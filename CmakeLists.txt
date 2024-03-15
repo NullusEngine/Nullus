@@ -1,0 +1,33 @@
+# CMake 最低版本号要求
+# ##############################################################################
+cmake_minimum_required(VERSION 3.18)
+
+# 设置c++版本要求
+# ##############################################################################
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_STANDARD 17)
+
+# 设置CMake安装目录
+# ##############################################################################
+set(CMAKE_INSTALL_PREFIX ${CMAKE_CURRENT_SOURCE_DIR}/Install CACHE PATH "set install path!" FORCE)
+
+# 设置项目名称
+# ##############################################################################
+project(Nullus)
+
+# 可选的配置项
+# ##############################################################################
+option(NLS_USE_SHARED_LIBRARY "Use Shared Library : OFF|ON (default is ON)" OFF)
+
+option(NLS_USE_VULKAN "Use Vulkan : OFF|ON (default is OFF)" OFF)
+
+option(NLS_USE_OPENGL "Use OpenGL : OFF|ON (default is ON)" ON)
+
+# 设置目录
+# ##############################################################################
+set(NLS_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+set(NLS_ThirdParty_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty")
+
+add_subdirectory("Runtime")
+add_subdirectory("Project")
+add_subdirectory("Plugins")

@@ -1,2 +1,0 @@
-C:\Uni\Games Engineering Code\game-engineering-codebase\x64\Debug\Common.pdb
-C:\Uni\Games Engineering Code\game-engineering-codebase\Common\x64\Debug\Common.pdb

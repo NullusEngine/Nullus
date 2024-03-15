@@ -1,2 +1,0 @@
-C:\Uni\Games Engineering Code\game-engineering-codebase\x64\Debug\Networking-ENet.pdb
-C:\Uni\Games Engineering Code\game-engineering-codebase\Plugins\Networking-ENet\x64\Debug\Networking-ENet.pdb

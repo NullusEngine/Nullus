@@ -1,2 +1,0 @@
-F:\Newcastle\8503 Release\Win32\Debug\CSC8503Common.pdb
-F:\Newcastle\8503 Release\CSC8503\CSC8503Common\Debug\CSC8503Common.pdb

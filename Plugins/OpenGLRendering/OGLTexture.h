@@ -7,7 +7,7 @@ Comments and queries to: richard-gordon.davison AT ncl.ac.uk
 https://research.ncl.ac.uk/game/
 */
 #pragma once
-#include "../../Common/TextureBase.h"
+#include "TextureBase.h"
 #include "glad\glad.h"
 
 #include <string>

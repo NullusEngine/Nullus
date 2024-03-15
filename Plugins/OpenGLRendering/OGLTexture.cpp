@@ -9,7 +9,7 @@ https://research.ncl.ac.uk/game/
 #include "OGLTexture.h"
 #include "OGLRenderer.h"
 
-#include "../../Common/TextureLoader.h"
+#include "TextureLoader.h"
 
 using namespace NCL;
 using namespace NCL::Rendering;

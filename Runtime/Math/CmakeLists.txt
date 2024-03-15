@@ -1,0 +1,35 @@
+# 收集头文件和源文件
+###############################################################################
+file(GLOB_RECURSE MATH_HEAD_FILES
+  ${CMAKE_CURRENT_SOURCE_DIR}/*.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/*.inl
+)
+file(GLOB_RECURSE MATH_SOURCE_FILES
+  ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/*.c
+)
+
+# 对文件进行分组
+###############################################################################
+source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${MATH_HEAD_FILES})
+source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${MATH_SOURCE_FILES})
+
+if(NLS_USE_SHARED_LIBRARY)
+add_library(NLS_Math SHARED ${MATH_HEAD_FILES} ${MATH_SOURCE_FILES})
+
+target_compile_definitions(
+    NLS_Math
+  PRIVATE
+  NLS_Math_EXPORT
+)
+else()
+add_library(NLS_Math STATIC ${MATH_HEAD_FILES} ${MATH_SOURCE_FILES})
+endif()
+
+# 设置包含路径
+###############################################################################
+target_include_directories(
+  NLS_Math
+  PUBLIC # 其他项目使用头文件时所需的目录
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+)

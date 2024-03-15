@@ -1,2 +1,0 @@
-C:\Uni\Games Engineering Code\game-engineering-codebase\x64\Debug\VulkanRendering.pdb
-C:\Uni\Games Engineering Code\game-engineering-codebase\Plugins\VulkanRendering\x64\Debug\VulkanRendering.pdb

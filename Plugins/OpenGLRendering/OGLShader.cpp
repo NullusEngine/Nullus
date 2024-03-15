@@ -7,7 +7,7 @@ Comments and queries to: richard-gordon.davison AT ncl.ac.uk
 https://research.ncl.ac.uk/game/
 */
 #include "OGLShader.h"
-#include "../../Common/Assets.h"
+#include "Assets.h"
 #include <iostream>
 
 using namespace NCL;

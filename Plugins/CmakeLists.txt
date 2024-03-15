@@ -1,0 +1,7 @@
+if(NLS_USE_VULKAN)
+add_subdirectory(VulkanRendering)
+endif()
+
+if(NLS_USE_OPENGL)
+add_subdirectory(OpenGLRendering)
+endif()

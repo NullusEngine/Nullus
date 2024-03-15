@@ -1,0 +1,3 @@
+﻿  MeshGeometry.cpp
+C:\Uni\Games Engineering Code\game-engineering-codebase\Common\MeshGeometry.cpp(175,11): warning C4018: '<': signed/unsigned mismatch
+  Common.vcxproj -> C:\Uni\Games Engineering Code\game-engineering-codebase\x64\Release\Common.lib

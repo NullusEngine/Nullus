@@ -1,0 +1,6 @@
+C:\Uni\Games Engineering Code\game-engineering-codebase\Win32\Debug\OpenGLRendering.pdb
+C:\Uni\Games Engineering Code\game-engineering-codebase\Plugins\OpenGLRendering\Debug\OpenGLRendering.pdb
+C:\Uni\Games Engineering Code\8503 Release\Win32\Debug\OpenGLRendering.pdb
+C:\Uni\Games Engineering Code\8503 Release\Plugins\OpenGLRendering\Debug\OpenGLRendering.pdb
+F:\Newcastle\8503 Release\Win32\Debug\OpenGLRendering.pdb
+F:\Newcastle\8503 Release\Plugins\OpenGLRendering\Debug\OpenGLRendering.pdb

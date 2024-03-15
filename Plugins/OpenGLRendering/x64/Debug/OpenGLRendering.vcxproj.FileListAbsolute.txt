@@ -1,0 +1,2 @@
+C:\Uni\Games Engineering Code\game-engineering-codebase\x64\Debug\OpenGLRendering.pdb
+C:\Uni\Games Engineering Code\game-engineering-codebase\Plugins\OpenGLRendering\x64\Debug\OpenGLRendering.pdb

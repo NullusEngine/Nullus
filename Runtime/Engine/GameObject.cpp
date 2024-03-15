@@ -1,7 +1,7 @@
 #include "GameObject.h"
 #include "CollosionDetection/CollisionDetection.h"
 
-using namespace NCL::CSC8503;
+using namespace NLS::CSC8503;
 
 GameObject::GameObject(string objectName)	{
 	name			= objectName;

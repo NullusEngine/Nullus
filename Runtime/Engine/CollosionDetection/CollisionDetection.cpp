@@ -9,8 +9,8 @@
 
 #include <list>
 #include "Math/Quaternion.h"
-
-using namespace NCL;
+#include "EngineDef.h"
+using namespace NLS;
 
 bool CollisionDetection::RayPlaneIntersection(const Ray&r, const Plane&p, RayCollision& collisions) {
 	float ln = Vector3::Dot(p.GetNormal(), r.GetDirection());

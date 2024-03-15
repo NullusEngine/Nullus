@@ -5,7 +5,7 @@
 #include <fstream>
 #include <string>
 
-using namespace NCL;
+using namespace NLS;
 
 MeshAnimation::MeshAnimation() {
 	jointCount	= 0;

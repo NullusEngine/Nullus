@@ -14,8 +14,8 @@ https://research.ncl.ac.uk/game/
 #include "Vector3.h"
 #include "Quaternion.h"
 
-using namespace NCL;
-using namespace NCL::Maths;
+using namespace NLS;
+using namespace NLS::Maths;
 
 Matrix3::Matrix3(void)	{
 	for (int i = 0; i < 9; ++i) {

@@ -11,14 +11,14 @@ https://research.ncl.ac.uk/game/
 #include <vector>
 #include "TextureBase.h"
 
-namespace NCL {
+namespace NLS {
 	namespace Maths {
 		class Vector2;
 		class Vector3;
 		class Vector4;
 	}
 	namespace Rendering {
-		class SimpleFont
+		class NLS_CORE_API SimpleFont
 		{
 		public:
 			SimpleFont(const std::string&fontName, const std::string&texName);

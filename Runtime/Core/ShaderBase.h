@@ -1,9 +1,10 @@
 #pragma once
 #include <string>
+#include "CoreDef.h"
 using std::string;
-namespace NCL {
+namespace NLS {
 	namespace Rendering {
-		enum class ShaderStages {
+		enum class NLS_CORE_API ShaderStages {
 			SHADER_VERTEX,
 			SHADER_FRAGMENT,
 			SHADER_GEOMETRY,
@@ -12,7 +13,7 @@ namespace NCL {
 			SHADER_MAX
 		};
 
-		class ShaderBase	{
+		class NLS_CORE_API ShaderBase	{
 		public:
 			ShaderBase() {
 			}

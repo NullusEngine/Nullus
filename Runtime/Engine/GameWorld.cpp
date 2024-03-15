@@ -5,8 +5,8 @@
 #include "Camera.h"
 #include <algorithm>
 #include <random>
-using namespace NCL;
-using namespace NCL::CSC8503;
+using namespace NLS;
+using namespace NLS::CSC8503;
 
 GameWorld::GameWorld()	{
 	mainCamera = new Camera();

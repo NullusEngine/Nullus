@@ -5,7 +5,7 @@
 #include "OGLTexture.h"
 #include "TextureLoader.h"
 
-using namespace NCL;
+using namespace NLS;
 using namespace CSC8503;
 
 TutorialGame::TutorialGame()	{
@@ -501,7 +501,7 @@ GameObject* TutorialGame::AddBonusToWorld(const Vector3& position) {
 	return apple;
 }
 
-StateGameObject* NCL::CSC8503::TutorialGame::AddStateObjectToWorld(const Vector3& position)
+StateGameObject* NLS::CSC8503::TutorialGame::AddStateObjectToWorld(const Vector3& position)
 {
 	StateGameObject* apple = new StateGameObject("apple");
 
@@ -545,7 +545,7 @@ bool TutorialGame::SelectObject() {
 	if (inSelectionMode) {
 		renderer->DrawString("Press Q to change to camera mode!", Vector2(5, 85));
 
-		if (Window::GetMouse()->ButtonDown(NCL::MouseButtons::LEFT)) {
+		if (Window::GetMouse()->ButtonDown(NLS::MouseButtons::LEFT)) {
 			if (selectionObject) {	//set colour to deselected;
 				selectionObject->GetRenderObject()->SetColour(Vector4(1, 1, 1, 1));
 				selectionObject = nullptr;
@@ -577,7 +577,7 @@ bool TutorialGame::SelectObject() {
 		renderer->DrawString("Press L to lock selected object object!", Vector2(5, 80));
 	}
 
-	if (Window::GetKeyboard()->KeyPressed(NCL::KeyboardKeys::L)) {
+	if (Window::GetKeyboard()->KeyPressed(NLS::KeyboardKeys::L)) {
 		if (selectionObject) {
 			if (lockedObject == selectionObject) {
 				lockedObject = nullptr;
@@ -606,7 +606,7 @@ void TutorialGame::MoveSelectedObject() {
 		return;// we haven ’t selected anything !
 	}
 	// Push the selected object !
-	if (Window::GetMouse() -> ButtonPressed(NCL::MouseButtons::RIGHT))
+	if (Window::GetMouse() -> ButtonPressed(NLS::MouseButtons::RIGHT))
 	{
 		Ray ray = CollisionDetection::BuildRayFromMouse(*world -> GetMainCamera());
 		RayCollision closestCollision;

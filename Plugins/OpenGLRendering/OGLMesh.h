@@ -1,20 +1,13 @@
-/*
-Part of Newcastle University's Game Engineering source code.
 
-Use as you see fit!
-
-Comments and queries to: richard-gordon.davison AT ncl.ac.uk
-https://research.ncl.ac.uk/game/
-*/
 #pragma once
 #include "MeshGeometry.h"
 #include "glad\glad.h"
-
+#include"OGLDef.h"
 #include <string>
 
-namespace NCL {
+namespace NLS {
 	namespace Rendering {
-		class OGLMesh : public NCL::MeshGeometry
+		class OGL_API OGLMesh : public NLS::MeshGeometry
 		{
 		public:
 			friend class OGLRenderer;

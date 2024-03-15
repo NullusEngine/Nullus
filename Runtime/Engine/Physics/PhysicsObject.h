@@ -1,16 +1,16 @@
 #pragma once
 #include "Vector3.h"
 #include "Matrix3.h"
+#include "EngineDef.h"
+using namespace NLS::Maths;
 
-using namespace NCL::Maths;
-
-namespace NCL {
+namespace NLS {
 	class CollisionVolume;
 	
 	namespace CSC8503 {
 		class Transform;
 
-		class PhysicsObject	{
+		class NLS_ENGINE_API PhysicsObject	{
 		public:
 			PhysicsObject(Transform* parentTransform, const CollisionVolume* parentVolume, float elasticity, float friction);
 			~PhysicsObject();

@@ -13,8 +13,8 @@ https://research.ncl.ac.uk/game/
 #include "Vector4.h"
 #include "Quaternion.h"
 
-using namespace NCL;
-using namespace NCL::Maths;
+using namespace NLS;
+using namespace NLS::Maths;
 Matrix4::Matrix4(void)	{
 	ToZero();
 	array[0]  = 1.0f;

@@ -1,15 +1,3 @@
-/******************************************************************************
-Class:Win32Window
-Implements:Window
-Author:Rich Davison
-Description:TODO
-
--_-_-_-_-_-_-_,------,
-_-_-_-_-_-_-_-|   /\_/\   NYANYANYAN
--_-_-_-_-_-_-~|__( ^ .^) /
-_-_-_-_-_-_-_-""  ""
-
-*//////////////////////////////////////////////////////////////////////////////
 #pragma once
 #include "Window.h"
 
@@ -38,15 +26,15 @@ _-_-_-_-_-_-_-""  ""
 
 #include "Win32Mouse.h"
 #include "Win32Keyboard.h"
-
-namespace NCL {
+#include "PlatformDef.h"
+namespace NLS {
 	namespace Win32Code {
 #define WINDOWCLASS "WindowClass"
 
 		class Win32Mouse;
 		class Win32Keyboard;
 
-		class Win32Window : public Window {
+		class NLS_PLATFORM_API Win32Window : public Window {
 		public:
 			friend class Window;
 			void	LockMouseToWindow(bool lock)		override;

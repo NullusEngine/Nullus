@@ -8,7 +8,7 @@ https://research.ncl.ac.uk/game/
 */
 #include "GameTimer.h"
 
-using namespace NCL;
+using namespace NLS;
 
 GameTimer::GameTimer(void) {
 	firstPoint = std::chrono::high_resolution_clock::now();

@@ -34,10 +34,14 @@ target_include_directories(
   Vulkan_Rendering
   PUBLIC # 其他项目使用头文件时所需的目录
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    ${Vulkan_INCLUDE_DIRS}
 )
+find_package(Vulkan REQUIRED)
 
 target_link_libraries(
   Vulkan_Rendering
     PUBLIC # 使用该库时必须依赖的库
     NLS_Core
+    NLS_Platform
+    Vulkan::Vulkan
 )

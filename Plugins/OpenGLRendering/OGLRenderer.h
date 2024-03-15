@@ -1,14 +1,7 @@
-/*
-Part of Newcastle University's Game Engineering source code.
 
-Use as you see fit!
-
-Comments and queries to: richard-gordon.davison AT ncl.ac.uk
-https://research.ncl.ac.uk/game/
-*/
 #pragma once
 #include "RendererBase.h"
-
+#include"OGLDef.h"
 #include "Vector3.h"
 #include "Vector4.h"
 
@@ -25,7 +18,7 @@ https://research.ncl.ac.uk/game/
 #include <string>
 #include <vector>
 
-namespace NCL {
+namespace NLS {
 	class MeshGeometry;
 
 	namespace Maths {
@@ -41,7 +34,7 @@ namespace NCL {
 
 		class SimpleFont;
 		
-		class OGLRenderer : public RendererBase
+		class OGL_API OGLRenderer : public RendererBase
 		{
 		public:
 			friend class OGLRenderer;

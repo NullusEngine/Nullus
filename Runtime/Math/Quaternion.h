@@ -8,14 +8,14 @@ https://research.ncl.ac.uk/game/
 */
 #pragma once
 #include <iostream>
-
-namespace NCL {
+#include "MathDef.h"
+namespace NLS {
 	namespace Maths {
 		class Matrix3;
 		class Matrix4;
 		class Vector3;
 
-		class Quaternion {
+		class NLS_MATH_API Quaternion {
 		public:
 			union {
 				struct {

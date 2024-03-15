@@ -1,8 +1,8 @@
 #pragma once
 #include "CollisionVolume.h"
-
-namespace NCL {
-    class CapsuleVolume : public CollisionVolume
+#include "EngineDef.h"
+namespace NLS {
+    class NLS_ENGINE_API CapsuleVolume : public CollisionVolume
     {
     public:
         CapsuleVolume(float halfHeight, float radius) {

@@ -19,7 +19,7 @@ https://research.ncl.ac.uk/game/
 using namespace std::filesystem;
 #endif
 
-using namespace NCL;
+using namespace NLS;
 using namespace Rendering;
 
 std::map<std::string, TextureLoadFunction> TextureLoader::fileHandlers;

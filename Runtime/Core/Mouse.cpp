@@ -1,7 +1,7 @@
 #include "Mouse.h"
 #include <string>
 
-using namespace NCL;
+using namespace NLS;
 
 Mouse::Mouse() {
 	memset(buttons		, 0, sizeof(bool)  * (int)MouseButtons::MAXVAL);

@@ -10,7 +10,7 @@ https://research.ncl.ac.uk/game/
 #include "Vector2.h"
 #include "Vector3.h"
 
-namespace NCL {
+namespace NLS {
 	namespace Maths {
 		void ScreenBoxOfTri(const Vector3& v0, const Vector3& v1, const Vector3& v2, Vector2& topLeft, Vector2& bottomRight) {
 			topLeft.x = std::min(v0.x, std::min(v1.x, v2.x));

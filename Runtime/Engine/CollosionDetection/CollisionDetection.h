@@ -11,12 +11,12 @@
 #include "SphereVolume.h"
 #include "CapsuleVolume.h"
 #include "Ray.h"
-
-using NCL::Camera;
-using namespace NCL::Maths;
-using namespace NCL::CSC8503;
-namespace NCL {
-	class CollisionDetection
+#include "EngineDef.h"
+using NLS::Camera;
+using namespace NLS::Maths;
+using namespace NLS::CSC8503;
+namespace NLS {
+	class NLS_ENGINE_API CollisionDetection
 	{
 	public:
 		struct ContactPoint {

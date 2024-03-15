@@ -8,9 +8,9 @@ https://research.ncl.ac.uk/game/
 */
 #pragma once
 #include "Vector3.h"
-namespace NCL {
+namespace NLS {
 	namespace Maths {
-		class Plane {
+		class NLS_MATH_API Plane {
 		public:
 			Plane(void);
 			Plane(const Vector3 &normal, float distance, bool normalise = false);

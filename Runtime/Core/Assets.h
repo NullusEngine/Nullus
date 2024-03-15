@@ -8,8 +8,8 @@ https://research.ncl.ac.uk/game/
 */
 #pragma once
 #include <string>
-
-namespace NCL {
+#include "CoreDef.h"
+namespace NLS {
 	namespace Assets {
 		const std::string SHADERDIR("../../Assets/Shaders/");
 		const std::string MESHDIR("../../Assets/Meshes/");
@@ -17,7 +17,7 @@ namespace NCL {
 		const std::string SOUNDSDIR("../../Assets/Sounds/");
 		const std::string FONTSSDIR("../../Assets/Fonts/");
 		const std::string DATADIR("../../Assets/Data/");
-		extern bool ReadTextFile(const std::string &filepath, std::string& result);
-		extern bool ReadBinaryFile(const std::string &filepath, char** into, size_t& size);
+		extern NLS_CORE_API bool ReadTextFile(const std::string &filepath, std::string& result);
+		extern NLS_CORE_API bool ReadBinaryFile(const std::string &filepath, char** into, size_t& size);
 	}
 }

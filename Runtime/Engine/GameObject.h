@@ -6,13 +6,13 @@
 #include "RenderObject.h"
 
 #include <vector>
-
+#include "EngineDef.h"
 using std::vector;
 
-namespace NCL {
+namespace NLS {
 	namespace CSC8503 {
 
-		class GameObject	{
+		class NLS_ENGINE_API GameObject	{
 		public:
 			GameObject(string name = "");
 			~GameObject();

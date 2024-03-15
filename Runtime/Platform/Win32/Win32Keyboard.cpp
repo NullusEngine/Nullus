@@ -1,7 +1,7 @@
 #include "Win32Keyboard.h"
 #ifdef _WIN32
 
-using namespace NCL;
+using namespace NLS;
 using namespace Win32Code;
 
 Win32Keyboard::Win32Keyboard(HWND &hwnd)	{

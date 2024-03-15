@@ -9,7 +9,7 @@
 #include "Debug.h"
 
 #include <functional>
-using namespace NCL;
+using namespace NLS;
 using namespace CSC8503;
 
 /*
@@ -222,7 +222,7 @@ void PhysicsSystem::BasicCollisionDetection() {
 	}
 }
 
-void NCL::CSC8503::PhysicsSystem::ResolveSpringCollision(GameObject& a, GameObject& b, CollisionDetection::ContactPoint& p) const
+void NLS::CSC8503::PhysicsSystem::ResolveSpringCollision(GameObject& a, GameObject& b, CollisionDetection::ContactPoint& p) const
 {
 	PhysicsObject* physA = a.GetPhysicsObject();
 	PhysicsObject* physB = b.GetPhysicsObject();

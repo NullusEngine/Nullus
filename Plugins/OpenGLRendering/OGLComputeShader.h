@@ -1,18 +1,11 @@
-/*
-Part of Newcastle University's Game Engineering source code.
 
-Use as you see fit!
-
-Comments and queries to: richard-gordon.davison AT ncl.ac.uk
-https://research.ncl.ac.uk/game/
-*/
 #pragma once
 #include "glad\glad.h"
-
+#include"OGLDef.h"
 #include <string>
 
-namespace NCL {
-	class OGLComputeShader	{
+namespace NLS {
+	class OGL_API OGLComputeShader	{
 	public:
 		OGLComputeShader(const std::string& s);
 		~OGLComputeShader();

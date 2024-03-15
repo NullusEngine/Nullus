@@ -1,6 +1,6 @@
 #include "Transform.h"
 
-using namespace NCL::CSC8503;
+using namespace NLS::CSC8503;
 
 Transform::Transform()
 {

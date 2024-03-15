@@ -1,18 +1,11 @@
-/*
-Part of Newcastle University's Game Engineering source code.
 
-Use as you see fit!
-
-Comments and queries to: richard-gordon.davison AT ncl.ac.uk
-https://research.ncl.ac.uk/game/
-*/
 #pragma once
 #include "ShaderBase.h"
 #include "glad\glad.h"
-
-namespace NCL {
+#include"OGLDef.h"
+namespace NLS {
 	namespace Rendering {
-		class OGLShader : public ShaderBase
+		class OGL_API OGLShader : public ShaderBase
 		{
 		public:
 			friend class OGLRenderer;

@@ -2,7 +2,7 @@
 #include "AI/StateTransition.h"
 #include "AI/StateMachine.h"
 #include "AI/State.h"
-using namespace NCL;
+using namespace NLS;
 using namespace CSC8503;
 
 StateGameObject::StateGameObject(string name) {

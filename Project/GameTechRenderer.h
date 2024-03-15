@@ -6,7 +6,7 @@
 
 #include "GameWorld.h"
 
-namespace NCL {
+namespace NLS {
 	class Maths::Vector3;
 	class Maths::Vector4;
 	namespace CSC8503 {

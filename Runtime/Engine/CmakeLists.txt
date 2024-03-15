@@ -20,7 +20,7 @@ add_library(NLS_Engine SHARED ${ENGINE_HEAD_FILES} ${ENGINE_SOURCE_FILES})
 target_compile_definitions(
   NLS_Engine
   PRIVATE
-  NLS_Engine_EXPORT
+  NLS_ENGINE_EXPORT
 )
 else()
 add_library(NLS_Engine STATIC ${ENGINE_HEAD_FILES} ${ENGINE_SOURCE_FILES})

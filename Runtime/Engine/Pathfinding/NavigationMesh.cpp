@@ -1,7 +1,7 @@
 #include "NavigationMesh.h"
 #include "Assets.h"
 #include <fstream>
-using namespace NCL;
+using namespace NLS;
 using namespace CSC8503;
 using namespace std;
 

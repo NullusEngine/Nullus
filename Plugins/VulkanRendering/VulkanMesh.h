@@ -1,5 +1,5 @@
 #pragma once
-#include "../../Common/MeshGeometry.h"
+#include "MeshGeometry.h"
 #include "VulkanRenderer.h"
 
 namespace NCL {

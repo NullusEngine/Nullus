@@ -1,10 +1,10 @@
 #pragma once
 #include "GameWorld.h"
 #include <set>
-
-namespace NCL {
+#include "EngineDef.h"
+namespace NLS {
 	namespace CSC8503 {
-		class PhysicsSystem	{
+		class NLS_ENGINE_API PhysicsSystem	{
 		public:
 			PhysicsSystem(GameWorld& g);
 			~PhysicsSystem();

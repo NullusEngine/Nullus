@@ -10,8 +10,8 @@ https://research.ncl.ac.uk/game/
 #include "Assets.h"
 #include <iostream>
 
-using namespace NCL;
-using namespace NCL::Rendering;
+using namespace NLS;
+using namespace NLS::Rendering;
 
 GLuint shaderTypes[(int)ShaderStages::SHADER_MAX] = {
 	GL_VERTEX_SHADER,

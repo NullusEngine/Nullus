@@ -9,8 +9,8 @@ https://research.ncl.ac.uk/game/
 #include "Matrix2.h"
 #include "Maths.h"
 
-using namespace NCL;
-using namespace NCL::Maths;
+using namespace NLS;
+using namespace NLS::Maths;
 
 Matrix2::Matrix2(void)	{
 	array[0] = 1.0f;

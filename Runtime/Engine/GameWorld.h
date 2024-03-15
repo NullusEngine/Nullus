@@ -3,7 +3,8 @@
 #include "CollosionDetection/Ray.h"
 #include "CollosionDetection/CollisionDetection.h"
 #include "QuadTree.h"
-namespace NCL {
+#include "EngineDef.h"
+namespace NLS {
 		class Camera;
 		using Maths::Ray;
 	namespace CSC8503 {
@@ -13,7 +14,7 @@ namespace NCL {
 		typedef std::function<void(GameObject*)> GameObjectFunc;
 		typedef std::vector<GameObject*>::const_iterator GameObjectIterator;
 
-		class GameWorld	{
+		class NLS_ENGINE_API GameWorld	{
 		public:
 			GameWorld();
 			~GameWorld();

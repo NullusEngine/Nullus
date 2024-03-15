@@ -1,15 +1,15 @@
 #pragma once
 #include <vector>
 #include <string>
-
-namespace NCL {
+#include "CoreDef.h"
+namespace NLS {
 
 namespace Maths {
 	class Matrix4;
 }
 using namespace Maths;
 
-class MeshAnimation
+class NLS_CORE_API MeshAnimation
 {
 public:
 	MeshAnimation();

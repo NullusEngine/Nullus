@@ -1,6 +1,6 @@
 #pragma once
 #include"GameObject.h"
-namespace NCL {
+namespace NLS {
 	namespace CSC8503 {
 		class StateMachine;
 		class StateGameObject : public GameObject {

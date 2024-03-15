@@ -1,8 +1,8 @@
 #pragma once
-
-namespace NCL {
+#include "CoreDef.h"
+namespace NLS {
 	namespace Rendering {
-		class TextureBase
+		class NLS_CORE_API TextureBase
 		{
 		public:
 			virtual ~TextureBase();

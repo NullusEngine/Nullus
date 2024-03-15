@@ -19,8 +19,11 @@ add_library(OpenGL_Rendering SHARED ${GL_HEAD_FILES} ${GL_SOURCE_FILES})
 
 target_compile_definitions(
   OpenGL_Rendering
+  PUBLIC
+  GLAD_GLAPI_EXPORT
   PRIVATE
-  OpenGL_Rendering_EXPORT
+  GLAD_GLAPI_EXPORT_BUILD
+  OGL_EXPORT
 )
 else()
 add_library(OpenGL_Rendering STATIC ${GL_HEAD_FILES} ${GL_SOURCE_FILES})
@@ -33,10 +36,14 @@ target_include_directories(
   OpenGL_Rendering
   PUBLIC # 其他项目使用头文件时所需的目录
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
-)
+
+    )
+find_package(OpenGL REQUIRED)
 
 target_link_libraries(
   OpenGL_Rendering
     PUBLIC # 使用该库时必须依赖的库
     NLS_Core
+    NLS_Platform
+    ${OPENGL_LIBRARIES}
 )

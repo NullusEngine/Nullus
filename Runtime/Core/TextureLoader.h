@@ -10,17 +10,18 @@ https://research.ncl.ac.uk/game/
 #include <map>
 #include <functional>
 #include <string>
+#include "CoreDef.h"
 using std::map;
 
 #include "TextureBase.h"
 
-namespace NCL {
+namespace NLS {
 
 	typedef std::function<bool(const std::string& filename, char*& outData, int& width, int &height, int &channels, int&flags)> TextureLoadFunction;
 
 	typedef std::function<Rendering::TextureBase*(const std::string& filename)> APILoadFunction;
 
-	class TextureLoader	{
+	class NLS_CORE_API TextureLoader	{
 	public:
 		static bool LoadTexture(const std::string& filename, char*& outData, int& width, int &height, int &channels, int&flags);
 

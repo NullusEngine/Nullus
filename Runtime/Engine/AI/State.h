@@ -1,6 +1,7 @@
 #pragma once
 #include <functional>
-namespace NCL {
+#include "EngineDef.h"
+namespace NLS {
 	namespace CSC8503 {
 		typedef std::function <void(float)> StateUpdateFunction;
 		class State		{

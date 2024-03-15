@@ -1,23 +1,11 @@
-/******************************************************************************
-Class:Win32Mouse
-Implements:Mouse
-Author:Rich Davison
-Description:TODO
-
--_-_-_-_-_-_-_,------,   
-_-_-_-_-_-_-_-|   /\_/\   NYANYANYAN
--_-_-_-_-_-_-~|__( ^ .^) /
-_-_-_-_-_-_-_-""  ""   
-
-*//////////////////////////////////////////////////////////////////////////////
 #pragma once
 #ifdef _WIN32
 #include "Mouse.h"
 #include "Win32Window.h"
-
-namespace NCL {
+#include "PlatformDef.h"
+namespace NLS {
 	namespace Win32Code {
-		class Win32Mouse : public NCL::Mouse {
+		class NLS_PLATFORM_API Win32Mouse : public NLS::Mouse {
 		public:
 			friend class Win32Window;
 

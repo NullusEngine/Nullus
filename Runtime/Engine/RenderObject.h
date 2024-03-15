@@ -3,16 +3,16 @@
 #include "TextureBase.h"
 #include "ShaderBase.h"
 #include "Vector4.h"
-
-namespace NCL {
-	using namespace NCL::Rendering;
+#include "EngineDef.h"
+namespace NLS {
+	using namespace NLS::Rendering;
 
 	class MeshGeometry;
 	namespace CSC8503 {
 		class Transform;
 		using namespace Maths;
 
-		class RenderObject
+		class NLS_ENGINE_API RenderObject
 		{
 		public:
 			RenderObject(Transform* parentTransform, MeshGeometry* mesh, TextureBase* tex, ShaderBase* shader);

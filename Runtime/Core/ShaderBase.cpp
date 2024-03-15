@@ -1,5 +1,5 @@
 #include "ShaderBase.h"
-using namespace NCL;
+using namespace NLS;
 using namespace Rendering;
 
 ShaderBase::ShaderBase(const string& vertex, const string& fragment, const string& geometry, const string& domain, const string& hull)

@@ -1,11 +1,11 @@
 #pragma once
 #include <stack>
-
-namespace NCL {
+#include "EngineDef.h"
+namespace NLS {
 	namespace CSC8503 {
 		class PushdownState;
 
-		class PushdownMachine
+		class NLS_ENGINE_API PushdownMachine
 		{
 		public:
 			PushdownMachine();

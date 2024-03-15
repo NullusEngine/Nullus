@@ -1,17 +1,13 @@
 #include "Window.h"
 #include <thread>
 
-#ifdef _WIN32
-#include "Win32/Win32Window.h"
-#endif
-
 #ifdef __ORBIS__
 #include "../Plugins/PlayStation4/PS4Window.h"
 #endif
 
 #include "RendererBase.h"
 
-using namespace NCL;
+using namespace NLS;
 using namespace Rendering;
 
 Window*		Window::window		= nullptr;
@@ -31,18 +27,6 @@ Window::~Window()	{
 	delete timer;	timer	= nullptr;
 	window = nullptr;
 	delete timer;
-}
-
-Window* Window::CreateGameWindow(std::string title, int sizeX, int sizeY, bool fullScreen, int offsetX, int offsetY) {
-	if (window) {
-		return nullptr;
-	}
-#ifdef _WIN32
-	return new Win32Code::Win32Window(title, sizeX, sizeY, fullScreen, offsetX, offsetY);
-#endif
-#ifdef __ORBIS__
-	return new PS4::PS4Window(title, sizeX, sizeY, fullScreen, offsetX, offsetY);
-#endif
 }
 
 void	Window::SetRenderer(RendererBase* r) {

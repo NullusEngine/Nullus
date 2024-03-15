@@ -20,7 +20,7 @@ add_library(NLS_Core SHARED ${CORE_HEAD_FILES} ${CORE_SOURCE_FILES})
 target_compile_definitions(
   NLS_Core
   PRIVATE
-  NLS_Core_EXPORT
+  NLS_CORE_EXPORT
 )
 else()
 add_library(NLS_Core STATIC ${CORE_HEAD_FILES} ${CORE_SOURCE_FILES})
@@ -39,5 +39,4 @@ target_link_libraries(
     NLS_Core
     PUBLIC # 使用该库时必须依赖的库
     NLS_Math
-    NLS_Platform
 )

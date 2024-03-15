@@ -1,8 +1,9 @@
 #pragma once
 #include "CollisionVolume.h"
 #include "Math/Vector3.h"
-namespace NCL {
-	class AABBVolume : CollisionVolume
+#include "EngineDef.h"
+namespace NLS {
+	class NLS_ENGINE_API AABBVolume : CollisionVolume
 	{
 	public:
 		AABBVolume(const Vector3& halfDims) {

@@ -2,9 +2,10 @@
 #include "NavigationMap.h"
 #include <string>
 #include <vector>
-namespace NCL {
+#include "EngineDef.h"
+namespace NLS {
 	namespace CSC8503 {
-		class NavigationMesh : public NavigationMap	{
+		class NLS_ENGINE_API NavigationMesh : public NavigationMap	{
 		public:
 			NavigationMesh();
 			NavigationMesh(const std::string&filename);

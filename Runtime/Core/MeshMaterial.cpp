@@ -5,8 +5,8 @@
 #include <fstream>
 #include <iostream>
 
-using namespace NCL;
-using namespace NCL::Rendering;
+using namespace NLS;
+using namespace NLS::Rendering;
 using std::ifstream;
 
 MeshMaterial::MeshMaterial(const std::string& filename) {

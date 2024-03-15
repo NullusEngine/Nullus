@@ -1,9 +1,10 @@
 #pragma once
 #include "NavigationMap.h"
 #include <string>
-namespace NCL {
+#include "EngineDef.h"
+namespace NLS {
 	namespace CSC8503 {
-		struct GridNode {
+		struct NLS_ENGINE_API GridNode {
 			GridNode* parent;
 
 			GridNode* connected[4];
@@ -29,7 +30,7 @@ namespace NCL {
 			~GridNode() {	}
 		};
 
-		class NavigationGrid : public NavigationMap	{
+		class NLS_ENGINE_API NavigationGrid : public NavigationMap	{
 		public:
 			NavigationGrid();
 			NavigationGrid(const std::string&filename);

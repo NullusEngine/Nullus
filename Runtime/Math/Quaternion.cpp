@@ -14,8 +14,8 @@ https://research.ncl.ac.uk/game/
 #include <algorithm>
 #include <cmath>
 
-using namespace NCL;
-using namespace NCL::Maths;
+using namespace NLS;
+using namespace NLS::Maths;
 
 Quaternion::Quaternion(void)
 {

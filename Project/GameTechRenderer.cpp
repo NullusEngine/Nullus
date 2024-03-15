@@ -4,7 +4,7 @@
 #include "Vector2.h"
 #include "Math/Vector3.h"
 #include "TextureLoader.h"
-using namespace NCL;
+using namespace NLS;
 using namespace Rendering;
 using namespace CSC8503;
 

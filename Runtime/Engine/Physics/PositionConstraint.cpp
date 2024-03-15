@@ -1,6 +1,6 @@
 #include "PositionConstraint.h"
 #include "GameObject.h"
-void NCL::CSC8503::PositionConstraint::UpdateConstraint(float dt)
+void NLS::CSC8503::PositionConstraint::UpdateConstraint(float dt)
 {
 	Vector3 relativePos = objectA -> GetTransform().GetPosition() - objectB ->GetTransform().GetPosition();
 

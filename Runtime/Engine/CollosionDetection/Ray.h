@@ -1,10 +1,10 @@
 #pragma once
 #include "Math/Vector3.h"
 #include "Math/Plane.h"
-
-namespace NCL {
+#include "EngineDef.h"
+namespace NLS {
 	namespace Maths {
-		struct RayCollision {
+		struct NLS_ENGINE_API RayCollision {
 			void*		node;			//Node that was hit
 			Vector3		collidedAt;		//WORLD SPACE position of the collision!
 			float		rayDistance;
@@ -15,7 +15,7 @@ namespace NCL {
 			}
 		};
 
-		class Ray {
+		class NLS_ENGINE_API Ray {
 		public:
 			Ray(Vector3 position, Vector3 direction) {
 				this->position  = position;

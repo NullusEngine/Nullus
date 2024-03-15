@@ -8,12 +8,12 @@ https://research.ncl.ac.uk/game/
 */
 #pragma once
 #include <iostream>
-
-namespace NCL {
+#include "MathDef.h"
+namespace NLS {
 	namespace Maths {
 		class Vector3;
 		class Vector4;
-		class Vector2 {
+		class NLS_MATH_API Vector2 {
 		public:
 			union {
 				struct {

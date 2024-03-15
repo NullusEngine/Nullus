@@ -3,9 +3,11 @@
 #include "Vector2.h"
 #include "Vector3.h"
 #include "Vector4.h"
+#include "Matrix4.h"
+#include "CoreDef.h"
 using std::vector;
 
-namespace NCL {
+namespace NLS {
 	namespace Maths {
 		class Vector2;
 		class Vector3;
@@ -17,7 +19,7 @@ namespace NCL {
 	}
 	using namespace Maths;
 
-	enum GeometryPrimitive {
+	enum NLS_CORE_API GeometryPrimitive {
 		Points,
 		Lines,
 		Triangles,
@@ -26,7 +28,7 @@ namespace NCL {
 		Patches
 	};
 
-	enum VertexAttribute {
+	enum NLS_CORE_API VertexAttribute {
 		Positions,
 		Colours,
 		TextureCoords,
@@ -37,12 +39,12 @@ namespace NCL {
 		MAX_ATTRIBUTES
 	};
 
-	struct SubMesh {
+	struct NLS_CORE_API SubMesh {
 		int start;
 		int count;
 	};
 
-	class MeshGeometry
+	class NLS_CORE_API MeshGeometry
 	{
 	public:		
 		virtual ~MeshGeometry();

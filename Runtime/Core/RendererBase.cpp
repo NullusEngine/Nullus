@@ -1,5 +1,5 @@
 #include "RendererBase.h"
-using namespace NCL;
+using namespace NLS;
 using namespace Rendering;
 
 RendererBase::RendererBase(Window& window) : hostWindow(window)	{

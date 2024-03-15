@@ -1,22 +1,14 @@
-/*
-Part of Newcastle University's Game Engineering source code.
-
-Use as you see fit!
-
-Comments and queries to: richard-gordon.davison AT ncl.ac.uk
-https://research.ncl.ac.uk/game/
-*/
 #pragma once
 #include <cmath>
 #include <iostream>
 #include <algorithm>
-
-namespace NCL {
+#include "MathDef.h"
+namespace NLS {
 	namespace Maths {
 		class Vector2;
 		class Vector4;
 
-		class Vector3 {
+		class NLS_MATH_API Vector3 {
 		public:
 			union {
 				struct {

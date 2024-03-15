@@ -1,4 +1,6 @@
-#include "Window.h"
+#ifdef _WIN32
+#include "Win32/Win32Window.h"
+#endif
 
 #include "AI/StateMachine.h"
 #include "AI/StateTransition.h"
@@ -8,7 +10,7 @@
 
 #include "TutorialGame.h"
 
-using namespace NCL;
+using namespace NLS;
 using namespace CSC8503;
 
 /*
@@ -26,7 +28,7 @@ hide or show the
 
 
 int main() {
-	Window*w = Window::CreateGameWindow("CSC8503 Game technology!", 1280, 720);
+	Window*w = Window::CreateGameWindow<Win32Code::Win32Window>("CSC8503 Game technology!", 1280, 720);
 
 	if (!w->HasInitialised()) {
 		return -1;

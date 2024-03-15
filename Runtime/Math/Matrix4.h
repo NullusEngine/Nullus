@@ -9,15 +9,15 @@ https://research.ncl.ac.uk/game/
 #pragma once
 
 #include <iostream>
-
-namespace NCL {
+#include "MathDef.h"
+namespace NLS {
 	namespace Maths {
 		class Vector3;
 		class Vector4;
 		class Matrix3;
 		class Quaternion;
 
-		class Matrix4 {
+		class NLS_MATH_API Matrix4 {
 		public:
 			Matrix4(void);
 			Matrix4(float elements[16]);

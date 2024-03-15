@@ -1,9 +1,9 @@
 #pragma once
 #include "State.h"
-
-namespace NCL {
+#include "EngineDef.h"
+namespace NLS {
 	namespace CSC8503 {
-		class PushdownState :
+		class NLS_ENGINE_API PushdownState :
 			public State
 		{
 		public:

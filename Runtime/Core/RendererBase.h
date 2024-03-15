@@ -13,16 +13,16 @@ _-_-_-_-_-_-_-""  ""
 #pragma once
 #include "Window.h"
 
-namespace NCL {
+namespace NLS {
 	namespace Rendering {
-		enum class VerticalSyncState {
+		enum class NLS_CORE_API VerticalSyncState {
 			VSync_ON,
 			VSync_OFF,
 			VSync_ADAPTIVE
 		};
-		class RendererBase {
+		class NLS_CORE_API RendererBase {
 		public:
-			friend class NCL::Window;
+			friend class NLS::Window;
 
 			RendererBase(Window& w);
 			virtual ~RendererBase();

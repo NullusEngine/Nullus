@@ -1,8 +1,8 @@
 #pragma once
-
-namespace NCL {
+#include "EngineDef.h"
+namespace NLS {
 	namespace CSC8503 {
-		class Constraint	{
+		class NLS_ENGINE_API Constraint	{
 		public:
 			Constraint() {}
 			virtual ~Constraint() {}

@@ -1,10 +1,11 @@
 #pragma once
 #include "Vector3.h"
 #include "NavigationPath.h"
-namespace NCL {
-	using namespace NCL::Maths;
+#include "EngineDef.h"
+namespace NLS {
+	using namespace NLS::Maths;
 	namespace CSC8503 {
-		class NavigationMap
+		class NLS_ENGINE_API NavigationMap
 		{
 		public:
 			NavigationMap() {}

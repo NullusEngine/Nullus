@@ -3,7 +3,7 @@
 
 #include <fstream>
 
-using namespace NCL;
+using namespace NLS;
 using namespace CSC8503;
 
 const int LEFT_NODE		= 0;

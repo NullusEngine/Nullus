@@ -1,9 +1,10 @@
 #pragma once
 #include "Constraint.h"
-namespace NCL {
+#include "EngineDef.h"
+namespace NLS {
 	namespace CSC8503 {
 		class GameObject;
-		class PositionConstraint : public Constraint {
+		class NLS_ENGINE_API PositionConstraint : public Constraint {
 		public:
 			PositionConstraint(GameObject* a, GameObject* b, float d) {
 				objectA = a;

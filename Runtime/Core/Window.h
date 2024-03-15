@@ -19,15 +19,16 @@ _-_-_-_-_-_-_-""  ""
 #include "Vector2.h"
 
 #include <string>
-
-namespace NCL {
+#include "CoreDef.h"
+namespace NLS {
 	namespace Rendering {
 		class RendererBase;
 	};
 	using namespace Rendering;
 	
-	class Window {
+	class NLS_CORE_API Window {
 	public:
+		template<typename T>
 		static Window* CreateGameWindow(std::string title = "NCLGL!", int sizeX = 800, int sizeY = 600, bool fullScreen = false, int offsetX = 100, int offsetY = 100);
 
 		static void DestroyGameWindow() {
@@ -90,4 +91,9 @@ namespace NCL {
 		static Mouse*		mouse;
 		static GameTimer*	timer;
 	};
+	template<typename T>
+	inline Window* Window::CreateGameWindow(std::string title, int sizeX, int sizeY, bool fullScreen, int offsetX, int offsetY)
+	{
+		return new T(title, sizeX, sizeY, fullScreen, offsetX, offsetY);
+	}
 }

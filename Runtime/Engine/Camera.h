@@ -1,15 +1,15 @@
 #pragma once
 #include "Matrix4.h"
 #include "Vector3.h"
-
-namespace NCL {
-	using namespace NCL::Maths;
-	enum class CameraType {
+#include "EngineDef.h"
+namespace NLS {
+	using namespace NLS::Maths;
+	enum class NLS_ENGINE_API CameraType {
 		Orthographic,
 		Perspective
 	};
 
-	class Camera {
+	class NLS_ENGINE_API Camera {
 	public:
 		Camera(void) {
 			left	= 0;

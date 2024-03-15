@@ -1,12 +1,12 @@
 #pragma once
 #include <functional>
-
-namespace NCL {
+#include "EngineDef.h"
+namespace NLS {
 	namespace CSC8503 {
 
 		class State;
 		typedef std::function <bool()> StateTransitionFunction;
-		class StateTransition
+		class NLS_ENGINE_API StateTransition
 		{
 		public:
 			StateTransition(State* source, State* dest, StateTransitionFunction f) {

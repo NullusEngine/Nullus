@@ -3,7 +3,7 @@
 #include "Physics/PhysicsSystem.h"
 #include "Physics/PositionConstraint.h"
 #include "StateGameObject.h"
-namespace NCL {
+namespace NLS {
 	namespace CSC8503 {
 		class TutorialGame		{
 		public:

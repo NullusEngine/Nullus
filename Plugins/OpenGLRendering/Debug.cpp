@@ -1,6 +1,6 @@
 #include "Debug.h"
 #include "Matrix4.h"
-using namespace NCL;
+using namespace NLS;
 
 OGLRenderer* Debug::renderer = nullptr;
 

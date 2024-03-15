@@ -1,11 +1,11 @@
 #pragma once
 #include "Vector3.h"
 #include <vector>
-
-namespace NCL {
-	using namespace NCL::Maths;
+#include "EngineDef.h"
+namespace NLS {
+	using namespace NLS::Maths;
 	namespace CSC8503 {
-		class NavigationPath		{
+		class NLS_ENGINE_API NavigationPath		{
 		public:
 			NavigationPath() {}
 			~NavigationPath() {}

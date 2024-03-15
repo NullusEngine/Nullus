@@ -20,7 +20,7 @@ add_library(NLS_Platform SHARED ${PLATFORM_HEAD_FILES} ${PLATFORM_SOURCE_FILES})
 target_compile_definitions(
   NLS_Platform
   PRIVATE
-  NLS_Platform_EXPORT
+  NLS_PLATFORM_EXPORT
 )
 else()
 add_library(NLS_Platform STATIC ${PLATFORM_HEAD_FILES} ${PLATFORM_SOURCE_FILES})

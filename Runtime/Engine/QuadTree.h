@@ -4,9 +4,9 @@
 #include "Debug.h"
 #include <list>
 #include <functional>
-
-namespace NCL {
-	using namespace NCL::Maths;
+#include "EngineDef.h"
+namespace NLS {
+	using namespace NLS::Maths;
 	namespace CSC8503 {
 		template<class T>
 		class QuadTree;
@@ -117,8 +117,8 @@ namespace NCL {
 }
 
 
-namespace NCL {
-	using namespace NCL::Maths;
+namespace NLS {
+	using namespace NLS::Maths;
 	namespace CSC8503 {
 		template<class T>
 		class QuadTree

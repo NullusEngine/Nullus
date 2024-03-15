@@ -1,10 +1,10 @@
 #pragma once
-#include "../../Plugins/OpenGLRendering/OGLRenderer.h"
+#include "OGLRenderer.h"
 #include <vector>
 #include <string>
-
-namespace NCL {
-	class Debug
+#include"OGLDef.h"
+namespace NLS {
+	class OGL_API Debug
 	{
 	public:
 		static void Print(const std::string& text, const Vector2&pos, const Vector4& colour = Vector4(1, 1, 1, 1));

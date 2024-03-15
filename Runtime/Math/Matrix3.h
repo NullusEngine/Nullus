@@ -10,15 +10,15 @@ https://research.ncl.ac.uk/game/
 #include <assert.h>
 #include <algorithm>
 #include <iostream>
-
-namespace NCL {
+#include "MathDef.h"
+namespace NLS {
 	namespace Maths {
 		class Matrix2;
 		class Matrix4;
 		class Vector3;
 		class Quaternion;
 
-		class Matrix3
+		class NLS_MATH_API Matrix3
 		{
 		public:
 			Matrix3(void);

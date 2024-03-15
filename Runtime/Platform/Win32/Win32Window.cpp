@@ -2,7 +2,7 @@
 #ifdef _WIN32
 #include "Windowsx.h"
 
-using namespace NCL;
+using namespace NLS;
 using namespace Win32Code;
 
 Win32Window::Win32Window(const std::string& title, int sizeX, int sizeY, bool fullScreen, int offsetX, int offsetY)	{

@@ -8,7 +8,7 @@
 #include <fstream>
 #include <string>
 
-using namespace NCL;
+using namespace NLS;
 using namespace Maths;
 
 MeshGeometry::MeshGeometry()

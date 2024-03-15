@@ -12,10 +12,10 @@ _-_-_-_-_-_-_-""  ""
 *//////////////////////////////////////////////////////////////////////////////
 #pragma once
 #include "Vector2.h"
-
-namespace NCL {
-	using namespace NCL::Maths;
-	enum class MouseButtons {
+#include "CoreDef.h"
+namespace NLS {
+	using namespace NLS::Maths;
+	enum class NLS_CORE_API MouseButtons {
 		LEFT		= 0,
 		RIGHT		= 1,
 		MIDDLE		= 2,
@@ -24,7 +24,7 @@ namespace NCL {
 		MAXVAL		= 5
 	};
 
-	class Mouse {
+	class NLS_CORE_API Mouse {
 	public:
 		friend class Window;
 		inline bool ButtonPressed(MouseButtons button) const {

@@ -1,8 +1,8 @@
 #pragma once
 #include <vector>
 #include <map>
-
-namespace NCL {
+#include "EngineDef.h"
+namespace NLS {
 	namespace CSC8503 {
 
 		class State;
@@ -11,7 +11,7 @@ namespace NCL {
 		typedef std::multimap<State*, StateTransition*> TransitionContainer;
 		typedef TransitionContainer::iterator TransitionIterator;
 
-		class StateMachine	{
+		class NLS_ENGINE_API StateMachine	{
 		public:
 			StateMachine();
 			~StateMachine();

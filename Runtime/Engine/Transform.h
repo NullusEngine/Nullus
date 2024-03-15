@@ -3,16 +3,16 @@
 #include "Matrix3.h"
 #include "Vector3.h"
 #include "Quaternion.h"
-
+#include "EngineDef.h"
 #include <vector>
 
 using std::vector;
 
-using namespace NCL::Maths;
+using namespace NLS::Maths;
 
-namespace NCL {
+namespace NLS {
 	namespace CSC8503 {
-		class Transform
+		class NLS_ENGINE_API Transform
 		{
 		public:
 			Transform();

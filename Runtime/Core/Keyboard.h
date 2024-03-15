@@ -1,20 +1,10 @@
-/******************************************************************************
-Class:Keyboard
-Implements:
-Author:Rich Davison
-Description:
+#include "CoreDef.h"
 
--_-_-_-_-_-_-_,------,
-_-_-_-_-_-_-_-|   /\_/\   NYANYANYAN
--_-_-_-_-_-_-~|__( ^ .^) /
-_-_-_-_-_-_-_-""  ""
-
-*//////////////////////////////////////////////////////////////////////////////
 #pragma once
 
-namespace NCL {
+namespace NLS {
 	//http://msdn.microsoft.com/en-us/library/ms645540(VS.85).aspx
-	enum class KeyboardKeys {
+	enum class NLS_CORE_API KeyboardKeys {
 		LBUTTON = 0x01,  // Left mouse button  
 		RBUTTON = 0x02,  // Right mouse button  
 		CANCEL = 0x03,  // Control-break processing  
@@ -161,7 +151,7 @@ namespace NCL {
 		MAXVALUE = 0xFF
 	};
 
-	class Keyboard {
+	class NLS_CORE_API Keyboard {
 	public:
 		friend class Window;
 

@@ -20,7 +20,7 @@ add_library(NLS_Math SHARED ${MATH_HEAD_FILES} ${MATH_SOURCE_FILES})
 target_compile_definitions(
     NLS_Math
   PRIVATE
-  NLS_Math_EXPORT
+  NLS_MATH_EXPORT
 )
 else()
 add_library(NLS_Math STATIC ${MATH_HEAD_FILES} ${MATH_SOURCE_FILES})

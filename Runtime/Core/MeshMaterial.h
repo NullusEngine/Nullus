@@ -2,17 +2,17 @@
 #include <string>
 #include <vector>
 #include <map>
-
+#include "CoreDef.h"
 using std::string;
 using std::vector;
 using std::map;
 
-namespace NCL {
+namespace NLS {
 
 	namespace Rendering {
 		class TextureBase;
 	}
-	class MeshMaterialEntry {
+	class NLS_CORE_API MeshMaterialEntry {
 		friend class MeshMaterial;
 	public:
 		bool GetEntry(const string& name, const string** output) const {

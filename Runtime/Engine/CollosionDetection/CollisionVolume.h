@@ -1,6 +1,7 @@
 #pragma once
-namespace NCL {
-	enum class VolumeType {
+#include "EngineDef.h"
+namespace NLS {
+	enum class NLS_ENGINE_API VolumeType {
 		AABB	= 1,
 		OBB		= 2,
 		Sphere	= 4, 
@@ -10,7 +11,7 @@ namespace NCL {
 		Invalid = 256
 	};
 
-	class CollisionVolume
+	class NLS_ENGINE_API CollisionVolume
 	{
 	public:
 		CollisionVolume() {

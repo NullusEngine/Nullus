@@ -8,7 +8,7 @@
 
 #include "Vulkan/vulkan.hpp"
 
-#include "../../Common/ShaderBase.h"
+#include "ShaderBase.h"
 #include <string>
 #include <vector>
 

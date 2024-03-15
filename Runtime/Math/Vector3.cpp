@@ -9,7 +9,7 @@ https://research.ncl.ac.uk/game/
 #include "Vector4.h"
 #include "Vector3.h"
 #include "Vector2.h"
-using namespace NCL;
+using namespace NLS;
 using namespace Maths;
 
 

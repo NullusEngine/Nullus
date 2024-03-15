@@ -1,6 +1,6 @@
 #include "PushdownMachine.h"
 #include "PushdownState.h"
-using namespace NCL::CSC8503;
+using namespace NLS::CSC8503;
 
 PushdownMachine::PushdownMachine()
 {

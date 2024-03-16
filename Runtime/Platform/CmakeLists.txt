@@ -33,6 +33,12 @@ target_include_directories(
   PUBLIC # 其他项目使用头文件时所需的目录
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
 )
+# 指定输出路径
+###############################################################################
+set_target_properties(NLS_Platform PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${NLS_APP_OUTPUT_PATH}"
+)
+
 
 target_link_libraries(
   NLS_Platform

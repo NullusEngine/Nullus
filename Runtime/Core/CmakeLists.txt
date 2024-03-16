@@ -35,6 +35,12 @@ target_include_directories(
     ${NLS_ThirdParty_DIR}
 )
 
+# 指定输出路径
+###############################################################################
+set_target_properties(NLS_Core PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${NLS_APP_OUTPUT_PATH}"
+)
+
 target_link_libraries(
     NLS_Core
     PUBLIC # 使用该库时必须依赖的库

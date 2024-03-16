@@ -16,6 +16,21 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 17)
 
 
+# 确定编译目标为32位还是64位
+# ##############################################################################
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(NLS_PLATFORM_X64 true)
+else()
+    set(NLS_PLATFORM_X64 false)
+endif()
+
+if(NLS_PLATFORM_X64)
+set(TARGET_PLATFORM_NAME "Win64")
+else()
+set(TARGET_PLATFORM_NAME "Win32")
+endif()
+
+
 # 可选的配置项
 # ##############################################################################
 option(NLS_USE_SHARED_LIBRARY "Use Shared Library : OFF|ON (default is ON)" OFF)
@@ -35,6 +50,23 @@ endif()
 # ##############################################################################
 set(NLS_ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 set(NLS_ThirdParty_DIR "${CMAKE_CURRENT_SOURCE_DIR}/ThirdParty")
+
+# App Path
+if(MSVC)
+    set(NLS_APP_PATH "${NLS_ROOT_DIR}/App")
+    if(NLS_USE_SHARED_LIBRARY)
+    set(NLS_APP_OUTPUT_PATH "${NLS_APP_PATH}/${TARGET_PLATFORM_NAME}_$<CONFIGURATION>_Runtime_Shared")
+    else()
+    set(NLS_APP_OUTPUT_PATH "${NLS_APP_PATH}/${TARGET_PLATFORM_NAME}_$<CONFIGURATION>_Runtime_Static")
+    endif()
+else()
+    set(NLS_APP_PATH "${NLS_ROOT_DIR}/App")
+    if(NLS_USE_SHARED_LIBRARY)
+        set(NLS_APP_OUTPUT_PATH "${NLS_APP_PATH}/${TARGET_PLATFORM_NAME}/${CMAKE_BUILD_TYPE}_Shared")
+    else()
+        set(NLS_APP_OUTPUT_PATH "${NLS_APP_PATH}/${TARGET_PLATFORM_NAME}/${CMAKE_BUILD_TYPE}_Static")
+    endif()
+endif()
 
 add_subdirectory("Runtime")
 add_subdirectory("Project")

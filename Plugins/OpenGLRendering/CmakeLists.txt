@@ -29,6 +29,12 @@ else()
 add_library(OpenGL_Rendering STATIC ${GL_HEAD_FILES} ${GL_SOURCE_FILES})
 endif()
 
+# 指定输出路径
+###############################################################################
+set_target_properties(OpenGL_Rendering PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${NLS_APP_OUTPUT_PATH}"
+)
+
 
 # 设置包含路径
 ###############################################################################

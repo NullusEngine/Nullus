@@ -26,6 +26,12 @@ else()
 add_library(NLS_Math STATIC ${MATH_HEAD_FILES} ${MATH_SOURCE_FILES})
 endif()
 
+# 指定输出路径
+###############################################################################
+set_target_properties(NLS_Math PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${NLS_APP_OUTPUT_PATH}"
+)
+
 # 设置包含路径
 ###############################################################################
 target_include_directories(

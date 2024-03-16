@@ -16,6 +16,11 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${GAME_SOURCE_FILES})
 
 add_executable(Game ${GAME_SOURCE_FILES} ${GAME_HEAD_FILES})
 
+# 指定输出路径
+###############################################################################
+set_target_properties(Game PROPERTIES
+  RUNTIME_OUTPUT_DIRECTORY "${NLS_APP_OUTPUT_PATH}"
+)
 
 # 设置包含路径
 ###############################################################################

@@ -35,9 +35,9 @@ endif()
 # ##############################################################################
 option(NLS_USE_SHARED_LIBRARY "Use Shared Library : OFF|ON (default is ON)" OFF)
 
-option(NLS_USE_VULKAN "Use Vulkan : OFF|ON (default is OFF)" OFF)
-
-option(NLS_USE_OPENGL "Use OpenGL : OFF|ON (default is ON)" ON)
+set(NLS_RENDER_API_LIST "OpenGL" "Vulkan")
+set(NLS_RENDER_API "OpenGL" CACHE STRING "Choose render api")
+set_property(CACHE NLS_RENDER_API PROPERTY STRINGS ${NLS_RENDER_API_LIST})
 
 if(NLS_USE_SHARED_LIBRARY)
     add_definitions(-DNLS_SHARED_LIB)

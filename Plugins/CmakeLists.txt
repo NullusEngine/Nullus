@@ -1,7 +1,7 @@
-if(NLS_USE_VULKAN)
-add_subdirectory(VulkanRendering)
-endif()
-
-if(NLS_USE_OPENGL)
-add_subdirectory(OpenGLRendering)
+if(NLS_RENDER_API STREQUAL "OpenGL")
+    add_subdirectory(OpenGLRendering)
+elseif(NLS_RENDER_API STREQUAL "Vulkan")
+    add_subdirectory(VulkanRendering)
+else()
+    message(FATAL_ERROR "NLS_RENDER_API is not supported. Aborting.")
 endif()

@@ -46,18 +46,18 @@ target_link_libraries(
     PUBLIC # 使用该库时必须依赖的库
     NLS_Math
 )
-if(NLS_USE_VULKAN)
-target_link_libraries(
-  NLS_Engine
-    PUBLIC # 使用该库时必须依赖的库
-    Vulkan_Rendering
-)
-endif()
-
-if(NLS_USE_OPENGL)
-target_link_libraries(
-  NLS_Engine
-    PUBLIC # 使用该库时必须依赖的库
-    OpenGL_Rendering
-)
+if(NLS_RENDER_API STREQUAL "OpenGL")
+  target_link_libraries(
+    NLS_Engine
+      PUBLIC # 使用该库时必须依赖的库
+      OpenGL_Rendering
+  )
+elseif(NLS_RENDER_API STREQUAL "Vulkan")
+  target_link_libraries(
+    NLS_Engine
+      PUBLIC # 使用该库时必须依赖的库
+      Vulkan_Rendering
+  )
+else()
+    message(FATAL_ERROR "NLS_RENDER_API is not supported. Aborting.")
 endif()

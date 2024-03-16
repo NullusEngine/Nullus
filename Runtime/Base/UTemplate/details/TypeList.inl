@@ -2,7 +2,7 @@
 
 #include "../Util.hpp"
 
-namespace Ubpa::details {
+namespace NLS::details {
 	template<typename List, typename T, std::size_t N = 0, bool found = false>
 	struct Find;
 
@@ -22,7 +22,7 @@ namespace Ubpa::details {
 	struct IsUnique;
 }
 
-namespace Ubpa {
+namespace NLS {
 	template<template<typename...>class OtherListTemplate, typename... Ts>
 	struct ToTypeList<OtherListTemplate, OtherListTemplate<Ts...>> : std::type_identity<TypeList<Ts...>> {};
 
@@ -192,7 +192,7 @@ namespace Ubpa {
 	struct IsUnique : details::IsUnique<List> {};
 }
 
-namespace Ubpa::details {
+namespace NLS::details {
 	template<typename T, std::size_t N, typename... Ts>
 	struct Find<TypeList<Ts...>, T, N, true> : std::integral_constant<std::size_t, N - 1> {};
 	template<typename T, std::size_t N>

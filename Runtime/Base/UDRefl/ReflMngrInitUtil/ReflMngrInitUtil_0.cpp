@@ -1,8 +1,8 @@
 #include "ReflMngrInitUtil.hpp"
 
-using namespace Ubpa::UDRefl;
+using namespace NLS::UDRefl;
 
-void Ubpa::UDRefl::details::ReflMngrInitUtil_0(ReflMngr& mngr) {
+void NLS::UDRefl::details::ReflMngrInitUtil_0(ReflMngr& mngr) {
 	mngr.RegisterType<ContainerType>();
 	mngr.AddField<ContainerType::Array>("Array");
 	mngr.AddField<ContainerType::Deque>("Deque");

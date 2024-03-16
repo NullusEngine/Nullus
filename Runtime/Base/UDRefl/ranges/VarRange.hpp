@@ -4,7 +4,7 @@
 
 #include "ObjectTree.hpp"
 
-namespace Ubpa::UDRefl {
+namespace NLS::UDRefl {
 	class NLS_BASE_API VarRange {
 	public:
 		// DFS

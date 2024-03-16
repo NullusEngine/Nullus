@@ -5,7 +5,7 @@
 #include <set>
 
 template<typename T>
-struct Ubpa::details::custom_type_name<std::set<T>> {
+struct NLS::details::custom_type_name<std::set<T>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::set<{"),
@@ -16,7 +16,7 @@ struct Ubpa::details::custom_type_name<std::set<T>> {
 };
 
 template<typename T, typename Less>
-struct Ubpa::details::custom_type_name<std::set<T, Less>> {
+struct NLS::details::custom_type_name<std::set<T, Less>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::set<{"),
@@ -29,7 +29,7 @@ struct Ubpa::details::custom_type_name<std::set<T, Less>> {
 };
 
 template<typename T>
-struct Ubpa::details::custom_type_name<std::multiset<T>> {
+struct NLS::details::custom_type_name<std::multiset<T>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::multiset<{"),
@@ -40,7 +40,7 @@ struct Ubpa::details::custom_type_name<std::multiset<T>> {
 };
 
 template<typename T, typename Less>
-struct Ubpa::details::custom_type_name<std::multiset<T, Less>> {
+struct NLS::details::custom_type_name<std::multiset<T, Less>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::multiset<{"),

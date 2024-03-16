@@ -5,9 +5,9 @@
 #include <set>
 
 template<typename Key, typename Compare, typename Allocator>
-struct Ubpa::UDRefl::SpecializeIsSet<std::set<Key, Compare, Allocator>> : std::true_type {};
+struct NLS::UDRefl::SpecializeIsSet<std::set<Key, Compare, Allocator>> : std::true_type {};
 
-namespace Ubpa::UDRefl {
+namespace NLS::UDRefl {
 	template<typename T>
 	concept IsRawArray = true
 		&& container_begin<T&>

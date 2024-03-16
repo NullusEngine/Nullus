@@ -5,7 +5,7 @@
 #include <string>
 
 template<typename Elem>
-struct Ubpa::details::custom_type_name<std::basic_string<Elem>> {
+struct NLS::details::custom_type_name<std::basic_string<Elem>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::basic_string<{"),
@@ -16,7 +16,7 @@ struct Ubpa::details::custom_type_name<std::basic_string<Elem>> {
 };
 
 template<typename Elem, typename Traits>
-struct Ubpa::details::custom_type_name<std::basic_string<Elem, Traits>> {
+struct NLS::details::custom_type_name<std::basic_string<Elem, Traits>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::basic_string<{"),
@@ -29,26 +29,26 @@ struct Ubpa::details::custom_type_name<std::basic_string<Elem, Traits>> {
 };
 
 template<>
-constexpr auto Ubpa::type_name<std::string>() noexcept {
+constexpr auto NLS::type_name<std::string>() noexcept {
 	return TSTR("std::string");
 }
 
 template<>
-constexpr auto Ubpa::type_name<std::wstring>() noexcept {
+constexpr auto NLS::type_name<std::wstring>() noexcept {
 	return TSTR("std::wstring");
 }
 
 template<>
-constexpr auto Ubpa::type_name<std::u8string>() noexcept {
+constexpr auto NLS::type_name<std::u8string>() noexcept {
 	return TSTR("std::u8string");
 }
 
 template<>
-constexpr auto Ubpa::type_name<std::u16string>() noexcept {
+constexpr auto NLS::type_name<std::u16string>() noexcept {
 	return TSTR("std::u16string");
 }
 
 template<>
-constexpr auto Ubpa::type_name<std::u32string>() noexcept {
+constexpr auto NLS::type_name<std::u32string>() noexcept {
 	return TSTR("std::u32string");
 }

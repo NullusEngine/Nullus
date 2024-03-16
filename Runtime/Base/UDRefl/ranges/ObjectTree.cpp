@@ -2,8 +2,8 @@
 
 #include <UDRefl/ReflMngr.hpp>
 
-using namespace Ubpa;
-using namespace Ubpa::UDRefl;
+using namespace NLS;
+using namespace NLS::UDRefl;
 
 void ObjectTree::iterator::update() {
 	switch (mode)
@@ -113,7 +113,7 @@ ObjectTree::iterator ObjectTree::iterator::operator++(int) {
 	return iter;
 }
 
-namespace Ubpa::UDRefl {
+namespace NLS::UDRefl {
 	NLS_BASE_API bool operator==(const ObjectTree::iterator& lhs, const ObjectTree::iterator& rhs) {
 		return lhs.deriveds == rhs.deriveds && lhs.mode == rhs.mode;
 	}

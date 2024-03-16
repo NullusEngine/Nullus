@@ -5,7 +5,7 @@
 
 #include <set>
 
-namespace Ubpa::UDRefl {
+namespace NLS::UDRefl {
 	using Attr = SharedObject;
 	struct NLS_BASE_API AttrLess {
 		using is_transparent = int;
@@ -58,6 +58,6 @@ namespace Ubpa::UDRefl {
 }
 
 template<>
-constexpr auto Ubpa::type_name<Ubpa::UDRefl::AttrSet>() noexcept {
-	return TSTR("Ubpa::UDRefl::AttrSet");
+constexpr auto NLS::type_name<NLS::UDRefl::AttrSet>() noexcept {
+	return TSTR("NLS::UDRefl::AttrSet");
 }

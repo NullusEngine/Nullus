@@ -2,8 +2,8 @@
 
 #include <UDRefl/ReflMngr.hpp>
 
-using namespace Ubpa;
-using namespace Ubpa::UDRefl;
+using namespace NLS;
+using namespace NLS::UDRefl;
 
 FieldRange::iterator::iterator(ObjectTree::iterator typeiter, FieldFlag flag) :
 	typeiter{ std::move(typeiter) }, flag{ flag }, mode {typeiter.Valid()?0:-1}
@@ -60,7 +60,7 @@ FieldRange::iterator FieldRange::iterator::operator++(int) {
 	return iter;
 }
 
-namespace Ubpa::UDRefl {
+namespace NLS::UDRefl {
 	NLS_BASE_API bool operator==(const FieldRange::iterator& lhs, const FieldRange::iterator& rhs) {
 		assert(lhs.flag == rhs.flag);
 		if (lhs.Valid()) {

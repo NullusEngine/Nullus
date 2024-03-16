@@ -1,8 +1,8 @@
 #include "ReflMngrInitUtil.hpp"
 
-using namespace Ubpa::UDRefl;
+using namespace NLS::UDRefl;
 
-namespace Ubpa::UDRefl::details {
+namespace NLS::UDRefl::details {
 	template<typename To, typename From>
 	void AddConvertCtor(ReflMngr& mngr) {
 		static_assert(std::is_convertible_v<From, To>);
@@ -32,7 +32,7 @@ namespace Ubpa::UDRefl::details {
 	}
 }
 
-void Ubpa::UDRefl::details::ReflMngrInitUtil_4(ReflMngr& mngr) {
+void NLS::UDRefl::details::ReflMngrInitUtil_4(ReflMngr& mngr) {
 	details::RegisterArithmeticConvertion<bool>(mngr);
 	details::RegisterArithmeticConvertion<std::int8_t>(mngr);
 	details::RegisterArithmeticConvertion<std::int16_t>(mngr);

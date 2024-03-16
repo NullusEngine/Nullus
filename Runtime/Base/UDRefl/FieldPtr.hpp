@@ -4,7 +4,7 @@
 
 #include <variant>
 
-namespace Ubpa::UDRefl {
+namespace NLS::UDRefl {
 	class NLS_BASE_API FieldPtr {
 	public:
 		//

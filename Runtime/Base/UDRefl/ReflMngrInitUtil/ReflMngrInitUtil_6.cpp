@@ -1,8 +1,8 @@
 #include "ReflMngrInitUtil.hpp"
 
-using namespace Ubpa::UDRefl;
+using namespace NLS::UDRefl;
 
-void Ubpa::UDRefl::details::ReflMngrInitUtil_6(ReflMngr& mngr) {
+void NLS::UDRefl::details::ReflMngrInitUtil_6(ReflMngr& mngr) {
 	mngr.RegisterType<std::string>();
 	mngr.AddConstructor<std::string, const std::string_view&>();
 	mngr.AddConstructor<std::string, const char* const&>();

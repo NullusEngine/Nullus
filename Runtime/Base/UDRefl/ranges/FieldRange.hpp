@@ -2,7 +2,7 @@
 
 #include "ObjectTree.hpp"
 
-namespace Ubpa::UDRefl {
+namespace NLS::UDRefl {
 	// DFS
 	class NLS_BASE_API FieldRange {
 	public:

@@ -5,7 +5,7 @@
 #include <map>
 
 template<typename Key, typename T>
-struct Ubpa::details::custom_type_name<std::map<Key, T>> {
+struct NLS::details::custom_type_name<std::map<Key, T>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::map<{"),
@@ -18,7 +18,7 @@ struct Ubpa::details::custom_type_name<std::map<Key, T>> {
 };
 
 template<typename Key, typename T, typename Less>
-struct Ubpa::details::custom_type_name<std::map<Key, T, Less>> {
+struct NLS::details::custom_type_name<std::map<Key, T, Less>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::map<{"),
@@ -33,7 +33,7 @@ struct Ubpa::details::custom_type_name<std::map<Key, T, Less>> {
 };
 
 template<typename Key, typename T>
-struct Ubpa::details::custom_type_name<std::multimap<Key, T>> {
+struct NLS::details::custom_type_name<std::multimap<Key, T>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::multimap<{"),
@@ -46,7 +46,7 @@ struct Ubpa::details::custom_type_name<std::multimap<Key, T>> {
 };
 
 template<typename Key, typename T, typename Less>
-struct Ubpa::details::custom_type_name<std::multimap<Key, T, Less>> {
+struct NLS::details::custom_type_name<std::multimap<Key, T, Less>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::multimap<{"),

@@ -8,7 +8,7 @@
 
 #include <span>
 
-namespace Ubpa::UDRefl::details {
+namespace NLS::UDRefl::details {
 	// parameter <- argument
 	// - same
 	// - reference

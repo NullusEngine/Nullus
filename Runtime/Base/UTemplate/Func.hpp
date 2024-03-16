@@ -4,7 +4,7 @@
 
 #include <tuple>
 
-namespace Ubpa {
+namespace NLS {
 	// type Object : if not member function, it is void
 	// type ArgList : TypeList<Args...>
 	// type Return

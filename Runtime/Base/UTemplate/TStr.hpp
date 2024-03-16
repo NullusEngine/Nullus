@@ -19,7 +19,7 @@
 #include <utility>
 #include <concepts>
 
-namespace Ubpa {
+namespace NLS {
 	template<typename Char, std::size_t N>
 	struct fixed_cstring {
 		using value_type = Char;
@@ -56,7 +56,7 @@ namespace Ubpa {
 
 #ifdef UBPA_TSTR_NTTPC
 
-namespace Ubpa {
+namespace NLS {
 	template<fixed_cstring str>
 	struct TStr {
 		using Char = typename decltype(str)::value_type;
@@ -78,16 +78,16 @@ namespace Ubpa {
 #define TSTR(s)                                                                                      \
 ([] {                                                                                                \
     constexpr std::basic_string_view str{s};                                                         \
-    return Ubpa::TStr<Ubpa::fixed_cstring<typename decltype(str)::value_type, str.size()>{ str }>{}; \
+    return NLS::TStr<NLS::fixed_cstring<typename decltype(str)::value_type, str.size()>{ str }>{}; \
 }())
 
 #else
-namespace Ubpa {
+namespace NLS {
 	template<typename Char, Char... chars>
 	struct TStr;
 }
 
-namespace Ubpa::details {
+namespace NLS::details {
 	template <typename Char, typename T, std::size_t ...N>
 	constexpr auto TSTRHelperImpl(std::index_sequence<N...>) {
 		return TStr<Char, T::get()[N]...>{};
@@ -107,10 +107,10 @@ namespace Ubpa::details {
 #define TSTR(s)                                                                       \
 ([] {                                                                                 \
     struct tmp { static constexpr auto get() { return std::basic_string_view{s}; } }; \
-    return Ubpa::details::TSTRHelper(tmp{});                                          \
+    return NLS::details::TSTRHelper(tmp{});                                          \
 }())
 
-namespace Ubpa {
+namespace NLS {
 	template<typename C, C... chars>
 	struct TStr {
 		using Char = C;
@@ -136,7 +136,7 @@ namespace Ubpa {
 #ifndef UBPA_TSTR_UTIL
 #define UBPA_TSTR_UTIL
 
-namespace Ubpa {
+namespace NLS {
 	template<typename T>
 	concept TStrLike = requires{
 		{T::View()}->std::same_as<std::basic_string_view<typename T::Char>>;

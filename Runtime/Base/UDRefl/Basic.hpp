@@ -28,7 +28,7 @@
 
 //#include <memory>
 
-namespace Ubpa::UDRefl {
+namespace NLS::UDRefl {
 	enum class MethodFlag {
 		Variable = 0b001,
 		Const    = 0b010,

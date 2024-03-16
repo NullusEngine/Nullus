@@ -1,8 +1,8 @@
 #include "ReflMngrInitUtil.hpp"
 
-using namespace Ubpa::UDRefl;
+using namespace NLS::UDRefl;
 
-void Ubpa::UDRefl::details::ReflMngrInitUtil_2(ReflMngr& mngr) {
+void NLS::UDRefl::details::ReflMngrInitUtil_2(ReflMngr& mngr) {
 	mngr.RegisterType<std::uint8_t>();
 	mngr.RegisterType<std::uint16_t>();
 	mngr.RegisterType<std::uint32_t>();

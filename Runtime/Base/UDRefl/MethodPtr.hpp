@@ -4,7 +4,7 @@
 
 //#include <vector>
 
-namespace Ubpa::UDRefl {
+namespace NLS::UDRefl {
 	using ParamList = std::vector<Type>;
 
 	class NLS_BASE_API MethodPtr {

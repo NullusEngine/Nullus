@@ -2,7 +2,7 @@
 
 #include <UDRefl/UDRefl.hpp>
 
-using namespace Ubpa::UDRefl;
+using namespace NLS::UDRefl;
 
 bool details::IsPriorityCompatible(std::span<const Type> params, std::span<const Type> argTypes) {
 	if (params.size() != argTypes.size())

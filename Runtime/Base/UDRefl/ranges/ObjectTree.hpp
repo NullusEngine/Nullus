@@ -4,7 +4,7 @@
 
 #include <UDRefl/Object.hpp>
 
-namespace Ubpa::UDRefl {
+namespace NLS::UDRefl {
 	class NLS_BASE_API ObjectTree {
 	public:
 		// DFS
@@ -37,8 +37,8 @@ namespace Ubpa::UDRefl {
 
 			void update();
 
-			small_vector<Type, 4> visitedVBs;
-			small_vector<Ranges::Derived, 8> deriveds;
+			std::vector<Type> visitedVBs;
+            std::vector<Ranges::Derived> deriveds;
 			bool curbase_valid;
 			int mode;
 

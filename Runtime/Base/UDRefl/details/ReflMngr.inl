@@ -4,7 +4,7 @@
 #include <sstream>
 #include <fstream>
 
-namespace Ubpa::UDRefl::details {
+namespace NLS::UDRefl::details {
 	template<bool NeedRegisterFieldType, typename T, typename... Args>
 	FieldPtr GenerateDynamicFieldPtr(ReflMngr& mngr, Args&&... args) {
 		static_assert(!std::is_reference_v<T> && !std::is_volatile_v<T>);
@@ -992,7 +992,7 @@ namespace Ubpa::UDRefl::details {
 	struct TypeAutoRegister : TypeAutoRegister_Default<T> {};
 };
 
-namespace Ubpa::UDRefl {
+namespace NLS::UDRefl {
 	//
 	// Factory
 	////////////

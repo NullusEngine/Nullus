@@ -2,7 +2,7 @@
 
 #include "TypeList.hpp"
 
-namespace Ubpa {
+namespace NLS {
 	template<template<typename...> class... Ts>
 	struct TemplateList { };
 

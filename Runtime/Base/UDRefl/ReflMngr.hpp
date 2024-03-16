@@ -2,7 +2,7 @@
 
 #include "Info.hpp"
 
-namespace Ubpa::UDRefl {
+namespace NLS::UDRefl {
 	constexpr Type GlobalType = TypeIDRegistry::Meta::global;
 	constexpr ObjectView Global = { GlobalType, nullptr };
 

@@ -7,14 +7,12 @@
 #include <UDRefl/ranges/ObjectTree.hpp>
 #include <UDRefl/ranges/VarRange.hpp>
 
-#include <USmallFlat/small_vector.hpp>
-
 #include <string>
 
-using namespace Ubpa;
-using namespace Ubpa::UDRefl;
+using namespace NLS;
+using namespace NLS::UDRefl;
 
-namespace Ubpa::UDRefl::details {
+namespace NLS::UDRefl::details {
 	static ObjectView StaticCast_BaseToDerived(ObjectView obj, Type type) {
 		assert(obj.GetType().GetCVRefMode() == CVRefMode::None);
 

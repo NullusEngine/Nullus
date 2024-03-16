@@ -4,9 +4,7 @@
 
 #include "../Info.hpp" 
 
-#include <USmallFlat/small_vector.hpp>
-
-namespace Ubpa::UDRefl::Ranges {
+namespace NLS::UDRefl::Ranges {
 	struct NLS_BASE_API Derived {
 		ObjectView obj;
 		TypeInfo* typeinfo; // not nullptr

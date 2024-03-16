@@ -1,6 +1,6 @@
 #include <UDRefl/FieldPtr.hpp>
 
-using namespace Ubpa::UDRefl;
+using namespace NLS::UDRefl;
 
 FieldFlag FieldPtr::GetFieldFlag() const noexcept {
 	switch (data.index())

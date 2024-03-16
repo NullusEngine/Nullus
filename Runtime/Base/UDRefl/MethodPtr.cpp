@@ -1,6 +1,6 @@
 #include <UDRefl/MethodPtr.hpp>
 
-using namespace Ubpa::UDRefl;
+using namespace NLS::UDRefl;
 
 MethodPtr::MethodPtr(Func func, MethodFlag flag, Type result_type, ParamList paramList)
 	: func{ std::move(func) }, flag{ flag }, result_type{ result_type }, paramList{ std::move(paramList) }

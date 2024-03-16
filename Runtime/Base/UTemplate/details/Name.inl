@@ -6,7 +6,7 @@
 #include <cassert>
 #include <cstring>
 
-namespace Ubpa::details {
+namespace NLS::details {
 	//
 	// core
 	/////////
@@ -150,7 +150,7 @@ namespace Ubpa::details {
 }
 
 template<auto V>
-constexpr auto Ubpa::constexpr_value_name() noexcept {
+constexpr auto NLS::constexpr_value_name() noexcept {
 	using T = decltype(V);
 	if constexpr (std::is_null_pointer_v<T>)
 		return TStrC_of<'n','u','l','l','p','t','r'>{};
@@ -188,7 +188,7 @@ constexpr auto Ubpa::constexpr_value_name() noexcept {
 }
 
 template<typename T>
-constexpr auto Ubpa::type_name() noexcept {
+constexpr auto NLS::type_name() noexcept {
 	if constexpr (is_defined_v<details::custom_type_name<T>>)
 		return details::custom_type_name<T>::get();
 	else if constexpr (std::is_lvalue_reference_v<T>)
@@ -323,11 +323,11 @@ constexpr auto Ubpa::type_name() noexcept {
 	}
 }
 
-constexpr bool Ubpa::constexpr_name_is_null_pointer(std::string_view name) noexcept {
+constexpr bool NLS::constexpr_name_is_null_pointer(std::string_view name) noexcept {
 	return name == constexpr_value_name<nullptr>().View();
 }
 
-constexpr bool Ubpa::constexpr_name_is_integral(std::string_view name) noexcept {
+constexpr bool NLS::constexpr_name_is_integral(std::string_view name) noexcept {
 	if (name.empty())
 		return false;
 
@@ -339,15 +339,15 @@ constexpr bool Ubpa::constexpr_name_is_integral(std::string_view name) noexcept 
 	return true;
 }
 
-constexpr bool Ubpa::type_name_is_void(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_void(std::string_view name) noexcept {
 	return type_name_remove_cv(name) == type_name<void>().View();
 }
 
-constexpr bool Ubpa::type_name_is_null_pointer(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_null_pointer(std::string_view name) noexcept {
 	return type_name_remove_cv(name) == type_name<std::nullptr_t>().View();
 }
 
-constexpr bool Ubpa::type_name_is_integral(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_integral(std::string_view name) noexcept {
 	switch (string_hash(type_name_remove_cv(name)))
 	{
 	case string_hash(type_name<bool>().View()):
@@ -365,7 +365,7 @@ constexpr bool Ubpa::type_name_is_integral(std::string_view name) noexcept {
 	}
 }
 
-constexpr bool Ubpa::type_name_is_floating_point(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_floating_point(std::string_view name) noexcept {
 	auto rmcv_name = type_name_remove_cv(name);
 	if (rmcv_name == type_name<float>().View())
 		return true;
@@ -379,41 +379,41 @@ constexpr bool Ubpa::type_name_is_floating_point(std::string_view name) noexcept
 	}
 }
 
-constexpr bool Ubpa::type_name_is_array(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_array(std::string_view name) noexcept {
 	return name.starts_with(std::string_view{"["});
 }
 
-constexpr bool Ubpa::type_name_is_enum(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_enum(std::string_view name) noexcept {
 	return name.starts_with(std::string_view{"enum{"});
 }
 
-constexpr bool Ubpa::type_name_is_union(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_union(std::string_view name) noexcept {
 	return name.starts_with(std::string_view{ "union{" });
 }
 
-constexpr bool Ubpa::type_name_is_function(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_function(std::string_view name) noexcept {
 	return name.starts_with(std::string_view{"("});
 }
 
-constexpr bool Ubpa::type_name_is_pointer(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_pointer(std::string_view name) noexcept {
 	return name.starts_with(std::string_view{"*"});
 }
 
-constexpr bool Ubpa::type_name_is_lvalue_reference(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_lvalue_reference(std::string_view name) noexcept {
 	return name.starts_with(std::string_view{"&{"});
 }
 
-constexpr bool Ubpa::type_name_is_rvalue_reference(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_rvalue_reference(std::string_view name) noexcept {
 	return name.starts_with(std::string_view{"&&"});
 }
 
-constexpr bool Ubpa::type_name_is_member_pointer(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_member_pointer(std::string_view name) noexcept {
 	return name.starts_with(std::string_view{"{"});
 }
 
 // composite
 
-constexpr bool Ubpa::type_name_is_arithmetic(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_arithmetic(std::string_view name) noexcept {
 	const std::size_t noncv_name_hash = string_hash(type_name_remove_cv(name));
 	switch (noncv_name_hash)
 	{
@@ -439,7 +439,7 @@ constexpr bool Ubpa::type_name_is_arithmetic(std::string_view name) noexcept {
 	}
 }
 
-constexpr bool Ubpa::type_name_is_fundamental(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_fundamental(std::string_view name) noexcept {
 	const std::size_t noncv_name_hash = string_hash(type_name_remove_cv(name));
 	switch (noncv_name_hash)
 	{
@@ -469,31 +469,31 @@ constexpr bool Ubpa::type_name_is_fundamental(std::string_view name) noexcept {
 
 // properties
 
-constexpr bool Ubpa::type_name_is_const(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_const(std::string_view name) noexcept {
 	return name.starts_with(std::string_view{"const"}) && name.size() >= 6 && (name[5] == '{' || name[5] == ' ');
 }
 
-constexpr bool Ubpa::type_name_is_read_only(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_read_only(std::string_view name) noexcept {
 	return type_name_is_const(type_name_remove_reference(name));
 }
 
-constexpr bool Ubpa::type_name_is_volatile(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_volatile(std::string_view name) noexcept {
 	return name.starts_with(std::string_view{"volatile{"}) || name.starts_with(std::string_view{"const volatile"});
 }
 
-constexpr bool Ubpa::type_name_is_cv(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_cv(std::string_view name) noexcept {
 	return name.starts_with(std::string_view{"const volatile"});
 }
 
-constexpr bool Ubpa::type_name_is_reference(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_reference(std::string_view name) noexcept {
 	return !name.empty() && name.front() == '&';
 }
 
-constexpr bool Ubpa::type_name_is_signed(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_signed(std::string_view name) noexcept {
 	return !type_name_is_unsigned(name);
 }
 
-constexpr bool Ubpa::type_name_is_unsigned(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_unsigned(std::string_view name) noexcept {
 	switch (string_hash(name))
 	{
 	case string_hash(type_name<uint8_t>().View()):
@@ -506,15 +506,15 @@ constexpr bool Ubpa::type_name_is_unsigned(std::string_view name) noexcept {
 	}
 }
 
-constexpr bool Ubpa::type_name_is_bounded_array(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_bounded_array(std::string_view name) noexcept {
 	return name.size() >= 2 && name[0] == '[' && name[1] != ']';
 }
 
-constexpr bool Ubpa::type_name_is_unbounded_array(std::string_view name) noexcept {
+constexpr bool NLS::type_name_is_unbounded_array(std::string_view name) noexcept {
 	return name.size() >= 2 && name[0] == '[' && name[1] == ']';
 }
 
-constexpr std::size_t Ubpa::type_name_rank(std::string_view name) noexcept {
+constexpr std::size_t NLS::type_name_rank(std::string_view name) noexcept {
 	std::size_t rank = 0;
 	std::size_t idx = 0;
 	bool flag = false;
@@ -535,7 +535,7 @@ constexpr std::size_t Ubpa::type_name_rank(std::string_view name) noexcept {
 	return rank;
 }
 
-constexpr std::size_t Ubpa::type_name_extent(std::string_view name, std::size_t N) noexcept {
+constexpr std::size_t NLS::type_name_extent(std::string_view name, std::size_t N) noexcept {
 	std::size_t idx = 0;
 	while (N != 0) {
 		if (name[idx] != '[')
@@ -560,7 +560,7 @@ constexpr std::size_t Ubpa::type_name_extent(std::string_view name, std::size_t 
 	return extent;
 }
 
-constexpr Ubpa::CVRefMode Ubpa::type_name_cvref_mode(std::string_view name) noexcept {
+constexpr NLS::CVRefMode NLS::type_name_cvref_mode(std::string_view name) noexcept {
 	if (name.empty())
 		return CVRefMode::None;
 
@@ -620,7 +620,7 @@ constexpr Ubpa::CVRefMode Ubpa::type_name_cvref_mode(std::string_view name) noex
 
 // modification (clip)
 
-constexpr std::string_view Ubpa::type_name_remove_cv(std::string_view name) noexcept {
+constexpr std::string_view NLS::type_name_remove_cv(std::string_view name) noexcept {
 	if (name.starts_with(std::string_view{"const"})) {
 		assert(name.size() >= 6);
 		if (name[5] == '{') {
@@ -642,7 +642,7 @@ constexpr std::string_view Ubpa::type_name_remove_cv(std::string_view name) noex
 		return name;
 }
 
-constexpr std::string_view Ubpa::type_name_remove_const(std::string_view name) noexcept {
+constexpr std::string_view NLS::type_name_remove_const(std::string_view name) noexcept {
 	if (!name.starts_with(std::string_view{"const"}))
 		return name;
 
@@ -658,7 +658,7 @@ constexpr std::string_view Ubpa::type_name_remove_const(std::string_view name) n
 		return name;
 }
 
-constexpr std::string_view Ubpa::type_name_remove_topmost_volatile(std::string_view name) noexcept {
+constexpr std::string_view NLS::type_name_remove_topmost_volatile(std::string_view name) noexcept {
 	if (!name.starts_with(std::string_view{"volatile{"}))
 		return name;
 
@@ -667,7 +667,7 @@ constexpr std::string_view Ubpa::type_name_remove_topmost_volatile(std::string_v
 	return { name.data() + 9,name.size() - 10 };
 }
 
-constexpr std::string_view Ubpa::type_name_remove_lvalue_reference(std::string_view name) noexcept {
+constexpr std::string_view NLS::type_name_remove_lvalue_reference(std::string_view name) noexcept {
 	if (name.size() <= 2 || name[0] != '&' || name[1] != '{')
 		return name;
 
@@ -675,7 +675,7 @@ constexpr std::string_view Ubpa::type_name_remove_lvalue_reference(std::string_v
 	return { name.data() + 2, name.size() - 3 };
 }
 
-constexpr std::string_view Ubpa::type_name_remove_rvalue_reference(std::string_view name) noexcept {
+constexpr std::string_view NLS::type_name_remove_rvalue_reference(std::string_view name) noexcept {
 	if (name.size() <= 2 || name[0] != '&' || name[1] != '&')
 		return name;
 
@@ -683,7 +683,7 @@ constexpr std::string_view Ubpa::type_name_remove_rvalue_reference(std::string_v
 	return { name.data() + 3, name.size() - 4 };
 }
 
-constexpr std::string_view Ubpa::type_name_remove_reference(std::string_view name) noexcept {
+constexpr std::string_view NLS::type_name_remove_reference(std::string_view name) noexcept {
 	if (name.size() <= 2 || name[0] != '&')
 		return name;
 	
@@ -697,7 +697,7 @@ constexpr std::string_view Ubpa::type_name_remove_reference(std::string_view nam
 	}
 }
 
-constexpr std::string_view Ubpa::type_name_remove_pointer(std::string_view name) noexcept {
+constexpr std::string_view NLS::type_name_remove_pointer(std::string_view name) noexcept {
 	name = type_name_remove_cvref(name);
 	if (!name.starts_with(std::string_view{"*"}))
 		return name;
@@ -706,11 +706,11 @@ constexpr std::string_view Ubpa::type_name_remove_pointer(std::string_view name)
 	return { name.data() + 2, name.size() - 3 };
 }
 
-constexpr std::string_view Ubpa::type_name_remove_cvref(std::string_view name) noexcept {
+constexpr std::string_view NLS::type_name_remove_cvref(std::string_view name) noexcept {
 	return type_name_remove_cv(type_name_remove_reference(name));
 }
 
-constexpr std::string_view Ubpa::type_name_remove_extent(std::string_view name) noexcept {
+constexpr std::string_view NLS::type_name_remove_extent(std::string_view name) noexcept {
 	std::size_t idx = 0;
 
 	if (name.empty())
@@ -733,14 +733,14 @@ constexpr std::string_view Ubpa::type_name_remove_extent(std::string_view name) 
 	}
 }
 
-constexpr std::string_view Ubpa::type_name_remove_all_extents(std::string_view name) noexcept {
+constexpr std::string_view NLS::type_name_remove_all_extents(std::string_view name) noexcept {
 	if (!type_name_is_array(name))
 		return name;
 
 	return type_name_remove_all_extents(type_name_remove_extent(name));
 }
 
-constexpr std::size_t Ubpa::type_name_add_const_hash(std::string_view name) noexcept {
+constexpr std::size_t NLS::type_name_add_const_hash(std::string_view name) noexcept {
 	if (type_name_is_reference(name) || type_name_is_const(name))
 		return string_hash(name);
 
@@ -750,7 +750,7 @@ constexpr std::size_t Ubpa::type_name_add_const_hash(std::string_view name) noex
 		return string_hash_seed(string_hash_seed(string_hash("const{"), name), "}");
 }
 
-constexpr std::size_t Ubpa::type_name_add_volatile_hash(std::string_view name) noexcept {
+constexpr std::size_t NLS::type_name_add_volatile_hash(std::string_view name) noexcept {
 	if (type_name_is_reference(name) || type_name_is_volatile(name))
 		return string_hash(name);
 
@@ -762,7 +762,7 @@ constexpr std::size_t Ubpa::type_name_add_volatile_hash(std::string_view name) n
 		return string_hash_seed(string_hash_seed(string_hash("volatile{"), name), "}");
 }
 
-constexpr std::size_t Ubpa::type_name_add_cv_hash(std::string_view name) noexcept {
+constexpr std::size_t NLS::type_name_add_cv_hash(std::string_view name) noexcept {
 	if (type_name_is_reference(name))
 		return string_hash(name);
 
@@ -779,7 +779,7 @@ constexpr std::size_t Ubpa::type_name_add_cv_hash(std::string_view name) noexcep
 		return string_hash_seed(string_hash_seed(string_hash("const volatile{"), name), "}");
 }
 
-constexpr std::size_t Ubpa::type_name_add_lvalue_reference_hash(std::string_view name) noexcept {
+constexpr std::size_t NLS::type_name_add_lvalue_reference_hash(std::string_view name) noexcept {
 	if (type_name_is_lvalue_reference(name))
 		return string_hash(name);
 
@@ -791,28 +791,28 @@ constexpr std::size_t Ubpa::type_name_add_lvalue_reference_hash(std::string_view
 		return string_hash_seed(string_hash_seed(string_hash("&{"), name), "}");
 }
 
-constexpr std::size_t Ubpa::type_name_add_lvalue_reference_weak_hash(std::string_view name) noexcept {
+constexpr std::size_t NLS::type_name_add_lvalue_reference_weak_hash(std::string_view name) noexcept {
 	if (type_name_is_reference(name))
 		return string_hash(name);
 
 	return string_hash_seed(string_hash_seed(string_hash("&{"), name), "}");
 }
 
-constexpr std::size_t Ubpa::type_name_add_rvalue_reference_hash(std::string_view name) noexcept {
+constexpr std::size_t NLS::type_name_add_rvalue_reference_hash(std::string_view name) noexcept {
 	if(type_name_is_reference(name))
 		return string_hash(name);
 
 	return string_hash_seed(string_hash_seed(string_hash("&&{"), name), "}");
 }
 
-constexpr std::size_t Ubpa::type_name_add_pointer_hash(std::string_view name) noexcept {
+constexpr std::size_t NLS::type_name_add_pointer_hash(std::string_view name) noexcept {
 	if (type_name_is_reference(name))
 		name = type_name_remove_reference(name);
 
 	return string_hash_seed(string_hash_seed(string_hash("*{"), name), "}");
 }
 
-constexpr std::size_t Ubpa::type_name_add_const_lvalue_reference_hash(std::string_view name) noexcept {
+constexpr std::size_t NLS::type_name_add_const_lvalue_reference_hash(std::string_view name) noexcept {
 	if (type_name_is_reference(name) || type_name_is_const(name))
 		return type_name_add_lvalue_reference_hash(name);
 
@@ -822,7 +822,7 @@ constexpr std::size_t Ubpa::type_name_add_const_lvalue_reference_hash(std::strin
 		return string_hash_seed(string_hash_seed(string_hash("&{const{"), name), "}}");
 }
 
-constexpr std::size_t Ubpa::type_name_add_const_rvalue_reference_hash(std::string_view name) noexcept {
+constexpr std::size_t NLS::type_name_add_const_rvalue_reference_hash(std::string_view name) noexcept {
 	if (type_name_is_reference(name))
 		return string_hash(name);
 
@@ -836,7 +836,7 @@ constexpr std::size_t Ubpa::type_name_add_const_rvalue_reference_hash(std::strin
 }
 
 template<typename Alloc>
-constexpr std::string_view Ubpa::type_name_add_const(std::string_view name, Alloc alloc) {
+constexpr std::string_view NLS::type_name_add_const(std::string_view name, Alloc alloc) {
 	if (type_name_is_reference(name) || type_name_is_const(name))
 		return name;
 
@@ -858,7 +858,7 @@ constexpr std::string_view Ubpa::type_name_add_const(std::string_view name, Allo
 }
 
 template<typename Alloc>
-constexpr std::string_view Ubpa::type_name_add_volatile(std::string_view name, Alloc alloc) {
+constexpr std::string_view NLS::type_name_add_volatile(std::string_view name, Alloc alloc) {
 	if (type_name_is_reference(name) || type_name_is_volatile(name))
 		return name;
 
@@ -881,7 +881,7 @@ constexpr std::string_view Ubpa::type_name_add_volatile(std::string_view name, A
 }
 
 template<typename Alloc>
-constexpr std::string_view Ubpa::type_name_add_cv(std::string_view name, Alloc alloc) {
+constexpr std::string_view NLS::type_name_add_cv(std::string_view name, Alloc alloc) {
 	if (type_name_is_reference(name) || type_name_is_cv(name))
 		return name;
 
@@ -911,7 +911,7 @@ constexpr std::string_view Ubpa::type_name_add_cv(std::string_view name, Alloc a
 }
 
 template<typename Alloc>
-constexpr std::string_view Ubpa::type_name_add_lvalue_reference(std::string_view name, Alloc alloc) {
+constexpr std::string_view NLS::type_name_add_lvalue_reference(std::string_view name, Alloc alloc) {
 	if (type_name_is_lvalue_reference(name))
 		return name;
 
@@ -933,7 +933,7 @@ constexpr std::string_view Ubpa::type_name_add_lvalue_reference(std::string_view
 }
 
 template<typename Alloc>
-constexpr std::string_view Ubpa::type_name_add_lvalue_reference_weak(std::string_view name, Alloc alloc) {
+constexpr std::string_view NLS::type_name_add_lvalue_reference_weak(std::string_view name, Alloc alloc) {
 	if (type_name_is_reference(name))
 		return name;
 
@@ -946,7 +946,7 @@ constexpr std::string_view Ubpa::type_name_add_lvalue_reference_weak(std::string
 }
 
 template<typename Alloc>
-constexpr std::string_view Ubpa::type_name_add_rvalue_reference(std::string_view name, Alloc alloc) {
+constexpr std::string_view NLS::type_name_add_rvalue_reference(std::string_view name, Alloc alloc) {
 	if (type_name_is_reference(name))
 		return name;
 
@@ -959,7 +959,7 @@ constexpr std::string_view Ubpa::type_name_add_rvalue_reference(std::string_view
 }
 
 template<typename Alloc>
-constexpr std::string_view Ubpa::type_name_add_pointer(std::string_view name, Alloc alloc) {
+constexpr std::string_view NLS::type_name_add_pointer(std::string_view name, Alloc alloc) {
 	if (type_name_is_reference(name))
 		name = type_name_remove_reference(name);
 
@@ -972,7 +972,7 @@ constexpr std::string_view Ubpa::type_name_add_pointer(std::string_view name, Al
 }
 
 template<typename Alloc>
-constexpr std::string_view Ubpa::type_name_add_const_lvalue_reference(std::string_view name, Alloc alloc) {
+constexpr std::string_view NLS::type_name_add_const_lvalue_reference(std::string_view name, Alloc alloc) {
 	if (type_name_is_reference(name) || type_name_is_const(name))
 		return type_name_add_lvalue_reference(name, alloc);
 
@@ -996,7 +996,7 @@ constexpr std::string_view Ubpa::type_name_add_const_lvalue_reference(std::strin
 }
 
 template<typename Alloc>
-constexpr std::string_view Ubpa::type_name_add_const_rvalue_reference(std::string_view name, Alloc alloc) {
+constexpr std::string_view NLS::type_name_add_const_rvalue_reference(std::string_view name, Alloc alloc) {
 	if (type_name_is_reference(name))
 		return name;
 

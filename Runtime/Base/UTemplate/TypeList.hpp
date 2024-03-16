@@ -2,7 +2,7 @@
 
 #include <cstddef>
 
-namespace Ubpa {
+namespace NLS {
 	template<typename... Ts>
 	struct TypeList {};
 

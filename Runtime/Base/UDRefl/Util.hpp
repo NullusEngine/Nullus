@@ -43,7 +43,7 @@ namespace std {
 	struct variant_size;
 }
 
-namespace Ubpa::UDRefl {
+namespace NLS::UDRefl {
 	using Offsetor = std::function<void*(void*)>;
 	using Destructor = std::function<void(const void*)>;
 	using DeleteFunc = std::function<void(void*)>; // destruct + free

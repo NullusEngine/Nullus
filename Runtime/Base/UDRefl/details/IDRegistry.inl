@@ -3,7 +3,7 @@
 #include <cassert>
 #include <cstring>
 
-namespace Ubpa::UDRefl {
+namespace NLS::UDRefl {
 	template<typename T, typename U>
 	IDRegistry<T, U>::IDRegistry() :
 		id2name{&resource}

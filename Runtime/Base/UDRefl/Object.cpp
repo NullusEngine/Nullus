@@ -7,10 +7,10 @@
 #include <UDRefl/ranges/MethodRange.hpp>
 #include <UDRefl/ranges/VarRange.hpp>
 
-using namespace Ubpa;
-using namespace Ubpa::UDRefl;
+using namespace NLS;
+using namespace NLS::UDRefl;
 
-NLS_BASE_API std::pmr::memory_resource* Ubpa::UDRefl::ReflMngr_GetTemporaryResource() {
+NLS_BASE_API std::pmr::memory_resource* NLS::UDRefl::ReflMngr_GetTemporaryResource() {
 	return Mngr.GetTemporaryResource();
 }
 

@@ -5,7 +5,7 @@
 
 //#include <span>
 
-namespace Ubpa::UDRefl {
+namespace NLS::UDRefl {
 	// pointer const array type (pointer is const, and pointer to non - const / referenced object)
 	using ArgPtrBuffer = void* const*;
 

@@ -5,7 +5,7 @@
 #include <unordered_map>
 
 template<typename Key, typename T>
-struct Ubpa::details::custom_type_name<std::unordered_map<Key, T>> {
+struct NLS::details::custom_type_name<std::unordered_map<Key, T>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::unordered_map<{"),
@@ -18,7 +18,7 @@ struct Ubpa::details::custom_type_name<std::unordered_map<Key, T>> {
 };
 
 template<typename Key, typename T, typename Hash>
-struct Ubpa::details::custom_type_name<std::unordered_map<Key, T, Hash>> {
+struct NLS::details::custom_type_name<std::unordered_map<Key, T, Hash>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::unordered_map<{"),
@@ -33,7 +33,7 @@ struct Ubpa::details::custom_type_name<std::unordered_map<Key, T, Hash>> {
 };
 
 template<typename Key, typename T, typename Hash, typename KeyEqual>
-struct Ubpa::details::custom_type_name<std::unordered_map<Key, T, Hash, KeyEqual>> {
+struct NLS::details::custom_type_name<std::unordered_map<Key, T, Hash, KeyEqual>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::unordered_map<{"),
@@ -50,7 +50,7 @@ struct Ubpa::details::custom_type_name<std::unordered_map<Key, T, Hash, KeyEqual
 };
 
 template<typename Key, typename T, typename Hash>
-struct Ubpa::details::custom_type_name<std::pmr::unordered_map<Key, T, Hash>> {
+struct NLS::details::custom_type_name<std::pmr::unordered_map<Key, T, Hash>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::pmr::unordered_map<{"),
@@ -65,7 +65,7 @@ struct Ubpa::details::custom_type_name<std::pmr::unordered_map<Key, T, Hash>> {
 };
 
 template<typename Key, typename T>
-struct Ubpa::details::custom_type_name<std::unordered_multimap<Key, T>> {
+struct NLS::details::custom_type_name<std::unordered_multimap<Key, T>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::unordered_multimap<{"),
@@ -78,7 +78,7 @@ struct Ubpa::details::custom_type_name<std::unordered_multimap<Key, T>> {
 };
 
 template<typename Key, typename T, typename Hash>
-struct Ubpa::details::custom_type_name<std::unordered_multimap<Key, T, Hash>> {
+struct NLS::details::custom_type_name<std::unordered_multimap<Key, T, Hash>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::unordered_multimap<{"),
@@ -93,7 +93,7 @@ struct Ubpa::details::custom_type_name<std::unordered_multimap<Key, T, Hash>> {
 };
 
 template<typename Key, typename T, typename Hash, typename KeyEqual>
-struct Ubpa::details::custom_type_name<std::unordered_multimap<Key, T, Hash, KeyEqual>> {
+struct NLS::details::custom_type_name<std::unordered_multimap<Key, T, Hash, KeyEqual>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::unordered_multimap<{"),
@@ -110,7 +110,7 @@ struct Ubpa::details::custom_type_name<std::unordered_multimap<Key, T, Hash, Key
 };
 
 template<typename Key, typename T>
-struct Ubpa::details::custom_type_name<std::pmr::unordered_multimap<Key, T>> {
+struct NLS::details::custom_type_name<std::pmr::unordered_multimap<Key, T>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::pmr::unordered_multimap<{"),

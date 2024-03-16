@@ -1,6 +1,6 @@
 #pragma once
 
-namespace Ubpa {
+namespace NLS {
 	template<template<typename...> class... Ts>
 	struct TLength<TemplateList<Ts...>> : std::integral_constant<std::size_t, sizeof...(Ts)> {};
 

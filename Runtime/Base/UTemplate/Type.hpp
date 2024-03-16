@@ -4,7 +4,7 @@
 
 #include <compare>
 
-namespace Ubpa {
+namespace NLS {
 	class NameID {
 	public:
 		static constexpr std::size_t InvalidValue() noexcept { return static_cast<std::size_t>(-1); }
@@ -237,29 +237,29 @@ namespace Ubpa {
 }
 
 template<>
-struct std::hash<Ubpa::NameID> {
-	std::size_t operator()(const Ubpa::NameID& ID) const noexcept {
+struct std::hash<NLS::NameID> {
+	std::size_t operator()(const NLS::NameID& ID) const noexcept {
 		return ID.GetValue();
 	}
 };
 
 template<>
-struct std::hash<Ubpa::TypeID> {
-	std::size_t operator()(const Ubpa::TypeID& ID) const noexcept {
+struct std::hash<NLS::TypeID> {
+	std::size_t operator()(const NLS::TypeID& ID) const noexcept {
 		return ID.GetValue();
 	}
 };
 
 template<>
-struct std::hash<Ubpa::Name> {
-	std::size_t operator()(const Ubpa::Name& name) const noexcept {
+struct std::hash<NLS::Name> {
+	std::size_t operator()(const NLS::Name& name) const noexcept {
 		return name.GetID().GetValue();
 	}
 };
 
 template<>
-struct std::hash<Ubpa::Type> {
-	std::size_t operator()(const Ubpa::Type& type) const noexcept {
+struct std::hash<NLS::Type> {
+	std::size_t operator()(const NLS::Type& type) const noexcept {
 		return type.GetID().GetValue();
 	}
 };

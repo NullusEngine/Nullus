@@ -4,7 +4,7 @@
 
 #include <string_view>
 
-namespace Ubpa {
+namespace NLS {
 	template<auto V>
 	constexpr auto constexpr_value_name() noexcept;
 

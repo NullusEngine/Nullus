@@ -2,7 +2,7 @@
 
 #include <UDRefl/ReflMngr.hpp>
 
-namespace Ubpa::UDRefl::details {
+namespace NLS::UDRefl::details {
 	void ReflMngrInitUtil_0(ReflMngr& mngr);
 	void ReflMngrInitUtil_1(ReflMngr& mngr);
 	void ReflMngrInitUtil_2(ReflMngr& mngr);

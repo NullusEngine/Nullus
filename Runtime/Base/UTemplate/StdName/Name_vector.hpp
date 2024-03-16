@@ -5,7 +5,7 @@
 #include <vector>
 
 template<typename T>
-struct Ubpa::details::custom_type_name<std::vector<T>> {
+struct NLS::details::custom_type_name<std::vector<T>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::vector<{"),

@@ -12,7 +12,7 @@
 #include <unordered_set>
 #endif // !NDEBUG
 
-namespace Ubpa::UDRefl {
+namespace NLS::UDRefl {
 	// name must end with 0
 	// thread-safe
 	template<typename T, typename U>

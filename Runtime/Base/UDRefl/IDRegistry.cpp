@@ -1,7 +1,7 @@
 #include <UDRefl/IDRegistry.hpp>
 
-using namespace Ubpa;
-using namespace Ubpa::UDRefl;
+using namespace NLS;
+using namespace NLS::UDRefl;
 
 #define UBPA_UDREFL_META_GET_ID_VIEW(meta) meta.GetID(), meta.GetView()
 #define UBPA_UDREFL_META_GET_ID_NAME(meta) meta.GetID(), meta.GetName()

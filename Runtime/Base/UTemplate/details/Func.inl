@@ -1,6 +1,6 @@
 #pragma once
 
-namespace Ubpa::details {
+namespace NLS::details {
 	// ref: qobjectdefs_impl.h
 
 	template <typename T> struct RmvLValueRef : std::type_identity<T> {};
@@ -50,7 +50,7 @@ namespace Ubpa::details {
 	};
 }
 
-namespace Ubpa::details {
+namespace NLS::details {
 	template<bool IsConst, bool IsVolatile, ReferenceMode Ref, bool IsNoexcept, typename Sig>
 	struct FuncTraitsBase;
 
@@ -74,128 +74,128 @@ namespace Ubpa::details {
 
 // 2*2*3*2 = 24
 template<typename Ret, typename... Args> // 0000
-struct Ubpa::FuncTraits<Ret(Args...)> 
+struct NLS::FuncTraits<Ret(Args...)> 
 	: details::FuncTraitsBase<false, false, ReferenceMode::None, false, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 1000
-struct Ubpa::FuncTraits<Ret(Args...)const>
+struct NLS::FuncTraits<Ret(Args...)const>
 	: details::FuncTraitsBase<true, false, ReferenceMode::None, false, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 0100
-struct Ubpa::FuncTraits<Ret(Args...)volatile>
+struct NLS::FuncTraits<Ret(Args...)volatile>
 	: details::FuncTraitsBase<false, true, ReferenceMode::None, false, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 1100
-struct Ubpa::FuncTraits<Ret(Args...)const volatile>
+struct NLS::FuncTraits<Ret(Args...)const volatile>
 	: details::FuncTraitsBase<true, true, ReferenceMode::None, false, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 0010
-struct Ubpa::FuncTraits<Ret(Args...)&>
+struct NLS::FuncTraits<Ret(Args...)&>
 	: details::FuncTraitsBase<false, false, ReferenceMode::Left, false, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 1010
-struct Ubpa::FuncTraits<Ret(Args...)const&>
+struct NLS::FuncTraits<Ret(Args...)const&>
 	: details::FuncTraitsBase<true, false, ReferenceMode::Left, false, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 0110
-struct Ubpa::FuncTraits<Ret(Args...)volatile&>
+struct NLS::FuncTraits<Ret(Args...)volatile&>
 	: details::FuncTraitsBase<false, true, ReferenceMode::Left, false, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 1110
-struct Ubpa::FuncTraits<Ret(Args...)const volatile&>
+struct NLS::FuncTraits<Ret(Args...)const volatile&>
 	: details::FuncTraitsBase<true, true, ReferenceMode::Left, false, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 0020
-struct Ubpa::FuncTraits<Ret(Args...)&&>
+struct NLS::FuncTraits<Ret(Args...)&&>
 	: details::FuncTraitsBase<false, false, ReferenceMode::Right, false, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 1020
-struct Ubpa::FuncTraits<Ret(Args...)const&&>
+struct NLS::FuncTraits<Ret(Args...)const&&>
 	: details::FuncTraitsBase<true, false, ReferenceMode::Right, false, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 0120
-struct Ubpa::FuncTraits<Ret(Args...)volatile&&>
+struct NLS::FuncTraits<Ret(Args...)volatile&&>
 	: details::FuncTraitsBase<false, true, ReferenceMode::Right, false, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 1120
-struct Ubpa::FuncTraits<Ret(Args...)const volatile&&>
+struct NLS::FuncTraits<Ret(Args...)const volatile&&>
 	: details::FuncTraitsBase<true, true, ReferenceMode::Right, false, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 0001
-struct Ubpa::FuncTraits<Ret(Args...)noexcept>
+struct NLS::FuncTraits<Ret(Args...)noexcept>
 	: details::FuncTraitsBase<false, false, ReferenceMode::None, true, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 1001
-struct Ubpa::FuncTraits<Ret(Args...)const noexcept>
+struct NLS::FuncTraits<Ret(Args...)const noexcept>
 	: details::FuncTraitsBase<true, false, ReferenceMode::None, true, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 0101
-struct Ubpa::FuncTraits<Ret(Args...)volatile noexcept>
+struct NLS::FuncTraits<Ret(Args...)volatile noexcept>
 	: details::FuncTraitsBase<false, true, ReferenceMode::None, true, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 1101
-struct Ubpa::FuncTraits<Ret(Args...)const volatile noexcept>
+struct NLS::FuncTraits<Ret(Args...)const volatile noexcept>
 	: details::FuncTraitsBase<true, true, ReferenceMode::None, true, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 0011
-struct Ubpa::FuncTraits<Ret(Args...) & noexcept>
+struct NLS::FuncTraits<Ret(Args...) & noexcept>
 	: details::FuncTraitsBase<false, false, ReferenceMode::Left, true, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 1011
-struct Ubpa::FuncTraits<Ret(Args...)const& noexcept>
+struct NLS::FuncTraits<Ret(Args...)const& noexcept>
 	: details::FuncTraitsBase<true, false, ReferenceMode::Left, true, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 0111
-struct Ubpa::FuncTraits<Ret(Args...)volatile& noexcept>
+struct NLS::FuncTraits<Ret(Args...)volatile& noexcept>
 	: details::FuncTraitsBase<false, true, ReferenceMode::Left, true, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 1111
-struct Ubpa::FuncTraits<Ret(Args...)const volatile& noexcept>
+struct NLS::FuncTraits<Ret(Args...)const volatile& noexcept>
 	: details::FuncTraitsBase<true, true, ReferenceMode::Left, true, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 0021
-struct Ubpa::FuncTraits<Ret(Args...) && noexcept>
+struct NLS::FuncTraits<Ret(Args...) && noexcept>
 	: details::FuncTraitsBase<false, false, ReferenceMode::Right, true, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 1021
-struct Ubpa::FuncTraits<Ret(Args...)const&& noexcept>
+struct NLS::FuncTraits<Ret(Args...)const&& noexcept>
 	: details::FuncTraitsBase<true, false, ReferenceMode::Right, true, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 0121
-struct Ubpa::FuncTraits<Ret(Args...)volatile&& noexcept>
+struct NLS::FuncTraits<Ret(Args...)volatile&& noexcept>
 	: details::FuncTraitsBase<false, true, ReferenceMode::Right, true, Ret(Args...)> {};
 
 template<typename Ret, typename... Args> // 1121
-struct Ubpa::FuncTraits<Ret(Args...)const volatile&& noexcept>
+struct NLS::FuncTraits<Ret(Args...)const volatile&& noexcept>
 	: details::FuncTraitsBase<true, true, ReferenceMode::Right, true, Ret(Args...)> {};
 
 // dispatch
 template<typename Func>
-struct Ubpa::FuncTraits<Func*> : FuncTraits<Func> {
+struct NLS::FuncTraits<Func*> : FuncTraits<Func> {
 	using Object = void;
 	using Function = Func;
 };
 
 template<typename T, typename Func>
-struct Ubpa::FuncTraits<Func T::*> : FuncTraits<Func> {
+struct NLS::FuncTraits<Func T::*> : FuncTraits<Func> {
 	using Object = T;
 	using Function = Func;
 };
 
 template<typename Func>
-struct Ubpa::FuncTraits<Func&> : FuncTraits<Func> {};
+struct NLS::FuncTraits<Func&> : FuncTraits<Func> {};
 template<typename Func>
-struct Ubpa::FuncTraits<Func&&> : FuncTraits<Func> {};
+struct NLS::FuncTraits<Func&&> : FuncTraits<Func> {};
 template<typename Func>
-struct Ubpa::FuncTraits<const Func&> : FuncTraits<Func> {};
+struct NLS::FuncTraits<const Func&> : FuncTraits<Func> {};
 template<typename Func>
-struct Ubpa::FuncTraits<const Func&&> : FuncTraits<Func> {};
+struct NLS::FuncTraits<const Func&&> : FuncTraits<Func> {};
 
 template<typename T>
-struct Ubpa::FuncTraits : details::FuncTraitsDispatch<std::is_function_v<T>, T> {};
+struct NLS::FuncTraits : details::FuncTraitsDispatch<std::is_function_v<T>, T> {};
 
 template<typename Ret, typename... Args>
-struct Ubpa::FuncExpand<Ret(Args...)> {
+struct NLS::FuncExpand<Ret(Args...)> {
 	template<typename Func>
 	static auto get(Func&& func) noexcept {
 		static_assert(std::is_void_v<Ret> || std::is_convertible_v<FuncTraits_Return<Func>, Ret>,
@@ -222,12 +222,12 @@ private:
 };
 
 template<typename Lambda>
-constexpr auto Ubpa::DecayLambda(Lambda&& lambda) noexcept {
+constexpr auto NLS::DecayLambda(Lambda&& lambda) noexcept {
 	return static_cast<std::add_pointer_t<FuncTraits_Signature<std::remove_reference_t<Lambda>>>>(std::forward<Lambda>(lambda));
 }
 
 template<typename Obj, typename Func>
-struct Ubpa::MemFuncOf {
+struct NLS::MemFuncOf {
 	static_assert(std::is_function_v<Func>);
 	static constexpr auto get(Func Obj::* func) noexcept {
 		return func;
@@ -235,7 +235,7 @@ struct Ubpa::MemFuncOf {
 };
 
 template<typename Func>
-struct Ubpa::FuncOf {
+struct NLS::FuncOf {
 	static_assert(std::is_function_v<Func>);
 	static constexpr auto get(Func* func) noexcept {
 		return func;

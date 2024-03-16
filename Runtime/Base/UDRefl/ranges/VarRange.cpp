@@ -2,8 +2,8 @@
 
 #include <UDRefl/ReflMngr.hpp>
 
-using namespace Ubpa;
-using namespace Ubpa::UDRefl;
+using namespace NLS;
+using namespace NLS::UDRefl;
 
 VarRange::iterator::iterator(ObjectTree::iterator typeiter, CVRefMode cvref_mode, FieldFlag flag) :
 	typeiter{ typeiter },
@@ -44,19 +44,19 @@ mode_0:
 					ObjectView var = curfield->second.fieldptr.Var(std::get<ObjectView>(*typeiter).GetPtr());
 					switch (cvref_mode)
 					{
-					case Ubpa::CVRefMode::Left:
+					case NLS::CVRefMode::Left:
 						std::get<ObjectView>(value) = var.AddLValueReference();
 						break;
-					case Ubpa::CVRefMode::Right:
+					case NLS::CVRefMode::Right:
 						std::get<ObjectView>(value) = var.AddRValueReference();
 						break;
-					case Ubpa::CVRefMode::Const:
+					case NLS::CVRefMode::Const:
 						std::get<ObjectView>(value) = var.AddConst();
 						break;
-					case Ubpa::CVRefMode::ConstLeft:
+					case NLS::CVRefMode::ConstLeft:
 						std::get<ObjectView>(value) = var.AddConstLValueReference();
 						break;
-					case Ubpa::CVRefMode::ConstRight:
+					case NLS::CVRefMode::ConstRight:
 						std::get<ObjectView>(value) = var.AddConstRValueReference();
 						break;
 					default:
@@ -89,7 +89,7 @@ VarRange::iterator VarRange::iterator::operator++(int) {
 	return iter;
 }
 
-namespace Ubpa::UDRefl {
+namespace NLS::UDRefl {
 	NLS_BASE_API bool operator==(const VarRange::iterator& lhs, const VarRange::iterator& rhs) {
 		assert(lhs.flag == rhs.flag);
 		assert(lhs.cvref_mode == rhs.cvref_mode);

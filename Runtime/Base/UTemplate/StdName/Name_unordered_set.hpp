@@ -5,7 +5,7 @@
 #include <unordered_set>
 
 template<typename Key>
-struct Ubpa::details::custom_type_name<std::unordered_set<Key>> {
+struct NLS::details::custom_type_name<std::unordered_set<Key>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::unordered_set<{"),
@@ -16,7 +16,7 @@ struct Ubpa::details::custom_type_name<std::unordered_set<Key>> {
 };
 
 template<typename Key, typename Hash>
-struct Ubpa::details::custom_type_name<std::unordered_set<Key, Hash>> {
+struct NLS::details::custom_type_name<std::unordered_set<Key, Hash>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::unordered_set<{"),
@@ -29,7 +29,7 @@ struct Ubpa::details::custom_type_name<std::unordered_set<Key, Hash>> {
 };
 
 template<typename Key, typename Hash, typename KeyEqual>
-struct Ubpa::details::custom_type_name<std::unordered_set<Key, Hash, KeyEqual>> {
+struct NLS::details::custom_type_name<std::unordered_set<Key, Hash, KeyEqual>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::unordered_set<{"),
@@ -44,7 +44,7 @@ struct Ubpa::details::custom_type_name<std::unordered_set<Key, Hash, KeyEqual>> 
 };
 
 template<typename Key>
-struct Ubpa::details::custom_type_name<std::unordered_multiset<Key>> {
+struct NLS::details::custom_type_name<std::unordered_multiset<Key>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::unordered_multiset<{"),
@@ -55,7 +55,7 @@ struct Ubpa::details::custom_type_name<std::unordered_multiset<Key>> {
 };
 
 template<typename Key, typename Hash>
-struct Ubpa::details::custom_type_name<std::unordered_multiset<Key, Hash>> {
+struct NLS::details::custom_type_name<std::unordered_multiset<Key, Hash>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::unordered_multiset<{"),
@@ -68,7 +68,7 @@ struct Ubpa::details::custom_type_name<std::unordered_multiset<Key, Hash>> {
 };
 
 template<typename Key, typename Hash, typename KeyEqual>
-struct Ubpa::details::custom_type_name<std::unordered_multiset<Key, Hash, KeyEqual>> {
+struct NLS::details::custom_type_name<std::unordered_multiset<Key, Hash, KeyEqual>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::unordered_multiset<{"),

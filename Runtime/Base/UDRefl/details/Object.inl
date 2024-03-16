@@ -35,7 +35,7 @@ inline Lhs& operator >>(Lhs& lhs, const Rhs& rhs) { \
 	return lhs;                                     \
 }
 
-namespace Ubpa::UDRefl::details {
+namespace NLS::UDRefl::details {
 	template<typename T>
 	constexpr Type ArgType(const std::remove_const_t<std::remove_reference_t<T>>& arg) noexcept {
 		using U = std::remove_cvref_t<T>;
@@ -54,7 +54,7 @@ namespace Ubpa::UDRefl::details {
 	}
 }
 
-namespace Ubpa::UDRefl {
+namespace NLS::UDRefl {
 	constexpr ObjectView ArgsView::operator[](size_t idx) const noexcept
 	{ return { argTypes[idx], buffer[idx] }; }
 
@@ -328,26 +328,26 @@ namespace Ubpa::UDRefl {
 }
 
 template<>
-struct std::hash<Ubpa::UDRefl::ObjectView> {
-	std::size_t operator()(const Ubpa::UDRefl::ObjectView& obj) const noexcept {
+struct std::hash<NLS::UDRefl::ObjectView> {
+	std::size_t operator()(const NLS::UDRefl::ObjectView& obj) const noexcept {
 		return obj.GetType().GetID().GetValue() ^ std::hash<const void*>()(obj.GetPtr());
 	}
 };
 
 template<>
-struct std::hash<Ubpa::UDRefl::SharedObject> {
-	std::size_t operator()(const Ubpa::UDRefl::SharedObject& obj) const noexcept {
+struct std::hash<NLS::UDRefl::SharedObject> {
+	std::size_t operator()(const NLS::UDRefl::SharedObject& obj) const noexcept {
 		return obj.GetType().GetID().GetValue() ^ std::hash<const void*>()(obj.GetPtr());
 	}
 };
 
 namespace std {
-	inline void swap(Ubpa::UDRefl::SharedObject& left, Ubpa::UDRefl::SharedObject& right) noexcept {
+	inline void swap(NLS::UDRefl::SharedObject& left, NLS::UDRefl::SharedObject& right) noexcept {
 		left.Swap(right);
 	}
 }
 
-namespace Ubpa::UDRefl {
+namespace NLS::UDRefl {
 	inline bool operator== (const ObjectView& lhs, const ObjectView& rhs) {
 		return lhs.Invoke<bool>(NameIDRegistry::Meta::operator_eq, TempArgsView{ rhs }, MethodFlag::Const)
 			|| rhs.Invoke<bool>(NameIDRegistry::Meta::operator_eq, TempArgsView{ lhs }, MethodFlag::Const);

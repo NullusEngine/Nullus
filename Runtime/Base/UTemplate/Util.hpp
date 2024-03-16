@@ -4,7 +4,7 @@
 #include <string_view>
 #include <span>
 
-namespace Ubpa {
+namespace NLS {
 	template<typename T>
 	constexpr bool always_false = false;
 

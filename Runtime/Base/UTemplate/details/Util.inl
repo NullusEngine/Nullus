@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <cassert>
 
-namespace Ubpa::details {
+namespace NLS::details {
 	template<typename Void, template<typename...> typename T, typename... Ts>
 	struct is_instantiable : std::false_type {};
 	template<template<typename...> typename T, typename... Ts>
@@ -66,49 +66,49 @@ namespace Ubpa::details {
 }
 
 template<template<typename...> typename T, typename... Ts>
-struct Ubpa::is_instantiable : details::is_instantiable<void, T, Ts...> {};
+struct NLS::is_instantiable : details::is_instantiable<void, T, Ts...> {};
 
 template<typename Instance, template<typename...> class T>
-struct Ubpa::is_instance_of : std::false_type {};
+struct NLS::is_instance_of : std::false_type {};
 
 template<typename... Args, template<typename...> class T>
-struct Ubpa::is_instance_of<T<Args...>, T> : std::true_type {};
+struct NLS::is_instance_of<T<Args...>, T> : std::true_type {};
 
 template<typename T, typename... Args>
-struct Ubpa::is_list_initializable : details::is_list_initializable<void, T, Args...> {};
+struct NLS::is_list_initializable : details::is_list_initializable<void, T, Args...> {};
 
 template<template<typename...> class TA, template<typename...> class TB>
-struct Ubpa::is_same_typename_template : std::false_type {};
+struct NLS::is_same_typename_template : std::false_type {};
 
 template<template<typename...> class T>
-struct Ubpa::is_same_typename_template<T, T> : std::true_type {};
+struct NLS::is_same_typename_template<T, T> : std::true_type {};
 
 template<typename T>
-struct Ubpa::is_defined : details::is_defined_helper<void, T> {};
+struct NLS::is_defined : details::is_defined_helper<void, T> {};
 
 template<typename T, typename U>
-struct Ubpa::member_pointer_traits<T U::*> {
+struct NLS::member_pointer_traits<T U::*> {
 	using object = U;
 	using value = T;
 };
 
 template<typename T>
-struct Ubpa::is_typename_template_type : std::false_type {};
+struct NLS::is_typename_template_type : std::false_type {};
 
 template<template<typename...>class T, typename... Ts>
-struct Ubpa::is_typename_template_type<T<Ts...>> : std::true_type {};
+struct NLS::is_typename_template_type<T<Ts...>> : std::true_type {};
 
-template<typename T> struct Ubpa::IsIValue : std::false_type {};
-template<typename T, T v> struct Ubpa::IsIValue<Ubpa::IValue<T, v>> : std::true_type {};
+template<typename T> struct NLS::IsIValue : std::false_type {};
+template<typename T, T v> struct NLS::IsIValue<NLS::IValue<T, v>> : std::true_type {};
 
 template<size_t N>
-constexpr std::size_t Ubpa::lengthof(const char(&str)[N]) noexcept {
+constexpr std::size_t NLS::lengthof(const char(&str)[N]) noexcept {
 	static_assert(N > 0);
 	assert(str[N - 1] == 0); // c-style string
 	return N - 1;
 }
 
-constexpr std::size_t Ubpa::string_hash_seed(std::size_t seed, const char* str, std::size_t N) noexcept {
+constexpr std::size_t NLS::string_hash_seed(std::size_t seed, const char* str, std::size_t N) noexcept {
 	using Traits = details::fnv1a_traits<sizeof(std::size_t)>;
 	std::size_t value = seed;
 
@@ -118,7 +118,7 @@ constexpr std::size_t Ubpa::string_hash_seed(std::size_t seed, const char* str, 
 	return value;
 }
 
-constexpr std::size_t Ubpa::string_hash_seed(std::size_t seed, const char* curr) noexcept {
+constexpr std::size_t NLS::string_hash_seed(std::size_t seed, const char* curr) noexcept {
 	using Traits = details::fnv1a_traits<sizeof(std::size_t)>;
 	std::size_t value = seed;
 
@@ -129,30 +129,30 @@ constexpr std::size_t Ubpa::string_hash_seed(std::size_t seed, const char* curr)
 	return value;
 }
 
-constexpr std::size_t Ubpa::string_hash(const char* str, std::size_t N) noexcept {
+constexpr std::size_t NLS::string_hash(const char* str, std::size_t N) noexcept {
 	using Traits = details::fnv1a_traits<sizeof(std::size_t)>;
 	return string_hash_seed(Traits::offset, str, N);
 }
 
-constexpr std::size_t Ubpa::string_hash(const char* str) noexcept {
+constexpr std::size_t NLS::string_hash(const char* str) noexcept {
 	using Traits = details::fnv1a_traits<sizeof(std::size_t)>;
 	return string_hash_seed(Traits::offset, str);
 }
 
 template<typename T>
-struct Ubpa::is_function_pointer : Ubpa::details::is_function_pointer<void, T> {};
+struct NLS::is_function_pointer : NLS::details::is_function_pointer<void, T> {};
 
 template<typename T>
-struct Ubpa::has_virtual_base : Ubpa::details::has_virtual_base_helper<void, T> {};
+struct NLS::has_virtual_base : NLS::details::has_virtual_base_helper<void, T> {};
 
 template<typename Base, typename Derived>
-struct Ubpa::is_virtual_base_of : Ubpa::details::is_virtual_base_of_helper<void, Base, Derived> {};
+struct NLS::is_virtual_base_of : NLS::details::is_virtual_base_of_helper<void, Base, Derived> {};
 
 template <template<class...> class Op, class... Args>
-struct Ubpa::is_valid : Ubpa::details::is_valid<void, Op, Args...> {};
+struct NLS::is_valid : NLS::details::is_valid<void, Op, Args...> {};
 
 template<typename V1, typename Obj1, typename V2, typename Obj2>
-constexpr bool Ubpa::member_pointer_equal(V1 Obj1::* p1, V2 Obj2::* p2) noexcept {
+constexpr bool NLS::member_pointer_equal(V1 Obj1::* p1, V2 Obj2::* p2) noexcept {
 	if constexpr (std::is_same_v<Obj1, Obj2> && std::is_same_v<V1, V2>)
 		return p1 == p2;
 	else

@@ -5,7 +5,7 @@
 #include <deque>
 
 template<typename T>
-struct Ubpa::details::custom_type_name<std::deque<T>> {
+struct NLS::details::custom_type_name<std::deque<T>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::deque<{"),
@@ -16,7 +16,7 @@ struct Ubpa::details::custom_type_name<std::deque<T>> {
 };
 
 template<typename T>
-struct Ubpa::details::custom_type_name<std::priority_queue<T>> {
+struct NLS::details::custom_type_name<std::priority_queue<T>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::priority_queue<{"),
@@ -27,7 +27,7 @@ struct Ubpa::details::custom_type_name<std::priority_queue<T>> {
 };
 
 template<typename T, typename Container>
-struct Ubpa::details::custom_type_name<std::priority_queue<T, Container>> {
+struct NLS::details::custom_type_name<std::priority_queue<T, Container>> {
 	static constexpr auto get() noexcept {
 		return concat_seq(
 			TSTR("std::priority_queue<{"),

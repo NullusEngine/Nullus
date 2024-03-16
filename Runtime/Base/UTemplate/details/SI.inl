@@ -1,6 +1,6 @@
 #pragma once
 
-namespace Ubpa::details {
+namespace NLS::details {
 	//
 	// SI_ImplTraits_IList
 	////////////////////////
@@ -179,7 +179,7 @@ namespace Ubpa::details {
 }
 
 template<typename Impl>
-struct Ubpa::details::SI : SI_Helper<ITopoSort_t<SI_ImplTraits_IList_t<Impl>>, Impl> {};
+struct NLS::details::SI : SI_Helper<ITopoSort_t<SI_ImplTraits_IList_t<Impl>>, Impl> {};
 
 template<typename T, template<typename Base, typename Impl>class Interface>
-struct Ubpa::SI_Contains : details::SI_Contains_Helper<void, T, Interface> {};
+struct NLS::SI_Contains : details::SI_Contains_Helper<void, T, Interface> {};

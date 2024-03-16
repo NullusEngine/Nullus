@@ -39,3 +39,9 @@ target_include_directories(
   PUBLIC # 其他项目使用头文件时所需的目录
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
 )
+
+target_link_libraries(
+  NLS_Math
+    PUBLIC # 使用该库时必须依赖的库
+    NLS_Base
+)

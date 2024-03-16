@@ -7,7 +7,7 @@
 #include "EngineDef.h"
 namespace NLS {
 	using namespace NLS::Maths;
-	namespace CSC8503 {
+	namespace Engine {
 		template<class T>
 		class QuadTree;
 
@@ -119,7 +119,7 @@ namespace NLS {
 
 namespace NLS {
 	using namespace NLS::Maths;
-	namespace CSC8503 {
+	namespace Engine {
 		template<class T>
 		class QuadTree
 		{

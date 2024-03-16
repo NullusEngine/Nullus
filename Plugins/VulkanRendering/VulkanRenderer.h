@@ -31,7 +31,7 @@ _-_-_-_-_-_-_-""  ""
 
 using std::string;
 
-namespace NCL {
+namespace NLS {
 	namespace Rendering {
 		struct UniformData {
 			vk::Buffer					buffer;

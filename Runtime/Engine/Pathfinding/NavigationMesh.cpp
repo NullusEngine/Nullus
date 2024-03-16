@@ -2,7 +2,7 @@
 #include "Assets.h"
 #include <fstream>
 using namespace NLS;
-using namespace CSC8503;
+using namespace Engine;
 using namespace std;
 
 NavigationMesh::NavigationMesh()

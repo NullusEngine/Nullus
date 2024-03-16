@@ -1,7 +1,7 @@
 #pragma once
 #include"GameObject.h"
 namespace NLS {
-	namespace CSC8503 {
+	namespace Engine {
 		class StateMachine;
 		class StateGameObject : public GameObject {
 		public:

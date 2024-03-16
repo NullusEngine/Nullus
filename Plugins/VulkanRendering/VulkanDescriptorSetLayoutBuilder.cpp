@@ -2,7 +2,7 @@
 #include "VulkanMesh.h"
 #include "VulkanShader.h"
 
-using namespace NCL;
+using namespace NLS;
 using namespace Rendering;
 
 VulkanDescriptorSetLayoutBuilder& VulkanDescriptorSetLayoutBuilder::WithSamplers(unsigned int count, vk::ShaderStageFlags inShaders) {

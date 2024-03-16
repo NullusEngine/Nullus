@@ -2,7 +2,7 @@
 #include <stack>
 #include "EngineDef.h"
 namespace NLS {
-	namespace CSC8503 {
+	namespace Engine {
 		class PushdownState;
 
 		class NLS_ENGINE_API PushdownMachine

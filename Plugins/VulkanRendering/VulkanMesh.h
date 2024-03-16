@@ -2,7 +2,7 @@
 #include "MeshGeometry.h"
 #include "VulkanRenderer.h"
 
-namespace NCL {
+namespace NLS {
 	namespace Rendering {
 		struct VulkanVertexSpecification {	
 			vk::PipelineVertexInputStateCreateInfo		vertexInfo;

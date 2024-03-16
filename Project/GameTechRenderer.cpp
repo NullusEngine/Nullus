@@ -6,7 +6,7 @@
 #include "TextureLoader.h"
 using namespace NLS;
 using namespace Rendering;
-using namespace CSC8503;
+using namespace Engine;
 
 #define SHADOWSIZE 4096
 

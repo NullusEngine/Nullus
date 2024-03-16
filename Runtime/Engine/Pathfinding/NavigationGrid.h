@@ -3,7 +3,7 @@
 #include <string>
 #include "EngineDef.h"
 namespace NLS {
-	namespace CSC8503 {
+	namespace Engine {
 		struct NLS_ENGINE_API GridNode {
 			GridNode* parent;
 

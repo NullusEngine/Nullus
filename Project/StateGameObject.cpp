@@ -3,7 +3,7 @@
 #include "AI/StateMachine.h"
 #include "AI/State.h"
 using namespace NLS;
-using namespace CSC8503;
+using namespace Engine;
 
 StateGameObject::StateGameObject(string name) {
 	counter = 0.0f;

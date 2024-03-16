@@ -1,7 +1,7 @@
 #pragma once
 #include "VulkanRenderer.h"
 
-namespace NCL {
+namespace NLS {
 	namespace Rendering {
 		class VulkanDescriptorSetLayoutBuilder
 		{

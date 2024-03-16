@@ -1,6 +1,6 @@
 #include "VulkanRenderPassBuilder.h"
 
-using namespace NCL;
+using namespace NLS;
 using namespace Rendering;
 
 VulkanRenderPassBuilder::VulkanRenderPassBuilder() {

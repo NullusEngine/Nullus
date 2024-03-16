@@ -2,7 +2,7 @@
 #include "Constraint.h"
 #include "EngineDef.h"
 namespace NLS {
-	namespace CSC8503 {
+	namespace Engine {
 		class GameObject;
 		class NLS_ENGINE_API PositionConstraint : public Constraint {
 		public:

@@ -2,14 +2,15 @@
 #include "VulkanMesh.h"
 #include "VulkanTexture.h"
 
-#include "../../Common/TextureLoader.h"
+#include "TextureLoader.h"
 
 #ifdef WIN32
-#include "../../Common/Win32Window.h"
-using namespace NCL::Win32Code;
+#include "WIn32/Win32Window.h"
+using namespace NLS::Win32Code;
 #endif
+#include "Maths.h"
 
-using namespace NCL;
+using namespace NLS;
 using namespace Rendering;
 
 VulkanRenderer::VulkanRenderer(Window& window) : RendererBase(window) {
@@ -201,7 +202,7 @@ int VulkanRenderer::InitBufferChain() {
 
 	int idealImageCount = surfaceCaps.minImageCount + 1;
 	if (surfaceCaps.maxImageCount > 0) {
-		idealImageCount = std::min(idealImageCount, (int)surfaceCaps.maxImageCount);
+		idealImageCount = Maths::Min(idealImageCount, (int)surfaceCaps.maxImageCount);
 	}
 
 	vk::SwapchainCreateInfoKHR swapInfo;

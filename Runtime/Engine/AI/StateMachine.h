@@ -3,7 +3,7 @@
 #include <map>
 #include "EngineDef.h"
 namespace NLS {
-	namespace CSC8503 {
+	namespace Engine {
 
 		class State;
 		class StateTransition;

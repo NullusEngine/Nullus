@@ -7,7 +7,7 @@
 namespace NLS {
 		class Camera;
 		using Maths::Ray;
-	namespace CSC8503 {
+	namespace Engine {
 		class GameObject;
 		class Constraint;
 

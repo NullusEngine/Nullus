@@ -6,7 +6,7 @@
 #include <algorithm>
 #include <random>
 using namespace NLS;
-using namespace NLS::CSC8503;
+using namespace NLS::Engine;
 
 GameWorld::GameWorld()	{
 	mainCamera = new Camera();

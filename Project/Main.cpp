@@ -11,7 +11,7 @@
 #include "TutorialGame.h"
 
 using namespace NLS;
-using namespace CSC8503;
+using namespace Engine;
 
 /*
 
@@ -28,7 +28,7 @@ hide or show the
 
 
 int main() {
-	Window*w = Window::CreateGameWindow<Win32Code::Win32Window>("CSC8503 Game technology!", 1280, 720);
+	Window*w = Window::CreateGameWindow<Win32Code::Win32Window>("Engine Game technology!", 1280, 720);
 
 	if (!w->HasInitialised()) {
 		return -1;

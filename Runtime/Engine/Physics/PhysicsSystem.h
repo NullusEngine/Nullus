@@ -3,7 +3,7 @@
 #include <set>
 #include "EngineDef.h"
 namespace NLS {
-	namespace CSC8503 {
+	namespace Engine {
 		class NLS_ENGINE_API PhysicsSystem	{
 		public:
 			PhysicsSystem(GameWorld& g);

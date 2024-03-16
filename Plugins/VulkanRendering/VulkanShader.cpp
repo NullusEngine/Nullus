@@ -1,6 +1,6 @@
 #include "VulkanShader.h"
-#include "glslangtoSpv.h"
-#include "../../Common/Assets.h"
+//#include "glslangtoSpv.h"
+#include "Assets.h"
 
 #include <fstream>
 #include <iostream>
@@ -9,7 +9,7 @@
 
 using std::ifstream;
 
-using namespace NCL;
+using namespace NLS;
 using namespace Rendering;
 
 //These have both been ordered to match the ShaderStages enum for easy lookup!

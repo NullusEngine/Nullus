@@ -4,7 +4,7 @@
 #include "Physics/PositionConstraint.h"
 #include "StateGameObject.h"
 namespace NLS {
-	namespace CSC8503 {
+	namespace Engine {
 		class TutorialGame		{
 		public:
 			TutorialGame();

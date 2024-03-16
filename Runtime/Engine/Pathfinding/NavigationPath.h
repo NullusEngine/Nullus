@@ -4,7 +4,7 @@
 #include "EngineDef.h"
 namespace NLS {
 	using namespace NLS::Maths;
-	namespace CSC8503 {
+	namespace Engine {
 		class NLS_ENGINE_API NavigationPath		{
 		public:
 			NavigationPath() {}

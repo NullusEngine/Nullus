@@ -1,7 +1,7 @@
 #pragma once
 #include "EngineDef.h"
 namespace NLS {
-	namespace CSC8503 {
+	namespace Engine {
 		class NLS_ENGINE_API Constraint	{
 		public:
 			Constraint() {}

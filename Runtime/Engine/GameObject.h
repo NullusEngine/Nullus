@@ -10,7 +10,7 @@
 using std::vector;
 
 namespace NLS {
-	namespace CSC8503 {
+	namespace Engine {
 
 		class NLS_ENGINE_API GameObject	{
 		public:

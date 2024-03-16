@@ -8,7 +8,7 @@ namespace NLS {
 	using namespace NLS::Rendering;
 
 	class MeshGeometry;
-	namespace CSC8503 {
+	namespace Engine {
 		class Transform;
 		using namespace Maths;
 

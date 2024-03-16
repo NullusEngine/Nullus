@@ -14,7 +14,7 @@
 #include "EngineDef.h"
 using NLS::Camera;
 using namespace NLS::Maths;
-using namespace NLS::CSC8503;
+using namespace NLS::Engine;
 namespace NLS {
 	class NLS_ENGINE_API CollisionDetection
 	{

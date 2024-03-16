@@ -7,7 +7,7 @@ using namespace NLS::Maths;
 namespace NLS {
 	class CollisionVolume;
 	
-	namespace CSC8503 {
+	namespace Engine {
 		class Transform;
 
 		class NLS_ENGINE_API PhysicsObject	{

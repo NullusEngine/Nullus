@@ -11,7 +11,7 @@ using std::vector;
 using namespace NLS::Maths;
 
 namespace NLS {
-	namespace CSC8503 {
+	namespace Engine {
 		class NLS_ENGINE_API Transform
 		{
 		public:

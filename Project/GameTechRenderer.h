@@ -9,7 +9,7 @@
 namespace NLS {
 	class Maths::Vector3;
 	class Maths::Vector4;
-	namespace CSC8503 {
+	namespace Engine {
 		class RenderObject;
 
 		class GameTechRenderer : public OGLRenderer	{

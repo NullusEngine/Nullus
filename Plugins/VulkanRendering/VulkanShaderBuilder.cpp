@@ -1,6 +1,6 @@
 #include "VulkanShaderBuilder.h"
 
-using namespace NCL;
+using namespace NLS;
 using namespace Rendering;
 
 VulkanShaderBuilder& VulkanShaderBuilder::WithVertexBinary(const string& name) {

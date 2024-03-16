@@ -1,8 +1,9 @@
 #include "VulkanTexture.h"
 #include "VulkanRenderer.h"
-#include "../../Common/TextureLoader.h"
+#include "TextureLoader.h"
+#include "Maths.h"
 
-using namespace NCL;
+using namespace NLS;
 using namespace Rendering;
 
 VulkanRenderer* VulkanTexture::vkRenderer = nullptr;
@@ -24,7 +25,7 @@ VulkanTexture::~VulkanTexture() {
 }
 
 int VulkanTexture::CalculateMipCount(int width, int height) {
-	return (int)floor(log2(float(std::min(width, height)))) + 1;
+	return (int)floor(log2(float(Maths::Min(width, height)))) + 1;
 }
 
  VulkanTexture* VulkanTexture::GenerateTextureFromDataInternal(int width, int height, int channelCount, bool isCube, vector<char*>dataSrcs, std::string debugName) {
@@ -232,8 +233,8 @@ void VulkanTexture::GenerateMipMaps(vk::CommandBuffer& buffer, vk::ImageLayout e
 			.setBaseArrayLayer(layer)
 			.setLayerCount(1);
 			blitData.srcOffsets[0] = vk::Offset3D(0, 0, 0);
-			blitData.srcOffsets[1].x = std::max(width >> (mip - 1), 1);
-			blitData.srcOffsets[1].y = std::max(height >> (mip - 1), 1);
+			blitData.srcOffsets[1].x = Maths::Max(width >> (mip - 1), 1);
+			blitData.srcOffsets[1].y = Maths::Max(height >> (mip - 1), 1);
 			blitData.srcOffsets[1].z = 1;
 
 			blitData.dstSubresource.setAspectMask(vk::ImageAspectFlagBits::eColor)
@@ -241,8 +242,8 @@ void VulkanTexture::GenerateMipMaps(vk::CommandBuffer& buffer, vk::ImageLayout e
 			.setLayerCount(1)
 			.setBaseArrayLayer(layer);
 			blitData.dstOffsets[0] = vk::Offset3D(0, 0, 0);
-			blitData.dstOffsets[1].x = std::max(width >> mip, 1);
-			blitData.dstOffsets[1].y = std::max(height >> mip, 1);
+			blitData.dstOffsets[1].x = Maths::Max(width >> mip, 1);
+			blitData.dstOffsets[1].y = Maths::Max(height >> mip, 1);
 			blitData.dstOffsets[1].z = 1;
 
 			vkRenderer->ImageTransitionBarrier(&buffer, this, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, aspectType, vk::PipelineStageFlagBits::eHost, vk::PipelineStageFlagBits::eTransfer, mip, layer);

@@ -1,6 +1,6 @@
 #include "VulkanMesh.h"
 
-using namespace NCL;
+using namespace NLS;
 using namespace Rendering;
 
 //These are both carefully arranged to match the MeshBuffer enum class!

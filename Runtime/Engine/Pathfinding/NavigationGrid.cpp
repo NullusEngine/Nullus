@@ -4,7 +4,7 @@
 #include <fstream>
 
 using namespace NLS;
-using namespace CSC8503;
+using namespace Engine;
 
 const int LEFT_NODE		= 0;
 const int RIGHT_NODE	= 1;

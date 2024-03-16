@@ -10,7 +10,7 @@
 
 #include <functional>
 using namespace NLS;
-using namespace CSC8503;
+using namespace Engine;
 
 /*
 
@@ -222,7 +222,7 @@ void PhysicsSystem::BasicCollisionDetection() {
 	}
 }
 
-void NLS::CSC8503::PhysicsSystem::ResolveSpringCollision(GameObject& a, GameObject& b, CollisionDetection::ContactPoint& p) const
+void NLS::Engine::PhysicsSystem::ResolveSpringCollision(GameObject& a, GameObject& b, CollisionDetection::ContactPoint& p) const
 {
 	PhysicsObject* physA = a.GetPhysicsObject();
 	PhysicsObject* physB = b.GetPhysicsObject();

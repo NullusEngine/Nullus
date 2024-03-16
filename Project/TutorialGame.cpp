@@ -6,7 +6,7 @@
 #include "TextureLoader.h"
 
 using namespace NLS;
-using namespace CSC8503;
+using namespace Engine;
 
 TutorialGame::TutorialGame()	{
 	world		= new GameWorld();
@@ -501,7 +501,7 @@ GameObject* TutorialGame::AddBonusToWorld(const Vector3& position) {
 	return apple;
 }
 
-StateGameObject* NLS::CSC8503::TutorialGame::AddStateObjectToWorld(const Vector3& position)
+StateGameObject* NLS::Engine::TutorialGame::AddStateObjectToWorld(const Vector3& position)
 {
 	StateGameObject* apple = new StateGameObject("apple");
 

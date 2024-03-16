@@ -15,7 +15,7 @@
 using std::string;
 using std::vector;
 
-namespace NCL {
+namespace NLS {
 	namespace Rendering {
 		class VulkanShader : public ShaderBase {
 		public:

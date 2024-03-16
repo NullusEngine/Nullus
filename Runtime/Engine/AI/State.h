@@ -2,7 +2,7 @@
 #include <functional>
 #include "EngineDef.h"
 namespace NLS {
-	namespace CSC8503 {
+	namespace Engine {
 		typedef std::function <void(float)> StateUpdateFunction;
 		class State		{
 		public:

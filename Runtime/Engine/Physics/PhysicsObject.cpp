@@ -2,7 +2,7 @@
 #include "PhysicsSystem.h"
 #include "Engine/Transform.h"
 using namespace NLS;
-using namespace CSC8503;
+using namespace Engine;
 
 PhysicsObject::PhysicsObject(Transform* parentTransform, const CollisionVolume* parentVolume,  float elasticity, float friction)	{
 	transform	= parentTransform;

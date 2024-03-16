@@ -1,7 +1,7 @@
 #include "RenderObject.h"
 #include "MeshGeometry.h"
 
-using namespace NLS::CSC8503;
+using namespace NLS::Engine;
 using namespace NLS;
 
 RenderObject::RenderObject(Transform* parentTransform, MeshGeometry* mesh, TextureBase* tex, ShaderBase* shader) {

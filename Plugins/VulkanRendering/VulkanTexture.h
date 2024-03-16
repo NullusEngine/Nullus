@@ -3,7 +3,7 @@
 #include <string>
 #include <vulkan\vulkan.hpp> //
 
-namespace NCL {
+namespace NLS {
 	namespace Rendering {
 		class VulkanTexture : public TextureBase
 		{

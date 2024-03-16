@@ -4,54 +4,63 @@
 #include "ShaderBase.h"
 #include "Vector4.h"
 #include "EngineDef.h"
-namespace NLS {
-	using namespace NLS::Rendering;
+namespace NLS
+{
+using namespace NLS::Rendering;
 
-	class MeshGeometry;
-	namespace Engine {
-		class Transform;
-		using namespace Maths;
+class MeshGeometry;
+namespace Engine
+{
+class Transform;
+using namespace Maths;
 
-		class NLS_ENGINE_API RenderObject
-		{
-		public:
-			RenderObject(Transform* parentTransform, MeshGeometry* mesh, TextureBase* tex, ShaderBase* shader);
-			~RenderObject();
+class NLS_ENGINE_API RenderObject
+{
+public:
+    RenderObject(Transform* parentTransform, MeshGeometry* mesh, TextureBase* tex, ShaderBase* shader);
+    ~RenderObject();
 
-			void SetDefaultTexture(TextureBase* t) {
-				texture = t;
-			}
+    void SetDefaultTexture(TextureBase* t)
+    {
+        texture = t;
+    }
 
-			TextureBase* GetDefaultTexture() const {
-				return texture;
-			}
+    TextureBase* GetDefaultTexture() const
+    {
+        return texture;
+    }
 
-			MeshGeometry*	GetMesh() const {
-				return mesh;
-			}
+    MeshGeometry* GetMesh() const
+    {
+        return mesh;
+    }
 
-			Transform*		GetTransform() const {
-				return transform;
-			}
+    Transform* GetTransform() const
+    {
+        return transform;
+    }
 
-			ShaderBase*		GetShader() const {
-				return shader;
-			}
+    ShaderBase* GetShader() const
+    {
+        return shader;
+    }
 
-			void SetColour(const Vector4& c) {
-				colour = c;
-			}
+    void SetColour(const Vector4& c)
+    {
+        colour = c;
+    }
 
-			Vector4 GetColour() const {
-				return colour;
-			}
+    Vector4 GetColour() const
+    {
+        return colour;
+    }
 
-		protected:
-			MeshGeometry*	mesh;
-			TextureBase*	texture;
-			ShaderBase*		shader;
-			Transform*		transform;
-			Vector4			colour;
-		};
-	}
-}
+protected:
+    MeshGeometry* mesh;
+    TextureBase* texture;
+    ShaderBase* shader;
+    Transform* transform;
+    Vector4 colour;
+};
+} // namespace Engine
+} // namespace NLS

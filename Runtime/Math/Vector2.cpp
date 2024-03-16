@@ -12,8 +12,12 @@ https://research.ncl.ac.uk/game/
 using namespace NLS;
 using namespace Maths;
 
-Vector2::Vector2(const Vector3& v3) : x(v3.x), y(v3.y){
+Vector2::Vector2(const Vector3& v3)
+    : x(v3.x), y(v3.y)
+{
 }
 
-Vector2::Vector2(const Vector4& v4) : x(v4.x), y(v4.y) {
+Vector2::Vector2(const Vector4& v4)
+    : x(v4.x), y(v4.y)
+{
 }

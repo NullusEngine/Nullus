@@ -9,7 +9,8 @@ _-_-_-_-_-_-_-|   /\_/\   NYANYANYAN
 -_-_-_-_-_-_-~|__( ^ .^) /
 _-_-_-_-_-_-_-""  ""
 
-*//////////////////////////////////////////////////////////////////////////////
+*/
+/////////////////////////////////////////////////////////////////////////////
 #pragma once
 
 #include "Keyboard.h"
@@ -20,80 +21,87 @@ _-_-_-_-_-_-_-""  ""
 
 #include <string>
 #include "CoreDef.h"
-namespace NLS {
-	namespace Rendering {
-		class RendererBase;
-	};
-	using namespace Rendering;
-	
-	class NLS_CORE_API Window {
-	public:
-		template<typename T>
-		static Window* CreateGameWindow(std::string title = "NCLGL!", int sizeX = 800, int sizeY = 600, bool fullScreen = false, int offsetX = 100, int offsetY = 100);
+namespace NLS
+{
+namespace Rendering
+{
+class RendererBase;
+};
+using namespace Rendering;
 
-		static void DestroyGameWindow() {
-			delete window;
-			window = nullptr;
-		}
+class NLS_CORE_API Window
+{
+public:
+    template<typename T>
+    static Window* CreateGameWindow(std::string title = "NCLGL!", int sizeX = 800, int sizeY = 600, bool fullScreen = false, int offsetX = 100, int offsetY = 100);
 
-		bool		UpdateWindow();
-		void		SetRenderer(RendererBase* r);
+    static void DestroyGameWindow()
+    {
+        delete window;
+        window = nullptr;
+    }
 
-		bool		HasInitialised()	const { return init; }
+    bool UpdateWindow();
+    void SetRenderer(RendererBase* r);
 
-		float		GetScreenAspect()	const {
-			return size.x / size.y;
-		}
+    bool HasInitialised() const { return init; }
 
-		Vector2		GetScreenSize()		const { return size; }
-		Vector2		GetScreenPosition()	const { return position; }
+    float GetScreenAspect() const
+    {
+        return size.x / size.y;
+    }
 
-		const std::string&  GetTitle()   const { return windowTitle; }
-		void				SetTitle(const std::string& title) {
-			windowTitle = title;
-			UpdateTitle();
-		};
+    Vector2 GetScreenSize() const { return size; }
+    Vector2 GetScreenPosition() const { return position; }
 
-		virtual void	LockMouseToWindow(bool lock) = 0;
-		virtual void	ShowOSPointer(bool show) = 0;
+    const std::string& GetTitle() const { return windowTitle; }
+    void SetTitle(const std::string& title)
+    {
+        windowTitle = title;
+        UpdateTitle();
+    };
 
-		virtual void	SetWindowPosition(int x, int y) {};
-		virtual void	SetFullScreen(bool state) {};
-		virtual void	SetConsolePosition(int x, int y) {};
-		virtual void	ShowConsole(bool state) {};
+    virtual void LockMouseToWindow(bool lock) = 0;
+    virtual void ShowOSPointer(bool show) = 0;
 
-		static const Keyboard*	 GetKeyboard() { return keyboard; }
-		static const Mouse*		 GetMouse() { return mouse; }
-		static const GameTimer*	 GetTimer() { return timer; }
+    virtual void SetWindowPosition(int x, int y){};
+    virtual void SetFullScreen(bool state){};
+    virtual void SetConsolePosition(int x, int y){};
+    virtual void ShowConsole(bool state){};
 
-		static Window*	const GetWindow() { return window; }
-	protected:
-		Window();
-		virtual ~Window();
+    static const Keyboard* GetKeyboard() { return keyboard; }
+    static const Mouse* GetMouse() { return mouse; }
+    static const GameTimer* GetTimer() { return timer; }
 
-		virtual void UpdateTitle() {}
+    static Window* const GetWindow() { return window; }
 
-		virtual bool InternalUpdate() = 0;
+protected:
+    Window();
+    virtual ~Window();
 
-		void ResizeRenderer();
+    virtual void UpdateTitle() {}
 
-		RendererBase*	renderer;
+    virtual bool InternalUpdate() = 0;
 
-		bool				init;
-		Vector2				position;
-		Vector2				size;
-		Vector2				defaultSize;
+    void ResizeRenderer();
 
-		std::string			windowTitle;
+    RendererBase* renderer;
 
-		static Window*		window;
-		static Keyboard*	keyboard;
-		static Mouse*		mouse;
-		static GameTimer*	timer;
-	};
-	template<typename T>
-	inline Window* Window::CreateGameWindow(std::string title, int sizeX, int sizeY, bool fullScreen, int offsetX, int offsetY)
-	{
-		return new T(title, sizeX, sizeY, fullScreen, offsetX, offsetY);
-	}
+    bool init;
+    Vector2 position;
+    Vector2 size;
+    Vector2 defaultSize;
+
+    std::string windowTitle;
+
+    static Window* window;
+    static Keyboard* keyboard;
+    static Mouse* mouse;
+    static GameTimer* timer;
+};
+template<typename T>
+inline Window* Window::CreateGameWindow(std::string title, int sizeX, int sizeY, bool fullScreen, int offsetX, int offsetY)
+{
+    return new T(title, sizeX, sizeY, fullScreen, offsetX, offsetY);
 }
+} // namespace NLS

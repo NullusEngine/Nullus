@@ -1,0 +1,150 @@
+---
+# 使用基于Google的代码样式
+BasedOnStyle : Google
+IndentWidth : 4
+ColumnLimit: 0
+---
+# 使用clang-format 10.0
+# 参考文档 https://releases.llvm.org/10.0.0/tools/clang/docs/ClangFormatStyleOptions.html
+# 针对C++语言
+Language : Cpp
+# public、protected、private的缩进为-4，保持跟类缩进一致
+AccessModifierOffset : -4
+# 存在换行时，括号内的参数与起始参数对齐
+AlignAfterOpenBracket : Align
+# 连续赋值对齐
+AlignConsecutiveAssignments : false
+# 连续变量声明对齐
+AlignConsecutiveDeclarations : false
+# 连续宏定义对齐
+AlignConsecutiveMacros : true
+# 由\开始的新行，\符号的对齐方式：靠左对齐
+AlignEscapedNewlines : Left
+# 对齐跨行的运算表达式
+AlignOperands : true
+# 连续的尾部注释对齐
+AlignTrailingComments : true
+# 允许函数调用的所有参数在函数名的下一行内书写
+AllowAllArgumentsOnNextLine : true
+# 允许构造函数的初始化表达式在下一行内书写
+AllowAllConstructorInitializersOnNextLine : true
+# 允许函数声明的所有参数在函数名的下一行内书写
+AllowAllParametersOfDeclarationOnNextLine : true
+# 可以放在一行内的空代码块强制放在一行内
+AllowShortBlocksOnASingleLine : Empty
+# 不允许短小的case语句写在一行内
+AllowShortCaseLabelsOnASingleLine : false
+# 允许inline的函数写在一行内
+AllowShortFunctionsOnASingleLine : Inline
+# 不允许短小的if-else放在一行内
+AllowShortIfStatementsOnASingleLine : Never
+# 只允许inline的lamda表达式写在一行内
+AllowShortLambdasOnASingleLine : All
+# 不允许短小的循环体写在一行内
+AllowShortLoopsOnASingleLine : false
+# 在函数的返回参数后永远不换行
+AlwaysBreakAfterReturnType : None
+# 多行字符串不强制换行
+AlwaysBreakBeforeMultilineStrings : false
+# 多行的模板函数，在模板参数声明后强制换行
+AlwaysBreakTemplateDeclarations : Yes
+# 所有的函数调用的参数要么在同一行，要么每一项单独一行
+BinPackArguments : false
+# 跨行的二元运算符，在运算符前换行
+BreakBeforeBinaryOperators : All
+# 所有的大括号都换行并且无额外缩进
+BreakBeforeBraces: Allman
+# 三元表达式的换行在运算符前
+BreakBeforeTernaryOperators : false
+# 构造函数的初始化列表中，在冒号和逗号之前换行，并且将逗号和冒号对齐
+BreakConstructorInitializers : BeforeComma
+# 强制换行过长的字符串
+BreakStringLiterals : false
+# 多个命名空间分别拥有一行
+CompactNamespaces : false
+# 构造函数的初始化列表要么在同一行，要么每一项单独一行
+ConstructorInitializerAllOnOneLineOrOnePerLine : true
+# 构造函数的初始化列表的缩进
+ConstructorInitializerIndentWidth : 4
+# 同一个表达式跨行时，每一次换行的缩进
+ContinuationIndentWidth : 4
+# c++11的{}列表表达式的缩进不留额外空格
+Cpp11BracedListStyle : true
+# 开启自适应换行符
+DeriveLineEnding : false
+# 关闭自适应指针和引用符号对齐
+DerivePointerAlignment : false
+# 开启格式化
+DisableFormat : false
+# 关闭自适应BinPackArguments
+ExperimentalAutoDetectBinPacking : false
+# 自动添加命名空间结束的注释
+FixNamespaceComments : true
+# 对头文件按照现有分组在组内排序
+IncludeBlocks : Preserve
+# switch内的case标签需要缩进
+IndentCaseLabels : true
+# 用于Goto的Label缩进到最左侧
+IndentGotoLabels : false
+# 对于if-endif组织的宏，在#前进行缩进
+IndentPPDirectives : BeforeHash
+# 在返回值后换行的函数声明，函数名前不进行缩进
+IndentWrappedFunctionNames : false
+# 代码块最开始时的无用空行一律删除
+KeepEmptyLinesAtTheStartOfBlocks : false
+# 最多连续3个空白行
+MaxEmptyLinesToKeep : 3
+# 命名空间引起的缩进
+NamespaceIndentation : None
+# 指针和引用靠左对齐
+PointerAlignment: Left
+# 自动排序include文件
+SortIncludes : false
+# 自动排序using的声明顺序
+SortUsingDeclarations : false
+# 强制类型转换后不加空格
+SpaceAfterCStyleCast : false
+# !运算符后不加空格
+SpaceAfterLogicalNot : false
+# template关键词后不加空格
+SpaceAfterTemplateKeyword : false
+# =号前加空格
+SpaceBeforeAssignmentOperators : true
+# c++11的{}表达式前不加空格
+SpaceBeforeCpp11BracedList : false
+# 初始化表达式的冒号前加空格
+SpaceBeforeCtorInitializerColon : true
+# 类继承表达式的冒号前加空格
+SpaceBeforeInheritanceColon : true
+# 控制块的左括号前加空格，函数调用的左括号前不加空格
+SpaceBeforeParens : ControlStatements
+# ranged-for的左括号前加空格
+SpaceBeforeRangeBasedForLoopColon : true
+# 方括号前不加空格
+SpaceBeforeSquareBrackets : false
+# 空内容的代码块中不加空格
+SpaceInEmptyBlock : false
+# 空内容的括号中不加空格
+SpaceInEmptyParentheses : false
+# 行尾的注释前加1个空格
+SpacesBeforeTrailingComments : 1
+# 尖括号之间不加空格
+SpacesInAngles : false
+# C风格的强制转换括号内不加空格
+SpacesInCStyleCastParentheses : false
+# 条件判断的语句两边不加空格
+SpacesInConditionalStatement : false
+# 数组内容两边不加空格
+SpacesInContainerLiterals : false
+# 圆括号内两边不加空格
+SpacesInParentheses : false
+# 方括号内两边不加空格
+SpacesInSquareBrackets : false
+# 按照C++20可解析的内容排版
+Standard : c++20
+# tab键的宽度
+TabWidth : 4
+# 使用\n换行
+UseCRLF : false
+# 不使用tab键
+UseTab : Never

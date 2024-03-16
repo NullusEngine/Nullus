@@ -2,26 +2,29 @@
 #include "VulkanShader.h"
 #include "VulkanRenderer.h"
 
-namespace NLS {
-	namespace Rendering {
-		class VulkanShaderBuilder {
-		public:
-			VulkanShaderBuilder()	{};
-			~VulkanShaderBuilder()	{};
+namespace NLS
+{
+namespace Rendering
+{
+class VulkanShaderBuilder
+{
+public:
+    VulkanShaderBuilder(){};
+    ~VulkanShaderBuilder(){};
 
-			VulkanShaderBuilder& WithVertexBinary(const string& name);
-			VulkanShaderBuilder& WithFragmentBinary(const string& name);
-			VulkanShaderBuilder& WithGeometryBinary(const string& name);
-			VulkanShaderBuilder& WithTessControlBinary(const string& name);
-			VulkanShaderBuilder& WithTessEvalBinary(const string& name);
+    VulkanShaderBuilder& WithVertexBinary(const string& name);
+    VulkanShaderBuilder& WithFragmentBinary(const string& name);
+    VulkanShaderBuilder& WithGeometryBinary(const string& name);
+    VulkanShaderBuilder& WithTessControlBinary(const string& name);
+    VulkanShaderBuilder& WithTessEvalBinary(const string& name);
 
-			VulkanShaderBuilder& WithDebugName(const string& name);
+    VulkanShaderBuilder& WithDebugName(const string& name);
 
-			VulkanShader*	Build(VulkanRenderer& renderer);
+    VulkanShader* Build(VulkanRenderer& renderer);
 
-		protected:
-			string shaderFiles[(int)ShaderStages::SHADER_MAX];
-			string debugName;
-		};
-	}
-}
+protected:
+    string shaderFiles[(int)ShaderStages::SHADER_MAX];
+    string debugName;
+};
+} // namespace Rendering
+} // namespace NLS

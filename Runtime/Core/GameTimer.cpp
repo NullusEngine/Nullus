@@ -10,34 +10,38 @@ https://research.ncl.ac.uk/game/
 
 using namespace NLS;
 
-GameTimer::GameTimer(void) {
-	firstPoint = std::chrono::high_resolution_clock::now();
-	nowPoint = firstPoint;
-	Tick();
+GameTimer::GameTimer(void)
+{
+    firstPoint = std::chrono::high_resolution_clock::now();
+    nowPoint = firstPoint;
+    Tick();
 }
 
-double	GameTimer::GetTotalTimeSeconds()	const {
-	Timepoint time = std::chrono::high_resolution_clock::now();
+double GameTimer::GetTotalTimeSeconds() const
+{
+    Timepoint time = std::chrono::high_resolution_clock::now();
 
-	std::chrono::duration<double> diff = time - firstPoint;
+    std::chrono::duration<double> diff = time - firstPoint;
 
-	return diff.count();
+    return diff.count();
 };
 
-double	GameTimer::GetTotalTimeMSec()		const {
-	Timepoint time = std::chrono::high_resolution_clock::now();
+double GameTimer::GetTotalTimeMSec() const
+{
+    Timepoint time = std::chrono::high_resolution_clock::now();
 
-	std::chrono::duration<double, std::milli> diff = time - firstPoint;
+    std::chrono::duration<double, std::milli> diff = time - firstPoint;
 
-	return diff.count();
+    return diff.count();
 }
 
-void	GameTimer::Tick() {
-	Timepoint latestTime = std::chrono::high_resolution_clock::now();
+void GameTimer::Tick()
+{
+    Timepoint latestTime = std::chrono::high_resolution_clock::now();
 
-	std::chrono::duration<float> diff = latestTime - nowPoint;
+    std::chrono::duration<float> diff = latestTime - nowPoint;
 
-	nowPoint = latestTime;
+    nowPoint = latestTime;
 
-	timeDelta = diff.count();
+    timeDelta = diff.count();
 }

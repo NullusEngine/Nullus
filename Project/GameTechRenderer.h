@@ -6,51 +6,53 @@
 
 #include "GameWorld.h"
 
-namespace NLS {
-	class Maths::Vector3;
-	class Maths::Vector4;
-	namespace Engine {
-		class RenderObject;
+namespace NLS
+{
+class Maths::Vector3;
+class Maths::Vector4;
+namespace Engine
+{
+class RenderObject;
 
-		class GameTechRenderer : public OGLRenderer	{
-		public:
-			GameTechRenderer(GameWorld& world);
-			~GameTechRenderer();
+class GameTechRenderer : public OGLRenderer
+{
+public:
+    GameTechRenderer(GameWorld& world);
+    ~GameTechRenderer();
 
-		protected:
-			void RenderFrame()	override;
+protected:
+    void RenderFrame() override;
 
-			Matrix4 SetupDebugLineMatrix()	const override;
-			Matrix4 SetupDebugStringMatrix()const override;
+    Matrix4 SetupDebugLineMatrix() const override;
+    Matrix4 SetupDebugStringMatrix() const override;
 
-			OGLShader*		defaultShader;
+    OGLShader* defaultShader;
 
-			GameWorld&	gameWorld;
+    GameWorld& gameWorld;
 
-			void BuildObjectList();
-			void SortObjectList();
-			void RenderShadowMap();
-			void RenderCamera(); 
-			void RenderSkybox();
+    void BuildObjectList();
+    void SortObjectList();
+    void RenderShadowMap();
+    void RenderCamera();
+    void RenderSkybox();
 
-			void LoadSkybox();
+    void LoadSkybox();
 
-			vector<const RenderObject*> activeObjects;
+    vector<const RenderObject*> activeObjects;
 
-			OGLShader*  skyboxShader;
-			OGLMesh*	skyboxMesh;
-			GLuint		skyboxTex;
+    OGLShader* skyboxShader;
+    OGLMesh* skyboxMesh;
+    GLuint skyboxTex;
 
-			//shadow mapping things
-			OGLShader*	shadowShader;
-			GLuint		shadowTex;
-			GLuint		shadowFBO;
-			Matrix4     shadowMatrix;
+    // shadow mapping things
+    OGLShader* shadowShader;
+    GLuint shadowTex;
+    GLuint shadowFBO;
+    Matrix4 shadowMatrix;
 
-			Vector4		lightColour;
-			float		lightRadius;
-			Vector3		lightPosition;
-		};
-	}
-}
-
+    Vector4 lightColour;
+    float lightRadius;
+    Vector3 lightPosition;
+};
+} // namespace Engine
+} // namespace NLS

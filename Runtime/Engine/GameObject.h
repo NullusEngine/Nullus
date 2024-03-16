@@ -9,83 +9,98 @@
 #include "EngineDef.h"
 using std::vector;
 
-namespace NLS {
-	namespace Engine {
+namespace NLS
+{
+namespace Engine
+{
 
-		class NLS_ENGINE_API GameObject	{
-		public:
-			GameObject(string name = "");
-			~GameObject();
+class NLS_ENGINE_API GameObject
+{
+public:
+    GameObject(string name = "");
+    ~GameObject();
 
-			void SetBoundingVolume(CollisionVolume* vol) {
-				boundingVolume = vol;
-			}
+    void SetBoundingVolume(CollisionVolume* vol)
+    {
+        boundingVolume = vol;
+    }
 
-			const CollisionVolume* GetBoundingVolume() const {
-				return boundingVolume;
-			}
+    const CollisionVolume* GetBoundingVolume() const
+    {
+        return boundingVolume;
+    }
 
-			bool IsActive() const {
-				return isActive;
-			}
+    bool IsActive() const
+    {
+        return isActive;
+    }
 
-			Transform& GetTransform() {
-				return transform;
-			}
+    Transform& GetTransform()
+    {
+        return transform;
+    }
 
-			RenderObject* GetRenderObject() const {
-				return renderObject;
-			}
+    RenderObject* GetRenderObject() const
+    {
+        return renderObject;
+    }
 
-			PhysicsObject* GetPhysicsObject() const {
-				return physicsObject;
-			}
+    PhysicsObject* GetPhysicsObject() const
+    {
+        return physicsObject;
+    }
 
-			void SetRenderObject(RenderObject* newObject) {
-				renderObject = newObject;
-			}
+    void SetRenderObject(RenderObject* newObject)
+    {
+        renderObject = newObject;
+    }
 
-			void SetPhysicsObject(PhysicsObject* newObject) {
-				physicsObject = newObject;
-			}
+    void SetPhysicsObject(PhysicsObject* newObject)
+    {
+        physicsObject = newObject;
+    }
 
-			const string& GetName() const {
-				return name;
-			}
+    const string& GetName() const
+    {
+        return name;
+    }
 
-			virtual void OnCollisionBegin(GameObject* otherObject) {
-				//std::cout << "OnCollisionBegin event occured!\n";
-			}
+    virtual void OnCollisionBegin(GameObject* otherObject)
+    {
+        // std::cout << "OnCollisionBegin event occured!\n";
+    }
 
-			virtual void OnCollisionEnd(GameObject* otherObject) {
-				//std::cout << "OnCollisionEnd event occured!\n";
-			}
+    virtual void OnCollisionEnd(GameObject* otherObject)
+    {
+        // std::cout << "OnCollisionEnd event occured!\n";
+    }
 
-			bool GetBroadphaseAABB(Vector3&outsize) const;
+    bool GetBroadphaseAABB(Vector3& outsize) const;
 
-			void UpdateBroadphaseAABB();
+    void UpdateBroadphaseAABB();
 
-			void SetWorldID(int newID) {
-				worldID = newID;
-			}
+    void SetWorldID(int newID)
+    {
+        worldID = newID;
+    }
 
-			int		GetWorldID() const {
-				return worldID;
-			}
+    int GetWorldID() const
+    {
+        return worldID;
+    }
 
-		protected:
-			Transform			transform;
+protected:
+    Transform transform;
 
-			CollisionVolume*	boundingVolume;
-			PhysicsObject*		physicsObject;
-			RenderObject*		renderObject;
+    CollisionVolume* boundingVolume;
+    PhysicsObject* physicsObject;
+    RenderObject* renderObject;
 
-			bool	isActive;
-			int		worldID;
-			string	name;
+    bool isActive;
+    int worldID;
+    string name;
 
-			Vector3 broadphaseAABB;
-		};
-	}
-}
-
+    Vector3 broadphaseAABB;
+};
+} // namespace Engine
+} // namespace NLS

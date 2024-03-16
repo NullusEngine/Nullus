@@ -10,25 +10,27 @@ https://research.ncl.ac.uk/game/
 
 #include <chrono>
 #include "CoreDef.h"
-namespace NLS {
-	typedef  std::chrono::time_point<std::chrono::high_resolution_clock>  Timepoint;
+namespace NLS
+{
+typedef std::chrono::time_point<std::chrono::high_resolution_clock> Timepoint;
 
-	class NLS_CORE_API GameTimer {
-	public:
-		GameTimer(void);
-		~GameTimer(void) {}
+class NLS_CORE_API GameTimer
+{
+public:
+    GameTimer(void);
+    ~GameTimer(void) {}
 
-		double	GetTotalTimeSeconds()	const;
-		double	GetTotalTimeMSec()		const;
+    double GetTotalTimeSeconds() const;
+    double GetTotalTimeMSec() const;
 
-		float	GetTimeDeltaSeconds()	const { return timeDelta; };
-		float	GetTimeDeltaMSec()		const { return timeDelta * 1000.0f; };
+    float GetTimeDeltaSeconds() const { return timeDelta; };
+    float GetTimeDeltaMSec() const { return timeDelta * 1000.0f; };
 
-		void	Tick();
-	protected:
-		float		timeDelta;
-		Timepoint	firstPoint;
-		Timepoint	nowPoint;
-	};
-}
+    void Tick();
 
+protected:
+    float timeDelta;
+    Timepoint firstPoint;
+    Timepoint nowPoint;
+};
+} // namespace NLS

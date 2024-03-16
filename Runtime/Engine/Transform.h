@@ -10,41 +10,47 @@ using std::vector;
 
 using namespace NLS::Maths;
 
-namespace NLS {
-	namespace Engine {
-		class NLS_ENGINE_API Transform
-		{
-		public:
-			Transform();
-			~Transform();
+namespace NLS
+{
+namespace Engine
+{
+class NLS_ENGINE_API Transform
+{
+public:
+    Transform();
+    ~Transform();
 
-			Transform& SetPosition(const Vector3& worldPos);
-			Transform& SetScale(const Vector3& worldScale);
-			Transform& SetOrientation(const Quaternion& newOr);
+    Transform& SetPosition(const Vector3& worldPos);
+    Transform& SetScale(const Vector3& worldScale);
+    Transform& SetOrientation(const Quaternion& newOr);
 
-			Vector3 GetPosition() const {
-				return position;
-			}
+    Vector3 GetPosition() const
+    {
+        return position;
+    }
 
-			Vector3 GetScale() const {
-				return scale;
-			}
+    Vector3 GetScale() const
+    {
+        return scale;
+    }
 
-			Quaternion GetOrientation() const {
-				return orientation;
-			}
+    Quaternion GetOrientation() const
+    {
+        return orientation;
+    }
 
-			Matrix4 GetMatrix() const {
-				return matrix;
-			}
-			void UpdateMatrix();
-		protected:
-			Matrix4		matrix;
-			Quaternion	orientation;
-			Vector3		position;
+    Matrix4 GetMatrix() const
+    {
+        return matrix;
+    }
+    void UpdateMatrix();
 
-			Vector3		scale;
-		};
-	}
-}
+protected:
+    Matrix4 matrix;
+    Quaternion orientation;
+    Vector3 position;
 
+    Vector3 scale;
+};
+} // namespace Engine
+} // namespace NLS

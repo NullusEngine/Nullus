@@ -9,14 +9,15 @@ _-_-_-_-_-_-_-|   /\_/\   NYANYANYAN
 -_-_-_-_-_-_-~|__( ^ .^) /
 _-_-_-_-_-_-_-""  ""
 
-*//////////////////////////////////////////////////////////////////////////////
+*/
+/////////////////////////////////////////////////////////////////////////////
 #pragma once
 #include "RendererBase.h"
 
 #ifdef _WIN32
-#define VK_USE_PLATFORM_WIN32_KHR
-#include <Windows.h> //vulkan hpp needs this included beforehand!
-#include <minwindef.h>
+    #define VK_USE_PLATFORM_WIN32_KHR
+    #include <Windows.h> //vulkan hpp needs this included beforehand!
+    #include <minwindef.h>
 #endif
 
 #include <vulkan/vulkan.hpp> //
@@ -31,131 +32,139 @@ _-_-_-_-_-_-_-""  ""
 
 using std::string;
 
-namespace NLS {
-	namespace Rendering {
-		struct UniformData {
-			vk::Buffer					buffer;
-			vk::MemoryAllocateInfo		allocInfo;
-			vk::DeviceMemory			deviceMem;
-			vk::DescriptorBufferInfo	descriptorInfo;
-		};
+namespace NLS
+{
+namespace Rendering
+{
+struct UniformData
+{
+    vk::Buffer buffer;
+    vk::MemoryAllocateInfo allocInfo;
+    vk::DeviceMemory deviceMem;
+    vk::DescriptorBufferInfo descriptorInfo;
+};
 
-		struct VulkanPipeline {
-			vk::Pipeline		pipeline;
-			vk::PipelineLayout	layout;
-		};
+struct VulkanPipeline
+{
+    vk::Pipeline pipeline;
+    vk::PipelineLayout layout;
+};
 
-		class VulkanRenderer : public RendererBase {
-			friend class VulkanMesh;
-			friend class VulkanTexture;
-			friend class VulkanPipelineBuilder;
-			friend class VulkanShaderBuilder;
-			friend class VulkanDescriptorSetLayoutBuilder;
-			friend class VulkanRenderPassBuilder;
-		public:
-			VulkanRenderer(Window& window);
-			~VulkanRenderer();
+class VulkanRenderer : public RendererBase
+{
+    friend class VulkanMesh;
+    friend class VulkanTexture;
+    friend class VulkanPipelineBuilder;
+    friend class VulkanShaderBuilder;
+    friend class VulkanDescriptorSetLayoutBuilder;
+    friend class VulkanRenderPassBuilder;
 
-		protected:
-			void OnWindowResize(int w, int h)	override;
-			void BeginFrame()		override;
-			void EndFrame()			override;
-			void SwapBuffers()		override;
+public:
+    VulkanRenderer(Window& window);
+    ~VulkanRenderer();
 
-			void SubmitDrawCall(VulkanMesh* m, vk::CommandBuffer& to);
+protected:
+    void OnWindowResize(int w, int h) override;
+    void BeginFrame() override;
+    void EndFrame() override;
+    void SwapBuffers() override;
 
-			void SetDebugName(vk::ObjectType t, uint64_t handle, const string& debugName);
+    void SubmitDrawCall(VulkanMesh* m, vk::CommandBuffer& to);
 
-			virtual void	CompleteResize();
+    void SetDebugName(vk::ObjectType t, uint64_t handle, const string& debugName);
 
-			vk::DescriptorSet	BuildDescriptorSet(vk::DescriptorSetLayout& layout);
+    virtual void CompleteResize();
 
-			bool	InitInstance();
-			bool	InitGPUDevice();
+    vk::DescriptorSet BuildDescriptorSet(vk::DescriptorSetLayout& layout);
 
-			int		InitBufferChain();
+    bool InitInstance();
+    bool InitGPUDevice();
 
-			bool	CreateDefaultFrameBuffers();
+    int InitBufferChain();
 
-			bool	InitSurface();
+    bool CreateDefaultFrameBuffers();
 
-			bool	InitDeviceQueue();
+    bool InitSurface();
 
-			void	ImageTransitionBarrier(vk::CommandBuffer* buffer, vk::Image i, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageAspectFlags aspect, vk::PipelineStageFlags srcStage, vk::PipelineStageFlags dstStage, int mipLevel = 0, int layer = 0 );
-			void	ImageTransitionBarrier(vk::CommandBuffer* buffer, VulkanTexture* t, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageAspectFlags aspect, vk::PipelineStageFlags srcStage, vk::PipelineStageFlags dstStage, int mipLevel = 0, int layer = 0);
+    bool InitDeviceQueue();
 
-			virtual void	InitDefaultRenderPass();
-			virtual void	InitDefaultDescriptorPool();
+    void ImageTransitionBarrier(vk::CommandBuffer* buffer, vk::Image i, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageAspectFlags aspect, vk::PipelineStageFlags srcStage, vk::PipelineStageFlags dstStage, int mipLevel = 0, int layer = 0);
+    void ImageTransitionBarrier(vk::CommandBuffer* buffer, VulkanTexture* t, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageAspectFlags aspect, vk::PipelineStageFlags srcStage, vk::PipelineStageFlags dstStage, int mipLevel = 0, int layer = 0);
 
-			vk::CommandBuffer BeginCmdBuffer();
-			void		EndCmdBufferWait(vk::CommandBuffer&buffer);
-			vk::Fence 	EndCmdBuffer(vk::CommandBuffer& buffer);
-			void		DestroyCmdBuffer(vk::CommandBuffer& buffer);
+    virtual void InitDefaultRenderPass();
+    virtual void InitDefaultDescriptorPool();
 
-			void	BeginSetupCmdBuffer();
-			void	EndSetupCmdBuffer();
+    vk::CommandBuffer BeginCmdBuffer();
+    void EndCmdBufferWait(vk::CommandBuffer& buffer);
+    vk::Fence EndCmdBuffer(vk::CommandBuffer& buffer);
+    void DestroyCmdBuffer(vk::CommandBuffer& buffer);
 
-			void	InitCommandPool();
+    void BeginSetupCmdBuffer();
+    void EndSetupCmdBuffer();
 
-			void	PresentScreenImage();
+    void InitCommandPool();
 
-			void InitUniformBuffer(UniformData& uniform, void* data, int dataSize);
-			void UpdateUniformBuffer(UniformData& uniform, void* data, int dataSize);
+    void PresentScreenImage();
 
-			void	UpdateImageDescriptor(vk::DescriptorSet& set, VulkanTexture* t, vk::Sampler sampler, int bindingNum = 0);
-			void	UpdateImageDescriptor(vk::DescriptorSet& set, VulkanTexture* t, vk::Sampler sampler, vk::ImageView, vk::ImageLayout forceLayout, int bindingNum = 0);
+    void InitUniformBuffer(UniformData& uniform, void* data, int dataSize);
+    void UpdateUniformBuffer(UniformData& uniform, void* data, int dataSize);
 
-			vk::Device GetDevice() const {
-				return device;
-			}
+    void UpdateImageDescriptor(vk::DescriptorSet& set, VulkanTexture* t, vk::Sampler sampler, int bindingNum = 0);
+    void UpdateImageDescriptor(vk::DescriptorSet& set, VulkanTexture* t, vk::Sampler sampler, vk::ImageView, vk::ImageLayout forceLayout, int bindingNum = 0);
 
-			bool	MemoryTypeFromPhysicalDeviceProps(vk::MemoryPropertyFlags requirements, uint32_t type, uint32_t& index);
+    vk::Device GetDevice() const
+    {
+        return device;
+    }
 
-			struct SwapChain {
-				vk::Image			image;
-				vk::ImageView		view;
-			};
+    bool MemoryTypeFromPhysicalDeviceProps(vk::MemoryPropertyFlags requirements, uint32_t type, uint32_t& index);
 
-			vk::DispatchLoaderDynamic* dispatcher;
+    struct SwapChain
+    {
+        vk::Image image;
+        vk::ImageView view;
+    };
 
-			vk::SurfaceKHR		surface;
-			vk::Format			surfaceFormat;
-			vk::ColorSpaceKHR	surfaceSpace;
+    vk::DispatchLoaderDynamic* dispatcher;
 
-			vk::Framebuffer*	frameBuffers;
+    vk::SurfaceKHR surface;
+    vk::Format surfaceFormat;
+    vk::ColorSpaceKHR surfaceSpace;
 
-			uint32_t			numFrameBuffers;
-			VulkanTexture*		depthBuffer;
+    vk::Framebuffer* frameBuffers;
 
-			vk::SwapchainKHR		swapChain;
+    uint32_t numFrameBuffers;
+    VulkanTexture* depthBuffer;
 
-			std::vector<SwapChain*> swapChainList;
-			uint32_t				currentSwap;
+    vk::SwapchainKHR swapChain;
 
-			vk::Instance		instance;	//API Instance
-			vk::PhysicalDevice	gpu;		//GPU in use
-			vk::Device			device;		//Device handle
+    std::vector<SwapChain*> swapChainList;
+    uint32_t currentSwap;
 
-			vk::PhysicalDeviceProperties		deviceProperties;
-			vk::PhysicalDeviceMemoryProperties	deviceMemoryProperties;
+    vk::Instance instance;  // API Instance
+    vk::PhysicalDevice gpu; // GPU in use
+    vk::Device device;      // Device handle
 
-			vk::PipelineCache	pipelineCache;
-			vk::DescriptorPool	defaultDescriptorPool;	//descriptor sets come from here!
-			vk::CommandPool		commandPool;			//Source Command Buffers from here
+    vk::PhysicalDeviceProperties deviceProperties;
+    vk::PhysicalDeviceMemoryProperties deviceMemoryProperties;
 
-			vk::CommandBuffer	setupCmdBuffer;
-			vk::CommandBuffer	frameCmdBuffer;
+    vk::PipelineCache pipelineCache;
+    vk::DescriptorPool defaultDescriptorPool; // descriptor sets come from here!
+    vk::CommandPool commandPool;              // Source Command Buffers from here
 
-			vk::RenderPass			defaultRenderPass;
-			vk::RenderPassBeginInfo defaultBeginInfo;
+    vk::CommandBuffer setupCmdBuffer;
+    vk::CommandBuffer frameCmdBuffer;
 
-			vk::ClearValue	defaultClearValues[2];
-			vk::Viewport	defaultViewport;
-			vk::Rect2D		defaultScissor;
+    vk::RenderPass defaultRenderPass;
+    vk::RenderPassBeginInfo defaultBeginInfo;
 
-			vk::Queue			deviceQueue;
-			uint32_t			gfxQueueIndex;
-			uint32_t			gfxPresentIndex;
-		};
-	}
-}
+    vk::ClearValue defaultClearValues[2];
+    vk::Viewport defaultViewport;
+    vk::Rect2D defaultScissor;
+
+    vk::Queue deviceQueue;
+    uint32_t gfxQueueIndex;
+    uint32_t gfxPresentIndex;
+};
+} // namespace Rendering
+} // namespace NLS

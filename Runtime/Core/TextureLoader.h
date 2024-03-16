@@ -15,28 +15,29 @@ using std::map;
 
 #include "TextureBase.h"
 
-namespace NLS {
+namespace NLS
+{
 
-	typedef std::function<bool(const std::string& filename, char*& outData, int& width, int &height, int &channels, int&flags)> TextureLoadFunction;
+typedef std::function<bool(const std::string& filename, char*& outData, int& width, int& height, int& channels, int& flags)> TextureLoadFunction;
 
-	typedef std::function<Rendering::TextureBase*(const std::string& filename)> APILoadFunction;
+typedef std::function<Rendering::TextureBase*(const std::string& filename)> APILoadFunction;
 
-	class NLS_CORE_API TextureLoader	{
-	public:
-		static bool LoadTexture(const std::string& filename, char*& outData, int& width, int &height, int &channels, int&flags);
+class NLS_CORE_API TextureLoader
+{
+public:
+    static bool LoadTexture(const std::string& filename, char*& outData, int& width, int& height, int& channels, int& flags);
 
-		static void RegisterTextureLoadFunction(TextureLoadFunction f, const std::string&fileExtension);
+    static void RegisterTextureLoadFunction(TextureLoadFunction f, const std::string& fileExtension);
 
-		static void RegisterAPILoadFunction(APILoadFunction f);
+    static void RegisterAPILoadFunction(APILoadFunction f);
 
-		static Rendering::TextureBase* LoadAPITexture(const std::string&filename);
-	protected:
+    static Rendering::TextureBase* LoadAPITexture(const std::string& filename);
 
-		static std::string GetFileExtension(const std::string& fileExtension);
+protected:
+    static std::string GetFileExtension(const std::string& fileExtension);
 
-		static std::map<std::string, TextureLoadFunction> fileHandlers;
+    static std::map<std::string, TextureLoadFunction> fileHandlers;
 
-		static APILoadFunction apiFunction;
-	};
-}
-
+    static APILoadFunction apiFunction;
+};
+} // namespace NLS

@@ -1,23 +1,24 @@
 #pragma once
 #include <stack>
 #include "EngineDef.h"
-namespace NLS {
-	namespace Engine {
-		class PushdownState;
+namespace NLS
+{
+namespace Engine
+{
+class PushdownState;
 
-		class NLS_ENGINE_API PushdownMachine
-		{
-		public:
-			PushdownMachine();
-			~PushdownMachine();
+class NLS_ENGINE_API PushdownMachine
+{
+public:
+    PushdownMachine();
+    ~PushdownMachine();
 
-			void Update();
+    void Update();
 
-		protected:
-			PushdownState * activeState;
+protected:
+    PushdownState* activeState;
 
-			std::stack<PushdownState*> stateStack;
-		};
-	}
-}
-
+    std::stack<PushdownState*> stateStack;
+};
+} // namespace Engine
+} // namespace NLS

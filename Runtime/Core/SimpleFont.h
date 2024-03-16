@@ -11,48 +11,52 @@ https://research.ncl.ac.uk/game/
 #include <vector>
 #include "TextureBase.h"
 
-namespace NLS {
-	namespace Maths {
-		class Vector2;
-		class Vector3;
-		class Vector4;
-	}
-	namespace Rendering {
-		class NLS_CORE_API SimpleFont
-		{
-		public:
-			SimpleFont(const std::string&fontName, const std::string&texName);
-			~SimpleFont();
+namespace NLS
+{
+namespace Maths
+{
+class Vector2;
+class Vector3;
+class Vector4;
+} // namespace Maths
+namespace Rendering
+{
+class NLS_CORE_API SimpleFont
+{
+public:
+    SimpleFont(const std::string& fontName, const std::string& texName);
+    ~SimpleFont();
 
-			int BuildVerticesForString(std::string &text, Maths::Vector2&startPos, Maths::Vector4&colour, float size, std::vector<Maths::Vector3>&positions, std::vector<Maths::Vector2>&texCoords, std::vector<Maths::Vector4>&colours);
+    int BuildVerticesForString(std::string& text, Maths::Vector2& startPos, Maths::Vector4& colour, float size, std::vector<Maths::Vector3>& positions, std::vector<Maths::Vector2>& texCoords, std::vector<Maths::Vector4>& colours);
 
-			const TextureBase* GetTexture() const {
-				return texture;
-			}
+    const TextureBase* GetTexture() const
+    {
+        return texture;
+    }
 
-		protected:
-			//matches stbtt_bakedchar
-			struct FontChar {
-				unsigned short x0;
-				unsigned short y0;
-				unsigned short x1;
-				unsigned short y1;
-				float xOff;
-				float yOff;
-				float xAdvance;
-			};
+protected:
+    // matches stbtt_bakedchar
+    struct FontChar
+    {
+        unsigned short x0;
+        unsigned short y0;
+        unsigned short x1;
+        unsigned short y1;
+        float xOff;
+        float yOff;
+        float xAdvance;
+    };
 
-			FontChar*		allCharData;
-			TextureBase*	texture;
+    FontChar* allCharData;
+    TextureBase* texture;
 
-			int startChar;
-			int numChars;
+    int startChar;
+    int numChars;
 
-			float texWidth;
-			float texHeight;
-			float texWidthRecip;
-			float texHeightRecip;
-		};
-	}
-}
-
+    float texWidth;
+    float texHeight;
+    float texWidthRecip;
+    float texHeightRecip;
+};
+} // namespace Rendering
+} // namespace NLS

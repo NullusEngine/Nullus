@@ -1,8 +1,10 @@
-#pragma once
+﻿#pragma once
 #include "OGLRenderer.h"
 #include <vector>
 #include <string>
 #include "OGLDef.h"
+#include "Window.h"
+
 namespace NLS
 {
 class OGL_API Debug

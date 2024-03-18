@@ -1,11 +1,11 @@
-#include "Window.h"
+﻿#include "Window.h"
 #include <thread>
 
 #ifdef __ORBIS__
     #include "../Plugins/PlayStation4/PS4Window.h"
 #endif
 
-#include "RendererBase.h"
+#include "RHI/RendererBase.h"
 
 using namespace NLS;
 using namespace Rendering;

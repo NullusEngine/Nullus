@@ -1,6 +1,6 @@
-
+﻿
 #pragma once
-#include "MeshGeometry.h"
+#include "RHI/MeshGeometry.h"
 #include "glad\glad.h"
 #include "OGLDef.h"
 #include <string>
@@ -9,7 +9,7 @@ namespace NLS
 {
 namespace Rendering
 {
-class OGL_API OGLMesh : public NLS::MeshGeometry
+class OGL_API OGLMesh : public MeshGeometry
 {
 public:
     friend class OGLRenderer;

@@ -1,11 +1,11 @@
-﻿#include "CoreDef.h"
+﻿#include "PlatformDef.h"
 
 #pragma once
 
 namespace NLS
 {
 // http://msdn.microsoft.com/en-us/library/ms645540(VS.85).aspx
-enum class NLS_CORE_API KeyboardKeys
+enum class NLS_PLATFORM_API KeyboardKeys
 {
     LBUTTON = 0x01,    // Left mouse button
     RBUTTON = 0x02,    // Right mouse button
@@ -153,7 +153,7 @@ enum class NLS_CORE_API KeyboardKeys
     MAXVALUE = 0xFF
 };
 
-class NLS_CORE_API Keyboard
+class NLS_PLATFORM_API Keyboard
 {
 public:
     friend class Window;

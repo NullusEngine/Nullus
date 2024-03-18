@@ -1,9 +1,11 @@
-#include "TutorialGame.h"
+﻿#include "TutorialGame.h"
 #include "GameWorld.h"
 #include "OGLMesh.h"
 #include "OGLShader.h"
 #include "OGLTexture.h"
 #include "TextureLoader.h"
+#include "Window.h"
+#include "Assets.h"
 
 using namespace NLS;
 using namespace Engine;
@@ -34,7 +36,7 @@ void TutorialGame::InitialiseAssets()
 {
     auto loadFunc = [](const string& name, OGLMesh** into)
     {
-        *into = new OGLMesh(name);
+        *into = new OGLMesh(Assets::MESHDIR + name);
         (*into)->SetPrimitiveType(GeometryPrimitive::Triangles);
         (*into)->UploadToGPU();
     };

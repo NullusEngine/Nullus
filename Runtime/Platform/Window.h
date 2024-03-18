@@ -20,7 +20,8 @@ _-_-_-_-_-_-_-""  ""
 #include "Vector2.h"
 
 #include <string>
-#include "CoreDef.h"
+#include "PlatformDef.h"
+
 namespace NLS
 {
 namespace Rendering
@@ -29,7 +30,7 @@ class RendererBase;
 };
 using namespace Rendering;
 
-class NLS_CORE_API Window
+class NLS_PLATFORM_API Window
 {
 public:
     template<typename T>

@@ -13,11 +13,11 @@ _-_-_-_-_-_-_-""  ""
 /////////////////////////////////////////////////////////////////////////////
 #pragma once
 #include "Vector2.h"
-#include "CoreDef.h"
+#include "PlatformDef.h"
 namespace NLS
 {
 using namespace NLS::Maths;
-enum class NLS_CORE_API MouseButtons
+enum class NLS_PLATFORM_API MouseButtons
 {
     LEFT = 0,
     RIGHT = 1,
@@ -27,7 +27,7 @@ enum class NLS_CORE_API MouseButtons
     MAXVAL = 5
 };
 
-class NLS_CORE_API Mouse
+class NLS_PLATFORM_API Mouse
 {
 public:
     friend class Window;

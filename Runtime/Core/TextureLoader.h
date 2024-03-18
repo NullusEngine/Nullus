@@ -1,4 +1,4 @@
-/*
+﻿/*
 Part of Newcastle University's Game Engineering source code.
 
 Use as you see fit!
@@ -13,7 +13,7 @@ https://research.ncl.ac.uk/game/
 #include "CoreDef.h"
 using std::map;
 
-#include "TextureBase.h"
+#include "RHI/TextureBase.h"
 
 namespace NLS
 {

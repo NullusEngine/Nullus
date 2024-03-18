@@ -1,4 +1,4 @@
-/******************************************************************************
+﻿/******************************************************************************
 Class:RendererBase
 Implements:
 Author:Rich Davison
@@ -12,23 +12,23 @@ _-_-_-_-_-_-_-""  ""
 */
 /////////////////////////////////////////////////////////////////////////////
 #pragma once
-#include "Window.h"
+
+#include "RenderDef.h"
 
 namespace NLS
 {
+class Window;
 namespace Rendering
 {
-enum class NLS_CORE_API VerticalSyncState
+enum class NLS_RENDER_API VerticalSyncState
 {
     VSync_ON,
     VSync_OFF,
     VSync_ADAPTIVE
 };
-class NLS_CORE_API RendererBase
+class NLS_RENDER_API RendererBase
 {
 public:
-    friend class NLS::Window;
-
     RendererBase(Window& w);
     virtual ~RendererBase();
 
@@ -49,18 +49,18 @@ public:
         return false;
     }
 
-protected:
     virtual void OnWindowResize(int w, int h) = 0;
     virtual void OnWindowDetach(){}; // Most renderers won't care about this
 
+protected:
     virtual void BeginFrame() = 0;
     virtual void RenderFrame() = 0;
     virtual void EndFrame() = 0;
     virtual void SwapBuffers() = 0;
     Window& hostWindow;
 
-    int currentWidth;
-    int currentHeight;
+    int currentWidth = 0;
+    int currentHeight = 0;
 };
 } // namespace Rendering
 } // namespace NLS

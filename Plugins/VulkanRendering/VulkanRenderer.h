@@ -1,4 +1,4 @@
-/******************************************************************************
+﻿/******************************************************************************
 Class:VulkanRenderer
 Implements:RendererBase
 Author:Rich Davison
@@ -12,7 +12,7 @@ _-_-_-_-_-_-_-""  ""
 */
 /////////////////////////////////////////////////////////////////////////////
 #pragma once
-#include "RendererBase.h"
+#include "RHI/RendererBase.h"
 
 #ifdef _WIN32
     #define VK_USE_PLATFORM_WIN32_KHR
@@ -63,8 +63,9 @@ public:
     VulkanRenderer(Window& window);
     ~VulkanRenderer();
 
-protected:
     void OnWindowResize(int w, int h) override;
+
+protected:
     void BeginFrame() override;
     void EndFrame() override;
     void SwapBuffers() override;

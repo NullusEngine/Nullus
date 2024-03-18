@@ -1,5 +1,4 @@
-#include "MeshGeometry.h"
-#include "Assets.h"
+﻿#include "MeshGeometry.h"
 #include "Vector2.h"
 #include "Vector3.h"
 #include "Vector4.h"
@@ -121,7 +120,7 @@ void ReadIndices(std::ifstream& file, vector<unsigned int>& elements, int numInd
 MeshGeometry::MeshGeometry(const std::string& filename)
 {
     primType = GeometryPrimitive::Triangles;
-    std::ifstream file(Assets::MESHDIR + filename);
+    std::ifstream file(filename);
 
     std::string filetype;
     int fileVersion;

@@ -1,9 +1,11 @@
-#pragma once
+﻿#pragma once
+
 #include "Matrix4.h"
-#include "TextureBase.h"
-#include "ShaderBase.h"
+#include "RHI/TextureBase.h"
+#include "RHI/ShaderBase.h"
 #include "Vector4.h"
-#include "EngineDef.h"
+#include "RenderDef.h"
+
 namespace NLS
 {
 using namespace NLS::Rendering;
@@ -14,7 +16,7 @@ namespace Engine
 class Transform;
 using namespace Maths;
 
-class NLS_ENGINE_API RenderObject
+class NLS_RENDER_API RenderObject
 {
 public:
     RenderObject(Transform* parentTransform, MeshGeometry* mesh, TextureBase* tex, ShaderBase* shader);

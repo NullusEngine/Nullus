@@ -1,4 +1,4 @@
-/*
+﻿/*
 Part of Newcastle University's Game Engineering source code.
 
 Use as you see fit!
@@ -18,7 +18,7 @@ https://research.ncl.ac.uk/game/
 #include "Vector3.h"
 #include "Matrix4.h"
 
-#include "MeshGeometry.h"
+#include "RHI/MeshGeometry.h"
 
 #ifdef _WIN32
     #include "Win32/Win32Window.h"

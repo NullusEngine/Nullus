@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "CommonDef.h"
 
 #ifdef NLS_SHARED_LIB

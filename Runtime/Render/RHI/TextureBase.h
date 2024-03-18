@@ -1,10 +1,11 @@
 #pragma once
-#include "CoreDef.h"
+#include "RenderDef.h"
+
 namespace NLS
 {
 namespace Rendering
 {
-class NLS_CORE_API TextureBase
+class NLS_RENDER_API TextureBase
 {
 public:
     virtual ~TextureBase();

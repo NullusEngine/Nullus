@@ -9,12 +9,12 @@ https://research.ncl.ac.uk/game/
 #pragma once
 
 #include <chrono>
-#include "CoreDef.h"
+#include "PlatformDef.h"
 namespace NLS
 {
 typedef std::chrono::time_point<std::chrono::high_resolution_clock> Timepoint;
 
-class NLS_CORE_API GameTimer
+class NLS_PLATFORM_API GameTimer
 {
 public:
     GameTimer(void);

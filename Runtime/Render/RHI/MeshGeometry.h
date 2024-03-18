@@ -4,7 +4,8 @@
 #include "Vector3.h"
 #include "Vector4.h"
 #include "Matrix4.h"
-#include "CoreDef.h"
+#include "RenderDef.h"
+
 using std::vector;
 
 namespace NLS
@@ -22,7 +23,7 @@ class RendererBase;
 }
 using namespace Maths;
 
-enum NLS_CORE_API GeometryPrimitive
+enum NLS_RENDER_API GeometryPrimitive
 {
     Points,
     Lines,
@@ -32,7 +33,7 @@ enum NLS_CORE_API GeometryPrimitive
     Patches
 };
 
-enum NLS_CORE_API VertexAttribute
+enum NLS_RENDER_API VertexAttribute
 {
     Positions,
     Colours,
@@ -44,13 +45,13 @@ enum NLS_CORE_API VertexAttribute
     MAX_ATTRIBUTES
 };
 
-struct NLS_CORE_API SubMesh
+struct NLS_RENDER_API SubMesh
 {
     int start;
     int count;
 };
 
-class NLS_CORE_API MeshGeometry
+class NLS_RENDER_API MeshGeometry
 {
 public:
     virtual ~MeshGeometry();

@@ -1,4 +1,4 @@
-/*
+﻿/*
 Part of Newcastle University's Game Engineering source code.
 
 Use as you see fit!
@@ -9,7 +9,8 @@ https://research.ncl.ac.uk/game/
 #pragma once
 #include <string>
 #include <vector>
-#include "TextureBase.h"
+#include "RHI/TextureBase.h"
+#include "CoreDef.h"
 
 namespace NLS
 {

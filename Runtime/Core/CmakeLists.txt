@@ -46,4 +46,5 @@ target_link_libraries(
     NLS_Core
     PUBLIC # 使用该库时必须依赖的库
     NLS_Math
+    NLS_Render
 )

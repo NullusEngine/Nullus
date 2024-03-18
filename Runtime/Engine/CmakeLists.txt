@@ -1,63 +1,20 @@
-# 收集头文件和源文件
-###############################################################################
-file(GLOB_RECURSE ENGINE_HEAD_FILES
-  ${CMAKE_CURRENT_SOURCE_DIR}/*.h
-  ${CMAKE_CURRENT_SOURCE_DIR}/*.inl
-)
-file(GLOB_RECURSE ENGINE_SOURCE_FILES
-  ${CMAKE_CURRENT_SOURCE_DIR}/*.cpp
-  ${CMAKE_CURRENT_SOURCE_DIR}/*.c
-)
 
-# 对文件进行分组
-###############################################################################
-source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${ENGINE_HEAD_FILES})
-source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${ENGINE_SOURCE_FILES})
-
-if(NLS_USE_SHARED_LIBRARY)
-add_library(NLS_Engine SHARED ${ENGINE_HEAD_FILES} ${ENGINE_SOURCE_FILES})
-
-target_compile_definitions(
-  NLS_Engine
-  PRIVATE
-  NLS_ENGINE_EXPORT
-)
-else()
-add_library(NLS_Engine STATIC ${ENGINE_HEAD_FILES} ${ENGINE_SOURCE_FILES})
-endif()
-
-# 设置包含路径
-###############################################################################
-target_include_directories(
-  NLS_Engine
-  PUBLIC # 其他项目使用头文件时所需的目录
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
-    ${NLS_ROOT_DIR}/Runtime
-)
-
-# 指定输出路径
-###############################################################################
-set_target_properties(NLS_Engine PROPERTIES
-  RUNTIME_OUTPUT_DIRECTORY "${NLS_APP_OUTPUT_PATH}"
-)
-
-target_link_libraries(
-  NLS_Engine
-    PUBLIC # 使用该库时必须依赖的库
-    NLS_Math
-)
 if(NLS_RENDER_API STREQUAL "OpenGL")
-  target_link_libraries(
-    NLS_Engine
-      PUBLIC # 使用该库时必须依赖的库
+  nls_add_runtime_target(
+    NAME NLS_Engine
+    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}
+    LIBS
+      NLS_Math
       OpenGL_Rendering
-  )
+    )
 elseif(NLS_RENDER_API STREQUAL "Vulkan")
-  target_link_libraries(
-    NLS_Engine
-      PUBLIC # 使用该库时必须依赖的库
+  nls_add_runtime_target(
+    NAME NLS_Engine
+    SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}
+    LIBS
+      NLS_Math
       Vulkan_Rendering
-  )
+    )
 else()
     message(FATAL_ERROR "NLS_RENDER_API is not supported. Aborting.")
 endif()

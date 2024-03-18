@@ -34,7 +34,7 @@ for this module, even in the coursework, but you can add it if you like!
 */
 void TutorialGame::InitialiseAssets()
 {
-    auto loadFunc = [](const string& name, OGLMesh** into)
+    auto loadFunc = [](const string& name, MeshGeometry** into)
     {
         *into = new OGLMesh(Assets::MESHDIR + name);
         (*into)->SetPrimitiveType(GeometryPrimitive::Triangles);
@@ -49,7 +49,7 @@ void TutorialGame::InitialiseAssets()
     loadFunc("coin.msh", &bonusMesh);
     loadFunc("capsule.msh", &capsuleMesh);
 
-    basicTex = (OGLTexture*)TextureLoader::LoadAPITexture("checkerboard.png");
+    basicTex = TextureLoader::LoadAPITexture("checkerboard.png");
     basicShader = new OGLShader("GameTechVert.glsl", "GameTechFrag.glsl");
 
     InitCamera();

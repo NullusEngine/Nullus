@@ -36,7 +36,7 @@ bool CollisionDetection::RayIntersection(const Ray& r, GameObject& object, RayCo
 {
     bool hasCollided = false;
 
-    const Transform& worldTransform = object.GetTransform();
+    const Engine::Transform& worldTransform = object.GetTransform();
     const CollisionVolume* volume = object.GetBoundingVolume();
 
     if (!volume)
@@ -104,14 +104,14 @@ bool CollisionDetection::RayBoxIntersection(const Ray& r, const Vector3& boxPos,
     return true;
 }
 
-bool CollisionDetection::RayAABBIntersection(const Ray& r, const Transform& worldTransform, const AABBVolume& volume, RayCollision& collision)
+bool CollisionDetection::RayAABBIntersection(const Ray& r, const Engine::Transform& worldTransform, const AABBVolume& volume, RayCollision& collision)
 {
     Vector3 boxPos = worldTransform.GetPosition();
     Vector3 boxSize = volume.GetHalfDimensions();
     return RayBoxIntersection(r, boxPos, boxSize, collision);
 }
 
-bool CollisionDetection::RayOBBIntersection(const Ray& r, const Transform& worldTransform, const OBBVolume& volume, RayCollision& collision)
+bool CollisionDetection::RayOBBIntersection(const Ray& r, const Engine::Transform& worldTransform, const OBBVolume& volume, RayCollision& collision)
 {
     Quaternion orientation = worldTransform.GetOrientation();
     Vector3 position = worldTransform.GetPosition();
@@ -131,12 +131,12 @@ bool CollisionDetection::RayOBBIntersection(const Ray& r, const Transform& world
     return collided;
 }
 
-bool CollisionDetection::RayCapsuleIntersection(const Ray& r, const Transform& worldTransform, const CapsuleVolume& volume, RayCollision& collision)
+bool CollisionDetection::RayCapsuleIntersection(const Ray& r, const Engine::Transform& worldTransform, const CapsuleVolume& volume, RayCollision& collision)
 {
     return false;
 }
 
-bool CollisionDetection::RaySphereIntersection(const Ray& r, const Transform& worldTransform, const SphereVolume& volume, RayCollision& collision)
+bool CollisionDetection::RaySphereIntersection(const Ray& r, const Engine::Transform& worldTransform, const SphereVolume& volume, RayCollision& collision)
 {
     Vector3 spherePos = worldTransform.GetPosition();
     float sphereRadius = volume.GetRadius();
@@ -342,8 +342,8 @@ bool CollisionDetection::ObjectIntersection(GameObject* a, GameObject* b, Collis
     collisionInfo.a = a;
     collisionInfo.b = b;
 
-    Transform& transformA = a->GetTransform();
-    Transform& transformB = b->GetTransform();
+    Engine::Transform& transformA = a->GetTransform();
+    Engine::Transform& transformB = b->GetTransform();
 
     VolumeType pairType = (VolumeType)((int)volA->type | (int)volB->type);
 
@@ -400,7 +400,7 @@ bool CollisionDetection::AABBTest(const Vector3& posA, const Vector3& posB, cons
 }
 
 // AABB/AABB Collisions
-bool CollisionDetection::AABBIntersection(const AABBVolume& volumeA, const Transform& worldTransformA, const AABBVolume& volumeB, const Transform& worldTransformB, CollisionInfo& collisionInfo)
+bool CollisionDetection::AABBIntersection(const AABBVolume& volumeA, const Engine::Transform& worldTransformA, const AABBVolume& volumeB, const Engine::Transform& worldTransformB, CollisionInfo& collisionInfo)
 {
     Vector3 boxAPos = worldTransformA.GetPosition();
     Vector3 boxBPos = worldTransformB.GetPosition();
@@ -452,7 +452,7 @@ bool CollisionDetection::AABBIntersection(const AABBVolume& volumeA, const Trans
 }
 
 // Sphere / Sphere Collision
-bool CollisionDetection::SphereIntersection(const SphereVolume& volumeA, const Transform& worldTransformA, const SphereVolume& volumeB, const Transform& worldTransformB, CollisionInfo& collisionInfo)
+bool CollisionDetection::SphereIntersection(const SphereVolume& volumeA, const Engine::Transform& worldTransformA, const SphereVolume& volumeB, const Engine::Transform& worldTransformB, CollisionInfo& collisionInfo)
 {
     float radii = volumeA.GetRadius() + volumeB.GetRadius();
     Vector3 delta = worldTransformB.GetPosition() - worldTransformA.GetPosition();
@@ -472,7 +472,7 @@ bool CollisionDetection::SphereIntersection(const SphereVolume& volumeA, const T
 }
 
 // AABB - Sphere Collision
-bool CollisionDetection::AABBSphereIntersection(const AABBVolume& volumeA, const Transform& worldTransformA, const SphereVolume& volumeB, const Transform& worldTransformB, CollisionInfo& collisionInfo)
+bool CollisionDetection::AABBSphereIntersection(const AABBVolume& volumeA, const Engine::Transform& worldTransformA, const SphereVolume& volumeB, const Engine::Transform& worldTransformB, CollisionInfo& collisionInfo)
 {
     Vector3 boxSize = volumeA.GetHalfDimensions();
 
@@ -497,12 +497,12 @@ bool CollisionDetection::AABBSphereIntersection(const AABBVolume& volumeA, const
     return false;
 }
 
-bool CollisionDetection::OBBIntersection(const OBBVolume& volumeA, const Transform& worldTransformA, const OBBVolume& volumeB, const Transform& worldTransformB, CollisionInfo& collisionInfo)
+bool CollisionDetection::OBBIntersection(const OBBVolume& volumeA, const Engine::Transform& worldTransformA, const OBBVolume& volumeB, const Engine::Transform& worldTransformB, CollisionInfo& collisionInfo)
 {
     return false;
 }
 
-bool CollisionDetection::SphereCapsuleIntersection(const CapsuleVolume& volumeA, const Transform& worldTransformA, const SphereVolume& volumeB, const Transform& worldTransformB, CollisionInfo& collisionInfo)
+bool CollisionDetection::SphereCapsuleIntersection(const CapsuleVolume& volumeA, const Engine::Transform& worldTransformA, const SphereVolume& volumeB, const Engine::Transform& worldTransformB, CollisionInfo& collisionInfo)
 {
     return false;
 }

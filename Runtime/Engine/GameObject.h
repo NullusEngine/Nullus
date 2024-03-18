@@ -7,18 +7,27 @@
 
 #include <vector>
 #include "EngineDef.h"
+#include "Component.h"
+#include "UTemplate/Type.hpp"
+#include "UDRefl/Object.hpp"
 using std::vector;
 
 namespace NLS
 {
 namespace Engine
 {
-
+using namespace UDRefl;
 class NLS_ENGINE_API GameObject
 {
 public:
     GameObject(string name = "");
     ~GameObject();
+    template<typename T>
+    T* AddComponent();
+    template<typename T>
+    T* GetComponent();
+    SharedObject AddComponent(Type type);
+    SharedObject GetComponent(Type type);
 
     void SetBoundingVolume(CollisionVolume* vol)
     {
@@ -37,7 +46,7 @@ public:
 
     Transform& GetTransform()
     {
-        return transform;
+        return *transform;
     }
 
     RenderObject* GetRenderObject() const
@@ -90,8 +99,8 @@ public:
     }
 
 protected:
-    Transform transform;
-
+    std::vector<SharedObject> m_vComponents;
+    Transform* transform;
     CollisionVolume* boundingVolume;
     PhysicsObject* physicsObject;
     RenderObject* renderObject;
@@ -102,5 +111,19 @@ protected:
 
     Vector3 broadphaseAABB;
 };
+
+template<typename T>
+T* GameObject::AddComponent()
+{
+    return AddComponent(Type_of<T>).AsPtr<T>();
+}
+
+
+template<typename T>
+T* GameObject::GetComponent()
+{
+    return GetComponent(Type_of<T>).AsPtr<T>();
+}
+
 } // namespace Engine
 } // namespace NLS

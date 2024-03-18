@@ -9,6 +9,12 @@
 #include "Pathfinding/NavigationGrid.h"
 
 #include "TutorialGame.h"
+#include "Assembly.h"
+#include "AssemblyCore.h"
+#include "AssemblyMath.h"
+#include "AssemblyEngine.h"
+#include "AssemblyPlatform.h"
+#include "AssemblyRender.h"
 
 using namespace NLS;
 using namespace Engine;
@@ -29,6 +35,8 @@ hide or show the
 
 int main()
 {
+    Assembly::Instance().Instance().Load<AssemblyMath>().Load<AssemblyCore>().Load<AssemblyPlatform>().Load<AssemblyRender>().Load<AssemblyEngine>();
+
     Window* w = Window::CreateGameWindow<Win32Code::Win32Window>("Engine Game technology!", 1280, 720);
 
     if (!w->HasInitialised())

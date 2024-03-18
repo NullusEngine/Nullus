@@ -5,6 +5,7 @@
 #include "Quaternion.h"
 #include "EngineDef.h"
 #include <vector>
+#include "Component.h"
 
 using std::vector;
 
@@ -14,7 +15,7 @@ namespace NLS
 {
 namespace Engine
 {
-class NLS_ENGINE_API Transform
+class NLS_ENGINE_API Transform :public Component
 {
 public:
     Transform();

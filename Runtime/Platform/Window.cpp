@@ -7,6 +7,10 @@
 
 #include "RHI/RendererBase.h"
 
+#ifdef _WIN32
+#include "Win32/Win32Window.h"
+#endif
+
 using namespace NLS;
 using namespace Rendering;
 
@@ -71,4 +75,9 @@ void Window::ResizeRenderer()
     {
         renderer->OnWindowResize((int)size.x, (int)size.y);
     }
+}
+
+Window* NLS::Window::CreateGameWindow(std::string title, int sizeX, int sizeY, bool fullScreen, int offsetX, int offsetY)
+{
+    return new PlatformWindow(title, sizeX, sizeY, fullScreen, offsetX, offsetY);
 }

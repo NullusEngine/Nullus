@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "Window.h"
 
 #ifdef _WIN32
@@ -75,5 +75,8 @@ protected:
     Win32Keyboard* winKeyboard;
 };
 } // namespace Win32Code
+
+using PlatformWindow = Win32Code::Win32Window;
+
 } // namespace NLS
 #endif //_WIN32

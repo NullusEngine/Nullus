@@ -1,6 +1,4 @@
-#ifdef _WIN32
-    #include "Win32/Win32Window.h"
-#endif
+﻿#include "Window.h"
 
 #include "AI/StateMachine.h"
 #include "AI/StateTransition.h"
@@ -37,7 +35,7 @@ int main()
 {
     Assembly::Instance().Instance().Load<AssemblyMath>().Load<AssemblyCore>().Load<AssemblyPlatform>().Load<AssemblyRender>().Load<AssemblyEngine>();
 
-    Window* w = Window::CreateGameWindow<Win32Code::Win32Window>("Engine Game technology!", 1280, 720);
+    Window* w = Window::CreateGameWindow("Engine Game technology!", 1280, 720);
 
     if (!w->HasInitialised())
     {

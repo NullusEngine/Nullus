@@ -227,13 +227,13 @@ void PhysicsSystem::BasicCollisionDetection()
 
     for (auto i = first; i != last; ++i)
     {
-        if ((*i)->GetPhysicsObject() == nullptr)
+        if ((*i)->GetComponent<PhysicsObject>() == nullptr)
         {
             continue;
         }
         for (auto j = i + 1; j != last; ++j)
         {
-            if ((*j)->GetPhysicsObject() == nullptr)
+            if ((*j)->GetComponent<PhysicsObject>() == nullptr)
             {
                 continue;
             }
@@ -251,8 +251,8 @@ void PhysicsSystem::BasicCollisionDetection()
 
 void NLS::Engine::PhysicsSystem::ResolveSpringCollision(GameObject& a, GameObject& b, CollisionDetection::ContactPoint& p) const
 {
-    PhysicsObject* physA = a.GetPhysicsObject();
-    PhysicsObject* physB = b.GetPhysicsObject();
+    PhysicsObject* physA = a.GetComponent<PhysicsObject>();
+    PhysicsObject* physB = b.GetComponent<PhysicsObject>();
 
     Transform& transformA = a.GetTransform();
     Transform& transformB = b.GetTransform();
@@ -276,8 +276,8 @@ so that objects separate back out.
 */
 void PhysicsSystem::ImpulseResolveCollision(GameObject& a, GameObject& b, CollisionDetection::ContactPoint& p) const
 {
-    PhysicsObject* physA = a.GetPhysicsObject();
-    PhysicsObject* physB = b.GetPhysicsObject();
+    PhysicsObject* physA = a.GetComponent<PhysicsObject>();
+    PhysicsObject* physB = b.GetComponent<PhysicsObject>();
 
     Transform& transformA = a.GetTransform();
     Transform& transformB = b.GetTransform();
@@ -399,7 +399,7 @@ void PhysicsSystem::IntegrateAccel(float dt)
 
     for (auto i = first; i != last; ++i)
     {
-        PhysicsObject* object = (*i)->GetPhysicsObject();
+        PhysicsObject* object = (*i)->GetComponent<PhysicsObject>();
         if (object == nullptr)
         {
             continue; // No physics object for this GameObject !
@@ -441,7 +441,7 @@ void PhysicsSystem::IntegrateVelocity(float dt)
 
     for (auto i = first; i != last; ++i)
     {
-        PhysicsObject* object = (*i)->GetPhysicsObject();
+        PhysicsObject* object = (*i)->GetComponent<PhysicsObject>();
         if (object == nullptr)
         {
             continue;
@@ -482,7 +482,7 @@ void PhysicsSystem::ClearForces()
     gameWorld.OperateOnContents(
         [](GameObject* o)
         {
-            o->GetPhysicsObject()->ClearForces();
+            o->GetComponent<PhysicsObject>()->ClearForces();
         });
 }
 

@@ -11,8 +11,8 @@ void NLS::Engine::PositionConstraint::UpdateConstraint(float dt)
     {
         Vector3 offsetDir = relativePos.Normalised();
 
-        PhysicsObject* physA = objectA->GetPhysicsObject();
-        PhysicsObject* physB = objectB->GetPhysicsObject();
+        PhysicsObject* physA = objectA->GetComponent<PhysicsObject>();
+        PhysicsObject* physB = objectB->GetComponent<PhysicsObject>();
 
         Vector3 relativeVelocity = physA->GetLinearVelocity() - physB->GetLinearVelocity();
 

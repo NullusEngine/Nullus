@@ -1,5 +1,6 @@
 #pragma once
 #include "EngineDef.h"
+#include "Component.h"
 namespace NLS
 {
 enum class NLS_ENGINE_API VolumeType
@@ -13,7 +14,7 @@ enum class NLS_ENGINE_API VolumeType
     Invalid = 256
 };
 
-class NLS_ENGINE_API CollisionVolume
+class NLS_ENGINE_API CollisionVolume : public Engine::Component
 {
 public:
     CollisionVolume()

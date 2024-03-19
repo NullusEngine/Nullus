@@ -37,7 +37,7 @@ bool CollisionDetection::RayIntersection(const Ray& r, GameObject& object, RayCo
     bool hasCollided = false;
 
     const Engine::Transform& worldTransform = object.GetTransform();
-    const CollisionVolume* volume = object.GetBoundingVolume();
+    const CollisionVolume* volume = object.GetComponent<CollisionVolume>();
 
     if (!volume)
     {
@@ -331,8 +331,8 @@ Vector3 CollisionDetection::UnprojectScreenPosition(Vector3 position, float aspe
 
 bool CollisionDetection::ObjectIntersection(GameObject* a, GameObject* b, CollisionInfo& collisionInfo)
 {
-    const CollisionVolume* volA = a->GetBoundingVolume();
-    const CollisionVolume* volB = b->GetBoundingVolume();
+    const CollisionVolume* volA = a->GetComponent<CollisionVolume>();
+    const CollisionVolume* volB = b->GetComponent<CollisionVolume>();
 
     if (!volA || !volB)
     {

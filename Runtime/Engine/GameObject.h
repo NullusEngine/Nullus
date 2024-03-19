@@ -23,22 +23,11 @@ public:
     GameObject(string name = "");
     ~GameObject();
     template<typename T>
-    T* AddComponent();
+    T* AddComponent(const std::function<void(Component*)>& func = {});
     template<typename T>
-    T* GetComponent();
-    SharedObject AddComponent(Type type);
-    SharedObject GetComponent(Type type);
-
-    void SetBoundingVolume(CollisionVolume* vol)
-    {
-        boundingVolume = vol;
-    }
-
-    const CollisionVolume* GetBoundingVolume() const
-    {
-        return boundingVolume;
-    }
-
+    T* GetComponent(bool includeSubType = true) const;
+    SharedObject AddComponent(Type type, const std::function<void(Component*)>& func = {});
+    SharedObject GetComponent(Type type, bool includeSubType = true) const;
     bool IsActive() const
     {
         return isActive;
@@ -54,19 +43,9 @@ public:
         return renderObject;
     }
 
-    PhysicsObject* GetPhysicsObject() const
-    {
-        return physicsObject;
-    }
-
     void SetRenderObject(RenderObject* newObject)
     {
         renderObject = newObject;
-    }
-
-    void SetPhysicsObject(PhysicsObject* newObject)
-    {
-        physicsObject = newObject;
     }
 
     const string& GetName() const
@@ -101,8 +80,6 @@ public:
 protected:
     std::vector<SharedObject> m_vComponents;
     Transform* transform;
-    CollisionVolume* boundingVolume;
-    PhysicsObject* physicsObject;
     RenderObject* renderObject;
 
     bool isActive;
@@ -113,16 +90,16 @@ protected:
 };
 
 template<typename T>
-T* GameObject::AddComponent()
+T* GameObject::AddComponent(const std::function<void(Component*)>& func)
 {
-    return AddComponent(Type_of<T>).AsPtr<T>();
+    return AddComponent(Type_of<T>, func).AsPtr<T>();
 }
 
 
 template<typename T>
-T* GameObject::GetComponent()
+T* GameObject::GetComponent(bool includeSubType) const
 {
-    return GetComponent(Type_of<T>).AsPtr<T>();
+    return GetComponent(Type_of<T>, includeSubType).StaticCast(Type_of<T>).AsPtr<T>();
 }
 
 } // namespace Engine

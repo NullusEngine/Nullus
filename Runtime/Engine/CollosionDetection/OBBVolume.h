@@ -4,19 +4,22 @@
 #include "EngineDef.h"
 namespace NLS
 {
-class NLS_ENGINE_API OBBVolume : CollisionVolume
+class NLS_ENGINE_API OBBVolume : public CollisionVolume
 {
 public:
-    OBBVolume(const Maths::Vector3& halfDims)
+    OBBVolume()
     {
         type = VolumeType::OBB;
-        halfSizes = halfDims;
     }
     ~OBBVolume() {}
 
     Maths::Vector3 GetHalfDimensions() const
     {
         return halfSizes;
+    }
+    void SetHalfDimensions(const  Maths::Vector3& halfDims)
+    {
+        halfSizes = halfDims;
     }
 
 protected:

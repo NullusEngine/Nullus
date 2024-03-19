@@ -6,10 +6,8 @@ namespace NLS
 class NLS_ENGINE_API CapsuleVolume : public CollisionVolume
 {
 public:
-    CapsuleVolume(float halfHeight, float radius)
+    CapsuleVolume()
     {
-        this->halfHeight = halfHeight;
-        this->radius = radius;
         this->type = VolumeType::Capsule;
     };
     ~CapsuleVolume()
@@ -20,9 +18,19 @@ public:
         return radius;
     }
 
+    void SetRadius(float radius)
+    {
+        this->radius = radius;
+    }
+
     float GetHalfHeight() const
     {
         return halfHeight;
+    }
+
+    void SetHalfHeight(float halfHeight)
+    {
+        this->halfHeight = halfHeight;
     }
 
 protected:

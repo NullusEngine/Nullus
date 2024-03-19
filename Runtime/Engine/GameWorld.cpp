@@ -94,7 +94,7 @@ bool GameWorld::Raycast(Ray& r, RayCollision& closestCollision, bool closestObje
 
     for (auto& i : gameObjects)
     {
-        if (!i->GetBoundingVolume())
+        if (!i->GetComponent<CollisionVolume>())
         { // objects might not be collideable etc...
             continue;
         }

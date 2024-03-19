@@ -2,6 +2,7 @@
 #include "Vector3.h"
 #include "Matrix3.h"
 #include "EngineDef.h"
+#include "Component.h"
 using namespace NLS::Maths;
 
 namespace NLS
@@ -12,10 +13,10 @@ namespace Engine
 {
 class Transform;
 
-class NLS_ENGINE_API PhysicsObject
+class NLS_ENGINE_API PhysicsObject: public Component
 {
 public:
-    PhysicsObject(Transform* parentTransform, const CollisionVolume* parentVolume, float elasticity, float friction);
+    PhysicsObject();
     ~PhysicsObject();
 
     Vector3 GetLinearVelocity() const
@@ -53,9 +54,19 @@ public:
         return friction;
     }
 
+    void SetFriction(float friction)
+    {
+        this->friction = friction;
+    }
+
     float GetElasticity() const
     {
         return elasticity;
+    }
+
+    void SetElasticity(float elasticity)
+    {
+        this->elasticity = elasticity;
     }
 
     void ApplyAngularImpulse(const Vector3& force);
@@ -91,12 +102,9 @@ public:
     }
 
 protected:
-    const CollisionVolume* volume;
-    Transform* transform;
-
     float inverseMass;
-    float elasticity;
-    float friction;
+    float elasticity = 0.8;
+    float friction = 0.8;
 
     // linear stuff
     Vector3 linearVelocity;

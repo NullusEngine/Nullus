@@ -21,7 +21,7 @@ public:
 
     bool IsSelfEnabled() const { return m_enabled; }
 
-    GameObject* Owner() const { return mOwner; }
+    GameObject* gameobject() const { return mOwner; }
 
 protected:
 private:

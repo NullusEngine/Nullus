@@ -48,6 +48,7 @@ namespace NLS::UDRefl {
 
 		bool ContainsVirtualBase(Type type) const;
 
+		bool IsDerivedFrom(Type derived, Type base) const;
 		//
 		// Factory
 		////////////

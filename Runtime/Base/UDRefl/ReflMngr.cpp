@@ -190,6 +190,23 @@ bool ReflMngr::ContainsVirtualBase(Type type) const {
 	return false;
 }
 
+
+bool ReflMngr::IsDerivedFrom(Type derived, Type base) const
+{
+    auto* info = GetTypeInfo(derived);
+    if (!info)
+        return false;
+
+    for (const auto& [tbase, baseinfo] : info->baseinfos)
+    {
+        if (tbase == base || IsDerivedFrom(tbase, base))
+            return true;
+    }
+
+    return false;
+}
+
+
 Type ReflMngr::RegisterType(Type type, size_t size, size_t alignment, bool is_polymorphic, bool is_trivial) {
 	assert(alignment > 0 && (alignment & (alignment - 1)) == 0);
 	auto target = typeinfos.find(type.RemoveCVRef());

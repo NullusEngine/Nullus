@@ -3,19 +3,22 @@
 #include "EngineDef.h"
 namespace NLS
 {
-class NLS_ENGINE_API SphereVolume : CollisionVolume
+class NLS_ENGINE_API SphereVolume : public CollisionVolume
 {
 public:
-    SphereVolume(float sphereRadius = 1.0f)
+    SphereVolume()
     {
         type = VolumeType::Sphere;
-        radius = sphereRadius;
     }
     ~SphereVolume() {}
 
     float GetRadius() const
     {
         return radius;
+    }
+    void SetRadius(float radius)
+    {
+        this->radius = radius;
     }
 
 protected:

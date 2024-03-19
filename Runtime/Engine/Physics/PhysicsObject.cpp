@@ -4,11 +4,8 @@
 using namespace NLS;
 using namespace Engine;
 
-PhysicsObject::PhysicsObject(Transform* parentTransform, const CollisionVolume* parentVolume, float elasticity, float friction)
+PhysicsObject::PhysicsObject()
 {
-    transform = parentTransform;
-    volume = parentVolume;
-
     inverseMass = 1.0f;
     this->elasticity = elasticity;
     this->friction = friction;
@@ -39,7 +36,7 @@ void PhysicsObject::AddForce(const Vector3& addedForce)
 
 void PhysicsObject::AddForceAtPosition(const Vector3& addedForce, const Vector3& position)
 {
-    Vector3 localPos = position - transform->GetPosition();
+    Vector3 localPos = position - gameobject()->GetComponent<Transform>()->GetPosition();
 
     force += addedForce;
     torque += Vector3::Cross(localPos, addedForce);
@@ -58,7 +55,7 @@ void PhysicsObject::ClearForces()
 
 void PhysicsObject::InitCubeInertia()
 {
-    Vector3 dimensions = transform->GetScale();
+    Vector3 dimensions = gameobject()->GetComponent<Transform>()->GetScale();
 
     Vector3 fullWidth = dimensions * 2;
 
@@ -71,7 +68,7 @@ void PhysicsObject::InitCubeInertia()
 
 void PhysicsObject::InitSphereInertia()
 {
-    float radius = transform->GetScale().GetMaxElement();
+    float radius = gameobject()->GetComponent<Transform>()->GetScale().GetMaxElement();
     float i = 2.5f * inverseMass / (radius * radius);
 
     inverseInertia = Vector3(i, i, i);
@@ -79,7 +76,7 @@ void PhysicsObject::InitSphereInertia()
 
 void PhysicsObject::UpdateInertiaTensor()
 {
-    Quaternion q = transform->GetOrientation();
+    Quaternion q = gameobject()->GetComponent<Transform>()->GetOrientation();
 
     Matrix3 invOrientation = Matrix3(q.Conjugate());
     Matrix3 orientation = Matrix3(q);

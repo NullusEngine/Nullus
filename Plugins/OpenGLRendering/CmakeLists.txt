@@ -21,6 +21,7 @@ target_compile_definitions(
   OpenGL_Rendering
   PUBLIC
   GLAD_GLAPI_EXPORT
+  NLS_USE_GL
   PRIVATE
   GLAD_GLAPI_EXPORT_BUILD
   OGL_EXPORT

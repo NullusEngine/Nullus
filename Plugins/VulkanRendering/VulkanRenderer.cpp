@@ -1,8 +1,10 @@
-#include "VulkanRenderer.h"
+﻿#include "VulkanRenderer.h"
 #include "VulkanMesh.h"
 #include "VulkanTexture.h"
 
 #include "TextureLoader.h"
+#include "MeshLoader.h"
+#include "VulkanShaderBuilder.h"
 
 #ifdef WIN32
     #include "WIn32/Win32Window.h"
@@ -28,6 +30,10 @@ VulkanRenderer::VulkanRenderer(Window& window)
 
     VulkanTexture::SetRenderer(this);
     TextureLoader::RegisterAPILoadFunction(VulkanTexture::VulkanTextureFromFilename);
+    TextureLoader::RegisterAPICubeMapLoadFunction([](const CubeMapFileNames& filenames)
+                                                  { return VulkanTexture::VulkanCubemapFromFilename(filenames[0], filenames[1], filenames[2], filenames[3], filenames[4], filenames[5]); });
+    MeshLoader::RegisterAPILoadFunction([](const std::string& filename)
+                                        { return new VulkanMesh(filename); });
 
     OnWindowResize((int)hostWindow.GetScreenSize().x, (int)hostWindow.GetScreenSize().y);
 
@@ -478,6 +484,24 @@ void VulkanRenderer::OnWindowResize(int width, int height)
     CompleteResize();
 
     EndSetupCmdBuffer();
+}
+
+ShaderBase* VulkanRenderer::CreateShader(const std::string& vertex, const std::string& fragment)
+{
+    VulkanShaderBuilder builder;
+    builder.WithVertexBinary(vertex);
+    builder.WithFragmentBinary(fragment);
+    return builder.Build(*this);
+}
+
+void VulkanRenderer::DrawString(const std::string& text, const Vector2& pos, const Vector4& colour, float size)
+{
+    // todo:
+}
+
+void VulkanRenderer::DrawLine(const Vector3& start, const Vector3& end, const Vector4& colour)
+{
+    // todo:
 }
 
 void VulkanRenderer::CompleteResize()

@@ -13,12 +13,11 @@ https://research.ncl.ac.uk/game/
 
 #include "SimpleFont.h"
 #include "TextureLoader.h"
+#include "MeshLoader.h"
 
 #include "Vector2.h"
 #include "Vector3.h"
 #include "Matrix4.h"
-
-#include "RHI/MeshGeometry.h"
 
 #ifdef _WIN32
     #include "Win32/Win32Window.h"
@@ -55,6 +54,9 @@ OGLRenderer::OGLRenderer(Window& w)
     if (initState)
     {
         TextureLoader::RegisterAPILoadFunction(OGLTexture::RGBATextureFromFilename);
+        TextureLoader::RegisterAPICubeMapLoadFunction(OGLTexture::RGBACubeMapFromFilenames);
+        MeshLoader::RegisterAPILoadFunction([](const std::string& filename)
+                                            { return new OGLMesh(filename); });
 
         font = new SimpleFont("PressStart2P.fnt", "PressStart2P.png");
 
@@ -106,6 +108,11 @@ void OGLRenderer::OnWindowResize(int w, int h)
     currentWidth = w;
     currentHeight = h;
     glViewport(0, 0, currentWidth, currentHeight);
+}
+
+ShaderBase* OGLRenderer::CreateShader(const std::string& vertex, const std::string& fragment)
+{
+    return new OGLShader(vertex, fragment);
 }
 
 void OGLRenderer::BeginFrame()

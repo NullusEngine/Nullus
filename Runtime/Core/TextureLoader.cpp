@@ -1,4 +1,4 @@
-/*
+﻿/*
 Part of Newcastle University's Game Engineering source code.
 
 Use as you see fit!
@@ -23,7 +23,8 @@ using namespace NLS;
 using namespace Rendering;
 
 std::map<std::string, TextureLoadFunction> TextureLoader::fileHandlers;
-APILoadFunction TextureLoader::apiFunction = nullptr;
+APITextureLoadFunction TextureLoader::apiFunction = nullptr;
+APICubeMapLoadFunction TextureLoader::apiCubeMapLoadFunction = nullptr;
 
 bool TextureLoader::LoadTexture(const std::string& filename, char*& outData, int& width, int& height, int& channels, int& flags)
 {
@@ -72,13 +73,22 @@ std::string TextureLoader::GetFileExtension(const std::string& fileExtension)
 #endif
 }
 
-void TextureLoader::RegisterAPILoadFunction(APILoadFunction f)
+void TextureLoader::RegisterAPILoadFunction(const APITextureLoadFunction& f)
 {
     if (apiFunction)
     {
         std::cout << __FUNCTION__ << " replacing previously defined API function." << std::endl;
     }
     apiFunction = f;
+}
+
+void NLS::TextureLoader::RegisterAPICubeMapLoadFunction(const APICubeMapLoadFunction& f)
+{
+    if (apiCubeMapLoadFunction)
+    {
+        std::cout << __FUNCTION__ << " replacing previously defined API function." << std::endl;
+    }
+    apiCubeMapLoadFunction = f;
 }
 
 TextureBase* TextureLoader::LoadAPITexture(const std::string& filename)
@@ -89,4 +99,14 @@ TextureBase* TextureLoader::LoadAPITexture(const std::string& filename)
         return nullptr;
     }
     return apiFunction(filename);
+}
+
+Rendering::TextureBase* NLS::TextureLoader::LoadAPICubeMap(const Rendering::CubeMapFileNames& filenames)
+{
+    if (apiCubeMapLoadFunction == nullptr)
+    {
+        std::cout << __FUNCTION__ << " no API Function has been defined!" << std::endl;
+        return nullptr;
+    }
+    return apiCubeMapLoadFunction(filenames);
 }

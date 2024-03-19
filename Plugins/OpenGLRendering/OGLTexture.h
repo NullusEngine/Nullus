@@ -21,6 +21,8 @@ public:
 
     static TextureBase* RGBATextureFromFilename(const std::string& name);
 
+    static TextureBase* RGBACubeMapFromFilenames(const CubeMapFileNames& names);
+
     GLuint GetObjectID() const
     {
         return texID;

@@ -20,7 +20,8 @@ namespace NLS
 
 typedef std::function<bool(const std::string& filename, char*& outData, int& width, int& height, int& channels, int& flags)> TextureLoadFunction;
 
-typedef std::function<Rendering::TextureBase*(const std::string& filename)> APILoadFunction;
+typedef std::function<Rendering::TextureBase*(const std::string& filename)> APITextureLoadFunction;
+typedef std::function<Rendering::TextureBase*(const Rendering::CubeMapFileNames& filenames)> APICubeMapLoadFunction;
 
 class NLS_CORE_API TextureLoader
 {
@@ -29,15 +30,18 @@ public:
 
     static void RegisterTextureLoadFunction(TextureLoadFunction f, const std::string& fileExtension);
 
-    static void RegisterAPILoadFunction(APILoadFunction f);
+    static void RegisterAPILoadFunction(const APITextureLoadFunction& f);
+    static void RegisterAPICubeMapLoadFunction(const APICubeMapLoadFunction& f);
 
     static Rendering::TextureBase* LoadAPITexture(const std::string& filename);
+    static Rendering::TextureBase* LoadAPICubeMap(const Rendering::CubeMapFileNames& filename);
 
 protected:
     static std::string GetFileExtension(const std::string& fileExtension);
 
     static std::map<std::string, TextureLoadFunction> fileHandlers;
 
-    static APILoadFunction apiFunction;
+    static APITextureLoadFunction apiFunction;
+    static APICubeMapLoadFunction apiCubeMapLoadFunction;
 };
 } // namespace NLS

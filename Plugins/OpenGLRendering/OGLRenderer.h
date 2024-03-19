@@ -58,8 +58,10 @@ public:
 
     virtual bool SetVerticalSync(VerticalSyncState s);
 
-    void DrawString(const std::string& text, const Vector2& pos, const Vector4& colour = Vector4(0.75f, 0.75f, 0.75f, 1), float size = 20.0f);
-    void DrawLine(const Vector3& start, const Vector3& end, const Vector4& colour);
+    virtual ShaderBase* CreateShader(const std::string& vertex, const std::string& fragment) override;
+
+    virtual void DrawString(const std::string& text, const Vector2& pos, const Vector4& colour, float size) override;
+    virtual void DrawLine(const Vector3& start, const Vector3& end, const Vector4& colour) override;
 
     virtual Matrix4 SetupDebugLineMatrix() const;
     virtual Matrix4 SetupDebugStringMatrix() const;

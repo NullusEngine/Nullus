@@ -1,7 +1,9 @@
-#pragma once
+﻿#pragma once
 #include "Vector2.h"
 #include "CollosionDetection/CollisionDetection.h"
+#ifdef NLS_USE_GL
 #include "Debug.h"
+#endif
 #include <list>
 #include <functional>
 #include "EngineDef.h"

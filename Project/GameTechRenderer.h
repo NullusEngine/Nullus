@@ -1,8 +1,18 @@
-#pragma once
+﻿#pragma once
+#ifdef NLS_USE_GL
+#define USE_GL 1
+#else
+#define USE_GL 0
+#endif
+
+#include "RHI/ShaderBase.h"
+
+#if USE_GL
 #include "OGLRenderer.h"
-#include "OGLShader.h"
 #include "OGLTexture.h"
-#include "OGLMesh.h"
+#else
+#include "VulkanRenderer.h"
+#endif
 
 #include "GameWorld.h"
 
@@ -14,7 +24,11 @@ namespace Engine
 {
 class RenderObject;
 
+#if USE_GL
 class GameTechRenderer : public OGLRenderer
+#else
+class GameTechRenderer : public VulkanRenderer
+#endif
 {
 public:
     GameTechRenderer(GameWorld& world);
@@ -23,10 +37,10 @@ public:
 protected:
     void RenderFrame() override;
 
+#if USE_GL
     Matrix4 SetupDebugLineMatrix() const override;
     Matrix4 SetupDebugStringMatrix() const override;
-
-    OGLShader* defaultShader;
+#endif
 
     GameWorld& gameWorld;
 
@@ -40,15 +54,17 @@ protected:
 
     vector<const RenderObject*> activeObjects;
 
-    OGLShader* skyboxShader;
-    OGLMesh* skyboxMesh;
-    GLuint skyboxTex;
+    ShaderBase* skyboxShader;
+    MeshGeometry* skyboxMesh;
+    TextureBase* skyboxTex;
 
+#if USE_GL
     // shadow mapping things
-    OGLShader* shadowShader;
+    ShaderBase* shadowShader;
     GLuint shadowTex;
     GLuint shadowFBO;
     Matrix4 shadowMatrix;
+#endif
 
     Vector4 lightColour;
     float lightRadius;

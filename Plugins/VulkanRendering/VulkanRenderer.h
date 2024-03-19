@@ -27,6 +27,8 @@ _-_-_-_-_-_-_-""  ""
 #include "VulkanShader.h"
 #include "VulkanTexture.h"
 
+#include "Window.h"
+
 #include <vector>
 #include <string>
 
@@ -64,6 +66,11 @@ public:
     ~VulkanRenderer();
 
     void OnWindowResize(int w, int h) override;
+
+    virtual ShaderBase* CreateShader(const std::string& vertex, const std::string& fragment) override;
+
+    virtual void DrawString(const std::string& text, const Vector2& pos, const Vector4& colour, float size) override;
+    virtual void DrawLine(const Vector3& start, const Vector3& end, const Vector4& colour) override;
 
 protected:
     void BeginFrame() override;

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include <vector>
 #include "Vector2.h"
 #include "Vector3.h"
@@ -157,6 +157,8 @@ public:
 protected:
     MeshGeometry();
     MeshGeometry(const std::string& filename);
+
+    void LoadMeshGeometry(const std::string& filename);
 
     void ReadRigPose(std::ifstream& file, vector<Matrix4>& into);
     void ReadJointParents(std::ifstream& file);

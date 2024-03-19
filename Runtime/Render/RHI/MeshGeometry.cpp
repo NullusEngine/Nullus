@@ -120,6 +120,14 @@ void ReadIndices(std::ifstream& file, vector<unsigned int>& elements, int numInd
 MeshGeometry::MeshGeometry(const std::string& filename)
 {
     primType = GeometryPrimitive::Triangles;
+    LoadMeshGeometry(filename);
+}
+
+void MeshGeometry::LoadMeshGeometry(const std::string& filename)
+{
+    if (filename.empty())
+        return;
+
     std::ifstream file(filename);
 
     std::string filetype;

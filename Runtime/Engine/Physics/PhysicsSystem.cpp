@@ -1,12 +1,15 @@
-#include "PhysicsSystem.h"
+﻿#include "PhysicsSystem.h"
 #include "PhysicsObject.h"
 #include "Engine/GameObject.h"
 #include "Engine/CollosionDetection/CollisionDetection.h"
 #include "Math/Quaternion.h"
+#include "Window.h"
 
 #include "Constraint.h"
 
+#ifdef NLS_USE_GL
 #include "Debug.h"
+#endif
 
 #include <functional>
 using namespace NLS;
@@ -356,8 +359,8 @@ void PhysicsSystem::BroadPhase()
 			for (auto j = std::next(i); j != data.end(); ++j) {
 				// is this pair of items already in the collision set -
 				// if the same pair is in another quadtree node together etc
-				info.a = min((*i).object, (*j).object);
-				info.b = max((*i).object, (*j).object);
+				info.a = std::min((*i).object, (*j).object);
+				info.b = std::max((*i).object, (*j).object);
 				broadphaseCollisions.insert(info);
 			}
 		} });

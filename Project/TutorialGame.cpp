@@ -1,9 +1,7 @@
 ﻿#include "TutorialGame.h"
 #include "GameWorld.h"
-#include "OGLMesh.h"
-#include "OGLShader.h"
-#include "OGLTexture.h"
 #include "TextureLoader.h"
+#include "MeshLoader.h"
 #include "Window.h"
 #include "Assets.h"
 
@@ -20,7 +18,9 @@ TutorialGame::TutorialGame()
     useGravity = false;
     inSelectionMode = false;
 
+#ifdef NLS_USE_GL
     Debug::SetRenderer(renderer);
+#endif
 
     InitialiseAssets();
 }
@@ -36,7 +36,7 @@ void TutorialGame::InitialiseAssets()
 {
     auto loadFunc = [](const string& name, MeshGeometry** into)
     {
-        *into = new OGLMesh(Assets::MESHDIR + name);
+        *into = MeshLoader::LoadAPIMesh(Assets::MESHDIR + name);
         (*into)->SetPrimitiveType(GeometryPrimitive::Triangles);
         (*into)->UploadToGPU();
     };
@@ -50,7 +50,7 @@ void TutorialGame::InitialiseAssets()
     loadFunc("capsule.msh", &capsuleMesh);
 
     basicTex = TextureLoader::LoadAPITexture("checkerboard.png");
-    basicShader = new OGLShader("GameTechVert.glsl", "GameTechFrag.glsl");
+    basicShader = renderer->CreateShader("GameTechVert.glsl", "GameTechFrag.glsl");
 
     InitCamera();
     InitWorld();
@@ -82,6 +82,7 @@ void TutorialGame::UpdateGame(float dt)
 
     UpdateKeys();
 
+#ifdef NLS_USE_GL
     if (useGravity)
     {
         Debug::Print("(G)ravity on", Vector2(5, 95));
@@ -90,6 +91,7 @@ void TutorialGame::UpdateGame(float dt)
     {
         Debug::Print("(G)ravity off", Vector2(5, 95));
     }
+#endif
 
     SelectObject();
     MoveSelectedObject();
@@ -117,7 +119,10 @@ void TutorialGame::UpdateGame(float dt)
     world->UpdateWorld(dt);
     renderer->Update(dt);
 
+#ifdef NLS_USE_GL
     Debug::FlushRenderables(dt);
+#endif
+
     renderer->Render();
 
     if (testStateObject)
@@ -596,7 +601,7 @@ bool TutorialGame::SelectObject()
     }
     if (inSelectionMode)
     {
-        renderer->DrawString("Press Q to change to camera mode!", Vector2(5, 85));
+        renderer->DrawStringGray("Press Q to change to camera mode!", Vector2(5, 85));
 
         if (Window::GetMouse()->ButtonDown(NLS::MouseButtons::LEFT))
         {
@@ -624,17 +629,17 @@ bool TutorialGame::SelectObject()
     }
     else
     {
-        renderer->DrawString("Press Q to change to select mode!", Vector2(5, 85));
+        renderer->DrawStringGray("Press Q to change to select mode!", Vector2(5, 85));
     }
 
     if (lockedObject)
     {
-        renderer->DrawString("Press L to unlock object!", Vector2(5, 80));
+        renderer->DrawStringGray("Press L to unlock object!", Vector2(5, 80));
     }
 
     else if (selectionObject)
     {
-        renderer->DrawString("Press L to lock selected object object!", Vector2(5, 80));
+        renderer->DrawStringGray("Press L to lock selected object object!", Vector2(5, 80));
     }
 
     if (Window::GetKeyboard()->KeyPressed(NLS::KeyboardKeys::L))
@@ -663,7 +668,7 @@ line - after the third, they'll be able to twist under torque aswell.
 */
 void TutorialGame::MoveSelectedObject()
 {
-    renderer->DrawString(" Click Force :" + std::to_string(forceMagnitude), Vector2(10, 20)); // Draw debug text at 10 ,20
+    renderer->DrawStringGray(" Click Force :" + std::to_string(forceMagnitude), Vector2(10, 20)); // Draw debug text at 10 ,20
     forceMagnitude += Window::GetMouse()->GetWheelMovement() * 100.0f;
     if (!selectionObject)
     {

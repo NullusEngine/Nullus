@@ -4,6 +4,10 @@
 #include "Vector2.h"
 #include "Math/Vector3.h"
 #include "TextureLoader.h"
+#include "MeshLoader.h"
+#if USE_GL
+    #include "OGLShader.h"
+#endif
 using namespace NLS;
 using namespace Rendering;
 using namespace Engine;
@@ -13,11 +17,17 @@ using namespace Engine;
 Matrix4 biasMatrix = Matrix4::Translation(Vector3(0.5, 0.5, 0.5)) * Matrix4::Scale(Vector3(0.5, 0.5, 0.5));
 
 GameTechRenderer::GameTechRenderer(GameWorld& world)
+#if USE_GL
     : OGLRenderer(*Window::GetWindow()), gameWorld(world)
+#else
+    : VulkanRenderer(*Window::GetWindow()), gameWorld(world)
+#endif
 {
-    glEnable(GL_DEPTH_TEST);
+#if USE_GL
+    // Shadow
+    shadowShader = CreateShader("GameTechShadowVert.glsl", "GameTechShadowFrag.glsl");
 
-    shadowShader = new OGLShader("GameTechShadowVert.glsl", "GameTechShadowFrag.glsl");
+    glEnable(GL_DEPTH_TEST);
 
     glGenTextures(1, &shadowTex);
     glBindTexture(GL_TEXTURE_2D, shadowTex);
@@ -38,14 +48,16 @@ GameTechRenderer::GameTechRenderer(GameWorld& world)
 
     glClearColor(1, 1, 1, 1);
 
+#endif
+
     // Set up the light properties
     lightColour = Vector4(0.8f, 0.8f, 0.5f, 1.0f);
     lightRadius = 1000.0f;
     lightPosition = Vector3(-200.0f, 60.0f, -200.0f);
 
     // Skybox!
-    skyboxShader = new OGLShader("skyboxVertex.glsl", "skyboxFragment.glsl");
-    skyboxMesh = new OGLMesh();
+    skyboxShader = CreateShader("skyboxVertex.glsl", "skyboxFragment.glsl");
+    skyboxMesh = MeshLoader::LoadAPIMesh(std::string());
     skyboxMesh->SetVertexPositions({Vector3(-1, 1, -1), Vector3(-1, -1, -1), Vector3(1, -1, -1), Vector3(1, 1, -1)});
     skyboxMesh->SetVertexIndices({0, 1, 2, 2, 3, 0});
     skyboxMesh->UploadToGPU();
@@ -55,13 +67,15 @@ GameTechRenderer::GameTechRenderer(GameWorld& world)
 
 GameTechRenderer::~GameTechRenderer()
 {
+#if USE_GL
     glDeleteTextures(1, &shadowTex);
     glDeleteFramebuffers(1, &shadowFBO);
+#endif
 }
 
 void GameTechRenderer::LoadSkybox()
 {
-    string filenames[6] = {
+    CubeMapFileNames filenames = {
         "/Cubemap/skyrender0004.png",
         "/Cubemap/skyrender0001.png",
         "/Cubemap/skyrender0003.png",
@@ -69,49 +83,23 @@ void GameTechRenderer::LoadSkybox()
         "/Cubemap/skyrender0002.png",
         "/Cubemap/skyrender0005.png"};
 
-    int width[6] = {0};
-    int height[6] = {0};
-    int channels[6] = {0};
-    int flags[6] = {0};
-
-    vector<char*> texData(6, nullptr);
-
-    for (int i = 0; i < 6; ++i)
-    {
-        TextureLoader::LoadTexture(filenames[i], texData[i], width[i], height[i], channels[i], flags[i]);
-        if (i > 0 && (width[i] != width[0] || height[0] != height[0]))
-        {
-            std::cout << __FUNCTION__ << " cubemap input textures don't match in size?\n";
-            return;
-        }
-    }
-    glGenTextures(1, &skyboxTex);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTex);
-
-    GLenum type = channels[0] == 4 ? GL_RGBA : GL_RGB;
-
-    for (int i = 0; i < 6; ++i)
-    {
-        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB, width[i], height[i], 0, type, GL_UNSIGNED_BYTE, texData[i]);
-    }
-
-    glTexParameterf(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameterf(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-
-    glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+    skyboxTex = TextureLoader::LoadAPICubeMap(filenames);
 }
 
 void GameTechRenderer::RenderFrame()
 {
+#if USE_GL
     glEnable(GL_CULL_FACE);
     glClearColor(1, 1, 1, 1);
+#endif
     BuildObjectList();
     SortObjectList();
     RenderShadowMap();
     RenderSkybox();
     RenderCamera();
+#if USE_GL
     glDisable(GL_CULL_FACE); // Todo - text indices are going the wrong way...
+#endif
 }
 
 void GameTechRenderer::BuildObjectList()
@@ -139,6 +127,7 @@ void GameTechRenderer::SortObjectList()
 
 void GameTechRenderer::RenderShadowMap()
 {
+#if USE_GL
     glBindFramebuffer(GL_FRAMEBUFFER, shadowFBO);
     glClear(GL_DEPTH_BUFFER_BIT);
     glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
@@ -147,7 +136,7 @@ void GameTechRenderer::RenderShadowMap()
     glCullFace(GL_FRONT);
 
     BindShader(shadowShader);
-    int mvpLocation = glGetUniformLocation(shadowShader->GetProgramID(), "mvpMatrix");
+    int mvpLocation = glGetUniformLocation(((OGLShader*)shadowShader)->GetProgramID(), "mvpMatrix");
 
     Matrix4 shadowViewMatrix = Matrix4::BuildViewMatrix(lightPosition, Vector3(0, 0, 0), Vector3(0, 1, 0));
     Matrix4 shadowProjMatrix = Matrix4::Perspective(100.0f, 500.0f, 1, 45.0f);
@@ -174,10 +163,12 @@ void GameTechRenderer::RenderShadowMap()
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     glCullFace(GL_BACK);
+#endif
 }
 
 void GameTechRenderer::RenderSkybox()
 {
+#if USE_GL
     glDisable(GL_CULL_FACE);
     glDisable(GL_BLEND);
     glDisable(GL_DEPTH_TEST);
@@ -188,16 +179,17 @@ void GameTechRenderer::RenderSkybox()
 
     BindShader(skyboxShader);
 
-    int projLocation = glGetUniformLocation(skyboxShader->GetProgramID(), "projMatrix");
-    int viewLocation = glGetUniformLocation(skyboxShader->GetProgramID(), "viewMatrix");
-    int texLocation = glGetUniformLocation(skyboxShader->GetProgramID(), "cubeTex");
+    auto glSkyboxShader = (OGLShader*)skyboxShader;
+    int projLocation = glGetUniformLocation(glSkyboxShader->GetProgramID(), "projMatrix");
+    int viewLocation = glGetUniformLocation(glSkyboxShader->GetProgramID(), "viewMatrix");
+    int texLocation = glGetUniformLocation(glSkyboxShader->GetProgramID(), "cubeTex");
 
     glUniformMatrix4fv(projLocation, 1, false, (float*)&projMatrix);
     glUniformMatrix4fv(viewLocation, 1, false, (float*)&viewMatrix);
 
     glUniform1i(texLocation, 0);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_CUBE_MAP, skyboxTex);
+    glBindTexture(GL_TEXTURE_CUBE_MAP, ((OGLTexture*)skyboxTex)->GetObjectID());
 
     BindMesh(skyboxMesh);
     DrawBoundMesh();
@@ -205,15 +197,17 @@ void GameTechRenderer::RenderSkybox()
     glEnable(GL_CULL_FACE);
     glEnable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
+#endif
 }
 
 void GameTechRenderer::RenderCamera()
 {
+#if USE_GL
     float screenAspect = (float)currentWidth / (float)currentHeight;
     Matrix4 viewMatrix = gameWorld.GetMainCamera()->BuildViewMatrix();
     Matrix4 projMatrix = gameWorld.GetMainCamera()->BuildProjectionMatrix(screenAspect);
 
-    OGLShader* activeShader = nullptr;
+    ShaderBase* activeShader = nullptr;
     int projLocation = 0;
     int viewLocation = 0;
     int modelLocation = 0;
@@ -289,8 +283,10 @@ void GameTechRenderer::RenderCamera()
             DrawBoundMesh(i);
         }
     }
+#endif
 }
 
+#if USE_GL
 Matrix4 GameTechRenderer::SetupDebugLineMatrix() const
 {
     float screenAspect = (float)currentWidth / (float)currentHeight;
@@ -304,3 +300,4 @@ Matrix4 GameTechRenderer::SetupDebugStringMatrix() const
 {
     return Matrix4::Orthographic(-1, 1.0f, 100, 0, 0, 100);
 }
+#endif

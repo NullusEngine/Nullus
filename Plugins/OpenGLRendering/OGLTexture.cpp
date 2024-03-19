@@ -1,4 +1,4 @@
-/*
+﻿/*
 Part of Newcastle University's Game Engineering source code.
 
 Use as you see fit!
@@ -83,4 +83,43 @@ TextureBase* OGLTexture::RGBATextureFromFilename(const std::string& name)
     free(texData);
 
     return glTex;
+}
+
+TextureBase* OGLTexture::RGBACubeMapFromFilenames(const CubeMapFileNames& filenames)
+{
+    int width[6] = { 0 };
+    int height[6] = { 0 };
+    int channels[6] = { 0 };
+    int flags[6] = { 0 };
+
+    std::vector<char*> texData(6, nullptr);
+
+    for (int i = 0; i < 6; ++i)
+    {
+        TextureLoader::LoadTexture(filenames[i], texData[i], width[i], height[i], channels[i], flags[i]);
+        if (i > 0 && (width[i] != width[0] || height[0] != height[0]))
+        {
+            std::cout << __FUNCTION__ << " cubemap input textures don't match in size?\n";
+            return nullptr;
+        }
+    }
+    OGLTexture* tex = new OGLTexture();
+    glBindTexture(GL_TEXTURE_CUBE_MAP, tex->texID);
+
+    GLenum type = channels[0] == 4 ? GL_RGBA : GL_RGB;
+
+    for (int i = 0; i < 6; ++i)
+    {
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB, width[i], height[i], 0, type, GL_UNSIGNED_BYTE, texData[i]);
+    }
+
+    glTexParameterf(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameterf(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+
+    glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+
+    // todo: free(texData)
+
+    return tex;
 }

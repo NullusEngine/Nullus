@@ -11,6 +11,11 @@
 #include "Debug.h"
 #endif
 
+// min max
+#ifdef _WIN32
+    #include "windows.h"
+#endif
+
 #include <functional>
 using namespace NLS;
 using namespace Engine;
@@ -359,8 +364,8 @@ void PhysicsSystem::BroadPhase()
 			for (auto j = std::next(i); j != data.end(); ++j) {
 				// is this pair of items already in the collision set -
 				// if the same pair is in another quadtree node together etc
-				info.a = std::min((*i).object, (*j).object);
-				info.b = std::max((*i).object, (*j).object);
+				info.a = min((*i).object, (*j).object);
+				info.b = max((*i).object, (*j).object);
 				broadphaseCollisions.insert(info);
 			}
 		} });

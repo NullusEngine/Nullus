@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include "RHI/MeshGeometry.h"
 #include "VulkanRenderer.h"
+#include "VulkanDef.h"
 
 namespace NLS
 {
@@ -14,7 +15,7 @@ struct VulkanVertexSpecification
     int numAttributes;
 };
 
-class VulkanMesh : public MeshGeometry
+class VULKAN_API VulkanMesh : public MeshGeometry
 {
 public:
     friend class VulkanRenderer;

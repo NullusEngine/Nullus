@@ -12,6 +12,8 @@ _-_-_-_-_-_-_-""  ""
 */
 /////////////////////////////////////////////////////////////////////////////
 #pragma once
+#include "VulkanDef.h"
+
 #include "RHI/RendererBase.h"
 
 #ifdef _WIN32
@@ -52,7 +54,7 @@ struct VulkanPipeline
     vk::PipelineLayout layout;
 };
 
-class VulkanRenderer : public RendererBase
+class VULKAN_API VulkanRenderer : public RendererBase
 {
     friend class VulkanMesh;
     friend class VulkanTexture;
@@ -69,8 +71,8 @@ public:
 
     virtual ShaderBase* CreateShader(const std::string& vertex, const std::string& fragment) override;
 
-    virtual void DrawString(const std::string& text, const Vector2& pos, const Vector4& colour, float size) override;
-    virtual void DrawLine(const Vector3& start, const Vector3& end, const Vector4& colour) override;
+    virtual void DrawString(const std::string& text, const Maths::Vector2& pos, const Maths::Vector4& colour, float size) override;
+    virtual void DrawLine(const Maths::Vector3& start, const Maths::Vector3& end, const Maths::Vector4& colour) override;
 
 protected:
     void BeginFrame() override;
@@ -147,7 +149,7 @@ protected:
     vk::SwapchainKHR swapChain;
 
     std::vector<SwapChain*> swapChainList;
-    uint32_t currentSwap;
+    uint32_t currentSwap = -1;
 
     vk::Instance instance;  // API Instance
     vk::PhysicalDevice gpu; // GPU in use
@@ -171,8 +173,8 @@ protected:
     vk::Rect2D defaultScissor;
 
     vk::Queue deviceQueue;
-    uint32_t gfxQueueIndex;
-    uint32_t gfxPresentIndex;
+    uint32_t gfxQueueIndex = -1;
+    uint32_t gfxPresentIndex = -1;
 };
 } // namespace Rendering
 } // namespace NLS

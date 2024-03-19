@@ -21,7 +21,7 @@ add_library(Vulkan_Rendering SHARED ${VK_HEAD_FILES} ${VK_SOURCE_FILES})
 target_compile_definitions(
   Vulkan_Rendering
   PRIVATE
-  Vulkan_Rendering_EXPORT
+    NLS_VULKAN_EXPORT
 )
 else()
 add_library(Vulkan_Rendering STATIC ${VK_HEAD_FILES} ${VK_SOURCE_FILES})

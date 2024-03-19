@@ -122,6 +122,9 @@ bool VulkanRenderer::InitGPUDevice()
 
     std::cout << "Vulkan using physical device " << gpu.getProperties().deviceName << std::endl;
 
+    InitSurface();
+    InitDeviceQueue();
+
     const char* layerNames[] = {"VK_LAYER_LUNARG_standard_validation"};
     const char* extensionNames[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
@@ -145,9 +148,6 @@ bool VulkanRenderer::InitGPUDevice()
                                           .setPpEnabledLayerNames(layerNames)
                                           .setEnabledExtensionCount(sizeof(extensionNames) / sizeof(char*))
                                           .setPpEnabledExtensionNames(extensionNames);
-
-    InitSurface();
-    InitDeviceQueue();
 
     device = gpu.createDevice(createInfo);
     deviceQueue = device.getQueue(gfxQueueIndex, 0);
@@ -494,12 +494,12 @@ ShaderBase* VulkanRenderer::CreateShader(const std::string& vertex, const std::s
     return builder.Build(*this);
 }
 
-void VulkanRenderer::DrawString(const std::string& text, const Vector2& pos, const Vector4& colour, float size)
+void VulkanRenderer::DrawString(const std::string& text, const Maths::Vector2& pos, const Maths::Vector4& colour, float size)
 {
     // todo:
 }
 
-void VulkanRenderer::DrawLine(const Vector3& start, const Vector3& end, const Vector4& colour)
+void VulkanRenderer::DrawLine(const Maths::Vector3& start, const Maths::Vector3& end, const Maths::Vector4& colour)
 {
     // todo:
 }

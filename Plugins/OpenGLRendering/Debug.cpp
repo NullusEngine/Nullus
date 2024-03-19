@@ -67,7 +67,7 @@ void Debug::FlushRenderables(float dt)
     }
     for (const auto& i : stringEntries)
     {
-        renderer->DrawString(i.data, i.position);
+        renderer->DrawStringGray(i.data, i.position);
     }
     int trim = 0;
     for (int i = 0; i < lineEntries.size();)

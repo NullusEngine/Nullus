@@ -1,13 +1,8 @@
 ﻿#pragma once
-#ifdef NLS_USE_GL
-#define USE_GL 1
-#else
-#define USE_GL 0
-#endif
 
 #include "RHI/ShaderBase.h"
 
-#if USE_GL
+#ifdef NLS_USE_GL
 #include "OGLRenderer.h"
 #include "OGLTexture.h"
 #else
@@ -24,7 +19,7 @@ namespace Engine
 {
 class RenderObject;
 
-#if USE_GL
+#ifdef NLS_USE_GL
 class GameTechRenderer : public OGLRenderer
 #else
 class GameTechRenderer : public VulkanRenderer
@@ -37,7 +32,7 @@ public:
 protected:
     void RenderFrame() override;
 
-#if USE_GL
+#ifdef NLS_USE_GL
     Matrix4 SetupDebugLineMatrix() const override;
     Matrix4 SetupDebugStringMatrix() const override;
 #endif
@@ -58,7 +53,7 @@ protected:
     MeshGeometry* skyboxMesh;
     TextureBase* skyboxTex;
 
-#if USE_GL
+#ifdef NLS_USE_GL
     // shadow mapping things
     ShaderBase* shadowShader;
     GLuint shadowTex;

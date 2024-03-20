@@ -34,11 +34,11 @@ for this module, even in the coursework, but you can add it if you like!
 */
 void TutorialGame::InitialiseAssets()
 {
-    auto loadFunc = [](const string& name, MeshGeometry** into)
+    auto loadFunc = [this](const string& name, MeshGeometry** into)
     {
         *into = MeshLoader::LoadAPIMesh(Assets::MESHDIR + name);
         (*into)->SetPrimitiveType(GeometryPrimitive::Triangles);
-        (*into)->UploadToGPU();
+        (*into)->UploadToGPU(renderer);
     };
 
     loadFunc("cube.msh", &cubeMesh);

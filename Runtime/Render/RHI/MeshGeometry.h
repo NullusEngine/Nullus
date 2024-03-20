@@ -150,7 +150,7 @@ public:
 
     void SetDebugName(const std::string& debugName);
 
-    virtual void UploadToGPU(Rendering::RendererBase* renderer = nullptr) = 0;
+    virtual void UploadToGPU(Rendering::RendererBase* renderer) = 0;
 
     static MeshGeometry* GenerateTriangle(MeshGeometry* input);
 

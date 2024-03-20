@@ -5,7 +5,7 @@
 #include "Math/Vector3.h"
 #include "TextureLoader.h"
 #include "MeshLoader.h"
-#if USE_GL
+#ifdef NLS_USE_GL
     #include "OGLShader.h"
 #endif
 using namespace NLS;
@@ -17,13 +17,13 @@ using namespace Engine;
 Matrix4 biasMatrix = Matrix4::Translation(Vector3(0.5, 0.5, 0.5)) * Matrix4::Scale(Vector3(0.5, 0.5, 0.5));
 
 GameTechRenderer::GameTechRenderer(GameWorld& world)
-#if USE_GL
+#ifdef NLS_USE_GL
     : OGLRenderer(*Window::GetWindow()), gameWorld(world)
 #else
     : VulkanRenderer(*Window::GetWindow()), gameWorld(world)
 #endif
 {
-#if USE_GL
+#ifdef NLS_USE_GL
     // Shadow
     shadowShader = CreateShader("GameTechShadowVert.glsl", "GameTechShadowFrag.glsl");
 
@@ -60,14 +60,14 @@ GameTechRenderer::GameTechRenderer(GameWorld& world)
     skyboxMesh = MeshLoader::LoadAPIMesh(std::string());
     skyboxMesh->SetVertexPositions({Vector3(-1, 1, -1), Vector3(-1, -1, -1), Vector3(1, -1, -1), Vector3(1, 1, -1)});
     skyboxMesh->SetVertexIndices({0, 1, 2, 2, 3, 0});
-    skyboxMesh->UploadToGPU();
+    skyboxMesh->UploadToGPU(this);
 
     LoadSkybox();
 }
 
 GameTechRenderer::~GameTechRenderer()
 {
-#if USE_GL
+#ifdef NLS_USE_GL
     glDeleteTextures(1, &shadowTex);
     glDeleteFramebuffers(1, &shadowFBO);
 #endif
@@ -88,7 +88,7 @@ void GameTechRenderer::LoadSkybox()
 
 void GameTechRenderer::RenderFrame()
 {
-#if USE_GL
+#ifdef NLS_USE_GL
     glEnable(GL_CULL_FACE);
     glClearColor(1, 1, 1, 1);
 #endif
@@ -97,7 +97,7 @@ void GameTechRenderer::RenderFrame()
     RenderShadowMap();
     RenderSkybox();
     RenderCamera();
-#if USE_GL
+#ifdef NLS_USE_GL
     glDisable(GL_CULL_FACE); // Todo - text indices are going the wrong way...
 #endif
 }
@@ -127,7 +127,7 @@ void GameTechRenderer::SortObjectList()
 
 void GameTechRenderer::RenderShadowMap()
 {
-#if USE_GL
+#ifdef NLS_USE_GL
     glBindFramebuffer(GL_FRAMEBUFFER, shadowFBO);
     glClear(GL_DEPTH_BUFFER_BIT);
     glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
@@ -168,14 +168,14 @@ void GameTechRenderer::RenderShadowMap()
 
 void GameTechRenderer::RenderSkybox()
 {
-#if USE_GL
-    glDisable(GL_CULL_FACE);
-    glDisable(GL_BLEND);
-    glDisable(GL_DEPTH_TEST);
-
     float screenAspect = (float)currentWidth / (float)currentHeight;
     Matrix4 viewMatrix = gameWorld.GetMainCamera()->BuildViewMatrix();
     Matrix4 projMatrix = gameWorld.GetMainCamera()->BuildProjectionMatrix(screenAspect);
+
+#ifdef NLS_USE_GL
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_BLEND);
+    glDisable(GL_DEPTH_TEST);
 
     BindShader(skyboxShader);
 
@@ -197,12 +197,14 @@ void GameTechRenderer::RenderSkybox()
     glEnable(GL_CULL_FACE);
     glEnable(GL_BLEND);
     glEnable(GL_DEPTH_TEST);
+#else
+    auto vkSkyboxShader = (VulkanShader*)skyboxShader;
 #endif
 }
 
 void GameTechRenderer::RenderCamera()
 {
-#if USE_GL
+#ifdef NLS_USE_GL
     float screenAspect = (float)currentWidth / (float)currentHeight;
     Matrix4 viewMatrix = gameWorld.GetMainCamera()->BuildViewMatrix();
     Matrix4 projMatrix = gameWorld.GetMainCamera()->BuildProjectionMatrix(screenAspect);
@@ -286,7 +288,7 @@ void GameTechRenderer::RenderCamera()
 #endif
 }
 
-#if USE_GL
+#ifdef NLS_USE_GL
 Matrix4 GameTechRenderer::SetupDebugLineMatrix() const
 {
     float screenAspect = (float)currentWidth / (float)currentHeight;

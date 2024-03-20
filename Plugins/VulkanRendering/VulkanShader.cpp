@@ -1,4 +1,4 @@
-#include "VulkanShader.h"
+﻿#include "VulkanShader.h"
 // #include "glslangtoSpv.h"
 #include "Assets.h"
 
@@ -46,7 +46,7 @@ void VulkanShader::SetSourceDevice(vk::Device d)
 
 void VulkanShader::AddBinaryShaderModule(const string& fromFile, ShaderStages stage)
 {
-    char* data;
+    char* data = nullptr;
     size_t dataSize = 0;
     Assets::ReadBinaryFile(Assets::SHADERDIR + "VK/" + fromFile, &data, dataSize);
 

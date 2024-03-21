@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "State.h"
 #include "EngineDef.h"
 namespace NLS
@@ -8,7 +8,7 @@ namespace Engine
 class NLS_ENGINE_API PushdownState : public State
 {
 public:
-    enum PushdownResult
+    enum class PushdownResult
     {
         Push,
         Pop,

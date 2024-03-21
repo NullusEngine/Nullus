@@ -24,13 +24,13 @@ public:
 
 protected:
     GLuint GetVAO() const { return vao; }
-    void BindVertexAttribute(int attribSlot, int bufferID, int bindingID, int elementCount, int elementSize, int elementOffset);
+    void BindVertexAttribute(VertexAttribute attribSlot, int bufferID, int bindingID, int elementCount, int elementSize, int elementOffset);
 
     int subCount;
 
     GLuint vao;
     GLuint oglType;
-    GLuint attributeBuffers[VertexAttribute::MAX_ATTRIBUTES];
+    GLuint attributeBuffers[(uint32_t)VertexAttribute::MAX_ATTRIBUTES];
     GLuint indexBuffer;
 };
 } // namespace Rendering

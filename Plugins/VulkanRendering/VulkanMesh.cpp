@@ -1,4 +1,4 @@
-#include "VulkanMesh.h"
+﻿#include "VulkanMesh.h"
 
 using namespace NLS;
 using namespace Rendering;
@@ -66,9 +66,9 @@ void VulkanMesh::UploadToGPU(RendererBase* r)
     {
         if (data)
         {
-            attributeTypes.emplace_back(attribute);
+            attributeTypes.emplace_back(ToUType(attribute));
             attributePtrs.emplace_back(data);
-            strideSize += (int)attributeSizes[attribute];
+            strideSize += (int)attributeSizes[ToUType(attribute)];
         }
     };
 

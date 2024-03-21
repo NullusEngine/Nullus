@@ -1,4 +1,4 @@
-#include "PushdownMachine.h"
+﻿#include "PushdownMachine.h"
 #include "PushdownState.h"
 using namespace NLS::Engine;
 
@@ -20,7 +20,7 @@ void PushdownMachine::Update()
 
         switch (result)
         {
-            case PushdownState::Pop:
+        case PushdownState::PushdownResult::Pop:
             {
                 activeState->OnSleep();
                 stateStack.pop();
@@ -35,7 +35,7 @@ void PushdownMachine::Update()
                 }
             }
             break;
-            case PushdownState::Push:
+        case PushdownState::PushdownResult::Push:
             {
                 activeState->OnSleep();
                 stateStack.push(newState);

@@ -141,3 +141,5 @@
     #pragma warning(disable : 4127) // conditional expression is constant
     #pragma warning(disable : 6011)
 #endif
+
+#include "NullusTraits.h"

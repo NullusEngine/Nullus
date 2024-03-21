@@ -23,7 +23,7 @@ class RendererBase;
 }
 using namespace Maths;
 
-enum NLS_RENDER_API GeometryPrimitive
+enum class NLS_RENDER_API GeometryPrimitive : uint32_t
 {
     Points,
     Lines,
@@ -33,7 +33,7 @@ enum NLS_RENDER_API GeometryPrimitive
     Patches
 };
 
-enum NLS_RENDER_API VertexAttribute
+enum class NLS_RENDER_API VertexAttribute : uint32_t
 {
     Positions,
     Colours,

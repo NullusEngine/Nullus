@@ -6,6 +6,8 @@
     #include <minwindef.h>
 #endif
 
+// 使用 C++20 指定初始化器
+#define VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
 #include "Vulkan/vulkan.hpp"
 
 #include "RHI/ShaderBase.h"

@@ -97,7 +97,10 @@ vk::ShaderModule VulkanShader::GetShaderModule(ShaderStages stage) const
 
 bool VulkanShader::CreateShaderModule(char* data, size_t size, vk::ShaderModule& into, vk::Device& device)
 {
-    into = device.createShaderModule(vk::ShaderModuleCreateInfo(vk::ShaderModuleCreateFlags(), size, (uint32_t*)data));
+    into = device.createShaderModule(vk::ShaderModuleCreateInfo{
+        .codeSize = size,
+        .pCode = reinterpret_cast<const uint32_t*>(data),
+    });
     return true;
 }
 

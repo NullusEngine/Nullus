@@ -204,11 +204,11 @@ void GameTechRenderer::RenderSkybox()
 
 void GameTechRenderer::RenderCamera()
 {
-#ifdef NLS_USE_GL
     float screenAspect = (float)currentWidth / (float)currentHeight;
     Matrix4 viewMatrix = gameWorld.GetMainCamera()->BuildViewMatrix();
     Matrix4 projMatrix = gameWorld.GetMainCamera()->BuildProjectionMatrix(screenAspect);
 
+#ifdef NLS_USE_GL
     ShaderBase* activeShader = nullptr;
     int projLocation = 0;
     int viewLocation = 0;

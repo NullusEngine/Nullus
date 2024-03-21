@@ -78,7 +78,9 @@ VulkanRenderer::~VulkanRenderer()
 
 bool VulkanRenderer::InitInstance()
 {
-    vk::ApplicationInfo appInfo = vk::ApplicationInfo(this->hostWindow.GetTitle().c_str());
+    vk::ApplicationInfo appInfo = {
+        .pApplicationName = this->hostWindow.GetTitle().c_str(),
+    };
 
     appInfo.apiVersion = VK_MAKE_VERSION(1, 1, 0);
 
@@ -91,7 +93,7 @@ bool VulkanRenderer::InitInstance()
     const char* usedLayers[] = {
         "VK_LAYER_KHRONOS_validation"};
 
-    vk::InstanceCreateInfo instanceInfo = vk::InstanceCreateInfo(vk::InstanceCreateFlags(), &appInfo)
+    vk::InstanceCreateInfo instanceInfo = vk::InstanceCreateInfo{.pApplicationInfo = &appInfo}
                                               .setEnabledExtensionCount(sizeof(usedExtensions) / sizeof(char*))
                                               .setPpEnabledExtensionNames(usedExtensions)
                                               .setEnabledLayerCount(sizeof(usedLayers) / sizeof(char*))
@@ -163,8 +165,9 @@ bool VulkanRenderer::InitSurface()
 
     vk::Win32SurfaceCreateInfoKHR createInfo;
 
-    createInfo = vk::Win32SurfaceCreateInfoKHR(
-        vk::Win32SurfaceCreateFlagsKHR(), window->GetInstance(), window->GetHandle());
+    createInfo = vk::Win32SurfaceCreateInfoKHR()
+					 .setHinstance(window->GetInstance())
+					 .setHwnd(window->GetHandle());
 
     surface = instance.createWin32SurfaceKHR(createInfo);
 #endif
@@ -331,18 +334,28 @@ void VulkanRenderer::ImageTransitionBarrier(vk::CommandBuffer* buffer, VulkanTex
 
 void VulkanRenderer::InitCommandPool()
 {
-    commandPool = device.createCommandPool(vk::CommandPoolCreateInfo(
-        vk::CommandPoolCreateFlagBits::eResetCommandBuffer, gfxQueueIndex));
+    commandPool = device.createCommandPool(vk::CommandPoolCreateInfo{
+        .flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
+        .queueFamilyIndex = gfxQueueIndex,
+    });
 
-    auto buffers = device.allocateCommandBuffers(vk::CommandBufferAllocateInfo(
-        commandPool, vk::CommandBufferLevel::ePrimary, 1));
+    auto buffers = device.allocateCommandBuffers(vk::CommandBufferAllocateInfo
+        {
+            .commandPool = commandPool,
+            .level = vk::CommandBufferLevel::ePrimary,
+            .commandBufferCount = 1,
+        });
 
     frameCmdBuffer = buffers[0];
 }
 
 vk::CommandBuffer VulkanRenderer::BeginCmdBuffer()
 {
-    vk::CommandBufferAllocateInfo bufferInfo = vk::CommandBufferAllocateInfo(commandPool, vk::CommandBufferLevel::ePrimary, 1);
+    vk::CommandBufferAllocateInfo bufferInfo = {
+        .commandPool = commandPool,
+        .level = vk::CommandBufferLevel::ePrimary,
+        .commandBufferCount = 1,
+    };
 
     auto buffers = device.allocateCommandBuffers(bufferInfo); // Func returns a vector!
 
@@ -511,7 +524,7 @@ void VulkanRenderer::CompleteResize()
 void VulkanRenderer::BeginFrame()
 {
     vk::CommandBufferInheritanceInfo inheritance;
-    vk::CommandBufferBeginInfo bufferBegin = vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlags(), &inheritance);
+    vk::CommandBufferBeginInfo bufferBegin = {.pInheritanceInfo = &inheritance};
     frameCmdBuffer.begin(bufferBegin);
     frameCmdBuffer.setViewport(0, 1, &defaultViewport);
     frameCmdBuffer.setScissor(0, 1, &defaultScissor);
@@ -525,7 +538,15 @@ void VulkanRenderer::EndFrame()
 {
     // frameCmdBuffer.endRenderPass();
     frameCmdBuffer.end();
-    vk::SubmitInfo submitInfo = vk::SubmitInfo(0, nullptr, nullptr, 1, &frameCmdBuffer, 0, nullptr);
+    vk::SubmitInfo submitInfo = {
+        .waitSemaphoreCount = 0,
+        .pWaitSemaphores = nullptr,
+        .pWaitDstStageMask = nullptr,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &frameCmdBuffer,
+        .signalSemaphoreCount = 0,
+        .pSignalSemaphores = nullptr,
+    };
     vk::Fence fence = device.createFence(vk::FenceCreateInfo());
 
     vk::Result result = deviceQueue.submit(1, &submitInfo, fence);
@@ -537,7 +558,14 @@ void VulkanRenderer::SwapBuffers()
 {
     PresentScreenImage();
 
-    deviceQueue.presentKHR(vk::PresentInfoKHR(0, nullptr, 1, &swapChain, &currentSwap, nullptr));
+    deviceQueue.presentKHR(vk::PresentInfoKHR{
+        .waitSemaphoreCount = 0,
+        .pWaitSemaphores = nullptr,
+        .swapchainCount = 1,
+        .pSwapchains = &swapChain,
+        .pImageIndices = &currentSwap,
+        .pResults = nullptr,
+    });
 
     vk::Semaphore presentSempaphore = device.createSemaphore(vk::SemaphoreCreateInfo());
     vk::Fence fence = device.createFence(vk::FenceCreateInfo());
@@ -741,13 +769,16 @@ void VulkanRenderer::UpdateImageDescriptor(vk::DescriptorSet& set, VulkanTexture
 
 void VulkanRenderer::InitUniformBuffer(UniformData& uniform, void* data, int dataSize)
 {
-    uniform.buffer = device.createBuffer(vk::BufferCreateInfo(vk::BufferCreateFlags(), dataSize, vk::BufferUsageFlagBits::eUniformBuffer));
+    uniform.buffer = device.createBuffer(vk::BufferCreateInfo{
+        .size = (uint32_t)dataSize,
+        .usage = vk::BufferUsageFlagBits::eUniformBuffer,
+    });
 
     uniform.descriptorInfo.buffer = uniform.buffer;
     uniform.descriptorInfo.range = dataSize; // reqs.size;
 
     vk::MemoryRequirements reqs = device.getBufferMemoryRequirements(uniform.buffer);
-    uniform.allocInfo = vk::MemoryAllocateInfo(reqs.size);
+    uniform.allocInfo = { .allocationSize = reqs.size };
 
     bool found = MemoryTypeFromPhysicalDeviceProps(vk::MemoryPropertyFlagBits::eHostVisible, reqs.memoryTypeBits, uniform.allocInfo.memoryTypeIndex);
 

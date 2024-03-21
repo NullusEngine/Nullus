@@ -83,11 +83,14 @@ void VulkanMesh::UploadToGPU(RendererBase* r)
     attributeSpec.numAttributes = (int)attributeTypes.size();
 
     vertexBuffer = sourceDevice.createBuffer(
-        vk::BufferCreateInfo({}, strideSize * GetVertexCount(), vk::BufferUsageFlagBits::eVertexBuffer));
+        {
+            .size = strideSize * GetVertexCount(),
+            .usage = vk::BufferUsageFlagBits::eVertexBuffer,
+        });
 
     vk::MemoryRequirements memReqs = sourceDevice.getBufferMemoryRequirements(vertexBuffer);
 
-    vk::MemoryAllocateInfo memInfo = vk::MemoryAllocateInfo(memReqs.size);
+    vk::MemoryAllocateInfo memInfo{.allocationSize = memReqs.size};
     if (!renderer->MemoryTypeFromPhysicalDeviceProps(
             vk::MemoryPropertyFlagBits::eHostVisible, memReqs.memoryTypeBits, memInfo.memoryTypeIndex))
     {
@@ -128,22 +131,25 @@ void VulkanMesh::UploadToGPU(RendererBase* r)
 
     attributeSpec.binding = vk::VertexInputBindingDescription(0, strideSize, vk::VertexInputRate::eVertex);
 
-    attributeSpec.vertexInfo = vk::PipelineVertexInputStateCreateInfo({},
-                                                                      1,
-                                                                      &attributeSpec.binding, // How many buffers this mesh will be taking data from
-                                                                      attributeSpec.numAttributes,
-                                                                      &attributeSpec.attributes[0] // how many attributes + attribute info from above
-    );
+    attributeSpec.vertexInfo = vk::PipelineVertexInputStateCreateInfo{
+        .vertexBindingDescriptionCount = 1,
+        .pVertexBindingDescriptions = &attributeSpec.binding, // How many buffers this mesh will be taking data from
+        .vertexAttributeDescriptionCount = (uint32_t)attributeSpec.numAttributes,
+        .pVertexAttributeDescriptions = &attributeSpec.attributes[0], // how many attributes + attribute info from above
+    };
 
     // Make the index buffer if there are any!
     if (GetIndexCount() > 0)
     {
         indexBuffer = sourceDevice.createBuffer(
-            vk::BufferCreateInfo({}, sizeof(int) * GetIndexCount(), vk::BufferUsageFlagBits::eIndexBuffer));
+            {
+                .size = sizeof(int) * GetIndexCount(),
+                .usage = vk::BufferUsageFlagBits::eIndexBuffer,
+            });
 
         vk::MemoryRequirements memReqs = sourceDevice.getBufferMemoryRequirements(indexBuffer);
 
-        vk::MemoryAllocateInfo memInfo = vk::MemoryAllocateInfo(memReqs.size);
+        vk::MemoryAllocateInfo memInfo{.allocationSize = memReqs.size};
         if (!renderer->MemoryTypeFromPhysicalDeviceProps(
                 vk::MemoryPropertyFlagBits::eHostVisible, memReqs.memoryTypeBits, memInfo.memoryTypeIndex))
         {

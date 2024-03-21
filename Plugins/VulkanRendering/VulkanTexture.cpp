@@ -1,4 +1,4 @@
-#include "VulkanTexture.h"
+﻿#include "VulkanTexture.h"
 #include "VulkanRenderer.h"
 #include "TextureLoader.h"
 #include "Maths.h"
@@ -48,8 +48,10 @@ VulkanTexture* VulkanTexture::GenerateTextureFromDataInternal(int width, int hei
 
     vk::Device device = vkRenderer->GetDevice();
 
-    vk::Buffer stagingBuffer = device.createBuffer(
-        vk::BufferCreateInfo({}, allocationSize, vk::BufferUsageFlagBits::eTransferSrc));
+    vk::Buffer stagingBuffer = device.createBuffer(vk::BufferCreateInfo{
+        .size = (uint32_t)allocationSize,
+        .usage = vk::BufferUsageFlagBits::eTransferSrc,
+    });
     vk::MemoryRequirements stagingReqs = {};
     vk::MemoryAllocateInfo stagingInfo = {};
     vk::DeviceMemory stagingMemory;
@@ -154,7 +156,7 @@ void VulkanTexture::InitTextureDeviceMemory(VulkanTexture& img)
 {
     vk::MemoryRequirements memReqs = vkRenderer->GetDevice().getImageMemoryRequirements(img.image);
 
-    img.allocInfo = vk::MemoryAllocateInfo(memReqs.size);
+    img.allocInfo = {.allocationSize = memReqs.size};
 
     bool found = vkRenderer->MemoryTypeFromPhysicalDeviceProps({}, memReqs.memoryTypeBits, img.allocInfo.memoryTypeIndex);
 

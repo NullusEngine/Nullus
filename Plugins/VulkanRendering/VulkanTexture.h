@@ -1,7 +1,10 @@
 ﻿#pragma once
 #include "RHI/TextureBase.h"
 #include <string>
-#include <vulkan\vulkan.hpp> //
+
+// 使用 C++20 指定初始化器
+#define VULKAN_HPP_NO_STRUCT_CONSTRUCTORS
+#include <vulkan/vulkan.hpp> //
 
 namespace NLS
 {

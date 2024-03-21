@@ -1,4 +1,4 @@
-#include "VulkanDescriptorSetLayoutBuilder.h"
+﻿#include "VulkanDescriptorSetLayoutBuilder.h"
 #include "VulkanMesh.h"
 #include "VulkanShader.h"
 
@@ -39,7 +39,10 @@ VulkanDescriptorSetLayoutBuilder& VulkanDescriptorSetLayoutBuilder::WithDebugNam
 vk::DescriptorSetLayout VulkanDescriptorSetLayoutBuilder::Build(VulkanRenderer& renderer)
 {
     vk::DescriptorSetLayout outLayout = renderer.device.createDescriptorSetLayout(
-        vk::DescriptorSetLayoutCreateInfo({}, (uint32_t)addedBindings.size(), addedBindings.data()));
+        {
+            .bindingCount = (uint32_t)addedBindings.size(),
+            .pBindings = addedBindings.data(),
+        });
     renderer.SetDebugName(vk::ObjectType::eDescriptorSetLayout, (uint64_t)(VkDescriptorSetLayout)outLayout, debugName);
     return outLayout;
 }

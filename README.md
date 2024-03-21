@@ -9,7 +9,11 @@ Nullus 3D游戏引擎
 
 ## Status
 
-![Build MacOS](https://github.com/LumGoGoGo/Nullus/workflows/CMake%20on%20multiple%20platforms/badge.svg)
+![Build MacOS](https://github.com/LumGoGoGo/Nullus/workflows/Build%20Linux/badge.svg)
+
+![Build MacOS](https://github.com/LumGoGoGo/Nullus/workflows/Build%20Windows/badge.svg)
+
+![Build MacOS](https://github.com/LumGoGoGo/Nullus/workflows/Build%20MacOS/badge.svg)
 
 ## Getting Started
 

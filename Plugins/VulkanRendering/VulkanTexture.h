@@ -50,7 +50,7 @@ public:
 
 protected:
     VulkanTexture();
-    void GenerateMipMaps(vk::CommandBuffer& buffer, vk::ImageLayout endLayout, vk::PipelineStageFlags endFlags);
+    void GenerateMipMaps(vk::CommandBuffer& buffer, vk::ImageLayout endLayout, vk::PipelineStageFlags endFlags, bool isCube = false);
 
     static void InitTextureDeviceMemory(VulkanTexture& img);
     static VulkanTexture* GenerateTextureInternal(int width, int height, int mipcount, bool isCube, std::string debugName, vk::Format format, vk::ImageAspectFlags aspect, vk::ImageUsageFlags usage, vk::ImageLayout outLayout, vk::PipelineStageFlags pipeType);
@@ -58,7 +58,7 @@ protected:
     static VulkanTexture* GenerateTextureFromDataInternal(int width, int height, int channelCount, bool isCube, std::vector<char*> dataSrcs, std::string debugName);
 
 
-    vk::ImageView GenerateDefaultView(vk::ImageAspectFlags type);
+    vk::ImageView GenerateDefaultView(vk::ImageAspectFlags type, vk::ImageViewType = vk::ImageViewType::e2D);
 
     static int CalculateMipCount(int width, int height);
 

@@ -194,7 +194,7 @@ VulkanTexture* VulkanTexture::GenerateTextureInternal(int width, int height, int
 
     InitTextureDeviceMemory(*tex);
 
-    tex->defaultView = tex->GenerateDefaultView(tex->aspectType);
+    tex->defaultView = tex->GenerateDefaultView(tex->aspectType, isCubemap ? vk::ImageViewType::eCube : vk::ImageViewType::e2D);
 
     vkRenderer->SetDebugName(vk::ObjectType::eImage, (uint64_t)tex->image.operator VkImage(), debugName);
     vkRenderer->SetDebugName(vk::ObjectType::eImageView, (uint64_t)tex->defaultView.operator VkImageView(), debugName);
@@ -224,17 +224,17 @@ VulkanTexture* VulkanTexture::GenerateColourTexture(int width, int height, strin
     return GenerateTextureInternal(width, height, 1, false, debugName, format, aspect, usage, layout, vk::PipelineStageFlagBits::eColorAttachmentOutput);
 }
 
-vk::ImageView VulkanTexture::GenerateDefaultView(vk::ImageAspectFlags type)
+vk::ImageView VulkanTexture::GenerateDefaultView(vk::ImageAspectFlags type, vk::ImageViewType viewType)
 {
     vk::ImageViewCreateInfo createInfo = vk::ImageViewCreateInfo()
-                                             .setViewType(vk::ImageViewType::e2D)
+                                             .setViewType(viewType)
                                              .setFormat(format)
                                              .setSubresourceRange(vk::ImageSubresourceRange(type, 0, mipCount, 0, layerCount))
                                              .setImage(image);
     return vkRenderer->GetDevice().createImageView(createInfo);
 }
 
-void VulkanTexture::GenerateMipMaps(vk::CommandBuffer& buffer, vk::ImageLayout endLayout, vk::PipelineStageFlags endFlags)
+void VulkanTexture::GenerateMipMaps(vk::CommandBuffer& buffer, vk::ImageLayout endLayout, vk::PipelineStageFlags endFlags, bool isCube)
 {
     bool localCmdBuffer = false;
     if (!buffer)
@@ -291,7 +291,7 @@ void VulkanTexture::GenerateMipMaps(vk::CommandBuffer& buffer, vk::ImageLayout e
         vkRenderer->GetDevice().destroyImageView(defaultView);
     }
 
-    defaultView = GenerateDefaultView(aspectType);
+    defaultView = GenerateDefaultView(aspectType, isCube ? vk::ImageViewType::eCube : vk::ImageViewType::e2D);
 
     layout = endLayout; // Not really true until the below barrier has completed...
 }

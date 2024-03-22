@@ -434,7 +434,7 @@ bool CollisionDetection::AABBIntersection(const AABBVolume& volumeA, const Engin
             (maxB.z - minA.z), // distance of box ’b’ to ’far ’ of ’a ’.
             (maxA.z - minB.z)  // distance of box ’b’ to ’near ’ of ’a ’.
         };
-        float penetration = FLT_MAX;
+        float penetration = Maths::MAX_FLOAT;
         Vector3 bestAxis;
 
         for (int i = 0; i < 6; i++)

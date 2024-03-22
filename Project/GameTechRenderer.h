@@ -8,8 +8,6 @@
 
 namespace NLS
 {
-class Maths::Vector3;
-class Maths::Vector4;
 namespace Engine
 {
 class RenderObject;

@@ -1,7 +1,7 @@
 ﻿
 #pragma once
 #include "RHI/ShaderBase.h"
-#include "glad\glad.h"
+#include "glad/glad.h"
 #include "OGLDef.h"
 namespace NLS
 {

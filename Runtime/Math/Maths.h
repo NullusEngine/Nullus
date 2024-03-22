@@ -210,7 +210,7 @@ FORCEINLINE bool IsPO2(const T& num)
 /// @param Value 给定的32位无符号整数
 /// @return 向下取整的以2为底的对数
 /// @ingroup LumMath
-[[api, FunctionNode]] FORCEINLINE uint32_t FloorLog2(uint32_t Value)
+FORCEINLINE uint32_t FloorLog2(uint32_t Value)
 {
     uint32_t pos = 0;
     if (Value >= 1 << 16)

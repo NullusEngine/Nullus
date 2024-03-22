@@ -1,6 +1,7 @@
 #include "Camera.h"
 #include "Window.h"
 #include <algorithm>
+#include <Maths.h>
 
 using namespace NLS;
 
@@ -16,8 +17,8 @@ void Camera::UpdateCamera(float dt)
     yaw -= (Window::GetMouse()->GetRelativePosition().x);
 
     // Bounds check the pitch, to be between straight up and straight down ;)
-    pitch = std::min(pitch, 90.0f);
-    pitch = std::max(pitch, -90.0f);
+    pitch = Min(pitch, 90.0f);
+    pitch = Max(pitch, -90.0f);
 
     if (yaw < 0)
     {

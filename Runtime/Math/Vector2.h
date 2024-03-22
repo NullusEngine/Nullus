@@ -8,8 +8,8 @@ https://research.ncl.ac.uk/game/
 */
 #pragma once
 #include <iostream>
-#include <cmath>
 #include "MathDef.h"
+#include "Maths.h"
 namespace NLS
 {
 namespace Maths
@@ -62,7 +62,7 @@ public:
 
     float Length() const
     {
-        return std::sqrt((x * x) + (y * y));
+        return Sqrt((x * x) + (y * y));
     }
 
     constexpr float LengthSquared() const

@@ -15,7 +15,7 @@ struct NLS_ENGINE_API RayCollision
     RayCollision()
     {
         node = nullptr;
-        rayDistance = FLT_MAX;
+        rayDistance = MAX_FLOAT;
     }
 };
 

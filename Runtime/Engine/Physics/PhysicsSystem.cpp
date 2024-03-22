@@ -9,6 +9,7 @@
 #include "Debug.h"
 
 #include <functional>
+#include <Maths.h>
 using namespace NLS;
 using namespace Engine;
 
@@ -356,8 +357,8 @@ void PhysicsSystem::BroadPhase()
 			for (auto j = std::next(i); j != data.end(); ++j) {
 				// is this pair of items already in the collision set -
 				// if the same pair is in another quadtree node together etc
-				info.a = min((*i).object, (*j).object);
-				info.b = max((*i).object, (*j).object);
+				info.a = Min((*i).object, (*j).object);
+				info.b = Max((*i).object, (*j).object);
 				broadphaseCollisions.insert(info);
 			}
 		} });

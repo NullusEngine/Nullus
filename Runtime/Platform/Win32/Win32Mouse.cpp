@@ -1,5 +1,6 @@
 #include "Win32Mouse.h"
 #include <algorithm>
+#include <Maths.h>
 #ifdef _WIN32
 
 using namespace NLS;
@@ -53,11 +54,11 @@ void Win32Mouse::UpdateRAW(RAWINPUT* raw)
             /*
             Bounds check the absolute position of the mouse, so it doesn't disappear off screen edges...
             */
-            absolutePosition.x = std::max(absolutePosition.x, 0.0f);
-            absolutePosition.x = std::min(absolutePosition.x, absolutePositionBounds.x);
+            absolutePosition.x = Max(absolutePosition.x, 0.0f);
+            absolutePosition.x = Min(absolutePosition.x, absolutePositionBounds.x);
 
-            absolutePosition.y = std::max(absolutePosition.y, 0.0f);
-            absolutePosition.y = std::min(absolutePosition.y, absolutePositionBounds.y);
+            absolutePosition.y = Max(absolutePosition.y, 0.0f);
+            absolutePosition.y = Min(absolutePosition.y, absolutePositionBounds.y);
         }
 
         /*

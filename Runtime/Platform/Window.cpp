@@ -79,5 +79,10 @@ void Window::ResizeRenderer()
 
 Window* NLS::Window::CreateGameWindow(std::string title, int sizeX, int sizeY, bool fullScreen, int offsetX, int offsetY)
 {
+#ifdef _WIN32
     return new PlatformWindow(title, sizeX, sizeY, fullScreen, offsetX, offsetY);
+#else
+    return nullptr;
+#endif
+ 
 }

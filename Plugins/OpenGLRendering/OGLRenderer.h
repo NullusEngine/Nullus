@@ -41,7 +41,6 @@ class SimpleFont;
 class OGL_API OGLRenderer : public RendererBase
 {
 public:
-    friend class OGLRenderer;
     OGLRenderer(Window& w);
     ~OGLRenderer();
 

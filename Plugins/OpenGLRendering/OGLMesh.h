@@ -1,7 +1,7 @@
 ﻿
 #pragma once
 #include "RHI/MeshGeometry.h"
-#include "glad\glad.h"
+#include "glad/glad.h"
 #include "OGLDef.h"
 #include <string>
 

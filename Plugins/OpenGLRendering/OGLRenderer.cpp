@@ -36,7 +36,7 @@ using namespace NLS::Rendering;
 
 #ifdef OPENGL_DEBUGGING
 static void APIENTRY DebugCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam);
-#endif;
+#endif
 
 OGLRenderer::OGLRenderer(Window& w)
     : RendererBase(w)
@@ -134,7 +134,9 @@ void OGLRenderer::EndFrame()
 
 void OGLRenderer::SwapBuffers()
 {
+#ifdef _WIN32
     ::SwapBuffers(deviceContext);
+#endif
 }
 
 void OGLRenderer::BindShader(ShaderBase* s)
@@ -518,9 +520,10 @@ void OGLRenderer::DestroyWithWin32()
 {
     wglDeleteContext(renderContext);
 }
-
+#endif
 bool OGLRenderer::SetVerticalSync(VerticalSyncState s)
 {
+#ifdef _WIN32
     if (!wglSwapIntervalEXT)
     {
         return false;
@@ -541,8 +544,10 @@ bool OGLRenderer::SetVerticalSync(VerticalSyncState s)
     }
 
     return wglSwapIntervalEXT(state);
-}
+#else
+    return false;
 #endif
+}
 
 #ifdef OPENGL_DEBUGGING
 static void APIENTRY DebugCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar* message, const void* userParam)

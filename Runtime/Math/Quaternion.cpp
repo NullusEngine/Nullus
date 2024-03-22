@@ -41,13 +41,13 @@ Quaternion::Quaternion(const Vector3& vector, float w)
 
 Quaternion::Quaternion(const Matrix4& m)
 {
-    w = sqrt(std::max(0.0f, (1.0f + m.array[0] + m.array[5] + m.array[10]))) * 0.5f;
+    w = Sqrt(std::max(0.0f, (1.0f + m.array[0] + m.array[5] + m.array[10]))) * 0.5f;
 
     if (abs(w) < 0.0001f)
     {
-        x = sqrt(std::max(0.0f, (1.0f + m.array[0] - m.array[5] - m.array[10]))) / 2.0f;
-        y = sqrt(std::max(0.0f, (1.0f - m.array[0] + m.array[5] - m.array[10]))) / 2.0f;
-        z = sqrt(std::max(0.0f, (1.0f - m.array[0] - m.array[5] + m.array[10]))) / 2.0f;
+        x = Sqrt(std::max(0.0f, (1.0f + m.array[0] - m.array[5] - m.array[10]))) / 2.0f;
+        y = Sqrt(std::max(0.0f, (1.0f - m.array[0] + m.array[5] - m.array[10]))) / 2.0f;
+        z = Sqrt(std::max(0.0f, (1.0f - m.array[0] - m.array[5] + m.array[10]))) / 2.0f;
 
         x = (float)copysign(x, m.array[9] - m.array[6]);
         y = (float)copysign(y, m.array[2] - m.array[8]);
@@ -66,7 +66,7 @@ Quaternion::Quaternion(const Matrix4& m)
 
 Quaternion::Quaternion(const Matrix3& m)
 {
-    w = sqrt(std::max(0.0f, (1.0f + m.array[0] + m.array[4] + m.array[8]))) * 0.5f;
+    w = Sqrt(std::max(0.0f, (1.0f + m.array[0] + m.array[4] + m.array[8]))) * 0.5f;
 
     float qrFour = 4.0f * w;
     float qrFourRecip = 1.0f / qrFour;
@@ -87,7 +87,7 @@ float Quaternion::Dot(const Quaternion& a, const Quaternion& b)
 
 void Quaternion::Normalise()
 {
-    float magnitude = sqrt(x * x + y * y + z * z + w * w);
+    float magnitude = Sqrt(x * x + y * y + z * z + w * w);
 
     if (magnitude > 0.0f)
     {
@@ -109,7 +109,7 @@ void Quaternion::CalculateW()
     }
     else
     {
-        w = -sqrt(w);
+        w = -Sqrt(w);
     }
 }
 

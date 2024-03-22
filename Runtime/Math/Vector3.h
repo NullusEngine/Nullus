@@ -1,5 +1,5 @@
 #pragma once
-#include <cmath>
+#include "Maths.h"
 #include <iostream>
 #include <algorithm>
 #include "MathDef.h"
@@ -58,7 +58,7 @@ public:
 
     float Length() const
     {
-        return sqrt((x * x) + (y * y) + (z * z));
+        return Sqrt((x * x) + (y * y) + (z * z));
     }
 
     constexpr float LengthSquared() const

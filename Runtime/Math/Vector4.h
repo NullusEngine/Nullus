@@ -1,6 +1,7 @@
 #pragma once
 #include <iostream>
 #include "MathDef.h"
+#include "Maths.h"
 namespace NLS
 {
 namespace Maths
@@ -58,7 +59,7 @@ public:
 
     float Length() const
     {
-        return sqrt((x * x) + (y * y) + (z * z) + (w * w));
+        return Sqrt((x * x) + (y * y) + (z * z) + (w * w));
     }
 
     constexpr float LengthSquared() const

@@ -92,14 +92,14 @@ protected:
 template<typename T>
 T* GameObject::AddComponent(const std::function<void(Component*)>& func)
 {
-    return AddComponent(Type_of<T>, func).AsPtr<T>();
+    return AddComponent(Type_of<T>, func).template AsPtr<T>();
 }
 
 
 template<typename T>
 T* GameObject::GetComponent(bool includeSubType) const
 {
-    return GetComponent(Type_of<T>, includeSubType).StaticCast(Type_of<T>).AsPtr<T>();
+    return GetComponent(Type_of<T>, includeSubType).StaticCast(Type_of<T>).template AsPtr<T>();
 }
 
 } // namespace Engine

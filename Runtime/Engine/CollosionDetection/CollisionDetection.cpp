@@ -162,7 +162,7 @@ bool CollisionDetection::RaySphereIntersection(const Ray& r, const Engine::Trans
         return false;
     }
 
-    float offset = sqrt((sphereRadius * sphereRadius) - (sphereDist * sphereDist));
+    float offset = Sqrt((sphereRadius * sphereRadius) - (sphereDist * sphereDist));
 
     collision.rayDistance = sphereProj - (offset);
     collision.collidedAt = r.GetPosition() + (r.GetDirection() * collision.rayDistance);
@@ -434,7 +434,7 @@ bool CollisionDetection::AABBIntersection(const AABBVolume& volumeA, const Engin
             (maxB.z - minA.z), // distance of box ’b’ to ’far ’ of ’a ’.
             (maxA.z - minB.z)  // distance of box ’b’ to ’near ’ of ’a ’.
         };
-        float penetration = FLT_MAX;
+        float penetration = Maths::MAX_FLOAT;
         Vector3 bestAxis;
 
         for (int i = 0; i < 6; i++)

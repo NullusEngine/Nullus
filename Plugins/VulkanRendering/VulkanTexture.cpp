@@ -31,7 +31,7 @@ int VulkanTexture::CalculateMipCount(int width, int height)
     return (int)floor(log2(float(Maths::Min(width, height)))) + 1;
 }
 
-VulkanTexture* VulkanTexture::GenerateTextureFromDataInternal(int width, int height, int channelCount, bool isCube, vector<char*> dataSrcs, std::string debugName)
+VulkanTexture* VulkanTexture::GenerateTextureFromDataInternal(int width, int height, int channelCount, TextureType type, vector<char*> dataSrcs, std::string debugName)
 {
     vk::Format format = vk::Format::eR8G8B8A8Unorm;
     vk::ImageAspectFlags aspect = vk::ImageAspectFlagBits::eColor;
@@ -40,7 +40,7 @@ VulkanTexture* VulkanTexture::GenerateTextureFromDataInternal(int width, int hei
 
     int mipCount = CalculateMipCount(width, height);
     // mipCount = 1;
-    VulkanTexture* outTex = GenerateTextureInternal(width, height, mipCount, true, debugName, format, aspect, usage, layout, vk::PipelineStageFlagBits::eFragmentShader);
+    VulkanTexture* outTex = GenerateTextureInternal(width, height, mipCount, type, debugName, format, aspect, usage, layout, vk::PipelineStageFlagBits::eFragmentShader);
 
     // tex is currently empty, need to fill it with our data from stbimage!
     int faceSize = width * height * channelCount;
@@ -112,7 +112,7 @@ TextureBase* VulkanTexture::VulkanTextureFromFilename(const std::string& name)
     int flags = 0;
     TextureLoader::LoadTexture(name, texData, width, height, channels, flags);
 
-    VulkanTexture* cubeTex = GenerateTextureFromDataInternal(width, height, channels, false, {texData}, name);
+    VulkanTexture* cubeTex = GenerateTextureFromDataInternal(width, height, channels, TextureType::e2D, {texData}, name);
     delete texData;
     return cubeTex;
 };
@@ -141,7 +141,7 @@ VulkanTexture* VulkanTexture::VulkanCubemapFromFilename(
         }
     }
 
-    VulkanTexture* cubeTex = GenerateTextureFromDataInternal(width[0], height[0], channels[0], true, texData, debugName);
+    VulkanTexture* cubeTex = GenerateTextureFromDataInternal(width[0], height[0], channels[0], TextureType::eCube, texData, debugName);
 
     // delete the old texData;
     for (int i = 0; i < 6; ++i)
@@ -165,7 +165,7 @@ void VulkanTexture::InitTextureDeviceMemory(VulkanTexture& img)
     vkRenderer->GetDevice().bindImageMemory(img.image, img.deviceMem, 0);
 }
 
-VulkanTexture* VulkanTexture::GenerateTextureInternal(int width, int height, int mipcount, bool isCubemap, std::string debugName, vk::Format format, vk::ImageAspectFlags aspect, vk::ImageUsageFlags usage, vk::ImageLayout outLayout, vk::PipelineStageFlags pipeType)
+VulkanTexture* VulkanTexture::GenerateTextureInternal(int width, int height, int mipcount, TextureType type, std::string debugName, vk::Format format, vk::ImageAspectFlags aspect, vk::ImageUsageFlags usage, vk::ImageLayout outLayout, vk::PipelineStageFlags pipeType)
 {
     VulkanTexture* tex = new VulkanTexture();
     tex->width = width;
@@ -173,28 +173,36 @@ VulkanTexture* VulkanTexture::GenerateTextureInternal(int width, int height, int
     tex->mipCount = mipcount;
     tex->format = format;
     tex->aspectType = aspect;
-    tex->layerCount = 1;
 
     tex->createInfo = vk::ImageCreateInfo()
-                          .setImageType(vk::ImageType::e2D)
-                          .setExtent(vk::Extent3D(width, height, 1))
-                          .setFormat(tex->format)
-                          .setUsage(usage)
-                          .setMipLevels(tex->mipCount)
-                          .setArrayLayers(1)
-                          .setImageType(vk::ImageType::e2D);
+        .setImageType(vk::ImageType::e2D)
+        .setExtent(vk::Extent3D(width, height, 1))
+        .setFormat(tex->format)
+        .setUsage(usage)
+        .setMipLevels(tex->mipCount);
 
-    if (isCubemap)
+    if (type == TextureType::eCube)
     {
-        tex->createInfo.setArrayLayers(6).setFlags(vk::ImageCreateFlagBits::eCubeCompatible);
+        tex->textureType = TextureType::eCube;
         tex->layerCount = 6;
+
+        tex->createInfo
+            .setArrayLayers(6)
+            .setFlags(vk::ImageCreateFlagBits::eCubeCompatible);
+    }
+    else
+    {
+        tex->textureType = TextureType::e2D;
+        tex->layerCount = 1;
+
+        tex->createInfo.setArrayLayers(1);
     }
 
     tex->image = vkRenderer->GetDevice().createImage(tex->createInfo);
 
     InitTextureDeviceMemory(*tex);
 
-    tex->defaultView = tex->GenerateDefaultView(tex->aspectType, isCubemap ? vk::ImageViewType::eCube : vk::ImageViewType::e2D);
+    tex->defaultView = tex->GenerateDefaultView(tex->aspectType);
 
     vkRenderer->SetDebugName(vk::ObjectType::eImage, (uint64_t)tex->image.operator VkImage(), debugName);
     vkRenderer->SetDebugName(vk::ObjectType::eImageView, (uint64_t)tex->defaultView.operator VkImageView(), debugName);
@@ -212,7 +220,7 @@ VulkanTexture* VulkanTexture::GenerateDepthTexture(int width, int height, string
     vk::ImageAspectFlags aspect = hasStencil ? vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil : vk::ImageAspectFlagBits::eDepth;
     vk::ImageLayout layout = hasStencil ? vk::ImageLayout::eDepthStencilAttachmentOptimal : vk::ImageLayout::eDepthAttachmentOptimal;
     vk::ImageUsageFlags usage = vk::ImageUsageFlagBits::eDepthStencilAttachment | vk::ImageUsageFlagBits::eSampled;
-    return GenerateTextureInternal(width, height, 1, false, debugName, format, aspect, usage, layout, vk::PipelineStageFlagBits::eEarlyFragmentTests);
+    return GenerateTextureInternal(width, height, 1, TextureType::e2D, debugName, format, aspect, usage, layout, vk::PipelineStageFlagBits::eEarlyFragmentTests);
 }
 
 VulkanTexture* VulkanTexture::GenerateColourTexture(int width, int height, string debugName, bool isFloat, bool useMips)
@@ -221,20 +229,25 @@ VulkanTexture* VulkanTexture::GenerateColourTexture(int width, int height, strin
     vk::ImageAspectFlags aspect = vk::ImageAspectFlagBits::eColor;
     vk::ImageLayout layout = vk::ImageLayout::eColorAttachmentOptimal;
     vk::ImageUsageFlags usage = vk::ImageUsageFlagBits::eColorAttachment | vk::ImageUsageFlagBits::eSampled;
-    return GenerateTextureInternal(width, height, 1, false, debugName, format, aspect, usage, layout, vk::PipelineStageFlagBits::eColorAttachmentOutput);
+    return GenerateTextureInternal(width, height, 1, TextureType::e2D, debugName, format, aspect, usage, layout, vk::PipelineStageFlagBits::eColorAttachmentOutput);
 }
 
-vk::ImageView VulkanTexture::GenerateDefaultView(vk::ImageAspectFlags type, vk::ImageViewType viewType)
+vk::ImageView VulkanTexture::GenerateDefaultView(vk::ImageAspectFlags type)
 {
     vk::ImageViewCreateInfo createInfo = vk::ImageViewCreateInfo()
-                                             .setViewType(viewType)
+                                             .setViewType(textureType == TextureType::e2D ? vk::ImageViewType::e2D : vk::ImageViewType::eCube)
                                              .setFormat(format)
-                                             .setSubresourceRange(vk::ImageSubresourceRange(type, 0, mipCount, 0, layerCount))
+                                             .setSubresourceRange(vk::ImageSubresourceRange{
+                                                 .aspectMask = type,
+                                                 .baseMipLevel = 0,
+                                                 .levelCount = (uint32_t)mipCount,
+                                                 .baseArrayLayer = 0,
+                                                 .layerCount = (uint32_t)layerCount})
                                              .setImage(image);
     return vkRenderer->GetDevice().createImageView(createInfo);
 }
 
-void VulkanTexture::GenerateMipMaps(vk::CommandBuffer& buffer, vk::ImageLayout endLayout, vk::PipelineStageFlags endFlags, bool isCube)
+void VulkanTexture::GenerateMipMaps(vk::CommandBuffer& buffer, vk::ImageLayout endLayout, vk::PipelineStageFlags endFlags)
 {
     bool localCmdBuffer = false;
     if (!buffer)
@@ -291,7 +304,7 @@ void VulkanTexture::GenerateMipMaps(vk::CommandBuffer& buffer, vk::ImageLayout e
         vkRenderer->GetDevice().destroyImageView(defaultView);
     }
 
-    defaultView = GenerateDefaultView(aspectType, isCube ? vk::ImageViewType::eCube : vk::ImageViewType::e2D);
+    defaultView = GenerateDefaultView(aspectType);
 
     layout = endLayout; // Not really true until the below barrier has completed...
 }

@@ -50,15 +50,15 @@ public:
 
 protected:
     VulkanTexture();
-    void GenerateMipMaps(vk::CommandBuffer& buffer, vk::ImageLayout endLayout, vk::PipelineStageFlags endFlags, bool isCube = false);
+    void GenerateMipMaps(vk::CommandBuffer& buffer, vk::ImageLayout endLayout, vk::PipelineStageFlags endFlags);
 
     static void InitTextureDeviceMemory(VulkanTexture& img);
-    static VulkanTexture* GenerateTextureInternal(int width, int height, int mipcount, bool isCube, std::string debugName, vk::Format format, vk::ImageAspectFlags aspect, vk::ImageUsageFlags usage, vk::ImageLayout outLayout, vk::PipelineStageFlags pipeType);
+    static VulkanTexture* GenerateTextureInternal(int width, int height, int mipcount, TextureType type, std::string debugName, vk::Format format, vk::ImageAspectFlags aspect, vk::ImageUsageFlags usage, vk::ImageLayout outLayout, vk::PipelineStageFlags pipeType);
 
-    static VulkanTexture* GenerateTextureFromDataInternal(int width, int height, int channelCount, bool isCube, std::vector<char*> dataSrcs, std::string debugName);
+    static VulkanTexture* GenerateTextureFromDataInternal(int width, int height, int channelCount, TextureType type, std::vector<char*> dataSrcs, std::string debugName);
 
 
-    vk::ImageView GenerateDefaultView(vk::ImageAspectFlags type, vk::ImageViewType = vk::ImageViewType::e2D);
+    vk::ImageView GenerateDefaultView(vk::ImageAspectFlags type);
 
     static int CalculateMipCount(int width, int height);
 

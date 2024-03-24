@@ -18,8 +18,8 @@ _-_-_-_-_-_-_-""  ""
 
 #ifdef _WIN32
     #define VK_USE_PLATFORM_WIN32_KHR
-    #include <Windows.h> //vulkan hpp needs this included beforehand!
-    #include <minwindef.h>
+    //#include <Windows.h> //vulkan hpp needs this included beforehand!
+    //#include <minwindef.h>
 #endif
 
 // 使用 C++20 指定初始化器
@@ -89,19 +89,26 @@ protected:
 
     vk::DescriptorSet BuildDescriptorSet(vk::DescriptorSetLayout& layout);
 
-    bool InitInstance();
-    bool InitGPUDevice();
+    bool InitVulkan();
 
-    int InitBufferChain();
+    bool InitInstance();
+    bool InitDebugMessager();
+    bool InitPhysicalDevice();
+    bool InitLogicalDevice();
+
+    int InitSwapChain();
+    vk::Extent2D ChooseSwapExtent(const vk::SurfaceCapabilitiesKHR& capabilities);
 
     bool CreateDefaultFrameBuffers();
 
     bool InitSurface();
 
-    bool InitDeviceQueue();
+    bool InitDeviceQueueFamilies();
 
     void ImageTransitionBarrier(vk::CommandBuffer* buffer, vk::Image i, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageAspectFlags aspect, vk::PipelineStageFlags srcStage, vk::PipelineStageFlags dstStage, int mipLevel = 0, int layer = 0);
     void ImageTransitionBarrier(vk::CommandBuffer* buffer, VulkanTexture* t, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageAspectFlags aspect, vk::PipelineStageFlags srcStage, vk::PipelineStageFlags dstStage, int mipLevel = 0, int layer = 0);
+
+    void CreateGraphicsPipeline();
 
     virtual void InitDefaultRenderPass();
     virtual void InitDefaultDescriptorPool();
@@ -137,16 +144,28 @@ protected:
         vk::ImageView view;
     };
 
-    vk::DispatchLoaderDynamic* dispatcher;
+    struct QueueFamilyIndices
+    {
+        std::optional<uint32_t> graphicsFamily;
+        std::optional<uint32_t> presentFamily;
+
+        bool IsComplete()
+        {
+            return graphicsFamily.has_value() && presentFamily.has_value();
+        }
+    };
+
+    vk::DispatchLoaderDynamic* dispatcher = nullptr;
+    vk::DebugUtilsMessengerEXT debugMessenger;
 
     vk::SurfaceKHR surface;
     vk::Format surfaceFormat;
     vk::ColorSpaceKHR surfaceSpace;
 
-    vk::Framebuffer* frameBuffers;
+    vk::Framebuffer* frameBuffers = nullptr;
 
-    uint32_t numFrameBuffers;
-    VulkanTexture* depthBuffer;
+    uint32_t numFrameBuffers = 0;
+    VulkanTexture* depthBuffer = nullptr;
 
     vk::SwapchainKHR swapChain;
 
@@ -160,6 +179,7 @@ protected:
     vk::PhysicalDeviceProperties deviceProperties;
     vk::PhysicalDeviceMemoryProperties deviceMemoryProperties;
 
+    vk::Pipeline graphicsPipeline;
     vk::PipelineCache pipelineCache;
     vk::DescriptorPool defaultDescriptorPool; // descriptor sets come from here!
     vk::CommandPool commandPool;              // Source Command Buffers from here
@@ -174,9 +194,9 @@ protected:
     vk::Viewport defaultViewport;
     vk::Rect2D defaultScissor;
 
-    vk::Queue deviceQueue;
-    uint32_t gfxQueueIndex = -1;
-    uint32_t gfxPresentIndex = -1;
+    vk::Queue graphicsQueue;
+    vk::Queue presentQueue;
+    QueueFamilyIndices queueFamilyIndices;
 };
 } // namespace Rendering
 } // namespace NLS

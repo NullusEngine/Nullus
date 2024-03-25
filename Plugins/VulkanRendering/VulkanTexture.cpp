@@ -156,7 +156,7 @@ void VulkanTexture::InitTextureDeviceMemory(VulkanTexture& img)
 {
     vk::MemoryRequirements memReqs = vkRenderer->GetDevice().getImageMemoryRequirements(img.image);
 
-    img.allocInfo = {.allocationSize = memReqs.size};
+    img.allocInfo = vk::MemoryAllocateInfo{.allocationSize = memReqs.size};
 
     bool found = vkRenderer->MemoryTypeFromPhysicalDeviceProps({}, memReqs.memoryTypeBits, img.allocInfo.memoryTypeIndex);
 

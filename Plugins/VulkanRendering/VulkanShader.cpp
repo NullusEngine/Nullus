@@ -44,8 +44,41 @@ void VulkanShader::SetSourceDevice(vk::Device d)
     sourceDevice = d;
 }
 
+const char* ComplerCommand = "glslc.exe -fshader-stage=%s %s -o %s ";
+
+void CompileShader(const std::string& fileName, ShaderStages stage)
+{
+    auto absPath = Assets::SHADERDIR + fileName;
+    auto targetSpvPath = Assets::SHADERDIR + "VK/" + fileName;
+
+    auto command = std::string(ComplerCommand);
+
+    const char* shaderstage = "";
+    switch (stage)
+    {
+        case ShaderStages::SHADER_VERTEX:
+            shaderstage = "vertex";
+            break;
+        case ShaderStages::SHADER_FRAGMENT:
+            shaderstage = "fragment";
+            break;
+        case ShaderStages::SHADER_GEOMETRY:
+            shaderstage = "geometry";
+            break;
+        default: // Should never happen
+            break;
+    }
+
+    std::vector<char> buf(1 + std::snprintf(nullptr, 0, ComplerCommand, shaderstage, absPath.c_str(), targetSpvPath.c_str()));
+    std::snprintf(buf.data(), buf.size(), ComplerCommand, shaderstage, absPath.c_str(), targetSpvPath.c_str());
+
+    std::system(buf.data());
+}
+
 void VulkanShader::AddBinaryShaderModule(const string& fromFile, ShaderStages stage)
 {
+    CompileShader(fromFile, stage);
+
     char* data = nullptr;
     size_t dataSize = 0;
     Assets::ReadBinaryFile(Assets::SHADERDIR + "VK/" + fromFile, &data, dataSize);

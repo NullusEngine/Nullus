@@ -122,6 +122,7 @@ protected:
     void EndSetupCmdBuffer();
 
     void InitCommandPool();
+    void InitCommandBuffer();
 
     void PresentScreenImage();
 
@@ -168,6 +169,7 @@ protected:
     VulkanTexture* depthBuffer = nullptr;
 
     vk::SwapchainKHR swapChain;
+    vk::Extent2D swapChainExtent;
 
     std::vector<SwapChain*> swapChainList;
     uint32_t currentSwap = -1;
@@ -179,7 +181,7 @@ protected:
     vk::PhysicalDeviceProperties deviceProperties;
     vk::PhysicalDeviceMemoryProperties deviceMemoryProperties;
 
-    vk::Pipeline graphicsPipeline;
+    VulkanPipeline graphicsPipeline;
     vk::PipelineCache pipelineCache;
     vk::DescriptorPool defaultDescriptorPool; // descriptor sets come from here!
     vk::CommandPool commandPool;              // Source Command Buffers from here

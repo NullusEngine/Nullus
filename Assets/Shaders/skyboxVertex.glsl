@@ -1,16 +1,16 @@
-#version 330 core
+#version 450 core
 
 uniform mat4 modelMatrix;
 uniform mat4 viewMatrix;
 uniform mat4 projMatrix;
 
-in  vec3 position;
+layout(location = 0) in  vec3 position;
 
-out Vertex {
+layout(location = 0) out Vertex {
 	vec3 viewDir;
 } OUT;
 
-void main(void)		{
+void main(void) {
 	vec3 pos = position;
 	mat4 invproj  = inverse(projMatrix);
 	pos.xy	  *= vec2(invproj[0][0],invproj[1][1]);

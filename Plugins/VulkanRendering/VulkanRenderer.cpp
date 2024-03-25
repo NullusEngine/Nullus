@@ -68,7 +68,7 @@ VulkanRenderer::~VulkanRenderer()
 
     device.destroyDescriptorPool(defaultDescriptorPool);
     device.destroyCommandPool(commandPool);
-    device.destroyPipeline(graphicsPipeline);
+    device.destroyPipeline(graphicsPipeline.pipeline);
     device.destroyRenderPass(defaultRenderPass);
     device.destroyPipelineCache(pipelineCache);
     device.destroy(); // Destroy everything except instance before this gets destroyed!
@@ -100,6 +100,7 @@ bool VulkanRenderer::InitVulkan()
     // CreateGraphicsPipeline();
 
     InitCommandPool();
+    InitCommandBuffer();
     InitDefaultDescriptorPool();
     return true;
 }
@@ -167,7 +168,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
 
 void PopulateDebugMessengerCreateInfo(vk::DebugUtilsMessengerCreateInfoEXT& createInfo)
 {
-    createInfo = {};
+    createInfo = vk::DebugUtilsMessengerCreateInfoEXT{};
     createInfo.setMessageSeverity(vk::DebugUtilsMessageSeverityFlagBitsEXT::eError | vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning | vk::DebugUtilsMessageSeverityFlagBitsEXT::eVerbose)
         .setMessageType(vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral | vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation | vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance)
         .setPfnUserCallback(debugCallback);
@@ -425,6 +426,7 @@ int VulkanRenderer::InitSwapChain()
     }
 
     swapChain = device.createSwapchainKHR(swapInfo);
+    swapChainExtent = swapExtents;
 
     if (!oldSwapChainList.empty())
     {
@@ -539,7 +541,10 @@ void VulkanRenderer::InitCommandPool()
         .flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
         .queueFamilyIndex = queueFamilyIndices.graphicsFamily.value(),
     });
+}
 
+void VulkanRenderer::InitCommandBuffer()
+{
     auto buffers = device.allocateCommandBuffers(vk::CommandBufferAllocateInfo{
         .commandPool = commandPool,
         .level = vk::CommandBufferLevel::ePrimary,
@@ -551,13 +556,11 @@ void VulkanRenderer::InitCommandPool()
 
 vk::CommandBuffer VulkanRenderer::BeginCmdBuffer()
 {
-    vk::CommandBufferAllocateInfo bufferInfo = {
+    auto buffers = device.allocateCommandBuffers(vk::CommandBufferAllocateInfo{
         .commandPool = commandPool,
         .level = vk::CommandBufferLevel::ePrimary,
         .commandBufferCount = 1,
-    };
-
-    auto buffers = device.allocateCommandBuffers(bufferInfo); // Func returns a vector!
+    }); // Func returns a vector!
 
     vk::CommandBuffer& newBuf = buffers[0];
 
@@ -903,8 +906,8 @@ bool VulkanRenderer::CreateDefaultFrameBuffers()
     vk::ImageView attachments[2];
 
     vk::FramebufferCreateInfo createInfo = vk::FramebufferCreateInfo()
-                                               .setWidth((int)hostWindow.GetScreenSize().x)
-                                               .setHeight((int)hostWindow.GetScreenSize().y)
+                                               .setWidth((int)swapChainExtent.width)
+                                               .setHeight((int)swapChainExtent.height)
                                                .setLayers(1)
                                                .setAttachmentCount(2)
                                                .setPAttachments(attachments)
@@ -1020,7 +1023,7 @@ void VulkanRenderer::InitUniformBuffer(UniformData& uniform, void* data, int dat
     uniform.descriptorInfo.range = dataSize; // reqs.size;
 
     vk::MemoryRequirements reqs = device.getBufferMemoryRequirements(uniform.buffer);
-    uniform.allocInfo = {.allocationSize = reqs.size};
+    uniform.allocInfo = vk::MemoryAllocateInfo{.allocationSize = reqs.size};
 
     bool found = MemoryTypeFromPhysicalDeviceProps(vk::MemoryPropertyFlagBits::eHostVisible, reqs.memoryTypeBits, uniform.allocInfo.memoryTypeIndex);
 

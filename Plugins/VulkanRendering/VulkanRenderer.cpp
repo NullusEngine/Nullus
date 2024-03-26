@@ -5,6 +5,7 @@
 #include "TextureLoader.h"
 #include "MeshLoader.h"
 #include "VulkanShaderBuilder.h"
+#include "VulkanPipelineBuilder.h"
 
 #ifdef WIN32
     #include "WIn32/Win32Window.h"
@@ -107,11 +108,7 @@ bool VulkanRenderer::InitVulkan()
 
 bool CheckLayerSupport(const std::vector<const char*>& layers)
 {
-    uint32_t layerCount;
-    vk::enumerateInstanceLayerProperties(&layerCount, nullptr);
-
-    std::vector<vk::LayerProperties> availableLayers(layerCount);
-    vk::enumerateInstanceLayerProperties(&layerCount, availableLayers.data());
+    std::vector<vk::LayerProperties> availableLayers = vk::enumerateInstanceLayerProperties();
 
     for (const char* layerName : layers)
     {
@@ -306,6 +303,40 @@ bool VulkanRenderer::InitLogicalDevice()
     deviceMemoryProperties = gpu.getMemoryProperties();
 
     return true;
+}
+
+bool VulkanRenderer::InitDeviceQueueFamilies()
+{
+    vector<vk::QueueFamilyProperties> deviceQueueProps = gpu.getQueueFamilyProperties();
+
+    for (unsigned int i = 0; i < deviceQueueProps.size(); ++i)
+    {
+        if (deviceQueueProps[i].queueFlags & vk::QueueFlagBits::eGraphics)
+        {
+            queueFamilyIndices.graphicsFamily = i;
+            VkBool32 supportsPresent = gpu.getSurfaceSupportKHR(i, surface);
+            if (supportsPresent)
+            {
+                queueFamilyIndices.presentFamily = i;
+                break;
+            }
+        }
+    }
+
+    if (queueFamilyIndices.presentFamily.has_value() == false)
+    {
+        for (unsigned int i = 0; i < deviceQueueProps.size(); ++i)
+        {
+            VkBool32 supportsPresent = gpu.getSurfaceSupportKHR(i, surface);
+            if (supportsPresent)
+            {
+                queueFamilyIndices.presentFamily = i;
+                break;
+            }
+        }
+    }
+
+    return queueFamilyIndices.IsComplete();
 }
 
 bool VulkanRenderer::InitSurface()
@@ -625,40 +656,6 @@ void VulkanRenderer::EndSetupCmdBuffer()
     EndCmdBufferWait(setupCmdBuffer);
 }
 
-bool VulkanRenderer::InitDeviceQueueFamilies()
-{
-    vector<vk::QueueFamilyProperties> deviceQueueProps = gpu.getQueueFamilyProperties();
-
-    for (unsigned int i = 0; i < deviceQueueProps.size(); ++i)
-    {
-        if (deviceQueueProps[i].queueFlags & vk::QueueFlagBits::eGraphics)
-        {
-            queueFamilyIndices.graphicsFamily = i;
-            VkBool32 supportsPresent = gpu.getSurfaceSupportKHR(i, surface);
-            if (supportsPresent)
-            {
-                queueFamilyIndices.presentFamily = i;
-                break;
-            }
-        }
-    }
-
-    if (queueFamilyIndices.presentFamily.has_value() == false)
-    {
-        for (unsigned int i = 0; i < deviceQueueProps.size(); ++i)
-        {
-            VkBool32 supportsPresent = gpu.getSurfaceSupportKHR(i, surface);
-            if (supportsPresent)
-            {
-                queueFamilyIndices.presentFamily = i;
-                break;
-            }
-        }
-    }
-
-    return queueFamilyIndices.IsComplete();
-}
-
 void VulkanRenderer::OnWindowResize(int width, int height)
 {
     if (width == currentWidth && height == currentHeight)
@@ -675,7 +672,7 @@ void VulkanRenderer::OnWindowResize(int width, int height)
     defaultClearValues[1] = vk::ClearValue(vk::ClearDepthStencilValue(1.0f, 0));
     BeginSetupCmdBuffer();
     std::cout << "calling resize! new dimensions: " << currentWidth << " , " << currentHeight << std::endl;
-    vkDeviceWaitIdle(device);
+    device.waitIdle();
 
     delete depthBuffer;
     depthBuffer = VulkanTexture::GenerateDepthTexture((int)hostWindow.GetScreenSize().x, (int)hostWindow.GetScreenSize().y);
@@ -685,7 +682,7 @@ void VulkanRenderer::OnWindowResize(int width, int height)
     InitDefaultRenderPass();
     CreateDefaultFrameBuffers();
 
-    vkDeviceWaitIdle(device);
+    device.waitIdle();
 
     CompleteResize();
 
@@ -780,54 +777,18 @@ void VulkanRenderer::SwapBuffers()
 
 void VulkanRenderer::CreateGraphicsPipeline()
 {
-    VulkanShader* shader;
+    VulkanShader* shader = nullptr;
+    VulkanMesh* mesh = nullptr;
 
-    vk::PipelineShaderStageCreateInfo vertShaderStageInfo = vk::PipelineShaderStageCreateInfo()
-                                                                .setStage(vk::ShaderStageFlagBits::eVertex)
-                                                                .setModule(shader->GetShaderModule(ShaderStages::SHADER_VERTEX))
-                                                                .setPName("main");
-
-    vk::PipelineShaderStageCreateInfo fragShaderStageInfo = vk::PipelineShaderStageCreateInfo()
-                                                                .setStage(vk::ShaderStageFlagBits::eFragment)
-                                                                .setModule(shader->GetShaderModule(ShaderStages::SHADER_FRAGMENT))
-                                                                .setPName("main");
-
-    vk::PipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
-
-    vk::PipelineVertexInputStateCreateInfo vertexInputInfo = vk::PipelineVertexInputStateCreateInfo();
-    vertexInputInfo.setVertexBindingDescriptionCount(0);
-    vertexInputInfo.setVertexAttributeDescriptionCount(0);
-
-    vk::PipelineInputAssemblyStateCreateInfo inputAssembly = vk::PipelineInputAssemblyStateCreateInfo()
-                                                                 .setTopology(vk::PrimitiveTopology::eTriangleList)
-                                                                 .setPrimitiveRestartEnable(false);
-
-    vk::Viewport viewport = vk::Viewport()
-                                .setX(0.0f)
-                                .setY(0.0f)
-                                .setWidth((float)currentWidth)
-                                .setHeight((float)currentHeight)
-                                .setMinDepth(0.0f)
-                                .setMaxDepth(1.0f);
-
-    vk::Rect2D scissor = vk::Rect2D()
-                             .setOffset(vk::Offset2D(0, 0))
-                             .setExtent(vk::Extent2D(currentWidth, currentHeight));
-
-    vk::PipelineViewportStateCreateInfo viewportState = vk::PipelineViewportStateCreateInfo()
-                                                            .setViewportCount(1)
-                                                            .setPViewports(&viewport)
-                                                            .setScissorCount(1)
-                                                            .setPScissors(&scissor);
-
-    vk::PipelineRasterizationStateCreateInfo rasterizer = vk::PipelineRasterizationStateCreateInfo()
-                                                              .setDepthClampEnable(false)
-                                                              .setRasterizerDiscardEnable(false)
-                                                              .setPolygonMode(vk::PolygonMode::eFill)
-                                                              .setLineWidth(1.0f)
-                                                              .setCullMode(vk::CullModeFlagBits::eBack)
-                                                              .setFrontFace(vk::FrontFace::eCounterClockwise)
-                                                              .setDepthBiasEnable(false);
+    VulkanPipelineBuilder builder;
+    builder.WithShaderState(shader);
+    builder.WithVertexSpecification(mesh->GetVertexSpecification(), vk::PrimitiveTopology::eTriangleList);
+    builder.WithRaster(vk::CullModeFlagBits::eBack, vk::PolygonMode::eFill);
+    //builder.WithBlendState(vk::BlendFactor::eSrcAlpha, vk::BlendFactor::eOneMinusSrcAlpha, true);
+    builder.WithDepthState(vk::CompareOp::eLess, true, true);
+    builder.WithPass(defaultRenderPass);
+    builder.WithDebugName("Default Pipeline");
+    graphicsPipeline = builder.Build(*this);
 }
 
 void VulkanRenderer::InitDefaultRenderPass()

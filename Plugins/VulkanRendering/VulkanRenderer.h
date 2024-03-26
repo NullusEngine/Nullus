@@ -96,14 +96,12 @@ protected:
     bool InitPhysicalDevice();
     bool InitLogicalDevice();
 
+    bool InitDeviceQueueFamilies();
+    bool InitSurface();
     int InitSwapChain();
     vk::Extent2D ChooseSwapExtent(const vk::SurfaceCapabilitiesKHR& capabilities);
 
     bool CreateDefaultFrameBuffers();
-
-    bool InitSurface();
-
-    bool InitDeviceQueueFamilies();
 
     void ImageTransitionBarrier(vk::CommandBuffer* buffer, vk::Image i, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageAspectFlags aspect, vk::PipelineStageFlags srcStage, vk::PipelineStageFlags dstStage, int mipLevel = 0, int layer = 0);
     void ImageTransitionBarrier(vk::CommandBuffer* buffer, VulkanTexture* t, vk::ImageLayout oldLayout, vk::ImageLayout newLayout, vk::ImageAspectFlags aspect, vk::PipelineStageFlags srcStage, vk::PipelineStageFlags dstStage, int mipLevel = 0, int layer = 0);

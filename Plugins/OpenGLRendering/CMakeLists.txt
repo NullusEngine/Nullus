@@ -20,14 +20,20 @@ add_library(OpenGL_Rendering SHARED ${GL_HEAD_FILES} ${GL_SOURCE_FILES})
 target_compile_definitions(
   OpenGL_Rendering
   PUBLIC
-  GLAD_GLAPI_EXPORT
-  NLS_USE_GL
+    GLAD_GLAPI_EXPORT
+    NLS_USE_GL
   PRIVATE
-  GLAD_GLAPI_EXPORT_BUILD
-  OGL_EXPORT
+    GLAD_GLAPI_EXPORT_BUILD
+    OGL_EXPORT
 )
 else()
 add_library(OpenGL_Rendering STATIC ${GL_HEAD_FILES} ${GL_SOURCE_FILES})
+
+target_compile_definitions(
+  OpenGL_Rendering
+  PUBLIC
+    NLS_USE_GL
+)
 endif()
 
 # 指定输出路径

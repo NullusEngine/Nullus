@@ -1,6 +1,7 @@
 
+#if defined(_WIN32)
 #include <windows.h>
-
+#endif
 #include "Windowing/Dialogs/MessageBox.h"
 
 #undef MessageBox
@@ -22,6 +23,7 @@ const NLS::Dialogs::MessageBox::EUserAction& NLS::Dialogs::MessageBox::GetUserAc
 
 void NLS::Dialogs::MessageBox::Spawn()
 {
+	#if defined(_WIN32)
 	int msgboxID = MessageBoxA
 	(
 		nullptr,
@@ -31,4 +33,5 @@ void NLS::Dialogs::MessageBox::Spawn()
 	);
 
 	m_userResult = static_cast<EUserAction>(msgboxID);
+	#endif
 }

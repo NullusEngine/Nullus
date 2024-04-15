@@ -7,8 +7,11 @@ std::string NLS::Time::Date::GetDateAsString()
 	std::string date;
 	const auto now = time(nullptr);
 	tm ltm;
-
-	localtime_s(&ltm, &now);
+	#if defined(_WIN32)
+		localtime_s(&ltm, &now);
+	#else
+		localtime_r(&now, &ltm);
+	#endif
 
 	std::string dateData[6] =
 	{

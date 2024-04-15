@@ -1,11 +1,16 @@
 #include "Windowing/Dialogs/SaveFileDialog.h"
-
+#if defined(_WIN32)
 #include <Windows.h>
-
+#endif
+#if defined(_WIN32)
 NLS::Dialogs::SaveFileDialog::SaveFileDialog(const std::string & p_dialogTitle) : FileDialog(GetSaveFileNameA, p_dialogTitle)
 {
 }
-
+#else
+NLS::Dialogs::SaveFileDialog::SaveFileDialog(const std::string & p_dialogTitle) : FileDialog(nullptr, p_dialogTitle)
+{
+}
+#endif
 void NLS::Dialogs::SaveFileDialog::Show(EExplorerFlags p_flags)
 {
 	FileDialog::Show(p_flags);

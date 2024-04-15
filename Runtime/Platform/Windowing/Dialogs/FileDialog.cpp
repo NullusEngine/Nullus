@@ -1,7 +1,7 @@
 #include <filesystem>
-
+#if defined(_WIN32)
 #include <Windows.h>
-
+#endif
 #include "Windowing/Dialogs/FileDialog.h"
 
 NLS::Dialogs::FileDialog::FileDialog(std::function<int(tagOFNA*)> p_callback, const std::string & p_dialogTitle) :
@@ -18,6 +18,7 @@ void NLS::Dialogs::FileDialog::SetInitialDirectory(const std::string & p_initial
 
 void NLS::Dialogs::FileDialog::Show(EExplorerFlags p_flags)
 {
+	#if defined(_WIN32)
 	OPENFILENAME ofn;
 
 	if (!m_initialDirectory.empty())
@@ -50,6 +51,7 @@ void NLS::Dialogs::FileDialog::Show(EExplorerFlags p_flags)
 	for (auto it = m_filepath.rbegin(); it != m_filepath.rend() && *it != '\\' && *it != '/'; ++it)
 		m_filename += *it;
 	std::reverse(m_filename.begin(), m_filename.end());
+	#endif
 }
 
 bool NLS::Dialogs::FileDialog::HasSucceeded() const
@@ -79,6 +81,7 @@ bool NLS::Dialogs::FileDialog::IsFileExisting() const
 
 void NLS::Dialogs::FileDialog::HandleError()
 {
+	#if defined(_WIN32)
 	switch (CommDlgExtendedError())
 	{
 	case CDERR_DIALOGFAILURE:	m_error = "CDERR_DIALOGFAILURE";   break;
@@ -98,4 +101,5 @@ void NLS::Dialogs::FileDialog::HandleError()
 	case FNERR_SUBCLASSFAILURE: m_error = "FNERR_SUBCLASSFAILURE"; break;
 	default:					m_error = "You cancelled.";
 	}
+	#endif
 }

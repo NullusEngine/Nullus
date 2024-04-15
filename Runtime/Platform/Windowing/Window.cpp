@@ -2,9 +2,7 @@
 #ifdef _WIN32
     #include "Windows.h"
 #endif
-// #define STB_IMAGE_IMPLEMENTATION
-
-#include <stb/stb_image.h>
+#include "Core/Image.h"
 
 #include <GLFW/glfw3.h>
 
@@ -15,9 +13,9 @@ std::unordered_map<GLFWwindow*, NLS::Window*> NLS::Window::__WINDOWS_MAP;
 NLS::Window::Window(Context::Device& p_device, const Settings::WindowSettings& p_windowSettings) :
 	m_device(p_device),
 	m_title(p_windowSettings.title),
-	m_size{ p_windowSettings.width, p_windowSettings.height },
-	m_minimumSize { p_windowSettings.minimumWidth, p_windowSettings.minimumHeight },
-	m_maximumSize { p_windowSettings.maximumWidth, p_windowSettings.maximumHeight },
+	m_size{ static_cast<float>(p_windowSettings.width), static_cast<float>(p_windowSettings.height) },
+	m_minimumSize { static_cast<float>(p_windowSettings.minimumWidth), static_cast<float>(p_windowSettings.minimumHeight) },
+	m_maximumSize { static_cast<float>(p_windowSettings.maximumWidth), static_cast<float>(p_windowSettings.maximumHeight) },
 	m_fullscreen(p_windowSettings.fullscreen),
 	m_refreshRate(p_windowSettings.refreshRate),
 	m_cursorMode(p_windowSettings.cursorMode),
@@ -74,8 +72,11 @@ void NLS::Window::ResizeRenderer()
 }
 void NLS::Window::SetIcon(const std::string & p_filePath)
 {
+	Image image(p_filePath);
 	GLFWimage images[1];
-	images[0].pixels = stbi_load(p_filePath.c_str(), &images[0].width, &images[0].height, 0, 4);
+	images[0].pixels = const_cast<unsigned char*>(image.getData());
+	images[0].height = image.getWidth();
+	images[0].width = image.getHeight();
 	glfwSetWindowIcon(m_glfwWindow, 1, images);
 }
 

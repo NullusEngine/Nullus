@@ -3,14 +3,13 @@
 
 #include <string>
 #include <chrono>
-
-
+#include "UDRefl/config.hpp"
 namespace NLS::Time
 {
 	/*
 	* Handle time calculations
 	*/
-	class Clock
+	class NLS_BASE_API Clock
 	{
 	public:
 		/**

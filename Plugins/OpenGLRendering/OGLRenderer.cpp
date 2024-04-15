@@ -22,6 +22,7 @@ https://research.ncl.ac.uk/game/
 
 #include <GLFW/glfw3.h>
 #include "Windowing/Window.h"
+#include <assert.h>
 using namespace NLS;
 using namespace NLS::Rendering;
 
@@ -41,6 +42,7 @@ OGLRenderer::OGLRenderer(Window& w)
         std::cout << "Failed to initialize GLAD" << std::endl;
         initState = false;
     }
+    assert(initState);
     boundMesh = nullptr;
     boundShader = nullptr;
 

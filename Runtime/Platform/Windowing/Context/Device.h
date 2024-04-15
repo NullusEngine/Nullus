@@ -1,7 +1,7 @@
 #pragma once
 
 #include <unordered_map>
-
+#include "PlatformDef.h"
 #include <Eventing/Event.h>
 
 #include "Windowing/Context/EDeviceError.h"
@@ -15,7 +15,7 @@ namespace NLS::Context
 	/**
 	* Device 代表窗口上下文。 创建窗口需要创建设备
 	*/
-	class Device
+	class NLS_PLATFORM_API Device
 	{
 	public:
 		/**

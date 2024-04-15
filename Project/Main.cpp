@@ -70,7 +70,7 @@ int main()
         {
             window->ShowConsole(true);
         }
-        if (inputManager->IsKeyPressed(Inputs::EKey::KEY_F1))
+        if (inputManager->IsKeyPressed(Inputs::EKey::KEY_F2))
         {
             window->ShowConsole(false);
         }

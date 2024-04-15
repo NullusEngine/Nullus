@@ -8,10 +8,6 @@ https://research.ncl.ac.uk/game/
 */
 #include "TextureLoader.h"
 #include <iostream>
-#define STB_IMAGE_IMPLEMENTATION
-
-#include "stb/stb_image.h"
-
 #include "Assets.h"
 
 #ifdef WIN32
@@ -25,12 +21,9 @@ using namespace Rendering;
 std::map<std::string, TextureLoadFunction> TextureLoader::fileHandlers;
 APILoadFunction TextureLoader::apiFunction = nullptr;
 
-bool TextureLoader::LoadTexture(const std::string& filename, char*& outData, int& width, int& height, int& channels, int& flags)
+Image TextureLoader::LoadTexture(const std::string& filename, int& flags)
 {
-    if (filename.empty())
-    {
-        return false;
-    }
+
     std::string extension = GetFileExtension(filename);
 
     auto it = fileHandlers.find(extension);
@@ -40,18 +33,10 @@ bool TextureLoader::LoadTexture(const std::string& filename, char*& outData, int
     if (it != fileHandlers.end())
     {
         // There's a custom handler function for this, just use that
-        return it->second(realPath, outData, width, height, channels, flags);
-    }
-    // By default, attempt to use stb image to get this texture
-    stbi_uc* texData = stbi_load(realPath.c_str(), &width, &height, &channels, 4); // 4 forces this to always be rgba!
-
-    if (texData)
-    {
-        outData = (char*)texData;
-        return true;
+        return it->second(realPath, flags);
     }
 
-    return false;
+    return Image(realPath);
 }
 
 void TextureLoader::RegisterTextureLoadFunction(TextureLoadFunction f, const std::string& fileExtension)

@@ -1,7 +1,7 @@
-prefix=E:/MyCode/Nullus/ThirdParty/glfw/Install
+prefix=D:/VSProject/Nullus/ThirdParty/glfw
 exec_prefix=${prefix}
-includedir=E:/MyCode/Nullus/ThirdParty/glfw/Install/include
-libdir=E:/MyCode/Nullus/ThirdParty/glfw/Install/lib
+includedir=D:/VSProject/Nullus/ThirdParty/glfw/include
+libdir=D:/VSProject/Nullus/ThirdParty/glfw/lib
 
 Name: GLFW
 Description: A multi-platform library for OpenGL, window and input

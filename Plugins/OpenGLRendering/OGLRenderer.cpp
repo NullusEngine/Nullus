@@ -20,18 +20,8 @@ https://research.ncl.ac.uk/game/
 
 #include "RHI/MeshGeometry.h"
 
-#ifdef _WIN32
-    #include "Win32/Win32Window.h"
-
-    #include "KHR\khrplatform.h"
-    #include "glad\glad.h"
-
-    #include "GL/GL.h"
-    #include "KHR/WGLext.h"
-
-PFNWGLSWAPINTERVALEXTPROC wglSwapIntervalEXT = NULL;
-#endif
-
+#include <GLFW/glfw3.h>
+#include "Windowing/Window.h"
 using namespace NLS;
 using namespace NLS::Rendering;
 
@@ -42,15 +32,20 @@ static void APIENTRY DebugCallback(GLenum source, GLenum type, GLuint id, GLenum
 OGLRenderer::OGLRenderer(Window& w)
     : RendererBase(w)
 {
-    initState = false;
-#ifdef _WIN32
-    InitWithWin32(w);
-#endif
+    if (gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
+    {
+        initState = true;
+    }
+    else
+    {
+        std::cout << "Failed to initialize GLAD" << std::endl;
+        initState = false;
+    }
     boundMesh = nullptr;
     boundShader = nullptr;
 
-    currentWidth = (int)w.GetScreenSize().x;
-    currentHeight = (int)w.GetScreenSize().y;
+    currentWidth = (int)w.GetSize().x;
+    currentHeight = (int)w.GetSize().y;
 
     if (initState)
     {
@@ -96,9 +91,6 @@ OGLRenderer::~OGLRenderer()
     delete font;
     delete debugShader;
 
-#ifdef _WIN32
-    DestroyWithWin32();
-#endif
 }
 
 void OGLRenderer::OnWindowResize(int w, int h)
@@ -127,9 +119,7 @@ void OGLRenderer::EndFrame()
 
 void OGLRenderer::SwapBuffers()
 {
-#ifdef _WIN32
-    ::SwapBuffers(deviceContext);
-#endif
+    Window::GetWindow()->SwapBuffers();
 }
 
 void OGLRenderer::BindShader(ShaderBase* s)
@@ -388,158 +378,19 @@ void OGLRenderer::DrawDebugLines()
     debugLines.clear();
 }
 
-#ifdef _WIN32
-void OGLRenderer::InitWithWin32(Window& w)
+void OGLRenderer::SetVerticalSync(VerticalSyncState s)
 {
-    Win32Code::Win32Window* realWindow = (Win32Code::Win32Window*)&w;
-
-    if (!(deviceContext = GetDC(realWindow->GetHandle())))
-    {
-        std::cout << __FUNCTION__ << " Failed to create window!" << std::endl;
-        return;
-    }
-
-    // A pixel format descriptor is a struct that tells the Windows OS what type of front / back buffers we want to create etc
-    PIXELFORMATDESCRIPTOR pfd;
-    memset(&pfd, 0, sizeof(PIXELFORMATDESCRIPTOR));
-
-    pfd.nSize = sizeof(PIXELFORMATDESCRIPTOR);
-    pfd.nVersion = 1;
-    pfd.dwFlags = PFD_DOUBLEBUFFER | PFD_SUPPORT_OPENGL | PFD_DRAW_TO_WINDOW; // It must be double buffered, it must support OGL(!), and it must allow us to draw to it...
-    pfd.iPixelType = PFD_TYPE_RGBA;                                           // We want our front / back buffer to have 4 channels!
-    pfd.cColorBits = 32;                                                      // 4 channels of 8 bits each!
-    pfd.cDepthBits = 24;                                                      // 24 bit depth buffer
-    pfd.cStencilBits = 8;                                                     // plus an 8 bit stencil buffer
-    pfd.iLayerType = PFD_MAIN_PLANE;
-
-    GLuint PixelFormat;
-    if (!(PixelFormat = ChoosePixelFormat(deviceContext, &pfd)))
-    { // Did Windows Find A Matching Pixel Format for our PFD?
-        std::cout << __FUNCTION__ << " Failed to choose a pixel format!" << std::endl;
-        return;
-    }
-
-    if (!SetPixelFormat(deviceContext, PixelFormat, &pfd))
-    { // Are We Able To Set The Pixel Format?
-        std::cout << __FUNCTION__ << " Failed to set a pixel format!" << std::endl;
-        return;
-    }
-
-    HGLRC tempContext; // We need a temporary OpenGL context to check for OpenGL 3.2 compatibility...stupid!!!
-    if (!(tempContext = wglCreateContext(deviceContext)))
-    { // Are We Able To get the temporary context?
-        std::cout << __FUNCTION__ << "  Cannot create a temporary context!" << std::endl;
-        wglDeleteContext(tempContext);
-        return;
-    }
-
-    if (!wglMakeCurrent(deviceContext, tempContext))
-    { // Try To Activate The Rendering Context
-        std::cout << __FUNCTION__ << " Cannot set temporary context!" << std::endl;
-        wglDeleteContext(tempContext);
-        return;
-    }
-    if (!gladLoadGL())
-    {
-        std::cout << __FUNCTION__ << " Cannot initialise GLAD!" << std::endl; // It's all gone wrong!
-        return;
-    }
-    // Now we have a temporary context, we can find out if we support OGL 4.x
-    char* ver = (char*)glGetString(GL_VERSION); // ver must equal "4.1.0" (or greater!)
-    int major = ver[0] - '0';                   // casts the 'correct' major version integer from our version string
-    int minor = ver[2] - '0';                   // casts the 'correct' minor version integer from our version string
-
-    if (major < 3)
-    { // Graphics hardware does not support OGL 4! Erk...
-        std::cout << __FUNCTION__ << " Device does not support OpenGL 4.x!" << std::endl;
-        wglDeleteContext(tempContext);
-        return;
-    }
-
-    if (major == 4 && minor < 1)
-    { // Graphics hardware does not support ENOUGH of OGL 4! Erk...
-        std::cout << __FUNCTION__ << " Device does not support OpenGL 4.1!" << std::endl;
-        wglDeleteContext(tempContext);
-        return;
-    }
-    // We do support OGL 4! Let's set it up...
-
-    int attribs[] = {
-        WGL_CONTEXT_MAJOR_VERSION_ARB, major, WGL_CONTEXT_MINOR_VERSION_ARB, minor, WGL_CONTEXT_FLAGS_ARB, WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB
-    #ifdef OPENGL_DEBUGGING
-                                                                                                               | WGL_CONTEXT_DEBUG_BIT_ARB
-    #endif // No deprecated stuff!! DIE DIE DIE glBegin!!!!
-        ,
-        WGL_CONTEXT_PROFILE_MASK_ARB,
-        WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
-        0 // That's enough attributes...
-    };
-
-    // Everywhere else in the Renderers, we use function pointers provided by GLEW...but we can't initialise GLEW yet! So we have to use the 'Wiggle' API
-    // to get a pointer to the function that will create our OpenGL 3.2 context...
-    PFNWGLCREATECONTEXTATTRIBSARBPROC wglCreateContextAttribsARB = (PFNWGLCREATECONTEXTATTRIBSARBPROC)wglGetProcAddress("wglCreateContextAttribsARB");
-    renderContext = wglCreateContextAttribsARB(deviceContext, 0, attribs);
-
-    // Check for the context, and try to make it the current rendering context
-    if (!renderContext || !wglMakeCurrent(deviceContext, renderContext))
-    {
-        std::cout << __FUNCTION__ << " Cannot set OpenGL 3 context!" << std::endl; // It's all gone wrong!
-        wglDeleteContext(renderContext);
-        wglDeleteContext(tempContext);
-        return;
-    }
-
-    wglDeleteContext(tempContext); // We don't need the temporary context any more!
-
-    std::cout << __FUNCTION__ << " Initialised OpenGL " << major << "." << minor << " rendering context" << std::endl; // It's all gone wrong!
-
-    glEnable(GL_FRAMEBUFFER_SRGB);
-
-    #ifdef OPENGL_DEBUGGING
-    glDebugMessageCallback(DebugCallback, NULL);
-    glDebugMessageControl(GL_DONT_CARE, GL_DONT_CARE, GL_DEBUG_SEVERITY_NOTIFICATION, 0, nullptr, GL_FALSE);
-    glEnable(GL_DEBUG_OUTPUT_SYNCHRONOUS_ARB);
-    #endif
-
-    // If we get this far, everything's going well!
-    initState = true;
-
-    wglSwapIntervalEXT = (PFNWGLSWAPINTERVALEXTPROC)wglGetProcAddress("wglSwapIntervalEXT");
-
-    w.SetRenderer(this);
-}
-
-void OGLRenderer::DestroyWithWin32()
-{
-    wglDeleteContext(renderContext);
-}
-#endif
-bool OGLRenderer::SetVerticalSync(VerticalSyncState s)
-{
-#ifdef _WIN32
-    if (!wglSwapIntervalEXT)
-    {
-        return false;
-    }
-    GLuint state;
-
     switch (s)
     {
         case VerticalSyncState::VSync_OFF:
-            state = 0;
+            Window::GetWindow()->GetDevice()->SetVsync(false);
             break;
         case VerticalSyncState::VSync_ON:
-            state = 1;
+            Window::GetWindow()->GetDevice()->SetVsync(true);
             break;
-        case VerticalSyncState::VSync_ADAPTIVE:
-            state = -1;
+        case VerticalSyncState::VSync_ADAPTIVE:        
             break;
     }
-
-    return wglSwapIntervalEXT(state);
-#else
-    return false;
-#endif
 }
 
 #ifdef OPENGL_DEBUGGING

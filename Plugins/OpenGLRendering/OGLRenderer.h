@@ -5,7 +5,7 @@
 #include "Vector3.h"
 #include "Vector4.h"
 
-#include "Window.h"
+#include "Windowing/Window.h"
 
 #ifdef _WIN32
     #include "windows.h"
@@ -22,7 +22,7 @@
 namespace NLS
 {
 class MeshGeometry;
-
+using namespace Maths;
 namespace Maths
 {
 class Matrix4;
@@ -55,7 +55,7 @@ public:
         forceValidDebugState = newState;
     }
 
-    virtual bool SetVerticalSync(VerticalSyncState s);
+    virtual void SetVerticalSync(VerticalSyncState s);
 
     void DrawString(const std::string& text, const Vector2& pos, const Vector4& colour = Vector4(0.75f, 0.75f, 0.75f, 1), float size = 20.0f);
     void DrawLine(const Vector3& start, const Vector3& end, const Vector4& colour);
@@ -77,12 +77,7 @@ protected:
     void BindTextureToShader(const TextureBase* t, const std::string& uniform, int texUnit) const;
     void BindMesh(MeshGeometry* m);
     void DrawBoundMesh(int subLayer = 0, int numInstances = 1);
-#ifdef _WIN32
-    void InitWithWin32(Window& w);
-    void DestroyWithWin32();
-    HDC deviceContext;   //...Device context?
-    HGLRC renderContext; // Permanent Rendering Context
-#endif
+
 private:
     struct DebugString
     {

@@ -3,9 +3,9 @@
 #include "Engine/GameObject.h"
 #include "Engine/CollosionDetection/CollisionDetection.h"
 #include "Math/Quaternion.h"
-
+#include "Windowing/Inputs/InputManager.h"
 #include "Constraint.h"
-
+#include "Time/Clock.h"
 #include "Debug.h"
 
 #include <functional>
@@ -77,17 +77,17 @@ float realDT = idealDT;
 
 void PhysicsSystem::Update(float dt)
 {
-    if (Window::GetKeyboard()->KeyPressed(KeyboardKeys::B))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_B))
     {
         useBroadPhase = !useBroadPhase;
         std::cout << "Setting broadphase to " << useBroadPhase << std::endl;
     }
-    if (Window::GetKeyboard()->KeyPressed(KeyboardKeys::I))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_I))
     {
         constraintIterationCount--;
         std::cout << "Setting constraint iterations to " << constraintIterationCount << std::endl;
     }
-    if (Window::GetKeyboard()->KeyPressed(KeyboardKeys::O))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_O))
     {
         constraintIterationCount++;
         std::cout << "Setting constraint iterations to " << constraintIterationCount << std::endl;
@@ -95,8 +95,7 @@ void PhysicsSystem::Update(float dt)
 
     dTOffset += dt; // We accumulate time delta here - there might be remainders from previous frame!
 
-    GameTimer t;
-    t.GetTimeDeltaSeconds();
+    Time::Clock clock;
 
     if (useBroadPhase)
     {
@@ -133,8 +132,8 @@ void PhysicsSystem::Update(float dt)
 
     UpdateCollisionList(); // Remove any old collisions
 
-    t.Tick();
-    float updateTime = t.GetTimeDeltaSeconds();
+    clock.Update();
+    float updateTime = clock.GetDeltaTime();
 
     // Uh oh, physics is taking too long...
     if (updateTime > realDT)

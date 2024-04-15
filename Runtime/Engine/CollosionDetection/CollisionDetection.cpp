@@ -4,9 +4,9 @@
 #include "OBBVolume.h"
 #include "SphereVolume.h"
 #include "Math/Vector2.h"
-#include "Window.h"
+#include "Windowing/Window.h"
 #include "Math/Maths.h"
-
+#include "Windowing/Inputs/InputManager.h"
 #include <list>
 #include "Math/Quaternion.h"
 #include "EngineDef.h"
@@ -182,7 +182,7 @@ Matrix4 GenerateInverseView(const Camera& c)
 
 Vector3 CollisionDetection::Unproject(const Vector3& screenPos, const Camera& cam)
 {
-    Vector2 screenSize = Window::GetWindow()->GetScreenSize();
+    Vector2 screenSize = Window::GetWindow()->GetSize();
 
     float aspect = screenSize.x / screenSize.y;
     float fov = cam.GetFieldOfVision();
@@ -214,8 +214,8 @@ Vector3 CollisionDetection::Unproject(const Vector3& screenPos, const Camera& ca
 
 Ray CollisionDetection::BuildRayFromMouse(const Camera& cam)
 {
-    Vector2 screenMouse = Window::GetMouse()->GetAbsolutePosition();
-    Vector2 screenSize = Window::GetWindow()->GetScreenSize();
+    Vector2 screenMouse = Inputs::InputManager::Instance->GetMousePosition();
+    Vector2 screenSize = Window::GetWindow()->GetSize();
 
     // We remove the y axis mouse position from height as OpenGL is 'upside down',
     // and thinks the bottom left is the origin, instead of the top left!
@@ -308,8 +308,7 @@ Vector3 CollisionDetection::UnprojectScreenPosition(Vector3 position, float aspe
     // the order of matrices used to form it are inverted, too.
     Matrix4 invVP = GenerateInverseView(c) * GenerateInverseProjection(aspect, fov, c.GetNearPlane(), c.GetFarPlane());
 
-    Vector2 screenSize = Window::GetWindow()->GetScreenSize();
-
+    Vector2 screenSize = Window::GetWindow()->GetSize();
     // Our mouse position x and y values are in 0 to screen dimensions range,
     // so we need to turn them into the -1 to 1 axis range of clip space.
     // We can do that by dividing the mouse values by the width and height of the

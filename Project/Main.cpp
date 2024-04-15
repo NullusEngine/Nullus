@@ -1,5 +1,6 @@
-﻿#include "Window.h"
-
+﻿#include "Windowing/Window.h"
+#include "Windowing/Inputs/InputManager.h"
+#include "Time/Clock.h"
 #include "AI/StateMachine.h"
 #include "AI/StateTransition.h"
 #include "AI/State.h"
@@ -35,43 +36,55 @@ int main()
 {
     Assembly::Instance().Instance().Load<AssemblyMath>().Load<AssemblyCore>().Load<AssemblyPlatform>().Load<AssemblyRender>().Load<AssemblyEngine>();
 
-    Window* w = Window::CreateGameWindow("Engine Game technology!", 1280, 720);
+    /* Settings */
+    NLS::Settings::DeviceSettings deviceSettings;
+    NLS::Settings::WindowSettings windowSettings;
+    windowSettings.title = "Nullus";
+    windowSettings.width = 1280;
+    windowSettings.height = 720;
+    /* Window creation */
+    auto device = std::make_unique<NLS::Context::Device>(deviceSettings);
+    auto window = std::make_unique<NLS::Window>(*device, windowSettings);
+    auto inputManager = std::make_unique<NLS::Inputs::InputManager>(*window);
+    window->MakeCurrentContext();
 
-    if (!w->HasInitialised())
+    if (!window->GetGlfwWindow())
     {
         return -1;
     }
     srand(time(0));
-    w->ShowOSPointer(false);
-    w->LockMouseToWindow(true);
+    window->SetCursorMode(Cursor::ECursorMode::DISABLED);
 
     TutorialGame* g = new TutorialGame();
-    w->GetTimer()->GetTimeDeltaSeconds(); // Clear the timer so we don't get a larget first dt!
-    while (w->UpdateWindow() && !Window::GetKeyboard()->KeyDown(KeyboardKeys::ESCAPE))
+    Time::Clock clock;
+    while (!window->ShouldClose() && !inputManager->IsKeyPressed(Inputs::EKey::KEY_ESCAPE))
     {
-        float dt = w->GetTimer()->GetTimeDeltaSeconds();
+        device->PollEvents();
+        float dt = clock.GetDeltaTime();
         if (dt > 0.1f)
         {
             std::cout << "Skipping large time delta" << std::endl;
             continue; // must have hit a breakpoint or something to have a 1 second frame time!
         }
-        if (Window::GetKeyboard()->KeyPressed(KeyboardKeys::PRIOR))
+        if (inputManager->IsKeyPressed(Inputs::EKey::KEY_F1))
         {
-            w->ShowConsole(true);
+            window->ShowConsole(true);
         }
-        if (Window::GetKeyboard()->KeyPressed(KeyboardKeys::NEXT))
+        if (inputManager->IsKeyPressed(Inputs::EKey::KEY_F1))
         {
-            w->ShowConsole(false);
-        }
-
-        if (Window::GetKeyboard()->KeyPressed(KeyboardKeys::T))
-        {
-            w->SetWindowPosition(0, 0);
+            window->ShowConsole(false);
         }
 
-        w->SetTitle("Gametech frame time:" + std::to_string(1000.0f * dt));
+        if (inputManager->IsKeyPressed(Inputs::EKey::KEY_T))
+        {
+            window->SetPosition(0, 0);
+        }
+
+        window->SetTitle("Gametech frame time:" + std::to_string(1000.0f * dt));
 
         g->UpdateGame(dt);
+        inputManager->Update();
+        clock.Update();
     }
-    Window::DestroyGameWindow();
+
 }

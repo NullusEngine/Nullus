@@ -4,9 +4,11 @@
 
 #include "TextureLoader.h"
 
-#ifdef WIN32
-    #include "WIn32/Win32Window.h"
-using namespace NLS::Win32Code;
+#include "Windowing/Window.h"
+#ifdef _WIN32
+#include <GLFW/glfw3.h>
+    #define GLFW_EXPOSE_NATIVE_WIN32
+    #include <GLFW/glfw3native.h>
 #endif
 #include "Maths.h"
 
@@ -29,7 +31,7 @@ VulkanRenderer::VulkanRenderer(Window& window)
     VulkanTexture::SetRenderer(this);
     TextureLoader::RegisterAPILoadFunction(VulkanTexture::VulkanTextureFromFilename);
 
-    OnWindowResize((int)hostWindow.GetScreenSize().x, (int)hostWindow.GetScreenSize().y);
+    OnWindowResize((int)hostWindow.GetSize().x, (int)hostWindow.GetSize().y);
 
     window.SetRenderer(this);
 
@@ -153,12 +155,13 @@ bool VulkanRenderer::InitGPUDevice()
 bool VulkanRenderer::InitSurface()
 {
 #ifdef _WIN32
-    Win32Window* window = (Win32Window*)&hostWindow;
-
+    auto window = hostWindow.GetGlfwWindow();
+    HWND hwnd = glfwGetWin32Window(window);
+    HINSTANCE hInst = (HINSTANCE)GetWindowLong(hwnd, -6);
     vk::Win32SurfaceCreateInfoKHR createInfo;
 
     createInfo = vk::Win32SurfaceCreateInfoKHR(
-        vk::Win32SurfaceCreateFlagsKHR(), window->GetInstance(), window->GetHandle());
+        vk::Win32SurfaceCreateFlagsKHR(), hInst, hwnd);
 
     surface = instance.createWin32SurfaceKHR(createInfo);
 #endif
@@ -187,7 +190,7 @@ int VulkanRenderer::InitBufferChain()
 
     vk::SurfaceCapabilitiesKHR surfaceCaps = gpu.getSurfaceCapabilitiesKHR(surface);
 
-    vk::Extent2D swapExtents = vk::Extent2D((int)hostWindow.GetScreenSize().x, (int)hostWindow.GetScreenSize().y);
+    vk::Extent2D swapExtents = vk::Extent2D((int)hostWindow.GetSize().x, (int)hostWindow.GetSize().y);
 
     auto presentModes = gpu.getSurfacePresentModesKHR(surface); // Type is of vector of PresentModeKHR
 
@@ -466,7 +469,7 @@ void VulkanRenderer::OnWindowResize(int width, int height)
     vkDeviceWaitIdle(device);
 
     delete depthBuffer;
-    depthBuffer = VulkanTexture::GenerateDepthTexture((int)hostWindow.GetScreenSize().x, (int)hostWindow.GetScreenSize().y);
+    depthBuffer = VulkanTexture::GenerateDepthTexture((int)hostWindow.GetSize().x, (int)hostWindow.GetSize().y);
 
     numFrameBuffers = InitBufferChain();
 
@@ -609,8 +612,8 @@ bool VulkanRenderer::CreateDefaultFrameBuffers()
     vk::ImageView attachments[2];
 
     vk::FramebufferCreateInfo createInfo = vk::FramebufferCreateInfo()
-                                               .setWidth((int)hostWindow.GetScreenSize().x)
-                                               .setHeight((int)hostWindow.GetScreenSize().y)
+                                               .setWidth((int)hostWindow.GetSize().x)
+                                               .setHeight((int)hostWindow.GetSize().y)
                                                .setLayers(1)
                                                .setAttachmentCount(2)
                                                .setPAttachments(attachments)

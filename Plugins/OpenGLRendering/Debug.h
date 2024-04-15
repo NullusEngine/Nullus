@@ -3,10 +3,12 @@
 #include <vector>
 #include <string>
 #include "OGLDef.h"
-#include "Window.h"
+#include "Windowing/Window.h"
 
 namespace NLS
 {
+using namespace Maths;
+using namespace Rendering;
 class OGL_API Debug
 {
 public:

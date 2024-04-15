@@ -4,7 +4,8 @@
 #include "OGLShader.h"
 #include "OGLTexture.h"
 #include "TextureLoader.h"
-#include "Window.h"
+#include "Windowing/Window.h"
+#include "Windowing/Inputs/InputManager.h"
 #include "Assets.h"
 
 using namespace NLS;
@@ -128,19 +129,19 @@ void TutorialGame::UpdateGame(float dt)
 
 void TutorialGame::UpdateKeys()
 {
-    if (Window::GetKeyboard()->KeyPressed(KeyboardKeys::F1))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_F1))
     {
         InitWorld(); // We can reset the simulation at any time with F1
         selectionObject = nullptr;
         lockedObject = nullptr;
     }
 
-    if (Window::GetKeyboard()->KeyPressed(KeyboardKeys::F2))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_F2))
     {
         InitCamera(); // F2 will reset the camera to a specific default place
     }
 
-    if (Window::GetKeyboard()->KeyPressed(KeyboardKeys::G))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_G))
     {
         useGravity = !useGravity; // Toggle gravity!
         physics->UseGravity(useGravity);
@@ -149,20 +150,20 @@ void TutorialGame::UpdateKeys()
     // bias in the calculations - the same objects might keep 'winning' the constraint
     // allowing the other one to stretch too much etc. Shuffling the order so that it
     // is random every frame can help reduce such bias.
-    if (Window::GetKeyboard()->KeyPressed(KeyboardKeys::F9))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_F9))
     {
         world->ShuffleConstraints(true);
     }
-    if (Window::GetKeyboard()->KeyPressed(KeyboardKeys::F10))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_F10))
     {
         world->ShuffleConstraints(false);
     }
 
-    if (Window::GetKeyboard()->KeyPressed(KeyboardKeys::F7))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_F7))
     {
         world->ShuffleObjects(true);
     }
-    if (Window::GetKeyboard()->KeyPressed(KeyboardKeys::F8))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_F8))
     {
         world->ShuffleObjects(false);
     }
@@ -197,28 +198,28 @@ void TutorialGame::LockedObjectMovement()
 
     float force = 100.0f;
 
-    if (Window::GetKeyboard()->KeyDown(KeyboardKeys::LEFT))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_LEFT))
     {
         lockedObject->GetComponent<PhysicsObject>()->AddForce(-rightAxis * force);
     }
 
-    if (Window::GetKeyboard()->KeyDown(KeyboardKeys::RIGHT))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_RIGHT))
     {
         Vector3 worldPos = selectionObject->GetTransform().GetPosition();
         lockedObject->GetComponent<PhysicsObject>()->AddForce(rightAxis * force);
     }
 
-    if (Window::GetKeyboard()->KeyDown(KeyboardKeys::UP))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_UP))
     {
         lockedObject->GetComponent<PhysicsObject>()->AddForce(fwdAxis * force);
     }
 
-    if (Window::GetKeyboard()->KeyDown(KeyboardKeys::DOWN))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_DOWN))
     {
         lockedObject->GetComponent<PhysicsObject>()->AddForce(-fwdAxis * force);
     }
 
-    if (Window::GetKeyboard()->KeyDown(KeyboardKeys::NEXT))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_PAGE_DOWN))
     {
         lockedObject->GetComponent<PhysicsObject>()->AddForce(Vector3(0, -10, 0));
     }
@@ -230,42 +231,42 @@ void TutorialGame::DebugObjectMovement()
     if (inSelectionMode && selectionObject)
     {
         // Twist the selected object!
-        if (Window::GetKeyboard()->KeyDown(KeyboardKeys::LEFT))
+        if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_LEFT))
         {
             selectionObject->GetComponent<PhysicsObject>()->AddTorque(Vector3(-10, 0, 0));
         }
 
-        if (Window::GetKeyboard()->KeyDown(KeyboardKeys::RIGHT))
+        if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_RIGHT))
         {
             selectionObject->GetComponent<PhysicsObject>()->AddTorque(Vector3(10, 0, 0));
         }
 
-        if (Window::GetKeyboard()->KeyDown(KeyboardKeys::NUM7))
+        if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_7))
         {
             selectionObject->GetComponent<PhysicsObject>()->AddTorque(Vector3(0, 10, 0));
         }
 
-        if (Window::GetKeyboard()->KeyDown(KeyboardKeys::NUM8))
+        if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_8))
         {
             selectionObject->GetComponent<PhysicsObject>()->AddTorque(Vector3(0, -10, 0));
         }
 
-        if (Window::GetKeyboard()->KeyDown(KeyboardKeys::RIGHT))
+        if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_RIGHT))
         {
             selectionObject->GetComponent<PhysicsObject>()->AddTorque(Vector3(10, 0, 0));
         }
 
-        if (Window::GetKeyboard()->KeyDown(KeyboardKeys::UP))
+        if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_UP))
         {
             selectionObject->GetComponent<PhysicsObject>()->AddForce(Vector3(0, 0, -10));
         }
 
-        if (Window::GetKeyboard()->KeyDown(KeyboardKeys::DOWN))
+        if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_DOWN))
         {
             selectionObject->GetComponent<PhysicsObject>()->AddForce(Vector3(0, 0, 10));
         }
 
-        if (Window::GetKeyboard()->KeyDown(KeyboardKeys::NUM5))
+        if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_5))
         {
             selectionObject->GetComponent<PhysicsObject>()->AddForce(Vector3(0, -10, 0));
         }
@@ -580,25 +581,23 @@ letting you move the camera around.
 */
 bool TutorialGame::SelectObject()
 {
-    if (Window::GetKeyboard()->KeyPressed(KeyboardKeys::Q))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_Q))
     {
         inSelectionMode = !inSelectionMode;
         if (inSelectionMode)
         {
-            Window::GetWindow()->ShowOSPointer(true);
-            Window::GetWindow()->LockMouseToWindow(false);
+            Window::GetWindow()->SetCursorMode(Cursor::ECursorMode::NORMAL);
         }
         else
         {
-            Window::GetWindow()->ShowOSPointer(false);
-            Window::GetWindow()->LockMouseToWindow(true);
+            Window::GetWindow()->SetCursorMode(Cursor::ECursorMode::DISABLED);
         }
     }
     if (inSelectionMode)
     {
         renderer->DrawString("Press Q to change to camera mode!", Vector2(5, 85));
 
-        if (Window::GetMouse()->ButtonDown(NLS::MouseButtons::LEFT))
+        if (Inputs::InputManager::Instance->IsMouseButtonPressed(Inputs::EMouseButton::MOUSE_BUTTON_LEFT))
         {
             if (selectionObject)
             { // set colour to deselected;
@@ -637,7 +636,7 @@ bool TutorialGame::SelectObject()
         renderer->DrawString("Press L to lock selected object object!", Vector2(5, 80));
     }
 
-    if (Window::GetKeyboard()->KeyPressed(NLS::KeyboardKeys::L))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_L))
     {
         if (selectionObject)
         {
@@ -664,13 +663,13 @@ line - after the third, they'll be able to twist under torque aswell.
 void TutorialGame::MoveSelectedObject()
 {
     renderer->DrawString(" Click Force :" + std::to_string(forceMagnitude), Vector2(10, 20)); // Draw debug text at 10 ,20
-    forceMagnitude += Window::GetMouse()->GetWheelMovement() * 100.0f;
+    forceMagnitude += (Inputs::InputManager::Instance->GetWheelMovement()).y * 100.0f;
     if (!selectionObject)
     {
         return; // we haven ’t selected anything !
     }
     // Push the selected object !
-    if (Window::GetMouse()->ButtonPressed(NLS::MouseButtons::RIGHT))
+    if (Inputs::InputManager::Instance->IsMouseButtonPressed(NLS::Inputs::EMouseButton::MOUSE_BUTTON_RIGHT))
     {
         Ray ray = CollisionDetection::BuildRayFromMouse(*world->GetMainCamera());
         RayCollision closestCollision;

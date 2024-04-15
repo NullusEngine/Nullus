@@ -44,10 +44,7 @@ public:
         SwapBuffers();
     }
 
-    virtual bool SetVerticalSync(VerticalSyncState s)
-    {
-        return false;
-    }
+    virtual void SetVerticalSync(VerticalSyncState s){}
 
     virtual void OnWindowResize(int w, int h) = 0;
     virtual void OnWindowDetach(){}; // Most renderers won't care about this

@@ -1,7 +1,8 @@
 #include "Camera.h"
-#include "Window.h"
+#include "Windowing/Window.h"
 #include <algorithm>
 #include <Maths.h>
+#include "Windowing/Inputs/InputManager.h"
 
 using namespace NLS;
 
@@ -12,10 +13,13 @@ last frame (default value is for simplicities sake...)
 */
 void Camera::UpdateCamera(float dt)
 {
-    // Update the mouse by how much
-    pitch -= (Window::GetMouse()->GetRelativePosition().y);
-    yaw -= (Window::GetMouse()->GetRelativePosition().x);
 
+    auto delta = 
+    // Update the mouse by how much
+    pitch -= ((Inputs::InputManager::Instance->GetMousePosition()- lastMousePos).y);
+    yaw -= ((Inputs::InputManager::Instance->GetMousePosition() - lastMousePos).x);
+
+    lastMousePos = Inputs::InputManager::Instance->GetMousePosition();
     // Bounds check the pitch, to be between straight up and straight down ;)
     pitch = Min(pitch, 90.0f);
     pitch = Max(pitch, -90.0f);
@@ -31,29 +35,29 @@ void Camera::UpdateCamera(float dt)
 
     float frameSpeed = 100 * dt;
 
-    if (Window::GetKeyboard()->KeyDown(KeyboardKeys::W))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_W))
     {
         position += Matrix4::Rotation(yaw, Vector3(0, 1, 0)) * Vector3(0, 0, -1) * frameSpeed;
     }
-    if (Window::GetKeyboard()->KeyDown(KeyboardKeys::S))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_S))
     {
         position -= Matrix4::Rotation(yaw, Vector3(0, 1, 0)) * Vector3(0, 0, -1) * frameSpeed;
     }
 
-    if (Window::GetKeyboard()->KeyDown(KeyboardKeys::A))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_A))
     {
         position += Matrix4::Rotation(yaw, Vector3(0, 1, 0)) * Vector3(-1, 0, 0) * frameSpeed;
     }
-    if (Window::GetKeyboard()->KeyDown(KeyboardKeys::D))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_D))
     {
         position -= Matrix4::Rotation(yaw, Vector3(0, 1, 0)) * Vector3(-1, 0, 0) * frameSpeed;
     }
 
-    if (Window::GetKeyboard()->KeyDown(KeyboardKeys::SHIFT))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_LEFT_SHIFT))
     {
         position.y += frameSpeed;
     }
-    if (Window::GetKeyboard()->KeyDown(KeyboardKeys::SPACE))
+    if (Inputs::InputManager::Instance->IsKeyPressed(Inputs::EKey::KEY_SPACE))
     {
         position.y -= frameSpeed;
     }

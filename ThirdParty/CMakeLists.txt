@@ -1,0 +1,12 @@
+set(third_party_folder "ThirdParty")
+
+if(NOT TARGET glfw)
+    option(GLFW_BUILD_EXAMPLES "" OFF)
+    option(GLFW_BUILD_TESTS "" OFF)
+    option(GLFW_BUILD_DOCS "" OFF)
+    option(GLFW_INSTALL "" OFF)
+    set(BUILD_SHARED_LIBS  ${NLS_USE_SHARED_LIBRARY})
+    add_subdirectory(glfw)
+    set_target_properties(glfw PROPERTIES FOLDER ${third_party_folder}/glfw)
+    set_target_properties(glfw PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${NLS_APP_OUTPUT_PATH}")
+endif()

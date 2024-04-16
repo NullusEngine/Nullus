@@ -103,15 +103,10 @@ VulkanTexture* VulkanTexture::GenerateTextureFromDataInternal(int width, int hei
 
 TextureBase* VulkanTexture::VulkanTextureFromFilename(const std::string& name)
 {
-    char* texData = nullptr;
-    int width = 0;
-    int height = 0;
-    int channels = 0;
     int flags = 0;
-    TextureLoader::LoadTexture(name, texData, width, height, channels, flags);
+    Image image = TextureLoader::LoadTexture(name, flags);
 
-    VulkanTexture* cubeTex = GenerateTextureFromDataInternal(width, height, channels, false, {texData}, name);
-    delete texData;
+    VulkanTexture* cubeTex = GenerateTextureFromDataInternal(image.getWidth(), image.getWidth(), image.getChannels(), false, { (char*)image.getData()}, name);
     return cubeTex;
 };
 
@@ -123,29 +118,19 @@ VulkanTexture* VulkanTexture::VulkanCubemapFromFilename(
 {
     vector<const string*> allFiles = {&negativeXFile, &positiveXFile, &negativeYFile, &positiveYFile, &negativeZFile, &positiveZFile};
 
-    vector<char*> texData(6, nullptr);
-    int width[6] = {0};
-    int height[6] = {0};
-    int channels[6] = {0};
     int flags[6] = {0};
-
+    vector<Image> images;
     for (int i = 0; i < 6; ++i)
     {
-        TextureLoader::LoadTexture(*(allFiles[i]), texData[i], width[i], height[i], channels[i], flags[i]);
-        if (i > 0 && (width[i] != width[0] || height[0] != height[0]))
+        images.push_back(TextureLoader::LoadTexture(*allFiles[i], flags[i]));
+        if (i > 0 && (images[i].getWidth() != images[0].getWidth() || images[i].getHeight() != images[0].getHeight()))
         {
             std::cout << __FUNCTION__ << " cubemap input textures don't match in size?\n";
             return nullptr;
         }
     }
-
-    VulkanTexture* cubeTex = GenerateTextureFromDataInternal(width[0], height[0], channels[0], true, texData, debugName);
-
-    // delete the old texData;
-    for (int i = 0; i < 6; ++i)
-    {
-        delete texData[i];
-    }
+    vector<char*> temp;
+    VulkanTexture* cubeTex = GenerateTextureFromDataInternal(images[0].getWidth(), images[0].getHeight(), images[0].getChannels(), true, temp, debugName);
 
     return cubeTex;
 }

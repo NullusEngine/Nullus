@@ -1,7 +1,7 @@
 ﻿#pragma once
 #include "RHI/TextureBase.h"
 #include <string>
-#include <vulkan\vulkan.hpp> //
+#include <vulkan/vulkan.hpp> //
 
 namespace NLS
 {

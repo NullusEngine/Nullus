@@ -27,12 +27,26 @@ else()
     set(NLS_PLATFORM_X64 false)
 endif()
 
-if(NLS_PLATFORM_X64)
-set(TARGET_PLATFORM_NAME "Win64")
-else()
-set(TARGET_PLATFORM_NAME "Win32")
+# Check for other platforms if needed
+if(APPLE)
+    set(NLS_PLATFORM_APPLE true)
+    set(TARGET_PLATFORM_NAME "MacOS")
+elseif(UNIX)
+    set(NLS_PLATFORM_UNIX true)
+    set(TARGET_PLATFORM_NAME "Linux")
+elseif(WIN32)
+    set(NLS_PLATFORM_WIN32 true)
 endif()
 
+if(NLS_PLATFORM_X64)
+    if(WIN32)
+        set(TARGET_PLATFORM_NAME "Win64")
+    endif()
+else()
+    if(WIN32)
+        set(TARGET_PLATFORM_NAME "Win32")
+    endif()
+endif()
 
 # 可选的配置项
 # ##############################################################################

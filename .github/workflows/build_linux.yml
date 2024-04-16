@@ -19,8 +19,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-            sudo apt install libwayland-dev libxkbcommon-dev xorg-dev
-            sudo apt install libvulkan-dev
+            sudo apt-get install libwayland-dev libxkbcommon-dev xorg-dev
+            sudo apt-get install libvulkan-dev
             sudo apt-get install libgl1-mesa-dev
       - name: Build
         run: ./build_linux.sh ${{matrix.configuration}} 

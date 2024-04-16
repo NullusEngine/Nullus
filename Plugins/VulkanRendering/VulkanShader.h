@@ -6,8 +6,7 @@
     #include <minwindef.h>
 #endif
 
-#include "Vulkan/vulkan.hpp"
-
+#include "vulkan/vulkan.hpp"
 #include "RHI/ShaderBase.h"
 #include <string>
 #include <vector>

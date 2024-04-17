@@ -68,7 +68,7 @@ VulkanTexture* VulkanTexture::GenerateTextureFromDataInternal(int width, int hei
     char* gpuPtr = (char*)device.mapMemory(stagingMemory, 0, allocationSize);
     for (int i = 0; i < dataSrcs.size(); ++i)
     {
-        memcpy(gpuPtr, dataSrcs[i], faceSize);
+        std::memcpy(gpuPtr, dataSrcs[i], faceSize);
         gpuPtr += faceSize;
 
         vkRenderer->ImageTransitionBarrier(&cmdBuffer, outTex, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, outTex->aspectType, vk::PipelineStageFlagBits::eHost, vk::PipelineStageFlagBits::eTransfer, 0, i);

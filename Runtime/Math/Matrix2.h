@@ -28,7 +28,7 @@ public:
     void SetColumn(unsigned int column, const Vector2& val)
     {
         assert(column < 2);
-        memcpy(&array[2 * column], &val, sizeof(Vector2));
+        std::memcpy(&array[2 * column], &val, sizeof(Vector2));
     }
 
     Vector2 GetRow(unsigned int row) const
@@ -48,7 +48,7 @@ public:
         assert(column < 2);
         Vector2 out(0, 0);
 
-        memcpy(&out, &array[3 * column], sizeof(Vector2));
+        std::memcpy(&out, &array[3 * column], sizeof(Vector2));
 
         return out;
     }

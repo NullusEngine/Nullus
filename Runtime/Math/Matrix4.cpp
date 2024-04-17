@@ -26,7 +26,7 @@ Matrix4::Matrix4(void)
 
 Matrix4::Matrix4(float elements[16])
 {
-    memcpy(this->array, elements, 16 * sizeof(float));
+    std::memcpy(this->array, elements, 16 * sizeof(float));
 }
 
 Matrix4::Matrix4(const Matrix3& m3)
@@ -322,7 +322,7 @@ Vector4 Matrix4::GetColumn(unsigned int column) const
 
     if (column <= 3)
     {
-        memcpy(&out, &array[4 * column], sizeof(Vector4));
+        std::memcpy(&out, &array[4 * column], sizeof(Vector4));
     }
 
     return out;

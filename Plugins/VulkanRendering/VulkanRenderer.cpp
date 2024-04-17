@@ -765,7 +765,7 @@ void VulkanRenderer::InitUniformBuffer(UniformData& uniform, void* data, int dat
 void VulkanRenderer::UpdateUniformBuffer(UniformData& uniform, void* data, int dataSize)
 {
     void* mappedData = device.mapMemory(uniform.deviceMem, 0, uniform.allocInfo.allocationSize);
-    memcpy(mappedData, data, dataSize);
+    std::memcpy(mappedData, data, dataSize);
     device.unmapMemory(uniform.deviceMem);
 }
 

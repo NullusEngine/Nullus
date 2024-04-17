@@ -103,7 +103,7 @@ void VulkanMesh::UploadToGPU(RendererBase* r)
         for (int i = 0; i < attributeSpec.numAttributes; ++i)
         { // copy its next attribute to the GPU
             size_t copySize = attributeSizes[attributeTypes[i]];
-            memcpy(dataPtr, (char*)attributePtrs[i] + (v * copySize), copySize);
+            std::memcpy(dataPtr, (char*)attributePtrs[i] + (v * copySize), copySize);
             dataPtr += copySize;
         }
     }
@@ -153,7 +153,7 @@ void VulkanMesh::UploadToGPU(RendererBase* r)
         indexMemory = sourceDevice.allocateMemory(memInfo);
         char* dataPtr = (char*)sourceDevice.mapMemory(indexMemory, 0, memInfo.allocationSize);
 
-        memcpy(dataPtr, GetIndexData().data(), sizeof(int) * GetIndexCount());
+        std::memcpy(dataPtr, GetIndexData().data(), sizeof(int) * GetIndexCount());
 
         sourceDevice.unmapMemory(indexMemory);
 

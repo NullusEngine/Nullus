@@ -76,7 +76,7 @@ void GameTechRenderer::LoadSkybox()
     for (int i = 0; i < 6; ++i)
     {
         images.push_back(TextureLoader::LoadTexture(filenames[i], flags[i]));
-        if (i > 0 && (images[i].getWidth() != images[0].getWidth() || images[i].getHeight() != images[0].getHeight()))
+        if (i > 0 && (images[i].GetWidth() != images[0].GetWidth() || images[i].GetHeight() != images[0].GetHeight()))
         {
             std::cout << __FUNCTION__ << " cubemap input textures don't match in size?\n";
             return;
@@ -87,8 +87,8 @@ void GameTechRenderer::LoadSkybox()
 
     for (int i = 0; i < 6; ++i)
     {
-        GLenum type = images[i].getChannels() == 4 ? GL_RGBA : GL_RGB;
-        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB, images[i].getWidth(), images[i].getHeight(), 0, type, GL_UNSIGNED_BYTE, images[i].getData());
+        GLenum type = images[i].GetChannels() == 4 ? GL_RGBA : GL_RGB;
+        glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGB, images[i].GetWidth(), images[i].GetHeight(), 0, type, GL_UNSIGNED_BYTE, images[i].GetData());
     }
 
     glTexParameterf(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);

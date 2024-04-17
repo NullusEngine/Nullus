@@ -12,5 +12,5 @@ using namespace NLS;
 
 void TextureWriter::WritePNG(const std::string& filename, const Image& image)
 {
-    image.save(filename);
+    image.Save(filename);
 }

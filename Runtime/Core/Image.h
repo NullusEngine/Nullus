@@ -17,12 +17,12 @@ namespace NLS
         Image& operator=(const Image& other); // 赋值运算符重载
         ~Image();
 
-        void setData(const unsigned char* newData); // 设置图像的像素数据
-        int getWidth() const;
-        int getHeight() const;
-        int getChannels() const;
-        const unsigned char* getData() const;
-        unsigned char* getData();
-        void save(const std::string& filename) const;
+        void SetData(const unsigned char* newData); // 设置图像的像素数据
+        int GetWidth() const;
+        int GetHeight() const;
+        int GetChannels() const;
+        const unsigned char* GetData() const;
+        unsigned char* GetData();
+        void Save(const std::string& filename) const;
     };
 }

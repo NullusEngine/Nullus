@@ -71,23 +71,23 @@ Image::~Image()
         stbi_image_free(data);
 }
 
-int Image::getWidth() const
+int Image::GetWidth() const
 {
     return width;
 }
-int Image::getHeight() const
+int Image::GetHeight() const
 {
     return height;
 }
-int Image::getChannels() const
+int Image::GetChannels() const
 {
     return channels;
 }
-const unsigned char* Image::getData() const
+const unsigned char* Image::GetData() const
 {
     return data;
 }
-void Image::setData(const unsigned char* newData) {
+void Image::SetData(const unsigned char* newData) {
     if (!newData) {
         std::cerr << "Invalid image data provided." << std::endl;
         return;
@@ -100,11 +100,11 @@ void Image::setData(const unsigned char* newData) {
     data = new unsigned char[dataSize];
     std::memcpy(data, newData, dataSize);
 }
-unsigned char* Image::getData() 
+unsigned char* Image::GetData() 
 {
     return data;
 }
-void Image::save(const std::string& filename) const
+void Image::Save(const std::string& filename) const
 {
     if (data)
     {

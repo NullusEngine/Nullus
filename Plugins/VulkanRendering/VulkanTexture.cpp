@@ -106,7 +106,7 @@ TextureBase* VulkanTexture::VulkanTextureFromFilename(const std::string& name)
     int flags = 0;
     Image image = TextureLoader::LoadTexture(name, flags);
 
-    VulkanTexture* cubeTex = GenerateTextureFromDataInternal(image.getWidth(), image.getWidth(), image.getChannels(), false, { (char*)image.getData()}, name);
+    VulkanTexture* cubeTex = GenerateTextureFromDataInternal(image.GetWidth(), image.GetWidth(), image.GetChannels(), false, { (char*)image.GetData()}, name);
     return cubeTex;
 };
 
@@ -123,14 +123,14 @@ VulkanTexture* VulkanTexture::VulkanCubemapFromFilename(
     for (int i = 0; i < 6; ++i)
     {
         images.push_back(TextureLoader::LoadTexture(*allFiles[i], flags[i]));
-        if (i > 0 && (images[i].getWidth() != images[0].getWidth() || images[i].getHeight() != images[0].getHeight()))
+        if (i > 0 && (images[i].GetWidth() != images[0].GetWidth() || images[i].GetHeight() != images[0].GetHeight()))
         {
             std::cout << __FUNCTION__ << " cubemap input textures don't match in size?\n";
             return nullptr;
         }
     }
     vector<char*> temp;
-    VulkanTexture* cubeTex = GenerateTextureFromDataInternal(images[0].getWidth(), images[0].getHeight(), images[0].getChannels(), true, temp, debugName);
+    VulkanTexture* cubeTex = GenerateTextureFromDataInternal(images[0].GetWidth(), images[0].GetHeight(), images[0].GetChannels(), true, temp, debugName);
 
     return cubeTex;
 }

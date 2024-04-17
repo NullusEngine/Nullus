@@ -74,9 +74,9 @@ void NLS::Window::SetIcon(const std::string & p_filePath)
 {
 	Image image(p_filePath);
 	GLFWimage images[1];
-	images[0].pixels = const_cast<unsigned char*>(image.getData());
-	images[0].height = image.getWidth();
-	images[0].width = image.getHeight();
+	images[0].pixels = const_cast<unsigned char*>(image.GetData());
+	images[0].height = image.GetWidth();
+	images[0].width = image.GetHeight();
 	glfwSetWindowIcon(m_glfwWindow, 1, images);
 }
 

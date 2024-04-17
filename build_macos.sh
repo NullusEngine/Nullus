@@ -26,6 +26,9 @@ else
     exit 1
 fi
 
-cmake -S . -B build -G "Xcode"
+export CC=gcc
+export CXX=g++
+
+cmake -S . -B build -G "Xcode" -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++
 
 cmake --build build --config "${CONFIG}"

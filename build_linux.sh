@@ -47,7 +47,7 @@ fi
 MY_DIR="$(cd "$(dirname "$0")" 1>/dev/null 2>/dev/null && pwd)"  
 cd "${MY_DIR}"
 
-export CC=clang
-export CXX=clang++
+export CC=gcc
+export CXX=g++
 cmake -S . -B build "${CMAKE_ARG_BUILD_TYPE_CONFIG}" "${CMAKE_ARG_BUILD_TOOL_TYPE_CONFIG}" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 cmake --build "${MY_DIR}/build" -- all -j$(nproc)

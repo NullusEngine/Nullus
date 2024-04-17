@@ -1,6 +1,7 @@
 #pragma once
 #include "Vector2.h"
 #include <assert.h>
+#include <cstring>
 namespace NLS
 {
 namespace Maths

@@ -12,7 +12,7 @@ https://research.ncl.ac.uk/game/
 #include "Vector3.h"
 #include "Vector4.h"
 #include "Quaternion.h"
-
+#include <cstring>
 using namespace NLS;
 using namespace NLS::Maths;
 Matrix4::Matrix4(void)

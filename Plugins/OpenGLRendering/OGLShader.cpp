@@ -123,7 +123,7 @@ void OGLShader::PrintCompileLog(GLuint object)
         glGetShaderInfoLog(object, logLength, NULL, tempData);
         std::cout << "Compile Log:\n"
                   << tempData << std::endl;
-        delete tempData;
+        delete[] tempData;
     }
 }
 

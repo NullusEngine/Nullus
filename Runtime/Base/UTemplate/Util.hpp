@@ -3,7 +3,7 @@
 #include <type_traits>
 #include <string_view>
 #include <span>
-
+#include <stdint.h>
 namespace NLS {
 	template<typename T>
 	constexpr bool always_false = false;

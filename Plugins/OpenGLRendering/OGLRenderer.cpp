@@ -348,7 +348,7 @@ void OGLRenderer::DrawDebugStrings()
     debugTextMesh->SetVertexPositions(vertPos);
     debugTextMesh->SetVertexTextureCoords(vertTex);
     debugTextMesh->SetVertexColours(vertColours);
-    debugTextMesh->UpdateGPUBuffers(0, vertPos.size());
+    debugTextMesh->UpdateGPUBuffers(0, (unsigned int)vertPos.size());
 
     BindMesh(debugTextMesh);
     DrawBoundMesh();

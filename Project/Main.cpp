@@ -61,11 +61,7 @@ int main()
     {
         device->PollEvents();
         float dt = clock.GetDeltaTime();
-        if (dt > 0.1f)
-        {
-            std::cout << "Skipping large time delta" << std::endl;
-            continue; // must have hit a breakpoint or something to have a 1 second frame time!
-        }
+
         if (inputManager->IsKeyPressed(Inputs::EKey::KEY_F1))
         {
             window->ShowConsole(true);
@@ -74,13 +70,12 @@ int main()
         {
             window->ShowConsole(false);
         }
-
-        if (inputManager->IsKeyPressed(Inputs::EKey::KEY_T))
+        if (inputManager->IsKeyPressed(Inputs::EKey::KEY_F11))
         {
-            window->SetPosition(0, 0);
+            window->ToggleFullscreen();
         }
 
-        window->SetTitle("Gametech frame time:" + std::to_string(1000.0f * dt));
+        window->SetTitle("FPS:" + std::to_string(clock.GetFramerate()));
 
         g->UpdateGame(dt);
         inputManager->Update();

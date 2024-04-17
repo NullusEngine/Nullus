@@ -1,7 +1,6 @@
 ﻿#pragma once
 #include "RHI/MeshGeometry.h"
-#include "VulkanRenderer.h"
-
+#include <vulkan/vulkan.hpp> 
 namespace NLS
 {
 namespace Rendering

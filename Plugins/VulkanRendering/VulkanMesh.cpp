@@ -1,5 +1,5 @@
 ﻿#include "VulkanMesh.h"
-
+#include "VulkanRenderer.h"
 using namespace NLS;
 using namespace Rendering;
 

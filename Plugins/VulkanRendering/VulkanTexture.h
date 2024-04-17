@@ -7,6 +7,7 @@ namespace NLS
 {
 namespace Rendering
 {
+class VulkanRenderer;
 class VulkanTexture : public TextureBase
 {
     friend class VulkanRenderer;

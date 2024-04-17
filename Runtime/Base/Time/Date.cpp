@@ -1,5 +1,5 @@
 #include <time.h>
-
+#include <stdint.h>
 #include "Time/Date.h"
 
 std::string NLS::Time::Date::GetDateAsString()

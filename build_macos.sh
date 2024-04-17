@@ -26,11 +26,6 @@ else
     exit 1
 fi
 
- alias gcc='gcc-x'
- alias cc='gcc-x'
- alias g++='g++-x'
- alias c++='c++-x'
- 
 #cmake -S . -B build -G "Xcode"
-cmake -S . -B build -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++
+cmake -S . -B build -DCMAKE_C_COMPILER=gcc-11.4 -DCMAKE_CXX_COMPILER=g++-11.4
 cmake --build build --config "${CONFIG}"

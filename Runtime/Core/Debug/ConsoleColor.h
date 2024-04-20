@@ -3,6 +3,8 @@
 #include <iostream>
 #ifdef _WIN32
 #include <windows.h>
+#else
+typedef unsigned short WORD;
 #endif
 #define COLOR_BLUE NLS::Debug::blue
 #define COLOR_RED NLS::Debug::red

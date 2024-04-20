@@ -14,7 +14,6 @@
 #include "AssemblyEngine.h"
 #include "AssemblyPlatform.h"
 #include "AssemblyRender.h"
-
 using namespace NLS;
 using namespace Engine;
 
@@ -76,7 +75,6 @@ int main()
         }
 
         window->SetTitle("FPS:" + std::to_string(clock.GetFramerate()));
-
         g->UpdateGame(dt);
         inputManager->Update();
         clock.Update();

@@ -1,6 +1,20 @@
 # CMake build directory
 [Bb]uild/
-App/
 
 # Visual Studio 2015/2017 cache/options directory
 .vs/
+
+# App/*.exe, App/*.pdb
+App/*/*.exe
+App/*/*.pdb
+App/*/*.dll
+# log file
+App/*.log
+
+# windows
+App/Win64_*/
+App/Win32_*/
+
+#linux
+App/Linux/
+

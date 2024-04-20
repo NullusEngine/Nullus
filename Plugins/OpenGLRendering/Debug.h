@@ -9,7 +9,7 @@ namespace NLS
 {
 using namespace Maths;
 using namespace Rendering;
-class OGL_API Debug
+class OGL_API RendererDebug
 {
 public:
     static void Print(const std::string& text, const Vector2& pos, const Vector4& colour = Vector4(1, 1, 1, 1));
@@ -52,8 +52,8 @@ protected:
         Vector4 colour;
     };
 
-    Debug() {}
-    ~Debug() {}
+    RendererDebug() {}
+    ~RendererDebug() {}
 
     static std::vector<DebugStringEntry> stringEntries;
     static std::vector<DebugLineEntry> lineEntries;

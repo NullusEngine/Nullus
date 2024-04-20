@@ -21,7 +21,7 @@ TutorialGame::TutorialGame()
     useGravity = false;
     inSelectionMode = false;
 
-    Debug::SetRenderer(renderer);
+    NLS::RendererDebug::SetRenderer(renderer);
 
     InitialiseAssets();
 }
@@ -85,11 +85,11 @@ void TutorialGame::UpdateGame(float dt)
 
     if (useGravity)
     {
-        Debug::Print("(G)ravity on", Vector2(5, 95));
+        NLS::RendererDebug::Print("(G)ravity on", Vector2(5, 95));
     }
     else
     {
-        Debug::Print("(G)ravity off", Vector2(5, 95));
+        NLS::RendererDebug::Print("(G)ravity off", Vector2(5, 95));
     }
 
     SelectObject();
@@ -112,13 +112,13 @@ void TutorialGame::UpdateGame(float dt)
         world->GetMainCamera()->SetPitch(angles.x);
         world->GetMainCamera()->SetYaw(angles.y);
 
-        // Debug::DrawAxisLines(lockedObject->GetTransform().GetMatrix(), 2.0f);
+        // NLS::Debug::DrawAxisLines(lockedObject->GetTransform().GetMatrix(), 2.0f);
     }
 
     world->UpdateWorld(dt);
     renderer->Update(dt);
 
-    Debug::FlushRenderables(dt);
+    NLS::RendererDebug::FlushRenderables(dt);
     renderer->Render();
 
     if (testStateObject)

@@ -2,24 +2,24 @@
 #include "Matrix4.h"
 using namespace NLS;
 
-OGLRenderer* Debug::renderer = nullptr;
+OGLRenderer* RendererDebug::renderer = nullptr;
 
-std::vector<Debug::DebugStringEntry> Debug::stringEntries;
-std::vector<Debug::DebugLineEntry> Debug::lineEntries;
+std::vector<RendererDebug::DebugStringEntry> RendererDebug::stringEntries;
+std::vector<RendererDebug::DebugLineEntry> RendererDebug::lineEntries;
 
-const Vector4 Debug::RED = Vector4(1, 0, 0, 1);
-const Vector4 Debug::GREEN = Vector4(0, 1, 0, 1);
-const Vector4 Debug::BLUE = Vector4(0, 0, 1, 1);
+const Vector4 RendererDebug::RED = Vector4(1, 0, 0, 1);
+const Vector4 RendererDebug::GREEN = Vector4(0, 1, 0, 1);
+const Vector4 RendererDebug::BLUE = Vector4(0, 0, 1, 1);
 
-const Vector4 Debug::BLACK = Vector4(0, 0, 0, 1);
-const Vector4 Debug::WHITE = Vector4(1, 1, 1, 1);
+const Vector4 RendererDebug::BLACK = Vector4(0, 0, 0, 1);
+const Vector4 RendererDebug::WHITE = Vector4(1, 1, 1, 1);
 
-const Vector4 Debug::YELLOW = Vector4(1, 1, 0, 1);
-const Vector4 Debug::MAGENTA = Vector4(1, 0, 1, 1);
-const Vector4 Debug::CYAN = Vector4(0, 1, 1, 1);
+const Vector4 RendererDebug::YELLOW = Vector4(1, 1, 0, 1);
+const Vector4 RendererDebug::MAGENTA = Vector4(1, 0, 1, 1);
+const Vector4 RendererDebug::CYAN = Vector4(0, 1, 1, 1);
 
 
-void Debug::Print(const std::string& text, const Vector2& pos, const Vector4& colour)
+void RendererDebug::Print(const std::string& text, const Vector2& pos, const Vector4& colour)
 {
     DebugStringEntry newEntry;
 
@@ -30,7 +30,7 @@ void Debug::Print(const std::string& text, const Vector2& pos, const Vector4& co
     stringEntries.emplace_back(newEntry);
 }
 
-void Debug::DrawLine(const Vector3& startpoint, const Vector3& endpoint, const Vector4& colour, float time)
+void RendererDebug::DrawLine(const Vector3& startpoint, const Vector3& endpoint, const Vector4& colour, float time)
 {
     DebugLineEntry newEntry;
 
@@ -42,7 +42,7 @@ void Debug::DrawLine(const Vector3& startpoint, const Vector3& endpoint, const V
     lineEntries.emplace_back(newEntry);
 }
 
-void Debug::DrawAxisLines(const Matrix4& modelMatrix, float scaleBoost, float time)
+void RendererDebug::DrawAxisLines(const Matrix4& modelMatrix, float scaleBoost, float time)
 {
     Matrix4 local = modelMatrix;
     local.SetPositionVector({0, 0, 0});
@@ -53,13 +53,13 @@ void Debug::DrawAxisLines(const Matrix4& modelMatrix, float scaleBoost, float ti
 
     Vector3 worldPos = modelMatrix.GetPositionVector();
 
-    DrawLine(worldPos, worldPos + (right * scaleBoost), Debug::RED, time);
-    DrawLine(worldPos, worldPos + (up * scaleBoost), Debug::GREEN, time);
-    DrawLine(worldPos, worldPos + (fwd * scaleBoost), Debug::BLUE, time);
+    DrawLine(worldPos, worldPos + (right * scaleBoost), RendererDebug::RED, time);
+    DrawLine(worldPos, worldPos + (up * scaleBoost), RendererDebug::GREEN, time);
+    DrawLine(worldPos, worldPos + (fwd * scaleBoost), RendererDebug::BLUE, time);
 }
 
 
-void Debug::FlushRenderables(float dt)
+void RendererDebug::FlushRenderables(float dt)
 {
     if (!renderer)
     {

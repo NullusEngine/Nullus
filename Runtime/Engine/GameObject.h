@@ -1,17 +1,12 @@
 #pragma once
-#include "Transform.h"
-#include "CollosionDetection/CollisionVolume.h"
-
-#include "Engine/Physics/PhysicsObject.h"
-#include "RenderObject.h"
-
+#include "TransformComponent.h"
 #include <vector>
 #include "EngineDef.h"
 #include "Component.h"
 #include "UTemplate/Type.hpp"
 #include "UDRefl/Object.hpp"
 using std::vector;
-
+using namespace std;
 namespace NLS
 {
 namespace Engine
@@ -33,19 +28,9 @@ public:
         return isActive;
     }
 
-    Transform& GetTransform()
+    TransformComponent* GetTransform()
     {
-        return *transform;
-    }
-
-    RenderObject* GetRenderObject() const
-    {
-        return renderObject;
-    }
-
-    void SetRenderObject(RenderObject* newObject)
-    {
-        renderObject = newObject;
+        return GetComponent<TransformComponent>();
     }
 
     const string& GetName() const
@@ -63,10 +48,6 @@ public:
         // std::cout << "OnCollisionEnd event occured!\n";
     }
 
-    bool GetBroadphaseAABB(Vector3& outsize) const;
-
-    void UpdateBroadphaseAABB();
-
     void SetWorldID(int newID)
     {
         worldID = newID;
@@ -79,9 +60,6 @@ public:
 
 protected:
     std::vector<SharedObject> m_vComponents;
-    Transform* transform;
-    RenderObject* renderObject;
-
     bool isActive;
     int worldID;
     string name;

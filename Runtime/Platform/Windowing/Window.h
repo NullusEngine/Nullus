@@ -51,10 +51,6 @@ using namespace Rendering;
 		* Destructor of the window, responsible of the GLFW window memory free
 		*/
 		~Window();
-
-		void SetRenderer(RendererBase* r);
-
-		void ResizeRenderer();
 		/**
 		* Set Icon
 		* @param p_filePath

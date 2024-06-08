@@ -50,9 +50,9 @@ std::string NLS::Debug::FileHandler::GetLogHeader(ELogLevel p_logLevel)
 	switch (p_logLevel)
 	{
 	case ELogLevel::LOG_DEFAULT:	return __DEFAULT_HEADER;
-	case ELogLevel::LOG_INFO:		return __INFO_HEADER;
-	case ELogLevel::LOG_WARNING:	return __WARNING_HEADER;
-	case ELogLevel::LOG_ERROR:		return __ERROR_HEADER;
+	case ELogLevel::NLS_LOG_INFO:		return __INFO_HEADER;
+	case ELogLevel::NLS_LOG_WARNING:	return __WARNING_HEADER;
+	case ELogLevel::NLS_LOG_ERROR:		return __ERROR_HEADER;
 	}
 
 	return "";

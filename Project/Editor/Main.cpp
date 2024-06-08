@@ -34,7 +34,7 @@ static void TryRun(const std::string& projectPath, const std::string& projectNam
 		[](NLS::EDeviceError, std::string errMsg)
 		{
 			errMsg = "Nullus requires OpenGL 4.3 or newer.\r\n" + errMsg;
-			LOG_ERROR(errMsg);
+			NLS_LOG_ERROR(errMsg);
 		};
 
 	std::unique_ptr<Editor::Core::Application> app;

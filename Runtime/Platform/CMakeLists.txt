@@ -5,6 +5,5 @@ nls_add_runtime_target(
     NLS_Base
     NLS_Core
     NLS_Math
-    NLS_Render
     glfw
   )

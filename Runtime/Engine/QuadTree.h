@@ -1,7 +1,6 @@
 #pragma once
 #include "Vector2.h"
-#include "CollosionDetection/CollisionDetection.h"
-#include "Debug.h"
+#include "Vector3.h"
 #include <list>
 #include <functional>
 #include "EngineDef.h"
@@ -27,7 +26,17 @@ struct QuadTreeEntry
         this->size = size;
     }
 };
+static bool AABBTest(const Vector3& posA, const Vector3& posB, const Vector3& halfSizeA, const Vector3& halfSizeB)
+{
+    Vector3 delta = posB - posA;
+    Vector3 totalSize = halfSizeA + halfSizeB;
 
+    if (abs(delta.x) < totalSize.x && abs(delta.y) < totalSize.y && abs(delta.z) < totalSize.z)
+    {
+        return true;
+    }
+    return false;
+}
 template<class T>
 class QuadTreeNode
 {
@@ -36,7 +45,7 @@ public:
 
     void Insert(T& object, const Vector3& objectPos, const Vector3& objectSize, int depthLeft, int maxSize)
     {
-        if (!CollisionDetection::AABBTest(objectPos, Vector3(position.x, 0, position.y), objectSize, Vector3(size.x, 1000.0f, size.y)))
+        if (!AABBTest(objectPos, Vector3(position.x, 0, position.y), objectSize, Vector3(size.x, 1000.0f, size.y)))
         {
             return;
         }

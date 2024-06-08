@@ -1,5 +1,4 @@
 #include "GameObject.h"
-#include "CollosionDetection/CollisionDetection.h"
 #include "UDRefl/Object.hpp"
 #include "UDRefl/ReflMngr.hpp"
 
@@ -10,48 +9,12 @@ GameObject::GameObject(string objectName)
     name = objectName;
     worldID = -1;
     isActive = true;
-    renderObject = nullptr;
-    transform = AddComponent<Transform>();
+    AddComponent<TransformComponent>();
 }
 
 GameObject::~GameObject()
 {
     m_vComponents.clear();
-    delete renderObject;
-}
-
-bool GameObject::GetBroadphaseAABB(Vector3& outSize) const
-{
-    if (!GetComponent<CollisionVolume>())
-    {
-        return false;
-    }
-    outSize = broadphaseAABB;
-    return true;
-}
-
-void GameObject::UpdateBroadphaseAABB()
-{
-    if (!GetComponent<CollisionVolume>())
-    {
-        return;
-    }
-    if (GetComponent<CollisionVolume>()->type == VolumeType::AABB)
-    {
-        broadphaseAABB = ((AABBVolume&)*GetComponent<CollisionVolume>()).GetHalfDimensions();
-    }
-    else if (GetComponent<CollisionVolume>()->type == VolumeType::Sphere)
-    {
-        float r = ((SphereVolume&)*GetComponent<CollisionVolume>()).GetRadius();
-        broadphaseAABB = Vector3(r, r, r);
-    }
-    else if (GetComponent<CollisionVolume>()->type == VolumeType::OBB)
-    {
-        Matrix3 mat = Matrix3(transform->GetOrientation());
-        mat = mat.Absolute();
-        Vector3 halfSizes = ((OBBVolume&)*GetComponent<CollisionVolume>()).GetHalfDimensions();
-        broadphaseAABB = mat * halfSizes;
-    }
 }
 
 SharedObject GameObject::AddComponent(Type type, const std::function<void(Component*)>& func)

@@ -7,7 +7,6 @@
 #include <GLFW/glfw3.h>
 
 #include <stdexcept>
-#include "RHI/RendererBase.h"
 std::unordered_map<GLFWwindow*, NLS::Window*> NLS::Window::__WINDOWS_MAP;
 
 NLS::Window::Window(Context::Device& p_device, const Settings::WindowSettings& p_windowSettings) :
@@ -50,26 +49,6 @@ NLS::Window::~Window()
 	glfwDestroyWindow(m_glfwWindow);
 }
 
-void NLS::Window::SetRenderer(RendererBase* r)
-{
-    if (renderer && renderer != r)
-    {
-        renderer->OnWindowDetach();
-    }
-    renderer = r;
-
-    if (r)
-    {
-        renderer->OnWindowResize((int)m_size.x, (int)m_size.y);
-    }
-}
-void NLS::Window::ResizeRenderer()
-{
-    if (renderer)
-    {
-        renderer->OnWindowResize((int)m_size.x, (int)m_size.y);
-    }
-}
 void NLS::Window::SetIcon(const std::string & p_filePath)
 {
 	Image image(p_filePath);
@@ -357,7 +336,7 @@ void NLS::Window::CreateGlfwWindow(const Settings::WindowSettings& p_windowSetti
 
 	if (!m_glfwWindow)
 	{
-		throw std::runtime_error("Failed to create GLFW window"); // TODO: Replace with OvDebug assertion
+		throw std::runtime_error("Failed to create GLFW window"); // TODO: Replace with Debug assertion
 	}
 	else
 	{

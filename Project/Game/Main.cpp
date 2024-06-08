@@ -1,35 +1,15 @@
 ﻿#include "Windowing/Window.h"
 #include "Windowing/Inputs/InputManager.h"
 #include "Time/Clock.h"
-#include "AI/StateMachine.h"
-#include "AI/StateTransition.h"
-#include "AI/State.h"
-
-#include "Pathfinding/NavigationGrid.h"
-
-#include "TutorialGame.h"
 #include "Assembly.h"
 #include "AssemblyCore.h"
 #include "AssemblyMath.h"
 #include "AssemblyEngine.h"
 #include "AssemblyPlatform.h"
 #include "AssemblyRender.h"
+#include "Game.h"
 using namespace NLS;
 using namespace Engine;
-
-/*
-
-The main function should look pretty familar to you!
-We make a window, and then go into a while loop that repeatedly
-runs our 'game' until we press escape. Instead of making a 'renderer'
-and updating it, we instead make a whole game, and repeatedly update that,
-instead.
-
-This time, we've added some extra functionality to the window class - we can
-hide or show the
-
-*/
-
 
 int main()
 {
@@ -54,7 +34,7 @@ int main()
     srand(time(0));
     window->SetCursorMode(Cursor::ECursorMode::DISABLED);
 
-    TutorialGame* g = new TutorialGame();
+    Game* g = new Game();
     Time::Clock clock;
     while (!window->ShouldClose() && !inputManager->IsKeyPressed(Inputs::EKey::KEY_ESCAPE))
     {

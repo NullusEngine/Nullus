@@ -13,6 +13,11 @@ class Vector4;
 class NLS_MATH_API Vector3
 {
 public:
+    static const Vector3 One;
+    static const Vector3 Zero;
+    static const Vector3 Forward;
+    static const Vector3 Right;
+    static const Vector3 Up;
     union
     {
         struct
@@ -94,15 +99,88 @@ public:
         return v;
     }
 
-    static constexpr float Dot(const Vector3& a, const Vector3& b)
-    {
-        return (a.x * b.x) + (a.y * b.y) + (a.z * b.z);
-    }
+    /**
+     * Calculate the sum of two vectors
+     * @param p_left (First vector)
+     * @param p_right (Second vector)
+     */
+    static Vector3 Add(const Vector3& p_left, const Vector3& p_right);
 
-    static Vector3 Cross(const Vector3& a, const Vector3& b)
-    {
-        return Vector3((a.y * b.z) - (a.z * b.y), (a.z * b.x) - (a.x * b.z), (a.x * b.y) - (a.y * b.x));
-    }
+    /**
+     * Calculate the substraction of two vectors
+     * @param p_left (First vector)
+     * @param p_right (Second vector)
+     */
+    static Vector3 Substract(const Vector3& p_left, const Vector3& p_right);
+
+    /**
+     * Calculate the multiplication of a vector with a scalar
+     * @param p_target
+     * @param p_scalar
+     */
+    static Vector3 Multiply(const Vector3& p_target, float p_scalar);
+
+    /**
+     * Multiple two vectors component-wise
+     * @param p_left
+     * @param p_right
+     */
+    static Vector3 Multiply(const Vector3& p_left, const Vector3& p_right);
+
+    /**
+     * Divide scalar to vector left
+     * @param p_left
+     * @param p_scalar
+     */
+    static Vector3 Divide(const Vector3& p_left, float p_scalar);
+
+    /**
+     * Return the length of a vector
+     * @param p_target
+     */
+    static float Length(const Vector3& p_target);
+
+    /**
+     * Return the dot product of two vectors
+     * @param p_left
+     * @param p_right
+     */
+    static float Dot(const Vector3& p_left, const Vector3& p_right);
+
+    /**
+     * Return the distance between two vectors
+     * @param p_left
+     * @param p_right
+     */
+    static float Distance(const Vector3& p_left, const Vector3& p_right);
+
+    /**
+     * Return the cross product of two vectors
+     * @param p_left
+     * @param p_right
+     */
+    static Vector3 Cross(const Vector3& p_left, const Vector3& p_right);
+
+    /**
+     * Return the normalize of the given vector
+     * @param p_target
+     */
+    static Vector3 Normalize(const Vector3& p_target);
+
+    /**
+     * Calculate the interpolation between two vectors
+     * @param p_start
+     * @param p_end
+     * @param p_alpha
+     */
+    static Vector3 Lerp(const Vector3& p_start, const Vector3& p_end, float p_alpha);
+
+    /**
+     * Calculate the angle between two vectors
+     * @param p_from
+     * @param p_to
+     */
+    static float AngleBetween(const Vector3& p_from, const Vector3& p_to);
 
     inline Vector3 operator+(const Vector3& a) const
     {

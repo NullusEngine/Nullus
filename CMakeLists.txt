@@ -87,5 +87,4 @@ endif()
 
 add_subdirectory("Runtime")
 add_subdirectory("Project")
-add_subdirectory("Plugins")
 add_subdirectory("ThirdParty")

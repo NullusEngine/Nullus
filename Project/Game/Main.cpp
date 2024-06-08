@@ -78,6 +78,7 @@ int main()
         g->UpdateGame(dt);
         inputManager->Update();
         clock.Update();
+        inputManager->ClearEvents();
     }
 
 }

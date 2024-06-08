@@ -2,7 +2,7 @@
 
 #include <string>
 #include <map>
-
+#include "CoreDef.h"
 #include <Eventing/Event.h>
 
 #include "Debug/ILogHandler.h"
@@ -25,7 +25,7 @@ namespace NLS::Debug
 	/*
 	* 用于在控制台或文件上显示错误消息的静态类
 	*/
-	class Logger
+	class NLS_CORE_API Logger
 	{
 	public:
 

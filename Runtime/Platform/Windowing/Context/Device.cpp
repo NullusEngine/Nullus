@@ -44,11 +44,11 @@ NLS::Context::Device::~Device()
 	}
 }
 
-std::pair<int16_t, int16_t> NLS::Context::Device::GetMonitorSize() const
+NLS::Maths::Vector2 NLS::Context::Device::GetMonitorSize() const
 {
 	const GLFWvidmode * mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
 
-	return std::pair<int16_t, int16_t>(static_cast<int16_t>(mode->width), static_cast<int16_t>(mode->height));
+	return NLS::Maths::Vector2(mode->width, mode->height);
 }
 
 GLFWcursor * NLS::Context::Device::GetCursorInstance(Cursor::ECursorShape p_cursorShape) const

@@ -7,6 +7,7 @@
 #include "Windowing/Context/EDeviceError.h"
 #include "Windowing/Settings/DeviceSettings.h"
 #include "Windowing/Cursor/ECursorShape.h"
+#include "Vector2.h"
 struct GLFWwindow;
 struct GLFWcursor;
 
@@ -36,7 +37,7 @@ namespace NLS::Context
 		/**
 		* 返回主显示器的大小（以像素为单位）
 		*/
-		std::pair<int16_t, int16_t> GetMonitorSize() const;
+		NLS::Maths::Vector2 GetMonitorSize() const;
 
 		/**
 		* 返回与给定形状对应的 GLFWcursor 实例

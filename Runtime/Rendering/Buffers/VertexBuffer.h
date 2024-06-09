@@ -10,7 +10,7 @@
 
 #include "Rendering/Context/Driver.h"
 
-namespace Rendering::Buffers
+namespace NLS::Rendering::Buffers
 {
 	/**
 	* Wraps OpenGL VBO

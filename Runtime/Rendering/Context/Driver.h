@@ -21,7 +21,7 @@
 
 class DriverImpl;
 
-namespace Rendering::Context
+namespace NLS::Rendering::Context
 {
 	/**
 	* Handles the lifecycle of the underlying graphics context
@@ -97,7 +97,7 @@ namespace Rendering::Context
 		* @param p_instances
 		*/
 		void Draw(
-			Rendering::Data::PipelineState p_pso,
+			NLS::Rendering::Data::PipelineState p_pso,
 			const Resources::IMesh& p_mesh,
 			Settings::EPrimitiveMode p_primitiveMode = Settings::EPrimitiveMode::TRIANGLES,
 			uint32_t p_instances = 1

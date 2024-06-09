@@ -1,6 +1,6 @@
 #pragma once
 
-namespace NLS::Inputs
+namespace NLS::Windowing::Inputs
 {
 /**
  * Keyboard keys
@@ -129,4 +129,4 @@ enum class EKey
     KEY_RIGHT_SUPER = 347,
     KEY_MENU = 348
 };
-} // namespace NLS::Inputs
+} // namespace NLS::Windowing::Inputs

@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace Rendering::Settings
+namespace NLS::Rendering::Settings
 {
     /**
     * Projection modes, mostly used for cameras

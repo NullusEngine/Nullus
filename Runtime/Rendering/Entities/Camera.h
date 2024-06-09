@@ -9,7 +9,7 @@
 #include "Rendering/Settings/EProjectionMode.h"
 #include "Rendering/Entities/Entity.h"
 
-namespace Rendering::Entities
+namespace NLS::Rendering::Entities
 {
 	/**
 	* Represents a camera. Wraps projection and view calculation based on applied rotation and the given positions
@@ -114,17 +114,17 @@ namespace Rendering::Entities
 		/**
 		* Returns the cached frustum
 		*/
-		const Rendering::Data::Frustum& GetFrustum() const;
+		const NLS::Rendering::Data::Frustum& GetFrustum() const;
 
 		/**
 		* Returns the frustum of the camera used for lights culling
 		*/
-		const Rendering::Data::Frustum* GetGeometryFrustum() const;
+		const NLS::Rendering::Data::Frustum* GetGeometryFrustum() const;
 
 		/**
 		* Returns the frustum of the camera used for lights culling
 		*/
-		const Rendering::Data::Frustum* GetLightFrustum() const;
+		const NLS::Rendering::Data::Frustum* GetLightFrustum() const;
 
 		/**
 		* Returns true if the frustum culling for geometry is enabled
@@ -139,7 +139,7 @@ namespace Rendering::Entities
 		/**
 		* Returns the current projection mode
 		*/
-		Rendering::Settings::EProjectionMode GetProjectionMode() const;
+		NLS::Rendering::Settings::EProjectionMode GetProjectionMode() const;
 
 		/**
 		* Set the camera position
@@ -217,17 +217,17 @@ namespace Rendering::Entities
 		* Defines the projection mode the camera should adopt
 		* @param p_projectionMode
 		*/
-		void SetProjectionMode(Rendering::Settings::EProjectionMode p_projectionMode);
+		void SetProjectionMode(NLS::Rendering::Settings::EProjectionMode p_projectionMode);
 
 	private:
 		Maths::Matrix4 CalculateProjectionMatrix(uint16_t p_windowWidth, uint16_t p_windowHeight) const;
 		Maths::Matrix4 CalculateViewMatrix() const;
 
 	private:
-		Rendering::Data::Frustum m_frustum;
+		NLS::Rendering::Data::Frustum m_frustum;
 		Maths::Matrix4 m_viewMatrix;
 		Maths::Matrix4 m_projectionMatrix;
-		Rendering::Settings::EProjectionMode m_projectionMode;
+		NLS::Rendering::Settings::EProjectionMode m_projectionMode;
 
 		float m_fov;
 		float m_size;

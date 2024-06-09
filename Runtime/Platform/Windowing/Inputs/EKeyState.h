@@ -1,6 +1,6 @@
 #pragma once
 
-namespace NLS::Inputs
+namespace NLS::Windowing::Inputs
 {
 	/**
 	* Defines some states that can be applied to keyboard keys

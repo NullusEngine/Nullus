@@ -4,7 +4,7 @@
 #include "Rendering/Buffers/Framebuffer.h"
 #include "Rendering/Entities/Camera.h"
 
-namespace Rendering::Data
+namespace NLS::Rendering::Data
 {
 	/**
 	* Describe how a given frame should be rendered
@@ -13,7 +13,7 @@ namespace Rendering::Data
 	{
 		uint16_t renderWidth = 0;
 		uint16_t renderHeight = 0;
-		Rendering::Entities::Camera* camera;
+		NLS::Rendering::Entities::Camera* camera;
 		Buffers::Framebuffer* outputBuffer;
 
 		/**

@@ -7,7 +7,7 @@
 
 
 
-namespace Rendering::Resources
+namespace NLS::Rendering::Resources
 {
 	namespace Loaders { class TextureLoader; }
 

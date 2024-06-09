@@ -2,7 +2,7 @@
 
 #include <string>
 
-namespace NLS::Settings
+namespace NLS::Windowing::Settings
 {
 	/**
 	* Contains device settings

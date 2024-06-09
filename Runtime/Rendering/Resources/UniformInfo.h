@@ -5,7 +5,7 @@
 
 #include "Rendering/Resources/UniformType.h"
 
-namespace Rendering::Resources
+namespace NLS::Rendering::Resources
 {
 	/**
 	* Data structure containing information about a uniform

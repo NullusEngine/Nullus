@@ -2,7 +2,7 @@
 
 #include "Rendering/Buffers/VertexBuffer.h"
 #include "Rendering/Settings/EDataType.h"
-namespace Rendering::Buffers
+namespace NLS::Rendering::Buffers
 {
 	/**
 	* Wraps OpenGL VAO

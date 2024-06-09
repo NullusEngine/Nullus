@@ -12,7 +12,7 @@
 
 
 using namespace NLS;
-namespace Rendering::Resources
+namespace NLS::Rendering::Resources
 {
 	namespace Loaders { class ShaderLoader; }
 

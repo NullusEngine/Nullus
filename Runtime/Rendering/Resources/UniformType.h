@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 
-namespace Rendering::Resources
+namespace NLS::Rendering::Resources
 {
 	/**
 	* Defines the types that a uniform can take

@@ -1,10 +1,10 @@
 #pragma once
-#include "TransformComponent.h"
 #include <vector>
 #include "EngineDef.h"
-#include "Component.h"
 #include "UTemplate/Type.hpp"
 #include "UDRefl/Object.hpp"
+#include "Eventing/Event.h"
+#include "Components/Component.h"
 using std::vector;
 using namespace std;
 namespace NLS
@@ -12,73 +12,234 @@ namespace NLS
 namespace Engine
 {
 using namespace UDRefl;
+namespace Components
+{
+    class TransformComponent;
+}
 class NLS_ENGINE_API GameObject
 {
 public:
-    GameObject(string name = "");
+    GameObject(int64_t p_actorID, const std::string& p_name, const std::string& p_tag, bool& p_playing);
     ~GameObject();
     template<typename T>
-    T* AddComponent(const std::function<void(Component*)>& func = {});
+    T* AddComponent(const std::function<void(Components::Component*)>& func = {});
     template<typename T>
     T* GetComponent(bool includeSubType = true) const;
-    SharedObject AddComponent(Type type, const std::function<void(Component*)>& func = {});
-    SharedObject GetComponent(Type type, bool includeSubType = true) const;
-    bool IsActive() const
-    {
-        return isActive;
-    }
 
-    TransformComponent* GetTransform()
+    SharedObject AddComponent(Type type, const std::function<void(Components::Component*)>& func = {});
+    SharedObject GetComponent(Type type, bool includeSubType = true) const;
+    /**
+     * Enable or disable the actor
+     * @param p_active
+     */
+    void SetActive(bool p_active);
+
+    /**
+     * Returns true if the actor is active, ignoring his parent (if any) active state
+     */
+    bool IsSelfActive() const;
+
+    /**
+     * Returns true if the actor is and his recursive parents (if any) are active
+     */
+    bool IsActive() const;
+
+    Components::TransformComponent* GetTransform()
     {
-        return GetComponent<TransformComponent>();
+        return m_transform;
     }
 
     const string& GetName() const
     {
-        return name;
+        return m_name;
     }
-
-    virtual void OnCollisionBegin(GameObject* otherObject)
+    /**
+     * Defines a new name for the actor
+     * @param p_name
+     */
+    void SetName(const std::string& p_name)
     {
-        // std::cout << "OnCollisionBegin event occured!\n";
+        m_name = p_name;
     }
-
-    virtual void OnCollisionEnd(GameObject* otherObject)
+    /**
+     * Returns true if the actor is not marked as destroyed
+     */
+    bool IsAlive() const
     {
-        // std::cout << "OnCollisionEnd event occured!\n";
+        return !m_destroyed;
     }
+    /**
+     * Defines a new tag for the actor
+     * @param p_tag
+     */
+    void SetTag(const std::string& p_tag)
+    {
+        m_tag = p_tag;
+    }
+    /**
+     * Return the current tag of the actor
+     */
+    const std::string& GetTag() const
+    {
+        return m_tag;
+    }
+    /**
+     * Called when the actor enter in collision with another physical object
+     * @param p_otherObject
+     */
+    void OnCollisionEnter(GameObject& p_otherObject);
+
+    /**
+     * Called when the actor is in collision with another physical object
+     * @param p_otherObject
+     */
+    void OnCollisionStay(GameObject& p_otherObject);
+
+    /**
+     * Called when the actor exit from collision with another physical object
+     * @param p_otherObject
+     */
+    void OnCollisionExit(GameObject& p_otherObject);
+
+    /**
+     * Called when the actor enter in trigger with another physical object
+     * @param p_otherObject
+     */
+    void OnTriggerEnter(GameObject& p_otherObject);
+
+    /**
+     * Called when the actor is in trigger with another physical object
+     * @param p_otherObject
+     */
+    void OnTriggerStay(GameObject& p_otherObject);
+
+    /**
+     * Called when the actor exit from trigger with another physical object
+     * @param p_otherObject
+     */
+    void OnTriggerExit(GameObject& p_otherObject);
 
     void SetWorldID(int newID)
     {
-        worldID = newID;
+        m_worldID = newID;
     }
 
     int GetWorldID() const
     {
-        return worldID;
+        return m_worldID;
     }
+    /**
+     * Defines if the actor is sleeping or not.
+     * A sleeping actor will not trigger methods suchs as OnEnable, OnDisable and OnDestroyed
+     * @param p_sleeping
+     */
+    void SetSleeping(bool p_sleeping) { m_sleeping = p_sleeping; }
+    /**
+     * Called when the scene start or when the actor gets enabled for the first time during play mode
+     * This method will always be called in an ordered triple:
+     * - OnAwake()
+     * - OnEnable()
+     * - OnStart()
+     */
+    void OnAwake();
+
+    /**
+     * Called when the scene start or when the actor gets enabled for the first time during play mode
+     * This method will always be called in an ordered triple:
+     * - OnAwake()
+     * - OnEnable()
+     * - OnStart()
+     */
+    void OnStart();
+
+    /**
+     * Called when the actor gets enabled (SetActive set to true) or at scene start if the actor is hierarchically active.
+     * This method can be called in an ordered triple at scene start:
+     * - OnAwake()
+     * - OnEnable()
+     * - OnStart()
+     * Or can be called solo if the actor hierarchical active state changed to true and the actor already gets awaked
+     * Conditions:
+     * - Play mode only
+     */
+    void OnEnable();
+
+    /**
+     * Called when the actor hierarchical active state changed to false or gets destroyed while being hierarchically active
+     * Conditions:
+     * - Play mode only
+     */
+    void OnDisable();
+
+    /**
+     * Called when the actor gets destroyed if it has been awaked
+     * Conditions:
+     * - Play mode only
+     */
+    void OnDestroy();
+
+    /**
+     * Called every frame
+     * @param p_deltaTime
+     */
+    void OnUpdate(float p_deltaTime);
+
+    /**
+     * Called every physics frame
+     * @param p_deltaTime
+     */
+    void OnFixedUpdate(float p_deltaTime);
+
+    /**
+     * Called every frame after OnUpdate
+     * @param p_deltaTime
+     */
+    void OnLateUpdate(float p_deltaTime);
+
+private:
+    /**
+     * @brief Deleted copy constructor
+     * @param p_actor
+     */
+    GameObject(const GameObject& p_actor) = delete;
+
+    void RecursiveActiveUpdate();
+    void RecursiveWasActiveUpdate();
+
+public:
+    /* Some events that are triggered when an action occur on the actor instance */
+    Event<Components::Component&> ComponentAddedEvent;
+    Event<Components::Component&> ComponentRemovedEvent;
+
+    /* Some events that are triggered when an action occur on any actor */
+    static Event<GameObject&> DestroyedEvent;
+    static Event<GameObject&> CreatedEvent;
+    static Event<GameObject&, GameObject&> AttachEvent;
+    static Event<GameObject&> DettachEvent;
 
 protected:
     std::vector<SharedObject> m_vComponents;
-    bool isActive;
-    int worldID;
-    string name;
+    bool m_active;
+    int m_worldID;
+    string m_name;
+    /* Settings */
+    std::string m_tag;
 
-    Vector3 broadphaseAABB;
+    /* Internal settings */
+    bool m_destroyed = false;
+    bool m_sleeping = true;
+    bool m_awaked = false;
+    bool m_started = false;
+    bool m_wasActive = false;
+    bool& m_playing;
+    /* Parenting system stuff */
+    int64_t m_parentID = 0;
+    GameObject* m_parent = nullptr;
+    std::vector<GameObject*> m_children;
+    Components::TransformComponent* m_transform = nullptr;
 };
-
-template<typename T>
-T* GameObject::AddComponent(const std::function<void(Component*)>& func)
-{
-    return AddComponent(Type_of<T>, func).template AsPtr<T>();
-}
-
-
-template<typename T>
-T* GameObject::GetComponent(bool includeSubType) const
-{
-    return GetComponent(Type_of<T>, includeSubType).StaticCast(Type_of<T>).template AsPtr<T>();
-}
 
 } // namespace Engine
 } // namespace NLS
+
+#include "GameObject.inl"

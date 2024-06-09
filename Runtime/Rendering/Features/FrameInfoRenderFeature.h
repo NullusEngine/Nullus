@@ -4,16 +4,16 @@
 #include "Rendering/Features/ARenderFeature.h"
 #include "Rendering/Data/FrameInfo.h"
 
-namespace Rendering::Features
+namespace NLS::Rendering::Features
 {
-	class FrameInfoRenderFeature : public Rendering::Features::ARenderFeature
+	class FrameInfoRenderFeature : public NLS::Rendering::Features::ARenderFeature
 	{
 	public:
 		/**
 		* Constructor
 		* @param p_renderer
 		*/
-		FrameInfoRenderFeature(Rendering::Core::CompositeRenderer& p_renderer);
+		FrameInfoRenderFeature(NLS::Rendering::Core::CompositeRenderer& p_renderer);
 
 		/**
 		* Destructor
@@ -24,16 +24,16 @@ namespace Rendering::Features
 		* Return a reference to the last frame info
 		* @note Will throw an error if called during the rendering of a frame
 		*/
-		const Rendering::Data::FrameInfo& GetFrameInfo() const;
+		const NLS::Rendering::Data::FrameInfo& GetFrameInfo() const;
 
 	protected:
 		virtual void OnBeginFrame(const Data::FrameDescriptor& p_frameDescriptor) override;
 		virtual void OnEndFrame() override;
-		virtual void OnAfterDraw(const Rendering::Entities::Drawable& p_drawable) override;
+		virtual void OnAfterDraw(const NLS::Rendering::Entities::Drawable& p_drawable) override;
 
 	private:
 		bool m_isFrameInfoDataValid;
-		Rendering::Data::FrameInfo m_frameInfo;
+		NLS::Rendering::Data::FrameInfo m_frameInfo;
 		NLS::ListenerID m_postDrawListener;
 	};
 }

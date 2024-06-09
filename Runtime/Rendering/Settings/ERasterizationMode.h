@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace Rendering::Settings
+namespace NLS::Rendering::Settings
 {
 	/**
 	* OpenGL rasterization mode enum wrapper

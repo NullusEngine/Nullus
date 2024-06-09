@@ -2,7 +2,7 @@
 
 #include "Rendering/Buffers/Framebuffer.h"
 
-Rendering::Buffers::Framebuffer::Framebuffer(uint16_t p_width, uint16_t p_height)
+NLS::Rendering::Buffers::Framebuffer::Framebuffer(uint16_t p_width, uint16_t p_height)
 {
 	/* Generate OpenGL objects */
 	glGenFramebuffers(1, &m_bufferID);
@@ -23,7 +23,7 @@ Rendering::Buffers::Framebuffer::Framebuffer(uint16_t p_width, uint16_t p_height
 	Resize(p_width, p_height, true);
 }
 
-Rendering::Buffers::Framebuffer::~Framebuffer()
+NLS::Rendering::Buffers::Framebuffer::~Framebuffer()
 {
 	/* Destroy OpenGL objects */
 	glDeleteBuffers(1, &m_bufferID);
@@ -31,17 +31,17 @@ Rendering::Buffers::Framebuffer::~Framebuffer()
 	glDeleteRenderbuffers(1, &m_depthStencilBuffer);
 }
 
-void Rendering::Buffers::Framebuffer::Bind() const
+void NLS::Rendering::Buffers::Framebuffer::Bind() const
 {
 	glBindFramebuffer(GL_FRAMEBUFFER, m_bufferID);
 }
 
-void Rendering::Buffers::Framebuffer::Unbind() const
+void NLS::Rendering::Buffers::Framebuffer::Unbind() const
 {
 	glBindFramebuffer(GL_FRAMEBUFFER, 0);
 }
 
-void Rendering::Buffers::Framebuffer::Resize(uint16_t p_width, uint16_t p_height, bool p_forceUpdate)
+void NLS::Rendering::Buffers::Framebuffer::Resize(uint16_t p_width, uint16_t p_height, bool p_forceUpdate)
 {
 	if (p_forceUpdate || p_width != m_width || p_height != m_height)
 	{
@@ -66,17 +66,17 @@ void Rendering::Buffers::Framebuffer::Resize(uint16_t p_width, uint16_t p_height
 	}
 }
 
-uint32_t Rendering::Buffers::Framebuffer::GetID() const
+uint32_t NLS::Rendering::Buffers::Framebuffer::GetID() const
 {
 	return m_bufferID;
 }
 
-uint32_t Rendering::Buffers::Framebuffer::GetTextureID() const
+uint32_t NLS::Rendering::Buffers::Framebuffer::GetTextureID() const
 {
 	return m_renderTexture;
 }
 
-uint32_t Rendering::Buffers::Framebuffer::GetRenderBufferID() const
+uint32_t NLS::Rendering::Buffers::Framebuffer::GetRenderBufferID() const
 {
 	return m_depthStencilBuffer;
 }

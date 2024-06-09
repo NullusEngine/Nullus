@@ -8,7 +8,7 @@
 #include "Rendering/Resources/Texture.h"
 #include "Rendering/Entities/Drawable.h"
 
-namespace Rendering::Core
+namespace NLS::Rendering::Core
 {
 	/**
 	* A simple base renderer that doesn't handle any object binding, but provide a strong base for other renderers
@@ -96,15 +96,15 @@ namespace Rendering::Core
 		* @param p_drawable
 		*/
 		virtual void DrawEntity(
-			Rendering::Data::PipelineState p_pso,
+			NLS::Rendering::Data::PipelineState p_pso,
 			const Entities::Drawable& p_drawable
 		);
 
 	protected:
 		Data::FrameDescriptor m_frameDescriptor;
 		Context::Driver& m_driver;
-		Rendering::Resources::Texture* m_emptyTexture;
-		Rendering::Data::PipelineState m_basePipelineState;
+		NLS::Rendering::Resources::Texture* m_emptyTexture;
+		NLS::Rendering::Data::PipelineState m_basePipelineState;
 		bool m_isDrawing;
 
 	private:

@@ -3,12 +3,12 @@
 #include "Rendering/Data/FrameDescriptor.h"
 #include "Rendering/Settings/ERenderPassOrder.h"
 
-namespace Rendering::Core
+namespace NLS::Rendering::Core
 {
 	class CompositeRenderer;
 }
 
-namespace Rendering::Core
+namespace NLS::Rendering::Core
 {
 	/**
 	* Represents a rendering step in the graphics pipeline.
@@ -54,7 +54,7 @@ namespace Rendering::Core
 		* Performs the rendering for the pass using the specified PipelineState.
 		* @param p_pso
 		*/
-		virtual void Draw(Rendering::Data::PipelineState p_pso) = 0;
+		virtual void Draw(NLS::Rendering::Data::PipelineState p_pso) = 0;
 
 	protected:
 		Core::CompositeRenderer& m_renderer;

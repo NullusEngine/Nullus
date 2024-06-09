@@ -1,6 +1,6 @@
 #pragma once
 
-namespace Rendering::Settings
+namespace NLS::Rendering::Settings
 {
 	/**
 	* OpenGL pixel data type enum wrapper

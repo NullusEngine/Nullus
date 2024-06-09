@@ -2,7 +2,7 @@
 
 #include <string>
 #include <map>
-#include "CoreDef.h"
+#include "UDRefl/config.hpp"
 #include <Eventing/Event.h>
 
 #include "Debug/ILogHandler.h"
@@ -25,7 +25,7 @@ namespace NLS::Debug
 	/*
 	* 用于在控制台或文件上显示错误消息的静态类
 	*/
-	class NLS_CORE_API Logger
+	class NLS_BASE_API Logger
 	{
 	public:
 

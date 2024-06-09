@@ -8,7 +8,7 @@
 #include "Rendering/Resources/Texture.h"
 #include "Rendering/Data/StateMask.h"
 
-namespace Rendering::Data
+namespace NLS::Rendering::Data
 {
 	/**
 	* A material is a combination of a shader and some settings (Material settings and shader settings)
@@ -20,13 +20,13 @@ namespace Rendering::Data
 		* Creates a material
 		* @param p_shader
 		*/
-		Material(Rendering::Resources::Shader* p_shader = nullptr);
+		Material(NLS::Rendering::Resources::Shader* p_shader = nullptr);
 
 		/**
 		* Defines the shader to attach to this material instance
 		* @param p_shader
 		*/
-		void SetShader(Rendering::Resources::Shader* p_shader);
+		void SetShader(NLS::Rendering::Resources::Shader* p_shader);
 
 		/**
 		* Fill uniform with default uniform values
@@ -37,7 +37,7 @@ namespace Rendering::Data
 		* Bind the material and send its uniform data to the GPU
 		* @param p_emptyTexture (The texture to use if a texture uniform is null)
 		*/
-		void Bind(Rendering::Resources::Texture* p_emptyTexture = nullptr) const;
+		void Bind(NLS::Rendering::Resources::Texture* p_emptyTexture = nullptr) const;
 
 		/**
 		* Unbind the material
@@ -60,7 +60,7 @@ namespace Rendering::Data
 		/**
 		* Returns the attached shader
 		*/
-		Rendering::Resources::Shader*& GetShader();
+		NLS::Rendering::Resources::Shader*& GetShader();
 
 		/**
 		* Returns true if the material has a shader attached
@@ -160,7 +160,7 @@ namespace Rendering::Data
 		std::map<std::string, std::any>& GetUniformsData();
 
 	protected:
-		Rendering::Resources::Shader* m_shader = nullptr;
+		NLS::Rendering::Resources::Shader* m_shader = nullptr;
 		std::map<std::string, std::any> m_uniformsData;
 
 		bool m_blendable = false;

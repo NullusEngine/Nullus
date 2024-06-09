@@ -7,7 +7,7 @@
 
 NLS::Event<NLS::EDeviceError, std::string> NLS::Context::Device::ErrorEvent;
 
-NLS::Context::Device::Device(const Settings::DeviceSettings& p_deviceSettings)
+NLS::Context::Device::Device(const NLS::Windowing::Settings::DeviceSettings& p_deviceSettings)
 {
 	BindErrorCallback();
 

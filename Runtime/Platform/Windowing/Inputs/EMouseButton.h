@@ -1,6 +1,6 @@
 #pragma once
 
-namespace NLS::Inputs
+namespace NLS::Windowing::Inputs
 {
 	/**
 	* Mouse buttons

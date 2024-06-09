@@ -7,7 +7,7 @@
 #include "Windowing/Context/EDeviceError.h"
 #include "Windowing/Settings/DeviceSettings.h"
 #include "Windowing/Cursor/ECursorShape.h"
-#include "Vector2.h"
+#include "Math/Vector2.h"
 struct GLFWwindow;
 struct GLFWcursor;
 
@@ -27,7 +27,7 @@ namespace NLS::Context
 		/**
 		* 构造函数将负责 GLFW 初始化
 		*/
-		Device(const Settings::DeviceSettings& p_deviceSettings);
+		Device(const NLS::Windowing::Settings::DeviceSettings& p_deviceSettings);
 
 		/**
 		* 析构函数将处理 GLFW 销毁

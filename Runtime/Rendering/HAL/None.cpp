@@ -15,11 +15,11 @@
 * additional calls.
 */
 
-namespace Rendering::HAL
+namespace NLS::Rendering::HAL
 {
-	std::optional<Rendering::Data::PipelineState> None::Init(bool debug)
+	std::optional<NLS::Rendering::Data::PipelineState> None::Init(bool debug)
 	{
-		return Rendering::Data::PipelineState{};
+		return NLS::Rendering::Data::PipelineState{};
 	}
 
 	void None::Clear(bool p_colorBuffer, bool p_depthBuffer, bool p_stencilBuffer)

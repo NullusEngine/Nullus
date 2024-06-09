@@ -3,12 +3,12 @@
 #include "Rendering/Data/FrameDescriptor.h"
 #include "Rendering/Entities/Drawable.h"
 
-namespace Rendering::Core
+namespace NLS::Rendering::Core
 {
 	class CompositeRenderer;
 }
 
-namespace Rendering::Features
+namespace NLS::Rendering::Features
 {
 	/**
 	* Extension of the composite renderer that provides new rendering capabilities

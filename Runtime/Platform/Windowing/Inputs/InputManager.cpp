@@ -2,9 +2,9 @@
 
 #include "Windowing/Inputs/InputManager.h"
 
-NLS::Inputs::InputManager* NLS::Inputs::InputManager::Instance = nullptr;
+NLS::Windowing::Inputs::InputManager* NLS::Windowing::Inputs::InputManager::Instance = nullptr;
 
-NLS::Inputs::InputManager::InputManager(Window& p_window) : m_window(p_window)
+NLS::Windowing::Inputs::InputManager::InputManager(Window& p_window) : m_window(p_window)
 {
 	m_keyPressedListener = m_window.KeyPressedEvent.AddListener(std::bind(&InputManager::OnKeyPressed, this, std::placeholders::_1));
 	m_keyReleasedListener = m_window.KeyReleasedEvent.AddListener(std::bind(&InputManager::OnKeyReleased, this, std::placeholders::_1));
@@ -14,7 +14,7 @@ NLS::Inputs::InputManager::InputManager(Window& p_window) : m_window(p_window)
 	Instance = this;
 }
 
-NLS::Inputs::InputManager::~InputManager()
+NLS::Windowing::Inputs::InputManager::~InputManager()
 {
 	m_window.KeyPressedEvent.RemoveListener(m_keyPressedListener);
 	m_window.KeyReleasedEvent.RemoveListener(m_keyReleasedListener);
@@ -23,7 +23,7 @@ NLS::Inputs::InputManager::~InputManager()
 	Instance = nullptr;
 }
 
-NLS::Inputs::EKeyState NLS::Inputs::InputManager::GetKeyState(EKey p_key) const
+NLS::Windowing::Inputs::EKeyState NLS::Windowing::Inputs::InputManager::GetKeyState(EKey p_key) const
 {
 	switch (glfwGetKey(m_window.GetGlfwWindow(), static_cast<int>(p_key)))
 	{
@@ -34,7 +34,7 @@ NLS::Inputs::EKeyState NLS::Inputs::InputManager::GetKeyState(EKey p_key) const
 	return EKeyState::KEY_UP;
 }
 
-NLS::Inputs::EMouseButtonState NLS::Inputs::InputManager::GetMouseButtonState(EMouseButton p_button) const
+NLS::Windowing::Inputs::EMouseButtonState NLS::Windowing::Inputs::InputManager::GetMouseButtonState(EMouseButton p_button) const
 {
 	switch (glfwGetMouseButton(m_window.GetGlfwWindow(), static_cast<int>(p_button)))
 	{
@@ -45,66 +45,66 @@ NLS::Inputs::EMouseButtonState NLS::Inputs::InputManager::GetMouseButtonState(EM
 	return EMouseButtonState::MOUSE_UP;
 }
 
-bool NLS::Inputs::InputManager::IsKeyPressed(EKey p_key) const
+bool NLS::Windowing::Inputs::InputManager::IsKeyPressed(EKey p_key) const
 {
 	return m_keyEvents.find(p_key) != m_keyEvents.end() && m_keyEvents.at(p_key) == EKeyState::KEY_DOWN;
 }
 
-bool NLS::Inputs::InputManager::IsKeyReleased(EKey p_key) const
+bool NLS::Windowing::Inputs::InputManager::IsKeyReleased(EKey p_key) const
 {
 	return m_keyEvents.find(p_key) != m_keyEvents.end() && m_keyEvents.at(p_key) == EKeyState::KEY_UP;
 }
 
-bool NLS::Inputs::InputManager::IsMouseButtonPressed(EMouseButton p_button) const
+bool NLS::Windowing::Inputs::InputManager::IsMouseButtonPressed(EMouseButton p_button) const
 {
 	return m_mouseButtonEvents.find(p_button) != m_mouseButtonEvents.end() && m_mouseButtonEvents.at(p_button) == EMouseButtonState::MOUSE_DOWN;
 }
 
-bool NLS::Inputs::InputManager::IsMouseButtonReleased(EMouseButton p_button) const
+bool NLS::Windowing::Inputs::InputManager::IsMouseButtonReleased(EMouseButton p_button) const
 {
 	return m_mouseButtonEvents.find(p_button) != m_mouseButtonEvents.end() && m_mouseButtonEvents.at(p_button) == EMouseButtonState::MOUSE_UP;
 }
 
-NLS::Maths::Vector2 NLS::Inputs::InputManager::GetMousePosition() const
+NLS::Maths::Vector2 NLS::Windowing::Inputs::InputManager::GetMousePosition() const
 {
 	std::pair<double, double> result;
 	glfwGetCursorPos(m_window.GetGlfwWindow(), &result.first, &result.second);
 	return NLS::Maths::Vector2(result.first, result.second);
 }
 
-void NLS::Inputs::InputManager::ClearEvents()
+void NLS::Windowing::Inputs::InputManager::ClearEvents()
 {
 	m_keyEvents.clear();
 	m_mouseButtonEvents.clear();
 }
 
-void NLS::Inputs::InputManager::OnKeyPressed(int p_key)
+void NLS::Windowing::Inputs::InputManager::OnKeyPressed(int p_key)
 {
 	m_keyEvents[static_cast<EKey>(p_key)] = EKeyState::KEY_DOWN;
 }
 
-void NLS::Inputs::InputManager::OnKeyReleased(int p_key)
+void NLS::Windowing::Inputs::InputManager::OnKeyReleased(int p_key)
 {
 	m_keyEvents[static_cast<EKey>(p_key)] = EKeyState::KEY_UP;
 }
 
-void NLS::Inputs::InputManager::OnMouseButtonPressed(int p_button)
+void NLS::Windowing::Inputs::InputManager::OnMouseButtonPressed(int p_button)
 {
 	m_mouseButtonEvents[static_cast<EMouseButton>(p_button)] = EMouseButtonState::MOUSE_DOWN;
 }
 
-void NLS::Inputs::InputManager::OnMouseButtonReleased(int p_button)
+void NLS::Windowing::Inputs::InputManager::OnMouseButtonReleased(int p_button)
 {
 	m_mouseButtonEvents[static_cast<EMouseButton>(p_button)] = EMouseButtonState::MOUSE_UP;
 }
 
-void NLS::Inputs::InputManager::OnMouseScroll(double x, double y)
+void NLS::Windowing::Inputs::InputManager::OnMouseScroll(double x, double y)
 {
 	lastWheel.x = x;
 	lastWheel.y = y;
 }
 
-void NLS::Inputs::InputManager::Update()
+void NLS::Windowing::Inputs::InputManager::Update()
 {
 	lastWheel.x = 0;
 	lastWheel.y = 0;

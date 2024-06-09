@@ -4,16 +4,16 @@
 #include "Rendering/Data/Material.h"
 #include "Rendering/Data/Describable.h"
 
-namespace Rendering::Entities
+namespace NLS::Rendering::Entities
 {
 	/**
 	* Drawable entity
 	*/
 	struct Drawable : public Data::Describable
 	{
-		Rendering::Resources::Mesh* mesh;
-		Rendering::Data::Material material;
-		Rendering::Data::StateMask stateMask;
-		Rendering::Settings::EPrimitiveMode primitiveMode = Rendering::Settings::EPrimitiveMode::TRIANGLES;
+		NLS::Rendering::Resources::Mesh* mesh;
+		NLS::Rendering::Data::Material material;
+		NLS::Rendering::Data::StateMask stateMask;
+		NLS::Rendering::Settings::EPrimitiveMode primitiveMode = NLS::Rendering::Settings::EPrimitiveMode::TRIANGLES;
 	};
 }

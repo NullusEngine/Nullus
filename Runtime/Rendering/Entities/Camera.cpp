@@ -3,7 +3,7 @@
 #include "Rendering/Entities/Camera.h"
 #include "Math/Matrix4.h"
 
-Rendering::Entities::Camera::Camera() :
+NLS::Rendering::Entities::Camera::Camera() :
 	m_projectionMode(Settings::EProjectionMode::PERSPECTIVE),
 	m_fov(45.0f),
 	m_size(5.0f),
@@ -19,7 +19,7 @@ Rendering::Entities::Camera::Camera() :
 {
 }
 
-Rendering::Entities::Camera::Camera(Maths::Transform p_transform) :
+NLS::Rendering::Entities::Camera::Camera(Maths::Transform p_transform) :
 	Entity{ p_transform },
     m_projectionMode(Settings::EProjectionMode::PERSPECTIVE),
 	m_fov(45.0f),
@@ -36,94 +36,94 @@ Rendering::Entities::Camera::Camera(Maths::Transform p_transform) :
 {
 }
 
-void Rendering::Entities::Camera::CacheMatrices(uint16_t p_windowWidth, uint16_t p_windowHeight)
+void NLS::Rendering::Entities::Camera::CacheMatrices(uint16_t p_windowWidth, uint16_t p_windowHeight)
 {
 	CacheProjectionMatrix(p_windowWidth, p_windowHeight);
 	CacheViewMatrix();
 	CacheFrustum(m_viewMatrix, m_projectionMatrix);
 }
 
-void Rendering::Entities::Camera::CacheProjectionMatrix(uint16_t p_windowWidth, uint16_t p_windowHeight)
+void NLS::Rendering::Entities::Camera::CacheProjectionMatrix(uint16_t p_windowWidth, uint16_t p_windowHeight)
 {
 	m_projectionMatrix = CalculateProjectionMatrix(p_windowWidth, p_windowHeight);
 }
 
-void Rendering::Entities::Camera::CacheViewMatrix()
+void NLS::Rendering::Entities::Camera::CacheViewMatrix()
 {
 	m_viewMatrix = CalculateViewMatrix();
 }
 
-void Rendering::Entities::Camera::CacheFrustum(const Maths::Matrix4& p_view, const Maths::Matrix4& p_projection)
+void NLS::Rendering::Entities::Camera::CacheFrustum(const Maths::Matrix4& p_view, const Maths::Matrix4& p_projection)
 {
 	m_frustum.CalculateFrustum(p_projection * p_view);
 }
 
-const Maths::Vector3& Rendering::Entities::Camera::GetPosition() const
+const Maths::Vector3& NLS::Rendering::Entities::Camera::GetPosition() const
 {
 	return transform.GetWorldPosition();
 }
 
-const Maths::Quaternion& Rendering::Entities::Camera::GetRotation() const
+const Maths::Quaternion& NLS::Rendering::Entities::Camera::GetRotation() const
 {
 	return transform.GetWorldRotation();
 }
 
-float Rendering::Entities::Camera::GetFov() const
+float NLS::Rendering::Entities::Camera::GetFov() const
 {
 	return m_fov;
 }
 
-float Rendering::Entities::Camera::GetSize() const
+float NLS::Rendering::Entities::Camera::GetSize() const
 {
     return m_size;
 }
 
-float Rendering::Entities::Camera::GetNear() const
+float NLS::Rendering::Entities::Camera::GetNear() const
 {
 	return m_near;
 }
 
-float Rendering::Entities::Camera::GetFar() const
+float NLS::Rendering::Entities::Camera::GetFar() const
 {
 	return m_far;
 }
 
-const Maths::Vector3 & Rendering::Entities::Camera::GetClearColor() const
+const Maths::Vector3 & NLS::Rendering::Entities::Camera::GetClearColor() const
 {
 	return m_clearColor;
 }
 
-bool Rendering::Entities::Camera::GetClearColorBuffer() const
+bool NLS::Rendering::Entities::Camera::GetClearColorBuffer() const
 {
 	return m_clearColorBuffer;
 }
 
-bool Rendering::Entities::Camera::GetClearDepthBuffer() const
+bool NLS::Rendering::Entities::Camera::GetClearDepthBuffer() const
 {
 	return m_clearDepthBuffer;
 }
 
-bool Rendering::Entities::Camera::GetClearStencilBuffer() const
+bool NLS::Rendering::Entities::Camera::GetClearStencilBuffer() const
 {
 	return m_clearStencilBuffer;
 }
 
-const Maths::Matrix4& Rendering::Entities::Camera::GetProjectionMatrix() const
+const Maths::Matrix4& NLS::Rendering::Entities::Camera::GetProjectionMatrix() const
 {
 	return m_projectionMatrix;
 }
 
-const Maths::Matrix4& Rendering::Entities::Camera::GetViewMatrix() const
+const Maths::Matrix4& NLS::Rendering::Entities::Camera::GetViewMatrix() const
 {
 	return m_viewMatrix;
 }
 
-const Rendering::Data::Frustum& Rendering::Entities::Camera::GetFrustum() const
+const NLS::Rendering::Data::Frustum& NLS::Rendering::Entities::Camera::GetFrustum() const
 {
 	return m_frustum;
 }
 
-const Rendering::Data::Frustum* Rendering::Entities::Camera::GetGeometryFrustum() const
+const NLS::Rendering::Data::Frustum* NLS::Rendering::Entities::Camera::GetGeometryFrustum() const
 {
 	if (m_frustumGeometryCulling)
 	{
@@ -133,7 +133,7 @@ const Rendering::Data::Frustum* Rendering::Entities::Camera::GetGeometryFrustum(
 	return nullptr;
 }
 
-const Rendering::Data::Frustum* Rendering::Entities::Camera::GetLightFrustum() const
+const NLS::Rendering::Data::Frustum* NLS::Rendering::Entities::Camera::GetLightFrustum() const
 {
 	if (m_frustumLightCulling)
 	{
@@ -143,90 +143,90 @@ const Rendering::Data::Frustum* Rendering::Entities::Camera::GetLightFrustum() c
 	return nullptr;
 }
 
-bool Rendering::Entities::Camera::HasFrustumGeometryCulling() const
+bool NLS::Rendering::Entities::Camera::HasFrustumGeometryCulling() const
 {
 	return m_frustumGeometryCulling;
 }
 
-bool Rendering::Entities::Camera::HasFrustumLightCulling() const
+bool NLS::Rendering::Entities::Camera::HasFrustumLightCulling() const
 {
 	return m_frustumLightCulling;
 }
 
-Rendering::Settings::EProjectionMode Rendering::Entities::Camera::GetProjectionMode() const
+NLS::Rendering::Settings::EProjectionMode NLS::Rendering::Entities::Camera::GetProjectionMode() const
 {
     return m_projectionMode;
 }
 
-void Rendering::Entities::Camera::SetPosition(const Maths::Vector3& p_position)
+void NLS::Rendering::Entities::Camera::SetPosition(const Maths::Vector3& p_position)
 {
 	transform.SetWorldPosition(p_position);
 }
 
-void Rendering::Entities::Camera::SetRotation(const Maths::Quaternion& p_rotation)
+void NLS::Rendering::Entities::Camera::SetRotation(const Maths::Quaternion& p_rotation)
 {
 	transform.SetWorldRotation(p_rotation);
 }
 
-void Rendering::Entities::Camera::SetFov(float p_value)
+void NLS::Rendering::Entities::Camera::SetFov(float p_value)
 {
 	m_fov = p_value;
 }
 
-void Rendering::Entities::Camera::SetSize(float p_value)
+void NLS::Rendering::Entities::Camera::SetSize(float p_value)
 {
     m_size = p_value;
 }
 
-void Rendering::Entities::Camera::SetNear(float p_value)
+void NLS::Rendering::Entities::Camera::SetNear(float p_value)
 {
 	m_near = p_value;
 }
 
-void Rendering::Entities::Camera::SetFar(float p_value)
+void NLS::Rendering::Entities::Camera::SetFar(float p_value)
 {
 	m_far = p_value;
 }
 
-void Rendering::Entities::Camera::SetClearColor(const Maths::Vector3 & p_clearColor)
+void NLS::Rendering::Entities::Camera::SetClearColor(const Maths::Vector3 & p_clearColor)
 {
 	m_clearColor = p_clearColor;
 }
 
-void Rendering::Entities::Camera::SetClearColorBuffer(bool p_value)
+void NLS::Rendering::Entities::Camera::SetClearColorBuffer(bool p_value)
 {
 	m_clearColorBuffer = p_value;
 }
 
-void Rendering::Entities::Camera::SetClearDepthBuffer(bool p_value)
+void NLS::Rendering::Entities::Camera::SetClearDepthBuffer(bool p_value)
 {
 	m_clearDepthBuffer = p_value;
 }
 
-void Rendering::Entities::Camera::SetClearStencilBuffer(bool p_value)
+void NLS::Rendering::Entities::Camera::SetClearStencilBuffer(bool p_value)
 {
 	m_clearStencilBuffer = p_value;
 }
 
-void Rendering::Entities::Camera::SetFrustumGeometryCulling(bool p_enable)
+void NLS::Rendering::Entities::Camera::SetFrustumGeometryCulling(bool p_enable)
 {
 	m_frustumGeometryCulling = p_enable;
 }
 
-void Rendering::Entities::Camera::SetFrustumLightCulling(bool p_enable)
+void NLS::Rendering::Entities::Camera::SetFrustumLightCulling(bool p_enable)
 {
 	m_frustumLightCulling = p_enable;
 }
 
-void Rendering::Entities::Camera::SetProjectionMode(Rendering::Settings::EProjectionMode p_projectionMode)
+void NLS::Rendering::Entities::Camera::SetProjectionMode(NLS::Rendering::Settings::EProjectionMode p_projectionMode)
 {
     m_projectionMode = p_projectionMode;
 }
 
-Maths::Matrix4 Rendering::Entities::Camera::CalculateProjectionMatrix(uint16_t p_windowWidth, uint16_t p_windowHeight) const
+Maths::Matrix4 NLS::Rendering::Entities::Camera::CalculateProjectionMatrix(uint16_t p_windowWidth, uint16_t p_windowHeight) const
 {
     using namespace Maths;
-    using namespace Rendering::Settings;
+    using namespace NLS::Rendering::Settings;
 
     const auto ratio = p_windowWidth / static_cast<float>(p_windowHeight);
 
@@ -243,7 +243,7 @@ Maths::Matrix4 Rendering::Entities::Camera::CalculateProjectionMatrix(uint16_t p
     }
 }
 
-Maths::Matrix4 Rendering::Entities::Camera::CalculateViewMatrix() const
+Maths::Matrix4 NLS::Rendering::Entities::Camera::CalculateViewMatrix() const
 {
 	const Maths::Vector3& position = transform.GetWorldPosition();
 	const Maths::Quaternion& rotation = transform.GetWorldRotation();

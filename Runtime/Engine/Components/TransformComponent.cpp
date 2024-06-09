@@ -1,12 +1,12 @@
-#include "TransformComponent.h"
+#include "Components/TransformComponent.h"
 
-using namespace NLS::Engine;
+using namespace NLS::Engine::Components;
 using namespace NLS;
-TransformComponent::TransformComponent() 
+
+
+NLS::Engine::Components::TransformComponent::TransformComponent()
 {
-
 }
-
 
 void TransformComponent::SetParent(TransformComponent& p_parent)
 {

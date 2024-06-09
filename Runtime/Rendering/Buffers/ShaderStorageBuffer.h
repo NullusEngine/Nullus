@@ -5,9 +5,9 @@
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Settings/EAccessSpecifier.h"
 
-namespace Rendering::Resources { class Shader; }
+namespace NLS::Rendering::Resources { class Shader; }
 
-namespace Rendering::Buffers
+namespace NLS::Rendering::Buffers
 {
 	/**
 	* Wraps OpenGL SSBO

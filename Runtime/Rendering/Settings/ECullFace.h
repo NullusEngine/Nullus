@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace Rendering::Settings
+namespace NLS::Rendering::Settings
 {
 	/**
 	* Enumeration of cullable face

@@ -70,7 +70,7 @@ void Editor::Core::Editor::UpdatePlayMode(float p_deltaTime)
 
 void Editor::Core::Editor::UpdateEditMode(float p_deltaTime)
 {
-    if (m_context.inputManager->IsKeyPressed(NLS::Inputs::EKey::KEY_F5))
+    if (m_context.inputManager->IsKeyPressed(NLS::Windowing::Inputs::EKey::KEY_F5))
     {
 
     }

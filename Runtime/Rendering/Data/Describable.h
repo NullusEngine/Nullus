@@ -6,7 +6,7 @@
 #include "Rendering/Buffers/Framebuffer.h"
 #include "Rendering/Entities/Camera.h"
 
-namespace Rendering::Data
+namespace NLS::Rendering::Data
 {
 	/**
 	* An object that can be described using additional data structures (descriptors)
@@ -51,7 +51,7 @@ namespace Rendering::Data
 		* @return true if the descriptor has been found
 		*/
 		template<typename T>
-		bool TryGetDescriptor(const T& p_outDescriptor) const;
+		bool TryGetDescriptor(const T* p_outDescriptor) const;
 
 	private:
 		std::unordered_map<std::type_index, std::any> m_descriptors;

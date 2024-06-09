@@ -7,15 +7,11 @@
 #include "Windowing/Settings/WindowSettings.h"
 #include "Windowing/Cursor/ECursorShape.h"
 #include "Windowing/Cursor/ECursorMode.h"
-#include "Vector2.h"
+#include "Math/Vector2.h"
 #include "PlatformDef.h"
-namespace NLS
+
+namespace NLS::Windowing
 {
-namespace Rendering
-{
-class RendererBase;
-};
-using namespace Rendering;
 	/**
 	* A simple OS-based window.
 	* It needs a Device (GLFW) to work
@@ -334,6 +330,5 @@ using namespace Rendering;
 		int32_t m_refreshRate;
 		Cursor::ECursorMode m_cursorMode;
 		Cursor::ECursorShape m_cursorShape;
-		RendererBase* renderer;
 	};
 }

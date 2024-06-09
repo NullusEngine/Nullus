@@ -1,24 +1,24 @@
 #include "Rendering/Features/FrameInfoRenderFeature.h"
 #include "Rendering/Core/CompositeRenderer.h"
 
-Rendering::Features::FrameInfoRenderFeature::FrameInfoRenderFeature(Rendering::Core::CompositeRenderer& p_renderer)
+NLS::Rendering::Features::FrameInfoRenderFeature::FrameInfoRenderFeature(NLS::Rendering::Core::CompositeRenderer& p_renderer)
 	: ARenderFeature(p_renderer), m_isFrameInfoDataValid(true)
 {
 	m_postDrawListener = m_renderer.postDrawEntityEvent += std::bind(&FrameInfoRenderFeature::OnAfterDraw, this, std::placeholders::_1);
 }
 
-Rendering::Features::FrameInfoRenderFeature::~FrameInfoRenderFeature()
+NLS::Rendering::Features::FrameInfoRenderFeature::~FrameInfoRenderFeature()
 {
 	m_renderer.postDrawEntityEvent.RemoveListener(m_postDrawListener);
 }
 
-const Rendering::Data::FrameInfo& Rendering::Features::FrameInfoRenderFeature::GetFrameInfo() const
+const NLS::Rendering::Data::FrameInfo& NLS::Rendering::Features::FrameInfoRenderFeature::GetFrameInfo() const
 {
 	NLS_ASSERT(m_isFrameInfoDataValid, "Invalid FrameInfo data! Make sure to retrieve frame info after the frame got fully rendered");
 	return m_frameInfo;
 }
 
-void Rendering::Features::FrameInfoRenderFeature::OnBeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
+void NLS::Rendering::Features::FrameInfoRenderFeature::OnBeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
 {
 	m_frameInfo.batchCount = 0;
 	m_frameInfo.instanceCount = 0;
@@ -28,12 +28,12 @@ void Rendering::Features::FrameInfoRenderFeature::OnBeginFrame(const Data::Frame
 	m_isFrameInfoDataValid = false;
 }
 
-void Rendering::Features::FrameInfoRenderFeature::OnEndFrame()
+void NLS::Rendering::Features::FrameInfoRenderFeature::OnEndFrame()
 {
 	m_isFrameInfoDataValid = true;
 }
 
-void Rendering::Features::FrameInfoRenderFeature::OnAfterDraw(const Rendering::Entities::Drawable& p_drawable)
+void NLS::Rendering::Features::FrameInfoRenderFeature::OnAfterDraw(const NLS::Rendering::Entities::Drawable& p_drawable)
 {
 	// TODO: Calculate vertex count from the primitive mode
 	constexpr uint32_t kVertexCountPerPolygon = 3;

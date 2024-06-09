@@ -8,7 +8,7 @@
 #include "Rendering/Geometry/BoundingSphere.h"
 #include "Rendering/Resources/Model.h"
 using namespace NLS;
-namespace Rendering::Data
+namespace NLS::Rendering::Data
 {
 	/**
 	* Mathematic representation of a 3D frustum
@@ -60,7 +60,7 @@ namespace Rendering::Data
 		* @param p_mesh
 		* @param p_transform
 		*/
-		bool IsMeshInFrustum(const Rendering::Resources::Mesh& p_mesh, const Maths::Transform& p_transform) const;
+		bool IsMeshInFrustum(const NLS::Rendering::Resources::Mesh& p_mesh, const Maths::Transform& p_transform) const;
 
 		/**
 		* Returns the list of meshes from a model that should be rendered
@@ -70,11 +70,11 @@ namespace Rendering::Data
 		* @param p_frustum
 		* @param p_cullingOptions
 		*/
-		std::vector<Rendering::Resources::Mesh*> GetMeshesInFrustum(
-			const Rendering::Resources::Model& p_model,
+		std::vector<NLS::Rendering::Resources::Mesh*> GetMeshesInFrustum(
+			const NLS::Rendering::Resources::Model& p_model,
 			const Rendering::Geometry::BoundingSphere& p_modelBoundingSphere,
 			const Maths::Transform& p_modelTransform,
-			Rendering::Settings::ECullingOptions p_cullingOptions
+			NLS::Rendering::Settings::ECullingOptions p_cullingOptions
 		) const;
 
 		/**

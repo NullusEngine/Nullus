@@ -5,7 +5,7 @@
 #include "Windowing/Cursor/ECursorShape.h"
 #include "Windowing/Cursor/ECursorMode.h"
 
-namespace NLS::Settings
+namespace NLS::Windowing::Settings
 {
 	/**
 	* Contains window settings

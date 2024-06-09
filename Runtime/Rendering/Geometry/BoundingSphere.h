@@ -3,7 +3,7 @@
 
 #include <Math/Vector3.h>
 
-namespace Rendering::Geometry
+namespace NLS::Rendering::Geometry
 {
 	/**
 	* Data structure that defines a bounding sphere (Position + radius)

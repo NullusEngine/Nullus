@@ -13,13 +13,13 @@
 #include "Rendering/Settings/EGraphicsBackend.h"
 #include "Rendering/Data/PipelineState.h"
 
-namespace Rendering::HAL
+namespace NLS::Rendering::HAL
 {
 	template<Settings::EGraphicsBackend Backend>
 	class GraphicsAPI final
 	{
 	public:
-		std::optional<Rendering::Data::PipelineState> Init(bool debug);
+		std::optional<NLS::Rendering::Data::PipelineState> Init(bool debug);
 
 		void Clear(bool p_colorBuffer, bool p_depthBuffer, bool p_stencilBuffer);
 		void ReadPixels(
@@ -27,32 +27,32 @@ namespace Rendering::HAL
 			uint32_t p_y,
 			uint32_t p_width,
 			uint32_t p_height,
-			Rendering::Settings::EPixelDataFormat p_format,
-			Rendering::Settings::EPixelDataType p_type,
+			NLS::Rendering::Settings::EPixelDataFormat p_format,
+			NLS::Rendering::Settings::EPixelDataType p_type,
 			void* p_data
 		);
 
-		void DrawElements(Rendering::Settings::EPrimitiveMode p_primitiveMode, uint32_t p_indexCount);
-		void DrawElementsInstanced(Rendering::Settings::EPrimitiveMode p_primitiveMode, uint32_t p_indexCount, uint32_t p_instances);
-		void DrawArrays(Rendering::Settings::EPrimitiveMode p_primitiveMode, uint32_t p_vertexCount);
-		void DrawArraysInstanced(Rendering::Settings::EPrimitiveMode p_primitiveMode, uint32_t p_vertexCount, uint32_t p_instances);
+		void DrawElements(NLS::Rendering::Settings::EPrimitiveMode p_primitiveMode, uint32_t p_indexCount);
+		void DrawElementsInstanced(NLS::Rendering::Settings::EPrimitiveMode p_primitiveMode, uint32_t p_indexCount, uint32_t p_instances);
+		void DrawArrays(NLS::Rendering::Settings::EPrimitiveMode p_primitiveMode, uint32_t p_vertexCount);
+		void DrawArraysInstanced(NLS::Rendering::Settings::EPrimitiveMode p_primitiveMode, uint32_t p_vertexCount, uint32_t p_instances);
 
 		void SetClearColor(float p_red, float p_green, float p_blue, float p_alpha);
 		void SetRasterizationLinesWidth(float p_width);
-		void SetRasterizationMode(Rendering::Settings::ERasterizationMode p_rasterizationMode);
-		void SetCapability(Rendering::Settings::ERenderingCapability p_capability, bool p_value);
-		bool GetCapability(Rendering::Settings::ERenderingCapability p_capability);
-		void SetStencilAlgorithm(Rendering::Settings::EComparaisonAlgorithm p_algorithm, int32_t p_reference, uint32_t p_mask);
-		void SetDepthAlgorithm(Rendering::Settings::EComparaisonAlgorithm p_algorithm);
+		void SetRasterizationMode(NLS::Rendering::Settings::ERasterizationMode p_rasterizationMode);
+		void SetCapability(NLS::Rendering::Settings::ERenderingCapability p_capability, bool p_value);
+		bool GetCapability(NLS::Rendering::Settings::ERenderingCapability p_capability);
+		void SetStencilAlgorithm(NLS::Rendering::Settings::EComparaisonAlgorithm p_algorithm, int32_t p_reference, uint32_t p_mask);
+		void SetDepthAlgorithm(NLS::Rendering::Settings::EComparaisonAlgorithm p_algorithm);
 		void SetStencilMask(uint32_t p_mask);
 
 		void SetStencilOperations(
-			Rendering::Settings::EOperation p_stencilFail,
-			Rendering::Settings::EOperation p_depthFail,
-			Rendering::Settings::EOperation p_bothPass
+			NLS::Rendering::Settings::EOperation p_stencilFail,
+			NLS::Rendering::Settings::EOperation p_depthFail,
+			NLS::Rendering::Settings::EOperation p_bothPass
 		);
 
-		void SetCullFace(Rendering::Settings::ECullFace p_cullFace);
+		void SetCullFace(NLS::Rendering::Settings::ECullFace p_cullFace);
 		void SetDepthWriting(bool p_enable);
 		void SetColorWriting(bool p_enableRed, bool p_enableGreen, bool p_enableBlue, bool p_enableAlpha);
 		void SetViewport(uint32_t x, uint32_t y, uint32_t width, uint32_t height);
@@ -63,7 +63,7 @@ namespace Rendering::HAL
 		std::string GetShadingLanguageVersion();
 	};
 
-	using None = Rendering::HAL::GraphicsAPI<Rendering::Settings::EGraphicsBackend::NONE>;
-	using OpenGL = Rendering::HAL::GraphicsAPI<Rendering::Settings::EGraphicsBackend::OPENGL>;
-	using Vulkan = Rendering::HAL::GraphicsAPI<Rendering::Settings::EGraphicsBackend::VULKAN>;
+	using None = NLS::Rendering::HAL::GraphicsAPI<NLS::Rendering::Settings::EGraphicsBackend::NONE>;
+	using OpenGL = NLS::Rendering::HAL::GraphicsAPI<NLS::Rendering::Settings::EGraphicsBackend::OPENGL>;
+	using Vulkan = NLS::Rendering::HAL::GraphicsAPI<NLS::Rendering::Settings::EGraphicsBackend::VULKAN>;
 }

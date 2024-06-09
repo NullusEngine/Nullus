@@ -1,9 +1,3 @@
-/**
-* @project: Overload
-* @author: Overload Tech.
-* @licence: MIT
-*/
-
 #pragma once
 
 #include <unordered_map>
@@ -14,7 +8,7 @@
 #include "Windowing/Inputs/EMouseButton.h"
 #include "Windowing/Inputs/EMouseButtonState.h"
 #include "Singleton.h"
-namespace NLS::Inputs
+namespace NLS::Windowing::Inputs
 {
 	/**
 	* Handles inputs (Mouse and keyboard)

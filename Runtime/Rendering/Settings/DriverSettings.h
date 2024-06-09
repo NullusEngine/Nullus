@@ -4,7 +4,7 @@
 
 #include "Rendering/Data/PipelineState.h"
 
-namespace Rendering::Settings
+namespace NLS::Rendering::Settings
 {
 	/**
 	* Settings that are sent to the driver at construction
@@ -12,6 +12,6 @@ namespace Rendering::Settings
 	struct DriverSettings
 	{
 		bool debugMode = false;
-		std::optional<Rendering::Data::PipelineState> defaultPipelineState = std::nullopt;
+		std::optional<NLS::Rendering::Data::PipelineState> defaultPipelineState = std::nullopt;
 	};
 }

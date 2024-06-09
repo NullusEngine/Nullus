@@ -1,6 +1,6 @@
 #pragma once
 
-namespace Rendering::Settings
+namespace NLS::Rendering::Settings
 {
 	/**
 	* Defines some access hints that buffers can use

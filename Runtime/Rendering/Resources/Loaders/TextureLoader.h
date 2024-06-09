@@ -6,7 +6,7 @@
 #include "Rendering/Resources/Texture.h"
 
 
-namespace Rendering::Resources::Loaders
+namespace NLS::Rendering::Resources::Loaders
 {
 	/**
 	* Handle the Texture creation and destruction
@@ -26,7 +26,7 @@ namespace Rendering::Resources::Loaders
 		* @param p_secondFilter
 		* @param p_generateMipmap
 		*/
-		static Texture* Create(const std::string& p_filepath, Rendering::Settings::ETextureFilteringMode p_firstFilter, Rendering::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
+		static Texture* Create(const std::string& p_filepath, NLS::Rendering::Settings::ETextureFilteringMode p_firstFilter, NLS::Rendering::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
 
 		/**
 		* Create a texture from a single pixel color
@@ -46,7 +46,7 @@ namespace Rendering::Resources::Loaders
 		* @param p_secondFilter
 		* @param p_generateMipmap
 		*/
-		static Texture* CreateFromMemory(uint8_t* p_data, uint32_t p_width, uint32_t p_height, Rendering::Settings::ETextureFilteringMode p_firstFilter, Rendering::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
+		static Texture* CreateFromMemory(uint8_t* p_data, uint32_t p_width, uint32_t p_height, NLS::Rendering::Settings::ETextureFilteringMode p_firstFilter, NLS::Rendering::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
 
 		/**
 		* Reload a texture from file
@@ -56,7 +56,7 @@ namespace Rendering::Resources::Loaders
 		* @param p_secondFilter
 		* @param p_generateMipmap
 		*/
-		static void Reload(Texture& p_texture, const std::string& p_filePath, Rendering::Settings::ETextureFilteringMode p_firstFilter, Rendering::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
+		static void Reload(Texture& p_texture, const std::string& p_filePath, NLS::Rendering::Settings::ETextureFilteringMode p_firstFilter, NLS::Rendering::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
 
 		/**
 		* Destroy a texture

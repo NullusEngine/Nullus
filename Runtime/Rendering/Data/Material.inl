@@ -4,7 +4,7 @@
 
 #include "Rendering/Data/Material.h"
 
-namespace Rendering::Data
+namespace NLS::Rendering::Data
 {
 	template<typename T>
 	inline void Material::Set(const std::string p_key, const T& p_value)

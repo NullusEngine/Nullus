@@ -1,7 +1,7 @@
 #pragma once
 
 #include <string>
-#include "CoreDef.h"
+#include "Core/CoreDef.h"
 namespace NLS::Utils
 {
 	/**

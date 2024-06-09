@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace Rendering::Data
+namespace NLS::Rendering::Data
 {
 	/**
 	* Holds information about a given frame

@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace Rendering::Data
+namespace NLS::Rendering::Data
 {
 	/**
 	* State mask used by materials to override some Pipeline State settings.

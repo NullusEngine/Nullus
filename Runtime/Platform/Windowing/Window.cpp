@@ -2,14 +2,14 @@
 #ifdef _WIN32
     #include "Windows.h"
 #endif
-#include "Core/Image.h"
+#include <stb/stb_image.h>
 
 #include <GLFW/glfw3.h>
 
 #include <stdexcept>
-std::unordered_map<GLFWwindow*, NLS::Window*> NLS::Window::__WINDOWS_MAP;
+std::unordered_map<GLFWwindow*, NLS::Windowing::Window*> NLS::Windowing::Window::__WINDOWS_MAP;
 
-NLS::Window::Window(Context::Device& p_device, const Settings::WindowSettings& p_windowSettings) :
+NLS::Windowing::Window::Window(Context::Device& p_device, const Settings::WindowSettings& p_windowSettings) :
 	m_device(p_device),
 	m_title(p_windowSettings.title),
 	m_size{ static_cast<float>(p_windowSettings.width), static_cast<float>(p_windowSettings.height) },
@@ -44,22 +44,19 @@ NLS::Window::Window(Context::Device& p_device, const Settings::WindowSettings& p
 	MoveEvent.AddListener(std::bind(&Window::OnMove, this, std::placeholders::_1, std::placeholders::_2));
 }
 
-NLS::Window::~Window()
+NLS::Windowing::Window::~Window()
 {
 	glfwDestroyWindow(m_glfwWindow);
 }
 
-void NLS::Window::SetIcon(const std::string & p_filePath)
+void NLS::Windowing::Window::SetIcon(const std::string & p_filePath)
 {
-	Image image(p_filePath);
 	GLFWimage images[1];
-	images[0].pixels = const_cast<unsigned char*>(image.GetData());
-	images[0].height = image.GetWidth();
-	images[0].width = image.GetHeight();
+	images[0].pixels = stbi_load(p_filePath.c_str(), &images[0].width, &images[0].height, 0, 4);
 	glfwSetWindowIcon(m_glfwWindow, 1, images);
 }
 
-void NLS::Window::SetIconFromMemory(uint8_t* p_data, uint32_t p_width, uint32_t p_height)
+void NLS::Windowing::Window::SetIconFromMemory(uint8_t* p_data, uint32_t p_width, uint32_t p_height)
 {
 	GLFWimage images[1];
 	images[0].pixels = p_data;
@@ -68,22 +65,22 @@ void NLS::Window::SetIconFromMemory(uint8_t* p_data, uint32_t p_width, uint32_t 
 	glfwSetWindowIcon(m_glfwWindow, 1, images);
 }
 
-NLS::Window* NLS::Window::FindInstance(GLFWwindow* p_glfwWindow)
+NLS::Windowing::Window* NLS::Windowing::Window::FindInstance(GLFWwindow* p_glfwWindow)
 {
 	return __WINDOWS_MAP.find(p_glfwWindow) != __WINDOWS_MAP.end() ? __WINDOWS_MAP[p_glfwWindow] : nullptr;
 }
 
-NLS::Window* NLS::Window::GetWindow()
+NLS::Windowing::Window* NLS::Windowing::Window::GetWindow()
 {
 	return __WINDOWS_MAP.begin()->second;
 }
 
-void NLS::Window::SetSize(uint16_t p_width, uint16_t p_height)
+void NLS::Windowing::Window::SetSize(uint16_t p_width, uint16_t p_height)
 {
 	glfwSetWindowSize(m_glfwWindow, static_cast<int>(p_width), static_cast<int>(p_height));
 }
 
-void NLS::Window::SetMinimumSize(int16_t p_minimumWidth, int16_t p_minimumHeight)
+void NLS::Windowing::Window::SetMinimumSize(int16_t p_minimumWidth, int16_t p_minimumHeight)
 {
 	m_minimumSize.x = p_minimumWidth;
 	m_minimumSize.y = p_minimumHeight;
@@ -91,7 +88,7 @@ void NLS::Window::SetMinimumSize(int16_t p_minimumWidth, int16_t p_minimumHeight
 	UpdateSizeLimit();
 }
 
-void NLS::Window::SetMaximumSize(int16_t p_maximumWidth, int16_t p_maximumHeight)
+void NLS::Windowing::Window::SetMaximumSize(int16_t p_maximumWidth, int16_t p_maximumHeight)
 {
 	m_maximumSize.x = p_maximumWidth;
 	m_maximumSize.y = p_maximumHeight;
@@ -99,52 +96,52 @@ void NLS::Window::SetMaximumSize(int16_t p_maximumWidth, int16_t p_maximumHeight
 	UpdateSizeLimit();
 }
 
-void NLS::Window::SetPosition(int16_t p_x, int16_t p_y)
+void NLS::Windowing::Window::SetPosition(int16_t p_x, int16_t p_y)
 {
 	glfwSetWindowPos(m_glfwWindow, static_cast<int>(p_x), static_cast<int>(p_y));
 }
 
-void NLS::Window::Minimize() const
+void NLS::Windowing::Window::Minimize() const
 {
 	glfwIconifyWindow(m_glfwWindow);
 }
 
-void NLS::Window::Maximize() const
+void NLS::Windowing::Window::Maximize() const
 {
 	glfwMaximizeWindow(m_glfwWindow);
 }
 
-void NLS::Window::Restore() const
+void NLS::Windowing::Window::Restore() const
 {
 	glfwRestoreWindow(m_glfwWindow);
 }
 
-void NLS::Window::Hide() const
+void NLS::Windowing::Window::Hide() const
 {
 	glfwHideWindow(m_glfwWindow);
 }
 
-void NLS::Window::Show() const
+void NLS::Windowing::Window::Show() const
 {
 	glfwShowWindow(m_glfwWindow);
 }
 
-void NLS::Window::Focus() const
+void NLS::Windowing::Window::Focus() const
 {
 	glfwFocusWindow(m_glfwWindow);
 }
 
-void NLS::Window::SetShouldClose(bool p_value) const
+void NLS::Windowing::Window::SetShouldClose(bool p_value) const
 {
 	glfwSetWindowShouldClose(m_glfwWindow, p_value);
 }
 
-bool NLS::Window::ShouldClose() const
+bool NLS::Windowing::Window::ShouldClose() const
 {
 	return glfwWindowShouldClose(m_glfwWindow);
 }
 
-void NLS::Window::SetFullscreen(bool p_value)
+void NLS::Windowing::Window::SetFullscreen(bool p_value)
 {
 	if (p_value)
 		m_fullscreen = true;
@@ -165,146 +162,146 @@ void NLS::Window::SetFullscreen(bool p_value)
 
 }
 
-void NLS::Window::ToggleFullscreen()
+void NLS::Windowing::Window::ToggleFullscreen()
 {
 	SetFullscreen(!m_fullscreen);
 }
 
-bool NLS::Window::IsFullscreen() const
+bool NLS::Windowing::Window::IsFullscreen() const
 {
 	return m_fullscreen;
 }
 
-bool NLS::Window::IsHidden() const
+bool NLS::Windowing::Window::IsHidden() const
 {
 	return glfwGetWindowAttrib(m_glfwWindow, GLFW_VISIBLE) == GLFW_FALSE;
 }
 
-bool NLS::Window::IsVisible() const
+bool NLS::Windowing::Window::IsVisible() const
 {
 	return glfwGetWindowAttrib(m_glfwWindow, GLFW_VISIBLE) == GLFW_TRUE;
 }
 
-bool NLS::Window::IsMaximized() const
+bool NLS::Windowing::Window::IsMaximized() const
 {
 	return glfwGetWindowAttrib(m_glfwWindow, GLFW_MAXIMIZED) == GLFW_TRUE;
 }
 
-bool NLS::Window::IsMinimized() const
+bool NLS::Windowing::Window::IsMinimized() const
 {
 	return glfwGetWindowAttrib(m_glfwWindow, GLFW_MAXIMIZED) == GLFW_FALSE;
 }
 
-bool NLS::Window::IsFocused() const
+bool NLS::Windowing::Window::IsFocused() const
 {
 	return glfwGetWindowAttrib(m_glfwWindow, GLFW_FOCUSED) == GLFW_TRUE;
 }
 
-bool NLS::Window::IsResizable() const
+bool NLS::Windowing::Window::IsResizable() const
 {
 	return glfwGetWindowAttrib(m_glfwWindow, GLFW_RESIZABLE) == GLFW_TRUE;
 }
 
-bool NLS::Window::IsDecorated() const
+bool NLS::Windowing::Window::IsDecorated() const
 {
 	return glfwGetWindowAttrib(m_glfwWindow, GLFW_DECORATED) == GLFW_TRUE;;
 }
 
-void NLS::Window::MakeCurrentContext() const
+void NLS::Windowing::Window::MakeCurrentContext() const
 {
 	glfwMakeContextCurrent(m_glfwWindow);
 }
 
-void NLS::Window::SwapBuffers() const
+void NLS::Windowing::Window::SwapBuffers() const
 {
 	glfwSwapBuffers(m_glfwWindow);
 }
 
-void NLS::Window::SetCursorMode(Cursor::ECursorMode p_cursorMode)
+void NLS::Windowing::Window::SetCursorMode(Cursor::ECursorMode p_cursorMode)
 {
 	m_cursorMode = p_cursorMode;
 	glfwSetInputMode(m_glfwWindow, GLFW_CURSOR, static_cast<int>(p_cursorMode));
 }
 
-void NLS::Window::SetCursorShape(Cursor::ECursorShape p_cursorShape)
+void NLS::Windowing::Window::SetCursorShape(Cursor::ECursorShape p_cursorShape)
 {
 	m_cursorShape = p_cursorShape;
 	glfwSetCursor(m_glfwWindow, m_device.GetCursorInstance(p_cursorShape));
 }
 
-void NLS::Window::SetCursorPosition(int16_t p_x, int16_t p_y)
+void NLS::Windowing::Window::SetCursorPosition(int16_t p_x, int16_t p_y)
 {
 	glfwSetCursorPos(m_glfwWindow, static_cast<double>(p_x), static_cast<double>(p_y));
 }
 
-void NLS::Window::SetTitle(const std::string& p_title)
+void NLS::Windowing::Window::SetTitle(const std::string& p_title)
 {
 	m_title = p_title;
 	glfwSetWindowTitle(m_glfwWindow, p_title.c_str());
 }
 
-void NLS::Window::SetRefreshRate(int32_t p_refreshRate)
+void NLS::Windowing::Window::SetRefreshRate(int32_t p_refreshRate)
 {
 	m_refreshRate = p_refreshRate;
 }
 
-std::string NLS::Window::GetTitle() const
+std::string NLS::Windowing::Window::GetTitle() const
 {
 	return m_title;
 }
 
-NLS::Maths::Vector2 NLS::Window::GetSize() const
+NLS::Maths::Vector2 NLS::Windowing::Window::GetSize() const
 {
 	int width, height;
 	glfwGetWindowSize(m_glfwWindow, &width, &height);
 	return NLS::Maths::Vector2(width, height);
 }
 
-NLS::Maths::Vector2 NLS::Window::GetMinimumSize() const
+NLS::Maths::Vector2 NLS::Windowing::Window::GetMinimumSize() const
 {
 	return m_minimumSize;
 }
 
-NLS::Maths::Vector2 NLS::Window::GetMaximumSize() const
+NLS::Maths::Vector2 NLS::Windowing::Window::GetMaximumSize() const
 {
 	return m_maximumSize;
 }
 
-NLS::Maths::Vector2 NLS::Window::GetPosition() const
+NLS::Maths::Vector2 NLS::Windowing::Window::GetPosition() const
 {
 	int x, y;
 	glfwGetWindowPos(m_glfwWindow, &x, &y);
 	return NLS::Maths::Vector2(static_cast<int16_t>(x), static_cast<int16_t>(y));
 }
 
-NLS::Maths::Vector2 NLS::Window::GetFramebufferSize() const
+NLS::Maths::Vector2 NLS::Windowing::Window::GetFramebufferSize() const
 {
 	int width, height;
 	glfwGetFramebufferSize(m_glfwWindow, &width, &height);
 	return NLS::Maths::Vector2(static_cast<uint16_t>(width), static_cast<uint16_t>(height));
 }
 
-NLS::Cursor::ECursorMode NLS::Window::GetCursorMode() const
+NLS::Cursor::ECursorMode NLS::Windowing::Window::GetCursorMode() const
 {
 	return m_cursorMode;
 }
 
-NLS::Cursor::ECursorShape NLS::Window::GetCursorShape() const
+NLS::Cursor::ECursorShape NLS::Windowing::Window::GetCursorShape() const
 {
 	return m_cursorShape;
 }
 
-int32_t NLS::Window::GetRefreshRate() const
+int32_t NLS::Windowing::Window::GetRefreshRate() const
 {
 	return m_refreshRate;
 }
 
-GLFWwindow* NLS::Window::GetGlfwWindow() const
+GLFWwindow* NLS::Windowing::Window::GetGlfwWindow() const
 {
 	return m_glfwWindow;
 }
 
-void NLS::Window::ShowConsole(bool state)
+void NLS::Windowing::Window::ShowConsole(bool state)
 {
 #ifdef _WIN32
     HWND consoleWindow = GetConsoleWindow();
@@ -315,7 +312,7 @@ void NLS::Window::ShowConsole(bool state)
 #endif
 }
 
-void NLS::Window::CreateGlfwWindow(const Settings::WindowSettings& p_windowSettings)
+void NLS::Windowing::Window::CreateGlfwWindow(const Settings::WindowSettings& p_windowSettings)
 {
 	GLFWmonitor* selectedMonitor = nullptr;
 
@@ -350,7 +347,7 @@ void NLS::Window::CreateGlfwWindow(const Settings::WindowSettings& p_windowSetti
 	}
 }
 
-void NLS::Window::BindKeyCallback() const
+void NLS::Windowing::Window::BindKeyCallback() const
 {
 	auto keyCallback = [](GLFWwindow* p_window, int p_key, int p_scancode, int p_action, int p_mods)
 	{
@@ -369,7 +366,7 @@ void NLS::Window::BindKeyCallback() const
 	glfwSetKeyCallback(m_glfwWindow, keyCallback);
 }
 
-void NLS::Window::BindMouseCallback() const
+void NLS::Windowing::Window::BindMouseCallback() const
 {
 	auto mouseCallback = [](GLFWwindow* p_window, int p_button, int p_action, int p_mods)
 	{
@@ -389,7 +386,7 @@ void NLS::Window::BindMouseCallback() const
 }
 
 
-void NLS::Window::BindScrollsCallback() const
+void NLS::Windowing::Window::BindScrollsCallback() const
 {
     auto scroll_callback = [](GLFWwindow* p_window, double xoffset, double yoffset)
     {
@@ -404,7 +401,7 @@ void NLS::Window::BindScrollsCallback() const
 	glfwSetScrollCallback(m_glfwWindow, scroll_callback);
 }
 
-void NLS::Window::BindResizeCallback() const
+void NLS::Windowing::Window::BindResizeCallback() const
 {
 	auto resizeCallback = [](GLFWwindow* p_window, int p_width, int p_height)
 	{
@@ -419,7 +416,7 @@ void NLS::Window::BindResizeCallback() const
 	glfwSetWindowSizeCallback(m_glfwWindow, resizeCallback);
 }
 
-void NLS::Window::BindFramebufferResizeCallback() const
+void NLS::Windowing::Window::BindFramebufferResizeCallback() const
 {
 	auto framebufferResizeCallback = [](GLFWwindow* p_window, int p_width, int p_height)
 	{
@@ -434,7 +431,7 @@ void NLS::Window::BindFramebufferResizeCallback() const
 	glfwSetFramebufferSizeCallback(m_glfwWindow, framebufferResizeCallback);
 }
 
-void NLS::Window::BindCursorMoveCallback() const
+void NLS::Windowing::Window::BindCursorMoveCallback() const
 {
 	auto cursorMoveCallback = [](GLFWwindow* p_window, double p_x, double p_y)
 	{
@@ -449,7 +446,7 @@ void NLS::Window::BindCursorMoveCallback() const
 	glfwSetCursorPosCallback(m_glfwWindow, cursorMoveCallback);
 }
 
-void NLS::Window::BindMoveCallback() const
+void NLS::Windowing::Window::BindMoveCallback() const
 {
 	auto moveCallback = [](GLFWwindow* p_window, int p_x, int p_y)
 	{
@@ -464,7 +461,7 @@ void NLS::Window::BindMoveCallback() const
 	glfwSetWindowPosCallback(m_glfwWindow, moveCallback);
 }
 
-void NLS::Window::BindIconifyCallback() const
+void NLS::Windowing::Window::BindIconifyCallback() const
 {
 	auto iconifyCallback = [](GLFWwindow* p_window, int p_iconified)
 	{
@@ -483,7 +480,7 @@ void NLS::Window::BindIconifyCallback() const
 	glfwSetWindowIconifyCallback(m_glfwWindow, iconifyCallback);
 }
 
-void NLS::Window::BindFocusCallback() const
+void NLS::Windowing::Window::BindFocusCallback() const
 {
 	auto focusCallback = [](GLFWwindow* p_window, int p_focused)
 	{
@@ -502,7 +499,7 @@ void NLS::Window::BindFocusCallback() const
 	glfwSetWindowFocusCallback(m_glfwWindow, focusCallback);
 }
 
-void NLS::Window::BindCloseCallback() const
+void NLS::Windowing::Window::BindCloseCallback() const
 {
 	auto closeCallback = [](GLFWwindow* p_window)
 	{
@@ -517,13 +514,13 @@ void NLS::Window::BindCloseCallback() const
 	glfwSetWindowCloseCallback(m_glfwWindow, closeCallback);
 }
 
-void NLS::Window::OnResize(uint16_t p_width, uint16_t p_height)
+void NLS::Windowing::Window::OnResize(uint16_t p_width, uint16_t p_height)
 {
 	m_size.x = p_width;
 	m_size.y = p_height;
 }
 
-void NLS::Window::OnMove(int16_t p_x, int16_t p_y)
+void NLS::Windowing::Window::OnMove(int16_t p_x, int16_t p_y)
 {
 	if (!m_fullscreen)
 	{
@@ -532,7 +529,7 @@ void NLS::Window::OnMove(int16_t p_x, int16_t p_y)
 	}
 }
 
-void NLS::Window::UpdateSizeLimit() const
+void NLS::Windowing::Window::UpdateSizeLimit() const
 {
 	glfwSetWindowSizeLimits
 	(

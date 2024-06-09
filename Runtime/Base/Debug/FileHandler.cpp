@@ -3,7 +3,6 @@
 #include <Time/Date.h>
 
 #include "Debug/FileHandler.h"
-#include "Assets.h"
 #include <fstream>
 #include <iostream>
 
@@ -15,7 +14,7 @@ std::string NLS::Debug::FileHandler::__APP_LAUNCH_DATE			= NLS::Time::Date::GetD
 std::string const NLS::Debug::FileHandler::__LOG_EXTENSION		= ".log";
 
 std::ofstream NLS::Debug::FileHandler::OUTPUT_FILE;
-std::string NLS::Debug::FileHandler::LOG_FILE_PATH = NLS::Assets::LOGDIR + __APP_LAUNCH_DATE + __LOG_EXTENSION;
+std::string NLS::Debug::FileHandler::LOG_FILE_PATH = __APP_LAUNCH_DATE + __LOG_EXTENSION;
 
 void NLS::Debug::FileHandler::Log(const LogData& p_logData)
 {

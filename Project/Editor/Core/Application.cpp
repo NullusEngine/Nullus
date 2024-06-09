@@ -1,7 +1,12 @@
 #include <Time/Clock.h>
 
 #include "Core/Application.h"
-
+#include "Assembly.h"
+#include "Core/AssemblyCore.h"
+#include "AssemblyMath.h"
+#include "AssemblyEngine.h"
+#include "AssemblyPlatform.h"
+#include "AssemblyRender.h"
 namespace NLS
 {
 Editor::Core::Application::Application(const std::string& p_projectPath, const std::string& p_projectName)
@@ -15,6 +20,7 @@ Editor::Core::Application::~Application()
 
 void Editor::Core::Application::Run()
 {
+    Assembly::Instance().Instance().Load<AssemblyMath>().Load<AssemblyCore>().Load<AssemblyPlatform>().Load<AssemblyRender>().Load<Engine::AssemblyEngine>();
     Time::Clock clock;
 
     while (IsRunning())

@@ -4,7 +4,7 @@
 
 #include "Rendering/Buffers/VertexArray.h"
 
-namespace Rendering::Resources
+namespace NLS::Rendering::Resources
 {
 	/**
 	* Interface for any mesh

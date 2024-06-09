@@ -51,9 +51,9 @@ namespace NLS
 			const std::string editorAssetsPath;
 
 			std::unique_ptr<NLS::Context::Device> device;
-			std::unique_ptr<NLS::Window> window;
-			std::unique_ptr<NLS::Inputs::InputManager> inputManager;
-			NLS::Settings::WindowSettings windowSettings;
+			std::unique_ptr<NLS::Windowing::Window> window;
+			std::unique_ptr<NLS::Windowing::Inputs::InputManager> inputManager;
+			NLS::Windowing::Settings::WindowSettings windowSettings;
 		};
 	}
 }

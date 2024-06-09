@@ -6,7 +6,7 @@
 
 #include "Rendering/Data/PipelineState.h"
 
-Rendering::Data::PipelineState::PipelineState() :
+NLS::Rendering::Data::PipelineState::PipelineState() :
     colorWriting{true, true, true, true},
     depthWriting(true),
     culling(true),

@@ -2,7 +2,7 @@
 
 #include <functional>
  #include <stdint.h>
-
+#include "UDRefl/config.hpp"
 namespace NLS
 {
 	/**
@@ -15,7 +15,7 @@ namespace NLS
 	* 包含一组函数回调的简单事件。
 	*/
 	template<class... ArgTypes>
-	class Event
+	class NLS_BASE_API Event
 	{
 	public:
 		/**

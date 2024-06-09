@@ -2,7 +2,7 @@
 
 #include "Rendering/Data/FrameDescriptor.h"
 
-namespace Rendering::Core
+namespace NLS::Rendering::Core
 {
 	class IRenderer
 	{

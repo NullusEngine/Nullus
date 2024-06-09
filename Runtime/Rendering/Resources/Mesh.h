@@ -9,7 +9,7 @@
 #include "Rendering/Geometry/Vertex.h"
 #include "Rendering/Geometry/BoundingSphere.h"
 
-namespace Rendering::Resources
+namespace NLS::Rendering::Resources
 {
 	/**
 	* Standard mesh of Rendering

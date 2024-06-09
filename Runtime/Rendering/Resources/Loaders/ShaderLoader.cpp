@@ -8,9 +8,9 @@
 
 #include "Rendering/Resources/Loaders/ShaderLoader.h"
 
-std::string Rendering::Resources::Loaders::ShaderLoader::__FILE_TRACE;
+std::string NLS::Rendering::Resources::Loaders::ShaderLoader::__FILE_TRACE;
 
-Rendering::Resources::Shader* Rendering::Resources::Loaders::ShaderLoader::Create(const std::string& p_filePath)
+NLS::Rendering::Resources::Shader* NLS::Rendering::Resources::Loaders::ShaderLoader::Create(const std::string& p_filePath)
 {
 	__FILE_TRACE = p_filePath;
 
@@ -24,7 +24,7 @@ Rendering::Resources::Shader* Rendering::Resources::Loaders::ShaderLoader::Creat
 	return nullptr;
 }
 
-Rendering::Resources::Shader* Rendering::Resources::Loaders::ShaderLoader::CreateFromSource(const std::string& p_vertexShader, const std::string& p_fragmentShader)
+NLS::Rendering::Resources::Shader* NLS::Rendering::Resources::Loaders::ShaderLoader::CreateFromSource(const std::string& p_vertexShader, const std::string& p_fragmentShader)
 {
 	uint32_t programID = CreateProgram(p_vertexShader, p_fragmentShader);
 
@@ -34,7 +34,7 @@ Rendering::Resources::Shader* Rendering::Resources::Loaders::ShaderLoader::Creat
 	return nullptr;
 }
 
-void Rendering::Resources::Loaders::ShaderLoader::Recompile(Shader& p_shader, const std::string& p_filePath)
+void NLS::Rendering::Resources::Loaders::ShaderLoader::Recompile(Shader& p_shader, const std::string& p_filePath)
 {
 	__FILE_TRACE = p_filePath;
 
@@ -64,7 +64,7 @@ void Rendering::Resources::Loaders::ShaderLoader::Recompile(Shader& p_shader, co
 	}
 }
 
-bool Rendering::Resources::Loaders::ShaderLoader::Destroy(Shader*& p_shader)
+bool NLS::Rendering::Resources::Loaders::ShaderLoader::Destroy(Shader*& p_shader)
 {
 	if (p_shader)
 	{
@@ -77,7 +77,7 @@ bool Rendering::Resources::Loaders::ShaderLoader::Destroy(Shader*& p_shader)
 	return false;
 }
 
-std::pair<std::string, std::string> Rendering::Resources::Loaders::ShaderLoader::ParseShader(const std::string& p_filePath)
+std::pair<std::string, std::string> NLS::Rendering::Resources::Loaders::ShaderLoader::ParseShader(const std::string& p_filePath)
 {
 	std::ifstream stream(p_filePath);
 
@@ -109,7 +109,7 @@ std::pair<std::string, std::string> Rendering::Resources::Loaders::ShaderLoader:
 	};
 }
 
-uint32_t Rendering::Resources::Loaders::ShaderLoader::CreateProgram(const std::string& p_vertexShader, const std::string& p_fragmentShader)
+uint32_t NLS::Rendering::Resources::Loaders::ShaderLoader::CreateProgram(const std::string& p_vertexShader, const std::string& p_fragmentShader)
 {
 	const uint32_t program = glCreateProgram();
 
@@ -148,7 +148,7 @@ uint32_t Rendering::Resources::Loaders::ShaderLoader::CreateProgram(const std::s
 	return program;
 }
 
-uint32_t Rendering::Resources::Loaders::ShaderLoader::CompileShader(uint32_t p_type, const std::string& p_source)
+uint32_t NLS::Rendering::Resources::Loaders::ShaderLoader::CompileShader(uint32_t p_type, const std::string& p_source)
 {
 	const uint32_t id = glCreateShader(p_type);
 

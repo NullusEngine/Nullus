@@ -59,7 +59,7 @@ void NormalizePlane(float frustum[6][4], int side)
 void NLS::Rendering::Data::Frustum::CalculateFrustum(const Maths::Matrix4& p_viewProjection)
 {
 	auto columnMajorViewProjection = Maths::Matrix4::Transpose(p_viewProjection);
-	float const* clip = columnMajorViewProjection.array;
+	float const* clip = columnMajorViewProjection.data;
 
 	// Now we actually want to get the sides of the frustum.  To do this we take
 	// the clipping planes we received above and extract the sides from them.

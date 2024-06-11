@@ -16,7 +16,7 @@ namespace NLS::Rendering::Entities
 class Light : public Entity
 {
 public :
-    Light(Maths::Transform p_transform)
+    Light(Maths::Transform* p_transform)
         : Entity{p_transform}
     {
     }

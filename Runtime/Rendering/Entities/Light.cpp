@@ -14,26 +14,26 @@ Maths::Matrix4 NLS::Rendering::Entities::Light::GenerateMatrix() const
 {
 	Maths::Matrix4 result;
 
-	auto position = transform.GetWorldPosition();
-	result.array[0] = position.x;
-	result.array[1] = position.y;
-	result.array[2] = position.z;
+	auto position = transform->GetWorldPosition();
+	result.data[0] = position.x;
+	result.data[1] = position.y;
+	result.data[2] = position.z;
 
-	auto forward = transform.GetWorldForward();
-	result.array[4] = forward.x;
-	result.array[5] = forward.y;
-	result.array[6] = forward.z;
+	auto forward = transform->GetWorldForward();
+	result.data[4] = forward.x;
+	result.data[5] = forward.y;
+	result.data[6] = forward.z;
 
-	result.array[8] = static_cast<float>(Pack(color));
+	result.data[8] = static_cast<float>(Pack(color));
 
-	result.array[12] = static_cast<float>(type);
-	result.array[13] = cutoff;
-	result.array[14] = outerCutoff;
+	result.data[12] = static_cast<float>(type);
+	result.data[13] = cutoff;
+	result.data[14] = outerCutoff;
 
-	result.array[3] = constant;
-	result.array[7] = linear;
-	result.array[11] = quadratic;
-	result.array[15] = intensity;
+	result.data[3] = constant;
+	result.data[7] = linear;
+	result.data[11] = quadratic;
+	result.data[15] = intensity;
 
 	return result;
 }
@@ -99,7 +99,7 @@ float NLS::Rendering::Entities::Light::GetEffectRange() const
 	{
 	case Settings::ELightType::POINT:
 	case Settings::ELightType::SPOT: return CalculatePointLightRadius(constant, linear, quadratic, intensity);
-	case Settings::ELightType::AMBIENT_BOX: return CalculateAmbientBoxLightRadius(transform.GetWorldPosition(), {constant, linear, quadratic});
+	case Settings::ELightType::AMBIENT_BOX: return CalculateAmbientBoxLightRadius(transform->GetWorldPosition(), {constant, linear, quadratic});
 	case Settings::ELightType::AMBIENT_SPHERE: return constant;
 	}
 

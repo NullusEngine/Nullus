@@ -42,13 +42,13 @@ void Engine::Rendering::EngineBufferRenderFeature::OnEndFrame()
 
 void Engine::Rendering::EngineBufferRenderFeature::OnBeforeDraw(NLS::Rendering::Data::PipelineState& p_pso, const NLS::Rendering::Entities::Drawable& p_drawable)
 {
-	const EngineDrawableDescriptor* descriptor;
+	EngineDrawableDescriptor descriptor;
 	if (p_drawable.TryGetDescriptor<EngineDrawableDescriptor>(descriptor))
 	{
-		m_engineBuffer->SetSubData(Maths::Matrix4::Transpose(descriptor->modelMatrix), 0);
+		m_engineBuffer->SetSubData(Maths::Matrix4::Transpose(descriptor.modelMatrix), 0);
 		m_engineBuffer->SetSubData
 		(
-			descriptor->userMatrix,
+			descriptor.userMatrix,
 
 			// UBO layout offset
 			sizeof(Maths::Matrix4) +

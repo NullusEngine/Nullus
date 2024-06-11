@@ -12,6 +12,6 @@ namespace NLS::Rendering::Entities
 	*/
 	struct Entity
 	{
-		NLS::Maths::Transform transform;
+		NLS::Maths::Transform* transform = nullptr;
 	};
 }

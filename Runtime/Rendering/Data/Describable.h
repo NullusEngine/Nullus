@@ -51,7 +51,7 @@ namespace NLS::Rendering::Data
 		* @return true if the descriptor has been found
 		*/
 		template<typename T>
-		bool TryGetDescriptor(const T* p_outDescriptor) const;
+		bool TryGetDescriptor(T& p_outDescriptor) const;
 
 	private:
 		std::unordered_map<std::type_index, std::any> m_descriptors;

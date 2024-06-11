@@ -53,7 +53,7 @@ void NLS::Rendering::Resources::Shader::SetUniformVec4(const std::string& p_name
 
 void NLS::Rendering::Resources::Shader::SetUniformMat4(const std::string& p_name, const Maths::Matrix4& p_mat4)
 {
-	glUniformMatrix4fv(GetUniformLocation(p_name), 1, GL_TRUE, &p_mat4.array[0]);
+	glUniformMatrix4fv(GetUniformLocation(p_name), 1, GL_TRUE, &p_mat4.data[0]);
 }
 
 int NLS::Rendering::Resources::Shader::GetUniformInt(const std::string& p_name)

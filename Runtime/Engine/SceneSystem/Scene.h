@@ -125,13 +125,13 @@ namespace NLS::Engine::SceneSystem
 		* Callback method called everytime a component is added on an actor of the scene
 		* @param p_component
 		*/
-		void OnComponentAdded(Engine::Components::Component& p_compononent);
+        void OnComponentAdded(SharedObject p_compononent);
 
 		/**
 		* Callback method called everytime a component is removed on an actor of the scene
 		* @param p_component
 		*/
-		void OnComponentRemoved(Engine::Components::Component& p_compononent);
+        void OnComponentRemoved(SharedObject p_compononent);
 
 		/**
 		* Return a reference on the actor map

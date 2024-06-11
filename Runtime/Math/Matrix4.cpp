@@ -21,27 +21,27 @@ const Maths::Matrix4 Maths::Matrix4::Identity{
 
 Maths::Matrix4::Matrix4()
 {
-	memcpy(this->array, Identity.array, 16 * sizeof(float)); // TODO: memcpy is not great (consider std::array)
+	memcpy(this->data, Identity.data, 16 * sizeof(float)); // TODO: memcpy is not great (consider std::data)
 }
 
 Maths::Matrix4::Matrix4(float p_element1, float p_element2, float p_element3, float p_element4, float p_element5, float p_element6, float p_element7, float p_element8, float p_element9, float p_element10, float p_element11, float p_element12, float p_element13, float p_element14, float p_element15, float p_element16)
 {
-	array[0] = p_element1;
-	array[1] = p_element2;
-	array[2] = p_element3;
-	array[3] = p_element4;
-	array[4] = p_element5;
-	array[5] = p_element6;
-	array[6] = p_element7;
-	array[7] = p_element8;
-	array[8] = p_element9;
-	array[9] = p_element10;
-	array[10] = p_element11;
-	array[11] = p_element12;
-	array[12] = p_element13;
-	array[13] = p_element14;
-	array[14] = p_element15;
-	array[15] = p_element16;
+	data[0] = p_element1;
+	data[1] = p_element2;
+	data[2] = p_element3;
+	data[3] = p_element4;
+	data[4] = p_element5;
+	data[5] = p_element6;
+	data[6] = p_element7;
+	data[7] = p_element8;
+	data[8] = p_element9;
+	data[9] = p_element10;
+	data[10] = p_element11;
+	data[11] = p_element12;
+	data[12] = p_element13;
+	data[13] = p_element14;
+	data[14] = p_element15;
+	data[15] = p_element16;
 }
 
 Maths::Matrix4::Matrix4(const Matrix4& p_other)
@@ -51,7 +51,7 @@ Maths::Matrix4::Matrix4(const Matrix4& p_other)
 
 Maths::Matrix4& Maths::Matrix4::operator=(const Matrix4& p_other)
 {
-	memcpy(this->array, p_other.array, 16 * sizeof(float));
+	memcpy(this->data, p_other.data, 16 * sizeof(float));
 	return *this;
 }
 
@@ -141,7 +141,7 @@ float& Maths::Matrix4::operator()(uint8_t p_row, uint8_t p_column)
 	if (p_row >= 4 || p_column >= 4)
 		throw std::out_of_range(
 			"Invalid index : " + std::to_string(p_row) + "," + std::to_string(p_column) + " is out of range");
-	return array[4 * p_row + p_column];
+	return data[4 * p_row + p_column];
 }
 
 bool Maths::Matrix4::AreEquals(const Matrix4& p_left, const Matrix4& p_right)
@@ -153,7 +153,7 @@ Maths::Matrix4 Maths::Matrix4::Add(const Matrix4& p_left, float p_scalar)
 {
 	Matrix4 result(p_left);
 	for (int8_t i = 0; i < 16; i++)
-		result.array[i] += p_scalar;
+		result.data[i] += p_scalar;
 	return result;
 }
 
@@ -161,7 +161,7 @@ Maths::Matrix4 Maths::Matrix4::Add(const Matrix4& p_left, const Matrix4& p_right
 {
 	Matrix4 result(p_left);
 	for (int8_t i = 0; i < 16; i++)
-		result.array[i] += p_right.array[i];
+		result.data[i] += p_right.data[i];
 	return result;
 }
 
@@ -169,7 +169,7 @@ Maths::Matrix4 Maths::Matrix4::Subtract(const Matrix4& p_left, float p_scalar)
 {
 	Matrix4 result(p_left);
 	for (int8_t i = 0; i < 16; ++i)
-		result.array[i] -= p_scalar;
+		result.data[i] -= p_scalar;
 	return result;
 }
 
@@ -177,7 +177,7 @@ Maths::Matrix4 Maths::Matrix4::Subtract(const Matrix4& p_left, const Matrix4& p_
 {
 	Matrix4 result(p_left);
 	for (int8_t i = 0; i < 16; ++i)
-		result.array[i] -= p_right.array[i];
+		result.data[i] -= p_right.data[i];
 	return result;
 }
 
@@ -185,7 +185,7 @@ Maths::Matrix4 Maths::Matrix4::Multiply(const Matrix4& p_left, float p_scalar)
 {
 	Matrix4 result(p_left);
 	for (int8_t i = 0; i < 16; ++i)
-		result.array[i] *= p_scalar;
+		result.data[i] *= p_scalar;
 	return result;
 }
 
@@ -193,61 +193,61 @@ Maths::Vector4 Maths::Matrix4::Multiply(const Matrix4& p_matrix, const Vector4& 
 {
 	Vector4 multiply;
 
-	multiply.x = ((p_matrix.array[0] * p_vector.x) + (p_matrix.array[1] * p_vector.y) + (p_matrix.array[2]
-		* p_vector.z) + (p_matrix.array[3] * p_vector.w));
-	multiply.y = ((p_matrix.array[4] * p_vector.x) + (p_matrix.array[5] * p_vector.y) + (p_matrix.array[6]
-		* p_vector.z) + (p_matrix.array[7] * p_vector.w));
-	multiply.z = ((p_matrix.array[8] * p_vector.x) + (p_matrix.array[9] * p_vector.y) + (p_matrix.array[10]
-		* p_vector.z) + (p_matrix.array[11] * p_vector.w));
-	multiply.w = ((p_matrix.array[12] * p_vector.x) + (p_matrix.array[13] * p_vector.y) + (p_matrix.array[
-		14] * p_vector.z) + (p_matrix.array[15] * p_vector.w));
+	multiply.x = ((p_matrix.data[0] * p_vector.x) + (p_matrix.data[1] * p_vector.y) + (p_matrix.data[2]
+		* p_vector.z) + (p_matrix.data[3] * p_vector.w));
+	multiply.y = ((p_matrix.data[4] * p_vector.x) + (p_matrix.data[5] * p_vector.y) + (p_matrix.data[6]
+		* p_vector.z) + (p_matrix.data[7] * p_vector.w));
+	multiply.z = ((p_matrix.data[8] * p_vector.x) + (p_matrix.data[9] * p_vector.y) + (p_matrix.data[10]
+		* p_vector.z) + (p_matrix.data[11] * p_vector.w));
+	multiply.w = ((p_matrix.data[12] * p_vector.x) + (p_matrix.data[13] * p_vector.y) + (p_matrix.data[
+		14] * p_vector.z) + (p_matrix.data[15] * p_vector.w));
 	return multiply;
 }
 
 Maths::Matrix4 Maths::Matrix4::Multiply(const Matrix4& p_left, const Matrix4& p_right)
 {
 	return Matrix4(
-		((p_left.array[0] * p_right.array[0]) + (p_left.array[1] * p_right.array[4]) + (p_left.array[
-			2] * p_right.array[8]) + (p_left.array[3] * p_right.array[12])),
-		((p_left.array[0] * p_right.array[1]) + (p_left.array[1] * p_right.array[5]) + (p_left.array[
-			2] * p_right.array[9]) + (p_left.array[3] * p_right.array[13])),
-		((p_left.array[0] * p_right.array[2]) + (p_left.array[1] * p_right.array[6]) + (p_left.array[
-			2] * p_right.array[10]) + (p_left.array[3] * p_right.array[14])),
-		((p_left.array[0] * p_right.array[3]) + (p_left.array[1] * p_right.array[7]) + (p_left.array[
-			2] * p_right.array[11]) + (p_left.array[3] * p_right.array[15])),
+		((p_left.data[0] * p_right.data[0]) + (p_left.data[1] * p_right.data[4]) + (p_left.data[
+			2] * p_right.data[8]) + (p_left.data[3] * p_right.data[12])),
+		((p_left.data[0] * p_right.data[1]) + (p_left.data[1] * p_right.data[5]) + (p_left.data[
+			2] * p_right.data[9]) + (p_left.data[3] * p_right.data[13])),
+		((p_left.data[0] * p_right.data[2]) + (p_left.data[1] * p_right.data[6]) + (p_left.data[
+			2] * p_right.data[10]) + (p_left.data[3] * p_right.data[14])),
+		((p_left.data[0] * p_right.data[3]) + (p_left.data[1] * p_right.data[7]) + (p_left.data[
+			2] * p_right.data[11]) + (p_left.data[3] * p_right.data[15])),
 
-		((p_left.array[4] * p_right.array[0]) + (p_left.array[5] * p_right.array[4]) + (p_left.array[
-			6] * p_right.array[8]) + (p_left.array[7] * p_right.array[12])),
-		((p_left.array[4] * p_right.array[1]) + (p_left.array[5] * p_right.array[5]) + (p_left.array[
-			6] * p_right.array[9]) + (p_left.array[7] * p_right.array[13])),
-		((p_left.array[4] * p_right.array[2]) + (p_left.array[5] * p_right.array[6]) + (p_left.array[
-			6] * p_right.array[10]) + (p_left.array[7] * p_right.array[14])),
-		((p_left.array[4] * p_right.array[3]) + (p_left.array[5] * p_right.array[7]) + (p_left.array[
-			6] * p_right.array[11]) + (p_left.array[7] * p_right.array[15])),
+		((p_left.data[4] * p_right.data[0]) + (p_left.data[5] * p_right.data[4]) + (p_left.data[
+			6] * p_right.data[8]) + (p_left.data[7] * p_right.data[12])),
+		((p_left.data[4] * p_right.data[1]) + (p_left.data[5] * p_right.data[5]) + (p_left.data[
+			6] * p_right.data[9]) + (p_left.data[7] * p_right.data[13])),
+		((p_left.data[4] * p_right.data[2]) + (p_left.data[5] * p_right.data[6]) + (p_left.data[
+			6] * p_right.data[10]) + (p_left.data[7] * p_right.data[14])),
+		((p_left.data[4] * p_right.data[3]) + (p_left.data[5] * p_right.data[7]) + (p_left.data[
+			6] * p_right.data[11]) + (p_left.data[7] * p_right.data[15])),
 
-		((p_left.array[8] * p_right.array[0]) + (p_left.array[9] * p_right.array[4]) + (p_left.array[
-			10] * p_right.array[8]) + (p_left.array[11] * p_right.array[12])),
-		((p_left.array[8] * p_right.array[1]) + (p_left.array[9] * p_right.array[5]) + (p_left.array[
-			10] * p_right.array[9]) + (p_left.array[11] * p_right.array[13])),
-		((p_left.array[8] * p_right.array[2]) + (p_left.array[9] * p_right.array[6]) + (p_left.array[
-			10] * p_right.array[10]) + (p_left.array[11] * p_right.array[14])),
-		((p_left.array[8] * p_right.array[3]) + (p_left.array[9] * p_right.array[7]) + (p_left.array[
-			10] * p_right.array[11]) + (p_left.array[11] * p_right.array[15])),
+		((p_left.data[8] * p_right.data[0]) + (p_left.data[9] * p_right.data[4]) + (p_left.data[
+			10] * p_right.data[8]) + (p_left.data[11] * p_right.data[12])),
+		((p_left.data[8] * p_right.data[1]) + (p_left.data[9] * p_right.data[5]) + (p_left.data[
+			10] * p_right.data[9]) + (p_left.data[11] * p_right.data[13])),
+		((p_left.data[8] * p_right.data[2]) + (p_left.data[9] * p_right.data[6]) + (p_left.data[
+			10] * p_right.data[10]) + (p_left.data[11] * p_right.data[14])),
+		((p_left.data[8] * p_right.data[3]) + (p_left.data[9] * p_right.data[7]) + (p_left.data[
+			10] * p_right.data[11]) + (p_left.data[11] * p_right.data[15])),
 
-		((p_left.array[12] * p_right.array[0]) + (p_left.array[13] * p_right.array[4]) + (p_left.
-			array[14] * p_right.array[8]) + (p_left.array[15] * p_right.array[12])),
-		((p_left.array[12] * p_right.array[1]) + (p_left.array[13] * p_right.array[5]) + (p_left.
-			array[14] * p_right.array[9]) + (p_left.array[15] * p_right.array[13])),
-		((p_left.array[12] * p_right.array[2]) + (p_left.array[13] * p_right.array[6]) + (p_left.
-			array[14] * p_right.array[10]) + (p_left.array[15] * p_right.array[14])),
-		((p_left.array[12] * p_right.array[3]) + (p_left.array[13] * p_right.array[7]) + (p_left.
-			array[14] * p_right.array[11]) + (p_left.array[15] * p_right.array[15])));
+		((p_left.data[12] * p_right.data[0]) + (p_left.data[13] * p_right.data[4]) + (p_left.
+			data[14] * p_right.data[8]) + (p_left.data[15] * p_right.data[12])),
+		((p_left.data[12] * p_right.data[1]) + (p_left.data[13] * p_right.data[5]) + (p_left.
+			data[14] * p_right.data[9]) + (p_left.data[15] * p_right.data[13])),
+		((p_left.data[12] * p_right.data[2]) + (p_left.data[13] * p_right.data[6]) + (p_left.
+			data[14] * p_right.data[10]) + (p_left.data[15] * p_right.data[14])),
+		((p_left.data[12] * p_right.data[3]) + (p_left.data[13] * p_right.data[7]) + (p_left.
+			data[14] * p_right.data[11]) + (p_left.data[15] * p_right.data[15])));
 }
 
 Maths::Matrix4 Maths::Matrix4::Divide(const Matrix4& p_left, float p_scalar)
 {
 	Matrix4 result(p_left);
-	for (float& element : result.array)
+	for (float& element : result.data)
 		element /= p_scalar;
 
 	return result;
@@ -261,7 +261,7 @@ Maths::Matrix4 Maths::Matrix4::Divide(const Matrix4& p_left, const Matrix4& p_ri
 
 bool Maths::Matrix4::IsIdentity(const Matrix4& p_matrix)
 {
-	return memcmp(Identity.array, p_matrix.array, 16 * sizeof(float)) == 0;
+	return memcmp(Identity.data, p_matrix.data, 16 * sizeof(float)) == 0;
 }
 
 float Maths::Matrix4::GetMinor(float p_minor0, float p_minor1, float p_minor2, float p_minor3, float p_minor4, float p_minor5, float p_minor6, float p_minor7, float p_minor8)
@@ -273,14 +273,14 @@ float Maths::Matrix4::GetMinor(float p_minor0, float p_minor1, float p_minor2, f
 
 float Maths::Matrix4::Determinant(const Matrix4& p_matrix)
 {
-	return p_matrix.array[0] * GetMinor(p_matrix.array[5], p_matrix.array[9], p_matrix.array[13], p_matrix.array[6], p_matrix.array[10], p_matrix.array[14],
-		p_matrix.array[7], p_matrix.array[11], p_matrix.array[15])
-		- p_matrix.array[4] * GetMinor(p_matrix.array[1], p_matrix.array[9], p_matrix.array[13], p_matrix.array[2], p_matrix.array[10], p_matrix.array[14],
-			p_matrix.array[3], p_matrix.array[11], p_matrix.array[15])
-		+ p_matrix.array[8] * GetMinor(p_matrix.array[1], p_matrix.array[5], p_matrix.array[13], p_matrix.array[2], p_matrix.array[6], p_matrix.array[14],
-			p_matrix.array[3], p_matrix.array[7], p_matrix.array[15])
-		- p_matrix.array[12] * GetMinor(p_matrix.array[1], p_matrix.array[5], p_matrix.array[9], p_matrix.array[2], p_matrix.array[6], p_matrix.array[10],
-			p_matrix.array[3], p_matrix.array[7], p_matrix.array[11]);
+	return p_matrix.data[0] * GetMinor(p_matrix.data[5], p_matrix.data[9], p_matrix.data[13], p_matrix.data[6], p_matrix.data[10], p_matrix.data[14],
+		p_matrix.data[7], p_matrix.data[11], p_matrix.data[15])
+		- p_matrix.data[4] * GetMinor(p_matrix.data[1], p_matrix.data[9], p_matrix.data[13], p_matrix.data[2], p_matrix.data[10], p_matrix.data[14],
+			p_matrix.data[3], p_matrix.data[11], p_matrix.data[15])
+		+ p_matrix.data[8] * GetMinor(p_matrix.data[1], p_matrix.data[5], p_matrix.data[13], p_matrix.data[2], p_matrix.data[6], p_matrix.data[14],
+			p_matrix.data[3], p_matrix.data[7], p_matrix.data[15])
+		- p_matrix.data[12] * GetMinor(p_matrix.data[1], p_matrix.data[5], p_matrix.data[9], p_matrix.data[2], p_matrix.data[6], p_matrix.data[10],
+			p_matrix.data[3], p_matrix.data[7], p_matrix.data[11]);
 }
 
 Maths::Matrix4 Maths::Matrix4::Transpose(const Matrix4& p_matrix)
@@ -291,7 +291,7 @@ Maths::Matrix4 Maths::Matrix4::Transpose(const Matrix4& p_matrix)
 	{
 		for (int j = 0; j < 4; j++)
 		{
-			TransposedMatrix.array[4 * j + i] = p_matrix.array[4 * i + j];
+			TransposedMatrix.data[4 * j + i] = p_matrix.data[4 * i + j];
 		}
 	}
 	return TransposedMatrix;
@@ -303,64 +303,64 @@ Maths::Matrix4 Maths::Matrix4::Inverse(const Matrix4& p_matrix)
 	if (determinant == 0)
 		throw std::logic_error("Division by 0");
 
-	const float cof0 = GetMinor(p_matrix.array[5], p_matrix.array[9], p_matrix.array[13], p_matrix.array[6], p_matrix.array[10], p_matrix.array[14],
-		p_matrix.array[7], p_matrix.array[11], p_matrix.array[15]);
-	const float cof1 = GetMinor(p_matrix.array[1], p_matrix.array[9], p_matrix.array[13], p_matrix.array[2], p_matrix.array[10], p_matrix.array[14],
-		p_matrix.array[3], p_matrix.array[11], p_matrix.array[15]);
-	const float cof2 = GetMinor(p_matrix.array[1], p_matrix.array[5], p_matrix.array[13], p_matrix.array[2], p_matrix.array[6], p_matrix.array[14],
-		p_matrix.array[3], p_matrix.array[7], p_matrix.array[15]);
-	const float cof3 = GetMinor(p_matrix.array[1], p_matrix.array[5], p_matrix.array[9], p_matrix.array[2], p_matrix.array[6], p_matrix.array[10],
-		p_matrix.array[3], p_matrix.array[7], p_matrix.array[11]);
+	const float cof0 = GetMinor(p_matrix.data[5], p_matrix.data[9], p_matrix.data[13], p_matrix.data[6], p_matrix.data[10], p_matrix.data[14],
+		p_matrix.data[7], p_matrix.data[11], p_matrix.data[15]);
+	const float cof1 = GetMinor(p_matrix.data[1], p_matrix.data[9], p_matrix.data[13], p_matrix.data[2], p_matrix.data[10], p_matrix.data[14],
+		p_matrix.data[3], p_matrix.data[11], p_matrix.data[15]);
+	const float cof2 = GetMinor(p_matrix.data[1], p_matrix.data[5], p_matrix.data[13], p_matrix.data[2], p_matrix.data[6], p_matrix.data[14],
+		p_matrix.data[3], p_matrix.data[7], p_matrix.data[15]);
+	const float cof3 = GetMinor(p_matrix.data[1], p_matrix.data[5], p_matrix.data[9], p_matrix.data[2], p_matrix.data[6], p_matrix.data[10],
+		p_matrix.data[3], p_matrix.data[7], p_matrix.data[11]);
 
-	const float det = p_matrix.array[0] * cof0 - p_matrix.array[4] * cof1 + p_matrix.array[8] * cof2 - p_matrix.array[12] * cof3;
+	const float det = p_matrix.data[0] * cof0 - p_matrix.data[4] * cof1 + p_matrix.data[8] * cof2 - p_matrix.data[12] * cof3;
 	if (fabs(det) <= kEpsilon)
 		return Identity;
-	const float cof4 = GetMinor(p_matrix.array[4], p_matrix.array[8], p_matrix.array[12], p_matrix.array[6], p_matrix.array[10], p_matrix.array[14],
-		p_matrix.array[7], p_matrix.array[11], p_matrix.array[15]);
-	const float cof5 = GetMinor(p_matrix.array[0], p_matrix.array[8], p_matrix.array[12], p_matrix.array[2], p_matrix.array[10], p_matrix.array[14],
-		p_matrix.array[3], p_matrix.array[11], p_matrix.array[15]);
-	const float cof6 = GetMinor(p_matrix.array[0], p_matrix.array[4], p_matrix.array[12], p_matrix.array[2], p_matrix.array[6], p_matrix.array[14],
-		p_matrix.array[3], p_matrix.array[7], p_matrix.array[15]);
-	const float cof7 = GetMinor(p_matrix.array[0], p_matrix.array[4], p_matrix.array[8], p_matrix.array[2], p_matrix.array[6], p_matrix.array[10],
-		p_matrix.array[3], p_matrix.array[7], p_matrix.array[11]);
+	const float cof4 = GetMinor(p_matrix.data[4], p_matrix.data[8], p_matrix.data[12], p_matrix.data[6], p_matrix.data[10], p_matrix.data[14],
+		p_matrix.data[7], p_matrix.data[11], p_matrix.data[15]);
+	const float cof5 = GetMinor(p_matrix.data[0], p_matrix.data[8], p_matrix.data[12], p_matrix.data[2], p_matrix.data[10], p_matrix.data[14],
+		p_matrix.data[3], p_matrix.data[11], p_matrix.data[15]);
+	const float cof6 = GetMinor(p_matrix.data[0], p_matrix.data[4], p_matrix.data[12], p_matrix.data[2], p_matrix.data[6], p_matrix.data[14],
+		p_matrix.data[3], p_matrix.data[7], p_matrix.data[15]);
+	const float cof7 = GetMinor(p_matrix.data[0], p_matrix.data[4], p_matrix.data[8], p_matrix.data[2], p_matrix.data[6], p_matrix.data[10],
+		p_matrix.data[3], p_matrix.data[7], p_matrix.data[11]);
 
-	const float cof8 = GetMinor(p_matrix.array[4], p_matrix.array[8], p_matrix.array[12], p_matrix.array[5], p_matrix.array[9], p_matrix.array[13],
-		p_matrix.array[7], p_matrix.array[11], p_matrix.array[15]);
-	const float cof9 = GetMinor(p_matrix.array[0], p_matrix.array[8], p_matrix.array[12], p_matrix.array[1], p_matrix.array[9], p_matrix.array[13],
-		p_matrix.array[3], p_matrix.array[11], p_matrix.array[15]);
-	const float cof10 = GetMinor(p_matrix.array[0], p_matrix.array[4], p_matrix.array[12], p_matrix.array[1], p_matrix.array[5], p_matrix.array[13],
-		p_matrix.array[3], p_matrix.array[7], p_matrix.array[15]);
-	const float cof11 = GetMinor(p_matrix.array[0], p_matrix.array[4], p_matrix.array[8], p_matrix.array[1], p_matrix.array[5], p_matrix.array[9],
-		p_matrix.array[3], p_matrix.array[7], p_matrix.array[11]);
+	const float cof8 = GetMinor(p_matrix.data[4], p_matrix.data[8], p_matrix.data[12], p_matrix.data[5], p_matrix.data[9], p_matrix.data[13],
+		p_matrix.data[7], p_matrix.data[11], p_matrix.data[15]);
+	const float cof9 = GetMinor(p_matrix.data[0], p_matrix.data[8], p_matrix.data[12], p_matrix.data[1], p_matrix.data[9], p_matrix.data[13],
+		p_matrix.data[3], p_matrix.data[11], p_matrix.data[15]);
+	const float cof10 = GetMinor(p_matrix.data[0], p_matrix.data[4], p_matrix.data[12], p_matrix.data[1], p_matrix.data[5], p_matrix.data[13],
+		p_matrix.data[3], p_matrix.data[7], p_matrix.data[15]);
+	const float cof11 = GetMinor(p_matrix.data[0], p_matrix.data[4], p_matrix.data[8], p_matrix.data[1], p_matrix.data[5], p_matrix.data[9],
+		p_matrix.data[3], p_matrix.data[7], p_matrix.data[11]);
 
-	const float cof12 = GetMinor(p_matrix.array[4], p_matrix.array[8], p_matrix.array[12], p_matrix.array[5], p_matrix.array[9], p_matrix.array[13],
-		p_matrix.array[6], p_matrix.array[10], p_matrix.array[14]);
-	const float cof13 = GetMinor(p_matrix.array[0], p_matrix.array[8], p_matrix.array[12], p_matrix.array[1], p_matrix.array[9], p_matrix.array[13],
-		p_matrix.array[2], p_matrix.array[10], p_matrix.array[14]);
-	const float cof14 = GetMinor(p_matrix.array[0], p_matrix.array[4], p_matrix.array[12], p_matrix.array[1], p_matrix.array[5], p_matrix.array[13],
-		p_matrix.array[2], p_matrix.array[6], p_matrix.array[14]);
-	const float cof15 = GetMinor(p_matrix.array[0], p_matrix.array[4], p_matrix.array[8], p_matrix.array[1], p_matrix.array[5], p_matrix.array[9],
-		p_matrix.array[2], p_matrix.array[6], p_matrix.array[10]);
+	const float cof12 = GetMinor(p_matrix.data[4], p_matrix.data[8], p_matrix.data[12], p_matrix.data[5], p_matrix.data[9], p_matrix.data[13],
+		p_matrix.data[6], p_matrix.data[10], p_matrix.data[14]);
+	const float cof13 = GetMinor(p_matrix.data[0], p_matrix.data[8], p_matrix.data[12], p_matrix.data[1], p_matrix.data[9], p_matrix.data[13],
+		p_matrix.data[2], p_matrix.data[10], p_matrix.data[14]);
+	const float cof14 = GetMinor(p_matrix.data[0], p_matrix.data[4], p_matrix.data[12], p_matrix.data[1], p_matrix.data[5], p_matrix.data[13],
+		p_matrix.data[2], p_matrix.data[6], p_matrix.data[14]);
+	const float cof15 = GetMinor(p_matrix.data[0], p_matrix.data[4], p_matrix.data[8], p_matrix.data[1], p_matrix.data[5], p_matrix.data[9],
+		p_matrix.data[2], p_matrix.data[6], p_matrix.data[10]);
 
 	const float detInv = 1.0f / det;
 	Matrix4 inverse;
 
-	inverse.array[0] = detInv * cof0;
-	inverse.array[4] = -detInv * cof4;
-	inverse.array[8] = detInv * cof8;
-	inverse.array[12] = -detInv * cof12;
-	inverse.array[1] = -detInv * cof1;
-	inverse.array[5] = detInv * cof5;
-	inverse.array[9] = -detInv * cof9;
-	inverse.array[13] = detInv * cof13;
-	inverse.array[2] = detInv * cof2;
-	inverse.array[6] = -detInv * cof6;
-	inverse.array[10] = detInv * cof10;
-	inverse.array[14] = -detInv * cof14;
-	inverse.array[3] = -detInv * cof3;
-	inverse.array[7] = detInv * cof7;
-	inverse.array[11] = -detInv * cof11;
-	inverse.array[15] = detInv * cof15;
+	inverse.data[0] = detInv * cof0;
+	inverse.data[4] = -detInv * cof4;
+	inverse.data[8] = detInv * cof8;
+	inverse.data[12] = -detInv * cof12;
+	inverse.data[1] = -detInv * cof1;
+	inverse.data[5] = detInv * cof5;
+	inverse.data[9] = -detInv * cof9;
+	inverse.data[13] = detInv * cof13;
+	inverse.data[2] = detInv * cof2;
+	inverse.data[6] = -detInv * cof6;
+	inverse.data[10] = detInv * cof10;
+	inverse.data[14] = -detInv * cof14;
+	inverse.data[3] = -detInv * cof3;
+	inverse.data[7] = detInv * cof7;
+	inverse.data[11] = -detInv * cof11;
+	inverse.data[15] = detInv * cof15;
 
 	return inverse;
 }
@@ -500,20 +500,20 @@ Maths::Matrix4 Maths::Matrix4::CreateView(const float p_eyeX, const float p_eyeY
 
 	Maths::Matrix4 View;
 
-	View.array[0] = upXForward.x;
-	View.array[1] = upXForward.y;
-	View.array[2] = upXForward.z;
-	View.array[3] = -Maths::Vector3::Dot(eye, upXForward);
+	View.data[0] = upXForward.x;
+	View.data[1] = upXForward.y;
+	View.data[2] = upXForward.z;
+	View.data[3] = -Maths::Vector3::Dot(eye, upXForward);
 
-	View.array[4] = v.x;
-	View.array[5] = v.y;
-	View.array[6] = v.z;
-	View.array[7] = -Maths::Vector3::Dot(eye, v);
+	View.data[4] = v.x;
+	View.data[5] = v.y;
+	View.data[6] = v.z;
+	View.data[7] = -Maths::Vector3::Dot(eye, v);
 
-	View.array[8] = forward.x;
-	View.array[9] = forward.y;
-	View.array[10] = forward.z;
-	View.array[11] = -Maths::Vector3::Dot(eye, forward);
+	View.data[8] = forward.x;
+	View.data[9] = forward.y;
+	View.data[10] = forward.z;
+	View.data[11] = -Maths::Vector3::Dot(eye, forward);
 
 	return View;
 }
@@ -527,14 +527,14 @@ Maths::Matrix4 Maths::Matrix4::CreateFrustum(const float p_left, const float p_r
 
 	Matrix4 Frustum;
 
-	Frustum.array[0] = maxView / width;
-	Frustum.array[5] = maxView / height;
-	Frustum.array[2] = (p_right + p_left) / width;
-	Frustum.array[6] = (p_top + p_bottom) / height;
-	Frustum.array[10] = (-p_zFar - p_zNear) / zRange;
-	Frustum.array[14] = -1.0f;
-	Frustum.array[11] = (-maxView * p_zFar) / zRange;
-	Frustum.array[15] = 0.0f;
+	Frustum.data[0] = maxView / width;
+	Frustum.data[5] = maxView / height;
+	Frustum.data[2] = (p_right + p_left) / width;
+	Frustum.data[6] = (p_top + p_bottom) / height;
+	Frustum.data[10] = (-p_zFar - p_zNear) / zRange;
+	Frustum.data[14] = -1.0f;
+	Frustum.data[11] = (-maxView * p_zFar) / zRange;
+	Frustum.data[15] = 0.0f;
 
 	return Frustum;
 }
@@ -544,7 +544,7 @@ Maths::Vector4 Maths::Matrix4::GetRow(const Matrix4& p_matrix, uint8_t p_row)
 	if (p_row >= 4)
 		throw std::out_of_range("Invalid index : " + std::to_string(p_row) + " is out of range");
 
-	return Vector4(p_matrix.array[p_row * 4], p_matrix.array[p_row * 4 + 1], p_matrix.array[p_row * 4 + 2], p_matrix.array[p_row * 4 + 3]);
+	return Vector4(p_matrix.data[p_row * 4], p_matrix.data[p_row * 4 + 1], p_matrix.data[p_row * 4 + 2], p_matrix.data[p_row * 4 + 3]);
 }
 
 Maths::Vector4 Maths::Matrix4::GetColumn(const Matrix4& p_matrix, uint8_t p_column)
@@ -552,5 +552,5 @@ Maths::Vector4 Maths::Matrix4::GetColumn(const Matrix4& p_matrix, uint8_t p_colu
 	if (p_column >= 4)
 		throw std::out_of_range("Invalid index : " + std::to_string(p_column) + " is out of range");
 
-	return Vector4(p_matrix.array[p_column], p_matrix.array[p_column + 4], p_matrix.array[p_column + 8], p_matrix.array[p_column + 12]);
+	return Vector4(p_matrix.data[p_column], p_matrix.data[p_column + 4], p_matrix.data[p_column + 8], p_matrix.data[p_column + 12]);
 }

@@ -14,7 +14,7 @@ NLS::Rendering::Resources::Parsers::EModelParserFlags GetAssetMetadata(const std
 	if (metaFile.GetOrDefault("GEN_NORMALS",				false))	flags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::GEN_NORMALS;
 	if (metaFile.GetOrDefault("GEN_SMOOTH_NORMALS",			true))	flags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::GEN_SMOOTH_NORMALS;
 	if (metaFile.GetOrDefault("SPLIT_LARGE_MESHES",			false))	flags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::SPLIT_LARGE_MESHES;
-	if (metaFile.GetOrDefault("PRE_TRANSFORM_VERTICES",		true))	flags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::PRE_TRANSFORM_VERTICES;
+	if (metaFile.GetOrDefault("PRE_TRANSFORM_VERTICES",		false))	flags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::PRE_TRANSFORM_VERTICES;
 	if (metaFile.GetOrDefault("LIMIT_BONE_WEIGHTS",			false))	flags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::LIMIT_BONE_WEIGHTS;
 	if (metaFile.GetOrDefault("VALIDATE_DATA_STRUCTURE",	false))	flags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::VALIDATE_DATA_STRUCTURE;
 	if (metaFile.GetOrDefault("IMPROVE_CACHE_LOCALITY",		true))	flags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::IMPROVE_CACHE_LOCALITY;
@@ -27,7 +27,7 @@ NLS::Rendering::Resources::Parsers::EModelParserFlags GetAssetMetadata(const std
 	if (metaFile.GetOrDefault("TRANSFORM_UV_COORDS",		false))	flags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::TRANSFORM_UV_COORDS;
 	if (metaFile.GetOrDefault("FIND_INSTANCES",				true))	flags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::FIND_INSTANCES;
 	if (metaFile.GetOrDefault("OPTIMIZE_MESHES",			true))	flags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::OPTIMIZE_MESHES;
-	if (metaFile.GetOrDefault("OPTIMIZE_GRAPH",				true))	flags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::OPTIMIZE_GRAPH;
+	if (metaFile.GetOrDefault("OPTIMIZE_GRAPH",				false))	flags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::OPTIMIZE_GRAPH;
 	if (metaFile.GetOrDefault("FLIP_UVS",					false))	flags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::FLIP_UVS;
 	if (metaFile.GetOrDefault("FLIP_WINDING_ORDER",			false))	flags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::FLIP_WINDING_ORDER;
 	if (metaFile.GetOrDefault("SPLIT_BY_BONE_COUNT",		false))	flags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::SPLIT_BY_BONE_COUNT;

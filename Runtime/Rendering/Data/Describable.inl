@@ -41,12 +41,12 @@ namespace NLS::Rendering::Data
 	}
 
 	template<typename T>
-	inline bool Describable::TryGetDescriptor(const T* p_outDescriptor) const
+	inline bool Describable::TryGetDescriptor(T& p_outDescriptor) const
 	{
 		auto it = m_descriptors.find(typeid(T));
 		if (it != m_descriptors.end())
 		{
-			p_outDescriptor = std::any_cast<const T*>(it->second);
+			p_outDescriptor = std::any_cast<const T&>(it->second);
 			return true;
 		}
 

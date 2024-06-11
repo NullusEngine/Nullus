@@ -68,7 +68,7 @@ void SceneManager::LoadEmptyLightedScene()
 	auto& camera = m_currentScene->CreateGameObject("Main Camera");
 	camera.AddComponent<CameraComponent>();
 	camera.GetTransform()->SetLocalPosition({0.0f, 3.0f, 8.0f});
-	camera.GetTransform()->SetLocalRotation(Maths::Quaternion({20.0f, 180.0f, 0.0f}));
+	camera.GetTransform()->SetLocalRotation(Maths::Quaternion({160.0f, 0.0f, 0.0f}));
 }
 
 bool SceneManager::LoadScene(const std::string& p_path, bool p_absolute)

@@ -15,7 +15,7 @@ class Quaternion;
 class NLS_MATH_API Matrix4
 {
 public:
-	float array[16];
+	float data[16];
 	static const Matrix4 Identity;
 
 	/**

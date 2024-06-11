@@ -25,6 +25,7 @@ namespace NLS::Engine::Components
 		*/
 		MaterialRenderer();
 
+		void OnCreate();
 
 		/**
 		* Fill the material renderer with the given material

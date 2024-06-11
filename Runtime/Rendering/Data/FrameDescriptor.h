@@ -13,8 +13,8 @@ namespace NLS::Rendering::Data
 	{
 		uint16_t renderWidth = 0;
 		uint16_t renderHeight = 0;
-		NLS::Rendering::Entities::Camera* camera;
-		Buffers::Framebuffer* outputBuffer;
+		NLS::Rendering::Entities::Camera* camera = nullptr;
+        Buffers::Framebuffer* outputBuffer = nullptr;
 
 		/**
 		* Ensures that the data provided in the frame descriptor is valid

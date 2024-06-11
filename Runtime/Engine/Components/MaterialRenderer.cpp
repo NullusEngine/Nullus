@@ -10,9 +10,13 @@ using namespace NLS::Engine::Components;
 NLS::Engine::Components::MaterialRenderer::MaterialRenderer()
 {
 	m_materials.fill(nullptr);
-
-	UpdateMaterialList();
 }
+
+void MaterialRenderer::OnCreate()
+{
+    UpdateMaterialList();
+}
+
 void MaterialRenderer::FillWithMaterial(NLS::Rendering::Data::Material & p_material)
 {
 	for (uint8_t i = 0; i < m_materials.size(); ++i)
@@ -80,13 +84,13 @@ void MaterialRenderer::UpdateMaterialList()
 void MaterialRenderer::SetUserMatrixElement(uint32_t p_row, uint32_t p_column, float p_value)
 {
 	if (p_row < 4 && p_column < 4)
-		m_userMatrix.array[4 * p_row + p_column] = p_value;
+		m_userMatrix.data[4 * p_row + p_column] = p_value;
 }
 
 float MaterialRenderer::GetUserMatrixElement(uint32_t p_row, uint32_t p_column) const
 {
 	if (p_row < 4 && p_column < 4)
-		return m_userMatrix.array[4 * p_row + p_column];
+		return m_userMatrix.data[4 * p_row + p_column];
 	else
 		return 0.0f;
 }

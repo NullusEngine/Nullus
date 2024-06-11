@@ -2,129 +2,313 @@
 #include <assert.h>
 #include <algorithm>
 #include <iostream>
+#include "Math/Vector3.h"
+#include "Math/Vector2.h"
+#include "Math/Quaternion.h"
 #include "MathDef.h"
 namespace NLS
 {
 namespace Maths
 {
-class Matrix2;
-class Matrix4;
-class Vector3;
-class Quaternion;
 
 class NLS_MATH_API Matrix3
 {
 public:
-    Matrix3(void);
-    Matrix3(float elements[9]);
-    Matrix3(const Matrix2& m4);
-    Matrix3(const Matrix4& m4);
-    Matrix3(const Quaternion& quat);
+    float data[9];
+    static const Matrix3 Identity;
 
-    ~Matrix3(void);
+    /**
+     * Default constructor
+     */
+    Matrix3();
 
-    // Set all matrix values to zero
-    void ToZero();
+    /**
+     * Set all elements to value
+     * @param p_value
+     */
+    Matrix3(float p_value);
 
-    Vector3 GetRow(unsigned int row) const;
-    void SetRow(unsigned int row, const Vector3& val);
+    /**
+     * Constructor
+     * @param p_element1
+     * @param p_element2
+     * @param p_element3
+     * @param p_element4
+     * @param p_element5
+     * @param p_element6
+     * @param p_element7
+     * @param p_element9
+     * @param p_element8
+     */
+    Matrix3(float p_element1, float p_element2, float p_element3,
+             float p_element4, float p_element5, float p_element6,
+             float p_element7, float p_element8, float p_element9);
 
-    Vector3 GetColumn(unsigned int column) const;
-    void SetColumn(unsigned int column, const Vector3& val);
+    /**
+     * Copy constructor
+     * @param p_other
+     */
+    Matrix3(const Matrix3& p_other);
 
-    Vector3 GetDiagonal() const;
-    void SetDiagonal(const Vector3& in);
+    /**
+     * Copy assignment
+     * @param p_other
+     */
+    Matrix3& operator=(const Matrix3& p_other);
 
-    Vector3 ToEuler() const;
+    /**
+     * Check if elements are equals
+     * @param p_other
+     */
+    bool operator==(const Matrix3& p_other);
 
-    inline Matrix3 Absolute() const
-    {
-        Matrix3 m;
+    /**
+     * Element-wise addition
+     * @param p_other
+     */
+    Matrix3 operator+(const Matrix3& p_other) const;
 
-        for (int i = 0; i < 9; ++i)
-        {
-            m.array[i] = std::abs(array[i]);
-        }
+    /**
+     * Element-wise addition
+     * @param p_other
+     */
+    Matrix3& operator+=(const Matrix3& p_other);
 
-        return m;
-    }
+    /**
+     * Element-wise subtraction
+     * @param p_other
+     */
+    Matrix3 operator-(const Matrix3& p_other) const;
 
-    inline Matrix3 Transposed() const
-    {
-        Matrix3 temp = *this;
-        temp.Transpose();
-        return temp;
-    }
+    /**
+     * Element-wise subtraction
+     * @param p_other
+     */
+    Matrix3& operator-=(const Matrix3& p_other);
 
-    inline void Transpose()
-    {
-        float tempValues[3];
+    /**
+     * Scalar Product
+     * @param p_scalar
+     */
+    Matrix3 operator*(float p_scalar) const;
 
-        tempValues[0] = array[3];
-        tempValues[1] = array[6];
-        tempValues[2] = array[7];
+    /**
+     * Scalar Product
+     * @param p_scalar
+     */
+    Matrix3& operator*=(float p_scalar);
 
-        array[3] = array[1];
-        array[6] = array[2];
-        array[7] = array[5];
+    /**
+     * Vector Product
+     * @param p_vector
+     */
+    Vector3 operator*(const Vector3& p_vector) const;
 
-        array[1] = tempValues[0];
-        array[2] = tempValues[1];
-        array[5] = tempValues[2];
-    }
+    /**
+     * Matrix Product
+     * @param p_other
+     */
+    Matrix3 operator*(const Matrix3& p_other) const;
 
-    Vector3 operator*(const Vector3& v) const;
+    /**
+     * Matrix Product
+     * @param p_other
+     */
+    Matrix3& operator*=(const Matrix3& p_other);
 
-    inline Matrix3 operator*(const Matrix3& a) const
-    {
-        Matrix3 out;
-        // Students! You should be able to think up a really easy way of speeding this up...
-        for (unsigned int r = 0; r < 3; ++r)
-        {
-            for (unsigned int c = 0; c < 3; ++c)
-            {
-                out.array[c + (r * 3)] = 0.0f;
-                for (unsigned int i = 0; i < 3; ++i)
-                {
-                    out.array[c + (r * 3)] += this->array[c + (i * 3)] * a.array[(r * 3) + i];
-                }
-            }
-        }
-        return out;
-    }
+    /**
+     * Scalar Division
+     * @param p_scalar
+     */
+    Matrix3 operator/(float p_scalar) const;
 
-    // Creates a rotation matrix that rotates by 'degrees' around the 'axis'
-    // Analogous to glRotatef
-    static Matrix3 Rotation(float degrees, const Vector3& axis);
+    /**
+     * Scalar Division
+     * @param p_scalar
+     */
+    Matrix3& operator/=(float p_scalar);
 
-    // Creates a scaling matrix (puts the 'scale' vector down the diagonal)
-    // Analogous to glScalef
-    static Matrix3 Scale(const Vector3& scale);
+    /**
+     * Matrix Division
+     * @param p_other
+     */
+    Matrix3 operator/(const Matrix3& p_other) const;
 
-    static Matrix3 FromEuler(const Vector3& euler);
+    /**
+     * Matrix Division
+     * @param p_other
+     */
+    Matrix3& operator/=(const Matrix3& p_other);
 
-public:
-    float array[9];
+    /**
+     * Get element at index (row,column)
+     * @param p_row
+     * @param p_column
+     */
+    float& operator()(uint8_t p_row, uint8_t p_column);
+
+    /**
+     * Check if elements are equals
+     * @param p_left
+     * @param p_right
+     */
+    static bool AreEquals(const Matrix3& p_left, const Matrix3& p_right);
+
+    /**
+     * Element-wise addition
+     * @param p_left
+     * @param p_scalar
+     */
+    static Matrix3 Add(const Matrix3& p_left, float p_scalar);
+
+    /**
+     * Element-wise addition
+     * @param p_left
+     * @param p_right
+     */
+    static Matrix3 Add(const Matrix3& p_left, const Matrix3& p_right);
+
+    /**
+     * Element-wise subtraction
+     * @param p_left
+     * @param p_scalar
+     */
+    static Matrix3 Subtract(const Matrix3& p_left, float p_scalar);
+
+    /**
+     * Element-wise subtractions
+     * @param p_left
+     * @param p_right
+     */
+    static Matrix3 Subtract(const Matrix3& p_left, const Matrix3& p_right);
+
+    /**
+     * Scalar Product
+     * @param p_left
+     * @param p_scalar
+     */
+    static Matrix3 Multiply(const Matrix3& p_left, float p_scalar);
+
+    /**
+     * Vector Product
+     * @param p_matrix
+     * @param p_vector
+     */
+    static Vector3 Multiply(const Matrix3& p_matrix, const Vector3& p_vector);
+
+    /**
+     * Matrix Product
+     * @param p_left
+     * @param p_right
+     */
+    static Matrix3 Multiply(const Matrix3& p_left, const Matrix3& p_right);
+
+    /**
+     * Scalar Division
+     * @param p_left
+     * @param p_scalar
+     */
+    static Matrix3 Divide(const Matrix3& p_left, float p_scalar);
+
+    /**
+     * Matrix Division
+     * @param p_left
+     * @param p_right
+     */
+    static Matrix3 Divide(const Matrix3& p_left, const Matrix3& p_right);
+
+    /**
+     * Compare to Identity matrix
+     * @param p_matrix
+     */
+    static bool IsIdentity(const Matrix3& p_matrix);
+
+    /**
+     * Compute matrix determinant
+     * @param p_matrix
+     */
+    static float Determinant(const Matrix3& p_matrix);
+
+    /**
+     * Return transposed matrix
+     * @param p_matrix
+     */
+    static Matrix3 Transpose(const Matrix3& p_matrix);
+
+    /**
+     * Return Cofactor matrix
+     * @param p_matrix
+     */
+    static Matrix3 Cofactor(const Matrix3& p_matrix);
+
+    /**
+     * Return Minor matrix
+     * @param p_matrix
+     */
+    static Matrix3 Minor(const Matrix3& p_matrix);
+
+    /**
+     * Return Adjoint matrix
+     * @param p_other
+     */
+    static Matrix3 Adjoint(const Matrix3& p_other);
+
+    /**
+     * Return inverse matrix
+     * @param p_matrix
+     */
+    static Matrix3 Inverse(const Matrix3& p_matrix);
+
+    /**
+     * Return 2D translation matrix
+     * @param p_translation
+     */
+    static Matrix3 Translation(const Vector2& p_translation);
+
+    /**
+     * Translate matrix in 2D
+     * @param p_matrix
+     * @param p_translation
+     */
+    static Matrix3 Translate(const Matrix3& p_matrix, const Vector2& p_translation);
+
+    /**
+     * Return 2D rotation matrix
+     * @param p_rotation angle in radians
+     */
+    static Matrix3 Rotation(float p_rotation);
+
+    /**
+     * Rotate matrix in 2D
+     * @param p_matrix
+     * @param p_rotation angle in radians
+     */
+    static Matrix3 Rotate(const Matrix3& p_matrix, float p_rotation);
+
+    /**
+     * Return 2D scaling matrix
+     * @param p_scale
+     */
+    static Matrix3 Scaling(const Vector2& p_scale);
+
+    /**
+     * Scale matrix in 2D
+     * @param p_matrix
+     * @param p_scale
+     */
+    static Matrix3 Scale(const Matrix3& p_matrix, const Vector2& p_scale);
+
+    /**
+     * Get row
+     * @param p_row
+     */
+    static Vector3 GetRow(const Matrix3& p_matrix, uint8_t p_row);
+
+    /**
+     * Get Column
+     * @param p_column
+     */
+    static Vector3 GetColumn(const Matrix3& p_matrix, uint8_t p_column);
 };
-
-// Handy string output for the matrix. Can get a bit messy, but better than nothing!
-inline std::ostream& operator<<(std::ostream& o, const Matrix3& m)
-{
-    o << m.array[0] << "," << m.array[1] << "," << m.array[2] << std::endl;
-    o << m.array[3] << "," << m.array[4] << "," << m.array[5] << std::endl;
-    o << m.array[6] << "," << m.array[7] << "," << m.array[8];
-    return o;
-}
-
-inline std::istream& operator>>(std::istream& i, Matrix3& m)
-{
-    char ignore;
-    i >> std::skipws;
-    i >> m.array[0] >> ignore >> m.array[1] >> ignore >> m.array[2];
-    i >> m.array[3] >> ignore >> m.array[4] >> ignore >> m.array[5];
-    i >> m.array[6] >> ignore >> m.array[7] >> ignore >> m.array[8];
-
-    return i;
-}
 } // namespace Maths
 } // namespace NLS

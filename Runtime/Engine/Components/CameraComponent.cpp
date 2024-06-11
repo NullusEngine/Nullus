@@ -12,7 +12,7 @@ NLS::Engine::Components::CameraComponent::CameraComponent()
 
 void NLS::Engine::Components::CameraComponent::OnCreate()
 {
-	m_camera = new Camera(m_owner->GetTransform()->GetTransform());
+	m_camera = new Camera(&m_owner->GetTransform()->GetTransform());
 	/* Default clear color for the CCamera (Different from Camera default clear color) */
 	SetClearColor({ 0.1921569f, 0.3019608f, 0.4745098f });
 }

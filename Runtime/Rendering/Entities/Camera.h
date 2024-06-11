@@ -22,7 +22,7 @@ namespace NLS::Rendering::Entities
 		* Constructor
 		* @param p_transform
 		*/
-		Camera(Maths::Transform p_transform);
+		Camera(Maths::Transform* p_transform);
 
 		/**
 		* Cache the projection, view and frustum matrices

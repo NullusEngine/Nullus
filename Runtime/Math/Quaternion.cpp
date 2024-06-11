@@ -38,40 +38,40 @@ Maths::Quaternion::Quaternion(const Quaternion& p_other)
 
 Maths::Quaternion::Quaternion(const Matrix3& p_rotationMatrix)
 {
-    float trace = p_rotationMatrix.array[0] + p_rotationMatrix.array[4] + p_rotationMatrix.array[8];
+    float trace = p_rotationMatrix.data[0] + p_rotationMatrix.data[4] + p_rotationMatrix.data[8];
     if (trace > 0.0f)
     {
         // I changed M_EPSILON to 0
         float s = 0.5f / sqrt(trace + 1.0f);
         w = 0.25f / s;
-        x = (p_rotationMatrix.array[7] - p_rotationMatrix.array[5]) * s;
-        y = (p_rotationMatrix.array[2] - p_rotationMatrix.array[6]) * s;
-        z = (p_rotationMatrix.array[3] - p_rotationMatrix.array[1]) * s;
+        x = (p_rotationMatrix.data[7] - p_rotationMatrix.data[5]) * s;
+        y = (p_rotationMatrix.data[2] - p_rotationMatrix.data[6]) * s;
+        z = (p_rotationMatrix.data[3] - p_rotationMatrix.data[1]) * s;
     }
     else
     {
-        if (p_rotationMatrix.array[0] > p_rotationMatrix.array[4] && p_rotationMatrix.array[0] > p_rotationMatrix.array[8])
+        if (p_rotationMatrix.data[0] > p_rotationMatrix.data[4] && p_rotationMatrix.data[0] > p_rotationMatrix.data[8])
         {
-            float s = 2.0f * sqrt(1.0f + p_rotationMatrix.array[0] - p_rotationMatrix.array[4] - p_rotationMatrix.array[8]);
-            w = (p_rotationMatrix.array[7] - p_rotationMatrix.array[5]) / s;
+            float s = 2.0f * sqrt(1.0f + p_rotationMatrix.data[0] - p_rotationMatrix.data[4] - p_rotationMatrix.data[8]);
+            w = (p_rotationMatrix.data[7] - p_rotationMatrix.data[5]) / s;
             x = 0.25f * s;
-            y = (p_rotationMatrix.array[1] + p_rotationMatrix.array[3]) / s;
-            z = (p_rotationMatrix.array[2] + p_rotationMatrix.array[6]) / s;
+            y = (p_rotationMatrix.data[1] + p_rotationMatrix.data[3]) / s;
+            z = (p_rotationMatrix.data[2] + p_rotationMatrix.data[6]) / s;
         }
-        else if (p_rotationMatrix.array[4] > p_rotationMatrix.array[8])
+        else if (p_rotationMatrix.data[4] > p_rotationMatrix.data[8])
         {
-            float s = 2.0f * sqrt(1.0f + p_rotationMatrix.array[4] - p_rotationMatrix.array[0] - p_rotationMatrix.array[8]);
-            w = (p_rotationMatrix.array[2] - p_rotationMatrix.array[6]) / s;
-            x = (p_rotationMatrix.array[1] + p_rotationMatrix.array[3]) / s;
+            float s = 2.0f * sqrt(1.0f + p_rotationMatrix.data[4] - p_rotationMatrix.data[0] - p_rotationMatrix.data[8]);
+            w = (p_rotationMatrix.data[2] - p_rotationMatrix.data[6]) / s;
+            x = (p_rotationMatrix.data[1] + p_rotationMatrix.data[3]) / s;
             y = 0.25f * s;
-            z = (p_rotationMatrix.array[5] + p_rotationMatrix.array[7]) / s;
+            z = (p_rotationMatrix.data[5] + p_rotationMatrix.data[7]) / s;
         }
         else
         {
-            float s = 2.0f * sqrt(1.0f + p_rotationMatrix.array[8] - p_rotationMatrix.array[0] - p_rotationMatrix.array[4]);
-            w = (p_rotationMatrix.array[3] - p_rotationMatrix.array[1]) / s;
-            x = (p_rotationMatrix.array[2] + p_rotationMatrix.array[6]) / s;
-            y = (p_rotationMatrix.array[5] + p_rotationMatrix.array[7]) / s;
+            float s = 2.0f * sqrt(1.0f + p_rotationMatrix.data[8] - p_rotationMatrix.data[0] - p_rotationMatrix.data[4]);
+            w = (p_rotationMatrix.data[3] - p_rotationMatrix.data[1]) / s;
+            x = (p_rotationMatrix.data[2] + p_rotationMatrix.data[6]) / s;
+            y = (p_rotationMatrix.data[5] + p_rotationMatrix.data[7]) / s;
             z = 0.25f * s;
         }
     }
@@ -82,7 +82,7 @@ Maths::Quaternion::Quaternion(const Matrix4& p_rotationMatrix)
     float halfSquare;
 
     // Check diagonal (trace)
-    const float trace = p_rotationMatrix.array[0] + p_rotationMatrix.array[5] + p_rotationMatrix.array[10];
+    const float trace = p_rotationMatrix.data[0] + p_rotationMatrix.data[5] + p_rotationMatrix.data[10];
 
     if (trace > 0.0f)
     {
@@ -90,26 +90,26 @@ Maths::Quaternion::Quaternion(const Matrix4& p_rotationMatrix)
         w = 0.5f * (1.f / InvSquare);
         halfSquare = 0.5f * InvSquare;
 
-        x = (p_rotationMatrix.array[6] - p_rotationMatrix.array[9]) * halfSquare;
-        y = (p_rotationMatrix.array[8] - p_rotationMatrix.array[2]) * halfSquare;
-        z = (p_rotationMatrix.array[1] - p_rotationMatrix.array[4]) * halfSquare;
+        x = (p_rotationMatrix.data[6] - p_rotationMatrix.data[9]) * halfSquare;
+        y = (p_rotationMatrix.data[8] - p_rotationMatrix.data[2]) * halfSquare;
+        z = (p_rotationMatrix.data[1] - p_rotationMatrix.data[4]) * halfSquare;
     }
     else
     {
         // diagonal is negative
         int8_t i = 0;
 
-        if (p_rotationMatrix.array[5] > p_rotationMatrix.array[0])
+        if (p_rotationMatrix.data[5] > p_rotationMatrix.data[0])
             i = 1;
 
-        if (p_rotationMatrix.array[10] > p_rotationMatrix.array[0] || p_rotationMatrix.array[10] > p_rotationMatrix.array[5])
+        if (p_rotationMatrix.data[10] > p_rotationMatrix.data[0] || p_rotationMatrix.data[10] > p_rotationMatrix.data[5])
             i = 2;
 
         static const int8_t next[3] = {1, 2, 0};
         const int8_t j = next[i];
         const int8_t k = next[j];
 
-        halfSquare = p_rotationMatrix.array[i * 5] - p_rotationMatrix.array[j * 5] - p_rotationMatrix.array[k * 5] + 1.0f;
+        halfSquare = p_rotationMatrix.data[i * 5] - p_rotationMatrix.data[j * 5] - p_rotationMatrix.data[k * 5] + 1.0f;
 
         const float InvSquare = 1 / sqrt(trace + 1.f);
 
@@ -120,23 +120,23 @@ Maths::Quaternion::Quaternion(const Matrix4& p_rotationMatrix)
         // if i is 0, j is 1 and k is 2
         if (i == 0)
         {
-            qt[3] = (p_rotationMatrix.array[6] - p_rotationMatrix.array[9]) * halfSquare;
-            qt[j] = (p_rotationMatrix.array[1] + p_rotationMatrix.array[4]) * halfSquare;
-            qt[k] = (p_rotationMatrix.array[2] + p_rotationMatrix.array[8]) * halfSquare;
+            qt[3] = (p_rotationMatrix.data[6] - p_rotationMatrix.data[9]) * halfSquare;
+            qt[j] = (p_rotationMatrix.data[1] + p_rotationMatrix.data[4]) * halfSquare;
+            qt[k] = (p_rotationMatrix.data[2] + p_rotationMatrix.data[8]) * halfSquare;
         }
         // if i is 1, j is 2 and k is 0
         else if (i == 1)
         {
-            qt[3] = (p_rotationMatrix.array[8] - p_rotationMatrix.array[2]) * halfSquare;
-            qt[j] = (p_rotationMatrix.array[6] + p_rotationMatrix.array[9]) * halfSquare;
-            qt[k] = (p_rotationMatrix.array[4] + p_rotationMatrix.array[1]) * halfSquare;
+            qt[3] = (p_rotationMatrix.data[8] - p_rotationMatrix.data[2]) * halfSquare;
+            qt[j] = (p_rotationMatrix.data[6] + p_rotationMatrix.data[9]) * halfSquare;
+            qt[k] = (p_rotationMatrix.data[4] + p_rotationMatrix.data[1]) * halfSquare;
         }
         // if i is 2, j is 0 and k is 1
         else
         {
-            qt[3] = (p_rotationMatrix.array[1] - p_rotationMatrix.array[4]) * halfSquare;
-            qt[j] = (p_rotationMatrix.array[8] + p_rotationMatrix.array[2]) * halfSquare;
-            qt[k] = (p_rotationMatrix.array[9] + p_rotationMatrix.array[6]) * halfSquare;
+            qt[3] = (p_rotationMatrix.data[1] - p_rotationMatrix.data[4]) * halfSquare;
+            qt[j] = (p_rotationMatrix.data[8] + p_rotationMatrix.data[2]) * halfSquare;
+            qt[k] = (p_rotationMatrix.data[9] + p_rotationMatrix.data[6]) * halfSquare;
         }
         x = qt[0];
         y = qt[1];
@@ -418,15 +418,15 @@ Maths::Matrix3 Maths::Quaternion::ToMatrix3(const Quaternion& p_target)
     float wx = p_target.w * p_target.x;
 
     Matrix3 converted;
-    converted.array[0] = 1.0f - (2 * y2) - (2 * z2);
-    converted.array[1] = (2 * xy) - (2 * wz);
-    converted.array[2] = (2 * xz) + (2 * wy);
-    converted.array[3] = (2 * xy) + (2 * wz);
-    converted.array[4] = 1.0f - (2 * x2) - (2 * z2);
-    converted.array[5] = (2 * yz) - (2 * wx);
-    converted.array[6] = (2 * xz) - (2 * wy);
-    converted.array[7] = (2 * yz) + (2 * wx);
-    converted.array[8] = 1.0f - (2 * x2) - (2 * y2);
+    converted.data[0] = 1.0f - (2 * y2) - (2 * z2);
+    converted.data[1] = (2 * xy) - (2 * wz);
+    converted.data[2] = (2 * xz) + (2 * wy);
+    converted.data[3] = (2 * xy) + (2 * wz);
+    converted.data[4] = 1.0f - (2 * x2) - (2 * z2);
+    converted.data[5] = (2 * yz) - (2 * wx);
+    converted.data[6] = (2 * xz) - (2 * wy);
+    converted.data[7] = (2 * yz) + (2 * wx);
+    converted.data[8] = 1.0f - (2 * x2) - (2 * y2);
     return converted;
 }
 
@@ -446,22 +446,22 @@ Maths::Matrix4 Maths::Quaternion::ToMatrix4(const Quaternion& p_target)
     float wx = p_target.w * p_target.x;
 
     Matrix4 converted;
-    converted.array[0] = 1.0f - (2 * y2) - (2 * z2);
-    converted.array[1] = (2 * xy) - (2 * wz);
-    converted.array[2] = (2 * xz) + (2 * wy);
-    converted.array[3] = 0;
-    converted.array[4] = (2 * xy) + (2 * wz);
-    converted.array[5] = 1.0f - (2 * x2) - (2 * z2);
-    converted.array[6] = (2 * yz) - (2 * wx);
-    converted.array[7] = 0;
-    converted.array[8] = (2 * xz) - (2 * wy);
-    converted.array[9] = (2 * yz) + (2 * wx);
-    converted.array[10] = 1.0f - (2 * x2) - (2 * y2);
-    converted.array[11] = 0;
-    converted.array[12] = 0;
-    converted.array[13] = 0;
-    converted.array[14] = 0;
-    converted.array[15] = 1;
+    converted.data[0] = 1.0f - (2 * y2) - (2 * z2);
+    converted.data[1] = (2 * xy) - (2 * wz);
+    converted.data[2] = (2 * xz) + (2 * wy);
+    converted.data[3] = 0;
+    converted.data[4] = (2 * xy) + (2 * wz);
+    converted.data[5] = 1.0f - (2 * x2) - (2 * z2);
+    converted.data[6] = (2 * yz) - (2 * wx);
+    converted.data[7] = 0;
+    converted.data[8] = (2 * xz) - (2 * wy);
+    converted.data[9] = (2 * yz) + (2 * wx);
+    converted.data[10] = 1.0f - (2 * x2) - (2 * y2);
+    converted.data[11] = 0;
+    converted.data[12] = 0;
+    converted.data[13] = 0;
+    converted.data[14] = 0;
+    converted.data[15] = 1;
     return converted;
 }
 

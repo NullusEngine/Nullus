@@ -208,8 +208,8 @@ private:
 
 public:
     /* Some events that are triggered when an action occur on the actor instance */
-    Event<Components::Component&> ComponentAddedEvent;
-    Event<Components::Component&> ComponentRemovedEvent;
+    Event<SharedObject> ComponentAddedEvent;
+    Event<SharedObject> ComponentRemovedEvent;
 
     /* Some events that are triggered when an action occur on any actor */
     static Event<GameObject&> DestroyedEvent;

@@ -8,6 +8,10 @@ NLS::Engine::Components::TransformComponent::TransformComponent()
 {
 }
 
+void Engine::Components::TransformComponent::OnCreate()
+{
+}
+
 void TransformComponent::SetParent(TransformComponent& p_parent)
 {
 	m_transform.SetParent(p_parent.GetTransform());

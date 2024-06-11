@@ -23,7 +23,7 @@ class NLS_ENGINE_API TransformComponent : public Component
 public:
     TransformComponent();
 
-
+    void OnCreate();
     /**
      * Defines a parent to the transform
      * @param p_parent

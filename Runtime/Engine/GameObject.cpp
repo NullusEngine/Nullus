@@ -36,6 +36,7 @@ SharedObject GameObject::AddComponent(Type type, const std::function<void(Compon
     }
     component.Invoke("CreateBy", TempArgsView{ this });
     m_vComponents.push_back(component);
+    ComponentAddedEvent.Invoke(component);
     return component;
 }
 

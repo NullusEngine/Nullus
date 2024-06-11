@@ -7,11 +7,10 @@ using namespace NLS;
 using namespace NLS::Core;
 using namespace NLS::Core::ResourceManagement;
 
-Game::Context::Context() :
-	engineAssetsPath("Data\\Engine\\"),
-	projectAssetsPath("Data\\User\\Assets\\"),
-	projectScriptsPath("Data\\User\\Scripts\\"),
-	projectSettings("Data\\User\\Game.ini"),
+Game::Context::Context()
+    : engineAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets")).string() + "\\"), projectAssetsPath(""),
+	projectScriptsPath(""),
+	projectSettings(""),
 	sceneManager(projectAssetsPath)
 {
 	ModelManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);

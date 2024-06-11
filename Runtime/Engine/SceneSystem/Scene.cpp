@@ -189,28 +189,28 @@ Engine::Components::CameraComponent* Scene::FindMainCamera() const
 	return nullptr;
 }
 
-void Scene::OnComponentAdded(Engine::Components::Component& p_compononent)
+void Scene::OnComponentAdded(SharedObject p_compononent)
 {
-	if (auto result = dynamic_cast<Engine::Components::MeshRenderer*>(&p_compononent))
-		m_fastAccessComponents.modelRenderers.push_back(result);
+    if (p_compononent.GetType().Is<MeshRenderer>())
+        m_fastAccessComponents.modelRenderers.push_back(p_compononent.AsPtr<Engine::Components::MeshRenderer>());
 
-	if (auto result = dynamic_cast<Engine::Components::CameraComponent*>(&p_compononent))
-		m_fastAccessComponents.cameras.push_back(result);
+	if (p_compononent.GetType().Is<Engine::Components::CameraComponent>())
+        m_fastAccessComponents.cameras.push_back(p_compononent.AsPtr<Engine::Components::CameraComponent>());
 
-	if (auto result = dynamic_cast<Engine::Components::LightComponent*>(&p_compononent))
-		m_fastAccessComponents.lights.push_back(result);
+	if (p_compononent.GetType().Is<Engine::Components::LightComponent>())
+        m_fastAccessComponents.lights.push_back(p_compononent.AsPtr<Engine::Components::LightComponent>());
 }
 
-void Scene::OnComponentRemoved(Engine::Components::Component& p_compononent)
+void Scene::OnComponentRemoved(SharedObject p_compononent)
 {
-	if (auto result = dynamic_cast<Engine::Components::MeshRenderer*>(&p_compononent))
-		m_fastAccessComponents.modelRenderers.erase(std::remove(m_fastAccessComponents.modelRenderers.begin(), m_fastAccessComponents.modelRenderers.end(), result), m_fastAccessComponents.modelRenderers.end());
+    if (p_compononent.GetType().Is<Engine::Components::MeshRenderer>())
+        m_fastAccessComponents.modelRenderers.erase(std::remove(m_fastAccessComponents.modelRenderers.begin(), m_fastAccessComponents.modelRenderers.end(), p_compononent.AsPtr<Engine::Components::MeshRenderer>()), m_fastAccessComponents.modelRenderers.end());
 
-	if (auto result = dynamic_cast<Engine::Components::CameraComponent*>(&p_compononent))
-		m_fastAccessComponents.cameras.erase(std::remove(m_fastAccessComponents.cameras.begin(), m_fastAccessComponents.cameras.end(), result), m_fastAccessComponents.cameras.end());
+	if (p_compononent.GetType().Is<Engine::Components::CameraComponent>())
+        m_fastAccessComponents.cameras.erase(std::remove(m_fastAccessComponents.cameras.begin(), m_fastAccessComponents.cameras.end(), p_compononent.AsPtr<Engine::Components::CameraComponent>()), m_fastAccessComponents.cameras.end());
 
-	if (auto result = dynamic_cast<Engine::Components::LightComponent*>(&p_compononent))
-		m_fastAccessComponents.lights.erase(std::remove(m_fastAccessComponents.lights.begin(), m_fastAccessComponents.lights.end(), result), m_fastAccessComponents.lights.end());
+	if (p_compononent.GetType().Is<Engine::Components::LightComponent>())
+        m_fastAccessComponents.lights.erase(std::remove(m_fastAccessComponents.lights.begin(), m_fastAccessComponents.lights.end(), p_compononent.AsPtr<Engine::Components::LightComponent>()), m_fastAccessComponents.lights.end());
 }
 
 std::vector<Engine::GameObject*>& Scene::GetActors()

@@ -266,13 +266,13 @@ namespace NLS
 		{
 			columns[2] /= m_worldScale.z;
 		}
-		float elements[9] = { 
+
+		Matrix3 rotationMatrix
+		(
 			columns[0].x, columns[1].x, columns[2].x,
 			columns[0].y, columns[1].y, columns[2].y,
-			columns[0].z, columns[1].z, columns[2].z 
-		};
-		Matrix3 rotationMatrix(elements);
-
+			columns[0].z, columns[1].z, columns[2].z
+		);
 		m_worldRotation = Quaternion(rotationMatrix);
 	}
 
@@ -311,7 +311,12 @@ namespace NLS
 			columns[0].y, columns[1].y, columns[2].y,
 			columns[0].z, columns[1].z, columns[2].z
 		};
-		Matrix3 rotationMatrix(elements);
+		Matrix3 rotationMatrix
+		(
+		columns[0].x, columns[1].x, columns[2].x,
+		columns[0].y, columns[1].y, columns[2].y,
+		columns[0].z, columns[1].z, columns[2].z
+		);
 
 		m_localRotation = Quaternion(rotationMatrix);
 	}

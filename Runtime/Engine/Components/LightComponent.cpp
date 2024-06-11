@@ -8,7 +8,7 @@ NLS::Engine::Components::LightComponent::LightComponent()
 
 void NLS::Engine::Components::LightComponent::OnCreate()
 {
-	m_data = new Light(m_owner->GetTransform()->GetTransform());
+	m_data = new Light(&m_owner->GetTransform()->GetTransform());
 }
 
 void NLS::Engine::Components::LightComponent::SetLightType(Settings::ELightType type)

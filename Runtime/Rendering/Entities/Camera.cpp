@@ -19,7 +19,7 @@ NLS::Rendering::Entities::Camera::Camera() :
 {
 }
 
-NLS::Rendering::Entities::Camera::Camera(Maths::Transform p_transform) :
+NLS::Rendering::Entities::Camera::Camera(Maths::Transform* p_transform) :
 	Entity{ p_transform },
     m_projectionMode(Settings::EProjectionMode::PERSPECTIVE),
 	m_fov(45.0f),
@@ -60,12 +60,12 @@ void NLS::Rendering::Entities::Camera::CacheFrustum(const Maths::Matrix4& p_view
 
 const Maths::Vector3& NLS::Rendering::Entities::Camera::GetPosition() const
 {
-	return transform.GetWorldPosition();
+	return transform->GetWorldPosition();
 }
 
 const Maths::Quaternion& NLS::Rendering::Entities::Camera::GetRotation() const
 {
-	return transform.GetWorldRotation();
+	return transform->GetWorldRotation();
 }
 
 float NLS::Rendering::Entities::Camera::GetFov() const
@@ -160,12 +160,12 @@ NLS::Rendering::Settings::EProjectionMode NLS::Rendering::Entities::Camera::GetP
 
 void NLS::Rendering::Entities::Camera::SetPosition(const Maths::Vector3& p_position)
 {
-	transform.SetWorldPosition(p_position);
+	transform->SetWorldPosition(p_position);
 }
 
 void NLS::Rendering::Entities::Camera::SetRotation(const Maths::Quaternion& p_rotation)
 {
-	transform.SetWorldRotation(p_rotation);
+	transform->SetWorldRotation(p_rotation);
 }
 
 void NLS::Rendering::Entities::Camera::SetFov(float p_value)
@@ -245,10 +245,10 @@ Maths::Matrix4 NLS::Rendering::Entities::Camera::CalculateProjectionMatrix(uint1
 
 Maths::Matrix4 NLS::Rendering::Entities::Camera::CalculateViewMatrix() const
 {
-	const Maths::Vector3& position = transform.GetWorldPosition();
-	const Maths::Quaternion& rotation = transform.GetWorldRotation();
-	const Maths::Vector3& up = transform.GetWorldUp();
-	const Maths::Vector3& forward = transform.GetWorldForward();
+	const Maths::Vector3& position = transform->GetWorldPosition();
+    const Maths::Quaternion& rotation = transform->GetWorldRotation();
+    const Maths::Vector3& up = transform->GetWorldUp();
+    const Maths::Vector3& forward = transform->GetWorldForward();
 
 	return Maths::Matrix4::CreateView(
 		position.x, position.y, position.z,

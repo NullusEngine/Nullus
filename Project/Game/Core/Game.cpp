@@ -11,6 +11,8 @@
 #include "AssemblyEngine.h"
 #include "AssemblyPlatform.h"
 #include "AssemblyRender.h"
+
+#include "Components/MaterialRenderer.h"
 using namespace NLS;
 Game::Core::Game::Game(Context & p_context) :
 	m_context(p_context),
@@ -19,6 +21,21 @@ Game::Core::Game::Game(Context & p_context) :
 	Assembly::Instance().Instance().Load<AssemblyMath>().Load<AssemblyCore>().Load<AssemblyPlatform>().Load<AssemblyRender>().Load<Engine::AssemblyEngine>();
 	//m_context.sceneManager.LoadScene(m_context.projectSettings.Get<std::string>("start_scene"));
 	m_context.sceneManager.LoadEmptyLightedScene();
+
+    {
+        auto& instance = m_context.sceneManager.GetCurrentScene()->CreateGameObject("Cube");
+
+        auto modelRenderer = instance.AddComponent<MeshRenderer>();
+
+        const auto model = m_context.modelManager[":Models\\Cube.fbx"];
+        if (model)
+            modelRenderer->SetModel(model);
+        auto materialRenderer = instance.AddComponent<MaterialRenderer>();
+        auto material = new NLS::Rendering::Data::Material(m_context.shaderManager[":Shaders\\Standard.glsl"]);
+        if (material)
+            materialRenderer->FillWithMaterial(*material);
+    }
+
 	m_context.sceneManager.GetCurrentScene()->Play();
 }
 

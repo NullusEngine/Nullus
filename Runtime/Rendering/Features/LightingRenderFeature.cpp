@@ -9,7 +9,7 @@ NLS::Rendering::Features::LightingRenderFeature::LightingRenderFeature(Core::Com
 
 bool IsLightInFrustum(const NLS::Rendering::Entities::Light& p_light, const NLS::Rendering::Data::Frustum& p_frustum)
 {
-	const auto& position = p_light.transform.GetWorldPosition();
+	const auto& position = p_light.transform->GetWorldPosition();
 	const auto effectRange = p_light.GetEffectRange();
 
 	// We always consider lights that have an +inf range (Not necessary to test if they are in frustum)

@@ -15,7 +15,7 @@ namespace NLS
 	* 包含一组函数回调的简单事件。
 	*/
 	template<class... ArgTypes>
-	class NLS_BASE_API Event
+	class Event
 	{
 	public:
 		/**

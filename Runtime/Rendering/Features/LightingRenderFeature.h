@@ -6,10 +6,10 @@
 #include "Rendering/Entities/Light.h"
 #include "Rendering/Buffers/ShaderStorageBuffer.h"
 #include "Rendering/Data/Frustum.h"
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Features
 {
-	class LightingRenderFeature : public ARenderFeature
+	class NLS_RENDER_API LightingRenderFeature : public ARenderFeature
 	{
 	public:
 		// TODO: Consider not using references here, but copying the light instead (should be fairly cheap and doesn't require to keep an instance outside of the scope)

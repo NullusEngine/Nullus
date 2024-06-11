@@ -11,7 +11,7 @@ namespace NLS::Rendering::Resources::Loaders
 	/**
 	* Handle the Texture creation and destruction
 	*/
-	class TextureLoader
+	class NLS_RENDER_API TextureLoader
 	{
 	public:
 		/**

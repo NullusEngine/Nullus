@@ -1,11 +1,11 @@
 #pragma once
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Settings
 {
 	/**
 	* Wraps from OpenGL types enum
 	*/
-	enum class EDataType
+	enum class NLS_RENDER_API EDataType
 	{
 		BYTE			= 0x1400,
 		UNISGNED_BYTE	= 0x1401,

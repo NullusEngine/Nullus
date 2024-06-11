@@ -3,13 +3,13 @@
 #include <Rendering/Resources/Loaders/ShaderLoader.h>
 
 #include "Core/ResourceManagement/AResourceManager.h"
-
+#include "CoreDef.h"
 namespace NLS::Core::ResourceManagement
 {
 	/**
 	* ResourceManager of shaders
 	*/
-	class ShaderManager : public AResourceManager<NLS::Rendering::Resources::Shader>
+	class NLS_CORE_API ShaderManager : public AResourceManager<NLS::Rendering::Resources::Shader>
 	{
 	public:
 		/**

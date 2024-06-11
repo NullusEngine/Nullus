@@ -14,7 +14,7 @@
 #include "GameObject.h"
 #include "Components/CameraComponent.h"
 #include "SceneSystem/Scene.h"
-
+#include "EngineDef.h"
 namespace NLS
 {
 	namespace Engine::Rendering
@@ -22,7 +22,7 @@ namespace NLS
 		/**
 		* Extension of the CompositeRenderer adding support for the scene system (parsing/drawing entities)
 		*/
-		class SceneRenderer : public NLS::Rendering::Core::CompositeRenderer
+		class NLS_ENGINE_API SceneRenderer : public NLS::Rendering::Core::CompositeRenderer
 		{
 		public:
 			using OpaqueDrawables = std::multimap<float, NLS::Rendering::Entities::Drawable, std::less<float>>;

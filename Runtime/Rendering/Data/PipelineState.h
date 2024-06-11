@@ -12,7 +12,7 @@
 #include "Rendering/Settings/ECullingOptions.h"
 #include "Rendering/Settings/EPixelDataFormat.h"
 #include "Rendering/Settings/EPixelDataType.h"
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Data
 {
 	/**
@@ -21,7 +21,7 @@ namespace NLS::Rendering::Data
 	* so copying 4 bytes will end-up copying 8 bytes. Therefore, we should try to align this struct
 	* to take a multiple of 8 bytes.
 	*/
-	struct PipelineState
+	struct NLS_RENDER_API PipelineState
 	{
 		PipelineState();
 

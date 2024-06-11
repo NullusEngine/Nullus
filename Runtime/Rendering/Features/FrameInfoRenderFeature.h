@@ -3,10 +3,10 @@
 #include "Rendering/Core/CompositeRenderer.h"
 #include "Rendering/Features/ARenderFeature.h"
 #include "Rendering/Data/FrameInfo.h"
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Features
 {
-	class FrameInfoRenderFeature : public NLS::Rendering::Features::ARenderFeature
+	class NLS_RENDER_API FrameInfoRenderFeature : public NLS::Rendering::Features::ARenderFeature
 	{
 	public:
 		/**

@@ -5,13 +5,13 @@
 
 #include "Components/Component.h"
 #include "Eventing/Event.h"
-
+#include "EngineDef.h"
 namespace NLS::Engine::Components
 {
 	/**
 	* A ModelRenderer is necessary in combination with a MaterialRenderer to render a model in the world
 	*/
-	class MeshRenderer : public Component
+	class NLS_ENGINE_API MeshRenderer : public Component
 	{
 	public:
 		/**

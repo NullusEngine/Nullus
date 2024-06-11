@@ -4,7 +4,7 @@
 
 #include <Math/Matrix4.h>
 #include <Math/Transform.h>
-
+#include "RenderDef.h"
 #include "Rendering/Geometry/BoundingSphere.h"
 #include "Rendering/Resources/Model.h"
 using namespace NLS;
@@ -13,7 +13,7 @@ namespace NLS::Rendering::Data
 	/**
 	* Mathematic representation of a 3D frustum
 	*/
-	class Frustum
+	class NLS_RENDER_API Frustum
 	{
 	public:
 		/**

@@ -7,7 +7,7 @@ namespace NLS::Rendering::Resources::Loaders
 	/**
 	* Handle the Shader creation and destruction
 	*/
-	class ShaderLoader
+	class NLS_RENDER_API ShaderLoader
 	{
 	public:
 		/**

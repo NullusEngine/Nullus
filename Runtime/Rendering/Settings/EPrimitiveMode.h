@@ -1,13 +1,13 @@
 #pragma once
 
 #include <cstdint>
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Settings
 {
 	/**
 	* OpenGL primitive mode enum wrapper
 	*/
-	enum class EPrimitiveMode : uint8_t
+	enum class NLS_RENDER_API EPrimitiveMode : uint8_t
 	{
 		POINTS,
 		LINES,

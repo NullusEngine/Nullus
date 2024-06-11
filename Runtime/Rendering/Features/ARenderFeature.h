@@ -2,7 +2,7 @@
 
 #include "Rendering/Data/FrameDescriptor.h"
 #include "Rendering/Entities/Drawable.h"
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Core
 {
 	class CompositeRenderer;
@@ -13,7 +13,7 @@ namespace NLS::Rendering::Features
 	/**
 	* Extension of the composite renderer that provides new rendering capabilities
 	*/
-	class ARenderFeature
+	class NLS_RENDER_API ARenderFeature
 	{
 	public:
 		/**

@@ -3,7 +3,7 @@
 #include <Rendering/Entities/Light.h>
 
 #include "Components/Component.h"
-
+#include "EngineDef.h"
 namespace NLS::Engine::Components
 {
 using namespace NLS::Rendering;
@@ -11,7 +11,7 @@ using namespace NLS::Rendering::Entities;
 /**
  * Base class for any light
  */
-class LightComponent : public Component
+class NLS_ENGINE_API LightComponent : public Component
 {
 public:
     /**

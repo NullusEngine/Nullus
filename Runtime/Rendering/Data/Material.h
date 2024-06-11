@@ -7,13 +7,13 @@
 #include "Rendering/Resources/Shader.h"
 #include "Rendering/Resources/Texture.h"
 #include "Rendering/Data/StateMask.h"
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Data
 {
 	/**
 	* A material is a combination of a shader and some settings (Material settings and shader settings)
 	*/
-	class Material
+	class NLS_RENDER_API Material
 	{
 	public:
 		/**

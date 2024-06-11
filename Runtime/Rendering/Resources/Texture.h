@@ -4,7 +4,7 @@
 #include <string>
 
 #include "Rendering/Settings/ETextureFilteringMode.h"
-
+#include "RenderDef.h"
 
 
 namespace NLS::Rendering::Resources
@@ -14,7 +14,7 @@ namespace NLS::Rendering::Resources
 	/**
 	* OpenGL texture wrapper
 	*/
-	class Texture
+	class NLS_RENDER_API Texture
 	{
 		friend class Loaders::TextureLoader;
 

@@ -8,13 +8,13 @@
 #include "Rendering/Resources/IMesh.h"
 #include "Rendering/Geometry/Vertex.h"
 #include "Rendering/Geometry/BoundingSphere.h"
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Resources
 {
 	/**
 	* Standard mesh of Rendering
 	*/
-	class Mesh : public IMesh
+	class NLS_RENDER_API Mesh : public IMesh
 	{
 	public:
 		/**

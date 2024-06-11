@@ -8,12 +8,13 @@
 #include "Rendering/Features/ARenderFeature.h"
 #include "Rendering/Data/Describable.h"
 #include "Eventing/Event.h"
+#include "RenderDef.h"
 namespace NLS::Rendering::Core
 {
 	/**
 	* A renderer relying on composition to define rendering logic.
 	*/
-	class CompositeRenderer : public ABaseRenderer, public Data::Describable
+	class NLS_RENDER_API CompositeRenderer : public ABaseRenderer, public Data::Describable
 	{
 	public:
 		NLS::Event<NLS::Rendering::Data::PipelineState&, const Entities::Drawable&> preDrawEntityEvent;

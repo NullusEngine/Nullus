@@ -4,13 +4,13 @@
 #include <Rendering/Resources/Loaders/ModelLoader.h>
 
 #include "Core/ResourceManagement/AResourceManager.h"
-
+#include "CoreDef.h"
 namespace NLS::Core::ResourceManagement
 {
 	/**
 	* ResourceManager of models
 	*/
-	class ModelManager : public AResourceManager<NLS::Rendering::Resources::Model>
+	class NLS_CORE_API ModelManager : public AResourceManager<NLS::Rendering::Resources::Model>
 	{
 	public:
 		/**

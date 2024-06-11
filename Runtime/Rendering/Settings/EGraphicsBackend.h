@@ -1,13 +1,13 @@
 #pragma once
 
 #include <cstdint>
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Settings
 {
 	/**
 	* Enumerate graphics backend implementations
 	*/
-	enum class EGraphicsBackend : uint8_t
+	enum class NLS_RENDER_API EGraphicsBackend : uint8_t
 	{
 		NONE,
 		OPENGL,

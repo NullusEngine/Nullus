@@ -5,7 +5,7 @@
 
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Settings/EAccessSpecifier.h"
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Resources { class Shader; }
 
 namespace NLS::Rendering::Buffers
@@ -13,7 +13,7 @@ namespace NLS::Rendering::Buffers
 	/**
 	* Wraps OpenGL UBO
 	*/
-	class UniformBuffer
+	class NLS_RENDER_API UniformBuffer
 	{
 	public:
 		/**

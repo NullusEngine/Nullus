@@ -2,7 +2,7 @@
 
 #include "Rendering/Data/FrameDescriptor.h"
 #include "Rendering/Settings/ERenderPassOrder.h"
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Core
 {
 	class CompositeRenderer;
@@ -14,7 +14,7 @@ namespace NLS::Rendering::Core
 	* Represents a rendering step in the graphics pipeline.
 	* Subclasses of this class define specific rendering passes.
 	*/
-	class ARenderPass
+	class NLS_RENDER_API ARenderPass
 	{
 	public:
 		/**

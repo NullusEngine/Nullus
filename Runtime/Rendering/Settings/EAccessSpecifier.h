@@ -1,11 +1,11 @@
 #pragma once
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Settings
 {
 	/**
 	* Defines some access hints that buffers can use
 	*/
-	enum class EAccessSpecifier
+	enum class NLS_RENDER_API EAccessSpecifier
 	{
 		STREAM_DRAW		= 0x88E0,
 		STREAM_READ		= 0x88E1,

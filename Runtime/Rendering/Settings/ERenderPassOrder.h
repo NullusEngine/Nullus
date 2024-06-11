@@ -1,13 +1,13 @@
 #pragma once
 
 #include <cstdint>
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Settings
 {
 	/**
 	* Represents some culling options
 	*/
-	struct ERenderPassOrder
+	struct NLS_RENDER_API ERenderPassOrder
 	{
 		using PassType = uint32_t;
 

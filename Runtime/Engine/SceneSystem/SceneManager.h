@@ -3,13 +3,13 @@
 
 #include <string>
 #include "SceneSystem/Scene.h"
-
+#include "EngineDef.h"
 namespace NLS::Engine::SceneSystem
 {
 	/**
 	* The scene manager of the current scene
 	*/
-	class SceneManager
+	class NLS_ENGINE_API SceneManager
 	{
 	public:
 

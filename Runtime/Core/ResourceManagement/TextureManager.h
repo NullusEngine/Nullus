@@ -3,13 +3,13 @@
 #include <Rendering/Resources/Loaders/TextureLoader.h>
 
 #include "Core/ResourceManagement/AResourceManager.h"
-
+#include "CoreDef.h"
 namespace NLS::Core::ResourceManagement
 {
 	/**
 	* ResourceManager of textures
 	*/
-	class TextureManager : public AResourceManager<NLS::Rendering::Resources::Texture>
+	class NLS_CORE_API TextureManager : public AResourceManager<NLS::Rendering::Resources::Texture>
 	{
 	public:
 		/**

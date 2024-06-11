@@ -1,13 +1,13 @@
 #pragma once
 
 #include <cstdint>
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Settings
 {
     /**
     * Projection modes, mostly used for cameras
     */
-    enum class EProjectionMode : uint8_t
+    enum class NLS_RENDER_API EProjectionMode : uint8_t
     {
         ORTHOGRAPHIC,
         PERSPECTIVE

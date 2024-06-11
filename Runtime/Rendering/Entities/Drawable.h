@@ -9,7 +9,7 @@ namespace NLS::Rendering::Entities
 	/**
 	* Drawable entity
 	*/
-	struct Drawable : public Data::Describable
+	struct NLS_RENDER_API Drawable : public Data::Describable
 	{
 		NLS::Rendering::Resources::Mesh* mesh;
 		NLS::Rendering::Data::Material material;

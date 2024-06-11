@@ -9,7 +9,7 @@
 #include <Math/Matrix4.h>
 
 #include "Rendering/Resources/UniformInfo.h"
-
+#include "RenderDef.h"
 
 using namespace NLS;
 namespace NLS::Rendering::Resources
@@ -19,7 +19,7 @@ namespace NLS::Rendering::Resources
 	/**
 	* OpenGL shader program wrapper
 	*/
-	class Shader
+	class NLS_RENDER_API Shader
 	{
 	friend class Loaders::ShaderLoader;
 

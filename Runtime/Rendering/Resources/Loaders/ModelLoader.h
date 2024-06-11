@@ -10,7 +10,7 @@ namespace NLS::Rendering::Resources::Loaders
 	/**
 	* Handle the Model creation and destruction
 	*/
-	class ModelLoader
+	class NLS_RENDER_API ModelLoader
 	{
 	public:
 		/**

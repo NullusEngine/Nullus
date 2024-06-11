@@ -5,7 +5,7 @@
 
 #include "Rendering/Buffers/Framebuffer.h"
 #include "Rendering/Entities/Camera.h"
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Data
 {
 	/**

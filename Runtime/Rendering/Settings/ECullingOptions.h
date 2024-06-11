@@ -1,13 +1,13 @@
 #pragma once
 
 #include <cstdint>
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Settings
 {
 	/**
 	* Represents some culling options
 	*/
-	enum class ECullingOptions : uint8_t
+	enum class NLS_RENDER_API ECullingOptions : uint8_t
 	{
 		NONE				= 0x0,
 		FRUSTUM_PER_MODEL	= 0x1,

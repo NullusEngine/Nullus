@@ -1,11 +1,11 @@
 #pragma once
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Settings
 {
 	/**
 	* OpenGL pixel data format enum wrapper
 	*/
-	enum class EPixelDataFormat
+	enum class NLS_RENDER_API EPixelDataFormat
 	{
 		COLOR_INDEX					= 0x1900,
 		STENCIL_INDEX				= 0x1901,

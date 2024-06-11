@@ -6,14 +6,14 @@
 
 #include "Rendering/Entities/Entity.h"
 #include "Rendering/Settings/ELightType.h"
-
+#include "RenderDef.h"
 using namespace NLS;
 namespace NLS::Rendering::Entities
 {
 /**
  * Data structure that can represent any type of light
  */
-class Light : public Entity
+class NLS_RENDER_API Light : public Entity
 {
 public :
     Light(Maths::Transform* p_transform)

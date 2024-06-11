@@ -4,6 +4,7 @@
 #include "Math/Matrix4.h"
 #include "Math/Matrix3.h"
 #include "Math/Vector3.h"
+#include "MathDef.h"
 #include <functional>
 namespace NLS
 {
@@ -65,7 +66,7 @@ namespace NLS
 		/**
 		* Mathematic representation of a 3D transformation with float precision
 		*/
-		class Transform
+        class NLS_MATH_API Transform
 		{
 		public:
 			/**

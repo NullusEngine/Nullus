@@ -6,7 +6,7 @@
 
 #include "Rendering/Data/Material.h"
 #include "Components/Component.h"
-
+#include "EngineDef.h"
 constexpr uint8_t kMaxMaterialCount = 0xFF;
 
 namespace NLS::Engine::Components
@@ -14,7 +14,7 @@ namespace NLS::Engine::Components
 	/**
 	* A component that handle a material list, necessary for model rendering
 	*/
-	class MaterialRenderer : public Component
+	class NLS_ENGINE_API MaterialRenderer : public Component
 	{
 	public:
 		using MaterialList = std::array< NLS::Rendering::Data::Material*, kMaxMaterialCount>;

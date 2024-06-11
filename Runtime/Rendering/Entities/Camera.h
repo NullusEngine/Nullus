@@ -14,7 +14,7 @@ namespace NLS::Rendering::Entities
 	/**
 	* Represents a camera. Wraps projection and view calculation based on applied rotation and the given positions
 	*/
-	class Camera : public Entity
+	class NLS_RENDER_API Camera : public Entity
 	{
 	public:
 		Camera();

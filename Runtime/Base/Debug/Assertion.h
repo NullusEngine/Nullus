@@ -1,7 +1,7 @@
 #pragma once
 
 #include <string>
-
+#include "UDRefl/config.hpp"
 
 #define NLS_ASSERT(condition, message) NLS::Debug::Assertion::Assert(condition, message)
 
@@ -10,7 +10,7 @@ namespace NLS::Debug
 	/**
 	* C++ 断言的封装
 	*/
-	class Assertion
+class NLS_BASE_API Assertion
 	{
 	public:
 

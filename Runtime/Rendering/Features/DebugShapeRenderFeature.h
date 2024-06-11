@@ -1,13 +1,13 @@
 #pragma once
 
 #include "Rendering/Features/ARenderFeature.h"
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Features
 {
 	/**
 	* The ShapeDrawer handles the drawing of basic shapes
 	*/
-	class DebugShapeRenderFeature : public ARenderFeature
+	class NLS_RENDER_API DebugShapeRenderFeature : public ARenderFeature
 	{
 	public:
 		/**

@@ -5,7 +5,7 @@
 #include <string>
 
 #include "Rendering/Resources/Mesh.h"
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Resources
 {
 	namespace Loaders { class ModelLoader; }
@@ -13,7 +13,7 @@ namespace NLS::Rendering::Resources
 	/**
 	* A model is a combinaison of meshes
 	*/
-	class Model
+	class NLS_RENDER_API Model
 	{
 		friend class Loaders::ModelLoader;
 

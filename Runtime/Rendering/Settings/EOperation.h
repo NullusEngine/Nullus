@@ -1,13 +1,13 @@
 #pragma once
 
 #include <cstdint>
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Settings
 {
 	/**
 	* Graphics operations (for stencil/depth buffers)
 	*/
-	enum class EOperation : uint8_t
+	enum class NLS_RENDER_API EOperation : uint8_t
 	{
 		ZERO,
 		KEEP,

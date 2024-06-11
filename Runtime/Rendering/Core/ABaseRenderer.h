@@ -7,7 +7,7 @@
 #include "Rendering/Resources/IMesh.h"
 #include "Rendering/Resources/Texture.h"
 #include "Rendering/Entities/Drawable.h"
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Core
 {
 	/**

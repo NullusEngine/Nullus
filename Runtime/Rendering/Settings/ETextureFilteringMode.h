@@ -1,5 +1,5 @@
 #pragma once
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Settings
 {
 	/**
@@ -7,7 +7,7 @@ namespace NLS::Rendering::Settings
 	*/
 	// TODO: Dissociate the values from OpenGL values, and convert them in the driver.cpp
 	// Would require the driver.cpp to wrap all GL functions
-	enum class ETextureFilteringMode
+	enum class NLS_RENDER_API ETextureFilteringMode
 	{
 		NEAREST					= 0x2600,
 		LINEAR					= 0x2601,

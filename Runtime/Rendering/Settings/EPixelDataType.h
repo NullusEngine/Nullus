@@ -1,11 +1,11 @@
 #pragma once
-
+#include "RenderDef.h"
 namespace NLS::Rendering::Settings
 {
 	/**
 	* OpenGL pixel data type enum wrapper
 	*/
-	enum class EPixelDataType
+	enum class NLS_RENDER_API EPixelDataType
 	{
 		BYTE						= 0x1400,
 		UNSIGNED_BYTE				= 0x1401,

@@ -36,7 +36,7 @@ public:
     Vector4(const Vector3& v3, float w = 0.0f);
     Vector4(const Vector2& v2, float z = 0.0f, float w = 0.0f);
 
-    ~Vector4(void) {}
+    ~Vector4(void);
 
     Vector4 Normalised() const
     {

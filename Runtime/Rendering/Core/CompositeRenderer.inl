@@ -11,7 +11,7 @@ namespace NLS::Rendering::Core
 		NLS_ASSERT(!HasFeature<T>(), "Feature already added");
 		static_assert(std::is_base_of<Features::ARenderFeature, T>::value, "T must inherit from ARenderFeature");
 		T* feature = new T(*this, std::forward<Args>(args)...);
-		m_features.emplace(typeid(T), feature);
+        m_features.emplace(typeid(T), feature);
 		return *feature;
 	}
 

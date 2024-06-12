@@ -16,3 +16,7 @@ Vector4::Vector4(const Vector2& v2, float newZ, float newW)
     : x(v2.x), y(v2.y), z(newZ), w(newW)
 {
 }
+
+Vector4::~Vector4(void)
+{
+}

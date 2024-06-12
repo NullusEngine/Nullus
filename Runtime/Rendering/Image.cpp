@@ -3,20 +3,15 @@
 #include <stb/stb_image.h>
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb/stb_image_write.h>
-#include "Core/Image.h"
+#include "Image.h"
 #include <iostream>
 #include <cstring>
 namespace NLS
 {
-Image::Image(const std::string& filename)
+Image::Image(const std::string& filename, bool flipVertically)
     : data(nullptr)
 {
-    data = stbi_load(filename.c_str(), &width, &height, &channels, 0);
-    if (!data)
-    {
-        std::cerr << "Failed to load image: " << filename << std::endl;
-        width = height = channels = 0;
-    }
+        Load(filename, flipVertically);
 }
 // 创建指定大小的空白图像
 Image::Image(int width, int height, int channels) : width(width), height(height), channels(channels), data(nullptr) {
@@ -47,6 +42,7 @@ Image::Image(Image&& other) noexcept
     other.width = other.height = other.channels = 0;
     other.data = nullptr;
 }
+
 // 赋值运算符重载的实现
 Image& Image::operator=(const Image& other)
 {
@@ -66,6 +62,23 @@ Image& Image::operator=(const Image& other)
 }
 
 Image::~Image()
+{
+    Free();
+}
+
+void Image::Load(const std::string& filename, bool flipVertically)
+{
+    stbi_set_flip_vertically_on_load(flipVertically);
+    data = stbi_load(filename.c_str(), &width, &height, &channels, 0);
+    if (!data)
+    {
+        std::cerr << "Failed to load image: " << filename << std::endl;
+        width = height = channels = 0;
+    }
+}
+
+
+void Image::Free()
 {
     if (data)
         stbi_image_free(data);

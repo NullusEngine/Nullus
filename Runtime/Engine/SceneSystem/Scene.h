@@ -5,13 +5,14 @@
 #include "Components/CameraComponent.h"
 #include "Components/LightComponent.h"
 #include "Components/MeshRenderer.h"
+#include "EngineDef.h"
 using namespace  NLS::Engine::Components;
 namespace NLS::Engine::SceneSystem
 {
 	/**
 	* The scene is a set of actors
 	*/
-	class Scene
+	class NLS_ENGINE_API Scene
 	{
 	public:
 		/**

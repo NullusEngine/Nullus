@@ -127,6 +127,6 @@ public:
     void SetSize(const Maths::Vector3& p_size);
 
 protected:
-    Light* m_data;
+    Light* m_data = nullptr;
 };
 } // namespace NLS::Engine::Components

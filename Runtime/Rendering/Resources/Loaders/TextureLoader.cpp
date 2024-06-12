@@ -1,7 +1,5 @@
-#define STB_IMAGE_IMPLEMENTATION
-
 #include <glad/glad.h>
-#include <stb/stb_image.h>
+#include <Image.h>
 #include <array>
 
 #include "Rendering/Resources/Loaders/TextureLoader.h"
@@ -9,14 +7,13 @@
 NLS::Rendering::Resources::Texture* NLS::Rendering::Resources::Loaders::TextureLoader::Create(const std::string& p_filepath, NLS::Rendering::Settings::ETextureFilteringMode p_firstFilter, NLS::Rendering::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap)
 {
 	GLuint textureID;
-	int textureWidth;
-	int textureHeight;
-	int bitsPerPixel;
 	glGenTextures(1, &textureID);
 
-	stbi_set_flip_vertically_on_load(true);
-	unsigned char* dataBuffer = stbi_load(p_filepath.c_str(), &textureWidth, &textureHeight, &bitsPerPixel, 4);
-
+	Image image(p_filepath, true);
+    unsigned char* dataBuffer = image.GetData();
+    int textureWidth = image.GetWidth();
+    int textureHeight = image.GetHeight();
+    int bitsPerPixel = image.GetChannels();
 	if (dataBuffer)
 	{
 		// TODO: Cleanup this code to use "Load from Memory"
@@ -33,15 +30,12 @@ NLS::Rendering::Resources::Texture* NLS::Rendering::Resources::Loaders::TextureL
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, static_cast<GLint>(p_firstFilter));
 		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, static_cast<GLint>(p_secondFilter));
-
-		stbi_image_free(dataBuffer);
 		glBindTexture(GL_TEXTURE_2D, 0);
 
 		return new Texture(p_filepath, textureID, textureWidth, textureHeight, bitsPerPixel, p_firstFilter, p_secondFilter, p_generateMipmap);
 	}
 	else
 	{
-		stbi_image_free(dataBuffer);
 		glBindTexture(GL_TEXTURE_2D, 0);
 		return nullptr;
 	}

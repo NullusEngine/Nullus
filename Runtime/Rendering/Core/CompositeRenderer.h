@@ -26,6 +26,9 @@ namespace NLS::Rendering::Core
 		*/
 		CompositeRenderer(Context::Driver& p_driver);
 
+		CompositeRenderer(const CompositeRenderer&) = delete;
+
+		CompositeRenderer &operator=(const CompositeRenderer&) = delete;
 		/**
 		* Begin Frame
 		* @param p_frameDescriptor

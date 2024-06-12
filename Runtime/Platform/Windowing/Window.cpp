@@ -2,7 +2,6 @@
 #ifdef _WIN32
     #include "Windows.h"
 #endif
-#include <stb/stb_image.h>
 
 #include <GLFW/glfw3.h>
 
@@ -49,12 +48,12 @@ NLS::Windowing::Window::~Window()
 	glfwDestroyWindow(m_glfwWindow);
 }
 
-void NLS::Windowing::Window::SetIcon(const std::string & p_filePath)
-{
-	GLFWimage images[1];
-	images[0].pixels = stbi_load(p_filePath.c_str(), &images[0].width, &images[0].height, 0, 4);
-	glfwSetWindowIcon(m_glfwWindow, 1, images);
-}
+//void NLS::Windowing::Window::SetIcon(const std::string & p_filePath)
+//{
+//	GLFWimage images[1];
+//	images[0].pixels = stbi_load(p_filePath.c_str(), &images[0].width, &images[0].height, 0, 4);
+//	glfwSetWindowIcon(m_glfwWindow, 1, images);
+//}
 
 void NLS::Windowing::Window::SetIconFromMemory(uint8_t* p_data, uint32_t p_width, uint32_t p_height)
 {

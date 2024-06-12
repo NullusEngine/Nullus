@@ -2,14 +2,14 @@
 
 #include <string>
 #include <unordered_map>
-
+#include "CoreDef.h"
 
 namespace NLS::Filesystem
 {
 	/**
 	* The IniFile class represents a file .ini that stores a set of attributes/values that can get read and written
 	*/
-	class IniFile final
+	class NLS_CORE_API IniFile final
 	{
 	public:
 		using AttributePair = std::pair<std::string, std::string>;

@@ -4,7 +4,7 @@
 
 #include <Filesystem/IniFile.h>
 
-std::tuple<NLS::Rendering::Settings::ETextureFilteringMode, NLS::Rendering::Settings::ETextureFilteringMode, bool> GetAssetMetadata(const std::string& p_path)
+std::tuple<NLS::Rendering::Settings::ETextureFilteringMode, NLS::Rendering::Settings::ETextureFilteringMode, bool> GetTextureMetadata(const std::string& p_path)
 {
 	auto metaFile = NLS::Filesystem::IniFile(p_path + ".meta");
 
@@ -19,7 +19,7 @@ NLS::Rendering::Resources::Texture* NLS::Core::ResourceManagement::TextureManage
 {
 	std::string realPath = GetRealPath(p_path);
 
-	auto [min, mag, mipmap] = GetAssetMetadata(realPath);
+	auto [min, mag, mipmap] = GetTextureMetadata(realPath);
 
 	NLS::Rendering::Resources::Texture* texture = NLS::Rendering::Resources::Loaders::TextureLoader::Create(realPath, min, mag, mipmap);
 	if (texture)
@@ -37,7 +37,7 @@ void NLS::Core::ResourceManagement::TextureManager::ReloadResource(NLS::Renderin
 {
 	std::string realPath = GetRealPath(p_path);
 
-	auto [min, mag, mipmap] = GetAssetMetadata(realPath);
+	auto [min, mag, mipmap] = GetTextureMetadata(realPath);
 
 	NLS::Rendering::Resources::Loaders::TextureLoader::Reload(*p_resource, realPath, min, mag, mipmap);
 }

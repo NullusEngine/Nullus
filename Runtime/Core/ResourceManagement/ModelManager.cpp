@@ -1,6 +1,6 @@
 #include "Core/ResourceManagement/ModelManager.h"
 #include <Filesystem/IniFile.h>
-NLS::Rendering::Resources::Parsers::EModelParserFlags GetAssetMetadata(const std::string& p_path)
+NLS::Rendering::Resources::Parsers::EModelParserFlags GetModelMetadata(const std::string& p_path)
 {
 	auto metaFile = NLS::Filesystem::IniFile(p_path + ".meta");
 
@@ -44,7 +44,7 @@ NLS::Rendering::Resources::Parsers::EModelParserFlags GetAssetMetadata(const std
 NLS::Rendering::Resources::Model* NLS::Core::ResourceManagement::ModelManager::CreateResource(const std::string& p_path)
 {
 	std::string realPath = GetRealPath(p_path);
-	auto model = NLS::Rendering::Resources::Loaders::ModelLoader::Create(realPath, GetAssetMetadata(realPath));
+    auto model = NLS::Rendering::Resources::Loaders::ModelLoader::Create(realPath, GetModelMetadata(realPath));
 	if (model)
 		*reinterpret_cast<std::string*>(reinterpret_cast<char*>(model) + offsetof(NLS::Rendering::Resources::Model, path)) = p_path; // Force the resource path to fit the given path
 
@@ -59,5 +59,5 @@ void NLS::Core::ResourceManagement::ModelManager::DestroyResource(NLS::Rendering
 void NLS::Core::ResourceManagement::ModelManager::ReloadResource(NLS::Rendering::Resources::Model* p_resource, const std::string& p_path)
 {
 	std::string realPath = GetRealPath(p_path);
-	NLS::Rendering::Resources::Loaders::ModelLoader::Reload(*p_resource, realPath, GetAssetMetadata(realPath));
+    NLS::Rendering::Resources::Loaders::ModelLoader::Reload(*p_resource, realPath, GetModelMetadata(realPath));
 }

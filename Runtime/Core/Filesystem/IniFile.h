@@ -3,7 +3,7 @@
 #include <string>
 #include <unordered_map>
 #include "CoreDef.h"
-
+#include <vector>
 namespace NLS::Filesystem
 {
 	/**

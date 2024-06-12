@@ -33,6 +33,6 @@ namespace NLS::Core
 		}
 
 	private:
-		static std::unordered_map<size_t, std::any> __SERVICES;
+		static std::unordered_map<std::size_t, std::any> __SERVICES;
 	};
 }

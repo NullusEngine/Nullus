@@ -1,6 +1,7 @@
 #include <string>
 #include <stdexcept>
 #include <cmath>
+#include <cstring>
 #include "Math/Matrix3.h"
 using namespace NLS::Maths;
 
@@ -129,7 +130,7 @@ float& Matrix3::operator()(uint8_t p_row, uint8_t p_column)
 
 bool Matrix3::AreEquals(const Matrix3& p_left, const Matrix3& p_right)
 {
-    return memcmp(&p_left, &p_right, 9 * sizeof(float)) == 0;
+    return std::memcmp(&p_left, &p_right, 9 * sizeof(float)) == 0;
 }
 
 Matrix3 Matrix3::Add(const Matrix3& p_left, float p_scalar)
@@ -219,7 +220,7 @@ Matrix3 Matrix3::Divide(const Matrix3& p_left, const Matrix3& p_right)
 
 bool Matrix3::IsIdentity(const Matrix3& p_matrix)
 {
-    return memcmp(Identity.data, p_matrix.data, 9 * sizeof(float)) == 0;
+    return std::memcmp(Identity.data, p_matrix.data, 9 * sizeof(float)) == 0;
 }
 
 float Matrix3::Determinant(const Matrix3& p_matrix)

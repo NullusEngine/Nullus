@@ -12,7 +12,6 @@ class Vector3;
 class NLS_MATH_API Quaternion
 {
 public:
-    static const Quaternion Identity;
     union
     {
         struct

@@ -3,6 +3,7 @@
 #include <Windowing/Context/Device.h>
 #include <Windowing/Inputs/InputManager.h>
 #include <Windowing/Window.h>
+#include <memory>
 namespace NLS
 {
 	namespace Editor::Core

@@ -1,8 +1,6 @@
 #pragma once
-
-#include <assert.h>
-
 #include "Core/Filesystem/IniFile.h"
+#include "Debug/Assertion.h"
 
 namespace NLS::Filesystem
 {
@@ -39,7 +37,7 @@ namespace NLS::Filesystem
 		}
 		else
 		{
-			//static_assert(false, "The given type must be : bool, integral, floating point or string");
+            NLS_ASSERT(false, "The given type must be : bool, integral, floating point or string");
 			return T();
 		}
 	}
@@ -73,7 +71,7 @@ namespace NLS::Filesystem
 			}
 			else
 			{
-				static_assert(false, "The given type must be : bool, integral, floating point or string");
+                NLS_ASSERT(false, "The given type must be : bool, integral, floating point or string");
 			}
 
 			return true;
@@ -105,7 +103,7 @@ namespace NLS::Filesystem
 			}
 			else
 			{
-				static_assert(false, "The given type must be : bool, integral, floating point or std::string");
+                NLS_ASSERT(false, "The given type must be : bool, integral, floating point or std::string");
 			}
 
 			return true;

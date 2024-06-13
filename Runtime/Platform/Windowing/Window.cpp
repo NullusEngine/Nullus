@@ -327,7 +327,9 @@ void NLS::Windowing::Window::CreateGlfwWindow(const Settings::WindowSettings& p_
 	glfwWindowHint(GLFW_AUTO_ICONIFY,	p_windowSettings.autoIconify);
 	glfwWindowHint(GLFW_REFRESH_RATE,	p_windowSettings.refreshRate);
 	glfwWindowHint(GLFW_SAMPLES,		p_windowSettings.samples);
-
+#ifdef __APPLE__
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+#endif
 	m_glfwWindow = glfwCreateWindow(static_cast<int>(m_size.x), static_cast<int>(m_size.y), m_title.c_str(), selectedMonitor, nullptr);
 
 	if (!m_glfwWindow)

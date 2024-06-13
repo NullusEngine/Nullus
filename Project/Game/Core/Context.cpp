@@ -20,7 +20,7 @@ Game::Context::Context()
 	/* Settings */
 	Windowing::Settings::DeviceSettings deviceSettings;
 	deviceSettings.contextMajorVersion = 4;
-	deviceSettings.contextMinorVersion = 6;
+	deviceSettings.contextMinorVersion = 3;
 	deviceSettings.samples = 4;
 
 	Windowing::Settings::WindowSettings windowSettings;

@@ -8,6 +8,7 @@
 App/*/*.exe
 App/*/*.pdb
 App/*/*.dll
+App/*/*.o
 # log file
 App/*.log
 
@@ -16,5 +17,5 @@ App/Win64_*/
 App/Win32_*/
 
 #linux
-App/Linux/
+App/Linux_*/
 

@@ -17,6 +17,7 @@ GameObject::GameObject(int64_t p_actorID, const std::string& p_name, const std::
 m_name(p_name),
 m_tag(p_tag),
 m_playing(p_playing),
+m_active(true),
 m_transform(AddComponent<Components::TransformComponent>())
 {
 	CreatedEvent.Invoke(*this);

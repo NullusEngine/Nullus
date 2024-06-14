@@ -159,6 +159,10 @@ int GetInt(uint32_t p_parameter)
 {
 	GLint result;
 	glGetIntegerv(p_parameter, &result);
+	GLenum error = glGetError();
+    if (error != GL_NO_ERROR) {
+        return -1; 
+    }
 	return static_cast<int>(result);
 }
 

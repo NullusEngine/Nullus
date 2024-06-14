@@ -27,11 +27,11 @@ Game::Core::Game::Game(Context & p_context) :
 
         auto modelRenderer = instance.AddComponent<MeshRenderer>();
 
-        const auto model = m_context.modelManager[":Models\\Cube.fbx"];
+        const auto model = m_context.modelManager[":Models/Cube.fbx"];
         if (model)
             modelRenderer->SetModel(model);
         auto materialRenderer = instance.AddComponent<MaterialRenderer>();
-        auto material = new NLS::Rendering::Data::Material(m_context.shaderManager[":Shaders\\Standard.glsl"]);
+        auto material = new NLS::Rendering::Data::Material(m_context.shaderManager[":Shaders/Standard.glsl"]);
         if (material)
             materialRenderer->FillWithMaterial(*material);
     }

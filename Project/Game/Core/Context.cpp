@@ -8,7 +8,7 @@ using namespace NLS::Core;
 using namespace NLS::Core::ResourceManagement;
 
 Game::Context::Context()
-    : engineAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets")).string() + "\\"), projectAssetsPath(""),
+    : engineAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets")).string() + "/"), projectAssetsPath(""),
 	projectScriptsPath(""),
 	projectSettings(""),
 	sceneManager(projectAssetsPath)

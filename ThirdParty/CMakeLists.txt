@@ -26,3 +26,9 @@ if(NOT TARGET assimp)
     set_target_properties(zlibstatic PROPERTIES FOLDER ${third_party_folder}/assimp)
     endif()
 endif()
+
+if(NOT TARGET ImGui)
+    add_subdirectory(ImGui)
+    # 指定FOLDER
+    set_target_properties(ImGui PROPERTIES FOLDER ${third_party_folder}/ImGui)
+endif()

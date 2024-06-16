@@ -7,7 +7,7 @@ namespace NLS::UI::Widgets::Layout
 	/**
 	* Widget that adds a space to the panel line
 	*/
-	class Spacing : public AWidget
+	class NLS_CORE_API Spacing : public AWidget
 	{
 	public:
 		/**

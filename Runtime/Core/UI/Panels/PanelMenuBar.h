@@ -14,7 +14,7 @@ namespace NLS::UI::Panels
 	/**
 	* A simple panel that will be displayed on the top side of the canvas
 	*/
-	class PanelMenuBar : public APanel
+	class NLS_CORE_API PanelMenuBar : public APanel
 	{
 	protected:
 		void _Draw_Impl() override;

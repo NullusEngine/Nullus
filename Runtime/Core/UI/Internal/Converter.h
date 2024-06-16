@@ -4,14 +4,14 @@
 #include <Vector4.h>
 
 #include "ImGui/imgui.h"
-#include "UI/Types/Color.h"
-
+#include "Color.h"
+#include "Core/CoreDef.h"
 namespace NLS::UI::Internal
 {
 /**
  * Handles imgui conversion to/from overload types
  */
-class Converter
+class NLS_CORE_API Converter
 {
 public:
     /**
@@ -23,13 +23,13 @@ public:
      * Convert the given Color to ImVec4
      * @param p_value
      */
-    static ImVec4 ToImVec4(const Types::Color& p_value);
+    static ImVec4 ToImVec4(const Maths::Color& p_value);
 
     /**
      * Convert the given ImVec4 to Color
      * @param p_value
      */
-    static Types::Color ToColor(const ImVec4& p_value);
+    static Maths::Color ToColor(const ImVec4& p_value);
 
     /**
      * Convert the given FVector2 to ImVec2

@@ -2,7 +2,7 @@
 
 #include <string>
 #include <functional>
-
+#include "PlatformDef.h"
 
 struct tagOFNA;
 
@@ -11,7 +11,7 @@ namespace NLS::Dialogs
 	/**
 	* 一些可以传递给 FileDialog 实例的标志
 	*/
-	enum class EExplorerFlags
+	enum class NLS_PLATFORM_API EExplorerFlags
 	{
 		READONLY                 = 0x00000001,
 		OVERWRITEPROMPT          = 0x00000002,
@@ -52,7 +52,7 @@ namespace NLS::Dialogs
 	/**
 	* FileDialog 是任何要求用户从磁盘选择文件/将文件保存到磁盘的对话框窗口的基类
 	*/
-	class FileDialog
+	class NLS_PLATFORM_API FileDialog
 	{
 	public:
 		/**

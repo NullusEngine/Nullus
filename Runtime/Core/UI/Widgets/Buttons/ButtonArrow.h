@@ -9,7 +9,7 @@ namespace NLS::UI::Widgets::Buttons
 	/**
 	* Button widget with an arrow image
 	*/
-	class ButtonArrow : public AButton
+	class NLS_CORE_API ButtonArrow : public AButton
 	{
 	public:
 		/**

@@ -12,7 +12,7 @@ namespace NLS::UI::Panels
 	/**
 	* A PanelWindow is a panel that is localized and behave like a window (Movable, resizable...)
 	*/
-	class PanelWindow : public APanelTransformable
+	class NLS_CORE_API PanelWindow : public APanelTransformable
 	{
 	public:
 		/**

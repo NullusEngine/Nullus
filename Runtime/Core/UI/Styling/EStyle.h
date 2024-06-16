@@ -5,7 +5,7 @@ namespace NLS::UI::Styling
 	/**
 	* Some styles that you can use to modify the UI looks
 	*/
-	enum class EStyle
+	enum class NLS_CORE_API EStyle
 	{
 		IM_CLASSIC_STYLE,
 		IM_DARK_STYLE,

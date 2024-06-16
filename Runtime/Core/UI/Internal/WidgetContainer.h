@@ -10,7 +10,7 @@ namespace NLS::UI::Internal
 	/**
 	* The base class for any widget container
 	*/
-	class WidgetContainer
+	class NLS_CORE_API WidgetContainer
 	{
 	public:
 		/**

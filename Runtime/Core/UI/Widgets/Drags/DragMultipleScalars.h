@@ -12,7 +12,7 @@ namespace NLS::UI::Widgets::Drags
 	* Drag widget of multiple generic type
 	*/
 	template <typename T, size_t _Size>
-	class DragMultipleScalars : public DataWidget<std::array<T, _Size>>
+	class NLS_CORE_API DragMultipleScalars : public DataWidget<std::array<T, _Size>>
 	{
 		static_assert(_Size > 1, "Invalid DragMultipleScalars _Size (2 or more requiered)");
 

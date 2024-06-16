@@ -14,7 +14,7 @@ namespace NLS::UI::Plugins
 	* Plugin that allow automatic data update of any DataWidget
 	*/
 	template <typename T>
-	class DataDispatcher : public IPlugin
+	class NLS_CORE_API DataDispatcher : public IPlugin
 	{
 	public:
 		/**

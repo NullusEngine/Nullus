@@ -10,7 +10,7 @@ namespace NLS::UI::Widgets::InputFields
 	* Input widget of generic type
 	*/
 	template <typename T>
-	class InputSingleScalar : public DataWidget<T>
+	class NLS_CORE_API InputSingleScalar : public DataWidget<T>
 	{
 		static_assert(std::is_scalar<T>::value, "Invalid InputSingleScalar T (Scalar expected)");
 

@@ -3,14 +3,14 @@
 #include <string>
 
 #include "UI/Widgets/Buttons/AButton.h"
-#include "UI/Types/Color.h"
+#include "Color.h"
 
 namespace NLS::UI::Widgets::Buttons
 {
 	/**
 	* Small button widget
 	*/
-	class ButtonSmall : public AButton
+	class NLS_CORE_API ButtonSmall : public AButton
 	{
 	public:
 		/**
@@ -25,10 +25,10 @@ namespace NLS::UI::Widgets::Buttons
 	public:
 		std::string label;
 
-		Types::Color idleBackgroundColor;
-		Types::Color hoveredBackgroundColor;
-		Types::Color clickedBackgroundColor;
+		Maths::Color idleBackgroundColor;
+		Maths::Color hoveredBackgroundColor;
+		Maths::Color clickedBackgroundColor;
 
-		Types::Color textColor;
+		Maths::Color textColor;
 	};
 }

@@ -7,7 +7,7 @@ namespace NLS::Dialogs
 	/**
 	* Dialog window that asks the user to save a file to the disk
 	*/
-	class SaveFileDialog : public FileDialog
+	class NLS_PLATFORM_API SaveFileDialog : public FileDialog
 	{
 	public:
 		/**

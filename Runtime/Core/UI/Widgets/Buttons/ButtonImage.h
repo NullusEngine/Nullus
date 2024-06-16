@@ -3,7 +3,7 @@
 #include <Vector2.h>
 
 #include "UI/Internal/TextureID.h"
-#include "UI/Types/Color.h"
+#include "Color.h"
 #include "UI/Widgets/Buttons/AButton.h"
 
 namespace NLS::UI::Widgets::Buttons
@@ -11,7 +11,7 @@ namespace NLS::UI::Widgets::Buttons
 	/**
 	* Button widget with an image
 	*/
-	class ButtonImage : public AButton
+	class NLS_CORE_API ButtonImage : public AButton
 	{
 	public:
 		/**
@@ -27,8 +27,8 @@ namespace NLS::UI::Widgets::Buttons
 	public:
 		bool disabled = false;
 
-		UI::Types::Color background = { 0, 0, 0, 0 };
-		UI::Types::Color tint = { 1, 1, 1, 1 };
+		Maths::Color background = { 0, 0, 0, 0 };
+		Maths::Color tint = { 1, 1, 1, 1 };
 
 		Internal::TextureID textureID;
 		Maths::Vector2 size;

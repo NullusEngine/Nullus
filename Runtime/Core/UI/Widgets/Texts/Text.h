@@ -8,7 +8,7 @@ namespace NLS::UI::Widgets::Texts
 	/**
 	* Simple widget to display text on a panel
 	*/
-	class Text : public DataWidget<std::string>
+	class NLS_CORE_API Text : public DataWidget<std::string>
 	{
 	public:
 		/**

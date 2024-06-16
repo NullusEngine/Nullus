@@ -2,7 +2,7 @@
 #pragma once
 
 #include <string>
-
+#include "PlatformDef.h"
 
 /* Prevent enum and class name to be replaced by standard macros */
 #undef MessageBox
@@ -16,7 +16,7 @@ namespace NLS::Dialogs
 	* a set of buttons, and a brief application-specific message,
 	* such as status or error information
 	*/
-	class MessageBox
+	class NLS_PLATFORM_API MessageBox
 	{
 	public:
 		/**

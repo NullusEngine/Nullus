@@ -4,13 +4,13 @@
 #include <unordered_map>
 
 #include "UI/Internal/WidgetContainer.h"
-
+#include "Core/CoreDef.h"
 namespace NLS::UI::Panels
 {
 	/**
 	* A Panel is a component of a canvas. It is a sort of window in the UI
 	*/
-	class APanel : public API::IDrawable, public Internal::WidgetContainer
+	class NLS_CORE_API APanel : public API::IDrawable, public Internal::WidgetContainer
 	{
 	public:
 		/**

@@ -3,13 +3,13 @@
 #include <vector>
 
 #include "UI/Plugins/IPlugin.h"
-
+#include "Core//CoreDef.h"
 namespace NLS::UI::Plugins
 {
 	/**
 	* Inherit from this class to make your class "Pluginable" (Able to have plugins)
 	*/
-	class Pluginable
+	class NLS_CORE_API Pluginable
 	{
 	public:
 		/**

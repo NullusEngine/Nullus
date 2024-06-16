@@ -8,7 +8,7 @@ namespace NLS::UI::Widgets::InputFields
 	* Input widget of multiple type float
 	*/
 	template <size_t _Size>
-	class InputMultipleFloats : public InputMultipleScalars<float, _Size>
+	class NLS_CORE_API InputMultipleFloats : public InputMultipleScalars<float, _Size>
 	{
 	public:
 		/**

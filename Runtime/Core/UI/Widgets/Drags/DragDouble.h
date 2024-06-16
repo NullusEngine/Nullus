@@ -7,7 +7,7 @@ namespace NLS::UI::Widgets::Drags
 	/**
 	* Drag widget of type double
 	*/
-	class DragDouble : public DragSingleScalar<double>
+	class NLS_CORE_API DragDouble : public DragSingleScalar<double>
 	{
 	public:
 		/**

@@ -11,7 +11,7 @@ namespace NLS::UI::Widgets::Layout
 	/**
 	* Widget that can contains other widgets and is collapsable
 	*/
-	class GroupCollapsable : public Group
+	class NLS_CORE_API GroupCollapsable : public Group
 	{
 	public:
 		/**

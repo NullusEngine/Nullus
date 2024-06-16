@@ -12,7 +12,7 @@ namespace NLS::UI::Widgets::InputFields
 	* Input widget of multiple generic type
 	*/
 	template <typename T, size_t _Size>
-	class InputMultipleScalars : public DataWidget<std::array<T, _Size>>
+	class NLS_CORE_API InputMultipleScalars : public DataWidget<std::array<T, _Size>>
 	{
 		static_assert(_Size > 1, "Invalid InputMultipleScalars _Size (2 or more requiered)");
 		static_assert(std::is_scalar<T>::value, "Invalid InputMultipleScalars T (Scalar expected)");

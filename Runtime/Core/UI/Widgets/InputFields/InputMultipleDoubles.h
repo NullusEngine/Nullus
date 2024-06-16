@@ -8,7 +8,7 @@ namespace NLS::UI::Widgets::InputFields
 	* Input widget of multiple type double
 	*/
 	template <size_t _Size>
-	class InputMultipleDoubles : public InputMultipleScalars<double, _Size>
+	class NLS_CORE_API InputMultipleDoubles : public InputMultipleScalars<double, _Size>
 	{
 	public:
 		/**

@@ -4,7 +4,7 @@
 
 namespace NLS
 {
-UI::Widgets::Texts::TextColored::TextColored(const std::string& p_content, const Types::Color& p_color)
+UI::Widgets::Texts::TextColored::TextColored(const std::string& p_content, const Maths::Color& p_color)
     : Text(p_content), color(p_color)
 {
 }

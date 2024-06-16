@@ -6,7 +6,7 @@
 #include "UI/Plugins/Pluginable.h"
 #include "UI/Plugins/DataDispatcher.h"
 #include "ImGui/imgui.h"
-
+#include "Core/CoreDef.h"
 namespace  NLS::UI::Internal { class WidgetContainer; }
 
 namespace NLS::UI::Widgets
@@ -16,7 +16,7 @@ namespace NLS::UI::Widgets
 	* It is basically a visual element that can be placed into a panel.
 	* It is drawable and can receive plugins
 	*/
-	class AWidget : public API::IDrawable, public Plugins::Pluginable
+	class NLS_CORE_API AWidget : public API::IDrawable, public Plugins::Pluginable
 	{
 	public:
 		/**

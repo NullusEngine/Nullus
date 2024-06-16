@@ -1,7 +1,7 @@
 #pragma once
 
 #include "UI/Widgets/Texts/Text.h"
-#include "UI/Types/Color.h"
+#include "Color.h"
 
 namespace NLS::UI::Widgets::Texts
 {
@@ -16,10 +16,10 @@ namespace NLS::UI::Widgets::Texts
 		* @param p_content
 		* @param p_color
 		*/
-		TextColored(const std::string& p_content = "", const Types::Color& p_color = Types::Color(1.0f, 1.0f, 1.0f, 1.0f));
+		TextColored(const std::string& p_content = "", const Maths::Color& p_color = Maths::Color(1.0f, 1.0f, 1.0f, 1.0f));
 
 	public:
-		Types::Color color;
+		Maths::Color color;
 
 	protected:
 		virtual void _Draw_Impl() override;

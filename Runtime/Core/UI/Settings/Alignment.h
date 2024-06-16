@@ -5,7 +5,7 @@ namespace NLS::UI::Settings
 	/**
 	* Defines horizontal alignments
 	*/
-	enum class EHorizontalAlignment
+	enum class NLS_CORE_API EHorizontalAlignment
 	{
 		LEFT,
 		CENTER,
@@ -15,7 +15,7 @@ namespace NLS::UI::Settings
 	/**
 	* Defines vertical alignments
 	*/
-	enum class EVerticalAlignment
+	enum class NLS_CORE_API EVerticalAlignment
 	{
 		TOP,
 		MIDDLE,

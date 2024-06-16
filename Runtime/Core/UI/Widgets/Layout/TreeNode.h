@@ -12,7 +12,7 @@ namespace NLS::UI::Widgets::Layout
 	/**
 	* Widget that allow columnification
 	*/
-	class TreeNode : public DataWidget<std::string>, public Internal::WidgetContainer 
+	class NLS_CORE_API TreeNode : public DataWidget<std::string>, public Internal::WidgetContainer
 	{
 	public:
 		/**

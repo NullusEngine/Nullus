@@ -6,7 +6,7 @@ namespace NLS::UI::Settings
 	/**
 	* Data structure to send to the panel window constructor to define its settings
 	*/
-	struct PanelWindowSettings
+	struct NLS_CORE_API PanelWindowSettings
 	{
 		bool closable					= false;
 		bool resizable					= true;

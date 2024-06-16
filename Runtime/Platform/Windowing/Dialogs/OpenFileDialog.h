@@ -7,7 +7,7 @@ namespace NLS::Dialogs
 	/**
 	* Dialog window that asks the user to select a file from the disk
 	*/
-	class OpenFileDialog : public FileDialog
+	class NLS_PLATFORM_API OpenFileDialog : public FileDialog
 	{
 	public:
 		/**

@@ -8,11 +8,10 @@ namespace NLS
 	Editor::Core::Context::Context(const std::string& p_projectPath, const std::string& p_projectName) :
 		projectPath(p_projectPath),
 		projectName(p_projectName),
-		projectFilePath(p_projectPath + p_projectName + ".nls"),
-		//engineAssetsPath(std::filesystem::canonical("Data\\Engine").string() + "\\"),
-		projectAssetsPath(p_projectPath + "Assets\\"),
-		projectScriptsPath(p_projectPath + "Scripts\\"),
-		editorAssetsPath("Data\\Editor\\")
+		projectFilePath(p_projectPath + p_projectName + ".nullus"),
+		engineAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets")).string()),
+		projectAssetsPath(p_projectPath + "Assets"),
+		projectScriptsPath(p_projectPath + "Scripts")
 	{
 
 		/* Settings */

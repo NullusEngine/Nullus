@@ -7,7 +7,7 @@ namespace NLS::UI::Widgets::Drags
 	/**
 	* Drag widget of type int
 	*/
-	class DragInt : public DragSingleScalar<int>
+	class NLS_CORE_API DragInt : public DragSingleScalar<int>
 	{
 	public:
 		/**

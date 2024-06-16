@@ -7,7 +7,7 @@ namespace NLS::UI::Widgets::Drags
 	/**
 	* Drag widget of type float
 	*/
-	class DragFloat : public DragSingleScalar<float>
+	class NLS_CORE_API DragFloat : public DragSingleScalar<float>
 	{
 	public:
 		/**

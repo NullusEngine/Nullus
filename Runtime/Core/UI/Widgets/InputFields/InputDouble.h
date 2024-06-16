@@ -7,7 +7,7 @@ namespace NLS::UI::Widgets::InputFields
 	/**
 	* Input widget of type double
 	*/
-	class InputDouble : public InputSingleScalar<double>
+	class NLS_CORE_API InputDouble : public InputSingleScalar<double>
 	{
 	public:
 		/**

@@ -1,20 +1,14 @@
-/**
-* @project: Overload
-* @author: Overload Tech.
-* @licence: MIT
-*/
-
 #pragma once
 
 #include <Vector3.h>
 #include <Vector4.h>
-
-namespace NLS::UI::Types
+#include "MathDef.h"
+namespace NLS::Maths
 {
 	/**
 	* Data structur that contains color information in a 0.f to 1.f float format
 	*/
-	struct Color
+	struct NLS_MATH_API Color
 	{
 		Color(float p_r = 1.0f, float p_g = 1.0f, float p_b = 1.0f, float p_a = 1.0f);
 		Color(Maths::Vector3 p_vector);

@@ -1,5 +1,5 @@
 #pragma once
-
+#include "Core/CoreDef.h"
 
 namespace NLS::UI::Plugins
 {
@@ -7,7 +7,7 @@ namespace NLS::UI::Plugins
 	* Interface to any plugin of UI.
 	* A plugin is basically a behaviour that you can plug to a widget
 	*/
-	class IPlugin
+	class NLS_CORE_API IPlugin
 	{
 	public:
 		/**

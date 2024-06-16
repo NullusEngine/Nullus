@@ -5,13 +5,13 @@
 
 #include "UI/Modules/Canvas.h"
 #include "UI/Styling/EStyle.h"
-
+#include "Core/CoreDef.h"
 namespace NLS::UI
 {
 	/**
 	* Handle the creation and drawing of the UI
 	*/
-	class UIManager
+	class NLS_CORE_API UIManager
 	{
 	public:
 		/**

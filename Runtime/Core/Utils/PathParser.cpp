@@ -1,6 +1,6 @@
 #include <algorithm>
 #include "Utils/PathParser.h"
-
+#include <filesystem>
 std::string NLS::Utils::PathParser::MakeWindowsStyle(const std::string & p_path)
 {
 	std::string result;
@@ -25,41 +25,12 @@ std::string NLS::Utils::PathParser::MakeNonWindowsStyle(const std::string & p_pa
 
 std::string NLS::Utils::PathParser::GetContainingFolder(const std::string & p_path)
 {
-	std::string result;
-
-	bool extraction = false;
-
-	for (auto it = p_path.rbegin(); it != p_path.rend(); ++it)
-	{
-		if (extraction)
-			result += *it;
-
-		if (!extraction && it != p_path.rbegin() && (*it == '\\' || *it == '/'))
-			extraction = true;
-	}
-
-	std::reverse(result.begin(), result.end());
-
-	if (!result.empty() && result.back() != '\\')
-		result += '\\';
-
-	return result;
+	return std::filesystem::path(p_path).parent_path().string();
 }
 
 std::string NLS::Utils::PathParser::GetElementName(const std::string & p_path)
 {
-	std::string result;
-
-	std::string path = p_path;
-	if (!path.empty() && path.back() == '\\')
-		path.pop_back();
-
-	for (auto it = path.rbegin(); it != path.rend() && *it != '\\' && *it != '/'; ++it)
-		result += *it;
-
-	std::reverse(result.begin(), result.end());
-
-	return result;
+	return std::filesystem::path(p_path).filename().string();
 }
 
 std::string NLS::Utils::PathParser::GetExtension(const std::string & p_path)

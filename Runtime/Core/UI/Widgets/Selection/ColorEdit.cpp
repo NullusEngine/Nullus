@@ -3,8 +3,8 @@
 
 namespace NLS
 {
-UI::Widgets::Selection::ColorEdit::ColorEdit(bool p_enableAlpha, const Types::Color& p_defaultColor)
-    : DataWidget<Types::Color>(color), enableAlpha(p_enableAlpha), color(p_defaultColor)
+UI::Widgets::Selection::ColorEdit::ColorEdit(bool p_enableAlpha, const Maths::Color& p_defaultColor)
+    : DataWidget<Maths::Color>(color), enableAlpha(p_enableAlpha), color(p_defaultColor)
 {
 }
 

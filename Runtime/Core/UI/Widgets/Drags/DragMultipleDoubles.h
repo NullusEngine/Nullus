@@ -8,7 +8,7 @@ namespace NLS::UI::Widgets::Drags
 	* Drag widget of multiple type double
 	*/
 	template <size_t _Size>
-	class DragMultipleDoubles : public DragMultipleScalars<double, _Size>
+	class NLS_CORE_API DragMultipleDoubles : public DragMultipleScalars<double, _Size>
 	{
 	public:
 		/**

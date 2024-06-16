@@ -11,7 +11,7 @@ namespace NLS::UI::Plugins
 	* A simple plugin that will show a contextual menu on right click
 	* You can add widgets to a contextual menu
 	*/
-	class ContextualMenu : public IPlugin, public Internal::WidgetContainer
+	class NLS_CORE_API ContextualMenu : public IPlugin, public Internal::WidgetContainer
 	{
 	public:
 		/**

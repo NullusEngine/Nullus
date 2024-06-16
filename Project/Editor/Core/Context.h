@@ -49,7 +49,6 @@ namespace NLS
 			const std::string engineAssetsPath;
 			const std::string projectAssetsPath;
 			const std::string projectScriptsPath;
-			const std::string editorAssetsPath;
 
 			std::unique_ptr<NLS::Context::Device> device;
 			std::unique_ptr<NLS::Windowing::Window> window;

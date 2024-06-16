@@ -9,7 +9,7 @@ namespace NLS::UI::Widgets::InputFields
 	/**
 	* Input widget of type string
 	*/
-	class InputText : public DataWidget<std::string>
+	class NLS_CORE_API InputText : public DataWidget<std::string>
 	{
 	public:
 		/**

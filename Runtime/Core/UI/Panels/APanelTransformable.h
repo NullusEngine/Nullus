@@ -8,13 +8,13 @@
 
 #include "UI/Panels/APanel.h"
 #include "UI/Settings/Alignment.h"
-
+#include "Core/CoreDef.h"
 namespace NLS::UI::Panels
 {
 	/**
 	* APanelTransformable is a panel that is localized in the canvas
 	*/
-	class APanelTransformable : public APanel
+	class NLS_CORE_API APanelTransformable : public APanel
 	{
 	public:
 		/**

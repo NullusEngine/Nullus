@@ -7,7 +7,7 @@ namespace NLS::UI::Widgets::InputFields
 	/**
 	* Input widget of type float
 	*/
-	class InputFloat : public InputSingleScalar<float>
+	class NLS_CORE_API InputFloat : public InputSingleScalar<float>
 	{
 	public:
 		/**

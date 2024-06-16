@@ -5,14 +5,14 @@
 #include <Vector2.h>
 
 #include "UI/Widgets/Buttons/AButton.h"
-#include "UI/Types/Color.h"
+#include "Color.h"
 
 namespace NLS::UI::Widgets::Buttons
 {
 	/**
 	* Simple button widget
 	*/
-	class Button : public AButton
+	class NLS_CORE_API Button : public AButton
 	{
 	public:
 		/**
@@ -31,10 +31,10 @@ namespace NLS::UI::Widgets::Buttons
 		Maths::Vector2 size;
 		bool disabled = false;
 
-		Types::Color idleBackgroundColor;
-		Types::Color hoveredBackgroundColor;
-		Types::Color clickedBackgroundColor;
+		Maths::Color idleBackgroundColor;
+		Maths::Color hoveredBackgroundColor;
+		Maths::Color clickedBackgroundColor;
 
-		Types::Color textColor;
+		Maths::Color textColor;
 	};
 }

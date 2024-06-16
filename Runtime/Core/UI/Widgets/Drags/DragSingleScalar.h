@@ -10,7 +10,7 @@ namespace NLS::UI::Widgets::Drags
 	* Drag widget of generic type
 	*/
 	template <typename T>
-	class DragSingleScalar : public DataWidget<T>
+	class NLS_CORE_API DragSingleScalar : public DataWidget<T>
 	{
 		static_assert(std::is_scalar<T>::value, "Invalid DragSingleScalar T (Scalar expected)");
 

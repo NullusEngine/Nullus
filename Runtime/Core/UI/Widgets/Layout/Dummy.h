@@ -9,7 +9,7 @@ namespace NLS::UI::Widgets::Layout
 	/**
 	* Dummy widget that takes the given size as space in the panel
 	*/
-	class Dummy : public AWidget
+	class NLS_CORE_API Dummy : public AWidget
 	{
 	public:
 		/**

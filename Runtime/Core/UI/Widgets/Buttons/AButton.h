@@ -11,7 +11,7 @@ namespace NLS::UI::Widgets::Buttons
 /**
  * Base class for any button widget
  */
-class AButton : public AWidget
+class NLS_CORE_API AButton : public AWidget
 {
 protected:
     void _Draw_Impl() override = 0;

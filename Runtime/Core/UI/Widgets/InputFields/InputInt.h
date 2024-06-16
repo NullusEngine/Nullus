@@ -7,7 +7,7 @@ namespace NLS::UI::Widgets::InputFields
 	/**
 	* Input widget of type int
 	*/
-	class InputInt : public InputSingleScalar<int>
+	class NLS_CORE_API InputInt : public InputSingleScalar<int>
 	{
 	public:
 		/**

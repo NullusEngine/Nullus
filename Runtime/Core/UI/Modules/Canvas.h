@@ -15,7 +15,7 @@ namespace NLS::UI::Modules
 	/**
 	* A Canvas represents the whole frame available for UI drawing
 	*/
-	class Canvas : public API::IDrawable
+	class NLS_CORE_API Canvas : public API::IDrawable
 	{
 	public:
 		/**

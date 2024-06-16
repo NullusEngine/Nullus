@@ -3,7 +3,7 @@
 
 namespace NLS
 {
-	UI::Widgets::Buttons::ButtonColored::ButtonColored(const std::string& p_label, const Types::Color& p_color, const Maths::Vector2& p_size, bool p_enableAlpha) :
+	UI::Widgets::Buttons::ButtonColored::ButtonColored(const std::string& p_label, const Maths::Color& p_color, const Maths::Vector2& p_size, bool p_enableAlpha) :
 		label(p_label), color(p_color), size(p_size), enableAlpha(p_enableAlpha)
 	{
 	}

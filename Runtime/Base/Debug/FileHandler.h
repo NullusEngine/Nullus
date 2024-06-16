@@ -4,13 +4,13 @@
 #include <queue>
 
 #include "Debug/ILogHandler.h"
-
+#include "UDRefl/config.hpp"
 namespace NLS::Debug
 {
 	/*
 	* 处理文件中的日志
 	*/
-	class FileHandler : public ILogHandler
+	class NLS_BASE_API FileHandler : public ILogHandler
 	{
 	public:
 

@@ -3,6 +3,7 @@
 #include <Core/ServiceLocator.h>
 #include "Windowing/Settings/DeviceSettings.h"
 #include "Core/Context.h"
+#include "Debug/FileHandler.h"
 namespace NLS
 {
 	Editor::Core::Context::Context(const std::string& p_projectPath, const std::string& p_projectName) :
@@ -10,10 +11,10 @@ namespace NLS
 		projectName(p_projectName),
 		projectFilePath(p_projectPath + p_projectName + ".nullus"),
 		engineAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets")).string()),
-		projectAssetsPath(p_projectPath + "Assets"),
-		projectScriptsPath(p_projectPath + "Scripts")
+		projectAssetsPath(p_projectPath + "/Assets"),
+		projectScriptsPath(p_projectPath + "/Scripts")
 	{
-
+		NLS::Debug::FileHandler::SetLogFilePath(p_projectPath + "/Log");
 		/* Settings */
 		NLS::Windowing::Settings::DeviceSettings deviceSettings;
 		deviceSettings.contextMajorVersion = 4;

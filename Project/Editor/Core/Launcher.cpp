@@ -35,9 +35,13 @@ public:
 
         SetSize({1000, 580});
         SetPosition({0.f, 0.f});
+        auto& topColumns = CreateWidget<UI::Widgets::Layout::Columns>(2);
+        topColumns.widths = {750, 500};
+        auto& text = topColumns.CreateWidget<UI::Widgets::Texts::Text>("Project", 2);
+        auto& actions = topColumns.CreateWidget<UI::Widgets::Layout::Group>();
+        auto& openProjectButton = actions.CreateWidget<UI::Widgets::Buttons::Button>("Open Project");
+        auto& newProjectButton = actions.CreateWidget<UI::Widgets::Buttons::Button>("New Project");
 
-        auto& openProjectButton = CreateWidget<UI::Widgets::Buttons::Button>("Open Project");
-        auto& newProjectButton = CreateWidget<UI::Widgets::Buttons::Button>("New Project");
 
         openProjectButton.idleBackgroundColor = {0.7f, 0.5f, 0.f};
         newProjectButton.idleBackgroundColor = {0.f, 0.5f, 0.0f};
@@ -77,9 +81,9 @@ public:
         for (uint8_t i = 0; i < 4; ++i)
             CreateWidget<UI::Widgets::Layout::Spacing>();
 
-        columns = &CreateWidget<UI::Widgets::Layout::Columns>(2);
+        m_columns = &CreateWidget<UI::Widgets::Layout::Columns>(2);
 
-        columns->widths = {750, 500};
+        m_columns->widths = {750, 500};
 
         std::string line;
         std::ifstream myfile(PROJECTS_FILE);
@@ -89,48 +93,51 @@ public:
             {
                 if (std::filesystem::exists(line)) // TODO: Delete line from the file
                 {
-                    auto& text = columns->CreateWidget<UI::Widgets::Texts::Text>(line);
-                    auto& actions = columns->CreateWidget<UI::Widgets::Layout::Group>();
-                    auto& openButton = actions.CreateWidget<UI::Widgets::Buttons::Button>("Open");
-                    auto& deleteButton = actions.CreateWidget<UI::Widgets::Buttons::Button>("Delete");
-
-                    openButton.idleBackgroundColor = {0.7f, 0.5f, 0.f};
-                    deleteButton.idleBackgroundColor = {0.5f, 0.f, 0.f};
-
-                    openButton.ClickedEvent += [this, line]
-                    {
-                        OpenProject(line);
-                    };
-
-                    std::string toErase = line;
-                    deleteButton.ClickedEvent += [this, &text, &actions, toErase]
-                    {
-                        text.Destroy();
-                        actions.Destroy();
-
-                        std::string line;
-                        std::ifstream fin(PROJECTS_FILE);
-                        std::ofstream temp("temp");
-
-                        while (getline(fin, line))
-                            if (line != toErase)
-                                temp << line << std::endl;
-
-                        temp.close();
-                        fin.close();
-
-                        std::filesystem::remove(PROJECTS_FILE);
-                        std::filesystem::rename("temp", PROJECTS_FILE);
-                    };
-
-                    openButton.lineBreak = false;
-                    deleteButton.lineBreak;
+                    CreateRegisteredItem(line);
                 }
             }
             myfile.close();
         }
     }
+    void CreateRegisteredItem(const std::string& p_path)
+    {
+        auto& text = m_columns->CreateWidget<UI::Widgets::Texts::Text>(p_path);
+        auto& actions = m_columns->CreateWidget<UI::Widgets::Layout::Group>();
+        auto& openButton = actions.CreateWidget<UI::Widgets::Buttons::Button>("Open");
+        auto& deleteButton = actions.CreateWidget<UI::Widgets::Buttons::Button>("Delete");
 
+        openButton.idleBackgroundColor = {0.7f, 0.5f, 0.f};
+        deleteButton.idleBackgroundColor = {0.5f, 0.f, 0.f};
+
+        openButton.ClickedEvent += [this, p_path]
+        {
+            OpenProject(p_path);
+        };
+
+        std::string toErase = p_path;
+        deleteButton.ClickedEvent += [this, &text, &actions, toErase]
+        {
+            text.Destroy();
+            actions.Destroy();
+
+            std::string line;
+            std::ifstream fin(PROJECTS_FILE);
+            std::ofstream temp("temp");
+
+            while (getline(fin, line))
+                if (line != toErase)
+                    temp << line << std::endl;
+
+            temp.close();
+            fin.close();
+
+            std::filesystem::remove(PROJECTS_FILE);
+            std::filesystem::rename("temp", PROJECTS_FILE);
+        };
+
+        openButton.lineBreak = false;
+        deleteButton.lineBreak;
+    }
     void CreateProject(const std::string& p_path)
     {
         if (!std::filesystem::exists(p_path))
@@ -175,42 +182,7 @@ public:
             projectsFile << p_path << std::endl;
             if (std::filesystem::exists(p_path)) // TODO: Delete line from the file
             {
-                auto& text = columns->CreateWidget<UI::Widgets::Texts::Text>(p_path);
-                auto& actions = columns->CreateWidget<UI::Widgets::Layout::Group>();
-                auto& openButton = actions.CreateWidget<UI::Widgets::Buttons::Button>("Open");
-                auto& deleteButton = actions.CreateWidget<UI::Widgets::Buttons::Button>("Delete");
-
-                openButton.idleBackgroundColor = {0.7f, 0.5f, 0.f};
-                deleteButton.idleBackgroundColor = {0.5f, 0.f, 0.f};
-
-                openButton.ClickedEvent += [this, p_path]
-                {
-                    OpenProject(p_path);
-                };
-
-                std::string toErase = p_path;
-                deleteButton.ClickedEvent += [this, &text, &actions, toErase]
-                {
-                    text.Destroy();
-                    actions.Destroy();
-
-                    std::string line;
-                    std::ifstream fin(PROJECTS_FILE);
-                    std::ofstream temp("temp");
-
-                    while (getline(fin, line))
-                        if (line != toErase)
-                            temp << line << std::endl;
-
-                    temp.close();
-                    fin.close();
-
-                    std::filesystem::remove(PROJECTS_FILE);
-                    std::filesystem::rename("temp", PROJECTS_FILE);
-                };
-
-                openButton.lineBreak = false;
-                deleteButton.lineBreak;
+                CreateRegisteredItem(p_path);
             }
         }
     }
@@ -240,7 +212,7 @@ private:
     bool& m_readyToGo;
     std::string& m_path;
     std::string& m_projectName;
-    UI::Widgets::Layout::Columns* columns = nullptr;
+    UI::Widgets::Layout::Columns* m_columns = nullptr;
 };
 
 

@@ -29,6 +29,13 @@ namespace Rendering
 {
 class ShaderBase;
 
+class IRenderResource
+{
+public:
+    virtual void CreateResource() = 0;
+    virtual void ReleaseResource() = 0;
+};
+
 enum class NLS_RENDER_API VerticalSyncState
 {
     VSync_ON,

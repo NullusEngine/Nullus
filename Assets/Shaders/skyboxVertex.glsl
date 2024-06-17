@@ -1,4 +1,5 @@
 #version 450 core
+
 #ifdef VULKAN
 layout(binding = 0) uniform UniformBufferObject {
 	mat4 modelMatrix;

@@ -39,6 +39,7 @@ VulkanRenderer::VulkanRenderer(Window& window)
     MeshLoader::RegisterAPILoadFunction([](const std::string& filename)
                                         { return new VulkanMesh(filename); });
 
+    currentSwap = 0;
     OnWindowResize((int)hostWindow.GetScreenSize().x, (int)hostWindow.GetScreenSize().y);
 
     window.SetRenderer(this);

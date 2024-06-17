@@ -1,12 +1,12 @@
-#version 330 core
+#version 450 core
 
-uniform samplerCube cubeTex;
+layout(binding = 1) uniform samplerCube cubeTex;
 
-in Vertex {
+layout(location = 0) in Vertex {
 	vec3 viewDir;
 } IN;
 
-out vec4 fragColour;
+layout(location = 0) out vec4 fragColour;
 
 void main(void)	{
 	vec4 samp = texture(cubeTex,normalize(IN.viewDir));

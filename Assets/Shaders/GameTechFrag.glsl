@@ -1,6 +1,24 @@
 #version 400 core
 
-uniform vec4 		objectColour;
+#ifdef VULKAN
+layout(binding = 0) uniform UniformBufferObject
+{
+	vec4 		objectColour;
+	sampler2D 	mainTex;
+	sampler2DShadow shadowTex;
+
+	vec3	lightPos;
+	float	lightRadius;
+	vec4	lightColour;
+
+	vec3	cameraPos;
+
+	bool hasTexture;
+}
+
+#else
+
+vec4 		objectColour;
 uniform sampler2D 	mainTex;
 uniform sampler2DShadow shadowTex;
 
@@ -11,6 +29,8 @@ uniform vec4	lightColour;
 uniform vec3	cameraPos;
 
 uniform bool hasTexture;
+
+#endif
 
 in Vertex
 {

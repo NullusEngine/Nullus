@@ -6,6 +6,7 @@
 #include <iostream>
 #include <string>
 #include <iosfwd>
+#include <filesystem>
 
 using std::ifstream;
 
@@ -44,12 +45,12 @@ void VulkanShader::SetSourceDevice(vk::Device d)
     sourceDevice = d;
 }
 
-const char* ComplerCommand = "glslc.exe -fshader-stage=%s %s -o %s ";
+const char* ComplerCommand = "glslc.exe -fshader-stage=%s \"%s\" -o \"%s\" ";
 
 void CompileShader(const std::string& fileName, ShaderStages stage)
 {
-    auto absPath = Assets::SHADERDIR + fileName;
-    auto targetSpvPath = Assets::SHADERDIR + "VK/" + fileName;
+    auto srcPath = std::filesystem::absolute(Assets::SHADERDIR + fileName);
+    auto targetSpvPath = std::filesystem::absolute(Assets::SHADERDIR + "VK/" + fileName);
 
     auto command = std::string(ComplerCommand);
 
@@ -69,8 +70,13 @@ void CompileShader(const std::string& fileName, ShaderStages stage)
             break;
     }
 
-    std::vector<char> buf(1 + std::snprintf(nullptr, 0, ComplerCommand, shaderstage, absPath.c_str(), targetSpvPath.c_str()));
-    std::snprintf(buf.data(), buf.size(), ComplerCommand, shaderstage, absPath.c_str(), targetSpvPath.c_str());
+    if (!std::filesystem::exists(Assets::SHADERDIR + "VK/"))
+    {
+        std::filesystem::create_directory(Assets::SHADERDIR + "VK/");
+    }
+
+    std::vector<char> buf(1 + std::snprintf(nullptr, 0, ComplerCommand, shaderstage, srcPath.string().c_str(), targetSpvPath.string().c_str()));
+    std::snprintf(buf.data(), buf.size(), ComplerCommand, shaderstage, srcPath.string().c_str(), targetSpvPath.string().c_str());
 
     std::system(buf.data());
 }

@@ -20,7 +20,7 @@ OGLMesh::OGLMesh()
     vao = 0;
     subCount = 1;
 
-    for (int i = 0; i < ToUType(VertexAttribute::MAX_ATTRIBUTES); ++i)
+    for (int i = 0; i < UnderlyingValue(VertexAttribute::MAX_ATTRIBUTES); ++i)
     {
         attributeBuffers[i] = 0;
     }
@@ -33,7 +33,7 @@ OGLMesh::OGLMesh(const std::string& filename)
     vao = 0;
     subCount = 1;
 
-    for (int i = 0; i < ToUType(VertexAttribute::MAX_ATTRIBUTES); ++i)
+    for (int i = 0; i < UnderlyingValue(VertexAttribute::MAX_ATTRIBUTES); ++i)
     {
         attributeBuffers[i] = 0;
     }
@@ -43,7 +43,7 @@ OGLMesh::OGLMesh(const std::string& filename)
 OGLMesh::~OGLMesh()
 {
     glDeleteVertexArrays(1, &vao);                                      // Delete our VAO
-    glDeleteBuffers(ToUType(VertexAttribute::MAX_ATTRIBUTES), attributeBuffers); // Delete our VBOs
+    glDeleteBuffers(UnderlyingValue(VertexAttribute::MAX_ATTRIBUTES), attributeBuffers); // Delete our VBOs
     glDeleteBuffers(1, &indexBuffer);                                   // Delete our indices
 }
 
@@ -56,7 +56,7 @@ void CreateVertexBuffer(GLuint& buffer, int byteCount, char* data)
 
 void OGLMesh::BindVertexAttribute(VertexAttribute attribSlot, int buffer, int bindingID, int elementCount, int elementSize, int elementOffset)
 {
-    auto uintAttribSlot = ToUType(attribSlot);
+    auto uintAttribSlot = UnderlyingValue(attribSlot);
     glEnableVertexAttribArray(uintAttribSlot);
     glVertexAttribFormat(uintAttribSlot, elementCount, GL_FLOAT, false, 0);
     glVertexAttribBinding(uintAttribSlot, bindingID);
@@ -99,8 +99,8 @@ void OGLMesh::UploadToGPU(Rendering::RendererBase* renderer)
     {
         if (!data.empty())
         {
-            CreateVertexBuffer(attributeBuffers[ToUType(attrib)], numVertices * sizeof(T), (char*)data.data());
-            BindVertexAttribute(attrib, attributeBuffers[ToUType(attrib)], ToUType(attrib), GetElementCount<T>(), sizeof(T), 0);
+            CreateVertexBuffer(attributeBuffers[UnderlyingValue(attrib)], numVertices * sizeof(T), (char*)data.data());
+            BindVertexAttribute(attrib, attributeBuffers[UnderlyingValue(attrib)], UnderlyingValue(attrib), GetElementCount<T>(), sizeof(T), 0);
         }
     };
 
@@ -114,8 +114,8 @@ void OGLMesh::UploadToGPU(Rendering::RendererBase* renderer)
 
     if (!GetIndexData().empty())
     { // buffer index data
-        glGenBuffers(1, &attributeBuffers[ToUType(VertexAttribute::MAX_ATTRIBUTES)]);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, attributeBuffers[ToUType(VertexAttribute::MAX_ATTRIBUTES)]);
+        glGenBuffers(1, &attributeBuffers[UnderlyingValue(VertexAttribute::MAX_ATTRIBUTES)]);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, attributeBuffers[UnderlyingValue(VertexAttribute::MAX_ATTRIBUTES)]);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, numIndices * sizeof(GLuint), (int*)GetIndexData().data(), GL_STATIC_DRAW);
     }
 
@@ -128,7 +128,7 @@ void OGLMesh::UpdateGPUBuffers(unsigned int startVertex, unsigned int vertexCoun
     {
         if (!data.empty())
         {
-            glBindBuffer(GL_ARRAY_BUFFER, attributeBuffers[ToUType(attrib)]);
+            glBindBuffer(GL_ARRAY_BUFFER, attributeBuffers[UnderlyingValue(attrib)]);
             glBufferSubData(GL_ARRAY_BUFFER, startVertex * sizeof(T), vertexCount * sizeof(T), (char*)&data[startVertex]);
         }
     };

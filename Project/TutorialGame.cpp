@@ -301,6 +301,9 @@ void TutorialGame::InitWorld()
 
 void TutorialGame::BridgeConstraintTest()
 {
+    std::tuple<int, int> x{};
+    NLS::get<KeyboardKeys::LBUTTON>(x);
+
     Vector3 cubeSize = Vector3(8, 8, 8);
 
     float invCubeMass = 5; // how heavy the middle pieces are

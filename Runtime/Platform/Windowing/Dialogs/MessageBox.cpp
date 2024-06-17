@@ -1,37 +1,21 @@
-
-#if defined(_WIN32)
-#include <windows.h>
-#endif
 #include "Windowing/Dialogs/MessageBox.h"
 
-#undef MessageBox
-
-NLS::Dialogs::MessageBox::MessageBox(std::string p_title, std::string p_message, EMessageType p_messageType, EButtonLayout p_buttonLayout, bool p_autoSpawn) :
-	m_title(p_title),
-	m_message(p_message),
-	m_buttonLayout(p_buttonLayout),
-	m_messageType(p_messageType)
+NLS::Dialogs::MessageBox::MessageBox(std::string p_title, std::string p_message, EMessageType p_messageType, EButtonLayout p_buttonLayout)
+    :msg(p_title, p_message, static_cast<pfd::choice>(p_buttonLayout), static_cast<pfd::icon>(p_messageType))
 {
-	if (p_autoSpawn)
-		Spawn();
 }
 
-const NLS::Dialogs::MessageBox::EUserAction& NLS::Dialogs::MessageBox::GetUserAction() const
+const NLS::Dialogs::MessageBox::EUserAction NLS::Dialogs::MessageBox::GetUserAction()
 {
-	return m_userResult;
+    return static_cast<NLS::Dialogs::MessageBox::EUserAction>(msg.result());
 }
 
-void NLS::Dialogs::MessageBox::Spawn()
+bool NLS::Dialogs::MessageBox::Kill() const
 {
-	#if defined(_WIN32)
-	int msgboxID = MessageBoxA
-	(
-		nullptr,
-		static_cast<LPCSTR>(m_message.c_str()),
-		static_cast<LPCSTR>(m_title.c_str()),
-		static_cast<UINT>(m_messageType) | static_cast<UINT>(m_buttonLayout) | MB_DEFBUTTON2
-	);
+    return msg.kill();
+}
 
-	m_userResult = static_cast<EUserAction>(msgboxID);
-	#endif
+bool NLS::Dialogs::MessageBox::Ready(int timeout /*= 20*/) const
+{
+    return msg.ready(timeout);
 }

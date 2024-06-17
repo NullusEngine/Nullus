@@ -28,6 +28,8 @@ namespace NLS::Utils
 		*/
 		PathParser() = delete;
 
+
+		static std::string Separator();
 		/**
 		* Returns the windows style version of the given path ('/' replaced by '\')
 		* @param p_path

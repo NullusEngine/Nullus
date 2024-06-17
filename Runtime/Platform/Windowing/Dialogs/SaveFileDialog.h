@@ -1,38 +1,25 @@
 #pragma once
 
-#include "Windowing/Dialogs/FileDialog.h"
+#include "PlatformDef.h"
+#include "portable-file-dialogs.h"
 
 namespace NLS::Dialogs
 {
 	/**
 	* Dialog window that asks the user to save a file to the disk
 	*/
-	class NLS_PLATFORM_API SaveFileDialog : public FileDialog
+	class NLS_PLATFORM_API SaveFileDialog
 	{
-	public:
-		/**
-		* Constructor
-		* @param p_dialogTitle
-		*/
-		SaveFileDialog(const std::string& p_dialogTitle);
+    public:
+        SaveFileDialog(std::string const& title,
+                       std::string const& initial_path = "",
+                       std::vector<std::string> filters = {"All Files", "*"},
+                       bool confirm_overwrite = false);
+        std::string Result();
+        bool Ready(int timeout = 20) const;
+        bool Kill() const;
 
-		/**
-		* Show the file dialog
-		* @param p_flags
-		*/
-		virtual void Show(EExplorerFlags p_flags = EExplorerFlags::DONTADDTORECENT | EExplorerFlags::FILEMUSTEXIST | EExplorerFlags::HIDEREADONLY | EExplorerFlags::NOCHANGEDIR) override;
-
-		/**
-		* Define the extension of the saved file
-		* @param p_label
-		* @param p_extension
-		*/
-		void DefineExtension(const std::string& p_label, const std::string& p_extension);
-
-	private:
-		void AddExtensionToFilePathAndName();
-
-	private:
-		std::string m_extension;
+    private:
+        pfd::save_file sv;
 	};
 }

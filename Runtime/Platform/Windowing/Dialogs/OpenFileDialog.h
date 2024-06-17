@@ -1,26 +1,23 @@
 #pragma once
-
-#include "Windowing/Dialogs/FileDialog.h"
-
+#include "PlatformDef.h"
+#include "portable-file-dialogs.h"
 namespace NLS::Dialogs
 {
-	/**
-	* Dialog window that asks the user to select a file from the disk
-	*/
-	class NLS_PLATFORM_API OpenFileDialog : public FileDialog
-	{
-	public:
-		/**
-		* Constructor
-		* @param p_dialogTitle
-		*/
-		OpenFileDialog(const std::string& p_dialogTitle);
+/**
+ * Dialog window that asks the user to select a file from the disk
+ */
+class NLS_PLATFORM_API OpenFileDialog
+{
+public:
+    OpenFileDialog(std::string const& title,
+                   std::string const& default_path = "",
+                   std::vector<std::string> const& filters = {"All Files", "*"},
+                   bool allow_multiselecte = false);
+    std::vector<std::string> Result();
+    bool Ready(int timeout = 20) const;
+    bool Kill() const;
 
-		/**
-		* Add a supported file type to the dialog window
-		* @param p_label
-		* @param p_filter
-		*/
-		void AddFileType(const std::string& p_label, const std::string& p_filter);
-	};
-}
+private:
+    pfd::open_file op;
+};
+} // namespace NLS::Dialogs

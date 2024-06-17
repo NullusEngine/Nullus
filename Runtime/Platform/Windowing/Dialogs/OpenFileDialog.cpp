@@ -1,17 +1,24 @@
 #include "Windowing/Dialogs/OpenFileDialog.h"
-#if defined(_WIN32)
-#include <Windows.h>
-#endif
-#if defined(_WIN32)
-NLS::Dialogs::OpenFileDialog::OpenFileDialog(const std::string & p_dialogTitle) : FileDialog(GetOpenFileNameA, p_dialogTitle)
+namespace NLS::Dialogs
+{
+OpenFileDialog::OpenFileDialog(std::string const& title, std::string const& default_path, std::vector<std::string> const& filters, bool allow_multiselecte)
+    : op(title, default_path, filters, allow_multiselecte)
 {
 }
-#else
-NLS::Dialogs::OpenFileDialog::OpenFileDialog(const std::string & p_dialogTitle) : FileDialog(nullptr, p_dialogTitle)
+
+std::vector<std::string> OpenFileDialog::Result()
 {
+    return op.result();
 }
-#endif
-void NLS::Dialogs::OpenFileDialog::AddFileType(const std::string & p_label, const std::string & p_filter)
+
+bool OpenFileDialog::Ready(int timeout /*= 20*/) const
 {
-	m_filter += p_label + '\0' + p_filter + '\0';
+    return op.ready(timeout);
 }
+
+bool OpenFileDialog::Kill() const
+{
+    return op.kill();
+}
+
+} // namespace NLS::Dialogs

@@ -1,45 +1,25 @@
-#include "Windowing/Dialogs/SaveFileDialog.h"
-#if defined(_WIN32)
-#include <Windows.h>
-#endif
-#if defined(_WIN32)
-NLS::Dialogs::SaveFileDialog::SaveFileDialog(const std::string & p_dialogTitle) : FileDialog(GetSaveFileNameA, p_dialogTitle)
-{
-}
-#else
-NLS::Dialogs::SaveFileDialog::SaveFileDialog(const std::string & p_dialogTitle) : FileDialog(nullptr, p_dialogTitle)
-{
-}
-#endif
-void NLS::Dialogs::SaveFileDialog::Show(EExplorerFlags p_flags)
-{
-	FileDialog::Show(p_flags);
+#include "SaveFileDialog.h"
 
-	if (m_succeeded)
-		AddExtensionToFilePathAndName();
+namespace NLS::Dialogs
+{
+SaveFileDialog::SaveFileDialog(std::string const& title, std::string const& initial_path /*= ""*/, std::vector<std::string> filters /*= {"All Files", "*"}*/, bool confirm_overwrite)
+    : sv(title, initial_path, filters, confirm_overwrite)
+{
 }
 
-void NLS::Dialogs::SaveFileDialog::DefineExtension(const std::string & p_label, const std::string & p_extension)
+std::string SaveFileDialog::Result()
 {
-	m_filter = p_label + '\0' + '*' + p_extension + '\0';
-	m_extension = p_extension;
+    return sv.result();
 }
 
-void NLS::Dialogs::SaveFileDialog::AddExtensionToFilePathAndName()
+bool SaveFileDialog::Ready(int timeout /*= 20*/) const
 {
-	if (m_filename.size() >= m_extension.size())
-	{
-		std::string fileEnd(m_filename.data() + m_filename.size() - m_extension.size(), m_filename.data() + m_filename.size());
-
-		if (fileEnd != m_extension)
-		{
-			m_filepath += m_extension;
-			m_filename += m_extension;
-		}
-	}
-	else
-	{
-		m_filepath += m_extension;
-		m_filename += m_extension;
-	}
+    return sv.ready(timeout);
 }
+
+bool SaveFileDialog::Kill() const
+{
+    return sv.kill();
+}
+
+} // namespace NLS::Dialogs

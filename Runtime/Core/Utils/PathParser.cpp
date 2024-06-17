@@ -78,3 +78,12 @@ NLS::Utils::PathParser::EFileType NLS::Utils::PathParser::GetFileType(const std:
 
 	return EFileType::UNKNOWN;
 }
+
+std::string NLS::Utils::PathParser::Separator()
+{
+#if _WIN32
+    return "\\";
+#else
+    return "/";
+#endif
+}

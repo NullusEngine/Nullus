@@ -27,6 +27,11 @@ else()
     set(NLS_PLATFORM_X64 false)
 endif()
 
+# 添加编译选项
+if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    add_compile_options(-Wno-shorten-64-to-32)
+endif()
+
 # Check for other platforms if needed
 if(APPLE)
     set(NLS_PLATFORM_APPLE true)

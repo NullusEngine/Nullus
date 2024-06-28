@@ -12,7 +12,7 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
 # 设置项目名称
 # ##############################################################################
-project(Nullus VERSION 1.0.0 LANGUAGES C CXX OBJC OBJCXX)
+project(Nullus VERSION 1.0.0 LANGUAGES C CXX)
 
 # 设置c++版本要求
 # ##############################################################################

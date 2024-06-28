@@ -26,12 +26,6 @@ else
     exit 1
 fi
 
-# 设置编译选项
-CMAKE_OPTIONS="-Wno-shorten-64-to-32"
-if [ "$CONFIG" = "Release" ]; then
-    CMAKE_OPTIONS="$CMAKE_OPTIONS -Werror"
-fi
-
-cmake -S . -B build -G "Xcode" -DCMAKE_CXX_FLAGS="$CMAKE_OPTIONS"
+cmake -S . -B build -G "Xcode" -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
 #cmake -S . -B build -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++-11
 cmake --build build --config "${CONFIG}"

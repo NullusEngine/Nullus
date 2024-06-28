@@ -13,10 +13,13 @@ jobs:
       matrix:
         configuration: [debug, release]
     steps:
-      - uses: maxim-lobanov/setup-xcode@v1
-      with:
-        xcode-version: latest-stable
-      - uses: actions/checkout@v2
+      - name: Set up Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+          
+      - name: Checkout code
+        uses: actions/checkout@v2
         with:
           submodules: 'true'
 

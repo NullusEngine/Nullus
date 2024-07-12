@@ -5,6 +5,7 @@
 #include "Core/Context.h"
 #include "Debug/FileHandler.h"
 #include "Utils/PathParser.h"
+using namespace  NLS::Core::ResourceManagement;
 namespace NLS
 {
 	Editor::Core::Context::Context(const std::string& p_projectPath, const std::string& p_projectName) :
@@ -13,7 +14,10 @@ namespace NLS
 		projectFilePath(p_projectPath + p_projectName + ".nullus"),
 		engineAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets")).string()),
 		projectAssetsPath(p_projectPath + Utils::PathParser::Separator() + "Assets"),
-		projectScriptsPath(p_projectPath +Utils::PathParser::Separator() + "Scripts")
+		projectScriptsPath(p_projectPath +Utils::PathParser::Separator() + "Scripts"), 
+		editorAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets")).string()),
+		sceneManager(projectAssetsPath), 
+		projectSettings(projectFilePath)
 	{
 		NLS::Debug::FileHandler::SetLogFilePath(p_projectPath + "/Log");
 		/* Settings */
@@ -40,12 +44,30 @@ namespace NLS
 		device->SetVsync(true);
 
 		/* Graphics context creation */
+        driver = std::make_unique<NLS::Rendering::Context::Driver>(NLS::Rendering::Settings::DriverSettings{true});
 
+        std::filesystem::create_directories(std::string(getenv("APPDATA")) + "\\OverloadTech\\OvEditor\\");
+
+        uiManager = std::make_unique<NLS::UI::UIManager>(window->GetGlfwWindow(), UI::Styling::EStyle::ALTERNATIVE_DARK);
+        uiManager->LoadFont("Ruda_Big", editorAssetsPath + "/Fonts/Ruda-Bold.ttf", 16);
+        uiManager->LoadFont("Ruda_Small", editorAssetsPath + "/Fonts/Ruda-Bold.ttf", 12);
+        uiManager->LoadFont("Ruda_Medium", editorAssetsPath + "/Fonts/Ruda-Bold.ttf", 14);
+        uiManager->UseFont("Ruda_Medium");
+        uiManager->SetEditorLayoutSaveFilename(std::filesystem::canonical(std::filesystem::path("../Settings")).string() + "/layout.ini");
+        uiManager->SetEditorLayoutAutosaveFrequency(60.0f);
+        uiManager->EnableEditorLayoutSave(true);
+        uiManager->EnableDocking(true);
 
 
 		/* Service Locator providing */
+        NLS::Core::ServiceLocator::Provide<ModelManager>(modelManager);
+        NLS::Core::ServiceLocator::Provide<TextureManager>(textureManager);
+        NLS::Core::ServiceLocator::Provide<ShaderManager>(shaderManager);
+        NLS::Core::ServiceLocator::Provide<MaterialManager>(materialManager);
+
 		NLS::Core::ServiceLocator::Provide<NLS::Windowing::Inputs::InputManager>(*inputManager);
 		NLS::Core::ServiceLocator::Provide<NLS::Windowing::Window>(*window);
+        NLS::Core::ServiceLocator::Provide<NLS::Engine::SceneSystem::SceneManager>(sceneManager);
 
 
 		ApplyProjectSettings();
@@ -53,15 +75,44 @@ namespace NLS
 
 	Editor::Core::Context::~Context()
 	{
+        modelManager.UnloadResources();
+        textureManager.UnloadResources();
+        shaderManager.UnloadResources();
+        materialManager.UnloadResources();
 	}
 
 	void Editor::Core::Context::ResetProjectSettings()
 	{
+        projectSettings.RemoveAll();
+        projectSettings.Add<float>("gravity", -9.81f);
+        projectSettings.Add<int>("x_resolution", 1280);
+        projectSettings.Add<int>("y_resolution", 720);
+        projectSettings.Add<bool>("fullscreen", false);
+        projectSettings.Add<std::string>("executable_name", "Game");
+        projectSettings.Add<std::string>("start_scene", "Scene.ovscene");
+        projectSettings.Add<bool>("vsync", true);
+        projectSettings.Add<bool>("multi_sampling", true);
+        projectSettings.Add<int>("samples", 4);
+        projectSettings.Add<int>("opengl_major", 4);
+        projectSettings.Add<int>("opengl_minor", 3);
+        projectSettings.Add<bool>("dev_build", true);
 	}
 
 	bool Editor::Core::Context::IsProjectSettingsIntegrityVerified()
 	{
-		return false;
+		return
+		projectSettings.IsKeyExisting("gravity") &&
+		projectSettings.IsKeyExisting("x_resolution") &&
+		projectSettings.IsKeyExisting("y_resolution") &&
+		projectSettings.IsKeyExisting("fullscreen") &&
+		projectSettings.IsKeyExisting("executable_name") &&
+		projectSettings.IsKeyExisting("start_scene") &&
+		projectSettings.IsKeyExisting("vsync") &&
+		projectSettings.IsKeyExisting("multi_sampling") &&
+		projectSettings.IsKeyExisting("samples") &&
+		projectSettings.IsKeyExisting("opengl_major") &&
+		projectSettings.IsKeyExisting("opengl_minor") &&
+		projectSettings.IsKeyExisting("dev_build");
 	}
 
 	void Editor::Core::Context::ApplyProjectSettings()

@@ -3,7 +3,7 @@
 #include <any>
 #include <unordered_map>
 #include "CoreDef.h"
-#define OVSERVICE(Type) Core::ServiceLocator::Get<Type>()
+#define NLS_SERVICE(Type) Core::ServiceLocator::Get<Type>()
 
 namespace NLS::Core
 {

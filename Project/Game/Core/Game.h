@@ -5,7 +5,7 @@
 
 #include "Core/Context.h"
 
-namespace Game::Core
+namespace NLS::Game::Core
 {
 	/**
 	* Handle the game logic

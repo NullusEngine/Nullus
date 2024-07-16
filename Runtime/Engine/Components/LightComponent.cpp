@@ -1,7 +1,10 @@
 #include "Components/LightComponent.h"
 #include "Components/TransformComponent.h"
-#include "GameObject.h""
+#include "GameObject.h"
+using namespace NLS;
 using namespace NLS::Engine::Components;
+using namespace NLS::Render::Entities;
+using namespace NLS::Render;
 NLS::Engine::Components::LightComponent::LightComponent()
 {
 }

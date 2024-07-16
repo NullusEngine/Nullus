@@ -5,6 +5,7 @@
 #include "Components/MaterialRenderer.h"
 #include "Components/MeshRenderer.h"
 #include "Core/ServiceLocator.h"
+using namespace NLS;
 using namespace NLS::Engine::Components;
 
 NLS::Engine::Components::MaterialRenderer::MaterialRenderer()

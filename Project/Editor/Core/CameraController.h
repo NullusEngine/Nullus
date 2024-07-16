@@ -23,7 +23,7 @@ public:
      * @param p_camera
      */
     CameraController(
-        Editor::Panels::AView& p_view,
+        NLS::Editor::Panels::AView& p_view,
         Render::Entities::Camera& p_camera);
 
     /**
@@ -101,7 +101,7 @@ private:
 private:
     Windowing::Inputs::InputManager& m_inputManager;
     Windowing::Window& m_window;
-    Editor::Panels::AView& m_view;
+    NLS::Editor::Panels::AView& m_view;
     Render::Entities::Camera& m_camera;
 
     std::queue<std::tuple<Maths::Vector3, Maths::Quaternion>> m_cameraDestinations;

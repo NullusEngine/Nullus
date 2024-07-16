@@ -4,13 +4,13 @@
 
 #include "UI/Internal/TextureID.h"
 #include "UI/Widgets/AWidget.h"
-
+#include "Core/CoreDef.h"
 namespace NLS::UI::Widgets::Visual
 {
 	/**
 	* Simple widget that display an image
 	*/
-	class Image : public AWidget
+	class NLS_CORE_API Image : public AWidget
 	{
 	public:
 		/**

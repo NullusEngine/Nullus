@@ -7,7 +7,7 @@
 #include "Components/MeshRenderer.h"
 #include "Components/MaterialRenderer.h"
 #include "GameObject.h"
-
+using namespace NLS;
 using namespace NLS::Engine::Components;
 
 NLS::Engine::Components::MeshRenderer::MeshRenderer()

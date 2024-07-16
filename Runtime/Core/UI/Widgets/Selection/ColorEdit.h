@@ -10,7 +10,7 @@ namespace NLS::UI::Widgets::Selection
 	/**
 	* Widget that can open a color picker on click
 	*/
-	class ColorEdit : public DataWidget<Maths::Color>
+	class NLS_CORE_API ColorEdit : public DataWidget<Maths::Color>
 	{
 	public:
 		/**

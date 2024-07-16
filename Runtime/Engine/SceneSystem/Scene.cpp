@@ -4,7 +4,9 @@
 
 #include "SceneSystem/Scene.h"
 #include "GameObject.h"
-using namespace  NLS::Engine::SceneSystem;
+using namespace NLS;
+using namespace UDRefl;
+using namespace NLS::Engine::SceneSystem;
 Scene::Scene()
 {
 
@@ -191,7 +193,7 @@ Engine::Components::CameraComponent* Scene::FindMainCamera() const
 
 void Scene::OnComponentAdded(SharedObject p_compononent)
 {
-    if (p_compononent.GetType().Is<MeshRenderer>())
+    if (p_compononent.GetType().Is<Engine::Components::MeshRenderer>())
         m_fastAccessComponents.modelRenderers.push_back(p_compononent.AsPtr<Engine::Components::MeshRenderer>());
 
 	if (p_compononent.GetType().Is<Engine::Components::CameraComponent>())

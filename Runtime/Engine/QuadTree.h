@@ -6,7 +6,6 @@
 #include "EngineDef.h"
 namespace NLS
 {
-using namespace NLS::Maths;
 namespace Engine
 {
 template<class T>
@@ -15,21 +14,21 @@ class QuadTree;
 template<class T>
 struct QuadTreeEntry
 {
-    Vector3 pos;
-    Vector3 size;
+    Maths::Vector3 pos;
+    Maths::Vector3 size;
     T object;
 
-    QuadTreeEntry(T obj, Vector3 pos, Vector3 size)
+    QuadTreeEntry(T obj, Maths::Vector3 pos, Maths::Vector3 size)
     {
         object = obj;
         this->pos = pos;
         this->size = size;
     }
 };
-static bool AABBTest(const Vector3& posA, const Vector3& posB, const Vector3& halfSizeA, const Vector3& halfSizeB)
+static bool AABBTest(const Maths::Vector3& posA, const Maths::Vector3& posB, const Maths::Vector3& halfSizeA, const Maths::Vector3& halfSizeB)
 {
-    Vector3 delta = posB - posA;
-    Vector3 totalSize = halfSizeA + halfSizeB;
+    Maths::Vector3 delta = posB - posA;
+    Maths::Vector3 totalSize = halfSizeA + halfSizeB;
 
     if (abs(delta.x) < totalSize.x && abs(delta.y) < totalSize.y && abs(delta.z) < totalSize.z)
     {
@@ -43,9 +42,9 @@ class QuadTreeNode
 public:
     typedef std::function<void(std::list<QuadTreeEntry<T>>&)> QuadTreeFunc;
 
-    void Insert(T& object, const Vector3& objectPos, const Vector3& objectSize, int depthLeft, int maxSize)
+    void Insert(T& object, const Maths::Vector3& objectPos, const Maths::Vector3& objectSize, int depthLeft, int maxSize)
     {
-        if (!AABBTest(objectPos, Vector3(position.x, 0, position.y), objectSize, Vector3(size.x, 1000.0f, size.y)))
+        if (!AABBTest(objectPos, Maths::Vector3(position.x, 0, position.y), objectSize, Maths::Vector3(size.x, 1000.0f, size.y)))
         {
             return;
         }
@@ -84,7 +83,7 @@ protected:
 
     QuadTreeNode() {}
 
-    QuadTreeNode(Vector2 pos, Vector2 size)
+    QuadTreeNode(Maths::Vector2 pos, Maths::Vector2 size)
     {
         children = nullptr;
         this->position = pos;
@@ -100,12 +99,12 @@ protected:
 
     void Split()
     {
-        Vector2 halfSize = size / 2.0f;
+        Maths::Vector2 halfSize = size / 2.0f;
         children = new QuadTreeNode<T>[4];
-        children[0] = QuadTreeNode<T>(position + Vector2(-halfSize.x, halfSize.y), halfSize);
-        children[1] = QuadTreeNode<T>(position + Vector2(halfSize.x, halfSize.y), halfSize);
-        children[2] = QuadTreeNode<T>(position + Vector2(-halfSize.x, -halfSize.y), halfSize);
-        children[3] = QuadTreeNode<T>(position + Vector2(halfSize.x, -halfSize.y), halfSize);
+        children[0] = QuadTreeNode<T>(position +  Maths::Vector2(-halfSize.x, halfSize.y), halfSize);
+        children[1] = QuadTreeNode<T>(position +  Maths::Vector2(halfSize.x, halfSize.y), halfSize);
+        children[2] = QuadTreeNode<T>(position +  Maths::Vector2(-halfSize.x, -halfSize.y), halfSize);
+        children[3] = QuadTreeNode<T>(position +  Maths::Vector2(halfSize.x, -halfSize.y), halfSize);
     }
 
     void DebugDraw()
@@ -133,8 +132,8 @@ protected:
 protected:
     std::list<QuadTreeEntry<T>> contents;
 
-    Vector2 position;
-    Vector2 size;
+    Maths::Vector2 position;
+    Maths::Vector2 size;
 
     QuadTreeNode<T>* children;
 };
@@ -144,16 +143,15 @@ protected:
 
 namespace NLS
 {
-using namespace NLS::Maths;
 namespace Engine
 {
 template<class T>
 class QuadTree
 {
 public:
-    QuadTree(Vector2 size, int maxDepth = 6, int maxSize = 5)
+    QuadTree(Maths::Vector2 size, int maxDepth = 6, int maxSize = 5)
     {
-        root = QuadTreeNode<T>(Vector2(), size);
+        root = QuadTreeNode<T>(Maths::Vector2(), size);
         this->maxDepth = maxDepth;
         this->maxSize = maxSize;
     }
@@ -161,7 +159,7 @@ public:
     {
     }
 
-    void Insert(T object, const Vector3& pos, const Vector3& size)
+    void Insert(T object, const Maths::Vector3& pos, const Maths::Vector3& size)
     {
         root.Insert(object, pos, size, maxDepth, maxSize);
     }

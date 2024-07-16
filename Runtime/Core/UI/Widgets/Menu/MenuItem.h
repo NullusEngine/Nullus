@@ -9,7 +9,7 @@ namespace NLS::UI::Widgets::Menu
 	/**
 	* Widget that can be added to a menu list. It is clickable and can be checkable
 	*/
-	class MenuItem : public DataWidget<bool>
+	class NLS_CORE_API MenuItem : public DataWidget<bool>
 	{
 	public:
 		/**

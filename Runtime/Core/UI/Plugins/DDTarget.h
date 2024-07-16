@@ -14,7 +14,7 @@ namespace NLS::UI::Plugins
 	* Represents a drag and drop target
 	*/
 	template<typename T>
-	class NLS_CORE_API DDTarget : public IPlugin
+	class DDTarget : public IPlugin
 	{
 	public:
 		/**

@@ -7,7 +7,7 @@ namespace NLS::UI::Widgets::Sliders
 	/**
 	* Slider widget of type float
 	*/
-	class SliderFloat : public SliderSingleScalar<float>
+	class NLS_CORE_API SliderFloat : public SliderSingleScalar<float>
 	{
 	public:
 		/**

@@ -3,7 +3,7 @@
 
 #include "Rendering/EngineBufferRenderFeature.h"
 #include "Rendering/EngineDrawableDescriptor.h"
-
+using namespace NLS;
 Engine::Rendering::EngineBufferRenderFeature::EngineBufferRenderFeature(NLS::Render::Core::CompositeRenderer& p_renderer)
 	: ARenderFeature(p_renderer)
 {

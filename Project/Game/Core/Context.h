@@ -14,7 +14,7 @@
 #include <SceneSystem/SceneManager.h>
 #include "Core/Filesystem/IniFile.h"
 
-namespace Game
+namespace NLS::Game
 {
 	/**
 	* The Context handle the engine features setup

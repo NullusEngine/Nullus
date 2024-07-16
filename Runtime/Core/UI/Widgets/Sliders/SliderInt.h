@@ -7,7 +7,7 @@ namespace NLS::UI::Widgets::Sliders
 	/**
 	* Slider widget of type int
 	*/
-	class SliderInt : public SliderSingleScalar<int>
+	class NLS_CORE_API SliderInt : public SliderSingleScalar<int>
 	{
 	public:
 		/**

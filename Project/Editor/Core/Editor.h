@@ -1,7 +1,8 @@
 #pragma once
 #include "Core/Context.h"
-
-
+#include "Core/EditorActions.h"
+#include "Core/PanelsManager.h"
+#include <UI/Modules/Canvas.h>
 namespace NLS
 {
 namespace Editor::Core
@@ -89,7 +90,10 @@ public:
 
 private:
     uint64_t m_elapsedFrames = 0;
+    UI::Modules::Canvas			m_canvas;
     Context& m_context;
+    PanelsManager	m_panelsManager;
+    EditorActions	m_editorActions;
 };
 } // namespace Editor::Core
 } // namespace NLS

@@ -11,7 +11,7 @@ namespace NLS::UI::Widgets::Menu
 	/**
 	* Widget that behave like a group with a menu display
 	*/
-	class MenuList : public Layout::Group
+	class NLS_CORE_API MenuList : public Layout::Group
 	{
 	public:
 		/**

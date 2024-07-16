@@ -1,8 +1,9 @@
 #include "Components/CameraComponent.h"
 #include "Components/TransformComponent.h"
 #include "GameObject.h"
-using namespace  NLS::Engine::Components;
-
+using namespace NLS;
+using namespace NLS::Engine::Components;
+using namespace NLS::Render::Entities;
 
 NLS::Engine::Components::CameraComponent::CameraComponent()
 {

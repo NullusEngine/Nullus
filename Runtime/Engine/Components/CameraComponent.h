@@ -6,7 +6,6 @@
 #include "EngineDef.h"
 namespace NLS::Engine::Components
 {
-	using namespace NLS::Render::Entities;
 	/**
 	* Represents a camera entity. Its position will determine its view matrix
 	*/
@@ -115,10 +114,10 @@ namespace NLS::Engine::Components
 		/**
 		* Returns the Rendering camera instance attached to this component
 		*/
-		Camera* GetCamera();
+		Render::Entities::Camera* GetCamera();
 
 
 	private:
-		Camera* m_camera;
+		Render::Entities::Camera* m_camera;
 	};
 }

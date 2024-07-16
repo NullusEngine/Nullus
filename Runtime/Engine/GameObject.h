@@ -5,13 +5,10 @@
 #include "UDRefl/Object.hpp"
 #include "Eventing/Event.h"
 #include "Components/Component.h"
-using std::vector;
-using namespace std;
 namespace NLS
 {
 namespace Engine
 {
-using namespace UDRefl;
 namespace Components
 {
     class TransformComponent;
@@ -28,14 +25,14 @@ public:
     /**
      * Returns a reference to the vector of components
      */
-    std::vector<SharedObject>& GetComponents()
+    std::vector<UDRefl::SharedObject>& GetComponents()
     {
         return m_vComponents;
     }
-    bool RemoveComponent(SharedObject component);
+    bool RemoveComponent(UDRefl::SharedObject component);
 
-    SharedObject AddComponent(Type type, const std::function<void(Components::Component*)>& func = {});
-    SharedObject GetComponent(Type type, bool includeSubType = true) const;
+    UDRefl::SharedObject AddComponent(Type type, const std::function<void(Components::Component*)>& func = {});
+    UDRefl::SharedObject GetComponent(Type type, bool includeSubType = true) const;
     /**
      * Enable or disable the actor
      * @param p_active
@@ -57,7 +54,7 @@ public:
         return m_transform;
     }
 
-    const string& GetName() const
+    const std::string& GetName() const
     {
         return m_name;
     }
@@ -260,8 +257,8 @@ private:
 
 public:
     /* Some events that are triggered when an action occur on the actor instance */
-    Event<SharedObject> ComponentAddedEvent;
-    Event<SharedObject> ComponentRemovedEvent;
+    Event<UDRefl::SharedObject> ComponentAddedEvent;
+    Event<UDRefl::SharedObject> ComponentRemovedEvent;
 
     /* Some events that are triggered when an action occur on any actor */
     static Event<GameObject&> DestroyedEvent;
@@ -270,10 +267,10 @@ public:
     static Event<GameObject&> DettachEvent;
 
 protected:
-    std::vector<SharedObject> m_vComponents;
+    std::vector<UDRefl::SharedObject> m_vComponents;
     bool m_active;
     int m_worldID;
-    string m_name;
+    std::string m_name;
     /* Settings */
     std::string m_tag;
 

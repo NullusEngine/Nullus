@@ -9,7 +9,7 @@ namespace NLS::UI::Widgets::Selection
 /**
  * Checkbox widget that can be checked or not
  */
-class CheckBox : public DataWidget<bool>
+class NLS_CORE_API CheckBox : public DataWidget<bool>
 {
 public:
     /**

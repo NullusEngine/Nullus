@@ -11,7 +11,7 @@ namespace NLS::UI::Widgets::Selection
 	/**
 	* Widget that can display a list of values that the user can select
 	*/
-	class ComboBox : public DataWidget<int>
+	class NLS_CORE_API ComboBox : public DataWidget<int>
 	{
 	public:
 		/**

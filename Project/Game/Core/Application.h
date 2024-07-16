@@ -3,7 +3,7 @@
 #include "Core/Context.h"
 #include "Core/Game.h"
 
-namespace Game::Core
+namespace NLS::Game::Core
 {
 	/**
 	* Entry point of Game

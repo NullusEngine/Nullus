@@ -8,6 +8,7 @@
 #include "Components/MeshRenderer.h"
 #include "Components/MaterialRenderer.h"
 #include "Components/TransformComponent.h"
+using namespace NLS;
 struct SceneRenderPassDescriptor
 {
 	Engine::Rendering::SceneRenderer::AllDrawables drawables;

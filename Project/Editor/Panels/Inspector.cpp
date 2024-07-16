@@ -1,5 +1,3 @@
-#include <map>
-
 #include "Panels/Inspector.h"
 
 #include <UI/Widgets/Texts/Text.h>
@@ -12,6 +10,8 @@
 #include <UI/Widgets/InputFields/InputFloat.h>
 #include <UI/Widgets/Selection/ColorEdit.h>
 #include <UI/Plugins/DDTarget.h>
+#include <UI/Widgets/Visual/Separator.h>
+#include <UI/Widgets/Layout/GroupCollapsable.h>
 
 #include <ServiceLocator.h>
 #include <ResourceManagement/ModelManager.h>
@@ -21,16 +21,15 @@
 #include <Windowing/Dialogs/MessageBox.h>
 
 #include "Core/EditorActions.h"
-#include "UI/GUIDrawer.h"
+//#include <UI/GUIDrawer.h>
 #include "Components/MaterialRenderer.h"
+#include "Components/MeshRenderer.h"
+#include "Components/LightComponent.h"
+#include "Components/CameraComponent.h"
 #include "GameObject.h"
-using namespace NLS;
-using namespace NLS::Engine::Components;
-
-Editor::Panels::Inspector::Inspector(
-    const std::string& p_title,
-    bool p_opened,
-    const NLS::UI::Settings::PanelWindowSettings& p_windowSettings)
+namespace NLS::Editor::Panels
+{
+Inspector::Inspector(const std::string& p_title, bool p_opened, const NLS::UI::Settings::PanelWindowSettings& p_windowSettings)
     : NLS::UI::Panels::PanelWindow(p_title, p_opened, p_windowSettings)
 {
     m_inspectorHeader = &CreateWidget<UI::Widgets::Layout::Group>();
@@ -44,21 +43,21 @@ Editor::Panels::Inspector::Inspector(
     { return m_targetActor ? m_targetActor->GetName() : "%undef%"; };
     auto nameProvider = [this](const std::string& p_newName)
     { if (m_targetActor) m_targetActor->SetName(p_newName); };
-    UI::GUIDrawer::DrawString(headerColumns, "Name", nameGatherer, nameProvider);
+    //UI::GUIDrawer::DrawString(headerColumns, "Name", nameGatherer, nameProvider);
 
     /* Tag field */
     auto tagGatherer = [this]
     { return m_targetActor ? m_targetActor->GetTag() : "%undef%"; };
     auto tagProvider = [this](const std::string& p_newName)
     { if (m_targetActor) m_targetActor->SetTag(p_newName); };
-    UI::GUIDrawer::DrawString(headerColumns, "Tag", tagGatherer, tagProvider);
+    //UI::GUIDrawer::DrawString(headerColumns, "Tag", tagGatherer, tagProvider);
 
     /* Active field */
     auto activeGatherer = [this]
     { return m_targetActor ? m_targetActor->IsSelfActive() : false; };
     auto activeProvider = [this](bool p_active)
     { if (m_targetActor) m_targetActor->SetActive(p_active); };
-    UI::GUIDrawer::DrawBoolean(headerColumns, "Active", activeGatherer, activeProvider);
+    //UI::GUIDrawer::DrawBoolean(headerColumns, "Active", activeGatherer, activeProvider);
 
     /* Component select + button */
     {
@@ -74,6 +73,7 @@ Editor::Panels::Inspector::Inspector(
         addComponentButton.textColor = Maths::Color::White;
         addComponentButton.ClickedEvent += [&componentSelectorWidget, this]
         {
+            using namespace NLS::Engine::Components;
             switch (componentSelectorWidget.currentChoice)
             {
                 case 0:
@@ -101,7 +101,7 @@ Editor::Panels::Inspector::Inspector(
                 addComponentButton.disabled = p_componentExists;
                 addComponentButton.idleBackgroundColor = !p_componentExists ? Maths::Color{0.7f, 0.5f, 0.f} : Maths::Color{0.1f, 0.1f, 0.1f};
             };
-
+            using namespace NLS::Engine::Components;
             switch (p_value)
             {
                 case 0:
@@ -130,15 +130,14 @@ Editor::Panels::Inspector::Inspector(
             UnFocus();
     };
 }
-
-Editor::Panels::Inspector::~Inspector()
+Inspector::~Inspector()
 {
     Engine::GameObject::DestroyedEvent -= m_destroyedListener;
 
     UnFocus();
 }
 
-void Editor::Panels::Inspector::FocusActor(Engine::GameObject& p_target)
+void Inspector::FocusActor(Engine::GameObject& p_target)
 {
     if (m_targetActor)
         UnFocus();
@@ -166,7 +165,7 @@ void Editor::Panels::Inspector::FocusActor(Engine::GameObject& p_target)
     EDITOR_EVENT(ActorSelectedEvent).Invoke(*m_targetActor);
 }
 
-void Editor::Panels::Inspector::UnFocus()
+void Inspector::UnFocus()
 {
     if (m_targetActor)
     {
@@ -177,7 +176,7 @@ void Editor::Panels::Inspector::UnFocus()
     SoftUnFocus();
 }
 
-void Editor::Panels::Inspector::SoftUnFocus()
+void Inspector::SoftUnFocus()
 {
     if (m_targetActor)
     {
@@ -188,13 +187,14 @@ void Editor::Panels::Inspector::SoftUnFocus()
     }
 }
 
-Engine::GameObject* Editor::Panels::Inspector::GetTargetActor() const
+Engine::GameObject* Inspector::GetTargetActor() const
 {
     return m_targetActor;
 }
 
-void Editor::Panels::Inspector::CreateActorInspector(Engine::GameObject& p_target)
+void Inspector::CreateActorInspector(Engine::GameObject& p_target)
 {
+    using namespace NLS::Engine::Components;
     std::map<std::string_view, UDRefl::SharedObject> components;
 
     for (auto component : p_target.GetComponents())
@@ -209,8 +209,9 @@ void Editor::Panels::Inspector::CreateActorInspector(Engine::GameObject& p_targe
         DrawComponent(*instance);
 }
 
-void Editor::Panels::Inspector::DrawComponent(UDRefl::SharedObject p_component)
+void Inspector::DrawComponent(UDRefl::SharedObject p_component)
 {
+    using namespace NLS::Engine::Components;
     auto& header = m_actorInfo->CreateWidget<UI::Widgets::Layout::GroupCollapsable>("Component");
     header.closable = p_component.GetType() == Type_of<TransformComponent>;
     header.CloseEvent += [this, &header, &p_component]
@@ -222,7 +223,7 @@ void Editor::Panels::Inspector::DrawComponent(UDRefl::SharedObject p_component)
     columns.widths[0] = 200;
 }
 
-void Editor::Panels::Inspector::Refresh()
+void Inspector::Refresh()
 {
     if (m_targetActor)
     {
@@ -230,3 +231,4 @@ void Editor::Panels::Inspector::Refresh()
         CreateActorInspector(*m_targetActor);
     }
 }
+} // namespace NLS::Editor::Panels

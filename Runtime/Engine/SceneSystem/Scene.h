@@ -6,7 +6,6 @@
 #include "Components/LightComponent.h"
 #include "Components/MeshRenderer.h"
 #include "EngineDef.h"
-using namespace  NLS::Engine::Components;
 namespace NLS::Engine::SceneSystem
 {
 	/**
@@ -21,9 +20,9 @@ namespace NLS::Engine::SceneSystem
 		*/
 		struct FastAccessComponents
 		{
-			std::vector<MeshRenderer*>		modelRenderers;
-			std::vector<CameraComponent*>			cameras;
-			std::vector<LightComponent*>			lights;
+			std::vector<Components::MeshRenderer*>		modelRenderers;
+			std::vector<Components::CameraComponent*>			cameras;
+			std::vector<Components::LightComponent*>			lights;
 		};
 
 		/**
@@ -126,13 +125,13 @@ namespace NLS::Engine::SceneSystem
 		* Callback method called everytime a component is added on an actor of the scene
 		* @param p_component
 		*/
-        void OnComponentAdded(SharedObject p_compononent);
+        void OnComponentAdded(UDRefl::SharedObject p_compononent);
 
 		/**
 		* Callback method called everytime a component is removed on an actor of the scene
 		* @param p_component
 		*/
-        void OnComponentRemoved(SharedObject p_compononent);
+        void OnComponentRemoved(UDRefl::SharedObject p_compononent);
 
 		/**
 		* Return a reference on the actor map

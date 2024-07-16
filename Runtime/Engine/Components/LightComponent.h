@@ -6,8 +6,6 @@
 #include "EngineDef.h"
 namespace NLS::Engine::Components
 {
-using namespace NLS::Render;
-using namespace NLS::Render::Entities;
 /**
  * Base class for any light
  */
@@ -22,9 +20,9 @@ public:
 
     void OnCreate()override;
 
-    void SetLightType(Settings::ELightType type);
+    void SetLightType(Render::Settings::ELightType type);
 
-    Settings::ELightType GetLightType() const;
+    Render::Settings::ELightType GetLightType() const;
     /**
      * Returns light data
      */
@@ -130,6 +128,6 @@ public:
     void SetSize(const Maths::Vector3& p_size);
 
 protected:
-    Light* m_data = nullptr;
+    Render::Entities::Light* m_data = nullptr;
 };
 } // namespace NLS::Engine::Components

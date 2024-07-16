@@ -1,6 +1,7 @@
 #include <Time/Clock.h>
 
 #include "Core/Application.h"
+using namespace NLS;
 Game::Core::Application::Application() :
 	m_game(m_context)
 {

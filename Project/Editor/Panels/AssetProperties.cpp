@@ -18,7 +18,7 @@
 #include "Panels/AssetProperties.h"
 #include "Panels/AssetView.h"
 #include "Core/EditorActions.h"
-
+using namespace NLS;
 Editor::Panels::AssetProperties::AssetProperties
 (
 	const std::string& p_title,

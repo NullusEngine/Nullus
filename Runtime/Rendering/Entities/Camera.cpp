@@ -3,6 +3,8 @@
 #include "Rendering/Entities/Camera.h"
 #include "Math/Matrix4.h"
 
+using namespace NLS;
+
 NLS::Render::Entities::Camera::Camera() :
 	m_projectionMode(Settings::EProjectionMode::PERSPECTIVE),
 	m_fov(45.0f),
@@ -60,12 +62,18 @@ void NLS::Render::Entities::Camera::CacheFrustum(const Maths::Matrix4& p_view, c
 
 const Maths::Vector3& NLS::Render::Entities::Camera::GetPosition() const
 {
-	return transform->GetWorldPosition();
+	if (transform)
+		return transform->GetWorldPosition();
+	else
+		return {};
 }
 
 const Maths::Quaternion& NLS::Render::Entities::Camera::GetRotation() const
 {
-	return transform->GetWorldRotation();
+	if (transform)
+		return transform->GetWorldRotation();
+	else
+		return {};
 }
 
 float NLS::Render::Entities::Camera::GetFov() const
@@ -160,12 +168,19 @@ NLS::Render::Settings::EProjectionMode NLS::Render::Entities::Camera::GetProject
 
 void NLS::Render::Entities::Camera::SetPosition(const Maths::Vector3& p_position)
 {
-	transform->SetWorldPosition(p_position);
+	if (transform)
+	{
+		transform->SetWorldPosition(p_position);
+	}
 }
 
 void NLS::Render::Entities::Camera::SetRotation(const Maths::Quaternion& p_rotation)
 {
-	transform->SetWorldRotation(p_rotation);
+	if (transform)
+	{
+		transform->SetWorldRotation(p_rotation);
+	}
+
 }
 
 void NLS::Render::Entities::Camera::SetFov(float p_value)
@@ -245,14 +260,21 @@ Maths::Matrix4 NLS::Render::Entities::Camera::CalculateProjectionMatrix(uint16_t
 
 Maths::Matrix4 NLS::Render::Entities::Camera::CalculateViewMatrix() const
 {
-	const Maths::Vector3& position = transform->GetWorldPosition();
-    const Maths::Quaternion& rotation = transform->GetWorldRotation();
-    const Maths::Vector3& up = transform->GetWorldUp();
-    const Maths::Vector3& forward = transform->GetWorldForward();
+	if (transform)
+	{
+		const Maths::Vector3& position = transform->GetWorldPosition();
+		const Maths::Quaternion& rotation = transform->GetWorldRotation();
+		const Maths::Vector3& up = transform->GetWorldUp();
+		const Maths::Vector3& forward = transform->GetWorldForward();
 
-	return Maths::Matrix4::CreateView(
-		position.x, position.y, position.z,
-		position.x + forward.x, position.y + forward.y, position.z + forward.z,
-		up.x, up.y, up.z
-	);
+		return Maths::Matrix4::CreateView(
+			position.x, position.y, position.z,
+			position.x + forward.x, position.y + forward.y, position.z + forward.z,
+			up.x, up.y, up.z
+		);
+	}
+	else
+	{
+		return Maths::Matrix4::Identity;
+	}
 }

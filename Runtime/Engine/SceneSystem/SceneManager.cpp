@@ -4,6 +4,7 @@
 #include "Components/LightComponent.h"
 #include "Components/CameraComponent.h"
 #include "Components/TransformComponent.h"
+using namespace NLS;
 using namespace NLS::Engine::SceneSystem;
 
 SceneManager::SceneManager(const std::string& p_sceneRootFolder) : m_sceneRootFolder(p_sceneRootFolder)
@@ -54,19 +55,19 @@ void SceneManager::LoadEmptyLightedScene()
 	SceneLoadEvent.Invoke();
 
 	auto& directionalLightGo = m_currentScene->CreateGameObject("Directional Light");
-	auto directionalLight = directionalLightGo.AddComponent<LightComponent>();
-	directionalLight->SetLightType(Settings::ELightType::DIRECTIONAL);
+	auto directionalLight = directionalLightGo.AddComponent<Engine::Components::LightComponent>();
+	directionalLight->SetLightType(Render::Settings::ELightType::DIRECTIONAL);
 	directionalLight->SetIntensity(0.75f);
 	directionalLightGo.GetTransform()->SetLocalPosition({0.0f, 10.0f, 0.0f});
 	directionalLightGo.GetTransform()->SetLocalRotation(Maths::Quaternion({120.0f, -40.0f, 0.0f}));
 
 	auto& ambientLightGo = m_currentScene->CreateGameObject("Ambient Light");
-	auto ambientLight = ambientLightGo.AddComponent<LightComponent>();
-	ambientLight->SetLightType(Settings::ELightType::AMBIENT_SPHERE);
+	auto ambientLight = ambientLightGo.AddComponent<Engine::Components::LightComponent>();
+	ambientLight->SetLightType(Render::Settings::ELightType::AMBIENT_SPHERE);
 	ambientLight->SetRadius(10000.0f);
 
 	auto& camera = m_currentScene->CreateGameObject("Main Camera");
-	camera.AddComponent<CameraComponent>();
+	camera.AddComponent<Engine::Components::CameraComponent>();
 	camera.GetTransform()->SetLocalPosition({0.0f, 3.0f, 8.0f});
 	camera.GetTransform()->SetLocalRotation(Maths::Quaternion({160.0f, 0.0f, 0.0f}));
 }

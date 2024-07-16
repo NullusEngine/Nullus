@@ -605,7 +605,7 @@ void Editor::Core::EditorActions::CompileShaders()
 void Editor::Core::EditorActions::SaveMaterials()
 {
     for (auto& [id, material] : m_context.materialManager.GetResources())
-        Resources::Loaders::MaterialLoader::Save(*material, GetRealPath(material->path));
+        Render::Resources::Loaders::MaterialLoader::Save(*material, GetRealPath(material->path));
 }
 
 bool Editor::Core::EditorActions::ImportAsset(const std::string& p_initialDestinationDirectory)

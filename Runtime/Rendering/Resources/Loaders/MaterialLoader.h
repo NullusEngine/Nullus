@@ -5,7 +5,6 @@
 
 #include "Rendering/Resources/Material.h"
 
-using namespace NLS::Render::Data;
 namespace NLS::Render::Resources::Loaders
 {
 /**

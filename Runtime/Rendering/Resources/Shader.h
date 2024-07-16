@@ -11,7 +11,6 @@
 #include "Rendering/Resources/UniformInfo.h"
 #include "RenderDef.h"
 
-using namespace NLS;
 namespace NLS::Render::Resources
 {
 	namespace Loaders { class ShaderLoader; }

@@ -7,7 +7,6 @@
 #include "Rendering/Entities/Entity.h"
 #include "Rendering/Settings/ELightType.h"
 #include "RenderDef.h"
-using namespace NLS;
 namespace NLS::Render::Entities
 {
 /**

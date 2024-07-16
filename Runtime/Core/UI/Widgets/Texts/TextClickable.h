@@ -9,7 +9,7 @@ namespace NLS::UI::Widgets::Texts
 	/**
 	* Widget to display text on a panel that is also clickable
 	*/
-	class TextClickable : public Text
+	class NLS_CORE_API TextClickable : public Text
 	{
 	public:
 		/**

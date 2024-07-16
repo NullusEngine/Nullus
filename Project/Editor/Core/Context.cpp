@@ -58,6 +58,8 @@ namespace NLS
         uiManager->EnableEditorLayoutSave(true);
         uiManager->EnableDocking(true);
 
+		/* Editor resources */
+		editorResources = std::make_unique<Editor::Core::EditorResources>(editorAssetsPath);
 
 		/* Service Locator providing */
         NLS::Core::ServiceLocator::Provide<ModelManager>(modelManager);

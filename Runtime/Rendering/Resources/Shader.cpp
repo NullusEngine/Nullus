@@ -5,7 +5,7 @@
 
 #include "Rendering/Resources/Texture.h"
 #include "Rendering/Resources/Shader.h"
-
+using namespace NLS;
 NLS::Render::Resources::Shader::Shader(const std::string p_path, uint32_t p_id) : path(p_path), id(p_id)
 {
 	QueryUniforms();

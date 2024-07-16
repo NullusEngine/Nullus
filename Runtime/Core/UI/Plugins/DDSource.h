@@ -14,7 +14,7 @@ namespace NLS::UI::Plugins
 	* Represents a drag and drop source
 	*/
 	template<typename T>
-	class NLS_CORE_API DDSource : public IPlugin
+	class DDSource : public IPlugin
 	{
 	public:
 		/**

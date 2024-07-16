@@ -8,7 +8,7 @@ namespace NLS::UI::Widgets::Texts
 	/**
 	* Widget to display text on a panel that can be colored
 	*/
-	class TextColored : public Text
+	class NLS_CORE_API TextColored : public Text
 	{
 	public:
 		/**

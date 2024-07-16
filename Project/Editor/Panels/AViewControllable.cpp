@@ -40,8 +40,11 @@ void Editor::Panels::AViewControllable::InitFrame()
 
 void Editor::Panels::AViewControllable::ResetCameraTransform()
 {
-	m_camera.transform->SetWorldPosition(kDefaultCameraPosition);
-	m_camera.transform->SetWorldRotation(kDefaultCameraRotation);
+	if (m_camera.transform)
+	{
+		m_camera.transform->SetWorldPosition(kDefaultCameraPosition);
+		m_camera.transform->SetWorldRotation(kDefaultCameraRotation);
+	}
 }
 
 Editor::Core::CameraController& Editor::Panels::AViewControllable::GetCameraController()

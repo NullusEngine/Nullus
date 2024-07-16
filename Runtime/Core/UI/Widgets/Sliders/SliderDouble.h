@@ -7,7 +7,7 @@ namespace NLS::UI::Widgets::Sliders
 	/**
 	* Slider widget of type double
 	*/
-	class SliderDouble : public SliderSingleScalar<double>
+	class NLS_CORE_API SliderDouble : public SliderSingleScalar<double>
 	{
 	public:
 		/**

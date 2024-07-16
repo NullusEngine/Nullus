@@ -7,7 +7,6 @@
 #include "RenderDef.h"
 #include "Rendering/Geometry/BoundingSphere.h"
 #include "Rendering/Resources/Model.h"
-using namespace NLS;
 namespace NLS::Render::Data
 {
 	/**

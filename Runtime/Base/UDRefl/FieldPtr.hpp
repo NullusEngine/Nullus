@@ -3,7 +3,10 @@
 #include "Object.hpp"
 
 #include <variant>
-
+constexpr std::size_t max_size(std::size_t a, std::size_t b)
+{
+    return (a > b) ? a : b;
+}
 namespace NLS::UDRefl {
 	class NLS_BASE_API FieldPtr {
 	public:
@@ -11,7 +14,7 @@ namespace NLS::UDRefl {
 		// Buffer
 		///////////
 
-		static constexpr std::size_t BufferSize = std::max(sizeof(Offsetor), sizeof(SharedBuffer)); // maybe 64
+		static constexpr std::size_t BufferSize = max_size(sizeof(Offsetor), sizeof(SharedBuffer)); // maybe 64
 		using Buffer = std::aligned_storage_t<BufferSize>;
 		static_assert(sizeof(Buffer) == BufferSize);
 		// raw offsetor

@@ -30,10 +30,7 @@ public:
     };
 
 public:
-    constexpr Vector3(void)
-        : x(0.0f), y(0.0f), z(0.0f) {}
-
-    constexpr Vector3(float xVal, float yVal, float zVal)
+    constexpr Vector3(float xVal = 0.0f, float yVal = 0.0f, float zVal = 0.0f)
         : x(xVal), y(yVal), z(zVal) {}
 
     Vector3(const Vector2& v2, float z = 0.0f);

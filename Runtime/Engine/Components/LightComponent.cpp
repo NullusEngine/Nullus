@@ -129,3 +129,8 @@ void NLS::Engine::Components::LightComponent::SetSize(const Maths::Vector3& p_si
 	m_data->linear = p_size.y;
 	m_data->quadratic = p_size.z;
 }
+
+Settings::ELightType LightComponent::GetLightType() const
+{
+    return m_data->type;
+}

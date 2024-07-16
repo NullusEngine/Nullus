@@ -105,7 +105,7 @@ void Engine::Rendering::SceneRenderer::DrawModelWithSingleMaterial(NLS::Renderin
 	{
 		NLS::Rendering::Entities::Drawable element;
 		element.mesh = mesh;
-		element.material = p_material;
+		element.material = &p_material;
 		element.stateMask = stateMask;
 		element.AddDescriptor(engineDrawableDescriptor);
 
@@ -176,23 +176,31 @@ Engine::Rendering::SceneRenderer::AllDrawables Engine::Rendering::SceneRenderer:
 						float distanceToActor = Maths::Vector3::Distance(transform.GetWorldPosition(), camera.GetPosition());
 						const MaterialRenderer::MaterialList& materials = materialRenderer->GetMaterials();
 
-						for (const auto& mesh : meshes)
+						for (const auto mesh : meshes)
 						{
-							NLS::Rendering::Data::Material material;
+                            NLS::Rendering::Data::Material* material = nullptr;
 
 							if (mesh->GetMaterialIndex() < kMaxMaterialCount)
 							{
-								if (overrideMaterial.IsValid())
+                                if (overrideMaterial && overrideMaterial->IsValid())
 								{
 									material = overrideMaterial;
 								}
 								else
 								{
-									material = *materials.at(mesh->GetMaterialIndex());
+									material = materials.at(mesh->GetMaterialIndex());
 								}
 
-								const bool isMaterialValid = material.IsValid();
-								const bool hasValidFallbackMaterial =  fallbackMaterial.IsValid();
+								bool isMaterialValid = false;
+                                if (material)
+								{
+                                    isMaterialValid = material->IsValid();
+								}
+                                bool hasValidFallbackMaterial = false;
+                                if (fallbackMaterial)
+								{
+                                    hasValidFallbackMaterial = fallbackMaterial->IsValid();
+								}
 
 								if (!isMaterialValid && hasValidFallbackMaterial)
 								{
@@ -200,19 +208,19 @@ Engine::Rendering::SceneRenderer::AllDrawables Engine::Rendering::SceneRenderer:
 								}
 							}
 
-							if (material.IsValid())
+							if (material && material->IsValid())
 							{
 								NLS::Rendering::Entities::Drawable drawable;
 								drawable.mesh = mesh;
 								drawable.material = material;
-								drawable.stateMask = material.GenerateStateMask();
+								drawable.stateMask = material->GenerateStateMask();
 
 								drawable.AddDescriptor<EngineDrawableDescriptor>({
 									transform.GetWorldMatrix(),
 									materialRenderer->GetUserMatrix()
 								});
 
-								if (material.IsBlendable())
+								if (material->IsBlendable())
 								{
 									transparents.emplace(distanceToActor, drawable);
 								}

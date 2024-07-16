@@ -44,7 +44,7 @@ public:
      */
     bool IsActive() const;
 
-    Components::TransformComponent* GetTransform()
+    Components::TransformComponent* GetTransform() const
     {
         return m_transform;
     }
@@ -128,6 +128,50 @@ public:
     {
         return m_worldID;
     }
+
+    /**
+     * Set an actor as the parent of this actor
+     * @param p_parent
+     */
+    void SetParent(GameObject& p_parent);
+
+    /**
+     * Detach from the parent
+     */
+    void DetachFromParent();
+
+    /**
+     * Returns true if this actor transform is descendant of the actor
+     * @param p_actor
+     */
+    bool IsDescendantOf(const GameObject* p_actor) const;
+
+    /**
+     * Returns true if the actor has a parent
+     */
+    bool HasParent() const;
+
+    /**
+     * Returns the parents of this actor (Or nullptr if no parent)
+     */
+    GameObject* GetParent() const;
+
+    /**
+     * Returns the ID of the parent of this actor
+     */
+    int64_t GetParentID() const;
+
+    /**
+     * Returns the children of this actor
+     */
+    std::vector<GameObject*>& GetChildren();
+
+    
+	/**
+     * Mark the Actor as "Destroyed". A "Destroyed" actor will be removed from the scene by the scene itself
+     */
+    void MarkAsDestroy();
+
     /**
      * Defines if the actor is sleeping or not.
      * A sleeping actor will not trigger methods suchs as OnEnable, OnDisable and OnDestroyed

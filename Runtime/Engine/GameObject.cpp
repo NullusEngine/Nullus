@@ -2,6 +2,7 @@
 #include "UDRefl/Object.hpp"
 #include "UDRefl/ReflMngr.hpp"
 #include <algorithm>
+#include "Components/TransformComponent.h"
 using namespace NLS::Engine;
 using namespace NLS::UDRefl;
 using namespace NLS::Engine::Components;
@@ -95,6 +96,82 @@ void NLS::Engine::GameObject::OnTriggerStay(GameObject& p_otherObject)
 
 void NLS::Engine::GameObject::OnTriggerExit(GameObject& p_otherObject)
 {
+}
+
+void Engine::GameObject::MarkAsDestroy()
+{
+    m_destroyed = true;
+
+    for (auto child : m_children)
+        child->MarkAsDestroy();
+}
+
+std::vector<GameObject*>& Engine::GameObject::GetChildren()
+{
+    return m_children;
+}
+
+int64_t Engine::GameObject::GetParentID() const
+{
+    return m_parentID;
+}
+
+GameObject* Engine::GameObject::GetParent() const
+{
+    return m_parent;
+}
+
+bool Engine::GameObject::HasParent() const
+{
+    return m_parent;
+}
+
+bool Engine::GameObject::IsDescendantOf(const GameObject* p_actor) const
+{
+    const GameObject* currentParentActor = m_parent;
+
+    while (currentParentActor != nullptr)
+    {
+        if (currentParentActor == p_actor)
+        {
+            return true;
+        }
+        currentParentActor = currentParentActor->GetParent();
+    }
+
+    return false;
+}
+
+void Engine::GameObject::DetachFromParent()
+{
+    DettachEvent.Invoke(*this);
+
+    /* Remove the actor from the parent children list */
+    if (m_parent)
+    {
+        m_parent->m_children.erase(std::remove_if(m_parent->m_children.begin(), m_parent->m_children.end(), [this](GameObject* p_element)
+                                                  { return p_element == this; }));
+    }
+
+    m_parent = nullptr;
+    m_parentID = 0;
+
+    m_transform->RemoveParent();
+}
+
+void Engine::GameObject::SetParent(GameObject& p_parent)
+{
+    DetachFromParent();
+
+    /* Define the given parent as the new parent */
+    m_parent = &p_parent;
+    m_parentID = p_parent.m_worldID;
+    m_transform->SetParent(*p_parent.m_transform);
+
+    /* Store the actor in the parent children list */
+    p_parent.m_children.push_back(this);
+
+    AttachEvent.Invoke(*this, p_parent);
 }
 
 void GameObject::OnAwake()

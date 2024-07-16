@@ -38,7 +38,7 @@ void NLS::Rendering::Features::FrameInfoRenderFeature::OnAfterDraw(const NLS::Re
 	// TODO: Calculate vertex count from the primitive mode
 	constexpr uint32_t kVertexCountPerPolygon = 3;
 
-	const int instances = p_drawable.material.GetGPUInstances();
+	const int instances = p_drawable.material->GetGPUInstances();
 
 	if (instances > 0)
 	{

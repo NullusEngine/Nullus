@@ -21,7 +21,10 @@ public:
     LightComponent();
 
     void OnCreate()override;
+
     void SetLightType(Settings::ELightType type);
+
+    Settings::ELightType GetLightType() const;
     /**
      * Returns light data
      */

@@ -107,7 +107,7 @@ void NLS::Rendering::Core::ABaseRenderer::DrawEntity(
 	auto material = p_drawable.material;
 	auto mesh = p_drawable.mesh;
 
-	const auto gpuInstances = material.GetGPUInstances();
+	const auto gpuInstances = material->GetGPUInstances();
 
 	if (mesh && gpuInstances > 0)
 	{
@@ -132,8 +132,8 @@ void NLS::Rendering::Core::ABaseRenderer::DrawEntity(
 			}
 		}
 
-		material.Bind(m_emptyTexture);
+		material->Bind(m_emptyTexture);
 		m_driver.Draw(p_pso, *mesh, p_drawable.primitiveMode, gpuInstances);
-		material.UnBind();
+		material->UnBind();
 	}
 }

@@ -1,5 +1,5 @@
 
-#include <Core/Utils/PathParser.h>
+#include <Utils/PathParser.h>
 
 #include "GameObject.h"
 #include "Components/MaterialRenderer.h"

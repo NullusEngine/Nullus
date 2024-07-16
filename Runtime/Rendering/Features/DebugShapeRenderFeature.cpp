@@ -96,7 +96,7 @@ void NLS::Rendering::Features::DebugShapeRenderFeature::DrawLine(
 	p_pso.lineWidthPow2 = Utils::Conversions::FloatToPow2(p_lineWidth);
 
 	NLS::Rendering::Entities::Drawable drawable;
-	drawable.material = *m_lineMaterial;
+	drawable.material = m_lineMaterial.get();
 	drawable.mesh = m_lineMesh;
 	drawable.stateMask = m_lineMaterial->GenerateStateMask();
 	drawable.primitiveMode = Settings::EPrimitiveMode::LINES;

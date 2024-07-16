@@ -12,6 +12,7 @@
 #include "ResourceManagement/TextureManager.h"
 #include "ResourceManagement/ShaderManager.h"
 #include "ResourceManagement/MaterialManager.h"
+#include "EditorResources.h"
 namespace NLS
 {
 namespace Editor::Core
@@ -64,7 +65,7 @@ public:
     std::unique_ptr<NLS::Windowing::Inputs::InputManager> inputManager;
     std::unique_ptr<NLS::Rendering::Context::Driver> driver;
     std::unique_ptr<NLS::UI::UIManager> uiManager;
-
+    std::unique_ptr<Editor::Core::EditorResources> editorResources;
     NLS::Engine::SceneSystem::SceneManager sceneManager;
 
     NLS::Core::ResourceManagement::ModelManager modelManager;

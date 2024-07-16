@@ -38,8 +38,8 @@ namespace NLS
 			{
 				SceneSystem::Scene& scene;
 				std::optional<NLS::Rendering::Data::Frustum> frustumOverride;
-				NLS::Rendering::Data::Material overrideMaterial;
-				NLS::Rendering::Data::Material fallbackMaterial;
+				NLS::Rendering::Data::Material* overrideMaterial;
+				NLS::Rendering::Data::Material* fallbackMaterial;
 			};
 
 			/**

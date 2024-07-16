@@ -1,6 +1,6 @@
 ﻿#include "Windowing/Window.h"
 #include <filesystem>
-#include "Core/Utils/PathParser.h"
+#include "Utils/PathParser.h"
 #include "Core/Utils/String.h"
 #include "Core/Application.h"
 #include "Debug/Logger.h"

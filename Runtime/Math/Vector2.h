@@ -11,6 +11,8 @@ class Vector4;
 class NLS_MATH_API Vector2
 {
 public:
+    static const Vector2 One;
+    static const Vector2 Zero;
     union
     {
         struct
@@ -22,14 +24,22 @@ public:
     };
 
 public:
-    constexpr Vector2(void)
-        : x(0.0f), y(0.0f) {}
-
-    constexpr Vector2(float xVal, float yVal)
+    constexpr Vector2(float xVal = 0.0f, float yVal = 0.0f)
         : x(xVal), y(yVal) {}
 
     Vector2(const Vector3& v3);
     Vector2(const Vector4& v4);
+    /**
+     * Copy constructor
+     * @param p_toCopy
+     */
+    Vector2(const Vector2& p_toCopy);
+
+    /**
+     * Move constructor
+     * @param p_toMove
+     */
+    Vector2(Vector2&& p_toMove) noexcept = default;
 
     ~Vector2(void) {}
 
@@ -88,6 +98,11 @@ public:
     {
         return (a.x * b.x) + (a.y * b.y);
     }
+    /**
+     * Copy assignment
+     * @param p_other
+     */
+    Vector2 operator=(const Vector2& p_other);
 
     inline Vector2 operator+(const Vector2& a) const
     {
@@ -179,6 +194,60 @@ public:
         o << "Vector2(" << v.x << "," << v.y << ")" << std::endl;
         return o;
     }
+    /**
+     * Calculate the sum of two vectors
+     * @param p_left (First vector)
+     * @param p_right (Second vector)
+     */
+    static Vector2 Add(const Vector2& p_left, const Vector2& p_right);
+
+    /**
+     * Calculate the substraction of two vectors
+     * @param p_left (First vector)
+     * @param p_right (Second vector)
+     */
+    static Vector2 Substract(const Vector2& p_left, const Vector2& p_right);
+
+    /**
+     * Calculate the multiplication of a vector with a scalar
+     * @param p_target
+     * @param p_scalar
+     */
+    static Vector2 Multiply(const Vector2& p_target, float p_scalar);
+
+    /**
+     * Divide scalar to vector left
+     * @param p_left
+     * @param p_scalar
+     */
+    static Vector2 Divide(const Vector2& p_left, float p_scalar);
+
+    /**
+     * Return the length of a vector
+     * @param p_target
+     */
+    static float Length(const Vector2& p_target);
+
+    /**
+     * Return the normalize of the given vector
+     * @param p_target
+     */
+    static Vector2 Normalize(const Vector2& p_target);
+
+    /**
+     * Calculate the interpolation between two vectors
+     * @param p_start
+     * @param p_end
+     * @param p_alpha
+     */
+    static Vector2 Lerp(const Vector2& p_start, const Vector2& p_end, float p_alpha);
+
+    /**
+     * Calculate the angle between two vectors
+     * @param p_from
+     * @param p_to
+     */
+    static float AngleBetween(const Vector2& p_from, const Vector2& p_to);
 };
 } // namespace Maths
 } // namespace NLS

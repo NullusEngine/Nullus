@@ -1,13 +1,13 @@
 #pragma once
 
 #include <string>
-#include "Core/CoreDef.h"
+#include "PlatformDef.h"
 namespace NLS::Utils
 {
 	/**
 	* Provide some tools to get information about a given path
 	*/
-	class NLS_CORE_API PathParser
+	class NLS_PLATFORM_API PathParser
 	{
 	public:
 		enum class EFileType

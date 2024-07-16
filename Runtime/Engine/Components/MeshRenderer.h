@@ -56,20 +56,20 @@ namespace NLS::Engine::Components
 		/**
 		* Returns the custom bounding sphere
 		*/
-		const Rendering::Geometry::BoundingSphere GetCustomBoundingSphere() const;
+        const NLS::Rendering::Geometry::BoundingSphere GetCustomBoundingSphere() const;
 
 		/**
 		* Sets the custom bounding sphere
 		* @param p_boundingSphere
 		*/
-		void SetCustomBoundingSphere(const Rendering::Geometry::BoundingSphere& p_boundingSphere);
+        void SetCustomBoundingSphere(const NLS::Rendering::Geometry::BoundingSphere& p_boundingSphere);
 
 
 
 	private:
 		NLS::Rendering::Resources::Model* m_model = nullptr;
 		Event<> m_modelChangedEvent;
-		Rendering::Geometry::BoundingSphere m_customBoundingSphere = { {}, 1.0f };
+        NLS::Rendering::Geometry::BoundingSphere m_customBoundingSphere = {{}, 1.0f};
 		EFrustumBehaviour m_frustumBehaviour = EFrustumBehaviour::CULL_MODEL;
 	};
 }

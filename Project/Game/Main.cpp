@@ -1,6 +1,4 @@
-﻿#include "Windowing/Window.h"
-#include "Core/Application.h"
-#include "Core/Utils/PathParser.h"
+﻿#include "Core/Application.h"
 #include <filesystem>
 int main(int argc, char** argv)
 {

@@ -6,7 +6,7 @@
 #include "EngineDef.h"
 namespace NLS::Engine::Components
 {
-	using namespace NLS::Rendering::Entities;
+	using namespace NLS::Render::Entities;
 	/**
 	* Represents a camera entity. Its position will determine its view matrix
 	*/
@@ -70,7 +70,7 @@ namespace NLS::Engine::Components
         * Defines the projection mode the camera should adopt
         * @param p_projectionMode
         */
-        void SetProjectionMode(NLS::Rendering::Settings::EProjectionMode p_projectionMode);
+        void SetProjectionMode(NLS::Render::Settings::EProjectionMode p_projectionMode);
 
 		/**
 		* Returns the fov of the camera
@@ -110,10 +110,10 @@ namespace NLS::Engine::Components
         /**
         * Returns the current projection mode
         */
-        NLS::Rendering::Settings::EProjectionMode GetProjectionMode() const;
+        NLS::Render::Settings::EProjectionMode GetProjectionMode() const;
 
 		/**
-		* Returns the OvRendering camera instance attached to this component
+		* Returns the Rendering camera instance attached to this component
 		*/
 		Camera* GetCamera();
 

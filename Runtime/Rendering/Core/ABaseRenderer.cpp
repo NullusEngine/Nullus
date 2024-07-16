@@ -3,23 +3,23 @@
 #include "Rendering/Core/ABaseRenderer.h"
 #include "Rendering/Resources/Loaders/TextureLoader.h"
 #include <Debug/Assertion.h>
-std::atomic_bool NLS::Rendering::Core::ABaseRenderer::s_isDrawing{ false };
+std::atomic_bool NLS::Render::Core::ABaseRenderer::s_isDrawing{ false };
 
-const NLS::Rendering::Entities::Camera kDefaultCamera;
+const NLS::Render::Entities::Camera kDefaultCamera;
 
-NLS::Rendering::Core::ABaseRenderer::ABaseRenderer(Context::Driver& p_driver) : 
+NLS::Render::Core::ABaseRenderer::ABaseRenderer(Context::Driver& p_driver) : 
 	m_driver(p_driver),
 	m_isDrawing(false),
-	m_emptyTexture(NLS::Rendering::Resources::Loaders::TextureLoader::CreatePixel(255, 255, 255, 255))
+	m_emptyTexture(NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(255, 255, 255, 255))
 {
 }
 
-NLS::Rendering::Core::ABaseRenderer::~ABaseRenderer()
+NLS::Render::Core::ABaseRenderer::~ABaseRenderer()
 {
-	NLS::Rendering::Resources::Loaders::TextureLoader::Destroy(m_emptyTexture);
+	NLS::Render::Resources::Loaders::TextureLoader::Destroy(m_emptyTexture);
 }
 
-void NLS::Rendering::Core::ABaseRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
+void NLS::Render::Core::ABaseRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
 {
 	NLS_ASSERT(!s_isDrawing, "Cannot call BeginFrame() when previous frame hasn't finished.");
 	NLS_ASSERT(p_frameDescriptor.IsValid(), "Invalid FrameDescriptor!");
@@ -47,7 +47,7 @@ void NLS::Rendering::Core::ABaseRenderer::BeginFrame(const Data::FrameDescriptor
 	s_isDrawing.store(true);
 }
 
-void NLS::Rendering::Core::ABaseRenderer::EndFrame()
+void NLS::Render::Core::ABaseRenderer::EndFrame()
 {
 	NLS_ASSERT(s_isDrawing, "Cannot call EndFrame() before calling BeginFrame()");
 
@@ -60,23 +60,23 @@ void NLS::Rendering::Core::ABaseRenderer::EndFrame()
 	s_isDrawing.store(false);
 }
 
-const NLS::Rendering::Data::FrameDescriptor& NLS::Rendering::Core::ABaseRenderer::GetFrameDescriptor() const
+const NLS::Render::Data::FrameDescriptor& NLS::Render::Core::ABaseRenderer::GetFrameDescriptor() const
 {
 	NLS_ASSERT(m_isDrawing, "Cannot call GetFrameDescriptor() outside of a frame");
 	return m_frameDescriptor;
 }
 
-NLS::Rendering::Data::PipelineState NLS::Rendering::Core::ABaseRenderer::CreatePipelineState() const
+NLS::Render::Data::PipelineState NLS::Render::Core::ABaseRenderer::CreatePipelineState() const
 {
 	return m_basePipelineState;
 }
 
-bool NLS::Rendering::Core::ABaseRenderer::IsDrawing() const
+bool NLS::Render::Core::ABaseRenderer::IsDrawing() const
 {
 	return m_isDrawing;
 }
 
-void NLS::Rendering::Core::ABaseRenderer::ReadPixels(
+void NLS::Render::Core::ABaseRenderer::ReadPixels(
 	uint32_t p_x,
 	uint32_t p_y,
 	uint32_t p_width,
@@ -89,7 +89,7 @@ void NLS::Rendering::Core::ABaseRenderer::ReadPixels(
 	return m_driver.ReadPixels(p_x, p_y, p_width, p_height, p_format, p_type, p_data);
 }
 
-void NLS::Rendering::Core::ABaseRenderer::Clear(
+void NLS::Render::Core::ABaseRenderer::Clear(
 	bool p_colorBuffer,
 	bool p_depthBuffer,
 	bool p_stencilBuffer,
@@ -99,8 +99,8 @@ void NLS::Rendering::Core::ABaseRenderer::Clear(
 	m_driver.Clear(p_colorBuffer, p_depthBuffer, p_stencilBuffer, p_color);
 }
 
-void NLS::Rendering::Core::ABaseRenderer::DrawEntity(
-	NLS::Rendering::Data::PipelineState p_pso,
+void NLS::Render::Core::ABaseRenderer::DrawEntity(
+	NLS::Render::Data::PipelineState p_pso,
 	const Entities::Drawable& p_drawable
 )
 {

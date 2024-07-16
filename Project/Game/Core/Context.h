@@ -40,7 +40,7 @@ namespace Game
 		std::unique_ptr<NLS::Context::Device> device;
 		std::unique_ptr<Windowing::Window> window;
 		std::unique_ptr<Windowing::Inputs::InputManager> inputManager;
-		std::unique_ptr<NLS::Rendering::Context::Driver> driver;
+		std::unique_ptr<NLS::Render::Context::Driver> driver;
 
 		Engine::SceneSystem::SceneManager sceneManager;
 

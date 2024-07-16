@@ -9,26 +9,26 @@ namespace NLS::Core::ResourceManagement
 	/**
 	* ResourceManager of textures
 	*/
-	class NLS_CORE_API TextureManager : public AResourceManager<NLS::Rendering::Resources::Texture>
+	class NLS_CORE_API TextureManager : public AResourceManager<NLS::Render::Resources::Texture>
 	{
 	public:
 		/**
 		* Create the resource identified by the given path
 		* @param p_path
 		*/
-		virtual NLS::Rendering::Resources::Texture* CreateResource(const std::string & p_path) override;
+		virtual NLS::Render::Resources::Texture* CreateResource(const std::string & p_path) override;
 
 		/**
 		* Destroy the given resource
 		* @param p_resource
 		*/
-		virtual void DestroyResource(NLS::Rendering::Resources::Texture* p_resource) override;
+		virtual void DestroyResource(NLS::Render::Resources::Texture* p_resource) override;
 
 		/**
 		* Reload the given resource
 		* @param p_resource
 		* @param p_path
 		*/
-		virtual void ReloadResource(NLS::Rendering::Resources::Texture* p_resource, const std::string& p_path) override;
+		virtual void ReloadResource(NLS::Render::Resources::Texture* p_resource, const std::string& p_path) override;
 	};
 }

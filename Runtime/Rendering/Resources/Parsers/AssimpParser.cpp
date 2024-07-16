@@ -5,7 +5,7 @@
 
 #include "Rendering/Resources/Parsers/AssimpParser.h"
 
-bool NLS::Rendering::Resources::Parsers::AssimpParser::LoadModel(const std::string & p_fileName, std::vector<Mesh*>& p_meshes, std::vector<std::string>& p_materials, EModelParserFlags p_parserFlags)
+bool NLS::Render::Resources::Parsers::AssimpParser::LoadModel(const std::string & p_fileName, std::vector<Mesh*>& p_meshes, std::vector<std::string>& p_materials, EModelParserFlags p_parserFlags)
 {
 	Assimp::Importer import;
     const aiScene* scene = import.ReadFile(p_fileName, static_cast<unsigned int>(p_parserFlags));
@@ -22,7 +22,7 @@ bool NLS::Rendering::Resources::Parsers::AssimpParser::LoadModel(const std::stri
 	return true;
 }
 
-void NLS::Rendering::Resources::Parsers::AssimpParser::ProcessMaterials(const aiScene * p_scene, std::vector<std::string>& p_materials)
+void NLS::Render::Resources::Parsers::AssimpParser::ProcessMaterials(const aiScene * p_scene, std::vector<std::string>& p_materials)
 {
 	for (uint32_t i = 0; i < p_scene->mNumMaterials; ++i)
 	{
@@ -36,7 +36,7 @@ void NLS::Rendering::Resources::Parsers::AssimpParser::ProcessMaterials(const ai
 	}
 }
 
-void NLS::Rendering::Resources::Parsers::AssimpParser::ProcessNode(void* p_transform, aiNode * p_node, const aiScene * p_scene, std::vector<Mesh*>& p_meshes)
+void NLS::Render::Resources::Parsers::AssimpParser::ProcessNode(void* p_transform, aiNode * p_node, const aiScene * p_scene, std::vector<Mesh*>& p_meshes)
 {
 	aiMatrix4x4 nodeTransformation = *reinterpret_cast<aiMatrix4x4*>(p_transform) * p_node->mTransformation;
 
@@ -57,7 +57,7 @@ void NLS::Rendering::Resources::Parsers::AssimpParser::ProcessNode(void* p_trans
 	}
 }
 
-void NLS::Rendering::Resources::Parsers::AssimpParser::ProcessMesh(void* p_transform, aiMesh* p_mesh, const aiScene* p_scene, std::vector<Geometry::Vertex>& p_outVertices, std::vector<uint32_t>& p_outIndices)
+void NLS::Render::Resources::Parsers::AssimpParser::ProcessMesh(void* p_transform, aiMesh* p_mesh, const aiScene* p_scene, std::vector<Geometry::Vertex>& p_outVertices, std::vector<uint32_t>& p_outIndices)
 {
 	aiMatrix4x4 meshTransformation = *reinterpret_cast<aiMatrix4x4*>(p_transform);
 

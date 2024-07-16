@@ -18,6 +18,12 @@
 
 #include "Core/EditorActions.h"
 #include "Components/TransformComponent.h"
+#include "Panels/Inspector.h"
+#include "Panels/SceneView.h"
+#include "ResourceManagement/ModelManager.h"
+#include "ServiceLocator.h"
+#include "Panels/AssetView.h"
+#include "Panels/MaterialEditor.h"
 // #include "Panels/SceneView.h"
 // #include "Panels/AssetView.h"
 // #include "Panels/GameView.h"
@@ -63,7 +69,7 @@ void Editor::Core::EditorActions::LoadSceneFromDisk(const std::string& p_path, b
 
     m_context.sceneManager.LoadScene(p_path, p_absolute);
     NLS_LOG_INFO("Scene loaded from disk: " + m_context.sceneManager.GetCurrentSceneSourcePath());
-    // m_panelsManager.GetPanelAs<OvEditor::Panels::SceneView>("Scene View").Focus();
+    // m_panelsManager.GetPanelAs<Editor::Panels::SceneView>("Scene View").Focus();
 }
 
 bool Editor::Core::EditorActions::IsCurrentSceneLoadedFromDisk() const
@@ -405,7 +411,7 @@ void Editor::Core::EditorActions::StartPlaying()
         // 			tinyxml2::XMLNode* node = m_sceneBackup.NewElement("root");
         // 			m_sceneBackup.InsertFirstChild(node);
         // 			m_context.sceneManager.GetCurrentScene()->OnSerialize(m_sceneBackup, node);
-        // 			m_panelsManager.GetPanelAs<OvEditor::Panels::GameView>("Game View").Focus();
+        // 			m_panelsManager.GetPanelAs<Editor::Panels::GameView>("Game View").Focus();
         // 			m_context.sceneManager.GetCurrentScene()->Play();
         // 			SetEditorMode(EEditorMode::PLAY);
         // 		}
@@ -428,7 +434,7 @@ void Editor::Core::EditorActions::StopPlaying()
     // 	if (m_editorMode != EEditorMode::EDIT)
     // 	{
     // 		ImGui::GetIO().DisableMouseUpdate = false;
-    // 		m_context.window->SetCursorMode(OvWindowing::Cursor::ECursorMode::NORMAL);
+    // 		m_context.window->SetCursorMode(Windowing::Cursor::ECursorMode::NORMAL);
     // 		SetEditorMode(EEditorMode::EDIT);
     // 		bool loadedFromDisk = m_context.sceneManager.IsCurrentSceneLoadedFromDisk();
     // 		std::string sceneSourcePath = m_context.sceneManager.GetCurrentSceneSourcePath();
@@ -567,41 +573,39 @@ void Editor::Core::EditorActions::DuplicateActor(Engine::GameObject& p_toDuplica
 
 void Editor::Core::EditorActions::SelectActor(Engine::GameObject& p_target)
 {
-    // EDITOR_PANEL(Panels::Inspector, "Inspector").FocusActor(p_target);
+    EDITOR_PANEL(Panels::Inspector, "Inspector").FocusActor(p_target);
 }
 
 void Editor::Core::EditorActions::UnselectActor()
 {
-    // EDITOR_PANEL(Panels::Inspector, "Inspector").UnFocus();
+    EDITOR_PANEL(Panels::Inspector, "Inspector").UnFocus();
 }
 
 bool Editor::Core::EditorActions::IsAnyActorSelected() const
 {
-    // return EDITOR_PANEL(Panels::Inspector, "Inspector").GetTargetActor();
-    return false;
+    return EDITOR_PANEL(Panels::Inspector, "Inspector").GetTargetActor();
 }
 
 Engine::GameObject* Editor::Core::EditorActions::GetSelectedActor() const
 {
-    // return *EDITOR_PANEL(Panels::Inspector, "Inspector").GetTargetActor();
-    return nullptr;
+    return EDITOR_PANEL(Panels::Inspector, "Inspector").GetTargetActor();
 }
 
 void Editor::Core::EditorActions::MoveToTarget(Engine::GameObject& p_target)
 {
-    // EDITOR_PANEL(Panels::SceneView, "Scene View").GetCameraController().MoveToTarget(p_target);
+    EDITOR_PANEL(Panels::SceneView, "Scene View").GetCameraController().MoveToTarget(p_target);
 }
 
 void Editor::Core::EditorActions::CompileShaders()
 {
     for (auto shader : m_context.shaderManager.GetResources())
-        Rendering::Resources::Loaders::ShaderLoader::Recompile(*shader.second, GetRealPath(shader.second->path));
+        Render::Resources::Loaders::ShaderLoader::Recompile(*shader.second, GetRealPath(shader.second->path));
 }
 
 void Editor::Core::EditorActions::SaveMaterials()
 {
-    //for (auto& [id, material] : m_context.materialManager.GetResources())
-        //Resources::Loaders::MaterialLoader::Save(*material, GetRealPath(material->path));
+    for (auto& [id, material] : m_context.materialManager.GetResources())
+        Resources::Loaders::MaterialLoader::Save(*material, GetRealPath(material->path));
 }
 
 bool Editor::Core::EditorActions::ImportAsset(const std::string& p_initialDestinationDirectory)
@@ -743,155 +747,129 @@ void Editor::Core::EditorActions::PropagateFolderDestruction(std::string p_folde
 
 void Editor::Core::EditorActions::PropagateScriptRename(std::string p_previousName, std::string p_newName)
 {
-//     p_previousName = GetScriptPath(p_previousName);
-//     p_newName = GetScriptPath(p_newName);
-// 
-//     if (auto currentScene = m_context.sceneManager.GetCurrentScene())
-//         for (auto actor : currentScene->GetActors())
-//             if (actor->RemoveBehaviour(p_previousName))
-//                 actor->AddBehaviour(p_newName);
-// 
-//     PropagateFileRenameThroughSavedFilesOfType(p_previousName, p_newName, OvTools::Utils::PathParser::EFileType::SCENE);
-// 
-//     EDITOR_PANEL(Panels::Inspector, "Inspector").Refresh();
+
 }
 
 void Editor::Core::EditorActions::PropagateFileRename(std::string p_previousName, std::string p_newName)
 {
-//     p_previousName = GetResourcePath(p_previousName);
-//     p_newName = GetResourcePath(p_newName);
-// 
-//     if (p_newName != "?")
-//     {
-//         /* If not a real rename is asked (Not delete) */
-// 
-//         if (NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::ResourceManagement::ModelManager>().MoveResource(p_previousName, p_newName))
-//         {
-//             OvRendering::Resources::Model* resource = OvCore::Global::ServiceLocator::Get<OvCore::ResourceManagement::ModelManager>()[p_newName];
-//             *reinterpret_cast<std::string*>(reinterpret_cast<char*>(resource) + offsetof(OvRendering::Resources::Model, path)) = p_newName;
-//         }
-// 
-//         if (OvCore::Global::ServiceLocator::Get<OvCore::ResourceManagement::TextureManager>().MoveResource(p_previousName, p_newName))
-//         {
-//             OvRendering::Resources::Texture* resource = OvCore::Global::ServiceLocator::Get<OvCore::ResourceManagement::TextureManager>()[p_newName];
-//             *reinterpret_cast<std::string*>(reinterpret_cast<char*>(resource) + offsetof(OvRendering::Resources::Texture, path)) = p_newName;
-//         }
-// 
-//         if (OvCore::Global::ServiceLocator::Get<OvCore::ResourceManagement::ShaderManager>().MoveResource(p_previousName, p_newName))
-//         {
-//             OvRendering::Resources::Shader* resource = OvCore::Global::ServiceLocator::Get<OvCore::ResourceManagement::ShaderManager>()[p_newName];
-//             *reinterpret_cast<std::string*>(reinterpret_cast<char*>(resource) + offsetof(OvRendering::Resources::Shader, path)) = p_newName;
-//         }
-// 
-//         if (OvCore::Global::ServiceLocator::Get<OvCore::ResourceManagement::MaterialManager>().MoveResource(p_previousName, p_newName))
-//         {
-//             OvCore::Resources::Material* resource = OvCore::Global::ServiceLocator::Get<OvCore::ResourceManagement::MaterialManager>()[p_newName];
-//             *reinterpret_cast<std::string*>(reinterpret_cast<char*>(resource) + offsetof(OvCore::Resources::Material, path)) = p_newName;
-//         }
-// 
-//         if (OvCore::Global::ServiceLocator::Get<OvCore::ResourceManagement::SoundManager>().MoveResource(p_previousName, p_newName))
-//         {
-//             OvAudio::Resources::Sound* resource = OvCore::Global::ServiceLocator::Get<OvCore::ResourceManagement::SoundManager>()[p_newName];
-//             *reinterpret_cast<std::string*>(reinterpret_cast<char*>(resource) + offsetof(OvAudio::Resources::Sound, path)) = p_newName;
-//         }
-//     }
-//     else
-//     {
-//         if (auto texture = OvCore::Global::ServiceLocator::Get<OvCore::ResourceManagement::TextureManager>().GetResource(p_previousName, false))
-//         {
-//             for (auto [name, instance] : OvCore::Global::ServiceLocator::Get<OvCore::ResourceManagement::MaterialManager>().GetResources())
-//                 if (instance)
-//                     for (auto& [name, value] : instance->GetUniformsData())
-//                         if (value.has_value() && value.type() == typeid(OvRendering::Resources::Texture*))
-//                             if (std::any_cast<OvRendering::Resources::Texture*>(value) == texture)
-//                                 value = static_cast<OvRendering::Resources::Texture*>(nullptr);
-// 
-//             auto& assetView = EDITOR_PANEL(Panels::AssetView, "Asset View");
-//             auto assetViewRes = assetView.GetResource();
-//             if (auto pval = std::get_if<OvRendering::Resources::Texture*>(&assetViewRes); pval && *pval)
-//                 assetView.ClearResource();
-// 
-//             OvCore::Global::ServiceLocator::Get<OvCore::ResourceManagement::TextureManager>().UnloadResource(p_previousName);
-//         }
-// 
-//         if (auto shader = OvCore::Global::ServiceLocator::Get<OvCore::ResourceManagement::ShaderManager>().GetResource(p_previousName, false))
-//         {
-//             auto& materialEditor = EDITOR_PANEL(Panels::MaterialEditor, "Material Editor");
-// 
-//             for (auto [name, instance] : OvCore::Global::ServiceLocator::Get<OvCore::ResourceManagement::MaterialManager>().GetResources())
-//                 if (instance && instance->GetShader() == shader)
-//                     instance->SetShader(nullptr);
-// 
-//             OvCore::Global::ServiceLocator::Get<OvCore::ResourceManagement::ShaderManager>().UnloadResource(p_previousName);
-//         }
-// 
-//         if (auto model = OvCore::Global::ServiceLocator::Get<OvCore::ResourceManagement::ModelManager>().GetResource(p_previousName, false))
-//         {
-//             auto& assetView = EDITOR_PANEL(Panels::AssetView, "Asset View");
-//             auto assetViewRes = assetView.GetResource();
-//             if (auto pval = std::get_if<OvRendering::Resources::Model*>(&assetViewRes); pval && *pval)
-//                 assetView.ClearResource();
-// 
-//             if (auto currentScene = m_context.sceneManager.GetCurrentScene())
-//                 for (auto actor : currentScene->GetActors())
-//                     if (auto modelRenderer = actor->GetComponent<OvCore::ECS::Components::CModelRenderer>(); modelRenderer && modelRenderer->GetModel() == model)
-//                         modelRenderer->SetModel(nullptr);
-// 
-//             OvCore::Global::ServiceLocator::Get<OvCore::ResourceManagement::ModelManager>().UnloadResource(p_previousName);
-//         }
-// 
-//         if (auto material = OvCore::Global::ServiceLocator::Get<OvCore::ResourceManagement::MaterialManager>().GetResource(p_previousName, false))
-//         {
-//             auto& materialEditor = EDITOR_PANEL(Panels::MaterialEditor, "Material Editor");
-// 
-//             if (materialEditor.GetTarget() == material)
-//                 materialEditor.RemoveTarget();
-// 
-//             auto& assetView = EDITOR_PANEL(Panels::AssetView, "Asset View");
-//             auto assetViewRes = assetView.GetResource();
-//             if (auto pval = std::get_if<OvCore::Resources::Material*>(&assetViewRes); pval && *pval)
-//                 assetView.ClearResource();
-// 
-//             if (auto currentScene = m_context.sceneManager.GetCurrentScene())
-//                 for (auto actor : currentScene->GetActors())
-//                     if (auto materialRenderer = actor->GetComponent<OvCore::ECS::Components::CMaterialRenderer>(); materialRenderer)
-//                         materialRenderer->RemoveMaterialByInstance(*material);
-// 
-//             OvCore::Global::ServiceLocator::Get<OvCore::ResourceManagement::MaterialManager>().UnloadResource(p_previousName);
-//         }
-// 
-//         if (auto sound = OvCore::Global::ServiceLocator::Get<OvCore::ResourceManagement::SoundManager>().GetResource(p_previousName, false))
-//         {
-//             if (auto currentScene = m_context.sceneManager.GetCurrentScene())
-//                 for (auto actor : currentScene->GetActors())
-//                     if (auto audioSource = actor->GetComponent<OvCore::ECS::Components::CAudioSource>(); audioSource && audioSource->GetSound() == sound)
-//                         audioSource->SetSound(nullptr);
-// 
-//             OvCore::Global::ServiceLocator::Get<OvCore::ResourceManagement::SoundManager>().UnloadResource(p_previousName);
-//         }
-//     }
-// 
-//     switch (OvTools::Utils::PathParser::GetFileType(p_previousName))
-//     {
-//         case OvTools::Utils::PathParser::EFileType::MATERIAL:
-//             PropagateFileRenameThroughSavedFilesOfType(p_previousName, p_newName, OvTools::Utils::PathParser::EFileType::SCENE);
-//             break;
-//         case OvTools::Utils::PathParser::EFileType::MODEL:
-//             PropagateFileRenameThroughSavedFilesOfType(p_previousName, p_newName, OvTools::Utils::PathParser::EFileType::SCENE);
-//             break;
-//         case OvTools::Utils::PathParser::EFileType::SHADER:
-//             PropagateFileRenameThroughSavedFilesOfType(p_previousName, p_newName, OvTools::Utils::PathParser::EFileType::MATERIAL);
-//             break;
-//         case OvTools::Utils::PathParser::EFileType::TEXTURE:
-//             PropagateFileRenameThroughSavedFilesOfType(p_previousName, p_newName, OvTools::Utils::PathParser::EFileType::MATERIAL);
-//             break;
-//         case OvTools::Utils::PathParser::EFileType::SOUND:
-//             PropagateFileRenameThroughSavedFilesOfType(p_previousName, p_newName, OvTools::Utils::PathParser::EFileType::SCENE);
-//             break;
-//     }
-// 
-//     EDITOR_PANEL(Panels::Inspector, "Inspector").Refresh();
-//     EDITOR_PANEL(Panels::MaterialEditor, "Material Editor").Refresh();
+     p_previousName = GetResourcePath(p_previousName);
+     p_newName = GetResourcePath(p_newName);
+ 
+     if (p_newName != "?")
+     {
+         /* If not a real rename is asked (Not delete) */
+ 
+         if (NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::ModelManager>().MoveResource(p_previousName, p_newName))
+         {
+             Render::Resources::Model* resource = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::ModelManager>()[p_newName];
+             *reinterpret_cast<std::string*>(reinterpret_cast<char*>(resource) + offsetof(Render::Resources::Model, path)) = p_newName;
+         }
+ 
+         if (NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::TextureManager>().MoveResource(p_previousName, p_newName))
+         {
+             Render::Resources::Texture* resource = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::TextureManager>()[p_newName];
+             *reinterpret_cast<std::string*>(reinterpret_cast<char*>(resource) + offsetof(Render::Resources::Texture, path)) = p_newName;
+         }
+ 
+         if (NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::ShaderManager>().MoveResource(p_previousName, p_newName))
+         {
+             Render::Resources::Shader* resource = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::ShaderManager>()[p_newName];
+             *reinterpret_cast<std::string*>(reinterpret_cast<char*>(resource) + offsetof(Render::Resources::Shader, path)) = p_newName;
+         }
+ 
+         if (NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::MaterialManager>().MoveResource(p_previousName, p_newName))
+         {
+             NLS::Render::Resources::Material* resource = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::MaterialManager>()[p_newName];
+             *reinterpret_cast<std::string*>(reinterpret_cast<char*>(resource) + offsetof(Render::Resources::Material, path)) = p_newName;
+         }
+     }
+     else
+     {
+         if (auto texture = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::TextureManager>().GetResource(p_previousName, false))
+         {
+             for (auto [name, instance] : NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::MaterialManager>().GetResources())
+                 if (instance)
+                     for (auto& [name, value] : instance->GetUniformsData())
+                         if (value.has_value() && value.type() == typeid(Render::Resources::Texture*))
+                             if (std::any_cast<Render::Resources::Texture*>(value) == texture)
+                                 value = static_cast<Render::Resources::Texture*>(nullptr);
+ 
+             auto& assetView = EDITOR_PANEL(Panels::AssetView, "Asset View");
+             auto assetViewRes = assetView.GetResource();
+             if (auto pval = std::get_if<Render::Resources::Texture*>(&assetViewRes); pval && *pval)
+                 assetView.ClearResource();
+ 
+             NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::TextureManager>().UnloadResource(p_previousName);
+         }
+ 
+         if (auto shader = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::ShaderManager>().GetResource(p_previousName, false))
+         {
+             auto& materialEditor = EDITOR_PANEL(Panels::MaterialEditor, "Material Editor");
+ 
+             for (auto [name, instance] : NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::MaterialManager>().GetResources())
+                 if (instance && instance->GetShader() == shader)
+                     instance->SetShader(nullptr);
+ 
+             NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::ShaderManager>().UnloadResource(p_previousName);
+         }
+ 
+         if (auto model = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::ModelManager>().GetResource(p_previousName, false))
+         {
+             auto& assetView = EDITOR_PANEL(Panels::AssetView, "Asset View");
+             auto assetViewRes = assetView.GetResource();
+             if (auto pval = std::get_if<Render::Resources::Model*>(&assetViewRes); pval && *pval)
+                 assetView.ClearResource();
+ 
+             if (auto currentScene = m_context.sceneManager.GetCurrentScene())
+                 for (auto actor : currentScene->GetActors())
+                     if (auto modelRenderer = actor->GetComponent<Engine::Components::MeshRenderer>(); modelRenderer && modelRenderer->GetModel() == model)
+                         modelRenderer->SetModel(nullptr);
+ 
+             NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::ModelManager>().UnloadResource(p_previousName);
+         }
+ 
+         if (auto material = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::MaterialManager>().GetResource(p_previousName, false))
+         {
+             auto& materialEditor = EDITOR_PANEL(Panels::MaterialEditor, "Material Editor");
+ 
+             if (materialEditor.GetTarget() == material)
+                 materialEditor.RemoveTarget();
+ 
+             auto& assetView = EDITOR_PANEL(Panels::AssetView, "Asset View");
+             auto assetViewRes = assetView.GetResource();
+             if (auto pval = std::get_if<NLS::Render::Resources::Material*>(&assetViewRes); pval && *pval)
+                 assetView.ClearResource();
+ 
+             if (auto currentScene = m_context.sceneManager.GetCurrentScene())
+                 for (auto actor : currentScene->GetActors())
+                     if (auto materialRenderer = actor->GetComponent<Engine::Components::MaterialRenderer>(); materialRenderer)
+                         materialRenderer->RemoveMaterialByInstance(*material);
+ 
+             NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::MaterialManager>().UnloadResource(p_previousName);
+         }
+     }
+ 
+     switch (Utils::PathParser::GetFileType(p_previousName))
+     {
+         case Utils::PathParser::EFileType::MATERIAL:
+             PropagateFileRenameThroughSavedFilesOfType(p_previousName, p_newName, Utils::PathParser::EFileType::SCENE);
+             break;
+         case Utils::PathParser::EFileType::MODEL:
+             PropagateFileRenameThroughSavedFilesOfType(p_previousName, p_newName, Utils::PathParser::EFileType::SCENE);
+             break;
+         case Utils::PathParser::EFileType::SHADER:
+             PropagateFileRenameThroughSavedFilesOfType(p_previousName, p_newName, Utils::PathParser::EFileType::MATERIAL);
+             break;
+         case Utils::PathParser::EFileType::TEXTURE:
+             PropagateFileRenameThroughSavedFilesOfType(p_previousName, p_newName, Utils::PathParser::EFileType::MATERIAL);
+             break;
+         case Utils::PathParser::EFileType::SOUND:
+             PropagateFileRenameThroughSavedFilesOfType(p_previousName, p_newName, Utils::PathParser::EFileType::SCENE);
+             break;
+     }
+ 
+     EDITOR_PANEL(Panels::Inspector, "Inspector").Refresh();
+     EDITOR_PANEL(Panels::MaterialEditor, "Material Editor").Refresh();
 }
 
 void Editor::Core::EditorActions::PropagateFileRenameThroughSavedFilesOfType(const std::string& p_previousName, const std::string& p_newName, Utils::PathParser::EFileType p_fileType)

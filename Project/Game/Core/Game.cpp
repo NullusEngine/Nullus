@@ -31,7 +31,7 @@ Game::Core::Game::Game(Context & p_context) :
         if (model)
             modelRenderer->SetModel(model);
         auto materialRenderer = instance.AddComponent<MaterialRenderer>();
-        auto material = new NLS::Rendering::Data::Material(m_context.shaderManager[":Shaders/Standard.glsl"]);
+        auto material = new NLS::Render::Resources::Material(m_context.shaderManager[":Shaders/Standard.glsl"]);
         if (material)
             materialRenderer->FillWithMaterial(*material);
     }
@@ -65,7 +65,7 @@ void RenderCurrentScene(
 				*currentScene,
 			});
 
-			NLS::Rendering::Data::FrameDescriptor frameDescriptor;
+			NLS::Render::Data::FrameDescriptor frameDescriptor;
 			frameDescriptor.renderWidth = windowSize.x;
 			frameDescriptor.renderHeight = windowSize.y;
 			frameDescriptor.camera = camera->GetCamera();
@@ -93,7 +93,7 @@ void Game::Core::Game::Update(float p_deltaTime)
 
 	#ifdef _DEBUG
 	if (m_context.inputManager->IsKeyPressed(Windowing::Inputs::EKey::KEY_R))
-		NLS::Rendering::Resources::Loaders::ShaderLoader::Recompile(*m_context.shaderManager[":Shaders\\Standard.glsl"], "Data\\Engine\\Shaders\\Standard.glsl");
+		NLS::Render::Resources::Loaders::ShaderLoader::Recompile(*m_context.shaderManager[":Shaders\\Standard.glsl"], "Data\\Engine\\Shaders\\Standard.glsl");
 	#endif
 }
 

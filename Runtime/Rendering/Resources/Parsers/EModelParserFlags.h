@@ -1,6 +1,6 @@
 #pragma once
 
-namespace NLS::Rendering::Resources::Parsers
+namespace NLS::Render::Resources::Parsers
 {
 	/**
 	* Some flags that can be used for model parsing

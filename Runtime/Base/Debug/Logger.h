@@ -11,14 +11,14 @@
 #include "Debug/HistoryHandler.h"
 
 //#define NLS_LOG(message)			NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_DEFAULT,	NLS::Debug::ELogMode::CONSOLE)
-//#define NLS_LOG_INFO(message)		NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::NLS_LOG_INFO,		NLS::Debug::ELogMode::CONSOLE)
-//#define NLS_LOG_WARNING(message)	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::NLS_LOG_WARNING,	NLS::Debug::ELogMode::CONSOLE)
-//#define NLS_LOG_ERROR(message)	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::NLS_LOG_ERROR,	NLS::Debug::ELogMode::CONSOLE)
+//#define NLS_LOG_INFO(message)		NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_INFO,		NLS::Debug::ELogMode::CONSOLE)
+//#define NLS_LOG_WARNING(message)	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_WARNING,	NLS::Debug::ELogMode::CONSOLE)
+//#define NLS_LOG_ERROR(message)	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_ERROR,	NLS::Debug::ELogMode::CONSOLE)
 
 #define NLS_LOG(message)			NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_DEFAULT, 	NLS::Debug::ELogMode::CONSOLE); NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_DEFAULT, NLS::Debug::ELogMode::FILE)
-#define NLS_LOG_INFO(message)	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::NLS_LOG_INFO, 	NLS::Debug::ELogMode::CONSOLE); NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::NLS_LOG_INFO, 	NLS::Debug::ELogMode::FILE)
-#define NLS_LOG_WARNING(message)	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::NLS_LOG_WARNING, 	NLS::Debug::ELogMode::CONSOLE); NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::NLS_LOG_WARNING, NLS::Debug::ELogMode::FILE)
-#define NLS_LOG_ERROR(message)	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::NLS_LOG_ERROR, 	NLS::Debug::ELogMode::CONSOLE); NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::NLS_LOG_ERROR, 	NLS::Debug::ELogMode::FILE)
+#define NLS_LOG_INFO(message)	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_INFO, 	NLS::Debug::ELogMode::CONSOLE); NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_INFO, 	NLS::Debug::ELogMode::FILE)
+#define NLS_LOG_WARNING(message)	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_WARNING, 	NLS::Debug::ELogMode::CONSOLE); NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_WARNING, NLS::Debug::ELogMode::FILE)
+#define NLS_LOG_ERROR(message)	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_ERROR, 	NLS::Debug::ELogMode::CONSOLE); NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_ERROR, 	NLS::Debug::ELogMode::FILE)
 
 namespace NLS::Debug
 {

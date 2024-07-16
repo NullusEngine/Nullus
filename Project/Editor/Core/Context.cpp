@@ -44,9 +44,9 @@ namespace NLS
 		device->SetVsync(true);
 
 		/* Graphics context creation */
-        driver = std::make_unique<NLS::Rendering::Context::Driver>(NLS::Rendering::Settings::DriverSettings{true});
+        driver = std::make_unique<NLS::Render::Context::Driver>(NLS::Render::Settings::DriverSettings{true});
 
-        std::filesystem::create_directories(std::string(getenv("APPDATA")) + "\\OverloadTech\\OvEditor\\");
+        std::filesystem::create_directories(std::string(getenv("APPDATA")) + "\\OverloadTech\\Editor\\");
 
         uiManager = std::make_unique<NLS::UI::UIManager>(window->GetGlfwWindow(), UI::Styling::EStyle::ALTERNATIVE_DARK);
         uiManager->LoadFont("Ruda_Big", editorAssetsPath + "/Fonts/Ruda-Bold.ttf", 16);

@@ -4,7 +4,7 @@
 
 #include "Rendering/Buffers/UniformBuffer.h"
 
-namespace NLS::Rendering::Buffers
+namespace NLS::Render::Buffers
 {
 	template<typename T>
 	inline void UniformBuffer::SetSubData(const T& p_data, size_t p_offsetInOut)

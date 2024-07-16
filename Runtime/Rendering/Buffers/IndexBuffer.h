@@ -4,7 +4,7 @@
 
 #include "Rendering/Context/Driver.h"
 
-namespace NLS::Rendering::Buffers
+namespace NLS::Render::Buffers
 {
 /**
  * Wraps OpenGL EBO
@@ -48,4 +48,4 @@ public:
 private:
     uint32_t m_bufferID;
 };
-} // namespace NLS::Rendering::Buffers
+} // namespace NLS::Render::Buffers

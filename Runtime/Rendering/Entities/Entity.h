@@ -5,7 +5,7 @@
 
 #include <Math/Transform.h>
 #include "RenderDef.h"
-namespace NLS::Rendering::Entities
+namespace NLS::Render::Entities
 {
 	/**
 	* Represents an entity with a transformation in space

@@ -2,7 +2,7 @@
 
 #include "Rendering/Core/CompositeRenderer.h"
 #include <Debug/Assertion.h>
-namespace NLS::Rendering::Core
+namespace NLS::Render::Core
 {
 	template <typename T, typename... Args>
 	T& CompositeRenderer::AddFeature(Args&&... args)

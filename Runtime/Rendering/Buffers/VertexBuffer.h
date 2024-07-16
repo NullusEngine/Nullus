@@ -4,7 +4,7 @@
 
 #include "Rendering/Context/Driver.h"
 
-namespace NLS::Rendering::Buffers
+namespace NLS::Render::Buffers
 {
 /**
  * Wraps OpenGL VBO
@@ -49,6 +49,6 @@ public:
 private:
     uint32_t m_bufferID;
 };
-} // namespace NLS::Rendering::Buffers
+} // namespace NLS::Render::Buffers
 
 #include "Rendering/Buffers/VertexBuffer.inl"

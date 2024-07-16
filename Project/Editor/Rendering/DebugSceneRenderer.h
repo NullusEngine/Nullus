@@ -6,7 +6,7 @@
 #include "GameObject.h"
 #include <Engine/SceneSystem/SceneManager.h>
 #include "Components/MeshRenderer.h"
-#include <Rendering/Data/Material.h>
+#include <Rendering/Resources/Material.h>
 #include "Components/LightComponent.h"
 #include <Engine/Rendering/SceneRenderer.h>
 #include "Core/GizmoBehaviour.h"
@@ -35,6 +35,6 @@ class DebugSceneRenderer : public Engine::Rendering::SceneRenderer
 		* Constructor of the Renderer
 		* @param p_driver
 		*/
-		DebugSceneRenderer(NLS::Rendering::Context::Driver& p_driver);
+		DebugSceneRenderer(NLS::Render::Context::Driver& p_driver);
 	};
 }

@@ -21,7 +21,7 @@
 #include "RenderDef.h"
 class DriverImpl;
 
-namespace NLS::Rendering::Context
+namespace NLS::Render::Context
 {
 /**
  * Handles the lifecycle of the underlying graphics context
@@ -94,7 +94,7 @@ public:
      * @param p_instances
      */
     void Draw(
-        NLS::Rendering::Data::PipelineState p_pso,
+        NLS::Render::Data::PipelineState p_pso,
         const Resources::IMesh& p_mesh,
         Settings::EPrimitiveMode p_primitiveMode = Settings::EPrimitiveMode::TRIANGLES,
         uint32_t p_instances = 1);
@@ -136,4 +136,4 @@ private:
     Data::PipelineState m_defaultPipelineState;
     Data::PipelineState m_pipelineState;
 };
-} // namespace NLS::Rendering::Context
+} // namespace NLS::Render::Context

@@ -2,7 +2,7 @@
 
 #include <cstdint>
 #include "RenderDef.h"
-namespace NLS::Rendering::Settings
+namespace NLS::Render::Settings
 {
 	/**
 	* Comparaison algorithm used by depth/stencil operations

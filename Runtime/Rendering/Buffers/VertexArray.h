@@ -2,7 +2,7 @@
 
 #include "Rendering/Buffers/VertexBuffer.h"
 #include "Rendering/Settings/EDataType.h"
-namespace NLS::Rendering::Buffers
+namespace NLS::Render::Buffers
 {
 /**
  * Wraps OpenGL VAO
@@ -56,6 +56,6 @@ public:
 private:
     GLuint m_bufferID;
 };
-} // namespace NLS::Rendering::Buffers
+} // namespace NLS::Render::Buffers
 
 #include "Rendering/Buffers/VertexArray.inl"

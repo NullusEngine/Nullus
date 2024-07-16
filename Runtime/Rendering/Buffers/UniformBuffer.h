@@ -6,12 +6,12 @@
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Settings/EAccessSpecifier.h"
 #include "RenderDef.h"
-namespace NLS::Rendering::Resources
+namespace NLS::Render::Resources
 {
 class Shader;
 }
 
-namespace NLS::Rendering::Buffers
+namespace NLS::Render::Buffers
 {
 /**
  * Wraps OpenGL UBO
@@ -75,7 +75,7 @@ public:
      * @param p_uniformBlockLocation
      * @param p_bindingPoint
      */
-    static void BindBlockToShader(NLS::Rendering::Resources::Shader& p_shader, uint32_t p_uniformBlockLocation, uint32_t p_bindingPoint = 0);
+    static void BindBlockToShader(NLS::Render::Resources::Shader& p_shader, uint32_t p_uniformBlockLocation, uint32_t p_bindingPoint = 0);
 
     /**
      * Bind a block identified by the given name to the given shader
@@ -83,14 +83,14 @@ public:
      * @param p_name
      * @param p_bindingPoint
      */
-    static void BindBlockToShader(NLS::Rendering::Resources::Shader& p_shader, const std::string& p_name, uint32_t p_bindingPoint = 0);
+    static void BindBlockToShader(NLS::Render::Resources::Shader& p_shader, const std::string& p_name, uint32_t p_bindingPoint = 0);
 
     /**
      * Return the location of the block (ID)
      * @param p_shader
      * @param p_name
      */
-    static uint32_t GetBlockLocation(NLS::Rendering::Resources::Shader& p_shader, const std::string& p_name);
+    static uint32_t GetBlockLocation(NLS::Render::Resources::Shader& p_shader, const std::string& p_name);
 
 private:
     void _SetSubData(const void* p_data, uint32_t size, size_t p_offset);
@@ -100,6 +100,6 @@ private:
     uint32_t m_bufferID;
     uint32_t m_bindingPoint = 0;
 };
-} // namespace NLS::Rendering::Buffers
+} // namespace NLS::Render::Buffers
 
 #include "Rendering/Buffers/UniformBuffer.inl"

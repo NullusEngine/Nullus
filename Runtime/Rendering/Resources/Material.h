@@ -8,7 +8,7 @@
 #include "Rendering/Resources/Texture.h"
 #include "Rendering/Data/StateMask.h"
 #include "RenderDef.h"
-namespace NLS::Rendering::Data
+namespace NLS::Render::Resources
 {
 /**
  * A material is a combination of a shader and some settings (Material settings and shader settings)
@@ -20,13 +20,13 @@ public:
      * Creates a material
      * @param p_shader
      */
-    Material(NLS::Rendering::Resources::Shader* p_shader = nullptr);
+    Material(NLS::Render::Resources::Shader* p_shader = nullptr);
 
     /**
      * Defines the shader to attach to this material instance
      * @param p_shader
      */
-    void SetShader(NLS::Rendering::Resources::Shader* p_shader);
+    void SetShader(NLS::Render::Resources::Shader* p_shader);
 
     /**
      * Fill uniform with default uniform values
@@ -37,7 +37,7 @@ public:
      * Bind the material and send its uniform data to the GPU
      * @param p_emptyTexture (The texture to use if a texture uniform is null)
      */
-    void Bind(NLS::Rendering::Resources::Texture* p_emptyTexture = nullptr) const;
+    void Bind(NLS::Render::Resources::Texture* p_emptyTexture = nullptr) const;
 
     /**
      * Unbind the material
@@ -62,7 +62,7 @@ public:
     /**
      * Returns the attached shader
      */
-    NLS::Rendering::Resources::Shader*& GetShader();
+    NLS::Render::Resources::Shader*& GetShader();
 
     /**
      * Returns true if the material has a shader attached
@@ -154,7 +154,7 @@ public:
     /**
      * Generate a state mask with the current material settings
      */
-    const StateMask GenerateStateMask() const;
+    const Data::StateMask GenerateStateMask() const;
 
     /**
      * Returns the uniforms data of the material
@@ -164,7 +164,7 @@ public:
     const std::string path;
 
 protected:
-    NLS::Rendering::Resources::Shader* m_shader = nullptr;
+    NLS::Render::Resources::Shader* m_shader = nullptr;
     std::map<std::string, std::any> m_uniformsData;
 
     bool m_blendable = false;
@@ -175,6 +175,6 @@ protected:
     bool m_colorWriting = true;
     int m_gpuInstances = 1;
 };
-} // namespace NLS::Rendering::Data
+} // namespace NLS::Render::Data
 
-#include "Rendering/Data/Material.inl"
+#include "Rendering/Resources/Material.inl"

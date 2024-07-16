@@ -19,13 +19,13 @@ NLS::Engine::Components::MeshRenderer::MeshRenderer()
 		};
 }
 
-void MeshRenderer::SetModel(Rendering::Resources::Model* p_model)
+void MeshRenderer::SetModel(Render::Resources::Model* p_model)
 {
 	m_model = p_model;
 	m_modelChangedEvent.Invoke();
 }
 
-Rendering::Resources::Model * MeshRenderer::GetModel() const
+Render::Resources::Model * MeshRenderer::GetModel() const
 {
 	return m_model;
 }
@@ -40,12 +40,12 @@ MeshRenderer::EFrustumBehaviour MeshRenderer::GetFrustumBehaviour() const
 	return m_frustumBehaviour;
 }
 
-const Rendering::Geometry::BoundingSphere MeshRenderer::GetCustomBoundingSphere() const
+const Render::Geometry::BoundingSphere& MeshRenderer::GetCustomBoundingSphere() const
 {
 	return m_customBoundingSphere;
 }
 
-void MeshRenderer::SetCustomBoundingSphere(const Rendering::Geometry::BoundingSphere& p_boundingSphere)
+void MeshRenderer::SetCustomBoundingSphere(const Render::Geometry::BoundingSphere& p_boundingSphere)
 {
 	m_customBoundingSphere = p_boundingSphere;
 }

@@ -12,7 +12,7 @@
 #include "RenderDef.h"
 
 using namespace NLS;
-namespace NLS::Rendering::Resources
+namespace NLS::Render::Resources
 {
 	namespace Loaders { class ShaderLoader; }
 

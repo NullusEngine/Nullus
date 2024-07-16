@@ -3,7 +3,7 @@
 #include "Rendering/Buffers/ShaderStorageBuffer.h"
 #include "UniformBuffer.h"
 
-namespace NLS::Rendering::Buffers
+namespace NLS::Render::Buffers
 {
 	template<typename T>
 	inline void ShaderStorageBuffer::SendBlocks(T* p_data, size_t p_size)

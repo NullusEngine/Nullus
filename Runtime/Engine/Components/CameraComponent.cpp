@@ -47,7 +47,7 @@ void CameraComponent::SetFrustumLightCulling(bool p_enable)
 	m_camera->SetFrustumLightCulling(p_enable);
 }
 
-void CameraComponent::SetProjectionMode(NLS::Rendering::Settings::EProjectionMode p_projectionMode)
+void CameraComponent::SetProjectionMode(NLS::Render::Settings::EProjectionMode p_projectionMode)
 {
     m_camera->SetProjectionMode(p_projectionMode);
 }
@@ -92,12 +92,12 @@ bool CameraComponent::HasFrustumLightCulling() const
 	return m_camera->HasFrustumLightCulling();
 }
 
-NLS::Rendering::Settings::EProjectionMode CameraComponent::GetProjectionMode() const
+NLS::Render::Settings::EProjectionMode CameraComponent::GetProjectionMode() const
 {
     return m_camera->GetProjectionMode();
 }
 
-NLS::Rendering::Entities::Camera* CameraComponent::GetCamera()
+NLS::Render::Entities::Camera* CameraComponent::GetCamera()
 {
 	return m_camera;
 }

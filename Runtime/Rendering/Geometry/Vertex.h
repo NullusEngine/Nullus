@@ -1,6 +1,6 @@
 #pragma once
 
-namespace NLS::Rendering::Geometry
+namespace NLS::Render::Geometry
 {
 	/**
 	* Data structure that defines the geometry of a vertex

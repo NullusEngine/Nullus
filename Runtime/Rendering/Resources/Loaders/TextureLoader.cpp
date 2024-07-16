@@ -4,7 +4,7 @@
 
 #include "Rendering/Resources/Loaders/TextureLoader.h"
 
-NLS::Rendering::Resources::Texture* NLS::Rendering::Resources::Loaders::TextureLoader::Create(const std::string& p_filepath, NLS::Rendering::Settings::ETextureFilteringMode p_firstFilter, NLS::Rendering::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap)
+NLS::Render::Resources::Texture* NLS::Render::Resources::Loaders::TextureLoader::Create(const std::string& p_filepath, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap)
 {
 	GLuint textureID;
 	glGenTextures(1, &textureID);
@@ -41,19 +41,19 @@ NLS::Rendering::Resources::Texture* NLS::Rendering::Resources::Loaders::TextureL
 	}
 }
 
-NLS::Rendering::Resources::Texture* NLS::Rendering::Resources::Loaders::TextureLoader::CreatePixel(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+NLS::Render::Resources::Texture* NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 {
 	std::array<uint8_t, 4> colorData = { r, g, b, a };
 
-	return NLS::Rendering::Resources::Loaders::TextureLoader::CreateFromMemory(
+	return NLS::Render::Resources::Loaders::TextureLoader::CreateFromMemory(
 		colorData.data(), 1, 1,
-		NLS::Rendering::Settings::ETextureFilteringMode::NEAREST,
-		NLS::Rendering::Settings::ETextureFilteringMode::NEAREST,
+		NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+		NLS::Render::Settings::ETextureFilteringMode::NEAREST,
 		false
 	);
 }
 
-NLS::Rendering::Resources::Texture* NLS::Rendering::Resources::Loaders::TextureLoader::CreateFromMemory(uint8_t* p_data, uint32_t p_width, uint32_t p_height, NLS::Rendering::Settings::ETextureFilteringMode p_firstFilter, NLS::Rendering::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap)
+NLS::Render::Resources::Texture* NLS::Render::Resources::Loaders::TextureLoader::CreateFromMemory(uint8_t* p_data, uint32_t p_width, uint32_t p_height, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap)
 {
 	GLuint textureID;
 	glGenTextures(1, &textureID);
@@ -76,7 +76,7 @@ NLS::Rendering::Resources::Texture* NLS::Rendering::Resources::Loaders::TextureL
 	return new Texture("", textureID, 1, 1, 32, p_firstFilter, p_secondFilter, p_generateMipmap);
 }
 
-void NLS::Rendering::Resources::Loaders::TextureLoader::Reload(Texture& p_texture, const std::string& p_filePath, NLS::Rendering::Settings::ETextureFilteringMode p_firstFilter, NLS::Rendering::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap)
+void NLS::Render::Resources::Loaders::TextureLoader::Reload(Texture& p_texture, const std::string& p_filePath, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap)
 {
 	Texture* newTexture = Create(p_filePath, p_firstFilter, p_secondFilter, p_generateMipmap);
 
@@ -95,7 +95,7 @@ void NLS::Rendering::Resources::Loaders::TextureLoader::Reload(Texture& p_textur
 	}
 }
 
-bool NLS::Rendering::Resources::Loaders::TextureLoader::Destroy(Texture*& p_textureInstance)
+bool NLS::Render::Resources::Loaders::TextureLoader::Destroy(Texture*& p_textureInstance)
 {
 	if (p_textureInstance)
 	{

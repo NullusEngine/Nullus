@@ -9,34 +9,34 @@
 using namespace NLS;
 Editor::Core::EditorResources::EditorResources(const std::string& p_editorAssetsPath)
 {
-	using namespace NLS::Rendering::Resources::Loaders;
+	using namespace NLS::Render::Resources::Loaders;
 
 	std::string buttonsFolder	= p_editorAssetsPath + "Textures/Buttons/";
 	std::string iconsFolder		= p_editorAssetsPath + "Textures/Icons/";
 	std::string modelsFolder	= p_editorAssetsPath + "Models/";
 	std::string shadersFolder	= p_editorAssetsPath + "Shaders/";
 
-	NLS::Rendering::Resources::Parsers::EModelParserFlags modelParserFlags = NLS::Rendering::Resources::Parsers::EModelParserFlags::NONE;
+	NLS::Render::Resources::Parsers::EModelParserFlags modelParserFlags = NLS::Render::Resources::Parsers::EModelParserFlags::NONE;
 
-	modelParserFlags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::TRIANGULATE;
-	modelParserFlags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::GEN_SMOOTH_NORMALS;
-	modelParserFlags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::OPTIMIZE_MESHES;
-	modelParserFlags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::OPTIMIZE_GRAPH;
-	modelParserFlags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::FIND_INSTANCES;
-	modelParserFlags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::CALC_TANGENT_SPACE;
-	modelParserFlags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::JOIN_IDENTICAL_VERTICES;
-	modelParserFlags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::DEBONE;
-	modelParserFlags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::FIND_INVALID_DATA;
-	modelParserFlags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::IMPROVE_CACHE_LOCALITY;
-	modelParserFlags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::GEN_UV_COORDS;
-	modelParserFlags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::PRE_TRANSFORM_VERTICES;
-	modelParserFlags |= NLS::Rendering::Resources::Parsers::EModelParserFlags::GLOBAL_SCALE;
+	modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE;
+	modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::GEN_SMOOTH_NORMALS;
+	modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::OPTIMIZE_MESHES;
+	modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::OPTIMIZE_GRAPH;
+	modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::FIND_INSTANCES;
+	modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::CALC_TANGENT_SPACE;
+	modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::JOIN_IDENTICAL_VERTICES;
+	modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::DEBONE;
+	modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::FIND_INVALID_DATA;
+	modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::IMPROVE_CACHE_LOCALITY;
+	modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::GEN_UV_COORDS;
+	modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::PRE_TRANSFORM_VERTICES;
+	modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::GLOBAL_SCALE;
 
-	NLS::Rendering::Settings::ETextureFilteringMode firstFilterEditor = NLS::Rendering::Settings::ETextureFilteringMode::LINEAR;
-    NLS::Rendering::Settings::ETextureFilteringMode secondFilterEditor = NLS::Rendering::Settings::ETextureFilteringMode::LINEAR;
+	NLS::Render::Settings::ETextureFilteringMode firstFilterEditor = NLS::Render::Settings::ETextureFilteringMode::LINEAR;
+    NLS::Render::Settings::ETextureFilteringMode secondFilterEditor = NLS::Render::Settings::ETextureFilteringMode::LINEAR;
 
-	NLS::Rendering::Settings::ETextureFilteringMode firstFilterBillboard = NLS::Rendering::Settings::ETextureFilteringMode::NEAREST;
-    NLS::Rendering::Settings::ETextureFilteringMode secondFilterBillboard = NLS::Rendering::Settings::ETextureFilteringMode::NEAREST;
+	NLS::Render::Settings::ETextureFilteringMode firstFilterBillboard = NLS::Render::Settings::ETextureFilteringMode::NEAREST;
+    NLS::Render::Settings::ETextureFilteringMode secondFilterBillboard = NLS::Render::Settings::ETextureFilteringMode::NEAREST;
 
 	/* Buttons */
 
@@ -162,7 +162,7 @@ Editor::Core::EditorResources::EditorResources(const std::string& p_editorAssets
 	/* From memory */
 	{
 		std::vector<uint64_t> raw = EMPTY_TEXTURE;
-        m_textures["Empty_Texture"] = NLS::Rendering::Resources::Loaders::TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 64, 64, firstFilterEditor, secondFilterEditor, false);
+        m_textures["Empty_Texture"] = NLS::Render::Resources::Loaders::TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 64, 64, firstFilterEditor, secondFilterEditor, false);
 		UI::GUIDrawer::ProvideEmptyTexture(*m_textures["Empty_Texture"]);
 	}
 }
@@ -170,22 +170,22 @@ Editor::Core::EditorResources::EditorResources(const std::string& p_editorAssets
 Editor::Core::EditorResources::~EditorResources()
 {
 	for (auto[id, texture] : m_textures)
-        NLS::Rendering::Resources::Loaders::TextureLoader::Destroy(texture);
+        NLS::Render::Resources::Loaders::TextureLoader::Destroy(texture);
 
 	for (auto [id, mesh] : m_models)
-        NLS::Rendering::Resources::Loaders::ModelLoader::Destroy(mesh);
+        NLS::Render::Resources::Loaders::ModelLoader::Destroy(mesh);
 
 	for (auto [id, shader] : m_shaders)
-        NLS::Rendering::Resources::Loaders::ShaderLoader::Destroy(shader);
+        NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader);
 }
 
-NLS::Rendering::Resources::Texture* Editor::Core::EditorResources::GetFileIcon(const std::string& p_filename)
+NLS::Render::Resources::Texture* Editor::Core::EditorResources::GetFileIcon(const std::string& p_filename)
 {
 	using namespace Utils;
 	return GetTexture("Icon_" + PathParser::FileTypeToString(PathParser::GetFileType(p_filename)));
 }
 
-NLS::Rendering::Resources::Texture* Editor::Core::EditorResources::GetTexture(const std::string& p_id)
+NLS::Render::Resources::Texture* Editor::Core::EditorResources::GetTexture(const std::string& p_id)
 {
 	if (m_textures.find(p_id) != m_textures.end())
 		return m_textures.at(p_id);
@@ -193,7 +193,7 @@ NLS::Rendering::Resources::Texture* Editor::Core::EditorResources::GetTexture(co
 	return nullptr;
 }
 
-NLS::Rendering::Resources::Model* Editor::Core::EditorResources::GetModel(const std::string& p_id)
+NLS::Render::Resources::Model* Editor::Core::EditorResources::GetModel(const std::string& p_id)
 {
 	if (m_models.find(p_id) != m_models.end())
 		return m_models.at(p_id);
@@ -201,7 +201,7 @@ NLS::Rendering::Resources::Model* Editor::Core::EditorResources::GetModel(const 
 	return nullptr;
 }
 
-NLS::Rendering::Resources::Shader* Editor::Core::EditorResources::GetShader(const std::string& p_id)
+NLS::Render::Resources::Shader* Editor::Core::EditorResources::GetShader(const std::string& p_id)
 {
 	if (m_shaders.find(p_id) != m_shaders.end())
 		return m_shaders.at(p_id);

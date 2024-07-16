@@ -5,7 +5,7 @@
 
 #include "Rendering/Buffers/Framebuffer.h"
 #include "Rendering/Entities/Camera.h"
-namespace NLS::Rendering::Data
+namespace NLS::Render::Data
 {
 /**
  * An object that can be described using additional data structures (descriptors)
@@ -55,6 +55,6 @@ public:
 private:
     std::unordered_map<std::type_index, std::any> m_descriptors;
 };
-} // namespace NLS::Rendering::Data
+} // namespace NLS::Render::Data
 
 #include "Rendering/Data/Describable.inl"

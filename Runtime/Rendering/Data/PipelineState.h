@@ -13,7 +13,7 @@
 #include "Rendering/Settings/EPixelDataFormat.h"
 #include "Rendering/Settings/EPixelDataType.h"
 #include "RenderDef.h"
-namespace NLS::Rendering::Data
+namespace NLS::Render::Data
 {
 	/**
 	* Represents the current state of the driver and allow for efficient context switches

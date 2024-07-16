@@ -6,7 +6,7 @@
 #include <GameObject.h>
 #include <SceneSystem/SceneManager.h>
 #include <Components/MeshRenderer.h>
-#include <Data/Material.h>
+#include <Resources/Material.h>
 #include <Components/LightComponent.h>
 #include <Rendering/SceneRenderer.h>
 
@@ -17,14 +17,14 @@ namespace NLS::Editor::Rendering
 	/**
 	* Draw a gizmo
 	*/
-class GizmoRenderFeature : public NLS::Rendering::Features::ARenderFeature
+class GizmoRenderFeature : public NLS::Render::Features::ARenderFeature
 	{
 	public:
 		/**
 		* Constructor
 		* @param p_renderer
 		*/
-        GizmoRenderFeature(NLS::Rendering::Core::CompositeRenderer& p_renderer);
+        GizmoRenderFeature(NLS::Render::Core::CompositeRenderer& p_renderer);
 
 		/**
 		* Render a gizmo at position
@@ -43,7 +43,7 @@ class GizmoRenderFeature : public NLS::Rendering::Features::ARenderFeature
 		);
 
 	private:
-        NLS::Rendering::Data::Material m_gizmoArrowMaterial;
-        NLS::Rendering::Data::Material m_gizmoBallMaterial;
+        NLS::Render::Resources::Material m_gizmoArrowMaterial;
+        NLS::Render::Resources::Material m_gizmoBallMaterial;
 	};
 }

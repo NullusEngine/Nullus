@@ -54,6 +54,20 @@ SharedObject GameObject::GetComponent(Type type, bool includeSubType) const
     return {};
 }
 
+bool Engine::GameObject::RemoveComponent(SharedObject component)
+{
+    for (auto it = m_vComponents.begin(); it != m_vComponents.end(); ++it)
+    {
+        if (*it == component)
+        {
+            ComponentRemovedEvent.Invoke(component);
+            m_vComponents.erase(it);
+            return true;
+        }
+    }
+    return false;
+}
+
 void NLS::Engine::GameObject::SetActive(bool p_active)
 {
 	if (p_active != m_active)

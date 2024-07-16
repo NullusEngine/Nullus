@@ -1,7 +1,7 @@
 #pragma once
 #include "Rendering/Buffers/VertexArray.h"
 
-namespace NLS::Rendering::Buffers
+namespace NLS::Render::Buffers
 {
 	template <class T>
 	inline void VertexArray::BindAttribute(

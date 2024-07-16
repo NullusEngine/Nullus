@@ -4,7 +4,7 @@
 
 #include "Rendering/Context/Driver.h"
 
-namespace NLS::Rendering::Buffers
+namespace NLS::Render::Buffers
 {
 /**
  * Wraps OpenGL EBO
@@ -65,4 +65,4 @@ private:
     uint32_t m_renderTexture = 0;
     uint32_t m_depthStencilBuffer = 0;
 };
-} // namespace NLS::Rendering::Buffers
+} // namespace NLS::Render::Buffers

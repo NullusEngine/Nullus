@@ -9,7 +9,7 @@
 #include "Rendering/Data/Describable.h"
 #include "Eventing/Event.h"
 #include "RenderDef.h"
-namespace NLS::Rendering::Core
+namespace NLS::Render::Core
 {
 	/**
 	* A renderer relying on composition to define rendering logic.
@@ -17,7 +17,7 @@ namespace NLS::Rendering::Core
 	class NLS_RENDER_API CompositeRenderer : public ABaseRenderer, public Data::Describable
 	{
 	public:
-		NLS::Event<NLS::Rendering::Data::PipelineState&, const Entities::Drawable&> preDrawEntityEvent;
+		NLS::Event<NLS::Render::Data::PipelineState&, const Entities::Drawable&> preDrawEntityEvent;
 		NLS::Event<const Entities::Drawable&> postDrawEntityEvent;
 
 		/**
@@ -52,7 +52,7 @@ namespace NLS::Rendering::Core
 		* @param p_drawable
 		*/
 		virtual void DrawEntity(
-			NLS::Rendering::Data::PipelineState p_pso,
+			NLS::Render::Data::PipelineState p_pso,
 			const Entities::Drawable& p_drawable
 		) override;
 

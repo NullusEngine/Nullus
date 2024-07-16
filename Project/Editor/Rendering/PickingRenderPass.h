@@ -6,7 +6,7 @@
 #include <GameObject.h>
 #include <SceneSystem/SceneManager.h>
 #include <Components/MeshRenderer.h>
-#include <Data/Material.h>
+#include <Resources/Material.h>
 #include <Components/LightComponent.h>
 #include <Rendering/SceneRenderer.h>
 
@@ -18,7 +18,7 @@ namespace NLS::Editor::Rendering
 	/**
 	* Draw the scene for actor picking
 	*/
-	class PickingRenderPass : public NLS::Rendering::Core::ARenderPass
+	class PickingRenderPass : public NLS::Render::Core::ARenderPass
 	{
 	public:
 		using PickingResult =
@@ -31,7 +31,7 @@ namespace NLS::Editor::Rendering
 		* Constructor
 		* @param p_renderer
 		*/
-		PickingRenderPass(NLS::Rendering::Core::CompositeRenderer& p_renderer);
+		PickingRenderPass(NLS::Render::Core::CompositeRenderer& p_renderer);
 
 		/**
 		* Return the picking result at the given position
@@ -46,21 +46,21 @@ namespace NLS::Editor::Rendering
 		);
 
 	private:
-		virtual void Draw(NLS::Rendering::Data::PipelineState p_pso) override;
-        void DrawPickableModels(NLS::Rendering::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
-        void DrawPickableCameras(NLS::Rendering::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
-        void DrawPickableLights(NLS::Rendering::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
+		virtual void Draw(NLS::Render::Data::PipelineState p_pso) override;
+        void DrawPickableModels(NLS::Render::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
+        void DrawPickableCameras(NLS::Render::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
+        void DrawPickableLights(NLS::Render::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
 		void DrawPickableGizmo(
-			NLS::Rendering::Data::PipelineState p_pso,
+			NLS::Render::Data::PipelineState p_pso,
 			const Maths::Vector3& p_position,
 			const Maths::Quaternion& p_rotation,
 			Core::EGizmoOperation p_operation
 		);
 
 	private:
-		NLS::Rendering::Buffers::Framebuffer m_actorPickingFramebuffer;
-		NLS::Rendering::Data::Material m_actorPickingMaterial;
-		NLS::Rendering::Data::Material m_lightMaterial;
-		NLS::Rendering::Data::Material m_gizmoPickingMaterial;
+		NLS::Render::Buffers::Framebuffer m_actorPickingFramebuffer;
+		NLS::Render::Resources::Material m_actorPickingMaterial;
+		NLS::Render::Resources::Material m_lightMaterial;
+		NLS::Render::Resources::Material m_gizmoPickingMaterial;
 	};
 }

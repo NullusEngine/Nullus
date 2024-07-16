@@ -35,12 +35,12 @@ namespace NLS::Engine::Components
 		* Defines the model to use
 		* @param p_model
 		*/
-		void SetModel(NLS::Rendering::Resources::Model* p_model);
+		void SetModel(NLS::Render::Resources::Model* p_model);
 
 		/**
 		* Returns the current model
 		*/
-		NLS::Rendering::Resources::Model* GetModel() const;
+		NLS::Render::Resources::Model* GetModel() const;
 
 		/**
 		* Sets a bounding mode
@@ -56,20 +56,20 @@ namespace NLS::Engine::Components
 		/**
 		* Returns the custom bounding sphere
 		*/
-        const NLS::Rendering::Geometry::BoundingSphere GetCustomBoundingSphere() const;
+        const NLS::Render::Geometry::BoundingSphere& GetCustomBoundingSphere() const;
 
 		/**
 		* Sets the custom bounding sphere
 		* @param p_boundingSphere
 		*/
-        void SetCustomBoundingSphere(const NLS::Rendering::Geometry::BoundingSphere& p_boundingSphere);
+        void SetCustomBoundingSphere(const NLS::Render::Geometry::BoundingSphere& p_boundingSphere);
 
 
 
 	private:
-		NLS::Rendering::Resources::Model* m_model = nullptr;
+		NLS::Render::Resources::Model* m_model = nullptr;
 		Event<> m_modelChangedEvent;
-        NLS::Rendering::Geometry::BoundingSphere m_customBoundingSphere = {{}, 1.0f};
+        NLS::Render::Geometry::BoundingSphere m_customBoundingSphere = {{}, 1.0f};
 		EFrustumBehaviour m_frustumBehaviour = EFrustumBehaviour::CULL_MODEL;
 	};
 }

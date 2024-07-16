@@ -2,12 +2,12 @@
 #include "Engine/Rendering/EngineDrawableDescriptor.h"
 #include "Rendering/Core/CompositeRenderer.h"
 using namespace NLS;
-Editor::Rendering::DebugModelRenderFeature::DebugModelRenderFeature(NLS::Rendering::Core::CompositeRenderer& p_renderer)
+Editor::Rendering::DebugModelRenderFeature::DebugModelRenderFeature(NLS::Render::Core::CompositeRenderer& p_renderer)
 	: ARenderFeature(p_renderer)
 {
 }
 
-void Editor::Rendering::DebugModelRenderFeature::DrawModelWithSingleMaterial(NLS::Rendering::Data::PipelineState p_pso, NLS::Rendering::Resources::Model& p_model, NLS::Rendering::Data::Material& p_material, const Maths::Matrix4& p_modelMatrix)
+void Editor::Rendering::DebugModelRenderFeature::DrawModelWithSingleMaterial(NLS::Render::Data::PipelineState p_pso, NLS::Render::Resources::Model& p_model, NLS::Render::Resources::Material& p_material, const Maths::Matrix4& p_modelMatrix)
 {
 	auto stateMask = p_material.GenerateStateMask();
 
@@ -18,7 +18,7 @@ void Editor::Rendering::DebugModelRenderFeature::DrawModelWithSingleMaterial(NLS
 
 	for (auto mesh : p_model.GetMeshes())
 	{
-		NLS::Rendering::Entities::Drawable element;
+		NLS::Render::Entities::Drawable element;
 		element.mesh = mesh;
 		element.material = &p_material;
 		element.stateMask = stateMask;

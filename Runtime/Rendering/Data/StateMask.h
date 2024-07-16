@@ -2,7 +2,7 @@
 
 #include <cstdint>
 #include "RenderDef.h"
-namespace NLS::Rendering::Data
+namespace NLS::Render::Data
 {
 /**
  * State mask used by materials to override some Pipeline State settings.
@@ -24,4 +24,4 @@ struct NLS_RENDER_API StateMask
         uint8_t mask;
     };
 };
-} // namespace NLS::Rendering::Data
+} // namespace NLS::Render::Data

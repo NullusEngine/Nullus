@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Rendering/Data/FrameDescriptor.h"
-namespace NLS::Rendering::Core
+namespace NLS::Render::Core
 {
 class IRenderer
 {
@@ -10,4 +10,4 @@ public:
     virtual void DrawFrame() = 0;
     virtual void EndFrame() = 0;
 };
-} // namespace NLS::Rendering::Core
+} // namespace NLS::Render::Core

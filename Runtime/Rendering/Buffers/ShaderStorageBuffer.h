@@ -5,12 +5,12 @@
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Settings/EAccessSpecifier.h"
 
-namespace NLS::Rendering::Resources
+namespace NLS::Render::Resources
 {
 class Shader;
 }
 
-namespace NLS::Rendering::Buffers
+namespace NLS::Render::Buffers
 {
 /**
  * Wraps OpenGL SSBO
@@ -48,6 +48,6 @@ public:
 private:
     uint32_t m_bufferID;
 };
-} // namespace NLS::Rendering::Buffers
+} // namespace NLS::Render::Buffers
 
 #include "Rendering/Buffers/ShaderStorageBuffer.inl"

@@ -17,18 +17,18 @@ void MaterialRenderer::OnCreate()
     UpdateMaterialList();
 }
 
-void MaterialRenderer::FillWithMaterial(NLS::Rendering::Data::Material & p_material)
+void MaterialRenderer::FillWithMaterial(NLS::Render::Resources::Material & p_material)
 {
 	for (uint8_t i = 0; i < m_materials.size(); ++i)
 		m_materials[i] = &p_material;
 }
 
-void MaterialRenderer::SetMaterialAtIndex(uint8_t p_index,NLS::Rendering::Data::Material& p_material)
+void MaterialRenderer::SetMaterialAtIndex(uint8_t p_index,NLS::Render::Resources::Material& p_material)
 {
 	m_materials[p_index] = &p_material;
 }
 
-NLS::Rendering::Data::Material* MaterialRenderer::GetMaterialAtIndex(uint8_t p_index)
+NLS::Render::Resources::Material* MaterialRenderer::GetMaterialAtIndex(uint8_t p_index)
 {
 	return m_materials.at(p_index);
 }
@@ -41,7 +41,7 @@ void MaterialRenderer::RemoveMaterialAtIndex(uint8_t p_index)
 	}
 }
 
-void MaterialRenderer::RemoveMaterialByInstance(NLS::Rendering::Data::Material& p_instance)
+void MaterialRenderer::RemoveMaterialByInstance(NLS::Render::Resources::Material& p_instance)
 {
 	for (uint8_t i = 0; i < m_materials.size(); ++i)
 		if (m_materials[i] == &p_instance)

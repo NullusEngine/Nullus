@@ -63,7 +63,7 @@ public:
     std::unique_ptr<NLS::Context::Device> device;
     std::unique_ptr<NLS::Windowing::Window> window;
     std::unique_ptr<NLS::Windowing::Inputs::InputManager> inputManager;
-    std::unique_ptr<NLS::Rendering::Context::Driver> driver;
+    std::unique_ptr<NLS::Render::Context::Driver> driver;
     std::unique_ptr<NLS::UI::UIManager> uiManager;
     std::unique_ptr<Editor::Core::EditorResources> editorResources;
     NLS::Engine::SceneSystem::SceneManager sceneManager;

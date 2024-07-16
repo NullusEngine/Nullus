@@ -6,7 +6,7 @@
 
 #include "Rendering/Resources/Mesh.h"
 #include "RenderDef.h"
-namespace NLS::Rendering::Resources
+namespace NLS::Render::Resources
 {
 	namespace Loaders { class ModelLoader; }
 
@@ -31,7 +31,7 @@ namespace NLS::Rendering::Resources
 		/**
 		* Returns the bounding sphere of the model
 		*/
-		const Rendering::Geometry::BoundingSphere GetBoundingSphere() const;
+        const Render::Geometry::BoundingSphere& GetBoundingSphere() const;
 
 	private:
 		Model(const std::string& p_path);

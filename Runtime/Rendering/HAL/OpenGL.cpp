@@ -6,81 +6,81 @@
 #include <Debug/Assertion.h>
 #include "Rendering/Utils/Conversions.h"
 
-constexpr GLenum ToGLEnum(NLS::Rendering::Settings::ERasterizationMode value)
+constexpr GLenum ToGLEnum(NLS::Render::Settings::ERasterizationMode value)
 {
 	return GL_POINT + static_cast<GLint>(value);
 }
 
-constexpr GLenum ToGLEnum(NLS::Rendering::Settings::EComparaisonAlgorithm value)
+constexpr GLenum ToGLEnum(NLS::Render::Settings::EComparaisonAlgorithm value)
 {
 	return GL_NEVER + static_cast<GLint>(value);
 }
 
-constexpr GLenum ToGLEnum(NLS::Rendering::Settings::ECullFace value)
+constexpr GLenum ToGLEnum(NLS::Render::Settings::ECullFace value)
 {
 	switch (value)
 	{
-	case NLS::Rendering::Settings::ECullFace::FRONT: return GL_FRONT;
-	case NLS::Rendering::Settings::ECullFace::BACK: return GL_BACK;
-	case NLS::Rendering::Settings::ECullFace::FRONT_AND_BACK: return GL_FRONT_AND_BACK;
+	case NLS::Render::Settings::ECullFace::FRONT: return GL_FRONT;
+	case NLS::Render::Settings::ECullFace::BACK: return GL_BACK;
+	case NLS::Render::Settings::ECullFace::FRONT_AND_BACK: return GL_FRONT_AND_BACK;
 	}
 
 	static_assert(true);
 	return {};
 }
 
-constexpr GLenum ToGLEnum(NLS::Rendering::Settings::EOperation value)
+constexpr GLenum ToGLEnum(NLS::Render::Settings::EOperation value)
 {
 	switch (value)
 	{
-	case NLS::Rendering::Settings::EOperation::KEEP: return GL_KEEP;
-	case NLS::Rendering::Settings::EOperation::ZERO: return GL_ZERO;
-	case NLS::Rendering::Settings::EOperation::REPLACE: return GL_REPLACE;
-	case NLS::Rendering::Settings::EOperation::INCREMENT: return GL_INCR;
-	case NLS::Rendering::Settings::EOperation::INCREMENT_WRAP: return GL_INCR_WRAP;
-	case NLS::Rendering::Settings::EOperation::DECREMENT: return GL_DECR;
-	case NLS::Rendering::Settings::EOperation::DECREMENT_WRAP: return GL_DECR_WRAP;
-	case NLS::Rendering::Settings::EOperation::INVERT: return GL_INVERT;
+	case NLS::Render::Settings::EOperation::KEEP: return GL_KEEP;
+	case NLS::Render::Settings::EOperation::ZERO: return GL_ZERO;
+	case NLS::Render::Settings::EOperation::REPLACE: return GL_REPLACE;
+	case NLS::Render::Settings::EOperation::INCREMENT: return GL_INCR;
+	case NLS::Render::Settings::EOperation::INCREMENT_WRAP: return GL_INCR_WRAP;
+	case NLS::Render::Settings::EOperation::DECREMENT: return GL_DECR;
+	case NLS::Render::Settings::EOperation::DECREMENT_WRAP: return GL_DECR_WRAP;
+	case NLS::Render::Settings::EOperation::INVERT: return GL_INVERT;
 	}
 
 	static_assert(true);
 	return {};
 }
 
-constexpr GLenum ToGLEnum(NLS::Rendering::Settings::ERenderingCapability value)
+constexpr GLenum ToGLEnum(NLS::Render::Settings::ERenderingCapability value)
 {
 	switch (value)
 	{
-	case NLS::Rendering::Settings::ERenderingCapability::BLEND: return GL_BLEND;
-	case NLS::Rendering::Settings::ERenderingCapability::CULL_FACE: return GL_CULL_FACE;
-	case NLS::Rendering::Settings::ERenderingCapability::DEPTH_TEST: return GL_DEPTH_TEST;
-	case NLS::Rendering::Settings::ERenderingCapability::DITHER: return GL_DITHER;
-	case NLS::Rendering::Settings::ERenderingCapability::POLYGON_OFFSET_FILL: return GL_POLYGON_OFFSET_FILL;
-	case NLS::Rendering::Settings::ERenderingCapability::SAMPLE_ALPHA_TO_COVERAGE: return GL_SAMPLE_ALPHA_TO_COVERAGE;
-	case NLS::Rendering::Settings::ERenderingCapability::SAMPLE_COVERAGE: return GL_SAMPLE_COVERAGE;
-	case NLS::Rendering::Settings::ERenderingCapability::SCISSOR_TEST: return GL_SCISSOR_TEST;
-	case NLS::Rendering::Settings::ERenderingCapability::STENCIL_TEST: return GL_STENCIL_TEST;
-	case NLS::Rendering::Settings::ERenderingCapability::MULTISAMPLE: return GL_MULTISAMPLE;
+	case NLS::Render::Settings::ERenderingCapability::BLEND: return GL_BLEND;
+	case NLS::Render::Settings::ERenderingCapability::CULL_FACE: return GL_CULL_FACE;
+	case NLS::Render::Settings::ERenderingCapability::DEPTH_TEST: return GL_DEPTH_TEST;
+	case NLS::Render::Settings::ERenderingCapability::DITHER: return GL_DITHER;
+	case NLS::Render::Settings::ERenderingCapability::POLYGON_OFFSET_FILL: return GL_POLYGON_OFFSET_FILL;
+	case NLS::Render::Settings::ERenderingCapability::SAMPLE_ALPHA_TO_COVERAGE: return GL_SAMPLE_ALPHA_TO_COVERAGE;
+	case NLS::Render::Settings::ERenderingCapability::SAMPLE_COVERAGE: return GL_SAMPLE_COVERAGE;
+	case NLS::Render::Settings::ERenderingCapability::SCISSOR_TEST: return GL_SCISSOR_TEST;
+	case NLS::Render::Settings::ERenderingCapability::STENCIL_TEST: return GL_STENCIL_TEST;
+	case NLS::Render::Settings::ERenderingCapability::MULTISAMPLE: return GL_MULTISAMPLE;
 	}
 
 	static_assert(true);
 	return {};
 }
 
-constexpr GLenum ToGLEnum(NLS::Rendering::Settings::EPrimitiveMode value)
+constexpr GLenum ToGLEnum(NLS::Render::Settings::EPrimitiveMode value)
 {
 	switch (value)
 	{
-	case NLS::Rendering::Settings::EPrimitiveMode::POINTS: return GL_POINTS;
-	case NLS::Rendering::Settings::EPrimitiveMode::LINES: return GL_LINES;
-	case NLS::Rendering::Settings::EPrimitiveMode::LINE_LOOP: return GL_LINE_LOOP;
-	case NLS::Rendering::Settings::EPrimitiveMode::LINE_STRIP: return GL_LINE_STRIP;
-	case NLS::Rendering::Settings::EPrimitiveMode::TRIANGLES: return GL_TRIANGLES;
-	case NLS::Rendering::Settings::EPrimitiveMode::TRIANGLE_STRIP: return GL_TRIANGLE_STRIP;
-	case NLS::Rendering::Settings::EPrimitiveMode::TRIANGLE_FAN: return GL_TRIANGLE_FAN;
-	case NLS::Rendering::Settings::EPrimitiveMode::LINES_ADJACENCY: return GL_LINES_ADJACENCY;
-	case NLS::Rendering::Settings::EPrimitiveMode::LINE_STRIP_ADJACENCY: return GL_LINE_STRIP_ADJACENCY;
-	case NLS::Rendering::Settings::EPrimitiveMode::PATCHES: return GL_PATCHES;
+	case NLS::Render::Settings::EPrimitiveMode::POINTS: return GL_POINTS;
+	case NLS::Render::Settings::EPrimitiveMode::LINES: return GL_LINES;
+	case NLS::Render::Settings::EPrimitiveMode::LINE_LOOP: return GL_LINE_LOOP;
+	case NLS::Render::Settings::EPrimitiveMode::LINE_STRIP: return GL_LINE_STRIP;
+	case NLS::Render::Settings::EPrimitiveMode::TRIANGLES: return GL_TRIANGLES;
+	case NLS::Render::Settings::EPrimitiveMode::TRIANGLE_STRIP: return GL_TRIANGLE_STRIP;
+	case NLS::Render::Settings::EPrimitiveMode::TRIANGLE_FAN: return GL_TRIANGLE_FAN;
+	case NLS::Render::Settings::EPrimitiveMode::LINES_ADJACENCY: return GL_LINES_ADJACENCY;
+	case NLS::Render::Settings::EPrimitiveMode::LINE_STRIP_ADJACENCY: return GL_LINE_STRIP_ADJACENCY;
+	case NLS::Render::Settings::EPrimitiveMode::PATCHES: return GL_PATCHES;
 	}
 
 	static_assert(true);
@@ -230,15 +230,15 @@ std::string GetString(uint32_t p_parameter, uint32_t p_index)
 /**
 * Very expensive! Call it once, and make sure you always keep track of state changes
 */
-NLS::Rendering::Data::PipelineState RetrieveOpenGLPipelineState()
+NLS::Render::Data::PipelineState RetrieveOpenGLPipelineState()
 {
-	using namespace NLS::Rendering::Settings;
+	using namespace NLS::Render::Settings;
 
-	NLS::Rendering::Data::PipelineState pso;
+	NLS::Render::Data::PipelineState pso;
 
 	// Rasterization
 	pso.rasterizationMode = static_cast<ERasterizationMode>(GetInt(GL_POLYGON_MODE));
-	pso.lineWidthPow2 = NLS::Rendering::Utils::Conversions::FloatToPow2(GetFloat(GL_LINE_WIDTH));
+	pso.lineWidthPow2 = NLS::Render::Utils::Conversions::FloatToPow2(GetFloat(GL_LINE_WIDTH));
 
 	// Color write mask
 	GLboolean colorWriteMask[4];
@@ -280,7 +280,7 @@ NLS::Rendering::Data::PipelineState RetrieveOpenGLPipelineState()
 	return pso;
 }
 
-namespace NLS::Rendering::HAL
+namespace NLS::Render::HAL
 {
 	template<>
 	std::optional<Data::PipelineState> OpenGL::Init(bool debug)

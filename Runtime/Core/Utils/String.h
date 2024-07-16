@@ -39,5 +39,7 @@ namespace NLS::Utils
         * @param p_isAvailable (A callback that must returning true if the input string is available)
         */
         static std::string GenerateUnique(const std::string& p_source, std::function<bool(std::string)> p_isAvailable);
+
+        static std::string ToString(const uint64_t number);
 	};
 }

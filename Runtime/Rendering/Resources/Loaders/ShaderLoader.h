@@ -2,7 +2,7 @@
 
 #include "Rendering/Resources/Shader.h"
 
-namespace NLS::Rendering::Resources::Loaders
+namespace NLS::Render::Resources::Loaders
 {
 	/**
 	* Handle the Shader creation and destruction

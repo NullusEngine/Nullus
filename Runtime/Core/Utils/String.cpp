@@ -1,28 +1,30 @@
 #include "String.h"
-
+#include <sstream>
+#include <iostream>
 bool NLS::Utils::String::Replace(std::string& p_target, const std::string& p_from, const std::string& p_to)
 {
-	size_t start_pos = p_target.find(p_from);
+    size_t start_pos = p_target.find(p_from);
 
-	if (start_pos != std::string::npos)
-	{
-		p_target.replace(start_pos, p_from.length(), p_to);
-		return true;
-	}
+    if (start_pos != std::string::npos)
+    {
+        p_target.replace(start_pos, p_from.length(), p_to);
+        return true;
+    }
 
-	return false;
+    return false;
 }
 
 void NLS::Utils::String::ReplaceAll(std::string& p_target, const std::string& p_from, const std::string& p_to)
 {
-	if (p_from.empty()) return;
+    if (p_from.empty())
+        return;
 
-	size_t start_pos = 0;
-	while ((start_pos = p_target.find(p_from, start_pos)) != std::string::npos)
-	{
-		p_target.replace(start_pos, p_from.length(), p_to);
-		start_pos += p_to.length();
-	}
+    size_t start_pos = 0;
+    while ((start_pos = p_target.find(p_from, start_pos)) != std::string::npos)
+    {
+        p_target.replace(start_pos, p_from.length(), p_to);
+        start_pos += p_to.length();
+    }
 }
 
 std::string NLS::Utils::String::GenerateUnique(const std::string& p_source, std::function<bool(std::string)> p_isAvailable)
@@ -40,12 +42,14 @@ std::string NLS::Utils::String::GenerateUnique(const std::string& p_source, std:
     {
         const auto c = *it;
 
-        if (suffixClosingParenthesisPos == std::string::npos && c == ')') suffixClosingParenthesisPos = currentPos;
-        if (suffixClosingParenthesisPos != std::string::npos && c == '(') suffixOpeningParenthesisPos = currentPos;
+        if (suffixClosingParenthesisPos == std::string::npos && c == ')')
+            suffixClosingParenthesisPos = currentPos;
+        if (suffixClosingParenthesisPos != std::string::npos && c == '(')
+            suffixOpeningParenthesisPos = currentPos;
     }
 
     // We need to declare our `counter` here to store the number between found parenthesis OR 1 (In the case no parenthesis, AKA, suffix, has been found)
-    auto counter = uint32_t{ 1 };
+    auto counter = uint32_t{1};
 
     // If the two parenthis have been found AND the closing parenthesis is the last character AND there is a space before the opening parenthesis
     if (suffixOpeningParenthesisPos != std::string::npos && suffixClosingParenthesisPos == p_source.length() - 1 && suffixOpeningParenthesisPos > 0 && p_source[suffixOpeningParenthesisPos - 1] == ' ')
@@ -54,7 +58,9 @@ std::string NLS::Utils::String::GenerateUnique(const std::string& p_source, std:
         const auto between = p_source.substr(suffixOpeningParenthesisPos + 1, suffixClosingParenthesisPos - suffixOpeningParenthesisPos - 1);
 
         // If the `between` string is composed of digits (AKA, `between` is a number)
-        if (!between.empty() && std::find_if(between.begin(), between.end(), [](unsigned char c) { return !std::isdigit(c); }) == between.end())
+        if (!between.empty() && std::find_if(between.begin(), between.end(), [](unsigned char c)
+                                             { return !std::isdigit(c); })
+                                    == between.end())
         {
             counter = static_cast<uint32_t>(std::atoi(between.c_str()));
             suffixlessSource = p_source.substr(0, suffixOpeningParenthesisPos - 1);
@@ -71,4 +77,21 @@ std::string NLS::Utils::String::GenerateUnique(const std::string& p_source, std:
     }
 
     return result;
+}
+
+struct DefaultNumberFormat : std::numpunct<char>
+{
+    // Comma separator between groups
+    char do_thousands_sep() const { return ','; }
+    // Group every 3 digits
+    std::string do_grouping() const { return "\03"; }
+};
+
+std::string NLS::Utils::String::ToString(const uint64_t number)
+{
+    std::stringstream ss;
+    ss.imbue(std::locale(std::cout.getloc(), new DefaultNumberFormat));
+    ss << number;
+
+    return ss.str();
 }

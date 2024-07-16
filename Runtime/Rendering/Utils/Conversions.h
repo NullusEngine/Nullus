@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace NLS::Rendering::Utils::Conversions
+namespace NLS::Render::Utils::Conversions
 {
     constexpr uint32_t _log2(float n)
     {

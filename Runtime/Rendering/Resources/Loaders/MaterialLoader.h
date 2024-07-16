@@ -3,10 +3,10 @@
 #include <string>
 #include <vector>
 
-#include "Rendering/Data/Material.h"
+#include "Rendering/Resources/Material.h"
 
-using namespace NLS::Rendering::Data;
-namespace NLS::Rendering::Resources::Loaders
+using namespace NLS::Render::Data;
+namespace NLS::Render::Resources::Loaders
 {
 /**
  * Handle the Texture creation and destruction
@@ -45,4 +45,4 @@ public:
      */
     static bool Destroy(Material*& p_material);
 };
-} // namespace NLS::Rendering::Resources::Loaders
+} // namespace NLS::Render::Resources::Loaders

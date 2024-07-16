@@ -1,8 +1,8 @@
 #include "Rendering/Resources/Loaders/ModelLoader.h"
 
-NLS::Rendering::Resources::Parsers::AssimpParser NLS::Rendering::Resources::Loaders::ModelLoader::__ASSIMP;
+NLS::Render::Resources::Parsers::AssimpParser NLS::Render::Resources::Loaders::ModelLoader::__ASSIMP;
 
-NLS::Rendering::Resources::Model* NLS::Rendering::Resources::Loaders::ModelLoader::Create(const std::string& p_filepath, Parsers::EModelParserFlags p_parserFlags)
+NLS::Render::Resources::Model* NLS::Render::Resources::Loaders::ModelLoader::Create(const std::string& p_filepath, Parsers::EModelParserFlags p_parserFlags)
 {
 	Model* result = new Model(p_filepath);
 
@@ -17,7 +17,7 @@ NLS::Rendering::Resources::Model* NLS::Rendering::Resources::Loaders::ModelLoade
 	return nullptr;
 }
 
-void NLS::Rendering::Resources::Loaders::ModelLoader::Reload(Model& p_model, const std::string& p_filePath, Parsers::EModelParserFlags p_parserFlags)
+void NLS::Render::Resources::Loaders::ModelLoader::Reload(Model& p_model, const std::string& p_filePath, Parsers::EModelParserFlags p_parserFlags)
 {
 	Model* newModel = Create(p_filePath, p_parserFlags);
 
@@ -31,7 +31,7 @@ void NLS::Rendering::Resources::Loaders::ModelLoader::Reload(Model& p_model, con
 	}
 }
 
-bool NLS::Rendering::Resources::Loaders::ModelLoader::Destroy(Model*& p_modelInstance)
+bool NLS::Render::Resources::Loaders::ModelLoader::Destroy(Model*& p_modelInstance)
 {
 	if (p_modelInstance)
 	{

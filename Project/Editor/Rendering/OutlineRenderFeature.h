@@ -7,7 +7,7 @@
 #include <GameObject.h>
 #include <SceneSystem/SceneManager.h>
 #include <Components/MeshRenderer.h>
-#include <Data/Material.h>
+#include <Resources/Material.h>
 #include <Components/LightComponent.h>
 
 #include "Core/Context.h"
@@ -17,14 +17,14 @@ namespace NLS::Editor::Rendering
 	/**
 	* Draw the scene for actor picking
 	*/
-	class OutlineRenderFeature : public NLS::Rendering::Features::ARenderFeature
+	class OutlineRenderFeature : public NLS::Render::Features::ARenderFeature
 	{
 	public:
 		/**
 		* Constructor
 		* @param p_renderer
 		*/
-		OutlineRenderFeature(NLS::Rendering::Core::CompositeRenderer& p_renderer);
+		OutlineRenderFeature(NLS::Render::Core::CompositeRenderer& p_renderer);
 
 		/**
 		* Draw an outline around the given actor
@@ -38,13 +38,13 @@ namespace NLS::Editor::Rendering
 		void DrawStencilPass(Engine::GameObject& p_actor);
 		void DrawOutlinePass(Engine::GameObject& p_actor, const Maths::Vector4& p_color, float p_thickness);
 		
-		void DrawActorToStencil(NLS::Rendering::Data::PipelineState p_pso, Engine::GameObject& p_actor);
-		void DrawActorOutline(NLS::Rendering::Data::PipelineState p_pso, Engine::GameObject& p_actor);
-		void DrawModelToStencil(NLS::Rendering::Data::PipelineState p_pso, const Maths::Matrix4& p_worldMatrix, NLS::Rendering::Resources::Model& p_model);
-		void DrawModelOutline(NLS::Rendering::Data::PipelineState p_pso, const Maths::Matrix4& p_worldMatrix, NLS::Rendering::Resources::Model& p_model);
+		void DrawActorToStencil(NLS::Render::Data::PipelineState p_pso, Engine::GameObject& p_actor);
+		void DrawActorOutline(NLS::Render::Data::PipelineState p_pso, Engine::GameObject& p_actor);
+		void DrawModelToStencil(NLS::Render::Data::PipelineState p_pso, const Maths::Matrix4& p_worldMatrix, NLS::Render::Resources::Model& p_model);
+		void DrawModelOutline(NLS::Render::Data::PipelineState p_pso, const Maths::Matrix4& p_worldMatrix, NLS::Render::Resources::Model& p_model);
 
 	private:
-        NLS::Rendering::Data::Material m_stencilFillMaterial;
-        NLS::Rendering::Data::Material m_outlineMaterial;
+        NLS::Render::Resources::Material m_stencilFillMaterial;
+        NLS::Render::Resources::Material m_outlineMaterial;
 	};
 }

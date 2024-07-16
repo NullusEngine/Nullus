@@ -6,8 +6,8 @@
 #include "EngineDef.h"
 namespace NLS::Engine::Components
 {
-using namespace NLS::Rendering;
-using namespace NLS::Rendering::Entities;
+using namespace NLS::Render;
+using namespace NLS::Render::Entities;
 /**
  * Base class for any light
  */
@@ -28,7 +28,7 @@ public:
     /**
      * Returns light data
      */
-    const NLS::Rendering::Entities::Light* GetData() const;
+    const NLS::Render::Entities::Light* GetData() const;
 
     /**
      * Returns light color

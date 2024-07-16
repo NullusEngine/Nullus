@@ -9,7 +9,7 @@
 #include "Rendering/Settings/EProjectionMode.h"
 #include "Rendering/Entities/Entity.h"
 
-namespace NLS::Rendering::Entities
+namespace NLS::Render::Entities
 {
 	/**
 	* Represents a camera. Wraps projection and view calculation based on applied rotation and the given positions
@@ -114,17 +114,17 @@ namespace NLS::Rendering::Entities
 		/**
 		* Returns the cached frustum
 		*/
-		const NLS::Rendering::Data::Frustum& GetFrustum() const;
+		const NLS::Render::Data::Frustum& GetFrustum() const;
 
 		/**
 		* Returns the frustum of the camera used for lights culling
 		*/
-		const NLS::Rendering::Data::Frustum* GetGeometryFrustum() const;
+		const NLS::Render::Data::Frustum* GetGeometryFrustum() const;
 
 		/**
 		* Returns the frustum of the camera used for lights culling
 		*/
-		const NLS::Rendering::Data::Frustum* GetLightFrustum() const;
+		const NLS::Render::Data::Frustum* GetLightFrustum() const;
 
 		/**
 		* Returns true if the frustum culling for geometry is enabled
@@ -139,7 +139,7 @@ namespace NLS::Rendering::Entities
 		/**
 		* Returns the current projection mode
 		*/
-		NLS::Rendering::Settings::EProjectionMode GetProjectionMode() const;
+		NLS::Render::Settings::EProjectionMode GetProjectionMode() const;
 
 		/**
 		* Set the camera position
@@ -217,17 +217,17 @@ namespace NLS::Rendering::Entities
 		* Defines the projection mode the camera should adopt
 		* @param p_projectionMode
 		*/
-		void SetProjectionMode(NLS::Rendering::Settings::EProjectionMode p_projectionMode);
+		void SetProjectionMode(NLS::Render::Settings::EProjectionMode p_projectionMode);
 
 	private:
 		Maths::Matrix4 CalculateProjectionMatrix(uint16_t p_windowWidth, uint16_t p_windowHeight) const;
 		Maths::Matrix4 CalculateViewMatrix() const;
 
 	private:
-		NLS::Rendering::Data::Frustum m_frustum;
+		NLS::Render::Data::Frustum m_frustum;
 		Maths::Matrix4 m_viewMatrix;
 		Maths::Matrix4 m_projectionMatrix;
-		NLS::Rendering::Settings::EProjectionMode m_projectionMode;
+		NLS::Render::Settings::EProjectionMode m_projectionMode;
 
 		float m_fov;
 		float m_size;

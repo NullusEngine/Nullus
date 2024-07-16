@@ -260,7 +260,7 @@ void Launcher::SetupContext()
     m_window->SetPosition(monSize.x / 2 - winSize.x / 2, monSize.y / 2 - winSize.y / 2);
 
     /* Graphics context creation */
-    m_driver = std::make_unique<Rendering::Context::Driver>(Rendering::Settings::DriverSettings{false});
+    m_driver = std::make_unique<Render::Context::Driver>(Render::Settings::DriverSettings{false});
 
     m_uiManager = std::make_unique<UI::UIManager>(m_window->GetGlfwWindow(), UI::Styling::EStyle::ALTERNATIVE_DARK);
     m_uiManager->LoadFont("Ruda_Big", "../Assets/Fonts/Ruda-Bold.ttf", 18);

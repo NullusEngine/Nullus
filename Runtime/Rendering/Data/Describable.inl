@@ -4,7 +4,7 @@
 
 #include "Rendering/Data/Describable.h"
 
-namespace NLS::Rendering::Data
+namespace NLS::Render::Data
 {
 	template<typename T>
 	inline void Describable::AddDescriptor(T&& p_descriptor)

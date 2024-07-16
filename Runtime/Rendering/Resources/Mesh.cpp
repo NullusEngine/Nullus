@@ -4,7 +4,7 @@
 
 using namespace NLS;
 
-NLS::Rendering::Resources::Mesh::Mesh(const std::vector<Geometry::Vertex>& p_vertices, const std::vector<uint32_t>& p_indices, uint32_t p_materialIndex) :
+NLS::Render::Resources::Mesh::Mesh(const std::vector<Geometry::Vertex>& p_vertices, const std::vector<uint32_t>& p_indices, uint32_t p_materialIndex) :
 	m_vertexCount(static_cast<uint32_t>(p_vertices.size())),
 	m_indicesCount(static_cast<uint32_t>(p_indices.size())),
 	m_materialIndex(p_materialIndex)
@@ -13,37 +13,37 @@ NLS::Rendering::Resources::Mesh::Mesh(const std::vector<Geometry::Vertex>& p_ver
 	ComputeBoundingSphere(p_vertices);
 }
 
-void NLS::Rendering::Resources::Mesh::Bind() const
+void NLS::Render::Resources::Mesh::Bind() const
 {
 	m_vertexArray.Bind();
 }
 
-void NLS::Rendering::Resources::Mesh::Unbind() const
+void NLS::Render::Resources::Mesh::Unbind() const
 {
 	m_vertexArray.Unbind();
 }
 
-uint32_t NLS::Rendering::Resources::Mesh::GetVertexCount() const
+uint32_t NLS::Render::Resources::Mesh::GetVertexCount() const
 {
 	return m_vertexCount;
 }
 
-uint32_t NLS::Rendering::Resources::Mesh::GetIndexCount() const
+uint32_t NLS::Render::Resources::Mesh::GetIndexCount() const
 {
 	return m_indicesCount;
 }
 
-uint32_t NLS::Rendering::Resources::Mesh::GetMaterialIndex() const
+uint32_t NLS::Render::Resources::Mesh::GetMaterialIndex() const
 {
 	return m_materialIndex;
 }
 
-const Rendering::Geometry::BoundingSphere& NLS::Rendering::Resources::Mesh::GetBoundingSphere() const
+const Render::Geometry::BoundingSphere& NLS::Render::Resources::Mesh::GetBoundingSphere() const
 {
 	return m_boundingSphere;
 }
 
-void NLS::Rendering::Resources::Mesh::CreateBuffers(const std::vector<Geometry::Vertex>& p_vertices, const std::vector<uint32_t>& p_indices)
+void NLS::Render::Resources::Mesh::CreateBuffers(const std::vector<Geometry::Vertex>& p_vertices, const std::vector<uint32_t>& p_indices)
 {
 	std::vector<float> vertexData;
 
@@ -83,7 +83,7 @@ void NLS::Rendering::Resources::Mesh::CreateBuffers(const std::vector<Geometry::
 	m_vertexArray.BindAttribute(4, *m_vertexBuffer, Settings::EDataType::FLOAT, 3, vertexSize, sizeof(float) * 11);
 }
 
-void NLS::Rendering::Resources::Mesh::ComputeBoundingSphere(const std::vector<Geometry::Vertex>& p_vertices)
+void NLS::Render::Resources::Mesh::ComputeBoundingSphere(const std::vector<Geometry::Vertex>& p_vertices)
 {
 	m_boundingSphere.position = Maths::Vector3::Zero;
 	m_boundingSphere.radius = 0.0f;

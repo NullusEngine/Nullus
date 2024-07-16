@@ -1,6 +1,6 @@
 #pragma once
 #include "RenderDef.h"
-namespace NLS::Rendering::Settings
+namespace NLS::Render::Settings
 {
 	/**
 	* OpenGL texture filtering mode enum wrapper

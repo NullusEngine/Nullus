@@ -10,7 +10,7 @@ uint32_t Pack(const Maths::Vector3& p_toPack)
 	return Pack(static_cast<uint8_t>(p_toPack.x * 255.f), static_cast<uint8_t>(p_toPack.y * 255.f), static_cast<uint8_t>(p_toPack.z * 255.f), 0);
 }
 
-Maths::Matrix4 NLS::Rendering::Entities::Light::GenerateMatrix() const
+Maths::Matrix4 NLS::Render::Entities::Light::GenerateMatrix() const
 {
 	Maths::Matrix4 result;
 
@@ -93,7 +93,7 @@ float CalculateAmbientBoxLightRadius(const Maths::Vector3& p_position, const Mat
 	return Maths::Vector3::Distance(p_position, p_position + p_size);
 }
 
-float NLS::Rendering::Entities::Light::GetEffectRange() const
+float NLS::Render::Entities::Light::GetEffectRange() const
 {
 	switch (type)
 	{

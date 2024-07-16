@@ -2,7 +2,7 @@
 
 #include <cstdint>
 #include "RenderDef.h"
-namespace NLS::Rendering::Settings
+namespace NLS::Render::Settings
 {
 	/**
 	* Graphics operations (for stencil/depth buffers)

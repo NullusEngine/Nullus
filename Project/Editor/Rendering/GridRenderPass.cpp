@@ -7,8 +7,8 @@
 #include "Core/EditorActions.h"
 #include "Rendering/GridRenderPass.h"
 using namespace NLS;
-Editor::Rendering::GridRenderPass::GridRenderPass(NLS::Rendering::Core::CompositeRenderer& p_renderer) :
-	NLS::Rendering::Core::ARenderPass(p_renderer)
+Editor::Rendering::GridRenderPass::GridRenderPass(NLS::Render::Core::CompositeRenderer& p_renderer) :
+	NLS::Render::Core::ARenderPass(p_renderer)
 {
 	/* Grid Material */
 	m_gridMaterial.SetShader(EDITOR_CONTEXT(editorResources)->GetShader("Grid"));
@@ -17,14 +17,14 @@ Editor::Rendering::GridRenderPass::GridRenderPass(NLS::Rendering::Core::Composit
 	m_gridMaterial.SetDepthTest(false);
 }
 
-void Editor::Rendering::GridRenderPass::Draw(NLS::Rendering::Data::PipelineState p_pso)
+void Editor::Rendering::GridRenderPass::Draw(NLS::Render::Data::PipelineState p_pso)
 {
 	NLS_ASSERT(m_renderer.HasDescriptor<GridDescriptor>(), "Cannot find GridDescriptor attached to this renderer");
-	NLS_ASSERT(m_renderer.HasFeature<NLS::Rendering::Features::DebugShapeRenderFeature>(), "Cannot find DebugShapeRenderFeature attached to this renderer");
+	NLS_ASSERT(m_renderer.HasFeature<NLS::Render::Features::DebugShapeRenderFeature>(), "Cannot find DebugShapeRenderFeature attached to this renderer");
 	NLS_ASSERT(m_renderer.HasFeature<Editor::Rendering::DebugModelRenderFeature>(), "Cannot find DebugModelRenderFeature attached to this renderer");
 
 	auto& gridDescriptor = m_renderer.GetDescriptor<GridDescriptor>();
-	auto& debugShapeRenderer = m_renderer.GetFeature<NLS::Rendering::Features::DebugShapeRenderFeature>();
+	auto& debugShapeRenderer = m_renderer.GetFeature<NLS::Render::Features::DebugShapeRenderFeature>();
 
 	auto pso = m_renderer.CreatePipelineState();
 

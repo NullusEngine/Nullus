@@ -6,7 +6,7 @@
 #include <GameObject.h>
 #include <SceneSystem/SceneManager.h>
 #include <Components/MeshRenderer.h>
-#include <Data/Material.h>
+#include <Resources/Material.h>
 #include <Components/LightComponent.h>
 #include <Rendering/SceneRenderer.h>
 
@@ -17,7 +17,7 @@ namespace NLS::Editor::Rendering
 	/**
 	* Draw a grid
 	*/
-	class GridRenderPass : public NLS::Rendering::Core::ARenderPass
+	class GridRenderPass : public NLS::Render::Core::ARenderPass
 	{
 	public:
 		struct GridDescriptor
@@ -30,12 +30,12 @@ namespace NLS::Editor::Rendering
 		* Constructor
 		* @param p_renderer
 		*/
-		GridRenderPass(NLS::Rendering::Core::CompositeRenderer& p_renderer);
+		GridRenderPass(NLS::Render::Core::CompositeRenderer& p_renderer);
 
 	protected:
-        virtual void Draw(NLS::Rendering::Data::PipelineState p_pso) override;
+        virtual void Draw(NLS::Render::Data::PipelineState p_pso) override;
 
 	private:
-        NLS::Rendering::Data::Material m_gridMaterial;
+        NLS::Render::Resources::Material m_gridMaterial;
 	};
 }

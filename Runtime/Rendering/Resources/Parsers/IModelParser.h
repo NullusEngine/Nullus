@@ -5,7 +5,7 @@
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Resources/Parsers/EModelParserFlags.h"
 
-namespace NLS::Rendering::Resources::Parsers
+namespace NLS::Render::Resources::Parsers
 {
 	/**
 	* Interface for any model parser

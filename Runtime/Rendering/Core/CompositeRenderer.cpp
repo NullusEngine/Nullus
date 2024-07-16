@@ -2,12 +2,12 @@
 
 #include "Rendering/Core/CompositeRenderer.h"
 
-NLS::Rendering::Core::CompositeRenderer::CompositeRenderer(Context::Driver& p_driver)
+NLS::Render::Core::CompositeRenderer::CompositeRenderer(Context::Driver& p_driver)
 	: ABaseRenderer(p_driver)
 {
 }
 
-void NLS::Rendering::Core::CompositeRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
+void NLS::Render::Core::CompositeRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
 {
 	ABaseRenderer::BeginFrame(p_frameDescriptor);
 
@@ -28,7 +28,7 @@ void NLS::Rendering::Core::CompositeRenderer::BeginFrame(const Data::FrameDescri
 	}
 }
 
-void NLS::Rendering::Core::CompositeRenderer::DrawFrame()
+void NLS::Render::Core::CompositeRenderer::DrawFrame()
 {
 	auto pso = CreatePipelineState();
 
@@ -41,7 +41,7 @@ void NLS::Rendering::Core::CompositeRenderer::DrawFrame()
 	}
 }
 
-void NLS::Rendering::Core::CompositeRenderer::EndFrame()
+void NLS::Render::Core::CompositeRenderer::EndFrame()
 {
 	for (const auto& [_, pass] : m_passes)
 	{
@@ -63,8 +63,8 @@ void NLS::Rendering::Core::CompositeRenderer::EndFrame()
 	ABaseRenderer::EndFrame();
 }
 
-void NLS::Rendering::Core::CompositeRenderer::DrawEntity(
-	NLS::Rendering::Data::PipelineState p_pso,
+void NLS::Render::Core::CompositeRenderer::DrawEntity(
+	NLS::Render::Data::PipelineState p_pso,
 	const Entities::Drawable& p_drawable
 )
 {

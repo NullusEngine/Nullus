@@ -12,19 +12,19 @@
 constexpr uint32_t kStencilMask = 0xFF;
 constexpr int32_t kStencilReference = 1;
 using namespace NLS;
-Editor::Rendering::OutlineRenderFeature::OutlineRenderFeature(NLS::Rendering::Core::CompositeRenderer& p_renderer)
-    : NLS::Rendering::Features::ARenderFeature(p_renderer)
+Editor::Rendering::OutlineRenderFeature::OutlineRenderFeature(NLS::Render::Core::CompositeRenderer& p_renderer)
+    : NLS::Render::Features::ARenderFeature(p_renderer)
 {
     /* Stencil Fill Material */
     m_stencilFillMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Unlit.glsl"]);
     m_stencilFillMaterial.SetBackfaceCulling(true);
     m_stencilFillMaterial.SetDepthTest(false);
     m_stencilFillMaterial.SetColorWriting(false);
-    m_stencilFillMaterial.Set<NLS::Rendering::Resources::Texture*>("u_DiffuseMap", nullptr);
+    m_stencilFillMaterial.Set<NLS::Render::Resources::Texture*>("u_DiffuseMap", nullptr);
 
     /* Outline Material */
     m_outlineMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Unlit.glsl"]);
-    m_outlineMaterial.Set<NLS::Rendering::Resources::Texture*>("u_DiffuseMap", nullptr);
+    m_outlineMaterial.Set<NLS::Render::Resources::Texture*>("u_DiffuseMap", nullptr);
     m_outlineMaterial.SetDepthTest(false);
 }
 
@@ -45,9 +45,9 @@ void Editor::Rendering::OutlineRenderFeature::DrawStencilPass(Engine::GameObject
     pso.stencilWriteMask = kStencilMask;
     pso.stencilFuncRef = kStencilReference;
     pso.stencilFuncMask = kStencilMask;
-    pso.stencilOpFail = NLS::Rendering::Settings::EOperation::REPLACE;
-    pso.depthOpFail = NLS::Rendering::Settings::EOperation::REPLACE;
-    pso.bothOpFail = NLS::Rendering::Settings::EOperation::REPLACE;
+    pso.stencilOpFail = NLS::Render::Settings::EOperation::REPLACE;
+    pso.depthOpFail = NLS::Render::Settings::EOperation::REPLACE;
+    pso.bothOpFail = NLS::Render::Settings::EOperation::REPLACE;
     pso.colorWriting.mask = 0x00;
 
     DrawActorToStencil(pso, p_actor);
@@ -58,14 +58,14 @@ void Editor::Rendering::OutlineRenderFeature::DrawOutlinePass(Engine::GameObject
     auto pso = m_renderer.CreatePipelineState();
 
     pso.stencilTest = true;
-    pso.stencilOpFail = NLS::Rendering::Settings::EOperation::KEEP;
-    pso.depthOpFail = NLS::Rendering::Settings::EOperation::KEEP;
-    pso.bothOpFail = NLS::Rendering::Settings::EOperation::REPLACE;
-    pso.stencilFuncOp = NLS::Rendering::Settings::EComparaisonAlgorithm::NOTEQUAL;
+    pso.stencilOpFail = NLS::Render::Settings::EOperation::KEEP;
+    pso.depthOpFail = NLS::Render::Settings::EOperation::KEEP;
+    pso.bothOpFail = NLS::Render::Settings::EOperation::REPLACE;
+    pso.stencilFuncOp = NLS::Render::Settings::EComparaisonAlgorithm::NOTEQUAL;
     pso.stencilFuncRef = kStencilReference;
     pso.stencilFuncMask = kStencilMask;
-    pso.rasterizationMode = NLS::Rendering::Settings::ERasterizationMode::LINE;
-    pso.lineWidthPow2 = NLS::Rendering::Utils::Conversions::FloatToPow2(p_thickness);
+    pso.rasterizationMode = NLS::Render::Settings::ERasterizationMode::LINE;
+    pso.lineWidthPow2 = NLS::Render::Utils::Conversions::FloatToPow2(p_thickness);
 
     // Prepare the outline material
     m_outlineMaterial.Set("u_Diffuse", p_color);
@@ -73,7 +73,7 @@ void Editor::Rendering::OutlineRenderFeature::DrawOutlinePass(Engine::GameObject
     DrawActorOutline(pso, p_actor);
 }
 
-void Editor::Rendering::OutlineRenderFeature::DrawActorToStencil(NLS::Rendering::Data::PipelineState p_pso, Engine::GameObject& p_actor)
+void Editor::Rendering::OutlineRenderFeature::DrawActorToStencil(NLS::Render::Data::PipelineState p_pso, Engine::GameObject& p_actor)
 {
     if (p_actor.IsActive())
     {
@@ -99,7 +99,7 @@ void Editor::Rendering::OutlineRenderFeature::DrawActorToStencil(NLS::Rendering:
     }
 }
 
-void Editor::Rendering::OutlineRenderFeature::DrawActorOutline(NLS::Rendering::Data::PipelineState p_pso, Engine::GameObject& p_actor)
+void Editor::Rendering::OutlineRenderFeature::DrawActorOutline(NLS::Render::Data::PipelineState p_pso, Engine::GameObject& p_actor)
 {
     if (p_actor.IsActive())
     {
@@ -124,18 +124,18 @@ void Editor::Rendering::OutlineRenderFeature::DrawActorOutline(NLS::Rendering::D
 }
 
 void Editor::Rendering::OutlineRenderFeature::DrawModelToStencil(
-    NLS::Rendering::Data::PipelineState p_pso,
+    NLS::Render::Data::PipelineState p_pso,
     const Maths::Matrix4& p_worldMatrix,
-    NLS::Rendering::Resources::Model& p_model)
+    NLS::Render::Resources::Model& p_model)
 {
     m_renderer.GetFeature<DebugModelRenderFeature>()
         .DrawModelWithSingleMaterial(p_pso, p_model, m_stencilFillMaterial, p_worldMatrix);
 }
 
 void Editor::Rendering::OutlineRenderFeature::DrawModelOutline(
-    NLS::Rendering::Data::PipelineState p_pso,
+    NLS::Render::Data::PipelineState p_pso,
     const Maths::Matrix4& p_worldMatrix,
-    NLS::Rendering::Resources::Model& p_model)
+    NLS::Render::Resources::Model& p_model)
 {
     m_renderer.GetFeature<DebugModelRenderFeature>()
         .DrawModelWithSingleMaterial(p_pso, p_model, m_outlineMaterial, p_worldMatrix);

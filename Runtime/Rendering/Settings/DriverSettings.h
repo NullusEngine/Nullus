@@ -4,7 +4,7 @@
 
 #include "Rendering/Data/PipelineState.h"
 #include "RenderDef.h"
-namespace NLS::Rendering::Settings
+namespace NLS::Render::Settings
 {
 	/**
 	* Settings that are sent to the driver at construction
@@ -12,6 +12,6 @@ namespace NLS::Rendering::Settings
 	struct NLS_RENDER_API DriverSettings
 	{
 		bool debugMode = false;
-		std::optional<NLS::Rendering::Data::PipelineState> defaultPipelineState = std::nullopt;
+		std::optional<NLS::Render::Data::PipelineState> defaultPipelineState = std::nullopt;
 	};
 }

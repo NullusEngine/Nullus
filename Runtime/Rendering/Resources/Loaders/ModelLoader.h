@@ -5,7 +5,7 @@
 #include "Rendering/Resources/Model.h"
 #include "Rendering/Resources/Parsers/AssimpParser.h"
 
-namespace NLS::Rendering::Resources::Loaders
+namespace NLS::Render::Resources::Loaders
 {
 	/**
 	* Handle the Model creation and destruction

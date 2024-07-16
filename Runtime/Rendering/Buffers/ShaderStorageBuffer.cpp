@@ -2,7 +2,7 @@
 
 #include "Rendering/Buffers/ShaderStorageBuffer.h"
 
-NLS::Rendering::Buffers::ShaderStorageBuffer::ShaderStorageBuffer(Settings::EAccessSpecifier p_accessSpecifier)
+NLS::Render::Buffers::ShaderStorageBuffer::ShaderStorageBuffer(Settings::EAccessSpecifier p_accessSpecifier)
 {
 	glGenBuffers(1, &m_bufferID);
 	glBindBuffer(GL_SHADER_STORAGE_BUFFER, m_bufferID);
@@ -10,17 +10,17 @@ NLS::Rendering::Buffers::ShaderStorageBuffer::ShaderStorageBuffer(Settings::EAcc
 	glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 }
 
-NLS::Rendering::Buffers::ShaderStorageBuffer::~ShaderStorageBuffer()
+NLS::Render::Buffers::ShaderStorageBuffer::~ShaderStorageBuffer()
 {
 	glDeleteBuffers(1, &m_bufferID);
 }
 
-void NLS::Rendering::Buffers::ShaderStorageBuffer::Bind(uint32_t p_bindingPoint)
+void NLS::Render::Buffers::ShaderStorageBuffer::Bind(uint32_t p_bindingPoint)
 {
 	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, p_bindingPoint, m_bufferID);
 }
 
-void NLS::Rendering::Buffers::ShaderStorageBuffer::Unbind()
+void NLS::Render::Buffers::ShaderStorageBuffer::Unbind()
 {
 	glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 }

@@ -7,12 +7,12 @@
 * additional calls.
 */
 
-namespace NLS::Rendering::HAL
+namespace NLS::Render::HAL
 {
 	template<>
-	std::optional<NLS::Rendering::Data::PipelineState> None::Init(bool debug)
+	std::optional<NLS::Render::Data::PipelineState> None::Init(bool debug)
 	{
-		return NLS::Rendering::Data::PipelineState{};
+		return NLS::Render::Data::PipelineState{};
 	}
 	template<>
 	void None::Clear(bool p_colorBuffer, bool p_depthBuffer, bool p_stencilBuffer)

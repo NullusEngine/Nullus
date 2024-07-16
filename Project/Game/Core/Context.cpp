@@ -42,11 +42,11 @@ Game::Context::Context()
 
 	device->SetVsync(projectSettings.Get<bool>("vsync"));
 
-	NLS::Rendering::Data::PipelineState basePSO;
+	NLS::Render::Data::PipelineState basePSO;
 	basePSO.multisample = projectSettings.Get<bool>("multisampling");
 
 	/* Graphics context creation */
-	driver = std::make_unique<NLS::Rendering::Context::Driver>(NLS::Rendering::Settings::DriverSettings{
+	driver = std::make_unique<NLS::Render::Context::Driver>(NLS::Render::Settings::DriverSettings{
 #ifdef _DEBUG
 		true,
 #else

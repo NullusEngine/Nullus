@@ -39,7 +39,7 @@ public:
 private:
     std::unique_ptr<Context::Device> m_device;
     std::unique_ptr<Windowing::Window> m_window;
-    std::unique_ptr<Rendering::Context::Driver> m_driver;
+    std::unique_ptr<Render::Context::Driver> m_driver;
     std::unique_ptr<UI::UIManager> m_uiManager;
 
     UI::Modules::Canvas m_canvas;

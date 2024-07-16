@@ -14,8 +14,8 @@
 #include "Core/EditorActions.h"
 #include "Rendering/GizmoRenderFeature.h"
 using namespace NLS;
-Editor::Rendering::GizmoRenderFeature::GizmoRenderFeature(NLS::Rendering::Core::CompositeRenderer& p_renderer)
-    : NLS::Rendering::Features::ARenderFeature(p_renderer)
+Editor::Rendering::GizmoRenderFeature::GizmoRenderFeature(NLS::Render::Core::CompositeRenderer& p_renderer)
+    : NLS::Render::Features::ARenderFeature(p_renderer)
 {
 	/* Gizmo Arrow Material */
 	m_gizmoArrowMaterial.SetShader(EDITOR_CONTEXT(editorResources)->GetShader("Gizmo"));

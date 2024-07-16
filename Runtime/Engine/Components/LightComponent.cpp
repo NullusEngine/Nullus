@@ -16,15 +16,15 @@ void NLS::Engine::Components::LightComponent::SetLightType(Settings::ELightType 
 	m_data->type = type;
 	switch (type)
 	{
-	case NLS::Rendering::Settings::ELightType::POINT:
+	case NLS::Render::Settings::ELightType::POINT:
 		break;
-	case NLS::Rendering::Settings::ELightType::DIRECTIONAL:
+	case NLS::Render::Settings::ELightType::DIRECTIONAL:
 		break;
-	case NLS::Rendering::Settings::ELightType::SPOT:
+	case NLS::Render::Settings::ELightType::SPOT:
 		break;
-	case NLS::Rendering::Settings::ELightType::AMBIENT_BOX:
+	case NLS::Render::Settings::ELightType::AMBIENT_BOX:
 		break;
-	case NLS::Rendering::Settings::ELightType::AMBIENT_SPHERE:
+	case NLS::Render::Settings::ELightType::AMBIENT_SPHERE:
 		m_data->intensity = 0.1f;
 		m_data->constant = 1.0f;
 		break;
@@ -33,7 +33,7 @@ void NLS::Engine::Components::LightComponent::SetLightType(Settings::ELightType 
 	}
 }
 
-const NLS::Rendering::Entities::Light* LightComponent::GetData() const
+const NLS::Render::Entities::Light* LightComponent::GetData() const
 {
 	return m_data;
 }

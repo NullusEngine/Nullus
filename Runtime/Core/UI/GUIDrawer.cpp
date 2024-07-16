@@ -26,9 +26,9 @@ const Maths::Color GUIDrawer::TitleColor = { 0.85f, 0.65f, 0.0f };
 const Maths::Color GUIDrawer::ClearButtonColor = {0.5f, 0.0f, 0.0f};
 const float GUIDrawer::_MIN_FLOAT = -999999999.f;
 const float GUIDrawer::_MAX_FLOAT = +999999999.f;
-Rendering::Resources::Texture* GUIDrawer::__EMPTY_TEXTURE = nullptr;
+Render::Resources::Texture* GUIDrawer::__EMPTY_TEXTURE = nullptr;
 
-void GUIDrawer::ProvideEmptyTexture(Rendering::Resources::Texture& p_emptyTexture)
+void GUIDrawer::ProvideEmptyTexture(Render::Resources::Texture& p_emptyTexture)
 {
 	__EMPTY_TEXTURE = &p_emptyTexture;
 }
@@ -94,7 +94,7 @@ void GUIDrawer::DrawColor(Internal::WidgetContainer & p_root, const std::string 
 	dispatcher.RegisterReference(p_color);
 }
 
-Widgets::Texts::Text& GUIDrawer::DrawMesh(Internal::WidgetContainer & p_root, const std::string & p_name, Rendering::Resources::Model *& p_data, Event<>* p_updateNotifier)
+Widgets::Texts::Text& GUIDrawer::DrawMesh(Internal::WidgetContainer & p_root, const std::string & p_name, Render::Resources::Model *& p_data, Event<>* p_updateNotifier)
 {
 	CreateTitle(p_root, p_name);
 
@@ -132,7 +132,7 @@ Widgets::Texts::Text& GUIDrawer::DrawMesh(Internal::WidgetContainer & p_root, co
 	return widget;
 }
 
-Widgets::Visual::Image& GUIDrawer::DrawTexture(Internal::WidgetContainer & p_root, const std::string & p_name, Rendering::Resources::Texture *& p_data, Event<>* p_updateNotifier)
+Widgets::Visual::Image& GUIDrawer::DrawTexture(Internal::WidgetContainer & p_root, const std::string & p_name, Render::Resources::Texture *& p_data, Event<>* p_updateNotifier)
 {
 	CreateTitle(p_root, p_name);
 
@@ -170,7 +170,7 @@ Widgets::Visual::Image& GUIDrawer::DrawTexture(Internal::WidgetContainer & p_roo
 	return widget;
 }
 
-Widgets::Texts::Text& GUIDrawer::DrawShader(Internal::WidgetContainer & p_root, const std::string & p_name, Rendering::Resources::Shader *& p_data, Event<>* p_updateNotifier)
+Widgets::Texts::Text& GUIDrawer::DrawShader(Internal::WidgetContainer & p_root, const std::string & p_name, Render::Resources::Shader *& p_data, Event<>* p_updateNotifier)
 {
 	CreateTitle(p_root, p_name);
 
@@ -208,7 +208,7 @@ Widgets::Texts::Text& GUIDrawer::DrawShader(Internal::WidgetContainer & p_root, 
 	return widget;
 }
 
-Widgets::Texts::Text& GUIDrawer::DrawMaterial(Internal::WidgetContainer& p_root, const std::string& p_name, NLS::Rendering::Data::Material*& p_data, Event<>* p_updateNotifier)
+Widgets::Texts::Text& GUIDrawer::DrawMaterial(Internal::WidgetContainer& p_root, const std::string& p_name, NLS::Render::Resources::Material*& p_data, Event<>* p_updateNotifier)
 {
 	CreateTitle(p_root, p_name);
 

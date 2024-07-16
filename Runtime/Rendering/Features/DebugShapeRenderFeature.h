@@ -2,7 +2,7 @@
 
 #include "Rendering/Features/ARenderFeature.h"
 #include "RenderDef.h"
-namespace NLS::Rendering::Features
+namespace NLS::Render::Features
 {
 	/**
 	* The ShapeDrawer handles the drawing of basic shapes
@@ -36,7 +36,7 @@ namespace NLS::Rendering::Features
 		* @param p_lineWidth
 		*/
 		void DrawLine(
-			NLS::Rendering::Data::PipelineState p_pso,
+			NLS::Render::Data::PipelineState p_pso,
 			const Maths::Vector3& p_start,
 			const Maths::Vector3& p_end,
 			const Maths::Vector3& p_color,
@@ -53,7 +53,7 @@ namespace NLS::Rendering::Features
 		* @param p_lineWidth
 		*/
 		void DrawBox(
-			NLS::Rendering::Data::PipelineState p_pso,
+			NLS::Render::Data::PipelineState p_pso,
 			const Maths::Vector3& p_position,
 			const Maths::Quaternion& p_rotation,
 			const Maths::Vector3& p_size,
@@ -71,7 +71,7 @@ namespace NLS::Rendering::Features
 		* @param p_lineWidth
 		*/
 		void DrawSphere(
-			NLS::Rendering::Data::PipelineState p_pso,
+			NLS::Render::Data::PipelineState p_pso,
 			const Maths::Vector3& p_position,
 			const Maths::Quaternion& p_rotation,
 			float p_radius,
@@ -90,7 +90,7 @@ namespace NLS::Rendering::Features
 		* @param p_lineWidth
 		*/
 		void DrawCapsule(
-			NLS::Rendering::Data::PipelineState p_pso,
+			NLS::Render::Data::PipelineState p_pso,
 			const Maths::Vector3& p_position,
 			const Maths::Quaternion& p_rotation,
 			float p_radius,
@@ -103,9 +103,9 @@ namespace NLS::Rendering::Features
 		virtual void OnBeginFrame(const Data::FrameDescriptor& p_frameDescriptor) override;
 
 	private:
-		NLS::Rendering::Resources::Shader* m_lineShader = nullptr;
-		NLS::Rendering::Resources::Mesh* m_lineMesh = nullptr;
+		NLS::Render::Resources::Shader* m_lineShader = nullptr;
+		NLS::Render::Resources::Mesh* m_lineMesh = nullptr;
 
-		std::unique_ptr<NLS::Rendering::Data::Material> m_lineMaterial;
+		std::unique_ptr<NLS::Render::Resources::Material> m_lineMaterial;
 	};
 }

@@ -9,7 +9,7 @@
 #include "Rendering/Geometry/Vertex.h"
 #include "Rendering/Geometry/BoundingSphere.h"
 #include "RenderDef.h"
-namespace NLS::Rendering::Resources
+namespace NLS::Render::Resources
 {
 	/**
 	* Standard mesh of Rendering
@@ -53,7 +53,7 @@ namespace NLS::Rendering::Resources
 		/**
 		* Returns the bounding sphere of the mesh
 		*/
-		const Rendering::Geometry::BoundingSphere& GetBoundingSphere() const;
+		const Render::Geometry::BoundingSphere& GetBoundingSphere() const;
 
 	private:
 		void CreateBuffers(const std::vector<Geometry::Vertex>& p_vertices, const std::vector<uint32_t>& p_indices);

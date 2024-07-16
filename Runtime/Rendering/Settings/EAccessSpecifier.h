@@ -1,6 +1,6 @@
 #pragma once
 #include "RenderDef.h"
-namespace NLS::Rendering::Settings
+namespace NLS::Render::Settings
 {
 	/**
 	* Defines some access hints that buffers can use

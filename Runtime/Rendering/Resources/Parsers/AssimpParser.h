@@ -7,7 +7,7 @@
 
 #pragma once
 
-namespace NLS::Rendering::Resources::Parsers
+namespace NLS::Render::Resources::Parsers
 {
 	/**
 	* A simple class to load assimp model data (Vertices only)

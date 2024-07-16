@@ -6,11 +6,11 @@
 
 #include "Rendering/HAL/GraphicsAPI.h"
 
-using SelectedAPI = NLS::Rendering::HAL::OpenGL;
+using SelectedAPI = NLS::Render::HAL::OpenGL;
 
 std::unique_ptr<SelectedAPI> m_driverImpl;
 
-NLS::Rendering::Context::Driver::Driver(const NLS::Rendering::Settings::DriverSettings& p_driverSettings)
+NLS::Render::Context::Driver::Driver(const NLS::Render::Settings::DriverSettings& p_driverSettings)
 {
 	m_driverImpl = std::make_unique<SelectedAPI>();
 
@@ -32,16 +32,16 @@ NLS::Rendering::Context::Driver::Driver(const NLS::Rendering::Settings::DriverSe
 	m_shadingLanguageVersion = m_driverImpl->GetShadingLanguageVersion();
 }
 
-NLS::Rendering::Context::Driver::~Driver()
+NLS::Render::Context::Driver::~Driver()
 {
 }
 
-void NLS::Rendering::Context::Driver::SetViewport(uint32_t p_x, uint32_t p_y, uint32_t p_width, uint32_t p_height)
+void NLS::Render::Context::Driver::SetViewport(uint32_t p_x, uint32_t p_y, uint32_t p_width, uint32_t p_height)
 {
 	m_driverImpl->SetViewport(p_x, p_y, p_width, p_height);
 }
 
-void NLS::Rendering::Context::Driver::Clear(
+void NLS::Render::Context::Driver::Clear(
 	bool p_colorBuffer,
 	bool p_depthBuffer,
 	bool p_stencilBuffer,
@@ -67,20 +67,20 @@ void NLS::Rendering::Context::Driver::Clear(
 	m_driverImpl->Clear(p_colorBuffer, p_depthBuffer, p_stencilBuffer);
 }
 
-void NLS::Rendering::Context::Driver::ReadPixels(
+void NLS::Render::Context::Driver::ReadPixels(
 	uint32_t p_x,
 	uint32_t p_y,
 	uint32_t p_width,
 	uint32_t p_height,
-	NLS::Rendering::Settings::EPixelDataFormat p_format,
-	NLS::Rendering::Settings::EPixelDataType p_type,
+	NLS::Render::Settings::EPixelDataFormat p_format,
+	NLS::Render::Settings::EPixelDataType p_type,
 	void* p_data
 ) const
 {
 	m_driverImpl->ReadPixels(p_x, p_y, p_width, p_height, p_format, p_type, p_data);
 }
 
-void NLS::Rendering::Context::Driver::Draw(
+void NLS::Render::Context::Driver::Draw(
 	Data::PipelineState p_pso,
 	const Resources::IMesh& p_mesh,
 	Settings::EPrimitiveMode p_primitiveMode,
@@ -120,9 +120,9 @@ void NLS::Rendering::Context::Driver::Draw(
 	}
 }
 
-void NLS::Rendering::Context::Driver::SetPipelineState(NLS::Rendering::Data::PipelineState p_state)
+void NLS::Render::Context::Driver::SetPipelineState(NLS::Render::Data::PipelineState p_state)
 {
-	using namespace NLS::Rendering::Settings;
+	using namespace NLS::Render::Settings;
 
 	if (p_state.bits != m_pipelineState.bits)
 	{
@@ -165,32 +165,32 @@ void NLS::Rendering::Context::Driver::SetPipelineState(NLS::Rendering::Data::Pip
 	}
 }
 
-void NLS::Rendering::Context::Driver::ResetPipelineState()
+void NLS::Render::Context::Driver::ResetPipelineState()
 {
 	SetPipelineState(m_defaultPipelineState);
 }
 
-NLS::Rendering::Data::PipelineState NLS::Rendering::Context::Driver::CreatePipelineState() const
+NLS::Render::Data::PipelineState NLS::Render::Context::Driver::CreatePipelineState() const
 {
 	return m_defaultPipelineState;
 }
 
-std::string_view NLS::Rendering::Context::Driver::GetVendor() const
+std::string_view NLS::Render::Context::Driver::GetVendor() const
 {
 	return m_vendor;
 }
 
-std::string_view NLS::Rendering::Context::Driver::GetHardware() const
+std::string_view NLS::Render::Context::Driver::GetHardware() const
 {
 	return m_hardware;
 }
 
-std::string_view NLS::Rendering::Context::Driver::GetVersion() const
+std::string_view NLS::Render::Context::Driver::GetVersion() const
 {
 	return m_version;
 }
 
-std::string_view NLS::Rendering::Context::Driver::GetShadingLanguageVersion() const
+std::string_view NLS::Render::Context::Driver::GetShadingLanguageVersion() const
 {
 	return m_shadingLanguageVersion;
 }

@@ -22,7 +22,7 @@
 #include "Core/EditorActions.h"
 using namespace NLS;
 using namespace Maths;
-using namespace NLS::Rendering::Resources;
+using namespace NLS::Render::Resources;
 
 const Maths::Vector3 kDebugBoundsColor		= { 1.0f, 0.0f, 0.0f };
 const Maths::Vector3 kLightVolumeColor		= { 1.0f, 1.0f, 0.0f };
@@ -42,9 +42,9 @@ Maths::Matrix4 CalculateCameraModelMatrix(Engine::GameObject& p_actor)
 	return translation * rotation;
 }
 
-std::optional<std::string> GetLightTypeTextureName(Rendering::Settings::ELightType type)
+std::optional<std::string> GetLightTypeTextureName(Render::Settings::ELightType type)
 {
-	using namespace Rendering::Settings;
+	using namespace Render::Settings;
 
 	switch (type)
 	{
@@ -58,18 +58,19 @@ std::optional<std::string> GetLightTypeTextureName(Rendering::Settings::ELightTy
 	return std::nullopt;
 }
 
-class DebugCamerasRenderPass : public Rendering::Core::ARenderPass
+class DebugCamerasRenderPass : public Render::Core::ARenderPass
 {
 public:
-	DebugCamerasRenderPass(Rendering::Core::CompositeRenderer& p_renderer) : Rendering::Core::ARenderPass(p_renderer)
+    DebugCamerasRenderPass(Render::Core::CompositeRenderer& p_renderer)
+        : Render::Core::ARenderPass(p_renderer)
 	{
 		m_cameraMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Lambert.glsl"]);
 		m_cameraMaterial.Set("u_Diffuse", Vector4(0.0f, 0.3f, 0.7f, 1.0f));
-		m_cameraMaterial.Set<Rendering::Resources::Texture*>("u_DiffuseMap", nullptr);
+		m_cameraMaterial.Set<Render::Resources::Texture*>("u_DiffuseMap", nullptr);
 	}
 
 protected:
-	virtual void Draw(Rendering::Data::PipelineState p_pso) override
+	virtual void Draw(Render::Data::PipelineState p_pso) override
 	{
         auto& sceneDescriptor = m_renderer.GetDescriptor<Engine::Rendering::SceneRenderer::SceneDescriptor>();
 
@@ -89,13 +90,13 @@ protected:
 	}
 
 private:
-    NLS::Rendering::Data::Material m_cameraMaterial;
+    NLS::Render::Resources::Material m_cameraMaterial;
 };
 
-class DebugLightsRenderPass : public Rendering::Core::ARenderPass
+class DebugLightsRenderPass : public Render::Core::ARenderPass
 {
 public:
-	DebugLightsRenderPass(Rendering::Core::CompositeRenderer& p_renderer) : Rendering::Core::ARenderPass(p_renderer)
+	DebugLightsRenderPass(Render::Core::CompositeRenderer& p_renderer) : Render::Core::ARenderPass(p_renderer)
 	{
 		m_lightMaterial.SetShader(EDITOR_CONTEXT(editorResources)->GetShader("Billboard"));
 		m_lightMaterial.Set("u_Diffuse", Vector4(1.f, 1.f, 0.5f, 0.5f));
@@ -105,7 +106,7 @@ public:
 	}
 
 protected:
-	virtual void Draw(Rendering::Data::PipelineState p_pso) override
+	virtual void Draw(Render::Data::PipelineState p_pso) override
 	{
 		auto& sceneDescriptor = m_renderer.GetDescriptor<Engine::Rendering::SceneRenderer::SceneDescriptor>();
 
@@ -128,7 +129,7 @@ protected:
 					nullptr;
 
 				const auto& lightColor = light->GetColor();
-				m_lightMaterial.Set<Rendering::Resources::Texture*>("u_DiffuseMap", lightTexture);
+				m_lightMaterial.Set<Render::Resources::Texture*>("u_DiffuseMap", lightTexture);
 				m_lightMaterial.Set<Maths::Vector4>("u_Diffuse", Maths::Vector4(lightColor.x, lightColor.y, lightColor.z, 0.75f));
 
 				m_renderer.GetFeature<Editor::Rendering::DebugModelRenderFeature>()
@@ -138,22 +139,22 @@ protected:
 	}
 
 private:
-    NLS::Rendering::Data::Material m_lightMaterial;
+    NLS::Render::Resources::Material m_lightMaterial;
 };
 
-class DebugActorRenderPass : public Rendering::Core::ARenderPass
+class DebugActorRenderPass : public Render::Core::ARenderPass
 {
 public:
-	DebugActorRenderPass(Rendering::Core::CompositeRenderer& p_renderer) : Rendering::Core::ARenderPass(p_renderer),
-		m_debugShapeFeature(m_renderer.GetFeature<Rendering::Features::DebugShapeRenderFeature>())
+	DebugActorRenderPass(Render::Core::CompositeRenderer& p_renderer) : Render::Core::ARenderPass(p_renderer),
+		m_debugShapeFeature(m_renderer.GetFeature<Render::Features::DebugShapeRenderFeature>())
 	{
 		
 	}
 
 protected:
-	Rendering::Features::DebugShapeRenderFeature& m_debugShapeFeature;
+	Render::Features::DebugShapeRenderFeature& m_debugShapeFeature;
 
-	virtual void Draw(Rendering::Data::PipelineState p_pso) override
+	virtual void Draw(Render::Data::PipelineState p_pso) override
 	{
 		auto& debugSceneDescriptor = m_renderer.GetDescriptor<Editor::Rendering::DebugSceneRenderer::DebugSceneDescriptor>();
 
@@ -208,16 +209,16 @@ protected:
                 auto type = plight->GetLightType();
                 switch (type)
                 {
-                    case NLS::Rendering::Settings::ELightType::POINT:
+                    case NLS::Render::Settings::ELightType::POINT:
                         break;
-                    case NLS::Rendering::Settings::ELightType::DIRECTIONAL:
+                    case NLS::Render::Settings::ELightType::DIRECTIONAL:
                         break;
-                    case NLS::Rendering::Settings::ELightType::SPOT:
+                    case NLS::Render::Settings::ELightType::SPOT:
                         break;
-                    case NLS::Rendering::Settings::ELightType::AMBIENT_BOX:
+                    case NLS::Render::Settings::ELightType::AMBIENT_BOX:
                         DrawAmbientBoxVolume(*plight);
                         break;
-                    case NLS::Rendering::Settings::ELightType::AMBIENT_SPHERE:
+                    case NLS::Render::Settings::ELightType::AMBIENT_SPHERE:
                         DrawAmbientSphereVolume(*plight);
                         break;
                     default:
@@ -358,11 +359,11 @@ protected:
 // 
 // 		switch (p_camera.GetProjectionMode())
 // 		{
-// 		case Rendering::Settings::EProjectionMode::ORTHOGRAPHIC:
+// 		case Render::Settings::EProjectionMode::ORTHOGRAPHIC:
 // 			DrawCameraOrthographicFrustum(gameViewSize, p_camera);
 // 			break;
 // 
-// 		case Rendering::Settings::EProjectionMode::PERSPECTIVE:
+// 		case Render::Settings::EProjectionMode::PERSPECTIVE:
 // 			DrawCameraPerspectiveFrustum(gameViewSize, p_camera);
 // 			break;
 // 		}
@@ -536,18 +537,18 @@ protected:
 	}
 };
 
-Editor::Rendering::DebugSceneRenderer::DebugSceneRenderer(NLS::Rendering::Context::Driver& p_driver) :
+Editor::Rendering::DebugSceneRenderer::DebugSceneRenderer(NLS::Render::Context::Driver& p_driver) :
 	Engine::Rendering::SceneRenderer(p_driver)
 {
-    AddFeature<NLS::Rendering::Features::FrameInfoRenderFeature>();
-    AddFeature<NLS::Rendering::Features::DebugShapeRenderFeature>();
+    AddFeature<NLS::Render::Features::FrameInfoRenderFeature>();
+    AddFeature<NLS::Render::Features::DebugShapeRenderFeature>();
 	AddFeature<Editor::Rendering::DebugModelRenderFeature>();
 	AddFeature<Editor::Rendering::OutlineRenderFeature>();
 	AddFeature<Editor::Rendering::GizmoRenderFeature>();
 
-	AddPass<GridRenderPass>("Grid", NLS::Rendering::Settings::ERenderPassOrder::Opaque - 1);
-    AddPass<DebugCamerasRenderPass>("Debug Cameras", NLS::Rendering::Settings::ERenderPassOrder::Transparent + 1);
-    AddPass<DebugLightsRenderPass>("Debug Lights", NLS::Rendering::Settings::ERenderPassOrder::Transparent + 2);
-    AddPass<DebugActorRenderPass>("Debug Actor", NLS::Rendering::Settings::ERenderPassOrder::Transparent + 3);
-    AddPass<PickingRenderPass>("Picking", NLS::Rendering::Settings::ERenderPassOrder::PostProcessing + 1);
+	AddPass<GridRenderPass>("Grid", NLS::Render::Settings::ERenderPassOrder::Opaque - 1);
+    AddPass<DebugCamerasRenderPass>("Debug Cameras", NLS::Render::Settings::ERenderPassOrder::Transparent + 1);
+    AddPass<DebugLightsRenderPass>("Debug Lights", NLS::Render::Settings::ERenderPassOrder::Transparent + 2);
+    AddPass<DebugActorRenderPass>("Debug Actor", NLS::Render::Settings::ERenderPassOrder::Transparent + 3);
+    AddPass<PickingRenderPass>("Picking", NLS::Render::Settings::ERenderPassOrder::PostProcessing + 1);
 }

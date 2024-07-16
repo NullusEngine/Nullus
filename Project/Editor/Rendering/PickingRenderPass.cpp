@@ -7,8 +7,8 @@
 #include <Components/MaterialRenderer.h>
 #include <Rendering/EngineDrawableDescriptor.h>
 using namespace NLS;
-Editor::Rendering::PickingRenderPass::PickingRenderPass(NLS::Rendering::Core::CompositeRenderer& p_renderer) :
-	NLS::Rendering::Core::ARenderPass(p_renderer)
+Editor::Rendering::PickingRenderPass::PickingRenderPass(NLS::Render::Core::CompositeRenderer& p_renderer) :
+	NLS::Render::Core::ARenderPass(p_renderer)
 {
 	/* Light Material */
 	m_lightMaterial.SetShader(EDITOR_CONTEXT(editorResources)->GetShader("Billboard"));
@@ -23,7 +23,7 @@ Editor::Rendering::PickingRenderPass::PickingRenderPass(NLS::Rendering::Core::Co
 	/* Picking Material */
 	m_actorPickingMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders\\Unlit.glsl"]);
 	m_actorPickingMaterial.Set("u_Diffuse", Maths::Vector4(1.f, 1.f, 1.f, 1.0f));
-	m_actorPickingMaterial.Set<NLS::Rendering::Resources::Texture*>("u_DiffuseMap", nullptr);
+	m_actorPickingMaterial.Set<NLS::Render::Resources::Texture*>("u_DiffuseMap", nullptr);
 	m_actorPickingMaterial.SetFrontfaceCulling(false);
 	m_actorPickingMaterial.SetBackfaceCulling(false);
 }
@@ -42,8 +42,8 @@ Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRe
 
 	m_renderer.ReadPixels(
 		p_x, p_y, 1, 1,
-		NLS::Rendering::Settings::EPixelDataFormat::RGB,
-		NLS::Rendering::Settings::EPixelDataType::UNSIGNED_BYTE,
+		NLS::Render::Settings::EPixelDataFormat::RGB,
+		NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
 		pixel
 	);
 
@@ -69,7 +69,7 @@ Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRe
 	return std::nullopt;
 }
 
-void Editor::Rendering::PickingRenderPass::Draw(NLS::Rendering::Data::PipelineState p_pso)
+void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState p_pso)
 {
 	// TODO: Make sure we only renderer when the view is hovered and not being resized
 
@@ -115,7 +115,7 @@ void Editor::Rendering::PickingRenderPass::Draw(NLS::Rendering::Data::PipelineSt
 	}
 }
 
-void PreparePickingMaterial(Engine::GameObject& p_actor, NLS::Rendering::Data::Material& p_material)
+void PreparePickingMaterial(Engine::GameObject& p_actor, NLS::Render::Resources::Material& p_material)
 {
 	uint32_t actorID = static_cast<uint32_t>(p_actor.GetWorldID());
 
@@ -126,7 +126,7 @@ void PreparePickingMaterial(Engine::GameObject& p_actor, NLS::Rendering::Data::M
 }
 
 void Editor::Rendering::PickingRenderPass::DrawPickableModels(
-	NLS::Rendering::Data::PipelineState p_pso,
+	NLS::Render::Data::PipelineState p_pso,
 	Engine::SceneSystem::Scene& p_scene
 )
 {
@@ -155,7 +155,7 @@ void Editor::Rendering::PickingRenderPass::DrawPickableModels(
 							stateMask = material->GenerateStateMask();
 						}
 
-						NLS::Rendering::Entities::Drawable drawable;
+						NLS::Render::Entities::Drawable drawable;
 						drawable.mesh = mesh;
 						drawable.material = &m_actorPickingMaterial;
 						drawable.stateMask = stateMask;
@@ -173,7 +173,7 @@ void Editor::Rendering::PickingRenderPass::DrawPickableModels(
 }
 
 void Editor::Rendering::PickingRenderPass::DrawPickableCameras(
-	NLS::Rendering::Data::PipelineState p_pso,
+	NLS::Render::Data::PipelineState p_pso,
 	Engine::SceneSystem::Scene& p_scene
 )
 {
@@ -196,7 +196,7 @@ void Editor::Rendering::PickingRenderPass::DrawPickableCameras(
 }
 
 void Editor::Rendering::PickingRenderPass::DrawPickableLights(
-	NLS::Rendering::Data::PipelineState p_pso,
+	NLS::Render::Data::PipelineState p_pso,
 	Engine::SceneSystem::Scene& p_scene
 )
 {
@@ -224,7 +224,7 @@ void Editor::Rendering::PickingRenderPass::DrawPickableLights(
 }
 
 void Editor::Rendering::PickingRenderPass::DrawPickableGizmo(
-	NLS::Rendering::Data::PipelineState p_pso,
+	NLS::Render::Data::PipelineState p_pso,
 	const Maths::Vector3& p_position,
 	const Maths::Quaternion& p_rotation,
 	Editor::Core::EGizmoOperation p_operation

@@ -25,6 +25,14 @@ public:
     T* AddComponent(const std::function<void(Components::Component*)>& func = {});
     template<typename T>
     T* GetComponent(bool includeSubType = true) const;
+    /**
+     * Returns a reference to the vector of components
+     */
+    std::vector<SharedObject>& GetComponents()
+    {
+        return m_vComponents;
+    }
+    bool RemoveComponent(SharedObject component);
 
     SharedObject AddComponent(Type type, const std::function<void(Components::Component*)>& func = {});
     SharedObject GetComponent(Type type, bool includeSubType = true) const;

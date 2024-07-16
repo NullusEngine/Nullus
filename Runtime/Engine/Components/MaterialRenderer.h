@@ -4,7 +4,7 @@
 
 #include <Rendering/Resources/Mesh.h>
 
-#include "Rendering/Data/Material.h"
+#include "Rendering/Resources/Material.h"
 #include "Components/Component.h"
 #include "EngineDef.h"
 constexpr uint8_t kMaxMaterialCount = 0xFF;
@@ -17,7 +17,7 @@ namespace NLS::Engine::Components
 	class NLS_ENGINE_API MaterialRenderer : public Component
 	{
 	public:
-		using MaterialList = std::array< NLS::Rendering::Data::Material*, kMaxMaterialCount>;
+		using MaterialList = std::array< NLS::Render::Resources::Material*, kMaxMaterialCount>;
 
 		/**
 		* Constructor
@@ -31,20 +31,20 @@ namespace NLS::Engine::Components
 		* Fill the material renderer with the given material
 		* @param p_material
 		*/
-		void FillWithMaterial(NLS::Rendering::Data::Material& p_material);
+		void FillWithMaterial(NLS::Render::Resources::Material& p_material);
 
 		/**
 		* Defines the material to use for the given index
 		* @param p_index
 		* @param p_material
 		*/
-		void SetMaterialAtIndex(uint8_t p_index, NLS::Rendering::Data::Material& p_material);
+		void SetMaterialAtIndex(uint8_t p_index, NLS::Render::Resources::Material& p_material);
 
 		/**
 		* Returns the material to use at index
 		* @param p_index
 		*/
-		NLS::Rendering::Data::Material* GetMaterialAtIndex(uint8_t p_index);
+		NLS::Render::Resources::Material* GetMaterialAtIndex(uint8_t p_index);
 
 		/**
 		* Remove the material at index
@@ -56,7 +56,7 @@ namespace NLS::Engine::Components
 		* Remove the material by instance
 		* @param p_instance
 		*/
-		void RemoveMaterialByInstance(NLS::Rendering::Data::Material& p_instance);
+		void RemoveMaterialByInstance(NLS::Render::Resources::Material& p_instance);
 
 		/**
 		* Remove every materials

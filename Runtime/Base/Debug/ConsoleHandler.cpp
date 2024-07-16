@@ -15,18 +15,18 @@ void NLS::Debug::ConsoleHandler::Log(const LogData& p_logData)
 	case ELogLevel::LOG_DEFAULT:
 		std::cout << COLOR_WHITE;
 		break;
-	case ELogLevel::NLS_LOG_INFO:
+	case ELogLevel::LOG_INFO:
 		std::cout << COLOR_BLUE;
 		break;
-	case ELogLevel::NLS_LOG_WARNING:
+	case ELogLevel::LOG_WARNING:
 		std::cout << COLOR_YELLOW;
 		break;
-	case ELogLevel::NLS_LOG_ERROR:
+	case ELogLevel::LOG_ERROR:
 		std::cout << COLOR_RED;
 		break;
 	}
 
-	std::ostream& output = p_logData.logLevel == ELogLevel::NLS_LOG_ERROR ? std::cerr : std::cout;
+	std::ostream& output = p_logData.logLevel == ELogLevel::LOG_ERROR ? std::cerr : std::cout;
 
 	output << GetLogHeader(p_logData.logLevel) << p_logData.date << " " << p_logData.message << std::endl;
 
@@ -38,9 +38,9 @@ std::string NLS::Debug::ConsoleHandler::GetLogHeader(ELogLevel p_logLevel)
 	switch (p_logLevel)
 	{
 	case ELogLevel::LOG_DEFAULT:	return __DEFAULT_HEADER;
-	case ELogLevel::NLS_LOG_INFO:		return __INFO_HEADER;
-	case ELogLevel::NLS_LOG_WARNING:	return __WARNING_HEADER;
-	case ELogLevel::NLS_LOG_ERROR:		return __ERROR_HEADER;
+	case ELogLevel::LOG_INFO:		return __INFO_HEADER;
+	case ELogLevel::LOG_WARNING:	return __WARNING_HEADER;
+	case ELogLevel::LOG_ERROR:		return __ERROR_HEADER;
 	}
 
 	return "";

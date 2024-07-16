@@ -43,11 +43,11 @@ std::string NLS::Debug::FileHandler::GetLogHeader(ELogLevel p_logLevel)
     {
         case ELogLevel::LOG_DEFAULT:
             return __DEFAULT_HEADER;
-        case ELogLevel::NLS_LOG_INFO:
+        case ELogLevel::LOG_INFO:
             return __INFO_HEADER;
-        case ELogLevel::NLS_LOG_WARNING:
+        case ELogLevel::LOG_WARNING:
             return __WARNING_HEADER;
-        case ELogLevel::NLS_LOG_ERROR:
+        case ELogLevel::LOG_ERROR:
             return __ERROR_HEADER;
     }
 

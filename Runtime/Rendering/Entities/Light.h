@@ -8,7 +8,7 @@
 #include "Rendering/Settings/ELightType.h"
 #include "RenderDef.h"
 using namespace NLS;
-namespace NLS::Rendering::Entities
+namespace NLS::Render::Entities
 {
 /**
  * Data structure that can represent any type of light
@@ -39,4 +39,4 @@ public :
      */
     float GetEffectRange() const;
 };
-} // namespace NLS::Rendering::Entities
+} // namespace NLS::Render::Entities

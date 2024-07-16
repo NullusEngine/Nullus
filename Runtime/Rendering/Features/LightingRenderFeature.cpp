@@ -1,13 +1,13 @@
 #include "Rendering/Features/LightingRenderFeature.h"
 #include "Rendering/Core/CompositeRenderer.h"
 
-NLS::Rendering::Features::LightingRenderFeature::LightingRenderFeature(Core::CompositeRenderer& p_renderer, uint32_t p_bufferBindingPoint)
+NLS::Render::Features::LightingRenderFeature::LightingRenderFeature(Core::CompositeRenderer& p_renderer, uint32_t p_bufferBindingPoint)
 	: ARenderFeature(p_renderer), m_bufferBindingPoint(p_bufferBindingPoint)
 {
 	m_lightBuffer = std::make_unique<Buffers::ShaderStorageBuffer>(Settings::EAccessSpecifier::STREAM_DRAW);
 }
 
-bool IsLightInFrustum(const NLS::Rendering::Entities::Light& p_light, const NLS::Rendering::Data::Frustum& p_frustum)
+bool IsLightInFrustum(const NLS::Render::Entities::Light& p_light, const NLS::Render::Data::Frustum& p_frustum)
 {
 	const auto& position = p_light.transform->GetWorldPosition();
 	const auto effectRange = p_light.GetEffectRange();
@@ -20,7 +20,7 @@ bool IsLightInFrustum(const NLS::Rendering::Entities::Light& p_light, const NLS:
 		p_frustum.SphereInFrustum(position.x, position.y, position.z, p_light.GetEffectRange());
 }
 
-void NLS::Rendering::Features::LightingRenderFeature::OnBeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
+void NLS::Render::Features::LightingRenderFeature::OnBeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
 {
 	NLS_ASSERT(m_renderer.HasDescriptor<LightingDescriptor>(), "Cannot find LightingDescriptor attached to this renderer");
 
@@ -43,7 +43,7 @@ void NLS::Rendering::Features::LightingRenderFeature::OnBeginFrame(const Data::F
 	m_lightBuffer->Bind(m_bufferBindingPoint);
 }
 
-void NLS::Rendering::Features::LightingRenderFeature::OnEndFrame()
+void NLS::Render::Features::LightingRenderFeature::OnEndFrame()
 {
 	m_lightBuffer->Unbind();
 }

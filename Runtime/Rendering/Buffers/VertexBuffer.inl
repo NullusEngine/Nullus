@@ -3,7 +3,7 @@
 #include <glad/glad.h>
 #include "Rendering/Buffers/VertexBuffer.h"
 
-namespace NLS::Rendering::Buffers
+namespace NLS::Render::Buffers
 {
 	template <class T>
 	inline VertexBuffer<T>::VertexBuffer(T* p_data, size_t p_elements)

@@ -56,7 +56,7 @@ void NormalizePlane(float frustum[6][4], int side)
 /////
 ///////////////////////////////// CALCULATE FRUSTUM \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\*
 
-void NLS::Rendering::Data::Frustum::CalculateFrustum(const Maths::Matrix4& p_viewProjection)
+void NLS::Render::Data::Frustum::CalculateFrustum(const Maths::Matrix4& p_viewProjection)
 {
 	auto columnMajorViewProjection = Maths::Matrix4::Transpose(p_viewProjection);
 	float const* clip = columnMajorViewProjection.data;
@@ -133,7 +133,7 @@ void NLS::Rendering::Data::Frustum::CalculateFrustum(const Maths::Matrix4& p_vie
 /////
 ///////////////////////////////// POINT IN FRUSTUM \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\*
 
-bool NLS::Rendering::Data::Frustum::PointInFrustum(float x, float y, float z) const
+bool NLS::Render::Data::Frustum::PointInFrustum(float x, float y, float z) const
 {
 	// If you remember the plane equation (A*x + B*y + C*z + D = 0), then the rest
 	// of this code should be quite obvious and easy to figure out yourself.
@@ -173,7 +173,7 @@ bool NLS::Rendering::Data::Frustum::PointInFrustum(float x, float y, float z) co
 /////
 ///////////////////////////////// SPHERE IN FRUSTUM \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\*
 
-bool NLS::Rendering::Data::Frustum::SphereInFrustum(float x, float y, float z, float radius) const
+bool NLS::Render::Data::Frustum::SphereInFrustum(float x, float y, float z, float radius) const
 {
 	// Now this function is almost identical to the PointInFrustum(), except we
 	// now have to deal with a radius around the point.  The point is the center of
@@ -207,7 +207,7 @@ bool NLS::Rendering::Data::Frustum::SphereInFrustum(float x, float y, float z, f
 /////
 ///////////////////////////////// CUBE IN FRUSTUM \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\*
 
-bool NLS::Rendering::Data::Frustum::CubeInFrustum(float x, float y, float z, float size) const
+bool NLS::Render::Data::Frustum::CubeInFrustum(float x, float y, float z, float size) const
 {
 	// This test is a bit more work, but not too much more complicated.
 	// Basically, what is going on is, that we are given the center of the cube,
@@ -246,7 +246,7 @@ bool NLS::Rendering::Data::Frustum::CubeInFrustum(float x, float y, float z, flo
 	return true;
 }
 
-bool NLS::Rendering::Data::Frustum::BoundingSphereInFrustum(const Rendering::Geometry::BoundingSphere& p_boundingSphere, const Maths::Transform& p_transform) const
+bool NLS::Render::Data::Frustum::BoundingSphereInFrustum(const Render::Geometry::BoundingSphere& p_boundingSphere, const Maths::Transform& p_transform) const
 {
 	const auto& position = p_transform.GetWorldPosition();
 	const auto& rotation = p_transform.GetWorldRotation();
@@ -261,20 +261,20 @@ bool NLS::Rendering::Data::Frustum::BoundingSphereInFrustum(const Rendering::Geo
 	return SphereInFrustum(worldCenter.x, worldCenter.y, worldCenter.z, scaledRadius);
 }
 
-bool NLS::Rendering::Data::Frustum::IsMeshInFrustum(const NLS::Rendering::Resources::Mesh& p_mesh, const Maths::Transform& p_transform) const
+bool NLS::Render::Data::Frustum::IsMeshInFrustum(const NLS::Render::Resources::Mesh& p_mesh, const Maths::Transform& p_transform) const
 {
 	return BoundingSphereInFrustum(p_mesh.GetBoundingSphere(), p_transform);
 }
 
-std::vector<NLS::Rendering::Resources::Mesh*> NLS::Rendering::Data::Frustum::GetMeshesInFrustum(const NLS::Rendering::Resources::Model& p_model, const Rendering::Geometry::BoundingSphere& p_modelBoundingSphere, const Maths::Transform& p_modelTransform, NLS::Rendering::Settings::ECullingOptions p_cullingOptions) const
+std::vector<NLS::Render::Resources::Mesh*> NLS::Render::Data::Frustum::GetMeshesInFrustum(const NLS::Render::Resources::Model& p_model, const Render::Geometry::BoundingSphere& p_modelBoundingSphere, const Maths::Transform& p_modelTransform, NLS::Render::Settings::ECullingOptions p_cullingOptions) const
 {
-	const bool frustumPerModel = NLS::Rendering::Settings::IsFlagSet(Settings::ECullingOptions::FRUSTUM_PER_MODEL, p_cullingOptions);
+	const bool frustumPerModel = NLS::Render::Settings::IsFlagSet(Settings::ECullingOptions::FRUSTUM_PER_MODEL, p_cullingOptions);
 
 	if (!frustumPerModel || BoundingSphereInFrustum(p_modelBoundingSphere, p_modelTransform))
 	{
-		std::vector<NLS::Rendering::Resources::Mesh*> result;
+		std::vector<NLS::Render::Resources::Mesh*> result;
 
-		const bool frustumPerMesh = NLS::Rendering::Settings::IsFlagSet(Settings::ECullingOptions::FRUSTUM_PER_MESH, p_cullingOptions);
+		const bool frustumPerMesh = NLS::Render::Settings::IsFlagSet(Settings::ECullingOptions::FRUSTUM_PER_MESH, p_cullingOptions);
 		const auto& meshes = p_model.GetMeshes();
 
 		for (auto mesh : meshes)
@@ -292,12 +292,12 @@ std::vector<NLS::Rendering::Resources::Mesh*> NLS::Rendering::Data::Frustum::Get
 	return {};
 }
 
-std::array<float, 4> NLS::Rendering::Data::Frustum::GetNearPlane() const
+std::array<float, 4> NLS::Render::Data::Frustum::GetNearPlane() const
 {
 	return { m_frustum[FRONT][0], m_frustum[FRONT][1], m_frustum[FRONT][2], m_frustum[FRONT][3] };
 }
 
-std::array<float, 4> NLS::Rendering::Data::Frustum::GetFarPlane() const
+std::array<float, 4> NLS::Render::Data::Frustum::GetFarPlane() const
 {
 	return { m_frustum[BACK][0], m_frustum[BACK][1], m_frustum[BACK][2], m_frustum[BACK][3] };
 }

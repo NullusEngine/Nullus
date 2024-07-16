@@ -13,13 +13,13 @@ struct SceneRenderPassDescriptor
 	Engine::Rendering::SceneRenderer::AllDrawables drawables;
 };
 
-class OpaqueRenderPass : public NLS::Rendering::Core::ARenderPass
+class OpaqueRenderPass : public NLS::Render::Core::ARenderPass
 {
 public:
-	OpaqueRenderPass(NLS::Rendering::Core::CompositeRenderer& p_renderer) : NLS::Rendering::Core::ARenderPass(p_renderer) {}
+	OpaqueRenderPass(NLS::Render::Core::CompositeRenderer& p_renderer) : NLS::Render::Core::ARenderPass(p_renderer) {}
 
 protected:
-	virtual void Draw(NLS::Rendering::Data::PipelineState p_pso) override
+	virtual void Draw(NLS::Render::Data::PipelineState p_pso) override
 	{
 		auto& sceneContent = m_renderer.GetDescriptor<SceneRenderPassDescriptor>();
 
@@ -30,13 +30,13 @@ protected:
 	}
 };
 
-class TransparentRenderPass : public NLS::Rendering::Core::ARenderPass
+class TransparentRenderPass : public NLS::Render::Core::ARenderPass
 {
 public:
-	TransparentRenderPass(NLS::Rendering::Core::CompositeRenderer& p_renderer) : NLS::Rendering::Core::ARenderPass(p_renderer) {}
+	TransparentRenderPass(NLS::Render::Core::CompositeRenderer& p_renderer) : NLS::Render::Core::ARenderPass(p_renderer) {}
 
 protected:
-	virtual void Draw(NLS::Rendering::Data::PipelineState p_pso) override
+	virtual void Draw(NLS::Render::Data::PipelineState p_pso) override
 	{
 		auto& sceneContent = m_renderer.GetDescriptor<SceneRenderPassDescriptor>();
 
@@ -47,19 +47,19 @@ protected:
 	}
 };
 
-Engine::Rendering::SceneRenderer::SceneRenderer(NLS::Rendering::Context::Driver& p_driver)
-	: NLS::Rendering::Core::CompositeRenderer(p_driver)
+Engine::Rendering::SceneRenderer::SceneRenderer(NLS::Render::Context::Driver& p_driver)
+	: NLS::Render::Core::CompositeRenderer(p_driver)
 {
 	AddFeature<EngineBufferRenderFeature>();
-	AddFeature<NLS::Rendering::Features::LightingRenderFeature>();
+	AddFeature<NLS::Render::Features::LightingRenderFeature>();
 
-	AddPass<OpaqueRenderPass>("Opaques", NLS::Rendering::Settings::ERenderPassOrder::Opaque);
-	AddPass<TransparentRenderPass>("Transparents", NLS::Rendering::Settings::ERenderPassOrder::Transparent);
+	AddPass<OpaqueRenderPass>("Opaques", NLS::Render::Settings::ERenderPassOrder::Opaque);
+	AddPass<TransparentRenderPass>("Transparents", NLS::Render::Settings::ERenderPassOrder::Transparent);
 }
 
-NLS::Rendering::Features::LightingRenderFeature::LightSet FindActiveLights(const Engine::SceneSystem::Scene& p_scene)
+NLS::Render::Features::LightingRenderFeature::LightSet FindActiveLights(const Engine::SceneSystem::Scene& p_scene)
 {
-	NLS::Rendering::Features::LightingRenderFeature::LightSet lights;
+	NLS::Render::Features::LightingRenderFeature::LightSet lights;
 
 	const auto& facs = p_scene.GetFastAccessComponents();
 
@@ -74,24 +74,24 @@ NLS::Rendering::Features::LightingRenderFeature::LightSet FindActiveLights(const
 	return lights;
 }
 
-void Engine::Rendering::SceneRenderer::BeginFrame(const NLS::Rendering::Data::FrameDescriptor& p_frameDescriptor)
+void Engine::Rendering::SceneRenderer::BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor)
 {
 	NLS_ASSERT(HasDescriptor<SceneDescriptor>(), "Cannot find SceneDescriptor attached to this renderer");
 
 	auto& sceneDescriptor = GetDescriptor<SceneDescriptor>();
 
-	AddDescriptor<NLS::Rendering::Features::LightingRenderFeature::LightingDescriptor>({
+	AddDescriptor<NLS::Render::Features::LightingRenderFeature::LightingDescriptor>({
 		FindActiveLights(sceneDescriptor.scene),
 	});
 
-	NLS::Rendering::Core::CompositeRenderer::BeginFrame(p_frameDescriptor);
+	NLS::Render::Core::CompositeRenderer::BeginFrame(p_frameDescriptor);
 
 	AddDescriptor<SceneRenderPassDescriptor>({
 		ParseScene()
 	});
 }
 
-void Engine::Rendering::SceneRenderer::DrawModelWithSingleMaterial(NLS::Rendering::Data::PipelineState p_pso, NLS::Rendering::Resources::Model& p_model, NLS::Rendering::Data::Material& p_material, const Maths::Matrix4& p_modelMatrix)
+void Engine::Rendering::SceneRenderer::DrawModelWithSingleMaterial(NLS::Render::Data::PipelineState p_pso, NLS::Render::Resources::Model& p_model, NLS::Render::Resources::Material& p_material, const Maths::Matrix4& p_modelMatrix)
 {
 	auto stateMask = p_material.GenerateStateMask();
 	auto userMatrix = Maths::Matrix4::Identity;
@@ -103,7 +103,7 @@ void Engine::Rendering::SceneRenderer::DrawModelWithSingleMaterial(NLS::Renderin
 
 	for (auto mesh : p_model.GetMeshes())
 	{
-		NLS::Rendering::Entities::Drawable element;
+		NLS::Render::Entities::Drawable element;
 		element.mesh = mesh;
 		element.material = &p_material;
 		element.stateMask = stateMask;
@@ -126,7 +126,7 @@ Engine::Rendering::SceneRenderer::AllDrawables Engine::Rendering::SceneRenderer:
 	auto& scene = sceneDescriptor.scene;
 	auto overrideMaterial = sceneDescriptor.overrideMaterial;
 	auto fallbackMaterial = sceneDescriptor.fallbackMaterial;
-	std::optional<NLS::Rendering::Data::Frustum> frustum = std::nullopt;
+	std::optional<NLS::Render::Data::Frustum> frustum = std::nullopt;
 
 	if (camera.HasFrustumGeometryCulling())
 	{
@@ -146,21 +146,21 @@ Engine::Rendering::SceneRenderer::AllDrawables Engine::Rendering::SceneRenderer:
 				{
 					auto& transform = owner->GetTransform()->GetTransform();
 
-					auto cullingOptions = NLS::Rendering::Settings::ECullingOptions::NONE;
+					auto cullingOptions = NLS::Render::Settings::ECullingOptions::NONE;
 
 					if (modelRenderer->GetFrustumBehaviour() != MeshRenderer::EFrustumBehaviour::DISABLED)
 					{
-						cullingOptions |= NLS::Rendering::Settings::ECullingOptions::FRUSTUM_PER_MODEL;
+						cullingOptions |= NLS::Render::Settings::ECullingOptions::FRUSTUM_PER_MODEL;
 					}
 
 					if (modelRenderer->GetFrustumBehaviour() == MeshRenderer::EFrustumBehaviour::CULL_MESHES)
 					{
-						cullingOptions |= NLS::Rendering::Settings::ECullingOptions::FRUSTUM_PER_MESH;
+						cullingOptions |= NLS::Render::Settings::ECullingOptions::FRUSTUM_PER_MESH;
 					}
 
 					auto modelBoundingSphere = modelRenderer->GetFrustumBehaviour() == MeshRenderer::EFrustumBehaviour::CULL_CUSTOM ? modelRenderer->GetCustomBoundingSphere() : model->GetBoundingSphere();
 
-					std::vector<NLS::Rendering::Resources::Mesh*> meshes;
+					std::vector<NLS::Render::Resources::Mesh*> meshes;
 
 					if (frustum)
 					{
@@ -178,7 +178,7 @@ Engine::Rendering::SceneRenderer::AllDrawables Engine::Rendering::SceneRenderer:
 
 						for (const auto mesh : meshes)
 						{
-                            NLS::Rendering::Data::Material* material = nullptr;
+                            NLS::Render::Resources::Material* material = nullptr;
 
 							if (mesh->GetMaterialIndex() < kMaxMaterialCount)
 							{
@@ -210,7 +210,7 @@ Engine::Rendering::SceneRenderer::AllDrawables Engine::Rendering::SceneRenderer:
 
 							if (material && material->IsValid())
 							{
-								NLS::Rendering::Entities::Drawable drawable;
+								NLS::Render::Entities::Drawable drawable;
 								drawable.mesh = mesh;
 								drawable.material = material;
 								drawable.stateMask = material->GenerateStateMask();

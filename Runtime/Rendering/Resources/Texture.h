@@ -7,7 +7,7 @@
 #include "RenderDef.h"
 
 
-namespace NLS::Rendering::Resources
+namespace NLS::Render::Resources
 {
 	namespace Loaders { class TextureLoader; }
 

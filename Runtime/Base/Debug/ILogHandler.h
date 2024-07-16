@@ -8,9 +8,9 @@ namespace NLS::Debug
 	enum class ELogLevel
 	{
 		LOG_DEFAULT,
-		NLS_LOG_INFO,
-		NLS_LOG_WARNING,
-		NLS_LOG_ERROR
+		LOG_INFO,
+		LOG_WARNING,
+		LOG_ERROR
 	};
 
 	enum class ELogMode

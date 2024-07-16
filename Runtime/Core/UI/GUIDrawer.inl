@@ -34,7 +34,7 @@ namespace NLS::UI
 
 		CreateTitle(p_root, p_name);
 		auto& widget = p_root.CreateWidget<Widgets::Drags::DragSingleScalar<T>>(GetDataType<T>(), p_min, p_max, p_data, p_step, "", GetFormat<T>());
-		auto& dispatcher = widget.AddPlugin<Plugins::DataDispatcher<T>>();
+        auto& dispatcher = widget.template AddPlugin<Plugins::DataDispatcher<T>>();
 		dispatcher.RegisterReference(p_data);
 	}
 
@@ -45,7 +45,7 @@ namespace NLS::UI
 
 		CreateTitle(p_root, p_name);
 		auto& widget = p_root.CreateWidget<Widgets::Drags::DragSingleScalar<T>>(GetDataType<T>(), p_min, p_max, static_cast<T>(0), p_step, "", GetFormat<T>());
-		auto& dispatcher = widget.AddPlugin<Plugins::DataDispatcher<T>>();
+        auto& dispatcher = widget.template AddPlugin<Plugins::DataDispatcher<T>>();
 		dispatcher.RegisterGatherer(p_gatherer);
 		dispatcher.RegisterProvider(p_provider);
 	}

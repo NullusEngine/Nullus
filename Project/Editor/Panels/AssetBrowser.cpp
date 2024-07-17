@@ -31,6 +31,7 @@
 #include "Core/EditorActions.h"
 #include "Core/EditorResources.h"
 #include "UI/Widgets/InputFields/InputText.h"
+#include "UI/UIManager.h"
 using namespace NLS;
 using namespace NLS::UI;
 using namespace NLS::UI::Panels;
@@ -87,14 +88,14 @@ public:
 
 	virtual void Execute() override
 	{
-		if (ImGui::IsItemHovered())
+        if (NLS_SERVICE(NLS::UI::UIManager).IsItemHovered())
 		{
 			if (texture)
 				image.textureID.id = texture->id;
 
-			ImGui::BeginTooltip();
+			NLS_SERVICE(NLS::UI::UIManager).BeginTooltip();
 			image.Draw();
-			ImGui::EndTooltip();
+            NLS_SERVICE(NLS::UI::UIManager).EndTooltip();
 		}
 	}
 

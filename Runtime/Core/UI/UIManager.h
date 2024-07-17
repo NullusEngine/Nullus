@@ -118,6 +118,36 @@ public:
      */
     void Render();
 
+#pragma region ImGUI封装
+    float GetMouseWheel();
+
+    ImGuiMouseCursor GetMouseCursor();
+
+    bool BeginDragDropTarget();
+
+    void EndDragDropTarget();
+
+    const ImGuiPayload* AcceptDragDropPayload(const char* type, ImGuiDragDropFlags flags);
+
+    void PushStyleVar(ImGuiStyleVar idx, const ImVec2& val);
+
+    void PopStyleVar(int count = 1);
+
+    bool BeginDragDropSource(ImGuiDragDropFlags flags = 0);
+
+    void EndDragDropSource();
+
+    bool SetDragDropPayload(const char* type, const void* data, size_t sz, ImGuiCond cond = 0);
+
+    bool IsAnyItemActive();
+
+    bool IsItemHovered(ImGuiHoveredFlags flags = 0);
+
+    bool BeginTooltip();
+
+    void EndTooltip();
+#pragma endregion
+
 private:
     void PushCurrentFont();
     void PopCurrentFont();

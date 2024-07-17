@@ -1,7 +1,3 @@
-#pragma once
-
-#include "Core/EditorActions.h"
-
 namespace NLS::Editor::Core
 {
 	template<typename T>

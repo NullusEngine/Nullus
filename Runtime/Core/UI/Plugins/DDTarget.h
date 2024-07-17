@@ -7,6 +7,8 @@
 #include "ImGui/imgui.h"
 
 #include "UI/Plugins/IPlugin.h"
+#include "UI/UIManager.h"
+#include "ServiceLocator.h"
 
 namespace NLS::UI::Plugins
 {
@@ -30,7 +32,7 @@ namespace NLS::UI::Plugins
 		*/
 		virtual void Execute() override
 		{
-			if (ImGui::BeginDragDropTarget())
+            if (NLS_SERVICE(UIManager).BeginDragDropTarget())
 			{
 				if (!m_isHovered)
 					HoverStartEvent.Invoke();
@@ -43,12 +45,12 @@ namespace NLS::UI::Plugins
 				if (!showYellowRect)
 					target_flags |= ImGuiDragDropFlags_AcceptNoDrawDefaultRect; // Don't display the yellow rectangle
 
-				if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(identifier.c_str(), target_flags))
+				if (const ImGuiPayload* payload = NLS_SERVICE(UIManager).AcceptDragDropPayload(identifier.c_str(), target_flags))
 				{
 					T data = *(T*)payload->Data;
 					DataReceivedEvent.Invoke(data);
 				}
-				ImGui::EndDragDropTarget();
+                NLS_SERVICE(UIManager).EndDragDropTarget();
 			}
 			else
 			{

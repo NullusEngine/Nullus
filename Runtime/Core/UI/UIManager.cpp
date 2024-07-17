@@ -295,4 +295,75 @@ void UI::UIManager::PushCurrentFont()
 void UI::UIManager::PopCurrentFont()
 {
 }
+
+bool UI::UIManager::BeginDragDropTarget()
+{
+    return ImGui::BeginDragDropTarget();
+}
+
+void UI::UIManager::EndDragDropTarget()
+{
+    ImGui::EndDragDropTarget();
+}
+
+const ImGuiPayload* UI::UIManager::AcceptDragDropPayload(const char* type, ImGuiDragDropFlags flags)
+{
+    return ImGui::AcceptDragDropPayload(type, flags);
+}
+
+void UI::UIManager::PushStyleVar(ImGuiStyleVar idx, const ImVec2& val)
+{
+    ImGui::PushStyleVar(idx, val);
+}
+
+void UI::UIManager::PopStyleVar(int count)
+{
+    ImGui::PopStyleVar(count);
+}
+
+bool UI::UIManager::BeginDragDropSource(ImGuiDragDropFlags flags /*= 0*/)
+{
+    return ImGui::BeginDragDropSource(flags);
+}
+
+void UI::UIManager::EndDragDropSource()
+{
+    ImGui::EndDragDropSource();
+}
+
+bool UI::UIManager::SetDragDropPayload(const char* type, const void* data, size_t sz, ImGuiCond cond /*= 0*/)
+{
+    return ImGui::SetDragDropPayload(type, data, sz, cond);
+}
+
+bool UI::UIManager::IsAnyItemActive()
+{
+    return ImGui::IsAnyItemActive();
+}
+
+float UI::UIManager::GetMouseWheel()
+{
+    return ImGui::GetIO().MouseWheel;
+}
+
+ImGuiMouseCursor UI::UIManager::GetMouseCursor()
+{
+    return ImGui::GetMouseCursor();
+}
+
+bool UI::UIManager::IsItemHovered(ImGuiHoveredFlags flags /*= 0*/)
+{
+    return ImGui::IsItemHovered(flags);
+}
+
+bool UI::UIManager::BeginTooltip()
+{
+    return ImGui::BeginTooltip();
+}
+
+void UI::UIManager::EndTooltip()
+{
+    return ImGui::EndTooltip();
+}
+
 } // namespace NLS

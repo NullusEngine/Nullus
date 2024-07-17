@@ -29,7 +29,7 @@ Editor::Core::EditorResources::EditorResources(const std::string& p_editorAssets
 	modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::FIND_INVALID_DATA;
 	modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::IMPROVE_CACHE_LOCALITY;
 	modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::GEN_UV_COORDS;
-	modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::PRE_TRANSFORM_VERTICES;
+	//modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::PRE_TRANSFORM_VERTICES;
 	modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::GLOBAL_SCALE;
 
 	NLS::Render::Settings::ETextureFilteringMode firstFilterEditor = NLS::Render::Settings::ETextureFilteringMode::LINEAR;

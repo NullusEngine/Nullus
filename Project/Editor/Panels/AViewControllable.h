@@ -68,6 +68,7 @@ namespace NLS::Editor::Panels
 		void ResetClearColor();
 
 	protected:
+        Maths::Transform camTrans;
 		Maths::Vector3 m_gridColor;
 		NLS::Render::Entities::Camera m_camera;
 		Editor::Core::CameraController m_cameraController;

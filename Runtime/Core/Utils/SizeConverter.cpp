@@ -1,4 +1,6 @@
 #include "Utils/SizeConverter.h"
+#include <cmath>
+#include <algorithm>
 using namespace NLS;
 std::pair<float, Utils::SizeConverter::ESizeUnit> Utils::SizeConverter::ConvertToOptimalUnit(float p_value, ESizeUnit p_unit)
 {

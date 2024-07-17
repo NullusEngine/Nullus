@@ -7,6 +7,8 @@
 #include "ImGui/imgui.h"
 
 #include "UI/Plugins/IPlugin.h"
+#include "ServiceLocator.h"
+#include "UI/UIManager.h"
 
 namespace NLS::UI::Plugins
 {
@@ -43,7 +45,7 @@ namespace NLS::UI::Plugins
 			if (!hasTooltip)
 				src_flags |= ImGuiDragDropFlags_SourceNoPreviewTooltip; // Hide the tooltip
 
-			if (ImGui::BeginDragDropSource(src_flags))
+			if (NLS_SERVICE(UIManager).BeginDragDropSource(src_flags))
 			{
 				if (!m_isDragged)
 					DragStartEvent.Invoke();
@@ -52,8 +54,8 @@ namespace NLS::UI::Plugins
 
 				if (!(src_flags & ImGuiDragDropFlags_SourceNoPreviewTooltip))
 					ImGui::Text(tooltip.c_str());
-				ImGui::SetDragDropPayload(identifier.c_str(), &data, sizeof(data));
-				ImGui::EndDragDropSource();
+                NLS_SERVICE(UIManager).SetDragDropPayload(identifier.c_str(), &data, sizeof(data));
+                NLS_SERVICE(UIManager).EndDragDropSource();
 			}
 			else
 			{

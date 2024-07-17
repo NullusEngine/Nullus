@@ -12,16 +12,12 @@
 #include <UI/Plugins/DDTarget.h>
 #include <UI/Widgets/Visual/Separator.h>
 #include <UI/Widgets/Layout/GroupCollapsable.h>
-
+#include <UI/GUIDrawer.h>
 #include <ServiceLocator.h>
 #include <ResourceManagement/ModelManager.h>
 #include <ResourceManagement/TextureManager.h>
 #include <ResourceManagement/ShaderManager.h>
-
-#include <Windowing/Dialogs/MessageBox.h>
-
 #include "Core/EditorActions.h"
-//#include <UI/GUIDrawer.h>
 #include "Components/MaterialRenderer.h"
 #include "Components/MeshRenderer.h"
 #include "Components/LightComponent.h"
@@ -43,21 +39,21 @@ Inspector::Inspector(const std::string& p_title, bool p_opened, const NLS::UI::S
     { return m_targetActor ? m_targetActor->GetName() : "%undef%"; };
     auto nameProvider = [this](const std::string& p_newName)
     { if (m_targetActor) m_targetActor->SetName(p_newName); };
-    //UI::GUIDrawer::DrawString(headerColumns, "Name", nameGatherer, nameProvider);
+    UI::GUIDrawer::DrawString(headerColumns, "Name", nameGatherer, nameProvider);
 
     /* Tag field */
     auto tagGatherer = [this]
     { return m_targetActor ? m_targetActor->GetTag() : "%undef%"; };
     auto tagProvider = [this](const std::string& p_newName)
     { if (m_targetActor) m_targetActor->SetTag(p_newName); };
-    //UI::GUIDrawer::DrawString(headerColumns, "Tag", tagGatherer, tagProvider);
+    UI::GUIDrawer::DrawString(headerColumns, "Tag", tagGatherer, tagProvider);
 
     /* Active field */
     auto activeGatherer = [this]
     { return m_targetActor ? m_targetActor->IsSelfActive() : false; };
     auto activeProvider = [this](bool p_active)
     { if (m_targetActor) m_targetActor->SetActive(p_active); };
-    //UI::GUIDrawer::DrawBoolean(headerColumns, "Active", activeGatherer, activeProvider);
+    UI::GUIDrawer::DrawBoolean(headerColumns, "Active", activeGatherer, activeProvider);
 
     /* Component select + button */
     {

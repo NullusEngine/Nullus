@@ -3,12 +3,13 @@
 #include "Core/Context.h"
 
 #include <Core/ServiceLocator.h>
+#include "Utils/PathParser.h"
 using namespace NLS;
 using namespace NLS::Core;
 using namespace NLS::Core::ResourceManagement;
 
 Game::Context::Context()
-    : engineAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets")).string() + "/"), projectAssetsPath(""),
+    : engineAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets/Engine")).string() + Utils::PathParser::Separator()), projectAssetsPath(""),
 	projectScriptsPath(""),
 	projectSettings(""),
 	sceneManager(projectAssetsPath)

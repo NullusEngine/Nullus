@@ -1,5 +1,7 @@
 #include "Panels/AView.h"
 #include "Core/EditorActions.h"
+#include "ServiceLocator.h"
+#include "UI/UIManager.h"
 
 using namespace NLS;
 Editor::Panels::AView::AView
@@ -22,9 +24,9 @@ void Editor::Panels::AView::Update(float p_deltaTime)
 
 void Editor::Panels::AView::_Draw_Impl()
 {
-	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    NLS_SERVICE(UI::UIManager).PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
 	UI::Panels::PanelWindow::_Draw_Impl();
-	ImGui::PopStyleVar();
+    NLS_SERVICE(UI::UIManager).PopStyleVar();
 }
 
 void Editor::Panels::AView::InitFrame()

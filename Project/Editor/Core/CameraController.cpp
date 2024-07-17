@@ -7,6 +7,8 @@
 
 #include <Components/LightComponent.h>
 #include <Components/TransformComponent.h>
+#include "UI/UIManager.h"
+#include "ServiceLocator.h"
 using namespace NLS;
 Editor::Core::CameraController::CameraController(
 	Editor::Panels::AView& p_view,
@@ -51,7 +53,7 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
 	{
 		UpdateMouseState();
 
-		if (!ImGui::IsAnyItemActive())
+		if (!NLS_SERVICE(NLS::UI::UIManager).IsAnyItemActive())
 		{
 			if (auto target = GetTargetActor())
 			{
@@ -289,7 +291,7 @@ void Editor::Core::CameraController::HandleCameraOrbit(
 
 void Editor::Core::CameraController::HandleCameraZoom()
 {
-	m_camera.SetPosition(m_camera.GetPosition() + m_camera.transform->GetWorldForward() * ImGui::GetIO().MouseWheel);
+    m_camera.SetPosition(m_camera.GetPosition() + m_camera.transform->GetWorldForward() * NLS_SERVICE(UI::UIManager).GetMouseWheel());
 }
 
 void Editor::Core::CameraController::HandleCameraFPSMouse(const Maths::Vector2& p_mouseOffset, bool p_firstMouse)

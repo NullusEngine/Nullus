@@ -74,7 +74,7 @@ void Editor::Panels::SceneView::InitFrame()
 {
     AViewControllable::InitFrame();
 
-    Engine::GameObject* selectedActor;
+    Engine::GameObject* selectedActor = nullptr;
 
     if (EDITOR_EXEC(IsAnyActorSelected()))
     {
@@ -107,7 +107,7 @@ void Editor::Panels::SceneView::DrawFrame()
 
 bool IsResizing()
 {
-    auto cursor = ImGui::GetMouseCursor();
+    auto cursor = NLS_SERVICE(UI::UIManager).GetMouseCursor();
 
     return cursor == ImGuiMouseCursor_ResizeEW || cursor == ImGuiMouseCursor_ResizeNS || cursor == ImGuiMouseCursor_ResizeNWSE || cursor == ImGuiMouseCursor_ResizeNESW || cursor == ImGuiMouseCursor_ResizeAll;
 }

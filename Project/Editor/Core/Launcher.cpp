@@ -263,7 +263,7 @@ void Launcher::SetupContext()
     m_driver = std::make_unique<Render::Context::Driver>(Render::Settings::DriverSettings{false});
 
     m_uiManager = std::make_unique<UI::UIManager>(m_window->GetGlfwWindow(), UI::Styling::EStyle::ALTERNATIVE_DARK);
-    m_uiManager->LoadFont("Ruda_Big", "../Assets/Fonts/Ruda-Bold.ttf", 18);
+    m_uiManager->LoadFont("Ruda_Big", "../Assets/Editor/Fonts/Ruda-Bold.ttf", 18);
     m_uiManager->UseFont("Ruda_Big");
     m_uiManager->EnableEditorLayoutSave(false);
     m_uiManager->EnableDocking(false);

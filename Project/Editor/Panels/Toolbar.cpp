@@ -5,6 +5,7 @@
 
 #include <ServiceLocator.h>
 #include <ResourceManagement/TextureManager.h>
+#include "UI/UIManager.h"
 using namespace NLS;
 Editor::Panels::Toolbar::Toolbar
 (
@@ -78,9 +79,9 @@ Editor::Panels::Toolbar::Toolbar
 
 void Editor::Panels::Toolbar::_Draw_Impl()
 {
-	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 10));
+    NLS_SERVICE(UI::UIManager).PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 10));
 
 	UI::Panels::PanelWindow::_Draw_Impl();
 
-	ImGui::PopStyleVar();
+	NLS_SERVICE(UI::UIManager).PopStyleVar();
 }

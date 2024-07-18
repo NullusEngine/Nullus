@@ -17,6 +17,7 @@ Game::Context::Context()
 	ModelManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
 	TextureManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
 	ShaderManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
+    MaterialManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
 
 	/* Settings */
 	Windowing::Settings::DeviceSettings deviceSettings;

@@ -17,7 +17,12 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     sceneManager(projectAssetsPath), 
     projectSettings(projectFilePath)
 {
-    NLS::Debug::FileHandler::SetLogFilePath(p_projectPath + "/Log");
+    ModelManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
+    TextureManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
+    ShaderManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
+    MaterialManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
+
+    NLS::Debug::FileHandler::SetLogFilePath(p_projectPath + Utils::PathParser::Separator() + "Log");
     /* Settings */
     NLS::Windowing::Settings::DeviceSettings deviceSettings;
     deviceSettings.contextMajorVersion = 4;

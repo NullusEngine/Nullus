@@ -24,7 +24,10 @@ void NLS::Debug::FileHandler::Log(const LogData& p_logData)
     if (OUTPUT_FILE.is_open())
         OUTPUT_FILE << GetLogHeader(p_logData.logLevel) << p_logData.date << " " << p_logData.message << std::endl;
     else
-        std::cout << "Unable to create log file" << std::endl;
+    {
+        std::cerr << "Error opening file: " << LOG_FILE_PATH << std::endl;
+        std::cerr << "Error state: " << OUTPUT_FILE.rdstate() << std::endl;
+    }
 }
 
 std::string& NLS::Debug::FileHandler::GetLogFilePath()

@@ -11,6 +11,7 @@
 #include <Core/ResourceManagement/ModelManager.h>
 #include <Core/ResourceManagement/TextureManager.h>
 #include <Core/ResourceManagement/ShaderManager.h>
+#include <Core/ResourceManagement/MaterialManager.h>
 #include <SceneSystem/SceneManager.h>
 #include "Core/Filesystem/IniFile.h"
 

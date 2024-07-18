@@ -152,6 +152,10 @@ public:
         {
             std::filesystem::create_directory(p_path + Utils::PathParser::Separator() + "Script");
         }
+        if (!std::filesystem::exists(p_path + Utils::PathParser::Separator() + "Log"))
+        {
+            std::filesystem::create_directory(p_path + Utils::PathParser::Separator() + "Log");
+        }
         std::ofstream projectFile(p_path + Utils::PathParser::Separator() + Utils::PathParser::GetElementName(p_path) + ".nullus");
     }
 

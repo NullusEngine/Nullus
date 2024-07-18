@@ -156,7 +156,6 @@ void Inspector::FocusActor(Engine::GameObject& p_target)
 
     // Force component and script selectors to trigger their ChangedEvent to update button states
     m_componentSelectorWidget->ValueChangedEvent.Invoke(m_componentSelectorWidget->currentChoice);
-    m_scriptSelectorWidget->ContentChangedEvent.Invoke(m_scriptSelectorWidget->content);
 
     EDITOR_EVENT(ActorSelectedEvent).Invoke(*m_targetActor);
 }

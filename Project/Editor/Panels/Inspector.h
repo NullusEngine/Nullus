@@ -76,7 +76,6 @@ private:
     UI::Widgets::Layout::Group* m_actorInfo;
     UI::Widgets::Layout::Group* m_inspectorHeader;
     UI::Widgets::Selection::ComboBox* m_componentSelectorWidget;
-    UI::Widgets::InputFields::InputText* m_scriptSelectorWidget;
 
     uint64_t m_componentAddedListener = 0;
     uint64_t m_componentRemovedListener = 0;

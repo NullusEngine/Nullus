@@ -28,7 +28,7 @@ if(NOT TARGET assimp)
 endif()
 
 if(NOT TARGET ImGui)
-    add_subdirectory(ImGui)
+    include(imgui.cmake)
     # 指定FOLDER
     set_target_properties(ImGui PROPERTIES FOLDER ${third_party_folder}/ImGui)
 endif()

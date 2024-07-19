@@ -6,6 +6,7 @@
 #include <GLFW/glfw3.h>
 
 #include <stdexcept>
+#include "Image.h"
 std::unordered_map<GLFWwindow*, NLS::Windowing::Window*> NLS::Windowing::Window::__WINDOWS_MAP;
 
 NLS::Windowing::Window::Window(Context::Device& p_device, const Settings::WindowSettings& p_windowSettings) :
@@ -48,12 +49,14 @@ NLS::Windowing::Window::~Window()
 	glfwDestroyWindow(m_glfwWindow);
 }
 
-//void NLS::Windowing::Window::SetIcon(const std::string & p_filePath)
-//{
-//	GLFWimage images[1];
-//	images[0].pixels = stbi_load(p_filePath.c_str(), &images[0].width, &images[0].height, 0, 4);
-//	glfwSetWindowIcon(m_glfwWindow, 1, images);
-//}
+void NLS::Windowing::Window::SetIcon(const std::string& p_filePath)
+{
+    GLFWimage images[1];
+    auto image = Image(p_filePath);
+    images[0].width = image.GetWidth();
+    images[0].height = image.GetHeight();
+    glfwSetWindowIcon(m_glfwWindow, 1, images);
+}
 
 void NLS::Windowing::Window::SetIconFromMemory(uint8_t* p_data, uint32_t p_width, uint32_t p_height)
 {

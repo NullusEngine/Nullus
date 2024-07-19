@@ -1,9 +1,9 @@
 ﻿#pragma once
 #include <string>
-#include "RenderDef.h"
+#include "UDRefl/config.hpp"
 namespace NLS
 {
-    class NLS_RENDER_API Image {
+    class NLS_BASE_API Image {
     private:
         int width, height, channels;
         unsigned char* data;

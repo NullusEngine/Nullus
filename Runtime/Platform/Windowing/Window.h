@@ -47,11 +47,11 @@ namespace NLS::Windowing
 		* Destructor of the window, responsible of the GLFW window memory free
 		*/
 		~Window();
-		///**
-		//* Set Icon
-		//* @param p_filePath
-		//*/
-		//void SetIcon(const std::string& p_filePath);
+		/**
+		* Set Icon
+		* @param p_filePath
+		*/
+		void SetIcon(const std::string& p_filePath);
 
 		/**
 		* Set Icon from memory

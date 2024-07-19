@@ -10,19 +10,19 @@ namespace NLS
 {
 Editor::Core::Context::Context(const std::string& p_projectPath, const std::string& p_projectName)
     : projectPath(p_projectPath), 
-    projectName(p_projectName), projectFilePath(p_projectPath + p_projectName + ".nullus"),
+    projectName(p_projectName), 
+    projectFilePath(p_projectPath + p_projectName + ".nullus"), 
     engineAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets/Engine")).string() + Utils::PathParser::Separator()), 
-    projectAssetsPath(p_projectPath + Utils::PathParser::Separator() + "Assets"), projectScriptsPath(p_projectPath + Utils::PathParser::Separator() + "Scripts"),
+    projectAssetsPath(p_projectPath + Utils::PathParser::Separator() + "Assets"), 
     editorAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets/Editor")).string() + Utils::PathParser::Separator()), 
-    sceneManager(projectAssetsPath), 
-    projectSettings(projectFilePath)
+    sceneManager(projectAssetsPath), projectSettings(projectFilePath)
 {
     ModelManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
     TextureManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
     ShaderManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
     MaterialManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
 
-    NLS::Debug::FileHandler::SetLogFilePath(p_projectPath + Utils::PathParser::Separator() + "Log");
+    NLS::Debug::FileHandler::SetLogFilePath(p_projectPath + Utils::PathParser::Separator() + "Logs");
     /* Settings */
     NLS::Windowing::Settings::DeviceSettings deviceSettings;
     deviceSettings.contextMajorVersion = 4;
@@ -49,17 +49,18 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     /* Graphics context creation */
     driver = std::make_unique<NLS::Render::Context::Driver>(NLS::Render::Settings::DriverSettings{true});
 
-    std::filesystem::create_directories(std::string(getenv("APPDATA")) + "\\OverloadTech\\Editor\\");
-
     uiManager = std::make_unique<NLS::UI::UIManager>(window->GetGlfwWindow(), UI::Styling::EStyle::ALTERNATIVE_DARK);
     uiManager->LoadFont("Ruda_Big", editorAssetsPath + "/Fonts/Ruda-Bold.ttf", 16);
     uiManager->LoadFont("Ruda_Small", editorAssetsPath + "/Fonts/Ruda-Bold.ttf", 12);
     uiManager->LoadFont("Ruda_Medium", editorAssetsPath + "/Fonts/Ruda-Bold.ttf", 14);
     uiManager->UseFont("Ruda_Medium");
-    uiManager->SetEditorLayoutSaveFilename(std::filesystem::canonical(std::filesystem::path("../Settings")).string() + "/layout.ini");
+    uiManager->SetEditorLayoutSaveFilename(p_projectPath + "/UserSettings/layout.ini");
     uiManager->SetEditorLayoutAutosaveFrequency(60.0f);
     uiManager->EnableEditorLayoutSave(true);
     uiManager->EnableDocking(true);
+
+    if (!std::filesystem::exists(p_projectPath + "/UserSettings/layout.ini"))
+        uiManager->ResetLayout(editorAssetsPath + "/Settings/layout.ini");
 
     /* Editor resources */
     editorResources = std::make_unique<Editor::Core::EditorResources>(editorAssetsPath);

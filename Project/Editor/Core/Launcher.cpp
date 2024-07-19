@@ -18,7 +18,7 @@
 #include <Windowing/Dialogs/OpenFileDialog.h>
 #include <Windowing/Dialogs/MessageBox.h>
 
-#define PROJECTS_FILE std::filesystem::canonical(std::filesystem::path("../Settings")).string() + Utils::PathParser::Separator() + "projects.ini"
+#define PROJECTS_FILE "projects.ini"
 namespace NLS
 {
 class LauncherPanel : public UI::Panels::PanelWindow
@@ -30,8 +30,6 @@ public:
         resizable = false;
         movable = false;
         titleBar = false;
-
-        std::filesystem::create_directories(std::filesystem::path("../Settings"));
 
         SetSize({1000, 580});
         SetPosition({0.f, 0.f});
@@ -148,13 +146,17 @@ public:
         {
             std::filesystem::create_directory(p_path + Utils::PathParser::Separator() + "Assets");
         }
-        if (!std::filesystem::exists(p_path + Utils::PathParser::Separator() + "Script"))
+        if (!std::filesystem::exists(p_path + Utils::PathParser::Separator() + "Logs"))
         {
-            std::filesystem::create_directory(p_path + Utils::PathParser::Separator() + "Script");
+            std::filesystem::create_directory(p_path + Utils::PathParser::Separator() + "Logs");
         }
-        if (!std::filesystem::exists(p_path + Utils::PathParser::Separator() + "Log"))
+        if (!std::filesystem::exists(p_path + Utils::PathParser::Separator() + "UserSetting"))
         {
-            std::filesystem::create_directory(p_path + Utils::PathParser::Separator() + "Log");
+            std::filesystem::create_directory(p_path + Utils::PathParser::Separator() + "UserSettings");
+        }
+        if (!std::filesystem::exists(p_path + Utils::PathParser::Separator() + "ProjectSettings"))
+        {
+            std::filesystem::create_directory(p_path + Utils::PathParser::Separator() + "ProjectSettings");
         }
         std::ofstream projectFile(p_path + Utils::PathParser::Separator() + Utils::PathParser::GetElementName(p_path) + ".nullus");
     }

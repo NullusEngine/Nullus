@@ -205,27 +205,15 @@ void Editor::Core::EditorActions::BuildAtLocation(const std::string& p_configura
                     {
                         NLS_LOG_INFO("Data/User/Assets/ directory copied");
 
-                        std::filesystem::copy(m_context.projectScriptsPath, buildPath + "Data/User/Scripts/", std::filesystem::copy_options::recursive, err);
+                        std::filesystem::copy(m_context.engineAssetsPath, buildPath + "Data/Engine/", std::filesystem::copy_options::recursive, err);
 
                         if (!err)
                         {
-                            NLS_LOG_INFO("Data/User/Scripts/ directory copied");
-
-                            std::filesystem::copy(m_context.engineAssetsPath, buildPath + "Data/Engine/", std::filesystem::copy_options::recursive, err);
-
-                            if (!err)
-                            {
-                                NLS_LOG_INFO("Data/Engine/ directory copied");
-                            }
-                            else
-                            {
-                                NLS_LOG_INFO("Data/Engine/ directory failed to copy");
-                                failed = true;
-                            }
+                            NLS_LOG_INFO("Data/Engine/ directory copied");
                         }
                         else
                         {
-                            NLS_LOG_ERROR("Data/User/Scripts/ directory failed to copy");
+                            NLS_LOG_INFO("Data/Engine/ directory failed to copy");
                             failed = true;
                         }
                     }
@@ -351,7 +339,7 @@ void Editor::Core::EditorActions::SetActorSpawnMode(EActorSpawnMode p_value)
 void Editor::Core::EditorActions::ResetLayout()
 {
     DelayAction([this]()
-                { m_context.uiManager->ResetLayout("Config\\layout.ini"); });
+                { m_context.uiManager->ResetLayout(m_context.editorAssetsPath + "/Settings/layout.ini"); });
 }
 
 void Editor::Core::EditorActions::SetSceneViewCameraSpeed(int p_speed)
@@ -696,16 +684,6 @@ std::string Editor::Core::EditorActions::GetResourcePath(const std::string& p_pa
         if (p_isFromEngine)
             result = ':' + result;
     }
-
-    return result;
-}
-
-std::string Editor::Core::EditorActions::GetScriptPath(const std::string& p_path)
-{
-    std::string result = p_path;
-
-    Utils::String::Replace(result, m_context.projectScriptsPath, "");
-    Utils::String::Replace(result, ".lua", "");
 
     return result;
 }

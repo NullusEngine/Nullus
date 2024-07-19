@@ -51,7 +51,7 @@ void Editor::Core::Editor::SetupUI()
     settings.dockable = true;
 
     m_panelsManager.CreatePanel<Panels::MenuBar>("Menu Bar");
-    m_panelsManager.CreatePanel<Panels::AssetBrowser>("Asset Browser", true, settings, m_context.engineAssetsPath, m_context.projectAssetsPath, m_context.projectScriptsPath);
+    m_panelsManager.CreatePanel<Panels::AssetBrowser>("Asset Browser", true, settings, m_context.engineAssetsPath, m_context.projectAssetsPath);
     m_panelsManager.CreatePanel<Panels::FrameInfo>("Frame Info", true, settings);
     m_panelsManager.CreatePanel<Panels::Console>("Console", true, settings);
     m_panelsManager.CreatePanel<Panels::AssetView>("Asset View", false, settings);
@@ -82,6 +82,7 @@ void Editor::Core::Editor::Update(float p_deltaTime)
     RenderViews(p_deltaTime);
     UpdateEditorPanels(p_deltaTime);
     RenderEditorUI(p_deltaTime);
+    m_editorActions.ExecuteDelayedActions();
 }
 
 void Editor::Core::Editor::HandleGlobalShortcuts()

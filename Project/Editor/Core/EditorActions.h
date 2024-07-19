@@ -248,12 +248,6 @@ namespace NLS::Editor::Core
 		std::string GetResourcePath(const std::string& p_path, bool p_isFromEngine = false);
 
 		/**
-		* Returns the script path of a file
-		* @param p_path
-		*/
-		std::string GetScriptPath(const std::string& p_path);
-
-		/**
 		* Propagate the folder rename everywhere (Resource manager, scenes, materials...)
 		* @param p_previousName
 		* @param p_newName

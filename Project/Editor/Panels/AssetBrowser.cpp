@@ -933,8 +933,7 @@ Editor::Panels::AssetBrowser::AssetBrowser
 ) :
 	PanelWindow(p_title, p_opened, p_windowSettings),
 	m_engineAssetFolder(p_engineAssetFolder),
-	m_projectAssetFolder(p_projectAssetFolder),
-	m_projectScriptFolder(p_projectScriptFolder)
+	m_projectAssetFolder(p_projectAssetFolder)
 {
 	if (!std::filesystem::exists(m_projectAssetFolder))
 	{
@@ -944,19 +943,6 @@ Editor::Panels::AssetBrowser::AssetBrowser
 		(
 			"Assets folder not found",
 			"The \"Assets/\" folders hasn't been found in your project directory.\nIt has been automatically generated",
-            NLS::Dialogs::MessageBox::EMessageType::WARNING,
-            NLS::Dialogs::MessageBox::EButtonLayout::OK
-		);
-	}
-
-	if (!std::filesystem::exists(m_projectScriptFolder))
-	{
-		std::filesystem::create_directories(m_projectScriptFolder);
-
-		NLS::Dialogs::MessageBox message
-		(
-			"Scripts folder not found",
-			"The \"Scripts/\" folders hasn't been found in your project directory.\nIt has been automatically generated",
             NLS::Dialogs::MessageBox::EMessageType::WARNING,
             NLS::Dialogs::MessageBox::EButtonLayout::OK
 		);
@@ -982,8 +968,6 @@ void Editor::Panels::AssetBrowser::Fill()
 	ConsiderItem(nullptr, std::filesystem::directory_entry(m_engineAssetFolder), true);
 	m_assetList->CreateWidget<Visual::Separator>();
 	ConsiderItem(nullptr, std::filesystem::directory_entry(m_projectAssetFolder), false);
-	m_assetList->CreateWidget<Visual::Separator>();
-	ConsiderItem(nullptr, std::filesystem::directory_entry(m_projectScriptFolder), false, false, true);
 }
 
 void Editor::Panels::AssetBrowser::Clear()

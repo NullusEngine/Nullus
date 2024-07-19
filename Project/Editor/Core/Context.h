@@ -57,7 +57,6 @@ public:
     const std::string projectFilePath;
     const std::string engineAssetsPath;
     const std::string projectAssetsPath;
-    const std::string projectScriptsPath;
     const std::string editorAssetsPath;
 
     std::unique_ptr<NLS::Context::Device> device;

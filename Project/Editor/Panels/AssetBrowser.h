@@ -62,7 +62,6 @@ namespace NLS::Editor::Panels
 	private:
 		std::string m_engineAssetFolder;
 		std::string m_projectAssetFolder;
-		std::string m_projectScriptFolder;
 		UI::Widgets::Layout::Group* m_assetList;
 		std::unordered_map<UI::Widgets::Layout::TreeNode*, std::string> m_pathUpdate;
 	};

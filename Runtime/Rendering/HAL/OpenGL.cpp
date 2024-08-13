@@ -227,6 +227,80 @@ std::string GetString(uint32_t p_parameter, uint32_t p_index)
 	return result ? reinterpret_cast<const char*>(result) : std::string();
 }
 
+template<class T>
+T GetEnum(GLenum e);
+
+template<>
+NLS::Render::Settings::ERasterizationMode GetEnum(GLenum e)
+{
+	auto glEnumValue = GetInt(e);
+	return static_cast<NLS::Render::Settings::ERasterizationMode>(glEnumValue - GL_POINT);
+}
+
+template<>
+NLS::Render::Settings::EComparaisonAlgorithm GetEnum(GLenum e)
+{
+	auto glEnumValue = GetInt(e);
+	return static_cast<NLS::Render::Settings::EComparaisonAlgorithm>(glEnumValue - GL_NEVER);
+}
+
+template<>
+NLS::Render::Settings::ECullFace GetEnum(GLenum e)
+{
+	auto glEnumValue = GetInt(e);
+	switch (glEnumValue)
+	{
+		case GL_FRONT: return NLS::Render::Settings::ECullFace::FRONT;
+		case GL_BACK: return NLS::Render::Settings::ECullFace::BACK;
+		case GL_FRONT_AND_BACK: return NLS::Render::Settings::ECullFace::FRONT_AND_BACK;
+	}
+
+	NLS_ASSERT(false, "");
+	return {};
+}
+
+template<>
+NLS::Render::Settings::EOperation GetEnum(GLenum e)
+{
+	auto glEnumValue = GetInt(e);
+	switch (glEnumValue)
+	{
+	case GL_KEEP: return NLS::Render::Settings::EOperation::KEEP;
+	case GL_ZERO: return NLS::Render::Settings::EOperation::ZERO;
+	case GL_REPLACE: return NLS::Render::Settings::EOperation::REPLACE;
+	case GL_INCR: return NLS::Render::Settings::EOperation::INCREMENT;
+	case GL_INCR_WRAP: return NLS::Render::Settings::EOperation::INCREMENT_WRAP;
+	case GL_DECR: return NLS::Render::Settings::EOperation::DECREMENT;
+	case GL_DECR_WRAP: return NLS::Render::Settings::EOperation::DECREMENT_WRAP;
+	case GL_INVERT: return NLS::Render::Settings::EOperation::INVERT;
+	}
+
+	NLS_ASSERT(false, "");
+	return {};
+}
+
+template<>
+NLS::Render::Settings::ERenderingCapability GetEnum(GLenum e)
+{
+	auto glEnumValue = GetInt(e);
+	switch (glEnumValue)
+	{
+	case GL_BLEND: return NLS::Render::Settings::ERenderingCapability::BLEND;
+	case GL_CULL_FACE: return NLS::Render::Settings::ERenderingCapability::CULL_FACE;
+	case GL_DEPTH_TEST: return NLS::Render::Settings::ERenderingCapability::DEPTH_TEST;
+	case GL_DITHER: return NLS::Render::Settings::ERenderingCapability::DITHER;
+	case GL_POLYGON_OFFSET_FILL: return NLS::Render::Settings::ERenderingCapability::POLYGON_OFFSET_FILL;
+	case GL_SAMPLE_ALPHA_TO_COVERAGE: return NLS::Render::Settings::ERenderingCapability::SAMPLE_ALPHA_TO_COVERAGE;
+	case GL_SAMPLE_COVERAGE: return NLS::Render::Settings::ERenderingCapability::SAMPLE_COVERAGE;
+	case GL_SCISSOR_TEST: return NLS::Render::Settings::ERenderingCapability::SCISSOR_TEST;
+	case GL_STENCIL_TEST: return NLS::Render::Settings::ERenderingCapability::STENCIL_TEST;
+	case GL_MULTISAMPLE: return NLS::Render::Settings::ERenderingCapability::MULTISAMPLE;
+	}
+
+	NLS_ASSERT(false, "");
+	return {};
+}
+
 /**
 * Very expensive! Call it once, and make sure you always keep track of state changes
 */
@@ -237,7 +311,7 @@ NLS::Render::Data::PipelineState RetrieveOpenGLPipelineState()
 	NLS::Render::Data::PipelineState pso;
 
 	// Rasterization
-	pso.rasterizationMode = static_cast<ERasterizationMode>(GetInt(GL_POLYGON_MODE));
+	pso.rasterizationMode = GetEnum<ERasterizationMode>(GL_POLYGON_MODE);
 	pso.lineWidthPow2 = NLS::Render::Utils::Conversions::FloatToPow2(GetFloat(GL_LINE_WIDTH));
 
 	// Color write mask
@@ -261,21 +335,21 @@ NLS::Render::Data::PipelineState RetrieveOpenGLPipelineState()
 	pso.multisample = GetBool(GL_MULTISAMPLE);
 
 	// Stencil
-	pso.stencilFuncOp = static_cast<EComparaisonAlgorithm>(GetInt(GL_STENCIL_FUNC));
+	pso.stencilFuncOp = GetEnum<EComparaisonAlgorithm>(GL_STENCIL_FUNC);
 	pso.stencilFuncRef = GetInt(GL_STENCIL_REF);
 	pso.stencilFuncMask = static_cast<uint32_t>(GetInt(GL_STENCIL_VALUE_MASK));
 
 	pso.stencilWriteMask = static_cast<uint32_t>(GetInt(GL_STENCIL_WRITEMASK));
 
-	pso.stencilOpFail = static_cast<EOperation>(GetInt(GL_STENCIL_FAIL));
-	pso.depthOpFail = static_cast<EOperation>(GetInt(GL_STENCIL_PASS_DEPTH_FAIL));
-	pso.bothOpFail = static_cast<EOperation>(GetInt(GL_STENCIL_PASS_DEPTH_PASS));
+	pso.stencilOpFail = GetEnum<EOperation>(GL_STENCIL_FAIL);
+	pso.depthOpFail = GetEnum<EOperation>(GL_STENCIL_PASS_DEPTH_FAIL);
+	pso.bothOpFail = GetEnum<EOperation>(GL_STENCIL_PASS_DEPTH_PASS);
 
 	// Depth
-	pso.depthFunc = static_cast<EComparaisonAlgorithm>(GetInt(GL_DEPTH_FUNC));
+	pso.depthFunc = GetEnum<EComparaisonAlgorithm>(GL_DEPTH_FUNC);
 
 	// Culling
-	pso.cullFace = static_cast<ECullFace>(GetInt(GL_CULL_FACE_MODE));
+	pso.cullFace = GetEnum<ECullFace>(GL_CULL_FACE_MODE);
 
 	return pso;
 }

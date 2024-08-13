@@ -1,4 +1,4 @@
-#include "AssemblyEngine.h"
+﻿#include "AssemblyEngine.h"
 #include "Components/Component.h"
 #include "UDRefl/ReflMngr.hpp"
 #include "Components/TransformComponent.h"
@@ -6,6 +6,7 @@
 #include "Components/LightComponent.h"
 #include "Components/MeshRenderer.h"
 #include "Components/MaterialRenderer.h"
+#include "Components/SkyBoxComponent.h"
 #include "GameObject.h"
 namespace NLS
 {
@@ -34,6 +35,9 @@ void AssemblyEngine::Initialize()
 
     Mngr.RegisterType<MeshRenderer>();
     Mngr.AddBases<MeshRenderer, Component>();
+
+    Mngr.RegisterType<SkyBoxComponent>();
+    Mngr.AddBases<SkyBoxComponent, Component>();
 }
 } // namespace Engine
 } // namespace NLS

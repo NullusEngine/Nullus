@@ -120,7 +120,7 @@ namespace NLS::Core::ResourceManagement
 	}
 
 	template<typename T>
-	inline std::string AResourceManager<T>::GetRealPath(const std::string& p_path) const
+	std::string AResourceManager<T>::GetRealPath(const std::string& p_path)
 	{
 		std::string result;
 

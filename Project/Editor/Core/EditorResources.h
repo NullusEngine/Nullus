@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <ResourceManagement/TextureManager.h>
 #include <ResourceManagement/ModelManager.h>
@@ -27,13 +27,13 @@ namespace NLS::Editor::Core
 		* Returns the file icon identified by the given string or nullptr on fail
 		* @param p_filename
 		*/
-        NLS::Render::Resources::Texture* GetFileIcon(const std::string& p_filename);
+        NLS::Render::Resources::Texture2D* GetFileIcon(const std::string& p_filename);
 
 		/**
 		* Returns the texture identified by the given string or nullptr on fail
 		* @param p_id
 		*/
-        NLS::Render::Resources::Texture* GetTexture(const std::string& p_id);
+        NLS::Render::Resources::Texture2D* GetTexture(const std::string& p_id);
 
 		/**
 		* Returns the model identified by the given string or nullptr on fail
@@ -48,7 +48,7 @@ namespace NLS::Editor::Core
         NLS::Render::Resources::Shader* GetShader(const std::string& p_id);
 
 	private:
-        std::unordered_map<std::string, NLS::Render::Resources::Texture*> m_textures;
+        std::unordered_map<std::string, NLS::Render::Resources::Texture2D*> m_textures;
         std::unordered_map<std::string, NLS::Render::Resources::Model*> m_models;
         std::unordered_map<std::string, NLS::Render::Resources::Shader*> m_shaders;
 	};

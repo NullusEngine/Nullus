@@ -23,7 +23,7 @@ Editor::Rendering::PickingRenderPass::PickingRenderPass(NLS::Render::Core::Compo
 	/* Picking Material */
 	m_actorPickingMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders\\Unlit.glsl"]);
 	m_actorPickingMaterial.Set("u_Diffuse", Maths::Vector4(1.f, 1.f, 1.f, 1.0f));
-	m_actorPickingMaterial.Set<NLS::Render::Resources::Texture*>("u_DiffuseMap", nullptr);
+	m_actorPickingMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", nullptr);
 	m_actorPickingMaterial.SetFrontfaceCulling(false);
 	m_actorPickingMaterial.SetBackfaceCulling(false);
 }

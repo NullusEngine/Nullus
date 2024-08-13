@@ -1,6 +1,7 @@
-#include "Rendering/Resources/Material.h"
+﻿#include "Rendering/Resources/Material.h"
 #include "Rendering/Buffers/UniformBuffer.h"
-#include "Rendering/Resources/Texture.h"
+#include "Rendering/Resources/Texture2D.h"
+#include "Rendering/Resources/TextureCube.h"
 
 using namespace NLS;
 using namespace Maths;
@@ -35,7 +36,7 @@ void NLS::Render::Resources::Material::FillUniform()
 		m_uniformsData.emplace(element.name, element.defaultValue);
 }
 
-void NLS::Render::Resources::Material::Bind(NLS::Render::Resources::Texture* p_emptyTexture) const
+void NLS::Render::Resources::Material::Bind(NLS::Render::Resources::Texture2D* p_emptyTexture) const
 {
 	if (HasShader())
 	{
@@ -62,9 +63,9 @@ void NLS::Render::Resources::Material::Bind(NLS::Render::Resources::Texture* p_e
 				case NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4:	if (value.type() == typeid(Vector4))	m_shader->SetUniformVec4(name, std::any_cast<Vector4>(value));		break;
 				case NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D:
 				{
-					if (value.type() == typeid(Texture*))
+					if (value.type() == typeid(Texture2D*))
 					{
-						if (auto tex = std::any_cast<Texture*>(value); tex)
+						if (auto tex = std::any_cast<Texture2D*>(value); tex)
 						{
 							tex->Bind(textureSlot);
 							m_shader->SetUniformInt(uniformData->name, textureSlot++);
@@ -76,6 +77,19 @@ void NLS::Render::Resources::Material::Bind(NLS::Render::Resources::Texture* p_e
 						}
 					}
 				}
+				break;
+				case NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_CUBE:
+				{
+					if (value.type() == typeid(TextureCube*))
+					{
+						if (auto tex = std::any_cast<TextureCube*>(value); tex)
+						{
+							tex->Bind(textureSlot);
+							m_shader->SetUniformInt(uniformData->name, textureSlot++);
+						}
+					}
+				}
+				break;
 				}
 			}
 		}

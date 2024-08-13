@@ -1,11 +1,11 @@
-#pragma once
+﻿#pragma once
 
 #include <any>
 #include <map>
 #include <optional>
 
 #include "Rendering/Resources/Shader.h"
-#include "Rendering/Resources/Texture.h"
+#include "Rendering/Resources/Texture2D.h"
 #include "Rendering/Data/StateMask.h"
 #include "RenderDef.h"
 namespace NLS::Render::Resources
@@ -37,7 +37,7 @@ public:
      * Bind the material and send its uniform data to the GPU
      * @param p_emptyTexture (The texture to use if a texture uniform is null)
      */
-    void Bind(NLS::Render::Resources::Texture* p_emptyTexture = nullptr) const;
+    void Bind(NLS::Render::Resources::Texture2D* p_emptyTexture = nullptr) const;
 
     /**
      * Unbind the material
@@ -50,7 +50,7 @@ public:
      * @param p_value
      */
     template<typename T>
-    void Set(const std::string p_key, const T& p_value);
+    void Set(const std::string& p_key, const T& p_value);
 
     /**
      * Set a shader uniform value

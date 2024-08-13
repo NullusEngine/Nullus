@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <variant>
 
@@ -11,14 +11,14 @@
 #include <UI/Widgets/Layout/Columns.h>
 
 #include <Rendering/Resources/Model.h>
-#include <Rendering/Resources/Texture.h>
+#include <Rendering/Resources/Texture2D.h>
 
 namespace NLS::Editor::Panels
 {
 	class AssetProperties : public UI::Panels::PanelWindow
 	{
 	public:
-		using EditableAssets = std::variant<Render::Resources::Model*, Render::Resources::Texture*>;
+		using EditableAssets = std::variant<Render::Resources::Model*, Render::Resources::Texture2D*>;
 
 		/**
 		* Constructor

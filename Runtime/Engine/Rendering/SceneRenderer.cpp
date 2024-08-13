@@ -1,4 +1,4 @@
-
+﻿
 #include <Rendering/Data/Frustum.h>
 #include <Rendering/Features/LightingRenderFeature.h>
 
@@ -232,6 +232,34 @@ Engine::Rendering::SceneRenderer::AllDrawables Engine::Rendering::SceneRenderer:
 							}
 						}
 					}
+				}
+			}
+		}
+	}
+
+	for (SkyBoxComponent* skybox : scene.GetFastAccessComponents().skyboxs)
+	{
+		auto owner = skybox->gameobject();
+
+		if (owner->IsActive())
+		{
+			if (auto model = skybox->GetModel())
+			{
+				if (auto material = skybox->GetMaterial())
+				{
+					auto& transform = owner->GetTransform()->GetTransform();
+
+					NLS::Render::Entities::Drawable drawable;
+					drawable.mesh = model->GetMeshes()[0];
+					drawable.material = material;
+					drawable.stateMask = material->GenerateStateMask();
+
+					drawable.AddDescriptor<EngineDrawableDescriptor>({
+						transform.GetWorldMatrix(),
+						//skybox->GetUserMatrix()
+						});
+
+					opaques.emplace(0.0f, drawable);
 				}
 			}
 		}

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <Math/Vector2.h>
 #include <Math/Vector3.h>
@@ -11,6 +11,7 @@
 #include <UI/Widgets/Drags/DragMultipleScalars.h>
 #include <UI/Widgets/InputFields/InputText.h>
 #include <UI/Widgets/Visual/Image.h>
+#include <Rendering/Resources/Texture2D.h>
 #include <Math/Color.h>
 #include "Resources/Material.h"
 #include <limits>
@@ -42,7 +43,7 @@ public:
      * Defines the texture to use when there is no texture in a texture resource field
      * @param p_emptyTexture
      */
-    static void ProvideEmptyTexture(Render::Resources::Texture& p_emptyTexture);
+    static void ProvideEmptyTexture(Render::Resources::Texture2D& p_emptyTexture);
 
     /**
      * Draw a title with the title color
@@ -69,7 +70,7 @@ public:
     static void DrawString(Internal::WidgetContainer& p_root, const std::string& p_name, std::string& p_data);
     static void DrawColor(Internal::WidgetContainer& p_root, const std::string& p_name, Maths::Color& p_color, bool p_hasAlpha = false);
     static Widgets::Texts::Text& DrawMesh(Internal::WidgetContainer& p_root, const std::string& p_name, Render::Resources::Model*& p_data, Event<>* p_updateNotifier = nullptr);
-    static Widgets::Visual::Image& DrawTexture(Internal::WidgetContainer& p_root, const std::string& p_name, Render::Resources::Texture*& p_data, Event<>* p_updateNotifier = nullptr);
+    static Widgets::Visual::Image& DrawTexture(Internal::WidgetContainer& p_root, const std::string& p_name, Render::Resources::Texture2D*& p_data, Event<>* p_updateNotifier = nullptr);
     static Widgets::Texts::Text& DrawShader(Internal::WidgetContainer& p_root, const std::string& p_name, Render::Resources::Shader*& p_data, Event<>* p_updateNotifier = nullptr);
     static Widgets::Texts::Text& DrawMaterial(Internal::WidgetContainer& p_root, const std::string& p_name, NLS::Render::Resources::Material*& p_data, Event<>* p_updateNotifier = nullptr);
     // static Widgets::Texts::Text& DrawSound(Internal::WidgetContainer& p_root, const std::string& p_name, OvAudio::Resources::Sound*& p_data, Event<>* p_updateNotifier = nullptr);
@@ -132,6 +133,6 @@ public:
     }
 
 private:
-    static Render::Resources::Texture* __EMPTY_TEXTURE;
+    static Render::Resources::Texture2D* __EMPTY_TEXTURE;
 };
 } // namespace NLS::UI

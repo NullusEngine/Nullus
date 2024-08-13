@@ -1,6 +1,8 @@
-#include <UI/GUIDrawer.h>
+﻿#include <UI/GUIDrawer.h>
 
 #include <Rendering/Settings/ETextureFilteringMode.h>
+#include <Rendering/Resources/Texture2D.h>
+#include <Rendering/Resources/Loaders/TextureLoader.h>
 
 #include <Utils/PathParser.h>
 
@@ -179,13 +181,13 @@ Editor::Core::EditorResources::~EditorResources()
         NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader);
 }
 
-NLS::Render::Resources::Texture* Editor::Core::EditorResources::GetFileIcon(const std::string& p_filename)
+NLS::Render::Resources::Texture2D* Editor::Core::EditorResources::GetFileIcon(const std::string& p_filename)
 {
 	using namespace Utils;
 	return GetTexture("Icon_" + PathParser::FileTypeToString(PathParser::GetFileType(p_filename)));
 }
 
-NLS::Render::Resources::Texture* Editor::Core::EditorResources::GetTexture(const std::string& p_id)
+NLS::Render::Resources::Texture2D* Editor::Core::EditorResources::GetTexture(const std::string& p_id)
 {
 	if (m_textures.find(p_id) != m_textures.end())
 		return m_textures.at(p_id);

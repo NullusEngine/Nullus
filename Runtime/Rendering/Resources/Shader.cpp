@@ -1,9 +1,10 @@
-
+﻿
 #include <glad/glad.h>
 
 #include <Debug/Logger.h>
 
-#include "Rendering/Resources/Texture.h"
+#include "Rendering/Resources/Texture2D.h"
+#include "Rendering/Resources/TextureCube.h"
 #include "Rendering/Resources/Shader.h"
 using namespace NLS;
 NLS::Render::Resources::Shader::Shader(const std::string p_path, uint32_t p_id) : path(p_path), id(p_id)
@@ -144,7 +145,8 @@ void NLS::Render::Resources::Shader::QueryUniforms()
 			case NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC2:	defaultValue = std::make_any<Maths::Vector2>(GetUniformVec2(name));		break;
 			case NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC3:	defaultValue = std::make_any<Maths::Vector3>(GetUniformVec3(name));		break;
 			case NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4:	defaultValue = std::make_any<Maths::Vector4>(GetUniformVec4(name));		break;
-			case NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D:	defaultValue = std::make_any<NLS::Render::Resources::Texture*>(nullptr);	break;
+			case NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D:	defaultValue = std::make_any<NLS::Render::Resources::Texture2D*>(nullptr);	break;
+			case NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_CUBE:	defaultValue = std::make_any<NLS::Render::Resources::TextureCube*>(nullptr);	break;
 			}
 
 			if (defaultValue.has_value())

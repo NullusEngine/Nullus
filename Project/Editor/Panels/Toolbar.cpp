@@ -1,4 +1,4 @@
-#include <UI/Widgets/Layout/Spacing.h>
+﻿#include <UI/Widgets/Layout/Spacing.h>
 
 #include "Panels/Toolbar.h"
 #include "Core/EditorActions.h"
@@ -18,13 +18,13 @@ Editor::Panels::Toolbar::Toolbar
 
 	auto& textureManager = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::TextureManager>();
 
-	m_playButton	= &CreateWidget<UI::Widgets::Buttons::ButtonImage>(EDITOR_CONTEXT(editorResources)->GetTexture("Button_Play")->id, Maths::Vector2{ 20, 20 });
-	m_pauseButton	= &CreateWidget<UI::Widgets::Buttons::ButtonImage>(EDITOR_CONTEXT(editorResources)->GetTexture("Button_Pause")->id, Maths::Vector2{ 20, 20 });
-	m_stopButton	= &CreateWidget<UI::Widgets::Buttons::ButtonImage>(EDITOR_CONTEXT(editorResources)->GetTexture("Button_Stop")->id, Maths::Vector2{ 20, 20 });
-	m_nextButton	= &CreateWidget<UI::Widgets::Buttons::ButtonImage>(EDITOR_CONTEXT(editorResources)->GetTexture("Button_Next")->id, Maths::Vector2{ 20, 20 });
+	m_playButton	= &CreateWidget<UI::Widgets::Buttons::ButtonImage>(EDITOR_CONTEXT(editorResources)->GetTexture("Button_Play")->GetTextureId(), Maths::Vector2{ 20, 20 });
+	m_pauseButton	= &CreateWidget<UI::Widgets::Buttons::ButtonImage>(EDITOR_CONTEXT(editorResources)->GetTexture("Button_Pause")->GetTextureId(), Maths::Vector2{ 20, 20 });
+	m_stopButton	= &CreateWidget<UI::Widgets::Buttons::ButtonImage>(EDITOR_CONTEXT(editorResources)->GetTexture("Button_Stop")->GetTextureId(), Maths::Vector2{ 20, 20 });
+	m_nextButton	= &CreateWidget<UI::Widgets::Buttons::ButtonImage>(EDITOR_CONTEXT(editorResources)->GetTexture("Button_Next")->GetTextureId(), Maths::Vector2{ 20, 20 });
 
 	CreateWidget<UI::Widgets::Layout::Spacing>(0).lineBreak = false;
-	auto& refreshButton	= CreateWidget<UI::Widgets::Buttons::ButtonImage>(EDITOR_CONTEXT(editorResources)->GetTexture("Button_Refresh")->id, Maths::Vector2{ 20, 20 });
+	auto& refreshButton	= CreateWidget<UI::Widgets::Buttons::ButtonImage>(EDITOR_CONTEXT(editorResources)->GetTexture("Button_Refresh")->GetTextureId(), Maths::Vector2{ 20, 20 });
 
 	m_playButton->lineBreak		= false;
 	m_pauseButton->lineBreak	= false;

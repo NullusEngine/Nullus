@@ -1,9 +1,13 @@
-
+﻿
 
 #include "SceneSystem/SceneManager.h"
 #include "Components/LightComponent.h"
+#include "Components/SkyBoxComponent.h"
 #include "Components/CameraComponent.h"
 #include "Components/TransformComponent.h"
+#include "ResourceManagement/TextureManager.h"
+#include "ServiceLocator.h"
+
 using namespace NLS;
 using namespace NLS::Engine::SceneSystem;
 
@@ -65,6 +69,25 @@ void SceneManager::LoadEmptyLightedScene()
 	auto ambientLight = ambientLightGo.AddComponent<Engine::Components::LightComponent>();
 	ambientLight->SetLightType(Render::Settings::ELightType::AMBIENT_SPHERE);
 	ambientLight->SetRadius(10000.0f);
+
+	auto& skyboxGo = m_currentScene->CreateGameObject("Skybox");
+	auto skybox = skyboxGo.AddComponent<Engine::Components::SkyBoxComponent>();
+	auto cube = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).CreateCubeMap({
+		":Textures\\skybox\\right.jpg",
+		":Textures\\skybox\\left.jpg",
+		":Textures\\skybox\\top.jpg",
+		":Textures\\skybox\\bottom.jpg",
+		":Textures\\skybox\\front.jpg",
+		":Textures\\skybox\\back.jpg" }
+	);
+	//auto cube = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).CreateCubeMap({
+	//	":Textures\\Cubemap\\skyrender0001.png",
+	//	":Textures\\Cubemap\\skyrender0004.png",
+	//	":Textures\\Cubemap\\skyrender0003.png",
+	//	":Textures\\Cubemap\\skyrender0006.png",
+	//	":Textures\\Cubemap\\skyrender0005.png",
+	//	":Textures\\Cubemap\\skyrender0002.png"});
+	skybox->SetCubeMap(cube);
 
 	auto& camera = m_currentScene->CreateGameObject("Main Camera");
 	camera.AddComponent<Engine::Components::CameraComponent>();

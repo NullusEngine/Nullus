@@ -1,4 +1,4 @@
-#include <UI/Plugins/DDTarget.h>
+﻿#include <UI/Plugins/DDTarget.h>
 
 #include "Rendering/DebugSceneRenderer.h"
 #include "Rendering/PickingRenderPass.h"
@@ -19,7 +19,7 @@ Editor::Panels::SceneView::SceneView(
 
     m_fallbackMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders\\Unlit.glsl"]);
     m_fallbackMaterial.Set<Maths::Vector4>("u_Diffuse", {1.f, 0.f, 1.f, 1.0f});
-    m_fallbackMaterial.Set<Render::Resources::Texture*>("u_DiffuseMap", nullptr);
+    m_fallbackMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", nullptr);
 
     m_image->AddPlugin<UI::Plugins::DDTarget<std::pair<std::string, UI::Widgets::Layout::Group*>>>("File").DataReceivedEvent += [this](auto p_data)
     {

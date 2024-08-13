@@ -1,9 +1,10 @@
-#pragma once
+﻿#pragma once
 
 
 #include "GameObject.h"
 #include "Components/CameraComponent.h"
 #include "Components/LightComponent.h"
+#include "Components/SkyBoxComponent.h"
 #include "Components/MeshRenderer.h"
 #include "EngineDef.h"
 namespace NLS::Engine::SceneSystem
@@ -23,6 +24,7 @@ namespace NLS::Engine::SceneSystem
 			std::vector<Components::MeshRenderer*>		modelRenderers;
 			std::vector<Components::CameraComponent*>			cameras;
 			std::vector<Components::LightComponent*>			lights;
+			std::vector<Components::SkyBoxComponent*>			skyboxs;
 		};
 
 		/**

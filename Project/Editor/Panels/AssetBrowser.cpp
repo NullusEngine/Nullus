@@ -1,4 +1,4 @@
-#include <fstream>
+﻿#include <fstream>
 #include <iostream>
 
 #include <UI/Widgets/Texts/TextClickable.h>
@@ -91,7 +91,7 @@ public:
         if (NLS_SERVICE(NLS::UI::UIManager).IsItemHovered())
 		{
 			if (texture)
-				image.textureID.id = texture->id;
+				image.textureID.id = texture->GetTextureId();
 
 			NLS_SERVICE(NLS::UI::UIManager).BeginTooltip();
 			image.Draw();
@@ -99,7 +99,7 @@ public:
 		}
 	}
 
-	Render::Resources::Texture* texture = nullptr;
+	Render::Resources::Texture2D* texture = nullptr;
 	Visual::Image image;
 };
 
@@ -835,7 +835,7 @@ public:
 	}
 };
 
-class TextureContextualMenu : public PreviewableContextualMenu<Render::Resources::Texture, NLS::Core::ResourceManagement::TextureManager>
+class TextureContextualMenu : public PreviewableContextualMenu<Render::Resources::Texture2D, NLS::Core::ResourceManagement::TextureManager>
 {
 public:
 	TextureContextualMenu(const std::string& p_filePath, bool p_protected = false) : PreviewableContextualMenu(p_filePath, p_protected) {}
@@ -1016,7 +1016,7 @@ void Editor::Panels::AssetBrowser::ConsiderItem(Layout::TreeNode* p_root, const 
 	auto& itemGroup = p_root ? p_root->CreateWidget<Layout::Group>() : m_assetList->CreateWidget<Layout::Group>();
 
 	/* Find the icon to apply to the item */
-	uint32_t iconTextureID = isDirectory ? EDITOR_CONTEXT(editorResources)->GetTexture("Icon_Folder")->id : EDITOR_CONTEXT(editorResources)->GetFileIcon(itemname)->id;
+	uint32_t iconTextureID = isDirectory ? EDITOR_CONTEXT(editorResources)->GetTexture("Icon_Folder")->GetTextureId() : EDITOR_CONTEXT(editorResources)->GetFileIcon(itemname)->GetTextureId();
 
 	itemGroup.CreateWidget<Visual::Image>(iconTextureID, Maths::Vector2{ 16, 16 }).lineBreak = false;
 

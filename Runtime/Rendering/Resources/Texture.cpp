@@ -1,21 +1,41 @@
+﻿
+#include "Rendering/Resources/Texture.h"
 
 #include <glad/glad.h>
 
-#include "Rendering/Resources/Texture.h"
+using namespace NLS::Render::Resources;
 
-void NLS::Render::Resources::Texture::Bind(uint32_t p_slot) const
+Texture::Texture(Texture&& rhs) noexcept
 {
-	glActiveTexture(GL_TEXTURE0 + p_slot);
-	glBindTexture(GL_TEXTURE_2D, id);
+	ReleaseRHITexture();
+	mTextureID = rhs.mTextureID;
+	rhs.mTextureID = -1;
 }
 
-void NLS::Render::Resources::Texture::Unbind() const
+Texture& Texture::operator=(Texture&& rhs) noexcept
 {
-	glBindTexture(GL_TEXTURE_2D, 0);
+	if (this != &rhs)
+	{
+		ReleaseRHITexture();
+		mTextureID = rhs.mTextureID;
+		rhs.mTextureID = -1;
+	}
+	return *this;
 }
 
-NLS::Render::Resources::Texture::Texture(const std::string p_path, uint32_t p_id, uint32_t p_width, uint32_t p_height, uint32_t p_bpp, Settings::ETextureFilteringMode p_firstFilter, Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap) : path(p_path),
-	id(p_id), width(p_width), height(p_height), bitsPerPixel(p_bpp), firstFilter(p_firstFilter), secondFilter(p_secondFilter), isMimapped(p_generateMipmap)
+void Texture::CreateRHITexture()
 {
+	if (mTextureID == -1)
+	{
+		glGenTextures(1, &mTextureID);
+	}
+}
 
+void Texture::ReleaseRHITexture()
+{
+	if (mTextureID != -1)
+	{
+		glDeleteTextures(1, &mTextureID);
+		mTextureID = -1;
+	}
 }

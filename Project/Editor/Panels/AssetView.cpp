@@ -1,4 +1,4 @@
-#include <Rendering/Features/FrameInfoRenderFeature.h>
+﻿#include <Rendering/Features/FrameInfoRenderFeature.h>
 
 #include <Utils/PathParser.h>
 
@@ -50,14 +50,14 @@ Editor::Panels::AssetView::AssetView
 	m_defaultMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Standard.glsl"]);
 	m_defaultMaterial.Set("u_Diffuse", Maths::Vector4(1.f, 1.f, 1.f, 1.f));
 	m_defaultMaterial.Set("u_Shininess", 100.0f);
-	m_defaultMaterial.Set<Render::Resources::Texture*>("u_DiffuseMap", nullptr);
+	m_defaultMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", nullptr);
 
 	/* Texture Material */
 	m_textureMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Unlit.glsl"]);
 	m_textureMaterial.Set("u_Diffuse", Maths::Vector4(1.f, 1.f, 1.f, 1.f));
 	m_textureMaterial.SetBackfaceCulling(false);
 	m_textureMaterial.SetBlendable(true);
-	m_textureMaterial.Set<Render::Resources::Texture*>("u_DiffuseMap", nullptr);
+	m_textureMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", nullptr);
 
 	m_image->AddPlugin<UI::Plugins::DDTarget<std::pair<std::string, UI::Widgets::Layout::Group*>>>("File").DataReceivedEvent += [this](auto p_data)
 	{
@@ -93,7 +93,7 @@ void Editor::Panels::AssetView::SetResource(ViewableResource p_resource)
 	{
 		SetModel(**pval);
 	}
-	else if (auto pval = std::get_if<Render::Resources::Texture*>(&p_resource); pval && *pval)
+	else if (auto pval = std::get_if<Render::Resources::Texture2D*>(&p_resource); pval && *pval)
 	{
 		SetTexture(**pval);
 	}
@@ -105,17 +105,17 @@ void Editor::Panels::AssetView::SetResource(ViewableResource p_resource)
 
 void Editor::Panels::AssetView::ClearResource()
 {
-	m_resource = static_cast<Render::Resources::Texture*>(nullptr);
+	m_resource = static_cast<Render::Resources::Texture2D*>(nullptr);
 	m_modelRenderer->SetModel(nullptr);
 }
 
-void Editor::Panels::AssetView::SetTexture(Render::Resources::Texture& p_texture)
+void Editor::Panels::AssetView::SetTexture(Render::Resources::Texture2D& p_texture)
 {
 	m_resource = &p_texture;
 	m_assetActor->GetTransform()->SetLocalRotation(Maths::Quaternion({ -90.0f, 0.0f, 0.0f }));
 	m_assetActor->GetTransform()->SetLocalScale(Maths::Vector3::One * 3.0f);
 	m_modelRenderer->SetModel(EDITOR_CONTEXT(editorResources)->GetModel("Plane"));
-	m_textureMaterial.Set<Render::Resources::Texture*>("u_DiffuseMap", &p_texture);
+	m_textureMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", &p_texture);
 	m_materialRenderer->FillWithMaterial(m_textureMaterial);
 
 	m_cameraController.MoveToTarget(*m_assetActor);

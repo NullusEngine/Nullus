@@ -1,4 +1,4 @@
-#include <Components/CameraComponent.h>
+﻿#include <Components/CameraComponent.h>
 #include <Components/LightComponent.h>
 #include <Components/TransformComponent.h>
 #include <Rendering/EngineDrawableDescriptor.h>
@@ -66,7 +66,7 @@ public:
 	{
 		m_cameraMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Lambert.glsl"]);
 		m_cameraMaterial.Set("u_Diffuse", Vector4(0.0f, 0.3f, 0.7f, 1.0f));
-		m_cameraMaterial.Set<Render::Resources::Texture*>("u_DiffuseMap", nullptr);
+		m_cameraMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", nullptr);
 	}
 
 protected:
@@ -129,7 +129,7 @@ protected:
 					nullptr;
 
 				const auto& lightColor = light->GetColor();
-				m_lightMaterial.Set<Render::Resources::Texture*>("u_DiffuseMap", lightTexture);
+				m_lightMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", lightTexture);
 				m_lightMaterial.Set<Maths::Vector4>("u_Diffuse", Maths::Vector4(lightColor.x, lightColor.y, lightColor.z, 0.75f));
 
 				m_renderer.GetFeature<Editor::Rendering::DebugModelRenderFeature>()
@@ -546,7 +546,7 @@ Editor::Rendering::DebugSceneRenderer::DebugSceneRenderer(NLS::Render::Context::
 	AddFeature<Editor::Rendering::OutlineRenderFeature>();
 	AddFeature<Editor::Rendering::GizmoRenderFeature>();
 
-	AddPass<GridRenderPass>("Grid", NLS::Render::Settings::ERenderPassOrder::Opaque - 1);
+    AddPass<GridRenderPass>("Grid", NLS::Render::Settings::ERenderPassOrder::Transparent + 1);
     AddPass<DebugCamerasRenderPass>("Debug Cameras", NLS::Render::Settings::ERenderPassOrder::Transparent + 1);
     AddPass<DebugLightsRenderPass>("Debug Lights", NLS::Render::Settings::ERenderPassOrder::Transparent + 2);
     AddPass<DebugActorRenderPass>("Debug Actor", NLS::Render::Settings::ERenderPassOrder::Transparent + 3);

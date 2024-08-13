@@ -1,4 +1,4 @@
-#include <array>
+﻿#include <array>
 
 #include <Utils/PathParser.h>
 
@@ -29,9 +29,9 @@ const Maths::Color GUIDrawer::TitleColor = {0.85f, 0.65f, 0.0f};
 const Maths::Color GUIDrawer::ClearButtonColor = {0.5f, 0.0f, 0.0f};
 const float GUIDrawer::_MIN_FLOAT = -999999999.f;
 const float GUIDrawer::_MAX_FLOAT = +999999999.f;
-Render::Resources::Texture* GUIDrawer::__EMPTY_TEXTURE = nullptr;
+Render::Resources::Texture2D* GUIDrawer::__EMPTY_TEXTURE = nullptr;
 
-void GUIDrawer::ProvideEmptyTexture(Render::Resources::Texture& p_emptyTexture)
+void GUIDrawer::ProvideEmptyTexture(Render::Resources::Texture2D& p_emptyTexture)
 {
     __EMPTY_TEXTURE = &p_emptyTexture;
 }
@@ -135,14 +135,14 @@ Widgets::Texts::Text& GUIDrawer::DrawMesh(Internal::WidgetContainer& p_root, con
     return widget;
 }
 
-Widgets::Visual::Image& GUIDrawer::DrawTexture(Internal::WidgetContainer& p_root, const std::string& p_name, Render::Resources::Texture*& p_data, Event<>* p_updateNotifier)
+Widgets::Visual::Image& GUIDrawer::DrawTexture(Internal::WidgetContainer& p_root, const std::string& p_name, Render::Resources::Texture2D*& p_data, Event<>* p_updateNotifier)
 {
     CreateTitle(p_root, p_name);
 
     std::string displayedText = (p_data ? p_data->path : std::string("Empty"));
     auto& rightSide = p_root.CreateWidget<Widgets::Layout::Group>();
 
-    auto& widget = rightSide.CreateWidget<Widgets::Visual::Image>(p_data ? p_data->id : (__EMPTY_TEXTURE ? __EMPTY_TEXTURE->id : 0), Maths::Vector2{75, 75});
+    auto& widget = rightSide.CreateWidget<Widgets::Visual::Image>(p_data ? p_data->GetTextureId() : (__EMPTY_TEXTURE ? __EMPTY_TEXTURE->GetTextureId() : 0), Maths::Vector2{75, 75});
 
     widget.AddPlugin<Plugins::DDTarget<std::pair<std::string, Widgets::Layout::Group*>>>("File").DataReceivedEvent += [&widget, &p_data, p_updateNotifier](auto p_receivedData)
     {
@@ -150,8 +150,8 @@ Widgets::Visual::Image& GUIDrawer::DrawTexture(Internal::WidgetContainer& p_root
         {
             if (auto resource = NLS_SERVICE(Core::ResourceManagement::TextureManager).GetResource(p_receivedData.first); resource)
             {
-                p_data = resource;
-                widget.textureID.id = resource->id;
+                p_data = static_cast<Render::Resources::Texture2D*>(resource);
+                widget.textureID.id = resource->GetTextureId();
                 if (p_updateNotifier)
                     p_updateNotifier->Invoke();
             }
@@ -165,7 +165,7 @@ Widgets::Visual::Image& GUIDrawer::DrawTexture(Internal::WidgetContainer& p_root
     resetButton.ClickedEvent += [&widget, &p_data, p_updateNotifier]
     {
         p_data = nullptr;
-        widget.textureID.id = (__EMPTY_TEXTURE ? __EMPTY_TEXTURE->id : 0);
+        widget.textureID.id = (__EMPTY_TEXTURE ? __EMPTY_TEXTURE->GetTextureId() : 0);
         if (p_updateNotifier)
             p_updateNotifier->Invoke();
     };

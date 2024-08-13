@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <Debug/Logger.h>
 
@@ -7,7 +7,7 @@
 namespace NLS::Render::Resources
 {
 	template<typename T>
-	inline void Material::Set(const std::string p_key, const T& p_value)
+	inline void Material::Set(const std::string& p_key, const T& p_value)
 	{
 		if (HasShader())
 		{

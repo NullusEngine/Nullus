@@ -1,4 +1,4 @@
-#include "Rendering/DebugModelRenderFeature.h"
+﻿#include "Rendering/DebugModelRenderFeature.h"
 #include "Rendering/OutlineRenderFeature.h"
 #include "Core/EditorActions.h"
 #include "Settings/EditorSettings.h"
@@ -20,11 +20,11 @@ Editor::Rendering::OutlineRenderFeature::OutlineRenderFeature(NLS::Render::Core:
     m_stencilFillMaterial.SetBackfaceCulling(true);
     m_stencilFillMaterial.SetDepthTest(false);
     m_stencilFillMaterial.SetColorWriting(false);
-    m_stencilFillMaterial.Set<NLS::Render::Resources::Texture*>("u_DiffuseMap", nullptr);
+    m_stencilFillMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", nullptr);
 
     /* Outline Material */
     m_outlineMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Unlit.glsl"]);
-    m_outlineMaterial.Set<NLS::Render::Resources::Texture*>("u_DiffuseMap", nullptr);
+    m_outlineMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", nullptr);
     m_outlineMaterial.SetDepthTest(false);
 }
 

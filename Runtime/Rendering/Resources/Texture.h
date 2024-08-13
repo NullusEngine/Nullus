@@ -1,47 +1,45 @@
-#pragma once
+﻿#pragma once
 
 #include <stdint.h>
-#include <string>
 
-#include "Rendering/Settings/ETextureFilteringMode.h"
 #include "RenderDef.h"
-
 
 namespace NLS::Render::Resources
 {
-	namespace Loaders { class TextureLoader; }
-
 	/**
 	* OpenGL texture wrapper
 	*/
 	class NLS_RENDER_API Texture
 	{
-		friend class Loaders::TextureLoader;
-
 	public:
 		/**
 		* Bind the texture to the given slot
 		* @param p_slot
 		*/
-		void Bind(uint32_t p_slot = 0) const;
+		virtual void Bind(uint32_t p_slot = 0) const = 0;
 
 		/**
 		* Unbind the texture
 		*/
-		void Unbind() const;
-
-	private:
-		Texture(const std::string p_path, uint32_t p_id, uint32_t p_width, uint32_t p_height, uint32_t p_bpp, Settings::ETextureFilteringMode p_firstFilter, Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
-		~Texture() = default;
+		virtual void Unbind() const = 0;
 
 	public:
-		const uint32_t id;
-		const uint32_t width;
-		const uint32_t height;
-		const uint32_t bitsPerPixel;
-		const Settings::ETextureFilteringMode firstFilter;
-		const Settings::ETextureFilteringMode secondFilter;
-		const std::string path;
-		const bool isMimapped;
+		Texture() = default;
+		~Texture() = default;
+
+		Texture(Texture&&) noexcept;
+		Texture& operator=(Texture&&) noexcept;
+
+		void CreateRHITexture();
+		void ReleaseRHITexture();
+
+		void SetTextureId(uint32_t p_id) { mTextureID = p_id; }
+		uint32_t GetTextureId() const { return mTextureID; }
+
+	private:
+		/**
+		 * @brief opengl texture id
+		 */
+		uint32_t mTextureID = -1;
 	};
 }

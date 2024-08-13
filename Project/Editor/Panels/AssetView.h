@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <variant>
 
@@ -16,7 +16,7 @@ namespace NLS::Editor::Panels
 	class AssetView : public Editor::Panels::AViewControllable
 	{
 	public:
-		using ViewableResource = std::variant<Render::Resources::Model*, Render::Resources::Texture*, Render::Resources::Material*>;
+		using ViewableResource = std::variant<Render::Resources::Model*, Render::Resources::Texture2D*, Render::Resources::Material*>;
 
 		/**
 		* Constructor
@@ -50,7 +50,7 @@ namespace NLS::Editor::Panels
 		* Set the currently viewed resource to the given texture
 		* @param p_texture
 		*/
-        void SetTexture(Render::Resources::Texture& p_texture);
+        void SetTexture(Render::Resources::Texture2D& p_texture);
 
 		/**
 		* Set the currently viewed resource to the given model

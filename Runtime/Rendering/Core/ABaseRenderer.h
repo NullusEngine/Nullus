@@ -1,11 +1,11 @@
-#pragma once
+﻿#pragma once
 
 #include <atomic>
 
 #include "Rendering/Core/IRenderer.h"
 #include "Rendering/Data/FrameInfo.h"
 #include "Rendering/Resources/IMesh.h"
-#include "Rendering/Resources/Texture.h"
+#include "Rendering/Resources/Texture2D.h"
 #include "Rendering/Entities/Drawable.h"
 #include "RenderDef.h"
 namespace NLS::Render::Core
@@ -100,7 +100,7 @@ public:
 protected:
     Data::FrameDescriptor m_frameDescriptor;
     Context::Driver& m_driver;
-    NLS::Render::Resources::Texture* m_emptyTexture;
+    NLS::Render::Resources::Texture2D* m_emptyTexture;
     NLS::Render::Data::PipelineState m_basePipelineState;
     bool m_isDrawing;
 

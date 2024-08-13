@@ -1,4 +1,4 @@
-
+﻿
 #include <algorithm>
 #include <string>
 
@@ -201,6 +201,9 @@ void Scene::OnComponentAdded(SharedObject p_compononent)
 
 	if (p_compononent.GetType().Is<Engine::Components::LightComponent>())
         m_fastAccessComponents.lights.push_back(p_compononent.AsPtr<Engine::Components::LightComponent>());
+
+    if (p_compononent.GetType().Is<Engine::Components::SkyBoxComponent>())
+        m_fastAccessComponents.skyboxs.push_back(p_compononent.AsPtr<Engine::Components::SkyBoxComponent>());
 }
 
 void Scene::OnComponentRemoved(SharedObject p_compononent)
@@ -213,6 +216,9 @@ void Scene::OnComponentRemoved(SharedObject p_compononent)
 
 	if (p_compononent.GetType().Is<Engine::Components::LightComponent>())
         m_fastAccessComponents.lights.erase(std::remove(m_fastAccessComponents.lights.begin(), m_fastAccessComponents.lights.end(), p_compononent.AsPtr<Engine::Components::LightComponent>()), m_fastAccessComponents.lights.end());
+
+	if (p_compononent.GetType().Is<Engine::Components::SkyBoxComponent>())
+        m_fastAccessComponents.skyboxs.erase(std::remove(m_fastAccessComponents.skyboxs.begin(), m_fastAccessComponents.skyboxs.end(), p_compononent.AsPtr<Engine::Components::SkyBoxComponent>()), m_fastAccessComponents.skyboxs.end());
 }
 
 std::vector<Engine::GameObject*>& Scene::GetActors()

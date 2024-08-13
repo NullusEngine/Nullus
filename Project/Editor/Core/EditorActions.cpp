@@ -1,4 +1,4 @@
-#include <filesystem>
+﻿#include <filesystem>
 #include <iostream>
 #include <fstream>
 
@@ -745,8 +745,8 @@ void Editor::Core::EditorActions::PropagateFileRename(std::string p_previousName
  
          if (NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::TextureManager>().MoveResource(p_previousName, p_newName))
          {
-             Render::Resources::Texture* resource = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::TextureManager>()[p_newName];
-             *reinterpret_cast<std::string*>(reinterpret_cast<char*>(resource) + offsetof(Render::Resources::Texture, path)) = p_newName;
+             Render::Resources::Texture2D* resource = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::TextureManager>()[p_newName];
+             *reinterpret_cast<std::string*>(reinterpret_cast<char*>(resource) + offsetof(Render::Resources::Texture2D, path)) = p_newName;
          }
  
          if (NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::ShaderManager>().MoveResource(p_previousName, p_newName))
@@ -768,13 +768,13 @@ void Editor::Core::EditorActions::PropagateFileRename(std::string p_previousName
              for (auto [name, instance] : NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::MaterialManager>().GetResources())
                  if (instance)
                      for (auto& [name, value] : instance->GetUniformsData())
-                         if (value.has_value() && value.type() == typeid(Render::Resources::Texture*))
-                             if (std::any_cast<Render::Resources::Texture*>(value) == texture)
-                                 value = static_cast<Render::Resources::Texture*>(nullptr);
+                         if (value.has_value() && value.type() == typeid(Render::Resources::Texture2D*))
+                             if (std::any_cast<Render::Resources::Texture2D*>(value) == texture)
+                                 value = static_cast<Render::Resources::Texture2D*>(nullptr);
  
              auto& assetView = EDITOR_PANEL(Panels::AssetView, "Asset View");
              auto assetViewRes = assetView.GetResource();
-             if (auto pval = std::get_if<Render::Resources::Texture*>(&assetViewRes); pval && *pval)
+             if (auto pval = std::get_if<Render::Resources::Texture2D*>(&assetViewRes); pval && *pval)
                  assetView.ClearResource();
  
              NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::TextureManager>().UnloadResource(p_previousName);

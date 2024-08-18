@@ -1,4 +1,4 @@
-
+﻿
 #include "UI/Panels/PanelWindow.h"
 #include "UI/Internal/Converter.h"
 
@@ -7,7 +7,7 @@
 namespace NLS
 {
 UI::Panels::PanelWindow::PanelWindow(const std::string& p_name, bool p_opened, const Settings::PanelWindowSettings& p_floatingPanelSettings)
-    : name(p_name), resizable(p_floatingPanelSettings.resizable), closable(p_floatingPanelSettings.closable), movable(p_floatingPanelSettings.movable), scrollable(p_floatingPanelSettings.scrollable), dockable(p_floatingPanelSettings.dockable), hideBackground(p_floatingPanelSettings.hideBackground), forceHorizontalScrollbar(p_floatingPanelSettings.forceHorizontalScrollbar), forceVerticalScrollbar(p_floatingPanelSettings.forceVerticalScrollbar), allowHorizontalScrollbar(p_floatingPanelSettings.allowHorizontalScrollbar), bringToFrontOnFocus(p_floatingPanelSettings.bringToFrontOnFocus), collapsable(p_floatingPanelSettings.collapsable), allowInputs(p_floatingPanelSettings.allowInputs), m_opened(p_opened)
+    : name(p_name), panelSettings(p_floatingPanelSettings), m_opened(p_opened)
 {
     autoSize = p_floatingPanelSettings.autoSize;
 }
@@ -97,29 +97,29 @@ void UI::Panels::PanelWindow::_Draw_Impl()
     {
         int windowFlags = ImGuiWindowFlags_None;
 
-        if (!resizable)
+        if (!panelSettings.resizable)
             windowFlags |= ImGuiWindowFlags_NoResize;
-        if (!movable)
+        if (!panelSettings.movable)
             windowFlags |= ImGuiWindowFlags_NoMove;
-        if (!dockable)
+        if (!panelSettings.dockable)
             windowFlags |= ImGuiWindowFlags_NoDocking;
-        if (hideBackground)
+        if (panelSettings.hideBackground)
             windowFlags |= ImGuiWindowFlags_NoBackground;
-        if (forceHorizontalScrollbar)
+        if (panelSettings.forceHorizontalScrollbar)
             windowFlags |= ImGuiWindowFlags_AlwaysHorizontalScrollbar;
-        if (forceVerticalScrollbar)
+        if (panelSettings.forceVerticalScrollbar)
             windowFlags |= ImGuiWindowFlags_AlwaysVerticalScrollbar;
-        if (allowHorizontalScrollbar)
+        if (panelSettings.allowHorizontalScrollbar)
             windowFlags |= ImGuiWindowFlags_HorizontalScrollbar;
-        if (!bringToFrontOnFocus)
+        if (!panelSettings.bringToFrontOnFocus)
             windowFlags |= ImGuiWindowFlags_NoBringToFrontOnFocus;
-        if (!collapsable)
+        if (!panelSettings.collapsable)
             windowFlags |= ImGuiWindowFlags_NoCollapse;
-        if (!allowInputs)
+        if (!panelSettings.allowInputs)
             windowFlags |= ImGuiWindowFlags_NoInputs;
-        if (!scrollable)
+        if (!panelSettings.scrollable)
             windowFlags |= ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoScrollbar;
-        if (!titleBar)
+        if (!panelSettings.titleBar)
             windowFlags |= ImGuiWindowFlags_NoTitleBar;
 
         ImVec2 minSizeConstraint = Internal::Converter::ToImVec2(minSize);
@@ -134,7 +134,7 @@ void UI::Panels::PanelWindow::_Draw_Impl()
 
         ImGui::SetNextWindowSizeConstraints(minSizeConstraint, maxSizeConstraint);
 
-        if (ImGui::Begin((name + m_panelID).c_str(), closable ? &m_opened : nullptr, windowFlags))
+        if (ImGui::Begin((name + m_panelID).c_str(), panelSettings.closable ? &m_opened : nullptr, windowFlags))
         {
             m_hovered = ImGui::IsWindowHovered();
             m_focused = ImGui::IsWindowFocused();

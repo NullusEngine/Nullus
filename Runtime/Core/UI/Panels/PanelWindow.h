@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <memory>
 
@@ -97,19 +97,7 @@ namespace NLS::UI::Panels
 		Maths::Vector2 minSize = { 0.f, 0.f };
 		Maths::Vector2 maxSize = { 0.f, 0.f };
 
-		bool resizable = true;
-		bool closable = false;
-		bool movable = true;
-		bool scrollable = true;
-		bool dockable = false;
-		bool hideBackground = false;
-		bool forceHorizontalScrollbar = false;
-		bool forceVerticalScrollbar = false;
-		bool allowHorizontalScrollbar = false;
-		bool bringToFrontOnFocus = true;
-		bool collapsable = false;
-		bool allowInputs = true;
-		bool titleBar = true;
+		Settings::PanelWindowSettings panelSettings;
 
 		NLS::Event<> OpenEvent;
 		NLS::Event<> CloseEvent;

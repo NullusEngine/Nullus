@@ -1,4 +1,4 @@
-#include <Utils/SystemCalls.h>
+﻿#include <Utils/SystemCalls.h>
 
 #include <UI/Widgets/Visual/Separator.h>
 #include <UI/Widgets/Sliders/SliderInt.h>
@@ -126,6 +126,8 @@ void Editor::Panels::MenuBar::InitializeSettingsMenu()
 	auto& debuggingMenu = m_settingsMenu->CreateWidget<MenuList>("Debugging");
 	debuggingMenu.CreateWidget<MenuItem>("Show geometry bounds", "", true, Settings::EditorSettings::ShowGeometryBounds).ValueChangedEvent += [this](bool p_value) { Settings::EditorSettings::ShowGeometryBounds = p_value; };
 	debuggingMenu.CreateWidget<MenuItem>("Show lights bounds", "", true, Settings::EditorSettings::ShowLightBounds).ValueChangedEvent += [this](bool p_value) { Settings::EditorSettings::ShowLightBounds = p_value; };
+    debuggingMenu.CreateWidget<MenuItem>("Wireframe Mode", "", true, false).ValueChangedEvent += [this](bool p_value)
+    { EDITOR_CONTEXT(driver)->SetPolygonMode(p_value ? NLS::Render::Settings::ERasterizationMode::LINE : NLS::Render::Settings::ERasterizationMode::FILL); };
 	auto& subMenu = debuggingMenu.CreateWidget<MenuList>("Frustum culling visualizer...");
 	subMenu.CreateWidget<MenuItem>("For geometry", "", true, Settings::EditorSettings::ShowGeometryFrustumCullingInSceneView).ValueChangedEvent += [this](bool p_value) { Settings::EditorSettings::ShowGeometryFrustumCullingInSceneView = p_value; };
 	subMenu.CreateWidget<MenuItem>("For lights", "", true, Settings::EditorSettings::ShowLightFrustumCullingInSceneView).ValueChangedEvent += [this](bool p_value) { Settings::EditorSettings::ShowLightFrustumCullingInSceneView = p_value; };

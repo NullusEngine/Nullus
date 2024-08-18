@@ -1,4 +1,4 @@
-#include <algorithm>
+﻿#include <algorithm>
 
 #include "Panels/Console.h"
 #include "Core/EditorActions.h"
@@ -46,7 +46,7 @@ Editor::Panels::Console::Console
 ) :
 	PanelWindow(p_title, p_opened, p_windowSettings)
 {
-	allowHorizontalScrollbar = true;
+	panelSettings.allowHorizontalScrollbar = true;
 
 	auto& clearButton = CreateWidget<Buttons::Button>("Clear");
 	clearButton.size = { 50.f, 0.f };

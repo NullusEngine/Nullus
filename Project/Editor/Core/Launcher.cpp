@@ -1,4 +1,4 @@
-#include "Launcher.h"
+﻿#include "Launcher.h"
 #define _CRT_SECURE_NO_WARNINGS
 
 #include <filesystem>
@@ -27,9 +27,9 @@ public:
     LauncherPanel(bool& p_readyToGo, std::string& p_path, std::string& p_projectName)
         : PanelWindow("Nullus - Launcher", true), m_readyToGo(p_readyToGo), m_path(p_path), m_projectName(p_projectName)
     {
-        resizable = false;
-        movable = false;
-        titleBar = false;
+        panelSettings.resizable = false;
+        panelSettings.movable = false;
+        panelSettings.titleBar = false;
 
         SetSize({1000, 580});
         SetPosition({0.f, 0.f});

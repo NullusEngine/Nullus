@@ -1,4 +1,4 @@
-#include <Debug/Logger.h>
+﻿#include <Debug/Logger.h>
 #include <Debug/Assertion.h>
 
 #include "Rendering/Context/Driver.h"
@@ -193,4 +193,9 @@ std::string_view NLS::Render::Context::Driver::GetVersion() const
 std::string_view NLS::Render::Context::Driver::GetShadingLanguageVersion() const
 {
 	return m_shadingLanguageVersion;
+}
+
+void NLS::Render::Context::Driver::SetPolygonMode(Settings::ERasterizationMode mode)
+{
+	m_defaultPipelineState.rasterizationMode = mode;
 }

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <string>
 #include <array>
@@ -123,6 +123,8 @@ public:
      * Returns the current shading language version
      */
     std::string_view GetShadingLanguageVersion() const;
+
+    void SetPolygonMode(Settings::ERasterizationMode mode);
 
 private:
     void SetPipelineState(Data::PipelineState p_state);

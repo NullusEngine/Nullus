@@ -1,4 +1,4 @@
-#include "Panels/AView.h"
+﻿#include "Panels/AView.h"
 #include "Core/EditorActions.h"
 #include "ServiceLocator.h"
 #include "UI/UIManager.h"
@@ -12,7 +12,7 @@ Editor::Panels::AView::AView
 ) : PanelWindow(p_title, p_opened, p_windowSettings)
 {
 	m_image = &CreateWidget<UI::Widgets::Visual::Image>(m_fbo.GetTextureID(), Maths::Vector2{ 0.f, 0.f });
-	scrollable = false;
+	panelSettings.scrollable = false;
 }
 
 void Editor::Panels::AView::Update(float p_deltaTime)

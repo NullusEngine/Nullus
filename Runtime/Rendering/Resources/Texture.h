@@ -24,8 +24,8 @@ namespace NLS::Render::Resources
 		virtual void Unbind() const = 0;
 
 	public:
-		Texture() = default;
-		~Texture() = default;
+		Texture();
+		~Texture();
 
 		Texture(Texture&&) noexcept;
 		Texture& operator=(Texture&&) noexcept;

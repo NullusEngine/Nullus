@@ -5,6 +5,16 @@
 
 using namespace NLS::Render::Resources;
 
+Texture::Texture()
+{
+	CreateRHITexture();
+}
+
+Texture::~Texture()
+{
+	ReleaseRHITexture();
+}
+
 Texture::Texture(Texture&& rhs) noexcept
 {
 	ReleaseRHITexture();

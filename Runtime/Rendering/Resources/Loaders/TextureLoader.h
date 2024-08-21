@@ -6,6 +6,11 @@
 #include <string>
 #include <vector>
 
+namespace NLS
+{
+	class Image;
+}
+
 namespace NLS::Render::Resources
 {
 	class Texture2D;
@@ -55,6 +60,8 @@ namespace NLS::Render::Resources::Loaders
 		* @param p_generateMipmap
 		*/
 		static Texture2D* CreateFromMemory(uint8_t* p_data, uint32_t p_width, uint32_t p_height, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
+
+		static Texture2D* CreateFromImage(const Image* iamge, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
 
 		/**
 		* Reload a texture from file

@@ -9,39 +9,17 @@
 
 NLS::Render::Resources::Texture2D* NLS::Render::Resources::Loaders::TextureLoader::Create(const std::string& p_filepath, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap)
 {
-	GLuint textureID;
-	glGenTextures(1, &textureID);
-
 	Image image(p_filepath, true);
-    unsigned char* dataBuffer = image.GetData();
-    int textureWidth = image.GetWidth();
-    int textureHeight = image.GetHeight();
-    int bitsPerPixel = image.GetChannels();
-	if (dataBuffer)
-	{
-		// TODO: Cleanup this code to use "Load from Memory"
-		glBindTexture(GL_TEXTURE_2D, textureID);
-
-		glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, textureWidth, textureHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, dataBuffer);
-
-		if (p_generateMipmap)
-		{
-			glGenerateMipmap(GL_TEXTURE_2D);
-		}
-		
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, static_cast<GLint>(p_firstFilter));
-		glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, static_cast<GLint>(p_secondFilter));
-		glBindTexture(GL_TEXTURE_2D, 0);
-
-		return new Texture2D(p_filepath, textureID, textureWidth, textureHeight, bitsPerPixel, p_firstFilter, p_secondFilter, p_generateMipmap);
-	}
-	else
-	{
-		glBindTexture(GL_TEXTURE_2D, 0);
+	if (image.GetData() == nullptr)
 		return nullptr;
+
+	Texture2D* texture = CreateFromImage(&image, p_firstFilter, p_secondFilter, p_generateMipmap);
+	if (texture)
+	{
+		texture->path = p_filepath;
 	}
+
+	return texture;
 }
 
 NLS::Render::Resources::TextureCube* NLS::Render::Resources::Loaders::TextureLoader::CreateCubeMap(const std::vector<std::string>& filePaths)
@@ -53,17 +31,14 @@ NLS::Render::Resources::TextureCube* NLS::Render::Resources::Loaders::TextureLoa
 
 	std::vector<Image> images;
 	images.reserve(6);
-	std::vector<Image*> imagesPtr;
-	imagesPtr.reserve(6);
 	for (size_t i = 0; i < 6; ++i)
 	{
 		images.push_back(Image(filePaths[i], false));
-		imagesPtr.push_back(&images[i]);
 	}
 
 	auto cubeMap = new TextureCube();
 	cubeMap->Bind();
-	cubeMap->SetTextureResource(imagesPtr);
+	cubeMap->SetTextureResource({&images[0], &images[1], &images[2], &images[3], &images[4], &images[5]});
 	cubeMap->Unbind();
 
 	return cubeMap;
@@ -73,8 +48,11 @@ NLS::Render::Resources::Texture2D* NLS::Render::Resources::Loaders::TextureLoade
 {
 	std::array<uint8_t, 4> colorData = { r, g, b, a };
 
-	return NLS::Render::Resources::Loaders::TextureLoader::CreateFromMemory(
-		colorData.data(), 1, 1,
+	Image image(1, 1, 4);
+	image.SetData(colorData.data());
+
+	return CreateFromImage(
+		&image,
 		NLS::Render::Settings::ETextureFilteringMode::NEAREST,
 		NLS::Render::Settings::ETextureFilteringMode::NEAREST,
 		false
@@ -83,25 +61,26 @@ NLS::Render::Resources::Texture2D* NLS::Render::Resources::Loaders::TextureLoade
 
 NLS::Render::Resources::Texture2D* NLS::Render::Resources::Loaders::TextureLoader::CreateFromMemory(uint8_t* p_data, uint32_t p_width, uint32_t p_height, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap)
 {
-	GLuint textureID;
-	glGenTextures(1, &textureID);
-	glBindTexture(GL_TEXTURE_2D, textureID);
+	Image image(p_width, p_height, 4);
+	image.SetData(p_data);
 
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, p_width, p_height, 0, GL_RGBA, GL_UNSIGNED_BYTE, p_data);
+	return CreateFromImage(&image, p_firstFilter, p_secondFilter, p_generateMipmap);
+}
 
-	if (p_generateMipmap)
-	{
-		glGenerateMipmap(GL_TEXTURE_2D);
-	}
+NLS::Render::Resources::Texture2D* NLS::Render::Resources::Loaders::TextureLoader::CreateFromImage(const Image* image, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap)
+{
+	Texture2D* texture = new Texture2D;
 
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, static_cast<GLint>(p_firstFilter));
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, static_cast<GLint>(p_secondFilter));
+	texture->Bind();
 
-	glBindTexture(GL_TEXTURE_2D, 0);
+	texture->isMimapped = p_generateMipmap;
+	texture->firstFilter = p_firstFilter;
+	texture->secondFilter = p_secondFilter;
+	texture->SetTextureResource(image);
 
-	return new Texture2D("", textureID, 1, 1, 32, p_firstFilter, p_secondFilter, p_generateMipmap);
+	texture->Unbind();
+
+	return texture;
 }
 
 void NLS::Render::Resources::Loaders::TextureLoader::Reload(Texture2D* p_texture, const std::string& p_filePath, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap)

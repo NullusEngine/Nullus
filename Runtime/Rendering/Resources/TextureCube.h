@@ -31,10 +31,10 @@ namespace NLS::Render::Resources
 		virtual void Unbind() const override;
 
 	public:
-		TextureCube();
-		~TextureCube();
+		TextureCube() = default;
+		~TextureCube() = default;
 
-		bool SetTextureResource(const std::vector<NLS::Image*>& images);
+		bool SetTextureResource(const std::vector<const NLS::Image*>& images);
 
 	public:
 	};

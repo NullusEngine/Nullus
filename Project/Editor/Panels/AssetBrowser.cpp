@@ -1184,8 +1184,7 @@ void Editor::Panels::AssetBrowser::ConsiderItem(Layout::TreeNode* p_root, const 
 		treeNode.OpenedEvent += [this, &treeNode, path, p_isEngineItem, p_scriptFolder]
 		{
 			treeNode.RemoveAllWidgets();
-			std::string updatedPath = Utils::PathParser::GetContainingFolder(path) + treeNode.name;
-			ParseFolder(treeNode, std::filesystem::directory_entry(updatedPath), p_isEngineItem, p_scriptFolder);
+			ParseFolder(treeNode, std::filesystem::directory_entry(path), p_isEngineItem, p_scriptFolder);
 		};
 
 		treeNode.ClosedEvent += [this, &treeNode]

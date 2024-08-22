@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <string>
 
@@ -24,6 +24,8 @@ namespace NLS::Render::Resources::Loaders
 		* @param p_parserFlags
 		*/
 		static Model* Create(const std::string& p_filepath, Parsers::EModelParserFlags p_parserFlags = Parsers::EModelParserFlags::NONE);
+
+		static Model* Create(const std::vector<NLS::Render::Resources::Mesh*>& meshes);
 
 		/**
 		* Reload a model from file

@@ -64,10 +64,40 @@ Engine::GameObject& Scene::CreateGameObject()
 
 Engine::GameObject& Scene::CreateGameObject(const std::string& p_name, const std::string& p_tag)
 {
-	m_actors.push_back(new Engine::GameObject(m_availableID++, p_name, p_tag, m_isPlaying));
+	GameObject* newGameObject = new Engine::GameObject(m_availableID++, p_name, p_tag, m_isPlaying);
+
+	AddGameObject(newGameObject);
+
+	return *newGameObject;
+}
+
+bool Scene::AddGameObject(GameObject* gameObject)
+{
+	// check added...
+
+	m_actors.push_back(gameObject);
 	GameObject& instance = *m_actors.back();
-	instance.ComponentAddedEvent	+= std::bind(&Scene::OnComponentAdded, this, std::placeholders::_1);
-	instance.ComponentRemovedEvent	+= std::bind(&Scene::OnComponentRemoved, this, std::placeholders::_1);
+
+	auto AddComponents = [this](GameObject* go)
+		{
+			for (auto&& component : go->GetComponents())
+			{
+				OnComponentAdded(component);
+			}
+			go->ComponentAddedEvent += std::bind(&Scene::OnComponentAdded, this, std::placeholders::_1);
+			go->ComponentRemovedEvent += std::bind(&Scene::OnComponentRemoved, this, std::placeholders::_1);
+		};
+
+	std::function<void(GameObject*)> AddGameObjectRecursively = [this, &AddComponents, &AddGameObjectRecursively](GameObject* go)
+		{
+			AddComponents(go);
+			for (auto&& child : go->GetChildren())
+			{
+				AddGameObjectRecursively(child);
+			}
+		};
+	AddGameObjectRecursively(&instance);
+
 	if (m_isPlaying)
 	{
 		instance.SetSleeping(false);
@@ -78,7 +108,12 @@ Engine::GameObject& Scene::CreateGameObject(const std::string& p_name, const std
 			instance.OnStart();
 		}
 	}
-	return instance;
+	return true;
+}
+
+bool Scene::AddActor(Actor* actor)
+{
+	return AddGameObject(actor->GetGameObject());
 }
 
 bool Scene::DestroyActor(GameObject& p_target)

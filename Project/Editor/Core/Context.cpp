@@ -1,10 +1,12 @@
-#include <filesystem>
+﻿#include <filesystem>
 
 #include <Core/ServiceLocator.h>
 #include "Windowing/Settings/DeviceSettings.h"
 #include "Core/Context.h"
 #include "Debug/FileHandler.h"
 #include "Utils/PathParser.h"
+#include "Resource/Actor/ActorManager.h"
+
 using namespace NLS::Core::ResourceManagement;
 namespace NLS
 {
@@ -13,7 +15,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     projectName(p_projectName), 
     projectFilePath(p_projectPath + p_projectName + ".nullus"), 
     engineAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets/Engine")).string() + Utils::PathParser::Separator()), 
-    projectAssetsPath(p_projectPath + Utils::PathParser::Separator() + "Assets"), 
+    projectAssetsPath(p_projectPath + Utils::PathParser::Separator() + "Assets" + Utils::PathParser::Separator()), 
     editorAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets/Editor")).string() + Utils::PathParser::Separator()), 
     sceneManager(projectAssetsPath), projectSettings(projectFilePath)
 {
@@ -21,6 +23,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     TextureManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
     ShaderManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
     MaterialManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
+    NLS::Engine::ActorManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
 
     NLS::Debug::FileHandler::SetLogFilePath(p_projectPath + Utils::PathParser::Separator() + "Logs");
     /* Settings */
@@ -71,6 +74,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     NLS::Core::ServiceLocator::Provide<ShaderManager>(shaderManager);
     NLS::Core::ServiceLocator::Provide<MaterialManager>(materialManager);
     NLS::Core::ServiceLocator::Provide<NLS::UI::UIManager>(*uiManager);
+    NLS::Core::ServiceLocator::Provide<NLS::Engine::ActorManager>(actorManager);
 
 
     NLS::Core::ServiceLocator::Provide<NLS::Windowing::Inputs::InputManager>(*inputManager);

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <ServiceLocator.h>
 #include <Filesystem/IniFile.h>
@@ -165,6 +165,7 @@ namespace NLS::Editor::Core
         * @param p_name
 		*/
         Engine::GameObject& CreateActorWithModel(const std::string& p_path, bool p_focusOnCreation = true, Engine::GameObject* p_parent = nullptr, const std::string& p_name = "");
+        Engine::GameObject& CreateActor(const std::string& path, bool focusOnCreation = true, Engine::GameObject* p_parent = nullptr);
 
 		/**
 		* Destroy an actor from his scene

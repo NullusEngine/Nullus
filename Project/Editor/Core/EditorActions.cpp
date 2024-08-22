@@ -21,6 +21,7 @@
 #include "Panels/Inspector.h"
 #include "Panels/SceneView.h"
 #include "ResourceManagement/ModelManager.h"
+#include "Resource/Actor/ActorManager.h"
 #include "ServiceLocator.h"
 #include "Panels/AssetView.h"
 #include "Panels/MaterialEditor.h"
@@ -30,6 +31,7 @@
 // #include "Panels/Inspector.h"
 // #include "Panels/ProjectSettings.h"
 // #include "Panels/MaterialEditor.h"
+
 using namespace NLS;
 Editor::Core::EditorActions::EditorActions(Context& p_context, PanelsManager& p_panelsManager)
     : m_context(p_context), m_panelsManager(p_panelsManager)
@@ -495,6 +497,27 @@ Engine::GameObject& Editor::Core::EditorActions::CreateActorWithModel(const std:
         materialRenderer->FillWithMaterial(*material);
 
     if (p_focusOnCreation)
+        SelectActor(instance);
+
+    return instance;
+}
+
+Engine::GameObject& NLS::Editor::Core::EditorActions::CreateActor(const std::string& path, bool focusOnCreation, Engine::GameObject* p_parent)
+{
+    const auto currentScene = m_context.sceneManager.GetCurrentScene();
+    auto* actor = NLS_SERVICE(Engine::ActorManager).CreateResource(path);
+
+    currentScene->AddActor(actor);
+
+    auto& instance = *(actor->GetGameObject());
+
+    if (p_parent)
+        instance.SetParent(*p_parent);
+
+    if (m_actorSpawnMode == EActorSpawnMode::FRONT)
+        instance.GetTransform()->SetLocalPosition(CalculateActorSpawnPoint(10.0f));
+
+    if (focusOnCreation)
         SelectActor(instance);
 
     return instance;

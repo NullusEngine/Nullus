@@ -1,4 +1,4 @@
-#include "Core/ResourceManagement/ModelManager.h"
+﻿#include "Core/ResourceManagement/ModelManager.h"
 #include <Filesystem/IniFile.h>
 NLS::Render::Resources::Parsers::EModelParserFlags GetModelMetadata(const std::string& p_path)
 {
@@ -47,6 +47,15 @@ NLS::Render::Resources::Model* NLS::Core::ResourceManagement::ModelManager::Crea
     auto model = NLS::Render::Resources::Loaders::ModelLoader::Create(realPath, GetModelMetadata(realPath));
 	if (model)
 		*reinterpret_cast<std::string*>(reinterpret_cast<char*>(model) + offsetof(NLS::Render::Resources::Model, path)) = p_path; // Force the resource path to fit the given path
+
+	return model;
+}
+
+NLS::Render::Resources::Model* NLS::Core::ResourceManagement::ModelManager::CreateResource(const std::string& name, const std::vector<NLS::Render::Resources::Mesh*>& meshes)
+{
+	auto model = NLS::Render::Resources::Loaders::ModelLoader::Create(meshes);
+	if (model)
+		*reinterpret_cast<std::string*>(reinterpret_cast<char*>(model) + offsetof(NLS::Render::Resources::Model, path)) = name;
 
 	return model;
 }

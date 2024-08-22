@@ -31,7 +31,7 @@ Editor::Panels::SceneView::SceneView(
                 EDITOR_EXEC(LoadSceneFromDisk(path));
                 break;
             case Utils::PathParser::EFileType::MODEL:
-                EDITOR_EXEC(CreateActorWithModel(path, true));
+                EDITOR_EXEC(CreateActor(path, true));
                 break;
         }
     };

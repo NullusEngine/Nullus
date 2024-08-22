@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <Windowing/Context/Device.h>
 #include <Windowing/Inputs/InputManager.h>
@@ -12,6 +12,7 @@
 #include "ResourceManagement/TextureManager.h"
 #include "ResourceManagement/ShaderManager.h"
 #include "ResourceManagement/MaterialManager.h"
+#include "Resource/Actor/ActorManager.h"
 #include "EditorResources.h"
 namespace NLS
 {
@@ -71,6 +72,7 @@ public:
     NLS::Core::ResourceManagement::TextureManager textureManager;
     NLS::Core::ResourceManagement::ShaderManager shaderManager;
     NLS::Core::ResourceManagement::MaterialManager materialManager;
+    NLS::Engine::ActorManager actorManager;
 
     NLS::Windowing::Settings::WindowSettings windowSettings;
 

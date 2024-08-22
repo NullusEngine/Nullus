@@ -1,4 +1,4 @@
-#include <algorithm>
+﻿#include <algorithm>
 #include "Utils/PathParser.h"
 #include <filesystem>
 std::string NLS::Utils::PathParser::MakeWindowsStyle(const std::string & p_path)
@@ -67,7 +67,7 @@ NLS::Utils::PathParser::EFileType NLS::Utils::PathParser::GetFileType(const std:
 	std::string ext = GetExtension(p_path);
 	std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
 
-	if (ext == "fbx" || ext == "obj")											return EFileType::MODEL;
+	if (ext == "fbx" || ext == "obj" || ext == "gltf" || ext == "glb")			return EFileType::MODEL;
 	else if (ext == "png" || ext == "jpeg" || ext == "jpg" || ext == "tga")		return EFileType::TEXTURE;
 	else if (ext == "glsl")														return EFileType::SHADER;
 	else if (ext == "ovmat")													return EFileType::MATERIAL;

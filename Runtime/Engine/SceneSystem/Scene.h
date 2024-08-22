@@ -6,7 +6,10 @@
 #include "Components/LightComponent.h"
 #include "Components/SkyBoxComponent.h"
 #include "Components/MeshRenderer.h"
+#include "Resource/Actor/Actor.h"
+
 #include "EngineDef.h"
+
 namespace NLS::Engine::SceneSystem
 {
 	/**
@@ -76,6 +79,10 @@ namespace NLS::Engine::SceneSystem
 		* @param p_tag
 		*/
 		GameObject& CreateGameObject(const std::string& p_name, const std::string& p_tag = "");
+
+		bool AddGameObject(GameObject* gameObject);
+
+		bool AddActor(Actor* actor);
 
 		/**
 		* Destroy and actor and return true on success

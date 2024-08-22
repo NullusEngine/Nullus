@@ -1,4 +1,4 @@
-
+﻿
 #pragma once
 
 #include <Rendering/Resources/Loaders/ModelLoader.h>
@@ -18,6 +18,8 @@ namespace NLS::Core::ResourceManagement
 		* @param p_path
 		*/
 		virtual NLS::Render::Resources::Model* CreateResource(const std::string & p_path) override;
+
+		NLS::Render::Resources::Model* CreateResource(const std::string& name, const std::vector<NLS::Render::Resources::Mesh*>& meshes);
 
 		/**
 		* Destroy the given resource

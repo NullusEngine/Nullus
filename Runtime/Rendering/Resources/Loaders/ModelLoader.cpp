@@ -1,4 +1,4 @@
-#include "Rendering/Resources/Loaders/ModelLoader.h"
+﻿#include "Rendering/Resources/Loaders/ModelLoader.h"
 
 NLS::Render::Resources::Parsers::AssimpParser NLS::Render::Resources::Loaders::ModelLoader::__ASSIMP;
 
@@ -15,6 +15,13 @@ NLS::Render::Resources::Model* NLS::Render::Resources::Loaders::ModelLoader::Cre
 	delete result;
 
 	return nullptr;
+}
+
+NLS::Render::Resources::Model* NLS::Render::Resources::Loaders::ModelLoader::Create(const std::vector<NLS::Render::Resources::Mesh*>& meshes)
+{
+	Model* result = new Model("");
+	result->m_meshes = meshes;
+	return result;
 }
 
 void NLS::Render::Resources::Loaders::ModelLoader::Reload(Model& p_model, const std::string& p_filePath, Parsers::EModelParserFlags p_parserFlags)

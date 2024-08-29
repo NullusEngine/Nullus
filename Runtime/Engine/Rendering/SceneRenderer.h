@@ -1,4 +1,4 @@
-
+﻿
 #pragma once
 
 #include <map>
@@ -27,11 +27,13 @@ namespace NLS
 		public:
 			using OpaqueDrawables = std::multimap<float, NLS::Render::Entities::Drawable, std::less<float>>;
 			using TransparentDrawables = std::multimap<float, NLS::Render::Entities::Drawable, std::greater<float >> ;
+			using SkyboxDrawables = std::multimap<float, NLS::Render::Entities::Drawable, std::less<float>>;
 
 			struct AllDrawables
 			{
 				OpaqueDrawables opaques;
 				TransparentDrawables transparents;
+				SkyboxDrawables skyboxes;
 			};
 
 			struct SceneDescriptor

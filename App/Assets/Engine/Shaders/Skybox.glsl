@@ -27,7 +27,8 @@ void main()
 
     TexCoords = aPos;
 	mat4 view = mat4(mat3(ubo_View));
-    gl_Position = ubo_Projection * view * vec4(aPos, 1.0);
+    vec4 pos = ubo_Projection * view * vec4(aPos, 1.0);
+    gl_Position = pos.xyww;
 }
 
 #shader fragment

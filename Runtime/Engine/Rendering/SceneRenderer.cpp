@@ -48,6 +48,33 @@ protected:
 	}
 };
 
+class SkyboxRenderPass : public NLS::Render::Core::ARenderPass
+{
+public:
+	SkyboxRenderPass(NLS::Render::Core::CompositeRenderer& p_renderer) : NLS::Render::Core::ARenderPass(p_renderer) {}
+
+protected:
+	virtual void Draw(NLS::Render::Data::PipelineState p_pso) override
+	{
+		p_pso.depthFunc = NLS::Render::Settings::EComparaisonAlgorithm::LESS_EQUAL;
+
+		auto& sceneContent = m_renderer.GetDescriptor<SceneRenderPassDescriptor>();
+
+		size_t skyboxCount = 0;
+		for (const auto& [distance, drawable] : sceneContent.drawables.skyboxes)
+		{
+			if (skyboxCount > 0)
+			{
+				NLS_LOG_WARNING("Multiple skyboxes detected, only the first one will be drawn!");
+				break;
+			}
+
+			m_renderer.DrawEntity(p_pso, drawable);
+			skyboxCount++;
+		}
+	}
+};
+
 Engine::Rendering::SceneRenderer::SceneRenderer(NLS::Render::Context::Driver& p_driver)
 	: NLS::Render::Core::CompositeRenderer(p_driver)
 {
@@ -55,6 +82,7 @@ Engine::Rendering::SceneRenderer::SceneRenderer(NLS::Render::Context::Driver& p_
 	AddFeature<NLS::Render::Features::LightingRenderFeature>();
 
 	AddPass<OpaqueRenderPass>("Opaques", NLS::Render::Settings::ERenderPassOrder::Opaque);
+	AddPass<SkyboxRenderPass>("Skybox", NLS::Render::Settings::ERenderPassOrder::Opaque + 1);
 	AddPass<TransparentRenderPass>("Transparents", NLS::Render::Settings::ERenderPassOrder::Transparent);
 }
 
@@ -120,6 +148,7 @@ Engine::Rendering::SceneRenderer::AllDrawables Engine::Rendering::SceneRenderer:
 
 	OpaqueDrawables opaques;
 	TransparentDrawables transparents;
+	SkyboxDrawables skyboxes;
 
 	auto& camera = *m_frameDescriptor.camera;
 
@@ -259,11 +288,11 @@ Engine::Rendering::SceneRenderer::AllDrawables Engine::Rendering::SceneRenderer:
 						//skybox->GetUserMatrix()
 						});
 
-					opaques.emplace(0.0f, drawable);
+					skyboxes.emplace(0.0f, drawable);
 				}
 			}
 		}
 	}
 
-	return { opaques, transparents };
+	return { opaques, transparents, skyboxes };
 }

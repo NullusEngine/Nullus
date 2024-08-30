@@ -10,7 +10,7 @@ using namespace NLS;
 Editor::Panels::SceneView::SceneView(
     const std::string& p_title,
     bool p_opened,
-    const UI::Settings::PanelWindowSettings& p_windowSettings)
+    const UI::PanelWindowSettings& p_windowSettings)
     : AViewControllable(p_title, p_opened, p_windowSettings), m_sceneManager(EDITOR_CONTEXT(sceneManager))
 {
     m_renderer = std::make_unique<Editor::Rendering::DebugSceneRenderer>(*EDITOR_CONTEXT(driver));
@@ -21,7 +21,7 @@ Editor::Panels::SceneView::SceneView(
     m_fallbackMaterial.Set<Maths::Vector4>("u_Diffuse", {1.f, 0.f, 1.f, 1.0f});
     m_fallbackMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", nullptr);
 
-    m_image->AddPlugin<UI::Plugins::DDTarget<std::pair<std::string, UI::Widgets::Layout::Group*>>>("File").DataReceivedEvent += [this](auto p_data)
+    m_image->AddPlugin<UI::DDTarget<std::pair<std::string, UI::Widgets::Group*>>>("File").DataReceivedEvent += [this](auto p_data)
     {
         std::string path = p_data.first;
 

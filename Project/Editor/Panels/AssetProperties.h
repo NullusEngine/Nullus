@@ -15,7 +15,7 @@
 
 namespace NLS::Editor::Panels
 {
-	class AssetProperties : public UI::Panels::PanelWindow
+	class AssetProperties : public UI::PanelWindow
 	{
 	public:
 		using EditableAssets = std::variant<Render::Resources::Model*, Render::Resources::Texture2D*>;
@@ -29,7 +29,7 @@ namespace NLS::Editor::Panels
 		AssetProperties(
 			const std::string& p_title,
 			bool p_opened,
-			const UI::Settings::PanelWindowSettings& p_windowSettings
+			const UI::PanelWindowSettings& p_windowSettings
 		);
 
 		/**
@@ -61,17 +61,17 @@ namespace NLS::Editor::Panels
 		std::string m_resource;
 
         Event<> m_targetChanged;
-        UI::Widgets::Layout::Group* m_settings = nullptr;
-        UI::Widgets::Layout::Group* m_info = nullptr;
-        UI::Widgets::Buttons::Button* m_applyButton = nullptr;
-        UI::Widgets::Buttons::Button* m_revertButton = nullptr;
-        UI::Widgets::Buttons::Button* m_previewButton = nullptr;
-        UI::Widgets::Buttons::Button* m_resetButton = nullptr;
+        UI::Widgets::Group* m_settings = nullptr;
+        UI::Widgets::Group* m_info = nullptr;
+        UI::Widgets::Button* m_applyButton = nullptr;
+        UI::Widgets::Button* m_revertButton = nullptr;
+        UI::Widgets::Button* m_previewButton = nullptr;
+        UI::Widgets::Button* m_resetButton = nullptr;
         UI::Widgets::AWidget* m_headerSeparator = nullptr;
         UI::Widgets::AWidget* m_headerLineBreak = nullptr;
-		UI::Widgets::Layout::Columns* m_settingsColumns = nullptr;
-		UI::Widgets::Layout::Columns* m_infoColumns = nullptr;
-        UI::Widgets::Texts::Text* m_assetSelector = nullptr;
+		UI::Widgets::Columns* m_settingsColumns = nullptr;
+		UI::Widgets::Columns* m_infoColumns = nullptr;
+        UI::Widgets::Text* m_assetSelector = nullptr;
 		std::unique_ptr<Filesystem::IniFile> m_metadata;
 	};
 }

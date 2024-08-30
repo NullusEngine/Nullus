@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <UI/Panels/PanelWindow.h>
 #include <UI/Widgets/Texts/TextColored.h>
@@ -11,7 +11,7 @@
 
 namespace NLS::Editor::Panels
 {
-	class FrameInfo : public UI::Panels::PanelWindow
+	class FrameInfo : public UI::PanelWindow
 	{
 	public:
 		/**
@@ -23,7 +23,7 @@ namespace NLS::Editor::Panels
 		FrameInfo(
 			const std::string& p_title,
 			bool p_opened,
-			const UI::Settings::PanelWindowSettings& p_windowSettings
+			const UI::PanelWindowSettings& p_windowSettings
 		);
 
 		/**
@@ -33,11 +33,11 @@ namespace NLS::Editor::Panels
         void Update(AView* p_targetView);
 
 	private:
-		UI::Widgets::Texts::Text& m_viewNameText;
-		UI::Widgets::Visual::Separator& m_separator;
-		UI::Widgets::Texts::Text& m_batchCountText;
-		UI::Widgets::Texts::Text& m_instanceCountText;
-		UI::Widgets::Texts::Text& m_polyCountText;
-		UI::Widgets::Texts::Text& m_vertexCountText;
+		UI::Widgets::Text& m_viewNameText;
+		UI::Widgets::Separator& m_separator;
+		UI::Widgets::Text& m_batchCountText;
+		UI::Widgets::Text& m_instanceCountText;
+		UI::Widgets::Text& m_polyCountText;
+		UI::Widgets::Text& m_vertexCountText;
 	};
 }

@@ -8,7 +8,7 @@
 
 namespace NLS::Editor::Panels
 {
-	class Console : public UI::Panels::PanelWindow
+	class Console : public UI::PanelWindow
 	{
 	public:
 		/**
@@ -21,7 +21,7 @@ namespace NLS::Editor::Panels
 		(
 			const std::string& p_title,
 			bool p_opened,
-			const UI::Settings::PanelWindowSettings& p_windowSettings
+			const UI::PanelWindowSettings& p_windowSettings
 		);
 
 		/**
@@ -58,8 +58,8 @@ namespace NLS::Editor::Panels
 		void SetShowErrorLogs(bool p_value);
 
 	private:
-		UI::Widgets::Layout::Group* m_logGroup;
-		std::unordered_map<UI::Widgets::Texts::TextColored*, Debug::ELogLevel> m_logTextWidgets;
+		UI::Widgets::Group* m_logGroup;
+		std::unordered_map<UI::Widgets::TextColored*, Debug::ELogLevel> m_logTextWidgets;
 
 		bool m_clearOnPlay = true;
 		bool m_showDefaultLog = true;

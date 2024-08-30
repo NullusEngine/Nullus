@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <filesystem>
 #include <unordered_map>
@@ -16,7 +16,7 @@ namespace NLS::Editor::Panels
 	/**
 	* A panel that handle asset management
 	*/
-	class AssetBrowser : public UI::Panels::PanelWindow
+	class AssetBrowser : public UI::PanelWindow
 	{
 	public:
 		/**
@@ -31,7 +31,7 @@ namespace NLS::Editor::Panels
 		AssetBrowser(
 			const std::string& p_title,
 			bool p_opened,
-			const UI::Settings::PanelWindowSettings& p_windowSettings,
+			const UI::PanelWindowSettings& p_windowSettings,
 			const std::string& p_engineAssetFolder = "",
 			const std::string& p_projectAssetFolder = "",
 			const std::string& p_projectScriptFolder = ""
@@ -53,8 +53,8 @@ namespace NLS::Editor::Panels
 		void Refresh();
 
 	private:
-		void ParseFolder(UI::Widgets::Layout::TreeNode& p_root, const std::filesystem::directory_entry& p_directory, bool p_isEngineItem, bool p_scriptFolder = false);
-		void ConsiderItem(UI::Widgets::Layout::TreeNode* p_root, const std::filesystem::directory_entry& p_entry, bool p_isEngineItem, bool p_autoOpen = false, bool p_scriptFolder = false);
+		void ParseFolder(UI::Widgets::TreeNode& p_root, const std::filesystem::directory_entry& p_directory, bool p_isEngineItem, bool p_scriptFolder = false);
+		void ConsiderItem(UI::Widgets::TreeNode* p_root, const std::filesystem::directory_entry& p_entry, bool p_isEngineItem, bool p_autoOpen = false, bool p_scriptFolder = false);
 
 	public:
 		static const std::string __FILENAMES_CHARS;
@@ -62,7 +62,7 @@ namespace NLS::Editor::Panels
 	private:
 		std::string m_engineAssetFolder;
 		std::string m_projectAssetFolder;
-		UI::Widgets::Layout::Group* m_assetList;
-		std::unordered_map<UI::Widgets::Layout::TreeNode*, std::string> m_pathUpdate;
+		UI::Widgets::Group* m_assetList;
+		std::unordered_map<UI::Widgets::TreeNode*, std::string> m_pathUpdate;
 	};
 }

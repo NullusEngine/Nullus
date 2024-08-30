@@ -1,4 +1,4 @@
-#include <filesystem>
+﻿#include <filesystem>
 
 #include <Utils/PathParser.h>
 #include <Utils/SizeConverter.h>
@@ -23,7 +23,7 @@ Editor::Panels::AssetProperties::AssetProperties
 (
 	const std::string& p_title,
 	bool p_opened,
-	const UI::Settings::PanelWindowSettings& p_windowSettings
+	const UI::PanelWindowSettings& p_windowSettings
 ) :
 	PanelWindow(p_title, p_opened, p_windowSettings)
 {
@@ -31,17 +31,17 @@ Editor::Panels::AssetProperties::AssetProperties
 
 	CreateHeaderButtons();
 
-    m_headerSeparator = &CreateWidget<UI::Widgets::Visual::Separator>();
+    m_headerSeparator = &CreateWidget<UI::Widgets::Separator>();
     m_headerSeparator->enabled = false;
 
     CreateAssetSelector();
 
-    m_settings = &CreateWidget<UI::Widgets::Layout::GroupCollapsable>("Settings");
-	m_settingsColumns = &m_settings->CreateWidget<UI::Widgets::Layout::Columns>(2);
+    m_settings = &CreateWidget<UI::Widgets::GroupCollapsable>("Settings");
+	m_settingsColumns = &m_settings->CreateWidget<UI::Widgets::Columns>(2);
 	m_settingsColumns->widths[0] = 150;
 
-    m_info = &CreateWidget<UI::Widgets::Layout::GroupCollapsable>("Info");
-    m_infoColumns = &m_info->CreateWidget<UI::Widgets::Layout::Columns>(2);
+    m_info = &CreateWidget<UI::Widgets::GroupCollapsable>("Info");
+    m_infoColumns = &m_info->CreateWidget<UI::Widgets::Columns>(2);
     m_infoColumns->widths[0] = 150;
 
     m_settings->enabled = m_info->enabled = false;
@@ -113,25 +113,25 @@ void Editor::Panels::AssetProperties::Preview()
 
 void Editor::Panels::AssetProperties::CreateHeaderButtons()
 {
-	m_applyButton = &CreateWidget<UI::Widgets::Buttons::Button>("Apply");
+	m_applyButton = &CreateWidget<UI::Widgets::Button>("Apply");
     m_applyButton->idleBackgroundColor = { 0.0f, 0.5f, 0.0f };
     m_applyButton->enabled = false;
     m_applyButton->lineBreak = false;
     m_applyButton->ClickedEvent += std::bind(&AssetProperties::Apply, this);
 
-	m_revertButton = &CreateWidget<UI::Widgets::Buttons::Button>("Revert");
+	m_revertButton = &CreateWidget<UI::Widgets::Button>("Revert");
 	m_revertButton->idleBackgroundColor = { 0.7f, 0.5f, 0.0f };
     m_revertButton->enabled = false;
     m_revertButton->lineBreak = false;
     m_revertButton->ClickedEvent += std::bind(&AssetProperties::SetTarget, this, m_resource);
 
-	m_previewButton = &CreateWidget<UI::Widgets::Buttons::Button>("Preview");
+	m_previewButton = &CreateWidget<UI::Widgets::Button>("Preview");
 	m_previewButton->idleBackgroundColor = { 0.7f, 0.5f, 0.0f };
     m_previewButton->enabled = false;
 	m_previewButton->lineBreak = false;
 	m_previewButton->ClickedEvent += std::bind(&AssetProperties::Preview, this);
 
-	m_resetButton = &CreateWidget<UI::Widgets::Buttons::Button>("Reset to default");
+	m_resetButton = &CreateWidget<UI::Widgets::Button>("Reset to default");
 	m_resetButton->idleBackgroundColor = { 0.5f, 0.0f, 0.0f };
     m_resetButton->enabled = false;
     m_resetButton->lineBreak = false;
@@ -141,13 +141,13 @@ void Editor::Panels::AssetProperties::CreateHeaderButtons()
 		CreateSettings();
 	};
 
-    m_headerLineBreak = &CreateWidget<UI::Widgets::Layout::NewLine>();
+    m_headerLineBreak = &CreateWidget<UI::Widgets::NewLine>();
     m_headerLineBreak->enabled = false;
 }
 
 void Editor::Panels::AssetProperties::CreateAssetSelector()
 {
-    auto& columns = CreateWidget<UI::Widgets::Layout::Columns>(2);
+    auto& columns = CreateWidget<UI::Widgets::Columns>(2);
     columns.widths[0] = 150;
     m_assetSelector = &NLS::UI::GUIDrawer::DrawAsset(columns, "Target", m_resource, &m_targetChanged);
 }
@@ -185,14 +185,14 @@ void Editor::Panels::AssetProperties::CreateInfo()
         m_info->enabled = true;
 
         NLS::UI::GUIDrawer::CreateTitle(*m_infoColumns, "Path");
-        m_infoColumns->CreateWidget<UI::Widgets::Texts::Text>(realPath);
+        m_infoColumns->CreateWidget<UI::Widgets::Text>(realPath);
 
         NLS::UI::GUIDrawer::CreateTitle(*m_infoColumns, "Size");
         const auto [size, unit] = Utils::SizeConverter::ConvertToOptimalUnit(static_cast<float>(std::filesystem::file_size(realPath)), Utils::SizeConverter::ESizeUnit::BYTE);
-        m_infoColumns->CreateWidget<UI::Widgets::Texts::Text>(std::to_string(size) + " " + Utils::SizeConverter::UnitToString(unit));
+        m_infoColumns->CreateWidget<UI::Widgets::Text>(std::to_string(size) + " " + Utils::SizeConverter::UnitToString(unit));
 
         NLS::UI::GUIDrawer::CreateTitle(*m_infoColumns, "Metadata");
-        m_infoColumns->CreateWidget<UI::Widgets::Texts::Text>(std::filesystem::exists(realPath + ".meta") ? "Yes" : "No");
+        m_infoColumns->CreateWidget<UI::Widgets::Text>(std::filesystem::exists(realPath + ".meta") ? "Yes" : "No");
     }
     else
     {
@@ -286,7 +286,7 @@ void Editor::Panels::AssetProperties::CreateTextureSettings()
     };
 
 	NLS::UI::GUIDrawer::CreateTitle(*m_settingsColumns, "MIN_FILTER");
-	auto& minFilter = m_settingsColumns->CreateWidget<UI::Widgets::Selection::ComboBox>(m_metadata->Get<int>("MIN_FILTER"));
+	auto& minFilter = m_settingsColumns->CreateWidget<UI::Widgets::ComboBox>(m_metadata->Get<int>("MIN_FILTER"));
 	minFilter.choices = filteringModes;
 	minFilter.ValueChangedEvent += [this](int p_choice)
 	{
@@ -294,7 +294,7 @@ void Editor::Panels::AssetProperties::CreateTextureSettings()
 	};
 
 	NLS::UI::GUIDrawer::CreateTitle(*m_settingsColumns, "MAG_FILTER");
-	auto& magFilter = m_settingsColumns->CreateWidget<UI::Widgets::Selection::ComboBox>(m_metadata->Get<int>("MAG_FILTER"));
+	auto& magFilter = m_settingsColumns->CreateWidget<UI::Widgets::ComboBox>(m_metadata->Get<int>("MAG_FILTER"));
 	magFilter.choices = filteringModes;
 	magFilter.ValueChangedEvent += [this](int p_choice)
 	{

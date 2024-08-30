@@ -8,8 +8,7 @@
 #include <UI/Widgets/Visual/Separator.h>
 #include <UI/Widgets/Layout/Spacing.h>
 using namespace NLS;
-using namespace NLS::UI::Panels;
-using namespace NLS::UI::Widgets;
+using namespace NLS::UI;
 
 std::pair<Maths::Color, std::string> GetWidgetSettingsFromLogData(const Debug::LogData& p_logData)
 {
@@ -42,26 +41,26 @@ Editor::Panels::Console::Console
 (
 	const std::string& p_title,
 	bool p_opened,
-	const UI::Settings::PanelWindowSettings& p_windowSettings
+	const UI::PanelWindowSettings& p_windowSettings
 ) :
 	PanelWindow(p_title, p_opened, p_windowSettings)
 {
 	panelSettings.allowHorizontalScrollbar = true;
 
-	auto& clearButton = CreateWidget<Buttons::Button>("Clear");
+	auto& clearButton = CreateWidget<Widgets::Button>("Clear");
 	clearButton.size = { 50.f, 0.f };
 	clearButton.idleBackgroundColor = { 0.5f, 0.f, 0.f };
 	clearButton.ClickedEvent += std::bind(&Console::Clear, this);
 	clearButton.lineBreak = false;
 
-	auto& clearOnPlay = CreateWidget<Selection::CheckBox>(m_clearOnPlay, "Auto clear on play");
+	auto& clearOnPlay = CreateWidget<Widgets::CheckBox>(m_clearOnPlay, "Auto clear on play");
 
-	CreateWidget<Layout::Spacing>(5).lineBreak = false;
+	CreateWidget<Widgets::Spacing>(5).lineBreak = false;
 
-	auto& enableDefault = CreateWidget<Selection::CheckBox>(true, "Default");
-	auto& enableInfo = CreateWidget<Selection::CheckBox>(true, "Info");
-	auto& enableWarning = CreateWidget<Selection::CheckBox>(true, "Warning");
-	auto& enableError = CreateWidget<Selection::CheckBox>(true, "Error");
+	auto& enableDefault = CreateWidget<Widgets::CheckBox>(true, "Default");
+	auto& enableInfo = CreateWidget<Widgets::CheckBox>(true, "Info");
+	auto& enableWarning = CreateWidget<Widgets::CheckBox>(true, "Warning");
+	auto& enableError = CreateWidget<Widgets::CheckBox>(true, "Error");
 
 	clearOnPlay.lineBreak = false;
 	enableDefault.lineBreak = false;
@@ -75,9 +74,9 @@ Editor::Panels::Console::Console
 	enableWarning.ValueChangedEvent += std::bind(&Console::SetShowWarningLogs, this, std::placeholders::_1);
 	enableError.ValueChangedEvent += std::bind(&Console::SetShowErrorLogs, this, std::placeholders::_1);
 
-	CreateWidget<Visual::Separator>();
+	CreateWidget<Widgets::Separator>();
 
-	m_logGroup = &CreateWidget<Layout::Group>();
+	m_logGroup = &CreateWidget<Widgets::Group>();
     m_logGroup->ReverseDrawOrder();
 
 	EDITOR_EVENT(PlayEvent) += std::bind(&Console::ClearOnPlay, this);
@@ -89,7 +88,7 @@ void Editor::Panels::Console::OnLogIntercepted(const Debug::LogData & p_logData)
 {
 	auto[logColor, logDate] = GetWidgetSettingsFromLogData(p_logData);
 
-	auto& consoleItem1 = m_logGroup->CreateWidget<Texts::TextColored>(logDate + "\t" + p_logData.message, logColor);
+	auto& consoleItem1 = m_logGroup->CreateWidget<Widgets::TextColored>(logDate + "\t" + p_logData.message, logColor);
 
 	consoleItem1.enabled = IsAllowedByFilter(p_logData.logLevel);
 

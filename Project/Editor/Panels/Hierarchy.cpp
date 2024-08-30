@@ -15,42 +15,42 @@
 
 #include "Utils/ActorCreationMenu.h"
 #include "UI/Widgets/InputFields/InputText.h"
+
 using namespace NLS;
-class ActorContextualMenu : public UI::Plugins::ContextualMenu
+class ActorContextualMenu : public UI::ContextualMenu
 {
 public:
-    ActorContextualMenu(Engine::GameObject* p_target, UI::Widgets::Layout::TreeNode& p_treeNode, bool p_panelMenu = false) :
+    ActorContextualMenu(Engine::GameObject* p_target, UI::Widgets::TreeNode& p_treeNode, bool p_panelMenu = false) :
         m_target(p_target),
         m_treeNode(p_treeNode)
     {
-        using namespace UI::Panels;
         using namespace UI::Widgets;
         using namespace UI::Widgets::Menu;
         using namespace Engine::Components;
 
         if (m_target)
         {
-            auto& focusButton = CreateWidget<UI::Widgets::Menu::MenuItem>("Focus");
+            auto& focusButton = CreateWidget<UI::Widgets::MenuItem>("Focus");
             focusButton.ClickedEvent += [this]
             {
                 EDITOR_EXEC(MoveToTarget(*m_target));
             };
 
-            auto& duplicateButton = CreateWidget<UI::Widgets::Menu::MenuItem>("Duplicate");
+            auto& duplicateButton = CreateWidget<UI::Widgets::MenuItem>("Duplicate");
             duplicateButton.ClickedEvent += [this]
             {
                 EDITOR_EXEC(DelayAction(EDITOR_BIND(DuplicateActor, std::ref(*m_target), nullptr, true), 0));
             };
 
-            auto& deleteButton = CreateWidget<UI::Widgets::Menu::MenuItem>("Delete");
+            auto& deleteButton = CreateWidget<UI::Widgets::MenuItem>("Delete");
             deleteButton.ClickedEvent += [this]
             {
                 EDITOR_EXEC(DestroyActor(std::ref(*m_target)));
             };
 
-			auto& renameMenu = CreateWidget<UI::Widgets::Menu::MenuList>("Rename to...");
+			auto& renameMenu = CreateWidget<UI::Widgets::MenuList>("Rename to...");
 
-			auto& nameEditor = renameMenu.CreateWidget<NLS::UI::Widgets::InputFields::InputText>("");
+			auto& nameEditor = renameMenu.CreateWidget<NLS::UI::Widgets::InputText>("");
 			nameEditor.selectAllOnClick = true;
 
 			renameMenu.ClickedEvent += [this, &nameEditor]
@@ -64,35 +64,35 @@ public:
 			};
         }
 
-		auto& createActor = CreateWidget<UI::Widgets::Menu::MenuList>("Create...");
-        Editor::Utils::ActorCreationMenu::GenerateActorCreationMenu(createActor, m_target, std::bind(&UI::Widgets::Layout::TreeNode::Open, &m_treeNode));
+		auto& createActor = CreateWidget<UI::Widgets::MenuList>("Create...");
+        Editor::Utils::ActorCreationMenu::GenerateActorCreationMenu(createActor, m_target, std::bind(&UI::Widgets::TreeNode::Open, &m_treeNode));
 	}
 
 	virtual void Execute() override
 	{
 		if (m_widgets.size() > 0)
-			UI::Plugins::ContextualMenu::Execute();
+			UI::ContextualMenu::Execute();
 	}
 
 private:
 	Engine::GameObject* m_target;
-	UI::Widgets::Layout::TreeNode& m_treeNode;
+	UI::Widgets::TreeNode& m_treeNode;
 };
 
-void ExpandTreeNode(UI::Widgets::Layout::TreeNode& p_toExpand, const UI::Widgets::Layout::TreeNode* p_root)
+void ExpandTreeNode(UI::Widgets::TreeNode& p_toExpand, const UI::Widgets::TreeNode* p_root)
 {
 	p_toExpand.Open();
 
 	if (&p_toExpand != p_root && p_toExpand.HasParent())
 	{
-		ExpandTreeNode(*static_cast<UI::Widgets::Layout::TreeNode*>(p_toExpand.GetParent()), p_root);
+		ExpandTreeNode(*static_cast<UI::Widgets::TreeNode*>(p_toExpand.GetParent()), p_root);
 	}
 }
 
-std::vector<UI::Widgets::Layout::TreeNode*> nodesToCollapse;
-std::vector<UI::Widgets::Layout::TreeNode*> founds;
+std::vector<UI::Widgets::TreeNode*> nodesToCollapse;
+std::vector<UI::Widgets::TreeNode*> founds;
 
-void ExpandTreeNodeAndEnable(UI::Widgets::Layout::TreeNode& p_toExpand, const UI::Widgets::Layout::TreeNode* p_root)
+void ExpandTreeNodeAndEnable(UI::Widgets::TreeNode& p_toExpand, const UI::Widgets::TreeNode* p_root)
 {
 	if (!p_toExpand.IsOpened())
 	{
@@ -104,7 +104,7 @@ void ExpandTreeNodeAndEnable(UI::Widgets::Layout::TreeNode& p_toExpand, const UI
 
 	if (&p_toExpand != p_root && p_toExpand.HasParent())
 	{
-		ExpandTreeNodeAndEnable(*static_cast<UI::Widgets::Layout::TreeNode*>(p_toExpand.GetParent()), p_root);
+		ExpandTreeNodeAndEnable(*static_cast<UI::Widgets::TreeNode*>(p_toExpand.GetParent()), p_root);
 	}
 }
 
@@ -112,10 +112,10 @@ Editor::Panels::Hierarchy::Hierarchy
 (
 	const std::string & p_title,
 	bool p_opened,
-	const UI::Settings::PanelWindowSettings& p_windowSettings
+	const UI::PanelWindowSettings& p_windowSettings
 ) : PanelWindow(p_title, p_opened, p_windowSettings)
 {
-	auto& searchBar = CreateWidget<UI::Widgets::InputFields::InputText>();
+	auto& searchBar = CreateWidget<UI::Widgets::InputText>();
 	searchBar.ContentChangedEvent += [this](const std::string& p_content)
 	{
 		founds.clear();
@@ -148,7 +148,7 @@ Editor::Panels::Hierarchy::Hierarchy
 
 			if (node->HasParent())
 			{
-				ExpandTreeNodeAndEnable(*static_cast<UI::Widgets::Layout::TreeNode*>(node->GetParent()), m_sceneRoot);
+				ExpandTreeNodeAndEnable(*static_cast<UI::Widgets::TreeNode*>(node->GetParent()), m_sceneRoot);
 			}
 		}
 
@@ -163,9 +163,9 @@ Editor::Panels::Hierarchy::Hierarchy
 		}
 	};
 
-	m_sceneRoot = &CreateWidget<UI::Widgets::Layout::TreeNode>("Root", true);
-	static_cast<UI::Widgets::Layout::TreeNode*>(m_sceneRoot)->Open();
-	m_sceneRoot->AddPlugin<UI::Plugins::DDTarget<std::pair<Engine::GameObject*, UI::Widgets::Layout::TreeNode*>>>("Actor").DataReceivedEvent += [this](std::pair<Engine::GameObject*, UI::Widgets::Layout::TreeNode*> p_element)
+	m_sceneRoot = &CreateWidget<UI::Widgets::TreeNode>("Root", true);
+	static_cast<UI::Widgets::TreeNode*>(m_sceneRoot)->Open();
+	m_sceneRoot->AddPlugin<UI::DDTarget<std::pair<Engine::GameObject*, UI::Widgets::TreeNode*>>>("Actor").DataReceivedEvent += [this](std::pair<Engine::GameObject*, UI::Widgets::TreeNode*> p_element)
 	{
 		if (p_element.second->HasParent())
 			p_element.second->GetParent()->UnconsiderWidget(*p_element.second);
@@ -207,7 +207,7 @@ void Editor::Panels::Hierarchy::SelectActorByInstance(Engine::GameObject& p_acto
 			SelectActorByWidget(*result->second);
 }
 
-void Editor::Panels::Hierarchy::SelectActorByWidget(UI::Widgets::Layout::TreeNode & p_widget)
+void Editor::Panels::Hierarchy::SelectActorByWidget(UI::Widgets::TreeNode & p_widget)
 {
 	UnselectActorsWidgets();
 
@@ -215,7 +215,7 @@ void Editor::Panels::Hierarchy::SelectActorByWidget(UI::Widgets::Layout::TreeNod
 
 	if (p_widget.HasParent())
 	{
-		ExpandTreeNode(*static_cast<UI::Widgets::Layout::TreeNode*>(p_widget.GetParent()), m_sceneRoot);
+		ExpandTreeNode(*static_cast<UI::Widgets::TreeNode*>(p_widget.GetParent()), m_sceneRoot);
 	}
 }
 
@@ -283,11 +283,11 @@ void Editor::Panels::Hierarchy::DeleteActorByInstance(Engine::GameObject& p_acto
 
 void Editor::Panels::Hierarchy::AddActorByInstance(Engine::GameObject & p_actor)
 {
-	auto& textSelectable = m_sceneRoot->CreateWidget<UI::Widgets::Layout::TreeNode>(p_actor.GetName(), true);
+	auto& textSelectable = m_sceneRoot->CreateWidget<UI::Widgets::TreeNode>(p_actor.GetName(), true);
 	textSelectable.leaf = true;
 	textSelectable.AddPlugin<ActorContextualMenu>(&p_actor, textSelectable);
-	textSelectable.AddPlugin<UI::Plugins::DDSource<std::pair<Engine::GameObject*, UI::Widgets::Layout::TreeNode*>>>("Actor", "Attach to...", std::make_pair(&p_actor, &textSelectable));
-	textSelectable.AddPlugin<UI::Plugins::DDTarget<std::pair<Engine::GameObject*, UI::Widgets::Layout::TreeNode*>>>("Actor").DataReceivedEvent += [&p_actor, &textSelectable](std::pair<Engine::GameObject*, UI::Widgets::Layout::TreeNode*> p_element)
+	textSelectable.AddPlugin<UI::DDSource<std::pair<Engine::GameObject*, UI::Widgets::TreeNode*>>>("Actor", "Attach to...", std::make_pair(&p_actor, &textSelectable));
+	textSelectable.AddPlugin<UI::DDTarget<std::pair<Engine::GameObject*, UI::Widgets::TreeNode*>>>("Actor").DataReceivedEvent += [&p_actor, &textSelectable](std::pair<Engine::GameObject*, UI::Widgets::TreeNode*> p_element)
 	{
 		if (p_actor.IsDescendantOf(p_element.first))
 		{
@@ -297,7 +297,7 @@ void Editor::Panels::Hierarchy::AddActorByInstance(Engine::GameObject & p_actor)
 
 		p_element.first->SetParent(p_actor);
 	};
-	auto& dispatcher = textSelectable.AddPlugin<UI::Plugins::DataDispatcher<std::string>>();
+	auto& dispatcher = textSelectable.AddPlugin<UI::DataDispatcher<std::string>>();
 
 	Engine::GameObject* targetPtr = &p_actor;
 	dispatcher.RegisterGatherer([targetPtr] { return targetPtr->GetName(); });

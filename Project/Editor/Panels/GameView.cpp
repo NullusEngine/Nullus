@@ -6,12 +6,13 @@
 #include "Panels/GameView.h"
 #include "Core/EditorActions.h"
 #include "Settings/EditorSettings.h"
+
 using namespace NLS;
 Editor::Panels::GameView::GameView
 (
 	const std::string & p_title,
 	bool p_opened,
-	const UI::Settings::PanelWindowSettings & p_windowSettings
+	const UI::PanelWindowSettings & p_windowSettings
 ) :
 	AView(p_title, p_opened, p_windowSettings),
 	m_sceneManager(EDITOR_CONTEXT(sceneManager))

@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 
 #include <UI/Panels/PanelWindow.h>
@@ -14,7 +14,7 @@ namespace NLS::Editor::Panels
 	/**
 	* Base class for any view
 	*/
-	class AView : public UI::Panels::PanelWindow
+	class AView : public UI::PanelWindow
 	{
 	public:
 		/**
@@ -26,7 +26,7 @@ namespace NLS::Editor::Panels
 		AView(
 			const std::string& p_title,
 			bool p_opened,
-			const UI::Settings::PanelWindowSettings& p_windowSettings
+			const UI::PanelWindowSettings& p_windowSettings
 		);
 
 		/**
@@ -80,7 +80,7 @@ namespace NLS::Editor::Panels
         virtual Engine::Rendering::SceneRenderer::SceneDescriptor CreateSceneDescriptor();
 
 	protected:
-		UI::Widgets::Visual::Image* m_image;
+		UI::Widgets::Image* m_image;
 
 		Maths::Vector3 m_gridColor = Maths::Vector3 { 0.176f, 0.176f, 0.176f };
 

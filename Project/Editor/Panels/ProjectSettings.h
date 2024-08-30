@@ -5,7 +5,7 @@
 
 namespace NLS::Editor::Panels
 {
-	class ProjectSettings : public UI::Panels::PanelWindow
+	class ProjectSettings : public UI::PanelWindow
 	{
 	public:
 		/**
@@ -18,7 +18,7 @@ namespace NLS::Editor::Panels
 		(
 			const std::string& p_title,
 			bool p_opened,
-			const UI::Settings::PanelWindowSettings& p_windowSettings
+			const UI::PanelWindowSettings& p_windowSettings
 		);
 
 		/**

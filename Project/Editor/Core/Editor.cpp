@@ -1,4 +1,4 @@
-
+﻿
 #include "Core/Editor.h"
 #include "UI/Settings/PanelWindowSettings.h"
 #include "Assembly.h"
@@ -45,7 +45,7 @@ Editor::Core::Editor::~Editor()
 
 void Editor::Core::Editor::SetupUI()
 {
-    NLS::UI::Settings::PanelWindowSettings settings;
+    NLS::UI::PanelWindowSettings settings;
     settings.closable = true;
     settings.collapsable = true;
     settings.dockable = true;

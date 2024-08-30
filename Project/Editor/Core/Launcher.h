@@ -1,4 +1,4 @@
-
+﻿
 #pragma once
 
 #include <Windowing/Context/Device.h>
@@ -42,8 +42,8 @@ private:
     std::unique_ptr<Render::Context::Driver> m_driver;
     std::unique_ptr<UI::UIManager> m_uiManager;
 
-    UI::Modules::Canvas m_canvas;
-    std::unique_ptr<UI::Panels::PanelWindow> m_mainPanel;
+    UI::Canvas m_canvas;
+    std::unique_ptr<UI::PanelWindow> m_mainPanel;
 
     std::string m_projectPath = "";
     std::string m_projectName = "";

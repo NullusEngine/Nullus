@@ -6,8 +6,7 @@
 #include "Core/EditorActions.h"
 #include "Utils/String.h"
 using namespace NLS;
-using namespace NLS::UI::Panels;
-using namespace NLS::UI::Widgets;
+using namespace NLS::UI;
 
 constexpr Render::Data::FrameInfo kEmptyFrameInfo{};
 
@@ -15,17 +14,17 @@ Editor::Panels::FrameInfo::FrameInfo
 (
 	const std::string& p_title,
 	bool p_opened,
-	const UI::Settings::PanelWindowSettings& p_windowSettings
+	const UI::PanelWindowSettings& p_windowSettings
 ) : PanelWindow(p_title, p_opened, p_windowSettings),
 
-	m_viewNameText(CreateWidget<Texts::Text>()),
+	m_viewNameText(CreateWidget<Widgets::Text>()),
 
-	m_separator(CreateWidget<Visual::Separator>()),
+	m_separator(CreateWidget<Widgets::Separator>()),
 
-	m_batchCountText(CreateWidget<Texts::Text>("")),
-	m_instanceCountText(CreateWidget<Texts::Text>("")),
-	m_polyCountText(CreateWidget<Texts::Text>("")),
-	m_vertexCountText(CreateWidget<Texts::Text>(""))
+	m_batchCountText(CreateWidget<Widgets::Text>("")),
+	m_instanceCountText(CreateWidget<Widgets::Text>("")),
+	m_polyCountText(CreateWidget<Widgets::Text>("")),
+	m_vertexCountText(CreateWidget<Widgets::Text>(""))
 {
 	m_polyCountText.lineBreak = false;
 }

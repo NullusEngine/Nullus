@@ -25,14 +25,14 @@
 #include "GameObject.h"
 namespace NLS::Editor::Panels
 {
-Inspector::Inspector(const std::string& p_title, bool p_opened, const NLS::UI::Settings::PanelWindowSettings& p_windowSettings)
-    : NLS::UI::Panels::PanelWindow(p_title, p_opened, p_windowSettings)
+Inspector::Inspector(const std::string& p_title, bool p_opened, const NLS::UI::PanelWindowSettings& p_windowSettings)
+    : NLS::UI::PanelWindow(p_title, p_opened, p_windowSettings)
 {
-    m_inspectorHeader = &CreateWidget<UI::Widgets::Layout::Group>();
+    m_inspectorHeader = &CreateWidget<UI::Widgets::Group>();
     m_inspectorHeader->enabled = false;
-    m_actorInfo = &CreateWidget<UI::Widgets::Layout::Group>();
+    m_actorInfo = &CreateWidget<UI::Widgets::Group>();
 
-    auto& headerColumns = m_inspectorHeader->CreateWidget<UI::Widgets::Layout::Columns>(2);
+    auto& headerColumns = m_inspectorHeader->CreateWidget<UI::Widgets::Columns>(2);
 
     /* Name field */
     auto nameGatherer = [this]
@@ -57,14 +57,14 @@ Inspector::Inspector(const std::string& p_title, bool p_opened, const NLS::UI::S
 
     /* Component select + button */
     {
-        auto& componentSelectorWidget = m_inspectorHeader->CreateWidget<UI::Widgets::Selection::ComboBox>(0);
+        auto& componentSelectorWidget = m_inspectorHeader->CreateWidget<UI::Widgets::ComboBox>(0);
         componentSelectorWidget.lineBreak = false;
         componentSelectorWidget.choices.emplace(0, "Model Renderer");
         componentSelectorWidget.choices.emplace(1, "Camera");
         componentSelectorWidget.choices.emplace(2, "Light");
         componentSelectorWidget.choices.emplace(3, "MaterialRenderer");
 
-        auto& addComponentButton = m_inspectorHeader->CreateWidget<UI::Widgets::Buttons::Button>("Add Component", Maths::Vector2{100.f, 0});
+        auto& addComponentButton = m_inspectorHeader->CreateWidget<UI::Widgets::Button>("Add Component", Maths::Vector2{100.f, 0});
         addComponentButton.idleBackgroundColor = Maths::Color{0.7f, 0.5f, 0.f};
         addComponentButton.textColor = Maths::Color::White;
         addComponentButton.ClickedEvent += [&componentSelectorWidget, this]
@@ -118,7 +118,7 @@ Inspector::Inspector(const std::string& p_title, bool p_opened, const NLS::UI::S
         m_componentSelectorWidget = &componentSelectorWidget;
     }
 
-    m_inspectorHeader->CreateWidget<UI::Widgets::Visual::Separator>();
+    m_inspectorHeader->CreateWidget<UI::Widgets::Separator>();
 
     m_destroyedListener = Engine::GameObject::DestroyedEvent += [this](Engine::GameObject& p_destroyed)
     {
@@ -207,14 +207,14 @@ void Inspector::CreateActorInspector(Engine::GameObject& p_target)
 void Inspector::DrawComponent(UDRefl::SharedObject p_component)
 {
     using namespace NLS::Engine::Components;
-    auto& header = m_actorInfo->CreateWidget<UI::Widgets::Layout::GroupCollapsable>("Component");
+    auto& header = m_actorInfo->CreateWidget<UI::Widgets::GroupCollapsable>("Component");
     header.closable = p_component.GetType() == Type_of<TransformComponent>;
     header.CloseEvent += [this, &header, &p_component]
     {
         if (p_component.Invoke<Engine::GameObject*>("gameobject")->RemoveComponent(p_component))
             m_componentSelectorWidget->ValueChangedEvent.Invoke(m_componentSelectorWidget->currentChoice);
     };
-    auto& columns = header.CreateWidget<UI::Widgets::Layout::Columns>(2);
+    auto& columns = header.CreateWidget<UI::Widgets::Columns>(2);
     columns.widths[0] = 200;
 }
 

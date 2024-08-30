@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <unordered_map>
 
@@ -19,7 +19,7 @@ namespace NLS::Editor::Core
 		* Constructor
 		* @param p_canvas
 		*/
-		PanelsManager(UI::Modules::Canvas& p_canvas);
+		PanelsManager(UI::Canvas& p_canvas);
 
 		/**
 		* Create a panel
@@ -29,7 +29,7 @@ namespace NLS::Editor::Core
 		template<typename T, typename... Args>
 		void CreatePanel(const std::string& p_id, Args&&... p_args)
 		{
-			if constexpr (std::is_base_of<UI::Panels::PanelWindow, T>::value)
+			if constexpr (std::is_base_of<UI::PanelWindow, T>::value)
 			{
 				m_panels.emplace(p_id, std::make_unique<T>(p_id, std::forward<Args>(p_args)...));
 				T& instance = *static_cast<T*>(m_panels.at(p_id).get());
@@ -54,7 +54,7 @@ namespace NLS::Editor::Core
 		}
 
 	private:
-		std::unordered_map<std::string, std::unique_ptr<UI::Panels::APanel>> m_panels;
-		UI::Modules::Canvas& m_canvas;
+		std::unordered_map<std::string, std::unique_ptr<UI::APanel>> m_panels;
+		UI::Canvas& m_canvas;
 	};
 }

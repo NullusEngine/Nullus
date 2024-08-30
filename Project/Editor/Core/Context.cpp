@@ -52,7 +52,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     /* Graphics context creation */
     driver = std::make_unique<NLS::Render::Context::Driver>(NLS::Render::Settings::DriverSettings{true});
 
-    uiManager = std::make_unique<NLS::UI::UIManager>(window->GetGlfwWindow(), UI::Styling::EStyle::ALTERNATIVE_DARK);
+    uiManager = std::make_unique<NLS::UI::UIManager>(window->GetGlfwWindow(), UI::EStyle::ALTERNATIVE_DARK);
     uiManager->LoadFont("Ruda_Big", editorAssetsPath + "/Fonts/Ruda-Bold.ttf", 16);
     uiManager->LoadFont("Ruda_Small", editorAssetsPath + "/Fonts/Ruda-Bold.ttf", 12);
     uiManager->LoadFont("Ruda_Medium", editorAssetsPath + "/Fonts/Ruda-Bold.ttf", 14);

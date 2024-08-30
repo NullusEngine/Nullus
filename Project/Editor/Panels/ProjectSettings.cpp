@@ -9,14 +9,13 @@
 #include <UI/Widgets/Buttons/Button.h>
 using namespace NLS;
 using namespace NLS::UI;
-using namespace NLS::UI::Panels;
 using namespace NLS::UI::Widgets;
 
-Editor::Panels::ProjectSettings::ProjectSettings(const std::string & p_title, bool p_opened, const UI::Settings::PanelWindowSettings & p_windowSettings) :
+Editor::Panels::ProjectSettings::ProjectSettings(const std::string & p_title, bool p_opened, const UI::PanelWindowSettings & p_windowSettings) :
 	PanelWindow(p_title, p_opened, p_windowSettings),
 	m_projectFile(EDITOR_CONTEXT(projectSettings))
 {
-	auto& saveButton = CreateWidget<Buttons::Button>("Apply");
+	auto& saveButton = CreateWidget<Button>("Apply");
 	saveButton.idleBackgroundColor = { 0.0f, 0.5f, 0.0f };
 	saveButton.ClickedEvent += [this]
 	{
@@ -26,19 +25,19 @@ Editor::Panels::ProjectSettings::ProjectSettings(const std::string & p_title, bo
 
 	saveButton.lineBreak = false;
 
-	auto& resetButton = CreateWidget<Buttons::Button>("Reset");
+	auto& resetButton = CreateWidget<Button>("Reset");
 	resetButton.idleBackgroundColor = { 0.5f, 0.0f, 0.0f };
 	resetButton.ClickedEvent += [this]
 	{
 		EDITOR_CONTEXT(ResetProjectSettings());
 	};
 
-	CreateWidget<UI::Widgets::Visual::Separator>();
+	CreateWidget<UI::Widgets::Separator>();
 
 	{
 		/* Physics settings */
-		auto& root = CreateWidget<Layout::GroupCollapsable>("Physics");
-		auto& columns = root.CreateWidget<Layout::Columns>(2);
+		auto& root = CreateWidget<Widgets::GroupCollapsable>("Physics");
+		auto& columns = root.CreateWidget<Widgets::Columns>(2);
 		columns.widths[0] = 125;
 
 		GUIDrawer::DrawScalar<float>(columns, "Gravity", GenerateGatherer<float>("gravity"), GenerateProvider<float>("gravity"), 0.1f, GUIDrawer::_MIN_FLOAT, GUIDrawer::_MAX_FLOAT);
@@ -46,8 +45,8 @@ Editor::Panels::ProjectSettings::ProjectSettings(const std::string & p_title, bo
 
 	{
 		/* Build settings */
-		auto& generationRoot = CreateWidget<Layout::GroupCollapsable>("Build");
-		auto& columns = generationRoot.CreateWidget<Layout::Columns>(2);
+		auto& generationRoot = CreateWidget<Widgets::GroupCollapsable>("Build");
+		auto& columns = generationRoot.CreateWidget<Widgets::Columns>(2);
 		columns.widths[0] = 125;
 
 		GUIDrawer::DrawBoolean(columns, "Development build", GenerateGatherer<bool>("dev_build"), GenerateProvider<bool>("dev_build"));
@@ -55,8 +54,8 @@ Editor::Panels::ProjectSettings::ProjectSettings(const std::string & p_title, bo
 
 	{
 		/* Windowing settings */
-		auto& windowingRoot = CreateWidget<Layout::GroupCollapsable>("Windowing");
-		auto& columns = windowingRoot.CreateWidget<Layout::Columns>(2);
+		auto& windowingRoot = CreateWidget<Widgets::GroupCollapsable>("Windowing");
+		auto& columns = windowingRoot.CreateWidget<Widgets::Columns>(2);
 		columns.widths[0] = 125;
 
 		GUIDrawer::DrawScalar<int>(columns, "Resolution X", GenerateGatherer<int>("x_resolution"), GenerateProvider<int>("x_resolution"), 1, 0, 10000);
@@ -67,8 +66,8 @@ Editor::Panels::ProjectSettings::ProjectSettings(const std::string & p_title, bo
 
 	{
 		/* Rendering settings */
-		auto& renderingRoot = CreateWidget<Layout::GroupCollapsable>("Rendering");
-		auto& columns = renderingRoot.CreateWidget<Layout::Columns>(2);
+		auto& renderingRoot = CreateWidget<Widgets::GroupCollapsable>("Rendering");
+		auto& columns = renderingRoot.CreateWidget<Widgets::Columns>(2);
 		columns.widths[0] = 125;
 
 		GUIDrawer::DrawBoolean(columns, "Vertical Sync.", GenerateGatherer<bool>("vsync"), GenerateProvider<bool>("vsync"));
@@ -80,8 +79,8 @@ Editor::Panels::ProjectSettings::ProjectSettings(const std::string & p_title, bo
 
 	{
 		/* Scene Management settings */
-		auto& gameRoot = CreateWidget<Layout::GroupCollapsable>("Scene Management");
-		auto& columns = gameRoot.CreateWidget<Layout::Columns>(2);
+		auto& gameRoot = CreateWidget<Widgets::GroupCollapsable>("Scene Management");
+		auto& columns = gameRoot.CreateWidget<Widgets::Columns>(2);
 		columns.widths[0] = 125;
 
 		GUIDrawer::DrawDDString(columns, "Start scene", GenerateGatherer<std::string>("start_scene"), GenerateProvider<std::string>("start_scene"), "File");

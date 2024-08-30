@@ -1,5 +1,5 @@
-#include "Core/PanelsManager.h"
+﻿#include "Core/PanelsManager.h"
 
-NLS::Editor::Core::PanelsManager::PanelsManager(UI::Modules::Canvas & p_canvas) : m_canvas(p_canvas)
+NLS::Editor::Core::PanelsManager::PanelsManager(UI::Canvas & p_canvas) : m_canvas(p_canvas)
 {
 }

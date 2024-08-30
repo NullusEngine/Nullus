@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <functional>
 
@@ -32,6 +32,6 @@ namespace NLS::Editor::Utils
         * @param p_parent
         * @param p_onItemClicked
         */
-        static void GenerateActorCreationMenu(NLS::UI::Widgets::Menu::MenuList& p_menuList, Engine::GameObject* p_parent = nullptr, std::optional<std::function<void()>> p_onItemClicked = {});
+        static void GenerateActorCreationMenu(NLS::UI::Widgets::MenuList& p_menuList, Engine::GameObject* p_parent = nullptr, std::optional<std::function<void()>> p_onItemClicked = {});
     };
 }

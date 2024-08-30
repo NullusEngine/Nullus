@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <UI/Panels/PanelMenuBar.h>
 #include <UI/Panels/PanelWindow.h>
@@ -6,9 +6,9 @@
 
 namespace NLS::Editor::Panels
 {
-	class MenuBar : public UI::Panels::PanelMenuBar
+	class MenuBar : public UI::PanelMenuBar
 	{
-		using PanelMap = std::unordered_map<std::string, std::pair<std::reference_wrapper<UI::Panels::PanelWindow>, std::reference_wrapper<UI::Widgets::Menu::MenuItem>>>;
+		using PanelMap = std::unordered_map<std::string, std::pair<std::reference_wrapper<UI::PanelWindow>, std::reference_wrapper<UI::Widgets::MenuItem>>>;
 
 	public:
 		/**
@@ -25,7 +25,7 @@ namespace NLS::Editor::Panels
 		/**
 		* Register a panel to the menu bar window menu
 		*/
-		void RegisterPanel(const std::string& p_name, UI::Panels::PanelWindow& p_panel);
+		void RegisterPanel(const std::string& p_name, UI::PanelWindow& p_panel);
 
 		/**
 		* @note This needs to be called after all other panels have been intialized, as the content of other
@@ -48,7 +48,7 @@ namespace NLS::Editor::Panels
 
 	private:
 		PanelMap m_panels;
-		UI::Widgets::Menu::MenuList* m_settingsMenu = nullptr;
-		UI::Widgets::Menu::MenuList* m_windowMenu = nullptr;
+		UI::Widgets::MenuList* m_settingsMenu = nullptr;
+		UI::Widgets::MenuList* m_windowMenu = nullptr;
 	};
 }

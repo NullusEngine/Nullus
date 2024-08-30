@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "Core/Context.h"
 #include "Core/EditorActions.h"
 #include "Core/PanelsManager.h"
@@ -90,7 +90,7 @@ public:
 
 private:
     uint64_t m_elapsedFrames = 0;
-    UI::Modules::Canvas			m_canvas;
+    UI::Canvas			m_canvas;
     Context& m_context;
     PanelsManager	m_panelsManager;
     EditorActions	m_editorActions;

@@ -14,31 +14,30 @@
 #include <UI/Widgets/Selection/ColorEdit.h>
 using namespace NLS;
 using namespace NLS::UI;
-using namespace NLS::UI::Panels;
 using namespace NLS::UI::Widgets;
 
 void DrawHybridVec3(Internal::WidgetContainer& p_root, const std::string& p_name, Maths::Vector3& p_data, float p_step, float p_min, float p_max)
 {
 	GUIDrawer::CreateTitle(p_root, p_name);
 
-	auto& rightSide = p_root.CreateWidget<Widgets::Layout::Group>();
+	auto& rightSide = p_root.CreateWidget<Widgets::Group>();
 
-	auto& xyzWidget = rightSide.CreateWidget<Widgets::Drags::DragMultipleScalars<float, 3>>(GUIDrawer::GetDataType<float>(), p_min, p_max, 0.f, p_step, "", GUIDrawer::GetFormat<float>());
-	auto& xyzDispatcher = xyzWidget.AddPlugin<Plugins::DataDispatcher<std::array<float, 3>>>();
+	auto& xyzWidget = rightSide.CreateWidget<Widgets::DragMultipleScalars<float, 3>>(GUIDrawer::GetDataType<float>(), p_min, p_max, 0.f, p_step, "", GUIDrawer::GetFormat<float>());
+	auto& xyzDispatcher = xyzWidget.AddPlugin<DataDispatcher<std::array<float, 3>>>();
 	xyzDispatcher.RegisterReference(reinterpret_cast<std::array<float, 3>&>(p_data));
 	xyzWidget.lineBreak = false;
 
-	auto& rgbWidget = rightSide.CreateWidget<Widgets::Selection::ColorEdit>(false, Maths::Color{p_data.x, p_data.y, p_data.z});
-    auto& rgbDispatcher = rgbWidget.AddPlugin<Plugins::DataDispatcher<Maths::Color>>();
+	auto& rgbWidget = rightSide.CreateWidget<Widgets::ColorEdit>(false, Maths::Color{p_data.x, p_data.y, p_data.z});
+    auto& rgbDispatcher = rgbWidget.AddPlugin<DataDispatcher<Maths::Color>>();
     rgbDispatcher.RegisterReference(reinterpret_cast<Maths::Color&>(p_data));
 	rgbWidget.enabled = false;
 	rgbWidget.lineBreak = false;
 
-	auto& xyzButton = rightSide.CreateWidget<Widgets::Buttons::Button>("XYZ");
+	auto& xyzButton = rightSide.CreateWidget<Widgets::Button>("XYZ");
 	xyzButton.idleBackgroundColor = { 0.7f, 0.5f, 0.0f };
 	xyzButton.lineBreak = false;
 
-	auto& rgbButton = rightSide.CreateWidget<Widgets::Buttons::Button>("RGB");
+	auto& rgbButton = rightSide.CreateWidget<Widgets::Button>("RGB");
 	rgbButton.idleBackgroundColor = { 0.7f, 0.5f, 0.0f };
 
 	xyzButton.ClickedEvent += [&]
@@ -58,24 +57,24 @@ void DrawHybridVec4(Internal::WidgetContainer& p_root, const std::string& p_name
 {
 	GUIDrawer::CreateTitle(p_root, p_name);
 
-	auto& rightSide = p_root.CreateWidget<Widgets::Layout::Group>();
+	auto& rightSide = p_root.CreateWidget<Widgets::Group>();
 
-	auto& xyzWidget = rightSide.CreateWidget<Widgets::Drags::DragMultipleScalars<float, 4>>(GUIDrawer::GetDataType<float>(), p_min, p_max, 0.f, p_step, "", GUIDrawer::GetFormat<float>());
-	auto& xyzDispatcher = xyzWidget.AddPlugin<Plugins::DataDispatcher<std::array<float, 4>>>();
+	auto& xyzWidget = rightSide.CreateWidget<Widgets::DragMultipleScalars<float, 4>>(GUIDrawer::GetDataType<float>(), p_min, p_max, 0.f, p_step, "", GUIDrawer::GetFormat<float>());
+	auto& xyzDispatcher = xyzWidget.AddPlugin<DataDispatcher<std::array<float, 4>>>();
 	xyzDispatcher.RegisterReference(reinterpret_cast<std::array<float, 4>&>(p_data));
 	xyzWidget.lineBreak = false;
 
-	auto& rgbaWidget = rightSide.CreateWidget<Widgets::Selection::ColorEdit>(true, Maths::Color{ p_data.x, p_data.y, p_data.z, p_data.w });
-	auto& rgbaDispatcher = rgbaWidget.AddPlugin<Plugins::DataDispatcher<Maths::Color>>();
+	auto& rgbaWidget = rightSide.CreateWidget<Widgets::ColorEdit>(true, Maths::Color{ p_data.x, p_data.y, p_data.z, p_data.w });
+	auto& rgbaDispatcher = rgbaWidget.AddPlugin<DataDispatcher<Maths::Color>>();
 	rgbaDispatcher.RegisterReference(reinterpret_cast<Maths::Color&>(p_data));
 	rgbaWidget.enabled = false;
 	rgbaWidget.lineBreak = false;
 
-	auto& xyzwButton = rightSide.CreateWidget<Widgets::Buttons::Button>("XYZW");
+	auto& xyzwButton = rightSide.CreateWidget<Widgets::Button>("XYZW");
 	xyzwButton.idleBackgroundColor = { 0.7f, 0.5f, 0.0f };
 	xyzwButton.lineBreak = false;
 
-	auto& rgbaButton = rightSide.CreateWidget<Widgets::Buttons::Button>("RGBA");
+	auto& rgbaButton = rightSide.CreateWidget<Widgets::Button>("RGBA");
 	rgbaButton.idleBackgroundColor = { 0.7f, 0.5f, 0.0f };
 
 	xyzwButton.ClickedEvent += [&]
@@ -95,14 +94,14 @@ Editor::Panels::MaterialEditor::MaterialEditor
 (
 	const std::string& p_title,
 	bool p_opened,
-	const UI::Settings::PanelWindowSettings& p_windowSettings
+	const UI::PanelWindowSettings& p_windowSettings
 ) :
 	PanelWindow(p_title, p_opened, p_windowSettings)
 {
 	CreateHeaderButtons();
-	CreateWidget<Widgets::Visual::Separator>();
+	CreateWidget<Widgets::Separator>();
 	CreateMaterialSelector();
-	m_settings = &CreateWidget<Layout::Group>();
+	m_settings = &CreateWidget<Widgets::Group>();
 	CreateShaderSelector();
 	CreateMaterialSettings();
 	CreateShaderSettings();
@@ -199,7 +198,7 @@ void Editor::Panels::MaterialEditor::OnShaderDropped()
 
 void Editor::Panels::MaterialEditor::CreateHeaderButtons()
 {
-	auto& saveButton = CreateWidget<Buttons::Button>("Save to file");
+	auto& saveButton = CreateWidget<Widgets::Button>("Save to file");
 	saveButton.idleBackgroundColor = { 0.0f, 0.5f, 0.0f };
 	saveButton.ClickedEvent += [this]
 	{
@@ -209,7 +208,7 @@ void Editor::Panels::MaterialEditor::CreateHeaderButtons()
 
 	saveButton.lineBreak = false;
 
-	auto& reloadButton = CreateWidget<Buttons::Button>("Reload from file");
+	auto& reloadButton = CreateWidget<Widgets::Button>("Reload from file");
 	reloadButton.idleBackgroundColor = { 0.7f, 0.5f, 0.0f };
 	reloadButton.ClickedEvent += [this]
 	{
@@ -221,41 +220,41 @@ void Editor::Panels::MaterialEditor::CreateHeaderButtons()
 
 	reloadButton.lineBreak = false;
 
-	auto& previewButton = CreateWidget<Buttons::Button>("Preview");
+	auto& previewButton = CreateWidget<Widgets::Button>("Preview");
 	previewButton.idleBackgroundColor = { 0.7f, 0.5f, 0.0f };
 	previewButton.ClickedEvent += std::bind(&MaterialEditor::Preview, this);
 	previewButton.lineBreak = false;
 
-	auto& resetButton = CreateWidget<Buttons::Button>("Reset to default");
+	auto& resetButton = CreateWidget<Widgets::Button>("Reset to default");
 	resetButton.idleBackgroundColor = { 0.5f, 0.0f, 0.0f };
 	resetButton.ClickedEvent += std::bind(&MaterialEditor::Reset, this);
 }
 
 void Editor::Panels::MaterialEditor::CreateMaterialSelector()
 {
-	auto& columns = CreateWidget<Widgets::Layout::Columns>(2);
+	auto& columns = CreateWidget<Widgets::Columns>(2);
 	columns.widths[0] = 150;
 	m_targetMaterialText = &GUIDrawer::DrawMaterial(columns, "Material", m_target, &m_materialDroppedEvent);
 }
 
 void Editor::Panels::MaterialEditor::CreateShaderSelector()
 {
-	auto& columns = m_settings->CreateWidget<Widgets::Layout::Columns>(2);
+	auto& columns = m_settings->CreateWidget<Widgets::Columns>(2);
 	columns.widths[0] = 150;
 	m_shaderText = &GUIDrawer::DrawShader(columns, "Shader", m_shader, &m_shaderDroppedEvent);
 }
 
 void Editor::Panels::MaterialEditor::CreateMaterialSettings()
 {
-	m_materialSettings = &m_settings->CreateWidget<Layout::GroupCollapsable>("Material Settings");
-	m_materialSettingsColumns = &m_materialSettings->CreateWidget<Widgets::Layout::Columns>(2);
+	m_materialSettings = &m_settings->CreateWidget<Widgets::GroupCollapsable>("Material Settings");
+	m_materialSettingsColumns = &m_materialSettings->CreateWidget<Widgets::Columns>(2);
 	m_materialSettingsColumns->widths[0] = 150;
 }
 
 void Editor::Panels::MaterialEditor::CreateShaderSettings()
 {
-	m_shaderSettings = &m_settings->CreateWidget<Layout::GroupCollapsable>("Shader Settings");
-	m_shaderSettingsColumns = &m_shaderSettings->CreateWidget<Widgets::Layout::Columns>(2);
+	m_shaderSettings = &m_settings->CreateWidget<Widgets::GroupCollapsable>("Shader Settings");
+	m_shaderSettingsColumns = &m_shaderSettings->CreateWidget<Widgets::Columns>(2);
 	m_shaderSettingsColumns->widths[0] = 150;
 }
 

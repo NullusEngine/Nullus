@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <Rendering/Resources/Loaders/TextureLoader.h>
 #include <Rendering/Entities/Camera.h>
@@ -11,7 +11,7 @@
 
 namespace NLS::Editor::Panels
 {
-	class Hierarchy : public UI::Panels::PanelWindow
+	class Hierarchy : public UI::PanelWindow
 	{
 	public:
 		/**
@@ -24,7 +24,7 @@ namespace NLS::Editor::Panels
 		(
 			const std::string& p_title,
 			bool p_opened,
-			const UI::Settings::PanelWindowSettings& p_windowSettings
+			const UI::PanelWindowSettings& p_windowSettings
 		);
 		
 		/**
@@ -47,7 +47,7 @@ namespace NLS::Editor::Panels
 		* Select the widget
 		* @param p_actor
 		*/
-		void SelectActorByWidget(UI::Widgets::Layout::TreeNode& p_widget);
+		void SelectActorByWidget(UI::Widgets::TreeNode& p_widget);
 
 		/**
 		* Attach the given actor linked widget to its parent widget
@@ -78,8 +78,8 @@ namespace NLS::Editor::Panels
 		Event<Engine::GameObject&> ActorUnselectedEvent;
 
 	private:
-		UI::Widgets::Layout::TreeNode* m_sceneRoot;
+		UI::Widgets::TreeNode* m_sceneRoot;
 
-		std::unordered_map<Engine::GameObject*, UI::Widgets::Layout::TreeNode*> m_widgetActorLink;
+		std::unordered_map<Engine::GameObject*, UI::Widgets::TreeNode*> m_widgetActorLink;
 	};
 }

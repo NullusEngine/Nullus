@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <UI/Widgets/Texts/Text.h>
 #include <UI/Panels/PanelWindow.h>
@@ -13,7 +13,7 @@ class Material;
 
 namespace NLS::Editor::Panels
 {
-class MaterialEditor : public NLS::UI::Panels::PanelWindow
+class MaterialEditor : public NLS::UI::PanelWindow
 {
 public:
     /**
@@ -25,7 +25,7 @@ public:
     MaterialEditor(
         const std::string& p_title,
         bool p_opened,
-        const NLS::UI::Settings::PanelWindowSettings& p_windowSettings);
+        const NLS::UI::PanelWindowSettings& p_windowSettings);
 
     /**
      * Refresh the material editor
@@ -75,16 +75,16 @@ private:
     Render::Resources::Material* m_target = nullptr;
     Render::Resources::Shader* m_shader = nullptr;
 
-    NLS::UI::Widgets::Texts::Text* m_targetMaterialText = nullptr;
-    NLS::UI::Widgets::Texts::Text* m_shaderText = nullptr;
+    NLS::UI::Widgets::Text* m_targetMaterialText = nullptr;
+    NLS::UI::Widgets::Text* m_shaderText = nullptr;
 
     Event<> m_materialDroppedEvent;
     Event<> m_shaderDroppedEvent;
 
-    NLS::UI::Widgets::Layout::Group* m_settings = nullptr;
-    NLS::UI::Widgets::Layout::Group* m_materialSettings = nullptr;
-    NLS::UI::Widgets::Layout::Group* m_shaderSettings = nullptr;
-    NLS::UI::Widgets::Layout::Columns* m_shaderSettingsColumns = nullptr;
-    NLS::UI::Widgets::Layout::Columns* m_materialSettingsColumns = nullptr;
+    NLS::UI::Widgets::Group* m_settings = nullptr;
+    NLS::UI::Widgets::Group* m_materialSettings = nullptr;
+    NLS::UI::Widgets::Group* m_shaderSettings = nullptr;
+    NLS::UI::Widgets::Columns* m_shaderSettingsColumns = nullptr;
+    NLS::UI::Widgets::Columns* m_materialSettingsColumns = nullptr;
 };
 } // namespace NLS::Editor::Panels

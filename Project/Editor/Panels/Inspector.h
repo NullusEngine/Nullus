@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <Rendering/Resources/Loaders/TextureLoader.h>
 
@@ -16,7 +16,7 @@
 
 namespace NLS::Editor::Panels
 {
-class Inspector : public NLS::UI::Panels::PanelWindow
+class Inspector : public NLS::UI::PanelWindow
 {
 public:
     /**
@@ -28,7 +28,7 @@ public:
     Inspector(
         const std::string& p_title,
         bool p_opened,
-        const NLS::UI::Settings::PanelWindowSettings& p_windowSettings);
+        const NLS::UI::PanelWindowSettings& p_windowSettings);
 
     /**
      * Destructor
@@ -73,9 +73,9 @@ public:
 
 private:
     Engine::GameObject* m_targetActor = nullptr;
-    UI::Widgets::Layout::Group* m_actorInfo;
-    UI::Widgets::Layout::Group* m_inspectorHeader;
-    UI::Widgets::Selection::ComboBox* m_componentSelectorWidget;
+    UI::Widgets::Group* m_actorInfo;
+    UI::Widgets::Group* m_inspectorHeader;
+    UI::Widgets::ComboBox* m_componentSelectorWidget;
 
     uint64_t m_componentAddedListener = 0;
     uint64_t m_componentRemovedListener = 0;

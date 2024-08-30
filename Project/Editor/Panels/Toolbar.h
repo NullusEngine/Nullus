@@ -1,11 +1,11 @@
-#pragma once
+﻿#pragma once
 
 #include <UI/Widgets/Buttons/ButtonImage.h>
 #include <UI/Panels/PanelWindow.h>
 
 namespace NLS::Editor::Panels
 {
-	class Toolbar : public UI::Panels::PanelWindow
+	class Toolbar : public UI::PanelWindow
 	{
 	public:
 		/**
@@ -18,7 +18,7 @@ namespace NLS::Editor::Panels
 		(
 			const std::string& p_title,
 			bool p_opened,
-			const UI::Settings::PanelWindowSettings& p_windowSettings
+			const UI::PanelWindowSettings& p_windowSettings
 		);
 
 		/**
@@ -27,9 +27,9 @@ namespace NLS::Editor::Panels
 		void _Draw_Impl() override;
 
 	private:
-		UI::Widgets::Buttons::ButtonImage* m_playButton;
-		UI::Widgets::Buttons::ButtonImage* m_pauseButton;
-		UI::Widgets::Buttons::ButtonImage* m_stopButton;
-		UI::Widgets::Buttons::ButtonImage* m_nextButton;
+		UI::Widgets::ButtonImage* m_playButton;
+		UI::Widgets::ButtonImage* m_pauseButton;
+		UI::Widgets::ButtonImage* m_stopButton;
+		UI::Widgets::ButtonImage* m_nextButton;
 	};
 }

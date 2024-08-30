@@ -32,9 +32,9 @@
 #include "Core/EditorResources.h"
 #include "UI/Widgets/InputFields/InputText.h"
 #include "UI/UIManager.h"
+
 using namespace NLS;
 using namespace NLS::UI;
-using namespace NLS::UI::Panels;
 using namespace NLS::UI::Widgets;
 
 #define FILENAMES_CHARS Editor::Panels::AssetBrowser::__FILENAMES_CHARS
@@ -73,7 +73,7 @@ void RemoveAsset(const std::string& p_toDelete)
 	}
 }
 
-class TexturePreview : public NLS::UI::Plugins::IPlugin
+class TexturePreview : public NLS::UI::IPlugin
 {
 public:
 	TexturePreview() : image(0, { 80, 80 })
@@ -100,10 +100,10 @@ public:
 	}
 
 	Render::Resources::Texture2D* texture = nullptr;
-	Visual::Image image;
+	NLS::UI::Widgets::Image image;
 };
 
-class BrowserItemContextualMenu : public NLS::UI::Plugins::ContextualMenu
+class BrowserItemContextualMenu : public NLS::UI::ContextualMenu
 {
 public:
 	BrowserItemContextualMenu(const std::string p_filePath, bool p_protected = false) : m_protected(p_protected), filePath(p_filePath) {}
@@ -112,12 +112,12 @@ public:
 	{
 		if (!m_protected)
 		{
-			auto& deleteAction = CreateWidget<Menu::MenuItem>("Delete");
+			auto& deleteAction = CreateWidget<MenuItem>("Delete");
 			deleteAction.ClickedEvent += [this] { DeleteItem(); };
 
-			auto& renameMenu = CreateWidget<Menu::MenuList>("Rename to...");
+			auto& renameMenu = CreateWidget<MenuList>("Rename to...");
 
-			auto& nameEditor = renameMenu.CreateWidget<InputFields::InputText>("");
+			auto& nameEditor = renameMenu.CreateWidget<InputText>("");
 			nameEditor.selectAllOnClick = true;
 
 			renameMenu.ClickedEvent += [this, &nameEditor]
@@ -158,7 +158,7 @@ public:
 	virtual void Execute() override
 	{
 		if (m_widgets.size() > 0)
-			Plugins::ContextualMenu::Execute();
+			ContextualMenu::Execute();
 	}
 
 	virtual void DeleteItem() = 0;
@@ -177,7 +177,7 @@ public:
 
 	virtual void CreateList() override
 	{
-		auto& showInExplorer = CreateWidget<Menu::MenuItem>("Show in explorer");
+		auto& showInExplorer = CreateWidget<MenuItem>("Show in explorer");
 		showInExplorer.ClickedEvent += [this]
 		{
             Platform::SystemCalls::ShowInExplorer(filePath);
@@ -185,48 +185,48 @@ public:
 
 		if (!m_protected)
 		{
-			auto& importAssetHere = CreateWidget<Menu::MenuItem>("Import Here...");
+			auto& importAssetHere = CreateWidget<MenuItem>("Import Here...");
 			importAssetHere.ClickedEvent += [this]
 			{
 				if (EDITOR_EXEC(ImportAssetAtLocation(filePath)))
 				{
-					Layout::TreeNode* pluginOwner = reinterpret_cast<Layout::TreeNode*>(userData);
+					TreeNode* pluginOwner = reinterpret_cast<TreeNode*>(userData);
 					pluginOwner->Close();
-					EDITOR_EXEC(DelayAction(std::bind(&Layout::TreeNode::Open, pluginOwner)));
+					EDITOR_EXEC(DelayAction(std::bind(&TreeNode::Open, pluginOwner)));
 				}
 			};
 
-			auto& createMenu = CreateWidget<Menu::MenuList>("Create..");
+			auto& createMenu = CreateWidget<MenuList>("Create..");
 
-			auto& createFolderMenu = createMenu.CreateWidget<Menu::MenuList>("Folder");
-			auto& createSceneMenu = createMenu.CreateWidget<Menu::MenuList>("Scene");
-			auto& createShaderMenu = createMenu.CreateWidget<Menu::MenuList>("Shader");
-			auto& createMaterialMenu = createMenu.CreateWidget<Menu::MenuList>("Material");
+			auto& createFolderMenu = createMenu.CreateWidget<MenuList>("Folder");
+			auto& createSceneMenu = createMenu.CreateWidget<MenuList>("Scene");
+			auto& createShaderMenu = createMenu.CreateWidget<MenuList>("Shader");
+			auto& createMaterialMenu = createMenu.CreateWidget<MenuList>("Material");
 
-			auto& createStandardShaderMenu = createShaderMenu.CreateWidget<Menu::MenuList>("Standard template");
-			auto& createStandardPBRShaderMenu = createShaderMenu.CreateWidget<Menu::MenuList>("Standard PBR template");
-			auto& createUnlitShaderMenu = createShaderMenu.CreateWidget<Menu::MenuList>("Unlit template");
-			auto& createLambertShaderMenu = createShaderMenu.CreateWidget<Menu::MenuList>("Lambert template");
+			auto& createStandardShaderMenu = createShaderMenu.CreateWidget<MenuList>("Standard template");
+			auto& createStandardPBRShaderMenu = createShaderMenu.CreateWidget<MenuList>("Standard PBR template");
+			auto& createUnlitShaderMenu = createShaderMenu.CreateWidget<MenuList>("Unlit template");
+			auto& createLambertShaderMenu = createShaderMenu.CreateWidget<MenuList>("Lambert template");
 
-			auto& createEmptyMaterialMenu = createMaterialMenu.CreateWidget<Menu::MenuList>("Empty");
-			auto& createStandardMaterialMenu = createMaterialMenu.CreateWidget<Menu::MenuList>("Standard");
-			auto& createStandardPBRMaterialMenu = createMaterialMenu.CreateWidget<Menu::MenuList>("Standard PBR");
-			auto& createUnlitMaterialMenu = createMaterialMenu.CreateWidget<Menu::MenuList>("Unlit");
-			auto& createLambertMaterialMenu = createMaterialMenu.CreateWidget<Menu::MenuList>("Lambert");
+			auto& createEmptyMaterialMenu = createMaterialMenu.CreateWidget<MenuList>("Empty");
+			auto& createStandardMaterialMenu = createMaterialMenu.CreateWidget<MenuList>("Standard");
+			auto& createStandardPBRMaterialMenu = createMaterialMenu.CreateWidget<MenuList>("Standard PBR");
+			auto& createUnlitMaterialMenu = createMaterialMenu.CreateWidget<MenuList>("Unlit");
+			auto& createLambertMaterialMenu = createMaterialMenu.CreateWidget<MenuList>("Lambert");
 
-			auto& createFolder = createFolderMenu.CreateWidget<InputFields::InputText>("");
-			auto& createScene = createSceneMenu.CreateWidget<InputFields::InputText>("");
+			auto& createFolder = createFolderMenu.CreateWidget<InputText>("");
+			auto& createScene = createSceneMenu.CreateWidget<InputText>("");
 
-			auto& createEmptyMaterial = createEmptyMaterialMenu.CreateWidget<InputFields::InputText>("");
-			auto& createStandardMaterial = createStandardMaterialMenu.CreateWidget<InputFields::InputText>("");
-			auto& createStandardPBRMaterial = createStandardPBRMaterialMenu.CreateWidget<InputFields::InputText>("");
-			auto& createUnlitMaterial = createUnlitMaterialMenu.CreateWidget<InputFields::InputText>("");
-			auto& createLambertMaterial = createLambertMaterialMenu.CreateWidget<InputFields::InputText>("");
+			auto& createEmptyMaterial = createEmptyMaterialMenu.CreateWidget<InputText>("");
+			auto& createStandardMaterial = createStandardMaterialMenu.CreateWidget<InputText>("");
+			auto& createStandardPBRMaterial = createStandardPBRMaterialMenu.CreateWidget<InputText>("");
+			auto& createUnlitMaterial = createUnlitMaterialMenu.CreateWidget<InputText>("");
+			auto& createLambertMaterial = createLambertMaterialMenu.CreateWidget<InputText>("");
 
-			auto& createStandardShader = createStandardShaderMenu.CreateWidget<InputFields::InputText>("");
-			auto& createStandardPBRShader = createStandardPBRShaderMenu.CreateWidget<InputFields::InputText>("");
-			auto& createUnlitShader = createUnlitShaderMenu.CreateWidget<InputFields::InputText>("");
-			auto& createLambertShader = createLambertShaderMenu.CreateWidget<InputFields::InputText>("");
+			auto& createStandardShader = createStandardShaderMenu.CreateWidget<InputText>("");
+			auto& createStandardPBRShader = createStandardPBRShaderMenu.CreateWidget<InputText>("");
+			auto& createUnlitShader = createUnlitShaderMenu.CreateWidget<InputText>("");
+			auto& createLambertShader = createLambertShaderMenu.CreateWidget<InputText>("");
 
 			createFolderMenu.ClickedEvent += [&createFolder] { createFolder.content = ""; };
 			createSceneMenu.ClickedEvent += [&createScene] { createScene.content = ""; };
@@ -540,8 +540,8 @@ public:
 	{
 		FolderContextualMenu::CreateList();
 
-		auto& newScriptMenu = CreateWidget<Menu::MenuList>("New script...");
-		auto& nameEditor = newScriptMenu.CreateWidget<InputFields::InputText>("");
+		auto& newScriptMenu = CreateWidget<MenuList>("New script...");
+		auto& nameEditor = newScriptMenu.CreateWidget<InputText>("");
 
 		newScriptMenu.ClickedEvent += [this, &nameEditor]
 		{
@@ -573,7 +573,7 @@ public:
 
 	virtual void CreateList() override
 	{
-		auto& editAction = CreateWidget<Menu::MenuItem>("Open");
+		auto& editAction = CreateWidget<MenuItem>("Open");
 
 		editAction.ClickedEvent += [this]
 		{
@@ -582,7 +582,7 @@ public:
 
 		if (!m_protected)
 		{
-			auto& duplicateAction = CreateWidget<Menu::MenuItem>("Duplicate");
+			auto& duplicateAction = CreateWidget<MenuItem>("Duplicate");
 
 			duplicateAction.ClickedEvent += [this]
 			{
@@ -610,7 +610,7 @@ public:
 		BrowserItemContextualMenu::CreateList();
 
 
-        auto& editMetadata = CreateWidget<Menu::MenuItem>("Properties");
+        auto& editMetadata = CreateWidget<MenuItem>("Properties");
 
         editMetadata.ClickedEvent += [this]
         {
@@ -647,7 +647,7 @@ public:
 
 	virtual void CreateList() override
 	{
-		auto& previewAction = CreateWidget<Menu::MenuItem>("Preview");
+		auto& previewAction = CreateWidget<MenuItem>("Preview");
 
 		previewAction.ClickedEvent += [this]
 		{
@@ -671,7 +671,7 @@ public:
 	{
 		FileContextualMenu::CreateList();
 
-		auto& compileAction = CreateWidget<Menu::MenuItem>("Compile");
+		auto& compileAction = CreateWidget<MenuItem>("Compile");
 
 		compileAction.ClickedEvent += [this]
 		{
@@ -702,7 +702,7 @@ public:
 
 	virtual void CreateList() override
 	{
-		auto& reloadAction = CreateWidget<Menu::MenuItem>("Reload");
+		auto& reloadAction = CreateWidget<MenuItem>("Reload");
 
 		reloadAction.ClickedEvent += [this]
 		{
@@ -716,9 +716,9 @@ public:
 
 		if (!m_protected)
 		{
-			auto& generateMaterialsMenu = CreateWidget<Menu::MenuList>("Generate materials...");
+			auto& generateMaterialsMenu = CreateWidget<MenuList>("Generate materials...");
 
-			generateMaterialsMenu.CreateWidget<Menu::MenuItem>("Standard").ClickedEvent += [this]
+			generateMaterialsMenu.CreateWidget<MenuItem>("Standard").ClickedEvent += [this]
 			{
 				auto& modelManager = NLS_SERVICE(NLS::Core::ResourceManagement::ModelManager);
 				std::string resourcePath = EDITOR_EXEC(GetResourcePath(filePath, m_protected));
@@ -746,7 +746,7 @@ public:
 				}
 			};
 
-			generateMaterialsMenu.CreateWidget<Menu::MenuItem>("StandardPBR").ClickedEvent += [this]
+			generateMaterialsMenu.CreateWidget<MenuItem>("StandardPBR").ClickedEvent += [this]
 			{
 				auto& modelManager = NLS_SERVICE(NLS::Core::ResourceManagement::ModelManager);
 				std::string resourcePath = EDITOR_EXEC(GetResourcePath(filePath, m_protected));
@@ -774,7 +774,7 @@ public:
 				}
 			};
 
-			generateMaterialsMenu.CreateWidget<Menu::MenuItem>("Unlit").ClickedEvent += [this]
+			generateMaterialsMenu.CreateWidget<MenuItem>("Unlit").ClickedEvent += [this]
 			{
 				auto& modelManager = NLS_SERVICE(NLS::Core::ResourceManagement::ModelManager);
 				std::string resourcePath = EDITOR_EXEC(GetResourcePath(filePath, m_protected));
@@ -802,7 +802,7 @@ public:
 				}
 			};
 
-			generateMaterialsMenu.CreateWidget<Menu::MenuItem>("Lambert").ClickedEvent += [this]
+			generateMaterialsMenu.CreateWidget<MenuItem>("Lambert").ClickedEvent += [this]
 			{
 				auto& modelManager = NLS_SERVICE(NLS::Core::ResourceManagement::ModelManager);
 				std::string resourcePath = EDITOR_EXEC(GetResourcePath(filePath, m_protected));
@@ -842,7 +842,7 @@ public:
 
 	virtual void CreateList() override
 	{
-		auto& reloadAction = CreateWidget<Menu::MenuItem>("Reload");
+		auto& reloadAction = CreateWidget<MenuItem>("Reload");
 
 		reloadAction.ClickedEvent += [this]
 		{
@@ -867,7 +867,7 @@ public:
 
 	virtual void CreateList() override
 	{
-		auto& editAction = CreateWidget<Menu::MenuItem>("Edit");
+		auto& editAction = CreateWidget<MenuItem>("Edit");
 
 		editAction.ClickedEvent += [this]
 		{
@@ -885,7 +885,7 @@ public:
 
 	virtual void CreateList() override
 	{
-		auto& editAction = CreateWidget<Menu::MenuItem>("Edit");
+		auto& editAction = CreateWidget<MenuItem>("Edit");
 
 		editAction.ClickedEvent += [this]
 		{
@@ -905,7 +905,7 @@ public:
 			}
 		};
 
-		auto& reload = CreateWidget<Menu::MenuItem>("Reload");
+		auto& reload = CreateWidget<MenuItem>("Reload");
 		reload.ClickedEvent += [this]
 		{
 			auto materialManager = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager);
@@ -926,7 +926,7 @@ Editor::Panels::AssetBrowser::AssetBrowser
 (
 	const std::string& p_title,
 	bool p_opened,
-	const UI::Settings::PanelWindowSettings& p_windowSettings,
+	const UI::PanelWindowSettings& p_windowSettings,
 	const std::string& p_engineAssetFolder,
 	const std::string& p_projectAssetFolder,
 	const std::string& p_projectScriptFolder
@@ -948,25 +948,25 @@ Editor::Panels::AssetBrowser::AssetBrowser
 		);
 	}
 
-	auto& refreshButton = CreateWidget<Buttons::Button>("Rescan assets");
+	auto& refreshButton = CreateWidget<Button>("Rescan assets");
 	refreshButton.ClickedEvent += std::bind(&AssetBrowser::Refresh, this);
 	refreshButton.lineBreak = false;
 	refreshButton.idleBackgroundColor = { 0.f, 0.5f, 0.0f };
 
-	auto& importButton = CreateWidget<Buttons::Button>("Import asset");
+	auto& importButton = CreateWidget<Button>("Import asset");
 	importButton.ClickedEvent += EDITOR_BIND(ImportAsset, m_projectAssetFolder);
 	importButton.idleBackgroundColor = { 0.7f, 0.5f, 0.0f };
 
-	m_assetList = &CreateWidget<Layout::Group>();
+	m_assetList = &CreateWidget<Group>();
 
 	Fill();
 }
 
 void Editor::Panels::AssetBrowser::Fill()
 {
-	m_assetList->CreateWidget<Visual::Separator>();
+	m_assetList->CreateWidget<Separator>();
 	ConsiderItem(nullptr, std::filesystem::directory_entry(m_engineAssetFolder), true);
-	m_assetList->CreateWidget<Visual::Separator>();
+	m_assetList->CreateWidget<Separator>();
 	ConsiderItem(nullptr, std::filesystem::directory_entry(m_projectAssetFolder), false);
 }
 
@@ -981,7 +981,7 @@ void Editor::Panels::AssetBrowser::Refresh()
 	Fill();
 }
 
-void Editor::Panels::AssetBrowser::ParseFolder(Layout::TreeNode& p_root, const std::filesystem::directory_entry& p_directory, bool p_isEngineItem, bool p_scriptFolder)
+void Editor::Panels::AssetBrowser::ParseFolder(TreeNode& p_root, const std::filesystem::directory_entry& p_directory, bool p_isEngineItem, bool p_scriptFolder)
 {
 	/* Iterates another time to display list files */
 	for (auto& item : std::filesystem::directory_iterator(p_directory))
@@ -994,7 +994,7 @@ void Editor::Panels::AssetBrowser::ParseFolder(Layout::TreeNode& p_root, const s
 			ConsiderItem(&p_root, item, p_isEngineItem, false, p_scriptFolder);
 }
 
-void Editor::Panels::AssetBrowser::ConsiderItem(Layout::TreeNode* p_root, const std::filesystem::directory_entry& p_entry, bool p_isEngineItem, bool p_autoOpen, bool p_scriptFolder)
+void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::filesystem::directory_entry& p_entry, bool p_isEngineItem, bool p_autoOpen, bool p_scriptFolder)
 {
 	bool isDirectory = p_entry.is_directory();
 	std::string itemname = Utils::PathParser::GetElementName(p_entry.path().string());
@@ -1013,22 +1013,22 @@ void Editor::Panels::AssetBrowser::ConsiderItem(Layout::TreeNode* p_root, const 
 	}
 
 	/* If there is a given treenode (p_root) we attach the new widget to it */
-	auto& itemGroup = p_root ? p_root->CreateWidget<Layout::Group>() : m_assetList->CreateWidget<Layout::Group>();
+	auto& itemGroup = p_root ? p_root->CreateWidget<Group>() : m_assetList->CreateWidget<Group>();
 
 	/* Find the icon to apply to the item */
 	uint32_t iconTextureID = isDirectory ? EDITOR_CONTEXT(editorResources)->GetTexture("Icon_Folder")->GetTextureId() : EDITOR_CONTEXT(editorResources)->GetFileIcon(itemname)->GetTextureId();
 
-	itemGroup.CreateWidget<Visual::Image>(iconTextureID, Maths::Vector2{ 16, 16 }).lineBreak = false;
+	itemGroup.CreateWidget<UI::Widgets::Image>(iconTextureID, Maths::Vector2{ 16, 16 }).lineBreak = false;
 
 	/* If the entry is a directory, the content must be a tree node, otherwise (= is a file), a text will suffice */
 	if (isDirectory)
 	{
-		auto& treeNode = itemGroup.CreateWidget<Layout::TreeNode>(itemname);
+		auto& treeNode = itemGroup.CreateWidget<TreeNode>(itemname);
 
 		if (p_autoOpen)
 			treeNode.Open();
 
-		auto& ddSource = treeNode.AddPlugin<UI::Plugins::DDSource<std::pair<std::string, Layout::Group*>>>("Folder", resourceFormatPath, std::make_pair(resourceFormatPath, &itemGroup));
+		auto& ddSource = treeNode.AddPlugin<UI::DDSource<std::pair<std::string, Group*>>>("Folder", resourceFormatPath, std::make_pair(resourceFormatPath, &itemGroup));
 		
 		if (!p_root || p_scriptFolder)
 			treeNode.RemoveAllPlugins();
@@ -1047,7 +1047,7 @@ void Editor::Panels::AssetBrowser::ConsiderItem(Layout::TreeNode* p_root, const 
 		{
 			if (!p_isEngineItem) /* Prevent engine item from being DDTarget (Can't Drag and drop to engine folder) */
 			{
-				treeNode.AddPlugin<UI::Plugins::DDTarget<std::pair<std::string, Layout::Group*>>>("Folder").DataReceivedEvent += [this, &treeNode, path, p_isEngineItem](std::pair<std::string, Layout::Group*> p_data)
+				treeNode.AddPlugin<UI::DDTarget<std::pair<std::string, Group*>>>("Folder").DataReceivedEvent += [this, &treeNode, path, p_isEngineItem](std::pair<std::string, Group*> p_data)
 				{
 					if (!p_data.first.empty())
 					{
@@ -1099,7 +1099,7 @@ void Editor::Panels::AssetBrowser::ConsiderItem(Layout::TreeNode* p_root, const 
 					}
 				};
 
-				treeNode.AddPlugin<UI::Plugins::DDTarget<std::pair<std::string, Layout::Group*>>>("File").DataReceivedEvent += [this, &treeNode, path, p_isEngineItem](std::pair<std::string, Layout::Group*> p_data)
+				treeNode.AddPlugin<UI::DDTarget<std::pair<std::string, Group*>>>("File").DataReceivedEvent += [this, &treeNode, path, p_isEngineItem](std::pair<std::string, Group*> p_data)
 				{
 					if (!p_data.first.empty())
 					{
@@ -1194,7 +1194,7 @@ void Editor::Panels::AssetBrowser::ConsiderItem(Layout::TreeNode* p_root, const 
 	}
 	else
 	{
-		auto& clickableText = itemGroup.CreateWidget<Texts::TextClickable>(itemname);
+		auto& clickableText = itemGroup.CreateWidget<TextClickable>(itemname);
 
 		FileContextualMenu* contextMenu = nullptr;
 
@@ -1218,7 +1218,7 @@ void Editor::Panels::AssetBrowser::ConsiderItem(Layout::TreeNode* p_root, const 
 				EDITOR_CONTEXT(sceneManager).ForgetCurrentSceneSourcePath();
 		};
 
-		auto& ddSource = clickableText.AddPlugin<UI::Plugins::DDSource<std::pair<std::string, Layout::Group*>>>
+		auto& ddSource = clickableText.AddPlugin<UI::DDSource<std::pair<std::string, Group*>>>
 		(
 			"File",
 			resourceFormatPath,

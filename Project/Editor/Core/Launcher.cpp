@@ -21,7 +21,7 @@
 #define PROJECTS_FILE "projects.ini"
 namespace NLS
 {
-class LauncherPanel : public UI::Panels::PanelWindow
+class LauncherPanel : public UI::PanelWindow
 {
 public:
     LauncherPanel(bool& p_readyToGo, std::string& p_path, std::string& p_projectName)
@@ -33,12 +33,12 @@ public:
 
         SetSize({1000, 580});
         SetPosition({0.f, 0.f});
-        auto& topColumns = CreateWidget<UI::Widgets::Layout::Columns>(2);
+        auto& topColumns = CreateWidget<UI::Widgets::Columns>(2);
         topColumns.widths = {750, 500};
-        auto& text = topColumns.CreateWidget<UI::Widgets::Texts::Text>("Project", 2);
-        auto& actions = topColumns.CreateWidget<UI::Widgets::Layout::Group>();
-        auto& openProjectButton = actions.CreateWidget<UI::Widgets::Buttons::Button>("Open Project");
-        auto& newProjectButton = actions.CreateWidget<UI::Widgets::Buttons::Button>("New Project");
+        auto& text = topColumns.CreateWidget<UI::Widgets::Text>("Project", 2);
+        auto& actions = topColumns.CreateWidget<UI::Widgets::Group>();
+        auto& openProjectButton = actions.CreateWidget<UI::Widgets::Button>("Open Project");
+        auto& newProjectButton = actions.CreateWidget<UI::Widgets::Button>("New Project");
 
 
         openProjectButton.idleBackgroundColor = {0.7f, 0.5f, 0.f};
@@ -72,14 +72,14 @@ public:
         newProjectButton.lineBreak = false;
 
         for (uint8_t i = 0; i < 4; ++i)
-            CreateWidget<UI::Widgets::Layout::Spacing>();
+            CreateWidget<UI::Widgets::Spacing>();
 
-        CreateWidget<UI::Widgets::Visual::Separator>();
+        CreateWidget<UI::Widgets::Separator>();
 
         for (uint8_t i = 0; i < 4; ++i)
-            CreateWidget<UI::Widgets::Layout::Spacing>();
+            CreateWidget<UI::Widgets::Spacing>();
 
-        m_columns = &CreateWidget<UI::Widgets::Layout::Columns>(2);
+        m_columns = &CreateWidget<UI::Widgets::Columns>(2);
 
         m_columns->widths = {750, 500};
 
@@ -99,10 +99,10 @@ public:
     }
     void CreateRegisteredItem(const std::string& p_path)
     {
-        auto& text = m_columns->CreateWidget<UI::Widgets::Texts::Text>(p_path);
-        auto& actions = m_columns->CreateWidget<UI::Widgets::Layout::Group>();
-        auto& openButton = actions.CreateWidget<UI::Widgets::Buttons::Button>("Open");
-        auto& deleteButton = actions.CreateWidget<UI::Widgets::Buttons::Button>("Delete");
+        auto& text = m_columns->CreateWidget<UI::Widgets::Text>(p_path);
+        auto& actions = m_columns->CreateWidget<UI::Widgets::Group>();
+        auto& openButton = actions.CreateWidget<UI::Widgets::Button>("Open");
+        auto& deleteButton = actions.CreateWidget<UI::Widgets::Button>("Delete");
 
         openButton.idleBackgroundColor = {0.7f, 0.5f, 0.f};
         deleteButton.idleBackgroundColor = {0.5f, 0.f, 0.f};
@@ -211,14 +211,14 @@ public:
 
     void Draw() override
     {
-        UI::Panels::PanelWindow::Draw();
+        UI::PanelWindow::Draw();
     }
 
 private:
     bool& m_readyToGo;
     std::string& m_path;
     std::string& m_projectName;
-    UI::Widgets::Layout::Columns* m_columns = nullptr;
+    UI::Widgets::Columns* m_columns = nullptr;
 };
 
 
@@ -268,7 +268,7 @@ void Launcher::SetupContext()
     /* Graphics context creation */
     m_driver = std::make_unique<Render::Context::Driver>(Render::Settings::DriverSettings{false});
 
-    m_uiManager = std::make_unique<UI::UIManager>(m_window->GetGlfwWindow(), UI::Styling::EStyle::ALTERNATIVE_DARK);
+    m_uiManager = std::make_unique<UI::UIManager>(m_window->GetGlfwWindow(), UI::EStyle::ALTERNATIVE_DARK);
     m_uiManager->LoadFont("Ruda_Big", "../Assets/Editor/Fonts/Ruda-Bold.ttf", 18);
     m_uiManager->UseFont("Ruda_Big");
     m_uiManager->EnableEditorLayoutSave(false);

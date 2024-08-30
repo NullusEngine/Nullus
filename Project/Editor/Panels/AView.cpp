@@ -8,10 +8,10 @@ Editor::Panels::AView::AView
 (
 	const std::string& p_title,
 	bool p_opened,
-	const UI::Settings::PanelWindowSettings& p_windowSettings
+	const UI::PanelWindowSettings& p_windowSettings
 ) : PanelWindow(p_title, p_opened, p_windowSettings)
 {
-	m_image = &CreateWidget<UI::Widgets::Visual::Image>(m_fbo.GetTextureID(), Maths::Vector2{ 0.f, 0.f });
+	m_image = &CreateWidget<UI::Widgets::Image>(m_fbo.GetTextureID(), Maths::Vector2{ 0.f, 0.f });
 	panelSettings.scrollable = false;
 }
 
@@ -25,7 +25,7 @@ void Editor::Panels::AView::Update(float p_deltaTime)
 void Editor::Panels::AView::_Draw_Impl()
 {
     NLS_SERVICE(UI::UIManager).PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-	UI::Panels::PanelWindow::_Draw_Impl();
+	UI::PanelWindow::_Draw_Impl();
     NLS_SERVICE(UI::UIManager).PopStyleVar();
 }
 

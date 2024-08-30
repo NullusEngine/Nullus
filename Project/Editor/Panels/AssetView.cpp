@@ -16,7 +16,7 @@ Editor::Panels::AssetView::AssetView
 (
 	const std::string& p_title,
 	bool p_opened,
-	const UI::Settings::PanelWindowSettings& p_windowSettings
+	const UI::PanelWindowSettings& p_windowSettings
 ) : AViewControllable(p_title, p_opened, p_windowSettings)
 {
 	m_renderer = std::make_unique<Engine::Rendering::SceneRenderer>(*EDITOR_CONTEXT(driver));
@@ -59,7 +59,7 @@ Editor::Panels::AssetView::AssetView
 	m_textureMaterial.SetBlendable(true);
 	m_textureMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", nullptr);
 
-	m_image->AddPlugin<UI::Plugins::DDTarget<std::pair<std::string, UI::Widgets::Layout::Group*>>>("File").DataReceivedEvent += [this](auto p_data)
+	m_image->AddPlugin<UI::DDTarget<std::pair<std::string, UI::Widgets::Group*>>>("File").DataReceivedEvent += [this](auto p_data)
 	{
 		std::string path = p_data.first;
 

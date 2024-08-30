@@ -17,7 +17,7 @@ namespace NLS::Editor::Panels
 		AViewControllable(
 			const std::string& p_title,
 			bool p_opened,
-			const UI::Settings::PanelWindowSettings& p_windowSettings
+			const UI::PanelWindowSettings& p_windowSettings
 		);
 
 		/**

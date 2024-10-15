@@ -50,7 +50,7 @@ namespace NLS::UDRefl {
 
 		constexpr const Type& GetType() const noexcept { return type; }
 		constexpr void* const& GetPtr() const noexcept { return ptr; }
-
+        constexpr bool Valid() const noexcept { return type.Valid() && ptr != nullptr; }
 		explicit operator bool() const noexcept;
 
 		template<typename T>

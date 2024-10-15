@@ -13,6 +13,8 @@ namespace NLS::Engine::Components
 	*/
 	class NLS_ENGINE_API MeshRenderer : public Component
 	{
+    public:
+        static void Bind();
 	public:
 		/**
 		* Defines how the model renderer bounding sphere should be interpreted

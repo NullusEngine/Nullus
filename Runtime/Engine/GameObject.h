@@ -16,6 +16,9 @@ namespace Components
 class NLS_ENGINE_API GameObject
 {
 public:
+    static void Bind();
+
+public:
     GameObject(int64_t p_actorID, const std::string& p_name, const std::string& p_tag, bool& p_playing);
     ~GameObject();
     template<typename T>

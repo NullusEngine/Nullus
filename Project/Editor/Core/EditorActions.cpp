@@ -25,6 +25,7 @@
 #include "ServiceLocator.h"
 #include "Panels/AssetView.h"
 #include "Panels/MaterialEditor.h"
+#include "Serialize/Serializer.h"
 // #include "Panels/SceneView.h"
 // #include "Panels/AssetView.h"
 // #include "Panels/GameView.h"
@@ -56,12 +57,8 @@ void Editor::Core::EditorActions::LoadEmptyScene()
 
 void Editor::Core::EditorActions::SaveCurrentSceneTo(const std::string& p_path)
 {
-    // 	tinyxml2::XMLDocument doc;
-    // 	tinyxml2::XMLNode* node = doc.NewElement("root");
-    // 	doc.InsertFirstChild(node);
-    // 	m_context.sceneManager.StoreCurrentSceneSourcePath(p_path);
-    // 	m_context.sceneManager.GetCurrentScene()->OnSerialize(doc, node);
-    // 	doc.SaveFile(p_path.c_str());
+    m_context.sceneManager.StoreCurrentSceneSourcePath(p_path);
+    Serializer::Instance()->SerializeToFile({Type_of<NLS::Engine::SceneSystem::Scene>, m_context.sceneManager.GetCurrentScene()}, p_path);
 }
 
 void Editor::Core::EditorActions::LoadSceneFromDisk(const std::string& p_path, bool p_absolute)
@@ -71,7 +68,7 @@ void Editor::Core::EditorActions::LoadSceneFromDisk(const std::string& p_path, b
 
     m_context.sceneManager.LoadScene(p_path, p_absolute);
     NLS_LOG_INFO("Scene loaded from disk: " + m_context.sceneManager.GetCurrentSceneSourcePath());
-    // m_panelsManager.GetPanelAs<Editor::Panels::SceneView>("Scene View").Focus();
+    m_panelsManager.GetPanelAs<Editor::Panels::SceneView>("Scene View").Focus();
 }
 
 bool Editor::Core::EditorActions::IsCurrentSceneLoadedFromDisk() const

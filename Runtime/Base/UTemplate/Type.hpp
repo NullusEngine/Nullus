@@ -169,6 +169,7 @@ namespace NLS {
 		constexpr std::string_view Name_RemoveCVRef() const noexcept { return type_name_remove_cvref(name.GetView()); }
 		constexpr std::string_view Name_RemoveExtent() const noexcept { return type_name_remove_extent(name.GetView()); }
 		constexpr std::string_view Name_RemoveAllExtents() const noexcept { return type_name_remove_all_extents(name.GetView()); }
+        constexpr std::string_view Name_RemoveBraces() const noexcept { return type_name_remove_braces(name.GetView()); }
 
 		constexpr Type RemoveCV() const noexcept { return FastGetType(Name_RemoveCV()); }
 		constexpr Type RemoveConst() const noexcept { return FastGetType(Name_RemoveConst()); }
@@ -180,7 +181,10 @@ namespace NLS {
 		constexpr Type RemoveCVRef() const noexcept { return FastGetType(Name_RemoveCVRef()); }
 		constexpr Type RemoveExtent() const noexcept { return FastGetType(Name_RemoveExtent()); }
 		constexpr Type RemoveAllExtents() const noexcept { return FastGetType(Name_RemoveAllExtents()); }
+        constexpr Type RemoveBraces() const noexcept { return FastGetType(Name_RemoveBraces()); }
 
+
+		constexpr Type GetElementType() const noexcept { return RemoveBraces(); }
 		// modification (add, ID)
 
 		constexpr TypeID ID_AddConst() const noexcept { return TypeID{ type_name_add_const_hash(name.GetView()) }; }

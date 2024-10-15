@@ -3,6 +3,14 @@
 using namespace NLS::Engine::Components;
 using namespace NLS;
 
+#include "UDRefl/ReflMngr.hpp"
+using namespace NLS::UDRefl;
+void Engine::Components::TransformComponent::Bind()
+{
+    Mngr.RegisterType<TransformComponent>();
+    Mngr.AddBases<TransformComponent, Component>();
+    Mngr.AddField<&TransformComponent::m_transform>("m_transform");
+}
 
 NLS::Engine::Components::TransformComponent::TransformComponent()
 {

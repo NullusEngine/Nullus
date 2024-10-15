@@ -9,6 +9,9 @@ namespace Components
 class NLS_ENGINE_API Component
 {
 public:
+    static void Bind();
+
+public:
     Component();
     virtual ~Component();
 

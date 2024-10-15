@@ -20,6 +20,9 @@ namespace Components
 class NLS_ENGINE_API MaterialRenderer : public Component
 {
 public:
+    static void Bind();
+
+public:
     using MaterialList = std::array<NLS::Render::Resources::Material*, kMaxMaterialCount>;
 
     /**

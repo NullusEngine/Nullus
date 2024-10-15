@@ -15,6 +15,8 @@ namespace NLS::Engine::Components
 	*/
 	class NLS_ENGINE_API SkyBoxComponent : public Component
 	{
+    public:
+        static void Bind();
 	public:
 		/**
 		* Constructor

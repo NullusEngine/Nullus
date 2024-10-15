@@ -132,6 +132,13 @@ void NLS::Engine::Components::LightComponent::SetSize(const Maths::Vector3& p_si
 	m_data->linear = p_size.y;
 	m_data->quadratic = p_size.z;
 }
+#include "UDRefl/ReflMngr.hpp"
+using namespace NLS::UDRefl;
+void LightComponent::Bind()
+{
+    Mngr.RegisterType<LightComponent>();
+    Mngr.AddBases<LightComponent, Component>();
+}
 
 Settings::ELightType LightComponent::GetLightType() const
 {

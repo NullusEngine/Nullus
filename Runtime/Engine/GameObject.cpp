@@ -68,6 +68,13 @@ bool Engine::GameObject::RemoveComponent(SharedObject component)
     return false;
 }
 
+#include "UDRefl/ReflMngr.hpp"
+using namespace NLS::UDRefl;
+void Engine::GameObject::Bind()
+{
+    Mngr.RegisterType<GameObject>();
+}
+
 void NLS::Engine::GameObject::SetActive(bool p_active)
 {
 	if (p_active != m_active)

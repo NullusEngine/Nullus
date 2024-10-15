@@ -29,3 +29,10 @@ void SkyBoxComponent::SetCubeMap(NLS::Render::Resources::TextureCube* cubmap)
 		mMaterial->Set("cubeTex", cubmap);
 	}
 }
+#include "UDRefl/ReflMngr.hpp"
+using namespace UDRefl;
+void SkyBoxComponent::Bind()
+{
+    Mngr.RegisterType<SkyBoxComponent>();
+    Mngr.AddBases<SkyBoxComponent, Component>();
+}

@@ -19,6 +19,16 @@ Vector3::Vector3(const Vector4& v4)
     : x(v4.x), y(v4.y), z(v4.z)
 {
 }
+#include "UDRefl/ReflMngr.hpp"
+using namespace NLS::UDRefl;
+void Vector3::Bind()
+{
+    Mngr.RegisterType<Vector3>();
+    Mngr.AddField<&Vector3::x>("x");
+    Mngr.AddField<&Vector3::y>("y");
+    Mngr.AddField<&Vector3::z>("z");
+}
+
 Maths::Vector3 Maths::Vector3::Add(const Vector3& p_left, const Vector3& p_right)
 {
 	return Vector3

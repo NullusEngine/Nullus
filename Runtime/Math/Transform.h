@@ -68,6 +68,8 @@ namespace NLS
 		*/
         class NLS_MATH_API Transform
 		{
+        public:
+            static void Bind();
 		public:
 			/**
 			* Create a transform without setting a parent

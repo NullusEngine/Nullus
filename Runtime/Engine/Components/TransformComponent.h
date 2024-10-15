@@ -21,6 +21,9 @@ namespace Components
 class NLS_ENGINE_API TransformComponent : public Component
 {
 public:
+    static void Bind();
+
+public:
     TransformComponent();
 
     void OnCreate();

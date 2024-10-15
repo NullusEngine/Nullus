@@ -12,6 +12,13 @@ NLS::Engine::Components::MaterialRenderer::MaterialRenderer()
 {
 	m_materials.fill(nullptr);
 }
+#include "UDRefl/ReflMngr.hpp"
+using namespace NLS::UDRefl;
+void MaterialRenderer::Bind()
+{
+    Mngr.RegisterType<MaterialRenderer>();
+    Mngr.AddBases<MaterialRenderer, Component>();
+}
 
 void MaterialRenderer::OnCreate()
 {

@@ -55,7 +55,7 @@ namespace NLS::details {
 #elif defined(__GNUC__)
 		return remove_suffix<1>(remove_prefix<62>(sig));
 #elif defined(_MSC_VER)
-		return remove_suffix(remove_suffix<16>(remove_prefix<48>(sig)), TStr_of_a<' '>{});
+		return remove_suffix(remove_suffix<16>(remove_prefix<47>(sig)), TStr_of_a<' '>{});
 #endif
 	}
 
@@ -738,6 +738,40 @@ constexpr std::string_view NLS::type_name_remove_all_extents(std::string_view na
 		return name;
 
 	return type_name_remove_all_extents(type_name_remove_extent(name));
+}
+
+constexpr std::string_view NLS::type_name_remove_braces(std::string_view name) noexcept
+{
+    std::size_t start = name.find('{');
+    if (start == std::string_view::npos)
+    {
+        return name; // 没有找到 '{'，直接返回原字符串
+    }
+
+    std::size_t end = start + 1;
+    int braceCount = 1;
+
+    // 找到匹配的 '}'
+    while (end < name.size() && braceCount > 0)
+    {
+        if (name[end] == '{')
+        {
+            ++braceCount;
+        }
+        else if (name[end] == '}')
+        {
+            --braceCount;
+        }
+        ++end;
+    }
+
+    if (braceCount != 0)
+    {
+        return name; // 不匹配的花括号，返回原字符串
+    }
+
+    // 构造一个新的 std::string_view，去掉花括号和其内容
+    return {name.data() + start + 1, end - start - 2};
 }
 
 constexpr std::size_t NLS::type_name_add_const_hash(std::string_view name) noexcept {

@@ -17,6 +17,8 @@ namespace NLS::Engine::SceneSystem
 	*/
 	class NLS_ENGINE_API Scene
 	{
+    public:
+        static void Bind();
 	public:
 		/**
 		* Contains a set of vectors of components that are sorted. It allows fast
@@ -155,7 +157,7 @@ namespace NLS::Engine::SceneSystem
 	private:
 		int64_t m_availableID = 1;
 		bool m_isPlaying = false;
-		std::vector<GameObject*> m_actors;
+		std::vector<GameObject*> m_gameobject;
 
 		FastAccessComponents m_fastAccessComponents;
 	};

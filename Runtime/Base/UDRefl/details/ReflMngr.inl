@@ -425,9 +425,9 @@ namespace NLS::UDRefl::details {
 			if constexpr (operator_band<const T>)
 				mngr.AddMemberMethod(NameIDRegistry::Meta::operator_band, [](const T& lhs, const T& rhs) -> decltype(auto) { return lhs & rhs; });
 			if constexpr (operator_bor<const T>)
-				mngr.AddMemberMethod(NameIDRegistry::Meta::operator_bor, [](const T& lhs, const T& rhs) -> decltype(auto) { return lhs & rhs; });
+				mngr.AddMemberMethod(NameIDRegistry::Meta::operator_bor, [](const T& lhs, const T& rhs) -> decltype(auto) { return lhs | rhs; });
 			if constexpr (operator_bxor<const T>)
-				mngr.AddMemberMethod(NameIDRegistry::Meta::operator_bxor, [](const T& lhs, const T& rhs) -> decltype(auto) { return lhs & rhs; });
+				mngr.AddMemberMethod(NameIDRegistry::Meta::operator_bxor, [](const T& lhs, const T& rhs) -> decltype(auto) { return lhs ^ rhs; });
 			if constexpr (operator_shl<const T&, const std::size_t&>)
 				mngr.AddMemberMethod(NameIDRegistry::Meta::operator_shl, [](const T& lhs, const std::size_t& rhs) -> decltype(auto) { return lhs << rhs; });
 			if constexpr (operator_shr<const T&, const std::size_t&>)

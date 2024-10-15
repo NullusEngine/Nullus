@@ -18,6 +18,13 @@ NLS::Engine::Components::MeshRenderer::MeshRenderer()
 				materialRenderer->UpdateMaterialList();
 		};
 }
+#include "UDRefl/ReflMngr.hpp"
+using namespace NLS::UDRefl;
+void MeshRenderer::Bind()
+{
+    Mngr.RegisterType<MeshRenderer>();
+    Mngr.AddBases<MeshRenderer, Component>();
+}
 
 void MeshRenderer::SetModel(Render::Resources::Model* p_model)
 {

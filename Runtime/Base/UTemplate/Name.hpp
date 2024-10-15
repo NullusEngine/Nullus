@@ -94,6 +94,8 @@ namespace NLS {
 
 	constexpr std::string_view type_name_remove_all_extents(std::string_view name) noexcept;
 
+	constexpr std::string_view type_name_remove_braces(std::string_view name) noexcept;
+
 	// modification (add, hash)
 
 	constexpr std::size_t type_name_add_const_hash(std::string_view name) noexcept;

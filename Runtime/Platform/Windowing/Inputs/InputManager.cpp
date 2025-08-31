@@ -2,8 +2,6 @@
 
 #include "Windowing/Inputs/InputManager.h"
 
-NLS::Windowing::Inputs::InputManager* NLS::Windowing::Inputs::InputManager::Instance = nullptr;
-
 NLS::Windowing::Inputs::InputManager::InputManager(Window& p_window) : m_window(p_window)
 {
 	m_keyPressedListener = m_window.KeyPressedEvent.AddListener(std::bind(&InputManager::OnKeyPressed, this, std::placeholders::_1));
@@ -11,7 +9,6 @@ NLS::Windowing::Inputs::InputManager::InputManager(Window& p_window) : m_window(
 	m_mouseButtonPressedListener = m_window.MouseButtonPressedEvent.AddListener(std::bind(&InputManager::OnMouseButtonPressed, this, std::placeholders::_1));
 	m_mouseButtonReleasedListener = m_window.MouseButtonReleasedEvent.AddListener(std::bind(&InputManager::OnMouseButtonReleased, this, std::placeholders::_1));
 	m_mouseScrollListener = m_window.MouseScrollEvent.AddListener(std::bind(&InputManager::OnMouseScroll, this, std::placeholders::_1, std::placeholders::_2));
-	Instance = this;
 }
 
 NLS::Windowing::Inputs::InputManager::~InputManager()
@@ -20,7 +17,6 @@ NLS::Windowing::Inputs::InputManager::~InputManager()
 	m_window.KeyReleasedEvent.RemoveListener(m_keyReleasedListener);
 	m_window.MouseButtonPressedEvent.RemoveListener(m_mouseButtonPressedListener);
 	m_window.MouseButtonReleasedEvent.RemoveListener(m_mouseButtonReleasedListener);
-	Instance = nullptr;
 }
 
 NLS::Windowing::Inputs::EKeyState NLS::Windowing::Inputs::InputManager::GetKeyState(EKey p_key) const

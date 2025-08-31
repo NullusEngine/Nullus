@@ -32,3 +32,9 @@ if(NOT TARGET ImGui)
     # 指定FOLDER
     set_target_properties(ImGui PROPERTIES FOLDER ${third_party_folder}/ImGui)
 endif()
+
+if(NOT TARGET json11)
+    add_subdirectory(json11)
+    set_target_properties(json11 PROPERTIES FOLDER ${third_party_folder}/json11)
+    set_target_properties(json11 PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${NLS_APP_OUTPUT_PATH}")
+endif()

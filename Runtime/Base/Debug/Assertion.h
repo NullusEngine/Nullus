@@ -3,27 +3,22 @@
 #include <string>
 #include "UDRefl/config.hpp"
 
-#define NLS_ASSERT(condition, message) NLS::Debug::Assertion::Assert(condition, message)
+#define NLS_ASSERT(assertion, ...) (!!(assertion) ||                                 \
+ (NLS::Debug::Assert(__FILE__, __FUNCTION__, __LINE__,##__VA_ARGS__), 0)) \
 
 namespace NLS::Debug
 {
 	/**
 	* C++ 断言的封装
 	*/
-class NLS_BASE_API Assertion
-	{
-	public:
-
-		/**
-		* 禁用构造函数
-		*/
-		Assertion() = delete;
-
-		/**
-		* C++ 断言调用封装
-		* @param p_condition
-		* @param p_message
-		*/
-		static void Assert(bool p_condition, const std::string& p_message = "");
-	};
+    template<typename... Args>
+    void Assert(
+        const std::string& file,
+        const std::string& function,
+        unsigned line,
+        const std::string& format,
+        const Args&... args
+    );
 }
+ 
+#include "Assertion.inl"

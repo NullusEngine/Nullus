@@ -16,7 +16,6 @@ namespace NLS::Windowing::Inputs
 	class NLS_PLATFORM_API InputManager
 	{
 	public:
-		static InputManager* Instance;
 		/**
 		* Create the window
 		* @param p_windowSettings

@@ -2,6 +2,9 @@
 # ##############################################################################
 cmake_minimum_required(VERSION 3.18)
 
+# 兼容第三方库
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+
 # 设置CMake安装目录
 # ##############################################################################
 set(CMAKE_INSTALL_PREFIX ${CMAKE_CURRENT_SOURCE_DIR}/Install CACHE PATH "set install path!" FORCE)
@@ -88,4 +91,4 @@ endif()
 add_subdirectory("Runtime")
 add_subdirectory("Project")
 add_subdirectory("ThirdParty")
-add_subdirectory("Tools/Parser" MetaParser)
+add_subdirectory("Tools")

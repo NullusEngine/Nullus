@@ -1,0 +1,40 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <PackageId>CppAst</PackageId>
+    <Description>CppAst is a .NET library providing a C/C++ parser for header files with access to the full AST, comments and macros</Description>
+    <Copyright>Alexandre Mutel</Copyright>
+    <Authors>Alexandre Mutel</Authors>
+    <PackageTags>parser;c++;ast;syntax</PackageTags>
+    <PackageReadmeFile>readme.md</PackageReadmeFile>
+    <PackageIcon>logo.png</PackageIcon>
+    <PackageProjectUrl>https://github.com/xoofx/CppAst</PackageProjectUrl>
+    <PackageLicenseExpression>BSD-2-Clause</PackageLicenseExpression>
+    <RepositoryType>git</RepositoryType>
+    <RepositoryUrl>https://github.com/xoofx/CppAst</RepositoryUrl>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <NeutralLanguage>en-US</NeutralLanguage>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!--Add support for sourcelink-->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="../../img/cppast.png" Pack="true" PackagePath="/logo.png" />
+    <None Include="../../readme.md" Pack="true" PackagePath="/" />
+
+    <PackageReference Include="ClangSharp" Version="18.1.0.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Irony" Version="1.5.3" />
+    <PackageReference Include="MinVer" Version="6.0.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
+  </ItemGroup>
+</Project>

@@ -13,7 +13,7 @@ elseif(UNIX)
 endif()
 
 set_target_properties(MetaParser PROPERTIES
-    VS_PACKAGE_REFERENCES "System.CommandLine_2.0.0-rc.1.25451.107"
+    VS_PACKAGE_REFERENCES "System.CommandLine_2.0.0-rc.1.25451.107;System.CodeDom_10.0.0-rc.1.25451.107"
 )
 
 set_property(TARGET MetaParser PROPERTY VS_GLOBAL_RuntimeIdentifier "${RID}")

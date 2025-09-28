@@ -11,28 +11,23 @@ class Program
     {
         var rootCommand = new RootCommand("C++ Code Generator");
 
-        var includeOption = new Option<string[]>("--include","Include search paths");
 
-        var defineOption = new Option<string[]>("--define","Preprocessor defines");
-
-        var inputOption = new Option<string>("--input","Input C++ header or source file");
-
-        var outputOption = new Option<string>("--output", "Output generated file");
-
-
-        rootCommand.Add(includeOption);
-        rootCommand.Add(defineOption);
-        rootCommand.Add(inputOption);
-        rootCommand.Add(outputOption);
 
         string text = @"
-__cppast(MyNS::MyType<int>(1,2,3),MyNS::MyType<int>(1,2,3), A, B())
+#define B
+class C;
+class A{
+    B
+};
+
+__cppast(MyNS::MyType<int>(1,2,3),MyNS::MyType<int>(1,2,3))
 void function0();
 int function1(int a, float b);
 float function2(int);
 ";
         CppParserOptions op = new CppParserOptions();
         op.ParseTokenAttributes = true;
+        op.EnableMacros();
         var cppCompilation = CppParser.Parse(text, op);
         foreach (var c in cppCompilation.Classes)
         {

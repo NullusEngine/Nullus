@@ -4,6 +4,12 @@
 #include <string_view>
 #include <span>
 #include <stdint.h>
+
+// Some platform headers (e.g. X11) define None as a macro, which breaks scoped enum members like CVRefMode::None.
+#ifdef None
+#undef None
+#endif
+
 namespace NLS {
 	template<typename T>
 	constexpr bool always_false = false;

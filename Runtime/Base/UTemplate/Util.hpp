@@ -100,7 +100,7 @@ namespace NLS {
 		Right
 	};
 
-	enum class CVRefMode : std::uint8_t {
+	enum CVRefMode : std::uint8_t {
 		None          = 0b0000,
 		Left          = 0b0001,
 		Right         = 0b0010,

@@ -41,7 +41,7 @@ void CommonValueHandler::SerializeImpl(const ObjectView& obj, json& j) const
             auto vars = obj.GetVars();
             for (auto& [name, var] : vars)
             {
-                Serializer::Instance()->SerializeObject(var, j[name.GetView()]);
+                Serializer::Instance()->SerializeObject(var, j[std::string(name.GetView())]);
             }
         }
     }

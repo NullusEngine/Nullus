@@ -1,6 +1,7 @@
 #include "Serialize/Serializer.h"
 #include "Debug/Logger.h"
 #include "Debug/Assertion.h"
+#include <iomanip>
 
 namespace NLS
 {
@@ -69,7 +70,7 @@ const NLS::IJsonHandler* Serializer::GetHandler(const Type& type, bool isPointer
     {
         const uint32_t tempLvl = handler->CalcMatchLevel(type, isPointer);
         if (tempLvl == retLvl && retLvl == 0)
-            NLS_LOG_ERROR("Type[%s][isPointer: %s] should not match two handler perfectly.", type.getName(), isPointer ? "true" : "false");
+            NLS_LOG_ERROR("Type conflict in serializer handlers");
         if (tempLvl < retLvl)
         {
             ret = handler;
@@ -78,7 +79,7 @@ const NLS::IJsonHandler* Serializer::GetHandler(const Type& type, bool isPointer
     }
     if (retLvl == IJsonHandler::NoMatch)
     {
-        NLS_LOG_ERROR("Type[%s][isPointer: %s] has no legal handler.", type.getName(), isPointer ? "true" : "false");
+        NLS_LOG_ERROR("No legal serializer handler found");
         return ret;
     }
 

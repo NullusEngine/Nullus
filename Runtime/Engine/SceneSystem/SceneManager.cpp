@@ -74,7 +74,7 @@ void SceneManager::LoadEmptyLightedScene()
 
     auto& skyboxGo = m_currentScene->CreateGameObject("Skybox");
     auto skybox = skyboxGo.AddComponent<Engine::Components::SkyBoxComponent>();
-    auto cube = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).CreateCubeMap({":Textures\\skybox\\right.jpg", ":Textures\\skybox\\left.jpg", ":Textures\\skybox\\top.jpg", ":Textures\\skybox\\bottom.jpg", ":Textures\\skybox\\front.jpg", ":Textures\\skybox\\back.jpg"});
+    auto cube = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).CreateCubeMap({":Textures/skybox/right.jpg", ":Textures/skybox/left.jpg", ":Textures/skybox/top.jpg", ":Textures/skybox/bottom.jpg", ":Textures/skybox/front.jpg", ":Textures/skybox/back.jpg"});
     // auto cube = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).CreateCubeMap({
     //	":Textures\\Cubemap\\skyrender0001.png",
     //	":Textures\\Cubemap\\skyrender0004.png",

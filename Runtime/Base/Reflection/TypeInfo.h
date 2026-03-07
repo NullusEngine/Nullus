@@ -12,15 +12,7 @@
 
 #include <type_traits>
 
-#if defined(COMPILER_CLANG) || defined(COMPILER_GNU)
-
-#define IsTriviallyDefaultConstructible(x) std::has_trivial_default_constructor<x>::value
-
-#else
-
 #define IsTriviallyDefaultConstructible(x) std::is_trivially_default_constructible<x>::value
-
-#endif
 
 namespace NLS
 {

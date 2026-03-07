@@ -15,9 +15,9 @@ using namespace NLS::Engine::Components;
 
 SkyBoxComponent::SkyBoxComponent()
 {
-	mModel = NLS_SERVICE(NLS::Core::ResourceManagement::ModelManager).CreateResource(":Models\\SkyCube.obj");
+	mModel = NLS_SERVICE(NLS::Core::ResourceManagement::ModelManager).CreateResource(":Models/SkyCube.obj");
 
-	auto shader = NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager).CreateResource(":Shaders\\Skybox.glsl");
+	auto shader = NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager).CreateResource(":Shaders/Skybox.glsl");
 	mMaterial = new NLS::Render::Resources::Material(shader);
 	mMaterial->SetDepthWriting(false);
 }

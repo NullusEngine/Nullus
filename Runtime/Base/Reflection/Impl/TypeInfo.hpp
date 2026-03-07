@@ -6,7 +6,7 @@
 
 #pragma once
 
-#include "../Common/Compiler.h"
+#include "../../Common/Compiler.h"
 #include "../TypeData.h"
 #include "../TypeID.h"
 

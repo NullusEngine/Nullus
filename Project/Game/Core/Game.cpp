@@ -93,7 +93,7 @@ void Game::Core::Game::Update(float p_deltaTime)
 
 	#ifdef _DEBUG
 	if (m_context.inputManager->IsKeyPressed(Windowing::Inputs::EKey::KEY_R))
-		NLS::Render::Resources::Loaders::ShaderLoader::Recompile(*m_context.shaderManager[":Shaders\\Standard.glsl"], "Data\\Engine\\Shaders\\Standard.glsl");
+		NLS::Render::Resources::Loaders::ShaderLoader::Recompile(*m_context.shaderManager[":Shaders/Standard.glsl"], "Data/Engine/Shaders/Standard.glsl");
 	#endif
 }
 

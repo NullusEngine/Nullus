@@ -67,7 +67,7 @@ private:
 		if (!material)
 			return nullptr;
 
-		auto shader = NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager).CreateResource(":Shaders\\Standard.glsl");
+		auto shader = NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager).CreateResource(":Shaders/Standard.glsl");
 		auto nlsMaterial = new NLS::Render::Resources::Material(shader);
 
 		aiString name;

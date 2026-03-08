@@ -1,5 +1,5 @@
 #include "Math/Transform.h"
-#include "UDRefl/ReflMngr.hpp"
+#include "Reflection/Compat/ReflMngr.hpp"
 namespace NLS
 {
 using namespace UDRefl;

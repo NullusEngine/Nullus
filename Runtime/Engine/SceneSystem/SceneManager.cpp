@@ -62,32 +62,44 @@ void SceneManager::LoadEmptyLightedScene()
 
     auto& directionalLightGo = m_currentScene->CreateGameObject("Directional Light");
     auto directionalLight = directionalLightGo.AddComponent<Engine::Components::LightComponent>();
-    directionalLight->SetLightType(Render::Settings::ELightType::DIRECTIONAL);
-    directionalLight->SetIntensity(0.75f);
-    directionalLightGo.GetTransform()->SetLocalPosition({0.0f, 10.0f, 0.0f});
-    directionalLightGo.GetTransform()->SetLocalRotation(Maths::Quaternion({120.0f, -40.0f, 0.0f}));
+    if (directionalLight)
+    {
+        directionalLight->SetLightType(Render::Settings::ELightType::DIRECTIONAL);
+        directionalLight->SetIntensity(0.75f);
+    }
+    if (auto tr = directionalLightGo.GetTransform())
+    {
+        tr->SetLocalPosition({0.0f, 10.0f, 0.0f});
+        tr->SetLocalRotation(Maths::Quaternion({120.0f, -40.0f, 0.0f}));
+    }
 
     auto& ambientLightGo = m_currentScene->CreateGameObject("Ambient Light");
     auto ambientLight = ambientLightGo.AddComponent<Engine::Components::LightComponent>();
-    ambientLight->SetLightType(Render::Settings::ELightType::AMBIENT_SPHERE);
-    ambientLight->SetRadius(10000.0f);
+    if (ambientLight)
+    {
+        ambientLight->SetLightType(Render::Settings::ELightType::AMBIENT_SPHERE);
+        ambientLight->SetRadius(10000.0f);
+    }
 
-    auto& skyboxGo = m_currentScene->CreateGameObject("Skybox");
-    auto skybox = skyboxGo.AddComponent<Engine::Components::SkyBoxComponent>();
-    auto cube = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).CreateCubeMap({":Textures/skybox/right.jpg", ":Textures/skybox/left.jpg", ":Textures/skybox/top.jpg", ":Textures/skybox/bottom.jpg", ":Textures/skybox/front.jpg", ":Textures/skybox/back.jpg"});
-    // auto cube = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).CreateCubeMap({
-    //	":Textures\\Cubemap\\skyrender0001.png",
-    //	":Textures\\Cubemap\\skyrender0004.png",
-    //	":Textures\\Cubemap\\skyrender0003.png",
-    //	":Textures\\Cubemap\\skyrender0006.png",
-    //	":Textures\\Cubemap\\skyrender0005.png",
-    //	":Textures\\Cubemap\\skyrender0002.png"});
-    skybox->SetCubeMap(cube);
+    // Temporarily disable skybox while debugging mesh visibility.
+    // auto& skyboxGo = m_currentScene->CreateGameObject("Skybox");
+    // auto skybox = skyboxGo.AddComponent<Engine::Components::SkyBoxComponent>();
+    // if (skybox)
+    // {
+    //     auto cube = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).CreateCubeMap({":Textures/skybox/right.jpg", ":Textures/skybox/left.jpg", ":Textures/skybox/top.jpg", ":Textures/skybox/bottom.jpg", ":Textures/skybox/front.jpg", ":Textures/skybox/back.jpg"});
+    //     skybox->SetCubeMap(cube);
+    // }
 
     auto& camera = m_currentScene->CreateGameObject("Main Camera");
-    camera.AddComponent<Engine::Components::CameraComponent>();
-    camera.GetTransform()->SetLocalPosition({0.0f, 3.0f, 8.0f});
-    camera.GetTransform()->SetLocalRotation(Maths::Quaternion({160.0f, 0.0f, 0.0f}));
+    if (auto cameraComponent = camera.AddComponent<Engine::Components::CameraComponent>())
+    {
+        cameraComponent->SetClearColor({0.08f, 0.12f, 0.2f});
+    }
+    if (auto tr = camera.GetTransform())
+    {
+        tr->SetLocalPosition({0.0f, 0.0f, 0.0f});
+        tr->SetLocalRotation(Maths::Quaternion::Identity);
+    }
 }
 
 bool SceneManager::LoadScene(const std::string& p_path, bool p_absolute)

@@ -58,7 +58,7 @@ void Editor::Core::EditorActions::LoadEmptyScene()
 void Editor::Core::EditorActions::SaveCurrentSceneTo(const std::string& p_path)
 {
     m_context.sceneManager.StoreCurrentSceneSourcePath(p_path);
-    Serializer::Instance()->SerializeToFile({Type_of<NLS::Engine::SceneSystem::Scene>, m_context.sceneManager.GetCurrentScene()}, p_path);
+    Serializer::Instance()->SerializeToFile(UDRefl::ObjectView(m_context.sceneManager.GetCurrentScene()), p_path);
 }
 
 void Editor::Core::EditorActions::LoadSceneFromDisk(const std::string& p_path, bool p_absolute)

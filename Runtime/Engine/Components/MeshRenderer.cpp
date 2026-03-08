@@ -18,7 +18,7 @@ NLS::Engine::Components::MeshRenderer::MeshRenderer()
 				materialRenderer->UpdateMaterialList();
 		};
 }
-#include "UDRefl/ReflMngr.hpp"
+#include "Reflection/Compat/ReflMngr.hpp"
 using namespace NLS::UDRefl;
 void MeshRenderer::Bind()
 {

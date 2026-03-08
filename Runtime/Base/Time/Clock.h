@@ -3,7 +3,7 @@
 
 #include <string>
 #include <chrono>
-#include "UDRefl/config.hpp"
+#include "Reflection/Compat/config.hpp"
 namespace NLS::Time
 {
 	/*

@@ -2,6 +2,7 @@
 #include "Debug/Logger.h"
 #include "Debug/Assertion.h"
 #include <iomanip>
+#include <fstream>
 
 namespace NLS
 {

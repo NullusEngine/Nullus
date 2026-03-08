@@ -88,12 +88,7 @@ else()
     endif()
 endif()
 
+add_subdirectory("ThirdParty")
+add_subdirectory("Tools")
 add_subdirectory("Runtime")
 add_subdirectory("Project")
-add_subdirectory("ThirdParty")
-
-# MetaParser in Tools currently requires C# with Visual Studio generator.
-# Skip Tools on non-Windows platforms to allow Linux/macOS native C++ build.
-if(WIN32)
-    add_subdirectory("Tools")
-endif()

@@ -4,9 +4,8 @@ NLS::Render::Resources::Shader* NLS::Core::ResourceManagement::ShaderManager::Cr
 {
 	std::string realPath = GetRealPath(p_path);
 	NLS::Render::Resources::Shader* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(realPath);
-	if (shader)
-		*reinterpret_cast<std::string*>(reinterpret_cast<char*>(shader) + offsetof(NLS::Render::Resources::Shader, path)) = p_path; // Force the resource path to fit the given path
-
+	// Do NOT rewrite const members with offsetof/reinterpret_cast (UB on non-standard-layout types).
+	// Keep loader path as-is to avoid corrupting shader object state.
 	return shader;
 }
 

@@ -90,11 +90,13 @@ NLS::Render::Features::LightingRenderFeature::LightSet FindActiveLights(const En
 {
 	NLS::Render::Features::LightingRenderFeature::LightSet lights;
 
-	const auto& facs = p_scene.GetFastAccessComponents();
-
-	for (auto light : facs.lights)
+	for (auto* light : p_scene.GetFastAccessComponents().lights)
 	{
-		if (light->gameobject()->IsActive())
+		if (!light)
+			continue;
+
+		auto* owner = light->gameobject();
+		if (owner && owner->IsActive())
 		{
 			lights.push_back(std::ref(*light->GetData()));
 		}
@@ -151,7 +153,6 @@ Engine::Rendering::SceneRenderer::AllDrawables Engine::Rendering::SceneRenderer:
 	SkyboxDrawables skyboxes;
 
 	auto& camera = *m_frameDescriptor.camera;
-
 	auto& sceneDescriptor = GetDescriptor<SceneDescriptor>();
 	auto& scene = sceneDescriptor.scene;
 	auto overrideMaterial = sceneDescriptor.overrideMaterial;
@@ -164,132 +165,109 @@ Engine::Rendering::SceneRenderer::AllDrawables Engine::Rendering::SceneRenderer:
 		frustum = frustumOverride ? frustumOverride : camera.GetFrustum();
 	}
 
-	for (MeshRenderer* modelRenderer : scene.GetFastAccessComponents().modelRenderers)
+	for (auto* modelRenderer : scene.GetFastAccessComponents().modelRenderers)
 	{
-		auto owner = modelRenderer->gameobject();
+		if (!modelRenderer)
+			continue;
 
-		if (owner->IsActive())
+		auto* owner = modelRenderer->gameobject();
+		if (!owner || !owner->IsActive())
+			continue;
+
+		auto model = modelRenderer->GetModel();
+		auto materialRenderer = owner->GetComponent<MaterialRenderer>();
+		if (owner->GetName() == "Cube")
 		{
-			if (auto model = modelRenderer->GetModel())
+			NLS_LOG_INFO("Parse Cube MeshRenderer ptr=" + std::to_string(reinterpret_cast<uintptr_t>(modelRenderer)) +
+				", modelPtr=" + std::to_string(reinterpret_cast<uintptr_t>(model)) +
+				", materialRendererPtr=" + std::to_string(reinterpret_cast<uintptr_t>(materialRenderer)));
+		}
+		if (!model || !materialRenderer)
+		{
+			NLS_LOG_WARNING(std::string("ParseScene skip actor '") + owner->GetName() + "' model=" + (model ? "ok" : "null") + ", materialRenderer=" + (materialRenderer ? "ok" : "null"));
+			continue;
+		}
+
+		auto& transform = owner->GetTransform()->GetTransform();
+		auto cullingOptions = NLS::Render::Settings::ECullingOptions::NONE;
+
+		if (modelRenderer->GetFrustumBehaviour() != MeshRenderer::EFrustumBehaviour::DISABLED)
+			cullingOptions |= NLS::Render::Settings::ECullingOptions::FRUSTUM_PER_MODEL;
+		if (modelRenderer->GetFrustumBehaviour() == MeshRenderer::EFrustumBehaviour::CULL_MESHES)
+			cullingOptions |= NLS::Render::Settings::ECullingOptions::FRUSTUM_PER_MESH;
+
+		auto modelBoundingSphere = modelRenderer->GetFrustumBehaviour() == MeshRenderer::EFrustumBehaviour::CULL_CUSTOM
+			? modelRenderer->GetCustomBoundingSphere()
+			: model->GetBoundingSphere();
+
+		std::vector<NLS::Render::Resources::Mesh*> meshes;
+		if (frustum)
+			meshes = frustum.value().GetMeshesInFrustum(*model, modelBoundingSphere, transform, cullingOptions);
+		else
+			meshes = model->GetMeshes();
+
+		if (meshes.empty())
+			continue;
+
+		float distanceToActor = Maths::Vector3::Distance(transform.GetWorldPosition(), camera.GetPosition());
+		const MaterialRenderer::MaterialList& materials = materialRenderer->GetMaterials();
+
+		for (const auto mesh : meshes)
+		{
+			NLS::Render::Resources::Material* material = nullptr;
+			if (mesh->GetMaterialIndex() < kMaxMaterialCount)
 			{
-				if (auto materialRenderer = modelRenderer->gameobject()->GetComponent<MaterialRenderer>())
-				{
-					auto& transform = owner->GetTransform()->GetTransform();
+				if (overrideMaterial && overrideMaterial->IsValid())
+					material = overrideMaterial;
+				else
+					material = materials.at(mesh->GetMaterialIndex());
 
-					auto cullingOptions = NLS::Render::Settings::ECullingOptions::NONE;
+				const bool isMaterialValid = material && material->IsValid();
+				const bool hasValidFallbackMaterial = fallbackMaterial && fallbackMaterial->IsValid();
+				if (!isMaterialValid && hasValidFallbackMaterial)
+					material = fallbackMaterial;
+			}
 
-					if (modelRenderer->GetFrustumBehaviour() != MeshRenderer::EFrustumBehaviour::DISABLED)
-					{
-						cullingOptions |= NLS::Render::Settings::ECullingOptions::FRUSTUM_PER_MODEL;
-					}
+			if (material && material->IsValid())
+			{
+				NLS::Render::Entities::Drawable drawable;
+				drawable.mesh = mesh;
+				drawable.material = material;
+				drawable.stateMask = material->GenerateStateMask();
+				drawable.AddDescriptor<EngineDrawableDescriptor>({ transform.GetWorldMatrix(), materialRenderer->GetUserMatrix() });
 
-					if (modelRenderer->GetFrustumBehaviour() == MeshRenderer::EFrustumBehaviour::CULL_MESHES)
-					{
-						cullingOptions |= NLS::Render::Settings::ECullingOptions::FRUSTUM_PER_MESH;
-					}
-
-					auto modelBoundingSphere = modelRenderer->GetFrustumBehaviour() == MeshRenderer::EFrustumBehaviour::CULL_CUSTOM ? modelRenderer->GetCustomBoundingSphere() : model->GetBoundingSphere();
-
-					std::vector<NLS::Render::Resources::Mesh*> meshes;
-
-					if (frustum)
-					{
-						meshes = frustum.value().GetMeshesInFrustum(*model, modelBoundingSphere, transform, cullingOptions);
-					}
-					else
-					{
-						meshes = model->GetMeshes();
-					}
-
-					if (!meshes.empty())
-					{
-						float distanceToActor = Maths::Vector3::Distance(transform.GetWorldPosition(), camera.GetPosition());
-						const MaterialRenderer::MaterialList& materials = materialRenderer->GetMaterials();
-
-						for (const auto mesh : meshes)
-						{
-                            NLS::Render::Resources::Material* material = nullptr;
-
-							if (mesh->GetMaterialIndex() < kMaxMaterialCount)
-							{
-                                if (overrideMaterial && overrideMaterial->IsValid())
-								{
-									material = overrideMaterial;
-								}
-								else
-								{
-									material = materials.at(mesh->GetMaterialIndex());
-								}
-
-								bool isMaterialValid = false;
-                                if (material)
-								{
-                                    isMaterialValid = material->IsValid();
-								}
-                                bool hasValidFallbackMaterial = false;
-                                if (fallbackMaterial)
-								{
-                                    hasValidFallbackMaterial = fallbackMaterial->IsValid();
-								}
-
-								if (!isMaterialValid && hasValidFallbackMaterial)
-								{
-									material = fallbackMaterial;
-								}
-							}
-
-							if (material && material->IsValid())
-							{
-								NLS::Render::Entities::Drawable drawable;
-								drawable.mesh = mesh;
-								drawable.material = material;
-								drawable.stateMask = material->GenerateStateMask();
-
-								drawable.AddDescriptor<EngineDrawableDescriptor>({
-									transform.GetWorldMatrix(),
-									materialRenderer->GetUserMatrix()
-								});
-
-								if (material->IsBlendable())
-								{
-									transparents.emplace(distanceToActor, drawable);
-								}
-								else
-								{
-									opaques.emplace(distanceToActor, drawable);
-								}
-							}
-						}
-					}
-				}
+				if (material->IsBlendable())
+					transparents.emplace(distanceToActor, drawable);
+				else
+					opaques.emplace(distanceToActor, drawable);
 			}
 		}
 	}
 
-	for (SkyBoxComponent* skybox : scene.GetFastAccessComponents().skyboxs)
+	if (opaques.empty() && transparents.empty())
 	{
-		auto owner = skybox->gameobject();
+		NLS_LOG_WARNING("ParseScene produced no mesh drawables");
+	}
 
-		if (owner->IsActive())
+	for (auto* skybox : scene.GetFastAccessComponents().skyboxs)
+	{
+		if (!skybox)
+			continue;
+		auto* owner = skybox->gameobject();
+		if (!owner || !owner->IsActive())
+			continue;
+
+		if (auto model = skybox->GetModel())
 		{
-			if (auto model = skybox->GetModel())
+			if (auto material = skybox->GetMaterial())
 			{
-				if (auto material = skybox->GetMaterial())
-				{
-					auto& transform = owner->GetTransform()->GetTransform();
-
-					NLS::Render::Entities::Drawable drawable;
-					drawable.mesh = model->GetMeshes()[0];
-					drawable.material = material;
-					drawable.stateMask = material->GenerateStateMask();
-
-					drawable.AddDescriptor<EngineDrawableDescriptor>({
-						transform.GetWorldMatrix(),
-						//skybox->GetUserMatrix()
-						});
-
-					skyboxes.emplace(0.0f, drawable);
-				}
+				auto& transform = owner->GetTransform()->GetTransform();
+				NLS::Render::Entities::Drawable drawable;
+				drawable.mesh = model->GetMeshes()[0];
+				drawable.material = material;
+				drawable.stateMask = material->GenerateStateMask();
+				drawable.AddDescriptor<EngineDrawableDescriptor>({ transform.GetWorldMatrix() });
+				skyboxes.emplace(0.0f, drawable);
 			}
 		}
 	}

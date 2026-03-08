@@ -1,7 +1,7 @@
 #pragma once
 
 #include <string>
-#include "UDRefl/config.hpp"
+#include "Reflection/Compat/config.hpp"
 
 #define NLS_ASSERT(assertion, ...) (!!(assertion) ||                                 \
  (NLS::Debug::Assert(__FILE__, __FUNCTION__, __LINE__,##__VA_ARGS__), 0)) \

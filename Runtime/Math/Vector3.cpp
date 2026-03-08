@@ -19,7 +19,7 @@ Vector3::Vector3(const Vector4& v4)
     : x(v4.x), y(v4.y), z(v4.z)
 {
 }
-#include "UDRefl/ReflMngr.hpp"
+#include "Reflection/Compat/ReflMngr.hpp"
 using namespace NLS::UDRefl;
 void Vector3::Bind()
 {

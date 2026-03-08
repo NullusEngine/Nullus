@@ -3,7 +3,7 @@
 using namespace NLS::Engine::Components;
 using namespace NLS;
 
-#include "UDRefl/ReflMngr.hpp"
+#include "Reflection/Compat/ReflMngr.hpp"
 using namespace NLS::UDRefl;
 void Engine::Components::TransformComponent::Bind()
 {

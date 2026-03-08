@@ -155,6 +155,7 @@ namespace NLS::Engine::SceneSystem
 		const FastAccessComponents& GetFastAccessComponents() const;
 
 	private:
+		void RebuildFastAccessComponents();
 		int64_t m_availableID = 1;
 		bool m_isPlaying = false;
 		std::vector<GameObject*> m_gameobject;

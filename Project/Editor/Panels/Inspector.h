@@ -12,7 +12,7 @@
 
 #include "Panels/Hierarchy.h"
 #include "Panels/AssetBrowser.h"
-#include "UDRefl/Object.hpp"
+#include "Reflection/Compat/Object.hpp"
 
 namespace NLS::Editor::Panels
 {

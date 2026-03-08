@@ -2,7 +2,7 @@
 
 #include <functional>
  #include <stdint.h>
-#include "UDRefl/config.hpp"
+#include "Reflection/Compat/config.hpp"
 namespace NLS
 {
 	/**

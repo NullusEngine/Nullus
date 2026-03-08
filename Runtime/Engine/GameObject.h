@@ -1,8 +1,7 @@
 #pragma once
 #include <vector>
 #include "EngineDef.h"
-#include "UTemplate/Type.hpp"
-#include "UDRefl/Object.hpp"
+#include "Reflection/Compat/ReflMngr.hpp"
 #include "Eventing/Event.h"
 #include "Components/Component.h"
 namespace NLS
@@ -34,8 +33,8 @@ public:
     }
     bool RemoveComponent(UDRefl::SharedObject component);
 
-    UDRefl::SharedObject AddComponent(Type type, const std::function<void(Components::Component*)>& func = {});
-    UDRefl::SharedObject GetComponent(Type type, bool includeSubType = true) const;
+    UDRefl::SharedObject AddComponent(UDRefl::Type type, const std::function<void(Components::Component*)>& func = {});
+    UDRefl::SharedObject GetComponent(UDRefl::Type type, bool includeSubType = true) const;
     /**
      * Enable or disable the actor
      * @param p_active

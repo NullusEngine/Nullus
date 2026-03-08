@@ -1,6 +1,6 @@
 ﻿#include "GameObject.h"
-#include "UDRefl/Object.hpp"
-#include "UDRefl/ReflMngr.hpp"
+#include "Reflection/Compat/Object.hpp"
+#include "Reflection/Compat/ReflMngr.hpp"
 #include <algorithm>
 
 #include "Components/TransformComponent.h"

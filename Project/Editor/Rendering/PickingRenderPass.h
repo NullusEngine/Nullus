@@ -1,5 +1,8 @@
 #pragma once
 
+#include <optional>
+#include <variant>
+
 #include <Rendering/Entities/Camera.h>
 #include <Rendering/Features/DebugShapeRenderFeature.h>
 

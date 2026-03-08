@@ -12,7 +12,7 @@ NLS::Engine::Components::MaterialRenderer::MaterialRenderer()
 {
 	m_materials.fill(nullptr);
 }
-#include "UDRefl/ReflMngr.hpp"
+#include "Reflection/Compat/ReflMngr.hpp"
 using namespace NLS::UDRefl;
 void MaterialRenderer::Bind()
 {

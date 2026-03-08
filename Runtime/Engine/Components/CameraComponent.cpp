@@ -17,7 +17,7 @@ void NLS::Engine::Components::CameraComponent::OnCreate()
 	/* Default clear color for the CCamera (Different from Camera default clear color) */
 	SetClearColor({ 0.1921569f, 0.3019608f, 0.4745098f });
 }
-#include "UDRefl/ReflMngr.hpp"
+#include "Reflection/Compat/ReflMngr.hpp"
 using namespace UDRefl;
 void CameraComponent::Bind()
 {

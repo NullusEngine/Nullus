@@ -1,7 +1,7 @@
 #pragma once
 #include "CoreDef.h"
 #include <Json/json.hpp>
-#include "UDRefl/UDRefl.hpp"
+#include "Reflection/Compat/UDRefl.hpp"
 #include <limits>
 namespace NLS
 {

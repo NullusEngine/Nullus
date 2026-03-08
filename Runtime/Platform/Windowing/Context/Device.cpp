@@ -2,13 +2,40 @@
 #include "Windowing/Context/Device.h"
 
 #include <stdexcept>
+#include <cstdlib>
+#include <filesystem>
 
 #include <GLFW/glfw3.h>
 
 NLS::Event<NLS::EDeviceError, std::string> NLS::Context::Device::ErrorEvent;
 
+namespace
+{
+	void EnsureWslgEnvironment()
+	{
+#if defined(__linux__)
+		const bool hasWslg = std::filesystem::exists("/mnt/wslg") && std::filesystem::exists("/mnt/wslg/runtime-dir");
+		if (!hasWslg)
+			return;
+
+		if (!std::getenv("DISPLAY"))
+			setenv("DISPLAY", ":0", 0);
+
+		if (!std::getenv("WAYLAND_DISPLAY"))
+			setenv("WAYLAND_DISPLAY", "wayland-0", 0);
+
+		if (!std::getenv("XDG_RUNTIME_DIR"))
+			setenv("XDG_RUNTIME_DIR", "/mnt/wslg/runtime-dir", 0);
+
+		if (!std::getenv("PULSE_SERVER"))
+			setenv("PULSE_SERVER", "unix:/mnt/wslg/PulseServer", 0);
+#endif
+	}
+}
+
 NLS::Context::Device::Device(const NLS::Windowing::Settings::DeviceSettings& p_deviceSettings)
 {
+	EnsureWslgEnvironment();
 	BindErrorCallback();
 
 	int initializationCode = glfwInit();
@@ -28,7 +55,8 @@ NLS::Context::Device::Device(const NLS::Windowing::Settings::DeviceSettings& p_d
 		glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, p_deviceSettings.contextMajorVersion);
 		glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, p_deviceSettings.contextMinorVersion);
 
-		glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+		// Use ANY profile for better compatibility on WSL/virtualized GL drivers.
+		glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_ANY_PROFILE);
 		glfwWindowHint(GLFW_SAMPLES, p_deviceSettings.samples);
 
 		m_isAlive = true;

@@ -132,7 +132,7 @@ void NLS::Engine::Components::LightComponent::SetSize(const Maths::Vector3& p_si
 	m_data->linear = p_size.y;
 	m_data->quadratic = p_size.z;
 }
-#include "UDRefl/ReflMngr.hpp"
+#include "Reflection/Compat/ReflMngr.hpp"
 using namespace NLS::UDRefl;
 void LightComponent::Bind()
 {

@@ -1,5 +1,5 @@
 #pragma once
-#include "UDRefl/config.hpp"
+#include "Reflection/Compat/config.hpp"
 namespace NLS
 {
 class NLS_BASE_API Assembly

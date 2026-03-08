@@ -44,5 +44,6 @@ namespace NLS::Game::Core
 		Context& m_context;
 
 		Engine::Rendering::SceneRenderer m_sceneRenderer;
+		bool m_frameCaptured = false;
 	};
 }

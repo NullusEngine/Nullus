@@ -1,6 +1,6 @@
 #include "GameObject.h"
-#include "UDRefl/Object.hpp"
-#include "UDRefl/ReflMngr.hpp"
+#include "Reflection/Compat/Object.hpp"
+#include "Reflection/Compat/ReflMngr.hpp"
 #include <algorithm>
 #include "Components/TransformComponent.h"
 using namespace NLS::Engine;
@@ -68,7 +68,7 @@ bool Engine::GameObject::RemoveComponent(SharedObject component)
     return false;
 }
 
-#include "UDRefl/ReflMngr.hpp"
+#include "Reflection/Compat/ReflMngr.hpp"
 using namespace NLS::UDRefl;
 void Engine::GameObject::Bind()
 {

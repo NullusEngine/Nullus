@@ -10,6 +10,8 @@
 
 #include "Type.h"
 
+#include "MetaGenerated.h"
+
 #define REGISTER_NATIVE_TYPE(type)                    \
     {                                                 \
         auto id = AllocateType( #type );              \
@@ -53,6 +55,9 @@ namespace NLS
 
             stringType.AddConstructor<std::string, false, false>( { } );
             stringType.AddConstructor<std::string, false, true>( { } );
+
+            // Register user-defined reflection types (avoid recursive Instance() in ctor)
+            NLS::meta_generated::RegisterReflectionTypes(*this);
         }
 
         ///////////////////////////////////////////////////////////////////////

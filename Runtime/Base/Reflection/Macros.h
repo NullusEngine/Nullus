@@ -8,7 +8,12 @@
 
 #if defined(__REFLECTION_PARSER__)
 
-    #define Meta(...) __attribute__((annotate(#__VA_ARGS__)))
+    #define META(...) __attribute__((annotate(#__VA_ARGS__)))
+    #define CLASS(class_name, ...) class __attribute__((annotate(#__VA_ARGS__))) class_name
+    #define STRUCT(struct_name, ...) struct __attribute__((annotate(#__VA_ARGS__))) struct_name
+
+    // 兼容旧写法（过渡期）
+    #define Meta(...) META(__VA_ARGS__)
 
     #define __META_EXTERNAL(type, guid)       \
         typedef type __META_EXTERNAL__##guid; \
@@ -21,7 +26,12 @@
 
 #else 
 
-    #define Meta(...) 
+    #define META(...)
+    #define CLASS(class_name, ...) class class_name
+    #define STRUCT(struct_name, ...) struct struct_name
+
+    // 兼容旧写法（过渡期）
+    #define Meta(...) META(__VA_ARGS__)
 
     #define MetaExternal(type)
 

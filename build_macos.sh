@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 if test \( $# -ne 1 \);
 then
@@ -11,11 +12,10 @@ then
     exit 1
 fi
 
-
-if test \( \( -n "$1" \) -a \( "$1" = "debug" \) \);then
-    CONFIG=" Debug"
-elif test \( \( -n "$1" \) -a \( "$1" = "release" \) \);then
-    CONFIG=" Release"
+if test \( \( -n "$1" \) -a \( "$1" = "debug" \) \); then
+    CONFIG="Debug"
+elif test \( \( -n "$1" \) -a \( "$1" = "release" \) \); then
+    CONFIG="Release"
 else
     echo "The config \"$1\" is not supported!"
     echo ""
@@ -26,6 +26,8 @@ else
     exit 1
 fi
 
-#cmake -S . -B build -G "Xcode"
-cmake -S . -B build -G "Xcode" -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++-11
+MY_DIR="$(cd "$(dirname "$0")" 1>/dev/null 2>/dev/null && pwd)"
+cd "${MY_DIR}"
+
+cmake -S . -B build -G "Xcode"
 cmake --build build --config "${CONFIG}"

@@ -20,3 +20,14 @@ App/Win32_*/
 #linux
 App/Linux_*/
 
+# Runtime generated reflection code
+Runtime/*/Gen/
+
+# C# build artifacts
+Tools/MetaParser/src/bin/
+Tools/MetaParser/src/obj/
+
+# Legacy tool output folder
+Tools/Tool/
+
+

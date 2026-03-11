@@ -12,6 +12,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Mono.TextTemplating" Version="3.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Include="Templates/MetaGenerated.cpp.tt" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Templates/MetaGenerated.h.tt" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

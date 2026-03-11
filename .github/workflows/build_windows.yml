@@ -8,11 +8,11 @@ on:
 
 jobs:
   build:
-    # windows 10 with latest image
     runs-on: windows-latest
     strategy:
       matrix:
-        configuration: [debug, release]
+        configuration: [Debug, Release]
+        platform: [x64]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,11 +23,6 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Install LLVM (libclang)
-        shell: powershell
-        run: |
-          choco install llvm -y
-          echo "C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
       - name: Build
-        run: ./build_windows.bat ${{matrix.configuration}} 
+        shell: cmd
+        run: build_windows.bat ${{ matrix.configuration }} ${{ matrix.platform }}

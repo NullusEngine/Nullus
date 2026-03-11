@@ -1,0 +1,16 @@
+{
+  "RootDir": @NLS_META_ROOT_DIR@,
+  "TargetName": @NLS_META_TARGET_NAME@,
+  "ModuleName": @NLS_META_MODULE_NAME@,
+  "OutputDir": @NLS_META_OUTPUT_DIR@,
+  "CompilerPath": @NLS_META_COMPILER_PATH@,
+  "CompilerId": @NLS_META_COMPILER_ID@,
+  "CompilerTarget": @NLS_META_COMPILER_TARGET@,
+  "ResourceDir": @NLS_META_RESOURCE_DIR@,
+  "Sysroot": @NLS_META_SYSROOT@,
+  "Headers": [@NLS_META_HEADERS_JSON@],
+  "IncludeDirs": [@NLS_META_INCLUDE_DIRS_JSON@],
+  "SystemIncludeDirs": [@NLS_META_SYSTEM_INCLUDE_DIRS_JSON@],
+  "Defines": [@NLS_META_DEFINES_JSON@],
+  "CompilerOptions": [@NLS_META_COMPILER_OPTIONS_JSON@]
+}

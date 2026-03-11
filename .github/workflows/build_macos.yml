@@ -22,12 +22,5 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Install LLVM (libclang)
-        run: |
-          brew update
-          brew install llvm
-          echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> $GITHUB_ENV
-          echo "DYLD_LIBRARY_PATH=$(brew --prefix llvm)/lib:$DYLD_LIBRARY_PATH" >> $GITHUB_ENV
-
       - name: Build
-        run: ./build_macos.sh ${{matrix.configuration}}
+        run: ./build_macos.sh ${{ matrix.configuration }}

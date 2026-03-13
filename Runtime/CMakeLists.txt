@@ -158,13 +158,56 @@ function(nls_detect_compiler_system_includes COMPILER OUT_INCLUDES)
 
         if(_compiler_verbose_result EQUAL 0)
             string(REPLACE "\r" "" _compiler_verbose "${_compiler_verbose}")
-            string(REGEX REPLACE ".*#include <...> search starts here:\n" "" _after_start "${_compiler_verbose}")
-            string(REGEX REPLACE "\nEnd of search list\..*" "" _include_block "${_after_start}")
-            string(REPLACE "\n" ";" _include_lines "${_include_block}")
-            foreach(_line IN LISTS _include_lines)
+            string(REGEX MATCHALL "(^|\n) ([^\n]+)" _include_matches "${_compiler_verbose}")
+            foreach(_match IN LISTS _include_matches)
+                string(REGEX REPLACE "(^|\n) " "" _line "${_match}")
                 string(STRIP "${_line}" _line)
+                string(REGEX REPLACE " \(framework directory\)$" "" _line "${_line}")
                 if(_line AND EXISTS "${_line}")
                     list(APPEND _includes "${_line}")
+                endif()
+            endforeach()
+        endif()
+
+        if(NOT _includes AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            execute_process(
+                COMMAND "${COMPILER}" -dumpfullversion
+                OUTPUT_VARIABLE _gcc_version
+                ERROR_QUIET
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+            )
+            if(NOT _gcc_version)
+                execute_process(
+                    COMMAND "${COMPILER}" -dumpversion
+                    OUTPUT_VARIABLE _gcc_version
+                    ERROR_QUIET
+                    OUTPUT_STRIP_TRAILING_WHITESPACE
+                )
+            endif()
+            string(REGEX MATCH "^[0-9]+" _gcc_major "${_gcc_version}")
+            execute_process(
+                COMMAND "${COMPILER}" -print-multiarch
+                OUTPUT_VARIABLE _gcc_multiarch
+                ERROR_QUIET
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+            )
+            execute_process(
+                COMMAND "${COMPILER}" -print-file-name=include
+                OUTPUT_VARIABLE _gcc_builtin_include
+                ERROR_QUIET
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+            )
+            foreach(_dir
+                "${_gcc_builtin_include}"
+                "/usr/include/c++/${_gcc_major}"
+                "/usr/include/${_gcc_multiarch}/c++/${_gcc_major}"
+                "/usr/include/c++/${_gcc_major}/backward"
+                "/usr/lib/gcc/${_gcc_multiarch}/${_gcc_major}/include"
+                "/usr/local/include"
+                "/usr/include/${_gcc_multiarch}"
+                "/usr/include")
+                if(_dir AND EXISTS "${_dir}")
+                    list(APPEND _includes "${_dir}")
                 endif()
             endforeach()
         endif()
@@ -172,6 +215,23 @@ function(nls_detect_compiler_system_includes COMPILER OUT_INCLUDES)
 
     list(REMOVE_DUPLICATES _includes)
     set(${OUT_INCLUDES} ${_includes} PARENT_SCOPE)
+endfunction()
+
+function(nls_detect_apple_sysroot OUT_SYSROOT)
+    set(_sysroot "")
+    if(APPLE)
+        execute_process(
+            COMMAND xcrun --sdk macosx --show-sdk-path
+            OUTPUT_VARIABLE _xcrun_sysroot
+            ERROR_QUIET
+            RESULT_VARIABLE _xcrun_result
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        if(_xcrun_result EQUAL 0 AND EXISTS "${_xcrun_sysroot}")
+            set(_sysroot "${_xcrun_sysroot}")
+        endif()
+    endif()
+    set(${OUT_SYSROOT} "${_sysroot}" PARENT_SCOPE)
 endfunction()
 
 function(nls_detect_clang_resource_dir OUT_RESOURCE_DIR)
@@ -368,6 +428,7 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
     set(_resource_dir "")
     set(_sysroot "")
     nls_detect_clang_resource_dir(_resource_dir)
+    nls_detect_apple_sysroot(_sysroot)
 
     list(FILTER _headers EXCLUDE REGEX "/Gen/")
     list(FILTER _headers EXCLUDE REGEX "/Generated/")

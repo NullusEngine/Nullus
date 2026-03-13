@@ -296,8 +296,22 @@ internal static class Program
 
         if (!string.IsNullOrWhiteSpace(config.Sysroot))
         {
-            compilerArgs.Add("--sysroot");
-            compilerArgs.Add(config.Sysroot);
+            if (OperatingSystem.IsMacOS())
+            {
+                compilerArgs.Add("-isysroot");
+                compilerArgs.Add(config.Sysroot);
+            }
+            else
+            {
+                compilerArgs.Add("--sysroot");
+                compilerArgs.Add(config.Sysroot);
+            }
+        }
+
+        foreach (var systemIncludeDir in normalizedSystemIncludes)
+        {
+            compilerArgs.Add("-isystem");
+            compilerArgs.Add(systemIncludeDir);
         }
 
         compilerArgs.AddRange(config.CompilerOptions.Where(static x => !string.IsNullOrWhiteSpace(x)));

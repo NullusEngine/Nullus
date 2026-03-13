@@ -24,6 +24,12 @@ void MeshRenderer::Bind()
 {
     Mngr.RegisterType<MeshRenderer>();
     Mngr.AddBases<MeshRenderer, Component>();
+    Mngr.AddMethod<&MeshRenderer::SetModel>("SetModel");
+    Mngr.AddMethod<&MeshRenderer::GetModel>("GetModel");
+    Mngr.AddMethod<&MeshRenderer::SetFrustumBehaviour>("SetFrustumBehaviour");
+    Mngr.AddMethod<&MeshRenderer::GetFrustumBehaviour>("GetFrustumBehaviour");
+    Mngr.AddMethod<&MeshRenderer::GetCustomBoundingSphere>("GetCustomBoundingSphere");
+    Mngr.AddMethod<&MeshRenderer::SetCustomBoundingSphere>("SetCustomBoundingSphere");
 }
 
 void MeshRenderer::SetModel(Render::Resources::Model* p_model)

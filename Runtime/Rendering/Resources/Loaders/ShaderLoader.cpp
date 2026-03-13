@@ -45,14 +45,12 @@ void NLS::Render::Resources::Loaders::ShaderLoader::Recompile(Shader& p_shader, 
 
 	if (newProgram)
 	{
-		/* Pointer to the shaderID (const data member, tricks to access it) */
-		std::uint32_t* shaderID = reinterpret_cast<uint32_t*>(&p_shader) + offsetof(Shader, id);
-
 		/* Deletes the previous program */
-		glDeleteProgram(*shaderID);
+		auto& shaderID = const_cast<std::uint32_t&>(p_shader.id);
+		glDeleteProgram(shaderID);
 
 		/* Store the new program in the shader */
-		*shaderID = newProgram;
+		shaderID = newProgram;
 
 		p_shader.QueryUniforms();
 

@@ -10,6 +10,7 @@ namespace NLS::Maths
 	*/
 	struct NLS_MATH_API Color
 	{
+		static void Bind();
 		Color(float p_r = 1.0f, float p_g = 1.0f, float p_b = 1.0f, float p_a = 1.0f);
 		Color(Maths::Vector3 p_vector);
 		Color(Maths::Vector4 p_vector);

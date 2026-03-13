@@ -9,6 +9,6 @@ TextWrapped::TextWrapped(const std::string& p_content)
 
 void TextWrapped::_Draw_Impl()
 {
-    ImGui::TextWrapped(content.c_str());
+    ImGui::TextWrapped("%s", content.c_str());
 }
 } // namespace NLS::UI::Widgets

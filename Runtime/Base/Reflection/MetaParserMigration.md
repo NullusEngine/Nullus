@@ -24,21 +24,26 @@
 
 ---
 
-## 构建链路（单文件粒度）
+## 构建链路（当前正式路径）
 
-`Runtime/Base/CMakeLists.txt` 会扫描 `Runtime/**/*.h|hpp|inl`：
+运行时模块通过 `Runtime/CMakeLists.txt` 中的 `nls_add_meta_generation(...)` 接入 C# MetaParser：
 
+- 扫描各模块 `Runtime/<Module>/` 下的头文件
 - 仅命中“带反射标记 + 继承 Object”的头文件
-- 每个命中头文件生成一个 `*.gen.cpp`
-- 无标记头文件不生成产物
+- 生成聚合产物 `MetaGenerated.h / MetaGenerated.cpp`
+- 生成结果直接写入模块源码树下的正式目录：`Runtime/<Module>/Gen/`
 
-生成目录：`build/Runtime/Base/Generated/`
+当前正式产物目录示例：
 
-典型产物：
+- `Runtime/Base/Gen/MetaGenerated.h`
+- `Runtime/Base/Gen/MetaGenerated.cpp`
+- `Runtime/Core/Gen/MetaGenerated.cpp`
+- `Runtime/Engine/Gen/MetaGenerated.cpp`
 
-- `MetaGenerated.h`
-- `MetaGenerated.cpp`（聚合入口，保持兼容）
-- `<header-id>.gen.cpp`（每个命中头文件一个）
+说明：
+
+- 旧的 `build/Runtime/Base/Generated/` 属于迁移过程中的历史/中间产物，不再视为当前正式输出目录
+- 当前构建实际编译的是 `Runtime/<Module>/Gen/*`
 
 聚合注册接口保持：
 

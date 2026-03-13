@@ -13,8 +13,19 @@
 #define TO_DEGREES(value) value * 180.f / PI
 using namespace NLS;
 using namespace Maths;
+#include "Reflection/Compat/ReflMngr.hpp"
+using namespace NLS::UDRefl;
 
 const Maths::Quaternion Maths::Quaternion::Identity = Maths::Quaternion(0.0f, 0.0f, 0.0f, 1.0f);
+
+void Maths::Quaternion::Bind()
+{
+    Mngr.RegisterType<Quaternion>();
+    Mngr.AddField<&Quaternion::x>("x");
+    Mngr.AddField<&Quaternion::y>("y");
+    Mngr.AddField<&Quaternion::z>("z");
+    Mngr.AddField<&Quaternion::w>("w");
+}
 
 Maths::Quaternion::Quaternion()
     : x(0.0f), y(0.0f), z(0.0f), w(1.0f)

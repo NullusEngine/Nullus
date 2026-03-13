@@ -2,6 +2,7 @@ using System.CodeDom.Compiler;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using CppAst;
 using Mono.TextTemplating;
 using Microsoft.VisualStudio.TextTemplating;
@@ -170,10 +171,10 @@ internal static class Program
             return false;
 
         var text = File.ReadAllText(headerPath);
-        return text.Contains("CLASS(", StringComparison.Ordinal)
-               || text.Contains("STRUCT(", StringComparison.Ordinal)
-               || text.Contains("Meta()", StringComparison.Ordinal)
-               || text.Contains("META(", StringComparison.Ordinal)
+        return Regex.IsMatch(text, @"\bCLASS\s*\(", RegexOptions.CultureInvariant)
+               || Regex.IsMatch(text, @"\bSTRUCT\s*\(", RegexOptions.CultureInvariant)
+               || Regex.IsMatch(text, @"\bMeta\s*\(", RegexOptions.CultureInvariant)
+               || Regex.IsMatch(text, @"\bMETA\s*\(", RegexOptions.CultureInvariant)
                || text.Contains("__cppast(", StringComparison.Ordinal)
                || text.Contains("__attribute__((annotate(", StringComparison.Ordinal);
     }
@@ -360,7 +361,25 @@ internal static class Program
     }
 
     private static bool HasReflectionMarker(CppClass cls)
-        => cls.Attributes.Any(IsReflectionAttribute) || cls.MetaAttributes.MetaList.Any();
+    {
+        if (cls.Attributes.Any(IsReflectionAttribute) || cls.MetaAttributes.MetaList.Any())
+            return true;
+
+        var sourceFile = cls.SourceFile;
+        if (string.IsNullOrWhiteSpace(sourceFile) || !File.Exists(sourceFile))
+            return false;
+
+        var text = File.ReadAllText(sourceFile);
+        if (string.IsNullOrWhiteSpace(cls.Name))
+            return false;
+
+        return text.Contains($"Meta() class {cls.Name}", StringComparison.Ordinal)
+               || text.Contains($"Meta() struct {cls.Name}", StringComparison.Ordinal)
+               || text.Contains($"META() class {cls.Name}", StringComparison.Ordinal)
+               || text.Contains($"META() struct {cls.Name}", StringComparison.Ordinal)
+               || text.Contains($"CLASS({cls.Name}", StringComparison.Ordinal)
+               || text.Contains($"STRUCT({cls.Name}", StringComparison.Ordinal);
+    }
 
     private static bool IsReflectionAttribute(CppAttribute attribute)
         => attribute.Kind == AttributeKind.AnnotateAttribute

@@ -23,6 +23,22 @@ void CameraComponent::Bind()
 {
     Mngr.RegisterType<CameraComponent>();
     Mngr.AddBases<CameraComponent, Component>();
+    Mngr.AddMethod<&CameraComponent::SetFov>("SetFov");
+    Mngr.AddMethod<&CameraComponent::SetSize>("SetSize");
+    Mngr.AddMethod<&CameraComponent::SetNear>("SetNear");
+    Mngr.AddMethod<&CameraComponent::SetFar>("SetFar");
+    Mngr.AddMethod<&CameraComponent::SetClearColor>("SetClearColor");
+    Mngr.AddMethod<&CameraComponent::SetFrustumGeometryCulling>("SetFrustumGeometryCulling");
+    Mngr.AddMethod<&CameraComponent::SetFrustumLightCulling>("SetFrustumLightCulling");
+    Mngr.AddMethod<&CameraComponent::SetProjectionMode>("SetProjectionMode");
+    Mngr.AddMethod<&CameraComponent::GetFov>("GetFov");
+    Mngr.AddMethod<&CameraComponent::GetSize>("GetSize");
+    Mngr.AddMethod<&CameraComponent::GetNear>("GetNear");
+    Mngr.AddMethod<&CameraComponent::GetFar>("GetFar");
+    Mngr.AddMethod<&CameraComponent::GetClearColor>("GetClearColor");
+    Mngr.AddMethod<&CameraComponent::HasFrustumGeometryCulling>("HasFrustumGeometryCulling");
+    Mngr.AddMethod<&CameraComponent::HasFrustumLightCulling>("HasFrustumLightCulling");
+    Mngr.AddMethod<&CameraComponent::GetProjectionMode>("GetProjectionMode");
 }
 
 void CameraComponent::SetFov(float p_value)

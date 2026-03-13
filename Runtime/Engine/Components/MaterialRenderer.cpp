@@ -18,6 +18,17 @@ void MaterialRenderer::Bind()
 {
     Mngr.RegisterType<MaterialRenderer>();
     Mngr.AddBases<MaterialRenderer, Component>();
+    Mngr.AddMethod<&MaterialRenderer::FillWithMaterial>("FillWithMaterial");
+    Mngr.AddMethod<&MaterialRenderer::SetMaterialAtIndex>("SetMaterialAtIndex");
+    Mngr.AddMethod<&MaterialRenderer::GetMaterialAtIndex>("GetMaterialAtIndex");
+    Mngr.AddMethod<&MaterialRenderer::RemoveMaterialAtIndex>("RemoveMaterialAtIndex");
+    Mngr.AddMethod<&MaterialRenderer::RemoveMaterialByInstance>("RemoveMaterialByInstance");
+    Mngr.AddMethod<&MaterialRenderer::RemoveAllMaterials>("RemoveAllMaterials");
+    Mngr.AddMethod<&MaterialRenderer::UpdateMaterialList>("UpdateMaterialList");
+    Mngr.AddMethod<&MaterialRenderer::SetUserMatrixElement>("SetUserMatrixElement");
+    Mngr.AddMethod<&MaterialRenderer::GetUserMatrixElement>("GetUserMatrixElement");
+    Mngr.AddMethod<&MaterialRenderer::GetUserMatrix>("GetUserMatrix");
+    Mngr.AddMethod<&MaterialRenderer::GetMaterials>("GetMaterials");
 }
 
 void MaterialRenderer::OnCreate()

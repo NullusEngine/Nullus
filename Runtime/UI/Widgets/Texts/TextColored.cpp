@@ -11,6 +11,6 @@ TextColored::TextColored(const std::string& p_content, const Maths::Color& p_col
 
 void TextColored::_Draw_Impl()
 {
-    ImGui::TextColored(Internal::Converter::ToImVec4(color), content.c_str());
+    ImGui::TextColored(Internal::Converter::ToImVec4(color), "%s", content.c_str());
 }
 } // namespace NLS::UI::Widgets

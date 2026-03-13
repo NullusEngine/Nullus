@@ -35,4 +35,7 @@ void SkyBoxComponent::Bind()
 {
     Mngr.RegisterType<SkyBoxComponent>();
     Mngr.AddBases<SkyBoxComponent, Component>();
+    Mngr.AddMethod<&SkyBoxComponent::SetCubeMap>("SetCubeMap");
+    Mngr.AddMethod<&SkyBoxComponent::GetModel>("GetModel");
+    Mngr.AddMethod<&SkyBoxComponent::GetMaterial>("GetMaterial");
 }

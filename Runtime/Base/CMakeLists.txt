@@ -5,5 +5,4 @@ nls_add_runtime_target(
     json11
   APPEND_INCLUDE_DIR
     ${NLS_ThirdParty_DIR}
-    ${CMAKE_CURRENT_BINARY_DIR}/Generated
 )

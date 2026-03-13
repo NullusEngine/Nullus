@@ -46,7 +46,7 @@ NLS::Render::Resources::Model* NLS::Core::ResourceManagement::ModelManager::Crea
 	std::string realPath = GetRealPath(p_path);
     auto model = NLS::Render::Resources::Loaders::ModelLoader::Create(realPath, GetModelMetadata(realPath));
 	if (model)
-		*reinterpret_cast<std::string*>(reinterpret_cast<char*>(model) + offsetof(NLS::Render::Resources::Model, path)) = p_path; // Force the resource path to fit the given path
+		const_cast<std::string&>(model->path) = p_path; // Force the resource path to fit the given path
 
 	return model;
 }
@@ -55,7 +55,7 @@ NLS::Render::Resources::Model* NLS::Core::ResourceManagement::ModelManager::Crea
 {
 	auto model = NLS::Render::Resources::Loaders::ModelLoader::Create(meshes);
 	if (model)
-		*reinterpret_cast<std::string*>(reinterpret_cast<char*>(model) + offsetof(NLS::Render::Resources::Model, path)) = name;
+		const_cast<std::string&>(model->path) = name;
 
 	return model;
 }

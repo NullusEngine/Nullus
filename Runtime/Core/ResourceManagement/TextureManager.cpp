@@ -24,7 +24,7 @@ NLS::Render::Resources::Texture2D* NLS::Core::ResourceManagement::TextureManager
 
 	NLS::Render::Resources::Texture2D* texture = NLS::Render::Resources::Loaders::TextureLoader::Create(realPath, min, mag, mipmap);
 	if (texture)
-		*reinterpret_cast<std::string*>(reinterpret_cast<char*>(texture) + offsetof(NLS::Render::Resources::Texture2D, path)) = p_path; // Force the resource path to fit the given path
+		texture->path = p_path; // Force the resource path to fit the given path
 
 	return texture;
 }

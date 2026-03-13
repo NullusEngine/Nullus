@@ -15,7 +15,7 @@ namespace NLS::Debug
         std::cerr << "----- Assertion Failed -----" << std::endl
             << "----------------------------" << std::endl;
 
-        std::fprintf(stderr, format.c_str(), args...);
+        std::fprintf(stderr, "%s", format.c_str());
 
         std::cerr << std::endl;
         std::cerr << "----------------------------" << std::endl;

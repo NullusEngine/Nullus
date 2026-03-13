@@ -18,15 +18,15 @@
 见：`Runtime/Base/Reflection/ReflectionObjectSample.h`
 
 ## 生成链路
-- CMake 目标：`NLS_MetaParser_Generate`
-- 输出文件：`<build>/Runtime/Base/Generated/MetaGenerated.cpp`
-- 编译接入：`Runtime/Base/CMakeLists.txt` 中 `target_sources(NLS_Base PRIVATE "${NLS_META_GEN_CPP}")`
+- 生成入口：`Runtime/CMakeLists.txt` 中的 `nls_add_meta_generation(...)`
+- 当前正式输出：`Runtime/Base/Gen/MetaGenerated.cpp`
+- 其他模块同理：`Runtime/<Module>/Gen/MetaGenerated.cpp`
+- 编译接入：各模块通过 `target_sources(<module> PRIVATE "${_gen_cpp}" "${_gen_h}")` 自动接入
 
 ## 快速验证
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-cmake --build build --target NLS_MetaParser_Generate
-cmake --build build -j4
+cmake --build build --target NLS_Base -j4
 ./build/bin/ReflectionTest
 ```
 

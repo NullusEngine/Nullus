@@ -138,6 +138,26 @@ void LightComponent::Bind()
 {
     Mngr.RegisterType<LightComponent>();
     Mngr.AddBases<LightComponent, Component>();
+    Mngr.AddMethod<&LightComponent::SetLightType>("SetLightType");
+    Mngr.AddMethod<&LightComponent::GetLightType>("GetLightType");
+    Mngr.AddMethod<&LightComponent::GetColor>("GetColor");
+    Mngr.AddMethod<&LightComponent::GetIntensity>("GetIntensity");
+    Mngr.AddMethod<&LightComponent::SetColor>("SetColor");
+    Mngr.AddMethod<&LightComponent::SetIntensity>("SetIntensity");
+    Mngr.AddMethod<&LightComponent::GetConstant>("GetConstant");
+    Mngr.AddMethod<&LightComponent::GetLinear>("GetLinear");
+    Mngr.AddMethod<&LightComponent::GetQuadratic>("GetQuadratic");
+    Mngr.AddMethod<&LightComponent::SetConstant>("SetConstant");
+    Mngr.AddMethod<&LightComponent::SetLinear>("SetLinear");
+    Mngr.AddMethod<&LightComponent::SetQuadratic>("SetQuadratic");
+    Mngr.AddMethod<&LightComponent::GetCutoff>("GetCutoff");
+    Mngr.AddMethod<&LightComponent::GetOuterCutoff>("GetOuterCutoff");
+    Mngr.AddMethod<&LightComponent::SetCutoff>("SetCutoff");
+    Mngr.AddMethod<&LightComponent::SetOuterCutoff>("SetOuterCutoff");
+    Mngr.AddMethod<&LightComponent::GetRadius>("GetRadius");
+    Mngr.AddMethod<&LightComponent::SetRadius>("SetRadius");
+    Mngr.AddMethod<&LightComponent::GetSize>("GetSize");
+    Mngr.AddMethod<&LightComponent::SetSize>("SetSize");
 }
 
 Settings::ELightType LightComponent::GetLightType() const

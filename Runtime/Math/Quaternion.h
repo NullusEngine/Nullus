@@ -12,6 +12,7 @@ class Vector3;
 class NLS_MATH_API Quaternion
 {
 public:
+    static void Bind();
     union
     {
         struct

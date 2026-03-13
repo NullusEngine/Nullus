@@ -4,8 +4,20 @@
 using namespace NLS;
 using namespace Maths;
 
+#include "Reflection/Compat/ReflMngr.hpp"
+using namespace NLS::UDRefl;
+
 const Vector4 Vector4::One(1.0f, 1.0f, 1.0f, 1.0f);
 const Vector4 Vector4::Zero(0.0f, 0.0f, 0.0f, 0.0f);
+
+void Vector4::Bind()
+{
+    Mngr.RegisterType<Vector4>();
+    Mngr.AddField<&Vector4::x>("x");
+    Mngr.AddField<&Vector4::y>("y");
+    Mngr.AddField<&Vector4::z>("z");
+    Mngr.AddField<&Vector4::w>("w");
+}
 
 Vector4::Vector4(const Vector3& v3, float newW)
     : x(v3.x), y(v3.y), z(v3.z), w(newW)

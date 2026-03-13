@@ -174,6 +174,24 @@ function(nls_detect_compiler_system_includes COMPILER OUT_INCLUDES)
     set(${OUT_INCLUDES} ${_includes} PARENT_SCOPE)
 endfunction()
 
+function(nls_detect_clang_resource_dir OUT_RESOURCE_DIR)
+    set(_resource_dir "")
+    find_program(_clangxx_program NAMES clang++ clang)
+    if(_clangxx_program)
+        execute_process(
+            COMMAND "${_clangxx_program}" -print-resource-dir
+            OUTPUT_VARIABLE _clang_resource_dir
+            ERROR_QUIET
+            RESULT_VARIABLE _clang_resource_result
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        if(_clang_resource_result EQUAL 0 AND EXISTS "${_clang_resource_dir}")
+            set(_resource_dir "${_clang_resource_dir}")
+        endif()
+    endif()
+    set(${OUT_RESOURCE_DIR} "${_resource_dir}" PARENT_SCOPE)
+endfunction()
+
 function(nls_get_common_meta_include_dirs OUT_VAR)
     set(_dirs
         "${NLS_ROOT_DIR}/Runtime"
@@ -349,6 +367,7 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
 
     set(_resource_dir "")
     set(_sysroot "")
+    nls_detect_clang_resource_dir(_resource_dir)
 
     list(FILTER _headers EXCLUDE REGEX "/Gen/")
     list(FILTER _headers EXCLUDE REGEX "/Generated/")

@@ -59,7 +59,20 @@ if(NLS_META_PARSER_WINDOWS_NATIVE)
     add_subdirectory(ThirdParty)
     add_subdirectory(src)
 
-    set(NLS_META_PARSER_EXECUTABLE "$<TARGET_FILE:MetaParser>" CACHE INTERNAL "MetaParser executable path" FORCE)
+    add_custom_target(MetaParser ALL
+        COMMAND "${DOTNET_EXECUTABLE}" publish "${NLS_META_PARSER_PROJECT}" --configuration "$<CONFIG>" --runtime "${NLS_META_PARSER_RUNTIME_ID}" --self-contained false --nologo -o "${NLS_META_PARSER_OUTPUT_DIR}"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        DEPENDS
+            MetaParserManaged
+            "${NLS_META_PARSER_PROJECT}"
+            "${NLS_META_PARSER_LAUNCH_SETTINGS}"
+            "${NLS_META_PARSER_SOURCE_DIR}/Main.cs"
+            "${NLS_META_PARSER_TEMPLATES_DIR}/MetaGenerated.cpp.tt"
+            "${NLS_META_PARSER_TEMPLATES_DIR}/MetaGenerated.h.tt"
+            "${NLS_META_PARSER_CPPAST_CSPROJ}"
+        COMMENT "Publishing C# MetaParser via generated SDK project"
+        VERBATIM
+    )
 else()
     project(MetaParser LANGUAGES NONE)
 

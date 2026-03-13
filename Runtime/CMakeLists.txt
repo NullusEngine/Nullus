@@ -49,6 +49,13 @@ function(nls_choose_meta_parser_compiler OUT_COMPILER OUT_TARGET OUT_SYSTEM_INCL
     set(_target "")
     set(_includes "")
 
+    if(NOT WIN32)
+        find_program(_meta_clangxx NAMES clang++ clang)
+        if(_meta_clangxx)
+            set(_compiler "${_meta_clangxx}")
+        endif()
+    endif()
+
     if(WIN32)
         if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64")
             set(_target "aarch64-pc-windows-msvc")
@@ -64,13 +71,6 @@ function(nls_choose_meta_parser_compiler OUT_COMPILER OUT_TARGET OUT_SYSTEM_INCL
             set(_target "x86_64-apple-darwin")
         endif()
     elseif(UNIX)
-        # Linux: prefer the project compiler by default. Fall back to g++-9 only when available,
-        # as it is currently the known-good compatibility path for the vendored CppAst/ClangSharp runtime
-        # on this project. Keep this branch explicit so future cross-platform cleanup can replace it with
-        # a more generic compiler/include discovery strategy instead of silently depending on host defaults.
-        if(EXISTS "/usr/bin/g++-9")
-            set(_compiler "/usr/bin/g++-9")
-        endif()
         if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
             set(_target "aarch64-linux-gnu")
         else()
@@ -235,8 +235,15 @@ function(nls_detect_apple_sysroot OUT_SYSROOT)
 endfunction()
 
 function(nls_detect_clang_resource_dir OUT_RESOURCE_DIR)
+    set(options)
+    set(oneValueArgs COMPILER)
+    cmake_parse_arguments(NLS "${options}" "${oneValueArgs}" "" ${ARGN})
+
     set(_resource_dir "")
-    find_program(_clangxx_program NAMES clang++ clang)
+    set(_clangxx_program "${NLS_COMPILER}")
+    if(NOT _clangxx_program)
+        find_program(_clangxx_program NAMES clang++ clang)
+    endif()
     if(_clangxx_program)
         execute_process(
             COMMAND "${_clangxx_program}" -print-resource-dir
@@ -421,13 +428,19 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
     else()
         set(_compiler_options -std=c++20)
     endif()
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    if(APPLE AND "${_meta_parser_compiler}" MATCHES "clang\\+\\+|clang$")
+        list(APPEND _compiler_options -stdlib=libc++)
+    endif()
+    if(UNIX AND NOT APPLE AND "${_meta_parser_compiler}" MATCHES "clang\\+\\+|clang$")
+        list(APPEND _compiler_options --gcc-toolchain=/usr)
+    endif()
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR "${_meta_parser_compiler}" MATCHES "clang\\+\\+|clang$")
         list(APPEND _compiler_options -Wno-pragma-once-outside-header)
     endif()
 
     set(_resource_dir "")
     set(_sysroot "")
-    nls_detect_clang_resource_dir(_resource_dir)
+    nls_detect_clang_resource_dir(_resource_dir COMPILER "${_meta_parser_compiler}")
     nls_detect_apple_sysroot(_sysroot)
 
     list(FILTER _headers EXCLUDE REGEX "/Gen/")

@@ -77,18 +77,23 @@ function(nls_choose_meta_parser_compiler OUT_COMPILER OUT_TARGET OUT_SYSTEM_INCL
             set(_target "x86_64-linux-gnu")
         endif()
 
-        foreach(_dir
-            "/usr/include/c++/9"
-            "/usr/include/x86_64-linux-gnu/c++/9"
-            "/usr/include/c++/9/backward"
-            "/usr/lib/gcc/x86_64-linux-gnu/9/include"
-            "/usr/local/include"
-            "/usr/include/x86_64-linux-gnu"
-            "/usr/include")
-            if(EXISTS "${_dir}")
-                list(APPEND _includes "${_dir}")
-            endif()
-        endforeach()
+        nls_detect_compiler_system_includes("${_compiler}" _detected_linux_includes)
+        if(_detected_linux_includes)
+            list(APPEND _includes ${_detected_linux_includes})
+        else()
+            foreach(_dir
+                "/usr/include/c++/9"
+                "/usr/include/x86_64-linux-gnu/c++/9"
+                "/usr/include/c++/9/backward"
+                "/usr/lib/gcc/x86_64-linux-gnu/9/include"
+                "/usr/local/include"
+                "/usr/include/x86_64-linux-gnu"
+                "/usr/include")
+                if(EXISTS "${_dir}")
+                    list(APPEND _includes "${_dir}")
+                endif()
+            endforeach()
+        endif()
     endif()
 
     list(REMOVE_DUPLICATES _includes)
@@ -131,6 +136,42 @@ function(nls_detect_compiler_builtin_defines COMPILER OUT_DEFINES)
 
     list(REMOVE_DUPLICATES _defines)
     set(${OUT_DEFINES} ${_defines} PARENT_SCOPE)
+endfunction()
+
+function(nls_detect_compiler_system_includes COMPILER OUT_INCLUDES)
+    set(_includes "")
+
+    if("${COMPILER}" AND EXISTS "${COMPILER}" AND NOT MSVC)
+        if("${COMPILER}" MATCHES "g..-9$")
+            set(_meta_std_flag "-std=c++2a")
+        else()
+            set(_meta_std_flag "-std=c++20")
+        endif()
+
+        execute_process(
+            COMMAND "${COMPILER}" -E -x c++ ${_meta_std_flag} - -v
+            INPUT_FILE /dev/null
+            OUTPUT_QUIET
+            ERROR_VARIABLE _compiler_verbose
+            RESULT_VARIABLE _compiler_verbose_result
+        )
+
+        if(_compiler_verbose_result EQUAL 0)
+            string(REPLACE "\r" "" _compiler_verbose "${_compiler_verbose}")
+            string(REGEX REPLACE ".*#include <...> search starts here:\n" "" _after_start "${_compiler_verbose}")
+            string(REGEX REPLACE "\nEnd of search list\..*" "" _include_block "${_after_start}")
+            string(REPLACE "\n" ";" _include_lines "${_include_block}")
+            foreach(_line IN LISTS _include_lines)
+                string(STRIP "${_line}" _line)
+                if(_line AND EXISTS "${_line}")
+                    list(APPEND _includes "${_line}")
+                endif()
+            endforeach()
+        endif()
+    endif()
+
+    list(REMOVE_DUPLICATES _includes)
+    set(${OUT_INCLUDES} ${_includes} PARENT_SCOPE)
 endfunction()
 
 function(nls_get_common_meta_include_dirs OUT_VAR)

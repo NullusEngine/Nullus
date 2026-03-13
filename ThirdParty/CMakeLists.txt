@@ -17,6 +17,12 @@ if(NOT TARGET assimp)
     set(ASSIMP_INSTALL OFF)
     set(BUILD_SHARED_LIBS  ${NLS_USE_SHARED_LIBRARY})
     add_subdirectory(assimp)
+    if(APPLE)
+        set_source_files_properties(
+            ${CMAKE_CURRENT_SOURCE_DIR}/assimp/contrib/zip/src/zip.c
+            PROPERTIES COMPILE_OPTIONS "-Wno-shorten-64-to-32"
+        )
+    endif()
     set_target_properties(assimp PROPERTIES FOLDER ${third_party_folder}/assimp)
     set_target_properties(assimp PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${NLS_APP_OUTPUT_PATH}")
     if(TARGET UpdateAssimpLibsDebugSymbolsAndDLLs)

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json.schemastore.org/launchsettings.json",
+  "profiles": {
+    "MetaParser (NLS_Base.precompile.json)": {
+      "commandName": "Project",
+      "commandLineArgs": "@NLS_META_PARSER_DEFAULT_PRECOMPILE_BASE@",
+      "workingDirectory": "@NLS_META_PARSER_INTERMEDIATE_DIR@"
+    },
+    "MetaParser (NLS_Core.precompile.json)": {
+      "commandName": "Project",
+      "commandLineArgs": "@NLS_META_PARSER_DEFAULT_PRECOMPILE_CORE@",
+      "workingDirectory": "@NLS_META_PARSER_INTERMEDIATE_DIR@"
+    }
+  }
+}

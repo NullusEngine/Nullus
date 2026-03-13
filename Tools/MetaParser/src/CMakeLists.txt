@@ -2,9 +2,9 @@ set(_meta_parser_sources
     "${CMAKE_CURRENT_SOURCE_DIR}/Main.cs"
 )
 
-add_executable(MetaParserManaged ${_meta_parser_sources})
+add_executable(MetaParser ${_meta_parser_sources})
 
-set_target_properties(MetaParserManaged PROPERTIES
+set_target_properties(MetaParser PROPERTIES
     DOTNET_TARGET_FRAMEWORK "net8.0"
     VS_GLOBAL_RootNamespace "MetaParser"
     VS_GLOBAL_ImplicitUsings "enable"
@@ -15,5 +15,5 @@ set_target_properties(MetaParserManaged PROPERTIES
 )
 
 if(TARGET CppAst)
-    target_link_libraries(MetaParserManaged PRIVATE CppAst)
+    target_link_libraries(MetaParser PRIVATE CppAst)
 endif()

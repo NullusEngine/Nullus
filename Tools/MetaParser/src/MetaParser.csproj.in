@@ -30,4 +30,8 @@
     <None Include="@NLS_META_PARSER_TEMPLATES_DIR@/MetaGenerated.h.tt" Link="Templates/MetaGenerated.h.tt" CopyToOutputDirectory="PreserveNewest" />
     <None Include="@NLS_META_PARSER_LAUNCH_SETTINGS@" Link="Properties/launchSettings.json" />
   </ItemGroup>
+
+  <PropertyGroup>
+    <PostBuildEventCommand>mkdir "$(OutputPath)Templates" 2>nul &amp;&amp; copy /Y "@NLS_META_PARSER_TEMPLATES_DIR@\MetaGenerated.cpp.tt" "$(OutputPath)Templates\" &amp;&amp; copy /Y "@NLS_META_PARSER_TEMPLATES_DIR@\MetaGenerated.h.tt" "$(OutputPath)Templates\"</PostBuildEventCommand>
+  </PropertyGroup>
 </Project>

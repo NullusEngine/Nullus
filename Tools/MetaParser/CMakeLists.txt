@@ -59,20 +59,8 @@ if(NLS_META_PARSER_WINDOWS_NATIVE)
     add_subdirectory(ThirdParty)
     add_subdirectory(src)
 
-    add_custom_target(MetaParser ALL
-        COMMAND "${DOTNET_EXECUTABLE}" publish "${NLS_META_PARSER_PROJECT}" --configuration "$<CONFIG>" --runtime "${NLS_META_PARSER_RUNTIME_ID}" --self-contained false --nologo -o "${NLS_META_PARSER_OUTPUT_DIR}"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-        DEPENDS
-            MetaParserManaged
-            "${NLS_META_PARSER_PROJECT}"
-            "${NLS_META_PARSER_LAUNCH_SETTINGS}"
-            "${NLS_META_PARSER_SOURCE_DIR}/Main.cs"
-            "${NLS_META_PARSER_TEMPLATES_DIR}/MetaGenerated.cpp.tt"
-            "${NLS_META_PARSER_TEMPLATES_DIR}/MetaGenerated.h.tt"
-            "${NLS_META_PARSER_CPPAST_CSPROJ}"
-        COMMENT "Publishing C# MetaParser via generated SDK project"
-        VERBATIM
-    )
+    # On Windows with VS generator, use dotnet build instead of publish
+    # Template copying is handled via VS_POST_BUILD_EVENT_COMMAND in .csproj
 else()
     project(MetaParser LANGUAGES NONE)
 

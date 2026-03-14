@@ -10,29 +10,21 @@ namespace NLS
 {
     namespace meta
     {
-        template<typename T>
+        template<typename T, typename>
         Argument::Argument(const T &data)
             : m_typeID( typeidof( T ) )
             , m_isArray( meta_traits::IsArray<T>::value )
             , m_data( reinterpret_cast<const void*>( std::addressof( data ) ) )
-        {
-            static_assert( !std::is_same< Argument, T >::value,
-                "Cannot use Argument as an argument"
-            );
-        }
+        { }
 
         ///////////////////////////////////////////////////////////////////////
 
-        template<typename T>
+        template<typename T, typename>
         Argument::Argument(T &data)
             : m_typeID( typeidof( T ) )
             , m_isArray( meta_traits::IsArray<T>::value )
             , m_data( reinterpret_cast<const void*>( std::addressof( data ) ) )
-        {
-            static_assert( !std::is_same< Argument, T >::value,
-                "Cannot use Argument as an argument"
-            );
-        }
+        { }
 
         ///////////////////////////////////////////////////////////////////////
 

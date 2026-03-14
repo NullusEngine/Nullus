@@ -17,6 +17,9 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 # ##############################################################################
 project(Nullus VERSION 1.0.0 LANGUAGES C CXX)
 
+include(CTest)
+enable_testing()
+
 # 设置c++版本要求
 # ##############################################################################
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -94,4 +97,5 @@ endif()
 add_subdirectory("ThirdParty")
 add_subdirectory("Tools")
 add_subdirectory("Runtime")
+add_subdirectory("Tests")
 add_subdirectory("Project")

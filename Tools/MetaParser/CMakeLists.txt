@@ -60,6 +60,13 @@ if(NLS_META_PARSER_WINDOWS_NATIVE)
     set(CMAKE_DOTNET_SDK "Microsoft.NET.Sdk")
 
     add_subdirectory(ThirdParty)
+    if(TARGET CppAst)
+        set_target_properties(CppAst PROPERTIES
+            VS_GLOBAL_AllowUnsafeBlocks "true"
+            VS_GLOBAL_GenerateAssemblyInfo "false"
+            VS_GLOBAL_GenerateTargetFrameworkAttribute "false"
+        )
+    endif()
     add_subdirectory(src)
     set(NLS_META_PARSER_EXECUTABLE "${CMAKE_CURRENT_BINARY_DIR}/src/$<CONFIG>/MetaParser.exe" CACHE INTERNAL "MetaParser executable path" FORCE)
 

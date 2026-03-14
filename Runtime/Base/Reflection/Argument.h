@@ -8,6 +8,7 @@
 
 #include "TypeConfig.h"
 
+#include <type_traits>
 #include <vector>
 
 namespace NLS
@@ -25,10 +26,10 @@ namespace NLS
             Argument(Variant &obj);
             Argument(const Variant &obj);
 
-            template<typename T>
+            template<typename T, typename = typename std::enable_if<!std::is_same<typename std::decay<T>::type, Argument>::value>::type>
             Argument(const T &data);
 
-            template<typename T>
+            template<typename T, typename = typename std::enable_if<!std::is_same<typename std::decay<T>::type, Argument>::value>::type>
             Argument(T &data);
 
             Argument &operator=(const Argument &rhs);

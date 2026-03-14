@@ -24,3 +24,6 @@ jobs:
 
       - name: Build
         run: ./build_macos.sh ${{ matrix.configuration }}
+
+      - name: Run unit tests
+        run: ctest --test-dir build -C ${{ matrix.configuration }} --output-on-failure

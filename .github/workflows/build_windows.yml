@@ -26,3 +26,7 @@ jobs:
       - name: Build
         shell: cmd
         run: build_windows.bat ${{ matrix.configuration }} ${{ matrix.platform }}
+
+      - name: Run unit tests
+        shell: cmd
+        run: ctest --test-dir build -C ${{ matrix.configuration }} --output-on-failure

@@ -33,3 +33,6 @@ jobs:
 
       - name: Build
         run: ./build_linux.sh ${{ matrix.configuration }}
+
+      - name: Run unit tests
+        run: ctest --test-dir build --output-on-failure

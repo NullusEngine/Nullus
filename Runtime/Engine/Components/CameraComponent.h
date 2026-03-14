@@ -4,12 +4,13 @@
 #include "Rendering/Entities/Camera.h"
 #include "Components/Component.h"
 #include "EngineDef.h"
+#include "Reflection/Macros.h"
 namespace NLS::Engine::Components
 {
 	/**
 	* Represents a camera entity. Its position will determine its view matrix
 	*/
-	class NLS_ENGINE_API CameraComponent : public Component
+	Meta() class NLS_ENGINE_API CameraComponent : public Component
 	{
     public:
         static void Bind();

@@ -8,6 +8,6 @@ void AssemblyCore::Initialize()
 {
     Serializer::Instance()->AddHandler<CommonValueHandler>();
     // Register all reflection types
-    meta_generated::RegisterReflectionTypes();
+    NLS_META_GENERATED_REGISTER_FUNCTION();
 }
 }

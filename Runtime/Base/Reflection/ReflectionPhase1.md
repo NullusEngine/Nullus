@@ -1,5 +1,7 @@
 # Reflection Phase 1（可用版）开发约束
 
+> Current verified workflow: `ReflectionBindingWorkflow.md` and `Runtime/Base/Reflection/ReflectionBindingWorkflow.md`
+
 ## 目标
 - 反射对象统一以 `NLS::meta::Object` 为基类。
 - 通过 `Tools/MetaParser` 自动生成注册代码（`MetaGenerated.cpp`）。

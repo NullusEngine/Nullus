@@ -54,7 +54,7 @@ void <#= functionName #>(NLS::meta::ReflectionDatabase& db)
 } #>
 }
 
-void RegisterReflectionTypes()
+void <#= functionName #>()
 {
     <#= functionName #>(NLS::meta::ReflectionDatabase::Instance());
 }

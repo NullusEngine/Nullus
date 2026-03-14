@@ -1,6 +1,7 @@
 #pragma once
 #include <vector>
 #include "EngineDef.h"
+#include "Reflection/Macros.h"
 #include "Reflection/Compat/ReflMngr.hpp"
 #include "Eventing/Event.h"
 #include "Components/Component.h"
@@ -12,7 +13,7 @@ namespace Components
 {
     class TransformComponent;
 }
-class NLS_ENGINE_API GameObject
+Meta() class NLS_ENGINE_API GameObject
 {
 public:
     static void Bind();

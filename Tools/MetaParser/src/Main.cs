@@ -23,6 +23,10 @@ internal sealed record ReflectTypeInfo(
     public string QualifiedName => FullTypeName;
 }
 
+internal sealed record TextMemberParseResult(
+    List<ReflectFieldInfo> Fields,
+    List<ReflectMethodInfo> Methods);
+
 internal sealed class PrecompileParams
 {
     public string RootDir { get; set; } = string.Empty;
@@ -93,15 +97,21 @@ internal static class Program
 
         var orderedTypes = types
             .DistinctBy(t => t.QualifiedName)
-            .OrderBy(t => t.HeaderPath, StringComparer.Ordinal)
+            .OrderBy(t => t.Bases.Count)
+            .ThenBy(t => t.HeaderPath, StringComparer.Ordinal)
             .ThenBy(t => t.QualifiedName, StringComparer.Ordinal)
             .ToList();
 
-        var templateData = BuildTemplateData(orderedTypes);
+        var templateData = BuildTemplateData(orderedTypes, config.TargetName);
         var exeDir = AppContext.BaseDirectory;
         var templateDir = Path.Combine(exeDir, "Templates");
 
-        var headerText = RenderT4(Path.Combine(templateDir, "MetaGenerated.h.tt"), new Dictionary<string, object?>());
+        var headerSession = new Dictionary<string, object?>
+        {
+            ["FunctionName"] = templateData["FunctionName"]
+        };
+
+        var headerText = RenderT4(Path.Combine(templateDir, "MetaGenerated.h.tt"), headerSession);
         var sourceText = RenderT4(Path.Combine(templateDir, "MetaGenerated.cpp.tt"), templateData);
 
         File.WriteAllText(Path.Combine(outputDir, "MetaGenerated.h"), headerText, new UTF8Encoding(false));
@@ -111,9 +121,11 @@ internal static class Program
         return 0;
     }
 
-    private static Dictionary<string, object?> BuildTemplateData(IReadOnlyList<ReflectTypeInfo> types)
+    private static Dictionary<string, object?> BuildTemplateData(IReadOnlyList<ReflectTypeInfo> types, string targetName)
     {
         var includes = types.Select(t => t.HeaderPath).Distinct(StringComparer.Ordinal).ToList();
+        var sanitizedTargetName = SanitizeIdentifier(string.IsNullOrWhiteSpace(targetName) ? "UnknownTarget" : targetName);
+        var functionName = $"RegisterReflectionTypes_{sanitizedTargetName}";
 
         var typeModels = types.Select(type => new Dictionary<string, object>
         {
@@ -134,7 +146,7 @@ internal static class Program
         {
             ["Includes"] = includes.Cast<object?>().ToList(),
             ["Types"] = typeModels,
-            ["FunctionName"] = "RegisterReflectionTypes"
+            ["FunctionName"] = functionName
         };
     }
 
@@ -181,6 +193,19 @@ internal static class Program
 
     private static IEnumerable<ReflectTypeInfo> ParseHeader(string rootDir, string headerPath, PrecompileParams config)
     {
+        try
+        {
+            return ParseHeaderWithCppAst(rootDir, headerPath, config).ToList();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[MetaParser] Warning: CppAst fallback for {headerPath}: {ex.Message}");
+            return ParseHeaderTextFallback(rootDir, headerPath).ToList();
+        }
+    }
+
+    private static IEnumerable<ReflectTypeInfo> ParseHeaderWithCppAst(string rootDir, string headerPath, PrecompileParams config)
+    {
         var options = CreateOptions(config);
         var compilation = CppParser.ParseFile(headerPath, options);
         if (compilation.HasErrors)
@@ -195,7 +220,7 @@ internal static class Program
             var sourceFileRaw = cls.SourceFile ?? string.Empty;
             var sourceFile = string.IsNullOrWhiteSpace(sourceFileRaw) ? string.Empty : Path.GetFullPath(sourceFileRaw);
             var isSameHeader = !string.IsNullOrEmpty(sourceFile) && string.Equals(sourceFile, normalizedHeader, PathComparison);
-            if (!cls.IsDefinition || !isSameHeader || !HasReflectionMarker(cls) || !InheritsReflectionObject(cls))
+            if (!cls.IsDefinition || !isSameHeader || !HasReflectionMarker(cls))
                 continue;
 
             var fullTypeName = string.IsNullOrWhiteSpace(cls.FullName)
@@ -204,14 +229,66 @@ internal static class Program
             if (string.IsNullOrWhiteSpace(fullTypeName))
                 continue;
 
+            List<ReflectBaseInfo> bases;
+            List<ReflectFieldInfo> fields;
+            List<ReflectMethodInfo> methods;
+
+            try
+            {
+                bases = ExtractBases(cls);
+                fields = ExtractFields(cls);
+                methods = ExtractMethods(cls);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[MetaParser] Warning: partial reflection fallback for {fullTypeName}: {ex.Message}");
+                bases = TryExtract(() => ExtractBases(cls));
+                fields = TryExtract(() => ExtractFields(cls));
+                methods = TryExtract(() => ExtractMethods(cls));
+            }
+
             yield return new ReflectTypeInfo(
                 cls.Name,
                 ExtractNamespace(fullTypeName, cls.Name),
                 fullTypeName,
                 ToGeneratedIncludePath(rootDir, normalizedHeader),
-                ExtractBases(cls),
-                ExtractFields(cls),
-                ExtractMethods(cls));
+                bases,
+                fields,
+                methods);
+        }
+    }
+
+    private static IEnumerable<ReflectTypeInfo> ParseHeaderTextFallback(string rootDir, string headerPath)
+    {
+        var text = File.ReadAllText(headerPath);
+        var matches = Regex.Matches(
+            text,
+            @"\bMeta\s*\(\s*\)\s+(class|struct)\s+(?:[\w_]+\s+)*(?<name>[A-Za-z_]\w*)\s*(?::\s*(?<bases>[^{]+))?\s*\{",
+            RegexOptions.CultureInvariant);
+
+        foreach (Match match in matches.Cast<Match>())
+        {
+            var className = match.Groups["name"].Value;
+            if (string.IsNullOrWhiteSpace(className))
+                continue;
+
+            var bodyStart = match.Index + match.Length - 1;
+            var body = ExtractBraceBody(text, bodyStart);
+            var namespacePrefix = ExtractNamespaceFromText(text[..match.Index]);
+            var fullTypeName = string.IsNullOrWhiteSpace(namespacePrefix)
+                ? className
+                : $"{namespacePrefix}::{className}";
+
+            var members = ExtractMembersFromText(body, className, match.Groups[1].Value == "struct");
+
+            yield return new ReflectTypeInfo(
+                className,
+                namespacePrefix,
+                fullTypeName,
+                ToGeneratedIncludePath(rootDir, Path.GetFullPath(headerPath)),
+                ParseBasesFromText(match.Groups["bases"].Value, namespacePrefix),
+                [],
+                members.Methods);
         }
     }
 
@@ -220,46 +297,280 @@ internal static class Program
         var result = new List<ReflectBaseInfo>();
         foreach (var baseType in cls.BaseTypes)
         {
-            if (baseType.Visibility != CppVisibility.Public && baseType.Visibility != CppVisibility.Default)
-                continue;
+            try
+            {
+                if (baseType.Visibility != CppVisibility.Public && baseType.Visibility != CppVisibility.Default)
+                    continue;
 
-            string typeName;
-            if (baseType.Type is CppClass baseClass && !string.IsNullOrWhiteSpace(baseClass.FullName))
-                typeName = NormalizeTypeName(baseClass.FullName);
-            else
-                typeName = NormalizeTypeName(baseType.Type.GetDisplayName());
+                string typeName;
+                if (baseType.Type is CppClass baseClass && !string.IsNullOrWhiteSpace(baseClass.FullName))
+                    typeName = NormalizeTypeName(baseClass.FullName);
+                else
+                    typeName = NormalizeTypeName(baseType.Type.GetDisplayName());
 
-            if (string.IsNullOrWhiteSpace(typeName))
-                continue;
+                if (string.IsNullOrWhiteSpace(typeName))
+                    continue;
 
-            result.Add(new ReflectBaseInfo(typeName));
+                result.Add(new ReflectBaseInfo(typeName));
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[MetaParser] Warning: skipping base on {cls.FullName}: {ex.Message}");
+            }
         }
         return result.DistinctBy(x => x.TypeName).ToList();
     }
 
     private static List<ReflectFieldInfo> ExtractFields(CppClass cls)
     {
-        return cls.Fields
-            .Where(f => f.Visibility == CppVisibility.Public || f.Visibility == CppVisibility.Default)
-            .Where(f => f.StorageQualifier != CppStorageQualifier.Static)
-            .Where(f => !string.IsNullOrWhiteSpace(f.Name))
-            .Select(f => new ReflectFieldInfo(f.Name, NormalizeTypeName(f.Type.GetDisplayName())))
-            .Where(f => !string.IsNullOrWhiteSpace(f.TypeName))
+        var result = new List<ReflectFieldInfo>();
+        foreach (var field in cls.Fields)
+        {
+            try
+            {
+                if (field.Visibility != CppVisibility.Public && field.Visibility != CppVisibility.Default)
+                    continue;
+                if (field.StorageQualifier == CppStorageQualifier.Static)
+                    continue;
+                if (string.IsNullOrWhiteSpace(field.Name))
+                    continue;
+
+                var typeName = NormalizeTypeName(field.Type.GetDisplayName());
+                if (string.IsNullOrWhiteSpace(typeName))
+                    continue;
+
+                result.Add(new ReflectFieldInfo(field.Name, typeName));
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[MetaParser] Warning: skipping field on {cls.FullName}: {ex.Message}");
+            }
+        }
+
+        return result
             .DistinctBy(f => f.Name)
             .ToList();
     }
 
     private static List<ReflectMethodInfo> ExtractMethods(CppClass cls)
     {
-        return cls.Functions
-            .Where(m => m.Visibility == CppVisibility.Public || m.Visibility == CppVisibility.Default)
-            .Where(m => !m.IsStatic)
-            .Where(m => !m.IsConstructor && !m.IsDestructor)
-            .Where(m => !m.Name.StartsWith("operator", StringComparison.Ordinal))
-            .Where(m => !string.IsNullOrWhiteSpace(m.Name))
-            .Select(m => new ReflectMethodInfo(m.Name))
-            .DistinctBy(m => m.Name)
+        var candidateNames = new List<string>();
+        foreach (var method in cls.Functions)
+        {
+            try
+            {
+                if (method.Visibility != CppVisibility.Public && method.Visibility != CppVisibility.Default)
+                    continue;
+                if (method.IsStatic || method.IsConstructor || method.IsDestructor)
+                    continue;
+                if (string.IsNullOrWhiteSpace(method.Name) || method.Name.StartsWith("operator", StringComparison.Ordinal))
+                    continue;
+
+                candidateNames.Add(method.Name);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[MetaParser] Warning: skipping method discovery on {cls.FullName}: {ex.Message}");
+            }
+        }
+
+        var overloadedMethodNames = candidateNames
+            .GroupBy(name => name, StringComparer.Ordinal)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .ToHashSet(StringComparer.Ordinal);
+
+        return candidateNames
+            .Where(name => !overloadedMethodNames.Contains(name))
+            .Distinct(StringComparer.Ordinal)
+            .Select(name => new ReflectMethodInfo(name))
             .ToList();
+    }
+
+    private static List<T> TryExtract<T>(Func<List<T>> extractor)
+    {
+        try
+        {
+            return extractor();
+        }
+        catch
+        {
+            return [];
+        }
+    }
+
+    private static string ExtractBraceBody(string text, int openBraceIndex)
+    {
+        if (openBraceIndex < 0 || openBraceIndex >= text.Length || text[openBraceIndex] != '{')
+            return string.Empty;
+
+        var depth = 0;
+        for (var i = openBraceIndex; i < text.Length; i++)
+        {
+            if (text[i] == '{')
+                depth++;
+            else if (text[i] == '}')
+            {
+                depth--;
+                if (depth == 0)
+                    return text[(openBraceIndex + 1)..i];
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static string ExtractNamespaceFromText(string prefix)
+    {
+        var namespaceStack = new Stack<string[]>();
+        foreach (Match match in Regex.Matches(prefix, @"namespace\s+([A-Za-z_][\w:]*)\s*\{|[{}]", RegexOptions.CultureInvariant).Cast<Match>())
+        {
+            if (match.Groups[1].Success)
+            {
+                namespaceStack.Push(match.Groups[1].Value
+                    .Split("::", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+            }
+            else if (match.Value == "}" && namespaceStack.Count > 0)
+            {
+                namespaceStack.Pop();
+            }
+        }
+
+        return string.Join("::", namespaceStack.Reverse().SelectMany(static parts => parts));
+    }
+
+    private static List<ReflectBaseInfo> ParseBasesFromText(string basesText, string namespacePrefix)
+    {
+        if (string.IsNullOrWhiteSpace(basesText))
+            return [];
+
+        return basesText
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(b => Regex.Replace(b, @"\b(public|protected|private|virtual)\b", string.Empty))
+            .Select(NormalizeTypeName)
+            .Select(b => QualifyTypeName(b, namespacePrefix))
+            .Where(static b => !string.IsNullOrWhiteSpace(b))
+            .Distinct(StringComparer.Ordinal)
+            .Select(b => new ReflectBaseInfo(b))
+            .ToList();
+    }
+
+    private static TextMemberParseResult ExtractMembersFromText(string body, string className, bool defaultPublic)
+    {
+        body = StripBlockComments(body);
+
+        var methods = new List<ReflectMethodInfo>();
+        var methodNames = new List<string>();
+
+        var currentAccess = defaultPublic ? "public" : "private";
+        var currentStatement = new StringBuilder();
+        var braceDepth = 0;
+
+        foreach (var rawLine in body.Split(new[] { '\r', '\n' }, StringSplitOptions.None))
+        {
+            var line = StripInlineComments(rawLine).Trim();
+            if (string.IsNullOrWhiteSpace(line))
+                continue;
+
+            if (braceDepth == 0)
+            {
+                if (line == "public:")
+                {
+                    currentAccess = "public";
+                    continue;
+                }
+                if (line == "protected:")
+                {
+                    currentAccess = "protected";
+                    continue;
+                }
+                if (line == "private:")
+                {
+                    currentAccess = "private";
+                    continue;
+                }
+            }
+
+            if (currentAccess != "public")
+            {
+                braceDepth += line.Count(static c => c == '{');
+                braceDepth -= line.Count(static c => c == '}');
+                continue;
+            }
+
+            currentStatement.Append(' ').Append(line);
+
+            braceDepth += line.Count(static c => c == '{');
+            braceDepth -= line.Count(static c => c == '}');
+
+            if (braceDepth == 0 && (line.EndsWith(";", StringComparison.Ordinal) || line.EndsWith("}", StringComparison.Ordinal)))
+            {
+                var statement = Regex.Replace(currentStatement.ToString(), @"\s+", " ").Trim();
+                currentStatement.Clear();
+
+                if (statement.Contains(" enum ", StringComparison.Ordinal)
+                    || statement.StartsWith("enum ", StringComparison.Ordinal)
+                    || statement.StartsWith("using ", StringComparison.Ordinal)
+                    || statement.StartsWith("typedef ", StringComparison.Ordinal)
+                    || statement.StartsWith("friend ", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                if (statement.Contains('('))
+                {
+                    var nameMatches = Regex.Matches(statement, @"(?<name>[~A-Za-z_]\w*)\s*\([^;{}]*\)", RegexOptions.CultureInvariant);
+                    if (nameMatches.Count == 0)
+                        continue;
+
+                    var methodName = nameMatches[^1].Groups["name"].Value;
+                    if (string.IsNullOrWhiteSpace(methodName)
+                        || methodName == className
+                        || methodName == $"~{className}"
+                        || methodName.StartsWith("operator", StringComparison.Ordinal)
+                        || statement.Contains(" static ", StringComparison.Ordinal)
+                        || statement.StartsWith("static ", StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    methodNames.Add(methodName);
+                    continue;
+                }
+            }
+        }
+
+        var overloaded = methodNames
+            .GroupBy(name => name, StringComparer.Ordinal)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .ToHashSet(StringComparer.Ordinal);
+
+        methods.AddRange(methodNames
+            .Where(name => !overloaded.Contains(name))
+            .Distinct(StringComparer.Ordinal)
+            .Select(name => new ReflectMethodInfo(name)));
+
+        return new TextMemberParseResult(
+            [],
+            methods);
+    }
+
+    private static string StripInlineComments(string line)
+    {
+        var commentIndex = line.IndexOf("//", StringComparison.Ordinal);
+        return commentIndex >= 0 ? line[..commentIndex] : line;
+    }
+
+    private static string StripBlockComments(string text)
+        => Regex.Replace(text, @"/\*.*?\*/", string.Empty, RegexOptions.Singleline | RegexOptions.CultureInvariant);
+
+    private static string QualifyTypeName(string typeName, string namespacePrefix)
+    {
+        if (string.IsNullOrWhiteSpace(typeName) || string.IsNullOrWhiteSpace(namespacePrefix) || typeName.Contains("::", StringComparison.Ordinal))
+            return typeName;
+
+        return $"{namespacePrefix}::{typeName}";
     }
 
     private static CppParserOptions CreateOptions(PrecompileParams config)
@@ -348,7 +659,7 @@ internal static class Program
 
     private static IEnumerable<CppClass> EnumerateAllClasses(CppCompilation compilation)
     {
-        foreach (var cls in EnumerateClasses(compilation.Classes))
+        foreach (var cls in compilation.Classes)
             yield return cls;
         foreach (var ns in compilation.Namespaces)
             foreach (var cls in EnumerateNamespaceClasses(ns))
@@ -357,21 +668,11 @@ internal static class Program
 
     private static IEnumerable<CppClass> EnumerateNamespaceClasses(CppNamespace ns)
     {
-        foreach (var cls in EnumerateClasses(ns.Classes))
+        foreach (var cls in ns.Classes)
             yield return cls;
         foreach (var child in ns.Namespaces)
             foreach (var cls in EnumerateNamespaceClasses(child))
                 yield return cls;
-    }
-
-    private static IEnumerable<CppClass> EnumerateClasses(IEnumerable<CppClass> classes)
-    {
-        foreach (var cls in classes)
-        {
-            yield return cls;
-            foreach (var nested in EnumerateClasses(cls.Classes))
-                yield return nested;
-        }
     }
 
     private static bool HasReflectionMarker(CppClass cls)
@@ -387,10 +688,11 @@ internal static class Program
         if (string.IsNullOrWhiteSpace(cls.Name))
             return false;
 
-        return text.Contains($"Meta() class {cls.Name}", StringComparison.Ordinal)
-               || text.Contains($"Meta() struct {cls.Name}", StringComparison.Ordinal)
-               || text.Contains($"META() class {cls.Name}", StringComparison.Ordinal)
-               || text.Contains($"META() struct {cls.Name}", StringComparison.Ordinal)
+        var escapedName = Regex.Escape(cls.Name);
+        return Regex.IsMatch(text, $@"\bMeta\s*\(\s*\)\s+class\b[\s\w:]*\b{escapedName}\b", RegexOptions.CultureInvariant)
+               || Regex.IsMatch(text, $@"\bMeta\s*\(\s*\)\s+struct\b[\s\w:]*\b{escapedName}\b", RegexOptions.CultureInvariant)
+               || Regex.IsMatch(text, $@"\bMETA\s*\(\s*\)\s+class\b[\s\w:]*\b{escapedName}\b", RegexOptions.CultureInvariant)
+               || Regex.IsMatch(text, $@"\bMETA\s*\(\s*\)\s+struct\b[\s\w:]*\b{escapedName}\b", RegexOptions.CultureInvariant)
                || text.Contains($"CLASS({cls.Name}", StringComparison.Ordinal)
                || text.Contains($"STRUCT({cls.Name}", StringComparison.Ordinal);
     }
@@ -399,24 +701,6 @@ internal static class Program
         => attribute.Kind == AttributeKind.AnnotateAttribute
            || string.Equals(attribute.Name, "annotate", StringComparison.OrdinalIgnoreCase)
            || attribute.Name.Contains("annotate", StringComparison.OrdinalIgnoreCase);
-
-    private static bool InheritsReflectionObject(CppClass cls)
-    {
-        foreach (var baseType in cls.BaseTypes)
-        {
-            var display = baseType.Type.GetDisplayName();
-            if (display == "Object" || display == "NLS::meta::Object" || display.EndsWith("::Object", StringComparison.Ordinal))
-                return true;
-
-            if (baseType.Type is CppClass baseClass)
-            {
-                var baseName = baseClass.FullName;
-                if (baseName == "NLS::meta::Object" || baseName.EndsWith("::Object", StringComparison.Ordinal))
-                    return true;
-            }
-        }
-        return false;
-    }
 
     private static string ExtractNamespace(string fullName, string className)
     {
@@ -435,6 +719,9 @@ internal static class Program
 
     private static string NormalizeTypeName(string typeName)
         => string.IsNullOrWhiteSpace(typeName) ? string.Empty : typeName.Replace("class ", string.Empty).Replace("struct ", string.Empty).Trim();
+
+    private static string SanitizeIdentifier(string value)
+        => Regex.Replace(value, @"[^A-Za-z0-9_]", "_", RegexOptions.CultureInvariant);
 
     private static StringComparison PathComparison => OperatingSystem.IsWindows()
         ? StringComparison.OrdinalIgnoreCase

@@ -14,7 +14,7 @@ namespace NLS
 { 
     namespace meta
     {
-        class MetaProperty : public Object
+        Meta() class MetaProperty : public Object
         {
 
         };

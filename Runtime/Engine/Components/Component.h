@@ -1,12 +1,13 @@
 #pragma once
 #include "EngineDef.h"
+#include "Reflection/Macros.h"
 
 namespace NLS::Engine
 {
 class GameObject;
 namespace Components
 {
-class NLS_ENGINE_API Component
+Meta() class NLS_ENGINE_API Component
 {
 public:
     static void Bind();

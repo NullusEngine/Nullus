@@ -4,6 +4,7 @@
 #include "Vector3.h"
 #include "Quaternion.h"
 #include "EngineDef.h"
+#include "Reflection/Macros.h"
 #include <vector>
 #include "Components/Component.h"
 #include <Math/Transform.h>
@@ -18,7 +19,7 @@ namespace Engine
 {
 namespace Components
 {
-class NLS_ENGINE_API TransformComponent : public Component
+Meta() class NLS_ENGINE_API TransformComponent : public Component
 {
 public:
     static void Bind();

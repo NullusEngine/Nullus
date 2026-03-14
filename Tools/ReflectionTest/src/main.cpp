@@ -1,8 +1,74 @@
-#include "Reflection/Type.h"
+#include "Assembly.h"
+#include "Core/AssemblyCore.h"
+#include "Engine/AssemblyEngine.h"
+#include "Reflection/Field.h"
+#include "Reflection/Method.h"
 #include "Reflection/ReflectionDatabase.h"
+#include "Reflection/Type.h"
 
 #include <iostream>
+#include <string>
+#include <vector>
+namespace
+{
+using NLS::meta::Field;
+using NLS::meta::Method;
+using NLS::meta::Type;
 
+struct TypeExpectation
+{
+    std::string name;
+    std::vector<std::string> requiredMethods;
+    std::vector<std::string> requiredFields;
+    std::string requiredBase;
+};
+
+bool Require(bool condition, const std::string& message)
+{
+    if (!condition)
+    {
+        std::cerr << "[FAIL] " << message << std::endl;
+        return false;
+    }
+
+    return true;
+}
+
+bool RequireValidType(const TypeExpectation& expectation)
+{
+    const Type type = Type::GetFromName(expectation.name);
+    if (!Require(type.IsValid(), "Type was not registered: " + expectation.name))
+        return false;
+
+    if (!expectation.requiredBase.empty())
+    {
+        const Type baseType = Type::GetFromName(expectation.requiredBase);
+        if (!Require(baseType.IsValid(), "Required base type was not registered: " + expectation.requiredBase))
+            return false;
+        if (!Require(type.DerivesFrom(baseType), expectation.name + " does not derive from " + expectation.requiredBase))
+            return false;
+    }
+
+    for (const std::string& fieldName : expectation.requiredFields)
+    {
+        const Field& field = type.GetField(fieldName);
+        if (!Require(field.IsValid(), expectation.name + " is missing reflected field " + fieldName))
+            return false;
+    }
+
+    for (const std::string& methodName : expectation.requiredMethods)
+    {
+        const Method& method = type.GetMethod(methodName);
+        if (!Require(method.IsValid(), expectation.name + " is missing reflected method " + methodName))
+            return false;
+    }
+
+    std::cout << "[PASS] " << expectation.name << std::endl;
+    return true;
+}
+} // namespace
+
+#if 0
 int main()
 {
     std::cout << "=== Reflection System Test ===" << std::endl;
@@ -29,5 +95,47 @@ int main()
     std::cout << "✓ Reflected type found: " << sampleType.GetName() << std::endl;
     std::cout << "=== All tests passed! ===" << std::endl;
 
+    return 0;
+}
+#endif
+
+int main()
+{
+    std::cout << "=== Reflection Registration Test ===" << std::endl;
+
+    auto& assembly = NLS::Assembly::Instance();
+    assembly.Load<NLS::AssemblyCore>();
+    assembly.Load<NLS::Engine::AssemblyEngine>();
+
+    auto& db = NLS::meta::ReflectionDatabase::Instance();
+    (void)db;
+
+    const std::vector<TypeExpectation> expectations = {
+        {"NLS::meta::MetaParserFieldMethodSample", {"GetValue", "SetValue"}, {"Value"}, ""},
+        {"NLS::meta::MetaProperty", {}, {}, ""},
+        {"NLS::meta::ReflectionObjectSample", {"OnSerialize"}, {}, ""},
+        {"NLS::meta::TestObject", {"OnSerialize", "OnDeserialize"}, {}, ""},
+        {"NLS::Engine::Components::Component", {"CreateBy"}, {}, ""},
+        {"NLS::Engine::Components::TransformComponent", {"SetLocalPosition", "GetWorldMatrix"}, {}, "NLS::Engine::Components::Component"},
+        {"NLS::Engine::Components::CameraComponent", {"SetFov", "GetCamera"}, {}, "NLS::Engine::Components::Component"},
+        {"NLS::Engine::Components::LightComponent", {"SetIntensity", "GetData"}, {}, "NLS::Engine::Components::Component"},
+        {"NLS::Engine::Components::MeshRenderer", {"SetModel", "GetModel"}, {}, "NLS::Engine::Components::Component"},
+        {"NLS::Engine::Components::MaterialRenderer", {"FillWithMaterial", "GetUserMatrix"}, {}, "NLS::Engine::Components::Component"},
+        {"NLS::Engine::Components::SkyBoxComponent", {"SetCubeMap", "GetModel"}, {}, "NLS::Engine::Components::Component"},
+        {"NLS::Engine::GameObject", {"GetName", "SetTag"}, {}, ""},
+        {"NLS::Engine::SceneSystem::Scene", {"Play", "GetActors"}, {}, ""},
+    };
+
+    bool allPassed = true;
+    for (const TypeExpectation& expectation : expectations)
+        allPassed = RequireValidType(expectation) && allPassed;
+
+    if (!allPassed)
+    {
+        std::cerr << "=== Reflection tests failed ===" << std::endl;
+        return 1;
+    }
+
+    std::cout << "=== All reflection tests passed ===" << std::endl;
     return 0;
 }

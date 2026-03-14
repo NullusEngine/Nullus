@@ -1,5 +1,7 @@
 # MetaParser 迁移说明（已切换到 C# 路线）
 
+> Current verified workflow: `ReflectionBindingWorkflow.md` and `Runtime/Base/Reflection/ReflectionBindingWorkflow.md`
+
 ## 结论（重要）
 
 **C++ MetaParser 路线已移除**。当前工程仅支持：

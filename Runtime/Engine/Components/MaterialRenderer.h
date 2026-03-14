@@ -3,6 +3,7 @@
 #include <array>
 #include "Components/Component.h"
 #include "EngineDef.h"
+#include "Reflection/Macros.h"
 #include "Math/Matrix4.h"
 constexpr uint8_t kMaxMaterialCount = 0xFF;
 namespace NLS::Render::Resources
@@ -17,7 +18,7 @@ namespace Components
 /**
  * A component that handle a material list, necessary for model rendering
  */
-class NLS_ENGINE_API MaterialRenderer : public Component
+Meta() class NLS_ENGINE_API MaterialRenderer : public Component
 {
 public:
     static void Bind();

@@ -21,6 +21,9 @@ project(Nullus VERSION 1.0.0 LANGUAGES C CXX)
 # ##############################################################################
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 20)
+if(MSVC)
+    add_compile_options(/FS /source-charset:utf-8 /execution-charset:utf-8)
+endif()
 
 # 确定编译目标为32位还是64位
 # ##############################################################################

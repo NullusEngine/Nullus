@@ -7,13 +7,14 @@
 #include <Rendering/Resources/Material.h>
 
 #include "Components/Component.h"
+#include "Reflection/Macros.h"
 
 namespace NLS::Engine::Components
 {
 	/**
 	* A ModelRenderer is necessary in combination with a MaterialRenderer to render a model in the world
 	*/
-	class NLS_ENGINE_API SkyBoxComponent : public Component
+	Meta() class NLS_ENGINE_API SkyBoxComponent : public Component
 	{
     public:
         static void Bind();

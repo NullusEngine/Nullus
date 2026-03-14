@@ -4,12 +4,13 @@
 
 #include "Components/Component.h"
 #include "EngineDef.h"
+#include "Reflection/Macros.h"
 namespace NLS::Engine::Components
 {
 /**
  * Base class for any light
  */
-class NLS_ENGINE_API LightComponent : public Component
+Meta() class NLS_ENGINE_API LightComponent : public Component
 {
 public:
     static void Bind();

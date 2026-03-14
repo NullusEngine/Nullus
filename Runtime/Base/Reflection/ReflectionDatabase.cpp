@@ -57,7 +57,7 @@ namespace NLS
             stringType.AddConstructor<std::string, false, true>( { } );
 
             // Register user-defined reflection types (avoid recursive Instance() in ctor)
-            NLS::meta_generated::RegisterReflectionTypes(*this);
+            NLS_META_GENERATED_REGISTER_FUNCTION(*this);
         }
 
         ///////////////////////////////////////////////////////////////////////

@@ -1,10 +1,15 @@
 <#@ template language="C#" hostspecific="true" #>
+<#
+    string functionName = (string)(Session["FunctionName"] ?? "RegisterReflectionTypes_UnknownTarget");
+#>
 #pragma once
 
 #include "Reflection/ReflectionDatabase.h"
 
 namespace NLS::meta_generated
 {
-void RegisterReflectionTypes(NLS::meta::ReflectionDatabase& db);
-void RegisterReflectionTypes();
+void <#= functionName #>(NLS::meta::ReflectionDatabase& db);
+void <#= functionName #>();
 }
+
+#define NLS_META_GENERATED_REGISTER_FUNCTION ::NLS::meta_generated::<#= functionName #>

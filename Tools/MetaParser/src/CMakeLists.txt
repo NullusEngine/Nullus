@@ -9,6 +9,7 @@ set_target_properties(MetaParser PROPERTIES
     VS_GLOBAL_RootNamespace "MetaParser"
     VS_GLOBAL_ImplicitUsings "enable"
     VS_GLOBAL_Nullable "enable"
+    VS_GLOBAL_AppendTargetFrameworkToOutputPath "false"
     VS_GLOBAL_CopyLocalLockFileAssemblies "true"
     VS_PACKAGE_REFERENCES "Mono.TextTemplating_3.0.0"
     FOLDER Tools

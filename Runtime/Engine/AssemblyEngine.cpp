@@ -7,6 +7,7 @@
 #include "Components/MaterialRenderer.h"
 #include "Components/SkyBoxComponent.h"
 #include "GameObject.h"
+#include "Gen/MetaGenerated.h"
 #include "Serialize/Serializer.h"
 #include "SceneSystem/Scene.h"
 #include "Serialize/GameobjectSerialize.h"
@@ -18,16 +19,7 @@ namespace Engine
 void AssemblyEngine::Initialize()
 {
     Serializer::Instance()->AddHandler<GameObjectSerializeHandler>();
-
-    Component::Bind();
-    GameObject::Bind();
-    TransformComponent::Bind();
-    CameraComponent::Bind();
-    LightComponent::Bind();
-    MaterialRenderer::Bind();
-    MeshRenderer::Bind();
-    SkyBoxComponent::Bind();
-    SceneSystem::Scene::Bind();
+    NLS_META_GENERATED_REGISTER_FUNCTION();
 }
 } // namespace Engine
 } // namespace NLS

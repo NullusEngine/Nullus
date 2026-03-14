@@ -6,12 +6,13 @@
 #include "Components/Component.h"
 #include "Eventing/Event.h"
 #include "EngineDef.h"
+#include "Reflection/Macros.h"
 namespace NLS::Engine::Components
 {
 	/**
 	* A ModelRenderer is necessary in combination with a MaterialRenderer to render a model in the world
 	*/
-	class NLS_ENGINE_API MeshRenderer : public Component
+	Meta() class NLS_ENGINE_API MeshRenderer : public Component
 	{
     public:
         static void Bind();

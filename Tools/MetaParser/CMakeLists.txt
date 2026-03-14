@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.22)
 
+set(NLS_META_PARSER_LIBCLANG_VERSION "18.1.3.2")
+set(NLS_META_PARSER_LIBCLANGSHARP_VERSION "18.1.3.1")
+
 find_program(DOTNET_EXECUTABLE dotnet REQUIRED)
 if(NOT DOTNET_EXECUTABLE)
     message(FATAL_ERROR "dotnet SDK is required for C# MetaParser. Please install .NET 8 SDK.")
@@ -58,6 +61,7 @@ if(NLS_META_PARSER_WINDOWS_NATIVE)
 
     add_subdirectory(ThirdParty)
     add_subdirectory(src)
+    set(NLS_META_PARSER_EXECUTABLE "${CMAKE_CURRENT_BINARY_DIR}/src/$<CONFIG>/MetaParser.exe" CACHE INTERNAL "MetaParser executable path" FORCE)
 
     # On Windows with VS generator, use dotnet build instead of publish
     # Template copying is handled via VS_POST_BUILD_EVENT_COMMAND in .csproj

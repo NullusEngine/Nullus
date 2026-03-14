@@ -471,7 +471,12 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
 
     set(_meta_parser_env_args "")
     set(_meta_parser_native_dirs "")
-    set(_nuget_root "$ENV{HOME}/.nuget/packages")
+    set(_meta_parser_command "${NLS_META_PARSER_EXECUTABLE}")
+    if(WIN32)
+        set(_nuget_root "$ENV{USERPROFILE}/.nuget/packages")
+    else()
+        set(_nuget_root "$ENV{HOME}/.nuget/packages")
+    endif()
 
     if(WIN32)
         if(CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|aarch64")
@@ -479,22 +484,32 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
         else()
             set(_nuget_runtime_id "win-x64")
         endif()
-        list(APPEND _meta_parser_native_dirs
+        set(_meta_parser_path_prefix "")
+        set(_meta_parser_exe_dir "${CMAKE_BINARY_DIR}/Tools/MetaParser/src/$<CONFIG>")
+        set(_meta_parser_templates_dir "${_meta_parser_exe_dir}/Templates")
+        set(_meta_parser_libclang "${_nuget_root}/libclang.runtime.${_nuget_runtime_id}/${NLS_META_LIBCLANG_VERSION}/runtimes/${_nuget_runtime_id}/native/libclang.dll")
+        set(_meta_parser_clangsharp "${_nuget_root}/libclangsharp.runtime.${_nuget_runtime_id}/${NLS_META_LIBCLANGSHARP_VERSION}/runtimes/${_nuget_runtime_id}/native/libClangSharp.dll")
+        file(TO_NATIVE_PATH "${NLS_ROOT_DIR}/Tools/MetaParser/src/Templates/MetaGenerated.h.tt" _meta_parser_template_h_native)
+        file(TO_NATIVE_PATH "${NLS_ROOT_DIR}/Tools/MetaParser/src/Templates/MetaGenerated.cpp.tt" _meta_parser_template_cpp_native)
+        file(TO_NATIVE_PATH "${_meta_parser_libclang}" _meta_parser_libclang_native)
+        file(TO_NATIVE_PATH "${_meta_parser_clangsharp}" _meta_parser_clangsharp_native)
+        foreach(_native_dir
             "${_nuget_root}/libclang.runtime.${_nuget_runtime_id}/${NLS_META_LIBCLANG_VERSION}/runtimes/${_nuget_runtime_id}/native"
             "${_nuget_root}/libclangsharp.runtime.${_nuget_runtime_id}/${NLS_META_LIBCLANGSHARP_VERSION}/runtimes/${_nuget_runtime_id}/native")
-        set(_meta_parser_path "$ENV{PATH}")
-        foreach(_native_dir IN LISTS _meta_parser_native_dirs)
             if(EXISTS "${_native_dir}")
-                if(_meta_parser_path)
-                    set(_meta_parser_path "${_native_dir};${_meta_parser_path}")
+                if(_meta_parser_path_prefix)
+                    set(_meta_parser_path_prefix "${_meta_parser_path_prefix};${_native_dir}")
                 else()
-                    set(_meta_parser_path "${_native_dir}")
+                    set(_meta_parser_path_prefix "${_native_dir}")
                 endif()
             endif()
         endforeach()
-        if(_meta_parser_path)
-            list(APPEND _meta_parser_env_args "PATH=${_meta_parser_path}")
-        endif()
+        set(_meta_parser_launcher "${CMAKE_CURRENT_BINARY_DIR}/${_target_name}_run_metaparser_$<CONFIG>.cmd")
+        file(GENERATE
+            OUTPUT "${_meta_parser_launcher}"
+            CONTENT "@echo off\nsetlocal\nset \"PATH=${_meta_parser_path_prefix};%PATH%\"\nif not exist \"$<SHELL_PATH:${_meta_parser_templates_dir}>\" mkdir \"$<SHELL_PATH:${_meta_parser_templates_dir}>\"\ncopy /Y \"${_meta_parser_template_h_native}\" \"$<SHELL_PATH:${_meta_parser_templates_dir}>\\MetaGenerated.h.tt\" >nul\ncopy /Y \"${_meta_parser_template_cpp_native}\" \"$<SHELL_PATH:${_meta_parser_templates_dir}>\\MetaGenerated.cpp.tt\" >nul\ncopy /Y \"${_meta_parser_libclang_native}\" \"$<SHELL_PATH:${_meta_parser_exe_dir}>\\libclang.dll\" >nul\ncopy /Y \"${_meta_parser_clangsharp_native}\" \"$<SHELL_PATH:${_meta_parser_exe_dir}>\\libClangSharp.dll\" >nul\n\"$<SHELL_PATH:${NLS_META_PARSER_EXECUTABLE}>\" \"%~1\"\nexit /b %ERRORLEVEL%\n"
+        )
+        set(_meta_parser_command "${_meta_parser_launcher}")
     elseif(APPLE)
         if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
             set(_nuget_runtime_id "osx-arm64")
@@ -544,7 +559,7 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
     add_custom_command(
         OUTPUT "${_gen_cpp}" "${_gen_h}"
         COMMAND ${CMAKE_COMMAND} -E make_directory "${_gen_dir}"
-        COMMAND ${CMAKE_COMMAND} -E env ${_meta_parser_env_args} "${NLS_META_PARSER_EXECUTABLE}" "${_params_file}"
+        COMMAND ${CMAKE_COMMAND} -E env ${_meta_parser_env_args} "${_meta_parser_command}" "${_params_file}"
         DEPENDS
             MetaParser
             ${_headers}

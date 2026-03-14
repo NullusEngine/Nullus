@@ -9,13 +9,14 @@
 #include "Resource/Actor/Actor.h"
 
 #include "EngineDef.h"
+#include "Reflection/Macros.h"
 
 namespace NLS::Engine::SceneSystem
 {
 	/**
 	* The scene is a set of actors
 	*/
-	class NLS_ENGINE_API Scene
+	Meta() class NLS_ENGINE_API Scene
 	{
     public:
         static void Bind();

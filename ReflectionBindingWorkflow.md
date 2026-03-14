@@ -49,9 +49,12 @@ Those headers still generate usable type and method bindings and are covered by 
 
 ## Verification
 
-`Tools/ReflectionTest` is the registration regression test.
+The repository now keeps two reflection verification layers:
 
-It links against:
+- `Tools/ReflectionTest` as a focused registration smoke test
+- `Tests/Unit/NullusUnitTests` as the formal `CTest` entry used by local development and GitHub Actions
+
+`NullusUnitTests` links against:
 
 - `NLS_Base`
 - `NLS_Core`
@@ -63,17 +66,28 @@ It checks:
 - key method registration
 - key field registration
 - inheritance registration for component types
+- generated binding content emitted by MetaParser
 
 ## Verified commands
 
+Windows:
+
 ```powershell
-cmake -S . -B build
-cmake --build build --config Debug --target ReflectionTest -- /m:1
-D:\VSProject\Nullus\Build\bin\Debug\ReflectionTest.exe
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+cmake --build build --config Debug --target NullusUnitTests -- /m:1
+ctest --test-dir build -C Debug --output-on-failure
+```
+
+Linux / macOS:
+
+```bash
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+ctest --test-dir build --output-on-failure
 ```
 
 Expected output:
 
 ```text
-=== All reflection tests passed ===
+100% tests passed
 ```

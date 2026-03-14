@@ -1,21 +1,21 @@
-# Nullus Testing Guide
+# Nullus 测试说明
 
-This document summarizes the current local and CI testing entry points for Nullus.
+本文档说明 Nullus 当前本地开发和 GitHub CI 使用的测试入口。
 
-## Test modules
+## 测试模块
 
-- `Tests/Unit/NullusUnitTests` is the formal unit test executable registered with `CTest`.
-- `Tools/ReflectionTest` remains available as a smaller reflection smoke test.
+- `Tests/Unit/NullusUnitTests` 是正式接入 `CTest` 的单元测试可执行文件。
+- `Tools/ReflectionTest` 仍然保留，作为更轻量的反射冒烟验证工具。
 
-`NullusUnitTests` currently covers:
+`NullusUnitTests` 当前覆盖：
 
-- runtime reflection registration for Base, Core, and Engine types
-- generated binding validation for `Runtime/*/Gen/MetaGenerated.h/.cpp`
-- MetaParser integration regressions that would otherwise only show up at build time
+- Base、Core、Engine 关键类型的运行时反射注册验证
+- `Runtime/*/Gen/MetaGenerated.h/.cpp` 生成内容验证
+- MetaParser 集成回归问题验证，这类问题通常只会在构建阶段暴露
 
-## Local build and test
+## 本地构建与测试
 
-Windows:
+Windows：
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64
@@ -23,7 +23,7 @@ cmake --build build --config Debug --target NullusUnitTests -- /m:1
 ctest --test-dir build -C Debug --output-on-failure
 ```
 
-Linux / macOS:
+Linux / macOS：
 
 ```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
@@ -31,25 +31,25 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-To run the unit test executable directly:
+如果需要直接运行单元测试可执行文件：
 
-- Windows: `Build/bin/Debug/NullusUnitTests.exe`
-- Linux / macOS: `Build/bin/NullusUnitTests`
+- Windows：`Build/bin/Debug/NullusUnitTests.exe`
+- Linux / macOS：`Build/bin/NullusUnitTests`
 
-## CI behavior
+## CI 行为
 
-GitHub Actions now runs `ctest` after the normal build step on:
+GitHub Actions 现在会在正常构建之后继续执行 `ctest`，覆盖以下平台：
 
 - Windows
 - Linux
 - macOS
 
-This means a pull request must now pass both:
+这意味着拉取请求现在需要同时通过：
 
-- project compilation
-- runtime reflection and MetaParser verification through `NullusUnitTests`
+- 工程构建
+- `NullusUnitTests` 中的反射系统与 MetaParser 验证
 
-## Notes
+## 说明
 
-- The test setup is designed to stay project-side and avoid patching third-party source where possible.
-- `ThirdParty/json11` must point at a fetchable submodule commit, otherwise clean CI checkouts will fail before tests run.
+- 这套测试接入尽量保持在项目侧完成，避免直接修改第三方源码。
+- `ThirdParty/json11` 必须指向可正常拉取的子模块提交，否则干净的 CI 拉取会在测试开始前失败。

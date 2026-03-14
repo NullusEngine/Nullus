@@ -47,6 +47,11 @@ internal sealed class PrecompileParams
 
 internal static class Program
 {
+    private static readonly HashSet<string> UnsupportedMethodNames = new(StringComparer.Ordinal)
+    {
+        "typeof"
+    };
+
     public static int Main(string[] args)
     {
         if (args.Length != 1)
@@ -363,7 +368,9 @@ internal static class Program
                     continue;
                 if (method.IsStatic || method.IsConstructor || method.IsDestructor)
                     continue;
-                if (string.IsNullOrWhiteSpace(method.Name) || method.Name.StartsWith("operator", StringComparison.Ordinal))
+                if (string.IsNullOrWhiteSpace(method.Name)
+                    || method.Name.StartsWith("operator", StringComparison.Ordinal)
+                    || !IsBindableMethodName(method.Name))
                     continue;
 
                 candidateNames.Add(method.Name);
@@ -528,6 +535,7 @@ internal static class Program
                         || methodName == className
                         || methodName == $"~{className}"
                         || methodName.StartsWith("operator", StringComparison.Ordinal)
+                        || !IsBindableMethodName(methodName)
                         || statement.Contains(" static ", StringComparison.Ordinal)
                         || statement.StartsWith("static ", StringComparison.Ordinal))
                     {
@@ -719,6 +727,11 @@ internal static class Program
 
     private static string NormalizeTypeName(string typeName)
         => string.IsNullOrWhiteSpace(typeName) ? string.Empty : typeName.Replace("class ", string.Empty).Replace("struct ", string.Empty).Trim();
+
+    private static bool IsBindableMethodName(string methodName)
+        => !string.IsNullOrWhiteSpace(methodName)
+           && Regex.IsMatch(methodName, @"^[A-Za-z_]\w*$", RegexOptions.CultureInvariant)
+           && !UnsupportedMethodNames.Contains(methodName);
 
     private static string SanitizeIdentifier(string value)
         => Regex.Replace(value, @"[^A-Za-z0-9_]", "_", RegexOptions.CultureInvariant);

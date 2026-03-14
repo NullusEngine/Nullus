@@ -169,16 +169,31 @@ function(nls_detect_compiler_system_includes COMPILER OUT_INCLUDES)
             endforeach()
         endif()
 
-        if(NOT _includes AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        set(_needs_gnu_stdlib_paths FALSE)
+        if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+            set(_needs_gnu_stdlib_paths TRUE)
+            foreach(_include IN LISTS _includes)
+                if(_include MATCHES "/include/c\\+\\+/[0-9]+")
+                    set(_needs_gnu_stdlib_paths FALSE)
+                    break()
+                endif()
+            endforeach()
+        endif()
+
+        if(_needs_gnu_stdlib_paths)
+            set(_gcc_probe_compiler "${CMAKE_CXX_COMPILER}")
+            if(NOT _gcc_probe_compiler)
+                set(_gcc_probe_compiler "${COMPILER}")
+            endif()
             execute_process(
-                COMMAND "${COMPILER}" -dumpfullversion
+                COMMAND "${_gcc_probe_compiler}" -dumpfullversion
                 OUTPUT_VARIABLE _gcc_version
                 ERROR_QUIET
                 OUTPUT_STRIP_TRAILING_WHITESPACE
             )
             if(NOT _gcc_version)
                 execute_process(
-                    COMMAND "${COMPILER}" -dumpversion
+                    COMMAND "${_gcc_probe_compiler}" -dumpversion
                     OUTPUT_VARIABLE _gcc_version
                     ERROR_QUIET
                     OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -186,13 +201,13 @@ function(nls_detect_compiler_system_includes COMPILER OUT_INCLUDES)
             endif()
             string(REGEX MATCH "^[0-9]+" _gcc_major "${_gcc_version}")
             execute_process(
-                COMMAND "${COMPILER}" -print-multiarch
+                COMMAND "${_gcc_probe_compiler}" -print-multiarch
                 OUTPUT_VARIABLE _gcc_multiarch
                 ERROR_QUIET
                 OUTPUT_STRIP_TRAILING_WHITESPACE
             )
             execute_process(
-                COMMAND "${COMPILER}" -print-file-name=include
+                COMMAND "${_gcc_probe_compiler}" -print-file-name=include
                 OUTPUT_VARIABLE _gcc_builtin_include
                 ERROR_QUIET
                 OUTPUT_STRIP_TRAILING_WHITESPACE

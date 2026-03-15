@@ -23,7 +23,23 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Build
-        run: ./build_macos.sh ${{ matrix.configuration }}
+        shell: bash
+        run: |
+          set -o pipefail
+          ./build_macos.sh ${{ matrix.configuration }} 2>&1 | tee "build_macos_${{ matrix.configuration }}.log"
+
+      - name: Dump build log on failure
+        if: failure()
+        shell: bash
+        run: |
+          if [[ -f "build_macos_${{ matrix.configuration }}.log" ]]; then
+            echo "::group::Last 200 lines of macOS build log"
+            tail -n 200 "build_macos_${{ matrix.configuration }}.log"
+            echo "::endgroup::"
+            while IFS= read -r line; do
+              echo "::error::$line"
+            done < <(tail -n 20 "build_macos_${{ matrix.configuration }}.log")
+          fi
 
       - name: Run unit tests
         run: ctest --test-dir build/macos -C ${{ matrix.configuration }} --output-on-failure

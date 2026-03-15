@@ -30,5 +30,11 @@ MY_DIR="$(cd "$(dirname "$0")" 1>/dev/null 2>/dev/null && pwd)"
 BUILD_DIR="${MY_DIR}/build/macos"
 cd "${MY_DIR}"
 
-cmake -S . -B "${BUILD_DIR}" -G "Xcode"
+if command -v ninja >/dev/null 2>&1; then
+    GENERATOR="Ninja Multi-Config"
+else
+    GENERATOR="Xcode"
+fi
+
+cmake -S . -B "${BUILD_DIR}" -G "${GENERATOR}"
 cmake --build "${BUILD_DIR}" --config "${CONFIG}"

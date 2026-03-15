@@ -1,18 +1,6 @@
 #include "Color.h"
-#include "Reflection/Compat/ReflMngr.hpp"
-
 namespace NLS::Maths
 {
-using namespace NLS::UDRefl;
-
-void Color::Bind()
-{
-    Mngr.RegisterType<Color>();
-    Mngr.AddField<&Color::r>("r");
-    Mngr.AddField<&Color::g>("g");
-    Mngr.AddField<&Color::b>("b");
-    Mngr.AddField<&Color::a>("a");
-}
 
 const Color Color::Red = {1.f, 0.f, 0.f};
 const Color Color::Green = {0.f, 1.f, 0.f};

@@ -84,6 +84,8 @@ else()
             "${NLS_META_PARSER_SOURCE_DIR}/Main.cs"
             "${NLS_META_PARSER_TEMPLATES_DIR}/MetaGenerated.cpp.tt"
             "${NLS_META_PARSER_TEMPLATES_DIR}/MetaGenerated.h.tt"
+            "${NLS_META_PARSER_TEMPLATES_DIR}/HeaderGenerated.cpp.tt"
+            "${NLS_META_PARSER_TEMPLATES_DIR}/HeaderGenerated.h.tt"
             "${NLS_META_PARSER_CPPAST_CSPROJ}"
         COMMENT "Building C# MetaParser via generated SDK project"
         VERBATIM

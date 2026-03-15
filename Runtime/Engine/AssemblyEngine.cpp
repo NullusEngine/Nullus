@@ -11,6 +11,12 @@
 #include "Serialize/Serializer.h"
 #include "SceneSystem/Scene.h"
 #include "Serialize/GameobjectSerialize.h"
+
+namespace
+{
+[[maybe_unused]] const auto* g_metaGeneratedEngineAnchor = &NLS_META_GENERATED_LINK_FUNCTION;
+}
+
 namespace NLS
 {
 namespace Engine
@@ -19,7 +25,6 @@ namespace Engine
 void AssemblyEngine::Initialize()
 {
     Serializer::Instance()->AddHandler<GameObjectSerializeHandler>();
-    NLS_META_GENERATED_REGISTER_FUNCTION();
 }
 } // namespace Engine
 } // namespace NLS

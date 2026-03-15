@@ -22,10 +22,3 @@ void NLS::Engine::Components::Component::CreateBy(GameObject* owner)
 	m_owner = owner;
 	OnCreate();
 }
-#include "Reflection/Compat/ReflMngr.hpp"
-using namespace NLS::UDRefl;
-void Component::Bind()
-{
-    Mngr.RegisterType<Component>();
-    Mngr.AddMethod<&Component::CreateBy>("CreateBy");
-}

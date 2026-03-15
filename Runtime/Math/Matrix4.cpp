@@ -4,17 +4,10 @@
 #include "Vector3.h"
 #include "Vector4.h"
 #include "Quaternion.h"
-#include "Reflection/Compat/ReflMngr.hpp"
 #include <cstring>
 #include <string>
 using namespace NLS;
 using namespace NLS::Maths;
-using namespace NLS::UDRefl;
-
-void Maths::Matrix4::Bind()
-{
-    Mngr.RegisterType<Matrix4>();
-}
 
 constexpr float kPI = 3.14159265359f;
 constexpr float kEpsilon = 0.00001f;

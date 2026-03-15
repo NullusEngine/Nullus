@@ -1,5 +1,6 @@
 {
   "RootDir": @NLS_META_ROOT_DIR@,
+  "SourceDir": @NLS_META_SOURCE_DIR@,
   "TargetName": @NLS_META_TARGET_NAME@,
   "ModuleName": @NLS_META_MODULE_NAME@,
   "OutputDir": @NLS_META_OUTPUT_DIR@,

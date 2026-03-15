@@ -12,6 +12,7 @@ set(CMAKE_INSTALL_PREFIX ${CMAKE_CURRENT_SOURCE_DIR}/Install CACHE PATH "set ins
 # 在生成的项目文件中使用文件夹。开启文件夹组织项
 # ##############################################################################
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+set(CMAKE_SUPPRESS_REGENERATION ON)
 
 # 设置项目名称
 # ##############################################################################

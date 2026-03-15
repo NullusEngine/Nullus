@@ -7,16 +7,16 @@
 #include "Eventing/Event.h"
 #include "EngineDef.h"
 #include "Reflection/Macros.h"
+#include "Components/MeshRenderer.generated.h"
 namespace NLS::Engine::Components
 {
 	/**
 	* A ModelRenderer is necessary in combination with a MaterialRenderer to render a model in the world
 	*/
-	Meta() class NLS_ENGINE_API MeshRenderer : public Component
+	CLASS() class NLS_ENGINE_API MeshRenderer : public Component
 	{
     public:
-        static void Bind();
-	public:
+		GENERATED_BODY()
 		/**
 		* Defines how the model renderer bounding sphere should be interpreted
 		*/

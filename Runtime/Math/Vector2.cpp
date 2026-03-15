@@ -4,18 +4,8 @@
 using namespace NLS;
 using namespace Maths;
 
-#include "Reflection/Compat/ReflMngr.hpp"
-using namespace NLS::UDRefl;
-
 const Vector2 Vector2::One(1.0f, 1.0f);
 const Vector2 Vector2::Zero(0.0f, 0.0f);
-
-void Vector2::Bind()
-{
-    Mngr.RegisterType<Vector2>();
-    Mngr.AddField<&Vector2::x>("x");
-    Mngr.AddField<&Vector2::y>("y");
-}
 Vector2::Vector2(const Vector3& v3)
     : x(v3.x), y(v3.y)
 {

@@ -1,0 +1,5 @@
+<Project>
+  <PropertyGroup Condition="'$(MSBuildProjectExtension)' == '.vcxproj'">
+    <ForceImportAfterCppTargets>$(MSBuildThisFileDirectory)Build\MSBuild\Nullus.Cpp.After.targets</ForceImportAfterCppTargets>
+  </PropertyGroup>
+</Project>

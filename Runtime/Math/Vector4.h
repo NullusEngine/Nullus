@@ -12,7 +12,6 @@ class Vector2;
 class NLS_MATH_API Vector4
 {
 public:
-    static void Bind();
     static const Vector4 One;
     static const Vector4 Zero;
     union

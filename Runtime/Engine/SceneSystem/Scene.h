@@ -10,17 +10,17 @@
 
 #include "EngineDef.h"
 #include "Reflection/Macros.h"
+#include "SceneSystem/Scene.generated.h"
 
 namespace NLS::Engine::SceneSystem
 {
 	/**
 	* The scene is a set of actors
 	*/
-	Meta() class NLS_ENGINE_API Scene
+	CLASS() class NLS_ENGINE_API Scene
 	{
     public:
-        static void Bind();
-	public:
+		GENERATED_BODY()
 		/**
 		* Contains a set of vectors of components that are sorted. It allows fast
 		* manipulation of components without parsing the whole scene

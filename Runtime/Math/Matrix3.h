@@ -15,7 +15,6 @@ namespace Maths
 class NLS_MATH_API Matrix3
 {
 public:
-    static void Bind();
     float data[9];
     static const Matrix3 Identity;
 

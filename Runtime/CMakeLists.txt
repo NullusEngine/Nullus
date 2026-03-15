@@ -342,6 +342,7 @@ function(nls_get_common_meta_include_dirs OUT_VAR)
     foreach(_dir ${_runtime_children})
         if(IS_DIRECTORY "${_dir}")
             list(APPEND _dirs "${_dir}")
+            list(APPEND _dirs "${_dir}/Gen")
         endif()
     endforeach()
 
@@ -461,7 +462,7 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
     set(_params_file "${CMAKE_CURRENT_BINARY_DIR}/${_target_name}.precompile.json")
 
     nls_get_common_meta_include_dirs(_common_include_dirs)
-    set(_include_dirs ${_common_include_dirs} ${_source_dir} ${TARGET_APPEND_INCLUDE_DIR})
+    set(_include_dirs ${_common_include_dirs} ${_source_dir} ${_gen_dir} ${TARGET_APPEND_INCLUDE_DIR})
 
     nls_choose_meta_parser_compiler(_meta_parser_compiler _compiler_target _system_include_dirs)
     nls_detect_compiler_builtin_defines("${_meta_parser_compiler}" _builtin_defines)
@@ -531,6 +532,7 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
     nls_join_json_array(NLS_META_DEFINES_JSON ${_defines})
     nls_join_json_array(NLS_META_COMPILER_OPTIONS_JSON ${_compiler_options})
     nls_json_quote(NLS_META_ROOT_DIR "${NLS_ROOT_DIR}")
+    nls_json_quote(NLS_META_SOURCE_DIR "${_source_dir}")
     nls_json_quote(NLS_META_TARGET_NAME "${_target_name}")
     nls_json_quote(NLS_META_MODULE_NAME "${_target_name}")
     nls_json_quote(NLS_META_OUTPUT_DIR "${_gen_dir}")
@@ -565,6 +567,8 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
         set(_meta_parser_clangsharp "${_nuget_root}/libclangsharp.runtime.${_nuget_runtime_id}/${NLS_META_LIBCLANGSHARP_VERSION}/runtimes/${_nuget_runtime_id}/native/libClangSharp.dll")
         file(TO_NATIVE_PATH "${NLS_ROOT_DIR}/Tools/MetaParser/src/Templates/MetaGenerated.h.tt" _meta_parser_template_h_native)
         file(TO_NATIVE_PATH "${NLS_ROOT_DIR}/Tools/MetaParser/src/Templates/MetaGenerated.cpp.tt" _meta_parser_template_cpp_native)
+        file(TO_NATIVE_PATH "${NLS_ROOT_DIR}/Tools/MetaParser/src/Templates/HeaderGenerated.h.tt" _meta_parser_header_template_h_native)
+        file(TO_NATIVE_PATH "${NLS_ROOT_DIR}/Tools/MetaParser/src/Templates/HeaderGenerated.cpp.tt" _meta_parser_header_template_cpp_native)
         file(TO_NATIVE_PATH "${_meta_parser_libclang}" _meta_parser_libclang_native)
         file(TO_NATIVE_PATH "${_meta_parser_clangsharp}" _meta_parser_clangsharp_native)
         foreach(_native_dir
@@ -581,7 +585,7 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
         set(_meta_parser_launcher "${CMAKE_CURRENT_BINARY_DIR}/${_target_name}_run_metaparser_$<CONFIG>.cmd")
         file(GENERATE
             OUTPUT "${_meta_parser_launcher}"
-            CONTENT "@echo off\nsetlocal\nset \"PATH=${_meta_parser_path_prefix};%PATH%\"\nif not exist \"$<SHELL_PATH:${_meta_parser_templates_dir}>\" mkdir \"$<SHELL_PATH:${_meta_parser_templates_dir}>\"\ncopy /Y \"${_meta_parser_template_h_native}\" \"$<SHELL_PATH:${_meta_parser_templates_dir}>\\MetaGenerated.h.tt\" >nul\ncopy /Y \"${_meta_parser_template_cpp_native}\" \"$<SHELL_PATH:${_meta_parser_templates_dir}>\\MetaGenerated.cpp.tt\" >nul\ncopy /Y \"${_meta_parser_libclang_native}\" \"$<SHELL_PATH:${_meta_parser_exe_dir}>\\libclang.dll\" >nul\ncopy /Y \"${_meta_parser_clangsharp_native}\" \"$<SHELL_PATH:${_meta_parser_exe_dir}>\\libClangSharp.dll\" >nul\n\"$<SHELL_PATH:${NLS_META_PARSER_EXECUTABLE}>\" \"%~1\"\nexit /b %ERRORLEVEL%\n"
+            CONTENT "@echo off\nsetlocal\nset \"PATH=${_meta_parser_path_prefix};%PATH%\"\nif not exist \"$<SHELL_PATH:${_meta_parser_templates_dir}>\" mkdir \"$<SHELL_PATH:${_meta_parser_templates_dir}>\"\ncopy /Y \"${_meta_parser_template_h_native}\" \"$<SHELL_PATH:${_meta_parser_templates_dir}>\\MetaGenerated.h.tt\" >nul\ncopy /Y \"${_meta_parser_template_cpp_native}\" \"$<SHELL_PATH:${_meta_parser_templates_dir}>\\MetaGenerated.cpp.tt\" >nul\ncopy /Y \"${_meta_parser_header_template_h_native}\" \"$<SHELL_PATH:${_meta_parser_templates_dir}>\\HeaderGenerated.h.tt\" >nul\ncopy /Y \"${_meta_parser_header_template_cpp_native}\" \"$<SHELL_PATH:${_meta_parser_templates_dir}>\\HeaderGenerated.cpp.tt\" >nul\ncopy /Y \"${_meta_parser_libclang_native}\" \"$<SHELL_PATH:${_meta_parser_exe_dir}>\\libclang.dll\" >nul\ncopy /Y \"${_meta_parser_clangsharp_native}\" \"$<SHELL_PATH:${_meta_parser_exe_dir}>\\libClangSharp.dll\" >nul\n\"$<SHELL_PATH:${NLS_META_PARSER_EXECUTABLE}>\" \"%~1\"\nexit /b %ERRORLEVEL%\n"
         )
         set(_meta_parser_command "${_meta_parser_launcher}")
     elseif(APPLE)
@@ -648,12 +652,14 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
             "${_params_template}"
             "${NLS_ROOT_DIR}/Tools/MetaParser/src/Main.cs"
             "${NLS_ROOT_DIR}/Tools/MetaParser/src/Templates/MetaGenerated.cpp.tt"
+            "${NLS_ROOT_DIR}/Tools/MetaParser/src/Templates/HeaderGenerated.h.tt"
+            "${NLS_ROOT_DIR}/Tools/MetaParser/src/Templates/HeaderGenerated.cpp.tt"
         VERBATIM
         COMMENT "Generating reflection bindings for ${_target_name}"
     )
 
     add_dependencies(${_target_name} MetaParser)
-    target_include_directories(${_target_name} PRIVATE "${_gen_dir}")
+    target_include_directories(${_target_name} PUBLIC "${_gen_dir}")
     target_sources(${_target_name} PRIVATE "${_gen_cpp}" "${_gen_h}")
 endfunction()
 

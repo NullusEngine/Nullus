@@ -5,17 +5,16 @@
 #include "Components/Component.h"
 #include "EngineDef.h"
 #include "Reflection/Macros.h"
+#include "Components/LightComponent.generated.h"
 namespace NLS::Engine::Components
 {
 /**
  * Base class for any light
  */
-Meta() class NLS_ENGINE_API LightComponent : public Component
+CLASS() class NLS_ENGINE_API LightComponent : public Component
 {
 public:
-    static void Bind();
-
-public:
+    GENERATED_BODY()
     /**
      * Constructor
      * @param p_owner

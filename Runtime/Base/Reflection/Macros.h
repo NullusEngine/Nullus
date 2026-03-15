@@ -9,11 +9,10 @@
 #if defined(__REFLECTION_PARSER__)
 
     #define META(...) __attribute__((annotate(#__VA_ARGS__)))
-    #define CLASS(class_name, ...) class __attribute__((annotate(#__VA_ARGS__))) class_name
-    #define STRUCT(struct_name, ...) struct __attribute__((annotate(#__VA_ARGS__))) struct_name
+    #define CLASS(...) META(Reflection)
+    #define STRUCT(...) META(Reflection)
 
     // 兼容旧写法（过渡期）
-    #define Meta(...) META(__VA_ARGS__)
 
     #define __META_EXTERNAL(type, guid)       \
         typedef type __META_EXTERNAL__##guid; \
@@ -22,18 +21,48 @@
 
     #define MetaExternal(type) _META_EXTERNAL(type, __COUNTER__)
 
+    #define REFLECT_EXTERNAL(...)
+    #define REFLECT_FIELD(...)
+    #define REFLECT_METHOD(...)
+    #define REFLECT_METHOD_EX(...)
+    #define REFLECT_STATIC_METHOD(...)
+    #define REFLECT_PRIVATE_FIELD(...)
+    #define REFLECT_PRIVATE_METHOD(...)
+    #define REFLECT_PRIVATE_METHOD_EX(...)
+    #define REFLECT_PRIVATE_STATIC_METHOD(...)
+    #define NLS_BODY_MACRO_COMBINE_INNER(A, B, C, D) A##B##C##D
+    #define NLS_BODY_MACRO_COMBINE(A, B, C, D) NLS_BODY_MACRO_COMBINE_INNER(A, B, C, D)
+    #ifndef CURRENT_FILE_ID
+        #define CURRENT_FILE_ID NLS_UNKNOWN_FILE_ID
+    #endif
+    #define GENERATED_BODY(...)
+
     #define META_OBJECT
 
 #else 
 
     #define META(...)
-    #define CLASS(class_name, ...) class class_name
-    #define STRUCT(struct_name, ...) struct struct_name
+    #define CLASS(...)
+    #define STRUCT(...)
 
     // 兼容旧写法（过渡期）
-    #define Meta(...) META(__VA_ARGS__)
 
     #define MetaExternal(type)
+    #define REFLECT_EXTERNAL(...)
+    #define REFLECT_FIELD(...)
+    #define REFLECT_METHOD(...)
+    #define REFLECT_METHOD_EX(...)
+    #define REFLECT_STATIC_METHOD(...)
+    #define REFLECT_PRIVATE_FIELD(...)
+    #define REFLECT_PRIVATE_METHOD(...)
+    #define REFLECT_PRIVATE_METHOD_EX(...)
+    #define REFLECT_PRIVATE_STATIC_METHOD(...)
+    #define NLS_BODY_MACRO_COMBINE_INNER(A, B, C, D) A##B##C##D
+    #define NLS_BODY_MACRO_COMBINE(A, B, C, D) NLS_BODY_MACRO_COMBINE_INNER(A, B, C, D)
+    #ifndef CURRENT_FILE_ID
+        #define CURRENT_FILE_ID NLS_UNKNOWN_FILE_ID
+    #endif
+    #define GENERATED_BODY(...) NLS_BODY_MACRO_COMBINE(CURRENT_FILE_ID, _, __LINE__, _GENERATED_BODY)
 
     #define MetaInitialize(initializer)                               \
         {                                                             \

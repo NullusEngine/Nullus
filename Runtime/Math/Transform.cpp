@@ -1,17 +1,4 @@
 #include "Math/Transform.h"
-#include "Reflection/Compat/ReflMngr.hpp"
-namespace NLS
-{
-using namespace UDRefl;
-void NLS::Maths::Transform::Bind()
-{
-    Mngr.RegisterType<Maths::Transform>();
-    Mngr.AddField<&Maths::Transform::m_localPosition>("m_localPosition");
-    Mngr.AddField<&Maths::Transform::m_localRotation>("m_localRotation");
-    Mngr.AddField<&Maths::Transform::m_localScale>("m_localScale");
-}
-} // namespace NLS
-
 namespace NLS
 {
 Maths::TransformNotifier::NotificationHandlerID Maths::TransformNotifier::AddNotificationHandler(NotificationHandler p_notificationHandler)

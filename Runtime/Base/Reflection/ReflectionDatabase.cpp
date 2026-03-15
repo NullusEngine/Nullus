@@ -8,9 +8,15 @@
 
 #include "ReflectionDatabase.h"
 
+#include "ReflectionModule.h"
 #include "Type.h"
 
 #include "MetaGenerated.h"
+
+namespace
+{
+[[maybe_unused]] const auto *g_metaGeneratedBaseAnchor = &NLS_META_GENERATED_LINK_FUNCTION;
+}
 
 #define REGISTER_NATIVE_TYPE(type)                    \
     {                                                 \
@@ -56,8 +62,8 @@ namespace NLS
             stringType.AddConstructor<std::string, false, false>( { } );
             stringType.AddConstructor<std::string, false, true>( { } );
 
-            // Register user-defined reflection types (avoid recursive Instance() in ctor)
-            NLS_META_GENERATED_REGISTER_FUNCTION(*this);
+            // Register user-defined reflection types discovered by static registrars.
+            ReflectionModuleRegistry::RegisterAll(*this);
         }
 
         ///////////////////////////////////////////////////////////////////////

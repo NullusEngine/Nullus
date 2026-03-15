@@ -313,11 +313,4 @@ void Scene::RebuildFastAccessComponents()
 		}
 	}
 }
-#include "Reflection/Compat/ReflMngr.hpp"
-using namespace NLS::UDRefl;
-void Scene::Bind()
-{
-    Mngr.RegisterType<Scene>();
-    Mngr.AddField<&Scene::m_gameobject>("m_gameobject");
-}
 

@@ -3,14 +3,7 @@
 #include <cmath>
 #include <cstring>
 #include "Math/Matrix3.h"
-#include "Reflection/Compat/ReflMngr.hpp"
 using namespace NLS::Maths;
-using namespace NLS::UDRefl;
-
-void Matrix3::Bind()
-{
-    Mngr.RegisterType<Matrix3>();
-}
 
 const Matrix3 Matrix3::Identity = Matrix3(1.0f, 0.0f, 0.0f,
                                           0.0f, 1.0f, 0.0f,

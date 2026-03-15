@@ -8,6 +8,7 @@
 #include <vector>
 #include "Components/Component.h"
 #include <Math/Transform.h>
+#include "Components/TransformComponent.generated.h"
 
 using std::vector;
 
@@ -19,12 +20,10 @@ namespace Engine
 {
 namespace Components
 {
-Meta() class NLS_ENGINE_API TransformComponent : public Component
+CLASS() class NLS_ENGINE_API TransformComponent : public Component
 {
 public:
-    static void Bind();
-
-public:
+    GENERATED_BODY()
     TransformComponent();
 
     void OnCreate();

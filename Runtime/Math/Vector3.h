@@ -13,9 +13,6 @@ class Vector4;
 class NLS_MATH_API Vector3
 {
 public:
-    static void Bind();
-
-public:
     static const Vector3 One;
     static const Vector3 Zero;
     static const Vector3 Forward;

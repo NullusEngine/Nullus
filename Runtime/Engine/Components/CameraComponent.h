@@ -5,16 +5,16 @@
 #include "Components/Component.h"
 #include "EngineDef.h"
 #include "Reflection/Macros.h"
+#include "Components/CameraComponent.generated.h"
 namespace NLS::Engine::Components
 {
 	/**
 	* Represents a camera entity. Its position will determine its view matrix
 	*/
-	Meta() class NLS_ENGINE_API CameraComponent : public Component
+	CLASS() class NLS_ENGINE_API CameraComponent : public Component
 	{
     public:
-        static void Bind();
-	public:
+		GENERATED_BODY()
 		/**
 		* Constructor
 		*/

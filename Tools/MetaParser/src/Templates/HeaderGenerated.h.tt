@@ -1,0 +1,82 @@
+<#@ template language="C#" hostspecific="true" #>
+<#@ import namespace="System.Collections.Generic" #>
+<#@ import namespace="System.Linq" #>
+<#
+    var types = (List<object>)(Session["Types"] ?? new List<object>());
+    var privateTypes = (List<object>)(Session["PrivateTypes"] ?? new List<object>());
+    var fileId = (string)(Session["FileId"] ?? "NLS_FID_Unknown");
+#>
+#pragma once
+
+namespace NLS::meta
+{
+class ReflectionDatabase;
+enum class ReflectionRegistrationPhase;
+}
+
+#ifdef CURRENT_FILE_ID
+#undef CURRENT_FILE_ID
+#endif
+#define CURRENT_FILE_ID <#= fileId #>
+
+namespace NLS::meta_generated
+{
+<# foreach (Dictionary<string, object> type in types.Cast<Dictionary<string, object>>()) {
+       var registerFunctionName = (string)type["RegisterFunctionName"];
+       var registrarClassName = (string)type["RegistrarClassName"];
+       var generatedBodyMacroName = (string)type["GeneratedBodyMacroName"]; #>
+void <#= registerFunctionName #>(NLS::meta::ReflectionDatabase& db, NLS::meta::ReflectionRegistrationPhase phase);
+
+class <#= registrarClassName #>
+{
+public:
+    <#= registrarClassName #>();
+};
+
+<# if (!string.IsNullOrWhiteSpace(generatedBodyMacroName)) { #>
+#ifdef <#= generatedBodyMacroName #>
+#undef <#= generatedBodyMacroName #>
+#endif
+#define <#= generatedBodyMacroName #> \
+    friend void ::NLS::meta_generated::<#= registerFunctionName #>(::NLS::meta::ReflectionDatabase& db, ::NLS::meta::ReflectionRegistrationPhase phase); \
+    friend class ::NLS::meta_generated::<#= registrarClassName #>;
+<# } #>
+
+<# } #>
+
+<# if (privateTypes.Count > 0) { #>
+<# foreach (Dictionary<string, object> type in privateTypes.Cast<Dictionary<string, object>>()) {
+       var accessStructName = (string)type["AccessStructName"];
+       var privateFields = (List<object>)type["PrivateFields"];
+       var privateMethods = (List<object>)type["PrivateMethods"];
+#>
+struct <#= accessStructName #>
+{
+<#     foreach (Dictionary<string, object> field in privateFields.Cast<Dictionary<string, object>>()) {
+           var accessorName = (string)field["AccessorName"]; #>
+    static auto <#= accessorName #>();
+<#     }
+       foreach (Dictionary<string, object> method in privateMethods.Cast<Dictionary<string, object>>()) {
+           var accessorName = (string)method["AccessorName"]; #>
+    static auto <#= accessorName #>();
+<#     } #>
+};
+
+<# } #>
+<# foreach (Dictionary<string, object> type in privateTypes.Cast<Dictionary<string, object>>()) {
+       var generatedBodyMacroName = (string)type["GeneratedBodyMacroName"];
+       var accessStructName = (string)type["AccessStructName"];
+       var registerFunctionName = (string)type["RegisterFunctionName"];
+       var registrarClassName = (string)type["RegistrarClassName"]; #>
+<# if (!string.IsNullOrWhiteSpace(generatedBodyMacroName)) { #>
+#ifdef <#= generatedBodyMacroName #>
+#undef <#= generatedBodyMacroName #>
+#endif
+#define <#= generatedBodyMacroName #> \
+    friend void ::NLS::meta_generated::<#= registerFunctionName #>(::NLS::meta::ReflectionDatabase& db, ::NLS::meta::ReflectionRegistrationPhase phase); \
+    friend class ::NLS::meta_generated::<#= registrarClassName #>; \
+    friend struct ::NLS::meta_generated::<#= accessStructName #>;
+<# } #>
+<# } #>
+<# } #>
+} // namespace NLS::meta_generated

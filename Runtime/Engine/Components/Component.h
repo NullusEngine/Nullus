@@ -1,18 +1,17 @@
 #pragma once
 #include "EngineDef.h"
 #include "Reflection/Macros.h"
+#include "Components/Component.generated.h"
 
 namespace NLS::Engine
 {
 class GameObject;
 namespace Components
 {
-Meta() class NLS_ENGINE_API Component
+CLASS() class NLS_ENGINE_API Component
 {
 public:
-    static void Bind();
-
-public:
+    GENERATED_BODY()
     Component();
     virtual ~Component();
 

@@ -8,5 +8,6 @@ add_subdirectory(src)
 target_link_libraries(ReflectionTest PRIVATE
     NLS_Base
     NLS_Core
+    NLS_Math
     NLS_Engine
 )

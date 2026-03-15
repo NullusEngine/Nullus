@@ -1,6 +1,7 @@
 #include "Assembly.h"
 #include "Core/AssemblyCore.h"
 #include "Engine/AssemblyEngine.h"
+#include "Math/AssemblyMath.h"
 #include "Reflection/Field.h"
 #include "Reflection/Method.h"
 #include "Reflection/ReflectionDatabase.h"
@@ -19,6 +20,7 @@ struct TypeExpectation
 {
     std::string name;
     std::vector<std::string> requiredMethods;
+    std::vector<std::string> requiredStaticMethods;
     std::vector<std::string> requiredFields;
     std::string requiredBase;
 };
@@ -60,6 +62,13 @@ bool RequireValidType(const TypeExpectation& expectation)
     {
         const Method& method = type.GetMethod(methodName);
         if (!Require(method.IsValid(), expectation.name + " is missing reflected method " + methodName))
+            return false;
+    }
+
+    for (const std::string& methodName : expectation.requiredStaticMethods)
+    {
+        const auto& method = type.GetStaticMethod(methodName);
+        if (!Require(method.IsValid(), expectation.name + " is missing reflected static method " + methodName))
             return false;
     }
 
@@ -105,25 +114,28 @@ int main()
 
     auto& assembly = NLS::Assembly::Instance();
     assembly.Load<NLS::AssemblyCore>();
+    assembly.Load<NLS::AssemblyMath>();
     assembly.Load<NLS::Engine::AssemblyEngine>();
 
     auto& db = NLS::meta::ReflectionDatabase::Instance();
     (void)db;
 
     const std::vector<TypeExpectation> expectations = {
-        {"NLS::meta::MetaParserFieldMethodSample", {"GetValue", "SetValue"}, {"Value"}, ""},
-        {"NLS::meta::MetaProperty", {}, {}, ""},
-        {"NLS::meta::ReflectionObjectSample", {"OnSerialize"}, {}, ""},
-        {"NLS::meta::TestObject", {"OnSerialize", "OnDeserialize"}, {}, ""},
-        {"NLS::Engine::Components::Component", {"CreateBy"}, {}, ""},
-        {"NLS::Engine::Components::TransformComponent", {"SetLocalPosition", "GetWorldMatrix"}, {}, "NLS::Engine::Components::Component"},
-        {"NLS::Engine::Components::CameraComponent", {"SetFov", "GetCamera"}, {}, "NLS::Engine::Components::Component"},
-        {"NLS::Engine::Components::LightComponent", {"SetIntensity", "GetData"}, {}, "NLS::Engine::Components::Component"},
-        {"NLS::Engine::Components::MeshRenderer", {"SetModel", "GetModel"}, {}, "NLS::Engine::Components::Component"},
-        {"NLS::Engine::Components::MaterialRenderer", {"FillWithMaterial", "GetUserMatrix"}, {}, "NLS::Engine::Components::Component"},
-        {"NLS::Engine::Components::SkyBoxComponent", {"SetCubeMap", "GetModel"}, {}, "NLS::Engine::Components::Component"},
-        {"NLS::Engine::GameObject", {"GetName", "SetTag"}, {}, ""},
-        {"NLS::Engine::SceneSystem::Scene", {"Play", "GetActors"}, {}, ""},
+        {"NLS::meta::MetaParserFieldMethodSample", {"GetValue", "SetValue"}, {}, {"Value"}, ""},
+        {"NLS::meta::PrivateReflectionExternalSample", {"GetHiddenValue"}, {}, {"m_hiddenValue"}, ""},
+        {"NLS::meta::MetaProperty", {}, {}, {}, ""},
+        {"NLS::meta::ReflectionObjectSample", {"OnSerialize"}, {}, {}, ""},
+        {"NLS::meta::TestObject", {"OnSerialize", "OnDeserialize"}, {}, {}, ""},
+        {"NLS::Maths::Vector3", {"Length", "Normalised"}, {"Dot", "Cross"}, {"x", "y", "z"}, ""},
+        {"NLS::Engine::Components::Component", {"CreateBy"}, {}, {}, ""},
+        {"NLS::Engine::Components::TransformComponent", {"SetLocalPosition", "GetWorldMatrix"}, {}, {}, "NLS::Engine::Components::Component"},
+        {"NLS::Engine::Components::CameraComponent", {"SetFov", "GetCamera"}, {}, {}, "NLS::Engine::Components::Component"},
+        {"NLS::Engine::Components::LightComponent", {"SetIntensity", "GetData"}, {}, {}, "NLS::Engine::Components::Component"},
+        {"NLS::Engine::Components::MeshRenderer", {"SetModel", "GetModel"}, {}, {}, "NLS::Engine::Components::Component"},
+        {"NLS::Engine::Components::MaterialRenderer", {"FillWithMaterial", "GetUserMatrix"}, {}, {}, "NLS::Engine::Components::Component"},
+        {"NLS::Engine::Components::SkyBoxComponent", {"SetCubeMap", "GetModel"}, {}, {}, "NLS::Engine::Components::Component"},
+        {"NLS::Engine::GameObject", {"GetName", "SetTag"}, {}, {}, ""},
+        {"NLS::Engine::SceneSystem::Scene", {"Play", "GetActors"}, {}, {}, ""},
     };
 
     bool allPassed = true;

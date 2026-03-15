@@ -8,17 +8,17 @@
 
 #include "Components/Component.h"
 #include "Reflection/Macros.h"
+#include "Components/SkyBoxComponent.generated.h"
 
 namespace NLS::Engine::Components
 {
 	/**
 	* A ModelRenderer is necessary in combination with a MaterialRenderer to render a model in the world
 	*/
-	Meta() class NLS_ENGINE_API SkyBoxComponent : public Component
+	CLASS() class NLS_ENGINE_API SkyBoxComponent : public Component
 	{
     public:
-        static void Bind();
-	public:
+		GENERATED_BODY()
 		/**
 		* Constructor
 		*/

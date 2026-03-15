@@ -5,6 +5,7 @@
 #include "Reflection/Compat/ReflMngr.hpp"
 #include "Eventing/Event.h"
 #include "Components/Component.h"
+#include "GameObject.generated.h"
 namespace NLS
 {
 namespace Engine
@@ -13,12 +14,10 @@ namespace Components
 {
     class TransformComponent;
 }
-Meta() class NLS_ENGINE_API GameObject
+CLASS() class NLS_ENGINE_API GameObject
 {
 public:
-    static void Bind();
-
-public:
+    GENERATED_BODY()
     GameObject(int64_t p_actorID, const std::string& p_name, const std::string& p_tag, bool& p_playing);
     ~GameObject();
     template<typename T>

@@ -2,12 +2,14 @@
 
 #include "Object.h"
 #include "Macros.h"
+#include "Reflection/MetaParserFieldMethodSample.generated.h"
 
 namespace NLS::meta
 {
-    CLASS(MetaParserFieldMethodSample, Reflection) : public NLS::meta::Object
+    CLASS() class MetaParserFieldMethodSample : public NLS::meta::Object
     {
     public:
+        GENERATED_BODY()
         int Value = 7;
 
         Type GetType() const override

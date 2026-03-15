@@ -8,11 +8,45 @@
 
 #include "ReflectionModule.h"
 
+#include <algorithm>
+#include <vector>
+
 namespace NLS
 {
     namespace meta
     {
-        ReflectionModule::ReflectionModule(ReflectionDatabase &db)
-            : db( db ) { }
+        namespace
+        {
+            std::vector<ReflectionRegisterFunction> &GetReflectionRegisterFunctions()
+            {
+                static std::vector<ReflectionRegisterFunction> functions;
+                return functions;
+            }
+        }
+
+        void ReflectionModuleRegistry::Add(ReflectionRegisterFunction function)
+        {
+            if (!function)
+                return;
+
+            auto &functions = GetReflectionRegisterFunctions();
+            if (std::find(functions.begin(), functions.end(), function) == functions.end())
+                functions.push_back(function);
+        }
+
+        void ReflectionModuleRegistry::RegisterAll(ReflectionDatabase &db)
+        {
+            auto &functions = GetReflectionRegisterFunctions();
+
+            for (auto function : functions)
+            {
+                function(db, ReflectionRegistrationPhase::Declare);
+            }
+
+            for (auto function : functions)
+            {
+                function(db, ReflectionRegistrationPhase::Define);
+            }
+        }
     }
 }

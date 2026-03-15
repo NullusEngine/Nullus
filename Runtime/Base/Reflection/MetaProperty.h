@@ -9,14 +9,16 @@
 #include "Object.h"
 
 #include "Macros.h"
+#include "Reflection/MetaProperty.generated.h"
 
 namespace NLS 
 { 
     namespace meta
     {
-        Meta() class MetaProperty : public Object
+        CLASS() class MetaProperty : public Object
         {
-
+        public:
+            GENERATED_BODY()
         };
 
         template<typename PropertyType, typename ...Args>

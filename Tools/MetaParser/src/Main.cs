@@ -7,8 +7,8 @@ using CppAst;
 using Mono.TextTemplating;
 using Microsoft.VisualStudio.TextTemplating;
 
-internal sealed record ReflectFieldInfo(string Name, string TypeName);
-internal sealed record ReflectMethodInfo(string Name);
+internal sealed record ReflectFieldInfo(string Name, string TypeName, string GetterExpression, string SetterExpression, bool IsPrivate);
+internal sealed record ReflectMethodInfo(string Name, string PointerExpression, bool IsStatic, bool IsPrivate);
 internal sealed record ReflectBaseInfo(string TypeName);
 
 internal sealed record ReflectTypeInfo(
@@ -16,6 +16,7 @@ internal sealed record ReflectTypeInfo(
     string NamespacePrefix,
     string FullTypeName,
     string HeaderPath,
+    string SourceFilePath,
     List<ReflectBaseInfo> Bases,
     List<ReflectFieldInfo> Fields,
     List<ReflectMethodInfo> Methods)
@@ -30,6 +31,7 @@ internal sealed record TextMemberParseResult(
 internal sealed class PrecompileParams
 {
     public string RootDir { get; set; } = string.Empty;
+    public string SourceDir { get; set; } = string.Empty;
     public string TargetName { get; set; } = string.Empty;
     public string ModuleName { get; set; } = string.Empty;
     public string OutputDir { get; set; } = string.Empty;
@@ -49,7 +51,39 @@ internal static class Program
 {
     private static readonly HashSet<string> UnsupportedMethodNames = new(StringComparer.Ordinal)
     {
-        "typeof"
+        "typeof",
+        "GENERATED_BODY",
+        "NLS_GENERATED_BODY"
+    };
+
+    private static readonly HashSet<string> BuiltinTypeNames = new(StringComparer.Ordinal)
+    {
+        "void",
+        "bool",
+        "char",
+        "signed char",
+        "unsigned char",
+        "short",
+        "unsigned short",
+        "int",
+        "unsigned int",
+        "long",
+        "unsigned long",
+        "long long",
+        "unsigned long long",
+        "float",
+        "double",
+        "long double",
+        "size_t",
+        "std::size_t",
+        "uint8_t",
+        "uint16_t",
+        "uint32_t",
+        "uint64_t",
+        "int8_t",
+        "int16_t",
+        "int32_t",
+        "int64_t"
     };
 
     public static int Main(string[] args)
@@ -72,7 +106,7 @@ internal static class Program
             PropertyNameCaseInsensitive = true
         });
 
-        if (config is null || string.IsNullOrWhiteSpace(config.RootDir) || string.IsNullOrWhiteSpace(config.OutputDir))
+        if (config is null || string.IsNullOrWhiteSpace(config.RootDir) || string.IsNullOrWhiteSpace(config.SourceDir) || string.IsNullOrWhiteSpace(config.OutputDir))
         {
             Console.Error.WriteLine("Invalid precompile params file.");
             return 4;
@@ -81,6 +115,7 @@ internal static class Program
         var rootDir = Path.GetFullPath(config.RootDir);
         var outputDir = Path.GetFullPath(config.OutputDir);
         Directory.CreateDirectory(outputDir);
+        EnsureGeneratedHeaderStubs(config.Headers.Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase), rootDir, outputDir);
 
         var types = new List<ReflectTypeInfo>();
         foreach (var header in config.Headers.Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase))
@@ -100,26 +135,46 @@ internal static class Program
             }
         }
 
-        var orderedTypes = types
-            .DistinctBy(t => t.QualifiedName)
-            .OrderBy(t => t.Bases.Count)
-            .ThenBy(t => t.HeaderPath, StringComparer.Ordinal)
+        var orderedTypes = MergeReflectTypes(types)
+            .OrderBy(t => t.HeaderPath, StringComparer.Ordinal)
             .ThenBy(t => t.QualifiedName, StringComparer.Ordinal)
             .ToList();
 
         var templateData = BuildTemplateData(orderedTypes, config.TargetName);
         var exeDir = AppContext.BaseDirectory;
         var templateDir = Path.Combine(exeDir, "Templates");
+        var sanitizedTargetName = (string)(templateData["SanitizedTargetName"] ?? "UnknownTarget");
+        var generatedSourceIncludes = new List<object?>();
+
+        foreach (var headerGroup in orderedTypes.GroupBy(type => type.HeaderPath, StringComparer.Ordinal))
+        {
+            var relativeGeneratedBase = GetGeneratedRelativeBasePath(headerGroup.Key);
+            var generatedHeaderPath = Path.Combine(outputDir, $"{relativeGeneratedBase}.generated.h");
+            var generatedSourcePath = Path.Combine(outputDir, $"{relativeGeneratedBase}.generated.cpp");
+            Directory.CreateDirectory(Path.GetDirectoryName(generatedHeaderPath)!);
+            Directory.CreateDirectory(Path.GetDirectoryName(generatedSourcePath)!);
+
+            var headerTemplateData = BuildHeaderTemplateData(headerGroup.ToList());
+            var generatedHeaderText = RenderT4(Path.Combine(templateDir, "HeaderGenerated.h.tt"), headerTemplateData);
+            var generatedSourceText = RenderT4(Path.Combine(templateDir, "HeaderGenerated.cpp.tt"), headerTemplateData);
+
+            File.WriteAllText(generatedHeaderPath, generatedHeaderText, new UTF8Encoding(false));
+            File.WriteAllText(generatedSourcePath, generatedSourceText, new UTF8Encoding(false));
+            generatedSourceIncludes.Add($"{relativeGeneratedBase}.generated.cpp".Replace('\\', '/'));
+        }
+
+        templateData["GeneratedSourceIncludes"] = generatedSourceIncludes;
 
         var headerSession = new Dictionary<string, object?>
         {
-            ["FunctionName"] = templateData["FunctionName"]
+            ["LinkFunctionName"] = templateData["LinkFunctionName"]
         };
 
         var headerText = RenderT4(Path.Combine(templateDir, "MetaGenerated.h.tt"), headerSession);
         var sourceText = RenderT4(Path.Combine(templateDir, "MetaGenerated.cpp.tt"), templateData);
 
         File.WriteAllText(Path.Combine(outputDir, "MetaGenerated.h"), headerText, new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(outputDir, $"{sanitizedTargetName}_MetaGenerated.h"), headerText, new UTF8Encoding(false));
         File.WriteAllText(Path.Combine(outputDir, "MetaGenerated.cpp"), sourceText, new UTF8Encoding(false));
 
         Console.WriteLine($"[MetaParser] Target={config.TargetName}, Types={orderedTypes.Count}, Output={outputDir}");
@@ -128,30 +183,111 @@ internal static class Program
 
     private static Dictionary<string, object?> BuildTemplateData(IReadOnlyList<ReflectTypeInfo> types, string targetName)
     {
-        var includes = types.Select(t => t.HeaderPath).Distinct(StringComparer.Ordinal).ToList();
         var sanitizedTargetName = SanitizeIdentifier(string.IsNullOrWhiteSpace(targetName) ? "UnknownTarget" : targetName);
-        var functionName = $"RegisterReflectionTypes_{sanitizedTargetName}";
-
-        var typeModels = types.Select(type => new Dictionary<string, object>
-        {
-            ["QualifiedName"] = type.QualifiedName,
-            ["Bases"] = type.Bases.Select(b => (object)b.TypeName).Distinct().ToList(),
-            ["Fields"] = type.Fields.Select(f => (object)new Dictionary<string, object>
-            {
-                ["Name"] = f.Name,
-                ["TypeName"] = f.TypeName
-            }).ToList(),
-            ["Methods"] = type.Methods.Select(m => (object)new Dictionary<string, object>
-            {
-                ["Name"] = m.Name
-            }).ToList()
-        }).Cast<object?>().ToList();
+        var linkFunctionName = $"LinkReflectionTypes_{sanitizedTargetName}";
 
         return new Dictionary<string, object?>
         {
-            ["Includes"] = includes.Cast<object?>().ToList(),
+            ["LinkFunctionName"] = linkFunctionName,
+            ["SanitizedTargetName"] = sanitizedTargetName
+        };
+    }
+
+    private static Dictionary<string, object?> BuildHeaderTemplateData(IReadOnlyList<ReflectTypeInfo> types)
+    {
+        var headerPath = types[0].HeaderPath;
+        var fileId = BuildGeneratedFileId(headerPath);
+        var generatedBodyLines = FindGeneratedBodyLines(types[0].SourceFilePath);
+        var headerIncludePath = headerPath.Replace('\\', '/');
+        var generatedHeaderIncludePath = $"{GetGeneratedRelativeBasePath(headerPath)}.generated.h".Replace('\\', '/');
+        var typeModels = new List<object?>();
+        var privateTypeModels = new List<object>();
+
+        var generatedBodyLineIndex = 0;
+        foreach (var type in types)
+        {
+            int? generatedBodyLine = generatedBodyLineIndex < generatedBodyLines.Count
+                ? generatedBodyLines[generatedBodyLineIndex++]
+                : null;
+
+            var fieldModels = type.Fields
+                .Select((field, index) => new Dictionary<string, object>
+                {
+                    ["Name"] = field.Name,
+                    ["TypeName"] = field.TypeName,
+                    ["GetterExpression"] = field.GetterExpression,
+                    ["SetterExpression"] = field.SetterExpression,
+                    ["IsPrivate"] = field.IsPrivate,
+                    ["AccessorName"] = BuildPrivateFieldAccessorName(field.Name, index)
+                })
+                .ToList();
+
+            var methodModels = type.Methods
+                .Select((method, index) => new Dictionary<string, object>
+                {
+                    ["Name"] = method.Name,
+                    ["PointerExpression"] = method.PointerExpression,
+                    ["IsStatic"] = method.IsStatic,
+                    ["IsPrivate"] = method.IsPrivate,
+                    ["AccessorName"] = BuildPrivateMethodAccessorName(method.Name, index)
+                })
+                .ToList();
+
+            typeModels.Add(new Dictionary<string, object>
+            {
+                ["ClassName"] = type.ClassName,
+                ["QualifiedName"] = type.QualifiedName,
+                ["AccessStructName"] = BuildPrivateAccessStructName(type.QualifiedName),
+                ["RegisterFunctionName"] = BuildRegisterFunctionName(type.QualifiedName),
+                ["RegistrarClassName"] = BuildRegistrarClassName(type.QualifiedName),
+                ["GeneratedBodyMacroName"] = generatedBodyLine.HasValue
+                    ? BuildGeneratedBodyMacroName(fileId, generatedBodyLine.Value)
+                    : string.Empty,
+                ["Bases"] = type.Bases.Select(b => (object)b.TypeName).Distinct().ToList(),
+                ["Fields"] = fieldModels.Cast<object>().ToList(),
+                ["Methods"] = methodModels.Cast<object>().ToList()
+            });
+
+            if (fieldModels.Any(field => (bool)field["IsPrivate"]) || methodModels.Any(method => (bool)method["IsPrivate"]))
+            {
+                privateTypeModels.Add(new Dictionary<string, object>
+                {
+                    ["ClassName"] = type.ClassName,
+                    ["QualifiedName"] = type.QualifiedName,
+                    ["AccessStructName"] = BuildPrivateAccessStructName(type.QualifiedName),
+                    ["RegisterFunctionName"] = BuildRegisterFunctionName(type.QualifiedName),
+                    ["RegistrarClassName"] = BuildRegistrarClassName(type.QualifiedName),
+                    ["GeneratedBodyMacroName"] = generatedBodyLine.HasValue
+                        ? BuildGeneratedBodyMacroName(fileId, generatedBodyLine.Value)
+                        : string.Empty,
+                    ["PrivateFields"] = fieldModels
+                        .Where(field => (bool)field["IsPrivate"])
+                        .Select(field => (object)new Dictionary<string, object>
+                        {
+                            ["Name"] = field["Name"],
+                            ["AccessorName"] = field["AccessorName"]
+                        }).ToList(),
+                    ["PrivateMethods"] = methodModels
+                        .Where(method => (bool)method["IsPrivate"])
+                        .Select(method => (object)new Dictionary<string, object>
+                        {
+                            ["Name"] = method["Name"],
+                            ["AccessorName"] = method["AccessorName"],
+                            ["PointerExpression"] = method["PointerExpression"]
+                        }).ToList()
+                });
+            }
+        }
+
+        return new Dictionary<string, object?>
+        {
+            ["HeaderPath"] = headerPath,
+            ["FileId"] = fileId,
+            ["HeaderIncludePath"] = headerIncludePath,
+            ["GeneratedHeaderIncludePath"] = generatedHeaderIncludePath,
+            ["RequiresGeneratedHeaderIncludeInSource"] = generatedBodyLines.Count == 0,
             ["Types"] = typeModels,
-            ["FunctionName"] = functionName
+            ["PrivateTypes"] = privateTypeModels
         };
     }
 
@@ -188,26 +324,116 @@ internal static class Program
             return false;
 
         var text = File.ReadAllText(headerPath);
-        return Regex.IsMatch(text, @"\bCLASS\s*\(", RegexOptions.CultureInvariant)
-               || Regex.IsMatch(text, @"\bSTRUCT\s*\(", RegexOptions.CultureInvariant)
-               || Regex.IsMatch(text, @"\bMeta\s*\(", RegexOptions.CultureInvariant)
-               || Regex.IsMatch(text, @"\bMETA\s*\(", RegexOptions.CultureInvariant)
-               || text.Contains("__cppast(", StringComparison.Ordinal)
-               || text.Contains("__attribute__((annotate(", StringComparison.Ordinal);
+        return ContainsReflectedDeclaration(text);
+    }
+
+    private static void EnsureGeneratedHeaderStubs(IEnumerable<string> headers, string rootDir, string outputDir)
+    {
+        foreach (var headerPath in headers)
+        {
+            if (!File.Exists(headerPath) || !ShouldParseHeader(headerPath))
+                continue;
+
+            var includePath = ToGeneratedIncludePath(rootDir, headerPath);
+            var generatedHeaderPath = Path.Combine(outputDir, $"{GetGeneratedRelativeBasePath(includePath)}.generated.h");
+            var generatedHeaderDir = Path.GetDirectoryName(generatedHeaderPath);
+            if (!string.IsNullOrWhiteSpace(generatedHeaderDir))
+                Directory.CreateDirectory(generatedHeaderDir);
+
+            var fileId = BuildGeneratedFileId(includePath);
+            var generatedBodyLines = FindGeneratedBodyLines(headerPath);
+            var builder = new StringBuilder();
+            builder.AppendLine("#pragma once");
+            builder.AppendLine();
+            builder.AppendLine("#ifdef CURRENT_FILE_ID");
+            builder.AppendLine("#undef CURRENT_FILE_ID");
+            builder.AppendLine("#endif");
+            builder.AppendLine($"#define CURRENT_FILE_ID {fileId}");
+
+            foreach (var line in generatedBodyLines)
+            {
+                var macroName = BuildGeneratedBodyMacroName(fileId, line);
+                builder.AppendLine();
+                builder.AppendLine($"#ifdef {macroName}");
+                builder.AppendLine($"#undef {macroName}");
+                builder.AppendLine("#endif");
+                builder.AppendLine($"#define {macroName}");
+            }
+
+            File.WriteAllText(generatedHeaderPath, builder.ToString(), new UTF8Encoding(false));
+        }
     }
 
     private static IEnumerable<ReflectTypeInfo> ParseHeader(string rootDir, string headerPath, PrecompileParams config)
     {
-        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
-            return ParseHeaderTextFallback(rootDir, headerPath).ToList();
+        var types = new List<ReflectTypeInfo>();
+        var headerText = File.ReadAllText(headerPath);
+        var hasReflectedTypeBodies = ContainsGeneratedBody(headerText);
+        var textFallbackTypes = hasReflectedTypeBodies
+            ? ParseHeaderFromText(rootDir, headerPath, headerText).ToList()
+            : [];
 
         try
         {
-            return ParseHeaderWithCppAst(rootDir, headerPath, config).ToList();
+            types.AddRange(ParseHeaderWithCppAst(rootDir, headerPath, config));
+            if (hasReflectedTypeBodies)
+            {
+                types.AddRange(textFallbackTypes);
+            }
         }
-        catch (Exception)
+        catch (Exception ex) when (hasReflectedTypeBodies)
         {
-            return ParseHeaderTextFallback(rootDir, headerPath).ToList();
+            types.AddRange(textFallbackTypes);
+            if (textFallbackTypes.Count == 0)
+            {
+                Console.Error.WriteLine($"[MetaParser] Warning: CppAst fallback for {headerPath}: {ex.Message}");
+            }
+        }
+
+        types.AddRange(ParseExternalReflectionDeclarations(rootDir, headerPath));
+        return MergeReflectTypes(types);
+    }
+
+    private static IEnumerable<ReflectTypeInfo> ParseHeaderFromText(string rootDir, string headerPath, string headerText)
+    {
+        var includePath = ToGeneratedIncludePath(rootDir, Path.GetFullPath(headerPath));
+        var text = SanitizeTextForMacroParsing(headerText);
+        var classMatches = Regex.Matches(
+            text,
+            @"\b(?<kind>class|struct)\s+(?:[A-Za-z_]\w*\s+)*(?<name>[A-Za-z_]\w*)\s*(?:\:\s*(?<bases>[^{]+))?\s*\{",
+            RegexOptions.CultureInvariant);
+
+        foreach (Match match in classMatches.Cast<Match>())
+        {
+            var kind = match.Groups["kind"].Value;
+            var className = match.Groups["name"].Value;
+            if (string.IsNullOrWhiteSpace(className))
+                continue;
+
+            var openBraceIndex = text.IndexOf('{', match.Index);
+            if (openBraceIndex < 0)
+                continue;
+
+            var body = ExtractBraceBody(text, openBraceIndex);
+            if (!ContainsGeneratedBody(body))
+                continue;
+
+            var namespacePrefix = ExtractNamespaceFromText(text[..match.Index]);
+            var fullTypeName = string.IsNullOrWhiteSpace(namespacePrefix)
+                ? className
+                : $"{namespacePrefix}::{className}";
+            var bases = ParseBasesFromText(match.Groups["bases"].Value, namespacePrefix);
+            var members = ExtractMembersFromText(body, fullTypeName, string.Equals(kind, "struct", StringComparison.Ordinal));
+
+            yield return new ReflectTypeInfo(
+                className,
+                namespacePrefix,
+                fullTypeName,
+                includePath,
+                Path.GetFullPath(headerPath),
+                bases,
+                members.Fields,
+                members.Methods);
         }
     }
 
@@ -259,48 +485,459 @@ internal static class Program
                 ExtractNamespace(fullTypeName, cls.Name),
                 fullTypeName,
                 ToGeneratedIncludePath(rootDir, normalizedHeader),
+                normalizedHeader,
                 bases,
                 fields,
                 methods);
         }
     }
 
-    private static IEnumerable<ReflectTypeInfo> ParseHeaderTextFallback(string rootDir, string headerPath)
+    private static IEnumerable<ReflectTypeInfo> ParseExternalReflectionDeclarations(string rootDir, string headerPath)
     {
-        var text = File.ReadAllText(headerPath);
-        var matches = Regex.Matches(
-            text,
-            @"(?:\bMeta\s*\(\s*\)\s+(?<kind>class|struct)\s+(?:[\w_]+\s+)*(?<name>[A-Za-z_]\w*)|\b(?<macro>CLASS|STRUCT)\s*\(\s*(?<macroName>[A-Za-z_]\w*)\s*(?:,\s*[^)]*)?\))\s*(?::\s*(?<bases>[^{]+))?\s*\{",
-            RegexOptions.CultureInvariant);
-
-        foreach (Match match in matches.Cast<Match>())
+        var text = SanitizeTextForMacroParsing(File.ReadAllText(headerPath));
+        if (!text.Contains("MetaExternal", StringComparison.Ordinal)
+            && !text.Contains("REFLECT_EXTERNAL", StringComparison.Ordinal))
         {
-            var className = match.Groups["name"].Success
-                ? match.Groups["name"].Value
-                : match.Groups["macroName"].Value;
-            if (string.IsNullOrWhiteSpace(className))
+            return [];
+        }
+
+        var includePath = ToGeneratedIncludePath(rootDir, Path.GetFullPath(headerPath));
+        var declarations = new List<ReflectTypeInfo>();
+
+        foreach (Match match in Regex.Matches(text, @"\bMetaExternal\s*\(\s*(?<type>[^)]+?)\s*\)", RegexOptions.CultureInvariant).Cast<Match>())
+        {
+            var fullTypeName = NormalizeTypeName(match.Groups["type"].Value);
+            if (string.IsNullOrWhiteSpace(fullTypeName))
                 continue;
 
-            var bodyStart = match.Index + match.Length - 1;
-            var body = ExtractBraceBody(text, bodyStart);
-            var namespacePrefix = ExtractNamespaceFromText(text[..match.Index]);
-            var fullTypeName = string.IsNullOrWhiteSpace(namespacePrefix)
-                ? className
-                : $"{namespacePrefix}::{className}";
-
-            var defaultPublic = string.Equals(match.Groups["kind"].Value, "struct", StringComparison.Ordinal)
-                || string.Equals(match.Groups["macro"].Value, "STRUCT", StringComparison.Ordinal);
-            var members = ExtractMembersFromText(body, className, defaultPublic);
-
-            yield return new ReflectTypeInfo(
-                className,
-                namespacePrefix,
-                fullTypeName,
-                ToGeneratedIncludePath(rootDir, Path.GetFullPath(headerPath)),
-                ParseBasesFromText(match.Groups["bases"].Value, namespacePrefix),
-                members.Fields,
-                members.Methods);
+            declarations.Add(CreateExternalReflectType(fullTypeName, includePath, Path.GetFullPath(headerPath), [], [], []));
         }
+
+        foreach (var invocation in ExtractMacroInvocations(text, "REFLECT_EXTERNAL"))
+        {
+            var args = SplitTopLevel(invocation, ',');
+            if (args.Count == 0)
+                continue;
+
+            var fullTypeName = NormalizeTypeName(args[0]);
+            if (string.IsNullOrWhiteSpace(fullTypeName))
+                continue;
+
+            var namespacePrefix = ExtractNamespace(fullTypeName, ExtractSimpleClassName(fullTypeName));
+            var bases = new List<ReflectBaseInfo>();
+            var fields = new List<ReflectFieldInfo>();
+            var methods = new List<ReflectMethodInfo>();
+
+            foreach (var section in args.Skip(1))
+            {
+                if (!TryParseMacroInvocation(section, out var sectionName, out var sectionBody))
+                    continue;
+
+                switch (sectionName)
+                {
+                case "Bases":
+                    bases.AddRange(ParseExternalBases(sectionBody, namespacePrefix));
+                    break;
+                case "Fields":
+                    fields.AddRange(ParseExternalFields(sectionBody, fullTypeName, namespacePrefix));
+                    break;
+                case "Methods":
+                    methods.AddRange(ParseExternalMethods(sectionBody, fullTypeName));
+                    break;
+                case "StaticMethods":
+                    methods.AddRange(ParseExternalStaticMethods(sectionBody, fullTypeName));
+                    break;
+                default:
+                    Console.Error.WriteLine($"[MetaParser] Warning: unknown external reflection section '{sectionName}' in {headerPath}");
+                    break;
+                }
+            }
+
+            declarations.Add(CreateExternalReflectType(fullTypeName, includePath, Path.GetFullPath(headerPath), bases, fields, methods));
+        }
+
+        return declarations;
+    }
+
+    private static List<ReflectTypeInfo> MergeReflectTypes(IEnumerable<ReflectTypeInfo> types)
+    {
+        var merged = new Dictionary<string, ReflectTypeInfo>(StringComparer.Ordinal);
+
+        foreach (var type in types.Where(static t => !string.IsNullOrWhiteSpace(t.QualifiedName)))
+        {
+            if (!merged.TryGetValue(type.QualifiedName, out var existing))
+            {
+                merged[type.QualifiedName] = type with
+                {
+                    Bases = type.Bases.DistinctBy(b => b.TypeName).ToList(),
+                    Fields = type.Fields.DistinctBy(f => f.Name).ToList(),
+                    Methods = type.Methods.DistinctBy(m => $"{m.IsStatic}:{m.Name}:{m.PointerExpression}").ToList()
+                };
+                continue;
+            }
+
+            merged[type.QualifiedName] = existing with
+            {
+                Bases = existing.Bases
+                    .Concat(type.Bases)
+                    .DistinctBy(b => b.TypeName)
+                    .ToList(),
+                Fields = existing.Fields
+                    .Concat(type.Fields)
+                    .DistinctBy(f => f.Name)
+                    .ToList(),
+                Methods = existing.Methods
+                    .Concat(type.Methods)
+                    .DistinctBy(m => $"{m.IsStatic}:{m.Name}:{m.PointerExpression}")
+                    .ToList()
+            };
+        }
+
+        return merged.Values.ToList();
+    }
+
+    private static ReflectTypeInfo CreateExternalReflectType(
+        string fullTypeName,
+        string includePath,
+        string sourceFilePath,
+        List<ReflectBaseInfo> bases,
+        List<ReflectFieldInfo> fields,
+        List<ReflectMethodInfo> methods)
+    {
+        var className = ExtractSimpleClassName(fullTypeName);
+        return new ReflectTypeInfo(
+            className,
+            ExtractNamespace(fullTypeName, className),
+            fullTypeName,
+            includePath,
+            sourceFilePath,
+            bases.DistinctBy(b => b.TypeName).ToList(),
+            fields.DistinctBy(f => f.Name).ToList(),
+            methods.DistinctBy(m => $"{m.IsStatic}:{m.Name}:{m.PointerExpression}").ToList());
+    }
+
+    private static List<ReflectBaseInfo> ParseExternalBases(string sectionBody, string namespacePrefix)
+        => SplitTopLevel(sectionBody, ',')
+            .Select(NormalizeTypeName)
+            .Select(typeName => QualifyTypeName(typeName, namespacePrefix))
+            .Where(static typeName => !string.IsNullOrWhiteSpace(typeName))
+            .Distinct(StringComparer.Ordinal)
+            .Select(typeName => new ReflectBaseInfo(typeName))
+            .ToList();
+
+    private static List<ReflectFieldInfo> ParseExternalFields(string sectionBody, string fullTypeName, string namespacePrefix)
+    {
+        var fields = new List<ReflectFieldInfo>();
+
+        foreach (var entry in SplitTopLevel(sectionBody, ','))
+        {
+            if (!TryParseMacroInvocation(entry, out var macroName, out var macroBody)
+                || (macroName != "REFLECT_FIELD" && macroName != "REFLECT_PRIVATE_FIELD"))
+                continue;
+
+            var args = SplitTopLevel(macroBody, ',');
+            if (args.Count != 2)
+                continue;
+
+            var typeName = QualifyTypeName(NormalizeTypeName(args[0]), namespacePrefix);
+            var fieldName = NormalizeRegistrationName(args[1]);
+            if (string.IsNullOrWhiteSpace(typeName) || string.IsNullOrWhiteSpace(fieldName))
+                continue;
+
+            fields.Add(new ReflectFieldInfo(
+                fieldName,
+                typeName,
+                $"&{fullTypeName}::{fieldName}",
+                $"&{fullTypeName}::{fieldName}",
+                macroName == "REFLECT_PRIVATE_FIELD"));
+        }
+
+        return fields
+            .DistinctBy(field => field.Name)
+            .ToList();
+    }
+
+    private static List<ReflectMethodInfo> ParseExternalMethods(string sectionBody, string fullTypeName)
+    {
+        var methods = new List<ReflectMethodInfo>();
+
+        foreach (var entry in SplitTopLevel(sectionBody, ','))
+        {
+            if (!TryParseMacroInvocation(entry, out var macroName, out var macroBody))
+                continue;
+
+            switch (macroName)
+            {
+            case "REFLECT_METHOD":
+            case "REFLECT_PRIVATE_METHOD":
+            {
+                var methodName = NormalizeRegistrationName(macroBody);
+                if (string.IsNullOrWhiteSpace(methodName))
+                    continue;
+
+                methods.Add(new ReflectMethodInfo(
+                    methodName,
+                    $"&{fullTypeName}::{methodName}",
+                    false,
+                    macroName == "REFLECT_PRIVATE_METHOD"));
+                break;
+            }
+            case "REFLECT_METHOD_EX":
+            case "REFLECT_PRIVATE_METHOD_EX":
+            {
+                var args = SplitTopLevel(macroBody, ',');
+                if (args.Count != 2)
+                    continue;
+
+                var methodName = NormalizeRegistrationName(args[0]);
+                var pointerExpression = args[1].Trim();
+                if (string.IsNullOrWhiteSpace(methodName) || string.IsNullOrWhiteSpace(pointerExpression))
+                    continue;
+
+                methods.Add(new ReflectMethodInfo(
+                    methodName,
+                    pointerExpression,
+                    false,
+                    macroName == "REFLECT_PRIVATE_METHOD_EX"));
+                break;
+            }
+            }
+        }
+
+        return methods
+            .DistinctBy(method => $"{method.IsStatic}:{method.Name}:{method.PointerExpression}")
+            .ToList();
+    }
+
+    private static List<ReflectMethodInfo> ParseExternalStaticMethods(string sectionBody, string fullTypeName)
+    {
+        var methods = new List<ReflectMethodInfo>();
+
+        foreach (var entry in SplitTopLevel(sectionBody, ','))
+        {
+            if (!TryParseMacroInvocation(entry, out var macroName, out var macroBody)
+                || (macroName != "REFLECT_STATIC_METHOD" && macroName != "REFLECT_PRIVATE_STATIC_METHOD"))
+                continue;
+
+            var args = SplitTopLevel(macroBody, ',');
+            if (args.Count != 2)
+                continue;
+
+            var methodName = NormalizeRegistrationName(args[0]);
+            var pointerExpression = args[1].Trim();
+            if (string.IsNullOrWhiteSpace(methodName) || string.IsNullOrWhiteSpace(pointerExpression))
+                continue;
+
+            methods.Add(new ReflectMethodInfo(
+                methodName,
+                pointerExpression,
+                true,
+                macroName == "REFLECT_PRIVATE_STATIC_METHOD"));
+        }
+
+        return methods
+            .DistinctBy(method => $"{method.IsStatic}:{method.Name}:{method.PointerExpression}")
+            .ToList();
+    }
+
+    private static List<string> ExtractMacroInvocations(string text, string macroName)
+    {
+        var invocations = new List<string>();
+        var startIndex = 0;
+
+        while (startIndex < text.Length)
+        {
+            var match = Regex.Match(text[startIndex..], $@"\b{Regex.Escape(macroName)}\s*\(", RegexOptions.CultureInvariant);
+            if (!match.Success)
+                break;
+
+            var macroIndex = startIndex + match.Index;
+            var openParenIndex = text.IndexOf('(', macroIndex + macroName.Length);
+            if (openParenIndex < 0)
+                break;
+
+            invocations.Add(ExtractDelimitedBody(text, openParenIndex, '(', ')'));
+            startIndex = SkipDelimitedBody(text, openParenIndex, '(', ')');
+        }
+
+        return invocations;
+    }
+
+    private static string SanitizeTextForMacroParsing(string text)
+        => string.Join(
+            Environment.NewLine,
+            StripBlockComments(text)
+                .Split('\n')
+                .Select(StripInlineComments));
+
+    private static bool ContainsReflectedDeclaration(string text)
+        => ContainsGeneratedBody(text)
+           || text.Contains("MetaExternal", StringComparison.Ordinal)
+           || text.Contains("REFLECT_EXTERNAL", StringComparison.Ordinal);
+
+    private static bool ContainsGeneratedBody(string text)
+        => text.Contains("GENERATED_BODY(", StringComparison.Ordinal);
+
+    private static List<string> SplitTopLevel(string text, char separator)
+    {
+        var result = new List<string>();
+        var current = new StringBuilder();
+        var parenDepth = 0;
+        var angleDepth = 0;
+        var braceDepth = 0;
+        var bracketDepth = 0;
+        var inString = false;
+        char stringDelimiter = '\0';
+
+        foreach (var ch in text)
+        {
+            if (inString)
+            {
+                current.Append(ch);
+                if (ch == stringDelimiter)
+                    inString = false;
+                continue;
+            }
+
+            switch (ch)
+            {
+            case '\'':
+            case '"':
+                inString = true;
+                stringDelimiter = ch;
+                current.Append(ch);
+                break;
+            case '(':
+                parenDepth++;
+                current.Append(ch);
+                break;
+            case ')':
+                parenDepth--;
+                current.Append(ch);
+                break;
+            case '<':
+                angleDepth++;
+                current.Append(ch);
+                break;
+            case '>':
+                if (angleDepth > 0)
+                    angleDepth--;
+                current.Append(ch);
+                break;
+            case '{':
+                braceDepth++;
+                current.Append(ch);
+                break;
+            case '}':
+                braceDepth--;
+                current.Append(ch);
+                break;
+            case '[':
+                bracketDepth++;
+                current.Append(ch);
+                break;
+            case ']':
+                bracketDepth--;
+                current.Append(ch);
+                break;
+            default:
+                if (ch == separator && parenDepth == 0 && angleDepth == 0 && braceDepth == 0 && bracketDepth == 0)
+                {
+                    var part = current.ToString().Trim();
+                    if (!string.IsNullOrWhiteSpace(part))
+                        result.Add(part);
+                    current.Clear();
+                }
+                else
+                {
+                    current.Append(ch);
+                }
+                break;
+            }
+        }
+
+        var trailing = current.ToString().Trim();
+        if (!string.IsNullOrWhiteSpace(trailing))
+            result.Add(trailing);
+
+        return result;
+    }
+
+    private static bool TryParseMacroInvocation(string text, out string macroName, out string macroBody)
+    {
+        macroName = string.Empty;
+        macroBody = string.Empty;
+
+        var trimmed = text.Trim();
+        var openParenIndex = trimmed.IndexOf('(');
+        if (openParenIndex <= 0 || !trimmed.EndsWith(")", StringComparison.Ordinal))
+            return false;
+
+        macroName = trimmed[..openParenIndex].Trim();
+        macroBody = trimmed[(openParenIndex + 1)..^1].Trim();
+        return !string.IsNullOrWhiteSpace(macroName);
+    }
+
+    private static string ExtractDelimitedBody(string text, int openIndex, char openChar, char closeChar)
+    {
+        if (openIndex < 0 || openIndex >= text.Length || text[openIndex] != openChar)
+            return string.Empty;
+
+        var start = openIndex + 1;
+        var depth = 1;
+        for (var index = start; index < text.Length; index++)
+        {
+            if (text[index] == openChar)
+                depth++;
+            else if (text[index] == closeChar)
+            {
+                depth--;
+                if (depth == 0)
+                    return text[start..index];
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static int SkipDelimitedBody(string text, int openIndex, char openChar, char closeChar)
+    {
+        if (openIndex < 0 || openIndex >= text.Length || text[openIndex] != openChar)
+            return text.Length;
+
+        var depth = 1;
+        for (var index = openIndex + 1; index < text.Length; index++)
+        {
+            if (text[index] == openChar)
+                depth++;
+            else if (text[index] == closeChar)
+            {
+                depth--;
+                if (depth == 0)
+                    return index + 1;
+            }
+        }
+
+        return text.Length;
+    }
+
+    private static string ExtractSimpleClassName(string fullTypeName)
+    {
+        var separatorIndex = fullTypeName.LastIndexOf("::", StringComparison.Ordinal);
+        return separatorIndex >= 0 ? fullTypeName[(separatorIndex + 2)..] : fullTypeName;
+    }
+
+    private static string NormalizeRegistrationName(string text)
+    {
+        var trimmed = text.Trim();
+        if (trimmed.Length >= 2
+            && ((trimmed[0] == '"' && trimmed[^1] == '"')
+                || (trimmed[0] == '\'' && trimmed[^1] == '\'')))
+        {
+            return trimmed[1..^1].Trim();
+        }
+
+        return trimmed;
     }
 
     private static List<ReflectBaseInfo> ExtractBases(CppClass cls)
@@ -350,7 +987,12 @@ internal static class Program
                 if (string.IsNullOrWhiteSpace(typeName))
                     continue;
 
-                result.Add(new ReflectFieldInfo(field.Name, typeName));
+                result.Add(new ReflectFieldInfo(
+                    field.Name,
+                    typeName,
+                    $"&{cls.FullName}::{field.Name}",
+                    $"&{cls.FullName}::{field.Name}",
+                    false));
             }
             catch (Exception ex)
             {
@@ -396,7 +1038,7 @@ internal static class Program
         return candidateNames
             .Where(name => !overloadedMethodNames.Contains(name))
             .Distinct(StringComparer.Ordinal)
-            .Select(name => new ReflectMethodInfo(name))
+            .Select(name => new ReflectMethodInfo(name, $"&{cls.FullName}::{name}", false, false))
             .ToList();
     }
 
@@ -468,13 +1110,15 @@ internal static class Program
             .ToList();
     }
 
-    private static TextMemberParseResult ExtractMembersFromText(string body, string className, bool defaultPublic)
+    private static TextMemberParseResult ExtractMembersFromText(string body, string fullTypeName, bool defaultPublic)
     {
         body = StripBlockComments(body);
 
         var fields = new List<ReflectFieldInfo>();
         var methods = new List<ReflectMethodInfo>();
         var methodNames = new List<string>();
+        var className = ExtractSimpleClassName(fullTypeName);
+        var namespacePrefix = ExtractNamespace(fullTypeName, ExtractSimpleClassName(fullTypeName));
 
         var currentAccess = defaultPublic ? "public" : "private";
         var currentStatement = new StringBuilder();
@@ -484,6 +1128,9 @@ internal static class Program
         {
             var line = StripInlineComments(rawLine).Trim();
             if (string.IsNullOrWhiteSpace(line))
+                continue;
+
+            if (Regex.IsMatch(line, @"^(?:GENERATED_BODY|NLS_GENERATED_BODY)\s*\([^)]*\)\s*;?$", RegexOptions.CultureInvariant))
                 continue;
 
             if (braceDepth == 0)
@@ -561,7 +1208,7 @@ internal static class Program
                 if (!fieldMatch.Success)
                     continue;
 
-                var fieldType = NormalizeTypeName(fieldMatch.Groups["type"].Value);
+                var fieldType = QualifyTypeName(NormalizeTypeName(fieldMatch.Groups["type"].Value), namespacePrefix);
                 var fieldName = fieldMatch.Groups["name"].Value;
 
                 if (string.IsNullOrWhiteSpace(fieldType)
@@ -575,7 +1222,12 @@ internal static class Program
                     continue;
                 }
 
-                fields.Add(new ReflectFieldInfo(fieldName, fieldType));
+                fields.Add(new ReflectFieldInfo(
+                    fieldName,
+                    fieldType,
+                    $"&{fullTypeName}::{fieldName}",
+                    $"&{fullTypeName}::{fieldName}",
+                    false));
             }
         }
 
@@ -588,7 +1240,7 @@ internal static class Program
         methods.AddRange(methodNames
             .Where(name => !overloaded.Contains(name))
             .Distinct(StringComparer.Ordinal)
-            .Select(name => new ReflectMethodInfo(name)));
+            .Select(name => new ReflectMethodInfo(name, $"&{fullTypeName}::{name}", false, false)));
 
         return new TextMemberParseResult(
             fields
@@ -610,15 +1262,57 @@ internal static class Program
     {
         if (string.IsNullOrWhiteSpace(typeName) || string.IsNullOrWhiteSpace(namespacePrefix) || typeName.Contains("::", StringComparison.Ordinal))
             return typeName;
+        if (BuiltinTypeNames.Contains(typeName))
+            return typeName;
+        if (typeName.IndexOfAny(new[] { ' ', '&', '*', '<', '>', '[', ']', '(', ')', ',' }) >= 0)
+            return typeName;
 
         return $"{namespacePrefix}::{typeName}";
     }
+
+    private static string GetGeneratedRelativeBasePath(string headerPath)
+    {
+        return Path.ChangeExtension(headerPath.Replace('/', Path.DirectorySeparatorChar), null) ?? headerPath;
+    }
+
+    private static string BuildGeneratedFileId(string headerPath)
+        => $"NLS_FID_{SanitizeIdentifier(headerPath.Replace('\\', '_').Replace('/', '_').Replace('.', '_'))}";
+
+    private static string BuildGeneratedBodyMacroName(string fileId, int line)
+        => $"{fileId}_{line}_GENERATED_BODY";
+
+    private static List<int> FindGeneratedBodyLines(string sourceFilePath)
+    {
+        if (string.IsNullOrWhiteSpace(sourceFilePath) || !File.Exists(sourceFilePath))
+            return [];
+
+        var text = File.ReadAllText(sourceFilePath);
+        return Regex.Matches(text, @"\b(?:GENERATED_BODY|NLS_GENERATED_BODY)\s*\(", RegexOptions.CultureInvariant)
+            .Cast<Match>()
+            .Select(match => 1 + text.Take(match.Index).Count(ch => ch == '\n'))
+            .ToList();
+    }
+
+    private static string BuildPrivateAccessStructName(string qualifiedName)
+        => $"PrivateAccess_{SanitizeIdentifier(qualifiedName)}";
+
+    private static string BuildPrivateFieldAccessorName(string fieldName, int index)
+        => $"Field_{SanitizeIdentifier(fieldName)}_{index}";
+
+    private static string BuildPrivateMethodAccessorName(string methodName, int index)
+        => $"Method_{SanitizeIdentifier(methodName)}_{index}";
+
+    private static string BuildRegisterFunctionName(string qualifiedName)
+        => $"RegisterType_{SanitizeIdentifier(qualifiedName)}";
+
+    private static string BuildRegistrarClassName(string qualifiedName)
+        => $"StaticTypeRegister_{SanitizeIdentifier(qualifiedName)}";
 
     private static CppParserOptions CreateOptions(PrecompileParams config)
     {
         var options = new CppParserOptions
         {
-            ParseTokenAttributes = false,
+            ParseTokenAttributes = true,
             ParseSystemIncludes = false
         };
 
@@ -729,30 +1423,49 @@ internal static class Program
 
     private static bool HasReflectionMarker(CppClass cls)
     {
-        if (cls.Attributes.Any(IsReflectionAttribute) || cls.MetaAttributes.MetaList.Any())
+        var hasAttribute = cls.Attributes.Any(IsReflectionAttribute);
+#pragma warning disable CS0618
+        var hasTokenAttribute = cls.TokenAttributes.Any(IsReflectionAttribute);
+#pragma warning restore CS0618
+        var hasMetaAttribute = cls.MetaAttributes.MetaList.Any(IsReflectionMetaAttribute);
+
+        if (hasAttribute || hasTokenAttribute || hasMetaAttribute)
+        {
             return true;
+        }
 
-        var sourceFile = cls.SourceFile;
-        if (string.IsNullOrWhiteSpace(sourceFile) || !File.Exists(sourceFile))
-            return false;
-
-        var text = File.ReadAllText(sourceFile);
-        if (string.IsNullOrWhiteSpace(cls.Name))
-            return false;
-
-        var escapedName = Regex.Escape(cls.Name);
-        return Regex.IsMatch(text, $@"\bMeta\s*\(\s*\)\s+class\b[\s\w:]*\b{escapedName}\b", RegexOptions.CultureInvariant)
-               || Regex.IsMatch(text, $@"\bMeta\s*\(\s*\)\s+struct\b[\s\w:]*\b{escapedName}\b", RegexOptions.CultureInvariant)
-               || Regex.IsMatch(text, $@"\bMETA\s*\(\s*\)\s+class\b[\s\w:]*\b{escapedName}\b", RegexOptions.CultureInvariant)
-               || Regex.IsMatch(text, $@"\bMETA\s*\(\s*\)\s+struct\b[\s\w:]*\b{escapedName}\b", RegexOptions.CultureInvariant)
-               || text.Contains($"CLASS({cls.Name}", StringComparison.Ordinal)
-               || text.Contains($"STRUCT({cls.Name}", StringComparison.Ordinal);
+        return false;
     }
 
     private static bool IsReflectionAttribute(CppAttribute attribute)
-        => attribute.Kind == AttributeKind.AnnotateAttribute
-           || string.Equals(attribute.Name, "annotate", StringComparison.OrdinalIgnoreCase)
-           || attribute.Name.Contains("annotate", StringComparison.OrdinalIgnoreCase);
+    {
+        if (!(attribute.Kind == AttributeKind.AnnotateAttribute
+              || string.Equals(attribute.Name, "annotate", StringComparison.OrdinalIgnoreCase)
+              || attribute.Name.Contains("annotate", StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        return string.IsNullOrWhiteSpace(attribute.Arguments)
+               || ContainsReflectionMarker(attribute.Arguments)
+               || ContainsReflectionMarker(attribute.ToString());
+    }
+
+    private static bool IsReflectionMetaAttribute(MetaAttribute attribute)
+    {
+        if (attribute is null)
+            return false;
+
+        if (ContainsReflectionMarker(attribute.FeatureName))
+            return true;
+
+        return attribute.ArgumentMap.Keys.Any(ContainsReflectionMarker)
+               || attribute.ArgumentMap.Values.Any(value => ContainsReflectionMarker(Convert.ToString(value)));
+    }
+
+    private static bool ContainsReflectionMarker(string? text)
+        => !string.IsNullOrWhiteSpace(text)
+           && text.IndexOf("Reflection", StringComparison.OrdinalIgnoreCase) >= 0;
 
     private static string ExtractNamespace(string fullName, string className)
     {

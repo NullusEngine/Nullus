@@ -2,15 +2,17 @@
 
 #include "Object.h"
 #include "Macros.h"
+#include "Reflection/TestObject.generated.h"
 
 namespace NLS
 {
     namespace meta
     {
         // 测试反射对象
-        Meta() class TestObject : public Object
+        CLASS() class TestObject : public Object
         {
         public:
+            GENERATED_BODY()
             TestObject() = default;
             virtual ~TestObject() = default;
 

@@ -37,4 +37,4 @@ else
 fi
 
 cmake -S . -B "${BUILD_DIR}" -G "${GENERATOR}"
-cmake --build "${BUILD_DIR}" --config "${CONFIG}"
+cmake --build "${BUILD_DIR}" --config "${CONFIG}" --target NullusUnitTests --verbose

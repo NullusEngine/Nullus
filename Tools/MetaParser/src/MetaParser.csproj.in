@@ -5,6 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <RuntimeIdentifiers>win-x64;win-arm64;linux-x64;linux-arm64;osx-x64;osx-arm64</RuntimeIdentifiers>
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">win-@NLS_META_PARSER_HOST_ARCH@</RuntimeIdentifier>
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">linux-@NLS_META_PARSER_HOST_ARCH@</RuntimeIdentifier>
@@ -30,8 +31,4 @@
     <None Include="@NLS_META_PARSER_TEMPLATES_DIR@/MetaGenerated.h.tt" Link="Templates/MetaGenerated.h.tt" CopyToOutputDirectory="PreserveNewest" />
     <None Include="@NLS_META_PARSER_LAUNCH_SETTINGS@" Link="Properties/launchSettings.json" />
   </ItemGroup>
-
-  <PropertyGroup>
-    <PostBuildEventCommand>mkdir "$(OutputPath)Templates" 2>nul &amp;&amp; copy /Y "@NLS_META_PARSER_TEMPLATES_DIR@\MetaGenerated.cpp.tt" "$(OutputPath)Templates\" &amp;&amp; copy /Y "@NLS_META_PARSER_TEMPLATES_DIR@\MetaGenerated.h.tt" "$(OutputPath)Templates\"</PostBuildEventCommand>
-  </PropertyGroup>
 </Project>

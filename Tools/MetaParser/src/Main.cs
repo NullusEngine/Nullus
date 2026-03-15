@@ -198,7 +198,7 @@ internal static class Program
 
     private static IEnumerable<ReflectTypeInfo> ParseHeader(string rootDir, string headerPath, PrecompileParams config)
     {
-        if (OperatingSystem.IsLinux())
+        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
             return ParseHeaderTextFallback(rootDir, headerPath).ToList();
 
         try

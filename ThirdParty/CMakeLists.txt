@@ -23,6 +23,15 @@ if(NOT TARGET assimp)
             ${CMAKE_CURRENT_SOURCE_DIR}/assimp/contrib/zip/src/zip.c
             PROPERTIES COMPILE_OPTIONS "-Wno-shorten-64-to-32"
         )
+        # assimp's bundled zlib assumes legacy Mac fdopen behavior and may
+        # redefine fdopen to NULL on modern Apple toolchains. Keep the symbol
+        # defined as itself so the fallback macro path stays disabled.
+        if(TARGET zlibstatic)
+            target_compile_definitions(zlibstatic PRIVATE "fdopen=fdopen")
+        endif()
+        if(TARGET assimp)
+            target_compile_definitions(assimp PRIVATE "fdopen=fdopen")
+        endif()
     endif()
     set_target_properties(assimp PROPERTIES FOLDER ${third_party_folder}/assimp)
     set_target_properties(assimp PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${NLS_APP_OUTPUT_PATH}")

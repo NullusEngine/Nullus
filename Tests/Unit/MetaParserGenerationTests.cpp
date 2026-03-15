@@ -30,32 +30,42 @@ TEST(MetaParserGenerationTests, GeneratesModuleSpecificRegistrationEntrypoints)
     const std::string baseText = ReadAllText(baseHeader);
     const std::string engineText = ReadAllText(engineHeader);
 
-    ExpectContains(baseText, "RegisterReflectionTypes_NLS_Base");
-    ExpectContains(baseText, "NLS_META_GENERATED_REGISTER_FUNCTION");
-    ExpectContains(engineText, "RegisterReflectionTypes_NLS_Engine");
-    ExpectContains(engineText, "NLS_META_GENERATED_REGISTER_FUNCTION");
+    ExpectContains(baseText, "LinkReflectionTypes_NLS_Base");
+    ExpectContains(baseText, "NLS_META_GENERATED_LINK_FUNCTION");
+    ExpectContains(engineText, "LinkReflectionTypes_NLS_Engine");
+    ExpectContains(engineText, "NLS_META_GENERATED_LINK_FUNCTION");
 }
 
 TEST(MetaParserGenerationTests, GeneratesExpectedBaseReflectionBindings)
 {
-    const std::filesystem::path baseSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Base/Gen/MetaGenerated.cpp";
-    const std::string text = ReadAllText(baseSource);
+    const std::filesystem::path sampleSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Base/Gen/Reflection/MetaParserFieldMethodSample.generated.cpp";
+    const std::filesystem::path metaSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Base/Gen/MetaGenerated.cpp";
+    const std::string sampleText = ReadAllText(sampleSource);
+    const std::string metaText = ReadAllText(metaSource);
 
-    ExpectContains(text, "AllocateType(\"NLS::meta::MetaParserFieldMethodSample\")");
-    ExpectContains(text, "AllocateType(\"NLS::meta::MetaProperty\")");
-    ExpectContains(text, "AddField<NLS::meta::MetaParserFieldMethodSample, int>(\"Value\"");
-    ExpectContains(text, "RegisterReflectionTypes_NLS_Base");
+    ExpectContains(sampleText, "AllocateType(\"NLS::meta::MetaParserFieldMethodSample\")");
+    ExpectContains(sampleText, "AddField<NLS::meta::MetaParserFieldMethodSample, int>(\"Value\"");
+    ExpectContains(sampleText, "AddMethod(\"GetValue\", &NLS::meta::MetaParserFieldMethodSample::GetValue, {})");
+    ExpectContains(metaText, "LinkReflectionTypes_NLS_Base");
+    ExpectContains(metaText, "#include \"Reflection/MetaParserFieldMethodSample.generated.cpp\"");
 }
 
 TEST(MetaParserGenerationTests, GeneratesExpectedEngineReflectionBindings)
 {
-    const std::filesystem::path engineSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/MetaGenerated.cpp";
-    const std::string text = ReadAllText(engineSource);
+    const std::filesystem::path componentSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/Components/Component.generated.cpp";
+    const std::filesystem::path sceneSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/SceneSystem/Scene.generated.cpp";
+    const std::filesystem::path gameObjectSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/GameObject.generated.cpp";
+    const std::filesystem::path engineMetaSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/MetaGenerated.cpp";
+    const std::string componentText = ReadAllText(componentSource);
+    const std::string sceneText = ReadAllText(sceneSource);
+    const std::string gameObjectText = ReadAllText(gameObjectSource);
+    const std::string metaText = ReadAllText(engineMetaSource);
 
-    ExpectContains(text, "AllocateType(\"NLS::Engine::Components::Component\")");
-    ExpectContains(text, "AllocateType(\"NLS::Engine::GameObject\")");
-    ExpectContains(text, "AllocateType(\"NLS::Engine::SceneSystem::Scene\")");
-    ExpectContains(text, "AddMethod(\"CreateBy\", &NLS::Engine::Components::Component::CreateBy, {})");
-    ExpectContains(text, "AddMethod(\"Play\", &NLS::Engine::SceneSystem::Scene::Play, {})");
-    ExpectContains(text, "RegisterReflectionTypes_NLS_Engine");
+    ExpectContains(componentText, "AllocateType(\"NLS::Engine::Components::Component\")");
+    ExpectContains(componentText, "AddMethod(\"CreateBy\", &NLS::Engine::Components::Component::CreateBy, {})");
+    ExpectContains(gameObjectText, "AllocateType(\"NLS::Engine::GameObject\")");
+    ExpectContains(sceneText, "AllocateType(\"NLS::Engine::SceneSystem::Scene\")");
+    ExpectContains(sceneText, "AddMethod(\"Play\", &NLS::Engine::SceneSystem::Scene::Play, {})");
+    ExpectContains(metaText, "LinkReflectionTypes_NLS_Engine");
+    ExpectContains(metaText, "#include \"GameObject.generated.cpp\"");
 }

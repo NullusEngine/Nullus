@@ -198,13 +198,15 @@ internal static class Program
 
     private static IEnumerable<ReflectTypeInfo> ParseHeader(string rootDir, string headerPath, PrecompileParams config)
     {
+        if (OperatingSystem.IsLinux())
+            return ParseHeaderTextFallback(rootDir, headerPath).ToList();
+
         try
         {
             return ParseHeaderWithCppAst(rootDir, headerPath, config).ToList();
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            Console.Error.WriteLine($"[MetaParser] Warning: CppAst fallback for {headerPath}: {ex.Message}");
             return ParseHeaderTextFallback(rootDir, headerPath).ToList();
         }
     }
@@ -268,12 +270,14 @@ internal static class Program
         var text = File.ReadAllText(headerPath);
         var matches = Regex.Matches(
             text,
-            @"\bMeta\s*\(\s*\)\s+(class|struct)\s+(?:[\w_]+\s+)*(?<name>[A-Za-z_]\w*)\s*(?::\s*(?<bases>[^{]+))?\s*\{",
+            @"(?:\bMeta\s*\(\s*\)\s+(?<kind>class|struct)\s+(?:[\w_]+\s+)*(?<name>[A-Za-z_]\w*)|\b(?<macro>CLASS|STRUCT)\s*\(\s*(?<macroName>[A-Za-z_]\w*)\s*(?:,\s*[^)]*)?\))\s*(?::\s*(?<bases>[^{]+))?\s*\{",
             RegexOptions.CultureInvariant);
 
         foreach (Match match in matches.Cast<Match>())
         {
-            var className = match.Groups["name"].Value;
+            var className = match.Groups["name"].Success
+                ? match.Groups["name"].Value
+                : match.Groups["macroName"].Value;
             if (string.IsNullOrWhiteSpace(className))
                 continue;
 
@@ -284,7 +288,9 @@ internal static class Program
                 ? className
                 : $"{namespacePrefix}::{className}";
 
-            var members = ExtractMembersFromText(body, className, match.Groups[1].Value == "struct");
+            var defaultPublic = string.Equals(match.Groups["kind"].Value, "struct", StringComparison.Ordinal)
+                || string.Equals(match.Groups["macro"].Value, "STRUCT", StringComparison.Ordinal);
+            var members = ExtractMembersFromText(body, className, defaultPublic);
 
             yield return new ReflectTypeInfo(
                 className,
@@ -292,7 +298,7 @@ internal static class Program
                 fullTypeName,
                 ToGeneratedIncludePath(rootDir, Path.GetFullPath(headerPath)),
                 ParseBasesFromText(match.Groups["bases"].Value, namespacePrefix),
-                [],
+                members.Fields,
                 members.Methods);
         }
     }
@@ -466,6 +472,7 @@ internal static class Program
     {
         body = StripBlockComments(body);
 
+        var fields = new List<ReflectFieldInfo>();
         var methods = new List<ReflectMethodInfo>();
         var methodNames = new List<string>();
 
@@ -545,6 +552,30 @@ internal static class Program
                     methodNames.Add(methodName);
                     continue;
                 }
+
+                var fieldMatch = Regex.Match(
+                    statement,
+                    @"^(?<type>.+?)\s+(?<name>[A-Za-z_]\w*)(?:\s*=\s*.+)?;$",
+                    RegexOptions.CultureInvariant);
+
+                if (!fieldMatch.Success)
+                    continue;
+
+                var fieldType = NormalizeTypeName(fieldMatch.Groups["type"].Value);
+                var fieldName = fieldMatch.Groups["name"].Value;
+
+                if (string.IsNullOrWhiteSpace(fieldType)
+                    || string.IsNullOrWhiteSpace(fieldName)
+                    || fieldType.StartsWith("static ", StringComparison.Ordinal)
+                    || fieldType.StartsWith("constexpr ", StringComparison.Ordinal)
+                    || fieldType.StartsWith("inline ", StringComparison.Ordinal)
+                    || fieldType.Contains(" static ", StringComparison.Ordinal)
+                    || fieldType.Contains("typedef", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                fields.Add(new ReflectFieldInfo(fieldName, fieldType));
             }
         }
 
@@ -560,7 +591,9 @@ internal static class Program
             .Select(name => new ReflectMethodInfo(name)));
 
         return new TextMemberParseResult(
-            [],
+            fields
+                .DistinctBy(f => f.Name)
+                .ToList(),
             methods);
     }
 
@@ -600,13 +633,21 @@ internal static class Program
             .Distinct()
             .ToList();
 
-        foreach (var systemIncludeDir in normalizedSystemIncludes)
-            options.SystemIncludeFolders.Add(systemIncludeDir);
+        if (!OperatingSystem.IsLinux())
+        {
+            foreach (var systemIncludeDir in normalizedSystemIncludes)
+                options.SystemIncludeFolders.Add(systemIncludeDir);
+        }
 
         foreach (var define in config.Defines.Where(static x => !string.IsNullOrWhiteSpace(x)).Distinct())
             options.Defines.Add(define);
 
         var compilerArgs = new List<string>();
+        if (!string.IsNullOrWhiteSpace(config.CompilerTarget))
+        {
+            compilerArgs.Add($"--target={config.CompilerTarget}");
+        }
+
         if (!string.IsNullOrWhiteSpace(config.ResourceDir))
         {
             compilerArgs.Add("-resource-dir");
@@ -627,10 +668,13 @@ internal static class Program
             }
         }
 
-        foreach (var systemIncludeDir in normalizedSystemIncludes)
+        if (!OperatingSystem.IsLinux())
         {
-            compilerArgs.Add("-isystem");
-            compilerArgs.Add(systemIncludeDir);
+            foreach (var systemIncludeDir in normalizedSystemIncludes)
+            {
+                compilerArgs.Add("-isystem");
+                compilerArgs.Add(systemIncludeDir);
+            }
         }
 
         compilerArgs.AddRange(config.CompilerOptions.Where(static x => !string.IsNullOrWhiteSpace(x)));

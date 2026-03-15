@@ -1,4 +1,5 @@
 #include "String.h"
+#include <cstdint>
 #include <sstream>
 #include <iostream>
 bool NLS::Utils::String::Replace(std::string& p_target, const std::string& p_from, const std::string& p_to)

@@ -1,5 +1,6 @@
 #include "Filesystem/IniFile.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 

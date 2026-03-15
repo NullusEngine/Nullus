@@ -5,7 +5,9 @@
 #include "Math/Matrix3.h"
 #include "Math/Vector3.h"
 #include "MathDef.h"
+#include <cstdint>
 #include <functional>
+#include <unordered_map>
 namespace NLS
 {
 	namespace Maths

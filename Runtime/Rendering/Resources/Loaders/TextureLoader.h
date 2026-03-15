@@ -3,6 +3,7 @@
 #include "RenderDef.h"
 #include "Rendering/Settings/ETextureFilteringMode.h"
 
+#include <cstdint>
 #include <string>
 #include <vector>
 

@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <cstdint>
 #include "CommonDef.h"
 
 #ifdef NLS_SHARED_LIB

@@ -27,7 +27,8 @@ else
 fi
 
 MY_DIR="$(cd "$(dirname "$0")" 1>/dev/null 2>/dev/null && pwd)"
+BUILD_DIR="${MY_DIR}/build/macos"
 cd "${MY_DIR}"
 
-cmake -S . -B build -G "Xcode"
-cmake --build build --config "${CONFIG}"
+cmake -S . -B "${BUILD_DIR}" -G "Xcode"
+cmake --build "${BUILD_DIR}" --config "${CONFIG}"

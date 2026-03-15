@@ -1,6 +1,7 @@
 ﻿#pragma once
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include "MathDef.h"
 namespace NLS
 {

@@ -94,6 +94,54 @@ function(nls_choose_meta_parser_compiler OUT_COMPILER OUT_TARGET OUT_SYSTEM_INCL
                 endif()
             endforeach()
         endif()
+
+        set(_gnu_stdlib_includes "")
+        execute_process(
+            COMMAND "${CMAKE_CXX_COMPILER}" -dumpfullversion
+            OUTPUT_VARIABLE _gcc_version
+            ERROR_QUIET
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        if(NOT _gcc_version)
+            execute_process(
+                COMMAND "${CMAKE_CXX_COMPILER}" -dumpversion
+                OUTPUT_VARIABLE _gcc_version
+                ERROR_QUIET
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+            )
+        endif()
+        string(REGEX MATCH "^[0-9]+" _gcc_major "${_gcc_version}")
+        execute_process(
+            COMMAND "${CMAKE_CXX_COMPILER}" -print-multiarch
+            OUTPUT_VARIABLE _gcc_multiarch
+            ERROR_QUIET
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        execute_process(
+            COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=include
+            OUTPUT_VARIABLE _gcc_builtin_include
+            ERROR_QUIET
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        foreach(_dir
+            "/usr/include/c++/${_gcc_major}"
+            "/usr/include/${_gcc_multiarch}/c++/${_gcc_major}"
+            "/usr/include/c++/${_gcc_major}/backward"
+            "${_gcc_builtin_include}"
+            "/usr/lib/gcc/${_gcc_multiarch}/${_gcc_major}/include")
+            if(_dir)
+                get_filename_component(_dir_real "${_dir}" REALPATH)
+                if(_dir_real AND EXISTS "${_dir_real}")
+                    list(APPEND _gnu_stdlib_includes "${_dir_real}")
+                elseif(EXISTS "${_dir}")
+                    list(APPEND _gnu_stdlib_includes "${_dir}")
+                endif()
+            endif()
+        endforeach()
+        if(_gnu_stdlib_includes)
+            list(APPEND _gnu_stdlib_includes ${_includes})
+            set(_includes ${_gnu_stdlib_includes})
+        endif()
     endif()
 
     list(REMOVE_DUPLICATES _includes)
@@ -163,8 +211,13 @@ function(nls_detect_compiler_system_includes COMPILER OUT_INCLUDES)
                 string(REGEX REPLACE "(^|\n) " "" _line "${_match}")
                 string(STRIP "${_line}" _line)
                 string(REGEX REPLACE " \(framework directory\)$" "" _line "${_line}")
-                if(_line AND EXISTS "${_line}")
-                    list(APPEND _includes "${_line}")
+                if(_line)
+                    get_filename_component(_line_real "${_line}" REALPATH)
+                    if(_line_real AND EXISTS "${_line_real}")
+                        list(APPEND _includes "${_line_real}")
+                    elseif(EXISTS "${_line}")
+                        list(APPEND _includes "${_line}")
+                    endif()
                 endif()
             endforeach()
         endif()
@@ -221,8 +274,13 @@ function(nls_detect_compiler_system_includes COMPILER OUT_INCLUDES)
                 "/usr/local/include"
                 "/usr/include/${_gcc_multiarch}"
                 "/usr/include")
-                if(_dir AND EXISTS "${_dir}")
-                    list(APPEND _includes "${_dir}")
+                if(_dir)
+                    get_filename_component(_dir_real "${_dir}" REALPATH)
+                    if(_dir_real AND EXISTS "${_dir_real}")
+                        list(APPEND _includes "${_dir_real}")
+                    elseif(EXISTS "${_dir}")
+                        list(APPEND _includes "${_dir}")
+                    endif()
                 endif()
             endforeach()
         endif()
@@ -578,6 +636,7 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
         DEPENDS
             MetaParser
             ${_headers}
+            "${_params_file}"
             "${_params_template}"
             "${NLS_ROOT_DIR}/Tools/MetaParser/src/Main.cs"
             "${NLS_ROOT_DIR}/Tools/MetaParser/src/Templates/MetaGenerated.cpp.tt"

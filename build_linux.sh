@@ -30,7 +30,7 @@ else
     exit 1
 fi
 
-if test \( \( -n "$1" \) -a \( "$1" = "debug" \) \);then 
+if test \( \( -n "$1" \) -a \( "$1" = "debug" \) \);then
     CMAKE_ARG_BUILD_TYPE_CONFIG="-DCMAKE_BUILD_TYPE=Debug"
 elif test \( \( -n "$1" \) -a \( "$1" = "release" \) \);then
     CMAKE_ARG_BUILD_TYPE_CONFIG="-DCMAKE_BUILD_TYPE=Release"
@@ -44,7 +44,8 @@ else
     exit 1
 fi
 
-MY_DIR="$(cd "$(dirname "$0")" 1>/dev/null 2>/dev/null && pwd)"  
+MY_DIR="$(cd "$(dirname "$0")" 1>/dev/null 2>/dev/null && pwd)"
+BUILD_DIR="${MY_DIR}/build/linux"
 cd "${MY_DIR}"
 
 if [ -z "${CC}" ] && command -v gcc >/dev/null 2>&1; then
@@ -54,5 +55,5 @@ if [ -z "${CXX}" ] && command -v g++ >/dev/null 2>&1; then
     export CXX=g++
 fi
 
-cmake -S . -B build "${CMAKE_ARG_BUILD_TYPE_CONFIG}" "${CMAKE_ARG_BUILD_TOOL_TYPE_CONFIG}" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-cmake --build "${MY_DIR}/build" -- all -j$(nproc)
+cmake -S . -B "${BUILD_DIR}" "${CMAKE_ARG_BUILD_TYPE_CONFIG}" "${CMAKE_ARG_BUILD_TOOL_TYPE_CONFIG}" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+cmake --build "${BUILD_DIR}" -- all -j$(nproc)

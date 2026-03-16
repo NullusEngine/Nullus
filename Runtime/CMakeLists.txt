@@ -486,6 +486,9 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
 
     set(_defines __REFLECTION_PARSER__)
     list(APPEND _defines ${_builtin_defines})
+    if(WIN32)
+        list(APPEND _defines _ALLOW_COMPILER_AND_STL_VERSION_MISMATCH)
+    endif()
 
     get_target_property(_target_defines ${_target_name} COMPILE_DEFINITIONS)
     if(_target_defines)

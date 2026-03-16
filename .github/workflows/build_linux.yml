@@ -32,7 +32,7 @@ jobs:
             libgl1-mesa-dev libglu1-mesa-dev libvulkan-dev
 
       - name: Build
-        run: NLS_BUILD_TARGETS="NullusUnitTests ReflectionTest" ./build_linux.sh ${{ matrix.configuration }}
+        run: NLS_BUILD_TARGETS="NullusUnitTests ReflectionTest" NLS_BUILD_JOBS=1 ./build_linux.sh ${{ matrix.configuration }}
 
       - name: Run unit tests
         run: |
@@ -48,11 +48,17 @@ jobs:
           file "${REFLECTION_TEST}" || true
           "${NULLUS_UNIT_TESTS}" > nullus_unit_tests.log 2>&1 || {
             cat nullus_unit_tests.log
+            while IFS= read -r line; do
+              echo "::error::$line"
+            done < nullus_unit_tests.log
             exit 1
           }
           cat nullus_unit_tests.log
           "${REFLECTION_TEST}" > reflection_test.log 2>&1 || {
             cat reflection_test.log
+            while IFS= read -r line; do
+              echo "::error::$line"
+            done < reflection_test.log
             exit 1
           }
           cat reflection_test.log

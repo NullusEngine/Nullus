@@ -26,7 +26,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          NLS_BUILD_TARGETS="NullusUnitTests ReflectionTest" ./build_macos.sh ${{ matrix.configuration }} 2>&1 | tee "build_macos_${{ matrix.configuration }}.log"
+          NLS_BUILD_TARGETS="NullusUnitTests ReflectionTest" NLS_BUILD_JOBS=1 ./build_macos.sh ${{ matrix.configuration }} 2>&1 | tee "build_macos_${{ matrix.configuration }}.log"
 
       - name: Dump build log on failure
         if: failure()
@@ -56,11 +56,17 @@ jobs:
           file "${REFLECTION_TEST}" || true
           "${NULLUS_UNIT_TESTS}" > nullus_unit_tests.log 2>&1 || {
             cat nullus_unit_tests.log
+            while IFS= read -r line; do
+              echo "::error::$line"
+            done < nullus_unit_tests.log
             exit 1
           }
           cat nullus_unit_tests.log
           "${REFLECTION_TEST}" > reflection_test.log 2>&1 || {
             cat reflection_test.log
+            while IFS= read -r line; do
+              echo "::error::$line"
+            done < reflection_test.log
             exit 1
           }
           cat reflection_test.log

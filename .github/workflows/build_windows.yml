@@ -36,14 +36,18 @@ jobs:
         run: cmake --build build\windows --config ${{ matrix.configuration }} --target NullusUnitTests ReflectionTest -- /m:1
 
       - name: Run unit tests
-        shell: cmd
+        shell: powershell
         run: |
-          dir build\windows\bin\${{ matrix.configuration }}
-          build\windows\bin\${{ matrix.configuration }}\NullusUnitTests.exe > nullus_unit_tests.log 2>&1
-          set UNIT_EXIT=%ERRORLEVEL%
-          type nullus_unit_tests.log
-          if not "%UNIT_EXIT%"=="0" exit /b %UNIT_EXIT%
-          build\windows\bin\${{ matrix.configuration }}\ReflectionTest.exe > reflection_test.log 2>&1
-          set REFLECTION_EXIT=%ERRORLEVEL%
-          type reflection_test.log
-          if not "%REFLECTION_EXIT%"=="0" exit /b %REFLECTION_EXIT%
+          Get-ChildItem "build/windows/bin/${{ matrix.configuration }}" | Format-Table -AutoSize
+          $unitLog = "nullus_unit_tests.log"
+          $reflectionLog = "reflection_test.log"
+          & "build/windows/bin/${{ matrix.configuration }}/NullusUnitTests.exe" *>&1 | Tee-Object -FilePath $unitLog
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content $unitLog | ForEach-Object { Write-Output "::error::$_" }
+            exit $LASTEXITCODE
+          }
+          & "build/windows/bin/${{ matrix.configuration }}/ReflectionTest.exe" *>&1 | Tee-Object -FilePath $reflectionLog
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content $reflectionLog | ForEach-Object { Write-Output "::error::$_" }
+            exit $LASTEXITCODE
+          }

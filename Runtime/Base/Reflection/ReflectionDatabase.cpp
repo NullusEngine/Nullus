@@ -13,11 +13,6 @@
 
 #include "MetaGenerated.h"
 
-namespace
-{
-[[maybe_unused]] auto g_metaGeneratedBaseAnchor = &NLS_META_GENERATED_LINK_FUNCTION;
-}
-
 #define REGISTER_NATIVE_TYPE(type)                    \
     {                                                 \
         auto id = AllocateType( #type );              \
@@ -43,6 +38,8 @@ namespace NLS
             : types( 1 )
             , m_nextID( 1 )
         {
+            NLS_META_GENERATED_LINK_FUNCTION();
+
             types[ InvalidTypeID ].name = "UNKNOWN";
 
             // register all of the native type variants explicity, before

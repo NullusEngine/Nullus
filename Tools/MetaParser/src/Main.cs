@@ -369,11 +369,15 @@ internal static class Program
         var types = new List<ReflectTypeInfo>();
         var headerText = File.ReadAllText(headerPath);
         var hasReflectedTypeBodies = ContainsGeneratedBody(headerText);
+        var hasExternalReflectionDeclarations =
+            headerText.Contains("MetaExternal", StringComparison.Ordinal)
+            || headerText.Contains("REFLECT_EXTERNAL", StringComparison.Ordinal);
+
         if (hasReflectedTypeBodies)
         {
             types.AddRange(ParseHeaderFromText(rootDir, headerPath, headerText));
         }
-        else
+        else if (!hasExternalReflectionDeclarations)
         {
             types.AddRange(ParseHeaderWithCppAst(rootDir, headerPath, config));
         }

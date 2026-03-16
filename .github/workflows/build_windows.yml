@@ -23,14 +23,21 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Configure
+        shell: cmd
+        run: cmake -S . -B build\windows -G "Visual Studio 17 2022" -A ${{ matrix.platform }} -DCMAKE_CONFIGURATION_TYPES=${{ matrix.configuration }}
+
+      - name: Restore MetaParser
+        shell: cmd
+        run: dotnet restore build\windows\Tools\MetaParser\src\MetaParser.csproj
+
       - name: Build
         shell: cmd
-        env:
-          NLS_BUILD_TARGETS: NullusUnitTests ReflectionTest
-        run: build_windows.bat ${{ matrix.configuration }} ${{ matrix.platform }}
+        run: cmake --build build\windows --config ${{ matrix.configuration }} --target NullusUnitTests ReflectionTest -- /m:1
 
       - name: Run unit tests
         shell: cmd
         run: |
+          dir build\windows\bin\${{ matrix.configuration }}
           build\windows\bin\${{ matrix.configuration }}\NullusUnitTests.exe
           build\windows\bin\${{ matrix.configuration }}\ReflectionTest.exe

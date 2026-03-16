@@ -27,7 +27,7 @@ if exist %BUILD_DIR%\Tools\MetaParser\src\MetaParser.csproj (
 )
 
 if defined NLS_BUILD_TARGETS (
-    cmake --build %BUILD_DIR% --config %CONFIG% --target %NLS_BUILD_TARGETS%
+    cmake --build %BUILD_DIR% --config %CONFIG% --target %NLS_BUILD_TARGETS% -- /m:1
 ) else (
     cmake --build %BUILD_DIR% --config %CONFIG%
 )

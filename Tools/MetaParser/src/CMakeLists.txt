@@ -15,8 +15,24 @@ set_target_properties(MetaParser PROPERTIES
     VS_GLOBAL_Nullable "enable"
     VS_GLOBAL_AppendTargetFrameworkToOutputPath "false"
     VS_GLOBAL_CopyLocalLockFileAssemblies "true"
-    VS_PACKAGE_REFERENCES "Mono.TextTemplating_3.0.0"
     FOLDER Tools
+)
+
+set(_meta_parser_package_references "Mono.TextTemplating_3.0.0")
+if(WIN32)
+    if(NLS_META_PARSER_HOST_ARCH STREQUAL "arm64")
+        list(APPEND _meta_parser_package_references
+            "libclang.runtime.win-arm64_${NLS_META_PARSER_LIBCLANG_VERSION}"
+            "libclangsharp.runtime.win-arm64_${NLS_META_PARSER_LIBCLANGSHARP_VERSION}")
+    else()
+        list(APPEND _meta_parser_package_references
+            "libclang.runtime.win-x64_${NLS_META_PARSER_LIBCLANG_VERSION}"
+            "libclangsharp.runtime.win-x64_${NLS_META_PARSER_LIBCLANGSHARP_VERSION}")
+    endif()
+endif()
+list(JOIN _meta_parser_package_references ";" _meta_parser_package_references_joined)
+set_target_properties(MetaParser PROPERTIES
+    VS_PACKAGE_REFERENCES "${_meta_parser_package_references_joined}"
 )
 
 if(TARGET CppAst)

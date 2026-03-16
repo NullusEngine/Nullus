@@ -369,25 +369,13 @@ internal static class Program
         var types = new List<ReflectTypeInfo>();
         var headerText = File.ReadAllText(headerPath);
         var hasReflectedTypeBodies = ContainsGeneratedBody(headerText);
-        var textFallbackTypes = hasReflectedTypeBodies
-            ? ParseHeaderFromText(rootDir, headerPath, headerText).ToList()
-            : [];
-
-        try
+        if (hasReflectedTypeBodies)
+        {
+            types.AddRange(ParseHeaderFromText(rootDir, headerPath, headerText));
+        }
+        else
         {
             types.AddRange(ParseHeaderWithCppAst(rootDir, headerPath, config));
-            if (hasReflectedTypeBodies)
-            {
-                types.AddRange(textFallbackTypes);
-            }
-        }
-        catch (Exception ex) when (hasReflectedTypeBodies)
-        {
-            types.AddRange(textFallbackTypes);
-            if (textFallbackTypes.Count == 0)
-            {
-                Console.Error.WriteLine($"[MetaParser] Warning: CppAst fallback for {headerPath}: {ex.Message}");
-            }
         }
 
         types.AddRange(ParseExternalReflectionDeclarations(rootDir, headerPath));

@@ -44,10 +44,12 @@ jobs:
       - name: Run unit tests
         shell: bash
         run: |
-          if [[ "${{ matrix.configuration }}" == "debug" ]]; then
-            CONFIG_DIR="Debug"
-          else
-            CONFIG_DIR="Release"
-          fi
-          ./build/macos/bin/${CONFIG_DIR}/NullusUnitTests
-          ./build/macos/bin/${CONFIG_DIR}/ReflectionTest
+          set -euo pipefail
+          NULLUS_UNIT_TESTS="$(find build/macos -type f -name NullusUnitTests | head -n 1)"
+          REFLECTION_TEST="$(find build/macos -type f -name ReflectionTest | head -n 1)"
+          echo "NullusUnitTests: ${NULLUS_UNIT_TESTS}"
+          echo "ReflectionTest: ${REFLECTION_TEST}"
+          test -n "${NULLUS_UNIT_TESTS}"
+          test -n "${REFLECTION_TEST}"
+          "${NULLUS_UNIT_TESTS}"
+          "${REFLECTION_TEST}"

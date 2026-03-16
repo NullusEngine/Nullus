@@ -24,16 +24,33 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Configure
-        shell: cmd
+        shell: powershell
         run: cmake -S . -B build\windows -G "Visual Studio 17 2022" -A ${{ matrix.platform }} -DCMAKE_CONFIGURATION_TYPES=${{ matrix.configuration }}
 
       - name: Restore MetaParser
-        shell: cmd
+        shell: powershell
         run: dotnet restore build\windows\Tools\MetaParser\src\MetaParser.csproj
 
       - name: Build
-        shell: cmd
-        run: cmake --build build\windows --config ${{ matrix.configuration }} --target NullusUnitTests ReflectionTest -- /m:1
+        shell: powershell
+        run: |
+          cmake --build build\windows --config ${{ matrix.configuration }} --target NullusUnitTests ReflectionTest -- /m:1 *>&1 |
+            Tee-Object -FilePath "build_windows_${{ matrix.configuration }}.log"
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
+      - name: Dump build log on failure
+        if: failure()
+        shell: powershell
+        run: |
+          $logPath = "build_windows_${{ matrix.configuration }}.log"
+          if (Test-Path $logPath) {
+            Write-Output "::group::Last 200 lines of Windows build log"
+            Get-Content $logPath -Tail 200
+            Write-Output "::endgroup::"
+            Get-Content $logPath -Tail 50 | ForEach-Object { Write-Output "::error::$_" }
+          }
 
       - name: Run unit tests
         shell: powershell

@@ -26,7 +26,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          ./build_macos.sh ${{ matrix.configuration }} 2>&1 | tee "build_macos_${{ matrix.configuration }}.log"
+          NLS_BUILD_TARGETS="NullusUnitTests ReflectionTest" ./build_macos.sh ${{ matrix.configuration }} 2>&1 | tee "build_macos_${{ matrix.configuration }}.log"
 
       - name: Dump build log on failure
         if: failure()
@@ -42,4 +42,12 @@ jobs:
           fi
 
       - name: Run unit tests
-        run: ctest --test-dir build/macos -C ${{ matrix.configuration }} --output-on-failure
+        shell: bash
+        run: |
+          if [[ "${{ matrix.configuration }}" == "debug" ]]; then
+            CONFIG_DIR="Debug"
+          else
+            CONFIG_DIR="Release"
+          fi
+          ./build/macos/bin/${CONFIG_DIR}/NullusUnitTests
+          ./build/macos/bin/${CONFIG_DIR}/ReflectionTest

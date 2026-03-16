@@ -56,4 +56,8 @@ if [ -z "${CXX}" ] && command -v g++ >/dev/null 2>&1; then
 fi
 
 cmake -S . -B "${BUILD_DIR}" "${CMAKE_ARG_BUILD_TYPE_CONFIG}" "${CMAKE_ARG_BUILD_TOOL_TYPE_CONFIG}" -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-cmake --build "${BUILD_DIR}" -- all -j$(nproc)
+if [ -n "${NLS_BUILD_TARGETS}" ]; then
+    cmake --build "${BUILD_DIR}" --target ${NLS_BUILD_TARGETS} -j$(nproc)
+else
+    cmake --build "${BUILD_DIR}" -- all -j$(nproc)
+fi

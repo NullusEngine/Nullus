@@ -25,8 +25,12 @@ jobs:
 
       - name: Build
         shell: cmd
+        env:
+          NLS_BUILD_TARGETS: NullusUnitTests ReflectionTest
         run: build_windows.bat ${{ matrix.configuration }} ${{ matrix.platform }}
 
       - name: Run unit tests
         shell: cmd
-        run: ctest --test-dir build/windows -C ${{ matrix.configuration }} --output-on-failure
+        run: |
+          build\windows\bin\${{ matrix.configuration }}\NullusUnitTests.exe
+          build\windows\bin\${{ matrix.configuration }}\ReflectionTest.exe

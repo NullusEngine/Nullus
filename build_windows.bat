@@ -21,7 +21,11 @@ if /I not "%PLATFORM%"=="x64" if /I not "%PLATFORM%"=="ARM64" (
 cmake -S . -B %BUILD_DIR% -G "Visual Studio 17 2022" -A %PLATFORM% -DCMAKE_CONFIGURATION_TYPES=%CONFIG%
 if errorlevel 1 exit /b %errorlevel%
 
-cmake --build %BUILD_DIR% --config %CONFIG%
+if defined NLS_BUILD_TARGETS (
+    cmake --build %BUILD_DIR% --config %CONFIG% --target %NLS_BUILD_TARGETS%
+) else (
+    cmake --build %BUILD_DIR% --config %CONFIG%
+)
 if errorlevel 1 exit /b %errorlevel%
 
 endlocal

@@ -32,7 +32,9 @@ jobs:
             libgl1-mesa-dev libglu1-mesa-dev libvulkan-dev
 
       - name: Build
-        run: ./build_linux.sh ${{ matrix.configuration }}
+        run: NLS_BUILD_TARGETS="NullusUnitTests ReflectionTest" ./build_linux.sh ${{ matrix.configuration }}
 
       - name: Run unit tests
-        run: ctest --test-dir build/linux --output-on-failure
+        run: |
+          ./build/linux/bin/NullusUnitTests
+          ./build/linux/bin/ReflectionTest

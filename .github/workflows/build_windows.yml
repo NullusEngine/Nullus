@@ -46,12 +46,14 @@ jobs:
             "/bl:build_windows_${{ matrix.configuration }}.binlog"
           )
           & cmake @buildArgs *>&1 | Tee-Object -FilePath "build_windows_${{ matrix.configuration }}.log"
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
+          $buildExit = $LASTEXITCODE
+          "exit_code=$buildExit" >> $env:GITHUB_OUTPUT
+          if ($buildExit -ne 0) {
+            exit $buildExit
           }
 
       - name: Dump build log on failure
-        if: steps.build_step.outcome == 'failure'
+        if: always() && steps.build_step.outputs.exit_code != '0'
         shell: powershell
         run: |
           $logPath = "build_windows_${{ matrix.configuration }}.log"
@@ -70,7 +72,7 @@ jobs:
           }
 
       - name: Upload Windows build logs
-        if: steps.build_step.outcome == 'failure'
+        if: always() && steps.build_step.outputs.exit_code != '0'
         uses: actions/upload-artifact@v4
         with:
           name: windows-build-logs-${{ matrix.configuration }}-${{ matrix.platform }}
@@ -80,9 +82,9 @@ jobs:
             build_windows_${{ matrix.configuration }}.binlog
 
       - name: Fail on build error
-        if: steps.build_step.outcome == 'failure'
+        if: always() && steps.build_step.outputs.exit_code != '0'
         shell: powershell
-        run: exit 1
+        run: exit [int]'${{ steps.build_step.outputs.exit_code }}'
 
       - name: Run unit tests
         shell: powershell

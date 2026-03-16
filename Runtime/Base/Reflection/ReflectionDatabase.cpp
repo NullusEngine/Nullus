@@ -15,7 +15,7 @@
 
 namespace
 {
-[[maybe_unused]] const auto *g_metaGeneratedBaseAnchor = &NLS_META_GENERATED_LINK_FUNCTION;
+[[maybe_unused]] auto g_metaGeneratedBaseAnchor = &NLS_META_GENERATED_LINK_FUNCTION;
 }
 
 #define REGISTER_NATIVE_TYPE(type)                    \

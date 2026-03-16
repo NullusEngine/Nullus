@@ -14,7 +14,7 @@
 
 namespace
 {
-[[maybe_unused]] const auto* g_metaGeneratedEngineAnchor = &NLS_META_GENERATED_LINK_FUNCTION;
+[[maybe_unused]] auto g_metaGeneratedEngineAnchor = &NLS_META_GENERATED_LINK_FUNCTION;
 }
 
 namespace NLS

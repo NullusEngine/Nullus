@@ -36,8 +36,16 @@ jobs:
         shell: powershell
         continue-on-error: true
         run: |
-          cmake --build build\windows --config ${{ matrix.configuration }} --target NullusUnitTests ReflectionTest -- /m:1 /flp:logfile=build_windows_${{ matrix.configuration }}_msbuild.log;verbosity=diagnostic /bl:build_windows_${{ matrix.configuration }}.binlog *>&1 |
-            Tee-Object -FilePath "build_windows_${{ matrix.configuration }}.log"
+          $buildArgs = @(
+            "--build", "build/windows",
+            "--config", "${{ matrix.configuration }}",
+            "--target", "NullusUnitTests", "ReflectionTest",
+            "--",
+            "/m:1",
+            "/flp:logfile=build_windows_${{ matrix.configuration }}_msbuild.log;verbosity=diagnostic",
+            "/bl:build_windows_${{ matrix.configuration }}.binlog"
+          )
+          & cmake @buildArgs *>&1 | Tee-Object -FilePath "build_windows_${{ matrix.configuration }}.log"
 
       - name: Dump build log on failure
         if: steps.build_step.outcome == 'failure'

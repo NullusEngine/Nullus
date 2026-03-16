@@ -36,7 +36,7 @@ jobs:
         shell: powershell
         continue-on-error: true
         run: |
-          cmake --build build\windows --config ${{ matrix.configuration }} --target NullusUnitTests ReflectionTest -- /m:1 *>&1 |
+          cmake --build build\windows --config ${{ matrix.configuration }} --target NullusUnitTests ReflectionTest -- /m:1 /flp:logfile=build_windows_${{ matrix.configuration }}_msbuild.log;verbosity=diagnostic /bl:build_windows_${{ matrix.configuration }}.binlog *>&1 |
             Tee-Object -FilePath "build_windows_${{ matrix.configuration }}.log"
 
       - name: Dump build log on failure
@@ -44,12 +44,29 @@ jobs:
         shell: powershell
         run: |
           $logPath = "build_windows_${{ matrix.configuration }}.log"
+          $msbuildLogPath = "build_windows_${{ matrix.configuration }}_msbuild.log"
           if (Test-Path $logPath) {
             Write-Output "::group::Last 200 lines of Windows build log"
             Get-Content $logPath -Tail 200
             Write-Output "::endgroup::"
             Get-Content $logPath -Tail 50 | ForEach-Object { Write-Output "::error::$_" }
           }
+          if (Test-Path $msbuildLogPath) {
+            Write-Output "::group::Last 200 lines of Windows MSBuild log"
+            Get-Content $msbuildLogPath -Tail 200
+            Write-Output "::endgroup::"
+            Get-Content $msbuildLogPath -Tail 50 | ForEach-Object { Write-Output "::error::$_" }
+          }
+
+      - name: Upload Windows build logs
+        if: steps.build_step.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-logs-${{ matrix.configuration }}-${{ matrix.platform }}
+          path: |
+            build_windows_${{ matrix.configuration }}.log
+            build_windows_${{ matrix.configuration }}_msbuild.log
+            build_windows_${{ matrix.configuration }}.binlog
 
       - name: Fail on build error
         if: steps.build_step.outcome == 'failure'

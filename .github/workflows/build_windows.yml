@@ -46,6 +46,9 @@ jobs:
             "/bl:build_windows_${{ matrix.configuration }}.binlog"
           )
           & cmake @buildArgs *>&1 | Tee-Object -FilePath "build_windows_${{ matrix.configuration }}.log"
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
       - name: Dump build log on failure
         if: steps.build_step.outcome == 'failure'

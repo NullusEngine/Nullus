@@ -39,5 +39,11 @@ jobs:
         shell: cmd
         run: |
           dir build\windows\bin\${{ matrix.configuration }}
-          build\windows\bin\${{ matrix.configuration }}\NullusUnitTests.exe
-          build\windows\bin\${{ matrix.configuration }}\ReflectionTest.exe
+          build\windows\bin\${{ matrix.configuration }}\NullusUnitTests.exe > nullus_unit_tests.log 2>&1
+          set UNIT_EXIT=%ERRORLEVEL%
+          type nullus_unit_tests.log
+          if not "%UNIT_EXIT%"=="0" exit /b %UNIT_EXIT%
+          build\windows\bin\${{ matrix.configuration }}\ReflectionTest.exe > reflection_test.log 2>&1
+          set REFLECTION_EXIT=%ERRORLEVEL%
+          type reflection_test.log
+          if not "%REFLECTION_EXIT%"=="0" exit /b %REFLECTION_EXIT%

@@ -37,11 +37,22 @@ jobs:
       - name: Run unit tests
         run: |
           set -euo pipefail
+          ls -R build/linux/bin || true
           NULLUS_UNIT_TESTS="$(find build/linux -type f -name NullusUnitTests | head -n 1)"
           REFLECTION_TEST="$(find build/linux -type f -name ReflectionTest | head -n 1)"
           echo "NullusUnitTests: ${NULLUS_UNIT_TESTS}"
           echo "ReflectionTest: ${REFLECTION_TEST}"
           test -n "${NULLUS_UNIT_TESTS}"
           test -n "${REFLECTION_TEST}"
-          "${NULLUS_UNIT_TESTS}"
-          "${REFLECTION_TEST}"
+          file "${NULLUS_UNIT_TESTS}" || true
+          file "${REFLECTION_TEST}" || true
+          "${NULLUS_UNIT_TESTS}" > nullus_unit_tests.log 2>&1 || {
+            cat nullus_unit_tests.log
+            exit 1
+          }
+          cat nullus_unit_tests.log
+          "${REFLECTION_TEST}" > reflection_test.log 2>&1 || {
+            cat reflection_test.log
+            exit 1
+          }
+          cat reflection_test.log

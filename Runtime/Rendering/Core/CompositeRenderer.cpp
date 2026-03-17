@@ -31,7 +31,11 @@ void NLS::Render::Core::CompositeRenderer::BeginFrame(const Data::FrameDescripto
 void NLS::Render::Core::CompositeRenderer::DrawFrame()
 {
 	auto pso = CreatePipelineState();
+	DrawRegisteredPasses(pso);
+}
 
+void NLS::Render::Core::CompositeRenderer::DrawRegisteredPasses(NLS::Render::Data::PipelineState pso)
+{
 	for (const auto& [_, pass] : m_passes)
 	{
 		if (pass.second->IsEnabled())

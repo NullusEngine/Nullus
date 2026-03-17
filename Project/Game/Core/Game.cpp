@@ -55,7 +55,7 @@ void Game::Core::Game::PreUpdate()
 namespace
 {
 	void RenderCurrentScene(
-		Engine::Rendering::SceneRenderer& p_renderer,
+		Engine::Rendering::BaseSceneRenderer& p_renderer,
 		const Game::Context& p_context
 	)
 	{
@@ -65,7 +65,7 @@ namespace
 			{
 				auto windowSize = p_context.window->GetSize();
 
-				p_renderer.AddDescriptor<Engine::Rendering::SceneRenderer::SceneDescriptor>({
+				p_renderer.AddDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
 					*currentScene,
 					std::nullopt,
 					nullptr,

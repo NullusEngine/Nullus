@@ -31,7 +31,7 @@ void Editor::Panels::AView::_Draw_Impl()
 
 void Editor::Panels::AView::InitFrame()
 {
-	m_renderer->AddDescriptor<Engine::Rendering::SceneRenderer::SceneDescriptor>(
+	m_renderer->AddDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>(
 		CreateSceneDescriptor()
 	);
 }
@@ -73,12 +73,12 @@ std::pair<uint16_t, uint16_t> Editor::Panels::AView::GetSafeSize() const
 	}; 
 }
 
-const Engine::Rendering::SceneRenderer& Editor::Panels::AView::GetRenderer() const
+const Engine::Rendering::BaseSceneRenderer& Editor::Panels::AView::GetRenderer() const
 {
 	return *m_renderer.get();
 }
 
-Engine::Rendering::SceneRenderer::SceneDescriptor Editor::Panels::AView::CreateSceneDescriptor()
+Engine::Rendering::BaseSceneRenderer::SceneDescriptor Editor::Panels::AView::CreateSceneDescriptor()
 {
 	auto scene = GetScene();
 

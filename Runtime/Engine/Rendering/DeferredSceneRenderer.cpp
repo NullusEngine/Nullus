@@ -7,7 +7,6 @@
 
 #include <Core/ResourceManagement/ShaderManager.h>
 #include <Core/ServiceLocator.h>
-#include <Rendering/Features/LightingRenderFeature.h>
 #include <Rendering/FrameGraph/OpenGLFrameGraphTexture.h>
 
 #include "Components/MaterialRenderer.h"
@@ -21,67 +20,6 @@ namespace
 	constexpr GLint kNearFarLocation = 2;
 	constexpr GLint kClusterLightIndexCountLocation = 3;
 	constexpr GLint kCameraWorldPosLocation = 4;
-
-	struct FrameGraphGBufferData
-	{
-		FrameGraphResource albedo;
-		FrameGraphResource normal;
-		FrameGraphResource material;
-		FrameGraphResource depth;
-	};
-
-	class DeferredOpaquePass final : public NLS::Render::Core::ARenderPass
-	{
-	public:
-		using ARenderPass::ARenderPass;
-
-	private:
-		void Draw(NLS::Render::Data::PipelineState pso) override
-		{
-			static_cast<NLS::Engine::Rendering::DeferredSceneRenderer&>(m_renderer).ExecuteDeferredPass(pso);
-		}
-	};
-
-	class DeferredSkyboxPass final : public NLS::Render::Core::ARenderPass
-	{
-	public:
-		using ARenderPass::ARenderPass;
-
-	private:
-		void Draw(NLS::Render::Data::PipelineState pso) override
-		{
-			static_cast<NLS::Engine::Rendering::DeferredSceneRenderer&>(m_renderer).DrawSkyboxes(pso);
-		}
-	};
-
-	class DeferredTransparentPass final : public NLS::Render::Core::ARenderPass
-	{
-	public:
-		using ARenderPass::ARenderPass;
-
-	private:
-		void Draw(NLS::Render::Data::PipelineState pso) override
-		{
-			static_cast<NLS::Engine::Rendering::DeferredSceneRenderer&>(m_renderer).DrawTransparents(pso);
-		}
-	};
-
-	NLS::Render::Features::LightingRenderFeature::LightSet FindActiveLights(const NLS::Engine::SceneSystem::Scene& scene)
-	{
-		NLS::Render::Features::LightingRenderFeature::LightSet lights;
-
-		for (auto* light : scene.GetFastAccessComponents().lights)
-		{
-			if (!light)
-				continue;
-
-			auto* owner = light->gameobject();
-			if (owner && owner->IsActive())
-				lights.push_back(std::ref(*light->GetData()));
-		}
-
-		return lights;
-	}
 
 	NLS::Render::Resources::Mesh BuildFullscreenTriangle()
 	{
@@ -113,20 +51,10 @@ namespace
 namespace NLS::Engine::Rendering
 {
 	DeferredSceneRenderer::DeferredSceneRenderer(NLS::Render::Context::Driver& p_driver)
-		: SceneRenderer(p_driver)
+		: BaseSceneRenderer(p_driver)
 		, m_fullscreenTriangle(BuildFullscreenTriangle())
 	{
 		m_deferredLightingShader = NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager)[":Shaders/DeferredLighting.glsl"];
-
-		for (auto& [_, passEntry] : m_passes)
-		{
-			if (passEntry.first == "Opaques" || passEntry.first == "Skybox" || passEntry.first == "Transparents")
-				passEntry.second->SetEnabled(false);
-		}
-
-		AddPass<DeferredOpaquePass>("Deferred Opaques", NLS::Render::Settings::ERenderPassOrder::Opaque);
-		AddPass<DeferredSkyboxPass>("Deferred Skybox", NLS::Render::Settings::ERenderPassOrder::Opaque + 1);
-		AddPass<DeferredTransparentPass>("Deferred Transparents", NLS::Render::Settings::ERenderPassOrder::Transparent);
 
 		m_clusterRecordsBuffer = std::make_unique<NLS::Render::Buffers::ShaderStorageBuffer>(NLS::Render::Settings::EAccessSpecifier::STREAM_DRAW);
 		m_clusterIndicesBuffer = std::make_unique<NLS::Render::Buffers::ShaderStorageBuffer>(NLS::Render::Settings::EAccessSpecifier::STREAM_DRAW);
@@ -134,17 +62,13 @@ namespace NLS::Engine::Rendering
 
 	void DeferredSceneRenderer::BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor)
 	{
-		NLS_ASSERT(HasDescriptor<SceneDescriptor>(), "Cannot find SceneDescriptor attached to this renderer");
-
-		auto& sceneDescriptor = GetDescriptor<SceneDescriptor>();
-		const auto lights = FindActiveLights(sceneDescriptor.scene);
-
-		AddDescriptor<NLS::Render::Features::LightingRenderFeature::LightingDescriptor>({ lights });
-		NLS::Render::Core::CompositeRenderer::BeginFrame(p_frameDescriptor);
+		BaseSceneRenderer::BeginFrame(p_frameDescriptor);
 
 		EnsureFrameResources(p_frameDescriptor.renderWidth, p_frameDescriptor.renderHeight);
 
 		auto drawables = ParseScene();
+		const auto& lighting = GetDescriptor<NLS::Render::Features::LightingRenderFeature::LightingDescriptor>();
+		const auto& lights = lighting.lights;
 		const auto clusteredLights = BuildClusteredLightGrid(
 			m_clusterSettings,
 			lights,
@@ -192,6 +116,68 @@ namespace NLS::Engine::Rendering
 		});
 	}
 
+	void DeferredSceneRenderer::DrawFrame()
+	{
+		auto pso = CreatePipelineState();
+		const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
+
+		FrameGraph frameGraph;
+		frameGraph.reserve(4, 0);
+
+		frameGraph.addCallbackPass(
+			"DeferredOpaque",
+			[](FrameGraph::Builder& builder, FrameGraph::NoData&)
+			{
+				builder.setSideEffect();
+			},
+			[this, pso](const FrameGraph::NoData&, FrameGraphPassResources&, void*)
+			{
+				DrawOpaques(pso);
+			}
+		);
+
+		frameGraph.addCallbackPass(
+			"DeferredLighting",
+			[](FrameGraph::Builder& builder, FrameGraph::NoData&)
+			{
+				builder.setSideEffect();
+			},
+			[this, &scene, pso](const FrameGraph::NoData&, FrameGraphPassResources&, void*)
+			{
+				DrawDeferredLightingPass(scene, pso);
+			}
+		);
+
+		frameGraph.addCallbackPass(
+			"DeferredSkybox",
+			[](FrameGraph::Builder& builder, FrameGraph::NoData&)
+			{
+				builder.setSideEffect();
+			},
+			[this, pso](const FrameGraph::NoData&, FrameGraphPassResources&, void*)
+			{
+				DrawSkyboxes(pso);
+			}
+		);
+
+		frameGraph.addCallbackPass(
+			"DeferredTransparent",
+			[](FrameGraph::Builder& builder, FrameGraph::NoData&)
+			{
+				builder.setSideEffect();
+			},
+			[this, pso](const FrameGraph::NoData&, FrameGraphPassResources&, void*)
+			{
+				DrawTransparents(pso);
+			}
+		);
+
+		frameGraph.compile();
+		frameGraph.execute();
+
+		DrawRegisteredPasses(CreatePipelineState());
+	}
+
 	void DeferredSceneRenderer::EnsureFrameResources(uint16_t width, uint16_t height)
 	{
 		if (width == 0 || height == 0)
@@ -217,42 +203,6 @@ namespace NLS::Engine::Rendering
 			m_gbufferWidth = width;
 			m_gbufferHeight = height;
 		}
-	}
-
-	void DeferredSceneRenderer::ExecuteDeferredPass(NLS::Render::Data::PipelineState pso)
-	{
-		const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
-		const auto& frame = GetFrameDescriptor();
-
-		FrameGraph frameGraph;
-		frameGraph.reserve(2, 0);
-
-		frameGraph.addCallbackPass(
-			"GBuffer",
-			[](FrameGraph::Builder& builder, FrameGraph::NoData&)
-			{
-				builder.setSideEffect();
-			},
-			[this, &scene, pso](const FrameGraph::NoData&, FrameGraphPassResources&, void*)
-			{
-				DrawDeferredGeometryPass(scene, pso);
-			}
-		);
-
-		frameGraph.addCallbackPass(
-			"DeferredLighting",
-			[](FrameGraph::Builder& builder, FrameGraph::NoData&)
-			{
-				builder.setSideEffect();
-			},
-			[this, &scene, pso](const FrameGraph::NoData&, FrameGraphPassResources&, void*)
-			{
-				DrawDeferredLightingPass(scene, pso);
-			}
-		);
-
-		frameGraph.compile();
-		frameGraph.execute();
 	}
 
 	void DeferredSceneRenderer::DrawSkyboxes(NLS::Render::Data::PipelineState pso)
@@ -282,6 +232,12 @@ namespace NLS::Engine::Rendering
 		{
 			DrawEntity(pso, drawable);
 		}
+	}
+
+	void DeferredSceneRenderer::DrawOpaques(NLS::Render::Data::PipelineState pso)
+	{
+		const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
+		DrawDeferredGeometryPass(scene, pso);
 	}
 
 	void DeferredSceneRenderer::DrawDeferredGeometryPass(const DeferredSceneDescriptor& scene, NLS::Render::Data::PipelineState pso)

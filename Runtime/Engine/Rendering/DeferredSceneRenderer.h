@@ -13,19 +13,17 @@
 #include <Rendering/Resources/Texture2D.h>
 
 #include "Rendering/ClusteredShading.h"
-#include "Rendering/SceneRenderer.h"
+#include "Rendering/BaseSceneRenderer.h"
 
 namespace NLS::Engine::Rendering
 {
-	class NLS_ENGINE_API DeferredSceneRenderer : public SceneRenderer
+	class NLS_ENGINE_API DeferredSceneRenderer : public BaseSceneRenderer
 	{
 	public:
 		DeferredSceneRenderer(NLS::Render::Context::Driver& p_driver);
 
 		void BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor) override;
-		void ExecuteDeferredPass(NLS::Render::Data::PipelineState pso);
-		void DrawSkyboxes(NLS::Render::Data::PipelineState pso);
-		void DrawTransparents(NLS::Render::Data::PipelineState pso);
+		void DrawFrame() override;
 
 	private:
 		struct DeferredSceneDescriptor
@@ -38,8 +36,11 @@ namespace NLS::Engine::Rendering
 		};
 
 		void EnsureFrameResources(uint16_t width, uint16_t height);
+		void DrawOpaques(NLS::Render::Data::PipelineState pso);
 		void DrawDeferredGeometryPass(const DeferredSceneDescriptor& scene, NLS::Render::Data::PipelineState pso);
 		void DrawDeferredLightingPass(const DeferredSceneDescriptor& scene, NLS::Render::Data::PipelineState pso);
+		void DrawSkyboxes(NLS::Render::Data::PipelineState pso);
+		void DrawTransparents(NLS::Render::Data::PipelineState pso);
 		NLS::Render::Resources::Material BuildGeometryMaterial(const NLS::Render::Resources::Material& source) const;
 
 	private:

@@ -92,7 +92,7 @@ Engine::SceneSystem::Scene* Editor::Panels::SceneView::GetScene()
     return m_sceneManager.GetCurrentScene();
 }
 
-Engine::Rendering::SceneRenderer::SceneDescriptor Editor::Panels::SceneView::CreateSceneDescriptor()
+Engine::Rendering::BaseSceneRenderer::SceneDescriptor Editor::Panels::SceneView::CreateSceneDescriptor()
 {
     auto descriptor = AViewControllable::CreateSceneDescriptor();
     descriptor.fallbackMaterial = &m_fallbackMaterial;

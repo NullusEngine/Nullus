@@ -8,7 +8,7 @@
 #include "Components/MeshRenderer.h"
 #include <Rendering/Resources/Material.h>
 #include "Components/LightComponent.h"
-#include <Engine/Rendering/SceneRenderer.h>
+#include <Engine/Rendering/ForwardSceneRenderer.h>
 #include "Core/GizmoBehaviour.h"
 #include "Core/Context.h"
 
@@ -20,7 +20,7 @@ namespace NLS::Editor::Rendering
 	* Provide a debug layer on top of the default scene renderer to see "invisible" entities such as
 	* lights, cameras, 
 	*/
-class DebugSceneRenderer : public Engine::Rendering::SceneRenderer
+class DebugSceneRenderer : public Engine::Rendering::ForwardSceneRenderer
 	{
 	public:
 		struct DebugSceneDescriptor

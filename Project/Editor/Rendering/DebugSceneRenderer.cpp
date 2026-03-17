@@ -72,7 +72,7 @@ public:
 protected:
 	virtual void Draw(Render::Data::PipelineState p_pso) override
 	{
-        auto& sceneDescriptor = m_renderer.GetDescriptor<Engine::Rendering::SceneRenderer::SceneDescriptor>();
+        auto& sceneDescriptor = m_renderer.GetDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>();
 
 		for (auto camera : sceneDescriptor.scene.GetFastAccessComponents().cameras)
 		{
@@ -108,7 +108,7 @@ public:
 protected:
 	virtual void Draw(Render::Data::PipelineState p_pso) override
 	{
-		auto& sceneDescriptor = m_renderer.GetDescriptor<Engine::Rendering::SceneRenderer::SceneDescriptor>();
+		auto& sceneDescriptor = m_renderer.GetDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>();
 
 		m_lightMaterial.Set<float>("u_Scale", Editor::Settings::EditorSettings::LightBillboardScale * 0.1f);
 
@@ -538,7 +538,7 @@ protected:
 };
 
 Editor::Rendering::DebugSceneRenderer::DebugSceneRenderer(NLS::Render::Context::Driver& p_driver) :
-	Engine::Rendering::SceneRenderer(p_driver)
+	Engine::Rendering::ForwardSceneRenderer(p_driver)
 {
     AddFeature<NLS::Render::Features::FrameInfoRenderFeature>();
     AddFeature<NLS::Render::Features::DebugShapeRenderFeature>();

@@ -36,7 +36,7 @@ namespace NLS::Editor::Panels
 		virtual Engine::SceneSystem::Scene* GetScene();
 
 	protected:
-        virtual Engine::Rendering::SceneRenderer::SceneDescriptor CreateSceneDescriptor() override;
+        virtual Engine::Rendering::BaseSceneRenderer::SceneDescriptor CreateSceneDescriptor() override;
 
 	private:
 		virtual void DrawFrame() override;

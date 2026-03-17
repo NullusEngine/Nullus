@@ -11,7 +11,7 @@
 #include <Components/MeshRenderer.h>
 #include <Resources/Material.h>
 #include <Components/LightComponent.h>
-#include <Rendering/SceneRenderer.h>
+#include <Rendering/BaseSceneRenderer.h>
 
 #include "Core/Context.h"
 #include "Core/GizmoBehaviour.h"

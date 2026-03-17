@@ -5,7 +5,7 @@
 #include <UI/Plugins/DDTarget.h>
 #include <Components/TransformComponent.h>
 #include <Components/LightComponent.h>
-#include <Engine/Rendering/SceneRenderer.h>
+#include <Engine/Rendering/ForwardSceneRenderer.h>
 
 #include "Core/EditorActions.h"
 #include "Panels/AssetView.h"
@@ -19,7 +19,7 @@ Editor::Panels::AssetView::AssetView
 	const UI::PanelWindowSettings& p_windowSettings
 ) : AViewControllable(p_title, p_opened, p_windowSettings)
 {
-	m_renderer = std::make_unique<Engine::Rendering::SceneRenderer>(*EDITOR_CONTEXT(driver));
+	m_renderer = std::make_unique<Engine::Rendering::ForwardSceneRenderer>(*EDITOR_CONTEXT(driver));
 	m_renderer->AddFeature<Editor::Rendering::DebugModelRenderFeature>();
 	m_renderer->AddFeature<Render::Features::DebugShapeRenderFeature>();
     m_renderer->AddFeature<Render::Features::FrameInfoRenderFeature>();

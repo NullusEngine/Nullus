@@ -75,10 +75,10 @@ void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState
 
 	using namespace Engine::Rendering;
 
-	NLS_ASSERT(m_renderer.HasDescriptor<SceneRenderer::SceneDescriptor>(), "Cannot find SceneDescriptor attached to this renderer");
+	NLS_ASSERT(m_renderer.HasDescriptor<BaseSceneRenderer::SceneDescriptor>(), "Cannot find SceneDescriptor attached to this renderer");
 	NLS_ASSERT(m_renderer.HasDescriptor<DebugSceneRenderer::DebugSceneDescriptor>(), "Cannot find DebugSceneDescriptor attached to this renderer");
 
-	auto& sceneDescriptor = m_renderer.GetDescriptor<SceneRenderer::SceneDescriptor>();
+	auto& sceneDescriptor = m_renderer.GetDescriptor<BaseSceneRenderer::SceneDescriptor>();
 	auto& debugSceneDescriptor = m_renderer.GetDescriptor<DebugSceneRenderer::DebugSceneDescriptor>();
 	auto& frameDescriptor = m_renderer.GetFrameDescriptor();
 	auto& scene = sceneDescriptor.scene;

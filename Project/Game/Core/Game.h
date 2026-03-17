@@ -1,8 +1,8 @@
 #pragma once
 
+#include <Engine/Rendering/BaseSceneRenderer.h>
 #include <Components/CameraComponent.h>
 #include <Engine/Rendering/DeferredSceneRenderer.h>
-#include <Engine/Rendering/SceneRenderer.h>
 
 #include "Core/Context.h"
 

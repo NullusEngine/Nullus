@@ -2,8 +2,6 @@
 
 #include <Components/CameraComponent.h>
 #include <Rendering/DeferredSceneRenderer.h>
-#include <Rendering/SceneRenderer.h>
-
 #include "Panels/GameView.h"
 #include "Core/EditorActions.h"
 #include "Settings/EditorSettings.h"

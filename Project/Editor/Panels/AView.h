@@ -7,7 +7,7 @@
 #include <Rendering/Buffers/Framebuffer.h>
 #include <Rendering/Entities/Camera.h>
 #include <Rendering/Core/CompositeRenderer.h>
-#include <Rendering/SceneRenderer.h>
+#include <Rendering/BaseSceneRenderer.h>
 
 namespace NLS::Editor::Panels
 {
@@ -74,10 +74,10 @@ namespace NLS::Editor::Panels
 		/**
 		* Returns the renderer used by this view
 		*/
-        const Engine::Rendering::SceneRenderer& GetRenderer() const;
+        const Engine::Rendering::BaseSceneRenderer& GetRenderer() const;
 
 	protected:
-        virtual Engine::Rendering::SceneRenderer::SceneDescriptor CreateSceneDescriptor();
+        virtual Engine::Rendering::BaseSceneRenderer::SceneDescriptor CreateSceneDescriptor();
 
 	protected:
 		UI::Widgets::Image* m_image;
@@ -85,6 +85,6 @@ namespace NLS::Editor::Panels
 		Maths::Vector3 m_gridColor = Maths::Vector3 { 0.176f, 0.176f, 0.176f };
 
 		Render::Buffers::Framebuffer m_fbo;
-        std::unique_ptr<Engine::Rendering::SceneRenderer> m_renderer;
+        std::unique_ptr<Engine::Rendering::BaseSceneRenderer> m_renderer;
 	};
 }

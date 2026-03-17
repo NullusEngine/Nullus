@@ -39,7 +39,7 @@ namespace NLS::Render::Core
 		* Handle the drawing logic of render pass, invoking DrawPass on the renderer and its
 		* associated render features.
 		*/
-		virtual void DrawFrame() final;
+		virtual void DrawFrame();
 
 		/**
 		* End Frame
@@ -99,6 +99,7 @@ namespace NLS::Render::Core
 		T& GetPass(const std::string& p_name) const;
 
 	protected:
+		void DrawRegisteredPasses(NLS::Render::Data::PipelineState pso);
 		std::unordered_map<std::type_index, std::unique_ptr<Features::ARenderFeature>> m_features;
 		std::multimap<uint32_t, std::pair<std::string, std::unique_ptr<Core::ARenderPass>>> m_passes;
 	};

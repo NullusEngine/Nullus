@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Components/CameraComponent.h>
+#include <Engine/Rendering/DeferredSceneRenderer.h>
 #include <Engine/Rendering/SceneRenderer.h>
 
 #include "Core/Context.h"
@@ -43,7 +44,6 @@ namespace NLS::Game::Core
 	private:
 		Context& m_context;
 
-		Engine::Rendering::SceneRenderer m_sceneRenderer;
-		bool m_frameCaptured = false;
+		Engine::Rendering::DeferredSceneRenderer m_sceneRenderer;
 	};
 }

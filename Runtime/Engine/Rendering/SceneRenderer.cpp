@@ -176,15 +176,8 @@ Engine::Rendering::SceneRenderer::AllDrawables Engine::Rendering::SceneRenderer:
 
 		auto model = modelRenderer->GetModel();
 		auto materialRenderer = owner->GetComponent<MaterialRenderer>();
-		if (owner->GetName() == "Cube")
-		{
-			NLS_LOG_INFO("Parse Cube MeshRenderer ptr=" + std::to_string(reinterpret_cast<uintptr_t>(modelRenderer)) +
-				", modelPtr=" + std::to_string(reinterpret_cast<uintptr_t>(model)) +
-				", materialRendererPtr=" + std::to_string(reinterpret_cast<uintptr_t>(materialRenderer)));
-		}
 		if (!model || !materialRenderer)
 		{
-			NLS_LOG_WARNING(std::string("ParseScene skip actor '") + owner->GetName() + "' model=" + (model ? "ok" : "null") + ", materialRenderer=" + (materialRenderer ? "ok" : "null"));
 			continue;
 		}
 

@@ -8,6 +8,7 @@ using namespace NLS::Render::Resources;
 
 void TextureCube::Bind(uint32_t p_slot) const
 {
+	glActiveTexture(GL_TEXTURE0 + p_slot);
 	glBindTexture(GL_TEXTURE_CUBE_MAP, GetTextureId());
 }
 

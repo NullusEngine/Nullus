@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <stdint.h>
+#include <memory>
 #include <string>
 
 #include "RenderDef.h"
@@ -21,6 +22,8 @@ namespace NLS::Render::Resources
 		friend class Loaders::TextureLoader;
 
 	public:
+		~Texture2D() = default;
+
 		/**
 		* Bind the texture to the given slot
 		* @param p_slot
@@ -34,7 +37,6 @@ namespace NLS::Render::Resources
 
 	private:
 		Texture2D() = default;
-		~Texture2D() = default;
 
 		Texture2D(Texture2D&&) noexcept;
 		Texture2D& operator=(Texture2D&&) noexcept;
@@ -42,6 +44,8 @@ namespace NLS::Render::Resources
 		void SetTextureResource(const Image*);
 
 	public:
+		static std::unique_ptr<Texture2D> WrapExternal(uint32_t textureId, uint32_t width, uint32_t height);
+
 		uint32_t width = 0;
 		uint32_t height = 0;
 		uint32_t bitsPerPixel = 0;

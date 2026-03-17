@@ -189,3 +189,11 @@ GitHub Actions 已按平台配置：
 - Level
 - Editor
 - Imgui
+
+## Recent Rendering Updates
+
+- Integrated a FrameGraph-based render scheduling layer under `ThirdParty/FrameGraph` and `Runtime/Rendering/FrameGraph`.
+- Added a deferred renderer for runtime and editor game view with GBuffer generation, fullscreen deferred lighting, skybox composition, and a forward transparent pass on top.
+- Added clustered shading support. Deferred lighting now consumes cluster light lists directly instead of falling back to a full-scene light sweep.
+- Extended the current OpenGL RHI bridge with multi-attachment framebuffer support, depth blitting, and wrapped external textures for deferred resources.
+- Cleaned internal shader/material binding for deferred lighting and skybox rendering so normal startup no longer emits noisy OpenGL uniform warnings.

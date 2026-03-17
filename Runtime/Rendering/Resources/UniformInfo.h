@@ -2,6 +2,7 @@
 
 #include <string>
 #include <any>
+#include <cstdint>
 
 #include "Rendering/Resources/UniformType.h"
 
@@ -14,7 +15,7 @@ namespace NLS::Render::Resources
 	{
 		UniformType		type;
 		std::string		name;
-		uint32_t		location;
+		int32_t			location;
 		std::any		defaultValue;
 	};
 }

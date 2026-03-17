@@ -4,4 +4,5 @@ nls_add_runtime_target(
   LIBS
   NLS_Platform
   assimp
+  fg::FrameGraph
   )

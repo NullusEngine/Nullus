@@ -1,6 +1,7 @@
 ﻿
 #include <glad/glad.h>
 #include <Image.h>
+#include <memory>
 
 #include "Rendering/Resources/Texture2D.h"
 
@@ -38,6 +39,15 @@ Texture2D& Texture2D::operator=(Texture2D&& rhs) noexcept
 	secondFilter = rhs.secondFilter;
 	isMimapped = rhs.isMimapped;
 	return *this;
+}
+
+std::unique_ptr<Texture2D> Texture2D::WrapExternal(uint32_t textureId, uint32_t inWidth, uint32_t inHeight)
+{
+	auto texture = std::unique_ptr<Texture2D>(new Texture2D{});
+	texture->AdoptTexture(textureId, false);
+	texture->width = inWidth;
+	texture->height = inHeight;
+	return texture;
 }
 
 void Texture2D::SetTextureResource(const Image* image)

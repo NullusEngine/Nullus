@@ -20,6 +20,8 @@ SkyBoxComponent::SkyBoxComponent()
 	auto shader = NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager).CreateResource(":Shaders/Skybox.glsl");
 	mMaterial = new NLS::Render::Resources::Material(shader);
 	mMaterial->SetDepthWriting(false);
+	mMaterial->SetBackfaceCulling(false);
+	mMaterial->SetFrontfaceCulling(false);
 }
 
 void SkyBoxComponent::SetCubeMap(NLS::Render::Resources::TextureCube* cubmap)

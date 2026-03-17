@@ -491,6 +491,25 @@ namespace NLS::Render::HAL
 		glViewport(x, y, width, height);
 	}
 	template<>
+	void OpenGL::BindFramebuffer(uint32_t framebufferId)
+	{
+		glBindFramebuffer(GL_FRAMEBUFFER, framebufferId);
+	}
+	template<>
+	void OpenGL::BlitDepth(uint32_t sourceFramebufferId, uint32_t destinationFramebufferId, uint32_t width, uint32_t height)
+	{
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, sourceFramebufferId);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, destinationFramebufferId);
+		glBlitFramebuffer(
+			0, 0, static_cast<GLint>(width), static_cast<GLint>(height),
+			0, 0, static_cast<GLint>(width), static_cast<GLint>(height),
+			GL_DEPTH_BUFFER_BIT,
+			GL_NEAREST
+		);
+		glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+		glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+	}
+	template<>
 	std::string OpenGL::GetVendor()
 	{
 		return GetString(GL_VENDOR);

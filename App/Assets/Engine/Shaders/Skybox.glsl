@@ -6,7 +6,7 @@ layout (location = 0) in vec3 aPos;
 out vec3 TexCoords;
 
 /* Global information sent by the engine */
-layout (std140) uniform EngineUBO
+layout (std140, binding = 0) uniform EngineUBO
 {
     mat4    ubo_Model;
     mat4    ubo_View;
@@ -38,7 +38,7 @@ out vec4 FragColor;
 
 in vec3 TexCoords;
 
-uniform samplerCube cubeTex;
+layout(binding = 0) uniform samplerCube cubeTex;
 
 void main()
 {

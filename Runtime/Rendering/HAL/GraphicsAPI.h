@@ -56,6 +56,8 @@ namespace NLS::Render::HAL
 		void SetDepthWriting(bool p_enable);
 		void SetColorWriting(bool p_enableRed, bool p_enableGreen, bool p_enableBlue, bool p_enableAlpha);
 		void SetViewport(uint32_t x, uint32_t y, uint32_t width, uint32_t height);
+		void BindFramebuffer(uint32_t framebufferId);
+		void BlitDepth(uint32_t sourceFramebufferId, uint32_t destinationFramebufferId, uint32_t width, uint32_t height);
 
 		std::string GetVendor();
 		std::string GetHardware();

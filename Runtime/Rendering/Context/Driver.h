@@ -54,6 +54,16 @@ public:
         uint32_t p_height);
 
     /**
+     * Bind a framebuffer by raw backend identifier. Use 0 for the backbuffer.
+     */
+    void BindFramebuffer(uint32_t framebufferId);
+
+    /**
+     * Blit the depth buffer from one framebuffer to another.
+     */
+    void BlitDepth(uint32_t sourceFramebufferId, uint32_t destinationFramebufferId, uint32_t width, uint32_t height);
+
+    /**
      * Clear the screen using the previously defined clear color (With Renderer::SetClearColor()) or by
      * using the OpenGL default one.
      * @param p_colorBuffer

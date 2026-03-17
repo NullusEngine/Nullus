@@ -128,7 +128,7 @@ namespace NLS::Render::Resources
 		~Shader();
 
 		static bool IsEngineUBOMember(const std::string& p_uniformName);
-		uint32_t GetUniformLocation(const std::string& name);
+		int32_t GetUniformLocation(const std::string& name);
 
 	public:
 		const uint32_t id;

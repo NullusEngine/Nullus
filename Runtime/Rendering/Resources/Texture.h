@@ -32,6 +32,7 @@ namespace NLS::Render::Resources
 
 		void CreateRHITexture();
 		void ReleaseRHITexture();
+		void AdoptTexture(uint32_t p_id, bool p_takeOwnership = false);
 
 		void SetTextureId(uint32_t p_id) { mTextureID = p_id; }
 		uint32_t GetTextureId() const { return mTextureID; }
@@ -41,5 +42,6 @@ namespace NLS::Render::Resources
 		 * @brief opengl texture id
 		 */
 		uint32_t mTextureID = -1;
+		bool m_ownsTexture = true;
 	};
 }

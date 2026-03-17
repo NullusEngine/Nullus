@@ -104,15 +104,28 @@ bool NLS::Render::Resources::Shader::IsEngineUBOMember(const std::string & p_uni
 	return p_uniformName.rfind("ubo_", 0) == 0;
 }
 
-uint32_t NLS::Render::Resources::Shader::GetUniformLocation(const std::string& name)
+int32_t NLS::Render::Resources::Shader::GetUniformLocation(const std::string& name)
 {
 	if (m_uniformLocationCache.find(name) != m_uniformLocationCache.end())
 		return m_uniformLocationCache.at(name);
 
-	const int location = glGetUniformLocation(id, name.c_str());
+	int location = glGetUniformLocation(id, name.c_str());
 
 	if (location == -1)
-		NLS_LOG_WARNING("Uniform: '" + name + "' doesn't exist");
+	{
+		location = glGetProgramResourceLocation(id, GL_UNIFORM, name.c_str());
+	}
+
+	if (location == -1)
+	{
+		const auto isKnownUniform = std::any_of(uniforms.begin(), uniforms.end(), [&name](const UniformInfo& uniform)
+		{
+			return uniform.name == name;
+		});
+
+		if (!isKnownUniform)
+			NLS_LOG_WARNING("Uniform: '" + name + "' doesn't exist");
+	}
 
 	m_uniformLocationCache[name] = location;
 
@@ -135,16 +148,65 @@ void NLS::Render::Resources::Shader::QueryUniforms()
 
 		if (!IsEngineUBOMember(name))
 		{
+			int location = glGetUniformLocation(id, name.c_str());
+			if (location == -1)
+			{
+				location = glGetProgramResourceLocation(id, GL_UNIFORM, name.c_str());
+			}
+
 			std::any defaultValue;
 
 			switch (static_cast<UniformType>(type))
 			{
-			case NLS::Render::Resources::UniformType::UNIFORM_BOOL:			defaultValue = std::make_any<bool>(GetUniformInt(name));					break;
-			case NLS::Render::Resources::UniformType::UNIFORM_INT:			defaultValue = std::make_any<int>(GetUniformInt(name));						break;
-			case NLS::Render::Resources::UniformType::UNIFORM_FLOAT:		defaultValue = std::make_any<float>(GetUniformFloat(name));					break;
-			case NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC2:	defaultValue = std::make_any<Maths::Vector2>(GetUniformVec2(name));		break;
-			case NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC3:	defaultValue = std::make_any<Maths::Vector3>(GetUniformVec3(name));		break;
-			case NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4:	defaultValue = std::make_any<Maths::Vector4>(GetUniformVec4(name));		break;
+			case NLS::Render::Resources::UniformType::UNIFORM_BOOL:
+			{
+				int value = 0;
+				if (location >= 0) glGetUniformiv(id, location, &value);
+				defaultValue = std::make_any<bool>(value != 0);
+				break;
+			}
+			case NLS::Render::Resources::UniformType::UNIFORM_INT:
+			{
+				int value = 0;
+				if (location >= 0) glGetUniformiv(id, location, &value);
+				defaultValue = std::make_any<int>(value);
+				break;
+			}
+			case NLS::Render::Resources::UniformType::UNIFORM_FLOAT:
+			{
+				float value = 0.0f;
+				if (location >= 0) glGetUniformfv(id, location, &value);
+				defaultValue = std::make_any<float>(value);
+				break;
+			}
+			case NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC2:
+			{
+				GLfloat values[2]{};
+				if (location >= 0) glGetUniformfv(id, location, values);
+				defaultValue = std::make_any<Maths::Vector2>(reinterpret_cast<Maths::Vector2&>(values));
+				break;
+			}
+			case NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC3:
+			{
+				GLfloat values[3]{};
+				if (location >= 0) glGetUniformfv(id, location, values);
+				defaultValue = std::make_any<Maths::Vector3>(reinterpret_cast<Maths::Vector3&>(values));
+				break;
+			}
+			case NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4:
+			{
+				GLfloat values[4]{};
+				if (location >= 0) glGetUniformfv(id, location, values);
+				defaultValue = std::make_any<Maths::Vector4>(reinterpret_cast<Maths::Vector4&>(values));
+				break;
+			}
+			case NLS::Render::Resources::UniformType::UNIFORM_FLOAT_MAT4:
+			{
+				GLfloat values[16]{};
+				if (location >= 0) glGetUniformfv(id, location, values);
+				defaultValue = std::make_any<Maths::Matrix4>(reinterpret_cast<Maths::Matrix4&>(values));
+				break;
+			}
 			case NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D:	defaultValue = std::make_any<NLS::Render::Resources::Texture2D*>(nullptr);	break;
 			case NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_CUBE:	defaultValue = std::make_any<NLS::Render::Resources::TextureCube*>(nullptr);	break;
 			}
@@ -155,7 +217,7 @@ void NLS::Render::Resources::Shader::QueryUniforms()
 				({
 					static_cast<UniformType>(type),
 					name,
-					GetUniformLocation(nameData.data()),
+					location,
 					defaultValue
 				});
 			}

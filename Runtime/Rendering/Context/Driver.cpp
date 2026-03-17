@@ -41,6 +41,16 @@ void NLS::Render::Context::Driver::SetViewport(uint32_t p_x, uint32_t p_y, uint3
 	m_driverImpl->SetViewport(p_x, p_y, p_width, p_height);
 }
 
+void NLS::Render::Context::Driver::BindFramebuffer(uint32_t framebufferId)
+{
+	m_driverImpl->BindFramebuffer(framebufferId);
+}
+
+void NLS::Render::Context::Driver::BlitDepth(uint32_t sourceFramebufferId, uint32_t destinationFramebufferId, uint32_t width, uint32_t height)
+{
+	m_driverImpl->BlitDepth(sourceFramebufferId, destinationFramebufferId, width, height);
+}
+
 void NLS::Render::Context::Driver::Clear(
 	bool p_colorBuffer,
 	bool p_depthBuffer,

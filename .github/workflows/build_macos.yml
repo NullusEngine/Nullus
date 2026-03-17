@@ -9,9 +9,6 @@ on:
 jobs:
   build:
     runs-on: macos-latest
-    strategy:
-      matrix:
-        configuration: [debug, release]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -26,19 +23,19 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          NLS_BUILD_TARGETS="NullusUnitTests ReflectionTest" NLS_BUILD_JOBS=1 ./build_macos.sh ${{ matrix.configuration }} 2>&1 | tee "build_macos_${{ matrix.configuration }}.log"
+          NLS_BUILD_TARGETS="NullusUnitTests ReflectionTest" NLS_BUILD_JOBS=1 ./build_macos.sh debug 2>&1 | tee "build_macos_debug.log"
 
       - name: Dump build log on failure
         if: failure()
         shell: bash
         run: |
-          if [[ -f "build_macos_${{ matrix.configuration }}.log" ]]; then
+          if [[ -f "build_macos_debug.log" ]]; then
             echo "::group::Last 200 lines of macOS build log"
-            tail -n 200 "build_macos_${{ matrix.configuration }}.log"
+            tail -n 200 "build_macos_debug.log"
             echo "::endgroup::"
             while IFS= read -r line; do
               echo "::error::$line"
-            done < <(tail -n 20 "build_macos_${{ matrix.configuration }}.log")
+            done < <(tail -n 20 "build_macos_debug.log")
           fi
 
       - name: Run unit tests

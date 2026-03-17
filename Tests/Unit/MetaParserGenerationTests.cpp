@@ -67,6 +67,8 @@ TEST(MetaParserGenerationTests, GeneratesExpectedEngineReflectionBindings)
     ExpectContains(externalText, "AddField<NLS::Engine::Components::TransformComponent, NLS::Maths::Vector3>(\"localPosition\"");
     ExpectContains(sceneText, "AllocateType(\"NLS::Engine::SceneSystem::Scene\")");
     ExpectContains(sceneText, "AddMethod(\"Play\", &NLS::Engine::SceneSystem::Scene::Play, {})");
+    ExpectContains(externalText, "AddMethod(\"GetActors\", static_cast<const std::vector<NLS::Engine::GameObject*>& (NLS::Engine::SceneSystem::Scene::*)() const>(&NLS::Engine::SceneSystem::Scene::GetActors), {})");
     ExpectContains(metaText, "LinkReflectionTypes_NLS_Engine");
     ExpectContains(metaText, "#include \"ExternalReflection.generated.cpp\"");
+    ExpectContains(metaText, "#include \"Components/Component.generated.cpp\"");
 }

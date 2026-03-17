@@ -76,7 +76,7 @@
     #define META_OBJECT                                  \
         NLS::meta::Type GetType(void) const override  \
         {                                                \
-            return typeof( decltype( *this ) );          \
+            return NLS_TYPEOF( decltype( *this ) );      \
         }                                                \
         NLS::meta::Object *Clone(void) const override \
         {                                                \

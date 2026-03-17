@@ -12,7 +12,7 @@ namespace NLS
     {
         template<typename T, typename>
         Argument::Argument(const T &data)
-            : m_typeID( typeidof( T ) )
+            : m_typeID( NLS_TYPEIDOF( T ) )
             , m_isArray( meta_traits::IsArray<T>::value )
             , m_data( reinterpret_cast<const void*>( std::addressof( data ) ) )
         { }
@@ -21,7 +21,7 @@ namespace NLS
 
         template<typename T, typename>
         Argument::Argument(T &data)
-            : m_typeID( typeidof( T ) )
+            : m_typeID( NLS_TYPEIDOF( T ) )
             , m_isArray( meta_traits::IsArray<T>::value )
             , m_data( reinterpret_cast<const void*>( std::addressof( data ) ) )
         { }

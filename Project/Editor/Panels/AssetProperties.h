@@ -11,6 +11,7 @@
 #include <UI/Widgets/Layout/Columns.h>
 
 #include <Rendering/Resources/Model.h>
+#include <Rendering/Resources/Material.h>
 #include <Rendering/Resources/Texture2D.h>
 
 namespace NLS::Editor::Panels
@@ -18,7 +19,7 @@ namespace NLS::Editor::Panels
 	class AssetProperties : public UI::PanelWindow
 	{
 	public:
-		using EditableAssets = std::variant<Render::Resources::Model*, Render::Resources::Texture2D*>;
+		using EditableAssets = std::variant<Render::Resources::Model*, Render::Resources::Material*, Render::Resources::Texture2D*>;
 
 		/**
 		* Constructor

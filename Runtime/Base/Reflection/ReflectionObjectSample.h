@@ -16,7 +16,7 @@ namespace NLS::meta
 
         Type GetType() const override
         {
-            return typeof(ReflectionObjectSample);
+            return NLS_TYPEOF(ReflectionObjectSample);
         }
 
         Object* Clone() const override

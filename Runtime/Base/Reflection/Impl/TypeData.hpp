@@ -21,7 +21,7 @@ namespace NLS
                 Invokable::CreateSignature<Args...>( );
 
             Constructor ctor {
-                typeof( ClassType ),
+                NLS_TYPEOF( ClassType ),
                 signature,
                 new ConstructorInvoker<ClassType, IsDynamic, IsWrapped, Args...>( ),
                 IsDynamic
@@ -41,7 +41,7 @@ namespace NLS
         void TypeData::SetArrayConstructor(void)
         {
             arrayConstructor = Constructor {
-                typeof( ClassType ),
+                NLS_TYPEOF( ClassType ),
                 { },
                 new ConstructorInvoker<Array<ClassType>, false, false>( ),
                 false
@@ -71,8 +71,8 @@ namespace NLS
 
             fields.emplace_back(
                 name,
-                typeof( FieldType ),
-                typeof( ClassType ),
+                NLS_TYPEOF( FieldType ),
+                NLS_TYPEOF( ClassType ),
                 !methodGetter ? nullptr : new GetterType( methodGetter ),
                 !methodSetter ? nullptr : new SetterType( methodSetter )
             );
@@ -105,8 +105,8 @@ namespace NLS
 
             fields.emplace_back(
                 name,
-                typeof( FieldType ),
-                typeof( ClassType ),
+                NLS_TYPEOF( FieldType ),
+                NLS_TYPEOF( ClassType ),
                 !methodGetter ? nullptr : new GetterType( methodGetter ),
                 !methodSetter ? nullptr : new SetterType( methodSetter )    
             );
@@ -131,8 +131,8 @@ namespace NLS
 
             fields.emplace_back(
                 name,
-                typeof( FieldType ),
-                typeof( ClassType ),
+                NLS_TYPEOF( FieldType ),
+                NLS_TYPEOF( ClassType ),
                 !methodGetter ? nullptr : new GetterType( methodGetter ),
                 !fieldSetter ? nullptr : new FieldSetter<ClassType, FieldType, false>( fieldSetter )   
             );
@@ -159,8 +159,8 @@ namespace NLS
 
             fields.emplace_back(
                 name,
-                typeof( FieldType ),
-                typeof( ClassType ),
+                NLS_TYPEOF( FieldType ),
+                NLS_TYPEOF( ClassType ),
                 !methodGetter ? nullptr : new GetterType( methodGetter ),
                 !fieldSetter ? nullptr : new FieldSetter<ClassType, FieldType, false>( fieldSetter )  
             );
@@ -187,8 +187,8 @@ namespace NLS
 
             fields.emplace_back(
                 name,
-                typeof( FieldType ),
-                typeof( ClassType ),
+                NLS_TYPEOF( FieldType ),
+                NLS_TYPEOF( ClassType ),
                 !fieldGetter ? nullptr : new FieldGetter<ClassType, FieldType, false>( fieldGetter ),
                 !methodSetter ? nullptr : new SetterType( methodSetter )
             );
@@ -208,8 +208,8 @@ namespace NLS
         {
             fields.emplace_back(
                 name,
-                typeof( FieldType ),
-                typeof( ClassType ),
+                NLS_TYPEOF( FieldType ),
+                NLS_TYPEOF( ClassType ),
                 !fieldGetter ? nullptr : new FieldGetter<ClassType, FieldType, false>( fieldGetter ),
                 !fieldSetter ? nullptr : new FieldSetter<ClassType, FieldType, false>( fieldSetter ) 
             );
@@ -242,8 +242,8 @@ namespace NLS
 
             fields.emplace_back(
                 name,
-                typeof( FieldType ),
-                typeof( ClassType ),
+                NLS_TYPEOF( FieldType ),
+                NLS_TYPEOF( ClassType ),
                 !functionGetter ? nullptr : new GetterType( functionGetter ),
                 !functionSetter ? nullptr : new SetterType( functionSetter )
             );
@@ -276,8 +276,8 @@ namespace NLS
 
             fields.emplace_back(
                 name,
-                typeof( FieldType ),
-                typeof( ClassType ),
+                NLS_TYPEOF( FieldType ),
+                NLS_TYPEOF( ClassType ),
                 !functionGetter ? nullptr : new GetterType( functionGetter ),
                 !functionSetter ? nullptr : new SetterType( functionSetter )
             );
@@ -295,14 +295,14 @@ namespace NLS
 
             staticFields.emplace_back(
                 name,
-                typeof( FieldType ),
+                NLS_TYPEOF( FieldType ),
                 !getter ? nullptr : new GlobalGetterType(
                     reinterpret_cast<typename GlobalGetterType::Signature>( getter )
                 ),
                 !setter ? nullptr : new GlobalSetterType(
                     reinterpret_cast<typename GlobalSetterType::Signature>( setter )
                 ),
-                typeof( ClassType )
+                NLS_TYPEOF( ClassType )
             );
 
             staticFields.back( ).m_meta = meta;
@@ -318,12 +318,12 @@ namespace NLS
 
             staticFields.emplace_back(
                 name,
-                typeof( FieldType ),
+                NLS_TYPEOF( FieldType ),
                 !getter ? nullptr : new GlobalGetterType(
                     reinterpret_cast<typename GlobalGetterType::Signature>( getter )
                 ),
                 !fieldSetter ? nullptr : new GlobalSetterType( fieldSetter ),
-                typeof( ClassType )
+                NLS_TYPEOF( ClassType )
             );
 
             staticFields.back( ).m_meta = meta;
@@ -339,12 +339,12 @@ namespace NLS
 
             staticFields.emplace_back(
                 name,
-                typeof( FieldType ),
+                NLS_TYPEOF( FieldType ),
                 !fieldGetter ? nullptr : new GlobalGetterType( fieldGetter ),
                 !setter ? nullptr : new GlobalSetterType(
                     reinterpret_cast<typename GlobalSetterType::Signature>( setter )
                 ),
-                typeof( ClassType )
+                NLS_TYPEOF( ClassType )
             );
 
             staticFields.back( ).m_meta = meta;
@@ -360,10 +360,10 @@ namespace NLS
 
             staticFields.emplace_back(
                 name,
-                typeof( FieldType ),
+                NLS_TYPEOF( FieldType ),
                 !fieldGetter ? nullptr : new GlobalGetterType( fieldGetter ),
                 !fieldSetter ? nullptr : new GlobalSetterType( fieldSetter ),
-                typeof( ClassType )
+                NLS_TYPEOF( ClassType )
             );
 
             staticFields.back( ).m_meta = meta;
@@ -375,7 +375,7 @@ namespace NLS
         void TypeData::SetDestructor(void)
         {
             destructor = {
-                typeof( ClassType ),
+                NLS_TYPEOF( ClassType ),
                 new DestructorInvoker<ClassType>( )
             };
         }
@@ -405,7 +405,7 @@ namespace NLS
             const MetaManager::Initializer &meta
         )
         {
-            Function fn( name, function, typeof( ClassType ) );
+            Function fn( name, function, NLS_TYPEOF( ClassType ) );
 
             fn.m_meta = meta;
 

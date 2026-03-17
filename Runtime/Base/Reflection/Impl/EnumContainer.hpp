@@ -48,7 +48,7 @@ namespace NLS
         template<typename EnumType>
         Type EnumContainer<EnumType>::GetType(void) const
         {
-            return typeof( EnumType );
+            return NLS_TYPEOF( EnumType );
         }
 
         ///////////////////////////////////////////////////////////////////////
@@ -56,7 +56,7 @@ namespace NLS
         template<typename EnumType>
         Type EnumContainer<EnumType>::GetUnderlyingType(void) const
         {
-            return typeof( typename std::underlying_type<EnumType>::type );
+            return NLS_TYPEOF( typename std::underlying_type<EnumType>::type );
         }
 
         ///////////////////////////////////////////////////////////////////////
@@ -91,8 +91,8 @@ namespace NLS
             auto type = value.GetType( );
 
             // invalid type
-            if (type != typeof( EnumType ) &&
-                type != typeof( UnderlyingType ))
+            if (type != NLS_TYPEOF( EnumType ) &&
+                type != NLS_TYPEOF( UnderlyingType ))
             {
                 return std::string( );
             }

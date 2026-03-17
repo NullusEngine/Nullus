@@ -28,7 +28,7 @@ namespace NLS
 
         Type VariantContainer<void>::GetType(void) const
         {
-            return typeof( void );
+            return NLS_TYPEOF( void );
         }
 
         ///////////////////////////////////////////////////////////////////////
@@ -102,7 +102,7 @@ namespace NLS
 
         Type VariantContainer<int>::GetType(void) const
         {
-            return typeof( int );
+            return NLS_TYPEOF( int );
         }
 
         ///////////////////////////////////////////////////////////////////////
@@ -180,7 +180,7 @@ namespace NLS
 
         Type VariantContainer<unsigned>::GetType(void) const
         {
-            return typeof( unsigned );
+            return NLS_TYPEOF( unsigned );
         }
 
         ///////////////////////////////////////////////////////////////////////
@@ -258,7 +258,7 @@ namespace NLS
 
         Type VariantContainer<bool>::GetType(void) const
         {
-            return typeof( bool );
+            return NLS_TYPEOF( bool );
         }
 
         ///////////////////////////////////////////////////////////////////////
@@ -336,7 +336,7 @@ namespace NLS
 
         Type VariantContainer<float>::GetType(void) const
         {
-            return typeof( float );
+            return NLS_TYPEOF( float );
         }
 
         ///////////////////////////////////////////////////////////////////////
@@ -414,7 +414,7 @@ namespace NLS
 
         Type VariantContainer<double>::GetType(void) const
         {
-            return typeof( double );
+            return NLS_TYPEOF( double );
         }
 
         ///////////////////////////////////////////////////////////////////////
@@ -496,7 +496,7 @@ namespace NLS
 
         Type VariantContainer<std::string>::GetType(void) const
         {
-            return typeof( std::string );
+            return NLS_TYPEOF( std::string );
         }
 
         ///////////////////////////////////////////////////////////////////////

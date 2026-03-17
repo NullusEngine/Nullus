@@ -22,7 +22,7 @@ namespace NLS
         template<typename T, typename StorageType>
         Type ArrayVariantContainer<T, StorageType>::GetType(void) const
         {
-            return typeof( Array<T> );
+            return NLS_TYPEOF( Array<T> );
         }
 
         template<typename T, typename StorageType>

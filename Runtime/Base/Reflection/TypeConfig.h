@@ -12,7 +12,7 @@
 #include <type_traits>
 
 // Gets the type ID of a given expression
-#define typeidof(expr)                                            \
+#define NLS_TYPEIDOF(expr)                                        \
     NLS::meta::TypeIDs<                                        \
         NLS::meta::CleanedType<                                \
             typename NLS::meta_traits::RemoveArray<expr>::type \
@@ -20,14 +20,14 @@
     >::ID                                                         \
 
 // Converts the expression into a meta::Type instance
-#define typeof(expr)                              \
+#define NLS_TYPEOF(expr)                          \
     NLS::meta::Type(                           \
-        typeidof( expr ),                         \
+        NLS_TYPEIDOF( expr ),                     \
         NLS::meta_traits::IsArray<expr>::value \
     )                                             \
 
 // Converts the resulting type of the given expression to a meta::Type instance
-#define decltypeof(expr) typeof( decltype( expr ) )
+#define NLS_DECLTYPEOF(expr) NLS_TYPEOF( decltype( expr ) )
 
 namespace NLS
 {

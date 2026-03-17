@@ -83,7 +83,7 @@ void <#= registerFunctionName #>(NLS::meta::ReflectionDatabase& db, NLS::meta::R
 
     auto& type = db.types[id];
 <# if (bases.Count > 0) { #>
-    type.LoadBaseClasses(db, id, { <#= string.Join(", ", bases.Cast<string>().Select(b => $"typeof({b})")) #> });
+    type.LoadBaseClasses(db, id, { <#= string.Join(", ", bases.Cast<string>().Select(b => $"NLS_TYPEOF({b})")) #> });
 <# }
    foreach (Dictionary<string, object> field in fields.Cast<Dictionary<string, object>>()) {
        var fieldName = (string)field["Name"];

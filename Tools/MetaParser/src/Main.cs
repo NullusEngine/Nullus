@@ -52,6 +52,11 @@ internal static class Program
     private static readonly HashSet<string> UnsupportedMethodNames = new(StringComparer.Ordinal)
     {
         "typeof",
+        "NLS_TYPEOF",
+        "typeidof",
+        "NLS_TYPEIDOF",
+        "decltypeof",
+        "NLS_DECLTYPEOF",
         "GENERATED_BODY",
         "NLS_GENERATED_BODY"
     };

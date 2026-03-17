@@ -11,6 +11,10 @@ namespace UI::Widgets::Layout
 {
 class Group;
 }
+namespace NLS::UI::Widgets
+{
+class TextClickable;
+}
 namespace NLS::Editor::Panels
 {
 	/**
@@ -63,6 +67,7 @@ namespace NLS::Editor::Panels
 		std::string m_engineAssetFolder;
 		std::string m_projectAssetFolder;
 		UI::Widgets::Group* m_assetList;
+		NLS::UI::Widgets::TextClickable* m_selectedAsset = nullptr;
 		std::unordered_map<UI::Widgets::TreeNode*, std::string> m_pathUpdate;
 	};
 }

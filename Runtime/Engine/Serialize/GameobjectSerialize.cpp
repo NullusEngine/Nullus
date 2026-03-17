@@ -340,10 +340,10 @@ NLS::Json GetComponentPayloadJson(const SerializedComponentData &record)
 
 Component *FindOrCreateComponent(GameObject &gameObject, const meta::Type &type)
 {
-    if (!type.IsValid() || !type.DerivesFrom(typeof(Component)))
+    if (!type.IsValid() || !type.DerivesFrom(NLS_TYPEOF(Component)))
         return nullptr;
 
-    if (type == typeof(TransformComponent))
+    if (type == NLS_TYPEOF(TransformComponent))
         return gameObject.GetTransform();
 
     if (auto *existing = gameObject.GetComponent(type, false))
@@ -539,7 +539,7 @@ void GameObjectSerializeHandler::DeserializeImpl(meta::Variant &obj, const json 
 
 uint32_t GameObjectSerializeHandler::CalcMatchLevel(const meta::Type &type, bool isPointer) const
 {
-    if (!isPointer && type == typeof(Engine::GameObject))
+    if (!isPointer && type == NLS_TYPEOF(Engine::GameObject))
         return 0;
     return NoMatch;
 }
@@ -556,7 +556,7 @@ void SceneSerializeHandler::DeserializeImpl(meta::Variant &obj, const json &inpu
 
 uint32_t SceneSerializeHandler::CalcMatchLevel(const meta::Type &type, bool isPointer) const
 {
-    if (!isPointer && type == typeof(Engine::SceneSystem::Scene))
+    if (!isPointer && type == NLS_TYPEOF(Engine::SceneSystem::Scene))
         return 0;
     return NoMatch;
 }

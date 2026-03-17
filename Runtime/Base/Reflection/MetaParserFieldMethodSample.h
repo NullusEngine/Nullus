@@ -14,7 +14,7 @@ namespace NLS::meta
 
         Type GetType() const override
         {
-            return typeof(MetaParserFieldMethodSample);
+            return NLS_TYPEOF(MetaParserFieldMethodSample);
         }
 
         Object* Clone() const override

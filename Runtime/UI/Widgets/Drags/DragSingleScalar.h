@@ -47,11 +47,16 @@ namespace NLS::UI::Widgets
 			else if (value > max)
 				value = max;
 
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 4.0f));
+			ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
+
 			if (ImGui::DragScalar((label + this->m_widgetID).c_str(), m_dataType, &value, speed, &min, &max, format.c_str()))
 			{
 				ValueChangedEvent.Invoke(value);
 				this->NotifyChange();
 			}
+
+			ImGui::PopStyleVar(2);
 		}
 
 	public:

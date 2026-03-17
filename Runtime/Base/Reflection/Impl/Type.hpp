@@ -32,7 +32,7 @@ namespace NLS
         template<typename T>
         Type Type::Get(T &&obj)
         {
-            return { typeof( T ) };
+            return { NLS_TYPEOF( T ) };
         }
 
         ///////////////////////////////////////////////////////////////////////
@@ -40,13 +40,13 @@ namespace NLS
         template<typename T>
         bool Type::DerivesFrom(void) const
         {
-            return DerivesFrom( typeof( T ) );
+            return DerivesFrom( NLS_TYPEOF( T ) );
         }
 
         template<typename ClassType>
         Json Type::SerializeJson(const ClassType &instance, bool invokeHook)
         {
-            auto type = typeof( ClassType );
+            auto type = NLS_TYPEOF( ClassType );
 
             NLS_ASSERT( type.IsValid( ),
                 "Invalid type serialized."
@@ -60,7 +60,7 @@ namespace NLS
         template<typename ClassType>
         ClassType Type::DeserializeJson(const Json &value)
         {
-            auto type = typeof( ClassType );
+            auto type = NLS_TYPEOF( ClassType );
 
             NLS_ASSERT( type.IsValid( ),
                 "Invalid type created."

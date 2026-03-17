@@ -22,7 +22,7 @@ public:
     GENERATED_BODY()
     GameObject(int64_t p_actorID, const std::string& p_name, const std::string& p_tag, bool& p_playing);
     ~GameObject();
-    meta::Type GetType(void) const override { return typeof(GameObject); }
+    meta::Type GetType(void) const override { return NLS_TYPEOF(GameObject); }
     NLS::meta::Object* Clone(void) const override { return nullptr; }
     template<typename T>
     T* AddComponent(const std::function<void(Components::Component*)>& func = {});

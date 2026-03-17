@@ -18,7 +18,7 @@ namespace NLS
 
             Type GetType() const override
             {
-                return typeof(TestObject);
+                return NLS_TYPEOF(TestObject);
             }
 
             Object* Clone() const override

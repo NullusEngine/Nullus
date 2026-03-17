@@ -19,7 +19,7 @@ namespace NLS
         )
             : Invokable( name )
             , m_isConst( false )
-            , m_classType( typeof( ClassType ) )
+            , m_classType( NLS_TYPEOF( ClassType ) )
             , m_invoker( new MethodInvoker<ClassType, ReturnType, ArgTypes...>( method ) )
         {
             TypeUnpacker<ArgTypes...>::Apply( m_signature );
@@ -32,7 +32,7 @@ namespace NLS
         )
             : Invokable( name )
             , m_isConst( true )
-            , m_classType( typeof( ClassType ) )
+            , m_classType( NLS_TYPEOF( ClassType ) )
             , m_invoker( new MethodInvoker<ClassType, ReturnType, ArgTypes...>( method ) )
         {
             TypeUnpacker<ArgTypes...>::Apply( m_signature );

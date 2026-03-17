@@ -28,7 +28,7 @@
 
 #define REGISTER_NATIVE_TYPE_VARIANTS_W_ARRAY(type)         \
     REGISTER_NATIVE_TYPE_VARIANTS( type )                   \
-    types[ typeidof( type ) ].SetArrayConstructor<type>( ); \
+    types[ NLS_TYPEIDOF( type ) ].SetArrayConstructor<type>( ); \
 
 namespace NLS
 {
@@ -58,7 +58,7 @@ namespace NLS
             REGISTER_NATIVE_TYPE_VARIANTS_W_ARRAY( double );
             REGISTER_NATIVE_TYPE_VARIANTS_W_ARRAY( std::string );
 
-            auto &stringType = types[ typeidof( std::string ) ];
+            auto &stringType = types[ NLS_TYPEIDOF( std::string ) ];
 
             // explicitly add default constructors for string
 

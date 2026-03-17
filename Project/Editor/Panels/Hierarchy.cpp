@@ -4,6 +4,7 @@
 #include <UI/Widgets/Buttons/Button.h>
 #include <UI/Widgets/Selection/CheckBox.h>
 #include <UI/Widgets/Visual/Separator.h>
+#include <UI/Widgets/Layout/Spacing.h>
 #include <UI/Plugins/DDSource.h>
 #include <UI/Plugins/DDTarget.h>
 
@@ -163,7 +164,9 @@ Editor::Panels::Hierarchy::Hierarchy
 		}
 	};
 
-	m_sceneRoot = &CreateWidget<UI::Widgets::TreeNode>("Root", true);
+    CreateWidget<UI::Widgets::Spacing>(1);
+
+	m_sceneRoot = &CreateWidget<UI::Widgets::TreeNode>("Scene", true);
 	static_cast<UI::Widgets::TreeNode*>(m_sceneRoot)->Open();
 	m_sceneRoot->AddPlugin<UI::DDTarget<std::pair<Engine::GameObject*, UI::Widgets::TreeNode*>>>("Actor").DataReceivedEvent += [this](std::pair<Engine::GameObject*, UI::Widgets::TreeNode*> p_element)
 	{

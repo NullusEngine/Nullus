@@ -44,7 +44,7 @@ public:
 #endif
 #define <#= generatedBodyMacroName #> \
 <# if (enableObjectBridge) { #>
-    ::NLS::meta::Type GetType(void) const { return typeof(<#= (string)type["QualifiedName"] #>); } \
+    ::NLS::meta::Type GetType(void) const { return NLS_TYPEOF(<#= (string)type["QualifiedName"] #>); } \
     ::NLS::meta::Object *Clone(void) const { using CurrentType = <#= (string)type["QualifiedName"] #>; if constexpr (::std::is_copy_constructible_v<CurrentType>) return new CurrentType(*this); return nullptr; } \
 <# } #>
     friend void ::NLS::meta_generated::<#= registerFunctionName #>(::NLS::meta::ReflectionDatabase& db, ::NLS::meta::ReflectionRegistrationPhase phase); \
@@ -84,7 +84,7 @@ struct <#= accessStructName #>
 #endif
 #define <#= generatedBodyMacroName #> \
 <# if (enableObjectBridge) { #>
-    ::NLS::meta::Type GetType(void) const { return typeof(<#= (string)type["QualifiedName"] #>); } \
+    ::NLS::meta::Type GetType(void) const { return NLS_TYPEOF(<#= (string)type["QualifiedName"] #>); } \
     ::NLS::meta::Object *Clone(void) const { using CurrentType = <#= (string)type["QualifiedName"] #>; if constexpr (::std::is_copy_constructible_v<CurrentType>) return new CurrentType(*this); return nullptr; } \
 <# } #>
     friend void ::NLS::meta_generated::<#= registerFunctionName #>(::NLS::meta::ReflectionDatabase& db, ::NLS::meta::ReflectionRegistrationPhase phase); \

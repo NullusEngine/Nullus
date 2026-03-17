@@ -18,7 +18,7 @@ namespace NLS
 
             Global global {
                 name,
-                typeof( GlobalType ),
+                NLS_TYPEOF( GlobalType ),
                 !getter ? nullptr : new GlobalGetterType(
                     reinterpret_cast<typename GlobalGetterType::Signature>( getter )
                 ),
@@ -42,7 +42,7 @@ namespace NLS
 
             Global global {
                 name,
-                typeof( GlobalType ),
+                NLS_TYPEOF( GlobalType ),
                 !getter ? nullptr : new GlobalGetterType(
                     reinterpret_cast<typename GlobalGetterType::Signature>( getter )
                 ),
@@ -64,7 +64,7 @@ namespace NLS
 
             Global global {
                 name,
-                typeof( GlobalType ),
+                NLS_TYPEOF( GlobalType ),
                 !globalGetter ? nullptr : new GlobalGetterType( globalGetter ),
                 !setter ? nullptr : new GlobalSetterType(
                     reinterpret_cast<typename GlobalSetterType::Signature>( setter )
@@ -86,7 +86,7 @@ namespace NLS
 
             Global global {
                 name,
-                typeof( GlobalType ),
+                NLS_TYPEOF( GlobalType ),
                 !globalGetter ? nullptr : new GlobalGetterType( globalGetter ),
                 !globalSetter ? nullptr : new GlobalSetterType( globalSetter )
             };

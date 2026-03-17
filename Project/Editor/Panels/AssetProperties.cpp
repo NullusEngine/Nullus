@@ -6,6 +6,7 @@
 #include <UI/GUIDrawer.h>
 #include <ServiceLocator.h>
 #include <ResourceManagement/ModelManager.h>
+#include <ResourceManagement/MaterialManager.h>
 #include <ResourceManagement/TextureManager.h>
 
 #include <UI/Widgets/Visual/Separator.h>
@@ -96,6 +97,13 @@ void Editor::Panels::AssetProperties::Preview()
 	if (fileType == Utils::PathParser::EFileType::MODEL)
 	{
 		if (auto resource = NLS_SERVICE(NLS::Core::ResourceManagement::ModelManager).GetResource(m_resource))
+		{
+			assetView.SetResource(resource);
+		}
+	}
+	else if (fileType == Utils::PathParser::EFileType::MATERIAL)
+	{
+		if (auto resource = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager).GetResource(m_resource))
 		{
 			assetView.SetResource(resource);
 		}

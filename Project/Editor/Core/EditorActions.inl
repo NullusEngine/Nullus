@@ -7,7 +7,7 @@ namespace NLS::Editor::Core
 
 		instance.AddComponent<T>();
 
-        instance.SetName(std::string(typeof(T).GetName()));
+        instance.SetName(std::string(NLS_TYPEOF(T).GetName()));
 
 		if (p_focusOnCreation)
 			SelectActor(instance);

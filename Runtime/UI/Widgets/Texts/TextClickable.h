@@ -24,5 +24,6 @@ namespace NLS::UI::Widgets
 	public:
 		NLS::Event<> ClickedEvent;
 		NLS::Event<> DoubleClickedEvent;
+		bool selected = false;
 	};
 }

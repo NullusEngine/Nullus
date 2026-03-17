@@ -19,7 +19,7 @@ namespace NLS
                 "Type must be a MetaProperty." 
             );
             
-            static const auto type = typeof( PropertyType );
+            static const auto type = NLS_TYPEOF( PropertyType );
 
             auto search = m_properties.find( type );
 

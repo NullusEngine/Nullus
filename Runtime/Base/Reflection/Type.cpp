@@ -544,7 +544,7 @@ namespace NLS
                 return array;
             }
 
-            if (*this == typeof( bool ))
+            if (*this == NLS_TYPEOF( bool ))
             {
                 return { instance.ToBool( ) };
             }
@@ -567,7 +567,7 @@ namespace NLS
                 return GetEnum( ).GetKey( instance );
             }
 
-            if (*this == typeof( std::string ))
+            if (*this == NLS_TYPEOF( std::string ))
             {
                 return { instance.ToString( ) };
             }
@@ -624,7 +624,7 @@ namespace NLS
                 return array;
             }
 
-            if (*this == typeof( bool ))
+            if (*this == NLS_TYPEOF( bool ))
             {
                 return { instance.ToBool( ) };
             }
@@ -647,7 +647,7 @@ namespace NLS
                 return GetEnum( ).GetKey( instance );
             }
 
-            if (*this == typeof( std::string ))
+            if (*this == NLS_TYPEOF( std::string ))
             {
                 return { instance.ToString( ) };
             }
@@ -721,15 +721,15 @@ namespace NLS
             // we have to handle all primitive types explicitly
             else if (IsPrimitive( ))
             {
-                if (*this == typeof( int ))
+                if (*this == NLS_TYPEOF( int ))
                     return { value.int_value( ) };
-                else if (*this == typeof( unsigned int ))
+                else if (*this == NLS_TYPEOF( unsigned int ))
                     return { static_cast<unsigned int>( value.number_value( ) ) };
-                else if (*this == typeof( bool ))
+                else if (*this == NLS_TYPEOF( bool ))
                     return { value.bool_value( ) };
-                else if (*this == typeof( float ))
+                else if (*this == NLS_TYPEOF( float ))
                     return { static_cast<float>( value.number_value( ) ) };
-                else if (*this == typeof( double ))
+                else if (*this == NLS_TYPEOF( double ))
                     return { value.number_value( ) };
             }
             else if (IsEnum( ))
@@ -748,7 +748,7 @@ namespace NLS
                 // use the default value as we couldn't find the key
                 return TypeCreator::Create( *this );
             }
-            else if (*this == typeof( std::string ))
+            else if (*this == NLS_TYPEOF( std::string ))
             {
                 return { value.string_value( ) };
             }

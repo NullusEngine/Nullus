@@ -25,8 +25,74 @@
 
 namespace NLS::UI
 {
-const Maths::Color GUIDrawer::TitleColor = {0.85f, 0.65f, 0.0f};
-const Maths::Color GUIDrawer::ClearButtonColor = {0.5f, 0.0f, 0.0f};
+namespace
+{
+std::string ToLowerCopy(const std::string &value)
+{
+    std::string lower = value;
+    std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c)
+    {
+        return static_cast<char>(std::tolower(c));
+    });
+    return lower;
+}
+
+template <size_t TCount>
+void ApplyAxisStyle(
+    Widgets::DragMultipleScalars<float, TCount>& widget,
+    const std::array<const char*, TCount>& labels,
+    const std::array<Maths::Color, TCount>& colors)
+{
+    widget.axisStyle = true;
+    for (size_t i = 0; i < TCount; ++i)
+    {
+        widget.componentLabels[i] = labels[i];
+        widget.componentColors[i] = colors[i];
+    }
+}
+
+template <size_t TCount>
+void ApplyLabeledStyle(Widgets::DragMultipleScalars<float, TCount>& widget, const std::string &fieldName)
+{
+    static const std::array<Maths::Color, 4> vectorColors = {
+        Maths::Color{0.72f, 0.30f, 0.30f, 1.0f},
+        Maths::Color{0.31f, 0.62f, 0.35f, 1.0f},
+        Maths::Color{0.29f, 0.47f, 0.79f, 1.0f},
+        Maths::Color{0.36f, 0.39f, 0.45f, 1.0f}
+    };
+    static const std::array<Maths::Color, 4> colorColors = {
+        Maths::Color{0.72f, 0.30f, 0.30f, 1.0f},
+        Maths::Color{0.31f, 0.62f, 0.35f, 1.0f},
+        Maths::Color{0.29f, 0.47f, 0.79f, 1.0f},
+        Maths::Color{0.52f, 0.52f, 0.56f, 1.0f}
+    };
+
+    const std::string loweredName = ToLowerCopy(fieldName);
+    const bool isColorField = loweredName.find("color") != std::string::npos;
+
+    if constexpr (TCount == 2)
+    {
+        ApplyAxisStyle(widget, std::array<const char*, 2>{"X", "Y"}, std::array<Maths::Color, 2>{vectorColors[0], vectorColors[1]});
+    }
+    else if constexpr (TCount == 3)
+    {
+        if (isColorField)
+            ApplyAxisStyle(widget, std::array<const char*, 3>{"R", "G", "B"}, std::array<Maths::Color, 3>{colorColors[0], colorColors[1], colorColors[2]});
+        else
+            ApplyAxisStyle(widget, std::array<const char*, 3>{"X", "Y", "Z"}, std::array<Maths::Color, 3>{vectorColors[0], vectorColors[1], vectorColors[2]});
+    }
+    else if constexpr (TCount == 4)
+    {
+        if (isColorField)
+            ApplyAxisStyle(widget, std::array<const char*, 4>{"R", "G", "B", "A"}, colorColors);
+        else
+            ApplyAxisStyle(widget, std::array<const char*, 4>{"X", "Y", "Z", "W"}, vectorColors);
+    }
+}
+} // namespace
+
+const Maths::Color GUIDrawer::TitleColor = {0.67f, 0.71f, 0.78f};
+const Maths::Color GUIDrawer::ClearButtonColor = {0.36f, 0.17f, 0.17f};
 const float GUIDrawer::_MIN_FLOAT = -999999999.f;
 const float GUIDrawer::_MAX_FLOAT = +999999999.f;
 Render::Resources::Texture2D* GUIDrawer::__EMPTY_TEXTURE = nullptr;
@@ -53,6 +119,7 @@ void GUIDrawer::DrawVec2(Internal::WidgetContainer& p_root, const std::string& p
 {
     CreateTitle(p_root, p_name);
     auto& widget = p_root.CreateWidget<Widgets::DragMultipleScalars<float, 2>>(GetDataType<float>(), p_min, p_max, 0.f, p_step, "", GetFormat<float>());
+    ApplyLabeledStyle(widget, p_name);
     auto& dispatcher = widget.AddPlugin<DataDispatcher<std::array<float, 2>>>();
     dispatcher.RegisterReference(reinterpret_cast<std::array<float, 2>&>(p_data));
 }
@@ -61,6 +128,7 @@ void GUIDrawer::DrawVec3(Internal::WidgetContainer& p_root, const std::string& p
 {
     CreateTitle(p_root, p_name);
     auto& widget = p_root.CreateWidget<Widgets::DragMultipleScalars<float, 3>>(GetDataType<float>(), p_min, p_max, 0.f, p_step, "", GetFormat<float>());
+    ApplyLabeledStyle(widget, p_name);
     auto& dispatcher = widget.AddPlugin<DataDispatcher<std::array<float, 3>>>();
     dispatcher.RegisterReference(reinterpret_cast<std::array<float, 3>&>(p_data));
 }
@@ -69,6 +137,7 @@ void GUIDrawer::DrawVec4(Internal::WidgetContainer& p_root, const std::string& p
 {
     CreateTitle(p_root, p_name);
     auto& widget = p_root.CreateWidget<Widgets::DragMultipleScalars<float, 4>>(GetDataType<float>(), p_min, p_max, 0.f, p_step, "", GetFormat<float>());
+    ApplyLabeledStyle(widget, p_name);
     auto& dispatcher = widget.AddPlugin<DataDispatcher<std::array<float, 4>>>();
     dispatcher.RegisterReference(reinterpret_cast<std::array<float, 4>&>(p_data));
 }
@@ -76,9 +145,18 @@ void GUIDrawer::DrawVec4(Internal::WidgetContainer& p_root, const std::string& p
 void GUIDrawer::DrawQuat(Internal::WidgetContainer& p_root, const std::string& p_name, Maths::Quaternion& p_data, float p_step, float p_min, float p_max)
 {
     CreateTitle(p_root, p_name);
-    auto& widget = p_root.CreateWidget<Widgets::DragMultipleScalars<float, 4>>(GetDataType<float>(), p_min, p_max, 0.f, p_step, "", GetFormat<float>());
-    auto& dispatcher = widget.AddPlugin<DataDispatcher<std::array<float, 4>>>();
-    dispatcher.RegisterReference(reinterpret_cast<std::array<float, 4>&>(p_data));
+    auto& widget = p_root.CreateWidget<Widgets::DragMultipleScalars<float, 3>>(GetDataType<float>(), p_min, p_max, 0.f, p_step, "", GetFormat<float>());
+    ApplyLabeledStyle(widget, p_name);
+    auto& dispatcher = widget.AddPlugin<DataDispatcher<std::array<float, 3>>>();
+    dispatcher.RegisterGatherer([&p_data]()
+    {
+        const Maths::Vector3 euler = Maths::Quaternion::EulerAngles(p_data);
+        return std::array<float, 3>{euler.x, euler.y, euler.z};
+    });
+    dispatcher.RegisterProvider([&p_data](std::array<float, 3> p_value)
+    {
+        p_data = Maths::Quaternion(Maths::Vector3{p_value[0], p_value[1], p_value[2]});
+    });
 }
 
 void GUIDrawer::DrawString(Internal::WidgetContainer& p_root, const std::string& p_name, std::string& p_data)
@@ -301,6 +379,7 @@ void GUIDrawer::DrawVec2(Internal::WidgetContainer& p_root, const std::string& p
 {
     CreateTitle(p_root, p_name);
     auto& widget = p_root.CreateWidget<Widgets::DragMultipleScalars<float, 2>>(GetDataType<float>(), p_min, p_max, 0.f, p_step, "", GetFormat<float>());
+    ApplyLabeledStyle(widget, p_name);
     auto& dispatcher = widget.AddPlugin<DataDispatcher<std::array<float, 2>>>();
 
     dispatcher.RegisterGatherer([p_gatherer]()
@@ -316,6 +395,7 @@ void GUIDrawer::DrawVec3(Internal::WidgetContainer& p_root, const std::string& p
 {
     CreateTitle(p_root, p_name);
     auto& widget = p_root.CreateWidget<Widgets::DragMultipleScalars<float, 3>>(GetDataType<float>(), p_min, p_max, 0.f, p_step, "", GetFormat<float>());
+    ApplyLabeledStyle(widget, p_name);
     auto& dispatcher = widget.AddPlugin<DataDispatcher<std::array<float, 3>>>();
 
     dispatcher.RegisterGatherer([p_gatherer]()
@@ -331,6 +411,7 @@ void GUIDrawer::DrawVec4(Internal::WidgetContainer& p_root, const std::string& p
 {
     CreateTitle(p_root, p_name);
     auto& widget = p_root.CreateWidget<Widgets::DragMultipleScalars<float, 4>>(GetDataType<float>(), p_min, p_max, 0.f, p_step, "", GetFormat<float>());
+    ApplyLabeledStyle(widget, p_name);
     auto& dispatcher = widget.AddPlugin<DataDispatcher<std::array<float, 4>>>();
 
     dispatcher.RegisterGatherer([p_gatherer]()
@@ -345,16 +426,17 @@ void GUIDrawer::DrawVec4(Internal::WidgetContainer& p_root, const std::string& p
 void GUIDrawer::DrawQuat(Internal::WidgetContainer& p_root, const std::string& p_name, std::function<Maths::Quaternion(void)> p_gatherer, std::function<void(Maths::Quaternion)> p_provider, float p_step, float p_min, float p_max)
 {
     CreateTitle(p_root, p_name);
-    auto& widget = p_root.CreateWidget<Widgets::DragMultipleScalars<float, 4>>(GetDataType<float>(), p_min, p_max, 0.f, p_step, "", GetFormat<float>());
-    auto& dispatcher = widget.AddPlugin<DataDispatcher<std::array<float, 4>>>();
+    auto& widget = p_root.CreateWidget<Widgets::DragMultipleScalars<float, 3>>(GetDataType<float>(), p_min, p_max, 0.f, p_step, "", GetFormat<float>());
+    ApplyLabeledStyle(widget, p_name);
+    auto& dispatcher = widget.AddPlugin<DataDispatcher<std::array<float, 3>>>();
 
     dispatcher.RegisterGatherer([p_gatherer]()
                                 {
-				Maths::Quaternion value = p_gatherer();
-				return reinterpret_cast<const std::array<float, 4>&>(value); });
+				const Maths::Vector3 euler = Maths::Quaternion::EulerAngles(p_gatherer());
+				return std::array<float, 3>{euler.x, euler.y, euler.z}; });
 
-    dispatcher.RegisterProvider([&dispatcher, p_provider](std::array<float, 4> p_value)
-                                { p_provider(Maths::Quaternion::Normalize(reinterpret_cast<Maths::Quaternion&>(p_value))); });
+    dispatcher.RegisterProvider([p_provider](std::array<float, 3> p_value)
+                                { p_provider(Maths::Quaternion(Maths::Vector3{p_value[0], p_value[1], p_value[2]})); });
 }
 
 void GUIDrawer::DrawDDString(Internal::WidgetContainer& p_root, const std::string& p_name,

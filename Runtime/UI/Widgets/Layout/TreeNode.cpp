@@ -40,7 +40,7 @@ void TreeNode::_Draw_Impl()
         m_shouldClose = false;
     }
 
-    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_None;
+    ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanFullWidth | ImGuiTreeNodeFlags_FramePadding;
     if (m_arrowClickToOpen)
         flags |= ImGuiTreeNodeFlags_OpenOnArrow;
     if (selected)
@@ -48,7 +48,12 @@ void TreeNode::_Draw_Impl()
     if (leaf)
         flags |= ImGuiTreeNodeFlags_Leaf;
 
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 4.0f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.20f, 0.29f, 0.40f, 0.68f));
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.24f, 0.36f, 0.52f, 0.82f));
     bool opened = ImGui::TreeNodeEx((name + m_widgetID).c_str(), flags);
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar();
 
     if (ImGui::IsItemClicked() && (ImGui::GetMousePos().x - ImGui::GetItemRectMin().x) > ImGui::GetTreeNodeToLabelSpacing())
     {

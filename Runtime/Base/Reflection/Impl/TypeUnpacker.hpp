@@ -24,7 +24,7 @@ namespace NLS
         {
             static void Apply(Type::List &types)
             {
-                types.emplace_back( typeof( First ) );
+                types.emplace_back( NLS_TYPEOF( First ) );
 
                 TypeUnpacker<Types...>::Apply( types );
             }

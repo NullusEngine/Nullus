@@ -39,10 +39,10 @@ GameObject::~GameObject()
 
 Component* GameObject::AddComponent(meta::Type type, const std::function<void(Component*)>& func)
 {
-    if (!type.IsValid() || !(type == typeof(Component) || type.DerivesFrom(typeof(Component))))
+    if (!type.IsValid() || !(type == NLS_TYPEOF(Component) || type.DerivesFrom(NLS_TYPEOF(Component))))
         return nullptr;
 
-    if (type == typeof(TransformComponent) && m_transform)
+    if (type == NLS_TYPEOF(TransformComponent) && m_transform)
         return m_transform;
 
     const auto instance = meta::TypeCreator::CreateDynamic(type);
@@ -58,7 +58,7 @@ Component* GameObject::AddComponent(meta::Type type, const std::function<void(Co
 
     m_vComponents.emplace_back(component);
 
-    if (type == typeof(TransformComponent))
+    if (type == NLS_TYPEOF(TransformComponent))
     {
         m_transform = static_cast<TransformComponent*>(component);
     }
@@ -74,17 +74,17 @@ Component* GameObject::AddComponent(meta::Type type, const std::function<void(Co
 
 Component* GameObject::GetComponent(meta::Type type, bool includeSubType) const
 {
-    if (type == typeof(TransformComponent))
+    if (type == NLS_TYPEOF(TransformComponent))
         return GetComponent<TransformComponent>(includeSubType);
-    if (type == typeof(CameraComponent))
+    if (type == NLS_TYPEOF(CameraComponent))
         return GetComponent<CameraComponent>(includeSubType);
-    if (type == typeof(LightComponent))
+    if (type == NLS_TYPEOF(LightComponent))
         return GetComponent<LightComponent>(includeSubType);
-    if (type == typeof(MaterialRenderer))
+    if (type == NLS_TYPEOF(MaterialRenderer))
         return GetComponent<MaterialRenderer>(includeSubType);
-    if (type == typeof(MeshRenderer))
+    if (type == NLS_TYPEOF(MeshRenderer))
         return GetComponent<MeshRenderer>(includeSubType);
-    if (type == typeof(SkyBoxComponent))
+    if (type == NLS_TYPEOF(SkyBoxComponent))
         return GetComponent<SkyBoxComponent>(includeSubType);
     return nullptr;
 }

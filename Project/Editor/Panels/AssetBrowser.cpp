@@ -6,6 +6,7 @@
 #include <UI/Widgets/Visual/Separator.h>
 #include <UI/Widgets/Buttons/Button.h>
 #include <UI/Widgets/Layout/Group.h>
+#include <UI/Widgets/Layout/Spacing.h>
 #include <UI/Plugins/DDSource.h>
 #include <UI/Plugins/DDTarget.h>
 #include <UI/Plugins/ContextualMenu.h>
@@ -951,11 +952,19 @@ Editor::Panels::AssetBrowser::AssetBrowser
 	auto& refreshButton = CreateWidget<Button>("Rescan assets");
 	refreshButton.ClickedEvent += std::bind(&AssetBrowser::Refresh, this);
 	refreshButton.lineBreak = false;
-	refreshButton.idleBackgroundColor = { 0.f, 0.5f, 0.0f };
+	refreshButton.idleBackgroundColor = { 0.18f, 0.19f, 0.21f };
+	refreshButton.hoveredBackgroundColor = { 0.23f, 0.24f, 0.26f };
+	refreshButton.clickedBackgroundColor = { 0.26f, 0.28f, 0.31f };
 
 	auto& importButton = CreateWidget<Button>("Import asset");
+	importButton.lineBreak = false;
 	importButton.ClickedEvent += EDITOR_BIND(ImportAsset, m_projectAssetFolder);
-	importButton.idleBackgroundColor = { 0.7f, 0.5f, 0.0f };
+	importButton.idleBackgroundColor = { 0.23f, 0.49f, 0.82f };
+	importButton.hoveredBackgroundColor = { 0.29f, 0.58f, 0.93f };
+	importButton.clickedBackgroundColor = { 0.18f, 0.41f, 0.71f };
+	importButton.textColor = { 0.96f, 0.97f, 0.99f };
+
+    CreateWidget<Spacing>(1);
 
 	m_assetList = &CreateWidget<Group>();
 
@@ -997,8 +1006,10 @@ void Editor::Panels::AssetBrowser::ParseFolder(TreeNode& p_root, const std::file
 void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::filesystem::directory_entry& p_entry, bool p_isEngineItem, bool p_autoOpen, bool p_scriptFolder)
 {
 	bool isDirectory = p_entry.is_directory();
-	std::string itemname = Utils::PathParser::GetElementName(p_entry.path().string());
 	std::string path = p_entry.path().string();
+	while (!path.empty() && (path.back() == '\\' || path.back() == '/'))
+		path.pop_back();
+	std::string itemname = Utils::PathParser::GetElementName(path);
 	if (isDirectory && path.back() != '\\') // Add '\\' if is directory and backslash is missing
 		path += '\\';
 	std::string resourceFormatPath = EDITOR_EXEC(GetResourcePath(path, p_isEngineItem));
@@ -1225,6 +1236,19 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 			std::make_pair(resourceFormatPath, &itemGroup)
 		);
 
+		clickableText.ClickedEvent += [this, &clickableText, resourceFormatPath]
+		{
+			if (m_selectedAsset && m_selectedAsset != &clickableText)
+				m_selectedAsset->selected = false;
+			m_selectedAsset = &clickableText;
+			clickableText.selected = true;
+
+			auto& assetProperties = EDITOR_PANEL(Editor::Panels::AssetProperties, "Asset Properties");
+			assetProperties.SetTarget(resourceFormatPath);
+			assetProperties.Open();
+			assetProperties.Focus();
+		};
+
 		contextMenu->RenamedEvent += [&ddSource, &clickableText, p_scriptFolder](std::string p_prev, std::string p_newPath)
 		{
 			if (p_newPath != p_prev)
@@ -1268,7 +1292,22 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 			texturePreview.SetPath(resourceFormatPath);
 		}
 
-		if (fileType == Utils::PathParser::EFileType::SCENE)
+		if (fileType == Utils::PathParser::EFileType::MODEL ||
+			fileType == Utils::PathParser::EFileType::TEXTURE ||
+			fileType == Utils::PathParser::EFileType::MATERIAL)
+		{
+			clickableText.DoubleClickedEvent += [resourceFormatPath]
+			{
+				auto& assetProperties = EDITOR_PANEL(Editor::Panels::AssetProperties, "Asset Properties");
+				assetProperties.SetTarget(resourceFormatPath);
+
+				auto& assetView = EDITOR_PANEL(Editor::Panels::AssetView, "Asset View");
+				assetProperties.Preview();
+				assetView.Open();
+				assetView.Focus();
+			};
+		}
+		else if (fileType == Utils::PathParser::EFileType::SCENE)
 		{
 			clickableText.DoubleClickedEvent += [path]
 			{

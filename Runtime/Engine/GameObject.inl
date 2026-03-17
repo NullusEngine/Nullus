@@ -1,8 +1,7 @@
 #pragma once
 
 #include "GameObject.h"
-#include "Reflection/Compat/ReflMngr.hpp"
-#include <utility>
+#include "Components/TransformComponent.h"
 namespace NLS::Engine
 {
     template<typename T>
@@ -10,17 +9,41 @@ namespace NLS::Engine
     {
         static_assert(std::is_base_of_v<Components::Component, T>, "T must derive from Component");
 
-        auto component = AddComponent(UDRefl::Type_of<T>, func);
-        if (!component)
+        auto component = std::make_unique<T>();
+        auto* typedComponent = component.get();
+
+        if (!typedComponent)
             return nullptr;
 
-        return component.StaticCast(UDRefl::Type_of<T>).template AsPtr<T>();
+        if (func)
+            func(static_cast<Components::Component*>(typedComponent));
+
+        m_vComponents.push_back(std::move(component));
+        if constexpr (!std::is_same_v<T, Components::TransformComponent>)
+        {
+            typedComponent->CreateBy(this);
+        }
+        ComponentAddedEvent.Invoke(typedComponent);
+
+        return typedComponent;
     }
 
     template<typename T>
     T* GameObject::GetComponent(bool includeSubType) const
     {
-        return GetComponent(UDRefl::Type_of<T>, includeSubType).StaticCast(UDRefl::Type_of<T>).template AsPtr<T>();
+        for (const auto& component : m_vComponents)
+        {
+            if (!component)
+                continue;
+
+            if (auto* exact = dynamic_cast<T*>(component.get()))
+                return exact;
+
+            if (!includeSubType && typeid(*component) == typeid(T))
+                return static_cast<T*>(component.get());
+        }
+
+        return nullptr;
     }
 }
 

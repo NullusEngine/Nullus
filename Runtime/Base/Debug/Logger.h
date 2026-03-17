@@ -2,7 +2,7 @@
 
 #include <string>
 #include <map>
-#include "Reflection/Compat/config.hpp"
+#include "BaseDef.h"
 #include <Eventing/Event.h>
 
 #include "Debug/ILogHandler.h"

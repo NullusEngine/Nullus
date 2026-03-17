@@ -26,6 +26,7 @@
 #include "Panels/AssetView.h"
 #include "Panels/MaterialEditor.h"
 #include "Serialize/Serializer.h"
+#include "Reflection/Variant.h"
 // #include "Panels/SceneView.h"
 // #include "Panels/AssetView.h"
 // #include "Panels/GameView.h"
@@ -58,7 +59,8 @@ void Editor::Core::EditorActions::LoadEmptyScene()
 void Editor::Core::EditorActions::SaveCurrentSceneTo(const std::string& p_path)
 {
     m_context.sceneManager.StoreCurrentSceneSourcePath(p_path);
-    Serializer::Instance()->SerializeToFile(UDRefl::ObjectView(m_context.sceneManager.GetCurrentScene()), p_path);
+    meta::Variant sceneVariant(*m_context.sceneManager.GetCurrentScene(), meta::variant_policy::NoCopy{});
+    Serializer::Instance()->SerializeToFile(sceneVariant, p_path);
 }
 
 void Editor::Core::EditorActions::LoadSceneFromDisk(const std::string& p_path, bool p_absolute)

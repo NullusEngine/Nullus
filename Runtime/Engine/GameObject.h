@@ -1,8 +1,10 @@
 #pragma once
+#include <memory>
 #include <vector>
 #include "EngineDef.h"
 #include "Reflection/Macros.h"
-#include "Reflection/Compat/ReflMngr.hpp"
+#include "Reflection/Object.h"
+#include "Reflection/Type.h"
 #include "Eventing/Event.h"
 #include "Components/Component.h"
 #include "GameObject.generated.h"
@@ -14,27 +16,28 @@ namespace Components
 {
     class TransformComponent;
 }
-CLASS() class NLS_ENGINE_API GameObject
+CLASS() class NLS_ENGINE_API GameObject : public NLS::meta::Object
 {
 public:
     GENERATED_BODY()
     GameObject(int64_t p_actorID, const std::string& p_name, const std::string& p_tag, bool& p_playing);
     ~GameObject();
+    meta::Type GetType(void) const override { return typeof(GameObject); }
+    NLS::meta::Object* Clone(void) const override { return nullptr; }
     template<typename T>
     T* AddComponent(const std::function<void(Components::Component*)>& func = {});
     template<typename T>
     T* GetComponent(bool includeSubType = true) const;
-    /**
-     * Returns a reference to the vector of components
-     */
-    std::vector<UDRefl::SharedObject>& GetComponents()
+#ifndef __REFLECTION_PARSER__
+    const std::vector<std::unique_ptr<Components::Component>>& GetComponents() const
     {
         return m_vComponents;
     }
-    bool RemoveComponent(UDRefl::SharedObject component);
+#endif
+    bool RemoveComponent(Components::Component* component);
 
-    UDRefl::SharedObject AddComponent(UDRefl::Type type, const std::function<void(Components::Component*)>& func = {});
-    UDRefl::SharedObject GetComponent(UDRefl::Type type, bool includeSubType = true) const;
+    Components::Component* AddComponent(meta::Type type, const std::function<void(Components::Component*)>& func = {});
+    Components::Component* GetComponent(meta::Type type, bool includeSubType = true) const;
     /**
      * Enable or disable the actor
      * @param p_active
@@ -259,8 +262,8 @@ private:
 
 public:
     /* Some events that are triggered when an action occur on the actor instance */
-    Event<UDRefl::SharedObject> ComponentAddedEvent;
-    Event<UDRefl::SharedObject> ComponentRemovedEvent;
+    ::NLS::Event<::NLS::Engine::Components::Component*> ComponentAddedEvent;
+    ::NLS::Event<::NLS::Engine::Components::Component*> ComponentRemovedEvent;
 
     /* Some events that are triggered when an action occur on any actor */
     static Event<GameObject&> DestroyedEvent;
@@ -269,7 +272,7 @@ public:
     static Event<GameObject&> DettachEvent;
 
 protected:
-    std::vector<UDRefl::SharedObject> m_vComponents;
+    std::vector<std::unique_ptr<Components::Component>> m_vComponents;
     bool m_active;
     int m_worldID;
     std::string m_name;

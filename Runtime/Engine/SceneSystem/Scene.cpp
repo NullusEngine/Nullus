@@ -6,7 +6,6 @@
 #include "SceneSystem/Scene.h"
 #include "GameObject.h"
 using namespace NLS;
-using namespace UDRefl;
 using namespace NLS::Engine::SceneSystem;
 Scene::Scene()
 {
@@ -83,7 +82,7 @@ bool Scene::AddGameObject(GameObject* gameObject)
 		{
 			for (auto&& component : go->GetComponents())
 			{
-				OnComponentAdded(component);
+				OnComponentAdded(component.get());
 			}
 			go->ComponentAddedEvent += std::bind(&Scene::OnComponentAdded, this, std::placeholders::_1);
 			go->ComponentRemovedEvent += std::bind(&Scene::OnComponentRemoved, this, std::placeholders::_1);
@@ -242,19 +241,24 @@ Engine::Components::CameraComponent* Scene::FindMainCamera() const
 	return nullptr;
 }
 
-void Scene::OnComponentAdded(SharedObject p_compononent)
+void Scene::OnComponentAdded(Components::Component* p_compononent)
 {
-	(void)p_compononent;
-	RebuildFastAccessComponents();
+    (void)p_compononent;
+    RebuildFastAccessComponents();
 }
 
-void Scene::OnComponentRemoved(SharedObject p_compononent)
+void Scene::OnComponentRemoved(Components::Component* p_compononent)
 {
-	(void)p_compononent;
-	RebuildFastAccessComponents();
+    (void)p_compononent;
+    RebuildFastAccessComponents();
 }
 
 std::vector<Engine::GameObject*>& Scene::GetActors()
+{
+	return m_gameobject;
+}
+
+const std::vector<Engine::GameObject*>& Scene::GetActors() const
 {
 	return m_gameobject;
 }
@@ -271,6 +275,11 @@ const Scene::FastAccessComponents& Scene::GetFastAccessComponents() const
 	return m_fastAccessComponents;
 }
 
+void Scene::SetAvailableID(int64_t p_nextID)
+{
+	m_availableID = p_nextID;
+}
+
 void Scene::RebuildFastAccessComponents()
 {
 	m_fastAccessComponents.modelRenderers.clear();
@@ -285,31 +294,18 @@ void Scene::RebuildFastAccessComponents()
 
 		for (auto& component : go->GetComponents())
 		{
-			auto* baseComponent = component.AsPtr<Engine::Components::Component>();
+			auto* baseComponent = component.get();
 			if (!baseComponent)
 				continue;
 
-			const auto typeName = component.GetType().GetName();
-			if (typeName.find("MeshRenderer") != std::string::npos)
-			{
-				if (auto* ptr = dynamic_cast<Engine::Components::MeshRenderer*>(baseComponent))
-					m_fastAccessComponents.modelRenderers.push_back(ptr);
-			}
-			else if (typeName.find("CameraComponent") != std::string::npos)
-			{
-				if (auto* ptr = dynamic_cast<Engine::Components::CameraComponent*>(baseComponent))
-					m_fastAccessComponents.cameras.push_back(ptr);
-			}
-			else if (typeName.find("LightComponent") != std::string::npos)
-			{
-				if (auto* ptr = dynamic_cast<Engine::Components::LightComponent*>(baseComponent))
-					m_fastAccessComponents.lights.push_back(ptr);
-			}
-			else if (typeName.find("SkyBoxComponent") != std::string::npos)
-			{
-				if (auto* ptr = dynamic_cast<Engine::Components::SkyBoxComponent*>(baseComponent))
-					m_fastAccessComponents.skyboxs.push_back(ptr);
-			}
+			if (auto* ptr = dynamic_cast<Engine::Components::MeshRenderer*>(baseComponent))
+				m_fastAccessComponents.modelRenderers.push_back(ptr);
+			else if (auto* ptr = dynamic_cast<Engine::Components::CameraComponent*>(baseComponent))
+				m_fastAccessComponents.cameras.push_back(ptr);
+			else if (auto* ptr = dynamic_cast<Engine::Components::LightComponent*>(baseComponent))
+				m_fastAccessComponents.lights.push_back(ptr);
+			else if (auto* ptr = dynamic_cast<Engine::Components::SkyBoxComponent*>(baseComponent))
+				m_fastAccessComponents.skyboxs.push_back(ptr);
 		}
 	}
 }

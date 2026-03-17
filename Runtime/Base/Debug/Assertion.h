@@ -1,7 +1,7 @@
 #pragma once
 
 #include <string>
-#include "Reflection/Compat/config.hpp"
+#include "BaseDef.h"
 
 #define NLS_ASSERT(assertion, ...) (!!(assertion) ||                                 \
  (NLS::Debug::Assert(__FILE__, __FUNCTION__, __LINE__,##__VA_ARGS__), 0)) \

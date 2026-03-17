@@ -7,7 +7,7 @@
 namespace NLS
 {
 
-void Serializer::SerializeObject(const ObjectView& obj, json& output)
+void Serializer::SerializeObject(const meta::Variant& obj, json& output)
 {
     const IJsonHandler* handler = GetHandler(obj.GetType(), obj.GetType().IsPointer());
     if (handler == nullptr)
@@ -18,7 +18,7 @@ void Serializer::SerializeObject(const ObjectView& obj, json& output)
 }
 
 
-std::string Serializer::SerializeToString(const ObjectView& obj)
+std::string Serializer::SerializeToString(const meta::Variant& obj)
 {
     json output;
     SerializeObject(obj, output);
@@ -26,7 +26,7 @@ std::string Serializer::SerializeToString(const ObjectView& obj)
 }
 
 
-void Serializer::SerializeToFile(const ObjectView& obj, const std::string& p_path)
+void Serializer::SerializeToFile(const meta::Variant& obj, const std::string& p_path)
 {
     std::ofstream o(p_path);
     json output;
@@ -34,7 +34,7 @@ void Serializer::SerializeToFile(const ObjectView& obj, const std::string& p_pat
     o << std::setw(4) << output << std::endl;
 }
 
-void Serializer::DeserializeObject(const ObjectView& obj, const json& input)
+void Serializer::DeserializeObject(meta::Variant& obj, const json& input)
 {
     const IJsonHandler* handler = GetHandler(obj.GetType(), obj.GetType().IsPointer());
     if (handler == nullptr)
@@ -46,14 +46,14 @@ void Serializer::DeserializeObject(const ObjectView& obj, const json& input)
 
 
 
-void Serializer::DeserializeFromString(const ObjectView& obj, const std::string& str)
+void Serializer::DeserializeFromString(meta::Variant& obj, const std::string& str)
 {
     json input = json::parse(str);
     DeserializeObject(obj, input);
 }
 
 
-void Serializer::DeserializeFromFile(const ObjectView& obj, const std::string& p_path)
+void Serializer::DeserializeFromFile(meta::Variant& obj, const std::string& p_path)
 {
     std::ifstream file(p_path);
     json input;
@@ -61,7 +61,7 @@ void Serializer::DeserializeFromFile(const ObjectView& obj, const std::string& p
     DeserializeObject(obj, input);
 }
 
-const NLS::IJsonHandler* Serializer::GetHandler(const Type& type, bool isPointer)
+const NLS::IJsonHandler* Serializer::GetHandler(const meta::Type& type, bool isPointer)
 {
     NLS_ASSERT(!mHandlers.empty(), "No serialization strategy available!");
 
@@ -70,8 +70,6 @@ const NLS::IJsonHandler* Serializer::GetHandler(const Type& type, bool isPointer
     for (const auto handler : mHandlers)
     {
         const uint32_t tempLvl = handler->CalcMatchLevel(type, isPointer);
-        if (tempLvl == retLvl && retLvl == 0)
-            NLS_LOG_ERROR("Type conflict in serializer handlers");
         if (tempLvl < retLvl)
         {
             ret = handler;

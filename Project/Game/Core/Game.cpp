@@ -36,8 +36,7 @@ Game::Core::Game::Game(Context & p_context) :
     {
         auto& instance = m_context.sceneManager.GetCurrentScene()->CreateGameObject("Cube");
 
-        auto meshObj = instance.AddComponent(UDRefl::Type_of<Engine::Components::MeshRenderer>);
-        auto modelRenderer = meshObj.StaticCast(UDRefl::Type_of<Engine::Components::MeshRenderer>).AsPtr<Engine::Components::MeshRenderer>();
+        auto modelRenderer = instance.AddComponent<Engine::Components::MeshRenderer>();
 
         if (!modelRenderer)
         {
@@ -69,8 +68,7 @@ Game::Core::Game::Game(Context & p_context) :
             tr->SetLocalScale({2.0f, 2.0f, 2.0f});
         }
 
-        auto matObj = instance.AddComponent(UDRefl::Type_of<Engine::Components::MaterialRenderer>);
-        auto materialRenderer = matObj.StaticCast(UDRefl::Type_of<Engine::Components::MaterialRenderer>).AsPtr<Engine::Components::MaterialRenderer>();
+        auto materialRenderer = instance.AddComponent<Engine::Components::MaterialRenderer>();
         if (!materialRenderer)
         {
             NLS_LOG_ERROR("Failed to resolve MaterialRenderer from reflection component");

@@ -5,6 +5,8 @@
 #include "Core/Application.h"
 #include "Debug/Logger.h"
 #include "Core//Launcher.h"
+#include <cstdio>
+#include <exception>
 using namespace NLS;
 
 int main(int argc, char** argv);
@@ -65,7 +67,14 @@ static void TryRun(const std::string& projectPath, const std::string& projectNam
 		app = std::make_unique<Editor::Core::Application>(projectPath, projectName);
 		NLS::Context::Device::ErrorEvent -= listenerId;
 	}
-	catch (...) {}
+	catch (const std::exception& e)
+	{
+		std::fprintf(stderr, "[Editor::TryRun] std::exception: %s\n", e.what());
+	}
+	catch (...)
+	{
+		std::fprintf(stderr, "[Editor::TryRun] unknown exception\n");
+	}
 
 	if (app)
 		app->Run();

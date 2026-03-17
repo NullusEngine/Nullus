@@ -2,7 +2,7 @@
 
 #include <functional>
  #include <stdint.h>
-#include "Reflection/Compat/config.hpp"
+#include "BaseDef.h"
 namespace NLS
 {
 	/**

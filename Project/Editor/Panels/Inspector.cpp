@@ -22,6 +22,7 @@
 #include "Components/MeshRenderer.h"
 #include "Components/LightComponent.h"
 #include "Components/CameraComponent.h"
+#include "Components/TransformComponent.h"
 #include "GameObject.h"
 namespace NLS::Editor::Panels
 {
@@ -190,28 +191,65 @@ Engine::GameObject* Inspector::GetTargetActor() const
 void Inspector::CreateActorInspector(Engine::GameObject& p_target)
 {
     using namespace NLS::Engine::Components;
-    std::map<std::string_view, UDRefl::SharedObject> components;
+    std::map<std::string_view, Component*> components;
+    const auto getComponentName = [](Component* component) -> std::string_view
+    {
+        if (dynamic_cast<TransformComponent*>(component))
+            return "TransformComponent";
+        if (dynamic_cast<MeshRenderer*>(component))
+            return "MeshRenderer";
+        if (dynamic_cast<MaterialRenderer*>(component))
+            return "MaterialRenderer";
+        if (dynamic_cast<LightComponent*>(component))
+            return "LightComponent";
+        if (dynamic_cast<CameraComponent*>(component))
+            return "CameraComponent";
+        return "Component";
+    };
 
-    for (auto component : p_target.GetComponents())
-        if (component.GetType().GetName() != "TransformComponent")
-            components[component.GetType().GetName()] = component;
+    for (const auto& component : p_target.GetComponents())
+    {
+        if (!component)
+            continue;
 
-    UDRefl::SharedObject transform = p_target.GetComponent(Type_of<TransformComponent>);
-    if (transform)
-        DrawComponent(*transform);
+        auto* rawComponent = component.get();
+        if (dynamic_cast<TransformComponent*>(rawComponent))
+            continue;
+
+        components[getComponentName(rawComponent)] = rawComponent;
+    }
+
+    if (auto* transform = p_target.GetComponent<TransformComponent>())
+        DrawComponent(transform);
 
     for (auto& [name, instance] : components)
-        DrawComponent(*instance);
+        DrawComponent(instance);
 }
 
-void Inspector::DrawComponent(UDRefl::SharedObject p_component)
+void Inspector::DrawComponent(Engine::Components::Component* p_component)
 {
     using namespace NLS::Engine::Components;
-    auto& header = m_actorInfo->CreateWidget<UI::Widgets::GroupCollapsable>("Component");
-    header.closable = p_component.GetType() == Type_of<TransformComponent>;
-    header.CloseEvent += [this, &header, &p_component]
+    if (!p_component)
+        return;
+
+    const bool isTransform = dynamic_cast<TransformComponent*>(p_component) != nullptr;
+    const char* title = "Component";
+    if (dynamic_cast<MeshRenderer*>(p_component))
+        title = "Mesh Renderer";
+    else if (dynamic_cast<MaterialRenderer*>(p_component))
+        title = "Material Renderer";
+    else if (dynamic_cast<LightComponent*>(p_component))
+        title = "Light";
+    else if (dynamic_cast<CameraComponent*>(p_component))
+        title = "Camera";
+    else if (isTransform)
+        title = "Transform";
+
+    auto& header = m_actorInfo->CreateWidget<UI::Widgets::GroupCollapsable>(title);
+    header.closable = !isTransform;
+    header.CloseEvent += [this, p_component]
     {
-        if (p_component.Invoke<Engine::GameObject*>("gameobject")->RemoveComponent(p_component))
+        if (p_component && p_component->gameobject() && p_component->gameobject()->RemoveComponent(p_component))
             m_componentSelectorWidget->ValueChangedEvent.Invoke(m_componentSelectorWidget->currentChoice);
     };
     auto& columns = header.CreateWidget<UI::Widgets::Columns>(2);

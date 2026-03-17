@@ -237,6 +237,7 @@ internal static class Program
             {
                 ["ClassName"] = type.ClassName,
                 ["QualifiedName"] = type.QualifiedName,
+                ["EnableObjectBridge"] = type.QualifiedName.StartsWith("NLS::Engine::Components::", StringComparison.Ordinal),
                 ["AccessStructName"] = BuildPrivateAccessStructName(type.QualifiedName),
                 ["RegisterFunctionName"] = BuildRegisterFunctionName(type.QualifiedName),
                 ["RegistrarClassName"] = BuildRegistrarClassName(type.QualifiedName),
@@ -254,6 +255,7 @@ internal static class Program
                 {
                     ["ClassName"] = type.ClassName,
                     ["QualifiedName"] = type.QualifiedName,
+                    ["EnableObjectBridge"] = type.QualifiedName.StartsWith("NLS::Engine::Components::", StringComparison.Ordinal),
                     ["AccessStructName"] = BuildPrivateAccessStructName(type.QualifiedName),
                     ["RegisterFunctionName"] = BuildRegisterFunctionName(type.QualifiedName),
                     ["RegistrarClassName"] = BuildRegistrarClassName(type.QualifiedName),
@@ -369,11 +371,13 @@ internal static class Program
         var types = new List<ReflectTypeInfo>();
         var headerText = File.ReadAllText(headerPath);
         var hasReflectedTypeBodies = ContainsGeneratedBody(headerText);
+        var hasExternalReflectionDeclarations = headerText.Contains("MetaExternal", StringComparison.Ordinal)
+            || headerText.Contains("REFLECT_EXTERNAL", StringComparison.Ordinal);
         if (hasReflectedTypeBodies)
         {
             types.AddRange(ParseHeaderFromText(rootDir, headerPath, headerText));
         }
-        else
+        else if (!hasExternalReflectionDeclarations)
         {
             types.AddRange(ParseHeaderWithCppAst(rootDir, headerPath, config));
         }
@@ -566,6 +570,12 @@ internal static class Program
 
             merged[type.QualifiedName] = existing with
             {
+                HeaderPath = type.HeaderPath.Contains("ExternalReflection", StringComparison.Ordinal)
+                    ? type.HeaderPath
+                    : existing.HeaderPath,
+                SourceFilePath = type.SourceFilePath.Contains("ExternalReflection", StringComparison.Ordinal)
+                    ? type.SourceFilePath
+                    : existing.SourceFilePath,
                 Bases = existing.Bases
                     .Concat(type.Bases)
                     .DistinctBy(b => b.TypeName)
@@ -620,23 +630,51 @@ internal static class Program
         foreach (var entry in SplitTopLevel(sectionBody, ','))
         {
             if (!TryParseMacroInvocation(entry, out var macroName, out var macroBody)
-                || (macroName != "REFLECT_FIELD" && macroName != "REFLECT_PRIVATE_FIELD"))
+                || (macroName != "REFLECT_FIELD"
+                    && macroName != "REFLECT_PRIVATE_FIELD"
+                    && macroName != "REFLECT_PROPERTY"))
                 continue;
 
             var args = SplitTopLevel(macroBody, ',');
+            if (macroName == "REFLECT_PROPERTY")
+            {
+                if (args.Count != 4)
+                    continue;
+
+                var typeName = QualifyTypeName(NormalizeTypeName(args[0]), namespacePrefix);
+                var fieldName = NormalizeRegistrationName(args[1]);
+                var getterExpression = args[2].Trim();
+                var setterExpression = args[3].Trim();
+                if (string.IsNullOrWhiteSpace(typeName)
+                    || string.IsNullOrWhiteSpace(fieldName)
+                    || string.IsNullOrWhiteSpace(getterExpression)
+                    || string.IsNullOrWhiteSpace(setterExpression))
+                {
+                    continue;
+                }
+
+                fields.Add(new ReflectFieldInfo(
+                    fieldName,
+                    typeName,
+                    getterExpression,
+                    setterExpression,
+                    false));
+                continue;
+            }
+
             if (args.Count != 2)
                 continue;
 
-            var typeName = QualifyTypeName(NormalizeTypeName(args[0]), namespacePrefix);
-            var fieldName = NormalizeRegistrationName(args[1]);
-            if (string.IsNullOrWhiteSpace(typeName) || string.IsNullOrWhiteSpace(fieldName))
+            var directTypeName = QualifyTypeName(NormalizeTypeName(args[0]), namespacePrefix);
+            var directFieldName = NormalizeRegistrationName(args[1]);
+            if (string.IsNullOrWhiteSpace(directTypeName) || string.IsNullOrWhiteSpace(directFieldName))
                 continue;
 
             fields.Add(new ReflectFieldInfo(
-                fieldName,
-                typeName,
-                $"&{fullTypeName}::{fieldName}",
-                $"&{fullTypeName}::{fieldName}",
+                directFieldName,
+                directTypeName,
+                $"&{fullTypeName}::{directFieldName}",
+                $"&{fullTypeName}::{directFieldName}",
                 macroName == "REFLECT_PRIVATE_FIELD"));
         }
 
@@ -972,7 +1010,7 @@ internal static class Program
                     continue;
 
                 var typeName = NormalizeTypeName(field.Type.GetDisplayName());
-                if (string.IsNullOrWhiteSpace(typeName))
+                if (string.IsNullOrWhiteSpace(typeName) || ContainsUnsupportedReflectionType(typeName))
                     continue;
 
                 result.Add(new ReflectFieldInfo(
@@ -1007,6 +1045,13 @@ internal static class Program
                 if (string.IsNullOrWhiteSpace(method.Name)
                     || method.Name.StartsWith("operator", StringComparison.Ordinal)
                     || !IsBindableMethodName(method.Name))
+                    continue;
+
+                var returnTypeName = NormalizeTypeName(method.ReturnType?.GetDisplayName() ?? string.Empty);
+                if (ContainsUnsupportedReflectionType(returnTypeName))
+                    continue;
+
+                if (method.Parameters.Any(parameter => ContainsUnsupportedReflectionType(NormalizeTypeName(parameter.Type.GetDisplayName()))))
                     continue;
 
                 candidateNames.Add(method.Name);
@@ -1168,6 +1213,9 @@ internal static class Program
 
                 if (statement.Contains('('))
                 {
+                    if (ContainsUnsupportedReflectionType(statement))
+                        continue;
+
                     var nameMatches = Regex.Matches(statement, @"(?<name>[~A-Za-z_]\w*)\s*\([^;{}]*\)", RegexOptions.CultureInvariant);
                     if (nameMatches.Count == 0)
                         continue;
@@ -1201,6 +1249,7 @@ internal static class Program
 
                 if (string.IsNullOrWhiteSpace(fieldType)
                     || string.IsNullOrWhiteSpace(fieldName)
+                    || ContainsUnsupportedReflectionType(fieldType)
                     || fieldType.StartsWith("static ", StringComparison.Ordinal)
                     || fieldType.StartsWith("constexpr ", StringComparison.Ordinal)
                     || fieldType.StartsWith("inline ", StringComparison.Ordinal)
@@ -1245,6 +1294,11 @@ internal static class Program
 
     private static string StripBlockComments(string text)
         => Regex.Replace(text, @"/\*.*?\*/", string.Empty, RegexOptions.Singleline | RegexOptions.CultureInvariant);
+
+    private static bool ContainsUnsupportedReflectionType(string text)
+        => !string.IsNullOrWhiteSpace(text)
+           && (text.Contains("std::unique_ptr", StringComparison.Ordinal)
+               || text.Contains("unique_ptr<", StringComparison.Ordinal));
 
     private static string QualifyTypeName(string typeName, string namespacePrefix)
     {

@@ -13,7 +13,7 @@ namespace NLS
 Editor::Core::Context::Context(const std::string& p_projectPath, const std::string& p_projectName)
     : projectPath(p_projectPath), 
     projectName(p_projectName), 
-    projectFilePath(p_projectPath + p_projectName + ".nullus"), 
+    projectFilePath(p_projectPath + Utils::PathParser::Separator() + p_projectName + ".nullus"), 
     engineAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets/Engine")).string() + Utils::PathParser::Separator()), 
     projectAssetsPath(p_projectPath + Utils::PathParser::Separator() + "Assets" + Utils::PathParser::Separator()), 
     editorAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets/Editor")).string() + Utils::PathParser::Separator()), 

@@ -1,6 +1,6 @@
 ﻿#pragma once
 #include <string>
-#include "Reflection/Compat/config.hpp"
+#include "BaseDef.h"
 namespace NLS
 {
     class NLS_BASE_API Image {

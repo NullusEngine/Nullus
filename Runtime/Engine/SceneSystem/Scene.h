@@ -137,23 +137,26 @@ namespace NLS::Engine::SceneSystem
 		* Callback method called everytime a component is added on an actor of the scene
 		* @param p_component
 		*/
-        void OnComponentAdded(UDRefl::SharedObject p_compononent);
+        void OnComponentAdded(Components::Component* p_compononent);
 
 		/**
 		* Callback method called everytime a component is removed on an actor of the scene
 		* @param p_component
 		*/
-        void OnComponentRemoved(UDRefl::SharedObject p_compononent);
+        void OnComponentRemoved(Components::Component* p_compononent);
 
 		/**
 		* Return a reference on the actor map
 		*/
 		std::vector<GameObject*>& GetActors();
+		const std::vector<GameObject*>& GetActors() const;
 
 		/**
 		* Return the fast access components data structure
 		*/
 		const FastAccessComponents& GetFastAccessComponents() const;
+
+		void SetAvailableID(int64_t p_nextID);
 
 	private:
 		void RebuildFastAccessComponents();

@@ -53,17 +53,18 @@ namespace NLS
                 addDefaultConstructor( data );
 
                 applyTrivialAttributes( data );
+                applyArrayAttributes( data );
             }
         }
 
         template<typename T>
         template<typename U>
         void TypeInfo<T>::addDefaultConstructor(
-            TypeData &data, 
-            typename std::enable_if< 
-                !IsTriviallyDefaultConstructible(U)
-            >::type*
-        )
+                TypeData &data, 
+                typename std::enable_if< 
+                    !IsMetaDefaultConstructible(U)
+                >::type*
+            )
         {
             // do nothing
         }
@@ -71,11 +72,11 @@ namespace NLS
         template<typename T>
         template<typename U>
         void TypeInfo<T>::addDefaultConstructor(
-            TypeData &data, 
-            typename std::enable_if<
-                IsTriviallyDefaultConstructible(U)
-            >::type*
-        )
+                TypeData &data, 
+                typename std::enable_if<
+                    IsMetaDefaultConstructible(U)
+                >::type*
+            )
         {
             // add the good 'ol default constructor
             data.AddConstructor<T, false, false>( { } );
@@ -106,6 +107,36 @@ namespace NLS
         )
         {
             data.SetDestructor<T>( );
+        }
+
+        template<typename T>
+        template<typename U>
+        void TypeInfo<T>::applyArrayAttributes(
+            TypeData &data,
+            typename std::enable_if<
+                !std::is_void<U>::value
+                && !std::is_abstract<U>::value
+                && std::is_copy_constructible<U>::value
+                && std::is_copy_assignable<U>::value
+            >::type*
+        )
+        {
+            data.SetArrayConstructor<T>( );
+        }
+
+        template<typename T>
+        template<typename U>
+        void TypeInfo<T>::applyArrayAttributes(
+            TypeData &data,
+            typename std::enable_if<
+                std::is_void<U>::value
+                || std::is_abstract<U>::value
+                || !std::is_copy_constructible<U>::value
+                || !std::is_copy_assignable<U>::value
+            >::type*
+        )
+        {
+            (void)data;
         }
     }
 }

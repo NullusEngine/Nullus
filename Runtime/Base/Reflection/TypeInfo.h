@@ -12,7 +12,7 @@
 
 #include <type_traits>
 
-#define IsTriviallyDefaultConstructible(x) std::is_trivially_default_constructible<x>::value
+#define IsMetaDefaultConstructible(x) std::is_default_constructible<x>::value
 
 namespace NLS
 {
@@ -32,7 +32,7 @@ namespace NLS
             static void addDefaultConstructor(
                 TypeData &data, 
                 typename std::enable_if<
-                    !IsTriviallyDefaultConstructible(U)
+                    !IsMetaDefaultConstructible(U)
                 >::type* = nullptr
             );
 
@@ -40,7 +40,7 @@ namespace NLS
             static void addDefaultConstructor(
                 TypeData &data, 
                 typename std::enable_if<
-                    IsTriviallyDefaultConstructible(U)
+                    IsMetaDefaultConstructible(U)
                 >::type* = nullptr
             );
 
@@ -54,7 +54,29 @@ namespace NLS
             template<typename U = T>
             static void applyTrivialAttributes(TypeData &data, 
                 typename std::enable_if< 
-                    std::is_trivial<U>::value 
+                std::is_trivial<U>::value 
+                >::type* = nullptr
+            );
+
+            template<typename U = T>
+            static void applyArrayAttributes(
+                TypeData &data,
+                typename std::enable_if<
+                    !std::is_void<U>::value
+                    && !std::is_abstract<U>::value
+                    && std::is_copy_constructible<U>::value
+                    && std::is_copy_assignable<U>::value
+                >::type* = nullptr
+            );
+
+            template<typename U = T>
+            static void applyArrayAttributes(
+                TypeData &data,
+                typename std::enable_if<
+                    std::is_void<U>::value
+                    || std::is_abstract<U>::value
+                    || !std::is_copy_constructible<U>::value
+                    || !std::is_copy_assignable<U>::value
                 >::type* = nullptr
             );
         };

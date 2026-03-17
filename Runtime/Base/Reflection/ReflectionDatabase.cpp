@@ -34,10 +34,16 @@ namespace NLS
 {
     namespace meta
     {
+        namespace
+        {
+            ReflectionDatabase *gReflectionDatabaseInstance = nullptr;
+        }
+
         ReflectionDatabase::ReflectionDatabase(void)
             : types( 1 )
             , m_nextID( 1 )
         {
+            gReflectionDatabaseInstance = this;
             NLS_META_GENERATED_LINK_FUNCTION();
 
             types[ InvalidTypeID ].name = "UNKNOWN";
@@ -74,6 +80,11 @@ namespace NLS
             static ReflectionDatabase instance;
 
             return instance;
+        }
+
+        ReflectionDatabase *ReflectionDatabase::TryGet(void)
+        {
+            return gReflectionDatabaseInstance;
         }
 
         ///////////////////////////////////////////////////////////////////////

@@ -30,7 +30,7 @@ Editor::Panels::AssetView::AssetView
 
 	auto& directionalLightGO = m_scene.CreateGameObject("Directional Light");
     directionalLightGO.GetTransform()->SetLocalPosition({0.0f, 10.0f, 0.0f});
-    directionalLightGO.GetTransform()->SetLocalRotation(Maths::Quaternion({120.0f, -40.0f, 0.0f}));
+    directionalLightGO.GetTransform()->SetLocalRotation(Maths::Quaternion::LookAt({-0.35f, -1.0f, 0.25f}, Maths::Vector3::Up));
     auto directionalLight = directionalLightGO.AddComponent<Engine::Components::LightComponent>();
     directionalLight->SetLightType(Render::Settings::ELightType::DIRECTIONAL);
     directionalLight->SetIntensity(0.75f);
@@ -112,7 +112,7 @@ void Editor::Panels::AssetView::ClearResource()
 void Editor::Panels::AssetView::SetTexture(Render::Resources::Texture2D& p_texture)
 {
 	m_resource = &p_texture;
-	m_assetActor->GetTransform()->SetLocalRotation(Maths::Quaternion({ -90.0f, 0.0f, 0.0f }));
+	m_assetActor->GetTransform()->SetLocalRotation(Maths::Quaternion::Identity);
 	m_assetActor->GetTransform()->SetLocalScale(Maths::Vector3::One * 3.0f);
 	m_modelRenderer->SetModel(EDITOR_CONTEXT(editorResources)->GetModel("Plane"));
 	m_textureMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", &p_texture);

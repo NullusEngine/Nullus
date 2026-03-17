@@ -1,6 +1,7 @@
 #pragma once
 #include "EngineDef.h"
 #include "Reflection/Macros.h"
+#include "Reflection/Object.h"
 #include "Components/Component.generated.h"
 
 namespace NLS::Engine
@@ -8,7 +9,7 @@ namespace NLS::Engine
 class GameObject;
 namespace Components
 {
-CLASS() class NLS_ENGINE_API Component
+CLASS() class NLS_ENGINE_API Component : public NLS::meta::Object
 {
 public:
     GENERATED_BODY()

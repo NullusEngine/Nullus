@@ -31,7 +31,14 @@ namespace NLS
 
             auto &functions = GetReflectionRegisterFunctions();
             if (std::find(functions.begin(), functions.end(), function) == functions.end())
+            {
                 functions.push_back(function);
+                if (auto *db = ReflectionDatabase::TryGet())
+                {
+                    function(*db, ReflectionRegistrationPhase::Declare);
+                    function(*db, ReflectionRegistrationPhase::Define);
+                }
+            }
         }
 
         void ReflectionModuleRegistry::RegisterAll(ReflectionDatabase &db)

@@ -54,18 +54,19 @@ TEST(MetaParserGenerationTests, GeneratesExpectedEngineReflectionBindings)
 {
     const std::filesystem::path componentSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/Components/Component.generated.cpp";
     const std::filesystem::path sceneSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/SceneSystem/Scene.generated.cpp";
-    const std::filesystem::path gameObjectSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/GameObject.generated.cpp";
+    const std::filesystem::path externalSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/ExternalReflection.generated.cpp";
     const std::filesystem::path engineMetaSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/MetaGenerated.cpp";
     const std::string componentText = ReadAllText(componentSource);
     const std::string sceneText = ReadAllText(sceneSource);
-    const std::string gameObjectText = ReadAllText(gameObjectSource);
+    const std::string externalText = ReadAllText(externalSource);
     const std::string metaText = ReadAllText(engineMetaSource);
 
     ExpectContains(componentText, "AllocateType(\"NLS::Engine::Components::Component\")");
     ExpectContains(componentText, "AddMethod(\"CreateBy\", &NLS::Engine::Components::Component::CreateBy, {})");
-    ExpectContains(gameObjectText, "AllocateType(\"NLS::Engine::GameObject\")");
+    ExpectContains(externalText, "AllocateType(\"NLS::Engine::GameObject\")");
+    ExpectContains(externalText, "AddField<NLS::Engine::Components::TransformComponent, NLS::Maths::Vector3>(\"localPosition\"");
     ExpectContains(sceneText, "AllocateType(\"NLS::Engine::SceneSystem::Scene\")");
     ExpectContains(sceneText, "AddMethod(\"Play\", &NLS::Engine::SceneSystem::Scene::Play, {})");
     ExpectContains(metaText, "LinkReflectionTypes_NLS_Engine");
-    ExpectContains(metaText, "#include \"GameObject.generated.cpp\"");
+    ExpectContains(metaText, "#include \"ExternalReflection.generated.cpp\"");
 }

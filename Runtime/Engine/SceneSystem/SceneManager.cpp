@@ -8,6 +8,7 @@
 #include "ResourceManagement/TextureManager.h"
 #include "ServiceLocator.h"
 #include "Serialize/Serializer.h"
+#include "Reflection/Variant.h"
 
 using namespace NLS;
 using namespace NLS::Engine::SceneSystem;
@@ -105,10 +106,11 @@ void SceneManager::LoadEmptyLightedScene()
 bool SceneManager::LoadScene(const std::string& p_path, bool p_absolute)
 {
     std::string completePath = (p_absolute ? "" : m_sceneRootFolder) + p_path;
-    ObjectView scene = Mngr.New(Type_of<Scene>);
-    Serializer::Instance()->DeserializeFromFile(scene, completePath);
+    auto scene = std::make_unique<Scene>();
+    meta::Variant sceneVariant(*scene, meta::variant_policy::NoCopy{});
+    Serializer::Instance()->DeserializeFromFile(sceneVariant, completePath);
     UnloadCurrentScene();
-    m_currentScene = scene.AsPtr<Scene>();
+    m_currentScene = scene.release();
     SceneLoadEvent.Invoke();
     StoreCurrentSceneSourcePath(completePath);
     return true;

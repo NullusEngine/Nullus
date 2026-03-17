@@ -20,6 +20,7 @@ namespace Engine
 void AssemblyEngine::Initialize()
 {
     NLS_META_GENERATED_LINK_FUNCTION();
+    Serializer::Instance()->AddHandler<SceneSerializeHandler>();
     Serializer::Instance()->AddHandler<GameObjectSerializeHandler>();
 }
 } // namespace Engine

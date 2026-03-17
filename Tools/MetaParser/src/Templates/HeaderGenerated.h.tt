@@ -8,10 +8,14 @@
 #>
 #pragma once
 
+#include <type_traits>
+#include "Reflection/Type.h"
+
 namespace NLS::meta
 {
 class ReflectionDatabase;
 enum class ReflectionRegistrationPhase;
+class Object;
 }
 
 #ifdef CURRENT_FILE_ID
@@ -24,7 +28,8 @@ namespace NLS::meta_generated
 <# foreach (Dictionary<string, object> type in types.Cast<Dictionary<string, object>>()) {
        var registerFunctionName = (string)type["RegisterFunctionName"];
        var registrarClassName = (string)type["RegistrarClassName"];
-       var generatedBodyMacroName = (string)type["GeneratedBodyMacroName"]; #>
+       var generatedBodyMacroName = (string)type["GeneratedBodyMacroName"];
+       var enableObjectBridge = (bool)type["EnableObjectBridge"]; #>
 void <#= registerFunctionName #>(NLS::meta::ReflectionDatabase& db, NLS::meta::ReflectionRegistrationPhase phase);
 
 class <#= registrarClassName #>
@@ -38,6 +43,10 @@ public:
 #undef <#= generatedBodyMacroName #>
 #endif
 #define <#= generatedBodyMacroName #> \
+<# if (enableObjectBridge) { #>
+    ::NLS::meta::Type GetType(void) const { return typeof(<#= (string)type["QualifiedName"] #>); } \
+    ::NLS::meta::Object *Clone(void) const { using CurrentType = <#= (string)type["QualifiedName"] #>; if constexpr (::std::is_copy_constructible_v<CurrentType>) return new CurrentType(*this); return nullptr; } \
+<# } #>
     friend void ::NLS::meta_generated::<#= registerFunctionName #>(::NLS::meta::ReflectionDatabase& db, ::NLS::meta::ReflectionRegistrationPhase phase); \
     friend class ::NLS::meta_generated::<#= registrarClassName #>;
 <# } #>
@@ -67,12 +76,17 @@ struct <#= accessStructName #>
        var generatedBodyMacroName = (string)type["GeneratedBodyMacroName"];
        var accessStructName = (string)type["AccessStructName"];
        var registerFunctionName = (string)type["RegisterFunctionName"];
-       var registrarClassName = (string)type["RegistrarClassName"]; #>
+       var registrarClassName = (string)type["RegistrarClassName"];
+       var enableObjectBridge = (bool)type["EnableObjectBridge"]; #>
 <# if (!string.IsNullOrWhiteSpace(generatedBodyMacroName)) { #>
 #ifdef <#= generatedBodyMacroName #>
 #undef <#= generatedBodyMacroName #>
 #endif
 #define <#= generatedBodyMacroName #> \
+<# if (enableObjectBridge) { #>
+    ::NLS::meta::Type GetType(void) const { return typeof(<#= (string)type["QualifiedName"] #>); } \
+    ::NLS::meta::Object *Clone(void) const { using CurrentType = <#= (string)type["QualifiedName"] #>; if constexpr (::std::is_copy_constructible_v<CurrentType>) return new CurrentType(*this); return nullptr; } \
+<# } #>
     friend void ::NLS::meta_generated::<#= registerFunctionName #>(::NLS::meta::ReflectionDatabase& db, ::NLS::meta::ReflectionRegistrationPhase phase); \
     friend class ::NLS::meta_generated::<#= registrarClassName #>; \
     friend struct ::NLS::meta_generated::<#= accessStructName #>;

@@ -1,4 +1,7 @@
 ﻿
+#include <filesystem>
+#include <Debug/Logger.h>
+
 #include "Core/Editor.h"
 #include "UI/Settings/PanelWindowSettings.h"
 #include "Assembly.h"
@@ -35,7 +38,18 @@ Editor::Core::Editor::Editor(Context& p_context)
 	
     SetupUI();
 
-    m_context.sceneManager.LoadEmptyLightedScene();
+    const auto startScene = m_context.projectSettings.Get<std::string>("start_scene");
+    const auto startScenePath = m_context.projectAssetsPath + startScene;
+    if (!startScene.empty() && std::filesystem::exists(startScenePath))
+    {
+        m_context.sceneManager.LoadScene(startScenePath, true);
+    }
+    else
+    {
+        if (!startScene.empty())
+            NLS_LOG_WARNING("Start scene not found, loading fallback scene: " + startScenePath);
+        m_context.sceneManager.LoadEmptyLightedScene();
+    }
 }
 
 Editor::Core::Editor::~Editor()

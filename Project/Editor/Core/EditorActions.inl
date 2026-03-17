@@ -5,9 +5,9 @@ namespace NLS::Editor::Core
 	{
 		auto& instance = CreateEmptyActor(false, p_parent);
 
-		UDRefl::SharedObject component = instance.AddComponent(Type_of<T>);
+		instance.AddComponent<T>();
 
-        instance.SetName(std::string(component.GetType().GetName()));
+        instance.SetName(std::string(typeof(T).GetName()));
 
 		if (p_focusOnCreation)
 			SelectActor(instance);

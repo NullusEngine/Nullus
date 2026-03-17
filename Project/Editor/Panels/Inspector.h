@@ -12,7 +12,6 @@
 
 #include "Panels/Hierarchy.h"
 #include "Panels/AssetBrowser.h"
-#include "Reflection/Compat/Object.hpp"
 
 namespace NLS::Editor::Panels
 {
@@ -64,7 +63,7 @@ public:
     /**
      * Draw the given component in inspector
      */
-    void DrawComponent(UDRefl::SharedObject p_component);
+    void DrawComponent(Engine::Components::Component* p_component);
 
     /**
      * Refresh the inspector

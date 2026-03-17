@@ -219,6 +219,74 @@ namespace NLS
 
         ///////////////////////////////////////////////////////////////////////
 
+        template<typename ClassType, typename FieldType, typename GetterReturnType, typename SetterArgumentType>
+        void TypeData::AddField(
+            const std::string &name,
+            GetterReturnType (*functionGetter)(const ClassType &),
+            void (*functionSetter)(ClassType &, SetterArgumentType),
+            const MetaManager::Initializer &meta
+        )
+        {
+            typedef FunctionFieldGetter<ClassType, GetterReturnType> GetterType;
+            typedef FunctionFieldSetter<ClassType, SetterArgumentType> SetterType;
+
+            static_assert( std::is_same<typename std::decay<GetterReturnType>::type, typename std::decay<FieldType>::type>::value,
+                "Return type of getter does not match field type. "
+                "This results in undefined behavior! (Even if there exists a conversion constructor between the types)"
+            );
+
+            static_assert( std::is_same<typename std::decay<SetterArgumentType>::type, typename std::decay<FieldType>::type>::value,
+                "Argument type of setter does not match field type. "
+                "This results in undefined behavior! (Even if there exists a conversion constructor between the types)"
+            );
+
+            fields.emplace_back(
+                name,
+                typeof( FieldType ),
+                typeof( ClassType ),
+                !functionGetter ? nullptr : new GetterType( functionGetter ),
+                !functionSetter ? nullptr : new SetterType( functionSetter )
+            );
+
+            fields.back( ).m_meta = meta;
+        }
+
+        ///////////////////////////////////////////////////////////////////////
+
+        template<typename ClassType, typename FieldType, typename GetterReturnType, typename SetterArgumentType>
+        void TypeData::AddField(
+            const std::string &name,
+            GetterReturnType (*functionGetter)(ClassType &),
+            void (*functionSetter)(ClassType &, SetterArgumentType),
+            const MetaManager::Initializer &meta
+        )
+        {
+            typedef FunctionFieldGetter<ClassType, GetterReturnType> GetterType;
+            typedef FunctionFieldSetter<ClassType, SetterArgumentType> SetterType;
+
+            static_assert( std::is_same<typename std::decay<GetterReturnType>::type, typename std::decay<FieldType>::type>::value,
+                "Return type of getter does not match field type. "
+                "This results in undefined behavior! (Even if there exists a conversion constructor between the types)"
+            );
+
+            static_assert( std::is_same<typename std::decay<SetterArgumentType>::type, typename std::decay<FieldType>::type>::value,
+                "Argument type of setter does not match field type. "
+                "This results in undefined behavior! (Even if there exists a conversion constructor between the types)"
+            );
+
+            fields.emplace_back(
+                name,
+                typeof( FieldType ),
+                typeof( ClassType ),
+                !functionGetter ? nullptr : new GetterType( functionGetter ),
+                !functionSetter ? nullptr : new SetterType( functionSetter )
+            );
+
+            fields.back( ).m_meta = meta;
+        }
+
+        ///////////////////////////////////////////////////////////////////////
+
         template<typename ClassType, typename FieldType, typename GetterType, typename SetterType>
         void TypeData::AddStaticField(const std::string &name, GetterType getter, SetterType setter, const MetaManager::Initializer &meta)
         {

@@ -1,6 +1,4 @@
 ﻿#include "GameObject.h"
-#include "Reflection/Compat/Object.hpp"
-#include "Reflection/Compat/ReflMngr.hpp"
 #include <algorithm>
 
 #include "Components/TransformComponent.h"

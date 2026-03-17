@@ -162,6 +162,12 @@ Maths::Quaternion::Quaternion(const Vector3& p_euler)
     y = cr * sp * cy + sr * cp * sy;
     z = cr * cp * sy - sr * sp * cy;
     w = cr * cp * cy + sr * sp * sy;
+
+    const auto normalized = Normalize(*this);
+    x = normalized.x;
+    y = normalized.y;
+    z = normalized.z;
+    w = normalized.w;
 }
 
 Maths::Quaternion Maths::Quaternion::LookAt(const Vector3& p_forward, const Vector3& p_up)
@@ -403,18 +409,17 @@ Maths::Vector3 Maths::Quaternion::EulerAngles(const Quaternion& p_target)
 
 Maths::Matrix3 Maths::Quaternion::ToMatrix3(const Quaternion& p_target)
 {
-    if (!IsNormalized(p_target))
-        throw std::logic_error("Cannot convert non-normalized quaternions to Matrix4");
+    const Quaternion normalized = IsNormalized(p_target) ? p_target : Normalize(p_target);
 
-    float y2 = p_target.y * p_target.y;
-    float wz = p_target.w * p_target.z;
-    float x2 = p_target.x * p_target.x;
-    float z2 = p_target.z * p_target.z;
-    float xz = p_target.x * p_target.z;
-    float yz = p_target.y * p_target.z;
-    float xy = p_target.x * p_target.y;
-    float wy = p_target.w * p_target.y;
-    float wx = p_target.w * p_target.x;
+    float y2 = normalized.y * normalized.y;
+    float wz = normalized.w * normalized.z;
+    float x2 = normalized.x * normalized.x;
+    float z2 = normalized.z * normalized.z;
+    float xz = normalized.x * normalized.z;
+    float yz = normalized.y * normalized.z;
+    float xy = normalized.x * normalized.y;
+    float wy = normalized.w * normalized.y;
+    float wx = normalized.w * normalized.x;
 
     Matrix3 converted;
     converted.data[0] = 1.0f - (2 * y2) - (2 * z2);
@@ -431,18 +436,17 @@ Maths::Matrix3 Maths::Quaternion::ToMatrix3(const Quaternion& p_target)
 
 Maths::Matrix4 Maths::Quaternion::ToMatrix4(const Quaternion& p_target)
 {
-    if (!IsNormalized(p_target))
-        throw std::logic_error("Cannot convert non-normalized quaternions to Matrix4");
+    const Quaternion normalized = IsNormalized(p_target) ? p_target : Normalize(p_target);
 
-    float y2 = p_target.y * p_target.y;
-    float wz = p_target.w * p_target.z;
-    float x2 = p_target.x * p_target.x;
-    float z2 = p_target.z * p_target.z;
-    float xz = p_target.x * p_target.z;
-    float yz = p_target.y * p_target.z;
-    float xy = p_target.x * p_target.y;
-    float wy = p_target.w * p_target.y;
-    float wx = p_target.w * p_target.x;
+    float y2 = normalized.y * normalized.y;
+    float wz = normalized.w * normalized.z;
+    float x2 = normalized.x * normalized.x;
+    float z2 = normalized.z * normalized.z;
+    float xz = normalized.x * normalized.z;
+    float yz = normalized.y * normalized.z;
+    float xy = normalized.x * normalized.y;
+    float wy = normalized.w * normalized.y;
+    float wx = normalized.w * normalized.x;
 
     Matrix4 converted;
     converted.data[0] = 1.0f - (2 * y2) - (2 * z2);

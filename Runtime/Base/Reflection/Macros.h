@@ -23,6 +23,7 @@
 
     #define REFLECT_EXTERNAL(...)
     #define REFLECT_FIELD(...)
+    #define REFLECT_PROPERTY(...)
     #define REFLECT_METHOD(...)
     #define REFLECT_METHOD_EX(...)
     #define REFLECT_STATIC_METHOD(...)
@@ -50,6 +51,7 @@
     #define MetaExternal(type)
     #define REFLECT_EXTERNAL(...)
     #define REFLECT_FIELD(...)
+    #define REFLECT_PROPERTY(...)
     #define REFLECT_METHOD(...)
     #define REFLECT_METHOD_EX(...)
     #define REFLECT_STATIC_METHOD(...)

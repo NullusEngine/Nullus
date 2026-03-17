@@ -4,7 +4,7 @@
 #include <queue>
 
 #include "Debug/ILogHandler.h"
-#include "Reflection/Compat/config.hpp"
+#include "BaseDef.h"
 namespace NLS::Debug
 {
 	/*

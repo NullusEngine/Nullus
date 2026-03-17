@@ -13,6 +13,8 @@
 
 #include "Field.h"
 #include "Global.h"
+#include "FunctionFieldGetter.h"
+#include "FunctionFieldSetter.h"
 
 #include "Method.h"
 #include "Function.h"
@@ -53,12 +55,12 @@ namespace NLS
             Destructor destructor;
 
             std::unordered_map<
-                InvokableSignature, 
+                InvokableSignature,
                 Constructor
             > constructors;
 
             std::unordered_map<
-                InvokableSignature, 
+                InvokableSignature,
                 Constructor
             > dynamicConstructors;
 
@@ -66,12 +68,12 @@ namespace NLS
             std::vector<Global> staticFields;
 
             std::unordered_map<
-                std::string, 
+                std::string,
                 InvokableOverloadMap<Method>
             > methods;
 
             std::unordered_map<
-                std::string, 
+                std::string,
                 InvokableOverloadMap<Function>
             > staticMethods;
 
@@ -82,8 +84,8 @@ namespace NLS
             TypeData(const std::string &name);
 
             void LoadBaseClasses(
-                ReflectionDatabase &db, 
-                TypeID thisType, 
+                ReflectionDatabase &db,
+                TypeID thisType,
                 const std::initializer_list<Type> &classes
             );
 
@@ -114,7 +116,7 @@ namespace NLS
 
             ///////////////////////////////////////////////////////////////////
             ///////////////////////////////////////////////////////////////////
-            
+
             // Method Getter, Method Setter
             template<typename ClassType, typename FieldType, typename GetterReturnType, typename SetterArgumentType>
             void AddField(
@@ -133,11 +135,10 @@ namespace NLS
                 const MetaManager::Initializer &meta
             );
 
-
             // Method Getter, Field Setter
             template<typename ClassType, typename FieldType, typename GetterReturnType>
             void AddField(
-                const std::string &name, 
+                const std::string &name,
                 GetterReturnType (ClassType::*methodGetter)(void),
                 typename FieldSetter<ClassType, FieldType, false>::Signature fieldSetter,
                 const MetaManager::Initializer &meta
@@ -146,7 +147,7 @@ namespace NLS
             // Const Method Getter, Field Setter
             template<typename ClassType, typename FieldType, typename GetterReturnType>
             void AddField(
-                const std::string &name, 
+                const std::string &name,
                 GetterReturnType (ClassType::*methodGetter)(void) const,
                 typename FieldSetter<ClassType, FieldType, false>::Signature fieldSetter,
                 const MetaManager::Initializer &meta
@@ -155,7 +156,7 @@ namespace NLS
             // Field Getter, Method Setter
             template<typename ClassType, typename FieldType, typename SetterArgumentType>
             void AddField(
-                const std::string &name, 
+                const std::string &name,
                 typename FieldGetter<ClassType, FieldType, false>::Signature fieldGetter,
                 void (ClassType::*methodSetter)(SetterArgumentType),
                 const MetaManager::Initializer &meta
@@ -164,9 +165,27 @@ namespace NLS
             // Field Getter, Field Setter
             template<typename ClassType, typename FieldType>
             void AddField(
-                const std::string &name, 
+                const std::string &name,
                 typename FieldGetter<ClassType, FieldType, false>::Signature fieldGetter,
                 typename FieldSetter<ClassType, FieldType, false>::Signature fieldSetter,
+                const MetaManager::Initializer &meta
+            );
+
+            // External Function Getter, External Function Setter
+            template<typename ClassType, typename FieldType, typename GetterReturnType, typename SetterArgumentType>
+            void AddField(
+                const std::string &name,
+                GetterReturnType (*functionGetter)(const ClassType &),
+                void (*functionSetter)(ClassType &, SetterArgumentType),
+                const MetaManager::Initializer &meta
+            );
+
+            // External Mutable Function Getter, External Function Setter
+            template<typename ClassType, typename FieldType, typename GetterReturnType, typename SetterArgumentType>
+            void AddField(
+                const std::string &name,
+                GetterReturnType (*functionGetter)(ClassType &),
+                void (*functionSetter)(ClassType &, SetterArgumentType),
                 const MetaManager::Initializer &meta
             );
 
@@ -178,7 +197,7 @@ namespace NLS
             // Method Getter, Method Setter
             template<typename ClassType, typename FieldType, typename GetterType, typename SetterType>
             void AddStaticField(
-                const std::string &name, 
+                const std::string &name,
                 GetterType getter,
                 SetterType setter,
                 const MetaManager::Initializer &meta
@@ -187,7 +206,7 @@ namespace NLS
             // Method Getter, Field Setter
             template<typename ClassType, typename FieldType, typename GetterType>
             void AddStaticField(
-                const std::string &name, 
+                const std::string &name,
                 GetterType getter,
                 FieldType *fieldSetter,
                 const MetaManager::Initializer &meta
@@ -196,7 +215,7 @@ namespace NLS
             // Field Getter, Method Setter
             template<typename ClassType, typename FieldType, typename SetterType>
             void AddStaticField(
-                const std::string &name, 
+                const std::string &name,
                 FieldType *fieldGetter,
                 SetterType setter,
                 const MetaManager::Initializer &meta
@@ -205,7 +224,7 @@ namespace NLS
             // Field Getter, Field Setter
             template<typename ClassType, typename FieldType>
             void AddStaticField(
-                const std::string &name, 
+                const std::string &name,
                 FieldType *fieldGetter,
                 FieldType *fieldSetter,
                 const MetaManager::Initializer &meta
@@ -218,7 +237,7 @@ namespace NLS
 
             template<typename MethodType>
             void AddMethod(
-                const std::string &name, 
+                const std::string &name,
                 MethodType method,
                 const MetaManager::Initializer &meta
             );
@@ -228,7 +247,7 @@ namespace NLS
             );
 
             const Method &GetMethod(
-                const std::string &name, 
+                const std::string &name,
                 const InvokableSignature &signature
             );
 
@@ -236,11 +255,11 @@ namespace NLS
             ///////////////////////////////////////////////////////////////////
 
             template<
-                typename ClassType, 
+                typename ClassType,
                 typename FunctionType
             >
             void AddStaticMethod(
-                const std::string &name, 
+                const std::string &name,
                 FunctionType function,
                 const MetaManager::Initializer &meta
             );
@@ -250,7 +269,7 @@ namespace NLS
             );
 
             const Function &GetStaticMethod(
-                const std::string &name, 
+                const std::string &name,
                 const InvokableSignature &signature
             );
 
@@ -259,7 +278,7 @@ namespace NLS
 
             template<typename EnumType>
             void SetEnum(
-                const std::string &name, 
+                const std::string &name,
                 const typename EnumContainer<EnumType>::Initializer &initalizer
             );
         };

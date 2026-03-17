@@ -46,6 +46,7 @@ namespace NLS::Engine::SceneSystem
 		/**
 		* Play the scene
 		*/
+        FUNCTION()
 		void Play();
 
 		/**

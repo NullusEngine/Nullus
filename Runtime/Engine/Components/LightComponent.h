@@ -29,6 +29,7 @@ public:
     /**
      * Returns light data
      */
+    FUNCTION()
     const NLS::Render::Entities::Light* GetData() const;
 
     /**
@@ -51,6 +52,7 @@ public:
      * Defines the intensity for the light
      * @param p_intensity
      */
+    FUNCTION()
     void SetIntensity(float p_intensity);
 
     /**

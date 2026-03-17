@@ -24,6 +24,7 @@ namespace NLS::meta
             return new ReflectionObjectSample(*this);
         }
 
+        FUNCTION()
         void OnSerialize(Json::object& output) const override
         {
             output["type"] = "ReflectionObjectSample";

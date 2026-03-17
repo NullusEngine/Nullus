@@ -10,6 +10,7 @@ namespace NLS::meta
     {
     public:
         GENERATED_BODY()
+        PROPERTY()
         int Value = 7;
 
         Type GetType() const override
@@ -27,11 +28,13 @@ namespace NLS::meta
             output["Value"] = Value;
         }
 
+        FUNCTION()
         int GetValue() const
         {
             return Value;
         }
 
+        FUNCTION()
         void SetValue(int v)
         {
             Value = v;

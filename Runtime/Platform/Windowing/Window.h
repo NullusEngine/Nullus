@@ -34,6 +34,7 @@ namespace NLS::Windowing
 		Event<> MaximizeEvent;
 		Event<> GainFocusEvent;
 		Event<> LostFocusEvent;
+		Event<> RefreshEvent;
 		Event<> CloseEvent;
 
 		/**
@@ -304,6 +305,7 @@ namespace NLS::Windowing
 		void BindMoveCallback() const;
 		void BindIconifyCallback() const;
 		void BindFocusCallback() const;
+		void BindRefreshCallback() const;
 		void BindCloseCallback() const;
 
 		/* Event listeners */

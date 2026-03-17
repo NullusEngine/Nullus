@@ -38,6 +38,7 @@ NLS::Windowing::Window::Window(Context::Device& p_device, const Settings::Window
 	BindFramebufferResizeCallback();
 	BindMoveCallback();
 	BindFocusCallback();
+	BindRefreshCallback();
 
 	/* Event listening */
 	ResizeEvent.AddListener(std::bind(&Window::OnResize, this, std::placeholders::_1, std::placeholders::_2));
@@ -501,6 +502,21 @@ void NLS::Windowing::Window::BindFocusCallback() const
 	};
 
 	glfwSetWindowFocusCallback(m_glfwWindow, focusCallback);
+}
+
+void NLS::Windowing::Window::BindRefreshCallback() const
+{
+	auto refreshCallback = [](GLFWwindow* p_window)
+	{
+		Window* windowInstance = FindInstance(p_window);
+
+		if (windowInstance)
+		{
+			windowInstance->RefreshEvent.Invoke();
+		}
+	};
+
+	glfwSetWindowRefreshCallback(m_glfwWindow, refreshCallback);
 }
 
 void NLS::Windowing::Window::BindCloseCallback() const

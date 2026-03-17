@@ -37,6 +37,7 @@ public:
      * Fill the material renderer with the given material
      * @param p_material
      */
+    FUNCTION()
     void FillWithMaterial(NLS::Render::Resources::Material& p_material);
 
     /**
@@ -92,6 +93,7 @@ public:
     /**
      * Returns the user matrix
      */
+    FUNCTION()
     const Maths::Matrix4& GetUserMatrix() const;
 
     /**

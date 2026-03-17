@@ -46,6 +46,7 @@ TEST(MetaParserGenerationTests, GeneratesExpectedBaseReflectionBindings)
     ExpectContains(sampleText, "AllocateType(\"NLS::meta::MetaParserFieldMethodSample\")");
     ExpectContains(sampleText, "AddField<NLS::meta::MetaParserFieldMethodSample, int>(\"Value\"");
     ExpectContains(sampleText, "AddMethod(\"GetValue\", &NLS::meta::MetaParserFieldMethodSample::GetValue, {})");
+    EXPECT_EQ(sampleText.find("AddMethod(\"OnSerialize\""), std::string::npos);
     ExpectContains(metaText, "LinkReflectionTypes_NLS_Base");
     ExpectContains(metaText, "#include \"Reflection/MetaParserFieldMethodSample.generated.cpp\"");
 }

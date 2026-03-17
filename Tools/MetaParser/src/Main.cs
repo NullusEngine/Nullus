@@ -1007,6 +1007,8 @@ internal static class Program
         {
             try
             {
+                if (!HasPropertyMarker(field))
+                    continue;
                 if (field.Visibility != CppVisibility.Public && field.Visibility != CppVisibility.Default)
                     continue;
                 if (field.StorageQualifier == CppStorageQualifier.Static)
@@ -1043,6 +1045,8 @@ internal static class Program
         {
             try
             {
+                if (!HasFunctionMarker(method))
+                    continue;
                 if (method.Visibility != CppVisibility.Public && method.Visibility != CppVisibility.Default)
                     continue;
                 if (method.IsStatic || method.IsConstructor || method.IsDestructor)
@@ -1161,6 +1165,8 @@ internal static class Program
         var currentAccess = defaultPublic ? "public" : "private";
         var currentStatement = new StringBuilder();
         var braceDepth = 0;
+        var pendingProperty = false;
+        var pendingFunction = false;
 
         foreach (var rawLine in body.Split(new[] { '\r', '\n' }, StringSplitOptions.None))
         {
@@ -1169,6 +1175,21 @@ internal static class Program
                 continue;
 
             if (Regex.IsMatch(line, @"^(?:GENERATED_BODY|NLS_GENERATED_BODY)\s*\([^)]*\)\s*;?$", RegexOptions.CultureInvariant))
+                continue;
+
+            if (Regex.IsMatch(line, @"\bPROPERTY\s*\(", RegexOptions.CultureInvariant))
+            {
+                pendingProperty = true;
+                line = Regex.Replace(line, @"\bPROPERTY\s*\([^)]*\)", string.Empty, RegexOptions.CultureInvariant).Trim();
+            }
+
+            if (Regex.IsMatch(line, @"\bFUNCTION\s*\(", RegexOptions.CultureInvariant))
+            {
+                pendingFunction = true;
+                line = Regex.Replace(line, @"\bFUNCTION\s*\([^)]*\)", string.Empty, RegexOptions.CultureInvariant).Trim();
+            }
+
+            if (string.IsNullOrWhiteSpace(line))
                 continue;
 
             if (braceDepth == 0)
@@ -1213,11 +1234,19 @@ internal static class Program
                     || statement.StartsWith("typedef ", StringComparison.Ordinal)
                     || statement.StartsWith("friend ", StringComparison.Ordinal))
                 {
+                    pendingProperty = false;
+                    pendingFunction = false;
                     continue;
                 }
 
                 if (statement.Contains('('))
                 {
+                    var shouldReflectMethod = pendingFunction;
+                    pendingProperty = false;
+                    pendingFunction = false;
+                    if (!shouldReflectMethod)
+                        continue;
+
                     if (ContainsUnsupportedReflectionType(statement))
                         continue;
 
@@ -1240,6 +1269,12 @@ internal static class Program
                     methodNames.Add(methodName);
                     continue;
                 }
+
+                var shouldReflectField = pendingProperty;
+                pendingProperty = false;
+                pendingFunction = false;
+                if (!shouldReflectField)
+                    continue;
 
                 var fieldMatch = Regex.Match(
                     statement,
@@ -1484,6 +1519,50 @@ internal static class Program
         return false;
     }
 
+    private static bool HasPropertyMarker(CppField field)
+        => HasMemberMarker(field, "Property");
+
+    private static bool HasFunctionMarker(CppFunction function)
+        => HasMemberMarker(function, "Function");
+
+    private static bool HasMemberMarker(ICppAttributeContainer container, params string[] markers)
+    {
+        if (container is null)
+            return false;
+
+        var hasAttribute = container.Attributes.Any(attribute => IsMemberAttribute(attribute, markers));
+#pragma warning disable CS0618
+        var hasTokenAttribute = container.TokenAttributes.Any(attribute => IsMemberAttribute(attribute, markers));
+#pragma warning restore CS0618
+        var hasMetaAttribute = container.MetaAttributes.MetaList.Any(attribute => IsMemberMetaAttribute(attribute, markers));
+        return hasAttribute || hasTokenAttribute || hasMetaAttribute;
+    }
+
+    private static bool IsMemberAttribute(CppAttribute attribute, params string[] markers)
+    {
+        if (!(attribute.Kind == AttributeKind.AnnotateAttribute
+              || string.Equals(attribute.Name, "annotate", StringComparison.OrdinalIgnoreCase)
+              || attribute.Name.Contains("annotate", StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        return ContainsAnyMarker(attribute.Arguments, markers)
+               || ContainsAnyMarker(attribute.ToString(), markers);
+    }
+
+    private static bool IsMemberMetaAttribute(MetaAttribute attribute, params string[] markers)
+    {
+        if (attribute is null)
+            return false;
+
+        if (ContainsAnyMarker(attribute.FeatureName, markers))
+            return true;
+
+        return attribute.ArgumentMap.Keys.Any(key => ContainsAnyMarker(key, markers))
+               || attribute.ArgumentMap.Values.Any(value => ContainsAnyMarker(Convert.ToString(value), markers));
+    }
+
     private static bool IsReflectionAttribute(CppAttribute attribute)
     {
         if (!(attribute.Kind == AttributeKind.AnnotateAttribute
@@ -1513,6 +1592,10 @@ internal static class Program
     private static bool ContainsReflectionMarker(string? text)
         => !string.IsNullOrWhiteSpace(text)
            && text.IndexOf("Reflection", StringComparison.OrdinalIgnoreCase) >= 0;
+
+    private static bool ContainsAnyMarker(string? text, params string[] markers)
+        => !string.IsNullOrWhiteSpace(text)
+           && markers.Any(marker => text.IndexOf(marker, StringComparison.OrdinalIgnoreCase) >= 0);
 
     private static string ExtractNamespace(string fullName, string className)
     {

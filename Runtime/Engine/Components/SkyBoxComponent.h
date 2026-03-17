@@ -27,12 +27,14 @@ namespace NLS::Engine::Components
 		/**
 		 * @brief Set CubeMap
 		 */
+        FUNCTION()
 		void SetCubeMap(NLS::Render::Resources::TextureCube* cubmap);
 
 		/**
 		 * @brief
 		 * @return
 		 */
+        FUNCTION()
 		NLS::Render::Resources::Model* GetModel() const { return mModel; }
 
 		/**

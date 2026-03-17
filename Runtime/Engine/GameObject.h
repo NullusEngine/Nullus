@@ -59,6 +59,7 @@ public:
         return m_transform;
     }
 
+    FUNCTION()
     const std::string& GetName() const
     {
         return m_name;
@@ -82,6 +83,7 @@ public:
      * Defines a new tag for the actor
      * @param p_tag
      */
+    FUNCTION()
     void SetTag(const std::string& p_tag)
     {
         m_tag = p_tag;

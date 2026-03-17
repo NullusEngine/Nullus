@@ -48,6 +48,7 @@ public:
      * Set the position of the transform in the local space
      * @param p_newPosition
      */
+    FUNCTION()
     void SetLocalPosition(struct Maths::Vector3 p_newPosition);
 
     /**
@@ -137,6 +138,7 @@ public:
     /**
      * Return the world matrix
      */
+    FUNCTION()
     const Maths::Matrix4& GetWorldMatrix() const;
 
     /**

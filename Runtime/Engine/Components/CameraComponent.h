@@ -30,6 +30,7 @@ namespace NLS::Engine::Components
 		* Sets the fov of the camera to the given value
 		* @param p_value
 		*/
+        FUNCTION()
 		void SetFov(float p_value);
 
         /**
@@ -117,6 +118,7 @@ namespace NLS::Engine::Components
 		/**
 		* Returns the Rendering camera instance attached to this component
 		*/
+        FUNCTION()
 		Render::Entities::Camera* GetCamera();
 
 

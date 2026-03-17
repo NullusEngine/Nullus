@@ -29,17 +29,20 @@ namespace NLS
 			/**
 			* Run the app
 			*/
-			void Run();
+		void Run();
+
+		void TickFrame(float p_deltaTime, bool p_pollEvents);
 
 			/**
 			* Returns true if the app is running
 			*/
-			bool IsRunning() const;
+		bool IsRunning() const;
 
-		private:
-			Context m_context;
-			Editor m_editor;
-		};
+	private:
+		bool m_isTicking = false;
+		Context m_context;
+		Editor m_editor;
+	};
 }
 
 }

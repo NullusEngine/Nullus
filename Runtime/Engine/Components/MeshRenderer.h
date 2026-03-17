@@ -38,11 +38,13 @@ namespace NLS::Engine::Components
 		* Defines the model to use
 		* @param p_model
 		*/
+        FUNCTION()
 		void SetModel(NLS::Render::Resources::Model* p_model);
 
 		/**
 		* Returns the current model
 		*/
+        FUNCTION()
 		NLS::Render::Resources::Model* GetModel() const;
 
 		/**

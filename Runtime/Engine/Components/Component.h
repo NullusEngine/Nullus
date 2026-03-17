@@ -16,6 +16,7 @@ public:
     Component();
     virtual ~Component();
 
+    FUNCTION()
     void CreateBy(GameObject* owner);
 
     virtual void OnCreate() {}

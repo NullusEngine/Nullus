@@ -26,11 +26,13 @@ namespace NLS
                 return new TestObject(*this);
             }
 
+            FUNCTION()
             void OnSerialize(Json::object& output) const override
             {
                 output["type"] = "TestObject";
             }
 
+            FUNCTION()
             void OnDeserialize(const Json& input) override
             {
                 // 测试反序列化

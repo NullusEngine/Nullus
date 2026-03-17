@@ -11,6 +11,8 @@
     #define META(...) __attribute__((annotate(#__VA_ARGS__)))
     #define CLASS(...) META(Reflection)
     #define STRUCT(...) META(Reflection)
+    #define PROPERTY(...) META(Property)
+    #define FUNCTION(...) META(Function)
 
     // 兼容旧写法（过渡期）
 
@@ -45,6 +47,8 @@
     #define META(...)
     #define CLASS(...)
     #define STRUCT(...)
+    #define PROPERTY(...)
+    #define FUNCTION(...)
 
     // 兼容旧写法（过渡期）
 

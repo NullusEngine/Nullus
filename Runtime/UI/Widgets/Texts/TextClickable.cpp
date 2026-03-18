@@ -14,7 +14,7 @@ void TextClickable::_Draw_Impl()
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.20f, 0.29f, 0.40f, 0.56f));
     ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.24f, 0.36f, 0.52f, 0.78f));
 
-    if (ImGui::Selectable((content + m_widgetID).c_str(), selected, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(-FLT_MIN, 0.0f)))
+    if (ImGui::Selectable((content + m_widgetID).c_str(), selected, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(0.0f, 0.0f)))
     {
         selected = true;
         if (ImGui::IsMouseDoubleClicked(0))

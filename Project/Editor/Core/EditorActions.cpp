@@ -524,6 +524,9 @@ Engine::GameObject& NLS::Editor::Core::EditorActions::CreateActor(const std::str
 
 bool Editor::Core::EditorActions::DestroyActor(Engine::GameObject& p_actor)
 {
+    if (GetSelectedActor() == &p_actor)
+        UnselectActor();
+
     p_actor.MarkAsDestroy();
     NLS_LOG_INFO("GameObject destroyed");
     return true;

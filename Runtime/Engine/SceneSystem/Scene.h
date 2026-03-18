@@ -161,6 +161,8 @@ namespace NLS::Engine::SceneSystem
 		void SetAvailableID(int64_t p_nextID);
 
 	private:
+        void NotifyActorDestroyed(GameObject& p_actor);
+        void DestroyActorInstance(GameObject& p_actor);
 		void RebuildFastAccessComponents();
 		int64_t m_availableID = 1;
 		bool m_isPlaying = false;

@@ -419,8 +419,8 @@ void DrawLightFallback(NLS::UI::Internal::WidgetContainer &root, Engine::Compone
 void DrawMeshRendererFallback(NLS::UI::Internal::WidgetContainer &root, Engine::Components::MeshRenderer &component)
 {
     NLS::UI::GUIDrawer::DrawDDString(root, "Model",
-        [&component]() { return Engine::Reflection::GetModelPath(component); },
-        [&component](std::string value) { Engine::Reflection::SetModelPath(component, value); },
+        [&component]() { return component.GetModelPath(); },
+        [&component](std::string value) { component.SetModelPath(value); },
         "File");
     DrawEnumValue(root, "Frustum Behaviour", static_cast<int>(component.GetFrustumBehaviour()),
     {

@@ -12,12 +12,31 @@ namespace NLS
 Editor::Core::Application::Application(const std::string& p_projectPath, const std::string& p_projectName)
     : m_context(p_projectPath, p_projectName), m_editor(m_context)
 {
-    m_context.window->RefreshEvent.AddListener([this]()
+    const auto tickWhileResizing = [this]()
     {
-        if (!IsRunning() || m_isTicking)
+        if (!IsRunning())
             return;
 
-        TickFrame(0.0f, false);
+        m_context.window->MakeCurrentContext();
+
+        if (m_isPollingEvents)
+        {
+            TickResizeFrame();
+            return;
+        }
+
+        if (!m_isTicking)
+            TickFrame(0.0f, false);
+    };
+
+    m_context.window->RefreshEvent.AddListener(tickWhileResizing);
+    m_context.window->ResizeEvent.AddListener([tickWhileResizing](uint16_t, uint16_t)
+    {
+        tickWhileResizing();
+    });
+    m_context.window->FramebufferResizeEvent.AddListener([tickWhileResizing](uint16_t, uint16_t)
+    {
+        tickWhileResizing();
     });
 }
 
@@ -45,12 +64,27 @@ void Editor::Core::Application::TickFrame(float p_deltaTime, bool p_pollEvents)
     m_isTicking = true;
 
     if (p_pollEvents)
+    {
+        m_isPollingEvents = true;
         m_editor.PreUpdate();
+        m_isPollingEvents = false;
+    }
 
     m_editor.Update(p_deltaTime);
     m_editor.PostUpdate();
 
     m_isTicking = false;
+}
+
+void Editor::Core::Application::TickResizeFrame()
+{
+    if (m_isResizeTicking)
+        return;
+
+    m_isResizeTicking = true;
+    m_editor.Update(0.0f);
+    m_editor.PostUpdate();
+    m_isResizeTicking = false;
 }
 
 bool Editor::Core::Application::IsRunning() const

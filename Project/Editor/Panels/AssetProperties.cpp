@@ -122,25 +122,35 @@ void Editor::Panels::AssetProperties::Preview()
 void Editor::Panels::AssetProperties::CreateHeaderButtons()
 {
 	m_applyButton = &CreateWidget<UI::Widgets::Button>("Apply");
-    m_applyButton->idleBackgroundColor = { 0.0f, 0.5f, 0.0f };
+    m_applyButton->idleBackgroundColor = { 0.23f, 0.49f, 0.82f };
+    m_applyButton->hoveredBackgroundColor = { 0.29f, 0.58f, 0.93f };
+    m_applyButton->clickedBackgroundColor = { 0.18f, 0.41f, 0.71f };
+    m_applyButton->textColor = { 0.96f, 0.97f, 0.99f };
     m_applyButton->enabled = false;
     m_applyButton->lineBreak = false;
     m_applyButton->ClickedEvent += std::bind(&AssetProperties::Apply, this);
 
 	m_revertButton = &CreateWidget<UI::Widgets::Button>("Revert");
-	m_revertButton->idleBackgroundColor = { 0.7f, 0.5f, 0.0f };
+	m_revertButton->idleBackgroundColor = { 0.18f, 0.19f, 0.21f };
+    m_revertButton->hoveredBackgroundColor = { 0.23f, 0.24f, 0.26f };
+    m_revertButton->clickedBackgroundColor = { 0.26f, 0.28f, 0.31f };
     m_revertButton->enabled = false;
     m_revertButton->lineBreak = false;
     m_revertButton->ClickedEvent += std::bind(&AssetProperties::SetTarget, this, m_resource);
 
 	m_previewButton = &CreateWidget<UI::Widgets::Button>("Preview");
-	m_previewButton->idleBackgroundColor = { 0.7f, 0.5f, 0.0f };
+	m_previewButton->idleBackgroundColor = { 0.18f, 0.19f, 0.21f };
+    m_previewButton->hoveredBackgroundColor = { 0.23f, 0.24f, 0.26f };
+    m_previewButton->clickedBackgroundColor = { 0.26f, 0.28f, 0.31f };
     m_previewButton->enabled = false;
 	m_previewButton->lineBreak = false;
 	m_previewButton->ClickedEvent += std::bind(&AssetProperties::Preview, this);
 
 	m_resetButton = &CreateWidget<UI::Widgets::Button>("Reset to default");
-	m_resetButton->idleBackgroundColor = { 0.5f, 0.0f, 0.0f };
+	m_resetButton->idleBackgroundColor = { 0.39f, 0.16f, 0.18f };
+    m_resetButton->hoveredBackgroundColor = { 0.47f, 0.20f, 0.22f };
+    m_resetButton->clickedBackgroundColor = { 0.33f, 0.13f, 0.15f };
+    m_resetButton->textColor = { 0.96f, 0.97f, 0.99f };
     m_resetButton->enabled = false;
     m_resetButton->lineBreak = false;
 	m_resetButton->ClickedEvent += [this]

@@ -125,7 +125,7 @@ bool Scene::DestroyActor(GameObject& p_target)
 
 	if (found != m_gameobject.end())
 	{
-		delete *found;
+        DestroyActorInstance(p_target);
 		m_gameobject.erase(found);
 		return true;
 	}
@@ -142,7 +142,7 @@ void Scene::CollectGarbages()
 		bool isGarbage = !element->IsAlive();
 		if (isGarbage)
 		{
-			delete element;
+            DestroyActorInstance(*element);
 		}
 		return isGarbage;
 	}), m_gameobject.end());
@@ -278,6 +278,35 @@ const Scene::FastAccessComponents& Scene::GetFastAccessComponents() const
 void Scene::SetAvailableID(int64_t p_nextID)
 {
 	m_availableID = p_nextID;
+}
+
+void Scene::NotifyActorDestroyed(GameObject& p_actor)
+{
+    for (auto* child : p_actor.GetChildren())
+    {
+        if (child)
+            NotifyActorDestroyed(*child);
+    }
+
+    GameObject::DestroyedEvent.Invoke(p_actor);
+}
+
+void Scene::DestroyActorInstance(GameObject& p_actor)
+{
+    NotifyActorDestroyed(p_actor);
+
+    if (p_actor.HasParent())
+        p_actor.DetachFromParent();
+
+    const auto children = p_actor.GetChildren();
+    for (auto* child : children)
+    {
+        if (child)
+            child->DetachFromParent();
+    }
+
+    delete &p_actor;
+    RebuildFastAccessComponents();
 }
 
 void Scene::RebuildFastAccessComponents()

@@ -2,6 +2,7 @@
 
 #include <Rendering/Geometry/Vertex.h>
 #include <Rendering/Resources/Model.h>
+#include <string>
 
 #include "Components/Component.h"
 #include "Eventing/Event.h"
@@ -20,7 +21,7 @@ namespace NLS::Engine::Components
 		/**
 		* Defines how the model renderer bounding sphere should be interpreted
 		*/
-		enum class EFrustumBehaviour
+        ENUM() enum class EFrustumBehaviour
 		{
 			DISABLED = 0,
 			CULL_MODEL = 1,
@@ -33,6 +34,8 @@ namespace NLS::Engine::Components
 		* @param p_owner
 		*/
 		MeshRenderer();
+
+        PROPERTY(name = model, getter = GetModelPath, setter = SetModelPath)
 
 		/**
 		* Defines the model to use
@@ -47,26 +50,36 @@ namespace NLS::Engine::Components
         FUNCTION()
 		NLS::Render::Resources::Model* GetModel() const;
 
+        FUNCTION()
+        std::string GetModelPath() const;
+
+        FUNCTION()
+        void SetModelPath(const std::string& p_path);
+
 		/**
 		* Sets a bounding mode
 		* @param p_boundingMode
 		*/
+        FUNCTION()
 		void SetFrustumBehaviour(EFrustumBehaviour p_boundingMode);
 
 		/**
 		* Returns the current bounding mode
 		*/
+        FUNCTION()
 		EFrustumBehaviour GetFrustumBehaviour() const;
 
 		/**
 		* Returns the custom bounding sphere
 		*/
+        FUNCTION()
         const NLS::Render::Geometry::BoundingSphere& GetCustomBoundingSphere() const;
 
 		/**
 		* Sets the custom bounding sphere
 		* @param p_boundingSphere
 		*/
+        FUNCTION()
         void SetCustomBoundingSphere(const NLS::Render::Geometry::BoundingSphere& p_boundingSphere);
 
 

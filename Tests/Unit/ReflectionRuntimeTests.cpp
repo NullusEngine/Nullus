@@ -1,6 +1,7 @@
 #include "Assembly.h"
 #include "Core/AssemblyCore.h"
 #include "Engine/AssemblyEngine.h"
+#include "Rendering/AssemblyRender.h"
 #include "Reflection/Field.h"
 #include "Reflection/Method.h"
 #include "Reflection/ReflectionDatabase.h"
@@ -8,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -32,6 +34,7 @@ protected:
     {
         auto& assembly = NLS::Assembly::Instance();
         assembly.Load<NLS::AssemblyCore>();
+        assembly.Load<NLS::AssemblyRender>();
         assembly.Load<NLS::Engine::AssemblyEngine>();
 
         auto& db = NLS::meta::ReflectionDatabase::Instance();
@@ -66,15 +69,36 @@ void ExpectReflectedType(const TypeExpectation& expectation)
             << expectation.name << " is missing reflected method " << methodName;
     }
 }
+
+void ExpectFieldTypeName(const Type& type, const std::string& fieldName, const std::string& expectedTypeName)
+{
+    const Field& field = type.GetField(fieldName);
+    ASSERT_TRUE(field.IsValid()) << type.GetName() << " is missing reflected field " << fieldName;
+    EXPECT_EQ(field.GetType().GetName(), expectedTypeName)
+        << type.GetName() << "." << fieldName << " has unexpected reflected type";
+}
 } // namespace
 
 TEST_F(ReflectionRuntimeTests, RegistersBaseReflectionTypes)
 {
     const std::vector<TypeExpectation> expectations = {
-        {"NLS::meta::MetaParserFieldMethodSample", {"GetValue", "SetValue"}, {"Value"}, ""},
+        {"NLS::meta::MetaParserFieldMethodSample", {"GetValue", "SetValue"}, {"value"}, ""},
         {"NLS::meta::MetaProperty", {}, {}, ""},
         {"NLS::meta::ReflectionObjectSample", {"OnSerialize"}, {}, ""},
         {"NLS::meta::TestObject", {"OnSerialize", "OnDeserialize"}, {}, ""},
+    };
+
+    for (const TypeExpectation& expectation : expectations)
+        ExpectReflectedType(expectation);
+}
+
+TEST_F(ReflectionRuntimeTests, RegistersRenderEnumAndStructReflectionTypes)
+{
+    const std::vector<TypeExpectation> expectations = {
+        {"NLS::Render::Settings::EProjectionMode", {}, {}, ""},
+        {"NLS::Render::Settings::ELightType", {}, {}, ""},
+        {"NLS::Render::Geometry::BoundingSphere", {}, {"position", "radius"}, ""},
+        {"NLS::Engine::Components::MeshRenderer::EFrustumBehaviour", {}, {}, ""}
     };
 
     for (const TypeExpectation& expectation : expectations)
@@ -97,4 +121,41 @@ TEST_F(ReflectionRuntimeTests, RegistersEngineReflectionTypes)
 
     for (const TypeExpectation& expectation : expectations)
         ExpectReflectedType(expectation);
+}
+
+TEST_F(ReflectionRuntimeTests, RegistersSpecialCasePropertyBindingsWithExpectedTypes)
+{
+    const Type cameraType = Type::GetFromName("NLS::Engine::Components::CameraComponent");
+    const Type lightType = Type::GetFromName("NLS::Engine::Components::LightComponent");
+    const Type meshRendererType = Type::GetFromName("NLS::Engine::Components::MeshRenderer");
+    const Type materialRendererType = Type::GetFromName("NLS::Engine::Components::MaterialRenderer");
+    const Type gameObjectType = Type::GetFromName("NLS::Engine::GameObject");
+    const Type projectionModeType = Type::GetFromName("NLS::Render::Settings::EProjectionMode");
+    const Type meshFrustumEnumType = Type::GetFromName("NLS::Engine::Components::MeshRenderer::EFrustumBehaviour");
+
+    ASSERT_TRUE(cameraType.IsValid());
+    ASSERT_TRUE(lightType.IsValid());
+    ASSERT_TRUE(meshRendererType.IsValid());
+    ASSERT_TRUE(materialRendererType.IsValid());
+    ASSERT_TRUE(gameObjectType.IsValid());
+    ASSERT_TRUE(projectionModeType.IsValid());
+    ASSERT_TRUE(meshFrustumEnumType.IsValid());
+
+    ExpectFieldTypeName(cameraType, "projectionMode", "NLS::Render::Settings::EProjectionMode");
+    ExpectFieldTypeName(cameraType, "frustumGeometryCulling", "bool");
+    ExpectFieldTypeName(cameraType, "frustumLightCulling", "bool");
+    ExpectFieldTypeName(lightType, "lightType", "NLS::Render::Settings::ELightType");
+    ExpectFieldTypeName(meshRendererType, "model", "std::string");
+    ExpectFieldTypeName(meshRendererType, "frustumBehaviour", "NLS::Engine::Components::MeshRenderer::EFrustumBehaviour");
+    ExpectFieldTypeName(meshRendererType, "customBoundingSphere", "NLS::Render::Geometry::BoundingSphere");
+    ExpectFieldTypeName(materialRendererType, "materials", "Array<std::string>");
+    ExpectFieldTypeName(materialRendererType, "userMatrix", "Array<float>");
+    ExpectFieldTypeName(gameObjectType, "active", "bool");
+
+    const auto projectionModeKeys = projectionModeType.GetEnum().GetKeys();
+    EXPECT_NE(std::find(projectionModeKeys.begin(), projectionModeKeys.end(), "ORTHOGRAPHIC"), projectionModeKeys.end());
+    EXPECT_NE(std::find(projectionModeKeys.begin(), projectionModeKeys.end(), "PERSPECTIVE"), projectionModeKeys.end());
+
+    const auto meshFrustumKeys = meshFrustumEnumType.GetEnum().GetKeys();
+    EXPECT_NE(std::find(meshFrustumKeys.begin(), meshFrustumKeys.end(), "CULL_CUSTOM"), meshFrustumKeys.end());
 }

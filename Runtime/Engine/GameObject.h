@@ -20,6 +20,7 @@ CLASS() class NLS_ENGINE_API GameObject : public NLS::meta::Object
 {
 public:
     GENERATED_BODY()
+    PROPERTY(name = active, getter = IsSelfActive, setter = SetActive)
     GameObject(int64_t p_actorID, const std::string& p_name, const std::string& p_tag, bool& p_playing);
     ~GameObject();
     meta::Type GetType(void) const override { return NLS_TYPEOF(GameObject); }
@@ -42,11 +43,13 @@ public:
      * Enable or disable the actor
      * @param p_active
      */
+    FUNCTION()
     void SetActive(bool p_active);
 
     /**
      * Returns true if the actor is active, ignoring his parent (if any) active state
      */
+    FUNCTION()
     bool IsSelfActive() const;
 
     /**
@@ -68,6 +71,7 @@ public:
      * Defines a new name for the actor
      * @param p_name
      */
+    FUNCTION()
     void SetName(const std::string& p_name)
     {
         m_name = p_name;
@@ -91,6 +95,7 @@ public:
     /**
      * Return the current tag of the actor
      */
+    FUNCTION()
     const std::string& GetTag() const
     {
         return m_tag;
@@ -131,11 +136,13 @@ public:
      */
     void OnTriggerExit(GameObject& p_otherObject);
 
+    FUNCTION()
     void SetWorldID(int newID)
     {
         m_worldID = newID;
     }
 
+    FUNCTION()
     int GetWorldID() const
     {
         return m_worldID;

@@ -1,5 +1,13 @@
+file(GLOB_RECURSE _meta_parser_cs_sources
+    CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/*.cs"
+)
+
+list(FILTER _meta_parser_cs_sources EXCLUDE REGEX [[/bin/]])
+list(FILTER _meta_parser_cs_sources EXCLUDE REGEX [[/obj/]])
+
 set(_meta_parser_sources
-    "${CMAKE_CURRENT_SOURCE_DIR}/Main.cs"
+    ${_meta_parser_cs_sources}
     "${CMAKE_CURRENT_SOURCE_DIR}/Templates/MetaGenerated.cpp.tt"
     "${CMAKE_CURRENT_SOURCE_DIR}/Templates/MetaGenerated.h.tt"
     "${CMAKE_CURRENT_SOURCE_DIR}/Templates/HeaderGenerated.cpp.tt"

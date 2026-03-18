@@ -55,12 +55,14 @@ public:
      * Set the rotation of the transform in the local space
      * @param p_newRotation
      */
+    FUNCTION()
     void SetLocalRotation(Maths::Quaternion p_newRotation);
 
     /**
      * Set the scale of the transform in the local space
      * @param p_newScale
      */
+    FUNCTION()
     void SetLocalScale(struct Maths::Vector3 p_newScale);
 
 
@@ -103,16 +105,19 @@ public:
     /**
      * Return the position in local space
      */
+    FUNCTION()
     const Maths::Vector3& GetLocalPosition() const;
 
     /**
      * Return the rotation in local space
      */
+    FUNCTION()
     const Maths::Quaternion& GetLocalRotation() const;
 
     /**
      * Return the scale in local space
      */
+    FUNCTION()
     const Maths::Vector3& GetLocalScale() const;
 
     /**

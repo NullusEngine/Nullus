@@ -6,7 +6,7 @@
 
 **C++ MetaParser 路线已移除**。当前工程仅支持：
 
-- C# `Tools/MetaParser/src/Main.cs`
+- C# `Tools/MetaParser/src/MetaParserTool.Core.cs`
 - `MetaParser.csproj`
 - CppAst（libclang）
 - T4 模板 `Templates/MetaGenerated.cpp.tt`

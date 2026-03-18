@@ -10,7 +10,6 @@ namespace NLS::meta
     {
     public:
         GENERATED_BODY()
-        PROPERTY()
         int Value = 7;
 
         Type GetType() const override

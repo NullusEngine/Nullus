@@ -81,7 +81,7 @@ else()
         DEPENDS
             "${NLS_META_PARSER_PROJECT}"
             "${NLS_META_PARSER_LAUNCH_SETTINGS}"
-            "${NLS_META_PARSER_SOURCE_DIR}/Main.cs"
+            "${NLS_META_PARSER_SOURCE_DIR}/MetaParserTool.Core.cs"
             "${NLS_META_PARSER_TEMPLATES_DIR}/MetaGenerated.cpp.tt"
             "${NLS_META_PARSER_TEMPLATES_DIR}/MetaGenerated.h.tt"
             "${NLS_META_PARSER_TEMPLATES_DIR}/HeaderGenerated.cpp.tt"

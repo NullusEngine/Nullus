@@ -21,6 +21,7 @@ namespace NLS::Engine::SceneSystem
 	{
     public:
 		GENERATED_BODY()
+        FUNCTION(name = GetActors, pointer = static_cast<const std::vector<NLS::Engine::GameObject*>& (NLS::Engine::SceneSystem::Scene::*)() const>(&NLS::Engine::SceneSystem::Scene::GetActors))
 		/**
 		* Contains a set of vectors of components that are sorted. It allows fast
 		* manipulation of components without parsing the whole scene

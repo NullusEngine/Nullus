@@ -3,6 +3,7 @@
 #include <array>
 #include "Components/Component.h"
 #include "EngineDef.h"
+#include "Reflection/Array.h"
 #include "Reflection/Macros.h"
 #include "Math/Matrix4.h"
 #include "Components/MaterialRenderer.generated.h"
@@ -24,6 +25,9 @@ CLASS() class NLS_ENGINE_API MaterialRenderer : public Component
 public:
     GENERATED_BODY()
     using MaterialList = std::array<NLS::Render::Resources::Material*, kMaxMaterialCount>;
+
+    PROPERTY(name = materials, getter = GetMaterialPaths, setter = SetMaterialPaths)
+    PROPERTY(name = userMatrix, getter = GetUserMatrixValues, setter = SetUserMatrixValues)
 
     /**
      * Constructor
@@ -95,6 +99,18 @@ public:
      */
     FUNCTION()
     const Maths::Matrix4& GetUserMatrix() const;
+
+    FUNCTION()
+    NLS::Array<std::string> GetMaterialPaths() const;
+
+    FUNCTION()
+    void SetMaterialPaths(const NLS::Array<std::string>& p_paths);
+
+    FUNCTION()
+    NLS::Array<float> GetUserMatrixValues() const;
+
+    FUNCTION()
+    void SetUserMatrixValues(const NLS::Array<float>& p_values);
 
     /**
      * Returns the materials

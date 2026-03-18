@@ -16,8 +16,22 @@ function(nls_collect_runtime_files OUT_HEADERS OUT_SOURCES SOURCE_DIR)
     list(FILTER _headers EXCLUDE REGEX "/Gen/")
     list(FILTER _sources EXCLUDE REGEX "/Gen/")
 
-    set(${OUT_HEADERS} ${_headers} PARENT_SCOPE)
-    set(${OUT_SOURCES} ${_sources} PARENT_SCOPE)
+    set(_existing_headers "")
+    foreach(_header IN LISTS _headers)
+      if(EXISTS "${_header}")
+        list(APPEND _existing_headers "${_header}")
+      endif()
+    endforeach()
+
+    set(_existing_sources "")
+    foreach(_source IN LISTS _sources)
+      if(EXISTS "${_source}")
+        list(APPEND _existing_sources "${_source}")
+      endif()
+    endforeach()
+
+    set(${OUT_HEADERS} ${_existing_headers} PARENT_SCOPE)
+    set(${OUT_SOURCES} ${_existing_sources} PARENT_SCOPE)
 endfunction()
 
 function(nls_json_quote OUT_VAR INPUT)
@@ -653,7 +667,7 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
             ${_headers}
             "${_params_file}"
             "${_params_template}"
-            "${NLS_ROOT_DIR}/Tools/MetaParser/src/Main.cs"
+            "${NLS_ROOT_DIR}/Tools/MetaParser/src/MetaParserTool.Core.cs"
             "${NLS_ROOT_DIR}/Tools/MetaParser/src/Templates/MetaGenerated.cpp.tt"
             "${NLS_ROOT_DIR}/Tools/MetaParser/src/Templates/HeaderGenerated.h.tt"
             "${NLS_ROOT_DIR}/Tools/MetaParser/src/Templates/HeaderGenerated.cpp.tt"

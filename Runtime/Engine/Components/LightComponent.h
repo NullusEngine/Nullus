@@ -23,8 +23,10 @@ public:
 
     void OnCreate()override;
 
+    FUNCTION()
     void SetLightType(Render::Settings::ELightType type);
 
+    FUNCTION()
     Render::Settings::ELightType GetLightType() const;
     /**
      * Returns light data
@@ -35,17 +37,20 @@ public:
     /**
      * Returns light color
      */
+    FUNCTION()
     const Maths::Vector3& GetColor() const;
 
     /**
      * Returns light intensity
      */
+    FUNCTION()
     float GetIntensity() const;
 
     /**
      * Defines a new color for the light
      * @param p_color
      */
+    FUNCTION()
     void SetColor(const Maths::Vector3& p_color);
 
     /**
@@ -58,78 +63,92 @@ public:
     /**
      * Returns the light constant
      */
+    FUNCTION()
     float GetConstant() const;
 
     /**
      * Returns the light linear
      */
+    FUNCTION()
     float GetLinear() const;
 
     /**
      * Returns the light quadratic
      */
+    FUNCTION()
     float GetQuadratic() const;
 
     /**
      * Defines the light constant
      * @param p_constant
      */
+    FUNCTION()
     void SetConstant(float p_constant);
 
     /**
      * Defines the light linear
      * @param p_linear
      */
+    FUNCTION()
     void SetLinear(float p_linear);
 
     /**
      * Defines the light quadratic
      * @param p_quadratic
      */
+    FUNCTION()
     void SetQuadratic(float p_quadratic);
 
     /**
      * Returns the light cutoff
      */
+    FUNCTION()
     float GetCutoff() const;
 
     /**
      * Returns the light outercutoff
      */
+    FUNCTION()
     float GetOuterCutoff() const;
 
     /**
      * Defines the light cutoff
      * @param p_cutoff
      */
+    FUNCTION()
     void SetCutoff(float p_cutoff);
 
     /**
      * Defines the light outercutoff
      * @param p_cutoff
      */
+    FUNCTION()
     void SetOuterCutoff(float p_outerCutoff);
 
     /**
      * Returns the radius of the sphere
      */
+    FUNCTION()
     float GetRadius() const;
 
     /**
      * Defines the radius of the sphere
      * @param p_radius
      */
+    FUNCTION()
     void SetRadius(float p_radius);
 
     /**
      * Returns the size of the box
      */
+    FUNCTION()
     Maths::Vector3 GetSize() const;
 
     /**
      * Defines the size of the box
      * @param p_size
      */
+    FUNCTION()
     void SetSize(const Maths::Vector3& p_size);
 
 protected:

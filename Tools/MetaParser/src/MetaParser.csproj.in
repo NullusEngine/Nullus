@@ -15,10 +15,6 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="@NLS_META_PARSER_SOURCE_DIR@/Main.cs" Link="Main.cs" />
-  </ItemGroup>
-
-  <ItemGroup>
     <ProjectReference Include="@NLS_META_PARSER_CPPAST_CSPROJ@" />
   </ItemGroup>
 

@@ -4,6 +4,7 @@
 #include "Core/ResourceManagement/TextureManager.h"
 #include "Core/ResourceManagement/ModelManager.h"
 #include "Core/ResourceManagement/ShaderManager.h"
+#include "Debug/Logger.h"
 #include "Components/MeshRenderer.h"
 #include "Components/MaterialRenderer.h"
 #include "GameObject.h"
@@ -28,6 +29,27 @@ void MeshRenderer::SetModel(Render::Resources::Model* p_model)
 Render::Resources::Model * MeshRenderer::GetModel() const
 {
 	return m_model;
+}
+
+std::string MeshRenderer::GetModelPath() const
+{
+    if (m_model)
+        return m_model->path;
+    return {};
+}
+
+void MeshRenderer::SetModelPath(const std::string& p_path)
+{
+    if (p_path.empty())
+    {
+        SetModel(nullptr);
+        return;
+    }
+
+    auto* model = NLS_SERVICE(Core::ResourceManagement::ModelManager)[p_path];
+    if (!model)
+        NLS_LOG_WARNING("Failed to resolve model path during reflection load: " + p_path);
+    SetModel(model);
 }
 
 void MeshRenderer::SetFrustumBehaviour(EFrustumBehaviour p_boundingMode)

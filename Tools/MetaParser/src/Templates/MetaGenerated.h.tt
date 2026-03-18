@@ -1,6 +1,7 @@
 <#@ template language="C#" hostspecific="true" #>
 <#
-    string linkFunctionName = (string)(Session["LinkFunctionName"] ?? "LinkReflectionTypes_UnknownTarget");
+    dynamic model = Session["Model"];
+    string linkFunctionName = model.LinkFunctionName;
 #>
 #pragma once
 

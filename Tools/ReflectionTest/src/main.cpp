@@ -2,6 +2,7 @@
 #include "Core/AssemblyCore.h"
 #include "Engine/AssemblyEngine.h"
 #include "Math/AssemblyMath.h"
+#include "Rendering/AssemblyRender.h"
 #include "Reflection/Field.h"
 #include "Reflection/Method.h"
 #include "Reflection/ReflectionDatabase.h"
@@ -115,18 +116,23 @@ int main()
     auto& assembly = NLS::Assembly::Instance();
     assembly.Load<NLS::AssemblyCore>();
     assembly.Load<NLS::AssemblyMath>();
+    assembly.Load<NLS::AssemblyRender>();
     assembly.Load<NLS::Engine::AssemblyEngine>();
 
     auto& db = NLS::meta::ReflectionDatabase::Instance();
     (void)db;
 
     const std::vector<TypeExpectation> expectations = {
-        {"NLS::meta::MetaParserFieldMethodSample", {"GetValue", "SetValue"}, {}, {"Value"}, ""},
+        {"NLS::meta::MetaParserFieldMethodSample", {"GetValue", "SetValue"}, {}, {"value"}, ""},
         {"NLS::meta::PrivateReflectionExternalSample", {"GetHiddenValue"}, {}, {"m_hiddenValue"}, ""},
         {"NLS::meta::MetaProperty", {}, {}, {}, ""},
         {"NLS::meta::ReflectionObjectSample", {"OnSerialize"}, {}, {}, ""},
         {"NLS::meta::TestObject", {"OnSerialize", "OnDeserialize"}, {}, {}, ""},
         {"NLS::Maths::Vector3", {"Length", "Normalised"}, {"Dot", "Cross"}, {"x", "y", "z"}, ""},
+        {"NLS::Render::Settings::EProjectionMode", {}, {}, {}, ""},
+        {"NLS::Render::Settings::ELightType", {}, {}, {}, ""},
+        {"NLS::Render::Geometry::BoundingSphere", {}, {}, {"position", "radius"}, ""},
+        {"NLS::Engine::Components::MeshRenderer::EFrustumBehaviour", {}, {}, {}, ""},
         {"NLS::Engine::Components::Component", {"CreateBy"}, {}, {}, ""},
         {"NLS::Engine::Components::TransformComponent", {"SetLocalPosition", "GetWorldMatrix"}, {}, {"localPosition", "localRotation", "localScale"}, "NLS::Engine::Components::Component"},
         {"NLS::Engine::Components::CameraComponent", {"SetFov", "GetCamera"}, {}, {"fov", "size", "near", "far", "clearColor", "frustumGeometryCulling", "frustumLightCulling", "projectionMode"}, "NLS::Engine::Components::Component"},

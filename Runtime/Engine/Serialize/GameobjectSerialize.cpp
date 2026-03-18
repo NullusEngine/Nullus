@@ -15,7 +15,6 @@
 #include "Components/MeshRenderer.h"
 #include "Components/TransformComponent.h"
 #include "Debug/Logger.h"
-#include "ExternalReflection.h"
 #include "GameObject.h"
 #include "Reflection/Field.h"
 #include "Reflection/JsonConfig.h"
@@ -275,7 +274,7 @@ void ApplyLegacyComponentFallbacks(Component &component, const json &payloadJson
     if (auto *meshRenderer = dynamic_cast<MeshRenderer *>(&component))
     {
         if (payloadJson.contains("model") && payloadJson["model"].is_string())
-            NLS::Engine::Reflection::SetModelPath(*meshRenderer, payloadJson["model"].get<std::string>());
+            meshRenderer->SetModelPath(payloadJson["model"].get<std::string>());
         if (payloadJson.contains("frustumBehaviour"))
             meshRenderer->SetFrustumBehaviour(static_cast<MeshRenderer::EFrustumBehaviour>(payloadJson["frustumBehaviour"].get<int>()));
         if (payloadJson.contains("customBoundingSphere"))
@@ -311,7 +310,7 @@ void ApplyLegacyComponentFallbacks(Component &component, const json &payloadJson
                 NLS::Array<std::string> paths;
                 for (const auto &entry : payloadJson["materials"])
                     paths.push_back(entry.is_string() ? entry.get<std::string>() : std::string {});
-                NLS::Engine::Reflection::SetMaterialPaths(*materialRenderer, paths);
+                materialRenderer->SetMaterialPaths(paths);
             }
         }
     }

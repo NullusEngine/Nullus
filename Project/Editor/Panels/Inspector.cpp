@@ -27,7 +27,6 @@
 #include "Components/LightComponent.h"
 #include "Components/CameraComponent.h"
 #include "Components/TransformComponent.h"
-#include "ExternalReflection.h"
 #include "Rendering/Geometry/BoundingSphere.h"
 #include "Rendering/Settings/EProjectionMode.h"
 #include "Rendering/Settings/ELightType.h"

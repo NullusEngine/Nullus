@@ -113,7 +113,7 @@ TEST_F(ReflectionRuntimeTests, RegistersEngineReflectionTypes)
         {"NLS::Engine::Components::CameraComponent", {"SetFov", "GetCamera"}, {"fov", "size", "near", "far", "clearColor", "frustumGeometryCulling", "frustumLightCulling", "projectionMode"}, "NLS::Engine::Components::Component"},
         {"NLS::Engine::Components::LightComponent", {"SetIntensity", "GetData"}, {"lightType", "color", "intensity", "constant", "linear", "quadratic", "cutoff", "outerCutoff", "radius", "size"}, "NLS::Engine::Components::Component"},
         {"NLS::Engine::Components::MeshRenderer", {"SetModel", "GetModel"}, {"model", "frustumBehaviour", "customBoundingSphere"}, "NLS::Engine::Components::Component"},
-        {"NLS::Engine::Components::MaterialRenderer", {"FillWithMaterial", "GetUserMatrix"}, {"materials", "userMatrix"}, "NLS::Engine::Components::Component"},
+        {"NLS::Engine::Components::MaterialRenderer", {"FillWithMaterial", "GetUserMatrix"}, {}, "NLS::Engine::Components::Component"},
         {"NLS::Engine::Components::SkyBoxComponent", {"SetCubeMap", "GetModel"}, {}, "NLS::Engine::Components::Component"},
         {"NLS::Engine::GameObject", {"GetName", "SetTag"}, {"name", "tag", "active", "worldID"}, ""},
         {"NLS::Engine::SceneSystem::Scene", {"Play", "GetActors"}, {}, ""},
@@ -128,7 +128,6 @@ TEST_F(ReflectionRuntimeTests, RegistersSpecialCasePropertyBindingsWithExpectedT
     const Type cameraType = Type::GetFromName("NLS::Engine::Components::CameraComponent");
     const Type lightType = Type::GetFromName("NLS::Engine::Components::LightComponent");
     const Type meshRendererType = Type::GetFromName("NLS::Engine::Components::MeshRenderer");
-    const Type materialRendererType = Type::GetFromName("NLS::Engine::Components::MaterialRenderer");
     const Type gameObjectType = Type::GetFromName("NLS::Engine::GameObject");
     const Type projectionModeType = Type::GetFromName("NLS::Render::Settings::EProjectionMode");
     const Type meshFrustumEnumType = Type::GetFromName("NLS::Engine::Components::MeshRenderer::EFrustumBehaviour");
@@ -136,7 +135,6 @@ TEST_F(ReflectionRuntimeTests, RegistersSpecialCasePropertyBindingsWithExpectedT
     ASSERT_TRUE(cameraType.IsValid());
     ASSERT_TRUE(lightType.IsValid());
     ASSERT_TRUE(meshRendererType.IsValid());
-    ASSERT_TRUE(materialRendererType.IsValid());
     ASSERT_TRUE(gameObjectType.IsValid());
     ASSERT_TRUE(projectionModeType.IsValid());
     ASSERT_TRUE(meshFrustumEnumType.IsValid());
@@ -148,8 +146,6 @@ TEST_F(ReflectionRuntimeTests, RegistersSpecialCasePropertyBindingsWithExpectedT
     ExpectFieldTypeName(meshRendererType, "model", "std::string");
     ExpectFieldTypeName(meshRendererType, "frustumBehaviour", "NLS::Engine::Components::MeshRenderer::EFrustumBehaviour");
     ExpectFieldTypeName(meshRendererType, "customBoundingSphere", "NLS::Render::Geometry::BoundingSphere");
-    ExpectFieldTypeName(materialRendererType, "materials", "Array<std::string>");
-    ExpectFieldTypeName(materialRendererType, "userMatrix", "Array<float>");
     ExpectFieldTypeName(gameObjectType, "active", "bool");
 
     const auto projectionModeKeys = projectionModeType.GetEnum().GetKeys();

@@ -10,6 +10,9 @@
 #include <sstream>
 #include <vector>
 
+#include <glad/glad.h>
+
+#include <Image.h>
 #include <UI/Internal/Converter.h>
 
 #include <Utils/PathParser.h>
@@ -43,6 +46,45 @@ bool DrawActionButton(const char *label, const ImVec2 &size, const Maths::Color 
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor(4);
     return clicked;
+}
+
+bool LoadTextureFromFile(const std::string& path, uint32_t& textureId, uint32_t& width, uint32_t& height)
+{
+    Image image(path, false);
+    if (!image.GetData())
+        return false;
+
+    const int channels = image.GetChannels();
+    const GLenum format = channels == 4 ? GL_RGBA : channels == 3 ? GL_RGB : 0;
+    if (!format)
+        return false;
+
+    glGenTextures(1, &textureId);
+    glBindTexture(GL_TEXTURE_2D, textureId);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, format, image.GetWidth(), image.GetHeight(), 0, format, GL_UNSIGNED_BYTE, image.GetData());
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    width = static_cast<uint32_t>(image.GetWidth());
+    height = static_cast<uint32_t>(image.GetHeight());
+    return true;
+}
+
+void DrawTexture(const ImVec2& min, const ImVec2& max, uint32_t textureId, const ImVec4& tint = ImVec4(1.f, 1.f, 1.f, 1.f))
+{
+    if (!textureId)
+        return;
+
+    ImGui::GetWindowDrawList()->AddImage(
+        reinterpret_cast<ImTextureID>(static_cast<intptr_t>(textureId)),
+        min,
+        max,
+        ImVec2(0.0f, 1.0f),
+        ImVec2(1.0f, 0.0f),
+        ImGui::GetColorU32(tint));
 }
 
 enum class TitleBarGlyph
@@ -139,8 +181,8 @@ std::string DetectStartScene(const std::string &projectPath)
 class LauncherPanel : public UI::PanelWindow
 {
 public:
-    LauncherPanel(Windowing::Window &p_window, bool &p_readyToGo, std::string &p_path, std::string &p_projectName)
-        : PanelWindow("Nullus - Launcher", true), m_window(p_window), m_readyToGo(p_readyToGo), m_path(p_path), m_projectName(p_projectName)
+    LauncherPanel(Windowing::Window &p_window, bool &p_readyToGo, std::string &p_path, std::string &p_projectName, uint32_t p_brandTexture)
+        : PanelWindow("Nullus - Launcher", true), m_window(p_window), m_readyToGo(p_readyToGo), m_path(p_path), m_projectName(p_projectName), m_brandTexture(p_brandTexture)
     {
         panelSettings.resizable = false;
         panelSettings.movable = false;
@@ -272,7 +314,9 @@ private:
         drawList->AddRectFilled(start, end, ToU32({0.125f, 0.145f, 0.17f, 1.0f}), 16.0f);
         drawList->AddRect(start, end, ToU32({0.20f, 0.23f, 0.27f, 1.0f}), 16.0f, 0, 1.0f);
 
-        ImGui::SetCursorScreenPos(ImVec2(start.x + 28.0f, start.y + 26.0f));
+        DrawTexture(ImVec2(start.x + 28.0f, start.y + 28.0f), ImVec2(start.x + 88.0f, start.y + 88.0f), m_brandTexture);
+
+        ImGui::SetCursorScreenPos(ImVec2(start.x + 104.0f, start.y + 26.0f));
         ImGui::PushStyleColor(ImGuiCol_Text, UI::Internal::Converter::ToImVec4({0.93f, 0.96f, 0.99f, 1.0f}));
         if (ImGui::GetIO().Fonts->Fonts.Size > 1)
             ImGui::PushFont(ImGui::GetIO().Fonts->Fonts.back());
@@ -281,7 +325,7 @@ private:
             ImGui::PopFont();
         ImGui::PopStyleColor();
 
-        ImGui::SetCursorScreenPos(ImVec2(start.x + 28.0f, start.y + 78.0f));
+        ImGui::SetCursorScreenPos(ImVec2(start.x + 104.0f, start.y + 78.0f));
         ImGui::PushStyleColor(ImGuiCol_Text, UI::Internal::Converter::ToImVec4({0.56f, 0.62f, 0.71f, 1.0f}));
         ImGui::PushTextWrapPos(start.x + availableWidth - 320.0f);
         ImGui::TextWrapped("Continue where you left off, open an existing project, or create a clean new workspace.");
@@ -326,10 +370,9 @@ private:
         drawList->AddRectFilled(origin, end, ToU32({0.11f, 0.12f, 0.15f, 1.0f}));
         drawList->AddLine(ImVec2(origin.x, end.y), ImVec2(end.x, end.y), ToU32({0.20f, 0.23f, 0.27f, 1.0f}), 1.0f);
 
-        drawList->AddRectFilled(ImVec2(origin.x + 16.0f, origin.y + 11.0f), ImVec2(origin.x + 26.0f, origin.y + 21.0f), ToU32({0.24f, 0.48f, 0.84f, 1.0f}), 3.0f);
-        drawList->AddRectFilled(ImVec2(origin.x + 19.0f, origin.y + 14.0f), ImVec2(origin.x + 29.0f, origin.y + 24.0f), ToU32({0.79f, 0.86f, 0.96f, 1.0f}), 3.0f);
+        DrawTexture(ImVec2(origin.x + 12.0f, origin.y + 7.0f), ImVec2(origin.x + 34.0f, origin.y + 29.0f), m_brandTexture);
 
-        ImGui::SetCursorScreenPos(ImVec2(origin.x + 38.0f, origin.y + 10.0f));
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + 42.0f, origin.y + 10.0f));
         ImGui::PushStyleColor(ImGuiCol_Text, UI::Internal::Converter::ToImVec4({0.88f, 0.92f, 0.97f, 1.0f}));
         ImGui::TextUnformatted("Nullus Launcher");
         ImGui::PopStyleColor();
@@ -437,20 +480,11 @@ private:
         if (isSelected)
             drawList->AddRect(origin, end, ToU32({0.24f, 0.48f, 0.84f, 1.0f}), 16.0f, 0, 1.5f);
 
-        const ImVec2 iconMin(origin.x + 22.0f, origin.y + 24.0f);
-        const ImVec2 iconMax(origin.x + 82.0f, origin.y + 84.0f);
+        const ImVec2 iconMin(origin.x + 18.0f, origin.y + 20.0f);
+        const ImVec2 iconMax(origin.x + 90.0f, origin.y + 92.0f);
         drawList->AddRectFilled(iconMin, iconMax, ToU32({0.16f, 0.20f, 0.25f, 1.0f}), 14.0f);
         drawList->AddRect(iconMin, iconMax, ToU32({0.24f, 0.29f, 0.36f, 1.0f}), 14.0f, 0, 1.0f);
-
-        const ImVec2 sheetBackMin(iconMin.x + 21.0f, iconMin.y + 18.0f);
-        const ImVec2 sheetBackMax(iconMin.x + 43.0f, iconMin.y + 47.0f);
-        const ImVec2 sheetFrontMin(iconMin.x + 15.0f, iconMin.y + 12.0f);
-        const ImVec2 sheetFrontMax(iconMin.x + 37.0f, iconMin.y + 41.0f);
-        drawList->AddRectFilled(sheetBackMin, sheetBackMax, IM_COL32(144, 162, 186, 120), 4.0f);
-        drawList->AddRectFilled(sheetFrontMin, sheetFrontMax, IM_COL32(231, 237, 245, 255), 4.0f);
-        drawList->AddLine(ImVec2(sheetFrontMin.x + 4.0f, sheetFrontMin.y + 9.0f), ImVec2(sheetFrontMax.x - 4.0f, sheetFrontMin.y + 9.0f), IM_COL32(135, 150, 173, 220), 1.0f);
-        drawList->AddLine(ImVec2(sheetFrontMin.x + 4.0f, sheetFrontMin.y + 15.0f), ImVec2(sheetFrontMax.x - 8.0f, sheetFrontMin.y + 15.0f), IM_COL32(135, 150, 173, 220), 1.0f);
-        drawList->AddLine(ImVec2(sheetFrontMin.x + 4.0f, sheetFrontMin.y + 21.0f), ImVec2(sheetFrontMax.x - 10.0f, sheetFrontMin.y + 21.0f), IM_COL32(135, 150, 173, 220), 1.0f);
+        DrawTexture(ImVec2(iconMin.x + 6.0f, iconMin.y + 6.0f), ImVec2(iconMax.x - 6.0f, iconMax.y - 6.0f), m_brandTexture);
 
         ImGui::SetCursorScreenPos(ImVec2(origin.x + 100.0f, origin.y + 28.0f));
         ImGui::PushStyleColor(ImGuiCol_Text, UI::Internal::Converter::ToImVec4({0.94f, 0.96f, 0.99f, 1.0f}));
@@ -578,6 +612,7 @@ private:
     bool &m_readyToGo;
     std::string &m_path;
     std::string &m_projectName;
+    uint32_t m_brandTexture = 0;
     std::vector<std::string> m_registeredProjects;
     std::string m_selectedProject;
 };
@@ -585,10 +620,19 @@ private:
 Launcher::Launcher()
 {
     SetupContext();
-    m_mainPanel = std::make_unique<LauncherPanel>(*m_window, m_readyToGo, m_projectPath, m_projectName);
+    m_mainPanel = std::make_unique<LauncherPanel>(*m_window, m_readyToGo, m_projectPath, m_projectName, m_brandTexture);
 
     m_uiManager->SetCanvas(m_canvas);
     m_canvas.AddPanel(*m_mainPanel);
+}
+
+Launcher::~Launcher()
+{
+    if (m_brandTexture != 0)
+    {
+        glDeleteTextures(1, &m_brandTexture);
+        m_brandTexture = 0;
+    }
 }
 
 std::tuple<bool, std::string, std::string> Launcher::Run()
@@ -620,6 +664,8 @@ void Launcher::SetupContext()
     m_device = std::make_unique<Context::Device>(deviceSettings);
     m_window = std::make_unique<Windowing::Window>(*m_device, windowSettings);
     m_window->MakeCurrentContext();
+    const std::string brandIconPath = std::filesystem::canonical(std::filesystem::path("../Assets/Engine/Brand/NullusLogoMark.png")).string();
+    m_window->SetIcon(brandIconPath);
     m_window->SetNativeTitleBarDragRegion(42, 100);
 
     auto monSize = m_device->GetMonitorSize();
@@ -634,6 +680,8 @@ void Launcher::SetupContext()
     m_uiManager->UseFont("Ruda_Medium");
     m_uiManager->EnableEditorLayoutSave(false);
     m_uiManager->EnableDocking(false);
+
+    LoadTextureFromFile(brandIconPath, m_brandTexture, m_brandTextureWidth, m_brandTextureHeight);
 }
 
 void Launcher::RegisterProject(const std::string &p_path)

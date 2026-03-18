@@ -72,6 +72,22 @@ meta::Type ResolveComponentType(const std::string &typeName)
 
 NLS::Json SerializeComponentPayload(const Component &component)
 {
+    if (const auto *materialRenderer = dynamic_cast<const MaterialRenderer *>(&component))
+    {
+        NLS::Json::array materials;
+        for (const auto &path : materialRenderer->GetMaterialPaths())
+            materials.emplace_back(path);
+
+        NLS::Json::array userMatrix;
+        for (const auto value : materialRenderer->GetUserMatrixValues())
+            userMatrix.emplace_back(value);
+
+        return NLS::Json::object{
+            { "materials", NLS::Json(materials) },
+            { "userMatrix", NLS::Json(userMatrix) }
+        };
+    }
+
     auto *mutableComponent = const_cast<Component *>(&component);
     meta::Variant componentVariant(mutableComponent, meta::variant_policy::WrapObject { });
     return component.GetType().SerializeJson(componentVariant);

@@ -517,7 +517,7 @@ internal static partial class MetaParserTool
             }
         }
 
-        return BuildAutoPropertyFields(cls.FullName, methods);
+        return BuildAutoPropertyFields(cls.FullName, methods, new HashSet<string>(StringComparer.Ordinal));
     }
 
     private static string BuildGeneratedFileId(string headerPath)

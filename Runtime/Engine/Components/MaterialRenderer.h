@@ -26,9 +26,6 @@ public:
     GENERATED_BODY()
     using MaterialList = std::array<NLS::Render::Resources::Material*, kMaxMaterialCount>;
 
-    PROPERTY(name = materials, getter = GetMaterialPaths, setter = SetMaterialPaths)
-    PROPERTY(name = userMatrix, getter = GetUserMatrixValues, setter = SetUserMatrixValues)
-
     /**
      * Constructor
      * @param p_owner
@@ -100,16 +97,12 @@ public:
     FUNCTION()
     const Maths::Matrix4& GetUserMatrix() const;
 
-    FUNCTION()
     NLS::Array<std::string> GetMaterialPaths() const;
 
-    FUNCTION()
     void SetMaterialPaths(const NLS::Array<std::string>& p_paths);
 
-    FUNCTION()
     NLS::Array<float> GetUserMatrixValues() const;
 
-    FUNCTION()
     void SetUserMatrixValues(const NLS::Array<float>& p_values);
 
     /**

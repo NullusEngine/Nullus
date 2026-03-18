@@ -34,7 +34,13 @@ m_transform(nullptr)
 
 GameObject::~GameObject()
 {
+    for (auto& component : m_vComponents)
+    {
+        if (component)
+            component->DestroyFromOwner();
+    }
     m_vComponents.clear();
+    m_transform = nullptr;
 }
 
 Component* GameObject::AddComponent(meta::Type type, const std::function<void(Component*)>& func)
@@ -91,12 +97,16 @@ Component* GameObject::GetComponent(meta::Type type, bool includeSubType) const
 
 bool Engine::GameObject::RemoveComponent(Component* component)
 {
+    if (!component || component == m_transform)
+        return false;
+
     for (auto it = m_vComponents.begin(); it != m_vComponents.end(); ++it)
     {
         if (it->get() == component)
         {
-            ComponentRemovedEvent.Invoke(component);
+            component->DestroyFromOwner();
             m_vComponents.erase(it);
+            ComponentRemovedEvent.Invoke(nullptr);
             return true;
         }
     }

@@ -20,6 +20,8 @@ public:
      */
     Launcher();
 
+    ~Launcher();
+
     /**
      * Run the project hub logic
      */
@@ -37,6 +39,10 @@ public:
     void RegisterProject(const std::string& p_path);
 
 private:
+    uint32_t m_brandTexture = 0;
+    uint32_t m_brandTextureWidth = 0;
+    uint32_t m_brandTextureHeight = 0;
+
     std::unique_ptr<Context::Device> m_device;
     std::unique_ptr<Windowing::Window> m_window;
     std::unique_ptr<Render::Context::Driver> m_driver;

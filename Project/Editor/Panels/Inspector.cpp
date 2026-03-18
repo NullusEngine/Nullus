@@ -440,13 +440,56 @@ void DrawMeshRendererFallback(NLS::UI::Internal::WidgetContainer &root, Engine::
 
 void DrawMaterialRendererFallback(NLS::UI::Internal::WidgetContainer &root, Engine::Components::MaterialRenderer &component)
 {
-    auto componentVariant = meta::Variant(&component, meta::variant_policy::WrapObject {});
-    const auto materialsField = component.GetType().GetField("materials");
-    if (materialsField.IsValid())
-        DrawStringArrayField(root, componentVariant, materialsField);
-    const auto userMatrixField = component.GetType().GetField("userMatrix");
-    if (userMatrixField.IsValid())
-        DrawFloatArrayField(root, componentVariant, userMatrixField);
+    NLS::UI::GUIDrawer::DrawDDString(
+        root,
+        "Materials 0",
+        [&component]() -> std::string
+        {
+            const auto paths = component.GetMaterialPaths();
+            return paths.empty() ? std::string {} : paths[0];
+        },
+        [&component](std::string value)
+        {
+            auto paths = component.GetMaterialPaths();
+            if (paths.empty())
+                paths.resize(1);
+            paths[0] = std::move(value);
+            component.SetMaterialPaths(paths);
+        },
+        "File");
+
+    const auto matrixValues = component.GetUserMatrixValues();
+    for (size_t row = 0; row < 4; ++row)
+    {
+        NLS::UI::GUIDrawer::DrawVec4(
+            root,
+            "User Matrix " + std::to_string(row),
+            [&component, row]() -> Maths::Vector4
+            {
+                const auto current = component.GetUserMatrixValues();
+                Maths::Vector4 value {};
+                const size_t base = row * 4;
+                for (size_t column = 0; column < 4; ++column)
+                    value[column] = base + column < current.size() ? current[base + column] : 0.0f;
+                return value;
+            },
+            [&component, row](Maths::Vector4 value)
+            {
+                auto current = component.GetUserMatrixValues();
+                if (current.size() < 16)
+                    current.resize(16, 0.0f);
+
+                const size_t base = row * 4;
+                for (size_t column = 0; column < 4; ++column)
+                    current[base + column] = value[column];
+
+                component.SetUserMatrixValues(current);
+            },
+            0.01f,
+            NLS::UI::GUIDrawer::_MIN_FLOAT,
+            NLS::UI::GUIDrawer::_MAX_FLOAT
+        );
+    }
 }
 
 void DrawComponentFallback(NLS::UI::Internal::WidgetContainer &root, Engine::Components::Component &component)
@@ -697,11 +740,42 @@ void Inspector::DrawComponent(Engine::Components::Component* p_component)
     header.opened = true;
     header.CloseEvent += [this, p_component]
     {
-        if (p_component && p_component->gameobject() && p_component->gameobject()->RemoveComponent(p_component))
-            m_componentSelectorWidget->ValueChangedEvent.Invoke(m_componentSelectorWidget->currentChoice);
+        if (!p_component)
+            return;
+
+        auto* owner = p_component->gameobject();
+        if (!owner)
+            return;
+
+        const auto actorId = owner->GetWorldID();
+        const auto componentType = p_component->GetType();
+        EDITOR_EXEC(DelayAction([this, actorId, componentType]
+        {
+            auto* scene = EDITOR_CONTEXT(sceneManager).GetCurrentScene();
+            if (!scene)
+                return;
+
+            auto* actor = scene->FindActorByID(actorId);
+            if (!actor)
+                return;
+
+            auto* component = actor->GetComponent(componentType, true);
+            if (!component)
+                return;
+
+            if (actor->RemoveComponent(component))
+                m_componentSelectorWidget->ValueChangedEvent.Invoke(m_componentSelectorWidget->currentChoice);
+        }));
     };
     auto& columns = header.CreateWidget<UI::Widgets::Columns>(2);
     columns.widths[0] = 104;
+
+    if (dynamic_cast<MaterialRenderer*>(p_component))
+    {
+        DrawMaterialRendererFallback(columns, *static_cast<MaterialRenderer*>(p_component));
+        m_actorInfo->CreateWidget<UI::Widgets::Spacing>(1);
+        return;
+    }
 
     meta::Variant componentInstance(p_component, meta::variant_policy::WrapObject {});
     const auto componentType = p_component->GetType();

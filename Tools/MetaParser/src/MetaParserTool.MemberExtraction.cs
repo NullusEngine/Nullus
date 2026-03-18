@@ -180,7 +180,8 @@ internal static partial class MetaParserTool
             }
         }
 
-        var autoPropertyFields = BuildAutoPropertyFields(fullTypeName, methodCandidates);
+        var explicitPropertyMethodNames = directivesToMethodNameSet(explicitProperties);
+        var autoPropertyFields = BuildAutoPropertyFields(fullTypeName, methodCandidates, explicitPropertyMethodNames);
         var explicitPropertyFields = ResolveExplicitPropertyDirectives(fullTypeName, explicitProperties, methodCandidates, namespacePrefix);
         fields.AddRange(explicitPropertyFields);
         fields.AddRange(autoPropertyFields);
@@ -384,15 +385,31 @@ internal static partial class MetaParserTool
         return string.Empty;
     }
 
-    private static List<ReflectFieldInfo> BuildAutoPropertyFields(string fullTypeName, List<MethodCandidateInfo> methods)
+    private static HashSet<string> directivesToMethodNameSet(List<ExplicitPropertyDirectiveInfo> directives)
+    {
+        var result = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var directive in directives)
+        {
+            var getter = ExtractMethodNameToken(directive.GetterToken);
+            var setter = ExtractMethodNameToken(directive.SetterToken);
+            if (!string.IsNullOrWhiteSpace(getter))
+                result.Add(getter);
+            if (!string.IsNullOrWhiteSpace(setter))
+                result.Add(setter);
+        }
+
+        return result;
+    }
+
+    private static List<ReflectFieldInfo> BuildAutoPropertyFields(string fullTypeName, List<MethodCandidateInfo> methods, HashSet<string> excludedMethodNames)
     {
         var getters = methods
-            .Where(IsGetterCandidate)
+            .Where(method => IsGetterCandidate(method) && !excludedMethodNames.Contains(method.Name))
             .GroupBy(GetPropertySuffix, StringComparer.Ordinal)
             .ToDictionary(static group => group.Key, static group => group.First(), StringComparer.Ordinal);
 
         var setters = methods
-            .Where(IsSetterCandidate)
+            .Where(method => IsSetterCandidate(method) && !excludedMethodNames.Contains(method.Name))
             .GroupBy(GetPropertySuffix, StringComparer.Ordinal)
             .ToDictionary(static group => group.Key, static group => group.First(), StringComparer.Ordinal);
 

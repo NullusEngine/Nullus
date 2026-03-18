@@ -16,6 +16,8 @@ public:
     Component();
     virtual ~Component();
 
+    void DestroyFromOwner();
+
     FUNCTION()
     void CreateBy(GameObject* owner);
 
@@ -75,6 +77,7 @@ public:
 protected:
     GameObject* m_owner = nullptr;
     bool m_enabled = true;
+    bool m_destroyedFromOwner = false;
 };
 } // namespace Components
 

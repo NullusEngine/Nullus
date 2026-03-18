@@ -1,5 +1,6 @@
 #include "Windowing/Window.h"
 #include <GLFW/glfw3.h>
+#include <vector>
 #ifdef _WIN32
     #define GLFW_EXPOSE_NATIVE_WIN32
     #include "Windows.h"
@@ -94,19 +95,57 @@ NLS::Windowing::Window::~Window()
 
 void NLS::Windowing::Window::SetIcon(const std::string& p_filePath)
 {
-    GLFWimage images[1];
     auto image = Image(p_filePath);
-    images[0].width = image.GetWidth();
-    images[0].height = image.GetHeight();
-    glfwSetWindowIcon(m_glfwWindow, 1, images);
+    if (image.GetData() == nullptr || image.GetWidth() <= 0 || image.GetHeight() <= 0)
+        return;
+
+    std::vector<uint8_t> rgbaPixels(static_cast<size_t>(image.GetWidth()) * static_cast<size_t>(image.GetHeight()) * 4);
+    const unsigned char* source = image.GetData();
+    const int channels = image.GetChannels();
+
+    for (int i = 0; i < image.GetWidth() * image.GetHeight(); ++i)
+    {
+        const int src = i * channels;
+        const int dst = i * 4;
+
+        switch (channels)
+        {
+        case 4:
+            rgbaPixels[dst + 0] = source[src + 0];
+            rgbaPixels[dst + 1] = source[src + 1];
+            rgbaPixels[dst + 2] = source[src + 2];
+            rgbaPixels[dst + 3] = source[src + 3];
+            break;
+        case 3:
+            rgbaPixels[dst + 0] = source[src + 0];
+            rgbaPixels[dst + 1] = source[src + 1];
+            rgbaPixels[dst + 2] = source[src + 2];
+            rgbaPixels[dst + 3] = 255;
+            break;
+        case 1:
+            rgbaPixels[dst + 0] = source[src + 0];
+            rgbaPixels[dst + 1] = source[src + 0];
+            rgbaPixels[dst + 2] = source[src + 0];
+            rgbaPixels[dst + 3] = 255;
+            break;
+        default:
+            return;
+        }
+    }
+
+    GLFWimage glfwImage {};
+    glfwImage.width = image.GetWidth();
+    glfwImage.height = image.GetHeight();
+    glfwImage.pixels = rgbaPixels.data();
+    glfwSetWindowIcon(m_glfwWindow, 1, &glfwImage);
 }
 
 void NLS::Windowing::Window::SetIconFromMemory(uint8_t* p_data, uint32_t p_width, uint32_t p_height)
 {
 	GLFWimage images[1];
 	images[0].pixels = p_data;
-	images[0].height = p_width;
-	images[0].width = p_height;
+	images[0].width = static_cast<int>(p_width);
+	images[0].height = static_cast<int>(p_height);
 	glfwSetWindowIcon(m_glfwWindow, 1, images);
 }
 

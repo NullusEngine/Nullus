@@ -82,8 +82,8 @@ TEST(MetaParserGenerationTests, GeneratesExpectedEngineReflectionBindings)
     ExpectContains(cameraText, "AddField<NLS::Engine::Components::CameraComponent, NLS::Render::Settings::EProjectionMode>(\"projectionMode\"");
     ExpectContains(lightText, "AddField<NLS::Engine::Components::LightComponent, float>(\"intensity\"");
     ExpectContains(lightText, "AddField<NLS::Engine::Components::LightComponent, NLS::Render::Settings::ELightType>(\"lightType\"");
-    ExpectContains(materialText, "AddField<NLS::Engine::Components::MaterialRenderer, NLS::Array<std::string>>(\"materials\", &NLS::Engine::Components::MaterialRenderer::GetMaterialPaths, &NLS::Engine::Components::MaterialRenderer::SetMaterialPaths, {})");
-    ExpectContains(materialText, "AddField<NLS::Engine::Components::MaterialRenderer, NLS::Array<float>>(\"userMatrix\", &NLS::Engine::Components::MaterialRenderer::GetUserMatrixValues, &NLS::Engine::Components::MaterialRenderer::SetUserMatrixValues, {})");
+    EXPECT_EQ(materialText.find("AddField<NLS::Engine::Components::MaterialRenderer, NLS::Array<std::string>>(\"materials\""), std::string::npos);
+    EXPECT_EQ(materialText.find("AddField<NLS::Engine::Components::MaterialRenderer, NLS::Array<float>>(\"userMatrix\""), std::string::npos);
     ExpectContains(meshText, "AddField<NLS::Engine::Components::MeshRenderer, std::string>(\"model\", &NLS::Engine::Components::MeshRenderer::GetModelPath, &NLS::Engine::Components::MeshRenderer::SetModelPath, {})");
     ExpectContains(meshText, "AddField<NLS::Engine::Components::MeshRenderer, NLS::Engine::Components::MeshRenderer::EFrustumBehaviour>(\"frustumBehaviour\"");
     ExpectContains(meshText, "AddField<NLS::Engine::Components::MeshRenderer, NLS::Render::Geometry::BoundingSphere>(\"customBoundingSphere\"");

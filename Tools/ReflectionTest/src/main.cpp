@@ -138,7 +138,7 @@ int main()
         {"NLS::Engine::Components::CameraComponent", {"SetFov", "GetCamera"}, {}, {"fov", "size", "near", "far", "clearColor", "frustumGeometryCulling", "frustumLightCulling", "projectionMode"}, "NLS::Engine::Components::Component"},
         {"NLS::Engine::Components::LightComponent", {"SetIntensity", "GetData"}, {}, {"lightType", "color", "intensity", "constant", "linear", "quadratic", "cutoff", "outerCutoff", "radius", "size"}, "NLS::Engine::Components::Component"},
         {"NLS::Engine::Components::MeshRenderer", {"SetModel", "GetModel"}, {}, {"model", "frustumBehaviour", "customBoundingSphere"}, "NLS::Engine::Components::Component"},
-        {"NLS::Engine::Components::MaterialRenderer", {"FillWithMaterial", "GetUserMatrix"}, {}, {"materials", "userMatrix"}, "NLS::Engine::Components::Component"},
+        {"NLS::Engine::Components::MaterialRenderer", {"FillWithMaterial", "GetUserMatrix"}, {}, {}, "NLS::Engine::Components::Component"},
         {"NLS::Engine::Components::SkyBoxComponent", {"SetCubeMap", "GetModel"}, {}, {}, "NLS::Engine::Components::Component"},
         {"NLS::Engine::GameObject", {"GetName", "SetTag"}, {}, {"name", "tag", "active", "worldID"}, ""},
         {"NLS::Engine::SceneSystem::Scene", {"Play", "GetActors"}, {}, {}, ""},

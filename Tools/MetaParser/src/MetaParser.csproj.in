@@ -23,6 +23,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="@NLS_META_PARSER_SOURCE_DIR@/**/*.cs" Exclude="@NLS_META_PARSER_SOURCE_DIR@/bin/**/*.cs;@NLS_META_PARSER_SOURCE_DIR@/obj/**/*.cs" Link="%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
     <None Include="@NLS_META_PARSER_TEMPLATES_DIR@/MetaGenerated.cpp.tt" Link="Templates/MetaGenerated.cpp.tt" CopyToOutputDirectory="PreserveNewest" />
     <None Include="@NLS_META_PARSER_TEMPLATES_DIR@/MetaGenerated.h.tt" Link="Templates/MetaGenerated.h.tt" CopyToOutputDirectory="PreserveNewest" />
     <None Include="@NLS_META_PARSER_TEMPLATES_DIR@/HeaderGenerated.cpp.tt" Link="Templates/HeaderGenerated.cpp.tt" CopyToOutputDirectory="PreserveNewest" />

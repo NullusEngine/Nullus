@@ -129,6 +129,21 @@ namespace NLS::Windowing
 		*/
 		void Focus() const;
 
+        /**
+        * Begin a native window move operation when supported by the platform.
+        */
+        void BeginSystemMove() const;
+
+        /**
+        * Configure a native draggable title bar region for undecorated windows.
+        */
+        void SetNativeTitleBarDragRegion(uint16_t p_height, uint16_t p_rightInset = 0);
+
+        /**
+        * Disable the native draggable title bar region.
+        */
+        void ClearNativeTitleBarDragRegion();
+
 		/**
 		* Set the should close flag of the window to true
 		* @param p_value
@@ -292,8 +307,14 @@ namespace NLS::Windowing
         {
 			return &m_device;
         }
+#ifdef _WIN32
+        long long HandleNativeWindowMessage(void* p_hwnd, unsigned int p_msg, unsigned long long p_wParam, long long p_lParam) const;
+#endif
 	private:
 		void CreateGlfwWindow(const Settings::WindowSettings& p_windowSettings);
+#ifdef _WIN32
+        void BindNativeWindowProc();
+#endif
 
 		/* Callbacks binding */
 		void BindKeyCallback() const;
@@ -332,5 +353,11 @@ namespace NLS::Windowing
 		int32_t m_refreshRate;
 		Cursor::ECursorMode m_cursorMode;
 		Cursor::ECursorShape m_cursorShape;
+        bool m_isDecorated = true;
+        uint16_t m_nativeTitleBarDragHeight = 0;
+        uint16_t m_nativeTitleBarDragRightInset = 0;
+#ifdef _WIN32
+        void* m_originalWindowProc = nullptr;
+#endif
 	};
 }

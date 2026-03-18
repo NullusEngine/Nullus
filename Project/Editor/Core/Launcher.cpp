@@ -45,6 +45,58 @@ bool DrawActionButton(const char *label, const ImVec2 &size, const Maths::Color 
     return clicked;
 }
 
+enum class TitleBarGlyph
+{
+    Minimize,
+    Close
+};
+
+bool DrawTitleBarButton(const char *id, TitleBarGlyph glyph, const ImVec2 &size, const Maths::Color &hovered, const Maths::Color &active, const Maths::Color &strokeColor)
+{
+    ImGui::PushID(id);
+    const ImVec2 pos = ImGui::GetCursorScreenPos();
+    const bool clicked = ImGui::InvisibleButton("##titlebar_button", size);
+
+    auto *drawList = ImGui::GetWindowDrawList();
+    const bool hoveredState = ImGui::IsItemHovered();
+    const bool activeState = ImGui::IsItemActive();
+    const ImVec2 buttonMax{pos.x + size.x, pos.y + size.y};
+
+    if (hoveredState || activeState)
+    {
+        const Maths::Color background = activeState ? active : hovered;
+        drawList->AddRectFilled(pos, buttonMax, ToU32(background), 8.0f);
+    }
+    
+    const ImU32 stroke = ToU32(strokeColor);
+    if (glyph == TitleBarGlyph::Minimize)
+    {
+        const float y = pos.y + size.y * 0.62f;
+        drawList->AddLine(
+            ImVec2(pos.x + 10.0f, y),
+            ImVec2(pos.x + size.x - 10.0f, y),
+            stroke,
+            1.6f);
+    }
+    else
+    {
+        const float inset = 10.0f;
+        drawList->AddLine(
+            ImVec2(pos.x + inset, pos.y + inset),
+            ImVec2(pos.x + size.x - inset, pos.y + size.y - inset),
+            stroke,
+            1.6f);
+        drawList->AddLine(
+            ImVec2(pos.x + size.x - inset, pos.y + inset),
+            ImVec2(pos.x + inset, pos.y + size.y - inset),
+            stroke,
+            1.6f);
+    }
+
+    ImGui::PopID();
+    return clicked;
+}
+
 std::string FormatTimestamp(std::filesystem::file_time_type value)
 {
     using namespace std::chrono;
@@ -87,8 +139,8 @@ std::string DetectStartScene(const std::string &projectPath)
 class LauncherPanel : public UI::PanelWindow
 {
 public:
-    LauncherPanel(bool &p_readyToGo, std::string &p_path, std::string &p_projectName)
-        : PanelWindow("Nullus - Launcher", true), m_readyToGo(p_readyToGo), m_path(p_path), m_projectName(p_projectName)
+    LauncherPanel(Windowing::Window &p_window, bool &p_readyToGo, std::string &p_path, std::string &p_projectName)
+        : PanelWindow("Nullus - Launcher", true), m_window(p_window), m_readyToGo(p_readyToGo), m_path(p_path), m_projectName(p_projectName)
     {
         panelSettings.resizable = false;
         panelSettings.movable = false;
@@ -119,7 +171,11 @@ public:
         if (!IsOpened())
             return;
 
-        const int windowFlags = ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse;
+        const int windowFlags = ImGuiWindowFlags_NoResize |
+                                ImGuiWindowFlags_NoMove |
+                                ImGuiWindowFlags_NoCollapse |
+                                ImGuiWindowFlags_NoTitleBar |
+                                ImGuiWindowFlags_NoBringToFrontOnFocus;
         ImGui::SetNextWindowSize(UI::Internal::Converter::ToImVec2(GetSize()), ImGuiCond_Always);
         ImGui::SetNextWindowPos(UI::Internal::Converter::ToImVec2(GetPosition()), ImGuiCond_Always);
 
@@ -258,6 +314,56 @@ private:
         }
 
         ImGui::Dummy(ImVec2(availableWidth, cardHeight));
+    }
+
+    void DrawTitleBar(float width)
+    {
+        constexpr float kTitleBarHeight = 42.0f;
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        const ImVec2 end(origin.x + width, origin.y + kTitleBarHeight);
+        auto *drawList = ImGui::GetWindowDrawList();
+
+        drawList->AddRectFilled(origin, end, ToU32({0.11f, 0.12f, 0.15f, 1.0f}));
+        drawList->AddLine(ImVec2(origin.x, end.y), ImVec2(end.x, end.y), ToU32({0.20f, 0.23f, 0.27f, 1.0f}), 1.0f);
+
+        drawList->AddRectFilled(ImVec2(origin.x + 16.0f, origin.y + 11.0f), ImVec2(origin.x + 26.0f, origin.y + 21.0f), ToU32({0.24f, 0.48f, 0.84f, 1.0f}), 3.0f);
+        drawList->AddRectFilled(ImVec2(origin.x + 19.0f, origin.y + 14.0f), ImVec2(origin.x + 29.0f, origin.y + 24.0f), ToU32({0.79f, 0.86f, 0.96f, 1.0f}), 3.0f);
+
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + 38.0f, origin.y + 10.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, UI::Internal::Converter::ToImVec4({0.88f, 0.92f, 0.97f, 1.0f}));
+        ImGui::TextUnformatted("Nullus Launcher");
+        ImGui::PopStyleColor();
+
+        const float buttonWidth = 38.0f;
+        const float buttonSpacing = 6.0f;
+        const float buttonsWidth = buttonWidth * 2.0f + buttonSpacing;
+
+#ifndef _WIN32
+        const ImVec2 dragAreaSize(width - buttonsWidth - 12.0f, kTitleBarHeight);
+        ImGui::SetCursorScreenPos(origin);
+        ImGui::InvisibleButton("##LauncherTitleDrag", dragAreaSize);
+        if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left))
+        {
+            const ImVec2 mouseDelta = ImGui::GetIO().MouseDelta;
+            const auto position = m_window.GetPosition();
+            m_window.SetPosition(
+                static_cast<int16_t>(position.x + mouseDelta.x),
+                static_cast<int16_t>(position.y + mouseDelta.y));
+        }
+#endif
+
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + width - buttonsWidth - 10.0f, origin.y + 4.0f));
+        if (DrawTitleBarButton("Minimize", TitleBarGlyph::Minimize, {buttonWidth, 34.0f}, {0.18f, 0.20f, 0.24f, 1.0f}, {0.23f, 0.25f, 0.30f, 1.0f}, {0.77f, 0.82f, 0.89f, 1.0f}))
+            m_window.Minimize();
+        ImGui::SameLine(0.0f, buttonSpacing);
+        if (DrawTitleBarButton("Close", TitleBarGlyph::Close, {buttonWidth, 34.0f}, {0.47f, 0.18f, 0.20f, 1.0f}, {0.39f, 0.13f, 0.15f, 1.0f}, {0.95f, 0.95f, 0.96f, 1.0f}))
+        {
+            m_window.SetShouldClose(true);
+            Close();
+        }
+
+        ImGui::SetCursorScreenPos(origin);
+        ImGui::Dummy(ImVec2(width, kTitleBarHeight));
     }
 
     void DrawProjectDetailsCard(const ImVec2 &origin, float width)
@@ -424,20 +530,26 @@ private:
         ImGui::PopStyleVar();
 
         const float padding = 28.0f;
-        const float fullWidth = ImGui::GetContentRegionAvail().x - padding * 2.0f;
-        const float contentTop = ImGui::GetCursorScreenPos().y + padding;
+        const float fullWidth = ImGui::GetContentRegionAvail().x;
+        const float contentTop = ImGui::GetCursorScreenPos().y;
 
-        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x + padding, contentTop));
-        DrawHeaderCard(fullWidth);
+        ImGui::SetCursorScreenPos(ImGui::GetCursorScreenPos());
+        DrawTitleBar(fullWidth);
 
-        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x + padding, contentTop + 164.0f));
+        const float contentWidth = fullWidth - padding * 2.0f;
+        const float bodyTop = contentTop + 42.0f + padding;
+
+        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x + padding, bodyTop));
+        DrawHeaderCard(contentWidth);
+
+        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x + padding, bodyTop + 164.0f));
         ImGui::PushStyleColor(ImGuiCol_Text, UI::Internal::Converter::ToImVec4({0.68f, 0.73f, 0.80f, 1.0f}));
         ImGui::TextUnformatted("RECENT PROJECTS");
         ImGui::PopStyleColor();
 
-        const float leftWidth = fullWidth * 0.70f;
-        const float rightWidth = fullWidth - leftWidth - 18.0f;
-        const ImVec2 contentOrigin(ImGui::GetCursorScreenPos().x + padding, contentTop + 194.0f);
+        const float leftWidth = contentWidth * 0.70f;
+        const float rightWidth = contentWidth - leftWidth - 18.0f;
+        const ImVec2 contentOrigin(ImGui::GetCursorScreenPos().x + padding, bodyTop + 194.0f);
 
         if (m_registeredProjects.empty())
         {
@@ -462,6 +574,7 @@ private:
     }
 
 private:
+    Windowing::Window &m_window;
     bool &m_readyToGo;
     std::string &m_path;
     std::string &m_projectName;
@@ -472,7 +585,7 @@ private:
 Launcher::Launcher()
 {
     SetupContext();
-    m_mainPanel = std::make_unique<LauncherPanel>(m_readyToGo, m_projectPath, m_projectName);
+    m_mainPanel = std::make_unique<LauncherPanel>(*m_window, m_readyToGo, m_projectPath, m_projectName);
 
     m_uiManager->SetCanvas(m_canvas);
     m_canvas.AddPanel(*m_mainPanel);
@@ -502,11 +615,12 @@ void Launcher::SetupContext()
     windowSettings.height = 580;
     windowSettings.maximized = false;
     windowSettings.resizable = false;
-    windowSettings.decorated = true;
+    windowSettings.decorated = false;
 
     m_device = std::make_unique<Context::Device>(deviceSettings);
     m_window = std::make_unique<Windowing::Window>(*m_device, windowSettings);
     m_window->MakeCurrentContext();
+    m_window->SetNativeTitleBarDragRegion(42, 100);
 
     auto monSize = m_device->GetMonitorSize();
     auto winSize = m_window->GetSize();

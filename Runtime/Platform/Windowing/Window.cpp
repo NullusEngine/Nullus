@@ -1,13 +1,40 @@
 #include "Windowing/Window.h"
-#ifdef _WIN32
-    #include "Windows.h"
-#endif
-
 #include <GLFW/glfw3.h>
+#ifdef _WIN32
+    #define GLFW_EXPOSE_NATIVE_WIN32
+    #include "Windows.h"
+    #include "windowsx.h"
+    #include <GLFW/glfw3native.h>
+    #ifdef IsMaximized
+        #undef IsMaximized
+    #endif
+    #ifdef IsMinimized
+        #undef IsMinimized
+    #endif
+#endif
 
 #include <stdexcept>
 #include "Image.h"
 std::unordered_map<GLFWwindow*, NLS::Windowing::Window*> NLS::Windowing::Window::__WINDOWS_MAP;
+
+#ifdef _WIN32
+namespace
+{
+LRESULT CALLBACK NullusWindowProc(HWND p_hwnd, UINT p_msg, WPARAM p_wParam, LPARAM p_lParam)
+{
+    if (auto* windowInstance = reinterpret_cast<NLS::Windowing::Window*>(GetWindowLongPtr(p_hwnd, GWLP_USERDATA)))
+    {
+        return static_cast<LRESULT>(windowInstance->HandleNativeWindowMessage(
+            p_hwnd,
+            p_msg,
+            static_cast<unsigned long long>(p_wParam),
+            static_cast<long long>(p_lParam)));
+    }
+
+    return DefWindowProc(p_hwnd, p_msg, p_wParam, p_lParam);
+}
+}
+#endif
 
 NLS::Windowing::Window::Window(Context::Device& p_device, const Settings::WindowSettings& p_windowSettings) :
 	m_device(p_device),
@@ -18,7 +45,8 @@ NLS::Windowing::Window::Window(Context::Device& p_device, const Settings::Window
 	m_fullscreen(p_windowSettings.fullscreen),
 	m_refreshRate(p_windowSettings.refreshRate),
 	m_cursorMode(p_windowSettings.cursorMode),
-	m_cursorShape(p_windowSettings.cursorShape)
+	m_cursorShape(p_windowSettings.cursorShape),
+    m_isDecorated(p_windowSettings.decorated)
 {
 	/* Window creation */
 	CreateGlfwWindow(p_windowSettings);
@@ -43,10 +71,24 @@ NLS::Windowing::Window::Window(Context::Device& p_device, const Settings::Window
 	/* Event listening */
 	ResizeEvent.AddListener(std::bind(&Window::OnResize, this, std::placeholders::_1, std::placeholders::_2));
 	MoveEvent.AddListener(std::bind(&Window::OnMove, this, std::placeholders::_1, std::placeholders::_2));
+
+#ifdef _WIN32
+    BindNativeWindowProc();
+#endif
 }
 
 NLS::Windowing::Window::~Window()
 {
+#ifdef _WIN32
+    if (m_glfwWindow && m_originalWindowProc)
+    {
+        if (HWND hwnd = glfwGetWin32Window(m_glfwWindow))
+        {
+            SetWindowLongPtr(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(m_originalWindowProc));
+            SetWindowLongPtr(hwnd, GWLP_USERDATA, 0);
+        }
+    }
+#endif
 	glfwDestroyWindow(m_glfwWindow);
 }
 
@@ -132,6 +174,29 @@ void NLS::Windowing::Window::Show() const
 void NLS::Windowing::Window::Focus() const
 {
 	glfwFocusWindow(m_glfwWindow);
+}
+
+void NLS::Windowing::Window::BeginSystemMove() const
+{
+#ifdef _WIN32
+    if (HWND hwnd = glfwGetWin32Window(m_glfwWindow))
+    {
+        ReleaseCapture();
+        SendMessage(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+    }
+#endif
+}
+
+void NLS::Windowing::Window::SetNativeTitleBarDragRegion(uint16_t p_height, uint16_t p_rightInset)
+{
+    m_nativeTitleBarDragHeight = p_height;
+    m_nativeTitleBarDragRightInset = p_rightInset;
+}
+
+void NLS::Windowing::Window::ClearNativeTitleBarDragRegion()
+{
+    m_nativeTitleBarDragHeight = 0;
+    m_nativeTitleBarDragRightInset = 0;
 }
 
 void NLS::Windowing::Window::SetShouldClose(bool p_value) const
@@ -351,6 +416,65 @@ void NLS::Windowing::Window::CreateGlfwWindow(const Settings::WindowSettings& p_
 		__WINDOWS_MAP[m_glfwWindow] = this;
 	}
 }
+
+#ifdef _WIN32
+void NLS::Windowing::Window::BindNativeWindowProc()
+{
+    if (HWND hwnd = glfwGetWin32Window(m_glfwWindow))
+    {
+        SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+        m_originalWindowProc = reinterpret_cast<void*>(
+            SetWindowLongPtr(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&NullusWindowProc)));
+    }
+}
+
+long long NLS::Windowing::Window::HandleNativeWindowMessage(void* p_hwnd, unsigned int p_msg, unsigned long long p_wParam, long long p_lParam) const
+{
+    HWND hwnd = static_cast<HWND>(p_hwnd);
+
+    if (p_msg == WM_NCHITTEST && !m_isDecorated && m_nativeTitleBarDragHeight > 0)
+    {
+        const LRESULT hit = CallWindowProc(
+            reinterpret_cast<WNDPROC>(m_originalWindowProc),
+            hwnd,
+            p_msg,
+            static_cast<WPARAM>(p_wParam),
+            static_cast<LPARAM>(p_lParam));
+
+        if (hit == HTCLIENT)
+        {
+            POINT cursorPoint{ GET_X_LPARAM(static_cast<LPARAM>(p_lParam)), GET_Y_LPARAM(static_cast<LPARAM>(p_lParam)) };
+            ScreenToClient(hwnd, &cursorPoint);
+
+            RECT clientRect{};
+            GetClientRect(hwnd, &clientRect);
+            const int draggableRightEdge = clientRect.right - static_cast<int>(m_nativeTitleBarDragRightInset);
+
+            if (cursorPoint.y >= 0 &&
+                cursorPoint.y < static_cast<int>(m_nativeTitleBarDragHeight) &&
+                cursorPoint.x >= 0 &&
+                cursorPoint.x < draggableRightEdge)
+            {
+                return HTCAPTION;
+            }
+        }
+
+        return hit;
+    }
+
+    if (m_originalWindowProc)
+    {
+        return CallWindowProc(
+            reinterpret_cast<WNDPROC>(m_originalWindowProc),
+            hwnd,
+            p_msg,
+            static_cast<WPARAM>(p_wParam),
+            static_cast<LPARAM>(p_lParam));
+    }
+
+    return DefWindowProc(hwnd, p_msg, static_cast<WPARAM>(p_wParam), static_cast<LPARAM>(p_lParam));
+}
+#endif
 
 void NLS::Windowing::Window::BindKeyCallback() const
 {

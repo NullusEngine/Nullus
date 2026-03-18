@@ -6,3 +6,9 @@ nls_add_runtime_target(
   assimp
   fg::FrameGraph
   )
+
+target_include_directories(
+  NLS_Render
+  PUBLIC
+    $<BUILD_INTERFACE:${NLS_ROOT_DIR}/Runtime/Core>
+  )

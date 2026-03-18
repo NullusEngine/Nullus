@@ -474,7 +474,7 @@ public:
 
 				do
 				{
-					finalPath = filePath + (!fails ? materialName : materialName + " (" + std::to_string(fails) + ')') + ".ovmat";
+					finalPath = filePath + (!fails ? materialName : materialName + " (" + std::to_string(fails) + ')') + ".mat";
 
 					++fails;
 				} while (std::filesystem::exists(finalPath));
@@ -732,7 +732,7 @@ public:
 
 						do
 						{
-							finalPath = Utils::PathParser::GetContainingFolder(filePath) + (!fails ? materialName : materialName + " (" + std::to_string(fails) + ')') + ".ovmat";
+							finalPath = Utils::PathParser::GetContainingFolder(filePath) + (!fails ? materialName : materialName + " (" + std::to_string(fails) + ')') + ".mat";
 
 							++fails;
 						} while (std::filesystem::exists(finalPath));
@@ -760,7 +760,7 @@ public:
 
 						do
 						{
-							finalPath = Utils::PathParser::GetContainingFolder(filePath) + (!fails ? materialName : materialName + " (" + std::to_string(fails) + ')') + ".ovmat";
+							finalPath = Utils::PathParser::GetContainingFolder(filePath) + (!fails ? materialName : materialName + " (" + std::to_string(fails) + ')') + ".mat";
 
 							++fails;
 						} while (std::filesystem::exists(finalPath));

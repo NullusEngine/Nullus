@@ -30,6 +30,46 @@ using namespace NLS::Render::Resources::Loaders;
 using namespace NLS::Render::Resources::Parsers;
 namespace NLS
 {
+namespace
+{
+void RenameFileReplacingDestination(const std::filesystem::path& source, const std::filesystem::path& destination)
+{
+    std::error_code error;
+    if (std::filesystem::exists(destination))
+        std::filesystem::remove(destination, error);
+
+    std::filesystem::rename(source, destination, error);
+    if (error)
+    {
+        std::filesystem::copy_file(source, destination, std::filesystem::copy_options::overwrite_existing, error);
+        if (!error)
+            std::filesystem::remove(source, error);
+    }
+}
+
+void MigrateLegacyMaterialAssets(Editor::Core::EditorActions& editorActions, const std::string& projectAssetsPath)
+{
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(projectAssetsPath))
+    {
+        if (!entry.is_regular_file() || entry.path().extension() != ".ovmat")
+            continue;
+
+        const auto sourcePath = entry.path();
+        const auto targetPath = sourcePath.parent_path() / (sourcePath.stem().string() + ".mat");
+
+        RenameFileReplacingDestination(sourcePath, targetPath);
+
+        const auto sourceMeta = sourcePath.string() + ".meta";
+        const auto targetMeta = targetPath.string() + ".meta";
+        if (std::filesystem::exists(sourceMeta))
+            RenameFileReplacingDestination(sourceMeta, targetMeta);
+
+        editorActions.PropagateFileRename(sourcePath.string(), targetPath.string());
+        NLS_LOG_INFO("Migrated legacy material asset: " + sourcePath.string() + " -> " + targetPath.string());
+    }
+}
+}
+
 Editor::Core::Editor::Editor(Context& p_context)
     : m_context(p_context), m_panelsManager(m_canvas),
     m_editorActions(m_context, m_panelsManager)
@@ -37,6 +77,7 @@ Editor::Core::Editor::Editor(Context& p_context)
     Assembly::Instance().Instance().Load<AssemblyMath>().Load<AssemblyCore>().Load<AssemblyPlatform>().Load<AssemblyRender>().Load<Engine::AssemblyEngine>();
 	
     SetupUI();
+    MigrateLegacyMaterialAssets(m_editorActions, m_context.projectAssetsPath);
 
     const auto startScene = m_context.projectSettings.Get<std::string>("start_scene");
     const auto startScenePath = m_context.projectAssetsPath + startScene;

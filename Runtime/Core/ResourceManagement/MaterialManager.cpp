@@ -5,6 +5,8 @@ NLS::Render::Resources::Material* NLS::Core::ResourceManagement::MaterialManager
     std::string realPath = GetRealPath(p_path);
 
     NLS::Render::Resources::Material* material = NLS::Render::Resources::Loaders::MaterialLoader::Create(realPath);
+    if (material)
+        *reinterpret_cast<std::string*>(reinterpret_cast<char*>(material) + offsetof(NLS::Render::Resources::Material, path)) = p_path;
 
     return material;
 }

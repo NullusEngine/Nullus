@@ -14,7 +14,8 @@ Editor::Rendering::GridRenderPass::GridRenderPass(NLS::Render::Core::CompositeRe
 	m_gridMaterial.SetShader(EDITOR_CONTEXT(editorResources)->GetShader("Grid"));
 	m_gridMaterial.SetBlendable(true);
 	m_gridMaterial.SetBackfaceCulling(false);
-	m_gridMaterial.SetDepthTest(false);
+	m_gridMaterial.SetDepthTest(true);
+	m_gridMaterial.SetDepthWriting(false);
 }
 
 void Editor::Rendering::GridRenderPass::Draw(NLS::Render::Data::PipelineState p_pso)

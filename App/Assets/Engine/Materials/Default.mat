@@ -1,0 +1,14 @@
+<root>
+  <shader>:Shaders\Lambert.glsl</shader>
+  <blendable>false</blendable>
+  <backfaceCulling>true</backfaceCulling>
+  <frontfaceCulling>false</frontfaceCulling>
+  <depthTest>true</depthTest>
+  <depthWriting>true</depthWriting>
+  <colorWriting>true</colorWriting>
+  <gpuInstances>1</gpuInstances>
+  <uniform name="u_Diffuse" type="vec4" value="1.000000 1.000000 1.000000 1.000000"/>
+  <uniform name="u_DiffuseMap" type="sampler2D" value=""/>
+  <uniform name="u_TextureTiling" type="vec2" value="1.000000 1.000000"/>
+  <uniform name="u_TextureOffset" type="vec2" value="0.000000 0.000000"/>
+</root>

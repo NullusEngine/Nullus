@@ -6,6 +6,9 @@
 
 #include <Components/MeshRenderer.h>
 #include <Components/MaterialRenderer.h>
+#include <Rendering/Resources/Material.h>
+#include <Rendering/Resources/Shader.h>
+#include <Math/Vector4.h>
 
 
 #include <Windowing/Dialogs/OpenFileDialog.h>
@@ -35,6 +38,16 @@
 // #include "Panels/MaterialEditor.h"
 
 using namespace NLS;
+
+namespace
+{
+NLS::Render::Resources::Material* GetOrCreateEditorDefaultMaterial(NLS::Editor::Core::Context& context)
+{
+    constexpr const char* kDefaultMaterialPath = ":Materials\\Default.mat";
+    return context.materialManager[kDefaultMaterialPath];
+}
+}
+
 Editor::Core::EditorActions::EditorActions(Context& p_context, PanelsManager& p_panelsManager)
     : m_context(p_context), m_panelsManager(p_panelsManager)
 {
@@ -491,7 +504,7 @@ Engine::GameObject& Editor::Core::EditorActions::CreateActorWithModel(const std:
         modelRenderer->SetModel(model);
 
     auto materialRenderer = instance.AddComponent<Engine::Components::MaterialRenderer>();
-    const auto material = m_context.materialManager[":Materials\\Default.mat"];
+    const auto material = GetOrCreateEditorDefaultMaterial(m_context);
     if (material)
         materialRenderer->FillWithMaterial(*material);
 

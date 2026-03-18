@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <filesystem>
 
 #include "Core/ResourceManagement/AResourceManager.h"
 namespace NLS::Core::ResourceManagement
@@ -122,6 +123,12 @@ namespace NLS::Core::ResourceManagement
 	template<typename T>
 	std::string AResourceManager<T>::GetRealPath(const std::string& p_path)
 	{
+		if (p_path.empty())
+			return {};
+
+		if (std::filesystem::path(p_path).is_absolute())
+			return p_path;
+
 		std::string result;
 
 		if (p_path[0] == ':') // The path is an engine path

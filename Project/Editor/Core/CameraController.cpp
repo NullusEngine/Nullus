@@ -49,11 +49,19 @@ float GetActorFocusDist(Engine::GameObject& p_actor)
 
 void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
 {
-	if (m_view.IsHovered())
+    if (!m_window.IsFocused())
+    {
+        ResetMouseInteractionState();
+    }
+
+    const bool capturingMouse = m_leftMousePressed || m_middleMousePressed || m_rightMousePressed;
+    const bool shouldProcessMouseState = m_view.IsHovered() || capturingMouse;
+
+	if (shouldProcessMouseState)
 	{
 		UpdateMouseState();
 
-		if (!NLS_SERVICE(NLS::UI::UIManager).IsAnyItemActive())
+		if (m_view.IsHovered() && !NLS_SERVICE(NLS::UI::UIManager).IsAnyItemActive())
 		{
 			if (auto target = GetTargetActor())
 			{
@@ -172,6 +180,16 @@ void Editor::Core::CameraController::MoveToTarget(Engine::GameObject& p_target)
 		GetActorFocusDist(p_target),
 		m_camera.GetRotation()
 	});
+}
+
+void Editor::Core::CameraController::ResetMouseInteractionState()
+{
+    m_leftMousePressed = false;
+    m_middleMousePressed = false;
+    m_rightMousePressed = false;
+    m_firstMouse = true;
+    m_window.SetCursorMode(Cursor::ECursorMode::NORMAL);
+    m_window.SetCursorShape(Cursor::ECursorShape::ARROW);
 }
 
 void Editor::Core::CameraController::SetSpeed(float p_speed)
@@ -340,34 +358,53 @@ void Editor::Core::CameraController::HandleCameraFPSKeyboard(float p_deltaTime)
 
 void Editor::Core::CameraController::UpdateMouseState()
 {
-	if (m_inputManager.IsMouseButtonPressed(Windowing::Inputs::EMouseButton::MOUSE_BUTTON_LEFT))
+    using Windowing::Inputs::EMouseButton;
+    using Windowing::Inputs::EMouseButtonState;
+
+    const bool leftDown = m_inputManager.GetMouseButtonState(EMouseButton::MOUSE_BUTTON_LEFT) == EMouseButtonState::MOUSE_DOWN;
+    const bool middleDown = m_inputManager.GetMouseButtonState(EMouseButton::MOUSE_BUTTON_MIDDLE) == EMouseButtonState::MOUSE_DOWN;
+    const bool rightDown = m_inputManager.GetMouseButtonState(EMouseButton::MOUSE_BUTTON_RIGHT) == EMouseButtonState::MOUSE_DOWN;
+
+	if (m_inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT))
 		m_leftMousePressed = true;
 
-	if (m_inputManager.IsMouseButtonReleased(Windowing::Inputs::EMouseButton::MOUSE_BUTTON_LEFT))
+	if (m_inputManager.IsMouseButtonReleased(EMouseButton::MOUSE_BUTTON_LEFT) || (m_leftMousePressed && !leftDown))
 	{
 		m_leftMousePressed = false;
 		m_firstMouse = true;
 	}
 
-	if (m_inputManager.IsMouseButtonPressed(Windowing::Inputs::EMouseButton::MOUSE_BUTTON_MIDDLE))
+	if (m_inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_MIDDLE))
+    {
 		m_middleMousePressed = true;
+        m_window.SetCursorMode(Cursor::ECursorMode::DISABLED);
+    }
 
-	if (m_inputManager.IsMouseButtonReleased(Windowing::Inputs::EMouseButton::MOUSE_BUTTON_MIDDLE))
+	if (m_inputManager.IsMouseButtonReleased(EMouseButton::MOUSE_BUTTON_MIDDLE) || (m_middleMousePressed && !middleDown))
 	{
 		m_middleMousePressed = false;
 		m_firstMouse = true;
+        if (!m_rightMousePressed)
+        {
+		    m_window.SetCursorMode(Cursor::ECursorMode::NORMAL);
+        }
+        m_window.SetCursorShape(Cursor::ECursorShape::ARROW);
 	}
 
-	if (m_inputManager.IsMouseButtonPressed(Windowing::Inputs::EMouseButton::MOUSE_BUTTON_RIGHT))
+	if (m_inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_RIGHT))
 	{
 		m_rightMousePressed = true;
 		m_window.SetCursorMode(Cursor::ECursorMode::DISABLED);
 	}
 
-	if (m_inputManager.IsMouseButtonReleased(Windowing::Inputs::EMouseButton::MOUSE_BUTTON_RIGHT))
+	if (m_inputManager.IsMouseButtonReleased(EMouseButton::MOUSE_BUTTON_RIGHT) || (m_rightMousePressed && !rightDown))
 	{
 		m_rightMousePressed = false;
 		m_firstMouse = true;
-		m_window.SetCursorMode(Cursor::ECursorMode::NORMAL);
+        if (!m_middleMousePressed)
+        {
+		    m_window.SetCursorMode(Cursor::ECursorMode::NORMAL);
+        }
+        m_window.SetCursorShape(Cursor::ECursorShape::ARROW);
 	}
 }

@@ -699,6 +699,12 @@ bool Editor::Core::EditorActions::ImportAssetAtLocation(const std::string& p_des
 // Duplicate from AResourceManager.h
 std::string Editor::Core::EditorActions::GetRealPath(const std::string& p_path)
 {
+    if (p_path.empty())
+        return {};
+
+    if (std::filesystem::path(p_path).is_absolute())
+        return p_path;
+
     std::string result;
 
     if (p_path[0] == ':') // The path is an engine path

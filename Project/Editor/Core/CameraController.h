@@ -90,6 +90,7 @@ public:
 
 private:
     Engine::GameObject* GetTargetActor() const;
+    void ResetMouseInteractionState();
     void HandleCameraPanning(const Maths::Vector2& p_mouseOffset, bool p_firstMouse);
     void HandleCameraOrbit(Engine::GameObject& p_target, const Maths::Vector2& p_mouseOffset, bool p_firstMouse);
     void HandleCameraFPSMouse(const Maths::Vector2& p_mouseOffset, bool p_firstMouse);

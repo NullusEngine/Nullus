@@ -3,14 +3,16 @@
 
 #include <iostream>
 
-std::string const NLS::Debug::ConsoleHandler::__DEFAULT_HEADER;
-std::string const NLS::Debug::ConsoleHandler::__INFO_HEADER = "[INFO] ";
-std::string const NLS::Debug::ConsoleHandler::__WARNING_HEADER = "[WARNING] ";
-std::string const NLS::Debug::ConsoleHandler::__ERROR_HEADER = "[ERROR] ";
-
-void NLS::Debug::ConsoleHandler::Log(const LogData& p_logData)
+namespace NLS::Debug
 {
-	switch (p_logData.logLevel)
+std::string const ConsoleHandler::__DEFAULT_HEADER;
+std::string const ConsoleHandler::__INFO_HEADER = "[INFO] ";
+std::string const ConsoleHandler::__WARNING_HEADER = "[WARNING] ";
+std::string const ConsoleHandler::__ERROR_HEADER = "[ERROR] ";
+
+void ConsoleHandler::Log(const LogData& logData)
+{
+	switch (logData.logLevel)
 	{
 	case ELogLevel::LOG_DEFAULT:
 		std::cout << COLOR_WHITE;
@@ -26,22 +28,22 @@ void NLS::Debug::ConsoleHandler::Log(const LogData& p_logData)
 		break;
 	}
 
-	std::ostream& output = p_logData.logLevel == ELogLevel::LOG_ERROR ? std::cerr : std::cout;
-
-	output << GetLogHeader(p_logData.logLevel) << p_logData.date << " " << p_logData.message << std::endl;
+	std::ostream& output = logData.logLevel == ELogLevel::LOG_ERROR ? std::cerr : std::cout;
+	output << GetLogHeader(logData.logLevel) << logData.date << " " << logData.message << std::endl;
 
 	std::cout << COLOR_DEFAULT;
 }
 
-std::string NLS::Debug::ConsoleHandler::GetLogHeader(ELogLevel p_logLevel)
+std::string ConsoleHandler::GetLogHeader(ELogLevel logLevel)
 {
-	switch (p_logLevel)
+	switch (logLevel)
 	{
-	case ELogLevel::LOG_DEFAULT:	return __DEFAULT_HEADER;
-	case ELogLevel::LOG_INFO:		return __INFO_HEADER;
-	case ELogLevel::LOG_WARNING:	return __WARNING_HEADER;
-	case ELogLevel::LOG_ERROR:		return __ERROR_HEADER;
+	case ELogLevel::LOG_DEFAULT: return __DEFAULT_HEADER;
+	case ELogLevel::LOG_INFO: return __INFO_HEADER;
+	case ELogLevel::LOG_WARNING: return __WARNING_HEADER;
+	case ELogLevel::LOG_ERROR: return __ERROR_HEADER;
 	}
 
 	return "";
+}
 }

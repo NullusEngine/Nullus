@@ -6,18 +6,15 @@
 
 #pragma once
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    class Argument;
+
+    class GlobalSetterBase
     {
-        class Argument;
+    public:
+        virtual ~GlobalSetterBase(void) { }
 
-        class GlobalSetterBase
-        {
-        public:
-            virtual ~GlobalSetterBase(void) { }
-
-            virtual void SetValue(const Argument &value) = 0;
-        };
-    }
+        virtual void SetValue(const Argument &value) = 0;
+    };
 }

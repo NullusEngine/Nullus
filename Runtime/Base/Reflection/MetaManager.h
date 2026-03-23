@@ -14,51 +14,48 @@
 #include <map>
 #include <vector>
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    class Type;
+    class Variant;
+
+    class MetaManager
     {
-        class Type;
-        class Variant;
+    public:
+        typedef std::initializer_list<
+            std::pair<Type, const MetaProperty *>
+        > Initializer;
 
-        class MetaManager
-        {
-        public:
-            typedef std::initializer_list<
-                std::pair<Type, const MetaProperty *>
-            > Initializer;
+        typedef std::vector<Variant> PropertyList;
 
-            typedef std::vector<Variant> PropertyList;
+        MetaManager(void);
+        MetaManager(const MetaManager &rhs);
+        MetaManager(const MetaManager &&rhs);
 
-            MetaManager(void);
-            MetaManager(const MetaManager &rhs);
-            MetaManager(const MetaManager &&rhs);
+        const MetaManager &operator=(const MetaManager &rhs);
 
-            const MetaManager &operator=(const MetaManager &rhs);
+        MetaManager(const Initializer &properties);
 
-            MetaManager(const Initializer &properties);
+        ~MetaManager(void);
 
-            ~MetaManager(void);
+        Variant GetProperty(Type type) const;
 
-            Variant GetProperty(Type type) const;
+        template<typename PropertyType>
+        const PropertyType *GetProperty(void) const;
 
-            template<typename PropertyType>
-            const PropertyType *GetProperty(void) const;
+        // Sets the given property
+        void SetProperty(Type type, const MetaProperty *value);
 
-            // Sets the given property
-            void SetProperty(Type type, const MetaProperty *value);
+        // Gets all properties
+        PropertyList GetProperties(void) const;
 
-            // Gets all properties
-            PropertyList GetProperties(void) const;
+        Json SerializeJson(void) const;
 
-            Json SerializeJson(void) const;
+    private:
+        void copy(const MetaManager &rhs);
 
-        private:
-            void copy(const MetaManager &rhs);
-
-            std::map<Type, const MetaProperty *> m_properties;
-        };
-    }
+        std::map<Type, const MetaProperty *> m_properties;
+    };
 }
 
 #include "Impl/MetaManager.hpp"

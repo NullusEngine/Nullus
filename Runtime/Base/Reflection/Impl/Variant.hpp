@@ -10,31 +10,28 @@
 #include "../ObjectWrapper.h"
 #include "../ArrayVariantContainer.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
-        template <typename T>
-        Variant::Variant(
-            T *data, 
-            variant_policy::WrapObject, 
-            typename std::enable_if< 
-                std::is_base_of<Object, T>::value 
-            >::type*
-        )
-            : m_isConst( std::is_const<T>::value )
-            , m_base( 
-                new ObjectWrapper( 
-                    static_cast<Object *>( 
-                        const_cast< typename std::remove_const<T>::type*>(
-                            data 
-                        )
-                    ) 
-                ) 
+    template <typename T>
+    Variant::Variant(
+        T *data,
+        variant_policy::WrapObject,
+        typename std::enable_if<
+            std::is_base_of<Object, T>::value
+        >::type*
+    )
+        : m_isConst( std::is_const<T>::value )
+        , m_base(
+            new ObjectWrapper(
+                static_cast<Object *>(
+                    const_cast<typename std::remove_const<T>::type*>(
+                        data
+                    )
+                )
             )
-        {
-
-        }
+        )
+    {
+    }
 
         ///////////////////////////////////////////////////////////////////////
 
@@ -139,5 +136,4 @@ namespace NLS
         {
             return *static_cast<T*>( getPtr( ) );
         }
-    }
 }

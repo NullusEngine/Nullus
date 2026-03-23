@@ -1,19 +1,16 @@
 #include "Components/CameraComponent.h"
 #include "Components/TransformComponent.h"
 #include "GameObject.h"
-using namespace NLS;
-using namespace NLS::Engine::Components;
-using namespace NLS::Render::Entities;
 
-NLS::Engine::Components::CameraComponent::CameraComponent()
+namespace NLS::Engine::Components
 {
-
-
+CameraComponent::CameraComponent()
+{
 }
 
-void NLS::Engine::Components::CameraComponent::OnCreate()
+void CameraComponent::OnCreate()
 {
-	m_camera = new Camera(&m_owner->GetTransform()->GetTransform());
+	m_camera = new Render::Entities::Camera(&m_owner->GetTransform()->GetTransform());
 	/* Default clear color for the CCamera (Different from Camera default clear color) */
 	SetClearColor({ 0.1921569f, 0.3019608f, 0.4745098f });
 }
@@ -48,7 +45,7 @@ void CameraComponent::SetFrustumLightCulling(bool p_enable)
 	m_camera->SetFrustumLightCulling(p_enable);
 }
 
-void CameraComponent::SetProjectionMode(NLS::Render::Settings::EProjectionMode p_projectionMode)
+void CameraComponent::SetProjectionMode(Render::Settings::EProjectionMode p_projectionMode)
 {
     m_camera->SetProjectionMode(p_projectionMode);
 }
@@ -93,13 +90,14 @@ bool CameraComponent::HasFrustumLightCulling() const
 	return m_camera->HasFrustumLightCulling();
 }
 
-NLS::Render::Settings::EProjectionMode CameraComponent::GetProjectionMode() const
+Render::Settings::EProjectionMode CameraComponent::GetProjectionMode() const
 {
     return m_camera->GetProjectionMode();
 }
 
-NLS::Render::Entities::Camera* CameraComponent::GetCamera()
+Render::Entities::Camera* CameraComponent::GetCamera()
 {
 	return m_camera;
 }
+} // namespace NLS::Engine::Components
 

@@ -10,6 +10,7 @@
 #include <Math/Matrix4.h>
 
 #include "Rendering/Resources/UniformInfo.h"
+#include "Rendering/Resources/ShaderReflection.h"
 #include "RenderDef.h"
 
 namespace NLS::Render::Resources
@@ -118,6 +119,8 @@ namespace NLS::Render::Resources
 		*/
 		const UniformInfo* GetUniformInfo(const std::string& p_name) const;
 
+		const ShaderReflection& GetReflection() const;
+
 		/**
 		* Query the uniforms from the program and store them in the uniform vector
 		*/
@@ -136,6 +139,7 @@ namespace NLS::Render::Resources
 		std::vector<UniformInfo> uniforms;
 
 	private:
+		ShaderReflection m_reflection;
 		std::unordered_map<std::string, int> m_uniformLocationCache;
 	};
 }

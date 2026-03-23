@@ -8,32 +8,29 @@
 
 #include "TypeCreator.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    Variant TypeCreator::CreateVariadic(const Type &type, const ArgumentList &arguments)
     {
-        Variant TypeCreator::CreateVariadic(const Type &type, const ArgumentList &arguments)
-        {
-            InvokableSignature signature;
+        InvokableSignature signature;
 
-            for (auto &argument : arguments)
-                signature.emplace_back( argument.GetType( ) );
+        for (auto &argument : arguments)
+            signature.emplace_back( argument.GetType( ) );
 
-            auto &constructor = type.GetConstructor( signature );
+        auto &constructor = type.GetConstructor( signature );
 
-            return constructor.InvokeVariadic( arguments );
-        }
+        return constructor.InvokeVariadic( arguments );
+    }
 
-        Variant TypeCreator::CreateDynamicVariadic(const Type &type, const ArgumentList &arguments)
-        {
-            InvokableSignature signature;
+    Variant TypeCreator::CreateDynamicVariadic(const Type &type, const ArgumentList &arguments)
+    {
+        InvokableSignature signature;
 
-            for (auto &argument : arguments)
-                signature.emplace_back( argument.GetType( ) );
+        for (auto &argument : arguments)
+            signature.emplace_back( argument.GetType( ) );
 
-            auto &constructor = type.GetDynamicConstructor( signature );
+        auto &constructor = type.GetDynamicConstructor( signature );
 
-            return constructor.InvokeVariadic( arguments );
-        }
+        return constructor.InvokeVariadic( arguments );
     }
 }

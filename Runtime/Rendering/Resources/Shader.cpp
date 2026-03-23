@@ -1,119 +1,142 @@
-﻿
-#include <glad/glad.h>
-
 #include <Debug/Logger.h>
 
+#include "Rendering/Backend/OpenGL/OpenGLShaderProgramAPI.h"
+#include "Rendering/Backend/OpenGL/OpenGLTypeMappings.h"
+#include "Rendering/Resources/Shader.h"
 #include "Rendering/Resources/Texture2D.h"
 #include "Rendering/Resources/TextureCube.h"
-#include "Rendering/Resources/Shader.h"
-using namespace NLS;
-NLS::Render::Resources::Shader::Shader(const std::string p_path, uint32_t p_id) : path(p_path), id(p_id)
+
+namespace
+{
+	using OpenGLShaderProgramAPI = NLS::Render::Backend::OpenGLShaderProgramAPI;
+    using ShaderResourceKind = NLS::Render::Resources::ShaderResourceKind;
+    using UniformType = NLS::Render::Resources::UniformType;
+    using NLS::Maths::Matrix4;
+    using NLS::Maths::Vector2;
+    using NLS::Maths::Vector3;
+    using NLS::Maths::Vector4;
+
+	ShaderResourceKind GetShaderResourceKind(UniformType type)
+	{
+		switch (type)
+		{
+		case UniformType::UNIFORM_SAMPLER_2D:
+		case UniformType::UNIFORM_SAMPLER_CUBE:
+			return ShaderResourceKind::SampledTexture;
+		default:
+			return ShaderResourceKind::Value;
+		}
+	}
+}
+
+namespace NLS::Render::Resources
+{
+Shader::Shader(const std::string p_path, uint32_t p_id) : path(p_path), id(p_id)
 {
 	QueryUniforms();
 }
 
-NLS::Render::Resources::Shader::~Shader()
+Shader::~Shader()
 {
-	glDeleteProgram(id);
+	OpenGLShaderProgramAPI::DeleteProgram(id);
 }
 
-void NLS::Render::Resources::Shader::Bind() const
+void Shader::Bind() const
 {
-	glUseProgram(id);
+	OpenGLShaderProgramAPI::UseProgram(id);
 }
 
-void NLS::Render::Resources::Shader::Unbind() const
+void Shader::Unbind() const
 {
-	glUseProgram(0);
+	OpenGLShaderProgramAPI::UseProgram(0);
 }
 
-void NLS::Render::Resources::Shader::SetUniformInt(const std::string& p_name, int p_value)
+void Shader::SetUniformInt(const std::string& p_name, int p_value)
 {
-	glUniform1i(GetUniformLocation(p_name), p_value);
+	OpenGLShaderProgramAPI::SetUniformInt(GetUniformLocation(p_name), p_value);
 }
 
-void NLS::Render::Resources::Shader::SetUniformFloat(const std::string& p_name, float p_value)
+void Shader::SetUniformFloat(const std::string& p_name, float p_value)
 {
-	glUniform1f(GetUniformLocation(p_name), p_value);
+	OpenGLShaderProgramAPI::SetUniformFloat(GetUniformLocation(p_name), p_value);
 }
 
-void NLS::Render::Resources::Shader::SetUniformVec2(const std::string & p_name, const Maths::Vector2 & p_vec2)
+void Shader::SetUniformVec2(const std::string& p_name, const Maths::Vector2& p_vec2)
 {
-	glUniform2f(GetUniformLocation(p_name), p_vec2.x, p_vec2.y);
+	OpenGLShaderProgramAPI::SetUniformVec2(GetUniformLocation(p_name), p_vec2.x, p_vec2.y);
 }
 
-void NLS::Render::Resources::Shader::SetUniformVec3(const std::string& p_name, const Maths::Vector3& p_vec3)
+void Shader::SetUniformVec3(const std::string& p_name, const Maths::Vector3& p_vec3)
 {
-	glUniform3f(GetUniformLocation(p_name), p_vec3.x, p_vec3.y, p_vec3.z);
+	OpenGLShaderProgramAPI::SetUniformVec3(GetUniformLocation(p_name), p_vec3.x, p_vec3.y, p_vec3.z);
 }
 
-void NLS::Render::Resources::Shader::SetUniformVec4(const std::string& p_name, const Maths::Vector4& p_vec4)
+void Shader::SetUniformVec4(const std::string& p_name, const Maths::Vector4& p_vec4)
 {
-	glUniform4f(GetUniformLocation(p_name), p_vec4.x, p_vec4.y, p_vec4.z, p_vec4.w);
+	OpenGLShaderProgramAPI::SetUniformVec4(GetUniformLocation(p_name), p_vec4.x, p_vec4.y, p_vec4.z, p_vec4.w);
 }
 
-void NLS::Render::Resources::Shader::SetUniformMat4(const std::string& p_name, const Maths::Matrix4& p_mat4)
+void Shader::SetUniformMat4(const std::string& p_name, const Maths::Matrix4& p_mat4)
 {
-	glUniformMatrix4fv(GetUniformLocation(p_name), 1, GL_TRUE, &p_mat4.data[0]);
+	OpenGLShaderProgramAPI::SetUniformMat4(GetUniformLocation(p_name), &p_mat4.data[0]);
 }
 
-int NLS::Render::Resources::Shader::GetUniformInt(const std::string& p_name)
+int Shader::GetUniformInt(const std::string& p_name)
 {
-	int value;
-	glGetUniformiv(id, GetUniformLocation(p_name), &value);
+	int value = 0;
+	OpenGLShaderProgramAPI::GetUniformInt(id, GetUniformLocation(p_name), &value);
 	return value;
 }
 
-float NLS::Render::Resources::Shader::GetUniformFloat(const std::string& p_name)
+float Shader::GetUniformFloat(const std::string& p_name)
 {
-	float value;
-	glGetUniformfv(id, GetUniformLocation(p_name), &value);
+	float value = 0.0f;
+	OpenGLShaderProgramAPI::GetUniformFloat(id, GetUniformLocation(p_name), &value);
 	return value;
 }
 
-Maths::Vector2 NLS::Render::Resources::Shader::GetUniformVec2(const std::string& p_name)
+Maths::Vector2 Shader::GetUniformVec2(const std::string& p_name)
 {
-	GLfloat values[2];
-	glGetUniformfv(id, GetUniformLocation(p_name), values);
-	return reinterpret_cast<Maths::Vector2&>(values);
+	GLfloat values[2]{};
+	OpenGLShaderProgramAPI::GetUniformFloatArray(id, GetUniformLocation(p_name), values);
+	return reinterpret_cast<Vector2&>(values);
 }
 
-Maths::Vector3 NLS::Render::Resources::Shader::GetUniformVec3(const std::string& p_name)
+Maths::Vector3 Shader::GetUniformVec3(const std::string& p_name)
 {
-	GLfloat values[3];
-	glGetUniformfv(id, GetUniformLocation(p_name), values);
-	return reinterpret_cast<Maths::Vector3&>(values);
+	GLfloat values[3]{};
+	OpenGLShaderProgramAPI::GetUniformFloatArray(id, GetUniformLocation(p_name), values);
+	return reinterpret_cast<Vector3&>(values);
 }
 
-Maths::Vector4 NLS::Render::Resources::Shader::GetUniformVec4(const std::string& p_name)
+Maths::Vector4 Shader::GetUniformVec4(const std::string& p_name)
 {
-	GLfloat values[4];
-	glGetUniformfv(id, GetUniformLocation(p_name), values);
-	return reinterpret_cast<Maths::Vector4&>(values);
+	GLfloat values[4]{};
+	OpenGLShaderProgramAPI::GetUniformFloatArray(id, GetUniformLocation(p_name), values);
+	return reinterpret_cast<Vector4&>(values);
 }
 
-Maths::Matrix4 NLS::Render::Resources::Shader::GetUniformMat4(const std::string& p_name)
+Maths::Matrix4 Shader::GetUniformMat4(const std::string& p_name)
 {
-	GLfloat values[16];
-	glGetUniformfv(id, GetUniformLocation(p_name), values);
-	return reinterpret_cast<Maths::Matrix4&>(values);
+	GLfloat values[16]{};
+	OpenGLShaderProgramAPI::GetUniformFloatArray(id, GetUniformLocation(p_name), values);
+	return reinterpret_cast<Matrix4&>(values);
 }
 
-bool NLS::Render::Resources::Shader::IsEngineUBOMember(const std::string & p_uniformName)
+bool Shader::IsEngineUBOMember(const std::string& p_uniformName)
 {
 	return p_uniformName.rfind("ubo_", 0) == 0;
 }
 
-int32_t NLS::Render::Resources::Shader::GetUniformLocation(const std::string& name)
+int32_t Shader::GetUniformLocation(const std::string& name)
 {
 	if (m_uniformLocationCache.find(name) != m_uniformLocationCache.end())
 		return m_uniformLocationCache.at(name);
 
-	int location = glGetUniformLocation(id, name.c_str());
-
+	int location = OpenGLShaderProgramAPI::GetUniformLocation(id, name);
 	if (location == -1)
 	{
-		location = glGetProgramResourceLocation(id, GL_UNIFORM, name.c_str());
+		location = OpenGLShaderProgramAPI::GetProgramResourceLocation(id, name);
 	}
 
 	if (location == -1)
@@ -128,104 +151,117 @@ int32_t NLS::Render::Resources::Shader::GetUniformLocation(const std::string& na
 	}
 
 	m_uniformLocationCache[name] = location;
-
 	return location;
 }
 
-void NLS::Render::Resources::Shader::QueryUniforms()
+void Shader::QueryUniforms()
 {
-	GLint numActiveUniforms = 0;
 	uniforms.clear();
-	glGetProgramiv(id, GL_ACTIVE_UNIFORMS, &numActiveUniforms);
+	m_reflection.properties.clear();
+	const auto numActiveUniforms = OpenGLShaderProgramAPI::GetActiveUniformCount(id);
 	std::vector<GLchar> nameData(256);
+
 	for (int unif = 0; unif < numActiveUniforms; ++unif)
 	{
 		GLint arraySize = 0;
 		GLenum type = 0;
 		GLsizei actualLength = 0;
-		glGetActiveUniform(id, unif, static_cast<GLsizei>(nameData.size()), &actualLength, &arraySize, &type, &nameData[0]);
+		OpenGLShaderProgramAPI::GetActiveUniform(id, unif, static_cast<GLsizei>(nameData.size()), &actualLength, &arraySize, &type, &nameData[0]);
 		std::string name(static_cast<char*>(nameData.data()), actualLength);
 
-		if (!IsEngineUBOMember(name))
+		if (IsEngineUBOMember(name))
+			continue;
+
+		int location = OpenGLShaderProgramAPI::GetUniformLocation(id, name);
+		if (location == -1)
 		{
-			int location = glGetUniformLocation(id, name.c_str());
-			if (location == -1)
-			{
-				location = glGetProgramResourceLocation(id, GL_UNIFORM, name.c_str());
-			}
+			location = OpenGLShaderProgramAPI::GetProgramResourceLocation(id, name);
+		}
 
-			std::any defaultValue;
+		std::any defaultValue;
 
-			switch (static_cast<UniformType>(type))
-			{
-			case NLS::Render::Resources::UniformType::UNIFORM_BOOL:
-			{
-				int value = 0;
-				if (location >= 0) glGetUniformiv(id, location, &value);
-				defaultValue = std::make_any<bool>(value != 0);
-				break;
-			}
-			case NLS::Render::Resources::UniformType::UNIFORM_INT:
-			{
-				int value = 0;
-				if (location >= 0) glGetUniformiv(id, location, &value);
-				defaultValue = std::make_any<int>(value);
-				break;
-			}
-			case NLS::Render::Resources::UniformType::UNIFORM_FLOAT:
-			{
-				float value = 0.0f;
-				if (location >= 0) glGetUniformfv(id, location, &value);
-				defaultValue = std::make_any<float>(value);
-				break;
-			}
-			case NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC2:
-			{
-				GLfloat values[2]{};
-				if (location >= 0) glGetUniformfv(id, location, values);
-				defaultValue = std::make_any<Maths::Vector2>(reinterpret_cast<Maths::Vector2&>(values));
-				break;
-			}
-			case NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC3:
-			{
-				GLfloat values[3]{};
-				if (location >= 0) glGetUniformfv(id, location, values);
-				defaultValue = std::make_any<Maths::Vector3>(reinterpret_cast<Maths::Vector3&>(values));
-				break;
-			}
-			case NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4:
-			{
-				GLfloat values[4]{};
-				if (location >= 0) glGetUniformfv(id, location, values);
-				defaultValue = std::make_any<Maths::Vector4>(reinterpret_cast<Maths::Vector4&>(values));
-				break;
-			}
-			case NLS::Render::Resources::UniformType::UNIFORM_FLOAT_MAT4:
-			{
-				GLfloat values[16]{};
-				if (location >= 0) glGetUniformfv(id, location, values);
-				defaultValue = std::make_any<Maths::Matrix4>(reinterpret_cast<Maths::Matrix4&>(values));
-				break;
-			}
-			case NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D:	defaultValue = std::make_any<NLS::Render::Resources::Texture2D*>(nullptr);	break;
-			case NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_CUBE:	defaultValue = std::make_any<NLS::Render::Resources::TextureCube*>(nullptr);	break;
-			}
+		const auto uniformType = NLS::Render::Backend::ToUniformType(type);
 
-			if (defaultValue.has_value())
-			{
-				uniforms.push_back
-				({
-					static_cast<UniformType>(type),
-					name,
-					location,
-					defaultValue
-				});
-			}
+		switch (uniformType)
+		{
+		case UniformType::UNIFORM_BOOL:
+		{
+			int value = 0;
+			if (location >= 0) OpenGLShaderProgramAPI::GetUniformInt(id, location, &value);
+			defaultValue = std::make_any<bool>(value != 0);
+			break;
+		}
+		case UniformType::UNIFORM_INT:
+		{
+			int value = 0;
+			if (location >= 0) OpenGLShaderProgramAPI::GetUniformInt(id, location, &value);
+			defaultValue = std::make_any<int>(value);
+			break;
+		}
+		case UniformType::UNIFORM_FLOAT:
+		{
+			float value = 0.0f;
+			if (location >= 0) OpenGLShaderProgramAPI::GetUniformFloat(id, location, &value);
+			defaultValue = std::make_any<float>(value);
+			break;
+		}
+		case UniformType::UNIFORM_FLOAT_VEC2:
+		{
+			GLfloat values[2]{};
+			if (location >= 0) OpenGLShaderProgramAPI::GetUniformFloatArray(id, location, values);
+			defaultValue = std::make_any<Maths::Vector2>(reinterpret_cast<Vector2&>(values));
+			break;
+		}
+		case UniformType::UNIFORM_FLOAT_VEC3:
+		{
+			GLfloat values[3]{};
+			if (location >= 0) OpenGLShaderProgramAPI::GetUniformFloatArray(id, location, values);
+			defaultValue = std::make_any<Maths::Vector3>(reinterpret_cast<Vector3&>(values));
+			break;
+		}
+		case UniformType::UNIFORM_FLOAT_VEC4:
+		{
+			GLfloat values[4]{};
+			if (location >= 0) OpenGLShaderProgramAPI::GetUniformFloatArray(id, location, values);
+			defaultValue = std::make_any<Maths::Vector4>(reinterpret_cast<Vector4&>(values));
+			break;
+		}
+		case UniformType::UNIFORM_FLOAT_MAT4:
+		{
+			GLfloat values[16]{};
+			if (location >= 0) OpenGLShaderProgramAPI::GetUniformFloatArray(id, location, values);
+			defaultValue = std::make_any<Maths::Matrix4>(reinterpret_cast<Matrix4&>(values));
+			break;
+		}
+		case UniformType::UNIFORM_SAMPLER_2D:
+			defaultValue = std::make_any<Texture2D*>(nullptr);
+			break;
+		case UniformType::UNIFORM_SAMPLER_CUBE:
+			defaultValue = std::make_any<TextureCube*>(nullptr);
+			break;
+		}
+
+		if (defaultValue.has_value())
+		{
+			uniforms.push_back({
+				uniformType,
+				name,
+				location,
+				defaultValue
+			});
+
+			m_reflection.properties.push_back({
+				name,
+				uniformType,
+				GetShaderResourceKind(uniformType),
+				location,
+				arraySize
+			});
 		}
 	}
 }
 
-const NLS::Render::Resources::UniformInfo* NLS::Render::Resources::Shader::GetUniformInfo(const std::string& p_name) const
+const UniformInfo* Shader::GetUniformInfo(const std::string& p_name) const
 {
 	auto found = std::find_if(uniforms.begin(), uniforms.end(), [&p_name](const UniformInfo& p_element)
 	{
@@ -236,4 +272,10 @@ const NLS::Render::Resources::UniformInfo* NLS::Render::Resources::Shader::GetUn
 		return &*found;
 	else
 		return nullptr;
+}
+
+const ShaderReflection& Shader::GetReflection() const
+{
+	return m_reflection;
+}
 }

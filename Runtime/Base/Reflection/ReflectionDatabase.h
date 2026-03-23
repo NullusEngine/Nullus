@@ -12,15 +12,13 @@
 #include <vector>
 #include <unordered_map>
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    class ReflectionDatabase
     {
-        class ReflectionDatabase
-        {
-        public:
-            ReflectionDatabase(void);
-            ~ReflectionDatabase(void);
+    public:
+        ReflectionDatabase(void);
+        ~ReflectionDatabase(void);
 
             std::vector<TypeData> types;
 
@@ -100,10 +98,9 @@ namespace NLS
                 const InvokableSignature &signature
             );
 
-        private:
-            TypeID m_nextID;
-        };
-    }
+    private:
+        TypeID m_nextID;
+    };
 }
 
 #include "Impl/ReflectionDatabase.hpp"

@@ -10,13 +10,11 @@
 
 #include "Type.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
-        Variant::Variant(void)
-            : m_isConst( true )
-            , m_base( nullptr ) { }
+    Variant::Variant(void)
+        : m_isConst( true )
+        , m_base( nullptr ) { }
 
         Variant::Variant(const Variant &rhs)
             : m_isConst( rhs.m_isConst )
@@ -116,9 +114,8 @@ namespace NLS
             return m_base ? m_base->IsArray( ) : false;
         }
 
-        void *Variant::getPtr(void) const
-        {
-            return m_base ? m_base->GetPtr( ) : nullptr;
-        }
+    void *Variant::getPtr(void) const
+    {
+        return m_base ? m_base->GetPtr( ) : nullptr;
     }
 }

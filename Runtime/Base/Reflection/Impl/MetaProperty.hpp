@@ -6,17 +6,14 @@
 
 #pragma once
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    template<typename PropertyType, typename ...Args>
+    MetaProperty *MetaPropertyInitializer(Args&&... args)
     {
-        template<typename PropertyType, typename ...Args>
-        MetaProperty *MetaPropertyInitializer(Args&&... args)
-        {
-            static_assert( std::is_base_of<MetaProperty, PropertyType>::value, 
-                "Meta properties must inherit from MetaProperty" );
+        static_assert( std::is_base_of<MetaProperty, PropertyType>::value,
+            "Meta properties must inherit from MetaProperty" );
 
-            return new PropertyType( std::forward<Args>( args )... );
-        }
+        return new PropertyType( std::forward<Args>( args )... );
     }
 }

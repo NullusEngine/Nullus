@@ -12,19 +12,16 @@
 // number of arguments within the usage of a dynamic method/function invoker
 #define THIS_ARG_COUNT sizeof...( ArgTypes )
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
-        class Type;
+    class Type;
 
-        typedef std::vector<Type> InvokableSignature;
+    typedef std::vector<Type> InvokableSignature;
 
-        template<typename T>
-        using InvokableOverloadMap = 
-            std::unordered_multimap<InvokableSignature, T>;
+    template<typename T>
+    using InvokableOverloadMap =
+        std::unordered_multimap<InvokableSignature, T>;
 
-        // maximum number of arguments supported
-        const size_t MaxArgumentCount = 10;
-    }
+    // maximum number of arguments supported
+    const size_t MaxArgumentCount = 10;
 }

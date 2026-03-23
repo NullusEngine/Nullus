@@ -33,6 +33,11 @@ namespace NLS::UI
 class NLS_UI_API GUIDrawer
 {
 public:
+    using Material = Render::Resources::Material;
+    using Model = Render::Resources::Model;
+    using Shader = Render::Resources::Shader;
+    using Texture2D = Render::Resources::Texture2D;
+
     static const Maths::Color TitleColor;
     static const Maths::Color ClearButtonColor;
 
@@ -43,7 +48,7 @@ public:
      * Defines the texture to use when there is no texture in a texture resource field
      * @param p_emptyTexture
      */
-    static void ProvideEmptyTexture(Render::Resources::Texture2D& p_emptyTexture);
+    static void ProvideEmptyTexture(Texture2D& p_emptyTexture);
 
     /**
      * Draw a title with the title color
@@ -69,10 +74,10 @@ public:
     static void DrawQuat(Internal::WidgetContainer& p_root, const std::string& p_name, Maths::Quaternion& p_data, float p_step = 1.f, float p_min = _MIN_FLOAT, float p_max = _MAX_FLOAT);
     static void DrawString(Internal::WidgetContainer& p_root, const std::string& p_name, std::string& p_data);
     static void DrawColor(Internal::WidgetContainer& p_root, const std::string& p_name, Maths::Color& p_color, bool p_hasAlpha = false);
-    static Widgets::Text& DrawMesh(Internal::WidgetContainer& p_root, const std::string& p_name, Render::Resources::Model*& p_data, Event<>* p_updateNotifier = nullptr);
-    static Widgets::Image& DrawTexture(Internal::WidgetContainer& p_root, const std::string& p_name, Render::Resources::Texture2D*& p_data, Event<>* p_updateNotifier = nullptr);
-    static Widgets::Text& DrawShader(Internal::WidgetContainer& p_root, const std::string& p_name, Render::Resources::Shader*& p_data, Event<>* p_updateNotifier = nullptr);
-    static Widgets::Text& DrawMaterial(Internal::WidgetContainer& p_root, const std::string& p_name, NLS::Render::Resources::Material*& p_data, Event<>* p_updateNotifier = nullptr);
+    static Widgets::Text& DrawMesh(Internal::WidgetContainer& p_root, const std::string& p_name, Model*& p_data, Event<>* p_updateNotifier = nullptr);
+    static Widgets::Image& DrawTexture(Internal::WidgetContainer& p_root, const std::string& p_name, Texture2D*& p_data, Event<>* p_updateNotifier = nullptr);
+    static Widgets::Text& DrawShader(Internal::WidgetContainer& p_root, const std::string& p_name, Shader*& p_data, Event<>* p_updateNotifier = nullptr);
+    static Widgets::Text& DrawMaterial(Internal::WidgetContainer& p_root, const std::string& p_name, Material*& p_data, Event<>* p_updateNotifier = nullptr);
     // static Widgets::Text& DrawSound(Internal::WidgetContainer& p_root, const std::string& p_name, OvAudio::Resources::Sound*& p_data, Event<>* p_updateNotifier = nullptr);
     static Widgets::Text& DrawAsset(Internal::WidgetContainer& p_root, const std::string& p_name, std::string& p_data, Event<>* p_updateNotifier = nullptr);
 
@@ -133,6 +138,6 @@ public:
     }
 
 private:
-    static Render::Resources::Texture2D* __EMPTY_TEXTURE;
+    static Texture2D* __EMPTY_TEXTURE;
 };
 } // namespace NLS::UI

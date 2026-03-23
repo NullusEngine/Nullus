@@ -1,23 +1,31 @@
-
 #include "Core/ResourceManagement/MaterialManager.h"
-NLS::Render::Resources::Material* NLS::Core::ResourceManagement::MaterialManager::CreateResource(const std::string& p_path)
+
+namespace NLS::Core::ResourceManagement
 {
-    std::string realPath = GetRealPath(p_path);
+using Material = Render::Resources::Material;
+namespace MaterialLoader = Render::Resources::Loaders::MaterialLoader;
 
-    NLS::Render::Resources::Material* material = NLS::Render::Resources::Loaders::MaterialLoader::Create(realPath);
-    if (material)
-        *reinterpret_cast<std::string*>(reinterpret_cast<char*>(material) + offsetof(NLS::Render::Resources::Material, path)) = p_path;
+Material* MaterialManager::CreateResource(const std::string& path)
+{
+	std::string realPath = GetRealPath(path);
 
-    return material;
+	Material* material = MaterialLoader::Create(realPath);
+	if (material)
+	{
+		*reinterpret_cast<std::string*>(reinterpret_cast<char*>(material) + offsetof(Material, path)) = path;
+	}
+
+	return material;
 }
 
-void NLS::Core::ResourceManagement::MaterialManager::DestroyResource(NLS::Render::Resources::Material* p_resource)
+void MaterialManager::DestroyResource(Material* resource)
 {
-    NLS::Render::Resources::Loaders::MaterialLoader::Destroy(p_resource);
+	MaterialLoader::Destroy(resource);
 }
 
-void NLS::Core::ResourceManagement::MaterialManager::ReloadResource(NLS::Render::Resources::Material* p_resource, const std::string& p_path)
+void MaterialManager::ReloadResource(Material* resource, const std::string& path)
 {
-    std::string realPath = GetRealPath(p_path);
-    NLS::Render::Resources::Loaders::MaterialLoader::Reload(*p_resource, realPath);
+	std::string realPath = GetRealPath(path);
+	MaterialLoader::Reload(*resource, realPath);
+}
 }

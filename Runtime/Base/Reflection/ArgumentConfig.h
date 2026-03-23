@@ -8,12 +8,9 @@
 
 #include <vector>
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
-        class Argument;
+    class Argument;
 
-        typedef std::vector<Argument> ArgumentList;
-    }
+    typedef std::vector<Argument> ArgumentList;
 }

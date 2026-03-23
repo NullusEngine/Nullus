@@ -5,7 +5,9 @@
 
 #include "Rendering/Resources/Parsers/AssimpParser.h"
 
-bool NLS::Render::Resources::Parsers::AssimpParser::LoadModel(const std::string & p_fileName, std::vector<Mesh*>& p_meshes, std::vector<std::string>& p_materials, EModelParserFlags p_parserFlags)
+namespace NLS::Render::Resources::Parsers
+{
+bool AssimpParser::LoadModel(const std::string & p_fileName, std::vector<Mesh*>& p_meshes, std::vector<std::string>& p_materials, EModelParserFlags p_parserFlags)
 {
 	Assimp::Importer import;
     const aiScene* scene = import.ReadFile(p_fileName, static_cast<unsigned int>(p_parserFlags));
@@ -22,7 +24,7 @@ bool NLS::Render::Resources::Parsers::AssimpParser::LoadModel(const std::string 
 	return true;
 }
 
-void NLS::Render::Resources::Parsers::AssimpParser::ProcessMaterials(const aiScene * p_scene, std::vector<std::string>& p_materials)
+void AssimpParser::ProcessMaterials(const aiScene * p_scene, std::vector<std::string>& p_materials)
 {
 	for (uint32_t i = 0; i < p_scene->mNumMaterials; ++i)
 	{
@@ -36,7 +38,7 @@ void NLS::Render::Resources::Parsers::AssimpParser::ProcessMaterials(const aiSce
 	}
 }
 
-void NLS::Render::Resources::Parsers::AssimpParser::ProcessNode(void* p_transform, aiNode * p_node, const aiScene * p_scene, std::vector<Mesh*>& p_meshes)
+void AssimpParser::ProcessNode(void* p_transform, aiNode * p_node, const aiScene * p_scene, std::vector<Mesh*>& p_meshes)
 {
 	aiMatrix4x4 nodeTransformation = *reinterpret_cast<aiMatrix4x4*>(p_transform) * p_node->mTransformation;
 
@@ -57,7 +59,7 @@ void NLS::Render::Resources::Parsers::AssimpParser::ProcessNode(void* p_transfor
 	}
 }
 
-void NLS::Render::Resources::Parsers::AssimpParser::ProcessMesh(void* p_transform, aiMesh* p_mesh, const aiScene* p_scene, std::vector<Geometry::Vertex>& p_outVertices, std::vector<uint32_t>& p_outIndices)
+void AssimpParser::ProcessMesh(void* p_transform, aiMesh* p_mesh, const aiScene* p_scene, std::vector<Geometry::Vertex>& p_outVertices, std::vector<uint32_t>& p_outIndices)
 {
 	aiMatrix4x4 meshTransformation = *reinterpret_cast<aiMatrix4x4*>(p_transform);
 
@@ -97,4 +99,5 @@ void NLS::Render::Resources::Parsers::AssimpParser::ProcessMesh(void* p_transfor
 		for (size_t indexID = 0; indexID < 3; ++indexID)
 			p_outIndices.push_back(face.mIndices[indexID]);
 	}
+}
 }

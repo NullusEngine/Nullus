@@ -15,51 +15,48 @@
 
 #include <memory>
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    class Variant;
+    class Argument;
+
+    class Constructor
+        : public MetaContainer
+        , public Invokable
     {
-        class Variant;
-        class Argument;
+    public:
+        Constructor(void);
+        Constructor(const Constructor &rhs);
+        Constructor(const Constructor &&rhs) noexcept;
 
-        class Constructor
-            : public MetaContainer
-            , public Invokable
-        {
-        public:
-            Constructor(void);
-            Constructor(const Constructor &rhs);
-            Constructor(const Constructor &&rhs) noexcept;
-            
-            Constructor(
-                Type classType, 
-                InvokableSignature signature, 
-                ConstructorInvokerBase *invoker, 
-                bool isDynamic
-            );
+        Constructor(
+            Type classType,
+            InvokableSignature signature,
+            ConstructorInvokerBase *invoker,
+            bool isDynamic
+        );
 
-            Constructor &operator=(const Constructor &&rhs);
+        Constructor &operator=(const Constructor &&rhs);
 
-            static const Constructor &Invalid(void);
+        static const Constructor &Invalid(void);
 
-            Type GetClassType(void) const;
+        Type GetClassType(void) const;
 
-            bool IsValid(void) const;
-            bool IsDynamic(void) const;
+        bool IsValid(void) const;
+        bool IsDynamic(void) const;
 
-            Variant InvokeVariadic(const ArgumentList &arguments) const;
+        Variant InvokeVariadic(const ArgumentList &arguments) const;
 
-            template<typename ...Args>
-            Variant Invoke(Args &&...args) const;
+        template<typename ...Args>
+        Variant Invoke(Args &&...args) const;
 
-        private:
-            bool m_isDynamic;
+    private:
+        bool m_isDynamic;
 
-            Type m_classType;
+        Type m_classType;
 
-            std::shared_ptr<ConstructorInvokerBase> m_invoker;
-        };
-    }
+        std::shared_ptr<ConstructorInvokerBase> m_invoker;
+    };
 }
 
 #include "Impl/Constructor.hpp"

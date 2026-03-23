@@ -10,14 +10,12 @@
 
 #include "Debug/Assertion.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
-        Function::Function(void)
-            : Invokable( )
-            , m_parentType( Type::Invalid( ) )
-            , m_invoker( nullptr ) { }
+    Function::Function(void)
+        : Invokable( )
+        , m_parentType( Type::Invalid( ) )
+        , m_invoker( nullptr ) { }
 
         const Function &Function::Invalid(void)
         {
@@ -36,15 +34,14 @@ namespace NLS
             return m_invoker != nullptr;
         }
 
-        Variant Function::InvokeVariadic(ArgumentList &arguments) const
-        {
+    Variant Function::InvokeVariadic(ArgumentList &arguments) const
+    {
         #if defined(_DEBUG)
 
             NLS_ASSERT( IsValid( ), "Invalid function invocation." );
 
         #endif
         
-            return m_invoker->Invoke( arguments );
-        }
+        return m_invoker->Invoke( arguments );
     }
 }

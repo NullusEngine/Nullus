@@ -11,22 +11,19 @@
 #include "Variant.h"
 #include "Argument.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
-        EnumBase::EnumBase(const std::string &name, TypeID owner)
-            : m_parentType( owner )
-            , m_name( name ) { }
+    EnumBase::EnumBase(const std::string &name, TypeID owner)
+        : m_parentType( owner )
+        , m_name( name ) { }
 
         Type EnumBase::GetParentType(void) const
         {
             return m_parentType;
         }
 
-        const std::string &EnumBase::GetName(void) const
-        {
-            return m_name;
-        }
+    const std::string &EnumBase::GetName(void) const
+    {
+        return m_name;
     }
 }

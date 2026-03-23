@@ -2,24 +2,25 @@
 
 #include "Rendering/Resources/Model.h"
 #include "Math/Vector3.h"
-using namespace NLS;
 
-const Render::Geometry::BoundingSphere& NLS::Render::Resources::Model::GetBoundingSphere() const
+namespace NLS::Render::Resources
+{
+const Render::Geometry::BoundingSphere& Model::GetBoundingSphere() const
 {
 	return m_boundingSphere;
 }
 
-NLS::Render::Resources::Model::Model(const std::string & p_path) : path(p_path)
+Model::Model(const std::string & p_path) : path(p_path)
 {
 }
 
-NLS::Render::Resources::Model::~Model()
+Model::~Model()
 {
 	for (auto mesh : m_meshes)
 		delete mesh;
 }
 
-void NLS::Render::Resources::Model::ComputeBoundingSphere()
+void Model::ComputeBoundingSphere()
 {
 	if (m_meshes.size() == 1)
 	{
@@ -58,12 +59,13 @@ void NLS::Render::Resources::Model::ComputeBoundingSphere()
 	}
 }
 
-const std::vector<NLS::Render::Resources::Mesh*>& NLS::Render::Resources::Model::GetMeshes() const
+const std::vector<Mesh*>& Model::GetMeshes() const
 {
 	return m_meshes;
 }
 
-const std::vector<std::string>& NLS::Render::Resources::Model::GetMaterialNames() const
+const std::vector<std::string>& Model::GetMaterialNames() const
 {
 	return m_materialNames;
+}
 }

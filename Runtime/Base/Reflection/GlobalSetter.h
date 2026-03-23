@@ -8,17 +8,14 @@
 
 #include "GlobalSetterBase.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    template<typename GlobalType, bool IsMethod>
+    class GlobalSetter : public GlobalSetterBase
     {
-        template<typename GlobalType, bool IsMethod>
-        class GlobalSetter : public GlobalSetterBase
-        {
-        public:
-            void SetValue(const Argument &value) override;
-        };
-    }
+    public:
+        void SetValue(const Argument &value) override;
+    };
 }
 
 #include "Impl/GlobalSetter.hpp"

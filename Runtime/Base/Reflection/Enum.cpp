@@ -10,12 +10,10 @@
 
 #include "Variant.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
-        Enum::Enum(const EnumBase *base)
-            : m_base( base ) { }
+    Enum::Enum(const EnumBase *base)
+        : m_base( base ) { }
 
         bool Enum::IsValid(void) const
         {
@@ -72,9 +70,8 @@ namespace NLS
             return m_base ? m_base->GetKey( value ) : std::string( );
         }
 
-        Variant Enum::GetValue(const std::string &key) const
-        {
-            return m_base ? m_base->GetValue( key ) : Variant( );
-        }
+    Variant Enum::GetValue(const std::string &key) const
+    {
+        return m_base ? m_base->GetValue( key ) : Variant( );
     }
 }

@@ -31,25 +31,22 @@ namespace std
     };
 }
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    template<typename ...Types>
+    InvokableSignature Invokable::CreateSignature(void)
     {
-        template<typename ...Types>
-        InvokableSignature Invokable::CreateSignature(void)
+        static InvokableSignature signature;
+
+        static auto initial = true;
+
+        if (initial)
         {
-            static InvokableSignature signature;
+            TypeUnpacker<Types...>::Apply( signature );
 
-            static auto initial = true;
-
-            if (initial)
-            {
-                TypeUnpacker<Types...>::Apply( signature );
-
-                initial = false;
-            }
-
-            return signature;
+            initial = false;
         }
+
+        return signature;
     }
 }

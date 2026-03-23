@@ -30,21 +30,19 @@
     REGISTER_NATIVE_TYPE_VARIANTS( type )                   \
     types[ NLS_TYPEIDOF( type ) ].SetArrayConstructor<type>( ); \
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    namespace
     {
-        namespace
-        {
-            ReflectionDatabase *gReflectionDatabaseInstance = nullptr;
-        }
+        ReflectionDatabase *gReflectionDatabaseInstance = nullptr;
+    }
 
-        ReflectionDatabase::ReflectionDatabase(void)
-            : types( 1 )
-            , m_nextID( 1 )
-        {
-            gReflectionDatabaseInstance = this;
-            NLS_META_GENERATED_LINK_FUNCTION();
+    ReflectionDatabase::ReflectionDatabase(void)
+        : types( 1 )
+        , m_nextID( 1 )
+    {
+        gReflectionDatabaseInstance = this;
+        NLS_META_GENERATED_LINK_FUNCTION();
 
             types[ InvalidTypeID ].name = "UNKNOWN";
 
@@ -66,8 +64,8 @@ namespace NLS
             stringType.AddConstructor<std::string, false, true>( { } );
 
             // Register user-defined reflection types discovered by static registrars.
-            ReflectionModuleRegistry::RegisterAll(*this);
-        }
+        ReflectionModuleRegistry::RegisterAll(*this);
+    }
 
         ///////////////////////////////////////////////////////////////////////
 
@@ -122,19 +120,18 @@ namespace NLS
 
         ///////////////////////////////////////////////////////////////////////
 
-        const Function &ReflectionDatabase::GetGlobalFunction(
-            const std::string &name, 
-            const InvokableSignature &signature
-        )
-        {
-            auto &base = globalFunctions[ name ];
+    const Function &ReflectionDatabase::GetGlobalFunction(
+        const std::string &name,
+        const InvokableSignature &signature
+    )
+    {
+        auto &base = globalFunctions[ name ];
 
             auto search = base.find( signature );
 
             if (search == base.end( ))
                 return Function::Invalid( );
 
-            return search->second;
-        }
+        return search->second;
     }
 }

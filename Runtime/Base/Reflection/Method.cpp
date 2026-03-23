@@ -10,15 +10,13 @@
 
 #include "Debug/Assertion.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
-        Method::Method(void)
-            : Invokable( )
-            , m_isConst( true )
-            , m_classType( Type::Invalid( ) )
-            , m_invoker( nullptr ) { }
+    Method::Method(void)
+        : Invokable( )
+        , m_isConst( true )
+        , m_classType( Type::Invalid( ) )
+        , m_invoker( nullptr ) { }
 
         const Method &Method::Invalid(void)
         {
@@ -42,11 +40,11 @@ namespace NLS
             return m_isConst;
         }
 
-        Variant Method::Invoke(
-            Variant &instance,
-            ArgumentList &arguments
-        ) const
-        {
+    Variant Method::Invoke(
+        Variant &instance,
+        ArgumentList &arguments
+    ) const
+    {
         #if defined(_DEBUG)
 
             NLS_ASSERT( IsValid( ), 
@@ -63,7 +61,6 @@ namespace NLS
 
         #endif
 
-            return m_invoker->Invoke( instance, arguments );
-        }
+        return m_invoker->Invoke( instance, arguments );
     }
 }

@@ -6,10 +6,8 @@
 
 #pragma once
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
         template<typename EnumType>
         EnumContainer<EnumType>::EnumContainer(
             const std::string &name, 
@@ -121,5 +119,4 @@ namespace NLS
 
             return Variant( search->second );
         }
-    }
 }

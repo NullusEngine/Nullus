@@ -26,15 +26,13 @@
         >::type* = nullptr                                                                       \
     ) const;                                                                                     \
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    template<typename T>
+    class VariantContainer : public VariantBase
     {
-        template<typename T>
-        class VariantContainer : public VariantBase
-        {
-        public:
-            typedef typename std::remove_reference<T>::type NonRefType;
+    public:
+        typedef typename std::remove_reference<T>::type NonRefType;
 
             VariantContainer(const NonRefType &value);
             VariantContainer(const NonRefType &&value);
@@ -110,8 +108,7 @@ namespace NLS
                     std::is_pointer<U>::value || !std::is_base_of<Object, U>::value
                 >::type* = nullptr
             );
-        };
-    }
+    };
 }
 
 #undef DEFAULT_TYPE_HANDLER

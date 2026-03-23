@@ -12,14 +12,12 @@
 
 #include "Variant.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
-        Argument::Argument(void)
-            : m_typeID( InvalidTypeID )
-            , m_isArray( false )
-            , m_data( nullptr ) { }
+    Argument::Argument(void)
+        : m_typeID( InvalidTypeID )
+        , m_isArray( false )
+        , m_data( nullptr ) { }
 
         Argument::Argument(const Argument &rhs) 
             : m_typeID( rhs.m_typeID )
@@ -50,9 +48,8 @@ namespace NLS
             return Type( m_typeID, m_isArray );
         }
 
-        void *Argument::GetPtr(void) const
-        {
-            return const_cast<void *>( m_data );
-        }
+    void *Argument::GetPtr(void) const
+    {
+        return const_cast<void *>( m_data );
     }
 }

@@ -19,6 +19,8 @@ namespace NLS::Render::Buffers
 class NLS_RENDER_API UniformBuffer
 {
 public:
+    using Shader = Resources::Shader;
+
     /**
      * Create a UniformBuffer
      * @param p_size (Specify the size in bytes of the UBO data)
@@ -75,7 +77,7 @@ public:
      * @param p_uniformBlockLocation
      * @param p_bindingPoint
      */
-    static void BindBlockToShader(NLS::Render::Resources::Shader& p_shader, uint32_t p_uniformBlockLocation, uint32_t p_bindingPoint = 0);
+    static void BindBlockToShader(Shader& p_shader, uint32_t p_uniformBlockLocation, uint32_t p_bindingPoint = 0);
 
     /**
      * Bind a block identified by the given name to the given shader
@@ -83,14 +85,14 @@ public:
      * @param p_name
      * @param p_bindingPoint
      */
-    static void BindBlockToShader(NLS::Render::Resources::Shader& p_shader, const std::string& p_name, uint32_t p_bindingPoint = 0);
+    static void BindBlockToShader(Shader& p_shader, const std::string& p_name, uint32_t p_bindingPoint = 0);
 
     /**
      * Return the location of the block (ID)
      * @param p_shader
      * @param p_name
      */
-    static uint32_t GetBlockLocation(NLS::Render::Resources::Shader& p_shader, const std::string& p_name);
+    static uint32_t GetBlockLocation(Shader& p_shader, const std::string& p_name);
 
 private:
     void _SetSubData(const void* p_data, uint32_t size, size_t p_offset);

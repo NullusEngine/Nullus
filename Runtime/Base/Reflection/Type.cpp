@@ -25,19 +25,17 @@
 
 #include "Debug/Assertion.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    namespace
     {
-        namespace
-        {
-            // make sure we always have a reference to the gDatabase
-            #define gDatabase ReflectionDatabase::Instance( )
-        }
+        // make sure we always have a reference to the gDatabase
+        #define gDatabase ReflectionDatabase::Instance( )
+    }
 
-        Type::Type(void)
-            : m_id( InvalidTypeID )
-            , m_isArray( false ) { }
+    Type::Type(void)
+        : m_id( InvalidTypeID )
+        , m_isArray( false ) { }
 
         ///////////////////////////////////////////////////////////////////////
 
@@ -763,9 +761,9 @@ namespace NLS
 
         ///////////////////////////////////////////////////////////////////////
 
-        void Type::DeserializeJson(Variant &instance, const Json &value) const
-        {
-            auto &fields = gDatabase.types[ m_id ].fields;
+    void Type::DeserializeJson(Variant &instance, const Json &value) const
+    {
+        auto &fields = gDatabase.types[ m_id ].fields;
 
             for (auto &field : fields)
             {
@@ -789,7 +787,6 @@ namespace NLS
                 }
             }
 
-            instance.m_base->OnDeserialize( value );
-        }
+        instance.m_base->OnDeserialize( value );
     }
 }

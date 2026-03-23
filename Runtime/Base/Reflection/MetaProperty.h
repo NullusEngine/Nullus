@@ -11,19 +11,16 @@
 #include "Macros.h"
 #include "Reflection/MetaProperty.generated.h"
 
-namespace NLS 
-{ 
-    namespace meta
+namespace NLS::meta
+{
+    CLASS() class MetaProperty : public Object
     {
-        CLASS() class MetaProperty : public Object
-        {
-        public:
-            GENERATED_BODY()
-        };
+    public:
+        GENERATED_BODY()
+    };
 
-        template<typename PropertyType, typename ...Args>
-        MetaProperty *MetaPropertyInitializer(Args&&... args);
-    } 
+    template<typename PropertyType, typename ...Args>
+    MetaProperty *MetaPropertyInitializer(Args&&... args);
 }
 
 #pragma region Built-In Parser Properties

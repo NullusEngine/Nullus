@@ -10,9 +10,9 @@
 
 namespace NLS
 {
-    // Basic wrapper around std::vector. Clang has a hard time with other 
-    // compilers implementation of std::vector, so this must be used in order to have 
-    // Array like functionality within the runtime
+    // Basic wrapper around std::vector. Clang has a hard time with other
+    // compilers' implementation of std::vector, so this must be used to have
+    // Array-like functionality within the runtime.
     template<typename T>
     class Array : public std::vector<T>
     {

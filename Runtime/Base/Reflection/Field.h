@@ -13,50 +13,47 @@
 #include "FieldGetter.h"
 #include "FieldSetter.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    class Field : public MetaContainer
     {
-        class Field : public MetaContainer
-        {
-        public:
-            static bool SetValue(Variant &instance, const Variant &value, const Method &setter);
+    public:
+        static bool SetValue(Variant &instance, const Variant &value, const Method &setter);
 
-            Field(void);
+        Field(void);
 
-            Field(
-                const std::string &name, 
-                Type type, 
-                Type classType, 
-                FieldGetterBase *getter, 
-                FieldSetterBase *setter
-            );
+        Field(
+            const std::string &name,
+            Type type,
+            Type classType,
+            FieldGetterBase *getter,
+            FieldSetterBase *setter
+        );
 
-            static const Field &Invalid(void);
+        static const Field &Invalid(void);
 
-            bool IsValid(void) const;
-            bool IsReadOnly(void) const;
+        bool IsValid(void) const;
+        bool IsReadOnly(void) const;
 
-            Type GetType(void) const;
-            Type GetClassType(void) const;
+        Type GetType(void) const;
+        Type GetClassType(void) const;
 
-            const std::string &GetName(void) const;
+        const std::string &GetName(void) const;
 
-            Variant GetValue(const Variant &instance) const;
-            Variant GetValueReference(const Variant &instance) const;
+        Variant GetValue(const Variant &instance) const;
+        Variant GetValueReference(const Variant &instance) const;
 
-            bool SetValue(Variant &instance, const Variant &value) const;
-            
-        private:
-            friend struct TypeData;
+        bool SetValue(Variant &instance, const Variant &value) const;
 
-            Type m_type;
-            Type m_classType;
+    private:
+        friend struct TypeData;
 
-            std::string m_name;
+        Type m_type;
+        Type m_classType;
 
-            std::shared_ptr<FieldGetterBase> m_getter;
-            std::shared_ptr<FieldSetterBase> m_setter;
-        };
-    }
+        std::string m_name;
+
+        std::shared_ptr<FieldGetterBase> m_getter;
+        std::shared_ptr<FieldSetterBase> m_setter;
+    };
 }

@@ -8,16 +8,14 @@
 
 #include "Global.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
-        Global::Global(void)
-            : m_type( Type::Invalid( ) )
-            , m_parentType( Type::Invalid( ) )
-            , m_name( "INVALID" )
-            , m_getter( nullptr ) 
-            , m_setter( nullptr ) { }
+    Global::Global(void)
+        : m_type( Type::Invalid( ) )
+        , m_parentType( Type::Invalid( ) )
+        , m_name( "INVALID" )
+        , m_getter( nullptr )
+        , m_setter( nullptr ) { }
 
         Global::Global(
             const std::string &name, 
@@ -69,17 +67,16 @@ namespace NLS
             return m_getter->GetValue( );
         }
 
-        bool Global::SetValue(const Argument &value) const
+    bool Global::SetValue(const Argument &value) const
+    {
+        // read only?
+        if (m_setter != nullptr)
         {
-            // read only?
-            if (m_setter != nullptr)
-            {
-                m_setter->SetValue( value );
+            m_setter->SetValue( value );
 
-                return true;
-            }
-               
-            return false;
+            return true;
         }
+
+        return false;
     }
 }

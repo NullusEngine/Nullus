@@ -6,7 +6,7 @@
 
 #pragma once
 
-namespace NLS 
+namespace NLS
 {
     template<typename T>
     Array<T>::Array(void) { }

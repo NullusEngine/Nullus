@@ -22,102 +22,97 @@
 #include "Enum.h"
 #include "EnumContainer.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    class ReflectionDatabase;
+
+    struct TypeData
     {
-        class ReflectionDatabase;
+        bool isEnum : 1;
+        bool isPrimitive : 1;
+        bool isSigned : 1;
+        bool isFloatingPoint : 1;
+        bool isPointer : 1;
+        bool isClass : 1;
 
-        struct TypeData
-        {
-            bool isEnum : 1;
-            bool isPrimitive : 1;
-            bool isSigned : 1;
-            bool isFloatingPoint : 1;
-            bool isPointer : 1;
-            bool isClass : 1;
+        MetaManager meta;
 
-            MetaManager meta;
+        std::string name;
 
-            std::string name;
+        // enum type
+        Enum enumeration;
 
-            // enum type
+        // class type
+        Type::Set baseClasses;
+        Type::Set derivedClasses;
 
-            Enum enumeration;
+        Constructor arrayConstructor;
+        Destructor destructor;
 
-            // class type
+        std::unordered_map<
+            InvokableSignature,
+            Constructor
+        > constructors;
 
-            Type::Set baseClasses;
-            Type::Set derivedClasses;
+        std::unordered_map<
+            InvokableSignature,
+            Constructor
+        > dynamicConstructors;
 
-            Constructor arrayConstructor;
+        std::vector<Field> fields;
+        std::vector<Global> staticFields;
 
-            Destructor destructor;
+        std::unordered_map<
+            std::string,
+            InvokableOverloadMap<Method>
+        > methods;
 
-            std::unordered_map<
-                InvokableSignature,
-                Constructor
-            > constructors;
+        std::unordered_map<
+            std::string,
+            InvokableOverloadMap<Function>
+        > staticMethods;
 
-            std::unordered_map<
-                InvokableSignature,
-                Constructor
-            > dynamicConstructors;
+        ///////////////////////////////////////////////////////////////////
+        ///////////////////////////////////////////////////////////////////
 
-            std::vector<Field> fields;
-            std::vector<Global> staticFields;
+        TypeData(void);
+        TypeData(const std::string &name);
 
-            std::unordered_map<
-                std::string,
-                InvokableOverloadMap<Method>
-            > methods;
+        void LoadBaseClasses(
+            ReflectionDatabase &db,
+            TypeID thisType,
+            const std::initializer_list<Type> &classes
+        );
 
-            std::unordered_map<
-                std::string,
-                InvokableOverloadMap<Function>
-            > staticMethods;
+        ///////////////////////////////////////////////////////////////////
+        ///////////////////////////////////////////////////////////////////
 
-            ///////////////////////////////////////////////////////////////////
-            ///////////////////////////////////////////////////////////////////
+        template<typename ClassType, bool IsDynamic, bool IsWrapped, typename ...Args>
+        void AddConstructor(
+            const MetaManager::Initializer &meta
+        );
 
-            TypeData(void);
-            TypeData(const std::string &name);
+        template<typename ClassType>
+        void SetArrayConstructor(void);
 
-            void LoadBaseClasses(
-                ReflectionDatabase &db,
-                TypeID thisType,
-                const std::initializer_list<Type> &classes
-            );
+        const Constructor &GetConstructor(
+            const InvokableSignature &signature
+        );
 
-            ///////////////////////////////////////////////////////////////////
-            ///////////////////////////////////////////////////////////////////
+        const Constructor &GetDynamicConstructor(
+            const InvokableSignature &signature
+        );
 
-            template<typename ClassType, bool IsDynamic, bool IsWrapped, typename ...Args>
-            void AddConstructor(
-                const MetaManager::Initializer &meta
-            );
+        ///////////////////////////////////////////////////////////////////
+        ///////////////////////////////////////////////////////////////////
 
-            template<typename ClassType>
-            void SetArrayConstructor(void);
+        template<typename ClassType>
+        void SetDestructor(void);
 
-            const Constructor &GetConstructor(
-                const InvokableSignature &signature
-            );
+        ///////////////////////////////////////////////////////////////////
+        ///////////////////////////////////////////////////////////////////
 
-            const Constructor &GetDynamicConstructor(
-                const InvokableSignature &signature
-            );
-
-            ///////////////////////////////////////////////////////////////////
-            ///////////////////////////////////////////////////////////////////
-
-            template<typename ClassType>
-            void SetDestructor(void);
-
-            ///////////////////////////////////////////////////////////////////
-            ///////////////////////////////////////////////////////////////////
-
-            // Method Getter, Method Setter
+        // Method Getter, Method Setter
             template<typename ClassType, typename FieldType, typename GetterReturnType, typename SetterArgumentType>
             void AddField(
                 const std::string &name,
@@ -281,8 +276,7 @@ namespace NLS
                 const std::string &name,
                 const typename EnumContainer<EnumType>::Initializer &initalizer
             );
-        };
-    }
+    };
 }
 
 #include "Impl/TypeData.hpp"

@@ -9,100 +9,56 @@
 #include "Rendering/Data/Describable.h"
 #include "Eventing/Event.h"
 #include "RenderDef.h"
+
 namespace NLS::Render::Core
 {
-	/**
-	* A renderer relying on composition to define rendering logic.
-	*/
-	class NLS_RENDER_API CompositeRenderer : public ABaseRenderer, public Data::Describable
-	{
-	public:
-		NLS::Event<NLS::Render::Data::PipelineState&, const Entities::Drawable&> preDrawEntityEvent;
-		NLS::Event<const Entities::Drawable&> postDrawEntityEvent;
+/**
+ * A renderer relying on composition to define rendering logic.
+ */
+class NLS_RENDER_API CompositeRenderer : public ABaseRenderer, public Data::Describable
+{
+public:
+    using PipelineState = Data::PipelineState;
 
-		/**
-		* Constructor of the base renderer
-		* @param p_driver
-		*/
-		CompositeRenderer(Context::Driver& p_driver);
+    NLS::Event<PipelineState&, const Entities::Drawable&> preDrawEntityEvent;
+    NLS::Event<const Entities::Drawable&> postDrawEntityEvent;
 
-		CompositeRenderer(const CompositeRenderer&) = delete;
+    CompositeRenderer(Context::Driver& p_driver);
+    CompositeRenderer(const CompositeRenderer&) = delete;
+    CompositeRenderer& operator=(const CompositeRenderer&) = delete;
 
-		CompositeRenderer &operator=(const CompositeRenderer&) = delete;
-		/**
-		* Begin Frame
-		* @param p_frameDescriptor
-		*/
-		virtual void BeginFrame(const Data::FrameDescriptor& p_frameDescriptor);
+    virtual void BeginFrame(const Data::FrameDescriptor& p_frameDescriptor);
+    virtual void DrawFrame();
+    virtual void EndFrame() override;
 
-		/**
-		* Handle the drawing logic of render pass, invoking DrawPass on the renderer and its
-		* associated render features.
-		*/
-		virtual void DrawFrame();
+    virtual void DrawEntity(
+        PipelineState p_pso,
+        const Entities::Drawable& p_drawable
+    ) override;
 
-		/**
-		* End Frame
-		*/
-		virtual void EndFrame() override;
+    template<typename T, typename ... Args>
+    T& AddFeature(Args&&... p_args);
 
-		/**
-		* Draw a drawable entity
-		* @param p_pso
-		* @param p_drawable
-		*/
-		virtual void DrawEntity(
-			NLS::Render::Data::PipelineState p_pso,
-			const Entities::Drawable& p_drawable
-		) override;
+    template<typename T>
+    bool RemoveFeature();
 
-		/**
-		* Add a render feature to the renderer
-		* @param p_args (Parameter pack forwared to the render feature constructor)
-		*/
-		template<typename T, typename ... Args>
-		T& AddFeature(Args&&... p_args);
+    template<typename T>
+    T& GetFeature() const;
 
-		/**
-		* Remove the given render feature
-		*/
-		template<typename T>
-		bool RemoveFeature();
+    template<typename T>
+    bool HasFeature() const;
 
-		/**
-		* Retrieve the render feature matching the given type
-		* @note Fails if the feature doesn't exist
-		*/
-		template<typename T>
-		T& GetFeature() const;
+    template<typename T, typename ... Args>
+    T& AddPass(const std::string& p_name, uint32_t p_order, Args&&... p_args);
 
-		/**
-		* Return true if the a feature matching the given type has been found
-		*/
-		template<typename T>
-		bool HasFeature() const;
+    template<typename T>
+    T& GetPass(const std::string& p_name) const;
 
-		/**
-		* Add a render pass to the renderer
-		* @param p_name
-		* @param p_order
-		* @param p_args (Parameter pack forwared to the render pass constructor)
-		*/
-		template<typename T, typename ... Args>
-		T& AddPass(const std::string& p_name, uint32_t p_order, Args&&... p_args);
-
-		/**
-		* Retrieve the render passing matching the given pass name
-		* @param p_name
-		*/
-		template<typename T>
-		T& GetPass(const std::string& p_name) const;
-
-	protected:
-		void DrawRegisteredPasses(NLS::Render::Data::PipelineState pso);
-		std::unordered_map<std::type_index, std::unique_ptr<Features::ARenderFeature>> m_features;
-		std::multimap<uint32_t, std::pair<std::string, std::unique_ptr<Core::ARenderPass>>> m_passes;
-	};
+protected:
+    void DrawRegisteredPasses(PipelineState pso);
+    std::unordered_map<std::type_index, std::unique_ptr<Features::ARenderFeature>> m_features;
+    std::multimap<uint32_t, std::pair<std::string, std::unique_ptr<Core::ARenderPass>>> m_passes;
+};
 }
 
 #include "Rendering/Core/CompositeRenderer.inl"

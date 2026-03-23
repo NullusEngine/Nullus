@@ -8,16 +8,13 @@
 
 #include "../ArrayWrapper.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    template<typename T, typename StorageType>
+    ArrayVariantContainer<T, StorageType>::ArrayVariantContainer(StorageType &rhs)
+        : m_array( rhs )
     {
-        template<typename T, typename StorageType>
-        ArrayVariantContainer<T, StorageType>::ArrayVariantContainer(StorageType &rhs)
-            : m_array( rhs )
-        {
-
-        }
+    }
 
         template<typename T, typename StorageType>
         Type ArrayVariantContainer<T, StorageType>::GetType(void) const
@@ -82,5 +79,4 @@ namespace NLS
         {
             return new ArrayVariantContainer<T, StorageType>( const_cast<Array<T>&>( m_array ) );
         }
-    }
 }

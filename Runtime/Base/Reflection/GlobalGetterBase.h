@@ -6,18 +6,15 @@
 
 #pragma once
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    class Variant;
+
+    class GlobalGetterBase
     {
-        class Variant;
+    public:
+        virtual ~GlobalGetterBase(void) { }
 
-        class GlobalGetterBase
-        {
-        public:
-            virtual ~GlobalGetterBase(void) { }
-
-            virtual Variant GetValue(void) = 0;
-        };
-    }
+        virtual Variant GetValue(void) = 0;
+    };
 }

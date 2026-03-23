@@ -12,14 +12,12 @@
 
 #include "Debug/Assertion.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    namespace
     {
-        namespace
-        {
-            const auto kConstructorName = "constructor";
-        }
+        const auto kConstructorName = "constructor";
+    }
 
         Constructor::Constructor(void)
             : Invokable( )
@@ -92,11 +90,10 @@ namespace NLS
             return m_isDynamic;
         }
 
-        Variant Constructor::InvokeVariadic(const ArgumentList &arguments) const
-        {
-            NLS_ASSERT( IsValid( ), "Invalid constructor invoked." );
+    Variant Constructor::InvokeVariadic(const ArgumentList &arguments) const
+    {
+        NLS_ASSERT( IsValid( ), "Invalid constructor invoked." );
 
-            return m_invoker->Invoke( arguments );
-        }
+        return m_invoker->Invoke( arguments );
     }
 }

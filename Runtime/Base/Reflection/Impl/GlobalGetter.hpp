@@ -6,10 +6,8 @@
 
 #pragma once
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
         ///////////////////////////////////////////////////////////////////////
         // Getter from Method
         ///////////////////////////////////////////////////////////////////////
@@ -51,5 +49,4 @@ namespace NLS
         private:
             GlobalType *m_global;
         };
-    }
 }

@@ -29,14 +29,11 @@
 // Converts the resulting type of the given expression to a meta::Type instance
 #define NLS_DECLTYPEOF(expr) NLS_TYPEOF( decltype( expr ) )
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
-        template<typename T>
-        using CleanedType = 
-            typename std::remove_cv< 
-                typename std::remove_reference< T >::type 
-            >::type;
-    }
+    template<typename T>
+    using CleanedType =
+        typename std::remove_cv<
+            typename std::remove_reference<T>::type
+        >::type;
 }

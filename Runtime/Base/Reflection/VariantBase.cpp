@@ -10,19 +10,16 @@
 
 #include "ArrayWrapper.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    bool VariantBase::IsArray(void) const
     {
-        bool VariantBase::IsArray(void) const
-        {
-            return false;
-        }
+        return false;
+    }
 
-        ArrayWrapper VariantBase::GetArray(void) const
-        {
-            // invalid wrapper
-            return { };
-        }
+    ArrayWrapper VariantBase::GetArray(void) const
+    {
+        // invalid wrapper
+        return { };
     }
 }

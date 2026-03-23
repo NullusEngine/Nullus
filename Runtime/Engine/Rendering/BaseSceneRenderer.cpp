@@ -7,13 +7,14 @@
 #include "Components/MaterialRenderer.h"
 #include "Components/TransformComponent.h"
 
-using namespace NLS;
-
 namespace
 {
-	NLS::Render::Features::LightingRenderFeature::LightSet FindActiveLights(const NLS::Engine::SceneSystem::Scene& p_scene)
+    namespace LightingFeature = NLS::Render::Features;
+    using Scene = NLS::Engine::SceneSystem::Scene;
+
+	LightingFeature::LightingRenderFeature::LightSet FindActiveLights(const Scene& p_scene)
 	{
-		NLS::Render::Features::LightingRenderFeature::LightSet lights;
+		LightingFeature::LightingRenderFeature::LightSet lights;
 
 		for (auto* light : p_scene.GetFastAccessComponents().lights)
 		{
@@ -29,29 +30,37 @@ namespace
 	}
 }
 
-Engine::Rendering::BaseSceneRenderer::BaseSceneRenderer(NLS::Render::Context::Driver& p_driver)
-	: NLS::Render::Core::CompositeRenderer(p_driver)
+namespace NLS::Engine::Rendering
+{
+using namespace Components;
+using RenderMaterial = Render::Resources::Material;
+using RenderModel = Render::Resources::Model;
+using RenderMesh = Render::Resources::Mesh;
+using LightingDescriptor = Render::Features::LightingRenderFeature::LightingDescriptor;
+
+BaseSceneRenderer::BaseSceneRenderer(Render::Context::Driver& p_driver)
+	: Render::Core::CompositeRenderer(p_driver)
 {
 	AddFeature<EngineBufferRenderFeature>();
-	AddFeature<NLS::Render::Features::LightingRenderFeature>();
+	AddFeature<Render::Features::LightingRenderFeature>();
 }
 
-void Engine::Rendering::BaseSceneRenderer::BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor)
+void BaseSceneRenderer::BeginFrame(const Render::Data::FrameDescriptor& p_frameDescriptor)
 {
 	NLS_ASSERT(HasDescriptor<SceneDescriptor>(), "Cannot find SceneDescriptor attached to this renderer");
 
 	auto& sceneDescriptor = GetDescriptor<SceneDescriptor>();
-	AddDescriptor<NLS::Render::Features::LightingRenderFeature::LightingDescriptor>({
+	AddDescriptor<LightingDescriptor>({
 		FindActiveLights(sceneDescriptor.scene),
 	});
 
-	NLS::Render::Core::CompositeRenderer::BeginFrame(p_frameDescriptor);
+	Render::Core::CompositeRenderer::BeginFrame(p_frameDescriptor);
 }
 
-void Engine::Rendering::BaseSceneRenderer::DrawModelWithSingleMaterial(
-	NLS::Render::Data::PipelineState p_pso,
-	NLS::Render::Resources::Model& p_model,
-	NLS::Render::Resources::Material& p_material,
+void BaseSceneRenderer::DrawModelWithSingleMaterial(
+	Render::Data::PipelineState p_pso,
+	RenderModel& p_model,
+	RenderMaterial& p_material,
 	const Maths::Matrix4& p_modelMatrix
 )
 {
@@ -65,7 +74,7 @@ void Engine::Rendering::BaseSceneRenderer::DrawModelWithSingleMaterial(
 
 	for (auto mesh : p_model.GetMeshes())
 	{
-		NLS::Render::Entities::Drawable element;
+		Render::Entities::Drawable element;
 		element.mesh = mesh;
 		element.material = &p_material;
 		element.stateMask = stateMask;
@@ -75,10 +84,8 @@ void Engine::Rendering::BaseSceneRenderer::DrawModelWithSingleMaterial(
 	}
 }
 
-Engine::Rendering::BaseSceneRenderer::AllDrawables Engine::Rendering::BaseSceneRenderer::ParseScene()
+BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 {
-	using namespace NLS::Engine::Components;
-
 	OpaqueDrawables opaques;
 	TransparentDrawables transparents;
 	SkyboxDrawables skyboxes;
@@ -88,7 +95,7 @@ Engine::Rendering::BaseSceneRenderer::AllDrawables Engine::Rendering::BaseSceneR
 	auto& scene = sceneDescriptor.scene;
 	auto overrideMaterial = sceneDescriptor.overrideMaterial;
 	auto fallbackMaterial = sceneDescriptor.fallbackMaterial;
-	std::optional<NLS::Render::Data::Frustum> frustum = std::nullopt;
+	std::optional<Render::Data::Frustum> frustum = std::nullopt;
 
 	if (camera.HasFrustumGeometryCulling())
 	{
@@ -111,18 +118,18 @@ Engine::Rendering::BaseSceneRenderer::AllDrawables Engine::Rendering::BaseSceneR
 			continue;
 
 		auto& transform = owner->GetTransform()->GetTransform();
-		auto cullingOptions = NLS::Render::Settings::ECullingOptions::NONE;
+		auto cullingOptions = Render::Settings::ECullingOptions::NONE;
 
 		if (modelRenderer->GetFrustumBehaviour() != MeshRenderer::EFrustumBehaviour::DISABLED)
-			cullingOptions |= NLS::Render::Settings::ECullingOptions::FRUSTUM_PER_MODEL;
+			cullingOptions |= Render::Settings::ECullingOptions::FRUSTUM_PER_MODEL;
 		if (modelRenderer->GetFrustumBehaviour() == MeshRenderer::EFrustumBehaviour::CULL_MESHES)
-			cullingOptions |= NLS::Render::Settings::ECullingOptions::FRUSTUM_PER_MESH;
+			cullingOptions |= Render::Settings::ECullingOptions::FRUSTUM_PER_MESH;
 
 		auto modelBoundingSphere = modelRenderer->GetFrustumBehaviour() == MeshRenderer::EFrustumBehaviour::CULL_CUSTOM
 			? modelRenderer->GetCustomBoundingSphere()
 			: model->GetBoundingSphere();
 
-		std::vector<NLS::Render::Resources::Mesh*> meshes;
+		std::vector<RenderMesh*> meshes;
 		if (frustum)
 			meshes = frustum.value().GetMeshesInFrustum(*model, modelBoundingSphere, transform, cullingOptions);
 		else
@@ -136,7 +143,7 @@ Engine::Rendering::BaseSceneRenderer::AllDrawables Engine::Rendering::BaseSceneR
 
 		for (const auto mesh : meshes)
 		{
-			NLS::Render::Resources::Material* material = nullptr;
+			RenderMaterial* material = nullptr;
 			if (mesh->GetMaterialIndex() < kMaxMaterialCount)
 			{
 				if (overrideMaterial && overrideMaterial->IsValid())
@@ -152,7 +159,7 @@ Engine::Rendering::BaseSceneRenderer::AllDrawables Engine::Rendering::BaseSceneR
 
 			if (material && material->IsValid())
 			{
-				NLS::Render::Entities::Drawable drawable;
+				Render::Entities::Drawable drawable;
 				drawable.mesh = mesh;
 				drawable.material = material;
 				drawable.stateMask = material->GenerateStateMask();
@@ -179,7 +186,7 @@ Engine::Rendering::BaseSceneRenderer::AllDrawables Engine::Rendering::BaseSceneR
 			if (auto material = skybox->GetMaterial())
 			{
 				auto& transform = owner->GetTransform()->GetTransform();
-				NLS::Render::Entities::Drawable drawable;
+				Render::Entities::Drawable drawable;
 				drawable.mesh = model->GetMeshes()[0];
 				drawable.material = material;
 				drawable.stateMask = material->GenerateStateMask();
@@ -190,4 +197,5 @@ Engine::Rendering::BaseSceneRenderer::AllDrawables Engine::Rendering::BaseSceneR
 	}
 
 	return { opaques, transparents, skyboxes };
+}
 }

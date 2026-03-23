@@ -18,9 +18,16 @@ namespace NLS::Engine::Rendering
 	class NLS_ENGINE_API BaseSceneRenderer : public NLS::Render::Core::CompositeRenderer
 	{
 	public:
-		using OpaqueDrawables = std::multimap<float, NLS::Render::Entities::Drawable, std::less<float>>;
-		using TransparentDrawables = std::multimap<float, NLS::Render::Entities::Drawable, std::greater<float>>;
-		using SkyboxDrawables = std::multimap<float, NLS::Render::Entities::Drawable, std::less<float>>;
+        using Drawable = Render::Entities::Drawable;
+        using Frustum = Render::Data::Frustum;
+        using PipelineState = Render::Data::PipelineState;
+        using Material = Render::Resources::Material;
+        using Model = Render::Resources::Model;
+        using Driver = Render::Context::Driver;
+
+		using OpaqueDrawables = std::multimap<float, Drawable, std::less<float>>;
+		using TransparentDrawables = std::multimap<float, Drawable, std::greater<float>>;
+		using SkyboxDrawables = std::multimap<float, Drawable, std::less<float>>;
 
 		struct AllDrawables
 		{
@@ -32,19 +39,19 @@ namespace NLS::Engine::Rendering
 		struct SceneDescriptor
 		{
 			SceneSystem::Scene& scene;
-			std::optional<NLS::Render::Data::Frustum> frustumOverride;
-			NLS::Render::Resources::Material* overrideMaterial;
-			NLS::Render::Resources::Material* fallbackMaterial;
+			std::optional<Frustum> frustumOverride;
+			Material* overrideMaterial;
+			Material* fallbackMaterial;
 		};
 
-		explicit BaseSceneRenderer(NLS::Render::Context::Driver& p_driver);
+		explicit BaseSceneRenderer(Driver& p_driver);
 
-		void BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor) override;
+		void BeginFrame(const Render::Data::FrameDescriptor& p_frameDescriptor) override;
 
 		virtual void DrawModelWithSingleMaterial(
-			NLS::Render::Data::PipelineState p_pso,
-			NLS::Render::Resources::Model& p_model,
-			NLS::Render::Resources::Material& p_material,
+			PipelineState p_pso,
+			Model& p_model,
+			Material& p_material,
 			const Maths::Matrix4& p_modelMatrix
 		);
 

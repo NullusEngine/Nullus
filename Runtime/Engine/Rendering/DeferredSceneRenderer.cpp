@@ -1,29 +1,93 @@
 #include "Rendering/DeferredSceneRenderer.h"
 
-#include <glad/glad.h>
 #include <fg/Blackboard.hpp>
 
+#include <algorithm>
+#include <cmath>
 #include <vector>
 
 #include <Core/ResourceManagement/ShaderManager.h>
 #include <Core/ServiceLocator.h>
-#include <Rendering/FrameGraph/OpenGLFrameGraphTexture.h>
+#include <Rendering/FrameGraph/FrameGraphExecutionContext.h>
+#include <Rendering/FrameGraph/FrameGraphBuffer.h>
+#include <Rendering/FrameGraph/FrameGraphTexture.h>
+#include <Rendering/RHI/RHITypes.h>
 
 #include "Components/MaterialRenderer.h"
 #include "Components/MeshRenderer.h"
 #include "Rendering/EngineDrawableDescriptor.h"
+#include "Rendering/FrameGraphSceneTargets.h"
+
+namespace RHI = NLS::Render::RHI;
 
 namespace
 {
-	constexpr GLint kClusterDimensionsLocation = 0;
-	constexpr GLint kScreenSizeLocation = 1;
-	constexpr GLint kNearFarLocation = 2;
-	constexpr GLint kClusterLightIndexCountLocation = 3;
-	constexpr GLint kCameraWorldPosLocation = 4;
+    using Driver = NLS::Render::Context::Driver;
+    using RenderMesh = NLS::Render::Resources::Mesh;
+    using Vertex = NLS::Render::Geometry::Vertex;
+	using FrameGraphTexture = NLS::Render::FrameGraph::FrameGraphTexture;
+	using FrameGraphBuffer = NLS::Render::FrameGraph::FrameGraphBuffer;
+	using DeferredOutputData = NLS::Engine::Rendering::SceneRenderTargetsData;
 
-	NLS::Render::Resources::Mesh BuildFullscreenTriangle()
+	struct DeferredGBufferData
 	{
-		using Vertex = NLS::Render::Geometry::Vertex;
+		FrameGraphResource albedo = -1;
+		FrameGraphResource position = -1;
+		FrameGraphResource normal = -1;
+		FrameGraphResource material = -1;
+		FrameGraphResource depth = -1;
+	};
+
+	struct DeferredLightingData
+	{
+		FrameGraphResource albedo = -1;
+		FrameGraphResource position = -1;
+		FrameGraphResource normal = -1;
+		FrameGraphResource material = -1;
+		FrameGraphResource depth = -1;
+		FrameGraphResource clusterRecords = -1;
+		FrameGraphResource clusterIndices = -1;
+		FrameGraphResource target = -1;
+	};
+
+	FrameGraphTexture::Desc MakeColorTextureDesc(uint16_t width, uint16_t height, RHI::TextureFormat format)
+	{
+		FrameGraphTexture::Desc desc;
+		desc.width = width;
+		desc.height = height;
+		desc.format = format;
+		desc.usage = RHI::TextureUsage::Sampled | RHI::TextureUsage::ColorAttachment;
+		return desc;
+	}
+
+	FrameGraphTexture::Desc MakeDepthTextureDesc(uint16_t width, uint16_t height)
+	{
+		FrameGraphTexture::Desc desc;
+		desc.width = width;
+		desc.height = height;
+		desc.format = RHI::TextureFormat::Depth24Stencil8;
+		desc.usage = RHI::TextureUsage::Sampled | RHI::TextureUsage::DepthStencilAttachment;
+		return desc;
+	}
+
+	void AttachDeferredGBuffer(Driver& driver, uint32_t framebuffer, uint32_t albedo, uint32_t position, uint32_t normal, uint32_t material, uint32_t depth)
+	{
+		driver.AttachFramebufferColorTexture(framebuffer, albedo, 0);
+		driver.AttachFramebufferColorTexture(framebuffer, position, 1);
+		driver.AttachFramebufferColorTexture(framebuffer, normal, 2);
+		driver.AttachFramebufferColorTexture(framebuffer, material, 3);
+		driver.AttachFramebufferDepthStencilTexture(framebuffer, depth);
+		driver.SetFramebufferDrawBufferCount(framebuffer, 4);
+	}
+
+	float RoughnessFromLegacyShininess(float shininess)
+	{
+		const float clampedShininess = std::max(shininess, 1.0f);
+		return std::clamp(std::sqrt(2.0f / (clampedShininess + 2.0f)), 0.045f, 1.0f);
+	}
+
+	RenderMesh BuildFullscreenTriangle()
+	{
 		std::vector<Vertex> vertices(3);
 
 		vertices[0].position[0] = -1.0f;
@@ -44,30 +108,44 @@ namespace
 		vertices[2].texCoords[0] = 0.0f;
 		vertices[2].texCoords[1] = 2.0f;
 
-		return NLS::Render::Resources::Mesh(vertices, {}, 0);
+		return RenderMesh(vertices, {}, 0);
 	}
 }
 
 namespace NLS::Engine::Rendering
 {
-	DeferredSceneRenderer::DeferredSceneRenderer(NLS::Render::Context::Driver& p_driver)
+    using DeferredLightingDescriptor = Render::Features::LightingRenderFeature::LightingDescriptor;
+    using RenderMaterial = Render::Resources::Material;
+    using RenderTexture2D = Render::Resources::Texture2D;
+    using RenderMesh = Render::Resources::Mesh;
+
+	DeferredSceneRenderer::DeferredSceneRenderer(Render::Context::Driver& p_driver)
 		: BaseSceneRenderer(p_driver)
 		, m_fullscreenTriangle(BuildFullscreenTriangle())
 	{
 		m_deferredLightingShader = NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager)[":Shaders/DeferredLighting.glsl"];
 
-		m_clusterRecordsBuffer = std::make_unique<NLS::Render::Buffers::ShaderStorageBuffer>(NLS::Render::Settings::EAccessSpecifier::STREAM_DRAW);
-		m_clusterIndicesBuffer = std::make_unique<NLS::Render::Buffers::ShaderStorageBuffer>(NLS::Render::Settings::EAccessSpecifier::STREAM_DRAW);
+		m_clusterRecordsBuffer = std::make_unique<Render::Buffers::ShaderStorageBuffer>(Render::Settings::EAccessSpecifier::STREAM_DRAW);
+		m_clusterIndicesBuffer = std::make_unique<Render::Buffers::ShaderStorageBuffer>(Render::Settings::EAccessSpecifier::STREAM_DRAW);
 	}
 
-	void DeferredSceneRenderer::BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor)
+	DeferredSceneRenderer::~DeferredSceneRenderer()
+	{
+		if (m_gbufferFramebuffer != 0)
+		{
+			m_driver.DestroyFramebuffer(m_gbufferFramebuffer);
+			m_gbufferFramebuffer = 0;
+		}
+	}
+
+	void DeferredSceneRenderer::BeginFrame(const Render::Data::FrameDescriptor& p_frameDescriptor)
 	{
 		BaseSceneRenderer::BeginFrame(p_frameDescriptor);
 
-		EnsureFrameResources(p_frameDescriptor.renderWidth, p_frameDescriptor.renderHeight);
+		EnsureGBufferFramebuffer();
 
 		auto drawables = ParseScene();
-		const auto& lighting = GetDescriptor<NLS::Render::Features::LightingRenderFeature::LightingDescriptor>();
+		const auto& lighting = GetDescriptor<DeferredLightingDescriptor>();
 		const auto& lights = lighting.lights;
 		const auto clusteredLights = BuildClusteredLightGrid(
 			m_clusterSettings,
@@ -120,94 +198,158 @@ namespace NLS::Engine::Rendering
 	{
 		auto pso = CreatePipelineState();
 		const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
+		const auto& frame = GetFrameDescriptor();
 
 		FrameGraph frameGraph;
-		frameGraph.reserve(4, 0);
+		frameGraph.reserve(4, frame.outputBuffer ? 9 : 7);
+		FrameGraphBlackboard blackboard;
 
-		frameGraph.addCallbackPass(
+		ImportSceneRenderTargets(frameGraph, blackboard, frame, "SceneColor", "SceneDepth");
+
+		const auto& gbufferPass = frameGraph.addCallbackPass<DeferredGBufferData>(
 			"DeferredOpaque",
-			[](FrameGraph::Builder& builder, FrameGraph::NoData&)
+			[&frame](FrameGraph::Builder& builder, DeferredGBufferData& data)
 			{
-				builder.setSideEffect();
+				data.albedo = builder.create<FrameGraphTexture>("GBufferAlbedo", MakeColorTextureDesc(frame.renderWidth, frame.renderHeight, RHI::TextureFormat::RGBA8));
+				data.position = builder.create<FrameGraphTexture>("GBufferPosition", MakeColorTextureDesc(frame.renderWidth, frame.renderHeight, RHI::TextureFormat::RGBA16F));
+				data.normal = builder.create<FrameGraphTexture>("GBufferNormal", MakeColorTextureDesc(frame.renderWidth, frame.renderHeight, RHI::TextureFormat::RGBA16F));
+				data.material = builder.create<FrameGraphTexture>("GBufferMaterial", MakeColorTextureDesc(frame.renderWidth, frame.renderHeight, RHI::TextureFormat::RGBA8));
+				data.depth = builder.create<FrameGraphTexture>("GBufferDepth", MakeDepthTextureDesc(frame.renderWidth, frame.renderHeight));
+
+				data.albedo = builder.write(data.albedo);
+				data.position = builder.write(data.position);
+				data.normal = builder.write(data.normal);
+				data.material = builder.write(data.material);
+				data.depth = builder.write(data.depth);
 			},
-			[this, pso](const FrameGraph::NoData&, FrameGraphPassResources&, void*)
+			[this, &scene, pso](const DeferredGBufferData& data, FrameGraphPassResources& resources, void*)
 			{
-				DrawOpaques(pso);
+				AttachDeferredGBuffer(
+					m_driver,
+					m_gbufferFramebuffer,
+					resources.get<FrameGraphTexture>(data.albedo).id,
+					resources.get<FrameGraphTexture>(data.position).id,
+					resources.get<FrameGraphTexture>(data.normal).id,
+					resources.get<FrameGraphTexture>(data.material).id,
+					resources.get<FrameGraphTexture>(data.depth).id
+				);
+				DrawDeferredGeometryPass(scene, pso);
 			}
 		);
 
-		frameGraph.addCallbackPass(
+		const auto clusterRecords = frameGraph.import<FrameGraphBuffer>(
+			"ClusterRecords",
+			[]()
+			{
+				FrameGraphBuffer::Desc desc;
+				desc.type = RHI::BufferType::ShaderStorage;
+				desc.usage = RHI::BufferUsage::StreamDraw;
+				return desc;
+			}(),
+			FrameGraphBuffer::WrapExternal(m_clusterRecordsBuffer->GetID())
+		);
+		const auto clusterIndices = frameGraph.import<FrameGraphBuffer>(
+			"ClusterIndices",
+			[]()
+			{
+				FrameGraphBuffer::Desc desc;
+				desc.type = RHI::BufferType::ShaderStorage;
+				desc.usage = RHI::BufferUsage::StreamDraw;
+				return desc;
+			}(),
+			FrameGraphBuffer::WrapExternal(m_clusterIndicesBuffer->GetID())
+		);
+
+		const auto& lightingPass = frameGraph.addCallbackPass<DeferredLightingData>(
 			"DeferredLighting",
-			[](FrameGraph::Builder& builder, FrameGraph::NoData&)
+			[&blackboard, &gbufferPass, clusterRecords, clusterIndices](FrameGraph::Builder& builder, DeferredLightingData& data)
 			{
-				builder.setSideEffect();
+				data.albedo = builder.read(gbufferPass.albedo, 0);
+				data.position = builder.read(gbufferPass.position, 1);
+				data.normal = builder.read(gbufferPass.normal, 2);
+				data.material = builder.read(gbufferPass.material, 3);
+				data.depth = builder.read(gbufferPass.depth, 4);
+				data.clusterRecords = builder.read(clusterRecords, 1);
+				data.clusterIndices = builder.read(clusterIndices, 2);
+
+				if (const auto* output = blackboard.try_get<DeferredOutputData>())
+				{
+					if (output->color >= 0)
+						data.target = builder.write(output->color);
+					if (output->depth >= 0)
+						data.depth = builder.write(output->depth);
+				}
+				else
+					builder.setSideEffect();
 			},
-			[this, &scene, pso](const FrameGraph::NoData&, FrameGraphPassResources&, void*)
+			[this, &scene, pso](const DeferredLightingData&, FrameGraphPassResources&, void*)
 			{
-				DrawDeferredLightingPass(scene, pso);
+				DrawDeferredLightingPass(scene, pso, m_gbufferFramebuffer);
 			}
 		);
 
-		frameGraph.addCallbackPass(
+		auto currentTarget = lightingPass.target;
+
+		const auto& skyboxPass = frameGraph.addCallbackPass<DeferredOutputData>(
 			"DeferredSkybox",
-			[](FrameGraph::Builder& builder, FrameGraph::NoData&)
+			[&blackboard, currentTarget](FrameGraph::Builder& builder, DeferredOutputData& data)
 			{
-				builder.setSideEffect();
+				if (currentTarget >= 0)
+					data.color = builder.write(currentTarget);
+				else if (const auto* output = blackboard.try_get<DeferredOutputData>())
+					data.color = builder.write(output->color);
+
+				if (const auto* output = blackboard.try_get<DeferredOutputData>(); output && output->depth >= 0)
+					data.depth = builder.write(output->depth);
+
+				if (data.color < 0 && data.depth < 0)
+					builder.setSideEffect();
 			},
-			[this, pso](const FrameGraph::NoData&, FrameGraphPassResources&, void*)
+			[this, pso](const DeferredOutputData&, FrameGraphPassResources&, void*)
 			{
 				DrawSkyboxes(pso);
 			}
 		);
 
-		frameGraph.addCallbackPass(
+		currentTarget = skyboxPass.color;
+
+		frameGraph.addCallbackPass<DeferredOutputData>(
 			"DeferredTransparent",
-			[](FrameGraph::Builder& builder, FrameGraph::NoData&)
+			[&blackboard, currentTarget](FrameGraph::Builder& builder, DeferredOutputData& data)
 			{
-				builder.setSideEffect();
+				if (currentTarget >= 0)
+					data.color = builder.write(currentTarget);
+				else if (const auto* output = blackboard.try_get<DeferredOutputData>())
+					data.color = builder.write(output->color);
+
+				if (const auto* output = blackboard.try_get<DeferredOutputData>(); output && output->depth >= 0)
+					data.depth = builder.write(output->depth);
+
+				if (data.color < 0 && data.depth < 0)
+					builder.setSideEffect();
 			},
-			[this, pso](const FrameGraph::NoData&, FrameGraphPassResources&, void*)
+			[this, pso](const DeferredOutputData&, FrameGraphPassResources&, void*)
 			{
 				DrawTransparents(pso);
 			}
 		);
 
 		frameGraph.compile();
-		frameGraph.execute();
+		Render::FrameGraph::FrameGraphExecutionContext executionContext{ m_driver.GetRenderDevice() };
+		frameGraph.execute(&executionContext, &executionContext);
 
 		DrawRegisteredPasses(CreatePipelineState());
 	}
 
-	void DeferredSceneRenderer::EnsureFrameResources(uint16_t width, uint16_t height)
+	void DeferredSceneRenderer::EnsureGBufferFramebuffer()
 	{
-		if (width == 0 || height == 0)
-			return;
-
-		if (m_gbufferWidth != width || m_gbufferHeight != height)
-		{
-			using AttachmentDesc = NLS::Render::Buffers::MultiFramebuffer::AttachmentDesc;
-			m_gbuffer.Init(width, height, {
-				AttachmentDesc{ GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE },
-				AttachmentDesc{ GL_RGBA16F, GL_RGBA, GL_FLOAT },
-				AttachmentDesc{ GL_RGBA16F, GL_RGBA, GL_FLOAT },
-				AttachmentDesc{ GL_RGBA8, GL_RGBA, GL_UNSIGNED_BYTE }
-			}, true);
-
-			const auto& textures = m_gbuffer.GetColorTextures();
-			m_albedoTexture = NLS::Render::Resources::Texture2D::WrapExternal(textures[0], width, height);
-			m_positionTexture = NLS::Render::Resources::Texture2D::WrapExternal(textures[1], width, height);
-			m_normalTexture = NLS::Render::Resources::Texture2D::WrapExternal(textures[2], width, height);
-			m_materialTexture = NLS::Render::Resources::Texture2D::WrapExternal(textures[3], width, height);
-			m_depthTexture = NLS::Render::Resources::Texture2D::WrapExternal(m_gbuffer.GetDepthTexture(), width, height);
-
-			m_gbufferWidth = width;
-			m_gbufferHeight = height;
-		}
+		if (m_gbufferFramebuffer == 0)
+			m_gbufferFramebuffer = m_driver.CreateFramebuffer();
 	}
 
-	void DeferredSceneRenderer::DrawSkyboxes(NLS::Render::Data::PipelineState pso)
+	void DeferredSceneRenderer::DrawSkyboxes(Render::Data::PipelineState pso)
 	{
-		pso.depthFunc = NLS::Render::Settings::EComparaisonAlgorithm::LESS_EQUAL;
+		pso.depthFunc = Render::Settings::EComparaisonAlgorithm::LESS_EQUAL;
 		pso.culling = false;
 
 		const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
@@ -225,7 +367,7 @@ namespace NLS::Engine::Rendering
 		}
 	}
 
-	void DeferredSceneRenderer::DrawTransparents(NLS::Render::Data::PipelineState pso)
+	void DeferredSceneRenderer::DrawTransparents(Render::Data::PipelineState pso)
 	{
 		const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
 		for (const auto& [_, drawable] : scene.transparents)
@@ -234,17 +376,18 @@ namespace NLS::Engine::Rendering
 		}
 	}
 
-	void DeferredSceneRenderer::DrawOpaques(NLS::Render::Data::PipelineState pso)
+	void DeferredSceneRenderer::DrawOpaques(Render::Data::PipelineState pso)
 	{
 		const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
 		DrawDeferredGeometryPass(scene, pso);
 	}
 
-	void DeferredSceneRenderer::DrawDeferredGeometryPass(const DeferredSceneDescriptor& scene, NLS::Render::Data::PipelineState pso)
+	void DeferredSceneRenderer::DrawDeferredGeometryPass(const DeferredSceneDescriptor& scene, Render::Data::PipelineState pso)
 	{
-		m_gbuffer.Bind();
-		m_driver.SetViewport(0, 0, m_gbufferWidth, m_gbufferHeight);
-		m_driver.Clear(true, true, false, NLS::Maths::Vector4(0.0f, 0.0f, 0.0f, 0.0f));
+		const auto& frame = GetFrameDescriptor();
+		m_driver.BindFramebuffer(m_gbufferFramebuffer);
+		m_driver.SetViewport(0, 0, frame.renderWidth, frame.renderHeight);
+		m_driver.Clear(true, true, false, Maths::Vector4(0.0f, 0.0f, 0.0f, 0.0f));
 
 		for (const auto& [_, drawable] : scene.opaques)
 		{
@@ -256,16 +399,13 @@ namespace NLS::Engine::Rendering
 		}
 	}
 
-	void DeferredSceneRenderer::DrawDeferredLightingPass(const DeferredSceneDescriptor& scene, NLS::Render::Data::PipelineState pso)
+	void DeferredSceneRenderer::DrawDeferredLightingPass(const DeferredSceneDescriptor& scene, Render::Data::PipelineState pso, uint32_t sourceFramebuffer)
 	{
 		const auto& frame = GetFrameDescriptor();
 		const auto destinationFramebuffer = frame.outputBuffer ? frame.outputBuffer->GetID() : 0;
 
 		m_driver.BindFramebuffer(destinationFramebuffer);
 		m_driver.SetViewport(0, 0, frame.renderWidth, frame.renderHeight);
-
-		m_clusterRecordsBuffer->Bind(1);
-		m_clusterIndicesBuffer->Bind(2);
 
 		auto& camera = *frame.camera;
 		pso.depthTest = false;
@@ -275,62 +415,75 @@ namespace NLS::Engine::Rendering
 		if (m_deferredLightingShader)
 		{
 			m_deferredLightingShader->Bind();
-			m_albedoTexture->Bind(0);
-			m_positionTexture->Bind(1);
-			m_normalTexture->Bind(2);
-			m_materialTexture->Bind(3);
-			m_depthTexture->Bind(4);
 
-			glUniform3f(
-				kClusterDimensionsLocation,
-				static_cast<float>(scene.clusteredLights.settings.gridSizeX),
-				static_cast<float>(scene.clusteredLights.settings.gridSizeY),
-				static_cast<float>(scene.clusteredLights.settings.gridSizeZ)
+			m_deferredLightingShader->SetUniformVec3(
+				"u_ClusterDimensions",
+				{
+					static_cast<float>(scene.clusteredLights.settings.gridSizeX),
+					static_cast<float>(scene.clusteredLights.settings.gridSizeY),
+					static_cast<float>(scene.clusteredLights.settings.gridSizeZ)
+				}
 			);
-			glUniform2f(kScreenSizeLocation, static_cast<float>(frame.renderWidth), static_cast<float>(frame.renderHeight));
-			glUniform2f(kNearFarLocation, camera.GetNear(), camera.GetFar());
-			glUniform1i(kClusterLightIndexCountLocation, static_cast<int>(scene.clusteredLights.lightIndices.size()));
-			glUniform3f(kCameraWorldPosLocation, camera.GetPosition().x, camera.GetPosition().y, camera.GetPosition().z);
+			m_deferredLightingShader->SetUniformVec2("u_ScreenSize", { static_cast<float>(frame.renderWidth), static_cast<float>(frame.renderHeight) });
+			m_deferredLightingShader->SetUniformVec2("u_NearFar", { camera.GetNear(), camera.GetFar() });
+			m_deferredLightingShader->SetUniformInt("u_ClusterLightIndexCount", static_cast<int>(scene.clusteredLights.lightIndices.size()));
+			m_deferredLightingShader->SetUniformVec3("u_CameraWorldPos", camera.GetPosition());
 
 			m_driver.Draw(pso, m_fullscreenTriangle);
-
-			m_depthTexture->Unbind();
-			m_materialTexture->Unbind();
-			m_normalTexture->Unbind();
-			m_positionTexture->Unbind();
-			m_albedoTexture->Unbind();
 			m_deferredLightingShader->Unbind();
 		}
 
-		m_clusterIndicesBuffer->Unbind();
-		m_clusterRecordsBuffer->Unbind();
-
-		m_driver.BlitDepth(m_gbuffer.GetID(), destinationFramebuffer, frame.renderWidth, frame.renderHeight);
+		m_driver.BlitDepth(sourceFramebuffer, destinationFramebuffer, frame.renderWidth, frame.renderHeight);
 		m_driver.BindFramebuffer(destinationFramebuffer);
 	}
 
-	NLS::Render::Resources::Material DeferredSceneRenderer::BuildGeometryMaterial(const NLS::Render::Resources::Material& source) const
+	RenderMaterial DeferredSceneRenderer::BuildGeometryMaterial(const RenderMaterial& source) const
 	{
-		NLS::Render::Resources::Material geometryMaterial(NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager)[":Shaders/DeferredGBuffer.glsl"]);
+		RenderMaterial geometryMaterial(NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager)[":Shaders/DeferredGBuffer.glsl"]);
 		geometryMaterial.SetBlendable(false);
 		geometryMaterial.SetBackfaceCulling(source.HasBackfaceCulling());
 		geometryMaterial.SetFrontfaceCulling(source.HasFrontfaceCulling());
 		geometryMaterial.SetDepthTest(source.HasDepthTest());
 		geometryMaterial.SetDepthWriting(source.HasDepthWriting());
 
-		geometryMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", nullptr);
-		geometryMaterial.Set<NLS::Render::Resources::Texture2D*>("u_SpecularMap", nullptr);
-		geometryMaterial.Set<NLS::Render::Resources::Texture2D*>("u_NormalMap", nullptr);
-		geometryMaterial.Set<NLS::Render::Resources::Texture2D*>("u_MaskMap", nullptr);
-		geometryMaterial.Set("u_Specular", NLS::Maths::Vector3(1.0f, 1.0f, 1.0f));
-		geometryMaterial.Set("u_Shininess", 64.0f);
+		geometryMaterial.Set<RenderTexture2D*>("u_AlbedoMap", nullptr);
+		geometryMaterial.Set<RenderTexture2D*>("u_MetallicMap", nullptr);
+		geometryMaterial.Set<RenderTexture2D*>("u_RoughnessMap", nullptr);
+		geometryMaterial.Set<RenderTexture2D*>("u_AmbientOcclusionMap", nullptr);
+		geometryMaterial.Set<RenderTexture2D*>("u_NormalMap", nullptr);
+		geometryMaterial.Set<RenderTexture2D*>("u_MaskMap", nullptr);
+		geometryMaterial.Set("u_Albedo", Maths::Vector4(1.0f, 1.0f, 1.0f, 1.0f));
+		geometryMaterial.Set("u_Metallic", 1.0f);
+		geometryMaterial.Set("u_Roughness", 1.0f);
 		geometryMaterial.Set("u_EnableNormalMapping", false);
 
 		auto& targetUniforms = geometryMaterial.GetUniformsData();
-		for (const auto& [name, value] : const_cast<NLS::Render::Resources::Material&>(source).GetUniformsData())
+		const auto& sourceUniforms = const_cast<RenderMaterial&>(source).GetUniformsData();
+		for (const auto& [name, value] : sourceUniforms)
 		{
 			if (targetUniforms.find(name) != targetUniforms.end())
 				targetUniforms[name] = value;
+		}
+
+		if (targetUniforms.contains("u_AlbedoMap") && sourceUniforms.contains("u_DiffuseMap") && !sourceUniforms.contains("u_AlbedoMap"))
+			targetUniforms["u_AlbedoMap"] = sourceUniforms.at("u_DiffuseMap");
+
+		if (targetUniforms.contains("u_Albedo") && sourceUniforms.contains("u_Diffuse") && !sourceUniforms.contains("u_Albedo"))
+			targetUniforms["u_Albedo"] = sourceUniforms.at("u_Diffuse");
+
+		if (targetUniforms.contains("u_EnableNormalMapping") && sourceUniforms.contains("u_EnableNormalMapping"))
+			targetUniforms["u_EnableNormalMapping"] = sourceUniforms.at("u_EnableNormalMapping");
+
+		if (targetUniforms.contains("u_NormalMap") && sourceUniforms.contains("u_NormalMap"))
+			targetUniforms["u_NormalMap"] = sourceUniforms.at("u_NormalMap");
+
+		if (!sourceUniforms.contains("u_Metallic"))
+			targetUniforms["u_Metallic"] = 0.0f;
+
+		if (!sourceUniforms.contains("u_Roughness") && sourceUniforms.contains("u_Shininess"))
+		{
+			if (const auto* legacyShininess = std::any_cast<float>(&sourceUniforms.at("u_Shininess")))
+				targetUniforms["u_Roughness"] = RoughnessFromLegacyShininess(*legacyShininess);
 		}
 
 		return geometryMaterial;

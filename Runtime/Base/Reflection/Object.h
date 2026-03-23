@@ -11,22 +11,19 @@
 // Constructs a variant that wraps an object
 #define ObjectVariant(object) NLS::meta::Variant { object, NLS::meta::variant_policy::WrapObject( ) }
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    class Type;
+
+    class Object
     {
-        class Type;
+    public:
+        virtual ~Object(void) { }
 
-        class Object
-        {
-        public:
-            virtual ~Object(void) { }
+        virtual Type GetType(void) const = 0;
+        virtual Object *Clone(void) const = 0;
 
-            virtual Type GetType(void) const = 0;
-            virtual Object *Clone(void) const = 0;
-
-            virtual void OnSerialize(Json::object &output) const { }
-            virtual void OnDeserialize(const Json &input) { }
-        };
-    }
+        virtual void OnSerialize(Json::object &output) const { }
+        virtual void OnDeserialize(const Json &input) { }
+    };
 }

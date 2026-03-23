@@ -10,16 +10,14 @@
 
 #include "ReflectionDatabase.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
-        TypeData::TypeData(void)
-            : isEnum( false )
-            , isPrimitive( false )
-            , isPointer( false )
-            , isClass( false )
-            , enumeration { nullptr }  { }
+    TypeData::TypeData(void)
+        : isEnum( false )
+        , isPrimitive( false )
+        , isPointer( false )
+        , isClass( false )
+        , enumeration { nullptr }  { }
 
         ///////////////////////////////////////////////////////////////////////
 
@@ -139,19 +137,18 @@ namespace NLS
 
         ///////////////////////////////////////////////////////////////////////
 
-        const Function &TypeData::GetStaticMethod(
-            const std::string &name, 
-            const InvokableSignature &signature
-        )
-        {
-            auto &base = staticMethods[ name ];
+    const Function &TypeData::GetStaticMethod(
+        const std::string &name,
+        const InvokableSignature &signature
+    )
+    {
+        auto &base = staticMethods[ name ];
 
-            auto search = base.find( signature );
+        auto search = base.find( signature );
 
-            if (search == base.end( ))
-                return Function::Invalid( );
+        if (search == base.end( ))
+            return Function::Invalid( );
 
-            return search->second;
-        }
+        return search->second;
     }
 }

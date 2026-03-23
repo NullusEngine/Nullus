@@ -10,28 +10,25 @@
 
 #include "DestructorInvoker.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    class Destructor : public Invokable
     {
-        class Destructor : public Invokable
-        {
-        public:
-            Destructor(void);
-            Destructor(Type classType, DestructorInvokerBase *invoker);
+    public:
+        Destructor(void);
+        Destructor(Type classType, DestructorInvokerBase *invoker);
 
-            static const Destructor &Invalid(void);
+        static const Destructor &Invalid(void);
 
-            Type GetClassType(void) const;
+        Type GetClassType(void) const;
 
-            bool IsValid(void) const;
+        bool IsValid(void) const;
 
-            void Invoke(Variant &instance) const;
+        void Invoke(Variant &instance) const;
 
-        private:
-            Type m_classType;
+    private:
+        Type m_classType;
 
-            std::shared_ptr<DestructorInvokerBase> m_invoker;
-        };
-    }
+        std::shared_ptr<DestructorInvokerBase> m_invoker;
+    };
 }

@@ -11,23 +11,21 @@
 #include <algorithm>
 #include <vector>
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    namespace
     {
-        namespace
+        std::vector<ReflectionRegisterFunction> &GetReflectionRegisterFunctions()
         {
-            std::vector<ReflectionRegisterFunction> &GetReflectionRegisterFunctions()
-            {
-                static std::vector<ReflectionRegisterFunction> functions;
-                return functions;
-            }
+            static std::vector<ReflectionRegisterFunction> functions;
+            return functions;
         }
+    }
 
-        void ReflectionModuleRegistry::Add(ReflectionRegisterFunction function)
-        {
-            if (!function)
-                return;
+    void ReflectionModuleRegistry::Add(ReflectionRegisterFunction function)
+    {
+        if (!function)
+            return;
 
             auto &functions = GetReflectionRegisterFunctions();
             if (std::find(functions.begin(), functions.end(), function) == functions.end())
@@ -41,19 +39,18 @@ namespace NLS
             }
         }
 
-        void ReflectionModuleRegistry::RegisterAll(ReflectionDatabase &db)
-        {
-            auto &functions = GetReflectionRegisterFunctions();
+    void ReflectionModuleRegistry::RegisterAll(ReflectionDatabase &db)
+    {
+        auto &functions = GetReflectionRegisterFunctions();
 
             for (auto function : functions)
             {
                 function(db, ReflectionRegistrationPhase::Declare);
             }
 
-            for (auto function : functions)
-            {
-                function(db, ReflectionRegistrationPhase::Define);
-            }
+        for (auto function : functions)
+        {
+            function(db, ReflectionRegistrationPhase::Define);
         }
     }
 }

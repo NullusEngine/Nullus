@@ -1,33 +1,32 @@
 #include "Components/LightComponent.h"
 #include "Components/TransformComponent.h"
 #include "GameObject.h"
-using namespace NLS;
-using namespace NLS::Engine::Components;
-using namespace NLS::Render::Entities;
-using namespace NLS::Render;
-NLS::Engine::Components::LightComponent::LightComponent()
+
+namespace NLS::Engine::Components
+{
+LightComponent::LightComponent()
 {
 }
 
-void NLS::Engine::Components::LightComponent::OnCreate()
+void LightComponent::OnCreate()
 {
-	m_data = new Light(&m_owner->GetTransform()->GetTransform());
+	m_data = new Render::Entities::Light(&m_owner->GetTransform()->GetTransform());
 }
 
-void NLS::Engine::Components::LightComponent::SetLightType(Settings::ELightType type)
+void LightComponent::SetLightType(Render::Settings::ELightType type)
 {
 	m_data->type = type;
 	switch (type)
 	{
-	case NLS::Render::Settings::ELightType::POINT:
+	case Render::Settings::ELightType::POINT:
 		break;
-	case NLS::Render::Settings::ELightType::DIRECTIONAL:
+	case Render::Settings::ELightType::DIRECTIONAL:
 		break;
-	case NLS::Render::Settings::ELightType::SPOT:
+	case Render::Settings::ELightType::SPOT:
 		break;
-	case NLS::Render::Settings::ELightType::AMBIENT_BOX:
+	case Render::Settings::ELightType::AMBIENT_BOX:
 		break;
-	case NLS::Render::Settings::ELightType::AMBIENT_SPHERE:
+	case Render::Settings::ELightType::AMBIENT_SPHERE:
 		m_data->intensity = 0.1f;
 		m_data->constant = 1.0f;
 		break;
@@ -36,7 +35,7 @@ void NLS::Engine::Components::LightComponent::SetLightType(Settings::ELightType 
 	}
 }
 
-const NLS::Render::Entities::Light* LightComponent::GetData() const
+const Render::Entities::Light* LightComponent::GetData() const
 {
 	return m_data;
 }
@@ -61,79 +60,80 @@ void LightComponent::SetIntensity(float p_intensity)
 	m_data->intensity = p_intensity;
 }
 
-float NLS::Engine::Components::LightComponent::GetConstant() const
+float LightComponent::GetConstant() const
 {
 	return m_data->constant;
 }
 
-float NLS::Engine::Components::LightComponent::GetLinear() const
+float LightComponent::GetLinear() const
 {
 	return m_data->linear;
 }
 
-float NLS::Engine::Components::LightComponent::GetQuadratic() const
+float LightComponent::GetQuadratic() const
 {
 	return m_data->quadratic;
 }
 
-void NLS::Engine::Components::LightComponent::SetConstant(float p_constant)
+void LightComponent::SetConstant(float p_constant)
 {
 	m_data->constant = p_constant;
 }
 
-void NLS::Engine::Components::LightComponent::SetLinear(float p_linear)
+void LightComponent::SetLinear(float p_linear)
 {
 	m_data->linear = p_linear;
 }
 
-void NLS::Engine::Components::LightComponent::SetQuadratic(float p_quadratic)
+void LightComponent::SetQuadratic(float p_quadratic)
 {
 	m_data->quadratic = p_quadratic;
 }
 
-float NLS::Engine::Components::LightComponent::GetCutoff() const
+float LightComponent::GetCutoff() const
 {
 	return m_data->cutoff;
 }
 
-float NLS::Engine::Components::LightComponent::GetOuterCutoff() const
+float LightComponent::GetOuterCutoff() const
 {
 	return m_data->outerCutoff;
 }
 
-void NLS::Engine::Components::LightComponent::SetCutoff(float p_cutoff)
+void LightComponent::SetCutoff(float p_cutoff)
 {
 	m_data->cutoff = p_cutoff;
 }
 
-void NLS::Engine::Components::LightComponent::SetOuterCutoff(float p_outerCutoff)
+void LightComponent::SetOuterCutoff(float p_outerCutoff)
 {
 	m_data->outerCutoff = p_outerCutoff;
 }
 
-float NLS::Engine::Components::LightComponent::GetRadius() const
+float LightComponent::GetRadius() const
 {
 	return m_data->quadratic;
 }
 
-void NLS::Engine::Components::LightComponent::SetRadius(float p_radius)
+void LightComponent::SetRadius(float p_radius)
 {
 	m_data->constant = p_radius;
 }
 
-Maths::Vector3 NLS::Engine::Components::LightComponent::GetSize() const
+Maths::Vector3 LightComponent::GetSize() const
 {
 	return { m_data->constant, m_data->linear, m_data->quadratic };
 }
 
-void NLS::Engine::Components::LightComponent::SetSize(const Maths::Vector3& p_size)
+void LightComponent::SetSize(const Maths::Vector3& p_size)
 {
 	m_data->constant = p_size.x;
 	m_data->linear = p_size.y;
 	m_data->quadratic = p_size.z;
 }
 
-Settings::ELightType LightComponent::GetLightType() const
+Render::Settings::ELightType LightComponent::GetLightType() const
 {
     return m_data->type;
 }
+} // namespace NLS::Engine::Components

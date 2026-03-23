@@ -46,10 +46,8 @@
         return static_cast<typeName>( m_value );                                                 \
     }                                                                                            \
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
         template<typename T>
         VariantContainer<T>::VariantContainer(const NonRefType &value)
             : m_value( const_cast<NonRefType&>( value ) )
@@ -223,7 +221,6 @@ namespace NLS
         {
             // do nothing
         }
-    }
 }
 
 #undef DEFAULT_TYPE_HANDLER_IMPL

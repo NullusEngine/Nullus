@@ -6,10 +6,8 @@
 
 #pragma once
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
         template<typename ...ArgTypes>
         class FunctionInvoker<void, ArgTypes...> : public FunctionInvokerBase
         {
@@ -170,5 +168,4 @@ namespace NLS
 
             Signature m_function;
         };
-    }
 }

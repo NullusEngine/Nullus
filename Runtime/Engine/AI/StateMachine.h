@@ -2,9 +2,7 @@
 #include <vector>
 #include <map>
 #include "EngineDef.h"
-namespace NLS
-{
-namespace Engine
+namespace NLS::Engine
 {
 
 class State;
@@ -31,5 +29,4 @@ protected:
 
     TransitionContainer allTransitions;
 };
-} // namespace Engine
-} // namespace NLS
+} // namespace NLS::Engine

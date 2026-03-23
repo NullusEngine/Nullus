@@ -33,10 +33,8 @@
         type m_value;                                                      \
     };                                                                     \
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
         // void is a tricky 'ol fella, and must be defined manually
         template<>
         class VariantContainer<void> : public VariantBase
@@ -67,7 +65,6 @@ namespace NLS
         DECLARE_STANDARD_VARIANT( float );
         DECLARE_STANDARD_VARIANT( double );
         DECLARE_STANDARD_VARIANT( std::string );
-    }
 }
 
 #undef DECLARE_STANDARD_TYPE

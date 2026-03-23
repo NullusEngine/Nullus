@@ -8,16 +8,13 @@
 
 #include "../Variant.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    template<typename ClassType>
+    void DestructorInvoker<ClassType>::Invoke(const Variant& obj)
     {
-        template<typename ClassType>
-        void DestructorInvoker<ClassType>::Invoke(const Variant& obj)
-        {
-            auto &instance = obj.GetValue<ClassType>( );
+        auto &instance = obj.GetValue<ClassType>( );
 
-            instance.~ClassType( );
-        }
+        instance.~ClassType( );
     }
 }

@@ -8,9 +8,7 @@
 #include "Eventing/Event.h"
 #include "Components/Component.h"
 #include "GameObject.generated.h"
-namespace NLS
-{
-namespace Engine
+namespace NLS::Engine
 {
 namespace Components
 {
@@ -302,7 +300,6 @@ protected:
     Components::TransformComponent* m_transform = nullptr;
 };
 
-} // namespace Engine
-} // namespace NLS
+} // namespace NLS::Engine
 
 #include "GameObject.inl"

@@ -4,40 +4,36 @@
 #include "Macros.h"
 #include "Reflection/TestObject.generated.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    // 娴嬭瘯鍙嶅皠瀵硅薄
+    CLASS() class TestObject : public Object
     {
-        // 测试反射对象
-        CLASS() class TestObject : public Object
+    public:
+        GENERATED_BODY()
+        TestObject() = default;
+        virtual ~TestObject() = default;
+
+        Type GetType() const override
         {
-        public:
-            GENERATED_BODY()
-            TestObject() = default;
-            virtual ~TestObject() = default;
+            return NLS_TYPEOF(TestObject);
+        }
 
-            Type GetType() const override
-            {
-                return NLS_TYPEOF(TestObject);
-            }
+        Object* Clone() const override
+        {
+            return new TestObject(*this);
+        }
 
-            Object* Clone() const override
-            {
-                return new TestObject(*this);
-            }
+        FUNCTION()
+        void OnSerialize(Json::object& output) const override
+        {
+            output["type"] = "TestObject";
+        }
 
-            FUNCTION()
-            void OnSerialize(Json::object& output) const override
-            {
-                output["type"] = "TestObject";
-            }
-
-            FUNCTION()
-            void OnDeserialize(const Json& input) override
-            {
-                // 测试反序列化
-            }
-        };
-
-    }
+        FUNCTION()
+        void OnDeserialize(const Json& input) override
+        {
+            // 娴嬭瘯鍙嶅簭鍒楀寲
+        }
+    };
 }

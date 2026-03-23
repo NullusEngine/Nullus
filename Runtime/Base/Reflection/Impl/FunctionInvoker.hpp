@@ -6,13 +6,11 @@
 
 #pragma once
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
-        template<typename ReturnType, typename ... ArgTypes>
-        FunctionInvoker<ReturnType, ArgTypes...>::FunctionInvoker(Signature function)
-            : m_function( function ) { }
+    template<typename ReturnType, typename ... ArgTypes>
+    FunctionInvoker<ReturnType, ArgTypes...>::FunctionInvoker(Signature function)
+        : m_function( function ) { }
 
         template<typename ReturnType, typename ... ArgTypes>
         Variant FunctionInvoker<ReturnType, ArgTypes...>::Invoke(const ArgumentList &arguments)
@@ -167,5 +165,4 @@ namespace NLS
                 arguments[ 9 ].GetValue<A10>( )
             );
         }
-    }
 }

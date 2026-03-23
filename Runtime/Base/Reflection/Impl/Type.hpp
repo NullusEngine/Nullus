@@ -25,48 +25,45 @@ namespace std
     };
 }
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    template<typename T>
+    Type Type::Get(T &&obj)
     {
-        template<typename T>
-        Type Type::Get(T &&obj)
-        {
-            return { NLS_TYPEOF( T ) };
-        }
+        return { NLS_TYPEOF( T ) };
+    }
 
         ///////////////////////////////////////////////////////////////////////
 
-        template<typename T>
-        bool Type::DerivesFrom(void) const
-        {
-            return DerivesFrom( NLS_TYPEOF( T ) );
-        }
+    template<typename T>
+    bool Type::DerivesFrom(void) const
+    {
+        return DerivesFrom( NLS_TYPEOF( T ) );
+    }
 
-        template<typename ClassType>
-        Json Type::SerializeJson(const ClassType &instance, bool invokeHook)
-        {
-            auto type = NLS_TYPEOF( ClassType );
+    template<typename ClassType>
+    Json Type::SerializeJson(const ClassType &instance, bool invokeHook)
+    {
+        auto type = NLS_TYPEOF( ClassType );
 
-            NLS_ASSERT( type.IsValid( ),
-                "Invalid type serialized."
-            );
+        NLS_ASSERT( type.IsValid( ),
+            "Invalid type serialized."
+        );
 
-            Variant variant = instance;
+        Variant variant = instance;
 
-            return type.SerializeJson( variant, invokeHook );
-        }
+        return type.SerializeJson( variant, invokeHook );
+    }
 
-        template<typename ClassType>
-        ClassType Type::DeserializeJson(const Json &value)
-        {
-            auto type = NLS_TYPEOF( ClassType );
+    template<typename ClassType>
+    ClassType Type::DeserializeJson(const Json &value)
+    {
+        auto type = NLS_TYPEOF( ClassType );
 
-            NLS_ASSERT( type.IsValid( ),
-                "Invalid type created."
-            );
+        NLS_ASSERT( type.IsValid( ),
+            "Invalid type created."
+        );
 
-            return type.DeserializeJson( value ).GetValue<ClassType>( );
-        }
+        return type.DeserializeJson( value ).GetValue<ClassType>( );
     }
 }

@@ -8,18 +8,15 @@
 
 #include "InvokableConfig.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    class Variant;
+
+    class DestructorInvokerBase
     {
-        class Variant;
+    public:
+        virtual ~DestructorInvokerBase(void) { }
 
-        class DestructorInvokerBase
-        {
-        public:
-            virtual ~DestructorInvokerBase(void) { }
-
-            virtual void Invoke(const Variant &obj) = 0;
-        };
-    }
+        virtual void Invoke(const Variant &obj) = 0;
+    };
 }

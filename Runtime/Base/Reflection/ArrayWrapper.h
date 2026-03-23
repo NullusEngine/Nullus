@@ -8,39 +8,37 @@
 
 #include "ArrayWrapperBase.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    class Argument;
+
+    class ArrayWrapper
     {
-        class Argument;
+    public:
+        ArrayWrapper(void);
 
-        class ArrayWrapper
-        {
-        public:
-            ArrayWrapper(void);
+        template<typename T>
+        ArrayWrapper(Array<T> &rhs);
 
-            template<typename T>
-            ArrayWrapper(Array<T> &rhs);
+        template<typename T>
+        ArrayWrapper(const Array<T> &rhs);
 
-            template<typename T>
-            ArrayWrapper(const Array<T> &rhs);
+        Variant GetValue(size_t index) const;
+        void SetValue(size_t index, const Argument &value);
 
-            Variant GetValue(size_t index) const;
-            void SetValue(size_t index, const Argument &value);
+        void Insert(size_t index, const Argument &value);
+        void Remove(size_t index);
 
-            void Insert(size_t index, const Argument &value);
-            void Remove(size_t index);
+        size_t Size(void) const;
 
-            size_t Size(void) const;
+        bool IsValid(void) const;
+        bool IsConst(void) const;
 
-            bool IsValid(void) const;
-            bool IsConst(void) const;
-        private:
-            bool m_isConst;
+    private:
+        bool m_isConst;
 
-            ArrayWrapperBase *m_base;
-        };
-    }
+        ArrayWrapperBase *m_base;
+    };
 }
 
 #include "Impl/ArrayWrapper.hpp"

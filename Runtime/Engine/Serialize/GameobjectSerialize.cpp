@@ -25,11 +25,30 @@
 
 namespace
 {
-using namespace NLS;
-using namespace NLS::Engine;
-using namespace NLS::Engine::Components;
-using namespace NLS::Engine::SceneSystem;
-using namespace NLS::Engine::Serialize;
+namespace meta = NLS::meta;
+namespace vp = NLS::meta::variant_policy;
+namespace SceneSystem = NLS::Engine::SceneSystem;
+namespace EngineSerialize = NLS::Engine::Serialize;
+namespace EngineComp = NLS::Engine::Components;
+namespace Render = NLS::Render;
+namespace RenderRes = NLS::Render::Resources;
+namespace Maths = NLS::Maths;
+namespace Core = NLS::Core;
+
+using NLS::Json;
+using json = NLS::json;
+using NLS::Serializer;
+using NLS::Engine::GameObject;
+using Scene = SceneSystem::Scene;
+using SerializedActorData = EngineSerialize::SerializedActorData;
+using SerializedComponentData = EngineSerialize::SerializedComponentData;
+using SerializedSceneData = EngineSerialize::SerializedSceneData;
+using Component = EngineComp::Component;
+using CameraComponent = EngineComp::CameraComponent;
+using LightComponent = EngineComp::LightComponent;
+using MaterialRenderer = EngineComp::MaterialRenderer;
+using MeshRenderer = EngineComp::MeshRenderer;
+using TransformComponent = EngineComp::TransformComponent;
 
 json SerializeWithReflection(const meta::Variant &variant)
 {
@@ -70,26 +89,26 @@ meta::Type ResolveComponentType(const std::string &typeName)
     return meta::Type::Invalid();
 }
 
-NLS::Json SerializeComponentPayload(const Component &component)
+Json SerializeComponentPayload(const Component &component)
 {
     if (const auto *materialRenderer = dynamic_cast<const MaterialRenderer *>(&component))
     {
-        NLS::Json::array materials;
+        Json::array materials;
         for (const auto &path : materialRenderer->GetMaterialPaths())
             materials.emplace_back(path);
 
-        NLS::Json::array userMatrix;
+        Json::array userMatrix;
         for (const auto value : materialRenderer->GetUserMatrixValues())
             userMatrix.emplace_back(value);
 
-        return NLS::Json::object{
-            { "materials", NLS::Json(materials) },
-            { "userMatrix", NLS::Json(userMatrix) }
+        return Json::object{
+            { "materials", Json(materials) },
+            { "userMatrix", Json(userMatrix) }
         };
     }
 
     auto *mutableComponent = const_cast<Component *>(&component);
-    meta::Variant componentVariant(mutableComponent, meta::variant_policy::WrapObject { });
+    meta::Variant componentVariant(mutableComponent, vp::WrapObject { });
     return component.GetType().SerializeJson(componentVariant);
 }
 
@@ -128,7 +147,7 @@ Maths::Quaternion ReadQuaternion(const json &value, const Maths::Quaternion &fal
         value.value("w", fallback.w));
 }
 
-void SetMaterialUniform(Render::Resources::Material &material, const std::string &uniformName, const json &uniformValue)
+void SetMaterialUniform(RenderRes::Material &material, const std::string &uniformName, const json &uniformValue)
 {
     if (uniformValue.is_null())
         return;
@@ -151,7 +170,7 @@ void SetMaterialUniform(Render::Resources::Material &material, const std::string
         if (!texturePath.empty())
         {
             auto *texture = NLS_SERVICE(Core::ResourceManagement::TextureManager)[texturePath];
-            material.Set<Render::Resources::Texture2D *>(uniformName, texture);
+            material.Set<RenderRes::Texture2D *>(uniformName, texture);
         }
         return;
     }
@@ -193,13 +212,13 @@ void SetMaterialUniform(Render::Resources::Material &material, const std::string
     {
         if (value.is_null())
         {
-            material.Set<Render::Resources::Texture2D *>(uniformName, nullptr);
+            material.Set<RenderRes::Texture2D *>(uniformName, nullptr);
         }
         else if (value.is_string())
         {
             const auto texturePath = value.template get<std::string>();
             auto *texture = NLS_SERVICE(Core::ResourceManagement::TextureManager)[texturePath];
-            material.Set<Render::Resources::Texture2D *>(uniformName, texture);
+            material.Set<RenderRes::Texture2D *>(uniformName, texture);
         }
     }
 }
@@ -210,7 +229,7 @@ void ApplyLegacyInlineMaterials(MaterialRenderer &component, const json &compone
     if (!materialsJson.is_array())
         return;
 
-    static std::vector<std::unique_ptr<Render::Resources::Material>> s_runtimeSceneMaterials;
+    static std::vector<std::unique_ptr<RenderRes::Material>> s_runtimeSceneMaterials;
 
     component.RemoveAllMaterials();
 
@@ -221,7 +240,7 @@ void ApplyLegacyInlineMaterials(MaterialRenderer &component, const json &compone
             break;
 
         auto *shader = NLS_SERVICE(Core::ResourceManagement::ShaderManager)[materialJson["shader"].get<std::string>()];
-        auto runtimeMaterial = std::make_unique<Render::Resources::Material>(shader);
+        auto runtimeMaterial = std::make_unique<RenderRes::Material>(shader);
 
         runtimeMaterial->SetBlendable(materialJson.value("blendable", false));
         runtimeMaterial->SetBackfaceCulling(materialJson.value("backfaceCulling", true));
@@ -340,15 +359,15 @@ SerializedComponentData SerializeComponentRecord(const Component &component)
     return record;
 }
 
-NLS::Json GetComponentPayloadJson(const SerializedComponentData &record)
+Json GetComponentPayloadJson(const SerializedComponentData &record)
 {
     if (record.data.empty())
-        return NLS::Json::object { };
+        return Json::object { };
 
     std::string parseError;
-    const auto parsed = NLS::Json::parse(record.data, parseError, json11::JsonParse::STANDARD);
+    const auto parsed = Json::parse(record.data, parseError, json11::JsonParse::STANDARD);
     if (!parseError.empty())
-        return NLS::Json::object { };
+        return Json::object { };
 
     return parsed;
 }
@@ -370,9 +389,9 @@ Component *FindOrCreateComponent(GameObject &gameObject, const meta::Type &type)
 SerializedActorData SerializeActorRecord(const GameObject &actor)
 {
     auto *mutableActor = const_cast<GameObject *>(&actor);
-    meta::Variant actorVariant(mutableActor, meta::variant_policy::WrapObject { });
+    meta::Variant actorVariant(mutableActor, vp::WrapObject { });
     SerializedActorData record;
-    meta::Variant recordVariant(record, meta::variant_policy::NoCopy { });
+    meta::Variant recordVariant(record, vp::NoCopy { });
     CopyMatchingFields(actorVariant, recordVariant);
     record.parent = actor.GetParentID();
 
@@ -387,7 +406,7 @@ SerializedActorData SerializeActorRecord(const GameObject &actor)
 void DeserializeComponentRecord(Component &component, const SerializedComponentData &record)
 {
     auto *mutableComponent = &component;
-    meta::Variant componentVariant(mutableComponent, meta::variant_policy::WrapObject { });
+    meta::Variant componentVariant(mutableComponent, vp::WrapObject { });
     const auto payload = GetComponentPayloadJson(record);
     component.GetType().DeserializeJson(componentVariant, payload);
     const auto payloadJson = json::parse(payload.dump(), nullptr, false);
@@ -403,8 +422,8 @@ void DeserializeComponentRecord(Component &component, const SerializedComponentD
 void DeserializeActor(GameObject &actor, const SerializedActorData &record)
 {
     auto *mutableActor = &actor;
-    meta::Variant actorVariant(mutableActor, meta::variant_policy::WrapObject { });
-    meta::Variant recordVariant(const_cast<SerializedActorData &>(record), meta::variant_policy::NoCopy { });
+    meta::Variant actorVariant(mutableActor, vp::WrapObject { });
+    meta::Variant recordVariant(const_cast<SerializedActorData &>(record), vp::NoCopy { });
     CopyMatchingFields(recordVariant, actorVariant);
 
     for (const auto &componentRecord : record.components)
@@ -537,42 +556,42 @@ void DeserializeSceneImpl(Scene &scene, const json &input)
 
 namespace NLS
 {
-void GameObjectSerializeHandler::SerializeImpl(const meta::Variant &obj, json &output) const
-{
-    const auto record = SerializeActorRecord(obj.GetValue<GameObject>());
-    meta::Variant recordVariant(const_cast<SerializedActorData &>(record), meta::variant_policy::NoCopy { });
-    output = SerializeWithReflection(recordVariant);
-}
+    void GameObjectSerializeHandler::SerializeImpl(const meta::Variant &obj, json &output) const
+    {
+        const auto record = SerializeActorRecord(obj.GetValue<GameObject>());
+        meta::Variant recordVariant(const_cast<SerializedActorData &>(record), vp::NoCopy { });
+        output = SerializeWithReflection(recordVariant);
+    }
 
-void GameObjectSerializeHandler::DeserializeImpl(meta::Variant &obj, const json &input) const
-{
-    SerializedActorData record;
-    meta::Variant recordVariant(record, meta::variant_policy::NoCopy { });
-    DeserializeWithReflection(recordVariant, input);
-    DeserializeActor(obj.GetValue<GameObject>(), record);
-}
+    void GameObjectSerializeHandler::DeserializeImpl(meta::Variant &obj, const json &input) const
+    {
+        SerializedActorData record;
+        meta::Variant recordVariant(record, vp::NoCopy { });
+        DeserializeWithReflection(recordVariant, input);
+        DeserializeActor(obj.GetValue<GameObject>(), record);
+    }
 
-uint32_t GameObjectSerializeHandler::CalcMatchLevel(const meta::Type &type, bool isPointer) const
-{
-    if (!isPointer && type == NLS_TYPEOF(Engine::GameObject))
-        return 0;
-    return NoMatch;
-}
+    uint32_t GameObjectSerializeHandler::CalcMatchLevel(const meta::Type &type, bool isPointer) const
+    {
+        if (!isPointer && type == NLS_TYPEOF(Engine::GameObject))
+            return 0;
+        return NoMatch;
+    }
 
-void SceneSerializeHandler::SerializeImpl(const meta::Variant &obj, json &output) const
-{
-    SerializeSceneImpl(obj.GetValue<Engine::SceneSystem::Scene>(), output);
-}
+    void SceneSerializeHandler::SerializeImpl(const meta::Variant &obj, json &output) const
+    {
+        SerializeSceneImpl(obj.GetValue<Engine::SceneSystem::Scene>(), output);
+    }
 
-void SceneSerializeHandler::DeserializeImpl(meta::Variant &obj, const json &input) const
-{
-    DeserializeSceneImpl(obj.GetValue<Engine::SceneSystem::Scene>(), input);
-}
+    void SceneSerializeHandler::DeserializeImpl(meta::Variant &obj, const json &input) const
+    {
+        DeserializeSceneImpl(obj.GetValue<Engine::SceneSystem::Scene>(), input);
+    }
 
-uint32_t SceneSerializeHandler::CalcMatchLevel(const meta::Type &type, bool isPointer) const
-{
-    if (!isPointer && type == NLS_TYPEOF(Engine::SceneSystem::Scene))
-        return 0;
-    return NoMatch;
+    uint32_t SceneSerializeHandler::CalcMatchLevel(const meta::Type &type, bool isPointer) const
+    {
+        if (!isPointer && type == NLS_TYPEOF(Engine::SceneSystem::Scene))
+            return 0;
+        return NoMatch;
+    }
 }
-} // namespace NLS

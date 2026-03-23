@@ -11,14 +11,12 @@
 
 #include "Type.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    ObjectWrapper::ObjectWrapper(Object *instance)
+        : m_object( instance )
     {
-        ObjectWrapper::ObjectWrapper(Object *instance)
-            : m_object( instance )
-        {
-        }
+    }
 
         Type ObjectWrapper::GetType(void) const
         {
@@ -65,9 +63,8 @@ namespace NLS
             m_object->OnSerialize( output );
         }
 
-        void ObjectWrapper::OnDeserialize(const Json &input)
-        {
-            m_object->OnDeserialize( input );
-        }
+    void ObjectWrapper::OnDeserialize(const Json &input)
+    {
+        m_object->OnDeserialize( input );
     }
 }

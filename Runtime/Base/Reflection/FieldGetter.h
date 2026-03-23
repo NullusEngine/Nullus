@@ -8,18 +8,15 @@
 
 #include "FieldGetterBase.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    template<typename ClassType, typename FieldType, bool IsMethod>
+    class FieldGetter : public FieldGetterBase
     {
-        template<typename ClassType, typename FieldType, bool IsMethod>
-        class FieldGetter : public FieldGetterBase
-        {
-        public:
-            Variant GetValue(const Variant &obj) override;
-            Variant GetValueReference(const Variant &obj) override;
-        };
-    }
+    public:
+        Variant GetValue(const Variant &obj) override;
+        Variant GetValueReference(const Variant &obj) override;
+    };
 }
 
 #include "Impl/FieldGetter.hpp"

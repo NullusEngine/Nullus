@@ -6,21 +6,18 @@
 
 #pragma once
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    typedef unsigned TypeID;
+
+    const TypeID InvalidTypeID = 0;
+
+    template<typename T>
+    struct TypeIDs
     {
-        typedef unsigned TypeID;
+        static TypeID ID;
+    };
 
-        const TypeID InvalidTypeID = 0;
-
-        template<typename T>
-        struct TypeIDs
-        {
-            static TypeID ID;
-        };
-
-        template<typename T>
-        TypeID TypeIDs<T>::ID = InvalidTypeID;
-    }
+    template<typename T>
+    TypeID TypeIDs<T>::ID = InvalidTypeID;
 }

@@ -1,9 +1,7 @@
 ﻿#pragma once
 #include "State.h"
 #include "EngineDef.h"
-namespace NLS
-{
-namespace Engine
+namespace NLS::Engine
 {
 class NLS_ENGINE_API PushdownState : public State
 {
@@ -22,5 +20,4 @@ public:
     virtual void OnAwake() {} // By default do nothing
     virtual void OnSleep() {} // By default do nothing
 };
-} // namespace Engine
-} // namespace NLS
+} // namespace NLS::Engine

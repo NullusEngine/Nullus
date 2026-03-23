@@ -2,54 +2,52 @@
 
 #include "Rendering/Resources/Mesh.h"
 
-using namespace NLS;
-
-NLS::Render::Resources::Mesh::Mesh(const std::vector<Geometry::Vertex>& p_vertices, const std::vector<uint32_t>& p_indices, uint32_t p_materialIndex) :
-	m_vertexCount(static_cast<uint32_t>(p_vertices.size())),
-	m_indicesCount(static_cast<uint32_t>(p_indices.size())),
-	m_materialIndex(p_materialIndex)
+namespace NLS::Render::Resources
 {
-	CreateBuffers(p_vertices, p_indices);
-	ComputeBoundingSphere(p_vertices);
+Mesh::Mesh(const std::vector<Geometry::Vertex>& vertices, const std::vector<uint32_t>& indices, uint32_t materialIndex)
+	: m_vertexCount(static_cast<uint32_t>(vertices.size()))
+	, m_indicesCount(static_cast<uint32_t>(indices.size()))
+	, m_materialIndex(materialIndex)
+{
+	CreateBuffers(vertices, indices);
+	ComputeBoundingSphere(vertices);
 }
 
-void NLS::Render::Resources::Mesh::Bind() const
+void Mesh::Bind() const
 {
 	m_vertexArray.Bind();
 }
 
-void NLS::Render::Resources::Mesh::Unbind() const
+void Mesh::Unbind() const
 {
 	m_vertexArray.Unbind();
 }
 
-uint32_t NLS::Render::Resources::Mesh::GetVertexCount() const
+uint32_t Mesh::GetVertexCount() const
 {
 	return m_vertexCount;
 }
 
-uint32_t NLS::Render::Resources::Mesh::GetIndexCount() const
+uint32_t Mesh::GetIndexCount() const
 {
 	return m_indicesCount;
 }
 
-uint32_t NLS::Render::Resources::Mesh::GetMaterialIndex() const
+uint32_t Mesh::GetMaterialIndex() const
 {
 	return m_materialIndex;
 }
 
-const Render::Geometry::BoundingSphere& NLS::Render::Resources::Mesh::GetBoundingSphere() const
+const Render::Geometry::BoundingSphere& Mesh::GetBoundingSphere() const
 {
 	return m_boundingSphere;
 }
 
-void NLS::Render::Resources::Mesh::CreateBuffers(const std::vector<Geometry::Vertex>& p_vertices, const std::vector<uint32_t>& p_indices)
+void Mesh::CreateBuffers(const std::vector<Geometry::Vertex>& vertices, const std::vector<uint32_t>& indices)
 {
 	std::vector<float> vertexData;
 
-	std::vector<unsigned int> rawIndices;
-
-	for (const auto& vertex : p_vertices)
+	for (const auto& vertex : vertices)
 	{
 		vertexData.push_back(vertex.position[0]);
 		vertexData.push_back(vertex.position[1]);
@@ -71,8 +69,8 @@ void NLS::Render::Resources::Mesh::CreateBuffers(const std::vector<Geometry::Ver
 		vertexData.push_back(vertex.bitangent[2]);
 	}
 
-	m_vertexBuffer	= std::make_unique<Buffers::VertexBuffer<float>>(vertexData);
-	m_indexBuffer	= std::make_unique<Buffers::IndexBuffer>(const_cast<uint32_t*>(p_indices.data()), p_indices.size());
+	m_vertexBuffer = std::make_unique<Buffers::VertexBuffer<float>>(vertexData);
+	m_indexBuffer = std::make_unique<Buffers::IndexBuffer>(const_cast<uint32_t*>(indices.data()), indices.size());
 
 	uint64_t vertexSize = sizeof(Geometry::Vertex);
 
@@ -83,12 +81,12 @@ void NLS::Render::Resources::Mesh::CreateBuffers(const std::vector<Geometry::Ver
 	m_vertexArray.BindAttribute(4, *m_vertexBuffer, Settings::EDataType::FLOAT, 3, vertexSize, sizeof(float) * 11);
 }
 
-void NLS::Render::Resources::Mesh::ComputeBoundingSphere(const std::vector<Geometry::Vertex>& p_vertices)
+void Mesh::ComputeBoundingSphere(const std::vector<Geometry::Vertex>& vertices)
 {
 	m_boundingSphere.position = Maths::Vector3::Zero;
 	m_boundingSphere.radius = 0.0f;
 
-	if (!p_vertices.empty())
+	if (!vertices.empty())
 	{
 		float minX = std::numeric_limits<float>::max();
 		float minY = std::numeric_limits<float>::max();
@@ -98,7 +96,7 @@ void NLS::Render::Resources::Mesh::ComputeBoundingSphere(const std::vector<Geome
 		float maxY = std::numeric_limits<float>::min();
 		float maxZ = std::numeric_limits<float>::min();
 
-		for (const auto& vertex : p_vertices)
+		for (const auto& vertex : vertices)
 		{
 			minX = std::min(minX, vertex.position[0]);
 			minY = std::min(minY, vertex.position[1]);
@@ -111,10 +109,11 @@ void NLS::Render::Resources::Mesh::ComputeBoundingSphere(const std::vector<Geome
 
 		m_boundingSphere.position = Maths::Vector3{ minX + maxX, minY + maxY, minZ + maxZ } / 2.0f;
 
-		for (const auto& vertex : p_vertices)
+		for (const auto& vertex : vertices)
 		{
 			const auto& position = reinterpret_cast<const Maths::Vector3&>(vertex.position);
 			m_boundingSphere.radius = std::max(m_boundingSphere.radius, Maths::Vector3::Distance(m_boundingSphere.position, position));
 		}
 	}
+}
 }

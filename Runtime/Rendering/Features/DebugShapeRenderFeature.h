@@ -10,6 +10,11 @@ namespace NLS::Render::Features
 	class NLS_RENDER_API DebugShapeRenderFeature : public ARenderFeature
 	{
 	public:
+        using PipelineState = Data::PipelineState;
+        using Shader = Resources::Shader;
+        using Mesh = Resources::Mesh;
+        using Material = Resources::Material;
+
 		/**
 		* Constructor
 		* @param p_renderer
@@ -36,7 +41,7 @@ namespace NLS::Render::Features
 		* @param p_lineWidth
 		*/
 		void DrawLine(
-			NLS::Render::Data::PipelineState p_pso,
+			PipelineState p_pso,
 			const Maths::Vector3& p_start,
 			const Maths::Vector3& p_end,
 			const Maths::Vector3& p_color,
@@ -53,7 +58,7 @@ namespace NLS::Render::Features
 		* @param p_lineWidth
 		*/
 		void DrawBox(
-			NLS::Render::Data::PipelineState p_pso,
+			PipelineState p_pso,
 			const Maths::Vector3& p_position,
 			const Maths::Quaternion& p_rotation,
 			const Maths::Vector3& p_size,
@@ -71,7 +76,7 @@ namespace NLS::Render::Features
 		* @param p_lineWidth
 		*/
 		void DrawSphere(
-			NLS::Render::Data::PipelineState p_pso,
+			PipelineState p_pso,
 			const Maths::Vector3& p_position,
 			const Maths::Quaternion& p_rotation,
 			float p_radius,
@@ -90,7 +95,7 @@ namespace NLS::Render::Features
 		* @param p_lineWidth
 		*/
 		void DrawCapsule(
-			NLS::Render::Data::PipelineState p_pso,
+			PipelineState p_pso,
 			const Maths::Vector3& p_position,
 			const Maths::Quaternion& p_rotation,
 			float p_radius,
@@ -103,9 +108,9 @@ namespace NLS::Render::Features
 		virtual void OnBeginFrame(const Data::FrameDescriptor& p_frameDescriptor) override;
 
 	private:
-		NLS::Render::Resources::Shader* m_lineShader = nullptr;
-		NLS::Render::Resources::Mesh* m_lineMesh = nullptr;
+		Shader* m_lineShader = nullptr;
+		Mesh* m_lineMesh = nullptr;
 
-		std::unique_ptr<NLS::Render::Resources::Material> m_lineMaterial;
+		std::unique_ptr<Material> m_lineMaterial;
 	};
 }

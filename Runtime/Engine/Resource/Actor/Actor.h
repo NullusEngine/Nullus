@@ -3,9 +3,7 @@
 #include "EngineDef.h"
 #include "GameObject.h"
 
-namespace NLS
-{
-namespace Engine
+namespace NLS::Engine
 {
 class NLS_ENGINE_API Actor
 {
@@ -16,5 +14,4 @@ public:
 private:
     GameObject* mGameObject = nullptr;
 };
-} // namespace Engine
-} // namespace NLS
+} // namespace NLS::Engine

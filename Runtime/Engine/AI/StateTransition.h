@@ -1,9 +1,7 @@
 #pragma once
 #include <functional>
 #include "EngineDef.h"
-namespace NLS
-{
-namespace Engine
+namespace NLS::Engine
 {
 
 class State;
@@ -80,5 +78,4 @@ protected:
     T dataA;
     U dataB;
 };*/
-} // namespace Engine
-} // namespace NLS
+} // namespace NLS::Engine

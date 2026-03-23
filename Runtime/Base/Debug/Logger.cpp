@@ -1,61 +1,64 @@
 #include "Debug/Logger.h"
 #include "Time/Date.h"
 
-NLS::Event<const NLS::Debug::LogData&> NLS::Debug::Logger::LogEvent;
-
-std::map<std::string, NLS::Debug::ConsoleHandler>	NLS::Debug::Logger::CONSOLE_HANDLER_MAP;
-std::map<std::string, NLS::Debug::FileHandler>		NLS::Debug::Logger::FILE_HANDLER_MAP;
-std::map<std::string, NLS::Debug::HistoryHandler>	NLS::Debug::Logger::HISTORY_HANDLER_MAP;
-
-void NLS::Debug::Logger::Log(const std::string& p_message, ELogLevel p_logLevel, ELogMode p_logMode, std::string p_handlerId)
+namespace NLS::Debug
 {
-	LogData logData{ p_message, p_logLevel, NLS::Time::Date::GetDateAsString() };
+Event<const LogData&> Logger::LogEvent;
 
-	switch (p_logMode)
+std::map<std::string, ConsoleHandler> Logger::CONSOLE_HANDLER_MAP;
+std::map<std::string, FileHandler> Logger::FILE_HANDLER_MAP;
+std::map<std::string, HistoryHandler> Logger::HISTORY_HANDLER_MAP;
+
+void Logger::Log(const std::string& message, ELogLevel logLevel, ELogMode logMode, std::string handlerId)
+{
+	LogData logData{ message, logLevel, Time::Date::GetDateAsString() };
+
+	switch (logMode)
 	{
 	case ELogMode::DEFAULT:
-	case ELogMode::CONSOLE: LogToHandlerMap<ConsoleHandler>(CONSOLE_HANDLER_MAP, logData, p_handlerId); break;
-	case ELogMode::FILE:	LogToHandlerMap<FileHandler>(FILE_HANDLER_MAP, logData, p_handlerId);		break;
-	case ELogMode::HISTORY: LogToHandlerMap<HistoryHandler>(HISTORY_HANDLER_MAP, logData, p_handlerId);	break;
+	case ELogMode::CONSOLE: LogToHandlerMap<ConsoleHandler>(CONSOLE_HANDLER_MAP, logData, handlerId); break;
+	case ELogMode::FILE: LogToHandlerMap<FileHandler>(FILE_HANDLER_MAP, logData, handlerId); break;
+	case ELogMode::HISTORY: LogToHandlerMap<HistoryHandler>(HISTORY_HANDLER_MAP, logData, handlerId); break;
 	case ELogMode::ALL:
-		LogToHandlerMap<ConsoleHandler>(CONSOLE_HANDLER_MAP, logData, p_handlerId);
-		LogToHandlerMap<FileHandler>(FILE_HANDLER_MAP, logData, p_handlerId);
-		LogToHandlerMap<HistoryHandler>(HISTORY_HANDLER_MAP, logData, p_handlerId);
+		LogToHandlerMap<ConsoleHandler>(CONSOLE_HANDLER_MAP, logData, handlerId);
+		LogToHandlerMap<FileHandler>(FILE_HANDLER_MAP, logData, handlerId);
+		LogToHandlerMap<HistoryHandler>(HISTORY_HANDLER_MAP, logData, handlerId);
 		break;
 	}
 
 	LogEvent.Invoke(logData);
 }
 
-NLS::Debug::ConsoleHandler& NLS::Debug::Logger::CreateConsoleHandler(std::string p_id)
+ConsoleHandler& Logger::CreateConsoleHandler(std::string id)
 {
-	CONSOLE_HANDLER_MAP.emplace(p_id, NLS::Debug::ConsoleHandler());
-	return CONSOLE_HANDLER_MAP[p_id];
+	CONSOLE_HANDLER_MAP.emplace(id, ConsoleHandler());
+	return CONSOLE_HANDLER_MAP[id];
 }
 
-NLS::Debug::FileHandler& NLS::Debug::Logger::CreateFileHandler(std::string p_id)
+FileHandler& Logger::CreateFileHandler(std::string id)
 {
-	FILE_HANDLER_MAP.emplace(p_id, NLS::Debug::FileHandler());
-	return FILE_HANDLER_MAP[p_id];
+	FILE_HANDLER_MAP.emplace(id, FileHandler());
+	return FILE_HANDLER_MAP[id];
 }
 
-NLS::Debug::HistoryHandler& NLS::Debug::Logger::CreateHistoryHandler(std::string p_id)
+HistoryHandler& Logger::CreateHistoryHandler(std::string id)
 {
-	HISTORY_HANDLER_MAP.emplace(p_id, NLS::Debug::HistoryHandler());
-	return HISTORY_HANDLER_MAP[p_id];
+	HISTORY_HANDLER_MAP.emplace(id, HistoryHandler());
+	return HISTORY_HANDLER_MAP[id];
 }
 
-NLS::Debug::ConsoleHandler& NLS::Debug::Logger::GetConsoleHandler(std::string p_id)
+ConsoleHandler& Logger::GetConsoleHandler(std::string id)
 {
-	return CONSOLE_HANDLER_MAP[p_id];
+	return CONSOLE_HANDLER_MAP[id];
 }
 
-NLS::Debug::FileHandler& NLS::Debug::Logger::GetFileHandler(std::string p_id)
+FileHandler& Logger::GetFileHandler(std::string id)
 {
-	return FILE_HANDLER_MAP[p_id];
+	return FILE_HANDLER_MAP[id];
 }
 
-NLS::Debug::HistoryHandler& NLS::Debug::Logger::GetHistoryHandler(std::string p_id)
+HistoryHandler& Logger::GetHistoryHandler(std::string id)
 {
-	return HISTORY_HANDLER_MAP[p_id];
+	return HISTORY_HANDLER_MAP[id];
+}
 }

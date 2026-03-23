@@ -20,18 +20,18 @@
 #include "Resource/Actor/ActorManager.h"
 #include "Resource/Actor/ActorLoader.h"
 
-using namespace NLS::Engine;
-using namespace NLS::Engine::Components;
+namespace NLS::Engine
+{
+using namespace Components;
 using namespace NLS::Render::Resources;
-using namespace NLS;
 
-Actor* NLS::Engine::ActorManager::CreateResource(const std::string& path)
+Actor* ActorManager::CreateResource(const std::string& path)
 {
 	auto&& realPath = GetRealPath(path);
 	return ActorLoader::LoadActor(path, realPath);
 }
 
-void NLS::Engine::ActorManager::DestroyResource(Actor* resource)
+void ActorManager::DestroyResource(Actor* resource)
 {
 	if (resource)
 	{
@@ -39,6 +39,7 @@ void NLS::Engine::ActorManager::DestroyResource(Actor* resource)
 	}
 }
 
-void NLS::Engine::ActorManager::ReloadResource(Actor* p_resource, const std::string& p_path)
+void ActorManager::ReloadResource(Actor* p_resource, const std::string& p_path)
 {
 }
+} // namespace NLS::Engine

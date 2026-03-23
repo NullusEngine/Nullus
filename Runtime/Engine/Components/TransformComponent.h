@@ -14,11 +14,7 @@ using std::vector;
 
 using namespace NLS::Maths;
 
-namespace NLS
-{
-namespace Engine
-{
-namespace Components
+namespace NLS::Engine::Components
 {
 CLASS() class NLS_ENGINE_API TransformComponent : public Component
 {
@@ -185,7 +181,4 @@ public:
 private:
     Maths::Transform m_transform;
 };
-} // namespace Components
-
-} // namespace Engine
-} // namespace NLS
+} // namespace NLS::Engine::Components

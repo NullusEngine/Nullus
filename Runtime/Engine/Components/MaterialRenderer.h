@@ -13,9 +13,7 @@ namespace NLS::Render::Resources
 class Material;
 } // namespace NLS::Render::Resources
 
-namespace NLS::Engine
-{
-namespace Components
+namespace NLS::Engine::Components
 {
 /**
  * A component that handle a material list, necessary for model rendering
@@ -24,7 +22,8 @@ CLASS() class NLS_ENGINE_API MaterialRenderer : public Component
 {
 public:
     GENERATED_BODY()
-    using MaterialList = std::array<NLS::Render::Resources::Material*, kMaxMaterialCount>;
+    using Material = Render::Resources::Material;
+    using MaterialList = std::array<Material*, kMaxMaterialCount>;
 
     /**
      * Constructor
@@ -39,20 +38,20 @@ public:
      * @param p_material
      */
     FUNCTION()
-    void FillWithMaterial(NLS::Render::Resources::Material& p_material);
+    void FillWithMaterial(Material& p_material);
 
     /**
      * Defines the material to use for the given index
      * @param p_index
      * @param p_material
      */
-    void SetMaterialAtIndex(uint8_t p_index, NLS::Render::Resources::Material& p_material);
+    void SetMaterialAtIndex(uint8_t p_index, Material& p_material);
 
     /**
      * Returns the material to use at index
      * @param p_index
      */
-    NLS::Render::Resources::Material* GetMaterialAtIndex(uint8_t p_index);
+    Material* GetMaterialAtIndex(uint8_t p_index);
 
     /**
      * Remove the material at index
@@ -64,7 +63,7 @@ public:
      * Remove the material by instance
      * @param p_instance
      */
-    void RemoveMaterialByInstance(NLS::Render::Resources::Material& p_instance);
+    void RemoveMaterialByInstance(Material& p_instance);
 
     /**
      * Remove every materials
@@ -97,13 +96,13 @@ public:
     FUNCTION()
     const Maths::Matrix4& GetUserMatrix() const;
 
-    NLS::Array<std::string> GetMaterialPaths() const;
+    Array<std::string> GetMaterialPaths() const;
 
-    void SetMaterialPaths(const NLS::Array<std::string>& p_paths);
+    void SetMaterialPaths(const Array<std::string>& p_paths);
 
-    NLS::Array<float> GetUserMatrixValues() const;
+    Array<float> GetUserMatrixValues() const;
 
-    void SetUserMatrixValues(const NLS::Array<float>& p_values);
+    void SetUserMatrixValues(const Array<float>& p_values);
 
     /**
      * Returns the materials
@@ -115,5 +114,4 @@ private:
     std::array<std::string, kMaxMaterialCount> m_materialNames;
     Maths::Matrix4 m_userMatrix;
 };
-} // namespace Components
-} // namespace NLS::Engine
+}

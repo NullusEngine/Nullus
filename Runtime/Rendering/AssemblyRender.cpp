@@ -3,8 +3,8 @@
 
 namespace NLS
 {
-void AssemblyRender::Initialize()
-{
-    NLS_META_GENERATED_LINK_FUNCTION();
-}
+    void AssemblyRender::Initialize()
+    {
+        NLS_META_GENERATED_LINK_FUNCTION();
+    }
 }

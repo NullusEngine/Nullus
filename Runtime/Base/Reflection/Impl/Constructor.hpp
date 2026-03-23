@@ -9,16 +9,13 @@
 #include "../Variant.h"
 #include "../Argument.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    template<typename ...Args>
+    Variant Constructor::Invoke(Args &&...args) const
     {
-        template<typename ...Args>
-        Variant Constructor::Invoke(Args &&...args) const
-        {
-            ArgumentList arguments { std::forward<Args>( args )... };
+        ArgumentList arguments { std::forward<Args>( args )... };
 
-            return InvokeVariadic( arguments );
-        }
+        return InvokeVariadic( arguments );
     }
 }

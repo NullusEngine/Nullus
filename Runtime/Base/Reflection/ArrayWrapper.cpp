@@ -10,13 +10,11 @@
 
 #include "Debug/Assertion.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
-        ArrayWrapper::ArrayWrapper(void)
-            : m_isConst( true )
-            , m_base( nullptr ) { }
+    ArrayWrapper::ArrayWrapper(void)
+        : m_isConst( true )
+        , m_base( nullptr ) { }
 
         Variant ArrayWrapper::GetValue(size_t index) const
         {
@@ -57,9 +55,8 @@ namespace NLS
             return m_base != nullptr;
         }
 
-        bool ArrayWrapper::IsConst(void) const
-        {
-            return m_isConst;
-        }
+    bool ArrayWrapper::IsConst(void) const
+    {
+        return m_isConst;
     }
 }

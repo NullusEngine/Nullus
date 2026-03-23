@@ -8,17 +8,14 @@
 
 #include "DestructorInvokerBase.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    template<typename ClassType>
+    class DestructorInvoker : public DestructorInvokerBase
     {
-        template<typename ClassType>
-        class DestructorInvoker : public DestructorInvokerBase
-        {
-        public:
-            void Invoke(const Variant &obj) override;
-        };
-    }
+    public:
+        void Invoke(const Variant &obj) override;
+    };
 }
 
 #include "Impl/DestructorInvoker.hpp"

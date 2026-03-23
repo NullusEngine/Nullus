@@ -17,10 +17,13 @@
 #include "Core/ServiceLocator.h"
 #include <Utils/PathParser.h>
 
-using namespace NLS::Engine;
-using namespace NLS::Engine::Components;
+namespace NLS::Engine
+{
+using namespace Components;
 using namespace NLS::Render::Resources;
-using namespace NLS;
+using Vertex = Render::Geometry::Vertex;
+using Texture2D = Render::Resources::Texture2D;
+namespace CoreRM = NLS::Core::ResourceManagement;
 
 class AssimpLoader
 {
@@ -67,8 +70,8 @@ private:
 		if (!material)
 			return nullptr;
 
-		auto shader = NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager).CreateResource(":Shaders/Standard.glsl");
-		auto nlsMaterial = new NLS::Render::Resources::Material(shader);
+		auto shader = NLS_SERVICE(CoreRM::ShaderManager).CreateResource(":Shaders/Standard.glsl");
+		auto nlsMaterial = new Material(shader);
 
 		aiString name;
 		aiGetMaterialString(material, AI_MATKEY_NAME, &name);
@@ -76,7 +79,7 @@ private:
 		aiString diffuseMapPath;
 		if (material->GetTexture(aiTextureType_DIFFUSE, 0, &diffuseMapPath) == AI_SUCCESS)
 		{
-			NLS::Render::Resources::Texture2D* texture = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).CreateResource(mDirectory + "/" + std::string(diffuseMapPath.C_Str()));
+			Texture2D* texture = NLS_SERVICE(CoreRM::TextureManager).CreateResource(mDirectory + "/" + std::string(diffuseMapPath.C_Str()));
 
 			nlsMaterial->Set<Render::Resources::Texture2D*>("u_DiffuseMap", texture);
 		}
@@ -84,7 +87,7 @@ private:
 		aiString specularMapPath;
 		if (material->GetTexture(aiTextureType_SPECULAR, 0, &specularMapPath) == AI_SUCCESS)
 		{
-			NLS::Render::Resources::Texture2D* texture = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).CreateResource(mDirectory + "/" + std::string(specularMapPath.C_Str()));
+			Texture2D* texture = NLS_SERVICE(CoreRM::TextureManager).CreateResource(mDirectory + "/" + std::string(specularMapPath.C_Str()));
 		
 			nlsMaterial->Set<Render::Resources::Texture2D*>("u_SpecularMap", texture);
 		}
@@ -92,7 +95,7 @@ private:
 		aiString normalMapPath;
 		if (material->GetTexture(aiTextureType_NORMALS, 0, &normalMapPath) == AI_SUCCESS)
 		{
-			NLS::Render::Resources::Texture2D* texture = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).CreateResource(mDirectory + "/" + std::string(normalMapPath.C_Str()));
+			Texture2D* texture = NLS_SERVICE(CoreRM::TextureManager).CreateResource(mDirectory + "/" + std::string(normalMapPath.C_Str()));
 				
 			nlsMaterial->Set<Render::Resources::Texture2D*>("u_NormalMap", texture);
 		}
@@ -100,7 +103,7 @@ private:
 		aiString heightMapPath;
 		if (material->GetTexture(aiTextureType_HEIGHT, 0, &heightMapPath) == AI_SUCCESS)
 		{
-			NLS::Render::Resources::Texture2D* texture = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).CreateResource(mDirectory + "/" + std::string(heightMapPath.C_Str()));
+			Texture2D* texture = NLS_SERVICE(CoreRM::TextureManager).CreateResource(mDirectory + "/" + std::string(heightMapPath.C_Str()));
 						
 			nlsMaterial->Set<Render::Resources::Texture2D*>("u_HeightMap", texture);
 		}
@@ -111,7 +114,7 @@ private:
 	Mesh* ProcessMesh(const aiMesh* mesh, int matIndex)
 	{
 		// vertices
-		std::vector<NLS::Render::Geometry::Vertex> vertices;
+		std::vector<Vertex> vertices;
 		for (uint32_t i = 0; i < mesh->mNumVertices; ++i)
 		{
 			aiVector3D position = mesh->mVertices[i];
@@ -175,7 +178,7 @@ private:
 			subMeshes.push_back(ProcessMesh(mesh, i));
 		}
 
-		Model* model = NLS_SERVICE(NLS::Core::ResourceManagement::ModelManager).CreateResource(node->mName.C_Str(), subMeshes);
+		Model* model = NLS_SERVICE(CoreRM::ModelManager).CreateResource(node->mName.C_Str(), subMeshes);
 		if (model)
 		{
 			MeshRenderer* meshRender = gameObject->AddComponent<MeshRenderer>();
@@ -216,7 +219,7 @@ private:
 	std::vector<Material*> mMaterials;
 };
 
-Actor* NLS::Engine::ActorLoader::LoadActor(const std::string& path, const std::string& absPath)
+Actor* ActorLoader::LoadActor(const std::string& path, const std::string& absPath)
 {
 	AssimpLoader loader(path, absPath);
 	auto* go = loader.LoadActor();
@@ -224,3 +227,4 @@ Actor* NLS::Engine::ActorLoader::LoadActor(const std::string& path, const std::s
 	actor->SetGameObject(go);
 	return actor;
 }
+} // namespace NLS::Engine

@@ -1,13 +1,12 @@
 #include "Components/TransformComponent.h"
 
-using namespace NLS::Engine::Components;
-using namespace NLS;
-
-NLS::Engine::Components::TransformComponent::TransformComponent()
+namespace NLS::Engine::Components
+{
+TransformComponent::TransformComponent()
 {
 }
 
-void Engine::Components::TransformComponent::OnCreate()
+void TransformComponent::OnCreate()
 {
 }
 
@@ -145,3 +144,4 @@ Maths::Vector3 TransformComponent::GetLocalRight() const
 {
 	return m_transform.GetLocalRight();
 }
+} // namespace NLS::Engine::Components

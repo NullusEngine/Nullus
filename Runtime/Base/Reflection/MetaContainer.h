@@ -8,22 +8,19 @@
 
 #include "MetaManager.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    class MetaContainer
     {
-        class MetaContainer
-        {
-        public:
-            const MetaManager &GetMeta(void) const;
+    public:
+        const MetaManager &GetMeta(void) const;
 
-        private:
-            MetaContainer &operator=(const MetaContainer &rhs) = delete;
+    private:
+        MetaContainer &operator=(const MetaContainer &rhs) = delete;
 
-            friend class ReflectionDatabase;
-            friend struct TypeData;
+        friend class ReflectionDatabase;
+        friend struct TypeData;
 
-            MetaManager m_meta;
-        };
-    }
+        MetaManager m_meta;
+    };
 }

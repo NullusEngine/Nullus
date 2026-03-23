@@ -13,46 +13,43 @@
 #include "GlobalGetter.h"
 #include "GlobalSetter.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    class Global : public MetaContainer
     {
-        class Global : public MetaContainer
-        {
-        public:
-            Global(void);
+    public:
+        Global(void);
 
-            Global(
-                const std::string &name, 
-                Type type, 
-                GlobalGetterBase *getter, 
-                GlobalSetterBase *setter, 
-                Type parentType = Type::Invalid( )
-            );
+        Global(
+            const std::string &name,
+            Type type,
+            GlobalGetterBase *getter,
+            GlobalSetterBase *setter,
+            Type parentType = Type::Invalid( )
+        );
 
-            static const Global &Invalid(void);
+        static const Global &Invalid(void);
 
-            bool IsValid(void) const;
-            bool IsReadOnly(void) const;
+        bool IsValid(void) const;
+        bool IsReadOnly(void) const;
 
-            Type GetType(void) const;
-            Type GetParentType(void) const;
+        Type GetType(void) const;
+        Type GetParentType(void) const;
 
-            const std::string &GetName(void) const;
+        const std::string &GetName(void) const;
 
-            Variant GetValue(void) const;
-            bool SetValue(const Argument &value) const;
-            
-        private:
-            friend struct TypeData;
+        Variant GetValue(void) const;
+        bool SetValue(const Argument &value) const;
 
-            Type m_type;
-            Type m_parentType;
+    private:
+        friend struct TypeData;
 
-            std::string m_name;
+        Type m_type;
+        Type m_parentType;
 
-            std::shared_ptr<GlobalGetterBase> m_getter;
-            std::shared_ptr<GlobalSetterBase> m_setter;
-        };  
-    }
+        std::string m_name;
+
+        std::shared_ptr<GlobalGetterBase> m_getter;
+        std::shared_ptr<GlobalSetterBase> m_setter;
+    };
 }

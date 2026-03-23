@@ -1,52 +1,55 @@
-﻿#include "Rendering/Resources/Loaders/ModelLoader.h"
+#include "Rendering/Resources/Loaders/ModelLoader.h"
 
-NLS::Render::Resources::Parsers::AssimpParser NLS::Render::Resources::Loaders::ModelLoader::__ASSIMP;
-
-NLS::Render::Resources::Model* NLS::Render::Resources::Loaders::ModelLoader::Create(const std::string& p_filepath, Parsers::EModelParserFlags p_parserFlags)
+namespace NLS::Render::Resources::Loaders
 {
-	Model* result = new Model(p_filepath);
+Parsers::AssimpParser ModelLoader::__ASSIMP;
 
-	if (__ASSIMP.LoadModel(p_filepath, result->m_meshes, result->m_materialNames, p_parserFlags))
-	{
-		result->ComputeBoundingSphere();
-		return result;
-	}
+Model* ModelLoader::Create(const std::string& p_filepath, Parsers::EModelParserFlags p_parserFlags)
+{
+    Model* result = new Model(p_filepath);
 
-	delete result;
+    if (__ASSIMP.LoadModel(p_filepath, result->m_meshes, result->m_materialNames, p_parserFlags))
+    {
+        result->ComputeBoundingSphere();
+        return result;
+    }
 
-	return nullptr;
+    delete result;
+
+    return nullptr;
 }
 
-NLS::Render::Resources::Model* NLS::Render::Resources::Loaders::ModelLoader::Create(const std::vector<NLS::Render::Resources::Mesh*>& meshes)
+Model* ModelLoader::Create(const std::vector<Mesh*>& meshes)
 {
-	Model* result = new Model("");
-	result->m_meshes = meshes;
-	return result;
+    Model* result = new Model("");
+    result->m_meshes = meshes;
+    return result;
 }
 
-void NLS::Render::Resources::Loaders::ModelLoader::Reload(Model& p_model, const std::string& p_filePath, Parsers::EModelParserFlags p_parserFlags)
+void ModelLoader::Reload(Model& p_model, const std::string& p_filePath, Parsers::EModelParserFlags p_parserFlags)
 {
-	Model* newModel = Create(p_filePath, p_parserFlags);
+    Model* newModel = Create(p_filePath, p_parserFlags);
 
-	if (newModel)
-	{
-		p_model.m_meshes = newModel->m_meshes;
-		p_model.m_materialNames = newModel->m_materialNames;
+    if (newModel)
+    {
+        p_model.m_meshes = newModel->m_meshes;
+        p_model.m_materialNames = newModel->m_materialNames;
         p_model.m_boundingSphere = newModel->m_boundingSphere;
-		newModel->m_meshes.clear();
-		delete newModel;
-	}
+        newModel->m_meshes.clear();
+        delete newModel;
+    }
 }
 
-bool NLS::Render::Resources::Loaders::ModelLoader::Destroy(Model*& p_modelInstance)
+bool ModelLoader::Destroy(Model*& p_modelInstance)
 {
-	if (p_modelInstance)
-	{
-		delete p_modelInstance;
-		p_modelInstance = nullptr;
+    if (p_modelInstance)
+    {
+        delete p_modelInstance;
+        p_modelInstance = nullptr;
 
-		return true;
-	}
+        return true;
+    }
 
-	return false;
+    return false;
+}
 }

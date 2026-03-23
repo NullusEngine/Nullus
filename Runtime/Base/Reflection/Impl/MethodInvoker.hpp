@@ -6,10 +6,8 @@
 
 #pragma once
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
         template<typename ClassType, typename ReturnType, typename ... ArgTypes>
         MethodInvoker<ClassType, ReturnType, ArgTypes...>::MethodInvoker(Signature method)
             : m_method( reinterpret_cast<ConstSignature>( method ) ) { }
@@ -217,5 +215,4 @@ namespace NLS
                 arguments[ 9 ].GetValue<A10>( )
             );
         }
-    }
 }

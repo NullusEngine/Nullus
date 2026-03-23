@@ -15,11 +15,9 @@
 
 #include <algorithm>
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
-        MetaManager::MetaManager(void) { }
+    MetaManager::MetaManager(void) { }
 
         MetaManager::MetaManager(const MetaManager &rhs)
         {
@@ -111,13 +109,12 @@ namespace NLS
             return object;
         }
 
-        void MetaManager::copy(const MetaManager &rhs)
+    void MetaManager::copy(const MetaManager &rhs)
+    {
+        for (auto &prop : rhs.m_properties)
         {
-            for (auto &prop : rhs.m_properties) 
-            {
-                m_properties[ prop.first ] = 
-                    static_cast<MetaProperty*>( prop.second->Clone( ) );
-            }
+            m_properties[ prop.first ] =
+                static_cast<MetaProperty*>( prop.second->Clone( ) );
         }
     }
 }

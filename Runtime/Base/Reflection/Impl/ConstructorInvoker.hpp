@@ -12,10 +12,8 @@
 #include "../ArgumentConfig.h"
 #include "../Argument.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
         ////////////////////////////////////////////////////////////////THIS_ARG_COUNT///////
         // Non Dynamic
         ///////////////////////////////////////////////////////////////////////
@@ -484,5 +482,4 @@ namespace NLS
                 ) );
             }
         };
-    }
 }

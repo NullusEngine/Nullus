@@ -15,11 +15,21 @@
 #include "Rendering/Settings/EPixelDataFormat.h"
 #include "Rendering/Settings/EPixelDataType.h"
 #include "Rendering/Data/PipelineState.h"
-#include "Rendering/Resources/IMesh.h"
+#include "Rendering/RHI/RHITypes.h"
 
 #include <Math/Vector4.h>
 #include "RenderDef.h"
 class DriverImpl;
+
+namespace NLS::Render::RHI
+{
+	class IRenderDevice;
+}
+
+namespace NLS::Render::Resources
+{
+	class IMesh;
+}
 
 namespace NLS::Render::Context
 {
@@ -53,10 +63,20 @@ public:
         uint32_t p_width,
         uint32_t p_height);
 
+    uint32_t CreateFramebuffer();
+
+    void DestroyFramebuffer(uint32_t framebufferId);
+
     /**
      * Bind a framebuffer by raw backend identifier. Use 0 for the backbuffer.
      */
     void BindFramebuffer(uint32_t framebufferId);
+
+    void AttachFramebufferColorTexture(uint32_t framebufferId, uint32_t textureId, uint32_t attachmentIndex);
+
+    void AttachFramebufferDepthStencilTexture(uint32_t framebufferId, uint32_t textureId);
+
+    void SetFramebufferDrawBufferCount(uint32_t framebufferId, uint32_t colorAttachmentCount);
 
     /**
      * Blit the depth buffer from one framebuffer to another.
@@ -75,7 +95,7 @@ public:
         bool p_colorBuffer,
         bool p_depthBuffer,
         bool p_stencilBuffer,
-        const NLS::Maths::Vector4& p_color = NLS::Maths::Vector4(0, 0, 0, 0));
+        const Maths::Vector4& p_color = Maths::Vector4(0, 0, 0, 0));
 
     /**
      * Read a block of pixels from the currently bound framebuffer (or backbuffer).
@@ -104,8 +124,8 @@ public:
      * @param p_instances
      */
     void Draw(
-        NLS::Render::Data::PipelineState p_pso,
-        const Resources::IMesh& p_mesh,
+        ::NLS::Render::Data::PipelineState p_pso,
+        const ::NLS::Render::Resources::IMesh& p_mesh,
         Settings::EPrimitiveMode p_primitiveMode = Settings::EPrimitiveMode::TRIANGLES,
         uint32_t p_instances = 1);
 
@@ -134,10 +154,20 @@ public:
      */
     std::string_view GetShadingLanguageVersion() const;
 
+	::NLS::Render::RHI::RHIDeviceCapabilities GetCapabilities() const;
+	bool IsBackendReady() const;
+	bool CreateSwapchain(const ::NLS::Render::RHI::SwapchainDesc& desc);
+	void DestroySwapchain();
+	void ResizeSwapchain(uint32_t width, uint32_t height);
+	void PresentSwapchain();
+
     void SetPolygonMode(Settings::ERasterizationMode mode);
 
+	::NLS::Render::RHI::IRenderDevice& GetRenderDevice();
+	const ::NLS::Render::RHI::IRenderDevice& GetRenderDevice() const;
+
 private:
-    void SetPipelineState(Data::PipelineState p_state);
+    void SetPipelineState(::NLS::Render::Data::PipelineState p_state);
     void ResetPipelineState();
 
 private:
@@ -145,7 +175,8 @@ private:
     std::string m_hardware;
     std::string m_version;
     std::string m_shadingLanguageVersion;
-    Data::PipelineState m_defaultPipelineState;
-    Data::PipelineState m_pipelineState;
+    ::NLS::Render::Data::PipelineState m_defaultPipelineState;
+    ::NLS::Render::Data::PipelineState m_pipelineState;
+	std::unique_ptr<::NLS::Render::RHI::IRenderDevice> m_renderDevice;
 };
 } // namespace NLS::Render::Context

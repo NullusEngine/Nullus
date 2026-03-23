@@ -4,9 +4,13 @@
 #include <map>
 #include <optional>
 
+#include "Rendering/Resources/BindingSet.h"
+#include "Rendering/Resources/ResourceBinding.h"
 #include "Rendering/Resources/Shader.h"
+#include "Rendering/Resources/MaterialParameterBlock.h"
 #include "Rendering/Resources/Texture2D.h"
 #include "Rendering/Data/StateMask.h"
+#include "Rendering/RHI/GraphicsPipelineDesc.h"
 #include "RenderDef.h"
 namespace NLS::Render::Resources
 {
@@ -16,28 +20,36 @@ namespace NLS::Render::Resources
 class NLS_RENDER_API Material
 {
 public:
+    using ShaderType = Shader;
+    using Texture2DType = Texture2D;
+
     /**
      * Creates a material
      * @param p_shader
      */
-    Material(NLS::Render::Resources::Shader* p_shader = nullptr);
+    Material(Shader* p_shader = nullptr);
 
     /**
      * Defines the shader to attach to this material instance
      * @param p_shader
      */
-    void SetShader(NLS::Render::Resources::Shader* p_shader);
+    void SetShader(Shader* p_shader);
 
     /**
      * Fill uniform with default uniform values
      */
     void FillUniform();
 
+    void SyncParameterLayout();
+
+    void RebuildBindingLayout();
+    void RebuildBindingSet() const;
+
     /**
      * Bind the material and send its uniform data to the GPU
      * @param p_emptyTexture (The texture to use if a texture uniform is null)
      */
-    void Bind(NLS::Render::Resources::Texture2D* p_emptyTexture = nullptr) const;
+    void Bind(Texture2D* p_emptyTexture = nullptr) const;
 
     /**
      * Unbind the material
@@ -62,7 +74,7 @@ public:
     /**
      * Returns the attached shader
      */
-    NLS::Render::Resources::Shader*& GetShader();
+    Shader*& GetShader();
 
     /**
      * Returns true if the material has a shader attached
@@ -156,6 +168,13 @@ public:
      */
     const Data::StateMask GenerateStateMask() const;
 
+    RHI::GraphicsPipelineDesc BuildGraphicsPipelineDesc() const;
+
+    MaterialParameterBlock& GetParameterBlock();
+    const MaterialParameterBlock& GetParameterBlock() const;
+    const ResourceBindingLayout& GetBindingLayout() const;
+    const BindingSet& GetBindingSet() const;
+
     /**
      * Returns the uniforms data of the material
      */
@@ -164,8 +183,10 @@ public:
     const std::string path;
 
 protected:
-    NLS::Render::Resources::Shader* m_shader = nullptr;
-    std::map<std::string, std::any> m_uniformsData;
+    Shader* m_shader = nullptr;
+    MaterialParameterBlock m_parameterBlock;
+    ResourceBindingLayout m_bindingLayout;
+    mutable BindingSet m_bindingSet;
 
     bool m_blendable = false;
     bool m_backfaceCulling = true;

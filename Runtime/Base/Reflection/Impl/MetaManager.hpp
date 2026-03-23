@@ -8,26 +8,23 @@
 
 #include "../Type.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    template<typename PropertyType>
+    const PropertyType *MetaManager::GetProperty(void) const
     {
-        template<typename PropertyType>
-        const PropertyType *MetaManager::GetProperty(void) const
-        {
-            static_assert( std::is_base_of<MetaProperty, PropertyType>::value, 
-                "Type must be a MetaProperty." 
-            );
-            
-            static const auto type = NLS_TYPEOF( PropertyType );
+        static_assert( std::is_base_of<MetaProperty, PropertyType>::value,
+            "Type must be a MetaProperty."
+        );
 
-            auto search = m_properties.find( type );
+        static const auto type = NLS_TYPEOF( PropertyType );
 
-            // doesn't exist
-            if (search == m_properties.end( ))
-                return nullptr;
+        auto search = m_properties.find( type );
 
-            return static_cast<const PropertyType*>( search->second );
-        }
+        // doesn't exist
+        if (search == m_properties.end( ))
+            return nullptr;
+
+        return static_cast<const PropertyType*>( search->second );
     }
 }

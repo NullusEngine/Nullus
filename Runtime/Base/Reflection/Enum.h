@@ -7,38 +7,35 @@
 
 #include "EnumBase.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    class Enum
     {
-        class Enum
-        {
-        public:
-            bool IsValid(void) const;
+    public:
+        bool IsValid(void) const;
 
-            operator bool(void) const;
+        operator bool(void) const;
 
-            bool operator ==(const Enum &rhs) const;
-            bool operator !=(const Enum &rhs) const;
+        bool operator ==(const Enum &rhs) const;
+        bool operator !=(const Enum &rhs) const;
 
-            std::string GetName(void) const;
+        std::string GetName(void) const;
 
-            Type GetType(void) const;
-            Type GetParentType(void) const;
-            Type GetUnderlyingType(void) const;
+        Type GetType(void) const;
+        Type GetParentType(void) const;
+        Type GetUnderlyingType(void) const;
 
-            std::vector<std::string> GetKeys(void) const;
-            std::vector<Variant> GetValues(void) const;
+        std::vector<std::string> GetKeys(void) const;
+        std::vector<Variant> GetValues(void) const;
 
-            std::string GetKey(const Argument &value) const;
-            Variant GetValue(const std::string &key) const;
+        std::string GetKey(const Argument &value) const;
+        Variant GetValue(const std::string &key) const;
 
-        private:
-            friend struct TypeData;
+    private:
+        friend struct TypeData;
 
-            Enum(const EnumBase *base);
+        Enum(const EnumBase *base);
 
-            std::shared_ptr<const EnumBase> m_base;
-        };
-    }
+        std::shared_ptr<const EnumBase> m_base;
+    };
 }

@@ -8,10 +8,8 @@
 
 #include "../ReflectionDatabase.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
         template<typename ClassType, bool IsDynamic, bool IsWrapped, typename ...Args>
         void TypeData::AddConstructor(
             const MetaManager::Initializer &meta
@@ -422,5 +420,4 @@ namespace NLS
         {
             enumeration = new EnumContainer<EnumType>( name, initializer );
         }
-    }
 }

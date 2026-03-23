@@ -12,14 +12,12 @@
 
 #include "Debug/Assertion.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    namespace
     {
-        namespace
-        {
-            const auto kDestructorName = "destructor";
-        }
+        const auto kDestructorName = "destructor";
+    }
 
         Destructor::Destructor(void)
             : Invokable( )
@@ -59,9 +57,8 @@ namespace NLS
             return invalid;
         }
 
-        bool Destructor::IsValid(void) const
-        {
-            return m_invoker != nullptr;
-        }
+    bool Destructor::IsValid(void) const
+    {
+        return m_invoker != nullptr;
     }
 }

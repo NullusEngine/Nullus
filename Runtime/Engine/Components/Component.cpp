@@ -1,18 +1,17 @@
 #include "Components/Component.h"
 #include "GameObject.h"
-using namespace NLS::Engine;
-using namespace NLS::Engine::Components;
 
-NLS::Engine::Components::Component::Component()
+namespace NLS::Engine::Components
 {
-
-}
-
-NLS::Engine::Components::Component::~Component()
+Component::Component()
 {
 }
 
-void NLS::Engine::Components::Component::DestroyFromOwner()
+Component::~Component()
+{
+}
+
+void Component::DestroyFromOwner()
 {
     if (m_destroyedFromOwner)
     {
@@ -28,9 +27,10 @@ void NLS::Engine::Components::Component::DestroyFromOwner()
     m_owner = nullptr;
 }
 
-void NLS::Engine::Components::Component::CreateBy(GameObject* owner)
+void Component::CreateBy(GameObject* owner)
 {
 	m_owner = owner;
     m_destroyedFromOwner = false;
 	OnCreate();
 }
+} // namespace NLS::Engine::Components

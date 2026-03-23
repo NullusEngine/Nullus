@@ -6,11 +6,7 @@
 #include "Reflection/Array.h"
 #include "Reflection/Macros.h"
 
-namespace NLS
-{
-namespace Engine
-{
-namespace Serialize
+namespace NLS::Engine::Serialize
 {
 struct SerializedComponentData
 {
@@ -33,9 +29,7 @@ struct SerializedSceneData
     int version = 1;
     NLS::Array<SerializedActorData> actors;
 };
-} // namespace Serialize
-} // namespace Engine
-} // namespace NLS
+} // namespace NLS::Engine::Serialize
 
 MetaExternal(NLS::Engine::Serialize::SerializedComponentData)
 MetaExternal(NLS::Engine::Serialize::SerializedActorData)

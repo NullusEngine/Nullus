@@ -8,33 +8,30 @@
 
 #include "ReflectionDatabase.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    enum class ReflectionRegistrationPhase
     {
-        enum class ReflectionRegistrationPhase
-        {
-            Declare,
-            Define
-        };
+        Declare,
+        Define
+    };
 
-        using ReflectionRegisterFunction = void(*)(ReflectionDatabase &db, ReflectionRegistrationPhase phase);
+    using ReflectionRegisterFunction = void(*)(ReflectionDatabase &db, ReflectionRegistrationPhase phase);
 
-        class ReflectionModuleRegistry
-        {
-        public:
-            static void Add(ReflectionRegisterFunction function);
-            static void RegisterAll(ReflectionDatabase &db);
-        };
+    class ReflectionModuleRegistry
+    {
+    public:
+        static void Add(ReflectionRegisterFunction function);
+        static void RegisterAll(ReflectionDatabase &db);
+    };
 
-        template<ReflectionRegisterFunction Function>
-        class AutoReflectionModuleRegistrar
+    template<ReflectionRegisterFunction Function>
+    class AutoReflectionModuleRegistrar
+    {
+    public:
+        AutoReflectionModuleRegistrar()
         {
-        public:
-            AutoReflectionModuleRegistrar()
-            {
-                ReflectionModuleRegistry::Add(Function);
-            }
-        };
-    }
+            ReflectionModuleRegistry::Add(Function);
+        }
+    };
 }

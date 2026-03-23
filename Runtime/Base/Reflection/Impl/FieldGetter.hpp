@@ -6,13 +6,11 @@
 
 #pragma once
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
-        ///////////////////////////////////////////////////////////////////////
-        // Getter from Method
-        ///////////////////////////////////////////////////////////////////////
+    ///////////////////////////////////////////////////////////////////////
+    // Getter from Method
+    ///////////////////////////////////////////////////////////////////////
 
         template<typename ClassType, typename ReturnType>
         class FieldGetter<ClassType, ReturnType, true> : public FieldGetterBase
@@ -98,5 +96,4 @@ namespace NLS
         private:
             Signature m_field;
         };
-    }
 }

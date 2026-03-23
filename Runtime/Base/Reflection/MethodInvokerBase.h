@@ -9,18 +9,15 @@
 #include "InvokableConfig.h"
 #include "ArgumentConfig.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    class Variant;
+
+    class MethodInvokerBase
     {
-        class Variant;
+    public:
+        virtual ~MethodInvokerBase(void) { }
 
-        class MethodInvokerBase
-        {
-        public:
-            virtual ~MethodInvokerBase(void) { }
-
-            virtual Variant Invoke(Variant &obj, const ArgumentList &arguments) = 0;
-        };
-    }
+        virtual Variant Invoke(Variant &obj, const ArgumentList &arguments) = 0;
+    };
 }

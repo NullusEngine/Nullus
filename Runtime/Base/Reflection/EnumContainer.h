@@ -12,16 +12,14 @@
 
 #include <unordered_map>
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    template<typename EnumType>
+    class EnumContainer : public EnumBase
     {
-        template<typename EnumType>
-        class EnumContainer : public EnumBase
-        {
-        public:
-            typedef std::initializer_list<std::pair<std::string, EnumType>> Initializer;
-            typedef std::unordered_map<std::string, EnumType> Table;
+    public:
+        typedef std::initializer_list<std::pair<std::string, EnumType>> Initializer;
+        typedef std::unordered_map<std::string, EnumType> Table;
 
             EnumContainer(const std::string &name, const Initializer &initializer);
             
@@ -42,9 +40,8 @@ namespace NLS
 
         private:
             Table m_keyToValue;
-            std::vector<std::string> m_keys;
-        };
-    }
+        std::vector<std::string> m_keys;
+    };
 }
 
 #include "Impl/EnumContainer.hpp"

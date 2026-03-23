@@ -6,18 +6,15 @@
 
 #pragma once
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    class Variant;
+
+    class FieldSetterBase
     {
-        class Variant;
+    public:
+        virtual ~FieldSetterBase(void) { }
 
-        class FieldSetterBase
-        {
-        public:
-            virtual ~FieldSetterBase(void) { }
-
-            virtual void SetValue(Variant &obj, const Variant &value) = 0;
-        };
-    }
+        virtual void SetValue(Variant &obj, const Variant &value) = 0;
+    };
 }

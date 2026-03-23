@@ -1,9 +1,7 @@
 #pragma once
 #include <stack>
 #include "EngineDef.h"
-namespace NLS
-{
-namespace Engine
+namespace NLS::Engine
 {
 class PushdownState;
 
@@ -20,5 +18,4 @@ protected:
 
     std::stack<PushdownState*> stateStack;
 };
-} // namespace Engine
-} // namespace NLS
+} // namespace NLS::Engine

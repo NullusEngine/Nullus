@@ -11,9 +11,12 @@ namespace NLS::Render::Entities
 	*/
 	struct NLS_RENDER_API Drawable : public Data::Describable
 	{
-		NLS::Render::Resources::Mesh* mesh;
-		NLS::Render::Resources::Material* material;
-		NLS::Render::Data::StateMask stateMask;
-		NLS::Render::Settings::EPrimitiveMode primitiveMode = NLS::Render::Settings::EPrimitiveMode::TRIANGLES;
+        using Mesh = Resources::Mesh;
+        using Material = Resources::Material;
+
+		Mesh* mesh;
+		Material* material;
+		Data::StateMask stateMask;
+		Settings::EPrimitiveMode primitiveMode = Settings::EPrimitiveMode::TRIANGLES;
 	};
 }

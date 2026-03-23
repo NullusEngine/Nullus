@@ -6,20 +6,14 @@
 
 #pragma once
 
-namespace NLS
+namespace NLS::meta::variant_policy
 {
-    namespace meta
-    {
-        namespace variant_policy
-        {
-            /** @brief Wraps an Object pointer, rather than copying the value.
-             *         This also ensures base class pointers can resolve their inherited type
-             */
-            struct WrapObject { };
+    /** @brief Wraps an Object pointer, rather than copying the value.
+     *         This also ensures base class pointers can resolve their inherited type
+     */
+    struct WrapObject { };
 
-            /** @brief Uses a reference to a value rather than copying it
-             */
-            struct NoCopy { };
-        }
-    }
+    /** @brief Uses a reference to a value rather than copying it
+     */
+    struct NoCopy { };
 }

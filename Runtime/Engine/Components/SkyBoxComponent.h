@@ -19,6 +19,10 @@ namespace NLS::Engine::Components
 	{
     public:
 		GENERATED_BODY()
+        using Model = Render::Resources::Model;
+        using Material = Render::Resources::Material;
+        using TextureCube = Render::Resources::TextureCube;
+
 		/**
 		* Constructor
 		*/
@@ -28,23 +32,23 @@ namespace NLS::Engine::Components
 		 * @brief Set CubeMap
 		 */
         FUNCTION()
-		void SetCubeMap(NLS::Render::Resources::TextureCube* cubmap);
+		void SetCubeMap(TextureCube* cubmap);
 
 		/**
 		 * @brief
 		 * @return
 		 */
         FUNCTION()
-		NLS::Render::Resources::Model* GetModel() const { return mModel; }
+		Model* GetModel() const { return mModel; }
 
 		/**
 		 * @brief 
 		 * @return 
 		 */
-		NLS::Render::Resources::Material* GetMaterial() const { return mMaterial; }
+		Material* GetMaterial() const { return mMaterial; }
 
 	private:
-		NLS::Render::Resources::Model* mModel = nullptr;
-		NLS::Render::Resources::Material* mMaterial = nullptr;
+		Model* mModel = nullptr;
+		Material* mMaterial = nullptr;
 	};
 }

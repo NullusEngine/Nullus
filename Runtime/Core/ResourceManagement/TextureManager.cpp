@@ -1,52 +1,78 @@
-﻿
 #include "Core/ResourceManagement/TextureManager.h"
 #include "Rendering/Settings/DriverSettings.h"
+
 #include <Rendering/Resources/Loaders/TextureLoader.h>
 
 #include <Filesystem/IniFile.h>
 
-std::tuple<NLS::Render::Settings::ETextureFilteringMode, NLS::Render::Settings::ETextureFilteringMode, bool> GetTextureMetadata(const std::string& p_path)
+namespace
 {
-	auto metaFile = NLS::Filesystem::IniFile(p_path + ".meta");
+using ETextureFilteringMode = NLS::Render::Settings::ETextureFilteringMode;
+using Texture2D = NLS::Render::Resources::Texture2D;
+using TextureCube = NLS::Render::Resources::TextureCube;
+using TextureLoader = NLS::Render::Resources::Loaders::TextureLoader;
 
-	auto min = metaFile.GetOrDefault("MIN_FILTER", static_cast<int>(NLS::Render::Settings::ETextureFilteringMode::LINEAR_MIPMAP_LINEAR));
-	auto mag = metaFile.GetOrDefault("MAG_FILTER", static_cast<int>(NLS::Render::Settings::ETextureFilteringMode::LINEAR));
-	auto mipmap = metaFile.GetOrDefault("ENABLE_MIPMAPPING", true);
-
-	return { static_cast<NLS::Render::Settings::ETextureFilteringMode>(min), static_cast<NLS::Render::Settings::ETextureFilteringMode>(mag), mipmap };
+ETextureFilteringMode ParseTextureFilteringMode(int value)
+{
+	switch (value)
+	{
+	case 0x2600: return ETextureFilteringMode::NEAREST;
+	case 0x2601: return ETextureFilteringMode::LINEAR;
+	case 0x2700: return ETextureFilteringMode::NEAREST_MIPMAP_NEAREST;
+	case 0x2701: return ETextureFilteringMode::LINEAR_MIPMAP_NEAREST;
+	case 0x2702: return ETextureFilteringMode::NEAREST_MIPMAP_LINEAR;
+	case 0x2703: return ETextureFilteringMode::LINEAR_MIPMAP_LINEAR;
+	default: return static_cast<ETextureFilteringMode>(value);
+	}
 }
 
-NLS::Render::Resources::Texture2D* NLS::Core::ResourceManagement::TextureManager::CreateResource(const std::string & p_path)
+std::tuple<ETextureFilteringMode, ETextureFilteringMode, bool> GetTextureMetadata(const std::string& path)
 {
-	std::string realPath = GetRealPath(p_path);
+	auto metaFile = NLS::Filesystem::IniFile(path + ".meta");
+
+	auto min = metaFile.GetOrDefault("MIN_FILTER", static_cast<int>(ETextureFilteringMode::LINEAR_MIPMAP_LINEAR));
+	auto mag = metaFile.GetOrDefault("MAG_FILTER", static_cast<int>(ETextureFilteringMode::LINEAR));
+	auto mipmap = metaFile.GetOrDefault("ENABLE_MIPMAPPING", true);
+
+	return { ParseTextureFilteringMode(min), ParseTextureFilteringMode(mag), mipmap };
+}
+}
+
+namespace NLS::Core::ResourceManagement
+{
+Texture2D* TextureManager::CreateResource(const std::string& path)
+{
+	std::string realPath = GetRealPath(path);
 
 	auto [min, mag, mipmap] = GetTextureMetadata(realPath);
 
-	NLS::Render::Resources::Texture2D* texture = NLS::Render::Resources::Loaders::TextureLoader::Create(realPath, min, mag, mipmap);
+	Texture2D* texture = TextureLoader::Create(realPath, min, mag, mipmap);
 	if (texture)
-		texture->path = p_path; // Force the resource path to fit the given path
+	{
+		texture->path = path;
+	}
 
 	return texture;
 }
 
-void NLS::Core::ResourceManagement::TextureManager::DestroyResource(NLS::Render::Resources::Texture2D* p_resource)
+void TextureManager::DestroyResource(Texture2D* resource)
 {
-	NLS::Render::Resources::Loaders::TextureLoader::Destroy(p_resource);
+	TextureLoader::Destroy(resource);
 }
 
-void NLS::Core::ResourceManagement::TextureManager::ReloadResource(NLS::Render::Resources::Texture2D* p_resource, const std::string& p_path)
+void TextureManager::ReloadResource(Texture2D* resource, const std::string& path)
 {
-	std::string realPath = GetRealPath(p_path);
+	std::string realPath = GetRealPath(path);
 
 	auto [min, mag, mipmap] = GetTextureMetadata(realPath);
 
-	NLS::Render::Resources::Loaders::TextureLoader::Reload(p_resource, realPath, min, mag, mipmap);
+	TextureLoader::Reload(resource, realPath, min, mag, mipmap);
 }
 
-NLS::Render::Resources::TextureCube* NLS::Core::ResourceManagement::TextureManager::CreateCubeMap(const std::vector<std::string>& filePaths)
+TextureCube* TextureManager::CreateCubeMap(const std::vector<std::string>& filePaths)
 {
 	if (filePaths.size() != 6)
-		{
+	{
 		return nullptr;
 	}
 
@@ -60,5 +86,6 @@ NLS::Render::Resources::TextureCube* NLS::Core::ResourceManagement::TextureManag
 		GetRealPath(filePaths[5])
 	};
 
-	return NLS::Render::Resources::Loaders::TextureLoader::CreateCubeMap(realPaths);
+	return TextureLoader::CreateCubeMap(realPaths);
+}
 }

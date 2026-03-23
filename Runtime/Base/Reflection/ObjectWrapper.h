@@ -10,16 +10,14 @@
 
 #include "JsonConfig.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
-        class Object;
+    class Object;
 
-        class ObjectWrapper : public VariantBase
-        {
-        public:
-            ObjectWrapper(Object *instance);
+    class ObjectWrapper : public VariantBase
+    {
+    public:
+        ObjectWrapper(Object *instance);
 
             Type GetType(void) const override;
             void *GetPtr(void) const override;
@@ -33,9 +31,9 @@ namespace NLS
             VariantBase *Clone(void) const override;
 
             void OnSerialize(Json::object &output) const override;
-            void OnDeserialize(const Json &input) override;
-        private:
-            Object *m_object;
-        };
-    }
+        void OnDeserialize(const Json &input) override;
+
+    private:
+        Object *m_object;
+    };
 }

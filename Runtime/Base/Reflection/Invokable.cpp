@@ -8,21 +8,18 @@
 
 #include "Invokable.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
-        Invokable::Invokable(const std::string &name) 
-            : m_name( name ) { }
+    Invokable::Invokable(const std::string &name)
+        : m_name( name ) { }
 
         const InvokableSignature &Invokable::GetSignature(void) const
         {
             return m_signature;
         }
 
-        const std::string &Invokable::GetName(void) const
-        {
-            return m_name;
-        }
+    const std::string &Invokable::GetName(void) const
+    {
+        return m_name;
     }
 }

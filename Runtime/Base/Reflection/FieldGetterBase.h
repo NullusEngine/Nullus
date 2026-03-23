@@ -6,19 +6,16 @@
 
 #pragma once
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    class Variant;
+
+    class FieldGetterBase
     {
-        class Variant;
+    public:
+        virtual ~FieldGetterBase(void) { }
 
-        class FieldGetterBase
-        {
-        public:
-            virtual ~FieldGetterBase(void) { }
-
-            virtual Variant GetValue(const Variant &obj) = 0;
-            virtual Variant GetValueReference(const Variant &obj) = 0;
-        };
-    }
+        virtual Variant GetValue(const Variant &obj) = 0;
+        virtual Variant GetValueReference(const Variant &obj) = 0;
+    };
 }

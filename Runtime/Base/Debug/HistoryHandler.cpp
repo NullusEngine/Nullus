@@ -1,13 +1,16 @@
 #include "Debug/HistoryHandler.h"
 
-std::queue<NLS::Debug::LogData> NLS::Debug::HistoryHandler::LOG_QUEUE;
-
-void NLS::Debug::HistoryHandler::Log(const LogData& p_logData)
+namespace NLS::Debug
 {
-	LOG_QUEUE.push(p_logData);
+std::queue<LogData> HistoryHandler::LOG_QUEUE;
+
+void HistoryHandler::Log(const LogData& logData)
+{
+	LOG_QUEUE.push(logData);
 }
 
-std::queue<NLS::Debug::LogData>& NLS::Debug::HistoryHandler::GetLogQueue()
+std::queue<LogData>& HistoryHandler::GetLogQueue()
 {
 	return LOG_QUEUE;
+}
 }

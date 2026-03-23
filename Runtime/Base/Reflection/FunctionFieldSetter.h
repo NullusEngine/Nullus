@@ -8,16 +8,14 @@
 
 #include "FieldSetterBase.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    template<typename ClassType, typename ArgumentType>
+    class FunctionFieldSetter : public FieldSetterBase
     {
-        template<typename ClassType, typename ArgumentType>
-        class FunctionFieldSetter : public FieldSetterBase
-        {
-        public:
-            using NonReferenceArgType = typename std::remove_reference<ArgumentType>::type;
-            using Signature = void (*)(ClassType &, ArgumentType);
+    public:
+        using NonReferenceArgType = typename std::remove_reference<ArgumentType>::type;
+        using Signature = void (*)(ClassType &, ArgumentType);
 
             explicit FunctionFieldSetter(Signature setter)
                 : m_setter(setter) { }
@@ -31,7 +29,6 @@ namespace NLS
             }
 
         private:
-            Signature m_setter;
-        };
-    }
+        Signature m_setter;
+    };
 }

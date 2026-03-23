@@ -12,16 +12,14 @@
 #include "SceneSystem/Scene.h"
 #include "Serialize/GameobjectSerialize.h"
 
-namespace NLS
+namespace NLS::Engine
 {
-namespace Engine
-{
-    using namespace Components;
+using namespace Components;
+
 void AssemblyEngine::Initialize()
 {
     NLS_META_GENERATED_LINK_FUNCTION();
     Serializer::Instance()->AddHandler<SceneSerializeHandler>();
     Serializer::Instance()->AddHandler<GameObjectSerializeHandler>();
 }
-} // namespace Engine
-} // namespace NLS
+} // namespace NLS::Engine

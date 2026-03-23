@@ -8,27 +8,27 @@
 #include "Components/MeshRenderer.h"
 #include "Components/MaterialRenderer.h"
 #include "GameObject.h"
-using namespace NLS;
-using namespace NLS::Engine::Components;
 
-NLS::Engine::Components::MeshRenderer::MeshRenderer()
+namespace NLS::Engine::Components
 {
-	m_modelChangedEvent += [this]
-		{
-			if (auto materialRenderer = m_owner->GetComponent<MaterialRenderer>())
-				materialRenderer->UpdateMaterialList();
-		};
+MeshRenderer::MeshRenderer()
+{
+    m_modelChangedEvent += [this]
+        {
+            if (auto materialRenderer = m_owner->GetComponent<MaterialRenderer>())
+                materialRenderer->UpdateMaterialList();
+        };
 }
 
 void MeshRenderer::SetModel(Render::Resources::Model* p_model)
 {
-	m_model = p_model;
-	m_modelChangedEvent.Invoke();
+    m_model = p_model;
+    m_modelChangedEvent.Invoke();
 }
 
-Render::Resources::Model * MeshRenderer::GetModel() const
+Render::Resources::Model* MeshRenderer::GetModel() const
 {
-	return m_model;
+    return m_model;
 }
 
 std::string MeshRenderer::GetModelPath() const
@@ -54,20 +54,21 @@ void MeshRenderer::SetModelPath(const std::string& p_path)
 
 void MeshRenderer::SetFrustumBehaviour(EFrustumBehaviour p_boundingMode)
 {
-	m_frustumBehaviour = p_boundingMode;
+    m_frustumBehaviour = p_boundingMode;
 }
 
 MeshRenderer::EFrustumBehaviour MeshRenderer::GetFrustumBehaviour() const
 {
-	return m_frustumBehaviour;
+    return m_frustumBehaviour;
 }
 
 const Render::Geometry::BoundingSphere& MeshRenderer::GetCustomBoundingSphere() const
 {
-	return m_customBoundingSphere;
+    return m_customBoundingSphere;
 }
 
 void MeshRenderer::SetCustomBoundingSphere(const Render::Geometry::BoundingSphere& p_boundingSphere)
 {
-	m_customBoundingSphere = p_boundingSphere;
+    m_customBoundingSphere = p_boundingSphere;
+}
 }

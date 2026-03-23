@@ -6,10 +6,8 @@
 
 #pragma once
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
         template<typename ClassType, typename ...ArgTypes>
         class MethodInvoker<ClassType, void, ArgTypes...> : public MethodInvokerBase
         {
@@ -196,5 +194,4 @@ namespace NLS
 
             ConstSignature m_method;
         };
-    }
 }

@@ -4,9 +4,7 @@
 #include <list>
 #include <functional>
 #include "EngineDef.h"
-namespace NLS
-{
-namespace Engine
+namespace NLS::Engine
 {
 template<class T>
 class QuadTree;
@@ -137,14 +135,7 @@ protected:
 
     QuadTreeNode<T>* children;
 };
-} // namespace Engine
-} // namespace NLS
 
-
-namespace NLS
-{
-namespace Engine
-{
 template<class T>
 class QuadTree
 {
@@ -179,5 +170,4 @@ protected:
     int maxDepth;
     int maxSize;
 };
-} // namespace Engine
-} // namespace NLS
+} // namespace NLS::Engine

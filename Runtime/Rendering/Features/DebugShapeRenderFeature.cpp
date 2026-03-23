@@ -3,7 +3,9 @@
 #include "Rendering/Resources/Loaders/ShaderLoader.h"
 #include "Rendering/Utils/Conversions.h"
 
-NLS::Render::Features::DebugShapeRenderFeature::DebugShapeRenderFeature(Core::CompositeRenderer& p_renderer)
+namespace NLS::Render::Features
+{
+DebugShapeRenderFeature::DebugShapeRenderFeature(Core::CompositeRenderer& p_renderer)
 	: ARenderFeature(p_renderer)
 {
 	std::vector<Geometry::Vertex> vertices;
@@ -55,17 +57,17 @@ void main()
 }
 )";
 
-	m_lineShader = NLS::Render::Resources::Loaders::ShaderLoader::CreateFromSource(vertexShader, fragmentShader);
-	m_lineMaterial = std::make_unique<NLS::Render::Resources::Material>(m_lineShader);
+	m_lineShader = Resources::Loaders::ShaderLoader::CreateFromSource(vertexShader, fragmentShader);
+	m_lineMaterial = std::make_unique<Resources::Material>(m_lineShader);
 }
 
-NLS::Render::Features::DebugShapeRenderFeature::~DebugShapeRenderFeature()
+DebugShapeRenderFeature::~DebugShapeRenderFeature()
 {
 	delete m_lineMesh;
-	NLS::Render::Resources::Loaders::ShaderLoader::Destroy(m_lineShader);
+	Resources::Loaders::ShaderLoader::Destroy(m_lineShader);
 }
 
-void NLS::Render::Features::DebugShapeRenderFeature::OnBeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
+void DebugShapeRenderFeature::OnBeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
 {
 	SetViewProjection(
 		p_frameDescriptor.camera->GetProjectionMatrix() *
@@ -73,15 +75,15 @@ void NLS::Render::Features::DebugShapeRenderFeature::OnBeginFrame(const Data::Fr
 	);
 }
 
-void NLS::Render::Features::DebugShapeRenderFeature::SetViewProjection(const Maths::Matrix4& p_viewProjection)
+void DebugShapeRenderFeature::SetViewProjection(const Maths::Matrix4& p_viewProjection)
 {
 	m_lineShader->Bind();
 	m_lineShader->SetUniformMat4("viewProjection", p_viewProjection);
 	m_lineShader->Unbind();
 }
 
-void NLS::Render::Features::DebugShapeRenderFeature::DrawLine(
-	NLS::Render::Data::PipelineState p_pso,
+void DebugShapeRenderFeature::DrawLine(
+	Data::PipelineState p_pso,
 	const Maths::Vector3& p_start,
 	const Maths::Vector3& p_end,
 	const Maths::Vector3& p_color,
@@ -95,7 +97,7 @@ void NLS::Render::Features::DebugShapeRenderFeature::DrawLine(
 	p_pso.rasterizationMode = Settings::ERasterizationMode::LINE;
 	p_pso.lineWidthPow2 = Utils::Conversions::FloatToPow2(p_lineWidth);
 
-	NLS::Render::Entities::Drawable drawable;
+	Entities::Drawable drawable;
 	drawable.material = m_lineMaterial.get();
 	drawable.mesh = m_lineMesh;
 	drawable.stateMask = m_lineMaterial->GenerateStateMask();
@@ -106,8 +108,8 @@ void NLS::Render::Features::DebugShapeRenderFeature::DrawLine(
 	m_lineShader->Unbind();
 }
 
-void NLS::Render::Features::DebugShapeRenderFeature::DrawBox(
-	NLS::Render::Data::PipelineState p_pso,
+void DebugShapeRenderFeature::DrawBox(
+	Data::PipelineState p_pso,
 	const Maths::Vector3& p_position,
 	const Maths::Quaternion& p_rotation,
 	const Maths::Vector3& p_size,
@@ -129,7 +131,7 @@ void NLS::Render::Features::DebugShapeRenderFeature::DrawBox(
 	DrawLine(p_pso, p_position + p_rotation * Maths::Vector3{ -p_size.x, +p_size.y, +p_size.z }, p_position + p_rotation * Maths::Vector3{ +p_size.x, +p_size.y, +p_size.z }, p_color, p_lineWidth);
 }
 
-void NLS::Render::Features::DebugShapeRenderFeature::DrawSphere(NLS::Render::Data::PipelineState p_pso, const Maths::Vector3& p_position, const Maths::Quaternion& p_rotation, float p_radius, const Maths::Vector3& p_color, float p_lineWidth)
+void DebugShapeRenderFeature::DrawSphere(Data::PipelineState p_pso, const Maths::Vector3& p_position, const Maths::Quaternion& p_rotation, float p_radius, const Maths::Vector3& p_color, float p_lineWidth)
 {
 	if (!std::isinf(p_radius))
 	{
@@ -142,7 +144,7 @@ void NLS::Render::Features::DebugShapeRenderFeature::DrawSphere(NLS::Render::Dat
 	}
 }
 
-void NLS::Render::Features::DebugShapeRenderFeature::DrawCapsule(NLS::Render::Data::PipelineState p_pso, const Maths::Vector3& p_position, const Maths::Quaternion& p_rotation, float p_radius, float p_height, const Maths::Vector3& p_color, float p_lineWidth)
+void DebugShapeRenderFeature::DrawCapsule(Data::PipelineState p_pso, const Maths::Vector3& p_position, const Maths::Quaternion& p_rotation, float p_radius, float p_height, const Maths::Vector3& p_color, float p_lineWidth)
 {
 	if (!std::isinf(p_radius))
 	{
@@ -172,4 +174,5 @@ void NLS::Render::Features::DebugShapeRenderFeature::DrawCapsule(NLS::Render::Da
 		DrawLine(p_pso, p_position + p_rotation * (Maths::Vector3{ 0.f, -halfHeight, -p_radius }), p_position + p_rotation * (Maths::Vector3{ 0.f, +halfHeight, -p_radius }), p_color, p_lineWidth);
 		DrawLine(p_pso, p_position + p_rotation * (Maths::Vector3{ 0.f, -halfHeight, p_radius }), p_position + p_rotation * (Maths::Vector3{ 0.f, +halfHeight, p_radius }), p_color, p_lineWidth);
 	}
+}
 }

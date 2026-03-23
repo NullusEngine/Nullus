@@ -9,13 +9,10 @@
 #include "MetaContainer.h"
 #include "MetaManager.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    const MetaManager &MetaContainer::GetMeta(void) const
     {
-        const MetaManager &MetaContainer::GetMeta(void) const
-        {
-            return m_meta;
-        }
+        return m_meta;
     }
 }

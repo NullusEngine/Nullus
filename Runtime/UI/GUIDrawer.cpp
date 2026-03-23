@@ -25,6 +25,11 @@
 
 namespace NLS::UI
 {
+using Material = GUIDrawer::Material;
+using Model = GUIDrawer::Model;
+using Shader = GUIDrawer::Shader;
+using Texture2D = GUIDrawer::Texture2D;
+
 namespace
 {
 std::string ToLowerCopy(const std::string &value)
@@ -95,9 +100,9 @@ const Maths::Color GUIDrawer::TitleColor = {0.67f, 0.71f, 0.78f};
 const Maths::Color GUIDrawer::ClearButtonColor = {0.36f, 0.17f, 0.17f};
 const float GUIDrawer::_MIN_FLOAT = -999999999.f;
 const float GUIDrawer::_MAX_FLOAT = +999999999.f;
-Render::Resources::Texture2D* GUIDrawer::__EMPTY_TEXTURE = nullptr;
+Texture2D* GUIDrawer::__EMPTY_TEXTURE = nullptr;
 
-void GUIDrawer::ProvideEmptyTexture(Render::Resources::Texture2D& p_emptyTexture)
+void GUIDrawer::ProvideEmptyTexture(Texture2D& p_emptyTexture)
 {
     __EMPTY_TEXTURE = &p_emptyTexture;
 }
@@ -175,7 +180,7 @@ void GUIDrawer::DrawColor(Internal::WidgetContainer& p_root, const std::string& 
     dispatcher.RegisterReference(p_color);
 }
 
-Widgets::Text& GUIDrawer::DrawMesh(Internal::WidgetContainer& p_root, const std::string& p_name, Render::Resources::Model*& p_data, Event<>* p_updateNotifier)
+Widgets::Text& GUIDrawer::DrawMesh(Internal::WidgetContainer& p_root, const std::string& p_name, Model*& p_data, Event<>* p_updateNotifier)
 {
     CreateTitle(p_root, p_name);
 
@@ -213,7 +218,7 @@ Widgets::Text& GUIDrawer::DrawMesh(Internal::WidgetContainer& p_root, const std:
     return widget;
 }
 
-Widgets::Image& GUIDrawer::DrawTexture(Internal::WidgetContainer& p_root, const std::string& p_name, Render::Resources::Texture2D*& p_data, Event<>* p_updateNotifier)
+Widgets::Image& GUIDrawer::DrawTexture(Internal::WidgetContainer& p_root, const std::string& p_name, Texture2D*& p_data, Event<>* p_updateNotifier)
 {
     CreateTitle(p_root, p_name);
 
@@ -228,7 +233,7 @@ Widgets::Image& GUIDrawer::DrawTexture(Internal::WidgetContainer& p_root, const 
         {
             if (auto resource = NLS_SERVICE(Core::ResourceManagement::TextureManager).GetResource(p_receivedData.first); resource)
             {
-                p_data = static_cast<Render::Resources::Texture2D*>(resource);
+                p_data = static_cast<Texture2D*>(resource);
                 widget.textureID.id = resource->GetTextureId();
                 if (p_updateNotifier)
                     p_updateNotifier->Invoke();
@@ -251,7 +256,7 @@ Widgets::Image& GUIDrawer::DrawTexture(Internal::WidgetContainer& p_root, const 
     return widget;
 }
 
-Widgets::Text& GUIDrawer::DrawShader(Internal::WidgetContainer& p_root, const std::string& p_name, Render::Resources::Shader*& p_data, Event<>* p_updateNotifier)
+Widgets::Text& GUIDrawer::DrawShader(Internal::WidgetContainer& p_root, const std::string& p_name, Shader*& p_data, Event<>* p_updateNotifier)
 {
     CreateTitle(p_root, p_name);
 
@@ -289,7 +294,7 @@ Widgets::Text& GUIDrawer::DrawShader(Internal::WidgetContainer& p_root, const st
     return widget;
 }
 
-Widgets::Text& GUIDrawer::DrawMaterial(Internal::WidgetContainer& p_root, const std::string& p_name, NLS::Render::Resources::Material*& p_data, Event<>* p_updateNotifier)
+Widgets::Text& GUIDrawer::DrawMaterial(Internal::WidgetContainer& p_root, const std::string& p_name, Material*& p_data, Event<>* p_updateNotifier)
 {
     CreateTitle(p_root, p_name);
 

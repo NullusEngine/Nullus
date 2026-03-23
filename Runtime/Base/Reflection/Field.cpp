@@ -9,16 +9,14 @@
 #include "Field.h"
 #include "Method.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
-        Field::Field(void)
-            : m_type( Type::Invalid( ) )
-            , m_classType( Type::Invalid( ) )
-            , m_name( "INVALID" )
-            , m_getter( nullptr ) 
-            , m_setter( nullptr ) { }
+    Field::Field(void)
+        : m_type( Type::Invalid( ) )
+        , m_classType( Type::Invalid( ) )
+        , m_name( "INVALID" )
+        , m_getter( nullptr )
+        , m_setter( nullptr ) { }
 
         Field::Field(
             const std::string &name, 
@@ -88,17 +86,16 @@ namespace NLS
             return m_getter->GetValueReference( instance );
         }
 
-        bool Field::SetValue(Variant &instance, const Variant &value) const
+    bool Field::SetValue(Variant &instance, const Variant &value) const
+    {
+        // read only?
+        if (m_setter && !instance.IsConst( ))
         {
-            // read only?
-            if (m_setter && !instance.IsConst( ))
-            {
-                m_setter->SetValue( instance, value );
+            m_setter->SetValue( instance, value );
 
-                return true;
-            }
-
-            return false;
+            return true;
         }
+
+        return false;
     }
 }

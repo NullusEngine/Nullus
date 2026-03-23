@@ -15,6 +15,10 @@ namespace NLS::Render::Data
 	class NLS_RENDER_API Frustum
 	{
 	public:
+        using Mesh = Resources::Mesh;
+        using Model = Resources::Model;
+        using BoundingSphere = Render::Geometry::BoundingSphere;
+
 		/**
 		* Update frustum values
 		* @param p_viewProjection
@@ -52,14 +56,14 @@ namespace NLS::Render::Data
 		* @param p_boundingSphere
 		* @param p_transform
 		*/
-		bool BoundingSphereInFrustum(const Render::Geometry::BoundingSphere& p_boundingSphere, const Maths::Transform& p_transform) const;
+		bool BoundingSphereInFrustum(const BoundingSphere& p_boundingSphere, const Maths::Transform& p_transform) const;
 
 		/**
 		* Returns true if the 
 		* @param p_mesh
 		* @param p_transform
 		*/
-		bool IsMeshInFrustum(const NLS::Render::Resources::Mesh& p_mesh, const Maths::Transform& p_transform) const;
+		bool IsMeshInFrustum(const Mesh& p_mesh, const Maths::Transform& p_transform) const;
 
 		/**
 		* Returns the list of meshes from a model that should be rendered
@@ -69,11 +73,11 @@ namespace NLS::Render::Data
 		* @param p_frustum
 		* @param p_cullingOptions
 		*/
-		std::vector<NLS::Render::Resources::Mesh*> GetMeshesInFrustum(
-			const NLS::Render::Resources::Model& p_model,
-			const Render::Geometry::BoundingSphere& p_modelBoundingSphere,
+		std::vector<Mesh*> GetMeshesInFrustum(
+			const Model& p_model,
+			const BoundingSphere& p_modelBoundingSphere,
 			const Maths::Transform& p_modelTransform,
-			NLS::Render::Settings::ECullingOptions p_cullingOptions
+			Settings::ECullingOptions p_cullingOptions
 		) const;
 
 		/**

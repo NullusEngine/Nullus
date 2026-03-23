@@ -8,16 +8,14 @@
 
 #include "FieldGetterBase.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    template<typename ClassType, typename ReturnType>
+    class FunctionFieldGetter : public FieldGetterBase
     {
-        template<typename ClassType, typename ReturnType>
-        class FunctionFieldGetter : public FieldGetterBase
-        {
-        public:
-            using Signature = ReturnType (*)(ClassType &);
-            using SignatureConst = ReturnType (*)(const ClassType &);
+    public:
+        using Signature = ReturnType (*)(ClassType &);
+        using SignatureConst = ReturnType (*)(const ClassType &);
 
             explicit FunctionFieldGetter(Signature getter)
                 : m_getterConst(reinterpret_cast<SignatureConst>(getter)) { }
@@ -60,7 +58,6 @@ namespace NLS
                 return GetValue(obj);
             }
 
-            SignatureConst m_getterConst;
-        };
-    }
+        SignatureConst m_getterConst;
+    };
 }

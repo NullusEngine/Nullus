@@ -12,10 +12,8 @@
 
 #include <algorithm>
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
         ///////////////////////////////////////////////////////////////////////
         /////////////////////////////////////////////////////////////////////// 
         // void
@@ -572,5 +570,4 @@ namespace NLS
         }
 
         #pragma endregion
-    }
 }

@@ -6,10 +6,8 @@
 
 #pragma once
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
         template<typename GlobalType, typename GetterType, typename SetterType>
         void ReflectionDatabase::AddGlobal(const std::string &name, GetterType getter, SetterType setter, const MetaManager::Initializer &meta)
         {
@@ -114,5 +112,4 @@ namespace NLS
                 function 
             );
         }
-    }
 }

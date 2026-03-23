@@ -18,6 +18,8 @@ namespace NLS::Engine::Components
 	{
     public:
 		GENERATED_BODY()
+        using Model = Render::Resources::Model;
+
 		/**
 		* Defines how the model renderer bounding sphere should be interpreted
 		*/
@@ -42,13 +44,13 @@ namespace NLS::Engine::Components
 		* @param p_model
 		*/
         FUNCTION()
-		void SetModel(NLS::Render::Resources::Model* p_model);
+		void SetModel(Model* p_model);
 
 		/**
 		* Returns the current model
 		*/
         FUNCTION()
-		NLS::Render::Resources::Model* GetModel() const;
+		Model* GetModel() const;
 
         FUNCTION()
         std::string GetModelPath() const;
@@ -73,21 +75,21 @@ namespace NLS::Engine::Components
 		* Returns the custom bounding sphere
 		*/
         FUNCTION()
-        const NLS::Render::Geometry::BoundingSphere& GetCustomBoundingSphere() const;
+        const Render::Geometry::BoundingSphere& GetCustomBoundingSphere() const;
 
 		/**
 		* Sets the custom bounding sphere
 		* @param p_boundingSphere
 		*/
         FUNCTION()
-        void SetCustomBoundingSphere(const NLS::Render::Geometry::BoundingSphere& p_boundingSphere);
+        void SetCustomBoundingSphere(const Render::Geometry::BoundingSphere& p_boundingSphere);
 
 
 
 	private:
-		NLS::Render::Resources::Model* m_model = nullptr;
+		Model* m_model = nullptr;
 		Event<> m_modelChangedEvent;
-        NLS::Render::Geometry::BoundingSphere m_customBoundingSphere = {{}, 1.0f};
+        Render::Geometry::BoundingSphere m_customBoundingSphere = {{}, 1.0f};
 		EFrustumBehaviour m_frustumBehaviour = EFrustumBehaviour::CULL_MODEL;
 	};
 }

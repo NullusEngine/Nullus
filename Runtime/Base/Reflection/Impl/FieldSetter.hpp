@@ -6,10 +6,8 @@
 
 #pragma once
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
         ///////////////////////////////////////////////////////////////////////
         // Setter from Method
         ///////////////////////////////////////////////////////////////////////
@@ -67,5 +65,4 @@ namespace NLS
         private:
             Signature m_field;
         };
-    }
 }

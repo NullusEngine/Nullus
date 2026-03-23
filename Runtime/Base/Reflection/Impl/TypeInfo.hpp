@@ -19,10 +19,8 @@
 
 #endif
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
-    {
         template<typename T>
         bool TypeInfo<T>::Defined = false;
 
@@ -138,7 +136,6 @@ namespace NLS
         {
             (void)data;
         }
-    }
 }
 
 #if defined(COMPILER_MSVC)

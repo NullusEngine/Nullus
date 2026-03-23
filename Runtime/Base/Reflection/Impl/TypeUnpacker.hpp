@@ -6,28 +6,25 @@
 
 #pragma once
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    template<class... Types>
+    struct TypeUnpacker { };
+
+    template<>
+    struct TypeUnpacker<>
     {
-        template<class... Types>
-        struct TypeUnpacker { };
+        static void Apply(Type::List &types) { }
+    };
 
-        template<>
-        struct TypeUnpacker<>
+    template<class First, class... Types>
+    struct TypeUnpacker<First, Types...>
+    {
+        static void Apply(Type::List &types)
         {
-            static void Apply(Type::List &types) { }
-        };
+            types.emplace_back( NLS_TYPEOF( First ) );
 
-        template<class First, class... Types>
-        struct TypeUnpacker<First, Types...>
-        {
-            static void Apply(Type::List &types)
-            {
-                types.emplace_back( NLS_TYPEOF( First ) );
-
-                TypeUnpacker<Types...>::Apply( types );
-            }
-        };
-    }
+            TypeUnpacker<Types...>::Apply( types );
+        }
+    };
 }

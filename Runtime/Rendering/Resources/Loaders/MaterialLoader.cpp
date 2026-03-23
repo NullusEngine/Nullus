@@ -18,6 +18,11 @@
 
 namespace
 {
+    using UniformType = NLS::Render::Resources::UniformType;
+    using Material = NLS::Render::Resources::Material;
+    using UniformInfo = NLS::Render::Resources::UniformInfo;
+    using Texture2D = NLS::Render::Resources::Texture2D;
+
     std::string ReadAllText(const std::string& path)
     {
         std::ifstream stream(path);
@@ -151,9 +156,8 @@ namespace
         return fallback;
     }
 
-    std::string UniformTypeToString(NLS::Render::Resources::UniformType type)
+    std::string UniformTypeToString(UniformType type)
     {
-        using UniformType = NLS::Render::Resources::UniformType;
         switch (type)
         {
         case UniformType::UNIFORM_BOOL: return "bool";
@@ -169,11 +173,12 @@ namespace
         }
     }
 
-    std::string SerializeUniformValue(NLS::Render::Resources::UniformType type, const std::any& value)
+    std::string SerializeUniformValue(UniformType type, const std::any& value)
     {
-        using namespace NLS;
-        using namespace NLS::Maths;
-        using namespace NLS::Render::Resources;
+        using NLS::Maths::Matrix4;
+        using NLS::Maths::Vector2;
+        using NLS::Maths::Vector3;
+        using NLS::Maths::Vector4;
 
         std::ostringstream stream;
         stream.setf(std::ios::fixed);
@@ -243,11 +248,12 @@ namespace
         return true;
     }
 
-    void ApplyUniformValue(NLS::Render::Resources::Material& material, const NLS::Render::Resources::UniformInfo& uniform, const std::string& value)
+    void ApplyUniformValue(Material& material, const UniformInfo& uniform, const std::string& value)
     {
-        using namespace NLS;
-        using namespace NLS::Maths;
-        using namespace NLS::Render::Resources;
+        using NLS::Maths::Matrix4;
+        using NLS::Maths::Vector2;
+        using NLS::Maths::Vector3;
+        using NLS::Maths::Vector4;
 
         switch (uniform.type)
         {
@@ -306,11 +312,8 @@ namespace
         }
     }
 
-    void ApplySerializedMaterial(NLS::Render::Resources::Material& material, const std::string& xml)
+    void ApplySerializedMaterial(Material& material, const std::string& xml)
     {
-        using namespace NLS;
-        using namespace NLS::Render::Resources;
-
         const auto shaderPath = GetTagValue(xml, "shader");
         auto* shader = shaderPath.empty() || shaderPath == "?" ? nullptr : NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager)[shaderPath];
         material.SetShader(shader);
@@ -359,7 +362,9 @@ namespace
     }
 }
 
-NLS::Render::Resources::Material* NLS::Render::Resources::Loaders::MaterialLoader::Create(const std::string& p_path)
+namespace NLS::Render::Resources::Loaders
+{
+Material* MaterialLoader::Create(const std::string& p_path)
 {
     const auto xml = ReadAllText(p_path);
     if (xml.empty())
@@ -374,7 +379,7 @@ NLS::Render::Resources::Material* NLS::Render::Resources::Loaders::MaterialLoade
     return material;
 }
 
-void NLS::Render::Resources::Loaders::MaterialLoader::Reload(Material& p_material, const std::string& p_path)
+void MaterialLoader::Reload(Material& p_material, const std::string& p_path)
 {
     const auto xml = ReadAllText(p_path);
     if (xml.empty())
@@ -386,7 +391,7 @@ void NLS::Render::Resources::Loaders::MaterialLoader::Reload(Material& p_materia
     ApplySerializedMaterial(p_material, xml);
 }
 
-void NLS::Render::Resources::Loaders::MaterialLoader::Save(Material& p_material, const std::string& p_path)
+void MaterialLoader::Save(Material& p_material, const std::string& p_path)
 {
     std::ofstream output(p_path, std::ios::trunc);
     if (!output)
@@ -425,7 +430,7 @@ void NLS::Render::Resources::Loaders::MaterialLoader::Save(Material& p_material,
     output << "</root>\n";
 }
 
-bool NLS::Render::Resources::Loaders::MaterialLoader::Destroy(Material*& p_material)
+bool MaterialLoader::Destroy(Material*& p_material)
 {
     if (!p_material)
         return false;
@@ -433,4 +438,5 @@ bool NLS::Render::Resources::Loaders::MaterialLoader::Destroy(Material*& p_mater
     delete p_material;
     p_material = nullptr;
     return true;
+}
 }

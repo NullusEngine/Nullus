@@ -7,11 +7,12 @@
 #include "Components/MeshRenderer.h"
 #include "Components/SkyBoxComponent.h"
 #include "Reflection/TypeCreator.h"
-using namespace NLS::Engine;
-using namespace NLS::Engine::Components;
-using namespace NLS;
 
-Event<GameObject&>GameObject::DestroyedEvent;
+namespace NLS::Engine
+{
+using namespace Components;
+
+Event<GameObject&> GameObject::DestroyedEvent;
 Event<GameObject&> GameObject::CreatedEvent;
 Event<GameObject&, GameObject&> GameObject::AttachEvent;
 Event<GameObject&> GameObject::DettachEvent;
@@ -95,7 +96,7 @@ Component* GameObject::GetComponent(meta::Type type, bool includeSubType) const
     return nullptr;
 }
 
-bool Engine::GameObject::RemoveComponent(Component* component)
+bool GameObject::RemoveComponent(Component* component)
 {
     if (!component || component == m_transform)
         return false;
@@ -113,7 +114,7 @@ bool Engine::GameObject::RemoveComponent(Component* component)
     return false;
 }
 
-void NLS::Engine::GameObject::SetActive(bool p_active)
+void GameObject::SetActive(bool p_active)
 {
 	if (p_active != m_active)
 	{
@@ -123,12 +124,12 @@ void NLS::Engine::GameObject::SetActive(bool p_active)
 	}
 }
 
-bool NLS::Engine::GameObject::IsSelfActive() const
+bool GameObject::IsSelfActive() const
 {
 	return m_active;
 }
 
-bool NLS::Engine::GameObject::IsActive() const
+bool GameObject::IsActive() const
 {
 	return m_active && (m_parent ? m_parent->IsActive() : true);
 }
@@ -157,7 +158,7 @@ void NLS::Engine::GameObject::OnTriggerExit(GameObject& p_otherObject)
 {
 }
 
-void Engine::GameObject::MarkAsDestroy()
+void GameObject::MarkAsDestroy()
 {
     m_destroyed = true;
 
@@ -165,27 +166,27 @@ void Engine::GameObject::MarkAsDestroy()
         child->MarkAsDestroy();
 }
 
-std::vector<GameObject*>& Engine::GameObject::GetChildren()
+std::vector<GameObject*>& GameObject::GetChildren()
 {
     return m_children;
 }
 
-int64_t Engine::GameObject::GetParentID() const
+int64_t GameObject::GetParentID() const
 {
     return m_parentID;
 }
 
-GameObject* Engine::GameObject::GetParent() const
+GameObject* GameObject::GetParent() const
 {
     return m_parent;
 }
 
-bool Engine::GameObject::HasParent() const
+bool GameObject::HasParent() const
 {
     return m_parent;
 }
 
-bool Engine::GameObject::IsDescendantOf(const GameObject* p_actor) const
+bool GameObject::IsDescendantOf(const GameObject* p_actor) const
 {
     const GameObject* currentParentActor = m_parent;
 
@@ -201,7 +202,7 @@ bool Engine::GameObject::IsDescendantOf(const GameObject* p_actor) const
     return false;
 }
 
-void Engine::GameObject::DetachFromParent()
+void GameObject::DetachFromParent()
 {
     DettachEvent.Invoke(*this);
 
@@ -218,7 +219,7 @@ void Engine::GameObject::DetachFromParent()
     m_transform->RemoveParent();
 }
 
-void Engine::GameObject::SetParent(GameObject& p_parent)
+void GameObject::SetParent(GameObject& p_parent)
 {
     DetachFromParent();
 
@@ -316,7 +317,7 @@ void GameObject::OnLateUpdate(float p_deltaTime)
 	}
 }
 
-void NLS::Engine::GameObject::RecursiveActiveUpdate()
+void GameObject::RecursiveActiveUpdate()
 {
 	bool isActive = IsActive();
 
@@ -341,10 +342,11 @@ void NLS::Engine::GameObject::RecursiveActiveUpdate()
 		child->RecursiveActiveUpdate();
 }
 
-void NLS::Engine::GameObject::RecursiveWasActiveUpdate()
+void GameObject::RecursiveWasActiveUpdate()
 {
 	m_wasActive = IsActive();
 	for (auto child : m_children)
 		child->RecursiveWasActiveUpdate();
 }
+} // namespace NLS::Engine
 

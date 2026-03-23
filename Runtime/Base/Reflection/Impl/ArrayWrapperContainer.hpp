@@ -9,16 +9,13 @@
 #include "../Argument.h"
 #include "../Variant.h"
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    template<typename T>
+    ArrayWrapperContainer<T>::ArrayWrapperContainer(Array<T> &a)
+        : m_array( a )
     {
-        template<typename T>
-        ArrayWrapperContainer<T>::ArrayWrapperContainer(Array<T> &a)
-            : m_array( a )
-        {
-
-        }
+    }
 
         template<typename T>
         Variant ArrayWrapperContainer<T>::GetValue(size_t index)
@@ -49,5 +46,4 @@ namespace NLS
         {
             return m_array.size( );
         }
-    }
 }

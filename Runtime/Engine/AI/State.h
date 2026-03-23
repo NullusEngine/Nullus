@@ -1,9 +1,7 @@
 #pragma once
 #include <functional>
 #include "EngineDef.h"
-namespace NLS
-{
-namespace Engine
+namespace NLS::Engine
 {
 typedef std::function<void(float)> StateUpdateFunction;
 class State
@@ -45,5 +43,4 @@ protected:
     StateFunc func;
     void* funcData;
 };*/
-} // namespace Engine
-} // namespace NLS
+} // namespace NLS::Engine

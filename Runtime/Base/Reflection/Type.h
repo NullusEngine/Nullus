@@ -19,28 +19,26 @@
 #include <set>
 #include <functional>
 
-namespace NLS
+namespace NLS::meta
 {
-    namespace meta
+    class Variant;
+    class Enum;
+    class Constructor;
+    class Destructor;
+    class Field;
+    class Global;
+    class Method;
+    class Function;
+    class Argument;
+
+    class MetaManager;
+
+    class Type
     {
-        class Variant;
-        class Enum;
-        class Constructor;
-        class Destructor;
-        class Field;
-        class Global;
-        class Method;
-        class Function;
-        class Argument;
-
-        class MetaManager;
-
-        class Type
-        {
-        public:
-            typedef std::vector<Type> List;
-            typedef std::set<Type> Set;
-            typedef std::function<Variant(const Variant &, const Field &)> SerializationGetterOverride;
+    public:
+        typedef std::vector<Type> List;
+        typedef std::set<Type> Set;
+        typedef std::function<Variant(const Variant &, const Field &)> SerializationGetterOverride;
 
             Type(void);
             Type(const Type &rhs);
@@ -392,8 +390,8 @@ namespace NLS
             Variant DeserializeJson(const Json &value, const Constructor &ctor) const;
             void DeserializeJson(Variant &instance, const Json &value) const;
 
-        private:
-            friend class std::allocator<Type>;
+    private:
+        friend class std::allocator<Type>;
 
             friend struct TypeData;
 
@@ -408,10 +406,9 @@ namespace NLS
             friend class Function;
             friend class Global;
 
-            TypeID m_id;
-            bool m_isArray;
-        };
-    }
+        TypeID m_id;
+        bool m_isArray;
+    };
 }
 
 #include "Impl/Type.hpp"

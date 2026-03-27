@@ -12,6 +12,7 @@
 
 #include <Core/ServiceLocator.h>
 #include <Debug/Logger.h>
+#include <Filesystem/IniFile.h>
 #include <Image.h>
 #include <UI/Internal/Converter.h>
 #include <UI/UIManager.h>
@@ -177,6 +178,44 @@ std::string DetectStartScene(const std::string &projectPath)
     }
 
     return "No scene found";
+}
+
+struct ProjectBackendResolution
+{
+    Render::Settings::EGraphicsBackend backend = Render::Settings::GetPlatformDefaultGraphicsBackend();
+    const char* source = "Platform default";
+};
+
+ProjectBackendResolution ResolveProjectRuntimeBackend(const std::string& projectPath)
+{
+    if (const auto backend = Render::Settings::TryReadGraphicsBackendFromEnvironment("NLS_GRAPHICS_BACKEND"); backend.has_value())
+        return { backend.value(), "Environment override" };
+
+    const std::filesystem::path projectRoot(projectPath);
+    const auto projectFilePath = projectRoot / (projectRoot.filename().string() + ".nullus");
+    if (std::filesystem::exists(projectFilePath))
+    {
+        NLS::Filesystem::IniFile projectSettings(projectFilePath.string());
+        if (projectSettings.IsKeyExisting("graphics_backend"))
+        {
+            const auto configuredBackend = projectSettings.Get<std::string>("graphics_backend");
+            if (const auto parsedBackend = Render::Settings::TryParseGraphicsBackend(configuredBackend); parsedBackend.has_value())
+                return { parsedBackend.value(), "Project setting" };
+
+            return {
+                Render::Settings::GetPlatformDefaultGraphicsBackend(),
+                "Invalid project setting, using platform default"
+            };
+        }
+    }
+
+    return {};
+}
+
+std::string DescribeProjectRuntimeBackend(const std::string& projectPath)
+{
+    const auto resolution = ResolveProjectRuntimeBackend(projectPath);
+    return std::string(Render::Settings::ToString(resolution.backend)) + " (" + resolution.source + ")";
 }
 } // namespace
 
@@ -437,11 +476,17 @@ private:
             return;
         }
 
+        if (m_cachedProjectDetailsPath != m_selectedProject)
+        {
+            m_cachedProjectDetailsPath = m_selectedProject;
+            m_cachedProjectRuntimeBackend = DescribeProjectRuntimeBackend(m_selectedProject);
+        }
+
         const std::array<std::pair<const char *, std::string>, 4> details =
         {{
             {"Project", Utils::PathParser::GetElementName(m_selectedProject)},
             {"Scene", DetectStartScene(m_selectedProject)},
-            {"Renderer", "OpenGL / RDG"},
+            {"Runtime Backend", m_cachedProjectRuntimeBackend},
             {"Updated", FormatTimestamp(std::filesystem::last_write_time(m_selectedProject))}
         }};
 
@@ -617,6 +662,8 @@ private:
     uint32_t m_brandTexture = 0;
     std::vector<std::string> m_registeredProjects;
     std::string m_selectedProject;
+    std::string m_cachedProjectDetailsPath;
+    std::string m_cachedProjectRuntimeBackend;
 };
 
 Launcher::Launcher()

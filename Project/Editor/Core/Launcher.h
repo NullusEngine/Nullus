@@ -59,6 +59,6 @@ private:
     std::string m_projectPath = "";
     std::string m_projectName = "";
     bool m_readyToGo = false;
-    Render::Settings::EGraphicsBackend m_graphicsBackend = Render::Settings::EGraphicsBackend::OPENGL;
+    Render::Settings::EGraphicsBackend m_graphicsBackend = Render::Settings::EGraphicsBackend::NONE;
 };
 } // namespace NLS

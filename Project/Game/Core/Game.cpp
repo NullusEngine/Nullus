@@ -19,7 +19,7 @@ using namespace NLS;
 
 Game::Core::Game::Game(Context& p_context) :
 	m_context(p_context),
-	m_sceneRenderer(*p_context.driver)
+	m_sceneRenderer(Engine::Rendering::CreateSceneRenderer(*p_context.driver))
 {
 	Assembly::Instance().Instance().Load<AssemblyMath>().Load<AssemblyCore>().Load<AssemblyPlatform>().Load<AssemblyRender>().Load<Engine::AssemblyEngine>();
 
@@ -87,23 +87,31 @@ namespace
 
 void Game::Core::Game::Update(float p_deltaTime)
 {
+	if (m_context.inputManager->IsKeyPressed(Windowing::Inputs::EKey::KEY_F11))
+	{
+		if (m_context.inputManager->GetKeyState(Windowing::Inputs::EKey::KEY_LEFT_CONTROL) == Windowing::Inputs::EKeyState::KEY_DOWN)
+			m_context.driver->OpenLatestRenderDocCapture();
+		else if (!m_context.driver->IsRenderDocAvailable())
+			m_context.driver->QueueRenderDocCapture("Game");
+	}
+
 	if (auto currentScene = m_context.sceneManager.GetCurrentScene())
 	{
 		currentScene->Update(p_deltaTime);
 		currentScene->LateUpdate(p_deltaTime);
-		RenderCurrentScene(m_sceneRenderer, m_context);
+		RenderCurrentScene(*m_sceneRenderer, m_context);
 	}
 
 	m_context.sceneManager.Update();
 
 #ifdef _DEBUG
 	if (m_context.inputManager->IsKeyPressed(Windowing::Inputs::EKey::KEY_R))
-		NLS::Render::Resources::Loaders::ShaderLoader::Recompile(*m_context.shaderManager[":Shaders/Standard.glsl"], "Data/Engine/Shaders/Standard.glsl");
+		NLS::Render::Resources::Loaders::ShaderLoader::Recompile(*m_context.shaderManager[":Shaders/Standard.hlsl"], "Data/Engine/Shaders/Standard.hlsl");
 #endif
 }
 
 void Game::Core::Game::PostUpdate()
 {
-	m_context.window->SwapBuffers();
+	m_context.driver->PresentSwapchain();
 	m_context.inputManager->ClearEvents();
 }

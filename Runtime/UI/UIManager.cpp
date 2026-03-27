@@ -1,9 +1,23 @@
 
 #include "UI/UIManager.h"
 
+#include <vector>
+
+#include "Debug/Logger.h"
+#include "Rendering/RHI/Utils/RHIUIBridge.h"
+#include "Rendering/Settings/GraphicsBackendUtils.h"
+#include "ImGui/backends/imgui_impl_glfw.h"
+#include "ImGui/imgui_internal.h"
+
 namespace NLS::UI
 {
-UIManager::UIManager(GLFWwindow* p_glfwWindow, EStyle p_style, const std::string& p_glslVersion)
+UIManager::UIManager(
+    GLFWwindow* p_glfwWindow,
+    NLS::Render::Settings::EGraphicsBackend p_backend,
+    const NLS::Render::RHI::NativeRenderDeviceInfo& p_nativeDeviceInfo,
+    EStyle p_style,
+    const std::string& p_glslVersion)
+    : m_backend(p_backend)
 {
     ImGui::CreateContext();
 
@@ -12,15 +26,72 @@ UIManager::UIManager(GLFWwindow* p_glfwWindow, EStyle p_style, const std::string
 
     ApplyStyle(p_style);
 
-    ImGui_ImplGlfw_InitForOpenGL(p_glfwWindow, true);
-    ImGui_ImplOpenGL3_Init(p_glslVersion.c_str());
+    switch (m_backend)
+    {
+    case NLS::Render::Settings::EGraphicsBackend::OPENGL:
+        ImGui_ImplGlfw_InitForOpenGL(p_glfwWindow, true);
+        break;
+    case NLS::Render::Settings::EGraphicsBackend::VULKAN:
+        ImGui_ImplGlfw_InitForVulkan(p_glfwWindow, true);
+        break;
+    case NLS::Render::Settings::EGraphicsBackend::DX12:
+        ImGui_ImplGlfw_InitForOther(p_glfwWindow, true);
+        break;
+    case NLS::Render::Settings::EGraphicsBackend::METAL:
+    case NLS::Render::Settings::EGraphicsBackend::NONE:
+    default:
+        ImGui_ImplGlfw_InitForOther(p_glfwWindow, true);
+        break;
+    }
+
+    m_uiBridge = NLS::Render::RHI::CreateRHIUIBridge(p_glfwWindow, m_backend, p_nativeDeviceInfo, p_glslVersion);
+    const bool hasRendererBackend = m_uiBridge != nullptr && m_uiBridge->HasRendererBackend();
+
+    if (m_backend != NLS::Render::Settings::EGraphicsBackend::OPENGL)
+    {
+        if (NLS::Render::Settings::HasCompiledOfficialImGuiBackend(m_backend))
+        {
+            if (!hasRendererBackend)
+            {
+                NLS_LOG_WARNING(
+                    "Official ImGui renderer backend for " +
+                    std::string(NLS::Render::Settings::ToString(m_backend)) +
+                    " is available, but runtime initialization did not complete.");
+            }
+        }
+        else
+        {
+            NLS_LOG_WARNING(
+                "No compiled ImGui renderer backend is available for " +
+                std::string(NLS::Render::Settings::ToString(m_backend)) + ".");
+        }
+    }
 }
 
 UIManager::~UIManager()
 {
-    ImGui_ImplOpenGL3_Shutdown();
+    m_uiBridge.reset();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
+}
+
+void UIManager::BeginFrame()
+{
+    if (GImGui != nullptr)
+    {
+        auto& context = *GImGui;
+        if (context.FrameCount > 0 && context.FrameCountEnded != context.FrameCount)
+        {
+            NLS_LOG_WARNING("UIManager detected an unfinished ImGui frame; forcing EndFrame() before starting a new one.");
+            ImGui::EndFrame();
+        }
+    }
+
+    ImGui_ImplGlfw_NewFrame();
+    if (m_uiBridge != nullptr)
+        m_uiBridge->BeginFrame();
+
+    ImGui::NewFrame();
 }
 
 void UIManager::ApplyStyle(EStyle p_style)
@@ -285,11 +356,27 @@ void UIManager::RemoveCanvas()
 
 void UIManager::Render()
 {
-    if (m_currentCanvas)
-    {
-        m_currentCanvas->Draw();
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-    }
+    if (m_currentCanvas == nullptr || m_isRenderingFrame)
+        return;
+
+    m_isRenderingFrame = true;
+    BeginFrame();
+    m_currentCanvas->Draw();
+    ImGui::Render();
+    if (m_uiBridge != nullptr)
+        m_uiBridge->RenderDrawData(ImGui::GetDrawData());
+    m_isRenderingFrame = false;
+}
+
+void* UIManager::ResolveTextureID(uint32_t textureId)
+{
+    return m_uiBridge != nullptr ? m_uiBridge->ResolveTextureID(textureId) : nullptr;
+}
+
+void UIManager::NotifySwapchainWillResize()
+{
+    if (m_uiBridge != nullptr)
+        m_uiBridge->NotifySwapchainWillResize();
 }
 
 void UIManager::PushCurrentFont()

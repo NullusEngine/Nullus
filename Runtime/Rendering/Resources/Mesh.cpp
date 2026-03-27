@@ -16,10 +16,18 @@ Mesh::Mesh(const std::vector<Geometry::Vertex>& vertices, const std::vector<uint
 void Mesh::Bind() const
 {
 	m_vertexArray.Bind();
+	if (m_vertexBuffer)
+		m_vertexBuffer->Bind();
+	if (m_indexBuffer)
+		m_indexBuffer->Bind();
 }
 
 void Mesh::Unbind() const
 {
+	if (m_indexBuffer)
+		m_indexBuffer->Unbind();
+	if (m_vertexBuffer)
+		m_vertexBuffer->Unbind();
 	m_vertexArray.Unbind();
 }
 
@@ -31,6 +39,31 @@ uint32_t Mesh::GetVertexCount() const
 uint32_t Mesh::GetIndexCount() const
 {
 	return m_indicesCount;
+}
+
+MeshBufferView Mesh::GetVertexBufferView() const
+{
+	return MeshBufferView{
+		m_vertexBuffer ? m_vertexBuffer->GetRHIBufferHandle() : nullptr,
+		m_vertexBuffer ? m_vertexBuffer->GetExplicitRHIBufferHandle() : nullptr,
+		m_vertexBuffer ? m_vertexBuffer->GetID() : 0u,
+		m_vertexStride,
+		0u
+	};
+}
+
+std::optional<MeshBufferView> Mesh::GetIndexBufferView() const
+{
+	if (!m_indexBuffer || m_indicesCount == 0)
+		return std::nullopt;
+
+	return MeshBufferView{
+		m_indexBuffer ? m_indexBuffer->GetRHIBufferHandle() : nullptr,
+		m_indexBuffer ? m_indexBuffer->GetExplicitRHIBufferHandle() : nullptr,
+		m_indexBuffer->GetID(),
+		sizeof(uint32_t),
+		0u
+	};
 }
 
 uint32_t Mesh::GetMaterialIndex() const

@@ -1,8 +1,12 @@
 #include "Windowing/Window.h"
+#include <Debug/Assertion.h>
 #include <GLFW/glfw3.h>
 #include <vector>
 #ifdef _WIN32
     #define GLFW_EXPOSE_NATIVE_WIN32
+    #ifdef APIENTRY
+        #undef APIENTRY
+    #endif
     #include "Windows.h"
     #include "windowsx.h"
     #include <GLFW/glfw3native.h>
@@ -43,6 +47,7 @@ NLS::Windowing::Window::Window(Context::Device& p_device, const Settings::Window
 	m_size{ static_cast<float>(p_windowSettings.width), static_cast<float>(p_windowSettings.height) },
 	m_minimumSize { static_cast<float>(p_windowSettings.minimumWidth), static_cast<float>(p_windowSettings.minimumHeight) },
 	m_maximumSize { static_cast<float>(p_windowSettings.maximumWidth), static_cast<float>(p_windowSettings.maximumHeight) },
+	m_clientAPI(p_windowSettings.clientAPI),
 	m_fullscreen(p_windowSettings.fullscreen),
 	m_refreshRate(p_windowSettings.refreshRate),
 	m_cursorMode(p_windowSettings.cursorMode),
@@ -321,6 +326,8 @@ void NLS::Windowing::Window::MakeCurrentContext() const
 
 void NLS::Windowing::Window::SwapBuffers() const
 {
+	NLS_ASSERT(m_clientAPI == Settings::WindowClientAPI::OpenGL,
+		"Window::SwapBuffers() is a legacy OpenGL-only path. Use Render::Context::Driver::PresentSwapchain() for explicit backends.");
 	glfwSwapBuffers(m_glfwWindow);
 }
 
@@ -408,6 +415,15 @@ GLFWwindow* NLS::Windowing::Window::GetGlfwWindow() const
 	return m_glfwWindow;
 }
 
+void* NLS::Windowing::Window::GetNativeWindowHandle() const
+{
+#ifdef _WIN32
+	return m_glfwWindow ? static_cast<void*>(glfwGetWin32Window(m_glfwWindow)) : nullptr;
+#else
+	return nullptr;
+#endif
+}
+
 void NLS::Windowing::Window::ShowConsole(bool state)
 {
 #ifdef _WIN32
@@ -435,8 +451,10 @@ void NLS::Windowing::Window::CreateGlfwWindow(const Settings::WindowSettings& p_
 	glfwWindowHint(GLFW_AUTO_ICONIFY,	p_windowSettings.autoIconify);
 	glfwWindowHint(GLFW_REFRESH_RATE,	p_windowSettings.refreshRate);
 	glfwWindowHint(GLFW_SAMPLES,		p_windowSettings.samples);
+	glfwWindowHint(GLFW_CLIENT_API, p_windowSettings.clientAPI == Settings::WindowClientAPI::NoAPI ? GLFW_NO_API : GLFW_OPENGL_API);
 #ifdef __APPLE__
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+	if (p_windowSettings.clientAPI == Settings::WindowClientAPI::OpenGL)
+		glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
 #endif
 	m_glfwWindow = glfwCreateWindow(static_cast<int>(m_size.x), static_cast<int>(m_size.y), m_title.c_str(), selectedMonitor, nullptr);
 

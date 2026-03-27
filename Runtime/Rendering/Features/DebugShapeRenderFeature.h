@@ -110,6 +110,7 @@ namespace NLS::Render::Features
 	private:
 		Shader* m_lineShader = nullptr;
 		Mesh* m_lineMesh = nullptr;
+		bool m_ownsLineShader = false;
 
 		std::unique_ptr<Material> m_lineMaterial;
 	};

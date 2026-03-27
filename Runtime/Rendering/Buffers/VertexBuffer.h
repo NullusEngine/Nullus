@@ -1,8 +1,11 @@
 #pragma once
 
+#include <memory>
 #include <vector>
 
 #include "Rendering/Context/Driver.h"
+#include "Rendering/RHI/Core/RHIResource.h"
+#include "Rendering/RHI/IRHIResource.h"
 
 namespace NLS::Render::Buffers
 {
@@ -45,9 +48,14 @@ public:
      * Returnd the ID of the VBO
      */
     uint32_t GetID();
+    const RHI::IRHIBuffer* GetRHIBuffer() const { return m_bufferResource.get(); }
+    const std::shared_ptr<RHI::IRHIBuffer>& GetRHIBufferHandle() const { return m_bufferResource; }
+    const std::shared_ptr<RHI::RHIBuffer>& GetExplicitRHIBufferHandle() const { return m_explicitBuffer; }
 
 private:
-    uint32_t m_bufferID;
+    uint32_t m_bufferID = 0;
+    std::shared_ptr<RHI::IRHIBuffer> m_bufferResource;
+    std::shared_ptr<RHI::RHIBuffer> m_explicitBuffer;
 };
 } // namespace NLS::Render::Buffers
 

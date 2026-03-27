@@ -55,6 +55,7 @@ public:
     T& GetPass(const std::string& p_name) const;
 
 protected:
+    bool CanRecordExplicitFrame() const override;
     void DrawRegisteredPasses(PipelineState pso);
     std::unordered_map<std::type_index, std::unique_ptr<Features::ARenderFeature>> m_features;
     std::multimap<uint32_t, std::pair<std::string, std::unique_ptr<Core::ARenderPass>>> m_passes;

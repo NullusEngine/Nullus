@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "Rendering/Buffers/VertexBuffer.h"
 #include "Rendering/Settings/EDataType.h"
 namespace NLS::Render::Buffers
@@ -51,10 +53,10 @@ public:
     /**
      * Return the VAO OpenGL ID
      */
-    GLint GetID() const;
+    uint32_t GetID() const;
 
 private:
-    GLuint m_bufferID;
+    uint32_t m_bufferID = 0;
 };
 } // namespace NLS::Render::Buffers
 

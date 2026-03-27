@@ -10,7 +10,7 @@
 
 namespace NLS
 {
-	class Image;
+    class Image;
 }
 
 namespace NLS::Render::Resources

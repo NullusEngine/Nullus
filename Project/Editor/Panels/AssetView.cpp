@@ -5,10 +5,11 @@
 #include <UI/Plugins/DDTarget.h>
 #include <Components/TransformComponent.h>
 #include <Components/LightComponent.h>
-#include <Engine/Rendering/ForwardSceneRenderer.h>
+#include <Engine/Rendering/SceneRendererFactory.h>
 
 #include "Core/EditorActions.h"
 #include "Panels/AssetView.h"
+#include "Rendering/EditorDefaultResources.h"
 #include "Rendering/GridRenderPass.h"
 #include "Rendering/DebugModelRenderFeature.h"
 using namespace NLS;
@@ -19,7 +20,7 @@ Editor::Panels::AssetView::AssetView
 	const UI::PanelWindowSettings& p_windowSettings
 ) : AViewControllable(p_title, p_opened, p_windowSettings)
 {
-	m_renderer = std::make_unique<Engine::Rendering::ForwardSceneRenderer>(*EDITOR_CONTEXT(driver));
+	m_renderer = Engine::Rendering::CreateSceneRenderer(*EDITOR_CONTEXT(driver));
 	m_renderer->AddFeature<Editor::Rendering::DebugModelRenderFeature>();
 	m_renderer->AddFeature<Render::Features::DebugShapeRenderFeature>();
     m_renderer->AddFeature<Render::Features::FrameInfoRenderFeature>();
@@ -47,17 +48,17 @@ Editor::Panels::AssetView::AssetView
 	m_cameraController.LockTargetActor(*m_assetActor);
 	
 	/* Default Material */
-	m_defaultMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Standard.glsl"]);
+	m_defaultMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Standard.hlsl"]);
 	m_defaultMaterial.Set("u_Diffuse", Maths::Vector4(1.f, 1.f, 1.f, 1.f));
 	m_defaultMaterial.Set("u_Shininess", 100.0f);
-	m_defaultMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", nullptr);
+	m_defaultMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", Editor::Rendering::GetEditorDefaultWhiteTexture());
 
 	/* Texture Material */
-	m_textureMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Unlit.glsl"]);
+	m_textureMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Unlit.hlsl"]);
 	m_textureMaterial.Set("u_Diffuse", Maths::Vector4(1.f, 1.f, 1.f, 1.f));
 	m_textureMaterial.SetBackfaceCulling(false);
 	m_textureMaterial.SetBlendable(true);
-	m_textureMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", nullptr);
+	m_textureMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", Editor::Rendering::GetEditorDefaultWhiteTexture());
 
 	m_image->AddPlugin<UI::DDTarget<std::pair<std::string, UI::Widgets::Group*>>>("File").DataReceivedEvent += [this](auto p_data)
 	{

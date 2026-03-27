@@ -22,13 +22,6 @@ namespace NLS::Render::Resources::Loaders
 		static Shader* Create(const std::string& p_filePath);
 
 		/**
-		* Create a shader from source
-		* @param p_vertexShader
-		* @param p_fragmentShader
-		*/
-		static Shader* CreateFromSource(const std::string& p_vertexShader, const std::string& p_fragmentShader);
-
-		/**
 		* Recompile a shader
 		* @param p_shader
 		* @param p_filePath
@@ -42,9 +35,7 @@ namespace NLS::Render::Resources::Loaders
 		static bool Destroy(Shader*& p_shader);
 
 	private:
-		static std::pair<std::string, std::string> ParseShader(const std::string& p_filePath);
-		static uint32_t CreateProgram(const std::string& p_vertexShader, const std::string& p_fragmentShader);
-		static uint32_t CompileShader(uint32_t p_type, const std::string& p_source);
+		static Shader* CreateHLSLShaderAsset(const std::string& p_filePath);
 
 		static std::string __FILE_TRACE;
 	};

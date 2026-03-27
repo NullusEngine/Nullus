@@ -1,7 +1,7 @@
 #include <Rendering/Features/FrameInfoRenderFeature.h>
 
 #include <Components/CameraComponent.h>
-#include <Rendering/DeferredSceneRenderer.h>
+#include <Rendering/SceneRendererFactory.h>
 #include "Panels/GameView.h"
 #include "Core/EditorActions.h"
 #include "Settings/EditorSettings.h"
@@ -16,7 +16,7 @@ Editor::Panels::GameView::GameView
 	AView(p_title, p_opened, p_windowSettings),
 	m_sceneManager(EDITOR_CONTEXT(sceneManager))
 {
-	m_renderer = std::make_unique<Engine::Rendering::DeferredSceneRenderer>(*EDITOR_CONTEXT(driver));
+	m_renderer = Engine::Rendering::CreateSceneRenderer(*EDITOR_CONTEXT(driver));
 	m_renderer->AddFeature<Render::Features::FrameInfoRenderFeature>();
 
 	Render::Buffers::UniformBuffer test(1024, 1);

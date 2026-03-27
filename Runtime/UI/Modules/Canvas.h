@@ -7,8 +7,6 @@
 #include "UI/API/IDrawable.h"
 #include "UI/Panels/APanel.h"
 #include "ImGui/imgui.h"
-#include "ImGui/backends/imgui_impl_glfw.h"
-#include "ImGui/backends/imgui_impl_opengl3.h"
 
 namespace NLS::UI
 {

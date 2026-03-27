@@ -15,10 +15,22 @@
 //#define NLS_LOG_WARNING(message)	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_WARNING,	NLS::Debug::ELogMode::CONSOLE)
 //#define NLS_LOG_ERROR(message)	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_ERROR,	NLS::Debug::ELogMode::CONSOLE)
 
-#define NLS_LOG(message)			NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_DEFAULT, 	NLS::Debug::ELogMode::CONSOLE); NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_DEFAULT, NLS::Debug::ELogMode::FILE)
-#define NLS_LOG_INFO(message)	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_INFO, 	NLS::Debug::ELogMode::CONSOLE); NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_INFO, 	NLS::Debug::ELogMode::FILE)
-#define NLS_LOG_WARNING(message)	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_WARNING, 	NLS::Debug::ELogMode::CONSOLE); NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_WARNING, NLS::Debug::ELogMode::FILE)
-#define NLS_LOG_ERROR(message)	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_ERROR, 	NLS::Debug::ELogMode::CONSOLE); NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_ERROR, 	NLS::Debug::ELogMode::FILE)
+#define NLS_LOG(message) do { \
+	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_DEFAULT, NLS::Debug::ELogMode::CONSOLE); \
+	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_DEFAULT, NLS::Debug::ELogMode::FILE); \
+} while (0)
+#define NLS_LOG_INFO(message) do { \
+	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_INFO, NLS::Debug::ELogMode::CONSOLE); \
+	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_INFO, NLS::Debug::ELogMode::FILE); \
+} while (0)
+#define NLS_LOG_WARNING(message) do { \
+	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_WARNING, NLS::Debug::ELogMode::CONSOLE); \
+	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_WARNING, NLS::Debug::ELogMode::FILE); \
+} while (0)
+#define NLS_LOG_ERROR(message) do { \
+	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_ERROR, NLS::Debug::ELogMode::CONSOLE); \
+	NLS::Debug::Logger::Log(message, NLS::Debug::ELogLevel::LOG_ERROR, NLS::Debug::ELogMode::FILE); \
+} while (0)
 
 namespace NLS::Debug
 {

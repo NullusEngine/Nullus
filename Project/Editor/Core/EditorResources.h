@@ -1,8 +1,12 @@
 ﻿#pragma once
 
+#include <string>
+#include <unordered_map>
+
 #include <ResourceManagement/TextureManager.h>
 #include <ResourceManagement/ModelManager.h>
 #include <ResourceManagement/ShaderManager.h>
+#include <Rendering/Resources/Parsers/EModelParserFlags.h>
 
 namespace NLS::Editor::Core
 {
@@ -48,8 +52,18 @@ namespace NLS::Editor::Core
         NLS::Render::Resources::Shader* GetShader(const std::string& p_id);
 
 	private:
+        NLS::Render::Resources::Model* LoadModel(const std::string& p_id);
+        NLS::Render::Resources::Shader* LoadShader(const std::string& p_id);
+
+	private:
+        std::string m_modelsFolder;
+        std::string m_shadersFolder;
+        NLS::Render::Resources::Parsers::EModelParserFlags m_modelParserFlags =
+            NLS::Render::Resources::Parsers::EModelParserFlags::NONE;
         std::unordered_map<std::string, NLS::Render::Resources::Texture2D*> m_textures;
         std::unordered_map<std::string, NLS::Render::Resources::Model*> m_models;
         std::unordered_map<std::string, NLS::Render::Resources::Shader*> m_shaders;
+        std::unordered_map<std::string, std::string> m_modelPaths;
+        std::unordered_map<std::string, std::string> m_shaderPaths;
 	};
 }

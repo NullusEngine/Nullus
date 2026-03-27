@@ -2,6 +2,7 @@
 
 #include "Rendering/Core/CompositeRenderer.h"
 #include <Debug/Assertion.h>
+#include <stdexcept>
 namespace NLS::Render::Core
 {
 	template <typename T, typename... Args>
@@ -71,6 +72,7 @@ namespace NLS::Render::Core
 			}
 		}
 
-		NLS_ASSERT(true, "Couldn't find a render pass matching the given type T.");
+		NLS_ASSERT(false, "Couldn't find a render pass matching the given type T.");
+		throw std::runtime_error("Couldn't find a render pass matching the given type T.");
 	}
 }

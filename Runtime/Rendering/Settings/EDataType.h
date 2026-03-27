@@ -3,17 +3,17 @@
 namespace NLS::Render::Settings
 {
 	/**
-	* Wraps from OpenGL types enum
+	* Generic vertex attribute element type
 	*/
 	enum class NLS_RENDER_API EDataType
 	{
-		BYTE			= 0x1400,
-		UNISGNED_BYTE	= 0x1401,
-		SHORT			= 0x1402,
-		UNSIGNED_SHORT	= 0x1403,
-		INT				= 0x1404,
-		UNSIGNED_INT	= 0x1405,
-		FLOAT			= 0x1406,
-		DOUBLE			= 0x140A
+		BYTE = 0,
+		UNISGNED_BYTE,
+		SHORT,
+		UNSIGNED_SHORT,
+		INT,
+		UNSIGNED_INT,
+		FLOAT,
+		DOUBLE
 	};
 }

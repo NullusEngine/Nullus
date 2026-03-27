@@ -1,5 +1,8 @@
 #pragma once
 #include "PlatformDef.h"
+#ifdef APIENTRY
+#undef APIENTRY
+#endif
 #include "portable-file-dialogs.h"
 namespace NLS::Dialogs
 {

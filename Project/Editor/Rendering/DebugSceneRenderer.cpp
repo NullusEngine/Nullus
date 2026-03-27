@@ -10,6 +10,7 @@
 
 #include "Rendering/DebugModelRenderFeature.h"
 #include "Rendering/DebugSceneRenderer.h"
+#include "Rendering/EditorDefaultResources.h"
 #include "Rendering/GridRenderPass.h"
 #include "Rendering/OutlineRenderFeature.h"
 #include "Rendering/GizmoRenderFeature.h"
@@ -61,12 +62,11 @@ std::optional<std::string> GetLightTypeTextureName(Render::Settings::ELightType 
 class DebugCamerasRenderPass : public Render::Core::ARenderPass
 {
 public:
-    DebugCamerasRenderPass(Render::Core::CompositeRenderer& p_renderer)
+	DebugCamerasRenderPass(Render::Core::CompositeRenderer& p_renderer)
         : Render::Core::ARenderPass(p_renderer)
 	{
-		m_cameraMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Lambert.glsl"]);
+		m_cameraMaterial.SetShader(EDITOR_CONTEXT(editorResources)->GetShader("DebugLitColor"));
 		m_cameraMaterial.Set("u_Diffuse", Vector4(0.0f, 0.3f, 0.7f, 1.0f));
-		m_cameraMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", nullptr);
 	}
 
 protected:
@@ -100,9 +100,12 @@ public:
 	{
 		m_lightMaterial.SetShader(EDITOR_CONTEXT(editorResources)->GetShader("Billboard"));
 		m_lightMaterial.Set("u_Diffuse", Vector4(1.f, 1.f, 0.5f, 0.5f));
+		m_lightMaterial.Set("u_TextureTiling", Vector2(1.0f, 1.0f));
+		m_lightMaterial.Set("u_TextureOffset", Vector2(0.0f, 0.0f));
 		m_lightMaterial.SetBackfaceCulling(false);
 		m_lightMaterial.SetBlendable(true);
 		m_lightMaterial.SetDepthTest(false);
+		m_lightMaterial.SetDepthWriting(false);
 	}
 
 protected:
@@ -118,7 +121,7 @@ protected:
 
 			if (actor->IsActive())
 			{
-				auto& model = *EDITOR_CONTEXT(editorResources)->GetModel("Vertical_Plane");
+				auto& model = *EDITOR_CONTEXT(editorResources)->GetModel("Plane");
                 auto modelMatrix = Maths::Matrix4::Translation(actor->GetTransform()->GetWorldPosition());
 
 				auto lightTypeTextureName = GetLightTypeTextureName(light->GetData()->type);
@@ -163,7 +166,6 @@ protected:
 			auto selectedActor = debugSceneDescriptor.selectedActor;
 			DrawActorDebugElements(*selectedActor);
 			m_renderer.GetFeature<Editor::Rendering::OutlineRenderFeature>().DrawOutline(*selectedActor, kSelectedOutlineColor, kSelectedOutlineWidth);
-			m_renderer.Clear(false, true, false, Maths::Vector3::Zero);
 			m_renderer.GetFeature<Editor::Rendering::GizmoRenderFeature>().DrawGizmo(
                 selectedActor->GetTransform()->GetWorldPosition(),
                 selectedActor->GetTransform()->GetWorldRotation(),
@@ -550,5 +552,6 @@ Editor::Rendering::DebugSceneRenderer::DebugSceneRenderer(NLS::Render::Context::
     AddPass<DebugCamerasRenderPass>("Debug Cameras", NLS::Render::Settings::ERenderPassOrder::Transparent + 1);
     AddPass<DebugLightsRenderPass>("Debug Lights", NLS::Render::Settings::ERenderPassOrder::Transparent + 2);
     AddPass<DebugActorRenderPass>("Debug Actor", NLS::Render::Settings::ERenderPassOrder::Transparent + 3);
-    AddPass<PickingRenderPass>("Picking", NLS::Render::Settings::ERenderPassOrder::PostProcessing + 1);
+    auto& pickingPass = AddPass<PickingRenderPass>("Picking", NLS::Render::Settings::ERenderPassOrder::PostProcessing + 1);
+    pickingPass.SetEnabled(false);
 }

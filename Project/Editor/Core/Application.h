@@ -33,6 +33,8 @@ namespace NLS
 
 		void TickFrame(float p_deltaTime, bool p_pollEvents);
         void TickResizeFrame();
+		void QueueResizeTick();
+		void FlushDeferredResizeTick();
 
 			/**
 			* Returns true if the app is running
@@ -43,6 +45,7 @@ namespace NLS
         bool m_isPollingEvents = false;
         bool m_isResizeTicking = false;
 		bool m_isTicking = false;
+		bool m_pendingResizeTick = false;
 		Context m_context;
 		Editor m_editor;
 	};

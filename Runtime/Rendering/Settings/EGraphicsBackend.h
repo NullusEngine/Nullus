@@ -11,6 +11,8 @@ namespace NLS::Render::Settings
 	{
 		NONE,
 		OPENGL,
-		VULKAN
+		VULKAN,
+		DX12,
+		METAL
 	};
 }

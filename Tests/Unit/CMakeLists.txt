@@ -1,8 +1,14 @@
-add_executable(NullusUnitTests
-    ReflectionRuntimeTests.cpp
-    MetaParserGenerationTests.cpp
-    MathsRuntimeTests.cpp
+file(GLOB_RECURSE NULLUS_UNIT_TEST_FILES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/*.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/*.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/*.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/*.inl"
 )
+
+source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${NULLUS_UNIT_TEST_FILES})
+
+add_executable(NullusUnitTests ${NULLUS_UNIT_TEST_FILES})
 
 target_compile_features(NullusUnitTests PRIVATE cxx_std_20)
 

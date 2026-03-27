@@ -6,8 +6,15 @@
 #include "Rendering/Data/FrameInfo.h"
 #include "Rendering/Resources/IMesh.h"
 #include "Rendering/Resources/Texture2D.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/Entities/Drawable.h"
 #include "RenderDef.h"
+
+namespace NLS::Render::Buffers
+{
+    class Framebuffer;
+    class MultiFramebuffer;
+}
 
 namespace NLS::Render::Core
 {
@@ -30,6 +37,27 @@ public:
     const Data::FrameDescriptor& GetFrameDescriptor() const;
     PipelineState CreatePipelineState() const;
     bool IsDrawing() const;
+    Context::Driver& GetDriver() const;
+    std::shared_ptr<NLS::Render::RHI::RHICommandBuffer> GetActiveExplicitCommandBuffer() const;
+    void BeginLegacyDrawSection();
+    void EndLegacyDrawSection();
+    bool BeginRecordedRenderPass(
+        NLS::Render::Buffers::Framebuffer* p_framebuffer,
+        uint16_t p_width,
+        uint16_t p_height,
+        bool p_clearColor,
+        bool p_clearDepth,
+        bool p_clearStencil,
+        const Maths::Vector4& p_clearValue = Maths::Vector4::Zero);
+    bool BeginRecordedRenderPass(
+        NLS::Render::Buffers::MultiFramebuffer* p_framebuffer,
+        uint16_t p_width,
+        uint16_t p_height,
+        bool p_clearColor,
+        bool p_clearDepth,
+        bool p_clearStencil,
+        const Maths::Vector4& p_clearValue = Maths::Vector4::Zero);
+    void EndRecordedRenderPass();
 
     void ReadPixels(
         uint32_t p_x,
@@ -51,11 +79,15 @@ public:
         const Entities::Drawable& p_drawable);
 
 protected:
+    virtual bool CanRecordExplicitFrame() const;
+
     Data::FrameDescriptor m_frameDescriptor;
     Context::Driver& m_driver;
     Texture2D* m_emptyTexture;
     PipelineState m_basePipelineState;
     bool m_isDrawing;
+    bool m_recordedRenderPassActive = false;
+    uint32_t m_legacyDrawSectionDepth = 0;
 
 private:
     static std::atomic_bool s_isDrawing;

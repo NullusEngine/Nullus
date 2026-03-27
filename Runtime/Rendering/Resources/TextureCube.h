@@ -8,7 +8,7 @@
 
 namespace NLS
 {
-	class Image;
+    class Image;
 }
 namespace NLS::Render::Resources
 {
@@ -31,7 +31,7 @@ namespace NLS::Render::Resources
 		virtual void Unbind() const override;
 
 	public:
-		TextureCube() = default;
+		TextureCube();
 		~TextureCube() = default;
 
 		bool SetTextureResource(const std::vector<const NLS::Image*>& images);

@@ -9,6 +9,8 @@ namespace NLS::UI
 PanelWindow::PanelWindow(const std::string& p_name, bool p_opened, const PanelWindowSettings& p_floatingPanelSettings)
     : name(p_name), panelSettings(p_floatingPanelSettings), m_opened(p_opened)
 {
+    if (!name.empty())
+        m_panelID = "##" + name;
     autoSize = p_floatingPanelSettings.autoSize;
 }
 

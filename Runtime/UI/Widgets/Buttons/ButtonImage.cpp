@@ -1,5 +1,7 @@
 #include "UI/Widgets/Buttons/ButtonImage.h"
+#include "Core/ServiceLocator.h"
 #include "UI/Internal/Converter.h"
+#include "UI/UIManager.h"
 #include "ImGui/imgui_internal.h"
 
 namespace NLS::UI::Widgets
@@ -13,8 +15,11 @@ void ButtonImage::_Draw_Impl()
 {
     ImVec4 bg = Internal::Converter::ToImVec4(background);
     ImVec4 tn = Internal::Converter::ToImVec4(tint);
+    void* resolvedTextureId = textureID.raw;
+    if (NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
+        resolvedTextureId = NLS_SERVICE(NLS::UI::UIManager).ResolveTextureID(textureID.id);
 
-    if (ImGui::ImageButton(textureID.raw, Internal::Converter::ToImVec2(size), ImVec2(0.f, 1.f), ImVec2(1.f, 0.f), -1, bg, tn))
+    if (ImGui::ImageButton(resolvedTextureId, Internal::Converter::ToImVec2(size), ImVec2(0.f, 1.f), ImVec2(1.f, 0.f), -1, bg, tn))
         ClickedEvent.Invoke();
 }
 } // namespace NLS

@@ -2,14 +2,18 @@
 
 #include <any>
 #include <map>
-#include <optional>
+#include <vector>
 
-#include "Rendering/Resources/BindingSet.h"
+#include "Rendering/Buffers/UniformBuffer.h"
+#include "Rendering/Resources/BindingSetInstance.h"
+#include "Rendering/Resources/MaterialLayout.h"
+#include "Rendering/Resources/MaterialResourceSet.h"
 #include "Rendering/Resources/ResourceBinding.h"
 #include "Rendering/Resources/Shader.h"
 #include "Rendering/Resources/MaterialParameterBlock.h"
 #include "Rendering/Resources/Texture2D.h"
 #include "Rendering/Data/StateMask.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/GraphicsPipelineDesc.h"
 #include "RenderDef.h"
 namespace NLS::Render::Resources
@@ -44,17 +48,6 @@ public:
 
     void RebuildBindingLayout();
     void RebuildBindingSet() const;
-
-    /**
-     * Bind the material and send its uniform data to the GPU
-     * @param p_emptyTexture (The texture to use if a texture uniform is null)
-     */
-    void Bind(Texture2D* p_emptyTexture = nullptr) const;
-
-    /**
-     * Unbind the material
-     */
-    void UnBind() const;
 
     /**
      * Set a shader uniform value
@@ -169,11 +162,22 @@ public:
     const Data::StateMask GenerateStateMask() const;
 
     RHI::GraphicsPipelineDesc BuildGraphicsPipelineDesc() const;
+    RHI::RHIGraphicsPipelineDesc BuildExplicitGraphicsPipelineDesc(
+        const std::shared_ptr<RHI::RHIPipelineLayout>& pipelineLayout,
+        const std::shared_ptr<RHI::RHIShaderModule>& vertexShader,
+        const std::shared_ptr<RHI::RHIShaderModule>& fragmentShader,
+        Settings::EPrimitiveMode primitiveMode,
+        Settings::EComparaisonAlgorithm depthCompare) const;
 
     MaterialParameterBlock& GetParameterBlock();
     const MaterialParameterBlock& GetParameterBlock() const;
+    const MaterialLayout& GetMaterialLayout() const;
     const ResourceBindingLayout& GetBindingLayout() const;
-    const BindingSet& GetBindingSet() const;
+    const BindingSetInstance& GetBindingSetInstance() const;
+    const MaterialResourceSet& GetBindingSet() const;
+    const std::shared_ptr<RHI::RHIBindingLayout>& GetExplicitBindingLayout(const std::shared_ptr<RHI::RHIDevice>& device) const;
+    const std::shared_ptr<RHI::RHIBindingSet>& GetExplicitBindingSet(const std::shared_ptr<RHI::RHIDevice>& device) const;
+    const std::shared_ptr<RHI::RHIPipelineLayout>& GetExplicitPipelineLayout(const std::shared_ptr<RHI::RHIDevice>& device) const;
 
     /**
      * Returns the uniforms data of the material
@@ -183,10 +187,30 @@ public:
     const std::string path;
 
 protected:
+    const ShaderPropertyDesc* FindMaterialProperty(const std::string& key) const;
+    bool EnsureMaterialParameterExists(const std::string& key);
+
+    struct MaterialConstantBufferState
+    {
+        std::unique_ptr<NLS::Render::Buffers::UniformBuffer> buffer;
+        uint32_t size = 0;
+        uint32_t bindingPoint = 0;
+    };
+
     Shader* m_shader = nullptr;
     MaterialParameterBlock m_parameterBlock;
+    MaterialLayout m_materialLayout;
     ResourceBindingLayout m_bindingLayout;
-    mutable BindingSet m_bindingSet;
+    mutable BindingSetInstance m_bindingSet;
+    mutable std::map<std::string, MaterialConstantBufferState> m_materialConstantBuffers;
+    mutable std::shared_ptr<RHI::RHIBindingLayout> m_explicitBindingLayout;
+    mutable std::shared_ptr<RHI::RHIBindingSet> m_explicitBindingSet;
+    mutable std::shared_ptr<RHI::RHIPipelineLayout> m_explicitPipelineLayout;
+    mutable RHI::NativeBackendType m_explicitBindingLayoutBackend = RHI::NativeBackendType::None;
+    mutable RHI::NativeBackendType m_explicitBindingSetBackend = RHI::NativeBackendType::None;
+    mutable RHI::NativeBackendType m_explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
+    mutable bool m_explicitBindingLayoutDirty = true;
+    mutable bool m_explicitBindingSetDirty = true;
 
     bool m_blendable = false;
     bool m_backfaceCulling = true;

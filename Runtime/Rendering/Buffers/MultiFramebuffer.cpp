@@ -1,7 +1,29 @@
 #include "Rendering/Buffers/MultiFramebuffer.h"
+#include "Core/ServiceLocator.h"
+#include "Rendering/Context/Driver.h"
+#include "Rendering/RHI/Backends/OpenGL/Compat/ExplicitRHICompat.h"
+
+using Driver = NLS::Render::Context::Driver;
 
 namespace NLS::Render::Buffers
 {
+	namespace
+	{
+		std::shared_ptr<NLS::Render::RHI::RHITextureView> CreateTextureViewForExplicitPath(
+			Driver& driver,
+			const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+			const NLS::Render::RHI::RHITextureViewDesc& desc)
+		{
+			if (texture == nullptr)
+				return nullptr;
+
+			if (const auto explicitDevice = driver.GetExplicitDevice(); explicitDevice != nullptr)
+				return explicitDevice->CreateTextureView(texture, desc);
+
+			return NLS::Render::RHI::CreateCompatibilityTextureView(texture, desc);
+		}
+	}
+
     MultiFramebuffer::MultiFramebuffer(uint16_t width, uint16_t height, const std::vector<AttachmentDesc>& colorAttachments, bool withDepth)
     {
         Init(width, height, colorAttachments, withDepth);
@@ -34,86 +56,178 @@ namespace NLS::Render::Buffers
 
     void MultiFramebuffer::Bind() const
     {
-        glBindFramebuffer(GL_FRAMEBUFFER, m_bufferId);
+        NLS_SERVICE(Driver).BindFramebuffer(m_bufferId);
     }
 
     void MultiFramebuffer::Unbind() const
     {
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        NLS_SERVICE(Driver).BindFramebuffer(0);
     }
 
     void MultiFramebuffer::Release()
     {
+        auto& rhi = NLS_SERVICE(Driver);
+
         if (!m_colorTextures.empty())
         {
-            glDeleteTextures(static_cast<GLsizei>(m_colorTextures.size()), m_colorTextures.data());
+            for (size_t i = 0; i < m_colorTextures.size(); ++i)
+            {
+                if (i < m_colorTextureResources.size() && m_colorTextureResources[i])
+                    m_colorTextureResources[i].reset();
+                else if (m_colorTextures[i] != 0)
+                    rhi.DestroyTexture(m_colorTextures[i]);
+            }
             m_colorTextures.clear();
         }
+        m_colorTextureResources.clear();
+        m_explicitColorTextures.clear();
+        m_explicitColorTextureViews.clear();
 
         if (m_depthTexture != 0)
         {
-            glDeleteTextures(1, &m_depthTexture);
+            if (m_depthTextureResource)
+                m_depthTextureResource.reset();
+            else
+                rhi.DestroyTexture(m_depthTexture);
             m_depthTexture = 0;
         }
+        m_depthTextureResource.reset();
+        m_explicitDepthTexture.reset();
+        m_explicitDepthTextureView.reset();
 
         if (m_bufferId != 0)
         {
-            glDeleteFramebuffers(1, &m_bufferId);
+            rhi.DestroyFramebuffer(m_bufferId);
             m_bufferId = 0;
         }
     }
 
     void MultiFramebuffer::Allocate()
     {
-        if (m_bufferId == 0)
-            glGenFramebuffers(1, &m_bufferId);
+        auto& rhi = NLS_SERVICE(Driver);
 
-        Bind();
+		if (m_bufferId == 0)
+			m_bufferId = rhi.CreateFramebuffer();
+
+		Bind();
 
         if (!m_colorTextures.empty())
         {
-            glDeleteTextures(static_cast<GLsizei>(m_colorTextures.size()), m_colorTextures.data());
+            for (const auto textureId : m_colorTextures)
+                rhi.DestroyTexture(textureId);
             m_colorTextures.clear();
         }
 
-        if (!m_attachmentDescs.empty())
-        {
-            m_colorTextures.resize(m_attachmentDescs.size(), 0);
-            glGenTextures(static_cast<GLsizei>(m_colorTextures.size()), m_colorTextures.data());
-
-            std::vector<GLenum> drawBuffers;
-            drawBuffers.reserve(m_attachmentDescs.size());
+		if (!m_attachmentDescs.empty())
+		{
+			m_colorTextures.resize(m_attachmentDescs.size(), 0);
+			m_colorTextureResources.resize(m_attachmentDescs.size());
+			m_explicitColorTextures.resize(m_attachmentDescs.size());
+			m_explicitColorTextureViews.assign(m_attachmentDescs.size(), nullptr);
 
             for (size_t i = 0; i < m_attachmentDescs.size(); ++i)
             {
-                glBindTexture(GL_TEXTURE_2D, m_colorTextures[i]);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-                glTexImage2D(GL_TEXTURE_2D, 0, m_attachmentDescs[i].internalFormat, m_width, m_height, 0, m_attachmentDescs[i].format, m_attachmentDescs[i].type, nullptr);
-                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0 + static_cast<GLenum>(i), GL_TEXTURE_2D, m_colorTextures[i], 0);
-                drawBuffers.push_back(GL_COLOR_ATTACHMENT0 + static_cast<GLenum>(i));
-            }
+                m_colorTextureResources[i] = rhi.CreateTextureResource();
+                m_explicitColorTextures[i] = m_colorTextureResources[i]
+                    ? NLS::Render::RHI::WrapCompatibilityTexture(m_colorTextureResources[i], "MultiFramebufferColorTexture" + std::to_string(i))
+                    : nullptr;
+                m_colorTextures[i] = m_colorTextureResources[i]
+                    ? m_colorTextureResources[i]->GetResourceId()
+                    : rhi.CreateTexture();
+                NLS::Render::RHI::TextureDesc colorDesc{};
+                colorDesc.width = m_width;
+                colorDesc.height = m_height;
+                colorDesc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
+                colorDesc.format = m_attachmentDescs[i].format;
+                colorDesc.minFilter = NLS::Render::RHI::TextureFilter::Nearest;
+                colorDesc.magFilter = NLS::Render::RHI::TextureFilter::Nearest;
+                colorDesc.wrapS = NLS::Render::RHI::TextureWrap::ClampToEdge;
+                colorDesc.wrapT = NLS::Render::RHI::TextureWrap::ClampToEdge;
+                colorDesc.usage = NLS::Render::RHI::TextureUsage::Sampled | NLS::Render::RHI::TextureUsage::ColorAttachment;
 
-            glDrawBuffers(static_cast<GLsizei>(drawBuffers.size()), drawBuffers.data());
-        }
+				rhi.BindTexture(NLS::Render::RHI::TextureDimension::Texture2D, m_colorTextures[i]);
+				rhi.SetupTexture(colorDesc, nullptr);
+			}
+		}
 
         if (m_withDepth)
         {
             if (m_depthTexture == 0)
-                glGenTextures(1, &m_depthTexture);
+            {
+                m_depthTextureResource = rhi.CreateTextureResource();
+                m_explicitDepthTexture = m_depthTextureResource
+                    ? NLS::Render::RHI::WrapCompatibilityTexture(m_depthTextureResource, "MultiFramebufferDepthTexture")
+                    : nullptr;
+                m_depthTexture = m_depthTextureResource
+                    ? m_depthTextureResource->GetResourceId()
+                    : rhi.CreateTexture();
+            }
 
-            glBindTexture(GL_TEXTURE_2D, m_depthTexture);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, m_width, m_height, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, nullptr);
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_TEXTURE_2D, m_depthTexture, 0);
-        }
+            NLS::Render::RHI::TextureDesc depthDesc{};
+            depthDesc.width = m_width;
+            depthDesc.height = m_height;
+            depthDesc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
+            depthDesc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
+            depthDesc.minFilter = NLS::Render::RHI::TextureFilter::Nearest;
+            depthDesc.magFilter = NLS::Render::RHI::TextureFilter::Nearest;
+            depthDesc.wrapS = NLS::Render::RHI::TextureWrap::ClampToEdge;
+            depthDesc.wrapT = NLS::Render::RHI::TextureWrap::ClampToEdge;
+            depthDesc.usage = NLS::Render::RHI::TextureUsage::DepthStencilAttachment | NLS::Render::RHI::TextureUsage::Sampled;
 
-        glBindTexture(GL_TEXTURE_2D, 0);
-        Unbind();
+			rhi.BindTexture(NLS::Render::RHI::TextureDimension::Texture2D, m_depthTexture);
+			rhi.SetupTexture(depthDesc, nullptr);
+		}
+
+		NLS::Render::RHI::FramebufferDesc framebufferDesc{};
+		framebufferDesc.drawBufferCount = static_cast<uint32_t>(m_attachmentDescs.size());
+		for (size_t i = 0; i < m_attachmentDescs.size(); ++i)
+		{
+			framebufferDesc.colorAttachments.push_back({
+				m_colorTextures[i],
+				m_attachmentDescs[i].format
+			});
+		}
+		framebufferDesc.depthStencilTextureId = m_depthTexture;
+		framebufferDesc.depthStencilFormat = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
+		rhi.ConfigureFramebuffer(m_bufferId, framebufferDesc);
+
+		Unbind();
+	}
+
+    std::shared_ptr<NLS::Render::RHI::RHITextureView> MultiFramebuffer::GetOrCreateExplicitColorView(size_t index, const std::string& debugName) const
+    {
+        if (index >= m_explicitColorTextures.size() || m_explicitColorTextures[index] == nullptr)
+            return nullptr;
+
+        if (index < m_explicitColorTextureViews.size() && m_explicitColorTextureViews[index] != nullptr)
+            return m_explicitColorTextureViews[index];
+
+        if (index >= m_explicitColorTextureViews.size())
+            m_explicitColorTextureViews.resize(m_explicitColorTextures.size());
+
+        NLS::Render::RHI::RHITextureViewDesc viewDesc;
+        viewDesc.format = m_explicitColorTextures[index]->GetDesc().format;
+        viewDesc.viewType = NLS::Render::RHI::TextureViewType::Texture2D;
+        viewDesc.debugName = debugName;
+        auto& driver = NLS_SERVICE(Driver);
+        m_explicitColorTextureViews[index] = CreateTextureViewForExplicitPath(driver, m_explicitColorTextures[index], viewDesc);
+        return m_explicitColorTextureViews[index];
+    }
+
+    std::shared_ptr<NLS::Render::RHI::RHITextureView> MultiFramebuffer::GetOrCreateExplicitDepthView(const std::string& debugName) const
+    {
+        if (m_explicitDepthTexture == nullptr)
+            return nullptr;
+
+        if (m_explicitDepthTextureView != nullptr)
+            return m_explicitDepthTextureView;
+
+        NLS::Render::RHI::RHITextureViewDesc viewDesc;
+        viewDesc.format = m_explicitDepthTexture->GetDesc().format;
+        viewDesc.viewType = NLS::Render::RHI::TextureViewType::Texture2D;
+        viewDesc.debugName = debugName;
+        auto& driver = NLS_SERVICE(Driver);
+        m_explicitDepthTextureView = CreateTextureViewForExplicitPath(driver, m_explicitDepthTexture, viewDesc);
+        return m_explicitDepthTextureView;
     }
 }

@@ -285,12 +285,12 @@ public:
 
 				do
 				{
-					finalPath = filePath + '\\' + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".glsl";
+					finalPath = filePath + '\\' + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".hlsl";
 
 					++fails;
 				} while (std::filesystem::exists(finalPath));
 
-				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\Standard.glsl", finalPath);
+				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\Standard.hlsl", finalPath);
 				ItemAddedEvent.Invoke(finalPath);
 				Close();
 			};
@@ -302,12 +302,12 @@ public:
 
 				do
 				{
-					finalPath = filePath + Utils::PathParser::Separator() + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".glsl";
+					finalPath = filePath + Utils::PathParser::Separator() + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".hlsl";
 
 					++fails;
 				} while (std::filesystem::exists(finalPath));
 
-				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders/StandardPBR.glsl", finalPath);
+				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders/Standard.hlsl", finalPath);
 				ItemAddedEvent.Invoke(finalPath);
 				Close();
 			};
@@ -319,12 +319,12 @@ public:
 
 				do
 				{
-					finalPath = filePath + '\\' + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".glsl";
+					finalPath = filePath + '\\' + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".hlsl";
 
 					++fails;
 				} while (std::filesystem::exists(finalPath));
 
-				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\Unlit.glsl", finalPath);
+				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\Unlit.hlsl", finalPath);
 				ItemAddedEvent.Invoke(finalPath);
 				Close();
 			};
@@ -336,12 +336,12 @@ public:
 
 				do
 				{
-					finalPath = filePath + '\\' + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".glsl";
+					finalPath = filePath + '\\' + (!fails ? newShaderName : newShaderName + " (" + std::to_string(fails) + ')') + ".hlsl";
 
 					++fails;
 				} while (std::filesystem::exists(finalPath));
 
-				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\Lambert.glsl", finalPath);
+				std::filesystem::copy_file(EDITOR_CONTEXT(engineAssetsPath) + "Shaders\\Lambert.hlsl", finalPath);
 				ItemAddedEvent.Invoke(finalPath);
 				Close();
 			};
@@ -390,7 +390,7 @@ public:
 
 				{
 					std::ofstream outfile(finalPath);
-					outfile << "<root><shader>:Shaders\\Standard.glsl</shader></root>" << std::endl; // Empty standard material content
+					outfile << "<root><shader>:Shaders\\Standard.hlsl</shader></root>" << std::endl; // Empty standard material content
 				}
 
 				ItemAddedEvent.Invoke(finalPath);
@@ -420,7 +420,7 @@ public:
 
 				{
 					std::ofstream outfile(finalPath);
-					outfile << "<root><shader>:Shaders\\StandardPBR.glsl</shader></root>" << std::endl; // Empty standard material content
+					outfile << "<root><shader>:Shaders\\Standard.hlsl</shader></root>" << std::endl;
 				}
 
 				ItemAddedEvent.Invoke(finalPath);
@@ -451,7 +451,7 @@ public:
 
 				{
 					std::ofstream outfile(finalPath);
-					outfile << "<root><shader>:Shaders\\Unlit.glsl</shader></root>" << std::endl; // Empty unlit material content
+					outfile << "<root><shader>:Shaders\\Unlit.hlsl</shader></root>" << std::endl; // Empty unlit material content
 				}
 
 				ItemAddedEvent.Invoke(finalPath);
@@ -481,7 +481,7 @@ public:
 
 				{
 					std::ofstream outfile(finalPath);
-					outfile << "<root><shader>:Shaders\\Lambert.glsl</shader></root>" << std::endl; // Empty unlit material content
+					outfile << "<root><shader>:Shaders\\Lambert.hlsl</shader></root>" << std::endl; // Empty unlit material content
 				}
 
 				ItemAddedEvent.Invoke(finalPath);
@@ -739,7 +739,7 @@ public:
 
 						{
 							std::ofstream outfile(finalPath);
-							outfile << "<root><shader>:Shaders\\Standard.glsl</shader></root>" << std::endl; // Empty standard material content
+							outfile << "<root><shader>:Shaders\\Standard.hlsl</shader></root>" << std::endl; // Empty standard material content
 						}
 
 						DuplicateEvent.Invoke(finalPath);
@@ -767,7 +767,7 @@ public:
 
 						{
 							std::ofstream outfile(finalPath);
-							outfile << "<root><shader>:Shaders\\StandardPBR.glsl</shader></root>" << std::endl; // Empty standard material content
+							outfile << "<root><shader>:Shaders\\Standard.hlsl</shader></root>" << std::endl;
 						}
 
 						DuplicateEvent.Invoke(finalPath);
@@ -795,7 +795,7 @@ public:
 
 						{
 							std::ofstream outfile(finalPath);
-							outfile << "<root><shader>:Shaders\\Unlit.glsl</shader></root>" << std::endl; // Empty standard material content
+							outfile << "<root><shader>:Shaders\\Unlit.hlsl</shader></root>" << std::endl; // Empty standard material content
 						}
 
 						DuplicateEvent.Invoke(finalPath);
@@ -823,7 +823,7 @@ public:
 
 						{
 							std::ofstream outfile(finalPath);
-							outfile << "<root><shader>:Shaders\\Lambert.glsl</shader></root>" << std::endl; // Empty standard material content
+							outfile << "<root><shader>:Shaders\\Lambert.hlsl</shader></root>" << std::endl; // Empty standard material content
 						}
 
 						DuplicateEvent.Invoke(finalPath);

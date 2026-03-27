@@ -2,6 +2,7 @@
 
 #include "Rendering/DebugSceneRenderer.h"
 #include "Rendering/PickingRenderPass.h"
+#include "Rendering/EditorDefaultResources.h"
 #include "Core/EditorActions.h"
 #include "Panels/SceneView.h"
 #include "Panels/GameView.h"
@@ -17,9 +18,9 @@ Editor::Panels::SceneView::SceneView(
 
     m_camera.SetFar(5000.0f);
 
-    m_fallbackMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders\\Unlit.glsl"]);
+    m_fallbackMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders\\Unlit.hlsl"]);
     m_fallbackMaterial.Set<Maths::Vector4>("u_Diffuse", {1.f, 0.f, 1.f, 1.0f});
-    m_fallbackMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", nullptr);
+    m_fallbackMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", Editor::Rendering::GetEditorDefaultWhiteTexture());
 
     m_image->AddPlugin<UI::DDTarget<std::pair<std::string, UI::Widgets::Group*>>>("File").DataReceivedEvent += [this](auto p_data)
     {
@@ -133,7 +134,7 @@ void Editor::Panels::SceneView::HandleActorPicking()
 
         auto& actorPickingFeature = m_renderer->GetPass<Rendering::PickingRenderPass>("Picking");
 
-        auto pickingResult = actorPickingFeature.ReadbackPickingResult(
+        auto pickingResult = actorPickingFeature.RenderAndReadbackPickingResult(
             scene,
             static_cast<uint32_t>(mousePos.x),
             static_cast<uint32_t>(mousePos.y));

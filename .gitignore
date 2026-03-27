@@ -12,6 +12,7 @@ App/*/*.dll
 App/*/*.o
 # log file
 App/*.log
+App/**/*.log
 
 # windows
 App/Win64_*/
@@ -29,5 +30,15 @@ Tools/MetaParser/src/obj/
 
 # Legacy tool output folder
 Tools/Tool/
+
+# Local scratch projects and generated logs
+TestProject/
+
+# Local AI workflow scratch
+.codex/
+.specify/cache/
+.specify/tmp/
+specs/.tmp/
+.worktrees/
 
 

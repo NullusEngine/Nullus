@@ -1,16 +1,47 @@
 #include <Debug/Assertion.h>
 #include <Debug/Logger.h>
+#include <Core/ServiceLocator.h>
+#include <UI/UIManager.h>
+#include <algorithm>
+#include <fstream>
+#include <filesystem>
 
-#include "Rendering/Backend/RenderDeviceFactory.h"
+#include "Rendering/RHI/Backends/ExplicitDeviceFactory.h"
+#include "Rendering/RHI/Backends/RenderDeviceFactory.h"
+#include "Rendering/RHI/Utils/DescriptorAllocator/DescriptorAllocator.h"
+#include "Rendering/RHI/Utils/PipelineCache/PipelineCache.h"
+#include "Rendering/RHI/Utils/ResourceStateTracker/ResourceStateTracker.h"
+#include "Rendering/RHI/Utils/UploadContext/UploadContext.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/RHI/IRenderDevice.h"
+#include "Rendering/Settings/GraphicsBackendUtils.h"
+#include "Rendering/Tooling/RenderDocCaptureController.h"
 #include "Rendering/Resources/IMesh.h"
 #include "Rendering/Utils/Conversions.h"
 
 namespace NLS::Render::Context
 {
+namespace
+{
+	const char* ToRenderDocBackendName(const Render::RHI::NativeBackendType backend)
+	{
+		switch (backend)
+		{
+		case Render::RHI::NativeBackendType::Vulkan: return "Vulkan";
+		case Render::RHI::NativeBackendType::DX12: return "DX12";
+		case Render::RHI::NativeBackendType::Metal: return "Metal";
+		case Render::RHI::NativeBackendType::OpenGL: return "OpenGL";
+		case Render::RHI::NativeBackendType::None:
+		default:
+			return "Unknown";
+		}
+	}
+}
+
 Driver::Driver(const Render::Settings::DriverSettings& p_driverSettings)
 {
+	m_renderDocCaptureController = std::make_unique<Render::Tooling::RenderDocCaptureController>(p_driverSettings.renderDoc);
+
 	m_renderDevice = Render::Backend::CreateRenderDevice(p_driverSettings.graphicsBackend);
 	NLS_ASSERT(m_renderDevice != nullptr, "Failed to create render device!");
 
@@ -29,6 +60,39 @@ Driver::Driver(const Render::Settings::DriverSettings& p_driverSettings)
 	m_hardware = m_renderDevice->GetHardware();
 	m_version = m_renderDevice->GetVersion();
 	m_shadingLanguageVersion = m_renderDevice->GetShadingLanguageVersion();
+	if (m_renderDocCaptureController != nullptr)
+	{
+		const auto nativeInfo = m_renderDevice->GetNativeDeviceInfo();
+		m_renderDocCaptureController->SetResolvedBackendName(ToRenderDocBackendName(nativeInfo.backend));
+		m_renderDocCaptureController->SetCaptureTarget(nativeInfo);
+	}
+
+	if (p_driverSettings.enableExplicitRHI)
+	{
+		m_explicitDevice = Render::Backend::CreateExplicitDevice(*m_renderDevice);
+		if (m_explicitDevice != nullptr)
+		{
+			m_pipelineCache = Render::RHI::CreateDefaultPipelineCache();
+			const auto frameCount = std::max<uint32_t>(1u, p_driverSettings.framesInFlight);
+			m_frameContexts.reserve(frameCount);
+			for (uint32_t frameIndex = 0; frameIndex < frameCount; ++frameIndex)
+			{
+				Render::RHI::RHIFrameContext frameContext;
+				frameContext.frameIndex = frameIndex;
+				frameContext.commandPool = m_explicitDevice->CreateCommandPool(Render::RHI::QueueType::Graphics, "FrameCommandPool" + std::to_string(frameIndex));
+				frameContext.commandBuffer = frameContext.commandPool != nullptr
+					? frameContext.commandPool->CreateCommandBuffer("FrameCommandBuffer" + std::to_string(frameIndex))
+					: nullptr;
+				frameContext.frameFence = m_explicitDevice->CreateFence("FrameFence" + std::to_string(frameIndex));
+				frameContext.imageAcquiredSemaphore = m_explicitDevice->CreateSemaphore("FrameAcquire" + std::to_string(frameIndex));
+				frameContext.renderFinishedSemaphore = m_explicitDevice->CreateSemaphore("FramePresent" + std::to_string(frameIndex));
+				frameContext.resourceStateTracker = Render::RHI::CreateDefaultResourceStateTracker();
+				frameContext.descriptorAllocator = Render::RHI::CreateDefaultDescriptorAllocator();
+				frameContext.uploadContext = Render::RHI::CreateDefaultUploadContext();
+				m_frameContexts.push_back(std::move(frameContext));
+			}
+		}
+	}
 }
 
 Driver::~Driver() = default;
@@ -38,9 +102,99 @@ void Driver::SetViewport(uint32_t p_x, uint32_t p_y, uint32_t p_width, uint32_t 
 	m_renderDevice->SetViewport(p_x, p_y, p_width, p_height);
 }
 
+std::shared_ptr<Render::RHI::IRHITexture> Driver::CreateTextureResource(const Render::RHI::TextureDimension dimension)
+{
+	return m_renderDevice->CreateTextureResource(dimension);
+}
+
+uint32_t Driver::CreateTexture()
+{
+	return m_renderDevice->CreateTexture();
+}
+
+void Driver::DestroyTexture(uint32_t textureId)
+{
+	m_renderDevice->DestroyTexture(textureId);
+}
+
+void Driver::BindTexture(const Render::RHI::TextureDimension dimension, uint32_t textureId)
+{
+	m_renderDevice->BindTexture(dimension, textureId);
+}
+
+void Driver::ActivateTexture(uint32_t slot)
+{
+	m_renderDevice->ActivateTexture(slot);
+}
+
+void Driver::SetupTexture(const Render::RHI::TextureDesc& desc, const void* data)
+{
+	m_renderDevice->SetupTexture(desc, data);
+}
+
+void Driver::GenerateTextureMipmap(const Render::RHI::TextureDimension dimension)
+{
+	m_renderDevice->GenerateTextureMipmap(dimension);
+}
+
+std::shared_ptr<Render::RHI::IRHIBuffer> Driver::CreateBufferResource(const Render::RHI::BufferType type)
+{
+	return m_renderDevice->CreateBufferResource(type);
+}
+
+uint32_t Driver::CreateBuffer()
+{
+	return m_renderDevice->CreateBuffer();
+}
+
+void Driver::DestroyBuffer(uint32_t bufferId)
+{
+	m_renderDevice->DestroyBuffer(bufferId);
+}
+
+void Driver::BindBuffer(const Render::RHI::BufferType type, uint32_t bufferId)
+{
+	m_renderDevice->BindBuffer(type, bufferId);
+}
+
+void Driver::BindBufferBase(const Render::RHI::BufferType type, uint32_t bindingPoint, uint32_t bufferId)
+{
+	m_renderDevice->BindBufferBase(type, bindingPoint, bufferId);
+}
+
+void Driver::SetBufferData(const Render::RHI::BufferType type, size_t size, const void* data, const Render::RHI::BufferUsage usage)
+{
+	m_renderDevice->SetBufferData(type, size, data, usage);
+}
+
+void Driver::SetBufferSubData(const Render::RHI::BufferType type, size_t offset, size_t size, const void* data)
+{
+	m_renderDevice->SetBufferSubData(type, offset, size, data);
+}
+
+void* Driver::GetUITextureHandle(uint32_t textureId) const
+{
+	return m_renderDevice->GetUITextureHandle(textureId);
+}
+
+void Driver::ReleaseUITextureHandles()
+{
+	m_renderDevice->ReleaseUITextureHandles();
+}
+
+bool Driver::PrepareUIRender()
+{
+	return m_renderDevice->PrepareUIRender();
+}
+
 uint32_t Driver::CreateFramebuffer()
 {
 	return m_renderDevice->CreateFramebuffer();
+}
+
+uint32_t Driver::CreateFramebuffer(const Render::RHI::FramebufferDesc& desc)
+{
+	return m_renderDevice->CreateFramebuffer(desc);
 }
 
 void Driver::DestroyFramebuffer(uint32_t framebufferId)
@@ -68,6 +222,11 @@ void Driver::SetFramebufferDrawBufferCount(uint32_t framebufferId, uint32_t colo
 	m_renderDevice->SetFramebufferDrawBufferCount(framebufferId, colorAttachmentCount);
 }
 
+void Driver::ConfigureFramebuffer(uint32_t framebufferId, const Render::RHI::FramebufferDesc& desc)
+{
+	m_renderDevice->ConfigureFramebuffer(framebufferId, desc);
+}
+
 void Driver::BlitDepth(uint32_t sourceFramebufferId, uint32_t destinationFramebufferId, uint32_t width, uint32_t height)
 {
 	m_renderDevice->BlitDepth(sourceFramebufferId, destinationFramebufferId, width, height);
@@ -81,9 +240,7 @@ void Driver::Clear(
 )
 {
 	if (p_colorBuffer)
-	{
 		m_renderDevice->SetClearColor(p_color.x, p_color.y, p_color.z, p_color.w);
-	}
 
 	auto pso = CreatePipelineState();
 
@@ -122,11 +279,16 @@ void Driver::Draw(
 	if (p_instances == 0)
 		return;
 
+	const auto vertexBufferView = p_mesh.GetVertexBufferView();
+	if (vertexBufferView.buffer == nullptr || vertexBufferView.bufferId == 0 || p_mesh.GetVertexCount() == 0)
+		return;
+
 	SetPipelineState(p_pso);
 
 	p_mesh.Bind();
 
-	if (p_mesh.GetIndexCount() > 0)
+	const auto indexBufferView = p_mesh.GetIndexBufferView();
+	if (indexBufferView.has_value() && p_mesh.GetIndexCount() > 0)
 	{
 		if (p_instances == 1)
 		{
@@ -150,6 +312,11 @@ void Driver::Draw(
 	}
 
 	p_mesh.Unbind();
+}
+
+void Driver::BindGraphicsPipeline(const Render::RHI::GraphicsPipelineDesc& pipelineDesc, const Render::Resources::BindingSetInstance* bindingSet)
+{
+	m_renderDevice->BindGraphicsPipeline(pipelineDesc, bindingSet);
 }
 
 void Driver::SetPipelineState(Render::Data::PipelineState p_state)
@@ -229,29 +396,287 @@ Render::RHI::RHIDeviceCapabilities Driver::GetCapabilities() const
 	return m_renderDevice->GetCapabilities();
 }
 
+Render::RHI::NativeRenderDeviceInfo Driver::GetNativeDeviceInfo() const
+{
+	return m_renderDevice->GetNativeDeviceInfo();
+}
+
 bool Driver::IsBackendReady() const
 {
 	return m_renderDevice->IsBackendReady();
 }
 
+bool Driver::SupportsCurrentSceneRenderer() const
+{
+	return m_renderDevice->GetCapabilities().supportsCurrentSceneRenderer;
+}
+
+bool Driver::IsRenderDocAvailable() const
+{
+	return m_renderDocCaptureController != nullptr && m_renderDocCaptureController->IsAvailable();
+}
+
+bool Driver::QueueRenderDocCapture(const std::string& label)
+{
+	return m_renderDocCaptureController != nullptr && m_renderDocCaptureController->QueueCapture(label);
+}
+
+bool Driver::StartRenderDocCapture()
+{
+	return m_renderDocCaptureController != nullptr && m_renderDocCaptureController->StartCapture();
+}
+
+bool Driver::EndRenderDocCapture()
+{
+	return m_renderDocCaptureController != nullptr && m_renderDocCaptureController->EndCapture();
+}
+
+std::string Driver::GetLatestRenderDocCapturePath() const
+{
+	return m_renderDocCaptureController != nullptr
+		? m_renderDocCaptureController->GetLatestCapturePath()
+		: std::string{};
+}
+
+std::string Driver::GetRenderDocCaptureDirectory() const
+{
+	return m_renderDocCaptureController != nullptr
+		? m_renderDocCaptureController->GetCaptureDirectory()
+		: std::string{};
+}
+
+bool Driver::OpenLatestRenderDocCapture()
+{
+	return m_renderDocCaptureController != nullptr && m_renderDocCaptureController->OpenLatestCapture();
+}
+
+bool Driver::GetRenderDocAutoOpenEnabled() const
+{
+	return m_renderDocCaptureController != nullptr && m_renderDocCaptureController->GetAutoOpenReplayUI();
+}
+
+void Driver::SetRenderDocAutoOpenEnabled(bool enabled)
+{
+	if (m_renderDocCaptureController != nullptr)
+		m_renderDocCaptureController->SetAutoOpenReplayUI(enabled);
+}
+
 bool Driver::CreateSwapchain(const Render::RHI::SwapchainDesc& desc)
 {
-	return m_renderDevice->CreateSwapchain(desc);
+	if (m_explicitDevice != nullptr)
+	{
+		m_explicitSwapchain = m_explicitDevice->CreateSwapchain(desc);
+		if (m_renderDocCaptureController != nullptr)
+			m_renderDocCaptureController->SetCaptureTarget(m_renderDevice->GetNativeDeviceInfo());
+		return m_explicitSwapchain != nullptr;
+	}
+
+	const bool created = m_renderDevice->CreateSwapchain(desc);
+	if (created && m_renderDocCaptureController != nullptr)
+		m_renderDocCaptureController->SetCaptureTarget(m_renderDevice->GetNativeDeviceInfo());
+	return created;
 }
 
 void Driver::DestroySwapchain()
 {
-	m_renderDevice->DestroySwapchain();
+	m_explicitSwapchain.reset();
+	if (m_explicitDevice == nullptr)
+		m_renderDevice->DestroySwapchain();
 }
 
 void Driver::ResizeSwapchain(uint32_t width, uint32_t height)
 {
-	m_renderDevice->ResizeSwapchain(width, height);
+	if (width == 0u || height == 0u)
+		return;
+
+	m_pendingSwapchainWidth = width;
+	m_pendingSwapchainHeight = height;
+	m_hasPendingSwapchainResize = true;
+	m_lastSwapchainResizeRequestTime = std::chrono::steady_clock::now();
 }
 
 void Driver::PresentSwapchain()
 {
+	if (m_renderDocCaptureController != nullptr)
+		m_renderDocCaptureController->OnPrePresent();
+
+	if (m_explicitDevice != nullptr && m_skipNextExplicitPresent)
+	{
+		m_skipNextExplicitPresent = false;
+		if (m_renderDocCaptureController != nullptr)
+			m_renderDocCaptureController->OnPostPresent();
+		return;
+	}
+
+	if (m_explicitDevice != nullptr && m_explicitSwapchain != nullptr)
+	{
+		if (m_explicitFrameActive)
+		{
+			NLS_ASSERT(false, "PresentSwapchain() must not be called while an explicit frame is still recording.");
+			return;
+		}
+
+		m_explicitDevice->GetQueue(Render::RHI::QueueType::Graphics)->Present({ m_explicitSwapchain, 0, {} });
+		if (m_renderDocCaptureController != nullptr)
+			m_renderDocCaptureController->OnPostPresent();
+		ApplyPendingSwapchainResize();
+		return;
+	}
+
 	m_renderDevice->PresentSwapchain();
+	if (m_renderDocCaptureController != nullptr)
+		m_renderDocCaptureController->OnPostPresent();
+	ApplyPendingSwapchainResize();
+}
+
+bool Driver::HasExplicitRHI() const
+{
+	return m_explicitDevice != nullptr;
+}
+
+Render::RHI::RHIFrameContext& Driver::BeginExplicitFrame(bool acquireSwapchainImage)
+{
+	NLS_ASSERT(m_explicitDevice != nullptr, "Explicit RHI is not enabled for this driver.");
+	NLS_ASSERT(!m_frameContexts.empty(), "Explicit RHI frame contexts were not initialized.");
+	NLS_ASSERT(!m_explicitFrameActive, "Cannot begin a new explicit frame while another one is still active.");
+
+	auto& frameContext = m_frameContexts[m_currentFrameIndex % m_frameContexts.size()];
+	frameContext.frameIndex = static_cast<uint32_t>(m_currentFrameIndex);
+	if (frameContext.frameFence != nullptr)
+		frameContext.frameFence->Wait();
+	if (frameContext.frameFence != nullptr)
+		frameContext.frameFence->Reset();
+	if (frameContext.commandPool != nullptr)
+		frameContext.commandPool->Reset();
+	if (frameContext.commandBuffer != nullptr)
+		frameContext.commandBuffer->Reset();
+	if (frameContext.resourceStateTracker != nullptr)
+		frameContext.resourceStateTracker->Reset();
+	if (frameContext.descriptorAllocator != nullptr)
+		frameContext.descriptorAllocator->BeginFrame(m_currentFrameIndex);
+	if (frameContext.uploadContext != nullptr)
+		frameContext.uploadContext->BeginFrame(m_currentFrameIndex);
+
+	frameContext.hasAcquiredSwapchainImage = false;
+	frameContext.uploadBytesReserved = 0;
+	if (acquireSwapchainImage && m_explicitSwapchain != nullptr)
+	{
+		const auto acquiredImage = m_explicitSwapchain->AcquireNextImage(frameContext.imageAcquiredSemaphore, frameContext.frameFence);
+		frameContext.hasAcquiredSwapchainImage = acquiredImage.has_value();
+		frameContext.swapchainImageIndex = acquiredImage.has_value() ? acquiredImage->imageIndex : 0u;
+	}
+
+	if (frameContext.commandBuffer != nullptr)
+		frameContext.commandBuffer->Begin();
+
+	if (m_renderDocCaptureController != nullptr)
+		m_renderDocCaptureController->OnPreFrame();
+
+	m_skipNextExplicitPresent = false;
+	m_explicitFrameActive = true;
+	return frameContext;
+}
+
+void Driver::EndExplicitFrame(bool presentSwapchain)
+{
+	if (m_explicitDevice == nullptr || m_frameContexts.empty() || !m_explicitFrameActive)
+		return;
+
+	auto& frameContext = m_frameContexts[m_currentFrameIndex % m_frameContexts.size()];
+	if (frameContext.commandBuffer != nullptr && frameContext.commandBuffer->IsRecording())
+		frameContext.commandBuffer->End();
+
+	Render::RHI::RHISubmitDesc submitDesc;
+	if (frameContext.commandBuffer != nullptr)
+		submitDesc.commandBuffers.push_back(frameContext.commandBuffer);
+	if (frameContext.hasAcquiredSwapchainImage && frameContext.imageAcquiredSemaphore != nullptr)
+		submitDesc.waitSemaphores.push_back(frameContext.imageAcquiredSemaphore);
+	if (presentSwapchain && frameContext.renderFinishedSemaphore != nullptr)
+		submitDesc.signalSemaphores.push_back(frameContext.renderFinishedSemaphore);
+	submitDesc.signalFence = frameContext.frameFence;
+
+	auto queue = m_explicitDevice->GetQueue(Render::RHI::QueueType::Graphics);
+	if (queue != nullptr)
+	{
+		queue->Submit(submitDesc);
+		if (presentSwapchain && frameContext.hasAcquiredSwapchainImage && m_explicitSwapchain != nullptr)
+		{
+			if (m_renderDocCaptureController != nullptr)
+				m_renderDocCaptureController->OnPrePresent();
+
+			Render::RHI::RHIPresentDesc presentDesc;
+			presentDesc.swapchain = m_explicitSwapchain;
+			presentDesc.imageIndex = frameContext.swapchainImageIndex;
+			if (frameContext.renderFinishedSemaphore != nullptr)
+				presentDesc.waitSemaphores.push_back(frameContext.renderFinishedSemaphore);
+			queue->Present(presentDesc);
+			if (m_renderDocCaptureController != nullptr)
+				m_renderDocCaptureController->OnPostPresent();
+			m_skipNextExplicitPresent = true;
+			ApplyPendingSwapchainResize();
+		}
+	}
+	if (frameContext.descriptorAllocator != nullptr)
+		frameContext.descriptorAllocator->EndFrame(m_currentFrameIndex);
+	if (frameContext.uploadContext != nullptr)
+		frameContext.uploadContext->EndFrame(m_currentFrameIndex);
+
+	m_currentFrameIndex = (m_currentFrameIndex + 1) % m_frameContexts.size();
+	m_explicitFrameActive = false;
+}
+
+void Driver::ApplyPendingSwapchainResize()
+{
+	if (!m_hasPendingSwapchainResize)
+		return;
+
+	constexpr auto kResizeDebounce = std::chrono::milliseconds(750);
+	if (std::chrono::steady_clock::now() - m_lastSwapchainResizeRequestTime < kResizeDebounce)
+		return;
+
+	const uint32_t width = m_pendingSwapchainWidth;
+	const uint32_t height = m_pendingSwapchainHeight;
+	m_hasPendingSwapchainResize = false;
+
+	if (NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
+	{
+		NLS_SERVICE(NLS::UI::UIManager).NotifySwapchainWillResize();
+	}
+
+	if (m_explicitSwapchain != nullptr)
+	{
+		m_explicitSwapchain->Resize(width, height);
+		return;
+	}
+
+	if (m_renderDevice != nullptr)
+		m_renderDevice->ResizeSwapchain(width, height);
+}
+
+const Render::RHI::RHIFrameContext* Driver::GetCurrentExplicitFrameContext() const
+{
+	if (m_frameContexts.empty() || !m_explicitFrameActive)
+		return nullptr;
+
+	return &m_frameContexts[m_currentFrameIndex % m_frameContexts.size()];
+}
+
+Render::RHI::RHIFrameContext* Driver::GetCurrentExplicitFrameContext()
+{
+	if (m_frameContexts.empty() || !m_explicitFrameActive)
+		return nullptr;
+
+	return &m_frameContexts[m_currentFrameIndex % m_frameContexts.size()];
+}
+
+std::shared_ptr<Render::RHI::RHIDevice> Driver::GetExplicitDevice() const
+{
+	return m_explicitDevice;
+}
+
+std::shared_ptr<Render::RHI::RHISwapchain> Driver::GetExplicitSwapchain() const
+{
+	return m_explicitSwapchain;
 }
 
 void Driver::SetPolygonMode(Settings::ERasterizationMode mode)
@@ -259,13 +684,4 @@ void Driver::SetPolygonMode(Settings::ERasterizationMode mode)
 	m_defaultPipelineState.rasterizationMode = mode;
 }
 
-Render::RHI::IRenderDevice& Driver::GetRenderDevice()
-{
-	return *m_renderDevice;
-}
-
-const Render::RHI::IRenderDevice& Driver::GetRenderDevice() const
-{
-	return *m_renderDevice;
-}
 }

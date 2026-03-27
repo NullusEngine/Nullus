@@ -7,6 +7,12 @@
 
 namespace NLS::Windowing::Settings
 {
+	enum class WindowClientAPI : uint8_t
+	{
+		OpenGL,
+		NoAPI
+	};
+
 	/**
 	* Contains window settings
 	*/
@@ -124,5 +130,10 @@ namespace NLS::Windowing::Settings
 		* Defines the number of samples to use (For anti-aliasing)
 		*/
 		uint32_t samples = 4;
+
+		/**
+		* Selects whether the window owns an OpenGL context or is created without a client graphics API.
+		*/
+		WindowClientAPI clientAPI = WindowClientAPI::OpenGL;
 	};
 }

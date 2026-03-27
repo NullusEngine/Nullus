@@ -32,6 +32,12 @@ namespace NLS::Core
 			return *std::any_cast<T*>(__SERVICES[typeid(T).hash_code()]);
 		}
 
+		template<typename T>
+		static bool Contains()
+		{
+			return __SERVICES.find(typeid(T).hash_code()) != __SERVICES.end();
+		}
+
 	private:
 		static std::unordered_map<std::size_t, std::any> __SERVICES;
 	};

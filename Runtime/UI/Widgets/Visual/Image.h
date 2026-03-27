@@ -27,5 +27,6 @@ namespace NLS::UI::Widgets
 	public:
 		Internal::TextureID textureID;
 		Maths::Vector2 size;
+		bool flipVertically = true;
 	};
 }

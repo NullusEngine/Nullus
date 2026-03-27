@@ -126,6 +126,33 @@ void Editor::Panels::MenuBar::InitializeSettingsMenu()
 	debuggingMenu.CreateWidget<Widgets::MenuItem>("Show lights bounds", "", true, Settings::EditorSettings::ShowLightBounds).ValueChangedEvent += [this](bool p_value) { Settings::EditorSettings::ShowLightBounds = p_value; };
     debuggingMenu.CreateWidget<Widgets::MenuItem>("Wireframe Mode", "", true, false).ValueChangedEvent += [this](bool p_value)
     { EDITOR_CONTEXT(driver)->SetPolygonMode(p_value ? NLS::Render::Settings::ERasterizationMode::LINE : NLS::Render::Settings::ERasterizationMode::FILL); };
+	auto& renderDocMenu = debuggingMenu.CreateWidget<Widgets::MenuList>("RenderDoc");
+	renderDocMenu.CreateWidget<Widgets::Text>(
+		EDITOR_CONTEXT(driver)->IsRenderDocAvailable()
+			? "Status: Available"
+			: "Status: Not installed or not loaded");
+	renderDocMenu.CreateWidget<Widgets::MenuItem>("Capture Next Frame", "F11").ClickedEvent += []
+	{
+		EDITOR_CONTEXT(driver)->QueueRenderDocCapture("Editor");
+	};
+	renderDocMenu.CreateWidget<Widgets::MenuItem>("Open Latest Capture", "CTRL + F11").ClickedEvent += []
+	{
+		EDITOR_CONTEXT(driver)->OpenLatestRenderDocCapture();
+	};
+	renderDocMenu.CreateWidget<Widgets::MenuItem>("Open Capture Folder").ClickedEvent += []
+	{
+		const auto captureDirectory = EDITOR_CONTEXT(driver)->GetRenderDocCaptureDirectory();
+		if (!captureDirectory.empty())
+			Platform::SystemCalls::ShowInExplorer(captureDirectory);
+	};
+	renderDocMenu.CreateWidget<Widgets::MenuItem>(
+		"Auto Open Replay UI",
+		"",
+		true,
+		EDITOR_CONTEXT(driver)->GetRenderDocAutoOpenEnabled()).ValueChangedEvent += [](bool enabled)
+	{
+		EDITOR_CONTEXT(driver)->SetRenderDocAutoOpenEnabled(enabled);
+	};
 	auto& subMenu = debuggingMenu.CreateWidget<Widgets::MenuList>("Frustum culling visualizer...");
 	subMenu.CreateWidget<Widgets::MenuItem>("For geometry", "", true, Settings::EditorSettings::ShowGeometryFrustumCullingInSceneView).ValueChangedEvent += [this](bool p_value) { Settings::EditorSettings::ShowGeometryFrustumCullingInSceneView = p_value; };
 	subMenu.CreateWidget<Widgets::MenuItem>("For lights", "", true, Settings::EditorSettings::ShowLightFrustumCullingInSceneView).ValueChangedEvent += [this](bool p_value) { Settings::EditorSettings::ShowLightFrustumCullingInSceneView = p_value; };

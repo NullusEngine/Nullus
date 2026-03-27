@@ -46,6 +46,16 @@ namespace NLS::Render::Resources
 		virtual uint32_t GetIndexCount() const override;
 
 		/**
+		* Returns the native vertex buffer binding information.
+		*/
+		virtual MeshBufferView GetVertexBufferView() const override;
+
+		/**
+		* Returns the native index buffer binding information if indexed.
+		*/
+		virtual std::optional<MeshBufferView> GetIndexBufferView() const override;
+
+		/**
 		* Returns the material index of the mesh
 		*/
 		uint32_t GetMaterialIndex() const;
@@ -63,6 +73,7 @@ namespace NLS::Render::Resources
 		const uint32_t m_vertexCount;
 		const uint32_t m_indicesCount;
 		const uint32_t m_materialIndex;
+		const size_t m_vertexStride = sizeof(Geometry::Vertex);
 
 		Buffers::VertexArray							m_vertexArray;
 		std::unique_ptr<Buffers::VertexBuffer<float>>	m_vertexBuffer;

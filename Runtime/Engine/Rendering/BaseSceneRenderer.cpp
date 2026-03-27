@@ -1,4 +1,6 @@
 #include <Rendering/Features/LightingRenderFeature.h>
+#include <filesystem>
+#include <fstream>
 
 #include "Rendering/BaseSceneRenderer.h"
 #include "Rendering/EngineBufferRenderFeature.h"
@@ -172,7 +174,6 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 			}
 		}
 	}
-
 	for (auto* skybox : scene.GetFastAccessComponents().skyboxs)
 	{
 		if (!skybox)
@@ -195,7 +196,6 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 			}
 		}
 	}
-
 	return { opaques, transparents, skyboxes };
 }
 }

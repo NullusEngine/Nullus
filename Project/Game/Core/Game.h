@@ -1,8 +1,10 @@
 #pragma once
 
+#include <memory>
+
 #include <Engine/Rendering/BaseSceneRenderer.h>
 #include <Components/CameraComponent.h>
-#include <Engine/Rendering/DeferredSceneRenderer.h>
+#include <Engine/Rendering/SceneRendererFactory.h>
 
 #include "Core/Context.h"
 
@@ -44,6 +46,6 @@ namespace NLS::Game::Core
 	private:
 		Context& m_context;
 
-		Engine::Rendering::DeferredSceneRenderer m_sceneRenderer;
+		std::unique_ptr<Engine::Rendering::BaseSceneRenderer> m_sceneRenderer;
 	};
 }

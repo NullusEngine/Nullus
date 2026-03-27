@@ -1,14 +1,16 @@
 #pragma once
 
+#include <memory>
 #include <vector>
 #include <string>
 
 #include "Rendering/Context/Driver.h"
+#include "Rendering/RHI/Core/RHIResource.h"
+#include "Rendering/RHI/IRHIResource.h"
 #include "Rendering/Settings/EAccessSpecifier.h"
 #include "RenderDef.h"
 namespace NLS::Render::Resources
 {
-class Shader;
 }
 
 namespace NLS::Render::Buffers
@@ -19,8 +21,6 @@ namespace NLS::Render::Buffers
 class NLS_RENDER_API UniformBuffer
 {
 public:
-    using Shader = Resources::Shader;
-
     /**
      * Create a UniformBuffer
      * @param p_size (Specify the size in bytes of the UBO data)
@@ -66,41 +66,28 @@ public:
     template<typename T>
     void SetSubData(const T& p_data, std::reference_wrapper<size_t> p_offsetInOut);
 
+    void SetRawData(const void* p_data, uint32_t size, size_t p_offset = 0);
+    std::shared_ptr<RHI::RHIBuffer> CreateExplicitSnapshotBuffer(const std::string& debugName = {}) const;
+
     /**
      * Return the ID of the UBO
      */
     uint32_t GetID() const;
-
-    /**
-     * Bind a block identified by the given ID to given shader
-     * @param p_shader
-     * @param p_uniformBlockLocation
-     * @param p_bindingPoint
-     */
-    static void BindBlockToShader(Shader& p_shader, uint32_t p_uniformBlockLocation, uint32_t p_bindingPoint = 0);
-
-    /**
-     * Bind a block identified by the given name to the given shader
-     * @param p_shader
-     * @param p_name
-     * @param p_bindingPoint
-     */
-    static void BindBlockToShader(Shader& p_shader, const std::string& p_name, uint32_t p_bindingPoint = 0);
-
-    /**
-     * Return the location of the block (ID)
-     * @param p_shader
-     * @param p_name
-     */
-    static uint32_t GetBlockLocation(Shader& p_shader, const std::string& p_name);
+    const RHI::IRHIBuffer* GetRHIBuffer() const { return m_bufferResource.get(); }
+    const std::shared_ptr<RHI::IRHIBuffer>& GetRHIBufferHandle() const { return m_bufferResource; }
+    const std::shared_ptr<RHI::RHIBuffer>& GetExplicitRHIBufferHandle() const { return m_explicitBuffer; }
 
 private:
     void _SetSubData(const void* p_data, uint32_t size, size_t p_offset);
     void _SetSubData(const void* p_data, uint32_t size, std::reference_wrapper<size_t> p_offsetInOut);
 
 private:
-    uint32_t m_bufferID;
+    uint32_t m_bufferID = 0;
     uint32_t m_bindingPoint = 0;
+    size_t m_size = 0;
+    std::vector<uint8_t> m_shadowData;
+    std::shared_ptr<RHI::IRHIBuffer> m_bufferResource;
+    std::shared_ptr<RHI::RHIBuffer> m_explicitBuffer;
 };
 } // namespace NLS::Render::Buffers
 

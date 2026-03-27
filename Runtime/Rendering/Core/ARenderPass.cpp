@@ -21,6 +21,16 @@ bool ARenderPass::IsEnabled() const
     return m_enabled;
 }
 
+bool ARenderPass::RequiresLegacyExecution() const
+{
+    return false;
+}
+
+bool ARenderPass::BlocksExplicitRecording() const
+{
+    return RequiresLegacyExecution();
+}
+
 void ARenderPass::OnBeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
 {
 }

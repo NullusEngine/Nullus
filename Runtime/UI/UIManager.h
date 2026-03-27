@@ -1,11 +1,17 @@
 ﻿#pragma once
 
+#include <memory>
 #include <string>
 #include <unordered_map>
 
+#include "Rendering/RHI/Utils/RHIUIBridge.h"
+#include "Rendering/RHI/RHITypes.h"
+#include "Rendering/Settings/EGraphicsBackend.h"
 #include "UI/Modules/Canvas.h"
 #include "UI/Styling/EStyle.h"
 #include "UI/UIDef.h"
+
+struct GLFWwindow;
 
 namespace NLS::UI
 {
@@ -18,10 +24,16 @@ public:
     /**
      * Create the UI manager. Will setup ImGui internally\
      * @param p_glfwWindow
+     * @param p_backend
      * @param p_style
      * @param p_glslVersion (Ex: #version 150)
      */
-    UIManager(GLFWwindow* p_glfwWindow, EStyle p_style = EStyle::IM_DARK_STYLE, const std::string& p_glslVersion = "#version 150");
+    UIManager(
+        GLFWwindow* p_glfwWindow,
+        NLS::Render::Settings::EGraphicsBackend p_backend = NLS::Render::Settings::EGraphicsBackend::OPENGL,
+        const NLS::Render::RHI::NativeRenderDeviceInfo& p_nativeDeviceInfo = {},
+        EStyle p_style = EStyle::IM_DARK_STYLE,
+        const std::string& p_glslVersion = "#version 150");
 
     /**
      * Destroy the UI manager. Will handle ImGui destruction internally
@@ -118,6 +130,8 @@ public:
      * @note Should be called once per frame
      */
     void Render();
+    void* ResolveTextureID(uint32_t textureId);
+    void NotifySwapchainWillResize();
 
 #pragma region ImGUIWrapper
     float GetMouseWheel();
@@ -152,10 +166,14 @@ public:
 private:
     void PushCurrentFont();
     void PopCurrentFont();
+    void BeginFrame();
 
 private:
     bool m_dockingState;
+    bool m_isRenderingFrame = false;
     Canvas* m_currentCanvas = nullptr;
+    NLS::Render::Settings::EGraphicsBackend m_backend = NLS::Render::Settings::EGraphicsBackend::OPENGL;
+    std::unique_ptr<NLS::Render::RHI::RHIUIBridge> m_uiBridge;
     std::unordered_map<std::string, ImFont*> m_fonts;
     std::string m_layoutSaveFilename = "imgui.ini";
 };

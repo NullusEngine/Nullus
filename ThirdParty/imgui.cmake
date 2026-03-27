@@ -10,6 +10,20 @@ file(GLOB imgui_impl CONFIGURE_DEPENDS
 "${imgui_SOURCE_DIR_}/backends/imgui_impl_opengl3.cpp" 
 "${imgui_SOURCE_DIR_}/backends/imgui_impl_opengl3.h"
 "${imgui_SOURCE_DIR_}/backends/imgui_impl_opengl3_loader.h")
+if(WIN32)
+list(APPEND imgui_impl
+    "${imgui_SOURCE_DIR_}/backends/imgui_impl_dx12.cpp"
+    "${imgui_SOURCE_DIR_}/backends/imgui_impl_dx12.h"
+)
+endif()
+
+find_package(Vulkan QUIET)
+if(Vulkan_FOUND)
+list(APPEND imgui_impl
+    "${imgui_SOURCE_DIR_}/backends/imgui_impl_vulkan.cpp"
+    "${imgui_SOURCE_DIR_}/backends/imgui_impl_vulkan.h"
+)
+endif()
 # 创建库
 add_library(ImGui STATIC ${imgui_sources} ${imgui_impl})
 
@@ -31,3 +45,17 @@ target_link_libraries(
     PRIVATE # 使用该库时必须依赖的库
     glfw
 )
+
+if(WIN32)
+    target_link_libraries(ImGui PRIVATE d3d12 dxgi dxguid)
+    target_compile_definitions(ImGui PUBLIC NLS_HAS_IMGUI_DX12_BACKEND=1)
+else()
+    target_compile_definitions(ImGui PUBLIC NLS_HAS_IMGUI_DX12_BACKEND=0)
+endif()
+
+if(Vulkan_FOUND)
+    target_link_libraries(ImGui PRIVATE Vulkan::Vulkan)
+    target_compile_definitions(ImGui PUBLIC NLS_HAS_IMGUI_VULKAN_BACKEND=1)
+else()
+    target_compile_definitions(ImGui PUBLIC NLS_HAS_IMGUI_VULKAN_BACKEND=0)
+endif()

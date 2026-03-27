@@ -3,7 +3,7 @@
 namespace NLS::Core::ResourceManagement
 {
 using Material = Render::Resources::Material;
-namespace MaterialLoader = Render::Resources::Loaders::MaterialLoader;
+using MaterialLoader = Render::Resources::Loaders::MaterialLoader;
 
 Material* MaterialManager::CreateResource(const std::string& path)
 {

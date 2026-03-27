@@ -9,6 +9,15 @@
 #include "ServiceLocator.h"
 #include "Serialize/Serializer.h"
 #include "Reflection/Variant.h"
+#include <fstream>
+
+namespace
+{
+    void AppendSceneManagerTrace(const char* message)
+    {
+        (void)message;
+    }
+}
 
 using namespace NLS;
 using namespace NLS::Engine::SceneSystem;
@@ -55,6 +64,7 @@ void SceneManager::LoadEmptyScene()
 
 void SceneManager::LoadEmptyLightedScene()
 {
+    AppendSceneManagerTrace("LoadEmptyLightedScene begin");
     UnloadCurrentScene();
 
     m_currentScene = new Scene();
@@ -83,7 +93,9 @@ void SceneManager::LoadEmptyLightedScene()
     }
 
     auto& skyboxGo = m_currentScene->CreateGameObject("Skybox");
+    AppendSceneManagerTrace("adding SkyBoxComponent");
     skyboxGo.AddComponent<Engine::Components::SkyBoxComponent>();
+    AppendSceneManagerTrace("SkyBoxComponent added");
 
     auto& camera = m_currentScene->CreateGameObject("Main Camera");
     if (auto cameraComponent = camera.AddComponent<Engine::Components::CameraComponent>())
@@ -95,6 +107,7 @@ void SceneManager::LoadEmptyLightedScene()
         tr->SetLocalPosition({0.0f, 0.0f, 0.0f});
         tr->SetLocalRotation(Maths::Quaternion::Identity);
     }
+    AppendSceneManagerTrace("LoadEmptyLightedScene end");
 }
 
 bool SceneManager::LoadScene(const std::string& p_path, bool p_absolute)

@@ -32,6 +32,10 @@ void ARenderFeature::OnBeforeDraw(PipelineState& p_pso, const Entities::Drawable
 {
 }
 
+void ARenderFeature::OnPrepareExplicitDraw(RHI::RHICommandBuffer&, PipelineState&, const Entities::Drawable&)
+{
+}
+
 void ARenderFeature::OnAfterDraw(const Entities::Drawable& p_drawable)
 {
 }

@@ -47,6 +47,14 @@ namespace NLS::Editor::Rendering
 			uint32_t p_x,
 			uint32_t p_y
 		);
+		PickingResult RenderAndReadbackPickingResult(
+			const Engine::SceneSystem::Scene& p_scene,
+			uint32_t p_x,
+			uint32_t p_y
+		);
+
+		bool RequiresLegacyExecution() const override { return true; }
+		bool BlocksExplicitRecording() const override { return false; }
 
 	private:
 		virtual void Draw(NLS::Render::Data::PipelineState p_pso) override;

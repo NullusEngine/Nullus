@@ -1,8 +1,10 @@
 #pragma once
 
+#include <memory>
 #include <vector>
 
 #include "Rendering/Context/Driver.h"
+#include "Rendering/RHI/IRHIResource.h"
 #include "Rendering/Settings/EAccessSpecifier.h"
 
 namespace NLS::Render::Resources
@@ -39,6 +41,9 @@ public:
      */
     void Unbind();
 
+    uint32_t GetID() const { return m_bufferID; }
+    const RHI::IRHIBuffer* GetRHIBuffer() const { return m_bufferResource.get(); }
+
     /**
      * Send the block data
      */
@@ -46,7 +51,8 @@ public:
     void SendBlocks(T* p_data, size_t p_size);
 
 private:
-    uint32_t m_bufferID;
+    uint32_t m_bufferID = 0;
+    std::shared_ptr<RHI::IRHIBuffer> m_bufferResource;
 };
 } // namespace NLS::Render::Buffers
 

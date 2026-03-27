@@ -20,28 +20,22 @@ int main(int argc, char** argv)
 	std::string projectPath;
 	std::string projectName;
 
+	if (argc < 2)
 	{
 		Launcher launcher;
+		std::tie(ready, projectPath, projectName) = launcher.Run();
+	}
+	else
+	{
+		// Project file given as argument ==> Open the project directly.
+		std::string projectFile = argv[1];
 
-		if (argc < 2)
+		if (Utils::PathParser::GetExtension(projectFile) == "nullus")
 		{
-			// No project file given as argument ==> Open the ProjectHub
-			std::tie(ready, projectPath, projectName) = launcher.Run();
-		}
-		else
-		{
-			// Project file given as argument ==> Open the project
-			std::string projectFile = argv[1];
-
-			if (Utils::PathParser::GetExtension(projectFile) == "nullus")
-			{
-				ready = true;
-				projectPath = std::filesystem::path(projectFile).parent_path().string();
-				projectName = Utils::PathParser::GetElementName(projectFile);
-				Utils::String::Replace(projectName, ".nullus", "");
-			}
-
-			launcher.RegisterProject(projectPath);
+			ready = true;
+			projectPath = std::filesystem::path(projectFile).parent_path().string();
+			projectName = Utils::PathParser::GetElementName(projectFile);
+			Utils::String::Replace(projectName, ".nullus", "");
 		}
 	}
 

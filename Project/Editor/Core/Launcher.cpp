@@ -10,11 +10,16 @@
 #include <sstream>
 #include <vector>
 
-#include <glad/glad.h>
-
+#include <Core/ServiceLocator.h>
+#include <Debug/Logger.h>
 #include <Image.h>
 #include <UI/Internal/Converter.h>
+#include <UI/UIManager.h>
 
+#include <Rendering/Resources/Texture2D.h>
+#include <Rendering/Resources/Loaders/TextureLoader.h>
+#include <Rendering/Settings/GraphicsBackendUtils.h>
+#include <Rendering/Tooling/RenderDocEnvironment.h>
 #include <Utils/PathParser.h>
 
 #include <Windowing/Dialogs/SelectFolderDialog.h>
@@ -29,6 +34,24 @@ namespace NLS
 {
 namespace
 {
+Render::Settings::EGraphicsBackend ResolveLauncherGraphicsBackend()
+{
+    auto requestedBackend = Render::Settings::TryReadGraphicsBackendFromEnvironment("NLS_LAUNCHER_GRAPHICS_BACKEND");
+    if (!requestedBackend.has_value())
+        requestedBackend = Render::Settings::TryReadGraphicsBackendFromEnvironment("NLS_GRAPHICS_BACKEND");
+
+    const auto resolvedBackend = requestedBackend.value_or(Render::Settings::GetPlatformDefaultGraphicsBackend());
+
+    if (Render::Settings::HasCompiledOfficialImGuiBackend(resolvedBackend))
+        return resolvedBackend;
+
+    NLS_LOG_WARNING(
+        "Launcher UI backend is not compiled for " +
+        std::string(Render::Settings::ToString(resolvedBackend)) +
+        " to OpenGL.");
+    return Render::Settings::EGraphicsBackend::OPENGL;
+}
+
 ImU32 ToU32(const Maths::Color &color)
 {
     return ImGui::GetColorU32(UI::Internal::Converter::ToImVec4(color));
@@ -48,38 +71,17 @@ bool DrawActionButton(const char *label, const ImVec2 &size, const Maths::Color 
     return clicked;
 }
 
-bool LoadTextureFromFile(const std::string& path, uint32_t& textureId, uint32_t& width, uint32_t& height)
-{
-    Image image(path, false);
-    if (!image.GetData())
-        return false;
-
-    const int channels = image.GetChannels();
-    const GLenum format = channels == 4 ? GL_RGBA : channels == 3 ? GL_RGB : 0;
-    if (!format)
-        return false;
-
-    glGenTextures(1, &textureId);
-    glBindTexture(GL_TEXTURE_2D, textureId);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glTexImage2D(GL_TEXTURE_2D, 0, format, image.GetWidth(), image.GetHeight(), 0, format, GL_UNSIGNED_BYTE, image.GetData());
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    width = static_cast<uint32_t>(image.GetWidth());
-    height = static_cast<uint32_t>(image.GetHeight());
-    return true;
-}
-
 void DrawTexture(const ImVec2& min, const ImVec2& max, uint32_t textureId, const ImVec4& tint = ImVec4(1.f, 1.f, 1.f, 1.f))
 {
     if (!textureId)
         return;
 
+    void* resolvedTextureId = reinterpret_cast<void*>(static_cast<intptr_t>(textureId));
+    if (Core::ServiceLocator::Contains<UI::UIManager>())
+        resolvedTextureId = NLS_SERVICE(UI::UIManager).ResolveTextureID(textureId);
+
     ImGui::GetWindowDrawList()->AddImage(
-        reinterpret_cast<ImTextureID>(static_cast<intptr_t>(textureId)),
+        resolvedTextureId,
         min,
         max,
         ImVec2(0.0f, 1.0f),
@@ -628,11 +630,8 @@ Launcher::Launcher()
 
 Launcher::~Launcher()
 {
-    if (m_brandTexture != 0)
-    {
-        glDeleteTextures(1, &m_brandTexture);
-        m_brandTexture = 0;
-    }
+    NLS::Render::Resources::Loaders::TextureLoader::Destroy(m_brandTextureResource);
+    m_brandTexture = 0;
 }
 
 std::tuple<bool, std::string, std::string> Launcher::Run()
@@ -641,7 +640,7 @@ std::tuple<bool, std::string, std::string> Launcher::Run()
     {
         m_device->PollEvents();
         m_uiManager->Render();
-        m_window->SwapBuffers();
+        m_driver->PresentSwapchain();
 
         if (!m_mainPanel->IsOpened())
             m_window->SetShouldClose(true);
@@ -660,10 +659,24 @@ void Launcher::SetupContext()
     windowSettings.maximized = false;
     windowSettings.resizable = false;
     windowSettings.decorated = false;
+    m_graphicsBackend = ResolveLauncherGraphicsBackend();
+    windowSettings.clientAPI = m_graphicsBackend == Render::Settings::EGraphicsBackend::OPENGL
+        ? Windowing::Settings::WindowClientAPI::OpenGL
+        : Windowing::Settings::WindowClientAPI::NoAPI;
+
+    Render::Settings::DriverSettings driverSettings;
+    driverSettings.graphicsBackend = m_graphicsBackend;
+    driverSettings.debugMode = false;
+    Render::Tooling::ApplyRenderDocEnvironmentOverrides(
+        driverSettings.renderDoc,
+        (std::filesystem::current_path() / "Logs" / "RenderDoc" / "Launcher").string(),
+        "Launcher");
+    Render::Tooling::PreloadRenderDocIfAvailable(driverSettings.renderDoc);
 
     m_device = std::make_unique<Context::Device>(deviceSettings);
     m_window = std::make_unique<Windowing::Window>(*m_device, windowSettings);
-    m_window->MakeCurrentContext();
+    if (m_graphicsBackend == Render::Settings::EGraphicsBackend::OPENGL)
+        m_window->MakeCurrentContext();
     const std::string brandIconPath = std::filesystem::canonical(std::filesystem::path("../Assets/Engine/Brand/NullusLogoMark.png")).string();
     m_window->SetIcon(brandIconPath);
     m_window->SetNativeTitleBarDragRegion(42, 100);
@@ -672,16 +685,42 @@ void Launcher::SetupContext()
     auto winSize = m_window->GetSize();
     m_window->SetPosition(monSize.x / 2 - winSize.x / 2, monSize.y / 2 - winSize.y / 2);
 
-    m_driver = std::make_unique<Render::Context::Driver>(Render::Settings::DriverSettings{false});
+    m_driver = std::make_unique<Render::Context::Driver>(driverSettings);
+    NLS::Core::ServiceLocator::Provide<Render::Context::Driver>(*m_driver);
 
-    m_uiManager = std::make_unique<UI::UIManager>(m_window->GetGlfwWindow(), UI::EStyle::ALTERNATIVE_DARK);
+    Render::RHI::SwapchainDesc swapchainDesc;
+    swapchainDesc.platformWindow = m_window->GetGlfwWindow();
+    swapchainDesc.nativeWindowHandle = m_window->GetNativeWindowHandle();
+    swapchainDesc.width = static_cast<uint32_t>(windowSettings.width);
+    swapchainDesc.height = static_cast<uint32_t>(windowSettings.height);
+    swapchainDesc.vsync = true;
+    m_driver->CreateSwapchain(swapchainDesc);
+
+    m_uiManager = std::make_unique<UI::UIManager>(
+        m_window->GetGlfwWindow(),
+        driverSettings.graphicsBackend,
+        m_driver->GetNativeDeviceInfo(),
+        UI::EStyle::ALTERNATIVE_DARK);
+    NLS::Core::ServiceLocator::Provide<UI::UIManager>(*m_uiManager);
     m_uiManager->LoadFont("Ruda_Medium", "../Assets/Editor/Fonts/Ruda-Bold.ttf", 18);
     m_uiManager->LoadFont("Ruda_Title", "../Assets/Editor/Fonts/Ruda-Bold.ttf", 30);
     m_uiManager->UseFont("Ruda_Medium");
+    m_window->FramebufferResizeEvent.AddListener([this](uint16_t width, uint16_t height)
+    {
+        if (m_driver != nullptr && width > 0u && height > 0u)
+        {
+            m_driver->ResizeSwapchain(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+        }
+    });
     m_uiManager->EnableEditorLayoutSave(false);
     m_uiManager->EnableDocking(false);
 
-    LoadTextureFromFile(brandIconPath, m_brandTexture, m_brandTextureWidth, m_brandTextureHeight);
+    m_brandTextureResource = NLS::Render::Resources::Loaders::TextureLoader::Create(
+        brandIconPath,
+        NLS::Render::Settings::ETextureFilteringMode::LINEAR,
+        NLS::Render::Settings::ETextureFilteringMode::LINEAR,
+        false);
+    m_brandTexture = m_brandTextureResource ? m_brandTextureResource->GetTextureId() : 0;
 }
 
 void Launcher::RegisterProject(const std::string &p_path)

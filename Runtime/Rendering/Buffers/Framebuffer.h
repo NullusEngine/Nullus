@@ -1,8 +1,12 @@
 #pragma once
 
+#include <memory>
+#include <string>
 #include <vector>
 
 #include "Rendering/Context/Driver.h"
+#include "Rendering/RHI/Core/RHIResource.h"
+#include "Rendering/RHI/IRHIResource.h"
 
 namespace NLS::Render::Buffers
 {
@@ -51,9 +55,20 @@ public:
      * Returns the ID of the OpenGL render texture
      */
     uint32_t GetTextureID() const;
+    const std::shared_ptr<NLS::Render::RHI::IRHITexture>& GetTextureResource() const;
+    const std::shared_ptr<NLS::Render::RHI::RHITexture>& GetExplicitTextureHandle() const;
+    std::shared_ptr<NLS::Render::RHI::RHITextureView> GetOrCreateExplicitColorView(const std::string& debugName = {}) const;
 
     /**
-     * Returns the ID of the OpenGL render buffer
+     * Returns the ID of the depth-stencil texture attached to this framebuffer.
+     */
+    uint32_t GetDepthStencilTextureID() const;
+    const std::shared_ptr<NLS::Render::RHI::IRHITexture>& GetDepthStencilTextureResource() const;
+    const std::shared_ptr<NLS::Render::RHI::RHITexture>& GetExplicitDepthStencilTextureHandle() const;
+    std::shared_ptr<NLS::Render::RHI::RHITextureView> GetOrCreateExplicitDepthStencilView(const std::string& debugName = {}) const;
+
+    /**
+     * Legacy compatibility alias.
      */
     uint32_t GetRenderBufferID() const;
 
@@ -63,6 +78,12 @@ private:
 
     uint32_t m_bufferID = 0;
     uint32_t m_renderTexture = 0;
-    uint32_t m_depthStencilBuffer = 0;
+    uint32_t m_depthStencilTexture = 0;
+    std::shared_ptr<NLS::Render::RHI::IRHITexture> m_renderTextureResource;
+    std::shared_ptr<NLS::Render::RHI::IRHITexture> m_depthStencilTextureResource;
+    std::shared_ptr<NLS::Render::RHI::RHITexture> m_explicitRenderTexture;
+    std::shared_ptr<NLS::Render::RHI::RHITexture> m_explicitDepthStencilTexture;
+    mutable std::shared_ptr<NLS::Render::RHI::RHITextureView> m_explicitRenderTextureView;
+    mutable std::shared_ptr<NLS::Render::RHI::RHITextureView> m_explicitDepthStencilTextureView;
 };
 } // namespace NLS::Render::Buffers

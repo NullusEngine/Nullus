@@ -1,281 +1,178 @@
-#include <Debug/Logger.h>
-
-#include "Rendering/Backend/OpenGL/OpenGLShaderProgramAPI.h"
-#include "Rendering/Backend/OpenGL/OpenGLTypeMappings.h"
 #include "Rendering/Resources/Shader.h"
+
+#include <algorithm>
+
+#include "Math/Matrix4.h"
+#include "Math/Vector2.h"
+#include "Math/Vector3.h"
+#include "Math/Vector4.h"
 #include "Rendering/Resources/Texture2D.h"
 #include "Rendering/Resources/TextureCube.h"
 
 namespace
 {
-	using OpenGLShaderProgramAPI = NLS::Render::Backend::OpenGLShaderProgramAPI;
-    using ShaderResourceKind = NLS::Render::Resources::ShaderResourceKind;
-    using UniformType = NLS::Render::Resources::UniformType;
-    using NLS::Maths::Matrix4;
-    using NLS::Maths::Vector2;
-    using NLS::Maths::Vector3;
-    using NLS::Maths::Vector4;
+	using ShaderResourceKind = NLS::Render::Resources::ShaderResourceKind;
+	using UniformType = NLS::Render::Resources::UniformType;
 
-	ShaderResourceKind GetShaderResourceKind(UniformType type)
+	NLS::Render::ShaderCompiler::ShaderTargetPlatform ToTargetPlatform(const NLS::Render::RHI::NativeBackendType backend)
+	{
+		switch (backend)
+		{
+		case NLS::Render::RHI::NativeBackendType::DX12: return NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL;
+		case NLS::Render::RHI::NativeBackendType::Vulkan: return NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV;
+		case NLS::Render::RHI::NativeBackendType::OpenGL: return NLS::Render::ShaderCompiler::ShaderTargetPlatform::GLSL;
+		default: return NLS::Render::ShaderCompiler::ShaderTargetPlatform::Unknown;
+		}
+	}
+
+	NLS::Render::RHI::ShaderStage ToRHIStage(const NLS::Render::ShaderCompiler::ShaderStage stage)
+	{
+		switch (stage)
+		{
+		case NLS::Render::ShaderCompiler::ShaderStage::Vertex: return NLS::Render::RHI::ShaderStage::Vertex;
+		case NLS::Render::ShaderCompiler::ShaderStage::Compute: return NLS::Render::RHI::ShaderStage::Compute;
+		case NLS::Render::ShaderCompiler::ShaderStage::Pixel:
+		default:
+			return NLS::Render::RHI::ShaderStage::Fragment;
+		}
+	}
+
+	std::any CreateDefaultValue(UniformType type)
 	{
 		switch (type)
 		{
-		case UniformType::UNIFORM_SAMPLER_2D:
-		case UniformType::UNIFORM_SAMPLER_CUBE:
-			return ShaderResourceKind::SampledTexture;
-		default:
-			return ShaderResourceKind::Value;
+		case UniformType::UNIFORM_BOOL: return std::make_any<bool>(false);
+		case UniformType::UNIFORM_INT: return std::make_any<int>(0);
+		case UniformType::UNIFORM_FLOAT: return std::make_any<float>(0.0f);
+		case UniformType::UNIFORM_FLOAT_VEC2: return std::make_any<NLS::Maths::Vector2>(NLS::Maths::Vector2::Zero);
+		case UniformType::UNIFORM_FLOAT_VEC3: return std::make_any<NLS::Maths::Vector3>(NLS::Maths::Vector3::Zero);
+		case UniformType::UNIFORM_FLOAT_VEC4: return std::make_any<NLS::Maths::Vector4>(NLS::Maths::Vector4::Zero);
+		case UniformType::UNIFORM_FLOAT_MAT4: return std::make_any<NLS::Maths::Matrix4>(NLS::Maths::Matrix4::Identity);
+		case UniformType::UNIFORM_SAMPLER_2D: return std::make_any<NLS::Render::Resources::Texture2D*>(nullptr);
+		case UniformType::UNIFORM_SAMPLER_CUBE: return std::make_any<NLS::Render::Resources::TextureCube*>(nullptr);
+		default: return {};
 		}
 	}
 }
 
 namespace NLS::Render::Resources
 {
-Shader::Shader(const std::string p_path, uint32_t p_id) : path(p_path), id(p_id)
-{
-	QueryUniforms();
-}
-
-Shader::~Shader()
-{
-	OpenGLShaderProgramAPI::DeleteProgram(id);
-}
-
-void Shader::Bind() const
-{
-	OpenGLShaderProgramAPI::UseProgram(id);
-}
-
-void Shader::Unbind() const
-{
-	OpenGLShaderProgramAPI::UseProgram(0);
-}
-
-void Shader::SetUniformInt(const std::string& p_name, int p_value)
-{
-	OpenGLShaderProgramAPI::SetUniformInt(GetUniformLocation(p_name), p_value);
-}
-
-void Shader::SetUniformFloat(const std::string& p_name, float p_value)
-{
-	OpenGLShaderProgramAPI::SetUniformFloat(GetUniformLocation(p_name), p_value);
-}
-
-void Shader::SetUniformVec2(const std::string& p_name, const Maths::Vector2& p_vec2)
-{
-	OpenGLShaderProgramAPI::SetUniformVec2(GetUniformLocation(p_name), p_vec2.x, p_vec2.y);
-}
-
-void Shader::SetUniformVec3(const std::string& p_name, const Maths::Vector3& p_vec3)
-{
-	OpenGLShaderProgramAPI::SetUniformVec3(GetUniformLocation(p_name), p_vec3.x, p_vec3.y, p_vec3.z);
-}
-
-void Shader::SetUniformVec4(const std::string& p_name, const Maths::Vector4& p_vec4)
-{
-	OpenGLShaderProgramAPI::SetUniformVec4(GetUniformLocation(p_name), p_vec4.x, p_vec4.y, p_vec4.z, p_vec4.w);
-}
-
-void Shader::SetUniformMat4(const std::string& p_name, const Maths::Matrix4& p_mat4)
-{
-	OpenGLShaderProgramAPI::SetUniformMat4(GetUniformLocation(p_name), &p_mat4.data[0]);
-}
-
-int Shader::GetUniformInt(const std::string& p_name)
-{
-	int value = 0;
-	OpenGLShaderProgramAPI::GetUniformInt(id, GetUniformLocation(p_name), &value);
-	return value;
-}
-
-float Shader::GetUniformFloat(const std::string& p_name)
-{
-	float value = 0.0f;
-	OpenGLShaderProgramAPI::GetUniformFloat(id, GetUniformLocation(p_name), &value);
-	return value;
-}
-
-Maths::Vector2 Shader::GetUniformVec2(const std::string& p_name)
-{
-	GLfloat values[2]{};
-	OpenGLShaderProgramAPI::GetUniformFloatArray(id, GetUniformLocation(p_name), values);
-	return reinterpret_cast<Vector2&>(values);
-}
-
-Maths::Vector3 Shader::GetUniformVec3(const std::string& p_name)
-{
-	GLfloat values[3]{};
-	OpenGLShaderProgramAPI::GetUniformFloatArray(id, GetUniformLocation(p_name), values);
-	return reinterpret_cast<Vector3&>(values);
-}
-
-Maths::Vector4 Shader::GetUniformVec4(const std::string& p_name)
-{
-	GLfloat values[4]{};
-	OpenGLShaderProgramAPI::GetUniformFloatArray(id, GetUniformLocation(p_name), values);
-	return reinterpret_cast<Vector4&>(values);
-}
-
-Maths::Matrix4 Shader::GetUniformMat4(const std::string& p_name)
-{
-	GLfloat values[16]{};
-	OpenGLShaderProgramAPI::GetUniformFloatArray(id, GetUniformLocation(p_name), values);
-	return reinterpret_cast<Matrix4&>(values);
-}
-
-bool Shader::IsEngineUBOMember(const std::string& p_uniformName)
-{
-	return p_uniformName.rfind("ubo_", 0) == 0;
-}
-
-int32_t Shader::GetUniformLocation(const std::string& name)
-{
-	if (m_uniformLocationCache.find(name) != m_uniformLocationCache.end())
-		return m_uniformLocationCache.at(name);
-
-	int location = OpenGLShaderProgramAPI::GetUniformLocation(id, name);
-	if (location == -1)
+	Shader::Shader(const std::string p_path, ShaderCompiler::ShaderSourceLanguage p_sourceLanguage)
+		: path(p_path)
+		, m_sourceLanguage(p_sourceLanguage)
 	{
-		location = OpenGLShaderProgramAPI::GetProgramResourceLocation(id, name);
 	}
 
-	if (location == -1)
+	Shader::~Shader() = default;
+
+	const UniformInfo* Shader::GetUniformInfo(const std::string& p_name) const
 	{
-		const auto isKnownUniform = std::any_of(uniforms.begin(), uniforms.end(), [&name](const UniformInfo& uniform)
+		const auto found = std::find_if(m_uniforms.begin(), m_uniforms.end(), [&p_name](const UniformInfo& element)
 		{
-			return uniform.name == name;
+			return p_name == element.name;
 		});
 
-		if (!isKnownUniform)
-			NLS_LOG_WARNING("Uniform: '" + name + "' doesn't exist");
+		return found != m_uniforms.end() ? &*found : nullptr;
 	}
 
-	m_uniformLocationCache[name] = location;
-	return location;
-}
-
-void Shader::QueryUniforms()
-{
-	uniforms.clear();
-	m_reflection.properties.clear();
-	const auto numActiveUniforms = OpenGLShaderProgramAPI::GetActiveUniformCount(id);
-	std::vector<GLchar> nameData(256);
-
-	for (int unif = 0; unif < numActiveUniforms; ++unif)
+	const ShaderReflection& Shader::GetReflection() const
 	{
-		GLint arraySize = 0;
-		GLenum type = 0;
-		GLsizei actualLength = 0;
-		OpenGLShaderProgramAPI::GetActiveUniform(id, unif, static_cast<GLsizei>(nameData.size()), &actualLength, &arraySize, &type, &nameData[0]);
-		std::string name(static_cast<char*>(nameData.data()), actualLength);
+		return m_reflection;
+	}
 
-		if (IsEngineUBOMember(name))
-			continue;
+	ShaderCompiler::ShaderSourceLanguage Shader::GetSourceLanguage() const
+	{
+		return m_sourceLanguage;
+	}
 
-		int location = OpenGLShaderProgramAPI::GetUniformLocation(id, name);
-		if (location == -1)
+	const ShaderCompiledArtifact* Shader::FindCompiledArtifact(ShaderCompiler::ShaderStage stage, ShaderCompiler::ShaderTargetPlatform targetPlatform) const
+	{
+		const auto found = std::find_if(m_compiledArtifacts.begin(), m_compiledArtifacts.end(), [stage, targetPlatform](const ShaderCompiledArtifact& artifact)
 		{
-			location = OpenGLShaderProgramAPI::GetProgramResourceLocation(id, name);
-		}
+			return artifact.stage == stage && artifact.targetPlatform == targetPlatform;
+		});
 
-		std::any defaultValue;
+		return found != m_compiledArtifacts.end() ? &*found : nullptr;
+	}
 
-		const auto uniformType = NLS::Render::Backend::ToUniformType(type);
+	std::shared_ptr<RHI::RHIShaderModule> Shader::GetOrCreateExplicitShaderModule(
+		const std::shared_ptr<RHI::RHIDevice>& device,
+		ShaderCompiler::ShaderStage stage) const
+	{
+		if (device == nullptr)
+			return nullptr;
 
-		switch (uniformType)
-		{
-		case UniformType::UNIFORM_BOOL:
-		{
-			int value = 0;
-			if (location >= 0) OpenGLShaderProgramAPI::GetUniformInt(id, location, &value);
-			defaultValue = std::make_any<bool>(value != 0);
-			break;
-		}
-		case UniformType::UNIFORM_INT:
-		{
-			int value = 0;
-			if (location >= 0) OpenGLShaderProgramAPI::GetUniformInt(id, location, &value);
-			defaultValue = std::make_any<int>(value);
-			break;
-		}
-		case UniformType::UNIFORM_FLOAT:
-		{
-			float value = 0.0f;
-			if (location >= 0) OpenGLShaderProgramAPI::GetUniformFloat(id, location, &value);
-			defaultValue = std::make_any<float>(value);
-			break;
-		}
-		case UniformType::UNIFORM_FLOAT_VEC2:
-		{
-			GLfloat values[2]{};
-			if (location >= 0) OpenGLShaderProgramAPI::GetUniformFloatArray(id, location, values);
-			defaultValue = std::make_any<Maths::Vector2>(reinterpret_cast<Vector2&>(values));
-			break;
-		}
-		case UniformType::UNIFORM_FLOAT_VEC3:
-		{
-			GLfloat values[3]{};
-			if (location >= 0) OpenGLShaderProgramAPI::GetUniformFloatArray(id, location, values);
-			defaultValue = std::make_any<Maths::Vector3>(reinterpret_cast<Vector3&>(values));
-			break;
-		}
-		case UniformType::UNIFORM_FLOAT_VEC4:
-		{
-			GLfloat values[4]{};
-			if (location >= 0) OpenGLShaderProgramAPI::GetUniformFloatArray(id, location, values);
-			defaultValue = std::make_any<Maths::Vector4>(reinterpret_cast<Vector4&>(values));
-			break;
-		}
-		case UniformType::UNIFORM_FLOAT_MAT4:
-		{
-			GLfloat values[16]{};
-			if (location >= 0) OpenGLShaderProgramAPI::GetUniformFloatArray(id, location, values);
-			defaultValue = std::make_any<Maths::Matrix4>(reinterpret_cast<Matrix4&>(values));
-			break;
-		}
-		case UniformType::UNIFORM_SAMPLER_2D:
-			defaultValue = std::make_any<Texture2D*>(nullptr);
-			break;
-		case UniformType::UNIFORM_SAMPLER_CUBE:
-			defaultValue = std::make_any<TextureCube*>(nullptr);
-			break;
-		}
+		const auto backend = device->GetNativeDeviceInfo().backend;
+		const auto cacheKey = std::make_pair(backend, stage);
+		if (const auto found = m_explicitShaderModules.find(cacheKey); found != m_explicitShaderModules.end())
+			return found->second;
 
-		if (defaultValue.has_value())
+		const auto targetPlatform = ToTargetPlatform(backend);
+		if (targetPlatform == ShaderCompiler::ShaderTargetPlatform::Unknown)
+			return nullptr;
+
+		const auto* artifact = FindCompiledArtifact(stage, targetPlatform);
+		if (artifact == nullptr)
+			return nullptr;
+
+		RHI::RHIShaderModuleDesc desc;
+		desc.stage = ToRHIStage(stage);
+		desc.targetBackend = backend;
+		desc.entryPoint = artifact->entryPoint;
+		desc.bytecode = artifact->output.bytecode;
+		desc.debugName = path + ":" + artifact->entryPoint;
+
+		auto module = device->CreateShaderModule(desc);
+		m_explicitShaderModules[cacheKey] = module;
+		return module;
+	}
+
+	void Shader::RebuildUniformInfosFromReflection()
+	{
+		m_uniforms.clear();
+
+		for (const auto& property : m_reflection.properties)
 		{
-			uniforms.push_back({
-				uniformType,
-				name,
-				location,
+			if (property.kind != ShaderResourceKind::Value && property.kind != ShaderResourceKind::SampledTexture)
+				continue;
+
+			const auto defaultValue = CreateDefaultValue(property.type);
+			if (!defaultValue.has_value())
+				continue;
+
+			m_uniforms.push_back({
+				property.type,
+				property.name,
+				property.location,
 				defaultValue
 			});
-
-			m_reflection.properties.push_back({
-				name,
-				uniformType,
-				GetShaderResourceKind(uniformType),
-				location,
-				arraySize
-			});
 		}
 	}
-}
 
-const UniformInfo* Shader::GetUniformInfo(const std::string& p_name) const
-{
-	auto found = std::find_if(uniforms.begin(), uniforms.end(), [&p_name](const UniformInfo& p_element)
+	void Shader::SetReflection(ShaderReflection reflection)
 	{
-		return p_name == p_element.name;
-	});
+		m_reflection = std::move(reflection);
+		m_explicitShaderModules.clear();
+		RebuildUniformInfosFromReflection();
+	}
 
-	if (found != uniforms.end())
-		return &*found;
-	else
-		return nullptr;
-}
+	void Shader::SetCompiledArtifact(ShaderCompiledArtifact artifact)
+	{
+		const auto found = std::find_if(m_compiledArtifacts.begin(), m_compiledArtifacts.end(), [&artifact](const ShaderCompiledArtifact& existing)
+		{
+			return existing.stage == artifact.stage && existing.targetPlatform == artifact.targetPlatform;
+		});
 
-const ShaderReflection& Shader::GetReflection() const
-{
-	return m_reflection;
-}
+		if (found != m_compiledArtifacts.end())
+			*found = std::move(artifact);
+		else
+			m_compiledArtifacts.push_back(std::move(artifact));
+		m_explicitShaderModules.clear();
+	}
+
+	void Shader::ClearCompiledArtifacts()
+	{
+		m_compiledArtifacts.clear();
+		m_explicitShaderModules.clear();
+	}
 }

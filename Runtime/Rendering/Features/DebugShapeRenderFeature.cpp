@@ -2,6 +2,8 @@
 #include "Rendering/Core/CompositeRenderer.h"
 #include "Rendering/Resources/Loaders/ShaderLoader.h"
 #include "Rendering/Utils/Conversions.h"
+#include "Core/ResourceManagement/ShaderManager.h"
+#include "Core/ServiceLocator.h"
 
 namespace NLS::Render::Features
 {
@@ -28,43 +30,33 @@ DebugShapeRenderFeature::DebugShapeRenderFeature(Core::CompositeRenderer& p_rend
 
 	m_lineMesh = new Resources::Mesh(vertices, { 0, 1 }, 0);
 
-	// TODO: Move these out of here, maybe we could have proper source files for these.
-	std::string vertexShader = R"(
-#version 430 core
+	if (::NLS::Core::ServiceLocator::Contains<::NLS::Core::ResourceManagement::ShaderManager>())
+	{
+		m_lineShader = ::NLS::Core::ServiceLocator::Get<::NLS::Core::ResourceManagement::ShaderManager>()[":Shaders/DebugLine.hlsl"];
+	}
+	else
+	{
+		m_lineShader = Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/DebugLine.hlsl");
+		m_ownsLineShader = m_lineShader != nullptr;
+	}
 
-uniform vec3 start;
-uniform vec3 end;
-uniform mat4 viewProjection;
-
-void main()
-{
-	vec3 position = gl_VertexID == 0 ? start : end;
-	gl_Position = viewProjection * vec4(position, 1.0);
-}
-
-)";
-
-	std::string fragmentShader = R"(
-#version 430 core
-
-uniform vec3 color;
-
-out vec4 FRAGMENT_COLOR;
-
-void main()
-{
-	FRAGMENT_COLOR = vec4(color, 1.0);
-}
-)";
-
-	m_lineShader = Resources::Loaders::ShaderLoader::CreateFromSource(vertexShader, fragmentShader);
-	m_lineMaterial = std::make_unique<Resources::Material>(m_lineShader);
+	if (m_lineShader != nullptr)
+	{
+		m_lineMaterial = std::make_unique<Material>();
+		m_lineMaterial->SetShader(m_lineShader);
+		m_lineMaterial->SetBlendable(false);
+		m_lineMaterial->SetDepthTest(true);
+		m_lineMaterial->SetDepthWriting(false);
+		m_lineMaterial->SetBackfaceCulling(false);
+		m_lineMaterial->SetFrontfaceCulling(false);
+	}
 }
 
 DebugShapeRenderFeature::~DebugShapeRenderFeature()
 {
 	delete m_lineMesh;
-	Resources::Loaders::ShaderLoader::Destroy(m_lineShader);
+	if (m_ownsLineShader)
+		Resources::Loaders::ShaderLoader::Destroy(m_lineShader);
 }
 
 void DebugShapeRenderFeature::OnBeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
@@ -77,9 +69,7 @@ void DebugShapeRenderFeature::OnBeginFrame(const Data::FrameDescriptor& p_frameD
 
 void DebugShapeRenderFeature::SetViewProjection(const Maths::Matrix4& p_viewProjection)
 {
-	m_lineShader->Bind();
-	m_lineShader->SetUniformMat4("viewProjection", p_viewProjection);
-	m_lineShader->Unbind();
+	(void)p_viewProjection;
 }
 
 void DebugShapeRenderFeature::DrawLine(
@@ -90,9 +80,12 @@ void DebugShapeRenderFeature::DrawLine(
 	float p_lineWidth
 )
 {
-	m_lineMaterial->Set("start", p_start);
-	m_lineMaterial->Set("end", p_end);
-	m_lineMaterial->Set("color", p_color);
+	if (!m_lineMaterial)
+		return;
+
+	m_lineMaterial->Set("u_Start", p_start);
+	m_lineMaterial->Set("u_End", p_end);
+	m_lineMaterial->Set("u_Color", p_color);
 
 	p_pso.rasterizationMode = Settings::ERasterizationMode::LINE;
 	p_pso.lineWidthPow2 = Utils::Conversions::FloatToPow2(p_lineWidth);
@@ -104,8 +97,6 @@ void DebugShapeRenderFeature::DrawLine(
 	drawable.primitiveMode = Settings::EPrimitiveMode::LINES;
 
 	m_renderer.DrawEntity(p_pso, drawable);
-
-	m_lineShader->Unbind();
 }
 
 void DebugShapeRenderFeature::DrawBox(

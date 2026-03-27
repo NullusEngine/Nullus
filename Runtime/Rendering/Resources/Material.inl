@@ -11,9 +11,11 @@ namespace NLS::Render::Resources
 	{
 		if (HasShader())
 		{
-			if (m_uniformsData.find(p_key) != m_uniformsData.end())
+			if (m_parameterBlock.Contains(p_key) || EnsureMaterialParameterExists(p_key))
 			{
-				m_uniformsData[p_key] = std::any(p_value);
+				m_parameterBlock.Set(p_key, std::any(p_value));
+				m_explicitBindingSet.reset();
+				m_explicitBindingSetDirty = true;
 			}
 		}
 		else
@@ -25,9 +27,6 @@ namespace NLS::Render::Resources
 	template<typename T>
 	inline const T& Material::Get(const std::string p_key) const
 	{
-		return
-			m_uniformsData.find(p_key) == m_uniformsData.end() ?
-			std::any_cast<T>(m_uniformsData.at(p_key)) :
-			T();
+		return std::any_cast<const T&>(m_parameterBlock.Data().at(p_key));
 	}
 }

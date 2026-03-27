@@ -1,6 +1,7 @@
 ﻿#include "Panels/AView.h"
 #include "Core/EditorActions.h"
 #include "ServiceLocator.h"
+#include "Rendering/Context/Driver.h"
 #include "UI/UIManager.h"
 
 using namespace NLS;
@@ -12,6 +13,11 @@ Editor::Panels::AView::AView
 ) : PanelWindow(p_title, p_opened, p_windowSettings)
 {
 	m_image = &CreateWidget<UI::Widgets::Image>(m_fbo.GetTextureID(), Maths::Vector2{ 0.f, 0.f });
+	if (NLS::Core::ServiceLocator::Contains<NLS::Render::Context::Driver>())
+	{
+		const auto backend = NLS_SERVICE(NLS::Render::Context::Driver).GetNativeDeviceInfo().backend;
+		m_image->flipVertically = backend == NLS::Render::RHI::NativeBackendType::OpenGL;
+	}
 	panelSettings.scrollable = false;
 }
 

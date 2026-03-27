@@ -70,7 +70,7 @@ private:
 		if (!material)
 			return nullptr;
 
-		auto shader = NLS_SERVICE(CoreRM::ShaderManager).CreateResource(":Shaders/Standard.glsl");
+		auto shader = NLS_SERVICE(CoreRM::ShaderManager)[":Shaders/Standard.hlsl"];
 		auto nlsMaterial = new Material(shader);
 
 		aiString name;
@@ -79,7 +79,7 @@ private:
 		aiString diffuseMapPath;
 		if (material->GetTexture(aiTextureType_DIFFUSE, 0, &diffuseMapPath) == AI_SUCCESS)
 		{
-			Texture2D* texture = NLS_SERVICE(CoreRM::TextureManager).CreateResource(mDirectory + "/" + std::string(diffuseMapPath.C_Str()));
+			Texture2D* texture = NLS_SERVICE(CoreRM::TextureManager)[mDirectory + "/" + std::string(diffuseMapPath.C_Str())];
 
 			nlsMaterial->Set<Render::Resources::Texture2D*>("u_DiffuseMap", texture);
 		}
@@ -87,7 +87,7 @@ private:
 		aiString specularMapPath;
 		if (material->GetTexture(aiTextureType_SPECULAR, 0, &specularMapPath) == AI_SUCCESS)
 		{
-			Texture2D* texture = NLS_SERVICE(CoreRM::TextureManager).CreateResource(mDirectory + "/" + std::string(specularMapPath.C_Str()));
+			Texture2D* texture = NLS_SERVICE(CoreRM::TextureManager)[mDirectory + "/" + std::string(specularMapPath.C_Str())];
 		
 			nlsMaterial->Set<Render::Resources::Texture2D*>("u_SpecularMap", texture);
 		}
@@ -95,7 +95,7 @@ private:
 		aiString normalMapPath;
 		if (material->GetTexture(aiTextureType_NORMALS, 0, &normalMapPath) == AI_SUCCESS)
 		{
-			Texture2D* texture = NLS_SERVICE(CoreRM::TextureManager).CreateResource(mDirectory + "/" + std::string(normalMapPath.C_Str()));
+			Texture2D* texture = NLS_SERVICE(CoreRM::TextureManager)[mDirectory + "/" + std::string(normalMapPath.C_Str())];
 				
 			nlsMaterial->Set<Render::Resources::Texture2D*>("u_NormalMap", texture);
 		}
@@ -103,7 +103,7 @@ private:
 		aiString heightMapPath;
 		if (material->GetTexture(aiTextureType_HEIGHT, 0, &heightMapPath) == AI_SUCCESS)
 		{
-			Texture2D* texture = NLS_SERVICE(CoreRM::TextureManager).CreateResource(mDirectory + "/" + std::string(heightMapPath.C_Str()));
+			Texture2D* texture = NLS_SERVICE(CoreRM::TextureManager)[mDirectory + "/" + std::string(heightMapPath.C_Str())];
 						
 			nlsMaterial->Set<Render::Resources::Texture2D*>("u_HeightMap", texture);
 		}

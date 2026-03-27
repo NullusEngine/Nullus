@@ -1,5 +1,5 @@
 <root>
-  <shader>:Shaders\Lambert.glsl</shader>
+  <shader>:Shaders\Lambert.hlsl</shader>
   <blendable>false</blendable>
   <backfaceCulling>true</backfaceCulling>
   <frontfaceCulling>false</frontfaceCulling>

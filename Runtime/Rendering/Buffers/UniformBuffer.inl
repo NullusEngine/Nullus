@@ -1,7 +1,5 @@
 #pragma once
 
-#include <glad/glad.h>
-
 #include "Rendering/Buffers/UniformBuffer.h"
 
 namespace NLS::Render::Buffers

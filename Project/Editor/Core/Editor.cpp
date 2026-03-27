@@ -87,8 +87,6 @@ Editor::Core::Editor::Editor(Context& p_context)
     }
     else
     {
-        if (!startScene.empty())
-            NLS_LOG_WARNING("Start scene not found, loading fallback scene: " + startScenePath);
         m_context.sceneManager.LoadEmptyLightedScene();
     }
 }
@@ -123,6 +121,7 @@ void Editor::Core::Editor::SetupUI()
     m_panelsManager.GetPanelAs<Panels::MenuBar>("Menu Bar").InitializeSettingsMenu();
     m_canvas.MakeDockspace(true);
     m_context.uiManager->SetCanvas(m_canvas);
+    m_context.uiManager->ResetLayout(m_context.projectPath + "/UserSettings/layout.ini");
 }
 
 void Editor::Core::Editor::PreUpdate()
@@ -142,6 +141,14 @@ void Editor::Core::Editor::Update(float p_deltaTime)
 
 void Editor::Core::Editor::HandleGlobalShortcuts()
 {
+    if (m_context.inputManager->IsKeyPressed(Windowing::Inputs::EKey::KEY_F11))
+    {
+        if (m_context.inputManager->GetKeyState(Windowing::Inputs::EKey::KEY_LEFT_CONTROL) == Windowing::Inputs::EKeyState::KEY_DOWN)
+            m_context.driver->OpenLatestRenderDocCapture();
+        else if (!m_context.driver->IsRenderDocAvailable())
+            m_context.driver->QueueRenderDocCapture("Editor");
+    }
+
     // If the [Del] key is pressed while an actor is selected and the Scene View or Hierarchy is focused
     if (m_context.inputManager->IsKeyPressed(Windowing::Inputs::EKey::KEY_DELETE) && EDITOR_EXEC(IsAnyActorSelected()) && (EDITOR_PANEL(SceneView, "Scene View").IsFocused() || EDITOR_PANEL(Hierarchy, "Hierarchy").IsFocused()))
     {
@@ -258,7 +265,7 @@ void Editor::Core::Editor::RenderEditorUI(float p_deltaTime)
 
 void Editor::Core::Editor::PostUpdate()
 {
-    m_context.window->SwapBuffers();
+    m_context.driver->PresentSwapchain();
     m_context.inputManager->ClearEvents();
     ++m_elapsedFrames;
 }

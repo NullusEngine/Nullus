@@ -2,6 +2,9 @@
 
 #include <string>
 #include "PlatformDef.h"
+#ifdef APIENTRY
+#undef APIENTRY
+#endif
 #include "portable-file-dialogs.h"
 /* Prevent enum and class name to be replaced by standard macros */
 #undef MessageBox

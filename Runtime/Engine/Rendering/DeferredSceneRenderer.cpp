@@ -2,490 +2,464 @@
 
 #include <fg/Blackboard.hpp>
 
-#include <algorithm>
-#include <cmath>
-#include <vector>
-
-#include <Core/ResourceManagement/ShaderManager.h>
-#include <Core/ServiceLocator.h>
+#include <Debug/Logger.h>
+#include <Math/Matrix4.h>
+#include <Math/Vector3.h>
+#include <Rendering/Buffers/UniformBuffer.h>
+#include <Rendering/Features/LightingRenderFeature.h>
 #include <Rendering/FrameGraph/FrameGraphExecutionContext.h>
-#include <Rendering/FrameGraph/FrameGraphBuffer.h>
 #include <Rendering/FrameGraph/FrameGraphTexture.h>
-#include <Rendering/RHI/RHITypes.h>
+#include <Rendering/Geometry/Vertex.h>
+#include <Rendering/RHI/BindingPointMap.h>
+#include <Rendering/Resources/Loaders/ShaderLoader.h>
+#include <Rendering/Resources/Material.h>
+#include <Rendering/Resources/Mesh.h>
+#include <Rendering/Resources/Texture2D.h>
+#include <Rendering/Resources/TextureCube.h>
+#include <Rendering/Settings/EPrimitiveMode.h>
 
-#include "Components/MaterialRenderer.h"
-#include "Components/MeshRenderer.h"
-#include "Rendering/EngineDrawableDescriptor.h"
 #include "Rendering/FrameGraphSceneTargets.h"
-
-namespace RHI = NLS::Render::RHI;
 
 namespace
 {
-    using Driver = NLS::Render::Context::Driver;
-    using RenderMesh = NLS::Render::Resources::Mesh;
-    using Vertex = NLS::Render::Geometry::Vertex;
-	using FrameGraphTexture = NLS::Render::FrameGraph::FrameGraphTexture;
-	using FrameGraphBuffer = NLS::Render::FrameGraph::FrameGraphBuffer;
-	using DeferredOutputData = NLS::Engine::Rendering::SceneRenderTargetsData;
-
-	struct DeferredGBufferData
+	struct DeferredGBufferPassData
 	{
 		FrameGraphResource albedo = -1;
-		FrameGraphResource position = -1;
 		FrameGraphResource normal = -1;
 		FrameGraphResource material = -1;
 		FrameGraphResource depth = -1;
 	};
 
-	struct DeferredLightingData
+	struct DeferredLightingPassData
 	{
 		FrameGraphResource albedo = -1;
-		FrameGraphResource position = -1;
 		FrameGraphResource normal = -1;
 		FrameGraphResource material = -1;
 		FrameGraphResource depth = -1;
-		FrameGraphResource clusterRecords = -1;
-		FrameGraphResource clusterIndices = -1;
-		FrameGraphResource target = -1;
+		FrameGraphResource outputColor = -1;
+		FrameGraphResource outputDepth = -1;
 	};
 
-	FrameGraphTexture::Desc MakeColorTextureDesc(uint16_t width, uint16_t height, RHI::TextureFormat format)
+	struct DeferredPassConstants
 	{
-		FrameGraphTexture::Desc desc;
+		NLS::Maths::Matrix4 inverseViewProjection;
+		NLS::Maths::Vector3 cameraWorldPosition;
+		float ambientIntensity = 0.2f;
+		NLS::Maths::Vector3 lightDirection{ -0.4f, -1.0f, -0.25f };
+		float lightIntensity = 1.0f;
+		NLS::Maths::Vector3 lightColor{ 1.0f, 0.98f, 0.92f };
+		float hasSkyboxTexture = 0.0f;
+		NLS::Maths::Vector3 skyFallbackColor{ 0.55f, 0.70f, 0.92f };
+		float depthFogFactor = 0.15f;
+	};
+
+	using LightingDescriptor = NLS::Render::Features::LightingRenderFeature::LightingDescriptor;
+
+	DeferredPassConstants BuildDeferredPassConstants(
+		const NLS::Render::Data::FrameDescriptor& frameDescriptor,
+		const LightingDescriptor* lightingDescriptor,
+		bool hasSkyboxTexture)
+	{
+		DeferredPassConstants constants{};
+		const auto viewProjection = frameDescriptor.camera->GetProjectionMatrix() * frameDescriptor.camera->GetViewMatrix();
+		constants.inverseViewProjection = NLS::Maths::Matrix4::Transpose(NLS::Maths::Matrix4::Inverse(viewProjection));
+		constants.cameraWorldPosition = frameDescriptor.camera->GetPosition();
+		constants.hasSkyboxTexture = hasSkyboxTexture ? 1.0f : 0.0f;
+
+		if (lightingDescriptor == nullptr)
+			return constants;
+
+		for (const auto& lightRef : lightingDescriptor->lights)
+		{
+			const auto& light = lightRef.get();
+			if (light.type != NLS::Render::Settings::ELightType::DIRECTIONAL &&
+				light.type != NLS::Render::Settings::ELightType::SPOT)
+			{
+				continue;
+			}
+
+			constants.lightDirection = light.transform->GetWorldForward();
+			constants.lightColor = light.color;
+			constants.lightIntensity = light.intensity;
+			return constants;
+		}
+
+		if (!lightingDescriptor->lights.empty())
+		{
+			const auto& light = lightingDescriptor->lights.front().get();
+			constants.lightDirection = light.transform->GetWorldForward();
+			constants.lightColor = light.color;
+			constants.lightIntensity = light.intensity;
+		}
+
+		return constants;
+	}
+
+	NLS::Render::FrameGraph::FrameGraphTexture::Desc MakeGBufferColorDesc(uint16_t width, uint16_t height)
+	{
+		NLS::Render::FrameGraph::FrameGraphTexture::Desc desc;
 		desc.width = width;
 		desc.height = height;
-		desc.format = format;
-		desc.usage = RHI::TextureUsage::Sampled | RHI::TextureUsage::ColorAttachment;
+		desc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+		desc.usage = NLS::Render::RHI::TextureUsage::ColorAttachment | NLS::Render::RHI::TextureUsage::Sampled;
 		return desc;
 	}
 
-	FrameGraphTexture::Desc MakeDepthTextureDesc(uint16_t width, uint16_t height)
+	NLS::Render::FrameGraph::FrameGraphTexture::Desc MakeGBufferDepthDesc(uint16_t width, uint16_t height)
 	{
-		FrameGraphTexture::Desc desc;
+		NLS::Render::FrameGraph::FrameGraphTexture::Desc desc;
 		desc.width = width;
 		desc.height = height;
-		desc.format = RHI::TextureFormat::Depth24Stencil8;
-		desc.usage = RHI::TextureUsage::Sampled | RHI::TextureUsage::DepthStencilAttachment;
+		desc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
+		desc.usage = NLS::Render::RHI::TextureUsage::DepthStencilAttachment | NLS::Render::RHI::TextureUsage::Sampled;
 		return desc;
 	}
 
-	void AttachDeferredGBuffer(Driver& driver, uint32_t framebuffer, uint32_t albedo, uint32_t position, uint32_t normal, uint32_t material, uint32_t depth)
+	NLS::Render::Geometry::Vertex MakeFullscreenVertex(float x, float y, float u, float v)
 	{
-		driver.AttachFramebufferColorTexture(framebuffer, albedo, 0);
-		driver.AttachFramebufferColorTexture(framebuffer, position, 1);
-		driver.AttachFramebufferColorTexture(framebuffer, normal, 2);
-		driver.AttachFramebufferColorTexture(framebuffer, material, 3);
-		driver.AttachFramebufferDepthStencilTexture(framebuffer, depth);
-		driver.SetFramebufferDrawBufferCount(framebuffer, 4);
-	}
-
-	float RoughnessFromLegacyShininess(float shininess)
-	{
-		const float clampedShininess = std::max(shininess, 1.0f);
-		return std::clamp(std::sqrt(2.0f / (clampedShininess + 2.0f)), 0.045f, 1.0f);
-	}
-
-	RenderMesh BuildFullscreenTriangle()
-	{
-		std::vector<Vertex> vertices(3);
-
-		vertices[0].position[0] = -1.0f;
-		vertices[0].position[1] = -1.0f;
-		vertices[0].position[2] = 0.0f;
-		vertices[0].texCoords[0] = 0.0f;
-		vertices[0].texCoords[1] = 0.0f;
-
-		vertices[1].position[0] = 3.0f;
-		vertices[1].position[1] = -1.0f;
-		vertices[1].position[2] = 0.0f;
-		vertices[1].texCoords[0] = 2.0f;
-		vertices[1].texCoords[1] = 0.0f;
-
-		vertices[2].position[0] = -1.0f;
-		vertices[2].position[1] = 3.0f;
-		vertices[2].position[2] = 0.0f;
-		vertices[2].texCoords[0] = 0.0f;
-		vertices[2].texCoords[1] = 2.0f;
-
-		return RenderMesh(vertices, {}, 0);
+		NLS::Render::Geometry::Vertex vertex{};
+		vertex.position[0] = x;
+		vertex.position[1] = y;
+		vertex.position[2] = 0.0f;
+		vertex.texCoords[0] = u;
+		vertex.texCoords[1] = v;
+		vertex.normals[2] = 1.0f;
+		vertex.tangent[0] = 1.0f;
+		vertex.bitangent[1] = 1.0f;
+		return vertex;
 	}
 }
 
 namespace NLS::Engine::Rendering
 {
-    using DeferredLightingDescriptor = Render::Features::LightingRenderFeature::LightingDescriptor;
-    using RenderMaterial = Render::Resources::Material;
-    using RenderTexture2D = Render::Resources::Texture2D;
-    using RenderMesh = Render::Resources::Mesh;
-
-	DeferredSceneRenderer::DeferredSceneRenderer(Render::Context::Driver& p_driver)
+	DeferredSceneRenderer::DeferredSceneRenderer(NLS::Render::Context::Driver& p_driver)
 		: BaseSceneRenderer(p_driver)
-		, m_fullscreenTriangle(BuildFullscreenTriangle())
 	{
-		m_deferredLightingShader = NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager)[":Shaders/DeferredLighting.glsl"];
-
-		m_clusterRecordsBuffer = std::make_unique<Render::Buffers::ShaderStorageBuffer>(Render::Settings::EAccessSpecifier::STREAM_DRAW);
-		m_clusterIndicesBuffer = std::make_unique<Render::Buffers::ShaderStorageBuffer>(Render::Settings::EAccessSpecifier::STREAM_DRAW);
+		LoadPipelineResources();
 	}
 
 	DeferredSceneRenderer::~DeferredSceneRenderer()
 	{
-		if (m_gbufferFramebuffer != 0)
-		{
-			m_driver.DestroyFramebuffer(m_gbufferFramebuffer);
-			m_gbufferFramebuffer = 0;
-		}
+		m_gBufferMaterialCache.clear();
+		m_lightingMaterial.reset();
+		m_fullscreenQuad.reset();
+		NLS::Render::Resources::Loaders::ShaderLoader::Destroy(m_lightingShader);
+		NLS::Render::Resources::Loaders::ShaderLoader::Destroy(m_gBufferShader);
 	}
 
-	void DeferredSceneRenderer::BeginFrame(const Render::Data::FrameDescriptor& p_frameDescriptor)
+	void DeferredSceneRenderer::BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor)
 	{
 		BaseSceneRenderer::BeginFrame(p_frameDescriptor);
-
-		EnsureGBufferFramebuffer();
-
-		auto drawables = ParseScene();
-		const auto& lighting = GetDescriptor<DeferredLightingDescriptor>();
-		const auto& lights = lighting.lights;
-		const auto clusteredLights = BuildClusteredLightGrid(
-			m_clusterSettings,
-			lights,
-			*p_frameDescriptor.camera,
-			p_frameDescriptor.camera->GetViewMatrix(),
-			p_frameDescriptor.camera->GetProjectionMatrix(),
-			p_frameDescriptor.renderWidth,
-			p_frameDescriptor.renderHeight,
-			p_frameDescriptor.camera->GetNear(),
-			p_frameDescriptor.camera->GetFar()
-		);
-
-		if (clusteredLights.records.empty())
-		{
-			static ClusterRecord emptyRecord{};
-			m_clusterRecordsBuffer->SendBlocks(&emptyRecord, sizeof(ClusterRecord));
-		}
-		else
-		{
-			m_clusterRecordsBuffer->SendBlocks(
-				const_cast<ClusterRecord*>(clusteredLights.records.data()),
-				clusteredLights.records.size() * sizeof(ClusterRecord)
-			);
-		}
-
-		if (clusteredLights.lightIndices.empty())
-		{
-			uint32_t emptyIndex = 0;
-			m_clusterIndicesBuffer->SendBlocks(&emptyIndex, sizeof(uint32_t));
-		}
-		else
-		{
-			m_clusterIndicesBuffer->SendBlocks(
-				clusteredLights.lightIndices.data(),
-				clusteredLights.lightIndices.size() * sizeof(uint32_t)
-			);
-		}
-
 		AddDescriptor<DeferredSceneDescriptor>({
-			std::move(drawables.opaques),
-			std::move(drawables.transparents),
-			std::move(drawables.skyboxes),
-			lights,
-			clusteredLights
+			ParseScene()
 		});
 	}
 
 	void DeferredSceneRenderer::DrawFrame()
 	{
-		auto pso = CreatePipelineState();
-		const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
 		const auto& frame = GetFrameDescriptor();
+		EnsureGBufferTargets(frame.renderWidth, frame.renderHeight);
 
+		if (!m_gBufferShader || !m_lightingMaterial || !m_fullscreenQuad)
+		{
+			NLS_LOG_WARNING("DeferredSceneRenderer is missing shader or mesh resources; skipping deferred frame.");
+			return;
+		}
+
+		auto basePso = CreatePipelineState();
 		FrameGraph frameGraph;
-		frameGraph.reserve(4, frame.outputBuffer ? 9 : 7);
+		frameGraph.reserve(2, frame.outputBuffer ? 6 : 4);
 		FrameGraphBlackboard blackboard;
 
-		ImportSceneRenderTargets(frameGraph, blackboard, frame, "SceneColor", "SceneDepth");
+		ImportSceneRenderTargets(frameGraph, blackboard, frame, "DeferredOutputColor", "DeferredOutputDepth");
 
-		const auto& gbufferPass = frameGraph.addCallbackPass<DeferredGBufferData>(
-			"DeferredOpaque",
-			[&frame](FrameGraph::Builder& builder, DeferredGBufferData& data)
+		const auto gBufferAlbedo = frameGraph.import<NLS::Render::FrameGraph::FrameGraphTexture>(
+			"DeferredGBufferAlbedo",
+			MakeGBufferColorDesc(frame.renderWidth, frame.renderHeight),
+			NLS::Render::FrameGraph::FrameGraphTexture::WrapExternal(
+				m_gBuffer.GetExplicitColorTextureHandles()[0],
+				m_gBuffer.GetOrCreateExplicitColorView(0, "DeferredGBufferAlbedoView"),
+				m_gBuffer.GetColorTextures()[0])
+		);
+		const auto gBufferNormal = frameGraph.import<NLS::Render::FrameGraph::FrameGraphTexture>(
+			"DeferredGBufferNormal",
+			MakeGBufferColorDesc(frame.renderWidth, frame.renderHeight),
+			NLS::Render::FrameGraph::FrameGraphTexture::WrapExternal(
+				m_gBuffer.GetExplicitColorTextureHandles()[1],
+				m_gBuffer.GetOrCreateExplicitColorView(1, "DeferredGBufferNormalView"),
+				m_gBuffer.GetColorTextures()[1])
+		);
+		const auto gBufferMaterial = frameGraph.import<NLS::Render::FrameGraph::FrameGraphTexture>(
+			"DeferredGBufferMaterial",
+			MakeGBufferColorDesc(frame.renderWidth, frame.renderHeight),
+			NLS::Render::FrameGraph::FrameGraphTexture::WrapExternal(
+				m_gBuffer.GetExplicitColorTextureHandles()[2],
+				m_gBuffer.GetOrCreateExplicitColorView(2, "DeferredGBufferMaterialView"),
+				m_gBuffer.GetColorTextures()[2])
+		);
+		const auto gBufferDepth = frameGraph.import<NLS::Render::FrameGraph::FrameGraphTexture>(
+			"DeferredGBufferDepth",
+			MakeGBufferDepthDesc(frame.renderWidth, frame.renderHeight),
+			NLS::Render::FrameGraph::FrameGraphTexture::WrapExternal(
+				m_gBuffer.GetExplicitDepthTextureHandle(),
+				m_gBuffer.GetOrCreateExplicitDepthView("DeferredGBufferDepthView"),
+				m_gBuffer.GetDepthTexture())
+		);
+
+		const auto& gBufferPass = frameGraph.addCallbackPass<DeferredGBufferPassData>(
+			"DeferredGBuffer",
+			[&](FrameGraph::Builder& builder, DeferredGBufferPassData& data)
 			{
-				data.albedo = builder.create<FrameGraphTexture>("GBufferAlbedo", MakeColorTextureDesc(frame.renderWidth, frame.renderHeight, RHI::TextureFormat::RGBA8));
-				data.position = builder.create<FrameGraphTexture>("GBufferPosition", MakeColorTextureDesc(frame.renderWidth, frame.renderHeight, RHI::TextureFormat::RGBA16F));
-				data.normal = builder.create<FrameGraphTexture>("GBufferNormal", MakeColorTextureDesc(frame.renderWidth, frame.renderHeight, RHI::TextureFormat::RGBA16F));
-				data.material = builder.create<FrameGraphTexture>("GBufferMaterial", MakeColorTextureDesc(frame.renderWidth, frame.renderHeight, RHI::TextureFormat::RGBA8));
-				data.depth = builder.create<FrameGraphTexture>("GBufferDepth", MakeDepthTextureDesc(frame.renderWidth, frame.renderHeight));
-
-				data.albedo = builder.write(data.albedo);
-				data.position = builder.write(data.position);
-				data.normal = builder.write(data.normal);
-				data.material = builder.write(data.material);
-				data.depth = builder.write(data.depth);
+				data.albedo = builder.write(gBufferAlbedo);
+				data.normal = builder.write(gBufferNormal);
+				data.material = builder.write(gBufferMaterial);
+				data.depth = builder.write(gBufferDepth);
 			},
-			[this, &scene, pso](const DeferredGBufferData& data, FrameGraphPassResources& resources, void*)
+			[this, basePso](const DeferredGBufferPassData&, FrameGraphPassResources&, void*)
 			{
-				AttachDeferredGBuffer(
-					m_driver,
-					m_gbufferFramebuffer,
-					resources.get<FrameGraphTexture>(data.albedo).id,
-					resources.get<FrameGraphTexture>(data.position).id,
-					resources.get<FrameGraphTexture>(data.normal).id,
-					resources.get<FrameGraphTexture>(data.material).id,
-					resources.get<FrameGraphTexture>(data.depth).id
-				);
-				DrawDeferredGeometryPass(scene, pso);
+				const bool recordedPass = BeginRecordedRenderPass(
+					&m_gBuffer,
+					GetFrameDescriptor().renderWidth,
+					GetFrameDescriptor().renderHeight,
+					true,
+					true,
+					true,
+					Maths::Vector4{ 0.0f, 0.0f, 0.0f, 1.0f });
+				if (!recordedPass)
+				{
+					m_gBuffer.Bind();
+					m_driver.SetViewport(0, 0, GetFrameDescriptor().renderWidth, GetFrameDescriptor().renderHeight);
+					Clear(true, true, true, Maths::Vector4{ 0.0f, 0.0f, 0.0f, 1.0f });
+				}
+				DrawGBufferOpaques(basePso);
+				if (recordedPass)
+					EndRecordedRenderPass();
+				else
+					m_gBuffer.Unbind();
 			}
 		);
 
-		const auto clusterRecords = frameGraph.import<FrameGraphBuffer>(
-			"ClusterRecords",
-			[]()
-			{
-				FrameGraphBuffer::Desc desc;
-				desc.type = RHI::BufferType::ShaderStorage;
-				desc.usage = RHI::BufferUsage::StreamDraw;
-				return desc;
-			}(),
-			FrameGraphBuffer::WrapExternal(m_clusterRecordsBuffer->GetID())
-		);
-		const auto clusterIndices = frameGraph.import<FrameGraphBuffer>(
-			"ClusterIndices",
-			[]()
-			{
-				FrameGraphBuffer::Desc desc;
-				desc.type = RHI::BufferType::ShaderStorage;
-				desc.usage = RHI::BufferUsage::StreamDraw;
-				return desc;
-			}(),
-			FrameGraphBuffer::WrapExternal(m_clusterIndicesBuffer->GetID())
-		);
-
-		const auto& lightingPass = frameGraph.addCallbackPass<DeferredLightingData>(
+		frameGraph.addCallbackPass<DeferredLightingPassData>(
 			"DeferredLighting",
-			[&blackboard, &gbufferPass, clusterRecords, clusterIndices](FrameGraph::Builder& builder, DeferredLightingData& data)
+			[&](FrameGraph::Builder& builder, DeferredLightingPassData& data)
 			{
-				data.albedo = builder.read(gbufferPass.albedo, 0);
-				data.position = builder.read(gbufferPass.position, 1);
-				data.normal = builder.read(gbufferPass.normal, 2);
-				data.material = builder.read(gbufferPass.material, 3);
-				data.depth = builder.read(gbufferPass.depth, 4);
-				data.clusterRecords = builder.read(clusterRecords, 1);
-				data.clusterIndices = builder.read(clusterIndices, 2);
+				data.albedo = builder.read(gBufferPass.albedo);
+				data.normal = builder.read(gBufferPass.normal);
+				data.material = builder.read(gBufferPass.material);
+				data.depth = builder.read(gBufferPass.depth);
 
-				if (const auto* output = blackboard.try_get<DeferredOutputData>())
+				if (const auto* output = blackboard.try_get<SceneRenderTargetsData>())
 				{
 					if (output->color >= 0)
-						data.target = builder.write(output->color);
+						data.outputColor = builder.write(output->color);
 					if (output->depth >= 0)
-						data.depth = builder.write(output->depth);
+						data.outputDepth = builder.write(output->depth);
 				}
 				else
 					builder.setSideEffect();
 			},
-			[this, &scene, pso](const DeferredLightingData&, FrameGraphPassResources&, void*)
+			[this, basePso](const DeferredLightingPassData&, FrameGraphPassResources&, void*)
 			{
-				DrawDeferredLightingPass(scene, pso, m_gbufferFramebuffer);
-			}
-		);
+				const auto& frameDescriptor = GetFrameDescriptor();
+				const auto clearColor = Maths::Vector4{
+					frameDescriptor.camera->GetClearColor().x,
+					frameDescriptor.camera->GetClearColor().y,
+					frameDescriptor.camera->GetClearColor().z,
+					1.0f
+				};
+				const bool recordedPass = BeginRecordedRenderPass(
+					frameDescriptor.outputBuffer,
+					frameDescriptor.renderWidth,
+					frameDescriptor.renderHeight,
+					frameDescriptor.camera->GetClearColorBuffer(),
+					frameDescriptor.camera->GetClearDepthBuffer(),
+					frameDescriptor.camera->GetClearStencilBuffer(),
+					clearColor);
+				if (!recordedPass)
+				{
+					if (frameDescriptor.outputBuffer)
+						frameDescriptor.outputBuffer->Bind();
+					else
+						m_driver.BindFramebuffer(0);
 
-		auto currentTarget = lightingPass.target;
+					m_driver.SetViewport(0, 0, frameDescriptor.renderWidth, frameDescriptor.renderHeight);
+				}
+				DrawLightingPass(basePso);
 
-		const auto& skyboxPass = frameGraph.addCallbackPass<DeferredOutputData>(
-			"DeferredSkybox",
-			[&blackboard, currentTarget](FrameGraph::Builder& builder, DeferredOutputData& data)
-			{
-				if (currentTarget >= 0)
-					data.color = builder.write(currentTarget);
-				else if (const auto* output = blackboard.try_get<DeferredOutputData>())
-					data.color = builder.write(output->color);
-
-				if (const auto* output = blackboard.try_get<DeferredOutputData>(); output && output->depth >= 0)
-					data.depth = builder.write(output->depth);
-
-				if (data.color < 0 && data.depth < 0)
-					builder.setSideEffect();
-			},
-			[this, pso](const DeferredOutputData&, FrameGraphPassResources&, void*)
-			{
-				DrawSkyboxes(pso);
-			}
-		);
-
-		currentTarget = skyboxPass.color;
-
-		frameGraph.addCallbackPass<DeferredOutputData>(
-			"DeferredTransparent",
-			[&blackboard, currentTarget](FrameGraph::Builder& builder, DeferredOutputData& data)
-			{
-				if (currentTarget >= 0)
-					data.color = builder.write(currentTarget);
-				else if (const auto* output = blackboard.try_get<DeferredOutputData>())
-					data.color = builder.write(output->color);
-
-				if (const auto* output = blackboard.try_get<DeferredOutputData>(); output && output->depth >= 0)
-					data.depth = builder.write(output->depth);
-
-				if (data.color < 0 && data.depth < 0)
-					builder.setSideEffect();
-			},
-			[this, pso](const DeferredOutputData&, FrameGraphPassResources&, void*)
-			{
-				DrawTransparents(pso);
+				if (recordedPass)
+					EndRecordedRenderPass();
+				else if (frameDescriptor.outputBuffer)
+					frameDescriptor.outputBuffer->Unbind();
 			}
 		);
 
 		frameGraph.compile();
-		Render::FrameGraph::FrameGraphExecutionContext executionContext{ m_driver.GetRenderDevice() };
+		auto* frameContext = m_driver.GetCurrentExplicitFrameContext();
+		NLS::Render::FrameGraph::FrameGraphExecutionContext executionContext{
+			m_driver,
+			m_driver.GetExplicitDevice().get(),
+			frameContext != nullptr ? frameContext->commandBuffer.get() : nullptr,
+			frameContext
+		};
 		frameGraph.execute(&executionContext, &executionContext);
 
 		DrawRegisteredPasses(CreatePipelineState());
 	}
 
-	void DeferredSceneRenderer::EnsureGBufferFramebuffer()
+	void DeferredSceneRenderer::LoadPipelineResources()
 	{
-		if (m_gbufferFramebuffer == 0)
-			m_gbufferFramebuffer = m_driver.CreateFramebuffer();
+		using ShaderLoader = NLS::Render::Resources::Loaders::ShaderLoader;
+
+		m_gBufferShader = ShaderLoader::Create("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
+		m_lightingShader = ShaderLoader::Create("App/Assets/Engine/Shaders/DeferredLighting.hlsl");
+
+		if (m_lightingShader)
+		{
+			m_lightingMaterial = std::make_unique<NLS::Render::Resources::Material>(m_lightingShader);
+			m_lightingMaterial->SetDepthTest(false);
+			m_lightingMaterial->SetDepthWriting(false);
+			m_lightingMaterial->SetBackfaceCulling(false);
+			m_lightingMaterial->SetFrontfaceCulling(false);
+			m_lightingMaterial->SetColorWriting(true);
+		}
+
+		m_passBuffer = std::make_unique<NLS::Render::Buffers::UniformBuffer>(
+			sizeof(DeferredPassConstants),
+			NLS::Render::RHI::BindingPointMap::GetUniformBufferBindingPoint(NLS::Render::RHI::BindingPointMap::kPassBindingSpace, 0),
+			0,
+			NLS::Render::Settings::EAccessSpecifier::STREAM_DRAW);
+
+		std::vector<NLS::Render::Geometry::Vertex> vertices{
+			MakeFullscreenVertex(-1.0f, -1.0f, 0.0f, 1.0f),
+			MakeFullscreenVertex(-1.0f,  1.0f, 0.0f, 0.0f),
+			MakeFullscreenVertex( 1.0f,  1.0f, 1.0f, 0.0f),
+			MakeFullscreenVertex( 1.0f, -1.0f, 1.0f, 1.0f)
+		};
+		std::vector<uint32_t> indices{ 0, 1, 2, 0, 2, 3 };
+		m_fullscreenQuad = std::make_unique<NLS::Render::Resources::Mesh>(vertices, indices, 0);
 	}
 
-	void DeferredSceneRenderer::DrawSkyboxes(Render::Data::PipelineState pso)
+	void DeferredSceneRenderer::EnsureGBufferTargets(uint16_t width, uint16_t height)
 	{
-		pso.depthFunc = Render::Settings::EComparaisonAlgorithm::LESS_EQUAL;
-		pso.culling = false;
+		static const std::vector<NLS::Render::Buffers::MultiFramebuffer::AttachmentDesc> kAttachments{
+			{ NLS::Render::RHI::TextureFormat::RGBA8 },
+			{ NLS::Render::RHI::TextureFormat::RGBA8 },
+			{ NLS::Render::RHI::TextureFormat::RGBA8 }
+		};
+
+		if (m_gBuffer.GetID() == 0)
+			m_gBuffer.Init(width, height, kAttachments, true);
+		else
+			m_gBuffer.Resize(width, height);
+
+		const auto& colorTextures = m_gBuffer.GetColorTextures();
+		const auto& colorResources = m_gBuffer.GetColorTextureResources();
+		if (colorTextures.size() < 3 || colorResources.size() < 3)
+			return;
+
+		auto wrapTexture = [width, height](uint32_t textureId, const std::shared_ptr<NLS::Render::RHI::IRHITexture>& textureResource)
+		{
+			auto texture = NLS::Render::Resources::Texture2D::WrapExternal(textureId, width, height);
+			texture->SetRHITexture(textureResource);
+			return texture;
+		};
+
+		m_gBufferAlbedoTexture = wrapTexture(colorTextures[0], colorResources[0]);
+		m_gBufferNormalTexture = wrapTexture(colorTextures[1], colorResources[1]);
+		m_gBufferMaterialTexture = wrapTexture(colorTextures[2], colorResources[2]);
+		if (m_gBuffer.GetDepthTextureResource())
+			m_gBufferDepthTexture = wrapTexture(m_gBuffer.GetDepthTexture(), m_gBuffer.GetDepthTextureResource());
+	}
+
+	NLS::Render::Resources::Material& DeferredSceneRenderer::GetOrCreateGBufferMaterial(NLS::Render::Resources::Material& sourceMaterial)
+	{
+		auto found = m_gBufferMaterialCache.find(&sourceMaterial);
+		if (found == m_gBufferMaterialCache.end())
+			found = m_gBufferMaterialCache.emplace(&sourceMaterial, std::make_unique<NLS::Render::Resources::Material>(m_gBufferShader)).first;
+
+		SyncGBufferMaterial(*found->second, sourceMaterial);
+		return *found->second;
+	}
+
+	void DeferredSceneRenderer::SyncGBufferMaterial(NLS::Render::Resources::Material& target, const NLS::Render::Resources::Material& sourceMaterial) const
+	{
+		target.SetDepthTest(sourceMaterial.HasDepthTest());
+		target.SetDepthWriting(sourceMaterial.HasDepthWriting());
+		target.SetBackfaceCulling(sourceMaterial.HasBackfaceCulling());
+		target.SetFrontfaceCulling(sourceMaterial.HasFrontfaceCulling());
+		target.SetBlendable(false);
+		target.SetColorWriting(true);
+		target.SetGPUInstances(sourceMaterial.GetGPUInstances());
+
+		target.FillUniform();
+		for (const auto& [name, value] : sourceMaterial.GetParameterBlock().Data())
+		{
+			if (target.GetParameterBlock().Contains(name))
+				target.GetParameterBlock().Set(name, value);
+		}
+	}
+
+	void DeferredSceneRenderer::DrawGBufferOpaques(NLS::Render::Data::PipelineState pso)
+	{
+		if (!m_gBufferShader)
+			return;
 
 		const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
-		size_t skyboxCount = 0;
-		for (const auto& [_, drawable] : scene.skyboxes)
+		for (const auto& [_, drawable] : scene.drawables.opaques)
 		{
-			if (skyboxCount > 0)
+			if (!drawable.material)
+				continue;
+
+			auto gbufferDrawable = drawable;
+			gbufferDrawable.material = &GetOrCreateGBufferMaterial(*drawable.material);
+			DrawEntity(pso, gbufferDrawable);
+		}
+	}
+
+	void DeferredSceneRenderer::DrawLightingPass(NLS::Render::Data::PipelineState pso)
+	{
+		if (!m_lightingMaterial || !m_fullscreenQuad || !m_gBufferAlbedoTexture || !m_gBufferNormalTexture || !m_gBufferMaterialTexture || !m_passBuffer)
+			return;
+
+		NLS::Render::Resources::TextureCube* skyboxTexture = nullptr;
+		const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
+		for (const auto& [_, drawable] : scene.drawables.skyboxes)
+		{
+			if (drawable.material == nullptr)
+				continue;
+
+			const auto* skyboxParameter = drawable.material->GetParameterBlock().TryGet("cubeTex");
+			if (skyboxParameter != nullptr && skyboxParameter->type() == typeid(NLS::Render::Resources::TextureCube*))
 			{
-				NLS_LOG_WARNING("Multiple skyboxes detected, only the first one will be drawn!");
+				skyboxTexture = std::any_cast<NLS::Render::Resources::TextureCube*>(*skyboxParameter);
 				break;
 			}
-
-			DrawEntity(pso, drawable);
-			++skyboxCount;
 		}
-	}
 
-	void DeferredSceneRenderer::DrawTransparents(Render::Data::PipelineState pso)
-	{
-		const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
-		for (const auto& [_, drawable] : scene.transparents)
-		{
-			DrawEntity(pso, drawable);
-		}
-	}
+		const auto* lightingDescriptor = HasDescriptor<LightingDescriptor>()
+			? &GetDescriptor<LightingDescriptor>()
+			: nullptr;
+		const auto passConstants = BuildDeferredPassConstants(GetFrameDescriptor(), lightingDescriptor, skyboxTexture != nullptr);
+		m_passBuffer->SetRawData(&passConstants, sizeof(passConstants));
+		m_passBuffer->Bind(NLS::Render::RHI::BindingPointMap::GetUniformBufferBindingPoint(NLS::Render::RHI::BindingPointMap::kPassBindingSpace, 0));
 
-	void DeferredSceneRenderer::DrawOpaques(Render::Data::PipelineState pso)
-	{
-		const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
-		DrawDeferredGeometryPass(scene, pso);
-	}
+		m_lightingMaterial->GetParameterBlock().Set("u_GBufferAlbedo", m_gBufferAlbedoTexture.get());
+		m_lightingMaterial->GetParameterBlock().Set("u_GBufferNormal", m_gBufferNormalTexture.get());
+		m_lightingMaterial->GetParameterBlock().Set("u_GBufferMaterial", m_gBufferMaterialTexture.get());
+		if (m_gBufferDepthTexture)
+			m_lightingMaterial->GetParameterBlock().Set("u_GBufferDepth", m_gBufferDepthTexture.get());
+		if (m_lightingMaterial->GetParameterBlock().Contains("u_SkyboxCube"))
+			m_lightingMaterial->GetParameterBlock().Set("u_SkyboxCube", skyboxTexture);
 
-	void DeferredSceneRenderer::DrawDeferredGeometryPass(const DeferredSceneDescriptor& scene, Render::Data::PipelineState pso)
-	{
-		const auto& frame = GetFrameDescriptor();
-		m_driver.BindFramebuffer(m_gbufferFramebuffer);
-		m_driver.SetViewport(0, 0, frame.renderWidth, frame.renderHeight);
-		m_driver.Clear(true, true, false, Maths::Vector4(0.0f, 0.0f, 0.0f, 0.0f));
-
-		for (const auto& [_, drawable] : scene.opaques)
-		{
-			auto geometryMaterial = BuildGeometryMaterial(*drawable.material);
-			auto geometryDrawable = drawable;
-			geometryDrawable.material = &geometryMaterial;
-			geometryDrawable.stateMask = geometryMaterial.GenerateStateMask();
-			DrawEntity(pso, geometryDrawable);
-		}
-	}
-
-	void DeferredSceneRenderer::DrawDeferredLightingPass(const DeferredSceneDescriptor& scene, Render::Data::PipelineState pso, uint32_t sourceFramebuffer)
-	{
-		const auto& frame = GetFrameDescriptor();
-		const auto destinationFramebuffer = frame.outputBuffer ? frame.outputBuffer->GetID() : 0;
-
-		m_driver.BindFramebuffer(destinationFramebuffer);
-		m_driver.SetViewport(0, 0, frame.renderWidth, frame.renderHeight);
-
-		auto& camera = *frame.camera;
 		pso.depthTest = false;
 		pso.depthWriting = false;
 		pso.culling = false;
+		pso.colorWriting.mask = 0xFF;
 
-		if (m_deferredLightingShader)
-		{
-			m_deferredLightingShader->Bind();
-
-			m_deferredLightingShader->SetUniformVec3(
-				"u_ClusterDimensions",
-				{
-					static_cast<float>(scene.clusteredLights.settings.gridSizeX),
-					static_cast<float>(scene.clusteredLights.settings.gridSizeY),
-					static_cast<float>(scene.clusteredLights.settings.gridSizeZ)
-				}
-			);
-			m_deferredLightingShader->SetUniformVec2("u_ScreenSize", { static_cast<float>(frame.renderWidth), static_cast<float>(frame.renderHeight) });
-			m_deferredLightingShader->SetUniformVec2("u_NearFar", { camera.GetNear(), camera.GetFar() });
-			m_deferredLightingShader->SetUniformInt("u_ClusterLightIndexCount", static_cast<int>(scene.clusteredLights.lightIndices.size()));
-			m_deferredLightingShader->SetUniformVec3("u_CameraWorldPos", camera.GetPosition());
-
-			m_driver.Draw(pso, m_fullscreenTriangle);
-			m_deferredLightingShader->Unbind();
-		}
-
-		m_driver.BlitDepth(sourceFramebuffer, destinationFramebuffer, frame.renderWidth, frame.renderHeight);
-		m_driver.BindFramebuffer(destinationFramebuffer);
-	}
-
-	RenderMaterial DeferredSceneRenderer::BuildGeometryMaterial(const RenderMaterial& source) const
-	{
-		RenderMaterial geometryMaterial(NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager)[":Shaders/DeferredGBuffer.glsl"]);
-		geometryMaterial.SetBlendable(false);
-		geometryMaterial.SetBackfaceCulling(source.HasBackfaceCulling());
-		geometryMaterial.SetFrontfaceCulling(source.HasFrontfaceCulling());
-		geometryMaterial.SetDepthTest(source.HasDepthTest());
-		geometryMaterial.SetDepthWriting(source.HasDepthWriting());
-
-		geometryMaterial.Set<RenderTexture2D*>("u_AlbedoMap", nullptr);
-		geometryMaterial.Set<RenderTexture2D*>("u_MetallicMap", nullptr);
-		geometryMaterial.Set<RenderTexture2D*>("u_RoughnessMap", nullptr);
-		geometryMaterial.Set<RenderTexture2D*>("u_AmbientOcclusionMap", nullptr);
-		geometryMaterial.Set<RenderTexture2D*>("u_NormalMap", nullptr);
-		geometryMaterial.Set<RenderTexture2D*>("u_MaskMap", nullptr);
-		geometryMaterial.Set("u_Albedo", Maths::Vector4(1.0f, 1.0f, 1.0f, 1.0f));
-		geometryMaterial.Set("u_Metallic", 1.0f);
-		geometryMaterial.Set("u_Roughness", 1.0f);
-		geometryMaterial.Set("u_EnableNormalMapping", false);
-
-		auto& targetUniforms = geometryMaterial.GetUniformsData();
-		const auto& sourceUniforms = const_cast<RenderMaterial&>(source).GetUniformsData();
-		for (const auto& [name, value] : sourceUniforms)
-		{
-			if (targetUniforms.find(name) != targetUniforms.end())
-				targetUniforms[name] = value;
-		}
-
-		if (targetUniforms.contains("u_AlbedoMap") && sourceUniforms.contains("u_DiffuseMap") && !sourceUniforms.contains("u_AlbedoMap"))
-			targetUniforms["u_AlbedoMap"] = sourceUniforms.at("u_DiffuseMap");
-
-		if (targetUniforms.contains("u_Albedo") && sourceUniforms.contains("u_Diffuse") && !sourceUniforms.contains("u_Albedo"))
-			targetUniforms["u_Albedo"] = sourceUniforms.at("u_Diffuse");
-
-		if (targetUniforms.contains("u_EnableNormalMapping") && sourceUniforms.contains("u_EnableNormalMapping"))
-			targetUniforms["u_EnableNormalMapping"] = sourceUniforms.at("u_EnableNormalMapping");
-
-		if (targetUniforms.contains("u_NormalMap") && sourceUniforms.contains("u_NormalMap"))
-			targetUniforms["u_NormalMap"] = sourceUniforms.at("u_NormalMap");
-
-		if (!sourceUniforms.contains("u_Metallic"))
-			targetUniforms["u_Metallic"] = 0.0f;
-
-		if (!sourceUniforms.contains("u_Roughness") && sourceUniforms.contains("u_Shininess"))
-		{
-			if (const auto* legacyShininess = std::any_cast<float>(&sourceUniforms.at("u_Shininess")))
-				targetUniforms["u_Roughness"] = RoughnessFromLegacyShininess(*legacyShininess);
-		}
-
-		return geometryMaterial;
+		NLS::Render::Entities::Drawable lightingDrawable;
+		lightingDrawable.mesh = m_fullscreenQuad.get();
+		lightingDrawable.material = m_lightingMaterial.get();
+		lightingDrawable.primitiveMode = NLS::Render::Settings::EPrimitiveMode::TRIANGLES;
+		DrawEntity(pso, lightingDrawable);
 	}
 }

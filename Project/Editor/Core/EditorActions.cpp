@@ -8,7 +8,9 @@
 #include <Components/MaterialRenderer.h>
 #include <Rendering/Resources/Material.h>
 #include <Rendering/Resources/Shader.h>
+#include <Rendering/EditorDefaultResources.h>
 #include <Math/Vector4.h>
+#include <Math/Vector2.h>
 
 
 #include <Windowing/Dialogs/OpenFileDialog.h>
@@ -30,7 +32,7 @@
 #include "Panels/MaterialEditor.h"
 #include "Serialize/Serializer.h"
 #include "Reflection/Variant.h"
-// #include "Panels/SceneView.h"
+#include "Panels/SceneView.h"
 // #include "Panels/AssetView.h"
 // #include "Panels/GameView.h"
 // #include "Panels/Inspector.h"
@@ -44,7 +46,14 @@ namespace
 NLS::Render::Resources::Material* GetOrCreateEditorDefaultMaterial(NLS::Editor::Core::Context& context)
 {
     constexpr const char* kDefaultMaterialPath = ":Materials\\Default.mat";
-    return context.materialManager[kDefaultMaterialPath];
+    auto* material = context.materialManager[kDefaultMaterialPath];
+    if (material != nullptr)
+    {
+        material->Set<Render::Resources::Texture2D*>("u_DiffuseMap", NLS::Editor::Rendering::GetEditorDefaultWhiteTexture());
+        material->Set<Maths::Vector2>("u_TextureTiling", { 1.0f, 1.0f });
+        material->Set<Maths::Vector2>("u_TextureOffset", { 0.0f, 0.0f });
+    }
+    return material;
 }
 }
 
@@ -464,12 +473,12 @@ void Editor::Core::EditorActions::NextFrame()
 
 Maths::Vector3 Editor::Core::EditorActions::CalculateActorSpawnPoint(float p_distanceToCamera)
 {
-    // 	auto& sceneView = m_panelsManager.GetPanelAs<Editor::Panels::SceneView>("Scene View");
-    //
-    // 	if (auto camera = sceneView.GetCamera())
-    // 	{
-    // 		return camera->GetPosition() + camera->transform->GetWorldForward() * p_distanceToCamera;
-    // 	}
+    auto& sceneView = m_panelsManager.GetPanelAs<Editor::Panels::SceneView>("Scene View");
+
+    if (auto camera = sceneView.GetCamera(); camera != nullptr && camera->transform != nullptr)
+    {
+        return camera->GetPosition() + camera->transform->GetWorldForward() * p_distanceToCamera;
+    }
 
     return Maths::Vector3::Zero;
 }
@@ -640,10 +649,10 @@ bool Editor::Core::EditorActions::ImportAsset(const std::string& p_initialDestin
 
     std::string modelFormats = "*.fbx;*.obj;";
     std::string textureFormats = "*.png;*.jpeg;*.jpg;*.tga";
-    std::string shaderFormats = "*.glsl;";
+    std::string shaderFormats = "*.hlsl;";
     std::string soundFormats = "*.mp3;*.ogg;*.wav;";
 
-    OpenFileDialog selectAssetDialog("Select an asset to import", "", {"Any supported format", modelFormats + textureFormats + shaderFormats + soundFormats, "Model (.fbx, .obj)", modelFormats, "Texture (.png, .jpeg, .jpg, .tga)", textureFormats, "Shader (.glsl)", shaderFormats, "Sound (.mp3, .ogg, .wav)", soundFormats});
+    OpenFileDialog selectAssetDialog("Select an asset to import", "", {"Any supported format", modelFormats + textureFormats + shaderFormats + soundFormats, "Model (.fbx, .obj)", modelFormats, "Texture (.png, .jpeg, .jpg, .tga)", textureFormats, "Shader (.hlsl)", shaderFormats, "Sound (.mp3, .ogg, .wav)", soundFormats});
 
     if (!selectAssetDialog.Result().empty())
     {
@@ -675,10 +684,10 @@ bool Editor::Core::EditorActions::ImportAssetAtLocation(const std::string& p_des
 
     std::string modelFormats = "*.fbx;*.obj;";
     std::string textureFormats = "*.png;*.jpeg;*.jpg;*.tga;";
-    std::string shaderFormats = "*.glsl;";
+    std::string shaderFormats = "*.hlsl;";
     std::string soundFormats = "*.mp3;*.ogg;*.wav;";
 
-    OpenFileDialog selectAssetDialog("Select an asset to import", "", {"Any supported format", modelFormats + textureFormats + shaderFormats + soundFormats, "Model (.fbx, .obj)", modelFormats, "Texture (.png, .jpeg, .jpg, .tga)", textureFormats, "Shader (.glsl)", shaderFormats, "Sound (.mp3, .ogg, .wav)", soundFormats});
+    OpenFileDialog selectAssetDialog("Select an asset to import", "", {"Any supported format", modelFormats + textureFormats + shaderFormats + soundFormats, "Model (.fbx, .obj)", modelFormats, "Texture (.png, .jpeg, .jpg, .tga)", textureFormats, "Shader (.hlsl)", shaderFormats, "Sound (.mp3, .ogg, .wav)", soundFormats});
 
     if (!selectAssetDialog.Result().empty())
     {

@@ -1,11 +1,18 @@
 #pragma once
 
+#include <memory>
 #include <cstdint>
+#include <string>
 #include <vector>
 
-#include <glad/glad.h>
-
 #include "RenderDef.h"
+#include "Rendering/RHI/Core/RHIResource.h"
+#include "Rendering/RHI/RHITypes.h"
+
+namespace NLS::Render::RHI
+{
+    class IRHITexture;
+}
 
 namespace NLS::Render::Buffers
 {
@@ -14,9 +21,7 @@ namespace NLS::Render::Buffers
     public:
         struct AttachmentDesc
         {
-            GLenum internalFormat = GL_RGBA8;
-            GLenum format = GL_RGBA;
-            GLenum type = GL_UNSIGNED_BYTE;
+            NLS::Render::RHI::TextureFormat format = NLS::Render::RHI::TextureFormat::RGBA8;
         };
 
         MultiFramebuffer() = default;
@@ -33,7 +38,13 @@ namespace NLS::Render::Buffers
 
         uint32_t GetID() const { return m_bufferId; }
         const std::vector<uint32_t>& GetColorTextures() const { return m_colorTextures; }
+        const std::vector<std::shared_ptr<NLS::Render::RHI::IRHITexture>>& GetColorTextureResources() const { return m_colorTextureResources; }
+        const std::vector<std::shared_ptr<NLS::Render::RHI::RHITexture>>& GetExplicitColorTextureHandles() const { return m_explicitColorTextures; }
+        std::shared_ptr<NLS::Render::RHI::RHITextureView> GetOrCreateExplicitColorView(size_t index, const std::string& debugName = {}) const;
         uint32_t GetDepthTexture() const { return m_depthTexture; }
+        const std::shared_ptr<NLS::Render::RHI::IRHITexture>& GetDepthTextureResource() const { return m_depthTextureResource; }
+        const std::shared_ptr<NLS::Render::RHI::RHITexture>& GetExplicitDepthTextureHandle() const { return m_explicitDepthTexture; }
+        std::shared_ptr<NLS::Render::RHI::RHITextureView> GetOrCreateExplicitDepthView(const std::string& debugName = {}) const;
 
     private:
         void Release();
@@ -47,5 +58,11 @@ namespace NLS::Render::Buffers
         uint32_t m_depthTexture = 0;
         std::vector<AttachmentDesc> m_attachmentDescs;
         std::vector<uint32_t> m_colorTextures;
+        std::vector<std::shared_ptr<NLS::Render::RHI::IRHITexture>> m_colorTextureResources;
+        std::vector<std::shared_ptr<NLS::Render::RHI::RHITexture>> m_explicitColorTextures;
+        mutable std::vector<std::shared_ptr<NLS::Render::RHI::RHITextureView>> m_explicitColorTextureViews;
+        std::shared_ptr<NLS::Render::RHI::IRHITexture> m_depthTextureResource;
+        std::shared_ptr<NLS::Render::RHI::RHITexture> m_explicitDepthTexture;
+        mutable std::shared_ptr<NLS::Render::RHI::RHITextureView> m_explicitDepthTextureView;
     };
 }

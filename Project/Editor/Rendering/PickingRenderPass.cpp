@@ -1,5 +1,6 @@
 #include "Rendering/DebugModelRenderFeature.h"
 #include "Rendering/PickingRenderPass.h"
+#include "Rendering/EditorDefaultResources.h"
 #include "Core/EditorActions.h"
 #include "Settings/EditorSettings.h"
 #include "Rendering/DebugSceneRenderer.h"
@@ -12,6 +13,8 @@ Editor::Rendering::PickingRenderPass::PickingRenderPass(NLS::Render::Core::Compo
 {
 	/* Light Material */
 	m_lightMaterial.SetShader(EDITOR_CONTEXT(editorResources)->GetShader("Billboard"));
+	m_lightMaterial.Set("u_TextureTiling", Maths::Vector2(1.0f, 1.0f));
+	m_lightMaterial.Set("u_TextureOffset", Maths::Vector2(0.0f, 0.0f));
 	m_lightMaterial.SetDepthTest(true);
 
 	/* Gizmo Pickable Material */
@@ -21,9 +24,11 @@ Editor::Rendering::PickingRenderPass::PickingRenderPass(NLS::Render::Core::Compo
 	m_gizmoPickingMaterial.Set("u_IsPickable", true);
 
 	/* Picking Material */
-	m_actorPickingMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders\\Unlit.glsl"]);
+	m_actorPickingMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders\\Unlit.hlsl"]);
 	m_actorPickingMaterial.Set("u_Diffuse", Maths::Vector4(1.f, 1.f, 1.f, 1.0f));
-	m_actorPickingMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", nullptr);
+	m_actorPickingMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", Editor::Rendering::GetEditorDefaultWhiteTexture());
+	m_actorPickingMaterial.Set("u_TextureTiling", Maths::Vector2(1.0f, 1.0f));
+	m_actorPickingMaterial.Set("u_TextureOffset", Maths::Vector2(0.0f, 0.0f));
 	m_actorPickingMaterial.SetFrontfaceCulling(false);
 	m_actorPickingMaterial.SetBackfaceCulling(false);
 }
@@ -69,6 +74,16 @@ Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRe
 	return std::nullopt;
 }
 
+Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRenderPass::RenderAndReadbackPickingResult(
+	const Engine::SceneSystem::Scene& p_scene,
+	uint32_t p_x,
+	uint32_t p_y
+)
+{
+	Draw(m_renderer.CreatePipelineState());
+	return ReadbackPickingResult(p_scene, p_x, p_y);
+}
+
 void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState p_pso)
 {
 	// TODO: Make sure we only renderer when the view is hovered and not being resized
@@ -86,6 +101,7 @@ void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState
 	m_actorPickingFramebuffer.Resize(frameDescriptor.renderWidth, frameDescriptor.renderHeight);
 
 	m_actorPickingFramebuffer.Bind();
+	m_renderer.BeginLegacyDrawSection();
 	
 	auto pso = m_renderer.CreatePipelineState();
 
@@ -107,6 +123,7 @@ void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState
 		);
 	}
 
+	m_renderer.EndLegacyDrawSection();
 	m_actorPickingFramebuffer.Unbind();
 
 	if (auto output = frameDescriptor.outputBuffer)
@@ -213,7 +230,7 @@ void Editor::Rendering::PickingRenderPass::DrawPickableLights(
 			if (actor.IsActive())
 			{
 				PreparePickingMaterial(actor, m_lightMaterial);
-				auto& lightModel = *EDITOR_CONTEXT(editorResources)->GetModel("Vertical_Plane");
+				auto& lightModel = *EDITOR_CONTEXT(editorResources)->GetModel("Plane");
                 auto modelMatrix = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
 
 				m_renderer.GetFeature<DebugModelRenderFeature>()

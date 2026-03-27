@@ -1,63 +1,63 @@
 #pragma once
 
 #include <memory>
+#include <unordered_map>
 
 #include <fg/FrameGraph.hpp>
 
-#include <Rendering/Buffers/ShaderStorageBuffer.h>
-#include <Rendering/Features/LightingRenderFeature.h>
-#include <Rendering/Resources/Material.h>
-#include <Rendering/Resources/Mesh.h>
-#include <Rendering/Resources/Shader.h>
-#include <Rendering/Resources/Texture2D.h>
+#include <Rendering/Buffers/MultiFramebuffer.h>
 
-#include "Rendering/ClusteredShading.h"
 #include "Rendering/BaseSceneRenderer.h"
+
+namespace NLS::Render::Resources
+{
+	class Material;
+	class Mesh;
+	class Shader;
+	class Texture2D;
+	class TextureCube;
+}
+
+namespace NLS::Render::Buffers
+{
+	class UniformBuffer;
+}
 
 namespace NLS::Engine::Rendering
 {
-	class NLS_ENGINE_API DeferredSceneRenderer : public BaseSceneRenderer
+	class NLS_ENGINE_API DeferredSceneRenderer final : public BaseSceneRenderer
 	{
 	public:
-        using PipelineState = Render::Data::PipelineState;
-        using Material = Render::Resources::Material;
-        using Mesh = Render::Resources::Mesh;
-        using Shader = Render::Resources::Shader;
-        using ShaderStorageBuffer = Render::Buffers::ShaderStorageBuffer;
-        using LightSet = Render::Features::LightingRenderFeature::LightSet;
-
-		DeferredSceneRenderer(Driver& p_driver);
+		explicit DeferredSceneRenderer(NLS::Render::Context::Driver& p_driver);
 		~DeferredSceneRenderer() override;
 
-		void BeginFrame(const Render::Data::FrameDescriptor& p_frameDescriptor) override;
+		void BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor) override;
 		void DrawFrame() override;
 
 	private:
 		struct DeferredSceneDescriptor
 		{
-			OpaqueDrawables opaques;
-			TransparentDrawables transparents;
-			SkyboxDrawables skyboxes;
-			LightSet lights;
-			ClusteredLightGrid clusteredLights;
+			AllDrawables drawables;
 		};
 
-		void EnsureGBufferFramebuffer();
-		void DrawOpaques(PipelineState pso);
-		void DrawDeferredGeometryPass(const DeferredSceneDescriptor& scene, PipelineState pso);
-		void DrawDeferredLightingPass(const DeferredSceneDescriptor& scene, PipelineState pso, uint32_t sourceFramebuffer);
-		void DrawSkyboxes(PipelineState pso);
-		void DrawTransparents(PipelineState pso);
-		Material BuildGeometryMaterial(const Material& source) const;
+		void LoadPipelineResources();
+		void EnsureGBufferTargets(uint16_t width, uint16_t height);
+		NLS::Render::Resources::Material& GetOrCreateGBufferMaterial(NLS::Render::Resources::Material& sourceMaterial);
+		void SyncGBufferMaterial(NLS::Render::Resources::Material& target, const NLS::Render::Resources::Material& sourceMaterial) const;
+		void DrawGBufferOpaques(NLS::Render::Data::PipelineState pso);
+		void DrawLightingPass(NLS::Render::Data::PipelineState pso);
 
 	private:
-		Mesh m_fullscreenTriangle;
-		Shader* m_deferredLightingShader = nullptr;
-
-		std::unique_ptr<ShaderStorageBuffer> m_clusterRecordsBuffer;
-		std::unique_ptr<ShaderStorageBuffer> m_clusterIndicesBuffer;
-
-		ClusteredShadingSettings m_clusterSettings;
-		uint32_t m_gbufferFramebuffer = 0;
+		NLS::Render::Buffers::MultiFramebuffer m_gBuffer;
+		std::unique_ptr<NLS::Render::Buffers::UniformBuffer> m_passBuffer;
+		std::unique_ptr<NLS::Render::Resources::Mesh> m_fullscreenQuad;
+		std::unique_ptr<NLS::Render::Resources::Material> m_lightingMaterial;
+		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferAlbedoTexture;
+		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferNormalTexture;
+		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferMaterialTexture;
+		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferDepthTexture;
+		std::unordered_map<const NLS::Render::Resources::Material*, std::unique_ptr<NLS::Render::Resources::Material>> m_gBufferMaterialCache;
+		NLS::Render::Resources::Shader* m_gBufferShader = nullptr;
+		NLS::Render::Resources::Shader* m_lightingShader = nullptr;
 	};
 }

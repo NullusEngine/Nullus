@@ -13,9 +13,11 @@ namespace NLS::Render::Buffers
 		intptr_t p_offset
 	) const
 	{
-		Bind();
-		p_vertexBuffer.Bind();
-		glEnableVertexAttribArray(p_attribute);
-		glVertexAttribPointer(static_cast<GLuint>(p_attribute), static_cast<GLint>(p_count), static_cast<GLenum>(p_type), GL_FALSE, static_cast<GLsizei>(p_stride), reinterpret_cast<const GLvoid*>(p_offset));
+		(void)p_attribute;
+		(void)p_vertexBuffer;
+		(void)p_type;
+		(void)p_count;
+		(void)p_stride;
+		(void)p_offset;
 	}
 }

@@ -22,6 +22,8 @@ public:
 
     void SetEnabled(bool p_enabled);
     bool IsEnabled() const;
+    virtual bool RequiresLegacyExecution() const;
+    virtual bool BlocksExplicitRecording() const;
 
 protected:
     virtual void OnBeginFrame(const Data::FrameDescriptor& p_frameDescriptor);

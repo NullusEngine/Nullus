@@ -1,6 +1,7 @@
 ﻿#include "Rendering/DebugModelRenderFeature.h"
 #include "Rendering/OutlineRenderFeature.h"
 #include "Core/EditorActions.h"
+#include "Rendering/EditorDefaultResources.h"
 #include "Settings/EditorSettings.h"
 
 #include <Components/MaterialRenderer.h>
@@ -16,15 +17,15 @@ Editor::Rendering::OutlineRenderFeature::OutlineRenderFeature(NLS::Render::Core:
     : NLS::Render::Features::ARenderFeature(p_renderer)
 {
     /* Stencil Fill Material */
-    m_stencilFillMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Unlit.glsl"]);
+    m_stencilFillMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Unlit.hlsl"]);
     m_stencilFillMaterial.SetBackfaceCulling(true);
     m_stencilFillMaterial.SetDepthTest(false);
     m_stencilFillMaterial.SetColorWriting(false);
-    m_stencilFillMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", nullptr);
+    m_stencilFillMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", Editor::Rendering::GetEditorDefaultWhiteTexture());
 
     /* Outline Material */
-    m_outlineMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Unlit.glsl"]);
-    m_outlineMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", nullptr);
+    m_outlineMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Unlit.hlsl"]);
+    m_outlineMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", Editor::Rendering::GetEditorDefaultWhiteTexture());
     m_outlineMaterial.SetDepthTest(false);
 }
 

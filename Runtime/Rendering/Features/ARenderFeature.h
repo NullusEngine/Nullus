@@ -2,6 +2,7 @@
 
 #include "Rendering/Data/FrameDescriptor.h"
 #include "Rendering/Entities/Drawable.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
 #include "RenderDef.h"
 
 namespace NLS::Render::Core
@@ -29,6 +30,7 @@ protected:
     virtual void OnBeginFrame(const Data::FrameDescriptor& p_frameDescriptor);
     virtual void OnEndFrame();
     virtual void OnBeforeDraw(PipelineState& p_pso, const Entities::Drawable& p_drawable);
+    virtual void OnPrepareExplicitDraw(RHI::RHICommandBuffer& commandBuffer, PipelineState& p_pso, const Entities::Drawable& p_drawable);
     virtual void OnAfterDraw(const Entities::Drawable& p_drawable);
 
 protected:

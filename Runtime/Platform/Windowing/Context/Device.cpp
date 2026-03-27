@@ -50,7 +50,7 @@ NLS::Context::Device::Device(const NLS::Windowing::Settings::DeviceSettings& p_d
 		CreateCursors();
 
 		if (p_deviceSettings.debugProfile)
-			glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GL_TRUE);
+			glfwWindowHint(GLFW_OPENGL_DEBUG_CONTEXT, GLFW_TRUE);
 
 		glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, p_deviceSettings.contextMajorVersion);
 		glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, p_deviceSettings.contextMinorVersion);

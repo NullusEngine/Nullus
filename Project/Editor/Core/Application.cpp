@@ -12,31 +12,48 @@ namespace NLS
 Editor::Core::Application::Application(const std::string& p_projectPath, const std::string& p_projectName)
     : m_context(p_projectPath, p_projectName), m_editor(m_context)
 {
+    const bool allowImmediateResizeTick =
+        m_context.windowSettings.clientAPI == Windowing::Settings::WindowClientAPI::OpenGL;
+
     const auto tickWhileResizing = [this]()
     {
         if (!IsRunning())
             return;
 
-        m_context.window->MakeCurrentContext();
+        if (m_context.windowSettings.clientAPI == Windowing::Settings::WindowClientAPI::OpenGL)
+            m_context.window->MakeCurrentContext();
 
-        if (m_isPollingEvents)
+        if (m_isTicking || m_isResizeTicking)
         {
-            TickResizeFrame();
+            QueueResizeTick();
             return;
         }
 
-        if (!m_isTicking)
-            TickFrame(0.0f, false);
+        TickResizeFrame();
     };
 
-    m_context.window->RefreshEvent.AddListener(tickWhileResizing);
-    m_context.window->ResizeEvent.AddListener([tickWhileResizing](uint16_t, uint16_t)
+    const auto handleResizeEvent = [this, allowImmediateResizeTick, tickWhileResizing]()
     {
-        tickWhileResizing();
+        if (allowImmediateResizeTick)
+        {
+            tickWhileResizing();
+            return;
+        }
+
+        QueueResizeTick();
+    };
+
+    m_context.window->RefreshEvent.AddListener([handleResizeEvent]()
+    {
+        handleResizeEvent();
     });
-    m_context.window->FramebufferResizeEvent.AddListener([tickWhileResizing](uint16_t, uint16_t)
+    m_context.window->ResizeEvent.AddListener([handleResizeEvent](uint16_t, uint16_t)
     {
-        tickWhileResizing();
+        handleResizeEvent();
+    });
+    m_context.window->FramebufferResizeEvent.AddListener([handleResizeEvent](uint16_t, uint16_t)
+    {
+        handleResizeEvent();
     });
 }
 
@@ -51,6 +68,7 @@ void Editor::Core::Application::Run()
     while (IsRunning())
     {
         TickFrame(clock.GetDeltaTime(), true);
+        FlushDeferredResizeTick();
 
         clock.Update();
     }
@@ -85,6 +103,20 @@ void Editor::Core::Application::TickResizeFrame()
     m_editor.Update(0.0f);
     m_editor.PostUpdate();
     m_isResizeTicking = false;
+}
+
+void Editor::Core::Application::QueueResizeTick()
+{
+    m_pendingResizeTick = true;
+}
+
+void Editor::Core::Application::FlushDeferredResizeTick()
+{
+    while (m_pendingResizeTick && IsRunning())
+    {
+        m_pendingResizeTick = false;
+        TickResizeFrame();
+    }
 }
 
 bool Editor::Core::Application::IsRunning() const

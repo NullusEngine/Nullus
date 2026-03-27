@@ -213,7 +213,8 @@ namespace NLS::Windowing
 		void MakeCurrentContext() const;
 
 		/**
-		* Handle the buffer swapping with the current window
+		* Legacy OpenGL-only buffer swap entry point.
+		* Prefer Render::Context::Driver::PresentSwapchain() for the runtime frame path.
 		*/
 		void SwapBuffers() const;
 
@@ -299,6 +300,7 @@ namespace NLS::Windowing
 		* Return GLFW window
 		*/
 		GLFWwindow* GetGlfwWindow() const;
+		void* GetNativeWindowHandle() const;
 
 
 		void ShowConsole(bool state);
@@ -349,6 +351,7 @@ namespace NLS::Windowing
 		Maths::Vector2 m_minimumSize;
 		Maths::Vector2 m_maximumSize;
 		Maths::Vector2 m_position;
+		Settings::WindowClientAPI m_clientAPI = Settings::WindowClientAPI::OpenGL;
 		bool m_fullscreen;
 		int32_t m_refreshRate;
 		Cursor::ECursorMode m_cursorMode;

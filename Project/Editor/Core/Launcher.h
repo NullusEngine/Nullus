@@ -4,8 +4,14 @@
 #include <Windowing/Context/Device.h>
 #include <Windowing/Window.h>
 #include <Rendering/Context/Driver.h>
+#include <Rendering/Settings/EGraphicsBackend.h>
 #include <UI/UIManager.h>
 #include <UI/Panels/PanelWindow.h>
+
+namespace NLS::Render::Resources
+{
+    class Texture2D;
+}
 
 namespace NLS
 {
@@ -40,8 +46,7 @@ public:
 
 private:
     uint32_t m_brandTexture = 0;
-    uint32_t m_brandTextureWidth = 0;
-    uint32_t m_brandTextureHeight = 0;
+    NLS::Render::Resources::Texture2D* m_brandTextureResource = nullptr;
 
     std::unique_ptr<Context::Device> m_device;
     std::unique_ptr<Windowing::Window> m_window;
@@ -54,5 +59,6 @@ private:
     std::string m_projectPath = "";
     std::string m_projectName = "";
     bool m_readyToGo = false;
+    Render::Settings::EGraphicsBackend m_graphicsBackend = Render::Settings::EGraphicsBackend::OPENGL;
 };
 } // namespace NLS

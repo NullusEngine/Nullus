@@ -3,15 +3,17 @@ file(GLOB_RECURSE _meta_parser_cs_sources
     "${CMAKE_CURRENT_SOURCE_DIR}/*.cs"
 )
 
+file(GLOB _meta_parser_template_sources
+    CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/Templates/*.tt"
+)
+
 list(FILTER _meta_parser_cs_sources EXCLUDE REGEX [[/bin/]])
 list(FILTER _meta_parser_cs_sources EXCLUDE REGEX [[/obj/]])
 
 set(_meta_parser_sources
     ${_meta_parser_cs_sources}
-    "${CMAKE_CURRENT_SOURCE_DIR}/Templates/MetaGenerated.cpp.tt"
-    "${CMAKE_CURRENT_SOURCE_DIR}/Templates/MetaGenerated.h.tt"
-    "${CMAKE_CURRENT_SOURCE_DIR}/Templates/HeaderGenerated.cpp.tt"
-    "${CMAKE_CURRENT_SOURCE_DIR}/Templates/HeaderGenerated.h.tt"
+    ${_meta_parser_template_sources}
 )
 
 add_executable(MetaParser ${_meta_parser_sources})
@@ -47,12 +49,7 @@ if(TARGET CppAst)
     target_link_libraries(MetaParser PRIVATE CppAst)
 endif()
 
-foreach(_template IN ITEMS
-    "${CMAKE_CURRENT_SOURCE_DIR}/Templates/MetaGenerated.cpp.tt"
-    "${CMAKE_CURRENT_SOURCE_DIR}/Templates/MetaGenerated.h.tt"
-    "${CMAKE_CURRENT_SOURCE_DIR}/Templates/HeaderGenerated.cpp.tt"
-    "${CMAKE_CURRENT_SOURCE_DIR}/Templates/HeaderGenerated.h.tt"
-)
+foreach(_template IN LISTS _meta_parser_template_sources)
     get_filename_component(_template_name "${_template}" NAME)
     set_source_files_properties("${_template}" PROPERTIES
         VS_TOOL_OVERRIDE "None"

@@ -3,6 +3,7 @@
 #include <Debug/Logger.h>
 #include <memory>
 
+#include "Rendering/RHI/Backends/DX11/DX11RenderDevice.h"
 #include "Rendering/RHI/Backends/DX12/DX12RenderDevice.h"
 #include "Rendering/RHI/Backends/Metal/MetalRenderDevice.h"
 #include "Rendering/RHI/Backends/Null/NullRenderDevice.h"
@@ -23,6 +24,8 @@ namespace NLS::Render::Backend
 			return std::make_unique<VulkanRenderDevice>();
 		case NLS::Render::Settings::EGraphicsBackend::DX12:
 			return std::make_unique<DX12RenderDevice>();
+		case NLS::Render::Settings::EGraphicsBackend::DX11:
+			return std::make_unique<DX11RenderDevice>();
 		case NLS::Render::Settings::EGraphicsBackend::METAL:
 			return std::make_unique<MetalRenderDevice>();
 		default:

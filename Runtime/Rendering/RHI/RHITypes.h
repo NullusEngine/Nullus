@@ -166,6 +166,7 @@ namespace NLS::Render::RHI
 		OpenGL,
 		Vulkan,
 		DX12,
+		DX11,
 		Metal
 	};
 

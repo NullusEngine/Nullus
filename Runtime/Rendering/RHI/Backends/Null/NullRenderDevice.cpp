@@ -1,6 +1,7 @@
 #include "Rendering/RHI/Backends/Null/NullRenderDevice.h"
 
 #include <memory>
+#include <utility>
 
 namespace NLS::Render::Backend
 {
@@ -31,6 +32,11 @@ namespace NLS::Render::Backend
 		private:
 			NLS::Render::RHI::BufferType m_type;
 		};
+	}
+
+	NullRenderDevice::NullRenderDevice(NullRenderDeviceDescriptor descriptor)
+		: m_descriptor(std::move(descriptor))
+	{
 	}
 
 	std::optional<NLS::Render::Data::PipelineState> NullRenderDevice::Init(const NLS::Render::Settings::DriverSettings&) { return NLS::Render::Data::PipelineState{}; }
@@ -78,13 +84,18 @@ namespace NLS::Render::Backend
 	void* NullRenderDevice::GetUITextureHandle(uint32_t) const { return nullptr; }
 	void NullRenderDevice::ReleaseUITextureHandles() {}
 	bool NullRenderDevice::PrepareUIRender() { return false; }
-	std::string NullRenderDevice::GetVendor() { return "None"; }
-	std::string NullRenderDevice::GetHardware() { return "None"; }
-	std::string NullRenderDevice::GetVersion() { return "None"; }
-	std::string NullRenderDevice::GetShadingLanguageVersion() { return "None"; }
-	NLS::Render::RHI::RHIDeviceCapabilities NullRenderDevice::GetCapabilities() const { return {}; }
-	NLS::Render::RHI::NativeRenderDeviceInfo NullRenderDevice::GetNativeDeviceInfo() const { return {}; }
-	bool NullRenderDevice::IsBackendReady() const { return false; }
+	std::string NullRenderDevice::GetVendor() { return m_descriptor.vendor; }
+	std::string NullRenderDevice::GetHardware() { return m_descriptor.hardware; }
+	std::string NullRenderDevice::GetVersion() { return m_descriptor.version; }
+	std::string NullRenderDevice::GetShadingLanguageVersion() { return m_descriptor.shadingLanguageVersion; }
+	NLS::Render::RHI::RHIDeviceCapabilities NullRenderDevice::GetCapabilities() const { return m_descriptor.capabilities; }
+	NLS::Render::RHI::NativeRenderDeviceInfo NullRenderDevice::GetNativeDeviceInfo() const
+	{
+		NLS::Render::RHI::NativeRenderDeviceInfo info;
+		info.backend = m_descriptor.backend;
+		return info;
+	}
+	bool NullRenderDevice::IsBackendReady() const { return m_descriptor.capabilities.backendReady; }
 	bool NullRenderDevice::CreateSwapchain(const NLS::Render::RHI::SwapchainDesc&) { return false; }
 	void NullRenderDevice::DestroySwapchain() {}
 	void NullRenderDevice::ResizeSwapchain(uint32_t, uint32_t) {}

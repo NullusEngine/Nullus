@@ -1,5 +1,6 @@
 #include "Rendering/RHI/Backends/ExplicitDeviceFactory.h"
 
+#include "Rendering/RHI/Backends/DX11/DX11ExplicitDeviceFactory.h"
 #include "Rendering/RHI/Backends/DX12/DX12ExplicitDeviceFactory.h"
 #include "Rendering/RHI/Backends/OpenGL/Compat/ExplicitRHICompat.h"
 #include "Rendering/RHI/Backends/Vulkan/VulkanExplicitDeviceFactory.h"
@@ -15,6 +16,8 @@ namespace NLS::Render::Backend
 			return CreateDX12ExplicitDevice(renderDevice);
 		case NLS::Render::RHI::NativeBackendType::Vulkan:
 			return CreateVulkanExplicitDevice(renderDevice);
+		case NLS::Render::RHI::NativeBackendType::DX11:
+			return CreateDX11ExplicitDevice(renderDevice);
 		case NLS::Render::RHI::NativeBackendType::OpenGL:
 		case NLS::Render::RHI::NativeBackendType::Metal:
 		case NLS::Render::RHI::NativeBackendType::None:

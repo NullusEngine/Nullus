@@ -1,12 +1,26 @@
 #pragma once
 
+#include <string>
+
 #include "Rendering/RHI/IRenderDevice.h"
 
 namespace NLS::Render::Backend
 {
-	class NLS_RENDER_API NullRenderDevice final : public NLS::Render::RHI::IRenderDevice
+	struct NLS_RENDER_API NullRenderDeviceDescriptor
+	{
+		NLS::Render::RHI::NativeBackendType backend = NLS::Render::RHI::NativeBackendType::None;
+		NLS::Render::RHI::RHIDeviceCapabilities capabilities{};
+		std::string vendor = "None";
+		std::string hardware = "None";
+		std::string version = "None";
+		std::string shadingLanguageVersion = "None";
+	};
+
+	class NLS_RENDER_API NullRenderDevice : public NLS::Render::RHI::IRenderDevice
 	{
 	public:
+		explicit NullRenderDevice(NullRenderDeviceDescriptor descriptor = {});
+
 		std::optional<NLS::Render::Data::PipelineState> Init(const NLS::Render::Settings::DriverSettings& settings) override;
 
 		void Clear(bool colorBuffer, bool depthBuffer, bool stencilBuffer) override;
@@ -80,5 +94,8 @@ namespace NLS::Render::Backend
 		void DestroySwapchain() override;
 		void ResizeSwapchain(uint32_t width, uint32_t height) override;
 		void PresentSwapchain() override;
+
+	private:
+		NullRenderDeviceDescriptor m_descriptor;
 	};
 }

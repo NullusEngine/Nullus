@@ -15,6 +15,15 @@ struct GLFWwindow;
 
 namespace NLS::UI
 {
+enum class NLS_UI_API ImGuiGlfwInitBackend : uint8_t
+{
+    OpenGL,
+    Vulkan,
+    Other
+};
+
+NLS_UI_API ImGuiGlfwInitBackend ResolveImGuiGlfwInitBackend(NLS::Render::Settings::EGraphicsBackend backend);
+
 /**
  * Handle the creation and drawing of the UI
  */

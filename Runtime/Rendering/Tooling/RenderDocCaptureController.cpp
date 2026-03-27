@@ -20,6 +20,22 @@
 
 namespace NLS::Render::Tooling
 {
+	void* ResolveRenderDocCaptureDevice(const ::NLS::Render::RHI::NativeRenderDeviceInfo& nativeInfo)
+	{
+		switch (nativeInfo.backend)
+		{
+		case ::NLS::Render::RHI::NativeBackendType::DX12:
+		case ::NLS::Render::RHI::NativeBackendType::Vulkan:
+			return nativeInfo.graphicsQueue != nullptr ? nativeInfo.graphicsQueue : nativeInfo.device;
+		case ::NLS::Render::RHI::NativeBackendType::DX11:
+		case ::NLS::Render::RHI::NativeBackendType::OpenGL:
+		case ::NLS::Render::RHI::NativeBackendType::Metal:
+		case ::NLS::Render::RHI::NativeBackendType::None:
+		default:
+			return nativeInfo.device;
+		}
+	}
+
 namespace
 {
 #if defined(_WIN32)
@@ -594,19 +610,7 @@ namespace
 	void RenderDocCaptureController::SetCaptureTarget(const ::NLS::Render::RHI::NativeRenderDeviceInfo& nativeInfo)
 	{
 #if defined(_WIN32)
-		switch (nativeInfo.backend)
-		{
-		case ::NLS::Render::RHI::NativeBackendType::DX12:
-		case ::NLS::Render::RHI::NativeBackendType::Vulkan:
-			m_impl->captureDevice = nativeInfo.graphicsQueue != nullptr ? nativeInfo.graphicsQueue : nativeInfo.device;
-			break;
-		case ::NLS::Render::RHI::NativeBackendType::OpenGL:
-		case ::NLS::Render::RHI::NativeBackendType::Metal:
-		case ::NLS::Render::RHI::NativeBackendType::None:
-		default:
-			m_impl->captureDevice = nativeInfo.device;
-			break;
-		}
+		m_impl->captureDevice = ResolveRenderDocCaptureDevice(nativeInfo);
 		m_impl->captureWindow = nativeInfo.nativeWindowHandle != nullptr
 			? nativeInfo.nativeWindowHandle
 			: nativeInfo.platformWindow;

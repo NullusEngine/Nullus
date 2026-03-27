@@ -9,6 +9,8 @@
 
 namespace NLS::Render::Tooling
 {
+	NLS_RENDER_API void* ResolveRenderDocCaptureDevice(const ::NLS::Render::RHI::NativeRenderDeviceInfo& nativeInfo);
+
 	class NLS_RENDER_API RenderDocCaptureController final
 	{
 	public:

@@ -11,6 +11,23 @@
 
 namespace NLS::UI
 {
+ImGuiGlfwInitBackend ResolveImGuiGlfwInitBackend(const NLS::Render::Settings::EGraphicsBackend backend)
+{
+    switch (backend)
+    {
+    case NLS::Render::Settings::EGraphicsBackend::OPENGL:
+        return ImGuiGlfwInitBackend::OpenGL;
+    case NLS::Render::Settings::EGraphicsBackend::VULKAN:
+        return ImGuiGlfwInitBackend::Vulkan;
+    case NLS::Render::Settings::EGraphicsBackend::DX11:
+    case NLS::Render::Settings::EGraphicsBackend::DX12:
+    case NLS::Render::Settings::EGraphicsBackend::METAL:
+    case NLS::Render::Settings::EGraphicsBackend::NONE:
+    default:
+        return ImGuiGlfwInitBackend::Other;
+    }
+}
+
 UIManager::UIManager(
     GLFWwindow* p_glfwWindow,
     NLS::Render::Settings::EGraphicsBackend p_backend,
@@ -26,20 +43,15 @@ UIManager::UIManager(
 
     ApplyStyle(p_style);
 
-    switch (m_backend)
+    switch (ResolveImGuiGlfwInitBackend(m_backend))
     {
-    case NLS::Render::Settings::EGraphicsBackend::OPENGL:
+    case ImGuiGlfwInitBackend::OpenGL:
         ImGui_ImplGlfw_InitForOpenGL(p_glfwWindow, true);
         break;
-    case NLS::Render::Settings::EGraphicsBackend::VULKAN:
+    case ImGuiGlfwInitBackend::Vulkan:
         ImGui_ImplGlfw_InitForVulkan(p_glfwWindow, true);
         break;
-    case NLS::Render::Settings::EGraphicsBackend::DX12:
-        ImGui_ImplGlfw_InitForOther(p_glfwWindow, true);
-        break;
-    case NLS::Render::Settings::EGraphicsBackend::METAL:
-    case NLS::Render::Settings::EGraphicsBackend::NONE:
-    default:
+    case ImGuiGlfwInitBackend::Other:
         ImGui_ImplGlfw_InitForOther(p_glfwWindow, true);
         break;
     }

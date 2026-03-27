@@ -557,6 +557,7 @@ namespace NLS::Render::RHI
         case NLS::Render::Settings::EGraphicsBackend::VULKAN:
             return std::make_unique<VulkanUIBridge>(nativeDeviceInfo);
 #endif
+        case NLS::Render::Settings::EGraphicsBackend::DX11:
         case NLS::Render::Settings::EGraphicsBackend::METAL:
         case NLS::Render::Settings::EGraphicsBackend::NONE:
         default:

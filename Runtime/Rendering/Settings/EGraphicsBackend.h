@@ -13,6 +13,7 @@ namespace NLS::Render::Settings
 		OPENGL,
 		VULKAN,
 		DX12,
+		DX11,
 		METAL
 	};
 }

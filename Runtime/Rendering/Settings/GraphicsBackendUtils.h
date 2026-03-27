@@ -39,6 +39,8 @@ namespace NLS::Render::Settings
 			return EGraphicsBackend::VULKAN;
 		if (normalized == "dx12" || normalized == "directx12" || normalized == "d3d12")
 			return EGraphicsBackend::DX12;
+		if (normalized == "dx11" || normalized == "directx11" || normalized == "d3d11")
+			return EGraphicsBackend::DX11;
 		if (normalized == "metal")
 			return EGraphicsBackend::METAL;
 		if (normalized == "none" || normalized == "null")
@@ -73,6 +75,7 @@ namespace NLS::Render::Settings
 		{
 		case EGraphicsBackend::VULKAN: return "Vulkan";
 		case EGraphicsBackend::DX12: return "DX12";
+		case EGraphicsBackend::DX11: return "DX11";
 		case EGraphicsBackend::METAL: return "Metal";
 		case EGraphicsBackend::NONE: return "None";
 		case EGraphicsBackend::OPENGL:
@@ -93,6 +96,8 @@ namespace NLS::Render::Settings
 #else
 			return false;
 #endif
+		case EGraphicsBackend::DX11:
+			return false;
 		case EGraphicsBackend::VULKAN:
 #if NLS_HAS_IMGUI_VULKAN_BACKEND
 			return true;
@@ -119,6 +124,8 @@ namespace NLS::Render::Settings
 #else
 			return false;
 #endif
+		case EGraphicsBackend::DX11:
+			return false;
 		case EGraphicsBackend::VULKAN:
 #if NLS_HAS_IMGUI_VULKAN_BACKEND
 			return true;
@@ -141,6 +148,8 @@ namespace NLS::Render::Settings
 			return "Current scene renderer is implemented on this backend.";
 		case EGraphicsBackend::DX12:
 			return "Runtime scene submission is available, but editor offscreen framebuffers/readback are not DX12-native yet.";
+		case EGraphicsBackend::DX11:
+			return "DX11 backend selection is available, but runtime scene submission and editor parity are not implemented yet.";
 		case EGraphicsBackend::VULKAN:
 			return "Runtime scene submission, editor offscreen framebuffers, and framebuffer readback are available on this backend.";
 		case EGraphicsBackend::METAL:

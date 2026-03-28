@@ -48,6 +48,7 @@ namespace NLS::Render::RHI
 			switch (backend)
 			{
 			case NativeBackendType::DX12: return NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL;
+			case NativeBackendType::DX11: return NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL;
 			case NativeBackendType::Vulkan: return NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV;
 			case NativeBackendType::OpenGL: return NLS::Render::ShaderCompiler::ShaderTargetPlatform::GLSL;
 			default: return NLS::Render::ShaderCompiler::ShaderTargetPlatform::Unknown;

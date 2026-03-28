@@ -8,6 +8,7 @@
 #include "Rendering/Buffers/Framebuffer.h"
 #include "Rendering/Buffers/MultiFramebuffer.h"
 #include "Rendering/Geometry/Vertex.h"
+#include "Rendering/Resources/MaterialCompatibilityDrawState.h"
 #include "Rendering/Resources/Loaders/TextureLoader.h"
 #include <Debug/Assertion.h>
 
@@ -360,23 +361,14 @@ void ABaseRenderer::DrawEntity(
             }
         }
 
-		auto pipelineDesc = material->BuildGraphicsPipelineDesc();
-		pipelineDesc.primitiveMode = p_drawable.primitiveMode;
-		p_pso.depthWriting = pipelineDesc.depthStencilState.depthWrite;
-        p_pso.colorWriting.mask = pipelineDesc.blendState.colorWrite ? 0xFF : 0x00;
-        p_pso.blending = pipelineDesc.blendState.enabled;
-        p_pso.culling = pipelineDesc.rasterState.culling;
-        p_pso.depthTest = pipelineDesc.depthStencilState.depthTest;
+        const auto compatibilityDrawState = Resources::BuildMaterialCompatibilityDrawState(
+            *material,
+            p_pso,
+            p_drawable.primitiveMode,
+            p_pso.depthFunc);
 
-        if (p_pso.culling)
-            p_pso.cullFace = pipelineDesc.rasterState.cullFace;
-
-		// Preserve pass-level depth overrides such as skybox LESS_EQUAL while
-		// still baking the final compare op into backend pipeline creation.
-		pipelineDesc.depthStencilState.depthCompare = p_pso.depthFunc;
-
-        m_driver.BindGraphicsPipeline(pipelineDesc, &material->GetBindingSetInstance());
-        m_driver.Draw(p_pso, *mesh, p_drawable.primitiveMode, gpuInstances);
+        compatibilityDrawState.Bind(m_driver);
+        m_driver.Draw(compatibilityDrawState.GetPipelineState(), *mesh, p_drawable.primitiveMode, gpuInstances);
 	}
 }
 }

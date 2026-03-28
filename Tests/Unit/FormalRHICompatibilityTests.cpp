@@ -9,6 +9,7 @@
 #include "Rendering/RHI/GraphicsPipelineDesc.h"
 #include "Rendering/RHI/IRenderDevice.h"
 #include "Rendering/Resources/BindingSetInstance.h"
+#include "Rendering/Resources/MaterialCompatibilityDrawState.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/ShaderReflection.h"
 #include "Rendering/ShaderCompiler/ShaderCompilationTypes.h"
@@ -534,4 +535,43 @@ TEST(FormalRHICompatibilityTests, MaterialRecordedHelpersDoNotSilentlyFallbackFo
 
     EXPECT_EQ(pipeline, nullptr);
     EXPECT_EQ(bindingSet, nullptr);
+}
+
+TEST(FormalRHICompatibilityTests, MaterialCompatibilityDrawStateAppliesLegacyPipelineAndBindingSet)
+{
+    RecordingRenderDevice renderDevice;
+
+    NLS::Render::Resources::Material material(nullptr);
+    material.SetBlendable(true);
+    material.SetBackfaceCulling(true);
+    material.SetDepthTest(false);
+    material.SetDepthWriting(false);
+    material.SetColorWriting(false);
+
+    NLS::Render::Data::PipelineState pipelineState;
+    pipelineState.depthFunc = NLS::Render::Settings::EComparaisonAlgorithm::LESS_EQUAL;
+
+    const auto drawState = NLS::Render::Resources::BuildMaterialCompatibilityDrawState(
+        material,
+        pipelineState,
+        NLS::Render::Settings::EPrimitiveMode::LINES,
+        NLS::Render::Settings::EComparaisonAlgorithm::GREATER);
+
+    const auto& resolvedPipelineState = drawState.GetPipelineState();
+    EXPECT_TRUE(resolvedPipelineState.blending);
+    EXPECT_FALSE(resolvedPipelineState.depthWriting);
+    EXPECT_FALSE(resolvedPipelineState.depthTest);
+    EXPECT_TRUE(resolvedPipelineState.culling);
+    EXPECT_EQ(resolvedPipelineState.cullFace, NLS::Render::Settings::ECullFace::BACK);
+    EXPECT_EQ(resolvedPipelineState.colorWriting.mask, 0x00);
+    EXPECT_EQ(resolvedPipelineState.depthFunc, NLS::Render::Settings::EComparaisonAlgorithm::LESS_EQUAL);
+    drawState.Bind(renderDevice);
+
+    ASSERT_TRUE(renderDevice.boundPipelineDesc.has_value());
+    EXPECT_EQ(renderDevice.boundPipelineDesc->primitiveMode, NLS::Render::Settings::EPrimitiveMode::LINES);
+    EXPECT_EQ(
+        renderDevice.boundPipelineDesc->depthStencilState.depthCompare,
+        NLS::Render::Settings::EComparaisonAlgorithm::GREATER);
+    EXPECT_NE(renderDevice.boundBindingSet, nullptr);
+    EXPECT_EQ(renderDevice.bindGraphicsPipelineCallCount, 1u);
 }

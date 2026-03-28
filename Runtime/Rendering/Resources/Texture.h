@@ -42,8 +42,9 @@ namespace NLS::Render::Resources
 		void SetTextureId(uint32_t p_id) { mTextureID = p_id; }
 		uint32_t GetTextureId() const { return mTextureID; }
 		const RHI::IRHITexture* GetRHITexture() const { return m_textureResource.get(); }
+		const std::shared_ptr<RHI::RHITexture>& GetTextureHandle() const { return m_explicitTexture; }
 		const std::shared_ptr<RHI::IRHITexture>& GetRHITextureHandle() const { return m_textureResource; }
-		const std::shared_ptr<RHI::RHITexture>& GetExplicitRHITextureHandle() const { return m_explicitTexture; }
+		const std::shared_ptr<RHI::RHITexture>& GetExplicitRHITextureHandle() const { return GetTextureHandle(); }
 		std::shared_ptr<RHI::RHITextureView> GetOrCreateExplicitTextureView(const std::string& debugName = {}) const;
 
 	private:

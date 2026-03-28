@@ -5,6 +5,7 @@
 #include <optional>
 #include <unordered_map>
 
+#include "Core/ServiceLocator.h"
 #define private public
 #include "Rendering/Context/Driver.h"
 #undef private
@@ -15,10 +16,12 @@
 #include "Rendering/RHI/GraphicsPipelineDesc.h"
 #include "Rendering/RHI/IRenderDevice.h"
 #include "Rendering/RHI/Utils/ResourceStateTracker/ResourceStateTracker.h"
+#include "Rendering/Resources/BindingSet.h"
 #include "Rendering/Resources/BindingSetInstance.h"
 #include "Rendering/Resources/MaterialCompatibilityDrawState.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/ShaderReflection.h"
+#include "Rendering/Resources/Texture.h"
 #include "Rendering/ShaderCompiler/ShaderCompilationTypes.h"
 
 namespace
@@ -335,6 +338,18 @@ namespace
     private:
         NLS::Render::RHI::RHITextureDesc m_desc{};
         NLS::Render::RHI::ResourceState m_state = NLS::Render::RHI::ResourceState::Unknown;
+    };
+
+    class TestTexture final : public NLS::Render::Resources::Texture
+    {
+    public:
+        TestTexture()
+            : Texture(NLS::Render::RHI::TextureDimension::Texture2D)
+        {
+        }
+
+        void Bind(uint32_t) const override {}
+        void Unbind() const override {}
     };
 
     NLS::Render::Settings::DriverSettings MakeNullDriverSettings()
@@ -677,6 +692,64 @@ TEST(FormalRHICompatibilityTests, MaterialCompatibilityDrawStateAppliesLegacyPip
         NLS::Render::Settings::EComparaisonAlgorithm::GREATER);
     EXPECT_NE(renderDevice.boundBindingSet, nullptr);
     EXPECT_EQ(renderDevice.bindGraphicsPipelineCallCount, 1u);
+}
+
+TEST(FormalRHICompatibilityTests, BindingSetTextureEntryKeepsFormalTextureHandleAlongsideCompatibilityResource)
+{
+    NLS::Render::Context::Driver driver(MakeNullDriverSettings());
+    InstallRecordingRenderDevice(driver);
+    NLS::Core::ServiceLocator::Provide(driver);
+
+    NLS::Render::Resources::BindingSet bindingSet;
+    NLS::Render::Resources::ResourceBindingLayout layout;
+    layout.bindings.push_back({
+        "Albedo",
+        NLS::Render::Resources::ShaderResourceKind::SampledTexture,
+        NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D,
+        0u,
+        0u,
+        0
+    });
+    bindingSet.SetLayout(layout);
+
+    TestTexture texture;
+    texture.SetRHITexture(std::make_shared<RecordingTextureResource>(77u, NLS::Render::RHI::TextureDimension::Texture2D));
+
+    bindingSet.SetTexture("Albedo", &texture);
+
+    const auto* entry = bindingSet.Find("Albedo");
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->texture, &texture);
+    EXPECT_NE(entry->textureResource, nullptr);
+    EXPECT_EQ(entry->resource, entry->textureResource);
+    EXPECT_EQ(entry->textureHandle, texture.GetTextureHandle());
+}
+
+TEST(FormalRHICompatibilityTests, BindingSetBufferEntryAcceptsFormalHandleWithCompatibilityFallback)
+{
+    NLS::Render::Resources::BindingSet bindingSet;
+    NLS::Render::Resources::ResourceBindingLayout layout;
+    layout.bindings.push_back({
+        "Globals",
+        NLS::Render::Resources::ShaderResourceKind::UniformBuffer,
+        NLS::Render::Resources::UniformType::UNIFORM_FLOAT,
+        0u,
+        1u,
+        1
+    });
+    bindingSet.SetLayout(layout);
+
+    auto legacyBuffer = std::make_shared<RecordingBufferResource>(91u, NLS::Render::RHI::BufferType::Uniform);
+    auto explicitBuffer = std::make_shared<RecordingExplicitBuffer>(NLS::Render::RHI::RHIBufferDesc{});
+
+    bindingSet.SetBuffer("Globals", explicitBuffer, legacyBuffer.get());
+
+    const auto* entry = bindingSet.Find("Globals");
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->bufferHandle, explicitBuffer);
+    EXPECT_EQ(entry->bufferResource, legacyBuffer.get());
+    EXPECT_EQ(entry->resource, legacyBuffer.get());
+    EXPECT_EQ(bindingSet.GetBufferHandle("Globals"), explicitBuffer);
 }
 
 TEST(FormalRHICompatibilityTests, FrameGraphBufferPreReadRecordsExplicitVertexBarrierAndTracksState)

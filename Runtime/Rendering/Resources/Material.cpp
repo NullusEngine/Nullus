@@ -550,7 +550,10 @@ namespace NLS::Render::Resources
 				bufferState.buffer->SetRawData(bufferData.data(), static_cast<uint32_t>(bufferData.size()));
 			bufferState.buffer->Bind(bindingPoint);
 
-			m_bindingSet.SetBuffer(constantBuffer.name, bufferState.buffer->GetRHIBuffer());
+			m_bindingSet.SetBuffer(
+				constantBuffer.name,
+				bufferState.buffer->GetBufferHandle(),
+				bufferState.buffer->GetRHIBuffer());
 		}
 	}
 
@@ -929,7 +932,7 @@ namespace NLS::Render::Resources
 
 				bindingEntry.buffer = bufferState->second.buffer->CreateExplicitSnapshotBuffer(entry.name + "Snapshot");
 				if (bindingEntry.buffer == nullptr)
-					bindingEntry.buffer = bufferState->second.buffer->GetExplicitRHIBufferHandle();
+				bindingEntry.buffer = bufferState->second.buffer->GetBufferHandle();
 				if (bindingEntry.buffer == nullptr)
 					continue;
 				bindingEntry.bufferRange = bufferState->second.size;
@@ -964,7 +967,7 @@ namespace NLS::Render::Resources
 					break;
 				}
 
-				if (texture == nullptr || !texture->GetExplicitRHITextureHandle())
+				if (texture == nullptr || !texture->GetTextureHandle())
 				{
 					if (ShouldLogMaterialBindingDiagnostics() && m_shader != nullptr && m_shader->path.find("Skybox") != std::string::npos)
 						NLS_LOG_INFO("[SkyboxMaterial] Texture entry \"" + entry.name + "\" resolved to null texture");

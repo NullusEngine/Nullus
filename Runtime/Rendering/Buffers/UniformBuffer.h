@@ -74,8 +74,9 @@ public:
      */
     uint32_t GetID() const;
     const RHI::IRHIBuffer* GetRHIBuffer() const { return m_bufferResource.get(); }
+    const std::shared_ptr<RHI::RHIBuffer>& GetBufferHandle() const { return m_explicitBuffer; }
     const std::shared_ptr<RHI::IRHIBuffer>& GetRHIBufferHandle() const { return m_bufferResource; }
-    const std::shared_ptr<RHI::RHIBuffer>& GetExplicitRHIBufferHandle() const { return m_explicitBuffer; }
+    const std::shared_ptr<RHI::RHIBuffer>& GetExplicitRHIBufferHandle() const { return GetBufferHandle(); }
 
 private:
     void _SetSubData(const void* p_data, uint32_t size, size_t p_offset);

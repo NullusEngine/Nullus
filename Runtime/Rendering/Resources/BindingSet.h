@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -17,10 +18,13 @@ namespace NLS::Render::Resources
 		void SetLayout(const ResourceBindingLayout& layout);
 		void SetSampler(const std::string& name, const RHI::SamplerDesc& sampler);
 		void SetTexture(const std::string& name, const Texture* texture);
+		void SetBuffer(const std::string& name, const std::shared_ptr<RHI::RHIBuffer>& buffer, const RHI::IRHIBuffer* compatibilityBuffer = nullptr);
 		void SetBuffer(const std::string& name, const RHI::IRHIBuffer* buffer);
 		void SetResource(const std::string& name, const RHI::IRHIResource* resource);
 		const RHI::SamplerDesc* GetSampler(const std::string& name) const;
 		const Texture* GetTexture(const std::string& name) const;
+		std::shared_ptr<RHI::RHITexture> GetTextureHandle(const std::string& name) const;
+		std::shared_ptr<RHI::RHIBuffer> GetBufferHandle(const std::string& name) const;
 		const RHI::IRHIBuffer* GetBuffer(const std::string& name) const;
 		const RHI::IRHIResource* GetResource(const std::string& name) const;
 		const ResourceBindingEntry* Find(const std::string& name) const;

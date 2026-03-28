@@ -48,8 +48,9 @@ public:
      */
     uint32_t GetID();
     const RHI::IRHIBuffer* GetRHIBuffer() const { return m_bufferResource.get(); }
+    const std::shared_ptr<RHI::RHIBuffer>& GetBufferHandle() const { return m_explicitBuffer; }
     const std::shared_ptr<RHI::IRHIBuffer>& GetRHIBufferHandle() const { return m_bufferResource; }
-    const std::shared_ptr<RHI::RHIBuffer>& GetExplicitRHIBufferHandle() const { return m_explicitBuffer; }
+    const std::shared_ptr<RHI::RHIBuffer>& GetExplicitRHIBufferHandle() const { return GetBufferHandle(); }
 
 private:
     uint32_t m_bufferID = 0;

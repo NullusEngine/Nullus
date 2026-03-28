@@ -45,7 +45,7 @@ MeshBufferView Mesh::GetVertexBufferView() const
 {
 	return MeshBufferView{
 		m_vertexBuffer ? m_vertexBuffer->GetRHIBufferHandle() : nullptr,
-		m_vertexBuffer ? m_vertexBuffer->GetExplicitRHIBufferHandle() : nullptr,
+		m_vertexBuffer ? m_vertexBuffer->GetBufferHandle() : nullptr,
 		m_vertexBuffer ? m_vertexBuffer->GetID() : 0u,
 		m_vertexStride,
 		0u
@@ -59,7 +59,7 @@ std::optional<MeshBufferView> Mesh::GetIndexBufferView() const
 
 	return MeshBufferView{
 		m_indexBuffer ? m_indexBuffer->GetRHIBufferHandle() : nullptr,
-		m_indexBuffer ? m_indexBuffer->GetExplicitRHIBufferHandle() : nullptr,
+		m_indexBuffer ? m_indexBuffer->GetBufferHandle() : nullptr,
 		m_indexBuffer->GetID(),
 		sizeof(uint32_t),
 		0u

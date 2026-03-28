@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,8 @@ namespace NLS::Render::RHI
 	class IRHIResource;
 	class IRHITexture;
 	class IRHIBuffer;
+	class RHITexture;
+	class RHIBuffer;
 }
 
 namespace NLS::Render::Resources
@@ -47,6 +50,8 @@ namespace NLS::Render::Resources
 		const RHI::IRHIResource* resource = nullptr;
 		const RHI::IRHITexture* textureResource = nullptr;
 		const RHI::IRHIBuffer* bufferResource = nullptr;
+		std::shared_ptr<RHI::RHITexture> textureHandle;
+		std::shared_ptr<RHI::RHIBuffer> bufferHandle;
 		const Texture* texture = nullptr;
 		RHI::SamplerDesc sampler{};
 		bool hasSampler = false;

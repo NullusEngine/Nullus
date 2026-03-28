@@ -293,19 +293,20 @@ void ABaseRenderer::DrawEntity(
             const auto nativeBackend = explicitDevice != nullptr
                 ? explicitDevice->GetNativeDeviceInfo().backend
                 : NLS::Render::RHI::NativeBackendType::None;
-            const auto explicitBindingSet = material->GetExplicitBindingSet(explicitDevice);
+            const auto recordedBindingSet = material->GetRecordedBindingSet(explicitDevice);
             const auto explicitPipelineState = material->BuildExplicitPipelineState(
                 explicitDevice,
                 p_drawable.primitiveMode,
                 p_pso.depthFunc);
-            const auto explicitPipeline = explicitDevice != nullptr && explicitPipelineState.IsComplete()
-                ? explicitDevice->CreateGraphicsPipeline(explicitPipelineState.pipelineDesc)
-                : nullptr;
+            const auto recordedPipeline = material->BuildRecordedGraphicsPipeline(
+                explicitDevice,
+                p_drawable.primitiveMode,
+                p_pso.depthFunc);
             const auto vertexBufferView = mesh->GetVertexBufferView();
-            if (explicitPipeline != nullptr && explicitBindingSet != nullptr && vertexBufferView.explicitBuffer != nullptr)
+            if (recordedPipeline != nullptr && recordedBindingSet != nullptr && vertexBufferView.explicitBuffer != nullptr)
             {
-                commandBuffer->BindGraphicsPipeline(explicitPipeline);
-                commandBuffer->BindBindingSet(1u, explicitBindingSet);
+                commandBuffer->BindGraphicsPipeline(recordedPipeline);
+                commandBuffer->BindBindingSet(1u, recordedBindingSet);
                 commandBuffer->BindVertexBuffer(
                     0u,
                     {
@@ -350,11 +351,11 @@ void ABaseRenderer::DrawEntity(
                         "[ExplicitDrawPath] Falling back to legacy draw for material \"" +
                         (material->path.empty() ? std::string("<unnamed>") : material->path) +
                         "\" device=" + (explicitDevice != nullptr ? "ok" : "null") +
-                        " bindingSet=" + (explicitBindingSet != nullptr ? "ok" : "null") +
+                        " bindingSet=" + (recordedBindingSet != nullptr ? "ok" : "null") +
                         " pipelineLayout=" + (explicitPipelineState.pipelineLayout != nullptr ? "ok" : "null") +
                         " vertexShader=" + (explicitPipelineState.vertexShader != nullptr ? "ok" : "null") +
                         " fragmentShader=" + (explicitPipelineState.fragmentShader != nullptr ? "ok" : "null") +
-                        " pipeline=" + (explicitPipeline != nullptr ? "ok" : "null") +
+                        " pipeline=" + (recordedPipeline != nullptr ? "ok" : "null") +
                         " vertexBuffer=" + (vertexBufferView.explicitBuffer != nullptr ? "ok" : "null"));
             }
         }

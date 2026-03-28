@@ -193,6 +193,11 @@ public:
         const std::shared_ptr<RHI::RHIDevice>& device,
         Settings::EPrimitiveMode primitiveMode,
         Settings::EComparaisonAlgorithm depthCompare) const;
+    std::shared_ptr<RHI::RHIGraphicsPipeline> BuildRecordedGraphicsPipeline(
+        const std::shared_ptr<RHI::RHIDevice>& device,
+        Settings::EPrimitiveMode primitiveMode,
+        Settings::EComparaisonAlgorithm depthCompare) const;
+    std::shared_ptr<RHI::RHIBindingSet> GetRecordedBindingSet(const std::shared_ptr<RHI::RHIDevice>& device) const;
 
     MaterialParameterBlock& GetParameterBlock();
     const MaterialParameterBlock& GetParameterBlock() const;

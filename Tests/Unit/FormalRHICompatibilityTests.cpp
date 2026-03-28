@@ -477,3 +477,61 @@ TEST(FormalRHICompatibilityTests, MaterialBuildExplicitPipelineStateBundlesForma
     EXPECT_FALSE(explicitState.pipelineDesc.rasterState.cullEnabled);
     EXPECT_EQ(explicitState.pipelineDesc.reflection, nullptr);
 }
+
+TEST(FormalRHICompatibilityTests, MaterialBuildRecordedGraphicsPipelineFallsBackToCompatibilityPipeline)
+{
+    RecordingRenderDevice renderDevice;
+    renderDevice.nativeBackend = NLS::Render::RHI::NativeBackendType::DX11;
+
+    const auto device = NLS::Render::RHI::CreateCompatibilityExplicitDevice(renderDevice);
+    ASSERT_NE(device, nullptr);
+
+    NLS::Render::Resources::Material material(nullptr);
+    material.SetBlendable(true);
+    material.SetDepthWriting(false);
+
+    const auto pipeline = material.BuildRecordedGraphicsPipeline(
+        device,
+        NLS::Render::Settings::EPrimitiveMode::LINES,
+        NLS::Render::Settings::EComparaisonAlgorithm::GREATER);
+
+    ASSERT_NE(pipeline, nullptr);
+    EXPECT_EQ(pipeline->GetDebugName(), "CompatibilityLegacyGraphicsPipeline");
+    EXPECT_EQ(pipeline->GetDesc().primitiveTopology, NLS::Render::RHI::PrimitiveTopology::LineList);
+}
+
+TEST(FormalRHICompatibilityTests, MaterialGetRecordedBindingSetFallsBackToCompatibilityBindingSet)
+{
+    RecordingRenderDevice renderDevice;
+    renderDevice.nativeBackend = NLS::Render::RHI::NativeBackendType::DX11;
+
+    const auto device = NLS::Render::RHI::CreateCompatibilityExplicitDevice(renderDevice);
+    ASSERT_NE(device, nullptr);
+
+    NLS::Render::Resources::Material material(nullptr);
+
+    const auto bindingSet = material.GetRecordedBindingSet(device);
+
+    ASSERT_NE(bindingSet, nullptr);
+    EXPECT_EQ(bindingSet->GetDebugName(), "CompatibilityBindingSet");
+}
+
+TEST(FormalRHICompatibilityTests, MaterialRecordedHelpersDoNotSilentlyFallbackForNativeDX12Identity)
+{
+    RecordingRenderDevice renderDevice;
+    renderDevice.nativeBackend = NLS::Render::RHI::NativeBackendType::DX12;
+
+    const auto device = NLS::Render::RHI::CreateCompatibilityExplicitDevice(renderDevice);
+    ASSERT_NE(device, nullptr);
+
+    NLS::Render::Resources::Material material(nullptr);
+
+    const auto pipeline = material.BuildRecordedGraphicsPipeline(
+        device,
+        NLS::Render::Settings::EPrimitiveMode::TRIANGLES,
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS);
+    const auto bindingSet = material.GetRecordedBindingSet(device);
+
+    EXPECT_EQ(pipeline, nullptr);
+    EXPECT_EQ(bindingSet, nullptr);
+}

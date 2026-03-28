@@ -13,6 +13,7 @@
 #include "Math/Matrix4.h"
 #include "Rendering/Geometry/Vertex.h"
 #include "Rendering/RHI/BindingPointMap.h"
+#include "Rendering/RHI/ExplicitRHICompat.h"
 #include "Rendering/Resources/Loaders/TextureLoader.h"
 #include "Rendering/Resources/TextureCube.h"
 
@@ -21,6 +22,26 @@ namespace
 	using ShaderSourceLanguage = NLS::Render::ShaderCompiler::ShaderSourceLanguage;
 	using ShaderResourceKind = NLS::Render::Resources::ShaderResourceKind;
 	using UniformType = NLS::Render::Resources::UniformType;
+
+	bool CanUseCompatibilityRecordedFallback(const std::shared_ptr<NLS::Render::RHI::RHIDevice>& device)
+	{
+		if (device == nullptr)
+			return true;
+
+		const auto nativeBackend = device->GetNativeDeviceInfo().backend;
+		switch (nativeBackend)
+		{
+		case NLS::Render::RHI::NativeBackendType::DX12:
+		case NLS::Render::RHI::NativeBackendType::Vulkan:
+		case NLS::Render::RHI::NativeBackendType::Metal:
+			return false;
+		case NLS::Render::RHI::NativeBackendType::None:
+		case NLS::Render::RHI::NativeBackendType::OpenGL:
+		case NLS::Render::RHI::NativeBackendType::DX11:
+		default:
+			return true;
+		}
+	}
 
 	NLS::Render::RHI::SamplerDesc BuildDefaultSamplerDesc(const std::string& bindingName)
 	{
@@ -736,6 +757,33 @@ namespace NLS::Render::Resources
 			fragmentShader,
 			primitiveMode,
 			depthCompare);
+	}
+
+	std::shared_ptr<RHI::RHIGraphicsPipeline> Material::BuildRecordedGraphicsPipeline(
+		const std::shared_ptr<RHI::RHIDevice>& device,
+		Settings::EPrimitiveMode primitiveMode,
+		Settings::EComparaisonAlgorithm depthCompare) const
+	{
+		const auto explicitState = BuildExplicitPipelineState(device, primitiveMode, depthCompare);
+		if (device != nullptr && explicitState.IsComplete())
+			return device->CreateGraphicsPipeline(explicitState.pipelineDesc);
+		if (!CanUseCompatibilityRecordedFallback(device))
+			return nullptr;
+
+		auto legacyDesc = BuildGraphicsPipelineDesc();
+		legacyDesc.primitiveMode = primitiveMode;
+		legacyDesc.depthStencilState.depthCompare = depthCompare;
+		return RHI::CreateCompatibilityGraphicsPipeline(legacyDesc);
+	}
+
+	std::shared_ptr<RHI::RHIBindingSet> Material::GetRecordedBindingSet(const std::shared_ptr<RHI::RHIDevice>& device) const
+	{
+		if (const auto explicitBindingSet = GetExplicitBindingSet(device); explicitBindingSet != nullptr)
+			return explicitBindingSet;
+		if (!CanUseCompatibilityRecordedFallback(device))
+			return nullptr;
+
+		return RHI::WrapCompatibilityBindingSet(&GetBindingSetInstance());
 	}
 
 	MaterialParameterBlock& Material::GetParameterBlock()

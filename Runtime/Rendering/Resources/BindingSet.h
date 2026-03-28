@@ -17,6 +17,7 @@ namespace NLS::Render::Resources
 		void Clear();
 		void SetLayout(const ResourceBindingLayout& layout);
 		void SetSampler(const std::string& name, const RHI::SamplerDesc& sampler);
+		void SetTexture(const std::string& name, const std::shared_ptr<RHI::RHITexture>& texture, const RHI::IRHITexture* compatibilityTexture = nullptr);
 		void SetTexture(const std::string& name, const Texture* texture);
 		void SetBuffer(const std::string& name, const std::shared_ptr<RHI::RHIBuffer>& buffer, const RHI::IRHIBuffer* compatibilityBuffer = nullptr);
 		void SetBuffer(const std::string& name, const RHI::IRHIBuffer* buffer);

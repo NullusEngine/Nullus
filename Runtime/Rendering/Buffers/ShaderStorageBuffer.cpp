@@ -1,6 +1,7 @@
 #include "Rendering/Buffers/ShaderStorageBuffer.h"
 #include "Debug/Assertion.h"
 #include "Core/ServiceLocator.h"
+#include "Rendering/RHI/Backends/OpenGL/Compat/ExplicitRHICompat.h"
 namespace
 {
 	using Driver = NLS::Render::Context::Driver;
@@ -28,6 +29,9 @@ NLS::Render::Buffers::ShaderStorageBuffer::ShaderStorageBuffer(Settings::EAccess
 {
 	auto& driver = RequireDriver();
 	m_bufferResource = driver.CreateBufferResource(NLS::Render::RHI::BufferType::ShaderStorage);
+	m_explicitBuffer = m_bufferResource
+		? NLS::Render::RHI::WrapCompatibilityBuffer(m_bufferResource, "ShaderStorageBuffer")
+		: nullptr;
 	m_bufferID = m_bufferResource ? m_bufferResource->GetResourceId() : 0;
 	driver.BindBuffer(NLS::Render::RHI::BufferType::ShaderStorage, m_bufferID);
 	driver.SetBufferData(
@@ -44,6 +48,8 @@ NLS::Render::Buffers::ShaderStorageBuffer::~ShaderStorageBuffer()
 		m_bufferResource.reset();
 	else if (m_bufferID != 0)
 		RequireDriver().DestroyBuffer(m_bufferID);
+
+	m_explicitBuffer.reset();
 }
 
 void NLS::Render::Buffers::ShaderStorageBuffer::Bind(uint32_t p_bindingPoint)

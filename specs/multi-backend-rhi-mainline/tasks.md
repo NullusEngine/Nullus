@@ -45,7 +45,7 @@
 - [ ] T011 [US1] Move `Runtime/Rendering/Resources/Material.h` and `Runtime/Rendering/Resources/Material.cpp` to formal-RHI-first pipeline and binding production for renderer mainline consumption
 - [ ] T012 [US1] Remove renderer-mainline dependence on legacy pipeline and binding descriptors in `Runtime/Rendering/Core/ABaseRenderer.h` and `Runtime/Rendering/Core/ABaseRenderer.cpp`
 - [x] T013 [US1] Finish formal resource and barrier usage in `Runtime/Rendering/FrameGraph/FrameGraphExecutionContext.h`, `Runtime/Rendering/FrameGraph/FrameGraphBuffer.*`, `Runtime/Rendering/FrameGraph/FrameGraphTexture.*`, and related frame graph support files
-- [ ] T014 [US1] Align wrapper resources and compatibility handoff points in `Runtime/Rendering/Resources/Texture.*`, `Runtime/Rendering/Buffers/*`, and `Runtime/Rendering/Resources/BindingSet.*` so formal RHI objects are the preferred surface
+- [x] T014 [US1] Align wrapper resources and compatibility handoff points in `Runtime/Rendering/Resources/Texture.*`, `Runtime/Rendering/Buffers/*`, and `Runtime/Rendering/Resources/BindingSet.*` so formal RHI objects are the preferred surface
 - [ ] T015 [US1] Reduce `Driver` exposure of renderer-mainline legacy operations in `Runtime/Rendering/Context/Driver.h` and `Runtime/Rendering/Context/Driver.cpp`
 - [ ] T016 [US1] Update engine and editor rendering integration points in `Runtime/Engine/Rendering/*` and `Project/Editor/Rendering/*` so they consume the formal RHI mainline
 - [ ] T017 [US1] Confine `IRenderDevice` usage to compatibility and backend-internal infrastructure in `Runtime/Rendering/RHI/IRenderDevice.h`, `Runtime/Rendering/RHI/ExplicitRHICompat.cpp`, and remaining callers

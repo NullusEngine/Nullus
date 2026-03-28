@@ -9,6 +9,7 @@
 #define private public
 #include "Rendering/Context/Driver.h"
 #undef private
+#include "Rendering/Buffers/ShaderStorageBuffer.h"
 #include "Rendering/FrameGraph/FrameGraphBuffer.h"
 #include "Rendering/FrameGraph/FrameGraphExecutionContext.h"
 #include "Rendering/FrameGraph/FrameGraphTexture.h"
@@ -368,6 +369,14 @@ namespace
         driver.m_renderDevice = std::move(renderDevice);
         return *renderDevicePtr;
     }
+
+    NLS::Render::Context::Driver& GetPersistentTestDriverService()
+    {
+        static auto driver = std::make_unique<NLS::Render::Context::Driver>(MakeNullDriverSettings());
+        InstallRecordingRenderDevice(*driver);
+        NLS::Core::ServiceLocator::Provide(*driver);
+        return *driver;
+    }
 }
 
 TEST(FormalRHICompatibilityTests, CompatibilityQueueSubmissionTranslatesFormalDX11PipelineAndBindingsToLegacyBindCall)
@@ -696,9 +705,7 @@ TEST(FormalRHICompatibilityTests, MaterialCompatibilityDrawStateAppliesLegacyPip
 
 TEST(FormalRHICompatibilityTests, BindingSetTextureEntryKeepsFormalTextureHandleAlongsideCompatibilityResource)
 {
-    NLS::Render::Context::Driver driver(MakeNullDriverSettings());
-    InstallRecordingRenderDevice(driver);
-    NLS::Core::ServiceLocator::Provide(driver);
+    auto& driver = GetPersistentTestDriverService();
 
     NLS::Render::Resources::BindingSet bindingSet;
     NLS::Render::Resources::ResourceBindingLayout layout;
@@ -750,6 +757,233 @@ TEST(FormalRHICompatibilityTests, BindingSetBufferEntryAcceptsFormalHandleWithCo
     EXPECT_EQ(entry->bufferResource, legacyBuffer.get());
     EXPECT_EQ(entry->resource, legacyBuffer.get());
     EXPECT_EQ(bindingSet.GetBufferHandle("Globals"), explicitBuffer);
+}
+
+TEST(FormalRHICompatibilityTests, WrappedCompatibilityBindingSetPreservesFormalBufferHandlesAcrossLegacyMerge)
+{
+    RecordingRenderDevice renderDevice;
+    const auto device = NLS::Render::RHI::CreateCompatibilityExplicitDevice(renderDevice);
+
+    ASSERT_NE(device, nullptr);
+
+    NLS::Render::Resources::ShaderReflection reflection;
+    reflection.constantBuffers.push_back({
+        "Globals",
+        NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+        0,
+        0,
+        64,
+        {}
+    });
+
+    NLS::Render::RHI::RHIBindingLayoutDesc bindingLayoutDesc;
+    bindingLayoutDesc.debugName = "WrappedCompatibilityLayout";
+    bindingLayoutDesc.entries.push_back({
+        "Globals",
+        NLS::Render::RHI::BindingType::UniformBuffer,
+        0,
+        0,
+        1,
+        NLS::Render::RHI::ShaderStageMask::Vertex
+    });
+    const auto bindingLayout = device->CreateBindingLayout(bindingLayoutDesc);
+    ASSERT_NE(bindingLayout, nullptr);
+
+    NLS::Render::Resources::BindingSetInstance legacyBindingSet;
+    NLS::Render::Resources::ResourceBindingLayout legacyLayout;
+    legacyLayout.bindings.push_back({
+        "Globals",
+        NLS::Render::Resources::ShaderResourceKind::UniformBuffer,
+        NLS::Render::Resources::UniformType::UNIFORM_FLOAT,
+        0u,
+        0u,
+        0
+    });
+    legacyBindingSet.SetLayout(legacyLayout);
+
+    auto legacyBuffer = std::make_shared<RecordingBufferResource>(23u, NLS::Render::RHI::BufferType::Uniform);
+    auto compatibilityBuffer = NLS::Render::RHI::WrapCompatibilityBuffer(legacyBuffer, "GlobalsCompatibilityBuffer");
+    legacyBindingSet.SetBuffer("Globals", compatibilityBuffer, legacyBuffer.get());
+
+    const auto bindingSet = NLS::Render::RHI::WrapCompatibilityBindingSet(&legacyBindingSet);
+    ASSERT_NE(bindingSet, nullptr);
+
+    NLS::Render::RHI::RHIPipelineLayoutDesc pipelineLayoutDesc;
+    pipelineLayoutDesc.debugName = "WrappedCompatibilityPipelineLayout";
+    pipelineLayoutDesc.bindingLayouts.push_back(bindingLayout);
+    const auto pipelineLayout = device->CreatePipelineLayout(pipelineLayoutDesc);
+    ASSERT_NE(pipelineLayout, nullptr);
+
+    NLS::Render::RHI::RHIShaderModuleDesc vertexShaderDesc;
+    vertexShaderDesc.stage = NLS::Render::RHI::ShaderStage::Vertex;
+    vertexShaderDesc.targetBackend = NLS::Render::RHI::NativeBackendType::DX11;
+    vertexShaderDesc.entryPoint = "VSMain";
+    vertexShaderDesc.bytecode = { 0x01, 0x02 };
+    vertexShaderDesc.debugName = "WrappedCompatibilityVertexShader";
+    const auto vertexShader = device->CreateShaderModule(vertexShaderDesc);
+    ASSERT_NE(vertexShader, nullptr);
+
+    NLS::Render::RHI::RHIGraphicsPipelineDesc pipelineDesc;
+    pipelineDesc.pipelineLayout = pipelineLayout;
+    pipelineDesc.vertexShader = vertexShader;
+    pipelineDesc.reflection = &reflection;
+    pipelineDesc.primitiveTopology = NLS::Render::RHI::PrimitiveTopology::TriangleList;
+    pipelineDesc.renderTargetLayout.colorFormats = { NLS::Render::RHI::TextureFormat::RGBA8 };
+    pipelineDesc.renderTargetLayout.depthFormat = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
+    pipelineDesc.renderTargetLayout.hasDepth = true;
+    pipelineDesc.renderTargetLayout.sampleCount = 1;
+    const auto pipeline = device->CreateGraphicsPipeline(pipelineDesc);
+    ASSERT_NE(pipeline, nullptr);
+
+    const auto queue = device->GetQueue(NLS::Render::RHI::QueueType::Graphics);
+    ASSERT_NE(queue, nullptr);
+    const auto commandPool = device->CreateCommandPool(NLS::Render::RHI::QueueType::Graphics, "WrappedCompatibilityPool");
+    ASSERT_NE(commandPool, nullptr);
+    const auto commandBuffer = commandPool->CreateCommandBuffer("WrappedCompatibilityCommandBuffer");
+    ASSERT_NE(commandBuffer, nullptr);
+
+    commandBuffer->Begin();
+    commandBuffer->BindGraphicsPipeline(pipeline);
+    commandBuffer->BindBindingSet(0u, bindingSet);
+    commandBuffer->DrawIndexed(3u);
+    commandBuffer->End();
+
+    NLS::Render::RHI::RHISubmitDesc submitInfo;
+    submitInfo.commandBuffers.push_back(commandBuffer);
+    queue->Submit(submitInfo);
+
+    ASSERT_NE(renderDevice.boundBindingSet, nullptr);
+    const auto* globalsBinding = renderDevice.boundBindingSet->Find("Globals");
+    ASSERT_NE(globalsBinding, nullptr);
+    EXPECT_EQ(globalsBinding->bufferResource, legacyBuffer.get());
+    EXPECT_EQ(globalsBinding->bufferHandle, compatibilityBuffer);
+}
+
+TEST(FormalRHICompatibilityTextureMergeTests, WrappedCompatibilityTextureHandleSurvivesLegacyMerge)
+{
+    RecordingRenderDevice renderDevice;
+    const auto device = NLS::Render::RHI::CreateCompatibilityExplicitDevice(renderDevice);
+
+    ASSERT_NE(device, nullptr);
+
+    NLS::Render::Resources::ShaderReflection reflection;
+    reflection.properties.push_back({
+        "Albedo",
+        NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D,
+        NLS::Render::Resources::ShaderResourceKind::SampledTexture,
+        NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        {}
+    });
+
+    NLS::Render::RHI::RHIBindingLayoutDesc bindingLayoutDesc;
+    bindingLayoutDesc.debugName = "WrappedCompatibilityTextureLayout";
+    bindingLayoutDesc.entries.push_back({
+        "Albedo",
+        NLS::Render::RHI::BindingType::Texture,
+        0,
+        0,
+        1,
+        NLS::Render::RHI::ShaderStageMask::Fragment
+    });
+    const auto bindingLayout = device->CreateBindingLayout(bindingLayoutDesc);
+    ASSERT_NE(bindingLayout, nullptr);
+
+    NLS::Render::Resources::BindingSetInstance legacyBindingSet;
+    NLS::Render::Resources::ResourceBindingLayout legacyLayout;
+    legacyLayout.bindings.push_back({
+        "Albedo",
+        NLS::Render::Resources::ShaderResourceKind::SampledTexture,
+        NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D,
+        0u,
+        0u,
+        0
+    });
+    legacyBindingSet.SetLayout(legacyLayout);
+
+    auto legacyTexture = std::make_shared<RecordingTextureResource>(31u, NLS::Render::RHI::TextureDimension::Texture2D);
+    auto compatibilityTexture = NLS::Render::RHI::WrapCompatibilityTexture(legacyTexture, "AlbedoCompatibilityTexture");
+    legacyBindingSet.SetTexture("Albedo", compatibilityTexture, nullptr);
+
+    const auto bindingSet = NLS::Render::RHI::WrapCompatibilityBindingSet(&legacyBindingSet);
+    ASSERT_NE(bindingSet, nullptr);
+
+    NLS::Render::RHI::RHIPipelineLayoutDesc pipelineLayoutDesc;
+    pipelineLayoutDesc.debugName = "WrappedCompatibilityTexturePipelineLayout";
+    pipelineLayoutDesc.bindingLayouts.push_back(bindingLayout);
+    const auto pipelineLayout = device->CreatePipelineLayout(pipelineLayoutDesc);
+    ASSERT_NE(pipelineLayout, nullptr);
+
+    NLS::Render::RHI::RHIShaderModuleDesc vertexShaderDesc;
+    vertexShaderDesc.stage = NLS::Render::RHI::ShaderStage::Vertex;
+    vertexShaderDesc.targetBackend = NLS::Render::RHI::NativeBackendType::DX11;
+    vertexShaderDesc.entryPoint = "VSMain";
+    vertexShaderDesc.bytecode = { 0x01, 0x02 };
+    vertexShaderDesc.debugName = "WrappedCompatibilityTextureVertexShader";
+    const auto vertexShader = device->CreateShaderModule(vertexShaderDesc);
+    ASSERT_NE(vertexShader, nullptr);
+
+    NLS::Render::RHI::RHIShaderModuleDesc fragmentShaderDesc;
+    fragmentShaderDesc.stage = NLS::Render::RHI::ShaderStage::Fragment;
+    fragmentShaderDesc.targetBackend = NLS::Render::RHI::NativeBackendType::DX11;
+    fragmentShaderDesc.entryPoint = "PSMain";
+    fragmentShaderDesc.bytecode = { 0x03, 0x04 };
+    fragmentShaderDesc.debugName = "WrappedCompatibilityTextureFragmentShader";
+    const auto fragmentShader = device->CreateShaderModule(fragmentShaderDesc);
+    ASSERT_NE(fragmentShader, nullptr);
+
+    NLS::Render::RHI::RHIGraphicsPipelineDesc pipelineDesc;
+    pipelineDesc.pipelineLayout = pipelineLayout;
+    pipelineDesc.vertexShader = vertexShader;
+    pipelineDesc.fragmentShader = fragmentShader;
+    pipelineDesc.reflection = &reflection;
+    pipelineDesc.primitiveTopology = NLS::Render::RHI::PrimitiveTopology::TriangleList;
+    pipelineDesc.renderTargetLayout.colorFormats = { NLS::Render::RHI::TextureFormat::RGBA8 };
+    pipelineDesc.renderTargetLayout.depthFormat = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
+    pipelineDesc.renderTargetLayout.hasDepth = true;
+    pipelineDesc.renderTargetLayout.sampleCount = 1;
+    const auto pipeline = device->CreateGraphicsPipeline(pipelineDesc);
+    ASSERT_NE(pipeline, nullptr);
+
+    const auto queue = device->GetQueue(NLS::Render::RHI::QueueType::Graphics);
+    ASSERT_NE(queue, nullptr);
+    const auto commandPool = device->CreateCommandPool(NLS::Render::RHI::QueueType::Graphics, "WrappedCompatibilityTexturePool");
+    ASSERT_NE(commandPool, nullptr);
+    const auto commandBuffer = commandPool->CreateCommandBuffer("WrappedCompatibilityTextureCommandBuffer");
+    ASSERT_NE(commandBuffer, nullptr);
+
+    commandBuffer->Begin();
+    commandBuffer->BindGraphicsPipeline(pipeline);
+    commandBuffer->BindBindingSet(0u, bindingSet);
+    commandBuffer->DrawIndexed(3u);
+    commandBuffer->End();
+
+    NLS::Render::RHI::RHISubmitDesc submitInfo;
+    submitInfo.commandBuffers.push_back(commandBuffer);
+    queue->Submit(submitInfo);
+
+    ASSERT_NE(renderDevice.boundBindingSet, nullptr);
+    const auto* albedoBinding = renderDevice.boundBindingSet->Find("Albedo");
+    ASSERT_NE(albedoBinding, nullptr);
+    EXPECT_EQ(albedoBinding->textureResource, legacyTexture.get());
+    EXPECT_EQ(albedoBinding->textureHandle, compatibilityTexture);
+}
+
+TEST(FormalRHICompatibilityTests, ShaderStorageBufferExposesFormalBufferHandle)
+{
+    auto& driver = GetPersistentTestDriverService();
+    (void)driver;
+
+    NLS::Render::Buffers::ShaderStorageBuffer buffer(NLS::Render::Settings::EAccessSpecifier::DYNAMIC_DRAW);
+
+    EXPECT_NE(buffer.GetRHIBuffer(), nullptr);
+    EXPECT_NE(buffer.GetBufferHandle(), nullptr);
+    EXPECT_EQ(buffer.GetExplicitRHIBufferHandle(), buffer.GetBufferHandle());
 }
 
 TEST(FormalRHICompatibilityTests, FrameGraphBufferPreReadRecordsExplicitVertexBarrierAndTracksState)

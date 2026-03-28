@@ -64,6 +64,23 @@ namespace NLS::Render::Resources
 		}
 	}
 
+	void BindingSet::SetTexture(const std::string& name, const std::shared_ptr<RHI::RHITexture>& texture, const RHI::IRHITexture* compatibilityTexture)
+	{
+		for (auto& entry : m_entries)
+		{
+			if (entry.name == name)
+			{
+				entry.texture = nullptr;
+				entry.textureHandle = texture;
+				entry.textureResource = compatibilityTexture;
+				entry.resource = compatibilityTexture;
+				entry.bufferResource = nullptr;
+				entry.bufferHandle.reset();
+				return;
+			}
+		}
+	}
+
 	void BindingSet::SetBuffer(const std::string& name, const std::shared_ptr<RHI::RHIBuffer>& buffer, const RHI::IRHIBuffer* compatibilityBuffer)
 	{
 		for (auto& entry : m_entries)

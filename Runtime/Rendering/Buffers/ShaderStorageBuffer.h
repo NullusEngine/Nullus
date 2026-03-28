@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "Rendering/Context/Driver.h"
+#include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/RHI/IRHIResource.h"
 #include "Rendering/Settings/EAccessSpecifier.h"
 
@@ -43,6 +44,9 @@ public:
 
     uint32_t GetID() const { return m_bufferID; }
     const RHI::IRHIBuffer* GetRHIBuffer() const { return m_bufferResource.get(); }
+    const std::shared_ptr<RHI::RHIBuffer>& GetBufferHandle() const { return m_explicitBuffer; }
+    const std::shared_ptr<RHI::IRHIBuffer>& GetRHIBufferHandle() const { return m_bufferResource; }
+    const std::shared_ptr<RHI::RHIBuffer>& GetExplicitRHIBufferHandle() const { return GetBufferHandle(); }
 
     /**
      * Send the block data
@@ -53,6 +57,7 @@ public:
 private:
     uint32_t m_bufferID = 0;
     std::shared_ptr<RHI::IRHIBuffer> m_bufferResource;
+    std::shared_ptr<RHI::RHIBuffer> m_explicitBuffer;
 };
 } // namespace NLS::Render::Buffers
 

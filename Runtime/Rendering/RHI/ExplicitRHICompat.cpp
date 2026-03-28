@@ -500,10 +500,20 @@ namespace NLS::Render::RHI
 				{
 					if (entry.hasSampler)
 						mergedBindingSet->SetSampler(entry.name, entry.sampler);
-					else if (entry.bufferResource != nullptr)
-						mergedBindingSet->SetBuffer(entry.name, entry.bufferResource);
+					else if (entry.bufferHandle != nullptr || entry.bufferResource != nullptr)
+					{
+						const auto* legacyBuffer = entry.bufferResource != nullptr
+							? entry.bufferResource
+							: ExtractLegacyBufferResource(entry.bufferHandle);
+						if (entry.bufferHandle != nullptr)
+							mergedBindingSet->SetBuffer(entry.name, entry.bufferHandle, legacyBuffer);
+						else if (legacyBuffer != nullptr)
+							mergedBindingSet->SetBuffer(entry.name, legacyBuffer);
+					}
 					else if (entry.texture != nullptr)
 						mergedBindingSet->SetTexture(entry.name, entry.texture);
+					else if (entry.textureHandle != nullptr)
+						mergedBindingSet->SetTexture(entry.name, entry.textureHandle, ExtractLegacyTextureResource(entry.textureHandle));
 					else if (entry.resource != nullptr)
 						mergedBindingSet->SetResource(entry.name, entry.resource);
 				}

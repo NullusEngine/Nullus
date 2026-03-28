@@ -294,20 +294,12 @@ void ABaseRenderer::DrawEntity(
                 ? explicitDevice->GetNativeDeviceInfo().backend
                 : NLS::Render::RHI::NativeBackendType::None;
             const auto explicitBindingSet = material->GetExplicitBindingSet(explicitDevice);
-            const auto pipelineLayout = material->GetExplicitPipelineLayout(explicitDevice);
-            const auto vertexShader = material->GetShader() != nullptr
-                ? material->GetShader()->GetOrCreateExplicitShaderModule(explicitDevice, NLS::Render::ShaderCompiler::ShaderStage::Vertex)
-                : nullptr;
-            const auto fragmentShader = material->GetShader() != nullptr
-                ? material->GetShader()->GetOrCreateExplicitShaderModule(explicitDevice, NLS::Render::ShaderCompiler::ShaderStage::Pixel)
-                : nullptr;
-            const auto explicitPipeline = explicitDevice != nullptr && pipelineLayout != nullptr && vertexShader != nullptr && fragmentShader != nullptr
-                ? explicitDevice->CreateGraphicsPipeline(material->BuildExplicitGraphicsPipelineDesc(
-                    pipelineLayout,
-                    vertexShader,
-                    fragmentShader,
-                    p_drawable.primitiveMode,
-                    p_pso.depthFunc))
+            const auto explicitPipelineState = material->BuildExplicitPipelineState(
+                explicitDevice,
+                p_drawable.primitiveMode,
+                p_pso.depthFunc);
+            const auto explicitPipeline = explicitDevice != nullptr && explicitPipelineState.IsComplete()
+                ? explicitDevice->CreateGraphicsPipeline(explicitPipelineState.pipelineDesc)
                 : nullptr;
             const auto vertexBufferView = mesh->GetVertexBufferView();
             if (explicitPipeline != nullptr && explicitBindingSet != nullptr && vertexBufferView.explicitBuffer != nullptr)
@@ -355,15 +347,15 @@ void ABaseRenderer::DrawEntity(
             if (ShouldLogExplicitDrawDiagnostics())
             {
                 NLS_LOG_WARNING(
-                    "[ExplicitDrawPath] Falling back to legacy draw for material \"" +
-                    (material->path.empty() ? std::string("<unnamed>") : material->path) +
-                    "\" device=" + (explicitDevice != nullptr ? "ok" : "null") +
-                    " bindingSet=" + (explicitBindingSet != nullptr ? "ok" : "null") +
-                    " pipelineLayout=" + (pipelineLayout != nullptr ? "ok" : "null") +
-                    " vertexShader=" + (vertexShader != nullptr ? "ok" : "null") +
-                    " fragmentShader=" + (fragmentShader != nullptr ? "ok" : "null") +
-                    " pipeline=" + (explicitPipeline != nullptr ? "ok" : "null") +
-                    " vertexBuffer=" + (vertexBufferView.explicitBuffer != nullptr ? "ok" : "null"));
+                        "[ExplicitDrawPath] Falling back to legacy draw for material \"" +
+                        (material->path.empty() ? std::string("<unnamed>") : material->path) +
+                        "\" device=" + (explicitDevice != nullptr ? "ok" : "null") +
+                        " bindingSet=" + (explicitBindingSet != nullptr ? "ok" : "null") +
+                        " pipelineLayout=" + (explicitPipelineState.pipelineLayout != nullptr ? "ok" : "null") +
+                        " vertexShader=" + (explicitPipelineState.vertexShader != nullptr ? "ok" : "null") +
+                        " fragmentShader=" + (explicitPipelineState.fragmentShader != nullptr ? "ok" : "null") +
+                        " pipeline=" + (explicitPipeline != nullptr ? "ok" : "null") +
+                        " vertexBuffer=" + (vertexBufferView.explicitBuffer != nullptr ? "ok" : "null"));
             }
         }
 

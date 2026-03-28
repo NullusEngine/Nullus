@@ -27,6 +27,21 @@ public:
     using ShaderType = Shader;
     using Texture2DType = Texture2D;
 
+    struct ExplicitPipelineState
+    {
+        std::shared_ptr<RHI::RHIPipelineLayout> pipelineLayout;
+        std::shared_ptr<RHI::RHIShaderModule> vertexShader;
+        std::shared_ptr<RHI::RHIShaderModule> fragmentShader;
+        RHI::RHIGraphicsPipelineDesc pipelineDesc;
+
+        bool IsComplete() const
+        {
+            return pipelineLayout != nullptr &&
+                vertexShader != nullptr &&
+                fragmentShader != nullptr;
+        }
+    };
+
     /**
      * Creates a material
      * @param p_shader
@@ -166,6 +181,16 @@ public:
         const std::shared_ptr<RHI::RHIPipelineLayout>& pipelineLayout,
         const std::shared_ptr<RHI::RHIShaderModule>& vertexShader,
         const std::shared_ptr<RHI::RHIShaderModule>& fragmentShader,
+        Settings::EPrimitiveMode primitiveMode,
+        Settings::EComparaisonAlgorithm depthCompare) const;
+    ExplicitPipelineState BuildExplicitPipelineState(
+        const std::shared_ptr<RHI::RHIPipelineLayout>& pipelineLayout,
+        const std::shared_ptr<RHI::RHIShaderModule>& vertexShader,
+        const std::shared_ptr<RHI::RHIShaderModule>& fragmentShader,
+        Settings::EPrimitiveMode primitiveMode,
+        Settings::EComparaisonAlgorithm depthCompare) const;
+    ExplicitPipelineState BuildExplicitPipelineState(
+        const std::shared_ptr<RHI::RHIDevice>& device,
         Settings::EPrimitiveMode primitiveMode,
         Settings::EComparaisonAlgorithm depthCompare) const;
 

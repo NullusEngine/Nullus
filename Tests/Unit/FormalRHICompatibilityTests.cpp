@@ -9,6 +9,7 @@
 #include "Rendering/RHI/GraphicsPipelineDesc.h"
 #include "Rendering/RHI/IRenderDevice.h"
 #include "Rendering/Resources/BindingSetInstance.h"
+#include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/ShaderReflection.h"
 #include "Rendering/ShaderCompiler/ShaderCompilationTypes.h"
 
@@ -213,7 +214,7 @@ namespace
         NLS::Render::RHI::NativeRenderDeviceInfo GetNativeDeviceInfo() const override
         {
             NLS::Render::RHI::NativeRenderDeviceInfo info;
-            info.backend = NLS::Render::RHI::NativeBackendType::DX11;
+            info.backend = nativeBackend;
             return info;
         }
         bool IsBackendReady() const override { return true; }
@@ -239,6 +240,7 @@ namespace
         uint32_t drawElementsInstancedCallCount = 0;
         uint32_t bindGraphicsPipelineCallCount = 0;
         bool depthWritingEnabled = true;
+        NLS::Render::RHI::NativeBackendType nativeBackend = NLS::Render::RHI::NativeBackendType::DX11;
 
     private:
         uint32_t m_nextBufferId = 0;
@@ -407,4 +409,71 @@ TEST(FormalRHICompatibilityTests, CompatibilityQueueSubmissionTranslatesFormalDX
     EXPECT_EQ(renderDevice.lastDrawMode, NLS::Render::Settings::EPrimitiveMode::TRIANGLES);
     EXPECT_EQ(renderDevice.lastIndexCount, 36u);
     EXPECT_EQ(renderDevice.drawElementsCallCount, 1u);
+}
+
+TEST(FormalRHICompatibilityTests, MaterialBuildExplicitPipelineStateBundlesFormalPipelineInputs)
+{
+    RecordingRenderDevice renderDevice;
+    renderDevice.nativeBackend = NLS::Render::RHI::NativeBackendType::DX12;
+
+    const auto device = NLS::Render::RHI::CreateCompatibilityExplicitDevice(renderDevice);
+    ASSERT_NE(device, nullptr);
+    EXPECT_EQ(device->GetNativeDeviceInfo().backend, NLS::Render::RHI::NativeBackendType::DX12);
+
+    NLS::Render::RHI::RHIBindingLayoutDesc bindingLayoutDesc;
+    bindingLayoutDesc.debugName = "MaterialPipelineLayout";
+    const auto bindingLayout = device->CreateBindingLayout(bindingLayoutDesc);
+    ASSERT_NE(bindingLayout, nullptr);
+
+    NLS::Render::RHI::RHIPipelineLayoutDesc pipelineLayoutDesc;
+    pipelineLayoutDesc.debugName = "MaterialPipelineLayout";
+    pipelineLayoutDesc.bindingLayouts.push_back(bindingLayout);
+    const auto pipelineLayout = device->CreatePipelineLayout(pipelineLayoutDesc);
+    ASSERT_NE(pipelineLayout, nullptr);
+
+    NLS::Render::RHI::RHIShaderModuleDesc vertexShaderDesc;
+    vertexShaderDesc.stage = NLS::Render::RHI::ShaderStage::Vertex;
+    vertexShaderDesc.targetBackend = NLS::Render::RHI::NativeBackendType::DX12;
+    vertexShaderDesc.entryPoint = "VSMain";
+    vertexShaderDesc.bytecode = { 0x01, 0x02, 0x03, 0x04 };
+    vertexShaderDesc.debugName = "UnitVertex";
+    const auto vertexShader = device->CreateShaderModule(vertexShaderDesc);
+    ASSERT_NE(vertexShader, nullptr);
+
+    NLS::Render::RHI::RHIShaderModuleDesc fragmentShaderDesc;
+    fragmentShaderDesc.stage = NLS::Render::RHI::ShaderStage::Fragment;
+    fragmentShaderDesc.targetBackend = NLS::Render::RHI::NativeBackendType::DX12;
+    fragmentShaderDesc.entryPoint = "PSMain";
+    fragmentShaderDesc.bytecode = { 0x05, 0x06, 0x07, 0x08 };
+    fragmentShaderDesc.debugName = "UnitPixel";
+    const auto fragmentShader = device->CreateShaderModule(fragmentShaderDesc);
+    ASSERT_NE(fragmentShader, nullptr);
+
+    NLS::Render::Resources::Material material(nullptr);
+    material.SetBlendable(true);
+    material.SetDepthWriting(false);
+    material.SetBackfaceCulling(false);
+
+    const auto explicitState = material.BuildExplicitPipelineState(
+        pipelineLayout,
+        vertexShader,
+        fragmentShader,
+        NLS::Render::Settings::EPrimitiveMode::LINES,
+        NLS::Render::Settings::EComparaisonAlgorithm::GREATER);
+
+    EXPECT_TRUE(explicitState.IsComplete());
+    ASSERT_NE(explicitState.pipelineLayout, nullptr);
+    ASSERT_NE(explicitState.vertexShader, nullptr);
+    ASSERT_NE(explicitState.fragmentShader, nullptr);
+    EXPECT_EQ(explicitState.pipelineDesc.pipelineLayout, explicitState.pipelineLayout);
+    EXPECT_EQ(explicitState.pipelineDesc.vertexShader, explicitState.vertexShader);
+    EXPECT_EQ(explicitState.pipelineDesc.fragmentShader, explicitState.fragmentShader);
+    EXPECT_EQ(explicitState.pipelineDesc.primitiveTopology, NLS::Render::RHI::PrimitiveTopology::LineList);
+    EXPECT_EQ(
+        explicitState.pipelineDesc.depthStencilState.depthCompare,
+        NLS::Render::Settings::EComparaisonAlgorithm::GREATER);
+    EXPECT_TRUE(explicitState.pipelineDesc.blendState.enabled);
+    EXPECT_FALSE(explicitState.pipelineDesc.depthStencilState.depthWrite);
+    EXPECT_FALSE(explicitState.pipelineDesc.rasterState.cullEnabled);
+    EXPECT_EQ(explicitState.pipelineDesc.reflection, nullptr);
 }

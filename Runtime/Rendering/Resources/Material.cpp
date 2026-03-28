@@ -693,6 +693,51 @@ namespace NLS::Render::Resources
 		return desc;
 	}
 
+	Material::ExplicitPipelineState Material::BuildExplicitPipelineState(
+		const std::shared_ptr<RHI::RHIPipelineLayout>& pipelineLayout,
+		const std::shared_ptr<RHI::RHIShaderModule>& vertexShader,
+		const std::shared_ptr<RHI::RHIShaderModule>& fragmentShader,
+		Settings::EPrimitiveMode primitiveMode,
+		Settings::EComparaisonAlgorithm depthCompare) const
+	{
+		ExplicitPipelineState state;
+		state.pipelineLayout = pipelineLayout;
+		state.vertexShader = vertexShader;
+		state.fragmentShader = fragmentShader;
+
+		if (state.IsComplete())
+		{
+			state.pipelineDesc = BuildExplicitGraphicsPipelineDesc(
+				state.pipelineLayout,
+				state.vertexShader,
+				state.fragmentShader,
+				primitiveMode,
+				depthCompare);
+		}
+
+		return state;
+	}
+
+	Material::ExplicitPipelineState Material::BuildExplicitPipelineState(
+		const std::shared_ptr<RHI::RHIDevice>& device,
+		Settings::EPrimitiveMode primitiveMode,
+		Settings::EComparaisonAlgorithm depthCompare) const
+	{
+		const auto pipelineLayout = GetExplicitPipelineLayout(device);
+		const auto vertexShader = m_shader != nullptr
+			? m_shader->GetOrCreateExplicitShaderModule(device, NLS::Render::ShaderCompiler::ShaderStage::Vertex)
+			: nullptr;
+		const auto fragmentShader = m_shader != nullptr
+			? m_shader->GetOrCreateExplicitShaderModule(device, NLS::Render::ShaderCompiler::ShaderStage::Pixel)
+			: nullptr;
+		return BuildExplicitPipelineState(
+			pipelineLayout,
+			vertexShader,
+			fragmentShader,
+			primitiveMode,
+			depthCompare);
+	}
+
 	MaterialParameterBlock& Material::GetParameterBlock()
 	{
 		return m_parameterBlock;

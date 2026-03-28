@@ -9,6 +9,13 @@ namespace NLS::Render::FrameGraph
 {
 	namespace
 	{
+		struct ExplicitTextureState
+		{
+			NLS::Render::RHI::ResourceState state = NLS::Render::RHI::ResourceState::Unknown;
+			NLS::Render::RHI::PipelineStageMask stageMask = NLS::Render::RHI::PipelineStageMask::AllCommands;
+			NLS::Render::RHI::AccessMask accessMask = NLS::Render::RHI::AccessMask::MemoryRead;
+		};
+
 		NLS::Render::RHI::TextureUsageFlags ToExplicitTextureUsage(const NLS::Render::RHI::TextureUsage usage)
 		{
 			NLS::Render::RHI::TextureUsageFlags flags = NLS::Render::RHI::TextureUsageFlags::None;
@@ -36,6 +43,71 @@ namespace NLS::Render::FrameGraph
 			explicitDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::GPUOnly;
 			explicitDesc.debugName = "FrameGraphTexture";
 			return explicitDesc;
+		}
+
+		NLS::Render::RHI::RHISubresourceRange GetFullSubresourceRange(const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture)
+		{
+			NLS::Render::RHI::RHISubresourceRange range;
+			if (texture == nullptr)
+				return range;
+
+			range.baseMipLevel = 0u;
+			range.mipLevelCount = texture->GetDesc().mipLevels;
+			range.baseArrayLayer = 0u;
+			range.arrayLayerCount = texture->GetDesc().arrayLayers;
+			return range;
+		}
+
+		ExplicitTextureState GetExplicitTextureReadState(const FrameGraphTexture::Desc& desc)
+		{
+			if (NLS::Render::RHI::HasUsage(desc.usage, NLS::Render::RHI::TextureUsage::DepthStencilAttachment) &&
+				!NLS::Render::RHI::HasUsage(desc.usage, NLS::Render::RHI::TextureUsage::Sampled) &&
+				!NLS::Render::RHI::HasUsage(desc.usage, NLS::Render::RHI::TextureUsage::Storage))
+			{
+				return {
+					NLS::Render::RHI::ResourceState::DepthRead,
+					NLS::Render::RHI::PipelineStageMask::DepthStencil,
+					NLS::Render::RHI::AccessMask::DepthStencilRead
+				};
+			}
+
+			return {
+				NLS::Render::RHI::ResourceState::ShaderRead,
+				NLS::Render::RHI::PipelineStageMask::AllGraphics | NLS::Render::RHI::PipelineStageMask::ComputeShader,
+				NLS::Render::RHI::AccessMask::ShaderRead
+			};
+		}
+
+		ExplicitTextureState GetExplicitTextureWriteState(const FrameGraphTexture::Desc& desc)
+		{
+			if (NLS::Render::RHI::HasUsage(desc.usage, NLS::Render::RHI::TextureUsage::DepthStencilAttachment))
+			{
+				return {
+					NLS::Render::RHI::ResourceState::DepthWrite,
+					NLS::Render::RHI::PipelineStageMask::DepthStencil,
+					NLS::Render::RHI::AccessMask::DepthStencilWrite
+				};
+			}
+
+			if (NLS::Render::RHI::HasUsage(desc.usage, NLS::Render::RHI::TextureUsage::ColorAttachment))
+			{
+				return {
+					NLS::Render::RHI::ResourceState::RenderTarget,
+					NLS::Render::RHI::PipelineStageMask::RenderTarget,
+					NLS::Render::RHI::AccessMask::ColorAttachmentWrite
+				};
+			}
+
+			if (NLS::Render::RHI::HasUsage(desc.usage, NLS::Render::RHI::TextureUsage::Storage))
+			{
+				return {
+					NLS::Render::RHI::ResourceState::ShaderWrite,
+					NLS::Render::RHI::PipelineStageMask::AllGraphics | NLS::Render::RHI::PipelineStageMask::ComputeShader,
+					NLS::Render::RHI::AccessMask::ShaderWrite
+				};
+			}
+
+			return GetExplicitTextureReadState(desc);
 		}
 	}
 
@@ -88,12 +160,19 @@ namespace NLS::Render::FrameGraph
 		auto* executionContext = static_cast<FrameGraphExecutionContext*>(allocator);
 		NLS_ASSERT(executionContext != nullptr, "FrameGraphTexture requires a valid frame graph execution context");
 		auto& driver = executionContext->driver;
+		const bool hadExplicitResource = explicitTexture != nullptr || explicitView != nullptr;
 
-		if (id == 0)
+		if (id == 0 && explicitTexture == nullptr && explicitView == nullptr && textureResource == nullptr)
 			return;
 
 		explicitView.reset();
 		explicitTexture.reset();
+		if (hadExplicitResource)
+		{
+			id = 0;
+			ownsResource = false;
+			return;
+		}
 		if (ownsResource)
 		{
 			if (textureResource != nullptr)
@@ -111,8 +190,23 @@ namespace NLS::Render::FrameGraph
 		NLS_ASSERT(executionContext != nullptr, "FrameGraphTexture requires a valid frame graph execution context");
 		auto& driver = executionContext->driver;
 
-		if (executionContext->HasExplicitContext() && explicitTexture != nullptr)
+		if (explicitTexture != nullptr && executionContext->CanTrackExplicitResourceState())
+		{
+			const auto targetState = GetExplicitTextureReadState(desc);
+			NLS::Render::RHI::RHIBarrierDesc barrierDesc;
+			barrierDesc.textureBarriers.push_back({
+				explicitTexture,
+				NLS::Render::RHI::ResourceState::Unknown,
+				targetState.state,
+				GetFullSubresourceRange(explicitTexture),
+				NLS::Render::RHI::PipelineStageMask::AllCommands,
+				targetState.stageMask,
+				NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite,
+				targetState.accessMask
+			});
+			executionContext->RecordResourceBarriers(barrierDesc);
 			return;
+		}
 
 		if (id == 0)
 			return;
@@ -122,9 +216,27 @@ namespace NLS::Render::FrameGraph
 		driver.BindTexture(desc.dimension, id);
 	}
 
-	void FrameGraphTexture::preWrite(const Desc&, uint32_t, void*)
+	void FrameGraphTexture::preWrite(const Desc& desc, uint32_t, void* context)
 	{
-		// Attachment routing stays in the pass execution path.
+		auto* executionContext = static_cast<FrameGraphExecutionContext*>(context);
+		NLS_ASSERT(executionContext != nullptr, "FrameGraphTexture requires a valid frame graph execution context");
+
+		if (explicitTexture != nullptr && executionContext->CanTrackExplicitResourceState())
+		{
+			const auto targetState = GetExplicitTextureWriteState(desc);
+			NLS::Render::RHI::RHIBarrierDesc barrierDesc;
+			barrierDesc.textureBarriers.push_back({
+				explicitTexture,
+				NLS::Render::RHI::ResourceState::Unknown,
+				targetState.state,
+				GetFullSubresourceRange(explicitTexture),
+				NLS::Render::RHI::PipelineStageMask::AllCommands,
+				targetState.stageMask,
+				NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite,
+				targetState.accessMask
+			});
+			executionContext->RecordResourceBarriers(barrierDesc);
+		}
 	}
 
 	std::string FrameGraphTexture::toString(const Desc& desc)

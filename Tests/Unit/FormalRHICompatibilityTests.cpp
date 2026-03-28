@@ -5,9 +5,16 @@
 #include <optional>
 #include <unordered_map>
 
+#define private public
+#include "Rendering/Context/Driver.h"
+#undef private
+#include "Rendering/FrameGraph/FrameGraphBuffer.h"
+#include "Rendering/FrameGraph/FrameGraphExecutionContext.h"
+#include "Rendering/FrameGraph/FrameGraphTexture.h"
 #include "Rendering/RHI/ExplicitRHICompat.h"
 #include "Rendering/RHI/GraphicsPipelineDesc.h"
 #include "Rendering/RHI/IRenderDevice.h"
+#include "Rendering/RHI/Utils/ResourceStateTracker/ResourceStateTracker.h"
 #include "Rendering/Resources/BindingSetInstance.h"
 #include "Rendering/Resources/MaterialCompatibilityDrawState.h"
 #include "Rendering/Resources/Material.h"
@@ -157,7 +164,10 @@ namespace
         }
 
         uint32_t CreateTexture() override { return ++m_nextTextureId; }
-        void DestroyTexture(uint32_t) override {}
+        void DestroyTexture(uint32_t textureId) override
+        {
+            destroyedTextureIds.push_back(textureId);
+        }
         void BindTexture(NLS::Render::RHI::TextureDimension, uint32_t) override {}
         void ActivateTexture(uint32_t) override {}
         void SetupTexture(const NLS::Render::RHI::TextureDesc&, const void*) override {}
@@ -179,7 +189,10 @@ namespace
         }
 
         uint32_t CreateBuffer() override { return ++m_nextBufferId; }
-        void DestroyBuffer(uint32_t) override {}
+        void DestroyBuffer(uint32_t bufferId) override
+        {
+            destroyedBufferIds.push_back(bufferId);
+        }
 
         void BindBuffer(NLS::Render::RHI::BufferType type, uint32_t bufferId) override
         {
@@ -241,6 +254,8 @@ namespace
         uint32_t drawElementsInstancedCallCount = 0;
         uint32_t bindGraphicsPipelineCallCount = 0;
         bool depthWritingEnabled = true;
+        std::vector<uint32_t> destroyedTextureIds;
+        std::vector<uint32_t> destroyedBufferIds;
         NLS::Render::RHI::NativeBackendType nativeBackend = NLS::Render::RHI::NativeBackendType::DX11;
 
     private:
@@ -250,6 +265,94 @@ namespace
         std::unordered_map<uint32_t, std::shared_ptr<RecordingTextureResource>> m_textures;
         std::array<std::shared_ptr<RecordingBufferResource>, 4> m_boundBuffers{};
     };
+
+    class RecordingCommandBuffer final : public NLS::Render::RHI::RHICommandBuffer
+    {
+    public:
+        std::string_view GetDebugName() const override { return "RecordingCommandBuffer"; }
+        void Begin() override { m_isRecording = true; }
+        void End() override { m_isRecording = false; }
+        void Reset() override
+        {
+            m_isRecording = false;
+            recordedBarriers.clear();
+        }
+        bool IsRecording() const override { return m_isRecording; }
+
+        void BeginRenderPass(const NLS::Render::RHI::RHIRenderPassDesc&) override {}
+        void EndRenderPass() override {}
+        void SetViewport(const NLS::Render::RHI::RHIViewport&) override {}
+        void SetScissor(const NLS::Render::RHI::RHIRect2D&) override {}
+        void BindGraphicsPipeline(const std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline>&) override {}
+        void BindComputePipeline(const std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>&) override {}
+        void BindBindingSet(uint32_t, const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>&) override {}
+        void PushConstants(NLS::Render::RHI::ShaderStageMask, uint32_t, uint32_t, const void*) override {}
+        void BindVertexBuffer(uint32_t, const NLS::Render::RHI::RHIVertexBufferView&) override {}
+        void BindIndexBuffer(const NLS::Render::RHI::RHIIndexBufferView&) override {}
+        void Draw(uint32_t, uint32_t, uint32_t, uint32_t) override {}
+        void DrawIndexed(uint32_t, uint32_t, uint32_t, int32_t, uint32_t) override {}
+        void Dispatch(uint32_t, uint32_t, uint32_t) override {}
+        void CopyBuffer(const std::shared_ptr<NLS::Render::RHI::RHIBuffer>&, const std::shared_ptr<NLS::Render::RHI::RHIBuffer>&, const NLS::Render::RHI::RHIBufferCopyRegion&) override {}
+        void CopyBufferToTexture(const NLS::Render::RHI::RHIBufferToTextureCopyDesc&) override {}
+        void CopyTexture(const NLS::Render::RHI::RHITextureCopyDesc&) override {}
+        void Barrier(const NLS::Render::RHI::RHIBarrierDesc& barrier) override { recordedBarriers.push_back(barrier); }
+
+        std::vector<NLS::Render::RHI::RHIBarrierDesc> recordedBarriers;
+
+    private:
+        bool m_isRecording = false;
+    };
+
+    class RecordingExplicitBuffer final : public NLS::Render::RHI::RHIBuffer
+    {
+    public:
+        explicit RecordingExplicitBuffer(NLS::Render::RHI::RHIBufferDesc desc)
+            : m_desc(std::move(desc))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return "RecordingExplicitBuffer"; }
+        const NLS::Render::RHI::RHIBufferDesc& GetDesc() const override { return m_desc; }
+        NLS::Render::RHI::ResourceState GetState() const override { return m_state; }
+
+    private:
+        NLS::Render::RHI::RHIBufferDesc m_desc{};
+        NLS::Render::RHI::ResourceState m_state = NLS::Render::RHI::ResourceState::Unknown;
+    };
+
+    class RecordingExplicitTexture final : public NLS::Render::RHI::RHITexture
+    {
+    public:
+        explicit RecordingExplicitTexture(NLS::Render::RHI::RHITextureDesc desc)
+            : m_desc(std::move(desc))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return "RecordingExplicitTexture"; }
+        const NLS::Render::RHI::RHITextureDesc& GetDesc() const override { return m_desc; }
+        NLS::Render::RHI::ResourceState GetState() const override { return m_state; }
+
+    private:
+        NLS::Render::RHI::RHITextureDesc m_desc{};
+        NLS::Render::RHI::ResourceState m_state = NLS::Render::RHI::ResourceState::Unknown;
+    };
+
+    NLS::Render::Settings::DriverSettings MakeNullDriverSettings()
+    {
+        NLS::Render::Settings::DriverSettings settings;
+        settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+        settings.enableExplicitRHI = false;
+        settings.framesInFlight = 1;
+        return settings;
+    }
+
+    RecordingRenderDevice& InstallRecordingRenderDevice(NLS::Render::Context::Driver& driver)
+    {
+        auto renderDevice = std::make_unique<RecordingRenderDevice>();
+        auto* renderDevicePtr = renderDevice.get();
+        driver.m_renderDevice = std::move(renderDevice);
+        return *renderDevicePtr;
+    }
 }
 
 TEST(FormalRHICompatibilityTests, CompatibilityQueueSubmissionTranslatesFormalDX11PipelineAndBindingsToLegacyBindCall)
@@ -574,4 +677,179 @@ TEST(FormalRHICompatibilityTests, MaterialCompatibilityDrawStateAppliesLegacyPip
         NLS::Render::Settings::EComparaisonAlgorithm::GREATER);
     EXPECT_NE(renderDevice.boundBindingSet, nullptr);
     EXPECT_EQ(renderDevice.bindGraphicsPipelineCallCount, 1u);
+}
+
+TEST(FormalRHICompatibilityTests, FrameGraphBufferPreReadRecordsExplicitVertexBarrierAndTracksState)
+{
+    NLS::Render::Context::Driver driver(MakeNullDriverSettings());
+    RecordingCommandBuffer commandBuffer;
+
+    NLS::Render::RHI::RHIFrameContext frameContext;
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    NLS::Render::FrameGraph::FrameGraphExecutionContext executionContext{
+        driver,
+        nullptr,
+        &commandBuffer,
+        &frameContext
+    };
+
+    NLS::Render::FrameGraph::FrameGraphBuffer buffer;
+    buffer.explicitBuffer = std::make_shared<RecordingExplicitBuffer>(NLS::Render::RHI::RHIBufferDesc{});
+
+    NLS::Render::FrameGraph::FrameGraphBuffer::Desc desc;
+    desc.type = NLS::Render::RHI::BufferType::Vertex;
+    desc.size = 256u;
+
+    buffer.preRead(desc, 3u, &executionContext);
+
+    ASSERT_EQ(commandBuffer.recordedBarriers.size(), 1u);
+    ASSERT_EQ(commandBuffer.recordedBarriers.front().bufferBarriers.size(), 1u);
+    const auto& barrier = commandBuffer.recordedBarriers.front().bufferBarriers.front();
+    EXPECT_EQ(barrier.buffer, buffer.explicitBuffer);
+    EXPECT_EQ(barrier.before, NLS::Render::RHI::ResourceState::Unknown);
+    EXPECT_EQ(barrier.after, NLS::Render::RHI::ResourceState::VertexBuffer);
+    EXPECT_EQ(barrier.destinationStageMask, NLS::Render::RHI::PipelineStageMask::VertexInput);
+    EXPECT_EQ(barrier.destinationAccessMask, NLS::Render::RHI::AccessMask::VertexRead);
+
+    buffer.preRead(desc, 3u, &executionContext);
+    EXPECT_EQ(commandBuffer.recordedBarriers.size(), 1u);
+}
+
+TEST(FormalRHICompatibilityTests, FrameGraphTexturePreWriteRecordsExplicitRenderTargetBarrier)
+{
+    NLS::Render::Context::Driver driver(MakeNullDriverSettings());
+    RecordingCommandBuffer commandBuffer;
+
+    NLS::Render::RHI::RHIFrameContext frameContext;
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    NLS::Render::FrameGraph::FrameGraphExecutionContext executionContext{
+        driver,
+        nullptr,
+        &commandBuffer,
+        &frameContext
+    };
+
+    NLS::Render::RHI::RHITextureDesc explicitTextureDesc;
+    explicitTextureDesc.extent.width = 128u;
+    explicitTextureDesc.extent.height = 128u;
+    explicitTextureDesc.usage = NLS::Render::RHI::TextureUsageFlags::ColorAttachment;
+
+    NLS::Render::FrameGraph::FrameGraphTexture texture;
+    texture.explicitTexture = std::make_shared<RecordingExplicitTexture>(explicitTextureDesc);
+
+    NLS::Render::FrameGraph::FrameGraphTexture::Desc desc;
+    desc.width = 128u;
+    desc.height = 128u;
+    desc.usage = NLS::Render::RHI::TextureUsage::ColorAttachment;
+
+    texture.preWrite(desc, 0u, &executionContext);
+
+    ASSERT_EQ(commandBuffer.recordedBarriers.size(), 1u);
+    ASSERT_EQ(commandBuffer.recordedBarriers.front().textureBarriers.size(), 1u);
+    const auto& barrier = commandBuffer.recordedBarriers.front().textureBarriers.front();
+    EXPECT_EQ(barrier.texture, texture.explicitTexture);
+    EXPECT_EQ(barrier.before, NLS::Render::RHI::ResourceState::Unknown);
+    EXPECT_EQ(barrier.after, NLS::Render::RHI::ResourceState::RenderTarget);
+    EXPECT_EQ(barrier.destinationStageMask, NLS::Render::RHI::PipelineStageMask::RenderTarget);
+    EXPECT_EQ(barrier.destinationAccessMask, NLS::Render::RHI::AccessMask::ColorAttachmentWrite);
+}
+
+TEST(FormalRHICompatibilityTests, FrameGraphBufferPreWritePreservesSameStateWriteDependencies)
+{
+    NLS::Render::Context::Driver driver(MakeNullDriverSettings());
+    RecordingCommandBuffer commandBuffer;
+
+    NLS::Render::RHI::RHIFrameContext frameContext;
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    NLS::Render::FrameGraph::FrameGraphExecutionContext executionContext{
+        driver,
+        nullptr,
+        &commandBuffer,
+        &frameContext
+    };
+
+    NLS::Render::FrameGraph::FrameGraphBuffer buffer;
+    buffer.explicitBuffer = std::make_shared<RecordingExplicitBuffer>(NLS::Render::RHI::RHIBufferDesc{});
+
+    NLS::Render::FrameGraph::FrameGraphBuffer::Desc desc;
+    desc.type = NLS::Render::RHI::BufferType::ShaderStorage;
+    desc.size = 512u;
+
+    buffer.preWrite(desc, 0u, &executionContext);
+    buffer.preWrite(desc, 0u, &executionContext);
+
+    ASSERT_EQ(commandBuffer.recordedBarriers.size(), 2u);
+    ASSERT_EQ(commandBuffer.recordedBarriers.back().bufferBarriers.size(), 1u);
+    const auto& secondBarrier = commandBuffer.recordedBarriers.back().bufferBarriers.front();
+    EXPECT_EQ(secondBarrier.before, NLS::Render::RHI::ResourceState::ShaderWrite);
+    EXPECT_EQ(secondBarrier.after, NLS::Render::RHI::ResourceState::ShaderWrite);
+    EXPECT_EQ(secondBarrier.destinationAccessMask, NLS::Render::RHI::AccessMask::ShaderWrite);
+}
+
+TEST(FormalRHICompatibilityTests, FrameGraphTextureDestroyReleasesExplicitResourcesWithoutLegacyId)
+{
+    NLS::Render::Context::Driver driver(MakeNullDriverSettings());
+    RecordingRenderDevice& renderDevice = InstallRecordingRenderDevice(driver);
+
+    NLS::Render::FrameGraph::FrameGraphExecutionContext executionContext{
+        driver,
+        nullptr,
+        nullptr,
+        nullptr
+    };
+
+    NLS::Render::RHI::RHITextureDesc explicitTextureDesc;
+    explicitTextureDesc.extent.width = 64u;
+    explicitTextureDesc.extent.height = 64u;
+    explicitTextureDesc.usage = NLS::Render::RHI::TextureUsageFlags::ColorAttachment;
+
+    NLS::Render::FrameGraph::FrameGraphTexture texture;
+    texture.ownsResource = true;
+    texture.id = 17u;
+    texture.explicitTexture = std::make_shared<RecordingExplicitTexture>(explicitTextureDesc);
+
+    NLS::Render::FrameGraph::FrameGraphTexture::Desc desc;
+    desc.width = 64u;
+    desc.height = 64u;
+    desc.usage = NLS::Render::RHI::TextureUsage::ColorAttachment;
+
+    texture.destroy(desc, &executionContext);
+
+    EXPECT_EQ(texture.explicitTexture, nullptr);
+    EXPECT_EQ(texture.explicitView, nullptr);
+    EXPECT_FALSE(texture.ownsResource);
+    EXPECT_EQ(texture.id, 0u);
+    EXPECT_TRUE(renderDevice.destroyedTextureIds.empty());
+}
+
+TEST(FormalRHICompatibilityTests, FrameGraphBufferDestroyReleasesExplicitResourcesWithoutLegacyId)
+{
+    NLS::Render::Context::Driver driver(MakeNullDriverSettings());
+    RecordingRenderDevice& renderDevice = InstallRecordingRenderDevice(driver);
+
+    NLS::Render::FrameGraph::FrameGraphExecutionContext executionContext{
+        driver,
+        nullptr,
+        nullptr,
+        nullptr
+    };
+
+    NLS::Render::FrameGraph::FrameGraphBuffer buffer;
+    buffer.ownsResource = true;
+    buffer.id = 11u;
+    buffer.explicitBuffer = std::make_shared<RecordingExplicitBuffer>(NLS::Render::RHI::RHIBufferDesc{});
+
+    NLS::Render::FrameGraph::FrameGraphBuffer::Desc desc;
+    desc.type = NLS::Render::RHI::BufferType::ShaderStorage;
+    desc.size = 128u;
+
+    buffer.destroy(desc, &executionContext);
+
+    EXPECT_EQ(buffer.explicitBuffer, nullptr);
+    EXPECT_FALSE(buffer.ownsResource);
+    EXPECT_EQ(buffer.id, 0u);
+    EXPECT_TRUE(renderDevice.destroyedBufferIds.empty());
 }

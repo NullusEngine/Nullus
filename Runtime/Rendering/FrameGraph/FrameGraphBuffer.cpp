@@ -9,6 +9,13 @@ namespace NLS::Render::FrameGraph
 {
 	namespace
 	{
+		struct ExplicitBufferState
+		{
+			NLS::Render::RHI::ResourceState state = NLS::Render::RHI::ResourceState::Unknown;
+			NLS::Render::RHI::PipelineStageMask stageMask = NLS::Render::RHI::PipelineStageMask::AllCommands;
+			NLS::Render::RHI::AccessMask accessMask = NLS::Render::RHI::AccessMask::MemoryRead;
+		};
+
 		NLS::Render::RHI::BufferUsageFlags ToExplicitBufferUsage(const FrameGraphBuffer::Desc& desc)
 		{
 			NLS::Render::RHI::BufferUsageFlags flags = NLS::Render::RHI::BufferUsageFlags::None;
@@ -51,6 +58,52 @@ namespace NLS::Render::FrameGraph
 			explicitDesc.debugName = "FrameGraphBuffer";
 			return explicitDesc;
 		}
+
+		ExplicitBufferState GetExplicitBufferReadState(const FrameGraphBuffer::Desc& desc)
+		{
+			switch (desc.type)
+			{
+			case NLS::Render::RHI::BufferType::Vertex:
+				return {
+					NLS::Render::RHI::ResourceState::VertexBuffer,
+					NLS::Render::RHI::PipelineStageMask::VertexInput,
+					NLS::Render::RHI::AccessMask::VertexRead
+				};
+			case NLS::Render::RHI::BufferType::Index:
+				return {
+					NLS::Render::RHI::ResourceState::IndexBuffer,
+					NLS::Render::RHI::PipelineStageMask::VertexInput,
+					NLS::Render::RHI::AccessMask::IndexRead
+				};
+			case NLS::Render::RHI::BufferType::Uniform:
+				return {
+					NLS::Render::RHI::ResourceState::UniformBuffer,
+					NLS::Render::RHI::PipelineStageMask::AllGraphics | NLS::Render::RHI::PipelineStageMask::ComputeShader,
+					NLS::Render::RHI::AccessMask::UniformRead
+				};
+			case NLS::Render::RHI::BufferType::ShaderStorage:
+			default:
+				return {
+					NLS::Render::RHI::ResourceState::ShaderRead,
+					NLS::Render::RHI::PipelineStageMask::AllGraphics | NLS::Render::RHI::PipelineStageMask::ComputeShader,
+					NLS::Render::RHI::AccessMask::ShaderRead
+				};
+			}
+		}
+
+		ExplicitBufferState GetExplicitBufferWriteState(const FrameGraphBuffer::Desc& desc)
+		{
+			if (desc.type == NLS::Render::RHI::BufferType::ShaderStorage)
+			{
+				return {
+					NLS::Render::RHI::ResourceState::ShaderWrite,
+					NLS::Render::RHI::PipelineStageMask::AllGraphics | NLS::Render::RHI::PipelineStageMask::ComputeShader,
+					NLS::Render::RHI::AccessMask::ShaderWrite
+				};
+			}
+
+			return GetExplicitBufferReadState(desc);
+		}
 	}
 
 	void FrameGraphBuffer::create(const Desc& desc, void* allocator)
@@ -90,11 +143,18 @@ namespace NLS::Render::FrameGraph
 		auto* executionContext = static_cast<FrameGraphExecutionContext*>(allocator);
 		NLS_ASSERT(executionContext != nullptr, "FrameGraphBuffer requires a valid frame graph execution context");
 		auto& driver = executionContext->driver;
+		const bool hadExplicitResource = explicitBuffer != nullptr;
 
-		if (id == 0)
+		if (id == 0 && explicitBuffer == nullptr && bufferResource == nullptr)
 			return;
 
 		explicitBuffer.reset();
+		if (hadExplicitResource)
+		{
+			id = 0;
+			ownsResource = false;
+			return;
+		}
 		if (ownsResource)
 		{
 			if (bufferResource != nullptr)
@@ -112,8 +172,22 @@ namespace NLS::Render::FrameGraph
 		NLS_ASSERT(executionContext != nullptr, "FrameGraphBuffer requires a valid frame graph execution context");
 		auto& driver = executionContext->driver;
 
-		if (executionContext->HasExplicitContext() && explicitBuffer != nullptr)
+		if (explicitBuffer != nullptr && executionContext->CanTrackExplicitResourceState())
+		{
+			const auto targetState = GetExplicitBufferReadState(desc);
+			NLS::Render::RHI::RHIBarrierDesc barrierDesc;
+			barrierDesc.bufferBarriers.push_back({
+				explicitBuffer,
+				NLS::Render::RHI::ResourceState::Unknown,
+				targetState.state,
+				NLS::Render::RHI::PipelineStageMask::AllCommands,
+				targetState.stageMask,
+				NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite,
+				targetState.accessMask
+			});
+			executionContext->RecordResourceBarriers(barrierDesc);
 			return;
+		}
 
 		if (id == 0)
 			return;
@@ -123,6 +197,26 @@ namespace NLS::Render::FrameGraph
 
 	void FrameGraphBuffer::preWrite(const Desc& desc, uint32_t flags, void* context)
 	{
+		auto* executionContext = static_cast<FrameGraphExecutionContext*>(context);
+		NLS_ASSERT(executionContext != nullptr, "FrameGraphBuffer requires a valid frame graph execution context");
+
+		if (explicitBuffer != nullptr && executionContext->CanTrackExplicitResourceState())
+		{
+			const auto targetState = GetExplicitBufferWriteState(desc);
+			NLS::Render::RHI::RHIBarrierDesc barrierDesc;
+			barrierDesc.bufferBarriers.push_back({
+				explicitBuffer,
+				NLS::Render::RHI::ResourceState::Unknown,
+				targetState.state,
+				NLS::Render::RHI::PipelineStageMask::AllCommands,
+				targetState.stageMask,
+				NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite,
+				targetState.accessMask
+			});
+			executionContext->RecordResourceBarriers(barrierDesc);
+			return;
+		}
+
 		preRead(desc, flags, context);
 	}
 

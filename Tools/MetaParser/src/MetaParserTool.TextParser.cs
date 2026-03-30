@@ -2,7 +2,7 @@ using System.Text.RegularExpressions;
 
 internal static partial class MetaParserTool
 {
-    private static IEnumerable<ReflectTypeInfo> ParseHeaderFromText(string rootDir, string headerPath, string headerText)
+    private static IEnumerable<ReflectTypeInfo> ParseHeaderFromText(string rootDir, string headerPath, string headerText, bool emitDiagnostics = false)
     {
         var includePath = ToGeneratedIncludePath(rootDir, Path.GetFullPath(headerPath));
         var text = SanitizeTextForMacroParsing(headerText);
@@ -32,6 +32,8 @@ internal static partial class MetaParserTool
                 : $"{namespacePrefix}::{className}";
             var bases = ParseBasesFromText(match.Groups["bases"].Value, namespacePrefix);
             var members = ExtractMembersFromText(body, fullTypeName, string.Equals(kind, "struct", StringComparison.Ordinal));
+            if (emitDiagnostics)
+                Console.WriteLine($"[MetaParser] Members {fullTypeName} {FormatMemberDiscoverySummary(members.Summary)}");
 
             yield return new ReflectTypeInfo(
                 className,

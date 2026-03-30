@@ -36,10 +36,14 @@ namespace NLS::Engine
             if (!component)
                 continue;
 
-            if (auto* exact = dynamic_cast<T*>(component.get()))
-                return exact;
+            if (includeSubType)
+            {
+                if (auto* match = dynamic_cast<T*>(component.get()))
+                    return match;
+                continue;
+            }
 
-            if (!includeSubType && typeid(*component) == typeid(T))
+            if (typeid(*component) == typeid(T))
                 return static_cast<T*>(component.get());
         }
 

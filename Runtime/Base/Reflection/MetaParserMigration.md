@@ -1,6 +1,6 @@
 # MetaParser 迁移说明（已切换到 C# 路线）
 
-> Current verified workflow: `ReflectionBindingWorkflow.md` and `Runtime/Base/Reflection/ReflectionBindingWorkflow.md`
+> Current verified workflow: `Docs/Reflection/ReflectionWorkflow.zh-CN.md` and `Docs/Reflection/ReflectionWorkflow.en.md`
 
 ## 结论（重要）
 
@@ -31,7 +31,7 @@
 运行时模块通过 `Runtime/CMakeLists.txt` 中的 `nls_add_meta_generation(...)` 接入 C# MetaParser：
 
 - 扫描各模块 `Runtime/<Module>/` 下的头文件
-- 仅命中“带反射标记 + 继承 Object”的头文件
+- 命中当前维护中的反射输入模式，包括内联反射类型、反射枚举和类外反射声明
 - 生成聚合产物 `MetaGenerated.h / MetaGenerated.cpp`
 - 生成结果直接写入模块源码树下的正式目录：`Runtime/<Module>/Gen/`
 
@@ -47,10 +47,13 @@
 - 旧的 `build/Runtime/Base/Generated/` 属于迁移过程中的历史/中间产物，不再视为当前正式输出目录
 - 当前构建实际编译的是 `Runtime/<Module>/Gen/*`
 
-聚合注册接口保持：
+当前模块级 link 入口保持为：
 
-- `RegisterReflectionTypes(ReflectionDatabase&)`
-- `RegisterReflectionTypes()`
+- `LinkReflectionTypes_NLS_Base`
+- `LinkReflectionTypes_NLS_Core`
+- `LinkReflectionTypes_NLS_Engine`
+
+运行时通过 `NLS_META_GENERATED_LINK_FUNCTION` 接入本模块的生成注册入口。
 
 ---
 
@@ -58,13 +61,24 @@
 
 解析器定义 `__REFLECTION_PARSER__`，支持以下写法：
 
-1. 用户宏方案（推荐）
-   - `__attribute__((annotate(...)))`
-   - `CLASS(...) / STRUCT(...)`（在 parser 模式下会展开到 annotate）
-2. 旧写法（兼容过渡）
+1. 当前维护中的内联反射宏
+   - `CLASS(...)`
+   - `STRUCT(...)`
+   - `ENUM(...)`
+   - `PROPERTY(...)`
+   - `FUNCTION(...)`
+   - `GENERATED_BODY(...)`
+2. 类外反射声明
+   - `MetaExternal(...)`
+   - `REFLECT_EXTERNAL(...)`
+   - `REFLECT_PRIVATE_*`
+3. 旧写法
    - `Meta(...)`
 
-并且类型需继承 `NLS::meta::Object`（或 `Object`）。
+注意：
+
+- 当前仓库里带 `GENERATED_BODY()` 的反射类型主体主要走维护中的文本解析路径
+- 不再应该把“CppAst-first”当成这类类型主体的默认口径
 
 ---
 

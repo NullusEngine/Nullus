@@ -38,6 +38,13 @@ specify init --here --ai codex --ai-skills --script ps --offline --force
 
 The current repository already contains the initialized scaffold, so contributors usually do not need to run `init` again unless they are refreshing the upstream scaffold.
 
+## Constitution Authority
+
+The project constitution at `.specify/memory/constitution.md` is the authoritative workflow policy
+for Nullus. If repository-level workflow rules, template expectations, or governance need to
+change, update the constitution and sync dependent templates/docs in the same change by using
+`$speckit-constitution`.
+
 ## Minimal Codex Flow
 
 For a typical major change:
@@ -50,6 +57,9 @@ For a typical major change:
 5. Implement in small steps.
 6. Validate with the right tests or runtime evidence.
 7. Update the same spec bundle if scope or acceptance changes.
+
+If the workflow itself needs to change, run `speckit-constitution` before editing the templates or
+repository guidance in isolation.
 
 If you need to scaffold a new feature bundle directly from the repository scripts, use:
 
@@ -93,7 +103,9 @@ If the scope grows while you work, stop and create the spec bundle.
 ### Reflection And MetaParser
 
 - Use the normal project build flow so `MetaParser` runs the same way it does in real development.
-- Validate with the current test entrypoints documented in `Testing.md`.
+- Use the maintained workflow guides in `Docs/Reflection/ReflectionWorkflow.zh-CN.md` and
+  `Docs/Reflection/ReflectionWorkflow.en.md` instead of relying on older reflection notes.
+- Validate with the current test entrypoints documented in `Docs/Testing.md`.
 - If generated output changes, explain why the generated result is expected instead of hand-editing generated files.
 
 ### Tests And Runtime Behavior

@@ -7,8 +7,7 @@ internal static partial class MetaParserTool
     {
         body = StripBlockComments(body);
 
-        var fields = new List<ReflectFieldInfo>();
-        var methods = new List<ReflectMethodInfo>();
+        var inlineFields = new List<ReflectFieldInfo>();
         var methodCandidates = new List<MethodCandidateInfo>();
         var explicitProperties = new List<ExplicitPropertyDirectiveInfo>();
         var explicitMethods = new List<ExplicitMethodDirectiveInfo>();
@@ -21,6 +20,8 @@ internal static partial class MetaParserTool
         var braceDepth = 0;
         var pendingProperty = false;
         var pendingFunction = false;
+        var rejectedFieldCount = 0;
+        var rejectedMethodCount = 0;
 
         foreach (var rawLine in body.Split(new[] { '\r', '\n' }, StringSplitOptions.None))
         {
@@ -31,11 +32,21 @@ internal static partial class MetaParserTool
             if (Regex.IsMatch(line, @"^GENERATED_BODY\s*\([^)]*\)\s*;?$", RegexOptions.CultureInvariant))
                 continue;
 
+            var explicitPropertyCountBefore = explicitProperties.Count;
             if (TryParseStandalonePropertyDirective(line, namespacePrefix, explicitProperties))
+            {
+                if (explicitProperties.Count == explicitPropertyCountBefore)
+                    rejectedFieldCount++;
                 continue;
+            }
 
+            var explicitMethodCountBefore = explicitMethods.Count;
             if (TryParseStandaloneFunctionDirective(line, fullTypeName, explicitMethods))
+            {
+                if (explicitMethods.Count == explicitMethodCountBefore)
+                    rejectedMethodCount++;
                 continue;
+            }
 
             if (Regex.IsMatch(line, @"\bPROPERTY\s*\(", RegexOptions.CultureInvariant))
             {
@@ -75,6 +86,14 @@ internal static partial class MetaParserTool
 
             if (currentAccess != "public")
             {
+                if (pendingProperty)
+                    rejectedFieldCount++;
+                if (pendingFunction)
+                    rejectedMethodCount++;
+
+                pendingProperty = false;
+                pendingFunction = false;
+                currentStatement.Clear();
                 braceDepth += line.Count(static c => c == '{');
                 braceDepth -= line.Count(static c => c == '}');
                 continue;
@@ -96,6 +115,11 @@ internal static partial class MetaParserTool
                     || statement.StartsWith("typedef ", StringComparison.Ordinal)
                     || statement.StartsWith("friend ", StringComparison.Ordinal))
                 {
+                    if (pendingProperty)
+                        rejectedFieldCount++;
+                    if (pendingFunction)
+                        rejectedMethodCount++;
+
                     pendingProperty = false;
                     pendingFunction = false;
                     continue;
@@ -104,17 +128,27 @@ internal static partial class MetaParserTool
                 if (statement.Contains('('))
                 {
                     var shouldReflectMethod = pendingFunction;
+                    var shouldRejectPropertyMarker = pendingProperty;
                     pendingProperty = false;
                     pendingFunction = false;
+                    if (shouldRejectPropertyMarker)
+                        rejectedFieldCount++;
+
                     if (!shouldReflectMethod)
                         continue;
 
                     if (ContainsUnsupportedReflectionType(statement))
+                    {
+                        rejectedMethodCount++;
                         continue;
+                    }
 
                     var nameMatches = Regex.Matches(statement, @"(?<name>[~A-Za-z_]\w*)\s*\([^;{}]*\)", RegexOptions.CultureInvariant);
                     if (nameMatches.Count == 0)
+                    {
+                        rejectedMethodCount++;
                         continue;
+                    }
 
                     var methodName = nameMatches[^1].Groups["name"].Value;
                     if (string.IsNullOrWhiteSpace(methodName)
@@ -125,12 +159,16 @@ internal static partial class MetaParserTool
                         || statement.Contains(" static ", StringComparison.Ordinal)
                         || statement.StartsWith("static ", StringComparison.Ordinal))
                     {
+                        rejectedMethodCount++;
                         continue;
                     }
 
                     var parameterTypeNames = ExtractParameterTypeNamesFromText(statement, methodName, namespacePrefix, fullTypeName, nestedTypeNames);
                     if (parameterTypeNames.Any(ContainsUnsupportedReflectionType))
+                    {
+                        rejectedMethodCount++;
                         continue;
+                    }
 
                     methodCandidates.Add(new MethodCandidateInfo(
                         methodName,
@@ -143,8 +181,12 @@ internal static partial class MetaParserTool
                 }
 
                 var shouldReflectField = pendingProperty;
+                var shouldRejectFunctionMarker = pendingFunction;
                 pendingProperty = false;
                 pendingFunction = false;
+                if (shouldRejectFunctionMarker)
+                    rejectedMethodCount++;
+
                 if (!shouldReflectField)
                     continue;
 
@@ -154,7 +196,10 @@ internal static partial class MetaParserTool
                     RegexOptions.CultureInvariant);
 
                 if (!fieldMatch.Success)
+                {
+                    rejectedFieldCount++;
                     continue;
+                }
 
                 var fieldType = QualifyMemberTypeName(NormalizeTypeName(fieldMatch.Groups["type"].Value), namespacePrefix, fullTypeName, nestedTypeNames);
                 var fieldName = fieldMatch.Groups["name"].Value;
@@ -168,10 +213,11 @@ internal static partial class MetaParserTool
                     || fieldType.Contains(" static ", StringComparison.Ordinal)
                     || fieldType.Contains("typedef", StringComparison.Ordinal))
                 {
+                    rejectedFieldCount++;
                     continue;
                 }
 
-                fields.Add(new ReflectFieldInfo(
+                inlineFields.Add(new ReflectFieldInfo(
                     fieldName,
                     fieldType,
                     $"&{fullTypeName}::{fieldName}",
@@ -181,10 +227,9 @@ internal static partial class MetaParserTool
         }
 
         var explicitPropertyMethodNames = directivesToMethodNameSet(explicitProperties);
+        var inlineFieldResults = inlineFields.DistinctBy(static field => field.Name).ToList();
         var autoPropertyFields = BuildAutoPropertyFields(fullTypeName, methodCandidates, explicitPropertyMethodNames);
         var explicitPropertyFields = ResolveExplicitPropertyDirectives(fullTypeName, explicitProperties, methodCandidates, namespacePrefix);
-        fields.AddRange(explicitPropertyFields);
-        fields.AddRange(autoPropertyFields);
 
         var overloaded = methodCandidates
             .GroupBy(static method => method.Name, StringComparer.Ordinal)
@@ -192,15 +237,43 @@ internal static partial class MetaParserTool
             .Select(static group => group.Key)
             .ToHashSet(StringComparer.Ordinal);
 
-        methods.AddRange(methodCandidates
+        var inlineMethods = methodCandidates
             .Where(method => !overloaded.Contains(method.Name))
             .DistinctBy(static method => method.Name)
-            .Select(static method => new ReflectMethodInfo(method.Name, method.PointerExpression, method.IsStatic, method.IsPrivate)));
+            .Select(static method => new ReflectMethodInfo(method.Name, method.PointerExpression, method.IsStatic, method.IsPrivate))
+            .ToList();
 
-        methods.AddRange(explicitMethods.Select(static method => new ReflectMethodInfo(method.Name, method.PointerExpression, method.IsStatic, method.IsPrivate)));
+        var explicitMethodResults = explicitMethods
+            .Select(static method => new ReflectMethodInfo(method.Name, method.PointerExpression, method.IsStatic, method.IsPrivate))
+            .ToList();
 
-        return new TextMemberParseResult(fields.DistinctBy(static field => field.Name).ToList(), methods);
+        var allFields = inlineFieldResults
+            .Concat(explicitPropertyFields)
+            .Concat(autoPropertyFields)
+            .DistinctBy(static field => field.Name)
+            .ToList();
+        var allMethods = inlineMethods
+            .Concat(explicitMethodResults)
+            .ToList();
+        var overloadRejectedMethodCount = methodCandidates.Count(method => overloaded.Contains(method.Name));
+        var summary = new TextMemberDiscoverySummary(
+            inlineFieldResults.Count,
+            explicitPropertyFields.Count,
+            autoPropertyFields.Count,
+            rejectedFieldCount,
+            allFields.Count,
+            inlineMethods.Count,
+            explicitMethodResults.Count,
+            rejectedMethodCount,
+            overloadRejectedMethodCount,
+            allMethods.Count);
+
+        return new TextMemberParseResult(allFields, allMethods, summary);
     }
+
+    private static string FormatMemberDiscoverySummary(TextMemberDiscoverySummary summary)
+        => $"[fields: inline={summary.InlineFieldCount}, explicit={summary.ExplicitPropertyFieldCount}, auto={summary.AutoPropertyFieldCount}, rejected={summary.RejectedFieldCount}, total={summary.TotalFieldCount}] " +
+           $"[methods: inline={summary.InlineMethodCount}, explicit={summary.ExplicitMethodCount}, rejected={summary.RejectedMethodCount}, overload-rejected={summary.OverloadRejectedMethodCount}, total={summary.TotalMethodCount}]";
 
     private static HashSet<string> FindNestedTypeNames(string body)
     {

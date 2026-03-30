@@ -81,18 +81,25 @@ Component* GameObject::AddComponent(meta::Type type, const std::function<void(Co
 
 Component* GameObject::GetComponent(meta::Type type, bool includeSubType) const
 {
-    if (type == NLS_TYPEOF(TransformComponent))
-        return GetComponent<TransformComponent>(includeSubType);
-    if (type == NLS_TYPEOF(CameraComponent))
-        return GetComponent<CameraComponent>(includeSubType);
-    if (type == NLS_TYPEOF(LightComponent))
-        return GetComponent<LightComponent>(includeSubType);
-    if (type == NLS_TYPEOF(MaterialRenderer))
-        return GetComponent<MaterialRenderer>(includeSubType);
-    if (type == NLS_TYPEOF(MeshRenderer))
-        return GetComponent<MeshRenderer>(includeSubType);
-    if (type == NLS_TYPEOF(SkyBoxComponent))
-        return GetComponent<SkyBoxComponent>(includeSubType);
+    if (!type.IsValid() || !(type == NLS_TYPEOF(Component) || type.DerivesFrom(NLS_TYPEOF(Component))))
+        return nullptr;
+
+    for (const auto& component : m_vComponents)
+    {
+        if (!component)
+            continue;
+
+        const auto componentType = component->GetType();
+        if (!componentType.IsValid())
+            continue;
+
+        if (componentType == type)
+            return component.get();
+
+        if (includeSubType && componentType.DerivesFrom(type))
+            return component.get();
+    }
+
     return nullptr;
 }
 

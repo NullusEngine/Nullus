@@ -27,6 +27,7 @@
 #include "Components/LightComponent.h"
 #include "Components/CameraComponent.h"
 #include "Components/TransformComponent.h"
+#include "Panels/InspectorReflectionUtils.h"
 #include "Rendering/Geometry/BoundingSphere.h"
 #include "Rendering/Settings/EProjectionMode.h"
 #include "Rendering/Settings/ELightType.h"
@@ -210,39 +211,14 @@ void DrawReflectedField(NLS::UI::Internal::WidgetContainer &root, meta::Variant 
     const auto fieldType = field.GetType();
     const auto label = FormatFieldLabel(field.GetName());
 
-    if (field.GetName() == "projectionMode")
+    if (fieldType.IsEnum())
     {
-        DrawEnumField(root, instance, field,
+        const auto choices = NLS::Editor::Panels::BuildEnumChoices(fieldType);
+        if (!choices.empty())
         {
-            { static_cast<int>(Render::Settings::EProjectionMode::ORTHOGRAPHIC), "Orthographic" },
-            { static_cast<int>(Render::Settings::EProjectionMode::PERSPECTIVE), "Perspective" }
-        });
-        return;
-    }
-
-    if (field.GetName() == "lightType")
-    {
-        DrawEnumField(root, instance, field,
-        {
-            { static_cast<int>(Render::Settings::ELightType::POINT), "Point" },
-            { static_cast<int>(Render::Settings::ELightType::DIRECTIONAL), "Directional" },
-            { static_cast<int>(Render::Settings::ELightType::SPOT), "Spot" },
-            { static_cast<int>(Render::Settings::ELightType::AMBIENT_BOX), "Ambient Box" },
-            { static_cast<int>(Render::Settings::ELightType::AMBIENT_SPHERE), "Ambient Sphere" }
-        });
-        return;
-    }
-
-    if (field.GetName() == "frustumBehaviour")
-    {
-        DrawEnumField(root, instance, field,
-        {
-            { static_cast<int>(Engine::Components::MeshRenderer::EFrustumBehaviour::DISABLED), "Disabled" },
-            { static_cast<int>(Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MODEL), "Cull Model" },
-            { static_cast<int>(Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MESHES), "Cull Meshes" },
-            { static_cast<int>(Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_CUSTOM), "Cull Custom" }
-        });
-        return;
+            DrawEnumField(root, instance, field, choices);
+            return;
+        }
     }
 
     if (fieldType == NLS_TYPEOF(bool))
@@ -357,154 +333,10 @@ void DrawReflectedField(NLS::UI::Internal::WidgetContainer &root, meta::Variant 
     root.CreateWidget<NLS::UI::Widgets::Text>(fieldType.GetName());
 }
 
-void DrawTransformFallback(NLS::UI::Internal::WidgetContainer &root, Engine::Components::TransformComponent &component)
-{
-    NLS::UI::GUIDrawer::DrawVec3(root, "Local Position",
-        [&component]() { return component.GetLocalPosition(); },
-        [&component](Maths::Vector3 value) { component.SetLocalPosition(value); },
-        0.01f, NLS::UI::GUIDrawer::_MIN_FLOAT, NLS::UI::GUIDrawer::_MAX_FLOAT);
-    NLS::UI::GUIDrawer::DrawQuat(root, "Local Rotation",
-        [&component]() { return component.GetLocalRotation(); },
-        [&component](Maths::Quaternion value) { component.SetLocalRotation(value); },
-        0.01f, NLS::UI::GUIDrawer::_MIN_FLOAT, NLS::UI::GUIDrawer::_MAX_FLOAT);
-    NLS::UI::GUIDrawer::DrawVec3(root, "Local Scale",
-        [&component]() { return component.GetLocalScale(); },
-        [&component](Maths::Vector3 value) { component.SetLocalScale(value); },
-        0.01f, NLS::UI::GUIDrawer::_MIN_FLOAT, NLS::UI::GUIDrawer::_MAX_FLOAT);
-}
-
-void DrawCameraFallback(NLS::UI::Internal::WidgetContainer &root, Engine::Components::CameraComponent &component)
-{
-    NLS::UI::GUIDrawer::DrawScalar<float>(root, "Fov", [&component]() { return component.GetFov(); }, [&component](float value) { component.SetFov(value); }, 0.01f, 0.0f, NLS::UI::GUIDrawer::_MAX_FLOAT);
-    NLS::UI::GUIDrawer::DrawScalar<float>(root, "Size", [&component]() { return component.GetSize(); }, [&component](float value) { component.SetSize(value); }, 0.01f, 0.0f, NLS::UI::GUIDrawer::_MAX_FLOAT);
-    NLS::UI::GUIDrawer::DrawScalar<float>(root, "Near", [&component]() { return component.GetNear(); }, [&component](float value) { component.SetNear(value); }, 0.01f, 0.0f, NLS::UI::GUIDrawer::_MAX_FLOAT);
-    NLS::UI::GUIDrawer::DrawScalar<float>(root, "Far", [&component]() { return component.GetFar(); }, [&component](float value) { component.SetFar(value); }, 0.01f, 0.0f, NLS::UI::GUIDrawer::_MAX_FLOAT);
-    NLS::UI::GUIDrawer::DrawVec3(root, "Clear Color", [&component]() { return component.GetClearColor(); }, [&component](Maths::Vector3 value) { component.SetClearColor(value); }, 0.01f, NLS::UI::GUIDrawer::_MIN_FLOAT, NLS::UI::GUIDrawer::_MAX_FLOAT);
-    NLS::UI::GUIDrawer::DrawBoolean(root, "Frustum Geometry Culling", [&component]() { return component.HasFrustumGeometryCulling(); }, [&component](bool value) { component.SetFrustumGeometryCulling(value); });
-    NLS::UI::GUIDrawer::DrawBoolean(root, "Frustum Light Culling", [&component]() { return component.HasFrustumLightCulling(); }, [&component](bool value) { component.SetFrustumLightCulling(value); });
-    DrawEnumValue(root, "Projection Mode", static_cast<int>(component.GetProjectionMode()),
-    {
-        { static_cast<int>(Render::Settings::EProjectionMode::ORTHOGRAPHIC), "Orthographic" },
-        { static_cast<int>(Render::Settings::EProjectionMode::PERSPECTIVE), "Perspective" }
-    }, [&component](int value)
-    {
-        component.SetProjectionMode(static_cast<Render::Settings::EProjectionMode>(value));
-    });
-}
-
-void DrawLightFallback(NLS::UI::Internal::WidgetContainer &root, Engine::Components::LightComponent &component)
-{
-    DrawEnumValue(root, "Light Type", static_cast<int>(component.GetLightType()),
-    {
-        { static_cast<int>(Render::Settings::ELightType::POINT), "Point" },
-        { static_cast<int>(Render::Settings::ELightType::DIRECTIONAL), "Directional" },
-        { static_cast<int>(Render::Settings::ELightType::SPOT), "Spot" },
-        { static_cast<int>(Render::Settings::ELightType::AMBIENT_BOX), "Ambient Box" },
-        { static_cast<int>(Render::Settings::ELightType::AMBIENT_SPHERE), "Ambient Sphere" }
-    }, [&component](int value)
-    {
-        component.SetLightType(static_cast<Render::Settings::ELightType>(value));
-    });
-    NLS::UI::GUIDrawer::DrawVec3(root, "Color", [&component]() { return component.GetColor(); }, [&component](Maths::Vector3 value) { component.SetColor(value); }, 0.01f, NLS::UI::GUIDrawer::_MIN_FLOAT, NLS::UI::GUIDrawer::_MAX_FLOAT);
-    NLS::UI::GUIDrawer::DrawScalar<float>(root, "Intensity", [&component]() { return component.GetIntensity(); }, [&component](float value) { component.SetIntensity(value); }, 0.01f, 0.0f, NLS::UI::GUIDrawer::_MAX_FLOAT);
-    NLS::UI::GUIDrawer::DrawScalar<float>(root, "Constant", [&component]() { return component.GetConstant(); }, [&component](float value) { component.SetConstant(value); }, 0.01f, 0.0f, NLS::UI::GUIDrawer::_MAX_FLOAT);
-    NLS::UI::GUIDrawer::DrawScalar<float>(root, "Linear", [&component]() { return component.GetLinear(); }, [&component](float value) { component.SetLinear(value); }, 0.01f, 0.0f, NLS::UI::GUIDrawer::_MAX_FLOAT);
-    NLS::UI::GUIDrawer::DrawScalar<float>(root, "Quadratic", [&component]() { return component.GetQuadratic(); }, [&component](float value) { component.SetQuadratic(value); }, 0.01f, 0.0f, NLS::UI::GUIDrawer::_MAX_FLOAT);
-    NLS::UI::GUIDrawer::DrawScalar<float>(root, "Cutoff", [&component]() { return component.GetCutoff(); }, [&component](float value) { component.SetCutoff(value); }, 0.01f, 0.0f, NLS::UI::GUIDrawer::_MAX_FLOAT);
-    NLS::UI::GUIDrawer::DrawScalar<float>(root, "Outer Cutoff", [&component]() { return component.GetOuterCutoff(); }, [&component](float value) { component.SetOuterCutoff(value); }, 0.01f, 0.0f, NLS::UI::GUIDrawer::_MAX_FLOAT);
-    NLS::UI::GUIDrawer::DrawScalar<float>(root, "Radius", [&component]() { return component.GetRadius(); }, [&component](float value) { component.SetRadius(value); }, 0.01f, 0.0f, NLS::UI::GUIDrawer::_MAX_FLOAT);
-    NLS::UI::GUIDrawer::DrawVec3(root, "Size", [&component]() { return component.GetSize(); }, [&component](Maths::Vector3 value) { component.SetSize(value); }, 0.01f, NLS::UI::GUIDrawer::_MIN_FLOAT, NLS::UI::GUIDrawer::_MAX_FLOAT);
-}
-
-void DrawMeshRendererFallback(NLS::UI::Internal::WidgetContainer &root, Engine::Components::MeshRenderer &component)
-{
-    NLS::UI::GUIDrawer::DrawDDString(root, "Model",
-        [&component]() { return component.GetModelPath(); },
-        [&component](std::string value) { component.SetModelPath(value); },
-        "File");
-    DrawEnumValue(root, "Frustum Behaviour", static_cast<int>(component.GetFrustumBehaviour()),
-    {
-        { static_cast<int>(Engine::Components::MeshRenderer::EFrustumBehaviour::DISABLED), "Disabled" },
-        { static_cast<int>(Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MODEL), "Cull Model" },
-        { static_cast<int>(Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MESHES), "Cull Meshes" },
-        { static_cast<int>(Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_CUSTOM), "Cull Custom" }
-    }, [&component](int value)
-    {
-        component.SetFrustumBehaviour(static_cast<Engine::Components::MeshRenderer::EFrustumBehaviour>(value));
-    });
-    auto sphereVariant = meta::Variant(&component, meta::variant_policy::WrapObject {});
-    const auto sphereField = component.GetType().GetField("customBoundingSphere");
-    if (sphereField.IsValid())
-        DrawBoundingSphereField(root, sphereVariant, sphereField);
-}
-
-void DrawMaterialRendererFallback(NLS::UI::Internal::WidgetContainer &root, Engine::Components::MaterialRenderer &component)
-{
-    NLS::UI::GUIDrawer::DrawDDString(
-        root,
-        "Materials 0",
-        [&component]() -> std::string
-        {
-            const auto paths = component.GetMaterialPaths();
-            return paths.empty() ? std::string {} : paths[0];
-        },
-        [&component](std::string value)
-        {
-            auto paths = component.GetMaterialPaths();
-            if (paths.empty())
-                paths.resize(1);
-            paths[0] = std::move(value);
-            component.SetMaterialPaths(paths);
-        },
-        "File");
-
-    const auto matrixValues = component.GetUserMatrixValues();
-    for (size_t row = 0; row < 4; ++row)
-    {
-        NLS::UI::GUIDrawer::DrawVec4(
-            root,
-            "User Matrix " + std::to_string(row),
-            [&component, row]() -> Maths::Vector4
-            {
-                const auto current = component.GetUserMatrixValues();
-                Maths::Vector4 value {};
-                const size_t base = row * 4;
-                for (size_t column = 0; column < 4; ++column)
-                    value[column] = base + column < current.size() ? current[base + column] : 0.0f;
-                return value;
-            },
-            [&component, row](Maths::Vector4 value)
-            {
-                auto current = component.GetUserMatrixValues();
-                if (current.size() < 16)
-                    current.resize(16, 0.0f);
-
-                const size_t base = row * 4;
-                for (size_t column = 0; column < 4; ++column)
-                    current[base + column] = value[column];
-
-                component.SetUserMatrixValues(current);
-            },
-            0.01f,
-            NLS::UI::GUIDrawer::_MIN_FLOAT,
-            NLS::UI::GUIDrawer::_MAX_FLOAT
-        );
-    }
-}
-
 void DrawComponentFallback(NLS::UI::Internal::WidgetContainer &root, Engine::Components::Component &component)
 {
-    using namespace NLS::Engine::Components;
-    if (auto *transform = dynamic_cast<TransformComponent *>(&component))
-        return DrawTransformFallback(root, *transform);
-    if (auto *camera = dynamic_cast<CameraComponent *>(&component))
-        return DrawCameraFallback(root, *camera);
-    if (auto *light = dynamic_cast<LightComponent *>(&component))
-        return DrawLightFallback(root, *light);
-    if (auto *meshRenderer = dynamic_cast<MeshRenderer *>(&component))
-        return DrawMeshRendererFallback(root, *meshRenderer);
-    if (auto *materialRenderer = dynamic_cast<MaterialRenderer *>(&component))
-        return DrawMaterialRendererFallback(root, *materialRenderer);
+    root.CreateWidget<NLS::UI::Widgets::Text>("No reflected fields");
+    root.CreateWidget<NLS::UI::Widgets::Text>(component.GetType().GetName());
 }
 } // namespace
 
@@ -769,13 +601,6 @@ void Inspector::DrawComponent(Engine::Components::Component* p_component)
     };
     auto& columns = header.CreateWidget<UI::Widgets::Columns>(2);
     columns.widths[0] = 104;
-
-    if (dynamic_cast<MaterialRenderer*>(p_component))
-    {
-        DrawMaterialRendererFallback(columns, *static_cast<MaterialRenderer*>(p_component));
-        m_actorInfo->CreateWidget<UI::Widgets::Spacing>(1);
-        return;
-    }
 
     meta::Variant componentInstance(p_component, meta::variant_policy::WrapObject {});
     const auto componentType = p_component->GetType();

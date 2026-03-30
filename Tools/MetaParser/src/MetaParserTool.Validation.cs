@@ -79,6 +79,12 @@ internal static partial class MetaParserTool
             return false;
         }
 
+        if (normalizedTypeName.StartsWith("Array<", StringComparison.Ordinal))
+        {
+            reason = "Use the fully qualified `NLS::Array<...>` type in reflected declarations so MetaParser can validate and register the container correctly.";
+            return false;
+        }
+
         if (ContainsUnsupportedReflectionType(normalizedTypeName))
         {
             reason = "This type category is not supported by the reflection system.";

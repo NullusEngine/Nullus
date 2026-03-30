@@ -54,7 +54,9 @@ internal static partial class MetaParserTool
             if (!File.Exists(header) || !ShouldParseHeader(header, MetaParserGeneratorRegistry.All))
                 continue;
 
-            Console.WriteLine($"[MetaParser] Parsing {header}");
+            var headerText = File.ReadAllText(header);
+            var routes = DescribeHeaderParseRoutes(headerText);
+            Console.WriteLine($"[MetaParser] Parsing {header} [routes: {routes}]");
             discoveredTypes.AddRange(ParseHeader(rootDir, header, config));
         }
 

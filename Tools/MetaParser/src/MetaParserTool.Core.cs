@@ -58,6 +58,35 @@ internal static partial class MetaParserTool
         "Debug"
     };
 
+    private static string DescribeHeaderParseRoutes(string headerText)
+    {
+        var routes = new List<string>();
+
+        if (headerText.Contains("ENUM(", StringComparison.Ordinal))
+            routes.Add("text-top-level-enum");
+
+        if (ContainsGeneratedBody(headerText))
+            routes.Add("text-type-body");
+
+        if (headerText.Contains("MetaExternal", StringComparison.Ordinal)
+            || headerText.Contains("REFLECT_EXTERNAL", StringComparison.Ordinal))
+        {
+            routes.Add("external-declaration");
+        }
+
+        if (!ContainsGeneratedBody(headerText)
+            && !headerText.Contains("MetaExternal", StringComparison.Ordinal)
+            && !headerText.Contains("REFLECT_EXTERNAL", StringComparison.Ordinal))
+        {
+            routes.Add("cppast");
+        }
+
+        if (routes.Count == 0)
+            routes.Add("none");
+
+        return string.Join(", ", routes);
+    }
+
     private static IEnumerable<ReflectTypeInfo> ParseHeader(string rootDir, string headerPath, PrecompileParams config)
     {
         var types = new List<ReflectTypeInfo>();
@@ -68,7 +97,7 @@ internal static partial class MetaParserTool
             || headerText.Contains("REFLECT_EXTERNAL", StringComparison.Ordinal);
         if (hasReflectedTypeBodies)
         {
-            types.AddRange(ParseHeaderFromText(rootDir, headerPath, headerText));
+            types.AddRange(ParseHeaderFromText(rootDir, headerPath, headerText, emitDiagnostics: true));
         }
         else if (!hasExternalReflectionDeclarations)
         {

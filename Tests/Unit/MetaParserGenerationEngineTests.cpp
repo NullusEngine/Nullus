@@ -1,59 +1,18 @@
+#include "ReflectionTestUtils.h"
+
 #include <gtest/gtest.h>
 
 #include <filesystem>
-#include <fstream>
-#include <sstream>
 #include <string>
 
 namespace
 {
-std::string ReadAllText(const std::filesystem::path& path)
-{
-    std::ifstream input(path, std::ios::in | std::ios::binary);
-    EXPECT_TRUE(input.is_open()) << "Failed to open " << path.string();
-    std::ostringstream buffer;
-    buffer << input.rdbuf();
-    return buffer.str();
+using NLS::Tests::Reflection::ExpectContains;
+using NLS::Tests::Reflection::ExpectNotContains;
+using NLS::Tests::Reflection::ReadAllText;
 }
 
-void ExpectContains(const std::string& content, const std::string& needle)
-{
-    EXPECT_NE(content.find(needle), std::string::npos) << "Missing generated fragment: " << needle;
-}
-} // namespace
-
-TEST(MetaParserGenerationTests, GeneratesModuleSpecificRegistrationEntrypoints)
-{
-    const std::filesystem::path baseHeader = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Base/Gen/MetaGenerated.h";
-    const std::filesystem::path engineHeader = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/MetaGenerated.h";
-
-    const std::string baseText = ReadAllText(baseHeader);
-    const std::string engineText = ReadAllText(engineHeader);
-
-    ExpectContains(baseText, "LinkReflectionTypes_NLS_Base");
-    ExpectContains(baseText, "NLS_META_GENERATED_LINK_FUNCTION");
-    ExpectContains(engineText, "LinkReflectionTypes_NLS_Engine");
-    ExpectContains(engineText, "NLS_META_GENERATED_LINK_FUNCTION");
-}
-
-TEST(MetaParserGenerationTests, GeneratesExpectedBaseReflectionBindings)
-{
-    const std::filesystem::path sampleSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Base/Gen/Reflection/MetaParserFieldMethodSample.generated.cpp";
-    const std::filesystem::path metaSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Base/Gen/MetaGenerated.cpp";
-    const std::string sampleText = ReadAllText(sampleSource);
-    const std::string metaText = ReadAllText(metaSource);
-
-    ExpectContains(sampleText, "AllocateType(\"NLS::meta::MetaParserFieldMethodSample\")");
-    ExpectContains(sampleText, "AddField<NLS::meta::MetaParserFieldMethodSample, int>(\"value\"");
-    ExpectContains(sampleText, "&NLS::meta::MetaParserFieldMethodSample::GetValue");
-    ExpectContains(sampleText, "&NLS::meta::MetaParserFieldMethodSample::SetValue");
-    ExpectContains(sampleText, "AddMethod(\"GetValue\", &NLS::meta::MetaParserFieldMethodSample::GetValue, {})");
-    EXPECT_EQ(sampleText.find("AddMethod(\"OnSerialize\""), std::string::npos);
-    ExpectContains(metaText, "LinkReflectionTypes_NLS_Base");
-    ExpectContains(metaText, "#include \"Reflection/MetaParserFieldMethodSample.generated.cpp\"");
-}
-
-TEST(MetaParserGenerationTests, GeneratesExpectedEngineReflectionBindings)
+TEST(MetaParserGenerationEngineTests, GeneratesExpectedEngineReflectionBindings)
 {
     const std::filesystem::path componentSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/Components/Component.generated.cpp";
     const std::filesystem::path transformSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/Components/TransformComponent.generated.cpp";
@@ -82,8 +41,8 @@ TEST(MetaParserGenerationTests, GeneratesExpectedEngineReflectionBindings)
     ExpectContains(cameraText, "AddField<NLS::Engine::Components::CameraComponent, NLS::Render::Settings::EProjectionMode>(\"projectionMode\"");
     ExpectContains(lightText, "AddField<NLS::Engine::Components::LightComponent, float>(\"intensity\"");
     ExpectContains(lightText, "AddField<NLS::Engine::Components::LightComponent, NLS::Render::Settings::ELightType>(\"lightType\"");
-    EXPECT_EQ(materialText.find("AddField<NLS::Engine::Components::MaterialRenderer, NLS::Array<std::string>>(\"materials\""), std::string::npos);
-    EXPECT_EQ(materialText.find("AddField<NLS::Engine::Components::MaterialRenderer, NLS::Array<float>>(\"userMatrix\""), std::string::npos);
+    ExpectContains(materialText, "AddField<NLS::Engine::Components::MaterialRenderer, NLS::Array<std::string>>(\"materialPaths\"");
+    ExpectContains(materialText, "AddField<NLS::Engine::Components::MaterialRenderer, NLS::Array<float>>(\"userMatrixValues\"");
     ExpectContains(meshText, "AddField<NLS::Engine::Components::MeshRenderer, std::string>(\"model\", &NLS::Engine::Components::MeshRenderer::GetModelPath, &NLS::Engine::Components::MeshRenderer::SetModelPath, {})");
     ExpectContains(meshText, "AddField<NLS::Engine::Components::MeshRenderer, NLS::Engine::Components::MeshRenderer::EFrustumBehaviour>(\"frustumBehaviour\"");
     ExpectContains(meshText, "AddField<NLS::Engine::Components::MeshRenderer, NLS::Render::Geometry::BoundingSphere>(\"customBoundingSphere\"");
@@ -95,23 +54,6 @@ TEST(MetaParserGenerationTests, GeneratesExpectedEngineReflectionBindings)
     ExpectContains(sceneText, "AddMethod(\"Play\", &NLS::Engine::SceneSystem::Scene::Play, {})");
     ExpectContains(sceneText, "AddMethod(\"GetActors\", static_cast<const std::vector<NLS::Engine::GameObject*>& (NLS::Engine::SceneSystem::Scene::*)() const>(&NLS::Engine::SceneSystem::Scene::GetActors), {})");
     ExpectContains(metaText, "LinkReflectionTypes_NLS_Engine");
-    EXPECT_EQ(metaText.find("ExternalReflection.generated.cpp"), std::string::npos);
+    ExpectNotContains(metaText, "ExternalReflection.generated.cpp");
     ExpectContains(metaText, "#include \"Components/Component.generated.cpp\"");
-}
-
-TEST(MetaParserGenerationTests, GeneratesExpectedRenderEnumAndStructBindings)
-{
-    const std::filesystem::path projectionModeSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Gen/Settings/EProjectionMode.generated.cpp";
-    const std::filesystem::path lightTypeSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Gen/Settings/ELightType.generated.cpp";
-    const std::filesystem::path boundingSphereSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Gen/Geometry/BoundingSphere.generated.cpp";
-    const std::string projectionModeText = ReadAllText(projectionModeSource);
-    const std::string lightTypeText = ReadAllText(lightTypeSource);
-    const std::string boundingSphereText = ReadAllText(boundingSphereSource);
-
-    ExpectContains(projectionModeText, "type.SetEnum<NLS::Render::Settings::EProjectionMode>");
-    ExpectContains(projectionModeText, "\"PERSPECTIVE\"");
-    ExpectContains(lightTypeText, "type.SetEnum<NLS::Render::Settings::ELightType>");
-    ExpectContains(lightTypeText, "\"DIRECTIONAL\"");
-    ExpectContains(boundingSphereText, "AddField<NLS::Render::Geometry::BoundingSphere, NLS::Maths::Vector3>(\"position\"");
-    ExpectContains(boundingSphereText, "AddField<NLS::Render::Geometry::BoundingSphere, float>(\"radius\"");
 }

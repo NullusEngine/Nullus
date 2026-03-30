@@ -68,9 +68,9 @@ const MaterialRenderer::MaterialList& MaterialRenderer::GetMaterials() const
     return m_materials;
 }
 
-Array<std::string> MaterialRenderer::GetMaterialPaths() const
+NLS::Array<std::string> MaterialRenderer::GetMaterialPaths() const
 {
-    Array<std::string> result;
+    NLS::Array<std::string> result;
     size_t lastUsedIndex = 0;
     bool hasMaterial = false;
     for (size_t index = 0; index < m_materials.size(); ++index)
@@ -96,7 +96,7 @@ Array<std::string> MaterialRenderer::GetMaterialPaths() const
     return result;
 }
 
-void MaterialRenderer::SetMaterialPaths(const Array<std::string>& p_paths)
+void MaterialRenderer::SetMaterialPaths(const NLS::Array<std::string>& p_paths)
 {
     RemoveAllMaterials();
     for (size_t index = 0; index < p_paths.size() && index < kMaxMaterialCount; ++index)
@@ -109,16 +109,16 @@ void MaterialRenderer::SetMaterialPaths(const Array<std::string>& p_paths)
     }
 }
 
-Array<float> MaterialRenderer::GetUserMatrixValues() const
+NLS::Array<float> MaterialRenderer::GetUserMatrixValues() const
 {
-    Array<float> result;
+    NLS::Array<float> result;
     result.reserve(16);
     for (float value : m_userMatrix.data)
         result.push_back(value);
     return result;
 }
 
-void MaterialRenderer::SetUserMatrixValues(const Array<float>& p_values)
+void MaterialRenderer::SetUserMatrixValues(const NLS::Array<float>& p_values)
 {
     for (uint32_t row = 0; row < 4; ++row)
     {

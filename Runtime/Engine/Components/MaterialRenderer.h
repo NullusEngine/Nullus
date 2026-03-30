@@ -96,13 +96,17 @@ public:
     FUNCTION()
     const Maths::Matrix4& GetUserMatrix() const;
 
-    Array<std::string> GetMaterialPaths() const;
+    FUNCTION()
+    NLS::Array<std::string> GetMaterialPaths() const;
 
-    void SetMaterialPaths(const Array<std::string>& p_paths);
+    FUNCTION()
+    void SetMaterialPaths(const NLS::Array<std::string>& p_paths);
 
-    Array<float> GetUserMatrixValues() const;
+    FUNCTION()
+    NLS::Array<float> GetUserMatrixValues() const;
 
-    void SetUserMatrixValues(const Array<float>& p_values);
+    FUNCTION()
+    void SetUserMatrixValues(const NLS::Array<float>& p_values);
 
     /**
      * Returns the materials

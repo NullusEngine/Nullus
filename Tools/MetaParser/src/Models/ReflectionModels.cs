@@ -41,6 +41,19 @@ internal sealed record ReflectTypeInfo(
     public string QualifiedName => FullTypeName;
 }
 
+internal sealed record TextMemberDiscoverySummary(
+    int InlineFieldCount,
+    int ExplicitPropertyFieldCount,
+    int AutoPropertyFieldCount,
+    int RejectedFieldCount,
+    int TotalFieldCount,
+    int InlineMethodCount,
+    int ExplicitMethodCount,
+    int RejectedMethodCount,
+    int OverloadRejectedMethodCount,
+    int TotalMethodCount);
+
 internal sealed record TextMemberParseResult(
     List<ReflectFieldInfo> Fields,
-    List<ReflectMethodInfo> Methods);
+    List<ReflectMethodInfo> Methods,
+    TextMemberDiscoverySummary Summary);

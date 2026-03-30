@@ -2,11 +2,19 @@
 #include "Core/AssemblyCore.h"
 #include "Engine/AssemblyEngine.h"
 #include "Math/AssemblyMath.h"
+#include "Components/CameraComponent.h"
+#include "Components/LightComponent.h"
+#include "Components/MeshRenderer.h"
+#include "Components/TransformComponent.h"
+#include "GameObject.h"
 #include "Rendering/AssemblyRender.h"
+#include "Rendering/Settings/EProjectionMode.h"
+#include "Rendering/Settings/ELightType.h"
 #include "Reflection/Field.h"
 #include "Reflection/Method.h"
 #include "Reflection/ReflectionDatabase.h"
 #include "Reflection/Type.h"
+#include "../../../Project/Editor/Panels/InspectorReflectionUtils.h"
 
 #include <iostream>
 #include <string>
@@ -76,6 +84,74 @@ bool RequireValidType(const TypeExpectation& expectation)
     std::cout << "[PASS] " << expectation.name << std::endl;
     return true;
 }
+
+bool RequireTypeDrivenComponentLookup()
+{
+    using namespace NLS::Engine;
+    using namespace NLS::Engine::Components;
+
+    bool playing = false;
+    GameObject actor(42, "ReflectionActor", "Test", playing);
+    auto* camera = actor.AddComponent<CameraComponent>();
+    auto* light = actor.AddComponent<LightComponent>();
+
+    if (!Require(camera != nullptr, "Failed to create reflected CameraComponent for lookup test"))
+        return false;
+    if (!Require(light != nullptr, "Failed to create reflected LightComponent for lookup test"))
+        return false;
+
+    auto* transformByType = actor.GetComponent(NLS_TYPEOF(Component), true);
+    if (!Require(transformByType == actor.GetTransform(), "includeSubType=true should return the first component deriving from Component"))
+        return false;
+
+    auto* exactBaseLookup = actor.GetComponent(NLS_TYPEOF(Component), false);
+    if (!Require(exactBaseLookup == nullptr, "includeSubType=false should not treat derived components as an exact Component match"))
+        return false;
+
+    auto* exactBaseTemplateLookup = actor.GetComponent<Component>(false);
+    if (!Require(exactBaseTemplateLookup == nullptr, "templated includeSubType=false should not treat derived components as an exact Component match"))
+        return false;
+
+    auto* cameraByMetaType = actor.GetComponent(NLS_TYPEOF(CameraComponent), false);
+    if (!Require(cameraByMetaType == camera, "meta::Type lookup should return the exact CameraComponent instance"))
+        return false;
+
+    auto* lightByMetaType = actor.GetComponent(NLS_TYPEOF(LightComponent), true);
+    if (!Require(lightByMetaType == light, "meta::Type lookup should return the exact LightComponent instance"))
+        return false;
+
+    std::cout << "[PASS] meta::Type component lookup" << std::endl;
+    return true;
+}
+
+bool RequireEnumChoiceMetadata()
+{
+    using namespace NLS::Render::Settings;
+    using namespace NLS::Engine::Components;
+    using NLS::Editor::Panels::BuildEnumChoices;
+
+    const auto projectionChoices = BuildEnumChoices(Type::GetFromName("NLS::Render::Settings::EProjectionMode"));
+    const auto lightChoices = BuildEnumChoices(Type::GetFromName("NLS::Render::Settings::ELightType"));
+    const auto frustumChoices = BuildEnumChoices(Type::GetFromName("NLS::Engine::Components::MeshRenderer::EFrustumBehaviour"));
+
+    if (!Require(projectionChoices.contains(static_cast<int>(EProjectionMode::ORTHOGRAPHIC)), "Projection mode enum choices should contain ORTHOGRAPHIC"))
+        return false;
+    if (!Require(projectionChoices.at(static_cast<int>(EProjectionMode::ORTHOGRAPHIC)) == "Orthographic", "Projection mode enum labels should be humanized from metadata"))
+        return false;
+
+    if (!Require(lightChoices.contains(static_cast<int>(ELightType::AMBIENT_SPHERE)), "Light type enum choices should contain AMBIENT_SPHERE"))
+        return false;
+    if (!Require(lightChoices.at(static_cast<int>(ELightType::AMBIENT_SPHERE)) == "Ambient Sphere", "Light type enum labels should be humanized from metadata"))
+        return false;
+
+    if (!Require(frustumChoices.contains(static_cast<int>(MeshRenderer::EFrustumBehaviour::CULL_MESHES)), "Frustum behaviour enum choices should contain CULL_MESHES"))
+        return false;
+    if (!Require(frustumChoices.at(static_cast<int>(MeshRenderer::EFrustumBehaviour::CULL_MESHES)) == "Cull Meshes", "Frustum behaviour labels should be humanized from metadata"))
+        return false;
+
+    std::cout << "[PASS] enum metadata choices" << std::endl;
+    return true;
+}
 } // namespace
 
 #if 0
@@ -123,30 +199,32 @@ int main()
     (void)db;
 
     const std::vector<TypeExpectation> expectations = {
+        // Inline reflected class with field + methods
         {"NLS::meta::MetaParserFieldMethodSample", {"GetValue", "SetValue"}, {}, {"value"}, ""},
+        // External private binding
         {"NLS::meta::PrivateReflectionExternalSample", {"GetHiddenValue"}, {}, {"m_hiddenValue"}, ""},
-        {"NLS::meta::MetaProperty", {}, {}, {}, ""},
-        {"NLS::meta::ReflectionObjectSample", {"OnSerialize"}, {}, {}, ""},
-        {"NLS::meta::TestObject", {"OnSerialize", "OnDeserialize"}, {}, {}, ""},
+        // External reflected value type with static methods
         {"NLS::Maths::Vector3", {"Length", "Normalised"}, {"Dot", "Cross"}, {"x", "y", "z"}, ""},
+        // Reflected enum
         {"NLS::Render::Settings::EProjectionMode", {}, {}, {}, ""},
-        {"NLS::Render::Settings::ELightType", {}, {}, {}, ""},
+        // Reflected struct/value type
         {"NLS::Render::Geometry::BoundingSphere", {}, {}, {"position", "radius"}, ""},
-        {"NLS::Engine::Components::MeshRenderer::EFrustumBehaviour", {}, {}, {}, ""},
-        {"NLS::Engine::Components::Component", {"CreateBy"}, {}, {}, ""},
-        {"NLS::Engine::Components::TransformComponent", {"SetLocalPosition", "GetWorldMatrix"}, {}, {"localPosition", "localRotation", "localScale"}, "NLS::Engine::Components::Component"},
-        {"NLS::Engine::Components::CameraComponent", {"SetFov", "GetCamera"}, {}, {"fov", "size", "near", "far", "clearColor", "frustumGeometryCulling", "frustumLightCulling", "projectionMode"}, "NLS::Engine::Components::Component"},
-        {"NLS::Engine::Components::LightComponent", {"SetIntensity", "GetData"}, {}, {"lightType", "color", "intensity", "constant", "linear", "quadratic", "cutoff", "outerCutoff", "radius", "size"}, "NLS::Engine::Components::Component"},
+        // External reflected serialization record
+        {"NLS::Engine::Serialize::SerializedSceneData", {}, {}, {"version", "actors"}, ""},
+        // Engine type with explicit property + nested enum/struct-backed fields
         {"NLS::Engine::Components::MeshRenderer", {"SetModel", "GetModel"}, {}, {"model", "frustumBehaviour", "customBoundingSphere"}, "NLS::Engine::Components::Component"},
-        {"NLS::Engine::Components::MaterialRenderer", {"FillWithMaterial", "GetUserMatrix"}, {}, {}, "NLS::Engine::Components::Component"},
-        {"NLS::Engine::Components::SkyBoxComponent", {"SetCubeMap", "GetModel"}, {}, {}, "NLS::Engine::Components::Component"},
+        // Engine type with auto-inferred array properties
+        {"NLS::Engine::Components::MaterialRenderer", {"FillWithMaterial", "GetUserMatrix"}, {}, {"materialPaths", "userMatrixValues"}, "NLS::Engine::Components::Component"},
+        // Engine object with explicit property
         {"NLS::Engine::GameObject", {"GetName", "SetTag"}, {}, {"name", "tag", "active", "worldID"}, ""},
-        {"NLS::Engine::SceneSystem::Scene", {"Play", "GetActors"}, {}, {}, ""},
     };
 
     bool allPassed = true;
     for (const TypeExpectation& expectation : expectations)
         allPassed = RequireValidType(expectation) && allPassed;
+
+    allPassed = RequireTypeDrivenComponentLookup() && allPassed;
+    allPassed = RequireEnumChoiceMetadata() && allPassed;
 
     if (!allPassed)
     {

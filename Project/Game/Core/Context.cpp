@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <stdexcept>
 
 #include "Core/Context.h"
 
@@ -20,81 +21,114 @@ namespace
 		std::string scriptsPath;
 	};
 
-	const ResolvedGameProjectPaths& ResolveGameProjectPaths()
+	std::optional<std::filesystem::path> ResolveProjectSettingsPathFromInput(const std::filesystem::path& inputPath)
 	{
-		static const ResolvedGameProjectPaths resolved = []()
+		std::error_code error;
+		const std::filesystem::path normalizedInput = std::filesystem::weakly_canonical(inputPath, error);
+		const std::filesystem::path effectiveInput = error ? inputPath : normalizedInput;
+
+		if (std::filesystem::is_regular_file(effectiveInput, error) && effectiveInput.extension() == ".nullus")
+			return effectiveInput;
+
+		if (std::filesystem::is_directory(effectiveInput, error))
 		{
-			ResolvedGameProjectPaths result;
-
-			if (const char* explicitProject = std::getenv("NLS_PROJECT_FILE"); explicitProject != nullptr)
+			for (const auto& entry : std::filesystem::directory_iterator(effectiveInput, error))
 			{
-				const std::filesystem::path explicitProjectPath = std::filesystem::weakly_canonical(std::filesystem::path(explicitProject));
-				if (std::filesystem::exists(explicitProjectPath))
-				{
-					result.settingsPath = explicitProjectPath.string();
-					result.assetsPath = (explicitProjectPath.parent_path() / "Assets").string() + Utils::PathParser::Separator();
-					result.scriptsPath = (explicitProjectPath.parent_path() / "Scripts").string() + Utils::PathParser::Separator();
-					return result;
-				}
+				if (error)
+					break;
+				if (entry.is_regular_file() && entry.path().extension() == ".nullus")
+					return entry.path();
 			}
+		}
 
-			const auto cwd = std::filesystem::current_path();
-			const auto packagedSettings = cwd / "Data" / "User" / "Game.ini";
-			if (std::filesystem::exists(packagedSettings))
+		return std::nullopt;
+	}
+
+	ResolvedGameProjectPaths ResolveGameProjectPaths(const std::optional<std::string>& projectPathOverride)
+	{
+		ResolvedGameProjectPaths result;
+
+		if (projectPathOverride.has_value())
+		{
+			if (const auto resolvedProject = ResolveProjectSettingsPathFromInput(projectPathOverride.value()); resolvedProject.has_value())
 			{
-				result.settingsPath = packagedSettings.string();
-				result.assetsPath = (cwd / "Data" / "User" / "Assets").string() + Utils::PathParser::Separator();
-				result.scriptsPath = (cwd / "Data" / "User" / "Scripts").string() + Utils::PathParser::Separator();
+				result.settingsPath = resolvedProject->string();
+				result.assetsPath = (resolvedProject->parent_path() / "Assets").string() + Utils::PathParser::Separator();
+				result.scriptsPath = (resolvedProject->parent_path() / "Scripts").string() + Utils::PathParser::Separator();
+				return result;
+			}
+		}
+
+		if (const char* explicitProject = std::getenv("NLS_PROJECT_FILE"); explicitProject != nullptr)
+		{
+			if (const auto resolvedProject = ResolveProjectSettingsPathFromInput(explicitProject); resolvedProject.has_value())
+			{
+				result.settingsPath = resolvedProject->string();
+				result.assetsPath = (resolvedProject->parent_path() / "Assets").string() + Utils::PathParser::Separator();
+				result.scriptsPath = (resolvedProject->parent_path() / "Scripts").string() + Utils::PathParser::Separator();
+				return result;
+			}
+		}
+
+		const auto cwd = std::filesystem::current_path();
+		const auto packagedSettings = cwd / "Data" / "User" / "Game.ini";
+		if (std::filesystem::exists(packagedSettings))
+		{
+			result.settingsPath = packagedSettings.string();
+			result.assetsPath = (cwd / "Data" / "User" / "Assets").string() + Utils::PathParser::Separator();
+			result.scriptsPath = (cwd / "Data" / "User" / "Scripts").string() + Utils::PathParser::Separator();
+			return result;
+		}
+
+		for (auto probe = cwd; !probe.empty(); probe = probe.parent_path())
+		{
+			const auto testProject = probe / "TestProject" / "TestProject.nullus";
+			if (std::filesystem::exists(testProject))
+			{
+				result.settingsPath = testProject.string();
+				result.assetsPath = (testProject.parent_path() / "Assets").string() + Utils::PathParser::Separator();
+				result.scriptsPath = (testProject.parent_path() / "Scripts").string() + Utils::PathParser::Separator();
 				return result;
 			}
 
-			for (auto probe = cwd; !probe.empty(); probe = probe.parent_path())
+			std::error_code error;
+			for (const auto& child : std::filesystem::directory_iterator(probe, error))
 			{
-				const auto testProject = probe / "TestProject" / "TestProject.nullus";
-				if (std::filesystem::exists(testProject))
-				{
-					result.settingsPath = testProject.string();
-					result.assetsPath = (testProject.parent_path() / "Assets").string() + Utils::PathParser::Separator();
-					result.scriptsPath = (testProject.parent_path() / "Scripts").string() + Utils::PathParser::Separator();
-					return result;
-				}
+				if (error)
+					break;
 
-				std::error_code error;
-				for (const auto& child : std::filesystem::directory_iterator(probe, error))
+				if (!child.is_directory())
+					continue;
+
+				for (const auto& candidate : std::filesystem::directory_iterator(child.path(), error))
 				{
 					if (error)
 						break;
 
-					if (!child.is_directory())
-						continue;
-
-					for (const auto& candidate : std::filesystem::directory_iterator(child.path(), error))
+					if (candidate.is_regular_file() && candidate.path().extension() == ".nullus")
 					{
-						if (error)
-							break;
-
-						if (candidate.is_regular_file() && candidate.path().extension() == ".nullus")
-						{
-							result.settingsPath = candidate.path().string();
-							result.assetsPath = (candidate.path().parent_path() / "Assets").string() + Utils::PathParser::Separator();
-							result.scriptsPath = (candidate.path().parent_path() / "Scripts").string() + Utils::PathParser::Separator();
-							return result;
-						}
+						result.settingsPath = candidate.path().string();
+						result.assetsPath = (candidate.path().parent_path() / "Assets").string() + Utils::PathParser::Separator();
+						result.scriptsPath = (candidate.path().parent_path() / "Scripts").string() + Utils::PathParser::Separator();
+						return result;
 					}
 				}
-
-				if (probe == probe.root_path())
-					break;
 			}
 
-			return result;
-		}();
+			if (probe == probe.root_path())
+				break;
+		}
 
-		return resolved;
+		return result;
 	}
 
-	NLS::Render::Settings::EGraphicsBackend ResolveGraphicsBackend(NLS::Filesystem::IniFile& projectSettings)
+	NLS::Render::Settings::EGraphicsBackend ResolveGraphicsBackend(
+		NLS::Filesystem::IniFile& projectSettings,
+		const std::optional<NLS::Render::Settings::EGraphicsBackend>& backendOverride)
 	{
+		if (backendOverride.has_value())
+			return backendOverride.value();
+
 		if (const auto backend = NLS::Render::Settings::TryReadGraphicsBackendFromEnvironment("NLS_GRAPHICS_BACKEND"); backend.has_value())
 			return backend.value();
 
@@ -112,12 +146,20 @@ namespace
 	}
 }
 
-Game::Context::Context()
-    : engineAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets/Engine")).string() + Utils::PathParser::Separator()), projectAssetsPath(ResolveGameProjectPaths().assetsPath),
-	projectScriptsPath(ResolveGameProjectPaths().scriptsPath),
-	projectSettings(ResolveGameProjectPaths().settingsPath),
-	sceneManager(projectAssetsPath)
+Game::Context::Context(
+	const Render::Settings::RenderDocSettings& p_renderDocSettings,
+	std::optional<Render::Settings::EGraphicsBackend> p_backendOverride,
+	std::optional<std::string> p_projectPathOverride)
+    : engineAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets/Engine")).string() + Utils::PathParser::Separator()), projectAssetsPath(ResolveGameProjectPaths(p_projectPathOverride).assetsPath),
+	projectScriptsPath(ResolveGameProjectPaths(p_projectPathOverride).scriptsPath),
+	projectSettings(ResolveGameProjectPaths(p_projectPathOverride).settingsPath),
+	sceneManager(projectAssetsPath),
+	m_renderDocSettings(p_renderDocSettings),
+	m_backendOverride(p_backendOverride),
+	m_projectPathOverride(p_projectPathOverride)
 {
+	const auto resolvedProjectPaths = ResolveGameProjectPaths(m_projectPathOverride);
+
 	ModelManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
 	TextureManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
 	ShaderManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
@@ -132,8 +174,8 @@ Game::Context::Context()
 	if (!projectSettings.IsKeyExisting("multi_sampling"))
 		projectSettings.Add<bool>("multi_sampling", true);
 
-	if (!ResolveGameProjectPaths().settingsPath.empty())
-		NLS_LOG_INFO("Game runtime using project settings: " + ResolveGameProjectPaths().settingsPath);
+	if (!resolvedProjectPaths.settingsPath.empty())
+		NLS_LOG_INFO("Game runtime using project settings: " + resolvedProjectPaths.settingsPath);
 	else
 		NLS_LOG_WARNING("Game runtime could not resolve a project settings file. Falling back to in-memory defaults.");
 
@@ -151,7 +193,11 @@ Game::Context::Context()
 	windowSettings.resizable = false;
 	windowSettings.fullscreen = false;
 	windowSettings.samples = 4;
-	auto graphicsBackend = ResolveGraphicsBackend(projectSettings);
+	auto graphicsBackend = ResolveGraphicsBackend(projectSettings, m_backendOverride);
+	if (m_backendOverride.has_value())
+	{
+		NLS_LOG_INFO("Using command-line backend override: " + std::string(NLS::Render::Settings::ToString(graphicsBackend)));
+	}
 	windowSettings.clientAPI = ToWindowClientAPI(graphicsBackend);
 
 	NLS::Render::Data::PipelineState basePSO;
@@ -165,6 +211,15 @@ Game::Context::Context()
 	driverSettings.debugMode = false;
 #endif
 	driverSettings.defaultPipelineState = basePSO;
+
+	if (m_renderDocSettings.enabled || m_renderDocSettings.startupCaptureAfterFrames > 0)
+	{
+		driverSettings.renderDoc = m_renderDocSettings;
+		NLS_LOG_INFO("RenderDoc: applied command-line settings (enabled=" +
+			std::string(m_renderDocSettings.enabled ? "true" : "false") +
+			", captureAfterFrames=" + std::to_string(m_renderDocSettings.startupCaptureAfterFrames) + ")");
+	}
+
 	Render::Tooling::ApplyRenderDocEnvironmentOverrides(
 		driverSettings.renderDoc,
 		(std::filesystem::current_path() / "Logs" / "RenderDoc" / "Game").string(),
@@ -183,34 +238,26 @@ Game::Context::Context()
 
 	/* Graphics context creation */
 	driver = std::make_unique<NLS::Render::Context::Driver>(driverSettings);
+	const auto driverCapabilities = driver != nullptr
+		? driver->GetCapabilities()
+		: NLS::Render::RHI::RHIDeviceCapabilities{};
+	const auto runtimeFallbackDecision =
+		NLS::Render::Settings::EvaluateGameMainRuntimeFallback(graphicsBackend, driverCapabilities);
+	if (runtimeFallbackDecision.primaryWarning.has_value())
+		NLS_LOG_WARNING(runtimeFallbackDecision.primaryWarning.value());
+	if (runtimeFallbackDecision.detailWarning.has_value())
+		NLS_LOG_WARNING(runtimeFallbackDecision.detailWarning.value());
 
-	if ((!driver->IsBackendReady() || !driver->SupportsCurrentSceneRenderer()) &&
-		graphicsBackend != NLS::Render::Settings::EGraphicsBackend::OPENGL)
+	if (driver == nullptr ||
+		runtimeFallbackDecision.primaryWarning.has_value() ||
+		!NLS::Render::Settings::SupportsGameMainRuntime(driverCapabilities))
 	{
-		if (!driver->IsBackendReady())
-		{
-			NLS_LOG_WARNING(
-				"Requested game backend " +
-				std::string(NLS::Render::Settings::ToString(graphicsBackend)) +
-				" is not ready. Falling back to OpenGL.");
-		}
-		else
-		{
-			NLS_LOG_WARNING(
-				"Game scene rendering is still OpenGL-native. Falling back from " +
-				std::string(NLS::Render::Settings::ToString(graphicsBackend)) +
-				" to OpenGL for the current runtime.");
-			NLS_LOG_WARNING(NLS::Render::Settings::SceneRendererSupportDescription(graphicsBackend));
-		}
-
-		graphicsBackend = NLS::Render::Settings::EGraphicsBackend::OPENGL;
-		windowSettings.clientAPI = ToWindowClientAPI(graphicsBackend);
-		window = std::make_unique<NLS::Windowing::Window>(*device, windowSettings);
-		window->SetIcon(engineAssetsPath + "Brand" + Utils::PathParser::Separator() + "NullusLogoMark.png");
-		inputManager = std::make_unique<NLS::Windowing::Inputs::InputManager>(*window);
-		window->MakeCurrentContext();
-		driverSettings.graphicsBackend = graphicsBackend;
-		driver = std::make_unique<NLS::Render::Context::Driver>(driverSettings);
+		const std::string message =
+			"Game startup failed: could not create a validated runtime for backend " +
+			std::string(NLS::Render::Settings::ToString(graphicsBackend)) +
+			".";
+		NLS_LOG_ERROR(message);
+		throw std::runtime_error(message);
 	}
 
 	NLS::Render::RHI::SwapchainDesc swapchainDesc;
@@ -219,12 +266,17 @@ Game::Context::Context()
 	swapchainDesc.width = static_cast<uint32_t>(windowSettings.width);
 	swapchainDesc.height = static_cast<uint32_t>(windowSettings.height);
 	swapchainDesc.vsync = projectSettings.GetOrDefault<bool>("vsync", true);
-	driver->CreateSwapchain(swapchainDesc);
+	if (!driver->CreateSwapchain(swapchainDesc))
+	{
+		const std::string message = "Game startup failed: CreateSwapchain returned false.";
+		NLS_LOG_ERROR(message);
+		throw std::runtime_error(message);
+	}
 	window->FramebufferResizeEvent.AddListener([this](uint16_t width, uint16_t height)
 	{
 		if (driver != nullptr && width > 0u && height > 0u)
 		{
-			driver->ResizeSwapchain(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+			driver->ResizePlatformSwapchain(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
 		}
 	});
 

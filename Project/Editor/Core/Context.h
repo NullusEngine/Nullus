@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <Windowing/Context/Device.h>
 #include <Windowing/Inputs/InputManager.h>
@@ -6,6 +6,7 @@
 #include "UI/UIManager.h"
 #include "Context/Driver.h"
 #include <memory>
+#include <optional>
 #include "SceneSystem/SceneManager.h"
 #include "Filesystem/IniFile.h"
 #include "ResourceManagement/ModelManager.h"
@@ -14,6 +15,8 @@
 #include "ResourceManagement/MaterialManager.h"
 #include "Resource/Actor/ActorManager.h"
 #include "EditorResources.h"
+#include "Rendering/Settings/DriverSettings.h"
+#include "Rendering/Settings/EGraphicsBackend.h"
 namespace NLS
 {
 namespace Editor::Core
@@ -28,8 +31,14 @@ public:
      * Constructor
      * @param p_projectPath
      * @param p_projectName
+     * @param p_backendOverride optional backend override from command line, if not provided uses project settings
+     * @param p_renderDocSettings RenderDoc settings from command line
      */
-    Context(const std::string& p_projectPath, const std::string& p_projectName);
+    Context(
+        const std::string& p_projectPath,
+        const std::string& p_projectName,
+        std::optional<Render::Settings::EGraphicsBackend> p_backendOverride = std::nullopt,
+        const Render::Settings::RenderDocSettings& p_renderDocSettings = {});
 
     /**
      * Destructor
@@ -77,6 +86,10 @@ public:
     NLS::Windowing::Settings::WindowSettings windowSettings;
 
     NLS::Filesystem::IniFile projectSettings;
+
+private:
+    std::optional<Render::Settings::EGraphicsBackend> m_backendOverride;
+    Render::Settings::RenderDocSettings m_renderDocSettings;
 };
 } // namespace Editor::Core
 } // namespace NLS

@@ -495,6 +495,17 @@ void Driver::ResizeSwapchain(uint32_t width, uint32_t height)
 	m_lastSwapchainResizeRequestTime = std::chrono::steady_clock::now();
 }
 
+void Driver::ResizePlatformSwapchain(uint32_t width, uint32_t height)
+{
+	if (width == 0u || height == 0u)
+		return;
+
+	ResizeSwapchain(width, height);
+
+	if (!m_explicitFrameActive)
+		ApplyPendingSwapchainResize();
+}
+
 void Driver::PresentSwapchain()
 {
 	if (m_renderDocCaptureController != nullptr)
@@ -637,6 +648,12 @@ void Driver::ApplyPendingSwapchainResize()
 	const uint32_t width = m_pendingSwapchainWidth;
 	const uint32_t height = m_pendingSwapchainHeight;
 	m_hasPendingSwapchainResize = false;
+
+	for (auto& frameContext : m_frameContexts)
+	{
+		if (frameContext.frameFence != nullptr)
+			frameContext.frameFence->Wait();
+	}
 
 	if (NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
 	{

@@ -2,6 +2,10 @@
 
 #include "Core/Context.h"
 #include "Core/Game.h"
+#include "Rendering/Settings/DriverSettings.h"
+
+#include <optional>
+#include <string>
 
 namespace NLS::Game::Core
 {
@@ -13,8 +17,12 @@ namespace NLS::Game::Core
 	public:
 		/**
 		* Constructor
+		* @param renderDocSettings RenderDoc settings from command line
 		*/
-		Application();
+		Application(
+			const Render::Settings::RenderDocSettings& renderDocSettings = {},
+			std::optional<Render::Settings::EGraphicsBackend> backendOverride = std::nullopt,
+			std::optional<std::string> projectPathOverride = std::nullopt);
 
 		/**
 		* Destructor

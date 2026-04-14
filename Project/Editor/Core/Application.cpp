@@ -1,6 +1,9 @@
 #include <Time/Clock.h>
 
 #include "Core/Application.h"
+#include "Core/ResizeRefreshPolicy.h"
+#include "Windowing/Inputs/EMouseButton.h"
+#include "Windowing/Inputs/EMouseButtonState.h"
 #include "Assembly.h"
 #include "Core/AssemblyCore.h"
 #include "AssemblyMath.h"
@@ -9,21 +12,45 @@
 #include "AssemblyRender.h"
 namespace NLS
 {
-Editor::Core::Application::Application(const std::string& p_projectPath, const std::string& p_projectName)
-    : m_context(p_projectPath, p_projectName), m_editor(m_context)
+namespace
 {
-    const bool allowImmediateResizeTick =
-        m_context.windowSettings.clientAPI == Windowing::Settings::WindowClientAPI::OpenGL;
+bool IsResizeCursor(const ImGuiMouseCursor cursor)
+{
+    return cursor == ImGuiMouseCursor_ResizeEW ||
+        cursor == ImGuiMouseCursor_ResizeNS ||
+        cursor == ImGuiMouseCursor_ResizeNWSE ||
+        cursor == ImGuiMouseCursor_ResizeNESW ||
+        cursor == ImGuiMouseCursor_ResizeAll;
+}
+}
 
+Editor::Core::Application::Application(
+    const std::string& p_projectPath,
+    const std::string& p_projectName,
+    std::optional<Render::Settings::EGraphicsBackend> p_backendOverride,
+    const Render::Settings::RenderDocSettings& p_renderDocSettings)
+    : m_context(p_projectPath, p_projectName, p_backendOverride, p_renderDocSettings), m_editor(m_context)
+{
     const auto tickWhileResizing = [this]()
     {
         if (!IsRunning())
             return;
 
+        if (m_context.window != nullptr && m_context.driver != nullptr)
+        {
+            const auto framebufferSize = m_context.window->GetFramebufferSize();
+            if (framebufferSize.x > 0.0f && framebufferSize.y > 0.0f)
+            {
+                m_context.driver->ResizePlatformSwapchain(
+                    static_cast<uint32_t>(framebufferSize.x),
+                    static_cast<uint32_t>(framebufferSize.y));
+            }
+        }
+
         if (m_context.windowSettings.clientAPI == Windowing::Settings::WindowClientAPI::OpenGL)
             m_context.window->MakeCurrentContext();
 
-        if (m_isTicking || m_isResizeTicking)
+        if (!ShouldTickResizeImmediately(m_isTicking, m_isPollingEvents, m_isResizeTicking))
         {
             QueueResizeTick();
             return;
@@ -32,15 +59,9 @@ Editor::Core::Application::Application(const std::string& p_projectPath, const s
         TickResizeFrame();
     };
 
-    const auto handleResizeEvent = [this, allowImmediateResizeTick, tickWhileResizing]()
+    const auto handleResizeEvent = [tickWhileResizing]()
     {
-        if (allowImmediateResizeTick)
-        {
-            tickWhileResizing();
-            return;
-        }
-
-        QueueResizeTick();
+        tickWhileResizing();
     };
 
     m_context.window->RefreshEvent.AddListener([handleResizeEvent]()
@@ -91,6 +112,21 @@ void Editor::Core::Application::TickFrame(float p_deltaTime, bool p_pollEvents)
     m_editor.Update(p_deltaTime);
     m_editor.PostUpdate();
 
+    const bool resizeCursorActive =
+        m_context.uiManager != nullptr && IsResizeCursor(m_context.uiManager->GetMouseCursor());
+    const bool primaryMouseDown =
+        m_context.inputManager != nullptr &&
+        m_context.inputManager->GetMouseButtonState(Windowing::Inputs::EMouseButton::MOUSE_BUTTON_LEFT) ==
+            Windowing::Inputs::EMouseButtonState::MOUSE_DOWN;
+
+    if (ShouldRunResizeFollowUpFrame(false, resizeCursorActive, primaryMouseDown))
+    {
+        m_isResizeTicking = true;
+        m_editor.Update(0.0f);
+        m_editor.PostUpdate();
+        m_isResizeTicking = false;
+    }
+
     m_isTicking = false;
 }
 
@@ -102,6 +138,11 @@ void Editor::Core::Application::TickResizeFrame()
     m_isResizeTicking = true;
     m_editor.Update(0.0f);
     m_editor.PostUpdate();
+    if (ShouldRunResizeFollowUpFrame(true, false, false))
+    {
+        m_editor.Update(0.0f);
+        m_editor.PostUpdate();
+    }
     m_isResizeTicking = false;
 }
 

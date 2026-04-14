@@ -93,11 +93,11 @@
 
 - [ ] T031 [US3] Define backend-by-backend product smoke criteria for `Editor` and `Game` in `specs/multi-backend-rhi-mainline/`
 - [ ] T032 [US3] Capture Tier A RenderDoc evidence for `Editor` or `Game` using the workflow in `Docs/Rendering/RenderDocDebugging.md` and `Tools/RenderDoc/*`
-- [ ] T033 [US3] Record Tier B focused runtime verification notes for `DX11` and `OpenGL` in `specs/multi-backend-rhi-mainline/`
+- [x] T033 [US3] Record Tier B focused runtime verification notes for `DX11` and `OpenGL` in `specs/multi-backend-rhi-mainline/`
 
 ### Implementation For User Story 3
 
-- [ ] T034 [US3] Update product startup and driver wiring in `Project/Editor/Core/*`, `Project/Game/Core/*`, and `Runtime/Rendering/Context/Driver.*` for the expanded backend matrix
+- [x] T034 [US3] Update product startup and driver wiring in `Project/Editor/Core/*`, `Project/Game/Core/*`, and `Runtime/Rendering/Context/Driver.*` for the expanded backend matrix
 - [ ] T035 [US3] Ensure editor rendering features remain functional on the formal RHI mainline in `Project/Editor/Rendering/*` and `Project/Editor/Panels/*`
 - [ ] T036 [US3] Ensure game runtime rendering remains functional on the formal RHI mainline in `Runtime/Engine/Rendering/*`, `Runtime/Engine/Components/*`, and `Project/Game/*`
 - [ ] T037 [US3] Fix backend-specific scene renderer, offscreen target, readback, or present issues discovered during smoke validation in `Runtime/Engine/Rendering/*`, `Runtime/Rendering/FrameGraph/*`, and affected backend files
@@ -132,6 +132,6 @@
 ## Final Verification
 
 - [ ] T045 Build the affected targets, including runtime modules, `Editor`, `Game`, `Project/RenderingDemos/*`, `NullusUnitTests`, and `ReflectionTest`
-- [ ] T046 Run targeted automated checks and record exact commands and results in `specs/multi-backend-rhi-mainline/`
+- [x] T046 Run targeted automated checks and record exact commands and results in `specs/multi-backend-rhi-mainline/`
 - [ ] T047 Run backend-specific smoke validation for `Editor`, `Game`, and the minimum demo set, recording which backend, what evidence, and what remains unverified
 - [ ] T048 Re-read `AGENTS.md`, `Docs/AIWorkflow.md`, and `Docs/Rendering/RenderDocDebugging.md` to confirm the completed change still follows repository workflow and validation rules

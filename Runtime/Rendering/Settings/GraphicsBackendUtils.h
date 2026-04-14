@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 
+#include "Rendering/RHI/RHITypes.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
 
 #ifndef NLS_HAS_IMGUI_DX12_BACKEND
@@ -19,6 +20,13 @@
 
 namespace NLS::Render::Settings
 {
+	struct RuntimeBackendFallbackDecision
+	{
+		bool shouldFallbackToOpenGL = false;
+		std::optional<std::string> primaryWarning;
+		std::optional<std::string> detailWarning;
+	};
+
 	inline std::string NormalizeGraphicsBackendName(std::string_view value)
 	{
 		std::string normalized(value);
@@ -84,6 +92,52 @@ namespace NLS::Render::Settings
 		}
 	}
 
+	inline bool IsBackendEnabledForCurrentBuild(EGraphicsBackend backend)
+	{
+#if defined(_WIN32)
+		switch (backend)
+		{
+		case EGraphicsBackend::DX12:
+			return true;
+		case EGraphicsBackend::VULKAN:
+#if NLS_HAS_VULKAN
+			return true;
+#else
+			return false;
+#endif
+		case EGraphicsBackend::OPENGL:
+		case EGraphicsBackend::DX11:
+		case EGraphicsBackend::METAL:
+		case EGraphicsBackend::NONE:
+		default:
+			return false;
+		}
+#else
+		switch (backend)
+		{
+		case EGraphicsBackend::VULKAN:
+#if NLS_HAS_VULKAN
+			return true;
+#else
+			return false;
+#endif
+		case EGraphicsBackend::METAL:
+#if NLS_HAS_METAL
+			return true;
+#else
+			return false;
+#endif
+		case EGraphicsBackend::OPENGL:
+			return true;
+		case EGraphicsBackend::DX12:
+		case EGraphicsBackend::DX11:
+		case EGraphicsBackend::NONE:
+		default:
+			return false;
+		}
+#endif
+	}
+
 	inline bool HasCompiledOfficialImGuiBackend(EGraphicsBackend backend)
 	{
 		switch (backend)
@@ -114,6 +168,9 @@ namespace NLS::Render::Settings
 
 	inline bool SupportsImGuiRendererBackend(EGraphicsBackend backend)
 	{
+		if (!IsBackendEnabledForCurrentBuild(backend))
+			return false;
+
 		switch (backend)
 		{
 		case EGraphicsBackend::OPENGL:
@@ -145,19 +202,137 @@ namespace NLS::Render::Settings
 		switch (backend)
 		{
 		case EGraphicsBackend::OPENGL:
-			return "Current scene renderer is implemented on this backend.";
+#if defined(_WIN32)
+			return "OpenGL is unsupported in the current Windows runtime validation matrix because startup smoke still crashes before the backend reaches a stable first frame.";
+#else
+			return "OpenGL support requires platform-specific validation before it should be exposed as a supported runtime backend.";
+#endif
 		case EGraphicsBackend::DX12:
-			return "Runtime scene submission is available, but editor offscreen framebuffers/readback are not DX12-native yet.";
+			return "Runtime scene rendering and editor offscreen framebuffers are available via formal RHI mainline, but scene view picking readback still uses an unfinished compatibility path.";
 		case EGraphicsBackend::DX11:
-			return "DX11 backend selection is available, but runtime scene submission and editor parity are not implemented yet.";
+#if defined(_WIN32)
+			return "DX11 is unsupported in the current Windows runtime validation matrix until sampler, binding layout, binding set, and pipeline layout support are implemented and revalidated.";
+#else
+			return "DX11 support is only meaningful on Windows and is not exposed as a supported runtime backend here.";
+#endif
 		case EGraphicsBackend::VULKAN:
-			return "Runtime scene submission, editor offscreen framebuffers, and framebuffer readback are available on this backend.";
+			return "Runtime scene rendering and editor offscreen framebuffers are available via formal RHI mainline, but scene view picking readback still uses an unfinished compatibility path.";
 		case EGraphicsBackend::METAL:
-			return "Metal is now a first-class backend target, but Apple-native presentation and editor parity still depend on platform-specific runtime work.";
+#if defined(__APPLE__)
+			return "Metal requires additional Apple-native presentation and editor validation before it should be exposed as a supported runtime backend.";
+#else
+			return "Metal is unsupported on this non-Apple build/platform.";
+#endif
 		case EGraphicsBackend::NONE:
 		default:
 			return "This backend does not provide a runnable scene renderer.";
 		}
+	}
+
+	inline bool SupportsEditorMainRuntime(const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
+	{
+		return capabilities.backendReady &&
+			capabilities.supportsCurrentSceneRenderer &&
+			capabilities.supportsOffscreenFramebuffers &&
+			capabilities.supportsUITextureHandles &&
+			capabilities.supportsDepthBlit &&
+			capabilities.supportsCubemaps;
+	}
+
+	inline bool SupportsGameMainRuntime(const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
+	{
+		return capabilities.backendReady &&
+			capabilities.supportsCurrentSceneRenderer &&
+			capabilities.supportsSwapchain;
+	}
+
+	inline RuntimeBackendFallbackDecision EvaluateEditorMainRuntimeFallback(
+		const EGraphicsBackend requestedBackend,
+		const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
+	{
+		if (!IsBackendEnabledForCurrentBuild(requestedBackend))
+		{
+			RuntimeBackendFallbackDecision decision;
+			decision.primaryWarning =
+				"Selected editor backend " +
+				std::string(ToString(requestedBackend)) +
+				" is unsupported in the current runtime validation matrix.";
+			decision.detailWarning = SceneRendererSupportDescription(requestedBackend);
+			return decision;
+		}
+
+		if (SupportsEditorMainRuntime(capabilities))
+			return {};
+
+		RuntimeBackendFallbackDecision decision;
+		if (!capabilities.backendReady)
+		{
+			decision.primaryWarning =
+				"Selected editor backend " +
+				std::string(ToString(requestedBackend)) +
+				" is not ready, and no validated fallback backend is currently available.";
+			decision.detailWarning = SceneRendererSupportDescription(requestedBackend);
+			return decision;
+		}
+
+		decision.primaryWarning =
+			"Editor runtime still requires native scene rendering, offscreen framebuffer, UI texture, depth blit, and cubemap support. no validated fallback backend is currently available for " +
+			std::string(ToString(requestedBackend)) +
+			".";
+		decision.detailWarning = SceneRendererSupportDescription(requestedBackend);
+		return decision;
+	}
+
+	inline RuntimeBackendFallbackDecision EvaluateGameMainRuntimeFallback(
+		const EGraphicsBackend requestedBackend,
+		const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
+	{
+		if (!IsBackendEnabledForCurrentBuild(requestedBackend))
+		{
+			RuntimeBackendFallbackDecision decision;
+			decision.primaryWarning =
+				"Requested game backend " +
+				std::string(ToString(requestedBackend)) +
+				" is unsupported in the current runtime validation matrix.";
+			decision.detailWarning = SceneRendererSupportDescription(requestedBackend);
+			return decision;
+		}
+
+		if (SupportsGameMainRuntime(capabilities))
+			return {};
+
+		RuntimeBackendFallbackDecision decision;
+		if (!capabilities.backendReady)
+		{
+			decision.primaryWarning =
+				"Requested game backend " +
+				std::string(ToString(requestedBackend)) +
+				" is not ready, and no validated fallback backend is currently available.";
+			decision.detailWarning = SceneRendererSupportDescription(requestedBackend);
+			return decision;
+		}
+
+		decision.primaryWarning =
+			"Game scene rendering requires a validated backend. no validated fallback backend is currently available for " +
+			std::string(ToString(requestedBackend)) +
+			".";
+		decision.detailWarning = SceneRendererSupportDescription(requestedBackend);
+		return decision;
+	}
+
+	inline bool SupportsEditorPickingReadback(const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
+	{
+		return capabilities.supportsEditorPickingReadback;
+	}
+
+	inline std::optional<std::string> GetEditorPickingReadbackWarning(const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
+	{
+		if (SupportsEditorPickingReadback(capabilities))
+			return std::nullopt;
+
+		return std::string(
+			"Scene view picking readback is unavailable on this backend. "
+			"Scene view hover picking, click selection, and gizmo hit testing will be disabled.");
 	}
 
 	inline std::optional<EGraphicsBackend> TryReadGraphicsBackendFromEnvironment(const char* variableName)

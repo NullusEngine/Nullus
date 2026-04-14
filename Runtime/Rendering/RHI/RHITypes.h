@@ -153,9 +153,11 @@ namespace NLS::Render::RHI
 		bool supportsCurrentSceneRenderer = false;
 		bool supportsOffscreenFramebuffers = false;
 		bool supportsFramebufferReadback = false;
+		bool supportsEditorPickingReadback = false;
 		bool supportsUITextureHandles = false;
 		bool supportsCubemaps = false;
 		bool supportsMultiRenderTargets = false;
+		bool supportsExplicitBarriers = false;
 		uint32_t maxTextureDimension2D = 0;
 		uint32_t maxColorAttachments = 0;
 	};

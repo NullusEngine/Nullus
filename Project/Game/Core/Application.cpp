@@ -2,7 +2,11 @@
 
 #include "Core/Application.h"
 using namespace NLS;
-Game::Core::Application::Application() :
+Game::Core::Application::Application(
+	const Render::Settings::RenderDocSettings& renderDocSettings,
+	std::optional<Render::Settings::EGraphicsBackend> backendOverride,
+	std::optional<std::string> projectPathOverride) :
+	m_context(renderDocSettings, backendOverride, projectPathOverride),
 	m_game(m_context)
 {
 

@@ -204,6 +204,7 @@ public:
 	bool CreateSwapchain(const ::NLS::Render::RHI::SwapchainDesc& desc);
 	void DestroySwapchain();
 	void ResizeSwapchain(uint32_t width, uint32_t height);
+	void ResizePlatformSwapchain(uint32_t width, uint32_t height);
 	void PresentSwapchain();
 	bool HasExplicitRHI() const;
 	::NLS::Render::RHI::RHIFrameContext& BeginExplicitFrame(bool acquireSwapchainImage = true);

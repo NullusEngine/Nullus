@@ -3,6 +3,7 @@
 #include <fstream>
 #include <regex>
 #include <sstream>
+#include <stdexcept>
 #include <unordered_set>
 
 #include <Core/ServiceLocator.h>
@@ -40,8 +41,16 @@ namespace
 		return Render::Settings::GetPlatformDefaultGraphicsBackend();
 	}
 
-	Render::Settings::EGraphicsBackend ResolveEditorGraphicsBackend(NLS::Filesystem::IniFile& projectSettings)
+	Render::Settings::EGraphicsBackend ResolveEditorGraphicsBackend(
+		NLS::Filesystem::IniFile& projectSettings,
+		std::optional<Render::Settings::EGraphicsBackend> backendOverride)
 	{
+		if (backendOverride.has_value())
+		{
+			NLS_LOG_INFO("Using command-line backend override: " + std::string(Render::Settings::ToString(backendOverride.value())));
+			return backendOverride.value();
+		}
+
 		return ResolveGraphicsBackend(projectSettings);
 	}
 
@@ -157,9 +166,15 @@ namespace
 	}
 }
 
-Editor::Core::Context::Context(const std::string& p_projectPath, const std::string& p_projectName)
+Editor::Core::Context::Context(
+	const std::string& p_projectPath,
+	const std::string& p_projectName,
+	std::optional<Render::Settings::EGraphicsBackend> p_backendOverride,
+	const Render::Settings::RenderDocSettings& p_renderDocSettings)
     : projectPath(p_projectPath), 
     projectName(p_projectName), 
+    m_backendOverride(p_backendOverride),
+    m_renderDocSettings(p_renderDocSettings),
     projectFilePath(p_projectPath + Utils::PathParser::Separator() + p_projectName + ".nullus"), 
     engineAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets/Engine")).string() + Utils::PathParser::Separator()), 
     projectAssetsPath(p_projectPath + Utils::PathParser::Separator() + "Assets" + Utils::PathParser::Separator()), 
@@ -187,13 +202,22 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     windowSettings.title = "Nullus Editor";
     windowSettings.width = 1600;
     windowSettings.height = 900;
-    const auto graphicsBackend = ResolveEditorGraphicsBackend(projectSettings);
+    const auto graphicsBackend = ResolveEditorGraphicsBackend(projectSettings, m_backendOverride);
     windowSettings.clientAPI = ToWindowClientAPI(graphicsBackend);
 
     /* Graphics context creation */
     NLS::Render::Settings::DriverSettings driverSettings;
     driverSettings.graphicsBackend = graphicsBackend;
     driverSettings.debugMode = true;
+
+	if (m_renderDocSettings.enabled || m_renderDocSettings.startupCaptureAfterFrames > 0)
+	{
+		driverSettings.renderDoc = m_renderDocSettings;
+		NLS_LOG_INFO("RenderDoc: applied command-line settings (enabled=" +
+			std::string(m_renderDocSettings.enabled ? "true" : "false") +
+			", captureAfterFrames=" + std::to_string(m_renderDocSettings.startupCaptureAfterFrames) + ")");
+	}
+
 	Render::Tooling::ApplyRenderDocEnvironmentOverrides(
 		driverSettings.renderDoc,
 		(std::filesystem::path(p_projectPath) / "Logs" / "RenderDoc" / "Editor").string(),
@@ -216,41 +240,26 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     if (windowSettings.clientAPI == Windowing::Settings::WindowClientAPI::OpenGL)
         device->SetVsync(true);
     driver = std::make_unique<NLS::Render::Context::Driver>(driverSettings);
+    const auto driverCapabilities = driver != nullptr
+        ? driver->GetCapabilities()
+        : NLS::Render::RHI::RHIDeviceCapabilities{};
+    const auto runtimeFallbackDecision =
+        Render::Settings::EvaluateEditorMainRuntimeFallback(graphicsBackend, driverCapabilities);
+    if (runtimeFallbackDecision.primaryWarning.has_value())
+        NLS_LOG_WARNING(runtimeFallbackDecision.primaryWarning.value());
+    if (runtimeFallbackDecision.detailWarning.has_value())
+        NLS_LOG_WARNING(runtimeFallbackDecision.detailWarning.value());
 
-    const auto driverCapabilities = driver->GetCapabilities();
-    if ((!driver->IsBackendReady() ||
-        !driverCapabilities.supportsCurrentSceneRenderer ||
-        !driverCapabilities.supportsOffscreenFramebuffers ||
-        !driverCapabilities.supportsFramebufferReadback ||
-        !driverCapabilities.supportsUITextureHandles ||
-        !driverCapabilities.supportsDepthBlit ||
-        !driverCapabilities.supportsCubemaps) &&
-        graphicsBackend != Render::Settings::EGraphicsBackend::OPENGL)
+    if (driver == nullptr ||
+        runtimeFallbackDecision.primaryWarning.has_value() ||
+        !Render::Settings::SupportsEditorMainRuntime(driverCapabilities))
     {
-        if (!driver->IsBackendReady())
-        {
-            NLS_LOG_WARNING("Selected editor backend is not ready. Falling back to OpenGL.");
-        }
-        else
-        {
-            NLS_LOG_WARNING(
-                "Editor runtime still requires native offscreen framebuffer + readback support. Falling back from " +
-                std::string(Render::Settings::ToString(graphicsBackend)) +
-                " to OpenGL for the main editor runtime.");
-            NLS_LOG_WARNING(Render::Settings::SceneRendererSupportDescription(graphicsBackend));
-        }
-
-        driverSettings.graphicsBackend = Render::Settings::EGraphicsBackend::OPENGL;
-        windowSettings.clientAPI = ToWindowClientAPI(driverSettings.graphicsBackend);
-        window = std::make_unique<NLS::Windowing::Window>(*device, windowSettings);
-        window->SetIcon(engineAssetsPath + "Brand" + Utils::PathParser::Separator() + "NullusLogoMark.png");
-        inputManager = std::make_unique<NLS::Windowing::Inputs::InputManager>(*window);
-        auto fallbackMonSize = device->GetMonitorSize();
-        auto fallbackWinSize = window->GetSize();
-        window->SetPosition(fallbackMonSize.x / 2 - fallbackWinSize.x / 2, fallbackMonSize.y / 2 - fallbackWinSize.y / 2);
-        window->MakeCurrentContext();
-        device->SetVsync(true);
-        driver = std::make_unique<NLS::Render::Context::Driver>(driverSettings);
+        const std::string message =
+            "Editor startup failed: could not create a validated runtime for backend " +
+            std::string(Render::Settings::ToString(graphicsBackend)) +
+            ".";
+        NLS_LOG_ERROR(message);
+        throw std::runtime_error(message);
     }
 
     NLS::Render::RHI::SwapchainDesc swapchainDesc;
@@ -259,8 +268,19 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     swapchainDesc.width = static_cast<uint32_t>(windowSettings.width);
     swapchainDesc.height = static_cast<uint32_t>(windowSettings.height);
     swapchainDesc.vsync = true;
-    driver->CreateSwapchain(swapchainDesc);
+    if (!driver->CreateSwapchain(swapchainDesc))
+    {
+        const std::string message = "Editor startup failed: CreateSwapchain returned false.";
+        NLS_LOG_ERROR(message);
+        throw std::runtime_error(message);
+    }
     NLS::Core::ServiceLocator::Provide<NLS::Render::Context::Driver>(*driver);
+
+    if (const auto pickingReadbackWarning = Render::Settings::GetEditorPickingReadbackWarning(driverCapabilities);
+        pickingReadbackWarning.has_value())
+    {
+        NLS_LOG_WARNING(pickingReadbackWarning.value());
+    }
 
     uiManager = std::make_unique<NLS::UI::UIManager>(
         window->GetGlfwWindow(),
@@ -277,7 +297,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     {
         if (driver != nullptr && width > 0u && height > 0u)
         {
-            driver->ResizeSwapchain(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+            driver->ResizePlatformSwapchain(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
         }
     });
     uiManager->SetEditorLayoutSaveFilename(layoutPath.string());

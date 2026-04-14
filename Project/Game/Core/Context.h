@@ -6,6 +6,7 @@
 #include <Windowing/Context/Device.h>
 #include <Windowing/Inputs/InputManager.h>
 #include <Windowing/Window.h>
+#include <Rendering/Context/Driver.h>
 
 
 #include <Core/ResourceManagement/ModelManager.h>
@@ -14,6 +15,9 @@
 #include <Core/ResourceManagement/MaterialManager.h>
 #include <SceneSystem/SceneManager.h>
 #include "Core/Filesystem/IniFile.h"
+#include "Rendering/Settings/DriverSettings.h"
+
+#include <optional>
 
 namespace NLS::Game
 {
@@ -25,8 +29,12 @@ namespace NLS::Game
 	public:
 		/**
 		* Constructor
+		* @param renderDocSettings RenderDoc settings from command line
 		*/
-		Context();
+		Context(
+			const Render::Settings::RenderDocSettings& renderDocSettings = {},
+			std::optional<Render::Settings::EGraphicsBackend> backendOverride = std::nullopt,
+			std::optional<std::string> projectPathOverride = std::nullopt);
 
 		/**
 		* Destructor
@@ -50,5 +58,10 @@ namespace NLS::Game
 		NLS::Core::ResourceManagement::ShaderManager shaderManager;
 		
 		NLS::Filesystem::IniFile projectSettings;
+
+	private:
+		Render::Settings::RenderDocSettings m_renderDocSettings;
+		std::optional<Render::Settings::EGraphicsBackend> m_backendOverride;
+		std::optional<std::string> m_projectPathOverride;
 	};
 }

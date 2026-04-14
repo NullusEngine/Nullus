@@ -4,8 +4,7 @@
 #include "Rendering/RHI/Core/RHICommandList.h"
 
 #if defined(__APPLE__)
-#import <Metal/Metal.h>
-#import <Metal/MTLCommandQueue.hpp>
+#include <Metal/Metal.h>
 #endif
 
 namespace NLS::Render::RHI::Metal {

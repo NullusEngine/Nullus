@@ -6,6 +6,11 @@ file(GLOB_RECURSE NULLUS_UNIT_TEST_FILES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/*.inl"
 )
 
+# Exclude DX12 tests on non-Windows platforms
+if(NOT WIN32)
+    list(FILTER NULLUS_UNIT_TEST_FILES EXCLUDE REGEX "[/\\\\]DX12.*\\.cpp$")
+endif()
+
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${NULLUS_UNIT_TEST_FILES})
 
 add_executable(NullusUnitTests ${NULLUS_UNIT_TEST_FILES})

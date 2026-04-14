@@ -84,6 +84,12 @@ public:
 		uint32_t imageCount = 2u);
 	void ResizePlatformSwapchain(uint32_t width, uint32_t height);
 
+    // Set a callback to be invoked before swapchain resize.
+    // This allows the application layer (e.g., Editor) to notify UI about impending resize
+    // without requiring Driver to directly depend on UIManager.
+    using SwapchainWillResizeCallback = std::function<void()>;
+    void SetSwapchainWillResizeCallback(SwapchainWillResizeCallback callback);
+
 private:
     friend struct DriverCompatibilityAccess;
     friend struct DriverRendererAccess;

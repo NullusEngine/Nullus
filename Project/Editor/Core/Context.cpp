@@ -295,6 +295,12 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     uiManager->UseFont("Ruda_Medium");
     const auto layoutPath = std::filesystem::path(p_projectPath) / "UserSettings" / "layout.ini";
     EnsureEditorLayoutFileReady(layoutPath, std::filesystem::path(editorAssetsPath) / "Settings" / "layout.ini");
+
+    // Set up swapchain resize callback to notify UI before resize
+    driver->SetSwapchainWillResizeCallback([this]() {
+        uiManager->NotifySwapchainWillResize();
+    });
+
     window->FramebufferResizeEvent.AddListener([this](uint16_t width, uint16_t height)
     {
         if (driver != nullptr && width > 0u && height > 0u)

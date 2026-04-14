@@ -1,7 +1,6 @@
 #include <Debug/Assertion.h>
 #include <Debug/Logger.h>
 #include <Core/ServiceLocator.h>
-#include <UI/UIManager.h>
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -57,6 +56,7 @@ public:
     uint32_t pendingSwapchainHeight = 0;
     std::chrono::steady_clock::time_point lastSwapchainResizeRequestTime{};
     void* uiRenderFinishedSemaphore = nullptr; // Set by UI before SubmitUIRendering, used by Present
+    std::function<void()> swapchainWillResizeCallback; // Called before swapchain resize
 };
 
 namespace
@@ -731,11 +731,20 @@ void Driver::ResizePlatformSwapchain(const uint32_t width, const uint32_t height
 		return;
 	ResizeSwapchain(width, height);
 
+	// Notify application layer (e.g., UI) before resize
+	if (m_impl->swapchainWillResizeCallback)
+		m_impl->swapchainWillResizeCallback();
+
 	// Interactive window-edge resizing should update the swapchain before the next
 	// frame is rendered. Otherwise DXGI can stretch the previous backbuffer to the
 	// new client rect for one frame, which shows up as UI stretching/ghosting.
 	if (!m_impl->explicitFrameActive)
 		ApplyPendingSwapchainResize();
+}
+
+void Driver::SetSwapchainWillResizeCallback(SwapchainWillResizeCallback callback)
+{
+	m_impl->swapchainWillResizeCallback = std::move(callback);
 }
 
 bool Driver::CreateSwapchain(const Render::RHI::SwapchainDesc& desc)
@@ -843,11 +852,6 @@ void Driver::ApplyPendingSwapchainResize()
 	{
 		if (frameContext.frameFence != nullptr)
 			frameContext.frameFence->Wait();
-	}
-
-	if (NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>())
-	{
-		NLS_SERVICE(NLS::UI::UIManager).NotifySwapchainWillResize();
 	}
 
 	if (m_impl->explicitSwapchain != nullptr)

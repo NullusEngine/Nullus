@@ -29,6 +29,14 @@ if(_nls_render_sources)
     list(FILTER _nls_render_sources EXCLUDE REGEX "[/\\\\]RHI[/\\\\]Backends[/\\\\]Metal[/\\\\]")
   endif()
 
+  if(APPLE)
+    set(_nls_objcxx_sources ${_nls_render_sources})
+    list(FILTER _nls_objcxx_sources INCLUDE REGEX "([/\\\\]RHI[/\\\\]Backends[/\\\\]Metal[/\\\\].*\\.cpp$)|([/\\\\]RHI[/\\\\]Backends[/\\\\]RHIDeviceFactory\\.cpp$)")
+    if(_nls_objcxx_sources)
+      set_source_files_properties(${_nls_objcxx_sources} PROPERTIES LANGUAGE OBJCXX)
+    endif()
+  endif()
+
   set_property(TARGET NLS_Render PROPERTY SOURCES "${_nls_render_sources}")
 endif()
 

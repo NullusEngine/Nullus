@@ -111,13 +111,19 @@ jobs:
           Get-ChildItem "build/windows/bin/${{ matrix.configuration }}" | Format-Table -AutoSize
           $unitLog = "nullus_unit_tests.log"
           $reflectionLog = "reflection_test.log"
-          & "build/windows/bin/${{ matrix.configuration }}/NullusUnitTests.exe" *>&1 | Tee-Object -FilePath $unitLog
-          if ($LASTEXITCODE -ne 0) {
+          $unitExe = (Resolve-Path "build/windows/bin/${{ matrix.configuration }}/NullusUnitTests.exe").Path
+          $reflectionExe = (Resolve-Path "build/windows/bin/${{ matrix.configuration }}/ReflectionTest.exe").Path
+          cmd /c """$unitExe"" > ""$unitLog"" 2>&1"
+          $unitExit = $LASTEXITCODE
+          Get-Content $unitLog
+          if ($unitExit -ne 0) {
             Get-Content $unitLog | ForEach-Object { Write-Output "::error::$_" }
-            exit $LASTEXITCODE
+            exit $unitExit
           }
-          & "build/windows/bin/${{ matrix.configuration }}/ReflectionTest.exe" *>&1 | Tee-Object -FilePath $reflectionLog
-          if ($LASTEXITCODE -ne 0) {
+          cmd /c """$reflectionExe"" > ""$reflectionLog"" 2>&1"
+          $reflectionExit = $LASTEXITCODE
+          Get-Content $reflectionLog
+          if ($reflectionExit -ne 0) {
             Get-Content $reflectionLog | ForEach-Object { Write-Output "::error::$_" }
-            exit $LASTEXITCODE
+            exit $reflectionExit
           }

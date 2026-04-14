@@ -684,21 +684,25 @@ namespace NLS::Render::Backend
 	NativeOpenGLSemaphore::NativeOpenGLSemaphore(const std::string& debugName)
 		: m_debugName(debugName)
 	{
-		// Create manual-reset event (non-signaled initially)
+		// Track signaled state in-process; on Windows we also mirror it to a manual-reset event.
+#if defined(_WIN32)
 		m_event = CreateEvent(nullptr, TRUE, FALSE, nullptr);
 		if (m_event == nullptr)
 		{
 			NLS_LOG_WARNING("NativeOpenGLSemaphore: failed to create event");
 		}
+#endif
 	}
 
 	NativeOpenGLSemaphore::~NativeOpenGLSemaphore()
 	{
+#if defined(_WIN32)
 		if (m_event != nullptr)
 		{
 			CloseHandle(m_event);
 			m_event = nullptr;
 		}
+#endif
 	}
 
 	bool NativeOpenGLSemaphore::IsSignaled() const
@@ -709,19 +713,23 @@ namespace NLS::Render::Backend
 	void NativeOpenGLSemaphore::Reset()
 	{
 		m_signaled = false;
+#if defined(_WIN32)
 		if (m_event != nullptr)
 		{
 			ResetEvent(m_event);
 		}
+#endif
 	}
 
 	void NativeOpenGLSemaphore::Signal()
 	{
 		m_signaled = true;
+#if defined(_WIN32)
 		if (m_event != nullptr)
 		{
 			SetEvent(m_event);
 		}
+#endif
 	}
 
 	// ============================================================================
@@ -1018,7 +1026,7 @@ namespace NLS::Render::Backend
 			{
 				std::vector<char> infoLog(infoLen);
 				glGetShaderInfoLog(shader, infoLen, nullptr, infoLog.data());
-				NLS_LOG_WARNING("OpenGLExplicitDevice::CreateShaderModule: shader compile error: {}", infoLog.data());
+				NLS_LOG_WARNING(std::string("OpenGLExplicitDevice::CreateShaderModule: shader compile error: ") + infoLog.data());
 			}
 			glDeleteShader(shader);
 			return nullptr;
@@ -1042,7 +1050,7 @@ namespace NLS::Render::Backend
 			{
 				std::vector<char> infoLog(infoLen);
 				glGetProgramInfoLog(program, infoLen, nullptr, infoLog.data());
-				NLS_LOG_WARNING("OpenGLExplicitDevice::CreateShaderModule: program link error: {}", infoLog.data());
+				NLS_LOG_WARNING(std::string("OpenGLExplicitDevice::CreateShaderModule: program link error: ") + infoLog.data());
 			}
 			glDeleteProgram(program);
 			return nullptr;

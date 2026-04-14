@@ -22,6 +22,7 @@
 #include "Rendering/Resources/MaterialResourceSet.h"
 #include "Rendering/Resources/ShaderBindingLayoutUtils.h"
 #include "Rendering/Resources/Shader.h"
+#include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/Resources/Texture2D.h"
 #include "Rendering/Resources/TextureCube.h"
 
@@ -138,9 +139,7 @@ namespace
     {
         static const bool enabled = []()
         {
-            if (const char* value = std::getenv("NLS_LOG_MATERIAL_BINDINGS"); value != nullptr)
-                return std::strcmp(value, "1") == 0 || _stricmp(value, "true") == 0;
-            return false;
+            return NLS::Render::Settings::IsEnvironmentFlagEnabled("NLS_LOG_MATERIAL_BINDINGS");
         }();
         return enabled;
     }

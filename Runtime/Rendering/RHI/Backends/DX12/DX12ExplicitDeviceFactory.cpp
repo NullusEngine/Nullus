@@ -23,6 +23,7 @@
 #include "Rendering/RHI/Core/RHIBinding.h"
 #include "Rendering/RHI/Core/RHIPipeline.h"
 #include "Rendering/RHI/Core/RHIResource.h"
+#include "Rendering/Settings/GraphicsBackendUtils.h"
 
 #if defined(_WIN32)
 #include <dxgi1_6.h>
@@ -440,10 +441,7 @@ namespace NLS::Render::Backend
 		{
 			static const bool enabled = []()
 			{
-				const char* value = std::getenv("NLS_DX12_LOG_MESSAGES");
-				if (value == nullptr)
-					return false;
-				return std::strcmp(value, "1") == 0 || _stricmp(value, "true") == 0;
+				return NLS::Render::Settings::IsEnvironmentFlagEnabled("NLS_DX12_LOG_MESSAGES");
 			}();
 			return enabled;
 		}
@@ -452,10 +450,7 @@ namespace NLS::Render::Backend
 		{
 			static const bool enabled = []()
 			{
-				const char* value = std::getenv("NLS_DX12_LOG_FRAME_FLOW");
-				if (value == nullptr)
-					return false;
-				return std::strcmp(value, "1") == 0 || _stricmp(value, "true") == 0;
+				return NLS::Render::Settings::IsEnvironmentFlagEnabled("NLS_DX12_LOG_FRAME_FLOW");
 			}();
 			return enabled;
 		}

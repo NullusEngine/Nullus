@@ -240,7 +240,6 @@ protected:
     MaterialParameterBlock m_parameterBlock;
     MaterialLayout m_materialLayout;
     ResourceBindingLayout m_bindingLayout;
-    struct MaterialRuntimeState;
     mutable std::unique_ptr<MaterialRuntimeState> m_runtimeState;
 
     bool m_blendable = false;

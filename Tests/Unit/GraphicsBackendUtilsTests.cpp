@@ -47,6 +47,19 @@ TEST(GraphicsBackendUtilsTests, StringifiesDX11Backend)
     EXPECT_STREQ(NLS::Render::Settings::ToString(NLS::Render::Settings::EGraphicsBackend::DX11), "DX11");
 }
 
+TEST(GraphicsBackendUtilsTests, ParsesTruthyEnvironmentValuesCaseInsensitively)
+{
+    EXPECT_TRUE(NLS::Render::Settings::IsTruthyEnvironmentValue("1"));
+    EXPECT_TRUE(NLS::Render::Settings::IsTruthyEnvironmentValue("true"));
+    EXPECT_TRUE(NLS::Render::Settings::IsTruthyEnvironmentValue("TRUE"));
+    EXPECT_TRUE(NLS::Render::Settings::IsTruthyEnvironmentValue("TrUe"));
+
+    EXPECT_FALSE(NLS::Render::Settings::IsTruthyEnvironmentValue(nullptr));
+    EXPECT_FALSE(NLS::Render::Settings::IsTruthyEnvironmentValue(""));
+    EXPECT_FALSE(NLS::Render::Settings::IsTruthyEnvironmentValue("0"));
+    EXPECT_FALSE(NLS::Render::Settings::IsTruthyEnvironmentValue("false"));
+}
+
 TEST(GraphicsBackendUtilsTests, SceneRendererSupportDescriptionsMatchCurrentSupportMatrix)
 {
     EXPECT_NE(

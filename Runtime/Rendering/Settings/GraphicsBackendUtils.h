@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <cstdlib>
 #include <optional>
 #include <string>
@@ -40,6 +41,22 @@ namespace NLS::Render::Settings
 				return static_cast<char>(std::tolower(ch));
 			});
 		return normalized;
+	}
+
+	inline bool IsTruthyEnvironmentValue(const char* value)
+	{
+		if (value == nullptr || value[0] == '\0')
+			return false;
+
+		return std::strcmp(value, "1") == 0 || NormalizeGraphicsBackendName(value) == "true";
+	}
+
+	inline bool IsEnvironmentFlagEnabled(const char* variableName)
+	{
+		if (variableName == nullptr || variableName[0] == '\0')
+			return false;
+
+		return IsTruthyEnvironmentValue(std::getenv(variableName));
 	}
 
 	inline std::optional<EGraphicsBackend> TryParseGraphicsBackend(std::string_view value)

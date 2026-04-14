@@ -1,4 +1,5 @@
 #include <Rendering/Features/DebugShapeRenderFeature.h>
+#include <Rendering/Settings/GraphicsBackendUtils.h>
 #include <cstdlib>
 #include <cstring>
 
@@ -15,14 +16,7 @@ namespace
 {
 	bool IsEnvFlagEnabled(const char* name)
 	{
-		if (name == nullptr || name[0] == '\0')
-			return false;
-
-		const char* value = std::getenv(name);
-		if (value == nullptr)
-			return false;
-
-		return std::strcmp(value, "1") == 0 || _stricmp(value, "true") == 0;
+		return NLS::Render::Settings::IsEnvironmentFlagEnabled(name);
 	}
 }
 

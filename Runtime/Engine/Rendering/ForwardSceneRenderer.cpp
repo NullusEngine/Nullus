@@ -8,6 +8,7 @@
 #include <Rendering/FrameGraph/FrameGraphExecutionContext.h>
 #include <Rendering/FrameGraph/FrameGraphTexture.h>
 #include <Rendering/RHI/BindingPointMap.h>
+#include <Rendering/Settings/GraphicsBackendUtils.h>
 
 #include "Rendering/FrameGraphSceneTargets.h"
 #include "Rendering/ScenePipelineStatePresets.h"
@@ -24,9 +25,7 @@ namespace
 	{
 		static const bool enabled = []()
 		{
-			if (const char* value = std::getenv("NLS_LOG_RENDER_DRAW_PATH"); value != nullptr)
-				return std::strcmp(value, "1") == 0 || _stricmp(value, "true") == 0;
-			return false;
+			return NLS::Render::Settings::IsEnvironmentFlagEnabled("NLS_LOG_RENDER_DRAW_PATH");
 		}();
 		return enabled;
 	}
@@ -35,9 +34,7 @@ namespace
 	{
 		static const bool enabled = []()
 		{
-			if (const char* value = std::getenv("NLS_DIAG_SKIP_SKYBOX_DRAW"); value != nullptr)
-				return std::strcmp(value, "1") == 0 || _stricmp(value, "true") == 0;
-			return false;
+			return NLS::Render::Settings::IsEnvironmentFlagEnabled("NLS_DIAG_SKIP_SKYBOX_DRAW");
 		}();
 		return enabled;
 	}

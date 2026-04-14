@@ -1,6 +1,7 @@
 
 #include <Rendering/Core/CompositeRenderer.h>
 #include <Rendering/RHI/BindingPointMap.h>
+#include <Rendering/Settings/GraphicsBackendUtils.h>
 #include <Debug/Logger.h>
 #include <cstdlib>
 #include <cstring>
@@ -14,9 +15,7 @@ namespace
 	{
 		static const bool enabled = []()
 		{
-			if (const char* value = std::getenv("NLS_LOG_RENDER_DRAW_PATH"); value != nullptr)
-				return std::strcmp(value, "1") == 0 || _stricmp(value, "true") == 0;
-			return false;
+			return NLS::Render::Settings::IsEnvironmentFlagEnabled("NLS_LOG_RENDER_DRAW_PATH");
 		}();
 		return enabled;
 	}

@@ -46,6 +46,7 @@
 #if defined(_WIN32)
 #include <vulkan/vulkan_win32.h>
 #elif defined(__linux__)
+#include <X11/Xlib.h>
 #include <vulkan/vulkan_xlib.h>
 #endif
 #endif

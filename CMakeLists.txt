@@ -19,6 +19,7 @@ set(CMAKE_SUPPRESS_REGENERATION ON)
 project(Nullus VERSION 1.0.0 LANGUAGES C CXX)
 
 if(APPLE)
+    enable_language(OBJC)
     enable_language(OBJCXX)
 endif()
 

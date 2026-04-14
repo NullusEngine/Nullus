@@ -7,8 +7,10 @@
 
 #include <Rendering/FrameGraph/FrameGraphExecutionContext.h>
 #include <Rendering/FrameGraph/FrameGraphTexture.h>
+#include <Rendering/RHI/BindingPointMap.h>
 
 #include "Rendering/FrameGraphSceneTargets.h"
+#include "Rendering/ScenePipelineStatePresets.h"
 
 namespace
 {
@@ -28,6 +30,17 @@ namespace
 		}();
 		return enabled;
 	}
+
+	bool ShouldSkipSkyboxDrawForDiagnostics()
+	{
+		static const bool enabled = []()
+		{
+			if (const char* value = std::getenv("NLS_DIAG_SKIP_SKYBOX_DRAW"); value != nullptr)
+				return std::strcmp(value, "1") == 0 || _stricmp(value, "true") == 0;
+			return false;
+		}();
+		return enabled;
+	}
 }
 
 namespace NLS::Engine::Rendering
@@ -39,10 +52,9 @@ namespace NLS::Engine::Rendering
 
 	void ForwardSceneRenderer::BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor)
 	{
-		static std::atomic_uint32_t s_loggedDrawables{ 0u };
 		BaseSceneRenderer::BeginFrame(p_frameDescriptor);
 		auto drawables = ParseScene();
-		if (ShouldLogSceneRendererDiagnostics() || s_loggedDrawables.fetch_add(1u) < 4u)
+		if (ShouldLogSceneRendererDiagnostics())
 		{
 			NLS_LOG_INFO(
 				"[ForwardSceneRenderer] Parsed scene drawables: opaque=" + std::to_string(drawables.opaques.size()) +
@@ -54,9 +66,7 @@ namespace NLS::Engine::Rendering
 
 	void ForwardSceneRenderer::DrawFrame()
 	{
-		auto pso = CreatePipelineState();
 		const auto& frame = GetFrameDescriptor();
-		const auto commandBuffer = GetActiveExplicitCommandBuffer();
 		FrameGraph frameGraph;
 		frameGraph.reserve(3, frame.outputBuffer ? 2 : 0);
 		FrameGraphBlackboard blackboard;
@@ -82,7 +92,7 @@ namespace NLS::Engine::Rendering
 				else
 					builder.setSideEffect();
 			},
-			[this, pso, &frame, commandBuffer](const ForwardOutputData&, FrameGraphPassResources&, void*)
+			[this, &frame](const ForwardOutputData&, FrameGraphPassResources&, void*)
 			{
 				const auto clearColor = Maths::Vector4{
 					frame.camera->GetClearColor().x,
@@ -91,18 +101,15 @@ namespace NLS::Engine::Rendering
 					1.0f
 				};
 				const bool startedRenderPass =
-					commandBuffer != nullptr &&
-					BeginRecordedRenderPass(
-						frame.outputBuffer,
+					BeginOutputRenderPass(
 						frame.renderWidth,
 						frame.renderHeight,
 						frame.camera->GetClearColorBuffer(),
 						frame.camera->GetClearDepthBuffer(),
 						frame.camera->GetClearStencilBuffer(),
 						clearColor);
-				DrawOpaques(pso);
-				if (startedRenderPass)
-					EndRecordedRenderPass();
+				DrawOpaques(CreateSceneDefaultPipelineState(*this));
+				EndOutputRenderPass(startedRenderPass);
 			}
 		);
 
@@ -123,20 +130,17 @@ namespace NLS::Engine::Rendering
 				if (data.color < 0 && data.depth < 0)
 					builder.setSideEffect();
 			},
-			[this, pso, &frame, commandBuffer](const ForwardOutputData&, FrameGraphPassResources&, void*)
+			[this, &frame](const ForwardOutputData&, FrameGraphPassResources&, void*)
 			{
 				const bool startedRenderPass =
-					commandBuffer != nullptr &&
-					BeginRecordedRenderPass(
-						frame.outputBuffer,
+					BeginOutputRenderPass(
 						frame.renderWidth,
 						frame.renderHeight,
 						false,
 						false,
 						false);
-				DrawSkyboxes(pso);
-				if (startedRenderPass)
-					EndRecordedRenderPass();
+				DrawSkyboxes(CreateSceneSkyboxPipelineState(*this));
+				EndOutputRenderPass(startedRenderPass);
 			}
 		);
 
@@ -157,70 +161,74 @@ namespace NLS::Engine::Rendering
 				if (data.color < 0 && data.depth < 0)
 					builder.setSideEffect();
 			},
-			[this, pso, &frame, commandBuffer](const ForwardOutputData&, FrameGraphPassResources&, void*)
+			[this, &frame](const ForwardOutputData&, FrameGraphPassResources&, void*)
 			{
 				const bool startedRenderPass =
-					commandBuffer != nullptr &&
-					BeginRecordedRenderPass(
-						frame.outputBuffer,
+					BeginOutputRenderPass(
 						frame.renderWidth,
 						frame.renderHeight,
 						false,
 						false,
 						false);
-				DrawTransparents(pso);
-				if (startedRenderPass)
-					EndRecordedRenderPass();
+				DrawTransparents(CreateSceneDefaultPipelineState(*this));
+				EndOutputRenderPass(startedRenderPass);
 			}
 		);
 
 		frameGraph.compile();
-		auto* frameContext = m_driver.GetCurrentExplicitFrameContext();
-		NLS::Render::FrameGraph::FrameGraphExecutionContext executionContext{
-			m_driver,
-			m_driver.GetExplicitDevice().get(),
-			frameContext != nullptr ? frameContext->commandBuffer.get() : nullptr,
-			frameContext
-		};
+		auto executionContext = CreateFrameGraphExecutionContext();
 		frameGraph.execute(&executionContext, &executionContext);
 
-		DrawRegisteredPasses(CreatePipelineState());
+		DrawRegisteredPasses();
 	}
 
 	void ForwardSceneRenderer::DrawOpaques(NLS::Render::Data::PipelineState pso)
 	{
 		const auto& scene = GetDescriptor<ForwardSceneDescriptor>();
+
 		for (const auto& [_, drawable] : scene.drawables.opaques)
 		{
+			if (drawable.material == nullptr || drawable.mesh == nullptr)
+				continue;
 			DrawEntity(pso, drawable);
 		}
 	}
 
 	void ForwardSceneRenderer::DrawSkyboxes(NLS::Render::Data::PipelineState pso)
 	{
-		pso.depthFunc = NLS::Render::Settings::EComparaisonAlgorithm::LESS_EQUAL;
-
 		const auto& scene = GetDescriptor<ForwardSceneDescriptor>();
-		size_t skyboxCount = 0;
+
+		if (ShouldSkipSkyboxDrawForDiagnostics())
+		{
+			static bool loggedSkip = false;
+			if (!loggedSkip)
+			{
+				loggedSkip = true;
+				NLS_LOG_WARNING("[ForwardSceneRenderer] Skipping skybox draw because NLS_DIAG_SKIP_SKYBOX_DRAW is enabled");
+			}
+			return;
+		}
+
 		for (const auto& [_, drawable] : scene.drawables.skyboxes)
 		{
-			if (skyboxCount > 0)
-			{
-				NLS_LOG_WARNING("Multiple skyboxes detected, only the first one will be drawn!");
-				break;
-			}
-
+			if (drawable.mesh == nullptr || drawable.material == nullptr)
+				continue;
 			DrawEntity(pso, drawable);
-			++skyboxCount;
 		}
 	}
 
 	void ForwardSceneRenderer::DrawTransparents(NLS::Render::Data::PipelineState pso)
 	{
 		const auto& scene = GetDescriptor<ForwardSceneDescriptor>();
+
+		NLS::Render::Resources::MaterialPipelineStateOverrides transparentOverrides;
+		transparentOverrides.depthWrite = false;
+
 		for (const auto& [_, drawable] : scene.drawables.transparents)
 		{
-			DrawEntity(pso, drawable);
+			if (drawable.material == nullptr || drawable.mesh == nullptr)
+				continue;
+			DrawEntity(drawable, transparentOverrides, pso.depthFunc);
 		}
 	}
 }

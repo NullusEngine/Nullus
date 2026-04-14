@@ -11,17 +11,6 @@ CompositeRenderer::CompositeRenderer(Context::Driver& p_driver)
 {
 }
 
-bool CompositeRenderer::CanRecordExplicitFrame() const
-{
-    for (const auto& [_, pass] : m_passes)
-    {
-        if (pass.second->IsEnabled() && pass.second->BlocksExplicitRecording())
-            return false;
-    }
-
-    return true;
-}
-
 void CompositeRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
 {
     ABaseRenderer::BeginFrame(p_frameDescriptor);
@@ -45,8 +34,39 @@ void CompositeRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescripto
 
 void CompositeRenderer::DrawFrame()
 {
-    auto pso = CreatePipelineState();
-    DrawRegisteredPasses(pso);
+    DrawRegisteredPasses();
+}
+
+void CompositeRenderer::ExecutePass(Core::ARenderPass& pass)
+{
+    ExecutePass(pass, CreatePipelineState());
+}
+
+void CompositeRenderer::ExecutePass(Core::ARenderPass& pass, PipelineState pso)
+{
+    const auto commandBuffer = GetActiveExplicitCommandBuffer();
+    if (commandBuffer != nullptr && !pass.ManagesOwnRenderPass())
+    {
+        const bool startedRenderPass = BeginOutputRenderPass(
+            m_frameDescriptor.renderWidth,
+            m_frameDescriptor.renderHeight,
+            false,
+            false,
+            false);
+
+        pass.Draw(pso);
+
+        EndOutputRenderPass(startedRenderPass);
+
+        return;
+    }
+
+    pass.Draw(pso);
+}
+
+void CompositeRenderer::DrawRegisteredPasses()
+{
+    DrawRegisteredPasses(CreatePipelineState());
 }
 
 void CompositeRenderer::DrawRegisteredPasses(PipelineState pso)
@@ -54,35 +74,7 @@ void CompositeRenderer::DrawRegisteredPasses(PipelineState pso)
     for (const auto& [_, pass] : m_passes)
     {
         if (pass.second->IsEnabled())
-        {
-            const auto commandBuffer = GetActiveExplicitCommandBuffer();
-            if (commandBuffer != nullptr && !pass.second->RequiresLegacyExecution())
-            {
-                const bool startedRenderPass = BeginRecordedRenderPass(
-                    m_frameDescriptor.outputBuffer,
-                    m_frameDescriptor.renderWidth,
-                    m_frameDescriptor.renderHeight,
-                    false,
-                    false,
-                    false);
-
-                pass.second->Draw(pso);
-
-                if (startedRenderPass)
-                    EndRecordedRenderPass();
-            }
-            else
-            {
-                const bool usesLegacyExecution = commandBuffer != nullptr && pass.second->RequiresLegacyExecution();
-                if (usesLegacyExecution)
-                    BeginLegacyDrawSection();
-
-                pass.second->Draw(pso);
-
-                if (usesLegacyExecution)
-                    EndLegacyDrawSection();
-            }
-        }
+            ExecutePass(*pass.second, pso);
     }
 }
 
@@ -113,18 +105,31 @@ void CompositeRenderer::DrawEntity(
     const Entities::Drawable& p_drawable
 )
 {
-    const auto commandBuffer = GetActiveExplicitCommandBuffer();
     for (const auto& [_, feature] : m_features)
     {
         if (feature->IsEnabled())
         {
             feature->OnBeforeDraw(p_pso, p_drawable);
-            if (commandBuffer != nullptr)
-                feature->OnPrepareExplicitDraw(*commandBuffer, p_pso, p_drawable);
         }
     }
 
-    ABaseRenderer::DrawEntity(p_pso, p_drawable);
+    PreparedRecordedDraw preparedDraw;
+    if (PrepareRecordedDraw(p_pso, p_drawable, preparedDraw))
+    {
+        BindPreparedGraphicsPipeline(preparedDraw);
+
+        if (preparedDraw.commandBuffer != nullptr)
+        {
+            for (const auto& [_, feature] : m_features)
+            {
+                if (feature->IsEnabled())
+                    feature->OnPrepareExplicitDraw(*preparedDraw.commandBuffer, p_pso, p_drawable);
+            }
+        }
+
+        BindPreparedMaterialBindingSet(preparedDraw);
+        SubmitPreparedDraw(preparedDraw);
+    }
 
     for (const auto& [_, feature] : m_features)
     {
@@ -134,4 +139,47 @@ void CompositeRenderer::DrawEntity(
         }
     }
 }
+
+void CompositeRenderer::DrawEntity(
+    const Entities::Drawable& p_drawable,
+    Resources::MaterialPipelineStateOverrides pipelineOverrides,
+    Settings::EComparaisonAlgorithm depthCompareOverride)
+{
+    auto effectivePso = CreatePipelineState();
+
+    for (const auto& [_, feature] : m_features)
+    {
+        if (feature->IsEnabled())
+        {
+            feature->OnBeforeDraw(effectivePso, p_drawable);
+        }
+    }
+
+    PreparedRecordedDraw preparedDraw;
+    if (PrepareRecordedDraw(p_drawable, pipelineOverrides, depthCompareOverride, preparedDraw))
+    {
+        BindPreparedGraphicsPipeline(preparedDraw);
+
+        if (preparedDraw.commandBuffer != nullptr)
+        {
+            for (const auto& [_, feature] : m_features)
+            {
+                if (feature->IsEnabled())
+                    feature->OnPrepareExplicitDraw(*preparedDraw.commandBuffer, effectivePso, p_drawable);
+            }
+        }
+
+        BindPreparedMaterialBindingSet(preparedDraw);
+        SubmitPreparedDraw(preparedDraw);
+    }
+
+    for (const auto& [_, feature] : m_features)
+    {
+        if (feature->IsEnabled())
+        {
+            feature->OnAfterDraw(p_drawable);
+        }
+    }
+}
+
 }

@@ -150,6 +150,7 @@ void PanelWindow::_Draw_Impl()
                 CloseEvent.Invoke();
 
             Update();
+            OnBeforeDrawWidgets();
 
             if (m_mustScrollToBottom)
             {
@@ -168,5 +169,9 @@ void PanelWindow::_Draw_Impl()
 
         ImGui::End();
     }
+}
+
+void PanelWindow::OnBeforeDrawWidgets()
+{
 }
 } // namespace NLS::UI

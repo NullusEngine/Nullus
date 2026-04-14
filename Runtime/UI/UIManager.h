@@ -36,13 +36,14 @@ public:
      * @param p_backend
      * @param p_style
      * @param p_glslVersion (Ex: #version 150)
+     * @param p_nativeDeviceInfo Optional native device info for backend-specific UI rendering
      */
     UIManager(
         GLFWwindow* p_glfwWindow,
         NLS::Render::Settings::EGraphicsBackend p_backend = NLS::Render::Settings::EGraphicsBackend::OPENGL,
-        const NLS::Render::RHI::NativeRenderDeviceInfo& p_nativeDeviceInfo = {},
         EStyle p_style = EStyle::IM_DARK_STYLE,
-        const std::string& p_glslVersion = "#version 150");
+        const std::string& p_glslVersion = "#version 150",
+        const NLS::Render::RHI::NativeRenderDeviceInfo* p_nativeDeviceInfo = nullptr);
 
     /**
      * Destroy the UI manager. Will handle ImGui destruction internally
@@ -139,8 +140,14 @@ public:
      * @note Should be called once per frame
      */
     void Render();
-    void* ResolveTextureID(uint32_t textureId);
+    NLS::Render::RHI::NativeHandle ResolveTextureView(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView);
     void NotifySwapchainWillResize();
+    void SetCurrentSwapchainImageIndex(uint32_t index) { m_currentSwapchainImageIndex = index; }
+    void SetWaitSemaphore(void* semaphore);
+    void SetSignalSemaphore(void* semaphore);
+    void SubmitUIRendering();
+    NLS::Render::RHI::NativeHandle ResolveUISignalSemaphore();
+    NLS::Render::Settings::EGraphicsBackend GetGraphicsBackend() const { return m_backend; }
 
 #pragma region ImGUIWrapper
     float GetMouseWheel();
@@ -180,9 +187,13 @@ private:
 private:
     bool m_dockingState;
     bool m_isRenderingFrame = false;
+    bool m_inFrame = false;
     Canvas* m_currentCanvas = nullptr;
     NLS::Render::Settings::EGraphicsBackend m_backend = NLS::Render::Settings::EGraphicsBackend::OPENGL;
     std::unique_ptr<NLS::Render::RHI::RHIUIBridge> m_uiBridge;
+    uint32_t m_currentSwapchainImageIndex = 0;
+    void* waitSemaphore_ = nullptr;
+    void* signalSemaphore_ = nullptr;
     std::unordered_map<std::string, ImFont*> m_fonts;
     std::string m_layoutSaveFilename = "imgui.ini";
 };

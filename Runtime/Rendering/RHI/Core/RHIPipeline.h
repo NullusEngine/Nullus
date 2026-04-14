@@ -1,6 +1,8 @@
 #pragma once
 
 #include "Rendering/RHI/Core/RHIBinding.h"
+#include "Rendering/Settings/EComparaisonAlgorithm.h"
+#include "Rendering/Settings/EOperation.h"
 
 namespace NLS::Render::RHI
 {
@@ -60,6 +62,14 @@ namespace NLS::Render::RHI
         bool depthTest = true;
         bool depthWrite = true;
         NLS::Render::Settings::EComparaisonAlgorithm depthCompare = NLS::Render::Settings::EComparaisonAlgorithm::LESS;
+        bool stencilTest = false;
+        uint32_t stencilReadMask = 0xFFu;
+        uint32_t stencilWriteMask = 0xFFu;
+        uint32_t stencilReference = 0u;
+        NLS::Render::Settings::EComparaisonAlgorithm stencilCompare = NLS::Render::Settings::EComparaisonAlgorithm::ALWAYS;
+        NLS::Render::Settings::EOperation stencilFailOp = NLS::Render::Settings::EOperation::KEEP;
+        NLS::Render::Settings::EOperation stencilDepthFailOp = NLS::Render::Settings::EOperation::KEEP;
+        NLS::Render::Settings::EOperation stencilPassOp = NLS::Render::Settings::EOperation::KEEP;
     };
 
     struct NLS_RENDER_API RHIRenderTargetLayoutDesc
@@ -109,6 +119,7 @@ namespace NLS::Render::RHI
     {
     public:
         virtual const RHIGraphicsPipelineDesc& GetDesc() const = 0;
+        virtual uint64_t GetPipelineHandle() const { return 0; }
     };
 
     class NLS_RENDER_API RHIComputePipeline : public RHIObject

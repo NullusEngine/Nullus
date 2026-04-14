@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Rendering/Data/FrameDescriptor.h"
+#include "Rendering/Data/PipelineState.h"
 #include "Rendering/Settings/ERenderPassOrder.h"
 #include "RenderDef.h"
 
@@ -22,8 +23,7 @@ public:
 
     void SetEnabled(bool p_enabled);
     bool IsEnabled() const;
-    virtual bool RequiresLegacyExecution() const;
-    virtual bool BlocksExplicitRecording() const;
+    virtual bool ManagesOwnRenderPass() const;
 
 protected:
     virtual void OnBeginFrame(const Data::FrameDescriptor& p_frameDescriptor);

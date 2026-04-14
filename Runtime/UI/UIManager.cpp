@@ -3,9 +3,11 @@
 
 #include <vector>
 
+#include "Core/ServiceLocator.h"
 #include "Debug/Logger.h"
 #include "Rendering/RHI/Utils/RHIUIBridge.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
+#include "Windowing/Window.h"
 #include "ImGui/backends/imgui_impl_glfw.h"
 #include "ImGui/imgui_internal.h"
 
@@ -16,7 +18,9 @@ ImGuiGlfwInitBackend ResolveImGuiGlfwInitBackend(const NLS::Render::Settings::EG
     switch (backend)
     {
     case NLS::Render::Settings::EGraphicsBackend::OPENGL:
-        return ImGuiGlfwInitBackend::OpenGL;
+        return NLS::Render::Settings::SupportsImGuiRendererBackend(backend)
+            ? ImGuiGlfwInitBackend::OpenGL
+            : ImGuiGlfwInitBackend::Other;
     case NLS::Render::Settings::EGraphicsBackend::VULKAN:
         return ImGuiGlfwInitBackend::Vulkan;
     case NLS::Render::Settings::EGraphicsBackend::DX11:
@@ -31,9 +35,9 @@ ImGuiGlfwInitBackend ResolveImGuiGlfwInitBackend(const NLS::Render::Settings::EG
 UIManager::UIManager(
     GLFWwindow* p_glfwWindow,
     NLS::Render::Settings::EGraphicsBackend p_backend,
-    const NLS::Render::RHI::NativeRenderDeviceInfo& p_nativeDeviceInfo,
     EStyle p_style,
-    const std::string& p_glslVersion)
+    const std::string& p_glslVersion,
+    const NLS::Render::RHI::NativeRenderDeviceInfo* p_nativeDeviceInfo)
     : m_backend(p_backend)
 {
     ImGui::CreateContext();
@@ -56,7 +60,12 @@ UIManager::UIManager(
         break;
     }
 
-    m_uiBridge = NLS::Render::RHI::CreateRHIUIBridge(p_glfwWindow, m_backend, p_nativeDeviceInfo, p_glslVersion);
+    // Note: CreateRHIUIBridge uses m_backend from initialization, p_nativeDeviceInfo is now used
+    m_uiBridge = NLS::Render::RHI::CreateRHIUIBridge(
+        p_glfwWindow,
+        m_backend,
+        p_glslVersion,
+        p_nativeDeviceInfo);
     const bool hasRendererBackend = m_uiBridge != nullptr && m_uiBridge->HasRendererBackend();
 
     if (m_backend != NLS::Render::Settings::EGraphicsBackend::OPENGL)
@@ -89,6 +98,13 @@ UIManager::~UIManager()
 
 void UIManager::BeginFrame()
 {
+    if (m_uiBridge != nullptr && !m_uiBridge->HasRendererBackend())
+    {
+        NLS_LOG_INFO("UIManager::BeginFrame: UI bridge has no renderer backend");
+        m_inFrame = false;
+        return;
+    }
+
     if (GImGui != nullptr)
     {
         auto& context = *GImGui;
@@ -103,7 +119,23 @@ void UIManager::BeginFrame()
     if (m_uiBridge != nullptr)
         m_uiBridge->BeginFrame();
 
+    if (NLS::Core::ServiceLocator::Contains<NLS::Windowing::Window>())
+    {
+        auto& window = NLS_SERVICE(NLS::Windowing::Window);
+        const auto windowSize = window.GetSize();
+        const auto framebufferSize = window.GetFramebufferSize();
+        if (windowSize.x > 0.0f && windowSize.y > 0.0f)
+        {
+            ImGuiIO& io = ImGui::GetIO();
+            io.DisplaySize = ImVec2(windowSize.x, windowSize.y);
+            io.DisplayFramebufferScale = ImVec2(
+                framebufferSize.x / windowSize.x,
+                framebufferSize.y / windowSize.y);
+        }
+    }
+
     ImGui::NewFrame();
+    m_inFrame = true;
 }
 
 void UIManager::ApplyStyle(EStyle p_style)
@@ -373,22 +405,73 @@ void UIManager::Render()
 
     m_isRenderingFrame = true;
     BeginFrame();
+    if (!m_inFrame)
+    {
+        m_isRenderingFrame = false;
+        return;
+    }
     m_currentCanvas->Draw();
-    ImGui::Render();
+
+    // All paths: ImGui::Render() must be called before RenderDrawData to build font atlas if needed
     if (m_uiBridge != nullptr)
-        m_uiBridge->RenderDrawData(ImGui::GetDrawData());
+    {
+        ImGui::Render();
+        m_uiBridge->RenderDrawData(ImGui::GetDrawData(), m_currentSwapchainImageIndex);
+    }
     m_isRenderingFrame = false;
 }
 
-void* UIManager::ResolveTextureID(uint32_t textureId)
+NLS::Render::RHI::NativeHandle UIManager::ResolveTextureView(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView)
 {
-    return m_uiBridge != nullptr ? m_uiBridge->ResolveTextureID(textureId) : nullptr;
+    return m_uiBridge != nullptr ? m_uiBridge->ResolveTextureView(textureView) : NLS::Render::RHI::NativeHandle{};
 }
 
 void UIManager::NotifySwapchainWillResize()
 {
     if (m_uiBridge != nullptr)
         m_uiBridge->NotifySwapchainWillResize();
+}
+
+void UIManager::SetWaitSemaphore(void* semaphore)
+{
+    waitSemaphore_ = semaphore;
+    if (m_uiBridge != nullptr)
+    {
+        m_uiBridge->SetWaitSemaphore(semaphore);
+    }
+}
+
+void UIManager::SetSignalSemaphore(void* semaphore)
+{
+    signalSemaphore_ = semaphore;
+    if (m_uiBridge != nullptr)
+    {
+        m_uiBridge->SetSignalSemaphore(semaphore);
+    }
+}
+
+void UIManager::SubmitUIRendering()
+{
+    if (m_uiBridge != nullptr)
+    {
+        m_uiBridge->SubmitCommandBuffer(m_currentSwapchainImageIndex);
+    }
+}
+
+NLS::Render::RHI::NativeHandle UIManager::ResolveUISignalSemaphore()
+{
+    if (m_uiBridge != nullptr)
+    {
+        void* sem = m_uiBridge->GetUISignalSemaphore();
+        if (sem != nullptr)
+        {
+            NLS::Render::RHI::NativeHandle handle;
+            handle.backend = NLS::Render::RHI::BackendType::Vulkan;
+            handle.handle = sem;
+            return handle;
+        }
+    }
+    return NLS::Render::RHI::NativeHandle{};
 }
 
 void UIManager::PushCurrentFont()

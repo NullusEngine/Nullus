@@ -24,9 +24,7 @@ bool IsResizeCursor(const ImGuiMouseCursor cursor)
 }
 }
 
-Editor::Core::Application::Application(
-    const std::string& p_projectPath,
-    const std::string& p_projectName,
+Editor::Core::Application::Application(const std::string& p_projectPath, const std::string& p_projectName,
     std::optional<Render::Settings::EGraphicsBackend> p_backendOverride,
     const Render::Settings::RenderDocSettings& p_renderDocSettings)
     : m_context(p_projectPath, p_projectName, p_backendOverride, p_renderDocSettings), m_editor(m_context)
@@ -38,6 +36,8 @@ Editor::Core::Application::Application(
 
         if (m_context.window != nullptr && m_context.driver != nullptr)
         {
+            // Do not rely on resize listener invocation order. Sync the swapchain to the
+            // latest framebuffer size before rendering the resize frame.
             const auto framebufferSize = m_context.window->GetFramebufferSize();
             if (framebufferSize.x > 0.0f && framebufferSize.y > 0.0f)
             {
@@ -140,6 +140,8 @@ void Editor::Core::Application::TickResizeFrame()
     m_editor.PostUpdate();
     if (ShouldRunResizeFollowUpFrame(true, false, false))
     {
+        // The first resize frame updates ImGui's layout state.
+        // The follow-up frame re-renders views against the new panel sizes.
         m_editor.Update(0.0f);
         m_editor.PostUpdate();
     }

@@ -128,6 +128,8 @@ namespace NLS::Render::RHI
         virtual void End() = 0;
         virtual void Reset() = 0;
         virtual bool IsRecording() const = 0;
+        // Returns the native command buffer handle (e.g., VkCommandBuffer for Vulkan)
+        virtual void* GetNativeCommandBuffer() const = 0;
 
         virtual void BeginRenderPass(const RHIRenderPassDesc& desc) = 0;
         virtual void EndRenderPass() = 0;

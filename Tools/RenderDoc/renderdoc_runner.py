@@ -21,7 +21,7 @@ if os.name == "nt":
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Launch Nullus with RenderDoc capture settings.")
     parser.add_argument("--target", choices=("editor", "game"), default="editor")
-    parser.add_argument("--backend", choices=("opengl", "vulkan", "dx12"), default="vulkan")
+    parser.add_argument("--backend", choices=("opengl", "vulkan", "dx12", "dx11"), default="vulkan")
     parser.add_argument("--launch-mode", choices=("auto", "direct", "renderdoccmd"), default="auto")
     parser.add_argument("--config", default="Debug")
     parser.add_argument("--project", help="Path to a .nullus project file for Editor launches.")
@@ -150,6 +150,49 @@ def find_newest_capture(capture_dir: Path, launched_at: float) -> Path | None:
     return newest_capture
 
 
+def snapshot_capture_set(search_roots: Iterable[Path]) -> dict[Path, float]:
+    captures: dict[Path, float] = {}
+    for root in search_roots:
+        if root is None or not root.exists():
+            continue
+        for path in root.rglob("*.rdc"):
+            try:
+                captures[path] = path.stat().st_mtime
+            except FileNotFoundError:
+                continue
+    return captures
+
+
+def discover_new_capture(
+    capture_dir: Path,
+    launched_at: float,
+    baseline: dict[Path, float],
+) -> Path | None:
+    search_roots = [capture_dir]
+    temp_renderdoc_dir = Path(os.environ.get("TEMP", "")) / "RenderDoc" if os.environ.get("TEMP") else None
+    if temp_renderdoc_dir is not None:
+        search_roots.append(temp_renderdoc_dir)
+
+    current = snapshot_capture_set(search_roots)
+    delta: list[Path] = []
+    for path, mtime in current.items():
+        baseline_mtime = baseline.get(path)
+        if baseline_mtime is None or mtime > baseline_mtime:
+            if mtime >= launched_at:
+                delta.append(path)
+    if not delta:
+        return None
+
+    newest_capture = max(delta, key=lambda path: path.stat().st_mtime)
+    if newest_capture.parent != capture_dir:
+        capture_dir.mkdir(parents=True, exist_ok=True)
+        copied_capture = capture_dir / newest_capture.name
+        shutil.copy2(newest_capture, copied_capture)
+        return copied_capture
+
+    return newest_capture
+
+
 def open_capture_ui(qrenderdoc_path: Path, capture_path: Path) -> None:
     subprocess.Popen(
         [str(qrenderdoc_path), str(capture_path)],
@@ -178,33 +221,33 @@ def main() -> int:
 
     capture_dir = (REPO_ROOT / "Build" / "RenderDocCaptures" / args.target / args.backend).resolve()
     capture_dir.mkdir(parents=True, exist_ok=True)
+    temp_renderdoc_dir = Path(os.environ.get("TEMP", "")) / "RenderDoc" if os.environ.get("TEMP") else None
+    search_roots = [capture_dir]
+    if temp_renderdoc_dir is not None:
+        search_roots.append(temp_renderdoc_dir)
 
     launch_env = os.environ.copy()
-    launch_env["NLS_GRAPHICS_BACKEND"] = args.backend
     launch_env["NLS_RENDERDOC_ENABLE"] = "1"
     launch_env["NLS_RENDERDOC_CAPTURE_DIR"] = str(capture_dir)
     launch_env["NLS_RENDERDOC_CAPTURE_LABEL"] = f"{args.target}_{args.backend}"
     launch_env["NLS_RENDERDOC_AUTO_OPEN"] = "1" if args.open_capture_ui else "0"
+
+    command = [str(executable_path), "--backend", args.backend]
     if args.target == "editor":
-        launch_env["NLS_LAUNCHER_GRAPHICS_BACKEND"] = args.backend
+        command.append(str(resolve_project(args.project)))
 
     if args.capture:
         launch_env["NLS_RENDERDOC_CAPTURE"] = "1"
         launch_env["NLS_RENDERDOC_CAPTURE_AFTER_FRAMES"] = str(max(0, args.capture_after_frames))
 
-    command = [str(executable_path)]
-    if args.target == "editor":
-        command.append(str(resolve_project(args.project)))
-
     launched_at = time.time()
-    use_renderdoccmd = False
+    baseline_captures = snapshot_capture_set(search_roots)
+    # Force direct launch on all backends.
+    # renderdoccmd injection may retain RenderDoc default hotkeys (F12) before app-level override.
+    # We explicitly disable this path so capture hotkey control stays in Nullus (F11 only).
     if args.launch_mode == "renderdoccmd":
-        use_renderdoccmd = renderdoccmd_path is not None
-    elif args.launch_mode == "direct":
-        use_renderdoccmd = False
-    else:
-        # OpenGL is most reliable in Nullus when RenderDoc is preloaded before window/context creation.
-        use_renderdoccmd = renderdoccmd_path is not None and args.backend != "opengl"
+        print("[renderdoc_runner] launch_mode=renderdoccmd requested, but renderdoccmd path is disabled to avoid F12 capture path; using direct")
+    use_renderdoccmd = False
 
     if use_renderdoccmd:
         capture_template = str((capture_dir / f"{args.target}_{args.backend}").resolve())
@@ -241,10 +284,10 @@ def main() -> int:
     deadline = launched_at + max(1, args.timeout)
     capture_path: Path | None = None
     while time.time() < deadline:
-        capture_path = find_newest_capture(capture_dir, launched_at)
+        capture_path = discover_new_capture(capture_dir, launched_at, baseline_captures)
+        if capture_path is None:
+            capture_path = find_newest_capture(capture_dir, launched_at)
         if capture_path is not None:
-            break
-        if process.poll() is not None:
             break
         time.sleep(1.0)
 

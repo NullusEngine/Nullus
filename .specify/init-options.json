@@ -1,6 +1,11 @@
-﻿{
-    "ai":  "codex",
-    "script_type":  "ps",
-    "ai_skills":  true,
-    "branch_numbering":  "sequential"
+{
+  "ai": "claude",
+  "ai_commands_dir": null,
+  "ai_skills": false,
+  "branch_numbering": "sequential",
+  "here": true,
+  "offline": false,
+  "preset": null,
+  "script": "ps",
+  "speckit_version": "0.4.3"
 }

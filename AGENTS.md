@@ -52,6 +52,9 @@ Rules:
 Template files live under `.specify/templates/`.
 PowerShell workflow scripts live under `.specify/scripts/powershell/`.
 Project constitution lives under `.specify/memory/constitution.md`.
+If repository workflow rules, template expectations, or review gates need to change, update the
+constitution and sync dependent templates/docs through `$speckit-constitution` instead of editing
+guidance files in isolation.
 
 ## Nullus-Specific Rules
 
@@ -88,6 +91,8 @@ This repository includes the official Codex Spec-Kit skills:
 - `$speckit-constitution`
 
 For major changes, prefer the official skills and the bundled `.specify` scripts over ad-hoc planning notes.
+The constitution is the repository's highest workflow authority; plans, tasks, and implementation
+summaries should align with it.
 
 ## Validation Expectations
 

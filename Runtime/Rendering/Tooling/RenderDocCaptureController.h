@@ -34,6 +34,10 @@ namespace NLS::Render::Tooling
 		void SetResolvedBackendName(const std::string& backendName);
 		void SetCaptureTarget(const ::NLS::Render::RHI::NativeRenderDeviceInfo& nativeInfo);
 
+		// Dynamic enable/disable RenderDoc at runtime
+		void SetEnabled(bool enabled);
+		bool IsEnabled() const;
+
 	private:
 		struct Impl;
 		std::unique_ptr<Impl> m_impl;

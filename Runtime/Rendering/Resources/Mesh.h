@@ -54,6 +54,7 @@ namespace NLS::Render::Resources
 		* Returns the native index buffer binding information if indexed.
 		*/
 		virtual std::optional<MeshBufferView> GetIndexBufferView() const override;
+		virtual std::shared_ptr<NLS::Render::RHI::RHIMesh> GetRHIMesh() const override;
 
 		/**
 		* Returns the material index of the mesh

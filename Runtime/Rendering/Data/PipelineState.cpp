@@ -8,6 +8,7 @@
 
 NLS::Render::Data::PipelineState::PipelineState() :
     colorWriting{true, true, true, true},
+    blending(false),
     depthWriting(true),
     culling(true),
     dither(false),

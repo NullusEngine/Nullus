@@ -71,10 +71,11 @@ public:
     void UpdateEditorPanels(float p_deltaTime);
 
     /**
-     * Render every views (Scene View, Game View, Asset View)
+     * Update every view (Scene View, Game View, Asset View) before UI drawing.
+     * Rendering happens during panel draw once the current ImGui layout is known.
      * @param p_deltaTime
      */
-    void RenderViews(float p_deltaTime);
+    void UpdateViews(float p_deltaTime);
 
     /**
      * Render the editor UI using ImGui

@@ -15,8 +15,8 @@
 #include "ResourceManagement/MaterialManager.h"
 #include "Resource/Actor/ActorManager.h"
 #include "EditorResources.h"
-#include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
+#include "Rendering/Settings/DriverSettings.h"
 namespace NLS
 {
 namespace Editor::Core
@@ -26,7 +26,7 @@ namespace Editor::Core
  */
 class Context
 {
-public:
+	public:
     /**
      * Constructor
      * @param p_projectPath
@@ -34,11 +34,9 @@ public:
      * @param p_backendOverride optional backend override from command line, if not provided uses project settings
      * @param p_renderDocSettings RenderDoc settings from command line
      */
-    Context(
-        const std::string& p_projectPath,
-        const std::string& p_projectName,
-        std::optional<Render::Settings::EGraphicsBackend> p_backendOverride = std::nullopt,
-        const Render::Settings::RenderDocSettings& p_renderDocSettings = {});
+    Context(const std::string& p_projectPath, const std::string& p_projectName,
+            std::optional<Render::Settings::EGraphicsBackend> p_backendOverride = std::nullopt,
+            const Render::Settings::RenderDocSettings& p_renderDocSettings = {});
 
     /**
      * Destructor
@@ -61,7 +59,7 @@ public:
      */
     void ApplyProjectSettings();
 
-public:
+	public:
     const std::string projectPath;
     const std::string projectName;
     const std::string projectFilePath;

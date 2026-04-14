@@ -53,6 +53,18 @@ namespace
 		default: return {};
 		}
 	}
+
+    NLS::Render::RHI::NativeBackendType ResolveDeviceBackendType(
+        const std::shared_ptr<NLS::Render::RHI::RHIDevice>& device)
+    {
+        if (device == nullptr)
+            return NLS::Render::RHI::NativeBackendType::None;
+
+        const auto& adapter = device->GetAdapter();
+        return adapter != nullptr
+            ? adapter->GetBackendType()
+            : NLS::Render::RHI::NativeBackendType::None;
+    }
 }
 
 namespace NLS::Render::Resources
@@ -102,7 +114,7 @@ namespace NLS::Render::Resources
 		if (device == nullptr)
 			return nullptr;
 
-		const auto backend = device->GetNativeDeviceInfo().backend;
+		const auto backend = ResolveDeviceBackendType(device);
 		const auto cacheKey = std::make_pair(backend, stage);
 		if (const auto found = m_explicitShaderModules.find(cacheKey); found != m_explicitShaderModules.end())
 			return found->second;

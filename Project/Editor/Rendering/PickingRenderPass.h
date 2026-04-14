@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <variant>
 
@@ -38,26 +39,18 @@ namespace NLS::Editor::Rendering
 
 		/**
 		* Return the picking result at the given position
-		* @param p_scene
 		* @param p_x
 		* @param p_y
 		*/
-		PickingResult ReadbackPickingResult(
-			const Engine::SceneSystem::Scene& p_scene,
-			uint32_t p_x,
-			uint32_t p_y
-		);
-		PickingResult RenderAndReadbackPickingResult(
-			const Engine::SceneSystem::Scene& p_scene,
-			uint32_t p_x,
-			uint32_t p_y
-		);
+		PickingResult PickAtRenderCoordinate(uint32_t p_x, uint32_t p_y);
+		bool SupportsPickingReadback() const;
 
-		bool RequiresLegacyExecution() const override { return true; }
-		bool BlocksExplicitRecording() const override { return false; }
+		bool ManagesOwnRenderPass() const override { return true; }
 
 	private:
 		virtual void Draw(NLS::Render::Data::PipelineState p_pso) override;
+        PickingResult DecodePickingResult(const Engine::SceneSystem::Scene& p_scene, const uint8_t (&pixel)[3]) const;
+        bool RenderPickingScene(NLS::Render::Data::PipelineState p_pso);
         void DrawPickableModels(NLS::Render::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
         void DrawPickableCameras(NLS::Render::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
         void DrawPickableLights(NLS::Render::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
@@ -73,5 +66,9 @@ namespace NLS::Editor::Rendering
 		NLS::Render::Resources::Material m_actorPickingMaterial;
 		NLS::Render::Resources::Material m_lightMaterial;
 		NLS::Render::Resources::Material m_gizmoPickingMaterial;
+		Engine::SceneSystem::Scene* m_lastRenderedScene = nullptr;
+		uint16_t m_lastRenderWidth = 0;
+		uint16_t m_lastRenderHeight = 0;
+		bool m_hasRenderedPickingFrame = false;
 	};
 }

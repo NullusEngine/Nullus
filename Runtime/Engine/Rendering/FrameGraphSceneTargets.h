@@ -18,20 +18,22 @@ namespace NLS::Engine::Rendering
 	inline NLS::Render::FrameGraph::FrameGraphTexture::Desc MakeSceneColorTargetDesc(uint16_t width, uint16_t height)
 	{
 		NLS::Render::FrameGraph::FrameGraphTexture::Desc desc;
-		desc.width = width;
-		desc.height = height;
+		desc.extent.width = width;
+		desc.extent.height = height;
+		desc.extent.depth = 1u;
 		desc.format = NLS::Render::RHI::TextureFormat::RGB8;
-		desc.usage = NLS::Render::RHI::TextureUsage::ColorAttachment;
+		desc.usage = NLS::Render::RHI::TextureUsageFlags::ColorAttachment | NLS::Render::RHI::TextureUsageFlags::Sampled;
 		return desc;
 	}
 
 	inline NLS::Render::FrameGraph::FrameGraphTexture::Desc MakeSceneDepthTargetDesc(uint16_t width, uint16_t height)
 	{
 		NLS::Render::FrameGraph::FrameGraphTexture::Desc desc;
-		desc.width = width;
-		desc.height = height;
+		desc.extent.width = width;
+		desc.extent.height = height;
+		desc.extent.depth = 1u;
 		desc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
-		desc.usage = NLS::Render::RHI::TextureUsage::DepthStencilAttachment;
+		desc.usage = NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment;
 		return desc;
 	}
 
@@ -46,16 +48,14 @@ namespace NLS::Engine::Rendering
 			MakeSceneColorTargetDesc(frame.renderWidth, frame.renderHeight),
 			NLS::Render::FrameGraph::FrameGraphTexture::WrapExternal(
 				frame.outputBuffer->GetExplicitTextureHandle(),
-				frame.outputBuffer->GetOrCreateExplicitColorView("SceneOutputColorView"),
-				frame.outputBuffer->GetTextureID())
+				frame.outputBuffer->GetOrCreateExplicitColorView("SceneOutputColorView"))
 		);
 		targets.depth = frameGraph.import<NLS::Render::FrameGraph::FrameGraphTexture>(
 			depthResourceName,
 			MakeSceneDepthTargetDesc(frame.renderWidth, frame.renderHeight),
 			NLS::Render::FrameGraph::FrameGraphTexture::WrapExternal(
 				frame.outputBuffer->GetExplicitDepthStencilTextureHandle(),
-				frame.outputBuffer->GetOrCreateExplicitDepthStencilView("SceneOutputDepthView"),
-				frame.outputBuffer->GetDepthStencilTextureID())
+				frame.outputBuffer->GetOrCreateExplicitDepthStencilView("SceneOutputDepthView"))
 		);
 
 		blackboard.add<SceneRenderTargetsData>(targets);

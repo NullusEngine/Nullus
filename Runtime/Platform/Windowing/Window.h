@@ -310,7 +310,7 @@ namespace NLS::Windowing
 			return &m_device;
         }
 #ifdef _WIN32
-        long long HandleNativeWindowMessage(void* p_hwnd, unsigned int p_msg, unsigned long long p_wParam, long long p_lParam) const;
+        long long HandleNativeWindowMessage(void* p_hwnd, unsigned int p_msg, unsigned long long p_wParam, long long p_lParam);
 #endif
 	private:
 		void CreateGlfwWindow(const Settings::WindowSettings& p_windowSettings);
@@ -361,6 +361,8 @@ namespace NLS::Windowing
         uint16_t m_nativeTitleBarDragRightInset = 0;
 #ifdef _WIN32
         void* m_originalWindowProc = nullptr;
+        bool m_nativeResizeInProgress = false;
+        bool m_dispatchingNativeResizeRefresh = false;
 #endif
 	};
 }

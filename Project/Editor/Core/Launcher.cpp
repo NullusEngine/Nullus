@@ -19,6 +19,7 @@
 
 #include <Rendering/Resources/Texture2D.h>
 #include <Rendering/Resources/Loaders/TextureLoader.h>
+#include <Rendering/Context/DriverAccess.h>
 #include <Rendering/Settings/GraphicsBackendUtils.h>
 #include <Rendering/Tooling/RenderDocEnvironment.h>
 #include <Utils/PathParser.h>
@@ -37,11 +38,7 @@ namespace
 {
 Render::Settings::EGraphicsBackend ResolveLauncherGraphicsBackend()
 {
-    auto requestedBackend = Render::Settings::TryReadGraphicsBackendFromEnvironment("NLS_LAUNCHER_GRAPHICS_BACKEND");
-    if (!requestedBackend.has_value())
-        requestedBackend = Render::Settings::TryReadGraphicsBackendFromEnvironment("NLS_GRAPHICS_BACKEND");
-
-    const auto resolvedBackend = requestedBackend.value_or(Render::Settings::GetPlatformDefaultGraphicsBackend());
+    const auto resolvedBackend = Render::Settings::GetPlatformDefaultGraphicsBackend();
 
     if (Render::Settings::HasCompiledOfficialImGuiBackend(resolvedBackend))
         return resolvedBackend;
@@ -72,14 +69,25 @@ bool DrawActionButton(const char *label, const ImVec2 &size, const Maths::Color 
     return clicked;
 }
 
-void DrawTexture(const ImVec2& min, const ImVec2& max, uint32_t textureId, const ImVec4& tint = ImVec4(1.f, 1.f, 1.f, 1.f))
+void DrawTexture(
+    const ImVec2& min,
+    const ImVec2& max,
+    const std::shared_ptr<Render::RHI::RHITextureView>& textureView,
+    const ImVec4& tint = ImVec4(1.f, 1.f, 1.f, 1.f))
 {
-    if (!textureId)
+    if (textureView == nullptr)
         return;
 
-    void* resolvedTextureId = reinterpret_cast<void*>(static_cast<intptr_t>(textureId));
+    void* resolvedTextureId = nullptr;
     if (Core::ServiceLocator::Contains<UI::UIManager>())
-        resolvedTextureId = NLS_SERVICE(UI::UIManager).ResolveTextureID(textureId);
+    {
+        auto nativeHandle = NLS_SERVICE(UI::UIManager).ResolveTextureView(textureView);
+        if (nativeHandle.IsValid())
+            resolvedTextureId = nativeHandle.handle;
+    }
+
+    if (resolvedTextureId == nullptr)
+        return;
 
     ImGui::GetWindowDrawList()->AddImage(
         resolvedTextureId,
@@ -161,6 +169,15 @@ std::string FormatTimestamp(std::filesystem::file_time_type value)
     return oss.str();
 }
 
+std::string GetProjectUpdatedTimestamp(const std::string& projectPath)
+{
+    std::error_code errorCode;
+    const auto writeTime = std::filesystem::last_write_time(projectPath, errorCode);
+    if (errorCode)
+        return "Unknown";
+    return FormatTimestamp(writeTime);
+}
+
 std::string DetectStartScene(const std::string &projectPath)
 {
     const std::filesystem::path assetsPath = std::filesystem::path(projectPath) / "Assets";
@@ -188,9 +205,6 @@ struct ProjectBackendResolution
 
 ProjectBackendResolution ResolveProjectRuntimeBackend(const std::string& projectPath)
 {
-    if (const auto backend = Render::Settings::TryReadGraphicsBackendFromEnvironment("NLS_GRAPHICS_BACKEND"); backend.has_value())
-        return { backend.value(), "Environment override" };
-
     const std::filesystem::path projectRoot(projectPath);
     const auto projectFilePath = projectRoot / (projectRoot.filename().string() + ".nullus");
     if (std::filesystem::exists(projectFilePath))
@@ -222,8 +236,18 @@ std::string DescribeProjectRuntimeBackend(const std::string& projectPath)
 class LauncherPanel : public UI::PanelWindow
 {
 public:
-    LauncherPanel(Windowing::Window &p_window, bool &p_readyToGo, std::string &p_path, std::string &p_projectName, uint32_t p_brandTexture)
-        : PanelWindow("Nullus - Launcher", true), m_window(p_window), m_readyToGo(p_readyToGo), m_path(p_path), m_projectName(p_projectName), m_brandTexture(p_brandTexture)
+    LauncherPanel(
+        Windowing::Window &p_window,
+        bool &p_readyToGo,
+        std::string &p_path,
+        std::string &p_projectName,
+        std::shared_ptr<Render::RHI::RHITextureView> p_brandTextureView)
+        : PanelWindow("Nullus - Launcher", true)
+        , m_window(p_window)
+        , m_readyToGo(p_readyToGo)
+        , m_path(p_path)
+        , m_projectName(p_projectName)
+        , m_brandTextureView(p_brandTextureView)
     {
         panelSettings.resizable = false;
         panelSettings.movable = false;
@@ -355,7 +379,7 @@ private:
         drawList->AddRectFilled(start, end, ToU32({0.125f, 0.145f, 0.17f, 1.0f}), 16.0f);
         drawList->AddRect(start, end, ToU32({0.20f, 0.23f, 0.27f, 1.0f}), 16.0f, 0, 1.0f);
 
-        DrawTexture(ImVec2(start.x + 28.0f, start.y + 28.0f), ImVec2(start.x + 88.0f, start.y + 88.0f), m_brandTexture);
+        DrawTexture(ImVec2(start.x + 28.0f, start.y + 28.0f), ImVec2(start.x + 88.0f, start.y + 88.0f), m_brandTextureView);
 
         ImGui::SetCursorScreenPos(ImVec2(start.x + 104.0f, start.y + 26.0f));
         ImGui::PushStyleColor(ImGuiCol_Text, UI::Internal::Converter::ToImVec4({0.93f, 0.96f, 0.99f, 1.0f}));
@@ -411,7 +435,7 @@ private:
         drawList->AddRectFilled(origin, end, ToU32({0.11f, 0.12f, 0.15f, 1.0f}));
         drawList->AddLine(ImVec2(origin.x, end.y), ImVec2(end.x, end.y), ToU32({0.20f, 0.23f, 0.27f, 1.0f}), 1.0f);
 
-        DrawTexture(ImVec2(origin.x + 12.0f, origin.y + 7.0f), ImVec2(origin.x + 34.0f, origin.y + 29.0f), m_brandTexture);
+        DrawTexture(ImVec2(origin.x + 12.0f, origin.y + 7.0f), ImVec2(origin.x + 34.0f, origin.y + 29.0f), m_brandTextureView);
 
         ImGui::SetCursorScreenPos(ImVec2(origin.x + 42.0f, origin.y + 10.0f));
         ImGui::PushStyleColor(ImGuiCol_Text, UI::Internal::Converter::ToImVec4({0.88f, 0.92f, 0.97f, 1.0f}));
@@ -480,14 +504,16 @@ private:
         {
             m_cachedProjectDetailsPath = m_selectedProject;
             m_cachedProjectRuntimeBackend = DescribeProjectRuntimeBackend(m_selectedProject);
+            m_cachedProjectStartScene = DetectStartScene(m_selectedProject);
+            m_cachedProjectUpdatedTime = GetProjectUpdatedTimestamp(m_selectedProject);
         }
 
         const std::array<std::pair<const char *, std::string>, 4> details =
         {{
             {"Project", Utils::PathParser::GetElementName(m_selectedProject)},
-            {"Scene", DetectStartScene(m_selectedProject)},
+            {"Scene", m_cachedProjectStartScene},
             {"Runtime Backend", m_cachedProjectRuntimeBackend},
-            {"Updated", FormatTimestamp(std::filesystem::last_write_time(m_selectedProject))}
+            {"Updated", m_cachedProjectUpdatedTime}
         }};
 
         float y = origin.y + 62.0f;
@@ -531,7 +557,7 @@ private:
         const ImVec2 iconMax(origin.x + 90.0f, origin.y + 92.0f);
         drawList->AddRectFilled(iconMin, iconMax, ToU32({0.16f, 0.20f, 0.25f, 1.0f}), 14.0f);
         drawList->AddRect(iconMin, iconMax, ToU32({0.24f, 0.29f, 0.36f, 1.0f}), 14.0f, 0, 1.0f);
-        DrawTexture(ImVec2(iconMin.x + 6.0f, iconMin.y + 6.0f), ImVec2(iconMax.x - 6.0f, iconMax.y - 6.0f), m_brandTexture);
+        DrawTexture(ImVec2(iconMin.x + 6.0f, iconMin.y + 6.0f), ImVec2(iconMax.x - 6.0f, iconMax.y - 6.0f), m_brandTextureView);
 
         ImGui::SetCursorScreenPos(ImVec2(origin.x + 100.0f, origin.y + 28.0f));
         ImGui::PushStyleColor(ImGuiCol_Text, UI::Internal::Converter::ToImVec4({0.94f, 0.96f, 0.99f, 1.0f}));
@@ -659,17 +685,23 @@ private:
     bool &m_readyToGo;
     std::string &m_path;
     std::string &m_projectName;
-    uint32_t m_brandTexture = 0;
+    std::shared_ptr<Render::RHI::RHITextureView> m_brandTextureView;
     std::vector<std::string> m_registeredProjects;
     std::string m_selectedProject;
     std::string m_cachedProjectDetailsPath;
     std::string m_cachedProjectRuntimeBackend;
+    std::string m_cachedProjectStartScene;
+    std::string m_cachedProjectUpdatedTime;
 };
 
-Launcher::Launcher()
+Launcher::Launcher(
+    std::optional<Render::Settings::EGraphicsBackend> backendOverride,
+    const Render::Settings::RenderDocSettings& renderDocSettings)
+    : m_backendOverride(backendOverride)
+    , m_renderDocSettings(renderDocSettings)
 {
     SetupContext();
-    m_mainPanel = std::make_unique<LauncherPanel>(*m_window, m_readyToGo, m_projectPath, m_projectName, m_brandTexture);
+    m_mainPanel = std::make_unique<LauncherPanel>(*m_window, m_readyToGo, m_projectPath, m_projectName, m_brandTextureView);
 
     m_uiManager->SetCanvas(m_canvas);
     m_canvas.AddPanel(*m_mainPanel);
@@ -677,8 +709,8 @@ Launcher::Launcher()
 
 Launcher::~Launcher()
 {
+    m_brandTextureView.reset();
     NLS::Render::Resources::Loaders::TextureLoader::Destroy(m_brandTextureResource);
-    m_brandTexture = 0;
 }
 
 std::tuple<bool, std::string, std::string> Launcher::Run()
@@ -686,8 +718,24 @@ std::tuple<bool, std::string, std::string> Launcher::Run()
     while (!m_window->ShouldClose())
     {
         m_device->PollEvents();
+
+        // Use explicit RHI frame management for proper swapchain synchronization
+        if (Render::Context::DriverRendererAccess::HasExplicitRHI(*m_driver))
+        {
+            Render::Context::DriverRendererAccess::BeginExplicitFrame(*m_driver, true);
+        }
+
         m_uiManager->Render();
-        m_driver->PresentSwapchain();
+        m_uiManager->SubmitUIRendering();
+
+        if (Render::Context::DriverRendererAccess::HasExplicitRHI(*m_driver))
+        {
+            Render::Context::DriverRendererAccess::EndExplicitFrame(*m_driver, true);
+        }
+        else
+        {
+            Render::Context::DriverUIAccess::PresentSwapchain(*m_driver);
+        }
 
         if (!m_mainPanel->IsOpened())
             m_window->SetShouldClose(true);
@@ -706,7 +754,16 @@ void Launcher::SetupContext()
     windowSettings.maximized = false;
     windowSettings.resizable = false;
     windowSettings.decorated = false;
-    m_graphicsBackend = ResolveLauncherGraphicsBackend();
+    // Use backend override if provided, otherwise resolve from platform default
+    if (m_backendOverride.has_value())
+    {
+        m_graphicsBackend = m_backendOverride.value();
+        NLS_LOG_INFO("Launcher using command-line backend override: " + std::string(Render::Settings::ToString(m_graphicsBackend)));
+    }
+    else
+    {
+        m_graphicsBackend = ResolveLauncherGraphicsBackend();
+    }
     windowSettings.clientAPI = m_graphicsBackend == Render::Settings::EGraphicsBackend::OPENGL
         ? Windowing::Settings::WindowClientAPI::OpenGL
         : Windowing::Settings::WindowClientAPI::NoAPI;
@@ -714,6 +771,13 @@ void Launcher::SetupContext()
     Render::Settings::DriverSettings driverSettings;
     driverSettings.graphicsBackend = m_graphicsBackend;
     driverSettings.debugMode = false;
+    if (m_renderDocSettings.enabled || m_renderDocSettings.startupCaptureAfterFrames > 0)
+    {
+        driverSettings.renderDoc = m_renderDocSettings;
+        NLS_LOG_INFO("Launcher RenderDoc: applied command-line settings (enabled=" +
+            std::string(m_renderDocSettings.enabled ? "true" : "false") +
+            ", captureAfterFrames=" + std::to_string(m_renderDocSettings.startupCaptureAfterFrames) + ")");
+    }
     Render::Tooling::ApplyRenderDocEnvironmentOverrides(
         driverSettings.renderDoc,
         (std::filesystem::current_path() / "Logs" / "RenderDoc" / "Launcher").string(),
@@ -735,19 +799,20 @@ void Launcher::SetupContext()
     m_driver = std::make_unique<Render::Context::Driver>(driverSettings);
     NLS::Core::ServiceLocator::Provide<Render::Context::Driver>(*m_driver);
 
-    Render::RHI::SwapchainDesc swapchainDesc;
-    swapchainDesc.platformWindow = m_window->GetGlfwWindow();
-    swapchainDesc.nativeWindowHandle = m_window->GetNativeWindowHandle();
-    swapchainDesc.width = static_cast<uint32_t>(windowSettings.width);
-    swapchainDesc.height = static_cast<uint32_t>(windowSettings.height);
-    swapchainDesc.vsync = true;
-    m_driver->CreateSwapchain(swapchainDesc);
+    m_driver->CreatePlatformSwapchain(
+        m_window->GetGlfwWindow(),
+        m_window->GetNativeWindowHandle(),
+        static_cast<uint32_t>(windowSettings.width),
+        static_cast<uint32_t>(windowSettings.height),
+        true);
 
+    auto nativeDeviceInfo = m_driver->GetNativeDeviceInfo();
     m_uiManager = std::make_unique<UI::UIManager>(
         m_window->GetGlfwWindow(),
         driverSettings.graphicsBackend,
-        m_driver->GetNativeDeviceInfo(),
-        UI::EStyle::ALTERNATIVE_DARK);
+        UI::EStyle::ALTERNATIVE_DARK,
+        "#version 150",
+        &nativeDeviceInfo);
     NLS::Core::ServiceLocator::Provide<UI::UIManager>(*m_uiManager);
     m_uiManager->LoadFont("Ruda_Medium", "../Assets/Editor/Fonts/Ruda-Bold.ttf", 18);
     m_uiManager->LoadFont("Ruda_Title", "../Assets/Editor/Fonts/Ruda-Bold.ttf", 30);
@@ -756,7 +821,7 @@ void Launcher::SetupContext()
     {
         if (m_driver != nullptr && width > 0u && height > 0u)
         {
-            m_driver->ResizeSwapchain(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+            m_driver->ResizePlatformSwapchain(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
         }
     });
     m_uiManager->EnableEditorLayoutSave(false);
@@ -767,7 +832,9 @@ void Launcher::SetupContext()
         NLS::Render::Settings::ETextureFilteringMode::LINEAR,
         NLS::Render::Settings::ETextureFilteringMode::LINEAR,
         false);
-    m_brandTexture = m_brandTextureResource ? m_brandTextureResource->GetTextureId() : 0;
+    m_brandTextureView = m_brandTextureResource != nullptr
+        ? m_brandTextureResource->GetOrCreateExplicitTextureView("Launcher.BrandTexture")
+        : nullptr;
 }
 
 void Launcher::RegisterProject(const std::string &p_path)

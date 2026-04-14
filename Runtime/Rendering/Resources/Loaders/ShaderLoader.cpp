@@ -6,13 +6,12 @@
 #include <unordered_map>
 #include <vector>
 
-#include <Core/ServiceLocator.h>
 #include <Debug/Logger.h>
 
 #include <spirv_glsl.hpp>
 #include <spirv_cross_util.hpp>
 
-#include "Rendering/Context/Driver.h"
+#include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Resources/Loaders/ShaderLoader.h"
 #include "Rendering/RHI/RHITypes.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
@@ -32,7 +31,6 @@ namespace
 	using ShaderReflection = NLS::Render::Resources::ShaderReflection;
 	using ShaderPropertyDesc = NLS::Render::Resources::ShaderPropertyDesc;
 	using ShaderConstantBufferDesc = NLS::Render::Resources::ShaderConstantBufferDesc;
-	using Driver = NLS::Render::Context::Driver;
 
 	uint32_t GetOpenGLTextureBindingPoint(uint32_t bindingSpace, uint32_t bindingIndex)
 	{
@@ -127,11 +125,11 @@ namespace
 			auto options = compiler.get_common_options();
 			options.version = 430;
 			options.es = false;
-			options.vulkan_semantics = false;
+			options.vulkan_semantics = true;
 			options.separate_shader_objects = false;
 			options.enable_420pack_extension = true;
 			options.vertex.flip_vert_y = false;
-			options.vertex.fixup_clipspace = false;
+			options.vertex.fixup_clipspace = true;
 			compiler.set_common_options(options);
 
 			auto resources = compiler.get_shader_resources();
@@ -239,22 +237,7 @@ namespace
 
     NLS::Render::Settings::EGraphicsBackend ResolveActiveGraphicsBackend()
     {
-        if (NLS::Core::ServiceLocator::Contains<Driver>())
-        {
-            const auto backend = NLS::Core::ServiceLocator::Get<Driver>().GetNativeDeviceInfo().backend;
-            switch (backend)
-            {
-            case NLS::Render::RHI::NativeBackendType::DX12: return NLS::Render::Settings::EGraphicsBackend::DX12;
-            case NLS::Render::RHI::NativeBackendType::Vulkan: return NLS::Render::Settings::EGraphicsBackend::VULKAN;
-            case NLS::Render::RHI::NativeBackendType::OpenGL: return NLS::Render::Settings::EGraphicsBackend::OPENGL;
-            case NLS::Render::RHI::NativeBackendType::Metal: return NLS::Render::Settings::EGraphicsBackend::METAL;
-            case NLS::Render::RHI::NativeBackendType::None:
-            default:
-                break;
-            }
-        }
-
-        if (const auto backend = NLS::Render::Settings::TryReadGraphicsBackendFromEnvironment("NLS_GRAPHICS_BACKEND"); backend.has_value())
+        if (const auto backend = NLS::Render::Context::TryGetLocatedActiveGraphicsBackend(); backend.has_value())
             return backend.value();
 
         return NLS::Render::Settings::GetPlatformDefaultGraphicsBackend();

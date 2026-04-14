@@ -4,6 +4,7 @@
 #include <string>
 
 #include "Rendering/Data/PipelineState.h"
+#include "Rendering/RHI/Core/RHIEnums.h"
 #include "Rendering/Settings/EComparaisonAlgorithm.h"
 #include "Rendering/Settings/ECullFace.h"
 #include "Rendering/Settings/EOperation.h"
@@ -30,8 +31,15 @@ namespace NLS::Render::Backend
 			NLS::Render::Settings::EPixelDataType type,
 			void* data);
 
-		void DrawElements(NLS::Render::Settings::EPrimitiveMode primitiveMode, uint32_t indexCount);
-		void DrawElementsInstanced(NLS::Render::Settings::EPrimitiveMode primitiveMode, uint32_t indexCount, uint32_t instances);
+		void DrawElements(
+			NLS::Render::Settings::EPrimitiveMode primitiveMode,
+			uint32_t indexCount,
+			NLS::Render::RHI::IndexType indexType);
+		void DrawElementsInstanced(
+			NLS::Render::Settings::EPrimitiveMode primitiveMode,
+			uint32_t indexCount,
+			uint32_t instances,
+			NLS::Render::RHI::IndexType indexType);
 		void DrawArrays(NLS::Render::Settings::EPrimitiveMode primitiveMode, uint32_t vertexCount);
 		void DrawArraysInstanced(NLS::Render::Settings::EPrimitiveMode primitiveMode, uint32_t vertexCount, uint32_t instances);
 

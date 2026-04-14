@@ -3,9 +3,8 @@
 #include <memory>
 #include <vector>
 
-#include "Rendering/Context/Driver.h"
 #include "Rendering/RHI/Core/RHIResource.h"
-#include "Rendering/RHI/IRHIResource.h"
+#include "Rendering/RHI/Core/IRHIResource.h"
 #include "Rendering/Settings/EAccessSpecifier.h"
 
 namespace NLS::Render::Resources
@@ -15,6 +14,8 @@ class Shader;
 
 namespace NLS::Render::Buffers
 {
+class ShaderStorageBuffer;
+
 /**
  * Wraps OpenGL SSBO
  */
@@ -42,10 +43,10 @@ public:
      */
     void Unbind();
 
-    uint32_t GetID() const { return m_bufferID; }
-    const RHI::IRHIBuffer* GetRHIBuffer() const { return m_bufferResource.get(); }
+    uint32_t GetID() const { return 0; } // Formal RHI has no legacy buffer ID
+    const RHI::IRHIBuffer* GetRHIBuffer() const { return nullptr; }
     const std::shared_ptr<RHI::RHIBuffer>& GetBufferHandle() const { return m_explicitBuffer; }
-    const std::shared_ptr<RHI::IRHIBuffer>& GetRHIBufferHandle() const { return m_bufferResource; }
+    const std::shared_ptr<RHI::IRHIBuffer>& GetRHIBufferHandle() const { return nullptr; }
     const std::shared_ptr<RHI::RHIBuffer>& GetExplicitRHIBufferHandle() const { return GetBufferHandle(); }
 
     /**
@@ -55,9 +56,8 @@ public:
     void SendBlocks(T* p_data, size_t p_size);
 
 private:
-    uint32_t m_bufferID = 0;
-    std::shared_ptr<RHI::IRHIBuffer> m_bufferResource;
     std::shared_ptr<RHI::RHIBuffer> m_explicitBuffer;
+    size_t m_currentSize = 0;
 };
 } // namespace NLS::Render::Buffers
 

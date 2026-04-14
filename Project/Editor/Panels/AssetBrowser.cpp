@@ -77,7 +77,7 @@ void RemoveAsset(const std::string& p_toDelete)
 class TexturePreview : public NLS::UI::IPlugin
 {
 public:
-	TexturePreview() : image(0, { 80, 80 })
+	TexturePreview() : image(nullptr, { 80, 80 })
 	{
 
 	}
@@ -85,15 +85,15 @@ public:
 	void SetPath(const std::string& p_path)
 	{
         texture = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::TextureManager>()[p_path];
+        image.textureView = texture != nullptr
+            ? texture->GetOrCreateExplicitTextureView("AssetBrowser.Preview")
+            : nullptr;
 	}
 
 	virtual void Execute() override
 	{
         if (NLS_SERVICE(NLS::UI::UIManager).IsItemHovered())
 		{
-			if (texture)
-				image.textureID.id = texture->GetTextureId();
-
 			NLS_SERVICE(NLS::UI::UIManager).BeginTooltip();
 			image.Draw();
             NLS_SERVICE(NLS::UI::UIManager).EndTooltip();
@@ -1027,9 +1027,13 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 	auto& itemGroup = p_root ? p_root->CreateWidget<Group>() : m_assetList->CreateWidget<Group>();
 
 	/* Find the icon to apply to the item */
-	uint32_t iconTextureID = isDirectory ? EDITOR_CONTEXT(editorResources)->GetTexture("Icon_Folder")->GetTextureId() : EDITOR_CONTEXT(editorResources)->GetFileIcon(itemname)->GetTextureId();
+    auto* iconTexture = isDirectory
+        ? EDITOR_CONTEXT(editorResources)->GetTexture("Icon_Folder")
+        : EDITOR_CONTEXT(editorResources)->GetFileIcon(itemname);
 
-	itemGroup.CreateWidget<UI::Widgets::Image>(iconTextureID, Maths::Vector2{ 16, 16 }).lineBreak = false;
+	itemGroup.CreateWidget<UI::Widgets::Image>(
+        iconTexture != nullptr ? iconTexture->GetOrCreateExplicitTextureView("AssetBrowser.ItemIcon") : nullptr,
+        Maths::Vector2{ 16, 16 }).lineBreak = false;
 
 	/* If the entry is a directory, the content must be a tree node, otherwise (= is a file), a text will suffice */
 	if (isDirectory)

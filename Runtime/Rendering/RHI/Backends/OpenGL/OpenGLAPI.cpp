@@ -131,6 +131,17 @@ namespace
 		}
 	}
 
+	constexpr GLenum ToGLIndexType(NLS::Render::RHI::IndexType indexType)
+	{
+		switch (indexType)
+		{
+		case NLS::Render::RHI::IndexType::UInt16: return GL_UNSIGNED_SHORT;
+		case NLS::Render::RHI::IndexType::UInt32:
+		default:
+			return GL_UNSIGNED_INT;
+		}
+	}
+
 	void GLDebugMessageCallback(uint32_t, uint32_t, uint32_t id, uint32_t severity, int32_t, const char* message, const void*)
 	{
 		if (id == 131169 || id == 131185 || id == 131218 || id == 131204)
@@ -289,8 +300,21 @@ namespace NLS::Render::Backend
 	}
 
 	void OpenGLAPI::ReadPixels(uint32_t x, uint32_t y, uint32_t width, uint32_t height, NLS::Render::Settings::EPixelDataFormat format, NLS::Render::Settings::EPixelDataType type, void* data) { glReadPixels(x, y, width, height, ToGLEnum(format), ToGLEnum(type), data); }
-	void OpenGLAPI::DrawElements(NLS::Render::Settings::EPrimitiveMode primitiveMode, uint32_t indexCount) { glDrawElements(ToGLEnum(primitiveMode), indexCount, GL_UNSIGNED_INT, nullptr); }
-	void OpenGLAPI::DrawElementsInstanced(NLS::Render::Settings::EPrimitiveMode primitiveMode, uint32_t indexCount, uint32_t instances) { glDrawElementsInstanced(ToGLEnum(primitiveMode), indexCount, GL_UNSIGNED_INT, nullptr, instances); }
+	void OpenGLAPI::DrawElements(
+		NLS::Render::Settings::EPrimitiveMode primitiveMode,
+		uint32_t indexCount,
+		NLS::Render::RHI::IndexType indexType)
+	{
+		glDrawElements(ToGLEnum(primitiveMode), indexCount, ToGLIndexType(indexType), nullptr);
+	}
+	void OpenGLAPI::DrawElementsInstanced(
+		NLS::Render::Settings::EPrimitiveMode primitiveMode,
+		uint32_t indexCount,
+		uint32_t instances,
+		NLS::Render::RHI::IndexType indexType)
+	{
+		glDrawElementsInstanced(ToGLEnum(primitiveMode), indexCount, ToGLIndexType(indexType), nullptr, instances);
+	}
 	void OpenGLAPI::DrawArrays(NLS::Render::Settings::EPrimitiveMode primitiveMode, uint32_t vertexCount) { glDrawArrays(ToGLEnum(primitiveMode), 0, vertexCount); }
 	void OpenGLAPI::DrawArraysInstanced(NLS::Render::Settings::EPrimitiveMode primitiveMode, uint32_t vertexCount, uint32_t instances) { glDrawArraysInstanced(ToGLEnum(primitiveMode), 0, vertexCount, instances); }
 	void OpenGLAPI::SetClearColor(float red, float green, float blue, float alpha) { glClearColor(red, green, blue, alpha); }

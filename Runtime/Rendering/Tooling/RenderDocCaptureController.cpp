@@ -25,8 +25,15 @@ namespace NLS::Render::Tooling
 		switch (nativeInfo.backend)
 		{
 		case ::NLS::Render::RHI::NativeBackendType::DX12:
+			// RenderDoc expects the API root handle for DX12.
+			return nativeInfo.device != nullptr ? nativeInfo.device : nativeInfo.graphicsQueue;
 		case ::NLS::Render::RHI::NativeBackendType::Vulkan:
-			return nativeInfo.graphicsQueue != nullptr ? nativeInfo.graphicsQueue : nativeInfo.device;
+#if defined(_WIN32)
+			// RenderDoc expects Vulkan's dispatch-table pointer derived from VkInstance.
+			if (nativeInfo.instance != nullptr)
+				return RENDERDOC_DEVICEPOINTER_FROM_VKINSTANCE(nativeInfo.instance);
+#endif
+			return nativeInfo.device != nullptr ? nativeInfo.device : nativeInfo.graphicsQueue;
 		case ::NLS::Render::RHI::NativeBackendType::DX11:
 		case ::NLS::Render::RHI::NativeBackendType::OpenGL:
 		case ::NLS::Render::RHI::NativeBackendType::Metal:
@@ -186,11 +193,40 @@ namespace
 			return settings.enabled && api != nullptr;
 		}
 
-		void TryLoadRenderDoc()
+		void ConfigureCaptureKeysAndPath(const char* context)
 		{
-			if (!settings.enabled)
+			if (api == nullptr)
 				return;
 
+			const std::string contextPrefix = std::string(context != nullptr ? context : "RenderDoc");
+
+			// Clear any existing capture keys first, then set only F11.
+			api->SetCaptureKeys(nullptr, 0);
+			RENDERDOC_InputButton captureKeys[] = { eRENDERDOC_Key_F11 };
+			api->SetCaptureKeys(captureKeys, 1);
+
+			if (!settings.captureDirectory.empty())
+			{
+				api->SetCaptureFilePathTemplate(settings.captureDirectory.c_str());
+				NLS_LOG_INFO(contextPrefix + ": SetCaptureFilePathTemplate to: " + settings.captureDirectory);
+			}
+
+			NLS_LOG_INFO(contextPrefix + ": captureKey=F11");
+		}
+
+		void EnsureApiConnected(const char* context)
+		{
+			if (!settings.enabled || api != nullptr)
+				return;
+
+			NLS_LOG_INFO(std::string(context != nullptr ? context : "RenderDoc") + ": API not connected, attempting reconnect");
+			ConnectToRenderDocAPI();
+			if (api != nullptr)
+				ConfigureCaptureKeysAndPath(context);
+		}
+
+		void TryLoadRenderDoc()
+		{
 			const auto installRoot = ResolveInstallRoot();
 			if (!installRoot.empty())
 			{
@@ -204,24 +240,36 @@ namespace
 			}
 
 			renderDocModule = ::GetModuleHandleW(L"renderdoc.dll");
-			if (renderDocModule == nullptr && !renderDocDllPath.empty())
+			NLS_LOG_INFO("TryLoadRenderDoc: GetModuleHandle result: " + std::string(renderDocModule != nullptr ? "found" : "not found"));
+			// Do not actively load RenderDoc DLL unless tooling is enabled.
+			// If module is already injected externally, we still connect to API so we can override capture keys.
+			if (renderDocModule == nullptr && settings.enabled && !renderDocDllPath.empty())
 			{
 				renderDocModule = ::LoadLibraryW(renderDocDllPath.wstring().c_str());
 				ownsRenderDocModule = renderDocModule != nullptr;
+				NLS_LOG_INFO("TryLoadRenderDoc: LoadLibrary result: " + std::string(renderDocModule != nullptr ? "loaded" : "failed"));
 			}
 
 			if (renderDocModule == nullptr)
+			{
+				NLS_LOG_INFO("TryLoadRenderDoc: no module handle available");
 				return;
+			}
 
 			const auto getApi = reinterpret_cast<pRENDERDOC_GetAPI>(::GetProcAddress(renderDocModule, "RENDERDOC_GetAPI"));
 			if (getApi == nullptr)
+			{
+				NLS_LOG_INFO("TryLoadRenderDoc: RENDERDOC_GetAPI not found");
 				return;
+			}
 
 			if (getApi(eRENDERDOC_API_Version_1_7_0, reinterpret_cast<void**>(&api)) != 1 || api == nullptr)
+			{
+				NLS_LOG_INFO("TryLoadRenderDoc: API version 1.7.0 not supported");
 				return;
+			}
 
-			RENDERDOC_InputButton captureKeys[] = { eRENDERDOC_Key_F11 };
-			api->SetCaptureKeys(captureKeys, 1);
+			ConfigureCaptureKeysAndPath("TryLoadRenderDoc");
 
 			int major = 0;
 			int minor = 0;
@@ -231,6 +279,62 @@ namespace
 
 			NLS_LOG_INFO(
 				"RenderDoc API connected: " +
+				std::to_string(major) + "." +
+				std::to_string(minor) + "." +
+				std::to_string(patch) +
+				", captureKey=F11");
+		}
+
+		// Connect to RenderDoc API without checking enabled flag
+		// Used for dynamic enable/disable when DLL is already preloaded
+		void ConnectToRenderDocAPI()
+		{
+			if (api != nullptr)
+			{
+				NLS_LOG_INFO("RenderDoc: Already connected, skipping");
+				return; // Already connected
+			}
+
+			renderDocModule = ::GetModuleHandleW(L"renderdoc.dll");
+			if (renderDocModule == nullptr)
+			{
+				NLS_LOG_ERROR("RenderDoc: DLL not loaded (GetModuleHandle returned null), cannot connect to API");
+				return;
+			}
+
+			NLS_LOG_INFO("RenderDoc: DLL handle found, attempting to connect to API...");
+
+			const auto installRoot = ResolveInstallRoot();
+			if (!installRoot.empty())
+			{
+				const auto candidateReplayUi = installRoot / "qrenderdoc.exe";
+				if (std::filesystem::exists(candidateReplayUi))
+					qrenderdocPath = candidateReplayUi;
+			}
+
+			const auto getApi = reinterpret_cast<pRENDERDOC_GetAPI>(::GetProcAddress(renderDocModule, "RENDERDOC_GetAPI"));
+			if (getApi == nullptr)
+			{
+				NLS_LOG_INFO("RenderDoc: Failed to get RENDERDOC_GetAPI function");
+				return;
+			}
+
+			if (getApi(eRENDERDOC_API_Version_1_7_0, reinterpret_cast<void**>(&api)) != 1 || api == nullptr)
+			{
+				NLS_LOG_INFO("RenderDoc: Failed to get API version 1.7.0");
+				return;
+			}
+
+			ConfigureCaptureKeysAndPath("ConnectToRenderDocAPI");
+
+			int major = 0;
+			int minor = 0;
+			int patch = 0;
+			api->GetAPIVersion(&major, &minor, &patch);
+			knownCaptureCount = api->GetNumCaptures();
+
+			NLS_LOG_INFO(
+				"RenderDoc API connected (dynamic): " +
 				std::to_string(major) + "." +
 				std::to_string(minor) + "." +
 				std::to_string(patch) +
@@ -389,7 +493,7 @@ namespace
 			api->SetCaptureFilePathTemplate(captureTemplate.string().c_str());
 			if (api->SetCaptureTitle != nullptr)
 				api->SetCaptureTitle(captureStem.c_str());
-			if (captureDevice != nullptr || captureWindow != nullptr)
+			if (captureDevice != nullptr && captureWindow != nullptr)
 				api->SetActiveWindow(captureDevice, captureWindow);
 		}
 
@@ -412,6 +516,7 @@ namespace
 			api->GetCapture(index, nullptr, &requiredLength, &timestamp);
 			if (requiredLength == 0)
 			{
+				RefreshLatestCapturePathFallback();
 				knownCaptureCount = captureCount;
 				return;
 			}
@@ -461,6 +566,9 @@ namespace
 
 	bool RenderDocCaptureController::QueueCapture(const std::string& label)
 	{
+#if defined(_WIN32)
+		m_impl->EnsureApiConnected("QueueCapture");
+#endif
 		if (!IsAvailable())
 			return false;
 
@@ -474,6 +582,7 @@ namespace
 	bool RenderDocCaptureController::StartCapture()
 	{
 #if defined(_WIN32)
+		m_impl->EnsureApiConnected("StartCapture");
 		if (!IsAvailable())
 			return false;
 
@@ -521,14 +630,11 @@ namespace
 		m_impl->captureQueued = false;
 		m_impl->presentCountdown = 0;
 		m_impl->api->StartFrameCapture(m_impl->captureDevice, m_impl->captureWindow);
-		m_impl->queuedCaptureActive = m_impl->api->IsFrameCapturing() == 1;
-		NLS_LOG_INFO(std::string("RenderDoc queued StartFrameCapture before frame -> ") + (m_impl->queuedCaptureActive ? "success" : "failed"));
-		if (!m_impl->queuedCaptureActive)
-		{
-			m_impl->api->TriggerCapture();
-			m_impl->waitingForTriggeredCapture = true;
-			NLS_LOG_INFO("RenderDoc fell back to TriggerCapture().");
-		}
+		// Some backends may not report IsFrameCapturing() synchronously immediately after StartFrameCapture().
+		// Treat this as an active capture request and validate with EndFrameCapture() on post-present.
+		m_impl->queuedCaptureActive = true;
+		m_impl->waitingForTriggeredCapture = false;
+		NLS_LOG_INFO("RenderDoc queued StartFrameCapture before frame -> requested");
 #endif
 	}
 
@@ -541,15 +647,34 @@ namespace
 #if defined(_WIN32)
 		if (IsAvailable() && m_impl->queuedCaptureActive)
 		{
-			const bool ended = m_impl->api->EndFrameCapture(m_impl->captureDevice, m_impl->captureWindow) == 1;
+			bool ended = m_impl->api->EndFrameCapture(m_impl->captureDevice, m_impl->captureWindow) == 1;
+			if (!ended)
+				ended = m_impl->api->EndFrameCapture(nullptr, nullptr) == 1;
 			m_impl->queuedCaptureActive = false;
-			m_impl->RefreshLatestCapturePath();
-			NLS_LOG_INFO(
-				std::string("RenderDoc queued EndFrameCapture after present -> ") +
-				(ended ? "success" : "failed") +
-				", latest=\"" + m_impl->latestCapturePath + "\"");
-			if (ended && m_impl->settings.autoOpenReplayUI)
-				OpenLatestCapture();
+			if (ended)
+			{
+				m_impl->RefreshLatestCapturePath();
+				if (!m_impl->latestCapturePath.empty())
+				{
+					NLS_LOG_INFO(
+						std::string("RenderDoc queued EndFrameCapture after present -> success") +
+						", latest=\"" + m_impl->latestCapturePath + "\"");
+					if (m_impl->settings.autoOpenReplayUI)
+						OpenLatestCapture();
+				}
+				else
+				{
+					m_impl->api->TriggerCapture();
+					m_impl->waitingForTriggeredCapture = true;
+					NLS_LOG_INFO("RenderDoc queued EndFrameCapture after present -> success, path unresolved; issued TriggerCapture fallback.");
+				}
+			}
+			else
+			{
+				m_impl->api->TriggerCapture();
+				m_impl->waitingForTriggeredCapture = true;
+				NLS_LOG_INFO("RenderDoc queued EndFrameCapture after present -> failed, fell back to TriggerCapture().");
+			}
 			return;
 		}
 
@@ -558,10 +683,13 @@ namespace
 
 		const auto previousCaptureCount = m_impl->knownCaptureCount;
 		m_impl->RefreshLatestCapturePath();
-		if (m_impl->knownCaptureCount > previousCaptureCount)
+		if (!m_impl->latestCapturePath.empty())
 		{
 			m_impl->waitingForTriggeredCapture = false;
-			NLS_LOG_INFO("RenderDoc TriggerCapture produced capture: " + m_impl->latestCapturePath);
+			if (m_impl->knownCaptureCount > previousCaptureCount)
+				NLS_LOG_INFO("RenderDoc TriggerCapture produced capture: " + m_impl->latestCapturePath);
+			else
+				NLS_LOG_INFO("RenderDoc capture path resolved asynchronously: " + m_impl->latestCapturePath);
 			if (m_impl->settings.autoOpenReplayUI)
 				OpenLatestCapture();
 		}
@@ -610,14 +738,71 @@ namespace
 	void RenderDocCaptureController::SetCaptureTarget(const ::NLS::Render::RHI::NativeRenderDeviceInfo& nativeInfo)
 	{
 #if defined(_WIN32)
+		m_impl->EnsureApiConnected("SetCaptureTarget");
 		m_impl->captureDevice = ResolveRenderDocCaptureDevice(nativeInfo);
 		m_impl->captureWindow = nativeInfo.nativeWindowHandle != nullptr
 			? nativeInfo.nativeWindowHandle
 			: nativeInfo.platformWindow;
-		if (m_impl->IsAvailable() && (m_impl->captureDevice != nullptr || m_impl->captureWindow != nullptr))
+		if (m_impl->IsAvailable() && m_impl->captureDevice != nullptr && m_impl->captureWindow != nullptr)
+		{
 			m_impl->api->SetActiveWindow(m_impl->captureDevice, m_impl->captureWindow);
+			m_impl->ConfigureCaptureKeysAndPath("SetCaptureTarget");
+		}
 #else
 		(void)nativeInfo;
 #endif
+	}
+
+	void RenderDocCaptureController::SetEnabled(bool enabled)
+	{
+#if defined(_WIN32)
+		NLS_LOG_INFO("RenderDocCaptureController::SetEnabled: " + std::string(enabled ? "true" : "false"));
+		if (m_impl->settings.enabled == enabled)
+		{
+			NLS_LOG_INFO("RenderDocCaptureController::SetEnabled: already in desired state, skipping");
+			return;
+		}
+
+		m_impl->settings.enabled = enabled;
+
+		// If enabling, connect to already-loaded RenderDoc DLL
+		if (enabled)
+		{
+			if (m_impl->api == nullptr)
+			{
+				// DLL was preloaded by PreloadRenderDocIfAvailable, just connect to API
+				NLS_LOG_INFO("RenderDocCaptureController::SetEnabled: calling ConnectToRenderDocAPI");
+				m_impl->ConnectToRenderDocAPI();
+			}
+			else
+			{
+				NLS_LOG_INFO("RenderDocCaptureController::SetEnabled: API already connected");
+				m_impl->ConfigureCaptureKeysAndPath("RenderDocCaptureController::SetEnabled");
+			}
+		}
+		else
+		{
+			// If disabling, close any active capture
+			if (m_impl->api != nullptr)
+			{
+				if (m_impl->manualCaptureActive || m_impl->queuedCaptureActive)
+				{
+					m_impl->api->EndFrameCapture(m_impl->captureDevice, m_impl->captureWindow);
+				}
+				m_impl->manualCaptureActive = false;
+				m_impl->queuedCaptureActive = false;
+				m_impl->captureQueued = false;
+				// Note: We keep the DLL loaded and API pointer intact
+				// so that disabling and re-enabling works without reloading
+			}
+		}
+#else
+		(void)enabled;
+#endif
+	}
+
+	bool RenderDocCaptureController::IsEnabled() const
+	{
+		return m_impl->settings.enabled;
 	}
 }

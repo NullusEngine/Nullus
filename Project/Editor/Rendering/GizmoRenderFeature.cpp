@@ -12,6 +12,7 @@
 #include "Settings/EditorSettings.h"
 #include "Core/GizmoBehaviour.h"
 #include "Core/EditorActions.h"
+#include "Rendering/EditorPipelineStatePresets.h"
 #include "Rendering/GizmoRenderFeature.h"
 using namespace NLS;
 Editor::Rendering::GizmoRenderFeature::GizmoRenderFeature(NLS::Render::Core::CompositeRenderer& p_renderer)
@@ -22,19 +23,11 @@ Editor::Rendering::GizmoRenderFeature::GizmoRenderFeature(NLS::Render::Core::Com
 	m_gizmoArrowMaterial.SetGPUInstances(3);
 	m_gizmoArrowMaterial.Set("u_IsBall", false);
 	m_gizmoArrowMaterial.Set("u_IsPickable", false);
-	m_gizmoArrowMaterial.SetDepthTest(false);
-	m_gizmoArrowMaterial.SetDepthWriting(false);
-	m_gizmoArrowMaterial.SetBackfaceCulling(false);
-	m_gizmoArrowMaterial.SetFrontfaceCulling(false);
 
 	/* Gizmo Ball Material */
 	m_gizmoBallMaterial.SetShader(EDITOR_CONTEXT(editorResources)->GetShader("Gizmo"));
 	m_gizmoBallMaterial.Set("u_IsBall", true);
 	m_gizmoBallMaterial.Set("u_IsPickable", false);
-	m_gizmoBallMaterial.SetDepthTest(false);
-	m_gizmoBallMaterial.SetDepthWriting(false);
-	m_gizmoBallMaterial.SetBackfaceCulling(false);
-	m_gizmoBallMaterial.SetFrontfaceCulling(false);
 }
 
 std::string GetArrowModelName(Editor::Core::EGizmoOperation p_operation)
@@ -63,7 +56,7 @@ void Editor::Rendering::GizmoRenderFeature::DrawGizmo(
 	std::optional<Editor::Core::GizmoBehaviour::EDirection> p_highlightedDirection
 )
 {
-	auto pso = m_renderer.CreatePipelineState();
+	auto pso = Editor::Rendering::CreateEditorOverlayPipelineState(m_renderer);
 
 	auto modelMatrix =
 		Maths::Matrix4::Translation(p_position) *

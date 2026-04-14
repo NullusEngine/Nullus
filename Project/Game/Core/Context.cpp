@@ -1,10 +1,10 @@
 #include <filesystem>
-#include <stdexcept>
 
 #include "Core/Context.h"
 
 #include <Core/ServiceLocator.h>
 #include <Debug/Logger.h>
+#include <stdexcept>
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/Tooling/RenderDocEnvironment.h"
 #include "Utils/PathParser.h"
@@ -122,16 +122,8 @@ namespace
 		return result;
 	}
 
-	NLS::Render::Settings::EGraphicsBackend ResolveGraphicsBackend(
-		NLS::Filesystem::IniFile& projectSettings,
-		const std::optional<NLS::Render::Settings::EGraphicsBackend>& backendOverride)
+	NLS::Render::Settings::EGraphicsBackend ResolveGraphicsBackend(NLS::Filesystem::IniFile& projectSettings)
 	{
-		if (backendOverride.has_value())
-			return backendOverride.value();
-
-		if (const auto backend = NLS::Render::Settings::TryReadGraphicsBackendFromEnvironment("NLS_GRAPHICS_BACKEND"); backend.has_value())
-			return backend.value();
-
 		if (projectSettings.IsKeyExisting("graphics_backend"))
 			return NLS::Render::Settings::ParseGraphicsBackendOrDefault(projectSettings.Get<std::string>("graphics_backend"));
 
@@ -193,9 +185,10 @@ Game::Context::Context(
 	windowSettings.resizable = false;
 	windowSettings.fullscreen = false;
 	windowSettings.samples = 4;
-	auto graphicsBackend = ResolveGraphicsBackend(projectSettings, m_backendOverride);
+	auto graphicsBackend = ResolveGraphicsBackend(projectSettings);
 	if (m_backendOverride.has_value())
 	{
+		graphicsBackend = m_backendOverride.value();
 		NLS_LOG_INFO("Using command-line backend override: " + std::string(NLS::Render::Settings::ToString(graphicsBackend)));
 	}
 	windowSettings.clientAPI = ToWindowClientAPI(graphicsBackend);
@@ -212,6 +205,7 @@ Game::Context::Context(
 #endif
 	driverSettings.defaultPipelineState = basePSO;
 
+	// Apply command-line RenderDoc settings first, then let environment variables override if set
 	if (m_renderDocSettings.enabled || m_renderDocSettings.startupCaptureAfterFrames > 0)
 	{
 		driverSettings.renderDoc = m_renderDocSettings;
@@ -222,7 +216,7 @@ Game::Context::Context(
 
 	Render::Tooling::ApplyRenderDocEnvironmentOverrides(
 		driverSettings.renderDoc,
-		(std::filesystem::current_path() / "Logs" / "RenderDoc" / "Game").string(),
+		(std::filesystem::current_path() / "Build" / "RenderDocCaptures" / "Game").string(),
 		"Game");
 	Render::Tooling::PreloadRenderDocIfAvailable(driverSettings.renderDoc);
 
@@ -238,37 +232,43 @@ Game::Context::Context(
 
 	/* Graphics context creation */
 	driver = std::make_unique<NLS::Render::Context::Driver>(driverSettings);
-	const auto driverCapabilities = driver != nullptr
-		? driver->GetCapabilities()
-		: NLS::Render::RHI::RHIDeviceCapabilities{};
-	const auto runtimeFallbackDecision =
-		NLS::Render::Settings::EvaluateGameMainRuntimeFallback(graphicsBackend, driverCapabilities);
+
+	const auto runtimeFallbackDecision = driver->EvaluateGameMainRuntimeFallback(graphicsBackend);
 	if (runtimeFallbackDecision.primaryWarning.has_value())
 		NLS_LOG_WARNING(runtimeFallbackDecision.primaryWarning.value());
 	if (runtimeFallbackDecision.detailWarning.has_value())
 		NLS_LOG_WARNING(runtimeFallbackDecision.detailWarning.value());
 
-	if (driver == nullptr ||
-		runtimeFallbackDecision.primaryWarning.has_value() ||
-		!NLS::Render::Settings::SupportsGameMainRuntime(driverCapabilities))
+	if (runtimeFallbackDecision.shouldFallbackToOpenGL)
+	{
+		graphicsBackend = NLS::Render::Settings::EGraphicsBackend::OPENGL;
+		windowSettings.clientAPI = ToWindowClientAPI(graphicsBackend);
+		window = std::make_unique<NLS::Windowing::Window>(*device, windowSettings);
+		window->SetIcon(engineAssetsPath + "Brand" + Utils::PathParser::Separator() + "NullusLogoMark.png");
+		inputManager = std::make_unique<NLS::Windowing::Inputs::InputManager>(*window);
+		window->MakeCurrentContext();
+		driverSettings.graphicsBackend = graphicsBackend;
+		driver = std::make_unique<NLS::Render::Context::Driver>(driverSettings);
+	}
+
+	if (driver == nullptr || driver->GetActiveGraphicsBackend() == NLS::Render::Settings::EGraphicsBackend::NONE)
 	{
 		const std::string message =
-			"Game startup failed: could not create a validated runtime for backend " +
+			"Game startup failed: could not create a usable RHI device for backend " +
 			std::string(NLS::Render::Settings::ToString(graphicsBackend)) +
-			".";
+			(runtimeFallbackDecision.shouldFallbackToOpenGL ? " (OpenGL fallback also failed)." : ".");
 		NLS_LOG_ERROR(message);
 		throw std::runtime_error(message);
 	}
 
-	NLS::Render::RHI::SwapchainDesc swapchainDesc;
-	swapchainDesc.platformWindow = window->GetGlfwWindow();
-	swapchainDesc.nativeWindowHandle = window->GetNativeWindowHandle();
-	swapchainDesc.width = static_cast<uint32_t>(windowSettings.width);
-	swapchainDesc.height = static_cast<uint32_t>(windowSettings.height);
-	swapchainDesc.vsync = projectSettings.GetOrDefault<bool>("vsync", true);
-	if (!driver->CreateSwapchain(swapchainDesc))
+	if (!driver->CreatePlatformSwapchain(
+		window->GetGlfwWindow(),
+		window->GetNativeWindowHandle(),
+		static_cast<uint32_t>(windowSettings.width),
+		static_cast<uint32_t>(windowSettings.height),
+		projectSettings.GetOrDefault<bool>("vsync", true)))
 	{
-		const std::string message = "Game startup failed: CreateSwapchain returned false.";
+		const std::string message = "Game startup failed: CreatePlatformSwapchain returned false.";
 		NLS_LOG_ERROR(message);
 		throw std::runtime_error(message);
 	}

@@ -1,6 +1,8 @@
 ﻿#pragma once
 
 
+#include <optional>
+
 #include <UI/Panels/PanelWindow.h>
 #include <UI/Widgets/Visual/Image.h>
 #include <Rendering/Buffers/UniformBuffer.h>
@@ -57,6 +59,11 @@ namespace NLS::Editor::Panels
 		virtual void DrawFrame();
 
 		/**
+		* Hook called after the renderer frame has been fully submitted.
+		*/
+		virtual void AfterRenderFrame();
+
+		/**
 		* Returns the camera used by this view
 		*/
 		virtual NLS::Render::Entities::Camera* GetCamera() = 0;
@@ -76,8 +83,21 @@ namespace NLS::Editor::Panels
 		*/
         const Engine::Rendering::BaseSceneRenderer& GetRenderer() const;
 
+		/**
+		* Returns true if the given mouse position is inside the rendered view content.
+		*/
+		bool IsMouseWithinView(const Maths::Vector2& mousePosition) const;
+
+		/**
+		* Convert a window-space mouse position to view-local render coordinates.
+		*/
+		std::optional<Maths::Vector2> GetLocalViewPosition(const Maths::Vector2& mousePosition) const;
+
 	protected:
+		void OnBeforeDrawWidgets() override;
         virtual Engine::Rendering::BaseSceneRenderer::SceneDescriptor CreateSceneDescriptor();
+		void SyncViewToCurrentContentRegion();
+		void Render(uint16_t p_width, uint16_t p_height);
 
 	protected:
 		UI::Widgets::Image* m_image;
@@ -86,5 +106,6 @@ namespace NLS::Editor::Panels
 
 		Render::Buffers::Framebuffer m_fbo;
         std::unique_ptr<Engine::Rendering::BaseSceneRenderer> m_renderer;
+		std::pair<uint16_t, uint16_t> m_lastResolvedViewSize { 0u, 0u };
 	};
 }

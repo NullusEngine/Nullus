@@ -5,13 +5,12 @@
 #include <stdint.h>
 
 #include "Rendering/RHI/Core/RHIResource.h"
-#include "Rendering/RHI/IRHIResource.h"
 #include "RenderDef.h"
 
 namespace NLS::Render::Resources
 {
 	/**
-	* OpenGL texture wrapper
+	* OpenGL texture wrapper - Formal RHI only
 	*/
 	class NLS_RENDER_API Texture
 	{
@@ -36,25 +35,32 @@ namespace NLS::Render::Resources
 
 		void CreateRHITexture();
 		void ReleaseRHITexture();
-		void AdoptTexture(uint32_t p_id, bool p_takeOwnership = false);
-		void SetRHITexture(std::shared_ptr<RHI::IRHITexture> texture);
+		void SetRHITexture(std::shared_ptr<RHI::RHITexture> texture);
 
-		void SetTextureId(uint32_t p_id) { mTextureID = p_id; }
-		uint32_t GetTextureId() const { return mTextureID; }
-		const RHI::IRHITexture* GetRHITexture() const { return m_textureResource.get(); }
+		// Legacy API - always returns nullptr now
+		void* GetRHITexture() const { return nullptr; }
 		const std::shared_ptr<RHI::RHITexture>& GetTextureHandle() const { return m_explicitTexture; }
-		const std::shared_ptr<RHI::IRHITexture>& GetRHITextureHandle() const { return m_textureResource; }
+		// Legacy - always returns nullptr
+		void* GetRHITextureHandle() const { return nullptr; }
 		const std::shared_ptr<RHI::RHITexture>& GetExplicitRHITextureHandle() const { return GetTextureHandle(); }
 		std::shared_ptr<RHI::RHITextureView> GetOrCreateExplicitTextureView(const std::string& debugName = {}) const;
 
-	private:
-		/**
-		 * @brief opengl texture id
-		 */
-		uint32_t mTextureID = -1;
-		bool m_ownsTexture = true;
+	protected:
+		// Legacy - always returns -1
+		uint32_t GetCompatibilityTextureId() const { return static_cast<uint32_t>(-1); }
+
+		void RecreateRHITextureIfNeeded(
+		    uint32_t width,
+		    uint32_t height,
+		    RHI::TextureFormat format,
+		    RHI::TextureFilter minFilter,
+		    RHI::TextureFilter magFilter,
+		    RHI::TextureWrap wrapS,
+		    RHI::TextureWrap wrapT,
+		    bool generateMimaps,
+		    const void* initialData);
+
 		RHI::TextureDimension m_dimension = RHI::TextureDimension::Texture2D;
-		std::shared_ptr<RHI::IRHITexture> m_textureResource;
 		std::shared_ptr<RHI::RHITexture> m_explicitTexture;
 		mutable std::shared_ptr<RHI::RHITextureView> m_explicitTextureView;
 	};

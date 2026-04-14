@@ -2,7 +2,6 @@
 
 #include <Debug/Assertion.h>
 
-#include "Rendering/Context/Driver.h"
 #include "Rendering/FrameGraph/FrameGraphExecutionContext.h"
 
 namespace NLS::Render::FrameGraph
@@ -110,59 +109,25 @@ namespace NLS::Render::FrameGraph
 	{
 		auto* executionContext = static_cast<FrameGraphExecutionContext*>(allocator);
 		NLS_ASSERT(executionContext != nullptr, "FrameGraphBuffer requires a valid frame graph execution context");
-		auto& driver = executionContext->driver;
 		auto* device = executionContext->device;
-
-		if (id != 0)
-		{
-			return;
-		}
-
-		if (device != nullptr)
-		{
-			explicitBuffer = device->CreateBuffer(ToExplicitBufferDesc(desc));
-			ownsResource = explicitBuffer != nullptr;
-		}
+		NLS_ASSERT(device != nullptr, "FrameGraphBuffer requires an explicit RHIDevice in formal-only mode.");
 
 		if (explicitBuffer != nullptr)
-		{
-			id = 0;
 			return;
-		}
 
-		bufferResource = driver.CreateBufferResource(desc.type);
-		id = bufferResource != nullptr ? bufferResource->GetResourceId() : driver.CreateBuffer();
+		explicitBuffer = device->CreateBuffer(ToExplicitBufferDesc(desc));
+		NLS_ASSERT(explicitBuffer != nullptr, "FrameGraphBuffer failed to create explicit buffer.");
 		ownsResource = true;
-		driver.BindBuffer(desc.type, id);
-		driver.SetBufferData(desc.type, desc.size, nullptr, desc.usage);
-		driver.BindBuffer(desc.type, 0);
 	}
 
 	void FrameGraphBuffer::destroy(const Desc&, void* allocator)
 	{
 		auto* executionContext = static_cast<FrameGraphExecutionContext*>(allocator);
 		NLS_ASSERT(executionContext != nullptr, "FrameGraphBuffer requires a valid frame graph execution context");
-		auto& driver = executionContext->driver;
-		const bool hadExplicitResource = explicitBuffer != nullptr;
-
-		if (id == 0 && explicitBuffer == nullptr && bufferResource == nullptr)
+		if (explicitBuffer == nullptr)
 			return;
 
 		explicitBuffer.reset();
-		if (hadExplicitResource)
-		{
-			id = 0;
-			ownsResource = false;
-			return;
-		}
-		if (ownsResource)
-		{
-			if (bufferResource != nullptr)
-				bufferResource.reset();
-			else
-				driver.DestroyBuffer(id);
-		}
-		id = 0;
 		ownsResource = false;
 	}
 
@@ -170,29 +135,23 @@ namespace NLS::Render::FrameGraph
 	{
 		auto* executionContext = static_cast<FrameGraphExecutionContext*>(context);
 		NLS_ASSERT(executionContext != nullptr, "FrameGraphBuffer requires a valid frame graph execution context");
-		auto& driver = executionContext->driver;
+		(void)flags;
 
-		if (explicitBuffer != nullptr && executionContext->CanTrackExplicitResourceState())
-		{
-			const auto targetState = GetExplicitBufferReadState(desc);
-			NLS::Render::RHI::RHIBarrierDesc barrierDesc;
-			barrierDesc.bufferBarriers.push_back({
-				explicitBuffer,
-				NLS::Render::RHI::ResourceState::Unknown,
-				targetState.state,
-				NLS::Render::RHI::PipelineStageMask::AllCommands,
-				targetState.stageMask,
-				NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite,
-				targetState.accessMask
-			});
-			executionContext->RecordResourceBarriers(barrierDesc);
-			return;
-		}
-
-		if (id == 0)
+		if (explicitBuffer == nullptr || !executionContext->CanTrackExplicitResourceState())
 			return;
 
-		driver.BindBufferBase(desc.type, flags == 0xFFFFFFFFu ? 0u : flags, id);
+		const auto targetState = GetExplicitBufferReadState(desc);
+		NLS::Render::RHI::RHIBarrierDesc barrierDesc;
+		barrierDesc.bufferBarriers.push_back({
+			explicitBuffer,
+			NLS::Render::RHI::ResourceState::Unknown,
+			targetState.state,
+			NLS::Render::RHI::PipelineStageMask::AllCommands,
+			targetState.stageMask,
+			NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite,
+			targetState.accessMask
+		});
+		executionContext->RecordResourceBarriers(barrierDesc);
 	}
 
 	void FrameGraphBuffer::preWrite(const Desc& desc, uint32_t flags, void* context)

@@ -1,28 +1,24 @@
 #include "Rendering/Resources/Texture.h"
-
-#include "Debug/Assertion.h"
-#include "Core/ServiceLocator.h"
-#include "Rendering/Context/Driver.h"
-#include "Rendering/RHI/Backends/OpenGL/Compat/ExplicitRHICompat.h"
+#include "Rendering/Context/DriverAccess.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
+#include "Rendering/Resources/TextureResourceUpdateUtils.h"
 
 using namespace NLS::Render::Resources;
 
 namespace
 {
-	using Driver = NLS::Render::Context::Driver;
-
-	std::shared_ptr<NLS::Render::RHI::RHITextureView> CreateTextureViewForExplicitPath(
-		Driver& driver,
-		const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
-		const NLS::Render::RHI::RHITextureViewDesc& desc)
+	// Helper to get RHIDevice from driver
+	std::shared_ptr<NLS::Render::RHI::RHIDevice> GetExplicitDevice()
 	{
-		if (texture == nullptr)
+		try
+		{
+			auto& driver = NLS::Render::Context::RequireLocatedDriver("Texture::CreateRHITexture");
+			return NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver);
+		}
+		catch (...)
+		{
 			return nullptr;
-
-		if (const auto explicitDevice = driver.GetExplicitDevice(); explicitDevice != nullptr)
-			return explicitDevice->CreateTextureView(texture, desc);
-
-		return NLS::Render::RHI::CreateCompatibilityTextureView(texture, desc);
+		}
 	}
 }
 
@@ -40,14 +36,9 @@ Texture::~Texture()
 Texture::Texture(Texture&& rhs) noexcept
 {
 	ReleaseRHITexture();
-	mTextureID = rhs.mTextureID;
-	m_ownsTexture = rhs.m_ownsTexture;
 	m_dimension = rhs.m_dimension;
-	m_textureResource = std::move(rhs.m_textureResource);
 	m_explicitTexture = std::move(rhs.m_explicitTexture);
 	m_explicitTextureView = std::move(rhs.m_explicitTextureView);
-	rhs.mTextureID = -1;
-	rhs.m_ownsTexture = true;
 	rhs.m_dimension = RHI::TextureDimension::Texture2D;
 }
 
@@ -56,14 +47,9 @@ Texture& Texture::operator=(Texture&& rhs) noexcept
 	if (this != &rhs)
 	{
 		ReleaseRHITexture();
-		mTextureID = rhs.mTextureID;
-		m_ownsTexture = rhs.m_ownsTexture;
 		m_dimension = rhs.m_dimension;
-		m_textureResource = std::move(rhs.m_textureResource);
 		m_explicitTexture = std::move(rhs.m_explicitTexture);
 		m_explicitTextureView = std::move(rhs.m_explicitTextureView);
-		rhs.mTextureID = -1;
-		rhs.m_ownsTexture = true;
 		rhs.m_dimension = RHI::TextureDimension::Texture2D;
 	}
 	return *this;
@@ -71,58 +57,37 @@ Texture& Texture::operator=(Texture&& rhs) noexcept
 
 void Texture::CreateRHITexture()
 {
-	if (mTextureID == static_cast<uint32_t>(-1))
-	{
-		m_ownsTexture = true;
-		NLS_ASSERT(NLS::Core::ServiceLocator::Contains<Driver>(), "Texture resources require an initialized Driver.");
-		m_textureResource = NLS_SERVICE(Driver).CreateTextureResource(m_dimension);
-		m_explicitTexture = m_textureResource
-			? RHI::WrapCompatibilityTexture(m_textureResource, "TextureResource")
-			: nullptr;
-		m_explicitTextureView.reset();
-		mTextureID = m_textureResource ? m_textureResource->GetResourceId() : static_cast<uint32_t>(-1);
-	}
+	if (m_explicitTexture != nullptr)
+		return;
+
+	auto device = GetExplicitDevice();
+	if (device == nullptr)
+		return;
+
+	RHI::RHITextureDesc desc{};
+	desc.extent.width = 1;
+	desc.extent.height = 1;
+	desc.extent.depth = 1;
+	desc.dimension = m_dimension;
+	desc.format = RHI::TextureFormat::RGBA8;
+	desc.usage = RHI::TextureUsageFlags::Sampled;
+	desc.debugName = "TextureResource";
+
+	m_explicitTexture = device->CreateTexture(desc, nullptr);
 }
 
 void Texture::ReleaseRHITexture()
 {
-	if (m_textureResource)
-	{
-		m_textureResource.reset();
-	}
-	else if (mTextureID != static_cast<uint32_t>(-1) && m_ownsTexture)
-	{
-		NLS_ASSERT(NLS::Core::ServiceLocator::Contains<Driver>(), "Texture destruction requires an initialized Driver.");
-		NLS_SERVICE(Driver).DestroyTexture(mTextureID);
-	}
-
-	mTextureID = static_cast<uint32_t>(-1);
-	m_ownsTexture = true;
 	m_explicitTexture.reset();
 	m_explicitTextureView.reset();
 }
 
-void Texture::AdoptTexture(uint32_t p_id, bool p_takeOwnership)
+void Texture::SetRHITexture(std::shared_ptr<RHI::RHITexture> texture)
 {
 	ReleaseRHITexture();
-	mTextureID = p_id;
-	m_ownsTexture = p_takeOwnership;
-	m_explicitTexture.reset();
-	m_explicitTextureView.reset();
-}
-
-void Texture::SetRHITexture(std::shared_ptr<RHI::IRHITexture> texture)
-{
-	ReleaseRHITexture();
-	m_textureResource = std::move(texture);
-	if (m_textureResource)
-		m_dimension = m_textureResource->GetDimension();
-	m_explicitTexture = m_textureResource
-		? RHI::WrapCompatibilityTexture(m_textureResource, "TextureResource")
-		: nullptr;
-	m_explicitTextureView.reset();
-	mTextureID = m_textureResource ? m_textureResource->GetResourceId() : static_cast<uint32_t>(-1);
-	m_ownsTexture = false;
+	m_explicitTexture = std::move(texture);
+	if (m_explicitTexture)
+		m_dimension = m_explicitTexture->GetDesc().dimension;
 }
 
 std::shared_ptr<NLS::Render::RHI::RHITextureView> Texture::GetOrCreateExplicitTextureView(const std::string& debugName) const
@@ -133,13 +98,62 @@ std::shared_ptr<NLS::Render::RHI::RHITextureView> Texture::GetOrCreateExplicitTe
 	if (m_explicitTextureView != nullptr)
 		return m_explicitTextureView;
 
-	RHI::RHITextureViewDesc textureViewDesc;
+	auto device = GetExplicitDevice();
+	if (device == nullptr)
+		return nullptr;
+
+	RHI::RHITextureViewDesc textureViewDesc{};
 	textureViewDesc.viewType = m_dimension == RHI::TextureDimension::TextureCube
 		? RHI::TextureViewType::Cube
 		: RHI::TextureViewType::Texture2D;
 	textureViewDesc.format = m_explicitTexture->GetDesc().format;
 	textureViewDesc.debugName = debugName;
-	auto& driver = NLS_SERVICE(Driver);
-	m_explicitTextureView = CreateTextureViewForExplicitPath(driver, m_explicitTexture, textureViewDesc);
+
+	m_explicitTextureView = device->CreateTextureView(m_explicitTexture, textureViewDesc);
 	return m_explicitTextureView;
+}
+
+void Texture::RecreateRHITextureIfNeeded(
+    uint32_t width,
+    uint32_t height,
+    RHI::TextureFormat format,
+    RHI::TextureFilter minFilter,
+    RHI::TextureFilter magFilter,
+    RHI::TextureWrap wrapS,
+    RHI::TextureWrap wrapT,
+    bool generateMimaps,
+    const void* initialData)
+{
+	// Only handle formal RHI path
+	if (m_explicitTexture == nullptr)
+		return;
+
+	if (!ShouldRecreateRHITexture(m_explicitTexture->GetDesc(), width, height, format, initialData))
+	{
+		return;
+	}
+
+	// Need to recreate with correct dimensions
+	auto device = GetExplicitDevice();
+	if (device == nullptr)
+		return;
+
+	// Release old texture
+	m_explicitTexture.reset();
+	m_explicitTextureView.reset();
+
+	// Create new texture with correct dimensions and data
+	RHI::RHITextureDesc desc{};
+	desc.extent.width = static_cast<uint16_t>(width);
+	desc.extent.height = static_cast<uint16_t>(height);
+	desc.extent.depth = 1;
+	desc.dimension = m_dimension;
+	desc.format = format;
+	desc.usage = RHI::TextureUsageFlags::Sampled;
+	desc.debugName = "TextureResource";
+
+	// Note: mipmap generation would require a separate pass after creation
+	// For now, create with 1 mip level
+
+	m_explicitTexture = device->CreateTexture(desc, initialData);
 }

@@ -14,6 +14,10 @@
 #define NLS_HAS_IMGUI_DX12_BACKEND 0
 #endif
 
+#ifndef NLS_HAS_IMGUI_DX11_BACKEND
+#define NLS_HAS_IMGUI_DX11_BACKEND 0
+#endif
+
 #ifndef NLS_HAS_IMGUI_VULKAN_BACKEND
 #define NLS_HAS_IMGUI_VULKAN_BACKEND 0
 #endif
@@ -151,7 +155,11 @@ namespace NLS::Render::Settings
 			return false;
 #endif
 		case EGraphicsBackend::DX11:
+#if defined(_WIN32) && NLS_HAS_IMGUI_DX11_BACKEND
+			return true;
+#else
 			return false;
+#endif
 		case EGraphicsBackend::VULKAN:
 #if NLS_HAS_IMGUI_VULKAN_BACKEND
 			return true;
@@ -182,7 +190,11 @@ namespace NLS::Render::Settings
 			return false;
 #endif
 		case EGraphicsBackend::DX11:
+#if defined(_WIN32) && NLS_HAS_IMGUI_DX11_BACKEND
+			return true;
+#else
 			return false;
+#endif
 		case EGraphicsBackend::VULKAN:
 #if NLS_HAS_IMGUI_VULKAN_BACKEND
 			return true;

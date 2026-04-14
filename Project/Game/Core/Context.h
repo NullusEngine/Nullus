@@ -16,7 +16,6 @@
 #include <SceneSystem/SceneManager.h>
 #include "Core/Filesystem/IniFile.h"
 #include "Rendering/Settings/DriverSettings.h"
-
 #include <optional>
 
 namespace NLS::Game
@@ -56,7 +55,7 @@ namespace NLS::Game
 		NLS::Core::ResourceManagement::ModelManager modelManager;
 		NLS::Core::ResourceManagement::TextureManager textureManager;
 		NLS::Core::ResourceManagement::ShaderManager shaderManager;
-		
+
 		NLS::Filesystem::IniFile projectSettings;
 
 	private:

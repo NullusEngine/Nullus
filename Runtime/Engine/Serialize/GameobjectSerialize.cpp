@@ -16,6 +16,7 @@
 #include "Components/TransformComponent.h"
 #include "Debug/Logger.h"
 #include "GameObject.h"
+#include "Math/Vector4.h"
 #include "Reflection/Field.h"
 #include "Reflection/JsonConfig.h"
 #include "Reflection/Variant.h"

@@ -2,9 +2,26 @@
 #include <Rendering/Core/CompositeRenderer.h>
 #include <Rendering/RHI/BindingPointMap.h>
 #include <Debug/Logger.h>
+#include <cstdlib>
+#include <cstring>
 #include "Rendering/EngineBufferRenderFeature.h"
 #include "Rendering/EngineDrawableDescriptor.h"
 using namespace NLS;
+
+namespace
+{
+	bool ShouldLogFrameConstantDiagnostics()
+	{
+		static const bool enabled = []()
+		{
+			if (const char* value = std::getenv("NLS_LOG_RENDER_DRAW_PATH"); value != nullptr)
+				return std::strcmp(value, "1") == 0 || _stricmp(value, "true") == 0;
+			return false;
+		}();
+		return enabled;
+	}
+}
+
 Engine::Rendering::EngineBufferRenderFeature::EngineBufferRenderFeature(NLS::Render::Core::CompositeRenderer& p_renderer)
 	: ARenderFeature(p_renderer)
 {
@@ -39,7 +56,6 @@ Engine::Rendering::EngineBufferRenderFeature::EngineBufferRenderFeature(NLS::Ren
 
 void Engine::Rendering::EngineBufferRenderFeature::OnBeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor)
 {
-	static std::atomic_uint32_t s_loggedFrameConstants{ 0u };
 	auto currentTime = std::chrono::high_resolution_clock::now();
 	auto elapsedTime = std::chrono::duration_cast<std::chrono::duration<float>>(currentTime - m_startTime);
 
@@ -58,7 +74,7 @@ void Engine::Rendering::EngineBufferRenderFeature::OnBeginFrame(const NLS::Rende
 	viewMatrixNoTranslation(2, 3) = 0.0f;
 	const auto viewProjectionNoTranslation = p_frameDescriptor.camera->GetProjectionMatrix() * viewMatrixNoTranslation;
 
-	if (s_loggedFrameConstants.fetch_add(1u) < 4u)
+	if (ShouldLogFrameConstantDiagnostics())
 	{
 		const auto& cameraPos = p_frameDescriptor.camera->GetPosition();
 		const auto& clearColor = p_frameDescriptor.camera->GetClearColor();
@@ -115,61 +131,13 @@ void Engine::Rendering::EngineBufferRenderFeature::OnPrepareExplicitDraw(
 	NLS::Render::Data::PipelineState&,
 	const NLS::Render::Entities::Drawable&)
 {
-	EnsureExplicitBindingLayouts();
 	RefreshExplicitFrameBindingSet();
 	RefreshExplicitObjectBindingSet();
 
 	if (m_explicitFrameBindingSet != nullptr)
-		commandBuffer.BindBindingSet(0u, m_explicitFrameBindingSet);
+		commandBuffer.BindBindingSet(NLS::Render::RHI::BindingPointMap::kFrameDescriptorSet, m_explicitFrameBindingSet);
 	if (m_explicitObjectBindingSet != nullptr)
-		commandBuffer.BindBindingSet(2u, m_explicitObjectBindingSet);
-}
-
-void Engine::Rendering::EngineBufferRenderFeature::EnsureExplicitBindingLayouts()
-{
-	const auto explicitDevice = m_renderer.GetDriver().GetExplicitDevice();
-	if (explicitDevice == nullptr)
-		return;
-
-	const auto backend = explicitDevice->GetNativeDeviceInfo().backend;
-	if (m_explicitFrameBindingLayout != nullptr &&
-		m_explicitObjectBindingLayout != nullptr &&
-		m_explicitBindingsBackend == backend)
-	{
-		return;
-	}
-
-	m_explicitFrameBindingLayout.reset();
-	m_explicitObjectBindingLayout.reset();
-	m_explicitFrameBindingSet.reset();
-	m_explicitObjectBindingSet.reset();
-	m_explicitBindingsBackend = backend;
-	m_explicitFrameBindingSetDirty = true;
-	m_explicitObjectBindingSetDirty = true;
-
-	NLS::Render::RHI::RHIBindingLayoutDesc frameLayoutDesc;
-	frameLayoutDesc.debugName = "EngineFrameBindingLayout";
-	frameLayoutDesc.entries.push_back({
-		"FrameConstants",
-		NLS::Render::RHI::BindingType::UniformBuffer,
-		0u,
-		0u,
-		1u,
-		NLS::Render::RHI::ShaderStageMask::AllGraphics
-	});
-	m_explicitFrameBindingLayout = explicitDevice->CreateBindingLayout(frameLayoutDesc);
-
-	NLS::Render::RHI::RHIBindingLayoutDesc objectLayoutDesc;
-	objectLayoutDesc.debugName = "EngineObjectBindingLayout";
-	objectLayoutDesc.entries.push_back({
-		"ObjectConstants",
-		NLS::Render::RHI::BindingType::UniformBuffer,
-		2u,
-		0u,
-		1u,
-		NLS::Render::RHI::ShaderStageMask::AllGraphics
-	});
-	m_explicitObjectBindingLayout = explicitDevice->CreateBindingLayout(objectLayoutDesc);
+		commandBuffer.BindBindingSet(NLS::Render::RHI::BindingPointMap::kObjectDescriptorSet, m_explicitObjectBindingSet);
 }
 
 void Engine::Rendering::EngineBufferRenderFeature::RefreshExplicitFrameBindingSet()
@@ -177,26 +145,19 @@ void Engine::Rendering::EngineBufferRenderFeature::RefreshExplicitFrameBindingSe
 	if (!m_explicitFrameBindingSetDirty)
 		return;
 
-	const auto explicitDevice = m_renderer.GetDriver().GetExplicitDevice();
-	if (explicitDevice == nullptr || m_explicitFrameBindingLayout == nullptr)
-		return;
-
 	m_explicitFrameBindingSet.reset();
 
-	NLS::Render::RHI::RHIBindingSetDesc frameSetDesc;
-	frameSetDesc.layout = m_explicitFrameBindingLayout;
-	frameSetDesc.debugName = "EngineFrameBindingSet";
-	const auto frameSnapshot = m_hlslFrameBuffer->CreateExplicitSnapshotBuffer("EngineFrameConstantsSnapshot");
-	frameSetDesc.entries.push_back({
-		0u,
-		NLS::Render::RHI::BindingType::UniformBuffer,
-		frameSnapshot != nullptr ? frameSnapshot : m_hlslFrameBuffer->GetExplicitRHIBufferHandle(),
-		0u,
-		sizeof(Maths::Matrix4) + sizeof(Maths::Vector3) + sizeof(float) + sizeof(Maths::Matrix4),
-		nullptr,
-		nullptr
-	});
-	m_explicitFrameBindingSet = explicitDevice->CreateBindingSet(frameSetDesc);
+	NLS::Render::Core::ABaseRenderer::ExplicitUniformBufferBindingDesc bindingDesc;
+	bindingDesc.set = NLS::Render::RHI::BindingPointMap::kFrameDescriptorSet;
+	bindingDesc.registerSpace = NLS::Render::RHI::BindingPointMap::kFrameBindingSpace;
+	bindingDesc.binding = 0u;
+	bindingDesc.range = sizeof(Maths::Matrix4) + sizeof(Maths::Vector3) + sizeof(float) + sizeof(Maths::Matrix4);
+	bindingDesc.entryName = "FrameConstants";
+	bindingDesc.layoutDebugName = "EngineFrameBindingLayout";
+	bindingDesc.setDebugName = "EngineFrameBindingSet";
+	bindingDesc.snapshotDebugName = "EngineFrameConstantsSnapshot";
+	bindingDesc.stageMask = NLS::Render::RHI::ShaderStageMask::AllGraphics;
+	m_explicitFrameBindingSet = m_renderer.CreateExplicitUniformBufferBindingSet(*m_hlslFrameBuffer, bindingDesc);
 	m_explicitFrameBindingSetDirty = false;
 }
 
@@ -205,25 +166,18 @@ void Engine::Rendering::EngineBufferRenderFeature::RefreshExplicitObjectBindingS
 	if (!m_explicitObjectBindingSetDirty)
 		return;
 
-	const auto explicitDevice = m_renderer.GetDriver().GetExplicitDevice();
-	if (explicitDevice == nullptr || m_explicitObjectBindingLayout == nullptr)
-		return;
-
 	m_explicitObjectBindingSet.reset();
 
-	NLS::Render::RHI::RHIBindingSetDesc objectSetDesc;
-	objectSetDesc.layout = m_explicitObjectBindingLayout;
-	objectSetDesc.debugName = "EngineObjectBindingSet";
-	const auto objectSnapshot = m_hlslObjectBuffer->CreateExplicitSnapshotBuffer("EngineObjectConstantsSnapshot");
-	objectSetDesc.entries.push_back({
-		0u,
-		NLS::Render::RHI::BindingType::UniformBuffer,
-		objectSnapshot != nullptr ? objectSnapshot : m_hlslObjectBuffer->GetExplicitRHIBufferHandle(),
-		0u,
-		sizeof(Maths::Matrix4),
-		nullptr,
-		nullptr
-	});
-	m_explicitObjectBindingSet = explicitDevice->CreateBindingSet(objectSetDesc);
+	NLS::Render::Core::ABaseRenderer::ExplicitUniformBufferBindingDesc bindingDesc;
+	bindingDesc.set = NLS::Render::RHI::BindingPointMap::kObjectDescriptorSet;
+	bindingDesc.registerSpace = NLS::Render::RHI::BindingPointMap::kObjectBindingSpace;
+	bindingDesc.binding = 0u;
+	bindingDesc.range = sizeof(Maths::Matrix4);
+	bindingDesc.entryName = "ObjectConstants";
+	bindingDesc.layoutDebugName = "EngineObjectBindingLayout";
+	bindingDesc.setDebugName = "EngineObjectBindingSet";
+	bindingDesc.snapshotDebugName = "EngineObjectConstantsSnapshot";
+	bindingDesc.stageMask = NLS::Render::RHI::ShaderStageMask::AllGraphics;
+	m_explicitObjectBindingSet = m_renderer.CreateExplicitUniformBufferBindingSet(*m_hlslObjectBuffer, bindingDesc);
 	m_explicitObjectBindingSetDirty = false;
 }

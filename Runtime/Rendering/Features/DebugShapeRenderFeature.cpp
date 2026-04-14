@@ -46,7 +46,6 @@ DebugShapeRenderFeature::DebugShapeRenderFeature(Core::CompositeRenderer& p_rend
 		m_lineMaterial->SetShader(m_lineShader);
 		m_lineMaterial->SetBlendable(false);
 		m_lineMaterial->SetDepthTest(true);
-		m_lineMaterial->SetDepthWriting(false);
 		m_lineMaterial->SetBackfaceCulling(false);
 		m_lineMaterial->SetFrontfaceCulling(false);
 	}
@@ -89,6 +88,7 @@ void DebugShapeRenderFeature::DrawLine(
 
 	p_pso.rasterizationMode = Settings::ERasterizationMode::LINE;
 	p_pso.lineWidthPow2 = Utils::Conversions::FloatToPow2(p_lineWidth);
+	p_pso.depthWriting = false;
 
 	Entities::Drawable drawable;
 	drawable.material = m_lineMaterial.get();

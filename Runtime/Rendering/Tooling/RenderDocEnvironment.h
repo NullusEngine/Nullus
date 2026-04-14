@@ -120,11 +120,27 @@ namespace NLS::Render::Tooling
 	inline bool PreloadRenderDocIfAvailable(const Settings::RenderDocSettings& settings)
 	{
 #if defined(_WIN32)
-		if (!settings.enabled)
-			return false;
-
-		if (::GetModuleHandleW(L"renderdoc.dll") != nullptr)
+		// Check if RenderDoc Vulkan layer is already loaded (implicit layer from registry)
+		// This means the layer will handle captures with its own configuration
+		HMODULE existingModule = ::GetModuleHandleW(L"renderdoc.dll");
+		if (existingModule != nullptr)
+		{
+			NLS_LOG_INFO("PreloadRenderDocIfAvailable: renderdoc.dll already loaded (Vulkan layer detected)");
+			NLS_LOG_INFO("PreloadRenderDocIfAvailable: Note: Vulkan layer uses its own capture keys and directory settings");
+			NLS_LOG_INFO("PreloadRenderDocIfAvailable: For programmatic control, either:");
+			NLS_LOG_INFO("  1. Configure capture keys and directory in RenderDoc UI before running, OR");
+			NLS_LOG_INFO("  2. Use the renderdoc_runner.py script which sets up environment correctly");
+			// Return true - we can still use the layer's API for triggering captures
 			return true;
+		}
+
+		// Do not actively load RenderDoc when capture tooling is not enabled.
+		// This prevents default RenderDoc hotkeys/overlay (F12) from appearing in normal editor/game runs.
+		if (!settings.enabled)
+		{
+			NLS_LOG_INFO("PreloadRenderDocIfAvailable: skipped (RenderDoc disabled)");
+			return false;
+		}
 
 		auto resolveInstallRoot = []() -> std::filesystem::path
 		{
@@ -152,13 +168,30 @@ namespace NLS::Render::Tooling
 
 		const auto installRoot = resolveInstallRoot();
 		if (installRoot.empty())
+		{
+			NLS_LOG_INFO("PreloadRenderDocIfAvailable: RenderDoc install root not found");
 			return false;
+		}
 
 		const auto dllPath = installRoot / "renderdoc.dll";
 		if (!std::filesystem::exists(dllPath))
+		{
+			NLS_LOG_INFO("PreloadRenderDocIfAvailable: renderdoc.dll not found at " + dllPath.string());
 			return false;
+		}
 
-		return ::LoadLibraryW(dllPath.wstring().c_str()) != nullptr;
+		// Preload the DLL so it can be dynamically enabled/disabled at runtime.
+		HMODULE loadedModule = ::LoadLibraryW(dllPath.wstring().c_str());
+		if (loadedModule != nullptr)
+		{
+			NLS_LOG_INFO("PreloadRenderDocIfAvailable: Successfully loaded renderdoc.dll");
+			return true;
+		}
+		else
+		{
+			NLS_LOG_INFO("PreloadRenderDocIfAvailable: Failed to load renderdoc.dll");
+			return false;
+		}
 #else
 		(void)settings;
 		return false;

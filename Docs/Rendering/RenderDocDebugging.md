@@ -17,32 +17,76 @@ If RenderDoc is not installed, the app still runs normally. Capture actions simp
 
 ## App Workflow
 
-The runtime now exposes RenderDoc capture support through `Driver`.
+The runtime exposes RenderDoc capture support through `Driver`.
 
-Supported trigger surfaces:
+### Keyboard Shortcuts
 
 - `F11`: capture the next presented frame
 - `Ctrl + F11`: open the latest `.rdc`
-- Editor menu: `Settings -> Debugging -> RenderDoc`
 
-Startup capture can be requested through environment variables:
+### Editor Menu
 
-- `NLS_GRAPHICS_BACKEND`
-- `NLS_RENDERDOC_CAPTURE`
-- `NLS_RENDERDOC_CAPTURE_AFTER_FRAMES`
-- `NLS_RENDERDOC_CAPTURE_DIR`
-- `NLS_RENDERDOC_CAPTURE_LABEL`
-- `NLS_RENDERDOC_AUTO_OPEN`
-- `NLS_LAUNCHER_GRAPHICS_BACKEND`
+Editor menu: `Settings -> Debugging -> RenderDoc`
 
-Notes:
+- **Enabled**: toggle RenderDoc on/off
+- **Capture Next Frame**: trigger a single-frame capture (same as F11)
+- **Open Latest Capture**: open the most recent `.rdc` file (same as Ctrl+F11)
+- **Open Capture Folder**: open the capture directory in Explorer
+- **Auto Open Replay UI**: automatically open `qrenderdoc.exe` after each capture
 
-- `Editor` now honors `NLS_GRAPHICS_BACKEND`, same as `Game`.
-- Launching `Editor.exe <project.nullus>` now skips the launcher entirely, which keeps startup captures focused on the actual editor runtime.
-- Capture files default to:
-  - Editor: `<project>/Logs/RenderDoc/Editor`
-  - Launcher: `<cwd>/Logs/RenderDoc/Launcher`
-  - Game: `<cwd>/Logs/RenderDoc/Game`
+## Command-Line Options
+
+Both `Editor.exe` and `Game.exe` support these RenderDoc flags:
+
+| Flag | Description |
+|------|-------------|
+| `--renderdoc` | Enable RenderDoc debugging |
+| `--no-renderdoc` | Disable RenderDoc debugging |
+| `--capture-after-frames <N>` | Automatically capture after N presents (enables RenderDoc) |
+
+### Examples
+
+```powershell
+# Enable RenderDoc and open project
+Editor.exe --renderdoc MyProject.nullus
+
+# Auto-capture after 60 frames
+Editor.exe --capture-after-frames 60 MyProject.nullus
+
+# Game with RenderDoc enabled
+Game.exe --renderdoc
+
+# Auto-capture game after 120 frames
+Game.exe --capture-after-frames 120
+```
+
+### Backend Selection
+
+Use `--backend <name>` to select graphics backend (dx12, vulkan, opengl, dx11):
+
+```powershell
+Editor.exe --backend vulkan --renderdoc MyProject.nullus
+```
+
+## Environment Variables
+
+Startup capture can also be requested through environment variables:
+
+- `NLS_RENDERDOC_ENABLE=1` - enable RenderDoc
+- `NLS_RENDERDOC_CAPTURE=1` - queue startup capture
+- `NLS_RENDERDOC_CAPTURE_AFTER_FRAMES=N` - capture after N frames
+- `NLS_RENDERDOC_CAPTURE_DIR=<path>` - custom capture directory
+- `NLS_RENDERDOC_CAPTURE_LABEL=<name>` - capture file label
+- `NLS_RENDERDOC_AUTO_OPEN=1` - auto-open qrenderdoc after capture
+
+**Note:** Command-line flags take precedence over environment variables. Environment variables override defaults.
+
+## Capture Output
+
+Capture files are saved to:
+
+- Editor: `Build/RenderDocCaptures/Editor/`
+- Game: `Build/RenderDocCaptures/Game/`
 
 ## Runner Script
 
@@ -69,6 +113,7 @@ Runner behavior:
 - defaults Editor project to `TestProject/TestProject.nullus`
 - writes captures under `Build/RenderDocCaptures/<target>/<backend>`
 - can open `qrenderdoc.exe` automatically after capture
+- uses a capture discovery step that detects newly written `.rdc` files and reports the exact `latest_capture` path
 
 ## rdc-cli Analysis
 
@@ -86,6 +131,7 @@ What it does:
 - picks a focus EID automatically from the first sampled draw unless you provide `--focus-eid`
 - loads `pipeline`, `bindings`, and shader metadata for that focus event
 - closes the session and prints a Markdown analysis skeleton
+- if `rdc --session` fails (daemon crash or missing CLI), it falls back to RenderDoc Python replay to keep analysis working
 
 Useful variants:
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Rendering/Data/FrameDescriptor.h"
+#include "Rendering/Data/PipelineState.h"
 #include "Rendering/Entities/Drawable.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "RenderDef.h"

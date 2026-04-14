@@ -42,6 +42,7 @@ namespace NLS::Engine::Rendering
 
 		void LoadPipelineResources();
 		void EnsureGBufferTargets(uint16_t width, uint16_t height);
+		std::unique_ptr<NLS::Render::Resources::Material> CreateGBufferMaterial() const;
 		NLS::Render::Resources::Material& GetOrCreateGBufferMaterial(NLS::Render::Resources::Material& sourceMaterial);
 		void SyncGBufferMaterial(NLS::Render::Resources::Material& target, const NLS::Render::Resources::Material& sourceMaterial) const;
 		void DrawGBufferOpaques(NLS::Render::Data::PipelineState pso);

@@ -6,52 +6,29 @@
 
 #include "RenderDef.h"
 #include "Rendering/RHI/Core/RHIResource.h"
-#include "Rendering/RHI/IRHIResource.h"
 #include "Rendering/RHI/RHITypes.h"
 
 namespace NLS::Render::FrameGraph
 {
 	struct NLS_RENDER_API FrameGraphBuffer
 	{
-		using Desc = NLS::Render::RHI::BufferDesc;
+		// FrameGraph internal buffer descriptor - kept separate from Formal RHI types
+		// because FrameGraph needs 'type' and 'usage' fields that map to RHI concepts
+		struct Desc
+		{
+			size_t size = 0;
+			NLS::Render::RHI::BufferType type = NLS::Render::RHI::BufferType::ShaderStorage;
+			NLS::Render::RHI::BufferUsage usage = NLS::Render::RHI::BufferUsage::DynamicDraw;
+		};
 
-		uint32_t id = 0;
 		bool ownsResource = false;
-		std::shared_ptr<NLS::Render::RHI::IRHIBuffer> bufferResource;
 		std::shared_ptr<NLS::Render::RHI::RHIBuffer> explicitBuffer;
 
-		static FrameGraphBuffer WrapExternal(std::shared_ptr<NLS::Render::RHI::IRHIBuffer> externalResource)
+		static FrameGraphBuffer WrapExternal(std::shared_ptr<NLS::Render::RHI::RHIBuffer> externalBuffer)
 		{
 			FrameGraphBuffer buffer;
-			buffer.id = externalResource != nullptr ? externalResource->GetResourceId() : 0;
-			buffer.ownsResource = false;
-			buffer.bufferResource = std::move(externalResource);
-			return buffer;
-		}
-
-		static FrameGraphBuffer WrapExternal(
-			std::shared_ptr<NLS::Render::RHI::RHIBuffer> externalBuffer,
-			uint32_t externalId = 0)
-		{
-			FrameGraphBuffer buffer;
-			buffer.id = externalId;
 			buffer.ownsResource = false;
 			buffer.explicitBuffer = std::move(externalBuffer);
-			return buffer;
-		}
-
-		static FrameGraphBuffer WrapExternal(uint32_t externalId, std::shared_ptr<NLS::Render::RHI::IRHIBuffer> externalResource = {})
-		{
-			if (externalResource != nullptr)
-			{
-				auto buffer = WrapExternal(std::move(externalResource));
-				buffer.id = externalId != 0 ? externalId : buffer.id;
-				return buffer;
-			}
-
-			FrameGraphBuffer buffer;
-			buffer.id = externalId;
-			buffer.ownsResource = false;
 			return buffer;
 		}
 

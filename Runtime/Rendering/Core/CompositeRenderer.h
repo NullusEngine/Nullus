@@ -35,6 +35,12 @@ public:
         PipelineState p_pso,
         const Entities::Drawable& p_drawable
     ) override;
+    void DrawEntity(
+        const Entities::Drawable& p_drawable,
+        Resources::MaterialPipelineStateOverrides pipelineOverrides = {},
+        Settings::EComparaisonAlgorithm depthCompareOverride = Settings::EComparaisonAlgorithm::LESS);
+    void ExecutePass(Core::ARenderPass& pass);
+    void ExecutePass(Core::ARenderPass& pass, PipelineState pso);
 
     template<typename T, typename ... Args>
     T& AddFeature(Args&&... p_args);
@@ -55,7 +61,7 @@ public:
     T& GetPass(const std::string& p_name) const;
 
 protected:
-    bool CanRecordExplicitFrame() const override;
+    void DrawRegisteredPasses();
     void DrawRegisteredPasses(PipelineState pso);
     std::unordered_map<std::type_index, std::unique_ptr<Features::ARenderFeature>> m_features;
     std::multimap<uint32_t, std::pair<std::string, std::unique_ptr<Core::ARenderPass>>> m_passes;

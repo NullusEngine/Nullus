@@ -2,11 +2,10 @@
 
 #include "Context.h"
 #include "Editor.h"
-#include "Rendering/Settings/DriverSettings.h"
-#include "Rendering/Settings/EGraphicsBackend.h"
-
-#include <optional>
 #include <string>
+#include <optional>
+#include "Rendering/Settings/EGraphicsBackend.h"
+#include "Rendering/Settings/DriverSettings.h"
 
 namespace NLS
 {
@@ -25,11 +24,9 @@ namespace NLS
 			* @param p_backendOverride optional backend override from command line
 			* @param p_renderDocSettings RenderDoc settings from command line
 			*/
-			Application(
-				const std::string& p_projectPath,
-				const std::string& p_projectName,
-				std::optional<Render::Settings::EGraphicsBackend> p_backendOverride = std::nullopt,
-				const Render::Settings::RenderDocSettings& p_renderDocSettings = {});
+			Application(const std::string& p_projectPath, const std::string& p_projectName,
+			            std::optional<Render::Settings::EGraphicsBackend> p_backendOverride = std::nullopt,
+			            const Render::Settings::RenderDocSettings& p_renderDocSettings = {});
 
 			/**
 			* Destructor

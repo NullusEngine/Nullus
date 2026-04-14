@@ -81,7 +81,6 @@ namespace NLS::Game::Launch
 				return parsed;
 			}
 		}
-
 		return parsed;
 	}
 }

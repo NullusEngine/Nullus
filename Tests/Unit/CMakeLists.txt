@@ -31,10 +31,11 @@ target_include_directories(NullusUnitTests PRIVATE
 
 target_compile_definitions(NullusUnitTests PRIVATE
     NLS_ROOT_DIR="${CMAKE_SOURCE_DIR}"
+    NLS_BUILD_DIR="${CMAKE_BINARY_DIR}"
 )
 
 target_link_libraries(NullusUnitTests PRIVATE
-    gtest_main
+    gtest
     NLS_Base
     NLS_Core
     NLS_Math

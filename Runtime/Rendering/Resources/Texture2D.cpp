@@ -2,23 +2,12 @@
 #include <memory>
 #include <vector>
 
-#include "Debug/Assertion.h"
-#include "Core/ServiceLocator.h"
-#include "Rendering/Context/Driver.h"
 #include "Rendering/Resources/Texture2D.h"
 
 using namespace NLS::Render::Resources;
 
 namespace
 {
-	using Driver = NLS::Render::Context::Driver;
-
-	Driver& RequireDriver()
-	{
-		NLS_ASSERT(NLS::Core::ServiceLocator::Contains<Driver>(), "Texture2D requires an initialized Driver.");
-		return NLS_SERVICE(Driver);
-	}
-
 	NLS::Render::RHI::TextureFilter ToRHITextureFilter(NLS::Render::Settings::ETextureFilteringMode mode)
 	{
 		return mode == NLS::Render::Settings::ETextureFilteringMode::LINEAR
@@ -69,14 +58,15 @@ namespace
 
 void Texture2D::Bind(uint32_t p_slot) const
 {
-	auto& driver = RequireDriver();
-	driver.ActivateTexture(p_slot);
-	driver.BindTexture(NLS::Render::RHI::TextureDimension::Texture2D, GetTextureId());
+	// In formal RHI, binding is handled at command buffer level through descriptor sets
+	// This is a no-op placeholder
+	(void)p_slot;
 }
 
 void Texture2D::Unbind() const
 {
-	RequireDriver().BindTexture(NLS::Render::RHI::TextureDimension::Texture2D, 0);
+	// In formal RHI, unbinding is handled at command buffer level
+	// This is a no-op placeholder
 }
 
 Texture2D::Texture2D(Texture2D&& rhs) noexcept : Texture(std::move(rhs))
@@ -102,10 +92,13 @@ Texture2D& Texture2D::operator=(Texture2D&& rhs) noexcept
 	return *this;
 }
 
-std::unique_ptr<Texture2D> Texture2D::WrapExternal(uint32_t textureId, uint32_t inWidth, uint32_t inHeight)
+std::unique_ptr<Texture2D> Texture2D::WrapExternal(
+	const std::shared_ptr<NLS::Render::RHI::RHITexture>& textureResource,
+	uint32_t inWidth,
+	uint32_t inHeight)
 {
 	auto texture = std::unique_ptr<Texture2D>(new Texture2D{});
-	texture->AdoptTexture(textureId, false);
+	texture->SetRHITexture(textureResource);
 	texture->width = inWidth;
 	texture->height = inHeight;
 	return texture;
@@ -124,20 +117,19 @@ void Texture2D::SetTextureResource(const Image* image)
 	if (uploadData.empty())
 		return;
 
-	NLS::Render::RHI::TextureDesc desc;
-	desc.width = static_cast<uint16_t>(image->GetWidth());
-	desc.height = static_cast<uint16_t>(image->GetHeight());
-	desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
-	desc.format = NLS::Render::RHI::TextureFormat::RGBA8;
-	desc.minFilter = ToRHITextureFilter(firstFilter);
-	desc.magFilter = ToRHITextureFilter(secondFilter);
-	desc.wrapS = NLS::Render::RHI::TextureWrap::Repeat;
-	desc.wrapT = NLS::Render::RHI::TextureWrap::Repeat;
-	desc.usage = NLS::Render::RHI::TextureUsage::Sampled;
-
-	auto& driver = RequireDriver();
-	driver.BindTexture(NLS::Render::RHI::TextureDimension::Texture2D, GetTextureId());
-	driver.SetupTexture(desc, uploadData.data());
-	if (isMimapped)
-		driver.GenerateTextureMipmap(NLS::Render::RHI::TextureDimension::Texture2D);
+	// For formal RHI texture, we need to recreate it with correct dimensions
+	// The initial CreateRHITexture() only creates a 1x1 placeholder
+	if (m_explicitTexture != nullptr)
+	{
+		RecreateRHITextureIfNeeded(
+		    width,
+		    height,
+		    NLS::Render::RHI::TextureFormat::RGBA8,
+		    ToRHITextureFilter(firstFilter),
+		    ToRHITextureFilter(secondFilter),
+		    NLS::Render::RHI::TextureWrap::Repeat,
+		    NLS::Render::RHI::TextureWrap::Repeat,
+		    isMimapped,
+		    uploadData.data());
+	}
 }

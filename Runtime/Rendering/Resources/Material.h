@@ -2,22 +2,61 @@
 
 #include <any>
 #include <map>
+#include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
-#include "Rendering/Buffers/UniformBuffer.h"
-#include "Rendering/Resources/BindingSetInstance.h"
-#include "Rendering/Resources/MaterialLayout.h"
-#include "Rendering/Resources/MaterialResourceSet.h"
-#include "Rendering/Resources/ResourceBinding.h"
-#include "Rendering/Resources/Shader.h"
-#include "Rendering/Resources/MaterialParameterBlock.h"
-#include "Rendering/Resources/Texture2D.h"
 #include "Rendering/Data/StateMask.h"
-#include "Rendering/RHI/Core/RHIDevice.h"
-#include "Rendering/RHI/GraphicsPipelineDesc.h"
+#include "Rendering/Data/PipelineState.h"
+#include "Rendering/Resources/MaterialLayout.h"
+#include "Rendering/Resources/MaterialParameterBlock.h"
+#include "Rendering/Resources/ResourceBinding.h"
+#include "Rendering/Settings/EComparaisonAlgorithm.h"
+#include "Rendering/Settings/ECullFace.h"
+#include "Rendering/Settings/EPrimitiveMode.h"
 #include "RenderDef.h"
+
 namespace NLS::Render::Resources
 {
+    class MaterialResourceSet;
+    struct MaterialPipelineStateOverrides;
+    class Material;
+    class Shader;
+    struct ShaderPropertyDesc;
+    class Texture2D;
+}
+
+namespace NLS::Render::RHI
+{
+    class RHIDevice;
+    class RHIBindingLayout;
+    class RHIBindingSet;
+    class RHIPipelineLayout;
+    class RHIGraphicsPipeline;
+}
+
+namespace NLS::Render::Context
+{
+class Driver;
+}
+
+namespace NLS::Render::Core
+{
+class ABaseRenderer;
+}
+
+namespace NLS::Render::Resources
+{
+struct MaterialPipelineStateOverrides
+{
+    std::optional<bool> depthWrite;
+    std::optional<bool> colorWrite;
+    std::optional<bool> depthTest;
+    std::optional<bool> culling;
+    std::optional<Settings::ECullFace> cullFace;
+};
+
 /**
  * A material is a combination of a shader and some settings (Material settings and shader settings)
  */
@@ -27,26 +66,12 @@ public:
     using ShaderType = Shader;
     using Texture2DType = Texture2D;
 
-    struct ExplicitPipelineState
-    {
-        std::shared_ptr<RHI::RHIPipelineLayout> pipelineLayout;
-        std::shared_ptr<RHI::RHIShaderModule> vertexShader;
-        std::shared_ptr<RHI::RHIShaderModule> fragmentShader;
-        RHI::RHIGraphicsPipelineDesc pipelineDesc;
-
-        bool IsComplete() const
-        {
-            return pipelineLayout != nullptr &&
-                vertexShader != nullptr &&
-                fragmentShader != nullptr;
-        }
-    };
-
     /**
      * Creates a material
      * @param p_shader
      */
     Material(Shader* p_shader = nullptr);
+    ~Material();
 
     /**
      * Defines the shader to attach to this material instance
@@ -83,6 +108,7 @@ public:
      * Returns the attached shader
      */
     Shader*& GetShader();
+    const Shader* GetShader() const;
 
     /**
      * Returns true if the material has a shader attached
@@ -176,43 +202,33 @@ public:
      */
     const Data::StateMask GenerateStateMask() const;
 
-    RHI::GraphicsPipelineDesc BuildGraphicsPipelineDesc() const;
-    RHI::RHIGraphicsPipelineDesc BuildExplicitGraphicsPipelineDesc(
-        const std::shared_ptr<RHI::RHIPipelineLayout>& pipelineLayout,
-        const std::shared_ptr<RHI::RHIShaderModule>& vertexShader,
-        const std::shared_ptr<RHI::RHIShaderModule>& fragmentShader,
-        Settings::EPrimitiveMode primitiveMode,
-        Settings::EComparaisonAlgorithm depthCompare) const;
-    ExplicitPipelineState BuildExplicitPipelineState(
-        const std::shared_ptr<RHI::RHIPipelineLayout>& pipelineLayout,
-        const std::shared_ptr<RHI::RHIShaderModule>& vertexShader,
-        const std::shared_ptr<RHI::RHIShaderModule>& fragmentShader,
-        Settings::EPrimitiveMode primitiveMode,
-        Settings::EComparaisonAlgorithm depthCompare) const;
-    ExplicitPipelineState BuildExplicitPipelineState(
-        const std::shared_ptr<RHI::RHIDevice>& device,
-        Settings::EPrimitiveMode primitiveMode,
-        Settings::EComparaisonAlgorithm depthCompare) const;
-    std::shared_ptr<RHI::RHIGraphicsPipeline> BuildRecordedGraphicsPipeline(
-        const std::shared_ptr<RHI::RHIDevice>& device,
-        Settings::EPrimitiveMode primitiveMode,
-        Settings::EComparaisonAlgorithm depthCompare) const;
-    std::shared_ptr<RHI::RHIBindingSet> GetRecordedBindingSet(const std::shared_ptr<RHI::RHIDevice>& device) const;
-
     MaterialParameterBlock& GetParameterBlock();
     const MaterialParameterBlock& GetParameterBlock() const;
-    const MaterialLayout& GetMaterialLayout() const;
-    const ResourceBindingLayout& GetBindingLayout() const;
-    const BindingSetInstance& GetBindingSetInstance() const;
-    const MaterialResourceSet& GetBindingSet() const;
-    const std::shared_ptr<RHI::RHIBindingLayout>& GetExplicitBindingLayout(const std::shared_ptr<RHI::RHIDevice>& device) const;
-    const std::shared_ptr<RHI::RHIBindingSet>& GetExplicitBindingSet(const std::shared_ptr<RHI::RHIDevice>& device) const;
-    const std::shared_ptr<RHI::RHIPipelineLayout>& GetExplicitPipelineLayout(const std::shared_ptr<RHI::RHIDevice>& device) const;
 
     /**
      * Returns the uniforms data of the material
      */
     std::map<std::string, std::any>& GetUniformsData();
+
+    struct MaterialRuntimeState;  // Forward declaration for public methods
+
+    // Formal RHI methods - exposed for renderer direct access
+    std::shared_ptr<RHI::RHIGraphicsPipeline> BuildRecordedGraphicsPipeline(
+        const std::shared_ptr<RHI::RHIDevice>& device,
+        Settings::EPrimitiveMode primitiveMode,
+        const Data::PipelineState& pipelineState,
+        MaterialPipelineStateOverrides overrides = {},
+        bool* hasPipelineLayout = nullptr,
+        bool* hasVertexShader = nullptr,
+        bool* hasFragmentShader = nullptr) const;
+    MaterialRuntimeState& GetRuntimeState() const;
+    void ResetRuntimeState() const;
+    void InvalidateExplicitBindingSetCache() const;
+    std::shared_ptr<RHI::RHIBindingSet> GetRecordedBindingSet(const std::shared_ptr<RHI::RHIDevice>& device) const;
+    const MaterialResourceSet& GetBindingSet() const;
+    const std::shared_ptr<RHI::RHIBindingLayout>& GetExplicitBindingLayout(const std::shared_ptr<RHI::RHIDevice>& device) const;
+    const std::shared_ptr<RHI::RHIBindingSet>& GetExplicitBindingSet(const std::shared_ptr<RHI::RHIDevice>& device) const;
+    const std::shared_ptr<RHI::RHIPipelineLayout>& GetExplicitPipelineLayout(const std::shared_ptr<RHI::RHIDevice>& device) const;
 
     const std::string path;
 
@@ -220,27 +236,12 @@ protected:
     const ShaderPropertyDesc* FindMaterialProperty(const std::string& key) const;
     bool EnsureMaterialParameterExists(const std::string& key);
 
-    struct MaterialConstantBufferState
-    {
-        std::unique_ptr<NLS::Render::Buffers::UniformBuffer> buffer;
-        uint32_t size = 0;
-        uint32_t bindingPoint = 0;
-    };
-
     Shader* m_shader = nullptr;
     MaterialParameterBlock m_parameterBlock;
     MaterialLayout m_materialLayout;
     ResourceBindingLayout m_bindingLayout;
-    mutable BindingSetInstance m_bindingSet;
-    mutable std::map<std::string, MaterialConstantBufferState> m_materialConstantBuffers;
-    mutable std::shared_ptr<RHI::RHIBindingLayout> m_explicitBindingLayout;
-    mutable std::shared_ptr<RHI::RHIBindingSet> m_explicitBindingSet;
-    mutable std::shared_ptr<RHI::RHIPipelineLayout> m_explicitPipelineLayout;
-    mutable RHI::NativeBackendType m_explicitBindingLayoutBackend = RHI::NativeBackendType::None;
-    mutable RHI::NativeBackendType m_explicitBindingSetBackend = RHI::NativeBackendType::None;
-    mutable RHI::NativeBackendType m_explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
-    mutable bool m_explicitBindingLayoutDirty = true;
-    mutable bool m_explicitBindingSetDirty = true;
+    struct MaterialRuntimeState;
+    mutable std::unique_ptr<MaterialRuntimeState> m_runtimeState;
 
     bool m_blendable = false;
     bool m_backfaceCulling = true;
@@ -249,6 +250,10 @@ protected:
     bool m_depthWriting = true;
     bool m_colorWriting = true;
     int m_gpuInstances = 1;
+
+private:
+    friend class NLS::Render::Context::Driver;
+    friend class NLS::Render::Core::ABaseRenderer;
 };
 } // namespace NLS::Render::Data
 

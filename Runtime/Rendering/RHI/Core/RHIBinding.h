@@ -12,6 +12,7 @@ namespace NLS::Render::RHI
         uint32_t binding = 0;
         uint32_t count = 1;
         ShaderStageMask stageMask = ShaderStageMask::AllGraphics;
+        uint32_t registerSpace = 0;
     };
 
     struct NLS_RENDER_API RHIBindingLayoutDesc

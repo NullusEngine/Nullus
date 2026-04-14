@@ -94,6 +94,13 @@ void ApplyLabeledStyle(Widgets::DragMultipleScalars<float, TCount>& widget, cons
             ApplyAxisStyle(widget, std::array<const char*, 4>{"X", "Y", "Z", "W"}, vectorColors);
     }
 }
+
+std::shared_ptr<NLS::Render::RHI::RHITextureView> ResolveUITextureView(Texture2D* texture, const char* debugName)
+{
+    return texture != nullptr
+        ? texture->GetOrCreateExplicitTextureView(debugName)
+        : nullptr;
+}
 } // namespace
 
 const Maths::Color GUIDrawer::TitleColor = {0.67f, 0.71f, 0.78f};
@@ -225,7 +232,9 @@ Widgets::Image& GUIDrawer::DrawTexture(Internal::WidgetContainer& p_root, const 
     std::string displayedText = (p_data ? p_data->path : std::string("Empty"));
     auto& rightSide = p_root.CreateWidget<Widgets::Group>();
 
-    auto& widget = rightSide.CreateWidget<Widgets::Image>(p_data ? p_data->GetTextureId() : (__EMPTY_TEXTURE ? __EMPTY_TEXTURE->GetTextureId() : 0), Maths::Vector2{75, 75});
+    auto& widget = rightSide.CreateWidget<Widgets::Image>(
+        ResolveUITextureView(p_data != nullptr ? p_data : __EMPTY_TEXTURE, "GUIDrawer.Texture"),
+        Maths::Vector2{75, 75});
 
     widget.AddPlugin<DDTarget<std::pair<std::string, Widgets::Group*>>>("File").DataReceivedEvent += [&widget, &p_data, p_updateNotifier](auto p_receivedData)
     {
@@ -234,7 +243,7 @@ Widgets::Image& GUIDrawer::DrawTexture(Internal::WidgetContainer& p_root, const 
             if (auto resource = NLS_SERVICE(Core::ResourceManagement::TextureManager).GetResource(p_receivedData.first); resource)
             {
                 p_data = static_cast<Texture2D*>(resource);
-                widget.textureID.id = resource->GetTextureId();
+                widget.textureView = ResolveUITextureView(p_data, "GUIDrawer.Texture");
                 if (p_updateNotifier)
                     p_updateNotifier->Invoke();
             }
@@ -248,7 +257,7 @@ Widgets::Image& GUIDrawer::DrawTexture(Internal::WidgetContainer& p_root, const 
     resetButton.ClickedEvent += [&widget, &p_data, p_updateNotifier]
     {
         p_data = nullptr;
-        widget.textureID.id = (__EMPTY_TEXTURE ? __EMPTY_TEXTURE->GetTextureId() : 0);
+        widget.textureView = ResolveUITextureView(__EMPTY_TEXTURE, "GUIDrawer.Texture");
         if (p_updateNotifier)
             p_updateNotifier->Invoke();
     };

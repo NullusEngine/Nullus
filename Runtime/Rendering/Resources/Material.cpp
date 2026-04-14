@@ -1,20 +1,28 @@
 #include "Rendering/Resources/Material.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstring>
 #include <cstdlib>
 #include <vector>
 
+#include "Base/Image.h"
 #include "Debug/Logger.h"
 #include "Math/Vector2.h"
 #include "Math/Vector3.h"
 #include "Math/Vector4.h"
 #include "Math/Matrix4.h"
+#include "Rendering/Buffers/UniformBuffer.h"
 #include "Rendering/Geometry/Vertex.h"
 #include "Rendering/RHI/BindingPointMap.h"
-#include "Rendering/RHI/ExplicitRHICompat.h"
+#include "Rendering/RHI/Core/RHIPipeline.h"
+#include "Rendering/RHI/Core/RHIPipelineStateUtils.h"
 #include "Rendering/Resources/Loaders/TextureLoader.h"
+#include "Rendering/Resources/MaterialResourceSet.h"
+#include "Rendering/Resources/ShaderBindingLayoutUtils.h"
+#include "Rendering/Resources/Shader.h"
+#include "Rendering/Resources/Texture2D.h"
 #include "Rendering/Resources/TextureCube.h"
 
 namespace
@@ -22,26 +30,6 @@ namespace
 	using ShaderSourceLanguage = NLS::Render::ShaderCompiler::ShaderSourceLanguage;
 	using ShaderResourceKind = NLS::Render::Resources::ShaderResourceKind;
 	using UniformType = NLS::Render::Resources::UniformType;
-
-	bool CanUseCompatibilityRecordedFallback(const std::shared_ptr<NLS::Render::RHI::RHIDevice>& device)
-	{
-		if (device == nullptr)
-			return true;
-
-		const auto nativeBackend = device->GetNativeDeviceInfo().backend;
-		switch (nativeBackend)
-		{
-		case NLS::Render::RHI::NativeBackendType::DX12:
-		case NLS::Render::RHI::NativeBackendType::Vulkan:
-		case NLS::Render::RHI::NativeBackendType::Metal:
-			return false;
-		case NLS::Render::RHI::NativeBackendType::None:
-		case NLS::Render::RHI::NativeBackendType::OpenGL:
-		case NLS::Render::RHI::NativeBackendType::DX11:
-		default:
-			return true;
-		}
-	}
 
 	NLS::Render::RHI::SamplerDesc BuildDefaultSamplerDesc(const std::string& bindingName)
 	{
@@ -78,6 +66,33 @@ namespace
 		return texture;
 	}
 
+	NLS::Render::Resources::TextureCube* GetDefaultWhiteTextureCube()
+	{
+		static NLS::Render::Resources::TextureCube* texture = []() -> NLS::Render::Resources::TextureCube*
+		{
+			auto* cubeMap = new NLS::Render::Resources::TextureCube();
+			std::vector<uint8_t> whitePixel(4, 255);
+			std::vector<NLS::Image> images;
+			images.reserve(6);
+			for (int i = 0; i < 6; ++i)
+			{
+				images.emplace_back(1, 1, 4);
+				images.back().SetData(whitePixel.data());
+			}
+			std::vector<const NLS::Image*> imagePtrs;
+			imagePtrs.reserve(6);
+			for (auto& img : images)
+				imagePtrs.push_back(&img);
+			if (!cubeMap->SetTextureResource(imagePtrs))
+			{
+				delete cubeMap;
+				return nullptr;
+			}
+			return cubeMap;
+		}();
+		return texture;
+	}
+
 	std::any CreateDefaultMaterialValue(UniformType type)
 	{
 		switch (type)
@@ -103,6 +118,22 @@ namespace
 			 property.kind == ShaderResourceKind::Sampler);
 	}
 
+	void ApplyPipelineStateOverrides(
+		NLS::Render::RHI::RHIGraphicsPipelineDesc& desc,
+		const NLS::Render::Resources::MaterialPipelineStateOverrides& overrides)
+	{
+		if (overrides.colorWrite.has_value())
+			desc.blendState.colorWrite = *overrides.colorWrite;
+		if (overrides.depthWrite.has_value())
+			desc.depthStencilState.depthWrite = *overrides.depthWrite;
+		if (overrides.depthTest.has_value())
+			desc.depthStencilState.depthTest = *overrides.depthTest;
+		if (overrides.culling.has_value())
+			desc.rasterState.cullEnabled = *overrides.culling;
+		if (overrides.cullFace.has_value())
+			desc.rasterState.cullFace = *overrides.cullFace;
+	}
+
     bool ShouldLogMaterialBindingDiagnostics()
     {
         static const bool enabled = []()
@@ -112,6 +143,18 @@ namespace
             return false;
         }();
         return enabled;
+    }
+
+    NLS::Render::RHI::NativeBackendType ResolveDeviceBackendType(
+        const std::shared_ptr<NLS::Render::RHI::RHIDevice>& device)
+    {
+        if (device == nullptr)
+            return NLS::Render::RHI::NativeBackendType::None;
+
+        const auto& adapter = device->GetAdapter();
+        return adapter != nullptr
+            ? adapter->GetBackendType()
+            : NLS::Render::RHI::NativeBackendType::None;
     }
 
 	template<typename T>
@@ -219,18 +262,6 @@ namespace
 		}
 	}
 
-	uint32_t MapBindingSpaceToSetIndex(const uint32_t bindingSpace)
-	{
-		switch (bindingSpace)
-		{
-		case NLS::Render::RHI::BindingPointMap::kFrameBindingSpace: return 0u;
-		case NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace: return 1u;
-		case NLS::Render::RHI::BindingPointMap::kObjectBindingSpace: return 2u;
-		case NLS::Render::RHI::BindingPointMap::kPassBindingSpace: return 3u;
-		default: return bindingSpace;
-		}
-	}
-
 	NLS::Render::RHI::BindingType ToBindingType(const ShaderResourceKind kind)
 	{
 		switch (kind)
@@ -285,22 +316,71 @@ namespace
 
 namespace NLS::Render::Resources
 {
+	struct Material::MaterialRuntimeState
+	{
+		struct MaterialConstantBufferState
+		{
+			std::unique_ptr<NLS::Render::Buffers::UniformBuffer> buffer;
+			uint32_t size = 0;
+			uint32_t bindingPoint = 0;
+		};
+
+		MaterialResourceSet bindingSet;
+		std::map<std::string, MaterialConstantBufferState> materialConstantBuffers;
+		std::shared_ptr<RHI::RHIBindingLayout> explicitBindingLayout;
+		std::shared_ptr<RHI::RHIBindingSet> explicitBindingSet;
+		std::shared_ptr<RHI::RHIPipelineLayout> explicitPipelineLayout;
+		RHI::NativeBackendType explicitBindingLayoutBackend = RHI::NativeBackendType::None;
+		RHI::NativeBackendType explicitBindingSetBackend = RHI::NativeBackendType::None;
+		RHI::NativeBackendType explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
+		bool explicitBindingLayoutDirty = true;
+		bool explicitBindingSetDirty = true;
+	};
+
+	Material::MaterialRuntimeState& Material::GetRuntimeState() const
+	{
+		if (!m_runtimeState)
+			m_runtimeState = std::make_unique<MaterialRuntimeState>();
+		return *m_runtimeState;
+	}
+
+	void Material::ResetRuntimeState() const
+	{
+		auto& state = GetRuntimeState();
+		state.bindingSet.Clear();
+		state.materialConstantBuffers.clear();
+		state.explicitBindingLayout.reset();
+		state.explicitBindingSet.reset();
+		state.explicitPipelineLayout.reset();
+		state.explicitBindingLayoutBackend = RHI::NativeBackendType::None;
+		state.explicitBindingSetBackend = RHI::NativeBackendType::None;
+		state.explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
+		state.explicitBindingLayoutDirty = true;
+		state.explicitBindingSetDirty = true;
+	}
+
+	void Material::InvalidateExplicitBindingSetCache() const
+	{
+		auto& state = GetRuntimeState();
+		state.explicitBindingSet.reset();
+		state.explicitPipelineLayout.reset();
+		state.explicitBindingSetBackend = RHI::NativeBackendType::None;
+		state.explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
+		state.explicitBindingSetDirty = true;
+	}
+
 	Material::Material(Shader* p_shader)
 	{
+		m_runtimeState = std::make_unique<MaterialRuntimeState>();
 		SetShader(p_shader);
 	}
+
+	Material::~Material() = default;
 
 	void Material::SetShader(Shader* p_shader)
 	{
 		m_shader = p_shader;
-		m_explicitBindingLayout.reset();
-		m_explicitBindingSet.reset();
-		m_explicitPipelineLayout.reset();
-		m_explicitBindingLayoutBackend = RHI::NativeBackendType::None;
-		m_explicitBindingSetBackend = RHI::NativeBackendType::None;
-		m_explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
-		m_explicitBindingLayoutDirty = true;
-		m_explicitBindingSetDirty = true;
+		ResetRuntimeState();
 
 		if (m_shader)
 			FillUniform();
@@ -308,8 +388,6 @@ namespace NLS::Render::Resources
 		{
 			m_parameterBlock.Clear();
 			m_bindingLayout.bindings.clear();
-			m_bindingSet.Clear();
-			m_materialConstantBuffers.clear();
 		}
 	}
 
@@ -317,16 +395,7 @@ namespace NLS::Render::Resources
 	{
 		m_parameterBlock.Clear();
 		m_bindingLayout.bindings.clear();
-		m_bindingSet.Clear();
-		m_materialConstantBuffers.clear();
-		m_explicitBindingLayout.reset();
-		m_explicitBindingSet.reset();
-		m_explicitPipelineLayout.reset();
-		m_explicitBindingLayoutBackend = RHI::NativeBackendType::None;
-		m_explicitBindingSetBackend = RHI::NativeBackendType::None;
-		m_explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
-		m_explicitBindingLayoutDirty = true;
-		m_explicitBindingSetDirty = true;
+		ResetRuntimeState();
 
 		if (!m_shader)
 			return;
@@ -382,8 +451,7 @@ namespace NLS::Render::Resources
 		else
 			return false;
 
-		m_explicitBindingSet.reset();
-		m_explicitBindingSetDirty = true;
+		InvalidateExplicitBindingSetCache();
 		return true;
 	}
 
@@ -395,14 +463,7 @@ namespace NLS::Render::Resources
 	void Material::RebuildBindingLayout()
 	{
 		m_bindingLayout.bindings.clear();
-		m_explicitBindingLayout.reset();
-		m_explicitBindingSet.reset();
-		m_explicitPipelineLayout.reset();
-		m_explicitBindingLayoutBackend = RHI::NativeBackendType::None;
-		m_explicitBindingSetBackend = RHI::NativeBackendType::None;
-		m_explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
-		m_explicitBindingLayoutDirty = true;
-		m_explicitBindingSetDirty = true;
+		ResetRuntimeState();
 
 		if (!m_shader)
 			return;
@@ -445,17 +506,15 @@ namespace NLS::Render::Resources
 
 	void Material::RebuildBindingSet() const
 	{
-		m_explicitBindingSet.reset();
-		m_explicitPipelineLayout.reset();
-		m_explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
-		m_explicitBindingSetDirty = true;
-		m_bindingSet.SetLayout(m_bindingLayout);
+		auto& state = GetRuntimeState();
+		InvalidateExplicitBindingSetCache();
+		state.bindingSet.SetLayout(m_bindingLayout);
 
 		for (const auto& binding : m_bindingLayout.bindings)
 		{
 			if (binding.kind == ShaderResourceKind::Sampler)
 			{
-				m_bindingSet.SetSampler(binding.name, BuildDefaultSamplerDesc(binding.name));
+				state.bindingSet.SetSampler(binding.name, BuildDefaultSamplerDesc(binding.name));
 				continue;
 			}
 
@@ -469,12 +528,12 @@ namespace NLS::Render::Resources
 				if (parameter->type() == typeid(Texture2D*))
 				{
 					auto* texture = std::any_cast<Texture2D*>(*parameter);
-					m_bindingSet.SetTexture(binding.name, texture != nullptr ? texture : GetDefaultWhiteTexture2D());
+					state.bindingSet.SetTexture(binding.name, texture != nullptr ? texture : GetDefaultWhiteTexture2D());
 				}
 				break;
 			case UniformType::UNIFORM_SAMPLER_CUBE:
 				if (parameter->type() == typeid(TextureCube*))
-					m_bindingSet.SetTexture(binding.name, std::any_cast<TextureCube*>(*parameter));
+					state.bindingSet.SetTexture(binding.name, std::any_cast<TextureCube*>(*parameter));
 				break;
 			default:
 				break;
@@ -525,7 +584,7 @@ namespace NLS::Render::Resources
 				constantBuffer.bindingSpace,
 				constantBuffer.bindingIndex);
 
-			auto& bufferState = m_materialConstantBuffers[constantBuffer.name];
+			auto& bufferState = state.materialConstantBuffers[constantBuffer.name];
 			if (!bufferState.buffer || bufferState.size != constantBuffer.byteSize || bufferState.bindingPoint != bindingPoint)
 			{
 				bufferState.buffer = std::make_unique<NLS::Render::Buffers::UniformBuffer>(
@@ -550,14 +609,18 @@ namespace NLS::Render::Resources
 				bufferState.buffer->SetRawData(bufferData.data(), static_cast<uint32_t>(bufferData.size()));
 			bufferState.buffer->Bind(bindingPoint);
 
-			m_bindingSet.SetBuffer(
+			state.bindingSet.SetBuffer(
 				constantBuffer.name,
-				bufferState.buffer->GetBufferHandle(),
-				bufferState.buffer->GetRHIBuffer());
+				bufferState.buffer->GetBufferHandle());
 		}
 	}
 
 	Shader*& Material::GetShader()
+	{
+		return m_shader;
+	}
+
+	const Shader* Material::GetShader() const
 	{
 		return m_shader;
 	}
@@ -599,194 +662,85 @@ namespace NLS::Render::Resources
 		return stateMask;
 	}
 
-	RHI::GraphicsPipelineDesc Material::BuildGraphicsPipelineDesc() const
-	{
-		RHI::GraphicsPipelineDesc desc;
-		desc.blendState.enabled = m_blendable;
-		desc.blendState.colorWrite = m_colorWriting;
-		desc.depthStencilState.depthTest = m_depthTest;
-		desc.depthStencilState.depthWrite = m_depthWriting;
-		desc.attachmentLayout.colorAttachmentFormats = { RHI::TextureFormat::RGBA8 };
-		desc.attachmentLayout.depthAttachmentFormat = RHI::TextureFormat::Depth24Stencil8;
-		desc.attachmentLayout.sampleCount = 1;
-		desc.attachmentLayout.hasDepthAttachment = true;
-		desc.rasterState.culling = m_backfaceCulling || m_frontfaceCulling;
-		desc.rasterState.cullFace = m_backfaceCulling && m_frontfaceCulling
-			? Settings::ECullFace::FRONT_AND_BACK
-			: m_frontfaceCulling ? Settings::ECullFace::FRONT : Settings::ECullFace::BACK;
-		desc.gpuInstances = m_gpuInstances;
-		desc.reflection = m_shader ? &m_shader->GetReflection() : nullptr;
-
-		if (m_shader)
-		{
-			for (const auto targetPlatform : {
-				ShaderCompiler::ShaderTargetPlatform::DXIL,
-				ShaderCompiler::ShaderTargetPlatform::SPIRV,
-				ShaderCompiler::ShaderTargetPlatform::GLSL })
-			{
-				for (const auto stage : { ShaderCompiler::ShaderStage::Vertex, ShaderCompiler::ShaderStage::Pixel })
-				{
-					if (const auto* artifact = m_shader->FindCompiledArtifact(stage, targetPlatform); artifact != nullptr)
-					{
-						desc.shaderStages.push_back({
-							static_cast<RHI::ShaderStage>(artifact->stage),
-							artifact->targetPlatform,
-							artifact->entryPoint,
-							artifact->output.bytecode
-						});
-					}
-				}
-			}
-		}
-
-		if (m_shader)
-		{
-			for (const auto& constantBuffer : m_shader->GetReflection().constantBuffers)
-				++desc.layout.uniformBufferBindingCount;
-
-			for (const auto& property : m_shader->GetReflection().properties)
-			{
-				switch (property.kind)
-				{
-				case ShaderResourceKind::SampledTexture:
-					++desc.layout.sampledTextureBindingCount;
-					break;
-				case ShaderResourceKind::Sampler:
-					++desc.layout.samplerBindingCount;
-					break;
-				case ShaderResourceKind::StructuredBuffer:
-				case ShaderResourceKind::StorageBuffer:
-					++desc.layout.storageBufferBindingCount;
-					break;
-				default:
-					break;
-				}
-			}
-		}
-
-		return desc;
-	}
-
-	RHI::RHIGraphicsPipelineDesc Material::BuildExplicitGraphicsPipelineDesc(
-		const std::shared_ptr<RHI::RHIPipelineLayout>& pipelineLayout,
-		const std::shared_ptr<RHI::RHIShaderModule>& vertexShader,
-		const std::shared_ptr<RHI::RHIShaderModule>& fragmentShader,
-		Settings::EPrimitiveMode primitiveMode,
-		Settings::EComparaisonAlgorithm depthCompare) const
-	{
-		RHI::RHIGraphicsPipelineDesc desc;
-		desc.pipelineLayout = pipelineLayout;
-		desc.vertexShader = vertexShader;
-		desc.fragmentShader = fragmentShader;
-		desc.reflection = m_shader ? &m_shader->GetReflection() : nullptr;
-		desc.rasterState.cullEnabled = m_backfaceCulling || m_frontfaceCulling;
-		desc.rasterState.cullFace = m_backfaceCulling && m_frontfaceCulling
-			? Settings::ECullFace::FRONT_AND_BACK
-			: m_frontfaceCulling ? Settings::ECullFace::FRONT : Settings::ECullFace::BACK;
-		desc.blendState.enabled = m_blendable;
-		desc.blendState.colorWrite = m_colorWriting;
-		desc.depthStencilState.depthTest = m_depthTest;
-		desc.depthStencilState.depthWrite = m_depthWriting;
-		desc.depthStencilState.depthCompare = depthCompare;
-		switch (primitiveMode)
-		{
-		case Settings::EPrimitiveMode::LINES:
-			desc.primitiveTopology = RHI::PrimitiveTopology::LineList;
-			break;
-		case Settings::EPrimitiveMode::POINTS:
-			desc.primitiveTopology = RHI::PrimitiveTopology::PointList;
-			break;
-		case Settings::EPrimitiveMode::TRIANGLES:
-		default:
-			desc.primitiveTopology = RHI::PrimitiveTopology::TriangleList;
-			break;
-		}
-		desc.renderTargetLayout.colorFormats = { RHI::TextureFormat::RGBA8 };
-		desc.renderTargetLayout.depthFormat = RHI::TextureFormat::Depth24Stencil8;
-		desc.renderTargetLayout.hasDepth = true;
-		desc.renderTargetLayout.sampleCount = 1;
-		desc.debugName = "RecordedGraphicsPipeline";
-		desc.vertexBuffers.push_back({ 0u, static_cast<uint32_t>(sizeof(NLS::Render::Geometry::Vertex)), false });
-		desc.vertexAttributes = {
-			{ 0u, 0u, 0u, 12u },
-			{ 1u, 0u, 12u, 8u },
-			{ 2u, 0u, 20u, 12u },
-			{ 3u, 0u, 32u, 12u },
-			{ 4u, 0u, 44u, 12u }
-		};
-		return desc;
-	}
-
-	Material::ExplicitPipelineState Material::BuildExplicitPipelineState(
-		const std::shared_ptr<RHI::RHIPipelineLayout>& pipelineLayout,
-		const std::shared_ptr<RHI::RHIShaderModule>& vertexShader,
-		const std::shared_ptr<RHI::RHIShaderModule>& fragmentShader,
-		Settings::EPrimitiveMode primitiveMode,
-		Settings::EComparaisonAlgorithm depthCompare) const
-	{
-		ExplicitPipelineState state;
-		state.pipelineLayout = pipelineLayout;
-		state.vertexShader = vertexShader;
-		state.fragmentShader = fragmentShader;
-
-		if (state.IsComplete())
-		{
-			state.pipelineDesc = BuildExplicitGraphicsPipelineDesc(
-				state.pipelineLayout,
-				state.vertexShader,
-				state.fragmentShader,
-				primitiveMode,
-				depthCompare);
-		}
-
-		return state;
-	}
-
-	Material::ExplicitPipelineState Material::BuildExplicitPipelineState(
-		const std::shared_ptr<RHI::RHIDevice>& device,
-		Settings::EPrimitiveMode primitiveMode,
-		Settings::EComparaisonAlgorithm depthCompare) const
-	{
-		const auto pipelineLayout = GetExplicitPipelineLayout(device);
-		const auto vertexShader = m_shader != nullptr
-			? m_shader->GetOrCreateExplicitShaderModule(device, NLS::Render::ShaderCompiler::ShaderStage::Vertex)
-			: nullptr;
-		const auto fragmentShader = m_shader != nullptr
-			? m_shader->GetOrCreateExplicitShaderModule(device, NLS::Render::ShaderCompiler::ShaderStage::Pixel)
-			: nullptr;
-		return BuildExplicitPipelineState(
-			pipelineLayout,
-			vertexShader,
-			fragmentShader,
-			primitiveMode,
-			depthCompare);
-	}
-
 	std::shared_ptr<RHI::RHIGraphicsPipeline> Material::BuildRecordedGraphicsPipeline(
 		const std::shared_ptr<RHI::RHIDevice>& device,
 		Settings::EPrimitiveMode primitiveMode,
-		Settings::EComparaisonAlgorithm depthCompare) const
+		const Data::PipelineState& pipelineState,
+		MaterialPipelineStateOverrides overrides,
+		bool* hasPipelineLayout,
+		bool* hasVertexShader,
+		bool* hasFragmentShader) const
 	{
-		const auto explicitState = BuildExplicitPipelineState(device, primitiveMode, depthCompare);
-		if (device != nullptr && explicitState.IsComplete())
-			return device->CreateGraphicsPipeline(explicitState.pipelineDesc);
-		if (!CanUseCompatibilityRecordedFallback(device))
-			return nullptr;
+		const auto pipelineLayout = GetExplicitPipelineLayout(device);
+		const auto vertexShader = device != nullptr && m_shader != nullptr
+			? m_shader->GetOrCreateExplicitShaderModule(device, NLS::Render::ShaderCompiler::ShaderStage::Vertex)
+			: nullptr;
+		const auto fragmentShader = device != nullptr && m_shader != nullptr
+			? m_shader->GetOrCreateExplicitShaderModule(device, NLS::Render::ShaderCompiler::ShaderStage::Pixel)
+			: nullptr;
 
-		auto legacyDesc = BuildGraphicsPipelineDesc();
-		legacyDesc.primitiveMode = primitiveMode;
-		legacyDesc.depthStencilState.depthCompare = depthCompare;
-		return RHI::CreateCompatibilityGraphicsPipeline(legacyDesc);
+		if (hasPipelineLayout != nullptr)
+			*hasPipelineLayout = pipelineLayout != nullptr;
+		if (hasVertexShader != nullptr)
+			*hasVertexShader = vertexShader != nullptr;
+		if (hasFragmentShader != nullptr)
+			*hasFragmentShader = fragmentShader != nullptr;
+
+		if (device != nullptr &&
+			pipelineLayout != nullptr &&
+			vertexShader != nullptr &&
+			fragmentShader != nullptr)
+		{
+			RHI::RHIGraphicsPipelineDesc desc;
+			desc.pipelineLayout = pipelineLayout;
+			desc.vertexShader = vertexShader;
+			desc.fragmentShader = fragmentShader;
+			desc.reflection = m_shader ? &m_shader->GetReflection() : nullptr;
+			desc.rasterState.cullEnabled = m_backfaceCulling || m_frontfaceCulling;
+			desc.rasterState.cullFace = m_backfaceCulling && m_frontfaceCulling
+				? Settings::ECullFace::FRONT_AND_BACK
+				: m_frontfaceCulling ? Settings::ECullFace::FRONT : Settings::ECullFace::BACK;
+			desc.blendState.enabled = m_blendable;
+			desc.blendState.colorWrite = m_colorWriting;
+			desc.depthStencilState.depthTest = m_depthTest;
+			desc.depthStencilState.depthWrite = m_depthWriting;
+			switch (primitiveMode)
+			{
+			case Settings::EPrimitiveMode::LINES:
+				desc.primitiveTopology = RHI::PrimitiveTopology::LineList;
+				break;
+			case Settings::EPrimitiveMode::POINTS:
+				desc.primitiveTopology = RHI::PrimitiveTopology::PointList;
+				break;
+			case Settings::EPrimitiveMode::TRIANGLES:
+			default:
+				desc.primitiveTopology = RHI::PrimitiveTopology::TriangleList;
+				break;
+			}
+			desc.renderTargetLayout.colorFormats = { RHI::TextureFormat::RGBA8 };
+			desc.renderTargetLayout.depthFormat = RHI::TextureFormat::Depth24Stencil8;
+			desc.renderTargetLayout.hasDepth = true;
+			desc.renderTargetLayout.sampleCount = 1;
+			desc.debugName = "RecordedGraphicsPipeline";
+			desc.vertexBuffers.push_back({ 0u, static_cast<uint32_t>(sizeof(NLS::Render::Geometry::Vertex)), false });
+			desc.vertexAttributes = {
+				{ 0u, 0u, 0u, 12u },
+				{ 1u, 0u, 12u, 8u },
+				{ 2u, 0u, 20u, 12u },
+				{ 3u, 0u, 32u, 12u },
+				{ 4u, 0u, 44u, 12u }
+			};
+			RHI::ApplyPipelineStateToGraphicsPipelineDesc(pipelineState, desc);
+			ApplyPipelineStateOverrides(desc, overrides);
+			return device->CreateGraphicsPipeline(desc);
+		}
+
+		return nullptr;
 	}
 
 	std::shared_ptr<RHI::RHIBindingSet> Material::GetRecordedBindingSet(const std::shared_ptr<RHI::RHIDevice>& device) const
 	{
-		if (const auto explicitBindingSet = GetExplicitBindingSet(device); explicitBindingSet != nullptr)
-			return explicitBindingSet;
-		if (!CanUseCompatibilityRecordedFallback(device))
-			return nullptr;
-
-		return RHI::WrapCompatibilityBindingSet(&GetBindingSetInstance());
+		return GetExplicitBindingSet(device);
 	}
 
 	MaterialParameterBlock& Material::GetParameterBlock()
@@ -799,108 +753,67 @@ namespace NLS::Render::Resources
 		return m_parameterBlock;
 	}
 
-	const ResourceBindingLayout& Material::GetBindingLayout() const
-	{
-		return m_bindingLayout;
-	}
-
-	const MaterialLayout& Material::GetMaterialLayout() const
-	{
-		return m_materialLayout;
-	}
-
-	const BindingSetInstance& Material::GetBindingSetInstance() const
-	{
-		RebuildBindingSet();
-		return m_bindingSet;
-	}
-
 	const MaterialResourceSet& Material::GetBindingSet() const
 	{
 		RebuildBindingSet();
-		return m_bindingSet;
+		return GetRuntimeState().bindingSet;
 	}
 
 	const std::shared_ptr<RHI::RHIBindingLayout>& Material::GetExplicitBindingLayout(const std::shared_ptr<RHI::RHIDevice>& device) const
 	{
-		const auto backend = device != nullptr ? device->GetNativeDeviceInfo().backend : RHI::NativeBackendType::None;
-		if (!m_explicitBindingLayoutDirty &&
-			m_explicitBindingLayout != nullptr &&
-			m_explicitBindingLayoutBackend == backend)
+		auto& state = GetRuntimeState();
+		const auto backend = ResolveDeviceBackendType(device);
+		if (!state.explicitBindingLayoutDirty &&
+			state.explicitBindingLayout != nullptr &&
+			state.explicitBindingLayoutBackend == backend)
 		{
-			return m_explicitBindingLayout;
+			return state.explicitBindingLayout;
 		}
 
-		m_explicitBindingLayout.reset();
-		m_explicitBindingLayoutBackend = backend;
+		state.explicitBindingLayout.reset();
+		state.explicitBindingLayoutBackend = backend;
 		if (!m_shader)
 		{
-			m_explicitBindingLayoutDirty = false;
-			return m_explicitBindingLayout;
+			state.explicitBindingLayoutDirty = false;
+			return state.explicitBindingLayout;
 		}
 
-		RHI::RHIBindingLayoutDesc layoutDesc;
-		layoutDesc.debugName = path.empty() ? "MaterialBindingLayout" : path + ":MaterialBindingLayout";
-
-		for (const auto& constantBuffer : m_shader->GetReflection().constantBuffers)
+		const auto layoutDescs = BuildExplicitBindingLayoutDescsBySet(
+			m_shader->GetReflection(),
+			path.empty() ? "Material" : path);
+		constexpr uint32_t materialSetIndex = NLS::Render::RHI::BindingPointMap::kMaterialDescriptorSet;
+		if (device != nullptr &&
+			layoutDescs.size() > materialSetIndex &&
+			!layoutDescs[materialSetIndex].entries.empty())
 		{
-			if (constantBuffer.bindingSpace != NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace)
-				continue;
-
-			UpsertBindingLayoutEntry(
-				layoutDesc,
-				constantBuffer.name,
-				RHI::BindingType::UniformBuffer,
-				MapBindingSpaceToSetIndex(constantBuffer.bindingSpace),
-				constantBuffer.bindingIndex,
-				1u,
-				ToShaderStageMask(constantBuffer.stage));
+			auto layoutDesc = layoutDescs[materialSetIndex];
+			layoutDesc.debugName = path.empty() ? "MaterialBindingLayout" : path + ":MaterialBindingLayout";
+			state.explicitBindingLayout = device->CreateBindingLayout(layoutDesc);
 		}
-
-		for (const auto& property : m_shader->GetReflection().properties)
-		{
-			if (!ShouldExposeToMaterial(property) ||
-				(property.kind != ShaderResourceKind::SampledTexture &&
-				 property.kind != ShaderResourceKind::Sampler))
-			{
-				continue;
-			}
-
-			UpsertBindingLayoutEntry(
-				layoutDesc,
-				property.name,
-				ToBindingType(property.kind),
-				MapBindingSpaceToSetIndex(property.bindingSpace),
-				property.bindingIndex,
-				property.arraySize > 0 ? static_cast<uint32_t>(property.arraySize) : 1u,
-				ToShaderStageMask(property.stage));
-		}
-
-		if (device != nullptr)
-			m_explicitBindingLayout = device->CreateBindingLayout(layoutDesc);
-		m_explicitBindingLayoutDirty = false;
-		return m_explicitBindingLayout;
+		state.explicitBindingLayoutDirty = false;
+		return state.explicitBindingLayout;
 	}
 
 	const std::shared_ptr<RHI::RHIBindingSet>& Material::GetExplicitBindingSet(const std::shared_ptr<RHI::RHIDevice>& device) const
 	{
-		const auto backend = device != nullptr ? device->GetNativeDeviceInfo().backend : RHI::NativeBackendType::None;
-		if (!m_explicitBindingSetDirty &&
-			m_explicitBindingSet != nullptr &&
-			m_explicitBindingSetBackend == backend)
+		auto& state = GetRuntimeState();
+		const auto backend = ResolveDeviceBackendType(device);
+		if (!state.explicitBindingSetDirty &&
+			state.explicitBindingSet != nullptr &&
+			state.explicitBindingSetBackend == backend)
 		{
-			return m_explicitBindingSet;
+			return state.explicitBindingSet;
 		}
 
 		RebuildBindingSet();
 
 		const auto& explicitLayout = GetExplicitBindingLayout(device);
-		m_explicitBindingSet.reset();
-		m_explicitBindingSetBackend = backend;
+		state.explicitBindingSet.reset();
+		state.explicitBindingSetBackend = backend;
 		if (device == nullptr || explicitLayout == nullptr)
 		{
-			m_explicitBindingSetDirty = false;
-			return m_explicitBindingSet;
+			state.explicitBindingSetDirty = false;
+			return state.explicitBindingSet;
 		}
 
 		RHI::RHIBindingSetDesc bindingSetDesc;
@@ -918,14 +831,14 @@ namespace NLS::Render::Resources
 			case RHI::BindingType::UniformBuffer:
 			case RHI::BindingType::StorageBuffer:
 			{
-				auto bufferState = m_materialConstantBuffers.find(entry.name);
-				if (bufferState == m_materialConstantBuffers.end() || !bufferState->second.buffer)
+				auto bufferState = state.materialConstantBuffers.find(entry.name);
+				if (bufferState == state.materialConstantBuffers.end() || !bufferState->second.buffer)
 				{
 					if (ShouldLogMaterialBindingDiagnostics() && m_shader != nullptr && m_shader->path.find("Skybox") != std::string::npos)
 					{
 						NLS_LOG_INFO(
 							"[SkyboxMaterial] Missing explicit buffer for entry \"" + entry.name +
-							"\". known buffers=" + std::to_string(m_materialConstantBuffers.size()));
+							"\". known buffers=" + std::to_string(state.materialConstantBuffers.size()));
 					}
 					continue;
 				}
@@ -961,8 +874,11 @@ namespace NLS::Render::Resources
 					break;
 				}
 				case UniformType::UNIFORM_SAMPLER_CUBE:
-					texture = std::any_cast<TextureCube*>(*parameter);
+				{
+					auto* textureCube = std::any_cast<TextureCube*>(*parameter);
+					texture = textureCube != nullptr ? textureCube : GetDefaultWhiteTextureCube();
 					break;
+				}
 				default:
 					break;
 				}
@@ -970,19 +886,26 @@ namespace NLS::Render::Resources
 				if (texture == nullptr || !texture->GetTextureHandle())
 				{
 					if (ShouldLogMaterialBindingDiagnostics() && m_shader != nullptr && m_shader->path.find("Skybox") != std::string::npos)
-						NLS_LOG_INFO("[SkyboxMaterial] Texture entry \"" + entry.name + "\" resolved to null texture");
+						NLS_LOG_INFO("[SkyboxMaterial] Texture entry \"" + entry.name + "\" resolved to null texture or null handle, skipping");
 					continue;
 				}
 
 				bindingEntry.textureView = texture->GetOrCreateExplicitTextureView(entry.name + "View");
 				if (bindingEntry.textureView == nullptr)
+				{
+					if (ShouldLogMaterialBindingDiagnostics() && m_shader != nullptr && m_shader->path.find("Skybox") != std::string::npos)
+						NLS_LOG_INFO("[SkyboxMaterial] Texture entry \"" + entry.name + "\" GetOrCreateExplicitTextureView returned null, skipping");
 					continue;
+				}
+
+				if (ShouldLogMaterialBindingDiagnostics() && m_shader != nullptr && m_shader->path.find("Skybox") != std::string::npos)
+					NLS_LOG_INFO("[SkyboxMaterial] Texture entry \"" + entry.name + "\" added to binding set");
 				break;
 			}
 			case RHI::BindingType::Sampler:
 			{
 				const auto defaultSampler = BuildDefaultSamplerDesc(entry.name);
-				const auto* sampler = m_bindingSet.GetSampler(entry.name);
+				const auto* sampler = state.bindingSet.GetSampler(entry.name);
 				bindingEntry.sampler = device->CreateSampler(
 					sampler != nullptr ? *sampler : defaultSampler,
 					entry.name + "Sampler");
@@ -998,31 +921,39 @@ namespace NLS::Render::Resources
 		if (ShouldLogMaterialBindingDiagnostics() && m_shader != nullptr && m_shader->path.find("Skybox") != std::string::npos)
 			NLS_LOG_INFO("[SkyboxMaterial] Explicit binding set entry count = " + std::to_string(bindingSetDesc.entries.size()));
 
-		m_explicitBindingSet = device->CreateBindingSet(bindingSetDesc);
-		m_explicitBindingSetDirty = false;
-		return m_explicitBindingSet;
+		state.explicitBindingSet = device->CreateBindingSet(bindingSetDesc);
+		state.explicitBindingSetDirty = false;
+		return state.explicitBindingSet;
 	}
 
 	const std::shared_ptr<RHI::RHIPipelineLayout>& Material::GetExplicitPipelineLayout(const std::shared_ptr<RHI::RHIDevice>& device) const
 	{
-		const auto backend = device != nullptr ? device->GetNativeDeviceInfo().backend : RHI::NativeBackendType::None;
-		if (m_explicitPipelineLayout != nullptr && m_explicitPipelineLayoutBackend == backend)
-			return m_explicitPipelineLayout;
+		auto& state = GetRuntimeState();
+		const auto backend = ResolveDeviceBackendType(device);
+		if (state.explicitPipelineLayout != nullptr && state.explicitPipelineLayoutBackend == backend)
+			return state.explicitPipelineLayout;
 
-		m_explicitPipelineLayout.reset();
-		m_explicitPipelineLayoutBackend = backend;
+		state.explicitPipelineLayout.reset();
+		state.explicitPipelineLayoutBackend = backend;
 		if (device == nullptr)
-			return m_explicitPipelineLayout;
+			return state.explicitPipelineLayout;
 
-		const auto& materialLayout = GetExplicitBindingLayout(device);
-		if (materialLayout == nullptr)
-			return m_explicitPipelineLayout;
+		if (m_shader == nullptr)
+			return state.explicitPipelineLayout;
+
+		const auto layoutDescs = BuildExplicitBindingLayoutDescsBySet(
+			m_shader->GetReflection(),
+			path.empty() ? "Material" : path);
+		if (layoutDescs.empty())
+			return state.explicitPipelineLayout;
 
 		RHI::RHIPipelineLayoutDesc pipelineLayoutDesc;
-		pipelineLayoutDesc.bindingLayouts.push_back(materialLayout);
 		pipelineLayoutDesc.debugName = path.empty() ? "MaterialPipelineLayout" : path + ":MaterialPipelineLayout";
-		m_explicitPipelineLayout = device->CreatePipelineLayout(pipelineLayoutDesc);
-		return m_explicitPipelineLayout;
+		pipelineLayoutDesc.bindingLayouts.reserve(layoutDescs.size());
+		for (const auto& layoutDesc : layoutDescs)
+			pipelineLayoutDesc.bindingLayouts.push_back(device->CreateBindingLayout(layoutDesc));
+		state.explicitPipelineLayout = device->CreatePipelineLayout(pipelineLayoutDesc);
+		return state.explicitPipelineLayout;
 	}
 
 	std::map<std::string, std::any>& Material::GetUniformsData()

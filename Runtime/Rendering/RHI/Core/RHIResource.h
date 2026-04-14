@@ -52,6 +52,8 @@ namespace NLS::Render::RHI
     public:
         virtual const RHIBufferDesc& GetDesc() const = 0;
         virtual ResourceState GetState() const = 0;
+        virtual uint64_t GetGPUAddress() const = 0;
+        virtual NativeHandle GetNativeBufferHandle() { return {}; } // Type-safe native handle
     };
 
     class NLS_RENDER_API RHITexture : public RHIObject
@@ -59,6 +61,7 @@ namespace NLS::Render::RHI
     public:
         virtual const RHITextureDesc& GetDesc() const = 0;
         virtual ResourceState GetState() const = 0;
+        virtual NativeHandle GetNativeImageHandle() { return {}; } // Type-safe native handle
     };
 
     class NLS_RENDER_API RHITextureView : public RHIObject
@@ -66,11 +69,15 @@ namespace NLS::Render::RHI
     public:
         virtual const RHITextureViewDesc& GetDesc() const = 0;
         virtual const std::shared_ptr<RHITexture>& GetTexture() const = 0;
+        virtual NativeHandle GetNativeRenderTargetView() { return {}; } // Type-safe native handle
+        virtual NativeHandle GetNativeDepthStencilView() { return {}; } // Type-safe native handle
+        virtual NativeHandle GetNativeShaderResourceView() { return {}; } // Type-safe native handle
     };
 
     class NLS_RENDER_API RHISampler : public RHIObject
     {
     public:
         virtual const SamplerDesc& GetDesc() const = 0;
+        virtual NativeHandle GetNativeSamplerHandle() { return {}; } // Type-safe native handle
     };
 }

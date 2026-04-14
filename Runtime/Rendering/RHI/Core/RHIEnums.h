@@ -217,4 +217,38 @@ namespace NLS::Render::RHI
         uint32_t baseArrayLayer = 0;
         uint32_t arrayLayerCount = 1;
     };
+
+    enum class NLS_RENDER_API BackendType : uint8_t
+    {
+        Unknown,
+        DX12,
+        Vulkan,
+        OpenGL,
+        Metal,
+        DX11
+    };
+
+    // Type-safe native handle with backend type tag
+    // Use IsValid() to check if handle is set before using GetHandle()
+    // The backend tag allows callers to validate the handle type before casting
+    struct NLS_RENDER_API NativeHandle
+    {
+        BackendType backend = BackendType::Unknown;
+        void* handle = nullptr;
+
+        bool IsValid() const { return backend != BackendType::Unknown && handle != nullptr; }
+
+        template<typename T>
+        T* Get() const { return static_cast<T*>(handle); }
+
+        // Convenience casts for common types
+        void* GetBuffer() const { return handle; }
+        void* GetImage() const { return handle; }
+        void* GetSampler() const { return handle; }
+        void* GetDescriptor() const { return handle; }
+
+        // Allow comparison with nullptr for test compatibility
+        bool operator==(std::nullptr_t) const { return !IsValid(); }
+        bool operator!=(std::nullptr_t) const { return IsValid(); }
+    };
 }

@@ -2,23 +2,12 @@
 #include <cstdint>
 #include <vector>
 
-#include "Debug/Assertion.h"
-#include "Core/ServiceLocator.h"
-#include "Rendering/Context/Driver.h"
 #include "Rendering/Resources/TextureCube.h"
 
 using namespace NLS::Render::Resources;
 
 namespace
 {
-	using Driver = NLS::Render::Context::Driver;
-
-	Driver& RequireDriver()
-	{
-		NLS_ASSERT(NLS::Core::ServiceLocator::Contains<Driver>(), "TextureCube requires an initialized Driver.");
-		return NLS_SERVICE(Driver);
-	}
-
 	std::vector<uint8_t> ConvertImageToRGBA8(const NLS::Image& image)
 	{
 		const auto* source = image.GetData();
@@ -67,14 +56,15 @@ TextureCube::TextureCube()
 
 void TextureCube::Bind(uint32_t p_slot) const
 {
-	auto& driver = RequireDriver();
-	driver.ActivateTexture(p_slot);
-	driver.BindTexture(NLS::Render::RHI::TextureDimension::TextureCube, GetTextureId());
+	// In formal RHI, binding is handled at command buffer level through descriptor sets
+	// This is a no-op placeholder
+	(void)p_slot;
 }
 
 void TextureCube::Unbind() const
 {
-	RequireDriver().BindTexture(NLS::Render::RHI::TextureDimension::TextureCube, 0);
+	// In formal RHI, unbinding is handled at command buffer level
+	// This is a no-op placeholder
 }
 
 bool TextureCube::SetTextureResource(const std::vector<const NLS::Image*>& images)
@@ -101,20 +91,21 @@ bool TextureCube::SetTextureResource(const std::vector<const NLS::Image*>& image
 		packedFaces.insert(packedFaces.end(), faceData.begin(), faceData.end());
 	}
 
-	NLS::Render::RHI::TextureDesc desc;
-	desc.width = static_cast<uint16_t>(width);
-	desc.height = static_cast<uint16_t>(height);
-	desc.dimension = NLS::Render::RHI::TextureDimension::TextureCube;
-	desc.format = NLS::Render::RHI::TextureFormat::RGBA8;
-	desc.minFilter = NLS::Render::RHI::TextureFilter::Linear;
-	desc.magFilter = NLS::Render::RHI::TextureFilter::Linear;
-	desc.wrapS = NLS::Render::RHI::TextureWrap::ClampToEdge;
-	desc.wrapT = NLS::Render::RHI::TextureWrap::ClampToEdge;
-	desc.usage = NLS::Render::RHI::TextureUsage::Sampled;
-
-	auto& driver = RequireDriver();
-	driver.BindTexture(NLS::Render::RHI::TextureDimension::TextureCube, GetTextureId());
-	driver.SetupTexture(desc, packedFaces.data());
+	// For formal RHI texture, we need to recreate it with correct dimensions
+	// The initial CreateRHITexture() only creates a 1x1 placeholder
+	if (m_explicitTexture != nullptr)
+	{
+		RecreateRHITextureIfNeeded(
+		    width,
+		    height,
+		    NLS::Render::RHI::TextureFormat::RGBA8,
+		    NLS::Render::RHI::TextureFilter::Linear,
+		    NLS::Render::RHI::TextureFilter::Linear,
+		    NLS::Render::RHI::TextureWrap::ClampToEdge,
+		    NLS::Render::RHI::TextureWrap::ClampToEdge,
+		    false, // no mipmap support for cubemap in this path
+		    packedFaces.data());
+	}
 
 	return true;
 }

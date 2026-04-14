@@ -14,8 +14,7 @@ namespace NLS::Render::Resources
 			if (m_parameterBlock.Contains(p_key) || EnsureMaterialParameterExists(p_key))
 			{
 				m_parameterBlock.Set(p_key, std::any(p_value));
-				m_explicitBindingSet.reset();
-				m_explicitBindingSetDirty = true;
+				InvalidateExplicitBindingSetCache();
 			}
 		}
 		else

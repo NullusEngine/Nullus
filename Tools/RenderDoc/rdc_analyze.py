@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -133,6 +134,204 @@ def run_session_command(
     )
 
 
+def resolve_renderdoc_python_module() -> Path | None:
+    configured = os.environ.get("RENDERDOC_PYTHON_PATH")
+    if configured:
+        candidate = Path(configured).expanduser()
+        if candidate.exists():
+            return candidate
+    candidate = Path.home() / "AppData" / "Local" / "rdc" / "renderdoc"
+    if candidate.exists():
+        return candidate
+    return None
+
+
+def analyze_with_python_replay(
+    capture_path: Path,
+    focus_eid: int | None,
+    draw_limit: int,
+    event_limit: int,
+) -> dict[str, Any]:
+    renderdoc_path = resolve_renderdoc_python_module()
+    if renderdoc_path is None:
+        raise RuntimeError("RenderDoc Python module not found; set RENDERDOC_PYTHON_PATH to enable fallback replay.")
+
+    sys.path.insert(0, str(renderdoc_path))
+    import renderdoc as rd  # type: ignore
+
+    cap = rd.OpenCaptureFile()
+    ret = cap.OpenFile(str(capture_path), "", None)
+    if ret != rd.ResultCode.Succeeded:
+        cap.Shutdown()
+        raise RuntimeError(f"RenderDoc OpenFile failed: {ret}")
+
+    replay_status = cap.LocalReplaySupport()
+    if replay_status != rd.ResultCode.Succeeded:
+        analysis = analyze_with_python_metadata(
+            capture_path=capture_path,
+            replay_status=replay_status,
+            renderdoc_module=rd,
+            capture_file=cap,
+        )
+        cap.Shutdown()
+        return analysis
+
+    status, controller = cap.OpenCapture(rd.ReplayOptions(), None)
+    if status != rd.ResultCode.Succeeded or controller is None:
+        analysis = analyze_with_python_metadata(
+            capture_path=capture_path,
+            replay_status=status,
+            renderdoc_module=rd,
+            capture_file=cap,
+        )
+        cap.Shutdown()
+        return analysis
+
+    def flatten_draws(draws: list[Any], out: list[Any]) -> None:
+        for d in draws:
+            out.append(d)
+            if getattr(d, "children", None):
+                flatten_draws(list(d.children), out)
+
+    drawcalls = list(controller.GetDrawcalls())
+    flat_draws: list[Any] = []
+    flatten_draws(drawcalls, flat_draws)
+
+    def build_row(draw: Any) -> dict[str, Any]:
+        return {
+            "eid": int(getattr(draw, "eventId", 0)),
+            "type": str(getattr(draw, "name", "")),
+            "triangles": int(getattr(draw, "numIndices", 0)),
+            "pass": str(getattr(draw, "parent", "") or ""),
+            "marker": str(getattr(draw, "name", "")),
+        }
+
+    draws_payload = [build_row(draw) for draw in flat_draws[: max(1, draw_limit)]]
+    events_payload = [{"eid": int(getattr(draw, "eventId", 0)), "name": str(getattr(draw, "name", ""))} for draw in flat_draws[: max(1, event_limit)]]
+
+    if focus_eid is None and draws_payload:
+        focus_eid = int(draws_payload[0]["eid"])
+
+    pipeline_payload: dict[str, Any] | None = None
+    bindings_payload: list[dict[str, Any]] = []
+    shaders_payload: dict[str, Any] = {}
+    if focus_eid is not None:
+        try:
+            pipe = controller.GetPipelineState()
+            topology = pipe.GetPrimitiveTopology()
+            pipeline_payload = {
+                "api": str(controller.GetAPIProperties().pipelineType),
+                "topology": str(topology),
+            }
+        except Exception:
+            pipeline_payload = {}
+
+        try:
+            texs = controller.GetPipelineState().GetReadOnlyResources(rd.ShaderStage.Pixel)
+            bindings_payload = [
+                {"stage": "ps", "name": getattr(tex, "name", ""), "resourceId": int(getattr(tex, "resourceId", 0))}
+                for tex in texs
+            ]
+        except Exception:
+            bindings_payload = []
+
+        try:
+            vs = controller.GetPipelineState().GetShaderReflection(rd.ShaderStage.Vertex)
+            ps = controller.GetPipelineState().GetShaderReflection(rd.ShaderStage.Pixel)
+            if vs:
+                shaders_payload["vs"] = {"shader": int(getattr(vs, "resourceId", 0))}
+            if ps:
+                shaders_payload["ps"] = {"shader": int(getattr(ps, "resourceId", 0))}
+        except Exception:
+            shaders_payload = {}
+
+    info = {
+        "API": str(controller.GetAPIProperties().pipelineType),
+        "Events": len(flat_draws),
+        "Draw Calls": len(flat_draws),
+        "Clears": "n/a",
+        "Copies": "n/a",
+        "Capture": str(capture_path),
+    }
+    stats = {}
+    controller.Shutdown()
+    cap.Shutdown()
+
+    return build_analysis(
+        capture_path=capture_path,
+        doctor_output=None,
+        info=info,
+        stats=stats,
+        passes=[],
+        draws=draws_payload,
+        events=events_payload,
+        focus_eid=focus_eid,
+        pipeline=pipeline_payload,
+        bindings=bindings_payload,
+        shaders=shaders_payload,
+    )
+
+
+def analyze_with_python_metadata(
+    capture_path: Path,
+    replay_status: Any,
+    renderdoc_module: Any,
+    capture_file: Any,
+) -> dict[str, Any]:
+    thumb_path: str | None = None
+    try:
+        analysis_dir = REPO_ROOT / "Build" / "RenderDocAnalysis"
+        analysis_dir.mkdir(parents=True, exist_ok=True)
+        thumb = capture_file.GetThumbnail(renderdoc_module.FileType.PNG, 512)
+        if thumb and getattr(thumb, "data", None):
+            thumb_name = capture_path.stem + "_thumb.png"
+            thumb_path = str((analysis_dir / thumb_name).resolve())
+            with open(thumb_path, "wb") as handle:
+                handle.write(thumb.data)
+    except Exception:
+        thumb_path = None
+
+    section_count = 0
+    section_names: list[str] = []
+    try:
+        section_count = capture_file.GetSectionCount()
+        for idx in range(section_count):
+            props = capture_file.GetSectionProperties(idx)
+            name = getattr(props, "name", "")
+            if name:
+                section_names.append(name)
+    except Exception:
+        section_names = []
+
+    info = {
+        "API": "Unknown",
+        "Events": 0,
+        "Draw Calls": 0,
+        "Clears": "n/a",
+        "Copies": "n/a",
+        "Capture": str(capture_path),
+    }
+    stats = {
+        "replay_status": str(replay_status),
+        "sections": section_count,
+        "section_names": section_names[:8],
+        "thumbnail": thumb_path or "unavailable",
+    }
+    return build_analysis(
+        capture_path=capture_path,
+        doctor_output=None,
+        info=info,
+        stats=stats,
+        passes=[],
+        draws=[],
+        events=[],
+        focus_eid=None,
+        pipeline=None,
+        bindings=[],
+        shaders={},
+    )
+
+
 def choose_focus_eid(explicit: int | None, draws: list[dict[str, Any]]) -> int | None:
     if explicit is not None:
         return explicit
@@ -243,6 +442,21 @@ def format_markdown(analysis: dict[str, Any]) -> str:
     lines.append(
         f"- Clears: `{overall.get('clears', 'n/a')}` | Copies: `{overall.get('copies', 'n/a')}`"
     )
+    if overall.get("stats"):
+        stats = overall.get("stats", {})
+        if isinstance(stats, dict) and stats:
+            thumb = stats.get("thumbnail")
+            replay_status = stats.get("replay_status")
+            sections = stats.get("sections")
+            section_names = stats.get("section_names")
+            if replay_status:
+                lines.append(f"- Replay status: `{replay_status}`")
+            if sections is not None:
+                lines.append(f"- Sections: `{sections}`")
+            if section_names:
+                lines.append(f"- Section names: `{', '.join(section_names)}`")
+            if thumb:
+                lines.append(f"- Thumbnail: `{thumb}`")
 
     lines.append("")
     lines.append("## Pass Summary")
@@ -317,11 +531,11 @@ def main() -> int:
     if not args.skip_doctor:
         doctor_output = run_doctor(rdc_path, env, args.session)
 
-    run_session_command(
-        rdc_path, args.session, ["open", str(capture_path)], env, expect_json=False
-    )
-
     try:
+        run_session_command(
+            rdc_path, args.session, ["open", str(capture_path)], env, expect_json=False
+        )
+
         info = run_session_command(
             rdc_path, args.session, ["info", "--json"], env, expect_json=True
         )
@@ -392,6 +606,24 @@ def main() -> int:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(json.dumps(analysis, indent=2), encoding="utf-8")
 
+        print(format_markdown(analysis))
+        return 0
+    except Exception as error:
+        sys.stdout.flush()
+        print(f"[rdc_analyze] rdc-cli path failed: {error}", file=sys.stderr)
+        print("[rdc_analyze] falling back to RenderDoc Python replay", file=sys.stderr)
+        if os.environ.get("RDC_DEBUG", ""):
+            print(traceback.format_exc(), file=sys.stderr)
+        analysis = analyze_with_python_replay(
+            capture_path=capture_path,
+            focus_eid=args.focus_eid,
+            draw_limit=args.draw_limit,
+            event_limit=args.event_limit,
+        )
+        if args.json_out:
+            output_path = Path(args.json_out).resolve()
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(analysis, indent=2), encoding="utf-8")
         print(format_markdown(analysis))
         return 0
     finally:

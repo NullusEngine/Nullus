@@ -1,13 +1,13 @@
-﻿---
+---
 name: "speckit-constitution"
-description: "Create or update project governing principles and development guidelines. Use at project start to establish code quality, testing standards, and architectural constraints that guide all development."
+description: "Create or update the project constitution from interactive or provided principle inputs, ensuring all dependent templates stay in sync."
 compatibility: "Requires spec-kit project structure with .specify/ directory"
 metadata:
   author: "github-spec-kit"
   source: "templates/commands/constitution.md"
 ---
 
-# Speckit Constitution Skill
+
 ## User Input
 
 ```text
@@ -84,4 +84,3 @@ If the user supplies partial updates (e.g., only one principle revision), still 
 If critical info missing (e.g., ratification date truly unknown), insert `TODO(<FIELD_NAME>): explanation` and include in the Sync Impact Report under deferred items.
 
 Do not create a new template; always operate on the existing `.specify/memory/constitution.md` file.
-

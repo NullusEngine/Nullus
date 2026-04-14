@@ -18,16 +18,19 @@ Game::Core::Application::~Application()
 
 void Game::Core::Application::Run()
 {
+	NLS_LOG_INFO("Application::Run: starting game loop");
 	Time::Clock clock;
 
 	while (IsRunning())
 	{
+		NLS_LOG_INFO("Application::Run: frame start");
 		m_game.PreUpdate();
 		m_game.Update(clock.GetDeltaTime());
 		m_game.PostUpdate();
 
 		clock.Update();
 	}
+	NLS_LOG_INFO("Application::Run: game loop ended");
 }
 
 bool Game::Core::Application::IsRunning() const

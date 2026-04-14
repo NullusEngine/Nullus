@@ -3,7 +3,7 @@
 #include "Core/Context.h"
 #include "Core/Game.h"
 #include "Rendering/Settings/DriverSettings.h"
-
+#include <cstdint>
 #include <optional>
 #include <string>
 

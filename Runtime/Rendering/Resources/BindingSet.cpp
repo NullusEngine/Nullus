@@ -1,5 +1,4 @@
 #include "Rendering/Resources/BindingSet.h"
-#include "Rendering/RHI/IRHIResource.h"
 #include "Rendering/Resources/Texture.h"
 
 namespace NLS::Render::Resources
@@ -22,9 +21,6 @@ namespace NLS::Render::Resources
 				binding.bindingSpace,
 				binding.bindingIndex,
 				binding.slot,
-				nullptr,
-				nullptr,
-				nullptr,
 				nullptr,
 				nullptr,
 				nullptr,
@@ -55,16 +51,13 @@ namespace NLS::Render::Resources
 			{
 				entry.texture = texture;
 				entry.textureHandle = texture ? texture->GetTextureHandle() : nullptr;
-				entry.textureResource = texture ? texture->GetRHITexture() : nullptr;
-				entry.resource = entry.textureResource;
-				entry.bufferResource = nullptr;
 				entry.bufferHandle.reset();
 				return;
 			}
 		}
 	}
 
-	void BindingSet::SetTexture(const std::string& name, const std::shared_ptr<RHI::RHITexture>& texture, const RHI::IRHITexture* compatibilityTexture)
+	void BindingSet::SetTexture(const std::string& name, const std::shared_ptr<RHI::RHITexture>& texture)
 	{
 		for (auto& entry : m_entries)
 		{
@@ -72,65 +65,20 @@ namespace NLS::Render::Resources
 			{
 				entry.texture = nullptr;
 				entry.textureHandle = texture;
-				entry.textureResource = compatibilityTexture;
-				entry.resource = compatibilityTexture;
-				entry.bufferResource = nullptr;
 				entry.bufferHandle.reset();
 				return;
 			}
 		}
 	}
 
-	void BindingSet::SetBuffer(const std::string& name, const std::shared_ptr<RHI::RHIBuffer>& buffer, const RHI::IRHIBuffer* compatibilityBuffer)
+	void BindingSet::SetBuffer(const std::string& name, const std::shared_ptr<RHI::RHIBuffer>& buffer)
 	{
 		for (auto& entry : m_entries)
 		{
 			if (entry.name == name)
 			{
 				entry.bufferHandle = buffer;
-				entry.bufferResource = compatibilityBuffer;
-				entry.resource = compatibilityBuffer;
 				entry.textureHandle.reset();
-				entry.textureResource = nullptr;
-				entry.texture = nullptr;
-				return;
-			}
-		}
-	}
-
-	void BindingSet::SetResource(const std::string& name, const RHI::IRHIResource* resource)
-	{
-		for (auto& entry : m_entries)
-		{
-			if (entry.name == name)
-			{
-				entry.resource = resource;
-				entry.textureResource = resource && resource->GetResourceType() == RHI::RHIResourceType::Texture
-					? static_cast<const RHI::IRHITexture*>(resource)
-					: nullptr;
-				entry.bufferResource = resource && resource->GetResourceType() == RHI::RHIResourceType::Buffer
-					? static_cast<const RHI::IRHIBuffer*>(resource)
-					: nullptr;
-				entry.textureHandle.reset();
-				entry.bufferHandle.reset();
-				if (!entry.textureResource)
-					entry.texture = nullptr;
-				return;
-			}
-		}
-	}
-
-	void BindingSet::SetBuffer(const std::string& name, const RHI::IRHIBuffer* buffer)
-	{
-		for (auto& entry : m_entries)
-		{
-			if (entry.name == name)
-			{
-				entry.bufferResource = buffer;
-				entry.resource = buffer;
-				entry.textureResource = nullptr;
-				entry.textureHandle.reset();
-				entry.bufferHandle.reset();
 				entry.texture = nullptr;
 				return;
 			}
@@ -176,28 +124,6 @@ namespace NLS::Render::Resources
 		{
 			if (entry.name == name)
 				return entry.bufferHandle;
-		}
-
-		return nullptr;
-	}
-
-	const RHI::IRHIResource* BindingSet::GetResource(const std::string& name) const
-	{
-		for (const auto& entry : m_entries)
-		{
-			if (entry.name == name)
-				return entry.resource;
-		}
-
-		return nullptr;
-	}
-
-	const RHI::IRHIBuffer* BindingSet::GetBuffer(const std::string& name) const
-	{
-		for (const auto& entry : m_entries)
-		{
-			if (entry.name == name)
-				return entry.bufferResource;
 		}
 
 		return nullptr;

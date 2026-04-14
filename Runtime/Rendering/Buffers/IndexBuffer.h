@@ -3,9 +3,8 @@
 #include <memory>
 #include <vector>
 
-#include "Rendering/Context/Driver.h"
 #include "Rendering/RHI/Core/RHIResource.h"
-#include "Rendering/RHI/IRHIResource.h"
+#include "Rendering/RHI/Core/IRHIResource.h"
 
 namespace NLS::Render::Buffers
 {
@@ -44,17 +43,15 @@ public:
     void Unbind();
 
     /**
-     * Returns the ID of the OpenGL EBO
+     * Returns the ID of the OpenGL EBO (always 0 for formal RHI)
      */
     uint32_t GetID();
-    const RHI::IRHIBuffer* GetRHIBuffer() const { return m_bufferResource.get(); }
+    const RHI::IRHIBuffer* GetRHIBuffer() const { return nullptr; }
     const std::shared_ptr<RHI::RHIBuffer>& GetBufferHandle() const { return m_explicitBuffer; }
-    const std::shared_ptr<RHI::IRHIBuffer>& GetRHIBufferHandle() const { return m_bufferResource; }
+    const std::shared_ptr<RHI::IRHIBuffer>& GetRHIBufferHandle() const { return nullptr; }
     const std::shared_ptr<RHI::RHIBuffer>& GetExplicitRHIBufferHandle() const { return GetBufferHandle(); }
 
 private:
-    uint32_t m_bufferID = 0;
-    std::shared_ptr<RHI::IRHIBuffer> m_bufferResource;
     std::shared_ptr<RHI::RHIBuffer> m_explicitBuffer;
 };
 } // namespace NLS::Render::Buffers

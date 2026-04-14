@@ -21,6 +21,9 @@ namespace NLS::Render::RHI
         std::shared_ptr<class RHISwapchain> swapchain;
         uint32_t imageIndex = 0;
         std::vector<std::shared_ptr<class RHISemaphore>> waitSemaphores;
+        // UI rendering signal semaphore - Driver sets this from UIManager::ResolveUISignalSemaphore()
+        // Backend should wait on this semaphore before presenting to ensure UI rendering completes first
+        void* uiSignalSemaphore = nullptr;
     };
 
     struct NLS_RENDER_API RHIAcquiredImage
@@ -38,7 +41,9 @@ namespace NLS::Render::RHI
         virtual std::optional<RHIAcquiredImage> AcquireNextImage(
             const std::shared_ptr<RHISemaphore>& signalSemaphore,
             const std::shared_ptr<RHIFence>& signalFence) = 0;
+        virtual std::shared_ptr<RHITextureView> GetBackbufferView(uint32_t index) { return nullptr; } // Returns view for swapchain backbuffer
         virtual void Resize(uint32_t width, uint32_t height) = 0;
+        virtual void* GetNativeSwapchainHandle() { return nullptr; } // For backend-specific access
     };
 
     class NLS_RENDER_API RHIQueue : public RHIObject
@@ -63,5 +68,6 @@ namespace NLS::Render::RHI
         std::shared_ptr<DescriptorAllocator> descriptorAllocator;
         std::shared_ptr<UploadContext> uploadContext;
         size_t uploadBytesReserved = 0;
+        std::shared_ptr<RHITextureView> swapchainBackbufferView; // View for swapchain backbuffer, used when outputBuffer is nullptr
     };
 }

@@ -54,14 +54,16 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
         ResetMouseInteractionState();
     }
 
+    const Maths::Vector2 mousePosition = m_inputManager.GetMousePosition();
+    const bool mouseOverView = m_view.IsMouseWithinView(mousePosition);
     const bool capturingMouse = m_leftMousePressed || m_middleMousePressed || m_rightMousePressed;
-    const bool shouldProcessMouseState = m_view.IsHovered() || capturingMouse;
+    const bool shouldProcessMouseState = mouseOverView || capturingMouse;
 
 	if (shouldProcessMouseState)
 	{
 		UpdateMouseState();
 
-		if (m_view.IsHovered() && !NLS_SERVICE(NLS::UI::UIManager).IsAnyItemActive())
+		if (mouseOverView && !NLS_SERVICE(NLS::UI::UIManager).IsAnyItemActive())
 		{
 			if (auto target = GetTargetActor())
 			{
@@ -119,7 +121,7 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
 	{
 		if (m_rightMousePressed || m_middleMousePressed || m_leftMousePressed)
 		{
-			auto pos = m_inputManager.GetMousePosition();
+			auto pos = mousePosition;
 
 			bool wasFirstMouse = m_firstMouse;
 
@@ -162,7 +164,7 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
 			}
 		}
 
-		if (m_view.IsHovered())
+		if (mouseOverView)
 		{
 			HandleCameraZoom();
 		}

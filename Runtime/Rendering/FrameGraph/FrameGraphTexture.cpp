@@ -2,7 +2,6 @@
 
 #include <Debug/Assertion.h>
 
-#include "Rendering/Context/Driver.h"
 #include "Rendering/FrameGraph/FrameGraphExecutionContext.h"
 
 namespace NLS::Render::FrameGraph
@@ -16,31 +15,15 @@ namespace NLS::Render::FrameGraph
 			NLS::Render::RHI::AccessMask accessMask = NLS::Render::RHI::AccessMask::MemoryRead;
 		};
 
-		NLS::Render::RHI::TextureUsageFlags ToExplicitTextureUsage(const NLS::Render::RHI::TextureUsage usage)
+		NLS::Render::RHI::TextureUsageFlags ToExplicitTextureUsage(const NLS::Render::RHI::TextureUsageFlags usage)
 		{
-			NLS::Render::RHI::TextureUsageFlags flags = NLS::Render::RHI::TextureUsageFlags::None;
-			if (NLS::Render::RHI::HasUsage(usage, NLS::Render::RHI::TextureUsage::Sampled))
-				flags = flags | NLS::Render::RHI::TextureUsageFlags::Sampled;
-			if (NLS::Render::RHI::HasUsage(usage, NLS::Render::RHI::TextureUsage::ColorAttachment))
-				flags = flags | NLS::Render::RHI::TextureUsageFlags::ColorAttachment;
-			if (NLS::Render::RHI::HasUsage(usage, NLS::Render::RHI::TextureUsage::DepthStencilAttachment))
-				flags = flags | NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment;
-			if (NLS::Render::RHI::HasUsage(usage, NLS::Render::RHI::TextureUsage::Storage))
-				flags = flags | NLS::Render::RHI::TextureUsageFlags::Storage;
-			return flags;
+			return usage;
 		}
 
 		NLS::Render::RHI::RHITextureDesc ToExplicitTextureDesc(const FrameGraphTexture::Desc& desc)
 		{
-			NLS::Render::RHI::RHITextureDesc explicitDesc;
-			explicitDesc.extent.width = desc.width;
-			explicitDesc.extent.height = desc.height;
-			explicitDesc.extent.depth = 1u;
-			explicitDesc.dimension = desc.dimension;
-			explicitDesc.format = desc.format;
+			NLS::Render::RHI::RHITextureDesc explicitDesc = desc;
 			explicitDesc.arrayLayers = desc.dimension == NLS::Render::RHI::TextureDimension::TextureCube ? 6u : 1u;
-			explicitDesc.usage = ToExplicitTextureUsage(desc.usage);
-			explicitDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::GPUOnly;
 			explicitDesc.debugName = "FrameGraphTexture";
 			return explicitDesc;
 		}
@@ -60,9 +43,9 @@ namespace NLS::Render::FrameGraph
 
 		ExplicitTextureState GetExplicitTextureReadState(const FrameGraphTexture::Desc& desc)
 		{
-			if (NLS::Render::RHI::HasUsage(desc.usage, NLS::Render::RHI::TextureUsage::DepthStencilAttachment) &&
-				!NLS::Render::RHI::HasUsage(desc.usage, NLS::Render::RHI::TextureUsage::Sampled) &&
-				!NLS::Render::RHI::HasUsage(desc.usage, NLS::Render::RHI::TextureUsage::Storage))
+			if (NLS::Render::RHI::HasTextureUsage(desc.usage, NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment) &&
+				!NLS::Render::RHI::HasTextureUsage(desc.usage, NLS::Render::RHI::TextureUsageFlags::Sampled) &&
+				!NLS::Render::RHI::HasTextureUsage(desc.usage, NLS::Render::RHI::TextureUsageFlags::Storage))
 			{
 				return {
 					NLS::Render::RHI::ResourceState::DepthRead,
@@ -80,7 +63,7 @@ namespace NLS::Render::FrameGraph
 
 		ExplicitTextureState GetExplicitTextureWriteState(const FrameGraphTexture::Desc& desc)
 		{
-			if (NLS::Render::RHI::HasUsage(desc.usage, NLS::Render::RHI::TextureUsage::DepthStencilAttachment))
+			if (NLS::Render::RHI::HasTextureUsage(desc.usage, NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment))
 			{
 				return {
 					NLS::Render::RHI::ResourceState::DepthWrite,
@@ -89,7 +72,7 @@ namespace NLS::Render::FrameGraph
 				};
 			}
 
-			if (NLS::Render::RHI::HasUsage(desc.usage, NLS::Render::RHI::TextureUsage::ColorAttachment))
+			if (NLS::Render::RHI::HasTextureUsage(desc.usage, NLS::Render::RHI::TextureUsageFlags::ColorAttachment))
 			{
 				return {
 					NLS::Render::RHI::ResourceState::RenderTarget,
@@ -98,7 +81,7 @@ namespace NLS::Render::FrameGraph
 				};
 			}
 
-			if (NLS::Render::RHI::HasUsage(desc.usage, NLS::Render::RHI::TextureUsage::Storage))
+			if (NLS::Render::RHI::HasTextureUsage(desc.usage, NLS::Render::RHI::TextureUsageFlags::Storage))
 			{
 				return {
 					NLS::Render::RHI::ResourceState::ShaderWrite,
@@ -115,12 +98,12 @@ namespace NLS::Render::FrameGraph
 	{
 		auto* executionContext = static_cast<FrameGraphExecutionContext*>(allocator);
 		NLS_ASSERT(executionContext != nullptr, "FrameGraphTexture requires a valid frame graph execution context");
-		auto& driver = executionContext->driver;
 		auto* device = executionContext->device;
+		NLS_ASSERT(device != nullptr, "FrameGraphTexture requires an explicit RHIDevice in formal-only mode.");
 
-		if (id != 0)
+		if (explicitTexture != nullptr)
 		{
-			if (explicitTexture != nullptr && explicitView == nullptr && device != nullptr)
+			if (explicitView == nullptr)
 			{
 				NLS::Render::RHI::RHITextureViewDesc viewDesc;
 				viewDesc.format = explicitTexture->GetDesc().format;
@@ -130,28 +113,14 @@ namespace NLS::Render::FrameGraph
 			return;
 		}
 
-		if (device != nullptr)
-		{
-			explicitTexture = device->CreateTexture(ToExplicitTextureDesc(desc));
-			ownsResource = explicitTexture != nullptr;
-		}
-
-		if (explicitTexture != nullptr)
-		{
-			id = 0;
-			NLS::Render::RHI::RHITextureViewDesc viewDesc;
-			viewDesc.format = explicitTexture->GetDesc().format;
-			viewDesc.debugName = "FrameGraphTextureView";
-			explicitView = device != nullptr ? device->CreateTextureView(explicitTexture, viewDesc) : nullptr;
-			return;
-		}
-
-		textureResource = driver.CreateTextureResource(desc.dimension);
-		id = textureResource != nullptr ? textureResource->GetResourceId() : driver.CreateTexture();
+		explicitTexture = device->CreateTexture(ToExplicitTextureDesc(desc));
+		NLS_ASSERT(explicitTexture != nullptr, "FrameGraphTexture failed to create explicit texture.");
 		ownsResource = true;
-		driver.BindTexture(desc.dimension, id);
-		driver.SetupTexture(desc, nullptr);
-		driver.BindTexture(desc.dimension, 0);
+
+		NLS::Render::RHI::RHITextureViewDesc viewDesc;
+		viewDesc.format = explicitTexture->GetDesc().format;
+		viewDesc.debugName = "FrameGraphTextureView";
+		explicitView = device->CreateTextureView(explicitTexture, viewDesc);
 	}
 
 	void FrameGraphTexture::destroy(const Desc& desc, void* allocator)
@@ -159,28 +128,11 @@ namespace NLS::Render::FrameGraph
 		(void)desc;
 		auto* executionContext = static_cast<FrameGraphExecutionContext*>(allocator);
 		NLS_ASSERT(executionContext != nullptr, "FrameGraphTexture requires a valid frame graph execution context");
-		auto& driver = executionContext->driver;
-		const bool hadExplicitResource = explicitTexture != nullptr || explicitView != nullptr;
-
-		if (id == 0 && explicitTexture == nullptr && explicitView == nullptr && textureResource == nullptr)
+		if (explicitTexture == nullptr && explicitView == nullptr)
 			return;
 
 		explicitView.reset();
 		explicitTexture.reset();
-		if (hadExplicitResource)
-		{
-			id = 0;
-			ownsResource = false;
-			return;
-		}
-		if (ownsResource)
-		{
-			if (textureResource != nullptr)
-				textureResource.reset();
-			else
-				driver.DestroyTexture(id);
-		}
-		id = 0;
 		ownsResource = false;
 	}
 
@@ -188,32 +140,24 @@ namespace NLS::Render::FrameGraph
 	{
 		auto* executionContext = static_cast<FrameGraphExecutionContext*>(context);
 		NLS_ASSERT(executionContext != nullptr, "FrameGraphTexture requires a valid frame graph execution context");
-		auto& driver = executionContext->driver;
+		(void)flags;
 
-		if (explicitTexture != nullptr && executionContext->CanTrackExplicitResourceState())
-		{
-			const auto targetState = GetExplicitTextureReadState(desc);
-			NLS::Render::RHI::RHIBarrierDesc barrierDesc;
-			barrierDesc.textureBarriers.push_back({
-				explicitTexture,
-				NLS::Render::RHI::ResourceState::Unknown,
-				targetState.state,
-				GetFullSubresourceRange(explicitTexture),
-				NLS::Render::RHI::PipelineStageMask::AllCommands,
-				targetState.stageMask,
-				NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite,
-				targetState.accessMask
-			});
-			executionContext->RecordResourceBarriers(barrierDesc);
-			return;
-		}
-
-		if (id == 0)
+		if (explicitTexture == nullptr || !executionContext->CanTrackExplicitResourceState())
 			return;
 
-		const auto slot = flags == 0xFFFFFFFFu ? 0u : flags;
-		driver.ActivateTexture(slot);
-		driver.BindTexture(desc.dimension, id);
+		const auto targetState = GetExplicitTextureReadState(desc);
+		NLS::Render::RHI::RHIBarrierDesc barrierDesc;
+		barrierDesc.textureBarriers.push_back({
+			explicitTexture,
+			NLS::Render::RHI::ResourceState::Unknown,
+			targetState.state,
+			GetFullSubresourceRange(explicitTexture),
+			NLS::Render::RHI::PipelineStageMask::AllCommands,
+			targetState.stageMask,
+			NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite,
+			targetState.accessMask
+		});
+		executionContext->RecordResourceBarriers(barrierDesc);
 	}
 
 	void FrameGraphTexture::preWrite(const Desc& desc, uint32_t, void* context)
@@ -241,6 +185,6 @@ namespace NLS::Render::FrameGraph
 
 	std::string FrameGraphTexture::toString(const Desc& desc)
 	{
-		return std::to_string(desc.width) + "x" + std::to_string(desc.height);
+		return std::to_string(desc.extent.width) + "x" + std::to_string(desc.extent.height);
 	}
 }

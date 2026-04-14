@@ -5,7 +5,6 @@
 #include "Core/EditorActions.h"
 
 #include <ServiceLocator.h>
-#include <ResourceManagement/TextureManager.h>
 #include "UI/UIManager.h"
 using namespace NLS;
 Editor::Panels::Toolbar::Toolbar
@@ -15,17 +14,21 @@ Editor::Panels::Toolbar::Toolbar
 	const UI::PanelWindowSettings& p_windowSettings
 ) : PanelWindow(p_title, p_opened, p_windowSettings)
 {
-	std::string iconFolder = ":Textures/Icons/";
+    auto makeToolbarTextureView = [](const char* textureName)
+    {
+        auto* texture = EDITOR_CONTEXT(editorResources)->GetTexture(textureName);
+        return texture != nullptr
+            ? texture->GetOrCreateExplicitTextureView(std::string("Toolbar.") + textureName)
+            : nullptr;
+    };
 
-	auto& textureManager = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::TextureManager>();
-
-	m_playButton	= &CreateWidget<UI::Widgets::ButtonImage>(EDITOR_CONTEXT(editorResources)->GetTexture("Button_Play")->GetTextureId(), Maths::Vector2{ 20, 20 });
-	m_pauseButton	= &CreateWidget<UI::Widgets::ButtonImage>(EDITOR_CONTEXT(editorResources)->GetTexture("Button_Pause")->GetTextureId(), Maths::Vector2{ 20, 20 });
-	m_stopButton	= &CreateWidget<UI::Widgets::ButtonImage>(EDITOR_CONTEXT(editorResources)->GetTexture("Button_Stop")->GetTextureId(), Maths::Vector2{ 20, 20 });
-	m_nextButton	= &CreateWidget<UI::Widgets::ButtonImage>(EDITOR_CONTEXT(editorResources)->GetTexture("Button_Next")->GetTextureId(), Maths::Vector2{ 20, 20 });
+	m_playButton	= &CreateWidget<UI::Widgets::ButtonImage>(makeToolbarTextureView("Button_Play"), Maths::Vector2{ 20, 20 });
+	m_pauseButton	= &CreateWidget<UI::Widgets::ButtonImage>(makeToolbarTextureView("Button_Pause"), Maths::Vector2{ 20, 20 });
+	m_stopButton	= &CreateWidget<UI::Widgets::ButtonImage>(makeToolbarTextureView("Button_Stop"), Maths::Vector2{ 20, 20 });
+	m_nextButton	= &CreateWidget<UI::Widgets::ButtonImage>(makeToolbarTextureView("Button_Next"), Maths::Vector2{ 20, 20 });
 
 	CreateWidget<UI::Widgets::Spacing>(0).lineBreak = false;
-	auto& refreshButton	= CreateWidget<UI::Widgets::ButtonImage>(EDITOR_CONTEXT(editorResources)->GetTexture("Button_Refresh")->GetTextureId(), Maths::Vector2{ 20, 20 });
+	auto& refreshButton	= CreateWidget<UI::Widgets::ButtonImage>(makeToolbarTextureView("Button_Refresh"), Maths::Vector2{ 20, 20 });
 
 	m_playButton->lineBreak		= false;
 	m_pauseButton->lineBreak	= false;

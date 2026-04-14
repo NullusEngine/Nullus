@@ -44,7 +44,10 @@ namespace NLS::Render::Resources
 		void SetTextureResource(const Image*);
 
 	public:
-		static std::unique_ptr<Texture2D> WrapExternal(uint32_t textureId, uint32_t width, uint32_t height);
+		static std::unique_ptr<Texture2D> WrapExternal(
+			const std::shared_ptr<NLS::Render::RHI::RHITexture>& textureResource,
+			uint32_t width,
+			uint32_t height);
 
 		uint32_t width = 0;
 		uint32_t height = 0;

@@ -3,6 +3,8 @@
 #include <Components/TransformComponent.h>
 #include <Rendering/EngineDrawableDescriptor.h>
 
+#include <cstdlib>
+#include <cstring>
 #include <Rendering/Features/DebugShapeRenderFeature.h>
 #include <Rendering/Features/FrameInfoRenderFeature.h>
 
@@ -11,6 +13,7 @@
 #include "Rendering/DebugModelRenderFeature.h"
 #include "Rendering/DebugSceneRenderer.h"
 #include "Rendering/EditorDefaultResources.h"
+#include "Rendering/EditorPipelineStatePresets.h"
 #include "Rendering/GridRenderPass.h"
 #include "Rendering/OutlineRenderFeature.h"
 #include "Rendering/GizmoRenderFeature.h"
@@ -35,6 +38,21 @@ const Maths::Vector4 kSelectedOutlineColor{ 1.0f, 1.0f, 0.0f, 1.0f };
 
 constexpr float kDefaultOutlineWidth = 2.5f;
 constexpr float kSelectedOutlineWidth = 5.0f;
+
+namespace
+{
+	bool IsEnvFlagEnabled(const char* name)
+	{
+		if (name == nullptr || name[0] == '\0')
+			return false;
+
+		const char* value = std::getenv(name);
+		if (value == nullptr)
+			return false;
+
+		return std::strcmp(value, "1") == 0 || _stricmp(value, "true") == 0;
+	}
+}
 
 Maths::Matrix4 CalculateCameraModelMatrix(Engine::GameObject& p_actor)
 {
@@ -102,16 +120,14 @@ public:
 		m_lightMaterial.Set("u_Diffuse", Vector4(1.f, 1.f, 0.5f, 0.5f));
 		m_lightMaterial.Set("u_TextureTiling", Vector2(1.0f, 1.0f));
 		m_lightMaterial.Set("u_TextureOffset", Vector2(0.0f, 0.0f));
-		m_lightMaterial.SetBackfaceCulling(false);
 		m_lightMaterial.SetBlendable(true);
-		m_lightMaterial.SetDepthTest(false);
-		m_lightMaterial.SetDepthWriting(false);
 	}
 
 protected:
 	virtual void Draw(Render::Data::PipelineState p_pso) override
 	{
 		auto& sceneDescriptor = m_renderer.GetDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>();
+		p_pso = Editor::Rendering::CreateEditorOverlayPipelineState(p_pso);
 
 		m_lightMaterial.Set<float>("u_Scale", Editor::Settings::EditorSettings::LightBillboardScale * 0.1f);
 
@@ -121,7 +137,7 @@ protected:
 
 			if (actor->IsActive())
 			{
-				auto& model = *EDITOR_CONTEXT(editorResources)->GetModel("Plane");
+				auto& model = *EDITOR_CONTEXT(editorResources)->GetModel("Vertical_Plane");
                 auto modelMatrix = Maths::Matrix4::Translation(actor->GetTransform()->GetWorldPosition());
 
 				auto lightTypeTextureName = GetLightTypeTextureName(light->GetData()->type);
@@ -256,7 +272,7 @@ protected:
 		const Maths::Vector3& h
 	)
 	{
-		auto pso = m_renderer.CreatePipelineState();
+		auto pso = Editor::Rendering::CreateEditorDebugLinePipelineState(m_renderer);
 
 		// Convenient lambda to draw a frustum line
 		auto draw = [&](const Vector3& p_start, const Vector3& p_end, const float planeDistance)
@@ -429,8 +445,7 @@ protected:
 
 	void DrawLightBounds(Engine::Components::LightComponent& p_light)
 	{
-		auto pso = m_renderer.CreatePipelineState();
-		pso.depthTest = false;
+		auto pso = Editor::Rendering::CreateEditorNoDepthPipelineState(m_renderer);
 
 		auto& data = *p_light.GetData();
 
@@ -446,8 +461,7 @@ protected:
 
 	void DrawAmbientBoxVolume(Engine::Components::LightComponent& p_ambientBoxLight)
 	{
-		auto pso = m_renderer.CreatePipelineState();
-		pso.depthTest = false;
+		auto pso = Editor::Rendering::CreateEditorNoDepthPipelineState(m_renderer);
 
 		auto& data = *p_ambientBoxLight.GetData();
 
@@ -463,8 +477,7 @@ protected:
 
 	void DrawAmbientSphereVolume(Engine::Components::LightComponent& p_ambientSphereLight)
 	{
-		auto pso = m_renderer.CreatePipelineState();
-		pso.depthTest = false;
+		auto pso = Editor::Rendering::CreateEditorNoDepthPipelineState(m_renderer);
 
 		auto& data = *p_ambientSphereLight.GetData();
 
@@ -482,8 +495,7 @@ protected:
 	{
 		using namespace Engine::Components;
 
-		auto pso = m_renderer.CreatePipelineState();
-		pso.depthTest = false;
+		auto pso = Editor::Rendering::CreateEditorNoDepthPipelineState(m_renderer);
 
 		/* Draw the sphere collider if any */
 		if (auto model = p_modelRenderer.GetModel())
@@ -548,10 +560,17 @@ Editor::Rendering::DebugSceneRenderer::DebugSceneRenderer(NLS::Render::Context::
 	AddFeature<Editor::Rendering::OutlineRenderFeature>();
 	AddFeature<Editor::Rendering::GizmoRenderFeature>();
 
-    AddPass<GridRenderPass>("Grid", NLS::Render::Settings::ERenderPassOrder::Transparent + 1);
-    AddPass<DebugCamerasRenderPass>("Debug Cameras", NLS::Render::Settings::ERenderPassOrder::Transparent + 1);
-    AddPass<DebugLightsRenderPass>("Debug Lights", NLS::Render::Settings::ERenderPassOrder::Transparent + 2);
-    AddPass<DebugActorRenderPass>("Debug Actor", NLS::Render::Settings::ERenderPassOrder::Transparent + 3);
+    auto& gridPass = AddPass<GridRenderPass>("Grid", NLS::Render::Settings::ERenderPassOrder::Transparent + 1);
+    gridPass.SetEnabled(!IsEnvFlagEnabled("NLS_EDITOR_DISABLE_GRID_PASS"));
+
+    auto& debugCamerasPass = AddPass<DebugCamerasRenderPass>("Debug Cameras", NLS::Render::Settings::ERenderPassOrder::Transparent + 1);
+    debugCamerasPass.SetEnabled(!IsEnvFlagEnabled("NLS_EDITOR_DISABLE_DEBUG_CAMERAS_PASS"));
+
+    auto& debugLightsPass = AddPass<DebugLightsRenderPass>("Debug Lights", NLS::Render::Settings::ERenderPassOrder::Transparent + 2);
+    debugLightsPass.SetEnabled(!IsEnvFlagEnabled("NLS_EDITOR_DISABLE_DEBUG_LIGHTS_PASS"));
+
+    auto& debugActorPass = AddPass<DebugActorRenderPass>("Debug Actor", NLS::Render::Settings::ERenderPassOrder::Transparent + 3);
+    debugActorPass.SetEnabled(!IsEnvFlagEnabled("NLS_EDITOR_DISABLE_DEBUG_ACTOR_PASS"));
     auto& pickingPass = AddPass<PickingRenderPass>("Picking", NLS::Render::Settings::ERenderPassOrder::PostProcessing + 1);
-    pickingPass.SetEnabled(false);
+    pickingPass.SetEnabled(!IsEnvFlagEnabled("NLS_EDITOR_DISABLE_PICKING_PASS"));
 }

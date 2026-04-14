@@ -1,6 +1,7 @@
 #include <algorithm>
 
 #include "Rendering/Resources/Mesh.h"
+#include "Rendering/RHI/Core/RHIMeshAdapter.h"
 
 namespace NLS::Render::Resources
 {
@@ -148,5 +149,10 @@ void Mesh::ComputeBoundingSphere(const std::vector<Geometry::Vertex>& vertices)
 			m_boundingSphere.radius = std::max(m_boundingSphere.radius, Maths::Vector3::Distance(m_boundingSphere.position, position));
 		}
 	}
+}
+
+std::shared_ptr<NLS::Render::RHI::RHIMesh> Mesh::GetRHIMesh() const
+{
+	return std::make_shared<RHI::RHIMeshAdapter>(*this);
 }
 }

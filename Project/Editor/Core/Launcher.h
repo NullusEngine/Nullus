@@ -5,12 +5,18 @@
 #include <Windowing/Window.h>
 #include <Rendering/Context/Driver.h>
 #include <Rendering/Settings/EGraphicsBackend.h>
+#include <Rendering/Settings/DriverSettings.h>
 #include <UI/UIManager.h>
 #include <UI/Panels/PanelWindow.h>
 
 namespace NLS::Render::Resources
 {
     class Texture2D;
+}
+
+namespace NLS::Render::RHI
+{
+    class RHITextureView;
 }
 
 namespace NLS
@@ -23,8 +29,12 @@ class Launcher
 public:
     /**
      * Constructor
+     * @param backendOverride Optional backend override from command line
+     * @param renderDocSettings Optional RenderDoc settings from command line
      */
-    Launcher();
+    Launcher(
+        std::optional<Render::Settings::EGraphicsBackend> backendOverride = std::nullopt,
+        const Render::Settings::RenderDocSettings& renderDocSettings = {});
 
     ~Launcher();
 
@@ -45,7 +55,7 @@ public:
     void RegisterProject(const std::string& p_path);
 
 private:
-    uint32_t m_brandTexture = 0;
+    std::shared_ptr<NLS::Render::RHI::RHITextureView> m_brandTextureView;
     NLS::Render::Resources::Texture2D* m_brandTextureResource = nullptr;
 
     std::unique_ptr<Context::Device> m_device;
@@ -60,5 +70,7 @@ private:
     std::string m_projectName = "";
     bool m_readyToGo = false;
     Render::Settings::EGraphicsBackend m_graphicsBackend = Render::Settings::EGraphicsBackend::NONE;
+    std::optional<Render::Settings::EGraphicsBackend> m_backendOverride = std::nullopt;
+    Render::Settings::RenderDocSettings m_renderDocSettings;
 };
 } // namespace NLS

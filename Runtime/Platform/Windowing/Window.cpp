@@ -19,12 +19,32 @@
 #endif
 
 #include <stdexcept>
+#include <optional>
 #include "Image.h"
 std::unordered_map<GLFWwindow*, NLS::Windowing::Window*> NLS::Windowing::Window::__WINDOWS_MAP;
 
 #ifdef _WIN32
 namespace
 {
+std::optional<NLS::Maths::Vector2> TryGetNativeClientSize(GLFWwindow* p_glfwWindow)
+{
+    if (p_glfwWindow == nullptr)
+        return std::nullopt;
+
+    if (HWND hwnd = glfwGetWin32Window(p_glfwWindow))
+    {
+        RECT clientRect{};
+        if (GetClientRect(hwnd, &clientRect))
+        {
+            const int width = clientRect.right >= clientRect.left ? clientRect.right - clientRect.left : 0;
+            const int height = clientRect.bottom >= clientRect.top ? clientRect.bottom - clientRect.top : 0;
+            return NLS::Maths::Vector2(width, height);
+        }
+    }
+
+    return std::nullopt;
+}
+
 LRESULT CALLBACK NullusWindowProc(HWND p_hwnd, UINT p_msg, WPARAM p_wParam, LPARAM p_lParam)
 {
     if (auto* windowInstance = reinterpret_cast<NLS::Windowing::Window*>(GetWindowLongPtr(p_hwnd, GWLP_USERDATA)))
@@ -366,6 +386,13 @@ std::string NLS::Windowing::Window::GetTitle() const
 
 NLS::Maths::Vector2 NLS::Windowing::Window::GetSize() const
 {
+#ifdef _WIN32
+    if (m_nativeResizeInProgress || m_dispatchingNativeResizeRefresh)
+    {
+        if (const auto nativeSize = TryGetNativeClientSize(m_glfwWindow); nativeSize.has_value())
+            return nativeSize.value();
+    }
+#endif
 	int width, height;
 	glfwGetWindowSize(m_glfwWindow, &width, &height);
 	return NLS::Maths::Vector2(width, height);
@@ -390,6 +417,13 @@ NLS::Maths::Vector2 NLS::Windowing::Window::GetPosition() const
 
 NLS::Maths::Vector2 NLS::Windowing::Window::GetFramebufferSize() const
 {
+#ifdef _WIN32
+    if (m_nativeResizeInProgress || m_dispatchingNativeResizeRefresh)
+    {
+        if (const auto nativeSize = TryGetNativeClientSize(m_glfwWindow); nativeSize.has_value())
+            return nativeSize.value();
+    }
+#endif
 	int width, height;
 	glfwGetFramebufferSize(m_glfwWindow, &width, &height);
 	return NLS::Maths::Vector2(static_cast<uint16_t>(width), static_cast<uint16_t>(height));
@@ -485,9 +519,25 @@ void NLS::Windowing::Window::BindNativeWindowProc()
     }
 }
 
-long long NLS::Windowing::Window::HandleNativeWindowMessage(void* p_hwnd, unsigned int p_msg, unsigned long long p_wParam, long long p_lParam) const
+long long NLS::Windowing::Window::HandleNativeWindowMessage(void* p_hwnd, unsigned int p_msg, unsigned long long p_wParam, long long p_lParam)
 {
     HWND hwnd = static_cast<HWND>(p_hwnd);
+
+    if (p_msg == WM_ENTERSIZEMOVE)
+    {
+        m_nativeResizeInProgress = true;
+    }
+    else if (p_msg == WM_EXITSIZEMOVE)
+    {
+        m_nativeResizeInProgress = false;
+    }
+
+    if (p_msg == WM_ERASEBKGND && m_nativeResizeInProgress)
+    {
+        // During interactive resize, avoid letting Windows repaint a stale background
+        // between swapchain presents. The runtime draws the full client area itself.
+        return 1;
+    }
 
     if (p_msg == WM_NCHITTEST && !m_isDecorated && m_nativeTitleBarDragHeight > 0)
     {
@@ -519,17 +569,37 @@ long long NLS::Windowing::Window::HandleNativeWindowMessage(void* p_hwnd, unsign
         return hit;
     }
 
+    LRESULT result = 0;
     if (m_originalWindowProc)
     {
-        return CallWindowProc(
+        result = CallWindowProc(
             reinterpret_cast<WNDPROC>(m_originalWindowProc),
             hwnd,
             p_msg,
             static_cast<WPARAM>(p_wParam),
             static_cast<LPARAM>(p_lParam));
     }
+    else
+    {
+        result = DefWindowProc(hwnd, p_msg, static_cast<WPARAM>(p_wParam), static_cast<LPARAM>(p_lParam));
+    }
 
-    return DefWindowProc(hwnd, p_msg, static_cast<WPARAM>(p_wParam), static_cast<LPARAM>(p_lParam));
+    const bool shouldRefreshDuringNativeResize =
+        m_nativeResizeInProgress &&
+        (p_msg == WM_PAINT ||
+            p_msg == WM_SIZE ||
+            p_msg == WM_SIZING ||
+            p_msg == WM_WINDOWPOSCHANGING ||
+            p_msg == WM_WINDOWPOSCHANGED);
+
+    if (shouldRefreshDuringNativeResize && !m_dispatchingNativeResizeRefresh)
+    {
+        m_dispatchingNativeResizeRefresh = true;
+        RefreshEvent.Invoke();
+        m_dispatchingNativeResizeRefresh = false;
+    }
+
+    return result;
 }
 #endif
 

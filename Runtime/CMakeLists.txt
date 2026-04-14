@@ -15,6 +15,8 @@ function(nls_collect_runtime_files OUT_HEADERS OUT_SOURCES SOURCE_DIR)
 
     list(FILTER _headers EXCLUDE REGEX "/Gen/")
     list(FILTER _sources EXCLUDE REGEX "/Gen/")
+    list(FILTER _headers EXCLUDE REGEX "[/_\\\\]_DISABLED/")
+    list(FILTER _sources EXCLUDE REGEX "[/_\\\\]_DISABLED/")
 
     set(_existing_headers "")
     foreach(_header IN LISTS _headers)

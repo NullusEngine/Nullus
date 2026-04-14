@@ -8,7 +8,7 @@ using namespace NLS;
 
 int main(int argc, char** argv)
 {
-    std::filesystem::current_path(std::filesystem::path(argv[0]).parent_path());
+	std::filesystem::current_path(std::filesystem::path(argv[0]).parent_path());
 
 	const NLS::Game::Launch::ParsedGameLaunchArgs launchArgs = NLS::Game::Launch::ParseGameArgs(argc, argv);
 	if (launchArgs.showHelp)

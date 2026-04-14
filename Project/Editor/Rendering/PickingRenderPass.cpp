@@ -4,6 +4,7 @@
 #include "Core/EditorActions.h"
 #include "Settings/EditorSettings.h"
 #include "Rendering/DebugSceneRenderer.h"
+#include "Rendering/EditorPipelineStatePresets.h"
 #include <Components/TransformComponent.h>
 #include <Components/MaterialRenderer.h>
 #include <Rendering/EngineDrawableDescriptor.h>
@@ -15,7 +16,6 @@ Editor::Rendering::PickingRenderPass::PickingRenderPass(NLS::Render::Core::Compo
 	m_lightMaterial.SetShader(EDITOR_CONTEXT(editorResources)->GetShader("Billboard"));
 	m_lightMaterial.Set("u_TextureTiling", Maths::Vector2(1.0f, 1.0f));
 	m_lightMaterial.Set("u_TextureOffset", Maths::Vector2(0.0f, 0.0f));
-	m_lightMaterial.SetDepthTest(true);
 
 	/* Gizmo Pickable Material */
 	m_gizmoPickingMaterial.SetShader(EDITOR_CONTEXT(editorResources)->GetShader("Gizmo"));
@@ -29,31 +29,12 @@ Editor::Rendering::PickingRenderPass::PickingRenderPass(NLS::Render::Core::Compo
 	m_actorPickingMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", Editor::Rendering::GetEditorDefaultWhiteTexture());
 	m_actorPickingMaterial.Set("u_TextureTiling", Maths::Vector2(1.0f, 1.0f));
 	m_actorPickingMaterial.Set("u_TextureOffset", Maths::Vector2(0.0f, 0.0f));
-	m_actorPickingMaterial.SetFrontfaceCulling(false);
-	m_actorPickingMaterial.SetBackfaceCulling(false);
 }
 
-Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRenderPass::ReadbackPickingResult(
+Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRenderPass::DecodePickingResult(
 	const Engine::SceneSystem::Scene& p_scene,
-	uint32_t p_x,
-	uint32_t p_y
-)
+	const uint8_t (&pixel)[3]) const
 {
-	uint8_t pixel[3];
-
-	m_actorPickingFramebuffer.Bind();
-
-	auto pso = m_renderer.CreatePipelineState();
-
-	m_renderer.ReadPixels(
-		p_x, p_y, 1, 1,
-		NLS::Render::Settings::EPixelDataFormat::RGB,
-		NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
-		pixel
-	);
-
-	m_actorPickingFramebuffer.Unbind();
-
 	uint32_t actorID = (0 << 24) | (pixel[2] << 16) | (pixel[1] << 8) | (pixel[0] << 0);
 	auto actorUnderMouse = p_scene.FindActorByID(actorID);
 
@@ -74,19 +55,69 @@ Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRe
 	return std::nullopt;
 }
 
-Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRenderPass::RenderAndReadbackPickingResult(
-	const Engine::SceneSystem::Scene& p_scene,
+Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRenderPass::PickAtRenderCoordinate(
 	uint32_t p_x,
-	uint32_t p_y
-)
+	uint32_t p_y)
 {
-	Draw(m_renderer.CreatePipelineState());
-	return ReadbackPickingResult(p_scene, p_x, p_y);
+	if (!SupportsPickingReadback() || !m_hasRenderedPickingFrame || m_lastRenderedScene == nullptr)
+		return std::nullopt;
+
+	const uint64_t maxX = static_cast<uint64_t>(p_x) + 1u;
+	const uint64_t maxY = static_cast<uint64_t>(p_y) + 1u;
+	if (maxX > static_cast<uint64_t>(m_lastRenderWidth) ||
+		maxY > static_cast<uint64_t>(m_lastRenderHeight))
+	{
+		return std::nullopt;
+	}
+
+	uint8_t pixel[3]{};
+	m_renderer.ReadPixelsFromFramebufferTexture(
+		m_actorPickingFramebuffer,
+		p_x,
+		p_y,
+		1,
+		1,
+		NLS::Render::Settings::EPixelDataFormat::RGB,
+		NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
+		pixel);
+
+	return DecodePickingResult(*m_lastRenderedScene, pixel);
+}
+
+bool Editor::Rendering::PickingRenderPass::SupportsPickingReadback() const
+{
+	return m_renderer.SupportsEditorPickingReadback();
 }
 
 void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState p_pso)
 {
+	if (!SupportsPickingReadback())
+	{
+		m_lastRenderedScene = nullptr;
+		m_lastRenderWidth = 0;
+		m_lastRenderHeight = 0;
+		m_hasRenderedPickingFrame = false;
+		return;
+	}
+
+	auto& frameDescriptor = m_renderer.GetFrameDescriptor();
+	auto& sceneDescriptor = m_renderer.GetDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>();
+	m_actorPickingFramebuffer.Resize(frameDescriptor.renderWidth, frameDescriptor.renderHeight);
+	m_hasRenderedPickingFrame = false;
+	m_renderer.ExecuteLegacyFramebufferPass(m_actorPickingFramebuffer, [&]()
+	{
+		RenderPickingScene(p_pso);
+	});
+	m_lastRenderedScene = &sceneDescriptor.scene;
+	m_lastRenderWidth = frameDescriptor.renderWidth;
+	m_lastRenderHeight = frameDescriptor.renderHeight;
+}
+
+bool Editor::Rendering::PickingRenderPass::RenderPickingScene(NLS::Render::Data::PipelineState p_pso)
+{
 	// TODO: Make sure we only renderer when the view is hovered and not being resized
+	if (!SupportsPickingReadback())
+		return false;
 
 	using namespace Engine::Rendering;
 
@@ -95,41 +126,39 @@ void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState
 
 	auto& sceneDescriptor = m_renderer.GetDescriptor<BaseSceneRenderer::SceneDescriptor>();
 	auto& debugSceneDescriptor = m_renderer.GetDescriptor<DebugSceneRenderer::DebugSceneDescriptor>();
-	auto& frameDescriptor = m_renderer.GetFrameDescriptor();
 	auto& scene = sceneDescriptor.scene;
 
-	m_actorPickingFramebuffer.Resize(frameDescriptor.renderWidth, frameDescriptor.renderHeight);
+	const auto& frameDescriptor = m_renderer.GetFrameDescriptor();
+	const bool startedPickingPass = m_renderer.BeginRecordedRenderPass(
+		&m_actorPickingFramebuffer,
+		frameDescriptor.renderWidth,
+		frameDescriptor.renderHeight,
+		true,
+		true,
+		true);
 
-	m_actorPickingFramebuffer.Bind();
-	m_renderer.BeginLegacyDrawSection();
-	
-	auto pso = m_renderer.CreatePipelineState();
+	if (!startedPickingPass)
+		return false;
 
-	m_renderer.Clear(true, true, true);
-
-	DrawPickableModels(pso, scene);
-	DrawPickableCameras(pso, scene);
-	DrawPickableLights(pso, scene);
+	DrawPickableModels(p_pso, scene);
+	DrawPickableCameras(p_pso, scene);
+	DrawPickableLights(p_pso, scene);
 
 	if (debugSceneDescriptor.selectedActor)
 	{
 		auto& selectedActor = *debugSceneDescriptor.selectedActor;
 
 		DrawPickableGizmo(
-			pso,
+			p_pso,
             selectedActor.GetTransform()->GetWorldPosition(),
             selectedActor.GetTransform()->GetWorldRotation(),
 			debugSceneDescriptor.gizmoOperation
 		);
 	}
 
-	m_renderer.EndLegacyDrawSection();
-	m_actorPickingFramebuffer.Unbind();
-
-	if (auto output = frameDescriptor.outputBuffer)
-	{
-		output->Bind();
-	}
+	m_renderer.EndRecordedRenderPass();
+	m_hasRenderedPickingFrame = true;
+	return true;
 }
 
 void PreparePickingMaterial(Engine::GameObject& p_actor, NLS::Render::Resources::Material& p_material)
@@ -147,6 +176,8 @@ void Editor::Rendering::PickingRenderPass::DrawPickableModels(
 	Engine::SceneSystem::Scene& p_scene
 )
 {
+	auto modelPickingPso = Editor::Rendering::CreateEditorUnculledPipelineState(p_pso);
+
 	for (auto modelRenderer : p_scene.GetFastAccessComponents().modelRenderers)
 	{
 		auto& actor = *modelRenderer->gameobject();
@@ -181,7 +212,9 @@ void Editor::Rendering::PickingRenderPass::DrawPickableModels(
 							modelMatrix
 						});
 
-						m_renderer.DrawEntity(p_pso, drawable);
+						NLS::Render::Resources::MaterialPipelineStateOverrides unculledOverrides;
+						unculledOverrides.culling = false;
+						m_renderer.DrawEntity(drawable, unculledOverrides);
 					}
 				}
 			}
@@ -194,6 +227,8 @@ void Editor::Rendering::PickingRenderPass::DrawPickableCameras(
 	Engine::SceneSystem::Scene& p_scene
 )
 {
+	auto cameraPickingPso = Editor::Rendering::CreateEditorUnculledPipelineState(p_pso);
+
 	for (auto camera : p_scene.GetFastAccessComponents().cameras)
 	{
 		auto& actor = *camera->gameobject();
@@ -207,7 +242,7 @@ void Editor::Rendering::PickingRenderPass::DrawPickableCameras(
 			auto modelMatrix = translation * rotation;
 
 			m_renderer.GetFeature<DebugModelRenderFeature>()
-				.DrawModelWithSingleMaterial(p_pso, cameraModel, m_actorPickingMaterial, modelMatrix);
+				.DrawModelWithSingleMaterial(cameraPickingPso, cameraModel, m_actorPickingMaterial, modelMatrix);
 		}
 	}
 }
@@ -219,7 +254,7 @@ void Editor::Rendering::PickingRenderPass::DrawPickableLights(
 {
 	if (Settings::EditorSettings::LightBillboardScale > 0.001f)
 	{
-		m_renderer.Clear(false, true, false);
+		auto lightPickingPso = Editor::Rendering::CreateEditorOverlayPipelineState(p_pso);
 
 		m_lightMaterial.Set<float>("u_Scale", Settings::EditorSettings::LightBillboardScale * 0.1f);
 
@@ -230,11 +265,11 @@ void Editor::Rendering::PickingRenderPass::DrawPickableLights(
 			if (actor.IsActive())
 			{
 				PreparePickingMaterial(actor, m_lightMaterial);
-				auto& lightModel = *EDITOR_CONTEXT(editorResources)->GetModel("Plane");
-                auto modelMatrix = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
+				auto& lightModel = *EDITOR_CONTEXT(editorResources)->GetModel("Vertical_Plane");
+				auto modelMatrix = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
 
 				m_renderer.GetFeature<DebugModelRenderFeature>()
-					.DrawModelWithSingleMaterial(p_pso, lightModel, m_lightMaterial, modelMatrix);
+					.DrawModelWithSingleMaterial(lightPickingPso, lightModel, m_lightMaterial, modelMatrix);
 			}
 		}
 	}
@@ -247,6 +282,8 @@ void Editor::Rendering::PickingRenderPass::DrawPickableGizmo(
 	Editor::Core::EGizmoOperation p_operation
 )
 {
+	auto gizmoPickingPso = Editor::Rendering::CreateEditorOverlayPipelineState(p_pso);
+
 	auto modelMatrix =
 		Maths::Matrix4::Translation(p_position) *
 		Maths::Quaternion::ToMatrix4(Maths::Quaternion::Normalize(p_rotation));
@@ -254,5 +291,5 @@ void Editor::Rendering::PickingRenderPass::DrawPickableGizmo(
 	auto arrowModel = EDITOR_CONTEXT(editorResources)->GetModel("Arrow_Picking");
 
 	m_renderer.GetFeature<DebugModelRenderFeature>()
-		.DrawModelWithSingleMaterial(p_pso, *arrowModel, m_gizmoPickingMaterial, modelMatrix);
+		.DrawModelWithSingleMaterial(gizmoPickingPso, *arrowModel, m_gizmoPickingMaterial, modelMatrix);
 }

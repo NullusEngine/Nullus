@@ -7,6 +7,7 @@
 #include "RenderDef.h"
 #include "Rendering/Geometry/BoundingSphere.h"
 #include "Rendering/Resources/Model.h"
+#include "Rendering/Settings/ECullingOptions.h"
 namespace NLS::Render::Data
 {
 	/**

@@ -90,6 +90,7 @@ namespace NLS::UI
 
 	protected:
 		void _Draw_Impl() override;
+		virtual void OnBeforeDrawWidgets();
 
 	public:
 		std::string name;

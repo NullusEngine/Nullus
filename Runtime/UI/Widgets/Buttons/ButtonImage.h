@@ -1,10 +1,16 @@
 #pragma once
 
+#include <memory>
+
 #include <Vector2.h>
 
-#include "UI/Internal/TextureID.h"
 #include "Color.h"
 #include "UI/Widgets/Buttons/AButton.h"
+
+namespace NLS::Render::RHI
+{
+    class RHITextureView;
+}
 
 namespace NLS::UI::Widgets
 {
@@ -16,10 +22,10 @@ namespace NLS::UI::Widgets
 	public:
 		/**
 		* Constructor
-		* @param p_textureID
+		* @param p_textureView
 		* @param p_size
 		*/
-		ButtonImage(uint32_t p_textureID, const Maths::Vector2& p_size);
+		ButtonImage(std::shared_ptr<NLS::Render::RHI::RHITextureView> p_textureView, const Maths::Vector2& p_size);
 
 	protected:
 		void _Draw_Impl() override;
@@ -30,7 +36,7 @@ namespace NLS::UI::Widgets
 		Maths::Color background = { 0, 0, 0, 0 };
 		Maths::Color tint = { 1, 1, 1, 1 };
 
-		Internal::TextureID textureID;
+		std::shared_ptr<NLS::Render::RHI::RHITextureView> textureView;
 		Maths::Vector2 size;
 	};
 }

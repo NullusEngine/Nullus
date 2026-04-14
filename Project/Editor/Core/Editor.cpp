@@ -24,6 +24,7 @@
 #include "Panels/MaterialEditor.h"
 #include "Panels/ProjectSettings.h"
 #include "Panels/AssetProperties.h"
+#include "Rendering/Context/DriverAccess.h"
 using namespace NLS::Core::ResourceManagement;
 using namespace NLS::Editor::Panels;
 using namespace NLS::Render::Resources::Loaders;
@@ -133,7 +134,7 @@ void Editor::Core::Editor::Update(float p_deltaTime)
 {
     HandleGlobalShortcuts();
     UpdateCurrentEditorMode(p_deltaTime);
-    RenderViews(p_deltaTime);
+    UpdateViews(p_deltaTime);
     UpdateEditorPanels(p_deltaTime);
     RenderEditorUI(p_deltaTime);
     m_editorActions.ExecuteDelayedActions();
@@ -144,9 +145,9 @@ void Editor::Core::Editor::HandleGlobalShortcuts()
     if (m_context.inputManager->IsKeyPressed(Windowing::Inputs::EKey::KEY_F11))
     {
         if (m_context.inputManager->GetKeyState(Windowing::Inputs::EKey::KEY_LEFT_CONTROL) == Windowing::Inputs::EKeyState::KEY_DOWN)
-            m_context.driver->OpenLatestRenderDocCapture();
-        else if (!m_context.driver->IsRenderDocAvailable())
-            m_context.driver->QueueRenderDocCapture("Editor");
+            Render::Context::DriverUIAccess::OpenLatestRenderDocCapture(*m_context.driver);
+        else if (Render::Context::DriverUIAccess::IsRenderDocAvailable(*m_context.driver))
+            Render::Context::DriverUIAccess::QueueRenderDocCapture(*m_context.driver, "Editor");
     }
 
     // If the [Del] key is pressed while an actor is selected and the Scene View or Hierarchy is focused
@@ -230,7 +231,7 @@ void Editor::Core::Editor::UpdateEditorPanels(float p_deltaTime)
     }
 }
 
-void Editor::Core::Editor::RenderViews(float p_deltaTime)
+void Editor::Core::Editor::UpdateViews(float p_deltaTime)
 {
     auto& assetView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::AssetView>("Asset View");
     auto& sceneView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::SceneView>("Scene View");
@@ -241,31 +242,32 @@ void Editor::Core::Editor::RenderViews(float p_deltaTime)
         gameView.Update(p_deltaTime);
         sceneView.Update(p_deltaTime);
     }
-
-    if (assetView.IsOpened())
-    {
-        assetView.Render();
-    }
-
-    if (gameView.IsOpened())
-    {
-        gameView.Render();
-    }
-
-    if (sceneView.IsOpened())
-    {
-        sceneView.Render();
-    }
 }
 
 void Editor::Core::Editor::RenderEditorUI(float p_deltaTime)
 {
+    // Set up UI synchronization semaphores for all backends
+    // Get the semaphore that game rendering will signal (UI should wait on this)
+    void* renderFinishedSemaphore = Render::Context::DriverUIAccess::GetRenderFinishedSemaphore(*m_context.driver);
+    if (renderFinishedSemaphore != nullptr)
+    {
+        m_context.uiManager->SetWaitSemaphore(renderFinishedSemaphore);
+    }
+
+    // Get the UI's signal semaphore (Driver will wait on this during Present)
+    NLS::Render::RHI::NativeHandle uiSignalSemaphore = m_context.uiManager->ResolveUISignalSemaphore();
+    if (uiSignalSemaphore.handle != nullptr)
+    {
+        Render::Context::DriverUIAccess::SetUISignalSemaphore(*m_context.driver, uiSignalSemaphore.handle);
+    }
+
     EDITOR_CONTEXT(uiManager)->Render();
+    m_context.uiManager->SubmitUIRendering();
 }
 
 void Editor::Core::Editor::PostUpdate()
 {
-    m_context.driver->PresentSwapchain();
+    Render::Context::DriverUIAccess::PresentSwapchain(*m_context.driver);
     m_context.inputManager->ClearEvents();
     ++m_elapsedFrames;
 }

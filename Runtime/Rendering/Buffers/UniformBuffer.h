@@ -4,9 +4,8 @@
 #include <vector>
 #include <string>
 
-#include "Rendering/Context/Driver.h"
 #include "Rendering/RHI/Core/RHIResource.h"
-#include "Rendering/RHI/IRHIResource.h"
+#include "Rendering/RHI/Core/IRHIResource.h"
 #include "Rendering/Settings/EAccessSpecifier.h"
 #include "RenderDef.h"
 namespace NLS::Render::Resources
@@ -70,12 +69,12 @@ public:
     std::shared_ptr<RHI::RHIBuffer> CreateExplicitSnapshotBuffer(const std::string& debugName = {}) const;
 
     /**
-     * Return the ID of the UBO
+     * Return the ID of the UBO (always 0 for formal RHI)
      */
     uint32_t GetID() const;
-    const RHI::IRHIBuffer* GetRHIBuffer() const { return m_bufferResource.get(); }
+    const RHI::IRHIBuffer* GetRHIBuffer() const { return nullptr; }
     const std::shared_ptr<RHI::RHIBuffer>& GetBufferHandle() const { return m_explicitBuffer; }
-    const std::shared_ptr<RHI::IRHIBuffer>& GetRHIBufferHandle() const { return m_bufferResource; }
+    const std::shared_ptr<RHI::IRHIBuffer>& GetRHIBufferHandle() const { return nullptr; }
     const std::shared_ptr<RHI::RHIBuffer>& GetExplicitRHIBufferHandle() const { return GetBufferHandle(); }
 
 private:
@@ -83,11 +82,9 @@ private:
     void _SetSubData(const void* p_data, uint32_t size, std::reference_wrapper<size_t> p_offsetInOut);
 
 private:
-    uint32_t m_bufferID = 0;
     uint32_t m_bindingPoint = 0;
     size_t m_size = 0;
     std::vector<uint8_t> m_shadowData;
-    std::shared_ptr<RHI::IRHIBuffer> m_bufferResource;
     std::shared_ptr<RHI::RHIBuffer> m_explicitBuffer;
 };
 } // namespace NLS::Render::Buffers

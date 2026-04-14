@@ -39,7 +39,7 @@ namespace NLS::Editor::Rendering
 		void DrawOutlinePass(Engine::GameObject& p_actor, const Maths::Vector4& p_color, float p_thickness);
 		
 		void DrawActorToStencil(NLS::Render::Data::PipelineState p_pso, Engine::GameObject& p_actor);
-		void DrawActorOutline(NLS::Render::Data::PipelineState p_pso, Engine::GameObject& p_actor);
+		void DrawActorOutline(NLS::Render::Data::PipelineState p_pso, Engine::GameObject& p_actor, float p_thickness);
 		void DrawModelToStencil(NLS::Render::Data::PipelineState p_pso, const Maths::Matrix4& p_worldMatrix, NLS::Render::Resources::Model& p_model);
 		void DrawModelOutline(NLS::Render::Data::PipelineState p_pso, const Maths::Matrix4& p_worldMatrix, NLS::Render::Resources::Model& p_model);
 

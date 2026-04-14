@@ -4,9 +4,8 @@
 #include <string>
 #include <vector>
 
-#include "Rendering/Context/Driver.h"
 #include "Rendering/RHI/Core/RHIResource.h"
-#include "Rendering/RHI/IRHIResource.h"
+#include "Rendering/RHI/Core/IRHIResource.h"
 
 namespace NLS::Render::Buffers
 {
@@ -51,26 +50,13 @@ public:
      */
     uint32_t GetID() const;
 
-    /**
-     * Returns the ID of the OpenGL render texture
-     */
-    uint32_t GetTextureID() const;
     const std::shared_ptr<NLS::Render::RHI::IRHITexture>& GetTextureResource() const;
     const std::shared_ptr<NLS::Render::RHI::RHITexture>& GetExplicitTextureHandle() const;
     std::shared_ptr<NLS::Render::RHI::RHITextureView> GetOrCreateExplicitColorView(const std::string& debugName = {}) const;
 
-    /**
-     * Returns the ID of the depth-stencil texture attached to this framebuffer.
-     */
-    uint32_t GetDepthStencilTextureID() const;
     const std::shared_ptr<NLS::Render::RHI::IRHITexture>& GetDepthStencilTextureResource() const;
     const std::shared_ptr<NLS::Render::RHI::RHITexture>& GetExplicitDepthStencilTextureHandle() const;
     std::shared_ptr<NLS::Render::RHI::RHITextureView> GetOrCreateExplicitDepthStencilView(const std::string& debugName = {}) const;
-
-    /**
-     * Legacy compatibility alias.
-     */
-    uint32_t GetRenderBufferID() const;
 
 private:
     uint16_t m_width = 0;

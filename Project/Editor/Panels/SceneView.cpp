@@ -3,10 +3,15 @@
 #include "Rendering/DebugSceneRenderer.h"
 #include "Rendering/PickingRenderPass.h"
 #include "Rendering/EditorDefaultResources.h"
+#include "Rendering/SceneRendererFactory.h"
+#include "Rendering/Features/FrameInfoRenderFeature.h"
 #include "Core/EditorActions.h"
 #include "Panels/SceneView.h"
 #include "Panels/GameView.h"
 #include "Settings/EditorSettings.h"
+#include <UI/UIManager.h>
+#include <chrono>
+#include <cmath>
 using namespace NLS;
 Editor::Panels::SceneView::SceneView(
     const std::string& p_title,
@@ -14,6 +19,8 @@ Editor::Panels::SceneView::SceneView(
     const UI::PanelWindowSettings& p_windowSettings)
     : AViewControllable(p_title, p_opened, p_windowSettings), m_sceneManager(EDITOR_CONTEXT(sceneManager))
 {
+    // Scene View should always render editor overlays (grid/gizmo/light billboards),
+    // so use the editor renderer on every backend.
     m_renderer = std::make_unique<Editor::Rendering::DebugSceneRenderer>(*EDITOR_CONTEXT(driver));
 
     m_camera.SetFar(5000.0f);
@@ -75,6 +82,10 @@ void Editor::Panels::SceneView::InitFrame()
 {
     AViewControllable::InitFrame();
 
+    auto* debugRenderer = dynamic_cast<Editor::Rendering::DebugSceneRenderer*>(m_renderer.get());
+    if (debugRenderer == nullptr)
+        return;
+
     Engine::GameObject* selectedActor = nullptr;
 
     if (EDITOR_EXEC(IsAnyActorSelected()))
@@ -82,10 +93,10 @@ void Editor::Panels::SceneView::InitFrame()
         selectedActor = EDITOR_EXEC(GetSelectedActor());
     }
 
-    m_renderer->AddDescriptor<Rendering::DebugSceneRenderer::DebugSceneDescriptor>({m_currentOperation,
-                                                                                    m_highlightedActor,
-                                                                                    selectedActor,
-                                                                                    m_highlightedGizmoDirection});
+    debugRenderer->AddDescriptor<Rendering::DebugSceneRenderer::DebugSceneDescriptor>({m_currentOperation,
+                                                                                       m_highlightedActor,
+                                                                                       selectedActor,
+                                                                                       m_highlightedGizmoDirection});
 }
 
 Engine::SceneSystem::Scene* Editor::Panels::SceneView::GetScene()
@@ -103,6 +114,10 @@ Engine::Rendering::BaseSceneRenderer::SceneDescriptor Editor::Panels::SceneView:
 void Editor::Panels::SceneView::DrawFrame()
 {
     Editor::Panels::AViewControllable::DrawFrame();
+}
+
+void Editor::Panels::SceneView::AfterRenderFrame()
+{
     HandleActorPicking();
 }
 
@@ -115,51 +130,111 @@ bool IsResizing()
 
 void Editor::Panels::SceneView::HandleActorPicking()
 {
+    auto* debugRenderer = dynamic_cast<Editor::Rendering::DebugSceneRenderer*>(m_renderer.get());
+    if (debugRenderer == nullptr)
+    {
+        m_highlightedActor = nullptr;
+        m_highlightedGizmoDirection = std::nullopt;
+        m_hasPickingSample = false;
+        return;
+    }
+
     using namespace Windowing::Inputs;
 
     auto& inputManager = *EDITOR_CONTEXT(inputManager);
+    const Maths::Vector2 screenMousePos = inputManager.GetMousePosition();
+    const bool mouseOverView = IsMouseWithinView(screenMousePos);
 
     if (inputManager.IsMouseButtonReleased(EMouseButton::MOUSE_BUTTON_LEFT))
     {
         m_gizmoOperations.StopPicking();
     }
 
-    if (IsHovered() && !IsResizing())
+    if (mouseOverView && !IsResizing())
     {
-        auto mousePos = inputManager.GetMousePosition();
-        mousePos -= m_position;
-        mousePos.y = GetSafeSize().second - mousePos.y + 25;
-
-        auto& scene = *GetScene();
-
-        auto& actorPickingFeature = m_renderer->GetPass<Rendering::PickingRenderPass>("Picking");
-
-        auto pickingResult = actorPickingFeature.RenderAndReadbackPickingResult(
-            scene,
-            static_cast<uint32_t>(mousePos.x),
-            static_cast<uint32_t>(mousePos.y));
-
-        m_highlightedActor = {};
-        m_highlightedGizmoDirection = {};
-
-        if (!m_cameraController.IsRightMousePressed() && pickingResult.has_value())
+        auto& actorPickingFeature = debugRenderer->GetPass<Rendering::PickingRenderPass>("Picking");
+        if (!actorPickingFeature.SupportsPickingReadback())
         {
-            if (const auto pval = std::get_if<Engine::GameObject*>(&pickingResult.value()))
-            {
-                m_highlightedActor = *pval;
-            }
-            else if (const auto pval = std::get_if<Editor::Core::GizmoBehaviour::EDirection>(&pickingResult.value()))
-            {
-                m_highlightedGizmoDirection = *pval;
-            }
+            m_highlightedActor = nullptr;
+            m_highlightedGizmoDirection = std::nullopt;
+            m_hasPickingSample = false;
+            return;
         }
-        else
+
+        const auto localMousePos = GetLocalViewPosition(screenMousePos);
+        if (!localMousePos.has_value())
+        {
+            m_highlightedActor = nullptr;
+            m_highlightedGizmoDirection = std::nullopt;
+            m_hasPickingSample = false;
+            return;
+        }
+
+        auto mousePos = localMousePos.value();
+        const auto [safeWidth, safeHeight] = GetSafeSize();
+        const float maxRenderX = std::max(0.0f, static_cast<float>(safeWidth) - 1.0f);
+        const float maxRenderY = std::max(0.0f, static_cast<float>(safeHeight) - 1.0f);
+        const bool bottomLeftOriginPicking =
+            NLS_SERVICE(UI::UIManager).GetGraphicsBackend() == Render::Settings::EGraphicsBackend::OPENGL;
+
+        mousePos.x = std::clamp(mousePos.x, 0.0f, maxRenderX);
+        mousePos.y = bottomLeftOriginPicking
+            ? std::clamp(static_cast<float>(safeHeight) - 1.0f - mousePos.y, 0.0f, maxRenderY)
+            : std::clamp(mousePos.y, 0.0f, maxRenderY);
+
+        const auto now = std::chrono::steady_clock::now();
+        const bool mouseMoved =
+            std::fabs(mousePos.x - m_lastPickingMousePos.x) > 0.5f ||
+            std::fabs(mousePos.y - m_lastPickingMousePos.y) > 0.5f;
+        constexpr int kHoverPickingIntervalMs = 120;
+        const auto elapsedMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastPickingSampleTime).count();
+        const bool sampleExpired =
+            !m_hasPickingSample ||
+            elapsedMs >= kHoverPickingIntervalMs;
+        const bool leftClicked = inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT);
+        const bool rightMousePressed = m_cameraController.IsRightMousePressed();
+        const bool shouldRepick =
+            leftClicked ||
+            (!rightMousePressed && sampleExpired && (mouseMoved || !m_hasPickingSample));
+
+        if (shouldRepick)
+        {
+            auto pickingResult = actorPickingFeature.PickAtRenderCoordinate(
+                static_cast<uint32_t>(mousePos.x),
+                static_cast<uint32_t>(mousePos.y));
+
+            m_highlightedActor = {};
+            m_highlightedGizmoDirection = {};
+
+            if (!rightMousePressed && pickingResult.has_value())
+            {
+                if (const auto pval = std::get_if<Engine::GameObject*>(&pickingResult.value()))
+                {
+                    m_highlightedActor = *pval;
+                }
+                else if (const auto pval = std::get_if<Editor::Core::GizmoBehaviour::EDirection>(&pickingResult.value()))
+                {
+                    m_highlightedGizmoDirection = *pval;
+                }
+            }
+            else
+            {
+                m_highlightedActor = {};
+                m_highlightedGizmoDirection = {};
+            }
+
+            m_lastPickingMousePos = mousePos;
+            m_lastPickingSampleTime = now;
+            m_hasPickingSample = true;
+        }
+        else if (rightMousePressed)
         {
             m_highlightedActor = {};
             m_highlightedGizmoDirection = {};
         }
 
-        if (inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT) && !m_cameraController.IsRightMousePressed())
+        if (leftClicked && !rightMousePressed)
         {
             if (m_highlightedGizmoDirection)
             {
@@ -183,6 +258,7 @@ void Editor::Panels::SceneView::HandleActorPicking()
     {
         m_highlightedActor = nullptr;
         m_highlightedGizmoDirection = std::nullopt;
+        m_hasPickingSample = false;
     }
 
     if (m_gizmoOperations.IsPicking())

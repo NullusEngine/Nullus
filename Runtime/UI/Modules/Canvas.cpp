@@ -9,6 +9,11 @@ void Canvas::Draw()
         if (m_isDockspace)
         {
             ImGuiViewport* viewport = ImGui::GetMainViewport();
+            ImDrawList* backgroundDrawList = ImGui::GetBackgroundDrawList(viewport);
+            backgroundDrawList->AddRectFilled(
+                viewport->Pos,
+                ImVec2(viewport->Pos.x + viewport->Size.x, viewport->Pos.y + viewport->Size.y),
+                ImGui::GetColorU32(ImGuiCol_DockingEmptyBg));
             ImGui::SetNextWindowPos(viewport->Pos);
             ImGui::SetNextWindowSize(viewport->Size);
             ImGui::SetNextWindowViewport(viewport->ID);

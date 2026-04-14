@@ -7,6 +7,7 @@
 #ifdef _DEBUG
 #include <Rendering/Features/FrameInfoRenderFeature.h>
 #endif
+#include <Rendering/Context/DriverAccess.h>
 
 #include "Assembly.h"
 #include "Core/AssemblyCore.h"
@@ -81,6 +82,14 @@ namespace
 				p_renderer.DrawFrame();
 				p_renderer.EndFrame();
 			}
+			else
+			{
+				NLS_LOG_ERROR("RenderCurrentScene: no camera found");
+			}
+		}
+		else
+		{
+			NLS_LOG_ERROR("RenderCurrentScene: no current scene");
 		}
 	}
 }
@@ -90,9 +99,9 @@ void Game::Core::Game::Update(float p_deltaTime)
 	if (m_context.inputManager->IsKeyPressed(Windowing::Inputs::EKey::KEY_F11))
 	{
 		if (m_context.inputManager->GetKeyState(Windowing::Inputs::EKey::KEY_LEFT_CONTROL) == Windowing::Inputs::EKeyState::KEY_DOWN)
-			m_context.driver->OpenLatestRenderDocCapture();
-		else if (!m_context.driver->IsRenderDocAvailable())
-			m_context.driver->QueueRenderDocCapture("Game");
+			Render::Context::DriverUIAccess::OpenLatestRenderDocCapture(*m_context.driver);
+		else if (Render::Context::DriverUIAccess::IsRenderDocAvailable(*m_context.driver))
+			Render::Context::DriverUIAccess::QueueRenderDocCapture(*m_context.driver, "Game");
 	}
 
 	if (auto currentScene = m_context.sceneManager.GetCurrentScene())
@@ -112,6 +121,6 @@ void Game::Core::Game::Update(float p_deltaTime)
 
 void Game::Core::Game::PostUpdate()
 {
-	m_context.driver->PresentSwapchain();
+	Render::Context::DriverUIAccess::PresentSwapchain(*m_context.driver);
 	m_context.inputManager->ClearEvents();
 }

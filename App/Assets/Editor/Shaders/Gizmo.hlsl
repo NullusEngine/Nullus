@@ -49,7 +49,7 @@ GizmoVSOutput VSMain(VSInput input, uint instanceId : SV_InstanceID)
     if (instanceId == 1)
         instanceModel = mul(instanceModel, RotationMatrix(float3(0.0f, 1.0f, 0.0f), radians(-90.0f)));
     else if (instanceId == 2)
-        instanceModel = mul(instanceModel, RotationMatrix(float3(1.0f, 0.0f, 0.0f), radians(90.0f)));
+        instanceModel = mul(instanceModel, RotationMatrix(float3(1.0f, 0.0f, 0.0f), radians(-90.0f)));
 
     const float3 gizmoCenter = mul(instanceModel, float4(0.0f, 0.0f, 0.0f, 1.0f)).xyz;
     const float distanceToCamera = distance(u_CameraWorldPos, gizmoCenter);

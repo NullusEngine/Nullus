@@ -82,7 +82,7 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 		element.stateMask = stateMask;
 		element.AddDescriptor(engineDrawableDescriptor);
 
-		DrawEntity(p_pso, element);
+		DrawEntity(element);
 	}
 }
 

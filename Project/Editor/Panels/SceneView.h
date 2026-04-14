@@ -1,5 +1,7 @@
 #pragma once
 
+#include <chrono>
+
 #include "Panels/AViewControllable.h"
 #include "Core/GizmoBehaviour.h"
 
@@ -40,6 +42,7 @@ namespace NLS::Editor::Panels
 
 	private:
 		virtual void DrawFrame() override;
+		virtual void AfterRenderFrame() override;
 		void HandleActorPicking();
 
 	private:
@@ -51,5 +54,8 @@ namespace NLS::Editor::Panels
 
 		Engine::GameObject* m_highlightedActor;
 		std::optional<Editor::Core::GizmoBehaviour::EDirection> m_highlightedGizmoDirection;
+		Maths::Vector2 m_lastPickingMousePos { -10000.0f, -10000.0f };
+		std::chrono::steady_clock::time_point m_lastPickingSampleTime {};
+		bool m_hasPickingSample = false;
 	};
 }

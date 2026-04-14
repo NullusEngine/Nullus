@@ -12,6 +12,7 @@
 #include "Core/EditorActions.h"
 #include "Settings/EditorSettings.h"
 #include "Utils/ActorCreationMenu.h"
+#include "Rendering/Context/DriverAccess.h"
 #include "UI/Widgets/Texts/Text.h"
 using namespace NLS;
 using namespace NLS::UI;
@@ -125,23 +126,36 @@ void Editor::Panels::MenuBar::InitializeSettingsMenu()
 	debuggingMenu.CreateWidget<Widgets::MenuItem>("Show geometry bounds", "", true, Settings::EditorSettings::ShowGeometryBounds).ValueChangedEvent += [this](bool p_value) { Settings::EditorSettings::ShowGeometryBounds = p_value; };
 	debuggingMenu.CreateWidget<Widgets::MenuItem>("Show lights bounds", "", true, Settings::EditorSettings::ShowLightBounds).ValueChangedEvent += [this](bool p_value) { Settings::EditorSettings::ShowLightBounds = p_value; };
     debuggingMenu.CreateWidget<Widgets::MenuItem>("Wireframe Mode", "", true, false).ValueChangedEvent += [this](bool p_value)
-    { EDITOR_CONTEXT(driver)->SetPolygonMode(p_value ? NLS::Render::Settings::ERasterizationMode::LINE : NLS::Render::Settings::ERasterizationMode::FILL); };
+    {
+        Render::Context::DriverUIAccess::SetPolygonMode(
+            *EDITOR_CONTEXT(driver),
+            p_value ? NLS::Render::Settings::ERasterizationMode::LINE : NLS::Render::Settings::ERasterizationMode::FILL);
+    };
 	auto& renderDocMenu = debuggingMenu.CreateWidget<Widgets::MenuList>("RenderDoc");
-	renderDocMenu.CreateWidget<Widgets::Text>(
-		EDITOR_CONTEXT(driver)->IsRenderDocAvailable()
-			? "Status: Available"
-			: "Status: Not installed or not loaded");
+	auto& renderDocStatus = renderDocMenu.CreateWidget<Widgets::Text>("Status: Unknown");
+	renderDocStatus.content = Render::Context::DriverUIAccess::IsRenderDocAvailable(*EDITOR_CONTEXT(driver))
+		? (Render::Context::DriverUIAccess::IsRenderDocEnabled(*EDITOR_CONTEXT(driver)) ? "Status: Enabled" : "Status: Available (disabled)")
+		: "Status: Not installed or not loaded";
+	renderDocMenu.CreateWidget<Widgets::MenuItem>(
+		"Enabled",
+		"",
+		true,
+		Render::Context::DriverUIAccess::IsRenderDocEnabled(*EDITOR_CONTEXT(driver))).ValueChangedEvent += [&renderDocStatus](bool enabled)
+	{
+		Render::Context::DriverUIAccess::SetRenderDocEnabled(*EDITOR_CONTEXT(driver), enabled);
+		renderDocStatus.content = enabled ? "Status: Enabled" : "Status: Available (disabled)";
+	};
 	renderDocMenu.CreateWidget<Widgets::MenuItem>("Capture Next Frame", "F11").ClickedEvent += []
 	{
-		EDITOR_CONTEXT(driver)->QueueRenderDocCapture("Editor");
+		Render::Context::DriverUIAccess::QueueRenderDocCapture(*EDITOR_CONTEXT(driver), "Editor");
 	};
 	renderDocMenu.CreateWidget<Widgets::MenuItem>("Open Latest Capture", "CTRL + F11").ClickedEvent += []
 	{
-		EDITOR_CONTEXT(driver)->OpenLatestRenderDocCapture();
+		Render::Context::DriverUIAccess::OpenLatestRenderDocCapture(*EDITOR_CONTEXT(driver));
 	};
 	renderDocMenu.CreateWidget<Widgets::MenuItem>("Open Capture Folder").ClickedEvent += []
 	{
-		const auto captureDirectory = EDITOR_CONTEXT(driver)->GetRenderDocCaptureDirectory();
+		const auto captureDirectory = Render::Context::DriverUIAccess::GetRenderDocCaptureDirectory(*EDITOR_CONTEXT(driver));
 		if (!captureDirectory.empty())
 			Platform::SystemCalls::ShowInExplorer(captureDirectory);
 	};
@@ -149,9 +163,9 @@ void Editor::Panels::MenuBar::InitializeSettingsMenu()
 		"Auto Open Replay UI",
 		"",
 		true,
-		EDITOR_CONTEXT(driver)->GetRenderDocAutoOpenEnabled()).ValueChangedEvent += [](bool enabled)
+		Render::Context::DriverUIAccess::GetRenderDocAutoOpenEnabled(*EDITOR_CONTEXT(driver))).ValueChangedEvent += [](bool enabled)
 	{
-		EDITOR_CONTEXT(driver)->SetRenderDocAutoOpenEnabled(enabled);
+		Render::Context::DriverUIAccess::SetRenderDocAutoOpenEnabled(*EDITOR_CONTEXT(driver), enabled);
 	};
 	auto& subMenu = debuggingMenu.CreateWidget<Widgets::MenuList>("Frustum culling visualizer...");
 	subMenu.CreateWidget<Widgets::MenuItem>("For geometry", "", true, Settings::EditorSettings::ShowGeometryFrustumCullingInSceneView).ValueChangedEvent += [this](bool p_value) { Settings::EditorSettings::ShowGeometryFrustumCullingInSceneView = p_value; };

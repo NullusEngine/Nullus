@@ -99,19 +99,6 @@ namespace NLS::Render::RHI
 		StreamDraw
 	};
 
-	struct NLS_RENDER_API TextureDesc
-	{
-		uint16_t width = 0;
-		uint16_t height = 0;
-		TextureDimension dimension = TextureDimension::Texture2D;
-		TextureFormat format = TextureFormat::RGBA8;
-		TextureFilter minFilter = TextureFilter::Nearest;
-		TextureFilter magFilter = TextureFilter::Nearest;
-		TextureWrap wrapS = TextureWrap::ClampToEdge;
-		TextureWrap wrapT = TextureWrap::ClampToEdge;
-		TextureUsage usage = TextureUsage::Sampled;
-	};
-
 	struct NLS_RENDER_API SamplerDesc
 	{
 		TextureFilter minFilter = TextureFilter::Linear;
@@ -133,13 +120,6 @@ namespace NLS::Render::RHI
 		uint32_t depthStencilTextureId = 0;
 		TextureFormat depthStencilFormat = TextureFormat::Depth24Stencil8;
 		uint32_t drawBufferCount = 0;
-	};
-
-	struct NLS_RENDER_API BufferDesc
-	{
-		size_t size = 0;
-		BufferType type = BufferType::ShaderStorage;
-		BufferUsage usage = BufferUsage::DynamicDraw;
 	};
 
 	struct NLS_RENDER_API RHIDeviceCapabilities

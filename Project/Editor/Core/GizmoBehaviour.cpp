@@ -2,6 +2,7 @@
 #include "Core/EditorActions.h"
 #include "Settings/EditorSettings.h"
 #include "Components/TransformComponent.h"
+#include <Math/Vector4.h>
 using namespace NLS;
 float SnapValue(float p_value, float p_step)
 {

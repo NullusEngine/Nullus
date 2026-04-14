@@ -7,6 +7,7 @@
 
 #include "RenderDef.h"
 #include "Rendering/RHI/Core/RHIResource.h"
+#include "Rendering/RHI/Core/IRHIResource.h"
 #include "Rendering/RHI/RHITypes.h"
 
 namespace NLS::Render::RHI
@@ -37,11 +38,9 @@ namespace NLS::Render::Buffers
         void Unbind() const;
 
         uint32_t GetID() const { return m_bufferId; }
-        const std::vector<uint32_t>& GetColorTextures() const { return m_colorTextures; }
         const std::vector<std::shared_ptr<NLS::Render::RHI::IRHITexture>>& GetColorTextureResources() const { return m_colorTextureResources; }
         const std::vector<std::shared_ptr<NLS::Render::RHI::RHITexture>>& GetExplicitColorTextureHandles() const { return m_explicitColorTextures; }
         std::shared_ptr<NLS::Render::RHI::RHITextureView> GetOrCreateExplicitColorView(size_t index, const std::string& debugName = {}) const;
-        uint32_t GetDepthTexture() const { return m_depthTexture; }
         const std::shared_ptr<NLS::Render::RHI::IRHITexture>& GetDepthTextureResource() const { return m_depthTextureResource; }
         const std::shared_ptr<NLS::Render::RHI::RHITexture>& GetExplicitDepthTextureHandle() const { return m_explicitDepthTexture; }
         std::shared_ptr<NLS::Render::RHI::RHITextureView> GetOrCreateExplicitDepthView(const std::string& debugName = {}) const;

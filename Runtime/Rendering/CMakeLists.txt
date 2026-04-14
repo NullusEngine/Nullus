@@ -14,6 +14,24 @@ nls_add_runtime_target(
   spirv-cross-util
   )
 
+get_target_property(_nls_render_sources NLS_Render SOURCES)
+if(_nls_render_sources)
+  if(NOT WIN32)
+    list(FILTER _nls_render_sources EXCLUDE REGEX "[/\\\\]RHI[/\\\\]Backends[/\\\\]DX11[/\\\\]")
+    list(FILTER _nls_render_sources EXCLUDE REGEX "[/\\\\]RHI[/\\\\]Backends[/\\\\]DX12[/\\\\]")
+  endif()
+
+  if(NOT Vulkan_FOUND)
+    list(FILTER _nls_render_sources EXCLUDE REGEX "[/\\\\]RHI[/\\\\]Backends[/\\\\]Vulkan[/\\\\]")
+  endif()
+
+  if(NOT APPLE)
+    list(FILTER _nls_render_sources EXCLUDE REGEX "[/\\\\]RHI[/\\\\]Backends[/\\\\]Metal[/\\\\]")
+  endif()
+
+  set_property(TARGET NLS_Render PROPERTY SOURCES "${_nls_render_sources}")
+endif()
+
 if(Vulkan_FOUND)
   target_link_libraries(NLS_Render PUBLIC Vulkan::Vulkan)
   target_compile_definitions(NLS_Render PUBLIC NLS_HAS_VULKAN=1)

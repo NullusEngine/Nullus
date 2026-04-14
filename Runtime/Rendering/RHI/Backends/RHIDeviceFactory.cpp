@@ -1,13 +1,17 @@
 #include "Rendering/RHI/Backends/RHIDeviceFactory.h"
 
+#if defined(_WIN32)
 #include "Rendering/RHI/Backends/DX11/DX11ExplicitDeviceFactory.h"
 #include "Rendering/RHI/Backends/DX11/DX11CommandListExecutor.h"
 #include "Rendering/RHI/Backends/DX12/DX12ExplicitDeviceFactory.h"
 #include "Rendering/RHI/Backends/DX12/DX12CommandListExecutor.h"
+#endif
 #include "Rendering/RHI/Backends/OpenGL/OpenGLExplicitDeviceFactory.h"
 #include "Rendering/RHI/Backends/OpenGL/OpenGLCommandListExecutor.h"
+#if NLS_HAS_VULKAN
 #include "Rendering/RHI/Backends/Vulkan/VulkanExplicitDeviceFactory.h"
 #include "Rendering/RHI/Backends/Vulkan/VulkanCommandListExecutor.h"
+#endif
 #if NLS_HAS_METAL
 #include "Rendering/RHI/Backends/Metal/MetalExplicitDeviceFactory.h"
 #include "Rendering/RHI/Backends/Metal/MetalCommandListExecutor.h"
@@ -33,9 +37,17 @@
 #endif
 
 #if NLS_HAS_VULKAN
+#if defined(_WIN32)
 #define VK_USE_PLATFORM_WIN32_KHR
+#elif defined(__linux__)
+#define VK_USE_PLATFORM_XLIB_KHR
+#endif
 #include <vulkan/vulkan.h>
+#if defined(_WIN32)
 #include <vulkan/vulkan_win32.h>
+#elif defined(__linux__)
+#include <vulkan/vulkan_xlib.h>
+#endif
 #endif
 
 namespace NLS::Render::Backend
@@ -66,12 +78,14 @@ namespace NLS::Render::Backend
 			return nullptr;
 		}
 
+#if defined(_WIN32)
 		// For DX11, create Tier A device directly without IRenderDevice
 		if (settings.graphicsBackend == NLS::Render::Settings::EGraphicsBackend::DX11)
 		{
 			// DX11 can create device directly - pass nullptr for window, will be set later via CreateSwapchain
 			return CreateDX11RhiDevice(nullptr, 1920, 1080);
 		}
+#endif
 
 		// For OpenGL, create Tier A device directly without IRenderDevice
 		if (settings.graphicsBackend == NLS::Render::Settings::EGraphicsBackend::OPENGL)

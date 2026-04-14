@@ -23,6 +23,25 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Install Vulkan SDK
+        shell: powershell
+        run: |
+          winget install --id KhronosGroup.VulkanSDK --exact --accept-package-agreements --accept-source-agreements --disable-interactivity
+
+          $vulkanSdk = $null
+          if (Test-Path 'C:\VulkanSDK') {
+            $vulkanSdk = Get-ChildItem 'C:\VulkanSDK' -Directory |
+              Sort-Object Name -Descending |
+              Select-Object -First 1
+          }
+
+          if (-not $vulkanSdk) {
+            throw "Vulkan SDK installation did not produce a discoverable C:\\VulkanSDK directory."
+          }
+
+          "VULKAN_SDK=$($vulkanSdk.FullName)" >> $env:GITHUB_ENV
+          "VK_SDK_PATH=$($vulkanSdk.FullName)" >> $env:GITHUB_ENV
+
       - name: Configure
         shell: powershell
         run: cmake -S . -B build\windows -G "Visual Studio 17 2022" -A ${{ matrix.platform }} -DCMAKE_CONFIGURATION_TYPES=${{ matrix.configuration }}

@@ -36,6 +36,13 @@ TestProject/
 
 # Local AI workflow scratch
 .codex/
+.claude/
+.agents/
+.specify/
+AGENTS.md
+Docs/AIWorkflow.md
+specs/
+imgui.ini
 .specify/cache/
 .specify/tmp/
 specs/.tmp/

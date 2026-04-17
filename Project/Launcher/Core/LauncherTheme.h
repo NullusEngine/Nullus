@@ -47,7 +47,8 @@ namespace HubLayout
     inline constexpr float kNavigationWidth = 232.0f;
     inline constexpr float kActionBarHeight = 132.0f;
     inline constexpr float kTableHeaderHeight = 36.0f;
-    inline constexpr float kProjectRowHeight = 56.0f;
+    inline constexpr float kProjectRowHeight = 64.0f;
+    inline constexpr float kProjectTablePadding = 24.0f;
     inline constexpr float kWizardHeaderHeight = 72.0f;
     inline constexpr float kWizardFooterHeight = 64.0f;
 
@@ -74,7 +75,7 @@ namespace HubLayout
         columns.backend = compact ? 136.0f : 180.0f;
         columns.actions = 72.0f;
 
-        const float reserved = columns.modified + columns.backend + columns.actions;
+        const float reserved = kProjectTablePadding + columns.modified + columns.backend + columns.actions;
         columns.name = (std::max)(compact ? 280.0f : 360.0f, availableWidth - reserved);
         return columns;
     }

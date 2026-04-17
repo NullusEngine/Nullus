@@ -60,6 +60,20 @@ void DrawHubPageTitle(const ImVec2& position, const char* text, float size = 28.
     drawList->AddText(font, size, position, color, text);
 }
 
+void DrawSectionTab(const ImVec2& position, const char* text)
+{
+    auto* drawList = ImGui::GetWindowDrawList();
+    ImGui::SetCursorScreenPos(position);
+    PushHubText(HubColors::TextPrimary);
+    ImGui::TextUnformatted(text);
+    PopHubText();
+    drawList->AddLine(
+        ImVec2(position.x, position.y + 34.0f),
+        ImVec2(position.x + 40.0f, position.y + 34.0f),
+        HubColorU32(HubColors::Accent),
+        2.0f);
+}
+
 std::string ReadEnvironmentValue(const char* name)
 {
     if (const char* value = std::getenv(name); value != nullptr)
@@ -482,11 +496,7 @@ private:
             }
         }
 
-        ImGui::SetCursorScreenPos(ImVec2(origin.x + 32.0f, origin.y + 92.0f));
-        PushHubText(HubColors::TextPrimary);
-        ImGui::TextUnformatted(Tr(LauncherTextKey::ProjectsTitle));
-        PopHubText();
-        drawList->AddLine(ImVec2(origin.x + 32.0f, origin.y + 126.0f), ImVec2(origin.x + 72.0f, origin.y + 126.0f), HubColorU32(HubColors::Accent), 2.0f);
+        DrawSectionTab(ImVec2(origin.x + 32.0f, origin.y + 92.0f), Tr(LauncherTextKey::ProjectsTitle));
 
         const float searchWidth = (std::min)(330.0f, (std::max)(220.0f, fullWidth * 0.28f));
         const ImVec2 searchOrigin(end.x - searchWidth - 32.0f, origin.y + 78.0f);
@@ -531,7 +541,7 @@ private:
         drawList->AddRectFilled(origin, end, HubColorU32(HubColors::Surface));
         drawList->AddLine(ImVec2(origin.x, end.y), ImVec2(end.x, end.y), HubColorU32(HubColors::Border), 1.0f);
 
-        const float padding = 24.0f;
+        const float padding = HubLayout::kProjectTablePadding;
         float colX = origin.x + padding;
 
         const float nameDividerX = colX + columns.name;
@@ -668,17 +678,17 @@ private:
             drawList->AddRectFilled(origin, end, HubColorU32(HubColors::RowHover));
         }
 
-        const float padding = 24.0f;
+        const float padding = HubLayout::kProjectTablePadding;
         float colX = origin.x + padding;
 
         // Name column
         {
-            ImGui::SetCursorScreenPos(ImVec2(colX, origin.y + 8.0f));
+            ImGui::SetCursorScreenPos(ImVec2(colX, origin.y + 10.0f));
             PushHubText(HubColors::TextPrimary);
             ImGui::TextUnformatted(projectName.c_str());
             PopHubText();
 
-            ImGui::SetCursorScreenPos(ImVec2(colX, origin.y + 28.0f));
+            ImGui::SetCursorScreenPos(ImVec2(colX, origin.y + 34.0f));
             PushHubText(HubColors::TextSecondary);
             ImGui::PushTextWrapPos(colX + columns.name - 18.0f);
             ImGui::TextUnformatted(projectPath.c_str());
@@ -689,7 +699,7 @@ private:
 
         // Modified column
         {
-            ImGui::SetCursorScreenPos(ImVec2(colX, origin.y + 16.0f));
+            ImGui::SetCursorScreenPos(ImVec2(colX, origin.y + 22.0f));
             PushHubText(HubColors::TextSecondary);
             ImGui::TextUnformatted(GetRelativeTimeString(projectPath).c_str());
             PopHubText();
@@ -698,7 +708,7 @@ private:
 
         // Editor version column
         {
-            ImGui::SetCursorScreenPos(ImVec2(colX, origin.y + 16.0f));
+            ImGui::SetCursorScreenPos(ImVec2(colX, origin.y + 22.0f));
             PushHubText(HubColors::TextSecondary);
             ImGui::TextUnformatted(editorVersion.c_str());
             PopHubText();
@@ -710,7 +720,7 @@ private:
         UI::Icons::DrawIcon(
             drawList,
             UI::Icons::IconId::MoreHorizontal,
-            ImVec2((actionButtonOrigin.x + actionButtonEnd.x) * 0.5f, origin.y + 26.0f),
+            ImVec2((actionButtonOrigin.x + actionButtonEnd.x) * 0.5f, (actionButtonOrigin.y + actionButtonEnd.y) * 0.5f),
             14.0f,
             { HubColorU32(HubColors::TextMuted), 1.5f });
 
@@ -801,42 +811,47 @@ private:
         if (DrawHubButton(Tr(LauncherTextKey::AddEngineExecutable), addBtnSize, HubColors::Accent, HubColors::AccentHover, HubColors::AccentActive, Maths::Color(1,1,1,0.95f)))
             addInstallVersion();
 
-        ImGui::SetCursorScreenPos(ImVec2(headerOrigin.x + 32.0f, headerOrigin.y + 92.0f));
-        PushHubText(HubColors::TextPrimary);
-        ImGui::TextUnformatted(Tr(LauncherTextKey::Installs));
+        DrawSectionTab(ImVec2(headerOrigin.x + 32.0f, headerOrigin.y + 92.0f), Tr(LauncherTextKey::Installs));
+
+        constexpr float kHeaderHeight = HubLayout::kTableHeaderHeight;
+        constexpr float kRowHeight = 64.0f;
+        const float tableTop = y + HubLayout::kActionBarHeight;
+        const float listTop = tableTop + kHeaderHeight;
+        const float listHeight = (std::max)(0.0f, y + height - listTop);
+        const float padding = 24.0f;
+        const float versionWidth = width < 920.0f ? 180.0f : 220.0f;
+        const float actionsWidth = width < 920.0f ? 188.0f : 220.0f;
+        const float pathWidth = (std::max)(240.0f, width - padding - versionWidth - actionsWidth - padding);
+
+        const ImVec2 tableHeaderMin(x, tableTop);
+        const ImVec2 tableHeaderMax(x + width, tableTop + kHeaderHeight);
+        drawList->AddRectFilled(tableHeaderMin, tableHeaderMax, HubColorU32(HubColors::Surface));
+        drawList->AddLine(ImVec2(tableHeaderMin.x, tableHeaderMax.y), ImVec2(tableHeaderMax.x, tableHeaderMax.y), HubColorU32(HubColors::Border), 1.0f);
+
+        const float versionDividerX = x + padding + versionWidth;
+        const float pathDividerX = versionDividerX + pathWidth;
+        drawList->AddLine(ImVec2(versionDividerX, tableHeaderMin.y), ImVec2(versionDividerX, tableHeaderMax.y), HubColorU32(HubColors::BorderStrong), 1.0f);
+        drawList->AddLine(ImVec2(pathDividerX, tableHeaderMin.y), ImVec2(pathDividerX, tableHeaderMax.y), HubColorU32(HubColors::BorderStrong), 1.0f);
+
+        ImGui::SetCursorScreenPos(ImVec2(x + padding, tableTop + 8.0f));
+        PushHubText(HubColors::TextSecondary);
+        ImGui::TextUnformatted(Tr(LauncherTextKey::EditorVersion));
         PopHubText();
-        drawList->AddLine(ImVec2(headerOrigin.x + 32.0f, headerOrigin.y + 126.0f), ImVec2(headerOrigin.x + 72.0f, headerOrigin.y + 126.0f), HubColorU32(HubColors::Accent), 2.0f);
 
-        const float panelX = x + 32.0f;
-        const float panelY = y + HubLayout::kActionBarHeight + 18.0f;
-        const float panelWidth = (std::min)(width - 64.0f, 920.0f);
-        const float panelHeight = (std::max)(220.0f, height - HubLayout::kActionBarHeight - 42.0f);
-        drawList->AddRectFilled(
-            ImVec2(panelX, panelY),
-            ImVec2(panelX + panelWidth, panelY + panelHeight),
-            HubColorU32(HubColors::Surface),
-            4.0f);
-
-        ImGui::SetCursorScreenPos(ImVec2(panelX + 20.0f, panelY + 20.0f));
-        PushHubText(HubColors::TextPrimary);
+        ImGui::SetCursorScreenPos(ImVec2(versionDividerX + 16.0f, tableTop + 8.0f));
+        PushHubText(HubColors::TextSecondary);
         ImGui::TextUnformatted(Tr(LauncherTextKey::EngineExecutable));
         PopHubText();
 
-        ImGui::SetCursorScreenPos(ImVec2(panelX + 20.0f, panelY + 48.0f));
-        PushHubText(HubColors::TextMuted);
-        ImGui::TextWrapped("%s", Tr(LauncherTextKey::EngineExecutableHint));
-        PopHubText();
-
         const auto installViews = m_settings.GetEngineInstallationViews();
-        const float listY = panelY + 90.0f;
-        const float listHeight = panelHeight - 120.0f;
 
-        ImGui::SetCursorScreenPos(ImVec2(panelX + 12.0f, listY));
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 8.0f));
-        ImGui::BeginChild("##InstallsList", ImVec2(panelWidth - 24.0f, listHeight), false, ImGuiWindowFlags_None);
+        ImGui::SetCursorScreenPos(ImVec2(x, listTop));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        ImGui::BeginChild("##InstallsList", ImVec2(width, listHeight), false, ImGuiWindowFlags_None);
 
         if (installViews.empty())
         {
+            ImGui::SetCursorScreenPos(ImVec2(x + 32.0f, listTop + 20.0f));
             PushHubText(HubColors::TextMuted);
             ImGui::TextUnformatted(Tr(LauncherTextKey::NoInstalledVersions));
             PopHubText();
@@ -847,14 +862,15 @@ private:
             {
                 const auto& install = installViews[index];
                 const ImVec2 rowOrigin = ImGui::GetCursorScreenPos();
-                const float rowWidth = panelWidth - 40.0f;
-                constexpr float kRowHeight = 72.0f;
+                const float rowWidth = width;
                 const ImVec2 rowEnd(rowOrigin.x + rowWidth, rowOrigin.y + kRowHeight);
+                const Maths::Color rowBg = (index % 2 == 0) ? HubColors::Background : HubColors::RowOdd;
 
-                drawList->AddRectFilled(rowOrigin, rowEnd, HubColorU32(HubColors::Background), 6.0f);
-                drawList->AddRect(rowOrigin, rowEnd, HubColorU32(HubColors::Border), 6.0f, 0, 1.0f);
+                drawList->AddRectFilled(rowOrigin, rowEnd, HubColorU32(rowBg));
+                drawList->AddLine(ImVec2(versionDividerX, rowOrigin.y), ImVec2(versionDividerX, rowEnd.y), HubColorU32(HubColors::Border), 1.0f);
+                drawList->AddLine(ImVec2(pathDividerX, rowOrigin.y), ImVec2(pathDividerX, rowEnd.y), HubColorU32(HubColors::Border), 1.0f);
 
-                ImGui::SetCursorScreenPos(ImVec2(rowOrigin.x + 14.0f, rowOrigin.y + 12.0f));
+                ImGui::SetCursorScreenPos(ImVec2(rowOrigin.x + padding, rowOrigin.y + 10.0f));
                 PushHubText(HubColors::TextPrimary);
                 const std::string versionText = install.versionLabel.empty()
                     ? std::string(Tr(LauncherTextKey::InvalidInstalledVersion))
@@ -862,32 +878,42 @@ private:
                 ImGui::TextUnformatted(versionText.c_str());
                 PopHubText();
 
-                ImGui::SetCursorScreenPos(ImVec2(rowOrigin.x + 14.0f, rowOrigin.y + 36.0f));
-                PushHubText(install.isValid ? HubColors::TextSecondary : HubColors::Danger);
-                ImGui::PushTextWrapPos(rowOrigin.x + rowWidth - 150.0f);
-                ImGui::TextWrapped("%s", install.executablePath.c_str());
-                ImGui::PopTextWrapPos();
-                PopHubText();
-
                 if (install.isDefault)
                 {
-                    ImGui::SetCursorScreenPos(ImVec2(rowOrigin.x + rowWidth - 230.0f, rowOrigin.y + 12.0f));
+                    ImGui::SetCursorScreenPos(ImVec2(rowOrigin.x + padding, rowOrigin.y + 34.0f));
                     PushHubText(HubColors::Accent);
                     ImGui::TextUnformatted(Tr(LauncherTextKey::DefaultEngineExecutable));
                     PopHubText();
                 }
-
-                ImGui::SetCursorScreenPos(ImVec2(rowOrigin.x + rowWidth - 210.0f, rowOrigin.y + 18.0f));
-                if (DrawHubButton(Tr(LauncherTextKey::DefaultEngineExecutable), {92.0f, 28.0f}, HubColors::Surface, HubColors::SurfaceHover, HubColors::SurfaceActive, HubColors::TextPrimary))
+                else if (!install.isValid)
                 {
-                    if (m_settings.SetDefaultEngineExecutablePath(install.executablePath))
+                    ImGui::SetCursorScreenPos(ImVec2(rowOrigin.x + padding, rowOrigin.y + 34.0f));
+                    PushHubText(HubColors::Danger);
+                    ImGui::TextUnformatted(Tr(LauncherTextKey::InvalidInstalledVersion));
+                    PopHubText();
+                }
+
+                ImGui::SetCursorScreenPos(ImVec2(versionDividerX + 16.0f, rowOrigin.y + 20.0f));
+                PushHubText(install.isValid ? HubColors::TextSecondary : HubColors::Danger);
+                ImGui::PushTextWrapPos(pathDividerX - 20.0f);
+                ImGui::TextWrapped("%s", install.executablePath.c_str());
+                ImGui::PopTextWrapPos();
+                PopHubText();
+
+                if (!install.isDefault)
+                {
+                    ImGui::SetCursorScreenPos(ImVec2(rowOrigin.x + rowWidth - 176.0f, rowOrigin.y + 18.0f));
+                    if (DrawHubButton(Tr(LauncherTextKey::DefaultEngineExecutable), {84.0f, 28.0f}, HubColors::Surface, HubColors::SurfaceHover, HubColors::SurfaceActive, HubColors::TextPrimary))
                     {
-                        m_settings.Save();
-                        m_installError.clear();
+                        if (m_settings.SetDefaultEngineExecutablePath(install.executablePath))
+                        {
+                            m_settings.Save();
+                            m_installError.clear();
+                        }
                     }
                 }
 
-                ImGui::SetCursorScreenPos(ImVec2(rowOrigin.x + rowWidth - 108.0f, rowOrigin.y + 18.0f));
+                ImGui::SetCursorScreenPos(ImVec2(rowOrigin.x + rowWidth - 86.0f, rowOrigin.y + 18.0f));
                 if (DrawHubButton(Tr(LauncherTextKey::RemoveEngineExecutable), {78.0f, 28.0f}, HubColors::Surface, HubColors::SurfaceHover, HubColors::SurfaceActive, HubColors::TextPrimary))
                 {
                     m_settings.RemoveEngineExecutablePath(install.executablePath);
@@ -895,7 +921,7 @@ private:
                     break;
                 }
 
-                ImGui::Dummy(ImVec2(rowWidth, kRowHeight + 8.0f));
+                ImGui::Dummy(ImVec2(rowWidth, kRowHeight));
             }
         }
 
@@ -904,7 +930,7 @@ private:
 
         if (!m_installError.empty())
         {
-            ImGui::SetCursorScreenPos(ImVec2(panelX + 20.0f, panelY + panelHeight - 22.0f));
+            ImGui::SetCursorScreenPos(ImVec2(x + 32.0f, y + height - 28.0f));
             PushHubText(HubColors::Danger);
             ImGui::TextUnformatted(m_installError.c_str());
             PopHubText();

@@ -6,7 +6,7 @@ namespace
 {
 float ProjectColumnTotal(const NLS::HubLayout::ProjectTableColumns& columns)
 {
-    return columns.name + columns.modified + columns.backend + columns.actions;
+    return NLS::HubLayout::kProjectTablePadding + columns.name + columns.modified + columns.backend + columns.actions;
 }
 
 float WizardColumnTotal(const NLS::HubLayout::WizardColumns& columns)

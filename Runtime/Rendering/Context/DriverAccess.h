@@ -54,6 +54,7 @@ namespace NLS::Render::RHI
     class RHIDevice;
     class RHITexture;
     class RHITextureView;
+    class RHISwapchain;
     enum class TextureDimension : uint8_t;
     struct NativeRenderDeviceInfo;
     struct FramebufferDesc;
@@ -160,6 +161,7 @@ namespace NLS::Render::Context
     struct DriverTestAccess final
     {
         static void SetExplicitDevice(Driver& driver, std::shared_ptr<RHI::RHIDevice> explicitDevice);
+        static void SetExplicitSwapchain(Driver& driver, std::shared_ptr<RHI::RHISwapchain> explicitSwapchain);
         static RHI::RHIFrameContext& EnsureFrameContext(Driver& driver, size_t index);
         static const RHI::RHIFrameContext* PeekFrameContext(const Driver& driver, size_t index);
         static void SetExplicitFrameActive(Driver& driver, bool active);

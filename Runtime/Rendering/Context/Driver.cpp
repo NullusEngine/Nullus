@@ -538,6 +538,11 @@ void DriverTestAccess::SetExplicitDevice(Driver& driver, std::shared_ptr<Render:
 	driver.m_impl->explicitDevice = std::move(explicitDevice);
 }
 
+void DriverTestAccess::SetExplicitSwapchain(Driver& driver, std::shared_ptr<Render::RHI::RHISwapchain> explicitSwapchain)
+{
+	driver.m_impl->explicitSwapchain = std::move(explicitSwapchain);
+}
+
 Render::RHI::RHIFrameContext& DriverTestAccess::EnsureFrameContext(Driver& driver, const size_t index)
 {
 	if (driver.m_impl->frameContexts.size() <= index)
@@ -852,6 +857,11 @@ void Driver::ApplyPendingSwapchainResize()
 	{
 		if (frameContext.frameFence != nullptr)
 			frameContext.frameFence->Wait();
+	}
+
+	for (auto& frameContext : m_impl->frameContexts)
+	{
+		frameContext.swapchainBackbufferView = nullptr;
 	}
 
 	if (m_impl->explicitSwapchain != nullptr)

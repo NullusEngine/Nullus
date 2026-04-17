@@ -1,3 +1,5 @@
+add_subdirectory("Launcher")
+set_target_properties(Launcher PROPERTIES FOLDER "Project")
 add_subdirectory("Game")
 set_target_properties(Game PROPERTIES FOLDER "Project")
 add_subdirectory("Editor")

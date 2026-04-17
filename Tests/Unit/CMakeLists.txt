@@ -18,6 +18,13 @@ add_executable(NullusUnitTests ${NULLUS_UNIT_TEST_FILES})
 target_sources(NullusUnitTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Project/Game/LaunchArgs.cpp
     ${CMAKE_SOURCE_DIR}/Project/Game/LaunchArgs.h
+    ${CMAKE_SOURCE_DIR}/Project/Launcher/Core/LauncherLocalization.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Launcher/Core/LauncherLocalization.h
+    ${CMAKE_SOURCE_DIR}/Project/Launcher/Core/LauncherProjectMetadata.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Launcher/Core/LauncherProjectMetadata.h
+    ${CMAKE_SOURCE_DIR}/Project/Launcher/Core/LauncherSettings.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Launcher/Core/LauncherSettings.h
+    ${CMAKE_SOURCE_DIR}/Project/Launcher/Core/LauncherNavigation.h
 )
 
 target_compile_features(NullusUnitTests PRIVATE cxx_std_20)
@@ -32,6 +39,7 @@ target_include_directories(NullusUnitTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Runtime/Rendering
     ${CMAKE_SOURCE_DIR}/Project/Game
     ${CMAKE_SOURCE_DIR}/Project/Editor
+    ${CMAKE_SOURCE_DIR}/Project/Launcher
 )
 
 target_compile_definitions(NullusUnitTests PRIVATE

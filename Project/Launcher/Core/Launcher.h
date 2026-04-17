@@ -1,4 +1,4 @@
-﻿
+
 #pragma once
 
 #include <Windowing/Context/Device.h>
@@ -8,6 +8,8 @@
 #include <Rendering/Settings/DriverSettings.h>
 #include <UI/UIManager.h>
 #include <UI/Panels/PanelWindow.h>
+
+#include "Core/TemplateManager.h"
 
 namespace NLS::Render::Resources
 {
@@ -21,6 +23,14 @@ namespace NLS::Render::RHI
 
 namespace NLS
 {
+struct LauncherRunResult
+{
+    bool ready = false;
+    std::string projectPath;
+    std::string projectName;
+    std::string editorExecutablePath;
+};
+
 /**
  * A simple panel that allow the user to select the project to launch
  */
@@ -41,7 +51,7 @@ public:
     /**
      * Run the project hub logic
      */
-    std::tuple<bool, std::string, std::string> Run();
+    LauncherRunResult Run();
 
     /**
      * Setup the project hub specific context (minimalist context)
@@ -68,9 +78,12 @@ private:
 
     std::string m_projectPath = "";
     std::string m_projectName = "";
+    std::string m_editorExecutablePath = "";
     bool m_readyToGo = false;
     Render::Settings::EGraphicsBackend m_graphicsBackend = Render::Settings::EGraphicsBackend::NONE;
     std::optional<Render::Settings::EGraphicsBackend> m_backendOverride = std::nullopt;
     Render::Settings::RenderDocSettings m_renderDocSettings;
+
+    TemplateManager m_templateManager;
 };
 } // namespace NLS

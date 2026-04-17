@@ -1,0 +1,67 @@
+key,en-US,zh-CN
+launcher.title,Nullus Hub,Nullus Hub
+projects.title,Projects,项目
+projects.search_hint,Search...,搜索...
+projects.open,Open,打开
+projects.new,New Project,新建项目
+projects.name,Name,名称
+projects.modified,Modified,修改时间
+projects.backend,Backend,后端
+projects.empty,No projects,暂无项目
+projects.menu.open,Open project,打开项目
+projects.menu.open_explorer,Open in Explorer,在资源管理器中打开
+projects.menu.open_files,Open in file manager,在文件管理器中打开
+projects.menu.command_line_args,Add command line arguments,添加命令行参数
+projects.menu.remove,Remove from list,从列表移除
+projects.not_found.title,Project not found,项目未找到
+projects.not_found.body,The selected project does not exist,所选项目不存在
+projects.open_file,Open project,打开项目
+installs.title,Installs,安装
+installs.select_executable,Select executable,选择可执行文件
+installs.add_executable,Add version,添加版本
+installs.remove_executable,Remove,移除
+installs.default_executable,Default,默认
+installs.executable,Engine executable,引擎可执行文件
+installs.executable_hint,Choose one or more existing Editor or engine executables.,选择一个或多个已有的 Editor 或引擎可执行文件。
+installs.invalid_executable,The selected executable does not exist.,所选可执行文件不存在。
+installs.empty,No engine executable selected.,尚未选择引擎可执行文件。
+installs.no_versions,No installed editor versions.,暂无已安装编辑器版本。
+installs.version_modified,Modified,修改时间
+installs.invalid_version,Missing executable,可执行文件缺失
+common.cancel,Cancel,取消
+common.browse,Browse...,浏览...
+wizard.title,New project,新建项目
+wizard.create,Create project,创建项目
+wizard.templates.all,All templates,所有模板
+wizard.templates.search,Search templates...,搜索模板...
+wizard.templates.no_match,No matching templates found,没有找到匹配的模板
+wizard.templates.select,Select a template to view details,选择一个模板以查看详情
+wizard.project_settings,Project settings,项目设置
+wizard.project_name,Project name,项目名称
+wizard.location,Location,位置
+wizard.editor_version,Editor version,编辑器版本
+wizard.select_location,Select project location,选择项目位置
+wizard.advanced,Advanced settings,高级设置
+wizard.backend,Backend,后端
+wizard.resolution,Resolution,分辨率
+wizard.samples,Samples:,采样:
+wizard.preview_image,Preview image,预览图
+wizard.error.name_empty,Project name cannot be empty,项目名称不能为空
+wizard.error.name_too_long,Project name cannot exceed 128 characters,项目名称不能超过 128 个字符
+wizard.error.name_invalid,Project name can only contain letters numbers underscores and hyphens,项目名称只能包含字母 数字 下划线和连字符
+wizard.error.location_empty,Select a project location,请选择项目位置
+wizard.error.location_not_exist,The selected location does not exist,所选位置不存在
+wizard.error.dir_exists_prefix,Directory ',目录 '
+wizard.error.dir_exists_suffix,' already exists in the selected location,' 已存在于所选位置
+wizard.error.resolution_invalid,Resolution must be between 640x480 and 7680x4320,分辨率必须在 640x480 到 7680x4320 之间
+wizard.error.create_dir_failed,Unable to create project directory:,无法创建项目目录:
+wizard.error.create_file_failed,Unable to create project file,无法创建项目文件
+wizard.error.editor_version_required,Select an editor version before creating the project,创建项目之前请选择一个编辑器版本
+wizard.error.no_editor_versions.title,No editor versions available,没有可用的编辑器版本
+wizard.error.no_editor_versions.body,Add a valid editor version in Installs before creating a project.,请先在安装页添加一个有效的编辑器版本再创建项目。
+time.unknown,Unknown,未知
+time.seconds_ago,seconds ago,秒前
+time.minutes_ago,minutes ago,分钟前
+time.hours_ago,hours ago,小时前
+time.days_ago,days ago,天前
+time.years_ago,years ago,年前

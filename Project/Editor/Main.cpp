@@ -4,7 +4,6 @@
 #include "Core/Utils/String.h"
 #include "Core/Application.h"
 #include "Debug/Logger.h"
-#include "Core//Launcher.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include <cstdio>
 #include <exception>
@@ -75,11 +74,11 @@ int main(int argc, char** argv)
 			std::printf("  --capture-after-frames <N>   Automatically capture frame after N presents\n");
 			std::printf("  --help, -h                  Show this help message\n");
 			std::printf("\nArguments:\n");
-			std::printf("  project_path   Path to .nullus project file or project directory (skips launcher)\n");
+			std::printf("  project_path   Path to .nullus project file or project directory (required)\n");
 			std::printf("\nExamples:\n");
 			std::printf("  %s MyProject.nullus                       # Open project with default backend\n", argv[0]);
 			std::printf("  %s --backend vulkan MyProject.nullus       # Open project with Vulkan backend\n", argv[0]);
-			std::printf("  %s -b dx12                                  # Launch with DX12 backend (shows launcher)\n", argv[0]);
+			std::printf("  %s -b dx12 MyProject.nullus                # Open with DX12 backend\n", argv[0]);
 			std::printf("  %s --renderdoc MyProject.nullus            # Enable RenderDoc and open project\n", argv[0]);
 			std::printf("  %s --capture-after-frames 60 MyProject.nullus  # Auto-capture after 60 frames\n", argv[0]);
 			return EXIT_SUCCESS;
@@ -130,8 +129,8 @@ int main(int argc, char** argv)
 
 	if (!ready)
 	{
-		Launcher launcher(backendOverride, renderDocSettings);
-		std::tie(ready, projectPath, projectName) = launcher.Run();
+		std::fprintf(stderr, "No project specified. Launch Editor through Launcher.exe or provide a project path as argument.\n");
+		return EXIT_FAILURE;
 	}
 
 	if (ready)

@@ -26,10 +26,11 @@ ctest --test-dir build -C Debug --output-on-failure
 cmake --build build --config Debug --target NullusUnitTests -- /m:1
 ```
 
-### Editor / Game Targets
+### Editor / Game / Launcher Targets
 After building, executables are under `Build/bin/Debug/` (Windows) or `Build/bin/` (Linux/macOS):
-- `Editor.exe`
-- `Game.exe`
+- `Launcher.exe` - Project hub (create/open projects, then launches Editor)
+- `Editor.exe` - Desktop editor (requires project path argument)
+- `Game.exe` - Runtime game application
 
 ## Architecture Overview
 
@@ -115,8 +116,9 @@ Editor.exe --backend vulkan MyProject.nullus
 # OpenGL backend
 Editor.exe --backend opengl MyProject.nullus
 
-# Without project argument, shows launcher
-Editor.exe
+# Without project argument, Editor exits with error
+# Use Launcher.exe to browse/create projects
+Launcher.exe
 ```
 
-If no `--backend` argument is provided, the backend is read from `projectSettings` in the `.nullus` project file.
+If no `--backend` argument is provided, the backend is read from `projectSettings` in the `.nullus` project file. Editor MUST be launched with a project path argument — use `Launcher.exe` for the interactive project selection and creation experience.

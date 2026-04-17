@@ -71,17 +71,34 @@ TEST(GraphicsBackendUtilsTests, SceneRendererSupportDescriptionsMatchCurrentSupp
             NLS::Render::Settings::EGraphicsBackend::VULKAN)).find("formal RHI mainline"),
         std::string::npos);
 
+#if defined(_WIN32)
+    const char* dx11SupportPhrase = "unsupported";
+#else
+    const char* dx11SupportPhrase = "not exposed";
+#endif
     EXPECT_NE(
         std::string(NLS::Render::Settings::SceneRendererSupportDescription(
-            NLS::Render::Settings::EGraphicsBackend::DX11)).find("unsupported"),
+            NLS::Render::Settings::EGraphicsBackend::DX11)).find(dx11SupportPhrase),
         std::string::npos);
+
+#if defined(_WIN32)
+    const char* openGlSupportPhrase = "unsupported";
+#else
+    const char* openGlSupportPhrase = "platform-specific validation";
+#endif
     EXPECT_NE(
         std::string(NLS::Render::Settings::SceneRendererSupportDescription(
-            NLS::Render::Settings::EGraphicsBackend::OPENGL)).find("unsupported"),
+            NLS::Render::Settings::EGraphicsBackend::OPENGL)).find(openGlSupportPhrase),
         std::string::npos);
+
+#if defined(__APPLE__)
+    const char* metalSupportPhrase = "Apple-native presentation";
+#else
+    const char* metalSupportPhrase = "unsupported";
+#endif
     EXPECT_NE(
         std::string(NLS::Render::Settings::SceneRendererSupportDescription(
-            NLS::Render::Settings::EGraphicsBackend::METAL)).find("unsupported"),
+            NLS::Render::Settings::EGraphicsBackend::METAL)).find(metalSupportPhrase),
         std::string::npos);
 }
 
@@ -204,7 +221,11 @@ TEST(GraphicsBackendUtilsTests, EditorRuntimeFallbackDecisionExplainsBackendNotR
 
     EXPECT_FALSE(decision.shouldFallbackToOpenGL);
     ASSERT_TRUE(decision.primaryWarning.has_value());
+#if defined(_WIN32)
     EXPECT_NE(decision.primaryWarning->find("no validated fallback backend"), std::string::npos);
+#else
+    EXPECT_NE(decision.primaryWarning->find("unsupported"), std::string::npos);
+#endif
     ASSERT_TRUE(decision.detailWarning.has_value());
     EXPECT_NE(decision.detailWarning->find("formal RHI mainline"), std::string::npos);
 }
@@ -225,7 +246,11 @@ TEST(GraphicsBackendUtilsTests, EditorRuntimeFallbackDecisionExplainsCapabilityG
 
     EXPECT_FALSE(decision.shouldFallbackToOpenGL);
     ASSERT_TRUE(decision.primaryWarning.has_value());
+#if defined(_WIN32)
     EXPECT_NE(decision.primaryWarning->find("no validated fallback backend"), std::string::npos);
+#else
+    EXPECT_NE(decision.primaryWarning->find("unsupported"), std::string::npos);
+#endif
     ASSERT_TRUE(decision.detailWarning.has_value());
     EXPECT_NE(decision.detailWarning->find("formal RHI mainline"), std::string::npos);
 }
@@ -241,7 +266,10 @@ TEST(GraphicsBackendUtilsTests, GameRuntimeFallbackDecisionExplainsBackendNotRea
 
     EXPECT_FALSE(decision.shouldFallbackToOpenGL);
     ASSERT_TRUE(decision.primaryWarning.has_value());
-    EXPECT_NE(decision.primaryWarning->find("no validated fallback backend"), std::string::npos);
+    if (NLS::Render::Settings::IsBackendEnabledForCurrentBuild(NLS::Render::Settings::EGraphicsBackend::VULKAN))
+        EXPECT_NE(decision.primaryWarning->find("no validated fallback backend"), std::string::npos);
+    else
+        EXPECT_NE(decision.primaryWarning->find("unsupported"), std::string::npos);
     ASSERT_TRUE(decision.detailWarning.has_value());
     EXPECT_NE(decision.detailWarning->find("formal RHI mainline"), std::string::npos);
 }
@@ -261,5 +289,9 @@ TEST(GraphicsBackendUtilsTests, GameRuntimeFallbackDecisionReportsUnsupportedBac
     ASSERT_TRUE(decision.primaryWarning.has_value());
     EXPECT_NE(decision.primaryWarning->find("unsupported"), std::string::npos);
     ASSERT_TRUE(decision.detailWarning.has_value());
+#if defined(_WIN32)
     EXPECT_NE(decision.detailWarning->find("unsupported"), std::string::npos);
+#else
+    EXPECT_NE(decision.detailWarning->find("not exposed"), std::string::npos);
+#endif
 }

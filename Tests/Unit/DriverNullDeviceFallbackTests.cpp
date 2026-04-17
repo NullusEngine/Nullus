@@ -18,14 +18,20 @@ TEST(DriverNullDeviceFallbackTests, ReturnsSafeFallbackDecisionsWhenExplicitDevi
         NLS::Render::Settings::EGraphicsBackend::DX12);
     EXPECT_FALSE(editorDecision.shouldFallbackToOpenGL);
     ASSERT_TRUE(editorDecision.primaryWarning.has_value());
-    EXPECT_NE(editorDecision.primaryWarning->find("no validated fallback backend"), std::string::npos);
+    if (NLS::Render::Settings::IsBackendEnabledForCurrentBuild(NLS::Render::Settings::EGraphicsBackend::DX12))
+        EXPECT_NE(editorDecision.primaryWarning->find("no validated fallback backend"), std::string::npos);
+    else
+        EXPECT_NE(editorDecision.primaryWarning->find("unsupported"), std::string::npos);
     ASSERT_TRUE(editorDecision.detailWarning.has_value());
 
     const auto gameDecision = driver.EvaluateGameMainRuntimeFallback(
         NLS::Render::Settings::EGraphicsBackend::VULKAN);
     EXPECT_FALSE(gameDecision.shouldFallbackToOpenGL);
     ASSERT_TRUE(gameDecision.primaryWarning.has_value());
-    EXPECT_NE(gameDecision.primaryWarning->find("no validated fallback backend"), std::string::npos);
+    if (NLS::Render::Settings::IsBackendEnabledForCurrentBuild(NLS::Render::Settings::EGraphicsBackend::VULKAN))
+        EXPECT_NE(gameDecision.primaryWarning->find("no validated fallback backend"), std::string::npos);
+    else
+        EXPECT_NE(gameDecision.primaryWarning->find("unsupported"), std::string::npos);
     ASSERT_TRUE(gameDecision.detailWarning.has_value());
 }
 

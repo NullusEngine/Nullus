@@ -5,8 +5,6 @@
 
 #if defined(__APPLE__)
 #import <Metal/Metal.h>
-#import <Metal/MTLDevice.hpp>
-#import <Metal/MTLCommandQueue.hpp>
 #endif
 
 namespace NLS::Render::Backend

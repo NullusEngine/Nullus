@@ -40,7 +40,9 @@ TestProject/
 .agents/
 .specify/
 AGENTS.md
+CLAUDE.md
 Docs/AIWorkflow.md
+Docs/superpowers/
 specs/
 imgui.ini
 .specify/cache/

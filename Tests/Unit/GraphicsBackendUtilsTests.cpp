@@ -202,7 +202,7 @@ TEST(GraphicsBackendUtilsTests, EditorRuntimeFallbackDecisionStaysOnRequestedBac
     capabilities.supportsCubemaps = true;
 
     const auto decision = NLS::Render::Settings::EvaluateEditorMainRuntimeFallback(
-        NLS::Render::Settings::EGraphicsBackend::VULKAN,
+        NLS::Render::Settings::GetPlatformDefaultGraphicsBackend(),
         capabilities);
 
     EXPECT_FALSE(decision.shouldFallbackToOpenGL);

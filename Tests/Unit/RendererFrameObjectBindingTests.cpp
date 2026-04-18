@@ -1,13 +1,14 @@
 #include <gtest/gtest.h>
 
 #include <memory>
-#include <string>
 #include <vector>
 
 #include "Core/ServiceLocator.h"
 #include "Rendering/Core/CompositeRenderer.h"
 #include "Rendering/Core/FrameObjectBindingProvider.h"
 #include "Rendering/Context/Driver.h"
+#include "Rendering/Data/FrameDescriptor.h"
+#include "Rendering/Entities/Camera.h"
 #include "Rendering/RHI/Core/RHICommand.h"
 #include "Rendering/Settings/DriverSettings.h"
 
@@ -44,10 +45,10 @@ namespace
         void Barrier(const NLS::Render::RHI::RHIBarrierDesc&) override {}
     };
 
-    class OrderRecordingBindingProvider final : public NLS::Render::Core::FrameObjectBindingProvider
+    class RecordingBindingProvider final : public NLS::Render::Core::FrameObjectBindingProvider
     {
     public:
-        OrderRecordingBindingProvider(
+        RecordingBindingProvider(
             NLS::Render::Core::CompositeRenderer& renderer,
             std::vector<std::string>& events)
             : FrameObjectBindingProvider(renderer)
@@ -56,9 +57,19 @@ namespace
         }
 
     protected:
+        void OnBeginFrame(const NLS::Render::Data::FrameDescriptor&) override
+        {
+            m_events.push_back("begin");
+        }
+
+        void OnEndFrame() override
+        {
+            m_events.push_back("end");
+        }
+
         void OnPrepareDraw(PipelineState&, const NLS::Render::Entities::Drawable&) override
         {
-            m_events.push_back("provider-before");
+            m_events.push_back("before");
         }
 
         void OnPrepareExplicitDraw(
@@ -66,19 +77,18 @@ namespace
             PipelineState&,
             const NLS::Render::Entities::Drawable&) override
         {
-            m_events.push_back("provider-prepare");
+            m_events.push_back("prepare");
         }
 
     private:
         std::vector<std::string>& m_events;
     };
 
-    class OrderRecordingRenderer final : public NLS::Render::Core::CompositeRenderer
+    class ProviderAwareRenderer final : public NLS::Render::Core::CompositeRenderer
     {
     public:
-        OrderRecordingRenderer(NLS::Render::Context::Driver& driver, std::vector<std::string>& events)
+        ProviderAwareRenderer(NLS::Render::Context::Driver& driver)
             : CompositeRenderer(driver)
-            , m_events(events)
             , m_commandBuffer(std::make_shared<TestCommandBuffer>())
         {
         }
@@ -94,28 +104,16 @@ namespace
             return true;
         }
 
-        void BindPreparedGraphicsPipeline(const PreparedRecordedDraw&) const override
-        {
-            m_events.push_back("pipeline");
-        }
-
-        void BindPreparedMaterialBindingSet(const PreparedRecordedDraw&) const override
-        {
-            m_events.push_back("material");
-        }
-
-        void SubmitPreparedDraw(const PreparedRecordedDraw&) const override
-        {
-            m_events.push_back("draw");
-        }
+        void BindPreparedGraphicsPipeline(const PreparedRecordedDraw&) const override {}
+        void BindPreparedMaterialBindingSet(const PreparedRecordedDraw&) const override {}
+        void SubmitPreparedDraw(const PreparedRecordedDraw&) const override {}
 
     private:
-        std::vector<std::string>& m_events;
         std::shared_ptr<NLS::Render::RHI::RHICommandBuffer> m_commandBuffer;
     };
 }
 
-TEST(CompositeRendererExplicitDrawOrderTests, SubmitsDrawWithoutOptionalFeatureRegistry)
+TEST(RendererFrameObjectBindingTests, ProviderTracksFrameLifecycle)
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
@@ -123,18 +121,30 @@ TEST(CompositeRendererExplicitDrawOrderTests, SubmitsDrawWithoutOptionalFeatureR
 
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     NLS::Core::ServiceLocator::Provide(*driver);
+
     std::vector<std::string> events;
-    OrderRecordingRenderer renderer(*driver, events);
+    ProviderAwareRenderer renderer(*driver);
+    auto provider = std::make_unique<RecordingBindingProvider>(renderer, events);
+    auto* providerPtr = provider.get();
+    renderer.SetFrameObjectBindingProvider(std::move(provider));
 
-    NLS::Render::Data::PipelineState pipelineState;
-    NLS::Render::Entities::Drawable drawable;
-    renderer.DrawEntity(pipelineState, drawable);
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 64u;
+    frameDescriptor.renderHeight = 64u;
+    frameDescriptor.camera = &camera;
 
-    const std::vector<std::string> expected = { "pipeline", "material", "draw" };
-    EXPECT_EQ(events, expected);
+    providerPtr->BeginFrame(frameDescriptor);
+    EXPECT_TRUE(providerPtr->IsFramePrepared());
+    EXPECT_FALSE(providerPtr->IsObjectPrepared());
+
+    providerPtr->EndFrame();
+    EXPECT_FALSE(providerPtr->IsFramePrepared());
+    EXPECT_FALSE(providerPtr->IsObjectPrepared());
+    EXPECT_EQ(events, std::vector<std::string>({ "begin", "end" }));
 }
 
-TEST(CompositeRendererExplicitDrawOrderTests, RunsRendererOwnedBindingPreparationBeforeMaterialSubmission)
+TEST(RendererFrameObjectBindingTests, ProviderPreparesObjectStateDuringDrawsWithoutFeatures)
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
@@ -142,20 +152,29 @@ TEST(CompositeRendererExplicitDrawOrderTests, RunsRendererOwnedBindingPreparatio
 
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     NLS::Core::ServiceLocator::Provide(*driver);
+
     std::vector<std::string> events;
-    OrderRecordingRenderer renderer(*driver, events);
-    renderer.SetFrameObjectBindingProvider(std::make_unique<OrderRecordingBindingProvider>(renderer, events));
+    ProviderAwareRenderer renderer(*driver);
+    auto provider = std::make_unique<RecordingBindingProvider>(renderer, events);
+    auto* providerPtr = provider.get();
+    renderer.SetFrameObjectBindingProvider(std::move(provider));
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 64u;
+    frameDescriptor.renderHeight = 64u;
+    frameDescriptor.camera = &camera;
+
+    providerPtr->BeginFrame(frameDescriptor);
 
     NLS::Render::Data::PipelineState pipelineState;
     NLS::Render::Entities::Drawable drawable;
     renderer.DrawEntity(pipelineState, drawable);
 
-    const std::vector<std::string> expected = {
-        "provider-before",
-        "pipeline",
-        "provider-prepare",
-        "material",
-        "draw"
-    };
-    EXPECT_EQ(events, expected);
+    EXPECT_TRUE(providerPtr->IsFramePrepared());
+    EXPECT_TRUE(providerPtr->IsObjectPrepared());
+    EXPECT_EQ(providerPtr->GetPreparedDrawCount(), 1u);
+    EXPECT_EQ(events, std::vector<std::string>({ "begin", "before", "prepare" }));
+
+    providerPtr->EndFrame();
 }

@@ -1,4 +1,3 @@
-#include "Rendering/DebugModelRenderFeature.h"
 #include "Rendering/PickingRenderPass.h"
 #include "Rendering/EditorDefaultResources.h"
 #include "Core/EditorActions.h"
@@ -10,7 +9,8 @@
 #include <Rendering/EngineDrawableDescriptor.h>
 using namespace NLS;
 Editor::Rendering::PickingRenderPass::PickingRenderPass(NLS::Render::Core::CompositeRenderer& p_renderer) :
-	NLS::Render::Core::ARenderPass(p_renderer)
+	NLS::Render::Core::ARenderPass(p_renderer),
+	m_debugModelRenderer(p_renderer)
 {
 	/* Light Material */
 	m_lightMaterial.SetShader(EDITOR_CONTEXT(editorResources)->GetShader("Billboard"));
@@ -241,8 +241,7 @@ void Editor::Rendering::PickingRenderPass::DrawPickableCameras(
             auto rotation = Maths::Quaternion::ToMatrix4(actor.GetTransform()->GetWorldRotation());
 			auto modelMatrix = translation * rotation;
 
-			m_renderer.GetFeature<DebugModelRenderFeature>()
-				.DrawModelWithSingleMaterial(cameraPickingPso, cameraModel, m_actorPickingMaterial, modelMatrix);
+			m_debugModelRenderer.DrawModelWithSingleMaterial(cameraPickingPso, cameraModel, m_actorPickingMaterial, modelMatrix);
 		}
 	}
 }
@@ -268,8 +267,7 @@ void Editor::Rendering::PickingRenderPass::DrawPickableLights(
 				auto& lightModel = *EDITOR_CONTEXT(editorResources)->GetModel("Vertical_Plane");
 				auto modelMatrix = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
 
-				m_renderer.GetFeature<DebugModelRenderFeature>()
-					.DrawModelWithSingleMaterial(lightPickingPso, lightModel, m_lightMaterial, modelMatrix);
+				m_debugModelRenderer.DrawModelWithSingleMaterial(lightPickingPso, lightModel, m_lightMaterial, modelMatrix);
 			}
 		}
 	}
@@ -290,6 +288,5 @@ void Editor::Rendering::PickingRenderPass::DrawPickableGizmo(
 
 	auto arrowModel = EDITOR_CONTEXT(editorResources)->GetModel("Arrow_Picking");
 
-	m_renderer.GetFeature<DebugModelRenderFeature>()
-		.DrawModelWithSingleMaterial(gizmoPickingPso, *arrowModel, m_gizmoPickingMaterial, modelMatrix);
+	m_debugModelRenderer.DrawModelWithSingleMaterial(gizmoPickingPso, *arrowModel, m_gizmoPickingMaterial, modelMatrix);
 }

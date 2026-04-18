@@ -1,15 +1,15 @@
-#include <Rendering/Features/DebugShapeRenderFeature.h>
+#include <Rendering/Debug/DebugDrawService.h>
 #include <Rendering/Settings/GraphicsBackendUtils.h>
 #include <cstdlib>
 #include <cstring>
 
 #include <Debug/Assertion.h>
 
-#include "Rendering/DebugModelRenderFeature.h"
 #include "Core/EditorResources.h"
 #include "Core/EditorActions.h"
 #include "Rendering/EditorPipelineStatePresets.h"
 #include "Rendering/GridRenderPass.h"
+#include "Settings/EditorSettings.h"
 using namespace NLS;
 
 namespace
@@ -21,7 +21,8 @@ namespace
 }
 
 Editor::Rendering::GridRenderPass::GridRenderPass(NLS::Render::Core::CompositeRenderer& p_renderer) :
-	NLS::Render::Core::ARenderPass(p_renderer)
+	NLS::Render::Core::ARenderPass(p_renderer),
+	m_debugModelRenderer(p_renderer)
 {
 	/* Grid Material */
 	m_gridMaterial.SetShader(EDITOR_CONTEXT(editorResources)->GetShader("Grid"));
@@ -31,11 +32,15 @@ Editor::Rendering::GridRenderPass::GridRenderPass(NLS::Render::Core::CompositeRe
 void Editor::Rendering::GridRenderPass::Draw(NLS::Render::Data::PipelineState p_pso)
 {
 	NLS_ASSERT(m_renderer.HasDescriptor<GridDescriptor>(), "Cannot find GridDescriptor attached to this renderer");
-	NLS_ASSERT(m_renderer.HasFeature<NLS::Render::Features::DebugShapeRenderFeature>(), "Cannot find DebugShapeRenderFeature attached to this renderer");
-	NLS_ASSERT(m_renderer.HasFeature<Editor::Rendering::DebugModelRenderFeature>(), "Cannot find DebugModelRenderFeature attached to this renderer");
+	NLS_ASSERT(m_renderer.HasDebugDrawService(), "Cannot find DebugDrawService attached to this renderer");
 
 	auto& gridDescriptor = m_renderer.GetDescriptor<GridDescriptor>();
-	auto& debugShapeRenderer = m_renderer.GetFeature<NLS::Render::Features::DebugShapeRenderFeature>();
+	auto& debugDrawService = *m_renderer.GetDebugDrawService();
+	debugDrawService.SetEnabled(Editor::Settings::EditorSettings::DebugDrawEnabled);
+	debugDrawService.SetCategoryEnabled(NLS::Render::Debug::DebugDrawCategory::Grid, Editor::Settings::EditorSettings::DebugDrawGrid);
+
+	if (!Editor::Settings::EditorSettings::DebugDrawEnabled || !Editor::Settings::EditorSettings::DebugDrawGrid)
+		return;
 
 	auto pso = Editor::Rendering::CreateEditorGridPipelineState(p_pso);
 
@@ -49,14 +54,15 @@ void Editor::Rendering::GridRenderPass::Draw(NLS::Render::Data::PipelineState p_
 
 	if (!IsEnvFlagEnabled("NLS_EDITOR_GRID_SKIP_PLANE"))
 	{
-		m_renderer.GetFeature<DebugModelRenderFeature>()
-		.DrawModelWithSingleMaterial(pso, *EDITOR_CONTEXT(editorResources)->GetModel("Plane"), m_gridMaterial, model);
+		m_debugModelRenderer.DrawModelWithSingleMaterial(pso, *EDITOR_CONTEXT(editorResources)->GetModel("Plane"), m_gridMaterial, model);
 	}
 
 	if (!IsEnvFlagEnabled("NLS_EDITOR_GRID_SKIP_AXES"))
 	{
-		debugShapeRenderer.DrawLine(pso, Maths::Vector3(-gridSize + gridDescriptor.viewPosition.x, 0.0f, 0.0f), Maths::Vector3(gridSize + gridDescriptor.viewPosition.x, 0.0f, 0.0f), Maths::Vector3(1.0f, 0.0f, 0.0f), 1.0f);
-		debugShapeRenderer.DrawLine(pso, Maths::Vector3(0.0f, -gridSize + gridDescriptor.viewPosition.y, 0.0f), Maths::Vector3(0.0f, gridSize + gridDescriptor.viewPosition.y, 0.0f), Maths::Vector3(0.0f, 1.0f, 0.0f), 1.0f);
-		debugShapeRenderer.DrawLine(pso, Maths::Vector3(0.0f, 0.0f, -gridSize + gridDescriptor.viewPosition.z), Maths::Vector3(0.0f, 0.0f, gridSize + gridDescriptor.viewPosition.z), Maths::Vector3(0.0f, 0.0f, 1.0f), 1.0f);
+		NLS::Render::Debug::DebugDrawSubmitOptions gridOptions;
+		gridOptions.category = NLS::Render::Debug::DebugDrawCategory::Grid;
+		debugDrawService.SubmitLine(Maths::Vector3(-gridSize + gridDescriptor.viewPosition.x, 0.0f, 0.0f), Maths::Vector3(gridSize + gridDescriptor.viewPosition.x, 0.0f, 0.0f), Maths::Vector3(1.0f, 0.0f, 0.0f), 1.0f, gridOptions);
+		debugDrawService.SubmitLine(Maths::Vector3(0.0f, -gridSize + gridDescriptor.viewPosition.y, 0.0f), Maths::Vector3(0.0f, gridSize + gridDescriptor.viewPosition.y, 0.0f), Maths::Vector3(0.0f, 1.0f, 0.0f), 1.0f, gridOptions);
+		debugDrawService.SubmitLine(Maths::Vector3(0.0f, 0.0f, -gridSize + gridDescriptor.viewPosition.z), Maths::Vector3(0.0f, 0.0f, gridSize + gridDescriptor.viewPosition.z), Maths::Vector3(0.0f, 0.0f, 1.0f), 1.0f, gridOptions);
 	}
 }

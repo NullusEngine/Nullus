@@ -1,36 +1,14 @@
-#include <Rendering/Features/LightingRenderFeature.h>
+#include <Rendering/Data/LightingDescriptor.h>
 #include <filesystem>
 #include <fstream>
 
 #include "Rendering/BaseSceneRenderer.h"
-#include "Rendering/EngineBufferRenderFeature.h"
 #include "Rendering/EngineDrawableDescriptor.h"
+#include "Rendering/EngineFrameObjectBindingProvider.h"
+#include "Rendering/SceneLightingProvider.h"
 #include "Components/MeshRenderer.h"
 #include "Components/MaterialRenderer.h"
 #include "Components/TransformComponent.h"
-
-namespace
-{
-    namespace LightingFeature = NLS::Render::Features;
-    using Scene = NLS::Engine::SceneSystem::Scene;
-
-	LightingFeature::LightingRenderFeature::LightSet FindActiveLights(const Scene& p_scene)
-	{
-		LightingFeature::LightingRenderFeature::LightSet lights;
-
-		for (auto* light : p_scene.GetFastAccessComponents().lights)
-		{
-			if (!light)
-				continue;
-
-			auto* owner = light->gameobject();
-			if (owner && owner->IsActive())
-				lights.push_back(std::ref(*light->GetData()));
-		}
-
-		return lights;
-	}
-}
 
 namespace NLS::Engine::Rendering
 {
@@ -38,25 +16,41 @@ using namespace Components;
 using RenderMaterial = Render::Resources::Material;
 using RenderModel = Render::Resources::Model;
 using RenderMesh = Render::Resources::Mesh;
-using LightingDescriptor = Render::Features::LightingRenderFeature::LightingDescriptor;
+using LightingDescriptor = Render::Data::LightingDescriptor;
 
 BaseSceneRenderer::BaseSceneRenderer(Render::Context::Driver& p_driver)
 	: Render::Core::CompositeRenderer(p_driver)
 {
-	AddFeature<EngineBufferRenderFeature>();
-	AddFeature<Render::Features::LightingRenderFeature>();
+	SetFrameObjectBindingProvider(std::make_unique<EngineFrameObjectBindingProvider>(*this));
+	m_sceneLightingProvider = std::make_unique<SceneLightingProvider>();
 }
+
+BaseSceneRenderer::~BaseSceneRenderer() = default;
 
 void BaseSceneRenderer::BeginFrame(const Render::Data::FrameDescriptor& p_frameDescriptor)
 {
 	NLS_ASSERT(HasDescriptor<SceneDescriptor>(), "Cannot find SceneDescriptor attached to this renderer");
 
 	auto& sceneDescriptor = GetDescriptor<SceneDescriptor>();
-	AddDescriptor<LightingDescriptor>({
-		FindActiveLights(sceneDescriptor.scene),
-	});
+	RefreshSceneLightingDescriptor(sceneDescriptor.scene);
 
 	Render::Core::CompositeRenderer::BeginFrame(p_frameDescriptor);
+}
+
+SceneLightingProvider& BaseSceneRenderer::GetSceneLightingProvider()
+{
+	return *m_sceneLightingProvider;
+}
+
+const SceneLightingProvider& BaseSceneRenderer::GetSceneLightingProvider() const
+{
+	return *m_sceneLightingProvider;
+}
+
+void BaseSceneRenderer::RefreshSceneLightingDescriptor(SceneSystem::Scene& scene)
+{
+	m_sceneLightingProvider->Collect(scene);
+	AddDescriptor<LightingDescriptor>(LightingDescriptor{ GetSceneLightingProvider().GetLightingDescriptor().lights });
 }
 
 void BaseSceneRenderer::DrawModelWithSingleMaterial(

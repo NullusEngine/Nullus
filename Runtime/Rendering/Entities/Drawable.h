@@ -14,8 +14,8 @@ namespace NLS::Render::Entities
         using Mesh = Resources::Mesh;
         using Material = Resources::Material;
 
-		Mesh* mesh;
-		Material* material;
+		Mesh* mesh = nullptr;
+		Material* material = nullptr;
 		Data::StateMask stateMask;
 		Settings::EPrimitiveMode primitiveMode = Settings::EPrimitiveMode::TRIANGLES;
 	};

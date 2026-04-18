@@ -16,6 +16,8 @@ source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${NULLUS_UNIT_TEST_FILES})
 add_executable(NullusUnitTests ${NULLUS_UNIT_TEST_FILES})
 
 target_sources(NullusUnitTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/FrameInfoRendererStats.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/FrameInfo.h
     ${CMAKE_SOURCE_DIR}/Project/Game/LaunchArgs.cpp
     ${CMAKE_SOURCE_DIR}/Project/Game/LaunchArgs.h
     ${CMAKE_SOURCE_DIR}/Project/Launcher/Core/LauncherLocalization.cpp

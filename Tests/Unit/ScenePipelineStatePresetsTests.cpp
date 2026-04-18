@@ -1,6 +1,13 @@
 #include <gtest/gtest.h>
 
+#include <type_traits>
+#include <utility>
+
+#include "Rendering/DeferredSceneRenderer.h"
+#include "Rendering/ForwardSceneRenderer.h"
+#include "Rendering/SceneLightingProvider.h"
 #include "Rendering/ScenePipelineStatePresets.h"
+#include "Rendering/Data/LightingDescriptor.h"
 #include "Rendering/Resources/Material.h"
 
 namespace
@@ -145,4 +152,19 @@ TEST(ScenePipelineStatePresetsTests, FullscreenCompositePresetCanBeCreatedDirect
     EXPECT_FALSE(state.depthWriting);
     EXPECT_FALSE(state.culling);
     EXPECT_EQ(state.colorWriting.mask, 0x0F);
+}
+
+TEST(ScenePipelineStatePresetsTests, ForwardAndDeferredRenderersResolveLightingFromSharedDescriptorType)
+{
+    using ForwardLightingDescriptorRef =
+        decltype(std::declval<NLS::Engine::Rendering::ForwardSceneRenderer&>().GetSceneLightingProvider().GetLightingDescriptor());
+    using DeferredLightingDescriptorRef =
+        decltype(std::declval<NLS::Engine::Rendering::DeferredSceneRenderer&>().GetSceneLightingProvider().GetLightingDescriptor());
+    constexpr bool kForwardUsesSharedDescriptor =
+        std::is_same_v<ForwardLightingDescriptorRef, const NLS::Render::Data::LightingDescriptor&>;
+    constexpr bool kDeferredUsesSharedDescriptor =
+        std::is_same_v<DeferredLightingDescriptorRef, const NLS::Render::Data::LightingDescriptor&>;
+
+    EXPECT_TRUE(kForwardUsesSharedDescriptor);
+    EXPECT_TRUE(kDeferredUsesSharedDescriptor);
 }

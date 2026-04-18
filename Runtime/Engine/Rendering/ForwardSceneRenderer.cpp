@@ -49,6 +49,7 @@ namespace NLS::Engine::Rendering
 
 	void ForwardSceneRenderer::BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor)
 	{
+		NLS_ASSERT(HasFrameObjectBindingProvider(), "ForwardSceneRenderer requires a renderer-owned frame/object binding provider.");
 		BaseSceneRenderer::BeginFrame(p_frameDescriptor);
 		auto drawables = ParseScene();
 		if (ShouldLogSceneRendererDiagnostics())

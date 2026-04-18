@@ -1,5 +1,3 @@
-#include <Rendering/Features/FrameInfoRenderFeature.h>
-
 #include <Components/CameraComponent.h>
 #include <Rendering/SceneRendererFactory.h>
 #include "Panels/GameView.h"
@@ -17,8 +15,6 @@ Editor::Panels::GameView::GameView
 	m_sceneManager(EDITOR_CONTEXT(sceneManager))
 {
 	m_renderer = Engine::Rendering::CreateSceneRenderer(*EDITOR_CONTEXT(driver));
-	m_renderer->AddFeature<Render::Features::FrameInfoRenderFeature>();
-
 	Render::Buffers::UniformBuffer test(1024, 1);
 }
 

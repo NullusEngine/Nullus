@@ -4,9 +4,6 @@
 
 #include <Debug/Logger.h>
 
-#ifdef _DEBUG
-#include <Rendering/Features/FrameInfoRenderFeature.h>
-#endif
 #include <Rendering/Context/DriverAccess.h>
 
 #include "Assembly.h"

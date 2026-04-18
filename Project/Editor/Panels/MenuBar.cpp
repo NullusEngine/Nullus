@@ -123,8 +123,20 @@ void Editor::Panels::MenuBar::InitializeSettingsMenu()
 	snappingMenu.CreateWidget<Widgets::DragFloat>(0.001f, 999999.0f, Settings::EditorSettings::ScalingSnapUnit, 0.05f, "Scaling Unit").ValueChangedEvent += [this](float p_value) { Settings::EditorSettings::ScalingSnapUnit = p_value; };
 
 	auto& debuggingMenu = m_settingsMenu->CreateWidget<Widgets::MenuList>("Debugging");
-	debuggingMenu.CreateWidget<Widgets::MenuItem>("Show geometry bounds", "", true, Settings::EditorSettings::ShowGeometryBounds).ValueChangedEvent += [this](bool p_value) { Settings::EditorSettings::ShowGeometryBounds = p_value; };
-	debuggingMenu.CreateWidget<Widgets::MenuItem>("Show lights bounds", "", true, Settings::EditorSettings::ShowLightBounds).ValueChangedEvent += [this](bool p_value) { Settings::EditorSettings::ShowLightBounds = p_value; };
+	auto& debugDrawMenu = debuggingMenu.CreateWidget<Widgets::MenuList>("Debug Draw");
+	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Enabled", "", true, Settings::EditorSettings::DebugDrawEnabled).ValueChangedEvent += [this](bool p_value) { Settings::EditorSettings::DebugDrawEnabled = p_value; };
+	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Grid", "", true, Settings::EditorSettings::DebugDrawGrid).ValueChangedEvent += [this](bool p_value) { Settings::EditorSettings::DebugDrawGrid = p_value; };
+	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Bounds", "", true, Settings::EditorSettings::DebugDrawBounds).ValueChangedEvent += [this](bool p_value)
+	{
+		Settings::EditorSettings::DebugDrawBounds = p_value;
+		Settings::EditorSettings::ShowGeometryBounds = p_value;
+	};
+	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Cameras", "", true, Settings::EditorSettings::DebugDrawCamera).ValueChangedEvent += [this](bool p_value) { Settings::EditorSettings::DebugDrawCamera = p_value; };
+	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Lights", "", true, Settings::EditorSettings::DebugDrawLighting).ValueChangedEvent += [this](bool p_value)
+	{
+		Settings::EditorSettings::DebugDrawLighting = p_value;
+		Settings::EditorSettings::ShowLightBounds = p_value;
+	};
     debuggingMenu.CreateWidget<Widgets::MenuItem>("Wireframe Mode", "", true, false).ValueChangedEvent += [this](bool p_value)
     {
         Render::Context::DriverUIAccess::SetPolygonMode(

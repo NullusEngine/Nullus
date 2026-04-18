@@ -4,7 +4,6 @@
 #include "Rendering/PickingRenderPass.h"
 #include "Rendering/EditorDefaultResources.h"
 #include "Rendering/SceneRendererFactory.h"
-#include "Rendering/Features/FrameInfoRenderFeature.h"
 #include "Core/EditorActions.h"
 #include "Panels/SceneView.h"
 #include "Panels/GameView.h"

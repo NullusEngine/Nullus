@@ -9,6 +9,8 @@
 
 #include <Rendering/Data/FrameInfo.h>
 
+namespace NLS::Render::Core { class CompositeRenderer; }
+
 namespace NLS::Editor::Panels
 {
 	class FrameInfo : public UI::PanelWindow
@@ -31,6 +33,7 @@ namespace NLS::Editor::Panels
 		* @param p_targetView
 		*/
         void Update(AView* p_targetView);
+        void UpdateForRenderer(const std::string& viewName, const Render::Core::CompositeRenderer& renderer);
 
 	private:
 		UI::Widgets::Text& m_viewNameText;

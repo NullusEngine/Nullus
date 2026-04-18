@@ -1,11 +1,12 @@
 #pragma once
 
-#include <typeindex>
 #include <memory>
 
 #include "Rendering/Core/ABaseRenderer.h"
 #include "Rendering/Core/ARenderPass.h"
-#include "Rendering/Features/ARenderFeature.h"
+#include "Rendering/Core/FrameObjectBindingProvider.h"
+#include "Rendering/Core/RendererStats.h"
+#include "Rendering/Debug/DebugDrawService.h"
 #include "Rendering/Data/Describable.h"
 #include "Eventing/Event.h"
 #include "RenderDef.h"
@@ -43,28 +44,30 @@ public:
     void ExecutePass(Core::ARenderPass& pass, PipelineState pso);
 
     template<typename T, typename ... Args>
-    T& AddFeature(Args&&... p_args);
-
-    template<typename T>
-    bool RemoveFeature();
-
-    template<typename T>
-    T& GetFeature() const;
-
-    template<typename T>
-    bool HasFeature() const;
-
-    template<typename T, typename ... Args>
     T& AddPass(const std::string& p_name, uint32_t p_order, Args&&... p_args);
 
     template<typename T>
     T& GetPass(const std::string& p_name) const;
 
+    void SetFrameObjectBindingProvider(std::unique_ptr<FrameObjectBindingProvider> provider);
+    FrameObjectBindingProvider* GetFrameObjectBindingProvider() const;
+    bool HasFrameObjectBindingProvider() const;
+    void SetDebugDrawService(std::unique_ptr<Debug::DebugDrawService> service);
+    Debug::DebugDrawService* GetDebugDrawService() const;
+    bool HasDebugDrawService() const;
+
+    const Data::FrameInfo& GetFrameInfo() const;
+    bool IsFrameInfoValid() const;
+    void ResetFrameStatistics();
+    void FinalizeFrameStatistics();
+
 protected:
     void DrawRegisteredPasses();
     void DrawRegisteredPasses(PipelineState pso);
-    std::unordered_map<std::type_index, std::unique_ptr<Features::ARenderFeature>> m_features;
     std::multimap<uint32_t, std::pair<std::string, std::unique_ptr<Core::ARenderPass>>> m_passes;
+    std::unique_ptr<FrameObjectBindingProvider> m_frameObjectBindingProvider;
+    std::unique_ptr<Debug::DebugDrawService> m_debugDrawService;
+    RendererStats m_rendererStats;
 };
 }
 

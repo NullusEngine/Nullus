@@ -5,7 +5,6 @@
 #include <variant>
 
 #include <Rendering/Entities/Camera.h>
-#include <Rendering/Features/DebugShapeRenderFeature.h>
 
 #include <GameObject.h>
 #include <SceneSystem/SceneManager.h>
@@ -16,6 +15,7 @@
 
 #include "Core/Context.h"
 #include "Core/GizmoBehaviour.h"
+#include "Rendering/DebugModelRenderer.h"
 
 namespace NLS::Editor::Rendering
 {
@@ -62,6 +62,7 @@ namespace NLS::Editor::Rendering
 		);
 
 	private:
+        DebugModelRenderer m_debugModelRenderer;
 		NLS::Render::Buffers::Framebuffer m_actorPickingFramebuffer;
 		NLS::Render::Resources::Material m_actorPickingMaterial;
 		NLS::Render::Resources::Material m_lightMaterial;

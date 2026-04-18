@@ -6,7 +6,7 @@
 #include <Math/Matrix4.h>
 #include <Math/Vector3.h>
 #include <Rendering/Buffers/UniformBuffer.h>
-#include <Rendering/Features/LightingRenderFeature.h>
+#include <Rendering/Data/LightingDescriptor.h>
 #include <Rendering/FrameGraph/FrameGraphExecutionContext.h>
 #include <Rendering/FrameGraph/FrameGraphTexture.h>
 #include <Rendering/Geometry/Vertex.h>
@@ -54,7 +54,7 @@ namespace
 		float depthFogFactor = 0.15f;
 	};
 
-	using LightingDescriptor = NLS::Render::Features::LightingRenderFeature::LightingDescriptor;
+	using LightingDescriptor = NLS::Render::Data::LightingDescriptor;
 
 	DeferredPassConstants BuildDeferredPassConstants(
 		const NLS::Render::Data::FrameDescriptor& frameDescriptor,
@@ -177,6 +177,7 @@ namespace NLS::Engine::Rendering
 
 	void DeferredSceneRenderer::BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor)
 	{
+		NLS_ASSERT(HasFrameObjectBindingProvider(), "DeferredSceneRenderer requires a renderer-owned frame/object binding provider.");
 		BaseSceneRenderer::BeginFrame(p_frameDescriptor);
 		AddDescriptor<DeferredSceneDescriptor>({
 			ParseScene()

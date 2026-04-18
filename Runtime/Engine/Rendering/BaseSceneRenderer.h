@@ -15,6 +15,9 @@
 
 namespace NLS::Engine::Rendering
 {
+	class EngineFrameObjectBindingProvider;
+	class SceneLightingProvider;
+
 	class NLS_ENGINE_API BaseSceneRenderer : public NLS::Render::Core::CompositeRenderer
 	{
 	public:
@@ -45,6 +48,7 @@ namespace NLS::Engine::Rendering
 		};
 
 		explicit BaseSceneRenderer(Driver& p_driver);
+		~BaseSceneRenderer() override;
 
 		void BeginFrame(const Render::Data::FrameDescriptor& p_frameDescriptor) override;
 
@@ -55,7 +59,14 @@ namespace NLS::Engine::Rendering
 			const Maths::Matrix4& p_modelMatrix
 		);
 
+		SceneLightingProvider& GetSceneLightingProvider();
+		const SceneLightingProvider& GetSceneLightingProvider() const;
+
 	protected:
+		void RefreshSceneLightingDescriptor(SceneSystem::Scene& scene);
 		AllDrawables ParseScene();
+
+	private:
+		std::unique_ptr<SceneLightingProvider> m_sceneLightingProvider;
 	};
 }

@@ -67,6 +67,11 @@ namespace NLS::Editor::Settings
 		*/
 		EditorSettings() = delete;
 
+		inline static Property<bool> DebugDrawEnabled = { true };
+		inline static Property<bool> DebugDrawGrid = { true };
+		inline static Property<bool> DebugDrawBounds = { false };
+		inline static Property<bool> DebugDrawCamera = { true };
+		inline static Property<bool> DebugDrawLighting = { true };
 		inline static Property<bool> ShowGeometryBounds = { false };
 		inline static Property<bool> ShowLightBounds = { false };
 		inline static Property<bool> ShowGeometryFrustumCullingInSceneView = { false };

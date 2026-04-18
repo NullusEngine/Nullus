@@ -1,23 +1,25 @@
 ﻿#include <Components/CameraComponent.h>
 #include <Components/LightComponent.h>
 #include <Components/TransformComponent.h>
+#include <Rendering/Debug/DebugDrawPass.h>
+#include <Rendering/Debug/DebugDrawGeometry.h>
+#include <Rendering/Debug/DebugDrawService.h>
 #include <Rendering/EngineDrawableDescriptor.h>
 
+#include <array>
 #include <cstdlib>
 #include <cstring>
-#include <Rendering/Features/DebugShapeRenderFeature.h>
-#include <Rendering/Features/FrameInfoRenderFeature.h>
 #include <Rendering/Settings/GraphicsBackendUtils.h>
 
 #include <Debug/Assertion.h>
 
-#include "Rendering/DebugModelRenderFeature.h"
+#include "Rendering/DebugModelRenderer.h"
 #include "Rendering/DebugSceneRenderer.h"
 #include "Rendering/EditorDefaultResources.h"
 #include "Rendering/EditorPipelineStatePresets.h"
 #include "Rendering/GridRenderPass.h"
-#include "Rendering/OutlineRenderFeature.h"
-#include "Rendering/GizmoRenderFeature.h"
+#include "Rendering/OutlineRenderer.h"
+#include "Rendering/GizmoRenderer.h"
 #include "Rendering/PickingRenderPass.h"
 #include "Core/EditorResources.h"
 //#include "Panels/AView.h"
@@ -76,6 +78,7 @@ class DebugCamerasRenderPass : public Render::Core::ARenderPass
 public:
 	DebugCamerasRenderPass(Render::Core::CompositeRenderer& p_renderer)
         : Render::Core::ARenderPass(p_renderer)
+        , m_debugModelRenderer(p_renderer)
 	{
 		m_cameraMaterial.SetShader(EDITOR_CONTEXT(editorResources)->GetShader("DebugLitColor"));
 		m_cameraMaterial.Set("u_Diffuse", Vector4(0.0f, 0.3f, 0.7f, 1.0f));
@@ -95,20 +98,22 @@ protected:
 				auto& model = *EDITOR_CONTEXT(editorResources)->GetModel("Camera");
 				auto modelMatrix = CalculateCameraModelMatrix(*actor);
 
-				m_renderer.GetFeature<Editor::Rendering::DebugModelRenderFeature>()
-					.DrawModelWithSingleMaterial(p_pso, model, m_cameraMaterial, modelMatrix);
+				m_debugModelRenderer.DrawModelWithSingleMaterial(p_pso, model, m_cameraMaterial, modelMatrix);
 			}
 		}
 	}
 
 private:
+    Editor::Rendering::DebugModelRenderer m_debugModelRenderer;
     NLS::Render::Resources::Material m_cameraMaterial;
 };
 
 class DebugLightsRenderPass : public Render::Core::ARenderPass
 {
 public:
-	DebugLightsRenderPass(Render::Core::CompositeRenderer& p_renderer) : Render::Core::ARenderPass(p_renderer)
+	DebugLightsRenderPass(Render::Core::CompositeRenderer& p_renderer)
+        : Render::Core::ARenderPass(p_renderer)
+        , m_debugModelRenderer(p_renderer)
 	{
 		m_lightMaterial.SetShader(EDITOR_CONTEXT(editorResources)->GetShader("Billboard"));
 		m_lightMaterial.Set("u_Diffuse", Vector4(1.f, 1.f, 0.5f, 0.5f));
@@ -145,28 +150,29 @@ protected:
 				m_lightMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", lightTexture);
 				m_lightMaterial.Set<Maths::Vector4>("u_Diffuse", Maths::Vector4(lightColor.x, lightColor.y, lightColor.z, 0.75f));
 
-				m_renderer.GetFeature<Editor::Rendering::DebugModelRenderFeature>()
-					.DrawModelWithSingleMaterial(p_pso, model, m_lightMaterial, modelMatrix);
+				m_debugModelRenderer.DrawModelWithSingleMaterial(p_pso, model, m_lightMaterial, modelMatrix);
 			}
 		}
 	}
 
 private:
+    Editor::Rendering::DebugModelRenderer m_debugModelRenderer;
     NLS::Render::Resources::Material m_lightMaterial;
 };
 
 class DebugActorRenderPass : public Render::Core::ARenderPass
 {
 public:
-	DebugActorRenderPass(Render::Core::CompositeRenderer& p_renderer) : Render::Core::ARenderPass(p_renderer),
-		m_debugShapeFeature(m_renderer.GetFeature<Render::Features::DebugShapeRenderFeature>())
+	DebugActorRenderPass(Render::Core::CompositeRenderer& p_renderer)
+        : Render::Core::ARenderPass(p_renderer)
+        , m_debugModelRenderer(p_renderer)
+        , m_outlineRenderer(p_renderer, m_debugModelRenderer)
+        , m_gizmoRenderer(p_renderer, m_debugModelRenderer)
 	{
 		
 	}
 
 protected:
-	Render::Features::DebugShapeRenderFeature& m_debugShapeFeature;
-
 	virtual void Draw(Render::Data::PipelineState p_pso) override
 	{
 		auto& debugSceneDescriptor = m_renderer.GetDescriptor<Editor::Rendering::DebugSceneRenderer::DebugSceneDescriptor>();
@@ -175,8 +181,8 @@ protected:
 		{
 			auto selectedActor = debugSceneDescriptor.selectedActor;
 			DrawActorDebugElements(*selectedActor);
-			m_renderer.GetFeature<Editor::Rendering::OutlineRenderFeature>().DrawOutline(*selectedActor, kSelectedOutlineColor, kSelectedOutlineWidth);
-			m_renderer.GetFeature<Editor::Rendering::GizmoRenderFeature>().DrawGizmo(
+			m_outlineRenderer.DrawOutline(*selectedActor, kSelectedOutlineColor, kSelectedOutlineWidth);
+			m_gizmoRenderer.DrawGizmo(
                 selectedActor->GetTransform()->GetWorldPosition(),
                 selectedActor->GetTransform()->GetWorldRotation(),
 				debugSceneDescriptor.gizmoOperation,
@@ -190,8 +196,10 @@ protected:
 	{
 		if (p_actor.IsActive())
 		{
+			ApplyDebugDrawSettings();
+
 			/* Render static mesh outline and bounding spheres */
-			if (Editor::Settings::EditorSettings::ShowGeometryBounds)
+			if (Editor::Settings::EditorSettings::DebugDrawBounds)
 			{
 				auto modelRenderer = p_actor.GetComponent<Engine::Components::MeshRenderer>();
 
@@ -204,7 +212,6 @@ protected:
 			/* Render camera component outline */
             if (auto cameraComponent = p_actor.GetComponent<Engine::Components::CameraComponent>(); cameraComponent)
 			{
-				auto model = CalculateCameraModelMatrix(p_actor);
 				DrawCameraFrustum(*cameraComponent);
 			}
 
@@ -218,28 +225,7 @@ protected:
             auto plight = p_actor.GetComponent<Engine::Components::LightComponent>();
             if (plight)
 			{
-                auto type = plight->GetLightType();
-                switch (type)
-                {
-                    case NLS::Render::Settings::ELightType::POINT:
-                        break;
-                    case NLS::Render::Settings::ELightType::DIRECTIONAL:
-                        break;
-                    case NLS::Render::Settings::ELightType::SPOT:
-                        break;
-                    case NLS::Render::Settings::ELightType::AMBIENT_BOX:
-                        DrawAmbientBoxVolume(*plight);
-                        break;
-                    case NLS::Render::Settings::ELightType::AMBIENT_SPHERE:
-                        DrawAmbientSphereVolume(*plight);
-                        break;
-                    default:
-                        break;
-                }
-                if (Editor::Settings::EditorSettings::ShowLightBounds)
-                {
-                    DrawLightBounds(*plight);
-                }
+				DrawLightVolume(*plight);
 			}
 
 
@@ -266,34 +252,24 @@ protected:
 		const Maths::Vector3& h
 	)
 	{
-		auto pso = Editor::Rendering::CreateEditorDebugLinePipelineState(m_renderer);
+		Render::Debug::DebugDrawSubmitOptions options;
+		options.category = Render::Debug::DebugDrawCategory::Camera;
+		options.style.color = kFrustumColor;
+		options.style.lineWidth = 1.0f;
+		options.style.depthMode = Render::Debug::DebugDrawDepthMode::AlwaysOnTop;
 
-		// Convenient lambda to draw a frustum line
-		auto draw = [&](const Vector3& p_start, const Vector3& p_end, const float planeDistance)
-			{
-				auto offset = pos + forward * planeDistance;
-				auto start = offset + p_start;
-				auto end = offset + p_end;
-				m_debugShapeFeature.DrawLine(pso, start, end, kFrustumColor);
-			};
+		const std::array<Vector3, 8u> corners = {
+			pos + forward * near + a,
+			pos + forward * near + b,
+			pos + forward * near + c,
+			pos + forward * near + d,
+			pos + forward * far + e,
+			pos + forward * far + f,
+			pos + forward * far + g,
+			pos + forward * far + h
+		};
 
-		// Draw near plane
-		draw(a, b, near);
-		draw(b, d, near);
-		draw(d, c, near);
-		draw(c, a, near);
-
-		// Draw far plane
-		draw(e, f, far);
-		draw(f, h, far);
-		draw(h, g, far);
-		draw(g, e, far);
-
-		// Draw lines between near and far planes
-		draw(a + forward * near, e + forward * far, 0);
-		draw(b + forward * near, f + forward * far, 0);
-		draw(c + forward * near, g + forward * far, 0);
-		draw(d + forward * near, h + forward * far, 0);
+		Render::Debug::SubmitFrustum(GetDebugDrawService(), corners, options);
 	}
 
 	void DrawCameraPerspectiveFrustum(std::pair<uint16_t, uint16_t>& p_size, Engine::Components::CameraComponent& p_camera)
@@ -361,24 +337,22 @@ protected:
 
 	void DrawCameraFrustum(Engine::Components::CameraComponent& p_camera)
 	{
-// 		auto& gameView = EDITOR_PANEL(Editor::Panels::GameView, "Game View");
-// 		auto gameViewSize = gameView.GetSafeSize();
-// 
-// 		if (gameViewSize.first == 0 || gameViewSize.second == 0)
-// 		{
-// 			gameViewSize = { 16, 9 };
-// 		}
-// 
-// 		switch (p_camera.GetProjectionMode())
-// 		{
-// 		case Render::Settings::EProjectionMode::ORTHOGRAPHIC:
-// 			DrawCameraOrthographicFrustum(gameViewSize, p_camera);
-// 			break;
-// 
-// 		case Render::Settings::EProjectionMode::PERSPECTIVE:
-// 			DrawCameraPerspectiveFrustum(gameViewSize, p_camera);
-// 			break;
-// 		}
+		const auto& frameDescriptor = m_renderer.GetFrameDescriptor();
+		std::pair<uint16_t, uint16_t> viewSize = {
+			frameDescriptor.renderWidth != 0 ? frameDescriptor.renderWidth : 16,
+			frameDescriptor.renderHeight != 0 ? frameDescriptor.renderHeight : 9
+		};
+
+		switch (p_camera.GetProjectionMode())
+		{
+		case Render::Settings::EProjectionMode::ORTHOGRAPHIC:
+			DrawCameraOrthographicFrustum(viewSize, p_camera);
+			break;
+
+		case Render::Settings::EProjectionMode::PERSPECTIVE:
+			DrawCameraPerspectiveFrustum(viewSize, p_camera);
+			break;
+		}
 	}
 
 	void DrawActorCollider(Engine::GameObject& p_actor)
@@ -392,7 +366,7 @@ protected:
 // 		/* Draw the box collider if any */
 // 		if (auto boxColliderComponent = p_actor.GetComponent<Engine::Components::CPhysicalBox>(); boxColliderComponent)
 // 		{
-// 			m_debugShapeFeature.DrawBox(
+// 			SubmitBox(
 // 				pso,
 // 				p_actor.transform.GetWorldPosition(),
 // 				p_actor.transform.GetWorldRotation(),
@@ -408,7 +382,7 @@ protected:
 // 			Vector3 actorScale = p_actor.transform.GetWorldScale();
 // 			float radius = sphereColliderComponent->GetRadius() * std::max(std::max(std::max(actorScale.x, actorScale.y), actorScale.z), 0.0f);
 // 
-// 			m_debugShapeFeature.DrawSphere(
+// 			SubmitSphere(
 // 				pso,
 // 				p_actor.transform.GetWorldPosition(),
 // 				p_actor.transform.GetWorldRotation(),
@@ -425,7 +399,7 @@ protected:
 // 			float radius = abs(capsuleColliderComponent->GetRadius() * std::max(std::max(actorScale.x, actorScale.z), 0.f));
 // 			float height = abs(capsuleColliderComponent->GetHeight() * actorScale.y);
 // 
-// 			m_debugShapeFeature.DrawCapsule(
+// 			SubmitCapsule(
 // 				pso,
 // 				p_actor.transform.GetWorldPosition(),
 // 				p_actor.transform.GetWorldRotation(),
@@ -437,59 +411,20 @@ protected:
 // 		}
 	}
 
-	void DrawLightBounds(Engine::Components::LightComponent& p_light)
+	void DrawLightVolume(Engine::Components::LightComponent& p_light)
 	{
-		auto pso = Editor::Rendering::CreateEditorNoDepthPipelineState(m_renderer);
+		Render::Debug::DebugDrawSubmitOptions options;
+		options.category = Render::Debug::DebugDrawCategory::Lighting;
+		options.style.color = kLightVolumeColor;
+		options.style.lineWidth = 1.0f;
+		options.style.depthMode = Render::Debug::DebugDrawDepthMode::AlwaysOnTop;
 
-		auto& data = *p_light.GetData();
-
-		m_debugShapeFeature.DrawSphere(
-			pso,
-			data.transform->GetWorldPosition(),
-			data.transform->GetWorldRotation(),
-			data.GetEffectRange(),
-			kDebugBoundsColor,
-			1.0f
-		);
-	}
-
-	void DrawAmbientBoxVolume(Engine::Components::LightComponent& p_ambientBoxLight)
-	{
-		auto pso = Editor::Rendering::CreateEditorNoDepthPipelineState(m_renderer);
-
-		auto& data = *p_ambientBoxLight.GetData();
-
-		m_debugShapeFeature.DrawBox(
-			pso,
-            p_ambientBoxLight.gameobject()->GetTransform()->GetWorldPosition(),
-			data.transform->GetWorldRotation(),
-			{ data.constant, data.linear, data.quadratic },
-			data.GetEffectRange(),
-			1.0f
-		);
-	}
-
-	void DrawAmbientSphereVolume(Engine::Components::LightComponent& p_ambientSphereLight)
-	{
-		auto pso = Editor::Rendering::CreateEditorNoDepthPipelineState(m_renderer);
-
-		auto& data = *p_ambientSphereLight.GetData();
-
-		m_debugShapeFeature.DrawSphere(
-			pso,
-            p_ambientSphereLight.gameobject()->GetTransform()->GetWorldPosition(),
-            p_ambientSphereLight.gameobject()->GetTransform()->GetWorldRotation(),
-			data.constant,
-			kLightVolumeColor,
-			1.0f
-		);
+		Render::Debug::SubmitLightVolume(GetDebugDrawService(), *p_light.GetData(), options);
 	}
 
 	void DrawBoundingSpheres(Engine::Components::MeshRenderer& p_modelRenderer)
 	{
 		using namespace Engine::Components;
-
-		auto pso = Editor::Rendering::CreateEditorNoDepthPipelineState(m_renderer);
 
 		/* Draw the sphere collider if any */
 		if (auto model = p_modelRenderer.GetModel())
@@ -509,13 +444,13 @@ protected:
 			float scaledRadius = modelBoundingsphere.radius * radiusScale;
 			auto sphereOffset = Maths::Quaternion::RotatePoint(modelBoundingsphere.position, actorRotation) * radiusScale;
 
-			m_debugShapeFeature.DrawSphere(
-				pso,
+			SubmitSphere(
 				actorPosition + sphereOffset,
 				actorRotation,
 				scaledRadius,
 				kDebugBoundsColor,
-				1.0f
+				1.0f,
+				Render::Debug::DebugDrawCategory::Bounds
 			);
 
 			if (p_modelRenderer.GetFrustumBehaviour() == Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MESHES)
@@ -530,29 +465,108 @@ protected:
 						float scaledRadius = meshBoundingSphere.radius * radiusScale;
 						auto sphereOffset = Maths::Quaternion::RotatePoint(meshBoundingSphere.position, actorRotation) * radiusScale;
 
-						m_debugShapeFeature.DrawSphere(
-							pso,
+						SubmitSphere(
 							actorPosition + sphereOffset,
 							actorRotation,
 							scaledRadius,
 							kDebugBoundsColor,
-							1.0f
+							1.0f,
+							Render::Debug::DebugDrawCategory::Bounds
 						);
 					}
 				}
 			}
 		}
 	}
+
+private:
+	void ApplyDebugDrawSettings()
+	{
+		auto& debugDrawService = GetDebugDrawService();
+		debugDrawService.SetEnabled(Editor::Settings::EditorSettings::DebugDrawEnabled);
+		debugDrawService.SetCategoryEnabled(Render::Debug::DebugDrawCategory::Grid, Editor::Settings::EditorSettings::DebugDrawGrid);
+		debugDrawService.SetCategoryEnabled(Render::Debug::DebugDrawCategory::Bounds, Editor::Settings::EditorSettings::DebugDrawBounds);
+		debugDrawService.SetCategoryEnabled(Render::Debug::DebugDrawCategory::Camera, Editor::Settings::EditorSettings::DebugDrawCamera);
+		debugDrawService.SetCategoryEnabled(Render::Debug::DebugDrawCategory::Lighting, Editor::Settings::EditorSettings::DebugDrawLighting);
+	}
+
+    Render::Debug::DebugDrawService& GetDebugDrawService()
+    {
+        auto* debugDrawService = m_renderer.GetDebugDrawService();
+        NLS_ASSERT(debugDrawService != nullptr, "Cannot find DebugDrawService attached to this renderer");
+        return *debugDrawService;
+    }
+
+    void SubmitLine(
+        const Maths::Vector3& start,
+        const Maths::Vector3& end,
+        const Maths::Vector3& color,
+        const float lineWidth = 1.0f,
+		const Render::Debug::DebugDrawCategory category = Render::Debug::DebugDrawCategory::General)
+    {
+		Render::Debug::DebugDrawSubmitOptions options;
+		options.category = category;
+		options.style.color = color;
+		options.style.lineWidth = lineWidth;
+        GetDebugDrawService().SubmitLine(start, end, options);
+    }
+
+    void SubmitBox(
+        const Maths::Vector3& position,
+        const Maths::Quaternion& rotation,
+        const Maths::Vector3& size,
+        const Maths::Vector3& color,
+        const float lineWidth = 1.0f,
+		const Render::Debug::DebugDrawCategory category = Render::Debug::DebugDrawCategory::General)
+    {
+		Render::Debug::DebugDrawSubmitOptions options;
+		options.category = category;
+		options.style.color = color;
+		options.style.lineWidth = lineWidth;
+        Render::Debug::SubmitBox(GetDebugDrawService(), position, rotation, size, options);
+    }
+
+    void SubmitSphere(
+        const Maths::Vector3& position,
+        const Maths::Quaternion& rotation,
+        const float radius,
+        const Maths::Vector3& color,
+        const float lineWidth = 1.0f,
+		const Render::Debug::DebugDrawCategory category = Render::Debug::DebugDrawCategory::General)
+    {
+		Render::Debug::DebugDrawSubmitOptions options;
+		options.category = category;
+		options.style.color = color;
+		options.style.lineWidth = lineWidth;
+        Render::Debug::SubmitSphere(GetDebugDrawService(), position, rotation, radius, options);
+    }
+
+    void SubmitCapsule(
+        const Maths::Vector3& position,
+        const Maths::Quaternion& rotation,
+        const float radius,
+        const float height,
+        const Maths::Vector3& color,
+        const float lineWidth = 1.0f,
+		const Render::Debug::DebugDrawCategory category = Render::Debug::DebugDrawCategory::General)
+    {
+		Render::Debug::DebugDrawSubmitOptions options;
+		options.category = category;
+		options.style.color = color;
+		options.style.lineWidth = lineWidth;
+        Render::Debug::SubmitCapsule(GetDebugDrawService(), position, rotation, radius, height, options);
+    }
+
+private:
+    Editor::Rendering::DebugModelRenderer m_debugModelRenderer;
+    Editor::Rendering::OutlineRenderer m_outlineRenderer;
+    Editor::Rendering::GizmoRenderer m_gizmoRenderer;
 };
 
 Editor::Rendering::DebugSceneRenderer::DebugSceneRenderer(NLS::Render::Context::Driver& p_driver) :
 	Engine::Rendering::ForwardSceneRenderer(p_driver)
 {
-    AddFeature<NLS::Render::Features::FrameInfoRenderFeature>();
-    AddFeature<NLS::Render::Features::DebugShapeRenderFeature>();
-	AddFeature<Editor::Rendering::DebugModelRenderFeature>();
-	AddFeature<Editor::Rendering::OutlineRenderFeature>();
-	AddFeature<Editor::Rendering::GizmoRenderFeature>();
+    SetDebugDrawService(std::make_unique<NLS::Render::Debug::DebugDrawService>());
 
     auto& gridPass = AddPass<GridRenderPass>("Grid", NLS::Render::Settings::ERenderPassOrder::Transparent + 1);
     gridPass.SetEnabled(!IsEnvFlagEnabled("NLS_EDITOR_DISABLE_GRID_PASS"));
@@ -565,6 +579,8 @@ Editor::Rendering::DebugSceneRenderer::DebugSceneRenderer(NLS::Render::Context::
 
     auto& debugActorPass = AddPass<DebugActorRenderPass>("Debug Actor", NLS::Render::Settings::ERenderPassOrder::Transparent + 3);
     debugActorPass.SetEnabled(!IsEnvFlagEnabled("NLS_EDITOR_DISABLE_DEBUG_ACTOR_PASS"));
+    auto& debugDrawPass = AddPass<NLS::Render::Debug::DebugDrawPass>("Debug Draw", NLS::Render::Settings::ERenderPassOrder::Transparent + 4);
+    debugDrawPass.SetEnabled(!IsEnvFlagEnabled("NLS_EDITOR_DISABLE_DEBUG_DRAW_PASS"));
     auto& pickingPass = AddPass<PickingRenderPass>("Picking", NLS::Render::Settings::ERenderPassOrder::PostProcessing + 1);
     pickingPass.SetEnabled(!IsEnvFlagEnabled("NLS_EDITOR_DISABLE_PICKING_PASS"));
 }

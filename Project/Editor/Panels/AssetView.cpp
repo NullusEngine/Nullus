@@ -1,8 +1,8 @@
-﻿#include <Rendering/Features/FrameInfoRenderFeature.h>
-
 #include <Utils/PathParser.h>
 
 #include <UI/Plugins/DDTarget.h>
+#include <Rendering/Debug/DebugDrawPass.h>
+#include <Rendering/Debug/DebugDrawService.h>
 #include <Components/TransformComponent.h>
 #include <Components/LightComponent.h>
 #include <Engine/Rendering/SceneRendererFactory.h>
@@ -11,7 +11,6 @@
 #include "Panels/AssetView.h"
 #include "Rendering/EditorDefaultResources.h"
 #include "Rendering/GridRenderPass.h"
-#include "Rendering/DebugModelRenderFeature.h"
 using namespace NLS;
 Editor::Panels::AssetView::AssetView
 (
@@ -21,11 +20,10 @@ Editor::Panels::AssetView::AssetView
 ) : AViewControllable(p_title, p_opened, p_windowSettings)
 {
 	m_renderer = Engine::Rendering::CreateSceneRenderer(*EDITOR_CONTEXT(driver));
-	m_renderer->AddFeature<Editor::Rendering::DebugModelRenderFeature>();
-	m_renderer->AddFeature<Render::Features::DebugShapeRenderFeature>();
-    m_renderer->AddFeature<Render::Features::FrameInfoRenderFeature>();
+	m_renderer->SetDebugDrawService(std::make_unique<Render::Debug::DebugDrawService>());
 
 	m_renderer->AddPass<Editor::Rendering::GridRenderPass>("Grid", Render::Settings::ERenderPassOrder::First);
+	m_renderer->AddPass<Render::Debug::DebugDrawPass>("Debug Draw", Render::Settings::ERenderPassOrder::Transparent + 2);
 
 	m_camera.SetFar(5000.0f);
 

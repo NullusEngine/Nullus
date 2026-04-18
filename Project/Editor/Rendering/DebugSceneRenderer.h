@@ -1,7 +1,6 @@
 #pragma once
 
 #include <Rendering/Entities/Camera.h>
-#include <Rendering/Features/DebugShapeRenderFeature.h>
 
 #include "GameObject.h"
 #include <Engine/SceneSystem/SceneManager.h>

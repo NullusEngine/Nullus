@@ -14,14 +14,10 @@ CompositeRenderer::CompositeRenderer(Context::Driver& p_driver)
 void CompositeRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
 {
     ABaseRenderer::BeginFrame(p_frameDescriptor);
+    m_rendererStats.BeginFrame();
 
-    for (const auto& [_, feature] : m_features)
-    {
-        if (feature->IsEnabled())
-        {
-            feature->OnBeginFrame(p_frameDescriptor);
-        }
-    }
+    if (m_frameObjectBindingProvider != nullptr)
+        m_frameObjectBindingProvider->BeginFrame(p_frameDescriptor);
 
     for (const auto& [_, pass] : m_passes)
     {
@@ -88,14 +84,12 @@ void CompositeRenderer::EndFrame()
         }
     }
 
-    for (const auto& [_, feature] : m_features)
-    {
-        if (feature->IsEnabled())
-        {
-            feature->OnEndFrame();
-        }
-    }
+    if (m_frameObjectBindingProvider != nullptr)
+        m_frameObjectBindingProvider->EndFrame();
+    if (m_debugDrawService != nullptr)
+        m_debugDrawService->EndFrame();
 
+    m_rendererStats.EndFrame();
     ClearDescriptors();
     ABaseRenderer::EndFrame();
 }
@@ -105,13 +99,8 @@ void CompositeRenderer::DrawEntity(
     const Entities::Drawable& p_drawable
 )
 {
-    for (const auto& [_, feature] : m_features)
-    {
-        if (feature->IsEnabled())
-        {
-            feature->OnBeforeDraw(p_pso, p_drawable);
-        }
-    }
+    if (m_frameObjectBindingProvider != nullptr)
+        m_frameObjectBindingProvider->PrepareDraw(p_pso, p_drawable);
 
     PreparedRecordedDraw preparedDraw;
     if (PrepareRecordedDraw(p_pso, p_drawable, preparedDraw))
@@ -120,23 +109,13 @@ void CompositeRenderer::DrawEntity(
 
         if (preparedDraw.commandBuffer != nullptr)
         {
-            for (const auto& [_, feature] : m_features)
-            {
-                if (feature->IsEnabled())
-                    feature->OnPrepareExplicitDraw(*preparedDraw.commandBuffer, p_pso, p_drawable);
-            }
+            if (m_frameObjectBindingProvider != nullptr)
+                m_frameObjectBindingProvider->PrepareExplicitDraw(*preparedDraw.commandBuffer, p_pso, p_drawable);
         }
 
         BindPreparedMaterialBindingSet(preparedDraw);
         SubmitPreparedDraw(preparedDraw);
-    }
-
-    for (const auto& [_, feature] : m_features)
-    {
-        if (feature->IsEnabled())
-        {
-            feature->OnAfterDraw(p_drawable);
-        }
+        m_rendererStats.RecordSubmittedDraw(p_drawable, preparedDraw.instanceCount);
     }
 }
 
@@ -147,13 +126,8 @@ void CompositeRenderer::DrawEntity(
 {
     auto effectivePso = CreatePipelineState();
 
-    for (const auto& [_, feature] : m_features)
-    {
-        if (feature->IsEnabled())
-        {
-            feature->OnBeforeDraw(effectivePso, p_drawable);
-        }
-    }
+    if (m_frameObjectBindingProvider != nullptr)
+        m_frameObjectBindingProvider->PrepareDraw(effectivePso, p_drawable);
 
     PreparedRecordedDraw preparedDraw;
     if (PrepareRecordedDraw(p_drawable, pipelineOverrides, depthCompareOverride, preparedDraw))
@@ -162,24 +136,66 @@ void CompositeRenderer::DrawEntity(
 
         if (preparedDraw.commandBuffer != nullptr)
         {
-            for (const auto& [_, feature] : m_features)
-            {
-                if (feature->IsEnabled())
-                    feature->OnPrepareExplicitDraw(*preparedDraw.commandBuffer, effectivePso, p_drawable);
-            }
+            if (m_frameObjectBindingProvider != nullptr)
+                m_frameObjectBindingProvider->PrepareExplicitDraw(*preparedDraw.commandBuffer, effectivePso, p_drawable);
         }
 
         BindPreparedMaterialBindingSet(preparedDraw);
         SubmitPreparedDraw(preparedDraw);
+        m_rendererStats.RecordSubmittedDraw(p_drawable, preparedDraw.instanceCount);
     }
+}
 
-    for (const auto& [_, feature] : m_features)
-    {
-        if (feature->IsEnabled())
-        {
-            feature->OnAfterDraw(p_drawable);
-        }
-    }
+void CompositeRenderer::SetFrameObjectBindingProvider(std::unique_ptr<FrameObjectBindingProvider> provider)
+{
+    NLS_ASSERT(!m_isDrawing, "You cannot swap the frame/object binding provider while drawing.");
+    m_frameObjectBindingProvider = std::move(provider);
+}
+
+FrameObjectBindingProvider* CompositeRenderer::GetFrameObjectBindingProvider() const
+{
+    return m_frameObjectBindingProvider.get();
+}
+
+bool CompositeRenderer::HasFrameObjectBindingProvider() const
+{
+    return m_frameObjectBindingProvider != nullptr;
+}
+
+void CompositeRenderer::SetDebugDrawService(std::unique_ptr<Debug::DebugDrawService> service)
+{
+    NLS_ASSERT(!m_isDrawing, "You cannot swap the debug draw service while drawing.");
+    m_debugDrawService = std::move(service);
+}
+
+Debug::DebugDrawService* CompositeRenderer::GetDebugDrawService() const
+{
+    return m_debugDrawService.get();
+}
+
+bool CompositeRenderer::HasDebugDrawService() const
+{
+    return m_debugDrawService != nullptr;
+}
+
+const Data::FrameInfo& CompositeRenderer::GetFrameInfo() const
+{
+    return m_rendererStats.GetFrameInfo();
+}
+
+bool CompositeRenderer::IsFrameInfoValid() const
+{
+    return m_rendererStats.IsFrameInfoValid();
+}
+
+void CompositeRenderer::ResetFrameStatistics()
+{
+    m_rendererStats.BeginFrame();
+}
+
+void CompositeRenderer::FinalizeFrameStatistics()
+{
+    m_rendererStats.EndFrame();
 }
 
 }

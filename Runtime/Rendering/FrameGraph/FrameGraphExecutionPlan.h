@@ -23,7 +23,44 @@ namespace NLS::Render::FrameGraph
 {
 	inline constexpr uint64_t kThreadedPlanUsePassDrawCount = (std::numeric_limits<uint64_t>::max)();
 
-	struct ThreadedRenderScenePassMetadata;
+	struct RenderPassExecutionMetadata
+	{
+		bool useFrameClearState = false;
+		bool clearColor = false;
+		bool clearDepth = false;
+		bool clearStencil = false;
+		Maths::Vector4 clearValue = Maths::Vector4::Zero;
+	};
+
+	enum class ThreadedRenderScenePassRole : uint8_t
+	{
+		Opaque = 0,
+		Transparent,
+		Skybox,
+		Helper,
+		Auxiliary
+	};
+
+	enum class ThreadedRenderScenePassExecutionMode : uint8_t
+	{
+		Output = 0,
+		Recorded
+	};
+
+	struct ThreadedRenderScenePassMetadata
+	{
+		Context::RenderPassCommandKind commandKind = Context::RenderPassCommandKind::Opaque;
+		ThreadedRenderScenePassRole role = ThreadedRenderScenePassRole::Auxiliary;
+		ThreadedRenderScenePassExecutionMode executionMode = ThreadedRenderScenePassExecutionMode::Output;
+		RHI::QueueType queueType = RHI::QueueType::Graphics;
+		Context::QueueDependencyPolicy queueDependencyPolicy = Context::QueueDependencyPolicy::Previous;
+		const char* graphPassName = "";
+		uint64_t visibleDrawCountContribution = kThreadedPlanUsePassDrawCount;
+		bool propagatesColorOutput = true;
+		bool propagatesDepthOutput = true;
+		RenderPassExecutionMetadata execution;
+		std::shared_ptr<std::string> ownedGraphPassName;
+	};
 
 	template<typename T, typename = void>
 	struct HasThreadedRenderScenePassMetadataMember : std::false_type
@@ -120,45 +157,6 @@ namespace NLS::Render::FrameGraph
 		bool clearDepth = false;
 		bool clearStencil = false;
 		Maths::Vector4 clearValue = Maths::Vector4::Zero;
-	};
-
-	struct RenderPassExecutionMetadata
-	{
-		bool useFrameClearState = false;
-		bool clearColor = false;
-		bool clearDepth = false;
-		bool clearStencil = false;
-		Maths::Vector4 clearValue = Maths::Vector4::Zero;
-	};
-
-	enum class ThreadedRenderScenePassRole : uint8_t
-	{
-		Opaque = 0,
-		Transparent,
-		Skybox,
-		Helper,
-		Auxiliary
-	};
-
-	enum class ThreadedRenderScenePassExecutionMode : uint8_t
-	{
-		Output = 0,
-		Recorded
-	};
-
-	struct ThreadedRenderScenePassMetadata
-	{
-		Context::RenderPassCommandKind commandKind = Context::RenderPassCommandKind::Opaque;
-		ThreadedRenderScenePassRole role = ThreadedRenderScenePassRole::Auxiliary;
-		ThreadedRenderScenePassExecutionMode executionMode = ThreadedRenderScenePassExecutionMode::Output;
-		RHI::QueueType queueType = RHI::QueueType::Graphics;
-		Context::QueueDependencyPolicy queueDependencyPolicy = Context::QueueDependencyPolicy::Previous;
-		const char* graphPassName = "";
-		uint64_t visibleDrawCountContribution = kThreadedPlanUsePassDrawCount;
-		bool propagatesColorOutput = true;
-		bool propagatesDepthOutput = true;
-		RenderPassExecutionMetadata execution;
-		std::shared_ptr<std::string> ownedGraphPassName;
 	};
 
 	inline void SetThreadedRenderScenePassGraphPassName(

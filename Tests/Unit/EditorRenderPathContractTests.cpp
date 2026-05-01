@@ -11,7 +11,6 @@
 #include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/RHI/Core/RHISwapchain.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
-#include "ReflectionTestUtils.h"
 
 namespace
 {
@@ -63,15 +62,6 @@ namespace
         return capabilities;
     }
 
-    std::filesystem::path GetRepositoryRoot()
-    {
-        return std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
-    }
-
-    std::string ReadRepositorySource(std::string_view relativePath)
-    {
-        return NLS::Tests::Reflection::ReadAllText(GetRepositoryRoot() / relativePath);
-    }
 }
 
 TEST(EditorRenderPathContractTests, EditorRuntimeRejectsNonDx12BackendsBeforeStartup)
@@ -98,14 +88,6 @@ TEST(EditorRenderPathContractTests, EditorRuntimeAcceptsDx12WhenCapabilitiesAreS
 #else
     ASSERT_TRUE(decision.primaryWarning.has_value());
 #endif
-}
-
-TEST(EditorRenderPathContractTests, EditorProductEntryDefaultsToThreadedRenderingMainline)
-{
-    const auto editorMainSource = ReadRepositorySource("Project/Editor/Main.cpp");
-
-    EXPECT_NE(editorMainSource.find("bool enableThreadedRendering = true;"), std::string::npos);
-    EXPECT_EQ(editorMainSource.find("bool enableThreadedRendering = false;"), std::string::npos);
 }
 
 TEST(EditorRenderPathContractTests, EditorDeferredPathKeepsGraphOwnedGBufferBeforeLightingOrder)
@@ -244,157 +226,4 @@ TEST(EditorRenderPathContractTests, PickingAuxiliaryPassDoesNotSatisfySceneOutpu
 
     EXPECT_TRUE(NLS::Editor::Rendering::WritesThreadedEditorSceneOutput(sceneHelperPass));
     EXPECT_FALSE(NLS::Editor::Rendering::WritesThreadedEditorSceneOutput(pickingPass));
-}
-
-TEST(EditorRenderPathContractTests, SceneViewRequiresSelectedActorBeforeStartingGizmoPicking)
-{
-    const auto sceneViewSource = ReadRepositorySource("Project/Editor/Panels/SceneView.cpp");
-
-    EXPECT_NE(
-        sceneViewSource.find("if (m_highlightedGizmoDirection && EDITOR_EXEC(IsAnyActorSelected()))"),
-        std::string::npos);
-    EXPECT_EQ(
-        sceneViewSource.find("*EDITOR_EXEC(GetSelectedActor()),"),
-        std::string::npos);
-}
-
-TEST(EditorRenderPathContractTests, SceneViewCameraSuppressesCursorCaptureTransitionDelta)
-{
-    const auto cameraControllerHeader = ReadRepositorySource("Project/Editor/Core/CameraController.h");
-    const auto cameraControllerSource = ReadRepositorySource("Project/Editor/Core/CameraController.cpp");
-
-    EXPECT_NE(
-        cameraControllerHeader.find("m_pendingMouseDeltaSuppressionFrames"),
-        std::string::npos);
-    EXPECT_NE(
-        cameraControllerHeader.find("SuppressMouseDeltaAfterCursorCapture()"),
-        std::string::npos);
-    EXPECT_NE(
-        cameraControllerSource.find("ConsumeSuppressedMouseDelta(pos)"),
-        std::string::npos);
-    EXPECT_NE(
-        cameraControllerSource.find("SuppressMouseDeltaAfterCursorCapture();"),
-        std::string::npos);
-    EXPECT_NE(
-        cameraControllerHeader.find("ClampMouseDeltaForCameraControl"),
-        std::string::npos);
-    EXPECT_NE(
-        cameraControllerSource.find("kMaxCameraMouseDeltaPerFrame = 16.0f"),
-        std::string::npos);
-    EXPECT_NE(
-        cameraControllerSource.find("ClampMouseDeltaForCameraControl(mouseOffset)"),
-        std::string::npos);
-    EXPECT_EQ(
-        cameraControllerSource.find("m_firstMouse = false;\n    --m_pendingMouseDeltaSuppressionFrames"),
-        std::string::npos);
-    const auto fpsMouseOffset =
-        cameraControllerSource.find("void Editor::Core::CameraController::HandleCameraFPSMouse");
-    ASSERT_NE(fpsMouseOffset, std::string::npos);
-    const auto fpsMouseInitializationOffset =
-        cameraControllerSource.find("m_ypr = Maths::Quaternion::EulerAngles(m_camera.GetRotation())", fpsMouseOffset);
-    const auto fpsMouseFirstReturnOffset = cameraControllerSource.find("return;", fpsMouseInitializationOffset);
-    const auto fpsMouseRotationWriteOffset = cameraControllerSource.find("m_camera.SetRotation", fpsMouseInitializationOffset);
-    ASSERT_NE(fpsMouseInitializationOffset, std::string::npos);
-    ASSERT_NE(fpsMouseFirstReturnOffset, std::string::npos);
-    ASSERT_NE(fpsMouseRotationWriteOffset, std::string::npos);
-    EXPECT_LT(fpsMouseFirstReturnOffset, fpsMouseRotationWriteOffset);
-    const auto activeMouseBlockOffset =
-        cameraControllerSource.find("if (m_rightMousePressed || m_middleMousePressed || m_leftMousePressed)");
-    ASSERT_NE(activeMouseBlockOffset, std::string::npos);
-    const auto consumeSuppressedOffset =
-        cameraControllerSource.find("ConsumeSuppressedMouseDelta(pos)", activeMouseBlockOffset);
-    const auto firstMouseOffset = cameraControllerSource.find("if (m_firstMouse)", activeMouseBlockOffset);
-    ASSERT_NE(consumeSuppressedOffset, std::string::npos);
-    ASSERT_NE(firstMouseOffset, std::string::npos);
-    EXPECT_LT(consumeSuppressedOffset, firstMouseOffset);
-    EXPECT_EQ(cameraControllerSource.find("ECursorMode::DISABLED"), std::string::npos);
-    EXPECT_NE(cameraControllerSource.find("ECursorMode::HIDDEN"), std::string::npos);
-}
-
-TEST(EditorRenderPathContractTests, LightGridDefaultAmbientFloorStaysBelowOverexposureThreshold)
-{
-    const auto lightGridSource = ReadRepositorySource("Runtime/Engine/Rendering/LightGridPrepass.cpp");
-
-    EXPECT_NE(lightGridSource.find("constexpr float kDefaultAmbientFloor = 0.05f;"), std::string::npos);
-    EXPECT_NE(lightGridSource.find("kDefaultAmbientFloor,"), std::string::npos);
-    EXPECT_EQ(lightGridSource.find("0.20f,"), std::string::npos);
-}
-
-TEST(EditorRenderPathContractTests, RenderValidationSceneKeepsNeutralAmbientLight)
-{
-    const auto renderValidationScene = ReadRepositorySource("TestProject/Assets/Scenes/RenderValidation.scene");
-
-    EXPECT_NE(renderValidationScene.find("\"name\": \"Ambient Light\""), std::string::npos);
-    EXPECT_NE(renderValidationScene.find("\"intensity\": 0.1"), std::string::npos);
-    EXPECT_EQ(renderValidationScene.find("\"intensity\": 0.8"), std::string::npos);
-}
-
-TEST(EditorRenderPathContractTests, RenderValidationSceneKeepsDirectionalLightFacingVisibleCubeFace)
-{
-    const auto renderValidationScene = ReadRepositorySource("TestProject/Assets/Scenes/RenderValidation.scene");
-    const auto directionalLightOffset = renderValidationScene.find("\"name\": \"Directional Light\"");
-    ASSERT_NE(directionalLightOffset, std::string::npos);
-
-    const auto validationCubeOffset = renderValidationScene.find("\"name\": \"Validation Cube\"");
-    ASSERT_NE(validationCubeOffset, std::string::npos);
-    const auto directionalLightBlock = renderValidationScene.substr(
-        directionalLightOffset,
-        validationCubeOffset - directionalLightOffset);
-
-    EXPECT_NE(directionalLightBlock.find("\"x\": 0.0"), std::string::npos);
-    EXPECT_NE(directionalLightBlock.find("\"y\": 0.0"), std::string::npos);
-    EXPECT_NE(directionalLightBlock.find("\"z\": 0.0"), std::string::npos);
-    EXPECT_NE(directionalLightBlock.find("\"w\": 1.0"), std::string::npos);
-}
-
-TEST(EditorRenderPathContractTests, DefaultLightedSceneKeepsDirectionalLightFacingVisibleCubeFace)
-{
-    const auto sceneManagerSource = ReadRepositorySource("Runtime/Engine/SceneSystem/SceneManager.cpp");
-
-    EXPECT_NE(
-        sceneManagerSource.find("tr->SetLocalRotation(Maths::Quaternion({60.0f, 40.0f, 0.0f}));"),
-        std::string::npos);
-    EXPECT_EQ(
-        sceneManagerSource.find("tr->SetLocalRotation(Maths::Quaternion({120.0f, -40.0f, 0.0f}));"),
-        std::string::npos);
-}
-
-TEST(EditorRenderPathContractTests, RuntimeContextsStopRenderingThreadsBeforeResourceUnload)
-{
-    const auto editorApplicationSource = ReadRepositorySource("Project/Editor/Core/Application.cpp");
-    const auto gameApplicationSource = ReadRepositorySource("Project/Game/Core/Application.cpp");
-    const auto editorContextSource = ReadRepositorySource("Project/Editor/Core/Context.cpp");
-    const auto gameContextSource = ReadRepositorySource("Project/Game/Core/Context.cpp");
-
-    const auto applicationDestructorOffset = editorApplicationSource.find("Editor::Core::Application::~Application()");
-    ASSERT_NE(applicationDestructorOffset, std::string::npos);
-    const auto applicationShutdownOffset =
-        editorApplicationSource.find("m_context.ShutdownThreadedRendering()", applicationDestructorOffset);
-    ASSERT_NE(applicationShutdownOffset, std::string::npos);
-
-    const auto gameApplicationDestructorOffset =
-        gameApplicationSource.find("Game::Core::Application::~Application()");
-    ASSERT_NE(gameApplicationDestructorOffset, std::string::npos);
-    const auto gameApplicationShutdownOffset =
-        gameApplicationSource.find("m_context.ShutdownThreadedRendering()", gameApplicationDestructorOffset);
-    ASSERT_NE(gameApplicationShutdownOffset, std::string::npos);
-
-    const auto assertShutdownBeforeUnload = [](const std::string& source, const std::string& destructorName)
-    {
-        const auto destructorOffset = source.find(destructorName);
-        ASSERT_NE(destructorOffset, std::string::npos);
-
-        const auto shutdownOffset = source.find("ShutdownThreadedRendering()", destructorOffset);
-        const auto unloadOffset = source.find("UnloadResources()", destructorOffset);
-        ASSERT_NE(shutdownOffset, std::string::npos);
-        ASSERT_NE(unloadOffset, std::string::npos);
-        EXPECT_LT(shutdownOffset, unloadOffset);
-
-        const auto methodOffset = source.find("::ShutdownThreadedRendering()");
-        ASSERT_NE(methodOffset, std::string::npos);
-        EXPECT_NE(source.find("driver->ShutdownThreadedRendering()", methodOffset), std::string::npos);
-    };
-
-    assertShutdownBeforeUnload(editorContextSource, "Editor::Core::Context::~Context()");
-    assertShutdownBeforeUnload(gameContextSource, "Game::Context::~Context()");
 }

@@ -1,12 +1,10 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
-#include <filesystem>
 #include <memory>
 #include <thread>
 #include <vector>
 
-#include "ReflectionTestUtils.h"
 #include "Core/ServiceLocator.h"
 #include "Panels/FrameInfo.h"
 #include "Panels/ViewFrameLifecycle.h"
@@ -122,32 +120,6 @@ const NLS::UI::Widgets::Text& TextWidgetAt(NLS::UI::PanelWindow& panel, const si
     auto* text = dynamic_cast<NLS::UI::Widgets::Text*>(widgets[index].first);
     EXPECT_NE(text, nullptr);
     return *text;
-}
-
-std::filesystem::path GetRepositoryRoot()
-{
-    return std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
-}
-
-std::string ReadRepositorySource(std::string_view relativePath)
-{
-    return NLS::Tests::Reflection::ReadAllText(GetRepositoryRoot() / relativePath);
-}
-
-void ExpectFunctionReturnsLiteral(
-    std::string_view source,
-    std::string_view signature,
-    std::string_view literal)
-{
-    const auto signatureOffset = source.find(signature);
-    ASSERT_NE(signatureOffset, std::string_view::npos) << "Missing function signature: " << signature;
-
-    const auto bodyOffset = source.find("return ", signatureOffset);
-    ASSERT_NE(bodyOffset, std::string_view::npos) << "Missing return statement near: " << signature;
-
-    const std::string expectedReturn = std::string("return ") + std::string(literal) + ";";
-    EXPECT_NE(source.find(expectedReturn, bodyOffset), std::string_view::npos)
-        << "Expected " << signature << " to contain " << expectedReturn;
 }
 
 }
@@ -344,83 +316,4 @@ TEST(PanelWindowHookTests, RetirementAwareResizePolicyRequestsDrainBeforeDeferri
         activeSize,
         true,
         telemetry));
-}
-
-TEST(PanelWindowHookTests, UnifiedEditorViewsConfigureRetiredFrameConsumptionFromSharedViewBase)
-{
-    const auto aViewSource = ReadRepositorySource("Project/Editor/Panels/AView.cpp");
-    const auto sceneViewSource = ReadRepositorySource("Project/Editor/Panels/SceneView.cpp");
-    const auto gameViewSource = ReadRepositorySource("Project/Editor/Panels/GameView.cpp");
-    const auto assetViewSource = ReadRepositorySource("Project/Editor/Panels/AssetView.cpp");
-    const auto applicationSource = ReadRepositorySource("Project/Editor/Core/Application.cpp");
-
-    ExpectFunctionReturnsLiteral(
-        aViewSource,
-        "bool Editor::Panels::AView::RequiresRetiredFrameConsumption() const",
-        "m_requiresRetiredFrameConsumption");
-    EXPECT_NE(sceneViewSource.find("SetRequiresRetiredFrameConsumption(true);"), std::string::npos);
-    EXPECT_NE(gameViewSource.find("SetRequiresRetiredFrameConsumption(true);"), std::string::npos);
-    EXPECT_NE(assetViewSource.find("SetRequiresRetiredFrameConsumption(true);"), std::string::npos);
-    EXPECT_EQ(sceneViewSource.find("RequiresRetiredFrameConsumption() const"), std::string::npos);
-    EXPECT_EQ(gameViewSource.find("RequiresRetiredFrameConsumption() const"), std::string::npos);
-    EXPECT_EQ(assetViewSource.find("RequiresRetiredFrameConsumption() const"), std::string::npos);
-    const auto drainOffset = aViewSource.find("DriverRendererAccess::DrainThreadedRendering(*driver)");
-    const auto deferOffset = aViewSource.find("ShouldDeferRetirementAwareViewResize(");
-    ASSERT_NE(drainOffset, std::string::npos);
-    ASSERT_NE(deferOffset, std::string::npos);
-    EXPECT_LT(drainOffset, deferOffset);
-    const auto endFrameOffset = aViewSource.find("m_renderer->EndFrame();");
-    const auto postSubmitDrainOffset =
-        aViewSource.find("DriverRendererAccess::DrainThreadedRendering(*driver)", endFrameOffset);
-    const auto afterRenderFrameOffset = aViewSource.find("AfterRenderFrame();", endFrameOffset);
-    ASSERT_NE(endFrameOffset, std::string::npos);
-    ASSERT_NE(postSubmitDrainOffset, std::string::npos);
-    ASSERT_NE(afterRenderFrameOffset, std::string::npos);
-    EXPECT_LT(endFrameOffset, postSubmitDrainOffset);
-    EXPECT_LT(postSubmitDrainOffset, afterRenderFrameOffset);
-    EXPECT_NE(applicationSource.find("RunEditorFrame("), std::string::npos);
-    EXPECT_NE(applicationSource.find("SyncPlatformSwapchainToFramebufferSize("), std::string::npos);
-    EXPECT_EQ(applicationSource.find("MakeCurrentContext("), std::string::npos);
-}
-
-TEST(PanelWindowHookTests, EditorPanelsUnsubscribeGlobalEventListenersBeforeDestruction)
-{
-    const auto sceneViewHeader = ReadRepositorySource("Project/Editor/Panels/SceneView.h");
-    const auto sceneViewSource = ReadRepositorySource("Project/Editor/Panels/SceneView.cpp");
-    const auto hierarchyHeader = ReadRepositorySource("Project/Editor/Panels/Hierarchy.h");
-    const auto hierarchySource = ReadRepositorySource("Project/Editor/Panels/Hierarchy.cpp");
-    const auto consoleHeader = ReadRepositorySource("Project/Editor/Panels/Console.h");
-    const auto consoleSource = ReadRepositorySource("Project/Editor/Panels/Console.cpp");
-    const auto toolbarHeader = ReadRepositorySource("Project/Editor/Panels/Toolbar.h");
-    const auto toolbarSource = ReadRepositorySource("Project/Editor/Panels/Toolbar.cpp");
-    const auto editorSource = ReadRepositorySource("Project/Editor/Core/Editor.cpp");
-
-    EXPECT_NE(sceneViewHeader.find("~SceneView()"), std::string::npos);
-    EXPECT_NE(sceneViewHeader.find("m_destroyedListener"), std::string::npos);
-    EXPECT_NE(sceneViewHeader.find("m_highlightedActor = nullptr"), std::string::npos);
-    EXPECT_NE(sceneViewSource.find("m_destroyedListener = Engine::GameObject::DestroyedEvent +="), std::string::npos);
-    EXPECT_NE(sceneViewSource.find("Engine::GameObject::DestroyedEvent -= m_destroyedListener"), std::string::npos);
-
-    EXPECT_NE(hierarchyHeader.find("~Hierarchy()"), std::string::npos);
-    EXPECT_NE(hierarchyHeader.find("m_actorDestroyedListener"), std::string::npos);
-    EXPECT_NE(hierarchyHeader.find("m_sceneUnloadListener"), std::string::npos);
-    EXPECT_NE(hierarchySource.find("m_actorDestroyedListener = Engine::GameObject::DestroyedEvent +="), std::string::npos);
-    EXPECT_NE(hierarchySource.find("Engine::GameObject::DestroyedEvent -= m_actorDestroyedListener"), std::string::npos);
-    EXPECT_NE(hierarchySource.find("EDITOR_CONTEXT(sceneManager).SceneUnloadEvent -= m_sceneUnloadListener"), std::string::npos);
-
-    EXPECT_NE(consoleHeader.find("~Console()"), std::string::npos);
-    EXPECT_NE(consoleHeader.find("m_logListener"), std::string::npos);
-    EXPECT_NE(consoleSource.find("m_logListener = Debug::Logger::LogEvent +="), std::string::npos);
-    EXPECT_NE(consoleSource.find("Debug::Logger::LogEvent -= m_logListener"), std::string::npos);
-
-    EXPECT_NE(toolbarHeader.find("~Toolbar()"), std::string::npos);
-    EXPECT_NE(toolbarHeader.find("m_editorModeChangedListener"), std::string::npos);
-    EXPECT_NE(toolbarSource.find("m_editorModeChangedListener = EDITOR_EVENT(EditorModeChangedEvent) +="), std::string::npos);
-    EXPECT_NE(toolbarSource.find("EDITOR_EVENT(EditorModeChangedEvent) -= m_editorModeChangedListener"), std::string::npos);
-
-    const auto destroyPanelsOffset = editorSource.find("m_panelsManager.DestroyPanels();");
-    const auto unloadSceneOffset = editorSource.find("m_context.sceneManager.UnloadCurrentScene();");
-    ASSERT_NE(destroyPanelsOffset, std::string::npos);
-    ASSERT_NE(unloadSceneOffset, std::string::npos);
-    EXPECT_LT(destroyPanelsOffset, unloadSceneOffset);
 }

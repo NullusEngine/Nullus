@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include <Debug/Logger.h>
 
 #include <UI/Panels/PanelWindow.h>
@@ -23,6 +25,7 @@ namespace NLS::Editor::Panels
 			bool p_opened,
 			const UI::PanelWindowSettings& p_windowSettings
 		);
+		~Console();
 
 		/**
 		* Method called when a log event occured
@@ -66,5 +69,7 @@ namespace NLS::Editor::Panels
 		bool m_showInfoLog = true;
 		bool m_showWarningLog = true;
 		bool m_showErrorLog = true;
+		uint64_t m_playListener = 0;
+		uint64_t m_logListener = 0;
 	};
 }

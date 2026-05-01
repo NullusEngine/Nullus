@@ -45,6 +45,7 @@ public:
      * Handle editor global shortcuts
      */
     void HandleGlobalShortcuts();
+    void ApplyStartupValidationDirectives();
 
     /**
      * Update the current editor mode

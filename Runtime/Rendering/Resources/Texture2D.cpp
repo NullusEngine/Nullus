@@ -56,19 +56,6 @@ namespace
 	}
 }
 
-void Texture2D::Bind(uint32_t p_slot) const
-{
-	// In formal RHI, binding is handled at command buffer level through descriptor sets
-	// This is a no-op placeholder
-	(void)p_slot;
-}
-
-void Texture2D::Unbind() const
-{
-	// In formal RHI, unbinding is handled at command buffer level
-	// This is a no-op placeholder
-}
-
 Texture2D::Texture2D(Texture2D&& rhs) noexcept : Texture(std::move(rhs))
 {
 	width = rhs.width;

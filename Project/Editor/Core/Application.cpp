@@ -26,29 +26,17 @@ bool IsResizeCursor(const ImGuiMouseCursor cursor)
 
 Editor::Core::Application::Application(const std::string& p_projectPath, const std::string& p_projectName,
     std::optional<Render::Settings::EGraphicsBackend> p_backendOverride,
-    const Render::Settings::RenderDocSettings& p_renderDocSettings)
-    : m_context(p_projectPath, p_projectName, p_backendOverride, p_renderDocSettings), m_editor(m_context)
+    const Render::Settings::RenderDocSettings& p_renderDocSettings,
+    bool p_enableThreadedRendering,
+    const Render::Settings::EngineDiagnosticsSettings& p_diagnosticsSettings)
+    : m_context(p_projectPath, p_projectName, p_backendOverride, p_renderDocSettings, p_enableThreadedRendering, p_diagnosticsSettings), m_editor(m_context)
 {
     const auto tickWhileResizing = [this]()
     {
         if (!IsRunning())
             return;
 
-        if (m_context.window != nullptr && m_context.driver != nullptr)
-        {
-            // Do not rely on resize listener invocation order. Sync the swapchain to the
-            // latest framebuffer size before rendering the resize frame.
-            const auto framebufferSize = m_context.window->GetFramebufferSize();
-            if (framebufferSize.x > 0.0f && framebufferSize.y > 0.0f)
-            {
-                m_context.driver->ResizePlatformSwapchain(
-                    static_cast<uint32_t>(framebufferSize.x),
-                    static_cast<uint32_t>(framebufferSize.y));
-            }
-        }
-
-        if (m_context.windowSettings.clientAPI == Windowing::Settings::WindowClientAPI::OpenGL)
-            m_context.window->MakeCurrentContext();
+        SyncPlatformSwapchainToFramebufferSize();
 
         if (!ShouldTickResizeImmediately(m_isTicking, m_isPollingEvents, m_isResizeTicking))
         {
@@ -80,6 +68,7 @@ Editor::Core::Application::Application(const std::string& p_projectPath, const s
 
 Editor::Core::Application::~Application()
 {
+    m_context.ShutdownThreadedRendering();
 }
 
 void Editor::Core::Application::Run()
@@ -109,8 +98,7 @@ void Editor::Core::Application::TickFrame(float p_deltaTime, bool p_pollEvents)
         m_isPollingEvents = false;
     }
 
-    m_editor.Update(p_deltaTime);
-    m_editor.PostUpdate();
+    RunEditorFrame(p_deltaTime);
 
     const bool resizeCursorActive =
         m_context.uiManager != nullptr && IsResizeCursor(m_context.uiManager->GetMouseCursor());
@@ -122,8 +110,7 @@ void Editor::Core::Application::TickFrame(float p_deltaTime, bool p_pollEvents)
     if (ShouldRunResizeFollowUpFrame(false, resizeCursorActive, primaryMouseDown))
     {
         m_isResizeTicking = true;
-        m_editor.Update(0.0f);
-        m_editor.PostUpdate();
+        RunEditorFrame(0.0f);
         m_isResizeTicking = false;
     }
 
@@ -136,14 +123,13 @@ void Editor::Core::Application::TickResizeFrame()
         return;
 
     m_isResizeTicking = true;
-    m_editor.Update(0.0f);
-    m_editor.PostUpdate();
+    SyncPlatformSwapchainToFramebufferSize();
+    RunEditorFrame(0.0f);
     if (ShouldRunResizeFollowUpFrame(true, false, false))
     {
         // The first resize frame updates ImGui's layout state.
         // The follow-up frame re-renders views against the new panel sizes.
-        m_editor.Update(0.0f);
-        m_editor.PostUpdate();
+        RunEditorFrame(0.0f);
     }
     m_isResizeTicking = false;
 }
@@ -165,5 +151,27 @@ void Editor::Core::Application::FlushDeferredResizeTick()
 bool Editor::Core::Application::IsRunning() const
 {
     return !m_context.window->ShouldClose();
+}
+
+void Editor::Core::Application::RunEditorFrame(const float deltaTime)
+{
+    m_editor.Update(deltaTime);
+    m_editor.PostUpdate();
+}
+
+void Editor::Core::Application::SyncPlatformSwapchainToFramebufferSize()
+{
+    if (m_context.window == nullptr || m_context.driver == nullptr)
+        return;
+
+    // Do not rely on resize listener invocation order. Sync the swapchain to the
+    // latest framebuffer size before rendering any frame that depends on it.
+    const auto framebufferSize = m_context.window->GetFramebufferSize();
+    if (framebufferSize.x <= 0.0f || framebufferSize.y <= 0.0f)
+        return;
+
+    m_context.driver->ResizePlatformSwapchain(
+        static_cast<uint32_t>(framebufferSize.x),
+        static_cast<uint32_t>(framebufferSize.y));
 }
 } // namespace NLS

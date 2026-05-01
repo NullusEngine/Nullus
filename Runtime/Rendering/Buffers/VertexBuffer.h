@@ -4,26 +4,25 @@
 #include <vector>
 
 #include "Rendering/RHI/Core/RHIResource.h"
-#include "Rendering/RHI/Core/IRHIResource.h"
 
 namespace NLS::Render::Buffers
 {
 /**
- * Wraps OpenGL VBO
+ * Backend-neutral vertex-buffer wrapper over the formal RHI surface.
  */
 template<class T>
 class VertexBuffer
 {
 public:
     /**
-     * Create the VBO using a pointer to the first element and a size (number of elements)
+     * Create the vertex buffer from a pointer to the first element and an element count.
      * @param p_data
-     * @parma p_elements
+     * @param p_elements
      */
     VertexBuffer(T* p_data, size_t p_elements);
 
     /**
-     * Create the EBO using a vector
+     * Create the vertex buffer from a vector.
      * @param p_data
      */
     VertexBuffer(std::vector<T>& p_data);
@@ -33,23 +32,7 @@ public:
      */
     ~VertexBuffer();
 
-    /**
-     * Bind the buffer
-     */
-    void Bind();
-
-    /**
-     * Bind the buffer
-     */
-    void Unbind();
-
-    /**
-     * Returnd the ID of the VBO (always 0 for formal RHI)
-     */
-    uint32_t GetID();
-    const RHI::IRHIBuffer* GetRHIBuffer() const { return nullptr; }
     const std::shared_ptr<RHI::RHIBuffer>& GetBufferHandle() const { return m_explicitBuffer; }
-    const std::shared_ptr<RHI::IRHIBuffer>& GetRHIBufferHandle() const { return nullptr; }
     const std::shared_ptr<RHI::RHIBuffer>& GetExplicitRHIBufferHandle() const { return GetBufferHandle(); }
 
 private:

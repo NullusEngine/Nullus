@@ -25,6 +25,11 @@ namespace NLS::Render::FrameGraph
 			NLS::Render::RHI::RHITextureDesc explicitDesc = desc;
 			explicitDesc.arrayLayers = desc.dimension == NLS::Render::RHI::TextureDimension::TextureCube ? 6u : 1u;
 			explicitDesc.debugName = "FrameGraphTexture";
+			if (NLS::Render::RHI::HasTextureUsage(desc.usage, NLS::Render::RHI::TextureUsageFlags::ColorAttachment) ||
+				NLS::Render::RHI::HasTextureUsage(desc.usage, NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment))
+			{
+				explicitDesc.optimizedClearValue.enabled = true;
+			}
 			return explicitDesc;
 		}
 
@@ -116,6 +121,12 @@ namespace NLS::Render::FrameGraph
 		explicitTexture = device->CreateTexture(ToExplicitTextureDesc(desc));
 		NLS_ASSERT(explicitTexture != nullptr, "FrameGraphTexture failed to create explicit texture.");
 		ownsResource = true;
+		executionContext->RegisterTransientTexture(
+			explicitTexture,
+			GetFullSubresourceRange(explicitTexture),
+			executionContext->frameContext != nullptr
+				? executionContext->frameContext->frameIndex
+				: 0u);
 
 		NLS::Render::RHI::RHITextureViewDesc viewDesc;
 		viewDesc.format = explicitTexture->GetDesc().format;

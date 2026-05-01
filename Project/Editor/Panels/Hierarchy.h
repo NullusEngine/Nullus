@@ -1,5 +1,7 @@
 ﻿#pragma once
 
+#include <cstdint>
+
 #include <Rendering/Resources/Loaders/TextureLoader.h>
 #include <Rendering/Entities/Camera.h>
 
@@ -26,6 +28,7 @@ namespace NLS::Editor::Panels
 			bool p_opened,
 			const UI::PanelWindowSettings& p_windowSettings
 		);
+		~Hierarchy();
 		
 		/**
 		* Clear hierarchy nodes
@@ -81,5 +84,12 @@ namespace NLS::Editor::Panels
 		UI::Widgets::TreeNode* m_sceneRoot;
 
 		std::unordered_map<Engine::GameObject*, UI::Widgets::TreeNode*> m_widgetActorLink;
+		uint64_t m_actorUnselectedListener = 0;
+		uint64_t m_sceneUnloadListener = 0;
+		uint64_t m_actorCreatedListener = 0;
+		uint64_t m_actorDestroyedListener = 0;
+		uint64_t m_actorSelectedListener = 0;
+		uint64_t m_actorAttachedListener = 0;
+		uint64_t m_actorDetachedListener = 0;
 	};
 }

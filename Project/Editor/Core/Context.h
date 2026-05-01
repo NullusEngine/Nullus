@@ -33,15 +33,21 @@ class Context
      * @param p_projectName
      * @param p_backendOverride optional backend override from command line, if not provided uses project settings
      * @param p_renderDocSettings RenderDoc settings from command line
+     * @param p_enableThreadedRendering enable threaded rendering from command line
+     * @param p_diagnosticsSettings Engine diagnostics settings from command line
      */
     Context(const std::string& p_projectPath, const std::string& p_projectName,
             std::optional<Render::Settings::EGraphicsBackend> p_backendOverride = std::nullopt,
-            const Render::Settings::RenderDocSettings& p_renderDocSettings = {});
+            const Render::Settings::RenderDocSettings& p_renderDocSettings = {},
+            bool p_enableThreadedRendering = false,
+            const Render::Settings::EngineDiagnosticsSettings& p_diagnosticsSettings = {});
 
     /**
      * Destructor
      */
     ~Context();
+
+    void ShutdownThreadedRendering();
 
     /**
      * Reset project settings ini file
@@ -58,6 +64,8 @@ class Context
      * Apply project settings to the ini file
      */
     void ApplyProjectSettings();
+
+    const Render::Settings::EngineDiagnosticsSettings& GetDiagnosticsSettings() const;
 
 	public:
     const std::string projectPath;
@@ -88,6 +96,8 @@ class Context
 private:
     std::optional<Render::Settings::EGraphicsBackend> m_backendOverride;
     Render::Settings::RenderDocSettings m_renderDocSettings;
+    bool m_enableThreadedRendering;
+    Render::Settings::EngineDiagnosticsSettings m_diagnosticsSettings;
 };
 } // namespace Editor::Core
 } // namespace NLS

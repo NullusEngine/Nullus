@@ -96,8 +96,11 @@ namespace NLS::Editor::Panels
 	protected:
 		void OnBeforeDrawWidgets() override;
         virtual Engine::Rendering::BaseSceneRenderer::SceneDescriptor CreateSceneDescriptor();
+		virtual bool RequiresRetiredFrameConsumption() const;
+		void SetRequiresRetiredFrameConsumption(bool requiresRetiredFrameConsumption);
 		void SyncViewToCurrentContentRegion();
 		void Render(uint16_t p_width, uint16_t p_height);
+		void ApplyResolvedViewSize(uint16_t p_width, uint16_t p_height);
 
 	protected:
 		UI::Widgets::Image* m_image;
@@ -107,5 +110,7 @@ namespace NLS::Editor::Panels
 		Render::Buffers::Framebuffer m_fbo;
         std::unique_ptr<Engine::Rendering::BaseSceneRenderer> m_renderer;
 		std::pair<uint16_t, uint16_t> m_lastResolvedViewSize { 0u, 0u };
+		std::optional<std::pair<uint16_t, uint16_t>> m_pendingResolvedViewSize;
+		bool m_requiresRetiredFrameConsumption = false;
 	};
 }

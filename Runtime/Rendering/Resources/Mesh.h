@@ -26,16 +26,6 @@ namespace NLS::Render::Resources
 		Mesh(const std::vector<Geometry::Vertex>& p_vertices, const std::vector<uint32_t>& p_indices, uint32_t p_materialIndex);
 
 		/**
-		* Bind the mesh (Actually bind its VAO)
-		*/
-		virtual void Bind() const override;
-
-		/**
-		* Unbind the mesh (Actually unbind its VAO)
-		*/
-		virtual void Unbind() const override;
-
-		/**
 		* Returns the number of vertices
 		*/
 		virtual uint32_t GetVertexCount() const override;

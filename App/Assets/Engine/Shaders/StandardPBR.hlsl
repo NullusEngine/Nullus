@@ -1,4 +1,5 @@
 #include "CommonTypes.hlsli"
+#include "LightGridCommon.hlsli"
 
 cbuffer FrameConstants : register(b0, space0)
 {
@@ -28,6 +29,9 @@ Texture2D u_RoughnessMap : register(t2, space2);
 Texture2D u_AmbientOcclusionMap : register(t3, space2);
 Texture2D u_NormalMap : register(t4, space2);
 SamplerState u_LinearWrapSampler : register(s0, space2);
+StructuredBuffer<uint> u_LightGridLights : register(t0, space1);
+StructuredBuffer<uint> u_LightGridClusterRecords : register(t1, space1);
+StructuredBuffer<uint> u_LightGridCompactIndices : register(t2, space1);
 
 VSOutput VSMain(VSInput input)
 {
@@ -52,9 +56,15 @@ float4 PSMain(VSOutput input) : SV_Target0
     const float ao = u_AmbientOcclusionMap.Sample(u_LinearWrapSampler, input.TexCoord).r * u_AmbientOcclusion;
 
     const float3 normalWS = normalize(input.NormalWS);
-    const float3 viewDir = normalize(u_CameraWorldPos - input.PositionWS);
-    const float ndotv = saturate(dot(normalWS, viewDir));
-
-    const float3 placeholderLighting = albedo * (0.2f + 0.8f * ndotv) * ao;
-    return float4(placeholderLighting + metallic.xxx * 0.02f + roughness.xxx * 0.01f, u_Albedo.a);
+    const float3 lighting = NLSAccumulateClusteredLightingPBR(
+        u_LightGridLights,
+        u_LightGridClusterRecords,
+        u_LightGridCompactIndices,
+        input.PositionWS,
+        normalWS,
+        albedo,
+        metallic,
+        roughness,
+        ao);
+    return float4(lighting, u_Albedo.a);
 }

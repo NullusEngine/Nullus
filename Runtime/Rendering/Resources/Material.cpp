@@ -14,10 +14,12 @@
 #include "Math/Vector4.h"
 #include "Math/Matrix4.h"
 #include "Rendering/Buffers/UniformBuffer.h"
+#include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Geometry/Vertex.h"
 #include "Rendering/RHI/BindingPointMap.h"
 #include "Rendering/RHI/Core/RHIPipeline.h"
 #include "Rendering/RHI/Core/RHIPipelineStateUtils.h"
+#include "Rendering/RHI/Utils/PipelineCache/PipelineCache.h"
 #include "Rendering/Resources/Loaders/TextureLoader.h"
 #include "Rendering/Resources/MaterialResourceSet.h"
 #include "Rendering/Resources/ShaderBindingLayoutUtils.h"
@@ -129,19 +131,24 @@ namespace
 			desc.depthStencilState.depthWrite = *overrides.depthWrite;
 		if (overrides.depthTest.has_value())
 			desc.depthStencilState.depthTest = *overrides.depthTest;
+		if (overrides.hasDepthAttachment.has_value())
+			desc.renderTargetLayout.hasDepth = *overrides.hasDepthAttachment;
 		if (overrides.culling.has_value())
 			desc.rasterState.cullEnabled = *overrides.culling;
 		if (overrides.cullFace.has_value())
 			desc.rasterState.cullFace = *overrides.cullFace;
+
+		if (!desc.depthStencilState.depthTest &&
+			!desc.depthStencilState.depthWrite &&
+			!desc.depthStencilState.stencilTest)
+		{
+			desc.renderTargetLayout.hasDepth = false;
+		}
 	}
 
     bool ShouldLogMaterialBindingDiagnostics()
     {
-        static const bool enabled = []()
-        {
-            return NLS::Render::Settings::IsEnvironmentFlagEnabled("NLS_LOG_MATERIAL_BINDINGS");
-        }();
-        return enabled;
+        return NLS::Render::Settings::GetThreadDiagnosticsSettings().logMaterialBindings;
     }
 
     NLS::Render::RHI::NativeBackendType ResolveDeviceBackendType(
@@ -266,7 +273,7 @@ namespace
 		switch (kind)
 		{
 		case ShaderResourceKind::UniformBuffer: return NLS::Render::RHI::BindingType::UniformBuffer;
-		case ShaderResourceKind::StructuredBuffer:
+		case ShaderResourceKind::StructuredBuffer: return NLS::Render::RHI::BindingType::StructuredBuffer;
 		case ShaderResourceKind::StorageBuffer: return NLS::Render::RHI::BindingType::StorageBuffer;
 		case ShaderResourceKind::SampledTexture: return NLS::Render::RHI::BindingType::Texture;
 		case ShaderResourceKind::Sampler:
@@ -311,6 +318,79 @@ namespace
 		entry.stageMask = stageMask;
 		layoutDesc.entries.push_back(std::move(entry));
 	}
+
+    template<typename TValue>
+    void HashCombine(uint64_t& seed, const TValue& value)
+    {
+        seed ^= static_cast<uint64_t>(std::hash<TValue>{}(value)) + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2);
+    }
+
+    uint64_t BuildGraphicsPipelineCacheHash(const NLS::Render::RHI::RHIGraphicsPipelineDesc& desc)
+    {
+        uint64_t hash = 0;
+        if (desc.pipelineLayout != nullptr)
+            HashCombine(hash, desc.pipelineLayout->GetDesc().debugName);
+        if (desc.vertexShader != nullptr)
+        {
+            HashCombine(hash, desc.vertexShader->GetDesc().debugName);
+            HashCombine(hash, desc.vertexShader->GetDesc().entryPoint);
+            HashCombine(hash, static_cast<uint32_t>(desc.vertexShader->GetDesc().targetBackend));
+        }
+        if (desc.fragmentShader != nullptr)
+        {
+            HashCombine(hash, desc.fragmentShader->GetDesc().debugName);
+            HashCombine(hash, desc.fragmentShader->GetDesc().entryPoint);
+            HashCombine(hash, static_cast<uint32_t>(desc.fragmentShader->GetDesc().targetBackend));
+        }
+        HashCombine(hash, static_cast<uint32_t>(desc.primitiveTopology));
+        HashCombine(hash, desc.rasterState.cullEnabled);
+        HashCombine(hash, static_cast<uint32_t>(desc.rasterState.cullFace));
+        HashCombine(hash, desc.rasterState.wireframe);
+        HashCombine(hash, desc.blendState.enabled);
+        HashCombine(hash, desc.blendState.colorWrite);
+        HashCombine(hash, desc.depthStencilState.depthTest);
+        HashCombine(hash, desc.depthStencilState.depthWrite);
+        HashCombine(hash, static_cast<uint32_t>(desc.depthStencilState.depthCompare));
+        HashCombine(hash, desc.depthStencilState.stencilTest);
+        HashCombine(hash, desc.depthStencilState.stencilReadMask);
+        HashCombine(hash, desc.depthStencilState.stencilWriteMask);
+        HashCombine(hash, desc.depthStencilState.stencilReference);
+        HashCombine(hash, static_cast<uint32_t>(desc.depthStencilState.stencilCompare));
+        HashCombine(hash, static_cast<uint32_t>(desc.depthStencilState.stencilFailOp));
+        HashCombine(hash, static_cast<uint32_t>(desc.depthStencilState.stencilDepthFailOp));
+        HashCombine(hash, static_cast<uint32_t>(desc.depthStencilState.stencilPassOp));
+        HashCombine(hash, static_cast<uint32_t>(desc.renderTargetLayout.depthFormat));
+        HashCombine(hash, desc.renderTargetLayout.hasDepth);
+        HashCombine(hash, desc.renderTargetLayout.sampleCount);
+        for (const auto colorFormat : desc.renderTargetLayout.colorFormats)
+            HashCombine(hash, static_cast<uint32_t>(colorFormat));
+        for (const auto& vertexBuffer : desc.vertexBuffers)
+        {
+            HashCombine(hash, vertexBuffer.binding);
+            HashCombine(hash, vertexBuffer.stride);
+            HashCombine(hash, vertexBuffer.perInstance);
+        }
+        for (const auto& vertexAttribute : desc.vertexAttributes)
+        {
+            HashCombine(hash, vertexAttribute.location);
+            HashCombine(hash, vertexAttribute.binding);
+            HashCombine(hash, vertexAttribute.offset);
+            HashCombine(hash, vertexAttribute.elementSize);
+        }
+        return hash;
+    }
+
+    NLS::Render::RHI::PipelineCacheKey BuildGraphicsPipelineCacheKey(const NLS::Render::RHI::RHIGraphicsPipelineDesc& desc)
+    {
+        NLS::Render::RHI::PipelineCacheKey key;
+        key.hash = BuildGraphicsPipelineCacheHash(desc);
+        key.backend =
+            desc.vertexShader != nullptr
+                ? desc.vertexShader->GetDesc().targetBackend
+                : NLS::Render::RHI::NativeBackendType::None;
+        key.stableDebugName = desc.debugName;
+        return key;
+    }
 }
 
 namespace NLS::Render::Resources
@@ -321,7 +401,6 @@ namespace NLS::Render::Resources
 		{
 			std::unique_ptr<NLS::Render::Buffers::UniformBuffer> buffer;
 			uint32_t size = 0;
-			uint32_t bindingPoint = 0;
 		};
 
 		MaterialResourceSet bindingSet;
@@ -477,8 +556,7 @@ namespace NLS::Render::Resources
 				ShaderResourceKind::UniformBuffer,
 				UniformType::UNIFORM_FLOAT,
 				constantBuffer.bindingSpace,
-				constantBuffer.bindingIndex,
-				static_cast<int32_t>(constantBuffer.bindingIndex)
+				constantBuffer.bindingIndex
 			});
 		}
 
@@ -495,8 +573,7 @@ namespace NLS::Render::Resources
 				property.kind,
 				property.type,
 				property.bindingSpace,
-				property.bindingIndex,
-				static_cast<int32_t>(property.bindingIndex)
+				property.bindingIndex
 			});
 		}
 
@@ -527,12 +604,20 @@ namespace NLS::Render::Resources
 				if (parameter->type() == typeid(Texture2D*))
 				{
 					auto* texture = std::any_cast<Texture2D*>(*parameter);
-					state.bindingSet.SetTexture(binding.name, texture != nullptr ? texture : GetDefaultWhiteTexture2D());
+					const auto resolvedTexture = texture != nullptr ? texture : GetDefaultWhiteTexture2D();
+					state.bindingSet.SetTexture(
+						binding.name,
+						resolvedTexture != nullptr ? resolvedTexture->GetTextureHandle() : nullptr);
 				}
 				break;
 			case UniformType::UNIFORM_SAMPLER_CUBE:
 				if (parameter->type() == typeid(TextureCube*))
-					state.bindingSet.SetTexture(binding.name, std::any_cast<TextureCube*>(*parameter));
+				{
+					const auto* texture = std::any_cast<TextureCube*>(*parameter);
+					state.bindingSet.SetTexture(
+						binding.name,
+						texture != nullptr ? texture->GetTextureHandle() : nullptr);
+				}
 				break;
 			default:
 				break;
@@ -584,7 +669,7 @@ namespace NLS::Render::Resources
 				constantBuffer.bindingIndex);
 
 			auto& bufferState = state.materialConstantBuffers[constantBuffer.name];
-			if (!bufferState.buffer || bufferState.size != constantBuffer.byteSize || bufferState.bindingPoint != bindingPoint)
+			if (!bufferState.buffer || bufferState.size != constantBuffer.byteSize)
 			{
 				bufferState.buffer = std::make_unique<NLS::Render::Buffers::UniformBuffer>(
 					constantBuffer.byteSize,
@@ -592,7 +677,6 @@ namespace NLS::Render::Resources
 					0,
 					Settings::EAccessSpecifier::STREAM_DRAW);
 				bufferState.size = constantBuffer.byteSize;
-				bufferState.bindingPoint = bindingPoint;
 			}
 
 			auto bufferData = BuildMaterialConstantBufferData(constantBuffer, m_parameterBlock);
@@ -606,7 +690,6 @@ namespace NLS::Render::Resources
 			}
 			if (!bufferData.empty())
 				bufferState.buffer->SetRawData(bufferData.data(), static_cast<uint32_t>(bufferData.size()));
-			bufferState.buffer->Bind(bindingPoint);
 
 			state.bindingSet.SetBuffer(
 				constantBuffer.name,
@@ -663,6 +746,7 @@ namespace NLS::Render::Resources
 
 	std::shared_ptr<RHI::RHIGraphicsPipeline> Material::BuildRecordedGraphicsPipeline(
 		const std::shared_ptr<RHI::RHIDevice>& device,
+        const std::shared_ptr<RHI::PipelineCache>& pipelineCache,
 		Settings::EPrimitiveMode primitiveMode,
 		const Data::PipelineState& pipelineState,
 		MaterialPipelineStateOverrides overrides,
@@ -731,7 +815,23 @@ namespace NLS::Render::Resources
 			};
 			RHI::ApplyPipelineStateToGraphicsPipelineDesc(pipelineState, desc);
 			ApplyPipelineStateOverrides(desc, overrides);
-			return device->CreateGraphicsPipeline(desc);
+			if (!desc.renderTargetLayout.hasDepth)
+			{
+				desc.depthStencilState.depthTest = false;
+				desc.depthStencilState.depthWrite = false;
+				desc.depthStencilState.stencilTest = false;
+			}
+			if (pipelineCache == nullptr)
+				return nullptr;
+
+			const auto cacheKey = BuildGraphicsPipelineCacheKey(desc);
+			return pipelineCache->GetOrCreateGraphicsPipeline(
+				cacheKey,
+				[device, desc]()
+				{
+					return device->CreateGraphicsPipeline(desc);
+				},
+				RHI::PipelineCacheRequestMode::Runtime);
 		}
 
 		return nullptr;
@@ -828,6 +928,7 @@ namespace NLS::Render::Resources
 			switch (entry.type)
 			{
 			case RHI::BindingType::UniformBuffer:
+			case RHI::BindingType::StructuredBuffer:
 			case RHI::BindingType::StorageBuffer:
 			{
 				auto bufferState = state.materialConstantBuffers.find(entry.name);
@@ -920,7 +1021,17 @@ namespace NLS::Render::Resources
 		if (ShouldLogMaterialBindingDiagnostics() && m_shader != nullptr && m_shader->path.find("Skybox") != std::string::npos)
 			NLS_LOG_INFO("[SkyboxMaterial] Explicit binding set entry count = " + std::to_string(bindingSetDesc.entries.size()));
 
-		state.explicitBindingSet = device->CreateBindingSet(bindingSetDesc);
+        if (auto* driver = NLS::Render::Context::TryGetLocatedDriver(); driver != nullptr)
+        {
+		    state.explicitBindingSet = NLS::Render::Context::DriverRendererAccess::CreateExplicitBindingSet(
+                *driver,
+                bindingSetDesc,
+                RHI::DescriptorAllocationLifetime::Persistent);
+        }
+        else
+        {
+            state.explicitBindingSet.reset();
+        }
 		state.explicitBindingSetDirty = false;
 		return state.explicitBindingSet;
 	}

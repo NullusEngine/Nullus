@@ -4,13 +4,24 @@
 #include <vector>
 
 #include "Core/ServiceLocator.h"
+#include "Rendering/Buffers/Framebuffer.h"
 #include "Rendering/Core/CompositeRenderer.h"
 #include "Rendering/Core/FrameObjectBindingProvider.h"
+#include "Rendering/BaseSceneRenderer.h"
 #include "Rendering/Context/Driver.h"
+#include "Rendering/Context/DriverAccess.h"
+#include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/Data/FrameDescriptor.h"
+#include "Rendering/DeferredSceneRenderer.h"
+#include "Rendering/EngineFrameObjectBindingProvider.h"
 #include "Rendering/Entities/Camera.h"
+#include "Rendering/ForwardSceneRenderer.h"
 #include "Rendering/RHI/Core/RHICommand.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
+#include "Rendering/RHI/Core/RHIResource.h"
+#include "Rendering/RHI/Utils/DescriptorAllocator/DescriptorAllocator.h"
 #include "Rendering/Settings/DriverSettings.h"
+#include "Components/MeshRenderer.h"
 
 namespace
 {
@@ -111,6 +122,158 @@ namespace
     private:
         std::shared_ptr<NLS::Render::RHI::RHICommandBuffer> m_commandBuffer;
     };
+
+    class PackageProbeSceneRenderer final : public NLS::Engine::Rendering::BaseSceneRenderer
+    {
+    public:
+        explicit PackageProbeSceneRenderer(NLS::Render::Context::Driver& driver)
+            : BaseSceneRenderer(driver)
+        {
+        }
+
+        NLS::Render::Context::RenderScenePackage CaptureRenderScenePackage(
+            const NLS::Render::Context::FrameSnapshot& snapshot) const
+        {
+            return BuildRenderScenePackage(snapshot);
+        }
+    };
+
+    class TestAdapter final : public NLS::Render::RHI::RHIAdapter
+    {
+    public:
+        std::string_view GetDebugName() const override { return "RendererFrameObjectBindingTestsAdapter"; }
+        NLS::Render::RHI::NativeBackendType GetBackendType() const override { return NLS::Render::RHI::NativeBackendType::DX12; }
+        std::string_view GetVendor() const override { return "TestVendor"; }
+        std::string_view GetHardware() const override { return "TestHardware"; }
+    };
+
+    class TestTexture final : public NLS::Render::RHI::RHITexture
+    {
+    public:
+        explicit TestTexture(NLS::Render::RHI::RHITextureDesc desc)
+            : m_desc(std::move(desc))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return m_desc.debugName; }
+        const NLS::Render::RHI::RHITextureDesc& GetDesc() const override { return m_desc; }
+        NLS::Render::RHI::ResourceState GetState() const override { return NLS::Render::RHI::ResourceState::Unknown; }
+
+    private:
+        NLS::Render::RHI::RHITextureDesc m_desc {};
+    };
+
+    class TestTextureView final : public NLS::Render::RHI::RHITextureView
+    {
+    public:
+        TestTextureView(
+            std::shared_ptr<NLS::Render::RHI::RHITexture> texture,
+            NLS::Render::RHI::RHITextureViewDesc desc)
+            : m_texture(std::move(texture))
+            , m_desc(std::move(desc))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return m_desc.debugName; }
+        const NLS::Render::RHI::RHITextureViewDesc& GetDesc() const override { return m_desc; }
+        const std::shared_ptr<NLS::Render::RHI::RHITexture>& GetTexture() const override { return m_texture; }
+
+    private:
+        std::shared_ptr<NLS::Render::RHI::RHITexture> m_texture;
+        NLS::Render::RHI::RHITextureViewDesc m_desc {};
+    };
+
+    class TestBindingSet final : public NLS::Render::RHI::RHIBindingSet
+    {
+    public:
+        explicit TestBindingSet(NLS::Render::RHI::RHIBindingSetDesc desc)
+            : m_desc(std::move(desc))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return m_desc.debugName; }
+        const NLS::Render::RHI::RHIBindingSetDesc& GetDesc() const override { return m_desc; }
+
+    private:
+        NLS::Render::RHI::RHIBindingSetDesc m_desc {};
+    };
+
+    class TestQueue final : public NLS::Render::RHI::RHIQueue
+    {
+    public:
+        std::string_view GetDebugName() const override { return "RendererFrameObjectBindingTestsQueue"; }
+        NLS::Render::RHI::QueueType GetType() const override { return NLS::Render::RHI::QueueType::Graphics; }
+        void Submit(const NLS::Render::RHI::RHISubmitDesc&) override {}
+        void Present(const NLS::Render::RHI::RHIPresentDesc&) override {}
+    };
+
+    class TestExplicitDevice final : public NLS::Render::RHI::RHIDevice
+    {
+    public:
+        TestExplicitDevice()
+            : m_adapter(std::make_shared<TestAdapter>())
+            , m_queue(std::make_shared<TestQueue>())
+        {
+            m_nativeDeviceInfo.backend = NLS::Render::RHI::NativeBackendType::DX12;
+            m_capabilities.backendReady = true;
+            m_capabilities.supportsGraphics = true;
+            m_capabilities.supportsCompute = true;
+            m_capabilities.supportsSwapchain = true;
+            m_capabilities.supportsCurrentSceneRenderer = true;
+            m_capabilities.supportsOffscreenFramebuffers = true;
+            m_capabilities.supportsMultiRenderTargets = true;
+            m_capabilities.supportsExplicitBarriers = true;
+            m_capabilities.supportsCentralizedDescriptorManagement = true;
+            m_capabilities.supportsPipelineStateCache = true;
+        }
+
+        std::string_view GetDebugName() const override { return "RendererFrameObjectBindingTestsDevice"; }
+        const std::shared_ptr<NLS::Render::RHI::RHIAdapter>& GetAdapter() const override { return m_adapter; }
+        const NLS::Render::RHI::RHIDeviceCapabilities& GetCapabilities() const override { return m_capabilities; }
+        NLS::Render::RHI::NativeRenderDeviceInfo GetNativeDeviceInfo() const override { return m_nativeDeviceInfo; }
+        bool IsBackendReady() const override { return true; }
+        std::shared_ptr<NLS::Render::RHI::RHIQueue> GetQueue(NLS::Render::RHI::QueueType) override { return m_queue; }
+        std::shared_ptr<NLS::Render::RHI::RHISwapchain> CreateSwapchain(const NLS::Render::RHI::SwapchainDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIBuffer> CreateBuffer(const NLS::Render::RHI::RHIBufferDesc&, const void* = nullptr) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHITexture> CreateTexture(const NLS::Render::RHI::RHITextureDesc& desc, const void* = nullptr) override
+        {
+            return std::make_shared<TestTexture>(desc);
+        }
+        std::shared_ptr<NLS::Render::RHI::RHITextureView> CreateTextureView(
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+            const NLS::Render::RHI::RHITextureViewDesc& desc) override
+        {
+            return std::make_shared<TestTextureView>(texture, desc);
+        }
+        std::shared_ptr<NLS::Render::RHI::RHISampler> CreateSampler(const NLS::Render::RHI::SamplerDesc&, std::string = {}) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> CreateBindingLayout(const NLS::Render::RHI::RHIBindingLayoutDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIBindingSet> CreateBindingSet(const NLS::Render::RHI::RHIBindingSetDesc& desc) override
+        {
+            return std::make_shared<TestBindingSet>(desc);
+        }
+        std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> CreatePipelineLayout(const NLS::Render::RHI::RHIPipelineLayoutDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIShaderModule> CreateShaderModule(const NLS::Render::RHI::RHIShaderModuleDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline> CreateGraphicsPipeline(const NLS::Render::RHI::RHIGraphicsPipelineDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> CreateComputePipeline(const NLS::Render::RHI::RHIComputePipelineDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHICommandPool> CreateCommandPool(NLS::Render::RHI::QueueType, std::string = {}) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIFence> CreateFence(std::string = {}) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHISemaphore> CreateSemaphore(std::string = {}) override { return nullptr; }
+        void ReadPixels(
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>&,
+            uint32_t,
+            uint32_t,
+            uint32_t,
+            uint32_t,
+            NLS::Render::Settings::EPixelDataFormat,
+            NLS::Render::Settings::EPixelDataType,
+            void*) override {}
+
+    private:
+        std::shared_ptr<NLS::Render::RHI::RHIAdapter> m_adapter;
+        std::shared_ptr<NLS::Render::RHI::RHIQueue> m_queue;
+        NLS::Render::RHI::NativeRenderDeviceInfo m_nativeDeviceInfo {};
+        NLS::Render::RHI::RHIDeviceCapabilities m_capabilities {};
+    };
 }
 
 TEST(RendererFrameObjectBindingTests, ProviderTracksFrameLifecycle)
@@ -177,4 +340,269 @@ TEST(RendererFrameObjectBindingTests, ProviderPreparesObjectStateDuringDrawsWith
     EXPECT_EQ(events, std::vector<std::string>({ "begin", "before", "prepare" }));
 
     providerPtr->EndFrame();
+}
+
+TEST(RendererFrameObjectBindingTests, RenderScenePackageMarksFrameAndObjectDataReadyForSnapshotDraws)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    PackageProbeSceneRenderer renderer(driver);
+
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.hasSceneInput = true;
+    snapshot.visibleOpaqueDrawCount = 2u;
+    snapshot.visibleTransparentDrawCount = 1u;
+    snapshot.visibleSkyboxDrawCount = 1u;
+
+    const auto package = renderer.CaptureRenderScenePackage(snapshot);
+
+    EXPECT_TRUE(package.hasVisibleDraws);
+    EXPECT_EQ(package.visibleDrawCount, 4u);
+    EXPECT_EQ(package.opaqueDrawCount, 2u);
+    EXPECT_EQ(package.transparentDrawCount, 1u);
+    EXPECT_EQ(package.skyboxDrawCount, 1u);
+    EXPECT_TRUE(package.hasOpaquePass);
+    EXPECT_TRUE(package.hasTransparentPass);
+    EXPECT_TRUE(package.hasSkyboxPass);
+    EXPECT_EQ(package.passPlanCount, 3u);
+    EXPECT_TRUE(package.frameDataReady);
+    EXPECT_TRUE(package.objectDataReady);
+    EXPECT_EQ(package.drawCommandCount, 4u);
+    EXPECT_EQ(package.materialBatchCount, 4u);
+    EXPECT_EQ(package.renderTargetUseCount, 1u);
+    EXPECT_TRUE(package.containsCommandInputs);
+    ASSERT_EQ(package.passCommandInputs.size(), 3u);
+    EXPECT_EQ(package.passCommandInputs[0].kind, NLS::Render::Context::RenderPassCommandKind::Opaque);
+    EXPECT_EQ(package.passCommandInputs[0].drawCount, 2u);
+    EXPECT_EQ(package.passCommandInputs[1].kind, NLS::Render::Context::RenderPassCommandKind::Transparent);
+    EXPECT_EQ(package.passCommandInputs[1].drawCount, 1u);
+    EXPECT_EQ(package.passCommandInputs[2].kind, NLS::Render::Context::RenderPassCommandKind::Skybox);
+    EXPECT_EQ(package.passCommandInputs[2].drawCount, 1u);
+}
+
+TEST(RendererFrameObjectBindingTests, EngineProviderPreparesFrameObjectDataIntoRenderScenePackage)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    ProviderAwareRenderer renderer(*driver);
+    NLS::Engine::Rendering::EngineFrameObjectBindingProvider provider(renderer);
+
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.hasSceneInput = true;
+    snapshot.visibleOpaqueDrawCount = 2u;
+    snapshot.visibleTransparentDrawCount = 1u;
+
+    NLS::Render::Context::RenderScenePackage package;
+    package.visibleDrawCount = 3u;
+    EXPECT_FALSE(package.frameDataReady);
+    EXPECT_FALSE(package.objectDataReady);
+
+    provider.PrepareRenderScenePackage(snapshot, package);
+
+    EXPECT_TRUE(package.frameDataReady);
+    EXPECT_TRUE(package.objectDataReady);
+}
+
+TEST(RendererFrameObjectBindingTests, ExplicitBindingSetCreationRequiresCentralDescriptorAllocator)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 23u;
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, true);
+
+    NLS::Render::RHI::RHIBindingSetDesc desc;
+    desc.debugName = "MainlineBindings";
+    desc.entries.resize(2u);
+    desc.entries[0].binding = 0u;
+    desc.entries[0].type = NLS::Render::RHI::BindingType::UniformBuffer;
+    desc.entries[1].binding = 1u;
+    desc.entries[1].type = NLS::Render::RHI::BindingType::Texture;
+
+    auto bindingSet = NLS::Render::Context::DriverRendererAccess::CreateExplicitBindingSet(
+        driver,
+        desc,
+        NLS::Render::RHI::DescriptorAllocationLifetime::TransientFrame);
+    EXPECT_EQ(bindingSet, nullptr);
+
+    frameContext.descriptorAllocator = NLS::Render::RHI::CreateDefaultDescriptorAllocator(16u);
+    ASSERT_NE(frameContext.descriptorAllocator, nullptr);
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+
+    bindingSet = NLS::Render::Context::DriverRendererAccess::CreateExplicitBindingSet(
+        driver,
+        desc,
+        NLS::Render::RHI::DescriptorAllocationLifetime::TransientFrame);
+    ASSERT_NE(bindingSet, nullptr);
+
+    const auto descriptorStats = frameContext.descriptorAllocator->GetStats();
+    EXPECT_EQ(descriptorStats.transientUsed, 2u);
+
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+}
+
+TEST(RendererFrameObjectBindingTests, ThreadedPreparedBindingSetCreationUsesCurrentFrameDescriptorAllocator)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 7u;
+    frameContext.descriptorAllocator = NLS::Render::RHI::CreateDefaultDescriptorAllocator(16u);
+    ASSERT_NE(frameContext.descriptorAllocator, nullptr);
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+
+    NLS::Render::RHI::RHIBindingSetDesc desc;
+    desc.debugName = "ThreadedPreparedBindings";
+    desc.entries.resize(2u);
+    desc.entries[0].binding = 0u;
+    desc.entries[0].type = NLS::Render::RHI::BindingType::UniformBuffer;
+    desc.entries[1].binding = 1u;
+    desc.entries[1].type = NLS::Render::RHI::BindingType::Texture;
+
+    const auto bindingSet = NLS::Render::Context::DriverRendererAccess::CreateExplicitBindingSet(
+        driver,
+        desc,
+        NLS::Render::RHI::DescriptorAllocationLifetime::Persistent);
+    ASSERT_NE(bindingSet, nullptr);
+
+    const auto descriptorStats = frameContext.descriptorAllocator->GetStats();
+    EXPECT_EQ(descriptorStats.persistentUsed, 2u);
+}
+
+TEST(RendererFrameObjectBindingTests, DeferredThreadedOffscreenPackageCarriesExternalOutputAttachmentViewForLightingPass)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Render::Buffers::Framebuffer outputBuffer(256u, 144u);
+    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver);
+
+    NLS::Engine::SceneSystem::Scene scene;
+    scene.CreateGameObject("LightActor").AddComponent<NLS::Engine::Components::LightComponent>();
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        scene,
+        std::nullopt,
+        nullptr
+    });
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 256u;
+    frameDescriptor.renderHeight = 144u;
+    frameDescriptor.camera = &camera;
+    frameDescriptor.outputBuffer = &outputBuffer;
+
+    ASSERT_NO_THROW(renderer.BeginFrame(frameDescriptor));
+    EXPECT_FALSE(renderer.HasPendingLightGridFrameInputs());
+    ASSERT_NO_THROW(renderer.EndFrame());
+
+    const auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
+    ASSERT_NE(lifecycle, nullptr);
+    const auto* publishedSlot = lifecycle->PeekSlot(0u);
+    ASSERT_NE(publishedSlot, nullptr);
+    ASSERT_TRUE(publishedSlot->snapshot.has_value());
+    EXPECT_TRUE(publishedSlot->preparedRenderSceneBuilder.has_value() || publishedSlot->renderScenePackage.has_value());
+
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
+    const auto* retiredSlot = lifecycle->PeekSlot(0u);
+    ASSERT_NE(retiredSlot, nullptr);
+    ASSERT_TRUE(retiredSlot->renderScenePackage.has_value());
+    ASSERT_EQ(retiredSlot->renderScenePackage->passCommandInputs.size(), 2u);
+    const auto& lightingPass = retiredSlot->renderScenePackage->passCommandInputs[1];
+    EXPECT_EQ(lightingPass.kind, NLS::Render::Context::RenderPassCommandKind::Lighting);
+    EXPECT_FALSE(lightingPass.targetsSwapchain);
+    EXPECT_TRUE(lightingPass.usesColorAttachment);
+    ASSERT_FALSE(lightingPass.colorAttachmentViews.empty());
+    EXPECT_NE(lightingPass.colorAttachmentViews.front(), nullptr);
+    ASSERT_FALSE(retiredSlot->renderScenePackage->extractedTextures.empty());
+    EXPECT_NE(retiredSlot->renderScenePackage->extractedTextures.front(), nullptr);
+}
+
+TEST(RendererFrameObjectBindingTests, ForwardThreadedOffscreenPackageRegistersExternalOutputExtraction)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Render::Buffers::Framebuffer outputBuffer(256u, 144u);
+    NLS::Engine::Rendering::ForwardSceneRenderer renderer(driver);
+
+    NLS::Engine::SceneSystem::Scene scene;
+    scene.CreateGameObject("MeshActor").AddComponent<NLS::Engine::Components::MeshRenderer>();
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        scene,
+        std::nullopt,
+        nullptr
+    });
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 256u;
+    frameDescriptor.renderHeight = 144u;
+    frameDescriptor.camera = &camera;
+    frameDescriptor.outputBuffer = &outputBuffer;
+
+    ASSERT_NO_THROW(renderer.BeginFrame(frameDescriptor));
+    EXPECT_FALSE(renderer.HasPendingLightGridFrameInputs());
+    ASSERT_NO_THROW(renderer.EndFrame());
+
+    const auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
+    ASSERT_NE(lifecycle, nullptr);
+    const auto* publishedSlot = lifecycle->PeekSlot(0u);
+    ASSERT_NE(publishedSlot, nullptr);
+    ASSERT_TRUE(publishedSlot->snapshot.has_value());
+    EXPECT_TRUE(publishedSlot->preparedRenderSceneBuilder.has_value() || publishedSlot->renderScenePackage.has_value());
+
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
+    const auto* retiredSlot = lifecycle->PeekSlot(0u);
+    ASSERT_NE(retiredSlot, nullptr);
+    ASSERT_TRUE(retiredSlot->renderScenePackage.has_value());
+    ASSERT_FALSE(retiredSlot->renderScenePackage->passCommandInputs.empty());
+    ASSERT_FALSE(retiredSlot->renderScenePackage->extractedTextures.empty());
+    EXPECT_NE(retiredSlot->renderScenePackage->extractedTextures.front(), nullptr);
 }

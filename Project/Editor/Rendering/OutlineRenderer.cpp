@@ -72,6 +72,43 @@ void Editor::Rendering::OutlineRenderer::DrawOutline(
     DrawOutlinePass(actor, color, thickness);
 }
 
+void Editor::Rendering::OutlineRenderer::CaptureOutlineDrawCommands(
+    Engine::GameObject& actor,
+    const Maths::Vector4& color,
+    const float thickness,
+    std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
+{
+    CaptureStencilPass(actor, outDrawCommands);
+    CaptureOutlinePass(actor, color, thickness, outDrawCommands);
+}
+
+void Editor::Rendering::OutlineRenderer::CaptureStencilPass(
+    Engine::GameObject& actor,
+    std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
+{
+    auto pso = Editor::Rendering::CreateEditorOutlineStencilPipelineState(
+        m_renderer,
+        kStencilMask,
+        kStencilReference);
+
+    CaptureActorToStencil(pso, actor, outDrawCommands);
+}
+
+void Editor::Rendering::OutlineRenderer::CaptureOutlinePass(
+    Engine::GameObject& actor,
+    const Maths::Vector4& color,
+    const float thickness,
+    std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
+{
+    auto pso = Editor::Rendering::CreateEditorOutlineShellPipelineState(
+        m_renderer,
+        kStencilReference,
+        kStencilMask);
+
+    m_outlineMaterial.Set("u_Diffuse", color);
+    CaptureActorOutline(pso, actor, thickness, outDrawCommands);
+}
+
 void Editor::Rendering::OutlineRenderer::DrawStencilPass(Engine::GameObject& actor)
 {
     auto pso = Editor::Rendering::CreateEditorOutlineStencilPipelineState(
@@ -94,6 +131,34 @@ void Editor::Rendering::OutlineRenderer::DrawOutlinePass(
 
     m_outlineMaterial.Set("u_Diffuse", color);
     DrawActorOutline(pso, actor, thickness);
+}
+
+void Editor::Rendering::OutlineRenderer::CaptureActorToStencil(
+    NLS::Render::Data::PipelineState pso,
+    Engine::GameObject& actor,
+    std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
+{
+    if (!actor.IsActive())
+        return;
+
+    const bool hasCameraComponent = actor.GetComponent<Engine::Components::CameraComponent>() != nullptr;
+
+    if (auto modelRenderer = actor.GetComponent<Engine::Components::MeshRenderer>(); modelRenderer && modelRenderer->GetModel())
+    {
+        if (!(hasCameraComponent && IsEditorCameraIconModel(*modelRenderer)))
+            CaptureModelToStencil(pso, actor.GetTransform()->GetWorldMatrix(), *modelRenderer->GetModel(), outDrawCommands);
+    }
+
+    if (auto cameraComponent = actor.GetComponent<Engine::Components::CameraComponent>(); cameraComponent)
+    {
+        auto translation = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
+        auto rotation = Maths::Quaternion::ToMatrix4(actor.GetTransform()->GetWorldRotation());
+        auto model = translation * rotation;
+        CaptureModelToStencil(pso, model, *EDITOR_CONTEXT(editorResources)->GetModel("Camera"), outDrawCommands);
+    }
+
+    for (auto& child : actor.GetChildren())
+        CaptureActorToStencil(pso, *child, outDrawCommands);
 }
 
 void Editor::Rendering::OutlineRenderer::DrawActorToStencil(
@@ -121,6 +186,48 @@ void Editor::Rendering::OutlineRenderer::DrawActorToStencil(
 
     for (auto& child : actor.GetChildren())
         DrawActorToStencil(pso, *child);
+}
+
+void Editor::Rendering::OutlineRenderer::CaptureActorOutline(
+    NLS::Render::Data::PipelineState pso,
+    Engine::GameObject& actor,
+    const float thickness,
+    std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
+{
+    if (!actor.IsActive())
+        return;
+
+    const bool hasCameraComponent = actor.GetComponent<Engine::Components::CameraComponent>() != nullptr;
+
+    if (auto modelRenderer = actor.GetComponent<Engine::Components::MeshRenderer>(); modelRenderer && modelRenderer->GetModel())
+    {
+        if (!(hasCameraComponent && IsEditorCameraIconModel(*modelRenderer)))
+        {
+            const auto outlineModel = BuildOutlineShellMatrix(
+                actor.GetTransform()->GetWorldMatrix(),
+                actor.GetTransform()->GetWorldScale(),
+                *modelRenderer->GetModel(),
+                thickness);
+            CaptureModelOutline(pso, outlineModel, *modelRenderer->GetModel(), outDrawCommands);
+        }
+    }
+
+    if (auto cameraComponent = actor.GetComponent<Engine::Components::CameraComponent>(); cameraComponent)
+    {
+        auto& cameraModel = *EDITOR_CONTEXT(editorResources)->GetModel("Camera");
+        auto translation = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
+        auto rotation = Maths::Quaternion::ToMatrix4(actor.GetTransform()->GetWorldRotation());
+        auto model = translation * rotation;
+        const auto outlineModel = BuildOutlineShellMatrix(
+            model,
+            Maths::Vector3::One,
+            cameraModel,
+            thickness);
+        CaptureModelOutline(pso, outlineModel, cameraModel, outDrawCommands);
+    }
+
+    for (auto& child : actor.GetChildren())
+        CaptureActorOutline(pso, *child, thickness, outDrawCommands);
 }
 
 void Editor::Rendering::OutlineRenderer::DrawActorOutline(
@@ -164,12 +271,40 @@ void Editor::Rendering::OutlineRenderer::DrawActorOutline(
         DrawActorOutline(pso, *child, thickness);
 }
 
+void Editor::Rendering::OutlineRenderer::CaptureModelToStencil(
+    NLS::Render::Data::PipelineState pso,
+    const Maths::Matrix4& worldMatrix,
+    NLS::Render::Resources::Model& model,
+    std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
+{
+    m_debugModelRenderer.CaptureModelDrawCommandsWithSingleMaterial(
+        pso,
+        model,
+        m_stencilFillMaterial,
+        worldMatrix,
+        outDrawCommands);
+}
+
 void Editor::Rendering::OutlineRenderer::DrawModelToStencil(
     NLS::Render::Data::PipelineState pso,
     const Maths::Matrix4& worldMatrix,
     NLS::Render::Resources::Model& model)
 {
     m_debugModelRenderer.DrawModelWithSingleMaterial(pso, model, m_stencilFillMaterial, worldMatrix);
+}
+
+void Editor::Rendering::OutlineRenderer::CaptureModelOutline(
+    NLS::Render::Data::PipelineState pso,
+    const Maths::Matrix4& worldMatrix,
+    NLS::Render::Resources::Model& model,
+    std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
+{
+    m_debugModelRenderer.CaptureModelDrawCommandsWithSingleMaterial(
+        pso,
+        model,
+        m_outlineMaterial,
+        worldMatrix,
+        outDrawCommands);
 }
 
 void Editor::Rendering::OutlineRenderer::DrawModelOutline(

@@ -1,0 +1,29 @@
+#pragma once
+
+#include <memory>
+
+#include "Rendering/Context/DriverAccess.h"
+#include "Rendering/RHI/Utils/RHIUIBridge.h"
+
+namespace NLS::Render::RHI
+{
+    inline NLS::Render::Context::Driver* ResolveUIDriver()
+    {
+        return NLS::Render::Context::TryGetLocatedDriver();
+    }
+
+    inline NativeRenderDeviceInfo ResolveUIDriverNativeDeviceInfo()
+    {
+        if (const auto* driver = ResolveUIDriver(); driver != nullptr)
+        {
+            if (NLS::Render::Context::DriverRendererAccess::HasExplicitRHI(*driver))
+                return NLS::Render::Context::DriverUIAccess::GetNativeDeviceInfo(*driver);
+        }
+
+        return {};
+    }
+
+#if defined(_WIN32) && NLS_HAS_IMGUI_DX12_BACKEND
+    std::unique_ptr<RHIUIBridge> CreateDX12RHIUIBridge(const NativeRenderDeviceInfo& nativeInfo);
+#endif
+}

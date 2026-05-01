@@ -18,11 +18,6 @@ namespace NLS::Render::Resources
 	class TextureCube;
 }
 
-namespace NLS::Render::Buffers
-{
-	class UniformBuffer;
-}
-
 namespace NLS::Engine::Rendering
 {
 	class NLS_ENGINE_API DeferredSceneRenderer final : public BaseSceneRenderer
@@ -38,6 +33,8 @@ namespace NLS::Engine::Rendering
 		struct DeferredSceneDescriptor
 		{
 			AllDrawables drawables;
+			NLS::Render::Context::RenderScenePackage scenePackage;
+			bool hasSkyboxTexture = false;
 		};
 
 		void LoadPipelineResources();
@@ -50,7 +47,6 @@ namespace NLS::Engine::Rendering
 
 	private:
 		NLS::Render::Buffers::MultiFramebuffer m_gBuffer;
-		std::unique_ptr<NLS::Render::Buffers::UniformBuffer> m_passBuffer;
 		std::unique_ptr<NLS::Render::Resources::Mesh> m_fullscreenQuad;
 		std::unique_ptr<NLS::Render::Resources::Material> m_lightingMaterial;
 		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferAlbedoTexture;

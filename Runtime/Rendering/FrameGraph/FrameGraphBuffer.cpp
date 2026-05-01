@@ -118,6 +118,11 @@ namespace NLS::Render::FrameGraph
 		explicitBuffer = device->CreateBuffer(ToExplicitBufferDesc(desc));
 		NLS_ASSERT(explicitBuffer != nullptr, "FrameGraphBuffer failed to create explicit buffer.");
 		ownsResource = true;
+		executionContext->RegisterTransientBuffer(
+			explicitBuffer,
+			executionContext->frameContext != nullptr
+				? executionContext->frameContext->frameIndex
+				: 0u);
 	}
 
 	void FrameGraphBuffer::destroy(const Desc&, void* allocator)

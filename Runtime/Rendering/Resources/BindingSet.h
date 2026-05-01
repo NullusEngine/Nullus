@@ -9,8 +9,6 @@
 
 namespace NLS::Render::Resources
 {
-	class Texture;
-
 	class NLS_RENDER_API BindingSet
 	{
 	public:
@@ -18,14 +16,8 @@ namespace NLS::Render::Resources
 		void SetLayout(const ResourceBindingLayout& layout);
 		void SetSampler(const std::string& name, const RHI::SamplerDesc& sampler);
 		void SetTexture(const std::string& name, const std::shared_ptr<RHI::RHITexture>& texture);
-		void SetTexture(const std::string& name, const Texture* texture);
 		void SetBuffer(const std::string& name, const std::shared_ptr<RHI::RHIBuffer>& buffer);
 		const RHI::SamplerDesc* GetSampler(const std::string& name) const;
-		const Texture* GetTexture(const std::string& name) const;
-		std::shared_ptr<RHI::RHITexture> GetTextureHandle(const std::string& name) const;
-		std::shared_ptr<RHI::RHIBuffer> GetBufferHandle(const std::string& name) const;
-		const ResourceBindingEntry* Find(const std::string& name) const;
-		const std::vector<ResourceBindingEntry>& Entries() const;
 
 	private:
 		std::vector<ResourceBindingEntry> m_entries;

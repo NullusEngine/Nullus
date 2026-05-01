@@ -20,6 +20,7 @@ Editor::Panels::AssetView::AssetView
 ) : AViewControllable(p_title, p_opened, p_windowSettings)
 {
 	m_renderer = Engine::Rendering::CreateSceneRenderer(*EDITOR_CONTEXT(driver));
+    SetRequiresRetiredFrameConsumption(true);
 	m_renderer->SetDebugDrawService(std::make_unique<Render::Debug::DebugDrawService>());
 
 	m_renderer->AddPass<Editor::Rendering::GridRenderPass>("Grid", Render::Settings::ERenderPassOrder::First);

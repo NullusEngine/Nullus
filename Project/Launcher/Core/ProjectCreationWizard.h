@@ -132,12 +132,9 @@ private:
         const char* label;
     };
     static inline const BackendOption s_backends[] = {
-        {Render::Settings::EGraphicsBackend::DX12, "DirectX 12"},
-        {Render::Settings::EGraphicsBackend::VULKAN, "Vulkan"},
-        {Render::Settings::EGraphicsBackend::OPENGL, "OpenGL"},
-        {Render::Settings::EGraphicsBackend::DX11, "DirectX 11"},
+        {Render::Settings::GetPhase1RequiredRuntimeBackend(), "DirectX 12"},
     };
-    static inline const int s_backendCount = 4;
+    static inline const int s_backendCount = 1;
     static inline const int s_sampleCounts[] = {1, 2, 4, 8};
     static inline const int s_sampleCountCount = 4;
 };

@@ -4,6 +4,11 @@
 #include "Rendering/Entities/Drawable.h"
 #include "RenderDef.h"
 
+namespace NLS::Render::Context
+{
+    struct ThreadedFrameTelemetry;
+}
+
 namespace NLS::Render::Core
 {
 class NLS_RENDER_API RendererStats
@@ -12,6 +17,7 @@ public:
     void BeginFrame();
     void EndFrame();
     void RecordSubmittedDraw(const Entities::Drawable& drawable, uint32_t instanceCount);
+    void SetThreadedFrameTelemetry(const NLS::Render::Context::ThreadedFrameTelemetry& telemetry);
 
     const Data::FrameInfo& GetFrameInfo() const;
     bool IsFrameInfoValid() const;

@@ -14,12 +14,20 @@ Scene::Scene()
 
 Scene::~Scene()
 {
-	std::for_each(m_gameobject.begin(), m_gameobject.end(), [](GameObject* element)
-	{ 
-		delete element;
-	});
+    std::unordered_set<GameObject*> notifiedActors;
+    for (auto* actor : m_gameobject)
+    {
+        if (actor)
+            NotifyActorDestroyed(*actor, notifiedActors);
+    }
+
+    std::for_each(m_gameobject.begin(), m_gameobject.end(), [](GameObject* element)
+    {
+        delete element;
+    });
 
 	m_gameobject.clear();
+    m_fastAccessComponents = {};
 }
 
 void Scene::Play()
@@ -282,10 +290,19 @@ void Scene::SetAvailableID(int64_t p_nextID)
 
 void Scene::NotifyActorDestroyed(GameObject& p_actor)
 {
+    std::unordered_set<GameObject*> notifiedActors;
+    NotifyActorDestroyed(p_actor, notifiedActors);
+}
+
+void Scene::NotifyActorDestroyed(GameObject& p_actor, std::unordered_set<GameObject*>& p_notifiedActors)
+{
+    if (!p_notifiedActors.insert(&p_actor).second)
+        return;
+
     for (auto* child : p_actor.GetChildren())
     {
         if (child)
-            NotifyActorDestroyed(*child);
+            NotifyActorDestroyed(*child, p_notifiedActors);
     }
 
     GameObject::DestroyedEvent.Invoke(p_actor);

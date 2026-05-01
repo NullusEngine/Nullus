@@ -18,6 +18,26 @@ namespace NLS::Render::Settings
 		std::string captureLabel;
 	};
 
+	struct NLS_RENDER_API EngineDiagnosticsSettings
+	{
+		bool logRenderDrawPath = false;
+		bool diagSkipSkyboxDraw = false;
+		bool logMaterialBindings = false;
+		bool dx12LogMessages = false;
+		bool dx12LogFrameFlow = false;
+		bool editorGridSkipPlane = false;
+		bool editorGridSkipAxes = false;
+		bool editorDisableGridPass = false;
+		bool editorDisableDebugCamerasPass = false;
+		bool editorDisableDebugLightsPass = false;
+		bool editorDisableDebugActorPass = false;
+		bool editorDisableDebugDrawPass = false;
+		bool editorDisablePickingPass = false;
+		std::string editorValidationFocusView;
+		std::string editorValidationExclusiveView;
+		std::string editorValidationSelectActor;
+	};
+
 	/**
 	* Settings that are sent to the driver at construction
 	*/
@@ -36,7 +56,11 @@ namespace NLS::Render::Settings
 		bool debugMode = false;
 		uint32_t framesInFlight = 2;
 		bool enableExplicitRHI = true;
+		bool enableThreadedRendering = false;
+		uint32_t threadedFrameSlotCount = 0;
+		uint32_t threadedPublishRetirementWaitMs = 0;
 		RenderDocSettings renderDoc{};
+		EngineDiagnosticsSettings diagnostics{};
 		std::optional<NLS::Render::Data::PipelineState> defaultPipelineState = std::nullopt;
 	};
 }

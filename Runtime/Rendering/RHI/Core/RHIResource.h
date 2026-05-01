@@ -14,6 +14,14 @@ namespace NLS::Render::RHI
 
     struct NLS_RENDER_API RHITextureDesc
     {
+        struct OptimizedClearValue
+        {
+            bool enabled = false;
+            float color[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+            float depth = 1.0f;
+            uint32_t stencil = 0u;
+        };
+
         RHIExtent3D extent{};
         TextureDimension dimension = TextureDimension::Texture2D;
         TextureFormat format = TextureFormat::RGBA8;
@@ -22,6 +30,7 @@ namespace NLS::Render::RHI
         uint32_t sampleCount = 1;
         TextureUsageFlags usage = TextureUsageFlags::Sampled;
         MemoryUsage memoryUsage = MemoryUsage::GPUOnly;
+        OptimizedClearValue optimizedClearValue{};
         std::string debugName;
     };
 

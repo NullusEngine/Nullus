@@ -38,9 +38,7 @@ TextureCube* TextureLoader::CreateCubeMap(const std::vector<std::string>& filePa
 	}
 
 	auto cubeMap = new TextureCube();
-	cubeMap->Bind();
 	cubeMap->SetTextureResource({&images[0], &images[1], &images[2], &images[3], &images[4], &images[5]});
-	cubeMap->Unbind();
 
 	return cubeMap;
 }
@@ -72,14 +70,10 @@ Texture2D* TextureLoader::CreateFromImage(const Image* image, Settings::ETexture
 {
 	Texture2D* texture = new Texture2D;
 
-	texture->Bind();
-
 	texture->isMimapped = p_generateMipmap;
 	texture->firstFilter = p_firstFilter;
 	texture->secondFilter = p_secondFilter;
 	texture->SetTextureResource(image);
-
-	texture->Unbind();
 
 	return texture;
 }

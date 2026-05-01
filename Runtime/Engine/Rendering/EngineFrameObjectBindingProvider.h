@@ -4,6 +4,7 @@
 #include <memory>
 
 #include <Rendering/Buffers/UniformBuffer.h>
+#include <Rendering/Context/ThreadedRenderingLifecycle.h>
 #include <Rendering/Core/FrameObjectBindingProvider.h>
 #include <Rendering/RHI/Core/RHIBinding.h>
 
@@ -15,6 +16,9 @@ class NLS_ENGINE_API EngineFrameObjectBindingProvider final : public NLS::Render
 {
 public:
     explicit EngineFrameObjectBindingProvider(NLS::Render::Core::CompositeRenderer& renderer);
+    void PrepareRenderScenePackage(
+        const NLS::Render::Context::FrameSnapshot& snapshot,
+        NLS::Render::Context::RenderScenePackage& package) const;
 
 protected:
     void OnBeginFrame(const NLS::Render::Data::FrameDescriptor& frameDescriptor) override;
@@ -24,18 +28,28 @@ protected:
         NLS::Render::RHI::RHICommandBuffer& commandBuffer,
         PipelineState& pso,
         const NLS::Render::Entities::Drawable& drawable) override;
+    bool OnCapturePreparedBindingSets(
+        PipelineState& pso,
+        const NLS::Render::Entities::Drawable& drawable,
+        PreparedBindingSets& outBindings) override;
 
 private:
     void RefreshExplicitFrameBindingSet();
     void RefreshExplicitObjectBindingSet();
+    void OnDeferredReset();
 
     std::chrono::high_resolution_clock::time_point m_startTime;
     std::unique_ptr<NLS::Render::Buffers::UniformBuffer> m_engineBuffer;
     std::unique_ptr<NLS::Render::Buffers::UniformBuffer> m_hlslFrameBuffer;
     std::unique_ptr<NLS::Render::Buffers::UniformBuffer> m_hlslObjectBuffer;
+    std::unique_ptr<NLS::Render::Buffers::UniformBuffer> m_hlslObjectBufferAlt;
     std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_explicitFrameBindingSet;
     std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_explicitObjectBindingSet;
     bool m_explicitFrameBindingSetDirty = true;
     bool m_explicitObjectBindingSetDirty = true;
+    bool m_useAltObjectBuffer = false;
+
+    std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_deferredFrameBindingSet;
+    std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_deferredObjectBindingSet;
 };
 }

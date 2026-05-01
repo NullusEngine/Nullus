@@ -1,0 +1,37 @@
+#pragma once
+
+#include <cstdint>
+
+#include "RenderDef.h"
+
+namespace NLS::Render::Settings
+{
+    enum class EPixelDataFormat : uint8_t;
+    enum class EPixelDataType : uint8_t;
+}
+
+namespace NLS::Render::Context
+{
+    class Driver;
+    enum class RhiSubmissionAttribution : uint8_t;
+
+    struct NLS_RENDER_API RhiThreadCoordinator final
+    {
+        static bool CanBeginStandaloneExplicitFrame(const Driver& driver);
+        static void BeginStandaloneExplicitFrame(Driver& driver, bool acquireSwapchainImage);
+        static void EndStandaloneExplicitFrame(Driver& driver, bool presentSwapchain);
+        static bool TryExecuteNextThreadedSubmission(Driver& driver, RhiSubmissionAttribution attribution);
+        static bool DrainPendingThreadedSubmissions(Driver& driver, RhiSubmissionAttribution attribution);
+        static void ReadPixels(
+            const Driver& driver,
+            uint32_t x,
+            uint32_t y,
+            uint32_t width,
+            uint32_t height,
+            Settings::EPixelDataFormat format,
+            Settings::EPixelDataType type,
+            void* data);
+        static bool PrepareUIRender(Driver& driver);
+        static void PresentSwapchain(Driver& driver);
+    };
+}

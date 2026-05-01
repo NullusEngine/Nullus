@@ -29,16 +29,24 @@ namespace NLS::Game
 		/**
 		* Constructor
 		* @param renderDocSettings RenderDoc settings from command line
+		* @param backendOverride optional backend override from command line
+		* @param projectPathOverride optional project path override from command line
+		* @param enableThreadedRendering enable threaded rendering from command line
+		* @param diagnosticsSettings Engine diagnostics settings from command line
 		*/
 		Context(
 			const Render::Settings::RenderDocSettings& renderDocSettings = {},
 			std::optional<Render::Settings::EGraphicsBackend> backendOverride = std::nullopt,
-			std::optional<std::string> projectPathOverride = std::nullopt);
+			std::optional<std::string> projectPathOverride = std::nullopt,
+			bool enableThreadedRendering = false,
+			const Render::Settings::EngineDiagnosticsSettings& diagnosticsSettings = {});
 
 		/**
 		* Destructor
 		*/
 		~Context();
+
+		void ShutdownThreadedRendering();
 
 	public:
 		const std::string engineAssetsPath;
@@ -55,6 +63,7 @@ namespace NLS::Game
 		NLS::Core::ResourceManagement::ModelManager modelManager;
 		NLS::Core::ResourceManagement::TextureManager textureManager;
 		NLS::Core::ResourceManagement::ShaderManager shaderManager;
+		NLS::Core::ResourceManagement::MaterialManager materialManager;
 
 		NLS::Filesystem::IniFile projectSettings;
 
@@ -62,5 +71,7 @@ namespace NLS::Game
 		Render::Settings::RenderDocSettings m_renderDocSettings;
 		std::optional<Render::Settings::EGraphicsBackend> m_backendOverride;
 		std::optional<std::string> m_projectPathOverride;
+		bool m_enableThreadedRendering;
+		Render::Settings::EngineDiagnosticsSettings m_diagnosticsSettings;
 	};
 }

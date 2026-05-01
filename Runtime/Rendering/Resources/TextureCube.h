@@ -19,18 +19,6 @@ namespace NLS::Render::Resources
 	{
 
 	public:
-		/**
-		* Bind the texture to the given slot
-		* @param p_slot
-		*/
-		virtual void Bind(uint32_t p_slot = 0) const override;
-
-		/**
-		* Unbind the texture
-		*/
-		virtual void Unbind() const override;
-
-	public:
 		TextureCube();
 		~TextureCube() = default;
 

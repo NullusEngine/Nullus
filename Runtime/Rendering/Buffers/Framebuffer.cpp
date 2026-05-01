@@ -5,7 +5,21 @@
 
 namespace
 {
-	NLS::Render::RHI::RHITextureDesc CreateColorTextureDesc(uint32_t width, uint32_t height)
+	bool SameOptimizedColorClearValue(
+		const NLS::Render::RHI::RHITextureDesc::OptimizedClearValue& left,
+		const NLS::Render::RHI::RHITextureDesc::OptimizedClearValue& right)
+	{
+		return left.enabled == right.enabled &&
+			left.color[0] == right.color[0] &&
+			left.color[1] == right.color[1] &&
+			left.color[2] == right.color[2] &&
+			left.color[3] == right.color[3];
+	}
+
+	NLS::Render::RHI::RHITextureDesc CreateColorTextureDesc(
+		uint32_t width,
+		uint32_t height,
+		const NLS::Render::RHI::RHITextureDesc::OptimizedClearValue& optimizedClearValue)
 	{
 		NLS::Render::RHI::RHITextureDesc desc{};
 		desc.extent.width = width;
@@ -14,6 +28,7 @@ namespace
 		desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
 		desc.format = NLS::Render::RHI::TextureFormat::RGB8;
 		desc.usage = NLS::Render::RHI::TextureUsageFlags::Sampled | NLS::Render::RHI::TextureUsageFlags::ColorAttachment;
+		desc.optimizedClearValue = optimizedClearValue;
 		desc.debugName = "FramebufferColorTexture";
 		return desc;
 	}
@@ -27,6 +42,9 @@ namespace
 		desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
 		desc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
 		desc.usage = NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment;
+		desc.optimizedClearValue.enabled = true;
+		desc.optimizedClearValue.depth = 1.0f;
+		desc.optimizedClearValue.stencil = 0u;
 		desc.debugName = "FramebufferDepthTexture";
 		return desc;
 	}
@@ -34,6 +52,9 @@ namespace
 
 NLS::Render::Buffers::Framebuffer::Framebuffer(uint16_t p_width, uint16_t p_height)
 {
+	if (p_width == 0u || p_height == 0u)
+		return;
+
 	auto& driver = NLS::Render::Context::RequireLocatedDriver("Framebuffer constructor");
 	auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver);
 	if (device == nullptr)
@@ -42,7 +63,7 @@ NLS::Render::Buffers::Framebuffer::Framebuffer(uint16_t p_width, uint16_t p_heig
 		return;
 	}
 
-	m_explicitRenderTexture = device->CreateTexture(CreateColorTextureDesc(p_width, p_height), nullptr);
+	m_explicitRenderTexture = device->CreateTexture(CreateColorTextureDesc(p_width, p_height, m_colorOptimizedClearValue), nullptr);
 	if (m_explicitRenderTexture == nullptr)
 	{
 		NLS_LOG_WARNING("Framebuffer: Failed to create color texture");
@@ -53,6 +74,7 @@ NLS::Render::Buffers::Framebuffer::Framebuffer(uint16_t p_width, uint16_t p_heig
 	if (m_explicitDepthStencilTexture == nullptr)
 	{
 		NLS_LOG_WARNING("Framebuffer: Failed to create depth texture");
+		Release();
 		return;
 	}
 
@@ -62,28 +84,29 @@ NLS::Render::Buffers::Framebuffer::Framebuffer(uint16_t p_width, uint16_t p_heig
 
 NLS::Render::Buffers::Framebuffer::~Framebuffer()
 {
-	m_explicitRenderTexture.reset();
-	m_explicitDepthStencilTexture.reset();
+	Release();
+}
+
+void NLS::Render::Buffers::Framebuffer::Release()
+{
 	m_explicitRenderTextureView.reset();
 	m_explicitDepthStencilTextureView.reset();
-}
-
-void NLS::Render::Buffers::Framebuffer::Bind() const
-{
-	// In formal RHI, binding is handled at command buffer level through render passes
-	// This is a no-op placeholder - actual binding happens during rendering
-}
-
-void NLS::Render::Buffers::Framebuffer::Unbind() const
-{
-	// In formal RHI, unbinding is handled at command buffer level
-	// This is a no-op placeholder
+	m_explicitRenderTexture.reset();
+	m_explicitDepthStencilTexture.reset();
 }
 
 void NLS::Render::Buffers::Framebuffer::Resize(uint16_t p_width, uint16_t p_height, bool p_forceUpdate)
 {
 	if (!p_forceUpdate && p_width == m_width && p_height == m_height)
 		return;
+
+	if (p_width == 0u || p_height == 0u)
+	{
+		Release();
+		m_width = p_width;
+		m_height = p_height;
+		return;
+	}
 
 	auto& driver = NLS::Render::Context::RequireLocatedDriver("Framebuffer::Resize");
 	auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver);
@@ -93,52 +116,47 @@ void NLS::Render::Buffers::Framebuffer::Resize(uint16_t p_width, uint16_t p_heig
 		return;
 	}
 
-	// Recreate color texture with new dimensions
-	m_explicitRenderTexture = device->CreateTexture(CreateColorTextureDesc(p_width, p_height), nullptr);
+	Release();
+
+	m_explicitRenderTexture = device->CreateTexture(CreateColorTextureDesc(p_width, p_height, m_colorOptimizedClearValue), nullptr);
 	if (m_explicitRenderTexture == nullptr)
 	{
 		NLS_LOG_WARNING("Framebuffer::Resize: Failed to recreate color texture");
 		return;
 	}
 
-	// Recreate depth texture with new dimensions
 	m_explicitDepthStencilTexture = device->CreateTexture(CreateDepthTextureDesc(p_width, p_height), nullptr);
 	if (m_explicitDepthStencilTexture == nullptr)
 	{
 		NLS_LOG_WARNING("Framebuffer::Resize: Failed to recreate depth texture");
+		Release();
 		return;
 	}
 
 	m_width = p_width;
 	m_height = p_height;
-	m_explicitRenderTextureView.reset();
-	m_explicitDepthStencilTextureView.reset();
 }
 
-uint32_t NLS::Render::Buffers::Framebuffer::GetID() const
+void NLS::Render::Buffers::Framebuffer::SetOptimizedColorClearValue(float r, float g, float b, float a)
 {
-	// In formal RHI, there's no framebuffer ID - return 0 as placeholder
-	// The actual framebuffer concept is handled through render passes
-	return 0;
-}
+	NLS::Render::RHI::RHITextureDesc::OptimizedClearValue clearValue{};
+	clearValue.enabled = true;
+	clearValue.color[0] = r;
+	clearValue.color[1] = g;
+	clearValue.color[2] = b;
+	clearValue.color[3] = a;
 
-const std::shared_ptr<NLS::Render::RHI::IRHITexture>& NLS::Render::Buffers::Framebuffer::GetTextureResource() const
-{
-	// No longer using legacy texture resource
-	static std::shared_ptr<NLS::Render::RHI::IRHITexture> nullResource;
-	return nullResource;
+	if (SameOptimizedColorClearValue(m_colorOptimizedClearValue, clearValue))
+		return;
+
+	m_colorOptimizedClearValue = clearValue;
+	if (m_explicitRenderTexture != nullptr)
+		Resize(m_width, m_height, true);
 }
 
 const std::shared_ptr<NLS::Render::RHI::RHITexture>& NLS::Render::Buffers::Framebuffer::GetExplicitTextureHandle() const
 {
 	return m_explicitRenderTexture;
-}
-
-const std::shared_ptr<NLS::Render::RHI::IRHITexture>& NLS::Render::Buffers::Framebuffer::GetDepthStencilTextureResource() const
-{
-	// No longer using legacy texture resource
-	static std::shared_ptr<NLS::Render::RHI::IRHITexture> nullResource;
-	return nullResource;
 }
 
 const std::shared_ptr<NLS::Render::RHI::RHITexture>& NLS::Render::Buffers::Framebuffer::GetExplicitDepthStencilTextureHandle() const

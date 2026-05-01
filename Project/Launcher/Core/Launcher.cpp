@@ -16,6 +16,7 @@
 #include <iomanip>
 #include <locale>
 #include <sstream>
+#include <stdexcept>
 #include <vector>
 
 #include <Core/ServiceLocator.h>
@@ -1092,16 +1093,20 @@ private:
 
 Render::Settings::EGraphicsBackend ResolveLauncherGraphicsBackend()
 {
-    const auto resolvedBackend = Render::Settings::GetPlatformDefaultGraphicsBackend();
+    const auto resolvedBackend = Render::Settings::GetPhase1RequiredRuntimeBackend();
 
-    if (Render::Settings::HasCompiledOfficialImGuiBackend(resolvedBackend))
+    if (const auto restriction =
+        Render::Settings::GetPhase1BackendRestrictionMessage(resolvedBackend, "Launcher runtime");
+        restriction.has_value())
+    {
+        throw std::runtime_error(*restriction);
+    }
+
+    if (Render::Settings::SupportsImGuiRendererBackend(resolvedBackend))
         return resolvedBackend;
 
-    NLS_LOG_WARNING(
-        "Launcher UI backend is not compiled for " +
-        std::string(Render::Settings::ToString(resolvedBackend)) +
-        " to OpenGL.");
-    return Render::Settings::EGraphicsBackend::OPENGL;
+    throw std::runtime_error(
+        "Launcher startup failed: phase-1 runtime requires a compiled DX12 UI backend and does not permit fallback.");
 }
 
 Launcher::Launcher(
@@ -1129,22 +1134,9 @@ LauncherRunResult Launcher::Run()
     {
         m_device->PollEvents();
 
-        if (Render::Context::DriverRendererAccess::HasExplicitRHI(*m_driver))
-        {
-            Render::Context::DriverRendererAccess::BeginExplicitFrame(*m_driver, true);
-        }
-
         m_uiManager->Render();
         m_uiManager->SubmitUIRendering();
-
-        if (Render::Context::DriverRendererAccess::HasExplicitRHI(*m_driver))
-        {
-            Render::Context::DriverRendererAccess::EndExplicitFrame(*m_driver, true);
-        }
-        else
-        {
-            Render::Context::DriverUIAccess::PresentSwapchain(*m_driver);
-        }
+        Render::Context::DriverUIAccess::PresentSwapchain(*m_driver);
 
         if (!m_mainPanel->IsOpened())
             m_window->SetShouldClose(true);
@@ -1176,13 +1168,21 @@ void Launcher::SetupContext()
     {
         m_graphicsBackend = ResolveLauncherGraphicsBackend();
     }
-    windowSettings.clientAPI = m_graphicsBackend == Render::Settings::EGraphicsBackend::OPENGL
-        ? Windowing::Settings::WindowClientAPI::OpenGL
-        : Windowing::Settings::WindowClientAPI::NoAPI;
+
+    if (const auto restriction =
+        Render::Settings::GetPhase1BackendRestrictionMessage(m_graphicsBackend, "Launcher runtime");
+        restriction.has_value())
+    {
+        throw std::runtime_error(*restriction);
+    }
+
+    windowSettings.clientAPI = Windowing::Settings::WindowClientAPI::NoAPI;
 
     Render::Settings::DriverSettings driverSettings;
     driverSettings.graphicsBackend = m_graphicsBackend;
     driverSettings.debugMode = false;
+    driverSettings.enableThreadedRendering = Render::Settings::IsEnvironmentFlagEnabled("NLS_ENABLE_THREADED_RENDERING");
+    driverSettings.threadedFrameSlotCount = driverSettings.framesInFlight;
     if (m_renderDocSettings.enabled || m_renderDocSettings.startupCaptureAfterFrames > 0)
     {
         driverSettings.renderDoc = m_renderDocSettings;
@@ -1198,8 +1198,6 @@ void Launcher::SetupContext()
 
     m_device = std::make_unique<Context::Device>(deviceSettings);
     m_window = std::make_unique<Windowing::Window>(*m_device, windowSettings);
-    if (m_graphicsBackend == Render::Settings::EGraphicsBackend::OPENGL)
-        m_window->MakeCurrentContext();
     const std::string brandIconPath = std::filesystem::canonical(std::filesystem::path("../Assets/Engine/Brand/NullusLogoMark.png")).string();
     m_window->SetIcon(brandIconPath);
 
@@ -1208,14 +1206,23 @@ void Launcher::SetupContext()
     m_window->SetPosition(monSize.x / 2 - winSize.x / 2, monSize.y / 2 - winSize.y / 2);
 
     m_driver = std::make_unique<Render::Context::Driver>(driverSettings);
+    if (m_driver == nullptr || m_driver->GetActiveGraphicsBackend() == Render::Settings::EGraphicsBackend::NONE)
+    {
+        throw std::runtime_error(
+            "Launcher startup failed: could not create a usable DX12 RHI device and phase-1 does not permit fallback.");
+    }
+
     NLS::Core::ServiceLocator::Provide<Render::Context::Driver>(*m_driver);
 
-    m_driver->CreatePlatformSwapchain(
+    if (!m_driver->CreatePlatformSwapchain(
         m_window->GetGlfwWindow(),
         m_window->GetNativeWindowHandle(),
         static_cast<uint32_t>(windowSettings.width),
         static_cast<uint32_t>(windowSettings.height),
-        true);
+        true))
+    {
+        throw std::runtime_error("Launcher startup failed: CreatePlatformSwapchain returned false.");
+    }
 
     auto nativeDeviceInfo = m_driver->GetNativeDeviceInfo();
     m_uiManager = std::make_unique<UI::UIManager>(

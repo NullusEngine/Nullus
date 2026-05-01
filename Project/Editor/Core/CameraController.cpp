@@ -5,6 +5,8 @@
 
 #include "Core/CameraController.h"
 
+#include <algorithm>
+
 #include <Components/LightComponent.h>
 #include <Components/TransformComponent.h>
 #include "UI/UIManager.h"
@@ -123,45 +125,47 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
 		{
 			auto pos = mousePosition;
 
-			bool wasFirstMouse = m_firstMouse;
+            if (!ConsumeSuppressedMouseDelta(pos))
+            {
+                bool wasFirstMouse = m_firstMouse;
 
-			if (m_firstMouse)
-			{
-				m_lastMousePosX = pos.x;
-				m_lastMousePosY = pos.y;
-				m_firstMouse = false;
-			}
+                if (m_firstMouse)
+                {
+                    ResetLastMousePosition(pos);
+                    m_firstMouse = false;
+                }
 
-			Maths::Vector2 mouseOffset
-			{
-                static_cast<float>(pos.x - m_lastMousePosX),
-                static_cast<float>(m_lastMousePosY - pos.y)
-			};
+                Maths::Vector2 mouseOffset
+                {
+                    static_cast<float>(pos.x - m_lastMousePosX),
+                    static_cast<float>(m_lastMousePosY - pos.y)
+                };
+                mouseOffset = ClampMouseDeltaForCameraControl(mouseOffset);
 
-			m_lastMousePosX = pos.x;
-            m_lastMousePosY = pos.y;
+                ResetLastMousePosition(pos);
 
-			if (m_rightMousePressed)
-			{
-				HandleCameraFPSMouse(mouseOffset, wasFirstMouse);
-			}
-			else
-			{
-				if (m_middleMousePressed)
-				{
-					if (m_inputManager.GetKeyState(Windowing::Inputs::EKey::KEY_LEFT_ALT) == Windowing::Inputs::EKeyState::KEY_DOWN)
-					{
-						if (auto target = GetTargetActor())
-						{
-                            HandleCameraOrbit(*target, mouseOffset, wasFirstMouse);
-						}
-					}
-					else
-					{
-						HandleCameraPanning(mouseOffset, wasFirstMouse);
-					}
-				}
-			}
+                if (m_rightMousePressed)
+                {
+                    HandleCameraFPSMouse(mouseOffset, wasFirstMouse);
+                }
+                else
+                {
+                    if (m_middleMousePressed)
+                    {
+                        if (m_inputManager.GetKeyState(Windowing::Inputs::EKey::KEY_LEFT_ALT) == Windowing::Inputs::EKeyState::KEY_DOWN)
+                        {
+                            if (auto target = GetTargetActor())
+                            {
+                                HandleCameraOrbit(*target, mouseOffset, wasFirstMouse);
+                            }
+                        }
+                        else
+                        {
+                            HandleCameraPanning(mouseOffset, wasFirstMouse);
+                        }
+                    }
+                }
+            }
 		}
 
 		if (mouseOverView)
@@ -190,8 +194,44 @@ void Editor::Core::CameraController::ResetMouseInteractionState()
     m_middleMousePressed = false;
     m_rightMousePressed = false;
     m_firstMouse = true;
+    m_pendingMouseDeltaSuppressionFrames = 0u;
     m_window.SetCursorMode(Cursor::ECursorMode::NORMAL);
     m_window.SetCursorShape(Cursor::ECursorShape::ARROW);
+}
+
+void Editor::Core::CameraController::ResetLastMousePosition(const Maths::Vector2& p_mousePosition)
+{
+    m_lastMousePosX = p_mousePosition.x;
+    m_lastMousePosY = p_mousePosition.y;
+}
+
+void Editor::Core::CameraController::SuppressMouseDeltaAfterCursorCapture()
+{
+    constexpr uint8_t kCursorCaptureSettleFrames = 3u;
+    m_pendingMouseDeltaSuppressionFrames = kCursorCaptureSettleFrames;
+    m_firstMouse = true;
+    ResetLastMousePosition(m_inputManager.GetMousePosition());
+}
+
+bool Editor::Core::CameraController::ConsumeSuppressedMouseDelta(const Maths::Vector2& p_mousePosition)
+{
+    if (m_pendingMouseDeltaSuppressionFrames == 0u)
+        return false;
+
+    ResetLastMousePosition(p_mousePosition);
+    --m_pendingMouseDeltaSuppressionFrames;
+    return true;
+}
+
+Maths::Vector2 Editor::Core::CameraController::ClampMouseDeltaForCameraControl(
+    const Maths::Vector2& p_mouseOffset) const
+{
+    constexpr float kMaxCameraMouseDeltaPerFrame = 16.0f;
+    return
+    {
+        std::clamp(p_mouseOffset.x, -kMaxCameraMouseDeltaPerFrame, kMaxCameraMouseDeltaPerFrame),
+        std::clamp(p_mouseOffset.y, -kMaxCameraMouseDeltaPerFrame, kMaxCameraMouseDeltaPerFrame)
+    };
 }
 
 void Editor::Core::CameraController::SetSpeed(float p_speed)
@@ -322,6 +362,7 @@ void Editor::Core::CameraController::HandleCameraFPSMouse(const Maths::Vector2& 
 	{
 		m_ypr = Maths::Quaternion::EulerAngles(m_camera.GetRotation());
 		m_ypr = RemoveRoll(m_ypr);
+        return;
 	}
 
 	m_ypr.y -= mouseOffset.x;
@@ -379,13 +420,15 @@ void Editor::Core::CameraController::UpdateMouseState()
 	if (m_inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_MIDDLE))
     {
 		m_middleMousePressed = true;
-        m_window.SetCursorMode(Cursor::ECursorMode::DISABLED);
+        m_window.SetCursorMode(Cursor::ECursorMode::HIDDEN);
+        SuppressMouseDeltaAfterCursorCapture();
     }
 
 	if (m_inputManager.IsMouseButtonReleased(EMouseButton::MOUSE_BUTTON_MIDDLE) || (m_middleMousePressed && !middleDown))
 	{
 		m_middleMousePressed = false;
 		m_firstMouse = true;
+        m_pendingMouseDeltaSuppressionFrames = 0u;
         if (!m_rightMousePressed)
         {
 		    m_window.SetCursorMode(Cursor::ECursorMode::NORMAL);
@@ -396,13 +439,15 @@ void Editor::Core::CameraController::UpdateMouseState()
 	if (m_inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_RIGHT))
 	{
 		m_rightMousePressed = true;
-		m_window.SetCursorMode(Cursor::ECursorMode::DISABLED);
+		m_window.SetCursorMode(Cursor::ECursorMode::HIDDEN);
+        SuppressMouseDeltaAfterCursorCapture();
 	}
 
 	if (m_inputManager.IsMouseButtonReleased(EMouseButton::MOUSE_BUTTON_RIGHT) || (m_rightMousePressed && !rightDown))
 	{
 		m_rightMousePressed = false;
 		m_firstMouse = true;
+        m_pendingMouseDeltaSuppressionFrames = 0u;
         if (!m_middleMousePressed)
         {
 		    m_window.SetCursorMode(Cursor::ECursorMode::NORMAL);

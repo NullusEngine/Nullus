@@ -164,6 +164,7 @@ namespace NLS::Render::RHI
     enum class NLS_RENDER_API BindingType : uint8_t
     {
         UniformBuffer,
+        StructuredBuffer,
         StorageBuffer,
         Texture,
         RWTexture,
@@ -247,7 +248,7 @@ namespace NLS::Render::RHI
         void* GetSampler() const { return handle; }
         void* GetDescriptor() const { return handle; }
 
-        // Allow comparison with nullptr for test compatibility
+        // Allow direct nullptr comparisons in tests and guard code.
         bool operator==(std::nullptr_t) const { return !IsValid(); }
         bool operator!=(std::nullptr_t) const { return IsValid(); }
     };

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <queue>
 
 #include <Windowing/Inputs/InputManager.h>
@@ -91,6 +92,10 @@ public:
 private:
     Engine::GameObject* GetTargetActor() const;
     void ResetMouseInteractionState();
+    void ResetLastMousePosition(const Maths::Vector2& p_mousePosition);
+    void SuppressMouseDeltaAfterCursorCapture();
+    bool ConsumeSuppressedMouseDelta(const Maths::Vector2& p_mousePosition);
+    Maths::Vector2 ClampMouseDeltaForCameraControl(const Maths::Vector2& p_mouseOffset) const;
     void HandleCameraPanning(const Maths::Vector2& p_mouseOffset, bool p_firstMouse);
     void HandleCameraOrbit(Engine::GameObject& p_target, const Maths::Vector2& p_mouseOffset, bool p_firstMouse);
     void HandleCameraFPSMouse(const Maths::Vector2& p_mouseOffset, bool p_firstMouse);
@@ -119,6 +124,7 @@ private:
     bool m_firstMouse = true;
     double m_lastMousePosX = 0.0;
     double m_lastMousePosY = 0.0;
+    uint8_t m_pendingMouseDeltaSuppressionFrames = 0u;
     Maths::Vector3 m_ypr;
     float m_mouseSensitivity = 0.12f;
     float m_cameraDragSpeed = 0.03f;

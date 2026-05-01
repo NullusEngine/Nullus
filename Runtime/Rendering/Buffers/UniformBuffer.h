@@ -5,7 +5,6 @@
 #include <string>
 
 #include "Rendering/RHI/Core/RHIResource.h"
-#include "Rendering/RHI/Core/IRHIResource.h"
 #include "Rendering/Settings/EAccessSpecifier.h"
 #include "RenderDef.h"
 namespace NLS::Render::Resources
@@ -15,16 +14,16 @@ namespace NLS::Render::Resources
 namespace NLS::Render::Buffers
 {
 /**
- * Wraps OpenGL UBO
+ * Backend-neutral uniform-buffer wrapper over the formal RHI surface.
  */
 class NLS_RENDER_API UniformBuffer
 {
 public:
     /**
-     * Create a UniformBuffer
-     * @param p_size (Specify the size in bytes of the UBO data)
-     * @param p_bindingPoint (Specify the binding point on which the uniform buffer should be binded)
-     * @parma p_offset (The offset of the UBO, sizeof previouses UBO if the binding point is != 0)
+     * Create a uniform buffer.
+     * @param p_size Size in bytes.
+     * @param p_bindingPoint Requested logical binding slot metadata.
+     * @param p_offset Byte offset inside the logical binding range.
      * @param p_accessSpecifier
      */
     UniformBuffer(
@@ -37,17 +36,6 @@ public:
      * Destructor of the UniformBuffer
      */
     ~UniformBuffer();
-
-    /**
-     * Bind the UBO
-     * @param p_bindingPoint
-     */
-    void Bind(uint32_t p_bindingPoint);
-
-    /**
-     * Unbind the UBO
-     */
-    void Unbind();
 
     /**
      * Set the data in the UBO located at p_offset to p_data
@@ -68,13 +56,7 @@ public:
     void SetRawData(const void* p_data, uint32_t size, size_t p_offset = 0);
     std::shared_ptr<RHI::RHIBuffer> CreateExplicitSnapshotBuffer(const std::string& debugName = {}) const;
 
-    /**
-     * Return the ID of the UBO (always 0 for formal RHI)
-     */
-    uint32_t GetID() const;
-    const RHI::IRHIBuffer* GetRHIBuffer() const { return nullptr; }
     const std::shared_ptr<RHI::RHIBuffer>& GetBufferHandle() const { return m_explicitBuffer; }
-    const std::shared_ptr<RHI::IRHIBuffer>& GetRHIBufferHandle() const { return nullptr; }
     const std::shared_ptr<RHI::RHIBuffer>& GetExplicitRHIBufferHandle() const { return GetBufferHandle(); }
 
 private:
@@ -82,7 +64,6 @@ private:
     void _SetSubData(const void* p_data, uint32_t size, std::reference_wrapper<size_t> p_offsetInOut);
 
 private:
-    uint32_t m_bindingPoint = 0;
     size_t m_size = 0;
     std::vector<uint8_t> m_shadowData;
     std::shared_ptr<RHI::RHIBuffer> m_explicitBuffer;

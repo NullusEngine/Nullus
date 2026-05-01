@@ -9,11 +9,6 @@
 #include "Rendering/Resources/ShaderReflection.h"
 #include "RenderDef.h"
 
-namespace NLS::Render::Resources
-{
-	class Texture;
-}
-
 namespace NLS::Render::RHI
 {
 	class RHITexture;
@@ -29,7 +24,6 @@ namespace NLS::Render::Resources
 		UniformType type = UniformType::UNIFORM_FLOAT;
 		uint32_t bindingSpace = 0;
 		uint32_t bindingIndex = 0;
-		int32_t slot = -1;
 	};
 
 	struct NLS_RENDER_API ResourceBindingLayout
@@ -43,10 +37,8 @@ namespace NLS::Render::Resources
 		ShaderResourceKind kind = ShaderResourceKind::Value;
 		uint32_t bindingSpace = 0;
 		uint32_t bindingIndex = 0;
-		int32_t slot = -1;
 		std::shared_ptr<RHI::RHITexture> textureHandle;
 		std::shared_ptr<RHI::RHIBuffer> bufferHandle;
-		const Texture* texture = nullptr;
 		RHI::SamplerDesc sampler{};
 		bool hasSampler = false;
 	};

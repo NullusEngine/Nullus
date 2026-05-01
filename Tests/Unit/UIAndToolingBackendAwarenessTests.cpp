@@ -1,5 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <string>
+
 #include "Core/ServiceLocator.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/RHI/RHITypes.h"
@@ -8,6 +13,22 @@
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/Tooling/RenderDocCaptureController.h"
 #include "UI/UIManager.h"
+
+namespace
+{
+    std::filesystem::path GetRepositoryRoot()
+    {
+        return std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
+    }
+
+    std::string ReadRepositorySource(std::string_view relativePath)
+    {
+        std::ifstream file(GetRepositoryRoot() / relativePath);
+        std::stringstream buffer;
+        buffer << file.rdbuf();
+        return buffer.str();
+    }
+}
 
 TEST(UIAndToolingBackendAwarenessTests, ResolvesImGuiGlfwInitBackendByGraphicsBackend)
 {
@@ -60,13 +81,34 @@ TEST(UIAndToolingBackendAwarenessTests, CreatesNullRendererBridgeForDX11Backend)
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
 
-    const auto bridge = NLS::Render::RHI::CreateRHIUIBridge(
-        nullptr,
-        NLS::Render::Settings::EGraphicsBackend::DX11,
-        "#version 150",
-        nullptr);
+    NLS::Render::RHI::NativeRenderDeviceInfo nativeInfo;
+    nativeInfo.backend = NLS::Render::RHI::NativeBackendType::DX11;
+
+    const auto bridge = NLS::Render::RHI::CreateRHIUIBridge(nullptr, "#version 150", &nativeInfo);
 
     ASSERT_NE(bridge, nullptr);
     EXPECT_FALSE(bridge->HasRendererBackend());
+    EXPECT_EQ(bridge->GetNativeBackendType(), NLS::Render::RHI::NativeBackendType::None);
     EXPECT_EQ(bridge->ResolveTextureView(nullptr), nullptr);
+}
+
+TEST(UIAndToolingBackendAwarenessTests, DX12UIBridgeClearsBackbufferBeforeImGuiDrawData)
+{
+    const auto source = ReadRepositorySource("Runtime/Rendering/RHI/Backends/DX12/DX12UIBridge.cpp");
+
+    const auto prepareOffset = source.find("DriverUIAccess::PrepareUIRender");
+    const auto ensureOffset = source.find("EnsureSwapchainRenderResources(nativeInfo)");
+    const auto setRenderTargetOffset = source.find("m_commandList->OMSetRenderTargets");
+    const auto clearOffset = source.find("m_commandList->ClearRenderTargetView", setRenderTargetOffset);
+    const auto drawOffset = source.find("ImGui_ImplDX12_RenderDrawData", setRenderTargetOffset);
+
+    ASSERT_NE(prepareOffset, std::string::npos);
+    ASSERT_NE(ensureOffset, std::string::npos);
+    ASSERT_NE(setRenderTargetOffset, std::string::npos);
+    ASSERT_NE(clearOffset, std::string::npos);
+    ASSERT_NE(drawOffset, std::string::npos);
+    EXPECT_LT(prepareOffset, ensureOffset);
+    EXPECT_LT(ensureOffset, setRenderTargetOffset);
+    EXPECT_LT(setRenderTargetOffset, clearOffset);
+    EXPECT_LT(clearOffset, drawOffset);
 }

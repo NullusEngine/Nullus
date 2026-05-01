@@ -1,5 +1,8 @@
 ﻿#include "Panels/AView.h"
+#include "Panels/ViewFrameLifecycle.h"
 #include "Core/EditorActions.h"
+#include "Rendering/Context/DriverAccess.h"
+#include "Rendering/FrameGraph/ExternalResourceBridge.h"
 #include "ServiceLocator.h"
 #include "UI/UIManager.h"
 #include <algorithm>
@@ -14,8 +17,7 @@ Editor::Panels::AView::AView
 ) : PanelWindow(p_title, p_opened, p_windowSettings)
 {
 	m_image = &CreateWidget<UI::Widgets::Image>(m_fbo.GetOrCreateExplicitColorView("Editor.AView.Output"), Maths::Vector2{ 0.f, 0.f });
-	m_image->flipVertically =
-		NLS_SERVICE(UI::UIManager).GetGraphicsBackend() == NLS::Render::Settings::EGraphicsBackend::OPENGL;
+	m_image->flipVertically = NLS_SERVICE(UI::UIManager).ShouldFlipPresentedRenderTargetVertically();
 	panelSettings.scrollable = false;
 }
 
@@ -64,10 +66,47 @@ void Editor::Panels::AView::SyncViewToCurrentContentRegion()
 
 	const auto winWidth = static_cast<uint16_t>(clampedWidth);
 	const auto winHeight = static_cast<uint16_t>(clampedHeight);
-	m_lastResolvedViewSize = { winWidth, winHeight };
-	m_image->size = Maths::Vector2(static_cast<float>(winWidth), static_cast<float>(winHeight));
-	m_fbo.Resize(winWidth, winHeight);
-	m_image->textureView = m_fbo.GetOrCreateExplicitColorView("Editor.AView.Output");
+
+    std::pair<uint16_t, uint16_t> requestedSize { winWidth, winHeight };
+    Render::Context::ThreadedFrameTelemetry telemetry {};
+    auto* driver = Render::Context::TryGetLocatedDriver();
+    const bool threadedRendering =
+        driver != nullptr &&
+        Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver);
+    if (threadedRendering)
+    {
+        telemetry = Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(*driver);
+        if (Editor::Panels::ShouldDrainBeforeRetirementAwareViewResize(
+            requestedSize,
+            m_lastResolvedViewSize,
+            RequiresRetiredFrameConsumption(),
+            telemetry))
+        {
+            Render::Context::DriverRendererAccess::DrainThreadedRendering(*driver);
+            telemetry = Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(*driver);
+        }
+    }
+
+    if (Editor::Panels::ShouldDeferRetirementAwareViewResize(
+        requestedSize,
+        m_lastResolvedViewSize,
+        RequiresRetiredFrameConsumption(),
+        telemetry))
+    {
+        m_pendingResolvedViewSize = requestedSize;
+        m_image->size = Maths::Vector2(
+            static_cast<float>(m_lastResolvedViewSize.first),
+            static_cast<float>(m_lastResolvedViewSize.second));
+        return;
+    }
+
+    if (m_pendingResolvedViewSize.has_value())
+        requestedSize = m_pendingResolvedViewSize.value();
+
+    ApplyResolvedViewSize(requestedSize.first, requestedSize.second);
+    m_image->size = Maths::Vector2(
+        static_cast<float>(m_lastResolvedViewSize.first),
+        static_cast<float>(m_lastResolvedViewSize.second));
 }
 
 void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_height)
@@ -77,17 +116,39 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
 
 	if (p_width > 0 && p_height > 0 && camera && scene)
 	{
+        if (RequiresRetiredFrameConsumption())
+        {
+            if (auto* driver = Render::Context::TryGetLocatedDriver();
+                driver != nullptr && Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver))
+            {
+                Render::Context::DriverRendererAccess::DrainThreadedRendering(*driver);
+            }
+        }
+
 		InitFrame();
 
 		Render::Data::FrameDescriptor frameDescriptor;
 		frameDescriptor.renderWidth = p_width;
 		frameDescriptor.renderHeight = p_height;
 		frameDescriptor.camera = camera;
-		frameDescriptor.outputBuffer = &m_fbo;
+		const auto& clearColor = camera->GetClearColor();
+		m_fbo.SetOptimizedColorClearValue(clearColor.x, clearColor.y, clearColor.z, 1.0f);
+		m_image->textureView = m_fbo.GetOrCreateExplicitColorView("Editor.AView.Output");
+        NLS::Render::FrameGraph::SetExternalSceneOutputFramebuffer(frameDescriptor, &m_fbo);
 
 		m_renderer->BeginFrame(frameDescriptor);
 		DrawFrame();
 		m_renderer->EndFrame();
+        if (RequiresRetiredFrameConsumption())
+        {
+            if (auto* driver = Render::Context::TryGetLocatedDriver();
+                driver != nullptr && Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver))
+            {
+                // The UI samples this framebuffer immediately after Render() returns.
+                // Retire the just-submitted offscreen frame before exposing the texture to ImGui.
+                Render::Context::DriverRendererAccess::DrainThreadedRendering(*driver);
+            }
+        }
 		AfterRenderFrame();
 	}
 }
@@ -99,6 +160,24 @@ void Editor::Panels::AView::DrawFrame()
 
 void Editor::Panels::AView::AfterRenderFrame()
 {
+}
+
+bool Editor::Panels::AView::RequiresRetiredFrameConsumption() const
+{
+    return m_requiresRetiredFrameConsumption;
+}
+
+void Editor::Panels::AView::SetRequiresRetiredFrameConsumption(const bool requiresRetiredFrameConsumption)
+{
+    m_requiresRetiredFrameConsumption = requiresRetiredFrameConsumption;
+}
+
+void Editor::Panels::AView::ApplyResolvedViewSize(const uint16_t p_width, const uint16_t p_height)
+{
+    m_lastResolvedViewSize = { p_width, p_height };
+    m_fbo.Resize(p_width, p_height);
+    m_image->textureView = m_fbo.GetOrCreateExplicitColorView("Editor.AView.Output");
+    m_pendingResolvedViewSize.reset();
 }
 
 std::pair<uint16_t, uint16_t> Editor::Panels::AView::GetSafeSize() const

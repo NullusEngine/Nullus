@@ -20,7 +20,12 @@ Editor::Panels::FrameInfo::FrameInfo
 	m_batchCountText(CreateWidget<Widgets::Text>("")),
 	m_instanceCountText(CreateWidget<Widgets::Text>("")),
 	m_polyCountText(CreateWidget<Widgets::Text>("")),
-	m_vertexCountText(CreateWidget<Widgets::Text>(""))
+	m_vertexCountText(CreateWidget<Widgets::Text>("")),
+	m_framesInFlightText(CreateWidget<Widgets::Text>("")),
+	m_blockedFramesText(CreateWidget<Widgets::Text>("")),
+	m_publishStateText(CreateWidget<Widgets::Text>("")),
+	m_frameStageText(CreateWidget<Widgets::Text>("")),
+	m_retirementStateText(CreateWidget<Widgets::Text>(""))
 {
 	m_polyCountText.lineBreak = false;
 }
@@ -39,4 +44,59 @@ void Editor::Panels::FrameInfo::UpdateForRenderer(
 	m_instanceCountText.content = "Instances: " + String::ToString(frameInfo.instanceCount);
 	m_polyCountText.content = "Polygons: " + String::ToString(frameInfo.polyCount);
 	m_vertexCountText.content = "Vertices: " + String::ToString(frameInfo.vertexCount);
+	m_framesInFlightText.content = "Frames In Flight: " + String::ToString(frameInfo.inFlightFrameCount);
+	m_blockedFramesText.content = "Blocked Frames: " + String::ToString(frameInfo.blockedFrameCount);
+	const char* publishState = "Direct";
+	switch (frameInfo.publishState)
+	{
+	case Render::Data::FramePublishState::Open:
+		publishState = "Open";
+		break;
+	case Render::Data::FramePublishState::BackPressured:
+		publishState = "BackPressured";
+		break;
+	case Render::Data::FramePublishState::Direct:
+	default:
+		break;
+	}
+	m_publishStateText.content = std::string("Publish State: ") + publishState;
+
+	const char* frameStage = "Direct";
+	switch (frameInfo.stageSummary)
+	{
+	case Render::Data::ThreadedFrameStageSummary::Logic:
+		frameStage = "Logic";
+		break;
+	case Render::Data::ThreadedFrameStageSummary::RenderScene:
+		frameStage = "RenderScene";
+		break;
+	case Render::Data::ThreadedFrameStageSummary::Rhi:
+		frameStage = "RHI";
+		break;
+	case Render::Data::ThreadedFrameStageSummary::Retired:
+		frameStage = "Retired";
+		break;
+	case Render::Data::ThreadedFrameStageSummary::Direct:
+	default:
+		break;
+	}
+	m_frameStageText.content = std::string("Frame Stage: ") + frameStage;
+
+	const char* retirementState = "Direct";
+	switch (frameInfo.retirementState)
+	{
+	case Render::Data::FrameRetirementState::Pending:
+		retirementState = "Pending";
+		break;
+	case Render::Data::FrameRetirementState::Ready:
+		retirementState = "Ready";
+		break;
+	case Render::Data::FrameRetirementState::Consumed:
+		retirementState = "Consumed";
+		break;
+	case Render::Data::FrameRetirementState::Direct:
+	default:
+		break;
+	}
+	m_retirementStateText.content = std::string("Retirement State: ") + retirementState;
 }

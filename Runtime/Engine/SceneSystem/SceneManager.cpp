@@ -2,9 +2,13 @@
 
 #include "SceneSystem/SceneManager.h"
 #include "Components/LightComponent.h"
+#include "Components/MaterialRenderer.h"
+#include "Components/MeshRenderer.h"
 #include "Components/SkyBoxComponent.h"
 #include "Components/CameraComponent.h"
 #include "Components/TransformComponent.h"
+#include "ResourceManagement/MaterialManager.h"
+#include "ResourceManagement/ModelManager.h"
 #include "ResourceManagement/TextureManager.h"
 #include "ServiceLocator.h"
 #include "Serialize/Serializer.h"
@@ -81,7 +85,7 @@ void SceneManager::LoadEmptyLightedScene()
     if (auto tr = directionalLightGo.GetTransform())
     {
         tr->SetLocalPosition({0.0f, 10.0f, 0.0f});
-        tr->SetLocalRotation(Maths::Quaternion({120.0f, -40.0f, 0.0f}));
+        tr->SetLocalRotation(Maths::Quaternion({60.0f, 40.0f, 0.0f}));
     }
 
     auto& ambientLightGo = m_currentScene->CreateGameObject("Ambient Light");
@@ -107,6 +111,35 @@ void SceneManager::LoadEmptyLightedScene()
         tr->SetLocalPosition({0.0f, 0.0f, 0.0f});
         tr->SetLocalRotation(Maths::Quaternion::Identity);
     }
+
+    if (Core::ServiceLocator::Contains<Core::ResourceManagement::ModelManager>() &&
+        Core::ServiceLocator::Contains<Core::ResourceManagement::MaterialManager>())
+    {
+        auto& validationCube = m_currentScene->CreateGameObject("Validation Cube");
+        if (auto tr = validationCube.GetTransform())
+        {
+            tr->SetLocalPosition({0.0f, 0.0f, 5.0f});
+            tr->SetLocalScale({1.5f, 1.5f, 1.5f});
+        }
+
+        auto* meshRenderer = validationCube.AddComponent<Engine::Components::MeshRenderer>();
+        auto* materialRenderer = validationCube.AddComponent<Engine::Components::MaterialRenderer>();
+        if (meshRenderer != nullptr)
+        {
+            meshRenderer->SetModel(
+                NLS_SERVICE(Core::ResourceManagement::ModelManager)[":Models\\Cube.fbx"]);
+        }
+        if (materialRenderer != nullptr)
+        {
+            if (auto* defaultMaterial =
+                    NLS_SERVICE(Core::ResourceManagement::MaterialManager)[":Materials\\Default.mat"];
+                defaultMaterial != nullptr)
+            {
+                materialRenderer->FillWithMaterial(*defaultMaterial);
+            }
+        }
+    }
+
     AppendSceneManagerTrace("LoadEmptyLightedScene end");
 }
 

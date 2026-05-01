@@ -9,15 +9,8 @@ namespace
 {
 	std::shared_ptr<NLS::Render::RHI::RHIDevice> GetExplicitDevice()
 	{
-		try
-		{
-			auto& driver = NLS::Render::Context::RequireLocatedDriver("VertexBuffer");
-			return NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver);
-		}
-		catch (...)
-		{
-			return nullptr;
-		}
+		auto& driver = NLS::Render::Context::RequireLocatedDriver("VertexBuffer");
+		return NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver);
 	}
 }
 
@@ -26,6 +19,9 @@ namespace NLS::Render::Buffers
 	template <class T>
 	inline VertexBuffer<T>::VertexBuffer(T* p_data, size_t p_elements)
 	{
+		if (p_data == nullptr || p_elements == 0u)
+			return;
+
 		NLS::Render::RHI::RHIBufferDesc desc;
 		desc.size = p_elements * sizeof(T);
 		desc.usage = NLS::Render::RHI::BufferUsageFlags::Vertex;
@@ -48,25 +44,5 @@ namespace NLS::Render::Buffers
 	inline VertexBuffer<T>::~VertexBuffer()
 	{
 		m_explicitBuffer.reset();
-	}
-
-	template <class T>
-	inline void VertexBuffer<T>::Bind()
-	{
-		// In formal RHI, binding is handled at command buffer level
-		// This is a no-op placeholder
-	}
-
-	template <class T>
-	inline void VertexBuffer<T>::Unbind()
-	{
-		// In formal RHI, unbinding is handled at command buffer level
-		// This is a no-op placeholder
-	}
-
-	template <class T>
-	inline uint32_t VertexBuffer<T>::GetID()
-	{
-		return 0; // Formal RHI has no legacy buffer ID
 	}
 }

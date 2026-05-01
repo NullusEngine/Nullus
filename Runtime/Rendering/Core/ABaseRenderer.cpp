@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <functional>
 #include <fstream>
 #include <filesystem>
@@ -6,10 +7,15 @@
 #include "Rendering/Buffers/MultiFramebuffer.h"
 #include "Rendering/Buffers/UniformBuffer.h"
 #include "Rendering/Context/DriverAccess.h"
+#include "Rendering/Context/RenderScenePackageBuilder.h"
+#include "Rendering/Context/RenderThreadCoordinator.h"
+#include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/FrameGraph/ExternalResourceBridge.h"
 #include "Rendering/Geometry/Vertex.h"
 #include "Rendering/RHI/BindingPointMap.h"
 #include "Rendering/RHI/Core/RHIBinding.h"
 #include "Rendering/RHI/Core/RHICommand.h"
+#include "Rendering/Resources/Shader.h"
 #include "Rendering/Resources/Loaders/TextureLoader.h"
 #include <Debug/Assertion.h>
 
@@ -28,7 +34,8 @@ namespace
 
     Resources::MaterialPipelineStateOverrides BuildMaterialPipelineStateOverrides(
         const Data::PipelineState& pipelineState,
-        const Resources::Material& material)
+        const Resources::Material& material,
+        const Data::FrameDescriptor& frameDescriptor)
     {
         Resources::MaterialPipelineStateOverrides overrides;
 
@@ -41,6 +48,10 @@ namespace
 
         if (pipelineState.depthTest != material.HasDepthTest())
             overrides.depthTest = pipelineState.depthTest;
+
+        overrides.hasDepthAttachment =
+            NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(frameDescriptor) != nullptr ||
+            NLS::Render::FrameGraph::FrameTargetsSwapchain(frameDescriptor);
 
         const bool materialCullingEnabled = material.HasBackfaceCulling() || material.HasFrontfaceCulling();
         const auto materialCullFace = material.HasBackfaceCulling() && material.HasFrontfaceCulling()
@@ -66,6 +77,28 @@ namespace
             desc.entryName + "|" +
             desc.layoutDebugName;
     }
+
+    bool MaterialUsesPassDescriptorSet(const NLS::Render::Resources::Material& material)
+    {
+        const auto* shader = material.GetShader();
+        if (shader == nullptr)
+            return false;
+
+        const auto& reflection = shader->GetReflection();
+        for (const auto& constantBuffer : reflection.constantBuffers)
+        {
+            if (constantBuffer.bindingSpace == NLS::Render::RHI::BindingPointMap::kPassBindingSpace)
+                return true;
+        }
+
+        for (const auto& property : reflection.properties)
+        {
+            if (property.bindingSpace == NLS::Render::RHI::BindingPointMap::kPassBindingSpace)
+                return true;
+        }
+
+        return false;
+    }
 }
 
 ABaseRenderer::ABaseRenderer(Context::Driver& p_driver) :
@@ -86,17 +119,22 @@ void ABaseRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
     NLS_ASSERT(p_frameDescriptor.IsValid(), "Invalid FrameDescriptor!");
 
     m_frameDescriptor = p_frameDescriptor;
+    m_threadedRecordedDrawCommands.clear();
+    m_pendingFrameSnapshot.reset();
+    m_pendingPreparedRenderSceneBuilder = {};
+    const bool targetsSwapchain = NLS::Render::FrameGraph::FrameTargetsSwapchain(p_frameDescriptor);
+    auto* externalOutputBuffer =
+        NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(p_frameDescriptor);
 
-    if (Context::DriverRendererAccess::HasExplicitRHI(m_driver) && CanRecordExplicitFrame())
-        Context::DriverRendererAccess::BeginExplicitFrame(m_driver, p_frameDescriptor.outputBuffer == nullptr);
+    const bool usesThreadedRendering = Context::RenderThreadCoordinator::IsThreadedRenderingEnabled(m_driver);
+    Context::RenderThreadCoordinator::BeginRendererFrame(
+        m_driver,
+        targetsSwapchain);
 
     const bool usesExplicitRecording = GetActiveExplicitCommandBuffer() != nullptr;
 
-    if (p_frameDescriptor.outputBuffer && !usesExplicitRecording)
-        p_frameDescriptor.outputBuffer->Bind();
-
     m_basePipelineState = Context::DriverRendererAccess::CreatePipelineState(m_driver);
-    if (!usesExplicitRecording)
+    if (!usesThreadedRendering && !usesExplicitRecording)
     {
         Context::DriverRendererAccess::SetViewport(
             m_driver,
@@ -122,21 +160,26 @@ void ABaseRenderer::EndFrame()
 {
     NLS_ASSERT(s_isDrawing, "Cannot call EndFrame() before calling BeginFrame()");
 
-    const bool shouldPresentSwapchain = m_frameDescriptor.outputBuffer == nullptr;
+    const bool usesThreadedRendering = Context::RenderThreadCoordinator::IsThreadedRenderingEnabled(m_driver);
+    const bool shouldPresentSwapchain = NLS::Render::FrameGraph::FrameTargetsSwapchain(m_frameDescriptor);
+    auto* externalOutputBuffer =
+        NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(m_frameDescriptor);
     const bool usesExplicitRecording =
-        Context::DriverRendererAccess::HasExplicitRHI(m_driver) && GetActiveExplicitCommandBuffer() != nullptr;
-    if (usesExplicitRecording && m_frameDescriptor.outputBuffer != nullptr)
+        Context::DriverRendererAccess::HasExplicitRHI(m_driver) &&
+        GetActiveExplicitCommandBuffer() != nullptr;
+    if (usesExplicitRecording && externalOutputBuffer != nullptr)
     {
-        Context::DriverRendererAccess::TransitionTextureToShaderRead(
+        NLS::Render::FrameGraph::TransitionExternalSceneOutputToShaderRead(
             m_driver,
-            m_frameDescriptor.outputBuffer->GetExplicitTextureHandle());
+            m_frameDescriptor);
     }
     if (usesExplicitRecording)
-        Context::DriverRendererAccess::EndExplicitFrame(m_driver, shouldPresentSwapchain);
-
-    if (m_frameDescriptor.outputBuffer && !usesExplicitRecording)
     {
-        m_frameDescriptor.outputBuffer->Unbind();
+        Context::RenderThreadCoordinator::EndRendererFrame(m_driver, shouldPresentSwapchain);
+    }
+    else if (usesThreadedRendering)
+    {
+        TryPublishThreadedFrame();
     }
 
     m_isDrawing = false;
@@ -149,6 +192,16 @@ const Data::FrameDescriptor& ABaseRenderer::GetFrameDescriptor() const
     return m_frameDescriptor;
 }
 
+Context::Driver& ABaseRenderer::GetDriver()
+{
+    return m_driver;
+}
+
+const Context::Driver& ABaseRenderer::GetDriver() const
+{
+    return m_driver;
+}
+
 ABaseRenderer::PipelineState ABaseRenderer::CreatePipelineState() const
 {
     return m_basePipelineState;
@@ -159,9 +212,74 @@ bool ABaseRenderer::IsDrawing() const
     return m_isDrawing;
 }
 
-bool ABaseRenderer::CanRecordExplicitFrame() const
+bool ABaseRenderer::TryPublishThreadedFrame()
 {
-    return true;
+    const auto snapshot =
+        m_pendingFrameSnapshot.has_value()
+            ? m_pendingFrameSnapshot
+            : BuildFrameSnapshot(m_frameDescriptor);
+    if (snapshot.has_value())
+    {
+        auto renderSceneBuilder = BuildPreparedRenderSceneBuilder(snapshot.value());
+        if (!renderSceneBuilder)
+            return false;
+
+        return Context::DriverRendererAccess::TryPublishPreparedFrameBuilder(
+            m_driver,
+            snapshot.value(),
+            std::move(renderSceneBuilder));
+    }
+
+    return false;
+}
+
+Context::PreparedRenderSceneBuilder ABaseRenderer::BuildPreparedRenderSceneBuilder(
+    const Context::FrameSnapshot& snapshot) const
+{
+    if (m_pendingPreparedRenderSceneBuilder)
+        return m_pendingPreparedRenderSceneBuilder;
+
+    return [snapshot]() mutable
+    {
+        return Context::BuildSnapshotOwnedRenderScenePackage(snapshot);
+    };
+}
+
+void ABaseRenderer::SetPendingFrameSnapshot(Context::FrameSnapshot snapshot)
+{
+    m_pendingFrameSnapshot = std::move(snapshot);
+}
+
+void ABaseRenderer::SetPendingPreparedRenderSceneBuilder(
+    Context::PreparedRenderSceneBuilder renderSceneBuilder)
+{
+    m_pendingPreparedRenderSceneBuilder = std::move(renderSceneBuilder);
+}
+
+std::optional<NLS::Render::Context::FrameSnapshot> ABaseRenderer::BuildFrameSnapshot(
+    const Data::FrameDescriptor& frameDescriptor) const
+{
+    if (!frameDescriptor.IsValid())
+        return std::nullopt;
+
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.renderWidth = frameDescriptor.renderWidth;
+    snapshot.renderHeight = frameDescriptor.renderHeight;
+    const bool hasExternalOutput =
+        NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(frameDescriptor) != nullptr;
+    snapshot.targetsSwapchain = !hasExternalOutput;
+    snapshot.hasExternalOutput = hasExternalOutput;
+    snapshot.externalOutputTextureCount = hasExternalOutput ? 1u : 0u;
+    const auto& camera = *frameDescriptor.camera;
+    const auto& clearColor = camera.GetClearColor();
+    snapshot.clearColor = Maths::Vector4(clearColor.x, clearColor.y, clearColor.z, 1.0f);
+    snapshot.clearColorBuffer = camera.GetClearColorBuffer();
+    snapshot.clearDepthBuffer = camera.GetClearDepthBuffer();
+    snapshot.clearStencilBuffer = camera.GetClearStencilBuffer();
+    snapshot.hasGeometryFrustum = camera.GetGeometryFrustum() != nullptr;
+    snapshot.hasLightFrustum = camera.GetLightFrustum() != nullptr;
+    snapshot.recordedDrawCommands = m_threadedRecordedDrawCommands;
+    return snapshot;
 }
 
 NLS::Render::FrameGraph::FrameGraphExecutionContext ABaseRenderer::CreateFrameGraphExecutionContext() const
@@ -169,41 +287,9 @@ NLS::Render::FrameGraph::FrameGraphExecutionContext ABaseRenderer::CreateFrameGr
     return Context::DriverRendererAccess::CreateFrameGraphExecutionContext(m_driver);
 }
 
-bool ABaseRenderer::IsLegacyDrawSectionActive() const
+void ABaseRenderer::SetActivePreparedPassBindingSet(const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& bindingSet)
 {
-    return m_legacyDrawSectionDepth > 0;
-}
-
-void ABaseRenderer::BindLegacyOutputTarget()
-{
-    if (m_frameDescriptor.outputBuffer != nullptr)
-        m_frameDescriptor.outputBuffer->Bind();
-    else
-        Context::DriverRendererAccess::BindDefaultCompatibilityFramebuffer(m_driver);
-
-    Context::DriverRendererAccess::SetViewport(
-        m_driver,
-        0,
-        0,
-        m_frameDescriptor.renderWidth,
-        m_frameDescriptor.renderHeight);
-}
-
-void ABaseRenderer::UnbindLegacyOutputTarget()
-{
-    if (m_frameDescriptor.outputBuffer != nullptr)
-        m_frameDescriptor.outputBuffer->Unbind();
-}
-
-void ABaseRenderer::BeginLegacyDrawSection()
-{
-    ++m_legacyDrawSectionDepth;
-}
-
-void ABaseRenderer::EndLegacyDrawSection()
-{
-    NLS_ASSERT(m_legacyDrawSectionDepth > 0, "Cannot end a legacy draw section that was never started.");
-    --m_legacyDrawSectionDepth;
+    m_activePreparedPassBindingSet = bindingSet;
 }
 
 bool ABaseRenderer::BeginRecordedRenderPass(
@@ -236,16 +322,16 @@ bool ABaseRenderer::BeginRecordedRenderPass(
     }
     else
     {
-        // When no framebuffer (swapchain rendering), use the swapchain backbuffer view
         auto swapchainView = Context::DriverRendererAccess::GetSwapchainBackbufferView(m_driver);
-        if (swapchainView != nullptr)
-        {
-            colorAttachment.view = swapchainView;
-            renderPassDesc.colorAttachments.push_back(std::move(colorAttachment));
-        }
+        if (swapchainView == nullptr)
+            return false;
+
+        colorAttachment.view = swapchainView;
+        renderPassDesc.colorAttachments.push_back(std::move(colorAttachment));
     }
 
-    if (p_clearDepth || (p_framebuffer != nullptr && p_framebuffer->GetExplicitDepthStencilTextureHandle() != nullptr))
+    if (p_framebuffer != nullptr &&
+        (p_clearDepth || p_framebuffer->GetExplicitDepthStencilTextureHandle() != nullptr))
     {
         NLS::Render::RHI::RHIRenderPassDepthStencilAttachmentDesc depthAttachment;
         depthAttachment.depthLoadOp = p_clearDepth ? NLS::Render::RHI::LoadOp::Clear : NLS::Render::RHI::LoadOp::Load;
@@ -257,6 +343,22 @@ bool ABaseRenderer::BeginRecordedRenderPass(
         if (p_framebuffer != nullptr)
             depthAttachment.view = p_framebuffer->GetOrCreateExplicitDepthStencilView("FramebufferDepthView");
         renderPassDesc.depthStencilAttachment = std::move(depthAttachment);
+    }
+    else if (p_framebuffer == nullptr)
+    {
+        auto swapchainDepthView = Context::DriverRendererAccess::GetSwapchainDepthStencilView(m_driver);
+        if (swapchainDepthView != nullptr)
+        {
+            NLS::Render::RHI::RHIRenderPassDepthStencilAttachmentDesc depthAttachment;
+            depthAttachment.depthLoadOp = p_clearDepth ? NLS::Render::RHI::LoadOp::Clear : NLS::Render::RHI::LoadOp::Load;
+            depthAttachment.depthStoreOp = NLS::Render::RHI::StoreOp::Store;
+            depthAttachment.stencilLoadOp = p_clearStencil ? NLS::Render::RHI::LoadOp::Clear : NLS::Render::RHI::LoadOp::DontCare;
+            depthAttachment.stencilStoreOp = NLS::Render::RHI::StoreOp::Store;
+            depthAttachment.clearValue.depth = 1.0f;
+            depthAttachment.clearValue.stencil = 0u;
+            depthAttachment.view = std::move(swapchainDepthView);
+            renderPassDesc.depthStencilAttachment = std::move(depthAttachment);
+        }
     }
 
     commandBuffer->BeginRenderPass(renderPassDesc);
@@ -284,8 +386,8 @@ bool ABaseRenderer::BeginRecordedRenderPass(
     renderPassDesc.renderArea = { 0, 0, p_width, p_height };
     renderPassDesc.debugName = "MultiFramebufferRenderPass";
 
-    const auto& colorResources = p_framebuffer->GetColorTextureResources();
-    for (size_t i = 0; i < colorResources.size(); ++i)
+    const auto& colorTextures = p_framebuffer->GetExplicitColorTextureHandles();
+    for (size_t i = 0; i < colorTextures.size(); ++i)
     {
         NLS::Render::RHI::RHIRenderPassColorAttachmentDesc colorAttachment;
         colorAttachment.loadOp = p_clearColor ? NLS::Render::RHI::LoadOp::Clear : NLS::Render::RHI::LoadOp::Load;
@@ -320,20 +422,16 @@ bool ABaseRenderer::BeginOutputRenderPass(
     bool p_clearColor,
     bool p_clearDepth,
     bool p_clearStencil,
-    const Maths::Vector4& p_clearValue,
-    const bool p_bindLegacyOutputOnFallback)
+    const Maths::Vector4& p_clearValue)
 {
-    const bool startedRecordedPass = BeginRecordedRenderPass(
-        m_frameDescriptor.outputBuffer,
+    return BeginRecordedRenderPass(
+        NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(m_frameDescriptor),
         p_width,
         p_height,
         p_clearColor,
         p_clearDepth,
         p_clearStencil,
         p_clearValue);
-    if (!startedRecordedPass && p_bindLegacyOutputOnFallback)
-        BindLegacyOutputTarget();
-    return startedRecordedPass;
 }
 
 void ABaseRenderer::EndRecordedRenderPass()
@@ -346,58 +444,10 @@ void ABaseRenderer::EndRecordedRenderPass()
     m_recordedRenderPassActive = false;
 }
 
-void ABaseRenderer::EndOutputRenderPass(const bool p_startedRecordedPass, const bool p_unbindLegacyOutputOnFallback)
+void ABaseRenderer::EndOutputRenderPass(const bool p_startedRecordedPass)
 {
     if (p_startedRecordedPass)
-    {
         EndRecordedRenderPass();
-        return;
-    }
-
-    if (p_unbindLegacyOutputOnFallback)
-        UnbindLegacyOutputTarget();
-}
-
-void ABaseRenderer::BeginLegacyFramebufferPass(Buffers::Framebuffer& framebuffer)
-{
-    framebuffer.Bind();
-    Context::DriverRendererAccess::SetViewport(
-        m_driver,
-        0,
-        0,
-        m_frameDescriptor.renderWidth,
-        m_frameDescriptor.renderHeight);
-}
-
-void ABaseRenderer::BeginLegacyFramebufferPass(Buffers::MultiFramebuffer& framebuffer)
-{
-    framebuffer.Bind();
-    Context::DriverRendererAccess::SetViewport(
-        m_driver,
-        0,
-        0,
-        m_frameDescriptor.renderWidth,
-        m_frameDescriptor.renderHeight);
-}
-
-void ABaseRenderer::EndLegacyFramebufferPass()
-{
-    BindLegacyOutputTarget();
-}
-
-void ABaseRenderer::ReadPixelsFromLegacyFramebuffer(
-    Buffers::Framebuffer& framebuffer,
-    const uint32_t p_x,
-    const uint32_t p_y,
-    const uint32_t p_width,
-    const uint32_t p_height,
-    const Settings::EPixelDataFormat p_format,
-    const Settings::EPixelDataType p_type,
-    void* p_data)
-{
-    BeginLegacyFramebufferPass(framebuffer);
-    ReadPixels(p_x, p_y, p_width, p_height, p_format, p_type, p_data);
-    EndLegacyFramebufferPass();
 }
 
 std::shared_ptr<NLS::Render::RHI::RHICommandBuffer> ABaseRenderer::GetActiveExplicitCommandBuffer() const
@@ -415,9 +465,9 @@ bool ABaseRenderer::SupportsEditorPickingReadback() const
     return Context::DriverRendererAccess::SupportsEditorPickingReadback(m_driver);
 }
 
-bool ABaseRenderer::SupportsFramebufferReadback() const
+bool ABaseRenderer::HasActiveReadbackSource() const
 {
-    return Context::DriverRendererAccess::SupportsFramebufferReadback(m_driver);
+    return Context::DriverRendererAccess::ResolveReadbackTexture(m_driver) != nullptr;
 }
 
 std::shared_ptr<NLS::Render::RHI::RHIBindingSet> ABaseRenderer::CreateExplicitUniformBufferBindingSet(
@@ -473,33 +523,17 @@ std::shared_ptr<NLS::Render::RHI::RHIBindingSet> ABaseRenderer::CreateExplicitUn
         nullptr,
         nullptr
     });
-    return Context::DriverRendererAccess::CreateExplicitBindingSet(m_driver, bindingSetDesc);
+    const auto allocationLifetime = Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver)
+        ? NLS::Render::RHI::DescriptorAllocationLifetime::Persistent
+        : NLS::Render::RHI::DescriptorAllocationLifetime::TransientFrame;
+    return Context::DriverRendererAccess::CreateExplicitBindingSet(m_driver,
+        bindingSetDesc,
+        allocationLifetime);
 }
 
 bool ABaseRenderer::IsRenderCoordinateInBounds(uint32_t p_x, uint32_t p_y) const
 {
     return p_x < m_frameDescriptor.renderWidth && p_y < m_frameDescriptor.renderHeight;
-}
-
-void ABaseRenderer::ReadPixelsFromFramebufferTexture(
-    Buffers::Framebuffer& framebuffer,
-    uint32_t p_x,
-    uint32_t p_y,
-    uint32_t p_width,
-    uint32_t p_height,
-    Settings::EPixelDataFormat p_format,
-    Settings::EPixelDataType p_type,
-    void* p_data)
-{
-    auto explicitDevice = GetExplicitDevice();
-    auto texture = framebuffer.GetExplicitTextureHandle();
-    if (explicitDevice != nullptr && texture != nullptr)
-    {
-        explicitDevice->ReadPixels(texture, p_x, p_y, p_width, p_height, p_format, p_type, p_data);
-        return;
-    }
-
-    ReadPixelsFromLegacyFramebuffer(framebuffer, p_x, p_y, p_width, p_height, p_format, p_type, p_data);
 }
 
 void ABaseRenderer::ReadPixels(
@@ -542,7 +576,7 @@ bool ABaseRenderer::PrepareRecordedDraw(
     if (material == nullptr)
         return false;
 
-    const auto pipelineOverrides = BuildMaterialPipelineStateOverrides(p_pso, *material);
+    const auto pipelineOverrides = BuildMaterialPipelineStateOverrides(p_pso, *material, m_frameDescriptor);
 
     auto mesh = p_drawable.mesh;
     if (mesh == nullptr)
@@ -554,20 +588,23 @@ bool ABaseRenderer::PrepareRecordedDraw(
 
     auto commandBuffer = GetActiveExplicitCommandBuffer();
     auto device = GetExplicitDevice();
+    auto pipelineCache = Context::DriverRendererAccess::GetPipelineCache(m_driver);
     auto pipeline = material->BuildRecordedGraphicsPipeline(
         device,
+        pipelineCache,
         p_drawable.primitiveMode,
         p_pso,
         pipelineOverrides);
     auto bindingSet = material->GetRecordedBindingSet(device);
     auto rhiMesh = mesh->GetRHIMesh();
 
-    if (commandBuffer == nullptr || pipeline == nullptr || bindingSet == nullptr || rhiMesh == nullptr)
+    if (pipeline == nullptr || bindingSet == nullptr || rhiMesh == nullptr)
         return false;
 
     outDraw.commandBuffer = std::move(commandBuffer);
     outDraw.pipeline = std::move(pipeline);
     outDraw.materialBindingSet = std::move(bindingSet);
+    outDraw.passBindingSet = MaterialUsesPassDescriptorSet(*material) ? m_activePreparedPassBindingSet : nullptr;
     outDraw.mesh = std::move(rhiMesh);
     outDraw.instanceCount = gpuInstances;
     return true;
@@ -591,19 +628,27 @@ bool ABaseRenderer::PrepareRecordedDraw(
 
     auto commandBuffer = GetActiveExplicitCommandBuffer();
     auto device = GetExplicitDevice();
+    auto pipelineCache = Context::DriverRendererAccess::GetPipelineCache(m_driver);
     auto effectivePipelineState = CreatePipelineState();
     effectivePipelineState.depthFunc = depthCompareOverride;
+    if (!pipelineOverrides.hasDepthAttachment.has_value())
+    {
+        pipelineOverrides.hasDepthAttachment =
+            NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(m_frameDescriptor) != nullptr ||
+            NLS::Render::FrameGraph::FrameTargetsSwapchain(m_frameDescriptor);
+    }
     auto pipeline = material->BuildRecordedGraphicsPipeline(
-        device, p_drawable.primitiveMode, effectivePipelineState, pipelineOverrides);
+        device, pipelineCache, p_drawable.primitiveMode, effectivePipelineState, pipelineOverrides);
     auto bindingSet = material->GetRecordedBindingSet(device);
     auto rhiMesh = mesh->GetRHIMesh();
 
-    if (commandBuffer == nullptr || pipeline == nullptr || bindingSet == nullptr || rhiMesh == nullptr)
+    if (pipeline == nullptr || bindingSet == nullptr || rhiMesh == nullptr)
         return false;
 
     outDraw.commandBuffer = std::move(commandBuffer);
     outDraw.pipeline = std::move(pipeline);
     outDraw.materialBindingSet = std::move(bindingSet);
+    outDraw.passBindingSet = MaterialUsesPassDescriptorSet(*material) ? m_activePreparedPassBindingSet : nullptr;
     outDraw.mesh = std::move(rhiMesh);
     outDraw.instanceCount = gpuInstances;
     return true;
@@ -619,6 +664,12 @@ void ABaseRenderer::BindPreparedMaterialBindingSet(const PreparedRecordedDraw& p
 {
     if (preparedDraw.commandBuffer != nullptr && preparedDraw.materialBindingSet != nullptr)
     {
+        if (preparedDraw.passBindingSet != nullptr)
+        {
+            preparedDraw.commandBuffer->BindBindingSet(
+                NLS::Render::RHI::BindingPointMap::kPassDescriptorSet,
+                preparedDraw.passBindingSet);
+        }
         preparedDraw.commandBuffer->BindBindingSet(
             NLS::Render::RHI::BindingPointMap::kMaterialDescriptorSet,
             preparedDraw.materialBindingSet);
@@ -656,6 +707,28 @@ void ABaseRenderer::SubmitPreparedDraw(const PreparedRecordedDraw& preparedDraw)
     const auto vertexCount = preparedDraw.mesh->GetVertexCount();
     if (vertexCount > 0u)
         preparedDraw.commandBuffer->Draw(vertexCount, preparedDraw.instanceCount, 0, 0);
+}
+
+bool ABaseRenderer::QueueThreadedRecordedDraw(const PreparedRecordedDraw& preparedDraw)
+{
+    if (preparedDraw.pipeline == nullptr ||
+        preparedDraw.materialBindingSet == nullptr ||
+        preparedDraw.mesh == nullptr ||
+        preparedDraw.instanceCount == 0u)
+    {
+        return false;
+    }
+
+    Context::RecordedDrawCommandInput drawCommand;
+    drawCommand.pipeline = preparedDraw.pipeline;
+    drawCommand.frameBindingSet = preparedDraw.frameBindingSet;
+    drawCommand.objectBindingSet = preparedDraw.objectBindingSet;
+    drawCommand.passBindingSet = preparedDraw.passBindingSet;
+    drawCommand.materialBindingSet = preparedDraw.materialBindingSet;
+    drawCommand.mesh = preparedDraw.mesh;
+    drawCommand.instanceCount = preparedDraw.instanceCount;
+    m_threadedRecordedDrawCommands.push_back(std::move(drawCommand));
+    return true;
 }
 
 void ABaseRenderer::DrawEntity(

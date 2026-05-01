@@ -148,6 +148,8 @@ public:
     void SubmitUIRendering();
     NLS::Render::RHI::NativeHandle ResolveUISignalSemaphore();
     NLS::Render::Settings::EGraphicsBackend GetGraphicsBackend() const { return m_backend; }
+    bool ShouldFlipPresentedRenderTargetVertically() const;
+    bool UsesBottomLeftRenderTargetOrigin() const;
 
 #pragma region ImGUIWrapper
     float GetMouseWheel();

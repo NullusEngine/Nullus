@@ -1,43 +1,35 @@
 #include "Rendering/ForwardSceneRenderer.h"
+#include <algorithm>
 #include <fg/Blackboard.hpp>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <cstdlib>
 #include <cstring>
 
 #include <Rendering/FrameGraph/FrameGraphExecutionContext.h>
+#include <Rendering/FrameGraph/FrameGraphExecutionPlan.h>
+#include <Rendering/FrameGraph/SceneRenderGraphBuilder.h>
 #include <Rendering/FrameGraph/FrameGraphTexture.h>
+#include <Rendering/Context/DriverAccess.h>
 #include <Rendering/RHI/BindingPointMap.h>
 #include <Rendering/Settings/GraphicsBackendUtils.h>
+#include <Rendering/Settings/DriverSettings.h>
 
-#include "Rendering/FrameGraphSceneTargets.h"
 #include "Rendering/ScenePipelineStatePresets.h"
 
 namespace
 {
-	struct ForwardOutputData
+	bool ShouldLogSceneRendererDiagnostics(const NLS::Render::Context::Driver& driver)
 	{
-		FrameGraphResource color = -1;
-		FrameGraphResource depth = -1;
-	};
-
-	bool ShouldLogSceneRendererDiagnostics()
-	{
-		static const bool enabled = []()
-		{
-			return NLS::Render::Settings::IsEnvironmentFlagEnabled("NLS_LOG_RENDER_DRAW_PATH");
-		}();
-		return enabled;
+		return NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(driver).logRenderDrawPath;
 	}
 
-	bool ShouldSkipSkyboxDrawForDiagnostics()
+	bool ShouldSkipSkyboxDrawForDiagnostics(const NLS::Render::Context::Driver& driver)
 	{
-		static const bool enabled = []()
-		{
-			return NLS::Render::Settings::IsEnvironmentFlagEnabled("NLS_DIAG_SKIP_SKYBOX_DRAW");
-		}();
-		return enabled;
+		return NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(driver).diagSkipSkyboxDraw;
 	}
+
 }
 
 namespace NLS::Engine::Rendering
@@ -47,137 +39,183 @@ namespace NLS::Engine::Rendering
 	{
 	}
 
+	void ForwardSceneRenderer::ExecuteCompiledGraphPass(
+		NLS::Render::Context::RenderPassCommandKind kind,
+		NLS::Render::Data::PipelineState pipelineState)
+	{
+		switch (NLS::Render::FrameGraph::GetForwardScenePassExecutionKind(kind))
+		{
+		case NLS::Render::FrameGraph::ForwardScenePassExecutionKind::Opaque:
+			DrawOpaques(pipelineState);
+			break;
+		case NLS::Render::FrameGraph::ForwardScenePassExecutionKind::Skybox:
+			DrawSkyboxes(pipelineState);
+			break;
+		case NLS::Render::FrameGraph::ForwardScenePassExecutionKind::Transparent:
+			DrawTransparents(pipelineState);
+			break;
+		default:
+			break;
+		}
+	}
+
 	void ForwardSceneRenderer::BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor)
 	{
 		NLS_ASSERT(HasFrameObjectBindingProvider(), "ForwardSceneRenderer requires a renderer-owned frame/object binding provider.");
 		BaseSceneRenderer::BeginFrame(p_frameDescriptor);
 		auto drawables = ParseScene();
-		if (ShouldLogSceneRendererDiagnostics())
+		const bool hasSkyboxTexture = !drawables.skyboxes.empty();
+
+		const bool usesThreadedRendering = NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
+		if (usesThreadedRendering)
+		{
+			SetActivePreparedPassBindingSet(BaseSceneRenderer::GetPreparedPassBindingSetPlaceholder());
+			const auto opaquePso = CreateSceneDefaultPipelineState(*this);
+			const auto skyboxPso = CreateSceneSkyboxPipelineState(*this);
+
+			for (const auto& [_, drawable] : drawables.opaques)
+			{
+				PreparedRecordedDraw preparedDraw;
+				if (CaptureThreadedPreparedDraw(opaquePso, drawable, preparedDraw))
+					QueueThreadedRecordedDraw(preparedDraw);
+			}
+
+			for (const auto& [_, drawable] : drawables.skyboxes)
+			{
+				PreparedRecordedDraw preparedDraw;
+				if (CaptureThreadedPreparedDraw(skyboxPso, drawable, preparedDraw))
+					QueueThreadedRecordedDraw(preparedDraw);
+			}
+
+			auto transparentOverrides = NLS::Render::Resources::MaterialPipelineStateOverrides{};
+			transparentOverrides.depthWrite = false;
+			for (const auto& [_, drawable] : drawables.transparents)
+			{
+				PreparedRecordedDraw preparedDraw;
+				if (CaptureThreadedPreparedDraw(drawable, transparentOverrides, opaquePso.depthFunc, preparedDraw))
+					QueueThreadedRecordedDraw(preparedDraw);
+			}
+
+			SetActivePreparedPassBindingSet(nullptr);
+		}
+
+		auto pendingFrameSnapshot = BuildFrameSnapshot(p_frameDescriptor);
+		if (pendingFrameSnapshot.has_value())
+		{
+			RefreshFrameSnapshotVisibility(pendingFrameSnapshot.value(), drawables);
+			SetPendingFrameSnapshot(pendingFrameSnapshot.value());
+		}
+
+		NLS::Render::Context::RenderScenePackage scenePackage;
+		if (!usesThreadedRendering && pendingFrameSnapshot.has_value())
+			scenePackage = BuildRenderScenePackage(pendingFrameSnapshot.value());
+
+		if (ShouldLogSceneRendererDiagnostics(m_driver))
 		{
 			NLS_LOG_INFO(
 				"[ForwardSceneRenderer] Parsed scene drawables: opaque=" + std::to_string(drawables.opaques.size()) +
 				", transparent=" + std::to_string(drawables.transparents.size()) +
 				", skybox=" + std::to_string(drawables.skyboxes.size()));
 		}
-		AddDescriptor<ForwardSceneDescriptor>({ std::move(drawables) });
+		AddDescriptor<ForwardSceneDescriptor>({ std::move(drawables), scenePackage, hasSkyboxTexture });
+
+		if (usesThreadedRendering && pendingFrameSnapshot.has_value())
+		{
+			auto snapshot = pendingFrameSnapshot.value();
+			auto lightGridContext = NLS::Render::FrameGraph::BuildLightGridCompileContext(
+				GetFrameDescriptor(),
+				GetLightGridPrepass(),
+				BuildLightGridFrameInputs(hasSkyboxTexture));
+			auto frameDescriptor = lightGridContext.frameDescriptor;
+			SetPendingPreparedRenderSceneBuilder(
+				[snapshot = std::move(snapshot),
+				 frameDescriptor,
+				 lightGridContext = std::move(lightGridContext)]() mutable
+			{
+				auto package = BuildSnapshotOwnedRenderScenePackage(
+					snapshot,
+					SnapshotRenderScenePackageBuildMode::SkipDefaultPassInputs);
+				NLS::Render::FrameGraph::CompileAndApplyPreparedForwardLightGridSceneExecution(
+					package,
+					lightGridContext);
+				NLS::Render::FrameGraph::FinalizePreparedForwardScenePackage(package, frameDescriptor);
+				return package;
+			});
+		}
 	}
 
 	void ForwardSceneRenderer::DrawFrame()
 	{
-		const auto& frame = GetFrameDescriptor();
-		FrameGraph frameGraph;
-		frameGraph.reserve(3, frame.outputBuffer ? 2 : 0);
-		FrameGraphBlackboard blackboard;
+		const bool usesThreadedRendering = NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
 
-		ImportSceneRenderTargets(frameGraph, blackboard, frame, "ForwardOutputColor", "ForwardOutputDepth");
-		if (const auto* importedTargets = blackboard.try_get<SceneRenderTargetsData>())
+		// In threaded rendering mode, the Game Thread only captured immutable per-draw inputs.
+		// Render-scene package assembly now happens later through the prepared builder path.
+		if (!usesThreadedRendering)
 		{
-			if (importedTargets->color >= 0 || importedTargets->depth >= 0)
-				blackboard.add<ForwardOutputData>(ForwardOutputData{ importedTargets->color, importedTargets->depth });
+			const auto& frame = GetFrameDescriptor();
+			FrameGraph frameGraph;
+			NLS::Render::FrameGraph::ReserveForwardSceneGraph(frameGraph, frame);
+			FrameGraphBlackboard blackboard;
+			const auto& scene = GetDescriptor<ForwardSceneDescriptor>();
+			const auto lightGridContext = NLS::Render::FrameGraph::BuildLightGridCompileContext(
+				frame,
+				GetLightGridPrepass(),
+				BuildLightGridFrameInputs(scene.hasSkyboxTexture));
+			const auto preparedGraph = NLS::Render::FrameGraph::PrepareForwardSceneGraph(
+				frameGraph,
+				blackboard,
+				lightGridContext);
+			SetActivePreparedPassBindingSet(
+				lightGridContext.lightGridPrepass != nullptr ? lightGridContext.lightGridPrepass->GetGraphicsPassBindingSet() : nullptr);
+
+			NLS::Render::FrameGraph::ExecutePreparedForwardSceneGraph(
+				frameGraph,
+				preparedGraph,
+				{
+					[this](const auto& beginDesc) -> bool
+					{
+						return BeginOutputRenderPass(
+							beginDesc.renderWidth,
+							beginDesc.renderHeight,
+							beginDesc.clearColor,
+							beginDesc.clearDepth,
+							beginDesc.clearStencil,
+							beginDesc.clearValue);
+					},
+					[this](const NLS::Render::FrameGraph::CompiledThreadedRenderSceneGraphPass& compiledPass)
+					{
+						const auto kind = compiledPass.metadata.commandKind;
+						const auto pipelineState = NLS::Render::FrameGraph::GetForwardScenePassPipelineKind(kind) ==
+								NLS::Render::FrameGraph::ForwardScenePassPipelineKind::Skybox
+							? CreateSceneSkyboxPipelineState(*this)
+							: CreateSceneDefaultPipelineState(*this);
+						ExecuteCompiledGraphPass(kind, pipelineState);
+					},
+					[this](bool startedRenderPass, const auto& endDesc)
+					{
+						(void)endDesc;
+						EndOutputRenderPass(startedRenderPass);
+					}
+				});
+
+			frameGraph.compile();
+			auto executionContext = CreateFrameGraphExecutionContext();
+			frameGraph.execute(&executionContext, &executionContext);
+			SetActivePreparedPassBindingSet(nullptr);
 		}
 
-		const auto& opaquePass = frameGraph.addCallbackPass<ForwardOutputData>(
-			"ForwardOpaque",
-			[&blackboard](FrameGraph::Builder& builder, ForwardOutputData& data)
-			{
-				if (const auto* output = blackboard.try_get<ForwardOutputData>())
-				{
-					if (output->color >= 0)
-						data.color = builder.write(output->color);
-					if (output->depth >= 0)
-						data.depth = builder.write(output->depth);
-				}
-				else
-					builder.setSideEffect();
-			},
-			[this, &frame](const ForwardOutputData&, FrameGraphPassResources&, void*)
-			{
-				const auto clearColor = Maths::Vector4{
-					frame.camera->GetClearColor().x,
-					frame.camera->GetClearColor().y,
-					frame.camera->GetClearColor().z,
-					1.0f
-				};
-				const bool startedRenderPass =
-					BeginOutputRenderPass(
-						frame.renderWidth,
-						frame.renderHeight,
-						frame.camera->GetClearColorBuffer(),
-						frame.camera->GetClearDepthBuffer(),
-						frame.camera->GetClearStencilBuffer(),
-						clearColor);
-				DrawOpaques(CreateSceneDefaultPipelineState(*this));
-				EndOutputRenderPass(startedRenderPass);
-			}
-		);
-
-		const auto& skyboxPass = frameGraph.addCallbackPass<ForwardOutputData>(
-			"ForwardSkybox",
-			[&blackboard, &opaquePass](FrameGraph::Builder& builder, ForwardOutputData& data)
-			{
-				if (opaquePass.color >= 0)
-					data.color = builder.write(opaquePass.color);
-				else if (const auto* output = blackboard.try_get<ForwardOutputData>(); output != nullptr && output->color >= 0)
-					data.color = builder.write(output->color);
-
-				if (opaquePass.depth >= 0)
-					data.depth = builder.write(opaquePass.depth);
-				else if (const auto* output = blackboard.try_get<ForwardOutputData>(); output != nullptr && output->depth >= 0)
-					data.depth = builder.write(output->depth);
-
-				if (data.color < 0 && data.depth < 0)
-					builder.setSideEffect();
-			},
-			[this, &frame](const ForwardOutputData&, FrameGraphPassResources&, void*)
-			{
-				const bool startedRenderPass =
-					BeginOutputRenderPass(
-						frame.renderWidth,
-						frame.renderHeight,
-						false,
-						false,
-						false);
-				DrawSkyboxes(CreateSceneSkyboxPipelineState(*this));
-				EndOutputRenderPass(startedRenderPass);
-			}
-		);
-
-		frameGraph.addCallbackPass<ForwardOutputData>(
-			"ForwardTransparent",
-			[&blackboard, &skyboxPass](FrameGraph::Builder& builder, ForwardOutputData& data)
-			{
-				if (skyboxPass.color >= 0)
-					data.color = builder.write(skyboxPass.color);
-				else if (const auto* output = blackboard.try_get<ForwardOutputData>(); output != nullptr && output->color >= 0)
-					data.color = builder.write(output->color);
-
-				if (skyboxPass.depth >= 0)
-					data.depth = builder.write(skyboxPass.depth);
-				else if (const auto* output = blackboard.try_get<ForwardOutputData>(); output != nullptr && output->depth >= 0)
-					data.depth = builder.write(output->depth);
-
-				if (data.color < 0 && data.depth < 0)
-					builder.setSideEffect();
-			},
-			[this, &frame](const ForwardOutputData&, FrameGraphPassResources&, void*)
-			{
-				const bool startedRenderPass =
-					BeginOutputRenderPass(
-						frame.renderWidth,
-						frame.renderHeight,
-						false,
-						false,
-						false);
-				DrawTransparents(CreateSceneDefaultPipelineState(*this));
-				EndOutputRenderPass(startedRenderPass);
-			}
-		);
-
-		frameGraph.compile();
-		auto executionContext = CreateFrameGraphExecutionContext();
-		frameGraph.execute(&executionContext, &executionContext);
-
 		DrawRegisteredPasses();
+
+		if (usesThreadedRendering)
+		{
+			const auto& scene = GetDescriptor<ForwardSceneDescriptor>();
+			auto pendingFrameSnapshot = BuildFrameSnapshot(m_frameDescriptor);
+			if (pendingFrameSnapshot.has_value())
+			{
+				RefreshFrameSnapshotVisibility(pendingFrameSnapshot.value(), scene.drawables);
+				SetPendingFrameSnapshot(pendingFrameSnapshot.value());
+			}
+		}
 	}
 
 	void ForwardSceneRenderer::DrawOpaques(NLS::Render::Data::PipelineState pso)
@@ -196,13 +234,13 @@ namespace NLS::Engine::Rendering
 	{
 		const auto& scene = GetDescriptor<ForwardSceneDescriptor>();
 
-		if (ShouldSkipSkyboxDrawForDiagnostics())
+		if (ShouldSkipSkyboxDrawForDiagnostics(m_driver))
 		{
 			static bool loggedSkip = false;
 			if (!loggedSkip)
 			{
 				loggedSkip = true;
-				NLS_LOG_WARNING("[ForwardSceneRenderer] Skipping skybox draw because NLS_DIAG_SKIP_SKYBOX_DRAW is enabled");
+				NLS_LOG_WARNING("[ForwardSceneRenderer] Skipping skybox draw because --diag-skip-skybox is enabled");
 			}
 			return;
 		}

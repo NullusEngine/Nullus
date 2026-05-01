@@ -49,7 +49,6 @@ void Editor::Rendering::GizmoRenderer::DrawGizmo(
     const Maths::Vector3& position,
     const Maths::Quaternion& rotation,
     Editor::Core::EGizmoOperation operation,
-    bool pickable,
     std::optional<Editor::Core::GizmoBehaviour::EDirection> highlightedDirection)
 {
     auto pso = Editor::Rendering::CreateEditorOverlayPipelineState(m_renderer);
@@ -75,12 +74,54 @@ void Editor::Rendering::GizmoRenderer::DrawGizmo(
     {
         const auto axisIndex = GetAxisIndexFromDirection(highlightedDirection);
         m_gizmoArrowMaterial.Set("u_HighlightedAxis", axisIndex);
-        m_gizmoArrowMaterial.Set("u_IsPickable", pickable);
+        m_gizmoArrowMaterial.Set("u_IsPickable", false);
 
         m_debugModelRenderer.DrawModelWithSingleMaterial(
             pso,
             *arrowModel,
             m_gizmoArrowMaterial,
             modelMatrix);
+    }
+}
+
+void Editor::Rendering::GizmoRenderer::CaptureGizmoDrawCommands(
+    const Maths::Vector3& position,
+    const Maths::Quaternion& rotation,
+    Editor::Core::EGizmoOperation operation,
+    std::optional<Editor::Core::GizmoBehaviour::EDirection> highlightedDirection,
+    std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
+{
+    auto pso = Editor::Rendering::CreateEditorOverlayPipelineState(m_renderer);
+
+    auto modelMatrix =
+        Maths::Matrix4::Translation(position) *
+        Maths::Quaternion::ToMatrix4(Maths::Quaternion::Normalize(rotation));
+
+    if (auto sphereModel = EDITOR_CONTEXT(editorResources)->GetModel("Sphere"))
+    {
+        auto sphereModelMatrix = modelMatrix * Maths::Matrix4::Scaling({ 0.1f, 0.1f, 0.1f });
+
+        m_debugModelRenderer.CaptureModelDrawCommandsWithSingleMaterial(
+            pso,
+            *sphereModel,
+            m_gizmoBallMaterial,
+            sphereModelMatrix,
+            outDrawCommands);
+    }
+
+    auto arrowModelName = GetArrowModelName(operation);
+
+    if (auto arrowModel = EDITOR_CONTEXT(editorResources)->GetModel(arrowModelName))
+    {
+        const auto axisIndex = GetAxisIndexFromDirection(highlightedDirection);
+        m_gizmoArrowMaterial.Set("u_HighlightedAxis", axisIndex);
+        m_gizmoArrowMaterial.Set("u_IsPickable", false);
+
+        m_debugModelRenderer.CaptureModelDrawCommandsWithSingleMaterial(
+            pso,
+            *arrowModel,
+            m_gizmoArrowMaterial,
+            modelMatrix,
+            outDrawCommands);
     }
 }

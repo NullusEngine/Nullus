@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Rendering/Context/ThreadedRenderingLifecycle.h>
 #include <Rendering/Data/LightingDescriptor.h>
 
 #include "EngineDef.h"
@@ -18,6 +19,9 @@ public:
     using LightSet = NLS::Render::Data::LightSet;
 
     void Collect(const SceneSystem::Scene& scene);
+    void PrepareRenderScenePackage(
+        const NLS::Render::Context::FrameSnapshot& snapshot,
+        NLS::Render::Context::RenderScenePackage& package) const;
     const LightingDescriptor& GetLightingDescriptor() const;
 
 private:

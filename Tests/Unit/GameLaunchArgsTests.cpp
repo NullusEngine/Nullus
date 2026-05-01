@@ -15,19 +15,15 @@ namespace
 	}
 }
 
-TEST(GameLaunchArgsTests, ParsesBackendOverrideAndProjectPath)
+TEST(GameLaunchArgsTests, RejectsNonDx12BackendOverrideDuringPhase1)
 {
 	std::vector<std::string> storage;
 	char** argv = MutableArgv({"Game.exe", "--backend", "vulkan", "TestProject.nullus"}, storage);
 
 	const auto parsed = NLS::Game::Launch::ParseGameArgs(static_cast<int>(storage.size()), argv);
 
-	EXPECT_FALSE(parsed.hasError);
+	EXPECT_TRUE(parsed.hasError);
 	EXPECT_FALSE(parsed.showHelp);
-	ASSERT_TRUE(parsed.backendOverride.has_value());
-	EXPECT_EQ(parsed.backendOverride.value(), NLS::Render::Settings::EGraphicsBackend::VULKAN);
-	ASSERT_TRUE(parsed.projectPathOverride.has_value());
-	EXPECT_EQ(parsed.projectPathOverride.value(), "TestProject.nullus");
 }
 
 TEST(GameLaunchArgsTests, ParsesShortBackendFlagAndRenderDocCaptureOptions)
@@ -44,6 +40,17 @@ TEST(GameLaunchArgsTests, ParsesShortBackendFlagAndRenderDocCaptureOptions)
 	EXPECT_EQ(parsed.renderDocSettings.startupCaptureAfterFrames, 42u);
 	ASSERT_TRUE(parsed.projectPathOverride.has_value());
 	EXPECT_EQ(parsed.projectPathOverride.value(), "TestProject");
+}
+
+TEST(GameLaunchArgsTests, DefaultsToThreadedRenderingMainlineWithoutOptInFlag)
+{
+	std::vector<std::string> storage;
+	char** argv = MutableArgv({"Game.exe", "TestProject"}, storage);
+
+	const auto parsed = NLS::Game::Launch::ParseGameArgs(static_cast<int>(storage.size()), argv);
+
+	EXPECT_FALSE(parsed.hasError);
+	EXPECT_TRUE(parsed.enableThreadedRendering);
 }
 
 TEST(GameLaunchArgsTests, RejectsUnknownBackendName)

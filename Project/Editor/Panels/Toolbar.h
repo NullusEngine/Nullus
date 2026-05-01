@@ -1,5 +1,7 @@
 ﻿#pragma once
 
+#include <cstdint>
+
 #include <UI/Widgets/Buttons/ButtonImage.h>
 #include <UI/Panels/PanelWindow.h>
 
@@ -20,6 +22,7 @@ namespace NLS::Editor::Panels
 			bool p_opened,
 			const UI::PanelWindowSettings& p_windowSettings
 		);
+		~Toolbar();
 
 		/**
 		* Custom implementation of the draw method
@@ -31,5 +34,6 @@ namespace NLS::Editor::Panels
 		UI::Widgets::ButtonImage* m_pauseButton;
 		UI::Widgets::ButtonImage* m_stopButton;
 		UI::Widgets::ButtonImage* m_nextButton;
+		uint64_t m_editorModeChangedListener = 0;
 	};
 }

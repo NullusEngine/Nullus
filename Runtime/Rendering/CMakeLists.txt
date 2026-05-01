@@ -16,25 +16,16 @@ nls_add_runtime_target(
 
 get_target_property(_nls_render_sources NLS_Render SOURCES)
 if(_nls_render_sources)
+  list(FILTER _nls_render_sources EXCLUDE REGEX "[/\\\\]RHI[/\\\\]Backends[/\\\\]DX11[/\\\\]")
+  list(FILTER _nls_render_sources EXCLUDE REGEX "[/\\\\]RHI[/\\\\]Backends[/\\\\]OpenGL[/\\\\]")
+  list(FILTER _nls_render_sources EXCLUDE REGEX "[/\\\\]RHI[/\\\\]Backends[/\\\\]Vulkan[/\\\\]")
+  list(FILTER _nls_render_sources EXCLUDE REGEX "[/\\\\]RHI[/\\\\]Backends[/\\\\]Metal[/\\\\]")
+  list(FILTER _nls_render_sources EXCLUDE REGEX "[/\\\\]Backend[/\\\\]OpenGL[/\\\\]")
+  list(FILTER _nls_render_sources EXCLUDE REGEX "[/\\\\]glad[/\\\\]")
+  list(FILTER _nls_render_sources EXCLUDE REGEX "[/\\\\]KHR[/\\\\]")
+
   if(NOT WIN32)
-    list(FILTER _nls_render_sources EXCLUDE REGEX "[/\\\\]RHI[/\\\\]Backends[/\\\\]DX11[/\\\\]")
     list(FILTER _nls_render_sources EXCLUDE REGEX "[/\\\\]RHI[/\\\\]Backends[/\\\\]DX12[/\\\\]")
-  endif()
-
-  if(NOT Vulkan_FOUND)
-    list(FILTER _nls_render_sources EXCLUDE REGEX "[/\\\\]RHI[/\\\\]Backends[/\\\\]Vulkan[/\\\\]")
-  endif()
-
-  if(NOT APPLE)
-    list(FILTER _nls_render_sources EXCLUDE REGEX "[/\\\\]RHI[/\\\\]Backends[/\\\\]Metal[/\\\\]")
-  endif()
-
-  if(APPLE)
-    set(_nls_objcxx_sources ${_nls_render_sources})
-    list(FILTER _nls_objcxx_sources INCLUDE REGEX "([/\\\\]RHI[/\\\\]Backends[/\\\\]Metal[/\\\\].*\\.cpp$)|([/\\\\]RHI[/\\\\]Backends[/\\\\]RHIDeviceFactory\\.cpp$)")
-    if(_nls_objcxx_sources)
-      set_source_files_properties(${_nls_objcxx_sources} PROPERTIES LANGUAGE OBJCXX)
-    endif()
   endif()
 
   set_property(TARGET NLS_Render PROPERTY SOURCES "${_nls_render_sources}")
@@ -58,4 +49,5 @@ target_include_directories(
   NLS_Render
   PUBLIC
     $<BUILD_INTERFACE:${NLS_ROOT_DIR}/Runtime/Core>
+    $<BUILD_INTERFACE:${NLS_ROOT_DIR}/Runtime/Engine>
   )

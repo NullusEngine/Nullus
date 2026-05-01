@@ -24,11 +24,13 @@ namespace
         switch (type)
         {
         case BindingType::UniformBuffer:
-        case BindingType::StorageBuffer:
             return DX12DescriptorRangeCategory::ConstantBuffer;
+        case BindingType::StructuredBuffer:
         case BindingType::Texture:
-        case BindingType::RWTexture:
             return DX12DescriptorRangeCategory::ShaderResource;
+        case BindingType::StorageBuffer:
+        case BindingType::RWTexture:
+            return DX12DescriptorRangeCategory::UnorderedAccess;
         case BindingType::Sampler:
             return DX12DescriptorRangeCategory::Sampler;
         }
@@ -60,6 +62,8 @@ namespace
             return D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
         case DX12DescriptorRangeCategory::ShaderResource:
             return D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+        case DX12DescriptorRangeCategory::UnorderedAccess:
+            return D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
         case DX12DescriptorRangeCategory::Sampler:
             return D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
         }

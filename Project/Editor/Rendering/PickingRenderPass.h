@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <variant>
+#include <vector>
 
 #include <Rendering/Entities/Camera.h>
 
@@ -44,13 +45,36 @@ namespace NLS::Editor::Rendering
 		*/
 		PickingResult PickAtRenderCoordinate(uint32_t p_x, uint32_t p_y);
 		bool SupportsPickingReadback() const;
+        std::optional<NLS::Render::Context::RenderPassCommandInput> GetPreparedThreadedPassInput() const;
 
 		bool ManagesOwnRenderPass() const override { return true; }
 
 	private:
+        void OnBeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor) override;
 		virtual void Draw(NLS::Render::Data::PipelineState p_pso) override;
         PickingResult DecodePickingResult(const Engine::SceneSystem::Scene& p_scene, const uint8_t (&pixel)[3]) const;
+        void ResetPickingFrameState();
         bool RenderPickingScene(NLS::Render::Data::PipelineState p_pso);
+        std::optional<NLS::Render::Context::RenderPassCommandInput> BuildThreadedPassInput(
+            NLS::Render::Data::PipelineState p_pso);
+        void CapturePickableModels(
+            NLS::Render::Data::PipelineState p_pso,
+            Engine::SceneSystem::Scene& p_scene,
+            std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands);
+        void CapturePickableCameras(
+            NLS::Render::Data::PipelineState p_pso,
+            Engine::SceneSystem::Scene& p_scene,
+            std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands);
+        void CapturePickableLights(
+            NLS::Render::Data::PipelineState p_pso,
+            Engine::SceneSystem::Scene& p_scene,
+            std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands);
+        void CapturePickableGizmo(
+            NLS::Render::Data::PipelineState p_pso,
+            const Maths::Vector3& p_position,
+            const Maths::Quaternion& p_rotation,
+            Editor::Core::EGizmoOperation p_operation,
+            std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands);
         void DrawPickableModels(NLS::Render::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
         void DrawPickableCameras(NLS::Render::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
         void DrawPickableLights(NLS::Render::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
@@ -71,5 +95,6 @@ namespace NLS::Editor::Rendering
 		uint16_t m_lastRenderWidth = 0;
 		uint16_t m_lastRenderHeight = 0;
 		bool m_hasRenderedPickingFrame = false;
+        std::optional<NLS::Render::Context::RenderPassCommandInput> m_preparedThreadedPassInput;
 	};
 }

@@ -33,9 +33,13 @@ namespace
 	Render::Settings::EGraphicsBackend ResolveGraphicsBackend(NLS::Filesystem::IniFile& projectSettings)
 	{
 		if (projectSettings.IsKeyExisting("graphics_backend"))
-			return Render::Settings::ParseGraphicsBackendOrDefault(projectSettings.Get<std::string>("graphics_backend"));
+		{
+			return Render::Settings::ParseGraphicsBackendOrDefault(
+				projectSettings.Get<std::string>("graphics_backend"),
+				Render::Settings::GetPhase1RequiredRuntimeBackend());
+		}
 
-		return Render::Settings::GetPlatformDefaultGraphicsBackend();
+		return Render::Settings::GetPhase1RequiredRuntimeBackend();
 	}
 
 	Render::Settings::EGraphicsBackend ResolveEditorGraphicsBackend(NLS::Filesystem::IniFile& projectSettings,
@@ -47,13 +51,6 @@ namespace
 			return backendOverride.value();
 		}
 		return ResolveGraphicsBackend(projectSettings);
-	}
-
-	Windowing::Settings::WindowClientAPI ToWindowClientAPI(Render::Settings::EGraphicsBackend backend)
-	{
-		return backend == Render::Settings::EGraphicsBackend::OPENGL
-			? Windowing::Settings::WindowClientAPI::OpenGL
-			: Windowing::Settings::WindowClientAPI::NoAPI;
 	}
 
     void MigrateLegacyEditorLayoutFile(const std::filesystem::path& layoutPath)
@@ -163,11 +160,15 @@ namespace
 
 Editor::Core::Context::Context(const std::string& p_projectPath, const std::string& p_projectName,
     std::optional<Render::Settings::EGraphicsBackend> p_backendOverride,
-    const Render::Settings::RenderDocSettings& p_renderDocSettings)
+    const Render::Settings::RenderDocSettings& p_renderDocSettings,
+    bool p_enableThreadedRendering,
+    const Render::Settings::EngineDiagnosticsSettings& p_diagnosticsSettings)
     : projectPath(p_projectPath),
     projectName(p_projectName),
     m_backendOverride(p_backendOverride),
-    m_renderDocSettings(p_renderDocSettings), 
+    m_renderDocSettings(p_renderDocSettings),
+    m_enableThreadedRendering(p_enableThreadedRendering),
+    m_diagnosticsSettings(p_diagnosticsSettings), 
     projectFilePath(p_projectPath + Utils::PathParser::Separator() + p_projectName + ".nullus"), 
     engineAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets/Engine")).string() + Utils::PathParser::Separator()), 
     projectAssetsPath(p_projectPath + Utils::PathParser::Separator() + "Assets" + Utils::PathParser::Separator()), 
@@ -187,7 +188,12 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
 		projectSettings.Rewrite();
 	}
 
-    NLS::Debug::FileHandler::SetLogFilePath(p_projectPath + Utils::PathParser::Separator() + "Logs");
+    const auto logDirectory = std::filesystem::path(p_projectPath) / "Logs";
+    std::error_code logDirectoryError;
+    std::filesystem::create_directories(logDirectory, logDirectoryError);
+    if (logDirectoryError)
+        throw std::runtime_error("Failed to create editor log directory: " + logDirectory.string());
+    NLS::Debug::FileHandler::SetLogFilePath(logDirectory.string());
     /* Settings */
     NLS::Windowing::Settings::DeviceSettings deviceSettings;
     deviceSettings.contextMajorVersion = 4;
@@ -196,12 +202,21 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     windowSettings.width = 1600;
     windowSettings.height = 900;
     const auto graphicsBackend = ResolveEditorGraphicsBackend(projectSettings, m_backendOverride);
-    windowSettings.clientAPI = ToWindowClientAPI(graphicsBackend);
+    if (const auto restriction =
+        Render::Settings::GetPhase1BackendRestrictionMessage(graphicsBackend, "Editor runtime");
+        restriction.has_value())
+    {
+        throw std::runtime_error(*restriction);
+    }
+    windowSettings.clientAPI = Windowing::Settings::WindowClientAPI::NoAPI;
 
     /* Graphics context creation */
     NLS::Render::Settings::DriverSettings driverSettings;
     driverSettings.graphicsBackend = graphicsBackend;
     driverSettings.debugMode = true;
+    driverSettings.enableThreadedRendering = m_enableThreadedRendering;
+    driverSettings.threadedFrameSlotCount = driverSettings.framesInFlight;
+    driverSettings.diagnostics = m_diagnosticsSettings;
 
     // Apply command-line RenderDoc settings first, then let environment variables override if set
     if (m_renderDocSettings.enabled || m_renderDocSettings.startupCaptureAfterFrames > 0)
@@ -223,45 +238,30 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     window = std::make_unique<NLS::Windowing::Window>(*device, windowSettings);
     window->SetIcon(engineAssetsPath + "Brand" + Utils::PathParser::Separator() + "NullusLogoMark.png");
     inputManager = std::make_unique<NLS::Windowing::Inputs::InputManager>(*window);
-    if (graphicsBackend == Render::Settings::EGraphicsBackend::OPENGL)
-        window->MakeCurrentContext();
 
     /* Center Window */
     auto monSize = device->GetMonitorSize();
     auto winSize = window->GetSize();
     window->SetPosition(monSize.x / 2 - winSize.x / 2, monSize.y / 2 - winSize.y / 2);
 
-    if (windowSettings.clientAPI == Windowing::Settings::WindowClientAPI::OpenGL)
-        device->SetVsync(true);
     driver = std::make_unique<NLS::Render::Context::Driver>(driverSettings);
 
-    const auto runtimeFallbackDecision = driver->EvaluateEditorMainRuntimeFallback(graphicsBackend);
-    if (runtimeFallbackDecision.primaryWarning.has_value())
-        NLS_LOG_WARNING(runtimeFallbackDecision.primaryWarning.value());
-    if (runtimeFallbackDecision.detailWarning.has_value())
-        NLS_LOG_WARNING(runtimeFallbackDecision.detailWarning.value());
+    const auto runtimeReadiness = driver->EvaluateEditorMainRuntimeReadiness(graphicsBackend);
+    if (runtimeReadiness.primaryWarning.has_value())
+        NLS_LOG_WARNING(runtimeReadiness.primaryWarning.value());
+    if (runtimeReadiness.detailWarning.has_value())
+        NLS_LOG_WARNING(runtimeReadiness.detailWarning.value());
 
-    if (runtimeFallbackDecision.shouldFallbackToOpenGL)
+    if (runtimeReadiness.primaryWarning.has_value())
     {
-        driverSettings.graphicsBackend = Render::Settings::EGraphicsBackend::OPENGL;
-        windowSettings.clientAPI = ToWindowClientAPI(driverSettings.graphicsBackend);
-        window = std::make_unique<NLS::Windowing::Window>(*device, windowSettings);
-        window->SetIcon(engineAssetsPath + "Brand" + Utils::PathParser::Separator() + "NullusLogoMark.png");
-        inputManager = std::make_unique<NLS::Windowing::Inputs::InputManager>(*window);
-        auto fallbackMonSize = device->GetMonitorSize();
-        auto fallbackWinSize = window->GetSize();
-        window->SetPosition(fallbackMonSize.x / 2 - fallbackWinSize.x / 2, fallbackMonSize.y / 2 - fallbackWinSize.y / 2);
-        window->MakeCurrentContext();
-        device->SetVsync(true);
-        driver = std::make_unique<NLS::Render::Context::Driver>(driverSettings);
+        throw std::runtime_error(runtimeReadiness.primaryWarning.value());
     }
 
     if (driver == nullptr || driver->GetActiveGraphicsBackend() == Render::Settings::EGraphicsBackend::NONE)
     {
         const std::string message =
             "Editor startup failed: could not create a usable RHI device for backend " +
-            std::string(Render::Settings::ToString(graphicsBackend)) +
-            (runtimeFallbackDecision.shouldFallbackToOpenGL ? " (OpenGL fallback also failed)." : ".");
+            std::string(Render::Settings::ToString(graphicsBackend)) + ".";
         NLS_LOG_ERROR(message);
         throw std::runtime_error(message);
     }
@@ -335,10 +335,17 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
 
 Editor::Core::Context::~Context()
 {
+    ShutdownThreadedRendering();
     modelManager.UnloadResources();
     textureManager.UnloadResources();
     shaderManager.UnloadResources();
     materialManager.UnloadResources();
+}
+
+void Editor::Core::Context::ShutdownThreadedRendering()
+{
+    if (driver != nullptr)
+        driver->ShutdownThreadedRendering();
 }
 
 void Editor::Core::Context::ResetProjectSettings()
@@ -353,7 +360,7 @@ void Editor::Core::Context::ResetProjectSettings()
     projectSettings.Add<bool>("vsync", true);
     projectSettings.Add<bool>("multi_sampling", true);
     projectSettings.Add<int>("samples", 4);
-    projectSettings.Add<std::string>("graphics_backend", Render::Settings::ToString(Render::Settings::GetPlatformDefaultGraphicsBackend()));
+    projectSettings.Add<std::string>("graphics_backend", Render::Settings::ToString(Render::Settings::GetPhase1RequiredRuntimeBackend()));
     projectSettings.Add<int>("opengl_major", 4);
     projectSettings.Add<int>("opengl_minor", 3);
     projectSettings.Add<bool>("dev_build", true);
@@ -366,5 +373,10 @@ bool Editor::Core::Context::IsProjectSettingsIntegrityVerified()
 
 void Editor::Core::Context::ApplyProjectSettings()
 {
+}
+
+const Render::Settings::EngineDiagnosticsSettings& Editor::Core::Context::GetDiagnosticsSettings() const
+{
+    return m_diagnosticsSettings;
 }
 } // namespace NLS

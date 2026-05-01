@@ -23,10 +23,14 @@ namespace NLS
 			* @param p_projectName
 			* @param p_backendOverride optional backend override from command line
 			* @param p_renderDocSettings RenderDoc settings from command line
+			* @param p_enableThreadedRendering enable threaded rendering from command line
+			* @param p_diagnosticsSettings Engine diagnostics settings from command line
 			*/
 			Application(const std::string& p_projectPath, const std::string& p_projectName,
 			            std::optional<Render::Settings::EGraphicsBackend> p_backendOverride = std::nullopt,
-			            const Render::Settings::RenderDocSettings& p_renderDocSettings = {});
+			            const Render::Settings::RenderDocSettings& p_renderDocSettings = {},
+			            bool p_enableThreadedRendering = false,
+			            const Render::Settings::EngineDiagnosticsSettings& p_diagnosticsSettings = {});
 
 			/**
 			* Destructor
@@ -49,6 +53,8 @@ namespace NLS
 		bool IsRunning() const;
 
 	private:
+        void RunEditorFrame(float deltaTime);
+        void SyncPlatformSwapchainToFramebufferSize();
         bool m_isPollingEvents = false;
         bool m_isResizeTicking = false;
 		bool m_isTicking = false;

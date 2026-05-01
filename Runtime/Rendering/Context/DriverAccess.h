@@ -7,6 +7,8 @@
 #include <string>
 #include <string_view>
 
+#include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/RHI/Utils/DescriptorAllocator/DescriptorAllocator.h"
 #include "RenderDef.h"
 
 namespace NLS::Maths
@@ -16,6 +18,7 @@ namespace NLS::Maths
 
 namespace NLS::Render::Data
 {
+    enum class FramePublishState : uint8_t;
     struct PipelineState;
 }
 
@@ -32,6 +35,7 @@ namespace NLS::Render::Settings
     enum class EPixelDataType : uint8_t;
     enum class EPrimitiveMode : uint8_t;
     enum class ERasterizationMode : uint8_t;
+    struct EngineDiagnosticsSettings;
 }
 
 namespace NLS::Render::Resources
@@ -45,13 +49,13 @@ namespace NLS::Render::RHI
 {
     enum class BufferType : uint8_t;
     enum class BufferUsage : uint8_t;
-    class IRHIBuffer;
-    class IRHITexture;
     class RHIBuffer;
     class RHICommandBuffer;
     class RHIBindingLayout;
     class RHIBindingSet;
+    class DescriptorAllocator;
     class RHIDevice;
+    class PipelineCache;
     class RHITexture;
     class RHITextureView;
     class RHISwapchain;
@@ -68,6 +72,10 @@ namespace NLS::Render::RHI
 namespace NLS::Render::Context
 {
     class Driver;
+    class ThreadedRenderingLifecycle;
+    struct FrameSnapshot;
+    struct RenderScenePackage;
+    struct ThreadedFrameTelemetry;
 
     NLS_RENDER_API Driver* TryGetLocatedDriver();
     NLS_RENDER_API Driver& RequireLocatedDriver(std::string_view ownerName = {});
@@ -76,9 +84,15 @@ namespace NLS::Render::Context
     struct DriverRendererAccess final
     {
         static bool HasExplicitRHI(const Driver& driver);
-        static void BeginExplicitFrame(Driver& driver, bool acquireSwapchainImage = true);
-        static void EndExplicitFrame(Driver& driver, bool presentSwapchain = true);
+        static bool IsThreadedRenderingEnabled(const Driver& driver);
         static std::shared_ptr<RHI::RHIDevice> GetExplicitDevice(const Driver& driver);
+        static bool TryPublishPreparedFrameBuilder(
+            Driver& driver,
+            const FrameSnapshot& snapshot,
+            PreparedRenderSceneBuilder renderSceneBuilder,
+            size_t* publishedSlotIndex = nullptr);
+        static void DrainThreadedRendering(Driver& driver);
+        static ThreadedFrameTelemetry GetThreadedFrameTelemetry(const Driver& driver);
 
         static void SetViewport(
             Driver& driver,
@@ -88,13 +102,13 @@ namespace NLS::Render::Context
             uint32_t height);
         static Data::PipelineState CreatePipelineState(const Driver& driver);
         static bool SupportsEditorPickingReadback(const Driver& driver);
-        static bool SupportsFramebufferReadback(const Driver& driver);
         static FrameGraph::FrameGraphExecutionContext CreateFrameGraphExecutionContext(const Driver& driver);
         static std::shared_ptr<RHI::RHICommandBuffer> GetActiveExplicitCommandBuffer(const Driver& driver);
         static std::shared_ptr<RHI::RHITextureView> GetSwapchainBackbufferView(const Driver& driver);
-        static void TransitionTextureToShaderRead(
-            Driver& driver,
-            const std::shared_ptr<RHI::RHITexture>& texture);
+        static std::shared_ptr<RHI::RHITextureView> GetSwapchainDepthStencilView(const Driver& driver);
+        static std::shared_ptr<RHI::RHITexture> ResolveReadbackTexture(const Driver& driver);
+        static std::shared_ptr<RHI::PipelineCache> GetPipelineCache(const Driver& driver);
+        static std::shared_ptr<RHI::DescriptorAllocator> GetActiveDescriptorAllocator(const Driver& driver);
 
         static std::shared_ptr<RHI::RHIBindingLayout> CreateExplicitBindingLayout(
             const Driver& driver,
@@ -102,7 +116,9 @@ namespace NLS::Render::Context
 
         static std::shared_ptr<RHI::RHIBindingSet> CreateExplicitBindingSet(
             const Driver& driver,
-            const RHI::RHIBindingSetDesc& desc);
+            const RHI::RHIBindingSetDesc& desc,
+            RHI::DescriptorAllocationLifetime allocationLifetime =
+                RHI::DescriptorAllocationLifetime::TransientFrame);
 
         static void ReadPixels(
             const Driver& driver,
@@ -120,25 +136,12 @@ namespace NLS::Render::Context
             bool depthBuffer,
             bool stencilBuffer,
             const Maths::Vector4& color);
-        static void BindDefaultCompatibilityFramebuffer(Driver& driver);
-        static bool SubmitMaterialDraw(
-            Driver& driver,
-            const Resources::Material& material,
-            Data::PipelineState pipelineState,
-            const Resources::MaterialPipelineStateOverrides& overrides,
-            const Resources::IMesh& mesh,
-            Settings::EPrimitiveMode primitiveMode,
-            Settings::EComparaisonAlgorithm depthCompare,
-            uint32_t instances,
-            bool allowExplicitRecording);
+        static const Settings::EngineDiagnosticsSettings& GetDiagnosticsSettings(const Driver& driver);
     };
 
     struct DriverUIAccess final
     {
         static RHI::NativeRenderDeviceInfo GetNativeDeviceInfo(const Driver& driver);
-        static void* GetUITextureHandle(
-            const Driver& driver,
-            const std::shared_ptr<RHI::RHITextureView>& textureView);
         static bool PrepareUIRender(Driver& driver);
         static void ReleaseUITextureHandles(Driver& driver);
         static void PresentSwapchain(Driver& driver);
@@ -152,9 +155,9 @@ namespace NLS::Render::Context
         static void SetRenderDocEnabled(Driver& driver, bool enabled);
         static bool IsRenderDocEnabled(const Driver& driver);
 
-        // Vulkan UI synchronization - get the semaphore UI should wait on before rendering
+        // UI synchronization - get the semaphore UI should wait on before rendering
         static void* GetRenderFinishedSemaphore(Driver& driver);
-        // Vulkan UI synchronization - set the semaphore UI signals after rendering (Present waits on this)
+        // UI synchronization - set the semaphore UI signals after rendering (Present waits on this)
         static void SetUISignalSemaphore(Driver& driver, void* semaphore);
     };
 
@@ -164,6 +167,28 @@ namespace NLS::Render::Context
         static void SetExplicitSwapchain(Driver& driver, std::shared_ptr<RHI::RHISwapchain> explicitSwapchain);
         static RHI::RHIFrameContext& EnsureFrameContext(Driver& driver, size_t index);
         static const RHI::RHIFrameContext* PeekFrameContext(const Driver& driver, size_t index);
+        static void SetCompletedReadbackTexture(
+            Driver& driver,
+            std::shared_ptr<RHI::RHITexture> texture);
         static void SetExplicitFrameActive(Driver& driver, bool active);
+        static ThreadedRenderingLifecycle* GetThreadedRenderingLifecycle(Driver& driver);
+        static const ThreadedRenderingLifecycle* GetThreadedRenderingLifecycle(const Driver& driver);
+        static bool CanBeginStandaloneExplicitFrame(const Driver& driver);
+        static void BeginStandaloneExplicitFrame(Driver& driver, bool acquireSwapchainImage = true);
+        static void EndStandaloneExplicitFrame(Driver& driver, bool presentSwapchain = true);
+        static void PauseThreadedRenderingWorkers(Driver& driver);
+        static void DrainThreadedRendering(Driver& driver);
+        static bool TryPublishHarnessFrameSnapshot(
+            Driver& driver,
+            const FrameSnapshot& snapshot,
+            size_t* publishedSlotIndex = nullptr);
+        static bool TryPublishHarnessPreparedFrame(
+            Driver& driver,
+            const FrameSnapshot& snapshot,
+            const RenderScenePackage& renderScenePackage,
+            size_t* publishedSlotIndex = nullptr);
+        static bool ResolveAndCompleteThreadedRenderScene(
+            Driver& driver,
+            size_t slotIndex);
     };
 }

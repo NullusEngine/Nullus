@@ -24,15 +24,8 @@ namespace
 
 	std::shared_ptr<NLS::Render::RHI::RHIDevice> GetExplicitDevice()
 	{
-		try
-		{
-			auto& driver = NLS::Render::Context::RequireLocatedDriver("UniformBuffer");
-			return NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver);
-		}
-		catch (...)
-		{
-			return nullptr;
-		}
+		auto& driver = NLS::Render::Context::RequireLocatedDriver("UniformBuffer");
+		return NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver);
 	}
 }
 
@@ -41,8 +34,8 @@ UniformBuffer::UniformBuffer(
     uint32_t p_bindingPoint,
     uint32_t p_offset,
     Settings::EAccessSpecifier p_accessSpecifier)
-    : m_bindingPoint(p_bindingPoint)
 {
+    (void)p_bindingPoint;
     (void)p_offset;
     (void)p_accessSpecifier;
     m_size = p_size;
@@ -63,24 +56,6 @@ UniformBuffer::UniformBuffer(
 UniformBuffer::~UniformBuffer()
 {
     m_explicitBuffer.reset();
-}
-
-void UniformBuffer::Bind(uint32_t p_bindingPoint)
-{
-    // In formal RHI, binding is handled at command buffer level through descriptor sets
-    // This is a no-op placeholder
-    (void)p_bindingPoint;
-}
-
-void UniformBuffer::Unbind()
-{
-    // In formal RHI, unbinding is handled at command buffer level
-    // This is a no-op placeholder
-}
-
-uint32_t UniformBuffer::GetID() const
-{
-    return 0; // Formal RHI has no legacy buffer ID
 }
 
 void UniformBuffer::_SetSubData(const void* p_data, uint32_t size, size_t p_offset)

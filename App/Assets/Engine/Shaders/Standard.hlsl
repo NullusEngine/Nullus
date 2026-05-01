@@ -1,4 +1,5 @@
 #include "CommonTypes.hlsli"
+#include "LightGridCommon.hlsli"
 
 cbuffer FrameConstants : register(b0, space0)
 {
@@ -31,10 +32,9 @@ Texture2D u_NormalMap : register(t2, space2);
 Texture2D u_HeightMap : register(t3, space2);
 Texture2D u_MaskMap : register(t4, space2);
 SamplerState u_LinearWrapSampler : register(s0, space2);
-
-static const float3 kLightDirection = normalize(float3(-0.55f, -0.75f, 0.35f));
-static const float3 kLightColor = float3(1.0f, 1.0f, 1.0f);
-static const float3 kAmbientColor = float3(0.20f, 0.20f, 0.20f);
+StructuredBuffer<uint> u_LightGridLights : register(t0, space1);
+StructuredBuffer<uint> u_LightGridClusterRecords : register(t1, space1);
+StructuredBuffer<uint> u_LightGridCompactIndices : register(t2, space1);
 
 VSOutput VSMain(VSInput input)
 {
@@ -96,13 +96,14 @@ float4 PSMain(VSOutput input) : SV_Target0
     const float3 specularSample = u_SpecularMap.Sample(u_LinearWrapSampler, texCoord).rgb * u_Specular;
     const float3 normalWS = ComputeNormal(input, texCoord);
 
-    const float3 lightDir = -kLightDirection;
-    const float3 viewDir = normalize(u_CameraWorldPos - input.PositionWS);
-    const float3 halfVector = normalize(lightDir + viewDir);
-
-    const float diffuseTerm = saturate(dot(normalWS, lightDir));
-    const float specularTerm = pow(saturate(dot(normalWS, halfVector)), max(u_Shininess, 1.0f));
-
-    const float3 lighting = kAmbientColor + kLightColor * diffuseTerm + specularSample * specularTerm;
-    return float4(diffuseSample.rgb * lighting, diffuseSample.a);
+    const float3 lighting = NLSAccumulateClusteredLightingPhong(
+        u_LightGridLights,
+        u_LightGridClusterRecords,
+        u_LightGridCompactIndices,
+        input.PositionWS,
+        normalWS,
+        diffuseSample.rgb,
+        specularSample,
+        u_Shininess);
+    return float4(lighting, diffuseSample.a);
 }

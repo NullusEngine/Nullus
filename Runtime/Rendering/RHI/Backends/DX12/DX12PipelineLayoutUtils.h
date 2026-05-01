@@ -23,7 +23,8 @@ namespace NLS::Render::RHI::DX12
     {
         ConstantBuffer = 0,
         ShaderResource = 1,
-        Sampler = 2
+        UnorderedAccess = 2,
+        Sampler = 3
     };
 
     struct NLS_RENDER_API DX12DescriptorTableRangeDesc

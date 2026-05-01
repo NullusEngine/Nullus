@@ -24,10 +24,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backend", choices=("opengl", "vulkan", "dx12", "dx11"), default="vulkan")
     parser.add_argument("--launch-mode", choices=("auto", "direct", "renderdoccmd"), default="auto")
     parser.add_argument("--config", default="Debug")
-    parser.add_argument("--project", help="Path to a .nullus project file for Editor launches.")
+    parser.add_argument("--project", help="Path to a .nullus project file for Editor or Game launches.")
     parser.add_argument("--exe", help="Explicit executable path. Bypasses auto-discovery.")
     parser.add_argument("--capture", action="store_true", help="Queue a startup capture.")
     parser.add_argument("--capture-after-frames", type=int, default=120)
+    parser.add_argument("--threaded-rendering", action="store_true", help="Pass --threaded-rendering to the launched app.")
     parser.add_argument("--open-capture-ui", action="store_true", help="Open qrenderdoc after capture.")
     parser.add_argument("--timeout", type=int, default=180, help="Seconds to wait for a capture file.")
     parser.add_argument("--no-wait", action="store_true", help="Do not wait for capture completion.")
@@ -218,6 +219,7 @@ def main() -> int:
     executable_path = resolve_executable(args.target, args.config, args.exe)
     qrenderdoc_path = resolve_renderdoc_ui()
     renderdoccmd_path = resolve_renderdoc_cmd()
+    project_path = resolve_project(args.project) if args.project else None
 
     capture_dir = (REPO_ROOT / "Build" / "RenderDocCaptures" / args.target / args.backend).resolve()
     capture_dir.mkdir(parents=True, exist_ok=True)
@@ -233,8 +235,10 @@ def main() -> int:
     launch_env["NLS_RENDERDOC_AUTO_OPEN"] = "1" if args.open_capture_ui else "0"
 
     command = [str(executable_path), "--backend", args.backend]
-    if args.target == "editor":
-        command.append(str(resolve_project(args.project)))
+    if args.threaded_rendering:
+        command.append("--threaded-rendering")
+    if project_path is not None:
+        command.append(str(project_path))
 
     if args.capture:
         launch_env["NLS_RENDERDOC_CAPTURE"] = "1"

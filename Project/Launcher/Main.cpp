@@ -92,7 +92,15 @@ int main(int argc, char** argv)
             if (!backendOverride.has_value())
             {
                 std::fprintf(stderr, "[Launcher] Unknown graphics backend: %s\n", backendName.c_str());
-                std::fprintf(stderr, "[Launcher] Supported backends: dx12, vulkan, opengl, dx11, metal\n");
+                std::fprintf(stderr, "[Launcher] Supported backends during phase 1: dx12\n");
+                return EXIT_FAILURE;
+            }
+
+            if (const auto restriction =
+                Render::Settings::GetPhase1BackendRestrictionMessage(backendOverride.value(), "Launcher CLI");
+                restriction.has_value())
+            {
+                std::fprintf(stderr, "[Launcher] %s\n", restriction->c_str());
                 return EXIT_FAILURE;
             }
         }
@@ -122,7 +130,7 @@ int main(int argc, char** argv)
         {
             std::printf("Usage: %s [options]\n", argv[0]);
             std::printf("\nOptions:\n");
-            std::printf("  --backend <name>, -b <name>  Default graphics backend for launched Editor\n");
+            std::printf("  --backend <name>, -b <name>  Default graphics backend for launched Editor (dx12 only during phase 1)\n");
             std::printf("  --renderdoc                  Enable RenderDoc debugging\n");
             std::printf("  --no-renderdoc               Disable RenderDoc debugging\n");
             std::printf("  --capture-after-frames <N>   Auto capture after N presents\n");

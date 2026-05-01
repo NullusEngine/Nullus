@@ -31,7 +31,7 @@ namespace NLS::Editor::Panels
 		*/
 		virtual Engine::SceneSystem::Scene* GetScene();
 
-	private:
+	protected:
         Engine::SceneSystem::SceneManager& m_sceneManager;
 	};
 }

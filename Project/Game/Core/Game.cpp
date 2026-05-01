@@ -30,7 +30,7 @@ Game::Core::Game::Game(Context& p_context) :
 	else
 	{
 		if (!startScene.empty())
-			NLS_LOG_WARNING("Start scene not found, loading fallback scene: " + startScenePath);
+			NLS_LOG_WARNING("Start scene not found, loading default validation scene: " + startScenePath);
 		m_context.sceneManager.LoadEmptyLightedScene();
 	}
 
@@ -66,8 +66,7 @@ namespace
 				p_renderer.AddDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
 					*currentScene,
 					std::nullopt,
-					nullptr,
-					nullptr,
+					nullptr
 				});
 
 				NLS::Render::Data::FrameDescriptor frameDescriptor;

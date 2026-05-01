@@ -38,6 +38,19 @@ namespace NLS::Render::RHI
         std::string debugName;
     };
 
+    struct NLS_RENDER_API DescriptorAllocatorStats
+    {
+        uint64_t currentFrameIndex = 0u;
+        uint64_t transientCapacity = 0u;
+        uint64_t transientUsed = 0u;
+        uint64_t transientPeak = 0u;
+        uint64_t transientRetired = 0u;
+        uint64_t persistentUsed = 0u;
+        uint64_t persistentPeak = 0u;
+        uint64_t persistentReleased = 0u;
+        uint64_t allocationFailures = 0u;
+    };
+
     class NLS_RENDER_API DescriptorAllocator
     {
     public:
@@ -47,6 +60,7 @@ namespace NLS::Render::RHI
         virtual DescriptorAllocation Allocate(const DescriptorAllocationRequest& request) = 0;
         virtual void Release(const DescriptorAllocation& allocation) = 0;
         virtual void Reset() = 0;
+        virtual DescriptorAllocatorStats GetStats() const = 0;
     };
 
     NLS_RENDER_API std::shared_ptr<DescriptorAllocator> CreateDefaultDescriptorAllocator(uint64_t transientCapacity = 65536);

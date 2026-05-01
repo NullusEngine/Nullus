@@ -74,3 +74,42 @@ TEST(RHIPipelineStateUtilsTests, MapsOutlineShellPresetToFrontCulledSolidStencil
     EXPECT_FALSE(desc.depthStencilState.depthTest);
     EXPECT_FALSE(desc.depthStencilState.depthWrite);
 }
+
+TEST(RHIPipelineStateUtilsTests, MapsGeneralPipelineStateToCentralGraphicsPipelineDescFields)
+{
+    NLS::Render::Data::PipelineState pipelineState;
+    pipelineState.culling = true;
+    pipelineState.cullFace = NLS::Render::Settings::ECullFace::FRONT;
+    pipelineState.rasterizationMode = NLS::Render::Settings::ERasterizationMode::LINE;
+    pipelineState.colorWriting.mask = 0x00;
+    pipelineState.depthTest = false;
+    pipelineState.depthWriting = false;
+    pipelineState.depthFunc = NLS::Render::Settings::EComparaisonAlgorithm::GREATER;
+    pipelineState.stencilTest = true;
+    pipelineState.stencilWriteMask = 0x3Cu;
+    pipelineState.stencilFuncMask = 0x1Fu;
+    pipelineState.stencilFuncRef = 9u;
+    pipelineState.stencilFuncOp = NLS::Render::Settings::EComparaisonAlgorithm::NOTEQUAL;
+    pipelineState.stencilOpFail = NLS::Render::Settings::EOperation::ZERO;
+    pipelineState.depthOpFail = NLS::Render::Settings::EOperation::INCREMENT;
+    pipelineState.bothOpFail = NLS::Render::Settings::EOperation::DECREMENT;
+
+    NLS::Render::RHI::RHIGraphicsPipelineDesc desc;
+    NLS::Render::RHI::ApplyPipelineStateToGraphicsPipelineDesc(pipelineState, desc);
+
+    EXPECT_TRUE(desc.rasterState.cullEnabled);
+    EXPECT_EQ(desc.rasterState.cullFace, NLS::Render::Settings::ECullFace::FRONT);
+    EXPECT_TRUE(desc.rasterState.wireframe);
+    EXPECT_FALSE(desc.blendState.colorWrite);
+    EXPECT_FALSE(desc.depthStencilState.depthTest);
+    EXPECT_FALSE(desc.depthStencilState.depthWrite);
+    EXPECT_EQ(desc.depthStencilState.depthCompare, NLS::Render::Settings::EComparaisonAlgorithm::GREATER);
+    EXPECT_TRUE(desc.depthStencilState.stencilTest);
+    EXPECT_EQ(desc.depthStencilState.stencilWriteMask, 0x3Cu);
+    EXPECT_EQ(desc.depthStencilState.stencilReadMask, 0x1Fu);
+    EXPECT_EQ(desc.depthStencilState.stencilReference, 9u);
+    EXPECT_EQ(desc.depthStencilState.stencilCompare, NLS::Render::Settings::EComparaisonAlgorithm::NOTEQUAL);
+    EXPECT_EQ(desc.depthStencilState.stencilFailOp, NLS::Render::Settings::EOperation::ZERO);
+    EXPECT_EQ(desc.depthStencilState.stencilDepthFailOp, NLS::Render::Settings::EOperation::INCREMENT);
+    EXPECT_EQ(desc.depthStencilState.stencilPassOp, NLS::Render::Settings::EOperation::DECREMENT);
+}

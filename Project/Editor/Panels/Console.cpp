@@ -79,9 +79,15 @@ Editor::Panels::Console::Console
 	m_logGroup = &CreateWidget<Widgets::Group>();
     m_logGroup->ReverseDrawOrder();
 
-	EDITOR_EVENT(PlayEvent) += std::bind(&Console::ClearOnPlay, this);
+	m_playListener = EDITOR_EVENT(PlayEvent) += std::bind(&Console::ClearOnPlay, this);
 
-	Debug::Logger::LogEvent += std::bind(&Console::OnLogIntercepted, this, std::placeholders::_1);
+	m_logListener = Debug::Logger::LogEvent += std::bind(&Console::OnLogIntercepted, this, std::placeholders::_1);
+}
+
+Editor::Panels::Console::~Console()
+{
+	EDITOR_EVENT(PlayEvent) -= m_playListener;
+	Debug::Logger::LogEvent -= m_logListener;
 }
 
 void Editor::Panels::Console::OnLogIntercepted(const Debug::LogData & p_logData)

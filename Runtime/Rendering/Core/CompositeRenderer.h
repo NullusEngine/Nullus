@@ -40,6 +40,15 @@ public:
         const Entities::Drawable& p_drawable,
         Resources::MaterialPipelineStateOverrides pipelineOverrides = {},
         Settings::EComparaisonAlgorithm depthCompareOverride = Settings::EComparaisonAlgorithm::LESS);
+    bool CaptureRecordedDrawCommand(
+        PipelineState p_pso,
+        const Entities::Drawable& p_drawable,
+        Context::RecordedDrawCommandInput& outDraw);
+    bool CaptureRecordedDrawCommand(
+        const Entities::Drawable& p_drawable,
+        Resources::MaterialPipelineStateOverrides pipelineOverrides,
+        Settings::EComparaisonAlgorithm depthCompareOverride,
+        Context::RecordedDrawCommandInput& outDraw);
     void ExecutePass(Core::ARenderPass& pass);
     void ExecutePass(Core::ARenderPass& pass, PipelineState pso);
 

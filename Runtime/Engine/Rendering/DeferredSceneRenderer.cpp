@@ -4,11 +4,11 @@
 
 #include <Debug/Logger.h>
 #include <Math/Matrix4.h>
-#include <Math/Vector3.h>
-#include <Rendering/Buffers/UniformBuffer.h>
+#include <Rendering/Context/DriverAccess.h>
 #include <Rendering/Data/LightingDescriptor.h>
 #include <Rendering/FrameGraph/FrameGraphExecutionContext.h>
-#include <Rendering/FrameGraph/FrameGraphTexture.h>
+#include <Rendering/FrameGraph/FrameGraphExecutionPlan.h>
+#include <Rendering/FrameGraph/SceneRenderGraphBuilder.h>
 #include <Rendering/Geometry/Vertex.h>
 #include <Rendering/RHI/BindingPointMap.h>
 #include <Rendering/Resources/Loaders/ShaderLoader.h>
@@ -18,105 +18,11 @@
 #include <Rendering/Resources/TextureCube.h>
 #include <Rendering/Settings/EPrimitiveMode.h>
 
-#include "Rendering/FrameGraphSceneTargets.h"
 #include "Rendering/ScenePipelineStatePresets.h"
 
 namespace
 {
-	struct DeferredGBufferPassData
-	{
-		FrameGraphResource albedo = -1;
-		FrameGraphResource normal = -1;
-		FrameGraphResource material = -1;
-		FrameGraphResource depth = -1;
-	};
-
-	struct DeferredLightingPassData
-	{
-		FrameGraphResource albedo = -1;
-		FrameGraphResource normal = -1;
-		FrameGraphResource material = -1;
-		FrameGraphResource depth = -1;
-		FrameGraphResource outputColor = -1;
-		FrameGraphResource outputDepth = -1;
-	};
-
-	struct DeferredPassConstants
-	{
-		NLS::Maths::Matrix4 inverseViewProjection;
-		NLS::Maths::Vector3 cameraWorldPosition;
-		float ambientIntensity = 0.2f;
-		NLS::Maths::Vector3 lightDirection{ -0.4f, -1.0f, -0.25f };
-		float lightIntensity = 1.0f;
-		NLS::Maths::Vector3 lightColor{ 1.0f, 0.98f, 0.92f };
-		float hasSkyboxTexture = 0.0f;
-		NLS::Maths::Vector3 skyFallbackColor{ 0.55f, 0.70f, 0.92f };
-		float depthFogFactor = 0.15f;
-	};
-
 	using LightingDescriptor = NLS::Render::Data::LightingDescriptor;
-
-	DeferredPassConstants BuildDeferredPassConstants(
-		const NLS::Render::Data::FrameDescriptor& frameDescriptor,
-		const LightingDescriptor* lightingDescriptor,
-		bool hasSkyboxTexture)
-	{
-		DeferredPassConstants constants{};
-		const auto viewProjection = frameDescriptor.camera->GetProjectionMatrix() * frameDescriptor.camera->GetViewMatrix();
-		constants.inverseViewProjection = NLS::Maths::Matrix4::Transpose(NLS::Maths::Matrix4::Inverse(viewProjection));
-		constants.cameraWorldPosition = frameDescriptor.camera->GetPosition();
-		constants.hasSkyboxTexture = hasSkyboxTexture ? 1.0f : 0.0f;
-
-		if (lightingDescriptor == nullptr)
-			return constants;
-
-		for (const auto& lightRef : lightingDescriptor->lights)
-		{
-			const auto& light = lightRef.get();
-			if (light.type != NLS::Render::Settings::ELightType::DIRECTIONAL &&
-				light.type != NLS::Render::Settings::ELightType::SPOT)
-			{
-				continue;
-			}
-
-			constants.lightDirection = light.transform->GetWorldForward();
-			constants.lightColor = light.color;
-			constants.lightIntensity = light.intensity;
-			return constants;
-		}
-
-		if (!lightingDescriptor->lights.empty())
-		{
-			const auto& light = lightingDescriptor->lights.front().get();
-			constants.lightDirection = light.transform->GetWorldForward();
-			constants.lightColor = light.color;
-			constants.lightIntensity = light.intensity;
-		}
-
-		return constants;
-	}
-
-	NLS::Render::FrameGraph::FrameGraphTexture::Desc MakeGBufferColorDesc(uint16_t width, uint16_t height)
-	{
-		NLS::Render::FrameGraph::FrameGraphTexture::Desc desc;
-		desc.extent.width = width;
-		desc.extent.height = height;
-		desc.extent.depth = 1u;
-		desc.format = NLS::Render::RHI::TextureFormat::RGBA8;
-		desc.usage = NLS::Render::RHI::TextureUsageFlags::ColorAttachment | NLS::Render::RHI::TextureUsageFlags::Sampled;
-		return desc;
-	}
-
-	NLS::Render::FrameGraph::FrameGraphTexture::Desc MakeGBufferDepthDesc(uint16_t width, uint16_t height)
-	{
-		NLS::Render::FrameGraph::FrameGraphTexture::Desc desc;
-		desc.extent.width = width;
-		desc.extent.height = height;
-		desc.extent.depth = 1u;
-		desc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
-		desc.usage = NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment | NLS::Render::RHI::TextureUsageFlags::Sampled;
-		return desc;
-	}
 
 	NLS::Render::Geometry::Vertex MakeFullscreenVertex(float x, float y, float u, float v)
 	{
@@ -179,136 +85,224 @@ namespace NLS::Engine::Rendering
 	{
 		NLS_ASSERT(HasFrameObjectBindingProvider(), "DeferredSceneRenderer requires a renderer-owned frame/object binding provider.");
 		BaseSceneRenderer::BeginFrame(p_frameDescriptor);
+
+		const bool usesThreadedRendering = NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
+
+		auto drawables = ParseScene();
+		const auto& frameDescriptor = GetFrameDescriptor();
+		NLS::Render::Resources::TextureCube* skyboxTexture = nullptr;
+		for (const auto& [_, drawable] : drawables.skyboxes)
+		{
+			if (drawable.material == nullptr)
+				continue;
+			const auto* skyboxParameter = drawable.material->GetParameterBlock().TryGet("cubeTex");
+			if (skyboxParameter != nullptr && skyboxParameter->type() == typeid(NLS::Render::Resources::TextureCube*))
+			{
+				skyboxTexture = std::any_cast<NLS::Render::Resources::TextureCube*>(*skyboxParameter);
+				break;
+			}
+		}
+		const bool hasSkyboxTexture = skyboxTexture != nullptr;
+
+		if (usesThreadedRendering)
+		{
+			EnsureGBufferTargets(frameDescriptor.renderWidth, frameDescriptor.renderHeight);
+
+			auto gbufferPso = CreateSceneDefaultPipelineState(*this);
+			for (const auto& [_, drawable] : drawables.opaques)
+			{
+				if (!drawable.material)
+					continue;
+				auto gbufferDrawable = drawable;
+				gbufferDrawable.material = &GetOrCreateGBufferMaterial(*drawable.material);
+
+				NLS::Render::Resources::MaterialPipelineStateOverrides gBufferOverrides;
+				gBufferOverrides.depthTest = drawable.material->HasDepthTest();
+				gBufferOverrides.depthWrite = drawable.material->HasDepthWriting();
+				gBufferOverrides.colorWrite = true;
+				gBufferOverrides.culling = drawable.material->HasBackfaceCulling() || drawable.material->HasFrontfaceCulling();
+				gBufferOverrides.cullFace = drawable.material->HasBackfaceCulling() && drawable.material->HasFrontfaceCulling()
+					? NLS::Render::Settings::ECullFace::FRONT_AND_BACK
+					: drawable.material->HasFrontfaceCulling()
+						? NLS::Render::Settings::ECullFace::FRONT
+						: NLS::Render::Settings::ECullFace::BACK;
+
+				PreparedRecordedDraw preparedDraw;
+				if (CaptureThreadedPreparedDraw(gbufferDrawable, gBufferOverrides, gbufferPso.depthFunc, preparedDraw))
+					QueueThreadedRecordedDraw(preparedDraw);
+			}
+
+			{
+				SetActivePreparedPassBindingSet(BaseSceneRenderer::GetPreparedPassBindingSetPlaceholder());
+
+				m_lightingMaterial->GetParameterBlock().Set("u_GBufferAlbedo", m_gBufferAlbedoTexture.get());
+				m_lightingMaterial->GetParameterBlock().Set("u_GBufferNormal", m_gBufferNormalTexture.get());
+				m_lightingMaterial->GetParameterBlock().Set("u_GBufferMaterial", m_gBufferMaterialTexture.get());
+				if (m_gBufferDepthTexture)
+					m_lightingMaterial->GetParameterBlock().Set("u_GBufferDepth", m_gBufferDepthTexture.get());
+				if (m_lightingMaterial->GetParameterBlock().Contains("u_SkyboxCube"))
+					m_lightingMaterial->GetParameterBlock().Set("u_SkyboxCube", skyboxTexture);
+
+				NLS::Render::Entities::Drawable lightingDrawable;
+				lightingDrawable.mesh = m_fullscreenQuad.get();
+				lightingDrawable.material = m_lightingMaterial.get();
+				lightingDrawable.primitiveMode = NLS::Render::Settings::EPrimitiveMode::TRIANGLES;
+
+				NLS::Render::Resources::MaterialPipelineStateOverrides compositeOverrides;
+				compositeOverrides.depthTest = false;
+				compositeOverrides.depthWrite = false;
+				compositeOverrides.culling = false;
+				compositeOverrides.colorWrite = true;
+
+				PreparedRecordedDraw preparedDraw;
+				if (CaptureThreadedPreparedDraw(lightingDrawable, compositeOverrides, gbufferPso.depthFunc, preparedDraw))
+					QueueThreadedRecordedDraw(preparedDraw);
+				SetActivePreparedPassBindingSet(nullptr);
+			}
+
+		}
+
+		auto pendingFrameSnapshot = BuildFrameSnapshot(p_frameDescriptor);
+		if (pendingFrameSnapshot.has_value())
+		{
+			RefreshFrameSnapshotVisibility(pendingFrameSnapshot.value(), drawables);
+			SetPendingFrameSnapshot(pendingFrameSnapshot.value());
+		}
+
+		NLS::Render::Context::RenderScenePackage scenePackage;
+		if (!usesThreadedRendering && pendingFrameSnapshot.has_value())
+			scenePackage = BuildRenderScenePackage(pendingFrameSnapshot.value());
+
 		AddDescriptor<DeferredSceneDescriptor>({
-			ParseScene()
-		});
+			std::move(drawables),
+			std::move(scenePackage),
+			hasSkyboxTexture });
+
+		if (usesThreadedRendering && pendingFrameSnapshot.has_value())
+		{
+			auto snapshot = pendingFrameSnapshot.value();
+			const NLS::Render::FrameGraph::DeferredPreparedSceneResourceRequest deferredResourceRequest{
+				&m_gBuffer,
+				m_gBufferAlbedoTexture.get(),
+				m_gBufferNormalTexture.get(),
+				m_gBufferMaterialTexture.get(),
+				m_gBufferDepthTexture.get()
+			};
+			auto lightGridContext = NLS::Render::FrameGraph::BuildLightGridCompileContext(
+				GetFrameDescriptor(),
+				GetLightGridPrepass(),
+				BuildLightGridFrameInputs(hasSkyboxTexture));
+			auto frameDescriptorForBuilder = GetFrameDescriptor();
+			auto deferredResources = NLS::Render::FrameGraph::CaptureDeferredPreparedSceneResources(deferredResourceRequest);
+
+			SetPendingPreparedRenderSceneBuilder(
+				[snapshot = std::move(snapshot),
+				 frameDescriptorForBuilder,
+				 lightGridContext = std::move(lightGridContext),
+				 deferredResources = std::move(deferredResources)]() mutable
+			{
+				auto package = BuildSnapshotOwnedRenderScenePackage(
+					snapshot,
+					SnapshotRenderScenePackageBuildMode::SkipDefaultPassInputs);
+				NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
+					package,
+					lightGridContext,
+					deferredResources);
+				NLS::Render::FrameGraph::FinalizePreparedDeferredScenePackage(package, frameDescriptorForBuilder);
+				return package;
+			});
+		}
 	}
 
 	void DeferredSceneRenderer::DrawFrame()
 	{
-		const auto& frame = GetFrameDescriptor();
-		EnsureGBufferTargets(frame.renderWidth, frame.renderHeight);
+		const bool usesThreadedRendering = NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
 
-		if (!m_gBufferShader || !m_lightingMaterial || !m_fullscreenQuad)
+		// NOTE: Deferred rendering with threaded RHI requires proper GBuffer-to-Lighting
+		// texture barrier handling in SubmitThreadedRhiFrame, which is not yet implemented.
+		// For now, always use FrameGraph path for Deferred to ensure correct rendering.
+		if (!usesThreadedRendering)
 		{
-			NLS_LOG_WARNING("DeferredSceneRenderer is missing shader or mesh resources; skipping deferred frame.");
-			return;
-		}
+			const auto& frame = GetFrameDescriptor();
+			EnsureGBufferTargets(frame.renderWidth, frame.renderHeight);
 
-		FrameGraph frameGraph;
-		frameGraph.reserve(2, frame.outputBuffer ? 6 : 4);
-		FrameGraphBlackboard blackboard;
-
-		ImportSceneRenderTargets(frameGraph, blackboard, frame, "DeferredOutputColor", "DeferredOutputDepth");
-
-		const auto gBufferAlbedo = frameGraph.import<NLS::Render::FrameGraph::FrameGraphTexture>(
-			"DeferredGBufferAlbedo",
-			MakeGBufferColorDesc(frame.renderWidth, frame.renderHeight),
-			NLS::Render::FrameGraph::FrameGraphTexture::WrapExternal(
-				m_gBuffer.GetExplicitColorTextureHandles()[0],
-				m_gBuffer.GetOrCreateExplicitColorView(0, "DeferredGBufferAlbedoView"))
-		);
-		const auto gBufferNormal = frameGraph.import<NLS::Render::FrameGraph::FrameGraphTexture>(
-			"DeferredGBufferNormal",
-			MakeGBufferColorDesc(frame.renderWidth, frame.renderHeight),
-			NLS::Render::FrameGraph::FrameGraphTexture::WrapExternal(
-				m_gBuffer.GetExplicitColorTextureHandles()[1],
-				m_gBuffer.GetOrCreateExplicitColorView(1, "DeferredGBufferNormalView"))
-		);
-		const auto gBufferMaterial = frameGraph.import<NLS::Render::FrameGraph::FrameGraphTexture>(
-			"DeferredGBufferMaterial",
-			MakeGBufferColorDesc(frame.renderWidth, frame.renderHeight),
-			NLS::Render::FrameGraph::FrameGraphTexture::WrapExternal(
-				m_gBuffer.GetExplicitColorTextureHandles()[2],
-				m_gBuffer.GetOrCreateExplicitColorView(2, "DeferredGBufferMaterialView"))
-		);
-		const auto gBufferDepth = frameGraph.import<NLS::Render::FrameGraph::FrameGraphTexture>(
-			"DeferredGBufferDepth",
-			MakeGBufferDepthDesc(frame.renderWidth, frame.renderHeight),
-			NLS::Render::FrameGraph::FrameGraphTexture::WrapExternal(
-				m_gBuffer.GetExplicitDepthTextureHandle(),
-				m_gBuffer.GetOrCreateExplicitDepthView("DeferredGBufferDepthView"))
-		);
-
-		const auto& gBufferPass = frameGraph.addCallbackPass<DeferredGBufferPassData>(
-			"DeferredGBuffer",
-			[&](FrameGraph::Builder& builder, DeferredGBufferPassData& data)
+			if (!m_gBufferShader || !m_lightingMaterial || !m_fullscreenQuad)
 			{
-				data.albedo = builder.write(gBufferAlbedo);
-				data.normal = builder.write(gBufferNormal);
-				data.material = builder.write(gBufferMaterial);
-				data.depth = builder.write(gBufferDepth);
-			},
-			[this](const DeferredGBufferPassData&, FrameGraphPassResources&, void*)
-			{
-				const bool recordedPass = BeginRecordedRenderPass(
-					&m_gBuffer,
-					GetFrameDescriptor().renderWidth,
-					GetFrameDescriptor().renderHeight,
-					true,
-					true,
-					true,
-					Maths::Vector4{ 0.0f, 0.0f, 0.0f, 1.0f });
-				if (!recordedPass)
+				NLS_LOG_WARNING("DeferredSceneRenderer is missing shader or mesh resources; skipping deferred frame.");
+				return;
+			}
+
+			FrameGraph frameGraph;
+			FrameGraphBlackboard blackboard;
+			const NLS::Render::FrameGraph::DeferredPreparedSceneResourceRequest deferredResourceRequest{
+				&m_gBuffer,
+				m_gBufferAlbedoTexture.get(),
+				m_gBufferNormalTexture.get(),
+				m_gBufferMaterialTexture.get(),
+				m_gBufferDepthTexture.get()
+			};
+			const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
+			const auto lightGridContext = NLS::Render::FrameGraph::BuildLightGridCompileContext(
+				frame,
+				GetLightGridPrepass(),
+				BuildLightGridFrameInputs(scene.hasSkyboxTexture));
+			const auto resourceRequest = NLS::Render::FrameGraph::BuildDeferredGraphSceneResourceRequest(
+				frameGraph,
+				blackboard,
+				frame,
+				deferredResourceRequest);
+			NLS::Render::FrameGraph::ReserveDeferredSceneGraph(frameGraph, resourceRequest);
+			const auto preparedGraph = NLS::Render::FrameGraph::PrepareDeferredSceneGraph(
+				resourceRequest,
+				lightGridContext);
+			NLS::Render::FrameGraph::ExecutePreparedDeferredSceneGraph(
+				frameGraph,
+				preparedGraph,
 				{
-					ExecuteLegacyFramebufferPass(m_gBuffer, [&]()
+					[this](const auto& beginDesc) -> bool
 					{
-						Clear(true, true, true, Maths::Vector4{ 0.0f, 0.0f, 0.0f, 1.0f });
+						return BeginRecordedRenderPass(
+							&m_gBuffer,
+							beginDesc.renderWidth,
+							beginDesc.renderHeight,
+							beginDesc.clearColor,
+							beginDesc.clearDepth,
+							beginDesc.clearStencil,
+							beginDesc.clearValue);
+					},
+					[this]()
+					{
 						DrawGBufferOpaques(CreateSceneDefaultPipelineState(*this));
-					});
-				}
-				else
-				{
-					DrawGBufferOpaques(CreateSceneDefaultPipelineState(*this));
-					EndRecordedRenderPass();
-				}
-			}
-		);
+					},
+					[this]()
+					{
+						EndRecordedRenderPass();
+					},
+					[this](const auto& beginDesc) -> bool
+					{
+						return BeginOutputRenderPass(
+							beginDesc.renderWidth,
+							beginDesc.renderHeight,
+							beginDesc.clearColor,
+							beginDesc.clearDepth,
+							beginDesc.clearStencil,
+							beginDesc.clearValue);
+					},
+					[this]()
+					{
+						DrawLightingPass(CreateSceneFullscreenCompositePipelineState(*this));
+					},
+					[this](bool startedRenderPass, const auto& endDesc)
+					{
+						(void)endDesc;
+						EndOutputRenderPass(startedRenderPass);
+					}
+				});
 
-		frameGraph.addCallbackPass<DeferredLightingPassData>(
-			"DeferredLighting",
-			[&](FrameGraph::Builder& builder, DeferredLightingPassData& data)
-			{
-				data.albedo = builder.read(gBufferPass.albedo);
-				data.normal = builder.read(gBufferPass.normal);
-				data.material = builder.read(gBufferPass.material);
-				data.depth = builder.read(gBufferPass.depth);
-
-				if (const auto* output = blackboard.try_get<SceneRenderTargetsData>())
-				{
-					if (output->color >= 0)
-						data.outputColor = builder.write(output->color);
-					if (output->depth >= 0)
-						data.outputDepth = builder.write(output->depth);
-				}
-				else
-					builder.setSideEffect();
-			},
-			[this](const DeferredLightingPassData&, FrameGraphPassResources&, void*)
-			{
-				const auto& frameDescriptor = GetFrameDescriptor();
-				const auto clearColor = Maths::Vector4{
-					frameDescriptor.camera->GetClearColor().x,
-					frameDescriptor.camera->GetClearColor().y,
-					frameDescriptor.camera->GetClearColor().z,
-					1.0f
-				};
-				const bool recordedPass = BeginOutputRenderPass(
-					frameDescriptor.renderWidth,
-					frameDescriptor.renderHeight,
-					frameDescriptor.camera->GetClearColorBuffer(),
-					frameDescriptor.camera->GetClearDepthBuffer(),
-					frameDescriptor.camera->GetClearStencilBuffer(),
-					clearColor,
-					true);
-				DrawLightingPass(CreateSceneFullscreenCompositePipelineState(*this));
-				EndOutputRenderPass(recordedPass, true);
-			}
-		);
-
-		frameGraph.compile();
-		auto executionContext = CreateFrameGraphExecutionContext();
-		frameGraph.execute(&executionContext, &executionContext);
+			frameGraph.compile();
+			auto executionContext = CreateFrameGraphExecutionContext();
+			frameGraph.execute(&executionContext, &executionContext);
+		}
 
 		DrawRegisteredPasses();
 	}
@@ -324,12 +318,6 @@ namespace NLS::Engine::Rendering
 		{
 			m_lightingMaterial = std::make_unique<NLS::Render::Resources::Material>(m_lightingShader);
 		}
-
-		m_passBuffer = std::make_unique<NLS::Render::Buffers::UniformBuffer>(
-			sizeof(DeferredPassConstants),
-			NLS::Render::RHI::BindingPointMap::GetUniformBufferBindingPoint(NLS::Render::RHI::BindingPointMap::kPassBindingSpace, 0),
-			0,
-			NLS::Render::Settings::EAccessSpecifier::STREAM_DRAW);
 
 		std::vector<NLS::Render::Geometry::Vertex> vertices{
 			MakeFullscreenVertex(-1.0f, -1.0f, 0.0f, 1.0f),
@@ -349,7 +337,7 @@ namespace NLS::Engine::Rendering
 			{ NLS::Render::RHI::TextureFormat::RGBA8 }
 		};
 
-		if (m_gBuffer.GetID() == 0)
+		if (!m_gBuffer.IsInitialized())
 			m_gBuffer.Init(width, height, kAttachments, true);
 		else
 			m_gBuffer.Resize(width, height);
@@ -358,8 +346,10 @@ namespace NLS::Engine::Rendering
 		if (colorResources.size() < 3)
 			return;
 
-		auto wrapTexture = [width, height](const std::shared_ptr<NLS::Render::RHI::RHITexture>& textureResource)
+		auto wrapTexture = [width, height](const std::shared_ptr<NLS::Render::RHI::RHITexture>& textureResource) -> std::unique_ptr<NLS::Render::Resources::Texture2D>
 		{
+			if (!textureResource)
+				return nullptr;
 			return NLS::Render::Resources::Texture2D::WrapExternal(textureResource, width, height);
 		};
 
@@ -432,7 +422,7 @@ namespace NLS::Engine::Rendering
 
 	void DeferredSceneRenderer::DrawLightingPass(NLS::Render::Data::PipelineState pso)
 	{
-		if (!m_lightingMaterial || !m_fullscreenQuad || !m_gBufferAlbedoTexture || !m_gBufferNormalTexture || !m_gBufferMaterialTexture || !m_passBuffer)
+		if (!m_lightingMaterial || !m_fullscreenQuad || !m_gBufferAlbedoTexture || !m_gBufferNormalTexture || !m_gBufferMaterialTexture)
 			return;
 
 		NLS::Render::Resources::TextureCube* skyboxTexture = nullptr;
@@ -450,13 +440,6 @@ namespace NLS::Engine::Rendering
 			}
 		}
 
-		const auto* lightingDescriptor = HasDescriptor<LightingDescriptor>()
-			? &GetDescriptor<LightingDescriptor>()
-			: nullptr;
-		const auto passConstants = BuildDeferredPassConstants(GetFrameDescriptor(), lightingDescriptor, skyboxTexture != nullptr);
-		m_passBuffer->SetRawData(&passConstants, sizeof(passConstants));
-		m_passBuffer->Bind(NLS::Render::RHI::BindingPointMap::GetUniformBufferBindingPoint(NLS::Render::RHI::BindingPointMap::kPassBindingSpace, 0));
-
 		m_lightingMaterial->GetParameterBlock().Set("u_GBufferAlbedo", m_gBufferAlbedoTexture.get());
 		m_lightingMaterial->GetParameterBlock().Set("u_GBufferNormal", m_gBufferNormalTexture.get());
 		m_lightingMaterial->GetParameterBlock().Set("u_GBufferMaterial", m_gBufferMaterialTexture.get());
@@ -467,6 +450,7 @@ namespace NLS::Engine::Rendering
 
 		auto commandBuffer = GetActiveExplicitCommandBuffer();
 		auto device = GetExplicitDevice();
+		auto pipelineCache = NLS::Render::Context::DriverRendererAccess::GetPipelineCache(GetDriver());
 
 		NLS::Render::Entities::Drawable lightingDrawable;
 		lightingDrawable.mesh = m_fullscreenQuad.get();
@@ -483,24 +467,12 @@ namespace NLS::Engine::Rendering
 		auto mesh = lightingDrawable.mesh;
 
 		auto pipeline = material->BuildRecordedGraphicsPipeline(
-			device, lightingDrawable.primitiveMode, pso, compositeOverrides);
+			device, pipelineCache, lightingDrawable.primitiveMode, pso, compositeOverrides);
 		auto bindingSet = material->GetRecordedBindingSet(device);
 		auto rhiMesh = mesh->GetRHIMesh();
-		NLS::Render::Core::ABaseRenderer::ExplicitUniformBufferBindingDesc passBindingDesc;
-		passBindingDesc.set = NLS::Render::RHI::BindingPointMap::kPassDescriptorSet;
-		passBindingDesc.registerSpace = NLS::Render::RHI::BindingPointMap::kPassBindingSpace;
-		passBindingDesc.binding = 0u;
-		passBindingDesc.range = sizeof(DeferredPassConstants);
-		passBindingDesc.entryName = "PassConstants";
-		passBindingDesc.layoutDebugName = "DeferredLightingPassBindingLayout";
-		passBindingDesc.setDebugName = "DeferredLightingPassBindingSet";
-		passBindingDesc.snapshotDebugName = "DeferredLightingPassConstantsSnapshot";
-		passBindingDesc.stageMask = NLS::Render::RHI::ShaderStageMask::AllGraphics;
-		auto passBindingSet = CreateExplicitUniformBufferBindingSet(*m_passBuffer, passBindingDesc);
-
 		commandBuffer->BindGraphicsPipeline(pipeline);
-		if (passBindingSet != nullptr)
-			commandBuffer->BindBindingSet(NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, passBindingSet);
+		if (GetLightGridGraphicsPassBindingSet() != nullptr)
+			commandBuffer->BindBindingSet(NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, GetLightGridGraphicsPassBindingSet());
 		commandBuffer->BindBindingSet(NLS::Render::RHI::BindingPointMap::kMaterialDescriptorSet, bindingSet);
 		SubmitMeshDraw(commandBuffer, rhiMesh, material->GetGPUInstances());
 	}

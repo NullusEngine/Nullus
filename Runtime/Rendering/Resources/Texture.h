@@ -10,22 +10,10 @@
 namespace NLS::Render::Resources
 {
 	/**
-	* OpenGL texture wrapper - Formal RHI only
+	* Backend-neutral texture wrapper over the formal RHI surface.
 	*/
 	class NLS_RENDER_API Texture
 	{
-	public:
-		/**
-		* Bind the texture to the given slot
-		* @param p_slot
-		*/
-		virtual void Bind(uint32_t p_slot = 0) const = 0;
-
-		/**
-		* Unbind the texture
-		*/
-		virtual void Unbind() const = 0;
-
 	public:
 		explicit Texture(RHI::TextureDimension dimension = RHI::TextureDimension::Texture2D);
 		~Texture();
@@ -37,18 +25,11 @@ namespace NLS::Render::Resources
 		void ReleaseRHITexture();
 		void SetRHITexture(std::shared_ptr<RHI::RHITexture> texture);
 
-		// Legacy API - always returns nullptr now
-		void* GetRHITexture() const { return nullptr; }
 		const std::shared_ptr<RHI::RHITexture>& GetTextureHandle() const { return m_explicitTexture; }
-		// Legacy - always returns nullptr
-		void* GetRHITextureHandle() const { return nullptr; }
 		const std::shared_ptr<RHI::RHITexture>& GetExplicitRHITextureHandle() const { return GetTextureHandle(); }
 		std::shared_ptr<RHI::RHITextureView> GetOrCreateExplicitTextureView(const std::string& debugName = {}) const;
 
 	protected:
-		// Legacy - always returns -1
-		uint32_t GetCompatibilityTextureId() const { return static_cast<uint32_t>(-1); }
-
 		void RecreateRHITextureIfNeeded(
 		    uint32_t width,
 		    uint32_t height,

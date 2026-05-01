@@ -5,7 +5,7 @@
 namespace NLS::Engine::Rendering
 {
 	/**
-	* Compatibility alias for renderer-owned per-draw object data.
+	* Alias for renderer-owned per-draw object data.
 	*/
 	using EngineDrawableDescriptor = NLS::Render::Data::DrawableObjectDescriptor;
 }

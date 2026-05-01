@@ -54,19 +54,6 @@ TextureCube::TextureCube()
 {
 }
 
-void TextureCube::Bind(uint32_t p_slot) const
-{
-	// In formal RHI, binding is handled at command buffer level through descriptor sets
-	// This is a no-op placeholder
-	(void)p_slot;
-}
-
-void TextureCube::Unbind() const
-{
-	// In formal RHI, unbinding is handled at command buffer level
-	// This is a no-op placeholder
-}
-
 bool TextureCube::SetTextureResource(const std::vector<const NLS::Image*>& images)
 {
 	if (images.size() != NLS::Render::RHI::GetTextureLayerCount(NLS::Render::RHI::TextureDimension::TextureCube))

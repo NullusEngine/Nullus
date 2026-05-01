@@ -7,20 +7,16 @@ namespace
 {
 	std::shared_ptr<NLS::Render::RHI::RHIDevice> GetExplicitDevice()
 	{
-		try
-		{
-			auto& driver = NLS::Render::Context::RequireLocatedDriver("IndexBuffer");
-			return NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver);
-		}
-		catch (...)
-		{
-			return nullptr;
-		}
+		auto& driver = NLS::Render::Context::RequireLocatedDriver("IndexBuffer");
+		return NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver);
 	}
 }
 
 NLS::Render::Buffers::IndexBuffer::IndexBuffer(unsigned int* p_data, size_t p_elements)
 {
+	if (p_data == nullptr || p_elements == 0u)
+		return;
+
 	NLS::Render::RHI::RHIBufferDesc desc;
 	desc.size = p_elements * sizeof(unsigned int);
 	desc.usage = NLS::Render::RHI::BufferUsageFlags::Index;
@@ -43,20 +39,3 @@ NLS::Render::Buffers::IndexBuffer::~IndexBuffer()
 	m_explicitBuffer.reset();
 }
 
-void NLS::Render::Buffers::IndexBuffer::Bind()
-{
-	// In formal RHI, binding is handled at command buffer level
-	// This is a no-op placeholder
-}
-
-void NLS::Render::Buffers::IndexBuffer::Unbind()
-{
-	// In formal RHI, unbinding is handled at command buffer level
-	// This is a no-op placeholder
-}
-
-uint32_t NLS::Render::Buffers::IndexBuffer::GetID()
-{
-	// In formal RHI, there's no buffer ID - return 0 as placeholder
-	return 0;
-}

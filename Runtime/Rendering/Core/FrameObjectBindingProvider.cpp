@@ -40,6 +40,14 @@ void FrameObjectBindingProvider::PrepareExplicitDraw(
     ++m_preparedDrawCount;
 }
 
+bool FrameObjectBindingProvider::CapturePreparedBindingSets(
+    PipelineState& pso,
+    const Entities::Drawable& drawable,
+    PreparedBindingSets& outBindings)
+{
+    return OnCapturePreparedBindingSets(pso, drawable, outBindings);
+}
+
 bool FrameObjectBindingProvider::IsFramePrepared() const
 {
     return m_framePrepared;
@@ -69,5 +77,13 @@ void FrameObjectBindingProvider::OnPrepareDraw(PipelineState&, const Entities::D
 
 void FrameObjectBindingProvider::OnPrepareExplicitDraw(RHI::RHICommandBuffer&, PipelineState&, const Entities::Drawable&)
 {
+}
+
+bool FrameObjectBindingProvider::OnCapturePreparedBindingSets(
+    PipelineState&,
+    const Entities::Drawable&,
+    PreparedBindingSets&)
+{
+    return false;
 }
 }

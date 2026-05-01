@@ -2,7 +2,6 @@
 
 #include "Rendering/DebugSceneRenderer.h"
 #include "Rendering/PickingRenderPass.h"
-#include "Rendering/EditorDefaultResources.h"
 #include "Rendering/SceneRendererFactory.h"
 #include "Core/EditorActions.h"
 #include "Panels/SceneView.h"
@@ -21,12 +20,9 @@ Editor::Panels::SceneView::SceneView(
     // Scene View should always render editor overlays (grid/gizmo/light billboards),
     // so use the editor renderer on every backend.
     m_renderer = std::make_unique<Editor::Rendering::DebugSceneRenderer>(*EDITOR_CONTEXT(driver));
+    SetRequiresRetiredFrameConsumption(true);
 
     m_camera.SetFar(5000.0f);
-
-    m_fallbackMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders\\Unlit.hlsl"]);
-    m_fallbackMaterial.Set<Maths::Vector4>("u_Diffuse", {1.f, 0.f, 1.f, 1.0f});
-    m_fallbackMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", Editor::Rendering::GetEditorDefaultWhiteTexture());
 
     m_image->AddPlugin<UI::DDTarget<std::pair<std::string, UI::Widgets::Group*>>>("File").DataReceivedEvent += [this](auto p_data)
     {
@@ -43,13 +39,18 @@ Editor::Panels::SceneView::SceneView(
         }
     };
 
-    Engine::GameObject::DestroyedEvent += [this](const Engine::GameObject& actor)
+    m_destroyedListener = Engine::GameObject::DestroyedEvent += [this](const Engine::GameObject& actor)
     {
         if (m_highlightedActor && m_highlightedActor->GetWorldID() == actor.GetWorldID())
         {
             m_highlightedActor = nullptr;
         }
     };
+}
+
+Editor::Panels::SceneView::~SceneView()
+{
+    Engine::GameObject::DestroyedEvent -= m_destroyedListener;
 }
 
 void Editor::Panels::SceneView::Update(float p_deltaTime)
@@ -105,14 +106,7 @@ Engine::SceneSystem::Scene* Editor::Panels::SceneView::GetScene()
 
 Engine::Rendering::BaseSceneRenderer::SceneDescriptor Editor::Panels::SceneView::CreateSceneDescriptor()
 {
-    auto descriptor = AViewControllable::CreateSceneDescriptor();
-    descriptor.fallbackMaterial = &m_fallbackMaterial;
-    return descriptor;
-}
-
-void Editor::Panels::SceneView::DrawFrame()
-{
-    Editor::Panels::AViewControllable::DrawFrame();
+    return AViewControllable::CreateSceneDescriptor();
 }
 
 void Editor::Panels::SceneView::AfterRenderFrame()
@@ -173,11 +167,9 @@ void Editor::Panels::SceneView::HandleActorPicking()
         const auto [safeWidth, safeHeight] = GetSafeSize();
         const float maxRenderX = std::max(0.0f, static_cast<float>(safeWidth) - 1.0f);
         const float maxRenderY = std::max(0.0f, static_cast<float>(safeHeight) - 1.0f);
-        const bool bottomLeftOriginPicking =
-            NLS_SERVICE(UI::UIManager).GetGraphicsBackend() == Render::Settings::EGraphicsBackend::OPENGL;
 
         mousePos.x = std::clamp(mousePos.x, 0.0f, maxRenderX);
-        mousePos.y = bottomLeftOriginPicking
+        mousePos.y = NLS_SERVICE(UI::UIManager).UsesBottomLeftRenderTargetOrigin()
             ? std::clamp(static_cast<float>(safeHeight) - 1.0f - mousePos.y, 0.0f, maxRenderY)
             : std::clamp(mousePos.y, 0.0f, maxRenderY);
 
@@ -235,13 +227,16 @@ void Editor::Panels::SceneView::HandleActorPicking()
 
         if (leftClicked && !rightMousePressed)
         {
-            if (m_highlightedGizmoDirection)
+            if (m_highlightedGizmoDirection && EDITOR_EXEC(IsAnyActorSelected()))
             {
-                m_gizmoOperations.StartPicking(
-                    *EDITOR_EXEC(GetSelectedActor()),
-                    m_camera.GetPosition(),
-                    m_currentOperation,
-                    m_highlightedGizmoDirection.value());
+                if (auto* selectedActor = EDITOR_EXEC(GetSelectedActor()); selectedActor != nullptr)
+                {
+                    m_gizmoOperations.StartPicking(
+                        *selectedActor,
+                        m_camera.GetPosition(),
+                        m_currentOperation,
+                        m_highlightedGizmoDirection.value());
+                }
             }
             else if (m_highlightedActor)
             {

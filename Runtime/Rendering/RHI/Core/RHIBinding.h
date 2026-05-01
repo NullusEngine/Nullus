@@ -49,5 +49,8 @@ namespace NLS::Render::RHI
     {
     public:
         virtual const RHIBindingSetDesc& GetDesc() const = 0;
+        virtual NativeHandle GetNativeBindingSetHandle() const { return {}; }
+        virtual std::shared_ptr<RHIBindingSet> GetWrappedBindingSetShared() { return nullptr; }
+        virtual std::shared_ptr<const RHIBindingSet> GetWrappedBindingSetShared() const { return nullptr; }
     };
 }

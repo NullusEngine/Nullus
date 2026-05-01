@@ -614,10 +614,10 @@ namespace
 #endif
 	}
 
-	void RenderDocCaptureController::OnPreFrame()
+	void RenderDocCaptureController::OnPreFrame(const bool frameWillPresent)
 	{
 #if defined(_WIN32)
-		if (!IsAvailable() || !m_impl->captureQueued)
+		if (!IsAvailable() || !m_impl->captureQueued || !frameWillPresent)
 			return;
 
 		if (m_impl->presentCountdown > 1)
@@ -629,12 +629,12 @@ namespace
 		m_impl->PrepareCaptureMetadata(m_impl->pendingCaptureLabel);
 		m_impl->captureQueued = false;
 		m_impl->presentCountdown = 0;
-		m_impl->api->StartFrameCapture(m_impl->captureDevice, m_impl->captureWindow);
-		// Some backends may not report IsFrameCapturing() synchronously immediately after StartFrameCapture().
-		// Treat this as an active capture request and validate with EndFrameCapture() on post-present.
-		m_impl->queuedCaptureActive = true;
-		m_impl->waitingForTriggeredCapture = false;
-		NLS_LOG_INFO("RenderDoc queued StartFrameCapture before frame -> requested");
+		m_impl->api->TriggerCapture();
+		// Startup captures use RenderDoc's next-frame trigger so the tooling path
+		// does not depend on a specific threaded-present callback branch.
+		m_impl->queuedCaptureActive = false;
+		m_impl->waitingForTriggeredCapture = true;
+		NLS_LOG_INFO("RenderDoc queued TriggerCapture before presentable frame -> requested");
 #endif
 	}
 

@@ -14,6 +14,7 @@ namespace
 		desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
 		desc.format = format;
 		desc.usage = NLS::Render::RHI::TextureUsageFlags::Sampled | NLS::Render::RHI::TextureUsageFlags::ColorAttachment;
+		desc.optimizedClearValue.enabled = true;
 		desc.debugName = "MultiFramebufferColorTexture" + std::to_string(index);
 		return desc;
 	}
@@ -27,6 +28,9 @@ namespace
 		desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
 		desc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
 		desc.usage = NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment | NLS::Render::RHI::TextureUsageFlags::Sampled;
+		desc.optimizedClearValue.enabled = true;
+		desc.optimizedClearValue.depth = 1.0f;
+		desc.optimizedClearValue.stencil = 0u;
 		desc.debugName = "MultiFramebufferDepthTexture";
 		return desc;
 	}
@@ -64,16 +68,18 @@ namespace NLS::Render::Buffers
 		Allocate();
 	}
 
-	void MultiFramebuffer::Bind() const
+	bool MultiFramebuffer::IsInitialized() const
 	{
-		// In formal RHI, binding is handled at command buffer level through render passes
-		// This is a no-op placeholder
-	}
+		if (m_withDepth && m_explicitDepthTexture != nullptr)
+			return true;
 
-	void MultiFramebuffer::Unbind() const
-	{
-		// In formal RHI, unbinding is handled at command buffer level
-		// This is a no-op placeholder
+		for (const auto& texture : m_explicitColorTextures)
+		{
+			if (texture != nullptr)
+				return true;
+		}
+
+		return false;
 	}
 
 	void MultiFramebuffer::Release()
@@ -82,11 +88,6 @@ namespace NLS::Render::Buffers
 		m_explicitColorTextureViews.clear();
 		m_explicitDepthTexture.reset();
 		m_explicitDepthTextureView.reset();
-
-		// Clear legacy resources (no longer used but kept for ABI compatibility)
-		m_colorTextures.clear();
-		m_colorTextureResources.clear();
-		m_depthTextureResource.reset();
 	}
 
 	void MultiFramebuffer::Allocate()

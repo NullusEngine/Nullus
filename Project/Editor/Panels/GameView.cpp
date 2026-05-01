@@ -15,6 +15,7 @@ Editor::Panels::GameView::GameView
 	m_sceneManager(EDITOR_CONTEXT(sceneManager))
 {
 	m_renderer = Engine::Rendering::CreateSceneRenderer(*EDITOR_CONTEXT(driver));
+    SetRequiresRetiredFrameConsumption(true);
 	Render::Buffers::UniformBuffer test(1024, 1);
 }
 

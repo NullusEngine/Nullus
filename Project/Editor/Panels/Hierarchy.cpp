@@ -179,14 +179,24 @@ Editor::Panels::Hierarchy::Hierarchy
 	};
     m_sceneRoot->AddPlugin<ActorContextualMenu>(nullptr, *m_sceneRoot);
 
-	// TODO: This code is unsafe, if the hierarchy gets deleted before the last actor gets deleted, this might crash
-	EDITOR_EVENT(ActorUnselectedEvent) += std::bind(&Hierarchy::UnselectActorsWidgets, this);
-	EDITOR_CONTEXT(sceneManager).SceneUnloadEvent += std::bind(&Hierarchy::Clear, this);
-	Engine::GameObject::CreatedEvent += std::bind(&Hierarchy::AddActorByInstance, this, std::placeholders::_1);
-	Engine::GameObject::DestroyedEvent += std::bind(&Hierarchy::DeleteActorByInstance, this, std::placeholders::_1);
-	EDITOR_EVENT(ActorSelectedEvent) += std::bind(&Hierarchy::SelectActorByInstance, this, std::placeholders::_1);
-	Engine::GameObject::AttachEvent += std::bind(&Hierarchy::AttachActorToParent, this, std::placeholders::_1);
-	Engine::GameObject::DettachEvent += std::bind(&Hierarchy::DetachFromParent, this, std::placeholders::_1);
+	m_actorUnselectedListener = EDITOR_EVENT(ActorUnselectedEvent) += std::bind(&Hierarchy::UnselectActorsWidgets, this);
+	m_sceneUnloadListener = EDITOR_CONTEXT(sceneManager).SceneUnloadEvent += std::bind(&Hierarchy::Clear, this);
+	m_actorCreatedListener = Engine::GameObject::CreatedEvent += std::bind(&Hierarchy::AddActorByInstance, this, std::placeholders::_1);
+	m_actorDestroyedListener = Engine::GameObject::DestroyedEvent += std::bind(&Hierarchy::DeleteActorByInstance, this, std::placeholders::_1);
+	m_actorSelectedListener = EDITOR_EVENT(ActorSelectedEvent) += std::bind(&Hierarchy::SelectActorByInstance, this, std::placeholders::_1);
+	m_actorAttachedListener = Engine::GameObject::AttachEvent += std::bind(&Hierarchy::AttachActorToParent, this, std::placeholders::_1);
+	m_actorDetachedListener = Engine::GameObject::DettachEvent += std::bind(&Hierarchy::DetachFromParent, this, std::placeholders::_1);
+}
+
+Editor::Panels::Hierarchy::~Hierarchy()
+{
+	EDITOR_EVENT(ActorUnselectedEvent) -= m_actorUnselectedListener;
+	EDITOR_CONTEXT(sceneManager).SceneUnloadEvent -= m_sceneUnloadListener;
+	Engine::GameObject::CreatedEvent -= m_actorCreatedListener;
+	Engine::GameObject::DestroyedEvent -= m_actorDestroyedListener;
+	EDITOR_EVENT(ActorSelectedEvent) -= m_actorSelectedListener;
+	Engine::GameObject::AttachEvent -= m_actorAttachedListener;
+	Engine::GameObject::DettachEvent -= m_actorDetachedListener;
 }
 
 void Editor::Panels::Hierarchy::Clear()

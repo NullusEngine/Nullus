@@ -1,5 +1,8 @@
 ﻿
 #include <filesystem>
+#include <algorithm>
+#include <cctype>
+#include <string_view>
 #include <Debug/Logger.h>
 
 #include "Core/Editor.h"
@@ -25,6 +28,7 @@
 #include "Panels/ProjectSettings.h"
 #include "Panels/AssetProperties.h"
 #include "Rendering/Context/DriverAccess.h"
+#include "Rendering/Settings/GraphicsBackendUtils.h"
 using namespace NLS::Core::ResourceManagement;
 using namespace NLS::Editor::Panels;
 using namespace NLS::Render::Resources::Loaders;
@@ -33,6 +37,39 @@ namespace NLS
 {
 namespace
 {
+enum class ValidationFocusTarget
+{
+    None,
+    SceneView,
+    GameView
+};
+
+std::string NormalizeValidationToken(std::string_view value)
+{
+    std::string normalized(value);
+    std::transform(
+        normalized.begin(),
+        normalized.end(),
+        normalized.begin(),
+        [](unsigned char ch)
+        {
+            return static_cast<char>(std::tolower(ch));
+        });
+    return normalized;
+}
+
+ValidationFocusTarget ResolveValidationFocusTarget(std::string_view value)
+{
+    const std::string normalized = NormalizeValidationToken(value);
+    if (normalized.empty())
+        return ValidationFocusTarget::None;
+    if (normalized == "scene" || normalized == "sceneview" || normalized == "scene-view")
+        return ValidationFocusTarget::SceneView;
+    if (normalized == "game" || normalized == "gameview" || normalized == "game-view")
+        return ValidationFocusTarget::GameView;
+    return ValidationFocusTarget::None;
+}
+
 void RenameFileReplacingDestination(const std::filesystem::path& source, const std::filesystem::path& destination)
 {
     std::error_code error;
@@ -82,18 +119,21 @@ Editor::Core::Editor::Editor(Context& p_context)
 
     const auto startScene = m_context.projectSettings.Get<std::string>("start_scene");
     const auto startScenePath = m_context.projectAssetsPath + startScene;
-    if (!startScene.empty() && std::filesystem::exists(startScenePath))
-    {
-        m_context.sceneManager.LoadScene(startScenePath, true);
-    }
-    else
-    {
-        m_context.sceneManager.LoadEmptyLightedScene();
-    }
+	if (!startScene.empty() && std::filesystem::exists(startScenePath))
+	{
+		m_context.sceneManager.LoadScene(startScenePath, true);
+	}
+	else
+	{
+		m_context.sceneManager.LoadEmptyLightedScene();
+	}
+
+    ApplyStartupValidationDirectives();
 }
 
 Editor::Core::Editor::~Editor()
 {
+    m_panelsManager.DestroyPanels();
     m_context.sceneManager.UnloadCurrentScene();
 }
 
@@ -157,6 +197,65 @@ void Editor::Core::Editor::HandleGlobalShortcuts()
     }
 }
 
+void Editor::Core::Editor::ApplyStartupValidationDirectives()
+{
+    const auto& diagnostics = m_context.GetDiagnosticsSettings();
+    auto& sceneView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::SceneView>("Scene View");
+    auto& gameView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::GameView>("Game View");
+
+    switch (ResolveValidationFocusTarget(diagnostics.editorValidationExclusiveView))
+    {
+    case ValidationFocusTarget::SceneView:
+        sceneView.Open();
+        gameView.Close();
+        NLS_LOG_INFO("Editor validation isolated Scene View.");
+        break;
+    case ValidationFocusTarget::GameView:
+        gameView.Open();
+        sceneView.Close();
+        NLS_LOG_INFO("Editor validation isolated Game View.");
+        break;
+    case ValidationFocusTarget::None:
+    default:
+        break;
+    }
+
+    switch (ResolveValidationFocusTarget(diagnostics.editorValidationFocusView))
+    {
+    case ValidationFocusTarget::SceneView:
+        sceneView.Focus();
+        NLS_LOG_INFO("Editor validation pre-focused Scene View.");
+        break;
+    case ValidationFocusTarget::GameView:
+        gameView.Focus();
+        NLS_LOG_INFO("Editor validation pre-focused Game View.");
+        break;
+    case ValidationFocusTarget::None:
+    default:
+        break;
+    }
+
+    if (!diagnostics.editorValidationSelectActor.empty())
+    {
+        if (auto* currentScene = m_context.sceneManager.GetCurrentScene();
+            currentScene != nullptr)
+        {
+            if (auto* actor = currentScene->FindActorByName(diagnostics.editorValidationSelectActor);
+                actor != nullptr)
+            {
+                m_editorActions.SelectActor(*actor);
+                NLS_LOG_INFO("Editor validation pre-selected actor: " + diagnostics.editorValidationSelectActor);
+            }
+            else
+            {
+                NLS_LOG_WARNING(
+                    "Editor validation could not find actor during startup: " +
+                    diagnostics.editorValidationSelectActor);
+            }
+        }
+    }
+}
+
 void Editor::Core::Editor::UpdateCurrentEditorMode(float p_deltaTime)
 {
     if (auto editorMode = m_editorActions.GetCurrentEditorMode(); editorMode == EditorActions::EEditorMode::PLAY || editorMode == EditorActions::EEditorMode::FRAME_BY_FRAME)
@@ -206,7 +305,10 @@ void Editor::Core::Editor::UpdateEditorPanels(float p_deltaTime)
 
     menuBar.HandleShortcuts(p_deltaTime);
 
-    if (m_elapsedFrames == 1) // Let the first frame happen and then make the scene view the first seen view
+    const bool keepDefaultSceneFocus =
+        ResolveValidationFocusTarget(m_context.GetDiagnosticsSettings().editorValidationFocusView) ==
+        ValidationFocusTarget::None;
+    if (m_elapsedFrames == 1 && keepDefaultSceneFocus) // Let the first frame happen and then make the scene view the first seen view
         sceneView.Focus();
 
     if (frameInfo.IsOpened())
@@ -246,6 +348,9 @@ void Editor::Core::Editor::UpdateViews(float p_deltaTime)
 
 void Editor::Core::Editor::RenderEditorUI(float p_deltaTime)
 {
+    if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
+        NLS_LOG_INFO("Editor::RenderEditorUI: begin");
+
     // Set up UI synchronization semaphores for all backends
     // Get the semaphore that game rendering will signal (UI should wait on this)
     void* renderFinishedSemaphore = Render::Context::DriverUIAccess::GetRenderFinishedSemaphore(*m_context.driver);
@@ -262,13 +367,26 @@ void Editor::Core::Editor::RenderEditorUI(float p_deltaTime)
     }
 
     EDITOR_CONTEXT(uiManager)->Render();
+    if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
+        NLS_LOG_INFO("Editor::RenderEditorUI: UIManager::Render returned");
+
     m_context.uiManager->SubmitUIRendering();
+    if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
+        NLS_LOG_INFO("Editor::RenderEditorUI: SubmitUIRendering returned");
 }
 
 void Editor::Core::Editor::PostUpdate()
 {
+    if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
+        NLS_LOG_INFO("Editor::PostUpdate: begin");
+
     Render::Context::DriverUIAccess::PresentSwapchain(*m_context.driver);
+    if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
+        NLS_LOG_INFO("Editor::PostUpdate: PresentSwapchain returned");
+
     m_context.inputManager->ClearEvents();
     ++m_elapsedFrames;
+    if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
+        NLS_LOG_INFO("Editor::PostUpdate: end");
 }
 } // namespace NLS

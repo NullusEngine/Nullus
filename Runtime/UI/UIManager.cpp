@@ -5,6 +5,7 @@
 
 #include "Core/ServiceLocator.h"
 #include "Debug/Logger.h"
+#include "Rendering/RHI/Core/RHIRenderSurfaceConvention.h"
 #include "Rendering/RHI/Utils/RHIUIBridge.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Windowing/Window.h"
@@ -13,6 +14,49 @@
 
 namespace NLS::UI
 {
+namespace
+{
+NLS::Render::RHI::NativeBackendType ToNativeBackendType(const NLS::Render::Settings::EGraphicsBackend backend)
+{
+    switch (backend)
+    {
+    case NLS::Render::Settings::EGraphicsBackend::OPENGL:
+        return NLS::Render::RHI::NativeBackendType::OpenGL;
+    case NLS::Render::Settings::EGraphicsBackend::VULKAN:
+        return NLS::Render::RHI::NativeBackendType::Vulkan;
+    case NLS::Render::Settings::EGraphicsBackend::DX12:
+        return NLS::Render::RHI::NativeBackendType::DX12;
+    case NLS::Render::Settings::EGraphicsBackend::DX11:
+        return NLS::Render::RHI::NativeBackendType::DX11;
+    case NLS::Render::Settings::EGraphicsBackend::METAL:
+        return NLS::Render::RHI::NativeBackendType::Metal;
+    case NLS::Render::Settings::EGraphicsBackend::NONE:
+    default:
+        return NLS::Render::RHI::NativeBackendType::None;
+    }
+}
+
+NLS::Render::RHI::BackendType ToTaggedBackendType(const NLS::Render::RHI::NativeBackendType backend)
+{
+    switch (backend)
+    {
+    case NLS::Render::RHI::NativeBackendType::DX12:
+        return NLS::Render::RHI::BackendType::DX12;
+    case NLS::Render::RHI::NativeBackendType::Vulkan:
+        return NLS::Render::RHI::BackendType::Vulkan;
+    case NLS::Render::RHI::NativeBackendType::OpenGL:
+        return NLS::Render::RHI::BackendType::OpenGL;
+    case NLS::Render::RHI::NativeBackendType::Metal:
+        return NLS::Render::RHI::BackendType::Metal;
+    case NLS::Render::RHI::NativeBackendType::DX11:
+        return NLS::Render::RHI::BackendType::DX11;
+    case NLS::Render::RHI::NativeBackendType::None:
+    default:
+        return NLS::Render::RHI::BackendType::Unknown;
+    }
+}
+}
+
 ImGuiGlfwInitBackend ResolveImGuiGlfwInitBackend(const NLS::Render::Settings::EGraphicsBackend backend)
 {
     switch (backend)
@@ -60,10 +104,10 @@ UIManager::UIManager(
         break;
     }
 
-    // Note: CreateRHIUIBridge uses m_backend from initialization, p_nativeDeviceInfo is now used
+    // GLFW init still depends on the requested UI backend, but the renderer bridge
+    // is now selected from resolved native backend identity.
     m_uiBridge = NLS::Render::RHI::CreateRHIUIBridge(
         p_glfwWindow,
-        m_backend,
         p_glslVersion,
         p_nativeDeviceInfo);
     const bool hasRendererBackend = m_uiBridge != nullptr && m_uiBridge->HasRendererBackend();
@@ -466,12 +510,24 @@ NLS::Render::RHI::NativeHandle UIManager::ResolveUISignalSemaphore()
         if (sem != nullptr)
         {
             NLS::Render::RHI::NativeHandle handle;
-            handle.backend = NLS::Render::RHI::BackendType::Vulkan;
+            handle.backend = ToTaggedBackendType(m_uiBridge->GetNativeBackendType());
             handle.handle = sem;
             return handle;
         }
     }
     return NLS::Render::RHI::NativeHandle{};
+}
+
+bool UIManager::ShouldFlipPresentedRenderTargetVertically() const
+{
+    return NLS::Render::RHI::GetRenderSurfaceConvention(ToNativeBackendType(m_backend))
+        .RequiresPresentedTextureVerticalFlip();
+}
+
+bool UIManager::UsesBottomLeftRenderTargetOrigin() const
+{
+    return NLS::Render::RHI::GetRenderSurfaceConvention(ToNativeBackendType(m_backend))
+        .UsesBottomLeftRenderTargetOrigin();
 }
 
 void UIManager::PushCurrentFont()

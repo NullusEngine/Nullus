@@ -1,63 +1,16 @@
 #pragma once
 
-#include <fg/Blackboard.hpp>
-#include <fg/FrameGraph.hpp>
-
-#include <Rendering/Data/FrameDescriptor.h>
-#include <Rendering/FrameGraph/FrameGraphTexture.h>
-#include <Rendering/RHI/RHITypes.h>
+#include "Rendering/FrameGraph/ExternalResourceBridge.h"
 
 namespace NLS::Engine::Rendering
 {
-	struct SceneRenderTargetsData
-	{
-		FrameGraphResource color = -1;
-		FrameGraphResource depth = -1;
-	};
+    inline NLS::Render::FrameGraph::FrameGraphTexture::Desc MakeSceneColorTargetDesc(uint16_t width, uint16_t height)
+    {
+        return NLS::Render::FrameGraph::MakeSceneColorTargetDesc(width, height);
+    }
 
-	inline NLS::Render::FrameGraph::FrameGraphTexture::Desc MakeSceneColorTargetDesc(uint16_t width, uint16_t height)
-	{
-		NLS::Render::FrameGraph::FrameGraphTexture::Desc desc;
-		desc.extent.width = width;
-		desc.extent.height = height;
-		desc.extent.depth = 1u;
-		desc.format = NLS::Render::RHI::TextureFormat::RGB8;
-		desc.usage = NLS::Render::RHI::TextureUsageFlags::ColorAttachment | NLS::Render::RHI::TextureUsageFlags::Sampled;
-		return desc;
-	}
-
-	inline NLS::Render::FrameGraph::FrameGraphTexture::Desc MakeSceneDepthTargetDesc(uint16_t width, uint16_t height)
-	{
-		NLS::Render::FrameGraph::FrameGraphTexture::Desc desc;
-		desc.extent.width = width;
-		desc.extent.height = height;
-		desc.extent.depth = 1u;
-		desc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
-		desc.usage = NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment;
-		return desc;
-	}
-
-	inline void ImportSceneRenderTargets(FrameGraph& frameGraph, FrameGraphBlackboard& blackboard, const NLS::Render::Data::FrameDescriptor& frame, const char* colorResourceName, const char* depthResourceName)
-	{
-		if (!frame.outputBuffer)
-			return;
-
-		SceneRenderTargetsData targets;
-		targets.color = frameGraph.import<NLS::Render::FrameGraph::FrameGraphTexture>(
-			colorResourceName,
-			MakeSceneColorTargetDesc(frame.renderWidth, frame.renderHeight),
-			NLS::Render::FrameGraph::FrameGraphTexture::WrapExternal(
-				frame.outputBuffer->GetExplicitTextureHandle(),
-				frame.outputBuffer->GetOrCreateExplicitColorView("SceneOutputColorView"))
-		);
-		targets.depth = frameGraph.import<NLS::Render::FrameGraph::FrameGraphTexture>(
-			depthResourceName,
-			MakeSceneDepthTargetDesc(frame.renderWidth, frame.renderHeight),
-			NLS::Render::FrameGraph::FrameGraphTexture::WrapExternal(
-				frame.outputBuffer->GetExplicitDepthStencilTextureHandle(),
-				frame.outputBuffer->GetOrCreateExplicitDepthStencilView("SceneOutputDepthView"))
-		);
-
-		blackboard.add<SceneRenderTargetsData>(targets);
-	}
+    inline NLS::Render::FrameGraph::FrameGraphTexture::Desc MakeSceneDepthTargetDesc(uint16_t width, uint16_t height)
+    {
+        return NLS::Render::FrameGraph::MakeSceneDepthTargetDesc(width, height);
+    }
 }

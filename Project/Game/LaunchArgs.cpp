@@ -11,16 +11,21 @@ namespace NLS::Game::Launch
 	{
 		std::printf("Usage: %s [options] [project_path]\n", executableName);
 		std::printf("\nOptions:\n");
-		std::printf("  --backend <name>, -b <name>  Specify graphics backend (dx12, vulkan, opengl, dx11, metal)\n");
+		std::printf("  --backend <name>, -b <name>  Specify graphics backend (DX12 required during phase 1)\n");
 		std::printf("  --renderdoc                  Enable RenderDoc debugging\n");
 		std::printf("  --no-renderdoc               Disable RenderDoc debugging\n");
 		std::printf("  --capture-after-frames <N>  Automatically capture frame after N presents\n");
+		std::printf("  --threaded-rendering         Threaded rendering is the default DX12 mainline\n");
+		std::printf("  --log-render-draw-path      Enable render draw path logging\n");
+		std::printf("  --diag-skip-skybox          Skip skybox draw for diagnostics\n");
+		std::printf("  --log-material-bindings      Enable material bindings logging\n");
+		std::printf("  --dx12-log-messages          Enable DX12 message logging\n");
+		std::printf("  --dx12-log-frame-flow       Enable DX12 frame flow logging\n");
 		std::printf("  --help, -h                  Show this help message\n");
 		std::printf("\nArguments:\n");
 		std::printf("  project_path   Path to .nullus project file or project directory\n");
 		std::printf("\nExamples:\n");
 		std::printf("  %s TestProject.nullus\n", executableName);
-		std::printf("  %s --backend vulkan TestProject.nullus\n", executableName);
 		std::printf("  %s --backend dx12 TestProject\n", executableName);
 	}
 
@@ -37,7 +42,16 @@ namespace NLS::Game::Launch
 				if (!parsed.backendOverride.has_value())
 				{
 					std::fprintf(stderr, "[Game main] Unknown graphics backend: %s\n", backendName.c_str());
-					std::fprintf(stderr, "[Game main] Supported backends: dx12, vulkan, opengl, dx11, metal\n");
+					std::fprintf(stderr, "[Game main] Supported backends during phase 1: dx12\n");
+					parsed.hasError = true;
+					return parsed;
+				}
+
+				if (const auto restriction =
+					Render::Settings::GetPhase1BackendRestrictionMessage(parsed.backendOverride.value(), "Game CLI");
+					restriction.has_value())
+				{
+					std::fprintf(stderr, "[Game main] %s\n", restriction->c_str());
 					parsed.hasError = true;
 					return parsed;
 				}
@@ -64,6 +78,30 @@ namespace NLS::Game::Launch
 					parsed.hasError = true;
 					return parsed;
 				}
+			}
+			else if (arg == "--threaded-rendering")
+			{
+				parsed.enableThreadedRendering = true;
+			}
+			else if (arg == "--log-render-draw-path")
+			{
+				parsed.diagnosticsSettings.logRenderDrawPath = true;
+			}
+			else if (arg == "--diag-skip-skybox")
+			{
+				parsed.diagnosticsSettings.diagSkipSkyboxDraw = true;
+			}
+			else if (arg == "--log-material-bindings")
+			{
+				parsed.diagnosticsSettings.logMaterialBindings = true;
+			}
+			else if (arg == "--dx12-log-messages")
+			{
+				parsed.diagnosticsSettings.dx12LogMessages = true;
+			}
+			else if (arg == "--dx12-log-frame-flow")
+			{
+				parsed.diagnosticsSettings.dx12LogFrameFlow = true;
 			}
 			else if (arg == "--help" || arg == "-h")
 			{

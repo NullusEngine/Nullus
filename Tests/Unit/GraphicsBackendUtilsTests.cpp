@@ -64,42 +64,65 @@ TEST(GraphicsBackendUtilsTests, SceneRendererSupportDescriptionsMatchCurrentSupp
 {
     EXPECT_NE(
         std::string(NLS::Render::Settings::SceneRendererSupportDescription(
-            NLS::Render::Settings::EGraphicsBackend::DX12)).find("formal RHI mainline"),
+            NLS::Render::Settings::EGraphicsBackend::DX12)).find("only active runtime backend"),
         std::string::npos);
     EXPECT_NE(
         std::string(NLS::Render::Settings::SceneRendererSupportDescription(
-            NLS::Render::Settings::EGraphicsBackend::VULKAN)).find("formal RHI mainline"),
+            NLS::Render::Settings::EGraphicsBackend::VULKAN)).find("future multi-backend"),
         std::string::npos);
+    EXPECT_NE(
+        std::string(NLS::Render::Settings::SceneRendererSupportDescription(
+            NLS::Render::Settings::EGraphicsBackend::DX11)).find("only permits DX12"),
+        std::string::npos);
+    EXPECT_NE(
+        std::string(NLS::Render::Settings::SceneRendererSupportDescription(
+            NLS::Render::Settings::EGraphicsBackend::OPENGL)).find("only permits DX12"),
+        std::string::npos);
+    EXPECT_NE(
+        std::string(NLS::Render::Settings::SceneRendererSupportDescription(
+            NLS::Render::Settings::EGraphicsBackend::METAL)).find("only permits DX12"),
+        std::string::npos);
+}
 
+TEST(GraphicsBackendUtilsTests, Phase1BackendSelectionOnlyAcceptsDX12)
+{
 #if defined(_WIN32)
-    const char* dx11SupportPhrase = "unsupported";
+    EXPECT_TRUE(NLS::Render::Settings::IsBackendSelectableForPhase1(
+        NLS::Render::Settings::EGraphicsBackend::DX12));
 #else
-    const char* dx11SupportPhrase = "not exposed";
+    EXPECT_FALSE(NLS::Render::Settings::IsBackendSelectableForPhase1(
+        NLS::Render::Settings::EGraphicsBackend::DX12));
 #endif
-    EXPECT_NE(
-        std::string(NLS::Render::Settings::SceneRendererSupportDescription(
-            NLS::Render::Settings::EGraphicsBackend::DX11)).find(dx11SupportPhrase),
-        std::string::npos);
+    EXPECT_FALSE(NLS::Render::Settings::IsBackendSelectableForPhase1(
+        NLS::Render::Settings::EGraphicsBackend::DX11));
+    EXPECT_FALSE(NLS::Render::Settings::IsBackendSelectableForPhase1(
+        NLS::Render::Settings::EGraphicsBackend::VULKAN));
+    EXPECT_FALSE(NLS::Render::Settings::IsBackendSelectableForPhase1(
+        NLS::Render::Settings::EGraphicsBackend::OPENGL));
+    EXPECT_FALSE(NLS::Render::Settings::IsBackendSelectableForPhase1(
+        NLS::Render::Settings::EGraphicsBackend::METAL));
+}
 
-#if defined(_WIN32)
-    const char* openGlSupportPhrase = "unsupported";
-#else
-    const char* openGlSupportPhrase = "platform-specific validation";
-#endif
-    EXPECT_NE(
-        std::string(NLS::Render::Settings::SceneRendererSupportDescription(
-            NLS::Render::Settings::EGraphicsBackend::OPENGL)).find(openGlSupportPhrase),
-        std::string::npos);
+TEST(GraphicsBackendUtilsTests, Phase1BackendRestrictionMessageExplainsExplicitDX12Requirement)
+{
+    EXPECT_FALSE(NLS::Render::Settings::GetPhase1BackendRestrictionMessage(
+        NLS::Render::Settings::EGraphicsBackend::DX12,
+        "Editor runtime").has_value());
 
-#if defined(__APPLE__)
-    const char* metalSupportPhrase = "Apple-native presentation";
-#else
-    const char* metalSupportPhrase = "unsupported";
-#endif
-    EXPECT_NE(
-        std::string(NLS::Render::Settings::SceneRendererSupportDescription(
-            NLS::Render::Settings::EGraphicsBackend::METAL)).find(metalSupportPhrase),
-        std::string::npos);
+    const auto dx11Restriction = NLS::Render::Settings::GetPhase1BackendRestrictionMessage(
+        NLS::Render::Settings::EGraphicsBackend::DX11,
+        "Game runtime");
+    ASSERT_TRUE(dx11Restriction.has_value());
+    EXPECT_NE(dx11Restriction->find("Game runtime"), std::string::npos);
+    EXPECT_NE(dx11Restriction->find("only supports DX12"), std::string::npos);
+    EXPECT_NE(dx11Restriction->find("DX11"), std::string::npos);
+
+    const auto noneRestriction = NLS::Render::Settings::GetPhase1BackendRestrictionMessage(
+        NLS::Render::Settings::EGraphicsBackend::NONE,
+        "Launcher");
+    ASSERT_TRUE(noneRestriction.has_value());
+    EXPECT_NE(noneRestriction->find("Launcher"), std::string::npos);
+    EXPECT_NE(noneRestriction->find("only supports DX12"), std::string::npos);
 }
 
 TEST(GraphicsBackendUtilsTests, EditorMainRuntimeDoesNotRequireFramebufferReadback)
@@ -191,7 +214,7 @@ TEST(GraphicsBackendUtilsTests, GameMainRuntimeDoesNotRequireEditorOnlyReadbackO
     EXPECT_TRUE(NLS::Render::Settings::SupportsGameMainRuntime(capabilities));
 }
 
-TEST(GraphicsBackendUtilsTests, EditorRuntimeFallbackDecisionStaysOnRequestedBackendWhenCapabilitiesAreSufficient)
+TEST(GraphicsBackendUtilsTests, EditorRuntimeReadinessDecisionStaysClearWhenCapabilitiesAreSufficient)
 {
     NLS::Render::RHI::RHIDeviceCapabilities capabilities;
     capabilities.backendReady = true;
@@ -201,36 +224,34 @@ TEST(GraphicsBackendUtilsTests, EditorRuntimeFallbackDecisionStaysOnRequestedBac
     capabilities.supportsDepthBlit = true;
     capabilities.supportsCubemaps = true;
 
-    const auto decision = NLS::Render::Settings::EvaluateEditorMainRuntimeFallback(
+    const auto decision = NLS::Render::Settings::EvaluateEditorMainRuntimeReadiness(
         NLS::Render::Settings::GetPlatformDefaultGraphicsBackend(),
         capabilities);
 
-    EXPECT_FALSE(decision.shouldFallbackToOpenGL);
     EXPECT_FALSE(decision.primaryWarning.has_value());
     EXPECT_FALSE(decision.detailWarning.has_value());
 }
 
-TEST(GraphicsBackendUtilsTests, EditorRuntimeFallbackDecisionExplainsBackendNotReady)
+TEST(GraphicsBackendUtilsTests, EditorRuntimeReadinessDecisionExplainsBackendNotReady)
 {
     NLS::Render::RHI::RHIDeviceCapabilities capabilities;
     capabilities.backendReady = false;
 
-    const auto decision = NLS::Render::Settings::EvaluateEditorMainRuntimeFallback(
+    const auto decision = NLS::Render::Settings::EvaluateEditorMainRuntimeReadiness(
         NLS::Render::Settings::EGraphicsBackend::DX12,
         capabilities);
 
-    EXPECT_FALSE(decision.shouldFallbackToOpenGL);
     ASSERT_TRUE(decision.primaryWarning.has_value());
 #if defined(_WIN32)
-    EXPECT_NE(decision.primaryWarning->find("no validated fallback backend"), std::string::npos);
+    EXPECT_NE(decision.primaryWarning->find("accepted phase-1 runtime startup path"), std::string::npos);
 #else
-    EXPECT_NE(decision.primaryWarning->find("unsupported"), std::string::npos);
+    EXPECT_NE(decision.primaryWarning->find("only supports DX12"), std::string::npos);
 #endif
     ASSERT_TRUE(decision.detailWarning.has_value());
-    EXPECT_NE(decision.detailWarning->find("formal RHI mainline"), std::string::npos);
+    EXPECT_NE(decision.detailWarning->find("only active runtime backend"), std::string::npos);
 }
 
-TEST(GraphicsBackendUtilsTests, EditorRuntimeFallbackDecisionExplainsCapabilityGapWhenBackendIsReady)
+TEST(GraphicsBackendUtilsTests, EditorRuntimeReadinessDecisionExplainsCapabilityGapWhenBackendIsReady)
 {
     NLS::Render::RHI::RHIDeviceCapabilities capabilities;
     capabilities.backendReady = true;
@@ -240,58 +261,228 @@ TEST(GraphicsBackendUtilsTests, EditorRuntimeFallbackDecisionExplainsCapabilityG
     capabilities.supportsDepthBlit = true;
     capabilities.supportsCubemaps = true;
 
-    const auto decision = NLS::Render::Settings::EvaluateEditorMainRuntimeFallback(
+    const auto decision = NLS::Render::Settings::EvaluateEditorMainRuntimeReadiness(
         NLS::Render::Settings::EGraphicsBackend::DX12,
         capabilities);
 
-    EXPECT_FALSE(decision.shouldFallbackToOpenGL);
     ASSERT_TRUE(decision.primaryWarning.has_value());
 #if defined(_WIN32)
-    EXPECT_NE(decision.primaryWarning->find("no validated fallback backend"), std::string::npos);
+    EXPECT_NE(decision.primaryWarning->find("before startup can continue on DX12"), std::string::npos);
 #else
-    EXPECT_NE(decision.primaryWarning->find("unsupported"), std::string::npos);
+    EXPECT_NE(decision.primaryWarning->find("only supports DX12"), std::string::npos);
 #endif
     ASSERT_TRUE(decision.detailWarning.has_value());
-    EXPECT_NE(decision.detailWarning->find("formal RHI mainline"), std::string::npos);
+    EXPECT_NE(decision.detailWarning->find("only active runtime backend"), std::string::npos);
 }
 
-TEST(GraphicsBackendUtilsTests, GameRuntimeFallbackDecisionExplainsBackendNotReady)
+TEST(GraphicsBackendUtilsTests, GameRuntimeReadinessDecisionExplainsBackendNotReady)
 {
     NLS::Render::RHI::RHIDeviceCapabilities capabilities;
     capabilities.backendReady = false;
 
-    const auto decision = NLS::Render::Settings::EvaluateGameMainRuntimeFallback(
-        NLS::Render::Settings::EGraphicsBackend::VULKAN,
+    const auto decision = NLS::Render::Settings::EvaluateGameMainRuntimeReadiness(
+        NLS::Render::Settings::EGraphicsBackend::DX12,
         capabilities);
 
-    EXPECT_FALSE(decision.shouldFallbackToOpenGL);
     ASSERT_TRUE(decision.primaryWarning.has_value());
-    if (NLS::Render::Settings::IsBackendEnabledForCurrentBuild(NLS::Render::Settings::EGraphicsBackend::VULKAN))
-        EXPECT_NE(decision.primaryWarning->find("no validated fallback backend"), std::string::npos);
-    else
-        EXPECT_NE(decision.primaryWarning->find("unsupported"), std::string::npos);
+    EXPECT_NE(decision.primaryWarning->find("accepted phase-1 runtime startup path"), std::string::npos);
     ASSERT_TRUE(decision.detailWarning.has_value());
-    EXPECT_NE(decision.detailWarning->find("formal RHI mainline"), std::string::npos);
+    EXPECT_NE(decision.detailWarning->find("only active runtime backend"), std::string::npos);
 }
 
-TEST(GraphicsBackendUtilsTests, GameRuntimeFallbackDecisionReportsUnsupportedBackendsExplicitly)
+TEST(GraphicsBackendUtilsTests, GameRuntimeReadinessDecisionReportsUnsupportedBackendsExplicitly)
 {
     NLS::Render::RHI::RHIDeviceCapabilities capabilities;
     capabilities.backendReady = true;
     capabilities.supportsCurrentSceneRenderer = true;
     capabilities.supportsSwapchain = true;
 
-    const auto decision = NLS::Render::Settings::EvaluateGameMainRuntimeFallback(
+    const auto decision = NLS::Render::Settings::EvaluateGameMainRuntimeReadiness(
         NLS::Render::Settings::EGraphicsBackend::DX11,
         capabilities);
 
-    EXPECT_FALSE(decision.shouldFallbackToOpenGL);
     ASSERT_TRUE(decision.primaryWarning.has_value());
-    EXPECT_NE(decision.primaryWarning->find("unsupported"), std::string::npos);
+    EXPECT_NE(decision.primaryWarning->find("only supports DX12"), std::string::npos);
     ASSERT_TRUE(decision.detailWarning.has_value());
+    EXPECT_NE(decision.detailWarning->find("only permits DX12"), std::string::npos);
+}
+
+TEST(GraphicsBackendUtilsTests, TierARenderFoundationRequiresCentralizedDescriptorAndPipelineSupport)
+{
+    NLS::Render::RHI::RHIDeviceCapabilities capabilities;
+    capabilities.backendReady = true;
+    capabilities.supportsGraphics = true;
+    capabilities.supportsCompute = true;
+    capabilities.supportsSwapchain = true;
+    capabilities.supportsCurrentSceneRenderer = true;
+    capabilities.supportsOffscreenFramebuffers = true;
+    capabilities.supportsMultiRenderTargets = true;
+    capabilities.supportsExplicitBarriers = true;
+
+    EXPECT_FALSE(NLS::Render::Settings::SupportsTierARenderFoundation(capabilities));
+
+    capabilities.supportsCentralizedDescriptorManagement = true;
+    capabilities.supportsPipelineStateCache = true;
+
+    EXPECT_TRUE(NLS::Render::Settings::SupportsTierARenderFoundation(capabilities));
+}
+
+TEST(GraphicsBackendUtilsTests, TransientRenderGraphResourcesRequireFoundationAndTransientAllocator)
+{
+    NLS::Render::RHI::RHIDeviceCapabilities capabilities;
+    capabilities.backendReady = true;
+    capabilities.supportsGraphics = true;
+    capabilities.supportsCompute = true;
+    capabilities.supportsSwapchain = true;
+    capabilities.supportsCurrentSceneRenderer = true;
+    capabilities.supportsOffscreenFramebuffers = true;
+    capabilities.supportsMultiRenderTargets = true;
+    capabilities.supportsExplicitBarriers = true;
+    capabilities.supportsCentralizedDescriptorManagement = true;
+    capabilities.supportsPipelineStateCache = true;
+
+    EXPECT_FALSE(NLS::Render::Settings::SupportsRenderGraphTransientResources(capabilities));
+
+    capabilities.supportsTransientResourceAllocator = true;
+
+    EXPECT_TRUE(NLS::Render::Settings::SupportsRenderGraphTransientResources(capabilities));
+}
+
+TEST(GraphicsBackendUtilsTests, AsyncComputeRequiresFoundationPlusDedicatedComputeReadiness)
+{
+    NLS::Render::RHI::RHIDeviceCapabilities capabilities;
+    capabilities.backendReady = true;
+    capabilities.supportsGraphics = true;
+    capabilities.supportsCompute = true;
+    capabilities.supportsSwapchain = true;
+    capabilities.supportsCurrentSceneRenderer = true;
+    capabilities.supportsOffscreenFramebuffers = true;
+    capabilities.supportsMultiRenderTargets = true;
+    capabilities.supportsExplicitBarriers = true;
+    capabilities.supportsCentralizedDescriptorManagement = true;
+    capabilities.supportsPipelineStateCache = true;
+
+    EXPECT_FALSE(NLS::Render::Settings::SupportsAsyncComputeFoundation(capabilities));
+
+    capabilities.supportsAsyncCompute = true;
+    EXPECT_FALSE(NLS::Render::Settings::SupportsAsyncComputeFoundation(capabilities));
+
+    capabilities.supportsDedicatedComputeQueue = true;
+    EXPECT_TRUE(NLS::Render::Settings::SupportsAsyncComputeFoundation(capabilities));
+}
+
+TEST(GraphicsBackendUtilsTests, ParallelCommandFoundationRequiresRecordingAndTranslation)
+{
+    NLS::Render::RHI::RHIDeviceCapabilities capabilities;
+    capabilities.backendReady = true;
+    capabilities.supportsGraphics = true;
+    capabilities.supportsCompute = true;
+    capabilities.supportsSwapchain = true;
+    capabilities.supportsCurrentSceneRenderer = true;
+    capabilities.supportsOffscreenFramebuffers = true;
+    capabilities.supportsMultiRenderTargets = true;
+    capabilities.supportsExplicitBarriers = true;
+    capabilities.supportsCentralizedDescriptorManagement = true;
+    capabilities.supportsPipelineStateCache = true;
+
+    EXPECT_FALSE(NLS::Render::Settings::SupportsParallelCommandFoundation(capabilities));
+
+    capabilities.supportsParallelCommandRecording = true;
+    EXPECT_FALSE(NLS::Render::Settings::SupportsParallelCommandFoundation(capabilities));
+
+    capabilities.supportsParallelCommandTranslation = true;
+    EXPECT_TRUE(NLS::Render::Settings::SupportsParallelCommandFoundation(capabilities));
+}
+
+TEST(GraphicsBackendUtilsTests, ThreadedRenderFoundationPathRequiresTierABackendAndCapabilities)
+{
+    NLS::Render::RHI::RHIDeviceCapabilities capabilities;
+    capabilities.backendReady = true;
+    capabilities.supportsGraphics = true;
+    capabilities.supportsCompute = true;
+    capabilities.supportsSwapchain = true;
+    capabilities.supportsCurrentSceneRenderer = true;
+    capabilities.supportsOffscreenFramebuffers = true;
+    capabilities.supportsMultiRenderTargets = true;
+    capabilities.supportsExplicitBarriers = true;
+    capabilities.supportsCentralizedDescriptorManagement = true;
+    capabilities.supportsPipelineStateCache = true;
+
+    EXPECT_TRUE(NLS::Render::Settings::SupportsThreadedRenderFoundationPath(
+        NLS::Render::RHI::NativeBackendType::DX12,
+        capabilities));
+    EXPECT_FALSE(NLS::Render::Settings::SupportsThreadedRenderFoundationPath(
+        NLS::Render::RHI::NativeBackendType::Vulkan,
+        capabilities));
+    EXPECT_FALSE(NLS::Render::Settings::SupportsThreadedRenderFoundationPath(
+        NLS::Render::RHI::NativeBackendType::OpenGL,
+        capabilities));
+    EXPECT_FALSE(NLS::Render::Settings::SupportsThreadedRenderFoundationPath(
+        NLS::Render::RHI::NativeBackendType::DX11,
+        capabilities));
+}
+
+TEST(GraphicsBackendUtilsTests, ThreadedRenderFoundationPathRejectsNonFoundationCapabilitiesEvenOnTierABackends)
+{
+    NLS::Render::RHI::RHIDeviceCapabilities capabilities;
+    capabilities.backendReady = true;
+    capabilities.supportsGraphics = true;
+    capabilities.supportsCompute = true;
+    capabilities.supportsSwapchain = true;
+    capabilities.supportsCurrentSceneRenderer = true;
+    capabilities.supportsOffscreenFramebuffers = true;
+    capabilities.supportsMultiRenderTargets = true;
+    capabilities.supportsExplicitBarriers = true;
+    capabilities.supportsCentralizedDescriptorManagement = true;
+
+    EXPECT_FALSE(NLS::Render::Settings::SupportsThreadedRenderFoundationPath(
+        NLS::Render::RHI::NativeBackendType::DX12,
+        capabilities));
+    EXPECT_FALSE(NLS::Render::Settings::SupportsThreadedRenderFoundationPath(
+        NLS::Render::RHI::NativeBackendType::Vulkan,
+        capabilities));
+}
+
+TEST(GraphicsBackendUtilsTests, Phase1ImGuiRuntimeRoutingRejectsAllNonDx12Backends)
+{
+    EXPECT_FALSE(NLS::Render::Settings::SupportsImGuiRendererBackend(
+        NLS::Render::Settings::EGraphicsBackend::OPENGL));
+    EXPECT_FALSE(NLS::Render::Settings::SupportsImGuiRendererBackend(
+        NLS::Render::Settings::EGraphicsBackend::VULKAN));
+    EXPECT_FALSE(NLS::Render::Settings::SupportsImGuiRendererBackend(
+        NLS::Render::Settings::EGraphicsBackend::DX11));
+    EXPECT_FALSE(NLS::Render::Settings::SupportsImGuiRendererBackend(
+        NLS::Render::Settings::EGraphicsBackend::METAL));
+    EXPECT_FALSE(NLS::Render::Settings::SupportsImGuiRendererBackend(
+        NLS::Render::Settings::EGraphicsBackend::NONE));
+}
+
+TEST(GraphicsBackendUtilsTests, Phase1EditorAndGameConsumersShareTheSameDx12OnlyRestriction)
+{
+    const auto editorRestriction = NLS::Render::Settings::GetPhase1BackendRestrictionMessage(
+        NLS::Render::Settings::EGraphicsBackend::VULKAN,
+        "Editor runtime");
+    const auto gameRestriction = NLS::Render::Settings::GetPhase1BackendRestrictionMessage(
+        NLS::Render::Settings::EGraphicsBackend::VULKAN,
+        "Game runtime");
+
+    ASSERT_TRUE(editorRestriction.has_value());
+    ASSERT_TRUE(gameRestriction.has_value());
+    EXPECT_NE(editorRestriction->find("only supports DX12 during UE5 alignment phase 1"), std::string::npos);
+    EXPECT_NE(gameRestriction->find("only supports DX12 during UE5 alignment phase 1"), std::string::npos);
+    EXPECT_NE(editorRestriction->find("Vulkan"), std::string::npos);
+    EXPECT_NE(gameRestriction->find("Vulkan"), std::string::npos);
+}
+
+TEST(GraphicsBackendUtilsTests, WindowsPhase1DefaultBackendMatchesTheOnlyAcceptedRuntimeBackend)
+{
 #if defined(_WIN32)
-    EXPECT_NE(decision.detailWarning->find("unsupported"), std::string::npos);
+    EXPECT_EQ(
+        NLS::Render::Settings::GetPlatformDefaultGraphicsBackend(),
+        NLS::Render::Settings::GetPhase1RequiredRuntimeBackend());
 #else
-    EXPECT_NE(decision.detailWarning->find("not exposed"), std::string::npos);
+    EXPECT_NE(
+        NLS::Render::Settings::GetPlatformDefaultGraphicsBackend(),
+        NLS::Render::Settings::GetPhase1RequiredRuntimeBackend());
 #endif
 }

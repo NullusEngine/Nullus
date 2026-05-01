@@ -1,6 +1,4 @@
 #include "Rendering/Resources/BindingSet.h"
-#include "Rendering/Resources/Texture.h"
-
 namespace NLS::Render::Resources
 {
 	void BindingSet::Clear()
@@ -20,8 +18,6 @@ namespace NLS::Render::Resources
 				binding.kind,
 				binding.bindingSpace,
 				binding.bindingIndex,
-				binding.slot,
-				nullptr,
 				nullptr,
 				nullptr,
 				{},
@@ -43,27 +39,12 @@ namespace NLS::Render::Resources
 		}
 	}
 
-	void BindingSet::SetTexture(const std::string& name, const Texture* texture)
-	{
-		for (auto& entry : m_entries)
-		{
-			if (entry.name == name)
-			{
-				entry.texture = texture;
-				entry.textureHandle = texture ? texture->GetTextureHandle() : nullptr;
-				entry.bufferHandle.reset();
-				return;
-			}
-		}
-	}
-
 	void BindingSet::SetTexture(const std::string& name, const std::shared_ptr<RHI::RHITexture>& texture)
 	{
 		for (auto& entry : m_entries)
 		{
 			if (entry.name == name)
 			{
-				entry.texture = nullptr;
 				entry.textureHandle = texture;
 				entry.bufferHandle.reset();
 				return;
@@ -79,7 +60,6 @@ namespace NLS::Render::Resources
 			{
 				entry.bufferHandle = buffer;
 				entry.textureHandle.reset();
-				entry.texture = nullptr;
 				return;
 			}
 		}
@@ -94,54 +74,5 @@ namespace NLS::Render::Resources
 		}
 
 		return nullptr;
-	}
-
-	const Texture* BindingSet::GetTexture(const std::string& name) const
-	{
-		for (const auto& entry : m_entries)
-		{
-			if (entry.name == name)
-				return entry.texture;
-		}
-
-		return nullptr;
-	}
-
-	std::shared_ptr<RHI::RHITexture> BindingSet::GetTextureHandle(const std::string& name) const
-	{
-		for (const auto& entry : m_entries)
-		{
-			if (entry.name == name)
-				return entry.textureHandle;
-		}
-
-		return nullptr;
-	}
-
-	std::shared_ptr<RHI::RHIBuffer> BindingSet::GetBufferHandle(const std::string& name) const
-	{
-		for (const auto& entry : m_entries)
-		{
-			if (entry.name == name)
-				return entry.bufferHandle;
-		}
-
-		return nullptr;
-	}
-
-	const ResourceBindingEntry* BindingSet::Find(const std::string& name) const
-	{
-		for (const auto& entry : m_entries)
-		{
-			if (entry.name == name)
-				return &entry;
-		}
-
-		return nullptr;
-	}
-
-	const std::vector<ResourceBindingEntry>& BindingSet::Entries() const
-	{
-		return m_entries;
 	}
 }

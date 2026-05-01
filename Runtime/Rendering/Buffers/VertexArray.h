@@ -7,7 +7,7 @@
 namespace NLS::Render::Buffers
 {
 /**
- * Wraps OpenGL VAO
+ * Backend-neutral vertex-input layout wrapper over the formal RHI surface.
  */
 class NLS_RENDER_API VertexArray
 {
@@ -23,7 +23,7 @@ public:
     ~VertexArray();
 
     /**
-     * Register a VBO into the VAO
+     * Register a vertex buffer attribute layout.
      * @param p_attribute
      * @param p_vertexBuffer
      * @param p_type
@@ -39,24 +39,6 @@ public:
         uint64_t p_count,
         uint64_t p_stride,
         intptr_t p_offset) const;
-
-    /**
-     * Bind the buffer
-     */
-    void Bind() const;
-
-    /**
-     * Unbind the buffer
-     */
-    void Unbind() const;
-
-    /**
-     * Return the VAO OpenGL ID
-     */
-    uint32_t GetID() const;
-
-private:
-    uint32_t m_bufferID = 0;
 };
 } // namespace NLS::Render::Buffers
 

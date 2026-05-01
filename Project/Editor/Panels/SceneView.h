@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 
 #include "Panels/AViewControllable.h"
 #include "Core/GizmoBehaviour.h"
@@ -21,6 +22,7 @@ namespace NLS::Editor::Panels
 			bool p_opened,
 			const UI::PanelWindowSettings& p_windowSettings
 		);
+		~SceneView();
 
 		/**
 		* Update the scene view
@@ -41,18 +43,16 @@ namespace NLS::Editor::Panels
         virtual Engine::Rendering::BaseSceneRenderer::SceneDescriptor CreateSceneDescriptor() override;
 
 	private:
-		virtual void DrawFrame() override;
 		virtual void AfterRenderFrame() override;
 		void HandleActorPicking();
 
 	private:
         Engine::SceneSystem::SceneManager& m_sceneManager;
-		Render::Buffers::Framebuffer m_actorPickingFramebuffer;
 		Editor::Core::GizmoBehaviour m_gizmoOperations;
 		Editor::Core::EGizmoOperation m_currentOperation = Editor::Core::EGizmoOperation::TRANSLATE;
-        Render::Resources::Material m_fallbackMaterial;
 
-		Engine::GameObject* m_highlightedActor;
+		Engine::GameObject* m_highlightedActor = nullptr;
+		uint64_t m_destroyedListener = 0;
 		std::optional<Editor::Core::GizmoBehaviour::EDirection> m_highlightedGizmoDirection;
 		Maths::Vector2 m_lastPickingMousePos { -10000.0f, -10000.0f };
 		std::chrono::steady_clock::time_point m_lastPickingSampleTime {};

@@ -42,7 +42,7 @@ namespace NLS::Render::RHI
             const std::shared_ptr<RHISemaphore>& signalSemaphore,
             const std::shared_ptr<RHIFence>& signalFence) = 0;
         virtual std::shared_ptr<RHITextureView> GetBackbufferView(uint32_t index) { return nullptr; } // Returns view for swapchain backbuffer
-        virtual void Resize(uint32_t width, uint32_t height) = 0;
+        virtual bool Resize(uint32_t width, uint32_t height) = 0;
         virtual void* GetNativeSwapchainHandle() { return nullptr; } // For backend-specific access
     };
 
@@ -64,10 +64,14 @@ namespace NLS::Render::RHI
         std::shared_ptr<RHIFence> frameFence;
         std::shared_ptr<RHISemaphore> imageAcquiredSemaphore;
         std::shared_ptr<RHISemaphore> renderFinishedSemaphore;
+        std::shared_ptr<RHISemaphore> computeFinishedSemaphore;
         std::shared_ptr<ResourceStateTracker> resourceStateTracker;
         std::shared_ptr<DescriptorAllocator> descriptorAllocator;
         std::shared_ptr<UploadContext> uploadContext;
         size_t uploadBytesReserved = 0;
         std::shared_ptr<RHITextureView> swapchainBackbufferView; // View for swapchain backbuffer, used when outputBuffer is nullptr
+        std::shared_ptr<RHITexture> swapchainDepthStencilTexture;
+        std::shared_ptr<RHITextureView> swapchainDepthStencilView;
+        std::shared_ptr<RHITexture> explicitReadbackTexture;
     };
 }

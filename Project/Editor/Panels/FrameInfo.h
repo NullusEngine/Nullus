@@ -42,5 +42,10 @@ namespace NLS::Editor::Panels
 		UI::Widgets::Text& m_instanceCountText;
 		UI::Widgets::Text& m_polyCountText;
 		UI::Widgets::Text& m_vertexCountText;
+		UI::Widgets::Text& m_framesInFlightText;
+		UI::Widgets::Text& m_blockedFramesText;
+		UI::Widgets::Text& m_publishStateText;
+		UI::Widgets::Text& m_frameStageText;
+		UI::Widgets::Text& m_retirementStateText;
 	};
 }

@@ -5,7 +5,11 @@
 #include <Rendering/Debug/DebugDrawGeometry.h>
 #include <Rendering/Debug/DebugDrawService.h>
 #include <Rendering/EngineDrawableDescriptor.h>
+#include <Rendering/FrameGraph/ExternalResourceBridge.h>
+#include <Rendering/FrameGraph/FrameGraphExecutionPlan.h>
+#include <Rendering/FrameGraph/SceneRenderGraphBuilder.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <cstring>
@@ -15,6 +19,7 @@
 
 #include "Rendering/DebugModelRenderer.h"
 #include "Rendering/DebugSceneRenderer.h"
+#include "Rendering/EditorHelperLifecycle.h"
 #include "Rendering/EditorDefaultResources.h"
 #include "Rendering/EditorPipelineStatePresets.h"
 #include "Rendering/GridRenderPass.h"
@@ -44,9 +49,234 @@ constexpr float kSelectedOutlineWidth = 5.0f;
 
 namespace
 {
-	bool IsEnvFlagEnabled(const char* name)
+	std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata> BuildDebugForwardThreadedPassMetadata(
+		const uint64_t helperVisibleCount,
+        const bool includeGridPass,
+        const bool includeSelectionPass,
+        const bool includePickingPass)
 	{
-		return NLS::Render::Settings::IsEnvironmentFlagEnabled(name);
+		std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata> metadata;
+		metadata.reserve(
+            NLS::Render::FrameGraph::GetForwardScenePassDescriptors().size() +
+            (includeGridPass ? 1u : 0u) +
+            (includeSelectionPass ? 1u : 0u) +
+            1u +
+            (includePickingPass ? 1u : 0u));
+
+		for (const auto& descriptor : NLS::Render::FrameGraph::GetForwardScenePassDescriptors())
+			metadata.push_back(descriptor.metadata);
+
+        if (includeGridPass)
+        {
+            NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata gridMetadata;
+            gridMetadata.commandKind = NLS::Render::Context::RenderPassCommandKind::Helper;
+            gridMetadata.role = NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Helper;
+            gridMetadata.queueType = NLS::Render::RHI::QueueType::Graphics;
+            gridMetadata.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
+            gridMetadata.visibleDrawCountContribution = 1u;
+            NLS::Render::FrameGraph::SetThreadedRenderScenePassGraphPassName(
+                gridMetadata,
+                "EditorGridPass");
+            metadata.push_back(std::move(gridMetadata));
+        }
+
+        if (includeSelectionPass)
+        {
+            NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata selectionMetadata;
+            selectionMetadata.commandKind = NLS::Render::Context::RenderPassCommandKind::Helper;
+            selectionMetadata.role = NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Helper;
+            selectionMetadata.queueType = NLS::Render::RHI::QueueType::Graphics;
+            selectionMetadata.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
+            selectionMetadata.visibleDrawCountContribution = 2u;
+            NLS::Render::FrameGraph::SetThreadedRenderScenePassGraphPassName(
+                selectionMetadata,
+                "EditorSelectionPass");
+            metadata.push_back(std::move(selectionMetadata));
+        }
+
+		NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata helperMetadata;
+		helperMetadata.commandKind = NLS::Render::Context::RenderPassCommandKind::Helper;
+		helperMetadata.role = NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Helper;
+		helperMetadata.queueType = NLS::Render::RHI::QueueType::Graphics;
+		helperMetadata.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
+		helperMetadata.visibleDrawCountContribution = helperVisibleCount;
+		NLS::Render::FrameGraph::SetThreadedRenderScenePassGraphPassName(
+			helperMetadata,
+			"EditorHelperPass");
+		metadata.push_back(std::move(helperMetadata));
+
+        if (includePickingPass)
+        {
+            NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata pickingMetadata;
+            pickingMetadata.commandKind = NLS::Render::Context::RenderPassCommandKind::Helper;
+            pickingMetadata.role = NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Auxiliary;
+            pickingMetadata.executionMode = NLS::Render::FrameGraph::ThreadedRenderScenePassExecutionMode::Recorded;
+            pickingMetadata.queueType = NLS::Render::RHI::QueueType::Graphics;
+            pickingMetadata.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
+            pickingMetadata.visibleDrawCountContribution = 0u;
+            pickingMetadata.propagatesColorOutput = false;
+            pickingMetadata.propagatesDepthOutput = false;
+            NLS::Render::FrameGraph::SetThreadedRenderScenePassGraphPassName(
+                pickingMetadata,
+                "EditorPickingPass");
+            metadata.push_back(std::move(pickingMetadata));
+        }
+
+		return metadata;
+	}
+
+	std::vector<NLS::Render::Context::RenderPassCommandInput> BuildDebugForwardScenePassInputs(
+		const NLS::Render::Context::RenderScenePackage& package,
+        const std::optional<NLS::Render::Context::RenderPassCommandInput>& gridPassInput,
+        const std::optional<NLS::Render::Context::RenderPassCommandInput>& selectionPassInput,
+        const std::optional<NLS::Render::Context::RenderPassCommandInput>& pickingPassInput)
+	{
+		std::vector<NLS::Render::Context::RenderPassCommandInput> passInputs;
+		passInputs.reserve(
+            4u +
+            (gridPassInput.has_value() ? 1u : 0u) +
+            (selectionPassInput.has_value() ? 1u : 0u) +
+            (pickingPassInput.has_value() ? 1u : 0u));
+
+		size_t nextRecordedDrawCommandIndex = 0u;
+		const auto appendPassInput =
+			[&package, &passInputs, &nextRecordedDrawCommandIndex](
+				const NLS::Render::Context::RenderPassCommandKind kind,
+				const uint64_t drawCount,
+				const bool usesDepthStencilAttachment)
+		{
+			if (drawCount == 0u)
+				return;
+
+			NLS::Render::Context::RenderPassCommandInput input;
+			input.kind = kind;
+			input.drawCount = drawCount;
+			input.requiresFrameData = true;
+			input.requiresObjectData = drawCount > 0u;
+			input.targetsSwapchain = package.targetsSwapchain;
+			input.renderWidth = package.renderWidth;
+			input.renderHeight = package.renderHeight;
+			input.clearColorValue = package.clearColorValue;
+			input.clearColor =
+				kind == NLS::Render::Context::RenderPassCommandKind::Opaque && package.clearColorBuffer;
+			input.clearDepth =
+				kind == NLS::Render::Context::RenderPassCommandKind::Opaque && package.clearDepthBuffer;
+			input.clearStencil =
+				kind == NLS::Render::Context::RenderPassCommandKind::Opaque && package.clearStencilBuffer;
+			input.usesColorAttachment = true;
+			input.usesDepthStencilAttachment = usesDepthStencilAttachment;
+
+			if (!package.recordedDrawCommands.empty() &&
+				nextRecordedDrawCommandIndex < package.recordedDrawCommands.size())
+			{
+				const auto availableDrawCount =
+					package.recordedDrawCommands.size() - nextRecordedDrawCommandIndex;
+				const auto copiedDrawCount =
+					std::min<size_t>(static_cast<size_t>(drawCount), availableDrawCount);
+				input.recordedDrawCommands.insert(
+					input.recordedDrawCommands.end(),
+					package.recordedDrawCommands.begin() + static_cast<std::ptrdiff_t>(nextRecordedDrawCommandIndex),
+					package.recordedDrawCommands.begin() + static_cast<std::ptrdiff_t>(nextRecordedDrawCommandIndex + copiedDrawCount));
+				nextRecordedDrawCommandIndex += copiedDrawCount;
+			}
+
+			passInputs.push_back(std::move(input));
+		};
+
+		appendPassInput(
+			NLS::Render::Context::RenderPassCommandKind::Opaque,
+			package.opaqueDrawCount,
+			true);
+		appendPassInput(
+			NLS::Render::Context::RenderPassCommandKind::Skybox,
+			package.skyboxDrawCount,
+			true);
+		appendPassInput(
+			NLS::Render::Context::RenderPassCommandKind::Transparent,
+			package.transparentDrawCount,
+			true);
+
+        if (gridPassInput.has_value())
+            passInputs.push_back(*gridPassInput);
+
+        if (selectionPassInput.has_value())
+            passInputs.push_back(*selectionPassInput);
+
+		const auto helperDrawCount =
+			nextRecordedDrawCommandIndex < package.recordedDrawCommands.size()
+				? static_cast<uint64_t>(package.recordedDrawCommands.size() - nextRecordedDrawCommandIndex)
+				: 0u;
+		appendPassInput(
+			NLS::Render::Context::RenderPassCommandKind::Helper,
+			helperDrawCount,
+			helperDrawCount > 0u);
+
+        if (pickingPassInput.has_value())
+            passInputs.push_back(*pickingPassInput);
+
+        if (std::none_of(
+            passInputs.begin(),
+            passInputs.end(),
+            [](const NLS::Render::Context::RenderPassCommandInput& input)
+            {
+                return NLS::Editor::Rendering::WritesThreadedEditorSceneOutput(input) &&
+                    (input.clearColor || input.clearDepth || input.clearStencil);
+            }))
+        {
+            const auto firstOutputPass = std::find_if(
+                passInputs.begin(),
+                passInputs.end(),
+                [](const NLS::Render::Context::RenderPassCommandInput& input)
+                {
+                    return NLS::Editor::Rendering::WritesThreadedEditorSceneOutput(input);
+                });
+            if (firstOutputPass != passInputs.end())
+            {
+                firstOutputPass->clearColor = firstOutputPass->usesColorAttachment && package.clearColorBuffer;
+                firstOutputPass->clearDepth = firstOutputPass->usesDepthStencilAttachment && package.clearDepthBuffer;
+                firstOutputPass->clearStencil = firstOutputPass->usesDepthStencilAttachment && package.clearStencilBuffer;
+                firstOutputPass->clearColorValue = package.clearColorValue;
+            }
+        }
+
+		return passInputs;
+	}
+
+	bool IsEditorDebugPassEnabled(const char* /*name*/)
+	{
+		// Debug passes are controlled via EditorSettings, not command-line diagnostics
+		// This function is kept for potential future use
+		return true;
+	}
+
+	bool ShouldDisableEditorGridPass()
+	{
+		return NLS::Render::Settings::GetThreadDiagnosticsSettings().editorDisableGridPass;
+	}
+
+	bool ShouldDisableDebugCamerasPass()
+	{
+		return NLS::Render::Settings::GetThreadDiagnosticsSettings().editorDisableDebugCamerasPass;
+	}
+
+	bool ShouldDisableDebugLightsPass()
+	{
+		return NLS::Render::Settings::GetThreadDiagnosticsSettings().editorDisableDebugLightsPass;
+	}
+
+	bool ShouldDisableDebugActorPass()
+	{
+		return NLS::Render::Settings::GetThreadDiagnosticsSettings().editorDisableDebugActorPass;
+	}
+
+	bool ShouldDisableDebugDrawPass()
+	{
+		return NLS::Render::Settings::GetThreadDiagnosticsSettings().editorDisableDebugDrawPass;
+	}
+
+	bool ShouldDisablePickingPass()
+	{
+		return NLS::Render::Settings::GetThreadDiagnosticsSettings().editorDisablePickingPass;
 	}
 }
 
@@ -172,23 +402,43 @@ public:
 		
 	}
 
+    std::optional<NLS::Render::Context::RenderPassCommandInput> GetPreparedThreadedPassInput() const
+    {
+        return m_preparedThreadedPassInput;
+    }
+
 protected:
+    void OnBeginFrame(const NLS::Render::Data::FrameDescriptor&) override
+    {
+        m_preparedThreadedPassInput.reset();
+    }
+
 	virtual void Draw(Render::Data::PipelineState p_pso) override
 	{
 		auto& debugSceneDescriptor = m_renderer.GetDescriptor<Editor::Rendering::DebugSceneRenderer::DebugSceneDescriptor>();
+        auto* selectedActor = debugSceneDescriptor.selectedActor;
 
-		if (debugSceneDescriptor.selectedActor)
+		if (selectedActor == nullptr)
+            return;
+
+        if (Editor::Rendering::OutlineRenderer::ShouldIncludeInThreadedFrame(true, selectedActor) ||
+            Editor::Rendering::GizmoRenderer::ShouldIncludeInThreadedFrame(true, selectedActor))
 		{
-			auto selectedActor = debugSceneDescriptor.selectedActor;
 			DrawActorDebugElements(*selectedActor);
-			m_outlineRenderer.DrawOutline(*selectedActor, kSelectedOutlineColor, kSelectedOutlineWidth);
-			m_gizmoRenderer.DrawGizmo(
+
+            if (NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_renderer.GetDriver()))
+            {
+                m_preparedThreadedPassInput = BuildThreadedPassInput(*selectedActor, debugSceneDescriptor, p_pso);
+                return;
+            }
+
+            m_outlineRenderer.DrawOutline(*selectedActor, kSelectedOutlineColor, kSelectedOutlineWidth);
+            m_gizmoRenderer.DrawGizmo(
                 selectedActor->GetTransform()->GetWorldPosition(),
                 selectedActor->GetTransform()->GetWorldRotation(),
-				debugSceneDescriptor.gizmoOperation,
-				false,
-				debugSceneDescriptor.highlightedGizmoDirection
-			);
+                debugSceneDescriptor.gizmoOperation,
+                debugSceneDescriptor.highlightedGizmoDirection
+            );
 		}
 	}
 
@@ -557,10 +807,50 @@ private:
         Render::Debug::SubmitCapsule(GetDebugDrawService(), position, rotation, radius, height, options);
     }
 
+    std::optional<NLS::Render::Context::RenderPassCommandInput> BuildThreadedPassInput(
+        Engine::GameObject& selectedActor,
+        const Editor::Rendering::DebugSceneRenderer::DebugSceneDescriptor& debugSceneDescriptor,
+        NLS::Render::Data::PipelineState p_pso)
+    {
+        const auto& frameDescriptor = m_renderer.GetFrameDescriptor();
+
+        NLS::Render::Context::RenderPassCommandInput passInput;
+        passInput.kind = NLS::Render::Context::RenderPassCommandKind::Helper;
+        passInput.debugName = "EditorSelectionPass";
+        passInput.queueType = NLS::Render::RHI::QueueType::Graphics;
+        passInput.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
+        passInput.requiresFrameData = true;
+        passInput.requiresObjectData = true;
+        passInput.targetsSwapchain = NLS::Render::FrameGraph::FrameTargetsSwapchain(frameDescriptor);
+        passInput.renderWidth = frameDescriptor.renderWidth;
+        passInput.renderHeight = frameDescriptor.renderHeight;
+        passInput.usesColorAttachment = true;
+        passInput.usesDepthStencilAttachment = true;
+
+        m_outlineRenderer.CaptureOutlineDrawCommands(
+            selectedActor,
+            kSelectedOutlineColor,
+            kSelectedOutlineWidth,
+            passInput.recordedDrawCommands);
+        m_gizmoRenderer.CaptureGizmoDrawCommands(
+            selectedActor.GetTransform()->GetWorldPosition(),
+            selectedActor.GetTransform()->GetWorldRotation(),
+            debugSceneDescriptor.gizmoOperation,
+            debugSceneDescriptor.highlightedGizmoDirection,
+            passInput.recordedDrawCommands);
+
+        passInput.drawCount = static_cast<uint64_t>(passInput.recordedDrawCommands.size());
+        if (passInput.drawCount == 0u)
+            return std::nullopt;
+
+        return passInput;
+    }
+
 private:
     Editor::Rendering::DebugModelRenderer m_debugModelRenderer;
     Editor::Rendering::OutlineRenderer m_outlineRenderer;
     Editor::Rendering::GizmoRenderer m_gizmoRenderer;
+    std::optional<NLS::Render::Context::RenderPassCommandInput> m_preparedThreadedPassInput;
 };
 
 Editor::Rendering::DebugSceneRenderer::DebugSceneRenderer(NLS::Render::Context::Driver& p_driver) :
@@ -569,18 +859,140 @@ Editor::Rendering::DebugSceneRenderer::DebugSceneRenderer(NLS::Render::Context::
     SetDebugDrawService(std::make_unique<NLS::Render::Debug::DebugDrawService>());
 
     auto& gridPass = AddPass<GridRenderPass>("Grid", NLS::Render::Settings::ERenderPassOrder::Transparent + 1);
-    gridPass.SetEnabled(!IsEnvFlagEnabled("NLS_EDITOR_DISABLE_GRID_PASS"));
+    gridPass.SetEnabled(!ShouldDisableEditorGridPass());
 
     auto& debugCamerasPass = AddPass<DebugCamerasRenderPass>("Debug Cameras", NLS::Render::Settings::ERenderPassOrder::Transparent + 1);
-    debugCamerasPass.SetEnabled(!IsEnvFlagEnabled("NLS_EDITOR_DISABLE_DEBUG_CAMERAS_PASS"));
+    debugCamerasPass.SetEnabled(!ShouldDisableDebugCamerasPass());
 
     auto& debugLightsPass = AddPass<DebugLightsRenderPass>("Debug Lights", NLS::Render::Settings::ERenderPassOrder::Transparent + 2);
-    debugLightsPass.SetEnabled(!IsEnvFlagEnabled("NLS_EDITOR_DISABLE_DEBUG_LIGHTS_PASS"));
+    debugLightsPass.SetEnabled(!ShouldDisableDebugLightsPass());
 
     auto& debugActorPass = AddPass<DebugActorRenderPass>("Debug Actor", NLS::Render::Settings::ERenderPassOrder::Transparent + 3);
-    debugActorPass.SetEnabled(!IsEnvFlagEnabled("NLS_EDITOR_DISABLE_DEBUG_ACTOR_PASS"));
+    debugActorPass.SetEnabled(!ShouldDisableDebugActorPass());
     auto& debugDrawPass = AddPass<NLS::Render::Debug::DebugDrawPass>("Debug Draw", NLS::Render::Settings::ERenderPassOrder::Transparent + 4);
-    debugDrawPass.SetEnabled(!IsEnvFlagEnabled("NLS_EDITOR_DISABLE_DEBUG_DRAW_PASS"));
+    debugDrawPass.SetEnabled(!ShouldDisableDebugDrawPass());
     auto& pickingPass = AddPass<PickingRenderPass>("Picking", NLS::Render::Settings::ERenderPassOrder::PostProcessing + 1);
-    pickingPass.SetEnabled(!IsEnvFlagEnabled("NLS_EDITOR_DISABLE_PICKING_PASS"));
+    pickingPass.SetEnabled(!ShouldDisablePickingPass());
+}
+
+std::optional<NLS::Render::Context::FrameSnapshot> Editor::Rendering::DebugSceneRenderer::BuildFrameSnapshot(
+    const NLS::Render::Data::FrameDescriptor& frameDescriptor) const
+{
+    auto snapshot = Engine::Rendering::ForwardSceneRenderer::BuildFrameSnapshot(frameDescriptor);
+    if (!snapshot.has_value() || !HasDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>())
+        return snapshot;
+
+    const auto& scene = GetDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>().scene;
+    const bool gridPassEnabled = !ShouldDisableEditorGridPass();
+    const bool cameraPassEnabled = !ShouldDisableDebugCamerasPass();
+    const bool lightPassEnabled = !ShouldDisableDebugLightsPass();
+    const bool actorPassEnabled = !ShouldDisableDebugActorPass();
+    const bool debugDrawPassEnabled = !ShouldDisableDebugDrawPass();
+
+    ThreadedEditorHelperState helperState;
+    helperState.gridPassEnabled = gridPassEnabled;
+    helperState.cameraPassEnabled = cameraPassEnabled;
+    helperState.lightPassEnabled = lightPassEnabled;
+    helperState.actorPassEnabled = actorPassEnabled;
+    helperState.debugDrawPassEnabled = debugDrawPassEnabled;
+    helperState.gridEnabled = GridRenderPass::ShouldIncludeInThreadedFrame(
+        gridPassEnabled,
+        HasDescriptor<GridRenderPass::GridDescriptor>(),
+        Editor::Settings::EditorSettings::DebugDrawEnabled,
+        Editor::Settings::EditorSettings::DebugDrawGrid);
+    helperState.sceneCameraCount = static_cast<uint64_t>(scene.GetFastAccessComponents().cameras.size());
+    helperState.sceneLightCount = static_cast<uint64_t>(scene.GetFastAccessComponents().lights.size());
+    if (HasDescriptor<DebugSceneDescriptor>())
+    {
+        const auto* selectedActor = GetDescriptor<DebugSceneDescriptor>().selectedActor;
+        helperState.hasSelectedActor =
+            OutlineRenderer::ShouldIncludeInThreadedFrame(actorPassEnabled, selectedActor) ||
+            GizmoRenderer::ShouldIncludeInThreadedFrame(actorPassEnabled, selectedActor);
+    }
+
+    if (const auto* debugDrawService = GetDebugDrawService(); debugDrawService != nullptr)
+        helperState.hasVisibleDebugDrawPrimitives = !debugDrawService->CollectVisiblePrimitives().empty();
+
+    snapshot->visibleHelperDrawCount = CountThreadedEditorHelperPasses(helperState);
+    return snapshot;
+}
+
+NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRenderer::BuildPreparedRenderSceneBuilder(
+    const NLS::Render::Context::FrameSnapshot& snapshot) const
+{
+    const auto frameDescriptor = GetFrameDescriptor();
+    const auto gridPassInput = GetPass<GridRenderPass>("Grid").GetPreparedThreadedPassInput();
+    const auto selectionPassInput = GetPass<DebugActorRenderPass>("Debug Actor").GetPreparedThreadedPassInput();
+    const auto pickingPassInput = GetPass<PickingRenderPass>("Picking").GetPreparedThreadedPassInput();
+    auto lightGridContext = NLS::Render::FrameGraph::BuildLightGridCompileContext(
+        frameDescriptor,
+        GetLightGridPrepass(),
+        BuildLightGridFrameInputs(snapshot.sceneSkyboxCount > 0u));
+    const auto explicitHelperContribution =
+        static_cast<uint64_t>(gridPassInput.has_value() ? 1u : 0u) +
+        static_cast<uint64_t>(selectionPassInput.has_value() ? 2u : 0u);
+    const auto aggregateHelperVisibleCount =
+        snapshot.visibleHelperDrawCount >= explicitHelperContribution
+            ? snapshot.visibleHelperDrawCount - explicitHelperContribution
+            : 0u;
+    auto metadata = BuildDebugForwardThreadedPassMetadata(
+        aggregateHelperVisibleCount,
+        gridPassInput.has_value(),
+        selectionPassInput.has_value(),
+        pickingPassInput.has_value());
+
+    return [snapshot,
+            frameDescriptor,
+            gridPassInput,
+            selectionPassInput,
+            pickingPassInput,
+            lightGridContext = std::move(lightGridContext),
+            metadata = std::move(metadata)]() mutable
+    {
+        auto package = BuildSnapshotOwnedRenderScenePackage(
+            snapshot,
+            SnapshotRenderScenePackageBuildMode::SkipDefaultPassInputs);
+        const auto preparedComputeRequest =
+            NLS::Engine::Rendering::LightGridPrepass::BuildPreparedComputeRequest(
+                frameDescriptor,
+                lightGridContext.lightGridPrepass,
+                lightGridContext.preparedFrameInputs);
+
+        NLS::Engine::Rendering::CompileAndApplyPreparedLightGridThreadedExecution(
+            package,
+            preparedComputeRequest,
+            [&lightGridContext](NLS::Render::Context::RenderScenePackage& scenePackage)
+            {
+                const auto resolvedBindingSet =
+                    lightGridContext.lightGridPrepass != nullptr
+                        ? lightGridContext.lightGridPrepass->GetGraphicsPassBindingSet()
+                        : nullptr;
+                ResolvePreparedPassBindingSetPlaceholders(scenePackage, resolvedBindingSet);
+            },
+            metadata,
+            [&package, &gridPassInput, &selectionPassInput, &pickingPassInput](const auto& lightGridComputeSource, const auto& compiledPasses)
+            {
+                return NLS::Render::FrameGraph::BuildPreparedComputeAndScenePassInputs(
+                    lightGridComputeSource,
+                    compiledPasses,
+                    BuildDebugForwardScenePassInputs(package, gridPassInput, selectionPassInput, pickingPassInput));
+            });
+
+        if (pickingPassInput.has_value())
+        {
+            const auto preferredReadbackTexture =
+                !pickingPassInput->colorAttachmentViews.empty()
+                    ? pickingPassInput->colorAttachmentViews.front()->GetTexture()
+                    : nullptr;
+
+            NLS::Render::FrameGraph::RegisterPreferredReadbackTexture(
+                package,
+                preferredReadbackTexture);
+
+            package.renderTargetUseCount += 2u;
+        }
+
+        NLS::Render::FrameGraph::FinalizePreparedForwardScenePackage(package, frameDescriptor);
+        return package;
+    };
 }

@@ -14,24 +14,6 @@ Mesh::Mesh(const std::vector<Geometry::Vertex>& vertices, const std::vector<uint
 	ComputeBoundingSphere(vertices);
 }
 
-void Mesh::Bind() const
-{
-	m_vertexArray.Bind();
-	if (m_vertexBuffer)
-		m_vertexBuffer->Bind();
-	if (m_indexBuffer)
-		m_indexBuffer->Bind();
-}
-
-void Mesh::Unbind() const
-{
-	if (m_indexBuffer)
-		m_indexBuffer->Unbind();
-	if (m_vertexBuffer)
-		m_vertexBuffer->Unbind();
-	m_vertexArray.Unbind();
-}
-
 uint32_t Mesh::GetVertexCount() const
 {
 	return m_vertexCount;
@@ -45,9 +27,7 @@ uint32_t Mesh::GetIndexCount() const
 MeshBufferView Mesh::GetVertexBufferView() const
 {
 	return MeshBufferView{
-		m_vertexBuffer ? m_vertexBuffer->GetRHIBufferHandle() : nullptr,
 		m_vertexBuffer ? m_vertexBuffer->GetBufferHandle() : nullptr,
-		m_vertexBuffer ? m_vertexBuffer->GetID() : 0u,
 		m_vertexStride,
 		0u
 	};
@@ -59,9 +39,7 @@ std::optional<MeshBufferView> Mesh::GetIndexBufferView() const
 		return std::nullopt;
 
 	return MeshBufferView{
-		m_indexBuffer ? m_indexBuffer->GetRHIBufferHandle() : nullptr,
 		m_indexBuffer ? m_indexBuffer->GetBufferHandle() : nullptr,
-		m_indexBuffer->GetID(),
 		sizeof(uint32_t),
 		0u
 	};
@@ -104,7 +82,8 @@ void Mesh::CreateBuffers(const std::vector<Geometry::Vertex>& vertices, const st
 	}
 
 	m_vertexBuffer = std::make_unique<Buffers::VertexBuffer<float>>(vertexData);
-	m_indexBuffer = std::make_unique<Buffers::IndexBuffer>(const_cast<uint32_t*>(indices.data()), indices.size());
+	if (!indices.empty())
+		m_indexBuffer = std::make_unique<Buffers::IndexBuffer>(const_cast<uint32_t*>(indices.data()), indices.size());
 
 	uint64_t vertexSize = sizeof(Geometry::Vertex);
 

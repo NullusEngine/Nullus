@@ -5,8 +5,10 @@ using namespace NLS;
 Game::Core::Application::Application(
 	const Render::Settings::RenderDocSettings& renderDocSettings,
 	std::optional<Render::Settings::EGraphicsBackend> backendOverride,
-	std::optional<std::string> projectPathOverride) :
-	m_context(renderDocSettings, backendOverride, projectPathOverride),
+	std::optional<std::string> projectPathOverride,
+	bool enableThreadedRendering,
+	const Render::Settings::EngineDiagnosticsSettings& diagnosticsSettings) :
+	m_context(renderDocSettings, backendOverride, projectPathOverride, enableThreadedRendering, diagnosticsSettings),
 	m_game(m_context)
 {
 
@@ -14,6 +16,7 @@ Game::Core::Application::Application(
 
 Game::Core::Application::~Application()
 {
+	m_context.ShutdownThreadedRendering();
 }
 
 void Game::Core::Application::Run()

@@ -44,6 +44,7 @@ namespace NLS::Render::Backend
 	NLS_RENDER_API std::shared_ptr<NLS::Render::RHI::RHIDevice> CreateNativeDX12ExplicitDevice(
 		ID3D12Device* device,
 		ID3D12CommandQueue* graphicsQueue,
+		ID3D12CommandQueue* computeQueue,
 		IDXGIFactory6* factory,
 		IDXGIAdapter1* adapter,
 		const NLS::Render::RHI::RHIDeviceCapabilities& capabilities,

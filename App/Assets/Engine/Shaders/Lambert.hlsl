@@ -1,4 +1,5 @@
 #include "CommonTypes.hlsli"
+#include "LightGridCommon.hlsli"
 
 cbuffer FrameConstants : register(b0, space0)
 {
@@ -22,10 +23,9 @@ cbuffer MaterialConstants : register(b0, space2)
 
 Texture2D u_DiffuseMap : register(t0, space2);
 SamplerState u_LinearWrapSampler : register(s0, space2);
-
-static const float3 kLightDirection = normalize(float3(-0.55f, -0.75f, 0.35f));
-static const float3 kLightColor = float3(1.0f, 1.0f, 1.0f);
-static const float3 kAmbientColor = float3(0.30f, 0.30f, 0.30f);
+StructuredBuffer<uint> u_LightGridLights : register(t0, space1);
+StructuredBuffer<uint> u_LightGridClusterRecords : register(t1, space1);
+StructuredBuffer<uint> u_LightGridCompactIndices : register(t2, space1);
 
 VSOutput VSMain(VSInput input)
 {
@@ -46,7 +46,14 @@ float4 PSMain(VSOutput input) : SV_Target0
     const float2 tiledTexCoord = u_TextureOffset + frac(input.TexCoord * u_TextureTiling);
     const float4 diffuse = u_DiffuseMap.Sample(u_LinearWrapSampler, tiledTexCoord) * u_Diffuse;
     const float3 normalWS = normalize(input.NormalWS);
-    const float diffuseTerm = saturate(dot(normalWS, -kLightDirection));
-    const float3 lighting = saturate(kAmbientColor + kLightColor * diffuseTerm);
-    return float4(lighting * diffuse.rgb, diffuse.a);
+    const float3 lighting = saturate(NLSAccumulateClusteredLightingPhong(
+        u_LightGridLights,
+        u_LightGridClusterRecords,
+        u_LightGridCompactIndices,
+        input.PositionWS,
+        normalWS,
+        diffuse.rgb,
+        0.0f.xxx,
+        1.0f));
+    return float4(lighting, diffuse.a);
 }

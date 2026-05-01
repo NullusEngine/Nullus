@@ -20,9 +20,15 @@ namespace NLS::Engine::Rendering
 		virtual void DrawTransparents(NLS::Render::Data::PipelineState pso);
 
 	private:
+		void ExecuteCompiledGraphPass(
+			NLS::Render::Context::RenderPassCommandKind kind,
+			NLS::Render::Data::PipelineState pipelineState);
+
 		struct ForwardSceneDescriptor
 		{
 			AllDrawables drawables;
+			NLS::Render::Context::RenderScenePackage scenePackage;
+			bool hasSkyboxTexture = false;
 		};
 	};
 }

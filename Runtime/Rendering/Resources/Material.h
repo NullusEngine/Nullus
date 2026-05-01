@@ -32,6 +32,7 @@ namespace NLS::Render::RHI
     class RHIDevice;
     class RHIBindingLayout;
     class RHIBindingSet;
+    class PipelineCache;
     class RHIPipelineLayout;
     class RHIGraphicsPipeline;
 }
@@ -53,6 +54,7 @@ struct MaterialPipelineStateOverrides
     std::optional<bool> depthWrite;
     std::optional<bool> colorWrite;
     std::optional<bool> depthTest;
+    std::optional<bool> hasDepthAttachment;
     std::optional<bool> culling;
     std::optional<Settings::ECullFace> cullFace;
 };
@@ -215,6 +217,7 @@ public:
     // Formal RHI methods - exposed for renderer direct access
     std::shared_ptr<RHI::RHIGraphicsPipeline> BuildRecordedGraphicsPipeline(
         const std::shared_ptr<RHI::RHIDevice>& device,
+        const std::shared_ptr<RHI::PipelineCache>& pipelineCache,
         Settings::EPrimitiveMode primitiveMode,
         const Data::PipelineState& pipelineState,
         MaterialPipelineStateOverrides overrides = {},

@@ -2,6 +2,7 @@
 
 #include <Math/Matrix4.h>
 #include <Rendering/Data/PipelineState.h>
+#include <Rendering/Context/ThreadedRenderingLifecycle.h>
 
 namespace NLS::Render::Core { class CompositeRenderer; }
 namespace NLS::Render::Resources { class Material; class Model; }
@@ -21,6 +22,12 @@ public:
         NLS::Render::Resources::Model& model,
         NLS::Render::Resources::Material& material,
         const Maths::Matrix4& modelMatrix);
+    void CaptureModelDrawCommandsWithSingleMaterial(
+        NLS::Render::Data::PipelineState pso,
+        NLS::Render::Resources::Model& model,
+        NLS::Render::Resources::Material& material,
+        const Maths::Matrix4& modelMatrix,
+        std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands);
 
 private:
     NLS::Render::Core::CompositeRenderer& m_renderer;

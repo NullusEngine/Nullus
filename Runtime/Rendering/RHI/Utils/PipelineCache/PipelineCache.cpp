@@ -1,11 +1,27 @@
 #include "Rendering/RHI/Utils/PipelineCache/PipelineCache.h"
 
+#include <algorithm>
 #include <unordered_map>
 
 namespace NLS::Render::RHI
 {
     namespace
     {
+        template<typename TValue>
+        void HashCombine(uint64_t& seed, const TValue& value)
+        {
+            seed ^= static_cast<uint64_t>(std::hash<TValue>{}(value)) + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2);
+        }
+
+        uint64_t ResolveEffectivePipelineCacheHash(const PipelineCacheKey& key)
+        {
+            uint64_t resolvedHash = key.hash;
+            HashCombine(resolvedHash, static_cast<uint32_t>(key.backend));
+            if (!key.stableDebugName.empty())
+                HashCombine(resolvedHash, key.stableDebugName);
+            return resolvedHash;
+        }
+
         class DefaultPipelineCache final : public PipelineCache
         {
         public:
@@ -21,7 +37,7 @@ namespace NLS::Render::RHI
                 if (!key.IsValid())
                     return nullptr;
 
-                const auto it = m_graphicsPipelines.find(key.hash);
+                const auto it = m_graphicsPipelines.find(ResolveEffectivePipelineCacheHash(key));
                 if (it == m_graphicsPipelines.end())
                 {
                     ++m_stats.graphicsMisses;
@@ -37,7 +53,7 @@ namespace NLS::Render::RHI
                 if (!key.IsValid())
                     return nullptr;
 
-                const auto it = m_computePipelines.find(key.hash);
+                const auto it = m_computePipelines.find(ResolveEffectivePipelineCacheHash(key));
                 if (it == m_computePipelines.end())
                 {
                     ++m_stats.computeMisses;
@@ -53,7 +69,9 @@ namespace NLS::Render::RHI
                 if (!key.IsValid() || pipeline == nullptr)
                     return;
 
-                m_graphicsPipelines[key.hash] = pipeline;
+                m_graphicsPipelines[ResolveEffectivePipelineCacheHash(key)] = pipeline;
+                ++m_stats.graphicsStores;
+                m_stats.graphicsEntryCount = static_cast<uint64_t>(m_graphicsPipelines.size());
             }
 
             void StoreComputePipeline(const PipelineCacheKey& key, const std::shared_ptr<RHIComputePipeline>& pipeline) override
@@ -61,7 +79,57 @@ namespace NLS::Render::RHI
                 if (!key.IsValid() || pipeline == nullptr)
                     return;
 
-                m_computePipelines[key.hash] = pipeline;
+                m_computePipelines[ResolveEffectivePipelineCacheHash(key)] = pipeline;
+                ++m_stats.computeStores;
+                m_stats.computeEntryCount = static_cast<uint64_t>(m_computePipelines.size());
+            }
+
+            std::shared_ptr<RHIGraphicsPipeline> GetOrCreateGraphicsPipeline(
+                const PipelineCacheKey& key,
+                const std::function<std::shared_ptr<RHIGraphicsPipeline>()>& createPipeline,
+                const PipelineCacheRequestMode requestMode) override
+            {
+                if (requestMode == PipelineCacheRequestMode::Prewarm)
+                    ++m_stats.graphicsPrewarmRequests;
+
+                if (auto pipeline = FindGraphicsPipeline(key); pipeline != nullptr)
+                {
+                    if (requestMode == PipelineCacheRequestMode::Prewarm)
+                        ++m_stats.graphicsPrewarmHits;
+                    return pipeline;
+                }
+
+                if (!createPipeline)
+                    return nullptr;
+
+                auto pipeline = createPipeline();
+                if (pipeline != nullptr)
+                    StoreGraphicsPipeline(key, pipeline);
+                return pipeline;
+            }
+
+            std::shared_ptr<RHIComputePipeline> GetOrCreateComputePipeline(
+                const PipelineCacheKey& key,
+                const std::function<std::shared_ptr<RHIComputePipeline>()>& createPipeline,
+                const PipelineCacheRequestMode requestMode) override
+            {
+                if (requestMode == PipelineCacheRequestMode::Prewarm)
+                    ++m_stats.computePrewarmRequests;
+
+                if (auto pipeline = FindComputePipeline(key); pipeline != nullptr)
+                {
+                    if (requestMode == PipelineCacheRequestMode::Prewarm)
+                        ++m_stats.computePrewarmHits;
+                    return pipeline;
+                }
+
+                if (!createPipeline)
+                    return nullptr;
+
+                auto pipeline = createPipeline();
+                if (pipeline != nullptr)
+                    StoreComputePipeline(key, pipeline);
+                return pipeline;
             }
 
             PipelineCacheStats GetStats() const override

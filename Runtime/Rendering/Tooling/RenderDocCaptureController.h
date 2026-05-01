@@ -21,7 +21,7 @@ namespace NLS::Render::Tooling
 		bool QueueCapture(const std::string& label = {});
 		bool StartCapture();
 		bool EndCapture();
-		void OnPreFrame();
+		void OnPreFrame(bool frameWillPresent = true);
 		void OnPrePresent();
 		void OnPostPresent();
 

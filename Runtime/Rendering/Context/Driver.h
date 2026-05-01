@@ -1,12 +1,12 @@
 ﻿#pragma once
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 
-#include "Rendering/Settings/EPrimitiveMode.h"
-#include "Rendering/Settings/EComparaisonAlgorithm.h"
 #include "RenderDef.h"
 
 namespace NLS::Render::Data
@@ -18,7 +18,7 @@ namespace NLS::Render::Settings
 {
     struct DriverSettings;
     enum class EGraphicsBackend : uint8_t;
-    struct RuntimeBackendFallbackDecision;
+    struct RuntimeBackendReadinessDecision;
     enum class ERasterizationMode : uint8_t;
 }
 
@@ -30,15 +30,15 @@ namespace NLS::Render::RHI
 
 namespace NLS::Render::Resources
 {
-	class IMesh;
-	class Material;
-	struct MaterialPipelineStateOverrides;
 }
 
 namespace NLS::Render::Context
 {
 class DriverImpl;
-struct DriverCompatibilityAccess;
+struct RenderThreadCoordinator;
+struct RhiThreadCoordinator;
+class ThreadedRenderingLifecycle;
+enum class RhiSubmissionAttribution : uint8_t;
 struct DriverRendererAccess;
 struct DriverTestAccess;
 struct DriverUIAccess;
@@ -60,18 +60,8 @@ public:
      */
 	~Driver();
 
-    bool SubmitMaterialDraw(
-        const ::NLS::Render::Resources::Material& material,
-        ::NLS::Render::Data::PipelineState pipelineState,
-        const ::NLS::Render::Resources::MaterialPipelineStateOverrides& overrides,
-        const ::NLS::Render::Resources::IMesh& mesh,
-        Settings::EPrimitiveMode primitiveMode = Settings::EPrimitiveMode::TRIANGLES,
-        Settings::EComparaisonAlgorithm depthCompare = Settings::EComparaisonAlgorithm::LESS,
-        uint32_t instances = 1,
-        bool allowExplicitRecording = true);
-
-    Settings::RuntimeBackendFallbackDecision EvaluateEditorMainRuntimeFallback(Settings::EGraphicsBackend requestedBackend) const;
-    Settings::RuntimeBackendFallbackDecision EvaluateGameMainRuntimeFallback(Settings::EGraphicsBackend requestedBackend) const;
+    Settings::RuntimeBackendReadinessDecision EvaluateEditorMainRuntimeReadiness(Settings::EGraphicsBackend requestedBackend) const;
+    Settings::RuntimeBackendReadinessDecision EvaluateGameMainRuntimeReadiness(Settings::EGraphicsBackend requestedBackend) const;
     std::optional<std::string> GetEditorPickingReadbackWarning() const;
     Settings::EGraphicsBackend GetActiveGraphicsBackend() const;
     ::NLS::Render::RHI::NativeRenderDeviceInfo GetNativeDeviceInfo() const;
@@ -83,6 +73,7 @@ public:
 		bool vsync,
 		uint32_t imageCount = 2u);
 	void ResizePlatformSwapchain(uint32_t width, uint32_t height);
+    void ShutdownThreadedRendering();
 
     // Set a callback to be invoked before swapchain resize.
     // This allows the application layer (e.g., Editor) to notify UI about impending resize
@@ -91,16 +82,21 @@ public:
     void SetSwapchainWillResizeCallback(SwapchainWillResizeCallback callback);
 
 private:
-    friend struct DriverCompatibilityAccess;
     friend struct DriverRendererAccess;
     friend struct DriverTestAccess;
     friend struct DriverUIAccess;
+    friend struct RenderThreadCoordinator;
+    friend struct RhiThreadCoordinator;
 
 	bool CreateSwapchain(const ::NLS::Render::RHI::SwapchainDesc& desc);
 	void DestroySwapchain();
 	void ResizeSwapchain(uint32_t width, uint32_t height);
-	void PresentSwapchain();
+    void PresentSwapchain();
     void SetPolygonMode(Settings::ERasterizationMode mode);
+    void StartThreadedRenderingWorkers();
+    void StopThreadedRenderingWorkers();
+    bool IsThreadedRenderingEnabled() const;
+    void ShutdownRhiResources();
 
     void ApplyPendingSwapchainResize();
     void SetPipelineState(::NLS::Render::Data::PipelineState p_state);

@@ -53,6 +53,12 @@ namespace NLS::Editor::Core
 			return *static_cast<T*>(m_panels[p_id].get());
 		}
 
+		void DestroyPanels()
+		{
+			m_canvas.RemoveAllPanels();
+			m_panels.clear();
+		}
+
 	private:
 		std::unordered_map<std::string, std::unique_ptr<UI::APanel>> m_panels;
 		UI::Canvas& m_canvas;

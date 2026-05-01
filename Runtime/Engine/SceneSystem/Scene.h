@@ -1,6 +1,8 @@
 ﻿#pragma once
 
 
+#include <unordered_set>
+
 #include "GameObject.h"
 #include "Components/CameraComponent.h"
 #include "Components/LightComponent.h"
@@ -162,6 +164,7 @@ namespace NLS::Engine::SceneSystem
 
 	private:
         void NotifyActorDestroyed(GameObject& p_actor);
+        void NotifyActorDestroyed(GameObject& p_actor, std::unordered_set<GameObject*>& p_notifiedActors);
         void DestroyActorInstance(GameObject& p_actor);
 		void RebuildFastAccessComponents();
 		int64_t m_availableID = 1;

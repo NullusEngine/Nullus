@@ -10,15 +10,8 @@ namespace
 	// Helper to get RHIDevice from driver
 	std::shared_ptr<NLS::Render::RHI::RHIDevice> GetExplicitDevice()
 	{
-		try
-		{
-			auto& driver = NLS::Render::Context::RequireLocatedDriver("Texture::CreateRHITexture");
-			return NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver);
-		}
-		catch (...)
-		{
-			return nullptr;
-		}
+		auto& driver = NLS::Render::Context::RequireLocatedDriver("Texture::CreateRHITexture");
+		return NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver);
 	}
 }
 

@@ -127,6 +127,9 @@ namespace NLS::Render::RHI
 		bool backendReady = false;
 		bool supportsGraphics = true;
 		bool supportsCompute = false;
+		bool supportsAsyncCompute = false;
+		bool supportsDedicatedComputeQueue = false;
+		bool supportsCopyQueue = false;
 		bool supportsSwapchain = false;
 		bool supportsFramebufferBlit = false;
 		bool supportsDepthBlit = false;
@@ -138,6 +141,11 @@ namespace NLS::Render::RHI
 		bool supportsCubemaps = false;
 		bool supportsMultiRenderTargets = false;
 		bool supportsExplicitBarriers = false;
+		bool supportsParallelCommandRecording = false;
+		bool supportsParallelCommandTranslation = false;
+		bool supportsTransientResourceAllocator = false;
+		bool supportsCentralizedDescriptorManagement = false;
+		bool supportsPipelineStateCache = false;
 		uint32_t maxTextureDimension2D = 0;
 		uint32_t maxColorAttachments = 0;
 	};

@@ -41,7 +41,7 @@ Editor::Panels::Toolbar::Toolbar
 	m_stopButton->ClickedEvent	+= EDITOR_BIND(StopPlaying);
 	m_nextButton->ClickedEvent	+= EDITOR_BIND(NextFrame);
 
-	EDITOR_EVENT(EditorModeChangedEvent) += [this](Editor::Core::EditorActions::EEditorMode p_newMode)
+	m_editorModeChangedListener = EDITOR_EVENT(EditorModeChangedEvent) += [this](Editor::Core::EditorActions::EEditorMode p_newMode)
 	{
 		auto enable = [](UI::Widgets::ButtonImage* p_button, bool p_enable)
 		{
@@ -79,6 +79,11 @@ Editor::Panels::Toolbar::Toolbar
 	};
 
 	EDITOR_EXEC(SetEditorMode(Editor::Core::EditorActions::EEditorMode::EDIT));
+}
+
+Editor::Panels::Toolbar::~Toolbar()
+{
+	EDITOR_EVENT(EditorModeChangedEvent) -= m_editorModeChangedListener;
 }
 
 void Editor::Panels::Toolbar::_Draw_Impl()

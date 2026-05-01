@@ -39,6 +39,30 @@ namespace NLS::Render::FrameGraph
 				frameContext->resourceStateTracker != nullptr;
 		}
 
+		void RegisterTransientBuffer(
+			const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& buffer,
+			uint64_t retireAfterFrameIndex) const
+		{
+			if (!CanTrackExplicitResourceState())
+				return;
+
+			frameContext->resourceStateTracker->RegisterTransientBuffer(buffer, retireAfterFrameIndex);
+		}
+
+		void RegisterTransientTexture(
+			const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+			const NLS::Render::RHI::RHISubresourceRange& subresourceRange,
+			uint64_t retireAfterFrameIndex) const
+		{
+			if (!CanTrackExplicitResourceState())
+				return;
+
+			frameContext->resourceStateTracker->RegisterTransientTexture(
+				texture,
+				subresourceRange,
+				retireAfterFrameIndex);
+		}
+
 		void RecordResourceBarriers(const NLS::Render::RHI::RHIBarrierDesc& requestedBarriers) const
 		{
 			if (!CanTrackExplicitResourceState())

@@ -1,8 +1,10 @@
+#include <algorithm>
 #include <functional>
 #include <filesystem>
 #include <fstream>
 
 #include "Rendering/Core/CompositeRenderer.h"
+#include "Rendering/Context/ThreadedRenderingLifecycle.h"
 
 namespace NLS::Render::Core
 {
@@ -49,6 +51,8 @@ void CompositeRenderer::ExecutePass(Core::ARenderPass& pass, PipelineState pso)
             false,
             false,
             false);
+        if (!startedRenderPass)
+            return;
 
         pass.Draw(pso);
 
@@ -88,10 +92,11 @@ void CompositeRenderer::EndFrame()
         m_frameObjectBindingProvider->EndFrame();
     if (m_debugDrawService != nullptr)
         m_debugDrawService->EndFrame();
-
-    m_rendererStats.EndFrame();
-    ClearDescriptors();
     ABaseRenderer::EndFrame();
+    ClearDescriptors();
+    const auto telemetry = Context::DriverRendererAccess::GetThreadedFrameTelemetry(m_driver);
+    m_rendererStats.SetThreadedFrameTelemetry(telemetry);
+    m_rendererStats.EndFrame();
 }
 
 void CompositeRenderer::DrawEntity(
@@ -99,19 +104,34 @@ void CompositeRenderer::DrawEntity(
     const Entities::Drawable& p_drawable
 )
 {
+    const bool usesThreadedRendering = Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
+
     if (m_frameObjectBindingProvider != nullptr)
         m_frameObjectBindingProvider->PrepareDraw(p_pso, p_drawable);
 
     PreparedRecordedDraw preparedDraw;
     if (PrepareRecordedDraw(p_pso, p_drawable, preparedDraw))
     {
-        BindPreparedGraphicsPipeline(preparedDraw);
-
-        if (preparedDraw.commandBuffer != nullptr)
+        if (preparedDraw.commandBuffer == nullptr && usesThreadedRendering && m_frameObjectBindingProvider != nullptr)
         {
-            if (m_frameObjectBindingProvider != nullptr)
-                m_frameObjectBindingProvider->PrepareExplicitDraw(*preparedDraw.commandBuffer, p_pso, p_drawable);
+            FrameObjectBindingProvider::PreparedBindingSets bindingSets;
+            if (m_frameObjectBindingProvider->CapturePreparedBindingSets(p_pso, p_drawable, bindingSets))
+            {
+                preparedDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
+                preparedDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
+            }
         }
+
+        if (preparedDraw.commandBuffer == nullptr)
+        {
+            if (usesThreadedRendering && QueueThreadedRecordedDraw(preparedDraw))
+                m_rendererStats.RecordSubmittedDraw(p_drawable, preparedDraw.instanceCount);
+            return;
+        }
+
+        BindPreparedGraphicsPipeline(preparedDraw);
+        if (m_frameObjectBindingProvider != nullptr)
+            m_frameObjectBindingProvider->PrepareExplicitDraw(*preparedDraw.commandBuffer, p_pso, p_drawable);
 
         BindPreparedMaterialBindingSet(preparedDraw);
         SubmitPreparedDraw(preparedDraw);
@@ -125,6 +145,7 @@ void CompositeRenderer::DrawEntity(
     Settings::EComparaisonAlgorithm depthCompareOverride)
 {
     auto effectivePso = CreatePipelineState();
+    const bool usesThreadedRendering = Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
 
     if (m_frameObjectBindingProvider != nullptr)
         m_frameObjectBindingProvider->PrepareDraw(effectivePso, p_drawable);
@@ -132,18 +153,129 @@ void CompositeRenderer::DrawEntity(
     PreparedRecordedDraw preparedDraw;
     if (PrepareRecordedDraw(p_drawable, pipelineOverrides, depthCompareOverride, preparedDraw))
     {
-        BindPreparedGraphicsPipeline(preparedDraw);
-
-        if (preparedDraw.commandBuffer != nullptr)
+        if (preparedDraw.commandBuffer == nullptr && usesThreadedRendering && m_frameObjectBindingProvider != nullptr)
         {
-            if (m_frameObjectBindingProvider != nullptr)
-                m_frameObjectBindingProvider->PrepareExplicitDraw(*preparedDraw.commandBuffer, effectivePso, p_drawable);
+            FrameObjectBindingProvider::PreparedBindingSets bindingSets;
+            if (m_frameObjectBindingProvider->CapturePreparedBindingSets(effectivePso, p_drawable, bindingSets))
+            {
+                preparedDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
+                preparedDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
+            }
         }
+
+        if (preparedDraw.commandBuffer == nullptr)
+        {
+            if (usesThreadedRendering && QueueThreadedRecordedDraw(preparedDraw))
+                m_rendererStats.RecordSubmittedDraw(p_drawable, preparedDraw.instanceCount);
+            return;
+        }
+
+        BindPreparedGraphicsPipeline(preparedDraw);
+        if (m_frameObjectBindingProvider != nullptr)
+            m_frameObjectBindingProvider->PrepareExplicitDraw(*preparedDraw.commandBuffer, effectivePso, p_drawable);
 
         BindPreparedMaterialBindingSet(preparedDraw);
         SubmitPreparedDraw(preparedDraw);
         m_rendererStats.RecordSubmittedDraw(p_drawable, preparedDraw.instanceCount);
     }
+}
+
+bool CompositeRenderer::CaptureRecordedDrawCommand(
+    PipelineState p_pso,
+    const Entities::Drawable& p_drawable,
+    Context::RecordedDrawCommandInput& outDraw)
+{
+    const auto populateRecordedDrawCommandInput =
+        [&outDraw](const PreparedRecordedDraw& preparedDraw)
+    {
+        if (preparedDraw.pipeline == nullptr ||
+            preparedDraw.materialBindingSet == nullptr ||
+            preparedDraw.mesh == nullptr ||
+            preparedDraw.instanceCount == 0u)
+        {
+            return false;
+        }
+
+        outDraw.pipeline = preparedDraw.pipeline;
+        outDraw.frameBindingSet = preparedDraw.frameBindingSet;
+        outDraw.objectBindingSet = preparedDraw.objectBindingSet;
+        outDraw.passBindingSet = preparedDraw.passBindingSet;
+        outDraw.materialBindingSet = preparedDraw.materialBindingSet;
+        outDraw.mesh = preparedDraw.mesh;
+        outDraw.instanceCount = preparedDraw.instanceCount;
+        return true;
+    };
+
+    const bool usesThreadedRendering = Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
+
+    if (m_frameObjectBindingProvider != nullptr)
+        m_frameObjectBindingProvider->PrepareDraw(p_pso, p_drawable);
+
+    PreparedRecordedDraw preparedDraw;
+    if (!PrepareRecordedDraw(p_pso, p_drawable, preparedDraw))
+        return false;
+
+    if (preparedDraw.commandBuffer == nullptr && usesThreadedRendering && m_frameObjectBindingProvider != nullptr)
+    {
+        FrameObjectBindingProvider::PreparedBindingSets bindingSets;
+        if (m_frameObjectBindingProvider->CapturePreparedBindingSets(p_pso, p_drawable, bindingSets))
+        {
+            preparedDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
+            preparedDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
+        }
+    }
+
+    return populateRecordedDrawCommandInput(preparedDraw);
+}
+
+bool CompositeRenderer::CaptureRecordedDrawCommand(
+    const Entities::Drawable& p_drawable,
+    Resources::MaterialPipelineStateOverrides pipelineOverrides,
+    Settings::EComparaisonAlgorithm depthCompareOverride,
+    Context::RecordedDrawCommandInput& outDraw)
+{
+    const auto populateRecordedDrawCommandInput =
+        [&outDraw](const PreparedRecordedDraw& preparedDraw)
+    {
+        if (preparedDraw.pipeline == nullptr ||
+            preparedDraw.materialBindingSet == nullptr ||
+            preparedDraw.mesh == nullptr ||
+            preparedDraw.instanceCount == 0u)
+        {
+            return false;
+        }
+
+        outDraw.pipeline = preparedDraw.pipeline;
+        outDraw.frameBindingSet = preparedDraw.frameBindingSet;
+        outDraw.objectBindingSet = preparedDraw.objectBindingSet;
+        outDraw.passBindingSet = preparedDraw.passBindingSet;
+        outDraw.materialBindingSet = preparedDraw.materialBindingSet;
+        outDraw.mesh = preparedDraw.mesh;
+        outDraw.instanceCount = preparedDraw.instanceCount;
+        return true;
+    };
+
+    auto effectivePso = CreatePipelineState();
+    const bool usesThreadedRendering = Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
+
+    if (m_frameObjectBindingProvider != nullptr)
+        m_frameObjectBindingProvider->PrepareDraw(effectivePso, p_drawable);
+
+    PreparedRecordedDraw preparedDraw;
+    if (!PrepareRecordedDraw(p_drawable, pipelineOverrides, depthCompareOverride, preparedDraw))
+        return false;
+
+    if (preparedDraw.commandBuffer == nullptr && usesThreadedRendering && m_frameObjectBindingProvider != nullptr)
+    {
+        FrameObjectBindingProvider::PreparedBindingSets bindingSets;
+        if (m_frameObjectBindingProvider->CapturePreparedBindingSets(effectivePso, p_drawable, bindingSets))
+        {
+            preparedDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
+            preparedDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
+        }
+    }
+
+    return populateRecordedDrawCommandInput(preparedDraw);
 }
 
 void CompositeRenderer::SetFrameObjectBindingProvider(std::unique_ptr<FrameObjectBindingProvider> provider)
@@ -180,6 +312,12 @@ bool CompositeRenderer::HasDebugDrawService() const
 
 const Data::FrameInfo& CompositeRenderer::GetFrameInfo() const
 {
+    if (Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver))
+    {
+        const auto telemetry = Context::DriverRendererAccess::GetThreadedFrameTelemetry(m_driver);
+        const_cast<RendererStats&>(m_rendererStats).SetThreadedFrameTelemetry(telemetry);
+    }
+
     return m_rendererStats.GetFrameInfo();
 }
 

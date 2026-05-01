@@ -4,7 +4,8 @@
 
 This document defines the active migration target for the engine rendering architecture:
 
-- On the current Windows stabilization matrix, `DX12` and `Vulkan` are the only backends still exposed as supported for Editor/Game runtime.
+- During the UE5 DX12 alignment phase, `DX12` is the only active runtime backend exposed for Editor/Game on the validated Windows path.
+- `Vulkan` remains in source only as a future backend implementation target behind backend-neutral architecture boundaries; it is not an active runtime path during this phase.
 - `DX11` and `OpenGL` remain in the source tree, but startup now gates them unsupported until their runtime path and evidence are repaired.
 - `Metal` is explicitly unsupported on non-Apple builds and must not be exposed through null-device fallback paths.
 - `runtime` and `editor` consume the same device, queue, swapchain, command buffer, binding, texture, and framebuffer semantics.
@@ -14,12 +15,17 @@ The old immediate-style `IRenderDevice` path is now a migration bridge only. New
 
 ## Backend Tiers
 
-### Validated Runtime Backends
+### Active Phase-1 Runtime Backend
 
 - `DX12` - Full native explicit RHI implementation
-- `Vulkan` - Full native explicit RHI implementation
 
-These backends currently have Windows smoke evidence and remain the only backends that may be reported as supported in docs, startup messaging, or UI/backend-selection flows.
+This phase intentionally permits only one accepted runtime mainline so threaded ownership, RDG authority, editor-path unification, and startup failure behavior can converge without compatibility branches.
+
+### Preserved Future Backend Implementations
+
+- `Vulkan` - Kept in source as a future backend implementation target, but intentionally gated unsupported for the active UE5 DX12 alignment phase
+
+Only `DX12` may currently be reported as supported in docs, startup messaging, or UI/backend-selection flows for the active alignment phase.
 
 Validated backends receive new graphics capabilities first:
 - offscreen rendering
@@ -136,12 +142,12 @@ The following formal RHI objects are implemented natively in Tier A backends:
 - `NativeVulkanPipelineLayout`, `NativeVulkanShaderModule`, `NativeVulkanGraphicsPipeline`, `NativeVulkanComputePipeline`
 - `NativeVulkanCommandPool`, `NativeVulkanCommandBuffer`, `NativeVulkanFence`, `NativeVulkanSemaphore`
 
-### Current Windows Runtime Matrix (2026-04-13)
+### Current Windows Runtime Matrix For UE5 DX12 Alignment Phase (2026-04-21)
 
-- `DX12` - supported; `verify_all_backends.ps1` reports Editor/Game `StillRunning`, and `Build/RenderDocCaptures/game/dx12/game_dx12_DX12_capture.rdc` is inspectable with a color pass and a sampled `cubeTex` draw
-- `Vulkan` - supported; `verify_all_backends.ps1` reports Editor/Game `StillRunning`, and `Build/RenderDocCaptures/game/vulkan/game_vulkan_Vulkan_capture.rdc` is captured successfully even though the latest startup-frame capture still lands before the first draw
-- `DX11` - gated unsupported; startup now reports explicit unsupported warnings and exits cleanly instead of crashing through fallback
-- `OpenGL` - gated unsupported on the current Windows build; startup now reports explicit unsupported warnings and exits cleanly instead of crashing through fallback
+- `DX12` - supported; this is the only accepted active runtime backend for the current alignment phase
+- `Vulkan` - preserved in source but intentionally gated unsupported while the DX12-only authoritative mainline is being closed
+- `DX11` - gated unsupported; startup now reports explicit unsupported warnings and exits cleanly instead of attempting any alternate runtime route
+- `OpenGL` - gated unsupported on the current Windows build; startup now reports explicit unsupported warnings and exits cleanly instead of attempting any alternate runtime route
 - `Metal` - unsupported on non-Apple builds
 
 ### Utilities Integration
@@ -149,17 +155,28 @@ The following formal RHI objects are implemented natively in Tier A backends:
 - `DescriptorAllocator`, `PipelineCache`, `ResourceStateTracker`, `UploadContext` are created by Driver and stored in per-frame `RHIFrameContext`
 - These utilities work with formal RHI resources created by native devices
 
+### UE5 DX12 Alignment Status (2026-04-23)
+
+- The active DX12-aligned mainline now requires central descriptor allocation for explicit binding-set creation.
+  - Missing allocator state is treated as a rejected mainline condition, not as permission to return a raw backend binding set.
+- Graphics and compute PSO acquisition stay on `PipelineCache`.
+  - Render code may supply backend creation lambdas to the cache, but accepted-path code no longer keeps direct PSO fallback branches outside the cache-owned flow.
+- Transient lifetime and readback visibility stay on `ResourceStateTracker` plus frame-graph/external-resource bridging.
+- Threaded diagnostics expose descriptor, PSO, transient-lifetime, and retirement mainline activity through `ThreadedFrameTelemetry`, `RendererStats`, and `FrameInfo`.
+
 ## Acceptance Matrix
 
 ### Runtime
 
-- `DX12` and `Vulkan` must launch and survive smoke for both `Editor` and `Game`
+- `DX12` must launch and survive smoke for both `Editor` and `Game`
+- `Vulkan` must remain behind backend-neutral architecture boundaries and must not be exposed as an active runtime path during this phase
 - `DX11`, `OpenGL`, and `Metal` must report explicit unsupported/gated behavior instead of crashing or relying on silent fallback
 - backend support claims must be backed by direct smoke results plus RenderDoc capture evidence for supported explicit backends
 
 ### Editor
 
-- `DX12` and `Vulkan` must run without fallback (Tier A)
+- `DX12` must run without fallback (Tier A)
+- `Vulkan` editor execution is out of scope for the current alignment phase and must remain gated unsupported in runtime selection surfaces
 - `DX11` and `OpenGL` must not be presented as supported on the current Windows matrix until their runtime path is repaired and revalidated
 - `SceneView` and `GameView` must display valid imagery
 - launcher/logo and regular UI textures must render correctly
@@ -170,4 +187,4 @@ The following formal RHI objects are implemented natively in Tier A backends:
 - backend-external code must not call backend-native APIs directly
 - new passes must not reintroduce `SetUniform*`, shader program handles, or handwritten binding slots
 - new renderer work must not add dependencies on `Driver::Draw`, `Driver::BindGraphicsPipeline`, or raw backend texture/buffer IDs as primary resource handles
-- unsupported backends must not route through a crashing fallback backend; startup must log a truthful unsupported state and stop cleanly
+- unsupported backends must not route through a crashing alternate runtime path; startup must log a truthful unsupported state and stop cleanly

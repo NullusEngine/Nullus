@@ -20,6 +20,14 @@ void SceneLightingProvider::Collect(const SceneSystem::Scene& scene)
     }
 }
 
+void SceneLightingProvider::PrepareRenderScenePackage(
+    const NLS::Render::Context::FrameSnapshot& snapshot,
+    NLS::Render::Context::RenderScenePackage& package) const
+{
+    package.hasLightingData = snapshot.sceneLightCount > 0u;
+    package.lightingDataReady = true;
+}
+
 const SceneLightingProvider::LightingDescriptor& SceneLightingProvider::GetLightingDescriptor() const
 {
     return m_lightingDescriptor;

@@ -14,11 +14,12 @@ TEST(UIAndToolingBackendAwarenessTests, ResolvesImGuiGlfwInitBackendByGraphicsBa
     using NLS::Render::Settings::EGraphicsBackend;
     using NLS::UI::ImGuiGlfwInitBackend;
 
-#if defined(_WIN32)
-    EXPECT_EQ(NLS::UI::ResolveImGuiGlfwInitBackend(EGraphicsBackend::OPENGL), ImGuiGlfwInitBackend::Other);
-#else
-    EXPECT_EQ(NLS::UI::ResolveImGuiGlfwInitBackend(EGraphicsBackend::OPENGL), ImGuiGlfwInitBackend::OpenGL);
-#endif
+    const auto expectedOpenGlBackend =
+        NLS::Render::Settings::SupportsImGuiRendererBackend(EGraphicsBackend::OPENGL)
+        ? ImGuiGlfwInitBackend::OpenGL
+        : ImGuiGlfwInitBackend::Other;
+
+    EXPECT_EQ(NLS::UI::ResolveImGuiGlfwInitBackend(EGraphicsBackend::OPENGL), expectedOpenGlBackend);
     EXPECT_EQ(NLS::UI::ResolveImGuiGlfwInitBackend(EGraphicsBackend::VULKAN), ImGuiGlfwInitBackend::Vulkan);
     EXPECT_EQ(NLS::UI::ResolveImGuiGlfwInitBackend(EGraphicsBackend::DX12), ImGuiGlfwInitBackend::Other);
     EXPECT_EQ(NLS::UI::ResolveImGuiGlfwInitBackend(EGraphicsBackend::DX11), ImGuiGlfwInitBackend::Other);

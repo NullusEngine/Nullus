@@ -33,13 +33,26 @@ TEST(GameLaunchArgsTests, ParsesShortBackendFlagAndRenderDocCaptureOptions)
 
 	const auto parsed = NLS::Game::Launch::ParseGameArgs(static_cast<int>(storage.size()), argv);
 
-	EXPECT_FALSE(parsed.hasError);
+	if (NLS::Render::Settings::IsBackendSelectableForPhase1(NLS::Render::Settings::EGraphicsBackend::DX12))
+		EXPECT_FALSE(parsed.hasError);
+	else
+		EXPECT_TRUE(parsed.hasError);
 	ASSERT_TRUE(parsed.backendOverride.has_value());
 	EXPECT_EQ(parsed.backendOverride.value(), NLS::Render::Settings::EGraphicsBackend::DX12);
-	EXPECT_TRUE(parsed.renderDocSettings.enabled);
-	EXPECT_EQ(parsed.renderDocSettings.startupCaptureAfterFrames, 42u);
-	ASSERT_TRUE(parsed.projectPathOverride.has_value());
-	EXPECT_EQ(parsed.projectPathOverride.value(), "TestProject");
+
+	if (NLS::Render::Settings::IsBackendSelectableForPhase1(NLS::Render::Settings::EGraphicsBackend::DX12))
+	{
+		EXPECT_TRUE(parsed.renderDocSettings.enabled);
+		EXPECT_EQ(parsed.renderDocSettings.startupCaptureAfterFrames, 42u);
+		ASSERT_TRUE(parsed.projectPathOverride.has_value());
+		EXPECT_EQ(parsed.projectPathOverride.value(), "TestProject");
+	}
+	else
+	{
+		EXPECT_FALSE(parsed.renderDocSettings.enabled);
+		EXPECT_EQ(parsed.renderDocSettings.startupCaptureAfterFrames, 0u);
+		EXPECT_FALSE(parsed.projectPathOverride.has_value());
+	}
 }
 
 TEST(GameLaunchArgsTests, DefaultsToThreadedRenderingMainlineWithoutOptInFlag)

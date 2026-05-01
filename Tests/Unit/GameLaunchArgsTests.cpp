@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "LaunchArgs.h"
+#include "Rendering/Settings/GraphicsBackendUtils.h"
 
 namespace
 {

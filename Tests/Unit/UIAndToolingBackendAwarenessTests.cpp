@@ -6,6 +6,7 @@
 #include "Rendering/RHI/Utils/RHIUIBridge.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
 #include "Rendering/Settings/DriverSettings.h"
+#include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/Tooling/RenderDocCaptureController.h"
 #include "UI/UIManager.h"
 

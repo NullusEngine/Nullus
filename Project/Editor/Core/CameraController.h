@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <queue>
 
@@ -18,6 +19,30 @@ namespace NLS::Editor::Core
 class CameraController
 {
 public:
+    static constexpr uint8_t GetLookCaptureSuppressionFrameCount()
+    {
+        return 1u;
+    }
+
+    static constexpr float GetMaxLookMouseDeltaPerFrame()
+    {
+        return 64.0f;
+    }
+
+    static constexpr float GetMaxPanOrbitMouseDeltaPerFrame()
+    {
+        return 16.0f;
+    }
+
+    static Maths::Vector2 ClampMouseDeltaForCameraControl(const Maths::Vector2& p_mouseOffset, float p_maxDeltaPerFrame)
+    {
+        return
+        {
+            std::clamp(p_mouseOffset.x, -p_maxDeltaPerFrame, p_maxDeltaPerFrame),
+            std::clamp(p_mouseOffset.y, -p_maxDeltaPerFrame, p_maxDeltaPerFrame)
+        };
+    }
+
     /**
      * Constructor
      * @param p_view
@@ -95,7 +120,6 @@ private:
     void ResetLastMousePosition(const Maths::Vector2& p_mousePosition);
     void SuppressMouseDeltaAfterCursorCapture();
     bool ConsumeSuppressedMouseDelta(const Maths::Vector2& p_mousePosition);
-    Maths::Vector2 ClampMouseDeltaForCameraControl(const Maths::Vector2& p_mouseOffset) const;
     void HandleCameraPanning(const Maths::Vector2& p_mouseOffset, bool p_firstMouse);
     void HandleCameraOrbit(Engine::GameObject& p_target, const Maths::Vector2& p_mouseOffset, bool p_firstMouse);
     void HandleCameraFPSMouse(const Maths::Vector2& p_mouseOffset, bool p_firstMouse);

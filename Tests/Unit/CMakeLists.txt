@@ -25,6 +25,8 @@ add_executable(NullusUnitTests
 )
 
 target_sources(NullusUnitTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ComponentSearchPanel.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ComponentSearchPanel.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/FrameInfoRendererStats.cpp
     ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/FrameInfo.h
     ${CMAKE_SOURCE_DIR}/Project/Game/LaunchArgs.cpp

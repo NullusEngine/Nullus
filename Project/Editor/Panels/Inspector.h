@@ -15,6 +15,8 @@
 
 namespace NLS::Editor::Panels
 {
+class ComponentSearchPanel;
+
 class Inspector : public NLS::UI::PanelWindow
 {
 public:
@@ -71,10 +73,12 @@ public:
     void Refresh();
 
 private:
+    void SyncComponentPicker();
+
     Engine::GameObject* m_targetActor = nullptr;
     UI::Widgets::Group* m_actorInfo;
     UI::Widgets::Group* m_inspectorHeader;
-    UI::Widgets::ComboBox* m_componentSelectorWidget;
+    ComponentSearchPanel* m_componentPicker = nullptr;
 
     uint64_t m_componentAddedListener = 0;
     uint64_t m_componentRemovedListener = 0;

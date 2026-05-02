@@ -21,12 +21,14 @@
 #include <Reflection/Type.h>
 #include <Reflection/Variant.h>
 #include <Reflection/Array.h>
+#include <imgui.h>
 #include "Core/EditorActions.h"
 #include "Components/MaterialRenderer.h"
 #include "Components/MeshRenderer.h"
 #include "Components/LightComponent.h"
 #include "Components/CameraComponent.h"
 #include "Components/TransformComponent.h"
+#include "Panels/ComponentSearchPanel.h"
 #include "Panels/InspectorReflectionUtils.h"
 #include "Rendering/Geometry/BoundingSphere.h"
 #include "Rendering/Settings/EProjectionMode.h"
@@ -36,6 +38,15 @@
 namespace
 {
 using namespace NLS;
+
+std::string GetComponentDisplayName(const NLS::Engine::Components::Component& component)
+{
+    std::string displayName = NLS::Editor::Panels::ComponentSearchPanel::MakeDisplayName(component.GetType());
+    if (displayName.empty())
+        displayName = "Component";
+
+    return displayName;
+}
 
 std::string FormatFieldLabel(const std::string &name)
 {
@@ -373,75 +384,29 @@ Inspector::Inspector(const std::string& p_title, bool p_opened, const NLS::UI::P
     { if (m_targetActor) m_targetActor->SetActive(p_active); };
     UI::GUIDrawer::DrawBoolean(headerColumns, "Active", activeGatherer, activeProvider);
 
-    /* Component select + button */
+    auto& addComponentButton = m_inspectorHeader->CreateWidget<UI::Widgets::Button>("Add Component", Maths::Vector2{118.f, 0});
+    addComponentButton.idleBackgroundColor = Maths::Color{0.23f, 0.49f, 0.82f};
+    addComponentButton.hoveredBackgroundColor = Maths::Color{0.29f, 0.58f, 0.93f};
+    addComponentButton.clickedBackgroundColor = Maths::Color{0.18f, 0.41f, 0.71f};
+    addComponentButton.textColor = Maths::Color::White;
+    addComponentButton.ClickedEvent += [this]
     {
-        auto& componentSelectorWidget = m_inspectorHeader->CreateWidget<UI::Widgets::ComboBox>(0);
-        componentSelectorWidget.lineBreak = false;
-        componentSelectorWidget.choices.emplace(0, "Model Renderer");
-        componentSelectorWidget.choices.emplace(1, "Camera");
-        componentSelectorWidget.choices.emplace(2, "Light");
-        componentSelectorWidget.choices.emplace(3, "MaterialRenderer");
+        SyncComponentPicker();
 
-        auto& addComponentButton = m_inspectorHeader->CreateWidget<UI::Widgets::Button>("Add Component", Maths::Vector2{118.f, 0});
-        addComponentButton.idleBackgroundColor = Maths::Color{0.23f, 0.49f, 0.82f};
-        addComponentButton.hoveredBackgroundColor = Maths::Color{0.29f, 0.58f, 0.93f};
-        addComponentButton.clickedBackgroundColor = Maths::Color{0.18f, 0.41f, 0.71f};
-        addComponentButton.textColor = Maths::Color::White;
-        addComponentButton.ClickedEvent += [&componentSelectorWidget, this]
+        if (m_targetActor && m_componentPicker)
         {
-            using namespace NLS::Engine::Components;
-            switch (componentSelectorWidget.currentChoice)
-            {
-                case 0:
-                    GetTargetActor()->AddComponent<MeshRenderer>();
-                    GetTargetActor()->AddComponent<MaterialRenderer>();
-                    break;
-                case 1:
-                    GetTargetActor()->AddComponent<CameraComponent>();
-                    break;
-                case 2:
-                    GetTargetActor()->AddComponent<LightComponent>();
-                    break;
-                case 3:
-                    GetTargetActor()->AddComponent<MaterialRenderer>();
-                    break;
-            }
-
-            componentSelectorWidget.ValueChangedEvent.Invoke(componentSelectorWidget.currentChoice);
-        };
-
-        componentSelectorWidget.ValueChangedEvent += [this, &addComponentButton](int p_value)
-        {
-            auto defineButtonsStates = [&addComponentButton](bool p_componentExists)
-            {
-                addComponentButton.disabled = p_componentExists;
-                addComponentButton.idleBackgroundColor = !p_componentExists ? Maths::Color{0.23f, 0.49f, 0.82f} : Maths::Color{0.16f, 0.17f, 0.18f};
-                addComponentButton.hoveredBackgroundColor = !p_componentExists ? Maths::Color{0.29f, 0.58f, 0.93f} : Maths::Color{0.16f, 0.17f, 0.18f};
-                addComponentButton.clickedBackgroundColor = !p_componentExists ? Maths::Color{0.18f, 0.41f, 0.71f} : Maths::Color{0.16f, 0.17f, 0.18f};
-            };
-            using namespace NLS::Engine::Components;
-            switch (p_value)
-            {
-                case 0:
-                    defineButtonsStates(GetTargetActor()->GetComponent<MeshRenderer>());
-                    return;
-                case 1:
-                    defineButtonsStates(GetTargetActor()->GetComponent<CameraComponent>());
-                    return;
-                case 2:
-                    defineButtonsStates(GetTargetActor()->GetComponent<LightComponent>());
-                    return;
-                case 3:
-                    defineButtonsStates(GetTargetActor()->GetComponent<MaterialRenderer>());
-                    return;
-            }
-        };
-
-        m_componentSelectorWidget = &componentSelectorWidget;
-    }
+            m_componentPicker->SetAnchorRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+            m_componentPicker->OpenForActor(m_targetActor);
+        }
+    };
 
     m_inspectorHeader->CreateWidget<UI::Widgets::Separator>();
     m_inspectorHeader->CreateWidget<UI::Widgets::Spacing>(1);
+    m_componentPicker = &m_inspectorHeader->CreateWidget<ComponentSearchPanel>();
+    m_componentPicker->ComponentAddedEvent += [this]
+    {
+        Refresh();
+    };
 
     m_destroyedListener = Engine::GameObject::DestroyedEvent += [this](Engine::GameObject& p_destroyed)
     {
@@ -476,9 +441,7 @@ void Inspector::FocusActor(Engine::GameObject& p_target)
     m_inspectorHeader->enabled = true;
 
     CreateActorInspector(p_target);
-
-    // Force component and script selectors to trigger their ChangedEvent to update button states
-    m_componentSelectorWidget->ValueChangedEvent.Invoke(m_componentSelectorWidget->currentChoice);
+    SyncComponentPicker();
 
     EDITOR_EVENT(ActorSelectedEvent).Invoke(*m_targetActor);
 }
@@ -499,6 +462,8 @@ void Inspector::SoftUnFocus()
     if (m_targetActor)
     {
         EDITOR_EVENT(ActorUnselectedEvent).Invoke(*m_targetActor);
+        if (m_componentPicker)
+            m_componentPicker->ClearTarget();
         m_inspectorHeader->enabled = false;
         m_targetActor = nullptr;
         m_actorInfo->RemoveAllWidgets();
@@ -513,21 +478,7 @@ Engine::GameObject* Inspector::GetTargetActor() const
 void Inspector::CreateActorInspector(Engine::GameObject& p_target)
 {
     using namespace NLS::Engine::Components;
-    std::map<std::string_view, Component*> components;
-    const auto getComponentName = [](Component* component) -> std::string_view
-    {
-        if (dynamic_cast<TransformComponent*>(component))
-            return "TransformComponent";
-        if (dynamic_cast<MeshRenderer*>(component))
-            return "MeshRenderer";
-        if (dynamic_cast<MaterialRenderer*>(component))
-            return "MaterialRenderer";
-        if (dynamic_cast<LightComponent*>(component))
-            return "LightComponent";
-        if (dynamic_cast<CameraComponent*>(component))
-            return "CameraComponent";
-        return "Component";
-    };
+    std::vector<Component*> components;
 
     for (const auto& component : p_target.GetComponents())
     {
@@ -538,13 +489,24 @@ void Inspector::CreateActorInspector(Engine::GameObject& p_target)
         if (dynamic_cast<TransformComponent*>(rawComponent))
             continue;
 
-        components[getComponentName(rawComponent)] = rawComponent;
+        components.push_back(rawComponent);
     }
+
+    std::sort(
+        components.begin(),
+        components.end(),
+        [](const Component* p_left, const Component* p_right)
+        {
+            if (p_left == nullptr || p_right == nullptr)
+                return p_left < p_right;
+
+            return GetComponentDisplayName(*p_left) < GetComponentDisplayName(*p_right);
+        });
 
     if (auto* transform = p_target.GetComponent<TransformComponent>())
         DrawComponent(transform);
 
-    for (auto& [name, instance] : components)
+    for (auto* instance : components)
         DrawComponent(instance);
 }
 
@@ -555,17 +517,9 @@ void Inspector::DrawComponent(Engine::Components::Component* p_component)
         return;
 
     const bool isTransform = dynamic_cast<TransformComponent*>(p_component) != nullptr;
-    const char* title = "Component";
-    if (dynamic_cast<MeshRenderer*>(p_component))
-        title = "Mesh Renderer";
-    else if (dynamic_cast<MaterialRenderer*>(p_component))
-        title = "Material Renderer";
-    else if (dynamic_cast<LightComponent*>(p_component))
-        title = "Light";
-    else if (dynamic_cast<CameraComponent*>(p_component))
-        title = "Camera";
-    else if (isTransform)
-        title = "Transform";
+    std::string title = GetComponentDisplayName(*p_component);
+    if (title.empty())
+        title = "Component";
 
     auto& header = m_actorInfo->CreateWidget<UI::Widgets::GroupCollapsable>(title);
     header.closable = !isTransform;
@@ -596,7 +550,7 @@ void Inspector::DrawComponent(Engine::Components::Component* p_component)
                 return;
 
             if (actor->RemoveComponent(component))
-                m_componentSelectorWidget->ValueChangedEvent.Invoke(m_componentSelectorWidget->currentChoice);
+                SyncComponentPicker();
         }));
     };
     auto& columns = header.CreateWidget<UI::Widgets::Columns>(2);
@@ -629,6 +583,25 @@ void Inspector::Refresh()
     {
         m_actorInfo->RemoveAllWidgets();
         CreateActorInspector(*m_targetActor);
+        SyncComponentPicker();
+    }
+}
+
+void Inspector::SyncComponentPicker()
+{
+    if (!m_componentPicker)
+        return;
+
+    if (m_targetActor)
+    {
+        if (m_componentPicker->GetTargetActor() != m_targetActor)
+            m_componentPicker->SetTargetActor(m_targetActor);
+        else
+            m_componentPicker->NotifyActorComponentsChanged();
+    }
+    else
+    {
+        m_componentPicker->ClearTarget();
     }
 }
 } // namespace NLS::Editor::Panels

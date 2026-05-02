@@ -101,6 +101,12 @@ internal static partial class MetaParserTool
                     BuildPrivateMethodAccessorName(method.Name, index)))
                 .ToList();
 
+            var typeMetaModels = (type.TypeMetas ?? [])
+                .Select(static meta => new GeneratedTypeMetaTemplateModel(
+                    meta.PropertyTypeName,
+                    meta.InitializerArguments))
+                .ToList();
+
             typeModels.Add(new GeneratedTypeTemplateModel(
                 type.ClassName,
                 type.QualifiedName,
@@ -112,6 +118,7 @@ internal static partial class MetaParserTool
                 type.IsEnum,
                 (type.EnumValues ?? []).Select(static value => value.Name).ToList(),
                 type.Bases.Select(static baseInfo => baseInfo.TypeName).Distinct().ToList(),
+                typeMetaModels,
                 fieldModels,
                 methodModels));
 

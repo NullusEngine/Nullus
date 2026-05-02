@@ -12,6 +12,7 @@
 #include "UI/UIManager.h"
 #include "ServiceLocator.h"
 using namespace NLS;
+
 Editor::Core::CameraController::CameraController(
 	Editor::Panels::AView& p_view,
 	Render::Entities::Camera& p_camera
@@ -140,7 +141,10 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
                     static_cast<float>(pos.x - m_lastMousePosX),
                     static_cast<float>(m_lastMousePosY - pos.y)
                 };
-                mouseOffset = ClampMouseDeltaForCameraControl(mouseOffset);
+                const float maxMouseDeltaPerFrame = m_rightMousePressed
+                    ? GetMaxLookMouseDeltaPerFrame()
+                    : GetMaxPanOrbitMouseDeltaPerFrame();
+                mouseOffset = ClampMouseDeltaForCameraControl(mouseOffset, maxMouseDeltaPerFrame);
 
                 ResetLastMousePosition(pos);
 
@@ -207,8 +211,7 @@ void Editor::Core::CameraController::ResetLastMousePosition(const Maths::Vector2
 
 void Editor::Core::CameraController::SuppressMouseDeltaAfterCursorCapture()
 {
-    constexpr uint8_t kCursorCaptureSettleFrames = 3u;
-    m_pendingMouseDeltaSuppressionFrames = kCursorCaptureSettleFrames;
+    m_pendingMouseDeltaSuppressionFrames = GetLookCaptureSuppressionFrameCount();
     m_firstMouse = true;
     ResetLastMousePosition(m_inputManager.GetMousePosition());
 }
@@ -221,17 +224,6 @@ bool Editor::Core::CameraController::ConsumeSuppressedMouseDelta(const Maths::Ve
     ResetLastMousePosition(p_mousePosition);
     --m_pendingMouseDeltaSuppressionFrames;
     return true;
-}
-
-Maths::Vector2 Editor::Core::CameraController::ClampMouseDeltaForCameraControl(
-    const Maths::Vector2& p_mouseOffset) const
-{
-    constexpr float kMaxCameraMouseDeltaPerFrame = 16.0f;
-    return
-    {
-        std::clamp(p_mouseOffset.x, -kMaxCameraMouseDeltaPerFrame, kMaxCameraMouseDeltaPerFrame),
-        std::clamp(p_mouseOffset.y, -kMaxCameraMouseDeltaPerFrame, kMaxCameraMouseDeltaPerFrame)
-    };
 }
 
 void Editor::Core::CameraController::SetSpeed(float p_speed)

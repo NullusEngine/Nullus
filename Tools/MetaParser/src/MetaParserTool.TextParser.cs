@@ -32,6 +32,7 @@ internal static partial class MetaParserTool
                 : $"{namespacePrefix}::{className}";
             var bases = ParseBasesFromText(match.Groups["bases"].Value, namespacePrefix);
             var members = ExtractMembersFromText(body, fullTypeName, string.Equals(kind, "struct", StringComparison.Ordinal));
+            var typeMetas = ExtractTypeMetasFromDeclarationText(text, match.Index);
             if (emitDiagnostics)
                 Console.WriteLine($"[MetaParser] Members {fullTypeName} {FormatMemberDiscoverySummary(members.Summary)}");
 
@@ -43,7 +44,8 @@ internal static partial class MetaParserTool
                 Path.GetFullPath(headerPath),
                 bases,
                 members.Fields,
-                members.Methods);
+                members.Methods,
+                typeMetas);
 
             foreach (var nestedEnum in ParseNestedEnumsFromText(body, fullTypeName, includePath, Path.GetFullPath(headerPath)))
                 yield return nestedEnum;
@@ -130,6 +132,7 @@ internal static partial class MetaParserTool
                     Bases = type.Bases.DistinctBy(static baseInfo => baseInfo.TypeName).ToList(),
                     Fields = type.Fields.DistinctBy(static field => field.Name).ToList(),
                     Methods = type.Methods.DistinctBy(static method => $"{method.IsStatic}:{method.Name}:{method.PointerExpression}").ToList(),
+                    TypeMetas = (type.TypeMetas ?? []).DistinctBy(static meta => $"{meta.PropertyTypeName}:{meta.InitializerArguments}").ToList(),
                     EnumValues = (type.EnumValues ?? []).DistinctBy(static value => value.Name).ToList()
                 };
                 continue;
@@ -151,6 +154,9 @@ internal static partial class MetaParserTool
                     .ToList(),
                 Methods = existing.Methods.Concat(type.Methods)
                     .DistinctBy(static method => $"{method.IsStatic}:{method.Name}:{method.PointerExpression}")
+                    .ToList(),
+                TypeMetas = (existing.TypeMetas ?? []).Concat(type.TypeMetas ?? [])
+                    .DistinctBy(static meta => $"{meta.PropertyTypeName}:{meta.InitializerArguments}")
                     .ToList(),
                 IsEnum = existing.IsEnum || type.IsEnum,
                 EnumValues = (existing.EnumValues ?? []).Concat(type.EnumValues ?? [])
@@ -179,7 +185,43 @@ internal static partial class MetaParserTool
             sourceFilePath,
             bases.DistinctBy(static baseInfo => baseInfo.TypeName).ToList(),
             fields.DistinctBy(static field => field.Name).ToList(),
-            methods.DistinctBy(static method => $"{method.IsStatic}:{method.Name}:{method.PointerExpression}").ToList());
+            methods.DistinctBy(static method => $"{method.IsStatic}:{method.Name}:{method.PointerExpression}").ToList(),
+            []);
+    }
+
+    private static List<ReflectTypeMetaInfo> ExtractTypeMetasFromDeclarationText(string text, int classKeywordIndex)
+    {
+        var lineStart = text.LastIndexOf('\n', Math.Max(0, classKeywordIndex - 1));
+        lineStart = lineStart < 0 ? 0 : lineStart + 1;
+        var declarationPrefix = text[lineStart..classKeywordIndex];
+
+        var macroMatch = Regex.Match(
+            declarationPrefix,
+            @"\b(?:CLASS|STRUCT)\s*\(",
+            RegexOptions.CultureInvariant | RegexOptions.RightToLeft);
+
+        if (!macroMatch.Success)
+            return [];
+
+        var openParenIndex = declarationPrefix.IndexOf('(', macroMatch.Index);
+        if (openParenIndex < 0)
+            return [];
+
+        var macroBody = ExtractDelimitedBody(declarationPrefix, openParenIndex, '(', ')');
+        if (string.IsNullOrWhiteSpace(macroBody))
+            return [];
+
+        var metas = new List<ReflectTypeMetaInfo>();
+        foreach (var token in SplitTopLevel(macroBody, ','))
+        {
+            if (!TryParseMacroInvocation(token, out var macroName, out var macroArgs))
+                continue;
+
+            if (string.Equals(macroName, "ComponentMenu", StringComparison.Ordinal))
+                metas.Add(new ReflectTypeMetaInfo("NLS::meta::ComponentMenu", macroArgs.Trim()));
+        }
+
+        return metas;
     }
 
     private static List<ReflectBaseInfo> ParseExternalBases(string sectionBody, string namespacePrefix)

@@ -42,3 +42,13 @@ TEST(MetaParserGenerationModuleTests, GeneratesExpectedBaseReflectionBindings)
     ExpectContains(metaText, "LinkReflectionTypes_NLS_Base");
     ExpectContains(metaText, "#include \"Reflection/MetaParserFieldMethodSample.generated.cpp\"");
 }
+
+TEST(MetaParserGenerationModuleTests, GeneratesComponentMenuTypeMetadataBindings)
+{
+    const std::filesystem::path meshRendererSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/Components/MeshRenderer.generated.cpp";
+    const std::string meshRendererText = ReadAllText(meshRendererSource);
+
+    ExpectContains(meshRendererText, "ComponentMenu");
+    ExpectContains(meshRendererText, "Rendering/Mesh Renderer");
+    ExpectContains(meshRendererText, "type.meta");
+}

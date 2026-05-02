@@ -9,9 +9,9 @@
 #if defined(__REFLECTION_PARSER__)
 
     #define META(...) __attribute__((annotate(#__VA_ARGS__)))
-    #define CLASS(...) META(Reflection)
-    #define STRUCT(...) META(Reflection)
-    #define ENUM(...) META(Reflection)
+    #define CLASS(...) META(Reflection __VA_OPT__(,) __VA_ARGS__)
+    #define STRUCT(...) META(Reflection __VA_OPT__(,) __VA_ARGS__)
+    #define ENUM(...) META(Reflection __VA_OPT__(,) __VA_ARGS__)
     #define PROPERTY(...) META(Property)
     #define FUNCTION(...) META(Function)
 

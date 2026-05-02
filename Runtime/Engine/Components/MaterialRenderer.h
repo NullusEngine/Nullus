@@ -18,7 +18,7 @@ namespace NLS::Engine::Components
 /**
  * A component that handle a material list, necessary for model rendering
  */
-CLASS() class NLS_ENGINE_API MaterialRenderer : public Component
+CLASS(ComponentMenu("Rendering/Material Renderer")) class NLS_ENGINE_API MaterialRenderer : public Component
 {
 public:
     GENERATED_BODY()

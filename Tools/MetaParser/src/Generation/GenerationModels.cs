@@ -13,6 +13,10 @@ public sealed record GeneratedMethodTemplateModel(
     bool IsPrivate,
     string AccessorName);
 
+public sealed record GeneratedTypeMetaTemplateModel(
+    string PropertyTypeName,
+    string InitializerArguments);
+
 public sealed record GeneratedPrivateFieldTemplateModel(
     string Name,
     string AccessorName);
@@ -33,6 +37,7 @@ public sealed record GeneratedTypeTemplateModel(
     bool IsEnum,
     List<string> EnumValues,
     List<string> Bases,
+    List<GeneratedTypeMetaTemplateModel> TypeMetas,
     List<GeneratedFieldTemplateModel> Fields,
     List<GeneratedMethodTemplateModel> Methods);
 

@@ -11,7 +11,7 @@ namespace NLS::Engine::Components
 /**
  * Base class for any light
  */
-CLASS() class NLS_ENGINE_API LightComponent : public Component
+CLASS(ComponentMenu("Rendering/Light")) class NLS_ENGINE_API LightComponent : public Component
 {
 public:
     GENERATED_BODY()

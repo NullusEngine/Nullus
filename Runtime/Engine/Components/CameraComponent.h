@@ -11,7 +11,7 @@ namespace NLS::Engine::Components
 	/**
 	* Represents a camera entity. Its position will determine its view matrix
 	*/
-	CLASS() class NLS_ENGINE_API CameraComponent : public Component
+	CLASS(ComponentMenu("Rendering/Camera")) class NLS_ENGINE_API CameraComponent : public Component
 	{
     public:
 		GENERATED_BODY()

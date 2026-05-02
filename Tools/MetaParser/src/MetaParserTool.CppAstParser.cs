@@ -53,7 +53,8 @@ internal static partial class MetaParserTool
                 normalizedHeader,
                 bases,
                 fields,
-                methods);
+                methods,
+                []);
         }
 
         foreach (var cppEnum in EnumerateAllEnums(compilation))
@@ -76,6 +77,7 @@ internal static partial class MetaParserTool
                 fullTypeName,
                 ToGeneratedIncludePath(rootDir, normalizedHeader),
                 normalizedHeader,
+                [],
                 [],
                 [],
                 [],

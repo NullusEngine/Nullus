@@ -1,5 +1,7 @@
 #include "ReflectionRuntimeTestFixture.h"
 
+#include "Reflection/RuntimeMetaProperties.h"
+
 #include <string>
 #include <vector>
 
@@ -35,6 +37,21 @@ TEST_F(ReflectionRuntimeTestFixture, RegistersExternalReflectionAndSerialization
 
     for (const TypeExpectation& expectation : expectations)
         ExpectReflectedType(expectation);
+}
+
+TEST_F(ReflectionRuntimeTestFixture, RegistersComponentMenuMetadataOnEngineComponents)
+{
+    const auto meshRendererType = NLS::meta::Type::GetFromName("NLS::Engine::Components::MeshRenderer");
+    const auto meshRendererMenu = meshRendererType.GetMeta().GetProperty<NLS::meta::ComponentMenu>();
+
+    ASSERT_NE(meshRendererMenu, nullptr);
+    EXPECT_EQ(meshRendererMenu->path, "Rendering/Mesh Renderer");
+
+    const auto cameraType = NLS::meta::Type::GetFromName("NLS::Engine::Components::CameraComponent");
+    const auto cameraMenu = cameraType.GetMeta().GetProperty<NLS::meta::ComponentMenu>();
+
+    ASSERT_NE(cameraMenu, nullptr);
+    EXPECT_EQ(cameraMenu->path, "Rendering/Camera");
 }
 
 TEST_F(ReflectionRuntimeTestFixture, RegistersRenderEnumAndStructReflectionTypes)

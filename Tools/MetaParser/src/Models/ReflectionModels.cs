@@ -6,6 +6,8 @@ internal sealed record ReflectBaseInfo(string TypeName);
 
 internal sealed record ReflectEnumValueInfo(string Name);
 
+internal sealed record ReflectTypeMetaInfo(string PropertyTypeName, string InitializerArguments);
+
 internal sealed record MethodCandidateInfo(
     string Name,
     string PointerExpression,
@@ -35,6 +37,7 @@ internal sealed record ReflectTypeInfo(
     List<ReflectBaseInfo> Bases,
     List<ReflectFieldInfo> Fields,
     List<ReflectMethodInfo> Methods,
+    List<ReflectTypeMetaInfo>? TypeMetas = null,
     bool IsEnum = false,
     List<ReflectEnumValueInfo>? EnumValues = null)
 {

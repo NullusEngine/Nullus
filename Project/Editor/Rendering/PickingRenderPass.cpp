@@ -60,13 +60,14 @@ Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRe
 	uint32_t p_x,
 	uint32_t p_y)
 {
-	if (!SupportsPickingReadback() || !m_hasRenderedPickingFrame || m_lastRenderedScene == nullptr)
+    const auto* readableFrame = m_readbackLifecycle.GetReadableFrame();
+	if (!SupportsPickingReadback() || readableFrame == nullptr || !m_renderer.HasActiveReadbackSource())
 		return std::nullopt;
 
 	const uint64_t maxX = static_cast<uint64_t>(p_x) + 1u;
 	const uint64_t maxY = static_cast<uint64_t>(p_y) + 1u;
-	if (maxX > static_cast<uint64_t>(m_lastRenderWidth) ||
-		maxY > static_cast<uint64_t>(m_lastRenderHeight))
+	if (maxX > static_cast<uint64_t>(readableFrame->width) ||
+		maxY > static_cast<uint64_t>(readableFrame->height))
 	{
 		return std::nullopt;
 	}
@@ -81,12 +82,12 @@ Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRe
 		NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
 		pixel);
 
-	return DecodePickingResult(*m_lastRenderedScene, pixel);
+	return DecodePickingResult(*readableFrame->scene, pixel);
 }
 
 bool Editor::Rendering::PickingRenderPass::SupportsPickingReadback() const
 {
-	return m_renderer.SupportsEditorPickingReadback() && m_renderer.HasActiveReadbackSource();
+	return m_renderer.SupportsEditorPickingReadback();
 }
 
 std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::PickingRenderPass::GetPreparedThreadedPassInput() const
@@ -96,16 +97,25 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::P
 
 void Editor::Rendering::PickingRenderPass::OnBeginFrame(const NLS::Render::Data::FrameDescriptor&)
 {
+    m_readbackLifecycle.PromotePendingFrameIfReadbackAvailable(m_renderer.HasActiveReadbackSource());
     m_preparedThreadedPassInput.reset();
-    ResetPickingFrameState();
 }
 
 void Editor::Rendering::PickingRenderPass::ResetPickingFrameState()
 {
-    m_lastRenderedScene = nullptr;
-    m_lastRenderWidth = 0;
-    m_lastRenderHeight = 0;
-    m_hasRenderedPickingFrame = false;
+    m_readbackLifecycle.ResetSubmittedFrame();
+}
+
+Editor::Rendering::PickingReadbackLifecycle<Engine::SceneSystem::Scene>::Frame
+Editor::Rendering::PickingRenderPass::BuildSubmittedReadbackFrame(
+    Engine::SceneSystem::Scene& scene) const
+{
+    const auto& frameDescriptor = m_renderer.GetFrameDescriptor();
+    return {
+        &scene,
+        frameDescriptor.renderWidth,
+        frameDescriptor.renderHeight
+    };
 }
 
 void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState p_pso)
@@ -133,16 +143,18 @@ void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState
             ResetPickingFrameState();
             return;
         }
+        m_readbackLifecycle.QueueSubmittedFrame(BuildSubmittedReadbackFrame(sceneDescriptor.scene));
     }
     else if (!RenderPickingScene(p_pso))
     {
         ResetPickingFrameState();
         return;
     }
-
-    m_lastRenderedScene = &sceneDescriptor.scene;
-    m_lastRenderWidth = frameDescriptor.renderWidth;
-    m_lastRenderHeight = frameDescriptor.renderHeight;
+    else
+    {
+        m_readbackLifecycle.MarkSubmittedFrameImmediatelyReadable(
+            BuildSubmittedReadbackFrame(sceneDescriptor.scene));
+    }
 }
 
 bool Editor::Rendering::PickingRenderPass::RenderPickingScene(NLS::Render::Data::PipelineState p_pso)
@@ -189,7 +201,6 @@ bool Editor::Rendering::PickingRenderPass::RenderPickingScene(NLS::Render::Data:
 	}
 
 	m_renderer.EndRecordedRenderPass();
-	m_hasRenderedPickingFrame = true;
 	return true;
 }
 
@@ -243,7 +254,6 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::P
     }
 
     passInput.drawCount = static_cast<uint64_t>(passInput.recordedDrawCommands.size());
-    m_hasRenderedPickingFrame = true;
     return passInput;
 }
 

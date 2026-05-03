@@ -46,6 +46,7 @@ namespace NLS::Render::Context
         uint32_t pendingSwapchainHeight = 0u;
         std::chrono::steady_clock::time_point lastSwapchainResizeRequestTime{};
         void* uiRenderFinishedSemaphore = nullptr;
+        uint64_t uiRenderFinishedValue = 0u;
         std::function<void()> swapchainWillResizeCallback;
         std::unique_ptr<ThreadedRenderingLifecycle> threadedLifecycle;
         bool threadedWorkersRunning = false;
@@ -53,6 +54,7 @@ namespace NLS::Render::Context
         std::thread renderSceneWorker;
         std::thread rhiWorker;
         std::mutex threadedRhiSubmissionMutex;
+        std::unique_lock<std::mutex> uiStandaloneFrameSubmissionLock;
         uint64_t nextThreadedFrameId = 1u;
         uint32_t threadedPublishRetirementWaitMs = 0u;
         Render::Settings::EngineDiagnosticsSettings diagnostics;

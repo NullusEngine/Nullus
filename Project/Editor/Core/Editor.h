@@ -84,6 +84,9 @@ public:
      */
     void RenderEditorUI(float p_deltaTime);
 
+    float GetCurrentFrameRate() const;
+    float GetCurrentDeltaTime() const;
+
     /**
      * Actually render the scene (Buffer swapping)
      * and clear input events
@@ -92,6 +95,10 @@ public:
 
 private:
     uint64_t m_elapsedFrames = 0;
+    uint32_t m_frameRateSampleCount = 0;
+    float m_currentDeltaTime = 0.0f;
+    float m_currentFrameRate = 0.0f;
+    float m_frameRateAccumulatedTime = 0.0f;
     UI::Canvas			m_canvas;
     Context& m_context;
     PanelsManager	m_panelsManager;

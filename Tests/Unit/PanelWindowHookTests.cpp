@@ -317,3 +317,18 @@ TEST(PanelWindowHookTests, RetirementAwareResizePolicyRequestsDrainBeforeDeferri
         true,
         telemetry));
 }
+
+TEST(PanelWindowHookTests, RetirementAwareRenderPolicyDrainsOnlyForImmediateReadback)
+{
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
+        true,
+        true));
+
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
+        true,
+        false));
+
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
+        false,
+        true));
+}

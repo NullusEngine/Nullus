@@ -7,6 +7,7 @@
 #include "Panels/SceneView.h"
 #include "Panels/GameView.h"
 #include "Settings/EditorSettings.h"
+#include <ServiceLocator.h>
 #include <UI/UIManager.h>
 #include <chrono>
 #include <cmath>
@@ -58,8 +59,11 @@ void Editor::Panels::SceneView::Update(float p_deltaTime)
     AViewControllable::Update(p_deltaTime);
 
     using namespace Windowing::Inputs;
+    const Maths::Vector2 mousePosition = EDITOR_CONTEXT(inputManager)->GetMousePosition();
+    const bool sceneViewActive = IsFocused() || IsHovered() || IsMouseWithinView(mousePosition);
+    const bool editingUiControl = NLS_SERVICE(UI::UIManager).IsAnyItemActive();
 
-    if (IsFocused() && !m_cameraController.IsRightMousePressed())
+    if (sceneViewActive && !editingUiControl && !m_cameraController.IsRightMousePressed())
     {
         if (EDITOR_CONTEXT(inputManager)->IsKeyPressed(EKey::KEY_W))
         {
@@ -76,6 +80,16 @@ void Editor::Panels::SceneView::Update(float p_deltaTime)
             m_currentOperation = Editor::Core::EGizmoOperation::SCALE;
         }
     }
+}
+
+Editor::Core::EGizmoOperation Editor::Panels::SceneView::GetCurrentGizmoOperation() const
+{
+    return m_currentOperation;
+}
+
+void Editor::Panels::SceneView::SetCurrentGizmoOperation(const Editor::Core::EGizmoOperation p_operation)
+{
+    m_currentOperation = p_operation;
 }
 
 void Editor::Panels::SceneView::InitFrame()

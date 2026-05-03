@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "Debug/Logger.h"
+#include "Rendering/RHI/Backends/DX12/DX12UIFrameFenceTracker.h"
 #include "Rendering/RHI/Backends/DX12/DX12TextureViewUtils.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "ImGui/backends/imgui_impl_dx12.h"
@@ -113,6 +114,15 @@ namespace NLS::Render::RHI
                 auto& commandAllocator = m_commandAllocators[backBufferIndex];
                 auto& backBuffer = m_backBuffers[backBufferIndex];
 
+                const auto reuseWait = m_frameFenceTracker.ResolveReuseWait(
+                    backBufferIndex,
+                    m_fence->GetCompletedValue());
+                if (reuseWait.shouldWait)
+                {
+                    m_fence->SetEventOnCompletion(reuseWait.fenceValue, m_fenceEvent);
+                    WaitForSingleObject(m_fenceEvent, INFINITE);
+                }
+
                 commandAllocator->Reset();
                 m_commandList->Reset(commandAllocator.Get(), nullptr);
 
@@ -148,19 +158,21 @@ namespace NLS::Render::RHI
                 if (ShouldLogDx12FrameFlow())
                     NLS_LOG_INFO("DX12UIBridge::RenderDrawData: UI command list submitted");
 
-                if (m_uiFence != nullptr)
-                    m_queue->Signal(m_uiFence.Get(), 1u);
-
                 const UINT64 fenceValue = ++m_fenceValue;
                 m_queue->Signal(m_fence.Get(), fenceValue);
-                if (m_fence->GetCompletedValue() < fenceValue)
+                m_frameFenceTracker.RecordSubmitted(backBufferIndex, fenceValue);
+
+                if (m_uiFence != nullptr)
                 {
-                    m_fence->SetEventOnCompletion(fenceValue, m_fenceEvent);
-                    WaitForSingleObject(m_fenceEvent, INFINITE);
+                    m_queue->Signal(m_uiFence.Get(), fenceValue);
                 }
 
                 if (ShouldLogDx12FrameFlow())
-                    NLS_LOG_INFO("DX12UIBridge::RenderDrawData: UI queue drained");
+                {
+                    NLS_LOG_INFO(
+                        "DX12UIBridge::RenderDrawData: UI submitted fenceValue=" +
+                        std::to_string(fenceValue));
+                }
             }
 
             NativeHandle ResolveTextureView(const std::shared_ptr<RHITextureView>& textureView) override
@@ -265,6 +277,11 @@ namespace NLS::Render::RHI
                 return reinterpret_cast<void*>(m_uiFence.Get());
             }
 
+            uint64_t GetUISignalValue() const override
+            {
+                return m_frameFenceTracker.GetLastSubmittedFenceValue();
+            }
+
             void SubmitCommandBuffer(uint32_t) override
             {
             }
@@ -314,6 +331,7 @@ namespace NLS::Render::RHI
                 }
 
                 m_imageCount = targetImageCount;
+                m_frameFenceTracker.ResetBackbufferCount(m_imageCount);
                 m_rtvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
                 m_backBuffers.resize(m_imageCount);
                 m_commandAllocators.resize(m_imageCount);
@@ -371,6 +389,7 @@ namespace NLS::Render::RHI
                 m_backBuffers.clear();
                 m_commandList.Reset();
                 m_rtvHeap.Reset();
+                m_frameFenceTracker.ResetBackbufferCount(0u);
             }
 
             bool Initialize(const NativeRenderDeviceInfo& nativeInfo)
@@ -498,6 +517,7 @@ namespace NLS::Render::RHI
             void* m_signalSemaphore = nullptr;
             Microsoft::WRL::ComPtr<ID3D12Fence> m_uiFence;
             HANDLE m_uiFenceEvent = nullptr;
+            NLS::Render::RHI::DX12::DX12UIFrameFenceTracker m_frameFenceTracker;
         };
     }
 

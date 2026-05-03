@@ -158,7 +158,7 @@ namespace NLS::Render::Context
         // UI synchronization - get the semaphore UI should wait on before rendering
         static void* GetRenderFinishedSemaphore(Driver& driver);
         // UI synchronization - set the semaphore UI signals after rendering (Present waits on this)
-        static void SetUISignalSemaphore(Driver& driver, void* semaphore);
+        static void SetUISignalSemaphore(Driver& driver, void* semaphore, uint64_t value);
     };
 
     struct DriverTestAccess final
@@ -171,6 +171,8 @@ namespace NLS::Render::Context
             Driver& driver,
             std::shared_ptr<RHI::RHITexture> texture);
         static void SetExplicitFrameActive(Driver& driver, bool active);
+        static bool TryLockThreadedRhiSubmission(Driver& driver);
+        static void UnlockThreadedRhiSubmission(Driver& driver);
         static ThreadedRenderingLifecycle* GetThreadedRenderingLifecycle(Driver& driver);
         static const ThreadedRenderingLifecycle* GetThreadedRenderingLifecycle(const Driver& driver);
         static bool CanBeginStandaloneExplicitFrame(const Driver& driver);

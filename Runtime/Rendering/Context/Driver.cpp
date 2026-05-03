@@ -1372,9 +1372,10 @@ void* DriverUIAccess::GetRenderFinishedSemaphore(Driver& driver)
 	return frameContext.renderFinishedSemaphore->GetNativeSemaphoreHandle();
 }
 
-void DriverUIAccess::SetUISignalSemaphore(Driver& driver, void* semaphore)
+void DriverUIAccess::SetUISignalSemaphore(Driver& driver, void* semaphore, const uint64_t value)
 {
 	driver.m_impl->uiRenderFinishedSemaphore = semaphore;
+	driver.m_impl->uiRenderFinishedValue = value;
 }
 
 void DriverTestAccess::SetExplicitDevice(Driver& driver, std::shared_ptr<Render::RHI::RHIDevice> explicitDevice)
@@ -1417,7 +1418,19 @@ void DriverTestAccess::SetCompletedReadbackTexture(
 
 void DriverTestAccess::SetExplicitFrameActive(Driver& driver, const bool active)
 {
-	driver.m_impl->explicitFrameActive = active;
+    driver.m_impl->explicitFrameActive = active;
+}
+
+bool DriverTestAccess::TryLockThreadedRhiSubmission(Driver& driver)
+{
+    return driver.m_impl != nullptr &&
+        driver.m_impl->threadedRhiSubmissionMutex.try_lock();
+}
+
+void DriverTestAccess::UnlockThreadedRhiSubmission(Driver& driver)
+{
+    if (driver.m_impl != nullptr)
+        driver.m_impl->threadedRhiSubmissionMutex.unlock();
 }
 
 const ThreadedRenderingLifecycle* DriverTestAccess::GetThreadedRenderingLifecycle(const Driver& driver)
@@ -1598,6 +1611,7 @@ void Driver::ShutdownRhiResources()
 
     m_impl->swapchainWillResizeCallback = nullptr;
     m_impl->uiRenderFinishedSemaphore = nullptr;
+    m_impl->uiRenderFinishedValue = 0u;
     m_impl->completedReadbackTexture = nullptr;
     m_impl->explicitFrameActive = false;
     m_impl->uiStandaloneFrameActive = false;

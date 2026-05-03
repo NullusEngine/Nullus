@@ -1868,6 +1868,82 @@ TEST(ThreadedRenderingLifecycleTests, StandaloneExplicitFrameIsRejectedWhileThre
     EXPECT_FALSE(NLS::Render::Context::DriverTestAccess::CanBeginStandaloneExplicitFrame(driver));
 }
 
+TEST(ThreadedRenderingLifecycleTests, ThreadedUiRenderCanBeginWhileOnlyOffscreenThreadedFrameIsInFlight)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    auto swapchain = std::make_shared<TestSwapchain>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    auto commandPool = std::make_shared<TestCommandPool>();
+    auto frameFence = std::make_shared<TestFence>();
+    commandPool->commandBuffer = commandBuffer;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.commandPool = commandPool;
+    frameContext.frameFence = frameFence;
+
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 303u;
+    snapshot.targetsSwapchain = false;
+    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryPublishHarnessFrameSnapshot(driver, snapshot));
+
+    EXPECT_TRUE(NLS::Render::Context::DriverUIAccess::PrepareUIRender(driver));
+    EXPECT_NE(NLS::Render::Context::DriverRendererAccess::GetActiveExplicitCommandBuffer(driver), nullptr);
+
+    NLS::Render::Context::DriverUIAccess::PresentSwapchain(driver);
+    EXPECT_EQ(NLS::Render::Context::DriverRendererAccess::GetActiveExplicitCommandBuffer(driver), nullptr);
+}
+
+TEST(ThreadedRenderingLifecycleTests, ThreadedUiRenderSkipsWhenRhiSubmissionOwnsFrameContext)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    auto swapchain = std::make_shared<TestSwapchain>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    auto commandPool = std::make_shared<TestCommandPool>();
+    auto frameFence = std::make_shared<TestFence>();
+    commandPool->commandBuffer = commandBuffer;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.commandPool = commandPool;
+    frameContext.frameFence = frameFence;
+
+    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryLockThreadedRhiSubmission(driver));
+    EXPECT_FALSE(NLS::Render::Context::DriverUIAccess::PrepareUIRender(driver));
+    NLS::Render::Context::DriverTestAccess::UnlockThreadedRhiSubmission(driver);
+
+    EXPECT_EQ(NLS::Render::Context::DriverRendererAccess::GetActiveExplicitCommandBuffer(driver), nullptr);
+    EXPECT_EQ(frameFence->waitCalls, 0u);
+    EXPECT_EQ(frameFence->resetCalls, 0u);
+    EXPECT_EQ(commandPool->resetCalls, 0u);
+    EXPECT_EQ(commandBuffer->resetCalls, 0u);
+    EXPECT_EQ(commandBuffer->beginCalls, 0u);
+}
+
 TEST(ThreadedRenderingLifecycleTests, StandaloneExplicitFrameBeginSkipsWhileThreadedFrameOwnsFrameContext)
 {
     NLS::Render::Settings::DriverSettings settings;
@@ -5293,7 +5369,8 @@ TEST(ThreadedRenderingLifecycleTests, ThreadedUiPresentSubmitsStandaloneExplicit
 
     ASSERT_TRUE(NLS::Render::Context::DriverUIAccess::PrepareUIRender(driver));
     void* const uiSignalSemaphore = reinterpret_cast<void*>(0x1234);
-    NLS::Render::Context::DriverUIAccess::SetUISignalSemaphore(driver, uiSignalSemaphore);
+    constexpr uint64_t uiSignalValue = 42u;
+    NLS::Render::Context::DriverUIAccess::SetUISignalSemaphore(driver, uiSignalSemaphore, uiSignalValue);
 
     NLS::Render::Context::DriverUIAccess::PresentSwapchain(driver);
 
@@ -5308,6 +5385,7 @@ TEST(ThreadedRenderingLifecycleTests, ThreadedUiPresentSubmitsStandaloneExplicit
     EXPECT_EQ(testQueue->lastPresentDesc.imageIndex, 1u);
     EXPECT_EQ(testQueue->lastPresentDesc.waitSemaphores.size(), 1u);
     EXPECT_EQ(testQueue->lastPresentDesc.uiSignalSemaphore, uiSignalSemaphore);
+    EXPECT_EQ(testQueue->lastPresentDesc.uiSignalValue, uiSignalValue);
     EXPECT_EQ(swapchain->acquireCalls, 1u);
 }
 

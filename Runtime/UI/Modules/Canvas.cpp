@@ -1,4 +1,5 @@
 #include "UI/Modules/Canvas.h"
+#include "UI/Panels/PanelViewportBar.h"
 
 namespace NLS::UI
 {
@@ -8,14 +9,27 @@ void Canvas::Draw()
     {
         if (m_isDockspace)
         {
+            PanelViewportBar::ResetReservedHeights();
+            for (auto& panel : m_panels)
+            {
+                if (auto* viewportBar = dynamic_cast<PanelViewportBar*>(&panel.get());
+                    viewportBar != nullptr && viewportBar->enabled)
+                {
+                    viewportBar->RefreshReservedLayout();
+                }
+            }
+
             ImGuiViewport* viewport = ImGui::GetMainViewport();
+            const float topInset = PanelViewportBar::GetReservedTopHeight();
+            const float bottomInset = PanelViewportBar::GetReservedBottomHeight();
+            const float dockspaceHeight = std::max(viewport->Size.y - topInset - bottomInset, 1.0f);
             ImDrawList* backgroundDrawList = ImGui::GetBackgroundDrawList(viewport);
             backgroundDrawList->AddRectFilled(
                 viewport->Pos,
                 ImVec2(viewport->Pos.x + viewport->Size.x, viewport->Pos.y + viewport->Size.y),
                 ImGui::GetColorU32(ImGuiCol_DockingEmptyBg));
-            ImGui::SetNextWindowPos(viewport->Pos);
-            ImGui::SetNextWindowSize(viewport->Size);
+            ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x, viewport->Pos.y + topInset));
+            ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, dockspaceHeight));
             ImGui::SetNextWindowViewport(viewport->ID);
             ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
             ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
@@ -29,7 +43,6 @@ void Canvas::Draw()
                 ImGuiWindowFlags_NoResize |
                 ImGuiWindowFlags_NoMove |
                 ImGuiWindowFlags_NoBringToFrontOnFocus |
-                ImGuiWindowFlags_MenuBar |
                 ImGuiWindowFlags_NoDocking |
                 ImGuiWindowFlags_NoSavedSettings);
             ImGuiID dockspace_id = ImGui::GetID("MyDockspace");

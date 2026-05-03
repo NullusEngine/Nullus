@@ -29,6 +29,8 @@ namespace NLS::Editor::Panels
 		*/
 		void _Draw_Impl() override;
 
+        void DrawToolbarContent();
+
 	private:
 		UI::Widgets::ButtonImage* m_playButton;
 		UI::Widgets::ButtonImage* m_pauseButton;

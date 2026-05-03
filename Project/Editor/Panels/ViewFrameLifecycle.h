@@ -30,4 +30,11 @@ namespace NLS::Editor::Panels
             requiresRetiredFrameConsumption,
             telemetry);
     }
+
+    inline bool ShouldDrainAfterRetirementAwareViewRender(
+        const bool requiresRetiredFrameConsumption,
+        const bool requiresImmediateReadback)
+    {
+        return requiresRetiredFrameConsumption && requiresImmediateReadback;
+    }
 }

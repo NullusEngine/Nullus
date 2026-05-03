@@ -94,3 +94,8 @@ void Editor::Panels::Toolbar::_Draw_Impl()
 
 	NLS_SERVICE(UI::UIManager).PopStyleVar();
 }
+
+void Editor::Panels::Toolbar::DrawToolbarContent()
+{
+    DrawWidgets();
+}

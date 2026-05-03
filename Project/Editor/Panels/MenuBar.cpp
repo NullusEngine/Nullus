@@ -32,6 +32,7 @@ Editor::Panels::MenuBar::MenuBar()
 
 void Editor::Panels::MenuBar::HandleShortcuts(float p_deltaTime)
 {
+    (void)p_deltaTime;
 	auto& inputManager = *EDITOR_CONTEXT(inputManager);
 
 	if (inputManager.GetKeyState(Windowing::Inputs::EKey::KEY_LEFT_CONTROL) == Windowing::Inputs::EKeyState::KEY_DOWN)
@@ -47,6 +48,11 @@ void Editor::Panels::MenuBar::HandleShortcuts(float p_deltaTime)
 				EDITOR_EXEC(SaveAs());
 		}
 	}
+}
+
+void Editor::Panels::MenuBar::DrawMenuEntries()
+{
+    DrawWidgets();
 }
 
 void Editor::Panels::MenuBar::InitializeSettingsMenu()
@@ -205,9 +211,6 @@ void Editor::Panels::MenuBar::CreateBuildMenu()
 void Editor::Panels::MenuBar::CreateWindowMenu()
 {
 	m_windowMenu = &CreateWidget<Widgets::MenuList>("Window");
-	m_windowMenu->CreateWidget<Widgets::MenuItem>("Close all").ClickedEvent	+= std::bind(&MenuBar::OpenEveryWindows, this, false);
-	m_windowMenu->CreateWidget<Widgets::MenuItem>("Open all").ClickedEvent		+= std::bind(&MenuBar::OpenEveryWindows, this, true);
-	m_windowMenu->CreateWidget<Widgets::Separator>();
 
 	/* When the menu is opened, we update which window is marked as "Opened" or "Closed" */
 	m_windowMenu->ClickedEvent += std::bind(&MenuBar::UpdateToggleableItems, this);

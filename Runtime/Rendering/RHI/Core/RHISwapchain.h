@@ -24,6 +24,7 @@ namespace NLS::Render::RHI
         // UI rendering signal semaphore - Driver sets this from UIManager::ResolveUISignalSemaphore()
         // Backend should wait on this semaphore before presenting to ensure UI rendering completes first
         void* uiSignalSemaphore = nullptr;
+        uint64_t uiSignalValue = 0u;
     };
 
     struct NLS_RENDER_API RHIAcquiredImage

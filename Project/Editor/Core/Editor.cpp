@@ -2,8 +2,10 @@
 #include <filesystem>
 #include <algorithm>
 #include <cctype>
+#include <limits>
 #include <string_view>
 #include <Debug/Logger.h>
+#include <ServiceLocator.h>
 
 #include "Core/Editor.h"
 #include "UI/Settings/PanelWindowSettings.h"
@@ -14,7 +16,8 @@
 #include "AssemblyPlatform.h"
 #include "AssemblyRender.h"
 
-#include "Panels/MenuBar.h"
+#include "Panels/EditorTopBar.h"
+#include "Panels/EditorStatusBar.h"
 #include "Panels/AssetBrowser.h"
 #include "Panels/FrameInfo.h"
 #include "Panels/Console.h"
@@ -23,7 +26,6 @@
 #include "Panels/SceneView.h"
 #include "Panels/GameView.h"
 #include "Panels/AssetView.h"
-#include "Panels/Toolbar.h"
 #include "Panels/MaterialEditor.h"
 #include "Panels/ProjectSettings.h"
 #include "Panels/AssetProperties.h"
@@ -112,6 +114,7 @@ Editor::Core::Editor::Editor(Context& p_context)
     : m_context(p_context), m_panelsManager(m_canvas),
     m_editorActions(m_context, m_panelsManager)
 {
+    NLS::Core::ServiceLocator::Provide<NLS::Editor::Core::Editor>(*this);
     Assembly::Instance().Instance().Load<AssemblyMath>().Load<AssemblyCore>().Load<AssemblyPlatform>().Load<AssemblyRender>().Load<Engine::AssemblyEngine>();
 	
     SetupUI();
@@ -144,22 +147,35 @@ void Editor::Core::Editor::SetupUI()
     settings.collapsable = true;
     settings.dockable = true;
 
-    m_panelsManager.CreatePanel<Panels::MenuBar>("Menu Bar");
+    m_panelsManager.CreatePanel<Panels::EditorTopBar>("Editor Top Bar");
+    m_panelsManager.CreatePanel<Panels::EditorStatusBar>("Editor Status Bar");
     m_panelsManager.CreatePanel<Panels::AssetBrowser>("Asset Browser", true, settings, m_context.engineAssetsPath, m_context.projectAssetsPath);
-    m_panelsManager.CreatePanel<Panels::FrameInfo>("Frame Info", true, settings);
+    m_panelsManager.CreatePanel<Panels::FrameInfo>("Frame Info", false, settings);
     m_panelsManager.CreatePanel<Panels::Console>("Console", true, settings);
     m_panelsManager.CreatePanel<Panels::AssetView>("Asset View", false, settings);
     m_panelsManager.CreatePanel<Panels::Hierarchy>("Hierarchy", true, settings);
     m_panelsManager.CreatePanel<Panels::Inspector>("Inspector", true, settings);
     m_panelsManager.CreatePanel<Panels::SceneView>("Scene View", true, settings);
     m_panelsManager.CreatePanel<Panels::GameView>("Game View", true, settings);
-    m_panelsManager.CreatePanel<Panels::Toolbar>("Toolbar", true, settings);
     m_panelsManager.CreatePanel<Panels::MaterialEditor>("Material Editor", false, settings);
     m_panelsManager.CreatePanel<Panels::ProjectSettings>("Project Settings", false, settings);
     m_panelsManager.CreatePanel<Panels::AssetProperties>("Asset Properties", false, settings);
 
+    auto& topBar = m_panelsManager.GetPanelAs<Panels::EditorTopBar>("Editor Top Bar");
+    topBar.RegisterWindowPanel("Asset Browser", m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser"));
+    topBar.RegisterWindowPanel("Frame Info", m_panelsManager.GetPanelAs<Panels::FrameInfo>("Frame Info"));
+    topBar.RegisterWindowPanel("Console", m_panelsManager.GetPanelAs<Panels::Console>("Console"));
+    topBar.RegisterWindowPanel("Asset View", m_panelsManager.GetPanelAs<Panels::AssetView>("Asset View"));
+    topBar.RegisterWindowPanel("Hierarchy", m_panelsManager.GetPanelAs<Panels::Hierarchy>("Hierarchy"));
+    topBar.RegisterWindowPanel("Inspector", m_panelsManager.GetPanelAs<Panels::Inspector>("Inspector"));
+    topBar.RegisterWindowPanel("Scene View", m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View"));
+    topBar.RegisterWindowPanel("Game View", m_panelsManager.GetPanelAs<Panels::GameView>("Game View"));
+    topBar.RegisterWindowPanel("Material Editor", m_panelsManager.GetPanelAs<Panels::MaterialEditor>("Material Editor"));
+    topBar.RegisterWindowPanel("Project Settings", m_panelsManager.GetPanelAs<Panels::ProjectSettings>("Project Settings"));
+    topBar.RegisterWindowPanel("Asset Properties", m_panelsManager.GetPanelAs<Panels::AssetProperties>("Asset Properties"));
+
     // Needs to be called after all panels got created, because some settings in this menu depend on other panels
-    m_panelsManager.GetPanelAs<Panels::MenuBar>("Menu Bar").InitializeSettingsMenu();
+    topBar.InitializeSettingsMenu();
     m_canvas.MakeDockspace(true);
     m_context.uiManager->SetCanvas(m_canvas);
     m_context.uiManager->ResetLayout(m_context.projectPath + "/UserSettings/layout.ini");
@@ -172,6 +188,20 @@ void Editor::Core::Editor::PreUpdate()
 
 void Editor::Core::Editor::Update(float p_deltaTime)
 {
+    m_currentDeltaTime = p_deltaTime;
+    if (p_deltaTime > std::numeric_limits<float>::epsilon())
+    {
+        m_frameRateAccumulatedTime += p_deltaTime;
+        ++m_frameRateSampleCount;
+
+        if (m_frameRateAccumulatedTime >= 1.0f)
+        {
+            m_currentFrameRate = static_cast<float>(m_frameRateSampleCount) / m_frameRateAccumulatedTime;
+            m_frameRateAccumulatedTime = 0.0f;
+            m_frameRateSampleCount = 0;
+        }
+    }
+
     HandleGlobalShortcuts();
     UpdateCurrentEditorMode(p_deltaTime);
     UpdateViews(p_deltaTime);
@@ -297,13 +327,13 @@ void Editor::Core::Editor::UpdateEditMode(float p_deltaTime)
 
 void Editor::Core::Editor::UpdateEditorPanels(float p_deltaTime)
 {
-    auto& menuBar = m_panelsManager.GetPanelAs<NLS::Editor::Panels::MenuBar>("Menu Bar");
+    auto& topBar = m_panelsManager.GetPanelAs<NLS::Editor::Panels::EditorTopBar>("Editor Top Bar");
     auto& frameInfo = m_panelsManager.GetPanelAs<NLS::Editor::Panels::FrameInfo>("Frame Info");
     auto& sceneView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::SceneView>("Scene View");
     auto& gameView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::GameView>("Game View");
     auto& assetView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::AssetView>("Asset View");
 
-    menuBar.HandleShortcuts(p_deltaTime);
+    topBar.HandleShortcuts(p_deltaTime);
 
     const bool keepDefaultSceneFocus =
         ResolveValidationFocusTarget(m_context.GetDiagnosticsSettings().editorValidationFocusView) ==
@@ -361,14 +391,18 @@ void Editor::Core::Editor::RenderEditorUI(float p_deltaTime)
 
     // Get the UI's signal semaphore (Driver will wait on this during Present)
     NLS::Render::RHI::NativeHandle uiSignalSemaphore = m_context.uiManager->ResolveUISignalSemaphore();
-    if (uiSignalSemaphore.handle != nullptr)
-    {
-        Render::Context::DriverUIAccess::SetUISignalSemaphore(*m_context.driver, uiSignalSemaphore.handle);
-    }
 
     EDITOR_CONTEXT(uiManager)->Render();
     if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
         NLS_LOG_INFO("Editor::RenderEditorUI: UIManager::Render returned");
+
+    if (uiSignalSemaphore.handle != nullptr)
+    {
+        Render::Context::DriverUIAccess::SetUISignalSemaphore(
+            *m_context.driver,
+            uiSignalSemaphore.handle,
+            m_context.uiManager->ResolveUISignalValue());
+    }
 
     m_context.uiManager->SubmitUIRendering();
     if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
@@ -388,5 +422,15 @@ void Editor::Core::Editor::PostUpdate()
     ++m_elapsedFrames;
     if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
         NLS_LOG_INFO("Editor::PostUpdate: end");
+}
+
+float Editor::Core::Editor::GetCurrentFrameRate() const
+{
+    return m_currentFrameRate;
+}
+
+float Editor::Core::Editor::GetCurrentDeltaTime() const
+{
+    return m_currentDeltaTime;
 }
 } // namespace NLS

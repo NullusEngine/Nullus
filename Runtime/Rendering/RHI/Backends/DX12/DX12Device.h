@@ -32,6 +32,7 @@ namespace NLS::Render::Backend
 		NLS::Render::RHI::RHIDeviceCapabilities capabilities{};
 		std::string vendor;
 		std::string hardware;
+		bool dredDiagnosticsEnabled = false;
 
 		bool IsValid() const;
 	};

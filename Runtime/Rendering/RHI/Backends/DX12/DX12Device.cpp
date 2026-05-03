@@ -22,7 +22,7 @@ namespace NLS::Render::Backend
 #if defined(_WIN32)
 	namespace
 	{
-		void EnableDx12Dred()
+		bool EnableDx12Dred()
 		{
 			Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> dredSettings1;
 			const HRESULT dredSettings1Hr = D3D12GetDebugInterface(IID_PPV_ARGS(&dredSettings1));
@@ -32,7 +32,7 @@ namespace NLS::Render::Backend
 				dredSettings1->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
 				dredSettings1->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
 				NLS_LOG_INFO("CreateDX12RhiDevice: DRED v1 auto breadcrumbs, page faults, and breadcrumb context forced on");
-				return;
+				return true;
 			}
 
 			Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedDataSettings> dredSettings;
@@ -42,12 +42,13 @@ namespace NLS::Render::Backend
 				NLS_LOG_WARNING(
 					"CreateDX12RhiDevice: DRED settings unavailable hr=" + std::to_string(dredSettingsHr) +
 					", settings1 hr=" + std::to_string(dredSettings1Hr));
-				return;
+				return false;
 			}
 
 			dredSettings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
 			dredSettings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
 			NLS_LOG_INFO("CreateDX12RhiDevice: DRED auto breadcrumbs and page faults forced on");
+			return true;
 		}
 
 		UINT BuildDx12FactoryFlags(bool debugMode)
@@ -166,7 +167,8 @@ namespace NLS::Render::Backend
 	{
 		DX12DeviceResources resources;
 #if defined(_WIN32)
-		EnableDx12Dred();
+		if (debugMode)
+			resources.dredDiagnosticsEnabled = EnableDx12Dred();
 
 		const UINT factoryFlags = BuildDx12FactoryFlags(debugMode);
 		if (FAILED(CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&resources.factory))))

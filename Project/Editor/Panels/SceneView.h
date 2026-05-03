@@ -29,6 +29,9 @@ namespace NLS::Editor::Panels
 		*/
 		virtual void Update(float p_deltaTime) override;
 
+        Editor::Core::EGizmoOperation GetCurrentGizmoOperation() const;
+        void SetCurrentGizmoOperation(Editor::Core::EGizmoOperation p_operation);
+
 		/**
 		* Prepare the renderer for rendering
 		*/

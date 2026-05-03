@@ -259,7 +259,9 @@ namespace NLS::Render::Backend
 				"NativeDX12Queue::Present: swapchain ptr=" +
 				std::to_string(reinterpret_cast<uintptr_t>(swapchain)) +
 				" uiSemaphore=" +
-				std::to_string(reinterpret_cast<uintptr_t>(presentDesc.uiSignalSemaphore)));
+				std::to_string(reinterpret_cast<uintptr_t>(presentDesc.uiSignalSemaphore)) +
+				" uiSignalValue=" +
+				std::to_string(presentDesc.uiSignalValue));
 		}
 
 		for (const auto& semaphore : presentDesc.waitSemaphores)
@@ -279,12 +281,12 @@ namespace NLS::Render::Backend
 			}
 		}
 
-		if (presentDesc.uiSignalSemaphore != nullptr)
+		if (presentDesc.uiSignalSemaphore != nullptr && presentDesc.uiSignalValue != 0u)
 		{
 			auto* uiFence = reinterpret_cast<ID3D12Fence*>(presentDesc.uiSignalSemaphore);
 			if (uiFence != nullptr)
 			{
-				const HRESULT waitHr = m_queue->Wait(uiFence, 1u);
+				const HRESULT waitHr = m_queue->Wait(uiFence, presentDesc.uiSignalValue);
 				if (FAILED(waitHr))
 				{
 					NLS_LOG_WARNING("NativeDX12Queue::Present: failed to wait on UI fence before present hr=" + std::to_string(waitHr));

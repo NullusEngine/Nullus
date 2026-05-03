@@ -98,6 +98,8 @@ namespace NLS::Editor::Panels
         virtual Engine::Rendering::BaseSceneRenderer::SceneDescriptor CreateSceneDescriptor();
 		virtual bool RequiresRetiredFrameConsumption() const;
 		void SetRequiresRetiredFrameConsumption(bool requiresRetiredFrameConsumption);
+        virtual bool RequiresImmediateRetiredFrameReadback() const;
+        void SetRequiresImmediateRetiredFrameReadback(bool requiresImmediateRetiredFrameReadback);
 		void SyncViewToCurrentContentRegion();
 		void Render(uint16_t p_width, uint16_t p_height);
 		void ApplyResolvedViewSize(uint16_t p_width, uint16_t p_height);
@@ -112,5 +114,6 @@ namespace NLS::Editor::Panels
 		std::pair<uint16_t, uint16_t> m_lastResolvedViewSize { 0u, 0u };
 		std::optional<std::pair<uint16_t, uint16_t>> m_pendingResolvedViewSize;
 		bool m_requiresRetiredFrameConsumption = false;
+        bool m_requiresImmediateRetiredFrameReadback = false;
 	};
 }

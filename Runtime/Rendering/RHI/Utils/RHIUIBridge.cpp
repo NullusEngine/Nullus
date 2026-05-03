@@ -19,6 +19,7 @@ namespace NLS::Render::RHI
             void SetWaitSemaphore(void*) override {}
             void SetSignalSemaphore(void*) override {}
             void* GetUISignalSemaphore() override { return nullptr; }
+            uint64_t GetUISignalValue() const override { return 0u; }
             void SubmitCommandBuffer(uint32_t) override {}
         };
     }

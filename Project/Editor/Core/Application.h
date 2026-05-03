@@ -30,6 +30,7 @@ namespace NLS
 			            std::optional<Render::Settings::EGraphicsBackend> p_backendOverride = std::nullopt,
 			            const Render::Settings::RenderDocSettings& p_renderDocSettings = {},
 			            bool p_enableThreadedRendering = false,
+			            bool p_enableRhiDebugValidation = true,
 			            const Render::Settings::EngineDiagnosticsSettings& p_diagnosticsSettings = {});
 
 			/**

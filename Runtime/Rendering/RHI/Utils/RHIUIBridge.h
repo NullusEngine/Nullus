@@ -32,6 +32,7 @@ namespace NLS::Render::RHI
         virtual void SetSignalSemaphore(void* semaphore) = 0;
         // Get the UI's signal semaphore for Driver to wait on during present
         virtual void* GetUISignalSemaphore() = 0;
+        virtual uint64_t GetUISignalValue() const = 0;
         // Submit the UI command buffer to the GPU
         virtual void SubmitCommandBuffer(uint32_t currentImageIndex) = 0;
     };

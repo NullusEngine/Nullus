@@ -9,6 +9,7 @@
 #include <limits>
 
 using namespace NLS;
+
 Editor::Panels::AView::AView
 (
 	const std::string& p_title,
@@ -116,15 +117,6 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
 
 	if (p_width > 0 && p_height > 0 && camera && scene)
 	{
-        if (RequiresRetiredFrameConsumption())
-        {
-            if (auto* driver = Render::Context::TryGetLocatedDriver();
-                driver != nullptr && Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver))
-            {
-                Render::Context::DriverRendererAccess::DrainThreadedRendering(*driver);
-            }
-        }
-
 		InitFrame();
 
 		Render::Data::FrameDescriptor frameDescriptor;
@@ -139,13 +131,15 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
 		m_renderer->BeginFrame(frameDescriptor);
 		DrawFrame();
 		m_renderer->EndFrame();
-        if (RequiresRetiredFrameConsumption())
+        if (Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
+            RequiresRetiredFrameConsumption(),
+            RequiresImmediateRetiredFrameReadback()))
         {
             if (auto* driver = Render::Context::TryGetLocatedDriver();
                 driver != nullptr && Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver))
             {
-                // The UI samples this framebuffer immediately after Render() returns.
-                // Retire the just-submitted offscreen frame before exposing the texture to ImGui.
+                // Immediate readback consumers need the just-submitted offscreen frame retired.
+                // Texture-only consumers can present the latest available texture without a CPU drain.
                 Render::Context::DriverRendererAccess::DrainThreadedRendering(*driver);
             }
         }
@@ -170,6 +164,17 @@ bool Editor::Panels::AView::RequiresRetiredFrameConsumption() const
 void Editor::Panels::AView::SetRequiresRetiredFrameConsumption(const bool requiresRetiredFrameConsumption)
 {
     m_requiresRetiredFrameConsumption = requiresRetiredFrameConsumption;
+}
+
+bool Editor::Panels::AView::RequiresImmediateRetiredFrameReadback() const
+{
+    return m_requiresImmediateRetiredFrameReadback;
+}
+
+void Editor::Panels::AView::SetRequiresImmediateRetiredFrameReadback(
+    const bool requiresImmediateRetiredFrameReadback)
+{
+    m_requiresImmediateRetiredFrameReadback = requiresImmediateRetiredFrameReadback;
 }
 
 void Editor::Panels::AView::ApplyResolvedViewSize(const uint16_t p_width, const uint16_t p_height)

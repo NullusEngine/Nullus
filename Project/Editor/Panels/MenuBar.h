@@ -22,6 +22,8 @@ namespace NLS::Editor::Panels
 		*/
 		void HandleShortcuts(float p_deltaTime);
 
+        void DrawMenuEntries();
+
 		/**
 		* Register a panel to the menu bar window menu
 		*/

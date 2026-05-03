@@ -162,12 +162,14 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     std::optional<Render::Settings::EGraphicsBackend> p_backendOverride,
     const Render::Settings::RenderDocSettings& p_renderDocSettings,
     bool p_enableThreadedRendering,
+    bool p_enableRhiDebugValidation,
     const Render::Settings::EngineDiagnosticsSettings& p_diagnosticsSettings)
     : projectPath(p_projectPath),
     projectName(p_projectName),
     m_backendOverride(p_backendOverride),
     m_renderDocSettings(p_renderDocSettings),
     m_enableThreadedRendering(p_enableThreadedRendering),
+    m_enableRhiDebugValidation(p_enableRhiDebugValidation),
     m_diagnosticsSettings(p_diagnosticsSettings), 
     projectFilePath(p_projectPath + Utils::PathParser::Separator() + p_projectName + ".nullus"), 
     engineAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets/Engine")).string() + Utils::PathParser::Separator()), 
@@ -213,7 +215,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     /* Graphics context creation */
     NLS::Render::Settings::DriverSettings driverSettings;
     driverSettings.graphicsBackend = graphicsBackend;
-    driverSettings.debugMode = true;
+    driverSettings.debugMode = m_enableRhiDebugValidation;
     driverSettings.enableThreadedRendering = m_enableThreadedRendering;
     driverSettings.threadedFrameSlotCount = driverSettings.framesInFlight;
     driverSettings.diagnostics = m_diagnosticsSettings;

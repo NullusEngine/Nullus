@@ -518,6 +518,11 @@ NLS::Render::RHI::NativeHandle UIManager::ResolveUISignalSemaphore()
     return NLS::Render::RHI::NativeHandle{};
 }
 
+uint64_t UIManager::ResolveUISignalValue() const
+{
+    return m_uiBridge != nullptr ? m_uiBridge->GetUISignalValue() : 0u;
+}
+
 bool UIManager::ShouldFlipPresentedRenderTargetVertically() const
 {
     return NLS::Render::RHI::GetRenderSurfaceConvention(ToNativeBackendType(m_backend))

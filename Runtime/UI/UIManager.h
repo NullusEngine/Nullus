@@ -147,6 +147,7 @@ public:
     void SetSignalSemaphore(void* semaphore);
     void SubmitUIRendering();
     NLS::Render::RHI::NativeHandle ResolveUISignalSemaphore();
+    uint64_t ResolveUISignalValue() const;
     NLS::Render::Settings::EGraphicsBackend GetGraphicsBackend() const { return m_backend; }
     bool ShouldFlipPresentedRenderTargetVertically() const;
     bool UsesBottomLeftRenderTargetOrigin() const;

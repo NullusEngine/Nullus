@@ -140,7 +140,10 @@ namespace NLS::Render::Context
                 if (frameContext->renderFinishedSemaphore != nullptr)
                     presentDesc.waitSemaphores.push_back(frameContext->renderFinishedSemaphore);
                 if (impl.uiRenderFinishedSemaphore != nullptr)
+                {
                     presentDesc.uiSignalSemaphore = impl.uiRenderFinishedSemaphore;
+                    presentDesc.uiSignalValue = impl.uiRenderFinishedValue;
+                }
                 queue->Present(presentDesc);
 
                 if (impl.renderDocCaptureController != nullptr)
@@ -156,6 +159,8 @@ namespace NLS::Render::Context
             impl.explicitFrameActive = false;
             impl.uiStandaloneFrameActive = false;
             impl.currentFrameIndex = (impl.currentFrameIndex + 1u) % impl.frameContexts.size();
+            if (impl.uiStandaloneFrameSubmissionLock.owns_lock())
+                impl.uiStandaloneFrameSubmissionLock.unlock();
         }
 
         bool RequiresExplicitQueueWait(const QueueDependencyPolicy policy)
@@ -280,9 +285,39 @@ namespace NLS::Render::Context
                 workUnit.commandInput.dependencySourceWorkUnitIndex.has_value();
         }
 
-        bool CanBeginStandaloneExplicitFrameForImpl(const DriverImpl& impl)
+        bool InFlightSlotTargetsSwapchain(const InFlightFrameSlot& slot)
         {
-            return impl.threadedLifecycle == nullptr;
+            if (slot.stage == ThreadedFrameStage::Available ||
+                slot.stage == ThreadedFrameStage::Retired)
+            {
+                return false;
+            }
+
+            if (slot.renderFrameInput.has_value())
+                return slot.renderFrameInput->targetsSwapchain;
+            if (slot.renderFrameBuild.has_value())
+                return slot.renderFrameBuild->targetsSwapchain;
+            if (slot.renderScenePackage.has_value())
+                return slot.renderScenePackage->targetsSwapchain;
+            if (slot.snapshot.has_value())
+                return slot.snapshot->targetsSwapchain;
+
+            return false;
+        }
+
+        bool HasInFlightThreadedSwapchainFrame(const DriverImpl& impl)
+        {
+            if (impl.threadedLifecycle == nullptr)
+                return false;
+
+            const auto slots = impl.threadedLifecycle->CopySlots();
+            return std::any_of(
+                slots.begin(),
+                slots.end(),
+                [](const InFlightFrameSlot& slot)
+                {
+                    return InFlightSlotTargetsSwapchain(slot);
+                });
         }
 
         const char* ToThreadedPassDebugName(const RenderPassCommandKind kind)
@@ -336,67 +371,14 @@ namespace NLS::Render::Context
             return input.queueType;
         }
 
+        bool CanBeginStandaloneExplicitFrameForImpl(const DriverImpl& impl)
+        {
+            return impl.threadedLifecycle == nullptr;
+        }
+
         bool CanBeginStandaloneUiExplicitFrameForImpl(const DriverImpl& impl)
         {
-            return impl.threadedLifecycle == nullptr ||
-                impl.threadedLifecycle->GetInFlightDepth() == 0u;
-        }
-
-        bool HasInFlightThreadedSwapchainFrame(const DriverImpl& impl)
-        {
-            if (impl.threadedLifecycle == nullptr)
-                return false;
-
-            const auto slots = impl.threadedLifecycle->CopySlots();
-            return std::any_of(
-                slots.begin(),
-                slots.end(),
-                [](const InFlightFrameSlot& slot)
-                {
-                    if (slot.stage == ThreadedFrameStage::Available ||
-                        slot.stage == ThreadedFrameStage::Retired)
-                    {
-                        return false;
-                    }
-
-                    if (slot.renderFrameInput.has_value())
-                        return slot.renderFrameInput->targetsSwapchain;
-                    if (slot.renderFrameBuild.has_value())
-                        return slot.renderFrameBuild->targetsSwapchain;
-                    if (slot.renderScenePackage.has_value())
-                        return slot.renderScenePackage->targetsSwapchain;
-                    if (slot.snapshot.has_value())
-                        return slot.snapshot->targetsSwapchain;
-
-                    return false;
-                });
-        }
-
-        void DrainThreadedOffscreenWorkForUiComposition(DriverImpl& impl, Driver& driver)
-        {
-            if (impl.threadedLifecycle == nullptr)
-                return;
-
-            while (impl.threadedLifecycle->GetInFlightDepth() > 0u)
-            {
-                bool progressed = false;
-                if (RenderThreadCoordinator::DrainPendingRenderFrameBuildsSynchronously(driver))
-                    progressed = true;
-                if (RhiThreadCoordinator::DrainPendingThreadedSubmissions(
-                    driver,
-                    RhiSubmissionAttribution::SynchronousDrain))
-                {
-                    progressed = true;
-                }
-
-                if (!progressed)
-                {
-                    // The render or RHI worker may own the slot right now. The UI pass is
-                    // the present boundary, so block until offscreen work is retired rather
-                    // than presenting an old backbuffer or exposing stale picking readback.
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                }
-            }
+            return !HasInFlightThreadedSwapchainFrame(impl);
         }
 
         bool BeginStandaloneUiExplicitFrame(DriverImpl& impl)
@@ -408,6 +390,11 @@ namespace NLS::Render::Context
                 return true;
 
             if (!CanBeginStandaloneUiExplicitFrameForImpl(impl))
+                return false;
+
+            impl.uiStandaloneFrameSubmissionLock =
+                std::unique_lock<std::mutex>(impl.threadedRhiSubmissionMutex, std::try_to_lock);
+            if (!impl.uiStandaloneFrameSubmissionLock.owns_lock())
                 return false;
 
             auto& frameContext = impl.frameContexts[impl.currentFrameIndex % impl.frameContexts.size()];
@@ -2328,8 +2315,6 @@ namespace NLS::Render::Context
         {
             if (HasInFlightThreadedSwapchainFrame(*driver.m_impl))
                 return false;
-
-            DrainThreadedOffscreenWorkForUiComposition(*driver.m_impl, driver);
         }
 
         if (!driver.m_impl->explicitFrameActive && driver.m_impl->explicitSwapchain != nullptr)

@@ -17,6 +17,7 @@
 #include "Core/Context.h"
 #include "Core/GizmoBehaviour.h"
 #include "Rendering/DebugModelRenderer.h"
+#include "Rendering/PickingReadbackLifecycle.h"
 
 namespace NLS::Editor::Rendering
 {
@@ -51,9 +52,11 @@ namespace NLS::Editor::Rendering
 
 	private:
         void OnBeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor) override;
-		virtual void Draw(NLS::Render::Data::PipelineState p_pso) override;
+        virtual void Draw(NLS::Render::Data::PipelineState p_pso) override;
         PickingResult DecodePickingResult(const Engine::SceneSystem::Scene& p_scene, const uint8_t (&pixel)[3]) const;
         void ResetPickingFrameState();
+        PickingReadbackLifecycle<Engine::SceneSystem::Scene>::Frame BuildSubmittedReadbackFrame(
+            Engine::SceneSystem::Scene& scene) const;
         bool RenderPickingScene(NLS::Render::Data::PipelineState p_pso);
         std::optional<NLS::Render::Context::RenderPassCommandInput> BuildThreadedPassInput(
             NLS::Render::Data::PipelineState p_pso);
@@ -91,10 +94,7 @@ namespace NLS::Editor::Rendering
 		NLS::Render::Resources::Material m_actorPickingMaterial;
 		NLS::Render::Resources::Material m_lightMaterial;
 		NLS::Render::Resources::Material m_gizmoPickingMaterial;
-		Engine::SceneSystem::Scene* m_lastRenderedScene = nullptr;
-		uint16_t m_lastRenderWidth = 0;
-		uint16_t m_lastRenderHeight = 0;
-		bool m_hasRenderedPickingFrame = false;
+        PickingReadbackLifecycle<Engine::SceneSystem::Scene> m_readbackLifecycle;
         std::optional<NLS::Render::Context::RenderPassCommandInput> m_preparedThreadedPassInput;
 	};
 }

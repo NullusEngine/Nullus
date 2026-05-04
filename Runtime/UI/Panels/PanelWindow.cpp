@@ -165,6 +165,7 @@ void PanelWindow::_Draw_Impl()
             }
 
             DrawWidgets();
+            OnAfterDrawWidgets();
         }
 
         ImGui::End();
@@ -172,6 +173,10 @@ void PanelWindow::_Draw_Impl()
 }
 
 void PanelWindow::OnBeforeDrawWidgets()
+{
+}
+
+void PanelWindow::OnAfterDrawWidgets()
 {
 }
 } // namespace NLS::UI

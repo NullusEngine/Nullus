@@ -7,11 +7,89 @@
 #include "Panels/SceneView.h"
 #include "Panels/GameView.h"
 #include "Settings/EditorSettings.h"
+#include "Core/SceneCameraFocus.h"
+#include "ImGuizmo.h"
 #include <ServiceLocator.h>
 #include <UI/UIManager.h>
+#include <array>
 #include <chrono>
 #include <cmath>
 using namespace NLS;
+
+namespace
+{
+constexpr float kSceneViewGizmoCameraLength = 8.0f;
+constexpr float kSceneViewDefaultFocusDistance = 15.0f;
+
+ImGuizmo::OPERATION ToNativeImGuizmoOperation(Editor::Core::EGizmoOperation operation)
+{
+    switch (Editor::Core::ToImGuizmoOperation(operation))
+    {
+    case Editor::Core::SceneViewGizmoOperation::Rotate:
+        return ImGuizmo::ROTATE;
+    case Editor::Core::SceneViewGizmoOperation::Scale:
+        return ImGuizmo::SCALE;
+    case Editor::Core::SceneViewGizmoOperation::Translate:
+    default:
+        return ImGuizmo::TRANSLATE;
+    }
+}
+
+ImGuizmo::MODE ToNativeImGuizmoMode(const Editor::Core::SceneViewGizmoSpace space)
+{
+    return space == Editor::Core::SceneViewGizmoSpace::Local
+        ? ImGuizmo::LOCAL
+        : ImGuizmo::WORLD;
+}
+
+Engine::GameObject* PickActorAtRenderCoordinate(
+    Editor::Rendering::PickingRenderPass& pickingPass,
+    const float x,
+    const float y)
+{
+    auto pickingResult = pickingPass.PickAtRenderCoordinate(
+        static_cast<uint32_t>(x),
+        static_cast<uint32_t>(y));
+
+    if (pickingResult.has_value())
+    {
+        if (const auto pickedActor = std::get_if<Engine::GameObject*>(&pickingResult.value()))
+            return *pickedActor;
+    }
+
+    return nullptr;
+}
+
+Engine::GameObject* PickActorNearRenderCoordinate(
+    Editor::Rendering::PickingRenderPass& pickingPass,
+    const Maths::Vector2& mousePos,
+    const float maxRenderX,
+    const float maxRenderY)
+{
+    constexpr float kClickPickRadius = 2.0f;
+    const std::array<Maths::Vector2, 9> offsets {{
+        {0.0f, 0.0f},
+        {-kClickPickRadius, 0.0f},
+        {kClickPickRadius, 0.0f},
+        {0.0f, -kClickPickRadius},
+        {0.0f, kClickPickRadius},
+        {-kClickPickRadius, -kClickPickRadius},
+        {kClickPickRadius, -kClickPickRadius},
+        {-kClickPickRadius, kClickPickRadius},
+        {kClickPickRadius, kClickPickRadius},
+    }};
+
+    for (const auto& offset : offsets)
+    {
+        const float sampleX = std::clamp(mousePos.x + offset.x, 0.0f, maxRenderX);
+        const float sampleY = std::clamp(mousePos.y + offset.y, 0.0f, maxRenderY);
+        if (auto* pickedActor = PickActorAtRenderCoordinate(pickingPass, sampleX, sampleY))
+            return pickedActor;
+    }
+
+    return nullptr;
+}
+}
 Editor::Panels::SceneView::SceneView(
     const std::string& p_title,
     bool p_opened,
@@ -22,6 +100,7 @@ Editor::Panels::SceneView::SceneView(
     // so use the editor renderer on every backend.
     m_renderer = std::make_unique<Editor::Rendering::DebugSceneRenderer>(*EDITOR_CONTEXT(driver));
     SetRequiresRetiredFrameConsumption(true);
+    SetRequiresImmediateRetiredFrameReadback(true);
 
     m_camera.SetFar(5000.0f);
 
@@ -56,28 +135,37 @@ Editor::Panels::SceneView::~SceneView()
 
 void Editor::Panels::SceneView::Update(float p_deltaTime)
 {
-    AViewControllable::Update(p_deltaTime);
-
     using namespace Windowing::Inputs;
     const Maths::Vector2 mousePosition = EDITOR_CONTEXT(inputManager)->GetMousePosition();
     const bool sceneViewActive = IsFocused() || IsHovered() || IsMouseWithinView(mousePosition);
     const bool editingUiControl = NLS_SERVICE(UI::UIManager).IsAnyItemActive();
+    EnsureCameraFocus();
+    m_cameraController.SetFocusState(&m_cameraFocus);
+    m_cameraController.SetInputActive(sceneViewActive && !editingUiControl);
+    if (HasViewportImageBounds())
+    {
+        const auto imageMin = GetViewportImageMin();
+        const auto imageMax = GetViewportImageMax();
+        m_cameraController.SetViewportHeight(std::max(1.0f, imageMax.y - imageMin.y));
+    }
+
+    AViewControllable::Update(p_deltaTime);
 
     if (sceneViewActive && !editingUiControl && !m_cameraController.IsRightMousePressed())
     {
         if (EDITOR_CONTEXT(inputManager)->IsKeyPressed(EKey::KEY_W))
         {
-            m_currentOperation = Editor::Core::EGizmoOperation::TRANSLATE;
+            SetCurrentGizmoOperation(Editor::Core::EGizmoOperation::TRANSLATE);
         }
 
         if (EDITOR_CONTEXT(inputManager)->IsKeyPressed(EKey::KEY_E))
         {
-            m_currentOperation = Editor::Core::EGizmoOperation::ROTATE;
+            SetCurrentGizmoOperation(Editor::Core::EGizmoOperation::ROTATE);
         }
 
         if (EDITOR_CONTEXT(inputManager)->IsKeyPressed(EKey::KEY_R))
         {
-            m_currentOperation = Editor::Core::EGizmoOperation::SCALE;
+            SetCurrentGizmoOperation(Editor::Core::EGizmoOperation::SCALE);
         }
     }
 }
@@ -90,6 +178,36 @@ Editor::Core::EGizmoOperation Editor::Panels::SceneView::GetCurrentGizmoOperatio
 void Editor::Panels::SceneView::SetCurrentGizmoOperation(const Editor::Core::EGizmoOperation p_operation)
 {
     m_currentOperation = p_operation;
+}
+
+Editor::Core::SceneViewGizmoPivot Editor::Panels::SceneView::GetCurrentGizmoPivot() const
+{
+    return m_currentPivot;
+}
+
+void Editor::Panels::SceneView::SetCurrentGizmoPivot(const Editor::Core::SceneViewGizmoPivot p_pivot)
+{
+    m_currentPivot = p_pivot;
+}
+
+void Editor::Panels::SceneView::ToggleCurrentGizmoPivot()
+{
+    m_currentPivot = Core::ToggleGizmoPivot(m_currentPivot);
+}
+
+Editor::Core::SceneViewGizmoSpace Editor::Panels::SceneView::GetCurrentGizmoSpace() const
+{
+    return m_currentSpace;
+}
+
+void Editor::Panels::SceneView::SetCurrentGizmoSpace(const Editor::Core::SceneViewGizmoSpace p_space)
+{
+    m_currentSpace = p_space;
+}
+
+void Editor::Panels::SceneView::ToggleCurrentGizmoSpace()
+{
+    m_currentSpace = Core::ToggleGizmoSpace(m_currentSpace);
 }
 
 void Editor::Panels::SceneView::InitFrame()
@@ -107,10 +225,8 @@ void Editor::Panels::SceneView::InitFrame()
         selectedActor = EDITOR_EXEC(GetSelectedActor());
     }
 
-    debugRenderer->AddDescriptor<Rendering::DebugSceneRenderer::DebugSceneDescriptor>({m_currentOperation,
-                                                                                       m_highlightedActor,
-                                                                                       selectedActor,
-                                                                                       m_highlightedGizmoDirection});
+    debugRenderer->AddDescriptor<Rendering::DebugSceneRenderer::DebugSceneDescriptor>({m_highlightedActor,
+                                                                                       selectedActor});
 }
 
 Engine::SceneSystem::Scene* Editor::Panels::SceneView::GetScene()
@@ -123,9 +239,125 @@ Engine::Rendering::BaseSceneRenderer::SceneDescriptor Editor::Panels::SceneView:
     return AViewControllable::CreateSceneDescriptor();
 }
 
-void Editor::Panels::SceneView::AfterRenderFrame()
+void Editor::Panels::SceneView::OnAfterDrawWidgets()
 {
+    DrawViewportOverlay();
     HandleActorPicking();
+}
+
+void Editor::Panels::SceneView::DrawViewportOverlay()
+{
+    m_gizmoInteraction = {};
+
+    if (!HasViewportImageBounds())
+        return;
+
+    const auto imageMin = GetViewportImageMin();
+    const auto imageMax = GetViewportImageMax();
+    const auto imageWidth = imageMax.x - imageMin.x;
+    const auto imageHeight = imageMax.y - imageMin.y;
+    if (imageWidth <= 0.0f || imageHeight <= 0.0f)
+        return;
+
+    auto viewMatrix = Core::ToImGuizmoMatrix(m_camera.GetViewMatrix());
+    auto projectionMatrix = Core::ToImGuizmoMatrix(m_camera.GetProjectionMatrix());
+    const bool cameraControlActive = m_cameraController.IsRightMousePressed();
+    EnsureCameraFocus();
+
+    ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
+    ImGuizmo::SetRect(imageMin.x, imageMin.y, imageWidth, imageHeight);
+
+    const auto viewGizmoRect = Core::GetSceneViewViewGizmoRect(imageMin, imageMax);
+    auto viewGizmoModelMatrix = Core::ToImGuizmoMatrix(Maths::Matrix4::Identity);
+    ImGuizmo::ViewManipulate(
+        viewMatrix.data(),
+        projectionMatrix.data(),
+        ToNativeImGuizmoOperation(m_currentOperation),
+        ToNativeImGuizmoMode(m_currentSpace),
+        viewGizmoModelMatrix.data(),
+        kSceneViewGizmoCameraLength,
+        ImVec2(viewGizmoRect.position.x, viewGizmoRect.position.y),
+        ImVec2(viewGizmoRect.size.x, viewGizmoRect.size.y),
+        IM_COL32(0, 0, 0, 0));
+
+    m_gizmoInteraction.isViewHovered = ImGuizmo::IsViewManipulateHovered();
+    m_gizmoInteraction.isViewUsing = ImGuizmo::IsUsingViewManipulate();
+    if (Core::ShouldCancelViewGizmoCameraTransform(cameraControlActive, m_gizmoInteraction.isViewUsing))
+    {
+        ImGuizmo::CancelViewManipulate();
+        m_gizmoInteraction.isViewUsing = false;
+    }
+
+    const ImGuiIO& io = ImGui::GetIO();
+    const Maths::Vector2 mouseDelta {io.MouseDelta.x, io.MouseDelta.y};
+    if (!cameraControlActive && Core::ShouldApplyViewGizmoCameraTransform(
+        m_gizmoInteraction.isViewUsing,
+        io.MouseDown[0],
+        mouseDelta))
+    {
+        const auto cameraTransform = Core::GetCameraTransformFromViewMatrix(viewMatrix);
+        float viewGizmoTargetDirection[3] {};
+        const bool hasViewGizmoTargetDirection =
+            ImGuizmo::GetViewManipulateTargetDirection(viewGizmoTargetDirection);
+        const Maths::Vector3 targetForward {
+            viewGizmoTargetDirection[0],
+            viewGizmoTargetDirection[1],
+            viewGizmoTargetDirection[2]
+        };
+        const Maths::Vector3 targetCameraForward =
+            Core::GetCameraForwardFromImGuizmoViewTargetDirection(targetForward);
+        const auto stableCameraTransform = Core::StabilizeViewGizmoCameraTransform(
+            {m_camera.GetPosition(), m_camera.GetRotation()},
+            cameraTransform,
+            m_cameraFocus.focusDistance,
+            m_cameraFocus.focusPoint,
+            hasViewGizmoTargetDirection ? &targetCameraForward : nullptr);
+        m_camera.SetPosition(stableCameraTransform.position);
+        m_camera.SetRotation(stableCameraTransform.rotation);
+        m_cameraFocus.focusDistance = Maths::Vector3::Distance(m_camera.GetPosition(), m_cameraFocus.focusPoint);
+        m_cameraFocus.hasFocus = true;
+        m_camera.CacheViewMatrix();
+    }
+
+    if (!EDITOR_EXEC(IsAnyActorSelected()))
+        return;
+
+    auto* selectedActor = EDITOR_EXEC(GetSelectedActor());
+    if (selectedActor == nullptr || selectedActor->GetTransform() == nullptr)
+        return;
+
+    auto modelMatrix = Core::GetActorWorldGizmoMatrix(*selectedActor, m_currentPivot);
+
+    using namespace Windowing::Inputs;
+    const bool snapEnabled = Core::IsSnapModifierActive(
+        EDITOR_CONTEXT(inputManager)->GetKeyState(EKey::KEY_LEFT_CONTROL),
+        EDITOR_CONTEXT(inputManager)->GetKeyState(EKey::KEY_RIGHT_CONTROL));
+    const float snapValue = Core::GetSnapValue(m_currentOperation);
+    float snap[3] { snapValue, snapValue, snapValue };
+
+    const bool manipulated = ImGuizmo::Manipulate(
+        viewMatrix.data(),
+        projectionMatrix.data(),
+        ToNativeImGuizmoOperation(m_currentOperation),
+        ToNativeImGuizmoMode(m_currentSpace),
+        modelMatrix.data(),
+        nullptr,
+        snapEnabled ? snap : nullptr);
+
+    m_gizmoInteraction.isHovered = !cameraControlActive && ImGuizmo::IsOver();
+    m_gizmoInteraction.isUsing = !cameraControlActive && ImGuizmo::IsUsing();
+
+    if (!cameraControlActive && manipulated)
+        Core::ApplyActorWorldGizmoMatrix(*selectedActor, modelMatrix, m_currentOperation, m_currentPivot);
+}
+
+void Editor::Panels::SceneView::EnsureCameraFocus()
+{
+    m_cameraFocus = Core::EnsureSceneCameraFocus(
+        m_cameraFocus,
+        m_camera.GetPosition(),
+        m_camera.GetRotation() * Maths::Vector3::Forward,
+        kSceneViewDefaultFocusDistance);
 }
 
 bool IsResizing()
@@ -141,7 +373,6 @@ void Editor::Panels::SceneView::HandleActorPicking()
     if (debugRenderer == nullptr)
     {
         m_highlightedActor = nullptr;
-        m_highlightedGizmoDirection = std::nullopt;
         m_hasPickingSample = false;
         return;
     }
@@ -154,8 +385,11 @@ void Editor::Panels::SceneView::HandleActorPicking()
 
     if (inputManager.IsMouseButtonReleased(EMouseButton::MOUSE_BUTTON_LEFT))
     {
-        m_gizmoOperations.StopPicking();
+        m_gizmoInteraction.isUsing = false;
     }
+
+    if (Core::ShouldSuppressScenePicking(m_gizmoInteraction))
+        return;
 
     if (mouseOverView && !IsResizing())
     {
@@ -163,7 +397,6 @@ void Editor::Panels::SceneView::HandleActorPicking()
         if (!actorPickingFeature.SupportsPickingReadback())
         {
             m_highlightedActor = nullptr;
-            m_highlightedGizmoDirection = std::nullopt;
             m_hasPickingSample = false;
             return;
         }
@@ -172,7 +405,6 @@ void Editor::Panels::SceneView::HandleActorPicking()
         if (!localMousePos.has_value())
         {
             m_highlightedActor = nullptr;
-            m_highlightedGizmoDirection = std::nullopt;
             m_hasPickingSample = false;
             return;
         }
@@ -205,28 +437,13 @@ void Editor::Panels::SceneView::HandleActorPicking()
 
         if (shouldRepick)
         {
-            auto pickingResult = actorPickingFeature.PickAtRenderCoordinate(
-                static_cast<uint32_t>(mousePos.x),
-                static_cast<uint32_t>(mousePos.y));
+            m_highlightedActor = nullptr;
 
-            m_highlightedActor = {};
-            m_highlightedGizmoDirection = {};
-
-            if (!rightMousePressed && pickingResult.has_value())
+            if (!rightMousePressed)
             {
-                if (const auto pval = std::get_if<Engine::GameObject*>(&pickingResult.value()))
-                {
-                    m_highlightedActor = *pval;
-                }
-                else if (const auto pval = std::get_if<Editor::Core::GizmoBehaviour::EDirection>(&pickingResult.value()))
-                {
-                    m_highlightedGizmoDirection = *pval;
-                }
-            }
-            else
-            {
-                m_highlightedActor = {};
-                m_highlightedGizmoDirection = {};
+                m_highlightedActor = leftClicked
+                    ? PickActorNearRenderCoordinate(actorPickingFeature, mousePos, maxRenderX, maxRenderY)
+                    : PickActorAtRenderCoordinate(actorPickingFeature, mousePos.x, mousePos.y);
             }
 
             m_lastPickingMousePos = mousePos;
@@ -236,23 +453,11 @@ void Editor::Panels::SceneView::HandleActorPicking()
         else if (rightMousePressed)
         {
             m_highlightedActor = {};
-            m_highlightedGizmoDirection = {};
         }
 
         if (leftClicked && !rightMousePressed)
         {
-            if (m_highlightedGizmoDirection && EDITOR_EXEC(IsAnyActorSelected()))
-            {
-                if (auto* selectedActor = EDITOR_EXEC(GetSelectedActor()); selectedActor != nullptr)
-                {
-                    m_gizmoOperations.StartPicking(
-                        *selectedActor,
-                        m_camera.GetPosition(),
-                        m_currentOperation,
-                        m_highlightedGizmoDirection.value());
-                }
-            }
-            else if (m_highlightedActor)
+            if (m_highlightedActor)
             {
                 EDITOR_EXEC(SelectActor(*m_highlightedActor));
             }
@@ -265,17 +470,6 @@ void Editor::Panels::SceneView::HandleActorPicking()
     else
     {
         m_highlightedActor = nullptr;
-        m_highlightedGizmoDirection = std::nullopt;
         m_hasPickingSample = false;
-    }
-
-    if (m_gizmoOperations.IsPicking())
-    {
-        auto mousePosition = EDITOR_CONTEXT(inputManager)->GetMousePosition();
-
-        auto [winWidth, winHeight] = GetSafeSize();
-
-        m_gizmoOperations.SetCurrentMouse(mousePosition);
-        m_gizmoOperations.ApplyOperation(m_camera.GetViewMatrix(), m_camera.GetProjectionMatrix(), {static_cast<float>(winWidth), static_cast<float>(winHeight)});
     }
 }

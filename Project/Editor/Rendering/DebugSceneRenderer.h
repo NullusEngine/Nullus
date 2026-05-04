@@ -8,7 +8,6 @@
 #include <Rendering/Resources/Material.h>
 #include "Components/LightComponent.h"
 #include <Engine/Rendering/ForwardSceneRenderer.h>
-#include "Core/GizmoBehaviour.h"
 #include "Core/Context.h"
 
 namespace NLS::Editor::Panels { class AView; }
@@ -24,10 +23,8 @@ class DebugSceneRenderer : public Engine::Rendering::ForwardSceneRenderer
 	public:
 		struct DebugSceneDescriptor
 		{
-			Editor::Core::EGizmoOperation gizmoOperation;
 			Engine::GameObject* highlightedActor;
             Engine::GameObject* selectedActor;
-			std::optional<Editor::Core::GizmoBehaviour::EDirection> highlightedGizmoDirection;
 		};
 
 		/**

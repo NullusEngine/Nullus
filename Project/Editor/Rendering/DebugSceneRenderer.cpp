@@ -24,7 +24,6 @@
 #include "Rendering/EditorPipelineStatePresets.h"
 #include "Rendering/GridRenderPass.h"
 #include "Rendering/OutlineRenderer.h"
-#include "Rendering/GizmoRenderer.h"
 #include "Rendering/PickingRenderPass.h"
 #include "Core/EditorResources.h"
 //#include "Panels/AView.h"
@@ -397,7 +396,6 @@ public:
         : Render::Core::ARenderPass(p_renderer)
         , m_debugModelRenderer(p_renderer)
         , m_outlineRenderer(p_renderer, m_debugModelRenderer)
-        , m_gizmoRenderer(p_renderer, m_debugModelRenderer)
 	{
 		
 	}
@@ -421,8 +419,7 @@ protected:
 		if (selectedActor == nullptr)
             return;
 
-        if (Editor::Rendering::OutlineRenderer::ShouldIncludeInThreadedFrame(true, selectedActor) ||
-            Editor::Rendering::GizmoRenderer::ShouldIncludeInThreadedFrame(true, selectedActor))
+        if (Editor::Rendering::OutlineRenderer::ShouldIncludeInThreadedFrame(true, selectedActor))
 		{
 			DrawActorDebugElements(*selectedActor);
 
@@ -433,12 +430,6 @@ protected:
             }
 
             m_outlineRenderer.DrawOutline(*selectedActor, kSelectedOutlineColor, kSelectedOutlineWidth);
-            m_gizmoRenderer.DrawGizmo(
-                selectedActor->GetTransform()->GetWorldPosition(),
-                selectedActor->GetTransform()->GetWorldRotation(),
-                debugSceneDescriptor.gizmoOperation,
-                debugSceneDescriptor.highlightedGizmoDirection
-            );
 		}
 	}
 
@@ -832,12 +823,6 @@ private:
             kSelectedOutlineColor,
             kSelectedOutlineWidth,
             passInput.recordedDrawCommands);
-        m_gizmoRenderer.CaptureGizmoDrawCommands(
-            selectedActor.GetTransform()->GetWorldPosition(),
-            selectedActor.GetTransform()->GetWorldRotation(),
-            debugSceneDescriptor.gizmoOperation,
-            debugSceneDescriptor.highlightedGizmoDirection,
-            passInput.recordedDrawCommands);
 
         passInput.drawCount = static_cast<uint64_t>(passInput.recordedDrawCommands.size());
         if (passInput.drawCount == 0u)
@@ -849,7 +834,6 @@ private:
 private:
     Editor::Rendering::DebugModelRenderer m_debugModelRenderer;
     Editor::Rendering::OutlineRenderer m_outlineRenderer;
-    Editor::Rendering::GizmoRenderer m_gizmoRenderer;
     std::optional<NLS::Render::Context::RenderPassCommandInput> m_preparedThreadedPassInput;
 };
 
@@ -906,8 +890,7 @@ std::optional<NLS::Render::Context::FrameSnapshot> Editor::Rendering::DebugScene
     {
         const auto* selectedActor = GetDescriptor<DebugSceneDescriptor>().selectedActor;
         helperState.hasSelectedActor =
-            OutlineRenderer::ShouldIncludeInThreadedFrame(actorPassEnabled, selectedActor) ||
-            GizmoRenderer::ShouldIncludeInThreadedFrame(actorPassEnabled, selectedActor);
+            OutlineRenderer::ShouldIncludeInThreadedFrame(actorPassEnabled, selectedActor);
     }
 
     if (const auto* debugDrawService = GetDebugDrawService(); debugDrawService != nullptr)

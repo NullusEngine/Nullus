@@ -17,6 +17,7 @@ NLS::Windowing::Inputs::InputManager::~InputManager()
 	m_window.KeyReleasedEvent.RemoveListener(m_keyReleasedListener);
 	m_window.MouseButtonPressedEvent.RemoveListener(m_mouseButtonPressedListener);
 	m_window.MouseButtonReleasedEvent.RemoveListener(m_mouseButtonReleasedListener);
+	m_window.MouseScrollEvent.RemoveListener(m_mouseScrollListener);
 }
 
 NLS::Windowing::Inputs::EKeyState NLS::Windowing::Inputs::InputManager::GetKeyState(EKey p_key) const
@@ -72,6 +73,8 @@ void NLS::Windowing::Inputs::InputManager::ClearEvents()
 {
 	m_keyEvents.clear();
 	m_mouseButtonEvents.clear();
+	lastWheel.x = 0.0f;
+	lastWheel.y = 0.0f;
 }
 
 void NLS::Windowing::Inputs::InputManager::OnKeyPressed(int p_key)

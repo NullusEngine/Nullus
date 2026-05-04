@@ -2,7 +2,7 @@
 
 #include <UI/Panels/PanelViewportBar.h>
 
-#include "Core/GizmoBehaviour.h"
+#include "Core/GizmoOperation.h"
 #include "Panels/MenuBar.h"
 #include "Panels/Toolbar.h"
 

@@ -18,12 +18,6 @@ Editor::Rendering::PickingRenderPass::PickingRenderPass(NLS::Render::Core::Compo
 	m_lightMaterial.Set("u_TextureTiling", Maths::Vector2(1.0f, 1.0f));
 	m_lightMaterial.Set("u_TextureOffset", Maths::Vector2(0.0f, 0.0f));
 
-	/* Gizmo Pickable Material */
-	m_gizmoPickingMaterial.SetShader(EDITOR_CONTEXT(editorResources)->GetShader("Gizmo"));
-	m_gizmoPickingMaterial.SetGPUInstances(3);
-	m_gizmoPickingMaterial.Set("u_IsBall", false);
-	m_gizmoPickingMaterial.Set("u_IsPickable", true);
-
 	/* Picking Material */
 	m_actorPickingMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders\\Unlit.hlsl"]);
 	m_actorPickingMaterial.Set("u_Diffuse", Maths::Vector4(1.f, 1.f, 1.f, 1.0f));
@@ -42,15 +36,6 @@ Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRe
 	if (actorUnderMouse)
 	{
         return actorUnderMouse;
-	}
-	else if (
-		pixel[0] == 255 &&
-		pixel[1] == 255 &&
-		pixel[2] >= 252 &&
-		pixel[2] <= 254
-		)
-	{
-		return static_cast<Editor::Core::GizmoBehaviour::EDirection>(pixel[2] - 252);
 	}
 
 	return std::nullopt;
@@ -169,7 +154,6 @@ bool Editor::Rendering::PickingRenderPass::RenderPickingScene(NLS::Render::Data:
 	NLS_ASSERT(m_renderer.HasDescriptor<DebugSceneRenderer::DebugSceneDescriptor>(), "Cannot find DebugSceneDescriptor attached to this renderer");
 
 	auto& sceneDescriptor = m_renderer.GetDescriptor<BaseSceneRenderer::SceneDescriptor>();
-	auto& debugSceneDescriptor = m_renderer.GetDescriptor<DebugSceneRenderer::DebugSceneDescriptor>();
 	auto& scene = sceneDescriptor.scene;
 
 	const auto& frameDescriptor = m_renderer.GetFrameDescriptor();
@@ -188,18 +172,6 @@ bool Editor::Rendering::PickingRenderPass::RenderPickingScene(NLS::Render::Data:
 	DrawPickableCameras(p_pso, scene);
 	DrawPickableLights(p_pso, scene);
 
-	if (debugSceneDescriptor.selectedActor)
-	{
-		auto& selectedActor = *debugSceneDescriptor.selectedActor;
-
-		DrawPickableGizmo(
-			p_pso,
-            selectedActor.GetTransform()->GetWorldPosition(),
-            selectedActor.GetTransform()->GetWorldRotation(),
-			debugSceneDescriptor.gizmoOperation
-		);
-	}
-
 	m_renderer.EndRecordedRenderPass();
 	return true;
 }
@@ -213,7 +185,6 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::P
     NLS_ASSERT(m_renderer.HasDescriptor<DebugSceneRenderer::DebugSceneDescriptor>(), "Cannot find DebugSceneDescriptor attached to this renderer");
 
     auto& sceneDescriptor = m_renderer.GetDescriptor<BaseSceneRenderer::SceneDescriptor>();
-    auto& debugSceneDescriptor = m_renderer.GetDescriptor<DebugSceneRenderer::DebugSceneDescriptor>();
     auto& scene = sceneDescriptor.scene;
     const auto& frameDescriptor = m_renderer.GetFrameDescriptor();
 
@@ -241,17 +212,6 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::P
     CapturePickableModels(p_pso, scene, passInput.recordedDrawCommands);
     CapturePickableCameras(p_pso, scene, passInput.recordedDrawCommands);
     CapturePickableLights(p_pso, scene, passInput.recordedDrawCommands);
-
-    if (debugSceneDescriptor.selectedActor)
-    {
-        auto& selectedActor = *debugSceneDescriptor.selectedActor;
-        CapturePickableGizmo(
-            p_pso,
-            selectedActor.GetTransform()->GetWorldPosition(),
-            selectedActor.GetTransform()->GetWorldRotation(),
-            debugSceneDescriptor.gizmoOperation,
-            passInput.recordedDrawCommands);
-    }
 
     passInput.drawCount = static_cast<uint64_t>(passInput.recordedDrawCommands.size());
     return passInput;
@@ -481,43 +441,3 @@ void Editor::Rendering::PickingRenderPass::CapturePickableLights(
     }
 }
 
-void Editor::Rendering::PickingRenderPass::DrawPickableGizmo(
-	NLS::Render::Data::PipelineState p_pso,
-	const Maths::Vector3& p_position,
-	const Maths::Quaternion& p_rotation,
-	Editor::Core::EGizmoOperation p_operation
-)
-{
-	auto gizmoPickingPso = Editor::Rendering::CreateEditorOverlayPipelineState(p_pso);
-
-	auto modelMatrix =
-		Maths::Matrix4::Translation(p_position) *
-		Maths::Quaternion::ToMatrix4(Maths::Quaternion::Normalize(p_rotation));
-
-	auto arrowModel = EDITOR_CONTEXT(editorResources)->GetModel("Arrow_Picking");
-
-	m_debugModelRenderer.DrawModelWithSingleMaterial(gizmoPickingPso, *arrowModel, m_gizmoPickingMaterial, modelMatrix);
-}
-
-void Editor::Rendering::PickingRenderPass::CapturePickableGizmo(
-    NLS::Render::Data::PipelineState p_pso,
-    const Maths::Vector3& p_position,
-    const Maths::Quaternion& p_rotation,
-    Editor::Core::EGizmoOperation,
-    std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
-{
-    auto gizmoPickingPso = Editor::Rendering::CreateEditorOverlayPipelineState(p_pso);
-    auto modelMatrix =
-        Maths::Matrix4::Translation(p_position) *
-        Maths::Quaternion::ToMatrix4(Maths::Quaternion::Normalize(p_rotation));
-
-    auto* arrowModel = EDITOR_CONTEXT(editorResources)->GetModel("Arrow_Picking");
-    if (arrowModel == nullptr)
-        return;
-    m_debugModelRenderer.CaptureModelDrawCommandsWithSingleMaterial(
-        gizmoPickingPso,
-        *arrowModel,
-        m_gizmoPickingMaterial,
-        modelMatrix,
-        outDrawCommands);
-}

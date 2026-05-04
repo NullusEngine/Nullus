@@ -78,70 +78,46 @@ Maths::Quaternion::Quaternion(const Matrix3& p_rotationMatrix)
 
 Maths::Quaternion::Quaternion(const Matrix4& p_rotationMatrix)
 {
-    float halfSquare;
-
-    // Check diagonal (trace)
     const float trace = p_rotationMatrix.data[0] + p_rotationMatrix.data[5] + p_rotationMatrix.data[10];
 
     if (trace > 0.0f)
     {
-        const float InvSquare = 1 / sqrt(trace + 1.f);
-        w = 0.5f * (1.f / InvSquare);
-        halfSquare = 0.5f * InvSquare;
-
-        x = (p_rotationMatrix.data[6] - p_rotationMatrix.data[9]) * halfSquare;
-        y = (p_rotationMatrix.data[8] - p_rotationMatrix.data[2]) * halfSquare;
-        z = (p_rotationMatrix.data[1] - p_rotationMatrix.data[4]) * halfSquare;
+        const float s = 2.0f * sqrt(trace + 1.0f);
+        w = 0.25f * s;
+        x = (p_rotationMatrix.data[9] - p_rotationMatrix.data[6]) / s;
+        y = (p_rotationMatrix.data[2] - p_rotationMatrix.data[8]) / s;
+        z = (p_rotationMatrix.data[4] - p_rotationMatrix.data[1]) / s;
+    }
+    else if (p_rotationMatrix.data[0] > p_rotationMatrix.data[5] && p_rotationMatrix.data[0] > p_rotationMatrix.data[10])
+    {
+        const float s = 2.0f * sqrt(1.0f + p_rotationMatrix.data[0] - p_rotationMatrix.data[5] - p_rotationMatrix.data[10]);
+        w = (p_rotationMatrix.data[9] - p_rotationMatrix.data[6]) / s;
+        x = 0.25f * s;
+        y = (p_rotationMatrix.data[1] + p_rotationMatrix.data[4]) / s;
+        z = (p_rotationMatrix.data[2] + p_rotationMatrix.data[8]) / s;
+    }
+    else if (p_rotationMatrix.data[5] > p_rotationMatrix.data[10])
+    {
+        const float s = 2.0f * sqrt(1.0f + p_rotationMatrix.data[5] - p_rotationMatrix.data[0] - p_rotationMatrix.data[10]);
+        w = (p_rotationMatrix.data[2] - p_rotationMatrix.data[8]) / s;
+        x = (p_rotationMatrix.data[1] + p_rotationMatrix.data[4]) / s;
+        y = 0.25f * s;
+        z = (p_rotationMatrix.data[6] + p_rotationMatrix.data[9]) / s;
     }
     else
     {
-        // diagonal is negative
-        int8_t i = 0;
-
-        if (p_rotationMatrix.data[5] > p_rotationMatrix.data[0])
-            i = 1;
-
-        if (p_rotationMatrix.data[10] > p_rotationMatrix.data[0] || p_rotationMatrix.data[10] > p_rotationMatrix.data[5])
-            i = 2;
-
-        static const int8_t next[3] = {1, 2, 0};
-        const int8_t j = next[i];
-        const int8_t k = next[j];
-
-        halfSquare = p_rotationMatrix.data[i * 5] - p_rotationMatrix.data[j * 5] - p_rotationMatrix.data[k * 5] + 1.0f;
-
-        const float InvSquare = 1 / sqrt(trace + 1.f);
-
-        float qt[4];
-        qt[i] = 0.5f * (1.f / InvSquare);
-
-        halfSquare = 0.5f * InvSquare;
-        // if i is 0, j is 1 and k is 2
-        if (i == 0)
-        {
-            qt[3] = (p_rotationMatrix.data[6] - p_rotationMatrix.data[9]) * halfSquare;
-            qt[j] = (p_rotationMatrix.data[1] + p_rotationMatrix.data[4]) * halfSquare;
-            qt[k] = (p_rotationMatrix.data[2] + p_rotationMatrix.data[8]) * halfSquare;
-        }
-        // if i is 1, j is 2 and k is 0
-        else if (i == 1)
-        {
-            qt[3] = (p_rotationMatrix.data[8] - p_rotationMatrix.data[2]) * halfSquare;
-            qt[j] = (p_rotationMatrix.data[6] + p_rotationMatrix.data[9]) * halfSquare;
-            qt[k] = (p_rotationMatrix.data[4] + p_rotationMatrix.data[1]) * halfSquare;
-        }
-        // if i is 2, j is 0 and k is 1
-        else
-        {
-            qt[3] = (p_rotationMatrix.data[1] - p_rotationMatrix.data[4]) * halfSquare;
-            qt[j] = (p_rotationMatrix.data[8] + p_rotationMatrix.data[2]) * halfSquare;
-            qt[k] = (p_rotationMatrix.data[9] + p_rotationMatrix.data[6]) * halfSquare;
-        }
-        x = qt[0];
-        y = qt[1];
-        z = qt[2];
-        w = qt[3];
+        const float s = 2.0f * sqrt(1.0f + p_rotationMatrix.data[10] - p_rotationMatrix.data[0] - p_rotationMatrix.data[5]);
+        w = (p_rotationMatrix.data[4] - p_rotationMatrix.data[1]) / s;
+        x = (p_rotationMatrix.data[2] + p_rotationMatrix.data[8]) / s;
+        y = (p_rotationMatrix.data[6] + p_rotationMatrix.data[9]) / s;
+        z = 0.25f * s;
     }
+
+    const auto normalized = Normalize(*this);
+    x = normalized.x;
+    y = normalized.y;
+    z = normalized.z;
+    w = normalized.w;
 }
 
 Maths::Quaternion::Quaternion(const Vector3& p_euler)

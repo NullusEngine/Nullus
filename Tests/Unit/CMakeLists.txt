@@ -25,6 +25,10 @@ add_executable(NullusUnitTests
 )
 
 target_sources(NullusUnitTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneCameraFocus.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneCameraFocus.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneViewImGuizmo.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneViewImGuizmo.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ComponentSearchPanel.cpp
     ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ComponentSearchPanel.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/EditorLaunchArgs.cpp

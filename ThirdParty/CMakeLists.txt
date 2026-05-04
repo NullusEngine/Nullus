@@ -47,6 +47,9 @@ if(NOT TARGET ImGui)
     include(imgui.cmake)
     # 指定FOLDER
     set_target_properties(ImGui PROPERTIES FOLDER ${third_party_folder}/ImGui)
+    if(TARGET ImGuizmo)
+        set_target_properties(ImGuizmo PROPERTIES FOLDER ${third_party_folder}/ImGuizmo)
+    endif()
 endif()
 
 if(NOT TARGET json11)

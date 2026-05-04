@@ -95,6 +95,8 @@ namespace NLS::Editor::Panels
 
 	protected:
 		void OnBeforeDrawWidgets() override;
+		void OnAfterDrawWidgets() override;
+        virtual void DrawViewportOverlay();
         virtual Engine::Rendering::BaseSceneRenderer::SceneDescriptor CreateSceneDescriptor();
 		virtual bool RequiresRetiredFrameConsumption() const;
 		void SetRequiresRetiredFrameConsumption(bool requiresRetiredFrameConsumption);
@@ -103,6 +105,9 @@ namespace NLS::Editor::Panels
 		void SyncViewToCurrentContentRegion();
 		void Render(uint16_t p_width, uint16_t p_height);
 		void ApplyResolvedViewSize(uint16_t p_width, uint16_t p_height);
+        bool HasViewportImageBounds() const;
+        Maths::Vector2 GetViewportImageMin() const;
+        Maths::Vector2 GetViewportImageMax() const;
 
 	protected:
 		UI::Widgets::Image* m_image;

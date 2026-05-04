@@ -4,7 +4,6 @@
 #include "SceneSystem/Scene.h"
 #include "Rendering/BaseSceneRenderer.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
-#include "Rendering/GizmoRenderer.h"
 #include "Rendering/GridRenderPass.h"
 #include "Rendering/EditorHelperLifecycle.h"
 #include "Rendering/OutlineRenderer.h"
@@ -86,7 +85,6 @@ TEST(DebugSceneLifecycleTests, GridHelperRequiresPassDescriptorAndDebugDrawSetti
 
 TEST(DebugSceneLifecycleTests, SelectionHelpersRequireActorPassAndSelectedActor)
 {
-    using NLS::Editor::Rendering::GizmoRenderer;
     using NLS::Editor::Rendering::OutlineRenderer;
 
     bool isPlaying = false;
@@ -95,10 +93,6 @@ TEST(DebugSceneLifecycleTests, SelectionHelpersRequireActorPassAndSelectedActor)
     EXPECT_FALSE(OutlineRenderer::ShouldIncludeInThreadedFrame(false, &actor));
     EXPECT_FALSE(OutlineRenderer::ShouldIncludeInThreadedFrame(true, nullptr));
     EXPECT_TRUE(OutlineRenderer::ShouldIncludeInThreadedFrame(true, &actor));
-
-    EXPECT_FALSE(GizmoRenderer::ShouldIncludeInThreadedFrame(false, &actor));
-    EXPECT_FALSE(GizmoRenderer::ShouldIncludeInThreadedFrame(true, nullptr));
-    EXPECT_TRUE(GizmoRenderer::ShouldIncludeInThreadedFrame(true, &actor));
 }
 
 TEST(DebugSceneLifecycleTests, SceneDestructionBroadcastsActorDestroyedBeforeDeletingActors)

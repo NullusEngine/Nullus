@@ -61,3 +61,26 @@ if(Vulkan_FOUND)
 else()
     target_compile_definitions(ImGui PUBLIC NLS_HAS_IMGUI_VULKAN_BACKEND=0)
 endif()
+
+set(imguizmo_SOURCE_DIR_ ${CMAKE_CURRENT_SOURCE_DIR}/ImGuizmo)
+
+add_library(ImGuizmo STATIC
+    "${imguizmo_SOURCE_DIR_}/ImGuizmo.cpp"
+    "${imguizmo_SOURCE_DIR_}/ImGuizmo.h"
+)
+
+set_target_properties(ImGuizmo PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${NLS_APP_OUTPUT_PATH}"
+)
+
+target_include_directories(
+    ImGuizmo
+    PUBLIC
+        $<BUILD_INTERFACE:${imguizmo_SOURCE_DIR_}>
+)
+
+target_link_libraries(
+    ImGuizmo
+    PUBLIC
+        ImGui
+)

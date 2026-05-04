@@ -4,6 +4,7 @@
 #include "ImGui/imgui.h"
 
 #include "Core/CameraController.h"
+#include "Core/SceneCameraFocus.h"
 
 #include <algorithm>
 
@@ -59,8 +60,9 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
 
     const Maths::Vector2 mousePosition = m_inputManager.GetMousePosition();
     const bool mouseOverView = m_view.IsMouseWithinView(mousePosition);
+    const bool inputActive = mouseOverView || m_inputActive;
     const bool capturingMouse = m_leftMousePressed || m_middleMousePressed || m_rightMousePressed;
-    const bool shouldProcessMouseState = mouseOverView || capturingMouse;
+    const bool shouldProcessMouseState = inputActive || capturingMouse;
 
 	if (shouldProcessMouseState)
 	{
@@ -85,6 +87,14 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
 					auto direction = Maths::Vector3::Normalize(targetPos - camPos);
 					m_camera.SetRotation(Maths::Quaternion::LookAt(direction, abs(direction.y) == 1.0f ? Maths::Vector3::Right : Maths::Vector3::Up));
 					m_cameraDestinations.push({ camPos, m_camera.GetRotation() });
+                    if (m_focusState != nullptr)
+                    {
+                        *m_focusState = {
+                            targetPos,
+                            dist,
+                            true
+                        };
+                    }
 				};
 
 				if (m_inputManager.IsKeyPressed(Windowing::Inputs::EKey::KEY_UP))			focusObjectFromAngle(Maths::Vector3::Up);
@@ -172,7 +182,7 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
             }
 		}
 
-		if (mouseOverView)
+		if (inputActive)
 		{
 			HandleCameraZoom();
 		}
@@ -183,13 +193,23 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
 
 void Editor::Core::CameraController::MoveToTarget(Engine::GameObject& p_target)
 {
+    const Maths::Vector3 focusPoint = p_target.GetTransform()->GetWorldPosition();
+    const float focusDistance = GetActorFocusDist(p_target);
 	m_cameraDestinations.push({
-		p_target.GetTransform()->GetWorldPosition() -
+		focusPoint -
 		m_camera.GetRotation() *
 		Maths::Vector3::Forward *
-		GetActorFocusDist(p_target),
+		focusDistance,
 		m_camera.GetRotation()
 	});
+    if (m_focusState != nullptr)
+    {
+        *m_focusState = {
+            focusPoint,
+            focusDistance,
+            true
+        };
+    }
 }
 
 void Editor::Core::CameraController::ResetMouseInteractionState()
@@ -261,6 +281,21 @@ bool Editor::Core::CameraController::IsRightMousePressed() const
 	return m_rightMousePressed;
 }
 
+void Editor::Core::CameraController::SetFocusState(SceneCameraFocusState* p_focusState)
+{
+    m_focusState = p_focusState;
+}
+
+void Editor::Core::CameraController::SetViewportHeight(const float p_viewportHeight)
+{
+    m_viewportHeight = std::max(1.0f, p_viewportHeight);
+}
+
+void Editor::Core::CameraController::SetInputActive(const bool p_inputActive)
+{
+    m_inputActive = p_inputActive;
+}
+
 void Editor::Core::CameraController::LockTargetActor(Engine::GameObject& p_actor)
 {
 	m_lockedActor = &p_actor;
@@ -289,10 +324,26 @@ void Editor::Core::CameraController::HandleCameraPanning(const Maths::Vector2& p
 {
 	m_window.SetCursorShape(Cursor::ECursorShape::HAND);
 
-	auto mouseOffset = p_mouseOffset * m_cameraDragSpeed;
+    Maths::Vector3 panDelta;
+    if (m_focusState != nullptr && m_focusState->hasFocus)
+    {
+        panDelta = GetSceneCameraPanDelta(
+            m_camera.GetRotation(),
+            p_mouseOffset,
+            m_focusState->focusDistance,
+            m_camera.GetFov(),
+            m_viewportHeight);
+    }
+    else
+    {
+	    auto mouseOffset = p_mouseOffset * m_cameraDragSpeed;
+        panDelta = m_camera.transform->GetWorldRight() * mouseOffset.x -
+            m_camera.transform->GetWorldUp() * mouseOffset.y;
+    }
 
-	m_camera.SetPosition(m_camera.GetPosition() + m_camera.transform->GetWorldRight() * mouseOffset.x);
-	m_camera.SetPosition(m_camera.GetPosition() - m_camera.transform->GetWorldUp() * mouseOffset.y);
+	m_camera.SetPosition(m_camera.GetPosition() + panDelta);
+    if (m_focusState != nullptr)
+        *m_focusState = UpdateSceneCameraFocusAfterPan(*m_focusState, panDelta);
 }
 
 Maths::Vector3 RemoveRoll(const Maths::Vector3& p_ypr)
@@ -339,11 +390,33 @@ void Editor::Core::CameraController::HandleCameraOrbit(
 	pivotTransform.RotateLocal(Maths::Quaternion(m_ypr));
 	m_camera.SetPosition(cameraTransform.GetWorldPosition());
 	m_camera.SetRotation(cameraTransform.GetWorldRotation());
+    if (m_focusState != nullptr)
+    {
+        *m_focusState = {
+            target.GetWorldPosition(),
+            Maths::Vector3::Distance(target.GetWorldPosition(), m_camera.GetPosition()),
+            true
+        };
+    }
 }
 
 void Editor::Core::CameraController::HandleCameraZoom()
 {
-    m_camera.SetPosition(m_camera.GetPosition() + m_camera.transform->GetWorldForward() * NLS_SERVICE(UI::UIManager).GetMouseWheel());
+    const float mouseWheel = m_inputManager.GetWheelMovement().y;
+    if (mouseWheel == 0.0f)
+        return;
+
+    const float focusDistance =
+        (m_focusState != nullptr && m_focusState->hasFocus)
+            ? m_focusState->focusDistance
+            : m_focusDistance;
+    const Maths::Vector3 zoomDelta = GetSceneCameraZoomDelta(
+        m_camera.transform->GetWorldForward(),
+        mouseWheel,
+        focusDistance);
+    m_camera.SetPosition(m_camera.GetPosition() + zoomDelta);
+    if (m_focusState != nullptr)
+        *m_focusState = UpdateSceneCameraFocusAfterZoom(*m_focusState, m_camera.GetPosition());
 }
 
 void Editor::Core::CameraController::HandleCameraFPSMouse(const Maths::Vector2& p_mouseOffset, bool p_firstMouse)
@@ -362,6 +435,13 @@ void Editor::Core::CameraController::HandleCameraFPSMouse(const Maths::Vector2& 
 	m_ypr.x = std::max(std::min(m_ypr.x, 90.0f), -90.0f);
 
 	m_camera.SetRotation(Maths::Quaternion(m_ypr));
+    if (m_focusState != nullptr)
+    {
+        *m_focusState = UpdateSceneCameraFocusAfterRotation(
+            *m_focusState,
+            m_camera.GetPosition(),
+            m_camera.GetRotation() * Maths::Vector3::Forward);
+    }
 }
 
 void Editor::Core::CameraController::HandleCameraFPSKeyboard(float p_deltaTime)
@@ -389,6 +469,8 @@ void Editor::Core::CameraController::HandleCameraFPSKeyboard(float p_deltaTime)
 
 	m_currentMovementSpeed = Maths::Vector3::Lerp(m_currentMovementSpeed, m_targetSpeed, 10.0f * p_deltaTime);
 	m_camera.SetPosition(m_camera.GetPosition() + m_currentMovementSpeed);
+    if (m_focusState != nullptr && Maths::Vector3::Length(m_currentMovementSpeed) > 0.0f)
+        *m_focusState = UpdateSceneCameraFocusAfterPan(*m_focusState, m_currentMovementSpeed);
 }
 
 void Editor::Core::CameraController::UpdateMouseState()

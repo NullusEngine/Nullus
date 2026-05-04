@@ -149,14 +149,9 @@ Editor::Core::EditorResources::EditorResources(const std::string& p_editorAssets
     m_modelPaths["Vertical_Plane"] = m_modelsFolder + "Vertical_Plane.fbx";
     m_modelPaths["Roll"] = m_modelsFolder + "Roll.fbx";
     m_modelPaths["Sphere"] = m_modelsFolder + "Sphere.fbx";
-    m_modelPaths["Arrow_Translate"] = m_modelsFolder + "Arrow_Translate.fbx";
-    m_modelPaths["Arrow_Rotate"] = m_modelsFolder + "Arrow_Rotate.fbx";
-    m_modelPaths["Arrow_Scale"] = m_modelsFolder + "Arrow_Scale.fbx";
-    m_modelPaths["Arrow_Picking"] = m_modelsFolder + "Arrow_Picking.fbx";
     m_modelPaths["Camera"] = m_modelsFolder + "Camera.fbx";
 
     m_shaderPaths["Grid"] = m_shadersFolder + "Grid.hlsl";
-    m_shaderPaths["Gizmo"] = m_shadersFolder + "Gizmo.hlsl";
     m_shaderPaths["Billboard"] = m_shadersFolder + "Billboard.hlsl";
     m_shaderPaths["DebugLitColor"] = m_shadersFolder + "DebugLitColor.hlsl";
 

@@ -40,6 +40,11 @@ void Editor::Panels::AView::OnBeforeDrawWidgets()
 	Render(m_lastResolvedViewSize.first, m_lastResolvedViewSize.second);
 }
 
+void Editor::Panels::AView::OnAfterDrawWidgets()
+{
+    DrawViewportOverlay();
+}
+
 void Editor::Panels::AView::InitFrame()
 {
 	m_renderer->AddDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>(
@@ -156,6 +161,10 @@ void Editor::Panels::AView::AfterRenderFrame()
 {
 }
 
+void Editor::Panels::AView::DrawViewportOverlay()
+{
+}
+
 bool Editor::Panels::AView::RequiresRetiredFrameConsumption() const
 {
     return m_requiresRetiredFrameConsumption;
@@ -229,6 +238,21 @@ std::optional<Maths::Vector2> Editor::Panels::AView::GetLocalViewPosition(const 
     localPosition.x = std::clamp(localPosition.x, 0.0f, std::max(0.0f, max.x - min.x));
     localPosition.y = std::clamp(localPosition.y, 0.0f, std::max(0.0f, max.y - min.y));
     return localPosition;
+}
+
+bool Editor::Panels::AView::HasViewportImageBounds() const
+{
+    return m_image != nullptr && m_image->HasLastDrawBounds();
+}
+
+Maths::Vector2 Editor::Panels::AView::GetViewportImageMin() const
+{
+    return HasViewportImageBounds() ? m_image->GetLastDrawMin() : Maths::Vector2 {};
+}
+
+Maths::Vector2 Editor::Panels::AView::GetViewportImageMax() const
+{
+    return HasViewportImageBounds() ? m_image->GetLastDrawMax() : Maths::Vector2 {};
 }
 
 Engine::Rendering::BaseSceneRenderer::SceneDescriptor Editor::Panels::AView::CreateSceneDescriptor()

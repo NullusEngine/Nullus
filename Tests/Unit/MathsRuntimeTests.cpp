@@ -64,6 +64,39 @@ TEST(MathsRuntimeTests, QuaternionRotationAndInterpolationBehaveAsExpected)
     ExpectQuaternionNear(normalized, Quaternion::Identity);
 }
 
+TEST(MathsRuntimeTests, QuaternionCanRoundTripFromNegativeTraceMatrix4)
+{
+    const Quaternion halfTurn(Vector3(180.0f, 0.0f, 0.0f));
+    const Quaternion roundTrip(Quaternion::ToMatrix4(halfTurn));
+
+    EXPECT_TRUE(std::isfinite(roundTrip.x));
+    EXPECT_TRUE(std::isfinite(roundTrip.y));
+    EXPECT_TRUE(std::isfinite(roundTrip.z));
+    EXPECT_TRUE(std::isfinite(roundTrip.w));
+    EXPECT_TRUE(Quaternion::IsNormalized(roundTrip));
+    EXPECT_NEAR(std::fabs(Quaternion::DotProduct(roundTrip, halfTurn)), 1.0f, 0.001f);
+}
+
+TEST(MathsRuntimeTests, QuaternionCanRoundTripRepresentativeMatrix4Rotations)
+{
+    const Vector3 rotations[] {
+        {45.0f, 0.0f, 0.0f},
+        {0.0f, 45.0f, 0.0f},
+        {0.0f, 0.0f, 45.0f},
+        {35.0f, 70.0f, 15.0f},
+        {-30.0f, 80.0f, -120.0f},
+    };
+
+    for (const auto& rotation : rotations)
+    {
+        const Quaternion expected(rotation);
+        const Quaternion roundTrip(Quaternion::ToMatrix4(expected));
+
+        EXPECT_TRUE(Quaternion::IsNormalized(roundTrip));
+        EXPECT_NEAR(std::fabs(Quaternion::DotProduct(roundTrip, expected)), 1.0f, 0.001f);
+    }
+}
+
 TEST(MathsRuntimeTests, Matrix4TranslationScalingAndInverseBehaveAsExpected)
 {
     const Matrix4 translation = Matrix4::Translation(Vector3(1.0f, 2.0f, 3.0f));

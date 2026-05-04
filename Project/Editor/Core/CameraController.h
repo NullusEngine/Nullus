@@ -8,6 +8,7 @@
 #include <Windowing/Window.h>
 #include <Rendering/Entities/Camera.h>
 
+#include "Core/SceneCameraFocus.h"
 #include "Panels/Hierarchy.h"
 #include "Panels/AView.h"
 
@@ -101,6 +102,9 @@ public:
      * Returns true if the right mouse click is being pressed
      */
     bool IsRightMousePressed() const;
+    void SetFocusState(SceneCameraFocusState* p_focusState);
+    void SetViewportHeight(float p_viewportHeight);
+    void SetInputActive(bool p_inputActive);
 
     /**
      * Lock the target actor to the given actor.
@@ -133,6 +137,7 @@ private:
     Windowing::Window& m_window;
     NLS::Editor::Panels::AView& m_view;
     Render::Entities::Camera& m_camera;
+    SceneCameraFocusState* m_focusState = nullptr;
 
     std::queue<std::tuple<Maths::Vector3, Maths::Quaternion>> m_cameraDestinations;
 
@@ -156,6 +161,8 @@ private:
     float m_cameraMoveSpeed = 15.0f;
     float m_focusDistance = 15.0f;
     float m_focusLerpCoefficient = 8.0f;
+    float m_viewportHeight = 1.0f;
+    bool m_inputActive = false;
 
     Engine::GameObject* m_lockedActor = nullptr;
 };

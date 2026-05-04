@@ -15,7 +15,7 @@ namespace
 constexpr float kTopBarHeight = 54.0f;
 constexpr float kToolbarRowOffsetY = 24.0f;
 constexpr float kToolbarApproxWidth = 150.0f;
-constexpr float kSceneToolAreaWidth = 280.0f;
+constexpr float kSceneToolAreaWidth = 300.0f;
 constexpr float kCompactSceneToolAreaWidth = 108.0f;
 constexpr float kSceneToolComboWidth = 110.0f;
 constexpr float kToolbarLeftPadding = 8.0f;
@@ -39,6 +39,16 @@ const char* ToToolLabel(const Editor::Core::EGizmoOperation p_operation)
     default:
         return "Tool";
     }
+}
+
+const char* ToPivotLabel(const Editor::Core::SceneViewGizmoPivot p_pivot)
+{
+    return p_pivot == Editor::Core::SceneViewGizmoPivot::Center ? "Center" : "Pivot";
+}
+
+const char* ToSpaceLabel(const Editor::Core::SceneViewGizmoSpace p_space)
+{
+    return p_space == Editor::Core::SceneViewGizmoSpace::Local ? "Local" : "Global";
 }
 }
 
@@ -100,6 +110,8 @@ void EditorTopBar::DrawSceneToolRow(const float p_rowY, const float p_availableW
 {
     auto& sceneView = EDITOR_PANEL(Panels::SceneView, "Scene View");
     const auto currentOperation = sceneView.GetCurrentGizmoOperation();
+    const auto currentPivot = sceneView.GetCurrentGizmoPivot();
+    const auto currentSpace = sceneView.GetCurrentGizmoSpace();
     const bool compactLayout = p_availableWidth < 700.0f;
     const bool comboLayout = p_availableWidth < 520.0f;
     const bool showReferencePlaceholders = p_availableWidth >= 900.0f;
@@ -152,11 +164,11 @@ void EditorTopBar::DrawSceneToolRow(const float p_rowY, const float p_availableW
         return;
 
     ImGui::SameLine(0.0f, 10.0f);
-    ImGui::BeginDisabled();
-    ImGui::Button("Pivot");
+    if (ImGui::Button(ToPivotLabel(currentPivot)))
+        sceneView.ToggleCurrentGizmoPivot();
     ImGui::SameLine(0.0f, 4.0f);
-    ImGui::Button("Local");
-    ImGui::EndDisabled();
+    if (ImGui::Button(ToSpaceLabel(currentSpace)))
+        sceneView.ToggleCurrentGizmoSpace();
 }
 
 void EditorTopBar::DrawSceneToolButton(

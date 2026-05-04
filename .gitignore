@@ -1,5 +1,14 @@
 # CMake build directory
 [Bb]uild/
+obj/
+out/
+*.o
+*.a
+*.so
+*.tmp
+*.swp
+.idea/
+.env*
 
 # Visual Studio 2015/2017 cache/options directory
 .vs/

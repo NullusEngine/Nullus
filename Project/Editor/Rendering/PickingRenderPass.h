@@ -15,7 +15,6 @@
 #include <Rendering/BaseSceneRenderer.h>
 
 #include "Core/Context.h"
-#include "Core/GizmoBehaviour.h"
 #include "Rendering/DebugModelRenderer.h"
 #include "Rendering/PickingReadbackLifecycle.h"
 
@@ -29,8 +28,7 @@ namespace NLS::Editor::Rendering
 	public:
 		using PickingResult =
 			std::optional<
-            std::variant<Engine::GameObject*,
-			Core::GizmoBehaviour::EDirection>
+            std::variant<Engine::GameObject*>
 			>;
 
 		/**
@@ -72,28 +70,15 @@ namespace NLS::Editor::Rendering
             NLS::Render::Data::PipelineState p_pso,
             Engine::SceneSystem::Scene& p_scene,
             std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands);
-        void CapturePickableGizmo(
-            NLS::Render::Data::PipelineState p_pso,
-            const Maths::Vector3& p_position,
-            const Maths::Quaternion& p_rotation,
-            Editor::Core::EGizmoOperation p_operation,
-            std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands);
         void DrawPickableModels(NLS::Render::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
         void DrawPickableCameras(NLS::Render::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
         void DrawPickableLights(NLS::Render::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
-		void DrawPickableGizmo(
-			NLS::Render::Data::PipelineState p_pso,
-			const Maths::Vector3& p_position,
-			const Maths::Quaternion& p_rotation,
-			Core::EGizmoOperation p_operation
-		);
 
 	private:
         DebugModelRenderer m_debugModelRenderer;
 		NLS::Render::Buffers::Framebuffer m_actorPickingFramebuffer;
 		NLS::Render::Resources::Material m_actorPickingMaterial;
 		NLS::Render::Resources::Material m_lightMaterial;
-		NLS::Render::Resources::Material m_gizmoPickingMaterial;
         PickingReadbackLifecycle<Engine::SceneSystem::Scene> m_readbackLifecycle;
         std::optional<NLS::Render::Context::RenderPassCommandInput> m_preparedThreadedPassInput;
 	};

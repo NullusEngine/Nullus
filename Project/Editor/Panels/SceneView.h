@@ -3,8 +3,9 @@
 #include <chrono>
 #include <cstdint>
 
+#include "Core/SceneCameraFocus.h"
 #include "Panels/AViewControllable.h"
-#include "Core/GizmoBehaviour.h"
+#include "Core/SceneViewImGuizmo.h"
 
 namespace NLS::Editor::Panels
 {
@@ -31,6 +32,12 @@ namespace NLS::Editor::Panels
 
         Editor::Core::EGizmoOperation GetCurrentGizmoOperation() const;
         void SetCurrentGizmoOperation(Editor::Core::EGizmoOperation p_operation);
+        Editor::Core::SceneViewGizmoPivot GetCurrentGizmoPivot() const;
+        void SetCurrentGizmoPivot(Editor::Core::SceneViewGizmoPivot p_pivot);
+        void ToggleCurrentGizmoPivot();
+        Editor::Core::SceneViewGizmoSpace GetCurrentGizmoSpace() const;
+        void SetCurrentGizmoSpace(Editor::Core::SceneViewGizmoSpace p_space);
+        void ToggleCurrentGizmoSpace();
 
 		/**
 		* Prepare the renderer for rendering
@@ -44,19 +51,23 @@ namespace NLS::Editor::Panels
 
 	protected:
         virtual Engine::Rendering::BaseSceneRenderer::SceneDescriptor CreateSceneDescriptor() override;
+        void OnAfterDrawWidgets() override;
+        void DrawViewportOverlay() override;
 
 	private:
-		virtual void AfterRenderFrame() override;
 		void HandleActorPicking();
+        void EnsureCameraFocus();
 
 	private:
-        Engine::SceneSystem::SceneManager& m_sceneManager;
-		Editor::Core::GizmoBehaviour m_gizmoOperations;
+		Engine::SceneSystem::SceneManager& m_sceneManager;
 		Editor::Core::EGizmoOperation m_currentOperation = Editor::Core::EGizmoOperation::TRANSLATE;
+		Editor::Core::SceneViewGizmoPivot m_currentPivot = Editor::Core::SceneViewGizmoPivot::Pivot;
+		Editor::Core::SceneViewGizmoSpace m_currentSpace = Editor::Core::SceneViewGizmoSpace::Global;
 
 		Engine::GameObject* m_highlightedActor = nullptr;
 		uint64_t m_destroyedListener = 0;
-		std::optional<Editor::Core::GizmoBehaviour::EDirection> m_highlightedGizmoDirection;
+        Editor::Core::SceneViewGizmoInteraction m_gizmoInteraction;
+        Editor::Core::SceneCameraFocusState m_cameraFocus;
 		Maths::Vector2 m_lastPickingMousePos { -10000.0f, -10000.0f };
 		std::chrono::steady_clock::time_point m_lastPickingSampleTime {};
 		bool m_hasPickingSample = false;

@@ -9,6 +9,7 @@
 #include "Panels/SceneViewPickingPolicy.h"
 #include "Panels/ViewFrameLifecycle.h"
 #include "Settings/EditorSettings.h"
+#include "Core/EditorInteractionBlocker.h"
 #include "Core/SceneCameraFocus.h"
 #include "ImGuizmo.h"
 #include "Debug/Logger.h"
@@ -154,8 +155,18 @@ void Editor::Panels::SceneView::Update(float p_deltaTime)
 {
     using namespace Windowing::Inputs;
     const Maths::Vector2 mousePosition = EDITOR_CONTEXT(inputManager)->GetMousePosition();
-    const bool sceneViewActive = IsFocused() || IsHovered() || IsMouseWithinView(mousePosition);
+    const bool shortcutsWindowOpen = Editor::Core::DoesShortcutSettingsWindowBlockSceneInput();
+    const bool sceneViewActive = !shortcutsWindowOpen && (IsFocused() || IsHovered() || IsMouseWithinView(mousePosition));
     const bool editingUiControl = NLS_SERVICE(UI::UIManager).IsAnyItemActive();
+    m_cameraController.SetInputBlocked(shortcutsWindowOpen);
+    if (shortcutsWindowOpen)
+    {
+        m_cameraController.ResetMouseInteractionState();
+        m_gizmoInteraction = {};
+        m_pendingClickPickRenderPos.reset();
+        m_highlightedActor = nullptr;
+        m_hasPickingSample = false;
+    }
     EnsureCameraFocus();
     m_cameraController.SetFocusState(&m_cameraFocus);
     m_cameraController.SetInputActive(sceneViewActive && !editingUiControl);
@@ -167,24 +178,6 @@ void Editor::Panels::SceneView::Update(float p_deltaTime)
     }
 
     AViewControllable::Update(p_deltaTime);
-
-    if (sceneViewActive && !editingUiControl && !m_cameraController.IsRightMousePressed())
-    {
-        if (EDITOR_CONTEXT(inputManager)->IsKeyPressed(EKey::KEY_W))
-        {
-            SetCurrentGizmoOperation(Editor::Core::EGizmoOperation::TRANSLATE);
-        }
-
-        if (EDITOR_CONTEXT(inputManager)->IsKeyPressed(EKey::KEY_E))
-        {
-            SetCurrentGizmoOperation(Editor::Core::EGizmoOperation::ROTATE);
-        }
-
-        if (EDITOR_CONTEXT(inputManager)->IsKeyPressed(EKey::KEY_R))
-        {
-            SetCurrentGizmoOperation(Editor::Core::EGizmoOperation::SCALE);
-        }
-    }
 }
 
 Editor::Core::EGizmoOperation Editor::Panels::SceneView::GetCurrentGizmoOperation() const
@@ -275,6 +268,8 @@ void Editor::Panels::SceneView::OnAfterDrawWidgets()
 void Editor::Panels::SceneView::DrawViewportOverlay()
 {
     m_gizmoInteraction = {};
+    if (Editor::Core::DoesShortcutSettingsWindowBlockSceneInput())
+        return;
 
     const auto imageMin = GetCurrentViewportImageMin();
     const auto imageMax = GetCurrentViewportImageMax();
@@ -395,6 +390,8 @@ bool IsResizing()
 bool Editor::Panels::SceneView::ShouldRequestPickingFrame() const
 {
     using namespace Windowing::Inputs;
+    if (Editor::Core::DoesShortcutSettingsWindowBlockSceneInput())
+        return false;
 
     const bool pickingSuppressedByGizmo = Core::ShouldSuppressScenePicking(m_gizmoInteraction);
     if (pickingSuppressedByGizmo)
@@ -490,6 +487,13 @@ bool Editor::Panels::SceneView::ShouldRequestPickingFrame() const
 
 void Editor::Panels::SceneView::HandleActorPicking()
 {
+    if (Editor::Core::DoesShortcutSettingsWindowBlockSceneInput())
+    {
+        m_highlightedActor = nullptr;
+        m_hasPickingSample = false;
+        return;
+    }
+
     auto* debugRenderer = dynamic_cast<Editor::Rendering::DebugSceneRenderer*>(m_renderer.get());
     if (debugRenderer == nullptr)
     {

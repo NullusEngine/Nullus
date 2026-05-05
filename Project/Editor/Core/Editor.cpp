@@ -8,6 +8,7 @@
 #include <Profiling/Profiler.h>
 #include <Profiling/TracyProfiler.h>
 #include <ServiceLocator.h>
+#include <imgui.h>
 
 #include "Core/Editor.h"
 #include "UI/Settings/PanelWindowSettings.h"
@@ -34,6 +35,10 @@
 #include "Panels/ProfilerPanel.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
+#include "Shortcuts/EditorShortcutBinding.h"
+#include "Shortcuts/EditorShortcutContext.h"
+#include <Windowing/Inputs/EMouseButton.h>
+#include <Windowing/Inputs/EMouseButtonState.h>
 using namespace NLS::Core::ResourceManagement;
 using namespace NLS::Editor::Panels;
 using namespace NLS::Render::Resources::Loaders;
@@ -122,10 +127,14 @@ Editor::Core::Editor::Editor(Context& p_context)
     NLS::Base::Profiling::Profiler::SetEnabled(true);
     NLS::Base::Profiling::Profiler::RegisterDestination(g_tracyProfiler);
 
+    NLS::Core::ServiceLocator::Provide<NLS::Editor::Core::Context>(m_context);
     NLS::Core::ServiceLocator::Provide<NLS::Editor::Core::Editor>(*this);
+    NLS::Core::ServiceLocator::Provide<NLS::Editor::Shortcuts::EditorShortcutService>(m_shortcutService);
     Assembly::Instance().Instance().Load<AssemblyMath>().Load<AssemblyCore>().Load<AssemblyPlatform>().Load<AssemblyRender>().Load<Engine::AssemblyEngine>();
 	
     SetupUI();
+    RegisterShortcutContexts();
+    RegisterDefaultShortcuts();
     MigrateLegacyMaterialAssets(m_editorActions, m_context.projectAssetsPath);
 
     const auto startScene = m_context.projectSettings.Get<std::string>("start_scene");
@@ -144,6 +153,7 @@ Editor::Core::Editor::Editor(Context& p_context)
 
 Editor::Core::Editor::~Editor()
 {
+    m_shortcutService.SaveProfile(std::filesystem::path(m_context.projectPath) / "UserSettings" / "shortcuts.json");
     NLS::Base::Profiling::Profiler::UnregisterDestination(
         m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler").GetTimelineSink());
     m_panelsManager.DestroyPanels();
@@ -172,9 +182,10 @@ void Editor::Core::Editor::SetupUI()
     m_panelsManager.CreatePanel<Panels::GameView>("Game View", true, settings);
     m_panelsManager.CreatePanel<Panels::MaterialEditor>("Material Editor", false, settings);
     m_panelsManager.CreatePanel<Panels::ProjectSettings>("Project Settings", false, settings);
+    m_panelsManager.GetPanelAs<Panels::ProjectSettings>("Project Settings").enabled = false;
     m_panelsManager.CreatePanel<Panels::AssetProperties>("Asset Properties", false, settings);
-
     auto& topBar = m_panelsManager.GetPanelAs<Panels::EditorTopBar>("Editor Top Bar");
+    topBar.RegisterProjectSettingsPanel(m_panelsManager.GetPanelAs<Panels::ProjectSettings>("Project Settings"));
     topBar.RegisterWindowPanel("Asset Browser", m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser"));
     topBar.RegisterWindowPanel("Frame Info", m_panelsManager.GetPanelAs<Panels::FrameInfo>("Frame Info"));
     topBar.RegisterWindowPanel("Profiler", profilerPanel);
@@ -185,9 +196,7 @@ void Editor::Core::Editor::SetupUI()
     topBar.RegisterWindowPanel("Scene View", m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View"));
     topBar.RegisterWindowPanel("Game View", m_panelsManager.GetPanelAs<Panels::GameView>("Game View"));
     topBar.RegisterWindowPanel("Material Editor", m_panelsManager.GetPanelAs<Panels::MaterialEditor>("Material Editor"));
-    topBar.RegisterWindowPanel("Project Settings", m_panelsManager.GetPanelAs<Panels::ProjectSettings>("Project Settings"));
     topBar.RegisterWindowPanel("Asset Properties", m_panelsManager.GetPanelAs<Panels::AssetProperties>("Asset Properties"));
-
     // Needs to be called after all panels got created, because some settings in this menu depend on other panels
     topBar.InitializeSettingsMenu();
     m_canvas.MakeDockspace(true);
@@ -229,19 +238,291 @@ void Editor::Core::Editor::Update(float p_deltaTime)
 
 void Editor::Core::Editor::HandleGlobalShortcuts()
 {
-    if (m_context.inputManager->IsKeyPressed(Windowing::Inputs::EKey::KEY_F11))
-    {
-        if (m_context.inputManager->GetKeyState(Windowing::Inputs::EKey::KEY_LEFT_CONTROL) == Windowing::Inputs::EKeyState::KEY_DOWN)
-            Render::Context::DriverUIAccess::OpenLatestRenderDocCapture(*m_context.driver);
-        else if (Render::Context::DriverUIAccess::IsRenderDocAvailable(*m_context.driver))
-            Render::Context::DriverUIAccess::QueueRenderDocCapture(*m_context.driver, "Editor");
-    }
+    m_shortcutService.ExecutePressedShortcut(
+        [this](Windowing::Inputs::EKey p_key)
+        {
+            return m_context.inputManager->IsKeyPressed(p_key);
+        },
+        [this](Windowing::Inputs::EKey p_key)
+        {
+            return m_context.inputManager->GetKeyState(p_key);
+        });
+}
 
-    // If the [Del] key is pressed while an actor is selected and the Scene View or Hierarchy is focused
-    if (m_context.inputManager->IsKeyPressed(Windowing::Inputs::EKey::KEY_DELETE) && EDITOR_EXEC(IsAnyActorSelected()) && (EDITOR_PANEL(SceneView, "Scene View").IsFocused() || EDITOR_PANEL(Hierarchy, "Hierarchy").IsFocused()))
+void Editor::Core::Editor::RegisterShortcutContexts()
+{
+    using namespace NLS::Editor::Shortcuts;
+    using namespace Windowing::Inputs;
+
+    const auto isSceneViewFocused = [this]
     {
-        EDITOR_EXEC(DestroyActor(*EDITOR_EXEC(GetSelectedActor())));
-    }
+        return m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View").IsFocused();
+    };
+
+    m_shortcutService.RegisterContext({
+        ShortcutContexts::SceneView,
+        "Scene View",
+        20,
+        "focused-panel",
+        isSceneViewFocused });
+
+    m_shortcutService.RegisterContext({
+        ShortcutContexts::SceneViewFlyMode,
+        "Scene View/Fly Mode",
+        40,
+        "scene-navigation-mode",
+        [this, isSceneViewFocused]
+        {
+            return isSceneViewFocused() &&
+                m_context.inputManager->GetMouseButtonState(EMouseButton::MOUSE_BUTTON_RIGHT) == EMouseButtonState::MOUSE_DOWN;
+        }});
+
+    m_shortcutService.RegisterContext({
+        ShortcutContexts::Hierarchy,
+        "Hierarchy",
+        20,
+        "focused-panel",
+        [this]
+        {
+            return m_panelsManager.GetPanelAs<Panels::Hierarchy>("Hierarchy").IsFocused();
+        }});
+
+    m_shortcutService.RegisterContext({
+        ShortcutContexts::TextInput,
+        "Text Input",
+        100,
+        "",
+        []
+        {
+            return ImGui::GetIO().WantTextInput;
+        }});
+}
+
+void Editor::Core::Editor::RegisterDefaultShortcuts()
+{
+    using namespace NLS::Editor::Shortcuts;
+    using Windowing::Inputs::EKey;
+
+    const auto registerCommand = [this](ShortcutCommand p_command)
+    {
+        m_shortcutService.RegisterCommand(std::move(p_command));
+    };
+
+    auto makeCommand = [](std::string p_id,
+                          std::string p_displayName,
+                          std::string p_category,
+                          ShortcutContextId p_context,
+                          ShortcutBinding p_binding,
+                          std::function<void()> p_execute)
+    {
+        ShortcutCommand command;
+        command.id = std::move(p_id);
+        command.displayName = std::move(p_displayName);
+        command.category = std::move(p_category);
+        command.context = std::move(p_context);
+        command.defaultBinding = p_binding;
+        command.execute = std::move(p_execute);
+        return command;
+    };
+
+    registerCommand(makeCommand(
+        "file.new-scene",
+        "New Scene",
+        "File",
+        ShortcutContexts::Global,
+        ShortcutBinding::FromKey(EKey::KEY_N, EShortcutModifier::Ctrl),
+        [this] { m_editorActions.LoadEmptyScene(); }));
+
+    registerCommand(makeCommand(
+        "file.save-scene",
+        "Save Scene",
+        "File",
+        ShortcutContexts::Global,
+        ShortcutBinding::FromKey(EKey::KEY_S, EShortcutModifier::Ctrl),
+        [this] { m_editorActions.SaveSceneChanges(); }));
+
+    registerCommand(makeCommand(
+        "file.save-scene-as",
+        "Save Scene As",
+        "File",
+        ShortcutContexts::Global,
+        ShortcutBinding::FromKey(EKey::KEY_S, EShortcutModifier::Ctrl | EShortcutModifier::Shift),
+        [this] { m_editorActions.SaveAs(); }));
+
+    registerCommand(makeCommand(
+        "editor.play",
+        "Play",
+        "Editor",
+        ShortcutContexts::Global,
+        ShortcutBinding::FromKey(EKey::KEY_F5),
+        [this] { m_editorActions.StartPlaying(); }));
+
+    auto stopCommand = makeCommand(
+        "editor.stop",
+        "Stop",
+        "Editor",
+        ShortcutContexts::Global,
+        ShortcutBinding::FromKey(EKey::KEY_ESCAPE),
+        [this] { m_editorActions.StopPlaying(); });
+    stopCommand.availability = [this]
+    {
+        return m_editorActions.GetCurrentEditorMode() != EditorActions::EEditorMode::EDIT;
+    };
+    registerCommand(std::move(stopCommand));
+
+    auto captureCommand = makeCommand(
+        "debug.renderdoc.capture-next-frame",
+        "Capture Next Frame",
+        "Debugging",
+        ShortcutContexts::Global,
+        ShortcutBinding::FromKey(EKey::KEY_F11),
+        [this]
+        {
+            if (Render::Context::DriverUIAccess::IsRenderDocAvailable(*m_context.driver))
+                Render::Context::DriverUIAccess::QueueRenderDocCapture(*m_context.driver, "Editor");
+        });
+    captureCommand.allowDuringTextInput = true;
+    registerCommand(std::move(captureCommand));
+
+    auto openCaptureCommand = makeCommand(
+        "debug.renderdoc.open-latest-capture",
+        "Open Latest RenderDoc Capture",
+        "Debugging",
+        ShortcutContexts::Global,
+        ShortcutBinding::FromKey(EKey::KEY_F11, EShortcutModifier::Ctrl),
+        [this]
+        {
+            Render::Context::DriverUIAccess::OpenLatestRenderDocCapture(*m_context.driver);
+        });
+    openCaptureCommand.allowDuringTextInput = true;
+    registerCommand(std::move(openCaptureCommand));
+
+    const auto registerSceneToolCommand = [&](std::string p_id,
+                                              std::string p_displayName,
+                                              const EKey p_key,
+                                              std::function<void(Panels::SceneView&)> p_execute)
+    {
+        registerCommand(makeCommand(
+            std::move(p_id),
+            std::move(p_displayName),
+            "Scene View",
+            ShortcutContexts::SceneView,
+            ShortcutBinding::FromKey(p_key),
+            [this, execute = std::move(p_execute)]
+            {
+                execute(m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View"));
+            }));
+    };
+
+    registerCommand(makeCommand(
+        "scene-view.fly-forward",
+        "Fly Mode Forward",
+        "Scene View/Fly Mode",
+        ShortcutContexts::SceneViewFlyMode,
+        ShortcutBinding::FromKey(EKey::KEY_W),
+        [] {}));
+    registerCommand(makeCommand(
+        "scene-view.fly-backward",
+        "Fly Mode Backward",
+        "Scene View/Fly Mode",
+        ShortcutContexts::SceneViewFlyMode,
+        ShortcutBinding::FromKey(EKey::KEY_S),
+        [] {}));
+    registerCommand(makeCommand(
+        "scene-view.fly-left",
+        "Fly Mode Left",
+        "Scene View/Fly Mode",
+        ShortcutContexts::SceneViewFlyMode,
+        ShortcutBinding::FromKey(EKey::KEY_A),
+        [] {}));
+    registerCommand(makeCommand(
+        "scene-view.fly-right",
+        "Fly Mode Right",
+        "Scene View/Fly Mode",
+        ShortcutContexts::SceneViewFlyMode,
+        ShortcutBinding::FromKey(EKey::KEY_D),
+        [] {}));
+    registerCommand(makeCommand(
+        "scene-view.fly-up",
+        "Fly Mode Up",
+        "Scene View/Fly Mode",
+        ShortcutContexts::SceneViewFlyMode,
+        ShortcutBinding::FromKey(EKey::KEY_E),
+        [] {}));
+    registerCommand(makeCommand(
+        "scene-view.fly-down",
+        "Fly Mode Down",
+        "Scene View/Fly Mode",
+        ShortcutContexts::SceneViewFlyMode,
+        ShortcutBinding::FromKey(EKey::KEY_Q),
+        [] {}));
+
+    registerSceneToolCommand(
+        "scene-view.view-tool",
+        "View",
+        EKey::KEY_Q,
+        [](Panels::SceneView&) {});
+    registerSceneToolCommand(
+        "scene-view.move-tool",
+        "Move",
+        EKey::KEY_W,
+        [](Panels::SceneView& p_sceneView) { p_sceneView.SetCurrentGizmoOperation(EGizmoOperation::TRANSLATE); });
+    registerSceneToolCommand(
+        "scene-view.rotate-tool",
+        "Rotate",
+        EKey::KEY_E,
+        [](Panels::SceneView& p_sceneView) { p_sceneView.SetCurrentGizmoOperation(EGizmoOperation::ROTATE); });
+    registerSceneToolCommand(
+        "scene-view.scale-tool",
+        "Scale",
+        EKey::KEY_R,
+        [](Panels::SceneView& p_sceneView) { p_sceneView.SetCurrentGizmoOperation(EGizmoOperation::SCALE); });
+    registerSceneToolCommand(
+        "scene-view.rect-tool",
+        "Rect",
+        EKey::KEY_T,
+        [](Panels::SceneView& p_sceneView) { p_sceneView.SetCurrentGizmoOperation(EGizmoOperation::TRANSLATE); });
+    registerSceneToolCommand(
+        "scene-view.transform-tool",
+        "Transform",
+        EKey::KEY_Y,
+        [](Panels::SceneView& p_sceneView) { p_sceneView.SetCurrentGizmoOperation(EGizmoOperation::TRANSLATE); });
+    registerSceneToolCommand(
+        "scene-view.toggle-pivot-position",
+        "Toggle Pivot Position",
+        EKey::KEY_Z,
+        [](Panels::SceneView& p_sceneView) { p_sceneView.ToggleCurrentGizmoPivot(); });
+    registerSceneToolCommand(
+        "scene-view.toggle-pivot-orientation",
+        "Toggle Pivot Orientation",
+        EKey::KEY_X,
+        [](Panels::SceneView& p_sceneView) { p_sceneView.ToggleCurrentGizmoSpace(); });
+
+    registerCommand(makeCommand(
+        "edit.delete-selected-actor",
+        "Delete Selected Actor",
+        "Edit",
+        ShortcutContexts::SceneView,
+        ShortcutBinding::FromKey(EKey::KEY_DELETE),
+        [this]
+        {
+            if (m_editorActions.IsAnyActorSelected())
+                m_editorActions.DestroyActor(*m_editorActions.GetSelectedActor());
+        }));
+
+    registerCommand(makeCommand(
+        "edit.delete-selected-actor-hierarchy",
+        "Delete Selected Actor",
+        "Edit",
+        ShortcutContexts::Hierarchy,
+        ShortcutBinding::FromKey(EKey::KEY_DELETE),
+        [this]
+        {
+            if (m_editorActions.IsAnyActorSelected())
+                m_editorActions.DestroyActor(*m_editorActions.GetSelectedActor());
+        }));
+
+    m_shortcutService.LoadProfile(std::filesystem::path(m_context.projectPath) / "UserSettings" / "shortcuts.json");
 }
 
 void Editor::Core::Editor::ApplyStartupValidationDirectives()
@@ -331,15 +612,11 @@ void Editor::Core::Editor::UpdatePlayMode(float p_deltaTime)
 
     if (m_editorActions.GetCurrentEditorMode() == EditorActions::EEditorMode::FRAME_BY_FRAME)
         m_editorActions.PauseGame();
-
-    if (m_context.inputManager->IsKeyPressed(Windowing::Inputs::EKey::KEY_ESCAPE))
-        m_editorActions.StopPlaying();
 }
 
 void Editor::Core::Editor::UpdateEditMode(float p_deltaTime)
 {
-    if (m_context.inputManager->IsKeyPressed(Windowing::Inputs::EKey::KEY_F5))
-        m_editorActions.StartPlaying();
+    (void)p_deltaTime;
 }
 
 void Editor::Core::Editor::UpdateEditorPanels(float p_deltaTime)

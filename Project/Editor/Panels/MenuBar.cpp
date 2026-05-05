@@ -9,10 +9,12 @@
 #include "Panels/MenuBar.h"
 #include "Panels/SceneView.h"
 #include "Panels/AssetView.h"
+#include "Panels/ProjectSettings.h"
 #include "Core/EditorActions.h"
 #include "Settings/EditorSettings.h"
 #include "Utils/ActorCreationMenu.h"
 #include "Rendering/Context/DriverAccess.h"
+#include "Shortcuts/EditorShortcutService.h"
 #include "UI/Widgets/Texts/Text.h"
 using namespace NLS;
 using namespace NLS::UI;
@@ -21,11 +23,11 @@ using namespace NLS::Engine::Components;
 Editor::Panels::MenuBar::MenuBar()
 {
 	CreateFileMenu();
+    CreateEditMenu();
 	CreateBuildMenu();
 	CreateWindowMenu();
 	CreateActorsMenu();
 	CreateResourcesMenu();
-	CreateSettingsMenu();
 	CreateLayoutMenu();
 	CreateHelpMenu();
 }
@@ -33,31 +35,27 @@ Editor::Panels::MenuBar::MenuBar()
 void Editor::Panels::MenuBar::HandleShortcuts(float p_deltaTime)
 {
     (void)p_deltaTime;
-	auto& inputManager = *EDITOR_CONTEXT(inputManager);
-
-	if (inputManager.GetKeyState(Windowing::Inputs::EKey::KEY_LEFT_CONTROL) == Windowing::Inputs::EKeyState::KEY_DOWN)
-	{
-		if (inputManager.IsKeyPressed(Windowing::Inputs::EKey::KEY_N))
-			EDITOR_EXEC(LoadEmptyScene());
-
-		if (inputManager.IsKeyPressed(Windowing::Inputs::EKey::KEY_S))
-		{
-			if (inputManager.GetKeyState(Windowing::Inputs::EKey::KEY_LEFT_SHIFT) == Windowing::Inputs::EKeyState::KEY_UP)
-				EDITOR_EXEC(SaveSceneChanges());
-			else
-				EDITOR_EXEC(SaveAs());
-		}
-	}
 }
 
 void Editor::Panels::MenuBar::DrawMenuEntries()
 {
+	UpdateShortcutLabels();
     DrawWidgets();
+}
+
+void Editor::Panels::MenuBar::DrawDialogs()
+{
+    if (m_projectSettingsPanel)
+        m_projectSettingsPanel->DrawModal();
+    m_shortcutSettingsPanel.Draw();
 }
 
 void Editor::Panels::MenuBar::InitializeSettingsMenu()
 {
-	m_settingsMenu->CreateWidget<Widgets::MenuItem>("Spawn actors at origin", "", true, true).ValueChangedEvent += EDITOR_BIND(SetActorSpawnAtOrigin, std::placeholders::_1);
+    if (!m_settingsMenu)
+        return;
+
+    m_settingsMenu->CreateWidget<Widgets::MenuItem>("Spawn actors at origin", "", true, true).ValueChangedEvent += EDITOR_BIND(SetActorSpawnAtOrigin, std::placeholders::_1);
 	m_settingsMenu->CreateWidget<Widgets::MenuItem>("Vertical Synchronization", "", true, true).ValueChangedEvent += [this](bool p_value) { EDITOR_CONTEXT(device)->SetVsync(p_value); };
 	auto& cameraSpeedMenu = m_settingsMenu->CreateWidget<Widgets::MenuList>("Camera Speed");
 	cameraSpeedMenu.CreateWidget<Widgets::SliderInt>(1, 50, 15, Widgets::ESliderOrientation::HORIZONTAL, "Scene View").ValueChangedEvent += EDITOR_BIND(SetSceneViewCameraSpeed, std::placeholders::_1);
@@ -118,30 +116,33 @@ void Editor::Panels::MenuBar::InitializeSettingsMenu()
 		assetViewGridPicker.color = assetView.GetGridColor();
 	};
 
+	auto* debugSettings = &Settings::EditorSettings::GetDebugDrawSettingsObject();
+	auto* sceneToolSettings = &Settings::EditorSettings::GetSceneToolSettingsObject();
+
 	auto& sceneViewBillboardScaleMenu = m_settingsMenu->CreateWidget<Widgets::MenuList>("3D Icons Scales");
-	auto& lightBillboardScaleSlider = sceneViewBillboardScaleMenu.CreateWidget<Widgets::SliderInt>(0, 100, static_cast<int>(Settings::EditorSettings::LightBillboardScale * 100.0f), Widgets::ESliderOrientation::HORIZONTAL, "Lights");
-	lightBillboardScaleSlider.ValueChangedEvent += [this](int p_value) { Settings::EditorSettings::LightBillboardScale = p_value / 100.0f; };
+	auto& lightBillboardScaleSlider = sceneViewBillboardScaleMenu.CreateWidget<Widgets::SliderInt>(0, 100, static_cast<int>(debugSettings->lightBillboardScale * 100.0f), Widgets::ESliderOrientation::HORIZONTAL, "Lights");
+	lightBillboardScaleSlider.ValueChangedEvent += [debugSettings](int p_value) { debugSettings->lightBillboardScale = p_value / 100.0f; };
 	lightBillboardScaleSlider.format = "%d %%";
 
 	auto& snappingMenu = m_settingsMenu->CreateWidget<Widgets::MenuList>("Snapping");
-	snappingMenu.CreateWidget<Widgets::DragFloat>(0.001f, 999999.0f, Settings::EditorSettings::TranslationSnapUnit, 0.05f, "Translation Unit").ValueChangedEvent += [this](float p_value) { Settings::EditorSettings::TranslationSnapUnit = p_value; };
-	snappingMenu.CreateWidget<Widgets::DragFloat>(0.001f, 999999.0f, Settings::EditorSettings::RotationSnapUnit, 1.0f, "Rotation Unit").ValueChangedEvent += [this](float p_value) { Settings::EditorSettings::RotationSnapUnit = p_value; };
-	snappingMenu.CreateWidget<Widgets::DragFloat>(0.001f, 999999.0f, Settings::EditorSettings::ScalingSnapUnit, 0.05f, "Scaling Unit").ValueChangedEvent += [this](float p_value) { Settings::EditorSettings::ScalingSnapUnit = p_value; };
+	snappingMenu.CreateWidget<Widgets::DragFloat>(0.001f, 999999.0f, sceneToolSettings->translationSnapUnit, 0.05f, "Translation Unit").ValueChangedEvent += [sceneToolSettings](float p_value) { sceneToolSettings->translationSnapUnit = p_value; };
+	snappingMenu.CreateWidget<Widgets::DragFloat>(0.001f, 999999.0f, sceneToolSettings->rotationSnapUnit, 1.0f, "Rotation Unit").ValueChangedEvent += [sceneToolSettings](float p_value) { sceneToolSettings->rotationSnapUnit = p_value; };
+	snappingMenu.CreateWidget<Widgets::DragFloat>(0.001f, 999999.0f, sceneToolSettings->scalingSnapUnit, 0.05f, "Scaling Unit").ValueChangedEvent += [sceneToolSettings](float p_value) { sceneToolSettings->scalingSnapUnit = p_value; };
 
 	auto& debuggingMenu = m_settingsMenu->CreateWidget<Widgets::MenuList>("Debugging");
 	auto& debugDrawMenu = debuggingMenu.CreateWidget<Widgets::MenuList>("Debug Draw");
-	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Enabled", "", true, Settings::EditorSettings::DebugDrawEnabled).ValueChangedEvent += [this](bool p_value) { Settings::EditorSettings::DebugDrawEnabled = p_value; };
-	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Grid", "", true, Settings::EditorSettings::DebugDrawGrid).ValueChangedEvent += [this](bool p_value) { Settings::EditorSettings::DebugDrawGrid = p_value; };
-	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Bounds", "", true, Settings::EditorSettings::DebugDrawBounds).ValueChangedEvent += [this](bool p_value)
+	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Enabled", "", true, debugSettings->debugDrawEnabled).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawEnabled = p_value; };
+	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Grid", "", true, debugSettings->debugDrawGrid).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawGrid = p_value; };
+	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Bounds", "", true, debugSettings->debugDrawBounds).ValueChangedEvent += [debugSettings](bool p_value)
 	{
-		Settings::EditorSettings::DebugDrawBounds = p_value;
-		Settings::EditorSettings::ShowGeometryBounds = p_value;
+		debugSettings->debugDrawBounds = p_value;
+		debugSettings->showGeometryBounds = p_value;
 	};
-	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Cameras", "", true, Settings::EditorSettings::DebugDrawCamera).ValueChangedEvent += [this](bool p_value) { Settings::EditorSettings::DebugDrawCamera = p_value; };
-	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Lights", "", true, Settings::EditorSettings::DebugDrawLighting).ValueChangedEvent += [this](bool p_value)
+	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Cameras", "", true, debugSettings->debugDrawCamera).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawCamera = p_value; };
+	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Lights", "", true, debugSettings->debugDrawLighting).ValueChangedEvent += [debugSettings](bool p_value)
 	{
-		Settings::EditorSettings::DebugDrawLighting = p_value;
-		Settings::EditorSettings::ShowLightBounds = p_value;
+		debugSettings->debugDrawLighting = p_value;
+		debugSettings->showLightBounds = p_value;
 	};
     debuggingMenu.CreateWidget<Widgets::MenuItem>("Wireframe Mode", "", true, false).ValueChangedEvent += [this](bool p_value)
     {
@@ -163,11 +164,13 @@ void Editor::Panels::MenuBar::InitializeSettingsMenu()
 		Render::Context::DriverUIAccess::SetRenderDocEnabled(*EDITOR_CONTEXT(driver), enabled);
 		renderDocStatus.content = enabled ? "Status: Enabled" : "Status: Available (disabled)";
 	};
-	renderDocMenu.CreateWidget<Widgets::MenuItem>("Capture Next Frame", "F11").ClickedEvent += []
+	m_renderDocCaptureItem = &renderDocMenu.CreateWidget<Widgets::MenuItem>("Capture Next Frame", "F11");
+	m_renderDocCaptureItem->ClickedEvent += []
 	{
 		Render::Context::DriverUIAccess::QueueRenderDocCapture(*EDITOR_CONTEXT(driver), "Editor");
 	};
-	renderDocMenu.CreateWidget<Widgets::MenuItem>("Open Latest Capture", "CTRL + F11").ClickedEvent += []
+	m_renderDocOpenLatestItem = &renderDocMenu.CreateWidget<Widgets::MenuItem>("Open Latest Capture", "CTRL + F11");
+	m_renderDocOpenLatestItem->ClickedEvent += []
 	{
 		Render::Context::DriverUIAccess::OpenLatestRenderDocCapture(*EDITOR_CONTEXT(driver));
 	};
@@ -186,17 +189,33 @@ void Editor::Panels::MenuBar::InitializeSettingsMenu()
 		Render::Context::DriverUIAccess::SetRenderDocAutoOpenEnabled(*EDITOR_CONTEXT(driver), enabled);
 	};
 	auto& subMenu = debuggingMenu.CreateWidget<Widgets::MenuList>("Frustum culling visualizer...");
-	subMenu.CreateWidget<Widgets::MenuItem>("For geometry", "", true, Settings::EditorSettings::ShowGeometryFrustumCullingInSceneView).ValueChangedEvent += [this](bool p_value) { Settings::EditorSettings::ShowGeometryFrustumCullingInSceneView = p_value; };
-	subMenu.CreateWidget<Widgets::MenuItem>("For lights", "", true, Settings::EditorSettings::ShowLightFrustumCullingInSceneView).ValueChangedEvent += [this](bool p_value) { Settings::EditorSettings::ShowLightFrustumCullingInSceneView = p_value; };
+	subMenu.CreateWidget<Widgets::MenuItem>("For geometry", "", true, debugSettings->showGeometryFrustumCullingInSceneView).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->showGeometryFrustumCullingInSceneView = p_value; };
+	subMenu.CreateWidget<Widgets::MenuItem>("For lights", "", true, debugSettings->showLightFrustumCullingInSceneView).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->showLightFrustumCullingInSceneView = p_value; };
 }
 
 void Editor::Panels::MenuBar::CreateFileMenu()
 {
 	auto& fileMenu = CreateWidget<Widgets::MenuList>("File");
-	fileMenu.CreateWidget<Widgets::MenuItem>("New Scene", "CTRL + N").ClickedEvent					+= EDITOR_BIND(LoadEmptyScene);
-	fileMenu.CreateWidget<Widgets::MenuItem>("Save Scene", "CTRL + S").ClickedEvent					+= EDITOR_BIND(SaveSceneChanges);
-	fileMenu.CreateWidget<Widgets::MenuItem>("Save Scene As...", "CTRL + SHIFT + S").ClickedEvent	+= EDITOR_BIND(SaveAs);
+	m_newSceneItem = &fileMenu.CreateWidget<Widgets::MenuItem>("New Scene", "CTRL + N");
+	m_newSceneItem->ClickedEvent += EDITOR_BIND(LoadEmptyScene);
+	m_saveSceneItem = &fileMenu.CreateWidget<Widgets::MenuItem>("Save Scene", "CTRL + S");
+	m_saveSceneItem->ClickedEvent += EDITOR_BIND(SaveSceneChanges);
+	m_saveSceneAsItem = &fileMenu.CreateWidget<Widgets::MenuItem>("Save Scene As...", "CTRL + SHIFT + S");
+	m_saveSceneAsItem->ClickedEvent += EDITOR_BIND(SaveAs);
 	fileMenu.CreateWidget<Widgets::MenuItem>("Exit", "ALT + F4").ClickedEvent						+= [] { EDITOR_CONTEXT(window)->SetShouldClose(true); };
+}
+
+void Editor::Panels::MenuBar::CreateEditMenu()
+{
+    m_editMenu = &CreateWidget<Widgets::MenuList>("Edit");
+    m_editMenu->CreateWidget<Widgets::MenuItem>("Settings...").ClickedEvent += [this]
+    {
+        OpenProjectSettings();
+    };
+    m_editMenu->CreateWidget<Widgets::MenuItem>("Shortcuts...").ClickedEvent += [this]
+    {
+        m_shortcutSettingsPanel.Open();
+    };
 }
 
 void Editor::Panels::MenuBar::CreateBuildMenu()
@@ -229,11 +248,6 @@ void Editor::Panels::MenuBar::CreateResourcesMenu()
 	resourcesMenu.CreateWidget<Widgets::MenuItem>("Save materials").ClickedEvent += EDITOR_BIND(SaveMaterials);
 }
 
-void Editor::Panels::MenuBar::CreateSettingsMenu()
-{
-	m_settingsMenu = &CreateWidget<Widgets::MenuList>("Settings");
-}
-
 void Editor::Panels::MenuBar::CreateLayoutMenu() 
 {
 	auto& layoutMenu = CreateWidget<Widgets::MenuList>("Layout");
@@ -259,14 +273,43 @@ void Editor::Panels::MenuBar::RegisterPanel(const std::string& p_name, UI::Panel
 	m_panels.emplace(p_name, std::make_pair(std::ref(p_panel), std::ref(menuItem)));
 }
 
+void Editor::Panels::MenuBar::RegisterProjectSettingsPanel(ProjectSettings& p_panel)
+{
+    m_projectSettingsPanel = &p_panel;
+}
+
 void Editor::Panels::MenuBar::UpdateToggleableItems()
 {
 	for (auto&[name, panel] : m_panels)
 		panel.second.get().checked = panel.first.get().IsOpened();
 }
 
+void Editor::Panels::MenuBar::UpdateShortcutLabels()
+{
+	if (!NLS::Core::ServiceLocator::Contains<Shortcuts::EditorShortcutService>())
+		return;
+
+	auto& shortcuts = NLS::Core::ServiceLocator::Get<Shortcuts::EditorShortcutService>();
+	if (m_newSceneItem)
+		m_newSceneItem->shortcut = shortcuts.GetBindingDisplayText("file.new-scene");
+	if (m_saveSceneItem)
+		m_saveSceneItem->shortcut = shortcuts.GetBindingDisplayText("file.save-scene");
+	if (m_saveSceneAsItem)
+		m_saveSceneAsItem->shortcut = shortcuts.GetBindingDisplayText("file.save-scene-as");
+	if (m_renderDocCaptureItem)
+		m_renderDocCaptureItem->shortcut = shortcuts.GetBindingDisplayText("debug.renderdoc.capture-next-frame");
+	if (m_renderDocOpenLatestItem)
+		m_renderDocOpenLatestItem->shortcut = shortcuts.GetBindingDisplayText("debug.renderdoc.open-latest-capture");
+}
+
 void Editor::Panels::MenuBar::OpenEveryWindows(bool p_state)
 {
 	for (auto&[name, panel] : m_panels)
 		panel.first.get().SetOpened(p_state);
+}
+
+void Editor::Panels::MenuBar::OpenProjectSettings()
+{
+    if (m_projectSettingsPanel)
+        m_projectSettingsPanel->Open();
 }

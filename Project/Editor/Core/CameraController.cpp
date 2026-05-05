@@ -5,6 +5,7 @@
 
 #include "Core/CameraController.h"
 #include "Core/SceneCameraFocus.h"
+#include "Shortcuts/EditorShortcutService.h"
 
 #include <algorithm>
 
@@ -24,6 +25,54 @@ Editor::Core::CameraController::CameraController(
 	m_camera(p_camera)
 {
 	m_camera.SetFov(60.0f);
+}
+
+namespace
+{
+bool IsKeyDown(
+    Windowing::Inputs::InputManager& p_inputManager,
+    const Windowing::Inputs::EKey p_key)
+{
+    return p_inputManager.GetKeyState(p_key) == Windowing::Inputs::EKeyState::KEY_DOWN;
+}
+
+bool AreRequiredModifiersDown(
+    Windowing::Inputs::InputManager& p_inputManager,
+    const Editor::Shortcuts::ShortcutModifiers p_modifiers)
+{
+    using namespace Editor::Shortcuts;
+    using Windowing::Inputs::EKey;
+
+    return (!HasModifier(p_modifiers, EShortcutModifier::Ctrl) ||
+            IsKeyDown(p_inputManager, EKey::KEY_LEFT_CONTROL) ||
+            IsKeyDown(p_inputManager, EKey::KEY_RIGHT_CONTROL)) &&
+        (!HasModifier(p_modifiers, EShortcutModifier::Shift) ||
+            IsKeyDown(p_inputManager, EKey::KEY_LEFT_SHIFT) ||
+            IsKeyDown(p_inputManager, EKey::KEY_RIGHT_SHIFT)) &&
+        (!HasModifier(p_modifiers, EShortcutModifier::Alt) ||
+            IsKeyDown(p_inputManager, EKey::KEY_LEFT_ALT) ||
+            IsKeyDown(p_inputManager, EKey::KEY_RIGHT_ALT)) &&
+        (!HasModifier(p_modifiers, EShortcutModifier::Super) ||
+            IsKeyDown(p_inputManager, EKey::KEY_LEFT_SUPER) ||
+            IsKeyDown(p_inputManager, EKey::KEY_RIGHT_SUPER));
+}
+
+bool IsFlyModeCommandDown(
+    Windowing::Inputs::InputManager& p_inputManager,
+    const std::string& p_commandId,
+    const Windowing::Inputs::EKey p_fallbackKey)
+{
+    if (NLS::Core::ServiceLocator::Contains<Editor::Shortcuts::EditorShortcutService>())
+    {
+        const auto& shortcuts = NLS::Core::ServiceLocator::Get<Editor::Shortcuts::EditorShortcutService>();
+        const auto binding = shortcuts.GetBinding(p_commandId);
+        return binding.IsValid() &&
+            IsKeyDown(p_inputManager, binding.primaryKey) &&
+            AreRequiredModifiersDown(p_inputManager, binding.modifiers);
+    }
+
+    return IsKeyDown(p_inputManager, p_fallbackKey);
+}
 }
 
 float GetActorFocusDist(Engine::GameObject& p_actor)
@@ -53,6 +102,12 @@ float GetActorFocusDist(Engine::GameObject& p_actor)
 
 void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
 {
+    if (m_inputBlocked)
+    {
+        ResetMouseInteractionState();
+        return;
+    }
+
     if (!m_window.IsFocused())
     {
         ResetMouseInteractionState();
@@ -296,6 +351,18 @@ void Editor::Core::CameraController::SetInputActive(const bool p_inputActive)
     m_inputActive = p_inputActive;
 }
 
+void Editor::Core::CameraController::SetInputBlocked(const bool p_inputBlocked)
+{
+    m_inputBlocked = p_inputBlocked;
+    if (m_inputBlocked)
+        ResetMouseInteractionState();
+}
+
+bool Editor::Core::CameraController::IsInputBlocked() const
+{
+    return m_inputBlocked;
+}
+
 void Editor::Core::CameraController::LockTargetActor(Engine::GameObject& p_actor)
 {
 	m_lockedActor = &p_actor;
@@ -450,20 +517,22 @@ void Editor::Core::CameraController::HandleCameraFPSKeyboard(float p_deltaTime)
 
 	if (m_rightMousePressed)
 	{
-		bool run = m_inputManager.GetKeyState(Windowing::Inputs::EKey::KEY_LEFT_SHIFT) == Windowing::Inputs::EKeyState::KEY_DOWN;
+        using Windowing::Inputs::EKey;
+
+		bool run = m_inputManager.GetKeyState(EKey::KEY_LEFT_SHIFT) == Windowing::Inputs::EKeyState::KEY_DOWN;
 		float velocity = m_cameraMoveSpeed * p_deltaTime * (run ? 2.0f : 1.0f);
 
-		if (m_inputManager.GetKeyState(Windowing::Inputs::EKey::KEY_W) == Windowing::Inputs::EKeyState::KEY_DOWN)
+		if (IsFlyModeCommandDown(m_inputManager, "scene-view.fly-forward", EKey::KEY_W))
 			m_targetSpeed += m_camera.transform->GetWorldForward() * velocity;
-		if (m_inputManager.GetKeyState(Windowing::Inputs::EKey::KEY_S) == Windowing::Inputs::EKeyState::KEY_DOWN)
+		if (IsFlyModeCommandDown(m_inputManager, "scene-view.fly-backward", EKey::KEY_S))
 			m_targetSpeed += m_camera.transform->GetWorldForward() * -velocity;
-		if (m_inputManager.GetKeyState(Windowing::Inputs::EKey::KEY_A) == Windowing::Inputs::EKeyState::KEY_DOWN)
+		if (IsFlyModeCommandDown(m_inputManager, "scene-view.fly-left", EKey::KEY_A))
 			m_targetSpeed += m_camera.transform->GetWorldRight() * velocity;
-		if (m_inputManager.GetKeyState(Windowing::Inputs::EKey::KEY_D) == Windowing::Inputs::EKeyState::KEY_DOWN)
+		if (IsFlyModeCommandDown(m_inputManager, "scene-view.fly-right", EKey::KEY_D))
 			m_targetSpeed += m_camera.transform->GetWorldRight() * -velocity;
-		if (m_inputManager.GetKeyState(Windowing::Inputs::EKey::KEY_E) == Windowing::Inputs::EKeyState::KEY_DOWN)
+		if (IsFlyModeCommandDown(m_inputManager, "scene-view.fly-up", EKey::KEY_E))
 			m_targetSpeed += {0.0f, velocity, 0.0f};
-		if (m_inputManager.GetKeyState(Windowing::Inputs::EKey::KEY_Q) == Windowing::Inputs::EKeyState::KEY_DOWN)
+		if (IsFlyModeCommandDown(m_inputManager, "scene-view.fly-down", EKey::KEY_Q))
 			m_targetSpeed += {0.0f, -velocity, 0.0f};
 	}
 

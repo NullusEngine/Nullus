@@ -6,6 +6,7 @@
 #include "GameObject.h"
 #include "Math/Matrix4.h"
 #include "Math/Quaternion.h"
+#include "Panels/EditorTopBar.h"
 #include "Settings/EditorSettings.h"
 
 using namespace NLS;
@@ -57,11 +58,22 @@ TEST(ImGuizmoTransformAdapterTests, TogglesPivotAndSpaceModes)
         Editor::Core::SceneViewGizmoSpace::Global);
 }
 
+TEST(ImGuizmoTransformAdapterTests, MapsPivotModesToToolbarIcons)
+{
+    EXPECT_STREQ(
+        Editor::Panels::GetToolbarPivotIconId(Editor::Core::SceneViewGizmoPivot::Pivot),
+        "Toolbar_Pivot");
+    EXPECT_STREQ(
+        Editor::Panels::GetToolbarPivotIconId(Editor::Core::SceneViewGizmoPivot::Center),
+        "Toolbar_Center");
+}
+
 TEST(ImGuizmoTransformAdapterTests, SelectsSnapValueForCurrentOperation)
 {
-    Editor::Settings::EditorSettings::TranslationSnapUnit = 2.0f;
-    Editor::Settings::EditorSettings::RotationSnapUnit = 30.0f;
-    Editor::Settings::EditorSettings::ScalingSnapUnit = 0.5f;
+    auto& sceneTools = Editor::Settings::EditorSettings::GetSceneToolSettingsObject();
+    sceneTools.translationSnapUnit = 2.0f;
+    sceneTools.rotationSnapUnit = 30.0f;
+    sceneTools.scalingSnapUnit = 0.5f;
 
     EXPECT_NEAR(
         Editor::Core::GetSnapValue(Editor::Core::EGizmoOperation::TRANSLATE),

@@ -1,88 +1,249 @@
 #include "Panels/ProjectSettings.h"
-#include "Core/EditorActions.h"
 
-#include <Resources/Loaders/MaterialLoader.h>
-#include <UI/GUIDrawer.h>
-#include <UI/Widgets/Layout/Columns.h>
-#include <UI/Widgets/Layout/GroupCollapsable.h>
-#include <UI/Widgets/Visual/Separator.h>
-#include <UI/Widgets/Buttons/Button.h>
-using namespace NLS;
-using namespace NLS::UI;
-using namespace NLS::UI::Widgets;
+#include <Reflection/Variant.h>
+#include <ServiceLocator.h>
+#include <imgui.h>
 
-Editor::Panels::ProjectSettings::ProjectSettings(const std::string & p_title, bool p_opened, const UI::PanelWindowSettings & p_windowSettings) :
-	PanelWindow(p_title, p_opened, p_windowSettings),
-	m_projectFile(EDITOR_CONTEXT(projectSettings))
+#include <algorithm>
+#include <array>
+#include <cstring>
+
+#include "../Core/Context.h"
+#include "Core/EditorInteractionBlocker.h"
+#include "Panels/ReflectedPropertyDrawer.h"
+#include "Settings/EditorSettings.h"
+#include "Settings/EditorSettingsPersistence.h"
+
+namespace
 {
-	auto& saveButton = CreateWidget<Button>("Apply");
-	saveButton.idleBackgroundColor = { 0.0f, 0.5f, 0.0f };
-	saveButton.ClickedEvent += [this]
-	{
-		EDITOR_CONTEXT(ApplyProjectSettings());
-		m_projectFile.Rewrite();
-	};
+constexpr float kSettingsWidth = 760.0f;
+constexpr float kSettingsHeight = 560.0f;
+constexpr float kCategoryWidth = 210.0f;
 
-	saveButton.lineBreak = false;
+void CopyToBuffer(const std::string& p_value, char (&p_buffer)[128])
+{
+    std::fill(std::begin(p_buffer), std::end(p_buffer), '\0');
+    const auto copyLength = (std::min)(p_value.size(), sizeof(p_buffer) - 1);
+    if (copyLength > 0)
+        std::memcpy(p_buffer, p_value.data(), copyLength);
+}
+}
 
-	auto& resetButton = CreateWidget<Button>("Reset");
-	resetButton.idleBackgroundColor = { 0.5f, 0.0f, 0.0f };
-	resetButton.ClickedEvent += [this]
-	{
-		EDITOR_CONTEXT(ResetProjectSettings());
-	};
+namespace NLS::Editor::Panels
+{
+ProjectSettings::ProjectSettings(
+    const std::string& p_title,
+    bool p_opened,
+    const UI::PanelWindowSettings& p_windowSettings)
+    : UI::PanelWindow(p_title, false, p_windowSettings),
+      m_opened(p_opened)
+{
+}
 
-	CreateWidget<UI::Widgets::Separator>();
+void ProjectSettings::Open()
+{
+    EnsureInitialized();
+    if (!m_opened)
+    {
+        m_opened = true;
+        Core::SetSettingsWindowBlocksSceneInput(true);
+    }
+}
 
-	{
-		/* Physics settings */
-		auto& root = CreateWidget<Widgets::GroupCollapsable>("Physics");
-		auto& columns = root.CreateWidget<Widgets::Columns>(2);
-		columns.widths[0] = 125;
+void ProjectSettings::Close()
+{
+    if (m_opened)
+    {
+        SaveIfDirty();
+        m_opened = false;
+        Core::SetSettingsWindowBlocksSceneInput(false);
+    }
+}
 
-		GUIDrawer::DrawScalar<float>(columns, "Gravity", GenerateGatherer<float>("gravity"), GenerateProvider<float>("gravity"), 0.1f, GUIDrawer::_MIN_FLOAT, GUIDrawer::_MAX_FLOAT);
-	}
+void ProjectSettings::DrawModal()
+{
+    DrawSettingsModal();
+}
 
-	{
-		/* Build settings */
-		auto& generationRoot = CreateWidget<Widgets::GroupCollapsable>("Build");
-		auto& columns = generationRoot.CreateWidget<Widgets::Columns>(2);
-		columns.widths[0] = 125;
+bool ProjectSettings::IsModalOpen() const
+{
+    return m_opened;
+}
 
-		GUIDrawer::DrawBoolean(columns, "Development build", GenerateGatherer<bool>("dev_build"), GenerateProvider<bool>("dev_build"));
-	}
+std::string ProjectSettings::ChooseSelectionAfterSearch(
+    const Settings::EditorSettingsRegistry& p_registry,
+    const std::string& p_currentSelection,
+    const std::string& p_searchText)
+{
+    const auto visible = p_registry.Search(p_searchText);
+    if (visible.empty())
+        return {};
 
-	{
-		/* Windowing settings */
-		auto& windowingRoot = CreateWidget<Widgets::GroupCollapsable>("Windowing");
-		auto& columns = windowingRoot.CreateWidget<Widgets::Columns>(2);
-		columns.widths[0] = 125;
+    const auto currentIt = std::find_if(
+        visible.begin(),
+        visible.end(),
+        [&p_currentSelection](const Settings::EditorSettingObject* p_object)
+        {
+            return p_object != nullptr && p_object->id == p_currentSelection;
+        });
+    if (currentIt != visible.end())
+        return p_currentSelection;
 
-		GUIDrawer::DrawScalar<int>(columns, "Resolution X", GenerateGatherer<int>("x_resolution"), GenerateProvider<int>("x_resolution"), 1, 0, 10000);
-		GUIDrawer::DrawScalar<int>(columns, "Resolution Y", GenerateGatherer<int>("y_resolution"), GenerateProvider<int>("y_resolution"), 1, 0, 10000);
-		GUIDrawer::DrawBoolean(columns, "Fullscreen", GenerateGatherer<bool>("fullscreen"), GenerateProvider<bool>("fullscreen"));
-		GUIDrawer::DrawString(columns, "Executable name", GenerateGatherer<std::string>("executable_name"), GenerateProvider<std::string>("executable_name"));
-	}
+    return visible.front()->id;
+}
 
-	{
-		/* Rendering settings */
-		auto& renderingRoot = CreateWidget<Widgets::GroupCollapsable>("Rendering");
-		auto& columns = renderingRoot.CreateWidget<Widgets::Columns>(2);
-		columns.widths[0] = 125;
+void ProjectSettings::_Draw_Impl()
+{
+    DrawSettingsModal();
+}
 
-		GUIDrawer::DrawBoolean(columns, "Vertical Sync.", GenerateGatherer<bool>("vsync"), GenerateProvider<bool>("vsync"));
-		GUIDrawer::DrawBoolean(columns, "Multi-sampling", GenerateGatherer<bool>("multisampling"), GenerateProvider<bool>("multisampling"));
-		GUIDrawer::DrawScalar<int>(columns, "Samples", GenerateGatherer<int>("samples"), GenerateProvider<int>("samples"), 1, 2, 16);
-		GUIDrawer::DrawScalar<int>(columns, "OpenGL Major", GenerateGatherer<int>("opengl_major"), GenerateProvider<int>("opengl_major"), 1, 3, 4);
-		GUIDrawer::DrawScalar<int>(columns, "OpenGL Minor", GenerateGatherer<int>("opengl_minor"), GenerateProvider<int>("opengl_minor"), 1, 0, 6);
-	}
+void ProjectSettings::EnsureInitialized()
+{
+    if (m_initialized)
+        return;
 
-	{
-		/* Scene Management settings */
-		auto& gameRoot = CreateWidget<Widgets::GroupCollapsable>("Scene Management");
-		auto& columns = gameRoot.CreateWidget<Widgets::Columns>(2);
-		columns.widths[0] = 125;
+    Settings::EditorSettings::RegisterSettingObjects(m_registry);
+    Settings::EditorSettingsPersistence::Load(GetSettingsPath(), m_registry);
+    m_selectedSettingId = ChooseSelectionAfterSearch(m_registry, m_selectedSettingId, m_searchText);
+    m_initialized = true;
+}
 
-		GUIDrawer::DrawDDString(columns, "Start scene", GenerateGatherer<std::string>("start_scene"), GenerateProvider<std::string>("start_scene"), "File");
-	}
+void ProjectSettings::DrawSettingsModal()
+{
+    Core::SetSettingsWindowBlocksSceneInput(m_opened);
+    if (!m_opened)
+        return;
+
+    EnsureInitialized();
+    ImGui::SetNextWindowSize(ImVec2(kSettingsWidth, kSettingsHeight), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(680.0f, 460.0f), ImVec2(1100.0f, 820.0f));
+    if (!ImGui::Begin("Settings", &m_opened, ImGuiWindowFlags_NoDocking))
+    {
+        ImGui::End();
+        Core::SetSettingsWindowBlocksSceneInput(m_opened);
+        if (!m_opened)
+            SaveIfDirty();
+        return;
+    }
+
+    DrawSearchRow();
+    ImGui::Separator();
+
+    const auto visibleObjects = m_registry.Search(m_searchText);
+    m_selectedSettingId = ChooseSelectionAfterSearch(m_registry, m_selectedSettingId, m_searchText);
+
+    const float contentHeight = ImGui::GetContentRegionAvail().y;
+    ImGui::BeginChild("##SettingsCategories", ImVec2(kCategoryWidth, contentHeight), true);
+    DrawCategoryList(visibleObjects);
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+    ImGui::BeginChild("##SettingsDetails", ImVec2(0.0f, contentHeight), true);
+    DrawSelectedSettings();
+    ImGui::EndChild();
+
+    ImGui::End();
+
+    if (!m_opened)
+        SaveIfDirty();
+    Core::SetSettingsWindowBlocksSceneInput(m_opened);
+}
+
+void ProjectSettings::DrawSearchRow()
+{
+    char searchBuffer[128];
+    CopyToBuffer(m_searchText, searchBuffer);
+
+    ImGui::SetNextItemWidth((std::min)(360.0f, ImGui::GetContentRegionAvail().x));
+    if (ImGui::InputTextWithHint("##SettingsSearch", "Search", searchBuffer, sizeof(searchBuffer)))
+        m_searchText = searchBuffer;
+}
+
+void ProjectSettings::DrawCategoryList(const std::vector<const Settings::EditorSettingObject*>& p_visibleObjects)
+{
+    if (p_visibleObjects.empty())
+    {
+        ImGui::TextUnformatted("No results");
+        return;
+    }
+
+    std::string lastCategory;
+    for (const auto* object : p_visibleObjects)
+    {
+        if (object == nullptr)
+            continue;
+
+        if (lastCategory != object->categoryPath)
+        {
+            if (!lastCategory.empty())
+                ImGui::Spacing();
+            lastCategory = object->categoryPath;
+            ImGui::TextColored(ImVec4(0.72f, 0.72f, 0.72f, 1.0f), "%s", lastCategory.c_str());
+        }
+
+        const bool selected = m_selectedSettingId == object->id;
+        if (ImGui::Selectable((object->displayName + "##" + object->id).c_str(), selected))
+            m_selectedSettingId = object->id;
+    }
+}
+
+void ProjectSettings::DrawSelectedSettings()
+{
+    auto* selected = m_registry.Find(m_selectedSettingId);
+    if (selected == nullptr)
+    {
+        RemoveAllWidgets();
+        m_reflectedWidgetsSelectionId.clear();
+        m_reflectedWidgetsSearchText.clear();
+        ImGui::TextUnformatted("No settings selected");
+        return;
+    }
+
+    ImGui::TextUnformatted(selected->displayName.c_str());
+    ImGui::Separator();
+
+    const bool needsRebuild =
+        m_reflectedWidgetsSelectionId != selected->id
+        || m_reflectedWidgetsSearchText != m_searchText
+        || GetWidgets().empty();
+
+    if (needsRebuild)
+    {
+        RemoveAllWidgets();
+
+        auto instance = selected->makeVariant();
+        ReflectedPropertyDrawerOptions options;
+        options.labelWidth = 180.0f;
+        options.searchText = m_searchText;
+        options.onFieldChanged = [this, id = selected->id](const meta::Field&)
+        {
+            m_dirtySettings.insert(id);
+        };
+        DrawReflectedObject(*this, instance, options);
+        m_reflectedWidgetsSelectionId = selected->id;
+        m_reflectedWidgetsSearchText = m_searchText;
+    }
+
+    DrawWidgets();
+}
+
+void ProjectSettings::SaveIfDirty()
+{
+    if (m_dirtySettings.empty())
+        return;
+
+    Settings::EditorSettingsPersistence::Save(GetSettingsPath(), m_registry);
+    m_dirtySettings.clear();
+}
+
+std::filesystem::path ProjectSettings::GetSettingsPath() const
+{
+    if (NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::Context>())
+    {
+        const auto& context = NLS::Core::ServiceLocator::Get<NLS::Editor::Core::Context>();
+        return std::filesystem::path(context.projectPath) / "UserSettings" / "editor-settings.json";
+    }
+
+    return std::filesystem::path("UserSettings") / "editor-settings.json";
+}
 }

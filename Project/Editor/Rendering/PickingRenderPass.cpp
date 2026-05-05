@@ -432,11 +432,12 @@ void Editor::Rendering::PickingRenderPass::DrawPickableLights(
 	Engine::SceneSystem::Scene& p_scene
 )
 {
-	if (Settings::EditorSettings::LightBillboardScale > 0.001f)
+    const auto lightBillboardScale = Settings::EditorSettings::GetDebugDrawSettingsObject().lightBillboardScale;
+	if (lightBillboardScale > 0.001f)
 	{
 		auto lightPickingPso = Editor::Rendering::CreateEditorOverlayPipelineState(p_pso);
 
-		m_lightMaterial.Set<float>("u_Scale", Settings::EditorSettings::LightBillboardScale * 0.1f);
+		m_lightMaterial.Set<float>("u_Scale", lightBillboardScale * 0.1f);
 
 		for (auto light : p_scene.GetFastAccessComponents().lights)
 		{
@@ -459,14 +460,15 @@ void Editor::Rendering::PickingRenderPass::CapturePickableLights(
     Engine::SceneSystem::Scene& p_scene,
     std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
 {
-    if (Settings::EditorSettings::LightBillboardScale <= 0.001f)
+    const auto lightBillboardScale = Settings::EditorSettings::GetDebugDrawSettingsObject().lightBillboardScale;
+    if (lightBillboardScale <= 0.001f)
         return;
 
     auto lightPickingPso = Editor::Rendering::CreateEditorOverlayPipelineState(p_pso);
     auto* lightModel = EDITOR_CONTEXT(editorResources)->GetModel("Vertical_Plane");
     if (lightModel == nullptr)
         return;
-    m_lightMaterial.Set<float>("u_Scale", Settings::EditorSettings::LightBillboardScale * 0.1f);
+    m_lightMaterial.Set<float>("u_Scale", lightBillboardScale * 0.1f);
 
     for (auto light : p_scene.GetFastAccessComponents().lights)
     {

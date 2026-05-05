@@ -25,6 +25,27 @@ add_executable(NullusUnitTests
 )
 
 target_sources(NullusUnitTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ReflectedPropertyDrawer.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ReflectedPropertyDrawer.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ProjectSettings.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ProjectSettings.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettings.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettings.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettingObject.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettingsPersistence.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettingsPersistence.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettingsRegistry.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettingsRegistry.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Gen/MetaGenerated.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Gen/MetaGenerated.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutProfile.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutProfile.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutRegistry.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutRegistry.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutResolver.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutResolver.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutService.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutService.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneCameraFocus.cpp
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneCameraFocus.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneViewImGuizmo.cpp
@@ -39,6 +60,8 @@ target_sources(NullusUnitTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/FrameInfo.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ProfilerPanel.cpp
     ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ProfilerPanel.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ShortcutSettingsPanel.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ShortcutSettingsPanel.h
     ${CMAKE_SOURCE_DIR}/Project/Game/LaunchArgs.cpp
     ${CMAKE_SOURCE_DIR}/Project/Game/LaunchArgs.h
     ${CMAKE_SOURCE_DIR}/Project/Launcher/Core/LauncherLocalization.cpp
@@ -60,6 +83,8 @@ target_include_directories(NullusUnitTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Runtime/Engine
     ${CMAKE_SOURCE_DIR}/Runtime/Math
     ${CMAKE_SOURCE_DIR}/Runtime/Rendering
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Gen
     ${CMAKE_SOURCE_DIR}/Project/Game
     ${CMAKE_SOURCE_DIR}/Project/Editor
     ${CMAKE_SOURCE_DIR}/Project/Launcher
@@ -76,6 +101,7 @@ target_link_libraries(NullusUnitTests PRIVATE
     NLS_Core
     NLS_Math
     NLS_Render
+    NLS_UI
     NLS_Engine
 )
 

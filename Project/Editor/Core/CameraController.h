@@ -102,9 +102,12 @@ public:
      * Returns true if the right mouse click is being pressed
      */
     bool IsRightMousePressed() const;
+    void ResetMouseInteractionState();
     void SetFocusState(SceneCameraFocusState* p_focusState);
     void SetViewportHeight(float p_viewportHeight);
     void SetInputActive(bool p_inputActive);
+    void SetInputBlocked(bool p_inputBlocked);
+    bool IsInputBlocked() const;
 
     /**
      * Lock the target actor to the given actor.
@@ -120,7 +123,6 @@ public:
 
 private:
     Engine::GameObject* GetTargetActor() const;
-    void ResetMouseInteractionState();
     void ResetLastMousePosition(const Maths::Vector2& p_mousePosition);
     void SuppressMouseDeltaAfterCursorCapture();
     bool ConsumeSuppressedMouseDelta(const Maths::Vector2& p_mousePosition);
@@ -163,6 +165,7 @@ private:
     float m_focusLerpCoefficient = 8.0f;
     float m_viewportHeight = 1.0f;
     bool m_inputActive = false;
+    bool m_inputBlocked = false;
 
     Engine::GameObject* m_lockedActor = nullptr;
 };

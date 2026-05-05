@@ -39,6 +39,7 @@ Editor::Core::EditorResources::EditorResources(const std::string& p_editorAssets
 
     const std::string buttonsFolder = p_editorAssetsPath + "Textures/Buttons/";
     const std::string iconsFolder = p_editorAssetsPath + "Textures/Icons/";
+    const std::string editorIconFolder = p_editorAssetsPath + "Icon/";
     m_modelsFolder = p_editorAssetsPath + "Models/";
     m_shadersFolder = p_editorAssetsPath + "Shaders/";
 
@@ -80,6 +81,21 @@ Editor::Core::EditorResources::EditorResources(const std::string& p_editorAssets
         std::vector<uint64_t> raw = BUTTON_REFRESH;
         m_textures["Button_Refresh"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 64, 64, firstFilterEditor, secondFilterEditor, false);
     }
+
+    const auto loadEditorIcon = [&](const std::string& id, const std::string& fileName)
+    {
+        auto* texture = TextureLoader::Create(editorIconFolder + fileName, firstFilterEditor, secondFilterEditor, false);
+        if (texture != nullptr)
+            m_textures[id] = texture;
+    };
+
+    loadEditorIcon("Toolbar_Move", "d_movetool.png");
+    loadEditorIcon("Toolbar_Rotate", "d_rotatetool.png");
+    loadEditorIcon("Toolbar_Scale", "d_scaletool.png");
+    loadEditorIcon("Toolbar_Pivot", "d_toolhandlepivot.png");
+    loadEditorIcon("Toolbar_Center", "d_toolhandlecenter.png");
+    loadEditorIcon("Toolbar_Global", "d_toolhandleglobal.png");
+    loadEditorIcon("Toolbar_Local", "d_toolhandlelocal.png");
 
     {
         std::vector<uint64_t> raw = ICON_FILE;

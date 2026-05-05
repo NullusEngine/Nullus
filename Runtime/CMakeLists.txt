@@ -1,6 +1,6 @@
-set(NLS_META_LIBCLANG_VERSION "18.1.3.2")
-set(NLS_META_LIBCLANG_OSX_VERSION "18.1.3")
-set(NLS_META_LIBCLANGSHARP_VERSION "18.1.3.1")
+set(NLS_META_LIBCLANG_VERSION "18.1.3.2" CACHE INTERNAL "libclang runtime package version for MetaParser")
+set(NLS_META_LIBCLANG_OSX_VERSION "18.1.3" CACHE INTERNAL "macOS libclang runtime package version for MetaParser")
+set(NLS_META_LIBCLANGSHARP_VERSION "18.1.3.1" CACHE INTERNAL "libclangsharp runtime package version for MetaParser")
 
 function(nls_collect_runtime_files OUT_HEADERS OUT_SOURCES SOURCE_DIR)
     file(GLOB_RECURSE _headers CONFIGURE_DEPENDS

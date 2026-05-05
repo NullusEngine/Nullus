@@ -1,6 +1,50 @@
 #pragma once
 
-#include <Eventing/Event.h>
+#include "Reflection/Macros.h"
+#include "Settings/EditorSettingsRegistry.h"
+#include "Project/Editor/Settings/EditorSettings.generated.h"
+
+namespace NLS::Editor::Settings
+{
+    STRUCT() struct EditorDebugDrawSettingsObject
+    {
+        GENERATED_BODY()
+        PROPERTY()
+        bool debugDrawEnabled = true;
+        PROPERTY()
+        bool debugDrawGrid = true;
+        PROPERTY()
+        bool debugDrawBounds = false;
+        PROPERTY()
+        bool debugDrawCamera = true;
+        PROPERTY()
+        bool debugDrawLighting = true;
+        PROPERTY()
+        bool showGeometryBounds = false;
+        PROPERTY()
+        bool showLightBounds = false;
+        PROPERTY()
+        bool showGeometryFrustumCullingInSceneView = false;
+        PROPERTY()
+        bool showLightFrustumCullingInSceneView = false;
+        PROPERTY()
+        float lightBillboardScale = 0.5f;
+    };
+}
+
+namespace NLS::Editor::Settings
+{
+    STRUCT() struct EditorSceneToolSettingsObject
+    {
+        GENERATED_BODY()
+        PROPERTY()
+        float translationSnapUnit = 1.0f;
+        PROPERTY()
+        float rotationSnapUnit = 15.0f;
+        PROPERTY()
+        float scalingSnapUnit = 1.0f;
+    };
+}
 
 namespace NLS::Editor::Settings
 {
@@ -10,75 +54,13 @@ namespace NLS::Editor::Settings
 	class EditorSettings
 	{
 	public:
-		template<typename T>
-		class Property
-		{
-		public:
-			/**
-			* Creates the property with a default value
-			* @param p_value
-			*/
-			Property(T p_value) : m_value(p_value) {}
-
-			/**
-			* Event called when the property value changes
-			*/
-			Event<T> OnValueChanged;
-
-			/**
-			* Assign a new value to the property
-			* @param p_value
-			*/
-			inline T& operator=(T p_value)
-			{
-				Set(p_value);
-				return m_value;
-			}
-
-			/**
-			* Assign a new valeu to the property
-			* @param p_value
-			*/
-			inline void Set(T p_value)
-			{
-				m_value = p_value;
-				OnValueChanged.Invoke(m_value);
-			}
-
-			inline operator T()
-			{
-				return m_value;
-			}
-
-			/**
-			* Returns the value of the property
-			*/
-			inline T Get() const
-			{
-				return m_value;
-			}
-
-		private:
-			T m_value;
-		};
-
 		/**
 		* No construction possible
 		*/
 		EditorSettings() = delete;
 
-		inline static Property<bool> DebugDrawEnabled = { true };
-		inline static Property<bool> DebugDrawGrid = { true };
-		inline static Property<bool> DebugDrawBounds = { false };
-		inline static Property<bool> DebugDrawCamera = { true };
-		inline static Property<bool> DebugDrawLighting = { true };
-		inline static Property<bool> ShowGeometryBounds = { false };
-		inline static Property<bool> ShowLightBounds = { false };
-		inline static Property<bool> ShowGeometryFrustumCullingInSceneView = { false };
-		inline static Property<bool> ShowLightFrustumCullingInSceneView = { false };
-		inline static Property<float> LightBillboardScale = { 0.5f };
-		inline static Property<float> TranslationSnapUnit = { 1.0f };
-		inline static Property<float> RotationSnapUnit = { 15.0f };
-		inline static Property<float> ScalingSnapUnit = { 1.0f };
+        static EditorDebugDrawSettingsObject& GetDebugDrawSettingsObject();
+        static EditorSceneToolSettingsObject& GetSceneToolSettingsObject();
+        static void RegisterSettingObjects(EditorSettingsRegistry& p_registry);
 	};
 }

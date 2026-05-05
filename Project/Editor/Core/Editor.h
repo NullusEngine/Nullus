@@ -2,6 +2,7 @@
 #include "Core/Context.h"
 #include "Core/EditorActions.h"
 #include "Core/PanelsManager.h"
+#include "Shortcuts/EditorShortcutService.h"
 #include <UI/Modules/Canvas.h>
 namespace NLS
 {
@@ -45,6 +46,8 @@ public:
      * Handle editor global shortcuts
      */
     void HandleGlobalShortcuts();
+    void RegisterShortcutContexts();
+    void RegisterDefaultShortcuts();
     void ApplyStartupValidationDirectives();
 
     /**
@@ -103,6 +106,7 @@ private:
     Context& m_context;
     PanelsManager	m_panelsManager;
     EditorActions	m_editorActions;
+    Shortcuts::EditorShortcutService m_shortcutService;
 };
 } // namespace Editor::Core
 } // namespace NLS

@@ -23,7 +23,7 @@
 #include <Debug/Logger.h>
 #include <Filesystem/IniFile.h>
 #include <Image.h>
-#include <UI/Icons/VectorIcons.h>
+#include <UI/Icons/FontAwesomeIconFont.h>
 #include <UI/UIManager.h>
 
 #include <Rendering/Resources/Texture2D.h>
@@ -386,7 +386,7 @@ private:
 
     bool DrawNavigationItem(
         const char* label,
-        UI::Icons::IconId iconId,
+        const char* icon,
         float x,
         float y,
         float width,
@@ -414,12 +414,11 @@ private:
         const float iconX = x + 18.0f;
         const float iconY = y + 20.0f;
         const auto iconColor = selected ? HubColors::TextPrimary : HubColors::TextSecondary;
-        UI::Icons::DrawIcon(
-            drawList,
-            iconId,
-            ImVec2(iconX, iconY),
-            14.0f,
-            { HubColorU32(iconColor), 1.4f });
+        const ImVec2 iconSize = ImGui::CalcTextSize(icon);
+        drawList->AddText(
+            ImVec2(iconX - iconSize.x * 0.5f, iconY - iconSize.y * 0.5f),
+            HubColorU32(iconColor),
+            icon);
 
         ImGui::SetCursorScreenPos(ImVec2(x + 42.0f, y + 10.0f));
         PushHubText(selected ? HubColors::TextPrimary : HubColors::TextSecondary);
@@ -449,10 +448,10 @@ private:
             1.0f);
 
         float itemY = y + 96.0f;
-        if (DrawNavigationItem(Tr(LauncherTextKey::ProjectsTitle), UI::Icons::IconId::Project, x + 16.0f, itemY, width - 32.0f, m_currentView == LauncherView::Projects))
+        if (DrawNavigationItem(Tr(LauncherTextKey::ProjectsTitle), ICON_FA_CUBE, x + 16.0f, itemY, width - 32.0f, m_currentView == LauncherView::Projects))
             m_currentView = LauncherView::Projects;
         itemY += 48.0f;
-        if (DrawNavigationItem(Tr(LauncherTextKey::Installs), UI::Icons::IconId::Install, x + 16.0f, itemY, width - 32.0f, m_currentView == LauncherView::Installs))
+        if (DrawNavigationItem(Tr(LauncherTextKey::Installs), ICON_FA_DOWNLOAD, x + 16.0f, itemY, width - 32.0f, m_currentView == LauncherView::Installs))
             m_currentView = LauncherView::Installs;
     }
 
@@ -523,12 +522,10 @@ private:
 
         const auto searchBorderColor = searchActive ? HubColors::SearchBorderActive : HubColors::SearchBorder;
         drawList->AddRect(searchMin, searchMax, HubColorU32(searchBorderColor), 4.0f, 0, 1.2f);
-        UI::Icons::DrawIcon(
-            drawList,
-            UI::Icons::IconId::Search,
-            ImVec2(searchMin.x + 16.0f, (searchMin.y + searchMax.y) * 0.5f),
-            14.0f,
-            { HubColorU32(searchHovered || searchActive ? HubColors::TextSecondary : HubColors::TextMuted), 1.5f });
+        drawList->AddText(
+            ImVec2(searchMin.x + 11.0f, searchMin.y + 8.0f),
+            HubColorU32(searchHovered || searchActive ? HubColors::TextSecondary : HubColors::TextMuted),
+            ICON_FA_SEARCH);
     }
 
     // ─── Table Header ───
@@ -718,12 +715,13 @@ private:
         if (actionHovered || menuOpen)
             drawList->AddRectFilled(actionButtonOrigin, actionButtonEnd, HubColorU32(HubColors::SurfaceHover), 4.0f);
 
-        UI::Icons::DrawIcon(
-            drawList,
-            UI::Icons::IconId::MoreHorizontal,
-            ImVec2((actionButtonOrigin.x + actionButtonEnd.x) * 0.5f, (actionButtonOrigin.y + actionButtonEnd.y) * 0.5f),
-            14.0f,
-            { HubColorU32(HubColors::TextMuted), 1.5f });
+        const ImVec2 moreIconSize = ImGui::CalcTextSize(ICON_FA_ELLIPSIS_H);
+        drawList->AddText(
+            ImVec2(
+                (actionButtonOrigin.x + actionButtonEnd.x - moreIconSize.x) * 0.5f,
+                (actionButtonOrigin.y + actionButtonEnd.y - moreIconSize.y) * 0.5f),
+            HubColorU32(HubColors::TextMuted),
+            ICON_FA_ELLIPSIS_H);
 
         ImGui::SetNextWindowPos(ImVec2(actionButtonEnd.x - 240.0f, actionButtonEnd.y + 4.0f), ImGuiCond_Appearing);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
@@ -1248,6 +1246,7 @@ void Launcher::SetupContext()
         ImFont* cjkFont = io.Fonts->AddFontFromFileTTF(cjkFontPath, 18.0f, nullptr, io.Fonts->GetGlyphRangesChineseFull());
         if (cjkFont)
         {
+            UI::Icons::EnsureFontAwesomeIconFontLoaded(18.0f, cjkFont);
             m_uiManager->LoadFont("Ruda_Title", "../Assets/Editor/Fonts/Ruda-Bold.ttf", 30);
             // Use the CJK font as the primary font
             io.FontDefault = cjkFont;

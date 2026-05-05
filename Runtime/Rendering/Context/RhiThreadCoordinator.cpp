@@ -10,6 +10,7 @@
 #include <Debug/Assertion.h>
 #include <Debug/Logger.h>
 
+#include "Profiling/Profiler.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverInternal.h"
 #include "Rendering/Context/RenderThreadCoordinator.h"
@@ -1110,9 +1111,11 @@ namespace NLS::Render::Context
             commandBuffer->Begin();
             if (passInput.kind == RenderPassCommandKind::Compute)
             {
+                commandBuffer->BeginGpuProfileScope("ThreadedParallelComputePass", __FUNCTION__);
                 const auto recordedDispatchCount = Detail::RecordComputeDispatches(
                     *commandBuffer,
                     passInput.computeDispatchInputs);
+                commandBuffer->EndGpuProfileScope();
                 if (recordedDispatchCount == 0u)
                 {
                     if (commandBuffer->IsRecording())
@@ -1152,8 +1155,10 @@ namespace NLS::Render::Context
                 return recordedWorkUnit;
             }
 
+            commandBuffer->BeginGpuProfileScope(ToThreadedPassDebugName(effectivePassInput.kind), __FUNCTION__);
             const auto recordedDrawCount =
                 Detail::RecordPreparedDrawCommandsForPass(commandBuffer.get(), effectivePassInput);
+            commandBuffer->EndGpuProfileScope();
             Detail::EndPassCommandPlan(*commandBuffer);
             if (recordedDrawCount == 0u && !effectivePassInput.recordedDrawCommands.empty())
             {
@@ -1586,6 +1591,7 @@ namespace NLS::Render::Context
         Render::RHI::ResourceStateTrackerStats* preResetTrackerStats,
         Render::RHI::DescriptorAllocatorStats* descriptorStats)
     {
+        NLS_PROFILE_SCOPE();
         if (impl.explicitDevice == nullptr || impl.frameContexts.empty())
             return nullptr;
 
@@ -1686,6 +1692,7 @@ namespace NLS::Render::Context
         AsyncComputeSubmitPlan* submitPlan,
         RhiSubmissionFrame* submissionFrame)
     {
+        NLS_PROFILE_SCOPE();
         if (submitPlan == nullptr || submissionFrame == nullptr)
             return;
 
@@ -1765,9 +1772,11 @@ namespace NLS::Render::Context
                         if (!beginMainCommandBufferIfNeeded())
                             continue;
 
+                        frameContext.commandBuffer->BeginGpuProfileScope("ThreadedComputePass", __FUNCTION__);
                         const auto recordedDispatches = Detail::RecordComputeDispatches(
                             *frameContext.commandBuffer,
                             passInput.computeDispatchInputs);
+                        frameContext.commandBuffer->EndGpuProfileScope();
                         if (recordedDispatches == 0u)
                             continue;
 
@@ -1820,9 +1829,11 @@ namespace NLS::Render::Context
                     }
 
                     recordedAnyCommand = true;
+                    frameContext.commandBuffer->BeginGpuProfileScope(ToThreadedPassDebugName(effectivePassInput.kind), __FUNCTION__);
                     const auto recordedDrawCount = Detail::RecordPreparedDrawCommandsForPass(
                         frameContext.commandBuffer.get(),
                         effectivePassInput);
+                    frameContext.commandBuffer->EndGpuProfileScope();
                     Detail::EndPassCommandPlan(*frameContext.commandBuffer);
                     if (recordedDrawCount == 0u && !effectivePassInput.recordedDrawCommands.empty())
                     {
@@ -1887,6 +1898,7 @@ namespace NLS::Render::Context
         AsyncComputeSubmitPlan& submitPlan,
         RhiSubmissionFrame* submissionFrame)
     {
+        NLS_PROFILE_SCOPE();
         auto graphicsQueue = impl.explicitDevice != nullptr
             ? impl.explicitDevice->GetQueue(Render::RHI::QueueType::Graphics)
             : nullptr;
@@ -1987,6 +1999,7 @@ namespace NLS::Render::Context
         DriverImpl& impl,
         const RenderScenePackage& renderScenePackage)
     {
+        NLS_PROFILE_SCOPE();
         const auto externalOutputSummary =
             Render::FrameGraph::BuildExternalSceneOutputSummary(renderScenePackage);
         RhiSubmissionFrame submissionFrame;
@@ -2117,6 +2130,7 @@ namespace NLS::Render::Context
 
     void RhiThreadCoordinator::BeginStandaloneExplicitFrame(Driver& driver, const bool acquireSwapchainImage)
     {
+        NLS_PROFILE_SCOPE();
         NLS_ASSERT(driver.m_impl->explicitDevice != nullptr, "Explicit RHI is not enabled for this driver.");
         NLS_ASSERT(!driver.m_impl->frameContexts.empty(), "Explicit RHI frame contexts were not initialized.");
         NLS_ASSERT(!driver.m_impl->explicitFrameActive, "Cannot begin a new explicit frame while another one is still active.");
@@ -2186,6 +2200,7 @@ namespace NLS::Render::Context
 
     void RhiThreadCoordinator::EndStandaloneExplicitFrame(Driver& driver, const bool presentSwapchain)
     {
+        NLS_PROFILE_SCOPE();
         if (driver.m_impl->explicitDevice == nullptr || driver.m_impl->frameContexts.empty() || !driver.m_impl->explicitFrameActive)
             return;
 
@@ -2236,6 +2251,7 @@ namespace NLS::Render::Context
         Driver& driver,
         const RhiSubmissionAttribution attribution)
     {
+        NLS_PROFILE_SCOPE();
         if (driver.m_impl->threadedLifecycle == nullptr)
             return false;
 
@@ -2266,6 +2282,7 @@ namespace NLS::Render::Context
         Driver& driver,
         const RhiSubmissionAttribution attribution)
     {
+        NLS_PROFILE_SCOPE();
         bool progressed = false;
         while (TryExecuteNextThreadedSubmission(driver, attribution))
             progressed = true;
@@ -2282,6 +2299,7 @@ namespace NLS::Render::Context
         const Settings::EPixelDataType type,
         void* data)
     {
+        NLS_PROFILE_SCOPE();
         if (driver.m_impl == nullptr || driver.m_impl->explicitDevice == nullptr)
         {
             NLS_LOG_WARNING("RhiThreadCoordinator::ReadPixels: explicit device is unavailable.");
@@ -2308,6 +2326,7 @@ namespace NLS::Render::Context
 
     bool RhiThreadCoordinator::PrepareUIRender(Driver& driver)
     {
+        NLS_PROFILE_SCOPE();
         if (driver.m_impl->explicitDevice == nullptr)
             return false;
 
@@ -2328,6 +2347,7 @@ namespace NLS::Render::Context
 
     void RhiThreadCoordinator::PresentSwapchain(Driver& driver)
     {
+        NLS_PROFILE_SCOPE();
         auto& impl = *driver.m_impl;
 
         if (PresentStandaloneUiFrame(impl))

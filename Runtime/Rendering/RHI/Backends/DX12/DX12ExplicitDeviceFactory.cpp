@@ -13,6 +13,7 @@
 #include <memory>
 #include <string>
 
+#include "Profiling/Profiler.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 
@@ -145,6 +146,7 @@ namespace NLS::Render::Backend
 						nativeQueue,
 						resolvedQueueType,
 						debugName);
+					InitializeTimelineGpuProfilerIfNeeded();
 				}
 				return m_queues[queueIndex];
 			}
@@ -181,6 +183,7 @@ namespace NLS::Render::Backend
 			std::shared_ptr<NLS::Render::RHI::RHICommandPool> CreateCommandPool(NLS::Render::RHI::QueueType queueType, std::string debugName) override
 			{
 #if defined(_WIN32)
+				InitializeTimelineGpuProfilerIfNeeded();
 				const bool useDedicatedComputeQueue =
 					queueType == NLS::Render::RHI::QueueType::Compute &&
 					m_computeQueue != nullptr;
@@ -229,6 +232,23 @@ namespace NLS::Render::Backend
 			    void* data) override;
 
 		private:
+			void InitializeTimelineGpuProfilerIfNeeded()
+			{
+#if defined(_WIN32)
+				if (m_gpuProfilerInitialized || m_device == nullptr || m_graphicsQueue == nullptr)
+					return;
+
+				NLS::Base::Profiling::ProfilerGpuContextEvent event;
+				event.nativeDevice = m_device.Get();
+				event.nativeCommandQueues.push_back(m_graphicsQueue.Get());
+				if (m_computeQueue != nullptr)
+					event.nativeCommandQueues.push_back(m_computeQueue.Get());
+				event.frameLatency = 2u;
+				NLS::Base::Profiling::Profiler::InitializeGpuContext(event);
+				m_gpuProfilerInitialized = true;
+#endif
+			}
+
 			Microsoft::WRL::ComPtr<ID3D12Device> m_device;
 			Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_graphicsQueue;
 			Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_computeQueue;
@@ -241,6 +261,7 @@ namespace NLS::Render::Backend
 			std::array<std::shared_ptr<NLS::Render::RHI::RHIQueue>, 3> m_queues{};
 			std::unique_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_resourceHeapAllocator;
 			std::unique_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_samplerHeapAllocator;
+			bool m_gpuProfilerInitialized = false;
 		};
 
 		// NativeDX12ExplicitDevice method implementations

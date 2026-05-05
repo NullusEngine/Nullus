@@ -15,6 +15,7 @@
 #include <vector>
 #include <Math/Vector4.h>
 
+#include "Profiling/Profiler.h"
 #include "Rendering/Data/PipelineState.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/RHI/Backends/RHIDeviceFactory.h"
@@ -1812,6 +1813,7 @@ void Driver::SetPolygonMode(Settings::ERasterizationMode mode)
 
 void Driver::StartThreadedRenderingWorkers()
 {
+    NLS_PROFILE_SCOPE();
     if (m_impl->threadedLifecycle == nullptr || m_impl->threadedWorkersRunning)
         return;
 
@@ -1822,9 +1824,11 @@ void Driver::StartThreadedRenderingWorkers()
     m_impl->threadedWorkersRunning = true;
     m_impl->renderSceneWorker = std::thread([this]()
     {
+        NLS_PROFILE_REGISTER_THREAD("Render Thread");
         Render::Settings::SetThreadDiagnosticsSettings(m_impl->diagnostics);
         while (!m_impl->threadedStopRequested.load())
         {
+            NLS_PROFILE_NAMED_SCOPE("Render Thread Tick");
             size_t slotIndex = 0u;
             if (m_impl->threadedLifecycle->TryBeginNextRenderFrameBuild(
                 &slotIndex,
@@ -1842,9 +1846,11 @@ void Driver::StartThreadedRenderingWorkers()
     });
     m_impl->rhiWorker = std::thread([this]()
     {
+        NLS_PROFILE_REGISTER_THREAD("RHI Thread");
         Render::Settings::SetThreadDiagnosticsSettings(m_impl->diagnostics);
         while (!m_impl->threadedStopRequested.load())
         {
+            NLS_PROFILE_NAMED_SCOPE("RHI Thread Tick");
             if (RhiThreadCoordinator::TryExecuteNextThreadedSubmission(
                 *this,
                 RhiSubmissionAttribution::Worker))
@@ -1859,6 +1865,7 @@ void Driver::StartThreadedRenderingWorkers()
 
 void Driver::StopThreadedRenderingWorkers()
 {
+    NLS_PROFILE_SCOPE();
     m_impl->threadedStopRequested.store(true);
     if (m_impl->renderSceneWorker.joinable())
         m_impl->renderSceneWorker.join();

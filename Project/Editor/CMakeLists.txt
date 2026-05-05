@@ -34,5 +34,4 @@ target_link_libraries(
   Editor
     PUBLIC # 使用该库时必须依赖的库
     NLS_Engine
-    ImGuizmo
 )

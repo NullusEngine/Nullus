@@ -35,6 +35,8 @@ target_sources(NullusUnitTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/EditorLaunchArgs.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/FrameInfoRendererStats.cpp
     ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/FrameInfo.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ProfilerPanel.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ProfilerPanel.h
     ${CMAKE_SOURCE_DIR}/Project/Game/LaunchArgs.cpp
     ${CMAKE_SOURCE_DIR}/Project/Game/LaunchArgs.h
     ${CMAKE_SOURCE_DIR}/Project/Launcher/Core/LauncherLocalization.cpp

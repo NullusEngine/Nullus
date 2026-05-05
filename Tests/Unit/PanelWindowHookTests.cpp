@@ -7,7 +7,9 @@
 
 #include "Core/ServiceLocator.h"
 #include "Panels/FrameInfo.h"
+#include "Panels/ProfilerPanel.h"
 #include "Panels/ViewFrameLifecycle.h"
+#include "Profiling/Profiler.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
@@ -194,6 +196,64 @@ TEST(PanelWindowHookTests, FrameInfoPanelReadsRendererOwnedStats)
     EXPECT_EQ(TextWidgetAt(panel, 5u).content, "Vertices: 6");
     EXPECT_EQ(TextWidgetAt(panel, 9u).content, "Frame Stage: Direct");
     EXPECT_EQ(TextWidgetAt(panel, 10u).content, "Retirement State: Direct");
+}
+
+TEST(PanelWindowHookTests, ProfilerPanelReportsTimelineDisabledByDefault)
+{
+    NLS::Editor::Panels::ProfilerPanel panel("Profiler", true, {});
+    const auto& status = TextWidgetAt(panel, 0u);
+    const auto& detail = TextWidgetAt(panel, 1u);
+
+#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+    EXPECT_TRUE(status.content.empty());
+    EXPECT_TRUE(detail.content.empty());
+#else
+    EXPECT_EQ(status.content, "TimelineProfiler: Disabled");
+    EXPECT_NE(detail.content.find("NLS_ENABLE_TIMELINE_PROFILER"), std::string::npos);
+#endif
+}
+
+TEST(PanelWindowHookTests, ProfilerPanelDrawDoesNotAdvanceTimelineFrameInsideActiveScope)
+{
+#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(1280.0f, 720.0f);
+
+    NLS::Editor::Panels::ProfilerPanel panel("Profiler", true, {});
+
+    unsigned char* pixels = nullptr;
+    int width = 0;
+    int height = 0;
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+    ASSERT_NE(pixels, nullptr);
+
+    NLS::Base::Profiling::Profiler::ResetForTesting();
+    NLS::Base::Profiling::Profiler::SetEnabled(true);
+    NLS::Base::Profiling::Profiler::RegisterDestination(panel.GetTimelineSink());
+
+    for (int i = 0; i < 16; ++i)
+    {
+        const auto warmupScope = NLS::Base::Profiling::Profiler::BeginScope("Warmup Scope", __FUNCTION__);
+        NLS::Base::Profiling::Profiler::EndScope(warmupScope);
+    }
+
+    const auto scope = NLS::Base::Profiling::Profiler::BeginScope("Outer Editor Scope", __FUNCTION__);
+
+    ImGui::NewFrame();
+    panel.Draw();
+    ImGui::EndFrame();
+
+    EXPECT_EQ(panel.GetTimelineSink().GetTickFrameCountForTesting(), 0u);
+    EXPECT_NO_FATAL_FAILURE(NLS::Base::Profiling::Profiler::EndScope(scope));
+
+    NLS::Base::Profiling::Profiler::ResetForTesting();
+    ImGui::DestroyContext();
+#else
+    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+#endif
 }
 
 TEST(PanelWindowHookTests, FrameInfoPanelReadsThreadedPublishDiagnostics)

@@ -1,5 +1,6 @@
 #include "Rendering/RHI/Backends/DX12/DX12Command.h"
 
+#include "Profiling/Profiler.h"
 #include "Rendering/RHI/Backends/DX12/DX12RenderPassUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12Resource.h"
 
@@ -126,6 +127,18 @@ namespace NLS::Render::Backend
 		return m_debugName;
 	}
 
+	void NativeDX12CommandBuffer::EndPendingGpuProfileScopes()
+	{
+#if defined(_WIN32)
+		while (!m_gpuProfileScopeStack.empty())
+		{
+			auto event = std::move(m_gpuProfileScopeStack.back());
+			m_gpuProfileScopeStack.pop_back();
+			NLS::Base::Profiling::Profiler::EndGpuScope(event);
+		}
+#endif
+	}
+
 	void NativeDX12CommandBuffer::Begin()
 	{
 #if defined(_WIN32)
@@ -157,6 +170,7 @@ namespace NLS::Render::Backend
 			m_recordedBindingSetKeepAlive.clear();
 			m_recordedPipelineKeepAlive.clear();
 			m_recordedComputePipelineKeepAlive.clear();
+			EndPendingGpuProfileScopes();
 			m_bindingComputePipeline = false;
 			m_recording = true;
 		}
@@ -186,6 +200,7 @@ namespace NLS::Render::Backend
 		m_recordedBindingSetKeepAlive.clear();
 		m_recordedPipelineKeepAlive.clear();
 		m_recordedComputePipelineKeepAlive.clear();
+		EndPendingGpuProfileScopes();
 		m_bindingComputePipeline = false;
 		m_boundPipeline.reset();
 		m_boundComputePipeline.reset();
@@ -223,6 +238,31 @@ namespace NLS::Render::Backend
 		return m_commandList.Get();
 #else
 		return nullptr;
+#endif
+	}
+
+	void NativeDX12CommandBuffer::BeginGpuProfileScope(
+		const std::string_view name,
+		const std::string_view sourceFunction)
+	{
+#if defined(_WIN32)
+		auto event = NLS::Base::Profiling::Profiler::BeginGpuScope(m_commandList.Get(), name, sourceFunction);
+		if (event.active)
+			m_gpuProfileScopeStack.push_back(std::move(event));
+#else
+		(void)name;
+		(void)sourceFunction;
+#endif
+	}
+
+	void NativeDX12CommandBuffer::EndGpuProfileScope()
+	{
+#if defined(_WIN32)
+		if (m_gpuProfileScopeStack.empty())
+			return;
+		auto event = std::move(m_gpuProfileScopeStack.back());
+		m_gpuProfileScopeStack.pop_back();
+		NLS::Base::Profiling::Profiler::EndGpuScope(event);
 #endif
 	}
 

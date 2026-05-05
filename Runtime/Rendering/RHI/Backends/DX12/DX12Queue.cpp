@@ -1,5 +1,6 @@
 #include "Rendering/RHI/Backends/DX12/DX12Queue.h"
 
+#include "Profiling/Profiler.h"
 #include "Rendering/RHI/Backends/DX12/DX12Synchronization.h"
 #include "Rendering/RHI/Core/RHICommand.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
@@ -170,6 +171,12 @@ namespace NLS::Render::Backend
 				NLS_LOG_INFO("NativeDX12Queue::Submit: executing " + std::to_string(commandLists.size()) + " command lists");
 			}
 			m_queue->ExecuteCommandLists(static_cast<UINT>(commandLists.size()), commandLists.data());
+			NLS::Base::Profiling::ProfilerGpuCommandListSubmitEvent profilerSubmit;
+			profilerSubmit.nativeCommandQueue = m_queue;
+			profilerSubmit.nativeCommandLists.reserve(commandLists.size());
+			for (auto* commandList : commandLists)
+				profilerSubmit.nativeCommandLists.push_back(commandList);
+			NLS::Base::Profiling::Profiler::SubmitGpuCommandLists(profilerSubmit);
 			if (ShouldLogDx12FrameFlow())
 			{
 				NLS_LOG_INFO("NativeDX12Queue::Submit: ExecuteCommandLists succeeded");

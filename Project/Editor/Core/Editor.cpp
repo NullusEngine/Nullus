@@ -5,6 +5,8 @@
 #include <limits>
 #include <string_view>
 #include <Debug/Logger.h>
+#include <Profiling/Profiler.h>
+#include <Profiling/TracyProfiler.h>
 #include <ServiceLocator.h>
 
 #include "Core/Editor.h"
@@ -29,6 +31,7 @@
 #include "Panels/MaterialEditor.h"
 #include "Panels/ProjectSettings.h"
 #include "Panels/AssetProperties.h"
+#include "Panels/ProfilerPanel.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 using namespace NLS::Core::ResourceManagement;
@@ -39,6 +42,8 @@ namespace NLS
 {
 namespace
 {
+NLS::Base::Profiling::TracyProfiler g_tracyProfiler;
+
 enum class ValidationFocusTarget
 {
     None,
@@ -114,6 +119,9 @@ Editor::Core::Editor::Editor(Context& p_context)
     : m_context(p_context), m_panelsManager(m_canvas),
     m_editorActions(m_context, m_panelsManager)
 {
+    NLS::Base::Profiling::Profiler::SetEnabled(true);
+    NLS::Base::Profiling::Profiler::RegisterDestination(g_tracyProfiler);
+
     NLS::Core::ServiceLocator::Provide<NLS::Editor::Core::Editor>(*this);
     Assembly::Instance().Instance().Load<AssemblyMath>().Load<AssemblyCore>().Load<AssemblyPlatform>().Load<AssemblyRender>().Load<Engine::AssemblyEngine>();
 	
@@ -136,6 +144,8 @@ Editor::Core::Editor::Editor(Context& p_context)
 
 Editor::Core::Editor::~Editor()
 {
+    NLS::Base::Profiling::Profiler::UnregisterDestination(
+        m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler").GetTimelineSink());
     m_panelsManager.DestroyPanels();
     m_context.sceneManager.UnloadCurrentScene();
 }
@@ -151,6 +161,9 @@ void Editor::Core::Editor::SetupUI()
     m_panelsManager.CreatePanel<Panels::EditorStatusBar>("Editor Status Bar");
     m_panelsManager.CreatePanel<Panels::AssetBrowser>("Asset Browser", true, settings, m_context.engineAssetsPath, m_context.projectAssetsPath);
     m_panelsManager.CreatePanel<Panels::FrameInfo>("Frame Info", false, settings);
+    m_panelsManager.CreatePanel<Panels::ProfilerPanel>("Profiler", false, settings);
+    auto& profilerPanel = m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler");
+    NLS::Base::Profiling::Profiler::RegisterDestination(profilerPanel.GetTimelineSink());
     m_panelsManager.CreatePanel<Panels::Console>("Console", true, settings);
     m_panelsManager.CreatePanel<Panels::AssetView>("Asset View", false, settings);
     m_panelsManager.CreatePanel<Panels::Hierarchy>("Hierarchy", true, settings);
@@ -164,6 +177,7 @@ void Editor::Core::Editor::SetupUI()
     auto& topBar = m_panelsManager.GetPanelAs<Panels::EditorTopBar>("Editor Top Bar");
     topBar.RegisterWindowPanel("Asset Browser", m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser"));
     topBar.RegisterWindowPanel("Frame Info", m_panelsManager.GetPanelAs<Panels::FrameInfo>("Frame Info"));
+    topBar.RegisterWindowPanel("Profiler", profilerPanel);
     topBar.RegisterWindowPanel("Console", m_panelsManager.GetPanelAs<Panels::Console>("Console"));
     topBar.RegisterWindowPanel("Asset View", m_panelsManager.GetPanelAs<Panels::AssetView>("Asset View"));
     topBar.RegisterWindowPanel("Hierarchy", m_panelsManager.GetPanelAs<Panels::Hierarchy>("Hierarchy"));
@@ -188,6 +202,9 @@ void Editor::Core::Editor::PreUpdate()
 
 void Editor::Core::Editor::Update(float p_deltaTime)
 {
+    m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler").BeginProfilerFrame();
+    NLS_PROFILE_SCOPE();
+
     m_currentDeltaTime = p_deltaTime;
     if (p_deltaTime > std::numeric_limits<float>::epsilon())
     {
@@ -378,6 +395,8 @@ void Editor::Core::Editor::UpdateViews(float p_deltaTime)
 
 void Editor::Core::Editor::RenderEditorUI(float p_deltaTime)
 {
+    NLS_PROFILE_SCOPE();
+
     if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
         NLS_LOG_INFO("Editor::RenderEditorUI: begin");
 

@@ -2,6 +2,7 @@
 
 #include <Debug/Logger.h>
 
+#include "Profiling/Profiler.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverInternal.h"
 #include "Rendering/Context/RenderThreadCoordinator.h"
@@ -93,6 +94,7 @@ namespace NLS::Render::Context
 
     void RenderThreadCoordinator::BeginRendererFrame(Driver& driver, const bool acquireSwapchainImage)
     {
+        NLS_PROFILE_SCOPE();
         if (driver.m_impl->explicitDevice == nullptr || IsThreadedRenderingEnabled(driver))
             return;
 
@@ -101,6 +103,7 @@ namespace NLS::Render::Context
 
     void RenderThreadCoordinator::EndRendererFrame(Driver& driver, const bool presentSwapchain)
     {
+        NLS_PROFILE_SCOPE();
         if (driver.m_impl->explicitDevice == nullptr || IsThreadedRenderingEnabled(driver))
             return;
 
@@ -112,6 +115,7 @@ namespace NLS::Render::Context
         const FrameSnapshot& snapshot,
         size_t* publishedSlotIndex)
     {
+        NLS_PROFILE_SCOPE();
         if (driver.m_impl->threadedLifecycle == nullptr)
             return false;
 
@@ -147,6 +151,7 @@ namespace NLS::Render::Context
         const RenderScenePackage& renderScenePackage,
         size_t* publishedSlotIndex)
     {
+        NLS_PROFILE_SCOPE();
         if (driver.m_impl->threadedLifecycle == nullptr)
             return false;
 
@@ -185,6 +190,7 @@ namespace NLS::Render::Context
         PreparedRenderSceneBuilder renderSceneBuilder,
         size_t* publishedSlotIndex)
     {
+        NLS_PROFILE_SCOPE();
         if (driver.m_impl->threadedLifecycle == nullptr)
             return false;
 
@@ -222,6 +228,7 @@ namespace NLS::Render::Context
 
     bool RenderThreadCoordinator::DrainPendingRenderFrameBuildsSynchronously(Driver& driver)
     {
+        NLS_PROFILE_SCOPE();
         if (driver.m_impl->threadedLifecycle == nullptr)
             return false;
 

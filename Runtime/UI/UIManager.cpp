@@ -8,6 +8,7 @@
 #include "Rendering/RHI/Core/RHIRenderSurfaceConvention.h"
 #include "Rendering/RHI/Utils/RHIUIBridge.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
+#include "UI/Icons/FontAwesomeIconFont.h"
 #include "Windowing/Window.h"
 #include "ImGui/backends/imgui_impl_glfw.h"
 #include "ImGui/imgui_internal.h"
@@ -343,6 +344,7 @@ bool UIManager::LoadFont(const std::string& p_id, const std::string& p_path, flo
 
         if (fontInstance)
         {
+            Icons::EnsureFontAwesomeIconFontLoaded(p_fontSize, fontInstance);
             m_fonts[p_id] = fontInstance;
             return true;
         }

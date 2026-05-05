@@ -9,6 +9,9 @@ Text::Text(const std::string& p_content /*= ""*/, float p_scale)
 
 void Text::_Draw_Impl()
 {
+    if (content.empty())
+        return;
+
     ImGui::SetWindowFontScale(m_scale); 
     ImGui::Text("%s", content.c_str());
     ImGui::SetWindowFontScale(1.f);

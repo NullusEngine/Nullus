@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "Profiling/Profiler.h"
 #include "Rendering/RHI/Backends/DX12/DX12PipelineLayoutUtils.h"
 #include "Rendering/RHI/Core/RHICommand.h"
 
@@ -92,6 +93,8 @@ namespace NLS::Render::Backend
 		void Reset() override;
 		bool IsRecording() const override;
 		void* GetNativeCommandBuffer() const override;
+		void BeginGpuProfileScope(std::string_view name, std::string_view sourceFunction) override;
+		void EndGpuProfileScope() override;
 		void BeginRenderPass(const NLS::Render::RHI::RHIRenderPassDesc& desc) override;
 		void EndRenderPass() override;
 		void SetViewport(const NLS::Render::RHI::RHIViewport& viewport) override;
@@ -121,6 +124,8 @@ namespace NLS::Render::Backend
 #endif
 
 	private:
+		void EndPendingGpuProfileScopes();
+
 		std::string m_debugName;
 		bool m_recording = false;
 #if defined(_WIN32)
@@ -149,6 +154,7 @@ namespace NLS::Render::Backend
 		std::vector<std::shared_ptr<NLS::Render::RHI::RHIBindingSet>> m_recordedBindingSetKeepAlive;
 		std::vector<std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline>> m_recordedPipelineKeepAlive;
 		std::vector<std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>> m_recordedComputePipelineKeepAlive;
+		std::vector<NLS::Base::Profiling::ProfilerGpuScopeEvent> m_gpuProfileScopeStack;
 		bool m_bindingComputePipeline = false;
 	};
 

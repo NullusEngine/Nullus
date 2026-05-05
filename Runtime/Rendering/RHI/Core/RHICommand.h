@@ -130,6 +130,8 @@ namespace NLS::Render::RHI
         virtual bool IsRecording() const = 0;
         // Returns the native command buffer handle (e.g., VkCommandBuffer for Vulkan)
         virtual void* GetNativeCommandBuffer() const = 0;
+        virtual void BeginGpuProfileScope(std::string_view name, std::string_view sourceFunction) {}
+        virtual void EndGpuProfileScope() {}
 
         virtual void BeginRenderPass(const RHIRenderPassDesc& desc) = 0;
         virtual void EndRenderPass() = 0;

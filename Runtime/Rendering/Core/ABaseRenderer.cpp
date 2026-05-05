@@ -2,6 +2,7 @@
 #include <functional>
 #include <fstream>
 #include <filesystem>
+#include "Profiling/Profiler.h"
 #include "Rendering/Core/ABaseRenderer.h"
 #include "Rendering/Buffers/Framebuffer.h"
 #include "Rendering/Buffers/MultiFramebuffer.h"
@@ -115,6 +116,7 @@ ABaseRenderer::~ABaseRenderer()
 
 void ABaseRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
 {
+    NLS_PROFILE_SCOPE();
     NLS_ASSERT(!s_isDrawing, "Cannot call BeginFrame() when previous frame hasn't finished.");
     NLS_ASSERT(p_frameDescriptor.IsValid(), "Invalid FrameDescriptor!");
 
@@ -158,6 +160,7 @@ void ABaseRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
 
 void ABaseRenderer::EndFrame()
 {
+    NLS_PROFILE_SCOPE();
     NLS_ASSERT(s_isDrawing, "Cannot call EndFrame() before calling BeginFrame()");
 
     const bool usesThreadedRendering = Context::RenderThreadCoordinator::IsThreadedRenderingEnabled(m_driver);
@@ -214,6 +217,7 @@ bool ABaseRenderer::IsDrawing() const
 
 bool ABaseRenderer::TryPublishThreadedFrame()
 {
+    NLS_PROFILE_SCOPE();
     const auto snapshot =
         m_pendingFrameSnapshot.has_value()
             ? m_pendingFrameSnapshot
@@ -362,6 +366,7 @@ bool ABaseRenderer::BeginRecordedRenderPass(
     }
 
     commandBuffer->BeginRenderPass(renderPassDesc);
+    commandBuffer->BeginGpuProfileScope(renderPassDesc.debugName, __FUNCTION__);
     commandBuffer->SetViewport({ 0.0f, 0.0f, static_cast<float>(p_width), static_cast<float>(p_height), 0.0f, 1.0f });
     m_recordedRenderPassActive = true;
     return true;
@@ -411,6 +416,7 @@ bool ABaseRenderer::BeginRecordedRenderPass(
     }
 
     commandBuffer->BeginRenderPass(renderPassDesc);
+    commandBuffer->BeginGpuProfileScope(renderPassDesc.debugName, __FUNCTION__);
     commandBuffer->SetViewport({ 0.0f, 0.0f, static_cast<float>(p_width), static_cast<float>(p_height), 0.0f, 1.0f });
     m_recordedRenderPassActive = true;
     return true;
@@ -440,6 +446,7 @@ void ABaseRenderer::EndRecordedRenderPass()
     if (commandBuffer == nullptr || !m_recordedRenderPassActive)
         return;
 
+    commandBuffer->EndGpuProfileScope();
     commandBuffer->EndRenderPass();
     m_recordedRenderPassActive = false;
 }

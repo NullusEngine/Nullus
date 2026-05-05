@@ -102,6 +102,10 @@ endif()
 # 可选的配置项
 # ##############################################################################
 option(NLS_USE_SHARED_LIBRARY "Use Shared Library : OFF|ON (default is ON)" OFF)
+option(NLS_ENABLE_PROFILING "Enable Nullus shared profiling instrumentation" OFF)
+option(NLS_ENABLE_TRACY "Enable Tracy profiler destination" OFF)
+option(NLS_ENABLE_TIMELINE_PROFILER "Enable TimelineProfiler editor destination" OFF)
+option(NLS_BUILD_TRACY_PROFILER "Build Tracy GUI profiler tool" ${NLS_ENABLE_TRACY})
 
 set(NLS_RENDER_API_LIST "OpenGL" "Vulkan" "DX12" "Metal")
 if(WIN32)

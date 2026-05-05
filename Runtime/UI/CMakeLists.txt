@@ -8,3 +8,5 @@ nls_add_runtime_target(
     NLS_Render
     ImGui
 )
+
+include("${CMAKE_CURRENT_SOURCE_DIR}/ImGuiExtensions/CMakeLists.txt")

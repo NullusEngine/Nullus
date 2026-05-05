@@ -13,6 +13,7 @@
 #include "Settings/EditorSettings.h"
 #include "Utils/ActorCreationMenu.h"
 #include "Rendering/Context/DriverAccess.h"
+#include "Shortcuts/EditorShortcutService.h"
 #include "UI/Widgets/Texts/Text.h"
 using namespace NLS;
 using namespace NLS::UI;
@@ -21,11 +22,11 @@ using namespace NLS::Engine::Components;
 Editor::Panels::MenuBar::MenuBar()
 {
 	CreateFileMenu();
+    CreateEditMenu();
 	CreateBuildMenu();
 	CreateWindowMenu();
 	CreateActorsMenu();
 	CreateResourcesMenu();
-	CreateSettingsMenu();
 	CreateLayoutMenu();
 	CreateHelpMenu();
 }
@@ -33,26 +34,17 @@ Editor::Panels::MenuBar::MenuBar()
 void Editor::Panels::MenuBar::HandleShortcuts(float p_deltaTime)
 {
     (void)p_deltaTime;
-	auto& inputManager = *EDITOR_CONTEXT(inputManager);
-
-	if (inputManager.GetKeyState(Windowing::Inputs::EKey::KEY_LEFT_CONTROL) == Windowing::Inputs::EKeyState::KEY_DOWN)
-	{
-		if (inputManager.IsKeyPressed(Windowing::Inputs::EKey::KEY_N))
-			EDITOR_EXEC(LoadEmptyScene());
-
-		if (inputManager.IsKeyPressed(Windowing::Inputs::EKey::KEY_S))
-		{
-			if (inputManager.GetKeyState(Windowing::Inputs::EKey::KEY_LEFT_SHIFT) == Windowing::Inputs::EKeyState::KEY_UP)
-				EDITOR_EXEC(SaveSceneChanges());
-			else
-				EDITOR_EXEC(SaveAs());
-		}
-	}
 }
 
 void Editor::Panels::MenuBar::DrawMenuEntries()
 {
+	UpdateShortcutLabels();
     DrawWidgets();
+}
+
+void Editor::Panels::MenuBar::DrawDialogs()
+{
+    m_shortcutSettingsPanel.Draw();
 }
 
 void Editor::Panels::MenuBar::InitializeSettingsMenu()
@@ -163,11 +155,13 @@ void Editor::Panels::MenuBar::InitializeSettingsMenu()
 		Render::Context::DriverUIAccess::SetRenderDocEnabled(*EDITOR_CONTEXT(driver), enabled);
 		renderDocStatus.content = enabled ? "Status: Enabled" : "Status: Available (disabled)";
 	};
-	renderDocMenu.CreateWidget<Widgets::MenuItem>("Capture Next Frame", "F11").ClickedEvent += []
+	m_renderDocCaptureItem = &renderDocMenu.CreateWidget<Widgets::MenuItem>("Capture Next Frame", "F11");
+	m_renderDocCaptureItem->ClickedEvent += []
 	{
 		Render::Context::DriverUIAccess::QueueRenderDocCapture(*EDITOR_CONTEXT(driver), "Editor");
 	};
-	renderDocMenu.CreateWidget<Widgets::MenuItem>("Open Latest Capture", "CTRL + F11").ClickedEvent += []
+	m_renderDocOpenLatestItem = &renderDocMenu.CreateWidget<Widgets::MenuItem>("Open Latest Capture", "CTRL + F11");
+	m_renderDocOpenLatestItem->ClickedEvent += []
 	{
 		Render::Context::DriverUIAccess::OpenLatestRenderDocCapture(*EDITOR_CONTEXT(driver));
 	};
@@ -193,10 +187,23 @@ void Editor::Panels::MenuBar::InitializeSettingsMenu()
 void Editor::Panels::MenuBar::CreateFileMenu()
 {
 	auto& fileMenu = CreateWidget<Widgets::MenuList>("File");
-	fileMenu.CreateWidget<Widgets::MenuItem>("New Scene", "CTRL + N").ClickedEvent					+= EDITOR_BIND(LoadEmptyScene);
-	fileMenu.CreateWidget<Widgets::MenuItem>("Save Scene", "CTRL + S").ClickedEvent					+= EDITOR_BIND(SaveSceneChanges);
-	fileMenu.CreateWidget<Widgets::MenuItem>("Save Scene As...", "CTRL + SHIFT + S").ClickedEvent	+= EDITOR_BIND(SaveAs);
+	m_newSceneItem = &fileMenu.CreateWidget<Widgets::MenuItem>("New Scene", "CTRL + N");
+	m_newSceneItem->ClickedEvent += EDITOR_BIND(LoadEmptyScene);
+	m_saveSceneItem = &fileMenu.CreateWidget<Widgets::MenuItem>("Save Scene", "CTRL + S");
+	m_saveSceneItem->ClickedEvent += EDITOR_BIND(SaveSceneChanges);
+	m_saveSceneAsItem = &fileMenu.CreateWidget<Widgets::MenuItem>("Save Scene As...", "CTRL + SHIFT + S");
+	m_saveSceneAsItem->ClickedEvent += EDITOR_BIND(SaveAs);
 	fileMenu.CreateWidget<Widgets::MenuItem>("Exit", "ALT + F4").ClickedEvent						+= [] { EDITOR_CONTEXT(window)->SetShouldClose(true); };
+}
+
+void Editor::Panels::MenuBar::CreateEditMenu()
+{
+    m_editMenu = &CreateWidget<Widgets::MenuList>("Edit");
+    m_settingsMenu = &m_editMenu->CreateWidget<Widgets::MenuList>("Settings");
+    m_editMenu->CreateWidget<Widgets::MenuItem>("Shortcuts...").ClickedEvent += [this]
+    {
+        m_shortcutSettingsPanel.Open();
+    };
 }
 
 void Editor::Panels::MenuBar::CreateBuildMenu()
@@ -229,11 +236,6 @@ void Editor::Panels::MenuBar::CreateResourcesMenu()
 	resourcesMenu.CreateWidget<Widgets::MenuItem>("Save materials").ClickedEvent += EDITOR_BIND(SaveMaterials);
 }
 
-void Editor::Panels::MenuBar::CreateSettingsMenu()
-{
-	m_settingsMenu = &CreateWidget<Widgets::MenuList>("Settings");
-}
-
 void Editor::Panels::MenuBar::CreateLayoutMenu() 
 {
 	auto& layoutMenu = CreateWidget<Widgets::MenuList>("Layout");
@@ -263,6 +265,24 @@ void Editor::Panels::MenuBar::UpdateToggleableItems()
 {
 	for (auto&[name, panel] : m_panels)
 		panel.second.get().checked = panel.first.get().IsOpened();
+}
+
+void Editor::Panels::MenuBar::UpdateShortcutLabels()
+{
+	if (!NLS::Core::ServiceLocator::Contains<Shortcuts::EditorShortcutService>())
+		return;
+
+	auto& shortcuts = NLS::Core::ServiceLocator::Get<Shortcuts::EditorShortcutService>();
+	if (m_newSceneItem)
+		m_newSceneItem->shortcut = shortcuts.GetBindingDisplayText("file.new-scene");
+	if (m_saveSceneItem)
+		m_saveSceneItem->shortcut = shortcuts.GetBindingDisplayText("file.save-scene");
+	if (m_saveSceneAsItem)
+		m_saveSceneAsItem->shortcut = shortcuts.GetBindingDisplayText("file.save-scene-as");
+	if (m_renderDocCaptureItem)
+		m_renderDocCaptureItem->shortcut = shortcuts.GetBindingDisplayText("debug.renderdoc.capture-next-frame");
+	if (m_renderDocOpenLatestItem)
+		m_renderDocOpenLatestItem->shortcut = shortcuts.GetBindingDisplayText("debug.renderdoc.open-latest-capture");
 }
 
 void Editor::Panels::MenuBar::OpenEveryWindows(bool p_state)

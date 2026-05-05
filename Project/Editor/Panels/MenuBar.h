@@ -4,6 +4,8 @@
 #include <UI/Panels/PanelWindow.h>
 #include <UI/Widgets/Menu/MenuItem.h>
 
+#include "Panels/ShortcutSettingsPanel.h"
+
 namespace NLS::Editor::Panels
 {
 	class MenuBar : public UI::PanelMenuBar
@@ -23,6 +25,7 @@ namespace NLS::Editor::Panels
 		void HandleShortcuts(float p_deltaTime);
 
         void DrawMenuEntries();
+        void DrawDialogs();
 
 		/**
 		* Register a panel to the menu bar window menu
@@ -37,20 +40,28 @@ namespace NLS::Editor::Panels
 
 	private:
 		void CreateFileMenu();
+        void CreateEditMenu();
 		void CreateBuildMenu();
 		void CreateWindowMenu();
 		void CreateActorsMenu();
 		void CreateResourcesMenu();
-		void CreateSettingsMenu();
 		void CreateLayoutMenu();
 		void CreateHelpMenu();
 
 		void UpdateToggleableItems();
+		void UpdateShortcutLabels();
 		void OpenEveryWindows(bool p_state);
 
 	private:
 		PanelMap m_panels;
+        ShortcutSettingsPanel m_shortcutSettingsPanel;
+        UI::Widgets::MenuList* m_editMenu = nullptr;
 		UI::Widgets::MenuList* m_settingsMenu = nullptr;
 		UI::Widgets::MenuList* m_windowMenu = nullptr;
+		UI::Widgets::MenuItem* m_newSceneItem = nullptr;
+		UI::Widgets::MenuItem* m_saveSceneItem = nullptr;
+		UI::Widgets::MenuItem* m_saveSceneAsItem = nullptr;
+		UI::Widgets::MenuItem* m_renderDocCaptureItem = nullptr;
+		UI::Widgets::MenuItem* m_renderDocOpenLatestItem = nullptr;
 	};
 }

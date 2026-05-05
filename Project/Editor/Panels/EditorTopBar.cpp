@@ -74,6 +74,11 @@ void EditorTopBar::RegisterWindowPanel(const std::string& p_name, UI::PanelWindo
     m_menuBar.RegisterPanel(p_name, p_panel);
 }
 
+void EditorTopBar::DrawDialogs()
+{
+    m_menuBar.DrawDialogs();
+}
+
 void EditorTopBar::DrawBarContent()
 {
     if (ImGui::BeginMenuBar())
@@ -82,6 +87,7 @@ void EditorTopBar::DrawBarContent()
         ImGui::EndMenuBar();
     }
 
+    m_menuBar.DrawDialogs();
     DrawToolbarRow();
 }
 

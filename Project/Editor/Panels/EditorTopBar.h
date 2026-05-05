@@ -16,6 +16,7 @@ namespace NLS::Editor::Panels
         void InitializeSettingsMenu();
         void HandleShortcuts(float p_deltaTime);
         void RegisterWindowPanel(const std::string& p_name, UI::PanelWindow& p_panel);
+        void DrawDialogs();
 
     protected:
         void DrawBarContent() override;

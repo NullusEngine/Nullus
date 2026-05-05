@@ -986,14 +986,19 @@ namespace
             return std::make_shared<TestSemaphore>();
         }
         void ReadPixels(
-            const std::shared_ptr<NLS::Render::RHI::RHITexture>&,
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
             uint32_t,
             uint32_t,
             uint32_t,
             uint32_t,
             NLS::Render::Settings::EPixelDataFormat,
             NLS::Render::Settings::EPixelDataType,
-            void*) override {}
+            void*) override
+        {
+            lastReadPixelsTexture = texture;
+        }
+
+        std::shared_ptr<NLS::Render::RHI::RHITexture> lastReadPixelsTexture;
 
     private:
         std::shared_ptr<NLS::Render::RHI::RHIAdapter> m_adapter;
@@ -1382,6 +1387,37 @@ TEST(ThreadedRenderingLifecycleTests, CompositeRendererPublishesThreadedFrameTel
     EXPECT_EQ(telemetry.inFlightFrameCount, 1u);
     EXPECT_EQ(telemetry.blockedPublishCount, 0u);
     EXPECT_EQ(telemetry.publishState, NLS::Render::Data::FramePublishState::Open);
+}
+
+TEST(ThreadedRenderingLifecycleTests, TelemetryTracksLatestPublishedAndRetiredFrameIds)
+{
+    NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(1u);
+
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 41u;
+
+    size_t slotIndex = 0u;
+    ASSERT_TRUE(lifecycle.TryPublishFrameSnapshot(snapshot, &slotIndex));
+
+    auto telemetry = lifecycle.GetTelemetry();
+    EXPECT_EQ(telemetry.latestPublishedFrameId, 41u);
+    EXPECT_EQ(telemetry.latestRetiredFrameId, 0u);
+
+    ASSERT_TRUE(lifecycle.TryBeginRenderScene(slotIndex));
+
+    NLS::Render::Context::RenderScenePackage package;
+    package.frameId = 41u;
+    ASSERT_TRUE(lifecycle.CompleteRenderScene(slotIndex, package));
+    ASSERT_TRUE(lifecycle.TryBeginRhiSubmission(slotIndex));
+
+    NLS::Render::Context::RhiSubmissionFrame submissionFrame;
+    submissionFrame.frameId = 41u;
+    ASSERT_TRUE(lifecycle.CompleteRhiSubmission(slotIndex, submissionFrame));
+    ASSERT_TRUE(lifecycle.RetireFrame(slotIndex));
+
+    telemetry = lifecycle.GetTelemetry();
+    EXPECT_EQ(telemetry.latestPublishedFrameId, 41u);
+    EXPECT_EQ(telemetry.latestRetiredFrameId, 41u);
 }
 
 TEST(ThreadedRenderingLifecycleTests, CompositeRendererKeepsFrameDescriptorsUntilPreparedBuilderIsCaptured)
@@ -5571,4 +5607,52 @@ TEST(ThreadedRenderingLifecycleTests, ThreadedPreparedFramePublishesCompletedPre
     EXPECT_EQ(
         NLS::Render::Context::DriverRendererAccess::ResolveReadbackTexture(driver),
         preferredReadbackTexture);
+}
+
+TEST(ThreadedRenderingLifecycleTests, CompletedReadbackHistoryRetainsPreviousTextureForExplicitReadbackConsumers)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Render::RHI::RHITextureDesc pickingDesc;
+    pickingDesc.debugName = "SceneViewPickingReadback";
+    pickingDesc.extent = { 64u, 64u, 1u };
+    auto pickingTexture = std::make_shared<TestTexture>(pickingDesc);
+
+    NLS::Render::RHI::RHITextureDesc gameViewDesc;
+    gameViewDesc.debugName = "GameViewReadback";
+    gameViewDesc.extent = { 64u, 64u, 1u };
+    auto gameViewTexture = std::make_shared<TestTexture>(gameViewDesc);
+
+    NLS::Render::Context::DriverTestAccess::SetCompletedReadbackTexture(driver, pickingTexture);
+    NLS::Render::Context::DriverTestAccess::SetCompletedReadbackTexture(driver, gameViewTexture);
+
+    EXPECT_EQ(
+        NLS::Render::Context::DriverRendererAccess::ResolveReadbackTexture(driver),
+        gameViewTexture);
+    EXPECT_TRUE(NLS::Render::Context::DriverRendererAccess::HasCompletedReadbackTexture(
+        driver,
+        pickingTexture));
+
+    uint8_t pixel[3] {};
+    NLS::Render::Context::DriverRendererAccess::ReadPixels(
+        driver,
+        pickingTexture,
+        0u,
+        0u,
+        1u,
+        1u,
+        NLS::Render::Settings::EPixelDataFormat::RGB,
+        NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
+        pixel);
+
+    EXPECT_EQ(explicitDevice->lastReadPixelsTexture, pickingTexture);
 }

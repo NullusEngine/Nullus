@@ -35,6 +35,31 @@ namespace NLS::Render::Context
                 : nullptr;
         }
 
+        void RememberCompletedReadbackTexture(
+            DriverImpl& impl,
+            const std::shared_ptr<Render::RHI::RHITexture>& texture)
+        {
+            impl.completedReadbackTexture = texture;
+            if (texture == nullptr)
+                return;
+
+            impl.completedReadbackTextureHistory.erase(
+                std::remove_if(
+                    impl.completedReadbackTextureHistory.begin(),
+                    impl.completedReadbackTextureHistory.end(),
+                    [&texture](const std::weak_ptr<Render::RHI::RHITexture>& storedTexture)
+                    {
+                        const auto lockedTexture = storedTexture.lock();
+                        return lockedTexture == nullptr || lockedTexture == texture;
+                    }),
+                impl.completedReadbackTextureHistory.end());
+
+            impl.completedReadbackTextureHistory.push_back(texture);
+            constexpr size_t kMaxCompletedReadbackHistory = 8u;
+            while (impl.completedReadbackTextureHistory.size() > kMaxCompletedReadbackHistory)
+                impl.completedReadbackTextureHistory.erase(impl.completedReadbackTextureHistory.begin());
+        }
+
         bool IsSwapchainDepthStencilCompatible(
             const Render::RHI::RHIFrameContext& frameContext,
             const uint32_t width,
@@ -156,7 +181,7 @@ namespace NLS::Render::Context
             if (frameContext->uploadContext != nullptr)
                 frameContext->uploadContext->EndFrame(impl.currentFrameIndex);
 
-            impl.completedReadbackTexture = frameContext->explicitReadbackTexture;
+            RememberCompletedReadbackTexture(impl, frameContext->explicitReadbackTexture);
             impl.explicitFrameActive = false;
             impl.uiStandaloneFrameActive = false;
             impl.currentFrameIndex = (impl.currentFrameIndex + 1u) % impl.frameContexts.size();
@@ -1975,12 +2000,16 @@ namespace NLS::Render::Context
         if (submissionFrame != nullptr)
         {
             if (frameContext.frameFence != nullptr)
+            {
+                NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::WaitFrameFence");
                 submissionFrame->retirementFenceWaited = frameContext.frameFence->Wait();
+            }
             else
                 submissionFrame->retirementFenceWaited = false;
         }
         else if (frameContext.frameFence != nullptr)
         {
+            NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::WaitFrameFence");
             frameContext.frameFence->Wait();
         }
 
@@ -1991,7 +2020,7 @@ namespace NLS::Render::Context
 
         submitPlan.batches.clear();
         submitPlan.temporarySemaphores.clear();
-        impl.completedReadbackTexture = frameContext.explicitReadbackTexture;
+        RememberCompletedReadbackTexture(impl, frameContext.explicitReadbackTexture);
         impl.currentFrameIndex = (impl.currentFrameIndex + 1u) % impl.frameContexts.size();
     }
 
@@ -2242,7 +2271,7 @@ namespace NLS::Render::Context
         if (frameContext.uploadContext != nullptr)
             frameContext.uploadContext->EndFrame(driver.m_impl->currentFrameIndex);
 
-        driver.m_impl->completedReadbackTexture = frameContext.explicitReadbackTexture;
+        RememberCompletedReadbackTexture(*driver.m_impl, frameContext.explicitReadbackTexture);
         driver.m_impl->currentFrameIndex = (driver.m_impl->currentFrameIndex + 1u) % driver.m_impl->frameContexts.size();
         driver.m_impl->explicitFrameActive = false;
     }
@@ -2310,6 +2339,41 @@ namespace NLS::Render::Context
         if (texture == nullptr)
         {
             NLS_LOG_WARNING("RhiThreadCoordinator::ReadPixels: no active explicit readback source is available.");
+            return;
+        }
+
+        driver.m_impl->explicitDevice->ReadPixels(
+            texture,
+            x,
+            y,
+            width,
+            height,
+            format,
+            type,
+            data);
+    }
+
+    void RhiThreadCoordinator::ReadPixels(
+        const Driver& driver,
+        const std::shared_ptr<Render::RHI::RHITexture>& texture,
+        const uint32_t x,
+        const uint32_t y,
+        const uint32_t width,
+        const uint32_t height,
+        const Settings::EPixelDataFormat format,
+        const Settings::EPixelDataType type,
+        void* data)
+    {
+        NLS_PROFILE_SCOPE();
+        if (driver.m_impl == nullptr || driver.m_impl->explicitDevice == nullptr)
+        {
+            NLS_LOG_WARNING("RhiThreadCoordinator::ReadPixels: explicit device is unavailable.");
+            return;
+        }
+
+        if (texture == nullptr)
+        {
+            NLS_LOG_WARNING("RhiThreadCoordinator::ReadPixels: explicit readback source is unavailable.");
             return;
         }
 

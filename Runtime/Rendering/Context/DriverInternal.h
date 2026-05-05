@@ -41,6 +41,7 @@ namespace NLS::Render::Context
         bool explicitFrameActive = false;
         bool uiStandaloneFrameActive = false;
         std::shared_ptr<Render::RHI::RHITexture> completedReadbackTexture;
+        std::vector<std::weak_ptr<Render::RHI::RHITexture>> completedReadbackTextureHistory;
         bool hasPendingSwapchainResize = false;
         uint32_t pendingSwapchainWidth = 0u;
         uint32_t pendingSwapchainHeight = 0u;

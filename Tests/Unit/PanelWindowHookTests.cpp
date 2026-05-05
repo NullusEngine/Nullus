@@ -8,7 +8,9 @@
 #include "Core/ServiceLocator.h"
 #include "Panels/FrameInfo.h"
 #include "Panels/ProfilerPanel.h"
+#include "Panels/Console.h"
 #include "Panels/ViewFrameLifecycle.h"
+#include "Panels/SceneViewPickingPolicy.h"
 #include "Profiling/Profiler.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverAccess.h"
@@ -213,6 +215,39 @@ TEST(PanelWindowHookTests, ProfilerPanelReportsTimelineDisabledByDefault)
 #endif
 }
 
+TEST(PanelWindowHookTests, ConsoleDefersBackgroundThreadLogsUntilUiFlush)
+{
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+
+    NLS::Editor::Panels::Console panel("Console", true, {});
+
+    NLS::Debug::LogData logData;
+    logData.date = "2026-05-05_17-30-00";
+    logData.message = "Background render thread log";
+    logData.logLevel = NLS::Debug::ELogLevel::LOG_INFO;
+
+    auto& widgets = panel.GetWidgets();
+    ASSERT_FALSE(widgets.empty());
+    auto* logGroup = dynamic_cast<NLS::UI::Widgets::Group*>(widgets.back().first);
+    ASSERT_NE(logGroup, nullptr);
+    EXPECT_TRUE(logGroup->GetWidgets().empty());
+
+    std::thread worker([&panel, &logData]
+    {
+        panel.OnLogIntercepted(logData);
+    });
+    worker.join();
+
+    EXPECT_TRUE(logGroup->GetWidgets().empty());
+
+    panel.FlushPendingLogs();
+
+    EXPECT_EQ(logGroup->GetWidgets().size(), 1u);
+
+    ImGui::DestroyContext();
+}
+
 TEST(PanelWindowHookTests, ProfilerPanelDrawDoesNotAdvanceTimelineFrameInsideActiveScope)
 {
 #if defined(NLS_ENABLE_TIMELINE_PROFILER)
@@ -391,4 +426,144 @@ TEST(PanelWindowHookTests, RetirementAwareRenderPolicyDrainsOnlyForImmediateRead
     EXPECT_FALSE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
         false,
         true));
+}
+
+TEST(PanelWindowHookTests, SceneViewPickingUsesDelayedReadbackByDefault)
+{
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldSceneViewRequestImmediatePickingReadback());
+}
+
+TEST(PanelWindowHookTests, SceneViewPickingRendersOnlyWhenSampleIsNeeded)
+{
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldRenderScenePickingFrame(
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        true));
+
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldRenderScenePickingFrame(
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        true,
+        true,
+        true));
+
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldRenderScenePickingFrame(
+        true,
+        false,
+        false,
+        false,
+        true,
+        true,
+        false,
+        false,
+        true));
+
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldRenderScenePickingFrame(
+        true,
+        false,
+        true,
+        true,
+        true,
+        false,
+        true,
+        true,
+        false));
+
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldRenderScenePickingFrame(
+        true,
+        false,
+        false,
+        true,
+        false,
+        false,
+        false,
+        false,
+        true));
+}
+
+TEST(PanelWindowHookTests, DelayedSceneViewReadbackDelaysOverlayMatrices)
+{
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldDelayRetirementAwareViewOverlayMatrices(
+        true,
+        false,
+        true));
+
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldDelayRetirementAwareViewOverlayMatrices(
+        true,
+        true,
+        true));
+
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldDelayRetirementAwareViewOverlayMatrices(
+        true,
+        false,
+        false));
+}
+
+TEST(PanelWindowHookTests, SceneMutatingViewportOverlayRunsBeforeViewRender)
+{
+    using NLS::Editor::Panels::ViewportOverlayLifecyclePhase;
+
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldApplySceneMutationFromViewportOverlay(
+        ViewportOverlayLifecyclePhase::BeforeViewRender));
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldApplySceneMutationFromViewportOverlay(
+        ViewportOverlayLifecyclePhase::AfterWidgetDraw));
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldResolveViewportPicking(
+        ViewportOverlayLifecyclePhase::BeforeViewRender));
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldResolveViewportPicking(
+        ViewportOverlayLifecyclePhase::AfterWidgetDraw));
+}
+
+TEST(PanelWindowHookTests, PendingSceneClickPickWaitsForRequestedPickingFrame)
+{
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldResolvePendingSceneClickPick(
+        true,
+        true,
+        false,
+        8u,
+        8u));
+
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldResolvePendingSceneClickPick(
+        true,
+        false,
+        false,
+        0u,
+        8u));
+
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldResolvePendingSceneClickPick(
+        true,
+        false,
+        false,
+        8u,
+        7u));
+
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldResolvePendingSceneClickPick(
+        true,
+        false,
+        false,
+        8u,
+        8u));
+
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldResolvePendingSceneClickPick(
+        true,
+        false,
+        false,
+        8u,
+        9u));
+
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldResolvePendingSceneClickPick(
+        true,
+        false,
+        true,
+        8u,
+        8u));
 }

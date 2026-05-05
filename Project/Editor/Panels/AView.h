@@ -1,6 +1,8 @@
 ﻿#pragma once
 
 
+#include <deque>
+#include <memory>
 #include <optional>
 
 #include <UI/Panels/PanelWindow.h>
@@ -13,6 +15,20 @@
 
 namespace NLS::Editor::Panels
 {
+    struct ViewOverlayCameraMatrices;
+}
+
+struct ImDrawListSplitter;
+
+namespace NLS::Editor::Panels
+{
+    struct ViewOverlayCameraMatrices
+    {
+        uint64_t frameId = 0u;
+        Maths::Matrix4 view = Maths::Matrix4::Identity;
+        Maths::Matrix4 projection = Maths::Matrix4::Identity;
+    };
+
 	/**
 	* Base class for any view
 	*/
@@ -30,6 +46,7 @@ namespace NLS::Editor::Panels
 			bool p_opened,
 			const UI::PanelWindowSettings& p_windowSettings
 		);
+        ~AView() override;
 
 		/**
 		* Update the view
@@ -96,6 +113,7 @@ namespace NLS::Editor::Panels
 	protected:
 		void OnBeforeDrawWidgets() override;
 		void OnAfterDrawWidgets() override;
+        virtual void DrawPreRenderViewportOverlay();
         virtual void DrawViewportOverlay();
         virtual Engine::Rendering::BaseSceneRenderer::SceneDescriptor CreateSceneDescriptor();
 		virtual bool RequiresRetiredFrameConsumption() const;
@@ -105,6 +123,19 @@ namespace NLS::Editor::Panels
 		void SyncViewToCurrentContentRegion();
 		void Render(uint16_t p_width, uint16_t p_height);
 		void ApplyResolvedViewSize(uint16_t p_width, uint16_t p_height);
+        void UpdatePreRenderOverlayCameraMatrices();
+        void BeginViewportOverlayDrawListChannels();
+        void FinishPreRenderViewportOverlayDrawList();
+        void EndViewportOverlayDrawListChannels();
+        void UpdateSubmittedOverlayCameraMatrices(
+            const ViewOverlayCameraMatrices& submittedMatrices,
+            bool threadedRendering,
+            bool framePublished,
+            uint64_t latestPublishedFrameId,
+            uint64_t latestRetiredFrameId);
+        Maths::Vector2 GetCurrentViewportImageMin() const;
+        Maths::Vector2 GetCurrentViewportImageMax() const;
+        ViewOverlayCameraMatrices GetViewportOverlayCameraMatrices() const;
         bool HasViewportImageBounds() const;
         Maths::Vector2 GetViewportImageMin() const;
         Maths::Vector2 GetViewportImageMax() const;
@@ -118,6 +149,10 @@ namespace NLS::Editor::Panels
         std::unique_ptr<Engine::Rendering::BaseSceneRenderer> m_renderer;
 		std::pair<uint16_t, uint16_t> m_lastResolvedViewSize { 0u, 0u };
 		std::optional<std::pair<uint16_t, uint16_t>> m_pendingResolvedViewSize;
+        std::optional<ViewOverlayCameraMatrices> m_overlayCameraMatricesForCurrentDraw;
+        std::deque<ViewOverlayCameraMatrices> m_submittedOverlayCameraMatrices;
+        std::unique_ptr<ImDrawListSplitter> m_viewportOverlayDrawSplitter;
+        bool m_viewportOverlayDrawListChannelsActive = false;
 		bool m_requiresRetiredFrameConsumption = false;
         bool m_requiresImmediateRetiredFrameReadback = false;
 	};

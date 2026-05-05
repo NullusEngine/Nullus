@@ -197,6 +197,7 @@ bool ThreadedRenderingLifecycle::PublishFrameSnapshotLocked(const FrameSnapshot&
     slot->submissionFrame.reset();
     slot->stage = ThreadedFrameStage::Published;
     ++m_telemetry.publishedFrameCount;
+    m_latestPublishedFrameId = snapshot.frameId;
     m_telemetry.publishState = Data::FramePublishState::Open;
     RefreshTelemetryLocked();
 
@@ -229,6 +230,7 @@ bool ThreadedRenderingLifecycle::PublishPreparedFrameLocked(
     slot->submissionFrame.reset();
     slot->stage = ThreadedFrameStage::Published;
     ++m_telemetry.publishedFrameCount;
+    m_latestPublishedFrameId = snapshot.frameId;
     m_telemetry.publishState = Data::FramePublishState::Open;
     RefreshTelemetryLocked();
 
@@ -258,6 +260,7 @@ bool ThreadedRenderingLifecycle::PublishPreparedFrameBuilderLocked(
     slot->submissionFrame.reset();
     slot->stage = ThreadedFrameStage::Published;
     ++m_telemetry.publishedFrameCount;
+    m_latestPublishedFrameId = snapshot.frameId;
     m_telemetry.publishState = Data::FramePublishState::Open;
     RefreshTelemetryLocked();
 
@@ -466,6 +469,8 @@ bool ThreadedRenderingLifecycle::RetireFrame(const size_t slotIndex)
         if (slot == nullptr || slot->stage != ThreadedFrameStage::RhiSubmitting)
             return false;
 
+        if (slot->submissionFrame.has_value())
+            m_latestRetiredFrameId = slot->submissionFrame->frameId;
         slot->stage = ThreadedFrameStage::Retired;
         RefreshTelemetryLocked();
     }
@@ -597,6 +602,8 @@ const InFlightFrameSlot* ThreadedRenderingLifecycle::PeekSlotLocked(const size_t
 void ThreadedRenderingLifecycle::RefreshTelemetryLocked()
 {
     m_telemetry.inFlightFrameCount = 0u;
+    m_telemetry.latestPublishedFrameId = m_latestPublishedFrameId;
+    m_telemetry.latestRetiredFrameId = m_latestRetiredFrameId;
     m_telemetry.publishOrigin = ThreadedFramePublishOrigin::Unknown;
     m_telemetry.renderSceneAttribution = RenderSceneAttribution::Unknown;
     m_telemetry.rhiSubmissionAttribution = RhiSubmissionAttribution::Unknown;

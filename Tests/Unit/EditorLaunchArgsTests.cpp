@@ -2,6 +2,7 @@
 
 #include <vector>
 
+#include "Core/EditorFrameLatency.h"
 #include "Core/EditorLaunchArgs.h"
 #include "Rendering/RHI/Backends/DX12/DX12Device.h"
 
@@ -50,6 +51,24 @@ TEST(EditorLaunchArgsTests, ExplicitNoDebugValidationFlagDisablesRhiDebugValidat
 
     EXPECT_FALSE(parsed.hasError);
     EXPECT_FALSE(parsed.enableRhiDebugValidation);
+}
+
+TEST(EditorLaunchArgsTests, ScenePickingDiagnosticsCanBeEnabledWithoutDx12FrameFlowLogging)
+{
+    std::vector<std::string> storage;
+    char** argv = MutableArgv({"Editor.exe", "--editor-log-scene-picking", "TestProject.nullus"}, storage);
+
+    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+
+    EXPECT_FALSE(parsed.hasError);
+    EXPECT_TRUE(parsed.diagnosticsSettings.editorLogScenePicking);
+    EXPECT_FALSE(parsed.diagnosticsSettings.dx12LogFrameFlow);
+}
+
+TEST(EditorLaunchArgsTests, EditorThreadedRenderingUsesSingleFrameSlotForInteractionLatency)
+{
+    EXPECT_EQ(NLS::Editor::Core::ResolveEditorThreadedFrameSlotCount(2u), 1u);
+    EXPECT_EQ(NLS::Editor::Core::ResolveEditorThreadedFrameSlotCount(3u), 1u);
 }
 
 #if defined(_WIN32)

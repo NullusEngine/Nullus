@@ -3,8 +3,10 @@
 #include "Core/EditorActions.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/FrameGraph/ExternalResourceBridge.h"
+#include "Profiling/Profiler.h"
 #include "ServiceLocator.h"
 #include "UI/UIManager.h"
+#include "ImGui/imgui.h"
 #include <algorithm>
 #include <limits>
 
@@ -15,12 +17,15 @@ Editor::Panels::AView::AView
 	const std::string& p_title,
 	bool p_opened,
 	const UI::PanelWindowSettings& p_windowSettings
-) : PanelWindow(p_title, p_opened, p_windowSettings)
+) : PanelWindow(p_title, p_opened, p_windowSettings),
+    m_viewportOverlayDrawSplitter(std::make_unique<ImDrawListSplitter>())
 {
 	m_image = &CreateWidget<UI::Widgets::Image>(m_fbo.GetOrCreateExplicitColorView("Editor.AView.Output"), Maths::Vector2{ 0.f, 0.f });
 	m_image->flipVertically = NLS_SERVICE(UI::UIManager).ShouldFlipPresentedRenderTargetVertically();
 	panelSettings.scrollable = false;
 }
+
+Editor::Panels::AView::~AView() = default;
 
 void Editor::Panels::AView::Update(float p_deltaTime)
 {
@@ -37,12 +42,17 @@ void Editor::Panels::AView::_Draw_Impl()
 void Editor::Panels::AView::OnBeforeDrawWidgets()
 {
 	SyncViewToCurrentContentRegion();
+    UpdatePreRenderOverlayCameraMatrices();
+    BeginViewportOverlayDrawListChannels();
+    DrawPreRenderViewportOverlay();
+    FinishPreRenderViewportOverlayDrawList();
 	Render(m_lastResolvedViewSize.first, m_lastResolvedViewSize.second);
 }
 
 void Editor::Panels::AView::OnAfterDrawWidgets()
 {
     DrawViewportOverlay();
+    EndViewportOverlayDrawListChannels();
 }
 
 void Editor::Panels::AView::InitFrame()
@@ -117,11 +127,20 @@ void Editor::Panels::AView::SyncViewToCurrentContentRegion()
 
 void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_height)
 {
+	NLS_PROFILE_NAMED_SCOPE(name.c_str());
 	auto camera = GetCamera();
 	auto scene = GetScene();
 
 	if (p_width > 0 && p_height > 0 && camera && scene)
 	{
+        Render::Context::ThreadedFrameTelemetry beforeTelemetry {};
+        auto* driver = Render::Context::TryGetLocatedDriver();
+        const bool threadedRendering =
+            driver != nullptr &&
+            Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver);
+        if (threadedRendering)
+            beforeTelemetry = Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(*driver);
+
 		InitFrame();
 
 		Render::Data::FrameDescriptor frameDescriptor;
@@ -134,7 +153,13 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
         NLS::Render::FrameGraph::SetExternalSceneOutputFramebuffer(frameDescriptor, &m_fbo);
 
 		m_renderer->BeginFrame(frameDescriptor);
-		DrawFrame();
+        ViewOverlayCameraMatrices submittedOverlayMatrices;
+        submittedOverlayMatrices.view = camera->GetViewMatrix();
+        submittedOverlayMatrices.projection = camera->GetProjectionMatrix();
+		{
+			NLS_PROFILE_NAMED_SCOPE("AView::DrawFrame");
+			DrawFrame();
+		}
 		m_renderer->EndFrame();
         if (Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
             RequiresRetiredFrameConsumption(),
@@ -148,6 +173,22 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
                 Render::Context::DriverRendererAccess::DrainThreadedRendering(*driver);
             }
         }
+        bool framePublished = !threadedRendering;
+        uint64_t latestPublishedFrameId = 0u;
+        uint64_t latestRetiredFrameId = 0u;
+        if (threadedRendering && driver != nullptr)
+        {
+            const auto afterTelemetry = Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(*driver);
+            framePublished = afterTelemetry.publishedFrameCount > beforeTelemetry.publishedFrameCount;
+            latestPublishedFrameId = afterTelemetry.latestPublishedFrameId;
+            latestRetiredFrameId = afterTelemetry.latestRetiredFrameId;
+        }
+        UpdateSubmittedOverlayCameraMatrices(
+            submittedOverlayMatrices,
+            threadedRendering,
+            framePublished,
+            latestPublishedFrameId,
+            latestRetiredFrameId);
 		AfterRenderFrame();
 	}
 }
@@ -158,6 +199,10 @@ void Editor::Panels::AView::DrawFrame()
 }
 
 void Editor::Panels::AView::AfterRenderFrame()
+{
+}
+
+void Editor::Panels::AView::DrawPreRenderViewportOverlay()
 {
 }
 
@@ -192,6 +237,135 @@ void Editor::Panels::AView::ApplyResolvedViewSize(const uint16_t p_width, const 
     m_fbo.Resize(p_width, p_height);
     m_image->textureView = m_fbo.GetOrCreateExplicitColorView("Editor.AView.Output");
     m_pendingResolvedViewSize.reset();
+}
+
+void Editor::Panels::AView::UpdatePreRenderOverlayCameraMatrices()
+{
+    auto* camera = GetCamera();
+    if (camera == nullptr)
+        return;
+
+    auto* driver = Render::Context::TryGetLocatedDriver();
+    const bool threadedRendering =
+        driver != nullptr &&
+        Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver);
+    const bool delayOverlayMatrices = Editor::Panels::ShouldDelayRetirementAwareViewOverlayMatrices(
+        RequiresRetiredFrameConsumption(),
+        RequiresImmediateRetiredFrameReadback(),
+        threadedRendering);
+    if (delayOverlayMatrices && m_overlayCameraMatricesForCurrentDraw.has_value())
+        return;
+
+    ViewOverlayCameraMatrices currentMatrices;
+    currentMatrices.view = camera->GetViewMatrix();
+    currentMatrices.projection = camera->GetProjectionMatrix();
+    m_overlayCameraMatricesForCurrentDraw = currentMatrices;
+}
+
+void Editor::Panels::AView::BeginViewportOverlayDrawListChannels()
+{
+    auto* drawList = ImGui::GetWindowDrawList();
+    if (drawList == nullptr || m_viewportOverlayDrawSplitter == nullptr)
+        return;
+
+    m_viewportOverlayDrawSplitter->Split(drawList, 2);
+    m_viewportOverlayDrawSplitter->SetCurrentChannel(drawList, 1);
+    m_viewportOverlayDrawListChannelsActive = true;
+}
+
+void Editor::Panels::AView::FinishPreRenderViewportOverlayDrawList()
+{
+    if (!m_viewportOverlayDrawListChannelsActive || m_viewportOverlayDrawSplitter == nullptr)
+        return;
+
+    if (auto* drawList = ImGui::GetWindowDrawList())
+        m_viewportOverlayDrawSplitter->SetCurrentChannel(drawList, 0);
+}
+
+void Editor::Panels::AView::EndViewportOverlayDrawListChannels()
+{
+    if (!m_viewportOverlayDrawListChannelsActive || m_viewportOverlayDrawSplitter == nullptr)
+        return;
+
+    if (auto* drawList = ImGui::GetWindowDrawList())
+        m_viewportOverlayDrawSplitter->Merge(drawList);
+
+    m_viewportOverlayDrawListChannelsActive = false;
+}
+
+void Editor::Panels::AView::UpdateSubmittedOverlayCameraMatrices(
+    const ViewOverlayCameraMatrices& submittedMatrices,
+    const bool threadedRendering,
+    const bool framePublished,
+    const uint64_t latestPublishedFrameId,
+    const uint64_t latestRetiredFrameId)
+{
+    const bool delayOverlayMatrices = Editor::Panels::ShouldDelayRetirementAwareViewOverlayMatrices(
+        RequiresRetiredFrameConsumption(),
+        RequiresImmediateRetiredFrameReadback(),
+        threadedRendering);
+
+    if (framePublished)
+    {
+        auto storedMatrices = submittedMatrices;
+        storedMatrices.frameId = threadedRendering ? latestPublishedFrameId : 0u;
+        m_submittedOverlayCameraMatrices.push_back(storedMatrices);
+        constexpr size_t kMaxOverlayCameraMatrixHistory = 8u;
+        while (m_submittedOverlayCameraMatrices.size() > kMaxOverlayCameraMatrixHistory)
+            m_submittedOverlayCameraMatrices.pop_front();
+    }
+
+    if (!delayOverlayMatrices)
+    {
+        if (!m_submittedOverlayCameraMatrices.empty())
+            m_overlayCameraMatricesForCurrentDraw = m_submittedOverlayCameraMatrices.back();
+        else
+            m_overlayCameraMatricesForCurrentDraw = submittedMatrices;
+        return;
+    }
+
+    if (m_submittedOverlayCameraMatrices.empty())
+    {
+        m_overlayCameraMatricesForCurrentDraw = submittedMatrices;
+        return;
+    }
+
+    auto selectedMatrices = m_submittedOverlayCameraMatrices.front();
+    for (const auto& candidateMatrices : m_submittedOverlayCameraMatrices)
+    {
+        if (candidateMatrices.frameId > latestRetiredFrameId)
+            break;
+        selectedMatrices = candidateMatrices;
+    }
+    m_overlayCameraMatricesForCurrentDraw = selectedMatrices;
+}
+
+Editor::Panels::ViewOverlayCameraMatrices Editor::Panels::AView::GetViewportOverlayCameraMatrices() const
+{
+    if (m_overlayCameraMatricesForCurrentDraw.has_value())
+        return m_overlayCameraMatricesForCurrentDraw.value();
+
+    if (!m_submittedOverlayCameraMatrices.empty())
+        return m_submittedOverlayCameraMatrices.back();
+
+    return {};
+}
+
+Maths::Vector2 Editor::Panels::AView::GetCurrentViewportImageMin() const
+{
+    return {
+        ImGui::GetCursorScreenPos().x,
+        ImGui::GetCursorScreenPos().y
+    };
+}
+
+Maths::Vector2 Editor::Panels::AView::GetCurrentViewportImageMax() const
+{
+    const auto imageMin = GetCurrentViewportImageMin();
+    return {
+        imageMin.x + static_cast<float>(m_lastResolvedViewSize.first),
+        imageMin.y + static_cast<float>(m_lastResolvedViewSize.second)
+    };
 }
 
 std::pair<uint16_t, uint16_t> Editor::Panels::AView::GetSafeSize() const

@@ -6,14 +6,19 @@
 #include "Core/EditorActions.h"
 #include "Panels/SceneView.h"
 #include "Panels/GameView.h"
+#include "Panels/SceneViewPickingPolicy.h"
+#include "Panels/ViewFrameLifecycle.h"
 #include "Settings/EditorSettings.h"
 #include "Core/SceneCameraFocus.h"
 #include "ImGuizmo.h"
+#include "Debug/Logger.h"
+#include "Rendering/Settings/GraphicsBackendUtils.h"
 #include <ServiceLocator.h>
 #include <UI/UIManager.h>
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <sstream>
 using namespace NLS;
 
 namespace
@@ -89,6 +94,18 @@ Engine::GameObject* PickActorNearRenderCoordinate(
 
     return nullptr;
 }
+
+bool ShouldLogScenePickingDiagnostics()
+{
+    const auto& diagnostics = NLS::Render::Settings::GetThreadDiagnosticsSettings();
+    return diagnostics.dx12LogFrameFlow || diagnostics.editorLogScenePicking;
+}
+
+void LogScenePickingDiagnostics(const std::string& message)
+{
+    if (ShouldLogScenePickingDiagnostics())
+        NLS_LOG_INFO("[SceneViewPicking] " + message);
+}
 }
 Editor::Panels::SceneView::SceneView(
     const std::string& p_title,
@@ -100,7 +117,7 @@ Editor::Panels::SceneView::SceneView(
     // so use the editor renderer on every backend.
     m_renderer = std::make_unique<Editor::Rendering::DebugSceneRenderer>(*EDITOR_CONTEXT(driver));
     SetRequiresRetiredFrameConsumption(true);
-    SetRequiresImmediateRetiredFrameReadback(true);
+    SetRequiresImmediateRetiredFrameReadback(ShouldSceneViewRequestImmediatePickingReadback());
 
     m_camera.SetFar(5000.0f);
 
@@ -225,8 +242,11 @@ void Editor::Panels::SceneView::InitFrame()
         selectedActor = EDITOR_EXEC(GetSelectedActor());
     }
 
-    debugRenderer->AddDescriptor<Rendering::DebugSceneRenderer::DebugSceneDescriptor>({m_highlightedActor,
-                                                                                       selectedActor});
+    m_requestPickingFrame = ShouldRequestPickingFrame();
+    debugRenderer->AddDescriptor<Rendering::DebugSceneRenderer::DebugSceneDescriptor>({
+        m_highlightedActor,
+        selectedActor,
+        m_requestPickingFrame});
 }
 
 Engine::SceneSystem::Scene* Editor::Panels::SceneView::GetScene()
@@ -239,28 +259,33 @@ Engine::Rendering::BaseSceneRenderer::SceneDescriptor Editor::Panels::SceneView:
     return AViewControllable::CreateSceneDescriptor();
 }
 
+void Editor::Panels::SceneView::DrawPreRenderViewportOverlay()
+{
+    if (ShouldApplySceneMutationFromViewportOverlay(ViewportOverlayLifecyclePhase::BeforeViewRender))
+        DrawViewportOverlay();
+}
+
 void Editor::Panels::SceneView::OnAfterDrawWidgets()
 {
-    DrawViewportOverlay();
-    HandleActorPicking();
+    if (ShouldResolveViewportPicking(ViewportOverlayLifecyclePhase::AfterWidgetDraw))
+        HandleActorPicking();
+    EndViewportOverlayDrawListChannels();
 }
 
 void Editor::Panels::SceneView::DrawViewportOverlay()
 {
     m_gizmoInteraction = {};
 
-    if (!HasViewportImageBounds())
-        return;
-
-    const auto imageMin = GetViewportImageMin();
-    const auto imageMax = GetViewportImageMax();
+    const auto imageMin = GetCurrentViewportImageMin();
+    const auto imageMax = GetCurrentViewportImageMax();
     const auto imageWidth = imageMax.x - imageMin.x;
     const auto imageHeight = imageMax.y - imageMin.y;
     if (imageWidth <= 0.0f || imageHeight <= 0.0f)
         return;
 
-    auto viewMatrix = Core::ToImGuizmoMatrix(m_camera.GetViewMatrix());
-    auto projectionMatrix = Core::ToImGuizmoMatrix(m_camera.GetProjectionMatrix());
+    const auto overlayMatrices = GetViewportOverlayCameraMatrices();
+    auto viewMatrix = Core::ToImGuizmoMatrix(overlayMatrices.view);
+    auto projectionMatrix = Core::ToImGuizmoMatrix(overlayMatrices.projection);
     const bool cameraControlActive = m_cameraController.IsRightMousePressed();
     EnsureCameraFocus();
 
@@ -367,6 +392,102 @@ bool IsResizing()
     return cursor == ImGuiMouseCursor_ResizeEW || cursor == ImGuiMouseCursor_ResizeNS || cursor == ImGuiMouseCursor_ResizeNWSE || cursor == ImGuiMouseCursor_ResizeNESW || cursor == ImGuiMouseCursor_ResizeAll;
 }
 
+bool Editor::Panels::SceneView::ShouldRequestPickingFrame() const
+{
+    using namespace Windowing::Inputs;
+
+    const bool pickingSuppressedByGizmo = Core::ShouldSuppressScenePicking(m_gizmoInteraction);
+    if (pickingSuppressedByGizmo)
+    {
+        if (EDITOR_CONTEXT(inputManager)->IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT) ||
+            m_pendingClickPickRenderPos.has_value())
+        {
+            std::ostringstream stream;
+            stream << "request blocked by gizmo"
+                << " leftPressed=" << EDITOR_CONTEXT(inputManager)->IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT)
+                << " pendingClick=" << m_pendingClickPickRenderPos.has_value()
+                << " hover=" << m_gizmoInteraction.isHovered
+                << " using=" << m_gizmoInteraction.isUsing
+                << " viewHover=" << m_gizmoInteraction.isViewHovered
+                << " viewUsing=" << m_gizmoInteraction.isViewUsing;
+            LogScenePickingDiagnostics(stream.str());
+        }
+        return false;
+    }
+
+    auto& inputManager = *EDITOR_CONTEXT(inputManager);
+    const Maths::Vector2 screenMousePos = inputManager.GetMousePosition();
+    const bool mouseOverView = IsMouseWithinView(screenMousePos);
+    if (!mouseOverView || IsResizing())
+    {
+        if (inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT) ||
+            m_pendingClickPickRenderPos.has_value())
+        {
+            std::ostringstream stream;
+            stream << "request blocked by bounds"
+                << " mouseOverView=" << mouseOverView
+                << " resizing=" << IsResizing()
+                << " mouse=(" << screenMousePos.x << "," << screenMousePos.y << ")"
+                << " hasBounds=" << HasViewportImageBounds();
+            LogScenePickingDiagnostics(stream.str());
+        }
+        return false;
+    }
+
+    const auto localMousePos = GetLocalViewPosition(screenMousePos);
+    if (!localMousePos.has_value())
+        return false;
+
+    auto mousePos = localMousePos.value();
+    const auto [safeWidth, safeHeight] = GetSafeSize();
+    const float maxRenderX = std::max(0.0f, static_cast<float>(safeWidth) - 1.0f);
+    const float maxRenderY = std::max(0.0f, static_cast<float>(safeHeight) - 1.0f);
+
+    mousePos.x = std::clamp(mousePos.x, 0.0f, maxRenderX);
+    mousePos.y = NLS_SERVICE(UI::UIManager).UsesBottomLeftRenderTargetOrigin()
+        ? std::clamp(static_cast<float>(safeHeight) - 1.0f - mousePos.y, 0.0f, maxRenderY)
+        : std::clamp(mousePos.y, 0.0f, maxRenderY);
+
+    const auto now = std::chrono::steady_clock::now();
+    const bool mouseMoved =
+        std::fabs(mousePos.x - m_lastPickingMousePos.x) > 0.5f ||
+        std::fabs(mousePos.y - m_lastPickingMousePos.y) > 0.5f;
+    constexpr int kHoverPickingIntervalMs = 120;
+    const auto elapsedMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - m_lastPickingSampleTime).count();
+    const bool sampleExpired =
+        !m_hasPickingSample ||
+        elapsedMs >= kHoverPickingIntervalMs;
+    const bool leftClicked = inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT);
+    const bool rightMousePressed = m_cameraController.IsRightMousePressed();
+
+    const bool request = ShouldRenderScenePickingFrame(
+        mouseOverView,
+        false,
+        false,
+        m_pendingClickPickRenderPos.has_value(),
+        leftClicked,
+        rightMousePressed,
+        sampleExpired,
+        mouseMoved,
+        m_hasPickingSample);
+    if (leftClicked || m_pendingClickPickRenderPos.has_value())
+    {
+        std::ostringstream stream;
+        stream << "request"
+            << " result=" << request
+            << " leftClicked=" << leftClicked
+            << " pendingClick=" << m_pendingClickPickRenderPos.has_value()
+            << " rightMouse=" << rightMousePressed
+            << " sampleExpired=" << sampleExpired
+            << " mouseMoved=" << mouseMoved
+            << " hasSample=" << m_hasPickingSample
+            << " local=(" << mousePos.x << "," << mousePos.y << ")";
+        LogScenePickingDiagnostics(stream.str());
+    }
+    return request;
+}
+
 void Editor::Panels::SceneView::HandleActorPicking()
 {
     auto* debugRenderer = dynamic_cast<Editor::Rendering::DebugSceneRenderer*>(m_renderer.get());
@@ -389,7 +510,23 @@ void Editor::Panels::SceneView::HandleActorPicking()
     }
 
     if (Core::ShouldSuppressScenePicking(m_gizmoInteraction))
+    {
+        if (inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT) ||
+            m_pendingClickPickRenderPos.has_value())
+        {
+            std::ostringstream stream;
+            stream << "handle blocked by gizmo"
+                << " leftPressed=" << inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT)
+                << " leftReleased=" << inputManager.IsMouseButtonReleased(EMouseButton::MOUSE_BUTTON_LEFT)
+                << " pendingClick=" << m_pendingClickPickRenderPos.has_value()
+                << " hover=" << m_gizmoInteraction.isHovered
+                << " using=" << m_gizmoInteraction.isUsing
+                << " viewHover=" << m_gizmoInteraction.isViewHovered
+                << " viewUsing=" << m_gizmoInteraction.isViewUsing;
+            LogScenePickingDiagnostics(stream.str());
+        }
         return;
+    }
 
     if (mouseOverView && !IsResizing())
     {
@@ -431,44 +568,121 @@ void Editor::Panels::SceneView::HandleActorPicking()
             elapsedMs >= kHoverPickingIntervalMs;
         const bool leftClicked = inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT);
         const bool rightMousePressed = m_cameraController.IsRightMousePressed();
-        const bool shouldRepick =
-            leftClicked ||
-            (!rightMousePressed && sampleExpired && (mouseMoved || !m_hasPickingSample));
+        const bool queuedClickPickThisFrame = leftClicked && !rightMousePressed;
+        if (queuedClickPickThisFrame)
+        {
+            m_pendingClickPickRenderPos = mousePos;
+            m_pendingClickMinReadablePickingFrameSerial =
+                actorPickingFeature.GetReadablePickingFrameSerial() + 1u;
+            std::ostringstream stream;
+            stream << "queued click"
+                << " local=(" << mousePos.x << "," << mousePos.y << ")"
+                << " minReadableSerial=" << m_pendingClickMinReadablePickingFrameSerial
+                << " currentReadableSerial=" << actorPickingFeature.GetReadablePickingFrameSerial()
+                << " requestThisFrame=" << m_requestPickingFrame;
+            LogScenePickingDiagnostics(stream.str());
+        }
 
+        const bool shouldRepick = ShouldRenderScenePickingFrame(
+            mouseOverView,
+            false,
+            false,
+            m_pendingClickPickRenderPos.has_value(),
+            leftClicked,
+            rightMousePressed,
+            sampleExpired,
+            mouseMoved,
+            m_hasPickingSample);
         if (shouldRepick)
         {
             m_highlightedActor = nullptr;
 
-            if (!rightMousePressed)
+            const bool pickingFrameReadable = actorPickingFeature.HasReadablePickingFrame();
+            const bool resolvePendingClickPick = ShouldResolvePendingSceneClickPick(
+                m_pendingClickPickRenderPos.has_value(),
+                queuedClickPickThisFrame,
+                rightMousePressed,
+                m_pendingClickMinReadablePickingFrameSerial,
+                actorPickingFeature.GetReadablePickingFrameSerial());
+            if (queuedClickPickThisFrame || m_pendingClickPickRenderPos.has_value())
             {
-                m_highlightedActor = leftClicked
-                    ? PickActorNearRenderCoordinate(actorPickingFeature, mousePos, maxRenderX, maxRenderY)
+                std::ostringstream stream;
+                stream << "repick"
+                    << " shouldRepick=" << shouldRepick
+                    << " readable=" << pickingFrameReadable
+                    << " readableSerial=" << actorPickingFeature.GetReadablePickingFrameSerial()
+                    << " minReadableSerial=" << m_pendingClickMinReadablePickingFrameSerial
+                    << " resolvePending=" << resolvePendingClickPick
+                    << " requestThisFrame=" << m_requestPickingFrame;
+                LogScenePickingDiagnostics(stream.str());
+            }
+            if (!rightMousePressed && pickingFrameReadable && !queuedClickPickThisFrame)
+            {
+                const bool resolveClickPick = resolvePendingClickPick;
+                const auto samplePos = resolveClickPick
+                    ? m_pendingClickPickRenderPos.value()
+                    : mousePos;
+                m_highlightedActor = resolveClickPick
+                    ? PickActorNearRenderCoordinate(actorPickingFeature, samplePos, maxRenderX, maxRenderY)
                     : PickActorAtRenderCoordinate(actorPickingFeature, mousePos.x, mousePos.y);
+                if (resolveClickPick)
+                {
+                    std::ostringstream stream;
+                    stream << "resolved click"
+                        << " hit=" << (m_highlightedActor != nullptr)
+                        << " actor=" << (m_highlightedActor != nullptr ? m_highlightedActor->GetName() : std::string("<none>"));
+                    LogScenePickingDiagnostics(stream.str());
+                }
             }
 
-            m_lastPickingMousePos = mousePos;
-            m_lastPickingSampleTime = now;
-            m_hasPickingSample = true;
+            if (pickingFrameReadable)
+            {
+                m_lastPickingMousePos = mousePos;
+                m_lastPickingSampleTime = now;
+                m_hasPickingSample = true;
+            }
         }
         else if (rightMousePressed)
         {
             m_highlightedActor = {};
         }
 
-        if (leftClicked && !rightMousePressed)
+        const bool resolvePendingClickPick = ShouldResolvePendingSceneClickPick(
+            m_pendingClickPickRenderPos.has_value(),
+            queuedClickPickThisFrame,
+            rightMousePressed,
+            m_pendingClickMinReadablePickingFrameSerial,
+            actorPickingFeature.GetReadablePickingFrameSerial());
+        if (resolvePendingClickPick)
         {
             if (m_highlightedActor)
             {
+                LogScenePickingDiagnostics("select actor=" + m_highlightedActor->GetName());
                 EDITOR_EXEC(SelectActor(*m_highlightedActor));
+                m_pendingClickPickRenderPos.reset();
             }
-            else
+            else if (actorPickingFeature.HasReadablePickingFrame())
             {
+                LogScenePickingDiagnostics("unselect actor from click");
                 EDITOR_EXEC(UnselectActor());
+                m_pendingClickPickRenderPos.reset();
             }
+            m_pendingClickMinReadablePickingFrameSerial = 0u;
         }
     }
     else
     {
+        if (inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT) ||
+            m_pendingClickPickRenderPos.has_value())
+        {
+            std::ostringstream stream;
+            stream << "handle blocked by bounds"
+                << " mouseOverView=" << mouseOverView
+                << " resizing=" << IsResizing()
+                << " mouse=(" << screenMousePos.x << "," << screenMousePos.y << ")"
+                << " hasBounds=" << HasViewportImageBounds();
+            LogScenePickingDiagnostics(stream.str());
+        }
         m_highlightedActor = nullptr;
         m_hasPickingSample = false;
     }

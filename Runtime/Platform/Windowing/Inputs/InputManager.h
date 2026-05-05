@@ -1,5 +1,6 @@
 #pragma once
 
+#include <unordered_set>
 #include <unordered_map>
 
 #include "Windowing/Window.h"
@@ -92,6 +93,8 @@ namespace NLS::Windowing::Inputs
 		ListenerID m_mouseScrollListener;
 		std::unordered_map<EKey, EKeyState>					m_keyEvents;
 		std::unordered_map<EMouseButton, EMouseButtonState>	m_mouseButtonEvents;
+        std::unordered_set<EMouseButton> m_mouseButtonsPressedThisFrame;
+        std::unordered_set<EMouseButton> m_mouseButtonsReleasedThisFrame;
 		Maths::Vector2 lastWheel;
 	};
 }

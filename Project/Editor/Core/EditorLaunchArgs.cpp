@@ -29,6 +29,7 @@ namespace NLS::Editor::Launch
         std::printf("  --editor-disable-debug-actor-pass   Disable debug actor pass\n");
         std::printf("  --editor-disable-debug-draw-pass    Disable debug draw pass\n");
         std::printf("  --editor-disable-picking-pass     Disable picking pass\n");
+        std::printf("  --editor-log-scene-picking   Enable Scene View picking diagnostics\n");
         std::printf("  --editor-validation-focus-view <scene|game>  Focus a validation target view after startup\n");
         std::printf("  --editor-validation-exclusive-view <scene|game>  Close the other main viewport for isolated validation\n");
         std::printf("  --editor-validation-select-actor <name>      Select an actor by name after startup\n");
@@ -151,6 +152,10 @@ namespace NLS::Editor::Launch
             else if (arg == "--editor-disable-picking-pass")
             {
                 parsed.diagnosticsSettings.editorDisablePickingPass = true;
+            }
+            else if (arg == "--editor-log-scene-picking")
+            {
+                parsed.diagnosticsSettings.editorLogScenePicking = true;
             }
             else if (arg == "--editor-validation-focus-view" && i + 1 < argc)
             {

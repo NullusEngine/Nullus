@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "Rendering/RHI/Backends/DX12/DX12PresentPolicy.h"
 #include "UI/ImGuiExtensions/TimelineProfiler/Profiler.h"
 
 TEST(TimelineProfilerGpuLifecycleTests, CommandListStateDoesNotUnregisterDuringDestructionCallback)
@@ -30,6 +31,17 @@ TEST(TimelineProfilerGpuLifecycleTests, InvalidGpuQueryPairsAreSkippedDuringRead
 #endif
 }
 
+TEST(TimelineProfilerGpuLifecycleTests, GpuFrameAdvanceWaitsForPendingCommandListQueries)
+{
+#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+    EXPECT_FALSE(TimelineProfilerDetail::ShouldAdvanceGpuProfilerFrame(true, false));
+    EXPECT_FALSE(TimelineProfilerDetail::ShouldAdvanceGpuProfilerFrame(false, true));
+    EXPECT_TRUE(TimelineProfilerDetail::ShouldAdvanceGpuProfilerFrame(false, false));
+#else
+    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+#endif
+}
+
 TEST(TimelineProfilerGpuLifecycleTests, MouseWheelDirectlyAdjustsTimelineZoomScale)
 {
 #if defined(NLS_ENABLE_TIMELINE_PROFILER)
@@ -40,4 +52,10 @@ TEST(TimelineProfilerGpuLifecycleTests, MouseWheelDirectlyAdjustsTimelineZoomSca
 #else
     GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
 #endif
+}
+
+TEST(DX12PresentPolicyTests, VsyncControlsPresentSyncInterval)
+{
+    EXPECT_EQ(NLS::Render::Backend::ResolveDX12PresentSyncInterval(true), 1u);
+    EXPECT_EQ(NLS::Render::Backend::ResolveDX12PresentSyncInterval(false), 0u);
 }

@@ -182,6 +182,27 @@ TEST_F(ProfilerDestinationTest, UnregisteredDestinationStopsReceivingScopeEvents
     EXPECT_TRUE(destination.events.empty());
 }
 
+TEST_F(ProfilerDestinationTest, ScopeEndOnlyRoutesToDestinationsThatAcceptedBegin)
+{
+    using namespace NLS::Base::Profiling;
+
+    RecordingProfilerDestination earlyDestination;
+    Profiler::RegisterDestination(earlyDestination);
+    Profiler::SetEnabled(true);
+
+    const auto scope = Profiler::BeginScope("In Flight Scope", __FUNCTION__);
+
+    RecordingProfilerDestination lateDestination;
+    Profiler::RegisterDestination(lateDestination);
+
+    Profiler::EndScope(scope);
+
+    ASSERT_EQ(earlyDestination.events.size(), 2u);
+    EXPECT_EQ(earlyDestination.events[0].phase, "begin");
+    EXPECT_EQ(earlyDestination.events[1].phase, "end");
+    EXPECT_TRUE(lateDestination.events.empty());
+}
+
 TEST_F(ProfilerDestinationTest, RegisterThreadLabelsSubsequentScopeEvents)
 {
     using namespace NLS::Base::Profiling;
@@ -433,6 +454,45 @@ TEST_F(ProfilerDestinationTest, TimelineSinkCanEndCpuScopeOnWorkerAfterFrameTick
         EXPECT_NO_FATAL_FAILURE(timeline.EndScope(event));
     });
     worker.join();
+#else
+    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+#endif
+}
+
+TEST_F(ProfilerDestinationTest, TimelineSinkHandlesConcurrentWorkerCpuScopes)
+{
+    using namespace NLS::Base::Profiling;
+
+#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+    TimelineProfilerSink timeline;
+
+    constexpr int kWorkerCount = 4;
+    constexpr int kScopeCount = 64;
+    std::vector<std::thread> workers;
+    workers.reserve(kWorkerCount);
+
+    for (int workerIndex = 0; workerIndex < kWorkerCount; ++workerIndex)
+    {
+        workers.emplace_back([&timeline]
+        {
+            for (int scopeIndex = 0; scopeIndex < kScopeCount; ++scopeIndex)
+            {
+                ProfilerScopeEvent event;
+                event.name = "Concurrent Worker Scope";
+                event.sourceFunction = __FUNCTION__;
+                event.threadName = "Profiler Worker";
+                event.active = true;
+
+                timeline.BeginScope(event);
+                timeline.EndScope(event);
+            }
+        });
+    }
+
+    for (auto& worker : workers)
+        worker.join();
+
+    EXPECT_NO_FATAL_FAILURE(timeline.TickFrame());
 #else
     GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
 #endif

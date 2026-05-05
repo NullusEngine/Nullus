@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstdint>
+#include <mutex>
+#include <vector>
 
 #include <Debug/Logger.h>
 
@@ -34,6 +36,11 @@ namespace NLS::Editor::Panels
 		void OnLogIntercepted(const Debug::LogData& p_logData);
 
 		/**
+		* Flush pending log entries on the UI thread.
+		*/
+		void FlushPendingLogs();
+
+		/**
 		* Called when the scene plays. It will clear the console if the "Clear on play" settings is on
 		*/
 		void ClearOnPlay();
@@ -59,10 +66,14 @@ namespace NLS::Editor::Panels
 		void SetShowInfoLogs(bool p_value);
 		void SetShowWarningLogs(bool p_value);
 		void SetShowErrorLogs(bool p_value);
+		void AddLogWidget(const Debug::LogData& p_logData);
+		void OnBeforeDrawWidgets() override;
 
 	private:
 		UI::Widgets::Group* m_logGroup;
 		std::unordered_map<UI::Widgets::TextColored*, Debug::ELogLevel> m_logTextWidgets;
+		std::mutex m_pendingLogsMutex;
+		std::vector<Debug::LogData> m_pendingLogs;
 
 		bool m_clearOnPlay = true;
 		bool m_showDefaultLog = true;

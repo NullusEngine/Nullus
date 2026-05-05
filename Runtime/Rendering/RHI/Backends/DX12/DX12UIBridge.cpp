@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "Debug/Logger.h"
+#include "Profiling/Profiler.h"
 #include "Rendering/RHI/Backends/DX12/DX12UIFrameFenceTracker.h"
 #include "Rendering/RHI/Backends/DX12/DX12TextureViewUtils.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
@@ -67,6 +68,7 @@ namespace NLS::Render::RHI
 
             void RenderDrawData(ImDrawData* drawData, uint32_t) override
             {
+                NLS_PROFILE_SCOPE();
                 if (!m_initialized || drawData == nullptr)
                     return;
 
@@ -119,6 +121,7 @@ namespace NLS::Render::RHI
                     m_fence->GetCompletedValue());
                 if (reuseWait.shouldWait)
                 {
+                    NLS_PROFILE_NAMED_SCOPE("DX12UIBridge::WaitForBackbufferReuse");
                     m_fence->SetEventOnCompletion(reuseWait.fenceValue, m_fenceEvent);
                     WaitForSingleObject(m_fenceEvent, INFINITE);
                 }
@@ -144,7 +147,10 @@ namespace NLS::Render::RHI
 
                 ID3D12DescriptorHeap* heaps[] = { m_srvHeap.Get() };
                 m_commandList->SetDescriptorHeaps(1, heaps);
-                ImGui_ImplDX12_RenderDrawData(drawData, m_commandList.Get());
+                {
+                    NLS_PROFILE_NAMED_SCOPE("ImGui_ImplDX12_RenderDrawData");
+                    ImGui_ImplDX12_RenderDrawData(drawData, m_commandList.Get());
+                }
                 if (ShouldLogDx12FrameFlow())
                     NLS_LOG_INFO("DX12UIBridge::RenderDrawData: ImGui draw data recorded");
 
@@ -154,7 +160,10 @@ namespace NLS::Render::RHI
                 m_commandList->Close();
 
                 ID3D12CommandList* commandLists[] = { m_commandList.Get() };
-                m_queue->ExecuteCommandLists(1, commandLists);
+                {
+                    NLS_PROFILE_NAMED_SCOPE("DX12UIBridge::ExecuteCommandLists");
+                    m_queue->ExecuteCommandLists(1, commandLists);
+                }
                 if (ShouldLogDx12FrameFlow())
                     NLS_LOG_INFO("DX12UIBridge::RenderDrawData: UI command list submitted");
 

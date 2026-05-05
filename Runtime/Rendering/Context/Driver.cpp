@@ -46,6 +46,44 @@ namespace NLS::Render::Context
 {
 namespace
 {
+    void RememberCompletedReadbackTexture(
+        DriverImpl& impl,
+        const std::shared_ptr<Render::RHI::RHITexture>& texture)
+    {
+        impl.completedReadbackTexture = texture;
+        if (texture == nullptr)
+            return;
+
+        impl.completedReadbackTextureHistory.erase(
+            std::remove_if(
+                impl.completedReadbackTextureHistory.begin(),
+                impl.completedReadbackTextureHistory.end(),
+                [&texture](const std::weak_ptr<Render::RHI::RHITexture>& storedTexture)
+                {
+                    const auto lockedTexture = storedTexture.lock();
+                    return lockedTexture == nullptr || lockedTexture == texture;
+                }),
+            impl.completedReadbackTextureHistory.end());
+
+        impl.completedReadbackTextureHistory.push_back(texture);
+        constexpr size_t kMaxCompletedReadbackHistory = 8u;
+        while (impl.completedReadbackTextureHistory.size() > kMaxCompletedReadbackHistory)
+            impl.completedReadbackTextureHistory.erase(impl.completedReadbackTextureHistory.begin());
+    }
+
+    bool HasRememberedReadbackTexture(
+        const DriverImpl& impl,
+        const std::shared_ptr<Render::RHI::RHITexture>& texture)
+    {
+        return std::any_of(
+            impl.completedReadbackTextureHistory.begin(),
+            impl.completedReadbackTextureHistory.end(),
+            [&texture](const std::weak_ptr<Render::RHI::RHITexture>& storedTexture)
+            {
+                return storedTexture.lock() == texture;
+            });
+    }
+
     void AppendPassCommandInput(
         RenderScenePackage& package,
         const RenderPassCommandKind kind,
@@ -1203,6 +1241,19 @@ std::shared_ptr<Render::RHI::RHITexture> DriverRendererAccess::ResolveReadbackTe
     return driver.m_impl->completedReadbackTexture;
 }
 
+bool DriverRendererAccess::HasCompletedReadbackTexture(
+    const Driver& driver,
+    const std::shared_ptr<Render::RHI::RHITexture>& texture)
+{
+    if (driver.m_impl == nullptr || texture == nullptr)
+        return false;
+
+    if (driver.m_impl->completedReadbackTexture == texture)
+        return true;
+
+    return HasRememberedReadbackTexture(*driver.m_impl, texture);
+}
+
 std::shared_ptr<Render::RHI::PipelineCache> DriverRendererAccess::GetPipelineCache(const Driver& driver)
 {
     return driver.m_impl->pipelineCache;
@@ -1267,6 +1318,30 @@ void DriverRendererAccess::ReadPixels(
         type,
         data);
 }
+
+void DriverRendererAccess::ReadPixels(
+    const Driver& driver,
+    const std::shared_ptr<Render::RHI::RHITexture>& texture,
+    const uint32_t x,
+    const uint32_t y,
+    const uint32_t width,
+    const uint32_t height,
+    const Settings::EPixelDataFormat format,
+    const Settings::EPixelDataType type,
+    void* data)
+{
+    RhiThreadCoordinator::ReadPixels(
+        driver,
+        texture,
+        x,
+        y,
+        width,
+        height,
+        format,
+        type,
+        data);
+}
+
 
 void DriverRendererAccess::Clear(
 	Driver& /*driver*/,
@@ -1414,7 +1489,7 @@ void DriverTestAccess::SetCompletedReadbackTexture(
     Driver& driver,
     std::shared_ptr<Render::RHI::RHITexture> texture)
 {
-    driver.m_impl->completedReadbackTexture = std::move(texture);
+    RememberCompletedReadbackTexture(*driver.m_impl, texture);
 }
 
 void DriverTestAccess::SetExplicitFrameActive(Driver& driver, const bool active)
@@ -1614,6 +1689,7 @@ void Driver::ShutdownRhiResources()
     m_impl->uiRenderFinishedSemaphore = nullptr;
     m_impl->uiRenderFinishedValue = 0u;
     m_impl->completedReadbackTexture = nullptr;
+    m_impl->completedReadbackTextureHistory.clear();
     m_impl->explicitFrameActive = false;
     m_impl->uiStandaloneFrameActive = false;
     m_impl->hasPendingSwapchainResize = false;
@@ -1784,6 +1860,7 @@ void Driver::ApplyPendingSwapchainResize()
 	}
 
 	m_impl->completedReadbackTexture = nullptr;
+    m_impl->completedReadbackTextureHistory.clear();
 	for (auto& frameContext : m_impl->frameContexts)
 	{
 		frameContext.hasAcquiredSwapchainImage = false;

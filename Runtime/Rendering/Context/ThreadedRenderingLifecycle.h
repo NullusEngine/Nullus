@@ -369,6 +369,8 @@ namespace NLS::Render::Context
         uint64_t inFlightFrameCount = 0u;
         uint64_t blockedPublishCount = 0u;
         uint64_t publishedFrameCount = 0u;
+        uint64_t latestPublishedFrameId = 0u;
+        uint64_t latestRetiredFrameId = 0u;
         Data::FramePublishState publishState = Data::FramePublishState::Direct;
         Data::ThreadedFrameStageSummary stageSummary = Data::ThreadedFrameStageSummary::Direct;
         Data::FrameRetirementState retirementState = Data::FrameRetirementState::Direct;
@@ -476,5 +478,7 @@ namespace NLS::Render::Context
         std::condition_variable m_slotAvailable;
         std::vector<InFlightFrameSlot> m_slots;
         ThreadedFrameTelemetry m_telemetry;
+        uint64_t m_latestPublishedFrameId = 0u;
+        uint64_t m_latestRetiredFrameId = 0u;
     };
 }

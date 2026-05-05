@@ -1,7 +1,13 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <optional>
+
+namespace NLS::Render::RHI
+{
+    class RHITexture;
+}
 
 namespace NLS::Editor::Rendering
 {
@@ -11,6 +17,8 @@ namespace NLS::Editor::Rendering
         SceneT* scene = nullptr;
         uint16_t width = 0u;
         uint16_t height = 0u;
+        uint64_t serial = 0u;
+        std::shared_ptr<NLS::Render::RHI::RHITexture> readbackTexture;
 
         bool IsValid() const
         {
@@ -56,6 +64,11 @@ namespace NLS::Editor::Rendering
         const Frame* GetReadableFrame() const
         {
             return m_readableFrame.has_value() ? &m_readableFrame.value() : nullptr;
+        }
+
+        const Frame* GetPendingFrame() const
+        {
+            return m_pendingFrame.has_value() ? &m_pendingFrame.value() : nullptr;
         }
 
     private:

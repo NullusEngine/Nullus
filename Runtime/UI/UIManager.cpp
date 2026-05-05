@@ -5,6 +5,7 @@
 
 #include "Core/ServiceLocator.h"
 #include "Debug/Logger.h"
+#include "Profiling/Profiler.h"
 #include "Rendering/RHI/Core/RHIRenderSurfaceConvention.h"
 #include "Rendering/RHI/Utils/RHIUIBridge.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
@@ -446,23 +447,36 @@ void UIManager::RemoveCanvas()
 
 void UIManager::Render()
 {
+    NLS_PROFILE_SCOPE();
     if (m_currentCanvas == nullptr || m_isRenderingFrame)
         return;
 
     m_isRenderingFrame = true;
-    BeginFrame();
+    {
+        NLS_PROFILE_NAMED_SCOPE("UIManager::BeginFrame");
+        BeginFrame();
+    }
     if (!m_inFrame)
     {
         m_isRenderingFrame = false;
         return;
     }
-    m_currentCanvas->Draw();
+    {
+        NLS_PROFILE_NAMED_SCOPE("UIManager::DrawCanvas");
+        m_currentCanvas->Draw();
+    }
 
     // All paths: ImGui::Render() must be called before RenderDrawData to build font atlas if needed
     if (m_uiBridge != nullptr)
     {
-        ImGui::Render();
-        m_uiBridge->RenderDrawData(ImGui::GetDrawData(), m_currentSwapchainImageIndex);
+        {
+            NLS_PROFILE_NAMED_SCOPE("ImGui::Render");
+            ImGui::Render();
+        }
+        {
+            NLS_PROFILE_NAMED_SCOPE("UIBridge::RenderDrawData");
+            m_uiBridge->RenderDrawData(ImGui::GetDrawData(), m_currentSwapchainImageIndex);
+        }
     }
     m_isRenderingFrame = false;
 }
@@ -498,6 +512,7 @@ void UIManager::SetSignalSemaphore(void* semaphore)
 
 void UIManager::SubmitUIRendering()
 {
+    NLS_PROFILE_SCOPE();
     if (m_uiBridge != nullptr)
     {
         m_uiBridge->SubmitCommandBuffer(m_currentSwapchainImageIndex);

@@ -25,6 +25,7 @@ class DebugSceneRenderer : public Engine::Rendering::ForwardSceneRenderer
 		{
 			Engine::GameObject* highlightedActor;
             Engine::GameObject* selectedActor;
+            bool requestPickingFrame = false;
 		};
 
 		/**

@@ -107,6 +107,9 @@ namespace NLS::Render::Context
         static std::shared_ptr<RHI::RHITextureView> GetSwapchainBackbufferView(const Driver& driver);
         static std::shared_ptr<RHI::RHITextureView> GetSwapchainDepthStencilView(const Driver& driver);
         static std::shared_ptr<RHI::RHITexture> ResolveReadbackTexture(const Driver& driver);
+        static bool HasCompletedReadbackTexture(
+            const Driver& driver,
+            const std::shared_ptr<RHI::RHITexture>& texture);
         static std::shared_ptr<RHI::PipelineCache> GetPipelineCache(const Driver& driver);
         static std::shared_ptr<RHI::DescriptorAllocator> GetActiveDescriptorAllocator(const Driver& driver);
 
@@ -122,6 +125,16 @@ namespace NLS::Render::Context
 
         static void ReadPixels(
             const Driver& driver,
+            uint32_t x,
+            uint32_t y,
+            uint32_t width,
+            uint32_t height,
+            Settings::EPixelDataFormat format,
+            Settings::EPixelDataType type,
+            void* data);
+        static void ReadPixels(
+            const Driver& driver,
+            const std::shared_ptr<RHI::RHITexture>& texture,
             uint32_t x,
             uint32_t y,
             uint32_t width,

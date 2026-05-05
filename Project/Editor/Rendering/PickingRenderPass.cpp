@@ -5,6 +5,7 @@
 #include "Rendering/DebugSceneRenderer.h"
 #include "Rendering/EditorPipelineStatePresets.h"
 #include "Rendering/Context/DriverAccess.h"
+#include "Rendering/RHI/Core/RHIResource.h"
 #include <Components/TransformComponent.h>
 #include <Components/MaterialRenderer.h>
 #include <Rendering/EngineDrawableDescriptor.h>
@@ -46,8 +47,16 @@ Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRe
 	uint32_t p_y)
 {
     const auto* readableFrame = m_readbackLifecycle.GetReadableFrame();
-	if (!SupportsPickingReadback() || readableFrame == nullptr || !m_renderer.HasActiveReadbackSource())
+	if (!SupportsPickingReadback() || readableFrame == nullptr)
 		return std::nullopt;
+    if (readableFrame->readbackTexture == nullptr)
+        return std::nullopt;
+    if (!NLS::Render::Context::DriverRendererAccess::HasCompletedReadbackTexture(
+        m_renderer.GetDriver(),
+        readableFrame->readbackTexture))
+    {
+        return std::nullopt;
+    }
 
 	const uint64_t maxX = static_cast<uint64_t>(p_x) + 1u;
 	const uint64_t maxY = static_cast<uint64_t>(p_y) + 1u;
@@ -58,7 +67,9 @@ Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRe
 	}
 
 	uint8_t pixel[3]{};
-	m_renderer.ReadPixels(
+	NLS::Render::Context::DriverRendererAccess::ReadPixels(
+        m_renderer.GetDriver(),
+        readableFrame->readbackTexture,
 		p_x,
 		p_y,
 		1u,
@@ -75,6 +86,26 @@ bool Editor::Rendering::PickingRenderPass::SupportsPickingReadback() const
 	return m_renderer.SupportsEditorPickingReadback();
 }
 
+bool Editor::Rendering::PickingRenderPass::HasReadablePickingFrame() const
+{
+    const auto* readableFrame = m_readbackLifecycle.GetReadableFrame();
+    return readableFrame != nullptr &&
+        NLS::Render::Context::DriverRendererAccess::HasCompletedReadbackTexture(
+            m_renderer.GetDriver(),
+            readableFrame->readbackTexture);
+}
+
+uint64_t Editor::Rendering::PickingRenderPass::GetReadablePickingFrameSerial() const
+{
+    const auto* readableFrame = m_readbackLifecycle.GetReadableFrame();
+    return readableFrame != nullptr &&
+        NLS::Render::Context::DriverRendererAccess::HasCompletedReadbackTexture(
+            m_renderer.GetDriver(),
+            readableFrame->readbackTexture)
+        ? readableFrame->serial
+        : 0u;
+}
+
 std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::PickingRenderPass::GetPreparedThreadedPassInput() const
 {
     return m_preparedThreadedPassInput;
@@ -82,7 +113,12 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::P
 
 void Editor::Rendering::PickingRenderPass::OnBeginFrame(const NLS::Render::Data::FrameDescriptor&)
 {
-    m_readbackLifecycle.PromotePendingFrameIfReadbackAvailable(m_renderer.HasActiveReadbackSource());
+    const auto* pendingFrame = m_readbackLifecycle.GetPendingFrame();
+    m_readbackLifecycle.PromotePendingFrameIfReadbackAvailable(
+        pendingFrame != nullptr &&
+        NLS::Render::Context::DriverRendererAccess::HasCompletedReadbackTexture(
+            m_renderer.GetDriver(),
+            pendingFrame->readbackTexture));
     m_preparedThreadedPassInput.reset();
 }
 
@@ -93,13 +129,16 @@ void Editor::Rendering::PickingRenderPass::ResetPickingFrameState()
 
 Editor::Rendering::PickingReadbackLifecycle<Engine::SceneSystem::Scene>::Frame
 Editor::Rendering::PickingRenderPass::BuildSubmittedReadbackFrame(
-    Engine::SceneSystem::Scene& scene) const
+    Engine::SceneSystem::Scene& scene,
+    const uint64_t serial) const
 {
     const auto& frameDescriptor = m_renderer.GetFrameDescriptor();
     return {
         &scene,
         frameDescriptor.renderWidth,
-        frameDescriptor.renderHeight
+        frameDescriptor.renderHeight,
+        serial,
+        m_actorPickingFramebuffer.GetExplicitTextureHandle()
     };
 }
 
@@ -119,6 +158,11 @@ void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState
     }
 
 	auto& sceneDescriptor = m_renderer.GetDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>();
+    auto& debugSceneDescriptor = m_renderer.GetDescriptor<DebugSceneRenderer::DebugSceneDescriptor>();
+    if (!debugSceneDescriptor.requestPickingFrame)
+        return;
+
+    const uint64_t submittedSerial = ++m_submittedPickingFrameSerial;
 	m_actorPickingFramebuffer.Resize(frameDescriptor.renderWidth, frameDescriptor.renderHeight);
     if (NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_renderer.GetDriver()))
     {
@@ -128,7 +172,7 @@ void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState
             ResetPickingFrameState();
             return;
         }
-        m_readbackLifecycle.QueueSubmittedFrame(BuildSubmittedReadbackFrame(sceneDescriptor.scene));
+        m_readbackLifecycle.QueueSubmittedFrame(BuildSubmittedReadbackFrame(sceneDescriptor.scene, submittedSerial));
     }
     else if (!RenderPickingScene(p_pso))
     {
@@ -138,7 +182,7 @@ void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState
     else
     {
         m_readbackLifecycle.MarkSubmittedFrameImmediatelyReadable(
-            BuildSubmittedReadbackFrame(sceneDescriptor.scene));
+            BuildSubmittedReadbackFrame(sceneDescriptor.scene, submittedSerial));
     }
 }
 

@@ -1,6 +1,7 @@
 #include "Rendering/RHI/Backends/DX12/DX12Queue.h"
 
 #include "Profiling/Profiler.h"
+#include "Rendering/RHI/Backends/DX12/DX12PresentPolicy.h"
 #include "Rendering/RHI/Backends/DX12/DX12Synchronization.h"
 #include "Rendering/RHI/Core/RHICommand.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
@@ -305,7 +306,12 @@ namespace NLS::Render::Backend
 		{
 			NLS_LOG_INFO("NativeDX12Queue::Present: calling swapchain->Present");
 		}
-		const HRESULT hr = swapchain->Present(0, 0);
+		const UINT syncInterval = ResolveDX12PresentSyncInterval(presentDesc.swapchain->GetDesc().vsync);
+		HRESULT hr = S_OK;
+		{
+			NLS_PROFILE_NAMED_SCOPE("IDXGISwapChain::Present");
+			hr = swapchain->Present(syncInterval, 0);
+		}
 		if (ShouldLogDx12FrameFlow())
 		{
 			NLS_LOG_INFO("NativeDX12Queue::Present: Present returned hr=" + std::to_string(hr));

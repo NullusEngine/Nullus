@@ -30,6 +30,8 @@ constexpr ProfilerCapabilityFlags ProfilerCapability_CPUScopes = 1u << 0u;
 constexpr ProfilerCapabilityFlags ProfilerCapability_GPUScopes = 1u << 1u;
 constexpr ProfilerCapabilityFlags ProfilerCapability_EditorTimeline = 1u << 2u;
 
+class IProfilerDestination;
+
 struct ProfilerDestinationState
 {
     ProfilerDestinationId id = ProfilerDestinationId::Test;
@@ -50,6 +52,7 @@ struct ProfilerScopeEvent
     std::string name;
     std::string sourceFunction;
     std::string threadName;
+    std::vector<IProfilerDestination*> destinations;
     uint32_t depth = 0u;
     bool active = false;
 };
@@ -60,6 +63,7 @@ struct ProfilerGpuScopeEvent
     std::string name;
     std::string sourceFunction;
     std::string threadName;
+    std::vector<IProfilerDestination*> destinations;
     uint32_t depth = 0u;
     bool active = false;
 };

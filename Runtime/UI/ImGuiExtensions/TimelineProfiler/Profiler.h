@@ -100,6 +100,11 @@ constexpr bool ShouldPublishGpuQueryPair(bool isValidQueryPair)
 	return isValidQueryPair;
 }
 
+constexpr bool ShouldAdvanceGpuProfilerFrame(bool hasPendingCommandListQueries, bool hasOpenQueueEvents)
+{
+	return !hasPendingCommandListQueries && !hasOpenQueueEvents;
+}
+
 inline float ComputeTimelineWheelZoomScale(float currentScale, float mouseWheel)
 {
 	const float zoomDelta = mouseWheel / 5.0f;
@@ -563,13 +568,9 @@ private:
 		return index;
 	}
 
-	EventTrack& GetCurrentThreadTrack()
-	{
-		int index = GetCurrentThreadTrackIndex();
-		if (index == -1)
-			index = RegisterCurrentThread();
-		return m_Tracks[index];
-	}
+	EventTrack& GetCurrentThreadTrackLocked();
+	int RegisterCurrentThreadLocked(const char* pName = nullptr);
+	int RegisterTrackLocked(const char* pName, EventTrack::EType type, uint32 id);
 
 	PresentEntry* GetPresentEntry(uint32 presentID, bool isNewEntry)
 	{

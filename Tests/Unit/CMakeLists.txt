@@ -33,6 +33,8 @@ target_sources(NullusUnitTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ComponentSearchPanel.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/EditorLaunchArgs.cpp
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/EditorLaunchArgs.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/Console.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/Console.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/FrameInfoRendererStats.cpp
     ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/FrameInfo.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ProfilerPanel.cpp

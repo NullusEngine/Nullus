@@ -7,6 +7,24 @@
 
 namespace NLS::Editor::Panels
 {
+    enum class ViewportOverlayLifecyclePhase
+    {
+        BeforeViewRender,
+        AfterWidgetDraw
+    };
+
+    inline bool ShouldApplySceneMutationFromViewportOverlay(
+        const ViewportOverlayLifecyclePhase phase)
+    {
+        return phase == ViewportOverlayLifecyclePhase::BeforeViewRender;
+    }
+
+    inline bool ShouldResolveViewportPicking(
+        const ViewportOverlayLifecyclePhase phase)
+    {
+        return phase == ViewportOverlayLifecyclePhase::AfterWidgetDraw;
+    }
+
     inline bool ShouldDeferRetirementAwareViewResize(
         const std::pair<uint16_t, uint16_t>& requestedSize,
         const std::pair<uint16_t, uint16_t>& activeSize,
@@ -36,5 +54,20 @@ namespace NLS::Editor::Panels
         const bool requiresImmediateReadback)
     {
         return requiresRetiredFrameConsumption && requiresImmediateReadback;
+    }
+
+    inline bool ShouldDelayRetirementAwareViewOverlayMatrices(
+        const bool requiresRetiredFrameConsumption,
+        const bool requiresImmediateReadback,
+        const bool threadedRendering)
+    {
+        return threadedRendering &&
+            requiresRetiredFrameConsumption &&
+            !requiresImmediateReadback;
+    }
+
+    inline bool ShouldSceneViewRequestImmediatePickingReadback()
+    {
+        return false;
     }
 }

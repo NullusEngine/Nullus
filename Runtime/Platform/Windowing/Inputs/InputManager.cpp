@@ -54,12 +54,12 @@ bool NLS::Windowing::Inputs::InputManager::IsKeyReleased(EKey p_key) const
 
 bool NLS::Windowing::Inputs::InputManager::IsMouseButtonPressed(EMouseButton p_button) const
 {
-	return m_mouseButtonEvents.find(p_button) != m_mouseButtonEvents.end() && m_mouseButtonEvents.at(p_button) == EMouseButtonState::MOUSE_DOWN;
+	return m_mouseButtonsPressedThisFrame.contains(p_button);
 }
 
 bool NLS::Windowing::Inputs::InputManager::IsMouseButtonReleased(EMouseButton p_button) const
 {
-	return m_mouseButtonEvents.find(p_button) != m_mouseButtonEvents.end() && m_mouseButtonEvents.at(p_button) == EMouseButtonState::MOUSE_UP;
+	return m_mouseButtonsReleasedThisFrame.contains(p_button);
 }
 
 NLS::Maths::Vector2 NLS::Windowing::Inputs::InputManager::GetMousePosition() const
@@ -73,6 +73,8 @@ void NLS::Windowing::Inputs::InputManager::ClearEvents()
 {
 	m_keyEvents.clear();
 	m_mouseButtonEvents.clear();
+    m_mouseButtonsPressedThisFrame.clear();
+    m_mouseButtonsReleasedThisFrame.clear();
 	lastWheel.x = 0.0f;
 	lastWheel.y = 0.0f;
 }
@@ -89,12 +91,16 @@ void NLS::Windowing::Inputs::InputManager::OnKeyReleased(int p_key)
 
 void NLS::Windowing::Inputs::InputManager::OnMouseButtonPressed(int p_button)
 {
-	m_mouseButtonEvents[static_cast<EMouseButton>(p_button)] = EMouseButtonState::MOUSE_DOWN;
+    const auto button = static_cast<EMouseButton>(p_button);
+	m_mouseButtonEvents[button] = EMouseButtonState::MOUSE_DOWN;
+    m_mouseButtonsPressedThisFrame.insert(button);
 }
 
 void NLS::Windowing::Inputs::InputManager::OnMouseButtonReleased(int p_button)
 {
-	m_mouseButtonEvents[static_cast<EMouseButton>(p_button)] = EMouseButtonState::MOUSE_UP;
+    const auto button = static_cast<EMouseButton>(p_button);
+	m_mouseButtonEvents[button] = EMouseButtonState::MOUSE_UP;
+    m_mouseButtonsReleasedThisFrame.insert(button);
 }
 
 void NLS::Windowing::Inputs::InputManager::OnMouseScroll(double x, double y)

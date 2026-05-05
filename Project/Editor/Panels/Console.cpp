@@ -1,5 +1,7 @@
 ﻿#include <algorithm>
 
+#include <utility>
+
 #include "Panels/Console.h"
 #include "Core/EditorActions.h"
 
@@ -79,26 +81,51 @@ Editor::Panels::Console::Console
 	m_logGroup = &CreateWidget<Widgets::Group>();
     m_logGroup->ReverseDrawOrder();
 
-	m_playListener = EDITOR_EVENT(PlayEvent) += std::bind(&Console::ClearOnPlay, this);
+    if (NLS::Core::ServiceLocator::Contains<Editor::Core::EditorActions>())
+        m_playListener = EDITOR_EVENT(PlayEvent) += std::bind(&Console::ClearOnPlay, this);
 
 	m_logListener = Debug::Logger::LogEvent += std::bind(&Console::OnLogIntercepted, this, std::placeholders::_1);
 }
 
 Editor::Panels::Console::~Console()
 {
-	EDITOR_EVENT(PlayEvent) -= m_playListener;
+    if (m_playListener != 0 && NLS::Core::ServiceLocator::Contains<Editor::Core::EditorActions>())
+        EDITOR_EVENT(PlayEvent) -= m_playListener;
 	Debug::Logger::LogEvent -= m_logListener;
 }
 
 void Editor::Panels::Console::OnLogIntercepted(const Debug::LogData & p_logData)
 {
-	auto[logColor, logDate] = GetWidgetSettingsFromLogData(p_logData);
+    std::lock_guard lock(m_pendingLogsMutex);
+    m_pendingLogs.push_back(p_logData);
+}
 
-	auto& consoleItem1 = m_logGroup->CreateWidget<Widgets::TextColored>(logDate + "\t" + p_logData.message, logColor);
+void Editor::Panels::Console::FlushPendingLogs()
+{
+    std::vector<Debug::LogData> pendingLogs;
+    {
+        std::lock_guard lock(m_pendingLogsMutex);
+        pendingLogs.swap(m_pendingLogs);
+    }
 
-	consoleItem1.enabled = IsAllowedByFilter(p_logData.logLevel);
+    for (const auto& logData : pendingLogs)
+        AddLogWidget(logData);
+}
 
-	m_logTextWidgets[&consoleItem1] = p_logData.logLevel;
+void Editor::Panels::Console::AddLogWidget(const Debug::LogData& p_logData)
+{
+    auto [logColor, logDate] = GetWidgetSettingsFromLogData(p_logData);
+
+    auto& consoleItem1 = m_logGroup->CreateWidget<Widgets::TextColored>(logDate + "\t" + p_logData.message, logColor);
+
+    consoleItem1.enabled = IsAllowedByFilter(p_logData.logLevel);
+
+    m_logTextWidgets[&consoleItem1] = p_logData.logLevel;
+}
+
+void Editor::Panels::Console::OnBeforeDrawWidgets()
+{
+    FlushPendingLogs();
 }
 
 void Editor::Panels::Console::ClearOnPlay()
@@ -109,6 +136,10 @@ void Editor::Panels::Console::ClearOnPlay()
 
 void Editor::Panels::Console::Clear()
 {
+    {
+        std::lock_guard lock(m_pendingLogsMutex);
+        m_pendingLogs.clear();
+    }
 	m_logTextWidgets.clear();
 	m_logGroup->RemoveAllWidgets();
 }

@@ -10,6 +10,7 @@
 #include <Debug/Logger.h>
 #include "Windowing/Settings/DeviceSettings.h"
 #include "Core/Context.h"
+#include "Core/EditorFrameLatency.h"
 #include "Debug/FileHandler.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/Tooling/RenderDocEnvironment.h"
@@ -217,7 +218,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     driverSettings.graphicsBackend = graphicsBackend;
     driverSettings.debugMode = m_enableRhiDebugValidation;
     driverSettings.enableThreadedRendering = m_enableThreadedRendering;
-    driverSettings.threadedFrameSlotCount = driverSettings.framesInFlight;
+    driverSettings.threadedFrameSlotCount = Editor::Core::ResolveEditorThreadedFrameSlotCount(driverSettings.framesInFlight);
     driverSettings.diagnostics = m_diagnosticsSettings;
 
     // Apply command-line RenderDoc settings first, then let environment variables override if set

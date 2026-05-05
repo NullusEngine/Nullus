@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <optional>
 
 #include "Core/SceneCameraFocus.h"
 #include "Panels/AViewControllable.h"
@@ -51,12 +52,14 @@ namespace NLS::Editor::Panels
 
 	protected:
         virtual Engine::Rendering::BaseSceneRenderer::SceneDescriptor CreateSceneDescriptor() override;
+        void DrawPreRenderViewportOverlay() override;
         void OnAfterDrawWidgets() override;
         void DrawViewportOverlay() override;
 
 	private:
 		void HandleActorPicking();
         void EnsureCameraFocus();
+        bool ShouldRequestPickingFrame() const;
 
 	private:
 		Engine::SceneSystem::SceneManager& m_sceneManager;
@@ -68,8 +71,11 @@ namespace NLS::Editor::Panels
 		uint64_t m_destroyedListener = 0;
         Editor::Core::SceneViewGizmoInteraction m_gizmoInteraction;
         Editor::Core::SceneCameraFocusState m_cameraFocus;
-		Maths::Vector2 m_lastPickingMousePos { -10000.0f, -10000.0f };
+        Maths::Vector2 m_lastPickingMousePos { -10000.0f, -10000.0f };
+        std::optional<Maths::Vector2> m_pendingClickPickRenderPos;
 		std::chrono::steady_clock::time_point m_lastPickingSampleTime {};
+        uint64_t m_pendingClickMinReadablePickingFrameSerial = 0u;
 		bool m_hasPickingSample = false;
+        bool m_requestPickingFrame = true;
 	};
 }

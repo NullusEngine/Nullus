@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 
 #include "RenderDef.h"
 
@@ -8,6 +9,11 @@ namespace NLS::Render::Settings
 {
     enum class EPixelDataFormat : uint8_t;
     enum class EPixelDataType : uint8_t;
+}
+
+namespace NLS::Render::RHI
+{
+    class RHITexture;
 }
 
 namespace NLS::Render::Context
@@ -24,6 +30,16 @@ namespace NLS::Render::Context
         static bool DrainPendingThreadedSubmissions(Driver& driver, RhiSubmissionAttribution attribution);
         static void ReadPixels(
             const Driver& driver,
+            uint32_t x,
+            uint32_t y,
+            uint32_t width,
+            uint32_t height,
+            Settings::EPixelDataFormat format,
+            Settings::EPixelDataType type,
+            void* data);
+        static void ReadPixels(
+            const Driver& driver,
+            const std::shared_ptr<RHI::RHITexture>& texture,
             uint32_t x,
             uint32_t y,
             uint32_t width,

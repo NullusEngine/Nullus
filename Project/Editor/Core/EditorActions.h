@@ -4,8 +4,8 @@
 #include <Filesystem/IniFile.h>
 #include <Utils/PathParser.h>
 
-#include "Core/Context.h"
-#include "Core/PanelsManager.h"
+#include "Context.h"
+#include "PanelsManager.h"
 
 #define EDITOR_EXEC(action)                 NLS::Core::ServiceLocator::Get<NLS::Editor::Core::EditorActions>().action
 #define EDITOR_BIND(method, ...)            std::bind(&NLS::Editor::Core::EditorActions::method, &NLS::Core::ServiceLocator::Get<NLS::Editor::Core::EditorActions>(), ##__VA_ARGS__)

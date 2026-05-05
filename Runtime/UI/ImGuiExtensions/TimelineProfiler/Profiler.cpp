@@ -318,9 +318,6 @@ void GPUProfiler::Tick()
 	if (!m_IsInitialized)
 		return;
 
-	for (ActiveEventStack& stack : m_QueueEventStack)
-		gAssert(stack.GetSize() == 0, "EventStack for the CommandQueue should be empty. Forgot to `End()` %d Events", stack.GetSize());
-
 	// Poll query heap and populate event timings
 	while (m_FrameToReadback < m_FrameIndex)
 	{
@@ -365,8 +362,32 @@ void GPUProfiler::Tick()
 	if (m_IsPaused)
 		return;
 
+	bool hasOpenQueueEvents = false;
+	{
+		std::scoped_lock lock(m_QueryRangeLock);
+		for (ActiveEventStack& stack : m_QueueEventStack)
+		{
+			if (stack.GetSize() != 0)
+			{
+				hasOpenQueueEvents = true;
+				break;
+			}
+		}
+	}
+
+	bool hasPendingCommandListQueries = false;
+	AcquireSRWLockShared((PSRWLOCK)&m_CommandListMapLock);
 	for (const auto& data: m_CommandListMap)
-		gAssert(data.second->Queries.empty(), "The Queries inside the commandlist is not empty. This is because ExecuteCommandLists was not called with this commandlist.");
+	{
+		if (data.second != nullptr && !data.second->Queries.empty())
+		{
+			hasPendingCommandListQueries = true;
+			break;
+		}
+	}
+	ReleaseSRWLockShared((PSRWLOCK)&m_CommandListMapLock);
+	if (!TimelineProfilerDetail::ShouldAdvanceGpuProfilerFrame(hasPendingCommandListQueries, hasOpenQueueEvents))
+		return;
 
 	for (QueryHeap& heap : m_QueryHeaps)
 		heap.Resolve(m_FrameIndex);
@@ -662,7 +683,8 @@ void Profiler::BeginEvent(const char* pName, uint32 color, const char* pFilePath
 		return;
 
 	// Record new event
-	EventTrack&		   track	 = GetCurrentThreadTrack();
+	std::scoped_lock lock(m_ThreadDataLock);
+	EventTrack&		   track	 = GetCurrentThreadTrackLocked();
 	ProfilerEventData& eventData = track.GetFrameData(m_FrameIndex);
 	track.EventStack.Push() = { m_FrameIndex, (uint32)eventData.size() };
 
@@ -689,7 +711,8 @@ void Profiler::EndEvent()
 		return;
 
 	// End and pop an event of the stack
-	EventTrack& track = GetCurrentThreadTrack();
+	std::scoped_lock lock(m_ThreadDataLock);
+	EventTrack& track = GetCurrentThreadTrackLocked();
 
 	gAssert(track.EventStack.GetSize() > 0, "Event mismatch. Called EndEvent more than BeginEvent");
 	const Profiler::EventTrack::EventStackEntry eventStackEntry = track.EventStack.Pop();
@@ -700,6 +723,7 @@ void Profiler::EndEvent()
 
 void Profiler::AddEvent(uint32 trackIndex, const ProfilerEvent& event, uint32 frameIndex)
 {
+	std::scoped_lock lock(m_ThreadDataLock);
 	EventTrack&		   track  = m_Tracks[trackIndex];
 	ProfilerEventData& events = track.GetFrameData(frameIndex);
 
@@ -894,6 +918,12 @@ void Profiler::Tick()
 // Register a new thread
 int Profiler::RegisterCurrentThread(const char* pName)
 {
+	std::scoped_lock lock(m_ThreadDataLock);
+	return RegisterCurrentThreadLocked(pName);
+}
+
+int Profiler::RegisterCurrentThreadLocked(const char* pName)
+{
 	int& threadIndex = GetCurrentThreadTrackIndex();
 
 	const char* pLocalName = pName;
@@ -913,7 +943,7 @@ int Profiler::RegisterCurrentThread(const char* pName)
 
 	if (threadIndex == -1)
 	{
-		threadIndex = RegisterTrack(pLocalName, EventTrack::EType::CPU, GetCurrentThreadId());
+		threadIndex = RegisterTrackLocked(pLocalName, EventTrack::EType::CPU, GetCurrentThreadId());
 	}
 	else
 	{
@@ -922,12 +952,23 @@ int Profiler::RegisterCurrentThread(const char* pName)
 	return threadIndex;
 }
 
+Profiler::EventTrack& Profiler::GetCurrentThreadTrackLocked()
+{
+	int& index = GetCurrentThreadTrackIndex();
+	if (index == -1)
+		index = RegisterCurrentThreadLocked();
+	return m_Tracks[index];
+}
 
 // Register a new track
 int Profiler::RegisterTrack(const char* pName, EventTrack::EType type, uint32 id)
 {
 	std::scoped_lock lock(m_ThreadDataLock);
+	return RegisterTrackLocked(pName, type, id);
+}
 
+int Profiler::RegisterTrackLocked(const char* pName, EventTrack::EType type, uint32 id)
+{
 	EventTrack& data = m_Tracks.emplace_back();
 	strcpy_s(data.Name, ARRAYSIZE(data.Name), pName);
 	data.ID	   = id;

@@ -180,6 +180,7 @@ ProfilerScopeEvent Profiler::BeginScope(const std::string_view name, const std::
         return event;
     }
 
+    event.destinations = destinations;
     event.active = true;
     for (auto* destination : destinations)
         destination->BeginScope(event);
@@ -199,9 +200,11 @@ void Profiler::EndScope(const ProfilerScopeEvent& event)
     if (!event.active)
         return;
 
-    auto destinations = GetAvailableDestinations(AcceptsCPUScopes);
-    for (auto* destination : destinations)
-        destination->EndScope(event);
+    for (auto* destination : event.destinations)
+    {
+        if (destination != nullptr)
+            destination->EndScope(event);
+    }
 
     if (g_scopeDepth > 0u)
         --g_scopeDepth;
@@ -235,6 +238,7 @@ ProfilerGpuScopeEvent Profiler::BeginGpuScope(
         return event;
     }
 
+    event.destinations = destinations;
     event.active = true;
     for (auto* destination : destinations)
         destination->BeginGpuScope(event);
@@ -254,9 +258,11 @@ void Profiler::EndGpuScope(const ProfilerGpuScopeEvent& event)
     if (!event.active)
         return;
 
-    auto destinations = GetAvailableDestinations(AcceptsGPUContextInitialization);
-    for (auto* destination : destinations)
-        destination->EndGpuScope(event);
+    for (auto* destination : event.destinations)
+    {
+        if (destination != nullptr)
+            destination->EndGpuScope(event);
+    }
 
     if (g_gpuScopeDepth > 0u)
         --g_gpuScopeDepth;

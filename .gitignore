@@ -32,6 +32,7 @@ App/Linux_*/
 
 # Runtime generated reflection code
 Runtime/*/Gen/
+Project/Editor/Gen/
 
 # C# build artifacts
 Tools/MetaParser/src/bin/

@@ -4,6 +4,7 @@
 #include <UI/Panels/PanelWindow.h>
 #include <UI/Widgets/Menu/MenuItem.h>
 
+#include "Panels/ProjectSettings.h"
 #include "Panels/ShortcutSettingsPanel.h"
 
 namespace NLS::Editor::Panels
@@ -31,6 +32,8 @@ namespace NLS::Editor::Panels
 		* Register a panel to the menu bar window menu
 		*/
 		void RegisterPanel(const std::string& p_name, UI::PanelWindow& p_panel);
+        void RegisterProjectSettingsPanel(ProjectSettings& p_panel);
+        void OpenProjectSettings();
 
 		/**
 		* @note This needs to be called after all other panels have been intialized, as the content of other
@@ -55,7 +58,8 @@ namespace NLS::Editor::Panels
 	private:
 		PanelMap m_panels;
         ShortcutSettingsPanel m_shortcutSettingsPanel;
-        UI::Widgets::MenuList* m_editMenu = nullptr;
+        ProjectSettings* m_projectSettingsPanel = nullptr;
+		UI::Widgets::MenuList* m_editMenu = nullptr;
 		UI::Widgets::MenuList* m_settingsMenu = nullptr;
 		UI::Widgets::MenuList* m_windowMenu = nullptr;
 		UI::Widgets::MenuItem* m_newSceneItem = nullptr;

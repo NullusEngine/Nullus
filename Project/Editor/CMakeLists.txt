@@ -9,6 +9,9 @@ file(GLOB_RECURSE EDITOR_SOURCE_FILES
   ${CMAKE_CURRENT_SOURCE_DIR}/*.c
 )
 
+list(FILTER EDITOR_HEAD_FILES EXCLUDE REGEX "/Gen/")
+list(FILTER EDITOR_SOURCE_FILES EXCLUDE REGEX "/Gen/")
+
 # 对文件进行分组
 ###############################################################################
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${EDITOR_HEAD_FILES})
@@ -28,6 +31,7 @@ target_include_directories(
   Editor
   PUBLIC # 其他项目使用头文件时所需的目录
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<BUILD_INTERFACE:${NLS_ROOT_DIR}>
 )
 
 target_link_libraries(
@@ -35,3 +39,5 @@ target_link_libraries(
     PUBLIC # 使用该库时必须依赖的库
     NLS_Engine
 )
+
+nls_add_meta_generation(Editor "${CMAKE_CURRENT_SOURCE_DIR}" "${EDITOR_HEAD_FILES}")

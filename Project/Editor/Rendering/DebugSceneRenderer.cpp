@@ -357,7 +357,7 @@ protected:
 		auto& sceneDescriptor = m_renderer.GetDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>();
 		p_pso = Editor::Rendering::CreateEditorOverlayPipelineState(p_pso);
 
-		m_lightMaterial.Set<float>("u_Scale", Editor::Settings::EditorSettings::LightBillboardScale * 0.1f);
+		m_lightMaterial.Set<float>("u_Scale", Editor::Settings::EditorSettings::GetDebugDrawSettingsObject().lightBillboardScale * 0.1f);
 
 		for (auto light : sceneDescriptor.scene.GetFastAccessComponents().lights)
 		{
@@ -440,7 +440,7 @@ protected:
 			ApplyDebugDrawSettings();
 
 			/* Render static mesh outline and bounding spheres */
-			if (Editor::Settings::EditorSettings::DebugDrawBounds)
+			if (Editor::Settings::EditorSettings::GetDebugDrawSettingsObject().debugDrawBounds)
 			{
 				auto modelRenderer = p_actor.GetComponent<Engine::Components::MeshRenderer>();
 
@@ -724,11 +724,12 @@ private:
 	void ApplyDebugDrawSettings()
 	{
 		auto& debugDrawService = GetDebugDrawService();
-		debugDrawService.SetEnabled(Editor::Settings::EditorSettings::DebugDrawEnabled);
-		debugDrawService.SetCategoryEnabled(Render::Debug::DebugDrawCategory::Grid, Editor::Settings::EditorSettings::DebugDrawGrid);
-		debugDrawService.SetCategoryEnabled(Render::Debug::DebugDrawCategory::Bounds, Editor::Settings::EditorSettings::DebugDrawBounds);
-		debugDrawService.SetCategoryEnabled(Render::Debug::DebugDrawCategory::Camera, Editor::Settings::EditorSettings::DebugDrawCamera);
-		debugDrawService.SetCategoryEnabled(Render::Debug::DebugDrawCategory::Lighting, Editor::Settings::EditorSettings::DebugDrawLighting);
+        const auto& debugSettings = Editor::Settings::EditorSettings::GetDebugDrawSettingsObject();
+		debugDrawService.SetEnabled(debugSettings.debugDrawEnabled);
+		debugDrawService.SetCategoryEnabled(Render::Debug::DebugDrawCategory::Grid, debugSettings.debugDrawGrid);
+		debugDrawService.SetCategoryEnabled(Render::Debug::DebugDrawCategory::Bounds, debugSettings.debugDrawBounds);
+		debugDrawService.SetCategoryEnabled(Render::Debug::DebugDrawCategory::Camera, debugSettings.debugDrawCamera);
+		debugDrawService.SetCategoryEnabled(Render::Debug::DebugDrawCategory::Lighting, debugSettings.debugDrawLighting);
 	}
 
     Render::Debug::DebugDrawService& GetDebugDrawService()
@@ -879,11 +880,12 @@ std::optional<NLS::Render::Context::FrameSnapshot> Editor::Rendering::DebugScene
     helperState.lightPassEnabled = lightPassEnabled;
     helperState.actorPassEnabled = actorPassEnabled;
     helperState.debugDrawPassEnabled = debugDrawPassEnabled;
+    const auto& debugSettings = Editor::Settings::EditorSettings::GetDebugDrawSettingsObject();
     helperState.gridEnabled = GridRenderPass::ShouldIncludeInThreadedFrame(
         gridPassEnabled,
         HasDescriptor<GridRenderPass::GridDescriptor>(),
-        Editor::Settings::EditorSettings::DebugDrawEnabled,
-        Editor::Settings::EditorSettings::DebugDrawGrid);
+        debugSettings.debugDrawEnabled,
+        debugSettings.debugDrawGrid);
     helperState.sceneCameraCount = static_cast<uint64_t>(scene.GetFastAccessComponents().cameras.size());
     helperState.sceneLightCount = static_cast<uint64_t>(scene.GetFastAccessComponents().lights.size());
     if (HasDescriptor<DebugSceneDescriptor>())

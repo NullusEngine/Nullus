@@ -25,6 +25,19 @@ add_executable(NullusUnitTests
 )
 
 target_sources(NullusUnitTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ReflectedPropertyDrawer.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ReflectedPropertyDrawer.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ProjectSettings.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ProjectSettings.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettings.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettings.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettingObject.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettingsPersistence.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettingsPersistence.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettingsRegistry.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettingsRegistry.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Gen/MetaGenerated.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Gen/MetaGenerated.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutProfile.cpp
     ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutProfile.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutRegistry.cpp
@@ -70,6 +83,8 @@ target_include_directories(NullusUnitTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Runtime/Engine
     ${CMAKE_SOURCE_DIR}/Runtime/Math
     ${CMAKE_SOURCE_DIR}/Runtime/Rendering
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Gen
     ${CMAKE_SOURCE_DIR}/Project/Game
     ${CMAKE_SOURCE_DIR}/Project/Editor
     ${CMAKE_SOURCE_DIR}/Project/Launcher

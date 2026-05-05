@@ -52,3 +52,25 @@ TEST(MetaParserGenerationModuleTests, GeneratesComponentMenuTypeMetadataBindings
     ExpectContains(meshRendererText, "Rendering/Mesh Renderer");
     ExpectContains(meshRendererText, "type.meta");
 }
+
+TEST(MetaParserGenerationModuleTests, GeneratesExpectedEditorSettingsReflectionBindings)
+{
+    const std::filesystem::path sceneToolSource =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Gen/Project/Editor/Settings/EditorSettings.generated.cpp";
+    const std::filesystem::path metaSource =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Gen/MetaGenerated.cpp";
+    const std::filesystem::path handwrittenSource =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Settings/EditorSettings.cpp";
+
+    const std::string sceneToolText = ReadAllText(sceneToolSource);
+    const std::string metaText = ReadAllText(metaSource);
+    const std::string handwrittenText = ReadAllText(handwrittenSource);
+
+    ExpectContains(sceneToolText, "AllocateType(\"NLS::Editor::Settings::EditorSceneToolSettingsObject\")");
+    ExpectContains(sceneToolText, "AddField<NLS::Editor::Settings::EditorSceneToolSettingsObject, float>(\"translationSnapUnit\"");
+    ExpectContains(sceneToolText, "AddField<NLS::Editor::Settings::EditorDebugDrawSettingsObject, bool>(\"debugDrawEnabled\"");
+    ExpectContains(metaText, "#include \"Project/Editor/Settings/EditorSettings.generated.cpp\"");
+    ExpectNotContains(handwrittenText, "AddField<EditorSceneToolSettingsObject");
+    ExpectNotContains(handwrittenText, "AddField<EditorDebugDrawSettingsObject");
+    ExpectNotContains(handwrittenText, "AutoReflectionModuleRegistrar");
+}

@@ -1,47 +1,54 @@
-#include <UI/Widgets/Texts/Text.h>
+#pragma once
+
 #include <UI/Panels/PanelWindow.h>
 
-#include <Filesystem/IniFile.h>
+#include <filesystem>
+#include <set>
+#include <string>
+#include <vector>
+
+#include "Settings/EditorSettingsRegistry.h"
 
 namespace NLS::Editor::Panels
 {
-	class ProjectSettings : public UI::PanelWindow
-	{
-	public:
-		/**
-		* Constructor
-		* @param p_title
-		* @param p_opened
-		* @param p_windowSettings
-		*/
-		ProjectSettings
-		(
-			const std::string& p_title,
-			bool p_opened,
-			const UI::PanelWindowSettings& p_windowSettings
-		);
+class ProjectSettings : public UI::PanelWindow
+{
+public:
+    ProjectSettings(
+        const std::string& p_title,
+        bool p_opened,
+        const UI::PanelWindowSettings& p_windowSettings);
 
-		/**
-		* Generate a gatherer that will get the value associated to the given key
-		* @param p_keyName
-		*/
-		template <typename T>
-		std::function<T()> GenerateGatherer(const std::string& p_keyName)
-		{
-			return std::bind(&Filesystem::IniFile::Get<T>, &m_projectFile, p_keyName);
-		}
+    void Open();
+    void Close();
+    void DrawModal();
+    bool IsModalOpen() const;
 
-		/**
-		* Generate a provider that will set the value associated to the given key
-		* @param p_keyName
-		*/
-		template <typename T>
-		std::function<void(T)> GenerateProvider(const std::string& p_keyName)
-		{
-			return std::bind(&Filesystem::IniFile::Set<T>, &m_projectFile, p_keyName, std::placeholders::_1);
-		}
+    static std::string ChooseSelectionAfterSearch(
+        const Settings::EditorSettingsRegistry& p_registry,
+        const std::string& p_currentSelection,
+        const std::string& p_searchText);
 
-	private:
-		Filesystem::IniFile& m_projectFile;
-	};
+protected:
+    void _Draw_Impl() override;
+
+private:
+    void EnsureInitialized();
+    void DrawSettingsModal();
+    void DrawSearchRow();
+    void DrawCategoryList(const std::vector<const Settings::EditorSettingObject*>& p_visibleObjects);
+    void DrawSelectedSettings();
+    void SaveIfDirty();
+    std::filesystem::path GetSettingsPath() const;
+
+private:
+    Settings::EditorSettingsRegistry m_registry;
+    bool m_initialized = false;
+    bool m_opened = false;
+    std::string m_searchText;
+    std::string m_selectedSettingId;
+    std::string m_reflectedWidgetsSelectionId;
+    std::string m_reflectedWidgetsSearchText;
+    std::set<std::string> m_dirtySettings;
+};
 }

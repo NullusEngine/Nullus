@@ -169,12 +169,12 @@ float GetSnapValue(const EGizmoOperation p_operation)
     switch (p_operation)
     {
     case EGizmoOperation::ROTATE:
-        return Settings::EditorSettings::RotationSnapUnit.Get();
+        return Settings::EditorSettings::GetSceneToolSettingsObject().rotationSnapUnit;
     case EGizmoOperation::SCALE:
-        return Settings::EditorSettings::ScalingSnapUnit.Get();
+        return Settings::EditorSettings::GetSceneToolSettingsObject().scalingSnapUnit;
     case EGizmoOperation::TRANSLATE:
     default:
-        return Settings::EditorSettings::TranslationSnapUnit.Get();
+        return Settings::EditorSettings::GetSceneToolSettingsObject().translationSnapUnit;
     }
 }
 

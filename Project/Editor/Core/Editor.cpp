@@ -127,6 +127,7 @@ Editor::Core::Editor::Editor(Context& p_context)
     NLS::Base::Profiling::Profiler::SetEnabled(true);
     NLS::Base::Profiling::Profiler::RegisterDestination(g_tracyProfiler);
 
+    NLS::Core::ServiceLocator::Provide<NLS::Editor::Core::Context>(m_context);
     NLS::Core::ServiceLocator::Provide<NLS::Editor::Core::Editor>(*this);
     NLS::Core::ServiceLocator::Provide<NLS::Editor::Shortcuts::EditorShortcutService>(m_shortcutService);
     Assembly::Instance().Instance().Load<AssemblyMath>().Load<AssemblyCore>().Load<AssemblyPlatform>().Load<AssemblyRender>().Load<Engine::AssemblyEngine>();
@@ -181,8 +182,10 @@ void Editor::Core::Editor::SetupUI()
     m_panelsManager.CreatePanel<Panels::GameView>("Game View", true, settings);
     m_panelsManager.CreatePanel<Panels::MaterialEditor>("Material Editor", false, settings);
     m_panelsManager.CreatePanel<Panels::ProjectSettings>("Project Settings", false, settings);
+    m_panelsManager.GetPanelAs<Panels::ProjectSettings>("Project Settings").enabled = false;
     m_panelsManager.CreatePanel<Panels::AssetProperties>("Asset Properties", false, settings);
     auto& topBar = m_panelsManager.GetPanelAs<Panels::EditorTopBar>("Editor Top Bar");
+    topBar.RegisterProjectSettingsPanel(m_panelsManager.GetPanelAs<Panels::ProjectSettings>("Project Settings"));
     topBar.RegisterWindowPanel("Asset Browser", m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser"));
     topBar.RegisterWindowPanel("Frame Info", m_panelsManager.GetPanelAs<Panels::FrameInfo>("Frame Info"));
     topBar.RegisterWindowPanel("Profiler", profilerPanel);
@@ -193,7 +196,6 @@ void Editor::Core::Editor::SetupUI()
     topBar.RegisterWindowPanel("Scene View", m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View"));
     topBar.RegisterWindowPanel("Game View", m_panelsManager.GetPanelAs<Panels::GameView>("Game View"));
     topBar.RegisterWindowPanel("Material Editor", m_panelsManager.GetPanelAs<Panels::MaterialEditor>("Material Editor"));
-    topBar.RegisterWindowPanel("Project Settings", m_panelsManager.GetPanelAs<Panels::ProjectSettings>("Project Settings"));
     topBar.RegisterWindowPanel("Asset Properties", m_panelsManager.GetPanelAs<Panels::AssetProperties>("Asset Properties"));
     // Needs to be called after all panels got created, because some settings in this menu depend on other panels
     topBar.InitializeSettingsMenu();

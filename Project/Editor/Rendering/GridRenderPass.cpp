@@ -53,14 +53,15 @@ void Editor::Rendering::GridRenderPass::Draw(NLS::Render::Data::PipelineState p_
 
 	auto& gridDescriptor = m_renderer.GetDescriptor<GridDescriptor>();
 	auto& debugDrawService = *m_renderer.GetDebugDrawService();
-	debugDrawService.SetEnabled(Editor::Settings::EditorSettings::DebugDrawEnabled);
-	debugDrawService.SetCategoryEnabled(NLS::Render::Debug::DebugDrawCategory::Grid, Editor::Settings::EditorSettings::DebugDrawGrid);
+    const auto& debugSettings = Editor::Settings::EditorSettings::GetDebugDrawSettingsObject();
+	debugDrawService.SetEnabled(debugSettings.debugDrawEnabled);
+	debugDrawService.SetCategoryEnabled(NLS::Render::Debug::DebugDrawCategory::Grid, debugSettings.debugDrawGrid);
 
 	if (!ShouldIncludeInThreadedFrame(
         true,
         true,
-        Editor::Settings::EditorSettings::DebugDrawEnabled,
-        Editor::Settings::EditorSettings::DebugDrawGrid))
+        debugSettings.debugDrawEnabled,
+        debugSettings.debugDrawGrid))
 		return;
 
 	auto pso = Editor::Rendering::CreateEditorGridPipelineState(p_pso);

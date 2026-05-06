@@ -16,6 +16,18 @@ set(NULLUS_RENDER_ALIGNMENT_CONTRACT_TEST_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/EditorRenderPathContractTests.cpp"
 )
 
+set(NULLUS_EDITOR_META_GENERATED_CPP
+    "${CMAKE_SOURCE_DIR}/Project/Editor/Gen/MetaGenerated.cpp"
+)
+set(NULLUS_EDITOR_META_GENERATED_H
+    "${CMAKE_SOURCE_DIR}/Project/Editor/Gen/MetaGenerated.h"
+)
+set_source_files_properties(
+    "${NULLUS_EDITOR_META_GENERATED_CPP}"
+    "${NULLUS_EDITOR_META_GENERATED_H}"
+    PROPERTIES GENERATED TRUE
+)
+
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${NULLUS_UNIT_TEST_FILES})
 source_group("Contract Tests" FILES ${NULLUS_RENDER_ALIGNMENT_CONTRACT_TEST_FILES})
 
@@ -36,8 +48,8 @@ target_sources(NullusUnitTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettingsPersistence.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettingsRegistry.cpp
     ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettingsRegistry.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Gen/MetaGenerated.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Gen/MetaGenerated.h
+    ${NULLUS_EDITOR_META_GENERATED_CPP}
+    ${NULLUS_EDITOR_META_GENERATED_H}
     ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutProfile.cpp
     ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutProfile.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutRegistry.cpp

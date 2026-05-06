@@ -5,6 +5,7 @@
 
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverAccess.h"
+#include "Rendering/Context/SwapchainResizePolicy.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/RHI/Core/RHICommand.h"
 #include "Rendering/RHI/Core/RHIResource.h"
@@ -176,6 +177,10 @@ TEST(DriverSwapchainResizeTests, ReleasesFrameContextBackbufferViewsBeforeResizi
 
     NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
     driver.ResizePlatformSwapchain(1664u, 941u);
+    NLS::Render::Context::DriverTestAccess::AgePendingSwapchainResize(
+        driver,
+        NLS::Render::Context::GetInteractiveSwapchainResizeDebounce());
+    NLS::Render::Context::DriverUIAccess::PresentSwapchain(driver);
 
     EXPECT_TRUE(swapchain->resizeCalled);
     EXPECT_EQ(swapchain->resizeWidth, 1664u);
@@ -222,6 +227,10 @@ TEST(DriverSwapchainResizeTests, ClearsTrackedBackbufferTextureStatesBeforeResiz
     NLS::Render::Context::DriverTestAccess::SetCompletedReadbackTexture(driver, weakTexture.lock());
     NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
     driver.ResizePlatformSwapchain(1920u, 1080u);
+    NLS::Render::Context::DriverTestAccess::AgePendingSwapchainResize(
+        driver,
+        NLS::Render::Context::GetInteractiveSwapchainResizeDebounce());
+    NLS::Render::Context::DriverUIAccess::PresentSwapchain(driver);
 
     EXPECT_TRUE(swapchain->resizeCalled);
     EXPECT_TRUE(swapchain->backbufferReleasedBeforeResize);
@@ -230,7 +239,7 @@ TEST(DriverSwapchainResizeTests, ClearsTrackedBackbufferTextureStatesBeforeResiz
     EXPECT_EQ(frameContext.explicitReadbackTexture, nullptr);
 }
 
-TEST(DriverSwapchainResizeTests, NotifiesWillResizeAgainAtActualResizeToReleaseReacquiredUiBackbuffers)
+TEST(DriverSwapchainResizeTests, NotifiesWillResizeOnlyWhenResizeActuallyApplies)
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
@@ -254,17 +263,42 @@ TEST(DriverSwapchainResizeTests, NotifiesWillResizeAgainAtActualResizeToReleaseR
     driver.ResizePlatformSwapchain(1600u, 900u);
 
     EXPECT_FALSE(swapchain->resizeCalled);
-    EXPECT_EQ(willResizeNotifications, 1u);
-
-    heldBackbufferView = std::make_shared<TestTextureView>();
-    swapchain->SetTrackedView(heldBackbufferView);
+    EXPECT_EQ(willResizeNotifications, 0u);
 
     NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+    NLS::Render::Context::DriverTestAccess::AgePendingSwapchainResize(
+        driver,
+        NLS::Render::Context::GetInteractiveSwapchainResizeDebounce());
     NLS::Render::Context::DriverUIAccess::PresentSwapchain(driver);
 
     EXPECT_TRUE(swapchain->resizeCalled);
-    EXPECT_EQ(willResizeNotifications, 2u);
+    EXPECT_EQ(willResizeNotifications, 1u);
     EXPECT_TRUE(swapchain->backbufferReleasedBeforeResize);
+}
+
+TEST(DriverSwapchainResizeTests, IgnoresResizeRequestsMatchingCurrentSwapchainSize)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.framesInFlight = 1;
+
+    NLS::Render::Context::Driver driver(settings);
+
+    auto swapchain = std::make_shared<TestSwapchain>(
+        std::weak_ptr<NLS::Render::RHI::RHITextureView>{});
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+
+    driver.ResizePlatformSwapchain(1600u, 900u);
+
+    EXPECT_TRUE(swapchain->resizeCalled);
+    EXPECT_EQ(swapchain->resizeCalls, 1u);
+
+    driver.ResizePlatformSwapchain(1600u, 900u);
+
+    EXPECT_EQ(swapchain->resizeCalls, 1u);
+    EXPECT_EQ(swapchain->resizeWidth, 1600u);
+    EXPECT_EQ(swapchain->resizeHeight, 900u);
 }
 
 TEST(DriverSwapchainResizeTests, ThreadedResizeWaitsForInFlightFrameRetirementBeforeResizingSwapchain)
@@ -308,6 +342,9 @@ TEST(DriverSwapchainResizeTests, ThreadedResizeWaitsForInFlightFrameRetirementBe
     ASSERT_TRUE(lifecycle->CompleteRhiSubmission(0u, submissionFrame));
     ASSERT_TRUE(lifecycle->RetireFrame(0u));
 
+    NLS::Render::Context::DriverTestAccess::AgePendingSwapchainResize(
+        driver,
+        NLS::Render::Context::GetInteractiveSwapchainResizeDebounce());
     driver.ResizePlatformSwapchain(1280u, 720u);
 
     EXPECT_TRUE(swapchain->resizeCalled);
@@ -355,6 +392,9 @@ TEST(DriverSwapchainResizeTests, ThreadedResizeAppliesPendingResizeBeforeRecover
     ASSERT_TRUE(lifecycle->CompleteRhiSubmission(0u, submissionFrame));
     ASSERT_TRUE(lifecycle->RetireFrame(0u));
 
+    NLS::Render::Context::DriverTestAccess::AgePendingSwapchainResize(
+        driver,
+        NLS::Render::Context::GetInteractiveSwapchainResizeDebounce());
     NLS::Render::Context::FrameSnapshot secondSnapshot;
     secondSnapshot.frameId = 24u;
     secondSnapshot.targetsSwapchain = true;
@@ -382,16 +422,23 @@ TEST(DriverSwapchainResizeTests, RetriesPendingSwapchainResizeAfterBackendResize
 
     NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
     driver.ResizePlatformSwapchain(1483u, 9003u);
+    NLS::Render::Context::DriverTestAccess::AgePendingSwapchainResize(
+        driver,
+        NLS::Render::Context::GetInteractiveSwapchainResizeDebounce());
+    NLS::Render::Context::DriverUIAccess::PresentSwapchain(driver);
 
     EXPECT_TRUE(swapchain->resizeCalled);
-    EXPECT_EQ(swapchain->resizeCalls, 1u);
+    EXPECT_EQ(swapchain->resizeCalls, 2u);
     EXPECT_EQ(swapchain->GetDesc().width, 0u);
     EXPECT_EQ(swapchain->GetDesc().height, 0u);
 
     swapchain->resizeResult = true;
+    NLS::Render::Context::DriverTestAccess::AgePendingSwapchainResize(
+        driver,
+        NLS::Render::Context::GetInteractiveSwapchainResizeDebounce());
     NLS::Render::Context::DriverUIAccess::PresentSwapchain(driver);
 
-    EXPECT_EQ(swapchain->resizeCalls, 2u);
+    EXPECT_EQ(swapchain->resizeCalls, 3u);
     EXPECT_EQ(swapchain->resizeWidth, 1483u);
     EXPECT_EQ(swapchain->resizeHeight, 9003u);
     EXPECT_EQ(swapchain->GetDesc().width, 1483u);

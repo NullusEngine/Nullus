@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
 #include <memory>
 #include <optional>
 #include <string>
@@ -184,6 +185,9 @@ namespace NLS::Render::Context
             Driver& driver,
             std::shared_ptr<RHI::RHITexture> texture);
         static void SetExplicitFrameActive(Driver& driver, bool active);
+        static void AgePendingSwapchainResize(
+            Driver& driver,
+            std::chrono::steady_clock::duration age);
         static bool TryLockThreadedRhiSubmission(Driver& driver);
         static void UnlockThreadedRhiSubmission(Driver& driver);
         static ThreadedRenderingLifecycle* GetThreadedRenderingLifecycle(Driver& driver);

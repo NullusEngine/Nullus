@@ -334,6 +334,15 @@ bool NLS::Windowing::Window::IsResizable() const
 	return glfwGetWindowAttrib(m_glfwWindow, GLFW_RESIZABLE) == GLFW_TRUE;
 }
 
+bool NLS::Windowing::Window::IsNativeResizeInProgress() const
+{
+#ifdef _WIN32
+    return m_nativeResizeInProgress;
+#else
+    return false;
+#endif
+}
+
 bool NLS::Windowing::Window::IsDecorated() const
 {
 	return glfwGetWindowAttrib(m_glfwWindow, GLFW_DECORATED) == GLFW_TRUE;;

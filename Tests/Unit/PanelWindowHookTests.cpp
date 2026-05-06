@@ -428,6 +428,19 @@ TEST(PanelWindowHookTests, RetirementAwareRenderPolicyDrainsOnlyForImmediateRead
         true));
 }
 
+TEST(PanelWindowHookTests, RetirementAwareRenderPolicyDrainsAfterViewResize)
+{
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
+        true,
+        false,
+        true));
+
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
+        false,
+        false,
+        true));
+}
+
 TEST(PanelWindowHookTests, SceneViewPickingUsesDelayedReadbackByDefault)
 {
     EXPECT_FALSE(NLS::Editor::Panels::ShouldSceneViewRequestImmediatePickingReadback());

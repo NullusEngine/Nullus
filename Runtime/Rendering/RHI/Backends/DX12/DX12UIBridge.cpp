@@ -318,16 +318,35 @@ namespace NLS::Render::RHI
 
                 m_swapchain = swapchain;
 
-                const uint32_t targetImageCount = nativeInfo.swapchainImageCount > 0 ? nativeInfo.swapchainImageCount : 2u;
+                DXGI_SWAP_CHAIN_DESC1 swapchainDesc{};
+                if (FAILED(swapchain->GetDesc1(&swapchainDesc)))
+                {
+                    NLS_LOG_WARNING("DX12UIBridge failed to query swapchain desc.");
+                    return false;
+                }
+
+                const uint32_t targetImageCount = swapchainDesc.BufferCount != 0
+                    ? swapchainDesc.BufferCount
+                    : (nativeInfo.swapchainImageCount > 0 ? nativeInfo.swapchainImageCount : 2u);
+                const uint32_t targetWidth = swapchainDesc.Width;
+                const uint32_t targetHeight = swapchainDesc.Height;
+                const DXGI_FORMAT targetFormat = swapchainDesc.Format == DXGI_FORMAT_UNKNOWN
+                    ? DXGI_FORMAT_R8G8B8A8_UNORM
+                    : swapchainDesc.Format;
                 if (m_commandList != nullptr &&
+                    m_swapchain.Get() == swapchain &&
                     !m_backBuffers.empty() &&
                     m_backBuffers.size() == targetImageCount &&
-                    m_commandAllocators.size() == targetImageCount)
+                    m_commandAllocators.size() == targetImageCount &&
+                    m_backbufferWidth == targetWidth &&
+                    m_backbufferHeight == targetHeight &&
+                    m_backbufferFormat == targetFormat)
                 {
                     return true;
                 }
 
                 ReleaseSwapchainRenderResources();
+                m_swapchain = swapchain;
 
                 D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc{};
                 rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
@@ -340,6 +359,9 @@ namespace NLS::Render::RHI
                 }
 
                 m_imageCount = targetImageCount;
+                m_backbufferWidth = targetWidth;
+                m_backbufferHeight = targetHeight;
+                m_backbufferFormat = targetFormat;
                 m_frameFenceTracker.ResetBackbufferCount(m_imageCount);
                 m_rtvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
                 m_backBuffers.resize(m_imageCount);
@@ -520,6 +542,8 @@ namespace NLS::Render::RHI
             UINT m_srvDescriptorCapacity = 0;
             UINT m_nextTextureDescriptorIndex = 1;
             DXGI_FORMAT m_backbufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+            uint32_t m_backbufferWidth = 0;
+            uint32_t m_backbufferHeight = 0;
             uint32_t m_imageCount = 0;
             bool m_initialized = false;
             void* m_waitSemaphore = nullptr;

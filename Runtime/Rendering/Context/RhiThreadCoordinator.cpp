@@ -2284,25 +2284,28 @@ namespace NLS::Render::Context
         if (driver.m_impl->threadedLifecycle == nullptr)
             return false;
 
-        std::unique_lock<std::mutex> submissionLock(driver.m_impl->threadedRhiSubmissionMutex);
-
-        size_t slotIndex = 0u;
-        RenderScenePackage renderScenePackage;
-        if (!Detail::TryBeginNextRhiFrameExecution(
-            *driver.m_impl->threadedLifecycle,
-            &slotIndex,
-            &renderScenePackage))
         {
-            return false;
+            std::unique_lock<std::mutex> submissionLock(driver.m_impl->threadedRhiSubmissionMutex);
+
+            size_t slotIndex = 0u;
+            RenderScenePackage renderScenePackage;
+            if (!Detail::TryBeginNextRhiFrameExecution(
+                *driver.m_impl->threadedLifecycle,
+                &slotIndex,
+                &renderScenePackage))
+            {
+                return false;
+            }
+
+            const RhiSubmissionFrame submissionFrame =
+                Detail::SubmitThreadedRhiFrame(*driver.m_impl, renderScenePackage);
+            driver.m_impl->threadedLifecycle->CompleteRhiSubmission(
+                slotIndex,
+                submissionFrame,
+                attribution);
+            driver.m_impl->threadedLifecycle->RetireFrame(slotIndex);
         }
 
-        const RhiSubmissionFrame submissionFrame =
-            Detail::SubmitThreadedRhiFrame(*driver.m_impl, renderScenePackage);
-        driver.m_impl->threadedLifecycle->CompleteRhiSubmission(
-            slotIndex,
-            submissionFrame,
-            attribution);
-        driver.m_impl->threadedLifecycle->RetireFrame(slotIndex);
         driver.ApplyPendingSwapchainResize();
         return true;
     }

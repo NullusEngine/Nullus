@@ -51,9 +51,10 @@ namespace NLS::Editor::Panels
 
     inline bool ShouldDrainAfterRetirementAwareViewRender(
         const bool requiresRetiredFrameConsumption,
-        const bool requiresImmediateReadback)
+        const bool requiresImmediateReadback,
+        const bool resizedViewThisFrame = false)
     {
-        return requiresRetiredFrameConsumption && requiresImmediateReadback;
+        return requiresRetiredFrameConsumption && (requiresImmediateReadback || resizedViewThisFrame);
     }
 
     inline bool ShouldDelayRetirementAwareViewOverlayMatrices(

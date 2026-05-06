@@ -202,6 +202,11 @@ namespace NLS::Windowing
 		*/
 		bool IsResizable() const;
 
+        /**
+        * Return true while the platform is running a native interactive move/resize loop.
+        */
+        bool IsNativeResizeInProgress() const;
+
 		/**
 		* Return true if the windows is decorated
 		*/

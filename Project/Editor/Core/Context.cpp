@@ -304,13 +304,6 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
         uiManager->NotifySwapchainWillResize();
     });
 
-    window->FramebufferResizeEvent.AddListener([this](uint16_t width, uint16_t height)
-    {
-        if (driver != nullptr && width > 0u && height > 0u)
-        {
-            driver->ResizePlatformSwapchain(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
-        }
-    });
     uiManager->SetEditorLayoutSaveFilename(layoutPath.string());
     uiManager->SetEditorLayoutAutosaveFrequency(60.0f);
     uiManager->EnableEditorLayoutSave(true);

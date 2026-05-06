@@ -12,6 +12,7 @@
 #include "Core/ServiceLocator.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverAccess.h"
+#include "Rendering/Context/SwapchainResizePolicy.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/Core/CompositeRenderer.h"
 #include "Rendering/Data/FrameDescriptor.h"
@@ -2948,6 +2949,9 @@ TEST(ThreadedRenderingLifecycleTests, SynchronousDrainAppliesPendingSwapchainRes
     EXPECT_EQ(swapchain->resizeWidth, 0u);
     EXPECT_EQ(swapchain->resizeHeight, 0u);
 
+    NLS::Render::Context::DriverTestAccess::AgePendingSwapchainResize(
+        driver,
+        NLS::Render::Context::GetInteractiveSwapchainResizeDebounce());
     NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
 
     EXPECT_EQ(swapchain->resizeWidth, 1600u);

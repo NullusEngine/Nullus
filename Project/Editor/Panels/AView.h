@@ -155,5 +155,6 @@ namespace NLS::Editor::Panels
         bool m_viewportOverlayDrawListChannelsActive = false;
 		bool m_requiresRetiredFrameConsumption = false;
         bool m_requiresImmediateRetiredFrameReadback = false;
+        bool m_resizedViewThisFrame = false;
 	};
 }

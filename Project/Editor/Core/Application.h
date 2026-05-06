@@ -4,6 +4,7 @@
 #include "Editor.h"
 #include <string>
 #include <optional>
+#include "Math/Vector2.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
 #include "Rendering/Settings/DriverSettings.h"
 
@@ -60,6 +61,8 @@ namespace NLS
         bool m_isResizeTicking = false;
 		bool m_isTicking = false;
 		bool m_pendingResizeTick = false;
+        bool m_hasLastNativeResizeTickSize = false;
+        Maths::Vector2 m_lastNativeResizeTickSize;
 		Context m_context;
 		Editor m_editor;
 	};

@@ -6,7 +6,7 @@
 
 using namespace std::chrono_literals;
 
-TEST(SwapchainResizePolicyTests, InteractiveResizeUsesNoDebounceByDefault)
+TEST(SwapchainResizePolicyTests, InteractiveResizeAppliesImmediatelyByDefault)
 {
     EXPECT_EQ(NLS::Render::Context::GetInteractiveSwapchainResizeDebounce(), 0ms);
     EXPECT_TRUE(NLS::Render::Context::ShouldApplyPendingSwapchainResize(0ms));

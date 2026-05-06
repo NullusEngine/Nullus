@@ -1497,6 +1497,13 @@ void DriverTestAccess::SetExplicitFrameActive(Driver& driver, const bool active)
     driver.m_impl->explicitFrameActive = active;
 }
 
+void DriverTestAccess::AgePendingSwapchainResize(
+    Driver& driver,
+    const std::chrono::steady_clock::duration age)
+{
+    driver.m_impl->lastSwapchainResizeRequestTime = std::chrono::steady_clock::now() - age;
+}
+
 bool DriverTestAccess::TryLockThreadedRhiSubmission(Driver& driver)
 {
     return driver.m_impl != nullptr &&
@@ -1782,10 +1789,6 @@ void Driver::ResizePlatformSwapchain(const uint32_t width, const uint32_t height
 		return;
 	ResizeSwapchain(width, height);
 
-	// Notify application layer (e.g., UI) before resize
-	if (m_impl->swapchainWillResizeCallback)
-		m_impl->swapchainWillResizeCallback();
-
 	// Interactive window-edge resizing should update the swapchain before the next
 	// frame is rendered. Otherwise DXGI can stretch the previous backbuffer to the
 	// new client rect for one frame, which shows up as UI stretching/ghosting.
@@ -1818,6 +1821,24 @@ void Driver::ResizeSwapchain(uint32_t width, uint32_t height)
 	if (width == 0u || height == 0u)
 		return;
 
+	if (m_impl->explicitSwapchain != nullptr)
+	{
+		const auto& swapchainDesc = m_impl->explicitSwapchain->GetDesc();
+		if (!m_impl->hasPendingSwapchainResize &&
+			swapchainDesc.width == width &&
+			swapchainDesc.height == height)
+		{
+			return;
+		}
+	}
+
+	if (m_impl->hasPendingSwapchainResize &&
+		m_impl->pendingSwapchainWidth == width &&
+		m_impl->pendingSwapchainHeight == height)
+	{
+		return;
+	}
+
 	m_impl->pendingSwapchainWidth = width;
 	m_impl->pendingSwapchainHeight = height;
 	m_impl->hasPendingSwapchainResize = true;
@@ -1837,6 +1858,19 @@ void Driver::ApplyPendingSwapchainResize()
 	if (!ShouldApplyPendingSwapchainResize(
 		std::chrono::steady_clock::now() - m_impl->lastSwapchainResizeRequestTime))
 		return;
+
+    if (m_impl->threadedLifecycle != nullptr && m_impl->threadedLifecycle->GetInFlightDepth() > 0u)
+        return;
+
+    std::unique_lock<std::mutex> threadedSubmissionLock;
+    if (m_impl->threadedLifecycle != nullptr)
+    {
+        threadedSubmissionLock = std::unique_lock<std::mutex>(
+            m_impl->threadedRhiSubmissionMutex,
+            std::try_to_lock);
+        if (!threadedSubmissionLock.owns_lock())
+            return;
+    }
 
     if (m_impl->threadedLifecycle != nullptr && m_impl->threadedLifecycle->GetInFlightDepth() > 0u)
         return;

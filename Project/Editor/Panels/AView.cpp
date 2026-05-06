@@ -70,6 +70,8 @@ void Editor::Panels::AView::Render()
 
 void Editor::Panels::AView::SyncViewToCurrentContentRegion()
 {
+    m_resizedViewThisFrame = false;
+
 	const ImVec2 availableContentRegion = ImGui::GetContentRegionAvail();
 	const float clampedWidth = std::clamp(
 		availableContentRegion.x,
@@ -163,7 +165,8 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
 		m_renderer->EndFrame();
         if (Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
             RequiresRetiredFrameConsumption(),
-            RequiresImmediateRetiredFrameReadback()))
+            RequiresImmediateRetiredFrameReadback(),
+            m_resizedViewThisFrame))
         {
             if (auto* driver = Render::Context::TryGetLocatedDriver();
                 driver != nullptr && Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver))
@@ -233,6 +236,8 @@ void Editor::Panels::AView::SetRequiresImmediateRetiredFrameReadback(
 
 void Editor::Panels::AView::ApplyResolvedViewSize(const uint16_t p_width, const uint16_t p_height)
 {
+    m_resizedViewThisFrame = m_lastResolvedViewSize.first != p_width ||
+        m_lastResolvedViewSize.second != p_height;
     m_lastResolvedViewSize = { p_width, p_height };
     m_fbo.Resize(p_width, p_height);
     m_image->textureView = m_fbo.GetOrCreateExplicitColorView("Editor.AView.Output");

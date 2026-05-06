@@ -37,7 +37,23 @@ Editor::Core::Application::Application(const std::string& p_projectPath, const s
         if (!IsRunning())
             return;
 
-        SyncPlatformSwapchainToFramebufferSize();
+        if (m_context.window != nullptr && m_context.window->IsNativeResizeInProgress())
+        {
+            const auto framebufferSize = m_context.window->GetFramebufferSize();
+            if (m_hasLastNativeResizeTickSize &&
+                m_lastNativeResizeTickSize.x == framebufferSize.x &&
+                m_lastNativeResizeTickSize.y == framebufferSize.y)
+            {
+                return;
+            }
+
+            m_lastNativeResizeTickSize = framebufferSize;
+            m_hasLastNativeResizeTickSize = true;
+        }
+        else
+        {
+            m_hasLastNativeResizeTickSize = false;
+        }
 
         if (!ShouldTickResizeImmediately(m_isTicking, m_isPollingEvents, m_isResizeTicking))
         {

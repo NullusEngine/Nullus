@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <Debug/Logger.h>
 
@@ -22,6 +23,55 @@ namespace NLS::Render::Backend
 		{
 			return NLS::Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow;
 		}
+
+#if defined(_WIN32)
+		UINT64 GetDx12StoredMessageCount(ID3D12Device* device)
+		{
+			if (device == nullptr)
+				return 0;
+
+			Microsoft::WRL::ComPtr<ID3D12InfoQueue> infoQueue;
+			if (FAILED(device->QueryInterface(IID_PPV_ARGS(&infoQueue))) || infoQueue == nullptr)
+				return 0;
+
+			return infoQueue->GetNumStoredMessages();
+		}
+
+		void LogDx12DebugMessagesSince(
+			ID3D12Device* device,
+			const UINT64 firstMessage,
+			const std::string& context)
+		{
+			if (device == nullptr)
+				return;
+
+			Microsoft::WRL::ComPtr<ID3D12InfoQueue> infoQueue;
+			if (FAILED(device->QueryInterface(IID_PPV_ARGS(&infoQueue))) || infoQueue == nullptr)
+				return;
+
+			const UINT64 messageCount = infoQueue->GetNumStoredMessages();
+			if (messageCount <= firstMessage)
+				return;
+
+			for (UINT64 messageIndex = firstMessage; messageIndex < messageCount; ++messageIndex)
+			{
+				SIZE_T messageSize = 0;
+				if (FAILED(infoQueue->GetMessage(messageIndex, nullptr, &messageSize)) || messageSize == 0)
+					continue;
+
+				std::vector<char> messageBytes(messageSize);
+				auto* message = reinterpret_cast<D3D12_MESSAGE*>(messageBytes.data());
+				if (FAILED(infoQueue->GetMessage(messageIndex, message, &messageSize)))
+					continue;
+
+				NLS_LOG_ERROR(
+					context +
+					": D3D12 message id=" + std::to_string(message->ID) +
+					" severity=" + std::to_string(static_cast<int>(message->Severity)) +
+					" text=" + std::string(message->pDescription));
+			}
+		}
+#endif
 	}
 
 #if defined(_WIN32)
@@ -358,39 +408,70 @@ namespace NLS::Render::Backend
 		if (m_device == nullptr || m_swapchain == nullptr)
 			return;
 
+		DXGI_SWAP_CHAIN_DESC1 swapchainDesc{};
+		if (FAILED(m_swapchain->GetDesc1(&swapchainDesc)))
+		{
+			NLS_LOG_ERROR("NativeDX12Swapchain::RecreateBackbufferViews: failed to query swapchain desc.");
+			return;
+		}
+
+		const DXGI_FORMAT backbufferFormat = swapchainDesc.Format == DXGI_FORMAT_UNKNOWN
+			? DXGI_FORMAT_R8G8B8A8_UNORM
+			: swapchainDesc.Format;
+		const uint32_t backbufferWidth = swapchainDesc.Width != 0 ? swapchainDesc.Width : m_desc.width;
+		const uint32_t backbufferHeight = swapchainDesc.Height != 0 ? swapchainDesc.Height : m_desc.height;
+		const uint32_t backbufferCount = swapchainDesc.BufferCount != 0 ? swapchainDesc.BufferCount : m_imageCount;
+
+		m_imageCount = backbufferCount;
+		m_desc.width = backbufferWidth;
+		m_desc.height = backbufferHeight;
+
 		D3D12_DESCRIPTOR_HEAP_DESC heapDesc{};
 		heapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-		heapDesc.NumDescriptors = m_imageCount;
+		heapDesc.NumDescriptors = backbufferCount;
 		heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 
-		if (FAILED(m_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_rtvHeap))))
+		HRESULT hr = m_device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&m_rtvHeap));
+		if (FAILED(hr))
+		{
+			NLS_LOG_ERROR("NativeDX12Swapchain::RecreateBackbufferViews: CreateDescriptorHeap failed with hr=" + std::to_string(hr));
 			return;
+		}
 
 		D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
 		const UINT rtvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
 
-		for (uint32_t i = 0; i < m_imageCount; ++i)
+		for (uint32_t i = 0; i < backbufferCount; ++i)
 		{
 			Microsoft::WRL::ComPtr<ID3D12Resource> backbuffer;
-			if (SUCCEEDED(m_swapchain->GetBuffer(i, IID_PPV_ARGS(&backbuffer))))
+			hr = m_swapchain->GetBuffer(i, IID_PPV_ARGS(&backbuffer));
+			if (FAILED(hr) || backbuffer == nullptr)
 			{
-				D3D12_RENDER_TARGET_VIEW_DESC rtvDesc{};
-				rtvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-				rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-				rtvDesc.Texture2D.MipSlice = 0;
-
-				m_device->CreateRenderTargetView(backbuffer.Get(), &rtvDesc, rtvHandle);
-
-				auto view = std::make_shared<NativeDX12BackbufferView>(
-					backbuffer,
-					rtvHandle,
-					DXGI_FORMAT_R8G8B8A8_UNORM,
-					m_desc.width,
-					m_desc.height);
-				m_backbufferViews.push_back(view);
-
-				rtvHandle.ptr += rtvDescriptorSize;
+				NLS_LOG_ERROR(
+					"NativeDX12Swapchain::RecreateBackbufferViews: GetBuffer failed for index=" +
+					std::to_string(i) +
+					" hr=" +
+					std::to_string(hr));
+				continue;
 			}
+
+			const UINT64 firstMessage = GetDx12StoredMessageCount(m_device);
+			m_device->CreateRenderTargetView(backbuffer.Get(), nullptr, rtvHandle);
+			LogDx12DebugMessagesSince(
+				m_device,
+				firstMessage,
+				"NativeDX12Swapchain::RecreateBackbufferViews: CreateRenderTargetView index=" +
+				std::to_string(i));
+
+			auto view = std::make_shared<NativeDX12BackbufferView>(
+				backbuffer,
+				rtvHandle,
+				backbufferFormat,
+				backbufferWidth,
+				backbufferHeight);
+			m_backbufferViews.push_back(view);
+
+			rtvHandle.ptr += rtvDescriptorSize;
 		}
 #endif
 	}

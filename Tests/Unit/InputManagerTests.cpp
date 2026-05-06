@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <cstdlib>
+
 #include "Windowing/Context/Device.h"
 #include "Windowing/Inputs/InputManager.h"
 #include "Windowing/Settings/WindowSettings.h"
@@ -7,8 +9,23 @@
 
 using namespace NLS;
 
+namespace
+{
+bool CanCreateHeadlessGlfwWindow()
+{
+#if defined(_WIN32) || defined(__APPLE__)
+    return true;
+#else
+    return std::getenv("DISPLAY") != nullptr || std::getenv("WAYLAND_DISPLAY") != nullptr;
+#endif
+}
+}
+
 TEST(InputManagerTests, ClearEventsClearsWheelMovement)
 {
+    if (!CanCreateHeadlessGlfwWindow())
+        GTEST_SKIP() << "GLFW display is not available in this environment.";
+
     Windowing::Settings::DeviceSettings deviceSettings;
     Context::Device device(deviceSettings);
 
@@ -33,6 +50,9 @@ TEST(InputManagerTests, ClearEventsClearsWheelMovement)
 
 TEST(InputManagerTests, MousePressAndReleaseInSameFrameAreBothVisible)
 {
+    if (!CanCreateHeadlessGlfwWindow())
+        GTEST_SKIP() << "GLFW display is not available in this environment.";
+
     Windowing::Settings::DeviceSettings deviceSettings;
     Context::Device device(deviceSettings);
 

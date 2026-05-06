@@ -10,6 +10,7 @@
 #include "UI/Modules/Canvas.h"
 #include "UI/Styling/EStyle.h"
 #include "UI/UIDef.h"
+#include "Windowing/Cursor/ECursorShape.h"
 
 struct GLFWwindow;
 
@@ -175,6 +176,10 @@ public:
 
     bool IsAnyItemActive();
 
+    void PushCustomCursorControl();
+    void PopCustomCursorControl();
+    void RequestInfiniteDragCursor(NLS::Cursor::ECursorShape p_cursorShape);
+
     bool IsItemHovered(ImGuiHoveredFlags flags = 0);
 
     bool BeginTooltip();
@@ -199,5 +204,10 @@ private:
     void* signalSemaphore_ = nullptr;
     std::unordered_map<std::string, ImFont*> m_fonts;
     std::string m_layoutSaveFilename = "imgui.ini";
+    ImVec2 m_pendingInfiniteCursorWrapCompensation = ImVec2(0.0f, 0.0f);
+    bool m_ownsInfiniteCursorWrap = false;
+    bool m_infiniteCursorWrapRequestedThisFrame = false;
+    bool m_forcedNoMouseCursorChange = false;
+    uint32_t m_customCursorControlDepth = 0;
 };
 } // namespace NLS::UI

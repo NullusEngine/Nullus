@@ -240,6 +240,18 @@ namespace NLS::Windowing
 		*/
 		void SetCursorPosition(int16_t p_x, int16_t p_y);
 
+        /**
+        * Enable edge wrapping for drag interactions that need unbounded mouse travel.
+        */
+        void SetInfiniteCursorWrapEnabled(bool p_enabled);
+
+        bool IsInfiniteCursorWrapEnabled() const;
+
+        /**
+        * Wrap the cursor to the opposite edge when needed and return the warp compensation.
+        */
+        Maths::Vector2 PollInfiniteCursorWrap();
+
 		/**
 		* Define a title for the window
 		* @param p_title
@@ -361,6 +373,7 @@ namespace NLS::Windowing
 		int32_t m_refreshRate;
 		Cursor::ECursorMode m_cursorMode;
 		Cursor::ECursorShape m_cursorShape;
+        bool m_infiniteCursorWrapEnabled = false;
         bool m_isDecorated = true;
         uint16_t m_nativeTitleBarDragHeight = 0;
         uint16_t m_nativeTitleBarDragRightInset = 0;

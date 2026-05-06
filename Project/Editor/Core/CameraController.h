@@ -166,6 +166,7 @@ private:
     float m_viewportHeight = 1.0f;
     bool m_inputActive = false;
     bool m_inputBlocked = false;
+    bool m_forcedNoMouseCursorChange = false;
 
     Engine::GameObject* m_lockedActor = nullptr;
 };

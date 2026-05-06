@@ -69,6 +69,11 @@ NLS::Maths::Vector2 NLS::Windowing::Inputs::InputManager::GetMousePosition() con
 	return NLS::Maths::Vector2(result.first, result.second);
 }
 
+NLS::Maths::Vector2 NLS::Windowing::Inputs::InputManager::PollInfiniteCursorWrap()
+{
+    return m_window.PollInfiniteCursorWrap();
+}
+
 void NLS::Windowing::Inputs::InputManager::ClearEvents()
 {
 	m_keyEvents.clear();

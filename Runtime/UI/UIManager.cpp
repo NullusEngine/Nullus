@@ -144,6 +144,36 @@ UIManager::~UIManager()
 
 void UIManager::BeginFrame()
 {
+    if (NLS::Core::ServiceLocator::Contains<NLS::Windowing::Window>())
+    {
+        auto& window = NLS_SERVICE(NLS::Windowing::Window);
+        if (m_ownsInfiniteCursorWrap && !m_infiniteCursorWrapRequestedThisFrame)
+        {
+            if (!window.IsInfiniteCursorWrapEnabled() ||
+                window.GetCursorShape() == NLS::Cursor::ECursorShape::SLIDE_ARROW)
+            {
+                window.SetInfiniteCursorWrapEnabled(false);
+                window.SetCursorShape(NLS::Cursor::ECursorShape::ARROW);
+            }
+            m_ownsInfiniteCursorWrap = false;
+        }
+        if (!m_ownsInfiniteCursorWrap && m_forcedNoMouseCursorChange)
+        {
+            PopCustomCursorControl();
+            m_forcedNoMouseCursorChange = false;
+        }
+
+        if (m_ownsInfiniteCursorWrap)
+        {
+            const auto wrapCompensation = window.PollInfiniteCursorWrap();
+            m_pendingInfiniteCursorWrapCompensation = ImVec2(wrapCompensation.x, wrapCompensation.y);
+        }
+        else
+        {
+            m_pendingInfiniteCursorWrapCompensation = ImVec2(0.0f, 0.0f);
+        }
+    }
+
     if (m_uiBridge != nullptr && !m_uiBridge->HasRendererBackend())
     {
         NLS_LOG_INFO("UIManager::BeginFrame: UI bridge has no renderer backend");
@@ -181,6 +211,14 @@ void UIManager::BeginFrame()
     }
 
     ImGui::NewFrame();
+    m_infiniteCursorWrapRequestedThisFrame = false;
+    if (m_pendingInfiniteCursorWrapCompensation.x != 0.0f || m_pendingInfiniteCursorWrapCompensation.y != 0.0f)
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        io.MouseDelta.x -= m_pendingInfiniteCursorWrapCompensation.x;
+        io.MouseDelta.y -= m_pendingInfiniteCursorWrapCompensation.y;
+        m_pendingInfiniteCursorWrapCompensation = ImVec2(0.0f, 0.0f);
+    }
     m_inFrame = true;
 }
 
@@ -603,6 +641,42 @@ bool UIManager::SetDragDropPayload(const char* type, const void* data, size_t sz
 bool UIManager::IsAnyItemActive()
 {
     return ImGui::IsAnyItemActive();
+}
+
+void UIManager::PushCustomCursorControl()
+{
+    if (m_customCursorControlDepth == 0)
+        ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+
+    ++m_customCursorControlDepth;
+}
+
+void UIManager::PopCustomCursorControl()
+{
+    if (m_customCursorControlDepth == 0)
+        return;
+
+    --m_customCursorControlDepth;
+    if (m_customCursorControlDepth == 0)
+        ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
+}
+
+void UIManager::RequestInfiniteDragCursor(const NLS::Cursor::ECursorShape p_cursorShape)
+{
+    if (!NLS::Core::ServiceLocator::Contains<NLS::Windowing::Window>())
+        return;
+
+    if (!m_forcedNoMouseCursorChange)
+    {
+        PushCustomCursorControl();
+        m_forcedNoMouseCursorChange = true;
+    }
+
+    auto& window = NLS_SERVICE(NLS::Windowing::Window);
+    window.SetInfiniteCursorWrapEnabled(true);
+    window.SetCursorShape(p_cursorShape);
+    m_ownsInfiniteCursorWrap = true;
+    m_infiniteCursorWrapRequestedThisFrame = true;
 }
 
 float UIManager::GetMouseWheel()

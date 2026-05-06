@@ -40,6 +40,7 @@ namespace NLS::Render::Context
         size_t currentFrameIndex = 0u;
         bool explicitFrameActive = false;
         bool uiStandaloneFrameActive = false;
+        mutable std::mutex completedReadbackTextureMutex;
         std::shared_ptr<Render::RHI::RHITexture> completedReadbackTexture;
         std::vector<std::weak_ptr<Render::RHI::RHITexture>> completedReadbackTextureHistory;
         bool hasPendingSwapchainResize = false;

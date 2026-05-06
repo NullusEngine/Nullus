@@ -13,6 +13,10 @@ namespace NLS::Cursor
 		CROSSHAIR	= 0x00036003,
 		HAND		= 0x00036004,
 		HRESIZE		= 0x00036005,
-		VRESIZE		= 0x00036006
+		VRESIZE		= 0x00036006,
+        FPS_VIEW,
+        PAN_VIEW,
+        ORBIT_VIEW,
+        SLIDE_ARROW
 	};
 }

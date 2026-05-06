@@ -70,6 +70,8 @@ namespace NLS::Windowing::Inputs
 		*/
 		Maths::Vector2 GetMousePosition() const;
 
+        Maths::Vector2 PollInfiniteCursorWrap();
+
 		inline Maths::Vector2 GetWheelMovement() const { return lastWheel; }
 		/**
 		* Clear any event occured

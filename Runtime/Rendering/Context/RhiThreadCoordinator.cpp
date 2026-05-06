@@ -39,6 +39,7 @@ namespace NLS::Render::Context
             DriverImpl& impl,
             const std::shared_ptr<Render::RHI::RHITexture>& texture)
         {
+            std::lock_guard lock(impl.completedReadbackTextureMutex);
             impl.completedReadbackTexture = texture;
             if (texture == nullptr)
                 return;

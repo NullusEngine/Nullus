@@ -50,6 +50,7 @@ namespace
         DriverImpl& impl,
         const std::shared_ptr<Render::RHI::RHITexture>& texture)
     {
+        std::lock_guard lock(impl.completedReadbackTextureMutex);
         impl.completedReadbackTexture = texture;
         if (texture == nullptr)
             return;
@@ -75,6 +76,10 @@ namespace
         const DriverImpl& impl,
         const std::shared_ptr<Render::RHI::RHITexture>& texture)
     {
+        std::lock_guard lock(impl.completedReadbackTextureMutex);
+        if (impl.completedReadbackTexture == texture)
+            return true;
+
         return std::any_of(
             impl.completedReadbackTextureHistory.begin(),
             impl.completedReadbackTextureHistory.end(),
@@ -1238,6 +1243,7 @@ std::shared_ptr<Render::RHI::RHITexture> DriverRendererAccess::ResolveReadbackTe
         }
     }
 
+    std::lock_guard lock(driver.m_impl->completedReadbackTextureMutex);
     return driver.m_impl->completedReadbackTexture;
 }
 
@@ -1247,9 +1253,6 @@ bool DriverRendererAccess::HasCompletedReadbackTexture(
 {
     if (driver.m_impl == nullptr || texture == nullptr)
         return false;
-
-    if (driver.m_impl->completedReadbackTexture == texture)
-        return true;
 
     return HasRememberedReadbackTexture(*driver.m_impl, texture);
 }
@@ -1695,8 +1698,11 @@ void Driver::ShutdownRhiResources()
     m_impl->swapchainWillResizeCallback = nullptr;
     m_impl->uiRenderFinishedSemaphore = nullptr;
     m_impl->uiRenderFinishedValue = 0u;
-    m_impl->completedReadbackTexture = nullptr;
-    m_impl->completedReadbackTextureHistory.clear();
+    {
+        std::lock_guard lock(m_impl->completedReadbackTextureMutex);
+        m_impl->completedReadbackTexture = nullptr;
+        m_impl->completedReadbackTextureHistory.clear();
+    }
     m_impl->explicitFrameActive = false;
     m_impl->uiStandaloneFrameActive = false;
     m_impl->hasPendingSwapchainResize = false;
@@ -1893,8 +1899,11 @@ void Driver::ApplyPendingSwapchainResize()
 			frameContext.resourceStateTracker->Reset();
 	}
 
-	m_impl->completedReadbackTexture = nullptr;
-    m_impl->completedReadbackTextureHistory.clear();
+    {
+        std::lock_guard lock(m_impl->completedReadbackTextureMutex);
+	    m_impl->completedReadbackTexture = nullptr;
+        m_impl->completedReadbackTextureHistory.clear();
+    }
 	for (auto& frameContext : m_impl->frameContexts)
 	{
 		frameContext.hasAcquiredSwapchainImage = false;

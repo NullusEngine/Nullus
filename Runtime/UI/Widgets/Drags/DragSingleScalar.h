@@ -2,6 +2,8 @@
 
 #include <Eventing/Event.h>
 
+#include "Core/ServiceLocator.h"
+#include "UI/UIManager.h"
 #include "UI/Widgets/DataWidget.h"
 
 namespace NLS::UI::Widgets
@@ -55,6 +57,8 @@ namespace NLS::UI::Widgets
 				ValueChangedEvent.Invoke(value);
 				this->NotifyChange();
 			}
+            if (ImGui::IsItemActive() && NLS::Core::ServiceLocator::Contains<UIManager>())
+                NLS_SERVICE(UIManager).RequestInfiniteDragCursor(NLS::Cursor::ECursorShape::SLIDE_ARROW);
 
 			ImGui::PopStyleVar(2);
 		}

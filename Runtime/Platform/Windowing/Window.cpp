@@ -1,6 +1,7 @@
 #include "Windowing/Window.h"
 #include <Debug/Assertion.h>
 #include <GLFW/glfw3.h>
+#include <algorithm>
 #include <vector>
 #ifdef _WIN32
     #define GLFW_EXPOSE_NATIVE_WIN32
@@ -375,6 +376,59 @@ void NLS::Windowing::Window::SetCursorShape(Cursor::ECursorShape p_cursorShape)
 void NLS::Windowing::Window::SetCursorPosition(int16_t p_x, int16_t p_y)
 {
 	glfwSetCursorPos(m_glfwWindow, static_cast<double>(p_x), static_cast<double>(p_y));
+}
+
+void NLS::Windowing::Window::SetInfiniteCursorWrapEnabled(bool p_enabled)
+{
+    m_infiniteCursorWrapEnabled = p_enabled;
+}
+
+bool NLS::Windowing::Window::IsInfiniteCursorWrapEnabled() const
+{
+    return m_infiniteCursorWrapEnabled;
+}
+
+NLS::Maths::Vector2 NLS::Windowing::Window::PollInfiniteCursorWrap()
+{
+    if (!m_infiniteCursorWrapEnabled || m_glfwWindow == nullptr || !IsFocused())
+        return {};
+
+    int width = 0;
+    int height = 0;
+    glfwGetWindowSize(m_glfwWindow, &width, &height);
+    if (width <= 2 || height <= 2)
+        return {};
+
+    double x = 0.0;
+    double y = 0.0;
+    glfwGetCursorPos(m_glfwWindow, &x, &y);
+
+    double wrappedX = x;
+    double wrappedY = y;
+    constexpr double edgePadding = 1.0;
+    const double rightEdge = static_cast<double>(width) - edgePadding;
+    const double bottomEdge = static_cast<double>(height) - edgePadding;
+
+    if (x <= 0.0)
+        wrappedX = rightEdge;
+    else if (x >= static_cast<double>(width) - 1.0)
+        wrappedX = edgePadding;
+
+    if (y <= 0.0)
+        wrappedY = bottomEdge;
+    else if (y >= static_cast<double>(height) - 1.0)
+        wrappedY = edgePadding;
+
+    if (wrappedX == x && wrappedY == y)
+        return {};
+
+    wrappedX = std::clamp(wrappedX, edgePadding, rightEdge);
+    wrappedY = std::clamp(wrappedY, edgePadding, bottomEdge);
+    glfwSetCursorPos(m_glfwWindow, wrappedX, wrappedY);
+
+    return Maths::Vector2(
+        static_cast<float>(wrappedX - x),
+        static_cast<float>(wrappedY - y));
 }
 
 void NLS::Windowing::Window::SetTitle(const std::string& p_title)

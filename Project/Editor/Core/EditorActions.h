@@ -62,6 +62,7 @@ namespace NLS::Editor::Core
 		* Reset the editor layout
 		*/
 		void ResetLayout();
+		void ApplyLayoutPreset(const std::string& p_presetId);
 
 		/**
 		* Defines the scene view camera speed

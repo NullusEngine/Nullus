@@ -237,6 +237,28 @@ NLS::Maths::Vector2 NLS::Context::Device::GetMonitorSize() const
 	return NLS::Maths::Vector2(mode->width, mode->height);
 }
 
+NLS::Maths::Vector4 NLS::Context::Device::GetMonitorWorkarea() const
+{
+    GLFWmonitor* primaryMonitor = glfwGetPrimaryMonitor();
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+    glfwGetMonitorWorkarea(primaryMonitor, &x, &y, &width, &height);
+
+    if (width <= 0 || height <= 0)
+    {
+        const GLFWvidmode* mode = glfwGetVideoMode(primaryMonitor);
+        return NLS::Maths::Vector4(0.0f, 0.0f, static_cast<float>(mode->width), static_cast<float>(mode->height));
+    }
+
+    return NLS::Maths::Vector4(
+        static_cast<float>(x),
+        static_cast<float>(y),
+        static_cast<float>(width),
+        static_cast<float>(height));
+}
+
 GLFWcursor * NLS::Context::Device::GetCursorInstance(Cursor::ECursorShape p_cursorShape) const
 {
 	return m_cursors.at(p_cursorShape);

@@ -25,6 +25,7 @@ namespace NLS::Render::RHI
         virtual void RenderDrawData(ImDrawData* drawData, uint32_t currentImageIndex) = 0;
         virtual NativeHandle ResolveTextureView(const std::shared_ptr<RHITextureView>& textureView) = 0;
         virtual void NotifySwapchainWillResize() {}
+        virtual void NotifyFontAtlasChanged() {}
 
         // Synchronization - wait semaphore from previous rendering stage
         virtual void SetWaitSemaphore(void* semaphore) = 0;

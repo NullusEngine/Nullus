@@ -174,7 +174,7 @@ void Editor::Core::Editor::SetupUI()
     m_panelsManager.CreatePanel<Panels::ProfilerPanel>("Profiler", false, settings);
     auto& profilerPanel = m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler");
     NLS::Base::Profiling::Profiler::RegisterDestination(profilerPanel.GetTimelineSink());
-    m_panelsManager.CreatePanel<Panels::Console>("Console", true, settings);
+    m_panelsManager.CreatePanel<Panels::Console>("Console", false, settings);
     m_panelsManager.CreatePanel<Panels::AssetView>("Asset View", false, settings);
     m_panelsManager.CreatePanel<Panels::Hierarchy>("Hierarchy", true, settings);
     m_panelsManager.CreatePanel<Panels::Inspector>("Inspector", true, settings);

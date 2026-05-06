@@ -1,6 +1,8 @@
 
 #include "UI/UIManager.h"
 
+#include <algorithm>
+#include <cmath>
 #include <vector>
 
 #include "Core/ServiceLocator.h"
@@ -13,6 +15,7 @@
 #include "Windowing/Window.h"
 #include "ImGui/backends/imgui_impl_glfw.h"
 #include "ImGui/imgui_internal.h"
+#include <GLFW/glfw3.h>
 
 namespace NLS::UI
 {
@@ -84,9 +87,11 @@ UIManager::UIManager(
     EStyle p_style,
     const std::string& p_glslVersion,
     const NLS::Render::RHI::NativeRenderDeviceInfo* p_nativeDeviceInfo)
-    : m_backend(p_backend)
+    : m_glfwWindow(p_glfwWindow),
+      m_backend(p_backend)
 {
     ImGui::CreateContext();
+    m_uiScale = ResolveWindowContentScale();
 
     ImGui::GetIO().ConfigWindowsMoveFromTitleBarOnly = true; /* Disable moving windows by dragging another thing than the title bar */
     EnableDocking(false);
@@ -144,6 +149,8 @@ UIManager::~UIManager()
 
 void UIManager::BeginFrame()
 {
+    RefreshScale();
+
     if (NLS::Core::ServiceLocator::Contains<NLS::Windowing::Window>())
     {
         auto& window = NLS_SERVICE(NLS::Windowing::Window);
@@ -224,6 +231,7 @@ void UIManager::BeginFrame()
 
 void UIManager::ApplyStyle(EStyle p_style)
 {
+    m_currentStyle = p_style;
     ImGuiStyle* style = &ImGui::GetStyle();
 
     switch (p_style)
@@ -372,6 +380,8 @@ void UIManager::ApplyStyle(EStyle p_style)
         colors[ImGuiCol_NavWindowingDimBg] = ImVec4(0.80f, 0.80f, 0.80f, 0.20f);
         colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0.80f, 0.80f, 0.80f, 0.35f);
     }
+
+    style->ScaleAllSizes(m_uiScale);
 }
 
 bool UIManager::LoadFont(const std::string& p_id, const std::string& p_path, float p_fontSize)
@@ -379,12 +389,12 @@ bool UIManager::LoadFont(const std::string& p_id, const std::string& p_path, flo
     if (m_fonts.find(p_id) == m_fonts.end())
     {
         auto& io = ImGui::GetIO();
-        ImFont* fontInstance = io.Fonts->AddFontFromFileTTF(p_path.c_str(), p_fontSize);
+        ImFont* fontInstance = io.Fonts->AddFontFromFileTTF(p_path.c_str(), p_fontSize * m_uiScale);
 
         if (fontInstance)
         {
-            Icons::EnsureFontAwesomeIconFontLoaded(p_fontSize, fontInstance);
-            m_fonts[p_id] = fontInstance;
+            Icons::EnsureFontAwesomeIconFontLoaded(p_fontSize * m_uiScale, fontInstance);
+            m_fonts.emplace(p_id, FontEntry{ p_path, p_fontSize, fontInstance });
             return true;
         }
     }
@@ -396,6 +406,8 @@ bool UIManager::UnloadFont(const std::string& p_id)
 {
     if (m_fonts.find(p_id) != m_fonts.end())
     {
+        if (m_currentFontId == p_id)
+            m_currentFontId.clear();
         m_fonts.erase(p_id);
         return true;
     }
@@ -409,7 +421,8 @@ bool UIManager::UseFont(const std::string& p_id)
 
     if (foundFont != m_fonts.end())
     {
-        ImGui::GetIO().FontDefault = foundFont->second;
+        m_currentFontId = p_id;
+        ImGui::GetIO().FontDefault = foundFont->second.instance;
         return true;
     }
 
@@ -418,6 +431,7 @@ bool UIManager::UseFont(const std::string& p_id)
 
 void UIManager::UseDefaultFont()
 {
+    m_currentFontId.clear();
     ImGui::GetIO().FontDefault = nullptr;
 }
 
@@ -588,6 +602,72 @@ bool UIManager::UsesBottomLeftRenderTargetOrigin() const
 {
     return NLS::Render::RHI::GetRenderSurfaceConvention(ToNativeBackendType(m_backend))
         .UsesBottomLeftRenderTargetOrigin();
+}
+
+float UIManager::GetScale() const
+{
+    return m_uiScale;
+}
+
+float UIManager::Scale(const float p_value) const
+{
+    return p_value * m_uiScale;
+}
+
+ImVec2 UIManager::Scale(const ImVec2& p_value) const
+{
+    return ImVec2(p_value.x * m_uiScale, p_value.y * m_uiScale);
+}
+
+float UIManager::ResolveWindowContentScale() const
+{
+    if (m_glfwWindow == nullptr)
+        return 1.0f;
+
+    float xScale = 1.0f;
+    float yScale = 1.0f;
+    glfwGetWindowContentScale(m_glfwWindow, &xScale, &yScale);
+
+    const float scale = std::max(xScale, yScale);
+    return std::clamp(scale, 0.75f, 3.0f);
+}
+
+void UIManager::RefreshScale()
+{
+    const float resolvedScale = ResolveWindowContentScale();
+    if (std::fabs(resolvedScale - m_uiScale) < 0.01f)
+        return;
+
+    m_uiScale = resolvedScale;
+    ApplyStyle(m_currentStyle);
+    RebuildFonts();
+}
+
+void UIManager::RebuildFonts()
+{
+    auto& io = ImGui::GetIO();
+    io.Fonts->Clear();
+
+    for (auto& [id, font] : m_fonts)
+    {
+        font.instance = io.Fonts->AddFontFromFileTTF(font.path.c_str(), font.baseSize * m_uiScale);
+        if (font.instance != nullptr)
+            Icons::EnsureFontAwesomeIconFontLoaded(font.baseSize * m_uiScale, font.instance);
+    }
+
+    if (!m_currentFontId.empty())
+    {
+        auto foundFont = m_fonts.find(m_currentFontId);
+        io.FontDefault = foundFont != m_fonts.end() ? foundFont->second.instance : nullptr;
+    }
+    else
+    {
+        io.FontDefault = nullptr;
+    }
+
+    io.Fonts->Build();
+    if (m_uiBridge != nullptr)
+        m_uiBridge->NotifyFontAtlasChanged();
 }
 
 void UIManager::PushCurrentFont()

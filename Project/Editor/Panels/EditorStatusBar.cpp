@@ -3,6 +3,7 @@
 #include <sstream>
 
 #include <ServiceLocator.h>
+#include <UI/UIManager.h>
 
 #include "Core/Editor.h"
 
@@ -11,6 +12,13 @@ namespace NLS::Editor::Panels
 namespace
 {
 constexpr float kStatusBarHeight = 24.0f;
+
+float Scaled(const float p_value)
+{
+    return NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>()
+        ? NLS_SERVICE(NLS::UI::UIManager).Scale(p_value)
+        : p_value;
+}
 }
 
 EditorStatusBar::EditorStatusBar()
@@ -36,7 +44,7 @@ void EditorStatusBar::DrawBarContent()
         }
     }
 
-    ImGui::SetCursorPosY(4.0f);
+    ImGui::SetCursorPosY(Scaled(4.0f));
     ImGui::TextUnformatted(fpsLabel.c_str());
 }
 }

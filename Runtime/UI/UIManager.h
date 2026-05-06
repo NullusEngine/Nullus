@@ -152,6 +152,9 @@ public:
     NLS::Render::Settings::EGraphicsBackend GetGraphicsBackend() const { return m_backend; }
     bool ShouldFlipPresentedRenderTargetVertically() const;
     bool UsesBottomLeftRenderTargetOrigin() const;
+    float GetScale() const;
+    float Scale(float p_value) const;
+    ImVec2 Scale(const ImVec2& p_value) const;
 
 #pragma region ImGUIWrapper
     float GetMouseWheel();
@@ -188,11 +191,22 @@ public:
 #pragma endregion
 
 private:
+    float ResolveWindowContentScale() const;
+    void RefreshScale();
+    void RebuildFonts();
     void PushCurrentFont();
     void PopCurrentFont();
     void BeginFrame();
 
 private:
+    struct FontEntry
+    {
+        std::string path;
+        float baseSize = 0.0f;
+        ImFont* instance = nullptr;
+    };
+
+    GLFWwindow* m_glfwWindow = nullptr;
     bool m_dockingState;
     bool m_isRenderingFrame = false;
     bool m_inFrame = false;
@@ -202,8 +216,11 @@ private:
     uint32_t m_currentSwapchainImageIndex = 0;
     void* waitSemaphore_ = nullptr;
     void* signalSemaphore_ = nullptr;
-    std::unordered_map<std::string, ImFont*> m_fonts;
+    std::unordered_map<std::string, FontEntry> m_fonts;
+    std::string m_currentFontId;
     std::string m_layoutSaveFilename = "imgui.ini";
+    EStyle m_currentStyle = EStyle::IM_DARK_STYLE;
+    float m_uiScale = 1.0f;
     ImVec2 m_pendingInfiniteCursorWrapCompensation = ImVec2(0.0f, 0.0f);
     bool m_ownsInfiniteCursorWrap = false;
     bool m_infiniteCursorWrapRequestedThisFrame = false;

@@ -2,8 +2,21 @@
 
 #include <algorithm>
 
+#include "Core/ServiceLocator.h"
+#include "UI/UIManager.h"
+
 namespace NLS::UI
 {
+namespace
+{
+float ScaleValue(const float p_value)
+{
+    return NLS::Core::ServiceLocator::Contains<UIManager>()
+        ? NLS_SERVICE(UIManager).Scale(p_value)
+        : p_value;
+}
+}
+
 PanelViewportBar::PanelViewportBar(
     const std::string& p_windowName,
     const EAnchor p_anchor,
@@ -41,28 +54,29 @@ void PanelViewportBar::SetHeight(const float p_height)
 
 float PanelViewportBar::GetHeight() const
 {
-    return m_height;
+    return ScaleValue(m_height);
 }
 
 void PanelViewportBar::RefreshReservedLayout() const
 {
-    RefreshReservedHeight(m_anchor, m_height);
+    RefreshReservedHeight(m_anchor, GetHeight());
 }
 
 void PanelViewportBar::_Draw_Impl()
 {
     ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float scaledHeight = GetHeight();
     const float posY = m_anchor == EAnchor::TOP
         ? viewport->Pos.y
-        : viewport->Pos.y + viewport->Size.y - m_height;
+        : viewport->Pos.y + viewport->Size.y - scaledHeight;
 
     ImGui::SetNextWindowPos(ImVec2(viewport->Pos.x, posY), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, m_height), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, scaledHeight), ImGuiCond_Always);
     ImGui::SetNextWindowViewport(viewport->ID);
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 4.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ScaleValue(8.0f), ScaleValue(4.0f)));
 
     int flags =
         ImGuiWindowFlags_NoTitleBar |

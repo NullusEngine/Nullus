@@ -66,6 +66,15 @@ namespace NLS::Render::RHI
                 ReleaseSwapchainRenderResources();
             }
 
+            void NotifyFontAtlasChanged() override
+            {
+                if (!m_initialized)
+                    return;
+
+                ImGui_ImplDX12_InvalidateDeviceObjects();
+                ImGui_ImplDX12_CreateDeviceObjects();
+            }
+
             void RenderDrawData(ImDrawData* drawData, uint32_t) override
             {
                 NLS_PROFILE_SCOPE();

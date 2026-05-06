@@ -84,6 +84,23 @@ void DrawToolbarTooltip(const char* p_text)
     if (p_text != nullptr && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort))
         ImGui::SetTooltip("%s", p_text);
 }
+
+float UiScale()
+{
+    return NLS::Core::ServiceLocator::Contains<NLS::UI::UIManager>()
+        ? NLS_SERVICE(NLS::UI::UIManager).GetScale()
+        : 1.0f;
+}
+
+float Scaled(const float p_value)
+{
+    return p_value * UiScale();
+}
+
+ImVec2 Scaled(const float p_x, const float p_y)
+{
+    return ImVec2(Scaled(p_x), Scaled(p_y));
+}
 }
 
 EditorTopBar::EditorTopBar()
@@ -133,16 +150,16 @@ void EditorTopBar::DrawBarContent()
 void EditorTopBar::DrawToolbarRow()
 {
     const float availableWidth = GetContentWidth();
-    const float rowY = kToolbarRowOffsetY;
+    const float rowY = Scaled(kToolbarRowOffsetY);
     DrawSceneToolRow(rowY, availableWidth);
 
-    const bool compactLayout = availableWidth < 700.0f;
-    const bool comboLayout = availableWidth < 520.0f;
+    const bool compactLayout = availableWidth < Scaled(700.0f);
+    const bool comboLayout = availableWidth < Scaled(520.0f);
     const float toolAreaWidth = comboLayout
-        ? kSceneToolComboWidth
-        : (compactLayout ? kCompactSceneToolAreaWidth : kSceneToolAreaWidth);
-    const float minimumToolbarX = kToolbarLeftPadding + toolAreaWidth + kToolbarSpacing;
-    const float centeredToolbarX = std::max((availableWidth - kToolbarApproxWidth) * 0.5f, kToolbarLeftPadding);
+        ? Scaled(kSceneToolComboWidth)
+        : (compactLayout ? Scaled(kCompactSceneToolAreaWidth) : Scaled(kSceneToolAreaWidth));
+    const float minimumToolbarX = Scaled(kToolbarLeftPadding) + toolAreaWidth + Scaled(kToolbarSpacing);
+    const float centeredToolbarX = std::max((availableWidth - Scaled(kToolbarApproxWidth)) * 0.5f, Scaled(kToolbarLeftPadding));
     const float toolbarX = compactLayout
         ? minimumToolbarX
         : std::max(centeredToolbarX, minimumToolbarX);
@@ -157,19 +174,19 @@ void EditorTopBar::DrawSceneToolRow(const float p_rowY, const float p_availableW
     const auto currentOperation = sceneView.GetCurrentGizmoOperation();
     const auto currentPivot = sceneView.GetCurrentGizmoPivot();
     const auto currentSpace = sceneView.GetCurrentGizmoSpace();
-    const bool compactLayout = p_availableWidth < 700.0f;
-    const bool comboLayout = p_availableWidth < 520.0f;
-    const bool showReferencePlaceholders = p_availableWidth >= 900.0f;
+    const bool compactLayout = p_availableWidth < Scaled(700.0f);
+    const bool comboLayout = p_availableWidth < Scaled(520.0f);
+    const bool showReferencePlaceholders = p_availableWidth >= Scaled(900.0f);
     const float toolAreaWidth = comboLayout
-        ? kSceneToolComboWidth
-        : (compactLayout ? kCompactSceneToolAreaWidth : kSceneToolAreaWidth);
+        ? Scaled(kSceneToolComboWidth)
+        : (compactLayout ? Scaled(kCompactSceneToolAreaWidth) : Scaled(kSceneToolAreaWidth));
 
     (void)toolAreaWidth;
-    ImGui::SetCursorPos(ImVec2(kToolbarLeftPadding, p_rowY - 1.0f));
+    ImGui::SetCursorPos(ImVec2(Scaled(kToolbarLeftPadding), p_rowY - Scaled(1.0f)));
 
     if (comboLayout)
     {
-        ImGui::SetNextItemWidth(kSceneToolComboWidth);
+        ImGui::SetNextItemWidth(Scaled(kSceneToolComboWidth));
         if (ImGui::BeginCombo("##SceneToolMode", ToToolLabel(currentOperation)))
         {
             const auto drawSelectable = [&](const char* label, const Editor::Core::EGizmoOperation operation)
@@ -195,13 +212,13 @@ void EditorTopBar::DrawSceneToolRow(const float p_rowY, const float p_availableW
         "Move",
         Editor::Core::EGizmoOperation::TRANSLATE,
         currentOperation == Editor::Core::EGizmoOperation::TRANSLATE);
-    ImGui::SameLine(0.0f, 4.0f);
+    ImGui::SameLine(0.0f, Scaled(4.0f));
     DrawSceneToolButton(
         "Toolbar_Rotate",
         "Rotate",
         Editor::Core::EGizmoOperation::ROTATE,
         currentOperation == Editor::Core::EGizmoOperation::ROTATE);
-    ImGui::SameLine(0.0f, 4.0f);
+    ImGui::SameLine(0.0f, Scaled(4.0f));
     DrawSceneToolButton(
         "Toolbar_Scale",
         "Scale",
@@ -211,10 +228,10 @@ void EditorTopBar::DrawSceneToolRow(const float p_rowY, const float p_availableW
     if (!showReferencePlaceholders)
         return;
 
-    ImGui::SameLine(0.0f, 10.0f);
+    ImGui::SameLine(0.0f, Scaled(10.0f));
     if (DrawIconTextButton(GetToolbarPivotIconId(currentPivot), ToPivotLabel(currentPivot), "Toggle Pivot Position"))
         sceneView.ToggleCurrentGizmoPivot();
-    ImGui::SameLine(0.0f, 4.0f);
+    ImGui::SameLine(0.0f, Scaled(4.0f));
     if (DrawIconTextButton(ToSpaceIconId(currentSpace), ToSpaceLabel(currentSpace), "Toggle Pivot Orientation"))
         sceneView.ToggleCurrentGizmoSpace();
 }
@@ -241,7 +258,7 @@ void EditorTopBar::DrawSceneToolButton(
     ImGui::PushID(p_iconId);
     const bool clicked = ImGui::ImageButton(
         ResolveTextureId(textureView),
-        ImVec2(kSceneToolIconSize, kSceneToolIconSize),
+        Scaled(kSceneToolIconSize, kSceneToolIconSize),
         ImVec2(0.0f, 1.0f),
         ImVec2(1.0f, 0.0f),
         -1,
@@ -262,8 +279,8 @@ bool EditorTopBar::DrawIconTextButton(const char* p_iconId, const char* p_label,
     const ImVec2 labelSize = ImGui::CalcTextSize(p_label);
     const ImVec2 framePadding = ImGui::GetStyle().FramePadding;
     const ImVec2 buttonSize(
-        kSceneToolIconSize + labelSize.x + framePadding.x * 3.0f,
-        kSceneToolButtonSize);
+        Scaled(kSceneToolIconSize) + labelSize.x + framePadding.x * 3.0f,
+        Scaled(kSceneToolButtonSize));
 
     const bool clicked = ImGui::Button(("##" + std::string(p_label)).c_str(), buttonSize);
     const ImVec2 buttonMin = ImGui::GetItemRectMin();
@@ -273,16 +290,16 @@ bool EditorTopBar::DrawIconTextButton(const char* p_iconId, const char* p_label,
     const auto textureView = GetToolbarIconView(p_iconId);
     const ImVec2 iconPos(
         buttonMin.x + framePadding.x,
-        buttonMin.y + (buttonMax.y - buttonMin.y - kSceneToolIconSize) * 0.5f);
+        buttonMin.y + (buttonMax.y - buttonMin.y - Scaled(kSceneToolIconSize)) * 0.5f);
     ImGui::GetWindowDrawList()->AddImage(
         ResolveTextureId(textureView),
         iconPos,
-        ImVec2(iconPos.x + kSceneToolIconSize, iconPos.y + kSceneToolIconSize),
+        ImVec2(iconPos.x + Scaled(kSceneToolIconSize), iconPos.y + Scaled(kSceneToolIconSize)),
         ImVec2(0.0f, 1.0f),
         ImVec2(1.0f, 0.0f));
 
     const ImVec2 textPos(
-        iconPos.x + kSceneToolIconSize + framePadding.x,
+        iconPos.x + Scaled(kSceneToolIconSize) + framePadding.x,
         buttonMin.y + (buttonMax.y - buttonMin.y - labelSize.y) * 0.5f);
     ImGui::GetWindowDrawList()->AddText(textPos, ImGui::GetColorU32(ImGuiCol_Text), p_label);
 

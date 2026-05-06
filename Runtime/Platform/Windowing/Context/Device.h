@@ -8,6 +8,7 @@
 #include "Windowing/Settings/DeviceSettings.h"
 #include "Windowing/Cursor/ECursorShape.h"
 #include "Math/Vector2.h"
+#include "Math/Vector4.h"
 struct GLFWwindow;
 struct GLFWcursor;
 
@@ -38,6 +39,11 @@ namespace NLS::Context
 		* 返回主显示器的大小（以像素为单位）
 		*/
 		NLS::Maths::Vector2 GetMonitorSize() const;
+
+		/**
+		* 返回主显示器工作区，格式为 x, y, width, height。
+		*/
+		NLS::Maths::Vector4 GetMonitorWorkarea() const;
 
 		/**
 		* 返回与给定形状对应的 GLFWcursor 实例

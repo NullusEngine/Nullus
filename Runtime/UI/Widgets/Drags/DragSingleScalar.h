@@ -49,8 +49,12 @@ namespace NLS::UI::Widgets
 			else if (value > max)
 				value = max;
 
-			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 4.0f));
-			ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
+			const float uiScale = NLS::Core::ServiceLocator::Contains<UIManager>()
+				? NLS_SERVICE(UIManager).GetScale()
+				: 1.0f;
+
+			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f * uiScale, 4.0f * uiScale));
+			ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f * uiScale);
 
 			if (ImGui::DragScalar((label + this->m_widgetID).c_str(), m_dataType, &value, speed, &min, &max, format.c_str()))
 			{

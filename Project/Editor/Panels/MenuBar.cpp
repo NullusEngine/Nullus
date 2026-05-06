@@ -251,7 +251,12 @@ void Editor::Panels::MenuBar::CreateResourcesMenu()
 void Editor::Panels::MenuBar::CreateLayoutMenu() 
 {
 	auto& layoutMenu = CreateWidget<Widgets::MenuList>("Layout");
-	layoutMenu.CreateWidget<Widgets::MenuItem>("Reset").ClickedEvent += EDITOR_BIND(ResetLayout);
+	layoutMenu.CreateWidget<Widgets::MenuItem>("Default").ClickedEvent += EDITOR_BIND(ResetLayout);
+	layoutMenu.CreateWidget<Widgets::Separator>();
+	layoutMenu.CreateWidget<Widgets::MenuItem>("Tall").ClickedEvent += EDITOR_BIND(ApplyLayoutPreset, "tall");
+	layoutMenu.CreateWidget<Widgets::MenuItem>("Wide").ClickedEvent += EDITOR_BIND(ApplyLayoutPreset, "wide");
+	layoutMenu.CreateWidget<Widgets::MenuItem>("2 by 3").ClickedEvent += EDITOR_BIND(ApplyLayoutPreset, "2_by_3");
+	layoutMenu.CreateWidget<Widgets::MenuItem>("4 Split").ClickedEvent += EDITOR_BIND(ApplyLayoutPreset, "4_split");
 }
 
 void Editor::Panels::MenuBar::CreateHelpMenu()

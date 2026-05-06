@@ -204,6 +204,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     windowSettings.title = "Nullus Editor";
     windowSettings.width = 1600;
     windowSettings.height = 900;
+    windowSettings.maximized = true;
     const auto graphicsBackend = ResolveEditorGraphicsBackend(projectSettings, m_backendOverride);
     if (const auto restriction =
         Render::Settings::GetPhase1BackendRestrictionMessage(graphicsBackend, "Editor runtime");
@@ -242,11 +243,6 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     window->SetIcon(engineAssetsPath + "Brand" + Utils::PathParser::Separator() + "NullusLogoMark.png");
     inputManager = std::make_unique<NLS::Windowing::Inputs::InputManager>(*window);
 
-    /* Center Window */
-    auto monSize = device->GetMonitorSize();
-    auto winSize = window->GetSize();
-    window->SetPosition(monSize.x / 2 - winSize.x / 2, monSize.y / 2 - winSize.y / 2);
-
     driver = std::make_unique<NLS::Render::Context::Driver>(driverSettings);
 
     const auto runtimeReadiness = driver->EvaluateEditorMainRuntimeReadiness(graphicsBackend);
@@ -269,11 +265,12 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
         throw std::runtime_error(message);
     }
 
+    const auto initialFramebufferSize = window->GetFramebufferSize();
     if (!driver->CreatePlatformSwapchain(
         window->GetGlfwWindow(),
         window->GetNativeWindowHandle(),
-        static_cast<uint32_t>(windowSettings.width),
-        static_cast<uint32_t>(windowSettings.height),
+        static_cast<uint32_t>(initialFramebufferSize.x),
+        static_cast<uint32_t>(initialFramebufferSize.y),
         true))
     {
         const std::string message = "Editor startup failed: CreatePlatformSwapchain returned false.";

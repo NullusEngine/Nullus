@@ -62,13 +62,16 @@ namespace NLS::UI::Widgets
 			}
 
 			bool valueChanged = false;
+			const float uiScale = NLS::Core::ServiceLocator::Contains<UIManager>()
+				? NLS_SERVICE(UIManager).GetScale()
+				: 1.0f;
 
 			if (axisStyle)
 			{
 				const float fullWidth = ImGui::GetContentRegionAvail().x;
-				const float totalSpacing = (_Size > 0 ? static_cast<float>(_Size - 1) * 4.0f : 0.0f);
-				const float labelWidth = 14.0f;
-				const float perItemWidth = std::max(24.0f, (fullWidth - totalSpacing - static_cast<float>(_Size) * labelWidth) / static_cast<float>(_Size));
+				const float totalSpacing = (_Size > 0 ? static_cast<float>(_Size - 1) * 4.0f * uiScale : 0.0f);
+				const float labelWidth = 14.0f * uiScale;
+				const float perItemWidth = std::max(24.0f * uiScale, (fullWidth - totalSpacing - static_cast<float>(_Size) * labelWidth) / static_cast<float>(_Size));
 				const float frameHeight = ImGui::GetFrameHeight();
 
 				for (size_t i = 0; i < _Size; ++i)
@@ -78,16 +81,16 @@ namespace NLS::UI::Widgets
 					const ImVec4 axisColor = UI::Internal::Converter::ToImVec4(componentColors[i]);
 					ImVec2 barMin = ImGui::GetCursorScreenPos();
 					ImVec2 barMax = ImVec2(barMin.x + labelWidth, barMin.y + frameHeight);
-					ImGui::GetWindowDrawList()->AddRectFilled(barMin, barMax, ImGui::GetColorU32(axisColor), 3.0f);
+					ImGui::GetWindowDrawList()->AddRectFilled(barMin, barMax, ImGui::GetColorU32(axisColor), 3.0f * uiScale);
 					ImGui::GetWindowDrawList()->AddText(
-						ImVec2(barMin.x + 3.0f, barMin.y + 2.0f),
+						ImVec2(barMin.x + 3.0f * uiScale, barMin.y + 2.0f * uiScale),
 						IM_COL32(243, 246, 250, 255),
 						componentLabels[i].c_str());
 					ImGui::Dummy(ImVec2(labelWidth, frameHeight));
 
 					ImGui::SameLine(0.0f, 0.0f);
-					ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 4.0f));
-					ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
+					ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f * uiScale, 4.0f * uiScale));
+					ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f * uiScale);
 					ImGui::PushItemWidth(perItemWidth);
 
 					if (ImGui::DragScalar(("##Axis" + this->m_widgetID).c_str(), m_dataType, &values[i], speed, &min, &max, format.c_str()))
@@ -99,7 +102,7 @@ namespace NLS::UI::Widgets
 					ImGui::PopStyleVar(2);
 
 					if (i + 1 < _Size)
-						ImGui::SameLine(0.0f, 4.0f);
+						ImGui::SameLine(0.0f, 4.0f * uiScale);
 
 					ImGui::PopID();
 				}

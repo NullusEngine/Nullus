@@ -25,10 +25,15 @@
 #include "Components/TransformComponent.h"
 #include "Panels/Inspector.h"
 #include "Panels/SceneView.h"
+#include "Panels/AssetBrowser.h"
 #include "ResourceManagement/ModelManager.h"
 #include "Resource/Actor/ActorManager.h"
+#include "Panels/Console.h"
 #include "ServiceLocator.h"
 #include "Panels/AssetView.h"
+#include "Panels/GameView.h"
+#include "Panels/FrameInfo.h"
+#include "Panels/Hierarchy.h"
 #include "Panels/MaterialEditor.h"
 #include "Serialize/Serializer.h"
 #include "Reflection/Variant.h"
@@ -363,6 +368,32 @@ void Editor::Core::EditorActions::ResetLayout()
 {
     DelayAction([this]()
                 { m_context.uiManager->ResetLayout(m_context.editorAssetsPath + "/Settings/layout.ini"); });
+}
+
+void Editor::Core::EditorActions::ApplyLayoutPreset(const std::string& p_presetId)
+{
+    DelayAction([this, p_presetId]()
+    {
+        const std::filesystem::path layoutPath =
+            std::filesystem::path(m_context.editorAssetsPath) / "Settings" / ("layout_" + p_presetId + ".ini");
+        if (!std::filesystem::exists(layoutPath))
+        {
+            NLS_LOG_WARNING("Editor layout preset not found: " + layoutPath.string());
+            return;
+        }
+
+        m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser").Open();
+        m_panelsManager.GetPanelAs<Panels::AssetView>("Asset View").Close();
+        m_panelsManager.GetPanelAs<Panels::Console>("Console").Close();
+        m_panelsManager.GetPanelAs<Panels::FrameInfo>("Frame Info").Close();
+        m_panelsManager.GetPanelAs<Panels::Hierarchy>("Hierarchy").Open();
+        m_panelsManager.GetPanelAs<Panels::Inspector>("Inspector").Open();
+        m_panelsManager.GetPanelAs<Panels::SceneView>("Scene View").Open();
+        m_panelsManager.GetPanelAs<Panels::GameView>("Game View").Open();
+
+        m_context.uiManager->ResetLayout(layoutPath.string());
+        NLS_LOG_INFO("Applied editor layout preset: " + p_presetId);
+    });
 }
 
 void Editor::Core::EditorActions::SetSceneViewCameraSpeed(int p_speed)

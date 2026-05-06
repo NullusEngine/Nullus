@@ -48,7 +48,7 @@ jobs:
 
       - name: Restore MetaParser
         shell: powershell
-        run: dotnet restore build\windows\Tools\MetaParser\src\MetaParser.csproj
+        run: dotnet restore build\windows\Tools\MetaParser\generated\src\MetaParser.csproj
 
       - name: Build
         id: build_step

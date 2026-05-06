@@ -25,9 +25,12 @@
 #include <array>
 #include <atomic>
 #include <cinttypes>
+#include <cmath>
+#include <cstdio>
 #include <mutex>
 #include <span>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include <queue>
 
@@ -41,11 +44,20 @@ static void HandleAssertMessage(const char* pExpression, const char* pFileName, 
 {
 	char message[1024]{};
 	if (pFmt)
-		sprintf_s(message, pFmt, std::forward<Args>(args)...);
+		std::snprintf(message, sizeof(message), pFmt, std::forward<Args>(args)...);
 	char finalMessage[1024]{};
-	sprintf_s(finalMessage, "ASSERT FAILED:\nExpression: %s\nFile: %s:%d\n%s\n", pExpression, __FILE__, __LINE__, message);
+	std::snprintf(finalMessage, sizeof(finalMessage), "ASSERT FAILED:\nExpression: %s\nFile: %s:%d\n%s\n", pExpression, pFileName, line, message);
 	HandleAssertMessage(finalMessage);
 }
+
+#if defined(_MSC_VER)
+#define gDebugBreak() __debugbreak()
+#elif defined(__clang__) || defined(__GNUC__)
+#define gDebugBreak() __builtin_trap()
+#else
+#include <cstdlib>
+#define gDebugBreak() std::abort()
+#endif
 
 #define gAssert(op, ...)                                               \
 	do                                                                 \
@@ -53,8 +65,8 @@ static void HandleAssertMessage(const char* pExpression, const char* pFileName, 
 		bool result = (op);                                            \
 		if (result == false)                                           \
 		{                                                              \
-			HandleAssertMessage(#op, __FILE__, __LINE__, __VA_ARGS__); \
-			__debugbreak();                                            \
+			HandleAssertMessage(#op, __FILE__, __LINE__, ##__VA_ARGS__); \
+			gDebugBreak();                                             \
 		}                                                              \
 	} while (false)
 
@@ -108,8 +120,8 @@ constexpr bool ShouldAdvanceGpuProfilerFrame(bool hasPendingCommandListQueries, 
 inline float ComputeTimelineWheelZoomScale(float currentScale, float mouseWheel)
 {
 	const float zoomDelta = mouseWheel / 5.0f;
-	const float logScale = logf(currentScale) + zoomDelta;
-	const float unclampedScale = expf(logScale);
+	const float logScale = std::log(currentScale) + zoomDelta;
+	const float unclampedScale = std::exp(logScale);
 	return unclampedScale < 1.0f ? 1.0f : (unclampedScale > 100.0f ? 100.0f : unclampedScale);
 }
 }

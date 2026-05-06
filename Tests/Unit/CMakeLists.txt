@@ -105,6 +105,7 @@ target_include_directories(NullusUnitTests PRIVATE
 target_compile_definitions(NullusUnitTests PRIVATE
     NLS_ROOT_DIR="${CMAKE_SOURCE_DIR}"
     NLS_BUILD_DIR="${CMAKE_BINARY_DIR}"
+    WITH_PROFILING=$<AND:$<BOOL:${WIN32}>,$<BOOL:${NLS_ENABLE_TIMELINE_PROFILER}>>
 )
 
 target_link_libraries(NullusUnitTests PRIVATE
@@ -116,6 +117,10 @@ target_link_libraries(NullusUnitTests PRIVATE
     NLS_UI
     NLS_Engine
 )
+
+if(TARGET Editor_MetaGenerated)
+    add_dependencies(NullusUnitTests Editor_MetaGenerated)
+endif()
 
 set_target_properties(NullusUnitTests PROPERTIES
     FOLDER Tests

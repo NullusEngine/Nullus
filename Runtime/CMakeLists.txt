@@ -684,7 +684,12 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
         COMMENT "Generating reflection bindings for ${_target_name}"
     )
 
-    add_dependencies(${_target_name} MetaParser)
+    set(_meta_generated_target "${_target_name}_MetaGenerated")
+    add_custom_target(${_meta_generated_target}
+        DEPENDS "${_gen_cpp}" "${_gen_h}"
+    )
+
+    add_dependencies(${_target_name} MetaParser ${_meta_generated_target})
     target_include_directories(${_target_name} PUBLIC "${_gen_dir}")
     target_sources(${_target_name} PRIVATE "${_gen_cpp}" "${_gen_h}")
 endfunction()

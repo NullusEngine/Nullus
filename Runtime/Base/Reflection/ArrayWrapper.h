@@ -6,13 +6,14 @@
 
 #pragma once
 
+#include "BaseDef.h"
 #include "ArrayWrapperBase.h"
 
 namespace NLS::meta
 {
     class Argument;
 
-    class ArrayWrapper
+    class NLS_BASE_API ArrayWrapper
     {
     public:
         ArrayWrapper(void);

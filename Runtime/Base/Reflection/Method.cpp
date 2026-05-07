@@ -32,7 +32,7 @@ namespace NLS::meta
 
         bool Method::IsValid(void) const
         {
-            return m_invoker != nullptr;
+            return m_invoker != nullptr && m_classType.IsValid( );
         }
 
         bool Method::IsConst(void) const

@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "BaseDef.h"
 #include "VariantBase.h"
 #include "VariantPolicy.h"
 
@@ -40,7 +41,7 @@ namespace NLS::meta
     class Argument;
     class ArrayWrapper;
 
-    class Variant
+    class NLS_BASE_API Variant
     {
     public:
         Variant(void);

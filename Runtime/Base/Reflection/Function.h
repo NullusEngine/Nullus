@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "BaseDef.h"
 #include "MetaContainer.h"
 #include "Invokable.h"
 
@@ -18,7 +19,7 @@
 
 namespace NLS::meta
 {
-    class Function
+    class NLS_BASE_API Function
         : public MetaContainer
         , public Invokable
     {

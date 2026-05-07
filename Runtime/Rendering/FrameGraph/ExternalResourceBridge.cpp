@@ -53,6 +53,7 @@ namespace NLS::Render::FrameGraph
                 [&renderScenePackage](const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture)
             {
                 return texture != nullptr &&
+                    texture != renderScenePackage.preferredReadbackTexture &&
                     std::find(
                         renderScenePackage.extractedTextures.begin(),
                         renderScenePackage.extractedTextures.end(),
@@ -75,7 +76,10 @@ namespace NLS::Render::FrameGraph
             }
 
             for (const auto& texture : renderScenePackage.extractedTextures)
-                AppendUniqueTexture(textures, texture);
+            {
+                if (texture != renderScenePackage.preferredReadbackTexture)
+                    AppendUniqueTexture(textures, texture);
+            }
 
             return textures;
         }
@@ -105,7 +109,11 @@ namespace NLS::Render::FrameGraph
 
     bool FrameTargetsSwapchain(const NLS::Render::Data::FrameDescriptor& frame)
     {
-        return ResolveExternalSceneOutputFramebuffer(frame) == nullptr;
+        return ResolveExternalSceneOutputFramebuffer(frame) == nullptr &&
+            frame.outputColorTexture == nullptr &&
+            frame.outputDepthStencilTexture == nullptr &&
+            frame.outputColorView == nullptr &&
+            frame.outputDepthStencilView == nullptr;
     }
 
     NLS::Render::Buffers::Framebuffer* ResolveExternalSceneOutputFramebuffer(
@@ -119,6 +127,39 @@ namespace NLS::Render::FrameGraph
         NLS::Render::Buffers::Framebuffer* framebuffer)
     {
         frame.outputBuffer = framebuffer;
+        frame.outputColorTexture.reset();
+        frame.outputDepthStencilTexture.reset();
+        frame.outputColorView.reset();
+        frame.outputDepthStencilView.reset();
+
+        if (framebuffer == nullptr)
+            return;
+
+        frame.outputColorTexture = framebuffer->GetExplicitTextureHandle();
+        frame.outputDepthStencilTexture = framebuffer->GetExplicitDepthStencilTextureHandle();
+        frame.outputColorView = framebuffer->GetOrCreateExplicitColorView("SceneOutputColorView");
+        frame.outputDepthStencilView = framebuffer->GetOrCreateExplicitDepthStencilView("SceneOutputDepthView");
+    }
+
+    NLS::Render::Data::FrameDescriptor CaptureExternalSceneOutputSnapshot(
+        const NLS::Render::Data::FrameDescriptor& frame)
+    {
+        auto snapshot = frame;
+        auto* outputBuffer = ResolveExternalSceneOutputFramebuffer(frame);
+        if (outputBuffer == nullptr)
+            return snapshot;
+
+        if (snapshot.outputColorTexture == nullptr)
+            snapshot.outputColorTexture = outputBuffer->GetExplicitTextureHandle();
+        if (snapshot.outputDepthStencilTexture == nullptr)
+            snapshot.outputDepthStencilTexture = outputBuffer->GetExplicitDepthStencilTextureHandle();
+        if (snapshot.outputColorView == nullptr)
+            snapshot.outputColorView = outputBuffer->GetOrCreateExplicitColorView("SceneOutputColorView");
+        if (snapshot.outputDepthStencilView == nullptr)
+            snapshot.outputDepthStencilView = outputBuffer->GetOrCreateExplicitDepthStencilView("SceneOutputDepthView");
+
+        snapshot.outputBuffer = nullptr;
+        return snapshot;
     }
 
     void ImportSceneRenderTargets(
@@ -129,22 +170,47 @@ namespace NLS::Render::FrameGraph
         const char* depthResourceName)
     {
         auto* outputBuffer = ResolveExternalSceneOutputFramebuffer(frame);
-        if (outputBuffer == nullptr)
+        if (outputBuffer == nullptr &&
+            frame.outputColorTexture == nullptr &&
+            frame.outputDepthStencilTexture == nullptr)
             return;
 
         SceneRenderTargetsData targets;
-        targets.color = frameGraph.import<FrameGraphTexture>(
-            colorResourceName,
-            MakeSceneColorTargetDesc(frame.renderWidth, frame.renderHeight),
-            FrameGraphTexture::WrapExternal(
-                outputBuffer->GetExplicitTextureHandle(),
-                outputBuffer->GetOrCreateExplicitColorView("SceneOutputColorView")));
-        targets.depth = frameGraph.import<FrameGraphTexture>(
-            depthResourceName,
-            MakeSceneDepthTargetDesc(frame.renderWidth, frame.renderHeight),
-            FrameGraphTexture::WrapExternal(
-                outputBuffer->GetExplicitDepthStencilTextureHandle(),
-                outputBuffer->GetOrCreateExplicitDepthStencilView("SceneOutputDepthView")));
+        const auto colorTexture =
+            frame.outputColorTexture != nullptr
+                ? frame.outputColorTexture
+                : (outputBuffer != nullptr ? outputBuffer->GetExplicitTextureHandle() : nullptr);
+        const auto depthTexture =
+            frame.outputDepthStencilTexture != nullptr
+                ? frame.outputDepthStencilTexture
+                : (outputBuffer != nullptr ? outputBuffer->GetExplicitDepthStencilTextureHandle() : nullptr);
+        const auto colorView =
+            frame.outputColorView != nullptr
+                ? frame.outputColorView
+                : (outputBuffer != nullptr ? outputBuffer->GetOrCreateExplicitColorView("SceneOutputColorView") : nullptr);
+        const auto depthView =
+            frame.outputDepthStencilView != nullptr
+                ? frame.outputDepthStencilView
+                : (outputBuffer != nullptr ? outputBuffer->GetOrCreateExplicitDepthStencilView("SceneOutputDepthView") : nullptr);
+
+        if (colorTexture != nullptr)
+        {
+            targets.color = frameGraph.import<FrameGraphTexture>(
+                colorResourceName,
+                MakeSceneColorTargetDesc(frame.renderWidth, frame.renderHeight),
+                FrameGraphTexture::WrapExternal(
+                    colorTexture,
+                    colorView));
+        }
+        if (depthTexture != nullptr)
+        {
+            targets.depth = frameGraph.import<FrameGraphTexture>(
+                depthResourceName,
+                MakeSceneDepthTargetDesc(frame.renderWidth, frame.renderHeight),
+                FrameGraphTexture::WrapExternal(
+                    depthTexture,
+                    depthView));
+        }
 
         blackboard.add<SceneRenderTargetsData>(targets);
     }
@@ -155,12 +221,20 @@ namespace NLS::Render::FrameGraph
         const char* depthViewName)
     {
         auto* outputBuffer = ResolveExternalSceneOutputFramebuffer(frame);
-        if (outputBuffer == nullptr)
+        if (outputBuffer == nullptr &&
+            frame.outputColorView == nullptr &&
+            frame.outputDepthStencilView == nullptr)
             return {};
 
         ExternalSceneOutputAttachments attachments;
-        attachments.colorView = outputBuffer->GetOrCreateExplicitColorView(colorViewName);
-        attachments.depthStencilView = outputBuffer->GetOrCreateExplicitDepthStencilView(depthViewName);
+        attachments.colorView =
+            frame.outputColorView != nullptr
+                ? frame.outputColorView
+                : (outputBuffer != nullptr ? outputBuffer->GetOrCreateExplicitColorView(colorViewName) : nullptr);
+        attachments.depthStencilView =
+            frame.outputDepthStencilView != nullptr
+                ? frame.outputDepthStencilView
+                : (outputBuffer != nullptr ? outputBuffer->GetOrCreateExplicitDepthStencilView(depthViewName) : nullptr);
         return attachments;
     }
 
@@ -228,7 +302,10 @@ namespace NLS::Render::FrameGraph
         const NLS::Render::Data::FrameDescriptor& frame)
     {
         auto* outputBuffer = ResolveExternalSceneOutputFramebuffer(frame);
-        if (package.targetsSwapchain || outputBuffer == nullptr)
+        if (package.targetsSwapchain ||
+            (outputBuffer == nullptr &&
+                frame.outputColorTexture == nullptr &&
+                frame.outputDepthStencilTexture == nullptr))
             return false;
 
         bool registered = false;
@@ -248,8 +325,10 @@ namespace NLS::Render::FrameGraph
             }
         };
 
-        appendIfMissing(outputBuffer->GetExplicitTextureHandle());
-        appendIfMissing(outputBuffer->GetExplicitDepthStencilTextureHandle());
+        appendIfMissing(
+            frame.outputColorTexture != nullptr
+                ? frame.outputColorTexture
+                : (outputBuffer != nullptr ? outputBuffer->GetExplicitTextureHandle() : nullptr));
         return registered;
     }
 
@@ -304,13 +383,17 @@ namespace NLS::Render::FrameGraph
     uint32_t CountExternalSceneOutputTextures(const NLS::Render::Data::FrameDescriptor& frame)
     {
         auto* outputBuffer = ResolveExternalSceneOutputFramebuffer(frame);
-        if (outputBuffer == nullptr)
+        if (outputBuffer == nullptr &&
+            frame.outputColorTexture == nullptr &&
+            frame.outputDepthStencilTexture == nullptr)
             return 0u;
 
         uint32_t textureCount = 0u;
-        if (outputBuffer->GetExplicitTextureHandle() != nullptr)
+        if ((frame.outputColorTexture != nullptr) ||
+            (outputBuffer != nullptr && outputBuffer->GetExplicitTextureHandle() != nullptr))
             ++textureCount;
-        if (outputBuffer->GetExplicitDepthStencilTextureHandle() != nullptr)
+        if ((frame.outputDepthStencilTexture != nullptr) ||
+            (outputBuffer != nullptr && outputBuffer->GetExplicitDepthStencilTextureHandle() != nullptr))
             ++textureCount;
         return textureCount;
     }
@@ -319,6 +402,22 @@ namespace NLS::Render::FrameGraph
         const NLS::Render::Context::RenderScenePackage& renderScenePackage)
     {
         return static_cast<uint32_t>(CollectExternalSceneOutputTextures(renderScenePackage).size());
+    }
+
+    uint32_t CountExternalSceneOutputSampledTextures(
+        const NLS::Render::Context::RenderScenePackage& renderScenePackage)
+    {
+        return static_cast<uint32_t>(std::count_if(
+            renderScenePackage.extractedTextures.begin(),
+            renderScenePackage.extractedTextures.end(),
+            [&renderScenePackage](const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture)
+            {
+                return texture != nullptr &&
+                    texture != renderScenePackage.preferredReadbackTexture &&
+                    NLS::Render::RHI::HasTextureUsage(
+                        texture->GetDesc().usage,
+                        NLS::Render::RHI::TextureUsageFlags::Sampled);
+            }));
     }
 
     bool HasExternalSceneOutput(const NLS::Render::Context::RenderScenePackage& renderScenePackage)
@@ -365,10 +464,13 @@ namespace NLS::Render::FrameGraph
         const NLS::Render::Data::FrameDescriptor& frame)
     {
         auto* outputBuffer = ResolveExternalSceneOutputFramebuffer(frame);
-        if (outputBuffer == nullptr)
+        if (outputBuffer == nullptr && frame.outputColorTexture == nullptr)
             return;
 
-        const auto texture = outputBuffer->GetExplicitTextureHandle();
+        const auto texture =
+            frame.outputColorTexture != nullptr
+                ? frame.outputColorTexture
+                : outputBuffer->GetExplicitTextureHandle();
         if (texture == nullptr)
             return;
 

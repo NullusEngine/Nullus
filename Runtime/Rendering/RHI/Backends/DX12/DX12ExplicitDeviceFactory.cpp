@@ -113,7 +113,11 @@ namespace NLS::Render::Backend
 
 			std::shared_ptr<NLS::Render::RHI::RHIQueue> GetQueue(NLS::Render::RHI::QueueType queueType) override
 			{
-				if (queueType == NLS::Render::RHI::QueueType::Compute && m_computeQueue == nullptr)
+				const bool useDedicatedComputeQueue =
+					queueType == NLS::Render::RHI::QueueType::Compute &&
+					m_computeQueue != nullptr &&
+					m_capabilities.supportsDedicatedComputeQueue;
+				if (queueType == NLS::Render::RHI::QueueType::Compute && !useDedicatedComputeQueue)
 				{
 					if (m_queues[static_cast<size_t>(NLS::Render::RHI::QueueType::Graphics)] == nullptr)
 					{
@@ -135,7 +139,7 @@ namespace NLS::Render::Backend
 					ID3D12CommandQueue* nativeQueue = m_graphicsQueue.Get();
 					std::string debugName = "GraphicsQueue";
 					NLS::Render::RHI::QueueType resolvedQueueType = NLS::Render::RHI::QueueType::Graphics;
-					if (queueType == NLS::Render::RHI::QueueType::Compute && m_computeQueue != nullptr)
+					if (useDedicatedComputeQueue)
 					{
 						nativeQueue = m_computeQueue.Get();
 						debugName = "ComputeQueue";
@@ -186,7 +190,8 @@ namespace NLS::Render::Backend
 				InitializeTimelineGpuProfilerIfNeeded();
 				const bool useDedicatedComputeQueue =
 					queueType == NLS::Render::RHI::QueueType::Compute &&
-					m_computeQueue != nullptr;
+					m_computeQueue != nullptr &&
+					m_capabilities.supportsDedicatedComputeQueue;
 				ID3D12CommandQueue* nativeQueue = useDedicatedComputeQueue
 					? m_computeQueue.Get()
 					: m_graphicsQueue.Get();

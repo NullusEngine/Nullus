@@ -342,14 +342,14 @@ namespace
         const std::shared_ptr<Render::RHI::RHIBuffer>& buffer)
     {
         const auto it = std::find_if(
-            input.bufferResourceAccesses.begin(),
-            input.bufferResourceAccesses.end(),
+            input.bufferResourceAccesses.rbegin(),
+            input.bufferResourceAccesses.rend(),
             [&buffer](const BufferResourceAccess& access)
             {
                 return access.mode == ResourceAccessMode::Write &&
                     access.buffer == buffer;
             });
-        return it != input.bufferResourceAccesses.end() ? &(*it) : nullptr;
+        return it != input.bufferResourceAccesses.rend() ? &(*it) : nullptr;
     }
 
     const TextureResourceAccess* FindSourceTextureWriteAccess(
@@ -358,8 +358,8 @@ namespace
         const Render::RHI::RHISubresourceRange& subresourceRange)
     {
         const auto it = std::find_if(
-            input.textureResourceAccesses.begin(),
-            input.textureResourceAccesses.end(),
+            input.textureResourceAccesses.rbegin(),
+            input.textureResourceAccesses.rend(),
             [&texture, &subresourceRange](const TextureResourceAccess& access)
             {
                 return access.mode == ResourceAccessMode::Write &&
@@ -368,7 +368,7 @@ namespace
                         IsEmptySubresourceRange(access.subresourceRange) ||
                         AreEqualSubresourceRanges(access.subresourceRange, subresourceRange));
             });
-        return it != input.textureResourceAccesses.end() ? &(*it) : nullptr;
+        return it != input.textureResourceAccesses.rend() ? &(*it) : nullptr;
     }
 
     const BufferVisibilityTransition* FindExportedBufferVisibilityTransition(
@@ -869,9 +869,100 @@ namespace
             commandBuffer.Barrier(barriers);
     }
 
+    void RecordShaderReadBarriersForBuffers(
+        Render::RHI::RHICommandBuffer& commandBuffer,
+        const std::vector<std::shared_ptr<Render::RHI::RHIBuffer>>& buffers)
+    {
+        if (buffers.empty())
+            return;
+
+        Render::RHI::RHIBarrierDesc barriers;
+        barriers.bufferBarriers.reserve(buffers.size());
+
+        for (const auto& buffer : buffers)
+        {
+            if (buffer == nullptr)
+                continue;
+
+            barriers.bufferBarriers.push_back({
+                buffer,
+                Render::RHI::ResourceState::Unknown,
+                Render::RHI::ResourceState::ShaderRead,
+                Render::RHI::PipelineStageMask::AllCommands,
+                Render::RHI::PipelineStageMask::ComputeShader,
+                Render::RHI::AccessMask::MemoryRead | Render::RHI::AccessMask::MemoryWrite,
+                Render::RHI::AccessMask::ShaderRead
+            });
+        }
+
+        if (!barriers.bufferBarriers.empty())
+            commandBuffer.Barrier(barriers);
+    }
+
+    void RecordShaderWriteBarriersForBuffers(
+        Render::RHI::RHICommandBuffer& commandBuffer,
+        const std::vector<std::shared_ptr<Render::RHI::RHIBuffer>>& buffers)
+    {
+        if (buffers.empty())
+            return;
+
+        Render::RHI::RHIBarrierDesc barriers;
+        barriers.bufferBarriers.reserve(buffers.size());
+
+        for (const auto& buffer : buffers)
+        {
+            if (buffer == nullptr)
+                continue;
+
+            barriers.bufferBarriers.push_back({
+                buffer,
+                Render::RHI::ResourceState::Unknown,
+                Render::RHI::ResourceState::ShaderWrite,
+                Render::RHI::PipelineStageMask::AllCommands,
+                Render::RHI::PipelineStageMask::ComputeShader,
+                Render::RHI::AccessMask::MemoryRead | Render::RHI::AccessMask::MemoryWrite,
+                Render::RHI::AccessMask::ShaderWrite
+            });
+        }
+
+        if (!barriers.bufferBarriers.empty())
+            commandBuffer.Barrier(barriers);
+    }
+
+    void RecordShaderReadAfterWriteBarriersForBuffers(
+        Render::RHI::RHICommandBuffer& commandBuffer,
+        const std::vector<std::shared_ptr<Render::RHI::RHIBuffer>>& buffers)
+    {
+        if (buffers.empty())
+            return;
+
+        Render::RHI::RHIBarrierDesc barriers;
+        barriers.bufferBarriers.reserve(buffers.size());
+
+        for (const auto& buffer : buffers)
+        {
+            if (buffer == nullptr)
+                continue;
+
+            barriers.bufferBarriers.push_back({
+                buffer,
+                Render::RHI::ResourceState::ShaderWrite,
+                Render::RHI::ResourceState::ShaderRead,
+                Render::RHI::PipelineStageMask::ComputeShader,
+                Render::RHI::PipelineStageMask::AllGraphics | Render::RHI::PipelineStageMask::ComputeShader,
+                Render::RHI::AccessMask::ShaderWrite,
+                Render::RHI::AccessMask::ShaderRead
+            });
+        }
+
+        if (!barriers.bufferBarriers.empty())
+            commandBuffer.Barrier(barriers);
+    }
+
     uint64_t RecordComputeDispatches(
         Render::RHI::RHICommandBuffer& commandBuffer,
-        const std::vector<RecordedComputeDispatchInput>& dispatchInputs)
+        const std::vector<RecordedComputeDispatchInput>& dispatchInputs,
+        const bool recordShaderReadBarriers)
     {
         uint64_t recordedDispatchCount = 0u;
         for (const auto& dispatchInput : dispatchInputs)
@@ -879,6 +970,9 @@ namespace
             if (dispatchInput.pipeline == nullptr)
                 continue;
 
+            if (recordShaderReadBarriers)
+                RecordShaderReadBarriersForBuffers(commandBuffer, dispatchInput.shaderReadBuffersBefore);
+            RecordShaderWriteBarriersForBuffers(commandBuffer, dispatchInput.shaderWriteBuffersBefore);
             RecordUavBarriersForBuffers(commandBuffer, dispatchInput.uavBarrierBuffersBefore);
             commandBuffer.BindComputePipeline(dispatchInput.pipeline);
             for (const auto& bindingSet : dispatchInput.bindingSets)
@@ -889,6 +983,7 @@ namespace
 
             commandBuffer.Dispatch(dispatchInput.groupCountX, dispatchInput.groupCountY, dispatchInput.groupCountZ);
             RecordUavBarriersForBuffers(commandBuffer, dispatchInput.uavBarrierBuffersAfter);
+            RecordShaderReadAfterWriteBarriersForBuffers(commandBuffer, dispatchInput.shaderReadBuffersAfter);
             ++recordedDispatchCount;
         }
 
@@ -1065,9 +1160,13 @@ uint64_t Detail::RecordPreparedDrawCommandsForPass(
 
 uint64_t Detail::RecordComputeDispatches(
     Render::RHI::RHICommandBuffer& commandBuffer,
-    const std::vector<RecordedComputeDispatchInput>& dispatchInputs)
+    const std::vector<RecordedComputeDispatchInput>& dispatchInputs,
+    const bool recordShaderReadBarriers)
 {
-    return NLS::Render::Context::RecordComputeDispatches(commandBuffer, dispatchInputs);
+    return NLS::Render::Context::RecordComputeDispatches(
+        commandBuffer,
+        dispatchInputs,
+        recordShaderReadBarriers);
 }
 
 bool Detail::SupportsThreadedFoundationExecution(const DriverImpl& impl)
@@ -1681,6 +1780,8 @@ Driver::Driver(const Render::Settings::DriverSettings& p_driverSettings)
 
 Driver::~Driver()
 {
+    if (m_impl != nullptr)
+        m_impl->swapchainWillResizeCallback = nullptr;
     ShutdownThreadedRendering();
     ShutdownRhiResources();
 }
@@ -1986,13 +2087,16 @@ void Driver::StartThreadedRenderingWorkers()
 void Driver::StopThreadedRenderingWorkers()
 {
     NLS_PROFILE_SCOPE();
+    if (m_impl == nullptr)
+        return;
     m_impl->threadedStopRequested.store(true);
     if (m_impl->renderSceneWorker.joinable())
         m_impl->renderSceneWorker.join();
     if (m_impl->rhiWorker.joinable())
         m_impl->rhiWorker.join();
     DrainThreadedLifecycleSynchronously(*m_impl, this);
-    ApplyPendingSwapchainResize();
+    if (m_impl->swapchainWillResizeCallback != nullptr)
+        ApplyPendingSwapchainResize();
     m_impl->threadedWorkersRunning = false;
 }
 

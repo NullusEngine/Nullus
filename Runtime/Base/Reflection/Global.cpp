@@ -39,7 +39,7 @@ namespace NLS::meta
 
         bool Global::IsValid(void) const
         {
-            return m_getter != nullptr;
+            return m_getter != nullptr && m_type.IsValid( ) && (!m_parentType || m_parentType.IsValid( ));
         }
 
         bool Global::IsReadOnly(void) const
@@ -64,13 +64,15 @@ namespace NLS::meta
 
         Variant Global::GetValue(void) const
         {
+            if (!IsValid( ))
+                return {};
             return m_getter->GetValue( );
         }
 
     bool Global::SetValue(const Argument &value) const
     {
         // read only?
-        if (m_setter != nullptr)
+        if (IsValid( ) && m_setter != nullptr)
         {
             m_setter->SetValue( value );
 

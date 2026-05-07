@@ -544,6 +544,12 @@ void UIManager::NotifySwapchainWillResize()
         m_uiBridge->NotifySwapchainWillResize();
 }
 
+void UIManager::ReleaseTextureViewHandle(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView)
+{
+    if (m_uiBridge != nullptr)
+        m_uiBridge->ReleaseTextureViewHandle(textureView);
+}
+
 void UIManager::SetWaitSemaphore(void* semaphore)
 {
     waitSemaphore_ = semaphore;

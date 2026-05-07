@@ -7,6 +7,7 @@
 #include <Debug/Logger.h>
 #include <Profiling/Profiler.h>
 #include <Profiling/TracyProfiler.h>
+#include <Reflection/ReflectionDiagnostics.h>
 #include <ServiceLocator.h>
 #include <imgui.h>
 
@@ -48,6 +49,7 @@ namespace NLS
 namespace
 {
 NLS::Base::Profiling::TracyProfiler g_tracyProfiler;
+std::size_t g_publishedReflectionDiagnosticCount = 0;
 
 enum class ValidationFocusTarget
 {
@@ -118,6 +120,25 @@ void MigrateLegacyMaterialAssets(Editor::Core::EditorActions& editorActions, con
         NLS_LOG_INFO("Migrated legacy material asset: " + sourcePath.string() + " -> " + targetPath.string());
     }
 }
+
+void PublishReflectionDiagnosticsToLog()
+{
+    const auto diagnostics = NLS::meta::ReflectionDiagnostics::Snapshot();
+    if (g_publishedReflectionDiagnosticCount > diagnostics.size())
+        g_publishedReflectionDiagnosticCount = 0;
+
+    for (std::size_t index = g_publishedReflectionDiagnosticCount; index < diagnostics.size(); ++index)
+    {
+        const auto& diagnostic = diagnostics[index];
+        const std::string message = "Reflection: " + NLS::meta::ReflectionDiagnostics::Format(diagnostic);
+        if (diagnostic.severity == NLS::meta::ReflectionDiagnosticSeverity::Error)
+            NLS_LOG_ERROR(message);
+        else
+            NLS_LOG_WARNING(message);
+    }
+
+    g_publishedReflectionDiagnosticCount = diagnostics.size();
+}
 }
 
 Editor::Core::Editor::Editor(Context& p_context)
@@ -133,6 +154,7 @@ Editor::Core::Editor::Editor(Context& p_context)
     Assembly::Instance().Instance().Load<AssemblyMath>().Load<AssemblyCore>().Load<AssemblyPlatform>().Load<AssemblyRender>().Load<Engine::AssemblyEngine>();
 	
     SetupUI();
+    PublishReflectionDiagnosticsToLog();
     RegisterShortcutContexts();
     RegisterDefaultShortcuts();
     MigrateLegacyMaterialAssets(m_editorActions, m_context.projectAssetsPath);
@@ -223,6 +245,9 @@ void Editor::Core::Editor::Update(float p_deltaTime)
         if (m_frameRateAccumulatedTime >= 1.0f)
         {
             m_currentFrameRate = static_cast<float>(m_frameRateSampleCount) / m_frameRateAccumulatedTime;
+            if (m_context.GetDiagnosticsSettings().logEditorFps)
+                NLS_LOG_INFO("Editor FPS: " + std::to_string(m_currentFrameRate));
+
             m_frameRateAccumulatedTime = 0.0f;
             m_frameRateSampleCount = 0;
         }
@@ -234,6 +259,7 @@ void Editor::Core::Editor::Update(float p_deltaTime)
     UpdateEditorPanels(p_deltaTime);
     RenderEditorUI(p_deltaTime);
     m_editorActions.ExecuteDelayedActions();
+    PublishReflectionDiagnosticsToLog();
 }
 
 void Editor::Core::Editor::HandleGlobalShortcuts()
@@ -728,5 +754,13 @@ float Editor::Core::Editor::GetCurrentFrameRate() const
 float Editor::Core::Editor::GetCurrentDeltaTime() const
 {
     return m_currentDeltaTime;
+}
+
+void Editor::Core::Editor::OpenConsole()
+{
+    auto& console = m_panelsManager.GetPanelAs<Panels::Console>("Console");
+    console.Open();
+    console.Focus();
+    console.ScrollToBottom();
 }
 } // namespace NLS

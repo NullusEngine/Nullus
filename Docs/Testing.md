@@ -88,4 +88,4 @@ GitHub Actions 现在会在正常构建之后继续执行 `ctest`，覆盖以下
 ## 说明
 
 - 这套测试接入尽量保持在项目侧完成，避免直接修改第三方源码。
-- `ThirdParty/json11` 必须指向可正常拉取的子模块提交，否则干净的 CI 拉取会在测试开始前失败。
+- JSON 解析使用仓库内置的 `ThirdParty/Json/json.hpp`，不再依赖额外 JSON 子模块。

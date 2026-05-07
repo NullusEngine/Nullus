@@ -5,11 +5,12 @@
 ** --------------------------------------------------------------------------*/
 #pragma once
 
+#include "BaseDef.h"
 #include "EnumBase.h"
 
 namespace NLS::meta
 {
-    class Enum
+    class NLS_BASE_API Enum
     {
     public:
         bool IsValid(void) const;

@@ -168,7 +168,7 @@ bool EditorSettingsPersistence::Load(const std::filesystem::path& p_path, const 
 
     const std::string content((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
     std::string error;
-    const auto root = Json::parse(content, error, json11::JsonParse::STANDARD);
+    const auto root = Json::parse(content, error);
     if (!error.empty() || !root.is_object())
         return false;
 

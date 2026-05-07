@@ -1676,9 +1676,9 @@ namespace IMGUIZMO_NAMESPACE
    static bool CanActivate()
    {
       // Nullus draws the scene view as an ImGui Image and overlays ImGuizmo in the same
-      // window. The image remains hovered under the gizmo, so requiring no hovered item
-      // prevents axis activation even when ImGuizmo's own hit test has selected a handle.
-      if (ImGui::IsMouseClicked(0) && gContext.mbMouseOver && !ImGui::IsAnyItemActive())
+      // window. The image/drag-drop target can own ImGui's active item state under the
+      // overlay, so rely on ImGuizmo's own hit test instead of rejecting active items here.
+      if (ImGui::IsMouseClicked(0) && gContext.mbMouseOver)
       {
          return true;
       }

@@ -46,6 +46,7 @@ Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRe
 	uint32_t p_x,
 	uint32_t p_y)
 {
+    PromotePendingFrameIfReadbackAvailable();
     const auto* readableFrame = m_readbackLifecycle.GetReadableFrame();
 	if (!SupportsPickingReadback() || readableFrame == nullptr)
 		return std::nullopt;
@@ -88,6 +89,7 @@ bool Editor::Rendering::PickingRenderPass::SupportsPickingReadback() const
 
 bool Editor::Rendering::PickingRenderPass::HasReadablePickingFrame() const
 {
+    PromotePendingFrameIfReadbackAvailable();
     const auto* readableFrame = m_readbackLifecycle.GetReadableFrame();
     return readableFrame != nullptr &&
         NLS::Render::Context::DriverRendererAccess::HasCompletedReadbackTexture(
@@ -97,6 +99,7 @@ bool Editor::Rendering::PickingRenderPass::HasReadablePickingFrame() const
 
 uint64_t Editor::Rendering::PickingRenderPass::GetReadablePickingFrameSerial() const
 {
+    PromotePendingFrameIfReadbackAvailable();
     const auto* readableFrame = m_readbackLifecycle.GetReadableFrame();
     return readableFrame != nullptr &&
         NLS::Render::Context::DriverRendererAccess::HasCompletedReadbackTexture(
@@ -106,6 +109,11 @@ uint64_t Editor::Rendering::PickingRenderPass::GetReadablePickingFrameSerial() c
         : 0u;
 }
 
+uint64_t Editor::Rendering::PickingRenderPass::GetSubmittedPickingFrameSerial() const
+{
+    return m_submittedPickingFrameSerial;
+}
+
 std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::PickingRenderPass::GetPreparedThreadedPassInput() const
 {
     return m_preparedThreadedPassInput;
@@ -113,13 +121,18 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::P
 
 void Editor::Rendering::PickingRenderPass::OnBeginFrame(const NLS::Render::Data::FrameDescriptor&)
 {
+    PromotePendingFrameIfReadbackAvailable();
+    m_preparedThreadedPassInput.reset();
+}
+
+void Editor::Rendering::PickingRenderPass::PromotePendingFrameIfReadbackAvailable() const
+{
     const auto* pendingFrame = m_readbackLifecycle.GetPendingFrame();
     m_readbackLifecycle.PromotePendingFrameIfReadbackAvailable(
         pendingFrame != nullptr &&
         NLS::Render::Context::DriverRendererAccess::HasCompletedReadbackTexture(
             m_renderer.GetDriver(),
             pendingFrame->readbackTexture));
-    m_preparedThreadedPassInput.reset();
 }
 
 void Editor::Rendering::PickingRenderPass::ResetPickingFrameState()

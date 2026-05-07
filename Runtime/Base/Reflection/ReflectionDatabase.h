@@ -6,23 +6,31 @@
 
 #pragma once
 
+#include "BaseDef.h"
 #include "TypeData.h"
 #include "TypeInfo.h"
 
 #include <vector>
+#include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace NLS::meta
 {
-    class ReflectionDatabase
+    class NLS_BASE_API ReflectionDatabase
     {
     public:
         ReflectionDatabase(void);
+        ReflectionDatabase(const ReflectionDatabase &) = delete;
+        ReflectionDatabase &operator=(const ReflectionDatabase &) = delete;
+
         ~ReflectionDatabase(void);
 
             std::vector<TypeData> types;
 
             std::unordered_map<std::string, TypeID> ids;
+            std::unordered_map<TypeKey, TypeID> keyedIds;
+            std::unordered_map<TypeKey, std::unordered_set<TypeKey>> moduleDependencies;
 
             std::unordered_map<std::string, Global> globals;
             
@@ -41,6 +49,16 @@ namespace NLS::meta
             ////////////////////////////////////////////////////////////////////////
 
             TypeID AllocateType(const std::string &name);
+            TypeID AllocateType(TypeKey key, const std::string &name, TypeKey ownerModuleKey = InvalidTypeKey);
+            TypeID FindType(TypeKey key) const;
+            TypeID FindType(const std::string &name) const;
+            unsigned GetGeneration(TypeID id) const;
+            bool IsAlive(TypeID id, unsigned generation) const;
+            void UnloadModule(TypeKey moduleKey);
+            bool CanUnloadModule(TypeKey moduleKey) const;
+            void AddDependency(TypeKey ownerModuleKey, TypeKey referencedTypeKey);
+
+            mutable std::recursive_mutex mutex;
 
             ////////////////////////////////////////////////////////////////////////
             ////////////////////////////////////////////////////////////////////////

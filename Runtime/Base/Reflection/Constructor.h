@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "BaseDef.h"
 #include "MetaContainer.h"
 #include "Invokable.h"
 
@@ -20,7 +21,7 @@ namespace NLS::meta
     class Variant;
     class Argument;
 
-    class Constructor
+    class NLS_BASE_API Constructor
         : public MetaContainer
         , public Invokable
     {

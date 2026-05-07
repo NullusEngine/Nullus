@@ -52,6 +52,7 @@ namespace NLS::Editor::Panels
 
 	protected:
         virtual Engine::Rendering::BaseSceneRenderer::SceneDescriptor CreateSceneDescriptor() override;
+        bool RequiresSynchronizedRetiredFramePresentation() const override;
         void DrawPreRenderViewportOverlay() override;
         void OnAfterDrawWidgets() override;
         void DrawViewportOverlay() override;

@@ -12,21 +12,27 @@ std::map<std::string, HistoryHandler> Logger::HISTORY_HANDLER_MAP;
 void Logger::Log(const std::string& message, ELogLevel logLevel, ELogMode logMode, std::string handlerId)
 {
 	LogData logData{ message, logLevel, Time::Date::GetDateAsString() };
+	bool broadcastLogEvent = false;
 
 	switch (logMode)
 	{
 	case ELogMode::DEFAULT:
-	case ELogMode::CONSOLE: LogToHandlerMap<ConsoleHandler>(CONSOLE_HANDLER_MAP, logData, handlerId); break;
+	case ELogMode::CONSOLE:
+		LogToHandlerMap<ConsoleHandler>(CONSOLE_HANDLER_MAP, logData, handlerId);
+		broadcastLogEvent = true;
+		break;
 	case ELogMode::FILE: LogToHandlerMap<FileHandler>(FILE_HANDLER_MAP, logData, handlerId); break;
 	case ELogMode::HISTORY: LogToHandlerMap<HistoryHandler>(HISTORY_HANDLER_MAP, logData, handlerId); break;
 	case ELogMode::ALL:
 		LogToHandlerMap<ConsoleHandler>(CONSOLE_HANDLER_MAP, logData, handlerId);
 		LogToHandlerMap<FileHandler>(FILE_HANDLER_MAP, logData, handlerId);
 		LogToHandlerMap<HistoryHandler>(HISTORY_HANDLER_MAP, logData, handlerId);
+		broadcastLogEvent = true;
 		break;
 	}
 
-	LogEvent.Invoke(logData);
+	if (broadcastLogEvent)
+		LogEvent.Invoke(logData);
 }
 
 ConsoleHandler& Logger::CreateConsoleHandler(std::string id)

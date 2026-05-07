@@ -15,7 +15,7 @@ namespace NLS::Editor::Launch
         std::optional<Render::Settings::EGraphicsBackend> backendOverride;
         std::optional<std::string> projectPathArgument;
         bool enableThreadedRendering = true;
-        bool enableRhiDebugValidation = true;
+        bool enableRhiDebugValidation = false;
         bool enablePerformanceMode = false;
         bool showHelp = false;
         bool hasError = false;

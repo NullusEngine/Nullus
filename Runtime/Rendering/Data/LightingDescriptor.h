@@ -10,7 +10,7 @@ namespace NLS::Render::Data
 {
     using LightSet = std::vector<std::reference_wrapper<const NLS::Render::Entities::Light>>;
 
-    struct NLS_RENDER_API LightingDescriptor
+    struct LightingDescriptor
     {
         LightSet lights;
     };

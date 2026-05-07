@@ -905,14 +905,12 @@ std::optional<NLS::Render::Context::FrameSnapshot> Editor::Rendering::DebugScene
 NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRenderer::BuildPreparedRenderSceneBuilder(
     const NLS::Render::Context::FrameSnapshot& snapshot) const
 {
-    const auto frameDescriptor = GetFrameDescriptor();
+    const auto frameDescriptor =
+        NLS::Render::FrameGraph::CaptureExternalSceneOutputSnapshot(GetFrameDescriptor());
     const auto gridPassInput = GetPass<GridRenderPass>("Grid").GetPreparedThreadedPassInput();
     const auto selectionPassInput = GetPass<DebugActorRenderPass>("Debug Actor").GetPreparedThreadedPassInput();
     const auto pickingPassInput = GetPass<PickingRenderPass>("Picking").GetPreparedThreadedPassInput();
-    auto lightGridContext = NLS::Render::FrameGraph::BuildLightGridCompileContext(
-        frameDescriptor,
-        GetLightGridPrepass(),
-        BuildLightGridFrameInputs(snapshot.sceneSkyboxCount > 0u));
+    auto lightGridContext = BuildLightGridCompileContext(snapshot.sceneSkyboxCount > 0u);
     const auto explicitHelperContribution =
         static_cast<uint64_t>(gridPassInput.has_value() ? 1u : 0u) +
         static_cast<uint64_t>(selectionPassInput.has_value() ? 2u : 0u);
@@ -937,22 +935,18 @@ NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRe
         auto package = BuildSnapshotOwnedRenderScenePackage(
             snapshot,
             SnapshotRenderScenePackageBuildMode::SkipDefaultPassInputs);
-        const auto preparedComputeRequest =
-            NLS::Engine::Rendering::LightGridPrepass::BuildPreparedComputeRequest(
-                frameDescriptor,
-                lightGridContext.lightGridPrepass,
-                lightGridContext.preparedFrameInputs);
-
-        NLS::Engine::Rendering::CompileAndApplyPreparedLightGridThreadedExecution(
+        NLS::Render::FrameGraph::CompileAndApplyThreadedRenderSceneExecution(
             package,
-            preparedComputeRequest,
+            frameDescriptor,
+            -1,
+            -1,
+            [&lightGridContext]()
+            {
+                return lightGridContext.preparedComputeSource;
+            },
             [&lightGridContext](NLS::Render::Context::RenderScenePackage& scenePackage)
             {
-                const auto resolvedBindingSet =
-                    lightGridContext.lightGridPrepass != nullptr
-                        ? lightGridContext.lightGridPrepass->GetGraphicsPassBindingSet()
-                        : nullptr;
-                ResolvePreparedPassBindingSetPlaceholders(scenePackage, resolvedBindingSet);
+                ResolvePreparedPassBindingSetPlaceholders(scenePackage, lightGridContext.graphicsPassBindingSet);
             },
             metadata,
             [&package, &gridPassInput, &selectionPassInput, &pickingPassInput](const auto& lightGridComputeSource, const auto& compiledPasses)

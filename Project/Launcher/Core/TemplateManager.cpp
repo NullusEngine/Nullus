@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <fstream>
 
-#include <json11.hpp>
+#include <Json/json.hpp>
 
 #include <Debug/Logger.h>
 
@@ -65,17 +65,16 @@ void TemplateManager::LoadTemplates(const std::filesystem::path& templateRoot)
                                  std::istreambuf_iterator<char>());
         ifs.close();
 
-        std::string parseError;
-        auto json = json11::Json::parse(jsonContent, parseError);
-        if (!parseError.empty())
+        auto json = nlohmann::json::parse(jsonContent, nullptr, false);
+        if (json.is_discarded())
         {
-            NLS_LOG_WARNING("TemplateManager: Failed to parse " + jsonPath.string() + ": " + parseError);
+            NLS_LOG_WARNING("TemplateManager: Failed to parse " + jsonPath.string());
             continue;
         }
 
         // Validate required fields
-        std::string name = json["name"].string_value();
-        std::string description = json["description"].string_value();
+        std::string name = json.value("name", std::string {});
+        std::string description = json.value("description", std::string {});
 
         if (name.empty() || name.size() > 64)
             continue;
@@ -87,15 +86,15 @@ void TemplateManager::LoadTemplates(const std::filesystem::path& templateRoot)
         tmpl.name = name;
         tmpl.description = description;
         tmpl.templateDirectory = templateDir;
-        tmpl.sortOrder = json["sortOrder"].int_value();
+        tmpl.sortOrder = json.value("sortOrder", 0);
 
         // Optional category (defaults to "Core")
-        std::string category = json["category"].string_value();
+        std::string category = json.value("category", std::string {});
         if (!category.empty())
             tmpl.category = category;
 
         // Optional preview path
-        std::string preview = json["preview"].string_value();
+        std::string preview = json.value("preview", std::string {});
         if (!preview.empty())
         {
             auto previewPath = templateDir / preview;

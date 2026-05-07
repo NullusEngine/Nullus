@@ -46,6 +46,7 @@ namespace NLS::Editor::Rendering
 		bool SupportsPickingReadback() const;
         bool HasReadablePickingFrame() const;
         uint64_t GetReadablePickingFrameSerial() const;
+        uint64_t GetSubmittedPickingFrameSerial() const;
         std::optional<NLS::Render::Context::RenderPassCommandInput> GetPreparedThreadedPassInput() const;
 
 		bool ManagesOwnRenderPass() const override { return true; }
@@ -53,6 +54,7 @@ namespace NLS::Editor::Rendering
 	private:
         void OnBeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor) override;
         virtual void Draw(NLS::Render::Data::PipelineState p_pso) override;
+        void PromotePendingFrameIfReadbackAvailable() const;
         PickingResult DecodePickingResult(const Engine::SceneSystem::Scene& p_scene, const uint8_t (&pixel)[3]) const;
         void ResetPickingFrameState();
         PickingReadbackLifecycle<Engine::SceneSystem::Scene>::Frame BuildSubmittedReadbackFrame(
@@ -82,7 +84,7 @@ namespace NLS::Editor::Rendering
 		NLS::Render::Buffers::Framebuffer m_actorPickingFramebuffer;
 		NLS::Render::Resources::Material m_actorPickingMaterial;
         NLS::Render::Resources::Material m_lightMaterial;
-        PickingReadbackLifecycle<Engine::SceneSystem::Scene> m_readbackLifecycle;
+        mutable PickingReadbackLifecycle<Engine::SceneSystem::Scene> m_readbackLifecycle;
         std::optional<NLS::Render::Context::RenderPassCommandInput> m_preparedThreadedPassInput;
         uint64_t m_submittedPickingFrameSerial = 0u;
 	};

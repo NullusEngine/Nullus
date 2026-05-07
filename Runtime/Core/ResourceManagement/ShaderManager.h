@@ -9,7 +9,7 @@ namespace NLS::Core::ResourceManagement
 	/**
 	* ResourceManager of shaders
 	*/
-	class NLS_CORE_API ShaderManager : public AResourceManager<Render::Resources::Shader>
+	class NLS_RESOURCE_MANAGEMENT_API ShaderManager : public AResourceManager<Render::Resources::Shader>
 	{
 	public:
         using Shader = Render::Resources::Shader;

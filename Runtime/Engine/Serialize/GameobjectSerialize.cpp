@@ -366,7 +366,7 @@ Json GetComponentPayloadJson(const SerializedComponentData &record)
         return Json::object { };
 
     std::string parseError;
-    const auto parsed = Json::parse(record.data, parseError, json11::JsonParse::STANDARD);
+    const auto parsed = Json::parse(record.data, parseError);
     if (!parseError.empty())
         return Json::object { };
 

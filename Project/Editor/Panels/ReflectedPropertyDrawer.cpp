@@ -13,6 +13,7 @@
 #include <memory>
 #include <string_view>
 
+#include "Math/ExternalReflection.h"
 #include "Rendering/Geometry/BoundingSphere.h"
 
 namespace

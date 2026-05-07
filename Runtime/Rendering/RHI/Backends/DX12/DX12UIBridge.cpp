@@ -7,6 +7,8 @@
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 
+#include <algorithm>
+#include <deque>
 #include <unordered_map>
 #include <vector>
 
@@ -47,6 +49,9 @@ namespace NLS::Render::RHI
                 if (!m_initialized)
                     return;
 
+                RetireCompletedTextureHandles();
+                DiscardCurrentFrameTextureHandles();
+
                 ImGuiIO& io = ImGui::GetIO();
                 if (!io.Fonts->IsBuilt())
                 {
@@ -66,6 +71,25 @@ namespace NLS::Render::RHI
                 ReleaseSwapchainRenderResources();
             }
 
+            void ReleaseTextureViewHandle(const std::shared_ptr<RHITextureView>& textureView) override
+            {
+                if (textureView == nullptr)
+                    return;
+
+                WaitForSubmittedUiWork();
+                RetireCompletedTextureHandles();
+                const uintptr_t viewKey = reinterpret_cast<uintptr_t>(textureView.get());
+                DiscardCurrentFrameTextureViewHandle(viewKey);
+                RemoveRetiredTextureViewHandleBatches(viewKey);
+                auto handleIt = m_textureHandles.find(viewKey);
+                if (handleIt != m_textureHandles.end())
+                {
+                    if (handleIt->second.descriptorIndex != 0u)
+                        ReleaseTextureDescriptorIndex(handleIt->second.descriptorIndex);
+                    m_textureHandles.erase(handleIt);
+                }
+            }
+
             void NotifyFontAtlasChanged() override
             {
                 if (!m_initialized)
@@ -79,7 +103,10 @@ namespace NLS::Render::RHI
             {
                 NLS_PROFILE_SCOPE();
                 if (!m_initialized || drawData == nullptr)
+                {
+                    DiscardCurrentFrameTextureHandles();
                     return;
+                }
 
                 if (ShouldLogDx12FrameFlow())
                     NLS_LOG_INFO("DX12UIBridge::RenderDrawData: begin");
@@ -89,6 +116,7 @@ namespace NLS::Render::RHI
                 {
                     if (ShouldLogDx12FrameFlow())
                         NLS_LOG_INFO("DX12UIBridge::RenderDrawData: skipped because UI driver is unavailable");
+                    DiscardCurrentFrameTextureHandles();
                     return;
                 }
 
@@ -96,6 +124,7 @@ namespace NLS::Render::RHI
                 {
                     if (ShouldLogDx12FrameFlow())
                         NLS_LOG_INFO("DX12UIBridge::RenderDrawData: skipped because PrepareUIRender returned false");
+                    DiscardCurrentFrameTextureHandles();
                     return;
                 }
 
@@ -104,6 +133,7 @@ namespace NLS::Render::RHI
                 {
                     if (ShouldLogDx12FrameFlow())
                         NLS_LOG_INFO("DX12UIBridge::RenderDrawData: skipped because swapchain render resources are unavailable");
+                    DiscardCurrentFrameTextureHandles();
                     return;
                 }
 
@@ -112,6 +142,7 @@ namespace NLS::Render::RHI
                 {
                     NLS_LOG_ERROR(
                         "DX12UIBridge::RenderDrawData: swapchain backbuffer index is outside UI frame resources.");
+                    DiscardCurrentFrameTextureHandles();
                     return;
                 }
 
@@ -179,11 +210,14 @@ namespace NLS::Render::RHI
                 const UINT64 fenceValue = ++m_fenceValue;
                 m_queue->Signal(m_fence.Get(), fenceValue);
                 m_frameFenceTracker.RecordSubmitted(backBufferIndex, fenceValue);
+                RetainCurrentFrameTextureHandles(fenceValue);
 
                 if (m_uiFence != nullptr)
                 {
                     m_queue->Signal(m_uiFence.Get(), fenceValue);
                 }
+
+                RetireCompletedTextureHandles();
 
                 if (ShouldLogDx12FrameFlow())
                 {
@@ -217,8 +251,21 @@ namespace NLS::Render::RHI
                 auto found = m_textureHandles.find(viewKey);
                 if (found == m_textureHandles.end() || found->second.resource != resource)
                 {
-                    const bool reuseExistingSlot = found != m_textureHandles.end();
-                    if (!reuseExistingSlot && m_nextTextureDescriptorIndex >= m_srvDescriptorCapacity)
+                    const bool hasExistingSlot = found != m_textureHandles.end();
+                    const bool existingSlotInFlight =
+                        hasExistingSlot &&
+                        m_textureDescriptorInFlightUseCounts.find(found->second.descriptorIndex) !=
+                            m_textureDescriptorInFlightUseCounts.end();
+                    const bool existingSlotReferencedByCurrentFrame =
+                        hasExistingSlot &&
+                        IsTextureDescriptorReferencedByCurrentFrame(found->second.descriptorIndex);
+                    const bool reuseExistingSlot =
+                        hasExistingSlot &&
+                        !existingSlotReferencedByCurrentFrame &&
+                        (!existingSlotInFlight || found->second.resource == resource);
+                    if (!reuseExistingSlot &&
+                        m_freeTextureDescriptorIndices.empty() &&
+                        m_nextTextureDescriptorIndex >= m_srvDescriptorCapacity)
                     {
                         NLS_LOG_WARNING("DX12UIBridge::ResolveTextureView: SRV heap capacity exhausted.");
                         return {};
@@ -230,9 +277,20 @@ namespace NLS::Render::RHI
                     if (!descriptors.hasSrv)
                         return {};
 
-                    const UINT descriptorIndex = reuseExistingSlot
-                        ? found->second.descriptorIndex
-                        : m_nextTextureDescriptorIndex;
+                    UINT descriptorIndex = 0;
+                    if (reuseExistingSlot)
+                    {
+                        descriptorIndex = found->second.descriptorIndex;
+                    }
+                    else if (!m_freeTextureDescriptorIndices.empty())
+                    {
+                        descriptorIndex = m_freeTextureDescriptorIndices.back();
+                        m_freeTextureDescriptorIndices.pop_back();
+                    }
+                    else
+                    {
+                        descriptorIndex = m_nextTextureDescriptorIndex;
+                    }
 
                     D3D12_CPU_DESCRIPTOR_HANDLE destinationCpu = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
                     destinationCpu.ptr += static_cast<SIZE_T>(descriptorIndex) * m_srvDescriptorSize;
@@ -246,15 +304,18 @@ namespace NLS::Render::RHI
                     cachedHandle.resource = resource;
                     cachedHandle.gpuHandle = destinationGpu;
                     cachedHandle.descriptorIndex = descriptorIndex;
-                    if (!reuseExistingSlot)
+                    if (!reuseExistingSlot && descriptorIndex == m_nextTextureDescriptorIndex)
                         ++m_nextTextureDescriptorIndex;
 
                     if (reuseExistingSlot)
+                        found->second = cachedHandle;
+                    else if (hasExistingSlot)
                         found->second = cachedHandle;
                     else
                         found = m_textureHandles.emplace(viewKey, cachedHandle).first;
                 }
 
+                KeepTextureViewForCurrentFrame(viewKey, found->second.descriptorIndex, textureView);
                 return {
                     NLS::Render::RHI::BackendType::DX12,
                     reinterpret_cast<void*>(found->second.gpuHandle.ptr)
@@ -311,6 +372,207 @@ namespace NLS::Render::RHI
                 D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle{};
                 UINT descriptorIndex = 0;
             };
+
+            struct RetainedTextureHandleUse
+            {
+                uintptr_t textureViewKey = 0u;
+                UINT descriptorIndex = 0u;
+
+                bool operator==(const RetainedTextureHandleUse& other) const
+                {
+                    return textureViewKey == other.textureViewKey &&
+                        descriptorIndex == other.descriptorIndex;
+                }
+            };
+
+            struct RetiredTextureHandleBatch
+            {
+                UINT64 fenceValue = 0;
+                std::vector<RetainedTextureHandleUse> textureHandleUses;
+                std::vector<std::shared_ptr<RHITextureView>> textureViews;
+            };
+
+            void KeepTextureViewForCurrentFrame(
+                const uintptr_t viewKey,
+                const UINT descriptorIndex,
+                const std::shared_ptr<RHITextureView>& textureView)
+            {
+                if (textureView == nullptr)
+                    return;
+
+                if (std::find(
+                    m_currentFrameTextureHandleUses.begin(),
+                    m_currentFrameTextureHandleUses.end(),
+                    RetainedTextureHandleUse{ viewKey, descriptorIndex }) !=
+                    m_currentFrameTextureHandleUses.end())
+                {
+                    return;
+                }
+
+                m_currentFrameTextureHandleUses.push_back({ viewKey, descriptorIndex });
+                m_currentFrameTextureViews.push_back(textureView);
+            }
+
+            void DiscardCurrentFrameTextureHandles()
+            {
+                m_currentFrameTextureHandleUses.clear();
+                m_currentFrameTextureViews.clear();
+            }
+
+            bool IsTextureDescriptorReferencedByCurrentFrame(const UINT descriptorIndex) const
+            {
+                return std::find_if(
+                    m_currentFrameTextureHandleUses.begin(),
+                    m_currentFrameTextureHandleUses.end(),
+                    [descriptorIndex](const RetainedTextureHandleUse& textureHandleUse)
+                    {
+                        return textureHandleUse.descriptorIndex == descriptorIndex;
+                    }) != m_currentFrameTextureHandleUses.end();
+            }
+
+            bool IsTextureViewHandleReferencedByCurrentFrame(
+                const uintptr_t viewKey,
+                const UINT descriptorIndex) const
+            {
+                return std::find(
+                    m_currentFrameTextureHandleUses.begin(),
+                    m_currentFrameTextureHandleUses.end(),
+                    RetainedTextureHandleUse{ viewKey, descriptorIndex }) !=
+                    m_currentFrameTextureHandleUses.end();
+            }
+
+            void DiscardCurrentFrameTextureViewHandle(const uintptr_t viewKey)
+            {
+                for (size_t index = 0u; index < m_currentFrameTextureHandleUses.size();)
+                {
+                    if (m_currentFrameTextureHandleUses[index].textureViewKey != viewKey)
+                    {
+                        ++index;
+                        continue;
+                    }
+
+                    m_currentFrameTextureHandleUses.erase(m_currentFrameTextureHandleUses.begin() + index);
+                    if (index < m_currentFrameTextureViews.size())
+                        m_currentFrameTextureViews.erase(m_currentFrameTextureViews.begin() + index);
+                }
+            }
+
+            void RemoveRetiredTextureViewHandleBatches(const uintptr_t viewKey)
+            {
+                for (auto batchIt = m_retiredTextureHandleBatches.begin();
+                    batchIt != m_retiredTextureHandleBatches.end();)
+                {
+                    for (size_t index = 0u; index < batchIt->textureHandleUses.size();)
+                    {
+                        if (batchIt->textureHandleUses[index].textureViewKey != viewKey)
+                        {
+                            ++index;
+                            continue;
+                        }
+
+                        const UINT descriptorIndex = batchIt->textureHandleUses[index].descriptorIndex;
+                        auto useCountIt = m_textureDescriptorInFlightUseCounts.find(descriptorIndex);
+                        if (useCountIt != m_textureDescriptorInFlightUseCounts.end())
+                        {
+                            if (useCountIt->second > 1u)
+                                --useCountIt->second;
+                            else
+                                m_textureDescriptorInFlightUseCounts.erase(useCountIt);
+                        }
+
+                        ReleaseTextureDescriptorIndex(descriptorIndex);
+
+                        batchIt->textureHandleUses.erase(batchIt->textureHandleUses.begin() + index);
+                        if (index < batchIt->textureViews.size())
+                            batchIt->textureViews.erase(batchIt->textureViews.begin() + index);
+                    }
+
+                    if (batchIt->textureHandleUses.empty())
+                        batchIt = m_retiredTextureHandleBatches.erase(batchIt);
+                    else
+                        ++batchIt;
+                }
+            }
+
+            void RetainCurrentFrameTextureHandles(const UINT64 fenceValue)
+            {
+                if (m_currentFrameTextureViews.empty())
+                    return;
+
+                for (const auto& textureHandleUse : m_currentFrameTextureHandleUses)
+                    ++m_textureDescriptorInFlightUseCounts[textureHandleUse.descriptorIndex];
+
+                m_retiredTextureHandleBatches.push_back({
+                    fenceValue,
+                    std::move(m_currentFrameTextureHandleUses),
+                    std::move(m_currentFrameTextureViews)
+                });
+
+                m_currentFrameTextureHandleUses.clear();
+                m_currentFrameTextureViews.clear();
+            }
+
+            void RetireCompletedTextureHandles()
+            {
+                if (m_fence == nullptr)
+                    return;
+
+                const UINT64 completedFenceValue = m_fence->GetCompletedValue();
+                while (!m_retiredTextureHandleBatches.empty() &&
+                    m_retiredTextureHandleBatches.front().fenceValue <= completedFenceValue)
+                {
+                    auto batch = std::move(m_retiredTextureHandleBatches.front());
+                    m_retiredTextureHandleBatches.pop_front();
+
+                    for (const auto& textureHandleUse : batch.textureHandleUses)
+                    {
+                        auto useCountIt = m_textureDescriptorInFlightUseCounts.find(textureHandleUse.descriptorIndex);
+                        if (useCountIt != m_textureDescriptorInFlightUseCounts.end())
+                        {
+                            if (useCountIt->second > 1u)
+                            {
+                                --useCountIt->second;
+                                continue;
+                            }
+
+                            m_textureDescriptorInFlightUseCounts.erase(useCountIt);
+                        }
+
+                        auto handleIt = m_textureHandles.find(textureHandleUse.textureViewKey);
+                        const bool descriptorReferencedByCurrentFrame =
+                            IsTextureDescriptorReferencedByCurrentFrame(textureHandleUse.descriptorIndex);
+                        const bool sameViewReferencedByCurrentFrame =
+                            IsTextureViewHandleReferencedByCurrentFrame(
+                                textureHandleUse.textureViewKey,
+                                textureHandleUse.descriptorIndex);
+                        if (handleIt != m_textureHandles.end() &&
+                            handleIt->second.descriptorIndex == textureHandleUse.descriptorIndex)
+                        {
+                            if (!descriptorReferencedByCurrentFrame || !sameViewReferencedByCurrentFrame)
+                                m_textureHandles.erase(handleIt);
+                        }
+
+                        ReleaseTextureDescriptorIndex(textureHandleUse.descriptorIndex);
+                    }
+                }
+            }
+
+            void ReleaseTextureDescriptorIndex(const UINT descriptorIndex)
+            {
+                if (descriptorIndex == 0u)
+                    return;
+
+                if (IsTextureDescriptorReferencedByCurrentFrame(descriptorIndex))
+                    return;
+
+                if (std::find(
+                    m_freeTextureDescriptorIndices.begin(),
+                    m_freeTextureDescriptorIndices.end(),
+                    descriptorIndex) == m_freeTextureDescriptorIndices.end())
+                {
+                    m_freeTextureDescriptorIndices.push_back(descriptorIndex);
+                }
+            }
 
             bool EnsureSwapchainRenderResources(const NativeRenderDeviceInfo& nativeInfo)
             {
@@ -414,6 +676,17 @@ namespace NLS::Render::RHI
 
             void ReleaseSwapchainRenderResources()
             {
+                WaitForSubmittedUiWork();
+
+                m_commandAllocators.clear();
+                m_backBuffers.clear();
+                m_commandList.Reset();
+                m_rtvHeap.Reset();
+                m_frameFenceTracker.ResetBackbufferCount(0u);
+            }
+
+            void WaitForSubmittedUiWork()
+            {
                 if (m_fence && m_queue && m_fenceEvent != nullptr)
                 {
                     const UINT64 fenceValue = ++m_fenceValue;
@@ -424,12 +697,6 @@ namespace NLS::Render::RHI
                         WaitForSingleObject(m_fenceEvent, INFINITE);
                     }
                 }
-
-                m_commandAllocators.clear();
-                m_backBuffers.clear();
-                m_commandList.Reset();
-                m_rtvHeap.Reset();
-                m_frameFenceTracker.ResetBackbufferCount(0u);
             }
 
             bool Initialize(const NativeRenderDeviceInfo& nativeInfo)
@@ -511,7 +778,11 @@ namespace NLS::Render::RHI
                 }
 
                 ReleaseSwapchainRenderResources();
+                DiscardCurrentFrameTextureHandles();
+                m_retiredTextureHandleBatches.clear();
+                m_textureDescriptorInFlightUseCounts.clear();
                 m_textureHandles.clear();
+                m_freeTextureDescriptorIndices.clear();
                 m_srvHeap.Reset();
                 m_uiFence.Reset();
                 if (m_uiFenceEvent != nullptr)
@@ -544,6 +815,11 @@ namespace NLS::Render::RHI
             std::vector<Microsoft::WRL::ComPtr<ID3D12CommandAllocator>> m_commandAllocators;
             std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> m_backBuffers;
             std::unordered_map<uintptr_t, CachedTextureHandle> m_textureHandles;
+            std::unordered_map<UINT, uint32_t> m_textureDescriptorInFlightUseCounts;
+            std::deque<RetiredTextureHandleBatch> m_retiredTextureHandleBatches;
+            std::vector<RetainedTextureHandleUse> m_currentFrameTextureHandleUses;
+            std::vector<std::shared_ptr<RHITextureView>> m_currentFrameTextureViews;
+            std::vector<UINT> m_freeTextureDescriptorIndices;
             HANDLE m_fenceEvent = nullptr;
             UINT64 m_fenceValue = 0;
             UINT m_rtvDescriptorSize = 0;

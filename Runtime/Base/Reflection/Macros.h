@@ -50,7 +50,13 @@
     #define PROPERTY(...)
     #define FUNCTION(...)
 
-    #define MetaExternal(type)
+    #define __META_EXTERNAL(type, guid)       \
+        inline constexpr const char* StaticMetaTypeName(type*) { return #type; } \
+        inline constexpr ::NLS::meta::TypeKey StaticMetaTypeKey(type*) { return ::NLS::meta::HashTypeKey(#type); }
+
+    #define _META_EXTERNAL(type, guid) __META_EXTERNAL(type, guid)
+
+    #define MetaExternal(type) _META_EXTERNAL(type, __COUNTER__)
     #define REFLECT_EXTERNAL(...)
     #define REFLECT_FIELD(...)
     #define REFLECT_PROPERTY(...)

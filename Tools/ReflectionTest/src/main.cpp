@@ -12,7 +12,9 @@
 #include "Rendering/Settings/ELightType.h"
 #include "Reflection/Field.h"
 #include "Reflection/Method.h"
+#include "Reflection/ReflectionDiagnostics.h"
 #include "Reflection/ReflectionDatabase.h"
+#include "Reflection/ReflectionModule.h"
 #include "Reflection/Type.h"
 #include "../../../Project/Editor/Panels/InspectorReflectionUtils.h"
 
@@ -152,6 +154,80 @@ bool RequireEnumChoiceMetadata()
     std::cout << "[PASS] enum metadata choices" << std::endl;
     return true;
 }
+
+bool RequireInspectorPropertySupport()
+{
+    using namespace NLS;
+    using namespace NLS::Maths;
+
+    const Type transformType = Type::GetFromName("NLS::Engine::Components::TransformComponent");
+    if (!Require(transformType.IsValid(), "TransformComponent type should be registered for inspector support test"))
+        return false;
+
+    if (!Require(transformType.GetField("localPosition").GetType() == NLS_TYPEOF(Vector3),
+            "Transform.localPosition should compare equal to NLS_TYPEOF(Vector3) across DLLs"))
+        return false;
+    if (!Require(transformType.GetField("localRotation").GetType() == NLS_TYPEOF(Quaternion),
+            "Transform.localRotation should compare equal to NLS_TYPEOF(Quaternion) across DLLs"))
+        return false;
+    if (!Require(transformType.GetField("localScale").GetType() == NLS_TYPEOF(Vector3),
+            "Transform.localScale should compare equal to NLS_TYPEOF(Vector3) across DLLs"))
+        return false;
+
+    std::cout << "[PASS] external math type comparisons" << std::endl;
+    return true;
+}
+
+bool RequireTypeKeysAreStable()
+{
+    const Type transformType = Type::GetFromName("NLS::Engine::Components::TransformComponent");
+    if (!Require(transformType.IsValid(), "TransformComponent type should be registered for TypeKey test"))
+        return false;
+
+    const auto key = transformType.GetKey();
+    if (!Require(key != NLS::meta::InvalidTypeKey, "TransformComponent should expose a non-zero 128-bit TypeKey"))
+        return false;
+    if (!Require(key == NLS::meta::HashTypeKey("NLS::Engine::Components::TransformComponent"), "TransformComponent TypeKey should be stable from the qualified name"))
+        return false;
+
+    const auto method = transformType.GetMethod("SetLocalPosition");
+    if (!Require(method.IsValid(), "Cached method should be valid while its owner type is alive"))
+        return false;
+
+    const auto field = transformType.GetField("localPosition");
+    if (!Require(field.IsValid(), "Cached field should be valid while its owner type is alive"))
+        return false;
+
+    std::cout << "[PASS] stable 128-bit TypeKey and member validity" << std::endl;
+    return true;
+}
+
+bool RequireReflectionDiagnosticsAreClean()
+{
+    const auto& diagnostics = NLS::meta::ReflectionDiagnostics::Get();
+    bool clean = true;
+    for (const auto& diagnostic : diagnostics)
+    {
+        if (diagnostic.severity != NLS::meta::ReflectionDiagnosticSeverity::Error)
+            continue;
+
+        clean = false;
+        std::cerr
+            << "[FAIL] Reflection diagnostic error in "
+            << diagnostic.moduleName
+            << " type=" << diagnostic.typeName
+            << " subject=" << diagnostic.subject
+            << " message=" << diagnostic.message
+            << std::endl;
+    }
+
+    if (!Require(clean, "Reflection diagnostics should not contain errors"))
+        return false;
+
+    NLS::meta::ReflectionModuleRegistry::Unload(NLS::meta::HashTypeKey("missing-test-module"));
+    std::cout << "[PASS] reflection diagnostics and unload API" << std::endl;
+    return true;
+}
 } // namespace
 
 #if 0
@@ -211,6 +287,8 @@ int main()
         {"NLS::Render::Geometry::BoundingSphere", {}, {}, {"position", "radius"}, ""},
         // External reflected serialization record
         {"NLS::Engine::Serialize::SerializedSceneData", {}, {}, {"version", "actors"}, ""},
+        // Core transform component used by the editor inspector
+        {"NLS::Engine::Components::TransformComponent", {"SetLocalPosition", "GetWorldMatrix"}, {}, {"localPosition", "localRotation", "localScale"}, "NLS::Engine::Components::Component"},
         // Engine type with explicit property + nested enum/struct-backed fields
         {"NLS::Engine::Components::MeshRenderer", {"SetModel", "GetModel"}, {}, {"model", "frustumBehaviour", "customBoundingSphere"}, "NLS::Engine::Components::Component"},
         // Engine type with auto-inferred array properties
@@ -225,6 +303,9 @@ int main()
 
     allPassed = RequireTypeDrivenComponentLookup() && allPassed;
     allPassed = RequireEnumChoiceMetadata() && allPassed;
+    allPassed = RequireInspectorPropertySupport() && allPassed;
+    allPassed = RequireTypeKeysAreStable() && allPassed;
+    allPassed = RequireReflectionDiagnosticsAreClean() && allPassed;
 
     if (!allPassed)
     {

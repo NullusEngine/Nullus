@@ -43,6 +43,8 @@ public:
 #undef <#= generatedBodyMacroName #>
 #endif
 #define <#= generatedBodyMacroName #> \
+    static constexpr const char* StaticMetaTypeName() { return "<#= type.QualifiedName #>"; } \
+    static constexpr ::NLS::meta::TypeKey StaticMetaTypeKey() { return ::NLS::meta::HashTypeKey("<#= type.QualifiedName #>"); } \
 <# if (enableObjectBridge) { #>
     ::NLS::meta::Type GetType(void) const { return NLS_TYPEOF(<#= type.QualifiedName #>); } \
     ::NLS::meta::Object *Clone(void) const { using CurrentType = <#= type.QualifiedName #>; if constexpr (::std::is_copy_constructible_v<CurrentType>) return new CurrentType(*this); return nullptr; } \
@@ -83,6 +85,8 @@ struct <#= accessStructName #>
 #undef <#= generatedBodyMacroName #>
 #endif
 #define <#= generatedBodyMacroName #> \
+    static constexpr const char* StaticMetaTypeName() { return "<#= type.QualifiedName #>"; } \
+    static constexpr ::NLS::meta::TypeKey StaticMetaTypeKey() { return ::NLS::meta::HashTypeKey("<#= type.QualifiedName #>"); } \
 <# if (enableObjectBridge) { #>
     ::NLS::meta::Type GetType(void) const { return NLS_TYPEOF(<#= type.QualifiedName #>); } \
     ::NLS::meta::Object *Clone(void) const { using CurrentType = <#= type.QualifiedName #>; if constexpr (::std::is_copy_constructible_v<CurrentType>) return new CurrentType(*this); return nullptr; } \

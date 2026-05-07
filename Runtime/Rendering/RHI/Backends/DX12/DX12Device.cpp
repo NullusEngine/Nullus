@@ -137,8 +137,8 @@ namespace NLS::Render::Backend
 			capabilities.backendReady = true;
 			capabilities.supportsGraphics = true;
 			capabilities.supportsCompute = true;
-			capabilities.supportsAsyncCompute = computeQueue != nullptr;
-			capabilities.supportsDedicatedComputeQueue = computeQueue != nullptr;
+			capabilities.supportsAsyncCompute = false;
+			capabilities.supportsDedicatedComputeQueue = false;
 			capabilities.supportsCopyQueue = false;
 			capabilities.supportsSwapchain = true;
 			capabilities.supportsFramebufferBlit = true;

@@ -6,7 +6,7 @@
 
 namespace NLS::Base::Profiling
 {
-class ProfilerScope
+class NLS_BASE_API ProfilerScope
 {
 public:
     ProfilerScope(std::string_view name, std::string_view sourceFunction);
@@ -22,7 +22,7 @@ private:
     ProfilerScopeEvent m_event;
 };
 
-class ProfilerGpuScope
+class NLS_BASE_API ProfilerGpuScope
 {
 public:
     ProfilerGpuScope(void* nativeCommandBuffer, std::string_view name, std::string_view sourceFunction);

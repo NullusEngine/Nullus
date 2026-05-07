@@ -9,11 +9,11 @@ namespace NLS::Editor::Panels
         uint64_t pendingClickRequestedPickingFrame,
         uint64_t readablePickingFrame)
     {
+        (void)queuedClickPickThisFrame;
         return hasPendingClickPick &&
-            !queuedClickPickThisFrame &&
             !rightMousePressed &&
             pendingClickRequestedPickingFrame > 0u &&
-            readablePickingFrame > pendingClickRequestedPickingFrame;
+            readablePickingFrame >= pendingClickRequestedPickingFrame;
     }
 
     inline bool ShouldRenderScenePickingFrame(

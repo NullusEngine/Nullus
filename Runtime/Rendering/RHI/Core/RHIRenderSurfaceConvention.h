@@ -4,13 +4,13 @@
 
 namespace NLS::Render::RHI
 {
-    enum class NLS_RENDER_API RenderSurfaceOrigin : uint8_t
+    enum class RenderSurfaceOrigin : uint8_t
     {
         TopLeft,
         BottomLeft
     };
 
-    struct NLS_RENDER_API RenderSurfaceConvention
+    struct RenderSurfaceConvention
     {
         RenderSurfaceOrigin presentedTextureOrigin = RenderSurfaceOrigin::TopLeft;
         RenderSurfaceOrigin renderTargetOrigin = RenderSurfaceOrigin::TopLeft;

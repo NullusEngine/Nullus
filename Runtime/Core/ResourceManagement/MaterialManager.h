@@ -10,7 +10,7 @@ namespace NLS::Core::ResourceManagement
 	/**
 	* ResourceManager of textures
 	*/
-class NLS_CORE_API MaterialManager : public AResourceManager<Render::Resources::Material>
+class NLS_RESOURCE_MANAGEMENT_API MaterialManager : public AResourceManager<Render::Resources::Material>
 	{
 	public:
         using Material = Render::Resources::Material;

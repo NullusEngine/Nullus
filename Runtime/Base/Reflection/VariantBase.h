@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "BaseDef.h"
 #include <string>
 
 #include "JsonConfig.h"
@@ -15,7 +16,7 @@ namespace NLS::meta
     class Type;
     class ArrayWrapper;
 
-    class VariantBase
+    class NLS_BASE_API VariantBase
     {
     public:
         virtual ~VariantBase(void) { }

@@ -20,7 +20,7 @@ void CommonValueHandler::DeserializeImpl(meta::Variant& obj, const json& input) 
         return;
 
     std::string err;
-    NLS::Json value = NLS::Json::parse(input.dump(), err, json11::JsonParse::STANDARD);
+    NLS::Json value = NLS::Json::parse(input.dump(), err);
     if (!err.empty())
         return;
     type.DeserializeJson(obj, value);

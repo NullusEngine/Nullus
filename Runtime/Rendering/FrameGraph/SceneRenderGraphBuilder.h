@@ -11,22 +11,37 @@
 #include "Rendering/FrameGraph/FrameGraphExecutionPlan.h"
 #include "Rendering/Resources/Texture2D.h"
 
-#include "../../Engine/Rendering/LightGridPrepass.h"
-#include "../../Engine/Rendering/ScenePassSchemas.h"
-
 namespace NLS::Render::FrameGraph
 {
     using ForwardScenePassDescriptor = ThreadedRenderSceneGraphPassDescriptor<>;
     using DeferredScenePassDescriptor = ThreadedRenderSceneGraphPassDescriptor<>;
-    using ForwardScenePassExecutionKind = NLS::Engine::Rendering::ForwardScenePassExecutionKind;
-    using ForwardScenePassPipelineKind = NLS::Engine::Rendering::ForwardScenePassPipelineKind;
-    using DeferredScenePassExecutionKind = NLS::Engine::Rendering::DeferredScenePassExecutionKind;
+
+    enum class ForwardScenePassPipelineKind : uint8_t
+    {
+        Default = 0,
+        Skybox
+    };
+
+    enum class ForwardScenePassExecutionKind : uint8_t
+    {
+        Unknown = 0,
+        Opaque,
+        Skybox,
+        Transparent
+    };
+
+    enum class DeferredScenePassExecutionKind : uint8_t
+    {
+        Unknown = 0,
+        GBuffer,
+        Lighting
+    };
 
     struct LightGridCompileContext
     {
         NLS::Render::Data::FrameDescriptor frameDescriptor{};
-        std::shared_ptr<NLS::Engine::Rendering::LightGridPrepass> lightGridPrepass;
-        std::optional<NLS::Engine::Rendering::LightGridPrepass::PreparedFrameInputs> preparedFrameInputs;
+        PreparedComputeDispatchSource preparedComputeSource;
+        std::shared_ptr<NLS::Render::RHI::RHIBindingSet> graphicsPassBindingSet;
     };
 
     struct PreparedSceneGraphExecution
@@ -106,73 +121,76 @@ namespace NLS::Render::FrameGraph
         std::function<void(bool, const OutputRenderPassExecutionDesc&)> endLightingPass;
     };
 
-    LightGridCompileContext BuildLightGridCompileContext(
+    NLS_RENDER_API LightGridCompileContext BuildLightGridCompileContext(
         const NLS::Render::Data::FrameDescriptor& frameDescriptor,
-        const std::shared_ptr<NLS::Engine::Rendering::LightGridPrepass>& lightGridPrepass,
-        const std::optional<NLS::Engine::Rendering::LightGridPrepass::PreparedFrameInputs>& preparedFrameInputs);
+        PreparedComputeDispatchSource preparedComputeSource,
+        std::shared_ptr<NLS::Render::RHI::RHIBindingSet> graphicsPassBindingSet);
 
-    void ReserveForwardSceneGraph(
+    NLS_RENDER_API void ReserveForwardSceneGraph(
         ::FrameGraph& frameGraph,
         const NLS::Render::Data::FrameDescriptor& frameDescriptor);
 
-    std::array<ForwardScenePassDescriptor, 3> GetForwardScenePassDescriptors();
+    NLS_RENDER_API std::array<ForwardScenePassDescriptor, 3> GetForwardScenePassDescriptors();
 
-    PreparedForwardSceneGraph PrepareForwardSceneGraph(
+    NLS_RENDER_API PreparedForwardSceneGraph PrepareForwardSceneGraph(
         ::FrameGraph& frameGraph,
         FrameGraphBlackboard& blackboard,
         const LightGridCompileContext& lightGridContext,
         const char* colorResourceName = "ForwardOutputColor",
         const char* depthResourceName = "ForwardOutputDepth");
 
-    void ExecutePreparedForwardSceneGraph(
+    NLS_RENDER_API void ExecutePreparedForwardSceneGraph(
         ::FrameGraph& frameGraph,
         const PreparedForwardSceneGraph& preparedGraph,
         const ForwardSceneGraphExecutionCallbacks& callbacks);
 
-    CompiledThreadedRenderSceneExecution CompileAndApplyPreparedForwardLightGridSceneExecution(
+    NLS_RENDER_API CompiledThreadedRenderSceneExecution CompileAndApplyPreparedForwardLightGridSceneExecution(
         NLS::Render::Context::RenderScenePackage& package,
         const LightGridCompileContext& lightGridContext);
 
-    void FinalizePreparedForwardScenePackage(
+    NLS_RENDER_API void FinalizePreparedForwardScenePackage(
         NLS::Render::Context::RenderScenePackage& package,
         const NLS::Render::Data::FrameDescriptor& frameDescriptor);
 
-    ForwardScenePassExecutionKind GetForwardScenePassExecutionKind(
+    NLS_RENDER_API ForwardScenePassExecutionKind GetForwardScenePassExecutionKind(
         NLS::Render::Context::RenderPassCommandKind kind);
 
-    ForwardScenePassPipelineKind GetForwardScenePassPipelineKind(
+    NLS_RENDER_API ForwardScenePassPipelineKind GetForwardScenePassPipelineKind(
         NLS::Render::Context::RenderPassCommandKind kind);
 
-    DeferredPreparedSceneResources CaptureDeferredPreparedSceneResources(
+    NLS_RENDER_API DeferredScenePassExecutionKind GetDeferredScenePassExecutionKind(
+        NLS::Render::Context::RenderPassCommandKind kind);
+
+    NLS_RENDER_API DeferredPreparedSceneResources CaptureDeferredPreparedSceneResources(
         const DeferredPreparedSceneResourceRequest& request);
 
-    DeferredGraphSceneResourceRequest BuildDeferredGraphSceneResourceRequest(
+    NLS_RENDER_API DeferredGraphSceneResourceRequest BuildDeferredGraphSceneResourceRequest(
         ::FrameGraph& frameGraph,
         FrameGraphBlackboard& blackboard,
         const NLS::Render::Data::FrameDescriptor& frameDescriptor,
         const DeferredPreparedSceneResourceRequest& preparedResources);
 
-    std::array<DeferredScenePassDescriptor, 2> GetDeferredScenePassDescriptors();
+    NLS_RENDER_API std::array<DeferredScenePassDescriptor, 2> GetDeferredScenePassDescriptors();
 
-    void ReserveDeferredSceneGraph(
+    NLS_RENDER_API void ReserveDeferredSceneGraph(
         ::FrameGraph& frameGraph,
         const DeferredGraphSceneResourceRequest& resourceRequest);
 
-    PreparedDeferredSceneGraph PrepareDeferredSceneGraph(
+    NLS_RENDER_API PreparedDeferredSceneGraph PrepareDeferredSceneGraph(
         const DeferredGraphSceneResourceRequest& resourceRequest,
         const LightGridCompileContext& lightGridContext);
 
-    void ExecutePreparedDeferredSceneGraph(
+    NLS_RENDER_API void ExecutePreparedDeferredSceneGraph(
         ::FrameGraph& frameGraph,
         const PreparedDeferredSceneGraph& preparedGraph,
         const DeferredSceneGraphExecutionCallbacks& callbacks);
 
-    CompiledThreadedRenderSceneExecution CompileAndApplyPreparedDeferredLightGridSceneExecution(
+    NLS_RENDER_API CompiledThreadedRenderSceneExecution CompileAndApplyPreparedDeferredLightGridSceneExecution(
         NLS::Render::Context::RenderScenePackage& package,
         const LightGridCompileContext& lightGridContext,
         const DeferredPreparedSceneResources& resources);
 
-    void FinalizePreparedDeferredScenePackage(
+    NLS_RENDER_API void FinalizePreparedDeferredScenePackage(
         NLS::Render::Context::RenderScenePackage& package,
         const NLS::Render::Data::FrameDescriptor& frameDescriptor);
 }

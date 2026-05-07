@@ -6,13 +6,14 @@
 
 #pragma once
 
+#include "BaseDef.h"
 #include "Invokable.h"
 
 #include "DestructorInvoker.h"
 
 namespace NLS::meta
 {
-    class Destructor : public Invokable
+    class NLS_BASE_API Destructor : public Invokable
     {
     public:
         Destructor(void);

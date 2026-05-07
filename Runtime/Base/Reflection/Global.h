@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "BaseDef.h"
 #include "MetaContainer.h"
 
 #include "Variant.h"
@@ -15,7 +16,7 @@
 
 namespace NLS::meta
 {
-    class Global : public MetaContainer
+    class NLS_BASE_API Global : public MetaContainer
     {
     public:
         Global(void);

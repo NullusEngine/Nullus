@@ -441,6 +441,21 @@ TEST(PanelWindowHookTests, RetirementAwareRenderPolicyDrainsAfterViewResize)
         true));
 }
 
+TEST(PanelWindowHookTests, RetirementAwareRenderPolicyDrainsDuringSynchronizedPresentation)
+{
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
+        true,
+        false,
+        false,
+        true));
+
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
+        false,
+        false,
+        false,
+        true));
+}
+
 TEST(PanelWindowHookTests, SceneViewPickingUsesDelayedReadbackByDefault)
 {
     EXPECT_FALSE(NLS::Editor::Panels::ShouldSceneViewRequestImmediatePickingReadback());
@@ -504,9 +519,9 @@ TEST(PanelWindowHookTests, SceneViewPickingRendersOnlyWhenSampleIsNeeded)
         true));
 }
 
-TEST(PanelWindowHookTests, DelayedSceneViewReadbackDelaysOverlayMatrices)
+TEST(PanelWindowHookTests, RetirementAwareViewsUseCurrentOverlayMatrices)
 {
-    EXPECT_TRUE(NLS::Editor::Panels::ShouldDelayRetirementAwareViewOverlayMatrices(
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldDelayRetirementAwareViewOverlayMatrices(
         true,
         false,
         true));
@@ -538,7 +553,7 @@ TEST(PanelWindowHookTests, SceneMutatingViewportOverlayRunsBeforeViewRender)
 
 TEST(PanelWindowHookTests, PendingSceneClickPickWaitsForRequestedPickingFrame)
 {
-    EXPECT_FALSE(NLS::Editor::Panels::ShouldResolvePendingSceneClickPick(
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldResolvePendingSceneClickPick(
         true,
         true,
         false,
@@ -560,18 +575,18 @@ TEST(PanelWindowHookTests, PendingSceneClickPickWaitsForRequestedPickingFrame)
         7u));
 
     EXPECT_FALSE(NLS::Editor::Panels::ShouldResolvePendingSceneClickPick(
-        true,
+        false,
         false,
         false,
         8u,
-        8u));
+        7u));
 
     EXPECT_TRUE(NLS::Editor::Panels::ShouldResolvePendingSceneClickPick(
         true,
         false,
         false,
         8u,
-        9u));
+        8u));
 
     EXPECT_FALSE(NLS::Editor::Panels::ShouldResolvePendingSceneClickPick(
         true,

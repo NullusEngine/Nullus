@@ -10,7 +10,7 @@ namespace NLS::Core::ResourceManagement
 	/**
 	* ResourceManager of models
 	*/
-	class NLS_CORE_API ModelManager : public AResourceManager<Render::Resources::Model>
+	class NLS_RESOURCE_MANAGEMENT_API ModelManager : public AResourceManager<Render::Resources::Model>
 	{
 	public:
         using Model = Render::Resources::Model;

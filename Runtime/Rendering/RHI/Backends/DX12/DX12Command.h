@@ -151,6 +151,7 @@ namespace NLS::Render::Backend
 		std::vector<NLS::Render::RHI::DX12::DX12DescriptorTableDesc> m_boundDescriptorTables;
 		std::vector<bool> m_initializedRootDescriptorTables;
 		std::vector<std::pair<uint32_t, std::shared_ptr<NLS::Render::RHI::RHIBindingSet>>> m_boundBindingSets;
+		std::vector<std::shared_ptr<NLS::Render::RHI::RHITextureView>> m_recordedTextureViewKeepAlive;
 		std::vector<std::shared_ptr<NLS::Render::RHI::RHIBindingSet>> m_recordedBindingSetKeepAlive;
 		std::vector<std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline>> m_recordedPipelineKeepAlive;
 		std::vector<std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>> m_recordedComputePipelineKeepAlive;

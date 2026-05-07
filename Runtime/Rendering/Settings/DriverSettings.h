@@ -25,6 +25,7 @@ namespace NLS::Render::Settings
 		bool logMaterialBindings = false;
 		bool dx12LogMessages = false;
 		bool dx12LogFrameFlow = false;
+		bool logEditorFps = false;
 		bool editorGridSkipPlane = false;
 		bool editorGridSkipAxes = false;
 		bool editorDisableGridPass = false;

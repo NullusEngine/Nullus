@@ -29,6 +29,33 @@ namespace NLS::meta
             , name( name )
             , enumeration { nullptr } { }
 
+        TypeData::TypeData(TypeKey key, const std::string &name, TypeKey ownerModuleKey)
+            : isEnum( false )
+            , isPrimitive( false )
+            , isPointer( false )
+            , isClass( false )
+            , key( key )
+            , name( name )
+            , ownerModuleKey( ownerModuleKey )
+            , enumeration { nullptr } { }
+
+        void TypeData::ResetForUnload(void)
+        {
+            ++generation;
+            meta = {};
+            enumeration = Enum( nullptr );
+            baseClasses.clear( );
+            derivedClasses.clear( );
+            arrayConstructor = {};
+            destructor = {};
+            constructors.clear( );
+            dynamicConstructors.clear( );
+            fields.clear( );
+            staticFields.clear( );
+            methods.clear( );
+            staticMethods.clear( );
+        }
+
         void TypeData::LoadBaseClasses(
             ReflectionDatabase &db, 
             TypeID thisType, 
@@ -83,6 +110,20 @@ namespace NLS::meta
                     return field;
 
             return Field::Invalid( );
+        }
+
+        ///////////////////////////////////////////////////////////////////////
+
+        void TypeData::OverrideLastFieldTypes(Type fieldType, Type classType)
+        {
+            if (fields.empty( ))
+                return;
+
+            auto &field = fields.back( );
+            if (fieldType.IsValid( ))
+                field.m_type = fieldType;
+            if (classType.IsValid( ))
+                field.m_classType = classType;
         }
 
         ///////////////////////////////////////////////////////////////////////

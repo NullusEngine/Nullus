@@ -13,7 +13,7 @@ namespace NLS::Core::ResourceManagement
 	/**
 	* ResourceManager of textures
 	*/
-	class NLS_CORE_API TextureManager : public AResourceManager<Render::Resources::Texture2D>
+	class NLS_RESOURCE_MANAGEMENT_API TextureManager : public AResourceManager<Render::Resources::Texture2D>
 	{
 	public:
         using Texture2D = Render::Resources::Texture2D;

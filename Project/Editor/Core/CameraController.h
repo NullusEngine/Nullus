@@ -102,6 +102,8 @@ public:
      * Returns true if the right mouse click is being pressed
      */
     bool IsRightMousePressed() const;
+    bool IsMiddleMousePressed() const;
+    bool IsCameraControlActive() const;
     void ResetMouseInteractionState();
     void SetFocusState(SceneCameraFocusState* p_focusState);
     void SetViewportHeight(float p_viewportHeight);

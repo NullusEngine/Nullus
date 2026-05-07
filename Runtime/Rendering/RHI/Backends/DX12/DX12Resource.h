@@ -32,6 +32,7 @@ namespace NLS::Render::Backend
 		std::string_view GetDebugName() const override;
 		const NLS::Render::RHI::RHIBufferDesc& GetDesc() const override;
 		NLS::Render::RHI::ResourceState GetState() const override;
+		void SetState(NLS::Render::RHI::ResourceState state);
 		uint64_t GetGPUAddress() const override;
 		NLS::Render::RHI::NativeHandle GetNativeBufferHandle() override;
 

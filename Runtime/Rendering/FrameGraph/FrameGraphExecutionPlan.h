@@ -384,6 +384,24 @@ namespace NLS::Render::FrameGraph
 		};
 
 		recordBufferBarriers(
+			dispatchInput.shaderReadBuffersBefore,
+			RHI::ResourceState::Unknown,
+			RHI::ResourceState::ShaderRead,
+			RHI::PipelineStageMask::AllCommands,
+			RHI::PipelineStageMask::ComputeShader,
+			RHI::AccessMask::MemoryRead | RHI::AccessMask::MemoryWrite,
+			RHI::AccessMask::ShaderRead);
+
+		recordBufferBarriers(
+			dispatchInput.shaderWriteBuffersBefore,
+			RHI::ResourceState::Unknown,
+			RHI::ResourceState::ShaderWrite,
+			RHI::PipelineStageMask::AllCommands,
+			RHI::PipelineStageMask::ComputeShader,
+			RHI::AccessMask::MemoryRead | RHI::AccessMask::MemoryWrite,
+			RHI::AccessMask::ShaderWrite);
+
+		recordBufferBarriers(
 			dispatchInput.uavBarrierBuffersBefore,
 			RHI::ResourceState::ShaderWrite,
 			RHI::ResourceState::ShaderWrite,
@@ -508,7 +526,20 @@ namespace NLS::Render::FrameGraph
 		passInput.clearStencil = compiledPass.outputExecution.clearStencil;
 		passInput.clearColorValue = compiledPass.outputExecution.clearValue;
 		passInput.computeDispatchInputs.push_back(*dispatchInput);
-		for (const auto& buffer : dispatchInput->shaderReadBuffersAfter)
+		for (const auto& buffer : dispatchInput->shaderReadBuffersBefore)
+		{
+			if (buffer == nullptr)
+				continue;
+
+			passInput.bufferResourceAccesses.push_back({
+				buffer,
+				Context::ResourceAccessMode::Read,
+				RHI::ResourceState::ShaderRead,
+				RHI::PipelineStageMask::ComputeShader,
+				RHI::AccessMask::ShaderRead
+			});
+		}
+		for (const auto& buffer : dispatchInput->shaderWriteBuffersBefore)
 		{
 			if (buffer == nullptr)
 				continue;
@@ -520,13 +551,30 @@ namespace NLS::Render::FrameGraph
 				RHI::PipelineStageMask::ComputeShader,
 				RHI::AccessMask::ShaderWrite
 			});
-			passInput.exportedBufferVisibilityTransitions.push_back({
+		}
+		for (const auto& buffer : dispatchInput->uavBarrierBuffersAfter)
+		{
+			if (buffer == nullptr)
+				continue;
+
+			passInput.bufferResourceAccesses.push_back({
 				buffer,
+				Context::ResourceAccessMode::Write,
 				RHI::ResourceState::ShaderWrite,
+				RHI::PipelineStageMask::ComputeShader,
+				RHI::AccessMask::ShaderWrite
+			});
+		}
+		for (const auto& buffer : dispatchInput->shaderReadBuffersAfter)
+		{
+			if (buffer == nullptr)
+				continue;
+
+			passInput.bufferResourceAccesses.push_back({
+				buffer,
+				Context::ResourceAccessMode::Write,
 				RHI::ResourceState::ShaderRead,
 				RHI::PipelineStageMask::ComputeShader,
-				RHI::PipelineStageMask::FragmentShader,
-				RHI::AccessMask::ShaderWrite,
 				RHI::AccessMask::ShaderRead
 			});
 		}
@@ -556,7 +604,20 @@ namespace NLS::Render::FrameGraph
 		passInput.clearStencil = compiledPass.outputExecution.clearStencil;
 		passInput.clearColorValue = compiledPass.outputExecution.clearValue;
 		passInput.computeDispatchInputs.push_back(*dispatchInput);
-		for (const auto& buffer : dispatchInput->shaderReadBuffersAfter)
+		for (const auto& buffer : dispatchInput->shaderReadBuffersBefore)
+		{
+			if (buffer == nullptr)
+				continue;
+
+			passInput.bufferResourceAccesses.push_back({
+				buffer,
+				Context::ResourceAccessMode::Read,
+				RHI::ResourceState::ShaderRead,
+				RHI::PipelineStageMask::ComputeShader,
+				RHI::AccessMask::ShaderRead
+			});
+		}
+		for (const auto& buffer : dispatchInput->shaderWriteBuffersBefore)
 		{
 			if (buffer == nullptr)
 				continue;
@@ -568,13 +629,30 @@ namespace NLS::Render::FrameGraph
 				RHI::PipelineStageMask::ComputeShader,
 				RHI::AccessMask::ShaderWrite
 			});
-			passInput.exportedBufferVisibilityTransitions.push_back({
+		}
+		for (const auto& buffer : dispatchInput->uavBarrierBuffersAfter)
+		{
+			if (buffer == nullptr)
+				continue;
+
+			passInput.bufferResourceAccesses.push_back({
 				buffer,
+				Context::ResourceAccessMode::Write,
 				RHI::ResourceState::ShaderWrite,
+				RHI::PipelineStageMask::ComputeShader,
+				RHI::AccessMask::ShaderWrite
+			});
+		}
+		for (const auto& buffer : dispatchInput->shaderReadBuffersAfter)
+		{
+			if (buffer == nullptr)
+				continue;
+
+			passInput.bufferResourceAccesses.push_back({
+				buffer,
+				Context::ResourceAccessMode::Write,
 				RHI::ResourceState::ShaderRead,
 				RHI::PipelineStageMask::ComputeShader,
-				RHI::PipelineStageMask::FragmentShader,
-				RHI::AccessMask::ShaderWrite,
 				RHI::AccessMask::ShaderRead
 			});
 		}
@@ -758,14 +836,14 @@ namespace NLS::Render::FrameGraph
 					continue;
 
 				const auto sourceIt = std::find_if(
-					sourcePass.commandInput.bufferResourceAccesses.begin(),
-					sourcePass.commandInput.bufferResourceAccesses.end(),
+					sourcePass.commandInput.bufferResourceAccesses.rbegin(),
+					sourcePass.commandInput.bufferResourceAccesses.rend(),
 					[&targetAccess](const Context::BufferResourceAccess& sourceAccess)
 					{
 						return sourceAccess.mode == Context::ResourceAccessMode::Write &&
 							sourceAccess.buffer == targetAccess.buffer;
 					});
-				if (sourceIt != sourcePass.commandInput.bufferResourceAccesses.end())
+				if (sourceIt != sourcePass.commandInput.bufferResourceAccesses.rend())
 					updateLatestSource(sourceIndex);
 			}
 
@@ -775,15 +853,15 @@ namespace NLS::Render::FrameGraph
 					continue;
 
 				const auto sourceIt = std::find_if(
-					sourcePass.commandInput.textureResourceAccesses.begin(),
-					sourcePass.commandInput.textureResourceAccesses.end(),
+					sourcePass.commandInput.textureResourceAccesses.rbegin(),
+					sourcePass.commandInput.textureResourceAccesses.rend(),
 					[&targetAccess, &isCompatibleSubresourceRange](const Context::TextureResourceAccess& sourceAccess)
 					{
 						return sourceAccess.mode == Context::ResourceAccessMode::Write &&
 							sourceAccess.texture == targetAccess.texture &&
 							isCompatibleSubresourceRange(sourceAccess.subresourceRange, targetAccess.subresourceRange);
 					});
-				if (sourceIt != sourcePass.commandInput.textureResourceAccesses.end())
+				if (sourceIt != sourcePass.commandInput.textureResourceAccesses.rend())
 					updateLatestSource(sourceIndex);
 			}
 		}
@@ -838,14 +916,14 @@ namespace NLS::Render::FrameGraph
 					continue;
 
 				const auto sourceIt = std::find_if(
-					sourcePass.commandInput.bufferResourceAccesses.begin(),
-					sourcePass.commandInput.bufferResourceAccesses.end(),
+					sourcePass.commandInput.bufferResourceAccesses.rbegin(),
+					sourcePass.commandInput.bufferResourceAccesses.rend(),
 					[&targetAccess](const Context::BufferResourceAccess& sourceAccess)
 					{
 						return sourceAccess.mode == Context::ResourceAccessMode::Write &&
 							sourceAccess.buffer == targetAccess.buffer;
 					});
-				if (sourceIt == sourcePass.commandInput.bufferResourceAccesses.end())
+				if (sourceIt == sourcePass.commandInput.bufferResourceAccesses.rend())
 					continue;
 
 				ThreadedRenderSceneDependencyEdge edge;
@@ -864,15 +942,15 @@ namespace NLS::Render::FrameGraph
 					continue;
 
 				const auto sourceIt = std::find_if(
-					sourcePass.commandInput.textureResourceAccesses.begin(),
-					sourcePass.commandInput.textureResourceAccesses.end(),
+					sourcePass.commandInput.textureResourceAccesses.rbegin(),
+					sourcePass.commandInput.textureResourceAccesses.rend(),
 					[&targetAccess, &isCompatibleSubresourceRange](const Context::TextureResourceAccess& sourceAccess)
 					{
 						return sourceAccess.mode == Context::ResourceAccessMode::Write &&
 							sourceAccess.texture == targetAccess.texture &&
 							isCompatibleSubresourceRange(sourceAccess.subresourceRange, targetAccess.subresourceRange);
 					});
-				if (sourceIt == sourcePass.commandInput.textureResourceAccesses.end())
+				if (sourceIt == sourcePass.commandInput.textureResourceAccesses.rend())
 					continue;
 
 				ThreadedRenderSceneDependencyEdge edge;

@@ -40,6 +40,8 @@ namespace NLS::Render::FrameGraph
     NLS_RENDER_API void SetExternalSceneOutputFramebuffer(
         NLS::Render::Data::FrameDescriptor& frame,
         NLS::Render::Buffers::Framebuffer* framebuffer);
+    NLS_RENDER_API NLS::Render::Data::FrameDescriptor CaptureExternalSceneOutputSnapshot(
+        const NLS::Render::Data::FrameDescriptor& frame);
 
     NLS_RENDER_API void ImportSceneRenderTargets(
         ::FrameGraph& frameGraph,
@@ -81,6 +83,8 @@ namespace NLS::Render::FrameGraph
     NLS_RENDER_API uint32_t CountExternalSceneOutputTextures(
         const NLS::Render::Data::FrameDescriptor& frame);
     NLS_RENDER_API uint32_t CountExternalSceneOutputTextures(
+        const NLS::Render::Context::RenderScenePackage& renderScenePackage);
+    NLS_RENDER_API uint32_t CountExternalSceneOutputSampledTextures(
         const NLS::Render::Context::RenderScenePackage& renderScenePackage);
     NLS_RENDER_API bool HasExternalSceneOutput(
         const NLS::Render::Context::RenderScenePackage& renderScenePackage);

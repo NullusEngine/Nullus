@@ -1,8 +1,8 @@
 #pragma once
 
+#include <deque>
 #include <memory>
 #include <string>
-#include <vector>
 
 #include "Rendering/RHI/Core/RHIResource.h"
 
@@ -42,7 +42,21 @@ public:
     std::shared_ptr<NLS::Render::RHI::RHITextureView> GetOrCreateExplicitDepthStencilView(const std::string& debugName = {}) const;
 
 private:
+    struct RetiredResourceSet
+    {
+        std::shared_ptr<NLS::Render::RHI::RHITexture> colorTexture;
+        std::shared_ptr<NLS::Render::RHI::RHITexture> depthStencilTexture;
+        std::shared_ptr<NLS::Render::RHI::RHITextureView> colorView;
+        std::shared_ptr<NLS::Render::RHI::RHITextureView> depthStencilView;
+
+        bool HasResources() const;
+        void Reset();
+    };
+
     void Release();
+    void ResetCurrentResources();
+    void RetireCurrentResources();
+    void PruneRetiredResources();
 
     uint16_t m_width = 0;
     uint16_t m_height = 0;
@@ -52,5 +66,6 @@ private:
     std::shared_ptr<NLS::Render::RHI::RHITexture> m_explicitDepthStencilTexture;
     mutable std::shared_ptr<NLS::Render::RHI::RHITextureView> m_explicitRenderTextureView;
     mutable std::shared_ptr<NLS::Render::RHI::RHITextureView> m_explicitDepthStencilTextureView;
+    std::deque<RetiredResourceSet> m_retiredResourceSets;
 };
 } // namespace NLS::Render::Buffers

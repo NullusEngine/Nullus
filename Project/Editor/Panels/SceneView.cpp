@@ -156,8 +156,10 @@ void Editor::Panels::SceneView::Update(float p_deltaTime)
     using namespace Windowing::Inputs;
     const Maths::Vector2 mousePosition = EDITOR_CONTEXT(inputManager)->GetMousePosition();
     const bool shortcutsWindowOpen = Editor::Core::DoesShortcutSettingsWindowBlockSceneInput();
-    const bool sceneViewActive = !shortcutsWindowOpen && (IsFocused() || IsHovered() || IsMouseWithinView(mousePosition));
-    const bool editingUiControl = NLS_SERVICE(UI::UIManager).IsAnyItemActive();
+    const bool mouseOverSceneView = IsMouseWithinView(mousePosition);
+    const bool sceneViewActive = !shortcutsWindowOpen && (IsFocused() || IsHovered() || mouseOverSceneView);
+    const bool editingUiControlOutsideSceneView =
+        NLS_SERVICE(UI::UIManager).IsAnyItemActive() && !mouseOverSceneView;
     m_cameraController.SetInputBlocked(shortcutsWindowOpen);
     if (shortcutsWindowOpen)
     {
@@ -169,7 +171,7 @@ void Editor::Panels::SceneView::Update(float p_deltaTime)
     }
     EnsureCameraFocus();
     m_cameraController.SetFocusState(&m_cameraFocus);
-    m_cameraController.SetInputActive(sceneViewActive && !editingUiControl);
+    m_cameraController.SetInputActive(sceneViewActive && !editingUiControlOutsideSceneView);
     if (HasViewportImageBounds())
     {
         const auto imageMin = GetViewportImageMin();
@@ -252,6 +254,22 @@ Engine::Rendering::BaseSceneRenderer::SceneDescriptor Editor::Panels::SceneView:
     return AViewControllable::CreateSceneDescriptor();
 }
 
+bool Editor::Panels::SceneView::RequiresSynchronizedRetiredFramePresentation() const
+{
+    using Windowing::Inputs::EMouseButton;
+
+    const bool clickPickingRequested =
+        m_requestPickingFrame &&
+        EDITOR_CONTEXT(inputManager)->IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT) &&
+        !m_cameraController.IsCameraControlActive();
+
+    return m_cameraController.IsCameraControlActive() ||
+        m_gizmoInteraction.isUsing ||
+        m_gizmoInteraction.isViewUsing ||
+        clickPickingRequested ||
+        m_pendingClickPickRenderPos.has_value();
+}
+
 void Editor::Panels::SceneView::DrawPreRenderViewportOverlay()
 {
     if (ShouldApplySceneMutationFromViewportOverlay(ViewportOverlayLifecyclePhase::BeforeViewRender))
@@ -281,7 +299,7 @@ void Editor::Panels::SceneView::DrawViewportOverlay()
     const auto overlayMatrices = GetViewportOverlayCameraMatrices();
     auto viewMatrix = Core::ToImGuizmoMatrix(overlayMatrices.view);
     auto projectionMatrix = Core::ToImGuizmoMatrix(overlayMatrices.projection);
-    const bool cameraControlActive = m_cameraController.IsRightMousePressed();
+    const bool cameraControlActive = m_cameraController.IsCameraControlActive();
     EnsureCameraFocus();
 
     ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
@@ -456,7 +474,7 @@ bool Editor::Panels::SceneView::ShouldRequestPickingFrame() const
         !m_hasPickingSample ||
         elapsedMs >= kHoverPickingIntervalMs;
     const bool leftClicked = inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT);
-    const bool rightMousePressed = m_cameraController.IsRightMousePressed();
+    const bool cameraControlActive = m_cameraController.IsCameraControlActive();
 
     const bool request = ShouldRenderScenePickingFrame(
         mouseOverView,
@@ -464,7 +482,7 @@ bool Editor::Panels::SceneView::ShouldRequestPickingFrame() const
         false,
         m_pendingClickPickRenderPos.has_value(),
         leftClicked,
-        rightMousePressed,
+        cameraControlActive,
         sampleExpired,
         mouseMoved,
         m_hasPickingSample);
@@ -475,7 +493,7 @@ bool Editor::Panels::SceneView::ShouldRequestPickingFrame() const
             << " result=" << request
             << " leftClicked=" << leftClicked
             << " pendingClick=" << m_pendingClickPickRenderPos.has_value()
-            << " rightMouse=" << rightMousePressed
+            << " cameraControl=" << cameraControlActive
             << " sampleExpired=" << sampleExpired
             << " mouseMoved=" << mouseMoved
             << " hasSample=" << m_hasPickingSample
@@ -571,13 +589,13 @@ void Editor::Panels::SceneView::HandleActorPicking()
             !m_hasPickingSample ||
             elapsedMs >= kHoverPickingIntervalMs;
         const bool leftClicked = inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT);
-        const bool rightMousePressed = m_cameraController.IsRightMousePressed();
-        const bool queuedClickPickThisFrame = leftClicked && !rightMousePressed;
+        const bool cameraControlActive = m_cameraController.IsCameraControlActive();
+        const bool queuedClickPickThisFrame = leftClicked && !cameraControlActive;
         if (queuedClickPickThisFrame)
         {
             m_pendingClickPickRenderPos = mousePos;
             m_pendingClickMinReadablePickingFrameSerial =
-                actorPickingFeature.GetReadablePickingFrameSerial() + 1u;
+                actorPickingFeature.GetSubmittedPickingFrameSerial();
             std::ostringstream stream;
             stream << "queued click"
                 << " local=(" << mousePos.x << "," << mousePos.y << ")"
@@ -593,7 +611,7 @@ void Editor::Panels::SceneView::HandleActorPicking()
             false,
             m_pendingClickPickRenderPos.has_value(),
             leftClicked,
-            rightMousePressed,
+            cameraControlActive,
             sampleExpired,
             mouseMoved,
             m_hasPickingSample);
@@ -605,7 +623,7 @@ void Editor::Panels::SceneView::HandleActorPicking()
             const bool resolvePendingClickPick = ShouldResolvePendingSceneClickPick(
                 m_pendingClickPickRenderPos.has_value(),
                 queuedClickPickThisFrame,
-                rightMousePressed,
+                cameraControlActive,
                 m_pendingClickMinReadablePickingFrameSerial,
                 actorPickingFeature.GetReadablePickingFrameSerial());
             if (queuedClickPickThisFrame || m_pendingClickPickRenderPos.has_value())
@@ -620,7 +638,8 @@ void Editor::Panels::SceneView::HandleActorPicking()
                     << " requestThisFrame=" << m_requestPickingFrame;
                 LogScenePickingDiagnostics(stream.str());
             }
-            if (!rightMousePressed && pickingFrameReadable && !queuedClickPickThisFrame)
+            if (!cameraControlActive && pickingFrameReadable &&
+                (!queuedClickPickThisFrame || resolvePendingClickPick))
             {
                 const bool resolveClickPick = resolvePendingClickPick;
                 const auto samplePos = resolveClickPick
@@ -646,7 +665,7 @@ void Editor::Panels::SceneView::HandleActorPicking()
                 m_hasPickingSample = true;
             }
         }
-        else if (rightMousePressed)
+        else if (cameraControlActive)
         {
             m_highlightedActor = {};
         }
@@ -654,7 +673,7 @@ void Editor::Panels::SceneView::HandleActorPicking()
         const bool resolvePendingClickPick = ShouldResolvePendingSceneClickPick(
             m_pendingClickPickRenderPos.has_value(),
             queuedClickPickThisFrame,
-            rightMousePressed,
+            cameraControlActive,
             m_pendingClickMinReadablePickingFrameSerial,
             actorPickingFeature.GetReadablePickingFrameSerial());
         if (resolvePendingClickPick)

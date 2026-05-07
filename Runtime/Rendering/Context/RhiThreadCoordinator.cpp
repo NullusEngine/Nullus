@@ -1,6 +1,8 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdint>
+#include <iterator>
 #include <limits>
 #include <mutex>
 #include <string>
@@ -219,6 +221,18 @@ namespace NLS::Render::Context
             return range.mipLevelCount == 0u && range.arrayLayerCount == 0u;
         }
 
+        bool HasWriteAccess(const Render::RHI::AccessMask accessMask)
+        {
+            constexpr uint32_t kWriteAccessMask =
+                static_cast<uint32_t>(Render::RHI::AccessMask::CopyWrite) |
+                static_cast<uint32_t>(Render::RHI::AccessMask::ShaderWrite) |
+                static_cast<uint32_t>(Render::RHI::AccessMask::ColorAttachmentWrite) |
+                static_cast<uint32_t>(Render::RHI::AccessMask::DepthStencilWrite) |
+                static_cast<uint32_t>(Render::RHI::AccessMask::HostWrite) |
+                static_cast<uint32_t>(Render::RHI::AccessMask::MemoryWrite);
+            return (static_cast<uint32_t>(accessMask) & kWriteAccessMask) != 0u;
+        }
+
         bool AreEqualSubresourceRanges(
             const Render::RHI::RHISubresourceRange& lhs,
             const Render::RHI::RHISubresourceRange& rhs)
@@ -248,6 +262,12 @@ namespace NLS::Render::Context
             transition.destinationStages = edge.targetBufferAccess->stages;
             transition.sourceAccess = edge.sourceBufferAccess->access;
             transition.destinationAccess = edge.targetBufferAccess->access;
+            if (transition.before == transition.after &&
+                !HasWriteAccess(transition.sourceAccess) &&
+                !HasWriteAccess(transition.destinationAccess))
+            {
+                return std::nullopt;
+            }
             return transition;
         }
 
@@ -273,6 +293,12 @@ namespace NLS::Render::Context
             transition.destinationStages = edge.targetTextureAccess->stages;
             transition.sourceAccess = edge.sourceTextureAccess->access;
             transition.destinationAccess = edge.targetTextureAccess->access;
+            if (transition.before == transition.after &&
+                !HasWriteAccess(transition.sourceAccess) &&
+                !HasWriteAccess(transition.destinationAccess))
+            {
+                return std::nullopt;
+            }
             return transition;
         }
 
@@ -542,6 +568,23 @@ namespace NLS::Render::Context
         return Render::Settings::SupportsOrderedParallelCommandSubmissionPath(
             nativeDeviceInfo.backend,
             impl.explicitDevice->GetCapabilities());
+    }
+
+    namespace
+    {
+        bool ShouldUseOrderedParallelCommandSubmissionForPackage(
+            const DriverImpl& impl,
+            const RenderScenePackage& renderScenePackage)
+        {
+            if (!Detail::SupportsOrderedParallelCommandSubmission(impl))
+                return false;
+
+            // External scene outputs are reused by the editor UI as sampled textures.
+            // Recording their render passes in parallel lets the DX12 backend race on
+            // per-texture state during command-list construction, which is especially
+            // fragile while the Scene view is being resized.
+            return !Render::FrameGraph::HasExternalSceneOutput(renderScenePackage);
+        }
     }
 
     AsyncComputeDisposition Detail::ResolveThreadedAsyncComputeDisposition(
@@ -1140,7 +1183,8 @@ namespace NLS::Render::Context
                 commandBuffer->BeginGpuProfileScope("ThreadedParallelComputePass", __FUNCTION__);
                 const auto recordedDispatchCount = Detail::RecordComputeDispatches(
                     *commandBuffer,
-                    passInput.computeDispatchInputs);
+                    passInput.computeDispatchInputs,
+                    false);
                 commandBuffer->EndGpuProfileScope();
                 if (recordedDispatchCount == 0u)
                 {
@@ -1558,10 +1602,11 @@ namespace NLS::Render::Context
                     resourceDependencyEdges);
                 const bool needsVisibilityBatch =
                     Detail::HasResourceVisibilityTransitions(visibilityInput);
+                bool recordedVisibilityBatch = false;
                 if (needsVisibilityBatch)
                 {
                     flushPendingTranslatedUnits();
-                    RecordResourceVisibilityBatch(
+                    recordedVisibilityBatch = RecordResourceVisibilityBatch(
                         impl,
                         renderScenePackage,
                         recordedWorkUnit->workUnit,
@@ -1576,15 +1621,23 @@ namespace NLS::Render::Context
                         : Detail::ResolveImplicitDependencySourceWorkUnitIndex(
                             recordedWorkUnit->workUnit);
                 const bool requiresDependencyVisibility =
-                    !needsVisibilityBatch &&
+                    !recordedVisibilityBatch &&
                     Detail::ResolveImplicitRequiresDependencyVisibility(
                         recordedWorkUnit->workUnit);
+                auto targetDependencyEdges = std::move(controlDependencyEdges);
+                if (!recordedVisibilityBatch)
+                {
+                    targetDependencyEdges.insert(
+                        targetDependencyEdges.end(),
+                        std::make_move_iterator(resourceDependencyEdges.begin()),
+                        std::make_move_iterator(resourceDependencyEdges.end()));
+                }
 
                 if (recordedWorkUnit->workUnit.eligibleForParallelTranslation)
                 {
                     pendingTranslatedUnits.push_back({
                         recordedWorkUnit,
-                        std::move(controlDependencyEdges),
+                        std::move(targetDependencyEdges),
                         dependencySourceSubmissionOrder,
                         requiresDependencyVisibility
                     });
@@ -1595,7 +1648,7 @@ namespace NLS::Render::Context
                     AppendRecordedParallelCommandWorkUnit(
                         translatedBatch,
                         *recordedWorkUnit,
-                        std::move(controlDependencyEdges),
+                        std::move(targetDependencyEdges),
                         dependencySourceSubmissionOrder,
                         requiresDependencyVisibility);
                 }
@@ -1725,7 +1778,9 @@ namespace NLS::Render::Context
         if (frameContext.commandBuffer != nullptr)
         {
             const bool supportsOrderedWorkUnitSubmission =
-                SupportsOrderedParallelCommandSubmission(impl);
+                ShouldUseOrderedParallelCommandSubmissionForPackage(
+                    impl,
+                    renderScenePackage);
             const bool parallelRecordingReady =
                 supportsOrderedWorkUnitSubmission &&
                 impl.explicitDevice != nullptr &&
@@ -1801,7 +1856,8 @@ namespace NLS::Render::Context
                         frameContext.commandBuffer->BeginGpuProfileScope("ThreadedComputePass", __FUNCTION__);
                         const auto recordedDispatches = Detail::RecordComputeDispatches(
                             *frameContext.commandBuffer,
-                            passInput.computeDispatchInputs);
+                            passInput.computeDispatchInputs,
+                            false);
                         frameContext.commandBuffer->EndGpuProfileScope();
                         if (recordedDispatches == 0u)
                             continue;
@@ -2036,7 +2092,8 @@ namespace NLS::Render::Context
         submissionFrame.frameId = renderScenePackage.frameId;
         submissionFrame.offscreenOnly = !renderScenePackage.targetsSwapchain;
         submissionFrame.usedExternalOutputBridge = externalOutputSummary.hasExternalOutput;
-        submissionFrame.externalOutputTextureCount = externalOutputSummary.textureCount;
+        submissionFrame.externalOutputTextureCount =
+            Render::FrameGraph::CountExternalSceneOutputSampledTextures(renderScenePackage);
 
         Render::RHI::ResourceStateTrackerStats preResetTrackerStats{};
         Render::RHI::DescriptorAllocatorStats descriptorStats{};

@@ -1122,6 +1122,8 @@ Launcher::Launcher(
 
 Launcher::~Launcher()
 {
+    if (m_driver != nullptr)
+        m_driver->SetSwapchainWillResizeCallback(nullptr);
     m_brandTextureView.reset();
     NLS::Render::Resources::Loaders::TextureLoader::Destroy(m_brandTextureResource);
 }

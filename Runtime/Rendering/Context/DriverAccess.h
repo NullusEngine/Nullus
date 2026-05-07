@@ -82,7 +82,7 @@ namespace NLS::Render::Context
     NLS_RENDER_API Driver& RequireLocatedDriver(std::string_view ownerName = {});
     NLS_RENDER_API std::optional<Settings::EGraphicsBackend> TryGetLocatedActiveGraphicsBackend();
 
-    struct DriverRendererAccess final
+    struct NLS_RENDER_API DriverRendererAccess final
     {
         static bool HasExplicitRHI(const Driver& driver);
         static bool IsThreadedRenderingEnabled(const Driver& driver);
@@ -153,7 +153,7 @@ namespace NLS::Render::Context
         static const Settings::EngineDiagnosticsSettings& GetDiagnosticsSettings(const Driver& driver);
     };
 
-    struct DriverUIAccess final
+    struct NLS_RENDER_API DriverUIAccess final
     {
         static RHI::NativeRenderDeviceInfo GetNativeDeviceInfo(const Driver& driver);
         static bool PrepareUIRender(Driver& driver);
@@ -175,7 +175,7 @@ namespace NLS::Render::Context
         static void SetUISignalSemaphore(Driver& driver, void* semaphore, uint64_t value);
     };
 
-    struct DriverTestAccess final
+    struct NLS_RENDER_API DriverTestAccess final
     {
         static void SetExplicitDevice(Driver& driver, std::shared_ptr<RHI::RHIDevice> explicitDevice);
         static void SetExplicitSwapchain(Driver& driver, std::shared_ptr<RHI::RHISwapchain> explicitSwapchain);

@@ -3,6 +3,7 @@
 #include "Reflection/Macros.h"
 #include "Quaternion.h"
 #include "Vector3.h"
+#include "Vector4.h"
 
 namespace NLS::Maths
 {
@@ -35,6 +36,18 @@ MetaExternal(NLS::Maths::Quaternion)
 
 REFLECT_EXTERNAL(
     NLS::Maths::Quaternion,
+    Fields(
+        REFLECT_FIELD(float, x),
+        REFLECT_FIELD(float, y),
+        REFLECT_FIELD(float, z),
+        REFLECT_FIELD(float, w)
+    )
+)
+
+MetaExternal(NLS::Maths::Vector4)
+
+REFLECT_EXTERNAL(
+    NLS::Maths::Vector4,
     Fields(
         REFLECT_FIELD(float, x),
         REFLECT_FIELD(float, y),

@@ -272,10 +272,7 @@ namespace NLS::Engine::Rendering
             { 0u, NLS::Render::RHI::BindingType::UniformBuffer, constantsBuffer, 0u, sizeof(LightGridPassConstants), nullptr, nullptr },
             { 0u, NLS::Render::RHI::BindingType::StructuredBuffer, packedLightsBuffer, 0u, frameData.packedLights.size() * sizeof(uint32_t), nullptr, nullptr },
             { 1u, NLS::Render::RHI::BindingType::StorageBuffer, clusterCountsBuffer, 0u, frameData.clusterLightCounts.size() * sizeof(uint32_t), nullptr, nullptr },
-            { 2u, NLS::Render::RHI::BindingType::StorageBuffer, clusterScratchBuffer, 0u, frameData.clusterScratchIndices.size() * sizeof(uint32_t), nullptr, nullptr },
-            { 3u, NLS::Render::RHI::BindingType::StorageBuffer, compactCounterBuffer, 0u, frameData.compactCounter.size() * sizeof(uint32_t), nullptr, nullptr },
-            { 4u, NLS::Render::RHI::BindingType::StorageBuffer, clusterRecordsBuffer, 0u, frameData.clusterRecords.size() * sizeof(uint32_t), nullptr, nullptr },
-            { 5u, NLS::Render::RHI::BindingType::StorageBuffer, compactLightIndicesBuffer, 0u, frameData.compactLightIndices.size() * sizeof(uint32_t), nullptr, nullptr }
+            { 2u, NLS::Render::RHI::BindingType::StorageBuffer, clusterScratchBuffer, 0u, frameData.clusterScratchIndices.size() * sizeof(uint32_t), nullptr, nullptr }
         };
         auto injectionBindingSet = NLS::Render::Context::DriverRendererAccess::CreateExplicitBindingSet(
             m_driver,
@@ -333,8 +330,10 @@ namespace NLS::Engine::Rendering
                 lightDispatchCount,
                 1u,
                 1u,
-                {},
+                { packedLightsBuffer },
                 { clusterCountsBuffer, clusterScratchBuffer },
+                {},
+                {},
                 {}
             },
             {
@@ -345,7 +344,9 @@ namespace NLS::Engine::Rendering
                 1u,
                 1u,
                 { clusterCountsBuffer, clusterScratchBuffer },
-                { compactCounterBuffer },
+                { compactCounterBuffer, clusterRecordsBuffer, compactLightIndicesBuffer },
+                {},
+                {},
                 { clusterRecordsBuffer, compactLightIndicesBuffer }
             }
         };
@@ -452,10 +453,7 @@ namespace NLS::Engine::Rendering
                 { "LightGridPassConstants", NLS::Render::RHI::BindingType::UniformBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 0u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
                 { "u_LightGridLights", NLS::Render::RHI::BindingType::StructuredBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 0u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
                 { "u_LightGridClusterLightCounts", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 1u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-                { "u_LightGridClusterScratchIndices", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 2u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-                { "u_LightGridCompactCounter", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 3u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-                { "u_LightGridClusterRecords", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 4u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-                { "u_LightGridCompactIndices", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 5u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace }
+                { "u_LightGridClusterScratchIndices", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 2u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace }
             }, "LightGridInjectionBindingLayout"));
         }
 

@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "BaseDef.h"
 #include "Macros.h"
 
 #include "TypeID.h"
@@ -33,7 +34,7 @@ namespace NLS::meta
 
     class MetaManager;
 
-    class Type
+    class NLS_BASE_API Type
     {
     public:
         typedef std::vector<Type> List;
@@ -43,6 +44,7 @@ namespace NLS::meta
             Type(void);
             Type(const Type &rhs);
             Type(TypeID id, bool isArray = false);
+            Type(TypeID id, bool isArray, unsigned generation);
 
             operator bool(void) const;
 
@@ -65,6 +67,7 @@ namespace NLS::meta
             /** @brief Gets the internal id of the type.
              */
             TypeID GetID(void) const;
+            TypeKey GetKey(void) const;
 
             ///////////////////////////////////////////////////////////////////
             ///////////////////////////////////////////////////////////////////
@@ -407,6 +410,7 @@ namespace NLS::meta
             friend class Global;
 
         TypeID m_id;
+        unsigned m_generation;
         bool m_isArray;
     };
 }

@@ -53,7 +53,7 @@ namespace NLS::meta
 
         bool Field::IsValid(void) const
         {
-            return m_getter != nullptr;
+            return m_getter != nullptr && m_type.IsValid( ) && m_classType.IsValid( );
         }
 
         bool Field::IsReadOnly(void) const
@@ -78,18 +78,22 @@ namespace NLS::meta
 
         Variant Field::GetValue(const Variant &instance) const
         {
+            if (!IsValid( ))
+                return {};
             return m_getter->GetValue( instance );
         }
 
         Variant Field::GetValueReference(const Variant &instance) const
         {
+            if (!IsValid( ))
+                return {};
             return m_getter->GetValueReference( instance );
         }
 
     bool Field::SetValue(Variant &instance, const Variant &value) const
     {
         // read only?
-        if (m_setter && !instance.IsConst( ))
+        if (IsValid( ) && m_setter && !instance.IsConst( ))
         {
             m_setter->SetValue( instance, value );
 

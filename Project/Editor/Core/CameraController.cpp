@@ -343,6 +343,16 @@ bool Editor::Core::CameraController::IsRightMousePressed() const
 	return m_rightMousePressed;
 }
 
+bool Editor::Core::CameraController::IsMiddleMousePressed() const
+{
+    return m_middleMousePressed;
+}
+
+bool Editor::Core::CameraController::IsCameraControlActive() const
+{
+    return m_middleMousePressed || m_rightMousePressed;
+}
+
 void Editor::Core::CameraController::SetFocusState(SceneCameraFocusState* p_focusState)
 {
     m_focusState = p_focusState;

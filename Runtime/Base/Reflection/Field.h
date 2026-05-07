@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "BaseDef.h"
 #include "MetaContainer.h"
 
 #include "Variant.h"
@@ -15,7 +16,7 @@
 
 namespace NLS::meta
 {
-    class Field : public MetaContainer
+    class NLS_BASE_API Field : public MetaContainer
     {
     public:
         static bool SetValue(Variant &instance, const Variant &value, const Method &setter);

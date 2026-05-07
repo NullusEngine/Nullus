@@ -98,6 +98,7 @@ TEST_F(ProfilerScopeTest, DefaultScopeMacroUsesCallingFunctionName)
 {
     using namespace NLS::Base::Profiling;
 
+#if defined(NLS_ENABLE_PROFILING)
     RecordingProfilerDestination destination;
     Profiler::RegisterDestination(destination);
     Profiler::SetEnabled(true);
@@ -109,12 +110,17 @@ TEST_F(ProfilerScopeTest, DefaultScopeMacroUsesCallingFunctionName)
     ASSERT_EQ(destination.events.size(), 2u);
     EXPECT_FALSE(destination.events[0].name.empty());
     EXPECT_EQ(destination.events[1].name, destination.events[0].name);
+#else
+    NLS_PROFILE_SCOPE();
+    SUCCEED() << "Profiling macros compile to no-ops when NLS_ENABLE_PROFILING is disabled.";
+#endif
 }
 
 TEST_F(ProfilerScopeTest, DefaultScopeMacroCanBeUsedTwiceInOneScope)
 {
     using namespace NLS::Base::Profiling;
 
+#if defined(NLS_ENABLE_PROFILING)
     RecordingProfilerDestination destination;
     Profiler::RegisterDestination(destination);
     Profiler::SetEnabled(true);
@@ -123,6 +129,11 @@ TEST_F(ProfilerScopeTest, DefaultScopeMacroCanBeUsedTwiceInOneScope)
     NLS_PROFILE_SCOPE();
 
     EXPECT_EQ(destination.events.size(), 2u);
+#else
+    NLS_PROFILE_SCOPE();
+    NLS_PROFILE_SCOPE();
+    SUCCEED() << "Profiling macros compile to no-ops when NLS_ENABLE_PROFILING is disabled.";
+#endif
 }
 
 TEST_F(ProfilerScopeTest, EmptyExplicitNameFallsBackToCallingFunctionName)
@@ -221,6 +232,7 @@ TEST_F(ProfilerScopeTest, DefaultGpuScopeMacroUsesCallingFunctionName)
 {
     using namespace NLS::Base::Profiling;
 
+#if defined(NLS_ENABLE_PROFILING)
     RecordingProfilerDestination destination;
     Profiler::RegisterDestination(destination);
     Profiler::SetEnabled(true);
@@ -232,6 +244,10 @@ TEST_F(ProfilerScopeTest, DefaultGpuScopeMacroUsesCallingFunctionName)
     ASSERT_EQ(destination.events.size(), 2u);
     EXPECT_FALSE(destination.events[0].name.empty());
     EXPECT_EQ(destination.events[1].name, destination.events[0].name);
+#else
+    NLS_GPU_PROFILE_SCOPE(nullptr);
+    SUCCEED() << "Profiling macros compile to no-ops when NLS_ENABLE_PROFILING is disabled.";
+#endif
 }
 
 TEST_F(ProfilerScopeTest, DisabledGpuScopeDoesNotCallDestination)

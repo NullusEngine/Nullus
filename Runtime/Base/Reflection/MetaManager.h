@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "BaseDef.h"
 #include "MetaProperty.h"
 
 #include "JsonConfig.h"
@@ -19,7 +20,7 @@ namespace NLS::meta
     class Type;
     class Variant;
 
-    class MetaManager
+    class NLS_BASE_API MetaManager
     {
     public:
         typedef std::initializer_list<

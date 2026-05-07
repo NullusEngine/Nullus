@@ -8,6 +8,7 @@
 #include <Rendering/Entities/Drawable.h>
 #include <Rendering/Context/RenderScenePackageBuilder.h>
 #include <Rendering/Context/ThreadedRenderingLifecycle.h>
+#include <Rendering/FrameGraph/SceneRenderGraphBuilder.h>
 #include "Rendering/LightGridPrepass.h"
 
 #include "Rendering/Resources/Material.h"
@@ -74,6 +75,8 @@ namespace NLS::Engine::Rendering
 		SceneLightingProvider& GetSceneLightingProvider();
 		const SceneLightingProvider& GetSceneLightingProvider() const;
 		const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& GetLightGridGraphicsPassBindingSet() const;
+		NLS::Render::FrameGraph::LightGridCompileContext BuildLightGridCompileContext(
+			bool hasSkyboxTexture = false) const;
 		bool HasPendingLightGridFrameInputs() const { return false; }
 
 	protected:

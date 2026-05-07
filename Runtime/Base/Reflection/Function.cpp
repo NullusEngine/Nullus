@@ -31,7 +31,7 @@ namespace NLS::meta
 
         bool Function::IsValid(void) const
         {
-            return m_invoker != nullptr;
+            return m_invoker != nullptr && (!m_parentType || m_parentType.IsValid( ));
         }
 
     Variant Function::InvokeVariadic(ArgumentList &arguments) const

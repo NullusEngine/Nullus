@@ -6,6 +6,7 @@
 #include <Math/Matrix4.h>
 #include <Rendering/Context/DriverAccess.h>
 #include <Rendering/Data/LightingDescriptor.h>
+#include <Rendering/FrameGraph/ExternalResourceBridge.h>
 #include <Rendering/FrameGraph/FrameGraphExecutionContext.h>
 #include <Rendering/FrameGraph/FrameGraphExecutionPlan.h>
 #include <Rendering/FrameGraph/SceneRenderGraphBuilder.h>
@@ -188,11 +189,9 @@ namespace NLS::Engine::Rendering
 				m_gBufferMaterialTexture.get(),
 				m_gBufferDepthTexture.get()
 			};
-			auto lightGridContext = NLS::Render::FrameGraph::BuildLightGridCompileContext(
-				GetFrameDescriptor(),
-				GetLightGridPrepass(),
-				BuildLightGridFrameInputs(hasSkyboxTexture));
-			auto frameDescriptorForBuilder = GetFrameDescriptor();
+			auto lightGridContext = BuildLightGridCompileContext(hasSkyboxTexture);
+			auto frameDescriptorForBuilder =
+				NLS::Render::FrameGraph::CaptureExternalSceneOutputSnapshot(GetFrameDescriptor());
 			auto deferredResources = NLS::Render::FrameGraph::CaptureDeferredPreparedSceneResources(deferredResourceRequest);
 
 			SetPendingPreparedRenderSceneBuilder(
@@ -242,10 +241,7 @@ namespace NLS::Engine::Rendering
 				m_gBufferDepthTexture.get()
 			};
 			const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
-			const auto lightGridContext = NLS::Render::FrameGraph::BuildLightGridCompileContext(
-				frame,
-				GetLightGridPrepass(),
-				BuildLightGridFrameInputs(scene.hasSkyboxTexture));
+			const auto lightGridContext = BuildLightGridCompileContext(scene.hasSkyboxTexture);
 			const auto resourceRequest = NLS::Render::FrameGraph::BuildDeferredGraphSceneResourceRequest(
 				frameGraph,
 				blackboard,

@@ -195,7 +195,8 @@ namespace NLS::Render::Context
             const RenderPassCommandInput& input);
         NLS_RENDER_API uint64_t RecordComputeDispatches(
             Render::RHI::RHICommandBuffer& commandBuffer,
-            const std::vector<RecordedComputeDispatchInput>& dispatchInputs);
+            const std::vector<RecordedComputeDispatchInput>& dispatchInputs,
+            bool recordShaderReadBarriers = true);
         NLS_RENDER_API void PopulateVisibilityTransitionsFromResourceUsage(
             std::vector<ParallelCommandWorkUnit>& workUnits);
         NLS_RENDER_API RenderScenePreparingResolutionDesc BuildRenderScenePreparingResolutionDesc();

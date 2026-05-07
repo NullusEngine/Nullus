@@ -67,7 +67,7 @@ endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 20)
 if(MSVC)
-    add_compile_options(/FS /source-charset:utf-8 /execution-charset:utf-8)
+    add_compile_options(/FS /bigobj /source-charset:utf-8 /execution-charset:utf-8)
 endif()
 
 # 确定编译目标为32位还是64位
@@ -101,7 +101,7 @@ endif()
 
 # 可选的配置项
 # ##############################################################################
-option(NLS_USE_SHARED_LIBRARY "Use Shared Library : OFF|ON (default is ON)" OFF)
+option(NLS_USE_SHARED_LIBRARY "Use Shared Library : OFF|ON (default is ON)" ON)
 option(NLS_ENABLE_PROFILING "Enable Nullus shared profiling instrumentation" OFF)
 option(NLS_ENABLE_TRACY "Enable Tracy profiler destination" OFF)
 option(NLS_ENABLE_TIMELINE_PROFILER "Enable TimelineProfiler editor destination" OFF)

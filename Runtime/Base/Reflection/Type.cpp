@@ -31,22 +31,57 @@ namespace NLS::meta
     {
         // make sure we always have a reference to the gDatabase
         #define gDatabase ReflectionDatabase::Instance( )
+
+        std::string NormalizeTypeLookupName(const char* name)
+        {
+            if (name == nullptr)
+                return {};
+
+            std::string normalized = name;
+
+            constexpr const char* prefixes[] = { "class ", "struct ", "enum " };
+            bool strippedPrefix = true;
+            while (strippedPrefix)
+            {
+                strippedPrefix = false;
+                for (const char* prefix : prefixes)
+                {
+                    const std::string_view prefixView(prefix);
+                    if (normalized.rfind(prefixView, 0) == 0)
+                    {
+                        normalized.erase(0, prefixView.size());
+                        strippedPrefix = true;
+                    }
+                }
+            }
+
+            return normalized;
+        }
+
     }
 
     Type::Type(void)
         : m_id( InvalidTypeID )
+        , m_generation( 0 )
         , m_isArray( false ) { }
 
         ///////////////////////////////////////////////////////////////////////
 
         Type::Type(const Type &rhs)
             : m_id( rhs.m_id )
+            , m_generation( rhs.m_generation )
             , m_isArray( rhs.m_isArray ) { }
 
         ///////////////////////////////////////////////////////////////////////
 
         Type::Type(TypeID id, bool isArray)
             : m_id( id )
+            , m_generation( ReflectionDatabase::TryGet( ) ? ReflectionDatabase::TryGet( )->GetGeneration( id ) : 0 )
+            , m_isArray( isArray ) { }
+
+        Type::Type(TypeID id, bool isArray, unsigned generation)
+            : m_id( id )
+            , m_generation( generation )
             , m_isArray( isArray ) { }
 
         ///////////////////////////////////////////////////////////////////////
@@ -61,6 +96,7 @@ namespace NLS::meta
         Type &Type::operator=(const Type &rhs)
         {
             m_id = rhs.m_id;
+            m_generation = rhs.m_generation;
             m_isArray = rhs.m_isArray;
 
             return *this;
@@ -70,35 +106,35 @@ namespace NLS::meta
 
         bool Type::operator<(const Type &rhs) const
         {
-            return m_id < rhs.m_id;
+            return m_id < rhs.m_id || (m_id == rhs.m_id && m_generation < rhs.m_generation);
         }
 
         ///////////////////////////////////////////////////////////////////////
 
         bool Type::operator>(const Type &rhs) const
         {
-            return m_id > rhs.m_id;
+            return rhs < *this;
         }
 
         ///////////////////////////////////////////////////////////////////////
 
         bool Type::operator<=(const Type &rhs) const
         {
-            return m_id <= rhs.m_id;
+            return !(rhs < *this);
         }
 
         ///////////////////////////////////////////////////////////////////////
 
         bool Type::operator>=(const Type &rhs) const
         {
-            return m_id >= rhs.m_id;
+            return !(*this < rhs);
         }
 
         ///////////////////////////////////////////////////////////////////////
 
         bool Type::operator==(const Type &rhs) const
         {
-            return m_id == rhs.m_id;
+            return m_id == rhs.m_id && m_generation == rhs.m_generation;
         }
 
         ///////////////////////////////////////////////////////////////////////
@@ -121,7 +157,12 @@ namespace NLS::meta
 
         TypeID Type::GetID(void) const
         {
-            return m_id;
+            return IsValid( ) ? m_id : InvalidTypeID;
+        }
+
+        TypeKey Type::GetKey(void) const
+        {
+            return IsValid( ) ? gDatabase.types[ m_id ].key : InvalidTypeKey;
         }
 
         ///////////////////////////////////////////////////////////////////////
@@ -206,6 +247,51 @@ namespace NLS::meta
 
         ///////////////////////////////////////////////////////////////////////
 
+        Type ResolveTypeByName(const char* name, bool isArray)
+        {
+            return ResolveTypeByID(ResolveTypeIDByName(name), isArray);
+        }
+
+        Type ResolveTypeByKey(TypeKey key, bool isArray)
+        {
+            return ResolveTypeByID(ResolveTypeIDByKey(key), isArray);
+        }
+
+        Type ResolveTypeByID(TypeID id, bool isArray)
+        {
+            return { id, isArray };
+        }
+
+        TypeKey MakeTypeKey(const char* stableName)
+        {
+            const auto normalizedName = NormalizeTypeLookupName(stableName);
+            return normalizedName.empty( ) ? InvalidTypeKey : HashTypeKey(normalizedName.c_str( ));
+        }
+
+        TypeID ResolveTypeIDByName(const char* name)
+        {
+            return ResolveTypeIDByKey(MakeTypeKey(name));
+        }
+
+        TypeID ResolveTypeIDByKey(TypeKey key)
+        {
+            if (key == InvalidTypeKey)
+                return InvalidTypeID;
+            
+            auto* db = ReflectionDatabase::TryGet( );
+            if (db == nullptr)
+                db = &ReflectionDatabase::Instance( );
+
+            return db->FindType(key);
+        }
+
+        TypeID ResolveTypeIDByID(TypeID id)
+        {
+            return id;
+        }
+
+        ///////////////////////////////////////////////////////////////////////
+
         bool Type::ListsEqual(const List &a, const List &b)
         {
             if (a.size( ) != b.size( ))
@@ -223,13 +309,16 @@ namespace NLS::meta
 
         bool Type::IsValid(void) const
         {
-            return m_id != InvalidTypeID;
+            auto* db = ReflectionDatabase::TryGet( );
+            return db != nullptr && db->IsAlive( m_id, m_generation );
         }
 
         ///////////////////////////////////////////////////////////////////////
 
         bool Type::IsPrimitive(void) const
         {
+            if (!IsValid( ))
+                return false;
             return gDatabase.types[ m_id ].isPrimitive;
         }
 
@@ -237,6 +326,8 @@ namespace NLS::meta
 
         bool Type::IsFloatingPoint(void) const
         {
+            if (!IsValid( ))
+                return false;
             return gDatabase.types[ m_id ].isFloatingPoint;
         }
 
@@ -244,6 +335,8 @@ namespace NLS::meta
 
         bool Type::IsSigned(void) const
         {
+            if (!IsValid( ))
+                return false;
             return gDatabase.types[ m_id ].isSigned;
         }
 
@@ -251,6 +344,8 @@ namespace NLS::meta
 
         bool Type::IsEnum(void) const
         {
+            if (!IsValid( ))
+                return false;
             return gDatabase.types[ m_id ].isEnum;
         }
 
@@ -258,6 +353,8 @@ namespace NLS::meta
 
         bool Type::IsPointer(void) const
         {
+            if (!IsValid( ))
+                return false;
             return gDatabase.types[ m_id ].isPointer;
         }
 
@@ -265,6 +362,8 @@ namespace NLS::meta
 
         bool Type::IsClass(void) const
         {
+            if (!IsValid( ))
+                return false;
             return gDatabase.types[ m_id ].isClass;
         }
 
@@ -279,6 +378,9 @@ namespace NLS::meta
 
         std::string Type::GetName(void) const
         {
+            if (!IsValid( ))
+                return gDatabase.types[ InvalidTypeID ].name;
+
             auto &name = gDatabase.types[ m_id ].name;
 
             if (IsArray( ))
@@ -289,6 +391,8 @@ namespace NLS::meta
 
         const MetaManager &Type::GetMeta(void) const
         {
+            if (!IsValid( ))
+                return gDatabase.types[ InvalidTypeID ].meta;
             return gDatabase.types[ m_id ].meta;
         }
 
@@ -296,6 +400,9 @@ namespace NLS::meta
 
         void Type::Destroy(Variant &instance) const
         {
+            if (!IsValid( ))
+                return;
+
             auto &destructor = gDatabase.types[ m_id ].destructor;
 
             if (destructor.IsValid( ))
@@ -316,6 +423,8 @@ namespace NLS::meta
 
         Type Type::GetArrayType(void) const
         {
+            if (!IsValid( ))
+                return Type::Invalid( );
             return Type( m_id, false );
         }
 
@@ -323,6 +432,8 @@ namespace NLS::meta
 
         const Enum &Type::GetEnum(void) const
         {
+            if (!IsValid( ))
+                return gDatabase.types[ InvalidTypeID ].enumeration;
             return gDatabase.types[ m_id ].enumeration;
         }
 
@@ -330,6 +441,9 @@ namespace NLS::meta
 
         bool Type::DerivesFrom(const Type &other) const
         {
+            if (!IsValid( ) || !other.IsValid( ))
+                return false;
+
             auto &baseClasses = gDatabase.types[ m_id ].baseClasses;
 
             return baseClasses.find( other ) != baseClasses.end( );
@@ -339,6 +453,8 @@ namespace NLS::meta
 
         const Type::Set &Type::GetBaseClasses(void) const
         {
+            if (!IsValid( ))
+                return gDatabase.types[ InvalidTypeID ].baseClasses;
             return gDatabase.types[ m_id ].baseClasses;
         }
 
@@ -346,6 +462,8 @@ namespace NLS::meta
 
         const Type::Set &Type::GetDerivedClasses(void) const
         {
+            if (!IsValid( ))
+                return gDatabase.types[ InvalidTypeID ].derivedClasses;
             return gDatabase.types[ m_id ].derivedClasses;
         }
 
@@ -353,6 +471,9 @@ namespace NLS::meta
 
         std::vector<Constructor> Type::GetConstructors(void) const
         {
+            if (!IsValid( ))
+                return {};
+
             auto &handle = gDatabase.types[ m_id ].constructors;
 
             std::vector<Constructor> constructors;
@@ -367,6 +488,9 @@ namespace NLS::meta
 
         std::vector<Constructor> Type::GetDynamicConstructors(void) const
         {
+            if (!IsValid( ))
+                return {};
+
             auto &handle = gDatabase.types[ m_id ].dynamicConstructors;
 
             std::vector<Constructor> constructors;
@@ -383,6 +507,8 @@ namespace NLS::meta
             const InvokableSignature &signature
         ) const
         {
+            if (!IsValid( ))
+                return Constructor::Invalid( );
             return gDatabase.types[ m_id ].GetConstructor( signature );
         }
 
@@ -392,6 +518,8 @@ namespace NLS::meta
             const InvokableSignature &signature
         ) const
         {
+            if (!IsValid( ))
+                return Constructor::Invalid( );
             return gDatabase.types[ m_id ].GetDynamicConstructor( signature );
         }
 
@@ -399,6 +527,8 @@ namespace NLS::meta
 
         const Constructor &Type::GetArrayConstructor(void) const
         {
+            if (!IsValid( ))
+                return Constructor::Invalid( );
             return gDatabase.types[ m_id ].arrayConstructor;
         }
 
@@ -406,6 +536,8 @@ namespace NLS::meta
 
         const Destructor &Type::GetDestructor(void) const
         {
+            if (!IsValid( ))
+                return Destructor::Invalid( );
             return gDatabase.types[ m_id ].destructor;
         }
 
@@ -413,6 +545,9 @@ namespace NLS::meta
 
         std::vector<Method> Type::GetMethods(void) const
         {
+            if (!IsValid( ))
+                return {};
+
             std::vector<Method> methods;
 
             auto &handle = gDatabase.types[ m_id ].methods;
@@ -432,6 +567,8 @@ namespace NLS::meta
 
         const Method &Type::GetMethod(const std::string &name) const
         {
+            if (!IsValid( ))
+                return Method::Invalid( );
             return gDatabase.types[ m_id ].GetMethod( name );
         }
 
@@ -442,6 +579,8 @@ namespace NLS::meta
             const InvokableSignature &signature
         ) const
         {
+            if (!IsValid( ))
+                return Method::Invalid( );
             return gDatabase.types[ m_id ].GetMethod( name, signature );
         }
 
@@ -449,6 +588,9 @@ namespace NLS::meta
 
         std::vector<Function> Type::GetStaticMethods(void) const
         {
+            if (!IsValid( ))
+                return {};
+
             std::vector<Function> methods;
 
             auto &handle = gDatabase.types[ m_id ].staticMethods;
@@ -468,6 +610,8 @@ namespace NLS::meta
 
         const Function &Type::GetStaticMethod(const std::string &name) const
         {
+            if (!IsValid( ))
+                return Function::Invalid( );
             return gDatabase.types[ m_id ].GetStaticMethod( name );
         }
 
@@ -478,6 +622,8 @@ namespace NLS::meta
             const InvokableSignature &signature
         ) const
         {
+            if (!IsValid( ))
+                return Function::Invalid( );
             return gDatabase.types[ m_id ].GetStaticMethod( name, signature );
         }
 
@@ -485,6 +631,9 @@ namespace NLS::meta
 
         const std::vector<Field> &Type::GetFields(void) const
         {
+            if (!IsValid( ))
+                return gDatabase.types[ InvalidTypeID ].fields;
+
             // @@@TODO: recursively get base class fields
 
             return gDatabase.types[ m_id ].fields;
@@ -494,6 +643,8 @@ namespace NLS::meta
 
         const Field &Type::GetField(const std::string &name) const
         {
+            if (!IsValid( ))
+                return Field::Invalid( );
             return gDatabase.types[ m_id ].GetField( name );
         }
 
@@ -501,6 +652,8 @@ namespace NLS::meta
 
         std::vector<Global> Type::GetStaticFields(void) const
         {
+            if (!IsValid( ))
+                return {};
             return gDatabase.types[ m_id ].staticFields;
         }
 
@@ -508,6 +661,8 @@ namespace NLS::meta
 
         const Global &Type::GetStaticField(const std::string &name) const
         {
+            if (!IsValid( ))
+                return Global::Invalid( );
             return gDatabase.types[ m_id ].GetStaticField( name );
         }
 
@@ -775,7 +930,7 @@ namespace NLS::meta
                     GetName( ).c_str( )
                 );
 
-                auto &fieldData = value[ field.GetName( ) ];
+                const auto fieldData = value[ field.GetName( ) ];
 
                 if (!fieldData.is_null( ))
                 {

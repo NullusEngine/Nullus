@@ -296,9 +296,10 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     const auto layoutPath = std::filesystem::path(p_projectPath) / "UserSettings" / "layout.ini";
     EnsureEditorLayoutFileReady(layoutPath, std::filesystem::path(editorAssetsPath) / "Settings" / "layout.ini");
 
-    // Set up swapchain resize callback to notify UI before resize
-    driver->SetSwapchainWillResizeCallback([this]() {
-        uiManager->NotifySwapchainWillResize();
+    // Set up swapchain resize callback to notify UI before resize.
+    driver->SetSwapchainWillResizeCallback([uiManager = uiManager.get()]() {
+        if (uiManager != nullptr)
+            uiManager->NotifySwapchainWillResize();
     });
 
     uiManager->SetEditorLayoutSaveFilename(layoutPath.string());
@@ -328,6 +329,8 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
 
 Editor::Core::Context::~Context()
 {
+    if (driver != nullptr)
+        driver->SetSwapchainWillResizeCallback(nullptr);
     ShutdownThreadedRendering();
     modelManager.UnloadResources();
     textureManager.UnloadResources();
@@ -338,7 +341,10 @@ Editor::Core::Context::~Context()
 void Editor::Core::Context::ShutdownThreadedRendering()
 {
     if (driver != nullptr)
+    {
+        driver->SetSwapchainWillResizeCallback(nullptr);
         driver->ShutdownThreadedRendering();
+    }
 }
 
 void Editor::Core::Context::ResetProjectSettings()

@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "BaseDef.h"
 #include "ReflectionDatabase.h"
 
 namespace NLS::meta
@@ -18,11 +19,20 @@ namespace NLS::meta
 
     using ReflectionRegisterFunction = void(*)(ReflectionDatabase &db, ReflectionRegistrationPhase phase);
 
-    class ReflectionModuleRegistry
+    struct ReflectionModuleDescriptor
+    {
+        TypeKey key = InvalidTypeKey;
+        const char* name = nullptr;
+        ReflectionRegisterFunction function = nullptr;
+    };
+
+    class NLS_BASE_API ReflectionModuleRegistry
     {
     public:
         static void Add(ReflectionRegisterFunction function);
+        static void Add(TypeKey moduleKey, const char* moduleName, ReflectionRegisterFunction function);
         static void RegisterAll(ReflectionDatabase &db);
+        static void Unload(TypeKey moduleKey);
     };
 
     template<ReflectionRegisterFunction Function>

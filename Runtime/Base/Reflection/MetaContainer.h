@@ -6,11 +6,12 @@
 
 #pragma once
 
+#include "BaseDef.h"
 #include "MetaManager.h"
 
 namespace NLS::meta
 {
-    class MetaContainer
+    class NLS_BASE_API MetaContainer
     {
     public:
         const MetaManager &GetMeta(void) const;

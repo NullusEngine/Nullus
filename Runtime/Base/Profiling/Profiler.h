@@ -1,5 +1,7 @@
 #pragma once
 
+#include "BaseDef.h"
+
 #include <cstdint>
 #include <cstddef>
 #include <string>
@@ -32,7 +34,7 @@ constexpr ProfilerCapabilityFlags ProfilerCapability_EditorTimeline = 1u << 2u;
 
 class IProfilerDestination;
 
-struct ProfilerDestinationState
+struct NLS_BASE_API ProfilerDestinationState
 {
     ProfilerDestinationId id = ProfilerDestinationId::Test;
     bool enabled = false;
@@ -41,13 +43,13 @@ struct ProfilerDestinationState
     std::string lastError;
 };
 
-struct ProfilerSessionStats
+struct NLS_BASE_API ProfilerSessionStats
 {
     uint64_t acceptedEventCount = 0u;
     uint64_t droppedEventCount = 0u;
 };
 
-struct ProfilerScopeEvent
+struct NLS_BASE_API ProfilerScopeEvent
 {
     std::string name;
     std::string sourceFunction;
@@ -57,7 +59,7 @@ struct ProfilerScopeEvent
     bool active = false;
 };
 
-struct ProfilerGpuScopeEvent
+struct NLS_BASE_API ProfilerGpuScopeEvent
 {
     void* nativeCommandBuffer = nullptr;
     std::string name;
@@ -68,20 +70,20 @@ struct ProfilerGpuScopeEvent
     bool active = false;
 };
 
-struct ProfilerGpuContextEvent
+struct NLS_BASE_API ProfilerGpuContextEvent
 {
     void* nativeDevice = nullptr;
     std::vector<void*> nativeCommandQueues;
     uint32_t frameLatency = 0u;
 };
 
-struct ProfilerGpuCommandListSubmitEvent
+struct NLS_BASE_API ProfilerGpuCommandListSubmitEvent
 {
     void* nativeCommandQueue = nullptr;
     std::vector<void*> nativeCommandLists;
 };
 
-class IProfilerDestination
+class NLS_BASE_API IProfilerDestination
 {
 public:
     virtual ~IProfilerDestination() = default;
@@ -94,7 +96,7 @@ public:
     virtual ProfilerDestinationState GetState() const = 0;
 };
 
-class Profiler
+class NLS_BASE_API Profiler
 {
 public:
     static void SetEnabled(bool enabled);
@@ -126,6 +128,8 @@ public:
 #define NLS_PROFILE_CONCAT_IMPL(a, b) a##b
 #define NLS_PROFILE_CONCAT(a, b) NLS_PROFILE_CONCAT_IMPL(a, b)
 
+#if defined(NLS_ENABLE_PROFILING)
+
 #define NLS_PROFILE_SCOPE() \
     ::NLS::Base::Profiling::ProfilerScope NLS_PROFILE_CONCAT(nlsProfileScope, __LINE__)(__FUNCTION__, __FUNCTION__)
 
@@ -140,3 +144,13 @@ public:
 
 #define NLS_GPU_PROFILE_NAMED_SCOPE(nativeCommandBuffer, name) \
     ::NLS::Base::Profiling::ProfilerGpuScope NLS_PROFILE_CONCAT(nlsGpuProfileScope, __LINE__)(nativeCommandBuffer, name, __FUNCTION__)
+
+#else
+
+#define NLS_PROFILE_SCOPE() ((void)0)
+#define NLS_PROFILE_NAMED_SCOPE(name) ((void)0)
+#define NLS_PROFILE_REGISTER_THREAD(name) ((void)0)
+#define NLS_GPU_PROFILE_SCOPE(nativeCommandBuffer) ((void)0)
+#define NLS_GPU_PROFILE_NAMED_SCOPE(nativeCommandBuffer, name) ((void)0)
+
+#endif

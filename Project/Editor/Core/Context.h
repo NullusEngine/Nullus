@@ -40,7 +40,7 @@ class Context
             std::optional<Render::Settings::EGraphicsBackend> p_backendOverride = std::nullopt,
             const Render::Settings::RenderDocSettings& p_renderDocSettings = {},
             bool p_enableThreadedRendering = false,
-            bool p_enableRhiDebugValidation = true,
+            bool p_enableRhiDebugValidation = false,
             const Render::Settings::EngineDiagnosticsSettings& p_diagnosticsSettings = {});
 
     /**

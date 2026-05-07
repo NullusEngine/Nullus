@@ -89,6 +89,7 @@ public:
 
     float GetCurrentFrameRate() const;
     float GetCurrentDeltaTime() const;
+    void OpenConsole();
 
     /**
      * Actually render the scene (Buffer swapping)

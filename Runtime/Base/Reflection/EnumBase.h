@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "BaseDef.h"
 #include "Type.h"
 
 #include <string>
@@ -16,7 +17,7 @@ namespace NLS::meta
     class Variant;
     class Argument;
 
-    class EnumBase
+    class NLS_BASE_API EnumBase
     {
     public:
         EnumBase(const std::string &name, TypeID owner);

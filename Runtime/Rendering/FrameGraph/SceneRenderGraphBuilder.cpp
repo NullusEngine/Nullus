@@ -49,31 +49,19 @@ namespace NLS::Render::FrameGraph
             FrameGraphResource outputDepth = -1;
         };
 
-        NLS::Engine::Rendering::LightGridPrepass::PreparedComputeRequest ResolveLightGridPreparedComputeRequest(
-            const LightGridCompileContext& context)
-        {
-            return NLS::Engine::Rendering::LightGridPrepass::BuildPreparedComputeRequest(
-                context.frameDescriptor,
-                context.lightGridPrepass,
-                context.preparedFrameInputs);
-        }
-
         PreparedComputeDispatchSource BuildPreparedLightGridDispatchSource(
             const LightGridCompileContext& context)
         {
-            return NLS::Engine::Rendering::LightGridPrepass::BuildPreparedComputeDispatchSource(
-                ResolveLightGridPreparedComputeRequest(context));
+            return context.preparedComputeSource;
         }
 
         void ResolvePreparedLightGridPassBindings(
             NLS::Render::Context::RenderScenePackage& package,
             const LightGridCompileContext& context)
         {
-            const auto resolvedBindingSet =
-                context.lightGridPrepass != nullptr ? context.lightGridPrepass->GetGraphicsPassBindingSet() : nullptr;
-            ResolvePreparedPassBindingPlaceholders(package.recordedDrawCommands, resolvedBindingSet);
+            ResolvePreparedPassBindingPlaceholders(package.recordedDrawCommands, context.graphicsPassBindingSet);
             for (auto& passInput : package.passCommandInputs)
-                ResolvePreparedPassBindingPlaceholders(passInput.recordedDrawCommands, resolvedBindingSet);
+                ResolvePreparedPassBindingPlaceholders(passInput.recordedDrawCommands, context.graphicsPassBindingSet);
         }
 
         template<typename TMetadataRange>
@@ -332,12 +320,12 @@ namespace NLS::Render::FrameGraph
                 if (outputState.depth < 0 && compiledPass.outputChain.depth >= 0)
                     outputState.depth = compiledPass.outputChain.depth;
 
-                switch (NLS::Engine::Rendering::GetDeferredScenePassExecutionKind(compiledPass.metadata.commandKind))
+                switch (GetDeferredScenePassExecutionKind(compiledPass.metadata.commandKind))
                 {
-                case NLS::Engine::Rendering::DeferredScenePassExecutionKind::GBuffer:
+                case DeferredScenePassExecutionKind::GBuffer:
                     gBufferPassData = &addGBufferPass(compiledPass);
                     break;
-                case NLS::Engine::Rendering::DeferredScenePassExecutionKind::Lighting:
+                case DeferredScenePassExecutionKind::Lighting:
                     addLightingPass(compiledPass, outputState, gBufferPassData);
                     break;
                 default:
@@ -439,9 +427,9 @@ namespace NLS::Render::FrameGraph
             }
 
             passInput = MakeCompiledThreadedRenderPassCommandInput(compiledPass);
-            switch (NLS::Engine::Rendering::GetDeferredScenePassExecutionKind(compiledPass.metadata.commandKind))
+            switch (GetDeferredScenePassExecutionKind(compiledPass.metadata.commandKind))
             {
-            case NLS::Engine::Rendering::DeferredScenePassExecutionKind::GBuffer:
+            case DeferredScenePassExecutionKind::GBuffer:
                 passInput.drawCount = opaqueDrawCount;
                 if (recordedDrawCommands.size() >= opaqueDrawCount)
                 {
@@ -477,7 +465,7 @@ namespace NLS::Render::FrameGraph
                     });
                 }
                 break;
-            case NLS::Engine::Rendering::DeferredScenePassExecutionKind::Lighting:
+            case DeferredScenePassExecutionKind::Lighting:
                 passInput.drawCount = 1u;
                 if (recordedDrawCommands.size() > opaqueDrawCount)
                 {
@@ -546,13 +534,13 @@ namespace NLS::Render::FrameGraph
 
     LightGridCompileContext BuildLightGridCompileContext(
         const NLS::Render::Data::FrameDescriptor& frameDescriptor,
-        const std::shared_ptr<NLS::Engine::Rendering::LightGridPrepass>& lightGridPrepass,
-        const std::optional<NLS::Engine::Rendering::LightGridPrepass::PreparedFrameInputs>& preparedFrameInputs)
+        PreparedComputeDispatchSource preparedComputeSource,
+        std::shared_ptr<NLS::Render::RHI::RHIBindingSet> graphicsPassBindingSet)
     {
         LightGridCompileContext context;
         context.frameDescriptor = frameDescriptor;
-        context.lightGridPrepass = lightGridPrepass;
-        context.preparedFrameInputs = preparedFrameInputs;
+        context.preparedComputeSource = std::move(preparedComputeSource);
+        context.graphicsPassBindingSet = std::move(graphicsPassBindingSet);
         return context;
     }
 
@@ -664,9 +652,15 @@ namespace NLS::Render::FrameGraph
         NLS::Render::Context::RenderScenePackage& package,
         const LightGridCompileContext& lightGridContext)
     {
-        return NLS::Engine::Rendering::CompileAndApplyPreparedLightGridThreadedExecution(
+        return CompileAndApplyThreadedRenderSceneExecution(
             package,
-            ResolveLightGridPreparedComputeRequest(lightGridContext),
+            lightGridContext.frameDescriptor,
+            -1,
+            -1,
+            [&lightGridContext]()
+            {
+                return BuildPreparedLightGridDispatchSource(lightGridContext);
+            },
             [&lightGridContext](NLS::Render::Context::RenderScenePackage& scenePackage)
             {
                 ResolvePreparedLightGridPassBindings(scenePackage, lightGridContext);
@@ -686,7 +680,7 @@ namespace NLS::Render::FrameGraph
         const NLS::Render::Data::FrameDescriptor& frameDescriptor)
     {
         if (!package.targetsSwapchain &&
-            ResolveExternalSceneOutputFramebuffer(frameDescriptor) != nullptr)
+            BuildExternalSceneOutputSummary(frameDescriptor).hasExternalOutput)
         {
             ApplyExternalSceneOutputAttachments(
                 package,
@@ -706,13 +700,39 @@ namespace NLS::Render::FrameGraph
     ForwardScenePassExecutionKind GetForwardScenePassExecutionKind(
         NLS::Render::Context::RenderPassCommandKind kind)
     {
-        return NLS::Engine::Rendering::GetForwardScenePassExecutionKind(kind);
+        switch (kind)
+        {
+        case NLS::Render::Context::RenderPassCommandKind::Opaque:
+            return ForwardScenePassExecutionKind::Opaque;
+        case NLS::Render::Context::RenderPassCommandKind::Skybox:
+            return ForwardScenePassExecutionKind::Skybox;
+        case NLS::Render::Context::RenderPassCommandKind::Transparent:
+            return ForwardScenePassExecutionKind::Transparent;
+        default:
+            return ForwardScenePassExecutionKind::Unknown;
+        }
     }
 
     ForwardScenePassPipelineKind GetForwardScenePassPipelineKind(
         NLS::Render::Context::RenderPassCommandKind kind)
     {
-        return NLS::Engine::Rendering::GetForwardScenePassPipelineKind(kind);
+        return GetForwardScenePassExecutionKind(kind) == ForwardScenePassExecutionKind::Skybox
+            ? ForwardScenePassPipelineKind::Skybox
+            : ForwardScenePassPipelineKind::Default;
+    }
+
+    DeferredScenePassExecutionKind GetDeferredScenePassExecutionKind(
+        NLS::Render::Context::RenderPassCommandKind kind)
+    {
+        switch (kind)
+        {
+        case NLS::Render::Context::RenderPassCommandKind::GBuffer:
+            return DeferredScenePassExecutionKind::GBuffer;
+        case NLS::Render::Context::RenderPassCommandKind::Lighting:
+            return DeferredScenePassExecutionKind::Lighting;
+        default:
+            return DeferredScenePassExecutionKind::Unknown;
+        }
     }
 
     DeferredPreparedSceneResources CaptureDeferredPreparedSceneResources(
@@ -905,9 +925,15 @@ namespace NLS::Render::FrameGraph
     {
         const auto opaqueDrawCount = package.opaqueDrawCount;
         const auto recordedDrawCommands = package.recordedDrawCommands;
-        return NLS::Engine::Rendering::CompileAndApplyPreparedLightGridThreadedExecution(
+        return CompileAndApplyThreadedRenderSceneExecution(
             package,
-            ResolveLightGridPreparedComputeRequest(lightGridContext),
+            lightGridContext.frameDescriptor,
+            -1,
+            -1,
+            [&lightGridContext]()
+            {
+                return BuildPreparedLightGridDispatchSource(lightGridContext);
+            },
             [&lightGridContext](NLS::Render::Context::RenderScenePackage& scenePackage)
             {
                 ResolvePreparedLightGridPassBindings(scenePackage, lightGridContext);

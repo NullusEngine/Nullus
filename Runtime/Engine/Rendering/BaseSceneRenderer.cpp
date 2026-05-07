@@ -10,6 +10,7 @@
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Context/RenderScenePackageBuilder.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/FrameGraph/ExternalResourceBridge.h"
 #include "Components/MeshRenderer.h"
 #include "Components/MaterialRenderer.h"
 #include "Components/TransformComponent.h"
@@ -120,6 +121,23 @@ const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& BaseSceneRenderer::GetLi
 {
 	static const std::shared_ptr<NLS::Render::RHI::RHIBindingSet> kNullBindingSet{};
 	return m_lightGridPrepass != nullptr ? m_lightGridPrepass->GetGraphicsPassBindingSet() : kNullBindingSet;
+}
+
+NLS::Render::FrameGraph::LightGridCompileContext BaseSceneRenderer::BuildLightGridCompileContext(
+	const bool hasSkyboxTexture) const
+{
+	const auto frameSnapshot =
+		NLS::Render::FrameGraph::CaptureExternalSceneOutputSnapshot(GetFrameDescriptor());
+	const auto preparedComputeRequest = LightGridPrepass::BuildPreparedComputeRequest(
+		frameSnapshot,
+		GetLightGridPrepass(),
+		BuildLightGridFrameInputs(hasSkyboxTexture));
+	auto preparedComputeSource = LightGridPrepass::BuildPreparedComputeDispatchSource(preparedComputeRequest);
+	auto graphicsPassBindingSet = GetLightGridGraphicsPassBindingSet();
+	return NLS::Render::FrameGraph::BuildLightGridCompileContext(
+		frameSnapshot,
+		std::move(preparedComputeSource),
+		std::move(graphicsPassBindingSet));
 }
 
 std::optional<LightGridPrepass::PreparedFrameInputs> BaseSceneRenderer::BuildLightGridFrameInputs(

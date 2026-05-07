@@ -347,6 +347,11 @@ void GPUProfiler::Tick()
 			// Convert to CPU ticks and assign to event
 			event.TicksBegin = ConvertToCPUTicks(queue, queries[queryRange.QueryIndexBegin]);
 			event.TicksEnd	 = ConvertToCPUTicks(queue, queries[queryRange.QueryIndexEnd]);
+			if (event.TicksEnd <= event.TicksBegin)
+			{
+				queryRange = {};
+				continue;
+			}
 
 			// Invalidate
 			queryRange = {};

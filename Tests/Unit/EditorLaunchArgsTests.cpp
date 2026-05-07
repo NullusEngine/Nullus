@@ -19,10 +19,21 @@ namespace
     }
 }
 
-TEST(EditorLaunchArgsTests, DefaultsToDebugValidationForDiagnosticSafety)
+TEST(EditorLaunchArgsTests, DefaultsToPerformanceFriendlyRhiValidation)
 {
     std::vector<std::string> storage;
     char** argv = MutableArgv({"Editor.exe", "TestProject.nullus"}, storage);
+
+    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+
+    EXPECT_FALSE(parsed.hasError);
+    EXPECT_FALSE(parsed.enableRhiDebugValidation);
+}
+
+TEST(EditorLaunchArgsTests, ExplicitDebugValidationFlagEnablesRhiDebugValidation)
+{
+    std::vector<std::string> storage;
+    char** argv = MutableArgv({"Editor.exe", "--rhi-debug-validation", "TestProject.nullus"}, storage);
 
     const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
 
@@ -65,17 +76,41 @@ TEST(EditorLaunchArgsTests, ScenePickingDiagnosticsCanBeEnabledWithoutDx12FrameF
     EXPECT_FALSE(parsed.diagnosticsSettings.dx12LogFrameFlow);
 }
 
-TEST(EditorLaunchArgsTests, EditorThreadedRenderingUsesSingleFrameSlotForInteractionLatency)
+TEST(EditorLaunchArgsTests, EditorFpsDiagnosticsCanBeEnabled)
 {
-    EXPECT_EQ(NLS::Editor::Core::ResolveEditorThreadedFrameSlotCount(2u), 1u);
-    EXPECT_EQ(NLS::Editor::Core::ResolveEditorThreadedFrameSlotCount(3u), 1u);
+    std::vector<std::string> storage;
+    char** argv = MutableArgv({"Editor.exe", "--log-editor-fps", "TestProject.nullus"}, storage);
+
+    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+
+    EXPECT_FALSE(parsed.hasError);
+    EXPECT_TRUE(parsed.diagnosticsSettings.logEditorFps);
+}
+
+TEST(EditorLaunchArgsTests, EditorThreadedRenderingUsesFramesInFlightSlotsForThroughput)
+{
+    EXPECT_EQ(NLS::Editor::Core::ResolveEditorThreadedFrameSlotCount(0u), 1u);
+    EXPECT_EQ(NLS::Editor::Core::ResolveEditorThreadedFrameSlotCount(2u), 2u);
+    EXPECT_EQ(NLS::Editor::Core::ResolveEditorThreadedFrameSlotCount(3u), 3u);
 }
 
 #if defined(_WIN32)
-TEST(EditorLaunchArgsTests, DefaultDx12DeviceCreationEnablesDredDiagnostics)
+TEST(EditorLaunchArgsTests, DefaultDx12DeviceCreationSkipsDredDiagnostics)
 {
     std::vector<std::string> storage;
     char** argv = MutableArgv({"Editor.exe", "TestProject.nullus"}, storage);
+    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+
+    const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(parsed.enableRhiDebugValidation);
+
+    EXPECT_TRUE(resources.IsValid());
+    EXPECT_FALSE(resources.dredDiagnosticsEnabled);
+}
+
+TEST(EditorLaunchArgsTests, ExplicitDebugValidationDx12DeviceCreationEnablesDredDiagnostics)
+{
+    std::vector<std::string> storage;
+    char** argv = MutableArgv({"Editor.exe", "--rhi-debug-validation", "TestProject.nullus"}, storage);
     const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
 
     const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(parsed.enableRhiDebugValidation);

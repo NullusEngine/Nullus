@@ -167,6 +167,7 @@ namespace NLS::Render::Backend
 			m_boundDescriptorTables.clear();
 			m_initializedRootDescriptorTables.clear();
 			m_boundBindingSets.clear();
+			m_recordedTextureViewKeepAlive.clear();
 			m_recordedBindingSetKeepAlive.clear();
 			m_recordedPipelineKeepAlive.clear();
 			m_recordedComputePipelineKeepAlive.clear();
@@ -197,6 +198,7 @@ namespace NLS::Render::Backend
 		m_boundDescriptorTables.clear();
 		m_initializedRootDescriptorTables.clear();
 		m_boundBindingSets.clear();
+		m_recordedTextureViewKeepAlive.clear();
 		m_recordedBindingSetKeepAlive.clear();
 		m_recordedPipelineKeepAlive.clear();
 		m_recordedComputePipelineKeepAlive.clear();
@@ -320,6 +322,7 @@ namespace NLS::Render::Backend
 			});
 			if (auto* nativeTexture = dynamic_cast<NativeDX12Texture*>(texture.get()))
 				nativeTexture->SetState(NLS::Render::RHI::ResourceState::RenderTarget);
+			m_recordedTextureViewKeepAlive.push_back(colorAttachment.view);
 		}
 
 		if (desc.depthStencilAttachment.has_value() && desc.depthStencilAttachment->view != nullptr)
@@ -351,6 +354,7 @@ namespace NLS::Render::Backend
 					});
 					if (auto* nativeTexture = dynamic_cast<NativeDX12Texture*>(texture.get()))
 						nativeTexture->SetState(NLS::Render::RHI::ResourceState::DepthWrite);
+					m_recordedTextureViewKeepAlive.push_back(desc.depthStencilAttachment->view);
 				}
 			}
 		}
@@ -973,7 +977,10 @@ namespace NLS::Render::Backend
 			if (resource == nullptr)
 				continue;
 
-			const auto stateBefore = ToD3D12ResourceState(bufferBarrier.before);
+			auto effectiveBefore = bufferBarrier.before;
+			if (effectiveBefore == NLS::Render::RHI::ResourceState::Unknown && bufferBarrier.buffer != nullptr)
+				effectiveBefore = bufferBarrier.buffer->GetState();
+			const auto stateBefore = ToD3D12ResourceState(effectiveBefore);
 			const auto stateAfter = ToD3D12ResourceState(bufferBarrier.after);
 			D3D12_RESOURCE_BARRIER barrier{};
 			if (stateBefore == stateAfter)
@@ -988,10 +995,12 @@ namespace NLS::Render::Backend
 
 			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 			barrier.Transition.pResource = resource;
-			barrier.Transition.StateBefore = ToD3D12ResourceState(bufferBarrier.before);
-			barrier.Transition.StateAfter = ToD3D12ResourceState(bufferBarrier.after);
+			barrier.Transition.StateBefore = stateBefore;
+			barrier.Transition.StateAfter = stateAfter;
 			barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 			barriers.push_back(barrier);
+			if (auto* nativeBuffer = dynamic_cast<NativeDX12Buffer*>(bufferBarrier.buffer.get()))
+				nativeBuffer->SetState(bufferBarrier.after);
 		}
 
 		for (const auto& textureBarrier : barrierDesc.textureBarriers)
@@ -1006,7 +1015,10 @@ namespace NLS::Render::Backend
 			if (resource == nullptr)
 				continue;
 
-			const auto stateBefore = ToD3D12ResourceState(textureBarrier.before);
+			auto effectiveBefore = textureBarrier.before;
+			if (effectiveBefore == NLS::Render::RHI::ResourceState::Unknown && textureBarrier.texture != nullptr)
+				effectiveBefore = textureBarrier.texture->GetState();
+			const auto stateBefore = ToD3D12ResourceState(effectiveBefore);
 			const auto stateAfter = ToD3D12ResourceState(textureBarrier.after);
 			D3D12_RESOURCE_BARRIER barrier{};
 			if (stateBefore == stateAfter)
@@ -1021,7 +1033,7 @@ namespace NLS::Render::Backend
 
 			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 			barrier.Transition.pResource = resource;
-			barrier.Transition.StateBefore = ToD3D12ResourceState(textureBarrier.before);
+			barrier.Transition.StateBefore = stateBefore;
 			barrier.Transition.StateAfter = ToD3D12ResourceState(textureBarrier.after);
 			barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 			barriers.push_back(barrier);

@@ -16,13 +16,15 @@ namespace NLS::Editor::Launch
         std::printf("  --no-renderdoc               Disable RenderDoc debugging\n");
         std::printf("  --capture-after-frames <N>   Automatically capture frame after N presents\n");
         std::printf("  --threaded-rendering         Threaded rendering is the default DX12 mainline\n");
-        std::printf("  --editor-performance-mode    Disable expensive RHI debug validation for FPS profiling\n");
-        std::printf("  --no-rhi-debug-validation    Disable RHI debug validation while keeping other diagnostics unchanged\n");
+        std::printf("  --rhi-debug-validation       Enable expensive RHI debug validation for GPU debugging\n");
+        std::printf("  --editor-performance-mode    Keep RHI debug validation disabled for FPS profiling\n");
+        std::printf("  --no-rhi-debug-validation    Keep RHI debug validation disabled while preserving other diagnostics\n");
         std::printf("  --log-render-draw-path      Enable render draw path logging\n");
         std::printf("  --diag-skip-skybox          Skip skybox draw for diagnostics\n");
         std::printf("  --log-material-bindings      Enable material bindings logging\n");
         std::printf("  --dx12-log-messages          Enable DX12 message logging\n");
         std::printf("  --dx12-log-frame-flow       Enable DX12 frame flow logging\n");
+        std::printf("  --log-editor-fps             Log one editor FPS sample per second\n");
         std::printf("  --editor-disable-grid-pass   Disable editor grid pass\n");
         std::printf("  --editor-disable-debug-cameras-pass  Disable debug cameras pass\n");
         std::printf("  --editor-disable-debug-lights-pass  Disable debug lights pass\n");
@@ -41,7 +43,7 @@ namespace NLS::Editor::Launch
         std::printf("\nExamples:\n");
         std::printf("  %s MyProject.nullus                       # Open project with default backend\n", executableName);
         std::printf("  %s -b dx12 MyProject.nullus                # Open with DX12 backend\n", executableName);
-        std::printf("  %s --editor-performance-mode MyProject.nullus  # Profile FPS without DX12 GPU validation\n", executableName);
+        std::printf("  %s --rhi-debug-validation MyProject.nullus # Debug GPU issues with DX12 validation\n", executableName);
         std::printf("  %s --renderdoc MyProject.nullus            # Enable RenderDoc and open project\n", executableName);
         std::printf("  %s --capture-after-frames 60 MyProject.nullus  # Auto-capture after 60 frames\n", executableName);
     }
@@ -105,6 +107,10 @@ namespace NLS::Editor::Launch
                 parsed.enablePerformanceMode = true;
                 parsed.enableRhiDebugValidation = false;
             }
+            else if (arg == "--rhi-debug-validation")
+            {
+                parsed.enableRhiDebugValidation = true;
+            }
             else if (arg == "--no-rhi-debug-validation")
             {
                 parsed.enableRhiDebugValidation = false;
@@ -128,6 +134,10 @@ namespace NLS::Editor::Launch
             else if (arg == "--dx12-log-frame-flow")
             {
                 parsed.diagnosticsSettings.dx12LogFrameFlow = true;
+            }
+            else if (arg == "--log-editor-fps")
+            {
+                parsed.diagnosticsSettings.logEditorFps = true;
             }
             else if (arg == "--editor-disable-grid-pass")
             {

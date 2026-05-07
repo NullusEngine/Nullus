@@ -442,7 +442,16 @@ namespace NLS::Render::Backend
 				return;
 			}
 
+			D3D12_RESOURCE_BARRIER toCopyDestBarrier{};
+			toCopyDestBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			toCopyDestBarrier.Transition.pResource = m_resource.Get();
+			toCopyDestBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+			toCopyDestBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+			toCopyDestBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			commandList->ResourceBarrier(1, &toCopyDestBarrier);
+
 			commandList->CopyBufferRegion(m_resource.Get(), 0, uploadBuffer.Get(), 0, desc.size);
+
 			D3D12_RESOURCE_BARRIER toCommonBarrier{};
 			toCommonBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 			toCommonBarrier.Transition.pResource = m_resource.Get();
@@ -488,6 +497,13 @@ namespace NLS::Render::Backend
 			WaitForSingleObject(fenceEvent, INFINITE);
 			CloseHandle(fenceEvent);
 		}
+
+		if (heapType == D3D12_HEAP_TYPE_UPLOAD)
+			m_state = NLS::Render::RHI::ResourceState::ShaderRead;
+		else if (heapType == D3D12_HEAP_TYPE_READBACK)
+			m_state = NLS::Render::RHI::ResourceState::CopyDst;
+		else
+			m_state = NLS::Render::RHI::ResourceState::Unknown;
 #endif
 	}
 
@@ -502,6 +518,7 @@ namespace NLS::Render::Backend
 	std::string_view NativeDX12Buffer::GetDebugName() const { return m_desc.debugName; }
 	const NLS::Render::RHI::RHIBufferDesc& NativeDX12Buffer::GetDesc() const { return m_desc; }
 	NLS::Render::RHI::ResourceState NativeDX12Buffer::GetState() const { return m_state; }
+	void NativeDX12Buffer::SetState(NLS::Render::RHI::ResourceState state) { m_state = state; }
 
 	uint64_t NativeDX12Buffer::GetGPUAddress() const
 	{

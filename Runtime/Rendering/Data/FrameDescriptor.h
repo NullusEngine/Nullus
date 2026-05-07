@@ -1,8 +1,15 @@
 #pragma once
 
+#include <memory>
 
 #include "Rendering/Buffers/Framebuffer.h"
 #include "Rendering/Entities/Camera.h"
+
+namespace NLS::Render::RHI
+{
+	class RHITexture;
+	class RHITextureView;
+}
 
 namespace NLS::Render::Data
 {
@@ -15,6 +22,10 @@ namespace NLS::Render::Data
 		uint16_t renderHeight = 0;
 		NLS::Render::Entities::Camera* camera = nullptr;
         Buffers::Framebuffer* outputBuffer = nullptr;
+		std::shared_ptr<NLS::Render::RHI::RHITexture> outputColorTexture;
+		std::shared_ptr<NLS::Render::RHI::RHITexture> outputDepthStencilTexture;
+		std::shared_ptr<NLS::Render::RHI::RHITextureView> outputColorView;
+		std::shared_ptr<NLS::Render::RHI::RHITextureView> outputDepthStencilView;
 
 		/**
 		* Ensures that the data provided in the frame descriptor is valid

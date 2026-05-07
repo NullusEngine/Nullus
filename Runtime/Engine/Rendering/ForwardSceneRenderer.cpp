@@ -122,10 +122,7 @@ namespace NLS::Engine::Rendering
 		if (usesThreadedRendering && pendingFrameSnapshot.has_value())
 		{
 			auto snapshot = pendingFrameSnapshot.value();
-			auto lightGridContext = NLS::Render::FrameGraph::BuildLightGridCompileContext(
-				GetFrameDescriptor(),
-				GetLightGridPrepass(),
-				BuildLightGridFrameInputs(hasSkyboxTexture));
+			auto lightGridContext = BuildLightGridCompileContext(hasSkyboxTexture);
 			auto frameDescriptor = lightGridContext.frameDescriptor;
 			SetPendingPreparedRenderSceneBuilder(
 				[snapshot = std::move(snapshot),
@@ -157,16 +154,12 @@ namespace NLS::Engine::Rendering
 			NLS::Render::FrameGraph::ReserveForwardSceneGraph(frameGraph, frame);
 			FrameGraphBlackboard blackboard;
 			const auto& scene = GetDescriptor<ForwardSceneDescriptor>();
-			const auto lightGridContext = NLS::Render::FrameGraph::BuildLightGridCompileContext(
-				frame,
-				GetLightGridPrepass(),
-				BuildLightGridFrameInputs(scene.hasSkyboxTexture));
+			const auto lightGridContext = BuildLightGridCompileContext(scene.hasSkyboxTexture);
 			const auto preparedGraph = NLS::Render::FrameGraph::PrepareForwardSceneGraph(
 				frameGraph,
 				blackboard,
 				lightGridContext);
-			SetActivePreparedPassBindingSet(
-				lightGridContext.lightGridPrepass != nullptr ? lightGridContext.lightGridPrepass->GetGraphicsPassBindingSet() : nullptr);
+			SetActivePreparedPassBindingSet(lightGridContext.graphicsPassBindingSet);
 
 			NLS::Render::FrameGraph::ExecutePreparedForwardSceneGraph(
 				frameGraph,

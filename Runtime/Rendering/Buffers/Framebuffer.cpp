@@ -3,8 +3,12 @@
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 
+#include <utility>
+
 namespace
 {
+	constexpr size_t kMaxRetiredFramebufferResourceSets = 16u;
+
 	bool SameOptimizedColorClearValue(
 		const NLS::Render::RHI::RHITextureDesc::OptimizedClearValue& left,
 		const NLS::Render::RHI::RHITextureDesc::OptimizedClearValue& right)
@@ -50,6 +54,22 @@ namespace
 	}
 }
 
+bool NLS::Render::Buffers::Framebuffer::RetiredResourceSet::HasResources() const
+{
+	return colorTexture != nullptr ||
+		depthStencilTexture != nullptr ||
+		colorView != nullptr ||
+		depthStencilView != nullptr;
+}
+
+void NLS::Render::Buffers::Framebuffer::RetiredResourceSet::Reset()
+{
+	colorView.reset();
+	depthStencilView.reset();
+	colorTexture.reset();
+	depthStencilTexture.reset();
+}
+
 NLS::Render::Buffers::Framebuffer::Framebuffer(uint16_t p_width, uint16_t p_height)
 {
 	if (p_width == 0u || p_height == 0u)
@@ -89,10 +109,39 @@ NLS::Render::Buffers::Framebuffer::~Framebuffer()
 
 void NLS::Render::Buffers::Framebuffer::Release()
 {
+	ResetCurrentResources();
+	for (auto& resourceSet : m_retiredResourceSets)
+		resourceSet.Reset();
+	m_retiredResourceSets.clear();
+}
+
+void NLS::Render::Buffers::Framebuffer::ResetCurrentResources()
+{
 	m_explicitRenderTextureView.reset();
 	m_explicitDepthStencilTextureView.reset();
 	m_explicitRenderTexture.reset();
 	m_explicitDepthStencilTexture.reset();
+}
+
+void NLS::Render::Buffers::Framebuffer::RetireCurrentResources()
+{
+	RetiredResourceSet resourceSet;
+	resourceSet.colorTexture = std::move(m_explicitRenderTexture);
+	resourceSet.depthStencilTexture = std::move(m_explicitDepthStencilTexture);
+	resourceSet.colorView = std::move(m_explicitRenderTextureView);
+	resourceSet.depthStencilView = std::move(m_explicitDepthStencilTextureView);
+
+	if (resourceSet.HasResources())
+		m_retiredResourceSets.push_back(std::move(resourceSet));
+}
+
+void NLS::Render::Buffers::Framebuffer::PruneRetiredResources()
+{
+	while (m_retiredResourceSets.size() > kMaxRetiredFramebufferResourceSets)
+	{
+		m_retiredResourceSets.front().Reset();
+		m_retiredResourceSets.pop_front();
+	}
 }
 
 void NLS::Render::Buffers::Framebuffer::Resize(uint16_t p_width, uint16_t p_height, bool p_forceUpdate)
@@ -102,7 +151,7 @@ void NLS::Render::Buffers::Framebuffer::Resize(uint16_t p_width, uint16_t p_heig
 
 	if (p_width == 0u || p_height == 0u)
 	{
-		Release();
+		RetireCurrentResources();
 		m_width = p_width;
 		m_height = p_height;
 		return;
@@ -116,25 +165,28 @@ void NLS::Render::Buffers::Framebuffer::Resize(uint16_t p_width, uint16_t p_heig
 		return;
 	}
 
-	Release();
-
-	m_explicitRenderTexture = device->CreateTexture(CreateColorTextureDesc(p_width, p_height, m_colorOptimizedClearValue), nullptr);
-	if (m_explicitRenderTexture == nullptr)
+	auto nextColorTexture = device->CreateTexture(CreateColorTextureDesc(p_width, p_height, m_colorOptimizedClearValue), nullptr);
+	if (nextColorTexture == nullptr)
 	{
 		NLS_LOG_WARNING("Framebuffer::Resize: Failed to recreate color texture");
+		PruneRetiredResources();
 		return;
 	}
 
-	m_explicitDepthStencilTexture = device->CreateTexture(CreateDepthTextureDesc(p_width, p_height), nullptr);
-	if (m_explicitDepthStencilTexture == nullptr)
+	auto nextDepthStencilTexture = device->CreateTexture(CreateDepthTextureDesc(p_width, p_height), nullptr);
+	if (nextDepthStencilTexture == nullptr)
 	{
 		NLS_LOG_WARNING("Framebuffer::Resize: Failed to recreate depth texture");
-		Release();
+		PruneRetiredResources();
 		return;
 	}
 
+	RetireCurrentResources();
+	m_explicitRenderTexture = std::move(nextColorTexture);
+	m_explicitDepthStencilTexture = std::move(nextDepthStencilTexture);
 	m_width = p_width;
 	m_height = p_height;
+	PruneRetiredResources();
 }
 
 void NLS::Render::Buffers::Framebuffer::SetOptimizedColorClearValue(float r, float g, float b, float a)

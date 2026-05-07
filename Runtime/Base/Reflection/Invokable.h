@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "BaseDef.h"
 #include "InvokableConfig.h"
 #include "ArgumentConfig.h"
 
@@ -15,7 +16,7 @@ namespace NLS::meta
 {
     class Type;
 
-    class Invokable
+    class NLS_BASE_API Invokable
     {
     public:
         Invokable(const std::string &name = "INVALID");

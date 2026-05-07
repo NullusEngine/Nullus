@@ -1,3 +1,6 @@
 #include "Core/ServiceLocator.h"
 
-std::unordered_map<std::size_t, std::any> NLS::Core::ServiceLocator::__SERVICES;
+namespace NLS::Core
+{
+std::unordered_map<std::size_t, std::any> ServiceLocator::__SERVICES;
+}

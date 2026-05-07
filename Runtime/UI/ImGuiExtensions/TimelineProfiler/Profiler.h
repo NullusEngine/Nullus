@@ -408,7 +408,10 @@ private:
 
 	uint64 ConvertToCPUTicks(const QueueInfo& queue, uint64 gpuTicks) const
 	{
-		gAssert(gpuTicks >= queue.GPUCalibrationTicks);
+		if (queue.GPUFrequency == 0)
+			return queue.CPUCalibrationTicks;
+		if (gpuTicks <= queue.GPUCalibrationTicks)
+			return queue.CPUCalibrationTicks;
 		return queue.CPUCalibrationTicks + (gpuTicks - queue.GPUCalibrationTicks) * m_CPUTickFrequency / queue.GPUFrequency;
 	}
 

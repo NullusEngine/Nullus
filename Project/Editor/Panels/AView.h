@@ -120,6 +120,7 @@ namespace NLS::Editor::Panels
 		void SetRequiresRetiredFrameConsumption(bool requiresRetiredFrameConsumption);
         virtual bool RequiresImmediateRetiredFrameReadback() const;
         void SetRequiresImmediateRetiredFrameReadback(bool requiresImmediateRetiredFrameReadback);
+        virtual bool RequiresSynchronizedRetiredFramePresentation() const;
 		void SyncViewToCurrentContentRegion();
 		void Render(uint16_t p_width, uint16_t p_height);
 		void ApplyResolvedViewSize(uint16_t p_width, uint16_t p_height);

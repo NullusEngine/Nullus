@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include "BaseDef.h"
+#include "TypeKey.h"
 #include "MetaManager.h"
 
 #include "Constructor.h"
@@ -26,7 +28,7 @@ namespace NLS::meta
 {
     class ReflectionDatabase;
 
-    struct TypeData
+    struct NLS_BASE_API TypeData
     {
         bool isEnum : 1;
         bool isPrimitive : 1;
@@ -37,7 +39,10 @@ namespace NLS::meta
 
         MetaManager meta;
 
+        TypeKey key = InvalidTypeKey;
+        unsigned generation = 0;
         std::string name;
+        TypeKey ownerModuleKey = InvalidTypeKey;
 
         // enum type
         Enum enumeration;
@@ -77,6 +82,10 @@ namespace NLS::meta
 
         TypeData(void);
         TypeData(const std::string &name);
+        TypeData(TypeKey key, const std::string &name, TypeKey ownerModuleKey);
+        TypeData &operator=(const TypeData &) = delete;
+
+        void ResetForUnload(void);
 
         void LoadBaseClasses(
             ReflectionDatabase &db,
@@ -185,6 +194,7 @@ namespace NLS::meta
             );
 
             const Field &GetField(const std::string &name) const;
+            void OverrideLastFieldTypes(Type fieldType, Type classType);
 
             ///////////////////////////////////////////////////////////////////
             ///////////////////////////////////////////////////////////////////

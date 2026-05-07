@@ -52,9 +52,11 @@ namespace NLS::Editor::Panels
     inline bool ShouldDrainAfterRetirementAwareViewRender(
         const bool requiresRetiredFrameConsumption,
         const bool requiresImmediateReadback,
-        const bool resizedViewThisFrame = false)
+        const bool resizedViewThisFrame = false,
+        const bool requiresSynchronizedPresentation = false)
     {
-        return requiresRetiredFrameConsumption && (requiresImmediateReadback || resizedViewThisFrame);
+        return requiresRetiredFrameConsumption &&
+            (requiresImmediateReadback || resizedViewThisFrame || requiresSynchronizedPresentation);
     }
 
     inline bool ShouldDelayRetirementAwareViewOverlayMatrices(
@@ -62,9 +64,10 @@ namespace NLS::Editor::Panels
         const bool requiresImmediateReadback,
         const bool threadedRendering)
     {
-        return threadedRendering &&
-            requiresRetiredFrameConsumption &&
-            !requiresImmediateReadback;
+        (void)requiresRetiredFrameConsumption;
+        (void)requiresImmediateReadback;
+        (void)threadedRendering;
+        return false;
     }
 
     inline bool ShouldSceneViewRequestImmediatePickingReadback()

@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "BaseDef.h"
 #include "VariantBase.h"
 
 #include "JsonConfig.h"
@@ -14,7 +15,7 @@ namespace NLS::meta
 {
     class Object;
 
-    class ObjectWrapper : public VariantBase
+    class NLS_BASE_API ObjectWrapper : public VariantBase
     {
     public:
         ObjectWrapper(Object *instance);

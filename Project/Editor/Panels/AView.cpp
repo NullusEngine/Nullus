@@ -142,7 +142,6 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
             Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver);
         if (threadedRendering)
             beforeTelemetry = Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(*driver);
-
 		InitFrame();
 
 		Render::Data::FrameDescriptor frameDescriptor;
@@ -166,7 +165,8 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
         if (Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
             RequiresRetiredFrameConsumption(),
             RequiresImmediateRetiredFrameReadback(),
-            m_resizedViewThisFrame))
+            m_resizedViewThisFrame,
+            RequiresSynchronizedRetiredFramePresentation()))
         {
             if (auto* driver = Render::Context::TryGetLocatedDriver();
                 driver != nullptr && Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver))
@@ -234,10 +234,34 @@ void Editor::Panels::AView::SetRequiresImmediateRetiredFrameReadback(
     m_requiresImmediateRetiredFrameReadback = requiresImmediateRetiredFrameReadback;
 }
 
+bool Editor::Panels::AView::RequiresSynchronizedRetiredFramePresentation() const
+{
+    return false;
+}
+
 void Editor::Panels::AView::ApplyResolvedViewSize(const uint16_t p_width, const uint16_t p_height)
 {
     m_resizedViewThisFrame = m_lastResolvedViewSize.first != p_width ||
         m_lastResolvedViewSize.second != p_height;
+
+    if (m_resizedViewThisFrame)
+    {
+        if (auto* driver = Render::Context::TryGetLocatedDriver();
+            driver != nullptr && Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver))
+        {
+            Render::Context::DriverRendererAccess::DrainThreadedRendering(*driver);
+        }
+
+        if (m_image != nullptr && m_image->textureView != nullptr &&
+            NLS::Core::ServiceLocator::Contains<UI::UIManager>())
+        {
+            NLS_SERVICE(UI::UIManager).ReleaseTextureViewHandle(m_image->textureView);
+        }
+
+        if (m_image != nullptr)
+            m_image->textureView.reset();
+    }
+
     m_lastResolvedViewSize = { p_width, p_height };
     m_fbo.Resize(p_width, p_height);
     m_image->textureView = m_fbo.GetOrCreateExplicitColorView("Editor.AView.Output");
@@ -249,6 +273,9 @@ void Editor::Panels::AView::UpdatePreRenderOverlayCameraMatrices()
     auto* camera = GetCamera();
     if (camera == nullptr)
         return;
+
+    if (m_lastResolvedViewSize.first > 0u && m_lastResolvedViewSize.second > 0u)
+        camera->CacheMatrices(m_lastResolvedViewSize.first, m_lastResolvedViewSize.second);
 
     auto* driver = Render::Context::TryGetLocatedDriver();
     const bool threadedRendering =
@@ -309,7 +336,6 @@ void Editor::Panels::AView::UpdateSubmittedOverlayCameraMatrices(
         RequiresRetiredFrameConsumption(),
         RequiresImmediateRetiredFrameReadback(),
         threadedRendering);
-
     if (framePublished)
     {
         auto storedMatrices = submittedMatrices;
@@ -322,10 +348,8 @@ void Editor::Panels::AView::UpdateSubmittedOverlayCameraMatrices(
 
     if (!delayOverlayMatrices)
     {
-        if (!m_submittedOverlayCameraMatrices.empty())
+        if (framePublished && !m_submittedOverlayCameraMatrices.empty())
             m_overlayCameraMatricesForCurrentDraw = m_submittedOverlayCameraMatrices.back();
-        else
-            m_overlayCameraMatricesForCurrentDraw = submittedMatrices;
         return;
     }
 

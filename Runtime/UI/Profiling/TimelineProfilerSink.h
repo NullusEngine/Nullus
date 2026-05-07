@@ -1,10 +1,11 @@
 #pragma once
 
 #include "Profiling/Profiler.h"
+#include "UIDef.h"
 
 namespace NLS::Base::Profiling
 {
-class TimelineProfilerSink final : public IProfilerDestination
+class NLS_UI_API TimelineProfilerSink final : public IProfilerDestination
 {
 public:
     TimelineProfilerSink();

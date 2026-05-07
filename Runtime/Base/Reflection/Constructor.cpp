@@ -82,7 +82,7 @@ namespace NLS::meta
 
         bool Constructor::IsValid(void) const
         {
-            return m_invoker != nullptr;
+            return m_invoker != nullptr && m_classType.IsValid( );
         }
 
         bool Constructor::IsDynamic(void) const

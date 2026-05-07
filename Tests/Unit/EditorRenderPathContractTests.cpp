@@ -108,8 +108,8 @@ TEST(EditorRenderPathContractTests, EditorDeferredPathKeepsGraphOwnedGBufferBefo
         {});
     const auto lightGridContext = NLS::Render::FrameGraph::BuildLightGridCompileContext(
         frameDescriptor,
-        nullptr,
-        std::nullopt);
+        NLS::Render::FrameGraph::PreparedComputeDispatchSource{},
+        nullptr);
     const auto preparedGraph = NLS::Render::FrameGraph::PrepareDeferredSceneGraph(
         resourceRequest,
         lightGridContext);

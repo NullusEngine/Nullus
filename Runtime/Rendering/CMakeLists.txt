@@ -5,6 +5,7 @@ nls_add_runtime_target(
   ${NLS_ThirdParty_DIR}
   ${NLS_ThirdParty_DIR}/ImGui
   LIBS
+  NLS_Core
   NLS_Platform
   ImGui
   assimp
@@ -38,6 +39,10 @@ else()
   target_compile_definitions(NLS_Render PUBLIC NLS_HAS_VULKAN=0)
 endif()
 
+if(WIN32)
+  target_link_libraries(NLS_Render PUBLIC d3d12 dxgi dxguid d3d11)
+endif()
+
 if(APPLE)
   target_compile_definitions(NLS_Render PUBLIC NLS_HAS_METAL=1)
   target_link_libraries(NLS_Render PUBLIC "-framework Metal" "-framework QuartzCore" "-framework Foundation")
@@ -51,3 +56,14 @@ target_include_directories(
     $<BUILD_INTERFACE:${NLS_ROOT_DIR}/Runtime/Core>
     $<BUILD_INTERFACE:${NLS_ROOT_DIR}/Runtime/Engine>
   )
+
+target_sources(
+  NLS_Render
+  PRIVATE
+    "${NLS_ROOT_DIR}/Runtime/Core/ResourceManagement/MaterialManager.cpp"
+    "${NLS_ROOT_DIR}/Runtime/Core/ResourceManagement/ModelManager.cpp"
+    "${NLS_ROOT_DIR}/Runtime/Core/ResourceManagement/ShaderManager.cpp"
+    "${NLS_ROOT_DIR}/Runtime/Core/ResourceManagement/TextureManager.cpp"
+)
+
+target_compile_definitions(NLS_Render PRIVATE NLS_RESOURCE_MANAGEMENT_EXPORT)

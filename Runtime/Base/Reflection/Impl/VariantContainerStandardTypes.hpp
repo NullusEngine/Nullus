@@ -8,7 +8,7 @@
 
 #define DECLARE_STANDARD_VARIANT(type)                                     \
     template<>                                                             \
-    class VariantContainer<type> : public VariantBase                      \
+    class NLS_BASE_API VariantContainer<type> : public VariantBase         \
     {                                                                      \
     public:                                                                \
         VariantContainer(const type &value);                               \
@@ -37,7 +37,7 @@ namespace NLS::meta
 {
         // void is a tricky 'ol fella, and must be defined manually
         template<>
-        class VariantContainer<void> : public VariantBase
+        class NLS_BASE_API VariantContainer<void> : public VariantBase
         {
         public:
             VariantContainer(void);

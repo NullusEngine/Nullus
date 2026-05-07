@@ -28,6 +28,14 @@ namespace std
 namespace NLS::meta
 {
     template<typename T>
+    Type ResolveType(bool isArray)
+    {
+        return ResolveTypeByID(ResolveTypeID<T>(), isArray);
+    }
+
+        ///////////////////////////////////////////////////////////////////////
+
+    template<typename T>
     Type Type::Get(T &&obj)
     {
         return { NLS_TYPEOF( T ) };

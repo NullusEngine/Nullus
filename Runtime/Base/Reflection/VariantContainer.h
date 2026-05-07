@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "BaseDef.h"
 #include "VariantBase.h"
 
 #include "MetaTraits.h"

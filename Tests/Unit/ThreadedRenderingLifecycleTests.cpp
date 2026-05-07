@@ -1905,7 +1905,7 @@ TEST(ThreadedRenderingLifecycleTests, StandaloneExplicitFrameIsRejectedWhileThre
     EXPECT_FALSE(NLS::Render::Context::DriverTestAccess::CanBeginStandaloneExplicitFrame(driver));
 }
 
-TEST(ThreadedRenderingLifecycleTests, ThreadedUiRenderCanBeginWhileOnlyOffscreenThreadedFrameIsInFlight)
+TEST(ThreadedRenderingLifecycleTests, ThreadedUiRenderCanProceedWhileOffscreenThreadedFrameIsInFlight)
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
@@ -1938,9 +1938,12 @@ TEST(ThreadedRenderingLifecycleTests, ThreadedUiRenderCanBeginWhileOnlyOffscreen
 
     EXPECT_TRUE(NLS::Render::Context::DriverUIAccess::PrepareUIRender(driver));
     EXPECT_NE(NLS::Render::Context::DriverRendererAccess::GetActiveExplicitCommandBuffer(driver), nullptr);
+    EXPECT_EQ(commandPool->resetCalls, 1u);
+    EXPECT_EQ(commandBuffer->resetCalls, 1u);
+    EXPECT_EQ(commandBuffer->beginCalls, 1u);
+    EXPECT_EQ(swapchain->acquireCalls, 1u);
 
     NLS::Render::Context::DriverUIAccess::PresentSwapchain(driver);
-    EXPECT_EQ(NLS::Render::Context::DriverRendererAccess::GetActiveExplicitCommandBuffer(driver), nullptr);
 }
 
 TEST(ThreadedRenderingLifecycleTests, ThreadedUiRenderSkipsWhenRhiSubmissionOwnsFrameContext)
@@ -4065,6 +4068,241 @@ TEST(ThreadedRenderingLifecycleTests, ParallelRecordingUsesMultipleWorkersForEli
     EXPECT_EQ(explicitDevice->GetCreatedCommandPools().size(), 2u);
     for (const auto& submittedBuffer : explicitDevice->GetTestQueue()->lastSubmitDesc.commandBuffers)
         EXPECT_NE(submittedBuffer, frameContext.commandBuffer);
+}
+
+TEST(ThreadedRenderingLifecycleTests, ExternalSceneOutputUsesSerialCommandPathEvenWhenParallelRecordingIsAvailable)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->MutableCapabilities().supportsParallelCommandRecording = true;
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    auto commandPool = std::make_shared<TestCommandPool>();
+    auto frameFence = std::make_shared<TestFence>();
+    commandPool->commandBuffer = commandBuffer;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.commandPool = commandPool;
+    frameContext.frameFence = frameFence;
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
+    ASSERT_NE(lifecycle, nullptr);
+
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 410u;
+    snapshot.targetsSwapchain = false;
+    snapshot.hasExternalOutput = true;
+    snapshot.externalOutputTextureCount = 2u;
+    snapshot.visibleOpaqueDrawCount = 2u;
+    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryPublishHarnessFrameSnapshot(driver, snapshot));
+
+    size_t slotIndex = 0u;
+    NLS::Render::Context::FrameSnapshot publishedSnapshot;
+    ASSERT_TRUE(lifecycle->TryBeginNextRenderScene(&slotIndex, &publishedSnapshot));
+
+    NLS::Render::RHI::RHITextureDesc colorDesc;
+    colorDesc.debugName = "EditorSceneColor";
+    colorDesc.extent.width = 64u;
+    colorDesc.extent.height = 64u;
+    colorDesc.extent.depth = 1u;
+    colorDesc.arrayLayers = 1u;
+    colorDesc.mipLevels = 1u;
+    colorDesc.usage =
+        NLS::Render::RHI::TextureUsageFlags::ColorAttachment |
+        NLS::Render::RHI::TextureUsageFlags::Sampled;
+    auto colorTexture = std::make_shared<TestTexture>(colorDesc);
+    auto colorView = std::make_shared<TestTextureView>(
+        colorTexture,
+        NLS::Render::RHI::RHITextureViewDesc{});
+
+    NLS::Render::RHI::RHITextureDesc depthDesc = colorDesc;
+    depthDesc.debugName = "EditorSceneDepth";
+    depthDesc.usage = NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment;
+    auto depthTexture = std::make_shared<TestTexture>(depthDesc);
+    auto depthView = std::make_shared<TestTextureView>(
+        depthTexture,
+        NLS::Render::RHI::RHITextureViewDesc{});
+
+    auto graphicsPipeline = std::make_shared<TestGraphicsPipeline>("ScenePipeline");
+    auto materialBindingSet = std::make_shared<TestBindingSet>("MaterialBindingSet");
+    auto mesh = std::make_shared<TestMesh>();
+
+    NLS::Render::Context::RenderPassCommandInput opaquePassInput;
+    opaquePassInput.kind = NLS::Render::Context::RenderPassCommandKind::Opaque;
+    opaquePassInput.drawCount = 1u;
+    opaquePassInput.requiresFrameData = true;
+    opaquePassInput.requiresObjectData = true;
+    opaquePassInput.targetsSwapchain = false;
+    opaquePassInput.renderWidth = 64u;
+    opaquePassInput.renderHeight = 64u;
+    opaquePassInput.clearColor = true;
+    opaquePassInput.clearDepth = true;
+    opaquePassInput.usesColorAttachment = true;
+    opaquePassInput.usesDepthStencilAttachment = true;
+    opaquePassInput.colorAttachmentViews.push_back(colorView);
+    opaquePassInput.depthStencilAttachmentView = depthView;
+    opaquePassInput.recordedDrawCommands.push_back({ graphicsPipeline, nullptr, nullptr, nullptr, materialBindingSet, mesh, 1u });
+
+    NLS::Render::Context::RenderPassCommandInput transparentPassInput = opaquePassInput;
+    transparentPassInput.kind = NLS::Render::Context::RenderPassCommandKind::Transparent;
+    transparentPassInput.clearColor = false;
+    transparentPassInput.clearDepth = false;
+    transparentPassInput.usesDepthStencilAttachment = false;
+
+    NLS::Render::Context::ParallelCommandWorkUnit opaqueWorkUnit;
+    opaqueWorkUnit.commandInput = opaquePassInput;
+    opaqueWorkUnit.debugName = "ExternalSceneOpaque";
+    opaqueWorkUnit.eligibleForParallelRecording = true;
+
+    NLS::Render::Context::ParallelCommandWorkUnit transparentWorkUnit;
+    transparentWorkUnit.commandInput = transparentPassInput;
+    transparentWorkUnit.debugName = "ExternalSceneTransparent";
+    transparentWorkUnit.eligibleForParallelRecording = true;
+
+    NLS::Render::Context::RenderScenePackage package;
+    package.frameId = publishedSnapshot.frameId;
+    package.targetsSwapchain = false;
+    package.visibleDrawCount = 2u;
+    package.opaqueDrawCount = 1u;
+    package.transparentDrawCount = 1u;
+    package.hasVisibleDraws = true;
+    package.frameDataReady = true;
+    package.objectDataReady = true;
+    package.renderWidth = 64u;
+    package.renderHeight = 64u;
+    package.containsParallelCommandWorkUnits = true;
+    package.parallelCommandWorkUnitCount = 2u;
+    package.parallelCommandWorkUnits = { opaqueWorkUnit, transparentWorkUnit };
+    package.extractedTextures = { colorTexture, depthTexture };
+
+    ASSERT_TRUE(lifecycle->CompleteRenderScene(slotIndex, package));
+
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
+    const auto copiedSlot = lifecycle->CopySlot(0u);
+    ASSERT_TRUE(copiedSlot.has_value());
+    ASSERT_TRUE(copiedSlot->submissionFrame.has_value());
+    EXPECT_TRUE(copiedSlot->submissionFrame->usedExternalOutputBridge);
+    EXPECT_EQ(copiedSlot->submissionFrame->externalOutputTextureCount, 1u);
+    EXPECT_FALSE(copiedSlot->submissionFrame->usedParallelCommandPath);
+    EXPECT_TRUE(copiedSlot->submissionFrame->usedSerialCommandPath);
+    EXPECT_EQ(copiedSlot->submissionFrame->parallelRecordingWorkerCount, 0u);
+    EXPECT_EQ(explicitDevice->GetCreatedCommandPools().size(), 0u);
+    ASSERT_EQ(explicitDevice->GetTestQueue()->submitCalls, 1u);
+    ASSERT_EQ(explicitDevice->GetTestQueue()->lastSubmitDesc.commandBuffers.size(), 1u);
+    EXPECT_EQ(explicitDevice->GetTestQueue()->lastSubmitDesc.commandBuffers.front(), frameContext.commandBuffer);
+    EXPECT_EQ(commandBuffer->beginRenderPassCalls, 2u);
+}
+
+TEST(ThreadedRenderingLifecycleTests, ExternalSceneOutputTelemetryIgnoresPreferredReadbackTexture)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    auto commandPool = std::make_shared<TestCommandPool>();
+    auto frameFence = std::make_shared<TestFence>();
+    commandPool->commandBuffer = commandBuffer;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.commandPool = commandPool;
+    frameContext.frameFence = frameFence;
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
+    ASSERT_NE(lifecycle, nullptr);
+
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 411u;
+    snapshot.targetsSwapchain = false;
+    snapshot.hasExternalOutput = true;
+    snapshot.externalOutputTextureCount = 1u;
+    ASSERT_TRUE(NLS::Render::Context::DriverTestAccess::TryPublishHarnessFrameSnapshot(driver, snapshot));
+
+    size_t slotIndex = 0u;
+    NLS::Render::Context::FrameSnapshot publishedSnapshot;
+    ASSERT_TRUE(lifecycle->TryBeginNextRenderScene(&slotIndex, &publishedSnapshot));
+
+    NLS::Render::RHI::RHITextureDesc sceneDesc;
+    sceneDesc.debugName = "EditorSceneColor";
+    sceneDesc.extent.width = 64u;
+    sceneDesc.extent.height = 64u;
+    sceneDesc.extent.depth = 1u;
+    sceneDesc.arrayLayers = 1u;
+    sceneDesc.mipLevels = 1u;
+    sceneDesc.usage =
+        NLS::Render::RHI::TextureUsageFlags::ColorAttachment |
+        NLS::Render::RHI::TextureUsageFlags::Sampled;
+    auto sceneTexture = std::make_shared<TestTexture>(sceneDesc);
+    auto sceneView = std::make_shared<TestTextureView>(
+        sceneTexture,
+        NLS::Render::RHI::RHITextureViewDesc{});
+
+    NLS::Render::RHI::RHITextureDesc pickingDesc = sceneDesc;
+    pickingDesc.debugName = "PickingReadbackColor";
+    auto pickingTexture = std::make_shared<TestTexture>(pickingDesc);
+
+    auto graphicsPipeline = std::make_shared<TestGraphicsPipeline>("ScenePipeline");
+    auto materialBindingSet = std::make_shared<TestBindingSet>("MaterialBindingSet");
+    auto mesh = std::make_shared<TestMesh>();
+
+    NLS::Render::Context::RenderPassCommandInput opaquePassInput;
+    opaquePassInput.kind = NLS::Render::Context::RenderPassCommandKind::Opaque;
+    opaquePassInput.drawCount = 1u;
+    opaquePassInput.requiresFrameData = true;
+    opaquePassInput.requiresObjectData = true;
+    opaquePassInput.targetsSwapchain = false;
+    opaquePassInput.renderWidth = 64u;
+    opaquePassInput.renderHeight = 64u;
+    opaquePassInput.clearColor = true;
+    opaquePassInput.usesColorAttachment = true;
+    opaquePassInput.colorAttachmentViews.push_back(sceneView);
+    opaquePassInput.recordedDrawCommands.push_back({ graphicsPipeline, nullptr, nullptr, nullptr, materialBindingSet, mesh, 1u });
+
+    NLS::Render::Context::RenderScenePackage package;
+    package.frameId = publishedSnapshot.frameId;
+    package.targetsSwapchain = false;
+    package.visibleDrawCount = 1u;
+    package.opaqueDrawCount = 1u;
+    package.hasVisibleDraws = true;
+    package.frameDataReady = true;
+    package.objectDataReady = true;
+    package.renderWidth = 64u;
+    package.renderHeight = 64u;
+    package.passCommandInputs = { opaquePassInput };
+    package.extractedTextures = { sceneTexture, pickingTexture };
+    package.preferredReadbackTexture = pickingTexture;
+
+    ASSERT_TRUE(lifecycle->CompleteRenderScene(slotIndex, package));
+
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
+
+    const auto copiedSlot = lifecycle->CopySlot(0u);
+    ASSERT_TRUE(copiedSlot.has_value());
+    ASSERT_TRUE(copiedSlot->submissionFrame.has_value());
+    EXPECT_TRUE(copiedSlot->submissionFrame->usedExternalOutputBridge);
+    EXPECT_EQ(copiedSlot->submissionFrame->externalOutputTextureCount, 1u);
 }
 
 TEST(ThreadedRenderingLifecycleTests, SubmissionDiagnosticsCaptureDescriptorAndTransientLifetimeStats)

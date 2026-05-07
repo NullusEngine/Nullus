@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include "BaseDef.h"
 #include "TypeConfig.h"
 
 #include <type_traits>
@@ -16,7 +17,7 @@ namespace NLS::meta
     class Type;
     class Variant;
 
-    class Argument
+    class NLS_BASE_API Argument
     {
     public:
         Argument(void);

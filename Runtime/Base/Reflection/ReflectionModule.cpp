@@ -9,28 +9,48 @@
 #include "ReflectionModule.h"
 
 #include <algorithm>
+#include <mutex>
 #include <vector>
 
 namespace NLS::meta
 {
     namespace
     {
-        std::vector<ReflectionRegisterFunction> &GetReflectionRegisterFunctions()
+        std::vector<ReflectionModuleDescriptor> &GetReflectionModules()
         {
-            static std::vector<ReflectionRegisterFunction> functions;
-            return functions;
+            static std::vector<ReflectionModuleDescriptor> modules;
+            return modules;
+        }
+
+        std::recursive_mutex &GetReflectionModuleMutex()
+        {
+            static std::recursive_mutex mutex;
+            return mutex;
         }
     }
 
     void ReflectionModuleRegistry::Add(ReflectionRegisterFunction function)
     {
+        Add(InvalidTypeKey, nullptr, function);
+    }
+
+    void ReflectionModuleRegistry::Add(TypeKey moduleKey, const char* moduleName, ReflectionRegisterFunction function)
+    {
         if (!function)
             return;
 
-            auto &functions = GetReflectionRegisterFunctions();
-            if (std::find(functions.begin(), functions.end(), function) == functions.end())
+            std::scoped_lock lock(GetReflectionModuleMutex());
+            auto &modules = GetReflectionModules();
+            const auto found = std::find_if(
+                modules.begin(),
+                modules.end(),
+                [function](const ReflectionModuleDescriptor &module)
+                {
+                    return module.function == function;
+                });
+            if (found == modules.end())
             {
-                functions.push_back(function);
+                modules.push_back({ moduleKey, moduleName, function });
                 if (auto *db = ReflectionDatabase::TryGet())
                 {
                     function(*db, ReflectionRegistrationPhase::Declare);
@@ -41,16 +61,38 @@ namespace NLS::meta
 
     void ReflectionModuleRegistry::RegisterAll(ReflectionDatabase &db)
     {
-        auto &functions = GetReflectionRegisterFunctions();
+        std::scoped_lock lock(GetReflectionModuleMutex());
+        auto &modules = GetReflectionModules();
 
-            for (auto function : functions)
+            for (const auto &module : modules)
             {
-                function(db, ReflectionRegistrationPhase::Declare);
+                module.function(db, ReflectionRegistrationPhase::Declare);
             }
 
-        for (auto function : functions)
+        for (const auto &module : modules)
         {
-            function(db, ReflectionRegistrationPhase::Define);
+            module.function(db, ReflectionRegistrationPhase::Define);
         }
+    }
+
+    void ReflectionModuleRegistry::Unload(TypeKey moduleKey)
+    {
+        if (moduleKey == InvalidTypeKey)
+            return;
+
+        std::scoped_lock lock(GetReflectionModuleMutex());
+        auto &modules = GetReflectionModules();
+        modules.erase(
+            std::remove_if(
+                modules.begin(),
+                modules.end(),
+                [moduleKey](const ReflectionModuleDescriptor &module)
+                {
+                    return module.key == moduleKey;
+                }),
+            modules.end());
+
+        if (auto *db = ReflectionDatabase::TryGet())
+            db->UnloadModule(moduleKey);
     }
 }

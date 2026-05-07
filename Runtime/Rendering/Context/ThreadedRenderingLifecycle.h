@@ -67,6 +67,8 @@ namespace NLS::Render::Context
         uint32_t groupCountX = 1u;
         uint32_t groupCountY = 1u;
         uint32_t groupCountZ = 1u;
+        std::vector<std::shared_ptr<RHI::RHIBuffer>> shaderReadBuffersBefore;
+        std::vector<std::shared_ptr<RHI::RHIBuffer>> shaderWriteBuffersBefore;
         std::vector<std::shared_ptr<RHI::RHIBuffer>> uavBarrierBuffersBefore;
         std::vector<std::shared_ptr<RHI::RHIBuffer>> uavBarrierBuffersAfter;
         std::vector<std::shared_ptr<RHI::RHIBuffer>> shaderReadBuffersAfter;

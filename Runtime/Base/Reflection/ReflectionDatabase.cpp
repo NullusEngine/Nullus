@@ -9,16 +9,18 @@
 #include "ReflectionDatabase.h"
 
 #include "ReflectionModule.h"
+#include "ReflectionDiagnostics.h"
+#include "Object.h"
 #include "Type.h"
 
 #include "MetaGenerated.h"
 
-#define REGISTER_NATIVE_TYPE(type)                    \
-    {                                                 \
-        auto id = AllocateType( #type );              \
-        auto &handle = types[ id ];                   \
-                                                      \
-        TypeInfo<type>::Register( id, handle, true ); \
+#define REGISTER_NATIVE_TYPE(type)                                      \
+    {                                                                   \
+        auto id = AllocateType(MakeTypeKey( #type ), #type );           \
+        auto &handle = types[ id ];                                     \
+                                                                        \
+        TypeInfo<type>::Register( id, handle, true );                   \
     }                                                 \
 
 #define REGISTER_NATIVE_TYPE_VARIANTS(type) \
@@ -51,10 +53,13 @@ namespace NLS::meta
             REGISTER_NATIVE_TYPE_VARIANTS( void );
             REGISTER_NATIVE_TYPE_VARIANTS_W_ARRAY( int );
             REGISTER_NATIVE_TYPE_VARIANTS_W_ARRAY( unsigned int );
+            REGISTER_NATIVE_TYPE_VARIANTS_W_ARRAY( int64_t );
+            REGISTER_NATIVE_TYPE_VARIANTS_W_ARRAY( uint64_t );
             REGISTER_NATIVE_TYPE_VARIANTS_W_ARRAY( bool );
             REGISTER_NATIVE_TYPE_VARIANTS_W_ARRAY( float );
             REGISTER_NATIVE_TYPE_VARIANTS_W_ARRAY( double );
             REGISTER_NATIVE_TYPE_VARIANTS_W_ARRAY( std::string );
+            REGISTER_NATIVE_TYPE_VARIANTS( NLS::meta::Object );
 
             auto &stringType = types[ NLS_TYPEIDOF( std::string ) ];
 
@@ -89,19 +94,122 @@ namespace NLS::meta
 
         TypeID ReflectionDatabase::AllocateType(const std::string &name)
         {
-            auto search = ids.find( name );
+            return AllocateType(MakeTypeKey(name.c_str( )), name);
+        }
 
-            // already defined
-            if (search != ids.end( ))
+        TypeID ReflectionDatabase::AllocateType(TypeKey key, const std::string &name, TypeKey ownerModuleKey)
+        {
+            std::scoped_lock lock(mutex);
+            if (key == InvalidTypeKey)
+                key = MakeTypeKey(name.c_str( ));
+
+            if (auto search = keyedIds.find(key); search != keyedIds.end( ))
                 return InvalidTypeID;
 
-            types.emplace_back( name );
+            if (auto search = ids.find(name); search != ids.end( ))
+                return InvalidTypeID;
+
+            types.emplace_back(key, name, ownerModuleKey);
 
             auto id = m_nextID++;
 
             ids[ name ] = id;
+            keyedIds[ key ] = id;
 
             return id;
+        }
+
+        TypeID ReflectionDatabase::FindType(TypeKey key) const
+        {
+            std::scoped_lock lock(mutex);
+            auto search = keyedIds.find(key);
+            return search != keyedIds.end( ) ? search->second : InvalidTypeID;
+        }
+
+        TypeID ReflectionDatabase::FindType(const std::string &name) const
+        {
+            std::scoped_lock lock(mutex);
+            auto search = ids.find(name);
+            return search != ids.end( ) ? search->second : InvalidTypeID;
+        }
+
+        unsigned ReflectionDatabase::GetGeneration(TypeID id) const
+        {
+            std::scoped_lock lock(mutex);
+            return id < types.size( ) ? types[ id ].generation : 0;
+        }
+
+        bool ReflectionDatabase::IsAlive(TypeID id, unsigned generation) const
+        {
+            std::scoped_lock lock(mutex);
+            return id != InvalidTypeID && id < types.size( ) && types[ id ].generation == generation && types[ id ].key != InvalidTypeKey;
+        }
+
+        void ReflectionDatabase::UnloadModule(TypeKey moduleKey)
+        {
+            std::scoped_lock lock(mutex);
+            if (moduleKey == InvalidTypeKey)
+                return;
+
+            if (!CanUnloadModule(moduleKey))
+            {
+                ReflectionDiagnostics::Report(
+                    ReflectionDiagnosticSeverity::Error,
+                    moduleKey,
+                    nullptr,
+                    nullptr,
+                    "module unload blocked",
+                    "module still has reflected types referenced by another module"
+                );
+                return;
+            }
+
+            for (TypeID id = 1; id < types.size( ); ++id)
+            {
+                auto &type = types[ id ];
+                if (type.ownerModuleKey != moduleKey)
+                    continue;
+
+                ids.erase(type.name);
+                keyedIds.erase(type.key);
+                type.ResetForUnload( );
+            }
+
+            moduleDependencies.erase(moduleKey);
+        }
+
+        bool ReflectionDatabase::CanUnloadModule(TypeKey moduleKey) const
+        {
+            std::scoped_lock lock(mutex);
+            if (moduleKey == InvalidTypeKey)
+                return false;
+
+            for (const auto &[otherModuleKey, dependencies] : moduleDependencies)
+            {
+                if (otherModuleKey == moduleKey)
+                    continue;
+
+                for (TypeID id = 1; id < types.size( ); ++id)
+                {
+                    const auto &type = types[ id ];
+                    if (type.ownerModuleKey != moduleKey)
+                        continue;
+
+                    if (dependencies.find(type.key) != dependencies.end( ))
+                        return false;
+                }
+            }
+
+            return true;
+        }
+
+        void ReflectionDatabase::AddDependency(TypeKey ownerModuleKey, TypeKey referencedTypeKey)
+        {
+            std::scoped_lock lock(mutex);
+            if (ownerModuleKey == InvalidTypeKey || referencedTypeKey == InvalidTypeKey)
+                return;
+
+            moduleDependencies[ ownerModuleKey ].insert(referencedTypeKey);
         }
 
         ///////////////////////////////////////////////////////////////////////

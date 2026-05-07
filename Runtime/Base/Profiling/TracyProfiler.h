@@ -4,7 +4,7 @@
 
 namespace NLS::Base::Profiling
 {
-class TracyProfiler final : public IProfilerDestination
+class NLS_BASE_API TracyProfiler final : public IProfilerDestination
 {
 public:
     void BeginScope(const ProfilerScopeEvent& event) override;

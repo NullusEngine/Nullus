@@ -37,12 +37,12 @@ TEST(MetaParserGenerationDataTests, GeneratesExpectedExternalAndPrivateReflectio
     const std::string privateText = ReadAllText(privateSource);
     const std::string serializeText = ReadAllText(serializeSource);
 
-    ExpectContains(mathText, "AllocateType(\"NLS::Maths::Vector3\")");
+    ExpectContains(mathText, "AllocateType(typeKey, \"NLS::Maths::Vector3\", moduleKey)");
     ExpectContains(mathText, "AddStaticMethod<NLS::Maths::Vector3>(\"Dot\"");
-    ExpectContains(mathText, "AllocateType(\"NLS::Maths::Quaternion\")");
+    ExpectContains(mathText, "AllocateType(typeKey, \"NLS::Maths::Quaternion\", moduleKey)");
     ExpectContains(privateText, "PrivateAccess_NLS__meta__PrivateReflectionExternalSample");
     ExpectContains(privateText, "AddField<NLS::meta::PrivateReflectionExternalSample, int>(\"m_hiddenValue\"");
     ExpectContains(privateText, "AddMethod(\"GetHiddenValue\"");
-    ExpectContains(serializeText, "AllocateType(\"NLS::Engine::Serialize::SerializedSceneData\")");
+    ExpectContains(serializeText, "AllocateType(typeKey, \"NLS::Engine::Serialize::SerializedSceneData\", moduleKey)");
     ExpectContains(serializeText, "AddField<NLS::Engine::Serialize::SerializedSceneData, NLS::Array<NLS::Engine::Serialize::SerializedActorData>>(\"actors\"");
 }

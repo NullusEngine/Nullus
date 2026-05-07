@@ -126,5 +126,6 @@ set_target_properties(NullusUnitTests PROPERTIES
     FOLDER Tests
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
+nls_copy_shared_runtime_to_target(NullusUnitTests)
 
 add_test(NAME NullusUnitTests COMMAND NullusUnitTests)

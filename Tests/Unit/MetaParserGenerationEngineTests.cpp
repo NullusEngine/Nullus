@@ -33,7 +33,7 @@ TEST(MetaParserGenerationEngineTests, GeneratesExpectedEngineReflectionBindings)
     const std::string sceneText = ReadAllText(sceneSource);
     const std::string metaText = ReadAllText(engineMetaSource);
 
-    ExpectContains(componentText, "AllocateType(\"NLS::Engine::Components::Component\")");
+    ExpectContains(componentText, "AllocateType(typeKey, \"NLS::Engine::Components::Component\", moduleKey)");
     ExpectContains(componentText, "AddMethod(\"CreateBy\", &NLS::Engine::Components::Component::CreateBy, {})");
     ExpectContains(transformText, "AddField<NLS::Engine::Components::TransformComponent, NLS::Maths::Vector3>(\"localPosition\"");
     ExpectContains(cameraText, "AddField<NLS::Engine::Components::CameraComponent, float>(\"fov\"");
@@ -46,11 +46,11 @@ TEST(MetaParserGenerationEngineTests, GeneratesExpectedEngineReflectionBindings)
     ExpectContains(meshText, "AddField<NLS::Engine::Components::MeshRenderer, std::string>(\"model\", &NLS::Engine::Components::MeshRenderer::GetModelPath, &NLS::Engine::Components::MeshRenderer::SetModelPath, {})");
     ExpectContains(meshText, "AddField<NLS::Engine::Components::MeshRenderer, NLS::Engine::Components::MeshRenderer::EFrustumBehaviour>(\"frustumBehaviour\"");
     ExpectContains(meshText, "AddField<NLS::Engine::Components::MeshRenderer, NLS::Render::Geometry::BoundingSphere>(\"customBoundingSphere\"");
-    ExpectContains(gameObjectText, "AllocateType(\"NLS::Engine::GameObject\")");
+    ExpectContains(gameObjectText, "AllocateType(typeKey, \"NLS::Engine::GameObject\", moduleKey)");
     ExpectContains(gameObjectText, "type.AddField<NLS::Engine::GameObject, std::string>(\"name\"");
     ExpectContains(gameObjectText, "type.AddField<NLS::Engine::GameObject, bool>(\"active\"");
     ExpectContains(gameObjectText, "&NLS::Engine::GameObject::IsSelfActive");
-    ExpectContains(sceneText, "AllocateType(\"NLS::Engine::SceneSystem::Scene\")");
+    ExpectContains(sceneText, "AllocateType(typeKey, \"NLS::Engine::SceneSystem::Scene\", moduleKey)");
     ExpectContains(sceneText, "AddMethod(\"Play\", &NLS::Engine::SceneSystem::Scene::Play, {})");
     ExpectContains(sceneText, "AddMethod(\"GetActors\", static_cast<const std::vector<NLS::Engine::GameObject*>& (NLS::Engine::SceneSystem::Scene::*)() const>(&NLS::Engine::SceneSystem::Scene::GetActors), {})");
     ExpectContains(metaText, "LinkReflectionTypes_NLS_Engine");

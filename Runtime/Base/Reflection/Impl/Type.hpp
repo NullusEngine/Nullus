@@ -72,6 +72,6 @@ namespace NLS::meta
             "Invalid type created."
         );
 
-        return type.DeserializeJson( value ).GetValue<ClassType>( );
+        return type.DeserializeJson( value ).template GetValue<ClassType>( );
     }
 }

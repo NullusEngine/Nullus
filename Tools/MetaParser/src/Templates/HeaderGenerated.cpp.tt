@@ -108,7 +108,7 @@ void <#= registerFunctionName #>(NLS::meta::ReflectionDatabase& db, NLS::meta::R
             );
         };
     auto resolveRegisteredType =
-        [&db, &reportMissingType](const char* name)
+        [&db, &reportMissingType, moduleKey](const char* name)
         {
             const auto referencedKey = NLS::meta::MakeTypeKey(name);
             db.AddDependency(moduleKey, referencedKey);

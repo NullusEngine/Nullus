@@ -14,25 +14,20 @@ namespace Components
 {
     class TransformComponent;
 }
-CLASS() class NLS_ENGINE_API GameObject : public NLS::meta::Object
+CLASS(NLS_ENGINE_API GameObject) : public NLS::meta::Object
 {
 public:
     GENERATED_BODY()
-    PROPERTY(name = active, getter = IsSelfActive, setter = SetActive)
-    GameObject(int64_t p_actorID, const std::string& p_name, const std::string& p_tag, bool& p_playing);
+    GameObject(const std::string& p_name, const std::string& p_tag = "");
     ~GameObject();
-    meta::Type GetType(void) const override { return NLS_TYPEOF(GameObject); }
-    NLS::meta::Object* Clone(void) const override { return nullptr; }
     template<typename T>
     T* AddComponent(const std::function<void(Components::Component*)>& func = {});
     template<typename T>
     T* GetComponent(bool includeSubType = true) const;
-#ifndef __REFLECTION_PARSER__
     const std::vector<std::unique_ptr<Components::Component>>& GetComponents() const
     {
         return m_vComponents;
     }
-#endif
     bool RemoveComponent(Components::Component* component);
 
     Components::Component* AddComponent(meta::Type type, const std::function<void(Components::Component*)>& func = {});
@@ -135,10 +130,7 @@ public:
     void OnTriggerExit(GameObject& p_otherObject);
 
     FUNCTION()
-    void SetWorldID(int newID)
-    {
-        m_worldID = newID;
-    }
+    void SetWorldID(int newID);
 
     FUNCTION()
     int GetWorldID() const
@@ -263,7 +255,9 @@ private:
      * @param p_actor
      */
     GameObject(const GameObject& p_actor) = delete;
+    GameObject& operator=(const GameObject& p_actor) = delete;
 
+    static int AllocateWorldID();
     void RecursiveActiveUpdate();
     void RecursiveWasActiveUpdate();
 
@@ -292,7 +286,6 @@ protected:
     bool m_awaked = false;
     bool m_started = false;
     bool m_wasActive = false;
-    bool& m_playing;
     /* Parenting system stuff */
     int64_t m_parentID = 0;
     GameObject* m_parent = nullptr;

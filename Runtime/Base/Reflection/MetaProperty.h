@@ -13,7 +13,7 @@
 
 namespace NLS::meta
 {
-    CLASS() class MetaProperty : public Object
+    CLASS(MetaProperty) : public Object
     {
     public:
         GENERATED_BODY()

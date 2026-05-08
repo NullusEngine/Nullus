@@ -24,7 +24,7 @@ Nullus currently supports these reflection inputs:
 1. Inline reflected types:
 
 ```cpp
-CLASS() class MyType : public NLS::meta::Object
+CLASS(MyType) : public NLS::meta::Object
 {
 public:
     GENERATED_BODY()
@@ -34,7 +34,7 @@ public:
 2. Reflected enums:
 
 ```cpp
-ENUM() enum class MyMode : uint8_t
+ENUM(MyMode) : uint8_t
 {
     A,
     B
@@ -146,7 +146,7 @@ Do not expose lifecycle callbacks or purely internal helpers unless a real consu
 ### Pattern 1: Inline reflected type
 
 ```cpp
-CLASS() class CameraComponent : public Component
+CLASS(CameraComponent) : public Component
 {
 public:
     GENERATED_BODY()

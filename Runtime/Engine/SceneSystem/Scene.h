@@ -19,11 +19,10 @@ namespace NLS::Engine::SceneSystem
 	/**
 	* The scene is a set of actors
 	*/
-	CLASS() class NLS_ENGINE_API Scene
+	CLASS(NLS_ENGINE_API Scene)
 	{
     public:
 		GENERATED_BODY()
-        FUNCTION(name = GetActors, pointer = static_cast<const std::vector<NLS::Engine::GameObject*>& (NLS::Engine::SceneSystem::Scene::*)() const>(&NLS::Engine::SceneSystem::Scene::GetActors))
 		/**
 		* Contains a set of vectors of components that are sorted. It allows fast
 		* manipulation of components without parsing the whole scene
@@ -153,6 +152,7 @@ namespace NLS::Engine::SceneSystem
 		* Return a reference on the actor map
 		*/
 		std::vector<GameObject*>& GetActors();
+        FUNCTION()
 		const std::vector<GameObject*>& GetActors() const;
 
 		/**
@@ -160,14 +160,11 @@ namespace NLS::Engine::SceneSystem
 		*/
 		const FastAccessComponents& GetFastAccessComponents() const;
 
-		void SetAvailableID(int64_t p_nextID);
-
 	private:
         void NotifyActorDestroyed(GameObject& p_actor);
         void NotifyActorDestroyed(GameObject& p_actor, std::unordered_set<GameObject*>& p_notifiedActors);
         void DestroyActorInstance(GameObject& p_actor);
 		void RebuildFastAccessComponents();
-		int64_t m_availableID = 1;
 		bool m_isPlaying = false;
 		std::vector<GameObject*> m_gameobject;
 

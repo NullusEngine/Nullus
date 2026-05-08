@@ -6,7 +6,7 @@
 
 namespace NLS::Editor::Settings
 {
-    STRUCT() struct EditorDebugDrawSettingsObject
+    STRUCT(EditorDebugDrawSettingsObject)
     {
         GENERATED_BODY()
         PROPERTY()
@@ -34,7 +34,7 @@ namespace NLS::Editor::Settings
 
 namespace NLS::Editor::Settings
 {
-    STRUCT() struct EditorSceneToolSettingsObject
+    STRUCT(EditorSceneToolSettingsObject)
     {
         GENERATED_BODY()
         PROPERTY()

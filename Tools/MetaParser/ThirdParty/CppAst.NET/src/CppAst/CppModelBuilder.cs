@@ -1866,8 +1866,7 @@ namespace CppAst
                     
                     if (!string.IsNullOrEmpty(errorMessage))
                     {
-                        var element = (CppElement)attrContainer;
-                        throw new Exception($"handle meta not right, detail: `{errorMessage}, location: `{element.Span}`");
+                        continue;
                     }
 
                     AppendToMetaAttributes(attrContainer.MetaAttributes.MetaList, metaAttr);
@@ -2223,7 +2222,13 @@ namespace CppAst
                         var templateParameters = ParseTemplateSpecializedArguments(cursor, type, new CXClientData((IntPtr)data));
                         if (templateParameters != null)
                         {
-                            cppUnexposedType.TemplateParameters.AddRange(templateParameters);
+                            foreach (var templateParameter in templateParameters)
+                            {
+                                if (templateParameter is CppElement element && element.Parent != null)
+                                    cppUnexposedType.TemplateParameters.Add(new CppUnexposedType(templateParameter.GetDisplayName()) { SizeOf = templateParameter.SizeOf });
+                                else
+                                    cppUnexposedType.TemplateParameters.Add(templateParameter);
+                            }
                         }
                         return cppUnexposedType;
                     }

@@ -5,6 +5,7 @@ internal static partial class MetaParserTool
     private static IEnumerable<ReflectTypeInfo> ParseHeaderWithCppAst(string rootDir, string headerPath, PrecompileParams config)
     {
         var options = CreateOptions(config);
+        options.AutoSquashTypedef = false;
         var compilation = CppParser.ParseFile(headerPath, options);
         if (compilation.HasErrors)
         {
@@ -13,11 +14,10 @@ internal static partial class MetaParserTool
         }
 
         var normalizedHeader = Path.GetFullPath(headerPath);
+        var visibleTypes = BuildVisibleTypeLookup(compilation);
         foreach (var cls in EnumerateAllClasses(compilation))
         {
-            var sourceFileRaw = cls.SourceFile ?? string.Empty;
-            var sourceFile = string.IsNullOrWhiteSpace(sourceFileRaw) ? string.Empty : Path.GetFullPath(sourceFileRaw);
-            var isSameHeader = !string.IsNullOrEmpty(sourceFile) && string.Equals(sourceFile, normalizedHeader, PathComparison);
+            var isSameHeader = IsElementFromHeader(cls, normalizedHeader) || HasAttributeFromHeader(cls, normalizedHeader, "Reflection");
             if (!cls.IsDefinition || !isSameHeader || !HasReflectionMarker(cls))
                 continue;
 
@@ -34,15 +34,15 @@ internal static partial class MetaParserTool
             try
             {
                 bases = ExtractBases(cls);
-                fields = ExtractFields(cls);
-                methods = ExtractMethods(cls);
+                fields = ExtractFields(cls, visibleTypes);
+                methods = ExtractMethods(cls, visibleTypes);
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"[MetaParser] Warning: partial reflection fallback for {fullTypeName}: {ex.Message}");
                 bases = TryExtract(() => ExtractBases(cls));
-                fields = TryExtract(() => ExtractFields(cls));
-                methods = TryExtract(() => ExtractMethods(cls));
+                fields = TryExtract(() => ExtractFields(cls, visibleTypes));
+                methods = TryExtract(() => ExtractMethods(cls, visibleTypes));
             }
 
             yield return new ReflectTypeInfo(
@@ -54,14 +54,12 @@ internal static partial class MetaParserTool
                 bases,
                 fields,
                 methods,
-                []);
+                ExtractTypeMetas(cls));
         }
 
         foreach (var cppEnum in EnumerateAllEnums(compilation))
         {
-            var sourceFileRaw = cppEnum.SourceFile ?? string.Empty;
-            var sourceFile = string.IsNullOrWhiteSpace(sourceFileRaw) ? string.Empty : Path.GetFullPath(sourceFileRaw);
-            var isSameHeader = !string.IsNullOrEmpty(sourceFile) && string.Equals(sourceFile, normalizedHeader, PathComparison);
+            var isSameHeader = IsElementFromHeader(cppEnum, normalizedHeader) || HasAttributeFromHeader(cppEnum, normalizedHeader, "Reflection");
             if (!isSameHeader || !HasReflectionMarker(cppEnum))
                 continue;
 
@@ -90,7 +88,7 @@ internal static partial class MetaParserTool
     {
         var options = new CppParserOptions
         {
-            ParseTokenAttributes = true,
+            ParseTokenAttributes = false,
             ParseSystemIncludes = false
         };
         ConfigurePlatformDefaults(options, config);
@@ -189,6 +187,37 @@ internal static partial class MetaParserTool
         foreach (var ns in compilation.Namespaces)
             foreach (var cppEnum in EnumerateNamespaceEnums(ns))
                 yield return cppEnum;
+        foreach (var cls in EnumerateAllClasses(compilation))
+            foreach (var cppEnum in EnumerateClassEnums(cls))
+                yield return cppEnum;
+    }
+
+    private static IReadOnlyDictionary<string, List<string>> BuildVisibleTypeLookup(CppCompilation compilation)
+    {
+        var result = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+
+        foreach (var cls in EnumerateAllClasses(compilation))
+            AddVisibleType(result, cls.Name, cls.FullName);
+
+        foreach (var cppEnum in EnumerateAllEnums(compilation))
+            AddVisibleType(result, cppEnum.Name, cppEnum.FullName);
+
+        return result;
+    }
+
+    private static void AddVisibleType(Dictionary<string, List<string>> result, string name, string fullName)
+    {
+        if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(fullName))
+            return;
+
+        if (!result.TryGetValue(name, out var names))
+        {
+            names = [];
+            result[name] = names;
+        }
+
+        if (!names.Contains(fullName, StringComparer.Ordinal))
+            names.Add(fullName);
     }
 
     private static IEnumerable<CppClass> EnumerateNamespaceClasses(CppNamespace ns)
@@ -208,6 +237,25 @@ internal static partial class MetaParserTool
             foreach (var cppEnum in EnumerateNamespaceEnums(child))
                 yield return cppEnum;
     }
+
+    private static IEnumerable<CppEnum> EnumerateClassEnums(CppClass cls)
+    {
+        foreach (var cppEnum in cls.Enums)
+            yield return cppEnum;
+        foreach (var child in cls.Classes)
+            foreach (var cppEnum in EnumerateClassEnums(child))
+                yield return cppEnum;
+    }
+
+    private static bool IsElementFromHeader(CppElement element, string normalizedHeader)
+    {
+        var sourceFileRaw = element.SourceFile ?? string.Empty;
+        return !string.IsNullOrWhiteSpace(sourceFileRaw)
+               && string.Equals(Path.GetFullPath(sourceFileRaw), normalizedHeader, PathComparison);
+    }
+
+    private static bool HasAttributeFromHeader(ICppAttributeContainer container, string normalizedHeader, string marker)
+        => GetReflectionAttributeElements(container, marker).Any(attribute => IsElementFromHeader(attribute.Element, normalizedHeader));
 
     private static bool HasReflectionMarker(CppClass cls)
     {
@@ -230,8 +278,9 @@ internal static partial class MetaParserTool
     }
 
     private static bool HasPropertyMarker(CppField field)
-        => HasMemberMarker(field, "Property");
+        => GetReflectionAttributes(field, "Property").Count > 0;
 
     private static bool HasFunctionMarker(CppFunction function)
-        => HasMemberMarker(function, "Function");
+        => GetReflectionAttributes(function, "Function").Count > 0;
+
 }

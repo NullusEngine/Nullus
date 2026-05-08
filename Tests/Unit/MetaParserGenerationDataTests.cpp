@@ -8,6 +8,7 @@
 namespace
 {
 using NLS::Tests::Reflection::ExpectContains;
+using NLS::Tests::Reflection::ExpectNotContains;
 using NLS::Tests::Reflection::ReadAllText;
 }
 
@@ -30,19 +31,26 @@ TEST(MetaParserGenerationDataTests, GeneratesExpectedRenderEnumAndStructBindings
 
 TEST(MetaParserGenerationDataTests, GeneratesExpectedExternalAndPrivateReflectionBindings)
 {
-    const std::filesystem::path mathSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Math/Gen/ExternalReflection.generated.cpp";
-    const std::filesystem::path privateSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Base/Gen/Reflection/PrivateReflectionExternalSample.generated.cpp";
-    const std::filesystem::path serializeSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/Serialize/SceneSerializationData.generated.cpp";
+    const std::filesystem::path mathSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Math/ExternalReflection.h";
+    const std::filesystem::path privateSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Base/Reflection/PrivateReflectionExternalSample.h";
+    const std::filesystem::path serializeSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Serialize/SceneSerializationData.h";
+    const std::filesystem::path mathMetaSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Math/Gen/MetaGenerated.cpp";
+    const std::filesystem::path engineMetaSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/MetaGenerated.cpp";
     const std::string mathText = ReadAllText(mathSource);
     const std::string privateText = ReadAllText(privateSource);
     const std::string serializeText = ReadAllText(serializeSource);
+    const std::string mathMetaText = ReadAllText(mathMetaSource);
+    const std::string engineMetaText = ReadAllText(engineMetaSource);
 
-    ExpectContains(mathText, "AllocateType(\"NLS::Maths::Vector3\")");
-    ExpectContains(mathText, "AddStaticMethod<NLS::Maths::Vector3>(\"Dot\"");
-    ExpectContains(mathText, "AllocateType(\"NLS::Maths::Quaternion\")");
-    ExpectContains(privateText, "PrivateAccess_NLS__meta__PrivateReflectionExternalSample");
-    ExpectContains(privateText, "AddField<NLS::meta::PrivateReflectionExternalSample, int>(\"m_hiddenValue\"");
-    ExpectContains(privateText, "AddMethod(\"GetHiddenValue\"");
-    ExpectContains(serializeText, "AllocateType(\"NLS::Engine::Serialize::SerializedSceneData\")");
-    ExpectContains(serializeText, "AddField<NLS::Engine::Serialize::SerializedSceneData, NLS::Array<NLS::Engine::Serialize::SerializedActorData>>(\"actors\"");
+    ExpectContains(mathText, "NLS_META_EXTERNAL_BEGIN(NLS::Maths::Vector3)");
+    ExpectContains(mathText, "NLS_META_EXTERNAL_STATIC_METHOD(");
+    ExpectContains(mathText, "\"Dot\"");
+    ExpectContains(mathText, "NLS_META_EXTERNAL_BEGIN(NLS::Maths::Quaternion)");
+    ExpectContains(privateText, "PrivateReflectionExternalSampleReflectionAccess");
+    ExpectContains(privateText, "\"m_hiddenValue\"");
+    ExpectContains(privateText, "\"GetHiddenValue\"");
+    ExpectContains(serializeText, "NLS_META_EXTERNAL_BEGIN(NLS::Engine::Serialize::SerializedSceneData)");
+    ExpectContains(serializeText, "NLS_META_EXTERNAL_FIELD(NLS::Array<NLS::Engine::Serialize::SerializedActorData>, actors)");
+    ExpectNotContains(mathMetaText, "ExternalReflection.generated.cpp");
+    ExpectNotContains(engineMetaText, "SceneSerializationData.generated.cpp");
 }

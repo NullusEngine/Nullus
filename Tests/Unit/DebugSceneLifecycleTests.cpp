@@ -87,8 +87,7 @@ TEST(DebugSceneLifecycleTests, SelectionHelpersRequireActorPassAndSelectedActor)
 {
     using NLS::Editor::Rendering::OutlineRenderer;
 
-    bool isPlaying = false;
-    NLS::Engine::GameObject actor(1, "Selected", "Editor", isPlaying);
+    NLS::Engine::GameObject actor("Selected", "Editor");
 
     EXPECT_FALSE(OutlineRenderer::ShouldIncludeInThreadedFrame(false, &actor));
     EXPECT_FALSE(OutlineRenderer::ShouldIncludeInThreadedFrame(true, nullptr));

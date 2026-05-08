@@ -8,7 +8,7 @@ namespace NLS::Render::Settings
     /**
     * Projection modes, mostly used for cameras
     */
-    ENUM() enum class NLS_RENDER_API EProjectionMode : uint8_t
+    ENUM(NLS_RENDER_API EProjectionMode) : uint8_t
     {
         ORTHOGRAPHIC,
         PERSPECTIVE

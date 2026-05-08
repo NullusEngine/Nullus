@@ -7,7 +7,7 @@ internal static class MetaParserGeneratorRegistry
     public static readonly MetaParserGeneratorManifest ReflectionManifest = new(
         "reflection",
         new GeneratorHeaderSelection(
-            ["GENERATED_BODY(", "ENUM(", "MetaExternal", "REFLECT_EXTERNAL"],
+            ["GENERATED_BODY(", "CLASS(", "STRUCT(", "ENUM("],
             true),
         new GeneratorTemplateSet(
             MetaParserTemplateCatalog.ReflectedHeaderRule,

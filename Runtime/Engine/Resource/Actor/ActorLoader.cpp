@@ -190,8 +190,7 @@ private:
 
 	GameObject* CreateGameObject(const std::string& name, GameObject* parent)
 	{
-		bool playing = false;
-		GameObject* gameObject = new GameObject(rand(), name, "", playing);
+		GameObject* gameObject = new GameObject(name);
 		if (parent != nullptr)
 			gameObject->SetParent(*parent);
 		return gameObject;

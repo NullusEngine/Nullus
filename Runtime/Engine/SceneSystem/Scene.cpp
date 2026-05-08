@@ -72,7 +72,7 @@ Engine::GameObject& Scene::CreateGameObject()
 
 Engine::GameObject& Scene::CreateGameObject(const std::string& p_name, const std::string& p_tag)
 {
-	GameObject* newGameObject = new Engine::GameObject(m_availableID++, p_name, p_tag, m_isPlaying);
+	GameObject* newGameObject = new Engine::GameObject(p_name, p_tag);
 
 	AddGameObject(newGameObject);
 
@@ -281,11 +281,6 @@ const Scene::FastAccessComponents& Scene::GetFastAccessComponents() const
 		const_cast<Scene*>(this)->RebuildFastAccessComponents();
 	}
 	return m_fastAccessComponents;
-}
-
-void Scene::SetAvailableID(int64_t p_nextID)
-{
-	m_availableID = p_nextID;
 }
 
 void Scene::NotifyActorDestroyed(GameObject& p_actor)

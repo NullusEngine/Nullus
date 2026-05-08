@@ -62,21 +62,12 @@ internal static partial class MetaParserTool
     {
         var routes = new List<string>();
 
-        if (headerText.Contains("ENUM(", StringComparison.Ordinal))
-            routes.Add("text-top-level-enum");
-
-        if (ContainsGeneratedBody(headerText))
-            routes.Add("text-type-body");
-
-        if (headerText.Contains("MetaExternal", StringComparison.Ordinal)
-            || headerText.Contains("REFLECT_EXTERNAL", StringComparison.Ordinal))
-        {
-            routes.Add("external-declaration");
-        }
-
-        if (!ContainsGeneratedBody(headerText)
-            && !headerText.Contains("MetaExternal", StringComparison.Ordinal)
-            && !headerText.Contains("REFLECT_EXTERNAL", StringComparison.Ordinal))
+        if (ContainsGeneratedBody(headerText)
+            || headerText.Contains("CLASS(", StringComparison.Ordinal)
+            || headerText.Contains("STRUCT(", StringComparison.Ordinal)
+            || headerText.Contains("ENUM(", StringComparison.Ordinal)
+            || headerText.Contains("PROPERTY(", StringComparison.Ordinal)
+            || headerText.Contains("FUNCTION(", StringComparison.Ordinal))
         {
             routes.Add("cppast");
         }
@@ -88,132 +79,58 @@ internal static partial class MetaParserTool
     }
 
     private static IEnumerable<ReflectTypeInfo> ParseHeader(string rootDir, string headerPath, PrecompileParams config)
+        => MergeReflectTypes(ParseHeaderWithCppAst(rootDir, headerPath, config));
+
+    private static List<ReflectTypeInfo> MergeReflectTypes(IEnumerable<ReflectTypeInfo> types)
     {
-        var types = new List<ReflectTypeInfo>();
-        var headerText = File.ReadAllText(headerPath);
-        types.AddRange(ParseTopLevelEnumsFromText(rootDir, headerPath, headerText));
-        var hasReflectedTypeBodies = ContainsGeneratedBody(headerText);
-        var hasExternalReflectionDeclarations = headerText.Contains("MetaExternal", StringComparison.Ordinal)
-            || headerText.Contains("REFLECT_EXTERNAL", StringComparison.Ordinal);
-        if (hasReflectedTypeBodies)
+        var merged = new Dictionary<string, ReflectTypeInfo>(StringComparer.Ordinal);
+
+        foreach (var type in types.Where(static type => !string.IsNullOrWhiteSpace(type.QualifiedName)))
         {
-            types.AddRange(ParseHeaderFromText(rootDir, headerPath, headerText, emitDiagnostics: true));
-        }
-        else if (!hasExternalReflectionDeclarations)
-        {
-            types.AddRange(ParseHeaderWithCppAst(rootDir, headerPath, config));
+            if (!merged.TryGetValue(type.QualifiedName, out var existing))
+            {
+                merged[type.QualifiedName] = type with
+                {
+                    Bases = type.Bases.DistinctBy(static baseInfo => baseInfo.TypeName).ToList(),
+                    Fields = type.Fields.DistinctBy(static field => field.Name).ToList(),
+                    Methods = type.Methods.DistinctBy(static method => $"{method.IsStatic}:{method.Name}:{method.PointerExpression}").ToList(),
+                    TypeMetas = (type.TypeMetas ?? []).DistinctBy(static meta => $"{meta.PropertyTypeName}:{meta.InitializerArguments}").ToList(),
+                    EnumValues = (type.EnumValues ?? []).DistinctBy(static value => value.Name).ToList()
+                };
+                continue;
+            }
+
+            merged[type.QualifiedName] = existing with
+            {
+                Bases = existing.Bases.Concat(type.Bases)
+                    .DistinctBy(static baseInfo => baseInfo.TypeName)
+                    .ToList(),
+                Fields = existing.Fields.Concat(type.Fields)
+                    .DistinctBy(static field => field.Name)
+                    .ToList(),
+                Methods = existing.Methods.Concat(type.Methods)
+                    .DistinctBy(static method => $"{method.IsStatic}:{method.Name}:{method.PointerExpression}")
+                    .ToList(),
+                TypeMetas = (existing.TypeMetas ?? []).Concat(type.TypeMetas ?? [])
+                    .DistinctBy(static meta => $"{meta.PropertyTypeName}:{meta.InitializerArguments}")
+                    .ToList(),
+                IsEnum = existing.IsEnum || type.IsEnum,
+                EnumValues = (existing.EnumValues ?? []).Concat(type.EnumValues ?? [])
+                    .DistinctBy(static value => value.Name)
+                    .ToList()
+            };
         }
 
-        types.AddRange(ParseExternalReflectionDeclarations(rootDir, headerPath));
-        return MergeReflectTypes(types);
+        return merged.Values.ToList();
     }
-
-    private static IEnumerable<ReflectTypeInfo> ParseTopLevelEnumsFromText(string rootDir, string headerPath, string headerText)
-    {
-        var includePath = ToGeneratedIncludePath(rootDir, Path.GetFullPath(headerPath));
-        var text = SanitizeTextForMacroParsing(headerText);
-        var classBodyRanges = FindClassBodyRanges(text);
-
-        foreach (Match match in Regex.Matches(
-                     text,
-                     @"ENUM\s*\([^)]*\)\s*enum\s+(?:class\s+)?(?:[A-Za-z_]\w*\s+)*(?<name>[A-Za-z_]\w*)\s*(?:\:\s*(?<underlying>[^{]+))?\s*\{(?<items>.*?)\}\s*;",
-                     RegexOptions.Singleline | RegexOptions.CultureInvariant).Cast<Match>())
-        {
-            if (classBodyRanges.Any(range => match.Index > range.start && match.Index < range.end))
-                continue;
-
-            var enumName = match.Groups["name"].Value;
-            if (string.IsNullOrWhiteSpace(enumName))
-                continue;
-
-            var namespacePrefix = ExtractNamespaceFromText(text[..match.Index]);
-            var fullTypeName = string.IsNullOrWhiteSpace(namespacePrefix)
-                ? enumName
-                : $"{namespacePrefix}::{enumName}";
-
-            var items = SplitTopLevel(match.Groups["items"].Value, ',')
-                .Select(item => item.Trim())
-                .Where(item => !string.IsNullOrWhiteSpace(item))
-                .Select(item => Regex.Match(item, @"^(?<name>[A-Za-z_]\w*)", RegexOptions.CultureInvariant))
-                .Where(itemMatch => itemMatch.Success)
-                .Select(itemMatch => new ReflectEnumValueInfo(itemMatch.Groups["name"].Value))
-                .ToList();
-
-            if (items.Count == 0)
-                continue;
-
-            yield return new ReflectTypeInfo(
-                enumName,
-                namespacePrefix,
-                fullTypeName,
-                includePath,
-                Path.GetFullPath(headerPath),
-                [],
-                [],
-                [],
-                [],
-                true,
-                items);
-        }
-    }
-
-    private static List<(int start, int end)> FindClassBodyRanges(string text)
-    {
-        var ranges = new List<(int start, int end)>();
-        foreach (Match match in Regex.Matches(
-                     text,
-                     @"\b(?:class|struct)\s+(?:[A-Za-z_]\w*\s+)*(?<name>[A-Za-z_]\w*)\s*(?:\:\s*[^{]+)?\s*\{",
-                     RegexOptions.CultureInvariant).Cast<Match>())
-        {
-            var openBraceIndex = text.IndexOf('{', match.Index);
-            if (openBraceIndex < 0)
-                continue;
-
-            var body = ExtractBraceBody(text, openBraceIndex);
-            if (string.IsNullOrEmpty(body))
-                continue;
-
-            ranges.Add((openBraceIndex + 1, openBraceIndex + 1 + body.Length));
-        }
-
-        return ranges;
-    }
-
-    private static List<string> ExtractMacroInvocations(string text, string macroName)
-    {
-        var invocations = new List<string>();
-        var startIndex = 0;
-
-        while (startIndex < text.Length)
-        {
-            var match = Regex.Match(text[startIndex..], $@"\b{Regex.Escape(macroName)}\s*\(", RegexOptions.CultureInvariant);
-            if (!match.Success)
-                break;
-
-            var macroIndex = startIndex + match.Index;
-            var openParenIndex = text.IndexOf('(', macroIndex + macroName.Length);
-            if (openParenIndex < 0)
-                break;
-
-            invocations.Add(ExtractDelimitedBody(text, openParenIndex, '(', ')'));
-            startIndex = SkipDelimitedBody(text, openParenIndex, '(', ')');
-        }
-
-        return invocations;
-    }
-
-    private static string SanitizeTextForMacroParsing(string text)
-        => string.Join(
-            Environment.NewLine,
-            StripBlockComments(text)
-                .Split('\n')
-                .Select(StripInlineComments));
 
     private static bool ContainsReflectedDeclaration(string text)
         => ContainsGeneratedBody(text)
+           || text.Contains("CLASS(", StringComparison.Ordinal)
+           || text.Contains("STRUCT(", StringComparison.Ordinal)
            || text.Contains("ENUM(", StringComparison.Ordinal)
-           || text.Contains("MetaExternal", StringComparison.Ordinal)
-           || text.Contains("REFLECT_EXTERNAL", StringComparison.Ordinal);
+           || text.Contains("PROPERTY(", StringComparison.Ordinal)
+           || text.Contains("FUNCTION(", StringComparison.Ordinal);
 
     private static bool ContainsGeneratedBody(string text)
         => text.Contains("GENERATED_BODY(", StringComparison.Ordinal);
@@ -318,49 +235,6 @@ internal static partial class MetaParserTool
         return !string.IsNullOrWhiteSpace(macroName);
     }
 
-    private static string ExtractDelimitedBody(string text, int openIndex, char openChar, char closeChar)
-    {
-        if (openIndex < 0 || openIndex >= text.Length || text[openIndex] != openChar)
-            return string.Empty;
-
-        var start = openIndex + 1;
-        var depth = 1;
-        for (var index = start; index < text.Length; index++)
-        {
-            if (text[index] == openChar)
-                depth++;
-            else if (text[index] == closeChar)
-            {
-                depth--;
-                if (depth == 0)
-                    return text[start..index];
-            }
-        }
-
-        return string.Empty;
-    }
-
-    private static int SkipDelimitedBody(string text, int openIndex, char openChar, char closeChar)
-    {
-        if (openIndex < 0 || openIndex >= text.Length || text[openIndex] != openChar)
-            return text.Length;
-
-        var depth = 1;
-        for (var index = openIndex + 1; index < text.Length; index++)
-        {
-            if (text[index] == openChar)
-                depth++;
-            else if (text[index] == closeChar)
-            {
-                depth--;
-                if (depth == 0)
-                    return index + 1;
-            }
-        }
-
-        return text.Length;
-    }
-
     private static string ExtractSimpleClassName(string fullTypeName)
     {
         var separatorIndex = fullTypeName.LastIndexOf("::", StringComparison.Ordinal);
@@ -409,14 +283,16 @@ internal static partial class MetaParserTool
         return result.DistinctBy(x => x.TypeName).ToList();
     }
 
-    private static List<ReflectFieldInfo> ExtractFields(CppClass cls)
+    private static List<ReflectFieldInfo> ExtractFields(CppClass cls, IReadOnlyDictionary<string, List<string>> visibleTypes)
     {
         var result = new List<ReflectFieldInfo>();
+        var methodCandidates = ExtractMethodCandidates(cls, visibleTypes);
         foreach (var field in cls.Fields)
         {
             try
             {
-                if (!HasPropertyMarker(field))
+                var propertyAttributes = GetReflectionAttributes(field, "Property").ToList();
+                if (propertyAttributes.Count == 0)
                     continue;
                 if (field.Visibility != CppVisibility.Public && field.Visibility != CppVisibility.Default)
                     continue;
@@ -425,7 +301,7 @@ internal static partial class MetaParserTool
                 if (string.IsNullOrWhiteSpace(field.Name))
                     continue;
 
-                var typeName = NormalizeTypeName(field.Type.GetDisplayName());
+                var typeName = NormalizeAstMemberTypeName(field.Type, cls, visibleTypes);
                 if (string.IsNullOrWhiteSpace(typeName) || ContainsUnsupportedReflectionType(typeName))
                     continue;
 
@@ -442,66 +318,27 @@ internal static partial class MetaParserTool
             }
         }
 
-        result.AddRange(ExtractAutoProperties(cls));
+        result.AddRange(BuildAutoPropertyFields(cls.FullName, methodCandidates, []));
 
         return result
             .DistinctBy(f => f.Name)
             .ToList();
     }
 
-    private static List<ReflectMethodInfo> ExtractMethods(CppClass cls)
+    private static List<ReflectMethodInfo> ExtractMethods(CppClass cls, IReadOnlyDictionary<string, List<string>> visibleTypes)
     {
-        var candidateMethods = new List<MethodCandidateInfo>();
-        foreach (var method in cls.Functions)
-        {
-            try
-            {
-                if (!HasFunctionMarker(method))
-                    continue;
-                if (method.Visibility != CppVisibility.Public && method.Visibility != CppVisibility.Default)
-                    continue;
-                if (method.IsStatic || method.IsConstructor || method.IsDestructor)
-                    continue;
-                if (string.IsNullOrWhiteSpace(method.Name)
-                    || method.Name.StartsWith("operator", StringComparison.Ordinal)
-                    || !IsBindableMethodName(method.Name))
-                    continue;
+        var candidateMethods = ExtractMethodCandidates(cls, visibleTypes);
 
-                var returnTypeName = NormalizeTypeName(method.ReturnType?.GetDisplayName() ?? string.Empty);
-                if (ContainsUnsupportedReflectionType(returnTypeName))
-                    continue;
-
-                if (method.Parameters.Any(parameter => ContainsUnsupportedReflectionType(NormalizeTypeName(parameter.Type.GetDisplayName()))))
-                    continue;
-
-                candidateMethods.Add(new MethodCandidateInfo(
-                    method.Name,
-                    $"&{cls.FullName}::{method.Name}",
-                    returnTypeName,
-                    method.Parameters.Select(parameter => NormalizeTypeName(parameter.Type.GetDisplayName())).ToList(),
-                    false,
-                    false));
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"[MetaParser] Warning: skipping method discovery on {cls.FullName}: {ex.Message}");
-            }
-        }
-
-        var overloadedMethodNames = candidateMethods
-            .GroupBy(candidate => candidate.Name, StringComparer.Ordinal)
-            .Where(g => g.Count() > 1)
-            .Select(g => g.Key)
-            .ToHashSet(StringComparer.Ordinal);
-
-        return candidateMethods
-            .Where(candidate => !overloadedMethodNames.Contains(candidate.Name))
-            .DistinctBy(candidate => candidate.Name)
+        var inlineMethods = candidateMethods
             .Select(candidate => new ReflectMethodInfo(candidate.Name, candidate.PointerExpression, candidate.IsStatic, candidate.IsPrivate))
+            .ToList();
+
+        return inlineMethods
+            .DistinctBy(static method => $"{method.IsStatic}:{method.Name}:{method.PointerExpression}")
             .ToList();
     }
 
-    private static List<ReflectFieldInfo> ExtractAutoProperties(CppClass cls)
+    private static List<MethodCandidateInfo> ExtractMethodCandidates(CppClass cls, IReadOnlyDictionary<string, List<string>> visibleTypes)
     {
         var methods = new List<MethodCandidateInfo>();
 
@@ -522,24 +359,32 @@ internal static partial class MetaParserTool
                     continue;
                 }
 
-                var returnTypeName = NormalizeTypeName(method.ReturnType?.GetDisplayName() ?? string.Empty);
+                var returnTypeName = NormalizeAstMemberTypeName(method.ReturnType, cls, visibleTypes);
                 if (ContainsUnsupportedReflectionType(returnTypeName))
                     continue;
 
                 var parameterTypeNames = method.Parameters
-                    .Select(parameter => NormalizeTypeName(parameter.Type.GetDisplayName()))
+                    .Select(parameter => NormalizeAstMemberTypeName(parameter.Type, cls, visibleTypes))
                     .ToList();
 
                 if (parameterTypeNames.Any(ContainsUnsupportedReflectionType))
                     continue;
 
+                var signatureReturnTypeName = NormalizeAstSignatureTypeName(method.ReturnType, cls, visibleTypes);
+                var signatureParameterTypeNames = method.Parameters
+                    .Select(parameter => NormalizeAstSignatureTypeName(parameter.Type, cls, visibleTypes))
+                    .ToList();
+                var propertyName = ExtractPropertyNameOverride(method);
+
                 methods.Add(new MethodCandidateInfo(
                     method.Name,
-                    $"&{cls.FullName}::{method.Name}",
+                    BuildMethodPointerExpression(cls.FullName, method.Name, signatureReturnTypeName, signatureParameterTypeNames, method.IsConst),
                     returnTypeName,
                     parameterTypeNames,
                     false,
-                    false));
+                    false,
+                    method.IsConst,
+                    propertyName));
             }
             catch (Exception ex)
             {
@@ -547,7 +392,82 @@ internal static partial class MetaParserTool
             }
         }
 
-        return BuildAutoPropertyFields(cls.FullName, methods, new HashSet<string>(StringComparer.Ordinal));
+        return methods;
+    }
+
+    private static string NormalizeAstSignatureTypeName(CppType? type, CppClass owner, IReadOnlyDictionary<string, List<string>> visibleTypes)
+    {
+        var normalized = NormalizeTypeName(GetAstSignatureTypeName(type));
+        if (string.IsNullOrWhiteSpace(normalized))
+            return string.Empty;
+
+        normalized = NormalizeStdTypeName(normalized);
+        normalized = QualifyTypeNameInExpression(normalized, ExtractNamespace(owner.FullName, owner.Name), visibleTypes);
+
+        foreach (var nestedEnum in owner.Enums)
+        {
+            normalized = Regex.Replace(
+                normalized,
+                $@"(?<![\w:]){Regex.Escape(nestedEnum.Name)}(?![\w:])",
+                $"{owner.FullName}::{nestedEnum.Name}",
+                RegexOptions.CultureInvariant);
+        }
+
+        normalized = Regex.Replace(normalized, @"\s+", " ", RegexOptions.CultureInvariant).Trim();
+        normalized = Regex.Replace(normalized, @"\s*([&*])\s*", "$1", RegexOptions.CultureInvariant);
+        return normalized;
+    }
+
+    private static string GetAstSignatureTypeName(CppType? type)
+    {
+        switch (type)
+        {
+        case null:
+            return string.Empty;
+        case CppQualifiedType qualified when qualified.Qualifier == CppTypeQualifier.Const:
+            return $"const {GetAstSignatureTypeName(qualified.ElementType)}";
+        case CppQualifiedType qualified:
+            return GetAstSignatureTypeName(qualified.ElementType);
+        case CppReferenceType reference:
+            return $"{GetAstSignatureTypeName(reference.ElementType)}&";
+        case CppPointerType pointer:
+            return $"{GetAstSignatureTypeName(pointer.ElementType)}*";
+        case CppTypedef typedef:
+            return !string.IsNullOrWhiteSpace(typedef.FullName) ? typedef.FullName : typedef.Name;
+        case CppClass cls:
+            return !string.IsNullOrWhiteSpace(cls.FullName) ? cls.FullName : cls.Name;
+        case CppEnum cppEnum:
+            return !string.IsNullOrWhiteSpace(cppEnum.FullName) ? cppEnum.FullName : cppEnum.Name;
+        case CppUnexposedType unexposed:
+            return NormalizeUnexposedAstTypeName(unexposed);
+        default:
+            return type.GetDisplayName();
+        }
+    }
+
+    private static string BuildMethodPointerExpression(
+        string fullTypeName,
+        string methodName,
+        string returnTypeName,
+        IReadOnlyList<string> parameterTypeNames,
+        bool isConst)
+    {
+        var constSuffix = isConst ? " const" : string.Empty;
+        return $"static_cast<{returnTypeName} ({fullTypeName}::*)({string.Join(", ", parameterTypeNames)}){constSuffix}>(&{fullTypeName}::{methodName})";
+    }
+
+    private static string? ExtractPropertyNameOverride(CppFunction method)
+    {
+        foreach (var attribute in GetReflectionAttributes(method, "Property"))
+        {
+            var body = StripAttributeMarker(attribute, "Property").Trim();
+            if (string.IsNullOrWhiteSpace(body))
+                continue;
+
+            return NormalizeRegistrationName(body);
+        }
+
+        return null;
     }
 
     private static string BuildGeneratedFileId(string headerPath)
@@ -583,21 +503,48 @@ internal static partial class MetaParserTool
     private static string BuildRegistrarClassName(string qualifiedName)
         => $"StaticTypeRegister_{SanitizeIdentifier(qualifiedName)}";
 
-    private static bool HasMemberMarker(ICppAttributeContainer container, params string[] markers)
+    private static List<string> GetReflectionAttributes(ICppAttributeContainer container, params string[] markers)
+        => GetReflectionAttributeElements(container, markers)
+            .Select(static item => item.Text)
+            .ToList();
+
+    private static List<(string Text, CppElement Element)> GetReflectionAttributeElements(ICppAttributeContainer container, params string[] markers)
+        => EnumerateAttributeTexts(container)
+            .Where(attribute => markers.Length == 0 || markers.Any(marker => AttributeHasMarker(attribute.Text, marker)))
+            .ToList();
+
+    private static IEnumerable<(string Text, CppElement Element)> EnumerateAttributeTexts(ICppAttributeContainer? container)
     {
         if (container is null)
-            return false;
+            yield break;
 
-        var hasAttribute = container.Attributes.Any(attribute => IsMemberAttribute(attribute, markers));
+        foreach (var attribute in container.Attributes)
+            if (TryGetAnnotateAttributeText(attribute, out var text))
+                yield return (text, attribute);
+
 #pragma warning disable CS0618
-        var hasTokenAttribute = container.TokenAttributes.Any(attribute => IsMemberAttribute(attribute, markers));
+        foreach (var attribute in container.TokenAttributes)
+            if (TryGetAnnotateAttributeText(attribute, out var text))
+                yield return (text, attribute);
 #pragma warning restore CS0618
-        var hasMetaAttribute = container.MetaAttributes.MetaList.Any(attribute => IsMemberMetaAttribute(attribute, markers));
-        return hasAttribute || hasTokenAttribute || hasMetaAttribute;
+
+        foreach (var attribute in container.MetaAttributes.MetaList)
+        {
+            if (!string.IsNullOrWhiteSpace(attribute.FeatureName))
+                yield return (attribute.FeatureName, (CppElement)container);
+
+            foreach (var (key, value) in attribute.ArgumentMap)
+            {
+                var valueText = Convert.ToString(value);
+                if (!string.IsNullOrWhiteSpace(valueText))
+                    yield return ($"{key} = {valueText}", (CppElement)container);
+            }
+        }
     }
 
-    private static bool IsMemberAttribute(CppAttribute attribute, params string[] markers)
+    private static bool TryGetAnnotateAttributeText(CppAttribute attribute, out string text)
     {
+        text = string.Empty;
         if (!(attribute.Kind == AttributeKind.AnnotateAttribute
               || string.Equals(attribute.Name, "annotate", StringComparison.OrdinalIgnoreCase)
               || attribute.Name.Contains("annotate", StringComparison.OrdinalIgnoreCase)))
@@ -605,20 +552,22 @@ internal static partial class MetaParserTool
             return false;
         }
 
-        return ContainsAnyMarker(attribute.Arguments, markers)
-               || ContainsAnyMarker(attribute.ToString(), markers);
+        text = !string.IsNullOrWhiteSpace(attribute.Arguments)
+            ? attribute.Arguments
+            : attribute.ToString();
+        return !string.IsNullOrWhiteSpace(text);
     }
 
-    private static bool IsMemberMetaAttribute(MetaAttribute attribute, params string[] markers)
+    private static bool AttributeHasMarker(string attributeText, string marker)
     {
-        if (attribute is null)
+        if (string.IsNullOrWhiteSpace(attributeText) || string.IsNullOrWhiteSpace(marker))
             return false;
 
-        if (ContainsAnyMarker(attribute.FeatureName, markers))
-            return true;
-
-        return attribute.ArgumentMap.Keys.Any(key => ContainsAnyMarker(key, markers))
-               || attribute.ArgumentMap.Values.Any(value => ContainsAnyMarker(Convert.ToString(value), markers));
+        var trimmed = attributeText.Trim();
+        return string.Equals(trimmed, marker, StringComparison.OrdinalIgnoreCase)
+               || trimmed.StartsWith($"{marker},", StringComparison.OrdinalIgnoreCase)
+               || trimmed.StartsWith($"{marker} ", StringComparison.OrdinalIgnoreCase)
+               || trimmed.Contains($", {marker}", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsReflectionAttribute(CppAttribute attribute)
@@ -655,6 +604,66 @@ internal static partial class MetaParserTool
         => !string.IsNullOrWhiteSpace(text)
            && markers.Any(marker => text.IndexOf(marker, StringComparison.OrdinalIgnoreCase) >= 0);
 
+    private static Dictionary<string, string> ParseAttributeNamedArguments(string attributeText, string marker)
+    {
+        var result = new Dictionary<string, string>(StringComparer.Ordinal);
+        var body = StripAttributeMarker(attributeText, marker);
+        foreach (var entry in SplitTopLevel(body, ','))
+        {
+            var trimmed = entry.Trim();
+            var separatorIndex = trimmed.IndexOf('=', StringComparison.Ordinal);
+            if (separatorIndex <= 0)
+                continue;
+
+            var key = trimmed[..separatorIndex].Trim();
+            var value = trimmed[(separatorIndex + 1)..].Trim();
+            if (string.IsNullOrWhiteSpace(key) || string.IsNullOrWhiteSpace(value))
+                continue;
+
+            result[key] = value;
+        }
+
+        return result;
+    }
+
+    private static bool HasNamedAttributeArgument(string attributeText, string key)
+        => ParseAttributeNamedArguments(attributeText, ExtractAttributeMarker(attributeText)).ContainsKey(key);
+
+    private static string StripAttributeMarker(string attributeText, string marker)
+    {
+        var trimmed = attributeText.Trim();
+        if (trimmed.StartsWith(marker, StringComparison.OrdinalIgnoreCase))
+            trimmed = trimmed[marker.Length..].TrimStart();
+        if (trimmed.StartsWith(",", StringComparison.Ordinal))
+            trimmed = trimmed[1..].TrimStart();
+        return trimmed;
+    }
+
+    private static string ExtractAttributeMarker(string attributeText)
+    {
+        var trimmed = attributeText.Trim();
+        var separatorIndex = trimmed.IndexOfAny(new[] { ',', ' ', '\t' });
+        return separatorIndex < 0 ? trimmed : trimmed[..separatorIndex];
+    }
+
+    private static List<ReflectTypeMetaInfo> ExtractTypeMetas(CppClass cls)
+    {
+        var metas = new List<ReflectTypeMetaInfo>();
+        foreach (var attribute in GetReflectionAttributes(cls, "Reflection"))
+        {
+            foreach (var token in SplitTopLevel(StripAttributeMarker(attribute, "Reflection"), ','))
+            {
+                if (!TryParseMacroInvocation(token, out var macroName, out var macroArgs))
+                    continue;
+
+                if (string.Equals(macroName, "ComponentMenu", StringComparison.Ordinal))
+                    metas.Add(new ReflectTypeMetaInfo("NLS::meta::ComponentMenu", macroArgs.Trim()));
+            }
+        }
+
+        return metas;
+    }
+
     private static string ExtractNamespace(string fullName, string className)
     {
         if (string.IsNullOrWhiteSpace(fullName))
@@ -676,6 +685,94 @@ internal static partial class MetaParserTool
 
     private static string NormalizeTypeName(string typeName)
         => string.IsNullOrWhiteSpace(typeName) ? string.Empty : typeName.Replace("class ", string.Empty).Replace("struct ", string.Empty).Trim();
+
+    private static string NormalizeAstMemberTypeName(
+        CppType? type,
+        CppClass owner,
+        IReadOnlyDictionary<string, List<string>> visibleTypes)
+        => NormalizeAstMemberTypeName(GetAstTypeName(type), owner, visibleTypes);
+
+    private static string NormalizeAstMemberTypeName(
+        string typeName,
+        CppClass owner,
+        IReadOnlyDictionary<string, List<string>> visibleTypes)
+    {
+        var normalized = NormalizeTypeName(typeName);
+        if (string.IsNullOrWhiteSpace(normalized))
+            return string.Empty;
+
+        normalized = NormalizeStdTypeName(normalized);
+        normalized = NormalizeTrailingConstReference(normalized);
+        normalized = QualifyTypeName(normalized, ExtractNamespace(owner.FullName, owner.Name), visibleTypes);
+
+        foreach (var nestedEnum in owner.Enums)
+        {
+            if (string.Equals(normalized, nestedEnum.Name, StringComparison.Ordinal))
+                return $"{owner.FullName}::{nestedEnum.Name}";
+        }
+
+        return normalized;
+    }
+
+    private static string GetAstTypeName(CppType? type)
+    {
+        switch (type)
+        {
+        case null:
+            return string.Empty;
+        case CppQualifiedType qualified:
+            return GetAstTypeName(qualified.ElementType);
+        case CppReferenceType reference:
+            return $"{GetAstTypeName(reference.ElementType)}&";
+        case CppPointerType pointer:
+            return $"{GetAstTypeName(pointer.ElementType)}*";
+        case CppTypedef typedef:
+            return !string.IsNullOrWhiteSpace(typedef.FullName) ? typedef.FullName : typedef.Name;
+        case CppClass cls:
+            return !string.IsNullOrWhiteSpace(cls.FullName) ? cls.FullName : cls.Name;
+        case CppEnum cppEnum:
+            return !string.IsNullOrWhiteSpace(cppEnum.FullName) ? cppEnum.FullName : cppEnum.Name;
+        case CppUnexposedType unexposed:
+            return NormalizeUnexposedAstTypeName(unexposed);
+        default:
+            return type.GetDisplayName();
+        }
+    }
+
+    private static string NormalizeUnexposedAstTypeName(CppUnexposedType type)
+    {
+        var name = NormalizeStdTypeName(type.Name);
+        if (type.TemplateParameters.Count == 0)
+            return name;
+
+        var openGenericIndex = name.IndexOf('<');
+        var genericName = openGenericIndex >= 0 ? name[..openGenericIndex].Trim() : name;
+        return $"{genericName}<{string.Join(", ", type.TemplateParameters.Select(GetAstTypeName))}>";
+    }
+
+    private static string NormalizeStdTypeName(string typeName)
+    {
+        var normalized = Regex.Replace(typeName, @"(?<![\w:])basic_string(?![\w:])", "std::string", RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(
+            normalized,
+            @"std::basic_string\s*<\s*char\s*,\s*std::char_traits\s*<\s*char\s*>\s*,\s*std::allocator\s*<\s*char\s*>\s*>",
+            "std::string",
+            RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(normalized, @"(?<![\w:])string(?![\w:])", "std::string", RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(normalized, @"(?<![\w:])vector\s*<", "std::vector<", RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(normalized, @"(?<![\w:])Array\s*<", "NLS::Array<", RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(normalized, @",\s*std::allocator\s*<\s*([^<>]+?)\s*>\s*(?=>)", string.Empty, RegexOptions.CultureInvariant);
+        return normalized;
+    }
+
+    private static string NormalizeTrailingConstReference(string typeName)
+    {
+        var normalized = typeName.Trim();
+        normalized = Regex.Replace(normalized, @"\s+const\s*([&*])", "$1", RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(normalized, @"([&*])\s+const\b", "$1", RegexOptions.CultureInvariant);
+        normalized = Regex.Replace(normalized, @"\s+", " ", RegexOptions.CultureInvariant).Trim();
+        return normalized;
+    }
 
     private static bool IsBindableMethodName(string methodName)
         => !string.IsNullOrWhiteSpace(methodName)

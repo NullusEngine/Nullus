@@ -14,19 +14,9 @@ internal sealed record MethodCandidateInfo(
     string ReturnTypeName,
     List<string> ParameterTypeNames,
     bool IsStatic,
-    bool IsPrivate);
-
-internal sealed record ExplicitPropertyDirectiveInfo(
-    string Name,
-    string GetterToken,
-    string SetterToken,
-    string? TypeName);
-
-internal sealed record ExplicitMethodDirectiveInfo(
-    string Name,
-    string PointerExpression,
-    bool IsStatic,
-    bool IsPrivate);
+    bool IsPrivate,
+    bool IsConst,
+    string? PropertyName);
 
 internal sealed record ReflectTypeInfo(
     string ClassName,
@@ -43,20 +33,3 @@ internal sealed record ReflectTypeInfo(
 {
     public string QualifiedName => FullTypeName;
 }
-
-internal sealed record TextMemberDiscoverySummary(
-    int InlineFieldCount,
-    int ExplicitPropertyFieldCount,
-    int AutoPropertyFieldCount,
-    int RejectedFieldCount,
-    int TotalFieldCount,
-    int InlineMethodCount,
-    int ExplicitMethodCount,
-    int RejectedMethodCount,
-    int OverloadRejectedMethodCount,
-    int TotalMethodCount);
-
-internal sealed record TextMemberParseResult(
-    List<ReflectFieldInfo> Fields,
-    List<ReflectMethodInfo> Methods,
-    TextMemberDiscoverySummary Summary);

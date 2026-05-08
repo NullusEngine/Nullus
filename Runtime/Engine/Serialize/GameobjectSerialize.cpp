@@ -521,10 +521,7 @@ void DeserializeSceneImpl(Scene &scene, const json &input)
     for (auto *actor : actors)
         delete actor;
     actors.clear();
-    scene.SetAvailableID(1);
-
     std::unordered_map<int64_t, GameObject *> actorById;
-    int64_t nextAvailableID = 1;
 
     for (const auto &actorRecord : sceneData.actors)
     {
@@ -534,7 +531,6 @@ void DeserializeSceneImpl(Scene &scene, const json &input)
 
         DeserializeActor(actor, actorRecord);
         actorById[actor.GetWorldID()] = &actor;
-        nextAvailableID = std::max(nextAvailableID, static_cast<int64_t>(actor.GetWorldID() + 1));
     }
 
     for (const auto &actorRecord : sceneData.actors)
@@ -550,8 +546,6 @@ void DeserializeSceneImpl(Scene &scene, const json &input)
         if (actorIt != actorById.end() && parentIt != actorById.end())
             actorIt->second->SetParent(*parentIt->second);
     }
-
-    scene.SetAvailableID(nextAvailableID);
 }
 } // namespace
 

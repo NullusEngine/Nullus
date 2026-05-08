@@ -17,11 +17,15 @@ Event<GameObject&> GameObject::CreatedEvent;
 Event<GameObject&, GameObject&> GameObject::AttachEvent;
 Event<GameObject&> GameObject::DettachEvent;
 
-GameObject::GameObject(int64_t p_actorID, const std::string& p_name, const std::string& p_tag, bool& p_playing):
-	m_worldID(p_actorID),
+namespace
+{
+int g_nextGameObjectWorldID = 1;
+}
+
+GameObject::GameObject(const std::string& p_name, const std::string& p_tag):
+	m_worldID(AllocateWorldID()),
 m_name(p_name),
 m_tag(p_tag),
-m_playing(p_playing),
 m_active(true),
 m_transform(nullptr)
 {
@@ -119,6 +123,17 @@ bool GameObject::RemoveComponent(Component* component)
         }
     }
     return false;
+}
+
+int GameObject::AllocateWorldID()
+{
+    return g_nextGameObjectWorldID++;
+}
+
+void GameObject::SetWorldID(int newID)
+{
+    m_worldID = newID;
+    g_nextGameObjectWorldID = std::max(g_nextGameObjectWorldID, newID + 1);
 }
 
 void GameObject::SetActive(bool p_active)

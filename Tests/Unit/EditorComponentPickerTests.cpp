@@ -33,8 +33,7 @@ using NLS::meta::Type;
 
 GameObject MakeActor()
 {
-    static bool playing = false;
-    return GameObject(1, "Actor", "Untagged", playing);
+    return GameObject("Actor", "Untagged");
 }
 
 bool ContainsDisplayName(const std::vector<ComponentSearchEntry>& p_entries, const std::string& p_displayName)

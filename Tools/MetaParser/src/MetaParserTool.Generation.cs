@@ -18,7 +18,7 @@ internal static partial class MetaParserTool
             if (!string.IsNullOrWhiteSpace(generatedDirectory))
                 Directory.CreateDirectory(generatedDirectory);
 
-            var headerSession = BuildHeaderTemplateSession(headerGroup.ToList());
+            var headerSession = BuildHeaderTemplateSession(headerGroup.ToList(), orderedTypes);
             var generatedHeaderText = MetaParserTemplateRenderer.Render(
                 MetaParserTemplateCatalog.ResolvePath(templateRoot, manifest.Templates.HeaderRule.HeaderTemplate),
                 headerSession);
@@ -64,7 +64,7 @@ internal static partial class MetaParserTool
             []);
     }
 
-    private static Dictionary<string, object?> BuildHeaderTemplateSession(IReadOnlyList<ReflectTypeInfo> types)
+    private static Dictionary<string, object?> BuildHeaderTemplateSession(IReadOnlyList<ReflectTypeInfo> types, IReadOnlyList<ReflectTypeInfo> allTypes)
     {
         var headerPath = types[0].HeaderPath;
         var fileId = BuildGeneratedFileId(headerPath);
@@ -110,7 +110,7 @@ internal static partial class MetaParserTool
             typeModels.Add(new GeneratedTypeTemplateModel(
                 type.ClassName,
                 type.QualifiedName,
-                type.QualifiedName.StartsWith("NLS::Engine::Components::", StringComparison.Ordinal),
+                ShouldEnableObjectBridge(type, allTypes),
                 BuildPrivateAccessStructName(type.QualifiedName),
                 BuildRegisterFunctionName(type.QualifiedName),
                 BuildRegistrarClassName(type.QualifiedName),
@@ -133,7 +133,7 @@ internal static partial class MetaParserTool
             privateTypeModels.Add(new GeneratedPrivateTypeTemplateModel(
                 type.ClassName,
                 type.QualifiedName,
-                type.QualifiedName.StartsWith("NLS::Engine::Components::", StringComparison.Ordinal),
+                ShouldEnableObjectBridge(type, allTypes),
                 BuildPrivateAccessStructName(type.QualifiedName),
                 BuildRegisterFunctionName(type.QualifiedName),
                 BuildRegistrarClassName(type.QualifiedName),
@@ -154,6 +154,43 @@ internal static partial class MetaParserTool
             generatedBodyLines.Count == 0,
             typeModels,
             privateTypeModels));
+    }
+
+    private static bool ShouldEnableObjectBridge(ReflectTypeInfo type, IReadOnlyList<ReflectTypeInfo> allTypes)
+    {
+        if (type.IsEnum)
+            return false;
+
+        var byName = allTypes.ToDictionary(static item => item.QualifiedName, StringComparer.Ordinal);
+        var visited = new HashSet<string>(StringComparer.Ordinal);
+        return InheritsFromMetaObject(type, byName, visited);
+    }
+
+    private static bool InheritsFromMetaObject(
+        ReflectTypeInfo type,
+        IReadOnlyDictionary<string, ReflectTypeInfo> byName,
+        HashSet<string> visited)
+    {
+        if (!visited.Add(type.QualifiedName))
+            return false;
+
+        foreach (var baseInfo in type.Bases)
+        {
+            var baseName = NormalizeTypeName(baseInfo.TypeName);
+            if (string.Equals(baseName, "NLS::meta::Object", StringComparison.Ordinal)
+                || string.Equals(baseName, "meta::Object", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            if (byName.TryGetValue(baseName, out var reflectedBase)
+                && InheritsFromMetaObject(reflectedBase, byName, visited))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool ShouldParseHeader(string headerPath, IReadOnlyList<MetaParserGeneratorDefinition> generators)

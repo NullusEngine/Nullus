@@ -1,8 +1,8 @@
 internal static partial class MetaParserTool
 {
-    private static void ValidateReflectTypes(string rootDir, IReadOnlyList<ReflectTypeInfo> types)
+    private static void ValidateReflectTypes(string rootDir, PrecompileParams config, IReadOnlyList<ReflectTypeInfo> types)
     {
-        var supportedTypeNames = BuildSupportedReflectionTypeNames(rootDir, types);
+        var supportedTypeNames = BuildSupportedReflectionTypeNames(rootDir, config, types);
         foreach (var type in types)
         {
             foreach (var field in type.Fields)
@@ -10,12 +10,20 @@ internal static partial class MetaParserTool
         }
     }
 
-    private static HashSet<string> BuildSupportedReflectionTypeNames(string rootDir, IReadOnlyList<ReflectTypeInfo> types)
+    private static HashSet<string> BuildSupportedReflectionTypeNames(string rootDir, PrecompileParams config, IReadOnlyList<ReflectTypeInfo> types)
     {
         var supportedTypeNames = new HashSet<string>(BuiltinTypeNames, StringComparer.Ordinal)
         {
             "std::string"
         };
+
+        AddManualExternalReflectionType(supportedTypeNames, "NLS::Maths::Vector3");
+        AddManualExternalReflectionType(supportedTypeNames, "NLS::Maths::Quaternion");
+        AddManualExternalReflectionType(supportedTypeNames, "NLS::Maths::Vector4");
+        AddManualExternalReflectionType(supportedTypeNames, "NLS::meta::PrivateReflectionExternalSample");
+        AddManualExternalReflectionType(supportedTypeNames, "NLS::Engine::Serialize::SerializedComponentData");
+        AddManualExternalReflectionType(supportedTypeNames, "NLS::Engine::Serialize::SerializedActorData");
+        AddManualExternalReflectionType(supportedTypeNames, "NLS::Engine::Serialize::SerializedSceneData");
 
         foreach (var type in types)
         {
@@ -33,24 +41,10 @@ internal static partial class MetaParserTool
                                  || string.Equals(Path.GetExtension(path), ".hpp", StringComparison.OrdinalIgnoreCase)))
         {
             var headerText = File.ReadAllText(headerPath);
-            foreach (var reflectedType in ParseTopLevelEnumsFromText(rootDir, headerPath, headerText))
-            {
-                supportedTypeNames.Add(reflectedType.QualifiedName);
-                if (reflectedType.QualifiedName.StartsWith("NLS::", StringComparison.Ordinal))
-                    supportedTypeNames.Add(reflectedType.QualifiedName["NLS::".Length..]);
-            }
+            if (!ContainsReflectedDeclaration(headerText))
+                continue;
 
-            if (ContainsGeneratedBody(headerText))
-            {
-                foreach (var reflectedType in ParseHeaderFromText(rootDir, headerPath, headerText))
-                {
-                    supportedTypeNames.Add(reflectedType.QualifiedName);
-                    if (reflectedType.QualifiedName.StartsWith("NLS::", StringComparison.Ordinal))
-                        supportedTypeNames.Add(reflectedType.QualifiedName["NLS::".Length..]);
-                }
-            }
-
-            foreach (var reflectedType in ParseExternalReflectionDeclarations(rootDir, headerPath))
+            foreach (var reflectedType in ParseHeader(rootDir, headerPath, config))
             {
                 supportedTypeNames.Add(reflectedType.QualifiedName);
                 if (reflectedType.QualifiedName.StartsWith("NLS::", StringComparison.Ordinal))
@@ -59,6 +53,13 @@ internal static partial class MetaParserTool
         }
 
         return supportedTypeNames;
+    }
+
+    private static void AddManualExternalReflectionType(HashSet<string> supportedTypeNames, string qualifiedName)
+    {
+        supportedTypeNames.Add(qualifiedName);
+        if (qualifiedName.StartsWith("NLS::", StringComparison.Ordinal))
+            supportedTypeNames.Add(qualifiedName["NLS::".Length..]);
     }
 
     private static void ValidateFieldType(ReflectTypeInfo ownerType, ReflectFieldInfo field, HashSet<string> supportedTypeNames)

@@ -426,8 +426,7 @@ TEST(ImGuizmoTransformAdapterTests, AllowsViewGizmoCameraToPitchUpAndDownBeforeP
 
 TEST(ImGuizmoTransformAdapterTests, ReadsAndAppliesActorWorldTransform)
 {
-    bool playing = false;
-    Engine::GameObject actor(1, "GizmoTarget", "", playing);
+    Engine::GameObject actor("GizmoTarget");
     actor.GetTransform()->SetWorldPosition({1.0f, 2.0f, 3.0f});
     actor.GetTransform()->SetWorldRotation(Maths::Quaternion(Maths::Vector3(0.0f, 45.0f, 0.0f)));
     actor.GetTransform()->SetWorldScale({2.0f, 3.0f, 4.0f});
@@ -445,8 +444,7 @@ TEST(ImGuizmoTransformAdapterTests, ReadsAndAppliesActorWorldTransform)
 
 TEST(ImGuizmoTransformAdapterTests, CenterPivotFallsBackToActorPivotWhenNoRenderableBoundsExist)
 {
-    bool playing = false;
-    Engine::GameObject actor(1, "GizmoTarget", "", playing);
+    Engine::GameObject actor("GizmoTarget");
     actor.GetTransform()->SetWorldPosition({1.0f, 2.0f, 3.0f});
 
     const auto pivotPosition = Editor::Core::GetActorGizmoPivotPosition(
@@ -472,9 +470,10 @@ TEST(ImGuizmoTransformAdapterTests, CenterPivotFallsBackToActorPivotWhenNoRender
 
 TEST(ImGuizmoTransformAdapterTests, CenterPivotUsesChildRenderableBounds)
 {
-    bool playing = false;
-    Engine::GameObject parent(1, "Parent", "", playing);
-    Engine::GameObject child(2, "Child", "", playing);
+    Engine::GameObject parent("Parent");
+    Engine::GameObject child("Child");
+    parent.SetWorldID(1);
+    child.SetWorldID(2);
     parent.GetTransform()->SetWorldPosition({1.0f, 2.0f, 3.0f});
     child.GetTransform()->SetLocalPosition({10.0f, 0.0f, 0.0f});
     child.SetParent(parent);
@@ -502,8 +501,7 @@ TEST(ImGuizmoTransformAdapterTests, CenterPivotUsesChildRenderableBounds)
 
 TEST(ImGuizmoTransformAdapterTests, CenterPivotTranslationAppliesDeltaToActorPosition)
 {
-    bool playing = false;
-    Engine::GameObject actor(1, "GizmoTarget", "", playing);
+    Engine::GameObject actor("GizmoTarget");
     actor.GetTransform()->SetWorldPosition({1.0f, 2.0f, 3.0f});
 
     auto gizmoMatrix = Editor::Core::GetActorWorldGizmoMatrix(
@@ -526,9 +524,10 @@ TEST(ImGuizmoTransformAdapterTests, CenterPivotTranslationAppliesDeltaToActorPos
 
 TEST(ImGuizmoTransformAdapterTests, CenterPivotRotationKeepsRenderableCenterAtGizmoPosition)
 {
-    bool playing = false;
-    Engine::GameObject parent(1, "Parent", "", playing);
-    Engine::GameObject child(2, "Child", "", playing);
+    Engine::GameObject parent("Parent");
+    Engine::GameObject child("Child");
+    parent.SetWorldID(1);
+    child.SetWorldID(2);
     parent.GetTransform()->SetWorldPosition({1.0f, 2.0f, 3.0f});
     child.GetTransform()->SetLocalPosition({10.0f, 0.0f, 0.0f});
     child.SetParent(parent);
@@ -571,9 +570,10 @@ TEST(ImGuizmoTransformAdapterTests, CenterPivotRotationKeepsRenderableCenterAtGi
 
 TEST(ImGuizmoTransformAdapterTests, CenterPivotScaleKeepsRenderableCenterAtGizmoPosition)
 {
-    bool playing = false;
-    Engine::GameObject parent(1, "Parent", "", playing);
-    Engine::GameObject child(2, "Child", "", playing);
+    Engine::GameObject parent("Parent");
+    Engine::GameObject child("Child");
+    parent.SetWorldID(1);
+    child.SetWorldID(2);
     parent.GetTransform()->SetWorldPosition({1.0f, 2.0f, 3.0f});
     child.GetTransform()->SetLocalPosition({10.0f, 0.0f, 0.0f});
     child.SetParent(parent);
@@ -614,8 +614,7 @@ TEST(ImGuizmoTransformAdapterTests, CenterPivotScaleKeepsRenderableCenterAtGizmo
 
 TEST(ImGuizmoTransformAdapterTests, AppliesRotationFromGizmoMatrixWithoutChangingPositionOrScale)
 {
-    bool playing = false;
-    Engine::GameObject actor(1, "GizmoTarget", "", playing);
+    Engine::GameObject actor("GizmoTarget");
 
     const Maths::Vector3 expectedPosition {1.0f, 2.0f, 3.0f};
     const Maths::Vector3 expectedScale {2.0f, 3.0f, 4.0f};
@@ -647,8 +646,7 @@ TEST(ImGuizmoTransformAdapterTests, AppliesRotationFromGizmoMatrixWithoutChangin
 
 TEST(ImGuizmoTransformAdapterTests, RotationOperationDoesNotApplyGizmoMatrixScaleOrShear)
 {
-    bool playing = false;
-    Engine::GameObject actor(1, "GizmoTarget", "", playing);
+    Engine::GameObject actor("GizmoTarget");
     actor.GetTransform()->SetWorldPosition({1.0f, 2.0f, 3.0f});
     actor.GetTransform()->SetWorldScale({2.0f, 3.0f, 4.0f});
 

@@ -10,7 +10,7 @@ namespace NLS::Render::Geometry
 	/**
 	* Data structure that defines a bounding sphere (Position + radius)
 	*/
-	STRUCT() struct BoundingSphere
+	STRUCT(BoundingSphere)
 	{
         GENERATED_BODY()
         PROPERTY()

@@ -30,7 +30,7 @@ internal static partial class MetaParserTool
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"[MetaParser] Fatal: {ex.Message}");
+            Console.Error.WriteLine($"[MetaParser] Fatal: {ex}");
             return 5;
         }
     }
@@ -65,7 +65,7 @@ internal static partial class MetaParserTool
             .ThenBy(static type => type.QualifiedName, StringComparer.Ordinal)
             .ToList();
 
-        ValidateReflectTypes(rootDir, orderedTypes);
+        ValidateReflectTypes(rootDir, config, orderedTypes);
         foreach (var generator in MetaParserGeneratorRegistry.All)
             generator.Generate(config, orderedTypes, outputDir);
 

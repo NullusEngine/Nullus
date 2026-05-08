@@ -9,29 +9,16 @@
 #if defined(__REFLECTION_PARSER__)
 
     #define META(...) __attribute__((annotate(#__VA_ARGS__)))
-    #define CLASS(...) META(Reflection __VA_OPT__(,) __VA_ARGS__)
-    #define STRUCT(...) META(Reflection __VA_OPT__(,) __VA_ARGS__)
-    #define ENUM(...) META(Reflection __VA_OPT__(,) __VA_ARGS__)
-    #define PROPERTY(...) META(Property)
-    #define FUNCTION(...) META(Function)
+    #define META_TEXT(text) __attribute__((annotate(text)))
+    #define CLASS(typeDecl, ...) class META(Reflection __VA_OPT__(,) __VA_ARGS__) typeDecl
+    #define STRUCT(typeDecl, ...) struct META(Reflection __VA_OPT__(,) __VA_ARGS__) typeDecl
+    #define ENUM(typeDecl, ...) enum class META(Reflection __VA_OPT__(,) __VA_ARGS__) typeDecl
+    #define PROPERTY(...) META_TEXT("Property" __VA_OPT__(", " #__VA_ARGS__))
+    #define FUNCTION(...) META_TEXT("Function" __VA_OPT__(", " #__VA_ARGS__))
 
-    #define __META_EXTERNAL(type, guid)       \
-        typedef type __META_EXTERNAL__##guid; \
+    #define __META_JOIN_INNER(left, right) left##right
+    #define __META_JOIN(left, right) __META_JOIN_INNER(left, right)
 
-    #define _META_EXTERNAL(type, guid) __META_EXTERNAL(type, guid)
-
-    #define MetaExternal(type) _META_EXTERNAL(type, __COUNTER__)
-
-    #define REFLECT_EXTERNAL(...)
-    #define REFLECT_FIELD(...)
-    #define REFLECT_PROPERTY(...)
-    #define REFLECT_METHOD(...)
-    #define REFLECT_METHOD_EX(...)
-    #define REFLECT_STATIC_METHOD(...)
-    #define REFLECT_PRIVATE_FIELD(...)
-    #define REFLECT_PRIVATE_METHOD(...)
-    #define REFLECT_PRIVATE_METHOD_EX(...)
-    #define REFLECT_PRIVATE_STATIC_METHOD(...)
     #define NLS_BODY_MACRO_COMBINE_INNER(A, B, C, D) A##B##C##D
     #define NLS_BODY_MACRO_COMBINE(A, B, C, D) NLS_BODY_MACRO_COMBINE_INNER(A, B, C, D)
     #ifndef CURRENT_FILE_ID
@@ -44,29 +31,12 @@
 #else
 
     #define META(...)
-    #define CLASS(...)
-    #define STRUCT(...)
-    #define ENUM(...)
+    #define CLASS(typeDecl, ...) class typeDecl
+    #define STRUCT(typeDecl, ...) struct typeDecl
+    #define ENUM(typeDecl, ...) enum class typeDecl
     #define PROPERTY(...)
     #define FUNCTION(...)
 
-    #define __META_EXTERNAL(type, guid)       \
-        inline constexpr const char* StaticMetaTypeName(type*) { return #type; } \
-        inline constexpr ::NLS::meta::TypeKey StaticMetaTypeKey(type*) { return ::NLS::meta::HashTypeKey(#type); }
-
-    #define _META_EXTERNAL(type, guid) __META_EXTERNAL(type, guid)
-
-    #define MetaExternal(type) _META_EXTERNAL(type, __COUNTER__)
-    #define REFLECT_EXTERNAL(...)
-    #define REFLECT_FIELD(...)
-    #define REFLECT_PROPERTY(...)
-    #define REFLECT_METHOD(...)
-    #define REFLECT_METHOD_EX(...)
-    #define REFLECT_STATIC_METHOD(...)
-    #define REFLECT_PRIVATE_FIELD(...)
-    #define REFLECT_PRIVATE_METHOD(...)
-    #define REFLECT_PRIVATE_METHOD_EX(...)
-    #define REFLECT_PRIVATE_STATIC_METHOD(...)
     #define NLS_BODY_MACRO_COMBINE_INNER(A, B, C, D) A##B##C##D
     #define NLS_BODY_MACRO_COMBINE(A, B, C, D) NLS_BODY_MACRO_COMBINE_INNER(A, B, C, D)
     #ifndef CURRENT_FILE_ID

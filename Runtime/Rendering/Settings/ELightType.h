@@ -8,7 +8,7 @@ namespace NLS::Render::Settings
 	/**
 	* Light types
 	*/
-	ENUM() enum class NLS_RENDER_API ELightType : uint8_t
+	ENUM(NLS_RENDER_API ELightType) : uint8_t
 	{
 		POINT,
 		DIRECTIONAL,

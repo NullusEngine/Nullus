@@ -22,7 +22,7 @@ TEST_F(ReflectionRuntimeTestFixture, RegistersEngineReflectionTypes)
         {"NLS::Engine::Components::MeshRenderer", {"SetModel", "GetModel"}, {}, {"model", "frustumBehaviour", "customBoundingSphere"}, "NLS::Engine::Components::Component"},
         {"NLS::Engine::Components::MaterialRenderer", {"FillWithMaterial", "GetUserMatrix"}, {}, {"materialPaths", "userMatrixValues"}, "NLS::Engine::Components::Component"},
         {"NLS::Engine::Components::SkyBoxComponent", {"SetCubeMap", "GetModel"}, {}, {}, "NLS::Engine::Components::Component"},
-        {"NLS::Engine::GameObject", {"GetName", "SetTag"}, {}, {"name", "tag", "active", "worldID"}, ""},
+        {"NLS::Engine::GameObject", {"GetName", "SetTag"}, {}, {"name", "tag", "worldID"}, ""},
         {"NLS::Engine::SceneSystem::Scene", {"Play", "GetActors"}, {}, {}, ""},
     };
 
@@ -36,7 +36,6 @@ TEST_F(ReflectionRuntimeTestFixture, RegistersSpecialCasePropertyBindingsWithExp
     const Type lightType = Type::GetFromName("NLS::Engine::Components::LightComponent");
     const Type meshRendererType = Type::GetFromName("NLS::Engine::Components::MeshRenderer");
     const Type materialRendererType = Type::GetFromName("NLS::Engine::Components::MaterialRenderer");
-    const Type gameObjectType = Type::GetFromName("NLS::Engine::GameObject");
     const Type projectionModeType = Type::GetFromName("NLS::Render::Settings::EProjectionMode");
     const Type meshFrustumEnumType = Type::GetFromName("NLS::Engine::Components::MeshRenderer::EFrustumBehaviour");
 
@@ -44,7 +43,6 @@ TEST_F(ReflectionRuntimeTestFixture, RegistersSpecialCasePropertyBindingsWithExp
     ASSERT_TRUE(lightType.IsValid());
     ASSERT_TRUE(meshRendererType.IsValid());
     ASSERT_TRUE(materialRendererType.IsValid());
-    ASSERT_TRUE(gameObjectType.IsValid());
     ASSERT_TRUE(projectionModeType.IsValid());
     ASSERT_TRUE(meshFrustumEnumType.IsValid());
 
@@ -57,8 +55,6 @@ TEST_F(ReflectionRuntimeTestFixture, RegistersSpecialCasePropertyBindingsWithExp
     ExpectFieldTypeName(meshRendererType, "customBoundingSphere", "NLS::Render::Geometry::BoundingSphere");
     ExpectFieldTypeName(materialRendererType, "materialPaths", "NLS::Array<std::string>");
     ExpectFieldTypeName(materialRendererType, "userMatrixValues", "NLS::Array<float>");
-    ExpectFieldTypeName(gameObjectType, "active", "bool");
-
     ExpectEnumKeys(projectionModeType, {"ORTHOGRAPHIC", "PERSPECTIVE"});
     ExpectEnumKeys(meshFrustumEnumType, {"CULL_CUSTOM"});
 }

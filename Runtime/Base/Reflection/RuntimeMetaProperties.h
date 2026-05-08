@@ -16,16 +16,14 @@
  */
 class SerializeAsNumber : public NLS::meta::MetaProperty
 {
-    META_OBJECT;
 };
 
 namespace NLS::meta
 {
-CLASS() class ComponentMenu : public NLS::meta::MetaProperty
+CLASS(ComponentMenu) : public NLS::meta::MetaProperty
 {
 public:
     GENERATED_BODY()
-    META_OBJECT
 
     ComponentMenu() = default;
     explicit ComponentMenu(const char* p_path)

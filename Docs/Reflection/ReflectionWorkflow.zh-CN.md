@@ -24,7 +24,7 @@ Nullus 当前维护中的反射路径只有一条：
 1. 内联反射类型：
 
 ```cpp
-CLASS() class MyType : public NLS::meta::Object
+CLASS(MyType) : public NLS::meta::Object
 {
 public:
     GENERATED_BODY()
@@ -34,7 +34,7 @@ public:
 2. 反射枚举：
 
 ```cpp
-ENUM() enum class MyMode : uint8_t
+ENUM(MyMode) : uint8_t
 {
     A,
     B
@@ -154,7 +154,7 @@ ENUM() enum class MyMode : uint8_t
 ### 模式 1：自动属性
 
 ```cpp
-CLASS() class CameraComponent : public Component
+CLASS(CameraComponent) : public Component
 {
 public:
     GENERATED_BODY()

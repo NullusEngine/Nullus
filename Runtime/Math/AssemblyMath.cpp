@@ -1,4 +1,5 @@
 #include "AssemblyMath.h"
+#include "ExternalReflection.h"
 #include "Gen/MetaGenerated.h"
 
 namespace NLS

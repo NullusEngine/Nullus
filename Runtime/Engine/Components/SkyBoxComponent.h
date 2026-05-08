@@ -15,7 +15,7 @@ namespace NLS::Engine::Components
 	/**
 	* A ModelRenderer is necessary in combination with a MaterialRenderer to render a model in the world
 	*/
-	CLASS() class NLS_ENGINE_API SkyBoxComponent : public Component
+	CLASS(NLS_ENGINE_API SkyBoxComponent) : public Component
 	{
     public:
 		GENERATED_BODY()

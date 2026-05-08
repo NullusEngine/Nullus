@@ -14,7 +14,7 @@ namespace NLS::Engine::Components
 	/**
 	* A ModelRenderer is necessary in combination with a MaterialRenderer to render a model in the world
 	*/
-	CLASS(ComponentMenu("Rendering/Mesh Renderer")) class NLS_ENGINE_API MeshRenderer : public Component
+	CLASS(NLS_ENGINE_API MeshRenderer, ComponentMenu("Rendering/Mesh Renderer")) : public Component
 	{
     public:
 		GENERATED_BODY()
@@ -23,7 +23,7 @@ namespace NLS::Engine::Components
 		/**
 		* Defines how the model renderer bounding sphere should be interpreted
 		*/
-        ENUM() enum class EFrustumBehaviour
+        ENUM(EFrustumBehaviour)
 		{
 			DISABLED = 0,
 			CULL_MODEL = 1,
@@ -37,8 +37,6 @@ namespace NLS::Engine::Components
 		*/
 		MeshRenderer();
 
-        PROPERTY(name = model, getter = GetModelPath, setter = SetModelPath)
-
 		/**
 		* Defines the model to use
 		* @param p_model
@@ -50,11 +48,13 @@ namespace NLS::Engine::Components
 		* Returns the current model
 		*/
         FUNCTION()
-		Model* GetModel() const;
+        Model* GetModel() const;
 
+        PROPERTY(model)
         FUNCTION()
         std::string GetModelPath() const;
 
+        PROPERTY(model)
         FUNCTION()
         void SetModelPath(const std::string& p_path);
 

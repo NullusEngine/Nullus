@@ -33,11 +33,11 @@ TEST(MetaParserGenerationModuleTests, GeneratesExpectedBaseReflectionBindings)
     const std::string sampleText = ReadAllText(sampleSource);
     const std::string metaText = ReadAllText(metaSource);
 
-    ExpectContains(sampleText, "AllocateType(\"NLS::meta::MetaParserFieldMethodSample\")");
+    ExpectContains(sampleText, "AllocateType(typeKey, \"NLS::meta::MetaParserFieldMethodSample\", moduleKey)");
     ExpectContains(sampleText, "AddField<NLS::meta::MetaParserFieldMethodSample, int>(\"value\"");
     ExpectContains(sampleText, "&NLS::meta::MetaParserFieldMethodSample::GetValue");
     ExpectContains(sampleText, "&NLS::meta::MetaParserFieldMethodSample::SetValue");
-    ExpectContains(sampleText, "AddMethod(\"GetValue\", &NLS::meta::MetaParserFieldMethodSample::GetValue, {})");
+    ExpectContains(sampleText, "AddMethod(\"GetValue\", static_cast<int (NLS::meta::MetaParserFieldMethodSample::*)() const>(&NLS::meta::MetaParserFieldMethodSample::GetValue), {})");
     ExpectNotContains(sampleText, "AddMethod(\"OnSerialize\"");
     ExpectContains(metaText, "LinkReflectionTypes_NLS_Base");
     ExpectContains(metaText, "#include \"Reflection/MetaParserFieldMethodSample.generated.cpp\"");
@@ -66,7 +66,7 @@ TEST(MetaParserGenerationModuleTests, GeneratesExpectedEditorSettingsReflectionB
     const std::string metaText = ReadAllText(metaSource);
     const std::string handwrittenText = ReadAllText(handwrittenSource);
 
-    ExpectContains(sceneToolText, "AllocateType(\"NLS::Editor::Settings::EditorSceneToolSettingsObject\")");
+    ExpectContains(sceneToolText, "AllocateType(typeKey, \"NLS::Editor::Settings::EditorSceneToolSettingsObject\", moduleKey)");
     ExpectContains(sceneToolText, "AddField<NLS::Editor::Settings::EditorSceneToolSettingsObject, float>(\"translationSnapUnit\"");
     ExpectContains(sceneToolText, "AddField<NLS::Editor::Settings::EditorDebugDrawSettingsObject, bool>(\"debugDrawEnabled\"");
     ExpectContains(metaText, "#include \"Project/Editor/Settings/EditorSettings.generated.cpp\"");

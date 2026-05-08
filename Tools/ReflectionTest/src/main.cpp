@@ -92,8 +92,7 @@ bool RequireTypeDrivenComponentLookup()
     using namespace NLS::Engine;
     using namespace NLS::Engine::Components;
 
-    bool playing = false;
-    GameObject actor(42, "ReflectionActor", "Test", playing);
+    GameObject actor("ReflectionActor", "Test");
     auto* camera = actor.AddComponent<CameraComponent>();
     auto* light = actor.AddComponent<LightComponent>();
 
@@ -293,8 +292,8 @@ int main()
         {"NLS::Engine::Components::MeshRenderer", {"SetModel", "GetModel"}, {}, {"model", "frustumBehaviour", "customBoundingSphere"}, "NLS::Engine::Components::Component"},
         // Engine type with auto-inferred array properties
         {"NLS::Engine::Components::MaterialRenderer", {"FillWithMaterial", "GetUserMatrix"}, {}, {"materialPaths", "userMatrixValues"}, "NLS::Engine::Components::Component"},
-        // Engine object with explicit property
-        {"NLS::Engine::GameObject", {"GetName", "SetTag"}, {}, {"name", "tag", "active", "worldID"}, ""},
+        // Engine object with auto-inferred properties
+        {"NLS::Engine::GameObject", {"GetName", "SetTag"}, {}, {"name", "tag", "worldID"}, ""},
     };
 
     bool allPassed = true;

@@ -9,7 +9,7 @@ namespace NLS::Engine
 class GameObject;
 namespace Components
 {
-CLASS() class NLS_ENGINE_API Component : public NLS::meta::Object
+CLASS(NLS_ENGINE_API Component) : public NLS::meta::Object
 {
 public:
     GENERATED_BODY()

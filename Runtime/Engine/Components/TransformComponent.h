@@ -16,7 +16,7 @@ using namespace NLS::Maths;
 
 namespace NLS::Engine::Components
 {
-CLASS() class NLS_ENGINE_API TransformComponent : public Component
+CLASS(NLS_ENGINE_API TransformComponent) : public Component
 {
 public:
     GENERATED_BODY()

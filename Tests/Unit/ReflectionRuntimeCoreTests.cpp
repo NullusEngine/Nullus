@@ -30,9 +30,6 @@ TEST_F(ReflectionRuntimeTestFixture, RegistersExternalReflectionAndSerialization
         {"NLS::Maths::Vector3", {"Length", "Normalised"}, {"Dot", "Cross"}, {"x", "y", "z"}, ""},
         {"NLS::Maths::Quaternion", {}, {}, {"x", "y", "z", "w"}, ""},
         {"NLS::meta::PrivateReflectionExternalSample", {"GetHiddenValue"}, {}, {"m_hiddenValue"}, ""},
-        {"NLS::Engine::Serialize::SerializedComponentData", {}, {}, {"type", "data"}, ""},
-        {"NLS::Engine::Serialize::SerializedActorData", {}, {}, {"name", "tag", "active", "worldID", "parent", "components"}, ""},
-        {"NLS::Engine::Serialize::SerializedSceneData", {}, {}, {"version", "actors"}, ""}
     };
 
     for (const TypeExpectation& expectation : expectations)

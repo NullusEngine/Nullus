@@ -29,6 +29,7 @@ public:
         return m_vComponents;
     }
     bool RemoveComponent(Components::Component* component);
+    bool MoveComponent(Components::Component* component, size_t index);
 
     Components::Component* AddComponent(meta::Type type, const std::function<void(Components::Component*)>& func = {});
     Components::Component* GetComponent(meta::Type type, bool includeSubType = true) const;
@@ -44,6 +45,12 @@ public:
      */
     FUNCTION()
     bool IsSelfActive() const;
+
+    FUNCTION()
+    bool GetActive() const
+    {
+        return IsSelfActive();
+    }
 
     /**
      * Returns true if the actor is and his recursive parents (if any) are active
@@ -129,15 +136,6 @@ public:
      */
     void OnTriggerExit(GameObject& p_otherObject);
 
-    FUNCTION()
-    void SetWorldID(int newID);
-
-    FUNCTION()
-    int GetWorldID() const
-    {
-        return m_worldID;
-    }
-
     /**
      * Set an actor as the parent of this actor
      * @param p_parent
@@ -166,14 +164,10 @@ public:
     GameObject* GetParent() const;
 
     /**
-     * Returns the ID of the parent of this actor
-     */
-    int64_t GetParentID() const;
-
-    /**
      * Returns the children of this actor
      */
     std::vector<GameObject*>& GetChildren();
+    const std::vector<GameObject*>& GetChildren() const;
 
     
 	/**
@@ -257,7 +251,6 @@ private:
     GameObject(const GameObject& p_actor) = delete;
     GameObject& operator=(const GameObject& p_actor) = delete;
 
-    static int AllocateWorldID();
     void RecursiveActiveUpdate();
     void RecursiveWasActiveUpdate();
 
@@ -275,7 +268,6 @@ public:
 protected:
     std::vector<std::unique_ptr<Components::Component>> m_vComponents;
     bool m_active;
-    int m_worldID;
     std::string m_name;
     /* Settings */
     std::string m_tag;
@@ -287,7 +279,6 @@ protected:
     bool m_started = false;
     bool m_wasActive = false;
     /* Parenting system stuff */
-    int64_t m_parentID = 0;
     GameObject* m_parent = nullptr;
     std::vector<GameObject*> m_children;
     Components::TransformComponent* m_transform = nullptr;

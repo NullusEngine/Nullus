@@ -2,8 +2,10 @@
 
 #include <filesystem>
 #include <unordered_map>
+#include <unordered_set>
 #include <queue>
 
+#include <Core/AssetFileWatcher.h>
 #include <UI/Panels/PanelWindow.h>
 #include <UI/Widgets/Layout/TreeNode.h>
 #include <Rendering/Resources/Loaders/TextureLoader.h>
@@ -57,6 +59,9 @@ namespace NLS::Editor::Panels
 		void Refresh();
 
 	private:
+		void OnBeforeDrawWidgets() override;
+		void RequestRefresh();
+		void RefreshPreservingExpandedFolders();
 		void ParseFolder(UI::Widgets::TreeNode& p_root, const std::filesystem::directory_entry& p_directory, bool p_isEngineItem, bool p_scriptFolder = false);
 		void ConsiderItem(UI::Widgets::TreeNode* p_root, const std::filesystem::directory_entry& p_entry, bool p_isEngineItem, bool p_autoOpen = false, bool p_scriptFolder = false);
 
@@ -69,5 +74,9 @@ namespace NLS::Editor::Panels
 		UI::Widgets::Group* m_assetList;
 		NLS::UI::Widgets::TextClickable* m_selectedAsset = nullptr;
 		std::unordered_map<UI::Widgets::TreeNode*, std::string> m_pathUpdate;
+		std::unordered_set<std::string> m_expandedFolders;
+		Core::AssetFileWatcher m_engineAssetsWatcher;
+		Core::AssetFileWatcher m_projectAssetsWatcher;
+		bool m_refreshRequested = false;
 	};
 }

@@ -60,6 +60,12 @@ namespace NLS::Engine::SceneSystem
 		//bool LoadSceneFromMemory(tinyxml2::XMLDocument& p_doc);
 
 		/**
+		* Save the current scene to the given path
+		* @param p_path
+		*/
+		bool SaveCurrentScene(const std::string& p_path);
+
+		/**
 		* Destroy current scene from memory
 		*/
 		void UnloadCurrentScene();
@@ -95,10 +101,26 @@ namespace NLS::Engine::SceneSystem
 		*/
 		void ForgetCurrentSceneSourcePath();
 
+		/**
+		* Mark the current scene as changed since the last save/load.
+		*/
+		void MarkCurrentSceneDirty();
+
+		/**
+		* Mark the current scene as matching its last saved/loaded state.
+		*/
+		void MarkCurrentSceneClean();
+
+		/**
+		* Return true if the current scene has unsaved edits.
+		*/
+		bool HasUnsavedSceneChanges() const;
+
 	public:
 		NLS::Event<> SceneLoadEvent;
 		NLS::Event<> SceneUnloadEvent;
 		NLS::Event<const std::string&> CurrentSceneSourcePathChangedEvent;
+		NLS::Event<bool> CurrentSceneDirtyStateChangedEvent;
 
 	private:
 		const std::string m_sceneRootFolder;
@@ -106,6 +128,7 @@ namespace NLS::Engine::SceneSystem
 
 		bool m_currentSceneLoadedFromPath = false;
 		std::string m_currentSceneSourcePath = "";
+		bool m_currentSceneDirty = false;
 
 		std::function<void()> m_delayedLoadCall;
 	};

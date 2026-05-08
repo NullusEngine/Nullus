@@ -22,8 +22,8 @@ TEST_F(ReflectionRuntimeTestFixture, RegistersEngineReflectionTypes)
         {"NLS::Engine::Components::MeshRenderer", {"SetModel", "GetModel"}, {}, {"model", "frustumBehaviour", "customBoundingSphere"}, "NLS::Engine::Components::Component"},
         {"NLS::Engine::Components::MaterialRenderer", {"FillWithMaterial", "GetUserMatrix"}, {}, {"materialPaths", "userMatrixValues"}, "NLS::Engine::Components::Component"},
         {"NLS::Engine::Components::SkyBoxComponent", {"SetCubeMap", "GetModel"}, {}, {}, "NLS::Engine::Components::Component"},
-        {"NLS::Engine::GameObject", {"GetName", "SetTag"}, {}, {"name", "tag", "worldID"}, ""},
-        {"NLS::Engine::SceneSystem::Scene", {"Play", "GetActors"}, {}, {}, ""},
+        {"NLS::Engine::GameObject", {"GetName", "SetTag"}, {}, {"active", "name", "tag"}, "NLS::meta::Object"},
+        {"NLS::Engine::SceneSystem::Scene", {"Play", "GetActors"}, {}, {}, "NLS::meta::Object"},
     };
 
     for (const TypeExpectation& expectation : expectations)

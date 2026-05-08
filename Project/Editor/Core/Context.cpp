@@ -190,6 +190,11 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
 		ResetProjectSettings();
 		projectSettings.Rewrite();
 	}
+    else if (!projectSettings.IsKeyExisting("last_opened_scene"))
+    {
+        projectSettings.Add<std::string>("last_opened_scene", "");
+        projectSettings.Rewrite();
+    }
 
     const auto logDirectory = std::filesystem::path(p_projectPath) / "Logs";
     std::error_code logDirectoryError;
@@ -356,6 +361,7 @@ void Editor::Core::Context::ResetProjectSettings()
     projectSettings.Add<bool>("fullscreen", false);
     projectSettings.Add<std::string>("executable_name", "Game");
     projectSettings.Add<std::string>("start_scene", "");
+    projectSettings.Add<std::string>("last_opened_scene", "");
     projectSettings.Add<bool>("vsync", true);
     projectSettings.Add<bool>("multi_sampling", true);
     projectSettings.Add<int>("samples", 4);

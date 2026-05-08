@@ -295,7 +295,7 @@ namespace NLS::Editor::Core
 		* Save the current scene to the given path
 		* @param p_path
 		*/
-		void SaveCurrentSceneTo(const std::string& p_path);
+		bool SaveCurrentSceneTo(const std::string& p_path);
 
 		/**
 		* Load a scene from the disk
@@ -318,6 +318,12 @@ namespace NLS::Editor::Core
 		* Save the current scene to a new disk location (Can create a duplication of the scene file)
 		*/
 		void SaveAs();
+
+		/**
+		* Ask whether unsaved scene changes should be saved before a destructive scene operation.
+		* Returns false when the caller should cancel the operation.
+		*/
+		bool PromptSaveCurrentSceneIfDirty();
 		#pragma endregion
 
 		#pragma region BUILDING
@@ -372,6 +378,7 @@ namespace NLS::Editor::Core
 		std::vector<std::pair<uint32_t, std::function<void()>>> m_delayedActions;
 
 		//tinyxml2::XMLDocument m_sceneBackup;
+		void RefreshWindowTitle();
 	};
 }
 

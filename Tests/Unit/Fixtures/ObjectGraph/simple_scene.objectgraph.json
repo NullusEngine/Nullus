@@ -1,0 +1,47 @@
+{
+    "documentId": "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+    "format": "Nullus.ObjectGraph.Scene",
+    "objects": [
+        {
+            "debugName": "Main Scene",
+            "id": "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb",
+            "properties": {
+                "gameObjects": [
+                    {
+                        "$owned": "cccccccc-cccc-4ccc-cccc-cccccccccccc"
+                    }
+                ]
+            },
+            "state": "Alive",
+            "type": "NLS::Engine::SceneSystem::Scene"
+        },
+        {
+            "debugName": "Player",
+            "debugPath": "/Player",
+            "id": "cccccccc-cccc-4ccc-cccc-cccccccccccc",
+            "properties": {
+                "components": [
+                    {
+                        "$owned": "dddddddd-dddd-4ddd-9ddd-dddddddddddd"
+                    }
+                ],
+                "name": "Player",
+                "parent": {
+                    "$ref": "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb"
+                },
+                "tag": "Player"
+            },
+            "state": "Alive",
+            "type": "NLS::Engine::GameObject"
+        },
+        {
+            "debugName": "Transform",
+            "id": "dddddddd-dddd-4ddd-9ddd-dddddddddddd",
+            "properties": {},
+            "state": "Alive",
+            "type": "NLS::Engine::Components::TransformComponent"
+        }
+    ],
+    "root": "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb",
+    "version": 1
+}

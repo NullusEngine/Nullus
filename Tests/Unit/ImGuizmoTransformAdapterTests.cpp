@@ -472,8 +472,6 @@ TEST(ImGuizmoTransformAdapterTests, CenterPivotUsesChildRenderableBounds)
 {
     Engine::GameObject parent("Parent");
     Engine::GameObject child("Child");
-    parent.SetWorldID(1);
-    child.SetWorldID(2);
     parent.GetTransform()->SetWorldPosition({1.0f, 2.0f, 3.0f});
     child.GetTransform()->SetLocalPosition({10.0f, 0.0f, 0.0f});
     child.SetParent(parent);
@@ -526,8 +524,6 @@ TEST(ImGuizmoTransformAdapterTests, CenterPivotRotationKeepsRenderableCenterAtGi
 {
     Engine::GameObject parent("Parent");
     Engine::GameObject child("Child");
-    parent.SetWorldID(1);
-    child.SetWorldID(2);
     parent.GetTransform()->SetWorldPosition({1.0f, 2.0f, 3.0f});
     child.GetTransform()->SetLocalPosition({10.0f, 0.0f, 0.0f});
     child.SetParent(parent);
@@ -572,8 +568,6 @@ TEST(ImGuizmoTransformAdapterTests, CenterPivotScaleKeepsRenderableCenterAtGizmo
 {
     Engine::GameObject parent("Parent");
     Engine::GameObject child("Child");
-    parent.SetWorldID(1);
-    child.SetWorldID(2);
     parent.GetTransform()->SetWorldPosition({1.0f, 2.0f, 3.0f});
     child.GetTransform()->SetLocalPosition({10.0f, 0.0f, 0.0f});
     child.SetParent(parent);

@@ -482,10 +482,142 @@ internal static partial class MetaParserTool
             return [];
 
         var text = File.ReadAllText(sourceFilePath);
-        return Regex.Matches(text, @"\bGENERATED_BODY\s*\(", RegexOptions.CultureInvariant)
-            .Cast<Match>()
+        return FindGeneratedBodyLineMatches(text)
             .Select(match => 1 + text.Take(match.Index).Count(ch => ch == '\n'))
             .ToList();
+    }
+
+    private static int? FindGeneratedBodyLineForType(string sourceFilePath, string className, int startOffset, int endOffset)
+    {
+        if (string.IsNullOrWhiteSpace(sourceFilePath) || !File.Exists(sourceFilePath))
+            return null;
+
+        var text = File.ReadAllText(sourceFilePath);
+        return FindGeneratedBodyLineInClassText(text, className)
+               ?? FindGeneratedBodyLineInSpan(text, startOffset, endOffset);
+    }
+
+    private static int? FindGeneratedBodyLineInClassText(string text, string className)
+    {
+        if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(className))
+            return null;
+
+        var classPattern = $@"\b(?:CLASS|STRUCT)\s*\([^)]*\b{Regex.Escape(className)}\b[^)]*\)";
+        foreach (Match classMatch in Regex.Matches(text, classPattern, RegexOptions.CultureInvariant))
+        {
+            var openBraceIndex = text.IndexOf('{', classMatch.Index + classMatch.Length);
+            if (openBraceIndex < 0)
+                continue;
+
+            var closeBraceIndex = FindMatchingBrace(text, openBraceIndex);
+            if (!closeBraceIndex.HasValue)
+                continue;
+
+            var bodyLine = FindGeneratedBodyLineMatches(text)
+                .Where(match => match.Index > openBraceIndex && match.Index < closeBraceIndex.Value)
+                .Select(match => (int?)(1 + text.Take(match.Index).Count(ch => ch == '\n')))
+                .FirstOrDefault();
+            if (bodyLine.HasValue)
+                return bodyLine;
+        }
+
+        return null;
+    }
+
+    private static int? FindGeneratedBodyLineInSpan(string text, int startOffset, int endOffset)
+    {
+        if (string.IsNullOrWhiteSpace(text) || startOffset < 0 || endOffset <= startOffset || startOffset >= text.Length)
+            return null;
+
+        var clampedEnd = Math.Min(endOffset, text.Length);
+        return FindGeneratedBodyLineMatches(text)
+            .Where(match => match.Index >= startOffset && match.Index < clampedEnd)
+            .Select(match => (int?)(1 + text.Take(match.Index).Count(ch => ch == '\n')))
+            .FirstOrDefault();
+    }
+
+    private static IEnumerable<Match> FindGeneratedBodyLineMatches(string text)
+        => Regex.Matches(text, @"\bGENERATED_BODY\s*\(", RegexOptions.CultureInvariant)
+            .Cast<Match>();
+
+    private static int? FindMatchingBrace(string text, int openBraceIndex)
+    {
+        var depth = 0;
+        var inString = false;
+        var inLineComment = false;
+        var inBlockComment = false;
+        char stringDelimiter = '\0';
+
+        for (var index = openBraceIndex; index < text.Length; ++index)
+        {
+            var ch = text[index];
+            var next = index + 1 < text.Length ? text[index + 1] : '\0';
+
+            if (inLineComment)
+            {
+                if (ch == '\n')
+                    inLineComment = false;
+                continue;
+            }
+
+            if (inBlockComment)
+            {
+                if (ch == '*' && next == '/')
+                {
+                    inBlockComment = false;
+                    ++index;
+                }
+                continue;
+            }
+
+            if (inString)
+            {
+                if (ch == '\\')
+                {
+                    ++index;
+                    continue;
+                }
+                if (ch == stringDelimiter)
+                    inString = false;
+                continue;
+            }
+
+            if (ch == '/' && next == '/')
+            {
+                inLineComment = true;
+                ++index;
+                continue;
+            }
+
+            if (ch == '/' && next == '*')
+            {
+                inBlockComment = true;
+                ++index;
+                continue;
+            }
+
+            if (ch == '"' || ch == '\'')
+            {
+                inString = true;
+                stringDelimiter = ch;
+                continue;
+            }
+
+            if (ch == '{')
+            {
+                ++depth;
+                continue;
+            }
+
+            if (ch != '}')
+                continue;
+
+            --depth;
+            if (depth == 0)
+                return index;
+        }
+
+        return null;
     }
 
     private static string BuildPrivateAccessStructName(string qualifiedName)

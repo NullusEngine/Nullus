@@ -53,6 +53,38 @@ TEST(MetaParserGenerationModuleTests, GeneratesComponentMenuTypeMetadataBindings
     ExpectContains(meshRendererText, "type.meta");
 }
 
+TEST(MetaParserGenerationModuleTests, MapsDenseRuntimeMetaPropertyGeneratedBodiesToTheirOwnTypes)
+{
+    const std::filesystem::path generatedHeader =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Base/Gen/Reflection/RuntimeMetaProperties.generated.h";
+    const std::string headerText = ReadAllText(generatedHeader);
+
+    const std::vector<std::string> expectedTypes = {
+        "NLS::meta::SerializationIntent",
+        "NLS::meta::SerializeField",
+        "NLS::meta::Transient",
+        "NLS::meta::OwnedReference",
+        "NLS::meta::ObjectReference",
+        "NLS::meta::AssetReference",
+        "NLS::meta::EditorOnly",
+        "NLS::meta::RuntimeOnly",
+        "NLS::meta::FormerlySerializedAs",
+        "NLS::meta::StableTypeName",
+        "NLS::meta::FormerlyTypeName",
+        "NLS::meta::ComponentMenu",
+    };
+
+    std::size_t previousPosition = 0;
+    for (const std::string& typeName : expectedTypes)
+    {
+        const std::string staticNameFragment = "StaticMetaTypeName() { return \"" + typeName + "\"; }";
+        const std::size_t position = headerText.find(staticNameFragment);
+        ASSERT_NE(position, std::string::npos) << "Missing generated body for " << typeName;
+        EXPECT_GE(position, previousPosition) << typeName << " generated body is out of source order";
+        previousPosition = position;
+    }
+}
+
 TEST(MetaParserGenerationModuleTests, GeneratesExpectedEditorSettingsReflectionBindings)
 {
     const std::filesystem::path sceneToolSource =

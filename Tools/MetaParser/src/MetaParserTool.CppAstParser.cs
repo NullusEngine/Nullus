@@ -54,7 +54,8 @@ internal static partial class MetaParserTool
                 bases,
                 fields,
                 methods,
-                ExtractTypeMetas(cls));
+                ExtractTypeMetas(cls),
+                FindGeneratedBodyLineForType(normalizedHeader, cls.Name, cls.Span.Start.Offset, cls.Span.End.Offset));
         }
 
         foreach (var cppEnum in EnumerateAllEnums(compilation))
@@ -79,6 +80,7 @@ internal static partial class MetaParserTool
                 [],
                 [],
                 [],
+                null,
                 true,
                 cppEnum.Items.Select(static item => new ReflectEnumValueInfo(item.Name)).ToList());
         }

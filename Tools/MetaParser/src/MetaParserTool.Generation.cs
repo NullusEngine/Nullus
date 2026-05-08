@@ -8,17 +8,42 @@ internal static partial class MetaParserTool
         var templateRoot = Path.Combine(AppContext.BaseDirectory, "Templates");
         var moduleSession = BuildModuleTemplateSession(config.TargetName);
         var generatedSourceIncludes = new List<string>();
+        var expectedHeaderOutputs = new HashSet<string>(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        var expectedSourceOutputs = new HashSet<string>(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+        foreach (var headerPath in ExpandGeneratedHeaderStubInputs(config.Headers, config.RootDir))
+        {
+            if (!File.Exists(headerPath))
+                continue;
+
+            var headerText = File.ReadAllText(headerPath);
+            if (!MatchesHeaderSelection(headerText, manifest.HeaderSelection) || FindGeneratedBodyLines(headerPath).Count == 0)
+                continue;
+
+            var includePath = ToGeneratedIncludePath(config.RootDir, headerPath);
+            var stubOutputDir = ResolveGeneratedOutputDir(config.RootDir, outputDir, headerPath);
+            expectedHeaderOutputs.Add(Path.GetFullPath(Path.Combine(
+                stubOutputDir,
+                $"{GetGeneratedRelativeBasePath(includePath)}{manifest.Outputs.HeaderGeneratedHeaderSuffix}")));
+        }
 
         foreach (var headerGroup in orderedTypes.GroupBy(static type => type.HeaderPath, StringComparer.Ordinal))
         {
             var generatedBase = GetGeneratedRelativeBasePath(headerGroup.Key);
             var generatedHeaderPath = Path.Combine(outputDir, $"{generatedBase}{manifest.Outputs.HeaderGeneratedHeaderSuffix}");
             var generatedSourcePath = Path.Combine(outputDir, $"{generatedBase}{manifest.Outputs.HeaderGeneratedSourceSuffix}");
+            expectedHeaderOutputs.Add(Path.GetFullPath(generatedHeaderPath));
+            expectedSourceOutputs.Add(Path.GetFullPath(generatedSourcePath));
             var generatedDirectory = Path.GetDirectoryName(generatedHeaderPath);
             if (!string.IsNullOrWhiteSpace(generatedDirectory))
                 Directory.CreateDirectory(generatedDirectory);
 
-            var headerSession = BuildHeaderTemplateSession(headerGroup.ToList(), orderedTypes);
+            var headerSession = BuildHeaderTemplateSession(
+                headerGroup
+                    .OrderBy(static type => type.GeneratedBodyLine ?? int.MaxValue)
+                    .ThenBy(static type => type.QualifiedName, StringComparer.Ordinal)
+                    .ToList(),
+                orderedTypes);
             var generatedHeaderText = MetaParserTemplateRenderer.Render(
                 MetaParserTemplateCatalog.ResolvePath(templateRoot, manifest.Templates.HeaderRule.HeaderTemplate),
                 headerSession);
@@ -49,6 +74,43 @@ internal static partial class MetaParserTool
             moduleHeaderText,
             new UTF8Encoding(false));
         File.WriteAllText(Path.Combine(outputDir, manifest.Outputs.ModuleSourceFileName), moduleSourceText, new UTF8Encoding(false));
+
+        RemoveStaleGeneratedOutputs(outputDir, manifest, expectedHeaderOutputs, expectedSourceOutputs);
+    }
+
+    private static void RemoveStaleGeneratedOutputs(
+        string outputDir,
+        MetaParserGeneratorManifest manifest,
+        IReadOnlySet<string> expectedHeaderOutputs,
+        IReadOnlySet<string> expectedSourceOutputs)
+    {
+        if (!Directory.Exists(outputDir))
+            return;
+
+        foreach (var path in Directory.EnumerateFiles(outputDir, "*", SearchOption.AllDirectories))
+        {
+            var fileName = Path.GetFileName(path);
+            var fullPath = Path.GetFullPath(path);
+            if (string.Equals(fileName, manifest.Outputs.ModuleHeaderFileName, StringComparison.Ordinal)
+                || string.Equals(fileName, manifest.Outputs.ModuleSourceFileName, StringComparison.Ordinal)
+                || fileName.EndsWith("_MetaGenerated.h", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (fileName.EndsWith(manifest.Outputs.HeaderGeneratedHeaderSuffix, StringComparison.Ordinal)
+                && !expectedHeaderOutputs.Contains(fullPath))
+            {
+                File.Delete(fullPath);
+                continue;
+            }
+
+            if (fileName.EndsWith(manifest.Outputs.HeaderGeneratedSourceSuffix, StringComparison.Ordinal)
+                && !expectedSourceOutputs.Contains(fullPath))
+            {
+                File.Delete(fullPath);
+            }
+        }
     }
 
     private static Dictionary<string, object?> CreateTemplateSession<TModel>(TModel model)
@@ -68,19 +130,15 @@ internal static partial class MetaParserTool
     {
         var headerPath = types[0].HeaderPath;
         var fileId = BuildGeneratedFileId(headerPath);
-        var generatedBodyLines = FindGeneratedBodyLines(types[0].SourceFilePath);
         var headerIncludePath = headerPath.Replace('\\', '/');
         var generatedHeaderIncludePath = $"{GetGeneratedRelativeBasePath(headerPath)}.generated.h".Replace('\\', '/');
 
         var typeModels = new List<GeneratedTypeTemplateModel>();
         var privateTypeModels = new List<GeneratedPrivateTypeTemplateModel>();
-        var generatedBodyLineIndex = 0;
 
         foreach (var type in types)
         {
-            int? generatedBodyLine = generatedBodyLineIndex < generatedBodyLines.Count
-                ? generatedBodyLines[generatedBodyLineIndex++]
-                : null;
+            var generatedBodyLine = type.GeneratedBodyLine;
 
             var fieldModels = type.Fields
                 .Select((field, index) => new GeneratedFieldTemplateModel(
@@ -151,7 +209,7 @@ internal static partial class MetaParserTool
             fileId,
             headerIncludePath,
             generatedHeaderIncludePath,
-            generatedBodyLines.Count == 0,
+            types.All(static type => !type.GeneratedBodyLine.HasValue),
             typeModels,
             privateTypeModels));
     }

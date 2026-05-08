@@ -17,13 +17,7 @@ Event<GameObject&> GameObject::CreatedEvent;
 Event<GameObject&, GameObject&> GameObject::AttachEvent;
 Event<GameObject&> GameObject::DettachEvent;
 
-namespace
-{
-int g_nextGameObjectWorldID = 1;
-}
-
 GameObject::GameObject(const std::string& p_name, const std::string& p_tag):
-	m_worldID(AllocateWorldID()),
 m_name(p_name),
 m_tag(p_tag),
 m_active(true),
@@ -125,15 +119,23 @@ bool GameObject::RemoveComponent(Component* component)
     return false;
 }
 
-int GameObject::AllocateWorldID()
+bool GameObject::MoveComponent(Component* component, size_t index)
 {
-    return g_nextGameObjectWorldID++;
-}
+    if (!component || index >= m_vComponents.size())
+        return false;
 
-void GameObject::SetWorldID(int newID)
-{
-    m_worldID = newID;
-    g_nextGameObjectWorldID = std::max(g_nextGameObjectWorldID, newID + 1);
+    auto found = std::find_if(m_vComponents.begin(), m_vComponents.end(), [component](const auto& entry)
+    {
+        return entry.get() == component;
+    });
+
+    if (found == m_vComponents.end())
+        return false;
+
+    auto owned = std::move(*found);
+    m_vComponents.erase(found);
+    m_vComponents.insert(m_vComponents.begin() + static_cast<std::ptrdiff_t>(index), std::move(owned));
+    return true;
 }
 
 void GameObject::SetActive(bool p_active)
@@ -193,9 +195,9 @@ std::vector<GameObject*>& GameObject::GetChildren()
     return m_children;
 }
 
-int64_t GameObject::GetParentID() const
+const std::vector<GameObject*>& GameObject::GetChildren() const
 {
-    return m_parentID;
+    return m_children;
 }
 
 GameObject* GameObject::GetParent() const
@@ -236,7 +238,6 @@ void GameObject::DetachFromParent()
     }
 
     m_parent = nullptr;
-    m_parentID = 0;
 
     m_transform->RemoveParent();
 }
@@ -247,7 +248,6 @@ void GameObject::SetParent(GameObject& p_parent)
 
     /* Define the given parent as the new parent */
     m_parent = &p_parent;
-    m_parentID = p_parent.m_worldID;
     m_transform->SetParent(*p_parent.m_transform);
 
     /* Store the actor in the parent children list */

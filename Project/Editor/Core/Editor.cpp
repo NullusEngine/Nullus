@@ -159,16 +159,12 @@ Editor::Core::Editor::Editor(Context& p_context)
     RegisterDefaultShortcuts();
     MigrateLegacyMaterialAssets(m_editorActions, m_context.projectAssetsPath);
 
-    const auto startScene = m_context.projectSettings.Get<std::string>("start_scene");
-    const auto startScenePath = m_context.projectAssetsPath + startScene;
-	if (!startScene.empty() && std::filesystem::exists(startScenePath))
-	{
-		m_context.sceneManager.LoadScene(startScenePath, true);
-	}
-	else
-	{
-		m_context.sceneManager.LoadEmptyLightedScene();
-	}
+    m_sceneSourcePathChangedListener = m_context.sceneManager.CurrentSceneSourcePathChangedEvent += [this](const std::string& p_scenePath)
+    {
+        RememberLastOpenedScene(p_scenePath);
+    };
+
+    RestoreStartupScene();
 
     ApplyStartupValidationDirectives();
 }
@@ -178,7 +174,9 @@ Editor::Core::Editor::~Editor()
     m_shortcutService.SaveProfile(std::filesystem::path(m_context.projectPath) / "UserSettings" / "shortcuts.json");
     NLS::Base::Profiling::Profiler::UnregisterDestination(
         m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler").GetTimelineSink());
+    m_editorActions.PromptSaveCurrentSceneIfDirty();
     m_panelsManager.DestroyPanels();
+    m_context.sceneManager.CurrentSceneSourcePathChangedEvent -= m_sceneSourcePathChangedListener;
     m_context.sceneManager.UnloadCurrentScene();
 }
 
@@ -549,6 +547,66 @@ void Editor::Core::Editor::RegisterDefaultShortcuts()
         }));
 
     m_shortcutService.LoadProfile(std::filesystem::path(m_context.projectPath) / "UserSettings" / "shortcuts.json");
+}
+
+void Editor::Core::Editor::RestoreStartupScene()
+{
+    const auto loadRememberedScene = [this](const std::string& scenePath) -> bool
+    {
+        if (scenePath.empty() || scenePath == "NULL")
+            return false;
+
+        const std::filesystem::path configuredPath(scenePath);
+        const auto resolvedPath = configuredPath.is_absolute()
+            ? configuredPath
+            : std::filesystem::path(m_context.projectAssetsPath) / configuredPath;
+
+        if (!std::filesystem::exists(resolvedPath))
+            return false;
+
+        return m_context.sceneManager.LoadScene(resolvedPath.string(), true);
+    };
+
+    const auto lastOpenedScene = m_context.projectSettings.GetOrDefault<std::string>("last_opened_scene", "");
+    if (loadRememberedScene(lastOpenedScene))
+        return;
+
+    const auto startScene = m_context.projectSettings.Get<std::string>("start_scene");
+    const auto startScenePath = m_context.projectAssetsPath + startScene;
+    if (!startScene.empty() && startScene != "NULL" && std::filesystem::exists(startScenePath))
+    {
+        m_context.sceneManager.LoadScene(startScenePath, true);
+        return;
+    }
+
+    m_context.sceneManager.LoadEmptyLightedScene();
+    m_context.sceneManager.MarkCurrentSceneDirty();
+}
+
+void Editor::Core::Editor::RememberLastOpenedScene(const std::string& p_scenePath)
+{
+    std::string storedScenePath = p_scenePath;
+    if (!storedScenePath.empty())
+    {
+        std::error_code scenePathError;
+        std::error_code assetsPathError;
+        const auto absoluteScenePath = std::filesystem::absolute(storedScenePath, scenePathError);
+        const auto absoluteAssetsPath = std::filesystem::absolute(m_context.projectAssetsPath, assetsPathError);
+        if (!scenePathError && !assetsPathError)
+        {
+            const auto relativeScenePath = absoluteScenePath.lexically_relative(absoluteAssetsPath);
+            const auto relativeScenePathText = relativeScenePath.generic_string();
+            if (!relativeScenePathText.empty() && relativeScenePathText != ".." && relativeScenePathText.rfind("../", 0) != 0)
+                storedScenePath = relativeScenePathText;
+        }
+    }
+
+    if (!m_context.projectSettings.IsKeyExisting("last_opened_scene"))
+        m_context.projectSettings.Add<std::string>("last_opened_scene", storedScenePath);
+    else
+        m_context.projectSettings.Set<std::string>("last_opened_scene", storedScenePath);
+
+    m_context.projectSettings.Rewrite();
 }
 
 void Editor::Core::Editor::ApplyStartupValidationDirectives()

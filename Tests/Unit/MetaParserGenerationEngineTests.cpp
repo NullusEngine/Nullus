@@ -47,8 +47,8 @@ TEST(MetaParserGenerationEngineTests, GeneratesExpectedEngineReflectionBindings)
     ExpectContains(meshText, "AddField<NLS::Engine::Components::MeshRenderer, NLS::Engine::Components::MeshRenderer::EFrustumBehaviour>(\"frustumBehaviour\"");
     ExpectContains(meshText, "AddField<NLS::Engine::Components::MeshRenderer, NLS::Render::Geometry::BoundingSphere>(\"customBoundingSphere\"");
     ExpectContains(gameObjectText, "AllocateType(typeKey, \"NLS::Engine::GameObject\", moduleKey)");
+    ExpectContains(gameObjectText, "type.AddField<NLS::Engine::GameObject, bool>(\"active\"");
     ExpectContains(gameObjectText, "type.AddField<NLS::Engine::GameObject, std::string>(\"name\"");
-    ExpectNotContains(gameObjectText, "type.AddField<NLS::Engine::GameObject, bool>(\"active\"");
     ExpectContains(sceneText, "AllocateType(typeKey, \"NLS::Engine::SceneSystem::Scene\", moduleKey)");
     ExpectContains(sceneText, "AddMethod(\"Play\", static_cast<void (NLS::Engine::SceneSystem::Scene::*)()>(&NLS::Engine::SceneSystem::Scene::Play), {})");
     ExpectContains(sceneText, "AddMethod(\"GetActors\", static_cast<const std::vector<NLS::Engine::GameObject*>& (NLS::Engine::SceneSystem::Scene::*)() const>(&NLS::Engine::SceneSystem::Scene::GetActors), {})");

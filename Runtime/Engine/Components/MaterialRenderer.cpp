@@ -23,7 +23,9 @@ void MaterialRenderer::OnCreate()
 
 void MaterialRenderer::FillWithMaterial(RenderMaterial& p_material)
 {
-    for (uint8_t i = 0; i < m_materials.size(); ++i)
+    RemoveAllMaterials();
+    const auto materialCount = GetExpectedMaterialSlotCount();
+    for (size_t i = 0; i < materialCount && i < m_materials.size(); ++i)
         m_materials[i] = &p_material;
 }
 
@@ -146,6 +148,26 @@ void MaterialRenderer::UpdateMaterialList()
         for (uint8_t i = materialIndex; i < kMaxMaterialCount; ++i)
             m_materialNames[i] = "";
     }
+}
+
+size_t MaterialRenderer::GetExpectedMaterialSlotCount() const
+{
+    if (auto modelRenderer = gameobject() ? gameobject()->GetComponent<MeshRenderer>() : nullptr;
+        modelRenderer && modelRenderer->GetModel())
+    {
+        const auto materialCount = modelRenderer->GetModel()->GetMaterialNames().size();
+        if (materialCount > 0)
+            return materialCount;
+    }
+
+    size_t materialCount = 0;
+    for (const auto& materialName : m_materialNames)
+    {
+        if (!materialName.empty())
+            ++materialCount;
+    }
+
+    return materialCount > 0 ? materialCount : 1;
 }
 
 void MaterialRenderer::SetUserMatrixElement(uint32_t p_row, uint32_t p_column, float p_value)

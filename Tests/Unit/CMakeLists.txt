@@ -62,6 +62,8 @@ target_sources(NullusUnitTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneCameraFocus.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneViewImGuizmo.cpp
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneViewImGuizmo.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/AssetFileWatcher.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/AssetFileWatcher.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ComponentSearchPanel.cpp
     ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ComponentSearchPanel.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/EditorLaunchArgs.cpp
@@ -117,6 +119,10 @@ target_link_libraries(NullusUnitTests PRIVATE
     NLS_UI
     NLS_Engine
 )
+
+if(APPLE)
+    target_link_libraries(NullusUnitTests PRIVATE "-framework CoreServices")
+endif()
 
 if(TARGET Editor_MetaGenerated)
     add_dependencies(NullusUnitTests Editor_MetaGenerated)

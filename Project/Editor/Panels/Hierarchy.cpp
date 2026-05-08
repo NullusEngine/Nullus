@@ -11,6 +11,7 @@
 #include <Debug/Logger.h>
 
 #include <ServiceLocator.h>
+#include <Utils/PathParser.h>
 
 #include <UI/Plugins/ContextualMenu.h>
 
@@ -62,6 +63,7 @@ public:
 			nameEditor.EnterPressedEvent += [this](std::string p_newName)
 			{
 				m_target->SetName(p_newName);
+				EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
 			};
         }
 
@@ -92,6 +94,15 @@ void ExpandTreeNode(UI::Widgets::TreeNode& p_toExpand, const UI::Widgets::TreeNo
 
 std::vector<UI::Widgets::TreeNode*> nodesToCollapse;
 std::vector<UI::Widgets::TreeNode*> founds;
+
+std::string GetCurrentHierarchySceneName()
+{
+	const auto path = EDITOR_CONTEXT(sceneManager).GetCurrentSceneSourcePath();
+	std::string sceneName = path.empty() ? "Untitled Scene" : Utils::PathParser::GetElementName(path);
+	if (EDITOR_CONTEXT(sceneManager).HasUnsavedSceneChanges())
+		sceneName += "*";
+	return sceneName;
+}
 
 void ExpandTreeNodeAndEnable(UI::Widgets::TreeNode& p_toExpand, const UI::Widgets::TreeNode* p_root)
 {
@@ -168,6 +179,7 @@ Editor::Panels::Hierarchy::Hierarchy
 
 	m_sceneRoot = &CreateWidget<UI::Widgets::TreeNode>("Scene", true);
 	static_cast<UI::Widgets::TreeNode*>(m_sceneRoot)->Open();
+	RefreshSceneRootName();
 	m_sceneRoot->AddPlugin<UI::DDTarget<std::pair<Engine::GameObject*, UI::Widgets::TreeNode*>>>("Actor").DataReceivedEvent += [this](std::pair<Engine::GameObject*, UI::Widgets::TreeNode*> p_element)
 	{
 		if (p_element.second->HasParent())
@@ -176,11 +188,21 @@ Editor::Panels::Hierarchy::Hierarchy
 		m_sceneRoot->ConsiderWidget(*p_element.second);
 
 		p_element.first->DetachFromParent();
+		EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
 	};
     m_sceneRoot->AddPlugin<ActorContextualMenu>(nullptr, *m_sceneRoot);
 
 	m_actorUnselectedListener = EDITOR_EVENT(ActorUnselectedEvent) += std::bind(&Hierarchy::UnselectActorsWidgets, this);
 	m_sceneUnloadListener = EDITOR_CONTEXT(sceneManager).SceneUnloadEvent += std::bind(&Hierarchy::Clear, this);
+	m_sceneLoadListener = EDITOR_CONTEXT(sceneManager).SceneLoadEvent += std::bind(&Hierarchy::RebuildFromCurrentScene, this);
+	m_sceneSourcePathChangedListener = EDITOR_CONTEXT(sceneManager).CurrentSceneSourcePathChangedEvent += [this](const std::string&)
+	{
+		RefreshSceneRootName();
+	};
+	m_sceneDirtyStateChangedListener = EDITOR_CONTEXT(sceneManager).CurrentSceneDirtyStateChangedEvent += [this](bool)
+	{
+		RefreshSceneRootName();
+	};
 	m_actorCreatedListener = Engine::GameObject::CreatedEvent += std::bind(&Hierarchy::AddActorByInstance, this, std::placeholders::_1);
 	m_actorDestroyedListener = Engine::GameObject::DestroyedEvent += std::bind(&Hierarchy::DeleteActorByInstance, this, std::placeholders::_1);
 	m_actorSelectedListener = EDITOR_EVENT(ActorSelectedEvent) += std::bind(&Hierarchy::SelectActorByInstance, this, std::placeholders::_1);
@@ -192,6 +214,9 @@ Editor::Panels::Hierarchy::~Hierarchy()
 {
 	EDITOR_EVENT(ActorUnselectedEvent) -= m_actorUnselectedListener;
 	EDITOR_CONTEXT(sceneManager).SceneUnloadEvent -= m_sceneUnloadListener;
+	EDITOR_CONTEXT(sceneManager).SceneLoadEvent -= m_sceneLoadListener;
+	EDITOR_CONTEXT(sceneManager).CurrentSceneSourcePathChangedEvent -= m_sceneSourcePathChangedListener;
+	EDITOR_CONTEXT(sceneManager).CurrentSceneDirtyStateChangedEvent -= m_sceneDirtyStateChangedListener;
 	Engine::GameObject::CreatedEvent -= m_actorCreatedListener;
 	Engine::GameObject::DestroyedEvent -= m_actorDestroyedListener;
 	EDITOR_EVENT(ActorSelectedEvent) -= m_actorSelectedListener;
@@ -205,6 +230,7 @@ void Editor::Panels::Hierarchy::Clear()
 
 	m_sceneRoot->RemoveAllWidgets();
 	m_widgetActorLink.clear();
+	RefreshSceneRootName();
 }
 
 void Editor::Panels::Hierarchy::UnselectActorsWidgets()
@@ -296,6 +322,9 @@ void Editor::Panels::Hierarchy::DeleteActorByInstance(Engine::GameObject& p_acto
 
 void Editor::Panels::Hierarchy::AddActorByInstance(Engine::GameObject & p_actor)
 {
+	if (m_widgetActorLink.find(&p_actor) != m_widgetActorLink.end())
+		return;
+
 	auto& textSelectable = m_sceneRoot->CreateWidget<UI::Widgets::TreeNode>(p_actor.GetName(), true);
 	textSelectable.leaf = true;
 	textSelectable.AddPlugin<ActorContextualMenu>(&p_actor, textSelectable);
@@ -309,6 +338,7 @@ void Editor::Panels::Hierarchy::AddActorByInstance(Engine::GameObject & p_actor)
 		}
 
 		p_element.first->SetParent(p_actor);
+		EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
 	};
 	auto& dispatcher = textSelectable.AddPlugin<UI::DataDispatcher<std::string>>();
 
@@ -319,4 +349,33 @@ void Editor::Panels::Hierarchy::AddActorByInstance(Engine::GameObject & p_actor)
 
 	textSelectable.ClickedEvent += EDITOR_BIND(SelectActor, std::ref(p_actor));
 	textSelectable.DoubleClickedEvent += EDITOR_BIND(MoveToTarget, std::ref(p_actor));
+}
+
+void Editor::Panels::Hierarchy::RebuildFromCurrentScene()
+{
+	m_sceneRoot->RemoveAllWidgets();
+	m_widgetActorLink.clear();
+	RefreshSceneRootName();
+
+	auto* scene = EDITOR_CONTEXT(sceneManager).GetCurrentScene();
+	if (!scene)
+		return;
+
+	for (auto* actor : scene->GetActors())
+	{
+		if (actor)
+			AddActorByInstance(*actor);
+	}
+
+	for (auto* actor : scene->GetActors())
+	{
+		if (actor && actor->HasParent())
+			AttachActorToParent(*actor);
+	}
+}
+
+void Editor::Panels::Hierarchy::RefreshSceneRootName()
+{
+	if (m_sceneRoot)
+		m_sceneRoot->name = GetCurrentHierarchySceneName();
 }

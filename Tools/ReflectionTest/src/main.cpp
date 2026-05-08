@@ -284,8 +284,6 @@ int main()
         {"NLS::Render::Settings::EProjectionMode", {}, {}, {}, ""},
         // Reflected struct/value type
         {"NLS::Render::Geometry::BoundingSphere", {}, {}, {"position", "radius"}, ""},
-        // External reflected serialization record
-        {"NLS::Engine::Serialize::SerializedSceneData", {}, {}, {"version", "actors"}, ""},
         // Core transform component used by the editor inspector
         {"NLS::Engine::Components::TransformComponent", {"SetLocalPosition", "GetWorldMatrix"}, {}, {"localPosition", "localRotation", "localScale"}, "NLS::Engine::Components::Component"},
         // Engine type with explicit property + nested enum/struct-backed fields
@@ -293,7 +291,8 @@ int main()
         // Engine type with auto-inferred array properties
         {"NLS::Engine::Components::MaterialRenderer", {"FillWithMaterial", "GetUserMatrix"}, {}, {"materialPaths", "userMatrixValues"}, "NLS::Engine::Components::Component"},
         // Engine object with auto-inferred properties
-        {"NLS::Engine::GameObject", {"GetName", "SetTag"}, {}, {"name", "tag", "worldID"}, ""},
+        {"NLS::Engine::GameObject", {"GetName", "SetTag"}, {}, {"name", "tag"}, "NLS::meta::Object"},
+        {"NLS::Engine::SceneSystem::Scene", {"Play", "GetActors"}, {}, {}, "NLS::meta::Object"},
     };
 
     bool allPassed = true;

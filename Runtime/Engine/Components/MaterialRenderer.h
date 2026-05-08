@@ -114,6 +114,8 @@ public:
     const MaterialList& GetMaterials() const;
 
 private:
+    size_t GetExpectedMaterialSlotCount() const;
+
     MaterialList m_materials;
     std::array<std::string, kMaxMaterialCount> m_materialNames;
     Maths::Matrix4 m_userMatrix;

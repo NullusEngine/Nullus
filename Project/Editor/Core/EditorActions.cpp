@@ -35,8 +35,6 @@
 #include "Panels/FrameInfo.h"
 #include "Panels/Hierarchy.h"
 #include "Panels/MaterialEditor.h"
-#include "Serialize/Serializer.h"
-#include "Reflection/Variant.h"
 #include "Panels/SceneView.h"
 // #include "Panels/AssetView.h"
 // #include "Panels/GameView.h"
@@ -69,8 +67,14 @@ Editor::Core::EditorActions::EditorActions(Context& p_context, PanelsManager& p_
 
     m_context.sceneManager.CurrentSceneSourcePathChangedEvent += [this](const std::string& p_newPath)
     {
-        std::string titleExtra = " - " + (p_newPath.empty() ? "Untitled Scene" : GetResourcePath(p_newPath));
-        m_context.window->SetTitle(m_context.windowSettings.title + titleExtra);
+        (void)p_newPath;
+        RefreshWindowTitle();
+    };
+
+    m_context.sceneManager.CurrentSceneDirtyStateChangedEvent += [this](bool p_dirty)
+    {
+        (void)p_dirty;
+        RefreshWindowTitle();
     };
 }
 
@@ -79,15 +83,32 @@ void Editor::Core::EditorActions::LoadEmptyScene()
     if (GetCurrentEditorMode() != EEditorMode::EDIT)
         StopPlaying();
 
+    if (!PromptSaveCurrentSceneIfDirty())
+        return;
+
     m_context.sceneManager.LoadEmptyLightedScene();
+    m_context.sceneManager.MarkCurrentSceneDirty();
     NLS_LOG_INFO("New scene created");
 }
 
-void Editor::Core::EditorActions::SaveCurrentSceneTo(const std::string& p_path)
+bool Editor::Core::EditorActions::SaveCurrentSceneTo(const std::string& p_path)
 {
-    m_context.sceneManager.StoreCurrentSceneSourcePath(p_path);
-    meta::Variant sceneVariant(*m_context.sceneManager.GetCurrentScene(), meta::variant_policy::NoCopy{});
-    Serializer::Instance()->SerializeToFile(sceneVariant, p_path);
+    std::filesystem::path scenePath(p_path);
+    if (scenePath.extension() != ".scene")
+        scenePath += ".scene";
+
+    if (m_context.sceneManager.SaveCurrentScene(scenePath.string()))
+    {
+        DelayAction([this]
+        {
+            m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser").Refresh();
+        });
+        return true;
+    }
+
+    if (!p_path.empty())
+        NLS_LOG_ERROR("Failed to save current scene to: " + scenePath.string());
+    return false;
 }
 
 void Editor::Core::EditorActions::LoadSceneFromDisk(const std::string& p_path, bool p_absolute)
@@ -95,7 +116,19 @@ void Editor::Core::EditorActions::LoadSceneFromDisk(const std::string& p_path, b
     if (GetCurrentEditorMode() != EEditorMode::EDIT)
         StopPlaying();
 
-    m_context.sceneManager.LoadScene(p_path, p_absolute);
+    if (!PromptSaveCurrentSceneIfDirty())
+        return;
+
+    if (!m_context.sceneManager.LoadScene(p_path, p_absolute))
+    {
+        Dialogs::MessageBox message(
+            "Scene loading failed",
+            "The scene you are trying to load was not found or could not be read.",
+            Dialogs::MessageBox::EMessageType::ERROR,
+            Dialogs::MessageBox::EButtonLayout::OK);
+        return;
+    }
+
     NLS_LOG_INFO("Scene loaded from disk: " + m_context.sceneManager.GetCurrentSceneSourcePath());
     m_panelsManager.GetPanelAs<Editor::Panels::SceneView>("Scene View").Focus();
 }
@@ -109,8 +142,9 @@ void Editor::Core::EditorActions::SaveSceneChanges()
 {
     if (IsCurrentSceneLoadedFromDisk())
     {
-        SaveCurrentSceneTo(m_context.sceneManager.GetCurrentSceneSourcePath());
-        NLS_LOG_INFO("Current scene saved to: " + m_context.sceneManager.GetCurrentSceneSourcePath());
+        const auto scenePath = m_context.sceneManager.GetCurrentSceneSourcePath();
+        if (SaveCurrentSceneTo(scenePath))
+            NLS_LOG_INFO("Current scene saved to: " + scenePath);
     }
     else
     {
@@ -136,8 +170,32 @@ void Editor::Core::EditorActions::SaveAs()
             }
         }
 
-        SaveCurrentSceneTo(dialog.Result());
-        NLS_LOG_INFO("Current scene saved to: " + dialog.Result());
+        if (SaveCurrentSceneTo(dialog.Result()))
+            NLS_LOG_INFO("Current scene saved to: " + dialog.Result());
+    }
+}
+
+bool Editor::Core::EditorActions::PromptSaveCurrentSceneIfDirty()
+{
+    if (!m_context.sceneManager.HasUnsavedSceneChanges())
+        return true;
+
+    Dialogs::MessageBox message(
+        "Unsaved Scene Changes",
+        "The current scene has unsaved changes.\n\nDo you want to save them before continuing?",
+        Dialogs::MessageBox::EMessageType::QUESTION,
+        Dialogs::MessageBox::EButtonLayout::YES_NO_CANCEL);
+
+    switch (message.GetUserAction())
+    {
+        case Dialogs::MessageBox::EUserAction::YES:
+            SaveSceneChanges();
+            return !m_context.sceneManager.HasUnsavedSceneChanges();
+        case Dialogs::MessageBox::EUserAction::NO:
+            return true;
+        case Dialogs::MessageBox::EUserAction::CANCEL:
+        default:
+            return false;
     }
 }
 
@@ -491,7 +549,7 @@ void Editor::Core::EditorActions::StopPlaying()
     // 			m_context.sceneManager.StoreCurrentSceneSourcePath(sceneSourcePath); // To bo able to save or reload the scene whereas the scene is loaded from memory (Supposed to have no path)
     // 		m_sceneBackup.Clear();
     // 		EDITOR_PANEL(Panels::SceneView, "Scene View").Focus();
-    // 		if (auto actorInstance = m_context.sceneManager.GetCurrentScene()->FindActorByID(focusedActorID))
+    // 		if (auto actorInstance = m_context.sceneManager.GetCurrentScene()->FindActorByName(focusedActorName))
     // 			EDITOR_PANEL(Panels::Inspector, "Inspector").FocusActor(*actorInstance);
     // 	}
 }
@@ -529,6 +587,7 @@ Engine::GameObject& Editor::Core::EditorActions::CreateEmptyActor(bool p_focusOn
         SelectActor(instance);
 
     NLS_LOG_INFO("GameObject created");
+    m_context.sceneManager.MarkCurrentSceneDirty();
 
     return instance;
 }
@@ -572,6 +631,7 @@ Engine::GameObject& NLS::Editor::Core::EditorActions::CreateActor(const std::str
     if (focusOnCreation)
         SelectActor(instance);
 
+    m_context.sceneManager.MarkCurrentSceneDirty();
     return instance;
 }
 
@@ -582,6 +642,7 @@ bool Editor::Core::EditorActions::DestroyActor(Engine::GameObject& p_actor)
 
     p_actor.MarkAsDestroy();
     NLS_LOG_INFO("GameObject destroyed");
+    m_context.sceneManager.MarkCurrentSceneDirty();
     return true;
 }
 
@@ -618,9 +679,9 @@ void Editor::Core::EditorActions::DuplicateActor(Engine::GameObject& p_toDuplica
     // 	{
     //         auto currentScene = m_context.sceneManager.GetCurrentScene();
     //
-    //         if (newActor.GetParentID() > 0)
+    //         if (newActor.HasParent())
     //         {
-    //             if (auto found = currentScene->FindActorByID(newActor.GetParentID()); found)
+    //             if (auto found = newActor.GetParent(); found)
     //             {
     //                 newActor.SetParent(*found);
     //             }
@@ -882,10 +943,15 @@ void Editor::Core::EditorActions::PropagateFileRename(std::string p_previousName
              if (auto pval = std::get_if<Render::Resources::Model*>(&assetViewRes); pval && *pval)
                  assetView.ClearResource();
  
-             if (auto currentScene = m_context.sceneManager.GetCurrentScene())
+            if (auto currentScene = m_context.sceneManager.GetCurrentScene())
+            {
                  for (auto actor : currentScene->GetActors())
                      if (auto modelRenderer = actor->GetComponent<Engine::Components::MeshRenderer>(); modelRenderer && modelRenderer->GetModel() == model)
+                     {
                          modelRenderer->SetModel(nullptr);
+                         m_context.sceneManager.MarkCurrentSceneDirty();
+                     }
+            }
  
              NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::ModelManager>().UnloadResource(p_previousName);
          }
@@ -902,10 +968,15 @@ void Editor::Core::EditorActions::PropagateFileRename(std::string p_previousName
              if (auto pval = std::get_if<NLS::Render::Resources::Material*>(&assetViewRes); pval && *pval)
                  assetView.ClearResource();
  
-             if (auto currentScene = m_context.sceneManager.GetCurrentScene())
+            if (auto currentScene = m_context.sceneManager.GetCurrentScene())
+            {
                  for (auto actor : currentScene->GetActors())
                      if (auto materialRenderer = actor->GetComponent<Engine::Components::MaterialRenderer>(); materialRenderer)
+                     {
                          materialRenderer->RemoveMaterialByInstance(*material);
+                         m_context.sceneManager.MarkCurrentSceneDirty();
+                     }
+            }
  
              NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::MaterialManager>().UnloadResource(p_previousName);
          }
@@ -965,4 +1036,12 @@ void Editor::Core::EditorActions::PropagateFileRenameThroughSavedFilesOfType(con
             std::filesystem::remove("TEMP");
         }
     }
+}
+
+void Editor::Core::EditorActions::RefreshWindowTitle()
+{
+    const auto scenePath = m_context.sceneManager.GetCurrentSceneSourcePath();
+    const std::string sceneName = scenePath.empty() ? "Untitled Scene" : GetResourcePath(scenePath);
+    const std::string dirtyMarker = m_context.sceneManager.HasUnsavedSceneChanges() ? "*" : "";
+    m_context.window->SetTitle(m_context.windowSettings.title + " - " + sceneName + dirtyMarker);
 }

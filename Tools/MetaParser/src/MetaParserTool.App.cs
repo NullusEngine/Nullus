@@ -46,7 +46,11 @@ internal static partial class MetaParserTool
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        EnsureGeneratedHeaderStubs(headers, rootDir, outputDir, MetaParserGeneratorRegistry.All);
+        EnsureGeneratedHeaderStubs(
+            ExpandGeneratedHeaderStubInputs(headers, rootDir),
+            rootDir,
+            outputDir,
+            MetaParserGeneratorRegistry.All);
 
         var discoveredTypes = new List<ReflectTypeInfo>();
         foreach (var header in headers)

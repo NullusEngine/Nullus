@@ -209,6 +209,35 @@ internal static partial class MetaParserTool
     private static bool MatchesHeaderSelection(string headerText, GeneratorHeaderSelection selection)
         => selection.Markers.Any(marker => headerText.Contains(marker, StringComparison.Ordinal));
 
+    private static IReadOnlyList<string> ExpandGeneratedHeaderStubInputs(IEnumerable<string> headers, string rootDir)
+    {
+        var expanded = headers
+            .Where(static header => !string.IsNullOrWhiteSpace(header))
+            .Select(Path.GetFullPath)
+            .ToList();
+        var seen = new HashSet<string>(
+            expanded,
+            OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        var runtimeRoot = Path.Combine(rootDir, "Runtime");
+
+        if (!Directory.Exists(runtimeRoot))
+            return expanded;
+
+        foreach (var headerPath in Directory.EnumerateFiles(runtimeRoot, "*.*", SearchOption.AllDirectories)
+                     .Where(path => string.Equals(Path.GetExtension(path), ".h", StringComparison.OrdinalIgnoreCase)
+                                 || string.Equals(Path.GetExtension(path), ".hpp", StringComparison.OrdinalIgnoreCase)))
+        {
+            var normalizedHeader = Path.GetFullPath(headerPath);
+            if (!seen.Add(normalizedHeader))
+                continue;
+
+            if (ShouldParseHeader(normalizedHeader, MetaParserGeneratorRegistry.All))
+                expanded.Add(normalizedHeader);
+        }
+
+        return expanded;
+    }
+
     private static void EnsureGeneratedHeaderStubs(
         IEnumerable<string> headers,
         string rootDir,
@@ -231,9 +260,13 @@ internal static partial class MetaParserTool
                     continue;
 
                 var includePath = ToGeneratedIncludePath(rootDir, headerPath);
+                var stubOutputDir = ResolveGeneratedOutputDir(rootDir, outputDir, headerPath);
                 var generatedHeaderPath = Path.Combine(
-                    outputDir,
+                    stubOutputDir,
                     $"{GetGeneratedRelativeBasePath(includePath)}{generator.Manifest.Outputs.HeaderGeneratedHeaderSuffix}");
+                if (File.Exists(generatedHeaderPath) && !IsPathInside(generatedHeaderPath, outputDir))
+                    continue;
+
                 var generatedDirectory = Path.GetDirectoryName(generatedHeaderPath);
                 if (!string.IsNullOrWhiteSpace(generatedDirectory))
                     Directory.CreateDirectory(generatedDirectory);
@@ -261,5 +294,35 @@ internal static partial class MetaParserTool
                 File.WriteAllText(generatedHeaderPath, builder.ToString(), new UTF8Encoding(false));
             }
         }
+    }
+
+    private static bool IsPathInside(string path, string directory)
+    {
+        var normalizedPath = Path.GetFullPath(path);
+        var normalizedDirectory = Path.GetFullPath(directory)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            + Path.DirectorySeparatorChar;
+
+        return normalizedPath.StartsWith(
+            normalizedDirectory,
+            OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+    }
+
+    private static string ResolveGeneratedOutputDir(string rootDir, string defaultOutputDir, string headerPath)
+    {
+        var runtimeRoot = Path.Combine(rootDir, "Runtime");
+        var relativeHeader = Path.GetRelativePath(runtimeRoot, headerPath).Replace('\\', '/');
+        if (relativeHeader.StartsWith("..", StringComparison.Ordinal))
+            return defaultOutputDir;
+
+        var separatorIndex = relativeHeader.IndexOf('/');
+        if (separatorIndex <= 0)
+            return defaultOutputDir;
+
+        var moduleName = relativeHeader[..separatorIndex];
+        var moduleSourceDir = Path.Combine(rootDir, "Runtime", moduleName);
+        return Directory.Exists(moduleSourceDir)
+            ? Path.Combine(moduleSourceDir, "Gen")
+            : defaultOutputDir;
     }
 }

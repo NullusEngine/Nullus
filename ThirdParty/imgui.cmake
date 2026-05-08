@@ -29,13 +29,21 @@ endif()
 # 创建库
 if(NLS_USE_SHARED_LIBRARY)
     add_library(ImGui SHARED ${imgui_sources} ${imgui_impl})
-    target_compile_definitions(
-        ImGui
-        PRIVATE
-            "IMGUI_API=__declspec(dllexport)"
-        INTERFACE
-            "IMGUI_API=__declspec(dllimport)"
-    )
+    if(WIN32)
+        target_compile_definitions(
+            ImGui
+            PRIVATE
+                "IMGUI_API=__declspec(dllexport)"
+            INTERFACE
+                "IMGUI_API=__declspec(dllimport)"
+        )
+    else()
+        target_compile_definitions(
+            ImGui
+            PUBLIC
+                "IMGUI_API=__attribute__((visibility(\"default\")))"
+        )
+    endif()
 else()
     add_library(ImGui STATIC ${imgui_sources} ${imgui_impl})
 endif()

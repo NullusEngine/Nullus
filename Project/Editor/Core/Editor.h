@@ -49,6 +49,8 @@ public:
     void RegisterShortcutContexts();
     void RegisterDefaultShortcuts();
     void ApplyStartupValidationDirectives();
+    void RestoreStartupScene();
+    void RememberLastOpenedScene(const std::string& p_scenePath);
 
     /**
      * Update the current editor mode
@@ -99,6 +101,7 @@ public:
 
 private:
     uint64_t m_elapsedFrames = 0;
+    uint64_t m_sceneSourcePathChangedListener = 0;
     uint32_t m_frameRateSampleCount = 0;
     float m_currentDeltaTime = 0.0f;
     float m_currentFrameRate = 0.0f;

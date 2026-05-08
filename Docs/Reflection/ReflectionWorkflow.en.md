@@ -223,7 +223,7 @@ This works through generated access helpers and should remain the exception, not
 | Reflected enum | The enum appears in reflected fields or editor choices | `ENUM` | `EProjectionMode`, `ELightType`, `MeshRenderer::EFrustumBehaviour` |
 | Auto property | Getter and setter names line up cleanly as `GetXxx` / `SetXxx` | `FUNCTION` on both accessors | `fov`, `near`, `far`, `lightType`, `materialPaths` |
 | Explicit property | The exposed property name differs from accessor naming | `PROPERTY(...)` plus matching accessors | `GameObject.active`, `MeshRenderer.model` |
-| External reflection | The target type should stay free of inline reflection macros | `MetaExternal` + `REFLECT_EXTERNAL` | `NLS::Maths::Vector3`, `SerializedActorData` |
+| External reflection | The target type should stay free of inline reflection macros | `MetaExternal` + `REFLECT_EXTERNAL` | `NLS::Maths::Vector3`, `NLS::Maths::Quaternion` |
 | Private external reflection | A private member must be exposed deliberately and exceptionally | `REFLECT_PRIVATE_*` | `PrivateReflectionExternalSample` |
 
 ## Current repository examples
@@ -246,10 +246,15 @@ Correct external reflection usage today includes:
 
 - `NLS::Maths::Vector3`
 - `NLS::Maths::Quaternion`
-- `SerializedComponentData`
-- `SerializedActorData`
-- `SerializedSceneData`
 - `PrivateReflectionExternalSample`
+
+## Reflection Serialization Expectations
+
+Object Graph serialization uses reflected object fields as the maintained ordinary-property surface. `ObjectGraphSerializer` walks `object.GetType().GetFields()` for value fields and converts each reflected value through the reflection JSON path before writing Object Graph properties.
+
+Relationships that define graph structure are not ordinary reflected fields. Scene ownership of game objects, game object ownership of components or children, parent object references, prefab overrides, and asset references are represented explicitly as `$owned`, `$ref`, `$asset`, or patch operations in `Runtime/Engine/Serialize`.
+
+Types intended for scene or prefab persistence should therefore expose stable serializable state through reflected fields, mark transient/editor-only/runtime-only intent with runtime metadata where appropriate, and avoid raw pointer persistence unless the field is explicitly modeled as owned, object reference, asset reference, or transient. The legacy `SerializedSceneData`, `SerializedActorData`, `SerializedComponentData`, and `GameobjectSerialize` adapter path are no longer the maintained scene persistence surface.
 
 ## Validation steps
 

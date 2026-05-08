@@ -231,7 +231,7 @@ REFLECT_EXTERNAL(
 | 反射枚举 | 枚举会出现在反射字段或编辑器选项中 | `ENUM` | `EProjectionMode`、`ELightType`、`MeshRenderer::EFrustumBehaviour` |
 | 自动属性 | getter / setter 命名能自然形成 `GetXxx` / `SetXxx` | 对两个访问器都加 `FUNCTION` | `fov`、`near`、`far`、`lightType`、`materialPaths` |
 | 显式属性 | 暴露名和访问器命名不一致 | `PROPERTY(...)` + 对应访问器 | `GameObject.active`、`MeshRenderer.model` |
-| 类外反射 | 类型本体不适合加内联反射宏 | `MetaExternal` + `REFLECT_EXTERNAL` | `NLS::Maths::Vector3`、`SerializedActorData` |
+| 类外反射 | 类型本体不适合加内联反射宏 | `MetaExternal` + `REFLECT_EXTERNAL` | `NLS::Maths::Vector3`、`NLS::Maths::Quaternion` |
 | 私有类外反射 | 私有成员确实需要被有意识地暴露 | `REFLECT_PRIVATE_*` | `PrivateReflectionExternalSample` |
 
 ## 当前仓库里的正确示例
@@ -254,10 +254,15 @@ REFLECT_EXTERNAL(
 
 - `NLS::Maths::Vector3`
 - `NLS::Maths::Quaternion`
-- `SerializedComponentData`
-- `SerializedActorData`
-- `SerializedSceneData`
 - `PrivateReflectionExternalSample`
+
+## 反射序列化约定
+
+Object Graph 序列化把反射字段作为维护中的普通属性面。`ObjectGraphSerializer` 会遍历 `object.GetType().GetFields()`，并通过反射 JSON 路径把字段值转换成 Object Graph property。
+
+定义图结构的关系不属于普通反射字段。Scene 对 GameObject 的拥有关系、GameObject 对组件或子物体的拥有关系、父级对象引用、Prefab override、资产引用，分别用 `Runtime/Engine/Serialize` 里的 `$owned`、`$ref`、`$asset` 或 patch operation 显式表达。
+
+因此，准备进入场景或预制体持久化的类型，应通过反射字段暴露稳定状态；需要跳过的字段应通过 transient / editor-only / runtime-only 等运行时元数据表达；原始指针默认不应持久化，除非明确建模为 owned、object reference、asset reference 或 transient。旧的 `SerializedSceneData`、`SerializedActorData`、`SerializedComponentData` 和 `GameobjectSerialize` adapter 路径不再是维护中的场景持久化面。
 
 ## 验证步骤
 

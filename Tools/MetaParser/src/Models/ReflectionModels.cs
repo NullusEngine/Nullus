@@ -28,6 +28,7 @@ internal sealed record ReflectTypeInfo(
     List<ReflectFieldInfo> Fields,
     List<ReflectMethodInfo> Methods,
     List<ReflectTypeMetaInfo>? TypeMetas = null,
+    int? GeneratedBodyLine = null,
     bool IsEnum = false,
     List<ReflectEnumValueInfo>? EnumValues = null)
 {

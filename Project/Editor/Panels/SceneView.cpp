@@ -139,7 +139,7 @@ Editor::Panels::SceneView::SceneView(
 
     m_destroyedListener = Engine::GameObject::DestroyedEvent += [this](const Engine::GameObject& actor)
     {
-        if (m_highlightedActor && m_highlightedActor->GetWorldID() == actor.GetWorldID())
+        if (m_highlightedActor == &actor)
         {
             m_highlightedActor = nullptr;
         }
@@ -386,7 +386,10 @@ void Editor::Panels::SceneView::DrawViewportOverlay()
     m_gizmoInteraction.isUsing = !cameraControlActive && ImGuizmo::IsUsing();
 
     if (!cameraControlActive && manipulated)
+    {
         Core::ApplyActorWorldGizmoMatrix(*selectedActor, modelMatrix, m_currentOperation, m_currentPivot);
+        EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+    }
 }
 
 void Editor::Panels::SceneView::EnsureCameraFocus()

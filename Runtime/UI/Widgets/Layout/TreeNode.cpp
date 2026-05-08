@@ -51,7 +51,8 @@ void TreeNode::_Draw_Impl()
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 4.0f));
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.20f, 0.29f, 0.40f, 0.68f));
     ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.24f, 0.36f, 0.52f, 0.82f));
-    bool opened = ImGui::TreeNodeEx((name + m_widgetID).c_str(), flags);
+    const std::string label = name + "###" + m_widgetID;
+    bool opened = ImGui::TreeNodeEx(label.c_str(), flags);
     ImGui::PopStyleColor(2);
     ImGui::PopStyleVar();
 

@@ -1,8 +1,25 @@
 #include "Filesystem/IniFile.h"
 
 #include <algorithm>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
+
+namespace
+{
+	std::string TrimWhitespace(const std::string& value)
+	{
+		auto first = value.begin();
+		while (first != value.end() && std::isspace(static_cast<unsigned char>(*first)))
+			++first;
+
+		auto last = value.end();
+		while (last != first && std::isspace(static_cast<unsigned char>(*(last - 1))))
+			--last;
+
+		return std::string(first, last);
+	}
+}
 
 NLS::Filesystem::IniFile::IniFile(const std::string& p_filePath) : m_filePath(p_filePath)
 {
@@ -68,10 +85,7 @@ void NLS::Filesystem::IniFile::Load()
 		while (std::getline(iniFile, currentLine))
 		{
 			if (IsValidLine(currentLine))
-			{
-				currentLine.erase(std::remove_if(currentLine.begin(), currentLine.end(), isspace), currentLine.end());
 				RegisterPair(ExtractKeyAndValue(currentLine));
-			}
 		}
 
 		iniFile.close();
@@ -107,7 +121,7 @@ std::pair<std::string, std::string> NLS::Filesystem::IniFile::ExtractKeyAndValue
 			currentBuffer->push_back(c);
 	}
 
-	return std::make_pair(key, value);
+	return std::make_pair(TrimWhitespace(key), TrimWhitespace(value));
 }
 
 bool NLS::Filesystem::IniFile::IsValidLine(const std::string & p_attributeLine) const

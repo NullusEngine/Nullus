@@ -182,19 +182,6 @@ Engine::GameObject* Scene::FindActorByTag(const std::string & p_tag) const
 		return nullptr;
 }
 
-Engine::GameObject* Scene::FindActorByID(int64_t p_id) const
-{
-	auto result = std::find_if(m_gameobject.begin(), m_gameobject.end(), [p_id](Engine::GameObject* element)
-	{
-		return element->GetWorldID() == p_id;
-	});
-
-	if (result != m_gameobject.end())
-		return *result;
-	else
-		return nullptr;
-}
-
 std::vector<std::reference_wrapper<Engine::GameObject>> Scene::FindActorsByName(const std::string & p_name) const
 {
 	std::vector<std::reference_wrapper<Engine::GameObject>> actors;

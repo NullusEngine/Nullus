@@ -8,9 +8,7 @@
 #include "Components/SkyBoxComponent.h"
 #include "GameObject.h"
 #include "Gen/MetaGenerated.h"
-#include "Serialize/Serializer.h"
 #include "SceneSystem/Scene.h"
-#include "Serialize/GameobjectSerialize.h"
 
 namespace NLS::Engine
 {
@@ -19,7 +17,5 @@ using namespace Components;
 void AssemblyEngine::Initialize()
 {
     NLS_META_GENERATED_LINK_FUNCTION();
-    Serializer::Instance()->AddHandler<SceneSerializeHandler>();
-    Serializer::Instance()->AddHandler<GameObjectSerializeHandler>();
 }
 } // namespace NLS::Engine

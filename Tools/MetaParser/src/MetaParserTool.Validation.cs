@@ -21,10 +21,6 @@ internal static partial class MetaParserTool
         AddManualExternalReflectionType(supportedTypeNames, "NLS::Maths::Quaternion");
         AddManualExternalReflectionType(supportedTypeNames, "NLS::Maths::Vector4");
         AddManualExternalReflectionType(supportedTypeNames, "NLS::meta::PrivateReflectionExternalSample");
-        AddManualExternalReflectionType(supportedTypeNames, "NLS::Engine::Serialize::SerializedComponentData");
-        AddManualExternalReflectionType(supportedTypeNames, "NLS::Engine::Serialize::SerializedActorData");
-        AddManualExternalReflectionType(supportedTypeNames, "NLS::Engine::Serialize::SerializedSceneData");
-
         foreach (var type in types)
         {
             supportedTypeNames.Add(type.QualifiedName);

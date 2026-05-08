@@ -12,6 +12,7 @@
 
 #include "EngineDef.h"
 #include "Reflection/Macros.h"
+#include "Reflection/Object.h"
 #include "SceneSystem/Scene.generated.h"
 
 namespace NLS::Engine::SceneSystem
@@ -19,7 +20,7 @@ namespace NLS::Engine::SceneSystem
 	/**
 	* The scene is a set of actors
 	*/
-	CLASS(NLS_ENGINE_API Scene)
+	CLASS(NLS_ENGINE_API Scene) : public NLS::meta::Object
 	{
     public:
 		GENERATED_BODY()
@@ -114,12 +115,6 @@ namespace NLS::Engine::SceneSystem
 		GameObject* FindActorByTag(const std::string& p_tag) const;
 
 		/**
-		* Return the actor identified by the given ID (Returns nullptr on fail)
-		* @param p_id
-		*/
-		GameObject* FindActorByID(int64_t p_id) const;
-
-		/**
 		* Return every actors identified by the given name
 		* @param p_name
 		*/
@@ -159,6 +154,11 @@ namespace NLS::Engine::SceneSystem
 		* Return the fast access components data structure
 		*/
 		const FastAccessComponents& GetFastAccessComponents() const;
+
+		void RebuildRuntimeCachesAfterLoad()
+		{
+			RebuildFastAccessComponents();
+		}
 
 	private:
         void NotifyActorDestroyed(GameObject& p_actor);

@@ -55,7 +55,9 @@ namespace NLS::Editor::Rendering
         void OnBeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor) override;
         virtual void Draw(NLS::Render::Data::PipelineState p_pso) override;
         void PromotePendingFrameIfReadbackAvailable() const;
-        PickingResult DecodePickingResult(const Engine::SceneSystem::Scene& p_scene, const uint8_t (&pixel)[3]) const;
+        PickingResult DecodePickingResult(
+            const PickingReadbackLifecycle<Engine::SceneSystem::Scene>::Frame& frame,
+            const uint8_t (&pixel)[3]) const;
         void ResetPickingFrameState();
         PickingReadbackLifecycle<Engine::SceneSystem::Scene>::Frame BuildSubmittedReadbackFrame(
             Engine::SceneSystem::Scene& scene,
@@ -78,6 +80,7 @@ namespace NLS::Editor::Rendering
         void DrawPickableModels(NLS::Render::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
         void DrawPickableCameras(NLS::Render::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
         void DrawPickableLights(NLS::Render::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
+        uint32_t RegisterPickableActor(Engine::GameObject& actor);
 
 	private:
         DebugModelRenderer m_debugModelRenderer;
@@ -86,6 +89,7 @@ namespace NLS::Editor::Rendering
         NLS::Render::Resources::Material m_lightMaterial;
         mutable PickingReadbackLifecycle<Engine::SceneSystem::Scene> m_readbackLifecycle;
         std::optional<NLS::Render::Context::RenderPassCommandInput> m_preparedThreadedPassInput;
+        mutable std::vector<Engine::GameObject*> m_submittedPickRegistry;
         uint64_t m_submittedPickingFrameSerial = 0u;
 	};
 }

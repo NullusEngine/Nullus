@@ -11,15 +11,62 @@
 #include "ResourceManagement/ModelManager.h"
 #include "ResourceManagement/TextureManager.h"
 #include "ServiceLocator.h"
-#include "Serialize/Serializer.h"
-#include "Reflection/Variant.h"
+#include "Serialize/ObjectGraphInstantiator.h"
+#include "Serialize/ObjectGraphReader.h"
+#include "Serialize/ObjectGraphSerializer.h"
+#include "Serialize/ObjectGraphWriter.h"
+#include <filesystem>
 #include <fstream>
+#include <memory>
+#include <sstream>
 
 namespace
 {
     void AppendSceneManagerTrace(const char* message)
     {
         (void)message;
+    }
+
+    bool WriteTextFileAtomically(const std::filesystem::path& path, const std::string& text)
+    {
+        std::error_code error;
+        if (path.has_parent_path())
+            std::filesystem::create_directories(path.parent_path(), error);
+
+        const auto temporaryPath = path.string() + ".tmp";
+        {
+            std::ofstream file(temporaryPath, std::ios::binary | std::ios::trunc);
+            if (!file)
+                return false;
+
+            file << text;
+            if (!file.good())
+                return false;
+        }
+
+        if (std::filesystem::exists(path, error))
+            std::filesystem::remove(path, error);
+
+        std::filesystem::rename(temporaryPath, path, error);
+        if (error)
+        {
+            error.clear();
+            std::filesystem::copy_file(temporaryPath, path, std::filesystem::copy_options::overwrite_existing, error);
+            std::filesystem::remove(temporaryPath, error);
+        }
+
+        return !error;
+    }
+
+    std::optional<std::string> ReadTextFile(const std::filesystem::path& path)
+    {
+        std::ifstream file(path, std::ios::binary);
+        if (!file)
+            return std::nullopt;
+
+        std::ostringstream stream;
+        stream << file.rdbuf();
+        return stream.str();
     }
 }
 
@@ -62,6 +109,7 @@ void SceneManager::LoadEmptyScene()
     UnloadCurrentScene();
 
     m_currentScene = new Scene();
+    MarkCurrentSceneClean();
 
     SceneLoadEvent.Invoke();
 }
@@ -72,6 +120,7 @@ void SceneManager::LoadEmptyLightedScene()
     UnloadCurrentScene();
 
     m_currentScene = new Scene();
+    MarkCurrentSceneClean();
 
     SceneLoadEvent.Invoke();
 
@@ -146,13 +195,48 @@ void SceneManager::LoadEmptyLightedScene()
 bool SceneManager::LoadScene(const std::string& p_path, bool p_absolute)
 {
     std::string completePath = (p_absolute ? "" : m_sceneRootFolder) + p_path;
-    auto scene = std::make_unique<Scene>();
-    meta::Variant sceneVariant(*scene, meta::variant_policy::NoCopy{});
-    Serializer::Instance()->DeserializeFromFile(sceneVariant, completePath);
+
+    const auto fileText = ReadTextFile(completePath);
+    if (!fileText.has_value())
+        return false;
+
+    const auto document = Engine::Serialize::ObjectGraphReader::Read(*fileText);
+    if (!document.has_value() || document->format != "Nullus.ObjectGraph.Scene")
+        return false;
+
     UnloadCurrentScene();
+
+    auto scene = Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(*document);
+    if (!scene)
+    {
+        m_currentScene = new Scene();
+        SceneLoadEvent.Invoke();
+        MarkCurrentSceneClean();
+        return false;
+    }
+
     m_currentScene = scene.release();
     SceneLoadEvent.Invoke();
     StoreCurrentSceneSourcePath(completePath);
+    MarkCurrentSceneClean();
+    return true;
+}
+
+bool SceneManager::SaveCurrentScene(const std::string& p_path)
+{
+    if (!m_currentScene || p_path.empty())
+        return false;
+
+    const auto document = Engine::Serialize::ObjectGraphSerializer::SerializeScene(*m_currentScene);
+    if (document.Validate().HasErrors())
+        return false;
+
+    const auto text = Engine::Serialize::ObjectGraphWriter::Write(document);
+    if (!WriteTextFileAtomically(p_path, text))
+        return false;
+
+    StoreCurrentSceneSourcePath(p_path);
+    MarkCurrentSceneClean();
     return true;
 }
 
@@ -187,6 +271,7 @@ void SceneManager::UnloadCurrentScene()
     }
 
     ForgetCurrentSceneSourcePath();
+    MarkCurrentSceneClean();
 }
 
 bool SceneManager::HasCurrentScene() const
@@ -211,6 +296,9 @@ bool SceneManager::IsCurrentSceneLoadedFromDisk() const
 
 void SceneManager::StoreCurrentSceneSourcePath(const std::string& p_path)
 {
+    if (m_currentSceneSourcePath == p_path && m_currentSceneLoadedFromPath)
+        return;
+
     m_currentSceneSourcePath = p_path;
     m_currentSceneLoadedFromPath = true;
     CurrentSceneSourcePathChangedEvent.Invoke(m_currentSceneSourcePath);
@@ -218,7 +306,33 @@ void SceneManager::StoreCurrentSceneSourcePath(const std::string& p_path)
 
 void SceneManager::ForgetCurrentSceneSourcePath()
 {
+    if (m_currentSceneSourcePath.empty() && !m_currentSceneLoadedFromPath)
+        return;
+
     m_currentSceneSourcePath = "";
     m_currentSceneLoadedFromPath = false;
     CurrentSceneSourcePathChangedEvent.Invoke(m_currentSceneSourcePath);
+}
+
+void SceneManager::MarkCurrentSceneDirty()
+{
+    if (m_currentSceneDirty)
+        return;
+
+    m_currentSceneDirty = true;
+    CurrentSceneDirtyStateChangedEvent.Invoke(m_currentSceneDirty);
+}
+
+void SceneManager::MarkCurrentSceneClean()
+{
+    if (!m_currentSceneDirty)
+        return;
+
+    m_currentSceneDirty = false;
+    CurrentSceneDirtyStateChangedEvent.Invoke(m_currentSceneDirty);
+}
+
+bool SceneManager::HasUnsavedSceneChanges() const
+{
+    return m_currentSceneDirty;
 }

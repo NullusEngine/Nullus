@@ -76,6 +76,10 @@ namespace NLS::Editor::Panels
 		*/
 		void AddActorByInstance(Engine::GameObject& p_actor);
 
+		void RebuildFromCurrentScene();
+
+		void RefreshSceneRootName();
+
 	public:
 		Event<Engine::GameObject&> ActorSelectedEvent;
 		Event<Engine::GameObject&> ActorUnselectedEvent;
@@ -91,5 +95,8 @@ namespace NLS::Editor::Panels
 		uint64_t m_actorSelectedListener = 0;
 		uint64_t m_actorAttachedListener = 0;
 		uint64_t m_actorDetachedListener = 0;
+		uint64_t m_sceneLoadListener = 0;
+		uint64_t m_sceneSourcePathChangedListener = 0;
+		uint64_t m_sceneDirtyStateChangedListener = 0;
 	};
 }

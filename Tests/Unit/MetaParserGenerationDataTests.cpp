@@ -33,12 +33,10 @@ TEST(MetaParserGenerationDataTests, GeneratesExpectedExternalAndPrivateReflectio
 {
     const std::filesystem::path mathSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Math/ExternalReflection.h";
     const std::filesystem::path privateSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Base/Reflection/PrivateReflectionExternalSample.h";
-    const std::filesystem::path serializeSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Serialize/SceneSerializationData.h";
     const std::filesystem::path mathMetaSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Math/Gen/MetaGenerated.cpp";
     const std::filesystem::path engineMetaSource = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Gen/MetaGenerated.cpp";
     const std::string mathText = ReadAllText(mathSource);
     const std::string privateText = ReadAllText(privateSource);
-    const std::string serializeText = ReadAllText(serializeSource);
     const std::string mathMetaText = ReadAllText(mathMetaSource);
     const std::string engineMetaText = ReadAllText(engineMetaSource);
 
@@ -49,8 +47,6 @@ TEST(MetaParserGenerationDataTests, GeneratesExpectedExternalAndPrivateReflectio
     ExpectContains(privateText, "PrivateReflectionExternalSampleReflectionAccess");
     ExpectContains(privateText, "\"m_hiddenValue\"");
     ExpectContains(privateText, "\"GetHiddenValue\"");
-    ExpectContains(serializeText, "NLS_META_EXTERNAL_BEGIN(NLS::Engine::Serialize::SerializedSceneData)");
-    ExpectContains(serializeText, "NLS_META_EXTERNAL_FIELD(NLS::Array<NLS::Engine::Serialize::SerializedActorData>, actors)");
     ExpectNotContains(mathMetaText, "ExternalReflection.generated.cpp");
     ExpectNotContains(engineMetaText, "SceneSerializationData.generated.cpp");
 }

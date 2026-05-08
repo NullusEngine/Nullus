@@ -3,6 +3,9 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <vector>
+
+#include <GameObject.h>
 
 namespace NLS::Render::RHI
 {
@@ -19,6 +22,7 @@ namespace NLS::Editor::Rendering
         uint16_t height = 0u;
         uint64_t serial = 0u;
         std::shared_ptr<NLS::Render::RHI::RHITexture> readbackTexture;
+        std::vector<NLS::Engine::GameObject*> pickRegistry;
 
         bool IsValid() const
         {

@@ -18,6 +18,7 @@
 #include "Panels/ComponentSearchPanel.h"
 #include "Panels/ReflectedPropertyDrawer.h"
 #include "GameObject.h"
+#include <algorithm>
 
 namespace
 {
@@ -55,21 +56,39 @@ Inspector::Inspector(const std::string& p_title, bool p_opened, const NLS::UI::P
     auto nameGatherer = [this]
     { return m_targetActor ? m_targetActor->GetName() : "%undef%"; };
     auto nameProvider = [this](const std::string& p_newName)
-    { if (m_targetActor) m_targetActor->SetName(p_newName); };
+    {
+        if (m_targetActor)
+        {
+            m_targetActor->SetName(p_newName);
+            EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+        }
+    };
     UI::GUIDrawer::DrawString(headerColumns, "Name", nameGatherer, nameProvider);
 
     /* Tag field */
     auto tagGatherer = [this]
     { return m_targetActor ? m_targetActor->GetTag() : "%undef%"; };
     auto tagProvider = [this](const std::string& p_newName)
-    { if (m_targetActor) m_targetActor->SetTag(p_newName); };
+    {
+        if (m_targetActor)
+        {
+            m_targetActor->SetTag(p_newName);
+            EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+        }
+    };
     UI::GUIDrawer::DrawString(headerColumns, "Tag", tagGatherer, tagProvider);
 
     /* Active field */
     auto activeGatherer = [this]
     { return m_targetActor ? m_targetActor->IsSelfActive() : false; };
     auto activeProvider = [this](bool p_active)
-    { if (m_targetActor) m_targetActor->SetActive(p_active); };
+    {
+        if (m_targetActor)
+        {
+            m_targetActor->SetActive(p_active);
+            EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+        }
+    };
     UI::GUIDrawer::DrawBoolean(headerColumns, "Active", activeGatherer, activeProvider);
 
     auto& addComponentButton = m_inspectorHeader->CreateWidget<UI::Widgets::Button>("Add Component", Maths::Vector2{118.f, 0});
@@ -93,6 +112,7 @@ Inspector::Inspector(const std::string& p_title, bool p_opened, const NLS::UI::P
     m_componentPicker = &m_inspectorHeader->CreateWidget<ComponentSearchPanel>();
     m_componentPicker->ComponentAddedEvent += [this]
     {
+        EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
         Refresh();
     };
 
@@ -221,24 +241,27 @@ void Inspector::DrawComponent(Engine::Components::Component* p_component)
         if (!owner)
             return;
 
-        const auto actorId = owner->GetWorldID();
+        auto* ownerActor = owner;
         const auto componentType = p_component->GetType();
-        EDITOR_EXEC(DelayAction([this, actorId, componentType]
+        EDITOR_EXEC(DelayAction([this, ownerActor, componentType]
         {
             auto* scene = EDITOR_CONTEXT(sceneManager).GetCurrentScene();
             if (!scene)
                 return;
 
-            auto* actor = scene->FindActorByID(actorId);
-            if (!actor)
+            const auto& actors = scene->GetActors();
+            if (std::find(actors.begin(), actors.end(), ownerActor) == actors.end())
                 return;
 
-            auto* component = actor->GetComponent(componentType, true);
+            auto* component = ownerActor->GetComponent(componentType, true);
             if (!component)
                 return;
 
-            if (actor->RemoveComponent(component))
+            if (ownerActor->RemoveComponent(component))
+            {
+                EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
                 SyncComponentPicker();
+            }
         }));
     };
     meta::Variant componentInstance(p_component, meta::variant_policy::WrapObject {});
@@ -253,6 +276,10 @@ void Inspector::DrawComponent(Engine::Components::Component* p_component)
 
     ReflectedPropertyDrawerOptions options;
     options.labelWidth = 104.0f;
+    options.onFieldChanged = [](const meta::Field&)
+    {
+        EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+    };
     DrawReflectedObject(header, componentInstance, options);
 
     m_actorInfo->CreateWidget<UI::Widgets::Spacing>(1);

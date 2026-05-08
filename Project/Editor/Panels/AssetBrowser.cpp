@@ -969,6 +969,8 @@ Editor::Panels::AssetBrowser::AssetBrowser
 	m_assetList = &CreateWidget<Group>();
 
 	Fill();
+	m_engineAssetsWatcher.Start(m_engineAssetFolder);
+	m_projectAssetsWatcher.Start(m_projectAssetFolder);
 }
 
 void Editor::Panels::AssetBrowser::Fill()
@@ -985,6 +987,28 @@ void Editor::Panels::AssetBrowser::Clear()
 }
 
 void Editor::Panels::AssetBrowser::Refresh()
+{
+	RefreshPreservingExpandedFolders();
+}
+
+void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()
+{
+	if (m_engineAssetsWatcher.ConsumeChanged() || m_projectAssetsWatcher.ConsumeChanged())
+		RequestRefresh();
+
+	if (m_refreshRequested)
+	{
+		m_refreshRequested = false;
+		RefreshPreservingExpandedFolders();
+	}
+}
+
+void Editor::Panels::AssetBrowser::RequestRefresh()
+{
+	m_refreshRequested = true;
+}
+
+void Editor::Panels::AssetBrowser::RefreshPreservingExpandedFolders()
 {
 	Clear();
 	Fill();
@@ -1040,7 +1064,7 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 	{
 		auto& treeNode = itemGroup.CreateWidget<TreeNode>(itemname);
 
-		if (p_autoOpen)
+		if (p_autoOpen || m_expandedFolders.contains(path))
 			treeNode.Open();
 
 		auto& ddSource = treeNode.AddPlugin<UI::DDSource<std::pair<std::string, Group*>>>("Folder", resourceFormatPath, std::make_pair(resourceFormatPath, &itemGroup));
@@ -1198,12 +1222,14 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 
 		treeNode.OpenedEvent += [this, &treeNode, path, p_isEngineItem, p_scriptFolder]
 		{
+			m_expandedFolders.insert(path);
 			treeNode.RemoveAllWidgets();
 			ParseFolder(treeNode, std::filesystem::directory_entry(path), p_isEngineItem, p_scriptFolder);
 		};
 
-		treeNode.ClosedEvent += [this, &treeNode]
+		treeNode.ClosedEvent += [this, &treeNode, path]
 		{
+			m_expandedFolders.erase(path);
 			treeNode.RemoveAllWidgets();
 		};
 	}

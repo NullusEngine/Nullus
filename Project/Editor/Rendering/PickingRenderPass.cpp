@@ -9,6 +9,8 @@
 #include <Components/TransformComponent.h>
 #include <Components/MaterialRenderer.h>
 #include <Rendering/EngineDrawableDescriptor.h>
+#include <algorithm>
+#include <iterator>
 using namespace NLS;
 Editor::Rendering::PickingRenderPass::PickingRenderPass(NLS::Render::Core::CompositeRenderer& p_renderer) :
 	NLS::Render::Core::ARenderPass(p_renderer),
@@ -28,12 +30,14 @@ Editor::Rendering::PickingRenderPass::PickingRenderPass(NLS::Render::Core::Compo
 }
 
 Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRenderPass::DecodePickingResult(
-	const Engine::SceneSystem::Scene& p_scene,
+    const PickingReadbackLifecycle<Engine::SceneSystem::Scene>::Frame& frame,
 	const uint8_t (&pixel)[3]) const
 {
-	uint32_t actorID = (0 << 24) | (pixel[2] << 16) | (pixel[1] << 8) | (pixel[0] << 0);
-	auto actorUnderMouse = p_scene.FindActorByID(actorID);
+	const uint32_t pickID = (0u << 24u) | (pixel[2] << 16u) | (pixel[1] << 8u) | (pixel[0] << 0u);
+    if (pickID == 0u || pickID > frame.pickRegistry.size())
+        return std::nullopt;
 
+	auto* actorUnderMouse = frame.pickRegistry[pickID - 1u];
 	if (actorUnderMouse)
 	{
         return actorUnderMouse;
@@ -79,7 +83,7 @@ Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRe
 		NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
 		pixel);
 
-	return DecodePickingResult(*readableFrame->scene, pixel);
+	return DecodePickingResult(*readableFrame, pixel);
 }
 
 bool Editor::Rendering::PickingRenderPass::SupportsPickingReadback() const
@@ -151,7 +155,8 @@ Editor::Rendering::PickingRenderPass::BuildSubmittedReadbackFrame(
         frameDescriptor.renderWidth,
         frameDescriptor.renderHeight,
         serial,
-        m_actorPickingFramebuffer.GetExplicitTextureHandle()
+        m_actorPickingFramebuffer.GetExplicitTextureHandle(),
+        m_submittedPickRegistry
     };
 }
 
@@ -176,6 +181,7 @@ void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState
         return;
 
     const uint64_t submittedSerial = ++m_submittedPickingFrameSerial;
+    m_submittedPickRegistry.clear();
 	m_actorPickingFramebuffer.Resize(frameDescriptor.renderWidth, frameDescriptor.renderHeight);
     if (NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_renderer.GetDriver()))
     {
@@ -274,14 +280,22 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::P
     return passInput;
 }
 
-void PreparePickingMaterial(Engine::GameObject& p_actor, NLS::Render::Resources::Material& p_material)
+void PreparePickingMaterial(uint32_t pickID, NLS::Render::Resources::Material& p_material)
 {
-	uint32_t actorID = static_cast<uint32_t>(p_actor.GetWorldID());
-
-	auto bytes = reinterpret_cast<uint8_t*>(&actorID);
+	auto bytes = reinterpret_cast<uint8_t*>(&pickID);
 	auto color = Maths::Vector4{ bytes[0] / 255.0f, bytes[1] / 255.0f, bytes[2] / 255.0f, 1.0f };
 
 	p_material.Set("u_Diffuse", color);
+}
+
+uint32_t Editor::Rendering::PickingRenderPass::RegisterPickableActor(Engine::GameObject& actor)
+{
+    auto found = std::find(m_submittedPickRegistry.begin(), m_submittedPickRegistry.end(), &actor);
+    if (found != m_submittedPickRegistry.end())
+        return static_cast<uint32_t>(std::distance(m_submittedPickRegistry.begin(), found) + 1);
+
+    m_submittedPickRegistry.push_back(&actor);
+    return static_cast<uint32_t>(m_submittedPickRegistry.size());
 }
 
 void Editor::Rendering::PickingRenderPass::CapturePickableModels(
@@ -304,7 +318,7 @@ void Editor::Rendering::PickingRenderPass::CapturePickableModels(
 
         const auto& materials = materialRenderer->GetMaterials();
         const auto& modelMatrix = actor.GetTransform()->GetWorldMatrix();
-        PreparePickingMaterial(actor, m_actorPickingMaterial);
+        PreparePickingMaterial(RegisterPickableActor(actor), m_actorPickingMaterial);
 
         for (auto mesh : model->GetMeshes())
         {
@@ -356,7 +370,7 @@ void Editor::Rendering::PickingRenderPass::DrawPickableModels(
 					const auto& materials = materialRenderer->GetMaterials();
 					const auto& modelMatrix = actor.GetTransform()->GetWorldMatrix();
 
-					PreparePickingMaterial(actor, m_actorPickingMaterial);
+					PreparePickingMaterial(RegisterPickableActor(actor), m_actorPickingMaterial);
 
 					for (auto mesh : model->GetMeshes())
 					{
@@ -400,7 +414,7 @@ void Editor::Rendering::PickingRenderPass::DrawPickableCameras(
 
 		if (actor.IsActive())
 		{
-			PreparePickingMaterial(actor, m_actorPickingMaterial);
+			PreparePickingMaterial(RegisterPickableActor(actor), m_actorPickingMaterial);
 			auto& cameraModel = *EDITOR_CONTEXT(editorResources)->GetModel("Camera");
             auto translation = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
             auto rotation = Maths::Quaternion::ToMatrix4(actor.GetTransform()->GetWorldRotation());
@@ -427,7 +441,7 @@ void Editor::Rendering::PickingRenderPass::CapturePickableCameras(
         if (!actor.IsActive())
             continue;
 
-        PreparePickingMaterial(actor, m_actorPickingMaterial);
+        PreparePickingMaterial(RegisterPickableActor(actor), m_actorPickingMaterial);
         auto translation = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
         auto rotation = Maths::Quaternion::ToMatrix4(actor.GetTransform()->GetWorldRotation());
         auto modelMatrix = translation * rotation;
@@ -458,7 +472,7 @@ void Editor::Rendering::PickingRenderPass::DrawPickableLights(
 
 			if (actor.IsActive())
 			{
-				PreparePickingMaterial(actor, m_lightMaterial);
+				PreparePickingMaterial(RegisterPickableActor(actor), m_lightMaterial);
 				auto& lightModel = *EDITOR_CONTEXT(editorResources)->GetModel("Vertical_Plane");
 				auto modelMatrix = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
 
@@ -489,7 +503,7 @@ void Editor::Rendering::PickingRenderPass::CapturePickableLights(
         if (!actor.IsActive())
             continue;
 
-        PreparePickingMaterial(actor, m_lightMaterial);
+        PreparePickingMaterial(RegisterPickableActor(actor), m_lightMaterial);
         auto modelMatrix = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
         m_debugModelRenderer.CaptureModelDrawCommandsWithSingleMaterial(
             lightPickingPso,

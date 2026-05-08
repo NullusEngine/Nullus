@@ -327,13 +327,13 @@ namespace NLS::Windowing
 			return &m_device;
         }
 #ifdef _WIN32
+        bool HasValidNativeWindowProc() const;
+        void InstallNativeWindowProc();
+        void RestoreNativeWindowProc();
         long long HandleNativeWindowMessage(void* p_hwnd, unsigned int p_msg, unsigned long long p_wParam, long long p_lParam);
 #endif
 	private:
 		void CreateGlfwWindow(const Settings::WindowSettings& p_windowSettings);
-#ifdef _WIN32
-        void BindNativeWindowProc();
-#endif
 
 		/* Callbacks binding */
 		void BindKeyCallback() const;

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 #include <vector>
 
 #include "Core/ServiceLocator.h"
@@ -98,6 +99,25 @@ UIManager::UIManager(
 
     ApplyStyle(p_style);
 
+#ifdef _WIN32
+    if (auto* window = NLS::Windowing::Window::FindInstance(p_glfwWindow))
+    {
+        if (window->GetNativeWindowHandle() == nullptr)
+        {
+            const std::string message = "UIManager startup failed: GLFW did not provide a Win32 native window handle.";
+            NLS_LOG_ERROR(message);
+            throw std::runtime_error(message);
+        }
+
+        if (!window->HasValidNativeWindowProc())
+        {
+            const std::string message = "UIManager startup failed: Win32 native window procedure is not available.";
+            NLS_LOG_ERROR(message);
+            throw std::runtime_error(message);
+        }
+    }
+#endif
+
     switch (ResolveImGuiGlfwInitBackend(m_backend))
     {
     case ImGuiGlfwInitBackend::OpenGL:
@@ -110,6 +130,13 @@ UIManager::UIManager(
         ImGui_ImplGlfw_InitForOther(p_glfwWindow, true);
         break;
     }
+
+#ifdef _WIN32
+    if (auto* window = NLS::Windowing::Window::FindInstance(p_glfwWindow))
+    {
+        window->InstallNativeWindowProc();
+    }
+#endif
 
     // GLFW init still depends on the requested UI backend, but the renderer bridge
     // is now selected from resolved native backend identity.
@@ -142,6 +169,11 @@ UIManager::UIManager(
 
 UIManager::~UIManager()
 {
+#ifdef _WIN32
+    if (auto* window = NLS::Windowing::Window::FindInstance(m_glfwWindow))
+        window->RestoreNativeWindowProc();
+#endif
+
     m_uiBridge.reset();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();

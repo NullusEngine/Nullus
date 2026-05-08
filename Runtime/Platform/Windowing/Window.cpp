@@ -99,22 +99,12 @@ NLS::Windowing::Window::Window(Context::Device& p_device, const Settings::Window
 	ResizeEvent.AddListener(std::bind(&Window::OnResize, this, std::placeholders::_1, std::placeholders::_2));
 	MoveEvent.AddListener(std::bind(&Window::OnMove, this, std::placeholders::_1, std::placeholders::_2));
 
-#ifdef _WIN32
-    BindNativeWindowProc();
-#endif
 }
 
 NLS::Windowing::Window::~Window()
 {
 #ifdef _WIN32
-    if (m_glfwWindow && m_originalWindowProc)
-    {
-        if (HWND hwnd = glfwGetWin32Window(m_glfwWindow))
-        {
-            SetWindowLongPtr(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(m_originalWindowProc));
-            SetWindowLongPtr(hwnd, GWLP_USERDATA, 0);
-        }
-    }
+    RestoreNativeWindowProc();
 #endif
 	glfwDestroyWindow(m_glfwWindow);
 }
@@ -572,14 +562,45 @@ void NLS::Windowing::Window::CreateGlfwWindow(const Settings::WindowSettings& p_
 }
 
 #ifdef _WIN32
-void NLS::Windowing::Window::BindNativeWindowProc()
+bool NLS::Windowing::Window::HasValidNativeWindowProc() const
 {
+    if (m_glfwWindow == nullptr)
+        return false;
+
+    if (HWND hwnd = glfwGetWin32Window(m_glfwWindow))
+        return GetWindowLongPtr(hwnd, GWLP_WNDPROC) != 0;
+
+    return false;
+}
+
+void NLS::Windowing::Window::InstallNativeWindowProc()
+{
+    if (m_originalWindowProc != nullptr)
+        return;
+
     if (HWND hwnd = glfwGetWin32Window(m_glfwWindow))
     {
         SetWindowLongPtr(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
         m_originalWindowProc = reinterpret_cast<void*>(
             SetWindowLongPtr(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&NullusWindowProc)));
     }
+}
+
+void NLS::Windowing::Window::RestoreNativeWindowProc()
+{
+    if (m_glfwWindow == nullptr || m_originalWindowProc == nullptr)
+        return;
+
+    if (HWND hwnd = glfwGetWin32Window(m_glfwWindow))
+    {
+        const auto currentWindowProc = reinterpret_cast<void*>(GetWindowLongPtr(hwnd, GWLP_WNDPROC));
+        if (currentWindowProc == reinterpret_cast<void*>(&NullusWindowProc))
+            SetWindowLongPtr(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(m_originalWindowProc));
+
+        SetWindowLongPtr(hwnd, GWLP_USERDATA, 0);
+    }
+
+    m_originalWindowProc = nullptr;
 }
 
 long long NLS::Windowing::Window::HandleNativeWindowMessage(void* p_hwnd, unsigned int p_msg, unsigned long long p_wParam, long long p_lParam)

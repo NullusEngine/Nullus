@@ -196,6 +196,10 @@ NLS::Context::Device::Device(const NLS::Windowing::Settings::DeviceSettings& p_d
 	EnsureWslgEnvironment();
 	BindErrorCallback();
 
+#ifdef _WIN32
+    glfwInitHint(GLFW_PLATFORM, GLFW_PLATFORM_WIN32);
+#endif
+
 	int initializationCode = glfwInit();
 
 	if (initializationCode == GLFW_FALSE)

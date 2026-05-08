@@ -149,6 +149,18 @@ else()
     endif()
 endif()
 
+function(nls_copy_shared_runtime_to_target TARGET_NAME)
+    if(WIN32 AND NLS_USE_SHARED_LIBRARY)
+        add_custom_command(TARGET ${TARGET_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${NLS_APP_OUTPUT_PATH}"
+                "$<TARGET_FILE_DIR:${TARGET_NAME}>"
+            VERBATIM
+            COMMENT "Copying Nullus runtime DLLs for ${TARGET_NAME}"
+        )
+    endif()
+endfunction()
+
 add_subdirectory("ThirdParty")
 add_subdirectory("Tools")
 add_subdirectory("Runtime")

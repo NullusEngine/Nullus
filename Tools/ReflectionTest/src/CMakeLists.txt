@@ -23,3 +23,4 @@ set_target_properties(ReflectionTest PROPERTIES
     FOLDER Tools
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
 )
+nls_copy_shared_runtime_to_target(ReflectionTest)

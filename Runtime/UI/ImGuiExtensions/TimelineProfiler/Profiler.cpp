@@ -250,8 +250,6 @@ void GPUProfiler::Shutdown()
 	for (QueryHeap& heap : m_QueryHeaps)
 		heap.Shutdown();
 
-	for (auto& commandListState : m_CommandListMap)
-		delete commandListState.second;
 	m_CommandListMap.clear();
 
 	m_QueryData.clear();
@@ -473,17 +471,18 @@ GPUProfiler::CommandListState* GPUProfiler::GetState(ID3D12CommandList* pCmd, bo
 	// See if it's already tracked
 	AcquireSRWLockShared((PSRWLOCK)&m_CommandListMapLock);
 	auto   it	 = m_CommandListMap.find(pCmd);
-	CommandListState* pState = it != m_CommandListMap.end() ? it->second : nullptr;
+	CommandListState* pState = it != m_CommandListMap.end() ? it->second.get() : nullptr;
 	ReleaseSRWLockShared((PSRWLOCK)&m_CommandListMapLock);
 
 	if (!pState && createIfNotFound)
 	{
 		// If not, register new commandlist
 		// TODO: Pool CommandListStates in case ID3D12CommandLists are often recreated
-		pState = new CommandListState(this, pCmd);
+		auto state = std::make_unique<CommandListState>(this, pCmd);
+		pState = state.get();
 	
 		AcquireSRWLockExclusive((PSRWLOCK)&m_CommandListMapLock);
-		m_CommandListMap[pCmd] = pState;
+		m_CommandListMap[pCmd] = std::move(state);
 		ReleaseSRWLockExclusive((PSRWLOCK)&m_CommandListMapLock);
 	}
 	return pState;
@@ -503,10 +502,9 @@ GPUProfiler::CommandListState::CommandListState(GPUProfiler* profiler, ID3D12Com
 		pState->IsDestroyingFromCallback = true;
 
 		AcquireSRWLockExclusive((PSRWLOCK)&pState->pProfiler->m_CommandListMapLock);
+		auto state = std::move(pState->pProfiler->m_CommandListMap[pState->pCommandList]);
 		pState->pProfiler->m_CommandListMap.erase(pState->pCommandList);
 		ReleaseSRWLockExclusive((PSRWLOCK)&pState->pProfiler->m_CommandListMapLock);
-
-		delete pState;
 	}, this, &DestructionEventID));
 
 	destruction_notifier->Release();
@@ -548,7 +546,7 @@ void GPUProfiler::QueryHeap::Initialize(ID3D12Device* pDevice, ID3D12CommandQueu
 
 	for (uint32 i = 0; i < frameLatency; ++i)
 		gVerifyHR(pDevice->CreateCommandAllocator(queueDesc.Type, IID_PPV_ARGS(&m_CommandAllocators.emplace_back())));
-	gVerifyHR(pDevice->CreateCommandList(0x1, queueDesc.Type, m_CommandAllocators[0], nullptr, IID_PPV_ARGS(&m_pCommandList)));
+	gVerifyHR(pDevice->CreateCommandList(0x1, queueDesc.Type, m_CommandAllocators[0].Get(), nullptr, IID_PPV_ARGS(&m_pCommandList)));
 
 	D3D12_RESOURCE_DESC readbackDesc{
 		.Dimension		  = D3D12_RESOURCE_DIMENSION_BUFFER,
@@ -587,12 +585,14 @@ void GPUProfiler::QueryHeap::Shutdown()
 	if (!IsInitialized())
 		return;
 
-	for (ID3D12CommandAllocator* pAllocator : m_CommandAllocators)
-		pAllocator->Release();
-	m_pCommandList->Release();
-	m_pQueryHeap->Release();
-	m_pReadbackResource->Release();
-	m_pResolveFence->Release();
+	if (m_pReadbackResource != nullptr)
+		m_pReadbackResource->Unmap(0, nullptr);
+	m_ReadbackData = {};
+	m_CommandAllocators.clear();
+	m_pCommandList.Reset();
+	m_pQueryHeap.Reset();
+	m_pReadbackResource.Reset();
+	m_pResolveFence.Reset();
 }
 
 uint32 GPUProfiler::QueryHeap::RecordQuery(ID3D12GraphicsCommandList* pCmd)
@@ -601,7 +601,7 @@ uint32 GPUProfiler::QueryHeap::RecordQuery(ID3D12GraphicsCommandList* pCmd)
 	if (index >= m_MaxNumQueries)
 		return 0xFFFFFFFF;
 
-	pCmd->EndQuery(m_pQueryHeap, D3D12_QUERY_TYPE_TIMESTAMP, index);
+	pCmd->EndQuery(m_pQueryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, index);
 	return index;
 }
 
@@ -613,11 +613,11 @@ uint32 GPUProfiler::QueryHeap::Resolve(uint32 frameIndex)
 	uint32 frameBit	  = frameIndex % m_FrameLatency;
 	uint32 queryStart = frameBit * m_MaxNumQueries;
 	uint32 numQueries = std::min(m_MaxNumQueries, (uint32)m_QueryIndex);
-	m_pCommandList->ResolveQueryData(m_pQueryHeap, D3D12_QUERY_TYPE_TIMESTAMP, 0, numQueries, m_pReadbackResource, queryStart * sizeof(uint64));
+	m_pCommandList->ResolveQueryData(m_pQueryHeap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, numQueries, m_pReadbackResource.Get(), queryStart * sizeof(uint64));
 	gVerifyHR(m_pCommandList->Close());
-	ID3D12CommandList* pCmdLists[] = { m_pCommandList };
+	ID3D12CommandList* pCmdLists[] = { m_pCommandList.Get() };
 	m_pResolveQueue->ExecuteCommandLists(1, pCmdLists);
-	gVerifyHR(m_pResolveQueue->Signal(m_pResolveFence, frameIndex));
+	gVerifyHR(m_pResolveQueue->Signal(m_pResolveFence.Get(), frameIndex));
 	return numQueries;
 }
 
@@ -631,11 +631,15 @@ void GPUProfiler::QueryHeap::Reset(uint32 frameIndex)
 	{
 		uint32 wait_frame = frameIndex - m_FrameLatency;
 		if (!IsFrameComplete(wait_frame))
-			m_pResolveFence->SetEventOnCompletion(wait_frame, nullptr);
+		{
+			const HRESULT hr = m_pResolveFence->SetEventOnCompletion(wait_frame, nullptr);
+			if (FAILED(hr))
+				return;
+		}
 	}
 
 	m_QueryIndex					   = 0;
-	ID3D12CommandAllocator* pAllocator = m_CommandAllocators[frameIndex % m_FrameLatency];
+	ID3D12CommandAllocator* pAllocator = m_CommandAllocators[frameIndex % m_FrameLatency].Get();
 	gVerifyHR(pAllocator->Reset());
 	gVerifyHR(m_pCommandList->Reset(pAllocator, nullptr));
 }

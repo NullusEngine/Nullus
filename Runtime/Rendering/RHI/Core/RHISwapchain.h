@@ -27,6 +27,22 @@ namespace NLS::Render::RHI
         uint64_t uiSignalValue = 0u;
     };
 
+    enum class RHIQueueOperationStatusCode : uint8_t
+    {
+        Success,
+        InvalidArgument,
+        BackendFailure,
+        DeviceLost
+    };
+
+    struct NLS_RENDER_API RHIQueueOperationResult
+    {
+        RHIQueueOperationStatusCode code = RHIQueueOperationStatusCode::Success;
+        std::string message;
+
+        bool Succeeded() const { return code == RHIQueueOperationStatusCode::Success; }
+    };
+
     struct NLS_RENDER_API RHIAcquiredImage
     {
         uint32_t imageIndex = 0;
@@ -53,6 +69,22 @@ namespace NLS::Render::RHI
         virtual QueueType GetType() const = 0;
         virtual void Submit(const RHISubmitDesc& submitDesc) = 0;
         virtual void Present(const RHIPresentDesc& presentDesc) = 0;
+        virtual RHIQueueOperationResult SubmitChecked(const RHISubmitDesc& submitDesc)
+        {
+            (void)submitDesc;
+            return {
+                RHIQueueOperationStatusCode::BackendFailure,
+                "RHI queue does not implement status-returning SubmitChecked"
+            };
+        }
+        virtual RHIQueueOperationResult PresentChecked(const RHIPresentDesc& presentDesc)
+        {
+            (void)presentDesc;
+            return {
+                RHIQueueOperationStatusCode::BackendFailure,
+                "RHI queue does not implement status-returning PresentChecked"
+            };
+        }
     };
 
     struct NLS_RENDER_API RHIFrameContext

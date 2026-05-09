@@ -133,9 +133,18 @@ namespace NLS::Render::Backend
 
 	void NativeDX12Queue::Submit(const NLS::Render::RHI::RHISubmitDesc& submitDesc)
 	{
+		(void)SubmitChecked(submitDesc);
+	}
+
+	NLS::Render::RHI::RHIQueueOperationResult NativeDX12Queue::SubmitChecked(
+		const NLS::Render::RHI::RHISubmitDesc& submitDesc)
+	{
 #if defined(_WIN32)
 		if (m_queue == nullptr)
-			return;
+			return {
+				NLS::Render::RHI::RHIQueueOperationStatusCode::InvalidArgument,
+				"NativeDX12Queue::Submit: queue is null"
+			};
 
 		for (const auto& semaphore : submitDesc.waitSemaphores)
 		{
@@ -148,9 +157,11 @@ namespace NLS::Render::Backend
 				nativeSemaphore->GetWaitValue());
 			if (FAILED(waitHr))
 			{
-				NLS_LOG_ERROR(
+				const std::string message =
 					"NativeDX12Queue::Submit: queue wait on semaphore failed hr=" +
-					std::to_string(waitHr));
+					std::to_string(waitHr);
+				NLS_LOG_ERROR(message);
+				return { NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure, message };
 			}
 		}
 
@@ -196,8 +207,12 @@ namespace NLS::Render::Backend
 				const HRESULT deviceStatus = m_device->GetDeviceRemovedReason();
 				if (FAILED(deviceStatus))
 				{
-					NLS_LOG_ERROR("NativeDX12Queue::Submit: device status after ExecuteCommandLists hr=" + std::to_string(deviceStatus));
+					const std::string message =
+						"NativeDX12Queue::Submit: device status after ExecuteCommandLists hr=" +
+						std::to_string(deviceStatus);
+					NLS_LOG_ERROR(message);
 					LogDx12DebugMessages(m_device, "NativeDX12Queue::Submit");
+					return { NLS::Render::RHI::RHIQueueOperationStatusCode::DeviceLost, message };
 				}
 			}
 		}
@@ -214,7 +229,9 @@ namespace NLS::Render::Backend
 
 			if (!nativeSemaphore->SignalOnQueue(m_queue))
 			{
-				NLS_LOG_ERROR("NativeDX12Queue::Submit: queue signal semaphore failed");
+				const std::string message = "NativeDX12Queue::Submit: queue signal semaphore failed";
+				NLS_LOG_ERROR(message);
+				return { NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure, message };
 			}
 		}
 
@@ -227,19 +244,29 @@ namespace NLS::Render::Backend
 				const HRESULT signalHr = m_queue->Signal(nativeFence->GetFence(), fenceValue);
 				if (FAILED(signalHr))
 				{
-					NLS_LOG_ERROR(
+					const std::string message =
 						"NativeDX12Queue::Submit: queue signal fence failed hr=" +
 						std::to_string(signalHr) +
-						" value=" + std::to_string(fenceValue));
+						" value=" + std::to_string(fenceValue);
+					NLS_LOG_ERROR(message);
+					return { NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure, message };
 				}
 			}
 		}
+		return {};
 #else
 		(void)submitDesc;
+		return { NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure, "DX12 queue submit is only available on Windows" };
 #endif
 	}
 
 	void NativeDX12Queue::Present(const NLS::Render::RHI::RHIPresentDesc& presentDesc)
+	{
+		(void)PresentChecked(presentDesc);
+	}
+
+	NLS::Render::RHI::RHIQueueOperationResult NativeDX12Queue::PresentChecked(
+		const NLS::Render::RHI::RHIPresentDesc& presentDesc)
 	{
 #if defined(_WIN32)
 		if (ShouldLogDx12FrameFlow())
@@ -253,8 +280,9 @@ namespace NLS::Render::Backend
 
 		if (m_queue == nullptr || presentDesc.swapchain == nullptr)
 		{
-			NLS_LOG_ERROR("NativeDX12Queue::Present: queue or swapchain is null");
-			return;
+			const std::string message = "NativeDX12Queue::Present: queue or swapchain is null";
+			NLS_LOG_ERROR(message);
+			return { NLS::Render::RHI::RHIQueueOperationStatusCode::InvalidArgument, message };
 		}
 
 		const auto swapchainHandle = presentDesc.swapchain->GetNativeSwapchainHandle();
@@ -263,8 +291,9 @@ namespace NLS::Render::Backend
 			: nullptr;
 		if (swapchain == nullptr)
 		{
-			NLS_LOG_ERROR("NativeDX12Queue::Present: GetNativeSwapchainHandle returned null");
-			return;
+			const std::string message = "NativeDX12Queue::Present: GetNativeSwapchainHandle returned null";
+			NLS_LOG_ERROR(message);
+			return { NLS::Render::RHI::RHIQueueOperationStatusCode::InvalidArgument, message };
 		}
 
 		if (ShouldLogDx12FrameFlow())
@@ -289,9 +318,11 @@ namespace NLS::Render::Backend
 				nativeSemaphore->GetWaitValue());
 			if (FAILED(waitHr))
 			{
-				NLS_LOG_ERROR(
+				const std::string message =
 					"NativeDX12Queue::Present: queue wait on present semaphore failed hr=" +
-					std::to_string(waitHr));
+					std::to_string(waitHr);
+				NLS_LOG_ERROR(message);
+				return { NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure, message };
 			}
 		}
 
@@ -305,7 +336,11 @@ namespace NLS::Render::Backend
 				const HRESULT waitHr = m_queue->Wait(uiFence, presentDesc.uiSignalValue);
 				if (FAILED(waitHr))
 				{
-					NLS_LOG_WARNING("NativeDX12Queue::Present: failed to wait on UI fence before present hr=" + std::to_string(waitHr));
+					const std::string message =
+						"NativeDX12Queue::Present: failed to wait on UI fence before present hr=" +
+						std::to_string(waitHr);
+					NLS_LOG_WARNING(message);
+					return { NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure, message };
 				}
 			}
 		}
@@ -326,7 +361,8 @@ namespace NLS::Render::Backend
 		}
 		if (FAILED(hr))
 		{
-			NLS_LOG_ERROR("NativeDX12Queue::Present: Present failed with hr=" + std::to_string(hr));
+			std::string message = "NativeDX12Queue::Present: Present failed with hr=" + std::to_string(hr);
+			NLS_LOG_ERROR(message);
 			LogDx12DebugMessages(m_device, "NativeDX12Queue::Present");
 
 			if (m_device != nullptr)
@@ -337,11 +373,19 @@ namespace NLS::Render::Backend
 					if (hr == DXGI_ERROR_DEVICE_REMOVED)
 						NLS_LOG_ERROR("NativeDX12Queue::Present: DXGI_ERROR_DEVICE_REMOVED");
 					NLS_LOG_ERROR("NativeDX12Queue::Present: Device removed reason hr=" + std::to_string(reason));
+					message += " deviceRemovedReason=" + std::to_string(reason);
 				}
 			}
+			const auto statusCode =
+				(hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+					? NLS::Render::RHI::RHIQueueOperationStatusCode::DeviceLost
+					: NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure;
+			return { statusCode, message };
 		}
+		return {};
 #else
 		(void)presentDesc;
+		return { NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure, "DX12 present is only available on Windows" };
 #endif
 	}
 }

@@ -239,7 +239,19 @@ namespace
         std::string_view GetDebugName() const override { return "RendererFrameObjectBindingTestsQueue"; }
         NLS::Render::RHI::QueueType GetType() const override { return NLS::Render::RHI::QueueType::Graphics; }
         void Submit(const NLS::Render::RHI::RHISubmitDesc&) override {}
+        NLS::Render::RHI::RHIQueueOperationResult SubmitChecked(
+            const NLS::Render::RHI::RHISubmitDesc& submitDesc) override
+        {
+            Submit(submitDesc);
+            return {};
+        }
         void Present(const NLS::Render::RHI::RHIPresentDesc&) override {}
+        NLS::Render::RHI::RHIQueueOperationResult PresentChecked(
+            const NLS::Render::RHI::RHIPresentDesc& presentDesc) override
+        {
+            Present(presentDesc);
+            return {};
+        }
     };
 
     class TestExplicitDevice final : public NLS::Render::RHI::RHIDevice

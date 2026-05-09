@@ -89,6 +89,9 @@ namespace
             });
     }
 
+    constexpr auto kThreadedWorkerWakeTimeout = std::chrono::milliseconds(250);
+    constexpr auto kThreadedDrainWakeTimeout = std::chrono::milliseconds(1);
+
     void AppendPassCommandInput(
         RenderScenePackage& package,
         const RenderPassCommandKind kind,
@@ -835,14 +838,14 @@ namespace
         if (desc.layout != nullptr)
         {
             for (const auto& entry : desc.layout->GetDesc().entries)
-                descriptorCount += std::max(1u, entry.count);
+                descriptorCount += (std::max)(1u, entry.count);
         }
         else
         {
             descriptorCount = static_cast<uint32_t>(desc.entries.size());
         }
 
-        return std::max(1u, descriptorCount);
+        return (std::max)(1u, descriptorCount);
     }
 
     class TrackedBindingSet final : public Render::RHI::RHIBindingSet
@@ -1145,11 +1148,20 @@ namespace
         }
     }
 
-    void DrainThreadedLifecycleSynchronously(DriverImpl& impl, Driver* driver = nullptr)
+    constexpr uint64_t kDriverGpuDrainTimeoutNanoseconds = 5'000'000'000ull;
+    constexpr auto kThreadedLifecycleDrainWatchdog = std::chrono::seconds(5);
+
+    void WaitForThreadedWorkerWake(
+        DriverImpl& impl,
+        uint64_t observedGeneration,
+        std::chrono::milliseconds timeout = kThreadedWorkerWakeTimeout);
+
+    bool DrainThreadedLifecycleSynchronously(DriverImpl& impl, Driver* driver = nullptr)
     {
         if (impl.threadedLifecycle == nullptr || driver == nullptr)
-            return;
+            return true;
 
+        const auto drainStartTime = std::chrono::steady_clock::now();
         while (impl.threadedLifecycle->GetInFlightDepth() > 0u)
         {
             bool progressed = false;
@@ -1168,18 +1180,73 @@ namespace
 
             if (!progressed)
             {
+                const uint64_t observedWakeGeneration =
+                    impl.threadedWorkerWakeGeneration.load(std::memory_order_acquire);
+                if (std::chrono::steady_clock::now() - drainStartTime >= kThreadedLifecycleDrainWatchdog)
+                {
+                    NLS_LOG_ERROR(
+                        "DrainThreadedLifecycleSynchronously: timed out waiting for threaded lifecycle depth=" +
+                        std::to_string(impl.threadedLifecycle->GetInFlightDepth()));
+                    return false;
+                }
                 // Another worker may currently own a RenderScenePreparing/RhiSubmitting slot.
                 // UI composition and shutdown are synchronization points, so wait for ownership
                 // to return instead of presenting stale backbuffers or exposing unfinished readback.
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                WaitForThreadedWorkerWake(impl, observedWakeGeneration, kThreadedDrainWakeTimeout);
             }
         }
+        return true;
+    }
+
+    void NotifyThreadedWorkers(DriverImpl& impl)
+    {
+        impl.threadedWorkerWakeGeneration.fetch_add(1u, std::memory_order_release);
+        impl.threadedWorkerWake.notify_all();
+    }
+
+    void WaitForThreadedWorkerWake(
+        DriverImpl& impl,
+        const uint64_t observedGeneration,
+        const std::chrono::milliseconds timeout)
+    {
+        std::unique_lock<std::mutex> lock(impl.threadedWorkerWakeMutex);
+        impl.threadedWorkerWake.wait_for(
+            lock,
+            timeout,
+            [&impl, observedGeneration]()
+            {
+                return impl.threadedStopRequested.load(std::memory_order_acquire) ||
+                    impl.threadedWorkerWakeGeneration.load(std::memory_order_acquire) != observedGeneration;
+            });
+    }
+
+    bool DrainFrameFenceForResize(Render::RHI::RHIFrameContext& frameContext)
+    {
+        if (frameContext.frameFence == nullptr || frameContext.frameFence->IsSignaled())
+            return true;
+
+        if (frameContext.frameFence->Wait(kDriverGpuDrainTimeoutNanoseconds))
+            return true;
+
+        NLS_LOG_ERROR(
+            "ApplyPendingSwapchainResize: timed out waiting for frame fence before resizing swapchain");
+        return false;
+    }
+
+    bool DrainFrameFencesForResize(std::vector<Render::RHI::RHIFrameContext>& frameContexts)
+    {
+        for (auto& frameContext : frameContexts)
+        {
+            if (!DrainFrameFenceForResize(frameContext))
+                return false;
+        }
+        return true;
     }
 
     void ReleaseFrameContextResources(Render::RHI::RHIFrameContext& frameContext)
     {
-        if (frameContext.frameFence != nullptr && !frameContext.frameFence->IsSignaled())
-            frameContext.frameFence->Wait();
+        if (!DrainFrameFenceForResize(frameContext))
+            return;
 
         if (frameContext.commandBuffer != nullptr && frameContext.commandBuffer->IsRecording())
             frameContext.commandBuffer->End();
@@ -1191,7 +1258,7 @@ namespace
 
         if (frameContext.resourceStateTracker != nullptr)
         {
-            frameContext.resourceStateTracker->RetireTransientResources(std::numeric_limits<uint64_t>::max());
+            frameContext.resourceStateTracker->RetireTransientResources((std::numeric_limits<uint64_t>::max)());
             frameContext.resourceStateTracker->Reset();
         }
 
@@ -1298,6 +1365,16 @@ bool Detail::AllowsThreadedHarnessPublish(const DriverImpl& impl)
     return NLS::Render::Context::AllowsThreadedHarnessPublish(impl);
 }
 
+void Detail::NotifyThreadedWorkers(DriverImpl& impl)
+{
+    NLS::Render::Context::NotifyThreadedWorkers(impl);
+}
+
+void Detail::WaitForThreadedWorkerWake(DriverImpl& impl, const uint64_t observedGeneration)
+{
+    NLS::Render::Context::WaitForThreadedWorkerWake(impl, observedGeneration);
+}
+
 void Detail::PopulateVisibilityTransitionsFromResourceUsage(
     std::vector<ParallelCommandWorkUnit>& workUnits)
 {
@@ -1359,10 +1436,20 @@ bool DriverRendererAccess::TryPublishPreparedFrameBuilder(
         publishedSlotIndex);
 }
 
+bool DriverRendererAccess::TryDrainThreadedRendering(Driver& driver)
+{
+    if (driver.m_impl == nullptr)
+        return true;
+
+    const bool drained = DrainThreadedLifecycleSynchronously(*driver.m_impl, &driver);
+    if (drained)
+        driver.ApplyPendingSwapchainResize();
+    return drained;
+}
+
 void DriverRendererAccess::DrainThreadedRendering(Driver& driver)
 {
-    DrainThreadedLifecycleSynchronously(*driver.m_impl, &driver);
-    driver.ApplyPendingSwapchainResize();
+    (void)TryDrainThreadedRendering(driver);
 }
 
 ThreadedFrameTelemetry DriverRendererAccess::GetThreadedFrameTelemetry(const Driver& driver)
@@ -1370,6 +1457,15 @@ ThreadedFrameTelemetry DriverRendererAccess::GetThreadedFrameTelemetry(const Dri
     auto telemetry = RenderThreadCoordinator::GetThreadedFrameTelemetry(driver);
     if (driver.m_impl == nullptr)
         return telemetry;
+
+    telemetry.queueOperationFailureCount = driver.m_impl->queueOperationFailureCount;
+    telemetry.lastQueueOperationFailure = driver.m_impl->lastQueueOperationFailure;
+    telemetry.currentFrameQueueOperationFailureCount =
+        driver.m_impl->currentFrameQueueOperationFailureCount;
+    telemetry.currentFrameLastQueueOperationFailure =
+        driver.m_impl->currentFrameLastQueueOperationFailure;
+    telemetry.deviceLostDetected = driver.m_impl->deviceLostDetected;
+    telemetry.deviceLostReason = driver.m_impl->deviceLostReason;
 
     if (driver.m_impl->pipelineCache != nullptr)
     {
@@ -1881,6 +1977,7 @@ void DriverTestAccess::EndStandaloneExplicitFrame(Driver& driver, const bool pre
 void DriverTestAccess::PauseThreadedRenderingWorkers(Driver& driver)
 {
     driver.m_impl->threadedStopRequested.store(true);
+    NotifyThreadedWorkers(*driver.m_impl);
     if (driver.m_impl->renderSceneWorker.joinable())
         driver.m_impl->renderSceneWorker.join();
     if (driver.m_impl->rhiWorker.joinable())
@@ -1888,10 +1985,20 @@ void DriverTestAccess::PauseThreadedRenderingWorkers(Driver& driver)
     driver.m_impl->threadedStopRequested.store(false);
 }
 
+bool DriverTestAccess::TryDrainThreadedRendering(Driver& driver)
+{
+    if (driver.m_impl == nullptr)
+        return true;
+
+    const bool drained = DrainThreadedLifecycleSynchronously(*driver.m_impl, &driver);
+    if (drained)
+        driver.ApplyPendingSwapchainResize();
+    return drained;
+}
+
 void DriverTestAccess::DrainThreadedRendering(Driver& driver)
 {
-    DrainThreadedLifecycleSynchronously(*driver.m_impl, &driver);
-    driver.ApplyPendingSwapchainResize();
+    (void)TryDrainThreadedRendering(driver);
 }
 
 bool DriverTestAccess::TryPublishHarnessFrameSnapshot(
@@ -2004,7 +2111,7 @@ Driver::Driver(const Render::Settings::DriverSettings& p_driverSettings)
 			NLS_ASSERT(frameContext.computeFinishedSemaphore != nullptr, "Failed to create compute semaphore for explicit RHI");
 			frameContext.resourceStateTracker = Render::RHI::CreateDefaultResourceStateTracker();
 			frameContext.descriptorAllocator = Render::RHI::CreateDefaultDescriptorAllocator();
-			frameContext.uploadContext = Render::RHI::CreateDefaultUploadContext();
+			frameContext.uploadContext = Render::Backend::CreateUploadContextForRhiDevice(m_impl->explicitDevice);
 			m_impl->frameContexts.push_back(std::move(frameContext));
 		}
 	}
@@ -2230,13 +2337,17 @@ void Driver::ApplyPendingSwapchainResize()
 	const uint32_t width = m_impl->pendingSwapchainWidth;
 	const uint32_t height = m_impl->pendingSwapchainHeight;
 
+    if (!DrainFrameFencesForResize(m_impl->frameContexts))
+    {
+        m_impl->lastSwapchainResizeRequestTime = std::chrono::steady_clock::now();
+        return;
+    }
+
 	if (m_impl->swapchainWillResizeCallback)
 		m_impl->swapchainWillResizeCallback();
 
 	for (auto& frameContext : m_impl->frameContexts)
 	{
-		if (frameContext.frameFence != nullptr)
-			frameContext.frameFence->Wait();
 		if (frameContext.commandBuffer != nullptr)
 			frameContext.commandBuffer->Reset();
 		if (frameContext.commandPool != nullptr)
@@ -2295,6 +2406,8 @@ void Driver::StartThreadedRenderingWorkers()
         while (!m_impl->threadedStopRequested.load())
         {
             NLS_PROFILE_NAMED_SCOPE("Render Thread Tick");
+            const uint64_t observedWakeGeneration =
+                m_impl->threadedWorkerWakeGeneration.load(std::memory_order_acquire);
             size_t slotIndex = 0u;
             if (m_impl->threadedLifecycle->TryBeginNextRenderFrameBuild(
                 &slotIndex,
@@ -2304,10 +2417,11 @@ void Driver::StartThreadedRenderingWorkers()
                 m_impl->threadedLifecycle->ResolveRenderScenePreparing(
                     slotIndex,
                     resolutionDesc);
+                NotifyThreadedWorkers(*m_impl);
                 continue;
             }
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            WaitForThreadedWorkerWake(*m_impl, observedWakeGeneration);
         }
     });
     m_impl->rhiWorker = std::thread([this]()
@@ -2317,6 +2431,8 @@ void Driver::StartThreadedRenderingWorkers()
         while (!m_impl->threadedStopRequested.load())
         {
             NLS_PROFILE_NAMED_SCOPE("RHI Thread Tick");
+            const uint64_t observedWakeGeneration =
+                m_impl->threadedWorkerWakeGeneration.load(std::memory_order_acquire);
             if (RhiThreadCoordinator::TryExecuteNextThreadedSubmission(
                 *this,
                 RhiSubmissionAttribution::Worker))
@@ -2324,7 +2440,7 @@ void Driver::StartThreadedRenderingWorkers()
                 continue;
             }
 
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            WaitForThreadedWorkerWake(*m_impl, observedWakeGeneration);
         }
     });
 }
@@ -2335,12 +2451,13 @@ void Driver::StopThreadedRenderingWorkers()
     if (m_impl == nullptr)
         return;
     m_impl->threadedStopRequested.store(true);
+    NotifyThreadedWorkers(*m_impl);
     if (m_impl->renderSceneWorker.joinable())
         m_impl->renderSceneWorker.join();
     if (m_impl->rhiWorker.joinable())
         m_impl->rhiWorker.join();
-    DrainThreadedLifecycleSynchronously(*m_impl, this);
-    if (m_impl->swapchainWillResizeCallback != nullptr)
+    const bool drained = DrainThreadedLifecycleSynchronously(*m_impl, this);
+    if (drained && m_impl->swapchainWillResizeCallback != nullptr)
         ApplyPendingSwapchainResize();
     m_impl->threadedWorkersRunning = false;
 }

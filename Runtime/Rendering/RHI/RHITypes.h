@@ -329,6 +329,24 @@ namespace NLS::Render::RHI
 		Metal
 	};
 
+	enum class NLS_RENDER_API NativeRenderDeviceHandleKind : uint8_t
+	{
+		Unknown,
+		DX12,
+		Vulkan,
+		OpenGL,
+		Metal,
+		DX11
+	};
+
+	struct NLS_RENDER_API NativeRenderDeviceHandle
+	{
+		NativeRenderDeviceHandleKind backend = NativeRenderDeviceHandleKind::Unknown;
+		void* handle = nullptr;
+
+		bool IsValid() const { return backend != NativeRenderDeviceHandleKind::Unknown && handle != nullptr; }
+	};
+
 	struct NLS_RENDER_API NativeRenderDeviceInfo
 	{
 		NativeBackendType backend = NativeBackendType::None;
@@ -345,6 +363,36 @@ namespace NLS::Render::RHI
 		void* currentCommandBuffer = nullptr;
 		uint32_t graphicsQueueFamilyIndex = 0;
 		uint32_t swapchainImageCount = 0;
+
+		NativeRenderDeviceHandleKind GetTaggedBackend() const
+		{
+			switch (backend)
+			{
+			case NativeBackendType::DX12: return NativeRenderDeviceHandleKind::DX12;
+			case NativeBackendType::Vulkan: return NativeRenderDeviceHandleKind::Vulkan;
+			case NativeBackendType::OpenGL: return NativeRenderDeviceHandleKind::OpenGL;
+			case NativeBackendType::Metal: return NativeRenderDeviceHandleKind::Metal;
+			case NativeBackendType::DX11: return NativeRenderDeviceHandleKind::DX11;
+			case NativeBackendType::None:
+			default:
+				return NativeRenderDeviceHandleKind::Unknown;
+			}
+		}
+
+		NativeRenderDeviceHandle MakeHandle(void* nativeHandle) const
+		{
+			return { GetTaggedBackend(), nativeHandle };
+		}
+
+		NativeRenderDeviceHandle GetInstanceHandle() const { return MakeHandle(instance); }
+		NativeRenderDeviceHandle GetPhysicalDeviceHandle() const { return MakeHandle(physicalDevice); }
+		NativeRenderDeviceHandle GetDeviceHandle() const { return MakeHandle(device); }
+		NativeRenderDeviceHandle GetGraphicsQueueHandle() const { return MakeHandle(graphicsQueue); }
+		NativeRenderDeviceHandle GetSurfaceHandle() const { return MakeHandle(surface); }
+		NativeRenderDeviceHandle GetSwapchainHandle() const { return MakeHandle(swapchain); }
+		NativeRenderDeviceHandle GetPlatformWindowHandle() const { return MakeHandle(platformWindow); }
+		NativeRenderDeviceHandle GetNativeWindowHandle() const { return MakeHandle(nativeWindowHandle); }
+		NativeRenderDeviceHandle GetCurrentCommandBufferHandle() const { return MakeHandle(currentCommandBuffer); }
 	};
 
 	struct NLS_RENDER_API SwapchainDesc

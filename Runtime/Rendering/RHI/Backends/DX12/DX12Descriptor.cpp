@@ -7,6 +7,7 @@
 
 #include <Debug/Logger.h>
 #include "Rendering/RHI/Backends/DX12/DX12FormatUtils.h"
+#include "Rendering/RHI/Backends/DX12/DX12ReadbackUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12SamplerUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12TextureViewUtils.h"
 #include "Rendering/RHI/Core/RHIPipeline.h"
@@ -22,12 +23,57 @@ namespace NLS::Render::Backend
 #if defined(_WIN32)
 	namespace
 	{
+		constexpr uint64_t kDX12DescriptorFenceWaitTimeoutNanoseconds = 5'000'000'000ull;
+
 		UINT64 AlignUp(UINT64 value, UINT64 alignment)
 		{
 			if (alignment == 0)
 				return value;
 
 			return (value + (alignment - 1u)) & ~(alignment - 1u);
+		}
+
+		bool WaitForDX12FenceValue(
+			ID3D12Fence* fence,
+			UINT64 fenceValue,
+			HANDLE fenceEvent,
+			const std::string& context)
+		{
+			if (fence == nullptr || fenceEvent == nullptr || fenceValue == 0u)
+			{
+				NLS_LOG_ERROR(context + ": invalid fence wait request");
+				return false;
+			}
+			if (fence->GetCompletedValue() >= fenceValue)
+				return true;
+
+			const HRESULT setEventResult = fence->SetEventOnCompletion(fenceValue, fenceEvent);
+			if (FAILED(setEventResult))
+			{
+				NLS_LOG_ERROR(
+					context +
+					": failed to set fence completion event hr=" +
+					std::to_string(setEventResult) +
+					" value=" +
+					std::to_string(fenceValue));
+				return false;
+			}
+
+			const DWORD waitTimeoutMs =
+				NLS::Render::RHI::DX12::ConvertDX12WaitTimeoutNanosecondsToMilliseconds(
+					kDX12DescriptorFenceWaitTimeoutNanoseconds);
+			const DWORD waitResult = WaitForSingleObject(fenceEvent, waitTimeoutMs);
+			if (waitResult != WAIT_OBJECT_0)
+			{
+				NLS_LOG_ERROR(
+					context +
+					": timed out waiting for fence value=" +
+					std::to_string(fenceValue) +
+					" completed=" +
+					std::to_string(fence->GetCompletedValue()));
+				return false;
+			}
+			return true;
 		}
 	}
 
@@ -74,20 +120,56 @@ namespace NLS::Render::Backend
 			if (SUCCEEDED(m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator))) &&
 				SUCCEEDED(m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr, IID_PPV_ARGS(&tempCmdList))))
 			{
-				tempCmdList->Close();
-				ID3D12CommandList* cmdLists[] = { tempCmdList.Get() };
-				m_commandQueue->ExecuteCommandLists(1, cmdLists);
-
-				Microsoft::WRL::ComPtr<ID3D12Fence> fence;
-				if (SUCCEEDED(m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
+				const HRESULT closeResult = tempCmdList->Close();
+				if (FAILED(closeResult))
 				{
-					HANDLE fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-					if (fenceEvent != nullptr)
+					NLS_LOG_ERROR(
+						m_heapDebugName +
+						": failed to close descriptor heap initialization command list hr=" +
+						std::to_string(closeResult));
+				}
+				else
+				{
+					ID3D12CommandList* cmdLists[] = { tempCmdList.Get() };
+					m_commandQueue->ExecuteCommandLists(1, cmdLists);
+
+					Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+					const HRESULT createFenceResult = m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+					if (FAILED(createFenceResult))
 					{
-						fence->SetEventOnCompletion(1, fenceEvent);
-						m_commandQueue->Signal(fence.Get(), 1);
-						WaitForSingleObject(fenceEvent, INFINITE);
-						CloseHandle(fenceEvent);
+						NLS_LOG_ERROR(
+							m_heapDebugName +
+							": failed to create descriptor heap initialization fence hr=" +
+							std::to_string(createFenceResult));
+					}
+					else
+					{
+						HANDLE fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+						if (fenceEvent == nullptr)
+						{
+							NLS_LOG_ERROR(m_heapDebugName + ": failed to create descriptor heap initialization fence event");
+						}
+						else
+						{
+							constexpr UINT64 fenceValue = 1u;
+							const HRESULT signalResult = m_commandQueue->Signal(fence.Get(), fenceValue);
+							if (FAILED(signalResult))
+							{
+								NLS_LOG_ERROR(
+									m_heapDebugName +
+									": failed to signal descriptor heap initialization fence hr=" +
+									std::to_string(signalResult));
+							}
+							else
+							{
+								(void)WaitForDX12FenceValue(
+									fence.Get(),
+									fenceValue,
+									fenceEvent,
+									m_heapDebugName + " descriptor heap initialization");
+							}
+							CloseHandle(fenceEvent);
+						}
 					}
 				}
 

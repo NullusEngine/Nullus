@@ -55,6 +55,8 @@ namespace NLS::Render::RHI
     {
         std::vector<UploadBufferRequest> bufferUploads;
         std::vector<UploadTextureRequest> textureUploads;
+        std::shared_ptr<RHIFence> completionFence;
+        bool requireRecordedBackendWork = false;
         std::string debugName;
     };
 
@@ -62,6 +64,17 @@ namespace NLS::Render::RHI
     {
         size_t acceptedBufferUploads = 0u;
         size_t acceptedTextureUploads = 0u;
+        bool recordedBackendWork = false;
+    };
+
+    class NLS_RENDER_API UploadBackend
+    {
+    public:
+        virtual ~UploadBackend() = default;
+        virtual std::shared_ptr<RHIBuffer> CreateStagingBuffer(
+            const void* data,
+            size_t size,
+            std::string debugName) = 0;
     };
 
     class NLS_RENDER_API UploadContext
@@ -80,4 +93,7 @@ namespace NLS::Render::RHI
     };
 
     NLS_RENDER_API std::shared_ptr<UploadContext> CreateDefaultUploadContext(size_t ringCapacity = 4 * 1024 * 1024);
+    NLS_RENDER_API std::shared_ptr<UploadContext> CreateBackendUploadContext(
+        std::shared_ptr<UploadBackend> backend,
+        size_t ringCapacity = 4 * 1024 * 1024);
 }

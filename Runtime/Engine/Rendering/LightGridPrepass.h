@@ -11,6 +11,7 @@
 #include <Rendering/Data/LightingDescriptor.h>
 #include <Rendering/FrameGraph/FrameGraphExecutionPlan.h>
 #include <Rendering/Resources/Shader.h>
+#include <Rendering/RHI/Utils/PipelineCache/PipelineCache.h>
 
 #include "Rendering/ClusteredShading.h"
 #include "EngineDef.h"
@@ -94,7 +95,27 @@ namespace NLS::Engine::Rendering
         std::vector<NLS::Render::Context::RecordedComputeDispatchInput> GetPreparedComputeDispatchInputs() const;
 
     private:
-        struct PackedFrameData;
+        struct LightGridPassConstants
+        {
+            NLS::Maths::Matrix4 viewMatrix;
+            NLS::Maths::Matrix4 projectionMatrix;
+            NLS::Maths::Matrix4 inverseViewProjection;
+            NLS::Maths::Vector4 cameraWorldPositionNearPlane;
+            NLS::Maths::Vector4 renderSizeFarPlane;
+            NLS::Maths::Vector4 gridParams;
+            NLS::Maths::Vector4 lightingParams;
+        };
+
+        struct PackedFrameData
+        {
+            LightGridPassConstants constants{};
+            std::vector<uint32_t> packedLights;
+            std::vector<uint32_t> clusterLightCounts;
+            std::vector<uint32_t> clusterScratchIndices;
+            std::vector<uint32_t> compactCounter;
+            std::vector<uint32_t> clusterRecords;
+            std::vector<uint32_t> compactLightIndices;
+        };
 
         bool EnsureShadersLoaded();
         bool EnsurePipelines();
@@ -121,8 +142,11 @@ namespace NLS::Engine::Rendering
         std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> m_graphicsBindingLayout;
         std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> m_injectionPipeline;
         std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> m_compactPipeline;
+        NLS::Render::RHI::PipelineCacheKey m_injectionPipelineKey;
+        NLS::Render::RHI::PipelineCacheKey m_compactPipelineKey;
         std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_graphicsPassBindingSet;
         std::vector<NLS::Render::Context::RecordedComputeDispatchInput> m_computeDispatchInputs;
+        mutable PackedFrameData m_frameScratch;
     };
 
     template<typename TMetadataRange, typename TMutatePackageFn, typename TBuildPassInputsFn>

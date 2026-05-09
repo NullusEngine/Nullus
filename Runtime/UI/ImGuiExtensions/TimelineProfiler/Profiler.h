@@ -22,17 +22,26 @@
 
 #else
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 #include <array>
 #include <atomic>
 #include <cinttypes>
 #include <cmath>
 #include <cstdio>
+#include <memory>
 #include <mutex>
 #include <span>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 #include <queue>
+
+#if defined(_WIN32)
+#include <wrl/client.h>
+#endif
 
 void DrawProfilerHUD();
 bool PrepareProfilerHUD();
@@ -342,19 +351,19 @@ private:
 		}
 
 		bool			 IsInitialized() const { return m_pQueryHeap != nullptr; }
-		ID3D12QueryHeap* GetHeap() const { return m_pQueryHeap; }
+		ID3D12QueryHeap* GetHeap() const { return m_pQueryHeap.Get(); }
 
 	private:
-		Array<ID3D12CommandAllocator*> m_CommandAllocators;			   ///< CommandAlloctors to resolve queries. 1 per frame
+		Array<Microsoft::WRL::ComPtr<ID3D12CommandAllocator>> m_CommandAllocators; ///< CommandAlloctors to resolve queries. 1 per frame
 		uint32						   m_MaxNumQueries		= 0;	   ///< Max number of event queries
 		uint32						   m_FrameLatency		= 0;	   ///< Number of GPU frame latency
 		std::atomic<uint32>			   m_QueryIndex			= 0;	   ///< Current index of queries
-		ID3D12GraphicsCommandList*	   m_pCommandList		= nullptr; ///< CommandList to resolve queries
-		ID3D12QueryHeap*			   m_pQueryHeap			= nullptr; ///< Heap containing MaxNumQueries * FrameLatency queries
-		ID3D12Resource*				   m_pReadbackResource	= nullptr; ///< Readback resource storing resolved query dara
+		Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_pCommandList; ///< CommandList to resolve queries
+		Microsoft::WRL::ComPtr<ID3D12QueryHeap> m_pQueryHeap; ///< Heap containing MaxNumQueries * FrameLatency queries
+		Microsoft::WRL::ComPtr<ID3D12Resource> m_pReadbackResource; ///< Readback resource storing resolved query dara
 		Span<const uint64>			   m_ReadbackData		= {};	   ///< Mapped readback resource pointer
 		ID3D12CommandQueue*			   m_pResolveQueue		= nullptr; ///< Queue to resolve queries on
-		ID3D12Fence*				   m_pResolveFence		= nullptr; ///< Fence for tracking when queries are finished resolving
+		Microsoft::WRL::ComPtr<ID3D12Fence> m_pResolveFence; ///< Fence for tracking when queries are finished resolving
 		uint64						   m_LastCompletedFence = 0;	   ///< Last finish fence value
 	};
 
@@ -431,7 +440,7 @@ private:
 	Mutex					  m_QueryRangeLock;
 
 	WinHandle									   m_CommandListMapLock{}; ///< Lock for accessing commandlist state hashmap
-	HashMap<ID3D12CommandList*, CommandListState*> m_CommandListMap;	   ///< Maps commandlist to index
+	HashMap<ID3D12CommandList*, std::unique_ptr<CommandListState>> m_CommandListMap; ///< Maps commandlist to index
 
 	static constexpr uint32 MAX_EVENT_DEPTH = 32;
 	using ActiveEventStack					= FixedArray<QueryData::Query, MAX_EVENT_DEPTH>;

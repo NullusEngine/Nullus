@@ -316,6 +316,12 @@ namespace NLS::Render::Context
         bool asyncComputeQueueAvailable = false;
         bool usedAsyncComputeQueueSubmission = false;
         AsyncComputeDisposition asyncComputeDisposition = AsyncComputeDisposition::NotRequested;
+        uint64_t queueOperationFailureCount = 0u;
+        std::string lastQueueOperationFailure;
+        uint64_t currentFrameQueueOperationFailureCount = 0u;
+        std::string currentFrameLastQueueOperationFailure;
+        bool deviceLostDetected = false;
+        std::string deviceLostReason;
     };
 
     enum class ThreadedFrameStage : uint8_t
@@ -401,6 +407,12 @@ namespace NLS::Render::Context
         uint64_t pipelineCacheComputeMisses = 0u;
         uint64_t pipelineCacheComputeStores = 0u;
         uint64_t pipelineCacheComputeEntries = 0u;
+        uint64_t queueOperationFailureCount = 0u;
+        std::string lastQueueOperationFailure;
+        uint64_t currentFrameQueueOperationFailureCount = 0u;
+        std::string currentFrameLastQueueOperationFailure;
+        bool deviceLostDetected = false;
+        std::string deviceLostReason;
     };
 
     struct NLS_RENDER_API RenderScenePreparingResolutionDesc

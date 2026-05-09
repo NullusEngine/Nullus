@@ -6,6 +6,7 @@
 
 #include "RenderDef.h"
 #include "Rendering/RHI/Core/RHIResource.h"
+#include "Rendering/RHI/Utils/UploadContext/UploadContext.h"
 
 struct ID3D12CommandQueue;
 struct ID3D12Device;
@@ -60,7 +61,6 @@ namespace NLS::Render::Backend
 		NLS::Render::RHI::ResourceState GetState() const override;
 		void SetState(NLS::Render::RHI::ResourceState state);
 		NLS::Render::RHI::NativeHandle GetNativeImageHandle() override;
-		void* GetNativeTextureHandle() const;
 #if defined(_WIN32)
 		ID3D12Resource* GetResource() const;
 		static DXGI_FORMAT ToDxgiFormat(NLS::Render::RHI::TextureFormat format);
@@ -132,4 +132,6 @@ namespace NLS::Render::Backend
 		ID3D12Device* device,
 		ID3D12CommandQueue* graphicsQueue,
 		const NLS::Render::RHI::RHITextureUpdateDesc& desc);
+	NLS_RENDER_API std::shared_ptr<NLS::Render::RHI::UploadBackend> CreateDX12UploadBackend(
+		ID3D12Device* device);
 }

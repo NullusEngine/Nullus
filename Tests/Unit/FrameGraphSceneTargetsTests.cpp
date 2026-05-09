@@ -184,7 +184,19 @@ namespace
         std::string_view GetDebugName() const override { return "FrameGraphSceneTargetsTestsQueue"; }
         NLS::Render::RHI::QueueType GetType() const override { return NLS::Render::RHI::QueueType::Graphics; }
         void Submit(const NLS::Render::RHI::RHISubmitDesc&) override {}
+        NLS::Render::RHI::RHIQueueOperationResult SubmitChecked(
+            const NLS::Render::RHI::RHISubmitDesc& submitDesc) override
+        {
+            Submit(submitDesc);
+            return {};
+        }
         void Present(const NLS::Render::RHI::RHIPresentDesc&) override {}
+        NLS::Render::RHI::RHIQueueOperationResult PresentChecked(
+            const NLS::Render::RHI::RHIPresentDesc& presentDesc) override
+        {
+            Present(presentDesc);
+            return {};
+        }
     };
 
     class TestExplicitDevice final : public NLS::Render::RHI::RHIDevice
@@ -1310,12 +1322,52 @@ TEST(FrameGraphSceneTargetsTests, PreparedComputeThreadedPassInputCarriesShaderR
         preparedSource,
         compiledPass,
         passInput));
-    ASSERT_EQ(passInput.bufferResourceAccesses.size(), 1u);
-    EXPECT_EQ(passInput.bufferResourceAccesses[0].buffer, testBuffer);
-    EXPECT_EQ(passInput.bufferResourceAccesses[0].mode, NLS::Render::Context::ResourceAccessMode::Write);
-    EXPECT_EQ(passInput.bufferResourceAccesses[0].state, NLS::Render::RHI::ResourceState::ShaderRead);
-    EXPECT_EQ(passInput.bufferResourceAccesses[0].access, NLS::Render::RHI::AccessMask::ShaderRead);
-    EXPECT_TRUE(passInput.exportedBufferVisibilityTransitions.empty());
+    EXPECT_TRUE(passInput.bufferResourceAccesses.empty());
+    ASSERT_EQ(passInput.exportedBufferVisibilityTransitions.size(), 1u);
+    EXPECT_EQ(passInput.exportedBufferVisibilityTransitions[0].buffer, testBuffer);
+    EXPECT_EQ(passInput.exportedBufferVisibilityTransitions[0].before, NLS::Render::RHI::ResourceState::ShaderWrite);
+    EXPECT_EQ(passInput.exportedBufferVisibilityTransitions[0].after, NLS::Render::RHI::ResourceState::ShaderRead);
+    EXPECT_EQ(passInput.exportedBufferVisibilityTransitions[0].destinationAccess, NLS::Render::RHI::AccessMask::ShaderRead);
+}
+
+TEST(FrameGraphSceneTargetsTests, PreparedComputeLifecycleBufferAccessesDoNotTripConflictValidation)
+{
+    auto testBuffer = std::make_shared<TestBuffer>(NLS::Render::RHI::RHIBufferDesc{});
+    NLS::Render::Context::RecordedComputeDispatchInput dispatchInput;
+    dispatchInput.debugName = "LightGridCompact";
+    dispatchInput.shaderWriteBuffersBefore.push_back(testBuffer);
+    dispatchInput.uavBarrierBuffersAfter.push_back(testBuffer);
+    dispatchInput.shaderReadBuffersAfter.push_back(testBuffer);
+
+    const auto preparedSource = NLS::Render::FrameGraph::BuildPreparedComputeDispatchSource({ dispatchInput });
+    NLS::Render::FrameGraph::CompiledThreadedRenderSceneGraphPass compiledPass;
+    compiledPass.metadata = preparedSource.metadata.front();
+    compiledPass.outputExecution.renderWidth = 64u;
+    compiledPass.outputExecution.renderHeight = 64u;
+
+    NLS::Render::Context::RenderPassCommandInput passInput;
+    ASSERT_TRUE(NLS::Render::FrameGraph::TryBuildPreparedComputeDispatchThreadedPassInput(
+        preparedSource,
+        compiledPass,
+        passInput));
+    EXPECT_TRUE(passInput.bufferResourceAccesses.empty());
+    ASSERT_EQ(passInput.bufferVisibilityTransitions.size(), 2u);
+    ASSERT_EQ(passInput.exportedBufferVisibilityTransitions.size(), 1u);
+    EXPECT_EQ(passInput.bufferVisibilityTransitions[0].buffer, testBuffer);
+    EXPECT_EQ(passInput.bufferVisibilityTransitions[0].after, NLS::Render::RHI::ResourceState::ShaderWrite);
+    EXPECT_EQ(passInput.bufferVisibilityTransitions[1].buffer, testBuffer);
+    EXPECT_EQ(passInput.bufferVisibilityTransitions[1].before, NLS::Render::RHI::ResourceState::ShaderWrite);
+    EXPECT_EQ(passInput.bufferVisibilityTransitions[1].after, NLS::Render::RHI::ResourceState::ShaderWrite);
+    EXPECT_EQ(passInput.exportedBufferVisibilityTransitions[0].buffer, testBuffer);
+    EXPECT_EQ(passInput.exportedBufferVisibilityTransitions[0].before, NLS::Render::RHI::ResourceState::ShaderWrite);
+    EXPECT_EQ(passInput.exportedBufferVisibilityTransitions[0].after, NLS::Render::RHI::ResourceState::ShaderRead);
+
+    const auto validation = NLS::Render::FrameGraph::ValidateThreadedRenderSceneExecutionInputs(
+        std::vector<NLS::Render::Context::RenderPassCommandInput>{ passInput },
+        preparedSource.metadata);
+
+    EXPECT_FALSE(validation.ContainsError(
+        NLS::Render::FrameGraph::FrameGraphCompileDiagnosticCode::ConflictingBufferResourceAccess));
 }
 
 TEST(FrameGraphSceneTargetsTests, ThreadedResourceDependencyUsesLastWriteAccessState)
@@ -1600,6 +1652,90 @@ TEST(FrameGraphSceneTargetsTests, ValidateThreadedExecutionInputsReportsIllegalM
         NLS::Render::FrameGraph::FrameGraphCompileDiagnosticCode::MissingQueueDependencySource));
 }
 
+TEST(FrameGraphSceneTargetsTests, ValidateThreadedExecutionInputsReportsResourceConflictsAndInvalidDependencies)
+{
+    auto testTexture = std::make_shared<TestTexture>(NLS::Render::RHI::RHITextureDesc{});
+    auto testBuffer = std::make_shared<TestBuffer>(NLS::Render::RHI::RHIBufferDesc{});
+
+    std::vector<NLS::Render::Context::RenderPassCommandInput> passInputs;
+
+    NLS::Render::Context::RenderPassCommandInput computePass;
+    computePass.kind = NLS::Render::Context::RenderPassCommandKind::Compute;
+    computePass.bufferResourceAccesses.push_back({
+        testBuffer,
+        NLS::Render::Context::ResourceAccessMode::Read,
+        NLS::Render::RHI::ResourceState::ShaderRead,
+        NLS::Render::RHI::PipelineStageMask::ComputeShader,
+        NLS::Render::RHI::AccessMask::ShaderRead
+    });
+    computePass.bufferResourceAccesses.push_back({
+        testBuffer,
+        NLS::Render::Context::ResourceAccessMode::Write,
+        NLS::Render::RHI::ResourceState::ShaderWrite,
+        NLS::Render::RHI::PipelineStageMask::ComputeShader,
+        NLS::Render::RHI::AccessMask::ShaderWrite
+    });
+    computePass.textureResourceAccesses.push_back({
+        testTexture,
+        {},
+        NLS::Render::Context::ResourceAccessMode::Read,
+        NLS::Render::RHI::ResourceState::ShaderRead,
+        NLS::Render::RHI::PipelineStageMask::ComputeShader,
+        NLS::Render::RHI::AccessMask::ShaderRead
+    });
+    computePass.textureResourceAccesses.push_back({
+        testTexture,
+        {},
+        NLS::Render::Context::ResourceAccessMode::Write,
+        NLS::Render::RHI::ResourceState::ShaderWrite,
+        NLS::Render::RHI::PipelineStageMask::ComputeShader,
+        NLS::Render::RHI::AccessMask::ShaderWrite
+    });
+    passInputs.push_back(computePass);
+
+    std::array<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata, 1> metadata{{
+        MakeThreadedPassMetadata(
+            NLS::Render::Context::RenderPassCommandKind::Compute,
+            NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Auxiliary,
+            "ConflictingCompute",
+            0u,
+            NLS::Render::FrameGraph::ThreadedRenderScenePassExecutionMode::Recorded,
+            NLS::Render::RHI::QueueType::Compute,
+            NLS::Render::Context::QueueDependencyPolicy::None)
+    }};
+    metadata[0].propagatesColorOutput = false;
+    metadata[0].propagatesDepthOutput = false;
+
+    const auto validation =
+        NLS::Render::FrameGraph::ValidateThreadedRenderSceneExecutionInputs(passInputs, metadata);
+
+    EXPECT_TRUE(validation.ContainsError(
+        NLS::Render::FrameGraph::FrameGraphCompileDiagnosticCode::ConflictingBufferResourceAccess));
+    EXPECT_TRUE(validation.ContainsError(
+        NLS::Render::FrameGraph::FrameGraphCompileDiagnosticCode::ConflictingTextureResourceAccess));
+
+    NLS::Render::FrameGraph::ThreadedRenderSceneExecutionPlan plan;
+    plan.passes.push_back({});
+    plan.dependencies.push_back({
+        0u,
+        0u,
+        NLS::Render::FrameGraph::ThreadedRenderSceneDependencyKind::QueueSynchronization,
+        NLS::Render::FrameGraph::ThreadedRenderSceneDependencyResourceKind::None
+    });
+    plan.dependencies.push_back({
+        2u,
+        0u,
+        NLS::Render::FrameGraph::ThreadedRenderSceneDependencyKind::QueueSynchronization,
+        NLS::Render::FrameGraph::ThreadedRenderSceneDependencyResourceKind::None
+    });
+
+    const auto planValidation =
+        NLS::Render::FrameGraph::ValidateThreadedRenderSceneExecutionPlan(plan);
+
+    EXPECT_TRUE(planValidation.ContainsError(
+        NLS::Render::FrameGraph::FrameGraphCompileDiagnosticCode::InvalidQueueDependency));
+}
+
 TEST(FrameGraphSceneTargetsTests, BuildThreadedExecutionPlanRejectsIllegalMetadataContractsBeforePlanning)
 {
     std::vector<NLS::Render::Context::RenderPassCommandInput> passInputs;
@@ -1620,6 +1756,67 @@ TEST(FrameGraphSceneTargetsTests, BuildThreadedExecutionPlanRejectsIllegalMetada
     EXPECT_THROW(
         NLS::Render::FrameGraph::BuildThreadedRenderSceneExecutionPlan(passInputs, metadata),
         std::invalid_argument);
+}
+
+TEST(FrameGraphSceneTargetsTests, TryBuildThreadedExecutionPlanReturnsDiagnosticsInsteadOfThrowing)
+{
+    std::vector<NLS::Render::Context::RenderPassCommandInput> passInputs;
+
+    NLS::Render::Context::RenderPassCommandInput gbufferPass;
+    gbufferPass.kind = NLS::Render::Context::RenderPassCommandKind::GBuffer;
+    passInputs.push_back(gbufferPass);
+
+    const std::array<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata, 1> metadata{{
+        MakeThreadedPassMetadata(
+            NLS::Render::Context::RenderPassCommandKind::GBuffer,
+            NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Opaque,
+            "InvalidRecordedGBuffer",
+            NLS::Render::FrameGraph::kThreadedPlanUsePassDrawCount,
+            NLS::Render::FrameGraph::ThreadedRenderScenePassExecutionMode::Recorded)
+    }};
+
+    const auto result =
+        NLS::Render::FrameGraph::TryBuildThreadedRenderSceneExecutionPlan(passInputs, metadata);
+
+    EXPECT_FALSE(result.succeeded);
+    EXPECT_TRUE(result.validation.ContainsError(
+        NLS::Render::FrameGraph::FrameGraphCompileDiagnosticCode::RecordedPassPropagatesOutput));
+    EXPECT_TRUE(result.plan.passes.empty());
+}
+
+TEST(FrameGraphSceneTargetsTests, TryCompileAndApplyThreadedExecutionReportsDiagnosticsWithoutMutatingPackage)
+{
+    NLS::Render::Context::RenderScenePackage package;
+    package.visibleDrawCount = 7u;
+    package.hasVisibleDraws = true;
+
+    NLS::Render::Context::RenderPassCommandInput gbufferPass;
+    gbufferPass.kind = NLS::Render::Context::RenderPassCommandKind::GBuffer;
+    gbufferPass.drawCount = 7u;
+    package.passCommandInputs.push_back(gbufferPass);
+
+    NLS::Render::Data::FrameDescriptor frame;
+    const std::array<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata, 1> metadata{{
+        MakeThreadedPassMetadata(
+            NLS::Render::Context::RenderPassCommandKind::GBuffer,
+            NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Opaque,
+            "InvalidRecordedGBuffer",
+            NLS::Render::FrameGraph::kThreadedPlanUsePassDrawCount,
+            NLS::Render::FrameGraph::ThreadedRenderScenePassExecutionMode::Recorded)
+    }};
+
+    const auto result = NLS::Render::FrameGraph::TryCompileAndApplyThreadedRenderSceneExecution(
+        package,
+        frame,
+        -1,
+        -1,
+        metadata);
+
+    EXPECT_FALSE(result.succeeded);
+    EXPECT_TRUE(result.validation.ContainsError(
+        NLS::Render::FrameGraph::FrameGraphCompileDiagnosticCode::RecordedPassPropagatesOutput));
+    EXPECT_EQ(package.visibleDrawCount, 7u);
+    EXPECT_TRUE(package.parallelCommandWorkUnits.empty());
 }
 
 TEST(FrameGraphSceneTargetsTests, BuildThreadedExecutionPlanRejectsInvalidResourceContractsBeforePlanning)

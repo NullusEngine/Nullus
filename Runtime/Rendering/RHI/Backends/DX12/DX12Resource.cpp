@@ -9,6 +9,7 @@
 #include "Rendering/RHI/Backends/DX12/DX12Command.h"
 #include "Rendering/RHI/Backends/DX12/DX12DebugNameUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12FormatUtils.h"
+#include "Rendering/RHI/Backends/DX12/DX12ReadbackUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12TextureUploadUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12TextureViewUtils.h"
 
@@ -22,6 +23,8 @@ namespace NLS::Render::Backend
 #if defined(_WIN32)
 	namespace
 	{
+		constexpr uint64_t kDX12InitialUploadFenceWaitTimeoutNanoseconds = 5'000'000'000ull;
+
 		UINT64 AlignUp(UINT64 value, UINT64 alignment)
 		{
 			if (alignment == 0)
@@ -55,6 +58,57 @@ namespace NLS::Render::Backend
 				return;
 
 			object->SetName(wideName.c_str());
+		}
+
+		bool WaitForDX12FenceValue(
+			ID3D12Fence* fence,
+			UINT64 fenceValue,
+			const std::string& context)
+		{
+			if (fence == nullptr || fenceValue == 0u)
+			{
+				NLS_LOG_ERROR(context + ": invalid fence wait request");
+				return false;
+			}
+			if (fence->GetCompletedValue() >= fenceValue)
+				return true;
+
+			HANDLE fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+			if (fenceEvent == nullptr)
+			{
+				NLS_LOG_ERROR(context + ": failed to create fence event");
+				return false;
+			}
+
+			const HRESULT setEventResult = fence->SetEventOnCompletion(fenceValue, fenceEvent);
+			if (FAILED(setEventResult))
+			{
+				CloseHandle(fenceEvent);
+				NLS_LOG_ERROR(
+					context +
+					": failed to set fence completion event hr=" +
+					std::to_string(setEventResult) +
+					" value=" +
+					std::to_string(fenceValue));
+				return false;
+			}
+
+			const DWORD waitTimeoutMs =
+				NLS::Render::RHI::DX12::ConvertDX12WaitTimeoutNanosecondsToMilliseconds(
+					kDX12InitialUploadFenceWaitTimeoutNanoseconds);
+			const DWORD waitResult = WaitForSingleObject(fenceEvent, waitTimeoutMs);
+			CloseHandle(fenceEvent);
+			if (waitResult != WAIT_OBJECT_0)
+			{
+				NLS_LOG_ERROR(
+					context +
+					": timed out waiting for fence value=" +
+					std::to_string(fenceValue) +
+					" completed=" +
+					std::to_string(fence->GetCompletedValue()));
+				return false;
+			}
+			return true;
 		}
 
 		NLS::Render::RHI::ResourceState ResolveUploadedTextureState(const NLS::Render::RHI::RHITextureDesc& desc)
@@ -103,6 +157,40 @@ namespace NLS::Render::Backend
 		private:
 			ID3D12Device* m_device = nullptr;
 			ID3D12CommandQueue* m_graphicsQueue = nullptr;
+		};
+
+		class DX12UploadBackend final : public NLS::Render::RHI::UploadBackend
+		{
+		public:
+			explicit DX12UploadBackend(ID3D12Device* device)
+				: m_device(device)
+			{
+			}
+
+			std::shared_ptr<NLS::Render::RHI::RHIBuffer> CreateStagingBuffer(
+				const void* data,
+				size_t size,
+				std::string debugName) override
+			{
+				if (m_device == nullptr || data == nullptr || size == 0u)
+					return nullptr;
+
+				NLS::Render::RHI::RHIBufferDesc desc;
+				desc.size = size;
+				desc.usage = NLS::Render::RHI::BufferUsageFlags::CopySrc;
+				desc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
+				desc.debugName = debugName.empty() ? "DX12UploadStagingBuffer" : std::move(debugName);
+
+				NLS::Render::RHI::RHIBufferUploadDesc uploadDesc;
+				uploadDesc.data = data;
+				uploadDesc.dataSize = size;
+				uploadDesc.destinationOffset = 0u;
+				uploadDesc.debugName = desc.debugName;
+				return std::make_shared<NativeDX12Buffer>(m_device, nullptr, desc, uploadDesc);
+			}
+
+		private:
+			ID3D12Device* m_device = nullptr;
 		};
 
 		bool DX12InitialUploadContext::UploadTexture(
@@ -302,33 +390,18 @@ namespace NLS::Render::Backend
 
 			SetDx12ObjectName(fence.Get(), debugName + "UploadFence");
 
-			HANDLE fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-			if (fenceEvent == nullptr)
-			{
-				NLS_LOG_ERROR("UploadInitialTextureData: failed to create fence event for texture \"" + debugName + "\"");
-				return false;
-			}
-
 			const UINT64 fenceValue = 1;
-			hr = fence->SetEventOnCompletion(fenceValue, fenceEvent);
-			if (FAILED(hr))
-			{
-				CloseHandle(fenceEvent);
-				NLS_LOG_ERROR("UploadInitialTextureData: failed to set fence completion event for texture \"" + debugName + "\" hr=" + std::to_string(hr));
-				return false;
-			}
-
 			hr = m_graphicsQueue->Signal(fence.Get(), fenceValue);
 			if (FAILED(hr))
 			{
-				CloseHandle(fenceEvent);
 				NLS_LOG_ERROR("UploadInitialTextureData: failed to signal fence for texture \"" + debugName + "\" hr=" + std::to_string(hr));
 				return false;
 			}
 
-			WaitForSingleObject(fenceEvent, INFINITE);
-			CloseHandle(fenceEvent);
-			return true;
+			return WaitForDX12FenceValue(
+				fence.Get(),
+				fenceValue,
+				"UploadInitialTextureData \"" + debugName + "\"");
 		}
 
 		bool DX12InitialUploadContext::UploadBuffer(
@@ -464,26 +537,18 @@ namespace NLS::Render::Backend
 
 			SetDx12ObjectName(fence.Get(), debugName + "UploadFence");
 
-			HANDLE fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-			if (fenceEvent == nullptr)
-			{
-				NLS_LOG_ERROR("UploadInitialBufferData: failed to create upload fence event for \"" + debugName + "\"");
-				return false;
-			}
-
 			const UINT64 fenceValue = 1u;
 			const HRESULT signalResult = m_graphicsQueue->Signal(fence.Get(), fenceValue);
 			if (FAILED(signalResult))
 			{
 				NLS_LOG_ERROR("UploadInitialBufferData: failed to signal upload fence for \"" + debugName + "\" hr=" + std::to_string(signalResult));
-				CloseHandle(fenceEvent);
 				return false;
 			}
 
-			fence->SetEventOnCompletion(fenceValue, fenceEvent);
-			WaitForSingleObject(fenceEvent, INFINITE);
-			CloseHandle(fenceEvent);
-			return true;
+			return WaitForDX12FenceValue(
+				fence.Get(),
+				fenceValue,
+				"UploadInitialBufferData \"" + debugName + "\"");
 		}
 	}
 #endif
@@ -760,15 +825,6 @@ namespace NLS::Render::Backend
 		return { NLS::Render::RHI::BackendType::DX12, static_cast<void*>(m_resource.Get()) };
 #else
 		return {};
-#endif
-	}
-
-	void* NativeDX12Texture::GetNativeTextureHandle() const
-	{
-#if defined(_WIN32)
-		return m_resource.Get();
-#else
-		return nullptr;
 #endif
 	}
 
@@ -1049,6 +1105,18 @@ namespace NLS::Render::Backend
 			NLS::Render::RHI::RHIUpdateStatusCode::Unsupported,
 			"DX12 texture update is only available on Windows"
 		};
+#endif
+	}
+
+	std::shared_ptr<NLS::Render::RHI::UploadBackend> CreateDX12UploadBackend(ID3D12Device* device)
+	{
+#if defined(_WIN32)
+		if (device == nullptr)
+			return nullptr;
+		return std::make_shared<DX12UploadBackend>(device);
+#else
+		(void)device;
+		return nullptr;
 #endif
 	}
 }

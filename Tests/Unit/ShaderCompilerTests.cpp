@@ -215,6 +215,61 @@ TEST(ShaderCompilerTests, ShaderArtifactTextWritesCommitThroughTemporaryFile)
     }
 }
 
+TEST(ShaderCompilerTests, ShaderArtifactLockReportsOwnerAndRecoversStaleLocks)
+{
+    const auto directory = std::filesystem::temp_directory_path() / "NullusShaderCompilerTests";
+    std::filesystem::create_directories(directory);
+    const auto finalPath = directory / "artifact-lock-metadata.txt";
+    const auto plan = NLS::Render::ShaderCompiler::BuildShaderArtifactStagingPlan(finalPath.string(), "text");
+
+    std::filesystem::remove(finalPath);
+    std::filesystem::remove_all(plan.lockPath);
+    ASSERT_TRUE(std::filesystem::create_directory(plan.lockPath));
+    {
+        std::ofstream metadata(std::filesystem::path(plan.lockPath) / "owner.txt", std::ios::binary);
+        metadata << "owner=stale-unit-test\ncreatedUnixMs=1\n";
+    }
+
+    NLS::Render::ShaderCompiler::ShaderArtifactLockOptions recoverOptions;
+    recoverOptions.owner = "recovering-unit-test";
+    recoverOptions.timeoutMilliseconds = 100u;
+    recoverOptions.retryIntervalMilliseconds = 1u;
+    recoverOptions.staleAfterMilliseconds = 1u;
+
+    std::string diagnostics;
+    ASSERT_TRUE(NLS::Render::ShaderCompiler::WriteShaderArtifactTextAtomic(
+        finalPath.string(),
+        "recovered",
+        recoverOptions,
+        &diagnostics)) << diagnostics;
+    EXPECT_NE(diagnostics.find("stale-unit-test"), std::string::npos);
+    EXPECT_NE(diagnostics.find("stale shader artifact lock"), std::string::npos);
+
+    ASSERT_FALSE(std::filesystem::exists(plan.lockPath));
+    ASSERT_TRUE(std::filesystem::create_directory(plan.lockPath));
+    {
+        std::ofstream metadata(std::filesystem::path(plan.lockPath) / "owner.txt", std::ios::binary);
+        metadata << "owner=active-unit-test\ncreatedUnixMs=9999999999999\n";
+    }
+
+    NLS::Render::ShaderCompiler::ShaderArtifactLockOptions timeoutOptions;
+    timeoutOptions.owner = "waiting-unit-test";
+    timeoutOptions.timeoutMilliseconds = 2u;
+    timeoutOptions.retryIntervalMilliseconds = 1u;
+    timeoutOptions.staleAfterMilliseconds = 60000u;
+
+    diagnostics.clear();
+    EXPECT_FALSE(NLS::Render::ShaderCompiler::WriteShaderArtifactTextAtomic(
+        finalPath.string(),
+        "blocked",
+        timeoutOptions,
+        &diagnostics));
+    EXPECT_NE(diagnostics.find("active-unit-test"), std::string::npos);
+    EXPECT_NE(diagnostics.find("timed out"), std::string::npos);
+
+    std::filesystem::remove_all(plan.lockPath);
+}
+
 TEST(ShaderCompilerTests, ShaderCompilerProcessReportsCommandLineAndOutputForSucceededProcess)
 {
 #if defined(_WIN32)
@@ -254,6 +309,51 @@ TEST(ShaderCompilerTests, ShaderCompilerProcessTimeoutReturnsDiagnostics)
 #else
     GTEST_SKIP() << "Shader compiler process execution is currently Windows-only.";
 #endif
+}
+
+TEST(ShaderCompilerTests, ShaderCompilerProcessTimeoutTerminatesChildProcessTree)
+{
+#if defined(_WIN32)
+    const auto markerPath = std::filesystem::temp_directory_path() / "NullusShaderCompilerTests" / "shader-child-survived.txt";
+    std::filesystem::create_directories(markerPath.parent_path());
+    std::filesystem::remove(markerPath);
+
+    NLS::Render::ShaderCompiler::ShaderProcessOptions options;
+    options.timeoutMilliseconds = 150u;
+
+    const std::string childCommand =
+        "Start-Process powershell.exe -ArgumentList '-NoProfile','-NonInteractive','-Command','Start-Sleep -Milliseconds 700; Set-Content -LiteralPath \"" +
+        markerPath.string() +
+        "\" -Value child-survived'; Start-Sleep -Seconds 5";
+
+    const auto result = NLS::Render::ShaderCompiler::ExecuteShaderCompilerProcess(
+        "powershell.exe",
+        { "-NoProfile", "-NonInteractive", "-Command", childCommand },
+        options);
+
+    EXPECT_EQ(result.status, NLS::Render::ShaderCompiler::ShaderProcessStatus::TimedOut)
+        << result.diagnostics << "\n" << result.output;
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+    EXPECT_FALSE(std::filesystem::exists(markerPath));
+#else
+    GTEST_SKIP() << "Shader compiler process execution is currently Windows-only.";
+#endif
+}
+
+TEST(ShaderCompilerTests, ShaderCompilerProcessUsesJobObjectInsteadOfPipePolling)
+{
+    const auto shaderCompilerSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/ShaderCompiler/ShaderCompiler.cpp";
+    std::ifstream stream(shaderCompilerSourcePath, std::ios::binary);
+    const std::string source((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+
+    ASSERT_FALSE(source.empty());
+    EXPECT_EQ(source.find("PeekNamedPipe"), std::string::npos);
+    EXPECT_EQ(source.find("WaitForSingleObject(processInfo.hProcess, 5)"), std::string::npos);
+    EXPECT_NE(source.find("CreateJobObject"), std::string::npos);
+    EXPECT_NE(source.find("AssignProcessToJobObject"), std::string::npos);
+    EXPECT_NE(source.find("TerminateJobObject"), std::string::npos);
 }
 
 TEST(ShaderCompilerTests, ShaderCompilerProcessCancellationReturnsDiagnostics)

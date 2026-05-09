@@ -109,6 +109,18 @@ namespace
         desc.debugName = "PipelineKeyTest";
         return desc;
     }
+
+    NLS::Render::RHI::RHIComputePipelineDesc MakeComputeDesc()
+    {
+        NLS::Render::RHI::RHIComputePipelineDesc desc;
+        desc.pipelineLayout = MakePipelineLayout(0u);
+        desc.computeShader = MakeShader(
+            NLS::Render::RHI::ShaderStage::Compute,
+            { 0xA0u, 0xB1u, 0xC2u, 0xD3u },
+            "dxc-1.8|cs_6_6|-O3");
+        desc.debugName = "LightGridInjectionPipeline";
+        return desc;
+    }
 }
 
 TEST(PipelineCacheKeyTests, GraphicsKeyChangesWhenShaderBytecodeChanges)
@@ -209,4 +221,28 @@ TEST(PipelineCacheKeyTests, GraphicsKeyChangesWhenRasterMsaaFlagChanges)
     const auto changedKey = NLS::Render::RHI::BuildGraphicsPipelineCacheKey(changedDesc);
 
     EXPECT_NE(baseKey.hash, changedKey.hash);
+}
+
+TEST(PipelineCacheKeyTests, ComputeKeyChangesWhenShaderBytecodeAndToolchainChange)
+{
+    auto baseDesc = MakeComputeDesc();
+    auto changedBytecodeDesc = MakeComputeDesc();
+    changedBytecodeDesc.computeShader = MakeShader(
+        NLS::Render::RHI::ShaderStage::Compute,
+        { 0xA0u, 0xB1u, 0xC2u, 0xD4u },
+        "dxc-1.8|cs_6_6|-O3");
+
+    auto changedToolchainDesc = MakeComputeDesc();
+    changedToolchainDesc.computeShader = MakeShader(
+        NLS::Render::RHI::ShaderStage::Compute,
+        { 0xA0u, 0xB1u, 0xC2u, 0xD3u },
+        "dxc-1.9|cs_6_8|-O3");
+
+    const auto baseKey = NLS::Render::RHI::BuildComputePipelineCacheKey(baseDesc);
+    const auto changedBytecodeKey = NLS::Render::RHI::BuildComputePipelineCacheKey(changedBytecodeDesc);
+    const auto changedToolchainKey = NLS::Render::RHI::BuildComputePipelineCacheKey(changedToolchainDesc);
+
+    EXPECT_TRUE(baseKey.IsValid());
+    EXPECT_NE(baseKey.hash, changedBytecodeKey.hash);
+    EXPECT_NE(baseKey.hash, changedToolchainKey.hash);
 }

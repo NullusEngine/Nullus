@@ -7,6 +7,11 @@
 
 namespace NLS::Render::RHI::DX12
 {
+    inline constexpr uint32_t GetDX12UIFenceWaitTimeoutMilliseconds()
+    {
+        return 5000u;
+    }
+
     struct NLS_RENDER_API DX12UIFrameReuseWait
     {
         bool shouldWait = false;

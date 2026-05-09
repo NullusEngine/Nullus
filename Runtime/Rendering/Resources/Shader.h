@@ -3,6 +3,7 @@
 
 #include <map>
 #include <memory>
+#include <tuple>
 #include <vector>
 
 #include "Rendering/RHI/Core/RHIDevice.h"
@@ -41,6 +42,7 @@ namespace NLS::Render::Resources
 		const ShaderCompiledArtifact* FindCompiledArtifact(
 			ShaderCompiler::ShaderStage stage,
 			ShaderCompiler::ShaderTargetPlatform targetPlatform) const;
+		uint64_t GetGeneration() const;
 		std::shared_ptr<RHI::RHIShaderModule> GetOrCreateExplicitShaderModule(
 			const std::shared_ptr<RHI::RHIDevice>& device,
 			ShaderCompiler::ShaderStage stage) const;
@@ -61,6 +63,7 @@ namespace NLS::Render::Resources
 		ShaderCompiler::ShaderSourceLanguage m_sourceLanguage;
 		ShaderReflection m_reflection;
 		std::vector<ShaderCompiledArtifact> m_compiledArtifacts;
-		mutable std::map<std::pair<RHI::NativeBackendType, ShaderCompiler::ShaderStage>, std::shared_ptr<RHI::RHIShaderModule>> m_explicitShaderModules;
+		uint64_t m_generation = 0u;
+		mutable std::map<std::tuple<RHI::NativeBackendType, ShaderCompiler::ShaderStage, uint64_t>, std::shared_ptr<RHI::RHIShaderModule>> m_explicitShaderModules;
 	};
 }

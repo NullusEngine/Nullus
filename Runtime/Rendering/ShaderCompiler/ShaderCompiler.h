@@ -33,6 +33,14 @@ namespace NLS::Render::ShaderCompiler
 		std::string lockPath;
 	};
 
+	struct NLS_RENDER_API ShaderArtifactLockOptions
+	{
+		uint32_t timeoutMilliseconds = 1000u;
+		uint32_t retryIntervalMilliseconds = 5u;
+		uint32_t staleAfterMilliseconds = 30000u;
+		std::string owner;
+	};
+
 	enum class NLS_RENDER_API ShaderProcessStatus : uint8_t
 	{
 		Succeeded,
@@ -69,6 +77,12 @@ namespace NLS::Render::ShaderCompiler
 	NLS_RENDER_API bool WriteShaderArtifactTextAtomic(
 		std::string_view finalPath,
 		std::string_view content,
+		std::string* diagnostics = nullptr);
+
+	NLS_RENDER_API bool WriteShaderArtifactTextAtomic(
+		std::string_view finalPath,
+		std::string_view content,
+		const ShaderArtifactLockOptions& lockOptions,
 		std::string* diagnostics = nullptr);
 
 	NLS_RENDER_API ShaderProcessResult ExecuteShaderCompilerProcess(

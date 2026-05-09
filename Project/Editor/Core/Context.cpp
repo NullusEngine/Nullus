@@ -276,7 +276,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
         window->GetNativeWindowHandle(),
         static_cast<uint32_t>(initialFramebufferSize.x),
         static_cast<uint32_t>(initialFramebufferSize.y),
-        true))
+        projectSettings.GetOrDefault<bool>("vsync", true)))
     {
         const std::string message = "Editor startup failed: CreatePlatformSwapchain returned false.";
         NLS_LOG_ERROR(message);

@@ -92,6 +92,29 @@ TEST(UIAndToolingBackendAwarenessTests, ResolvesRenderDocCaptureDeviceByNativeBa
     EXPECT_EQ(NLS::Render::Tooling::ResolveRenderDocCaptureDevice(info), info.device);
 }
 
+TEST(UIAndToolingBackendAwarenessTests, NativeRenderDeviceInfoExposesTaggedHandlesForToolingBoundaries)
+{
+    NLS::Render::RHI::NativeRenderDeviceInfo info;
+    info.backend = NLS::Render::RHI::NativeBackendType::DX12;
+    info.device = reinterpret_cast<void*>(0x11);
+    info.graphicsQueue = reinterpret_cast<void*>(0x22);
+    info.currentCommandBuffer = reinterpret_cast<void*>(0x33);
+
+    const auto deviceHandle = info.GetDeviceHandle();
+    const auto graphicsQueueHandle = info.GetGraphicsQueueHandle();
+    const auto commandBufferHandle = info.GetCurrentCommandBufferHandle();
+
+    EXPECT_EQ(deviceHandle.backend, NLS::Render::RHI::NativeRenderDeviceHandleKind::DX12);
+    EXPECT_EQ(deviceHandle.handle, info.device);
+    EXPECT_EQ(graphicsQueueHandle.backend, NLS::Render::RHI::NativeRenderDeviceHandleKind::DX12);
+    EXPECT_EQ(graphicsQueueHandle.handle, info.graphicsQueue);
+    EXPECT_EQ(commandBufferHandle.backend, NLS::Render::RHI::NativeRenderDeviceHandleKind::DX12);
+    EXPECT_EQ(commandBufferHandle.handle, info.currentCommandBuffer);
+
+    EXPECT_EQ(NLS::Render::Tooling::ResolveRenderDocCaptureDeviceHandle(info).backend, NLS::Render::RHI::NativeRenderDeviceHandleKind::DX12);
+    EXPECT_EQ(NLS::Render::Tooling::ResolveRenderDocCaptureDeviceHandle(info).handle, info.device);
+}
+
 TEST(UIAndToolingBackendAwarenessTests, RhiDeviceBaseDoesNotExposeDefaultUiBridgeHooks)
 {
     EXPECT_FALSE(HasDevicePrepareUIRender<NLS::Render::RHI::RHIDevice>::value);

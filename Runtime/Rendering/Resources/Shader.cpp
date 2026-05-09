@@ -139,6 +139,11 @@ namespace NLS::Render::Resources
 		return found != m_compiledArtifacts.end() ? &*found : nullptr;
 	}
 
+	uint64_t Shader::GetGeneration() const
+	{
+		return m_generation;
+	}
+
 	std::shared_ptr<RHI::RHIShaderModule> Shader::GetOrCreateExplicitShaderModule(
 		const std::shared_ptr<RHI::RHIDevice>& device,
 		ShaderCompiler::ShaderStage stage) const
@@ -147,7 +152,7 @@ namespace NLS::Render::Resources
 			return nullptr;
 
 		const auto backend = ResolveDeviceBackendType(device);
-		const auto cacheKey = std::make_pair(backend, stage);
+		const auto cacheKey = std::make_tuple(backend, stage, m_generation);
 		if (const auto found = m_explicitShaderModules.find(cacheKey); found != m_explicitShaderModules.end())
 			return found->second;
 
@@ -201,6 +206,7 @@ namespace NLS::Render::Resources
 	void Shader::SetReflection(ShaderReflection reflection)
 	{
 		m_reflection = std::move(reflection);
+		++m_generation;
 		m_explicitShaderModules.clear();
 		RebuildUniformInfosFromReflection();
 	}
@@ -216,12 +222,14 @@ namespace NLS::Render::Resources
 			*found = std::move(artifact);
 		else
 			m_compiledArtifacts.push_back(std::move(artifact));
+		++m_generation;
 		m_explicitShaderModules.clear();
 	}
 
 	void Shader::ClearCompiledArtifacts()
 	{
 		m_compiledArtifacts.clear();
+		++m_generation;
 		m_explicitShaderModules.clear();
 	}
 }

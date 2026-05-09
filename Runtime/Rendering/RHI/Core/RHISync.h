@@ -23,8 +23,9 @@ namespace NLS::Render::RHI
     class NLS_RENDER_API RHICompletionToken : public RHIObject
     {
     public:
-        virtual bool IsComplete() const = 0;
-        virtual RHICompletionStatus GetStatus() const = 0;
+        virtual RHICompletionStatus Poll() = 0;
+        virtual bool IsComplete() { return Poll().IsComplete(); }
+        virtual RHICompletionStatus GetStatus() { return Poll(); }
         virtual RHICompletionStatus Wait(uint64_t timeoutNanoseconds = 0) = 0;
     };
 

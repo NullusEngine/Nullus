@@ -629,6 +629,12 @@ void ThreadedRenderingLifecycle::RefreshTelemetryLocked()
     m_telemetry.pipelineCacheComputeMisses = 0u;
     m_telemetry.pipelineCacheComputeStores = 0u;
     m_telemetry.pipelineCacheComputeEntries = 0u;
+    m_telemetry.queueOperationFailureCount = 0u;
+    m_telemetry.lastQueueOperationFailure.clear();
+    m_telemetry.currentFrameQueueOperationFailureCount = 0u;
+    m_telemetry.currentFrameLastQueueOperationFailure.clear();
+    m_telemetry.deviceLostDetected = false;
+    m_telemetry.deviceLostReason.clear();
     bool hasPublishedFrames = false;
     bool hasRenderSceneFrames = false;
     bool hasRhiFrames = false;
@@ -721,6 +727,14 @@ void ThreadedRenderingLifecycle::RefreshTelemetryLocked()
         m_telemetry.retiredTransientBufferCount = latestSubmissionFrame->retiredTransientBufferCount;
         m_telemetry.descriptorTransientPeak = latestSubmissionFrame->descriptorTransientPeak;
         m_telemetry.descriptorAllocationFailures = latestSubmissionFrame->descriptorAllocationFailures;
+        m_telemetry.queueOperationFailureCount = latestSubmissionFrame->queueOperationFailureCount;
+        m_telemetry.lastQueueOperationFailure = latestSubmissionFrame->lastQueueOperationFailure;
+        m_telemetry.currentFrameQueueOperationFailureCount =
+            latestSubmissionFrame->currentFrameQueueOperationFailureCount;
+        m_telemetry.currentFrameLastQueueOperationFailure =
+            latestSubmissionFrame->currentFrameLastQueueOperationFailure;
+        m_telemetry.deviceLostDetected = latestSubmissionFrame->deviceLostDetected;
+        m_telemetry.deviceLostReason = latestSubmissionFrame->deviceLostReason;
     }
 
     if (hasRhiFrames)

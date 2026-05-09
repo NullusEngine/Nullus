@@ -20,17 +20,6 @@
 
 namespace
 {
-    struct LightGridPassConstants
-    {
-        NLS::Maths::Matrix4 viewMatrix;
-        NLS::Maths::Matrix4 projectionMatrix;
-        NLS::Maths::Matrix4 inverseViewProjection;
-        NLS::Maths::Vector4 cameraWorldPositionNearPlane;
-        NLS::Maths::Vector4 renderSizeFarPlane;
-        NLS::Maths::Vector4 gridParams;
-        NLS::Maths::Vector4 lightingParams;
-    };
-
     constexpr uint32_t kLightWordStride = 16u;
     constexpr uint32_t kRecordWordStride = 2u;
     constexpr float kDefaultAmbientFloor = 0.05f;
@@ -99,40 +88,6 @@ namespace
         packedWords.push_back(PackFloat(light.outerCutoff));
     }
 
-    uint64_t HashComputePipelineKey(
-        std::string_view label,
-        const std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout>& layout,
-        const std::shared_ptr<NLS::Render::RHI::RHIShaderModule>& shaderModule)
-    {
-        uint64_t hash = static_cast<uint64_t>(std::hash<std::string_view>{}(label));
-        if (layout != nullptr)
-        {
-            hash ^= static_cast<uint64_t>(std::hash<std::string>{}(layout->GetDesc().debugName)) + 0x9e3779b97f4a7c15ull;
-        }
-        if (shaderModule != nullptr)
-        {
-            hash ^= static_cast<uint64_t>(std::hash<std::string>{}(shaderModule->GetDesc().debugName)) + 0x517cc1b727220a95ull;
-            hash ^= static_cast<uint64_t>(std::hash<std::string>{}(shaderModule->GetDesc().entryPoint)) + 0x94d049bb133111ebull;
-            hash ^= static_cast<uint64_t>(static_cast<uint32_t>(shaderModule->GetDesc().targetBackend)) << 32u;
-        }
-        return hash;
-    }
-
-    NLS::Render::RHI::PipelineCacheKey BuildComputePipelineCacheKey(
-        std::string_view label,
-        const std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout>& layout,
-        const std::shared_ptr<NLS::Render::RHI::RHIShaderModule>& shaderModule)
-    {
-        NLS::Render::RHI::PipelineCacheKey key;
-        key.hash = HashComputePipelineKey(label, layout, shaderModule);
-        key.backend =
-            shaderModule != nullptr
-                ? shaderModule->GetDesc().targetBackend
-                : NLS::Render::RHI::NativeBackendType::None;
-        key.stableDebugName = std::string(label);
-        return key;
-    }
-
     bool ShouldLogLightGridHotPathFailureDiagnostics(const NLS::Render::Context::Driver& driver)
     {
         return NLS::Engine::Rendering::LightGridPrepass::ShouldLogHotPathFailureDiagnostics(
@@ -147,21 +102,34 @@ namespace
             NLS_LOG_ERROR(message);
     }
 
+    bool PipelineCacheKeysEqual(
+        const NLS::Render::RHI::PipelineCacheKey& lhs,
+        const NLS::Render::RHI::PipelineCacheKey& rhs)
+    {
+        return lhs.hash == rhs.hash &&
+            lhs.backend == rhs.backend &&
+            lhs.stableDebugName == rhs.stableDebugName;
+    }
+
+    bool IsPipelineCacheKeyUnset(const NLS::Render::RHI::PipelineCacheKey& key)
+    {
+        return key.hash == 0u &&
+            key.backend == NLS::Render::RHI::NativeBackendType::None &&
+            key.stableDebugName.empty();
+    }
+
+    bool MatchesPipelineCacheKey(
+        const NLS::Render::RHI::PipelineCacheKey& cachedKey,
+        const NLS::Render::RHI::PipelineCacheKey& currentKey)
+    {
+        return IsPipelineCacheKeyUnset(cachedKey) ||
+            PipelineCacheKeysEqual(cachedKey, currentKey);
+    }
+
 }
 
 namespace NLS::Engine::Rendering
 {
-    struct LightGridPrepass::PackedFrameData
-    {
-        LightGridPassConstants constants{};
-        std::vector<uint32_t> packedLights;
-        std::vector<uint32_t> clusterLightCounts;
-        std::vector<uint32_t> clusterScratchIndices;
-        std::vector<uint32_t> compactCounter;
-        std::vector<uint32_t> clusterRecords;
-        std::vector<uint32_t> compactLightIndices;
-    };
-
     LightGridPrepass::LightGridPrepass(NLS::Render::Context::Driver& driver)
         : m_driver(driver)
     {
@@ -239,7 +207,7 @@ namespace NLS::Engine::Rendering
             return false;
         }
 
-        PackedFrameData frameData;
+        auto& frameData = m_frameScratch;
         if (!BuildFrameData(frameDescriptor, preparedFrameInputs, preparedFrameInputs.hasSkyboxTexture, frameData))
         {
             LogLightGridHotPathFailure(m_driver, "LightGridPrepass::Prepare failed: frame data could not be built.");
@@ -463,9 +431,6 @@ namespace NLS::Engine::Rendering
 
     bool LightGridPrepass::EnsurePipelines()
     {
-        if (m_injectionPipeline != nullptr && m_compactPipeline != nullptr)
-            return true;
-
         auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_driver);
         auto pipelineCache = NLS::Render::Context::DriverRendererAccess::GetPipelineCache(m_driver);
         if (device == nullptr || m_injectionShader == nullptr || m_compactShader == nullptr)
@@ -532,11 +497,13 @@ namespace NLS::Engine::Rendering
             m_compactPipelineLayout = device->CreatePipelineLayout(desc);
         }
 
-        auto createComputePipeline = [&](NLS::Render::Resources::Shader* shader, const std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout>& pipelineLayout, const std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>& existingPipeline, std::string_view label)
+        auto createComputePipeline = [&](
+            NLS::Render::Resources::Shader* shader,
+            const std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout>& pipelineLayout,
+            const std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>& existingPipeline,
+            NLS::Render::RHI::PipelineCacheKey& existingPipelineKey,
+            std::string_view label)
         {
-            if (existingPipeline != nullptr)
-                return existingPipeline;
-
             auto shaderModule = shader->GetOrCreateExplicitShaderModule(device, NLS::Render::ShaderCompiler::ShaderStage::Compute);
             if (shaderModule == nullptr)
             {
@@ -550,22 +517,39 @@ namespace NLS::Engine::Rendering
                 return std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>{};
             }
 
-            const auto cacheKey = BuildComputePipelineCacheKey(label, pipelineLayout, shaderModule);
+            NLS::Render::RHI::RHIComputePipelineDesc desc;
+            desc.pipelineLayout = pipelineLayout;
+            desc.computeShader = shaderModule;
+            desc.debugName = std::string(label);
+            const auto cacheKey = NLS::Render::RHI::BuildComputePipelineCacheKey(desc);
+            if (existingPipeline != nullptr && MatchesPipelineCacheKey(existingPipelineKey, cacheKey))
+            {
+                existingPipelineKey = cacheKey;
+                return existingPipeline;
+            }
+
+            existingPipelineKey = cacheKey;
             return pipelineCache->GetOrCreateComputePipeline(
                 cacheKey,
-                [device, pipelineLayout, shaderModule, label]()
+                [device, desc]()
                 {
-                    NLS::Render::RHI::RHIComputePipelineDesc desc;
-                    desc.pipelineLayout = pipelineLayout;
-                    desc.computeShader = shaderModule;
-                    desc.debugName = std::string(label);
                     return device->CreateComputePipeline(desc);
                 },
                 NLS::Render::RHI::PipelineCacheRequestMode::Prewarm);
         };
 
-        m_injectionPipeline = createComputePipeline(m_injectionShader, m_injectionPipelineLayout, m_injectionPipeline, "LightGridInjectionPipeline");
-        m_compactPipeline = createComputePipeline(m_compactShader, m_compactPipelineLayout, m_compactPipeline, "LightGridCompactPipeline");
+        m_injectionPipeline = createComputePipeline(
+            m_injectionShader,
+            m_injectionPipelineLayout,
+            m_injectionPipeline,
+            m_injectionPipelineKey,
+            "LightGridInjectionPipeline");
+        m_compactPipeline = createComputePipeline(
+            m_compactShader,
+            m_compactPipelineLayout,
+            m_compactPipeline,
+            m_compactPipelineKey,
+            "LightGridCompactPipeline");
         if (m_injectionPipeline == nullptr)
             LogLightGridHotPathFailure(m_driver, "LightGridPrepass::EnsurePipelines failed: LightGridInjectionPipeline is null.");
         if (m_compactPipeline == nullptr)
@@ -627,6 +611,7 @@ namespace NLS::Engine::Rendering
             hasSkyboxTexture ? 1.0f : 0.0f
         };
 
+        outFrameData.packedLights.clear();
         outFrameData.packedLights.reserve(preparedFrameInputs.lights.size() * kLightWordStride);
         for (const auto& light : preparedFrameInputs.lights)
             PackCapturedLight(light, outFrameData.packedLights);

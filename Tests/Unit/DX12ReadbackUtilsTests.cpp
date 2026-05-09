@@ -3,7 +3,11 @@
 #if defined(_WIN32)
 #include <array>
 
+#include <Windows.h>
+
+#include "Rendering/RHI/Backends/DX12/DX12Device.h"
 #include "Rendering/RHI/Backends/DX12/DX12ReadbackUtils.h"
+#include "Rendering/RHI/Backends/DX12/DX12Resource.h"
 #include "Rendering/RHI/Core/RHIEnums.h"
 #include "Rendering/RHI/Core/RHIResource.h"
 
@@ -146,5 +150,90 @@ TEST(DX12ReadbackUtilsTests, ValidateReadPixelsInputsReturnsStatusAndMessage)
         data.data());
     EXPECT_EQ(invalid.code, NLS::Render::RHI::DX12::DX12ReadbackStatusCode::InvalidArgument);
     EXPECT_NE(invalid.message.find("texture"), std::string::npos);
+}
+
+TEST(DX12ReadbackUtilsTests, PositiveNanosecondTimeoutsRoundUpToAtLeastOneMillisecond)
+{
+    EXPECT_EQ(NLS::Render::RHI::DX12::ConvertDX12WaitTimeoutNanosecondsToMilliseconds(1u), 1u);
+    EXPECT_EQ(NLS::Render::RHI::DX12::ConvertDX12WaitTimeoutNanosecondsToMilliseconds(999999u), 1u);
+    EXPECT_EQ(NLS::Render::RHI::DX12::ConvertDX12WaitTimeoutNanosecondsToMilliseconds(1000000u), 1u);
+    EXPECT_EQ(NLS::Render::RHI::DX12::ConvertDX12WaitTimeoutNanosecondsToMilliseconds(1000001u), 2u);
+}
+
+TEST(DX12ReadbackUtilsTests, ZeroNanosecondTimeoutMeansInfiniteWait)
+{
+    EXPECT_EQ(
+        NLS::Render::RHI::DX12::ConvertDX12WaitTimeoutNanosecondsToMilliseconds(0u),
+        INFINITE);
+}
+
+TEST(DX12ReadbackUtilsTests, PollingCompletedAsyncReadbackFinalizesAndAllowsNextReadback)
+{
+    const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
+    if (!resources.IsValid())
+    {
+        GTEST_SKIP() << "DX12 device unavailable on this test machine";
+    }
+
+    const std::array<uint8_t, 4> sourcePixel{ 16u, 32u, 48u, 255u };
+    NLS::Render::RHI::RHITextureDesc textureDesc{};
+    textureDesc.extent = { 1u, 1u, 1u };
+    textureDesc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    textureDesc.usage = NLS::Render::RHI::TextureUsageFlags::Sampled;
+    textureDesc.debugName = "ReadbackPollingTexture";
+
+    NLS::Render::RHI::RHITextureUploadDesc uploadDesc{};
+    uploadDesc.data = sourcePixel.data();
+    uploadDesc.dataSize = sourcePixel.size();
+    uploadDesc.extent = textureDesc.extent;
+    uploadDesc.debugName = "ReadbackPollingTextureUpload";
+
+    auto texture = NLS::Render::Backend::CreateNativeDX12Texture(
+        resources.device.Get(),
+        resources.graphicsQueue.Get(),
+        textureDesc,
+        uploadDesc);
+    ASSERT_NE(texture, nullptr);
+
+    NLS::Render::RHI::DX12::DX12ReadbackContext context;
+    std::array<uint8_t, 4> firstReadback{};
+    auto first = context.Begin(
+        resources.device.Get(),
+        resources.graphicsQueue.Get(),
+        texture,
+        0u,
+        0u,
+        1u,
+        1u,
+        NLS::Render::Settings::EPixelDataFormat::RGBA,
+        NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
+        firstReadback.data());
+    ASSERT_TRUE(first.Succeeded()) << first.message;
+    ASSERT_NE(first.completion, nullptr);
+
+    NLS::Render::RHI::RHICompletionStatus status{};
+    for (int attempt = 0; attempt < 100; ++attempt)
+    {
+        status = first.completion->GetStatus();
+        if (status.IsComplete())
+            break;
+        Sleep(1);
+    }
+    ASSERT_EQ(status.code, NLS::Render::RHI::RHICompletionStatusCode::Success) << status.message;
+    EXPECT_EQ(firstReadback, sourcePixel);
+
+    std::array<uint8_t, 4> secondReadback{};
+    auto second = context.Begin(
+        resources.device.Get(),
+        resources.graphicsQueue.Get(),
+        texture,
+        0u,
+        0u,
+        1u,
+        1u,
+        NLS::Render::Settings::EPixelDataFormat::RGBA,
+        NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
+        secondReadback.data());
+    EXPECT_TRUE(second.Succeeded()) << second.message;
 }
 #endif

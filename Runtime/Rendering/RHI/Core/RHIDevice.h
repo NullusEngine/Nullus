@@ -97,8 +97,18 @@ namespace NLS::Render::RHI
             Settings::EPixelDataType type,
             void* data)
         {
-            ReadPixels(texture, x, y, width, height, format, type, data);
-            return { RHIReadbackStatusCode::Success, {} };
+            (void)texture;
+            (void)x;
+            (void)y;
+            (void)width;
+            (void)height;
+            (void)format;
+            (void)type;
+            (void)data;
+            return {
+                RHIReadbackStatusCode::BackendFailure,
+                "RHI device does not implement status-returning ReadPixelsChecked"
+            };
         }
         virtual RHIReadbackResult BeginReadPixels(
             const std::shared_ptr<RHITexture>& texture,

@@ -80,6 +80,8 @@ namespace NLS::Render::RHI
         uint32_t arrayLayer = 0;
         RHIOffset3D textureOffset{};
         RHIExtent3D extent{};
+        uint32_t rowPitch = 0;
+        uint32_t slicePitch = 0;
     };
 
     struct NLS_RENDER_API RHITextureCopyDesc

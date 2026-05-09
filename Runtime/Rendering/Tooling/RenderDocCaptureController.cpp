@@ -20,27 +20,37 @@
 
 namespace NLS::Render::Tooling
 {
-	void* ResolveRenderDocCaptureDevice(const ::NLS::Render::RHI::NativeRenderDeviceInfo& nativeInfo)
+	::NLS::Render::RHI::NativeRenderDeviceHandle ResolveRenderDocCaptureDeviceHandle(
+		const ::NLS::Render::RHI::NativeRenderDeviceInfo& nativeInfo)
 	{
 		switch (nativeInfo.backend)
 		{
 		case ::NLS::Render::RHI::NativeBackendType::DX12:
 			// RenderDoc expects the API root handle for DX12.
-			return nativeInfo.device != nullptr ? nativeInfo.device : nativeInfo.graphicsQueue;
+			return nativeInfo.device != nullptr
+				? nativeInfo.GetDeviceHandle()
+				: nativeInfo.GetGraphicsQueueHandle();
 		case ::NLS::Render::RHI::NativeBackendType::Vulkan:
 #if defined(_WIN32)
 			// RenderDoc expects Vulkan's dispatch-table pointer derived from VkInstance.
 			if (nativeInfo.instance != nullptr)
-				return RENDERDOC_DEVICEPOINTER_FROM_VKINSTANCE(nativeInfo.instance);
+				return nativeInfo.MakeHandle(RENDERDOC_DEVICEPOINTER_FROM_VKINSTANCE(nativeInfo.instance));
 #endif
-			return nativeInfo.device != nullptr ? nativeInfo.device : nativeInfo.graphicsQueue;
+			return nativeInfo.device != nullptr
+				? nativeInfo.GetDeviceHandle()
+				: nativeInfo.GetGraphicsQueueHandle();
 		case ::NLS::Render::RHI::NativeBackendType::DX11:
 		case ::NLS::Render::RHI::NativeBackendType::OpenGL:
 		case ::NLS::Render::RHI::NativeBackendType::Metal:
 		case ::NLS::Render::RHI::NativeBackendType::None:
 		default:
-			return nativeInfo.device;
+			return nativeInfo.GetDeviceHandle();
 		}
+	}
+
+	void* ResolveRenderDocCaptureDevice(const ::NLS::Render::RHI::NativeRenderDeviceInfo& nativeInfo)
+	{
+		return ResolveRenderDocCaptureDeviceHandle(nativeInfo).handle;
 	}
 
 namespace

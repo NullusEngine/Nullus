@@ -1,6 +1,10 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <concepts>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -13,6 +17,7 @@
 #include "Rendering/FrameGraph/FrameGraphBuffer.h"
 #include "Rendering/FrameGraph/FrameGraphExecutionContext.h"
 #include "Rendering/FrameGraph/FrameGraphTexture.h"
+#include "Rendering/RHI/Backends/DX12/DX12Resource.h"
 #include "Rendering/RHI/Core/RHIBinding.h"
 #include "Rendering/RHI/Core/RHICommand.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
@@ -23,6 +28,18 @@
 
 namespace
 {
+    template<typename T>
+    concept HasRawNativeTextureHandle = requires(T& texture)
+    {
+        texture.GetNativeTextureHandle();
+    };
+
+    template<typename T>
+    concept HasTaggedNativeImageHandle = requires(T& texture)
+    {
+        { texture.GetNativeImageHandle() } -> std::same_as<NLS::Render::RHI::NativeHandle>;
+    };
+
     class ContractAdapter final : public NLS::Render::RHI::RHIAdapter
     {
     public:
@@ -44,8 +61,9 @@ namespace
         }
 
         std::string_view GetDebugName() const override { return "ContractCompletionToken"; }
-        bool IsComplete() const override { return m_status.IsComplete(); }
-        NLS::Render::RHI::RHICompletionStatus GetStatus() const override { return m_status; }
+        NLS::Render::RHI::RHICompletionStatus Poll() override { return m_status; }
+        bool IsComplete() override { return m_status.IsComplete(); }
+        NLS::Render::RHI::RHICompletionStatus GetStatus() override { return m_status; }
         NLS::Render::RHI::RHICompletionStatus Wait(uint64_t = 0) override
         {
             ++waitCalls;
@@ -68,11 +86,12 @@ namespace
             signaled = false;
             ++resetCalls;
         }
-        bool Wait(uint64_t = 0) override
+        bool Wait(uint64_t timeoutNanoseconds = 0) override
         {
-            signaled = true;
+            lastWaitTimeoutNanoseconds = timeoutNanoseconds;
+            signaled = waitResult;
             ++waitCalls;
-            return true;
+            return waitResult;
         }
         NLS::Render::RHI::NativeHandle GetNativeFenceHandle() override
         {
@@ -80,6 +99,8 @@ namespace
         }
 
         bool signaled = false;
+        bool waitResult = true;
+        uint64_t lastWaitTimeoutNanoseconds = 0u;
         size_t resetCalls = 0u;
         size_t waitCalls = 0u;
     };
@@ -254,16 +275,42 @@ namespace
             ++submitCalls;
             lastSubmitDesc = submitDesc;
         }
+        NLS::Render::RHI::RHIQueueOperationResult SubmitChecked(
+            const NLS::Render::RHI::RHISubmitDesc& submitDesc) override
+        {
+            Submit(submitDesc);
+            return nextSubmitResult;
+        }
         void Present(const NLS::Render::RHI::RHIPresentDesc& presentDesc) override
         {
             ++presentCalls;
             lastPresentDesc = presentDesc;
+        }
+        NLS::Render::RHI::RHIQueueOperationResult PresentChecked(
+            const NLS::Render::RHI::RHIPresentDesc& presentDesc) override
+        {
+            Present(presentDesc);
+            return nextPresentResult;
         }
 
         size_t submitCalls = 0u;
         size_t presentCalls = 0u;
         NLS::Render::RHI::RHISubmitDesc lastSubmitDesc {};
         NLS::Render::RHI::RHIPresentDesc lastPresentDesc {};
+        NLS::Render::RHI::RHIQueueOperationResult nextSubmitResult {};
+        NLS::Render::RHI::RHIQueueOperationResult nextPresentResult {};
+    };
+
+    class BaseQueueContract final : public NLS::Render::RHI::RHIQueue
+    {
+    public:
+        std::string_view GetDebugName() const override { return "BaseQueueContract"; }
+        NLS::Render::RHI::QueueType GetType() const override { return NLS::Render::RHI::QueueType::Graphics; }
+        void Submit(const NLS::Render::RHI::RHISubmitDesc&) override { ++submitCalls; }
+        void Present(const NLS::Render::RHI::RHIPresentDesc&) override { ++presentCalls; }
+
+        size_t submitCalls = 0u;
+        size_t presentCalls = 0u;
     };
 
     class ContractSwapchain final : public NLS::Render::RHI::RHISwapchain
@@ -478,6 +525,110 @@ namespace
         NLS::Render::RHI::RHIDeviceCapabilities m_capabilities {};
     };
 
+    class BaseReadbackContractDevice final : public NLS::Render::RHI::RHIDevice
+    {
+    public:
+        BaseReadbackContractDevice()
+            : m_adapter(std::make_shared<ContractAdapter>())
+        {
+        }
+
+        std::string_view GetDebugName() const override { return "BaseReadbackContractDevice"; }
+        const std::shared_ptr<NLS::Render::RHI::RHIAdapter>& GetAdapter() const override { return m_adapter; }
+        const NLS::Render::RHI::RHIDeviceCapabilities& GetCapabilities() const override { return m_capabilities; }
+        NLS::Render::RHI::NativeRenderDeviceInfo GetNativeDeviceInfo() const override { return {}; }
+        bool IsBackendReady() const override { return true; }
+        std::shared_ptr<NLS::Render::RHI::RHIQueue> GetQueue(NLS::Render::RHI::QueueType) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHISwapchain> CreateSwapchain(
+            const NLS::Render::RHI::SwapchainDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIBuffer> CreateBuffer(
+            const NLS::Render::RHI::RHIBufferDesc&,
+            const NLS::Render::RHI::RHIBufferUploadDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHITexture> CreateTexture(
+            const NLS::Render::RHI::RHITextureDesc&,
+            const NLS::Render::RHI::RHITextureUploadDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHITextureView> CreateTextureView(
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>&,
+            const NLS::Render::RHI::RHITextureViewDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHISampler> CreateSampler(
+            const NLS::Render::RHI::SamplerDesc&,
+            std::string = {}) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> CreateBindingLayout(
+            const NLS::Render::RHI::RHIBindingLayoutDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIBindingSet> CreateBindingSet(
+            const NLS::Render::RHI::RHIBindingSetDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> CreatePipelineLayout(
+            const NLS::Render::RHI::RHIPipelineLayoutDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIShaderModule> CreateShaderModule(
+            const NLS::Render::RHI::RHIShaderModuleDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline> CreateGraphicsPipeline(
+            const NLS::Render::RHI::RHIGraphicsPipelineDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> CreateComputePipeline(
+            const NLS::Render::RHI::RHIComputePipelineDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHICommandPool> CreateCommandPool(
+            NLS::Render::RHI::QueueType,
+            std::string = {}) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIFence> CreateFence(std::string = {}) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHISemaphore> CreateSemaphore(std::string = {}) override { return nullptr; }
+        void ReadPixels(
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>&,
+            uint32_t,
+            uint32_t,
+            uint32_t,
+            uint32_t,
+            NLS::Render::Settings::EPixelDataFormat,
+            NLS::Render::Settings::EPixelDataType,
+            void*) override
+        {
+        }
+
+        NLS::Render::RHI::RHIReadbackResult BeginReadPixels(
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+            uint32_t x,
+            uint32_t y,
+            uint32_t width,
+            uint32_t height,
+            NLS::Render::Settings::EPixelDataFormat format,
+            NLS::Render::Settings::EPixelDataType type,
+            void* data) override
+        {
+            return NLS::Render::RHI::RHIDevice::BeginReadPixels(
+                texture,
+                x,
+                y,
+                width,
+                height,
+                format,
+                type,
+                data);
+        }
+
+        NLS::Render::RHI::RHIReadbackResult ReadPixelsChecked(
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+            uint32_t x,
+            uint32_t y,
+            uint32_t width,
+            uint32_t height,
+            NLS::Render::Settings::EPixelDataFormat format,
+            NLS::Render::Settings::EPixelDataType type,
+            void* data) override
+        {
+            return NLS::Render::RHI::RHIDevice::ReadPixelsChecked(
+                texture,
+                x,
+                y,
+                width,
+                height,
+                format,
+                type,
+                data);
+        }
+
+    private:
+        std::shared_ptr<NLS::Render::RHI::RHIAdapter> m_adapter;
+        NLS::Render::RHI::RHIDeviceCapabilities m_capabilities {};
+    };
+
     NLS::Render::Settings::DriverSettings MakeContractDriverSettings(bool threaded = false)
     {
         NLS::Render::Settings::DriverSettings settings;
@@ -553,6 +704,38 @@ TEST(RenderFrameworkContractTests, SwapchainResizeContractDrainsThreadedFramesAn
     EXPECT_EQ(swapchain->resizeHeight, 720u);
 }
 
+TEST(RenderFrameworkContractTests, SwapchainResizeKeepsPendingStateWhenFrameFenceDrainFails)
+{
+    NLS::Render::Context::Driver driver(MakeContractDriverSettings());
+    auto explicitDevice = std::make_shared<ContractDevice>();
+    auto swapchain = std::make_shared<ContractSwapchain>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+
+    auto backbufferView = std::make_shared<ContractTextureView>();
+    auto commandBuffer = std::make_shared<ContractCommandBuffer>();
+    auto frameFence = std::make_shared<ContractFence>();
+    frameFence->signaled = false;
+    frameFence->waitResult = false;
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.swapchainBackbufferView = backbufferView;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.frameFence = frameFence;
+
+    driver.ResizePlatformSwapchain(1440u, 900u);
+    NLS::Render::Context::DriverTestAccess::AgePendingSwapchainResize(
+        driver,
+        NLS::Render::Context::GetInteractiveSwapchainResizeDebounce());
+    NLS::Render::Context::DriverUIAccess::PresentSwapchain(driver);
+
+    EXPECT_GE(frameFence->waitCalls, 1u);
+    EXPECT_GT(frameFence->lastWaitTimeoutNanoseconds, 0u);
+    EXPECT_EQ(swapchain->resizeCalls, 0u);
+    EXPECT_EQ(frameContext.swapchainBackbufferView, backbufferView);
+    EXPECT_EQ(commandBuffer->resetCalls, 0u);
+}
+
 TEST(RenderFrameworkContractTests, ReadbackContractSeparatesBeginTokenFromCheckedWaitAndDiagnostics)
 {
     NLS::Render::Context::Driver driver(MakeContractDriverSettings());
@@ -615,6 +798,459 @@ TEST(RenderFrameworkContractTests, ReadbackContractSeparatesBeginTokenFromChecke
     EXPECT_EQ(failedCompletion->waitCalls, 1u);
     EXPECT_EQ(checkedResult.code, NLS::Render::RHI::RHIReadbackStatusCode::BackendFailure);
     EXPECT_EQ(checkedResult.message, "readback fence failed");
+}
+
+TEST(RenderFrameworkContractTests, BaseRhiDeviceReadPixelsCheckedReportsUnsupportedInsteadOfFakeSuccess)
+{
+    BaseReadbackContractDevice device;
+    std::array<uint8_t, 4> pixels {};
+    auto texture = std::make_shared<ContractTexture>();
+
+    const auto result = device.ReadPixelsChecked(
+        texture,
+        0u,
+        0u,
+        1u,
+        1u,
+        NLS::Render::Settings::EPixelDataFormat::RGBA,
+        NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
+        pixels.data());
+
+    EXPECT_EQ(result.code, NLS::Render::RHI::RHIReadbackStatusCode::BackendFailure);
+    EXPECT_NE(result.message.find("does not implement"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, BaseRhiQueueCheckedOperationsReportUnsupportedInsteadOfFakeSuccess)
+{
+    BaseQueueContract queue;
+
+    const auto submitResult = queue.SubmitChecked({});
+    EXPECT_EQ(submitResult.code, NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure);
+    EXPECT_NE(submitResult.message.find("does not implement"), std::string::npos);
+    EXPECT_EQ(queue.submitCalls, 0u);
+
+    const auto presentResult = queue.PresentChecked({});
+    EXPECT_EQ(presentResult.code, NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure);
+    EXPECT_NE(presentResult.message.find("does not implement"), std::string::npos);
+    EXPECT_EQ(queue.presentCalls, 0u);
+}
+
+TEST(RenderFrameworkContractTests, QueueCheckedSubmissionAndPresentExposeStatus)
+{
+    ContractQueue queue;
+
+    const auto submitResult = queue.SubmitChecked({});
+    EXPECT_TRUE(submitResult.Succeeded());
+    EXPECT_EQ(queue.submitCalls, 1u);
+
+    const auto presentResult = queue.PresentChecked({});
+    EXPECT_TRUE(presentResult.Succeeded());
+    EXPECT_EQ(queue.presentCalls, 1u);
+}
+
+TEST(RenderFrameworkContractTests, DX12UploadAndDescriptorWaitsUseBoundedFencePolicy)
+{
+    const std::filesystem::path dx12ResourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12Resource.cpp";
+    const std::filesystem::path dx12DescriptorPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12Descriptor.cpp";
+
+    const auto readFile = [](const std::filesystem::path& path)
+    {
+        std::ifstream stream(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+    };
+
+    const std::string resourceSource = readFile(dx12ResourcePath);
+    const std::string descriptorSource = readFile(dx12DescriptorPath);
+
+    ASSERT_FALSE(resourceSource.empty());
+    ASSERT_FALSE(descriptorSource.empty());
+
+    EXPECT_EQ(resourceSource.find("WaitForSingleObject(fenceEvent, INFINITE)"), std::string::npos);
+    EXPECT_EQ(descriptorSource.find("WaitForSingleObject(fenceEvent, INFINITE)"), std::string::npos);
+    EXPECT_NE(resourceSource.find("WaitForDX12FenceValue"), std::string::npos);
+    EXPECT_NE(descriptorSource.find("WaitForDX12FenceValue"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, ThreadedWorkersUseWakeConditionInsteadOfIdleSleepPolling)
+{
+    const std::filesystem::path driverSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Context/Driver.cpp";
+    const std::filesystem::path driverInternalPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Context/DriverInternal.h";
+    const std::filesystem::path renderCoordinatorPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Context/RenderThreadCoordinator.cpp";
+
+    const auto readFile = [](const std::filesystem::path& path)
+    {
+        std::ifstream stream(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+    };
+
+    const std::string driverSource = readFile(driverSourcePath);
+    const std::string driverInternalSource = readFile(driverInternalPath);
+    const std::string renderCoordinatorSource = readFile(renderCoordinatorPath);
+
+    ASSERT_FALSE(driverSource.empty());
+    ASSERT_FALSE(driverInternalSource.empty());
+    ASSERT_FALSE(renderCoordinatorSource.empty());
+
+    EXPECT_NE(driverInternalSource.find("std::condition_variable threadedWorkerWake"), std::string::npos);
+    EXPECT_NE(driverSource.find("WaitForThreadedWorkerWake"), std::string::npos);
+    EXPECT_NE(driverSource.find("NotifyThreadedWorkers"), std::string::npos);
+    EXPECT_NE(renderCoordinatorSource.find("NotifyThreadedWorkers"), std::string::npos);
+    const auto drainStart = driverSource.find("bool DrainThreadedLifecycleSynchronously");
+    const auto notifyStart = driverSource.find("void NotifyThreadedWorkers", drainStart);
+    ASSERT_NE(drainStart, std::string::npos);
+    ASSERT_NE(notifyStart, std::string::npos);
+    const auto drainBody = driverSource.substr(drainStart, notifyStart - drainStart);
+    EXPECT_NE(drainBody.find("WaitForThreadedWorkerWake"), std::string::npos);
+    EXPECT_NE(driverSource.find("kThreadedDrainWakeTimeout"), std::string::npos);
+    EXPECT_NE(drainBody.find("kThreadedDrainWakeTimeout"), std::string::npos);
+    EXPECT_EQ(drainBody.find("kThreadedWorkerWakeTimeout"), std::string::npos);
+    EXPECT_EQ(drainBody.find("std::this_thread::sleep_for(std::chrono::milliseconds(1));"), std::string::npos);
+    EXPECT_EQ(driverSource.find("std::this_thread::sleep_for(std::chrono::milliseconds(1));", driverSource.find("Render Thread Tick")),
+        std::string::npos);
+    EXPECT_EQ(driverSource.find("std::this_thread::sleep_for(std::chrono::milliseconds(1));", driverSource.find("RHI Thread Tick")),
+        std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, DriverCreatesUploadContextThroughBackendFactoryWithoutDX12Casts)
+{
+    const std::filesystem::path driverSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Context/Driver.cpp";
+    const std::filesystem::path backendFactoryHeaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/RHIDeviceFactory.h";
+    const std::filesystem::path backendFactorySourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/RHIDeviceFactory.cpp";
+
+    const auto readFile = [](const std::filesystem::path& path)
+    {
+        std::ifstream stream(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+    };
+
+    const std::string driverSource = readFile(driverSourcePath);
+    const std::string backendFactoryHeader = readFile(backendFactoryHeaderPath);
+    const std::string backendFactorySource = readFile(backendFactorySourcePath);
+
+    ASSERT_FALSE(driverSource.empty());
+    ASSERT_FALSE(backendFactoryHeader.empty());
+    ASSERT_FALSE(backendFactorySource.empty());
+
+    EXPECT_EQ(driverSource.find("DX12Resource.h"), std::string::npos);
+    EXPECT_EQ(driverSource.find("ID3D12Device"), std::string::npos);
+    EXPECT_EQ(driverSource.find("CreateDX12UploadBackend"), std::string::npos);
+    EXPECT_NE(driverSource.find("CreateUploadContextForRhiDevice"), std::string::npos);
+    EXPECT_NE(backendFactoryHeader.find("CreateUploadContextForRhiDevice"), std::string::npos);
+    EXPECT_NE(backendFactorySource.find("CreateDX12UploadBackend"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, QueueOperationFailuresAreExposedThroughDriverTelemetry)
+{
+    NLS::Render::Context::Driver driver(MakeContractDriverSettings());
+    auto explicitDevice = std::make_shared<ContractDevice>();
+    auto swapchain = std::make_shared<ContractSwapchain>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+
+    auto commandBuffer = std::make_shared<ContractCommandBuffer>();
+    auto frameFence = std::make_shared<ContractFence>();
+    auto imageAcquiredSemaphore = std::make_shared<ContractSemaphore>();
+    auto renderFinishedSemaphore = std::make_shared<ContractSemaphore>();
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.frameFence = frameFence;
+    frameContext.imageAcquiredSemaphore = imageAcquiredSemaphore;
+    frameContext.renderFinishedSemaphore = renderFinishedSemaphore;
+
+    const auto queue = explicitDevice->GetContractQueue();
+    queue->nextSubmitResult = {
+        NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure,
+        "submit failed for telemetry"
+    };
+    queue->nextPresentResult = {
+        NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure,
+        "present failed for telemetry"
+    };
+
+    NLS::Render::Context::DriverTestAccess::BeginStandaloneExplicitFrame(driver, true);
+    NLS::Render::Context::DriverTestAccess::EndStandaloneExplicitFrame(driver, true);
+
+    const auto telemetry = NLS::Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(driver);
+    EXPECT_EQ(telemetry.queueOperationFailureCount, 2u);
+    EXPECT_NE(telemetry.lastQueueOperationFailure.find("present failed for telemetry"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, StandaloneFrameFenceWaitUsesBoundedDriverPolicy)
+{
+    NLS::Render::Context::Driver driver(MakeContractDriverSettings());
+    auto explicitDevice = std::make_shared<ContractDevice>();
+    auto swapchain = std::make_shared<ContractSwapchain>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+
+    auto commandBuffer = std::make_shared<ContractCommandBuffer>();
+    auto frameFence = std::make_shared<ContractFence>();
+    auto imageAcquiredSemaphore = std::make_shared<ContractSemaphore>();
+    auto renderFinishedSemaphore = std::make_shared<ContractSemaphore>();
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.frameFence = frameFence;
+    frameContext.imageAcquiredSemaphore = imageAcquiredSemaphore;
+    frameContext.renderFinishedSemaphore = renderFinishedSemaphore;
+
+    NLS::Render::Context::DriverTestAccess::BeginStandaloneExplicitFrame(driver, true);
+
+    EXPECT_EQ(frameFence->waitCalls, 1u);
+    EXPECT_GT(frameFence->lastWaitTimeoutNanoseconds, 0u);
+}
+
+TEST(RenderFrameworkContractTests, QueueOperationTelemetrySeparatesCurrentFrameFromCumulativeHistory)
+{
+    NLS::Render::Context::Driver driver(MakeContractDriverSettings());
+    auto explicitDevice = std::make_shared<ContractDevice>();
+    auto swapchain = std::make_shared<ContractSwapchain>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+
+    auto commandBuffer = std::make_shared<ContractCommandBuffer>();
+    auto frameFence = std::make_shared<ContractFence>();
+    auto imageAcquiredSemaphore = std::make_shared<ContractSemaphore>();
+    auto renderFinishedSemaphore = std::make_shared<ContractSemaphore>();
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.frameFence = frameFence;
+    frameContext.imageAcquiredSemaphore = imageAcquiredSemaphore;
+    frameContext.renderFinishedSemaphore = renderFinishedSemaphore;
+
+    const auto queue = explicitDevice->GetContractQueue();
+    queue->nextSubmitResult = {
+        NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure,
+        "first frame submit failed"
+    };
+    NLS::Render::Context::DriverTestAccess::BeginStandaloneExplicitFrame(driver, true);
+    NLS::Render::Context::DriverTestAccess::EndStandaloneExplicitFrame(driver, false);
+
+    auto failedTelemetry = NLS::Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(driver);
+    EXPECT_EQ(failedTelemetry.queueOperationFailureCount, 1u);
+    EXPECT_EQ(failedTelemetry.currentFrameQueueOperationFailureCount, 1u);
+    EXPECT_NE(failedTelemetry.currentFrameLastQueueOperationFailure.find("first frame submit failed"), std::string::npos);
+
+    queue->nextSubmitResult = {};
+    NLS::Render::Context::DriverTestAccess::BeginStandaloneExplicitFrame(driver, true);
+    NLS::Render::Context::DriverTestAccess::EndStandaloneExplicitFrame(driver, false);
+
+    const auto recoveredTelemetry = NLS::Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(driver);
+    EXPECT_EQ(recoveredTelemetry.queueOperationFailureCount, 1u);
+    EXPECT_EQ(recoveredTelemetry.currentFrameQueueOperationFailureCount, 0u);
+    EXPECT_TRUE(recoveredTelemetry.currentFrameLastQueueOperationFailure.empty());
+}
+
+TEST(RenderFrameworkContractTests, DeviceLostQueueOperationIsExposedThroughTelemetry)
+{
+    NLS::Render::Context::Driver driver(MakeContractDriverSettings());
+    auto explicitDevice = std::make_shared<ContractDevice>();
+    auto swapchain = std::make_shared<ContractSwapchain>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+
+    auto commandBuffer = std::make_shared<ContractCommandBuffer>();
+    auto frameFence = std::make_shared<ContractFence>();
+    auto imageAcquiredSemaphore = std::make_shared<ContractSemaphore>();
+    auto renderFinishedSemaphore = std::make_shared<ContractSemaphore>();
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.frameFence = frameFence;
+    frameContext.imageAcquiredSemaphore = imageAcquiredSemaphore;
+    frameContext.renderFinishedSemaphore = renderFinishedSemaphore;
+
+    const auto queue = explicitDevice->GetContractQueue();
+    queue->nextSubmitResult = {
+        NLS::Render::RHI::RHIQueueOperationStatusCode::DeviceLost,
+        "device removed during submit"
+    };
+
+    NLS::Render::Context::DriverTestAccess::BeginStandaloneExplicitFrame(driver, true);
+    NLS::Render::Context::DriverTestAccess::EndStandaloneExplicitFrame(driver, false);
+
+    const auto telemetry = NLS::Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(driver);
+    EXPECT_TRUE(telemetry.deviceLostDetected);
+    EXPECT_NE(telemetry.deviceLostReason.find("device removed during submit"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, TimelineProfilerFenceCompletionFailureIsChecked)
+{
+    const std::filesystem::path profilerSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.cpp";
+
+    std::ifstream stream(profilerSourcePath, std::ios::binary);
+    const std::string profilerSource{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()
+    };
+
+    ASSERT_FALSE(profilerSource.empty());
+    EXPECT_NE(
+        profilerSource.find("const HRESULT hr = m_pResolveFence->SetEventOnCompletion(wait_frame, nullptr)"),
+        std::string::npos);
+    EXPECT_NE(profilerSource.find("FAILED("), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, TimelineProfilerGpuResourcesUseRaiiAndUnmapReadback)
+{
+    const std::filesystem::path profilerHeaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.h";
+    const std::filesystem::path profilerSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.cpp";
+
+    const auto readFile = [](const std::filesystem::path& path)
+    {
+        std::ifstream stream(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+    };
+
+    const std::string headerSource = readFile(profilerHeaderPath);
+    const std::string profilerSource = readFile(profilerSourcePath);
+
+    ASSERT_FALSE(headerSource.empty());
+    ASSERT_FALSE(profilerSource.empty());
+
+    EXPECT_NE(headerSource.find("Microsoft::WRL::ComPtr<ID3D12Resource>"), std::string::npos);
+    EXPECT_NE(headerSource.find("HashMap<ID3D12CommandList*, std::unique_ptr<CommandListState>>"), std::string::npos);
+    EXPECT_NE(profilerSource.find("m_pReadbackResource->Unmap(0, nullptr)"), std::string::npos);
+    EXPECT_EQ(profilerSource.find("delete commandListState.second"), std::string::npos);
+    EXPECT_EQ(profilerSource.find("pAllocator->Release()"), std::string::npos);
+    EXPECT_EQ(profilerSource.find("m_pReadbackResource->Release()"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, DX12TextureDoesNotExposeRawVoidNativeTextureHandle)
+{
+    static_assert(!HasRawNativeTextureHandle<NLS::Render::Backend::NativeDX12Texture>);
+    static_assert(HasTaggedNativeImageHandle<NLS::Render::Backend::NativeDX12Texture>);
+    SUCCEED();
+}
+
+TEST(RenderFrameworkContractTests, CompletionTokenExposesExplicitPollContract)
+{
+    class PollCountingToken final : public NLS::Render::RHI::RHICompletionToken
+    {
+    public:
+        std::string_view GetDebugName() const override { return "PollCountingToken"; }
+
+        NLS::Render::RHI::RHICompletionStatus Poll() override
+        {
+            ++pollCalls;
+            return {
+                pollCalls > 1u
+                    ? NLS::Render::RHI::RHICompletionStatusCode::Success
+                    : NLS::Render::RHI::RHICompletionStatusCode::Pending,
+                {}
+            };
+        }
+
+        NLS::Render::RHI::RHICompletionStatus Wait(uint64_t = 0) override
+        {
+            return Poll();
+        }
+
+        size_t pollCalls = 0u;
+    };
+
+    PollCountingToken token;
+
+    const auto firstStatus = token.GetStatus();
+    EXPECT_EQ(firstStatus.code, NLS::Render::RHI::RHICompletionStatusCode::Pending);
+    EXPECT_EQ(token.pollCalls, 1u);
+
+    EXPECT_TRUE(token.IsComplete());
+    EXPECT_EQ(token.pollCalls, 2u);
+}
+
+TEST(RenderFrameworkContractTests, ShaderGenerationParticipatesInExplicitModuleCacheKey)
+{
+    const std::filesystem::path shaderHeaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Resources/Shader.h";
+    const std::filesystem::path shaderSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Resources/Shader.cpp";
+
+    const auto readFile = [](const std::filesystem::path& path)
+    {
+        std::ifstream stream(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+    };
+
+    const std::string headerSource = readFile(shaderHeaderPath);
+    const std::string source = readFile(shaderSourcePath);
+
+    ASSERT_FALSE(headerSource.empty());
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(headerSource.find("uint64_t GetGeneration() const"), std::string::npos);
+    EXPECT_NE(headerSource.find("m_generation"), std::string::npos);
+    EXPECT_NE(source.find("std::make_tuple(backend, stage, m_generation)"), std::string::npos);
+    EXPECT_NE(source.find("++m_generation"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, LightGridPrepassReusesFrameScratchStorage)
+{
+    const std::filesystem::path lightGridHeaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/LightGridPrepass.h";
+    const std::filesystem::path lightGridSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/LightGridPrepass.cpp";
+
+    const auto readFile = [](const std::filesystem::path& path)
+    {
+        std::ifstream stream(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+    };
+
+    const std::string headerSource = readFile(lightGridHeaderPath);
+    const std::string source = readFile(lightGridSourcePath);
+
+    ASSERT_FALSE(headerSource.empty());
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(headerSource.find("mutable PackedFrameData m_frameScratch"), std::string::npos);
+    EXPECT_NE(source.find("auto& frameData = m_frameScratch"), std::string::npos);
+    EXPECT_NE(source.find("outFrameData.packedLights.clear()"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, ThreadedDrainResultIsActionableForCallers)
+{
+    NLS::Render::Context::Driver driver(MakeContractDriverSettings(true));
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+
+    EXPECT_TRUE(NLS::Render::Context::DriverTestAccess::TryDrainThreadedRendering(driver));
+    EXPECT_TRUE(NLS::Render::Context::DriverRendererAccess::TryDrainThreadedRendering(driver));
+}
+
+TEST(RenderFrameworkContractTests, LightGridPipelineMemberCacheTracksPipelineCacheKey)
+{
+    const std::filesystem::path lightGridHeaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/LightGridPrepass.h";
+    const std::filesystem::path lightGridSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/LightGridPrepass.cpp";
+
+    const auto readFile = [](const std::filesystem::path& path)
+    {
+        std::ifstream stream(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+    };
+
+    const std::string headerSource = readFile(lightGridHeaderPath);
+    const std::string lightGridSource = readFile(lightGridSourcePath);
+
+    ASSERT_FALSE(headerSource.empty());
+    ASSERT_FALSE(lightGridSource.empty());
+
+    EXPECT_NE(headerSource.find("m_injectionPipelineKey"), std::string::npos);
+    EXPECT_NE(headerSource.find("m_compactPipelineKey"), std::string::npos);
+    EXPECT_NE(lightGridSource.find("MatchesPipelineCacheKey"), std::string::npos);
+    EXPECT_EQ(lightGridSource.find("if (m_injectionPipeline != nullptr && m_compactPipeline != nullptr)"), std::string::npos);
 }
 
 TEST(RenderFrameworkContractTests, UiCompositionContractPropagatesSignalToPresentAndClearsAfterSubmit)

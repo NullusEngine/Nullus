@@ -93,6 +93,7 @@ namespace NLS::Render::Context
             const FrameSnapshot& snapshot,
             PreparedRenderSceneBuilder renderSceneBuilder,
             size_t* publishedSlotIndex = nullptr);
+        static bool TryDrainThreadedRendering(Driver& driver);
         static void DrainThreadedRendering(Driver& driver);
         static ThreadedFrameTelemetry GetThreadedFrameTelemetry(const Driver& driver);
 
@@ -244,6 +245,7 @@ namespace NLS::Render::Context
         static void BeginStandaloneExplicitFrame(Driver& driver, bool acquireSwapchainImage = true);
         static void EndStandaloneExplicitFrame(Driver& driver, bool presentSwapchain = true);
         static void PauseThreadedRenderingWorkers(Driver& driver);
+        static bool TryDrainThreadedRendering(Driver& driver);
         static void DrainThreadedRendering(Driver& driver);
         static bool TryPublishHarnessFrameSnapshot(
             Driver& driver,

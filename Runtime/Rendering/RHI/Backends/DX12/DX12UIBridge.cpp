@@ -28,6 +28,45 @@ namespace NLS::Render::RHI
             return NLS::Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow;
         }
 
+        bool WaitForDX12UIFence(
+            ID3D12Fence* fence,
+            HANDLE fenceEvent,
+            UINT64 fenceValue,
+            const std::string& context)
+        {
+            if (fence == nullptr || fenceEvent == nullptr || fenceValue == 0u)
+                return false;
+            if (fence->GetCompletedValue() >= fenceValue)
+                return true;
+
+            const HRESULT setEventHr = fence->SetEventOnCompletion(fenceValue, fenceEvent);
+            if (FAILED(setEventHr))
+            {
+                NLS_LOG_ERROR(
+                    context +
+                    ": SetEventOnCompletion failed hr=" +
+                    std::to_string(setEventHr) +
+                    " value=" +
+                    std::to_string(fenceValue));
+                return false;
+            }
+
+            const DWORD waitResult = WaitForSingleObject(
+                fenceEvent,
+                DX12::GetDX12UIFenceWaitTimeoutMilliseconds());
+            if (waitResult != WAIT_OBJECT_0)
+            {
+                NLS_LOG_ERROR(
+                    context +
+                    ": timed out waiting for UI fence value=" +
+                    std::to_string(fenceValue) +
+                    " completed=" +
+                    std::to_string(fence->GetCompletedValue()));
+                return false;
+            }
+            return true;
+        }
+
         class DX12UIBridge final : public RHIUIBridge
         {
         public:
@@ -162,8 +201,15 @@ namespace NLS::Render::RHI
                 if (reuseWait.shouldWait)
                 {
                     NLS_PROFILE_NAMED_SCOPE("DX12UIBridge::WaitForBackbufferReuse");
-                    m_fence->SetEventOnCompletion(reuseWait.fenceValue, m_fenceEvent);
-                    WaitForSingleObject(m_fenceEvent, INFINITE);
+                    if (!WaitForDX12UIFence(
+                        m_fence.Get(),
+                        m_fenceEvent,
+                        reuseWait.fenceValue,
+                        "DX12UIBridge::RenderDrawData(backbuffer reuse)"))
+                    {
+                        DiscardCurrentFrameTextureHandles();
+                        return;
+                    }
                 }
 
                 commandAllocator->Reset();
@@ -690,12 +736,19 @@ namespace NLS::Render::RHI
                 if (m_fence && m_queue && m_fenceEvent != nullptr)
                 {
                     const UINT64 fenceValue = ++m_fenceValue;
-                    m_queue->Signal(m_fence.Get(), fenceValue);
-                    if (m_fence->GetCompletedValue() < fenceValue)
+                    const HRESULT signalHr = m_queue->Signal(m_fence.Get(), fenceValue);
+                    if (FAILED(signalHr))
                     {
-                        m_fence->SetEventOnCompletion(fenceValue, m_fenceEvent);
-                        WaitForSingleObject(m_fenceEvent, INFINITE);
+                        NLS_LOG_ERROR(
+                            "DX12UIBridge::WaitForSubmittedUiWork: queue signal failed hr=" +
+                            std::to_string(signalHr));
+                        return;
                     }
+                    WaitForDX12UIFence(
+                        m_fence.Get(),
+                        m_fenceEvent,
+                        fenceValue,
+                        "DX12UIBridge::WaitForSubmittedUiWork");
                 }
             }
 
@@ -769,11 +822,20 @@ namespace NLS::Render::RHI
                 if (m_fence && m_queue)
                 {
                     const UINT64 fenceValue = ++m_fenceValue;
-                    m_queue->Signal(m_fence.Get(), fenceValue);
-                    if (m_fence->GetCompletedValue() < fenceValue)
+                    const HRESULT signalHr = m_queue->Signal(m_fence.Get(), fenceValue);
+                    if (FAILED(signalHr))
                     {
-                        m_fence->SetEventOnCompletion(fenceValue, m_fenceEvent);
-                        WaitForSingleObject(m_fenceEvent, INFINITE);
+                        NLS_LOG_ERROR(
+                            "DX12UIBridge::Shutdown: queue signal failed hr=" +
+                            std::to_string(signalHr));
+                    }
+                    else
+                    {
+                        WaitForDX12UIFence(
+                            m_fence.Get(),
+                            m_fenceEvent,
+                            fenceValue,
+                            "DX12UIBridge::Shutdown");
                     }
                 }
 

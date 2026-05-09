@@ -2,6 +2,8 @@
 
 #if defined(_WIN32)
 #include <Windows.h>
+
+#include "Rendering/RHI/Backends/DX12/DX12ReadbackUtils.h"
 #endif
 
 namespace NLS::Render::Backend
@@ -59,8 +61,13 @@ namespace NLS::Render::Backend
 		if (event == nullptr)
 			return false;
 
-		m_fence->SetEventOnCompletion(m_targetValue, event);
-		const DWORD waitMs = timeoutNanoseconds > 0 ? static_cast<DWORD>(timeoutNanoseconds / 1000000) : INFINITE;
+		const HRESULT setEventHr = m_fence->SetEventOnCompletion(m_targetValue, event);
+		if (FAILED(setEventHr))
+		{
+			CloseHandle(event);
+			return false;
+		}
+		const DWORD waitMs = NLS::Render::RHI::DX12::ConvertDX12WaitTimeoutNanosecondsToMilliseconds(timeoutNanoseconds);
 		const DWORD result = WaitForSingleObject(event, waitMs);
 		CloseHandle(event);
 		return result == WAIT_OBJECT_0;

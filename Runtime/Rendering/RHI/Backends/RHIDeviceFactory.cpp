@@ -2,8 +2,10 @@
 
 #if defined(_WIN32)
 #include "Rendering/RHI/Backends/DX12/DX12ExplicitDeviceFactory.h"
+#include "Rendering/RHI/Backends/DX12/DX12Resource.h"
 #endif
 #include "Rendering/RHI/Core/RHIDevice.h"
+#include "Rendering/RHI/Utils/UploadContext/UploadContext.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Debug/Logger.h"
@@ -65,4 +67,23 @@ namespace NLS::Render::Backend
 		return CreateDX12RhiDevice(settings.debugMode);
 	}
 #endif
+
+	std::shared_ptr<NLS::Render::RHI::UploadContext> CreateUploadContextForRhiDevice(
+		const std::shared_ptr<NLS::Render::RHI::RHIDevice>& device)
+	{
+		if (device == nullptr)
+			return NLS::Render::RHI::CreateDefaultUploadContext();
+
+#if defined(_WIN32)
+		const auto nativeInfo = device->GetNativeDeviceInfo();
+		if (nativeInfo.backend == NLS::Render::RHI::NativeBackendType::DX12 && nativeInfo.device != nullptr)
+		{
+			auto backend = CreateDX12UploadBackend(static_cast<ID3D12Device*>(nativeInfo.device));
+			if (backend != nullptr)
+				return NLS::Render::RHI::CreateBackendUploadContext(std::move(backend));
+		}
+#endif
+
+		return NLS::Render::RHI::CreateDefaultUploadContext();
+	}
 }

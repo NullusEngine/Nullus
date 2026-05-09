@@ -69,6 +69,7 @@ namespace NLS::Render::RHI::DX12
     };
 
     NLS_RENDER_API uint32_t GetDX12ReadbackBytesPerPixel(DXGI_FORMAT format);
+    NLS_RENDER_API uint32_t ConvertDX12WaitTimeoutNanosecondsToMilliseconds(uint64_t timeoutNanoseconds);
     NLS_RENDER_API DX12ReadbackLayout BuildDX12ReadbackLayout(DXGI_FORMAT format, uint32_t width, uint32_t height);
     NLS_RENDER_API DX12ReadbackScratchResourcePlan BuildDX12ReadbackScratchResourcePlan(
         uint64_t currentCapacity,

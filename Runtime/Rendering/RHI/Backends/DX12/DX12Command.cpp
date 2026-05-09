@@ -892,6 +892,9 @@ namespace NLS::Render::Backend
 
 		DXGI_FORMAT format = ToDXGIFormat(desc.destination->GetDesc().format);
 		const uint32_t bytesPerPixel = GetBytesPerPixel(format);
+		const uint32_t rowPitch = desc.rowPitch != 0u
+			? desc.rowPitch
+			: desc.extent.width * bytesPerPixel;
 
 		D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
 		footprint.Offset = desc.bufferOffset;
@@ -899,7 +902,7 @@ namespace NLS::Render::Backend
 		footprint.Footprint.Width = desc.extent.width;
 		footprint.Footprint.Height = desc.extent.height;
 		footprint.Footprint.Depth = 1;
-		footprint.Footprint.RowPitch = desc.extent.width * bytesPerPixel;
+		footprint.Footprint.RowPitch = rowPitch;
 
 		D3D12_TEXTURE_COPY_LOCATION srcLocation{};
 		srcLocation.pResource = srcResource;
@@ -909,7 +912,9 @@ namespace NLS::Render::Backend
 		D3D12_TEXTURE_COPY_LOCATION dstLocation{};
 		dstLocation.pResource = dstResource;
 		dstLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-		dstLocation.SubresourceIndex = desc.mipLevel;
+		const auto& destinationDesc = desc.destination->GetDesc();
+		const uint32_t mipLevels = (std::max)(destinationDesc.mipLevels, 1u);
+		dstLocation.SubresourceIndex = desc.arrayLayer * mipLevels + desc.mipLevel;
 
 		D3D12_BOX srcBox{};
 		srcBox.left = 0;

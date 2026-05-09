@@ -23,6 +23,10 @@ namespace NLS::Render::Backend
 		NLS::Render::RHI::QueueType GetType() const override;
 		void Submit(const NLS::Render::RHI::RHISubmitDesc& submitDesc) override;
 		void Present(const NLS::Render::RHI::RHIPresentDesc& presentDesc) override;
+		NLS::Render::RHI::RHIQueueOperationResult SubmitChecked(
+			const NLS::Render::RHI::RHISubmitDesc& submitDesc) override;
+		NLS::Render::RHI::RHIQueueOperationResult PresentChecked(
+			const NLS::Render::RHI::RHIPresentDesc& presentDesc) override;
 
 	private:
 		ID3D12Device* m_device = nullptr;

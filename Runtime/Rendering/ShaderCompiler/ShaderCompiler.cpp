@@ -184,25 +184,127 @@ namespace NLS::Render::ShaderCompiler
 			return false;
 		}
 
+		uint64_t CurrentUnixTimeMilliseconds()
+		{
+			return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::system_clock::now().time_since_epoch()).count());
+		}
+
+		std::string DefaultShaderArtifactLockOwner()
+		{
+			std::ostringstream stream;
+			stream << "pid=";
+#if defined(_WIN32)
+			stream << GetCurrentProcessId();
+#else
+			stream << "unknown";
+#endif
+			stream << ";thread=" << std::this_thread::get_id();
+			return stream.str();
+		}
+
+		std::string ReadShaderArtifactLockOwner(const std::filesystem::path& lockPath)
+		{
+			std::ifstream stream(lockPath / "owner.txt", std::ios::binary);
+			if (!stream)
+				return {};
+
+			return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+		}
+
+		void WriteShaderArtifactLockOwner(
+			const std::filesystem::path& lockPath,
+			const ShaderArtifactLockOptions& options)
+		{
+			std::ofstream stream(lockPath / "owner.txt", std::ios::binary | std::ios::trunc);
+			if (!stream)
+				return;
+
+			const auto owner = options.owner.empty()
+				? DefaultShaderArtifactLockOwner()
+				: options.owner;
+			stream << "owner=" << owner << "\n";
+			stream << "createdUnixMs=" << CurrentUnixTimeMilliseconds() << "\n";
+		}
+
+		bool IsShaderArtifactLockStale(
+			const std::filesystem::path& lockPath,
+			const ShaderArtifactLockOptions& options)
+		{
+			if (options.staleAfterMilliseconds == 0u)
+				return false;
+
+			std::error_code error;
+			const auto writeTime = std::filesystem::last_write_time(lockPath, error);
+			if (error)
+				return false;
+
+			const auto now = std::filesystem::file_time_type::clock::now();
+			if (now < writeTime)
+				return false;
+
+			const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(now - writeTime);
+			return age.count() >= options.staleAfterMilliseconds;
+		}
+
 		class ShaderArtifactLock final
 		{
 		public:
-			explicit ShaderArtifactLock(std::filesystem::path lockPath)
+			ShaderArtifactLock(
+				std::filesystem::path lockPath,
+				ShaderArtifactLockOptions options = {},
+				std::string* diagnostics = nullptr)
 				: m_lockPath(std::move(lockPath))
+				, m_options(std::move(options))
 			{
-				for (uint32_t attempt = 0; attempt < 200u; ++attempt)
+				if (m_options.retryIntervalMilliseconds == 0u)
+					m_options.retryIntervalMilliseconds = 1u;
+
+				const auto deadline = std::chrono::steady_clock::now() +
+					std::chrono::milliseconds(m_options.timeoutMilliseconds);
+				do
 				{
 					std::error_code error;
 					if (std::filesystem::create_directory(m_lockPath, error))
 					{
 						m_acquired = true;
+						WriteShaderArtifactLockOwner(m_lockPath, m_options);
 						return;
 					}
 
 					if (error && error != std::errc::file_exists)
 						break;
 
-					std::this_thread::sleep_for(std::chrono::milliseconds(5));
+					if (IsShaderArtifactLockStale(m_lockPath, m_options))
+					{
+						const std::string staleOwner = ReadShaderArtifactLockOwner(m_lockPath);
+						std::filesystem::remove_all(m_lockPath, error);
+						if (diagnostics != nullptr)
+						{
+							*diagnostics += "Removed stale shader artifact lock: " + m_lockPath.string();
+							if (!staleOwner.empty())
+								*diagnostics += " owner={" + staleOwner + "}";
+							*diagnostics += "\n";
+						}
+						continue;
+					}
+
+					if (std::chrono::steady_clock::now() >= deadline)
+						break;
+
+					std::this_thread::sleep_for(std::chrono::milliseconds(m_options.retryIntervalMilliseconds));
+				}
+				while (m_options.timeoutMilliseconds != 0u || std::chrono::steady_clock::now() < deadline);
+
+				if (diagnostics != nullptr)
+				{
+					*diagnostics += "timed out waiting for shader artifact lock: " + m_lockPath.string();
+					const std::string currentOwner = ReadShaderArtifactLockOwner(m_lockPath);
+					if (!currentOwner.empty())
+						*diagnostics += " owner={" + currentOwner + "}";
+					if (!m_options.owner.empty())
+						*diagnostics += " waiter=" + m_options.owner;
+					*diagnostics += "\n";
 				}
 			}
 
@@ -212,7 +314,7 @@ namespace NLS::Render::ShaderCompiler
 					return;
 
 				std::error_code error;
-				std::filesystem::remove(m_lockPath, error);
+				std::filesystem::remove_all(m_lockPath, error);
 			}
 
 			bool IsAcquired() const
@@ -222,12 +324,14 @@ namespace NLS::Render::ShaderCompiler
 
 		private:
 			std::filesystem::path m_lockPath;
+			ShaderArtifactLockOptions m_options;
 			bool m_acquired = false;
 		};
 
 		bool CommitShaderArtifactBytesAtomic(
 			const ShaderArtifactStagingPlan& plan,
 			const std::vector<uint8_t>& content,
+			const ShaderArtifactLockOptions& lockOptions,
 			std::string* diagnostics)
 		{
 			const std::filesystem::path finalPath(plan.finalPath);
@@ -237,7 +341,7 @@ namespace NLS::Render::ShaderCompiler
 			std::error_code error;
 			std::filesystem::create_directories(finalPath.parent_path(), error);
 
-			ShaderArtifactLock lock(lockPath);
+			ShaderArtifactLock lock(lockPath, lockOptions, diagnostics);
 			if (!lock.IsAcquired())
 			{
 				if (diagnostics != nullptr)
@@ -1053,6 +1157,21 @@ namespace NLS::Render::ShaderCompiler
 		return CommitShaderArtifactBytesAtomic(
 			plan,
 			std::vector<uint8_t>(content.begin(), content.end()),
+			ShaderArtifactLockOptions{},
+			diagnostics);
+	}
+
+	bool WriteShaderArtifactTextAtomic(
+		std::string_view finalPath,
+		std::string_view content,
+		const ShaderArtifactLockOptions& lockOptions,
+		std::string* diagnostics)
+	{
+		const auto plan = BuildShaderArtifactStagingPlan(finalPath, "text");
+		return CommitShaderArtifactBytesAtomic(
+			plan,
+			std::vector<uint8_t>(content.begin(), content.end()),
+			lockOptions,
 			diagnostics);
 	}
 
@@ -1103,13 +1222,25 @@ namespace NLS::Render::ShaderCompiler
 		mutableCommandLine.push_back('\0');
 
 		PROCESS_INFORMATION processInfo{};
+		HANDLE jobObject = CreateJobObjectA(nullptr, nullptr);
+		if (jobObject != nullptr)
+		{
+			JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobInfo{};
+			jobInfo.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+			SetInformationJobObject(
+				jobObject,
+				JobObjectExtendedLimitInformation,
+				&jobInfo,
+				sizeof(jobInfo));
+		}
+
 		const BOOL created = CreateProcessA(
 			nullptr,
 			mutableCommandLine.data(),
 			nullptr,
 			nullptr,
 			TRUE,
-			CREATE_NO_WINDOW,
+			CREATE_NO_WINDOW | CREATE_SUSPENDED,
 			nullptr,
 			nullptr,
 			&startupInfo,
@@ -1123,29 +1254,52 @@ namespace NLS::Render::ShaderCompiler
 			result.status = ShaderProcessStatus::FailedToStart;
 			result.diagnostics = "Failed to spawn shader compiler process (" + std::to_string(errorCode) + "): " + result.commandLine;
 			CloseHandle(readPipe);
+			if (jobObject != nullptr)
+				CloseHandle(jobObject);
 			return result;
 		}
 
-		const auto timeout = std::chrono::milliseconds(options.timeoutMilliseconds == 0u ? INFINITE : options.timeoutMilliseconds);
+		if (jobObject != nullptr && !AssignProcessToJobObject(jobObject, processInfo.hProcess))
+		{
+			const auto errorCode = GetLastError();
+			TerminateProcess(processInfo.hProcess, static_cast<UINT>(-1));
+			result.status = ShaderProcessStatus::FailedToStart;
+			result.diagnostics = "Failed to assign shader compiler process to cleanup job (" +
+				std::to_string(errorCode) + "): " + result.commandLine;
+			WaitForSingleObject(processInfo.hProcess, 5000);
+			CloseHandle(readPipe);
+			CloseHandle(processInfo.hThread);
+			CloseHandle(processInfo.hProcess);
+			CloseHandle(jobObject);
+			return result;
+		}
+
+		std::string processOutput;
+		std::thread outputReader([readPipe, &processOutput]()
+		{
+			char buffer[4096];
+			DWORD bytesRead = 0;
+			while (ReadFile(readPipe, buffer, static_cast<DWORD>(sizeof(buffer) - 1), &bytesRead, nullptr) && bytesRead > 0)
+			{
+				buffer[bytesRead] = '\0';
+				processOutput += buffer;
+			}
+			CloseHandle(readPipe);
+		});
+
+		ResumeThread(processInfo.hThread);
+
+		const auto timeout = std::chrono::milliseconds(options.timeoutMilliseconds);
 		const auto startTime = std::chrono::steady_clock::now();
 		bool running = true;
 		while (running)
 		{
-			char buffer[4096];
-			DWORD bytesAvailable = 0;
-			while (PeekNamedPipe(readPipe, nullptr, 0, nullptr, &bytesAvailable, nullptr) && bytesAvailable > 0)
-			{
-				DWORD bytesRead = 0;
-				if (!ReadFile(readPipe, buffer, std::min<DWORD>(static_cast<DWORD>(sizeof(buffer) - 1), bytesAvailable), &bytesRead, nullptr) || bytesRead == 0)
-					break;
-
-				buffer[bytesRead] = '\0';
-				result.output += buffer;
-			}
-
 			if (options.cancellationFlag != nullptr && options.cancellationFlag->load())
 			{
-				TerminateProcess(processInfo.hProcess, static_cast<UINT>(-1));
+				if (jobObject != nullptr)
+					TerminateJobObject(jobObject, static_cast<UINT>(-1));
+				else
+					TerminateProcess(processInfo.hProcess, static_cast<UINT>(-1));
 				result.status = ShaderProcessStatus::Cancelled;
 				result.diagnostics = "Shader compiler process cancelled: " + result.commandLine;
 				break;
@@ -1153,18 +1307,26 @@ namespace NLS::Render::ShaderCompiler
 
 			if (options.timeoutMilliseconds != 0u && std::chrono::steady_clock::now() - startTime >= timeout)
 			{
-				TerminateProcess(processInfo.hProcess, static_cast<UINT>(-1));
+				if (jobObject != nullptr)
+					TerminateJobObject(jobObject, static_cast<UINT>(-1));
+				else
+					TerminateProcess(processInfo.hProcess, static_cast<UINT>(-1));
 				result.status = ShaderProcessStatus::TimedOut;
 				result.diagnostics = "Shader compiler process timed out after " + std::to_string(options.timeoutMilliseconds) + " ms: " + result.commandLine;
 				break;
 			}
 
-			const DWORD waitResult = WaitForSingleObject(processInfo.hProcess, 5);
+			const DWORD waitResult = WaitForSingleObject(
+				processInfo.hProcess,
+				options.timeoutMilliseconds == 0u ? 50u : 10u);
 			if (waitResult == WAIT_OBJECT_0)
 				running = false;
 			else if (waitResult != WAIT_TIMEOUT)
 			{
-				TerminateProcess(processInfo.hProcess, static_cast<UINT>(-1));
+				if (jobObject != nullptr)
+					TerminateJobObject(jobObject, static_cast<UINT>(-1));
+				else
+					TerminateProcess(processInfo.hProcess, static_cast<UINT>(-1));
 				result.status = ShaderProcessStatus::Failed;
 				result.diagnostics = "Shader compiler process wait failed: " + result.commandLine;
 				running = false;
@@ -1174,13 +1336,15 @@ namespace NLS::Render::ShaderCompiler
 		if (WaitForSingleObject(processInfo.hProcess, 5000) != WAIT_OBJECT_0 && result.diagnostics.empty())
 			result.diagnostics = "Shader compiler process cleanup wait timed out: " + result.commandLine;
 
-		char buffer[4096];
-		DWORD bytesRead = 0;
-		while (ReadFile(readPipe, buffer, static_cast<DWORD>(sizeof(buffer) - 1), &bytesRead, nullptr) && bytesRead > 0)
+		if (jobObject != nullptr &&
+			(result.status == ShaderProcessStatus::TimedOut || result.status == ShaderProcessStatus::Cancelled))
 		{
-			buffer[bytesRead] = '\0';
-			result.output += buffer;
+			TerminateJobObject(jobObject, static_cast<UINT>(-1));
 		}
+
+		if (outputReader.joinable())
+			outputReader.join();
+		result.output = std::move(processOutput);
 
 		DWORD exitCode = static_cast<DWORD>(-1);
 		GetExitCodeProcess(processInfo.hProcess, &exitCode);
@@ -1199,6 +1363,8 @@ namespace NLS::Render::ShaderCompiler
 		CloseHandle(readPipe);
 		CloseHandle(processInfo.hThread);
 		CloseHandle(processInfo.hProcess);
+		if (jobObject != nullptr)
+			CloseHandle(jobObject);
 #else
 		(void)executable;
 		(void)arguments;

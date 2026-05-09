@@ -63,4 +63,10 @@ namespace
         EXPECT_EQ(reuse.fenceValue, 0u);
         EXPECT_EQ(tracker.GetLastSubmittedFenceValue(), 0u);
     }
+
+    TEST(DX12UIFrameFenceTrackerTests, UiFenceWaitTimeoutIsFinite)
+    {
+        EXPECT_NE(NLS::Render::RHI::DX12::GetDX12UIFenceWaitTimeoutMilliseconds(), 0xFFFFFFFFu);
+        EXPECT_GT(NLS::Render::RHI::DX12::GetDX12UIFenceWaitTimeoutMilliseconds(), 0u);
+    }
 }

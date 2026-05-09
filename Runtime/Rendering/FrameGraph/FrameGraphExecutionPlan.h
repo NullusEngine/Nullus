@@ -256,7 +256,10 @@ namespace NLS::Render::FrameGraph
 		RecordedPassPropagatesOutput,
 		ComputePassUsesNonComputeQueue,
 		ComputePassPropagatesOutput,
-		MissingQueueDependencySource
+		MissingQueueDependencySource,
+		ConflictingBufferResourceAccess,
+		ConflictingTextureResourceAccess,
+		InvalidQueueDependency
 	};
 
 	struct FrameGraphCompileDiagnostic
@@ -294,6 +297,20 @@ namespace NLS::Render::FrameGraph
 						diagnostic.code == code;
 				});
 		}
+	};
+
+	struct ThreadedRenderSceneExecutionPlanBuildResult
+	{
+		bool succeeded = false;
+		ThreadedRenderSceneExecutionPlan plan;
+		FrameGraphCompileValidationResult validation;
+	};
+
+	struct ThreadedRenderSceneExecutionCompileResult
+	{
+		bool succeeded = false;
+		CompiledThreadedRenderSceneExecution execution;
+		FrameGraphCompileValidationResult validation;
 	};
 
 	inline std::vector<ThreadedRenderScenePassMetadata> BuildPreparedComputeDispatchPassMetadata(
@@ -591,11 +608,13 @@ namespace NLS::Render::FrameGraph
 			if (buffer == nullptr)
 				continue;
 
-			passInput.bufferResourceAccesses.push_back({
+			passInput.bufferVisibilityTransitions.push_back({
 				buffer,
-				Context::ResourceAccessMode::Read,
+				RHI::ResourceState::Unknown,
 				RHI::ResourceState::ShaderRead,
+				RHI::PipelineStageMask::AllCommands,
 				RHI::PipelineStageMask::ComputeShader,
+				RHI::AccessMask::MemoryRead | RHI::AccessMask::MemoryWrite,
 				RHI::AccessMask::ShaderRead
 			});
 		}
@@ -604,11 +623,13 @@ namespace NLS::Render::FrameGraph
 			if (buffer == nullptr)
 				continue;
 
-			passInput.bufferResourceAccesses.push_back({
+			passInput.bufferVisibilityTransitions.push_back({
 				buffer,
-				Context::ResourceAccessMode::Write,
+				RHI::ResourceState::Unknown,
 				RHI::ResourceState::ShaderWrite,
+				RHI::PipelineStageMask::AllCommands,
 				RHI::PipelineStageMask::ComputeShader,
+				RHI::AccessMask::MemoryRead | RHI::AccessMask::MemoryWrite,
 				RHI::AccessMask::ShaderWrite
 			});
 		}
@@ -617,12 +638,14 @@ namespace NLS::Render::FrameGraph
 			if (buffer == nullptr)
 				continue;
 
-			passInput.bufferResourceAccesses.push_back({
+			passInput.bufferVisibilityTransitions.push_back({
 				buffer,
-				Context::ResourceAccessMode::Write,
+				RHI::ResourceState::ShaderWrite,
 				RHI::ResourceState::ShaderWrite,
 				RHI::PipelineStageMask::ComputeShader,
-				RHI::AccessMask::ShaderWrite
+				RHI::PipelineStageMask::ComputeShader,
+				RHI::AccessMask::ShaderWrite,
+				RHI::AccessMask::ShaderRead | RHI::AccessMask::ShaderWrite
 			});
 		}
 		for (const auto& buffer : dispatchInput->shaderReadBuffersAfter)
@@ -630,11 +653,13 @@ namespace NLS::Render::FrameGraph
 			if (buffer == nullptr)
 				continue;
 
-			passInput.bufferResourceAccesses.push_back({
+			passInput.exportedBufferVisibilityTransitions.push_back({
 				buffer,
-				Context::ResourceAccessMode::Write,
+				RHI::ResourceState::ShaderWrite,
 				RHI::ResourceState::ShaderRead,
 				RHI::PipelineStageMask::ComputeShader,
+				RHI::PipelineStageMask::FragmentShader,
+				RHI::AccessMask::ShaderWrite,
 				RHI::AccessMask::ShaderRead
 			});
 		}
@@ -669,11 +694,13 @@ namespace NLS::Render::FrameGraph
 			if (buffer == nullptr)
 				continue;
 
-			passInput.bufferResourceAccesses.push_back({
+			passInput.bufferVisibilityTransitions.push_back({
 				buffer,
-				Context::ResourceAccessMode::Read,
+				RHI::ResourceState::Unknown,
 				RHI::ResourceState::ShaderRead,
+				RHI::PipelineStageMask::AllCommands,
 				RHI::PipelineStageMask::ComputeShader,
+				RHI::AccessMask::MemoryRead | RHI::AccessMask::MemoryWrite,
 				RHI::AccessMask::ShaderRead
 			});
 		}
@@ -682,11 +709,13 @@ namespace NLS::Render::FrameGraph
 			if (buffer == nullptr)
 				continue;
 
-			passInput.bufferResourceAccesses.push_back({
+			passInput.bufferVisibilityTransitions.push_back({
 				buffer,
-				Context::ResourceAccessMode::Write,
+				RHI::ResourceState::Unknown,
 				RHI::ResourceState::ShaderWrite,
+				RHI::PipelineStageMask::AllCommands,
 				RHI::PipelineStageMask::ComputeShader,
+				RHI::AccessMask::MemoryRead | RHI::AccessMask::MemoryWrite,
 				RHI::AccessMask::ShaderWrite
 			});
 		}
@@ -695,12 +724,14 @@ namespace NLS::Render::FrameGraph
 			if (buffer == nullptr)
 				continue;
 
-			passInput.bufferResourceAccesses.push_back({
+			passInput.bufferVisibilityTransitions.push_back({
 				buffer,
-				Context::ResourceAccessMode::Write,
+				RHI::ResourceState::ShaderWrite,
 				RHI::ResourceState::ShaderWrite,
 				RHI::PipelineStageMask::ComputeShader,
-				RHI::AccessMask::ShaderWrite
+				RHI::PipelineStageMask::ComputeShader,
+				RHI::AccessMask::ShaderWrite,
+				RHI::AccessMask::ShaderRead | RHI::AccessMask::ShaderWrite
 			});
 		}
 		for (const auto& buffer : dispatchInput->shaderReadBuffersAfter)
@@ -708,11 +739,13 @@ namespace NLS::Render::FrameGraph
 			if (buffer == nullptr)
 				continue;
 
-			passInput.bufferResourceAccesses.push_back({
+			passInput.exportedBufferVisibilityTransitions.push_back({
 				buffer,
-				Context::ResourceAccessMode::Write,
+				RHI::ResourceState::ShaderWrite,
 				RHI::ResourceState::ShaderRead,
 				RHI::PipelineStageMask::ComputeShader,
+				RHI::PipelineStageMask::FragmentShader,
+				RHI::AccessMask::ShaderWrite,
 				RHI::AccessMask::ShaderRead
 			});
 		}
@@ -746,6 +779,12 @@ namespace NLS::Render::FrameGraph
 			return "ComputePassPropagatesOutput";
 		case FrameGraphCompileDiagnosticCode::MissingQueueDependencySource:
 			return "MissingQueueDependencySource";
+		case FrameGraphCompileDiagnosticCode::ConflictingBufferResourceAccess:
+			return "ConflictingBufferResourceAccess";
+		case FrameGraphCompileDiagnosticCode::ConflictingTextureResourceAccess:
+			return "ConflictingTextureResourceAccess";
+		case FrameGraphCompileDiagnosticCode::InvalidQueueDependency:
+			return "InvalidQueueDependency";
 		default:
 			return "Unknown";
 		}
@@ -800,6 +839,67 @@ namespace NLS::Render::FrameGraph
 			passKind,
 			std::move(message)
 		});
+	}
+
+	inline bool ResourceAccessModeWrites(const Context::ResourceAccessMode mode)
+	{
+		return mode == Context::ResourceAccessMode::Write;
+	}
+
+	inline bool TextureAccessRangesOverlap(
+		const RHI::RHISubresourceRange& left,
+		const RHI::RHISubresourceRange& right)
+	{
+		const auto leftMipEnd = left.baseMipLevel + left.mipLevelCount;
+		const auto rightMipEnd = right.baseMipLevel + right.mipLevelCount;
+		const auto leftLayerEnd = left.baseArrayLayer + left.arrayLayerCount;
+		const auto rightLayerEnd = right.baseArrayLayer + right.arrayLayerCount;
+		return left.baseMipLevel < rightMipEnd &&
+			right.baseMipLevel < leftMipEnd &&
+			left.baseArrayLayer < rightLayerEnd &&
+			right.baseArrayLayer < leftLayerEnd;
+	}
+
+	inline bool BufferVectorContains(
+		const std::vector<std::shared_ptr<RHI::RHIBuffer>>& buffers,
+		const std::shared_ptr<RHI::RHIBuffer>& buffer)
+	{
+		return std::find(buffers.begin(), buffers.end(), buffer) != buffers.end();
+	}
+
+	inline bool IsPreparedComputeLifecycleBufferAccess(
+		const Context::RenderPassCommandInput& passInput,
+		const Context::BufferResourceAccess& access)
+	{
+		if (access.buffer == nullptr)
+			return false;
+
+		for (const auto& dispatchInput : passInput.computeDispatchInputs)
+		{
+			if (access.mode == Context::ResourceAccessMode::Read &&
+				access.state == RHI::ResourceState::ShaderRead &&
+				BufferVectorContains(dispatchInput.shaderReadBuffersBefore, access.buffer))
+			{
+				return true;
+			}
+
+			if (access.mode == Context::ResourceAccessMode::Write &&
+				access.state == RHI::ResourceState::ShaderWrite &&
+				(BufferVectorContains(dispatchInput.shaderWriteBuffersBefore, access.buffer) ||
+					BufferVectorContains(dispatchInput.uavBarrierBuffersAfter, access.buffer)))
+			{
+				return true;
+			}
+
+			if (access.mode == Context::ResourceAccessMode::Write &&
+				access.state == RHI::ResourceState::ShaderRead &&
+				BufferVectorContains(dispatchInput.shaderReadBuffersAfter, access.buffer))
+			{
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	template<typename TMetadataRange>
@@ -912,6 +1012,36 @@ namespace NLS::Render::FrameGraph
 					"Threaded FrameGraph pass declares a buffer resource access with a null buffer.");
 			}
 
+			for (size_t leftIndex = 0u; leftIndex < passInput.bufferResourceAccesses.size(); ++leftIndex)
+			{
+				const auto& left = passInput.bufferResourceAccesses[leftIndex];
+				if (left.buffer == nullptr)
+					continue;
+
+				for (size_t rightIndex = leftIndex + 1u; rightIndex < passInput.bufferResourceAccesses.size(); ++rightIndex)
+				{
+					const auto& right = passInput.bufferResourceAccesses[rightIndex];
+					if (right.buffer != left.buffer)
+						continue;
+
+					if (IsPreparedComputeLifecycleBufferAccess(passInput, left) &&
+						IsPreparedComputeLifecycleBufferAccess(passInput, right))
+					{
+						continue;
+					}
+
+					if (!ResourceAccessModeWrites(left.mode) && !ResourceAccessModeWrites(right.mode))
+						continue;
+
+					AddFrameGraphCompileDiagnostic(
+						result,
+						FrameGraphCompileDiagnosticCode::ConflictingBufferResourceAccess,
+						passIndex,
+						passInput.kind,
+						"Threaded FrameGraph pass declares conflicting buffer read/write access for the same buffer.");
+				}
+			}
+
 			for (const auto& access : passInput.textureResourceAccesses)
 			{
 				if (access.texture != nullptr)
@@ -923,6 +1053,33 @@ namespace NLS::Render::FrameGraph
 					passIndex,
 					passInput.kind,
 					"Threaded FrameGraph pass declares a texture resource access with a null texture.");
+			}
+
+			for (size_t leftIndex = 0u; leftIndex < passInput.textureResourceAccesses.size(); ++leftIndex)
+			{
+				const auto& left = passInput.textureResourceAccesses[leftIndex];
+				if (left.texture == nullptr)
+					continue;
+
+				for (size_t rightIndex = leftIndex + 1u; rightIndex < passInput.textureResourceAccesses.size(); ++rightIndex)
+				{
+					const auto& right = passInput.textureResourceAccesses[rightIndex];
+					if (right.texture != left.texture)
+						continue;
+
+					if (!TextureAccessRangesOverlap(left.subresourceRange, right.subresourceRange))
+						continue;
+
+					if (!ResourceAccessModeWrites(left.mode) && !ResourceAccessModeWrites(right.mode))
+						continue;
+
+					AddFrameGraphCompileDiagnostic(
+						result,
+						FrameGraphCompileDiagnosticCode::ConflictingTextureResourceAccess,
+						passIndex,
+						passInput.kind,
+						"Threaded FrameGraph pass declares conflicting texture read/write access for the same subresource range.");
+				}
 			}
 
 			for (const auto& transition : passInput.bufferVisibilityTransitions)
@@ -970,6 +1127,34 @@ namespace NLS::Render::FrameGraph
 				<< ": " << diagnostic.message;
 		}
 		return stream.str();
+	}
+
+	inline FrameGraphCompileValidationResult ValidateThreadedRenderSceneExecutionPlan(
+		const ThreadedRenderSceneExecutionPlan& plan)
+	{
+		FrameGraphCompileValidationResult result;
+
+		for (size_t dependencyIndex = 0u; dependencyIndex < plan.dependencies.size(); ++dependencyIndex)
+		{
+			const auto& dependency = plan.dependencies[dependencyIndex];
+			const bool sourceOutOfRange = dependency.sourcePassIndex >= plan.passes.size();
+			const bool targetOutOfRange = dependency.targetPassIndex >= plan.passes.size();
+			const bool selfDependency = dependency.sourcePassIndex == dependency.targetPassIndex;
+			if (!sourceOutOfRange && !targetOutOfRange && !selfDependency)
+				continue;
+
+			const auto passKind = targetOutOfRange
+				? Context::RenderPassCommandKind::Opaque
+				: plan.passes[dependency.targetPassIndex].commandInput.kind;
+			AddFrameGraphCompileDiagnostic(
+				result,
+				FrameGraphCompileDiagnosticCode::InvalidQueueDependency,
+				dependencyIndex,
+				passKind,
+				"Threaded FrameGraph dependency edge has an invalid source, target, or self-dependency.");
+		}
+
+		return result;
 	}
 
 	template<typename TPreparedComputeSource>
@@ -1760,16 +1945,19 @@ namespace NLS::Render::FrameGraph
 	}
 
 	template<typename TMetadataRange>
-	inline ThreadedRenderSceneExecutionPlan BuildThreadedRenderSceneExecutionPlan(
+	inline ThreadedRenderSceneExecutionPlanBuildResult TryBuildThreadedRenderSceneExecutionPlan(
 		const std::vector<Context::RenderPassCommandInput>& passInputs,
 		const TMetadataRange& metadataRange)
 	{
+		ThreadedRenderSceneExecutionPlanBuildResult result;
 		const auto validation = ValidateThreadedRenderSceneExecutionInputs(passInputs, metadataRange);
 		if (validation.HasErrors())
-			throw std::invalid_argument(BuildFrameGraphCompileValidationErrorMessage(validation));
+		{
+			result.validation = validation;
+			return result;
+		}
 
-		ThreadedRenderSceneExecutionPlan plan;
-		plan.passes.reserve(passInputs.size());
+		result.plan.passes.reserve(passInputs.size());
 		const auto metadataCount = static_cast<size_t>(std::distance(std::begin(metadataRange), std::end(metadataRange)));
 		const bool usePositionalMapping = metadataCount == passInputs.size();
 
@@ -1792,7 +1980,15 @@ namespace NLS::Render::FrameGraph
 			}
 
 			if (metadataIt == std::end(metadataRange))
-				throw std::invalid_argument("Missing ThreadedRenderScenePassMetadata for pass input kind");
+			{
+				AddFrameGraphCompileDiagnostic(
+					result.validation,
+					FrameGraphCompileDiagnosticCode::MissingPassMetadata,
+					passIndex,
+					passInput.kind,
+					"Missing ThreadedRenderScenePassMetadata for pass input kind.");
+				return result;
+			}
 
 			auto plannedCommandInput = passInput;
 			const auto& metadata = ResolveThreadedRenderScenePassMetadata(*metadataIt);
@@ -1813,7 +2009,7 @@ namespace NLS::Render::FrameGraph
 				plannedCommandInput.clearColorValue = explicitClearValue;
 			}
 
-			plan.passes.push_back({
+			result.plan.passes.push_back({
 				std::move(plannedCommandInput),
 				metadata.role,
 				metadata.queueType,
@@ -1827,9 +2023,55 @@ namespace NLS::Render::FrameGraph
 			});
 		}
 
-		plan.dependencies = BuildThreadedRenderSceneDependencyEdges(plan.passes);
+		result.plan.dependencies = BuildThreadedRenderSceneDependencyEdges(result.plan.passes);
+		const auto planValidation = ValidateThreadedRenderSceneExecutionPlan(result.plan);
+		if (planValidation.HasErrors())
+		{
+			result.validation = planValidation;
+			return result;
+		}
 
-		return plan;
+		result.succeeded = true;
+		return result;
+	}
+
+	template<typename TMetadataRange>
+	inline ThreadedRenderSceneExecutionPlan BuildThreadedRenderSceneExecutionPlan(
+		const std::vector<Context::RenderPassCommandInput>& passInputs,
+		const TMetadataRange& metadataRange)
+	{
+		auto result = TryBuildThreadedRenderSceneExecutionPlan(passInputs, metadataRange);
+		if (!result.succeeded)
+			throw std::invalid_argument(BuildFrameGraphCompileValidationErrorMessage(result.validation));
+		return std::move(result.plan);
+	}
+
+	template<typename TMetadataRange>
+	inline ThreadedRenderSceneExecutionCompileResult TryCompileThreadedRenderSceneExecution(
+		const Data::FrameDescriptor& frame,
+		int32_t importedColor,
+		int32_t importedDepth,
+		const std::vector<Context::RenderPassCommandInput>& passInputs,
+		const TMetadataRange& metadataRange)
+	{
+		ThreadedRenderSceneExecutionCompileResult result;
+		result.execution.graphPasses = CompileThreadedRenderSceneGraphPasses(
+			frame,
+			importedColor,
+			importedDepth,
+			metadataRange);
+		auto planResult = TryBuildThreadedRenderSceneExecutionPlan(
+			passInputs,
+			result.execution.graphPasses);
+		if (!planResult.succeeded)
+		{
+			result.validation = std::move(planResult.validation);
+			return result;
+		}
+
+		result.execution.threadedPlan = std::move(planResult.plan);
+		result.succeeded = true;
+		return result;
 	}
 
 	template<typename TMetadataRange>
@@ -1840,16 +2082,15 @@ namespace NLS::Render::FrameGraph
 		const std::vector<Context::RenderPassCommandInput>& passInputs,
 		const TMetadataRange& metadataRange)
 	{
-		CompiledThreadedRenderSceneExecution compiledExecution;
-		compiledExecution.graphPasses = CompileThreadedRenderSceneGraphPasses(
+		auto result = TryCompileThreadedRenderSceneExecution(
 			frame,
 			importedColor,
 			importedDepth,
-			metadataRange);
-		compiledExecution.threadedPlan = BuildThreadedRenderSceneExecutionPlan(
 			passInputs,
-			compiledExecution.graphPasses);
-		return compiledExecution;
+			metadataRange);
+		if (!result.succeeded)
+			throw std::invalid_argument(BuildFrameGraphCompileValidationErrorMessage(result.validation));
+		return std::move(result.execution);
 	}
 
 	template<
@@ -2151,6 +2392,27 @@ namespace NLS::Render::FrameGraph
 	}
 
 	template<typename TMetadataRange>
+	inline ThreadedRenderSceneExecutionCompileResult TryCompileAndApplyThreadedRenderSceneExecution(
+		Context::RenderScenePackage& package,
+		const Data::FrameDescriptor& frame,
+		int32_t importedColor,
+		int32_t importedDepth,
+		const TMetadataRange& metadataRange)
+	{
+		auto result = TryCompileThreadedRenderSceneExecution(
+			frame,
+			importedColor,
+			importedDepth,
+			package.passCommandInputs,
+			metadataRange);
+		if (!result.succeeded)
+			return result;
+
+		ApplyThreadedRenderSceneExecutionPlan(package, result.execution.threadedPlan);
+		return result;
+	}
+
+	template<typename TMetadataRange>
 	inline CompiledThreadedRenderSceneExecution CompileAndApplyThreadedRenderSceneExecution(
 		Context::RenderScenePackage& package,
 		const Data::FrameDescriptor& frame,
@@ -2158,14 +2420,15 @@ namespace NLS::Render::FrameGraph
 		int32_t importedDepth,
 		const TMetadataRange& metadataRange)
 	{
-		auto compiledExecution = CompileThreadedRenderSceneExecution(
+		auto result = TryCompileAndApplyThreadedRenderSceneExecution(
+			package,
 			frame,
 			importedColor,
 			importedDepth,
-			package.passCommandInputs,
 			metadataRange);
-		ApplyThreadedRenderSceneExecutionPlan(package, compiledExecution.threadedPlan);
-		return compiledExecution;
+		if (!result.succeeded)
+			throw std::invalid_argument(BuildFrameGraphCompileValidationErrorMessage(result.validation));
+		return std::move(result.execution);
 	}
 
 	template<

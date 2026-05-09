@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <chrono>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -55,11 +56,20 @@ namespace NLS::Render::Context
         std::atomic_bool threadedStopRequested{ false };
         std::thread renderSceneWorker;
         std::thread rhiWorker;
+        std::mutex threadedWorkerWakeMutex;
+        std::condition_variable threadedWorkerWake;
+        std::atomic_uint64_t threadedWorkerWakeGeneration{ 0u };
         std::mutex threadedRhiSubmissionMutex;
         std::unique_lock<std::mutex> uiStandaloneFrameSubmissionLock;
         uint64_t nextThreadedFrameId = 1u;
         uint32_t threadedPublishRetirementWaitMs = 0u;
         Render::Settings::EngineDiagnosticsSettings diagnostics;
+        uint64_t queueOperationFailureCount = 0u;
+        std::string lastQueueOperationFailure;
+        uint64_t currentFrameQueueOperationFailureCount = 0u;
+        std::string currentFrameLastQueueOperationFailure;
+        bool deviceLostDetected = false;
+        std::string deviceLostReason;
     };
 
     namespace Detail
@@ -122,6 +132,8 @@ namespace NLS::Render::Context
         NLS_RENDER_API uint64_t ResolveAsyncComputeCandidateWorkloadCount(
             const RenderScenePackage& renderScenePackage);
         NLS_RENDER_API bool SupportsOrderedParallelCommandSubmission(const DriverImpl& impl);
+        NLS_RENDER_API void NotifyThreadedWorkers(DriverImpl& impl);
+        NLS_RENDER_API void WaitForThreadedWorkerWake(DriverImpl& impl, uint64_t observedGeneration);
         NLS_RENDER_API Render::RHI::RHIFrameContext* BeginThreadedRhiFrame(
             DriverImpl& impl,
             const RenderScenePackage& renderScenePackage,

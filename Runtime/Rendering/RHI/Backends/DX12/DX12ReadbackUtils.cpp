@@ -1,6 +1,7 @@
 #include "Rendering/RHI/Backends/DX12/DX12ReadbackUtils.h"
 
 #if defined(_WIN32)
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <memory>
@@ -36,6 +37,18 @@ namespace NLS::Render::RHI::DX12
     uint32_t GetDX12ReadbackBytesPerPixel(DXGI_FORMAT format)
     {
         return GetDXGIFormatBytesPerPixel(format);
+    }
+
+    uint32_t ConvertDX12WaitTimeoutNanosecondsToMilliseconds(uint64_t timeoutNanoseconds)
+    {
+        if (timeoutNanoseconds == 0u)
+            return INFINITE;
+
+        constexpr uint64_t kNanosecondsPerMillisecond = 1000000u;
+        constexpr uint64_t kMaxFiniteWaitMilliseconds = static_cast<uint64_t>(INFINITE) - 1u;
+        const uint64_t waitMilliseconds =
+            (timeoutNanoseconds + kNanosecondsPerMillisecond - 1u) / kNanosecondsPerMillisecond;
+        return static_cast<uint32_t>((std::min)(waitMilliseconds, kMaxFiniteWaitMilliseconds));
     }
 
     DX12ReadbackLayout BuildDX12ReadbackLayout(DXGI_FORMAT format, uint32_t width, uint32_t height)
@@ -255,21 +268,21 @@ namespace NLS::Render::RHI::DX12
 
             std::string_view GetDebugName() const override { return "DX12ReadbackCompletionToken"; }
 
-            bool IsComplete() const override
+            bool IsComplete() override
             {
-                if (m_status.IsComplete())
-                    return true;
-                return m_pendingCopy.fence != nullptr &&
-                    m_pendingCopy.fence->GetCompletedValue() >= m_pendingCopy.fenceValue;
+                return Poll().IsComplete();
             }
 
-            RHICompletionStatus GetStatus() const override
+            RHICompletionStatus Poll() override
             {
                 if (m_status.IsComplete())
                     return m_status;
-                return IsComplete()
-                    ? RHICompletionStatus{ RHICompletionStatusCode::Success, {} }
-                    : RHICompletionStatus{ RHICompletionStatusCode::Pending, {} };
+                if (m_pendingCopy.fence == nullptr ||
+                    m_pendingCopy.fence->GetCompletedValue() < m_pendingCopy.fenceValue)
+                {
+                    return { RHICompletionStatusCode::Pending, {} };
+                }
+                return FinalizeCompletedCopy();
             }
 
             RHICompletionStatus Wait(uint64_t timeoutNanoseconds = 0) override
@@ -299,16 +312,24 @@ namespace NLS::Render::RHI::DX12
                         return CompleteWithFailure("ReadPixels failed to set fence completion event");
                     }
 
-                    const DWORD waitMs =
-                        timeoutNanoseconds > 0u
-                            ? static_cast<DWORD>(timeoutNanoseconds / 1000000u)
-                            : INFINITE;
+                    const DWORD waitMs = ConvertDX12WaitTimeoutNanosecondsToMilliseconds(timeoutNanoseconds);
                     const DWORD waitResult = WaitForSingleObject(eventHandle, waitMs);
                     if (ownedEvent != nullptr)
                         CloseHandle(ownedEvent);
                     if (waitResult != WAIT_OBJECT_0)
                         return { RHICompletionStatusCode::Pending, "ReadPixels completion wait timed out" };
                 }
+
+                return FinalizeCompletedCopy();
+            }
+
+        private:
+            RHICompletionStatus FinalizeCompletedCopy() const
+            {
+                if (m_status.IsComplete())
+                    return m_status;
+                if (m_pendingCopy.readbackResource == nullptr)
+                    return CompleteWithFailure("DX12 readback completion token is missing backend resources");
 
                 void* mappedData = nullptr;
                 D3D12_RANGE readRange{};
@@ -330,8 +351,7 @@ namespace NLS::Render::RHI::DX12
                 return m_status;
             }
 
-        private:
-            RHICompletionStatus CompleteWithFailure(std::string message)
+            RHICompletionStatus CompleteWithFailure(std::string message) const
             {
                 if (m_pendingCopy.inFlightFlag != nullptr)
                     m_pendingCopy.inFlightFlag->store(false);
@@ -340,7 +360,7 @@ namespace NLS::Render::RHI::DX12
             }
 
             DX12ReadbackPendingCopy m_pendingCopy;
-            RHICompletionStatus m_status{};
+            mutable RHICompletionStatus m_status{};
         };
 
         DX12ReadbackStatusCode ToDX12StatusCode(RHICompletionStatusCode code)

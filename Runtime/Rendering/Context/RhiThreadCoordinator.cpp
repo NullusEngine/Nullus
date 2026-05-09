@@ -30,6 +30,8 @@ namespace NLS::Render::Context
 {
     namespace
     {
+        constexpr uint64_t kFrameFenceWaitTimeoutNanoseconds = 5'000'000'000ull;
+
         Render::RHI::RHIFrameContext* GetCurrentFrameContext(DriverImpl& impl)
         {
             return !impl.frameContexts.empty()
@@ -198,6 +200,66 @@ namespace NLS::Render::Context
             impl.uiRenderFinishedValue = 0u;
         }
 
+        void ResetCurrentFrameQueueOperationTelemetry(DriverImpl& impl)
+        {
+            impl.currentFrameQueueOperationFailureCount = 0u;
+            impl.currentFrameLastQueueOperationFailure.clear();
+        }
+
+        bool WaitFrameFenceWithDriverPolicy(
+            DriverImpl& impl,
+            const std::shared_ptr<Render::RHI::RHIFence>& frameFence,
+            const std::string& context)
+        {
+            if (frameFence == nullptr)
+                return false;
+
+            const bool waited = frameFence->Wait(kFrameFenceWaitTimeoutNanoseconds);
+            if (!waited)
+            {
+                const std::string message =
+                    context +
+                    " timed out waiting for frame fence after " +
+                    std::to_string(kFrameFenceWaitTimeoutNanoseconds) +
+                    " ns";
+                ++impl.queueOperationFailureCount;
+                ++impl.currentFrameQueueOperationFailureCount;
+                impl.lastQueueOperationFailure = message;
+                impl.currentFrameLastQueueOperationFailure = message;
+                NLS_LOG_ERROR(message);
+            }
+            return waited;
+        }
+
+        bool RecordQueueOperationResult(
+            DriverImpl& impl,
+            const Render::RHI::RHIQueueOperationResult& result,
+            const std::string& context)
+        {
+            if (result.Succeeded())
+                return true;
+
+            const std::string message =
+                context +
+                " failed: " +
+                (result.message.empty()
+                    ? std::string{ "queue operation returned failure" }
+                    : result.message);
+
+            ++impl.queueOperationFailureCount;
+            impl.lastQueueOperationFailure = message;
+            ++impl.currentFrameQueueOperationFailureCount;
+            impl.currentFrameLastQueueOperationFailure = message;
+            if (result.code == Render::RHI::RHIQueueOperationStatusCode::DeviceLost)
+            {
+                impl.deviceLostDetected = true;
+                impl.deviceLostReason = message;
+            }
+
+            NLS_LOG_ERROR(message);
+            return false;
+        }
+
         void PresentSwapchainFrame(
             DriverImpl& impl,
             Render::RHI::RHIQueue& queue,
@@ -211,7 +273,10 @@ namespace NLS::Render::Context
                 impl,
                 frameContext,
                 includeUiCompositionSignal);
-            queue.Present(presentDesc);
+            RecordQueueOperationResult(
+                impl,
+                queue.PresentChecked(presentDesc),
+                "RhiThreadCoordinator::PresentSwapchainFrame");
 
             if (impl.renderDocCaptureController != nullptr)
                 impl.renderDocCaptureController->OnPostPresent();
@@ -233,7 +298,10 @@ namespace NLS::Render::Context
                 : nullptr;
             if (queue != nullptr)
             {
-                queue->Submit(submitDesc);
+                RecordQueueOperationResult(
+                    impl,
+                    queue->SubmitChecked(submitDesc),
+                    "RhiThreadCoordinator::FinalizeStandaloneUiFrame::Submit");
                 PresentSwapchainFrame(impl, *queue, *frameContext, true);
             }
 
@@ -512,8 +580,12 @@ namespace NLS::Render::Context
 
             auto& frameContext = impl.frameContexts[impl.currentFrameIndex % impl.frameContexts.size()];
             frameContext.frameIndex = static_cast<uint32_t>(impl.currentFrameIndex);
+            ResetCurrentFrameQueueOperationTelemetry(impl);
             if (frameContext.frameFence != nullptr)
-                frameContext.frameFence->Wait();
+                WaitFrameFenceWithDriverPolicy(
+                    impl,
+                    frameContext.frameFence,
+                    "RhiThreadCoordinator::BeginStandaloneUiExplicitFrame");
             if (frameContext.frameFence != nullptr)
                 frameContext.frameFence->Reset();
             if (frameContext.imageAcquiredSemaphore != nullptr)
@@ -1739,6 +1811,7 @@ namespace NLS::Render::Context
         const size_t frameContextIndex = impl.currentFrameIndex % impl.frameContexts.size();
         auto& frameContext = impl.frameContexts[frameContextIndex];
         frameContext.frameIndex = static_cast<uint32_t>(impl.currentFrameIndex);
+        ResetCurrentFrameQueueOperationTelemetry(impl);
 
         if (submissionFrame != nullptr)
         {
@@ -1755,7 +1828,10 @@ namespace NLS::Render::Context
         }
 
         if (frameContext.frameFence != nullptr)
-            frameContext.frameFence->Wait();
+            WaitFrameFenceWithDriverPolicy(
+                impl,
+                frameContext.frameFence,
+                "RhiThreadCoordinator::BeginThreadedRhiFrame");
         if (frameContext.frameFence != nullptr)
             frameContext.frameFence->Reset();
         if (frameContext.imageAcquiredSemaphore != nullptr)
@@ -2099,7 +2175,10 @@ namespace NLS::Render::Context
             }
             if (isLastBatch)
                 submitDesc.signalFence = frameContext.frameFence;
-            queue->Submit(submitDesc);
+            RecordQueueOperationResult(
+                impl,
+                queue->SubmitChecked(submitDesc),
+                "RhiThreadCoordinator::SubmitCompiledExecution");
 
             if (renderScenePackage.targetsSwapchain &&
                 isLastGraphicsBatch &&
@@ -2115,7 +2194,10 @@ namespace NLS::Render::Context
                 presentDesc.imageIndex = frameContext.swapchainImageIndex;
                 if (frameContext.renderFinishedSemaphore != nullptr)
                     presentDesc.waitSemaphores.push_back(frameContext.renderFinishedSemaphore);
-                graphicsQueue->Present(presentDesc);
+                RecordQueueOperationResult(
+                    impl,
+                    graphicsQueue->PresentChecked(presentDesc),
+                    "RhiThreadCoordinator::SubmitCompiledExecutionPresent");
 
                 if (impl.renderDocCaptureController != nullptr)
                     impl.renderDocCaptureController->OnPostPresent();
@@ -2127,7 +2209,10 @@ namespace NLS::Render::Context
             if (frameContext.frameFence != nullptr)
             {
                 NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::WaitFrameFence");
-                submissionFrame->retirementFenceWaited = frameContext.frameFence->Wait();
+                submissionFrame->retirementFenceWaited = WaitFrameFenceWithDriverPolicy(
+                    impl,
+                    frameContext.frameFence,
+                    "RhiThreadCoordinator::ExecuteThreadedSubmitPlan");
             }
             else
                 submissionFrame->retirementFenceWaited = false;
@@ -2135,7 +2220,10 @@ namespace NLS::Render::Context
         else if (frameContext.frameFence != nullptr)
         {
             NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::WaitFrameFence");
-            frameContext.frameFence->Wait();
+            WaitFrameFenceWithDriverPolicy(
+                impl,
+                frameContext.frameFence,
+                "RhiThreadCoordinator::ExecuteThreadedSubmitPlan");
         }
 
         if (frameContext.descriptorAllocator != nullptr)
@@ -2227,6 +2315,14 @@ namespace NLS::Render::Context
             submissionFrame->usedAsyncComputeQueueSubmission
                 ? AsyncComputeDisposition::Submitted
                 : ResolveThreadedAsyncComputeDisposition(impl, renderScenePackage);
+        submissionFrame->queueOperationFailureCount = impl.queueOperationFailureCount;
+        submissionFrame->lastQueueOperationFailure = impl.lastQueueOperationFailure;
+        submissionFrame->currentFrameQueueOperationFailureCount =
+            impl.currentFrameQueueOperationFailureCount;
+        submissionFrame->currentFrameLastQueueOperationFailure =
+            impl.currentFrameLastQueueOperationFailure;
+        submissionFrame->deviceLostDetected = impl.deviceLostDetected;
+        submissionFrame->deviceLostReason = impl.deviceLostReason;
 
         if (frameContext.resourceStateTracker != nullptr)
         {
@@ -2295,8 +2391,12 @@ namespace NLS::Render::Context
 
         auto& frameContext = driver.m_impl->frameContexts[driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size()];
         frameContext.frameIndex = static_cast<uint32_t>(driver.m_impl->currentFrameIndex);
+        ResetCurrentFrameQueueOperationTelemetry(*driver.m_impl);
         if (frameContext.frameFence != nullptr)
-            frameContext.frameFence->Wait();
+            WaitFrameFenceWithDriverPolicy(
+                *driver.m_impl,
+                frameContext.frameFence,
+                "RhiThreadCoordinator::BeginStandaloneExplicitFrame");
         if (frameContext.frameFence != nullptr)
             frameContext.frameFence->Reset();
         if (frameContext.imageAcquiredSemaphore != nullptr)
@@ -2369,14 +2469,17 @@ namespace NLS::Render::Context
         auto queue = driver.m_impl->explicitDevice->GetQueue(Render::RHI::QueueType::Graphics);
         if (queue != nullptr)
         {
-            queue->Submit(submitDesc);
+            RecordQueueOperationResult(
+                *driver.m_impl,
+                queue->SubmitChecked(submitDesc),
+                "RhiThreadCoordinator::EndStandaloneExplicitFrame::Submit");
             if (presentSwapchain && frameContext.hasAcquiredSwapchainImage && driver.m_impl->explicitSwapchain != nullptr)
             {
                 PresentSwapchainFrame(*driver.m_impl, *queue, frameContext, true);
-                ClearUICompositionSignal(*driver.m_impl);
                 driver.ApplyPendingSwapchainResize();
             }
         }
+        ClearUICompositionSignal(*driver.m_impl);
         if (frameContext.descriptorAllocator != nullptr)
             frameContext.descriptorAllocator->EndFrame(driver.m_impl->currentFrameIndex);
         if (frameContext.uploadContext != nullptr)
@@ -2415,6 +2518,7 @@ namespace NLS::Render::Context
                 submissionFrame,
                 attribution);
             driver.m_impl->threadedLifecycle->RetireFrame(slotIndex);
+            Detail::NotifyThreadedWorkers(*driver.m_impl);
         }
 
         driver.ApplyPendingSwapchainResize();

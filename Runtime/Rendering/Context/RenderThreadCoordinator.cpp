@@ -139,10 +139,13 @@ namespace NLS::Render::Context
         if (resolvedSnapshot.frameId == 0u)
             resolvedSnapshot.frameId = driver.m_impl->nextThreadedFrameId++;
 
-        return driver.m_impl->threadedLifecycle->PublishFrameSnapshot(
+        const bool published = driver.m_impl->threadedLifecycle->PublishFrameSnapshot(
             resolvedSnapshot,
             std::chrono::milliseconds(driver.m_impl->threadedPublishRetirementWaitMs),
             publishedSlotIndex);
+        if (published)
+            Detail::NotifyThreadedWorkers(*driver.m_impl);
+        return published;
     }
 
     bool RenderThreadCoordinator::TryPublishHarnessPreparedFrame(
@@ -178,10 +181,13 @@ namespace NLS::Render::Context
         auto resolvedRenderScenePackage = renderScenePackage;
         resolvedRenderScenePackage.frameId = resolvedSnapshot.frameId;
 
-        return driver.m_impl->threadedLifecycle->TryPublishPreparedFrame(
+        const bool published = driver.m_impl->threadedLifecycle->TryPublishPreparedFrame(
             resolvedSnapshot,
             resolvedRenderScenePackage,
             publishedSlotIndex);
+        if (published)
+            Detail::NotifyThreadedWorkers(*driver.m_impl);
+        return published;
     }
 
     bool RenderThreadCoordinator::TryPublishPreparedFrameBuilder(
@@ -219,11 +225,14 @@ namespace NLS::Render::Context
             return renderScenePackage;
         };
 
-        return driver.m_impl->threadedLifecycle->PublishPreparedFrameBuilder(
+        const bool published = driver.m_impl->threadedLifecycle->PublishPreparedFrameBuilder(
             resolvedSnapshot,
             std::move(resolvedRenderSceneBuilder),
             std::chrono::milliseconds(driver.m_impl->threadedPublishRetirementWaitMs),
             publishedSlotIndex);
+        if (published)
+            Detail::NotifyThreadedWorkers(*driver.m_impl);
+        return published;
     }
 
     bool RenderThreadCoordinator::DrainPendingRenderFrameBuildsSynchronously(Driver& driver)
@@ -239,9 +248,12 @@ namespace NLS::Render::Context
             nullptr))
         {
             const auto resolutionDesc = Detail::BuildRenderScenePreparingResolutionDesc();
-            driver.m_impl->threadedLifecycle->ResolveRenderScenePreparing(
+            if (driver.m_impl->threadedLifecycle->ResolveRenderScenePreparing(
                 slotIndex,
-                resolutionDesc);
+                resolutionDesc))
+            {
+                Detail::NotifyThreadedWorkers(*driver.m_impl);
+            }
             progressed = true;
         }
 

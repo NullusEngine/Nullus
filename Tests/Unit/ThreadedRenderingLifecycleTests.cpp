@@ -197,8 +197,9 @@ namespace
         }
 
         std::string_view GetDebugName() const override { return "TestCompletionToken"; }
-        bool IsComplete() const override { return m_status.IsComplete(); }
-        NLS::Render::RHI::RHICompletionStatus GetStatus() const override { return m_status; }
+        NLS::Render::RHI::RHICompletionStatus Poll() override { return m_status; }
+        bool IsComplete() override { return m_status.IsComplete(); }
+        NLS::Render::RHI::RHICompletionStatus GetStatus() override { return m_status; }
         NLS::Render::RHI::RHICompletionStatus Wait(uint64_t = 0) override { return m_status; }
 
     private:
@@ -983,10 +984,22 @@ namespace
                     testSemaphore->signaled = true;
             }
         }
+        NLS::Render::RHI::RHIQueueOperationResult SubmitChecked(
+            const NLS::Render::RHI::RHISubmitDesc& submitDesc) override
+        {
+            Submit(submitDesc);
+            return {};
+        }
         void Present(const NLS::Render::RHI::RHIPresentDesc& presentDesc) override
         {
             ++presentCalls;
             lastPresentDesc = presentDesc;
+        }
+        NLS::Render::RHI::RHIQueueOperationResult PresentChecked(
+            const NLS::Render::RHI::RHIPresentDesc& presentDesc) override
+        {
+            Present(presentDesc);
+            return {};
         }
 
     private:
@@ -5993,6 +6006,49 @@ TEST(ThreadedRenderingLifecycleTests, StandaloneExplicitFramePresentUsesUiCompos
     EXPECT_EQ(testQueue->lastPresentDesc.uiSignalSemaphore.handle, uiSignalSemaphore.handle);
     EXPECT_EQ(testQueue->lastPresentDesc.uiSignalValue, uiSignalValue);
 
+    const auto boundary = NLS::Render::Context::DriverUIAccess::BuildUICompositionSyncBoundary(driver);
+    EXPECT_FALSE(boundary.uiToPresentSignalSemaphore.IsValid());
+    EXPECT_EQ(boundary.uiToPresentSignalValue, 0u);
+}
+
+TEST(ThreadedRenderingLifecycleTests, StandaloneExplicitFrameWithoutPresentClearsUiCompositionSignal)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = false;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    auto swapchain = std::make_shared<TestSwapchain>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    auto commandPool = std::make_shared<TestCommandPool>();
+    auto frameFence = std::make_shared<TestFence>();
+    auto imageAcquiredSemaphore = std::make_shared<TestSemaphore>();
+    auto renderFinishedSemaphore = std::make_shared<TestSemaphore>();
+    commandPool->commandBuffer = commandBuffer;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.commandPool = commandPool;
+    frameContext.frameFence = frameFence;
+    frameContext.imageAcquiredSemaphore = imageAcquiredSemaphore;
+    frameContext.renderFinishedSemaphore = renderFinishedSemaphore;
+
+    NLS::Render::Context::DriverTestAccess::BeginStandaloneExplicitFrame(driver, true);
+
+    const NLS::Render::RHI::NativeHandle uiSignalSemaphore{
+        NLS::Render::RHI::BackendType::DX12,
+        reinterpret_cast<void*>(0x2468)
+    };
+    NLS::Render::Context::DriverUIAccess::SetUICompositionSignal(driver, uiSignalSemaphore, 91u);
+
+    NLS::Render::Context::DriverTestAccess::EndStandaloneExplicitFrame(driver, false);
+
+    EXPECT_EQ(explicitDevice->GetTestQueue()->presentCalls, 0u);
     const auto boundary = NLS::Render::Context::DriverUIAccess::BuildUICompositionSyncBoundary(driver);
     EXPECT_FALSE(boundary.uiToPresentSignalSemaphore.IsValid());
     EXPECT_EQ(boundary.uiToPresentSignalValue, 0u);

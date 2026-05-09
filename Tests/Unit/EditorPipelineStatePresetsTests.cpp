@@ -98,12 +98,14 @@ TEST(EditorPipelineStatePresetsTests, GridPresetDisablesDepthWritingAndCulling)
     baseState.depthWriting = true;
     baseState.depthTest = true;
     baseState.culling = true;
+    baseState.blending = false;
 
     const auto gridState = NLS::Editor::Rendering::CreateEditorGridPipelineState(baseState);
 
     EXPECT_FALSE(gridState.depthWriting);
     EXPECT_TRUE(gridState.depthTest);
     EXPECT_FALSE(gridState.culling);
+    EXPECT_TRUE(gridState.blending);
 }
 
 TEST(EditorPipelineStatePresetsTests, DebugLinePresetDisablesDepthWritingAndCullingWhileKeepingDepthTest)

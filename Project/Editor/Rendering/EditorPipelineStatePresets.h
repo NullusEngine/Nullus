@@ -48,6 +48,7 @@ namespace NLS::Editor::Rendering
     {
         baseState = CreateEditorUnculledPipelineState(baseState);
         baseState.depthWriting = false;
+        baseState.blending = true;
         return baseState;
     }
 

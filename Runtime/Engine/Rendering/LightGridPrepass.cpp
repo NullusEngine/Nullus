@@ -18,6 +18,8 @@
 #include <Rendering/RHI/Utils/PipelineCache/PipelineCache.h>
 #include <Rendering/Settings/DriverSettings.h>
 
+#include <Profiling/Profiler.h>
+
 namespace
 {
     constexpr uint32_t kLightWordStride = 16u;
@@ -147,6 +149,7 @@ namespace NLS::Engine::Rendering
         const NLS::Render::Data::LightingDescriptor& lightingDescriptor,
         const bool hasSkyboxTexture)
     {
+        NLS_PROFILE_SCOPE();
         PreparedFrameInputs preparedInputs;
         preparedInputs.hasSkyboxTexture = hasSkyboxTexture;
         preparedInputs.lights.reserve(lightingDescriptor.lights.size());
@@ -176,6 +179,7 @@ namespace NLS::Engine::Rendering
         const NLS::Render::Data::LightingDescriptor& lightingDescriptor,
         const bool hasSkyboxTexture)
     {
+        NLS_PROFILE_SCOPE();
         return Prepare(
             frameDescriptor,
             CaptureFrameInputs(lightingDescriptor, hasSkyboxTexture));
@@ -185,6 +189,7 @@ namespace NLS::Engine::Rendering
         const NLS::Render::Data::FrameDescriptor& frameDescriptor,
         const PreparedFrameInputs& preparedFrameInputs)
     {
+        NLS_PROFILE_SCOPE();
         m_computeDispatchInputs.clear();
         m_graphicsPassBindingSet.reset();
 
@@ -369,6 +374,7 @@ namespace NLS::Engine::Rendering
     NLS::Render::FrameGraph::PreparedComputeDispatchSource LightGridPrepass::BuildPreparedComputeDispatchSource(
         const PreparedComputeRequest& preparedComputeRequest)
     {
+        NLS_PROFILE_SCOPE();
         const auto& lightGridPrepass = preparedComputeRequest.lightGridPrepass;
         const auto& preparedFrameInputs = preparedComputeRequest.preparedFrameInputs;
         if (lightGridPrepass == nullptr)
@@ -411,6 +417,7 @@ namespace NLS::Engine::Rendering
 
     bool LightGridPrepass::EnsureShadersLoaded()
     {
+        NLS_PROFILE_SCOPE();
         if (!NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::ShaderManager>())
         {
             LogLightGridHotPathFailure(m_driver, "LightGridPrepass requires ShaderManager to resolve engine shader assets.");
@@ -431,6 +438,7 @@ namespace NLS::Engine::Rendering
 
     bool LightGridPrepass::EnsurePipelines()
     {
+        NLS_PROFILE_SCOPE();
         auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_driver);
         auto pipelineCache = NLS::Render::Context::DriverRendererAccess::GetPipelineCache(m_driver);
         if (device == nullptr || m_injectionShader == nullptr || m_compactShader == nullptr)

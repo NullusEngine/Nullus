@@ -4,6 +4,7 @@
 #include <utility>
 #include <vector>
 
+#include "Profiling/Profiler.h"
 #include "Rendering/FrameGraph/SceneRenderGraphBuilderInternal.h"
 
 namespace NLS::Render::FrameGraph
@@ -204,6 +205,7 @@ namespace NLS::Render::FrameGraph
         ::FrameGraph& frameGraph,
         const NLS::Render::Data::FrameDescriptor& frameDescriptor)
     {
+        NLS_PROFILE_SCOPE();
         frameGraph.reserve(
             3,
             !FrameTargetsSwapchain(frameDescriptor) ? 2 : 0);
@@ -216,6 +218,7 @@ namespace NLS::Render::FrameGraph
         const char* colorResourceName,
         const char* depthResourceName)
     {
+        NLS_PROFILE_SCOPE();
         PreparedForwardSceneGraph preparedGraph;
         ImportSceneRenderTargets(
             frameGraph,
@@ -237,6 +240,7 @@ namespace NLS::Render::FrameGraph
         const PreparedForwardSceneGraph& preparedGraph,
         const ForwardSceneGraphExecutionCallbacks& callbacks)
     {
+        NLS_PROFILE_SCOPE();
         DispatchForwardCompiledGraphPasses(
             frameGraph,
             preparedGraph.execution.preparedComputeSource,
@@ -266,6 +270,7 @@ namespace NLS::Render::FrameGraph
         NLS::Render::Context::RenderScenePackage& package,
         const LightGridCompileContext& lightGridContext)
     {
+        NLS_PROFILE_SCOPE();
         return CompileAndApplyThreadedRenderSceneExecution(
             package,
             lightGridContext.frameDescriptor,
@@ -293,6 +298,7 @@ namespace NLS::Render::FrameGraph
         NLS::Render::Context::RenderScenePackage& package,
         const NLS::Render::Data::FrameDescriptor& frameDescriptor)
     {
+        NLS_PROFILE_SCOPE();
         if (!package.targetsSwapchain &&
             BuildExternalSceneOutputSummary(frameDescriptor).hasExternalOutput)
         {

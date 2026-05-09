@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <utility>
 
+#include "Profiling/Profiler.h"
+
 namespace NLS::Render::Context
 {
 namespace
@@ -110,6 +112,7 @@ bool ThreadedRenderingLifecycle::TryPublishPreparedFrame(
     const RenderScenePackage& renderScenePackage,
     size_t* publishedSlotIndex)
 {
+    NLS_PROFILE_SCOPE();
     std::lock_guard<std::mutex> lock(m_mutex);
     return PublishPreparedFrameLocked(snapshot, renderScenePackage, publishedSlotIndex);
 }
@@ -119,6 +122,7 @@ bool ThreadedRenderingLifecycle::TryPublishPreparedFrameBuilder(
     PreparedRenderSceneBuilder renderSceneBuilder,
     size_t* publishedSlotIndex)
 {
+    NLS_PROFILE_SCOPE();
     std::lock_guard<std::mutex> lock(m_mutex);
     return PublishPreparedFrameBuilderLocked(snapshot, std::move(renderSceneBuilder), publishedSlotIndex);
 }
@@ -129,6 +133,7 @@ bool ThreadedRenderingLifecycle::PublishPreparedFrameBuilder(
     const std::chrono::nanoseconds retirementWaitTimeout,
     size_t* publishedSlotIndex)
 {
+    NLS_PROFILE_SCOPE();
     std::unique_lock<std::mutex> lock(m_mutex);
     InFlightFrameSlot* slot = FindReusableSlotLocked();
     if (slot == nullptr)
@@ -157,6 +162,7 @@ bool ThreadedRenderingLifecycle::PublishFrameSnapshot(
     const std::chrono::nanoseconds retirementWaitTimeout,
     size_t* publishedSlotIndex)
 {
+    NLS_PROFILE_SCOPE();
     std::unique_lock<std::mutex> lock(m_mutex);
     InFlightFrameSlot* slot = FindReusableSlotLocked();
     if (slot == nullptr)
@@ -272,6 +278,7 @@ bool ThreadedRenderingLifecycle::PublishPreparedFrameBuilderLocked(
 
 bool ThreadedRenderingLifecycle::TryBeginNextRenderFrameBuild(size_t* slotIndex, RenderFrameInput* renderFrameInput)
 {
+    NLS_PROFILE_SCOPE();
     std::lock_guard<std::mutex> lock(m_mutex);
     for (auto& slot : m_slots)
     {
@@ -327,6 +334,7 @@ bool ThreadedRenderingLifecycle::CompleteRenderScene(
     const RenderScenePackage& renderScenePackage,
     const RenderSceneAttribution attribution)
 {
+    NLS_PROFILE_SCOPE();
     std::lock_guard<std::mutex> lock(m_mutex);
     auto* slot = const_cast<InFlightFrameSlot*>(PeekSlotLocked(slotIndex));
     if (slot == nullptr || slot->stage != ThreadedFrameStage::RenderScenePreparing)
@@ -345,6 +353,7 @@ bool ThreadedRenderingLifecycle::ResolveRenderScenePreparing(
     const size_t slotIndex,
     const RenderScenePreparingResolutionDesc& resolutionDesc)
 {
+    NLS_PROFILE_SCOPE();
     FrameSnapshot snapshot;
     ThreadedFramePublishOrigin publishOrigin = ThreadedFramePublishOrigin::Unknown;
     PreparedRenderSceneBuilder renderSceneBuilder;
@@ -395,6 +404,7 @@ bool ThreadedRenderingLifecycle::ResolveRenderScenePreparing(
 
 bool ThreadedRenderingLifecycle::TryBeginNextRhiFrameExecution(size_t* slotIndex, RenderFrameBuild* renderFrameBuild)
 {
+    NLS_PROFILE_SCOPE();
     std::lock_guard<std::mutex> lock(m_mutex);
     for (auto& slot : m_slots)
     {
@@ -450,6 +460,7 @@ bool ThreadedRenderingLifecycle::CompleteRhiSubmission(
     const RhiSubmissionFrame& submissionFrame,
     const RhiSubmissionAttribution attribution)
 {
+    NLS_PROFILE_SCOPE();
     std::lock_guard<std::mutex> lock(m_mutex);
     auto* slot = const_cast<InFlightFrameSlot*>(PeekSlotLocked(slotIndex));
     if (slot == nullptr || slot->stage != ThreadedFrameStage::RhiSubmitting)
@@ -463,6 +474,7 @@ bool ThreadedRenderingLifecycle::CompleteRhiSubmission(
 
 bool ThreadedRenderingLifecycle::RetireFrame(const size_t slotIndex)
 {
+    NLS_PROFILE_SCOPE();
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         auto* slot = const_cast<InFlightFrameSlot*>(PeekSlotLocked(slotIndex));

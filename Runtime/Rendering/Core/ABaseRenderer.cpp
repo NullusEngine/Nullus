@@ -305,6 +305,8 @@ bool ABaseRenderer::BeginRecordedRenderPass(
     bool p_clearStencil,
     const Maths::Vector4& p_clearValue)
 {
+    NLS_PROFILE_SCOPE();
+
     auto commandBuffer = GetActiveExplicitCommandBuffer();
     if (commandBuffer == nullptr)
         return false;
@@ -381,6 +383,8 @@ bool ABaseRenderer::BeginRecordedRenderPass(
     bool p_clearStencil,
     const Maths::Vector4& p_clearValue)
 {
+    NLS_PROFILE_SCOPE();
+
     auto commandBuffer = GetActiveExplicitCommandBuffer();
     if (commandBuffer == nullptr || p_framebuffer == nullptr)
         return false;
@@ -430,6 +434,8 @@ bool ABaseRenderer::BeginOutputRenderPass(
     bool p_clearStencil,
     const Maths::Vector4& p_clearValue)
 {
+    NLS_PROFILE_SCOPE();
+
     return BeginRecordedRenderPass(
         NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(m_frameDescriptor),
         p_width,
@@ -442,6 +448,8 @@ bool ABaseRenderer::BeginOutputRenderPass(
 
 void ABaseRenderer::EndRecordedRenderPass()
 {
+    NLS_PROFILE_SCOPE();
+
     auto commandBuffer = GetActiveExplicitCommandBuffer();
     if (commandBuffer == nullptr || !m_recordedRenderPassActive)
         return;
@@ -453,6 +461,8 @@ void ABaseRenderer::EndRecordedRenderPass()
 
 void ABaseRenderer::EndOutputRenderPass(const bool p_startedRecordedPass)
 {
+    NLS_PROFILE_SCOPE();
+
     if (p_startedRecordedPass)
         EndRecordedRenderPass();
 }

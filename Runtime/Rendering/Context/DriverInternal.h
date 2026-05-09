@@ -184,6 +184,7 @@ namespace NLS::Render::Context
             const ParallelCommandWorkUnit& workUnit,
             const std::vector<WorkUnitDependencyEdge>& dependencyEdges);
         NLS_RENDER_API const char* ToPassDebugName(RenderPassCommandKind kind);
+        NLS_RENDER_API const char* ResolvePassProfileScopeName(const RenderPassCommandInput& input);
         NLS_RENDER_API bool IsPassRecordable(
             const RenderScenePackage& package,
             const RenderPassCommandInput& input);

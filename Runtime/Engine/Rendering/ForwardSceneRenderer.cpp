@@ -16,6 +16,8 @@
 #include <Rendering/Settings/GraphicsBackendUtils.h>
 #include <Rendering/Settings/DriverSettings.h>
 
+#include <Profiling/Profiler.h>
+
 #include "Rendering/ScenePipelineStatePresets.h"
 
 namespace
@@ -43,6 +45,7 @@ namespace NLS::Engine::Rendering
 		NLS::Render::Context::RenderPassCommandKind kind,
 		NLS::Render::Data::PipelineState pipelineState)
 	{
+		NLS_PROFILE_SCOPE();
 		switch (NLS::Render::FrameGraph::GetForwardScenePassExecutionKind(kind))
 		{
 		case NLS::Render::FrameGraph::ForwardScenePassExecutionKind::Opaque:
@@ -61,6 +64,7 @@ namespace NLS::Engine::Rendering
 
 	void ForwardSceneRenderer::BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor)
 	{
+		NLS_PROFILE_SCOPE();
 		NLS_ASSERT(HasFrameObjectBindingProvider(), "ForwardSceneRenderer requires a renderer-owned frame/object binding provider.");
 		BaseSceneRenderer::BeginFrame(p_frameDescriptor);
 		auto drawables = ParseScene();
@@ -143,6 +147,7 @@ namespace NLS::Engine::Rendering
 
 	void ForwardSceneRenderer::DrawFrame()
 	{
+		NLS_PROFILE_SCOPE();
 		const bool usesThreadedRendering = NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
 
 		// In threaded rendering mode, the Game Thread only captured immutable per-draw inputs.
@@ -213,6 +218,7 @@ namespace NLS::Engine::Rendering
 
 	void ForwardSceneRenderer::DrawOpaques(NLS::Render::Data::PipelineState pso)
 	{
+		NLS_PROFILE_SCOPE();
 		const auto& scene = GetDescriptor<ForwardSceneDescriptor>();
 
 		for (const auto& [_, drawable] : scene.drawables.opaques)
@@ -225,6 +231,7 @@ namespace NLS::Engine::Rendering
 
 	void ForwardSceneRenderer::DrawSkyboxes(NLS::Render::Data::PipelineState pso)
 	{
+		NLS_PROFILE_SCOPE();
 		const auto& scene = GetDescriptor<ForwardSceneDescriptor>();
 
 		if (ShouldSkipSkyboxDrawForDiagnostics(m_driver))
@@ -248,6 +255,7 @@ namespace NLS::Engine::Rendering
 
 	void ForwardSceneRenderer::DrawTransparents(NLS::Render::Data::PipelineState pso)
 	{
+		NLS_PROFILE_SCOPE();
 		const auto& scene = GetDescriptor<ForwardSceneDescriptor>();
 
 		NLS::Render::Resources::MaterialPipelineStateOverrides transparentOverrides;

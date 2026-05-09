@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 
+#include "Profiling/Profiler.h"
 #include "Rendering/Core/CompositeRenderer.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 
@@ -15,6 +16,7 @@ CompositeRenderer::CompositeRenderer(Context::Driver& p_driver)
 
 void CompositeRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
 {
+    NLS_PROFILE_SCOPE();
     ABaseRenderer::BeginFrame(p_frameDescriptor);
     m_rendererStats.BeginFrame();
 
@@ -32,6 +34,7 @@ void CompositeRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescripto
 
 void CompositeRenderer::DrawFrame()
 {
+    NLS_PROFILE_SCOPE();
     DrawRegisteredPasses();
 }
 
@@ -42,6 +45,17 @@ void CompositeRenderer::ExecutePass(Core::ARenderPass& pass)
 
 void CompositeRenderer::ExecutePass(Core::ARenderPass& pass, PipelineState pso)
 {
+    std::string passName = "CompositeRenderPass";
+    for (const auto& [_, registeredPass] : m_passes)
+    {
+        if (registeredPass.second.get() == &pass)
+        {
+            passName = registeredPass.first;
+            break;
+        }
+    }
+    NLS_PROFILE_NAMED_SCOPE(passName.c_str());
+
     const auto commandBuffer = GetActiveExplicitCommandBuffer();
     if (commandBuffer != nullptr && !pass.ManagesOwnRenderPass())
     {
@@ -66,11 +80,13 @@ void CompositeRenderer::ExecutePass(Core::ARenderPass& pass, PipelineState pso)
 
 void CompositeRenderer::DrawRegisteredPasses()
 {
+    NLS_PROFILE_SCOPE();
     DrawRegisteredPasses(CreatePipelineState());
 }
 
 void CompositeRenderer::DrawRegisteredPasses(PipelineState pso)
 {
+    NLS_PROFILE_SCOPE();
     for (const auto& [_, pass] : m_passes)
     {
         if (pass.second->IsEnabled())
@@ -80,6 +96,7 @@ void CompositeRenderer::DrawRegisteredPasses(PipelineState pso)
 
 void CompositeRenderer::EndFrame()
 {
+    NLS_PROFILE_SCOPE();
     for (const auto& [_, pass] : m_passes)
     {
         if (pass.second->IsEnabled())
@@ -104,6 +121,7 @@ void CompositeRenderer::DrawEntity(
     const Entities::Drawable& p_drawable
 )
 {
+    NLS_PROFILE_SCOPE();
     const bool usesThreadedRendering = Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
 
     if (m_frameObjectBindingProvider != nullptr)
@@ -144,6 +162,7 @@ void CompositeRenderer::DrawEntity(
     Resources::MaterialPipelineStateOverrides pipelineOverrides,
     Settings::EComparaisonAlgorithm depthCompareOverride)
 {
+    NLS_PROFILE_SCOPE();
     auto effectivePso = CreatePipelineState();
     const bool usesThreadedRendering = Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
 

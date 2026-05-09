@@ -266,6 +266,7 @@ namespace NLS::Render::Context
             const Render::RHI::RHIFrameContext& frameContext,
             const bool includeUiCompositionSignal)
         {
+            NLS_PROFILE_SCOPE();
             if (impl.renderDocCaptureController != nullptr)
                 impl.renderDocCaptureController->OnPrePresent();
 
@@ -284,6 +285,7 @@ namespace NLS::Render::Context
 
         void FinalizeStandaloneUiFrame(DriverImpl& impl)
         {
+            NLS_PROFILE_SCOPE();
             auto* frameContext = GetCurrentFrameContext(impl);
             if (frameContext == nullptr)
                 return;
@@ -1104,9 +1106,7 @@ namespace NLS::Render::Context
                     ResolveEffectiveQueueTypeForPass(workUnit.commandInput);
                 if (workUnit.debugName.empty())
                 {
-                    workUnit.debugName = !workUnit.commandInput.debugName.empty()
-                        ? workUnit.commandInput.debugName
-                        : ToThreadedPassDebugName(workUnit.commandInput.kind);
+                    workUnit.debugName = Detail::ResolvePassProfileScopeName(workUnit.commandInput);
                 }
                 workUnit.eligibleForParallelRecording =
                     parallelRecordingReady && workUnit.eligibleForParallelRecording;
@@ -1130,9 +1130,7 @@ namespace NLS::Render::Context
             workUnit.commandInput = passInput;
             workUnit.commandInput.queueType =
                 ResolveEffectiveQueueTypeForPass(workUnit.commandInput);
-            workUnit.debugName = !passInput.debugName.empty()
-                ? passInput.debugName
-                : ToThreadedPassDebugName(passInput.kind);
+            workUnit.debugName = Detail::ResolvePassProfileScopeName(passInput);
             const bool eligible = IsPassEligibleForParallelRecording(passInput);
             workUnit.eligibleForParallelRecording = parallelRecordingReady && eligible;
             workUnit.eligibleForParallelTranslation = parallelTranslationReady && eligible;
@@ -1302,8 +1300,9 @@ namespace NLS::Render::Context
                 return recordedWorkUnit;
             }
 
+            const auto* passProfileScopeName = Detail::ResolvePassProfileScopeName(passInput);
             auto commandBuffer = commandPool->CreateCommandBuffer(
-                !workUnit.debugName.empty() ? workUnit.debugName : Detail::ToPassDebugName(passInput.kind));
+                !workUnit.debugName.empty() ? workUnit.debugName : passProfileScopeName);
             if (commandBuffer == nullptr)
             {
                 Detail::LogSkippedPass(renderScenePackage, passInput, "CreateCommandBuffer failed");
@@ -1313,7 +1312,8 @@ namespace NLS::Render::Context
             commandBuffer->Begin();
             if (passInput.kind == RenderPassCommandKind::Compute)
             {
-                commandBuffer->BeginGpuProfileScope("ThreadedParallelComputePass", __FUNCTION__);
+                NLS_PROFILE_NAMED_SCOPE(passProfileScopeName);
+                commandBuffer->BeginGpuProfileScope(passProfileScopeName, __FUNCTION__);
                 const auto recordedDispatchCount = Detail::RecordComputeDispatches(
                     *commandBuffer,
                     passInput.computeDispatchInputs,
@@ -1359,7 +1359,9 @@ namespace NLS::Render::Context
                 return recordedWorkUnit;
             }
 
-            commandBuffer->BeginGpuProfileScope(ToThreadedPassDebugName(effectivePassInput.kind), __FUNCTION__);
+            const auto* effectivePassProfileScopeName = Detail::ResolvePassProfileScopeName(effectivePassInput);
+            NLS_PROFILE_NAMED_SCOPE(effectivePassProfileScopeName);
+            commandBuffer->BeginGpuProfileScope(effectivePassProfileScopeName, __FUNCTION__);
             const auto recordedDrawCount =
                 Detail::RecordPreparedDrawCommandsForPass(commandBuffer.get(), effectivePassInput);
             commandBuffer->EndGpuProfileScope();
@@ -1996,7 +1998,9 @@ namespace NLS::Render::Context
                         if (!beginMainCommandBufferIfNeeded())
                             continue;
 
-                        frameContext.commandBuffer->BeginGpuProfileScope("ThreadedComputePass", __FUNCTION__);
+                        const auto* passProfileScopeName = Detail::ResolvePassProfileScopeName(passInput);
+                        NLS_PROFILE_NAMED_SCOPE(passProfileScopeName);
+                        frameContext.commandBuffer->BeginGpuProfileScope(passProfileScopeName, __FUNCTION__);
                         const auto recordedDispatches = Detail::RecordComputeDispatches(
                             *frameContext.commandBuffer,
                             passInput.computeDispatchInputs,
@@ -2055,7 +2059,10 @@ namespace NLS::Render::Context
                     }
 
                     recordedAnyCommand = true;
-                    frameContext.commandBuffer->BeginGpuProfileScope(ToThreadedPassDebugName(effectivePassInput.kind), __FUNCTION__);
+                    const auto* effectivePassProfileScopeName =
+                        Detail::ResolvePassProfileScopeName(effectivePassInput);
+                    NLS_PROFILE_NAMED_SCOPE(effectivePassProfileScopeName);
+                    frameContext.commandBuffer->BeginGpuProfileScope(effectivePassProfileScopeName, __FUNCTION__);
                     const auto recordedDrawCount = Detail::RecordPreparedDrawCommandsForPass(
                         frameContext.commandBuffer.get(),
                         effectivePassInput);
@@ -2146,6 +2153,7 @@ namespace NLS::Render::Context
 
         for (size_t batchIndex = 0u; batchIndex < submitPlan.batches.size(); ++batchIndex)
         {
+            NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::SubmitBatch");
             auto& batch = submitPlan.batches[batchIndex];
             auto queue = batch.queueType == Render::RHI::QueueType::Compute
                 ? computeQueue
@@ -2186,6 +2194,7 @@ namespace NLS::Render::Context
                 impl.explicitSwapchain != nullptr &&
                 batch.queueType == Render::RHI::QueueType::Graphics)
             {
+                NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::Present");
                 if (impl.renderDocCaptureController != nullptr)
                     impl.renderDocCaptureController->OnPrePresent();
 

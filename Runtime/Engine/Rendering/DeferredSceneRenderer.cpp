@@ -20,6 +20,8 @@
 #include <Rendering/Resources/TextureCube.h>
 #include <Rendering/Settings/EPrimitiveMode.h>
 
+#include <Profiling/Profiler.h>
+
 #include "Rendering/ScenePipelineStatePresets.h"
 
 namespace
@@ -101,6 +103,7 @@ namespace NLS::Engine::Rendering
 
 	void DeferredSceneRenderer::BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor)
 	{
+		NLS_PROFILE_SCOPE();
 		NLS_ASSERT(HasFrameObjectBindingProvider(), "DeferredSceneRenderer requires a renderer-owned frame/object binding provider.");
 		BaseSceneRenderer::BeginFrame(p_frameDescriptor);
 
@@ -232,6 +235,7 @@ namespace NLS::Engine::Rendering
 
 	void DeferredSceneRenderer::DrawFrame()
 	{
+		NLS_PROFILE_SCOPE();
 		const bool usesThreadedRendering = NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
 
 		// NOTE: Deferred rendering with threaded RHI requires proper GBuffer-to-Lighting
@@ -322,6 +326,7 @@ namespace NLS::Engine::Rendering
 
 	void DeferredSceneRenderer::LoadPipelineResources()
 	{
+		NLS_PROFILE_SCOPE();
 		using ShaderLoader = NLS::Render::Resources::Loaders::ShaderLoader;
 
 		m_gBufferShader = ShaderLoader::Create("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
@@ -344,6 +349,7 @@ namespace NLS::Engine::Rendering
 
 	void DeferredSceneRenderer::EnsureGBufferTargets(uint16_t width, uint16_t height)
 	{
+		NLS_PROFILE_SCOPE();
 		static const std::vector<NLS::Render::Buffers::MultiFramebuffer::AttachmentDesc> kAttachments{
 			{ NLS::Render::RHI::TextureFormat::RGBA8 },
 			{ NLS::Render::RHI::TextureFormat::RGBA8 },
@@ -383,6 +389,7 @@ namespace NLS::Engine::Rendering
 
 	NLS::Render::Resources::Material& DeferredSceneRenderer::GetOrCreateGBufferMaterial(NLS::Render::Resources::Material& sourceMaterial)
 	{
+		NLS_PROFILE_SCOPE();
 		const NLS::Render::Data::PipelineState pipelineState;
 		const auto cacheKey = NLS::Render::Resources::BuildMaterialPassVariantKey(
 			sourceMaterial,
@@ -411,6 +418,7 @@ namespace NLS::Engine::Rendering
 
 	void DeferredSceneRenderer::DrawGBufferOpaques(NLS::Render::Data::PipelineState pso)
 	{
+		NLS_PROFILE_SCOPE();
 		if (!m_gBufferShader)
 			return;
 
@@ -441,6 +449,7 @@ namespace NLS::Engine::Rendering
 
 	void DeferredSceneRenderer::DrawLightingPass(NLS::Render::Data::PipelineState pso)
 	{
+		NLS_PROFILE_SCOPE();
 		if (!m_lightingMaterial || !m_fullscreenQuad || !m_gBufferAlbedoTexture || !m_gBufferNormalTexture || !m_gBufferMaterialTexture)
 			return;
 

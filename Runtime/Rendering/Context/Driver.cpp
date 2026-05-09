@@ -180,6 +180,13 @@ namespace
         }
     }
 
+    const char* ResolvePassProfileScopeName(const RenderPassCommandInput& input)
+    {
+        return !input.debugName.empty()
+            ? input.debugName.c_str()
+            : ToPassDebugName(input.kind);
+    }
+
     bool ShouldLogThreadedRenderingDiagnostics()
     {
         return Render::Settings::GetThreadDiagnosticsSettings().logRenderDrawPath;
@@ -190,9 +197,7 @@ namespace
         if (!ShouldLogThreadedRenderingDiagnostics())
             return;
 
-        const auto passName = !passInput.debugName.empty()
-            ? passInput.debugName.c_str()
-            : ToPassDebugName(passInput.kind);
+        const auto passName = ResolvePassProfileScopeName(passInput);
         const auto message = std::string("[Driver] Skipped pass: ") + passName
             + " reason=" + reason
             + " frameId=" + std::to_string(package.frameId)
@@ -212,9 +217,7 @@ namespace
         {
             if (ShouldLogThreadedRenderingDiagnostics())
             {
-                const auto passName = !input.debugName.empty()
-                    ? input.debugName
-                    : ToPassDebugName(input.kind);
+                const auto passName = std::string(ResolvePassProfileScopeName(input));
                 NLS_LOG_WARNING("[Driver] BeginPassCommandPlan failed: command buffer is not recording for pass " + passName);
             }
             return false;
@@ -226,9 +229,7 @@ namespace
 
         Render::RHI::RHIRenderPassDesc renderPassDesc;
         renderPassDesc.renderArea = { 0, 0, input.renderWidth, input.renderHeight };
-        renderPassDesc.debugName = !input.debugName.empty()
-            ? input.debugName
-            : ToPassDebugName(input.kind);
+        renderPassDesc.debugName = ResolvePassProfileScopeName(input);
         renderPassDesc.attachmentsRequireExternalStateTransitions = useResourceStateTracker;
 
         if (input.usesColorAttachment)
@@ -257,9 +258,7 @@ namespace
                 {
                     if (ShouldLogThreadedRenderingDiagnostics())
                     {
-                        const auto passName = !input.debugName.empty()
-                            ? input.debugName
-                            : ToPassDebugName(input.kind);
+                        const auto passName = std::string(ResolvePassProfileScopeName(input));
                         NLS_LOG_WARNING("[Driver] BeginPassCommandPlan failed: swapchain backbuffer view is null for pass " + passName);
                     }
                     return false;
@@ -767,9 +766,7 @@ namespace
             pipelineDesc.renderTargetLayout.hasDepth &&
             (!passInput.usesDepthStencilAttachment || passInput.depthStencilAttachmentView == nullptr))
         {
-            const auto passName = !passInput.debugName.empty()
-                ? passInput.debugName
-                : ToPassDebugName(passInput.kind);
+            const auto passName = std::string(ResolvePassProfileScopeName(passInput));
             NLS_LOG_WARNING(
                 "[Driver] Depth PSO recorded without DSV: pass=" + passName +
                 " pipeline=" + pipelineDesc.debugName +
@@ -817,6 +814,8 @@ namespace
         Render::RHI::RHICommandBuffer* commandBuffer,
         const RenderPassCommandInput& input)
     {
+        NLS_PROFILE_NAMED_SCOPE(ResolvePassProfileScopeName(input));
+
         if (commandBuffer == nullptr)
             return input.recordedDrawCommands.empty() ? input.drawCount : 0u;
 
@@ -1081,6 +1080,8 @@ namespace
         const std::vector<RecordedComputeDispatchInput>& dispatchInputs,
         const bool recordShaderReadBarriers)
     {
+        NLS_PROFILE_SCOPE();
+
         uint64_t recordedDispatchCount = 0u;
         for (const auto& dispatchInput : dispatchInputs)
         {
@@ -1281,6 +1282,11 @@ namespace
 const char* Detail::ToPassDebugName(const RenderPassCommandKind kind)
 {
     return NLS::Render::Context::ToPassDebugName(kind);
+}
+
+const char* Detail::ResolvePassProfileScopeName(const RenderPassCommandInput& input)
+{
+    return NLS::Render::Context::ResolvePassProfileScopeName(input);
 }
 
 bool Detail::IsPassRecordable(

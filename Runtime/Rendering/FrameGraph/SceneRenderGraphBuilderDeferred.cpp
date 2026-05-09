@@ -2,6 +2,7 @@
 
 #include <utility>
 
+#include "Profiling/Profiler.h"
 #include "Rendering/FrameGraph/SceneRenderGraphBuilderInternal.h"
 
 namespace NLS::Render::FrameGraph
@@ -357,6 +358,7 @@ namespace NLS::Render::FrameGraph
     DeferredPreparedSceneResources CaptureDeferredPreparedSceneResources(
         const DeferredPreparedSceneResourceRequest& request)
     {
+        NLS_PROFILE_SCOPE();
         DeferredPreparedSceneResources resources;
         if (request.gBuffer == nullptr)
             return resources;
@@ -444,6 +446,7 @@ namespace NLS::Render::FrameGraph
         ::FrameGraph& frameGraph,
         const DeferredGraphSceneResourceRequest& resourceRequest)
     {
+        NLS_PROFILE_SCOPE();
         const bool hasExternalOutput =
             resourceRequest.frameDescriptor != nullptr &&
             ResolveExternalSceneOutputFramebuffer(*resourceRequest.frameDescriptor) != nullptr;
@@ -454,6 +457,7 @@ namespace NLS::Render::FrameGraph
         const DeferredGraphSceneResourceRequest& resourceRequest,
         const LightGridCompileContext& lightGridContext)
     {
+        NLS_PROFILE_SCOPE();
         PreparedDeferredSceneGraph preparedGraph;
         preparedGraph.resources = ImportDeferredSceneGraphResources(resourceRequest);
         preparedGraph.execution = Detail::CompilePreparedSceneGraphExecution(
@@ -469,6 +473,7 @@ namespace NLS::Render::FrameGraph
         const PreparedDeferredSceneGraph& preparedGraph,
         const DeferredSceneGraphExecutionCallbacks& callbacks)
     {
+        NLS_PROFILE_SCOPE();
         const auto addCompiledGBufferPass = [&frameGraph, &preparedGraph, &callbacks](
             const CompiledThreadedRenderSceneGraphPass& compiledPass) -> const DeferredGBufferGraphPassData&
         {
@@ -542,6 +547,7 @@ namespace NLS::Render::FrameGraph
         const LightGridCompileContext& lightGridContext,
         const DeferredPreparedSceneResources& resources)
     {
+        NLS_PROFILE_SCOPE();
         const auto opaqueDrawCount = package.opaqueDrawCount;
         const auto recordedDrawCommands = package.recordedDrawCommands;
         return CompileAndApplyThreadedRenderSceneExecution(
@@ -574,6 +580,7 @@ namespace NLS::Render::FrameGraph
         NLS::Render::Context::RenderScenePackage& package,
         const NLS::Render::Data::FrameDescriptor& frameDescriptor)
     {
+        NLS_PROFILE_SCOPE();
         ApplyExternalSceneOutputAttachments(
             package,
             frameDescriptor,

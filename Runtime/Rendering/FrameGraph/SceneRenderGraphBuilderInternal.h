@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <vector>
 
+#include "Profiling/Profiler.h"
 #include "Rendering/FrameGraph/SceneRenderGraphBuilderLightGrid.h"
 
 namespace NLS::Render::FrameGraph::Detail
@@ -46,6 +47,7 @@ namespace NLS::Render::FrameGraph::Detail
         const int32_t importedDepth,
         const TMetadataRange& scenePassMetadataRange)
     {
+        NLS_PROFILE_SCOPE();
         PreparedSceneGraphExecution execution;
         execution.preparedComputeSource = BuildPreparedLightGridDispatchSource(lightGridContext);
         execution.compiledExecution = CompileThreadedRenderSceneExecution(

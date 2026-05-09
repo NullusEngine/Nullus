@@ -11,6 +11,7 @@
 #include "Rendering/Context/RenderScenePackageBuilder.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/FrameGraph/ExternalResourceBridge.h"
+#include "Profiling/Profiler.h"
 #include "Components/MeshRenderer.h"
 #include "Components/MaterialRenderer.h"
 #include "Components/TransformComponent.h"
@@ -73,6 +74,7 @@ BaseSceneRenderer::~BaseSceneRenderer() = default;
 
 void BaseSceneRenderer::BeginFrame(const Render::Data::FrameDescriptor& p_frameDescriptor)
 {
+	NLS_PROFILE_SCOPE();
 	NLS_ASSERT(HasDescriptor<SceneDescriptor>(), "Cannot find SceneDescriptor attached to this renderer");
 
 	auto& sceneDescriptor = GetDescriptor<SceneDescriptor>();
@@ -87,6 +89,7 @@ void BaseSceneRenderer::BeginFrame(const Render::Data::FrameDescriptor& p_frameD
 std::optional<Render::Context::FrameSnapshot> BaseSceneRenderer::BuildFrameSnapshot(
 	const Render::Data::FrameDescriptor& frameDescriptor) const
 {
+	NLS_PROFILE_SCOPE();
 	auto snapshot = Render::Core::ABaseRenderer::BuildFrameSnapshot(frameDescriptor);
 	if (!snapshot.has_value())
 		return snapshot;
@@ -126,6 +129,7 @@ const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& BaseSceneRenderer::GetLi
 NLS::Render::FrameGraph::LightGridCompileContext BaseSceneRenderer::BuildLightGridCompileContext(
 	const bool hasSkyboxTexture) const
 {
+	NLS_PROFILE_SCOPE();
 	const auto frameSnapshot =
 		NLS::Render::FrameGraph::CaptureExternalSceneOutputSnapshot(GetFrameDescriptor());
 	const auto preparedComputeRequest = LightGridPrepass::BuildPreparedComputeRequest(
@@ -143,6 +147,7 @@ NLS::Render::FrameGraph::LightGridCompileContext BaseSceneRenderer::BuildLightGr
 std::optional<LightGridPrepass::PreparedFrameInputs> BaseSceneRenderer::BuildLightGridFrameInputs(
 	const bool hasSkyboxTexture) const
 {
+	NLS_PROFILE_SCOPE();
 	if (m_lightGridPrepass == nullptr || !HasDescriptor<LightingDescriptor>())
 		return std::nullopt;
 
@@ -175,6 +180,7 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 	const Drawable& drawable,
 	PreparedRecordedDraw& outDraw)
 {
+	NLS_PROFILE_SCOPE();
 	auto* bindingProvider = GetFrameObjectBindingProvider();
 	if (bindingProvider != nullptr)
 		bindingProvider->PrepareDraw(pso, drawable);
@@ -205,6 +211,7 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 	Render::Settings::EComparaisonAlgorithm depthCompareOverride,
 	PreparedRecordedDraw& outDraw)
 {
+	NLS_PROFILE_SCOPE();
 	auto effectivePso = CreatePipelineState();
 	auto* bindingProvider = GetFrameObjectBindingProvider();
 	if (bindingProvider != nullptr)
@@ -240,6 +247,7 @@ Render::Context::RenderScenePackage BaseSceneRenderer::BuildSnapshotOwnedRenderS
 Render::Context::RenderScenePackage BaseSceneRenderer::BuildRenderScenePackage(
 	const Render::Context::FrameSnapshot& snapshot) const
 {
+	NLS_PROFILE_SCOPE();
 	return BuildSnapshotOwnedRenderScenePackage(snapshot);
 }
 
@@ -255,6 +263,7 @@ const SceneLightingProvider& BaseSceneRenderer::GetSceneLightingProvider() const
 
 void BaseSceneRenderer::RefreshSceneLightingDescriptor(SceneSystem::Scene& scene)
 {
+	NLS_PROFILE_SCOPE();
 	m_sceneLightingProvider->Collect(scene);
 	AddDescriptor<LightingDescriptor>(LightingDescriptor{ GetSceneLightingProvider().GetLightingDescriptor().lights });
 }

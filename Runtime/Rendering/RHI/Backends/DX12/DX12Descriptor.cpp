@@ -6,6 +6,8 @@
 #include <utility>
 
 #include <Debug/Logger.h>
+#include "Rendering/RHI/Backends/DX12/DX12FormatUtils.h"
+#include "Rendering/RHI/Backends/DX12/DX12SamplerUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12TextureViewUtils.h"
 #include "Rendering/RHI/Core/RHIPipeline.h"
 #include "Rendering/RHI/Core/RHIResource.h"
@@ -41,6 +43,13 @@ namespace NLS::Render::Backend
 		, m_heapType(heapType)
 		, m_descriptorCapacity(descriptorCapacity)
 	{
+		NLS::Render::RHI::DescriptorRangeAllocatorDesc rangeDesc;
+		rangeDesc.transientCapacity = m_descriptorCapacity > 0u ? m_descriptorCapacity : 1u;
+		rangeDesc.persistentCapacity = m_descriptorCapacity;
+		rangeDesc.boundPersistentCapacity = true;
+		rangeDesc.debugName = m_heapDebugName;
+		m_rangeAllocator.Configure(rangeDesc);
+
 		if (m_device == nullptr)
 			return;
 
@@ -56,7 +65,6 @@ namespace NLS::Render::Backend
 		}
 
 		m_descriptorSize = m_device->GetDescriptorHandleIncrementSize(m_heapType);
-		m_freeDescriptors.push_back({0, m_descriptorCapacity});
 
 		D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = m_heap->GetGPUDescriptorHandleForHeapStart();
 		if (m_commandQueue != nullptr)
@@ -128,19 +136,13 @@ namespace NLS::Render::Backend
 
 	UINT DX12ShaderVisibleDescriptorHeapAllocator::Allocate(UINT count)
 	{
-		std::lock_guard<std::mutex> lock(m_mutex);
-		for (auto it = m_freeDescriptors.begin(); it != m_freeDescriptors.end(); ++it)
-		{
-			if (it->second >= count)
-			{
-				const UINT offset = it->first;
-				it->first += count;
-				it->second -= count;
-				if (it->second == 0)
-					m_freeDescriptors.erase(it);
-				return offset;
-			}
-		}
+		NLS::Render::RHI::DescriptorAllocationRequest request;
+		request.count = count;
+		request.lifetime = NLS::Render::RHI::DescriptorAllocationLifetime::Persistent;
+		request.debugName = m_heapDebugName;
+		const auto allocation = m_rangeAllocator.Allocate(request);
+		if (allocation.IsValid())
+			return static_cast<UINT>(allocation.offset);
 
 		NLS_LOG_ERROR(m_heapDebugName + ": Out of descriptors!");
 		return UINT_MAX;
@@ -148,8 +150,17 @@ namespace NLS::Render::Backend
 
 	void DX12ShaderVisibleDescriptorHeapAllocator::Free(UINT offset, UINT count)
 	{
-		std::lock_guard<std::mutex> lock(m_mutex);
-		m_freeDescriptors.push_back({offset, count});
+		NLS::Render::RHI::DescriptorAllocation allocation;
+		allocation.offset = offset;
+		allocation.count = count;
+		allocation.lifetime = NLS::Render::RHI::DescriptorAllocationLifetime::Persistent;
+		allocation.debugName = m_heapDebugName;
+		m_rangeAllocator.Release(allocation);
+	}
+
+	NLS::Render::RHI::DescriptorAllocatorStats DX12ShaderVisibleDescriptorHeapAllocator::GetStats() const
+	{
+		return m_rangeAllocator.GetStats();
 	}
 
 	NativeDX12BindingSet::NativeDX12BindingSet(
@@ -323,44 +334,6 @@ namespace NLS::Render::Backend
 			: (m_resourceHeapAllocator != nullptr ? m_resourceHeapAllocator->GetHeap() : nullptr);
 	}
 
-	D3D12_FILTER NativeDX12BindingSet::ToD3D12Filter(
-		NLS::Render::RHI::TextureFilter minFilter,
-		NLS::Render::RHI::TextureFilter magFilter)
-	{
-		if (minFilter == NLS::Render::RHI::TextureFilter::Nearest &&
-			magFilter == NLS::Render::RHI::TextureFilter::Nearest)
-		{
-			return D3D12_FILTER_MIN_MAG_MIP_POINT;
-		}
-
-		if (minFilter == NLS::Render::RHI::TextureFilter::Nearest)
-			return D3D12_FILTER_MIN_POINT_MAG_LINEAR_MIP_POINT;
-		if (magFilter == NLS::Render::RHI::TextureFilter::Nearest)
-			return D3D12_FILTER_MIN_LINEAR_MAG_MIP_POINT;
-		return D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-	}
-
-	D3D12_TEXTURE_ADDRESS_MODE NativeDX12BindingSet::ToD3D12AddressMode(NLS::Render::RHI::TextureWrap wrap)
-	{
-		return wrap == NLS::Render::RHI::TextureWrap::ClampToEdge
-			? D3D12_TEXTURE_ADDRESS_MODE_CLAMP
-			: D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-	}
-
-	D3D12_SAMPLER_DESC NativeDX12BindingSet::BuildSamplerDesc(const NLS::Render::RHI::SamplerDesc& desc)
-	{
-		D3D12_SAMPLER_DESC samplerDesc{};
-		samplerDesc.Filter = ToD3D12Filter(desc.minFilter, desc.magFilter);
-		samplerDesc.AddressU = ToD3D12AddressMode(desc.wrapU);
-		samplerDesc.AddressV = ToD3D12AddressMode(desc.wrapV);
-		samplerDesc.AddressW = ToD3D12AddressMode(desc.wrapW);
-		samplerDesc.MinLOD = 0.0f;
-		samplerDesc.MaxLOD = D3D12_FLOAT32_MAX;
-		samplerDesc.MaxAnisotropy = 1;
-		samplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-		return samplerDesc;
-	}
-
 	NLS::Render::RHI::DX12::DX12DescriptorRangeCategory NativeDX12BindingSet::ToRangeCategory(
 		NLS::Render::RHI::BindingType type)
 	{
@@ -446,7 +419,7 @@ namespace NLS::Render::Backend
 		const auto& samplerDesc = boundEntry != nullptr && boundEntry->sampler != nullptr
 			? boundEntry->sampler->GetDesc()
 			: defaultSamplerDesc;
-		const auto nativeSamplerDesc = BuildSamplerDesc(samplerDesc);
+		const auto nativeSamplerDesc = NLS::Render::RHI::DX12::BuildDX12SamplerDesc(samplerDesc);
 		m_device->CreateSampler(&nativeSamplerDesc, destination);
 	}
 
@@ -612,8 +585,8 @@ namespace NLS::Render::Backend
 			if (resource != nullptr &&
 				viewDesc != nullptr &&
 				texture != nullptr &&
-				viewDesc->format != NLS::Render::RHI::TextureFormat::Depth24Stencil8 &&
-				texture->GetDesc().format != NLS::Render::RHI::TextureFormat::Depth24Stencil8)
+				!NLS::Render::RHI::DX12::IsDepthStencilFormat(viewDesc->format) &&
+				!NLS::Render::RHI::DX12::IsDepthStencilFormat(texture->GetDesc().format))
 			{
 				if (layoutEntry->type == NLS::Render::RHI::BindingType::RWTexture)
 				{

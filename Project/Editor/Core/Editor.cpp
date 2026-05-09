@@ -761,26 +761,24 @@ void Editor::Core::Editor::RenderEditorUI(float p_deltaTime)
     if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
         NLS_LOG_INFO("Editor::RenderEditorUI: begin");
 
-    // Set up UI synchronization semaphores for all backends
-    // Get the semaphore that game rendering will signal (UI should wait on this)
-    void* renderFinishedSemaphore = Render::Context::DriverUIAccess::GetRenderFinishedSemaphore(*m_context.driver);
-    if (renderFinishedSemaphore != nullptr)
+    // Set up the explicit scene -> UI -> present synchronization boundary.
+    auto uiSyncBoundary = Render::Context::DriverUIAccess::BuildUICompositionSyncBoundary(*m_context.driver);
+    if (uiSyncBoundary.sceneToUiWaitSemaphore.IsValid())
     {
-        m_context.uiManager->SetWaitSemaphore(renderFinishedSemaphore);
+        m_context.uiManager->SetWaitSemaphore(uiSyncBoundary.sceneToUiWaitSemaphore);
     }
 
-    // Get the UI's signal semaphore (Driver will wait on this during Present)
     NLS::Render::RHI::NativeHandle uiSignalSemaphore = m_context.uiManager->ResolveUISignalSemaphore();
 
     EDITOR_CONTEXT(uiManager)->Render();
     if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
         NLS_LOG_INFO("Editor::RenderEditorUI: UIManager::Render returned");
 
-    if (uiSignalSemaphore.handle != nullptr)
+    if (uiSignalSemaphore.IsValid())
     {
-        Render::Context::DriverUIAccess::SetUISignalSemaphore(
+        Render::Context::DriverUIAccess::SetUICompositionSignal(
             *m_context.driver,
-            uiSignalSemaphore.handle,
+            uiSignalSemaphore,
             m_context.uiManager->ResolveUISignalValue());
     }
 

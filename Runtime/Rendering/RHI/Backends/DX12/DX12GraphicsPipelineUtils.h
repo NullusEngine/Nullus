@@ -21,5 +21,7 @@ namespace NLS::Render::RHI::DX12
     };
 
     NLS_RENDER_API DX12OwnedInputLayout BuildDX12OwnedInputLayout(const RHIGraphicsPipelineDesc& desc);
+    NLS_RENDER_API D3D12_BLEND_DESC BuildDX12BlendState(const RHIGraphicsPipelineDesc& desc);
+    NLS_RENDER_API D3D12_RASTERIZER_DESC BuildDX12RasterizerState(const RHIGraphicsPipelineDesc& desc);
 #endif
 }

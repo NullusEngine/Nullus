@@ -82,7 +82,7 @@ bool TextureCube::SetTextureResource(const std::vector<const NLS::Image*>& image
 	// The initial CreateRHITexture() only creates a 1x1 placeholder
 	if (m_explicitTexture != nullptr)
 	{
-		RecreateRHITextureIfNeeded(
+		return RecreateRHITextureIfNeeded(
 		    width,
 		    height,
 		    NLS::Render::RHI::TextureFormat::RGBA8,
@@ -91,8 +91,9 @@ bool TextureCube::SetTextureResource(const std::vector<const NLS::Image*>& image
 		    NLS::Render::RHI::TextureWrap::ClampToEdge,
 		    NLS::Render::RHI::TextureWrap::ClampToEdge,
 		    false, // no mipmap support for cubemap in this path
-		    packedFaces.data());
+		    packedFaces.data(),
+		    packedFaces.size());
 	}
 
-	return true;
+	return false;
 }

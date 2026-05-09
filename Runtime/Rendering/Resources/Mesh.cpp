@@ -5,6 +5,14 @@
 
 namespace NLS::Render::Resources
 {
+MeshVertexUploadView BuildMeshVertexUploadView(const std::vector<Geometry::Vertex>& vertices)
+{
+	MeshVertexUploadView view;
+	view.data = vertices.empty() ? nullptr : vertices.data();
+	view.byteSize = vertices.size() * sizeof(Geometry::Vertex);
+	return view;
+}
+
 Mesh::Mesh(const std::vector<Geometry::Vertex>& vertices, const std::vector<uint32_t>& indices, uint32_t materialIndex)
 	: m_vertexCount(static_cast<uint32_t>(vertices.size()))
 	, m_indicesCount(static_cast<uint32_t>(indices.size()))
@@ -57,31 +65,9 @@ const Render::Geometry::BoundingSphere& Mesh::GetBoundingSphere() const
 
 void Mesh::CreateBuffers(const std::vector<Geometry::Vertex>& vertices, const std::vector<uint32_t>& indices)
 {
-	std::vector<float> vertexData;
-
-	for (const auto& vertex : vertices)
-	{
-		vertexData.push_back(vertex.position[0]);
-		vertexData.push_back(vertex.position[1]);
-		vertexData.push_back(vertex.position[2]);
-
-		vertexData.push_back(vertex.texCoords[0]);
-		vertexData.push_back(vertex.texCoords[1]);
-
-		vertexData.push_back(vertex.normals[0]);
-		vertexData.push_back(vertex.normals[1]);
-		vertexData.push_back(vertex.normals[2]);
-
-		vertexData.push_back(vertex.tangent[0]);
-		vertexData.push_back(vertex.tangent[1]);
-		vertexData.push_back(vertex.tangent[2]);
-
-		vertexData.push_back(vertex.bitangent[0]);
-		vertexData.push_back(vertex.bitangent[1]);
-		vertexData.push_back(vertex.bitangent[2]);
-	}
-
-	m_vertexBuffer = std::make_unique<Buffers::VertexBuffer<float>>(vertexData);
+	m_vertexBuffer = std::make_unique<Buffers::VertexBuffer<Geometry::Vertex>>(
+		BuildMeshVertexUploadView(vertices).data,
+		vertices.size());
 	if (!indices.empty())
 		m_indexBuffer = std::make_unique<Buffers::IndexBuffer>(const_cast<uint32_t*>(indices.data()), indices.size());
 
@@ -105,9 +91,9 @@ void Mesh::ComputeBoundingSphere(const std::vector<Geometry::Vertex>& vertices)
 		float minY = std::numeric_limits<float>::max();
 		float minZ = std::numeric_limits<float>::max();
 
-		float maxX = std::numeric_limits<float>::min();
-		float maxY = std::numeric_limits<float>::min();
-		float maxZ = std::numeric_limits<float>::min();
+		float maxX = std::numeric_limits<float>::lowest();
+		float maxY = std::numeric_limits<float>::lowest();
+		float maxZ = std::numeric_limits<float>::lowest();
 
 		for (const auto& vertex : vertices)
 		{

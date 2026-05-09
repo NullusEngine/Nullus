@@ -35,10 +35,18 @@ TextureCube* TextureLoader::CreateCubeMap(const std::vector<std::string>& filePa
 	for (size_t i = 0; i < 6; ++i)
 	{
 		images.push_back(Image(filePaths[i], false));
+		if (images.back().GetData() == nullptr)
+		{
+			return nullptr;
+		}
 	}
 
 	auto cubeMap = new TextureCube();
-	cubeMap->SetTextureResource({&images[0], &images[1], &images[2], &images[3], &images[4], &images[5]});
+	if (!cubeMap->SetTextureResource({&images[0], &images[1], &images[2], &images[3], &images[4], &images[5]}))
+	{
+		delete cubeMap;
+		return nullptr;
+	}
 
 	return cubeMap;
 }

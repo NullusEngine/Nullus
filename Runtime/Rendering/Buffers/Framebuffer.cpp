@@ -83,14 +83,14 @@ NLS::Render::Buffers::Framebuffer::Framebuffer(uint16_t p_width, uint16_t p_heig
 		return;
 	}
 
-	m_explicitRenderTexture = device->CreateTexture(CreateColorTextureDesc(p_width, p_height, m_colorOptimizedClearValue), nullptr);
+	m_explicitRenderTexture = device->CreateTexture(CreateColorTextureDesc(p_width, p_height, m_colorOptimizedClearValue));
 	if (m_explicitRenderTexture == nullptr)
 	{
 		NLS_LOG_WARNING("Framebuffer: Failed to create color texture");
 		return;
 	}
 
-	m_explicitDepthStencilTexture = device->CreateTexture(CreateDepthTextureDesc(p_width, p_height), nullptr);
+	m_explicitDepthStencilTexture = device->CreateTexture(CreateDepthTextureDesc(p_width, p_height));
 	if (m_explicitDepthStencilTexture == nullptr)
 	{
 		NLS_LOG_WARNING("Framebuffer: Failed to create depth texture");
@@ -165,7 +165,7 @@ void NLS::Render::Buffers::Framebuffer::Resize(uint16_t p_width, uint16_t p_heig
 		return;
 	}
 
-	auto nextColorTexture = device->CreateTexture(CreateColorTextureDesc(p_width, p_height, m_colorOptimizedClearValue), nullptr);
+	auto nextColorTexture = device->CreateTexture(CreateColorTextureDesc(p_width, p_height, m_colorOptimizedClearValue));
 	if (nextColorTexture == nullptr)
 	{
 		NLS_LOG_WARNING("Framebuffer::Resize: Failed to recreate color texture");
@@ -173,7 +173,7 @@ void NLS::Render::Buffers::Framebuffer::Resize(uint16_t p_width, uint16_t p_heig
 		return;
 	}
 
-	auto nextDepthStencilTexture = device->CreateTexture(CreateDepthTextureDesc(p_width, p_height), nullptr);
+	auto nextDepthStencilTexture = device->CreateTexture(CreateDepthTextureDesc(p_width, p_height));
 	if (nextDepthStencilTexture == nullptr)
 	{
 		NLS_LOG_WARNING("Framebuffer::Resize: Failed to recreate depth texture");

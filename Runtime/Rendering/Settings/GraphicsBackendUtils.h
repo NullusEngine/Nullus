@@ -5,6 +5,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -31,6 +32,49 @@ namespace NLS::Render::Settings
 	{
 		std::optional<std::string> primaryWarning;
 		std::optional<std::string> detailWarning;
+	};
+
+	enum class RuntimeConsumer : uint8_t
+	{
+		Editor,
+		Game
+	};
+
+	enum class BackendPhaseGate : uint8_t
+	{
+		BackendSelection,
+		DeviceCreation,
+		CapabilityValidation,
+		RuntimeConsumer
+	};
+
+	enum class BackendPhaseGateSeverity : uint8_t
+	{
+		Info,
+		Warning,
+		Error
+	};
+
+	struct BackendPhaseGateDiagnostic
+	{
+		BackendPhaseGate phase = BackendPhaseGate::BackendSelection;
+		BackendPhaseGateSeverity severity = BackendPhaseGateSeverity::Info;
+		EGraphicsBackend backend = EGraphicsBackend::NONE;
+		std::string reason;
+	};
+
+	struct BackendPhaseGateReport
+	{
+		EGraphicsBackend requestedBackend = EGraphicsBackend::NONE;
+		EGraphicsBackend fallbackBackend = EGraphicsBackend::NONE;
+		RuntimeConsumer consumer = RuntimeConsumer::Editor;
+		std::vector<BackendPhaseGateDiagnostic> gates;
+		std::string summary;
+
+		bool AllowsRuntime() const
+		{
+			return gates.empty();
+		}
 	};
 
 	inline std::string NormalizeGraphicsBackendName(std::string_view value)
@@ -111,6 +155,42 @@ namespace NLS::Render::Settings
 		case EGraphicsBackend::OPENGL:
 		default:
 			return "OpenGL";
+		}
+	}
+
+	inline const char* ToString(RuntimeConsumer consumer)
+	{
+		switch (consumer)
+		{
+		case RuntimeConsumer::Game: return "Game";
+		case RuntimeConsumer::Editor:
+		default:
+			return "Editor";
+		}
+	}
+
+	inline const char* ToString(BackendPhaseGate phase)
+	{
+		switch (phase)
+		{
+		case BackendPhaseGate::BackendSelection: return "BackendSelection";
+		case BackendPhaseGate::DeviceCreation: return "DeviceCreation";
+		case BackendPhaseGate::CapabilityValidation: return "CapabilityValidation";
+		case BackendPhaseGate::RuntimeConsumer: return "RuntimeConsumer";
+		default:
+			return "UnknownPhase";
+		}
+	}
+
+	inline const char* ToString(BackendPhaseGateSeverity severity)
+	{
+		switch (severity)
+		{
+		case BackendPhaseGateSeverity::Info: return "Info";
+		case BackendPhaseGateSeverity::Warning: return "Warning";
+		case BackendPhaseGateSeverity::Error: return "Error";
+		default:
+			return "UnknownSeverity";
 		}
 	}
 
@@ -283,39 +363,47 @@ namespace NLS::Render::Settings
 
 	inline bool SupportsEditorMainRuntime(const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
 	{
-		return capabilities.backendReady &&
-			capabilities.supportsCurrentSceneRenderer &&
-			capabilities.supportsOffscreenFramebuffers &&
-			capabilities.supportsUITextureHandles &&
-			capabilities.supportsDepthBlit &&
-			capabilities.supportsCubemaps;
+		auto synced = capabilities;
+		synced.SynchronizeLegacyFields();
+		return synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::BackendReady).supported &&
+			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::CurrentSceneRenderer).supported &&
+			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::OffscreenFramebuffers).supported &&
+			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::UITextureHandles).supported &&
+			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::DepthBlit).supported &&
+			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::Cubemaps).supported;
 	}
 
 	inline bool SupportsGameMainRuntime(const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
 	{
-		return capabilities.backendReady &&
-			capabilities.supportsCurrentSceneRenderer &&
-			capabilities.supportsSwapchain;
+		auto synced = capabilities;
+		synced.SynchronizeLegacyFields();
+		return synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::BackendReady).supported &&
+			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::CurrentSceneRenderer).supported &&
+			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::Swapchain).supported;
 	}
 
 	inline bool SupportsTierARenderFoundation(const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
 	{
-		return capabilities.backendReady &&
-			capabilities.supportsGraphics &&
-			capabilities.supportsCompute &&
-			capabilities.supportsSwapchain &&
-			capabilities.supportsCurrentSceneRenderer &&
-			capabilities.supportsOffscreenFramebuffers &&
-			capabilities.supportsMultiRenderTargets &&
-			capabilities.supportsExplicitBarriers &&
-			capabilities.supportsCentralizedDescriptorManagement &&
-			capabilities.supportsPipelineStateCache;
+		auto synced = capabilities;
+		synced.SynchronizeLegacyFields();
+		return synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::BackendReady).supported &&
+			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::Graphics).supported &&
+			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::Compute).supported &&
+			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::Swapchain).supported &&
+			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::CurrentSceneRenderer).supported &&
+			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::OffscreenFramebuffers).supported &&
+			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::MultiRenderTargets).supported &&
+			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::ExplicitBarriers).supported &&
+			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::CentralizedDescriptorManagement).supported &&
+			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::PipelineStateCache).supported;
 	}
 
 	inline bool SupportsRenderGraphTransientResources(const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
 	{
-		return SupportsTierARenderFoundation(capabilities) &&
-			capabilities.supportsTransientResourceAllocator;
+		auto synced = capabilities;
+		synced.SynchronizeLegacyFields();
+		return SupportsTierARenderFoundation(synced) &&
+			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::TransientResourceAllocator).supported;
 	}
 
 	// Thread-local diagnostics settings - set when Driver is created, read by subsystems without driver access
@@ -334,16 +422,20 @@ namespace NLS::Render::Settings
 
 	inline bool SupportsAsyncComputeFoundation(const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
 	{
-		return SupportsTierARenderFoundation(capabilities) &&
-			capabilities.supportsAsyncCompute &&
-			capabilities.supportsDedicatedComputeQueue;
+		auto synced = capabilities;
+		synced.SynchronizeLegacyFields();
+		return SupportsTierARenderFoundation(synced) &&
+			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::AsyncCompute).supported &&
+			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::DedicatedComputeQueue).supported;
 	}
 
 	inline bool SupportsParallelCommandFoundation(const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
 	{
-		return SupportsTierARenderFoundation(capabilities) &&
-			capabilities.supportsParallelCommandRecording &&
-			capabilities.supportsParallelCommandTranslation;
+		auto synced = capabilities;
+		synced.SynchronizeLegacyFields();
+		return SupportsTierARenderFoundation(synced) &&
+			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::ParallelCommandRecording).supported &&
+			synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::ParallelCommandTranslation).supported;
 	}
 
 	inline bool SupportsOrderedParallelCommandSubmissionPath(
@@ -372,6 +464,21 @@ namespace NLS::Render::Settings
 			SupportsParallelCommandFoundation(capabilities);
 	}
 
+	inline std::optional<std::string> GetFirstMissingCapabilityReason(
+		const NLS::Render::RHI::RHIDeviceCapabilities& capabilities,
+		std::initializer_list<NLS::Render::RHI::RHIDeviceFeature> requiredFeatures)
+	{
+		auto synced = capabilities;
+		synced.SynchronizeLegacyFields();
+		for (const auto feature : requiredFeatures)
+		{
+			const auto state = synced.GetFeature(feature);
+			if (!state.supported && !state.reason.empty())
+				return state.reason;
+		}
+		return std::nullopt;
+	}
+
 	inline bool SupportsThreadedRenderFoundationPath(
 		const NLS::Render::RHI::NativeBackendType backend,
 		const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
@@ -388,6 +495,117 @@ namespace NLS::Render::Settings
 		default:
 			return false;
 		}
+	}
+
+	inline BackendPhaseGateReport BuildBackendPhaseGateReportSummary(BackendPhaseGateReport report)
+	{
+		std::ostringstream stream;
+		stream << "requested=" << ToString(report.requestedBackend)
+			<< " consumer=" << ToString(report.consumer)
+			<< " fallback=" << ToString(report.fallbackBackend);
+		for (const auto& gate : report.gates)
+		{
+			stream << " [" << ToString(gate.phase)
+				<< "/" << ToString(gate.severity)
+				<< " backend=" << ToString(gate.backend)
+				<< " reason=" << gate.reason << "]";
+		}
+		report.summary = stream.str();
+		return report;
+	}
+
+	inline BackendPhaseGateReport EvaluateBackendPhaseGate(
+		const EGraphicsBackend requestedBackend,
+		const RuntimeConsumer consumer,
+		const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
+	{
+		BackendPhaseGateReport report;
+		report.requestedBackend = requestedBackend;
+		report.consumer = consumer;
+
+		if (const auto restriction = GetPhase1BackendRestrictionMessage(
+				requestedBackend,
+				consumer == RuntimeConsumer::Editor ? "Editor runtime" : "Game runtime");
+			restriction.has_value())
+		{
+			report.gates.push_back({
+				BackendPhaseGate::BackendSelection,
+				BackendPhaseGateSeverity::Error,
+				requestedBackend,
+				*restriction
+			});
+			report.fallbackBackend = EGraphicsBackend::NONE;
+			return BuildBackendPhaseGateReportSummary(std::move(report));
+		}
+
+		if (!IsBackendEnabledForCurrentBuild(requestedBackend))
+		{
+			report.gates.push_back({
+				BackendPhaseGate::BackendSelection,
+				BackendPhaseGateSeverity::Error,
+				requestedBackend,
+				"Backend is not enabled for the current build/runtime validation matrix."
+			});
+			report.fallbackBackend = EGraphicsBackend::NONE;
+			return BuildBackendPhaseGateReportSummary(std::move(report));
+		}
+
+		auto synced = capabilities;
+		synced.SynchronizeLegacyFields();
+		if (!synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::BackendReady).supported)
+		{
+			auto reason = synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::BackendReady).reason;
+			if (reason.empty())
+				reason = "Backend device was not created or is not ready.";
+			report.gates.push_back({
+				BackendPhaseGate::DeviceCreation,
+				BackendPhaseGateSeverity::Error,
+				requestedBackend,
+				std::move(reason)
+			});
+			report.fallbackBackend = EGraphicsBackend::NONE;
+			return BuildBackendPhaseGateReportSummary(std::move(report));
+		}
+
+		const bool consumerReady = consumer == RuntimeConsumer::Editor
+			? SupportsEditorMainRuntime(synced)
+			: SupportsGameMainRuntime(synced);
+		if (!consumerReady)
+		{
+			std::optional<std::string> reason;
+			if (consumer == RuntimeConsumer::Editor)
+			{
+				reason = GetFirstMissingCapabilityReason(
+					synced,
+					{
+						NLS::Render::RHI::RHIDeviceFeature::CurrentSceneRenderer,
+						NLS::Render::RHI::RHIDeviceFeature::OffscreenFramebuffers,
+						NLS::Render::RHI::RHIDeviceFeature::UITextureHandles,
+						NLS::Render::RHI::RHIDeviceFeature::DepthBlit,
+						NLS::Render::RHI::RHIDeviceFeature::Cubemaps
+					});
+			}
+			else
+			{
+				reason = GetFirstMissingCapabilityReason(
+					synced,
+					{
+						NLS::Render::RHI::RHIDeviceFeature::CurrentSceneRenderer,
+						NLS::Render::RHI::RHIDeviceFeature::Swapchain
+					});
+			}
+			report.gates.push_back({
+				BackendPhaseGate::CapabilityValidation,
+				BackendPhaseGateSeverity::Error,
+				requestedBackend,
+				reason.value_or("Backend is missing required runtime capabilities for this consumer.")
+			});
+			report.fallbackBackend = EGraphicsBackend::NONE;
+			return BuildBackendPhaseGateReportSummary(std::move(report));
+		}
+
+		report.fallbackBackend = requestedBackend;
+		return BuildBackendPhaseGateReportSummary(std::move(report));
 	}
 
 	inline RuntimeBackendReadinessDecision EvaluateEditorMainRuntimeReadiness(
@@ -418,7 +636,7 @@ namespace NLS::Render::Settings
 			return {};
 
 		RuntimeBackendReadinessDecision decision;
-		if (!capabilities.backendReady)
+		if (!capabilities.GetFeature(NLS::Render::RHI::RHIDeviceFeature::BackendReady).supported)
 		{
 			decision.primaryWarning =
 				"Selected editor backend " +
@@ -432,6 +650,21 @@ namespace NLS::Render::Settings
 			"Editor runtime still requires native scene rendering, offscreen framebuffer, UI texture, depth blit, and cubemap support before startup can continue on " +
 			std::string(ToString(requestedBackend)) +
 			".";
+		if (const auto reason = GetFirstMissingCapabilityReason(
+				capabilities,
+				{
+					NLS::Render::RHI::RHIDeviceFeature::CurrentSceneRenderer,
+					NLS::Render::RHI::RHIDeviceFeature::OffscreenFramebuffers,
+					NLS::Render::RHI::RHIDeviceFeature::UITextureHandles,
+					NLS::Render::RHI::RHIDeviceFeature::DepthBlit,
+					NLS::Render::RHI::RHIDeviceFeature::Cubemaps
+				});
+			reason.has_value())
+		{
+			*decision.primaryWarning += " Missing capability reason: ";
+			*decision.primaryWarning += *reason;
+			*decision.primaryWarning += '.';
+		}
 		decision.detailWarning = SceneRendererSupportDescription(requestedBackend);
 		return decision;
 	}
@@ -464,7 +697,7 @@ namespace NLS::Render::Settings
 			return {};
 
 		RuntimeBackendReadinessDecision decision;
-		if (!capabilities.backendReady)
+		if (!capabilities.GetFeature(NLS::Render::RHI::RHIDeviceFeature::BackendReady).supported)
 		{
 			decision.primaryWarning =
 				"Requested game backend " +
@@ -478,13 +711,27 @@ namespace NLS::Render::Settings
 			"Game scene rendering requires a validated backend before startup can continue on " +
 			std::string(ToString(requestedBackend)) +
 			".";
+		if (const auto reason = GetFirstMissingCapabilityReason(
+				capabilities,
+				{
+					NLS::Render::RHI::RHIDeviceFeature::CurrentSceneRenderer,
+					NLS::Render::RHI::RHIDeviceFeature::Swapchain
+				});
+			reason.has_value())
+		{
+			*decision.primaryWarning += " Missing capability reason: ";
+			*decision.primaryWarning += *reason;
+			*decision.primaryWarning += '.';
+		}
 		decision.detailWarning = SceneRendererSupportDescription(requestedBackend);
 		return decision;
 	}
 
 	inline bool SupportsEditorPickingReadback(const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
 	{
-		return capabilities.supportsEditorPickingReadback;
+		auto synced = capabilities;
+		synced.SynchronizeLegacyFields();
+		return synced.GetFeature(NLS::Render::RHI::RHIDeviceFeature::EditorPickingReadback).supported;
 	}
 
 	inline std::optional<std::string> GetEditorPickingReadbackWarning(const NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
@@ -492,9 +739,19 @@ namespace NLS::Render::Settings
 		if (SupportsEditorPickingReadback(capabilities))
 			return std::nullopt;
 
-		return std::string(
+		auto warning = std::string(
 			"Scene view picking readback is unavailable on this backend. "
 			"Scene view hover picking, click selection, and gizmo hit testing will be disabled.");
+		if (const auto reason = GetFirstMissingCapabilityReason(
+				capabilities,
+				{ NLS::Render::RHI::RHIDeviceFeature::EditorPickingReadback });
+			reason.has_value())
+		{
+			warning += " Reason: ";
+			warning += *reason;
+			warning += '.';
+		}
+		return warning;
 	}
 
 	inline std::optional<EGraphicsBackend> TryReadGraphicsBackendFromEnvironment(const char* variableName)

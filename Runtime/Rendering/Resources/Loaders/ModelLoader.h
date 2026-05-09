@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <initializer_list>
 #include <string>
 
 #include "Rendering/Resources/Model.h"
@@ -26,6 +27,7 @@ namespace NLS::Render::Resources::Loaders
 		static Model* Create(const std::string& p_filepath, Parsers::EModelParserFlags p_parserFlags = Parsers::EModelParserFlags::NONE);
 
 		static Model* Create(const std::vector<NLS::Render::Resources::Mesh*>& meshes);
+		static Model* Create(std::initializer_list<NLS::Render::Resources::Mesh*> meshes);
 
 		/**
 		* Reload a model from file

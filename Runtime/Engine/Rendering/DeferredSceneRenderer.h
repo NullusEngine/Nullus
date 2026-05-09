@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 #include <unordered_map>
 
 #include <fg/FrameGraph.hpp>
@@ -53,7 +54,7 @@ namespace NLS::Engine::Rendering
 		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferNormalTexture;
 		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferMaterialTexture;
 		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferDepthTexture;
-		std::unordered_map<const NLS::Render::Resources::Material*, std::unique_ptr<NLS::Render::Resources::Material>> m_gBufferMaterialCache;
+		std::unordered_map<std::string, std::unique_ptr<NLS::Render::Resources::Material>> m_gBufferMaterialCache;
 		NLS::Render::Resources::Shader* m_gBufferShader = nullptr;
 		NLS::Render::Resources::Shader* m_lightingShader = nullptr;
 	};

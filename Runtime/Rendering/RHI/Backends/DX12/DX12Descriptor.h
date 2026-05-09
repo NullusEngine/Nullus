@@ -10,6 +10,7 @@
 #include "Rendering/RHI/Backends/DX12/DX12Command.h"
 #include "Rendering/RHI/Backends/DX12/DX12PipelineLayoutUtils.h"
 #include "Rendering/RHI/Core/RHIBinding.h"
+#include "Rendering/RHI/Utils/DescriptorAllocator/DescriptorAllocator.h"
 
 struct ID3D12CommandQueue;
 struct ID3D12DescriptorHeap;
@@ -40,19 +41,19 @@ namespace NLS::Render::Backend
 		D3D12_GPU_DESCRIPTOR_HANDLE GetGpuHandle() const;
 		UINT Allocate(UINT count = 1);
 		void Free(UINT offset, UINT count = 1);
+		NLS::Render::RHI::DescriptorAllocatorStats GetStats() const;
 #endif
 
 	private:
 		ID3D12Device* m_device = nullptr;
 		ID3D12CommandQueue* m_commandQueue = nullptr;
 		std::string m_heapDebugName;
+		NLS::Render::RHI::DescriptorRangeAllocator m_rangeAllocator;
 #if defined(_WIN32)
 		D3D12_DESCRIPTOR_HEAP_TYPE m_heapType = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 		UINT m_descriptorCapacity = 0;
 		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_heap;
 		UINT m_descriptorSize = 0;
-		std::mutex m_mutex;
-		std::vector<std::pair<UINT, UINT>> m_freeDescriptors;
 #endif
 	};
 
@@ -92,11 +93,6 @@ namespace NLS::Render::Backend
 			D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = {};
 		};
 
-		static D3D12_FILTER ToD3D12Filter(
-			NLS::Render::RHI::TextureFilter minFilter,
-			NLS::Render::RHI::TextureFilter magFilter);
-		static D3D12_TEXTURE_ADDRESS_MODE ToD3D12AddressMode(NLS::Render::RHI::TextureWrap wrap);
-		static D3D12_SAMPLER_DESC BuildSamplerDesc(const NLS::Render::RHI::SamplerDesc& desc);
 		static NLS::Render::RHI::DX12::DX12DescriptorRangeCategory ToRangeCategory(
 			NLS::Render::RHI::BindingType type);
 

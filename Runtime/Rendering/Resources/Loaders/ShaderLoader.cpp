@@ -25,6 +25,7 @@ namespace
 	using ShaderCompilationOutput = NLS::Render::ShaderCompiler::ShaderCompilationOutput;
 	using ShaderCompilationStatus = NLS::Render::ShaderCompiler::ShaderCompilationStatus;
 	using ShaderCompilationInput = NLS::Render::ShaderCompiler::ShaderCompilationInput;
+	using ShaderReflectionInput = NLS::Render::ShaderCompiler::ShaderReflectionInput;
 	using ShaderSourceLanguage = NLS::Render::ShaderCompiler::ShaderSourceLanguage;
 	using ShaderStage = NLS::Render::ShaderCompiler::ShaderStage;
 	using ShaderTargetPlatform = NLS::Render::ShaderCompiler::ShaderTargetPlatform;
@@ -69,16 +70,6 @@ namespace
 			break;
 		}
 		return path.string();
-	}
-
-	bool WriteTextFile(const std::string& path, const std::string& content)
-	{
-		std::ofstream stream(path, std::ios::binary | std::ios::trunc);
-		if (!stream)
-			return false;
-
-		stream << content;
-		return true;
 	}
 
 	std::vector<uint8_t> ReadBinaryFile(const std::string& path)
@@ -205,7 +196,9 @@ namespace
 			}
 
 			const auto glsl = compiler.compile();
-			WriteTextFile(GetGLSLCachePath(spirvOutput.artifactPath, stage), glsl);
+			std::string diagnostics;
+			if (!NLS::Render::ShaderCompiler::WriteShaderArtifactTextAtomic(GetGLSLCachePath(spirvOutput.artifactPath, stage), glsl, &diagnostics))
+				NLS_LOG_WARNING("[HLSL][OpenGL][" + std::string(ShaderStageLabel(stage)) + "] Failed to write GLSL cache artifact atomically: " + diagnostics);
 			return glsl;
 		}
 		catch (const spirv_cross::CompilerError& error)
@@ -375,24 +368,27 @@ Shader* ShaderLoader::CreateHLSLShaderAsset(const std::string& p_filePath)
     ShaderCompilationOutput vertexSpirvResult;
     ShaderCompilationOutput pixelSpirvResult;
     ShaderCompilationOutput computeSpirvResult;
-    if (compileDxil)
-    {
-		if (hasVertexEntryPoint)
-			vertexDxilResult = compiler.Compile(vertexDxilInput);
-		if (hasPixelEntryPoint)
-			pixelDxilResult = compiler.Compile(pixelDxilInput);
-		if (hasComputeEntryPoint)
-			computeDxilResult = compiler.Compile(computeDxilInput);
-    }
-    if (compileSpirv)
-    {
-		if (hasVertexEntryPoint)
-			vertexSpirvResult = compiler.Compile(vertexSpirvInput);
-		if (hasPixelEntryPoint)
-			pixelSpirvResult = compiler.Compile(pixelSpirvInput);
-		if (hasComputeEntryPoint)
-			computeSpirvResult = compiler.Compile(computeSpirvInput);
-    }
+	std::vector<ShaderCompilationInput> compileInputs;
+	std::vector<ShaderCompilationOutput*> compileOutputs;
+	auto queueCompile = [&](const bool shouldCompile, const ShaderCompilationInput& input, ShaderCompilationOutput& output)
+	{
+		if (!shouldCompile)
+			return;
+
+		compileInputs.push_back(input);
+		compileOutputs.push_back(&output);
+	};
+	queueCompile(compileDxil && hasVertexEntryPoint, vertexDxilInput, vertexDxilResult);
+	queueCompile(compileDxil && hasPixelEntryPoint, pixelDxilInput, pixelDxilResult);
+	queueCompile(compileDxil && hasComputeEntryPoint, computeDxilInput, computeDxilResult);
+	queueCompile(compileSpirv && hasVertexEntryPoint, vertexSpirvInput, vertexSpirvResult);
+	queueCompile(compileSpirv && hasPixelEntryPoint, pixelSpirvInput, pixelSpirvResult);
+	queueCompile(compileSpirv && hasComputeEntryPoint, computeSpirvInput, computeSpirvResult);
+
+	const auto compileResults = compiler.CompileBatch(compileInputs);
+	for (size_t index = 0u; index < compileResults.size() && index < compileOutputs.size(); ++index)
+		*compileOutputs[index] = compileResults[index];
+
 	NormalizeCompilationResult(vertexDxilResult);
 	NormalizeCompilationResult(pixelDxilResult);
 	NormalizeCompilationResult(computeDxilResult);
@@ -401,18 +397,28 @@ Shader* ShaderLoader::CreateHLSLShaderAsset(const std::string& p_filePath)
 	NormalizeCompilationResult(computeSpirvResult);
 	ShaderReflection reflection;
 
+	std::vector<ShaderReflectionInput> dxilReflectionInputs;
 	if (HasUsableCompilationResult(vertexDxilResult))
-		MergeReflection(reflection, compiler.Reflect(vertexDxilInput, vertexDxilResult));
+		dxilReflectionInputs.push_back({ vertexDxilInput, vertexDxilResult });
 	if (HasUsableCompilationResult(pixelDxilResult))
-		MergeReflection(reflection, compiler.Reflect(pixelDxilInput, pixelDxilResult));
+		dxilReflectionInputs.push_back({ pixelDxilInput, pixelDxilResult });
 	if (HasUsableCompilationResult(computeDxilResult))
-		MergeReflection(reflection, compiler.Reflect(computeDxilInput, computeDxilResult));
-    if (reflection.constantBuffers.empty() && HasUsableCompilationResult(vertexSpirvResult))
-        MergeReflection(reflection, compiler.Reflect(vertexSpirvInput, vertexSpirvResult));
-    if (reflection.constantBuffers.empty() && HasUsableCompilationResult(pixelSpirvResult))
-        MergeReflection(reflection, compiler.Reflect(pixelSpirvInput, pixelSpirvResult));
-    if (reflection.constantBuffers.empty() && HasUsableCompilationResult(computeSpirvResult))
-        MergeReflection(reflection, compiler.Reflect(computeSpirvInput, computeSpirvResult));
+		dxilReflectionInputs.push_back({ computeDxilInput, computeDxilResult });
+	for (const auto& reflectedStage : compiler.ReflectBatch(dxilReflectionInputs))
+		MergeReflection(reflection, reflectedStage);
+
+	if (reflection.constantBuffers.empty())
+	{
+		std::vector<ShaderReflectionInput> spirvReflectionInputs;
+		if (HasUsableCompilationResult(vertexSpirvResult))
+			spirvReflectionInputs.push_back({ vertexSpirvInput, vertexSpirvResult });
+		if (HasUsableCompilationResult(pixelSpirvResult))
+			spirvReflectionInputs.push_back({ pixelSpirvInput, pixelSpirvResult });
+		if (HasUsableCompilationResult(computeSpirvResult))
+			spirvReflectionInputs.push_back({ computeSpirvInput, computeSpirvResult });
+		for (const auto& reflectedStage : compiler.ReflectBatch(spirvReflectionInputs))
+			MergeReflection(reflection, reflectedStage);
+	}
 	const auto vertexGLSL = compileGlsl && HasUsableCompilationResult(vertexSpirvResult)
 		? CrossCompileSpirvToGLSL(vertexSpirvResult, ShaderStage::Vertex)
 		: std::string{};

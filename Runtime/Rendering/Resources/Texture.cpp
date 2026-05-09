@@ -66,7 +66,7 @@ void Texture::CreateRHITexture()
 	desc.usage = RHI::TextureUsageFlags::Sampled;
 	desc.debugName = "TextureResource";
 
-	m_explicitTexture = device->CreateTexture(desc, nullptr);
+	m_explicitTexture = device->CreateTexture(desc);
 }
 
 void Texture::ReleaseRHITexture()
@@ -106,7 +106,7 @@ std::shared_ptr<NLS::Render::RHI::RHITextureView> Texture::GetOrCreateExplicitTe
 	return m_explicitTextureView;
 }
 
-void Texture::RecreateRHITextureIfNeeded(
+bool Texture::RecreateRHITextureIfNeeded(
     uint32_t width,
     uint32_t height,
     RHI::TextureFormat format,
@@ -115,25 +115,46 @@ void Texture::RecreateRHITextureIfNeeded(
     RHI::TextureWrap wrapS,
     RHI::TextureWrap wrapT,
     bool generateMimaps,
-    const void* initialData)
+    const void* initialData,
+    size_t initialDataSize)
 {
 	// Only handle formal RHI path
 	if (m_explicitTexture == nullptr)
-		return;
+		return false;
+
+	const auto& existingDesc = m_explicitTexture->GetDesc();
+	if (CanUpdateRHITextureInPlace(existingDesc, width, height, format, initialData))
+	{
+		auto device = GetExplicitDevice();
+		if (device == nullptr)
+			return false;
+
+		RHI::RHITextureUpdateDesc updateDesc{};
+		updateDesc.texture = m_explicitTexture;
+		updateDesc.data = initialData;
+		const uint32_t bytesPerPixel = RHI::GetTextureFormatBytesPerPixel(format);
+		updateDesc.dataSize = initialDataSize;
+		updateDesc.extent = {
+			static_cast<uint32_t>(width),
+			static_cast<uint32_t>(height),
+			1u
+		};
+		updateDesc.rowPitch = static_cast<uint32_t>(width) * bytesPerPixel;
+		updateDesc.slicePitch = updateDesc.rowPitch * static_cast<uint32_t>(height);
+		updateDesc.debugName = "TextureResourceInPlaceUpdate";
+
+		return device->UpdateTexture(updateDesc).Succeeded();
+	}
 
 	if (!ShouldRecreateRHITexture(m_explicitTexture->GetDesc(), width, height, format, initialData))
 	{
-		return;
+		return true;
 	}
 
 	// Need to recreate with correct dimensions
 	auto device = GetExplicitDevice();
 	if (device == nullptr)
-		return;
-
-	// Release old texture
-	m_explicitTexture.reset();
-	m_explicitTextureView.reset();
+		return false;
 
 	// Create new texture with correct dimensions and data
 	RHI::RHITextureDesc desc{};
@@ -148,5 +169,26 @@ void Texture::RecreateRHITextureIfNeeded(
 	// Note: mipmap generation would require a separate pass after creation
 	// For now, create with 1 mip level
 
-	m_explicitTexture = device->CreateTexture(desc, initialData);
+	std::shared_ptr<RHI::RHITexture> newTexture;
+	if (initialData != nullptr && initialDataSize != 0u)
+	{
+		RHI::RHITextureUploadDesc uploadDesc{};
+		uploadDesc.data = initialData;
+		uploadDesc.dataSize = initialDataSize;
+		uploadDesc.extent = desc.extent;
+		uploadDesc.rowPitch = static_cast<uint32_t>(width) * RHI::GetTextureFormatBytesPerPixel(format);
+		uploadDesc.slicePitch = uploadDesc.rowPitch * static_cast<uint32_t>(height);
+		uploadDesc.debugName = "TextureResourceInitialUpload";
+		newTexture = device->CreateTexture(desc, uploadDesc);
+	}
+	else
+	{
+		newTexture = device->CreateTexture(desc);
+	}
+	if (newTexture == nullptr)
+		return false;
+
+	m_explicitTextureView.reset();
+	m_explicitTexture = std::move(newTexture);
+	return true;
 }

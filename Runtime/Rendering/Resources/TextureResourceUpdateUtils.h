@@ -13,4 +13,11 @@ namespace NLS::Render::Resources
         uint32_t height,
         RHI::TextureFormat format,
         const void* initialData);
+
+    NLS_RENDER_API bool CanUpdateRHITextureInPlace(
+        const RHI::RHITextureDesc& existingDesc,
+        uint32_t width,
+        uint32_t height,
+        RHI::TextureFormat format,
+        const void* initialData);
 }

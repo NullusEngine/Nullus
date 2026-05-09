@@ -188,6 +188,23 @@ namespace
         std::string_view GetHardware() const override { return "TestHardware"; }
     };
 
+    class TestCompletionToken final : public NLS::Render::RHI::RHICompletionToken
+    {
+    public:
+        explicit TestCompletionToken(NLS::Render::RHI::RHICompletionStatus status)
+            : m_status(std::move(status))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return "TestCompletionToken"; }
+        bool IsComplete() const override { return m_status.IsComplete(); }
+        NLS::Render::RHI::RHICompletionStatus GetStatus() const override { return m_status; }
+        NLS::Render::RHI::RHICompletionStatus Wait(uint64_t = 0) override { return m_status; }
+
+    private:
+        NLS::Render::RHI::RHICompletionStatus m_status;
+    };
+
     class TestFence final : public NLS::Render::RHI::RHIFence
     {
     public:
@@ -221,7 +238,10 @@ namespace
             ++resetCalls;
         }
 
-        void* GetNativeSemaphoreHandle() override { return this; }
+        NLS::Render::RHI::NativeHandle GetNativeSemaphoreHandle() override
+        {
+            return { NLS::Render::RHI::BackendType::DX12, this };
+        }
 
         mutable size_t resetCalls = 0u;
         bool signaled = false;
@@ -249,7 +269,7 @@ namespace
             recording = false;
         }
         bool IsRecording() const override { return recording; }
-        void* GetNativeCommandBuffer() const override { return nullptr; }
+        NLS::Render::RHI::NativeHandle GetNativeCommandBuffer() const override { return {}; }
         void SetScissor(const NLS::Render::RHI::RHIRect2D&) override {}
         void BindComputePipeline(const std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>&) override {}
         void BindBindingSet(uint32_t setIndex, const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& bindingSet) override
@@ -568,6 +588,24 @@ namespace
             return allocation;
         }
 
+        NLS::Render::RHI::DescriptorAllocationBatch AllocateBatch(
+            const std::vector<NLS::Render::RHI::DescriptorAllocationRequest>& requests) override
+        {
+            NLS::Render::RHI::DescriptorAllocationBatch batch;
+            batch.allocations.reserve(requests.size());
+            for (const auto& request : requests)
+            {
+                batch.totalRequested += request.count;
+                auto allocation = Allocate(request);
+                if (!allocation.IsValid())
+                    batch.allSucceeded = false;
+                else
+                    batch.totalAllocated += allocation.count;
+                batch.allocations.push_back(std::move(allocation));
+            }
+            return batch;
+        }
+
         void Release(const NLS::Render::RHI::DescriptorAllocation& allocation) override
         {
             if (!allocation.IsValid() ||
@@ -641,6 +679,24 @@ namespace
             return allocation;
         }
 
+        NLS::Render::RHI::DescriptorAllocationBatch AllocateBatch(
+            const std::vector<NLS::Render::RHI::DescriptorAllocationRequest>& requests) override
+        {
+            NLS::Render::RHI::DescriptorAllocationBatch batch;
+            batch.allocations.reserve(requests.size());
+            for (const auto& request : requests)
+            {
+                batch.totalRequested += request.count;
+                auto allocation = Allocate(request);
+                if (!allocation.IsValid())
+                    batch.allSucceeded = false;
+                else
+                    batch.totalAllocated += allocation.count;
+                batch.allocations.push_back(std::move(allocation));
+            }
+            return batch;
+        }
+
         void Release(const NLS::Render::RHI::DescriptorAllocation&) override {}
         void Reset() override {}
         NLS::Render::RHI::DescriptorAllocatorStats GetStats() const override { return m_stats; }
@@ -668,6 +724,31 @@ namespace
         NLS::Render::RHI::UploadAllocation Allocate(size_t, size_t, std::string) override
         {
             return {};
+        }
+
+        NLS::Render::RHI::UploadBatchSubmission SubmitUploadBatch(
+            NLS::Render::RHI::RHICommandBuffer&,
+            const NLS::Render::RHI::UploadBatchRequest& request) override
+        {
+            NLS::Render::RHI::UploadBatchSubmission submission;
+            submission.accepted = !request.bufferUploads.empty() || !request.textureUploads.empty();
+            submission.acceptedBufferUploads = request.bufferUploads.size();
+            submission.acceptedTextureUploads = request.textureUploads.size();
+            return submission;
+        }
+
+        NLS::Render::RHI::UploadSubmission SubmitUploadBuffer(
+            NLS::Render::RHI::RHICommandBuffer&,
+            const NLS::Render::RHI::UploadBufferRequest&) override
+        {
+            return { true, nullptr, {} };
+        }
+
+        NLS::Render::RHI::UploadSubmission SubmitUploadTexture(
+            NLS::Render::RHI::RHICommandBuffer&,
+            const NLS::Render::RHI::UploadTextureRequest&) override
+        {
+            return { true, nullptr, {} };
         }
 
         bool UploadBuffer(NLS::Render::RHI::RHICommandBuffer&, const NLS::Render::RHI::UploadBufferRequest&) override
@@ -728,6 +809,24 @@ namespace
             allocation.frameIndex = request.frameIndex;
             allocation.debugName = request.debugName;
             return allocation;
+        }
+
+        NLS::Render::RHI::DescriptorAllocationBatch AllocateBatch(
+            const std::vector<NLS::Render::RHI::DescriptorAllocationRequest>& requests) override
+        {
+            NLS::Render::RHI::DescriptorAllocationBatch batch;
+            batch.allocations.reserve(requests.size());
+            for (const auto& request : requests)
+            {
+                batch.totalRequested += request.count;
+                auto allocation = Allocate(request);
+                if (!allocation.IsValid())
+                    batch.allSucceeded = false;
+                else
+                    batch.totalAllocated += allocation.count;
+                batch.allocations.push_back(std::move(allocation));
+            }
+            return batch;
         }
 
         void Release(const NLS::Render::RHI::DescriptorAllocation&) override {}
@@ -904,6 +1003,9 @@ namespace
     class TestExplicitDevice final : public NLS::Render::RHI::RHIDevice
     {
     public:
+        using NLS::Render::RHI::RHIDevice::CreateBuffer;
+        using NLS::Render::RHI::RHIDevice::CreateTexture;
+
         TestExplicitDevice()
             : m_adapter(std::make_shared<TestAdapter>())
             , m_queue(std::make_shared<TestQueue>(NLS::Render::RHI::QueueType::Graphics))
@@ -949,8 +1051,15 @@ namespace
         std::shared_ptr<TestQueue> GetTestQueue() const { return m_queue; }
         std::shared_ptr<TestQueue> GetComputeTestQueue() const { return m_computeQueue; }
         std::shared_ptr<NLS::Render::RHI::RHISwapchain> CreateSwapchain(const NLS::Render::RHI::SwapchainDesc&) override { return nullptr; }
-        std::shared_ptr<NLS::Render::RHI::RHIBuffer> CreateBuffer(const NLS::Render::RHI::RHIBufferDesc&, const void* = nullptr) override { return nullptr; }
-        std::shared_ptr<NLS::Render::RHI::RHITexture> CreateTexture(const NLS::Render::RHI::RHITextureDesc& desc, const void* = nullptr) override
+        std::shared_ptr<NLS::Render::RHI::RHIBuffer> CreateBuffer(
+            const NLS::Render::RHI::RHIBufferDesc&,
+            const NLS::Render::RHI::RHIBufferUploadDesc&) override
+        {
+            return nullptr;
+        }
+        std::shared_ptr<NLS::Render::RHI::RHITexture> CreateTexture(
+            const NLS::Render::RHI::RHITextureDesc& desc,
+            const NLS::Render::RHI::RHITextureUploadDesc&) override
         {
             return std::make_shared<TestTexture>(desc);
         }
@@ -999,7 +1108,47 @@ namespace
             lastReadPixelsTexture = texture;
         }
 
+        NLS::Render::RHI::RHIReadbackResult ReadPixelsChecked(
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+            uint32_t,
+            uint32_t,
+            uint32_t,
+            uint32_t,
+            NLS::Render::Settings::EPixelDataFormat,
+            NLS::Render::Settings::EPixelDataType,
+            void*) override
+        {
+            lastReadPixelsTexture = texture;
+            return readPixelsResult;
+        }
+
+        NLS::Render::RHI::RHIReadbackResult BeginReadPixels(
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+            uint32_t,
+            uint32_t,
+            uint32_t,
+            uint32_t,
+            NLS::Render::Settings::EPixelDataFormat,
+            NLS::Render::Settings::EPixelDataType,
+            void*) override
+        {
+            lastReadPixelsTexture = texture;
+            return beginReadPixelsResult;
+        }
+
         std::shared_ptr<NLS::Render::RHI::RHITexture> lastReadPixelsTexture;
+        NLS::Render::RHI::RHIReadbackResult readPixelsResult {
+            NLS::Render::RHI::RHIReadbackStatusCode::Success,
+            {}
+        };
+        NLS::Render::RHI::RHIReadbackResult beginReadPixelsResult {
+            NLS::Render::RHI::RHIReadbackStatusCode::Success,
+            {},
+            std::make_shared<TestCompletionToken>(NLS::Render::RHI::RHICompletionStatus{
+                NLS::Render::RHI::RHICompletionStatusCode::Success,
+                {}
+            })
+        };
 
     private:
         std::shared_ptr<NLS::Render::RHI::RHIAdapter> m_adapter;
@@ -5646,7 +5795,10 @@ TEST(ThreadedRenderingLifecycleTests, ThreadedUiPresentSubmitsStandaloneExplicit
     frameContext.renderFinishedSemaphore = renderFinishedSemaphore;
 
     ASSERT_TRUE(NLS::Render::Context::DriverUIAccess::PrepareUIRender(driver));
-    void* const uiSignalSemaphore = reinterpret_cast<void*>(0x1234);
+    const NLS::Render::RHI::NativeHandle uiSignalSemaphore{
+        NLS::Render::RHI::BackendType::DX12,
+        reinterpret_cast<void*>(0x1234)
+    };
     constexpr uint64_t uiSignalValue = 42u;
     NLS::Render::Context::DriverUIAccess::SetUISignalSemaphore(driver, uiSignalSemaphore, uiSignalValue);
 
@@ -5662,9 +5814,73 @@ TEST(ThreadedRenderingLifecycleTests, ThreadedUiPresentSubmitsStandaloneExplicit
     EXPECT_EQ(testQueue->lastPresentDesc.swapchain, swapchain);
     EXPECT_EQ(testQueue->lastPresentDesc.imageIndex, 1u);
     EXPECT_EQ(testQueue->lastPresentDesc.waitSemaphores.size(), 1u);
-    EXPECT_EQ(testQueue->lastPresentDesc.uiSignalSemaphore, uiSignalSemaphore);
+    EXPECT_EQ(testQueue->lastPresentDesc.uiSignalSemaphore.backend, NLS::Render::RHI::BackendType::DX12);
+    EXPECT_EQ(testQueue->lastPresentDesc.uiSignalSemaphore.handle, uiSignalSemaphore.handle);
     EXPECT_EQ(testQueue->lastPresentDesc.uiSignalValue, uiSignalValue);
     EXPECT_EQ(swapchain->acquireCalls, 1u);
+}
+
+TEST(ThreadedRenderingLifecycleTests, UiCompositionSyncBoundaryDescribesSceneUiAndPresentOrdering)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    auto swapchain = std::make_shared<TestSwapchain>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    auto commandPool = std::make_shared<TestCommandPool>();
+    auto frameFence = std::make_shared<TestFence>();
+    auto imageAcquiredSemaphore = std::make_shared<TestSemaphore>();
+    auto renderFinishedSemaphore = std::make_shared<TestSemaphore>();
+    commandPool->commandBuffer = commandBuffer;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.commandPool = commandPool;
+    frameContext.frameFence = frameFence;
+    frameContext.imageAcquiredSemaphore = imageAcquiredSemaphore;
+    frameContext.renderFinishedSemaphore = renderFinishedSemaphore;
+
+    ASSERT_TRUE(NLS::Render::Context::DriverUIAccess::PrepareUIRender(driver));
+
+    auto boundary = NLS::Render::Context::DriverUIAccess::BuildUICompositionSyncBoundary(driver);
+    EXPECT_TRUE(boundary.sceneToUiWaitSemaphore.IsValid());
+    EXPECT_EQ(boundary.sceneToUiWaitSemaphore.handle, renderFinishedSemaphore.get());
+    EXPECT_FALSE(boundary.uiToPresentSignalSemaphore.IsValid());
+    EXPECT_EQ(boundary.uiToPresentSignalValue, 0u);
+
+    const NLS::Render::RHI::NativeHandle uiSignalSemaphore{
+        NLS::Render::RHI::BackendType::DX12,
+        reinterpret_cast<void*>(0x1234)
+    };
+    constexpr uint64_t uiSignalValue = 42u;
+    NLS::Render::Context::DriverUIAccess::SetUICompositionSignal(driver, uiSignalSemaphore, uiSignalValue);
+
+    boundary = NLS::Render::Context::DriverUIAccess::BuildUICompositionSyncBoundary(driver);
+    EXPECT_EQ(boundary.sceneToUiWaitSemaphore.handle, renderFinishedSemaphore.get());
+    EXPECT_EQ(boundary.uiToPresentSignalSemaphore.backend, NLS::Render::RHI::BackendType::DX12);
+    EXPECT_EQ(boundary.uiToPresentSignalSemaphore.handle, uiSignalSemaphore.handle);
+    EXPECT_EQ(boundary.uiToPresentSignalValue, uiSignalValue);
+
+    NLS::Render::Context::DriverUIAccess::PresentSwapchain(driver);
+
+    auto testQueue = explicitDevice->GetTestQueue();
+    ASSERT_EQ(testQueue->presentCalls, 1u);
+    EXPECT_EQ(testQueue->lastPresentDesc.uiSignalSemaphore.backend, NLS::Render::RHI::BackendType::DX12);
+    EXPECT_EQ(testQueue->lastPresentDesc.uiSignalSemaphore.handle, uiSignalSemaphore.handle);
+    EXPECT_EQ(testQueue->lastPresentDesc.uiSignalValue, uiSignalValue);
+
+    boundary = NLS::Render::Context::DriverUIAccess::BuildUICompositionSyncBoundary(driver);
+    EXPECT_FALSE(boundary.uiToPresentSignalSemaphore.IsValid());
+    EXPECT_EQ(boundary.uiToPresentSignalValue, 0u);
 }
 
 TEST(ThreadedRenderingLifecycleTests, ThreadedMainThreadPresentSkipsWhenNoStandaloneUiFrameIsActive)
@@ -5731,6 +5947,55 @@ TEST(ThreadedRenderingLifecycleTests, StandaloneExplicitFramePresentDoesNotRequi
     EXPECT_EQ(explicitDevice->GetTestQueue()->submitCalls, 1u);
     EXPECT_EQ(explicitDevice->GetTestQueue()->presentCalls, 1u);
     EXPECT_EQ(swapchain->acquireCalls, 1u);
+}
+
+TEST(ThreadedRenderingLifecycleTests, StandaloneExplicitFramePresentUsesUiCompositionBoundaryAndClearsSignal)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = false;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    auto swapchain = std::make_shared<TestSwapchain>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::SetExplicitSwapchain(driver, swapchain);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    auto commandPool = std::make_shared<TestCommandPool>();
+    auto frameFence = std::make_shared<TestFence>();
+    auto imageAcquiredSemaphore = std::make_shared<TestSemaphore>();
+    auto renderFinishedSemaphore = std::make_shared<TestSemaphore>();
+    commandPool->commandBuffer = commandBuffer;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.commandPool = commandPool;
+    frameContext.frameFence = frameFence;
+    frameContext.imageAcquiredSemaphore = imageAcquiredSemaphore;
+    frameContext.renderFinishedSemaphore = renderFinishedSemaphore;
+
+    NLS::Render::Context::DriverTestAccess::BeginStandaloneExplicitFrame(driver, true);
+
+    const NLS::Render::RHI::NativeHandle uiSignalSemaphore{
+        NLS::Render::RHI::BackendType::DX12,
+        reinterpret_cast<void*>(0x5678)
+    };
+    constexpr uint64_t uiSignalValue = 77u;
+    NLS::Render::Context::DriverUIAccess::SetUICompositionSignal(driver, uiSignalSemaphore, uiSignalValue);
+
+    NLS::Render::Context::DriverTestAccess::EndStandaloneExplicitFrame(driver, true);
+
+    auto testQueue = explicitDevice->GetTestQueue();
+    ASSERT_EQ(testQueue->presentCalls, 1u);
+    EXPECT_EQ(testQueue->lastPresentDesc.uiSignalSemaphore.backend, NLS::Render::RHI::BackendType::DX12);
+    EXPECT_EQ(testQueue->lastPresentDesc.uiSignalSemaphore.handle, uiSignalSemaphore.handle);
+    EXPECT_EQ(testQueue->lastPresentDesc.uiSignalValue, uiSignalValue);
+
+    const auto boundary = NLS::Render::Context::DriverUIAccess::BuildUICompositionSyncBoundary(driver);
+    EXPECT_FALSE(boundary.uiToPresentSignalSemaphore.IsValid());
+    EXPECT_EQ(boundary.uiToPresentSignalValue, 0u);
 }
 
 TEST(ThreadedRenderingLifecycleTests, ThreadedUiPresentFinalizesStandaloneFrameAllocatorsAndUploads)
@@ -5896,5 +6161,90 @@ TEST(ThreadedRenderingLifecycleTests, CompletedReadbackHistoryRetainsPreviousTex
         NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
         pixel);
 
+    EXPECT_EQ(explicitDevice->lastReadPixelsTexture, pickingTexture);
+}
+
+TEST(ThreadedRenderingLifecycleTests, DriverReadPixelsCheckedPropagatesExplicitReadbackFailure)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->readPixelsResult = {
+        NLS::Render::RHI::RHIReadbackStatusCode::UnsupportedFormat,
+        "test unsupported format"
+    };
+    explicitDevice->beginReadPixelsResult = explicitDevice->readPixelsResult;
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Render::RHI::RHITextureDesc pickingDesc;
+    pickingDesc.debugName = "SceneViewPickingReadback";
+    pickingDesc.extent = { 64u, 64u, 1u };
+    auto pickingTexture = std::make_shared<TestTexture>(pickingDesc);
+
+    uint8_t pixel[3] {};
+    const auto result = NLS::Render::Context::DriverRendererAccess::ReadPixelsChecked(
+        driver,
+        pickingTexture,
+        0u,
+        0u,
+        1u,
+        1u,
+        NLS::Render::Settings::EPixelDataFormat::RGB,
+        NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
+        pixel);
+
+    EXPECT_EQ(result.code, NLS::Render::RHI::RHIReadbackStatusCode::UnsupportedFormat);
+    EXPECT_EQ(result.message, "test unsupported format");
+    EXPECT_EQ(explicitDevice->lastReadPixelsTexture, pickingTexture);
+}
+
+TEST(ThreadedRenderingLifecycleTests, DriverBeginReadPixelsReturnsCompletionTokenWithoutWaiting)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    settings.framesInFlight = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    auto completion = std::make_shared<TestCompletionToken>(NLS::Render::RHI::RHICompletionStatus{
+        NLS::Render::RHI::RHICompletionStatusCode::Pending,
+        {}
+    });
+    explicitDevice->beginReadPixelsResult = {
+        NLS::Render::RHI::RHIReadbackStatusCode::Success,
+        {},
+        completion
+    };
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Render::RHI::RHITextureDesc pickingDesc;
+    pickingDesc.debugName = "SceneViewPickingReadback";
+    pickingDesc.extent = { 64u, 64u, 1u };
+    auto pickingTexture = std::make_shared<TestTexture>(pickingDesc);
+
+    uint8_t pixel[3] {};
+    const auto result = NLS::Render::Context::DriverRendererAccess::BeginReadPixels(
+        driver,
+        pickingTexture,
+        0u,
+        0u,
+        1u,
+        1u,
+        NLS::Render::Settings::EPixelDataFormat::RGB,
+        NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
+        pixel);
+
+    EXPECT_TRUE(result.Succeeded());
+    EXPECT_EQ(result.completion, completion);
+    EXPECT_EQ(result.completion->GetStatus().code, NLS::Render::RHI::RHICompletionStatusCode::Pending);
     EXPECT_EQ(explicitDevice->lastReadPixelsTexture, pickingTexture);
 }

@@ -15,8 +15,19 @@ namespace NLS::Render::Resources
         if (existingDesc.format != format)
             return true;
 
-        // The current Formal RHI texture API has no in-place data upload/update path,
-        // so any call with initial data must recreate the underlying texture resource.
-        return initialData != nullptr;
+        return false;
+    }
+
+    bool CanUpdateRHITextureInPlace(
+        const RHI::RHITextureDesc& existingDesc,
+        uint32_t width,
+        uint32_t height,
+        RHI::TextureFormat format,
+        const void* initialData)
+    {
+        return initialData != nullptr &&
+            existingDesc.extent.width == width &&
+            existingDesc.extent.height == height &&
+            existingDesc.format == format;
     }
 }

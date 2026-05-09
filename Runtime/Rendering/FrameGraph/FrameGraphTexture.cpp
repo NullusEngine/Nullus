@@ -8,6 +8,13 @@ namespace NLS::Render::FrameGraph
 {
 	namespace
 	{
+		uint64_t GetTransientRetireFrameIndex(const FrameGraphExecutionContext& executionContext)
+		{
+			return executionContext.frameContext != nullptr
+				? executionContext.frameContext->frameIndex
+				: 0u;
+		}
+
 		struct ExplicitTextureState
 		{
 			NLS::Render::RHI::ResourceState state = NLS::Render::RHI::ResourceState::Unknown;
@@ -23,8 +30,10 @@ namespace NLS::Render::FrameGraph
 		NLS::Render::RHI::RHITextureDesc ToExplicitTextureDesc(const FrameGraphTexture::Desc& desc)
 		{
 			NLS::Render::RHI::RHITextureDesc explicitDesc = desc;
-			explicitDesc.arrayLayers = desc.dimension == NLS::Render::RHI::TextureDimension::TextureCube ? 6u : 1u;
-			explicitDesc.debugName = "FrameGraphTexture";
+			explicitDesc.arrayLayers = NLS::Render::RHI::GetTextureLayerCount(desc.dimension, desc.arrayLayers);
+			explicitDesc.debugName = !desc.debugName.empty()
+				? desc.debugName
+				: "FrameGraphTexture";
 			if (NLS::Render::RHI::HasTextureUsage(desc.usage, NLS::Render::RHI::TextureUsageFlags::ColorAttachment) ||
 				NLS::Render::RHI::HasTextureUsage(desc.usage, NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment))
 			{
@@ -112,8 +121,13 @@ namespace NLS::Render::FrameGraph
 			{
 				NLS::Render::RHI::RHITextureViewDesc viewDesc;
 				viewDesc.format = explicitTexture->GetDesc().format;
-				viewDesc.debugName = "FrameGraphTextureView";
+				viewDesc.debugName = !desc.debugName.empty()
+					? desc.debugName + "View"
+					: "FrameGraphTextureView";
 				explicitView = device->CreateTextureView(explicitTexture, viewDesc);
+				executionContext->RegisterTransientTextureView(
+					explicitView,
+					GetTransientRetireFrameIndex(*executionContext));
 			}
 			return;
 		}
@@ -124,14 +138,17 @@ namespace NLS::Render::FrameGraph
 		executionContext->RegisterTransientTexture(
 			explicitTexture,
 			GetFullSubresourceRange(explicitTexture),
-			executionContext->frameContext != nullptr
-				? executionContext->frameContext->frameIndex
-				: 0u);
+			GetTransientRetireFrameIndex(*executionContext));
 
 		NLS::Render::RHI::RHITextureViewDesc viewDesc;
 		viewDesc.format = explicitTexture->GetDesc().format;
-		viewDesc.debugName = "FrameGraphTextureView";
+		viewDesc.debugName = !desc.debugName.empty()
+			? desc.debugName + "View"
+			: "FrameGraphTextureView";
 		explicitView = device->CreateTextureView(explicitTexture, viewDesc);
+		executionContext->RegisterTransientTextureView(
+			explicitView,
+			GetTransientRetireFrameIndex(*executionContext));
 	}
 
 	void FrameGraphTexture::destroy(const Desc& desc, void* allocator)

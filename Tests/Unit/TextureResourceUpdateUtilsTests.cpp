@@ -29,14 +29,26 @@ TEST(TextureResourceUpdateUtilsTests, DoesNotRecreateWhenDescriptorAlreadyMatche
         1,
         NLS::Render::RHI::TextureFormat::RGBA8,
         nullptr));
+    EXPECT_FALSE(NLS::Render::Resources::CanUpdateRHITextureInPlace(
+        existingDesc,
+        1,
+        1,
+        NLS::Render::RHI::TextureFormat::RGBA8,
+        nullptr));
 }
 
-TEST(TextureResourceUpdateUtilsTests, RecreatesWhenInitialDataIsProvidedEvenIfDimensionsMatch)
+TEST(TextureResourceUpdateUtilsTests, UsesInPlaceUpdateWhenInitialDataIsProvidedAndDescriptorMatches)
 {
     const auto existingDesc = MakeExistingDesc(1, 1, NLS::Render::RHI::TextureFormat::RGBA8);
     const uint32_t whitePixel = 0xFFFFFFFFu;
 
-    EXPECT_TRUE(NLS::Render::Resources::ShouldRecreateRHITexture(
+    EXPECT_FALSE(NLS::Render::Resources::ShouldRecreateRHITexture(
+        existingDesc,
+        1,
+        1,
+        NLS::Render::RHI::TextureFormat::RGBA8,
+        &whitePixel));
+    EXPECT_TRUE(NLS::Render::Resources::CanUpdateRHITextureInPlace(
         existingDesc,
         1,
         1,

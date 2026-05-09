@@ -9,6 +9,7 @@
 #include <string_view>
 
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Utils/DescriptorAllocator/DescriptorAllocator.h"
 #include "RenderDef.h"
 
@@ -143,6 +144,44 @@ namespace NLS::Render::Context
             Settings::EPixelDataFormat format,
             Settings::EPixelDataType type,
             void* data);
+        static RHI::RHIReadbackResult ReadPixelsChecked(
+            const Driver& driver,
+            uint32_t x,
+            uint32_t y,
+            uint32_t width,
+            uint32_t height,
+            Settings::EPixelDataFormat format,
+            Settings::EPixelDataType type,
+            void* data);
+        static RHI::RHIReadbackResult ReadPixelsChecked(
+            const Driver& driver,
+            const std::shared_ptr<RHI::RHITexture>& texture,
+            uint32_t x,
+            uint32_t y,
+            uint32_t width,
+            uint32_t height,
+            Settings::EPixelDataFormat format,
+            Settings::EPixelDataType type,
+            void* data);
+        static RHI::RHIReadbackResult BeginReadPixels(
+            const Driver& driver,
+            uint32_t x,
+            uint32_t y,
+            uint32_t width,
+            uint32_t height,
+            Settings::EPixelDataFormat format,
+            Settings::EPixelDataType type,
+            void* data);
+        static RHI::RHIReadbackResult BeginReadPixels(
+            const Driver& driver,
+            const std::shared_ptr<RHI::RHITexture>& texture,
+            uint32_t x,
+            uint32_t y,
+            uint32_t width,
+            uint32_t height,
+            Settings::EPixelDataFormat format,
+            Settings::EPixelDataType type,
+            void* data);
 
         static void Clear(
             Driver& driver,
@@ -155,6 +194,13 @@ namespace NLS::Render::Context
 
     struct NLS_RENDER_API DriverUIAccess final
     {
+        struct UICompositionSyncBoundary
+        {
+            RHI::NativeHandle sceneToUiWaitSemaphore;
+            RHI::NativeHandle uiToPresentSignalSemaphore;
+            uint64_t uiToPresentSignalValue = 0u;
+        };
+
         static RHI::NativeRenderDeviceInfo GetNativeDeviceInfo(const Driver& driver);
         static bool PrepareUIRender(Driver& driver);
         static void ReleaseUITextureHandles(Driver& driver);
@@ -170,9 +216,11 @@ namespace NLS::Render::Context
         static bool IsRenderDocEnabled(const Driver& driver);
 
         // UI synchronization - get the semaphore UI should wait on before rendering
-        static void* GetRenderFinishedSemaphore(Driver& driver);
+        static RHI::NativeHandle GetRenderFinishedSemaphore(Driver& driver);
+        static UICompositionSyncBoundary BuildUICompositionSyncBoundary(Driver& driver);
+        static void SetUICompositionSignal(Driver& driver, RHI::NativeHandle semaphore, uint64_t value);
         // UI synchronization - set the semaphore UI signals after rendering (Present waits on this)
-        static void SetUISignalSemaphore(Driver& driver, void* semaphore, uint64_t value);
+        static void SetUISignalSemaphore(Driver& driver, RHI::NativeHandle semaphore, uint64_t value);
     };
 
     struct NLS_RENDER_API DriverTestAccess final

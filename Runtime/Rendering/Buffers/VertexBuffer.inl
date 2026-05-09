@@ -17,7 +17,7 @@ namespace
 namespace NLS::Render::Buffers
 {
 	template <class T>
-	inline VertexBuffer<T>::VertexBuffer(T* p_data, size_t p_elements)
+	inline VertexBuffer<T>::VertexBuffer(const T* p_data, size_t p_elements)
 	{
 		if (p_data == nullptr || p_elements == 0u)
 			return;
@@ -31,12 +31,16 @@ namespace NLS::Render::Buffers
 		auto device = GetExplicitDevice();
 		if (device != nullptr)
 		{
-			m_explicitBuffer = device->CreateBuffer(desc, p_data);
+			NLS::Render::RHI::RHIBufferUploadDesc uploadDesc;
+			uploadDesc.data = p_data;
+			uploadDesc.dataSize = desc.size;
+			uploadDesc.debugName = "VertexBufferInitialUpload";
+			m_explicitBuffer = device->CreateBuffer(desc, uploadDesc);
 		}
 	}
 
 	template<class T>
-	inline VertexBuffer<T>::VertexBuffer(std::vector<T>& p_data) : VertexBuffer(p_data.data(), p_data.size())
+	inline VertexBuffer<T>::VertexBuffer(const std::vector<T>& p_data) : VertexBuffer(p_data.data(), p_data.size())
 	{
 	}
 

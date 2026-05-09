@@ -57,4 +57,45 @@ TEST(DX12GraphicsPipelineUtilsTests, ReturnsEmptyInputLayoutWhenNoVertexAttribut
     EXPECT_TRUE(inputLayout.semanticNames.empty());
     EXPECT_TRUE(inputLayout.elements.empty());
 }
+
+TEST(DX12GraphicsPipelineUtilsTests, BuildsExpandedBlendStateForIndependentRenderTargets)
+{
+    NLS::Render::RHI::RHIGraphicsPipelineDesc desc;
+    desc.blendState.alphaToCoverageEnable = true;
+    desc.blendState.independentBlendEnable = true;
+    desc.blendState.renderTargets.resize(2u);
+    desc.blendState.renderTargets[0].blendEnable = true;
+    desc.blendState.renderTargets[0].srcColor = NLS::Render::RHI::RHIBlendFactor::SrcAlpha;
+    desc.blendState.renderTargets[0].dstColor = NLS::Render::RHI::RHIBlendFactor::InvSrcAlpha;
+    desc.blendState.renderTargets[0].colorOp = NLS::Render::RHI::RHIBlendOp::Add;
+    desc.blendState.renderTargets[0].srcAlpha = NLS::Render::RHI::RHIBlendFactor::One;
+    desc.blendState.renderTargets[0].dstAlpha = NLS::Render::RHI::RHIBlendFactor::Zero;
+    desc.blendState.renderTargets[0].alphaOp = NLS::Render::RHI::RHIBlendOp::Max;
+    desc.blendState.renderTargets[0].colorWriteMask =
+        NLS::Render::RHI::RHIColorWriteMask::Red | NLS::Render::RHI::RHIColorWriteMask::Alpha;
+    desc.blendState.renderTargets[1].blendEnable = false;
+    desc.blendState.renderTargets[1].colorWriteMask = NLS::Render::RHI::RHIColorWriteMask::Green;
+
+    const auto blendState = NLS::Render::RHI::DX12::BuildDX12BlendState(desc);
+
+    EXPECT_TRUE(blendState.AlphaToCoverageEnable);
+    EXPECT_TRUE(blendState.IndependentBlendEnable);
+    EXPECT_TRUE(blendState.RenderTarget[0].BlendEnable);
+    EXPECT_EQ(blendState.RenderTarget[0].SrcBlend, D3D12_BLEND_SRC_ALPHA);
+    EXPECT_EQ(blendState.RenderTarget[0].DestBlend, D3D12_BLEND_INV_SRC_ALPHA);
+    EXPECT_EQ(blendState.RenderTarget[0].BlendOpAlpha, D3D12_BLEND_OP_MAX);
+    EXPECT_EQ(blendState.RenderTarget[0].RenderTargetWriteMask, D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_ALPHA);
+    EXPECT_FALSE(blendState.RenderTarget[1].BlendEnable);
+    EXPECT_EQ(blendState.RenderTarget[1].RenderTargetWriteMask, D3D12_COLOR_WRITE_ENABLE_GREEN);
+}
+
+TEST(DX12GraphicsPipelineUtilsTests, BuildsRasterizerStateWithMsaaFlag)
+{
+    NLS::Render::RHI::RHIGraphicsPipelineDesc desc;
+    desc.rasterState.multisampleEnable = true;
+
+    const auto rasterizerState = NLS::Render::RHI::DX12::BuildDX12RasterizerState(desc);
+
+    EXPECT_TRUE(rasterizerState.MultisampleEnable);
+}
 #endif

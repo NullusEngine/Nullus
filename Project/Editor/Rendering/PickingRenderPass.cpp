@@ -6,6 +6,7 @@
 #include "Rendering/EditorPipelineStatePresets.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/RHI/Core/RHIResource.h"
+#include <Debug/Logger.h>
 #include <Components/TransformComponent.h>
 #include <Components/MaterialRenderer.h>
 #include <Rendering/EngineDrawableDescriptor.h>
@@ -72,7 +73,7 @@ Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRe
 	}
 
 	uint8_t pixel[3]{};
-	NLS::Render::Context::DriverRendererAccess::ReadPixels(
+	const auto readbackResult = NLS::Render::Context::DriverRendererAccess::ReadPixelsChecked(
         m_renderer.GetDriver(),
         readableFrame->readbackTexture,
 		p_x,
@@ -82,6 +83,11 @@ Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRe
 		NLS::Render::Settings::EPixelDataFormat::RGB,
 		NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
 		pixel);
+	if (!readbackResult.Succeeded())
+	{
+		NLS_LOG_WARNING("PickingRenderPass::PickAtRenderCoordinate readback failed: " + readbackResult.message);
+		return std::nullopt;
+	}
 
 	return DecodePickingResult(*readableFrame, pixel);
 }

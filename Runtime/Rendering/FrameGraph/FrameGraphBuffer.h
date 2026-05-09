@@ -19,6 +19,7 @@ namespace NLS::Render::FrameGraph
 			size_t size = 0;
 			NLS::Render::RHI::BufferType type = NLS::Render::RHI::BufferType::ShaderStorage;
 			NLS::Render::RHI::BufferUsage usage = NLS::Render::RHI::BufferUsage::DynamicDraw;
+			std::string debugName;
 		};
 
 		bool ownsResource = false;

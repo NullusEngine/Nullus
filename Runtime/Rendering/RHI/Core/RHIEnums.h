@@ -157,6 +157,7 @@ namespace NLS::Render::RHI
         Auto,
         Texture2D,
         Texture2DArray,
+        Texture3D,
         Cube,
         CubeArray
     };

@@ -23,7 +23,13 @@ Model* ModelLoader::Create(const std::vector<Mesh*>& meshes)
 {
     Model* result = new Model("");
     result->m_meshes = meshes;
+    result->ComputeBoundingSphere();
     return result;
+}
+
+Model* ModelLoader::Create(std::initializer_list<Mesh*> meshes)
+{
+    return Create(std::vector<Mesh*>(meshes));
 }
 
 void ModelLoader::Reload(Model& p_model, const std::string& p_filePath, Parsers::EModelParserFlags p_parserFlags)

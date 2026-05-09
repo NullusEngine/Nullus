@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <any>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
@@ -57,6 +58,20 @@ struct MaterialPipelineStateOverrides
     std::optional<bool> hasDepthAttachment;
     std::optional<bool> culling;
     std::optional<Settings::ECullFace> cullFace;
+};
+
+enum class MaterialBindingDiagnosticSeverity : uint8_t
+{
+    Info,
+    Warning,
+    Error
+};
+
+struct MaterialBindingDiagnostic
+{
+    MaterialBindingDiagnosticSeverity severity = MaterialBindingDiagnosticSeverity::Info;
+    std::string bindingName;
+    std::string message;
 };
 
 /**
@@ -232,6 +247,8 @@ public:
     const std::shared_ptr<RHI::RHIBindingLayout>& GetExplicitBindingLayout(const std::shared_ptr<RHI::RHIDevice>& device) const;
     const std::shared_ptr<RHI::RHIBindingSet>& GetExplicitBindingSet(const std::shared_ptr<RHI::RHIDevice>& device) const;
     const std::shared_ptr<RHI::RHIPipelineLayout>& GetExplicitPipelineLayout(const std::shared_ptr<RHI::RHIDevice>& device) const;
+    const std::vector<MaterialBindingDiagnostic>& GetLastExplicitBindingDiagnostics() const;
+    bool HasExplicitBindingErrors() const;
 
     const std::string path;
 

@@ -17,9 +17,9 @@ namespace NLS::Render::RHI
             void RenderDrawData(ImDrawData*, uint32_t) override {}
             NativeHandle ResolveTextureView(const std::shared_ptr<RHITextureView>&) override { return {}; }
             void ReleaseTextureViewHandle(const std::shared_ptr<RHITextureView>&) override {}
-            void SetWaitSemaphore(void*) override {}
-            void SetSignalSemaphore(void*) override {}
-            void* GetUISignalSemaphore() override { return nullptr; }
+            void SetWaitSemaphore(NativeHandle) override {}
+            void SetSignalSemaphore(NativeHandle) override {}
+            NativeHandle GetUISignalSemaphore() override { return {}; }
             uint64_t GetUISignalValue() const override { return 0u; }
             void SubmitCommandBuffer(uint32_t) override {}
         };

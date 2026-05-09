@@ -19,13 +19,13 @@ public:
      * @param p_data
      * @param p_elements
      */
-    VertexBuffer(T* p_data, size_t p_elements);
+    VertexBuffer(const T* p_data, size_t p_elements);
 
     /**
      * Create the vertex buffer from a vector.
      * @param p_data
      */
-    VertexBuffer(std::vector<T>& p_data);
+    VertexBuffer(const std::vector<T>& p_data);
 
     /**
      * Destructor

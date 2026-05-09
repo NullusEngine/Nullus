@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <memory>
 #include <vector>
 
@@ -16,10 +17,14 @@
 #include "Rendering/EngineFrameObjectBindingProvider.h"
 #include "Rendering/Entities/Camera.h"
 #include "Rendering/ForwardSceneRenderer.h"
+#include "Rendering/RHI/BindingPointMap.h"
 #include "Rendering/RHI/Core/RHICommand.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/RHI/Utils/DescriptorAllocator/DescriptorAllocator.h"
+#include "Rendering/Resources/Loaders/ShaderLoader.h"
+#include "Rendering/Resources/Material.h"
+#include "Rendering/Resources/Shader.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Components/MeshRenderer.h"
 
@@ -33,7 +38,7 @@ namespace
         void End() override {}
         void Reset() override {}
         bool IsRecording() const override { return true; }
-        void* GetNativeCommandBuffer() const override { return nullptr; }
+        NLS::Render::RHI::NativeHandle GetNativeCommandBuffer() const override { return {}; }
         void BeginRenderPass(const NLS::Render::RHI::RHIRenderPassDesc&) override {}
         void EndRenderPass() override {}
         void SetViewport(const NLS::Render::RHI::RHIViewport&) override {}
@@ -198,6 +203,36 @@ namespace
         NLS::Render::RHI::RHIBindingSetDesc m_desc {};
     };
 
+    class TestBindingLayout final : public NLS::Render::RHI::RHIBindingLayout
+    {
+    public:
+        explicit TestBindingLayout(NLS::Render::RHI::RHIBindingLayoutDesc desc)
+            : m_desc(std::move(desc))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return m_desc.debugName; }
+        const NLS::Render::RHI::RHIBindingLayoutDesc& GetDesc() const override { return m_desc; }
+
+    private:
+        NLS::Render::RHI::RHIBindingLayoutDesc m_desc {};
+    };
+
+    class TestSampler final : public NLS::Render::RHI::RHISampler
+    {
+    public:
+        explicit TestSampler(NLS::Render::RHI::SamplerDesc desc)
+            : m_desc(desc)
+        {
+        }
+
+        std::string_view GetDebugName() const override { return "RendererFrameObjectBindingTestsSampler"; }
+        const NLS::Render::RHI::SamplerDesc& GetDesc() const override { return m_desc; }
+
+    private:
+        NLS::Render::RHI::SamplerDesc m_desc {};
+    };
+
     class TestQueue final : public NLS::Render::RHI::RHIQueue
     {
     public:
@@ -210,6 +245,9 @@ namespace
     class TestExplicitDevice final : public NLS::Render::RHI::RHIDevice
     {
     public:
+        using NLS::Render::RHI::RHIDevice::CreateBuffer;
+        using NLS::Render::RHI::RHIDevice::CreateTexture;
+
         TestExplicitDevice()
             : m_adapter(std::make_shared<TestAdapter>())
             , m_queue(std::make_shared<TestQueue>())
@@ -234,8 +272,15 @@ namespace
         bool IsBackendReady() const override { return true; }
         std::shared_ptr<NLS::Render::RHI::RHIQueue> GetQueue(NLS::Render::RHI::QueueType) override { return m_queue; }
         std::shared_ptr<NLS::Render::RHI::RHISwapchain> CreateSwapchain(const NLS::Render::RHI::SwapchainDesc&) override { return nullptr; }
-        std::shared_ptr<NLS::Render::RHI::RHIBuffer> CreateBuffer(const NLS::Render::RHI::RHIBufferDesc&, const void* = nullptr) override { return nullptr; }
-        std::shared_ptr<NLS::Render::RHI::RHITexture> CreateTexture(const NLS::Render::RHI::RHITextureDesc& desc, const void* = nullptr) override
+        std::shared_ptr<NLS::Render::RHI::RHIBuffer> CreateBuffer(
+            const NLS::Render::RHI::RHIBufferDesc&,
+            const NLS::Render::RHI::RHIBufferUploadDesc&) override
+        {
+            return nullptr;
+        }
+        std::shared_ptr<NLS::Render::RHI::RHITexture> CreateTexture(
+            const NLS::Render::RHI::RHITextureDesc& desc,
+            const NLS::Render::RHI::RHITextureUploadDesc&) override
         {
             return std::make_shared<TestTexture>(desc);
         }
@@ -245,10 +290,21 @@ namespace
         {
             return std::make_shared<TestTextureView>(texture, desc);
         }
-        std::shared_ptr<NLS::Render::RHI::RHISampler> CreateSampler(const NLS::Render::RHI::SamplerDesc&, std::string = {}) override { return nullptr; }
-        std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> CreateBindingLayout(const NLS::Render::RHI::RHIBindingLayoutDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHISampler> CreateSampler(const NLS::Render::RHI::SamplerDesc& desc, std::string = {}) override
+        {
+            if (failSamplerCreation)
+                return nullptr;
+            return std::make_shared<TestSampler>(desc);
+        }
+        std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> CreateBindingLayout(const NLS::Render::RHI::RHIBindingLayoutDesc& desc) override
+        {
+            ++bindingLayoutCreateCalls;
+            return std::make_shared<TestBindingLayout>(desc);
+        }
         std::shared_ptr<NLS::Render::RHI::RHIBindingSet> CreateBindingSet(const NLS::Render::RHI::RHIBindingSetDesc& desc) override
         {
+            ++bindingSetCreateCalls;
+            lastBindingSetDesc = desc;
             return std::make_shared<TestBindingSet>(desc);
         }
         std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> CreatePipelineLayout(const NLS::Render::RHI::RHIPipelineLayoutDesc&) override { return nullptr; }
@@ -268,12 +324,104 @@ namespace
             NLS::Render::Settings::EPixelDataType,
             void*) override {}
 
+        uint32_t bindingLayoutCreateCalls = 0u;
+        uint32_t bindingSetCreateCalls = 0u;
+        bool failSamplerCreation = false;
+        NLS::Render::RHI::RHIBindingSetDesc lastBindingSetDesc {};
+
     private:
         std::shared_ptr<NLS::Render::RHI::RHIAdapter> m_adapter;
         std::shared_ptr<NLS::Render::RHI::RHIQueue> m_queue;
         NLS::Render::RHI::NativeRenderDeviceInfo m_nativeDeviceInfo {};
         NLS::Render::RHI::RHIDeviceCapabilities m_capabilities {};
     };
+
+    NLS::Render::Resources::Shader* CreateMaterialSamplerShader()
+    {
+        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+        if (shader == nullptr)
+            return nullptr;
+
+        NLS::Render::Resources::ShaderReflection reflection;
+        reflection.properties.push_back({
+            "u_MaterialSampler",
+            NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D,
+            NLS::Render::Resources::ShaderResourceKind::Sampler,
+            NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+            NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+            3u,
+            -1,
+            1,
+            0u,
+            0u,
+            {}
+        });
+        const_cast<NLS::Render::Resources::ShaderReflection&>(shader->GetReflection()) = std::move(reflection);
+        return shader;
+    }
+
+    NLS::Render::Resources::Shader* CreateMaterialStructuredBufferShader()
+    {
+        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+        if (shader == nullptr)
+            return nullptr;
+
+        NLS::Render::Resources::ShaderReflection reflection;
+        reflection.properties.push_back({
+            "u_MissingStructuredBuffer",
+            NLS::Render::Resources::UniformType::UNIFORM_FLOAT,
+            NLS::Render::Resources::ShaderResourceKind::StructuredBuffer,
+            NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+            NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+            4u,
+            -1,
+            1,
+            0u,
+            0u,
+            {}
+        });
+        const_cast<NLS::Render::Resources::ShaderReflection&>(shader->GetReflection()) = std::move(reflection);
+        return shader;
+    }
+
+    NLS::Render::Resources::Shader* CreateConflictingMaterialBindingShader()
+    {
+        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+        if (shader == nullptr)
+            return nullptr;
+
+        NLS::Render::Resources::ShaderReflection reflection;
+        reflection.properties = {
+            {
+                "u_Buffer",
+                NLS::Render::Resources::UniformType::UNIFORM_FLOAT,
+                NLS::Render::Resources::ShaderResourceKind::StructuredBuffer,
+                NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+                NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+                0u,
+                -1,
+                1,
+                0u,
+                0u,
+                {}
+            },
+            {
+                "u_OtherBuffer",
+                NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D,
+                NLS::Render::Resources::ShaderResourceKind::StructuredBuffer,
+                NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+                NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+                0u,
+                -1,
+                1,
+                0u,
+                0u,
+                {}
+            }
+        };
+        const_cast<NLS::Render::Resources::ShaderReflection&>(shader->GetReflection()) = std::move(reflection);
+        return shader;
+    }
 }
 
 TEST(RendererFrameObjectBindingTests, ProviderTracksFrameLifecycle)
@@ -455,6 +603,123 @@ TEST(RendererFrameObjectBindingTests, ExplicitBindingSetCreationRequiresCentralD
     EXPECT_EQ(descriptorStats.transientUsed, 2u);
 
     NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+}
+
+TEST(RendererFrameObjectBindingTests, MaterialExplicitBindingSetUsesProvidedDeviceInsteadOfLocatedDriver)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    auto* shader = CreateMaterialSamplerShader();
+    ASSERT_NE(shader, nullptr);
+    NLS::Render::Resources::Material material(shader);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+
+    const auto& bindingSet = material.GetExplicitBindingSet(explicitDevice);
+
+    ASSERT_NE(bindingSet, nullptr);
+    EXPECT_EQ(explicitDevice->bindingLayoutCreateCalls, 1u);
+    EXPECT_EQ(explicitDevice->bindingSetCreateCalls, 1u);
+    ASSERT_NE(explicitDevice->lastBindingSetDesc.layout, nullptr);
+    const auto samplerEntry = std::find_if(
+        explicitDevice->lastBindingSetDesc.entries.begin(),
+        explicitDevice->lastBindingSetDesc.entries.end(),
+        [](const NLS::Render::RHI::RHIBindingSetEntry& entry)
+        {
+            return entry.type == NLS::Render::RHI::BindingType::Sampler;
+        });
+    ASSERT_NE(samplerEntry, explicitDevice->lastBindingSetDesc.entries.end());
+    EXPECT_NE(samplerEntry->sampler, nullptr);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RendererFrameObjectBindingTests, MaterialExplicitBindingSetReportsMissingRequiredBindings)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    auto* shader = CreateMaterialStructuredBufferShader();
+    ASSERT_NE(shader, nullptr);
+    NLS::Render::Resources::Material material(shader);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+
+    const auto& bindingSet = material.GetExplicitBindingSet(explicitDevice);
+
+    ASSERT_NE(bindingSet, nullptr);
+    EXPECT_TRUE(explicitDevice->lastBindingSetDesc.entries.empty());
+    ASSERT_EQ(material.GetLastExplicitBindingDiagnostics().size(), 1u);
+    const auto& diagnostic = material.GetLastExplicitBindingDiagnostics().front();
+    EXPECT_EQ(diagnostic.severity, NLS::Render::Resources::MaterialBindingDiagnosticSeverity::Error);
+    EXPECT_EQ(diagnostic.bindingName, "u_MissingStructuredBuffer");
+    EXPECT_NE(diagnostic.message.find("missing"), std::string::npos);
+    EXPECT_TRUE(material.HasExplicitBindingErrors());
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RendererFrameObjectBindingTests, MaterialExplicitBindingSetReportsNullSamplerDescriptor)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    auto* shader = CreateMaterialSamplerShader();
+    ASSERT_NE(shader, nullptr);
+    NLS::Render::Resources::Material material(shader);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    explicitDevice->failSamplerCreation = true;
+
+    const auto& bindingSet = material.GetExplicitBindingSet(explicitDevice);
+
+    ASSERT_NE(bindingSet, nullptr);
+    EXPECT_TRUE(explicitDevice->lastBindingSetDesc.entries.empty());
+    ASSERT_EQ(material.GetLastExplicitBindingDiagnostics().size(), 1u);
+    const auto& diagnostic = material.GetLastExplicitBindingDiagnostics().front();
+    EXPECT_EQ(diagnostic.severity, NLS::Render::Resources::MaterialBindingDiagnosticSeverity::Error);
+    EXPECT_EQ(diagnostic.bindingName, "u_MaterialSampler");
+    EXPECT_NE(diagnostic.message.find("sampler"), std::string::npos);
+    EXPECT_TRUE(material.HasExplicitBindingErrors());
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RendererFrameObjectBindingTests, MaterialExplicitBindingSetReportsShaderReflectionValidationErrors)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    auto* shader = CreateConflictingMaterialBindingShader();
+    ASSERT_NE(shader, nullptr);
+    NLS::Render::Resources::Material material(shader);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+
+    const auto& bindingSet = material.GetExplicitBindingSet(explicitDevice);
+
+    EXPECT_EQ(bindingSet, nullptr);
+    EXPECT_EQ(explicitDevice->bindingLayoutCreateCalls, 0u);
+    ASSERT_EQ(material.GetLastExplicitBindingDiagnostics().size(), 1u);
+    const auto& diagnostic = material.GetLastExplicitBindingDiagnostics().front();
+    EXPECT_EQ(diagnostic.severity, NLS::Render::Resources::MaterialBindingDiagnosticSeverity::Error);
+    EXPECT_NE(diagnostic.message.find("conflict"), std::string::npos);
+    EXPECT_TRUE(material.HasExplicitBindingErrors());
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
 }
 
 TEST(RendererFrameObjectBindingTests, ThreadedPreparedBindingSetCreationUsesCurrentFrameDescriptorAllocator)

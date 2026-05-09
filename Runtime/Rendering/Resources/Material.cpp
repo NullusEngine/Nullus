@@ -126,7 +126,16 @@ namespace
 		const NLS::Render::Resources::MaterialPipelineStateOverrides& overrides)
 	{
 		if (overrides.colorWrite.has_value())
+		{
 			desc.blendState.colorWrite = *overrides.colorWrite;
+			const auto writeMask = *overrides.colorWrite
+				? NLS::Render::RHI::RHIColorWriteMask::All
+				: NLS::Render::RHI::RHIColorWriteMask::None;
+			if (desc.blendState.renderTargets.empty())
+				desc.blendState.renderTargets.resize(std::max<size_t>(1u, desc.renderTargetLayout.colorFormats.size()));
+			for (auto& target : desc.blendState.renderTargets)
+				target.colorWriteMask = writeMask;
+		}
 		if (overrides.depthWrite.has_value())
 			desc.depthStencilState.depthWrite = *overrides.depthWrite;
 		if (overrides.depthTest.has_value())
@@ -319,78 +328,6 @@ namespace
 		layoutDesc.entries.push_back(std::move(entry));
 	}
 
-    template<typename TValue>
-    void HashCombine(uint64_t& seed, const TValue& value)
-    {
-        seed ^= static_cast<uint64_t>(std::hash<TValue>{}(value)) + 0x9e3779b97f4a7c15ull + (seed << 6) + (seed >> 2);
-    }
-
-    uint64_t BuildGraphicsPipelineCacheHash(const NLS::Render::RHI::RHIGraphicsPipelineDesc& desc)
-    {
-        uint64_t hash = 0;
-        if (desc.pipelineLayout != nullptr)
-            HashCombine(hash, desc.pipelineLayout->GetDesc().debugName);
-        if (desc.vertexShader != nullptr)
-        {
-            HashCombine(hash, desc.vertexShader->GetDesc().debugName);
-            HashCombine(hash, desc.vertexShader->GetDesc().entryPoint);
-            HashCombine(hash, static_cast<uint32_t>(desc.vertexShader->GetDesc().targetBackend));
-        }
-        if (desc.fragmentShader != nullptr)
-        {
-            HashCombine(hash, desc.fragmentShader->GetDesc().debugName);
-            HashCombine(hash, desc.fragmentShader->GetDesc().entryPoint);
-            HashCombine(hash, static_cast<uint32_t>(desc.fragmentShader->GetDesc().targetBackend));
-        }
-        HashCombine(hash, static_cast<uint32_t>(desc.primitiveTopology));
-        HashCombine(hash, desc.rasterState.cullEnabled);
-        HashCombine(hash, static_cast<uint32_t>(desc.rasterState.cullFace));
-        HashCombine(hash, desc.rasterState.wireframe);
-        HashCombine(hash, desc.blendState.enabled);
-        HashCombine(hash, desc.blendState.colorWrite);
-        HashCombine(hash, desc.depthStencilState.depthTest);
-        HashCombine(hash, desc.depthStencilState.depthWrite);
-        HashCombine(hash, static_cast<uint32_t>(desc.depthStencilState.depthCompare));
-        HashCombine(hash, desc.depthStencilState.stencilTest);
-        HashCombine(hash, desc.depthStencilState.stencilReadMask);
-        HashCombine(hash, desc.depthStencilState.stencilWriteMask);
-        HashCombine(hash, desc.depthStencilState.stencilReference);
-        HashCombine(hash, static_cast<uint32_t>(desc.depthStencilState.stencilCompare));
-        HashCombine(hash, static_cast<uint32_t>(desc.depthStencilState.stencilFailOp));
-        HashCombine(hash, static_cast<uint32_t>(desc.depthStencilState.stencilDepthFailOp));
-        HashCombine(hash, static_cast<uint32_t>(desc.depthStencilState.stencilPassOp));
-        HashCombine(hash, static_cast<uint32_t>(desc.renderTargetLayout.depthFormat));
-        HashCombine(hash, desc.renderTargetLayout.hasDepth);
-        HashCombine(hash, desc.renderTargetLayout.sampleCount);
-        for (const auto colorFormat : desc.renderTargetLayout.colorFormats)
-            HashCombine(hash, static_cast<uint32_t>(colorFormat));
-        for (const auto& vertexBuffer : desc.vertexBuffers)
-        {
-            HashCombine(hash, vertexBuffer.binding);
-            HashCombine(hash, vertexBuffer.stride);
-            HashCombine(hash, vertexBuffer.perInstance);
-        }
-        for (const auto& vertexAttribute : desc.vertexAttributes)
-        {
-            HashCombine(hash, vertexAttribute.location);
-            HashCombine(hash, vertexAttribute.binding);
-            HashCombine(hash, vertexAttribute.offset);
-            HashCombine(hash, vertexAttribute.elementSize);
-        }
-        return hash;
-    }
-
-    NLS::Render::RHI::PipelineCacheKey BuildGraphicsPipelineCacheKey(const NLS::Render::RHI::RHIGraphicsPipelineDesc& desc)
-    {
-        NLS::Render::RHI::PipelineCacheKey key;
-        key.hash = BuildGraphicsPipelineCacheHash(desc);
-        key.backend =
-            desc.vertexShader != nullptr
-                ? desc.vertexShader->GetDesc().targetBackend
-                : NLS::Render::RHI::NativeBackendType::None;
-        key.stableDebugName = desc.debugName;
-        return key;
-    }
 }
 
 namespace NLS::Render::Resources
@@ -408,6 +345,7 @@ namespace NLS::Render::Resources
 		std::shared_ptr<RHI::RHIBindingLayout> explicitBindingLayout;
 		std::shared_ptr<RHI::RHIBindingSet> explicitBindingSet;
 		std::shared_ptr<RHI::RHIPipelineLayout> explicitPipelineLayout;
+		std::vector<MaterialBindingDiagnostic> explicitBindingDiagnostics;
 		RHI::NativeBackendType explicitBindingLayoutBackend = RHI::NativeBackendType::None;
 		RHI::NativeBackendType explicitBindingSetBackend = RHI::NativeBackendType::None;
 		RHI::NativeBackendType explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
@@ -430,6 +368,7 @@ namespace NLS::Render::Resources
 		state.explicitBindingLayout.reset();
 		state.explicitBindingSet.reset();
 		state.explicitPipelineLayout.reset();
+		state.explicitBindingDiagnostics.clear();
 		state.explicitBindingLayoutBackend = RHI::NativeBackendType::None;
 		state.explicitBindingSetBackend = RHI::NativeBackendType::None;
 		state.explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
@@ -442,6 +381,7 @@ namespace NLS::Render::Resources
 		auto& state = GetRuntimeState();
 		state.explicitBindingSet.reset();
 		state.explicitPipelineLayout.reset();
+		state.explicitBindingDiagnostics.clear();
 		state.explicitBindingSetBackend = RHI::NativeBackendType::None;
 		state.explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
 		state.explicitBindingSetDirty = true;
@@ -785,6 +725,11 @@ namespace NLS::Render::Resources
 				: m_frontfaceCulling ? Settings::ECullFace::FRONT : Settings::ECullFace::BACK;
 			desc.blendState.enabled = m_blendable;
 			desc.blendState.colorWrite = m_colorWriting;
+			desc.blendState.renderTargets = { RHI::RHIRenderTargetBlendStateDesc{} };
+			desc.blendState.renderTargets[0].blendEnable = m_blendable;
+			desc.blendState.renderTargets[0].colorWriteMask = m_colorWriting
+				? RHI::RHIColorWriteMask::All
+				: RHI::RHIColorWriteMask::None;
 			desc.depthStencilState.depthTest = m_depthTest;
 			desc.depthStencilState.depthWrite = m_depthWriting;
 			switch (primitiveMode)
@@ -824,7 +769,7 @@ namespace NLS::Render::Resources
 			if (pipelineCache == nullptr)
 				return nullptr;
 
-			const auto cacheKey = BuildGraphicsPipelineCacheKey(desc);
+			const auto cacheKey = RHI::BuildGraphicsPipelineCacheKey(desc);
 			return pipelineCache->GetOrCreateGraphicsPipeline(
 				cacheKey,
 				[device, desc]()
@@ -877,6 +822,24 @@ namespace NLS::Render::Resources
 			return state.explicitBindingLayout;
 		}
 
+		const auto validation = ValidateShaderBindingReflection(m_shader->GetReflection());
+		if (validation.HasErrors())
+		{
+			for (const auto& diagnostic : validation.diagnostics)
+			{
+				if (diagnostic.severity == ShaderBindingValidationSeverity::Error)
+				{
+					state.explicitBindingDiagnostics.push_back({
+						MaterialBindingDiagnosticSeverity::Error,
+						{},
+						diagnostic.message
+					});
+				}
+			}
+			state.explicitBindingLayoutDirty = false;
+			return state.explicitBindingLayout;
+		}
+
 		const auto layoutDescs = BuildExplicitBindingLayoutDescsBySet(
 			m_shader->GetReflection(),
 			path.empty() ? "Material" : path);
@@ -918,6 +881,17 @@ namespace NLS::Render::Resources
 		RHI::RHIBindingSetDesc bindingSetDesc;
 		bindingSetDesc.layout = explicitLayout;
 		bindingSetDesc.debugName = path.empty() ? "MaterialBindingSet" : path + ":MaterialBindingSet";
+		if (!state.explicitBindingDiagnostics.empty())
+			state.explicitBindingDiagnostics.clear();
+
+		auto addBindingDiagnostic = [&state](MaterialBindingDiagnosticSeverity severity, std::string bindingName, std::string message)
+		{
+			state.explicitBindingDiagnostics.push_back({
+				severity,
+				std::move(bindingName),
+				std::move(message)
+			});
+		};
 
 		for (const auto& entry : explicitLayout->GetDesc().entries)
 		{
@@ -934,6 +908,10 @@ namespace NLS::Render::Resources
 				auto bufferState = state.materialConstantBuffers.find(entry.name);
 				if (bufferState == state.materialConstantBuffers.end() || !bufferState->second.buffer)
 				{
+					addBindingDiagnostic(
+						MaterialBindingDiagnosticSeverity::Error,
+						entry.name,
+						"Material binding \"" + entry.name + "\" is missing required buffer resource.");
 					if (ShouldLogMaterialBindingDiagnostics() && m_shader != nullptr && m_shader->path.find("Skybox") != std::string::npos)
 					{
 						NLS_LOG_INFO(
@@ -947,7 +925,13 @@ namespace NLS::Render::Resources
 				if (bindingEntry.buffer == nullptr)
 				bindingEntry.buffer = bufferState->second.buffer->GetBufferHandle();
 				if (bindingEntry.buffer == nullptr)
+				{
+					addBindingDiagnostic(
+						MaterialBindingDiagnosticSeverity::Error,
+						entry.name,
+						"Material binding \"" + entry.name + "\" resolved to a null buffer descriptor.");
 					continue;
+				}
 				bindingEntry.bufferRange = bufferState->second.size;
 				break;
 			}
@@ -957,6 +941,10 @@ namespace NLS::Render::Resources
 				const auto* parameter = m_parameterBlock.TryGet(entry.name);
 				if (parameter == nullptr)
 				{
+					addBindingDiagnostic(
+						MaterialBindingDiagnosticSeverity::Error,
+						entry.name,
+						"Material binding \"" + entry.name + "\" is missing required texture parameter.");
 					if (ShouldLogMaterialBindingDiagnostics() && m_shader != nullptr && m_shader->path.find("Skybox") != std::string::npos)
 						NLS_LOG_INFO("[SkyboxMaterial] Missing texture parameter for entry \"" + entry.name + "\"");
 					continue;
@@ -985,6 +973,10 @@ namespace NLS::Render::Resources
 
 				if (texture == nullptr || !texture->GetTextureHandle())
 				{
+					addBindingDiagnostic(
+						MaterialBindingDiagnosticSeverity::Error,
+						entry.name,
+						"Material binding \"" + entry.name + "\" resolved to a null texture descriptor.");
 					if (ShouldLogMaterialBindingDiagnostics() && m_shader != nullptr && m_shader->path.find("Skybox") != std::string::npos)
 						NLS_LOG_INFO("[SkyboxMaterial] Texture entry \"" + entry.name + "\" resolved to null texture or null handle, skipping");
 					continue;
@@ -993,6 +985,10 @@ namespace NLS::Render::Resources
 				bindingEntry.textureView = texture->GetOrCreateExplicitTextureView(entry.name + "View");
 				if (bindingEntry.textureView == nullptr)
 				{
+					addBindingDiagnostic(
+						MaterialBindingDiagnosticSeverity::Error,
+						entry.name,
+						"Material binding \"" + entry.name + "\" resolved to a null texture view descriptor.");
 					if (ShouldLogMaterialBindingDiagnostics() && m_shader != nullptr && m_shader->path.find("Skybox") != std::string::npos)
 						NLS_LOG_INFO("[SkyboxMaterial] Texture entry \"" + entry.name + "\" GetOrCreateExplicitTextureView returned null, skipping");
 					continue;
@@ -1009,6 +1005,14 @@ namespace NLS::Render::Resources
 				bindingEntry.sampler = device->CreateSampler(
 					sampler != nullptr ? *sampler : defaultSampler,
 					entry.name + "Sampler");
+				if (bindingEntry.sampler == nullptr)
+				{
+					addBindingDiagnostic(
+						MaterialBindingDiagnosticSeverity::Error,
+						entry.name,
+						"Material binding \"" + entry.name + "\" resolved to a null sampler descriptor.");
+					continue;
+				}
 				break;
 			}
 			default:
@@ -1021,17 +1025,7 @@ namespace NLS::Render::Resources
 		if (ShouldLogMaterialBindingDiagnostics() && m_shader != nullptr && m_shader->path.find("Skybox") != std::string::npos)
 			NLS_LOG_INFO("[SkyboxMaterial] Explicit binding set entry count = " + std::to_string(bindingSetDesc.entries.size()));
 
-        if (auto* driver = NLS::Render::Context::TryGetLocatedDriver(); driver != nullptr)
-        {
-		    state.explicitBindingSet = NLS::Render::Context::DriverRendererAccess::CreateExplicitBindingSet(
-                *driver,
-                bindingSetDesc,
-                RHI::DescriptorAllocationLifetime::Persistent);
-        }
-        else
-        {
-            state.explicitBindingSet.reset();
-        }
+		state.explicitBindingSet = device->CreateBindingSet(bindingSetDesc);
 		state.explicitBindingSetDirty = false;
 		return state.explicitBindingSet;
 	}
@@ -1064,6 +1058,23 @@ namespace NLS::Render::Resources
 			pipelineLayoutDesc.bindingLayouts.push_back(device->CreateBindingLayout(layoutDesc));
 		state.explicitPipelineLayout = device->CreatePipelineLayout(pipelineLayoutDesc);
 		return state.explicitPipelineLayout;
+	}
+
+	const std::vector<MaterialBindingDiagnostic>& Material::GetLastExplicitBindingDiagnostics() const
+	{
+		return GetRuntimeState().explicitBindingDiagnostics;
+	}
+
+	bool Material::HasExplicitBindingErrors() const
+	{
+		const auto& diagnostics = GetRuntimeState().explicitBindingDiagnostics;
+		return std::any_of(
+			diagnostics.begin(),
+			diagnostics.end(),
+			[](const MaterialBindingDiagnostic& diagnostic)
+			{
+				return diagnostic.severity == MaterialBindingDiagnosticSeverity::Error;
+			});
 	}
 
 	std::map<std::string, std::any>& Material::GetUniformsData()

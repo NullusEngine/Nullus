@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <vector>
 #include <memory>
 
@@ -11,6 +12,20 @@
 #include "RenderDef.h"
 namespace NLS::Render::Resources
 {
+	struct NLS_RENDER_API MeshVertexUploadView
+	{
+		const Geometry::Vertex* data = nullptr;
+		size_t byteSize = 0u;
+		size_t stride = sizeof(Geometry::Vertex);
+		size_t positionOffset = 0u;
+		size_t texCoordOffset = sizeof(float) * 3u;
+		size_t normalOffset = sizeof(float) * 5u;
+		size_t tangentOffset = sizeof(float) * 8u;
+		size_t bitangentOffset = sizeof(float) * 11u;
+	};
+
+	NLS_RENDER_API MeshVertexUploadView BuildMeshVertexUploadView(const std::vector<Geometry::Vertex>& vertices);
+
 	/**
 	* Standard mesh of Rendering
 	*/
@@ -67,7 +82,7 @@ namespace NLS::Render::Resources
 		const size_t m_vertexStride = sizeof(Geometry::Vertex);
 
 		Buffers::VertexArray							m_vertexArray;
-		std::unique_ptr<Buffers::VertexBuffer<float>>	m_vertexBuffer;
+		std::unique_ptr<Buffers::VertexBuffer<Geometry::Vertex>>	m_vertexBuffer;
 		std::unique_ptr<Buffers::IndexBuffer>			m_indexBuffer;
 
 		Geometry::BoundingSphere m_boundingSphere;

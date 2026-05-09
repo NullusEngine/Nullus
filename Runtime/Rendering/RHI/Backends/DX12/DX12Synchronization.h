@@ -26,6 +26,7 @@ namespace NLS::Render::Backend
 		bool IsSignaled() const override;
 		void Reset() override;
 		bool Wait(uint64_t timeoutNanoseconds) override;
+		NLS::Render::RHI::NativeHandle GetNativeFenceHandle() override;
 
 #if defined(_WIN32)
 		ID3D12Fence* GetFence() const;
@@ -49,7 +50,7 @@ namespace NLS::Render::Backend
 		std::string_view GetDebugName() const override;
 		bool IsSignaled() const override;
 		void Reset() override;
-		void* GetNativeSemaphoreHandle() override;
+		NLS::Render::RHI::NativeHandle GetNativeSemaphoreHandle() override;
 
 #if defined(_WIN32)
 		ID3D12Fence* GetFence() const;

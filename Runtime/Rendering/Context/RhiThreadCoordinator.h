@@ -4,6 +4,7 @@
 #include <memory>
 
 #include "RenderDef.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
 
 namespace NLS::Render::Settings
 {
@@ -38,6 +39,44 @@ namespace NLS::Render::Context
             Settings::EPixelDataType type,
             void* data);
         static void ReadPixels(
+            const Driver& driver,
+            const std::shared_ptr<RHI::RHITexture>& texture,
+            uint32_t x,
+            uint32_t y,
+            uint32_t width,
+            uint32_t height,
+            Settings::EPixelDataFormat format,
+            Settings::EPixelDataType type,
+            void* data);
+        static RHI::RHIReadbackResult ReadPixelsChecked(
+            const Driver& driver,
+            uint32_t x,
+            uint32_t y,
+            uint32_t width,
+            uint32_t height,
+            Settings::EPixelDataFormat format,
+            Settings::EPixelDataType type,
+            void* data);
+        static RHI::RHIReadbackResult ReadPixelsChecked(
+            const Driver& driver,
+            const std::shared_ptr<RHI::RHITexture>& texture,
+            uint32_t x,
+            uint32_t y,
+            uint32_t width,
+            uint32_t height,
+            Settings::EPixelDataFormat format,
+            Settings::EPixelDataType type,
+            void* data);
+        static RHI::RHIReadbackResult BeginReadPixels(
+            const Driver& driver,
+            uint32_t x,
+            uint32_t y,
+            uint32_t width,
+            uint32_t height,
+            Settings::EPixelDataFormat format,
+            Settings::EPixelDataType type,
+            void* data);
+        static RHI::RHIReadbackResult BeginReadPixels(
             const Driver& driver,
             const std::shared_ptr<RHI::RHITexture>& texture,
             uint32_t x,

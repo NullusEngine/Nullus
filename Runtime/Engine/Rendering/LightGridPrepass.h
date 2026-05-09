@@ -29,6 +29,11 @@ namespace NLS::Render::RHI
     class RHIPipelineLayout;
 }
 
+namespace NLS::Render::Settings
+{
+    struct EngineDiagnosticsSettings;
+}
+
 namespace NLS::Engine::Rendering
 {
     class NLS_ENGINE_API LightGridPrepass
@@ -81,6 +86,8 @@ namespace NLS::Engine::Rendering
             const std::optional<PreparedFrameInputs>& preparedFrameInputs = {});
         static NLS::Render::FrameGraph::PreparedComputeDispatchSource BuildPreparedComputeDispatchSource(
             const PreparedComputeRequest& preparedComputeRequest);
+        static bool ShouldLogHotPathFailureDiagnostics(
+            const NLS::Render::Settings::EngineDiagnosticsSettings& diagnostics);
 
         const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& GetGraphicsPassBindingSet() const;
         NLS::Render::FrameGraph::PreparedComputeDispatchSource GetPreparedComputeDispatchSource() const;

@@ -3,8 +3,12 @@
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 
+#include <utility>
+
 namespace
 {
+	constexpr size_t kMaxRetiredMultiFramebufferResourceSets = 16u;
+
 	NLS::Render::RHI::RHITextureDesc CreateColorTextureDesc(uint32_t width, uint32_t height, NLS::Render::RHI::TextureFormat format, uint32_t index)
 	{
 		NLS::Render::RHI::RHITextureDesc desc{};
@@ -36,6 +40,40 @@ namespace
 	}
 }
 
+bool NLS::Render::Buffers::MultiFramebuffer::RetiredResourceSet::HasResources() const
+{
+	if (depthTexture != nullptr || depthTextureView != nullptr)
+		return true;
+
+	for (const auto& texture : colorTextures)
+	{
+		if (texture != nullptr)
+			return true;
+	}
+
+	for (const auto& view : colorTextureViews)
+	{
+		if (view != nullptr)
+			return true;
+	}
+
+	return false;
+}
+
+void NLS::Render::Buffers::MultiFramebuffer::RetiredResourceSet::Reset()
+{
+	for (auto& view : colorTextureViews)
+		view.reset();
+	depthTextureView.reset();
+
+	for (auto& texture : colorTextures)
+		texture.reset();
+	depthTexture.reset();
+
+	colorTextureViews.clear();
+	colorTextures.clear();
+}
+
 namespace NLS::Render::Buffers
 {
 	MultiFramebuffer::MultiFramebuffer(uint16_t width, uint16_t height, const std::vector<AttachmentDesc>& colorAttachments, bool withDepth)
@@ -55,7 +93,14 @@ namespace NLS::Render::Buffers
 		m_height = height;
 		m_withDepth = withDepth;
 		m_attachmentDescs = colorAttachments;
-		Allocate();
+		if (width == 0u || height == 0u)
+			return;
+
+		if (!Allocate(width, height))
+		{
+			m_width = 0u;
+			m_height = 0u;
+		}
 	}
 
 	void MultiFramebuffer::Resize(uint16_t width, uint16_t height)
@@ -63,9 +108,20 @@ namespace NLS::Render::Buffers
 		if (width == m_width && height == m_height)
 			return;
 
-		m_width = width;
-		m_height = height;
-		Allocate();
+		if (width == 0u || height == 0u)
+		{
+			RetireCurrentResources();
+			m_width = width;
+			m_height = height;
+			PruneRetiredResources();
+			return;
+		}
+
+		if (Allocate(width, height))
+		{
+			m_width = width;
+			m_height = height;
+		}
 	}
 
 	bool MultiFramebuffer::IsInitialized() const
@@ -84,41 +140,68 @@ namespace NLS::Render::Buffers
 
 	void MultiFramebuffer::Release()
 	{
-		m_explicitColorTextures.clear();
-		m_explicitColorTextureViews.clear();
-		m_explicitDepthTexture.reset();
-		m_explicitDepthTextureView.reset();
+		ResetCurrentResources();
+		for (auto& resourceSet : m_retiredResourceSets)
+			resourceSet.Reset();
+		m_retiredResourceSets.clear();
 	}
 
-	void MultiFramebuffer::Allocate()
+	void MultiFramebuffer::ResetCurrentResources()
+	{
+		m_explicitColorTextureViews.clear();
+		m_explicitDepthTextureView.reset();
+		m_explicitColorTextures.clear();
+		m_explicitDepthTexture.reset();
+	}
+
+	void MultiFramebuffer::RetireCurrentResources()
+	{
+		RetiredResourceSet resourceSet;
+		resourceSet.colorTextures = std::move(m_explicitColorTextures);
+		resourceSet.colorTextureViews = std::move(m_explicitColorTextureViews);
+		resourceSet.depthTexture = std::move(m_explicitDepthTexture);
+		resourceSet.depthTextureView = std::move(m_explicitDepthTextureView);
+
+		if (resourceSet.HasResources())
+			m_retiredResourceSets.push_back(std::move(resourceSet));
+	}
+
+	void MultiFramebuffer::PruneRetiredResources()
+	{
+		while (m_retiredResourceSets.size() > kMaxRetiredMultiFramebufferResourceSets)
+		{
+			m_retiredResourceSets.front().Reset();
+			m_retiredResourceSets.pop_front();
+		}
+	}
+
+	bool MultiFramebuffer::Allocate(uint16_t width, uint16_t height)
 	{
 		auto& driver = NLS::Render::Context::RequireLocatedDriver("MultiFramebuffer::Allocate");
 		auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver);
 		if (device == nullptr)
 		{
 			NLS_LOG_WARNING("MultiFramebuffer::Allocate: Explicit RHI device not available");
-			return;
+			return false;
 		}
 
-		// Release existing textures first
-		m_explicitColorTextures.clear();
-		m_explicitColorTextureViews.clear();
-		m_explicitDepthTexture.reset();
-		m_explicitDepthTextureView.reset();
+		std::vector<std::shared_ptr<NLS::Render::RHI::RHITexture>> nextColorTextures;
+		std::shared_ptr<NLS::Render::RHI::RHITexture> nextDepthTexture;
 
 		// Create color textures
 		if (!m_attachmentDescs.empty())
 		{
-			m_explicitColorTextures.resize(m_attachmentDescs.size());
-			m_explicitColorTextureViews.assign(m_attachmentDescs.size(), nullptr);
+			nextColorTextures.resize(m_attachmentDescs.size());
 
 			for (size_t i = 0; i < m_attachmentDescs.size(); ++i)
 			{
-				auto desc = CreateColorTextureDesc(m_width, m_height, m_attachmentDescs[i].format, static_cast<uint32_t>(i));
-				m_explicitColorTextures[i] = device->CreateTexture(desc, nullptr);
-				if (m_explicitColorTextures[i] == nullptr)
+				auto desc = CreateColorTextureDesc(width, height, m_attachmentDescs[i].format, static_cast<uint32_t>(i));
+				nextColorTextures[i] = device->CreateTexture(desc);
+				if (nextColorTextures[i] == nullptr)
 				{
 					NLS_LOG_WARNING("MultiFramebuffer::Allocate: Failed to create color texture " + std::to_string(i));
+					PruneRetiredResources();
+					return false;
 				}
 			}
 		}
@@ -126,13 +209,22 @@ namespace NLS::Render::Buffers
 		// Create depth texture
 		if (m_withDepth)
 		{
-			auto desc = CreateDepthTextureDesc(m_width, m_height);
-			m_explicitDepthTexture = device->CreateTexture(desc, nullptr);
-			if (m_explicitDepthTexture == nullptr)
+			auto desc = CreateDepthTextureDesc(width, height);
+			nextDepthTexture = device->CreateTexture(desc);
+			if (nextDepthTexture == nullptr)
 			{
 				NLS_LOG_WARNING("MultiFramebuffer::Allocate: Failed to create depth texture");
+				PruneRetiredResources();
+				return false;
 			}
 		}
+
+		RetireCurrentResources();
+		m_explicitColorTextures = std::move(nextColorTextures);
+		m_explicitColorTextureViews.assign(m_explicitColorTextures.size(), nullptr);
+		m_explicitDepthTexture = std::move(nextDepthTexture);
+		PruneRetiredResources();
+		return true;
 	}
 
 	std::shared_ptr<NLS::Render::RHI::RHITextureView> MultiFramebuffer::GetOrCreateExplicitColorView(size_t index, const std::string& debugName) const

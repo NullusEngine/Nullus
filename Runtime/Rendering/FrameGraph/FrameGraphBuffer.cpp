@@ -54,7 +54,9 @@ namespace NLS::Render::FrameGraph
 			explicitDesc.size = desc.size;
 			explicitDesc.usage = ToExplicitBufferUsage(desc);
 			explicitDesc.memoryUsage = ToExplicitMemoryUsage(desc.usage);
-			explicitDesc.debugName = "FrameGraphBuffer";
+			explicitDesc.debugName = !desc.debugName.empty()
+				? desc.debugName
+				: "FrameGraphBuffer";
 			return explicitDesc;
 		}
 

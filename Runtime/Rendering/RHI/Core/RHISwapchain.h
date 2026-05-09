@@ -23,7 +23,7 @@ namespace NLS::Render::RHI
         std::vector<std::shared_ptr<class RHISemaphore>> waitSemaphores;
         // UI rendering signal semaphore - Driver sets this from UIManager::ResolveUISignalSemaphore()
         // Backend should wait on this semaphore before presenting to ensure UI rendering completes first
-        void* uiSignalSemaphore = nullptr;
+        NativeHandle uiSignalSemaphore;
         uint64_t uiSignalValue = 0u;
     };
 
@@ -44,7 +44,7 @@ namespace NLS::Render::RHI
             const std::shared_ptr<RHIFence>& signalFence) = 0;
         virtual std::shared_ptr<RHITextureView> GetBackbufferView(uint32_t index) { return nullptr; } // Returns view for swapchain backbuffer
         virtual bool Resize(uint32_t width, uint32_t height) = 0;
-        virtual void* GetNativeSwapchainHandle() { return nullptr; } // For backend-specific access
+        virtual NativeHandle GetNativeSwapchainHandle() { return {}; } // For backend-specific access
     };
 
     class NLS_RENDER_API RHIQueue : public RHIObject

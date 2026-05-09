@@ -13,7 +13,7 @@ namespace NLS::Render::Backend
 			graphicsQueue != nullptr &&
 			factory != nullptr &&
 			adapter != nullptr &&
-			capabilities.backendReady;
+			capabilities.GetFeature(NLS::Render::RHI::RHIDeviceFeature::BackendReady).supported;
 #else
 		return false;
 #endif
@@ -133,31 +133,50 @@ namespace NLS::Render::Backend
 
 		NLS::Render::RHI::RHIDeviceCapabilities BuildDX12Capabilities(ID3D12CommandQueue* computeQueue)
 		{
+			using NLS::Render::RHI::RHIDeviceFeature;
+
 			NLS::Render::RHI::RHIDeviceCapabilities capabilities{};
-			capabilities.backendReady = true;
-			capabilities.supportsGraphics = true;
-			capabilities.supportsCompute = true;
-			capabilities.supportsAsyncCompute = false;
-			capabilities.supportsDedicatedComputeQueue = false;
-			capabilities.supportsCopyQueue = false;
-			capabilities.supportsSwapchain = true;
-			capabilities.supportsFramebufferBlit = true;
-			capabilities.supportsDepthBlit = true;
-			capabilities.supportsCurrentSceneRenderer = true;
-			capabilities.supportsOffscreenFramebuffers = true;
-			capabilities.supportsFramebufferReadback = true;
-			capabilities.supportsEditorPickingReadback = true;
-			capabilities.supportsUITextureHandles = true;
-			capabilities.supportsCubemaps = true;
-			capabilities.supportsMultiRenderTargets = true;
-			capabilities.supportsParallelCommandRecording = true;
-			capabilities.supportsParallelCommandTranslation = true;
-			capabilities.supportsTransientResourceAllocator = false;
-			capabilities.supportsCentralizedDescriptorManagement = true;
-			capabilities.supportsPipelineStateCache = true;
+			capabilities.SetFeature(RHIDeviceFeature::BackendReady, true);
+			capabilities.SetFeature(RHIDeviceFeature::Graphics, true);
+			capabilities.SetFeature(RHIDeviceFeature::Compute, true);
+			capabilities.SetFeature(
+				RHIDeviceFeature::AsyncCompute,
+				false,
+				"DX12 async compute is gated until cross-queue scheduling and lifetime validation are complete");
+			capabilities.SetFeature(
+				RHIDeviceFeature::DedicatedComputeQueue,
+				computeQueue != nullptr,
+				computeQueue != nullptr
+					? std::string{}
+					: "DX12 dedicated compute queue creation failed or is unavailable");
+			capabilities.SetFeature(
+				RHIDeviceFeature::CopyQueue,
+				false,
+				"DX12 copy queue is not wired into the RHI submission path");
+			capabilities.SetFeature(RHIDeviceFeature::Swapchain, true);
+			capabilities.SetFeature(RHIDeviceFeature::FramebufferBlit, true);
+			capabilities.SetFeature(RHIDeviceFeature::DepthBlit, true);
+			capabilities.SetFeature(RHIDeviceFeature::CurrentSceneRenderer, true);
+			capabilities.SetFeature(RHIDeviceFeature::OffscreenFramebuffers, true);
+			capabilities.SetFeature(RHIDeviceFeature::FramebufferReadback, true);
+			capabilities.SetFeature(RHIDeviceFeature::EditorPickingReadback, true);
+			capabilities.SetFeature(RHIDeviceFeature::UITextureHandles, true);
+			capabilities.SetFeature(RHIDeviceFeature::Cubemaps, true);
+			capabilities.SetFeature(RHIDeviceFeature::MultiRenderTargets, true);
+			capabilities.SetFeature(RHIDeviceFeature::ParallelCommandRecording, true);
+			capabilities.SetFeature(RHIDeviceFeature::ParallelCommandTranslation, true);
+			capabilities.SetFeature(
+				RHIDeviceFeature::TransientResourceAllocator,
+				false,
+				"DX12 transient resource allocator is not implemented yet");
+			capabilities.SetFeature(RHIDeviceFeature::CentralizedDescriptorManagement, true);
+			capabilities.SetFeature(RHIDeviceFeature::PipelineStateCache, true);
 			capabilities.maxTextureDimension2D = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
 			capabilities.maxColorAttachments = D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT;
-			capabilities.supportsExplicitBarriers = true;
+			capabilities.limits.maxTextureDimension2D = capabilities.maxTextureDimension2D;
+			capabilities.limits.maxColorAttachments = capabilities.maxColorAttachments;
+			capabilities.SetFeature(RHIDeviceFeature::ExplicitBarriers, true);
+			capabilities.SynchronizeLegacyFields();
 			return capabilities;
 		}
 	}

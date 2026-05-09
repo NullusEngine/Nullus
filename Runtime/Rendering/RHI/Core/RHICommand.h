@@ -61,6 +61,7 @@ namespace NLS::Render::RHI
         std::optional<RHIRenderPassDepthStencilAttachmentDesc> depthStencilAttachment;
         RHIRect2D renderArea{};
         std::string debugName;
+        bool attachmentsRequireExternalStateTransitions = false;
     };
 
     struct NLS_RENDER_API RHIBufferCopyRegion
@@ -128,8 +129,8 @@ namespace NLS::Render::RHI
         virtual void End() = 0;
         virtual void Reset() = 0;
         virtual bool IsRecording() const = 0;
-        // Returns the native command buffer handle (e.g., VkCommandBuffer for Vulkan)
-        virtual void* GetNativeCommandBuffer() const = 0;
+        // Returns the native command buffer handle (e.g., ID3D12GraphicsCommandList for DX12)
+        virtual NativeHandle GetNativeCommandBuffer() const = 0;
         virtual void BeginGpuProfileScope(std::string_view name, std::string_view sourceFunction) {}
         virtual void EndGpuProfileScope() {}
 

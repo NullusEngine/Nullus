@@ -2,12 +2,17 @@
 
 #include <algorithm>
 #include <climits>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include <Debug/Logger.h>
+#include "Rendering/RHI/Backends/DX12/DX12DebugNameUtils.h"
+#include "Rendering/RHI/Backends/DX12/DX12FormatUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12GraphicsPipelineUtils.h"
+#include "Rendering/RHI/Backends/DX12/DX12PipelineCacheBlobUtils.h"
+#include "Rendering/RHI/Utils/PipelineCache/PipelineCache.h"
 
 namespace NLS::Render::Backend
 {
@@ -49,18 +54,42 @@ namespace NLS::Render::Backend
 
 		DXGI_FORMAT ToD3D12Format(NLS::Render::RHI::TextureFormat format)
 		{
-			switch (format)
-			{
-			case NLS::Render::RHI::TextureFormat::RGBA8:
-			case NLS::Render::RHI::TextureFormat::RGB8:
-				return DXGI_FORMAT_R8G8B8A8_UNORM;
-			case NLS::Render::RHI::TextureFormat::RGBA16F:
-				return DXGI_FORMAT_R16G16B16A16_FLOAT;
-			case NLS::Render::RHI::TextureFormat::Depth24Stencil8:
-				return DXGI_FORMAT_D24_UNORM_S8_UINT;
-			default:
-				return DXGI_FORMAT_R8G8B8A8_UNORM;
-			}
+			const DXGI_FORMAT dxgiFormat = NLS::Render::RHI::DX12::ToDXGIFormat(format);
+			return dxgiFormat != DXGI_FORMAT_UNKNOWN ? dxgiFormat : DXGI_FORMAT_R8G8B8A8_UNORM;
+		}
+
+		std::wstring Utf8ToWideString(const std::string& value)
+		{
+			if (value.empty())
+				return {};
+
+			const int requiredChars = MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, nullptr, 0);
+			if (requiredChars <= 1)
+				return {};
+
+			std::wstring wide(static_cast<size_t>(requiredChars), L'\0');
+			MultiByteToWideChar(CP_UTF8, 0, value.c_str(), -1, wide.data(), requiredChars);
+			wide.resize(static_cast<size_t>(requiredChars - 1));
+			return wide;
+		}
+
+		void SetDx12ObjectName(ID3D12Object* object, const std::string& debugName)
+		{
+			if (object == nullptr || debugName.empty())
+				return;
+
+			const auto wideName = Utf8ToWideString(debugName);
+			if (!wideName.empty())
+				object->SetName(wideName.c_str());
+		}
+
+		std::string PipelineKeyLabel(const NLS::Render::RHI::PipelineCacheKey& key)
+		{
+			std::ostringstream stream;
+			stream << std::hex << key.hash;
+			if (!key.stableDebugName.empty())
+				stream << ":" << key.stableDebugName;
+			return stream.str();
 		}
 
 		void LogDx12DebugMessages(ID3D12Device* device, const std::string& context)
@@ -140,6 +169,7 @@ namespace NLS::Render::Backend
 				NLS_LOG_ERROR("NativeDX12PipelineLayout: CreateRootSignature failed with hr=" + std::to_string(hr));
 				return;
 			}
+			SetDx12ObjectName(m_rootSignature.Get(), "DX12 RootSignature \"" + m_desc.debugName + "\"");
 		}
 #endif
 	}
@@ -255,6 +285,7 @@ namespace NLS::Render::Backend
 			NLS_LOG_ERROR("NativeDX12GraphicsPipeline: CreateRootSignature failed with hr=" + std::to_string(hr));
 			return;
 		}
+		SetDx12ObjectName(m_rootSignature, "DX12 RootSignature \"" + m_desc.debugName + "\" default");
 #endif
 	}
 
@@ -299,34 +330,11 @@ namespace NLS::Render::Backend
 		psoDesc.StreamOutput.NumStrides = 0;
 		psoDesc.StreamOutput.RasterizedStream = 0;
 
-		psoDesc.BlendState.AlphaToCoverageEnable = FALSE;
-		psoDesc.BlendState.IndependentBlendEnable = FALSE;
-		psoDesc.BlendState.RenderTarget[0].BlendEnable = m_desc.blendState.enabled ? TRUE : FALSE;
-		psoDesc.BlendState.RenderTarget[0].LogicOpEnable = FALSE;
-		psoDesc.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
-		psoDesc.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
-		psoDesc.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
-		psoDesc.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
-		psoDesc.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
-		psoDesc.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
-		psoDesc.BlendState.RenderTarget[0].LogicOp = D3D12_LOGIC_OP_NOOP;
-		psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask =
-			m_desc.blendState.colorWrite ? D3D12_COLOR_WRITE_ENABLE_ALL : 0;
+		psoDesc.BlendState = NLS::Render::RHI::DX12::BuildDX12BlendState(m_desc);
 
 		psoDesc.SampleMask = UINT_MAX;
 
-		psoDesc.RasterizerState.FillMode = m_desc.rasterState.wireframe ? D3D12_FILL_MODE_WIREFRAME : D3D12_FILL_MODE_SOLID;
-		psoDesc.RasterizerState.CullMode = m_desc.rasterState.cullEnabled ?
-			(m_desc.rasterState.cullFace == NLS::Render::Settings::ECullFace::FRONT ? D3D12_CULL_MODE_FRONT : D3D12_CULL_MODE_BACK) :
-			D3D12_CULL_MODE_NONE;
-		psoDesc.RasterizerState.FrontCounterClockwise = TRUE;
-		psoDesc.RasterizerState.DepthBias = D3D12_DEFAULT_DEPTH_BIAS;
-		psoDesc.RasterizerState.SlopeScaledDepthBias = D3D12_DEFAULT_SLOPE_SCALED_DEPTH_BIAS;
-		psoDesc.RasterizerState.DepthClipEnable = TRUE;
-		psoDesc.RasterizerState.MultisampleEnable = FALSE;
-		psoDesc.RasterizerState.AntialiasedLineEnable = FALSE;
-		psoDesc.RasterizerState.ForcedSampleCount = 0;
-		psoDesc.RasterizerState.ConservativeRaster = D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF;
+		psoDesc.RasterizerState = NLS::Render::RHI::DX12::BuildDX12RasterizerState(m_desc);
 
 		const bool hasDepthAttachment = m_desc.renderTargetLayout.hasDepth;
 		const bool depthTestEnabled = hasDepthAttachment && m_desc.depthStencilState.depthTest;
@@ -373,16 +381,38 @@ namespace NLS::Render::Backend
 		psoDesc.SampleDesc.Count = 1;
 		psoDesc.SampleDesc.Quality = 0;
 		psoDesc.NodeMask = 0;
-		psoDesc.CachedPSO.CachedBlobSizeInBytes = 0;
-		psoDesc.CachedPSO.pCachedBlob = nullptr;
+		const auto cacheKey = NLS::Render::RHI::BuildGraphicsPipelineCacheKey(m_desc);
+		const auto pipelineDebugLabel = NLS::Render::RHI::DX12::BuildDX12GraphicsPipelineDebugLabel(m_desc, PipelineKeyLabel(cacheKey));
+		const auto cacheBlobPaths = NLS::Render::RHI::DX12::BuildDX12PipelineCacheBlobPaths(
+			cacheKey,
+			"graphics",
+			NLS::Render::RHI::DX12::GetDX12PipelineCacheBlobRoot());
+		const auto cachedBlob = NLS::Render::RHI::DX12::ReadDX12PipelineCacheBlob(cacheBlobPaths.blobPath);
+		psoDesc.CachedPSO = NLS::Render::RHI::DX12::BuildDX12CachedPipelineStateView(cachedBlob);
+		const bool usedCachedBlob = psoDesc.CachedPSO.pCachedBlob != nullptr && psoDesc.CachedPSO.CachedBlobSizeInBytes != 0u;
 		psoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
 
 		HRESULT hr = m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_pipelineState));
+		if (NLS::Render::RHI::DX12::ShouldRetryDX12PipelineCreationWithoutCachedBlob(usedCachedBlob, hr))
+		{
+			psoDesc.CachedPSO = {};
+			hr = m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_pipelineState));
+		}
 		if (FAILED(hr))
 		{
 			NLS_LOG_ERROR("NativeDX12GraphicsPipeline: CreateGraphicsPipelineState failed with hr=" + std::to_string(hr));
 			LogDx12DebugMessages(m_device, "NativeDX12GraphicsPipeline");
 			return;
+		}
+		SetDx12ObjectName(m_pipelineState, pipelineDebugLabel);
+
+		Microsoft::WRL::ComPtr<ID3DBlob> createdBlob;
+		if (SUCCEEDED(m_pipelineState->GetCachedBlob(&createdBlob)) && createdBlob != nullptr)
+		{
+			NLS::Render::RHI::DX12::WriteDX12PipelineCacheBlobAtomically(
+				cacheBlobPaths.blobPath,
+				createdBlob->GetBufferPointer(),
+				createdBlob->GetBufferSize());
 		}
 #endif
 	}
@@ -448,15 +478,38 @@ namespace NLS::Render::Backend
 		psoDesc.CS.pShaderBytecode = shaderDesc.bytecode.data();
 		psoDesc.CS.BytecodeLength = shaderDesc.bytecode.size();
 		psoDesc.NodeMask = 0;
-		psoDesc.CachedPSO.CachedBlobSizeInBytes = 0;
-		psoDesc.CachedPSO.pCachedBlob = nullptr;
+		const auto cacheKey = NLS::Render::RHI::BuildComputePipelineCacheKey(m_desc);
+		const auto pipelineDebugLabel = NLS::Render::RHI::DX12::BuildDX12ComputePipelineDebugLabel(m_desc, PipelineKeyLabel(cacheKey));
+		const auto cacheBlobPaths = NLS::Render::RHI::DX12::BuildDX12PipelineCacheBlobPaths(
+			cacheKey,
+			"compute",
+			NLS::Render::RHI::DX12::GetDX12PipelineCacheBlobRoot());
+		const auto cachedBlob = NLS::Render::RHI::DX12::ReadDX12PipelineCacheBlob(cacheBlobPaths.blobPath);
+		psoDesc.CachedPSO = NLS::Render::RHI::DX12::BuildDX12CachedPipelineStateView(cachedBlob);
+		const bool usedCachedBlob = psoDesc.CachedPSO.pCachedBlob != nullptr && psoDesc.CachedPSO.CachedBlobSizeInBytes != 0u;
 		psoDesc.Flags = D3D12_PIPELINE_STATE_FLAG_NONE;
 
-		const HRESULT hr = m_device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&m_pipelineState));
+		HRESULT hr = m_device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&m_pipelineState));
+		if (NLS::Render::RHI::DX12::ShouldRetryDX12PipelineCreationWithoutCachedBlob(usedCachedBlob, hr))
+		{
+			psoDesc.CachedPSO = {};
+			hr = m_device->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(&m_pipelineState));
+		}
 		if (FAILED(hr))
 		{
 			NLS_LOG_ERROR("NativeDX12ComputePipeline: CreateComputePipelineState failed with hr=" + std::to_string(hr));
 			LogDx12DebugMessages(m_device, "NativeDX12ComputePipeline");
+			return;
+		}
+		SetDx12ObjectName(m_pipelineState, pipelineDebugLabel);
+
+		Microsoft::WRL::ComPtr<ID3DBlob> createdBlob;
+		if (SUCCEEDED(m_pipelineState->GetCachedBlob(&createdBlob)) && createdBlob != nullptr)
+		{
+			NLS::Render::RHI::DX12::WriteDX12PipelineCacheBlobAtomically(
+				cacheBlobPaths.blobPath,
+				createdBlob->GetBufferPointer(),
+				createdBlob->GetBufferSize());
 		}
 #endif
 	}

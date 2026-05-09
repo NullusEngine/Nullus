@@ -1,15 +1,43 @@
 #pragma once
 
 #include "Rendering/RHI/Core/RHIEnums.h"
+#include "Rendering/RHI/Core/RHISync.h"
 
 namespace NLS::Render::RHI
 {
+    enum class RHIUpdateStatusCode : uint8_t
+    {
+        Success,
+        InvalidArgument,
+        Unsupported,
+        BackendFailure
+    };
+
+    struct NLS_RENDER_API RHIUpdateResult
+    {
+        RHIUpdateStatusCode code = RHIUpdateStatusCode::Unsupported;
+        std::string message;
+        std::shared_ptr<RHICompletionToken> completion;
+
+        bool Succeeded() const { return code == RHIUpdateStatusCode::Success; }
+    };
+
     struct NLS_RENDER_API RHIBufferDesc
     {
         size_t size = 0;
         BufferUsageFlags usage = BufferUsageFlags::None;
         MemoryUsage memoryUsage = MemoryUsage::GPUOnly;
         std::string debugName;
+    };
+
+    struct NLS_RENDER_API RHIBufferUploadDesc
+    {
+        const void* data = nullptr;
+        size_t dataSize = 0u;
+        uint64_t destinationOffset = 0u;
+        std::string debugName;
+
+        bool HasData() const { return data != nullptr && dataSize != 0u; }
     };
 
     struct NLS_RENDER_API RHITextureDesc
@@ -31,6 +59,36 @@ namespace NLS::Render::RHI
         TextureUsageFlags usage = TextureUsageFlags::Sampled;
         MemoryUsage memoryUsage = MemoryUsage::GPUOnly;
         OptimizedClearValue optimizedClearValue{};
+        std::string debugName;
+    };
+
+    struct NLS_RENDER_API RHITextureUploadDesc
+    {
+        const void* data = nullptr;
+        size_t dataSize = 0u;
+        uint32_t mipLevel = 0u;
+        uint32_t arrayLayer = 0u;
+        RHIExtent3D extent{};
+        uint32_t rowPitch = 0u;
+        uint32_t slicePitch = 0u;
+        std::string debugName;
+
+        bool HasData() const { return data != nullptr && dataSize != 0u; }
+    };
+
+    struct NLS_RENDER_API RHITextureUpdateDesc
+    {
+        std::shared_ptr<class RHITexture> texture;
+        const void* data = nullptr;
+        size_t dataSize = 0u;
+        uint32_t mipLevel = 0u;
+        uint32_t arrayLayer = 0u;
+        uint32_t x = 0u;
+        uint32_t y = 0u;
+        uint32_t z = 0u;
+        RHIExtent3D extent{};
+        uint32_t rowPitch = 0u;
+        uint32_t slicePitch = 0u;
         std::string debugName;
     };
 

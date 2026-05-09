@@ -64,5 +64,9 @@ namespace NLS::Render::RHI
         virtual PipelineCacheStats GetStats() const = 0;
     };
 
+    NLS_RENDER_API uint64_t BuildGraphicsPipelineCacheHash(const RHIGraphicsPipelineDesc& desc);
+    NLS_RENDER_API PipelineCacheKey BuildGraphicsPipelineCacheKey(const RHIGraphicsPipelineDesc& desc);
+    NLS_RENDER_API uint64_t BuildComputePipelineCacheHash(const RHIComputePipelineDesc& desc);
+    NLS_RENDER_API PipelineCacheKey BuildComputePipelineCacheKey(const RHIComputePipelineDesc& desc);
     NLS_RENDER_API std::shared_ptr<PipelineCache> CreateDefaultPipelineCache();
 }

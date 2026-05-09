@@ -93,6 +93,7 @@ namespace NLS::Render::FrameGraph
         desc.extent.depth = 1u;
         desc.format = NLS::Render::RHI::TextureFormat::RGB8;
         desc.usage = NLS::Render::RHI::TextureUsageFlags::ColorAttachment | NLS::Render::RHI::TextureUsageFlags::Sampled;
+        desc.debugName = "SceneColor";
         return desc;
     }
 
@@ -104,6 +105,7 @@ namespace NLS::Render::FrameGraph
         desc.extent.depth = 1u;
         desc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
         desc.usage = NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment;
+        desc.debugName = "SceneDepth";
         return desc;
     }
 

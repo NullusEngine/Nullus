@@ -70,6 +70,15 @@ namespace NLS::Render::Backend
 #endif
 	}
 
+	NLS::Render::RHI::NativeHandle NativeDX12Fence::GetNativeFenceHandle()
+	{
+#if defined(_WIN32)
+		return { NLS::Render::RHI::BackendType::DX12, m_fence.Get() };
+#else
+		return {};
+#endif
+	}
+
 #if defined(_WIN32)
 	ID3D12Fence* NativeDX12Fence::GetFence() const
 	{
@@ -123,12 +132,12 @@ namespace NLS::Render::Backend
 #endif
 	}
 
-	void* NativeDX12Semaphore::GetNativeSemaphoreHandle()
+	NLS::Render::RHI::NativeHandle NativeDX12Semaphore::GetNativeSemaphoreHandle()
 	{
 #if defined(_WIN32)
-		return m_fence.Get();
+		return { NLS::Render::RHI::BackendType::DX12, m_fence.Get() };
 #else
-		return nullptr;
+		return {};
 #endif
 	}
 

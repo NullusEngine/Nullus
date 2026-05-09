@@ -7,6 +7,8 @@
 
 #include <Debug/Logger.h>
 #include "Rendering/RHI/Backends/DX12/DX12Command.h"
+#include "Rendering/RHI/Backends/DX12/DX12DebugNameUtils.h"
+#include "Rendering/RHI/Backends/DX12/DX12FormatUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12TextureUploadUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12TextureViewUtils.h"
 
@@ -77,19 +79,49 @@ namespace NLS::Render::Backend
 			return ResourceState::Unknown;
 		}
 
-		bool UploadInitialTextureData(
-			ID3D12Device* device,
-			ID3D12CommandQueue* graphicsQueue,
+		class DX12InitialUploadContext final
+		{
+		public:
+			DX12InitialUploadContext(ID3D12Device* device, ID3D12CommandQueue* graphicsQueue)
+				: m_device(device)
+				, m_graphicsQueue(graphicsQueue)
+			{
+			}
+
+			bool UploadBuffer(
+				ID3D12Resource* bufferResource,
+				const NLS::Render::RHI::DX12::DX12InitialUploadRequest& uploadRequest,
+				const std::string& debugName) const;
+
+			bool UploadTexture(
+				ID3D12Resource* textureResource,
+				const NLS::Render::RHI::RHITextureDesc& desc,
+				const NLS::Render::RHI::DX12::DX12InitialUploadRequest& uploadRequest,
+				const std::string& debugName,
+				NLS::Render::RHI::ResourceState& outFinalState) const;
+
+		private:
+			ID3D12Device* m_device = nullptr;
+			ID3D12CommandQueue* m_graphicsQueue = nullptr;
+		};
+
+		bool DX12InitialUploadContext::UploadTexture(
 			ID3D12Resource* textureResource,
 			const NLS::Render::RHI::RHITextureDesc& desc,
-			const void* initialData,
+			const NLS::Render::RHI::DX12::DX12InitialUploadRequest& uploadRequest,
 			const std::string& debugName,
-			NLS::Render::RHI::ResourceState& outFinalState)
+			NLS::Render::RHI::ResourceState& outFinalState) const
 		{
-			if (device == nullptr || graphicsQueue == nullptr || textureResource == nullptr || initialData == nullptr)
+			if (m_device == nullptr ||
+				m_graphicsQueue == nullptr ||
+				textureResource == nullptr ||
+				uploadRequest.resourceKind != NLS::Render::RHI::DX12::DX12InitialUploadResourceKind::Texture ||
+				uploadRequest.data == nullptr)
+			{
 				return false;
+			}
 
-			const auto uploadPlan = NLS::Render::RHI::DX12::BuildDX12TextureUploadPlan(desc);
+			const auto& uploadPlan = uploadRequest.texturePlan;
 			if (uploadPlan.subresources.empty() || uploadPlan.totalBytes == 0)
 			{
 				NLS_LOG_ERROR("UploadInitialTextureData: no upload plan for texture \"" + debugName + "\"");
@@ -103,7 +135,7 @@ namespace NLS::Render::Backend
 			UINT64 uploadBufferSize = 0;
 
 			const D3D12_RESOURCE_DESC textureDesc = textureResource->GetDesc();
-			device->GetCopyableFootprints(
+			m_device->GetCopyableFootprints(
 				&textureDesc,
 				0,
 				subresourceCount,
@@ -138,7 +170,7 @@ namespace NLS::Render::Backend
 			uploadBufferDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
 			Microsoft::WRL::ComPtr<ID3D12Resource> uploadBuffer;
-			HRESULT hr = device->CreateCommittedResource(
+			HRESULT hr = m_device->CreateCommittedResource(
 				&uploadHeapProperties,
 				D3D12_HEAP_FLAG_NONE,
 				&uploadBufferDesc,
@@ -162,7 +194,7 @@ namespace NLS::Render::Backend
 				return false;
 			}
 
-			const auto* sourceBytes = static_cast<const uint8_t*>(initialData);
+			const auto* sourceBytes = static_cast<const uint8_t*>(uploadRequest.data);
 			for (UINT subresourceIndex = 0; subresourceIndex < subresourceCount; ++subresourceIndex)
 			{
 				const auto& subresource = uploadPlan.subresources[subresourceIndex];
@@ -179,10 +211,19 @@ namespace NLS::Render::Backend
 					auto* dstSlice = dstSubresource + static_cast<size_t>(depthSlice) * dstSlicePitch;
 					for (UINT row = 0; row < rowCounts[subresourceIndex]; ++row)
 					{
-						std::memcpy(
-							dstSlice + static_cast<size_t>(row) * dstRowPitch,
+						const auto rowCopyResult = NLS::Render::RHI::DX12::CopyDX12TextureUploadRow(
+							desc.format,
 							srcSlice + static_cast<size_t>(row) * subresource.rowPitch,
-							rowByteCount);
+							subresource.rowPitch,
+							dstSlice + static_cast<size_t>(row) * dstRowPitch,
+							rowByteCount,
+							subresource.width);
+						if (!rowCopyResult.succeeded)
+						{
+							uploadBuffer->Unmap(0, nullptr);
+							NLS_LOG_ERROR("UploadInitialTextureData: failed to copy upload row for texture \"" + debugName + "\"");
+							return false;
+						}
 					}
 				}
 			}
@@ -190,7 +231,7 @@ namespace NLS::Render::Backend
 			uploadBuffer->Unmap(0, nullptr);
 
 			Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
-			hr = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&commandAllocator));
+			hr = m_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&commandAllocator));
 			if (FAILED(hr))
 			{
 				NLS_LOG_ERROR("UploadInitialTextureData: failed to create command allocator for texture \"" + debugName + "\" hr=" + std::to_string(hr));
@@ -200,7 +241,7 @@ namespace NLS::Render::Backend
 			SetDx12ObjectName(commandAllocator.Get(), debugName + "UploadAllocator");
 
 			Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
-			hr = device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocator.Get(), nullptr, IID_PPV_ARGS(&commandList));
+			hr = m_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, commandAllocator.Get(), nullptr, IID_PPV_ARGS(&commandList));
 			if (FAILED(hr))
 			{
 				NLS_LOG_ERROR("UploadInitialTextureData: failed to create command list for texture \"" + debugName + "\" hr=" + std::to_string(hr));
@@ -249,10 +290,10 @@ namespace NLS::Render::Backend
 			}
 
 			ID3D12CommandList* commandLists[] = { commandList.Get() };
-			graphicsQueue->ExecuteCommandLists(1, commandLists);
+			m_graphicsQueue->ExecuteCommandLists(1, commandLists);
 
 			Microsoft::WRL::ComPtr<ID3D12Fence> fence;
-			hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+			hr = m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
 			if (FAILED(hr))
 			{
 				NLS_LOG_ERROR("UploadInitialTextureData: failed to create fence for texture \"" + debugName + "\" hr=" + std::to_string(hr));
@@ -277,7 +318,7 @@ namespace NLS::Render::Backend
 				return false;
 			}
 
-			hr = graphicsQueue->Signal(fence.Get(), fenceValue);
+			hr = m_graphicsQueue->Signal(fence.Get(), fenceValue);
 			if (FAILED(hr))
 			{
 				CloseHandle(fenceEvent);
@@ -289,6 +330,161 @@ namespace NLS::Render::Backend
 			CloseHandle(fenceEvent);
 			return true;
 		}
+
+		bool DX12InitialUploadContext::UploadBuffer(
+			ID3D12Resource* bufferResource,
+			const NLS::Render::RHI::DX12::DX12InitialUploadRequest& uploadRequest,
+			const std::string& debugName) const
+		{
+			if (m_device == nullptr ||
+				m_graphicsQueue == nullptr ||
+				bufferResource == nullptr ||
+				uploadRequest.resourceKind != NLS::Render::RHI::DX12::DX12InitialUploadResourceKind::Buffer ||
+				uploadRequest.data == nullptr ||
+				uploadRequest.dataSize == 0u)
+			{
+				return false;
+			}
+
+			D3D12_HEAP_PROPERTIES uploadHeapProps{};
+			uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+			uploadHeapProps.CreationNodeMask = 1;
+			uploadHeapProps.VisibleNodeMask = 1;
+
+			D3D12_RESOURCE_DESC uploadDesc{};
+			uploadDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+			uploadDesc.Width = static_cast<UINT64>(uploadRequest.dataSize);
+			uploadDesc.Height = 1;
+			uploadDesc.DepthOrArraySize = 1;
+			uploadDesc.MipLevels = 1;
+			uploadDesc.Format = DXGI_FORMAT_UNKNOWN;
+			uploadDesc.SampleDesc.Count = 1;
+			uploadDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+			uploadDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+			Microsoft::WRL::ComPtr<ID3D12Resource> uploadBuffer;
+			const HRESULT uploadCreateResult = m_device->CreateCommittedResource(
+				&uploadHeapProps,
+				D3D12_HEAP_FLAG_NONE,
+				&uploadDesc,
+				D3D12_RESOURCE_STATE_GENERIC_READ,
+				nullptr,
+				IID_PPV_ARGS(uploadBuffer.GetAddressOf()));
+			if (FAILED(uploadCreateResult))
+			{
+				NLS_LOG_ERROR("UploadInitialBufferData: failed to create upload buffer for \"" + debugName + "\" hr=" + std::to_string(uploadCreateResult));
+				return false;
+			}
+
+			SetDx12ObjectName(uploadBuffer.Get(), debugName + "UploadBuffer");
+
+			void* mappedData = nullptr;
+			D3D12_RANGE readRange{};
+			readRange.Begin = 0;
+			readRange.End = 0;
+			const HRESULT mapResult = uploadBuffer->Map(0, &readRange, &mappedData);
+			if (FAILED(mapResult) || mappedData == nullptr)
+			{
+				NLS_LOG_ERROR("UploadInitialBufferData: failed to map upload buffer for \"" + debugName + "\" hr=" + std::to_string(mapResult));
+				return false;
+			}
+			std::memcpy(mappedData, uploadRequest.data, uploadRequest.dataSize);
+			D3D12_RANGE writeRange{};
+			writeRange.Begin = 0;
+			writeRange.End = uploadRequest.dataSize;
+			uploadBuffer->Unmap(0, &writeRange);
+
+			Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
+			const HRESULT allocatorResult = m_device->CreateCommandAllocator(
+				D3D12_COMMAND_LIST_TYPE_DIRECT,
+				IID_PPV_ARGS(commandAllocator.GetAddressOf()));
+			if (FAILED(allocatorResult))
+			{
+				NLS_LOG_ERROR("UploadInitialBufferData: failed to create upload command allocator for \"" + debugName + "\" hr=" + std::to_string(allocatorResult));
+				return false;
+			}
+
+			SetDx12ObjectName(commandAllocator.Get(), debugName + "UploadAllocator");
+
+			Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
+			const HRESULT commandListResult = m_device->CreateCommandList(
+				0,
+				D3D12_COMMAND_LIST_TYPE_DIRECT,
+				commandAllocator.Get(),
+				nullptr,
+				IID_PPV_ARGS(commandList.GetAddressOf()));
+			if (FAILED(commandListResult))
+			{
+				NLS_LOG_ERROR("UploadInitialBufferData: failed to create upload command list for \"" + debugName + "\" hr=" + std::to_string(commandListResult));
+				return false;
+			}
+
+			SetDx12ObjectName(commandList.Get(), debugName + "UploadCommandList");
+
+			D3D12_RESOURCE_BARRIER toCopyDestBarrier{};
+			toCopyDestBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			toCopyDestBarrier.Transition.pResource = bufferResource;
+			toCopyDestBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+			toCopyDestBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+			toCopyDestBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			commandList->ResourceBarrier(1, &toCopyDestBarrier);
+
+			commandList->CopyBufferRegion(
+				bufferResource,
+				uploadRequest.destinationOffset,
+				uploadBuffer.Get(),
+				0,
+				uploadRequest.dataSize);
+
+			D3D12_RESOURCE_BARRIER toCommonBarrier{};
+			toCommonBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			toCommonBarrier.Transition.pResource = bufferResource;
+			toCommonBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+			toCommonBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
+			toCommonBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+			commandList->ResourceBarrier(1, &toCommonBarrier);
+
+			const HRESULT closeResult = commandList->Close();
+			if (FAILED(closeResult))
+			{
+				NLS_LOG_ERROR("UploadInitialBufferData: failed to close upload command list for \"" + debugName + "\" hr=" + std::to_string(closeResult));
+				return false;
+			}
+
+			ID3D12CommandList* commandLists[] = { commandList.Get() };
+			m_graphicsQueue->ExecuteCommandLists(1, commandLists);
+
+			Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+			const HRESULT fenceResult = m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(fence.GetAddressOf()));
+			if (FAILED(fenceResult))
+			{
+				NLS_LOG_ERROR("UploadInitialBufferData: failed to create upload fence for \"" + debugName + "\" hr=" + std::to_string(fenceResult));
+				return false;
+			}
+
+			SetDx12ObjectName(fence.Get(), debugName + "UploadFence");
+
+			HANDLE fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+			if (fenceEvent == nullptr)
+			{
+				NLS_LOG_ERROR("UploadInitialBufferData: failed to create upload fence event for \"" + debugName + "\"");
+				return false;
+			}
+
+			const UINT64 fenceValue = 1u;
+			const HRESULT signalResult = m_graphicsQueue->Signal(fence.Get(), fenceValue);
+			if (FAILED(signalResult))
+			{
+				NLS_LOG_ERROR("UploadInitialBufferData: failed to signal upload fence for \"" + debugName + "\" hr=" + std::to_string(signalResult));
+				CloseHandle(fenceEvent);
+				return false;
+			}
+
+			fence->SetEventOnCompletion(fenceValue, fenceEvent);
+			WaitForSingleObject(fenceEvent, INFINITE);
+			CloseHandle(fenceEvent);
+			return true;
+		}
 	}
 #endif
 
@@ -296,7 +492,7 @@ namespace NLS::Render::Backend
 		ID3D12Device* device,
 		ID3D12CommandQueue* graphicsQueue,
 		const NLS::Render::RHI::RHIBufferDesc& desc,
-		const void* initialData)
+		const NLS::Render::RHI::RHIBufferUploadDesc& uploadDesc)
 		: m_device(device)
 		, m_graphicsQueue(graphicsQueue)
 		, m_desc(desc)
@@ -343,7 +539,13 @@ namespace NLS::Render::Backend
 			(static_cast<uint32_t>(desc.usage) & static_cast<uint32_t>(NLS::Render::RHI::BufferUsageFlags::Storage)) != 0u;
 		if (isStorageBuffer && heapType == D3D12_HEAP_TYPE_DEFAULT)
 			resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-		const bool needsDefaultHeapUpload = initialData != nullptr && heapType == D3D12_HEAP_TYPE_DEFAULT;
+		const bool hasInitialData = uploadDesc.HasData();
+		if (hasInitialData && uploadDesc.destinationOffset + uploadDesc.dataSize > desc.size)
+		{
+			NLS_LOG_ERROR("NativeDX12Buffer: initial upload exceeds buffer size for \"" + desc.debugName + "\"");
+			return;
+		}
+		const bool needsDefaultHeapUpload = hasInitialData && heapType == D3D12_HEAP_TYPE_DEFAULT;
 
 		heapProps.Type = heapType;
 		const D3D12_RESOURCE_STATES initialState =
@@ -363,7 +565,9 @@ namespace NLS::Render::Backend
 		if (FAILED(createResourceResult) || m_resource == nullptr)
 			return;
 
-		if (initialData != nullptr && heapType == D3D12_HEAP_TYPE_UPLOAD)
+		SetDx12ObjectName(m_resource.Get(), NLS::Render::RHI::DX12::BuildDX12BufferDebugLabel(desc));
+
+		if (hasInitialData && heapType == D3D12_HEAP_TYPE_UPLOAD)
 		{
 			void* mappedData = nullptr;
 			D3D12_RANGE readRange{};
@@ -372,130 +576,23 @@ namespace NLS::Render::Backend
 			m_resource->Map(0, &readRange, &mappedData);
 			if (mappedData != nullptr)
 			{
-				std::memcpy(mappedData, initialData, desc.size);
+				std::memcpy(
+					static_cast<uint8_t*>(mappedData) + uploadDesc.destinationOffset,
+					uploadDesc.data,
+					uploadDesc.dataSize);
 				D3D12_RANGE writeRange{};
-				writeRange.Begin = 0;
-				writeRange.End = desc.size;
+				writeRange.Begin = static_cast<SIZE_T>(uploadDesc.destinationOffset);
+				writeRange.End = static_cast<SIZE_T>(uploadDesc.destinationOffset + uploadDesc.dataSize);
 				m_resource->Unmap(0, &writeRange);
 			}
 		}
 		else if (needsDefaultHeapUpload && m_graphicsQueue != nullptr)
 		{
-			D3D12_HEAP_PROPERTIES uploadHeapProps{};
-			uploadHeapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-			uploadHeapProps.CreationNodeMask = 1;
-			uploadHeapProps.VisibleNodeMask = 1;
-
-			D3D12_RESOURCE_DESC uploadDesc = resourceDesc;
-			uploadDesc.Width = static_cast<UINT64>(desc.size);
-			uploadDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
-			Microsoft::WRL::ComPtr<ID3D12Resource> uploadBuffer;
-			const HRESULT uploadCreateResult = device->CreateCommittedResource(
-				&uploadHeapProps,
-				D3D12_HEAP_FLAG_NONE,
-				&uploadDesc,
-				D3D12_RESOURCE_STATE_GENERIC_READ,
-				nullptr,
-				IID_PPV_ARGS(uploadBuffer.GetAddressOf()));
-			if (FAILED(uploadCreateResult))
-			{
-				NLS_LOG_ERROR("NativeDX12Buffer: failed to create upload buffer hr=" + std::to_string(uploadCreateResult));
+			const auto uploadRequest = NLS::Render::RHI::DX12::BuildDX12InitialBufferUploadRequest(desc, uploadDesc);
+			const std::string bufferName = desc.debugName.empty() ? "BufferResource" : desc.debugName;
+			DX12InitialUploadContext uploadContext(device, m_graphicsQueue);
+			if (!uploadContext.UploadBuffer(m_resource.Get(), uploadRequest, bufferName))
 				return;
-			}
-
-			void* mappedData = nullptr;
-			D3D12_RANGE readRange{};
-			readRange.Begin = 0;
-			readRange.End = 0;
-			const HRESULT mapResult = uploadBuffer->Map(0, &readRange, &mappedData);
-			if (FAILED(mapResult) || mappedData == nullptr)
-			{
-				NLS_LOG_ERROR("NativeDX12Buffer: failed to map upload buffer hr=" + std::to_string(mapResult));
-				return;
-			}
-			std::memcpy(mappedData, initialData, desc.size);
-			D3D12_RANGE writeRange{};
-			writeRange.Begin = 0;
-			writeRange.End = desc.size;
-			uploadBuffer->Unmap(0, &writeRange);
-
-			Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
-			const HRESULT allocatorResult = device->CreateCommandAllocator(
-				D3D12_COMMAND_LIST_TYPE_DIRECT,
-				IID_PPV_ARGS(commandAllocator.GetAddressOf()));
-			if (FAILED(allocatorResult))
-			{
-				NLS_LOG_ERROR("NativeDX12Buffer: failed to create upload command allocator hr=" + std::to_string(allocatorResult));
-				return;
-			}
-
-			Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
-			const HRESULT commandListResult = device->CreateCommandList(
-				0,
-				D3D12_COMMAND_LIST_TYPE_DIRECT,
-				commandAllocator.Get(),
-				nullptr,
-				IID_PPV_ARGS(commandList.GetAddressOf()));
-			if (FAILED(commandListResult))
-			{
-				NLS_LOG_ERROR("NativeDX12Buffer: failed to create upload command list hr=" + std::to_string(commandListResult));
-				return;
-			}
-
-			D3D12_RESOURCE_BARRIER toCopyDestBarrier{};
-			toCopyDestBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-			toCopyDestBarrier.Transition.pResource = m_resource.Get();
-			toCopyDestBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-			toCopyDestBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-			toCopyDestBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			commandList->ResourceBarrier(1, &toCopyDestBarrier);
-
-			commandList->CopyBufferRegion(m_resource.Get(), 0, uploadBuffer.Get(), 0, desc.size);
-
-			D3D12_RESOURCE_BARRIER toCommonBarrier{};
-			toCommonBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-			toCommonBarrier.Transition.pResource = m_resource.Get();
-			toCommonBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-			toCommonBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
-			toCommonBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			commandList->ResourceBarrier(1, &toCommonBarrier);
-
-			const HRESULT closeResult = commandList->Close();
-			if (FAILED(closeResult))
-			{
-				NLS_LOG_ERROR("NativeDX12Buffer: failed to close upload command list hr=" + std::to_string(closeResult));
-				return;
-			}
-
-			ID3D12CommandList* commandLists[] = { commandList.Get() };
-			m_graphicsQueue->ExecuteCommandLists(1, commandLists);
-
-			Microsoft::WRL::ComPtr<ID3D12Fence> fence;
-			const HRESULT fenceResult = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(fence.GetAddressOf()));
-			if (FAILED(fenceResult))
-			{
-				NLS_LOG_ERROR("NativeDX12Buffer: failed to create upload fence hr=" + std::to_string(fenceResult));
-				return;
-			}
-
-			HANDLE fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
-			if (fenceEvent == nullptr)
-			{
-				NLS_LOG_ERROR("NativeDX12Buffer: failed to create upload fence event");
-				return;
-			}
-
-			const HRESULT signalResult = m_graphicsQueue->Signal(fence.Get(), 1);
-			if (FAILED(signalResult))
-			{
-				NLS_LOG_ERROR("NativeDX12Buffer: failed to signal upload fence hr=" + std::to_string(signalResult));
-				CloseHandle(fenceEvent);
-				return;
-			}
-
-			fence->SetEventOnCompletion(1, fenceEvent);
-			WaitForSingleObject(fenceEvent, INFINITE);
-			CloseHandle(fenceEvent);
 		}
 
 		if (heapType == D3D12_HEAP_TYPE_UPLOAD)
@@ -540,7 +637,10 @@ namespace NLS::Render::Backend
 #endif
 	}
 
-	NativeDX12Texture::NativeDX12Texture(ID3D12Device* device, const NLS::Render::RHI::RHITextureDesc& desc, const void* initialData)
+	NativeDX12Texture::NativeDX12Texture(
+		ID3D12Device* device,
+		const NLS::Render::RHI::RHITextureDesc& desc,
+		const NLS::Render::RHI::RHITextureUploadDesc& uploadDesc)
 		: m_device(device)
 		, m_desc(desc)
 	{
@@ -562,19 +662,23 @@ namespace NLS::Render::Backend
 		const bool isColorAttachment =
 			NLS::Render::RHI::HasTextureUsage(desc.usage, NLS::Render::RHI::TextureUsageFlags::ColorAttachment);
 		const auto layerCount = static_cast<UINT16>(
-			desc.dimension == NLS::Render::RHI::TextureDimension::TextureCube
-				? NLS::Render::RHI::GetTextureLayerCount(desc.dimension)
-				: (std::max)(desc.arrayLayers, 1u));
+			NLS::Render::RHI::GetTextureLayerCount(desc.dimension, desc.arrayLayers));
 
 		D3D12_RESOURCE_DIMENSION dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-		if (desc.dimension == NLS::Render::RHI::TextureDimension::TextureCube)
+		if (desc.dimension == NLS::Render::RHI::TextureDimension::Texture1D)
+			dimension = D3D12_RESOURCE_DIMENSION_TEXTURE1D;
+		else if (desc.dimension == NLS::Render::RHI::TextureDimension::Texture3D)
+			dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+		else if (desc.dimension == NLS::Render::RHI::TextureDimension::TextureCube)
 			dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
 
 		D3D12_RESOURCE_DESC resourceDesc{};
 		resourceDesc.Dimension = dimension;
 		resourceDesc.Width = desc.extent.width;
-		resourceDesc.Height = desc.extent.height;
-		resourceDesc.DepthOrArraySize = (desc.dimension == NLS::Render::RHI::TextureDimension::TextureCube) ? 6 : layerCount;
+		resourceDesc.Height = desc.dimension == NLS::Render::RHI::TextureDimension::Texture1D ? 1u : desc.extent.height;
+		resourceDesc.DepthOrArraySize = desc.dimension == NLS::Render::RHI::TextureDimension::Texture3D
+			? static_cast<UINT16>((std::max)(desc.extent.depth, 1u))
+			: layerCount;
 		resourceDesc.MipLevels = desc.mipLevels;
 		resourceDesc.Format = ToDxgiFormat(desc.format);
 		resourceDesc.SampleDesc.Count = desc.sampleCount;
@@ -597,7 +701,7 @@ namespace NLS::Render::Backend
 		};
 
 		const D3D12_RESOURCE_STATES initialState =
-			(initialData != nullptr && !isDepthTexture)
+			(uploadDesc.HasData() && !isDepthTexture)
 			? D3D12_RESOURCE_STATE_COPY_DEST
 			: D3D12_RESOURCE_STATE_COMMON;
 
@@ -629,7 +733,7 @@ namespace NLS::Render::Backend
 
 		if (m_resource != nullptr)
 		{
-			SetDx12ObjectName(m_resource.Get(), desc.debugName);
+			SetDx12ObjectName(m_resource.Get(), NLS::Render::RHI::DX12::BuildDX12TextureDebugLabel(desc));
 			m_state = initialState == D3D12_RESOURCE_STATE_COPY_DEST
 				? NLS::Render::RHI::ResourceState::CopyDst
 				: NLS::Render::RHI::ResourceState::Unknown;
@@ -676,14 +780,8 @@ namespace NLS::Render::Backend
 
 	DXGI_FORMAT NativeDX12Texture::ToDxgiFormat(NLS::Render::RHI::TextureFormat format)
 	{
-		switch (format)
-		{
-		case NLS::Render::RHI::TextureFormat::RGB8:
-		case NLS::Render::RHI::TextureFormat::RGBA8: return DXGI_FORMAT_R8G8B8A8_UNORM;
-		case NLS::Render::RHI::TextureFormat::RGBA16F: return DXGI_FORMAT_R16G16B16A16_FLOAT;
-		case NLS::Render::RHI::TextureFormat::Depth24Stencil8: return DXGI_FORMAT_D24_UNORM_S8_UINT;
-		default: return DXGI_FORMAT_R8G8B8A8_UNORM;
-		}
+		const DXGI_FORMAT dxgiFormat = NLS::Render::RHI::DX12::ToDXGIFormat(format);
+		return dxgiFormat != DXGI_FORMAT_UNKNOWN ? dxgiFormat : DXGI_FORMAT_R8G8B8A8_UNORM;
 	}
 #endif
 
@@ -713,6 +811,9 @@ namespace NLS::Render::Backend
 		srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 		if (FAILED(device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&m_srvHeap))))
 			return;
+		SetDx12ObjectName(
+			m_srvHeap.Get(),
+			NLS::Render::RHI::DX12::BuildDX12TextureViewDebugLabel(desc, texture->GetDebugName()) + " SRVHeap");
 		m_srvHandle = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
 
 		const auto descriptors = NLS::Render::RHI::DX12::BuildDX12TextureViewDescriptorSet(texture->GetDesc(), desc);
@@ -727,6 +828,9 @@ namespace NLS::Render::Backend
 			rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 			if (SUCCEEDED(device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_rtvHeap))))
 			{
+				SetDx12ObjectName(
+					m_rtvHeap.Get(),
+					NLS::Render::RHI::DX12::BuildDX12TextureViewDebugLabel(desc, texture->GetDebugName()) + " RTVHeap");
 				m_rtvHandle = m_rtvHeap->GetCPUDescriptorHandleForHeapStart();
 				device->CreateRenderTargetView(resource, &descriptors.rtvDesc, m_rtvHandle);
 			}
@@ -740,6 +844,9 @@ namespace NLS::Render::Backend
 			dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
 			if (SUCCEEDED(device->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&m_dsvHeap))))
 			{
+				SetDx12ObjectName(
+					m_dsvHeap.Get(),
+					NLS::Render::RHI::DX12::BuildDX12TextureViewDebugLabel(desc, texture->GetDebugName()) + " DSVHeap");
 				m_dsvHandle = m_dsvHeap->GetCPUDescriptorHandleForHeapStart();
 				device->CreateDepthStencilView(resource, &descriptors.dsvDesc, m_dsvHandle);
 			}
@@ -800,19 +907,19 @@ namespace NLS::Render::Backend
 		ID3D12Device* device,
 		ID3D12CommandQueue* graphicsQueue,
 		const NLS::Render::RHI::RHITextureDesc& desc,
-		const void* initialData)
+		const NLS::Render::RHI::RHITextureUploadDesc& uploadDesc)
 	{
 #if defined(_WIN32)
 		if (device == nullptr)
 			return nullptr;
 
-		auto texture = std::make_shared<NativeDX12Texture>(device, desc, initialData);
+		auto texture = std::make_shared<NativeDX12Texture>(device, desc, uploadDesc);
 		if (texture == nullptr)
 			return nullptr;
 
 		const bool needsInitialUpload =
-			initialData != nullptr &&
-			desc.format != NLS::Render::RHI::TextureFormat::Depth24Stencil8;
+			uploadDesc.HasData() &&
+			!NLS::Render::RHI::DX12::IsDepthStencilFormat(desc.format);
 
 		if (needsInitialUpload)
 		{
@@ -825,7 +932,14 @@ namespace NLS::Render::Backend
 
 			NLS::Render::RHI::ResourceState finalState = NLS::Render::RHI::ResourceState::Unknown;
 			const std::string textureName = desc.debugName.empty() ? "TextureResource" : desc.debugName;
-			if (!UploadInitialTextureData(device, graphicsQueue, resource, desc, initialData, textureName, finalState))
+			const auto uploadRequest = NLS::Render::RHI::DX12::BuildDX12InitialTextureUploadRequest(desc, uploadDesc);
+			if (uploadRequest.dataSize < uploadRequest.texturePlan.totalBytes)
+			{
+				NLS_LOG_ERROR("CreateNativeDX12Texture: initial upload data is smaller than required for \"" + textureName + "\"");
+				return nullptr;
+			}
+			DX12InitialUploadContext uploadContext(device, graphicsQueue);
+			if (!uploadContext.UploadTexture(resource, desc, uploadRequest, textureName, finalState))
 			{
 				NLS_LOG_ERROR("CreateNativeDX12Texture: initial upload failed for \"" + textureName + "\"");
 				return nullptr;
@@ -839,8 +953,102 @@ namespace NLS::Render::Backend
 		(void)device;
 		(void)graphicsQueue;
 		(void)desc;
-		(void)initialData;
+		(void)uploadDesc;
 		return nullptr;
+#endif
+	}
+
+	NLS::Render::RHI::RHIUpdateResult UpdateNativeDX12Texture(
+		ID3D12Device* device,
+		ID3D12CommandQueue* graphicsQueue,
+		const NLS::Render::RHI::RHITextureUpdateDesc& desc)
+	{
+#if defined(_WIN32)
+		if (device == nullptr || graphicsQueue == nullptr)
+		{
+			return {
+				NLS::Render::RHI::RHIUpdateStatusCode::InvalidArgument,
+				"DX12 texture update requires a valid device and graphics queue"
+			};
+		}
+		if (desc.texture == nullptr || desc.data == nullptr || desc.dataSize == 0u)
+		{
+			return {
+				NLS::Render::RHI::RHIUpdateStatusCode::InvalidArgument,
+				"DX12 texture update requires a texture, data pointer, and non-zero data size"
+			};
+		}
+		if (desc.x != 0u || desc.y != 0u || desc.z != 0u || desc.mipLevel != 0u || desc.arrayLayer != 0u)
+		{
+			return {
+				NLS::Render::RHI::RHIUpdateStatusCode::Unsupported,
+				"DX12 texture update currently supports only full texture mip 0 updates"
+			};
+		}
+
+		auto* nativeTexture = dynamic_cast<NativeDX12Texture*>(desc.texture.get());
+		ID3D12Resource* resource = nativeTexture != nullptr ? nativeTexture->GetResource() : nullptr;
+		if (resource == nullptr)
+		{
+			return {
+				NLS::Render::RHI::RHIUpdateStatusCode::InvalidArgument,
+				"DX12 texture update target is not a native DX12 texture"
+			};
+		}
+
+		const auto& textureDesc = desc.texture->GetDesc();
+		if (desc.extent.width != textureDesc.extent.width ||
+			desc.extent.height != textureDesc.extent.height ||
+			(std::max)(desc.extent.depth, 1u) != (std::max)(textureDesc.extent.depth, 1u))
+		{
+			return {
+				NLS::Render::RHI::RHIUpdateStatusCode::Unsupported,
+				"DX12 texture update extent must match the target texture extent"
+			};
+		}
+		if (NLS::Render::RHI::DX12::IsDepthStencilFormat(textureDesc.format))
+		{
+			return {
+				NLS::Render::RHI::RHIUpdateStatusCode::Unsupported,
+				"DX12 texture update does not support depth/stencil textures"
+			};
+		}
+
+		const auto uploadRequest =
+			NLS::Render::RHI::DX12::BuildDX12InitialTextureUploadRequest(textureDesc, desc.data);
+		if (uploadRequest.dataSize == 0u || uploadRequest.dataSize > desc.dataSize)
+		{
+			return {
+				NLS::Render::RHI::RHIUpdateStatusCode::InvalidArgument,
+				"DX12 texture update data size is smaller than the required upload size"
+			};
+		}
+
+		NLS::Render::RHI::ResourceState finalState = textureDesc.usage != NLS::Render::RHI::TextureUsageFlags::None
+			? ResolveUploadedTextureState(textureDesc)
+			: desc.texture->GetState();
+		const std::string textureName = desc.debugName.empty()
+			? std::string(desc.texture->GetDebugName())
+			: desc.debugName;
+		DX12InitialUploadContext uploadContext(device, graphicsQueue);
+		if (!uploadContext.UploadTexture(resource, textureDesc, uploadRequest, textureName, finalState))
+		{
+			return {
+				NLS::Render::RHI::RHIUpdateStatusCode::BackendFailure,
+				"DX12 texture update upload failed"
+			};
+		}
+
+		nativeTexture->SetState(finalState);
+		return { NLS::Render::RHI::RHIUpdateStatusCode::Success, {} };
+#else
+		(void)device;
+		(void)graphicsQueue;
+		(void)desc;
+		return {
+			NLS::Render::RHI::RHIUpdateStatusCode::Unsupported,
+			"DX12 texture update is only available on Windows"
+		};
 #endif
 	}
 }

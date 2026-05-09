@@ -24,6 +24,12 @@ namespace NLS::Render::Resources
 		ShaderCompiler::ShaderCompilationOutput output;
 	};
 
+	NLS_RENDER_API std::string BuildShaderArtifactToolchainFingerprint(
+		ShaderCompiler::ShaderTargetPlatform targetPlatform,
+		std::string_view targetProfile,
+		std::string_view entryPoint,
+		const ShaderCompiler::ShaderCompilationOutput& output);
+
 	class NLS_RENDER_API Shader
 	{
 		friend class Loaders::ShaderLoader;

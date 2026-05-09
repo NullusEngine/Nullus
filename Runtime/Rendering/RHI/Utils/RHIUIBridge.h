@@ -29,11 +29,11 @@ namespace NLS::Render::RHI
         virtual void NotifyFontAtlasChanged() {}
 
         // Synchronization - wait semaphore from previous rendering stage
-        virtual void SetWaitSemaphore(void* semaphore) = 0;
+        virtual void SetWaitSemaphore(NativeHandle semaphore) = 0;
         // Synchronization - semaphore to signal when UI rendering is complete
-        virtual void SetSignalSemaphore(void* semaphore) = 0;
+        virtual void SetSignalSemaphore(NativeHandle semaphore) = 0;
         // Get the UI's signal semaphore for Driver to wait on during present
-        virtual void* GetUISignalSemaphore() = 0;
+        virtual NativeHandle GetUISignalSemaphore() = 0;
         virtual uint64_t GetUISignalValue() const = 0;
         // Submit the UI command buffer to the GPU
         virtual void SubmitCommandBuffer(uint32_t currentImageIndex) = 0;

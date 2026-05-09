@@ -15,6 +15,7 @@
 #include "Rendering/FrameGraph/FrameGraphExecutionContext.h"
 #include "Rendering/Resources/IMesh.h"
 #include "Rendering/Resources/Texture2D.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Core/RHIEnums.h"
 #include "Rendering/Entities/Drawable.h"
 #include "Rendering/Settings/EPixelDataFormat.h"
@@ -116,6 +117,22 @@ public:
     void EndOutputRenderPass(bool p_startedRecordedPass);
 
     void ReadPixels(
+        uint32_t p_x,
+        uint32_t p_y,
+        uint32_t p_width,
+        uint32_t p_height,
+        Settings::EPixelDataFormat p_format,
+        Settings::EPixelDataType p_type,
+        void* p_data) const;
+    RHI::RHIReadbackResult ReadPixelsChecked(
+        uint32_t p_x,
+        uint32_t p_y,
+        uint32_t p_width,
+        uint32_t p_height,
+        Settings::EPixelDataFormat p_format,
+        Settings::EPixelDataType p_type,
+        void* p_data) const;
+    RHI::RHIReadbackResult BeginReadPixels(
         uint32_t p_x,
         uint32_t p_y,
         uint32_t p_width,

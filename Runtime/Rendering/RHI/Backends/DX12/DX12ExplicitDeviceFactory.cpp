@@ -13,6 +13,7 @@
 #include <memory>
 #include <string>
 
+#include <Debug/Logger.h>
 #include "Profiling/Profiler.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
@@ -57,6 +58,9 @@ namespace NLS::Render::Backend
 		class NativeDX12ExplicitDevice final : public NLS::Render::RHI::RHIDevice
 		{
 		public:
+			using NLS::Render::RHI::RHIDevice::CreateBuffer;
+			using NLS::Render::RHI::RHIDevice::CreateTexture;
+
 			NativeDX12ExplicitDevice(
 				ID3D12Device* device,
 				ID3D12CommandQueue* graphicsQueue,
@@ -116,7 +120,7 @@ namespace NLS::Render::Backend
 				const bool useDedicatedComputeQueue =
 					queueType == NLS::Render::RHI::QueueType::Compute &&
 					m_computeQueue != nullptr &&
-					m_capabilities.supportsDedicatedComputeQueue;
+					m_capabilities.GetFeature(NLS::Render::RHI::RHIDeviceFeature::DedicatedComputeQueue).supported;
 				if (queueType == NLS::Render::RHI::QueueType::Compute && !useDedicatedComputeQueue)
 				{
 					if (m_queues[static_cast<size_t>(NLS::Render::RHI::QueueType::Graphics)] == nullptr)
@@ -166,7 +170,10 @@ namespace NLS::Render::Backend
 				if (swapchain != nullptr)
 				{
 					m_nativeWindowHandle = desc.nativeWindowHandle;
-					m_swapchain = static_cast<IDXGISwapChain3*>(swapchain->GetNativeSwapchainHandle());
+					const auto swapchainHandle = swapchain->GetNativeSwapchainHandle();
+					m_swapchain = swapchainHandle.backend == NLS::Render::RHI::BackendType::DX12
+						? static_cast<IDXGISwapChain3*>(swapchainHandle.handle)
+						: nullptr;
 				}
 				return swapchain;
 #else
@@ -174,8 +181,12 @@ namespace NLS::Render::Backend
 #endif
 			}
 
-			std::shared_ptr<NLS::Render::RHI::RHIBuffer> CreateBuffer(const NLS::Render::RHI::RHIBufferDesc& desc, const void* initialData) override;
-			std::shared_ptr<NLS::Render::RHI::RHITexture> CreateTexture(const NLS::Render::RHI::RHITextureDesc& desc, const void* initialData) override;
+			std::shared_ptr<NLS::Render::RHI::RHIBuffer> CreateBuffer(
+				const NLS::Render::RHI::RHIBufferDesc& desc,
+				const NLS::Render::RHI::RHIBufferUploadDesc& uploadDesc) override;
+			std::shared_ptr<NLS::Render::RHI::RHITexture> CreateTexture(
+				const NLS::Render::RHI::RHITextureDesc& desc,
+				const NLS::Render::RHI::RHITextureUploadDesc& uploadDesc) override;
 			std::shared_ptr<NLS::Render::RHI::RHITextureView> CreateTextureView(const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture, const NLS::Render::RHI::RHITextureViewDesc& desc) override;
 			std::shared_ptr<NLS::Render::RHI::RHISampler> CreateSampler(const NLS::Render::RHI::SamplerDesc& desc, std::string debugName) override;
 			std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> CreateBindingLayout(const NLS::Render::RHI::RHIBindingLayoutDesc& desc) override;
@@ -191,7 +202,7 @@ namespace NLS::Render::Backend
 				const bool useDedicatedComputeQueue =
 					queueType == NLS::Render::RHI::QueueType::Compute &&
 					m_computeQueue != nullptr &&
-					m_capabilities.supportsDedicatedComputeQueue;
+					m_capabilities.GetFeature(NLS::Render::RHI::RHIDeviceFeature::DedicatedComputeQueue).supported;
 				ID3D12CommandQueue* nativeQueue = useDedicatedComputeQueue
 					? m_computeQueue.Get()
 					: m_graphicsQueue.Get();
@@ -224,9 +235,39 @@ namespace NLS::Render::Backend
 				return nullptr;
 #endif
 			}
+			NLS::Render::RHI::RHIUpdateResult UpdateTexture(const NLS::Render::RHI::RHITextureUpdateDesc& desc) override
+			{
+#if defined(_WIN32)
+				return UpdateNativeDX12Texture(m_device.Get(), m_graphicsQueue.Get(), desc);
+#else
+				(void)desc;
+				return {
+					NLS::Render::RHI::RHIUpdateStatusCode::Unsupported,
+					"DX12 texture update is only available on Windows"
+				};
+#endif
+			}
 
 			// Readback support
 			void ReadPixels(
+			    const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+			    uint32_t x,
+			    uint32_t y,
+			    uint32_t width,
+			    uint32_t height,
+			    NLS::Render::Settings::EPixelDataFormat format,
+			    NLS::Render::Settings::EPixelDataType type,
+			    void* data) override;
+			NLS::Render::RHI::RHIReadbackResult ReadPixelsChecked(
+			    const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+			    uint32_t x,
+			    uint32_t y,
+			    uint32_t width,
+			    uint32_t height,
+			    NLS::Render::Settings::EPixelDataFormat format,
+			    NLS::Render::Settings::EPixelDataType type,
+			    void* data) override;
+			NLS::Render::RHI::RHIReadbackResult BeginReadPixels(
 			    const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
 			    uint32_t x,
 			    uint32_t y,
@@ -266,22 +307,29 @@ namespace NLS::Render::Backend
 			std::array<std::shared_ptr<NLS::Render::RHI::RHIQueue>, 3> m_queues{};
 			std::unique_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_resourceHeapAllocator;
 			std::unique_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_samplerHeapAllocator;
+			NLS::Render::RHI::DX12::DX12ReadbackContext m_readbackContext;
 			bool m_gpuProfilerInitialized = false;
 		};
 
 		// NativeDX12ExplicitDevice method implementations
-		std::shared_ptr<NLS::Render::RHI::RHIBuffer> NativeDX12ExplicitDevice::CreateBuffer(const NLS::Render::RHI::RHIBufferDesc& desc, const void* initialData)
+		std::shared_ptr<NLS::Render::RHI::RHIBuffer> NativeDX12ExplicitDevice::CreateBuffer(
+			const NLS::Render::RHI::RHIBufferDesc& desc,
+			const NLS::Render::RHI::RHIBufferUploadDesc& uploadDesc)
 		{
 			if (m_device == nullptr)
 				return nullptr;
-			return std::make_shared<NativeDX12Buffer>(m_device.Get(), m_graphicsQueue.Get(), desc, initialData);
+			return std::make_shared<NativeDX12Buffer>(m_device.Get(), m_graphicsQueue.Get(), desc, uploadDesc);
 		}
 
-		std::shared_ptr<NLS::Render::RHI::RHITexture> NativeDX12ExplicitDevice::CreateTexture(const NLS::Render::RHI::RHITextureDesc& desc, const void* initialData)
+		std::shared_ptr<NLS::Render::RHI::RHITexture> NativeDX12ExplicitDevice::CreateTexture(
+			const NLS::Render::RHI::RHITextureDesc& desc,
+			const NLS::Render::RHI::RHITextureUploadDesc& uploadDesc)
 		{
 #if defined(_WIN32)
-			return CreateNativeDX12Texture(m_device.Get(), m_graphicsQueue.Get(), desc, initialData);
+			return CreateNativeDX12Texture(m_device.Get(), m_graphicsQueue.Get(), desc, uploadDesc);
 #else
+			(void)desc;
+			(void)uploadDesc;
 			return nullptr;
 #endif
 		}
@@ -352,8 +400,58 @@ namespace NLS::Render::Backend
 		    NLS::Render::Settings::EPixelDataType type,
 		    void* data)
 		{
+			const auto result = ReadPixelsChecked(texture, x, y, width, height, format, type, data);
+			if (!result.Succeeded())
+				NLS_LOG_WARNING("NativeDX12ExplicitDevice::ReadPixels failed: " + result.message);
+		}
+
+		NLS::Render::RHI::RHIReadbackResult NativeDX12ExplicitDevice::ReadPixelsChecked(
+		    const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+		    uint32_t x,
+		    uint32_t y,
+		    uint32_t width,
+		    uint32_t height,
+		    NLS::Render::Settings::EPixelDataFormat format,
+		    NLS::Render::Settings::EPixelDataType type,
+		    void* data)
+		{
+			auto result = BeginReadPixels(texture, x, y, width, height, format, type, data);
+			if (!result.Succeeded() || result.completion == nullptr)
+				return result;
+
+			const auto completionStatus = result.completion->Wait();
+			switch (completionStatus.code)
+			{
+			case NLS::Render::RHI::RHICompletionStatusCode::Success:
+				result.code = NLS::Render::RHI::RHIReadbackStatusCode::Success;
+				result.message = completionStatus.message;
+				return result;
+			case NLS::Render::RHI::RHICompletionStatusCode::Failed:
+				result.code = NLS::Render::RHI::RHIReadbackStatusCode::BackendFailure;
+				result.message = completionStatus.message;
+				return result;
+			case NLS::Render::RHI::RHICompletionStatusCode::Pending:
+			default:
+				result.code = NLS::Render::RHI::RHIReadbackStatusCode::BackendFailure;
+				result.message = completionStatus.message.empty()
+					? "ReadPixels completion did not finish"
+					: completionStatus.message;
+				return result;
+			}
+		}
+
+		NLS::Render::RHI::RHIReadbackResult NativeDX12ExplicitDevice::BeginReadPixels(
+		    const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+		    uint32_t x,
+		    uint32_t y,
+		    uint32_t width,
+		    uint32_t height,
+		    NLS::Render::Settings::EPixelDataFormat format,
+		    NLS::Render::Settings::EPixelDataType type,
+		    void* data)
+		{
 #if defined(_WIN32)
-			NLS::Render::RHI::DX12::ExecuteDX12ReadPixels(
+			const auto result = m_readbackContext.Begin(
 				m_device.Get(),
 				m_graphicsQueue.Get(),
 				texture,
@@ -364,6 +462,18 @@ namespace NLS::Render::Backend
 				format,
 				type,
 				data);
+			switch (result.code)
+			{
+			case NLS::Render::RHI::DX12::DX12ReadbackStatusCode::Success:
+				return { NLS::Render::RHI::RHIReadbackStatusCode::Success, result.message, result.completion };
+			case NLS::Render::RHI::DX12::DX12ReadbackStatusCode::UnsupportedFormat:
+				return { NLS::Render::RHI::RHIReadbackStatusCode::UnsupportedFormat, result.message, result.completion };
+			case NLS::Render::RHI::DX12::DX12ReadbackStatusCode::BackendFailure:
+				return { NLS::Render::RHI::RHIReadbackStatusCode::BackendFailure, result.message, result.completion };
+			case NLS::Render::RHI::DX12::DX12ReadbackStatusCode::InvalidArgument:
+			default:
+				return { NLS::Render::RHI::RHIReadbackStatusCode::InvalidArgument, result.message, result.completion };
+			}
 #else
 			(void)texture;
 			(void)x;
@@ -373,6 +483,10 @@ namespace NLS::Render::Backend
 			(void)format;
 			(void)type;
 			(void)data;
+			return {
+				NLS::Render::RHI::RHIReadbackStatusCode::UnsupportedFormat,
+				"DX12 ReadPixels is only available on Windows"
+			};
 #endif
 		}
 	}

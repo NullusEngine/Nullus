@@ -1,7 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <type_traits>
+
 #include "Core/ServiceLocator.h"
 #include "Rendering/Context/Driver.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/RHITypes.h"
 #include "Rendering/RHI/Utils/RHIUIBridge.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
@@ -9,6 +12,42 @@
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/Tooling/RenderDocCaptureController.h"
 #include "UI/UIManager.h"
+
+namespace
+{
+    template<typename T, typename = void>
+    struct HasDevicePrepareUIRender : std::false_type
+    {
+    };
+
+    template<typename T>
+    struct HasDevicePrepareUIRender<T, std::void_t<decltype(std::declval<T&>().PrepareUIRender())>>
+        : std::true_type
+    {
+    };
+
+    template<typename T, typename = void>
+    struct HasDeviceReleaseUITextureHandles : std::false_type
+    {
+    };
+
+    template<typename T>
+    struct HasDeviceReleaseUITextureHandles<T, std::void_t<decltype(std::declval<T&>().ReleaseUITextureHandles())>>
+        : std::true_type
+    {
+    };
+
+    template<typename T, typename = void>
+    struct HasDeviceSetCurrentCommandBuffer : std::false_type
+    {
+    };
+
+    template<typename T>
+    struct HasDeviceSetCurrentCommandBuffer<T, std::void_t<decltype(std::declval<T&>().SetCurrentCommandBuffer(NLS::Render::RHI::NativeHandle{}))>>
+        : std::true_type
+    {
+    };
+}
 
 TEST(UIAndToolingBackendAwarenessTests, ResolvesImGuiGlfwInitBackendByGraphicsBackend)
 {
@@ -51,6 +90,13 @@ TEST(UIAndToolingBackendAwarenessTests, ResolvesRenderDocCaptureDeviceByNativeBa
 
     info.backend = NLS::Render::RHI::NativeBackendType::OpenGL;
     EXPECT_EQ(NLS::Render::Tooling::ResolveRenderDocCaptureDevice(info), info.device);
+}
+
+TEST(UIAndToolingBackendAwarenessTests, RhiDeviceBaseDoesNotExposeDefaultUiBridgeHooks)
+{
+    EXPECT_FALSE(HasDevicePrepareUIRender<NLS::Render::RHI::RHIDevice>::value);
+    EXPECT_FALSE(HasDeviceReleaseUITextureHandles<NLS::Render::RHI::RHIDevice>::value);
+    EXPECT_FALSE(HasDeviceSetCurrentCommandBuffer<NLS::Render::RHI::RHIDevice>::value);
 }
 
 TEST(UIAndToolingBackendAwarenessTests, CreatesNullRendererBridgeForDX11Backend)

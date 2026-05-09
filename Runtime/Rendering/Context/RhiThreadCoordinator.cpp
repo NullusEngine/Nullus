@@ -104,7 +104,7 @@ namespace NLS::Render::Context
             textureDesc.optimizedClearValue.stencil = 0u;
             textureDesc.debugName = "SwapchainSceneDepth";
 
-            frameContext.swapchainDepthStencilTexture = impl.explicitDevice->CreateTexture(textureDesc, nullptr);
+            frameContext.swapchainDepthStencilTexture = impl.explicitDevice->CreateTexture(textureDesc);
 
             Render::RHI::RHITextureViewDesc viewDesc{};
             viewDesc.viewType = Render::RHI::TextureViewType::Texture2D;
@@ -135,6 +135,88 @@ namespace NLS::Render::Context
             return resolvedInput;
         }
 
+        void SeedAcquiredSwapchainBackbufferState(Render::RHI::RHIFrameContext& frameContext)
+        {
+            if (frameContext.resourceStateTracker == nullptr ||
+                frameContext.swapchainBackbufferView == nullptr ||
+                frameContext.swapchainBackbufferView->GetTexture() == nullptr)
+            {
+                return;
+            }
+
+            Render::RHI::RHIBarrierDesc barrierDesc;
+            barrierDesc.textureBarriers.push_back({
+                frameContext.swapchainBackbufferView->GetTexture(),
+                Render::RHI::ResourceState::Unknown,
+                Render::RHI::ResourceState::Present,
+                frameContext.swapchainBackbufferView->GetDesc().subresourceRange,
+                Render::RHI::PipelineStageMask::Present,
+                Render::RHI::PipelineStageMask::Present,
+                Render::RHI::AccessMask::Present,
+                Render::RHI::AccessMask::Present
+            });
+            frameContext.resourceStateTracker->Commit(barrierDesc);
+        }
+
+        Render::RHI::RHISubmitDesc BuildStandaloneGraphicsSubmitDesc(
+            const Render::RHI::RHIFrameContext& frameContext,
+            const bool signalRenderFinished)
+        {
+            Render::RHI::RHISubmitDesc submitDesc;
+            if (frameContext.commandBuffer != nullptr)
+                submitDesc.commandBuffers.push_back(frameContext.commandBuffer);
+            if (frameContext.hasAcquiredSwapchainImage && frameContext.imageAcquiredSemaphore != nullptr)
+                submitDesc.waitSemaphores.push_back(frameContext.imageAcquiredSemaphore);
+            if (signalRenderFinished && frameContext.renderFinishedSemaphore != nullptr)
+                submitDesc.signalSemaphores.push_back(frameContext.renderFinishedSemaphore);
+            submitDesc.signalFence = frameContext.frameFence;
+            return submitDesc;
+        }
+
+        Render::RHI::RHIPresentDesc BuildSwapchainPresentDesc(
+            const DriverImpl& impl,
+            const Render::RHI::RHIFrameContext& frameContext,
+            const bool includeUiCompositionSignal)
+        {
+            Render::RHI::RHIPresentDesc presentDesc;
+            presentDesc.swapchain = impl.explicitSwapchain;
+            presentDesc.imageIndex = frameContext.swapchainImageIndex;
+            if (frameContext.renderFinishedSemaphore != nullptr)
+                presentDesc.waitSemaphores.push_back(frameContext.renderFinishedSemaphore);
+
+            if (includeUiCompositionSignal && impl.uiRenderFinishedSemaphore.IsValid())
+            {
+                presentDesc.uiSignalSemaphore = impl.uiRenderFinishedSemaphore;
+                presentDesc.uiSignalValue = impl.uiRenderFinishedValue;
+            }
+            return presentDesc;
+        }
+
+        void ClearUICompositionSignal(DriverImpl& impl)
+        {
+            impl.uiRenderFinishedSemaphore = {};
+            impl.uiRenderFinishedValue = 0u;
+        }
+
+        void PresentSwapchainFrame(
+            DriverImpl& impl,
+            Render::RHI::RHIQueue& queue,
+            const Render::RHI::RHIFrameContext& frameContext,
+            const bool includeUiCompositionSignal)
+        {
+            if (impl.renderDocCaptureController != nullptr)
+                impl.renderDocCaptureController->OnPrePresent();
+
+            const auto presentDesc = BuildSwapchainPresentDesc(
+                impl,
+                frameContext,
+                includeUiCompositionSignal);
+            queue.Present(presentDesc);
+
+            if (impl.renderDocCaptureController != nullptr)
+                impl.renderDocCaptureController->OnPostPresent();
+        }
+
         void FinalizeStandaloneUiFrame(DriverImpl& impl)
         {
             auto* frameContext = GetCurrentFrameContext(impl);
@@ -144,14 +226,7 @@ namespace NLS::Render::Context
             if (frameContext->commandBuffer != nullptr && frameContext->commandBuffer->IsRecording())
                 frameContext->commandBuffer->End();
 
-            Render::RHI::RHISubmitDesc submitDesc;
-            if (frameContext->commandBuffer != nullptr)
-                submitDesc.commandBuffers.push_back(frameContext->commandBuffer);
-            if (frameContext->hasAcquiredSwapchainImage && frameContext->imageAcquiredSemaphore != nullptr)
-                submitDesc.waitSemaphores.push_back(frameContext->imageAcquiredSemaphore);
-            if (frameContext->renderFinishedSemaphore != nullptr)
-                submitDesc.signalSemaphores.push_back(frameContext->renderFinishedSemaphore);
-            submitDesc.signalFence = frameContext->frameFence;
+            const auto submitDesc = BuildStandaloneGraphicsSubmitDesc(*frameContext, true);
 
             auto queue = impl.explicitDevice != nullptr
                 ? impl.explicitDevice->GetQueue(Render::RHI::QueueType::Graphics)
@@ -159,25 +234,10 @@ namespace NLS::Render::Context
             if (queue != nullptr)
             {
                 queue->Submit(submitDesc);
-
-                if (impl.renderDocCaptureController != nullptr)
-                    impl.renderDocCaptureController->OnPrePresent();
-
-                Render::RHI::RHIPresentDesc presentDesc;
-                presentDesc.swapchain = impl.explicitSwapchain;
-                presentDesc.imageIndex = frameContext->swapchainImageIndex;
-                if (frameContext->renderFinishedSemaphore != nullptr)
-                    presentDesc.waitSemaphores.push_back(frameContext->renderFinishedSemaphore);
-                if (impl.uiRenderFinishedSemaphore != nullptr)
-                {
-                    presentDesc.uiSignalSemaphore = impl.uiRenderFinishedSemaphore;
-                    presentDesc.uiSignalValue = impl.uiRenderFinishedValue;
-                }
-                queue->Present(presentDesc);
-
-                if (impl.renderDocCaptureController != nullptr)
-                    impl.renderDocCaptureController->OnPostPresent();
+                PresentSwapchainFrame(impl, *queue, *frameContext, true);
             }
+
+            ClearUICompositionSignal(impl);
 
             if (frameContext->descriptorAllocator != nullptr)
                 frameContext->descriptorAllocator->EndFrame(impl.currentFrameIndex);
@@ -487,6 +547,7 @@ namespace NLS::Render::Context
             frameContext.swapchainImageIndex = acquiredImage.has_value() ? acquiredImage->imageIndex : 0u;
             if (acquiredImage.has_value())
                 frameContext.swapchainBackbufferView = impl.explicitSwapchain->GetBackbufferView(frameContext.swapchainImageIndex);
+            SeedAcquiredSwapchainBackbufferState(frameContext);
             frameContext.explicitReadbackTexture =
                 Render::FrameGraph::ResolveFrameReadbackTexture(nullptr, &frameContext);
 
@@ -1217,7 +1278,8 @@ namespace NLS::Render::Context
                 *commandBuffer,
                 frameContext.swapchainBackbufferView,
                 frameContext.swapchainDepthStencilView,
-                effectivePassInput))
+                effectivePassInput,
+                &frameContext))
             {
                 Detail::LogSkippedPass(renderScenePackage, effectivePassInput, "BeginPassCommandPlan failed");
                 if (commandBuffer->IsRecording())
@@ -1229,7 +1291,7 @@ namespace NLS::Render::Context
             const auto recordedDrawCount =
                 Detail::RecordPreparedDrawCommandsForPass(commandBuffer.get(), effectivePassInput);
             commandBuffer->EndGpuProfileScope();
-            Detail::EndPassCommandPlan(*commandBuffer);
+            Detail::EndPassCommandPlan(*commandBuffer, &effectivePassInput, &frameContext);
             if (recordedDrawCount == 0u && !effectivePassInput.recordedDrawCommands.empty())
             {
                 Detail::LogSkippedPass(
@@ -1748,6 +1810,7 @@ namespace NLS::Render::Context
                 frameContext.swapchainBackbufferView = impl.explicitSwapchain->GetBackbufferView(frameContext.swapchainImageIndex);
             if (frameContext.swapchainBackbufferView != nullptr)
             {
+                SeedAcquiredSwapchainBackbufferState(frameContext);
                 EnsureSwapchainDepthStencilAttachment(
                     impl,
                     frameContext,
@@ -1784,11 +1847,15 @@ namespace NLS::Render::Context
             const bool parallelRecordingReady =
                 supportsOrderedWorkUnitSubmission &&
                 impl.explicitDevice != nullptr &&
-                impl.explicitDevice->GetCapabilities().supportsParallelCommandRecording;
+                impl.explicitDevice->GetCapabilities()
+                    .GetFeature(Render::RHI::RHIDeviceFeature::ParallelCommandRecording)
+                    .supported;
             const bool parallelTranslationReady =
                 supportsOrderedWorkUnitSubmission &&
                 impl.explicitDevice != nullptr &&
-                impl.explicitDevice->GetCapabilities().supportsParallelCommandTranslation;
+                impl.explicitDevice->GetCapabilities()
+                    .GetFeature(Render::RHI::RHIDeviceFeature::ParallelCommandTranslation)
+                    .supported;
             const auto workUnits = Detail::BuildParallelCommandWorkUnits(
                 renderScenePackage,
                 parallelRecordingReady,
@@ -1899,7 +1966,8 @@ namespace NLS::Render::Context
                         *frameContext.commandBuffer,
                         frameContext.swapchainBackbufferView,
                         frameContext.swapchainDepthStencilView,
-                        effectivePassInput))
+                        effectivePassInput,
+                        &frameContext))
                     {
                         Detail::LogSkippedPass(
                             renderScenePackage,
@@ -1916,7 +1984,7 @@ namespace NLS::Render::Context
                         frameContext.commandBuffer.get(),
                         effectivePassInput);
                     frameContext.commandBuffer->EndGpuProfileScope();
-                    Detail::EndPassCommandPlan(*frameContext.commandBuffer);
+                    Detail::EndPassCommandPlan(*frameContext.commandBuffer, &effectivePassInput, &frameContext);
                     if (recordedDrawCount == 0u && !effectivePassInput.recordedDrawCommands.empty())
                     {
                         Detail::LogSkippedPass(
@@ -2265,6 +2333,7 @@ namespace NLS::Render::Context
                 frameContext.swapchainBackbufferView = driver.m_impl->explicitSwapchain->GetBackbufferView(frameContext.swapchainImageIndex);
             if (frameContext.swapchainBackbufferView != nullptr)
             {
+                SeedAcquiredSwapchainBackbufferState(frameContext);
                 const auto& swapchainDesc = driver.m_impl->explicitSwapchain->GetDesc();
                 EnsureSwapchainDepthStencilAttachment(
                     *driver.m_impl,
@@ -2295,14 +2364,7 @@ namespace NLS::Render::Context
         if (frameContext.commandBuffer != nullptr && frameContext.commandBuffer->IsRecording())
             frameContext.commandBuffer->End();
 
-        Render::RHI::RHISubmitDesc submitDesc;
-        if (frameContext.commandBuffer != nullptr)
-            submitDesc.commandBuffers.push_back(frameContext.commandBuffer);
-        if (frameContext.hasAcquiredSwapchainImage && frameContext.imageAcquiredSemaphore != nullptr)
-            submitDesc.waitSemaphores.push_back(frameContext.imageAcquiredSemaphore);
-        if (presentSwapchain && frameContext.renderFinishedSemaphore != nullptr)
-            submitDesc.signalSemaphores.push_back(frameContext.renderFinishedSemaphore);
-        submitDesc.signalFence = frameContext.frameFence;
+        const auto submitDesc = BuildStandaloneGraphicsSubmitDesc(frameContext, presentSwapchain);
 
         auto queue = driver.m_impl->explicitDevice->GetQueue(Render::RHI::QueueType::Graphics);
         if (queue != nullptr)
@@ -2310,17 +2372,8 @@ namespace NLS::Render::Context
             queue->Submit(submitDesc);
             if (presentSwapchain && frameContext.hasAcquiredSwapchainImage && driver.m_impl->explicitSwapchain != nullptr)
             {
-                if (driver.m_impl->renderDocCaptureController != nullptr)
-                    driver.m_impl->renderDocCaptureController->OnPrePresent();
-
-                Render::RHI::RHIPresentDesc presentDesc;
-                presentDesc.swapchain = driver.m_impl->explicitSwapchain;
-                presentDesc.imageIndex = frameContext.swapchainImageIndex;
-                if (frameContext.renderFinishedSemaphore != nullptr)
-                    presentDesc.waitSemaphores.push_back(frameContext.renderFinishedSemaphore);
-                queue->Present(presentDesc);
-                if (driver.m_impl->renderDocCaptureController != nullptr)
-                    driver.m_impl->renderDocCaptureController->OnPostPresent();
+                PresentSwapchainFrame(*driver.m_impl, *queue, frameContext, true);
+                ClearUICompositionSignal(*driver.m_impl);
                 driver.ApplyPendingSwapchainResize();
             }
         }
@@ -2390,28 +2443,9 @@ namespace NLS::Render::Context
         void* data)
     {
         NLS_PROFILE_SCOPE();
-        if (driver.m_impl == nullptr || driver.m_impl->explicitDevice == nullptr)
-        {
-            NLS_LOG_WARNING("RhiThreadCoordinator::ReadPixels: explicit device is unavailable.");
-            return;
-        }
-
-        const auto texture = DriverRendererAccess::ResolveReadbackTexture(driver);
-        if (texture == nullptr)
-        {
-            NLS_LOG_WARNING("RhiThreadCoordinator::ReadPixels: no active explicit readback source is available.");
-            return;
-        }
-
-        driver.m_impl->explicitDevice->ReadPixels(
-            texture,
-            x,
-            y,
-            width,
-            height,
-            format,
-            type,
-            data);
+        const auto result = ReadPixelsChecked(driver, x, y, width, height, format, type, data);
+        if (!result.Succeeded())
+            NLS_LOG_WARNING("RhiThreadCoordinator::ReadPixels failed: " + result.message);
     }
 
     void RhiThreadCoordinator::ReadPixels(
@@ -2426,19 +2460,111 @@ namespace NLS::Render::Context
         void* data)
     {
         NLS_PROFILE_SCOPE();
+        const auto result = ReadPixelsChecked(driver, texture, x, y, width, height, format, type, data);
+        if (!result.Succeeded())
+            NLS_LOG_WARNING("RhiThreadCoordinator::ReadPixels failed: " + result.message);
+    }
+
+    Render::RHI::RHIReadbackResult RhiThreadCoordinator::ReadPixelsChecked(
+        const Driver& driver,
+        const uint32_t x,
+        const uint32_t y,
+        const uint32_t width,
+        const uint32_t height,
+        const Settings::EPixelDataFormat format,
+        const Settings::EPixelDataType type,
+        void* data)
+    {
+        NLS_PROFILE_SCOPE();
+        const auto result = BeginReadPixels(driver, x, y, width, height, format, type, data);
+        if (!result.Succeeded() || result.completion == nullptr)
+            return result;
+
+        auto completedResult = result;
+        const auto completionStatus = result.completion->Wait();
+        completedResult.message = completionStatus.message;
+        completedResult.code = completionStatus.Succeeded()
+            ? Render::RHI::RHIReadbackStatusCode::Success
+            : Render::RHI::RHIReadbackStatusCode::BackendFailure;
+        return completedResult;
+    }
+
+    Render::RHI::RHIReadbackResult RhiThreadCoordinator::ReadPixelsChecked(
+        const Driver& driver,
+        const std::shared_ptr<Render::RHI::RHITexture>& texture,
+        const uint32_t x,
+        const uint32_t y,
+        const uint32_t width,
+        const uint32_t height,
+        const Settings::EPixelDataFormat format,
+        const Settings::EPixelDataType type,
+        void* data)
+    {
+        NLS_PROFILE_SCOPE();
+        const auto result = BeginReadPixels(driver, texture, x, y, width, height, format, type, data);
+        if (!result.Succeeded() || result.completion == nullptr)
+            return result;
+
+        auto completedResult = result;
+        const auto completionStatus = result.completion->Wait();
+        completedResult.message = completionStatus.message;
+        completedResult.code = completionStatus.Succeeded()
+            ? Render::RHI::RHIReadbackStatusCode::Success
+            : Render::RHI::RHIReadbackStatusCode::BackendFailure;
+        return completedResult;
+    }
+
+    Render::RHI::RHIReadbackResult RhiThreadCoordinator::BeginReadPixels(
+        const Driver& driver,
+        const uint32_t x,
+        const uint32_t y,
+        const uint32_t width,
+        const uint32_t height,
+        const Settings::EPixelDataFormat format,
+        const Settings::EPixelDataType type,
+        void* data)
+    {
+        NLS_PROFILE_SCOPE();
         if (driver.m_impl == nullptr || driver.m_impl->explicitDevice == nullptr)
-        {
-            NLS_LOG_WARNING("RhiThreadCoordinator::ReadPixels: explicit device is unavailable.");
-            return;
-        }
+            return { Render::RHI::RHIReadbackStatusCode::BackendFailure, "explicit device is unavailable" };
+
+        const auto texture = DriverRendererAccess::ResolveReadbackTexture(driver);
+        if (texture == nullptr)
+            return {
+                Render::RHI::RHIReadbackStatusCode::InvalidArgument,
+                "no active explicit readback source is available"
+            };
+
+        return driver.m_impl->explicitDevice->BeginReadPixels(
+            texture,
+            x,
+            y,
+            width,
+            height,
+            format,
+            type,
+            data);
+    }
+
+    Render::RHI::RHIReadbackResult RhiThreadCoordinator::BeginReadPixels(
+        const Driver& driver,
+        const std::shared_ptr<Render::RHI::RHITexture>& texture,
+        const uint32_t x,
+        const uint32_t y,
+        const uint32_t width,
+        const uint32_t height,
+        const Settings::EPixelDataFormat format,
+        const Settings::EPixelDataType type,
+        void* data)
+    {
+        NLS_PROFILE_SCOPE();
+        if (driver.m_impl == nullptr || driver.m_impl->explicitDevice == nullptr)
+            return { Render::RHI::RHIReadbackStatusCode::BackendFailure, "explicit device is unavailable" };
 
         if (texture == nullptr)
-        {
-            NLS_LOG_WARNING("RhiThreadCoordinator::ReadPixels: explicit readback source is unavailable.");
-            return;
-        }
+            return { Render::RHI::RHIReadbackStatusCode::InvalidArgument, "explicit readback source is unavailable" };
 
-        driver.m_impl->explicitDevice->ReadPixels(
+        return driver.m_impl->explicitDevice->BeginReadPixels(
             texture,
             x,
             y,
@@ -2467,7 +2593,10 @@ namespace NLS::Render::Context
                 return false;
         }
 
-        return driver.m_impl->explicitDevice->PrepareUIRender();
+        auto* uiBridgeDevice = driver.m_impl->explicitDevice->GetUIBridgeDevice();
+        return uiBridgeDevice != nullptr
+            ? uiBridgeDevice->PrepareUIRender()
+            : true;
     }
 
     void RhiThreadCoordinator::PresentSwapchain(Driver& driver)

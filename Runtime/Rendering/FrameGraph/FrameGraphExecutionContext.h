@@ -63,6 +63,16 @@ namespace NLS::Render::FrameGraph
 				retireAfterFrameIndex);
 		}
 
+		void RegisterTransientTextureView(
+			const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView,
+			uint64_t retireAfterFrameIndex) const
+		{
+			if (!CanTrackExplicitResourceState())
+				return;
+
+			frameContext->resourceStateTracker->RegisterTransientTextureView(textureView, retireAfterFrameIndex);
+		}
+
 		void RecordResourceBarriers(const NLS::Render::RHI::RHIBarrierDesc& requestedBarriers) const
 		{
 			if (!CanTrackExplicitResourceState())

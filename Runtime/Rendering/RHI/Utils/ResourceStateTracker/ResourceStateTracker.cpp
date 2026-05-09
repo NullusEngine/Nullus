@@ -65,6 +65,12 @@ namespace NLS::Render::RHI
             uint64_t retireAfterFrameIndex = 0u;
         };
 
+        struct TransientTextureViewRetirement
+        {
+            std::shared_ptr<RHITextureView> textureView;
+            uint64_t retireAfterFrameIndex = 0u;
+        };
+
         class DefaultResourceStateTracker final : public ResourceStateTracker
         {
         public:
@@ -79,13 +85,16 @@ namespace NLS::Render::RHI
                 m_textureStates.clear();
                 m_transientBuffers.clear();
                 m_transientTextures.clear();
+                m_transientTextureViews.clear();
                 m_stats.currentFrameIndex = 0u;
                 m_stats.trackedBufferCount = 0u;
                 m_stats.trackedTextureCount = 0u;
                 m_stats.transientBufferRegistrations = 0u;
                 m_stats.transientTextureRegistrations = 0u;
+                m_stats.transientTextureViewRegistrations = 0u;
                 m_stats.retiredTransientBuffers = 0u;
                 m_stats.retiredTransientTextures = 0u;
+                m_stats.retiredTransientTextureViews = 0u;
             }
 
             std::optional<TrackedBufferState> GetBufferState(const std::shared_ptr<RHIBuffer>& buffer) const override
@@ -183,6 +192,17 @@ namespace NLS::Render::RHI
                 ++m_stats.transientTextureRegistrations;
             }
 
+            void RegisterTransientTextureView(
+                const std::shared_ptr<RHITextureView>& textureView,
+                uint64_t retireAfterFrameIndex) override
+            {
+                if (textureView == nullptr)
+                    return;
+
+                m_transientTextureViews.push_back({ textureView, retireAfterFrameIndex });
+                ++m_stats.transientTextureViewRegistrations;
+            }
+
             void RetireTransientResources(uint64_t completedFrameIndex) override
             {
                 for (auto it = m_transientBuffers.begin(); it != m_transientBuffers.end();)
@@ -209,6 +229,18 @@ namespace NLS::Render::RHI
                     m_textureStates.erase(TextureKey{ it->texture.get(), it->subresourceRange });
                     ++m_stats.retiredTransientTextures;
                     it = m_transientTextures.erase(it);
+                }
+
+                for (auto it = m_transientTextureViews.begin(); it != m_transientTextureViews.end();)
+                {
+                    if (it->textureView == nullptr || it->retireAfterFrameIndex > completedFrameIndex)
+                    {
+                        ++it;
+                        continue;
+                    }
+
+                    ++m_stats.retiredTransientTextureViews;
+                    it = m_transientTextureViews.erase(it);
                 }
 
                 m_stats.trackedBufferCount = static_cast<uint64_t>(m_bufferStates.size());
@@ -259,6 +291,7 @@ namespace NLS::Render::RHI
             std::unordered_map<TextureKey, TrackedTextureState, TextureKeyHash> m_textureStates;
             std::vector<TransientBufferRetirement> m_transientBuffers;
             std::vector<TransientTextureRetirement> m_transientTextures;
+            std::vector<TransientTextureViewRetirement> m_transientTextureViews;
         };
     }
 

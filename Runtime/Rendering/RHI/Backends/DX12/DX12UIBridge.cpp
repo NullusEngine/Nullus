@@ -322,20 +322,20 @@ namespace NLS::Render::RHI
                 };
             }
 
-            void SetWaitSemaphore(void* semaphore) override
+            void SetWaitSemaphore(NativeHandle semaphore) override
             {
                 m_waitSemaphore = semaphore;
             }
 
-            void SetSignalSemaphore(void* semaphore) override
+            void SetSignalSemaphore(NativeHandle semaphore) override
             {
                 m_signalSemaphore = semaphore;
             }
 
-            void* GetUISignalSemaphore() override
+            NativeHandle GetUISignalSemaphore() override
             {
                 if (!m_initialized)
-                    return nullptr;
+                    return {};
 
                 if (m_uiFence == nullptr)
                 {
@@ -343,17 +343,17 @@ namespace NLS::Render::RHI
                     if (FAILED(hr))
                     {
                         NLS_LOG_ERROR("DX12UIBridge: Failed to create UI fence, HRESULT=" + std::to_string(hr));
-                        return nullptr;
+                        return {};
                     }
                     m_uiFenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
                     if (m_uiFenceEvent == nullptr)
                     {
                         NLS_LOG_ERROR("DX12UIBridge: Failed to create UI fence event");
                         m_uiFence.Reset();
-                        return nullptr;
+                        return {};
                     }
                 }
-                return reinterpret_cast<void*>(m_uiFence.Get());
+                return { NLS::Render::RHI::BackendType::DX12, reinterpret_cast<void*>(m_uiFence.Get()) };
             }
 
             uint64_t GetUISignalValue() const override
@@ -831,8 +831,8 @@ namespace NLS::Render::RHI
             uint32_t m_backbufferHeight = 0;
             uint32_t m_imageCount = 0;
             bool m_initialized = false;
-            void* m_waitSemaphore = nullptr;
-            void* m_signalSemaphore = nullptr;
+            NativeHandle m_waitSemaphore;
+            NativeHandle m_signalSemaphore;
             Microsoft::WRL::ComPtr<ID3D12Fence> m_uiFence;
             HANDLE m_uiFenceEvent = nullptr;
             NLS::Render::RHI::DX12::DX12UIFrameFenceTracker m_frameFenceTracker;

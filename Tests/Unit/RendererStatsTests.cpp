@@ -37,7 +37,7 @@ namespace
         void End() override {}
         void Reset() override {}
         bool IsRecording() const override { return true; }
-        void* GetNativeCommandBuffer() const override { return nullptr; }
+        NLS::Render::RHI::NativeHandle GetNativeCommandBuffer() const override { return {}; }
         void BeginRenderPass(const NLS::Render::RHI::RHIRenderPassDesc&) override {}
         void EndRenderPass() override {}
         void SetViewport(const NLS::Render::RHI::RHIViewport&) override {}

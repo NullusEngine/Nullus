@@ -32,8 +32,10 @@ namespace NLS::Render::RHI
         uint64_t trackedTextureCount = 0u;
         uint64_t transientBufferRegistrations = 0u;
         uint64_t transientTextureRegistrations = 0u;
+        uint64_t transientTextureViewRegistrations = 0u;
         uint64_t retiredTransientBuffers = 0u;
         uint64_t retiredTransientTextures = 0u;
+        uint64_t retiredTransientTextureViews = 0u;
     };
 
     class NLS_RENDER_API ResourceStateTracker
@@ -55,6 +57,9 @@ namespace NLS::Render::RHI
         virtual void RegisterTransientTexture(
             const std::shared_ptr<RHITexture>& texture,
             const RHISubresourceRange& subresourceRange,
+            uint64_t retireAfterFrameIndex) = 0;
+        virtual void RegisterTransientTextureView(
+            const std::shared_ptr<RHITextureView>& textureView,
             uint64_t retireAfterFrameIndex) = 0;
         virtual void RetireTransientResources(uint64_t completedFrameIndex) = 0;
         virtual void Commit(const RHIBarrierDesc& barriers) = 0;

@@ -553,7 +553,50 @@ void ABaseRenderer::ReadPixels(
     void* p_data
 ) const
 {
-    Context::DriverRendererAccess::ReadPixels(
+    const auto result = ReadPixelsChecked(
+        p_x,
+        p_y,
+        p_width,
+        p_height,
+        p_format,
+        p_type,
+        p_data);
+    if (!result.Succeeded())
+        NLS_LOG_WARNING("[ABaseRenderer] ReadPixels failed: " + result.message);
+}
+
+NLS::Render::RHI::RHIReadbackResult ABaseRenderer::ReadPixelsChecked(
+    uint32_t p_x,
+    uint32_t p_y,
+    uint32_t p_width,
+    uint32_t p_height,
+    Settings::EPixelDataFormat p_format,
+    Settings::EPixelDataType p_type,
+    void* p_data
+) const
+{
+    return Context::DriverRendererAccess::ReadPixelsChecked(
+        m_driver,
+        p_x,
+        p_y,
+        p_width,
+        p_height,
+        p_format,
+        p_type,
+        p_data);
+}
+
+NLS::Render::RHI::RHIReadbackResult ABaseRenderer::BeginReadPixels(
+    uint32_t p_x,
+    uint32_t p_y,
+    uint32_t p_width,
+    uint32_t p_height,
+    Settings::EPixelDataFormat p_format,
+    Settings::EPixelDataType p_type,
+    void* p_data
+) const
+{
+    return Context::DriverRendererAccess::BeginReadPixels(
         m_driver,
         p_x,
         p_y,

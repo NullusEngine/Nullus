@@ -2,13 +2,16 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <optional>
 #include <regex>
 #include <set>
 #include <sstream>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -21,18 +24,14 @@ namespace NLS::Render::ShaderCompiler
 {
 	namespace
 	{
+		constexpr const char* kDxcArgumentSchemaVersion = "dxc-args-v1";
+
 		using ShaderReflection = Resources::ShaderReflection;
 		using ShaderPropertyDesc = Resources::ShaderPropertyDesc;
 		using ShaderConstantBufferDesc = Resources::ShaderConstantBufferDesc;
 		using ShaderCBufferMemberDesc = Resources::ShaderCBufferMemberDesc;
 		using ShaderResourceKind = Resources::ShaderResourceKind;
 		using UniformType = Resources::UniformType;
-
-		struct ProcessResult
-		{
-			int exitCode = -1;
-			std::string output;
-		};
 
 		std::string QuoteCommandArgument(const std::string& value)
 		{
@@ -103,6 +102,17 @@ namespace NLS::Render::ShaderCompiler
 			return static_cast<bool>(stream);
 		}
 
+		bool WriteBinaryFile(const std::filesystem::path& path, const std::vector<uint8_t>& content)
+		{
+			std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+			if (!stream)
+				return false;
+
+			if (!content.empty())
+				stream.write(reinterpret_cast<const char*>(content.data()), static_cast<std::streamsize>(content.size()));
+			return static_cast<bool>(stream);
+		}
+
 		std::vector<uint8_t> ReadBinaryFile(const std::filesystem::path& path)
 		{
 			std::ifstream stream(path, std::ios::binary);
@@ -129,6 +139,153 @@ namespace NLS::Render::ShaderCompiler
 			std::ostringstream stream;
 			stream << std::hex << value;
 			return stream.str();
+		}
+
+		std::string SanitizeArtifactPurpose(std::string_view value)
+		{
+			std::string sanitized;
+			sanitized.reserve(value.size());
+			for (const unsigned char ch : value)
+			{
+				if (std::isalnum(ch) || ch == '-' || ch == '_')
+					sanitized.push_back(static_cast<char>(ch));
+				else
+					sanitized.push_back('_');
+			}
+			if (sanitized.empty())
+				return "artifact";
+			return sanitized;
+		}
+
+		bool TryCommitStagedShaderArtifact(
+			const std::filesystem::path& temporaryPath,
+			const std::filesystem::path& finalPath,
+			std::string* diagnostics)
+		{
+			std::error_code error;
+			std::filesystem::create_directories(finalPath.parent_path(), error);
+			error.clear();
+
+			std::filesystem::rename(temporaryPath, finalPath, error);
+			if (!error)
+				return true;
+
+			std::filesystem::remove(finalPath, error);
+			error.clear();
+			std::filesystem::rename(temporaryPath, finalPath, error);
+			if (!error)
+				return true;
+
+			if (diagnostics != nullptr)
+			{
+				*diagnostics += "Failed to commit shader artifact from temporary path '" +
+					temporaryPath.string() + "' to '" + finalPath.string() + "': " + error.message() + "\n";
+			}
+			return false;
+		}
+
+		class ShaderArtifactLock final
+		{
+		public:
+			explicit ShaderArtifactLock(std::filesystem::path lockPath)
+				: m_lockPath(std::move(lockPath))
+			{
+				for (uint32_t attempt = 0; attempt < 200u; ++attempt)
+				{
+					std::error_code error;
+					if (std::filesystem::create_directory(m_lockPath, error))
+					{
+						m_acquired = true;
+						return;
+					}
+
+					if (error && error != std::errc::file_exists)
+						break;
+
+					std::this_thread::sleep_for(std::chrono::milliseconds(5));
+				}
+			}
+
+			~ShaderArtifactLock()
+			{
+				if (!m_acquired)
+					return;
+
+				std::error_code error;
+				std::filesystem::remove(m_lockPath, error);
+			}
+
+			bool IsAcquired() const
+			{
+				return m_acquired;
+			}
+
+		private:
+			std::filesystem::path m_lockPath;
+			bool m_acquired = false;
+		};
+
+		bool CommitShaderArtifactBytesAtomic(
+			const ShaderArtifactStagingPlan& plan,
+			const std::vector<uint8_t>& content,
+			std::string* diagnostics)
+		{
+			const std::filesystem::path finalPath(plan.finalPath);
+			const std::filesystem::path temporaryPath(plan.temporaryPath);
+			const std::filesystem::path lockPath(plan.lockPath);
+
+			std::error_code error;
+			std::filesystem::create_directories(finalPath.parent_path(), error);
+
+			ShaderArtifactLock lock(lockPath);
+			if (!lock.IsAcquired())
+			{
+				if (diagnostics != nullptr)
+					*diagnostics += "Failed to acquire shader artifact lock: " + lockPath.string() + "\n";
+				return false;
+			}
+
+			std::filesystem::remove(temporaryPath, error);
+			if (!WriteBinaryFile(temporaryPath, content))
+			{
+				if (diagnostics != nullptr)
+					*diagnostics += "Failed to write temporary shader artifact: " + temporaryPath.string() + "\n";
+				std::filesystem::remove(temporaryPath, error);
+				return false;
+			}
+
+			const bool committed = TryCommitStagedShaderArtifact(temporaryPath, finalPath, diagnostics);
+			if (!committed)
+				std::filesystem::remove(temporaryPath, error);
+			return committed;
+		}
+
+		std::string BuildToolchainVersionFingerprint(const std::filesystem::path& executable)
+		{
+			std::error_code error;
+			const auto fileSize = std::filesystem::file_size(executable, error);
+			const auto writeTime = std::filesystem::last_write_time(executable, error);
+
+			std::ostringstream stream;
+			stream << "size=" << (error ? 0u : fileSize);
+			stream << ";mtime=";
+			if (!error)
+				stream << writeTime.time_since_epoch().count();
+			else
+				stream << 0;
+			return stream.str();
+		}
+
+		ShaderCompilerToolchainIdentity BuildDxcToolchainIdentity(const std::filesystem::path& dxcPath)
+		{
+			ShaderCompilerToolchainIdentity identity;
+			std::error_code error;
+			identity.compilerPath = std::filesystem::weakly_canonical(dxcPath, error).string();
+			if (identity.compilerPath.empty())
+				identity.compilerPath = dxcPath.string();
+			identity.compilerVersion = BuildToolchainVersionFingerprint(dxcPath);
+			identity.argumentSchemaVersion = kDxcArgumentSchemaVersion;
+			return identity;
 		}
 
 		std::string StageToProfilePrefix(ShaderStage stage)
@@ -160,6 +317,19 @@ namespace NLS::Render::ShaderCompiler
 			case ShaderTargetPlatform::DXIL: return "dxil";
 			case ShaderTargetPlatform::SPIRV: return "spirv";
 			case ShaderTargetPlatform::GLSL: return "glsl";
+			default: return "unknown";
+			}
+		}
+
+		std::string ShaderProcessStatusToString(ShaderProcessStatus status)
+		{
+			switch (status)
+			{
+			case ShaderProcessStatus::Succeeded: return "succeeded";
+			case ShaderProcessStatus::Failed: return "failed";
+			case ShaderProcessStatus::FailedToStart: return "failed-to-start";
+			case ShaderProcessStatus::TimedOut: return "timed-out";
+			case ShaderProcessStatus::Cancelled: return "cancelled";
 			default: return "unknown";
 			}
 		}
@@ -286,168 +456,6 @@ namespace NLS::Render::ShaderCompiler
 			const auto path = std::filesystem::temp_directory_path() / "NullusShaderCache";
 			std::filesystem::create_directories(path);
 			return path;
-		}
-
-		ProcessResult ExecuteCommand(const std::string& command)
-		{
-			ProcessResult result;
-
-#if defined(_WIN32)
-			SECURITY_ATTRIBUTES securityAttributes{};
-			securityAttributes.nLength = sizeof(securityAttributes);
-			securityAttributes.bInheritHandle = TRUE;
-
-			HANDLE readPipe = nullptr;
-			HANDLE writePipe = nullptr;
-			if (!CreatePipe(&readPipe, &writePipe, &securityAttributes, 0))
-			{
-				result.output = "Failed to create process pipe for command: " + command;
-				return result;
-			}
-
-			SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
-
-			STARTUPINFOA startupInfo{};
-			startupInfo.cb = sizeof(startupInfo);
-			startupInfo.dwFlags = STARTF_USESTDHANDLES;
-			startupInfo.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-			startupInfo.hStdOutput = writePipe;
-			startupInfo.hStdError = writePipe;
-
-			PROCESS_INFORMATION processInfo{};
-			std::vector<char> commandLine(command.begin(), command.end());
-			commandLine.push_back('\0');
-
-			const BOOL created = CreateProcessA(
-				nullptr,
-				commandLine.data(),
-				nullptr,
-				nullptr,
-				TRUE,
-				CREATE_NO_WINDOW,
-				nullptr,
-				nullptr,
-				&startupInfo,
-				&processInfo);
-
-			CloseHandle(writePipe);
-
-			if (!created)
-			{
-				const auto errorCode = GetLastError();
-				result.output = "Failed to spawn process (" + std::to_string(errorCode) + "): " + command;
-				CloseHandle(readPipe);
-				return result;
-			}
-
-			char buffer[4096];
-			DWORD bytesRead = 0;
-			while (ReadFile(readPipe, buffer, static_cast<DWORD>(sizeof(buffer) - 1), &bytesRead, nullptr) && bytesRead > 0)
-			{
-				buffer[bytesRead] = '\0';
-				result.output += buffer;
-			}
-
-			WaitForSingleObject(processInfo.hProcess, INFINITE);
-
-			DWORD exitCode = static_cast<DWORD>(-1);
-			GetExitCodeProcess(processInfo.hProcess, &exitCode);
-			result.exitCode = static_cast<int>(exitCode);
-
-			CloseHandle(readPipe);
-			CloseHandle(processInfo.hThread);
-			CloseHandle(processInfo.hProcess);
-#else
-			(void)command;
-			result.output = "Shader compiler process execution is only implemented on Windows.";
-#endif
-
-			return result;
-		}
-
-		ProcessResult ExecuteProcess(const std::filesystem::path& executable, const std::vector<std::string>& arguments)
-		{
-			ProcessResult result;
-
-#if defined(_WIN32)
-			SECURITY_ATTRIBUTES securityAttributes{};
-			securityAttributes.nLength = sizeof(securityAttributes);
-			securityAttributes.bInheritHandle = TRUE;
-
-			HANDLE readPipe = nullptr;
-			HANDLE writePipe = nullptr;
-			if (!CreatePipe(&readPipe, &writePipe, &securityAttributes, 0))
-			{
-				result.output = "Failed to create process pipe for executable: " + executable.string();
-				return result;
-			}
-
-			SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
-
-			STARTUPINFOA startupInfo{};
-			startupInfo.cb = sizeof(startupInfo);
-			startupInfo.dwFlags = STARTF_USESTDHANDLES;
-			startupInfo.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
-			startupInfo.hStdOutput = writePipe;
-			startupInfo.hStdError = writePipe;
-
-			std::ostringstream commandLineBuilder;
-			commandLineBuilder << QuoteCommandArgument(executable.string());
-			for (const auto& argument : arguments)
-				commandLineBuilder << ' ' << QuoteCommandArgument(argument);
-
-			std::string commandLine = commandLineBuilder.str();
-			std::vector<char> mutableCommandLine(commandLine.begin(), commandLine.end());
-			mutableCommandLine.push_back('\0');
-
-			PROCESS_INFORMATION processInfo{};
-			const std::string executableString = executable.string();
-			const BOOL created = CreateProcessA(
-				executableString.c_str(),
-				mutableCommandLine.data(),
-				nullptr,
-				nullptr,
-				TRUE,
-				CREATE_NO_WINDOW,
-				nullptr,
-				nullptr,
-				&startupInfo,
-				&processInfo);
-
-			CloseHandle(writePipe);
-
-			if (!created)
-			{
-				const auto errorCode = GetLastError();
-				result.output = "Failed to spawn process (" + std::to_string(errorCode) + "): " + commandLine;
-				CloseHandle(readPipe);
-				return result;
-			}
-
-			char buffer[4096];
-			DWORD bytesRead = 0;
-			while (ReadFile(readPipe, buffer, static_cast<DWORD>(sizeof(buffer) - 1), &bytesRead, nullptr) && bytesRead > 0)
-			{
-				buffer[bytesRead] = '\0';
-				result.output += buffer;
-			}
-
-			WaitForSingleObject(processInfo.hProcess, INFINITE);
-
-			DWORD exitCode = static_cast<DWORD>(-1);
-			GetExitCodeProcess(processInfo.hProcess, &exitCode);
-			result.exitCode = static_cast<int>(exitCode);
-
-			CloseHandle(readPipe);
-			CloseHandle(processInfo.hThread);
-			CloseHandle(processInfo.hProcess);
-#else
-			(void)executable;
-			(void)arguments;
-			result.output = "Shader compiler process execution is only implemented on Windows.";
-#endif
-
-			return result;
 		}
 
 		bool ResolveSourceDependencies(
@@ -824,28 +832,16 @@ namespace NLS::Render::ShaderCompiler
 				std::string dependencyDiagnostics;
 				ResolveSourceDependencies(sourcePath, includeDirectories, visited, output.dependencyPaths, hashInput, dependencyDiagnostics);
 
-				hashInput += sourcePath.string();
-				hashInput += input.options.entryPoint;
-				hashInput += input.options.targetProfile;
-				hashInput += TargetPlatformToString(input.options.targetPlatform);
-				hashInput += StageToString(input.stage);
-				hashInput += input.options.enableDebugInfo ? "debug" : "nodebug";
-				hashInput += input.options.treatWarningsAsErrors ? "werror" : "nowerror";
-
-				for (const auto& macro : input.options.macros)
-				{
-					hashInput += macro.name;
-					hashInput += '=';
-					hashInput += macro.value;
-					hashInput += ';';
-				}
-
-				output.cacheKey = ToHex(HashStringFNV1a(hashInput));
+				output.cacheKey = BuildShaderCompilationCacheKey(
+					input,
+					hashInput,
+					BuildDxcToolchainIdentity(*dxcPath));
 
 				const auto cacheDirectory = GetShaderCacheDirectory();
 				const auto baseName = sourcePath.stem().string() + "_" + StageToProfilePrefix(input.stage) + "_" + output.cacheKey;
 				const auto artifactExtension = input.options.targetPlatform == ShaderTargetPlatform::SPIRV ? ".spv" : ".dxil";
 				const auto artifactPath = cacheDirectory / (baseName + artifactExtension);
+				const auto stagingPlan = BuildShaderArtifactStagingPlan(artifactPath.string(), "dxc");
 				output.artifactPath = artifactPath.string();
 
 				if (std::filesystem::exists(artifactPath))
@@ -862,7 +858,7 @@ namespace NLS::Render::ShaderCompiler
 					"-nologo",
 					"-E", input.options.entryPoint,
 					"-T", input.options.targetProfile,
-					"-Fo", artifactPath.string()
+					"-Fo", stagingPlan.temporaryPath
 				};
 
 				if (input.options.enableDebugInfo)
@@ -890,21 +886,44 @@ namespace NLS::Render::ShaderCompiler
 
 				arguments.push_back(sourcePath.string());
 
-				const auto process = ExecuteProcess(*dxcPath, arguments);
+				const auto process = ExecuteShaderCompilerProcess(dxcPath->string(), arguments);
 				output.diagnostics = dependencyDiagnostics + process.output;
+				if (!process.diagnostics.empty())
+					output.diagnostics += "\n" + process.diagnostics;
 
-				if (process.exitCode != 0 || !std::filesystem::exists(artifactPath))
+				if (process.status == ShaderProcessStatus::Succeeded && std::filesystem::exists(stagingPlan.temporaryPath))
+				{
+					ShaderArtifactLock lock(stagingPlan.lockPath);
+					if (!lock.IsAcquired())
+					{
+						output.status = ShaderCompilationStatus::Failed;
+						output.diagnostics += "\n[artifact-lock-failed] " + stagingPlan.lockPath;
+						return output;
+					}
+
+					if (!TryCommitStagedShaderArtifact(stagingPlan.temporaryPath, artifactPath, &output.diagnostics))
+					{
+						output.status = ShaderCompilationStatus::Failed;
+						output.diagnostics += "\n[artifact-commit-failed] " + artifactPath.string();
+						return output;
+					}
+				}
+
+				if (process.status != ShaderProcessStatus::Succeeded || !std::filesystem::exists(artifactPath))
 				{
 					output.status = ShaderCompilationStatus::Failed;
-					if (process.exitCode != 0)
+					if (process.status != ShaderProcessStatus::Succeeded)
+					{
+						output.diagnostics += "\n[process-status] " + ShaderProcessStatusToString(process.status);
 						output.diagnostics += "\n[dxc-exit-code] " + std::to_string(process.exitCode);
+					}
 					if (!std::filesystem::exists(artifactPath))
+					{
 						output.diagnostics += "\n[missing-artifact] " + artifactPath.string();
-					std::ostringstream commandLine;
-					commandLine << QuoteCommandArgument(dxcPath->string());
-					for (const auto& argument : arguments)
-						commandLine << ' ' << QuoteCommandArgument(argument);
-					output.diagnostics += "\n[dxc-command] " + commandLine.str();
+						if (std::filesystem::exists(stagingPlan.temporaryPath))
+							output.diagnostics += "\n[staged-artifact] " + stagingPlan.temporaryPath;
+					}
+					output.diagnostics += "\n[dxc-command] " + process.commandLine;
 					return output;
 				}
 
@@ -945,11 +964,11 @@ namespace NLS::Render::ShaderCompiler
 					"-dumpbin",
 					compileOutput.artifactPath
 				};
-				const auto process = ExecuteProcess(*dxcPath, arguments);
-				if (process.exitCode != 0)
+				const auto process = ExecuteShaderCompilerProcess(dxcPath->string(), arguments);
+				if (process.status != ShaderProcessStatus::Succeeded)
 					return {};
 				if (!process.output.empty())
-					WriteTextFile(reflectionCachePath, process.output);
+					WriteShaderArtifactTextAtomic(reflectionCachePath.string(), process.output);
 				return ParseReflectionDump(process.output, input.stage);
 			}
 
@@ -958,6 +977,237 @@ namespace NLS::Render::ShaderCompiler
 				return "DxcShaderCompilerBackend";
 			}
 		};
+	}
+
+	std::string BuildShaderCompilationCacheKey(
+		const ShaderCompilationInput& input,
+		std::string_view sourceDependencyFingerprint,
+		const ShaderCompilerToolchainIdentity& toolchain)
+	{
+		std::string hashInput;
+		hashInput += sourceDependencyFingerprint;
+		hashInput += '\n';
+		hashInput += input.assetPath;
+		hashInput += '\n';
+		hashInput += input.options.entryPoint;
+		hashInput += '\n';
+		hashInput += input.options.targetProfile;
+		hashInput += '\n';
+		hashInput += TargetPlatformToString(input.options.targetPlatform);
+		hashInput += '\n';
+		hashInput += StageToString(input.stage);
+		hashInput += '\n';
+		hashInput += input.options.enableDebugInfo ? "debug" : "nodebug";
+		hashInput += '\n';
+		hashInput += input.options.treatWarningsAsErrors ? "werror" : "nowerror";
+		hashInput += '\n';
+		hashInput += toolchain.compilerPath;
+		hashInput += '\n';
+		hashInput += toolchain.compilerVersion;
+		hashInput += '\n';
+		hashInput += toolchain.argumentSchemaVersion;
+		hashInput += '\n';
+
+		for (const auto& includeDirectory : input.options.includeDirectories)
+		{
+			hashInput += "include=";
+			hashInput += includeDirectory;
+			hashInput += '\n';
+		}
+
+		for (const auto& macro : input.options.macros)
+		{
+			hashInput += "macro=";
+			hashInput += macro.name;
+			hashInput += '=';
+			hashInput += macro.value;
+			hashInput += '\n';
+		}
+
+		return ToHex(HashStringFNV1a(hashInput));
+	}
+
+		ShaderArtifactStagingPlan BuildShaderArtifactStagingPlan(std::string_view finalPath, std::string_view purpose)
+		{
+			ShaderArtifactStagingPlan plan;
+			plan.finalPath = std::string(finalPath);
+
+			const std::filesystem::path finalArtifactPath(plan.finalPath);
+			const auto parentPath = finalArtifactPath.parent_path();
+			const auto filename = finalArtifactPath.filename().string();
+			const auto purposeSuffix = SanitizeArtifactPurpose(purpose);
+			std::ostringstream uniqueInput;
+			uniqueInput << plan.finalPath << "|" << purposeSuffix << "|"
+				<< std::chrono::steady_clock::now().time_since_epoch().count() << "|"
+				<< std::this_thread::get_id();
+			const auto uniqueSuffix = ToHex(HashStringFNV1a(uniqueInput.str()));
+
+			plan.temporaryPath = (parentPath / (filename + "." + purposeSuffix + "." + uniqueSuffix + ".tmp")).string();
+			plan.lockPath = (parentPath / (filename + "." + purposeSuffix + ".lock")).string();
+			return plan;
+		}
+
+	bool WriteShaderArtifactTextAtomic(std::string_view finalPath, std::string_view content, std::string* diagnostics)
+	{
+		const auto plan = BuildShaderArtifactStagingPlan(finalPath, "text");
+		return CommitShaderArtifactBytesAtomic(
+			plan,
+			std::vector<uint8_t>(content.begin(), content.end()),
+			diagnostics);
+	}
+
+	ShaderProcessResult ExecuteShaderCompilerProcess(
+		std::string_view executable,
+		const std::vector<std::string>& arguments,
+		const ShaderProcessOptions& options)
+	{
+		ShaderProcessResult result;
+
+		std::ostringstream commandLineBuilder;
+		commandLineBuilder << QuoteCommandArgument(std::string(executable));
+		for (const auto& argument : arguments)
+			commandLineBuilder << ' ' << QuoteCommandArgument(argument);
+		result.commandLine = commandLineBuilder.str();
+
+		if (options.cancellationFlag != nullptr && options.cancellationFlag->load())
+		{
+			result.status = ShaderProcessStatus::Cancelled;
+			result.diagnostics = "Shader compiler process cancelled before launch: " + result.commandLine;
+			return result;
+		}
+
+#if defined(_WIN32)
+		SECURITY_ATTRIBUTES securityAttributes{};
+		securityAttributes.nLength = sizeof(securityAttributes);
+		securityAttributes.bInheritHandle = TRUE;
+
+		HANDLE readPipe = nullptr;
+		HANDLE writePipe = nullptr;
+		if (!CreatePipe(&readPipe, &writePipe, &securityAttributes, 0))
+		{
+			result.status = ShaderProcessStatus::FailedToStart;
+			result.diagnostics = "Failed to create shader compiler process pipe for: " + result.commandLine;
+			return result;
+		}
+
+		SetHandleInformation(readPipe, HANDLE_FLAG_INHERIT, 0);
+
+		STARTUPINFOA startupInfo{};
+		startupInfo.cb = sizeof(startupInfo);
+		startupInfo.dwFlags = STARTF_USESTDHANDLES;
+		startupInfo.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+		startupInfo.hStdOutput = writePipe;
+		startupInfo.hStdError = writePipe;
+
+		std::vector<char> mutableCommandLine(result.commandLine.begin(), result.commandLine.end());
+		mutableCommandLine.push_back('\0');
+
+		PROCESS_INFORMATION processInfo{};
+		const BOOL created = CreateProcessA(
+			nullptr,
+			mutableCommandLine.data(),
+			nullptr,
+			nullptr,
+			TRUE,
+			CREATE_NO_WINDOW,
+			nullptr,
+			nullptr,
+			&startupInfo,
+			&processInfo);
+
+		CloseHandle(writePipe);
+
+		if (!created)
+		{
+			const auto errorCode = GetLastError();
+			result.status = ShaderProcessStatus::FailedToStart;
+			result.diagnostics = "Failed to spawn shader compiler process (" + std::to_string(errorCode) + "): " + result.commandLine;
+			CloseHandle(readPipe);
+			return result;
+		}
+
+		const auto timeout = std::chrono::milliseconds(options.timeoutMilliseconds == 0u ? INFINITE : options.timeoutMilliseconds);
+		const auto startTime = std::chrono::steady_clock::now();
+		bool running = true;
+		while (running)
+		{
+			char buffer[4096];
+			DWORD bytesAvailable = 0;
+			while (PeekNamedPipe(readPipe, nullptr, 0, nullptr, &bytesAvailable, nullptr) && bytesAvailable > 0)
+			{
+				DWORD bytesRead = 0;
+				if (!ReadFile(readPipe, buffer, std::min<DWORD>(static_cast<DWORD>(sizeof(buffer) - 1), bytesAvailable), &bytesRead, nullptr) || bytesRead == 0)
+					break;
+
+				buffer[bytesRead] = '\0';
+				result.output += buffer;
+			}
+
+			if (options.cancellationFlag != nullptr && options.cancellationFlag->load())
+			{
+				TerminateProcess(processInfo.hProcess, static_cast<UINT>(-1));
+				result.status = ShaderProcessStatus::Cancelled;
+				result.diagnostics = "Shader compiler process cancelled: " + result.commandLine;
+				break;
+			}
+
+			if (options.timeoutMilliseconds != 0u && std::chrono::steady_clock::now() - startTime >= timeout)
+			{
+				TerminateProcess(processInfo.hProcess, static_cast<UINT>(-1));
+				result.status = ShaderProcessStatus::TimedOut;
+				result.diagnostics = "Shader compiler process timed out after " + std::to_string(options.timeoutMilliseconds) + " ms: " + result.commandLine;
+				break;
+			}
+
+			const DWORD waitResult = WaitForSingleObject(processInfo.hProcess, 5);
+			if (waitResult == WAIT_OBJECT_0)
+				running = false;
+			else if (waitResult != WAIT_TIMEOUT)
+			{
+				TerminateProcess(processInfo.hProcess, static_cast<UINT>(-1));
+				result.status = ShaderProcessStatus::Failed;
+				result.diagnostics = "Shader compiler process wait failed: " + result.commandLine;
+				running = false;
+			}
+		}
+
+		if (WaitForSingleObject(processInfo.hProcess, 5000) != WAIT_OBJECT_0 && result.diagnostics.empty())
+			result.diagnostics = "Shader compiler process cleanup wait timed out: " + result.commandLine;
+
+		char buffer[4096];
+		DWORD bytesRead = 0;
+		while (ReadFile(readPipe, buffer, static_cast<DWORD>(sizeof(buffer) - 1), &bytesRead, nullptr) && bytesRead > 0)
+		{
+			buffer[bytesRead] = '\0';
+			result.output += buffer;
+		}
+
+		DWORD exitCode = static_cast<DWORD>(-1);
+		GetExitCodeProcess(processInfo.hProcess, &exitCode);
+		result.exitCode = static_cast<int>(exitCode);
+
+		if (result.status != ShaderProcessStatus::TimedOut &&
+			result.status != ShaderProcessStatus::Cancelled &&
+			result.status != ShaderProcessStatus::FailedToStart &&
+			result.diagnostics.empty())
+		{
+			result.status = exitCode == 0u ? ShaderProcessStatus::Succeeded : ShaderProcessStatus::Failed;
+			if (result.status == ShaderProcessStatus::Failed)
+				result.diagnostics = "Shader compiler process exited with code " + std::to_string(result.exitCode) + ": " + result.commandLine;
+		}
+
+		CloseHandle(readPipe);
+		CloseHandle(processInfo.hThread);
+		CloseHandle(processInfo.hProcess);
+#else
+		(void)executable;
+		(void)arguments;
+		(void)options;
+		result.status = ShaderProcessStatus::FailedToStart;
+		result.diagnostics = "Shader compiler process execution is only implemented on Windows: " + result.commandLine;
+#endif
+
+		return result;
 	}
 
 	ShaderCompiler::ShaderCompiler()
@@ -983,6 +1233,29 @@ namespace NLS::Render::ShaderCompiler
 	ShaderCompilationOutput ShaderCompiler::Compile(const ShaderCompilationInput& input) const
 	{
 		return m_backend->Compile(input);
+	}
+
+	std::vector<ShaderCompilationOutput> ShaderCompiler::CompileBatch(const std::vector<ShaderCompilationInput>& inputs) const
+	{
+		std::vector<ShaderCompilationOutput> outputs(inputs.size());
+		if (inputs.empty())
+			return outputs;
+
+		std::vector<std::future<ShaderCompilationOutput>> futures;
+		futures.reserve(inputs.size());
+		for (const auto& input : inputs)
+		{
+			futures.push_back(std::async(
+				std::launch::async,
+				[this, input]()
+				{
+					return Compile(input);
+				}));
+		}
+
+		for (size_t index = 0u; index < futures.size(); ++index)
+			outputs[index] = futures[index].get();
+		return outputs;
 	}
 
 	ShaderCompilationOutput ShaderCompiler::Compile(ShaderAsset& asset, const ShaderVariantKey& variantKey, const ShaderCompileOptions& options) const
@@ -1017,5 +1290,28 @@ namespace NLS::Render::ShaderCompiler
 	ShaderReflection ShaderCompiler::Reflect(const ShaderCompilationInput& input, const ShaderCompilationOutput& compiledOutput) const
 	{
 		return m_backend->Reflect(input, compiledOutput);
+	}
+
+	std::vector<ShaderReflection> ShaderCompiler::ReflectBatch(const std::vector<ShaderReflectionInput>& inputs) const
+	{
+		std::vector<ShaderReflection> reflections(inputs.size());
+		if (inputs.empty())
+			return reflections;
+
+		std::vector<std::future<ShaderReflection>> futures;
+		futures.reserve(inputs.size());
+		for (const auto& input : inputs)
+		{
+			futures.push_back(std::async(
+				std::launch::async,
+				[this, input]()
+				{
+					return Reflect(input.input, input.compiledOutput);
+				}));
+		}
+
+		for (size_t index = 0u; index < futures.size(); ++index)
+			reflections[index] = futures[index].get();
+		return reflections;
 	}
 }

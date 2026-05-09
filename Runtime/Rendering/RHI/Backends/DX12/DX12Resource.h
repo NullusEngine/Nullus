@@ -26,7 +26,7 @@ namespace NLS::Render::Backend
 			ID3D12Device* device,
 			ID3D12CommandQueue* graphicsQueue,
 			const NLS::Render::RHI::RHIBufferDesc& desc,
-			const void* initialData);
+			const NLS::Render::RHI::RHIBufferUploadDesc& uploadDesc);
 		~NativeDX12Buffer() override;
 
 		std::string_view GetDebugName() const override;
@@ -49,7 +49,10 @@ namespace NLS::Render::Backend
 	class NativeDX12Texture final : public NLS::Render::RHI::RHITexture
 	{
 	public:
-		NativeDX12Texture(ID3D12Device* device, const NLS::Render::RHI::RHITextureDesc& desc, const void* initialData);
+		NativeDX12Texture(
+			ID3D12Device* device,
+			const NLS::Render::RHI::RHITextureDesc& desc,
+			const NLS::Render::RHI::RHITextureUploadDesc& uploadDesc);
 		~NativeDX12Texture() override;
 
 		std::string_view GetDebugName() const override;
@@ -124,5 +127,9 @@ namespace NLS::Render::Backend
 		ID3D12Device* device,
 		ID3D12CommandQueue* graphicsQueue,
 		const NLS::Render::RHI::RHITextureDesc& desc,
-		const void* initialData);
+		const NLS::Render::RHI::RHITextureUploadDesc& uploadDesc);
+	NLS_RENDER_API NLS::Render::RHI::RHIUpdateResult UpdateNativeDX12Texture(
+		ID3D12Device* device,
+		ID3D12CommandQueue* graphicsQueue,
+		const NLS::Render::RHI::RHITextureUpdateDesc& desc);
 }

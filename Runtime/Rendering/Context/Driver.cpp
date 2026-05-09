@@ -202,7 +202,8 @@ namespace
         Render::RHI::RHICommandBuffer& commandBuffer,
         const std::shared_ptr<Render::RHI::RHITextureView>& swapchainBackbufferView,
         const std::shared_ptr<Render::RHI::RHITextureView>& swapchainDepthStencilView,
-        const RenderPassCommandInput& input)
+        const RenderPassCommandInput& input,
+        Render::RHI::RHIFrameContext* frameContext = nullptr)
     {
         if (!commandBuffer.IsRecording())
         {
@@ -216,11 +217,16 @@ namespace
             return false;
         }
 
+        const bool useResourceStateTracker =
+            frameContext != nullptr &&
+            frameContext->resourceStateTracker != nullptr;
+
         Render::RHI::RHIRenderPassDesc renderPassDesc;
         renderPassDesc.renderArea = { 0, 0, input.renderWidth, input.renderHeight };
         renderPassDesc.debugName = !input.debugName.empty()
             ? input.debugName
             : ToPassDebugName(input.kind);
+        renderPassDesc.attachmentsRequireExternalStateTransitions = useResourceStateTracker;
 
         if (input.usesColorAttachment)
         {
@@ -287,6 +293,58 @@ namespace
             renderPassDesc.depthStencilAttachment = std::move(depthAttachment);
         }
 
+        if (useResourceStateTracker)
+        {
+            Render::RHI::RHIBarrierDesc attachmentBarriers;
+            attachmentBarriers.textureBarriers.reserve(
+                renderPassDesc.colorAttachments.size() +
+                (renderPassDesc.depthStencilAttachment.has_value() ? 1u : 0u));
+
+            for (const auto& colorAttachment : renderPassDesc.colorAttachments)
+            {
+                if (colorAttachment.view == nullptr || colorAttachment.view->GetTexture() == nullptr)
+                    continue;
+
+                attachmentBarriers.textureBarriers.push_back({
+                    colorAttachment.view->GetTexture(),
+                    Render::RHI::ResourceState::Unknown,
+                    Render::RHI::ResourceState::RenderTarget,
+                    colorAttachment.view->GetDesc().subresourceRange,
+                    Render::RHI::PipelineStageMask::AllCommands,
+                    Render::RHI::PipelineStageMask::RenderTarget,
+                    Render::RHI::AccessMask::MemoryRead | Render::RHI::AccessMask::MemoryWrite,
+                    Render::RHI::AccessMask::ColorAttachmentRead | Render::RHI::AccessMask::ColorAttachmentWrite
+                });
+            }
+
+            if (renderPassDesc.depthStencilAttachment.has_value() &&
+                renderPassDesc.depthStencilAttachment->view != nullptr &&
+                renderPassDesc.depthStencilAttachment->view->GetTexture() != nullptr)
+            {
+                attachmentBarriers.textureBarriers.push_back({
+                    renderPassDesc.depthStencilAttachment->view->GetTexture(),
+                    Render::RHI::ResourceState::Unknown,
+                    Render::RHI::ResourceState::DepthWrite,
+                    renderPassDesc.depthStencilAttachment->view->GetDesc().subresourceRange,
+                    Render::RHI::PipelineStageMask::AllCommands,
+                    Render::RHI::PipelineStageMask::DepthStencil,
+                    Render::RHI::AccessMask::MemoryRead | Render::RHI::AccessMask::MemoryWrite,
+                    Render::RHI::AccessMask::DepthStencilRead | Render::RHI::AccessMask::DepthStencilWrite
+                });
+            }
+
+            if (!attachmentBarriers.textureBarriers.empty())
+            {
+                FrameGraph::FrameGraphExecutionContext executionContext{
+                    Context::RequireLocatedDriver("BeginPassCommandPlan"),
+                    nullptr,
+                    &commandBuffer,
+                    frameContext
+                };
+                executionContext.RecordResourceBarriers(attachmentBarriers);
+            }
+        }
+
         commandBuffer.BeginRenderPass(renderPassDesc);
         commandBuffer.SetViewport({
             0.0f,
@@ -299,10 +357,63 @@ namespace
         return true;
     }
 
-    void EndPassCommandPlan(Render::RHI::RHICommandBuffer& commandBuffer)
+    void EndPassCommandPlan(
+        Render::RHI::RHICommandBuffer& commandBuffer,
+        const RenderPassCommandInput* input = nullptr,
+        Render::RHI::RHIFrameContext* frameContext = nullptr)
     {
         if (commandBuffer.IsRecording())
             commandBuffer.EndRenderPass();
+
+        if (input == nullptr ||
+            frameContext == nullptr ||
+            frameContext->resourceStateTracker == nullptr)
+        {
+            return;
+        }
+
+        Render::RHI::RHIBarrierDesc attachmentBarriers;
+
+        const auto addColorAttachmentEndBarrier =
+            [&attachmentBarriers](
+                const std::shared_ptr<Render::RHI::RHITextureView>& view,
+                const Render::RHI::ResourceState after,
+                const Render::RHI::PipelineStageMask destinationStage,
+                const Render::RHI::AccessMask destinationAccess)
+            {
+                if (view == nullptr || view->GetTexture() == nullptr)
+                    return;
+
+                attachmentBarriers.textureBarriers.push_back({
+                    view->GetTexture(),
+                    Render::RHI::ResourceState::Unknown,
+                    after,
+                    view->GetDesc().subresourceRange,
+                    Render::RHI::PipelineStageMask::RenderTarget,
+                    destinationStage,
+                    Render::RHI::AccessMask::ColorAttachmentRead | Render::RHI::AccessMask::ColorAttachmentWrite,
+                    destinationAccess
+                });
+            };
+
+        if (input->targetsSwapchain)
+        {
+            addColorAttachmentEndBarrier(
+                frameContext->swapchainBackbufferView,
+                Render::RHI::ResourceState::Present,
+                Render::RHI::PipelineStageMask::Present,
+                Render::RHI::AccessMask::Present);
+        }
+        if (!attachmentBarriers.textureBarriers.empty())
+        {
+            FrameGraph::FrameGraphExecutionContext executionContext{
+                Context::RequireLocatedDriver("EndPassCommandPlan"),
+                nullptr,
+                &commandBuffer,
+                frameContext
+            };
+            executionContext.RecordResourceBarriers(attachmentBarriers);
+        }
     }
 
     bool HasResourceVisibilityTransitions(const RenderPassCommandInput& input)
@@ -571,6 +682,9 @@ namespace
         const RenderPassCommandInput& input,
         Render::RHI::RHIFrameContext* frameContext = nullptr)
     {
+        const bool useResourceStateTracker =
+            frameContext != nullptr &&
+            frameContext->resourceStateTracker != nullptr;
         Render::RHI::RHIBarrierDesc barriers;
         barriers.bufferBarriers.reserve(input.bufferVisibilityTransitions.size());
         barriers.textureBarriers.reserve(input.textureVisibilityTransitions.size());
@@ -581,7 +695,7 @@ namespace
                 continue;
 
             auto before = transition.before;
-            if (before == Render::RHI::ResourceState::Unknown)
+            if (!useResourceStateTracker && before == Render::RHI::ResourceState::Unknown)
                 before = transition.buffer->GetState();
             barriers.bufferBarriers.push_back({
                 transition.buffer,
@@ -600,7 +714,7 @@ namespace
                 continue;
 
             auto before = transition.before;
-            if (before == Render::RHI::ResourceState::Unknown)
+            if (!useResourceStateTracker && before == Render::RHI::ResourceState::Unknown)
                 before = transition.texture->GetState();
             barriers.textureBarriers.push_back({
                 transition.texture,
@@ -617,7 +731,7 @@ namespace
         if (barriers.bufferBarriers.empty() && barriers.textureBarriers.empty())
             return false;
 
-        if (frameContext != nullptr && frameContext->resourceStateTracker != nullptr)
+        if (useResourceStateTracker)
         {
             FrameGraph::FrameGraphExecutionContext executionContext{
                 Context::RequireLocatedDriver("RecordResourceVisibilityTransitions"),
@@ -1121,18 +1235,23 @@ bool Detail::BeginPassCommandPlan(
     Render::RHI::RHICommandBuffer& commandBuffer,
     const std::shared_ptr<Render::RHI::RHITextureView>& swapchainBackbufferView,
     const std::shared_ptr<Render::RHI::RHITextureView>& swapchainDepthStencilView,
-    const RenderPassCommandInput& input)
+    const RenderPassCommandInput& input,
+    Render::RHI::RHIFrameContext* frameContext)
 {
     return NLS::Render::Context::BeginPassCommandPlan(
         commandBuffer,
         swapchainBackbufferView,
         swapchainDepthStencilView,
-        input);
+        input,
+        frameContext);
 }
 
-void Detail::EndPassCommandPlan(Render::RHI::RHICommandBuffer& commandBuffer)
+void Detail::EndPassCommandPlan(
+    Render::RHI::RHICommandBuffer& commandBuffer,
+    const RenderPassCommandInput* input,
+    Render::RHI::RHIFrameContext* frameContext)
 {
-    NLS::Render::Context::EndPassCommandPlan(commandBuffer);
+    NLS::Render::Context::EndPassCommandPlan(commandBuffer, input, frameContext);
 }
 
 bool Detail::HasResourceVisibilityTransitions(const RenderPassCommandInput& input)
@@ -1410,7 +1529,7 @@ void DriverRendererAccess::ReadPixels(
 	const Settings::EPixelDataType type,
 	void* data)
 {
-	RhiThreadCoordinator::ReadPixels(
+	const auto result = ReadPixelsChecked(
         driver,
         x,
         y,
@@ -1419,6 +1538,8 @@ void DriverRendererAccess::ReadPixels(
         format,
         type,
         data);
+    if (!result.Succeeded())
+        NLS_LOG_WARNING("DriverRendererAccess::ReadPixels failed: " + result.message);
 }
 
 void DriverRendererAccess::ReadPixels(
@@ -1432,7 +1553,97 @@ void DriverRendererAccess::ReadPixels(
     const Settings::EPixelDataType type,
     void* data)
 {
-    RhiThreadCoordinator::ReadPixels(
+    const auto result = ReadPixelsChecked(
+        driver,
+        texture,
+        x,
+        y,
+        width,
+        height,
+        format,
+        type,
+        data);
+    if (!result.Succeeded())
+        NLS_LOG_WARNING("DriverRendererAccess::ReadPixels failed: " + result.message);
+}
+
+Render::RHI::RHIReadbackResult DriverRendererAccess::ReadPixelsChecked(
+    const Driver& driver,
+    const uint32_t x,
+    const uint32_t y,
+    const uint32_t width,
+    const uint32_t height,
+    const Settings::EPixelDataFormat format,
+    const Settings::EPixelDataType type,
+    void* data)
+{
+    return RhiThreadCoordinator::ReadPixelsChecked(
+        driver,
+        x,
+        y,
+        width,
+        height,
+        format,
+        type,
+        data);
+}
+
+Render::RHI::RHIReadbackResult DriverRendererAccess::ReadPixelsChecked(
+    const Driver& driver,
+    const std::shared_ptr<Render::RHI::RHITexture>& texture,
+    const uint32_t x,
+    const uint32_t y,
+    const uint32_t width,
+    const uint32_t height,
+    const Settings::EPixelDataFormat format,
+    const Settings::EPixelDataType type,
+    void* data)
+{
+    return RhiThreadCoordinator::ReadPixelsChecked(
+        driver,
+        texture,
+        x,
+        y,
+        width,
+        height,
+        format,
+        type,
+        data);
+}
+
+Render::RHI::RHIReadbackResult DriverRendererAccess::BeginReadPixels(
+    const Driver& driver,
+    const uint32_t x,
+    const uint32_t y,
+    const uint32_t width,
+    const uint32_t height,
+    const Settings::EPixelDataFormat format,
+    const Settings::EPixelDataType type,
+    void* data)
+{
+    return RhiThreadCoordinator::BeginReadPixels(
+        driver,
+        x,
+        y,
+        width,
+        height,
+        format,
+        type,
+        data);
+}
+
+Render::RHI::RHIReadbackResult DriverRendererAccess::BeginReadPixels(
+    const Driver& driver,
+    const std::shared_ptr<Render::RHI::RHITexture>& texture,
+    const uint32_t x,
+    const uint32_t y,
+    const uint32_t width,
+    const uint32_t height,
+    const Settings::EPixelDataFormat format,
+    const Settings::EPixelDataType type,
+    void* data)
+{
+    return RhiThreadCoordinator::BeginReadPixels(
         driver,
         texture,
         x,
@@ -1477,8 +1688,12 @@ bool DriverUIAccess::PrepareUIRender(Driver& driver)
 
 void DriverUIAccess::ReleaseUITextureHandles(Driver& driver)
 {
-	// Use formal RHI device for UI texture handle release
-	driver.m_impl->explicitDevice->ReleaseUITextureHandles();
+	if (driver.m_impl == nullptr || driver.m_impl->explicitDevice == nullptr)
+		return;
+
+	auto* uiBridgeDevice = driver.m_impl->explicitDevice->GetUIBridgeDevice();
+	if (uiBridgeDevice != nullptr)
+		uiBridgeDevice->ReleaseUITextureHandles();
 }
 
 void DriverUIAccess::PresentSwapchain(Driver& driver)
@@ -1540,20 +1755,40 @@ bool DriverUIAccess::IsRenderDocEnabled(const Driver& driver)
 		driver.m_impl->renderDocCaptureController->IsEnabled();
 }
 
-void* DriverUIAccess::GetRenderFinishedSemaphore(Driver& driver)
+Render::RHI::NativeHandle DriverUIAccess::GetRenderFinishedSemaphore(Driver& driver)
 {
 	if (driver.m_impl->frameContexts.empty())
-		return nullptr;
+		return {};
 	auto& frameContext = driver.m_impl->frameContexts[driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size()];
 	if (frameContext.renderFinishedSemaphore == nullptr)
-		return nullptr;
+		return {};
 	return frameContext.renderFinishedSemaphore->GetNativeSemaphoreHandle();
 }
 
-void DriverUIAccess::SetUISignalSemaphore(Driver& driver, void* semaphore, const uint64_t value)
+DriverUIAccess::UICompositionSyncBoundary DriverUIAccess::BuildUICompositionSyncBoundary(Driver& driver)
+{
+	UICompositionSyncBoundary boundary;
+	boundary.sceneToUiWaitSemaphore = GetRenderFinishedSemaphore(driver);
+	boundary.uiToPresentSignalSemaphore = driver.m_impl->uiRenderFinishedSemaphore;
+	boundary.uiToPresentSignalValue = driver.m_impl->uiRenderFinishedValue;
+	return boundary;
+}
+
+void DriverUIAccess::SetUICompositionSignal(
+	Driver& driver,
+	Render::RHI::NativeHandle semaphore,
+	const uint64_t value)
 {
 	driver.m_impl->uiRenderFinishedSemaphore = semaphore;
 	driver.m_impl->uiRenderFinishedValue = value;
+}
+
+void DriverUIAccess::SetUISignalSemaphore(
+	Driver& driver,
+	Render::RHI::NativeHandle semaphore,
+	const uint64_t value)
+{
+	SetUICompositionSignal(driver, semaphore, value);
 }
 
 void DriverTestAccess::SetExplicitDevice(Driver& driver, std::shared_ptr<Render::RHI::RHIDevice> explicitDevice)
@@ -1703,9 +1938,14 @@ Driver::Driver(const Render::Settings::DriverSettings& p_driverSettings)
     if (m_impl->requestedGraphicsBackend != Render::Settings::EGraphicsBackend::NONE &&
         !Render::Settings::IsBackendSelectableForPhase1(m_impl->requestedGraphicsBackend))
     {
+        const auto phaseGateReport = Render::Settings::EvaluateBackendPhaseGate(
+            m_impl->requestedGraphicsBackend,
+            Render::Settings::RuntimeConsumer::Editor,
+            Render::RHI::RHIDeviceCapabilities{});
         NLS_LOG_WARNING(
             "Driver: rejecting non-DX12 runtime backend during UE5 alignment phase 1: " +
-            std::string(Render::Settings::ToString(m_impl->requestedGraphicsBackend)));
+            std::string(Render::Settings::ToString(m_impl->requestedGraphicsBackend)) +
+            " phaseGate=" + phaseGateReport.summary);
     }
 	m_impl->renderDocCaptureController = std::make_unique<Render::Tooling::RenderDocCaptureController>(p_driverSettings.renderDoc);
 
@@ -1714,10 +1954,15 @@ Driver::Driver(const Render::Settings::DriverSettings& p_driverSettings)
 	m_impl->explicitDevice = Render::Backend::CreateRhiDevice(p_driverSettings);
 	if (m_impl->explicitDevice == nullptr)
 	{
+		const auto phaseGateReport = Render::Settings::EvaluateBackendPhaseGate(
+			p_driverSettings.graphicsBackend,
+			Render::Settings::RuntimeConsumer::Editor,
+			Render::RHI::RHIDeviceCapabilities{});
 		NLS_LOG_WARNING(
 			std::string("Driver: failed to create explicit RHI device for backend: ") +
 			Render::Settings::ToString(p_driverSettings.graphicsBackend) +
-			", continuing without device");
+			", continuing without device. phaseGate=" +
+			phaseGateReport.summary);
 	}
 
 	// Set up pipeline state
@@ -1797,7 +2042,7 @@ void Driver::ShutdownRhiResources()
         return;
 
     m_impl->swapchainWillResizeCallback = nullptr;
-    m_impl->uiRenderFinishedSemaphore = nullptr;
+    m_impl->uiRenderFinishedSemaphore = {};
     m_impl->uiRenderFinishedValue = 0u;
     {
         std::lock_guard lock(m_impl->completedReadbackTextureMutex);

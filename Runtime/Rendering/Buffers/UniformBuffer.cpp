@@ -49,7 +49,7 @@ UniformBuffer::UniformBuffer(
     auto device = GetExplicitDevice();
     if (device != nullptr)
     {
-        m_explicitBuffer = device->CreateBuffer(desc, nullptr);
+        m_explicitBuffer = device->CreateBuffer(desc);
     }
 }
 
@@ -90,7 +90,14 @@ std::shared_ptr<NLS::Render::RHI::RHIBuffer> UniformBuffer::CreateExplicitSnapsh
     auto device = GetExplicitDevice();
     if (device != nullptr)
     {
-        return device->CreateBuffer(desc, m_shadowData.empty() ? nullptr : m_shadowData.data());
+        if (m_shadowData.empty())
+            return device->CreateBuffer(desc);
+
+        NLS::Render::RHI::RHIBufferUploadDesc uploadDesc;
+        uploadDesc.data = m_shadowData.data();
+        uploadDesc.dataSize = m_shadowData.size();
+        uploadDesc.debugName = desc.debugName + "InitialUpload";
+        return device->CreateBuffer(desc, uploadDesc);
     }
     return nullptr;
 }

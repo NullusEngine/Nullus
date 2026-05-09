@@ -81,3 +81,22 @@ TEST(ShaderBindingLayoutUtilsTests, PreservesEmptyDescriptorSetSlotsNeededByHigh
     EXPECT_EQ(layouts[3].entries[0].set, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet);
     EXPECT_EQ(layouts[3].entries[0].registerSpace, NLS::Render::RHI::BindingPointMap::kPassBindingSpace);
 }
+
+TEST(ShaderBindingLayoutUtilsTests, ValidatesConflictingReflectionBindingsBeforeLayoutCreation)
+{
+    ShaderReflection reflection;
+    reflection.properties = {
+        { "u_Texture", UniformType::UNIFORM_SAMPLER_2D, ShaderResourceKind::SampledTexture, ShaderStage::Pixel, NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace, 0u, -1, 1, 0u, 0u, {} },
+        { "u_OtherTexture", UniformType::UNIFORM_SAMPLER_2D, ShaderResourceKind::SampledTexture, ShaderStage::Pixel, NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace, 0u, -1, 1, 0u, 0u, {} },
+        { "u_InvalidArray", UniformType::UNIFORM_SAMPLER_2D, ShaderResourceKind::SampledTexture, ShaderStage::Pixel, NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace, 1u, -1, 0, 0u, 0u, {} }
+    };
+
+    const auto validation = NLS::Render::Resources::ValidateShaderBindingReflection(reflection);
+
+    EXPECT_TRUE(validation.HasErrors());
+    ASSERT_EQ(validation.diagnostics.size(), 2u);
+    EXPECT_EQ(validation.diagnostics[0].severity, NLS::Render::Resources::ShaderBindingValidationSeverity::Error);
+    EXPECT_NE(validation.diagnostics[0].message.find("conflict"), std::string::npos);
+    EXPECT_NE(validation.diagnostics[0].message.find("space2"), std::string::npos);
+    EXPECT_NE(validation.diagnostics[1].message.find("arraySize"), std::string::npos);
+}

@@ -160,7 +160,10 @@ namespace NLS::Render::Backend
 			if (cmdBuffer == nullptr)
 				continue;
 
-			auto* nativeCommandList = static_cast<ID3D12CommandList*>(cmdBuffer->GetNativeCommandBuffer());
+			const auto nativeCommandBuffer = cmdBuffer->GetNativeCommandBuffer();
+			auto* nativeCommandList = nativeCommandBuffer.backend == NLS::Render::RHI::BackendType::DX12
+				? static_cast<ID3D12CommandList*>(nativeCommandBuffer.handle)
+				: nullptr;
 			if (nativeCommandList != nullptr)
 				commandLists.push_back(nativeCommandList);
 		}
@@ -254,7 +257,10 @@ namespace NLS::Render::Backend
 			return;
 		}
 
-		auto* swapchain = reinterpret_cast<IDXGISwapChain3*>(presentDesc.swapchain->GetNativeSwapchainHandle());
+		const auto swapchainHandle = presentDesc.swapchain->GetNativeSwapchainHandle();
+		auto* swapchain = swapchainHandle.backend == NLS::Render::RHI::BackendType::DX12
+			? reinterpret_cast<IDXGISwapChain3*>(swapchainHandle.handle)
+			: nullptr;
 		if (swapchain == nullptr)
 		{
 			NLS_LOG_ERROR("NativeDX12Queue::Present: GetNativeSwapchainHandle returned null");
@@ -267,7 +273,7 @@ namespace NLS::Render::Backend
 				"NativeDX12Queue::Present: swapchain ptr=" +
 				std::to_string(reinterpret_cast<uintptr_t>(swapchain)) +
 				" uiSemaphore=" +
-				std::to_string(reinterpret_cast<uintptr_t>(presentDesc.uiSignalSemaphore)) +
+				std::to_string(reinterpret_cast<uintptr_t>(presentDesc.uiSignalSemaphore.handle)) +
 				" uiSignalValue=" +
 				std::to_string(presentDesc.uiSignalValue));
 		}
@@ -289,9 +295,11 @@ namespace NLS::Render::Backend
 			}
 		}
 
-		if (presentDesc.uiSignalSemaphore != nullptr && presentDesc.uiSignalValue != 0u)
+		if (presentDesc.uiSignalSemaphore.backend == NLS::Render::RHI::BackendType::DX12 &&
+			presentDesc.uiSignalSemaphore.handle != nullptr &&
+			presentDesc.uiSignalValue != 0u)
 		{
-			auto* uiFence = reinterpret_cast<ID3D12Fence*>(presentDesc.uiSignalSemaphore);
+			auto* uiFence = reinterpret_cast<ID3D12Fence*>(presentDesc.uiSignalSemaphore.handle);
 			if (uiFence != nullptr)
 			{
 				const HRESULT waitHr = m_queue->Wait(uiFence, presentDesc.uiSignalValue);

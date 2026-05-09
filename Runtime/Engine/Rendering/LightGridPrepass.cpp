@@ -16,6 +16,7 @@
 #include <Rendering/RHI/BindingPointMap.h>
 #include <Rendering/RHI/Core/RHIDevice.h>
 #include <Rendering/RHI/Utils/PipelineCache/PipelineCache.h>
+#include <Rendering/Settings/DriverSettings.h>
 
 namespace
 {
@@ -132,6 +133,20 @@ namespace
         return key;
     }
 
+    bool ShouldLogLightGridHotPathFailureDiagnostics(const NLS::Render::Context::Driver& driver)
+    {
+        return NLS::Engine::Rendering::LightGridPrepass::ShouldLogHotPathFailureDiagnostics(
+            NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(driver));
+    }
+
+    void LogLightGridHotPathFailure(
+        const NLS::Render::Context::Driver& driver,
+        const std::string& message)
+    {
+        if (ShouldLogLightGridHotPathFailureDiagnostics(driver))
+            NLS_LOG_ERROR(message);
+    }
+
 }
 
 namespace NLS::Engine::Rendering
@@ -153,6 +168,12 @@ namespace NLS::Engine::Rendering
     }
 
     LightGridPrepass::~LightGridPrepass() = default;
+
+    bool LightGridPrepass::ShouldLogHotPathFailureDiagnostics(
+        const NLS::Render::Settings::EngineDiagnosticsSettings& diagnostics)
+    {
+        return diagnostics.logRenderDrawPath;
+    }
 
     LightGridPrepass::PreparedFrameInputs LightGridPrepass::CaptureFrameInputs(
         const NLS::Render::Data::LightingDescriptor& lightingDescriptor,
@@ -202,26 +223,26 @@ namespace NLS::Engine::Rendering
         auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_driver);
         if (device == nullptr)
         {
-            NLS_LOG_ERROR("LightGridPrepass::Prepare failed: explicit RHI device is unavailable.");
+            LogLightGridHotPathFailure(m_driver, "LightGridPrepass::Prepare failed: explicit RHI device is unavailable.");
             return false;
         }
 
         if (!EnsureShadersLoaded())
         {
-            NLS_LOG_ERROR("LightGridPrepass::Prepare failed: clustered lighting shaders are not loaded.");
+            LogLightGridHotPathFailure(m_driver, "LightGridPrepass::Prepare failed: clustered lighting shaders are not loaded.");
             return false;
         }
 
         if (!EnsurePipelines())
         {
-            NLS_LOG_ERROR("LightGridPrepass::Prepare failed: clustered lighting compute pipelines are unavailable.");
+            LogLightGridHotPathFailure(m_driver, "LightGridPrepass::Prepare failed: clustered lighting compute pipelines are unavailable.");
             return false;
         }
 
         PackedFrameData frameData;
         if (!BuildFrameData(frameDescriptor, preparedFrameInputs, preparedFrameInputs.hasSkyboxTexture, frameData))
         {
-            NLS_LOG_ERROR("LightGridPrepass::Prepare failed: frame data could not be built.");
+            LogLightGridHotPathFailure(m_driver, "LightGridPrepass::Prepare failed: frame data could not be built.");
             return false;
         }
 
@@ -230,7 +251,11 @@ namespace NLS::Engine::Rendering
         constantsDesc.usage = NLS::Render::RHI::BufferUsageFlags::Uniform;
         constantsDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
         constantsDesc.debugName = "LightGridPassConstants";
-        auto constantsBuffer = device->CreateBuffer(constantsDesc, &frameData.constants);
+        NLS::Render::RHI::RHIBufferUploadDesc constantsUploadDesc;
+        constantsUploadDesc.data = &frameData.constants;
+        constantsUploadDesc.dataSize = sizeof(frameData.constants);
+        constantsUploadDesc.debugName = "LightGridPassConstantsInitialUpload";
+        auto constantsBuffer = device->CreateBuffer(constantsDesc, constantsUploadDesc);
 
         auto createStorageBuffer = [&](std::string_view debugName, const std::vector<uint32_t>& data)
         {
@@ -239,7 +264,14 @@ namespace NLS::Engine::Rendering
             desc.usage = NLS::Render::RHI::BufferUsageFlags::Storage;
             desc.memoryUsage = NLS::Render::RHI::MemoryUsage::GPUOnly;
             desc.debugName = std::string(debugName);
-            return device->CreateBuffer(desc, data.empty() ? nullptr : data.data());
+            if (data.empty())
+                return device->CreateBuffer(desc);
+
+            NLS::Render::RHI::RHIBufferUploadDesc uploadDesc;
+            uploadDesc.data = data.data();
+            uploadDesc.dataSize = data.size() * sizeof(uint32_t);
+            uploadDesc.debugName = desc.debugName + "InitialUpload";
+            return device->CreateBuffer(desc, uploadDesc);
         };
 
         auto packedLightsBuffer = createStorageBuffer("LightGridPackedLights", frameData.packedLights);
@@ -257,7 +289,7 @@ namespace NLS::Engine::Rendering
             clusterRecordsBuffer == nullptr ||
             compactLightIndicesBuffer == nullptr)
         {
-            NLS_LOG_ERROR("LightGridPrepass::Prepare failed: one or more clustered lighting buffers could not be created.");
+            LogLightGridHotPathFailure(m_driver, "LightGridPrepass::Prepare failed: one or more clustered lighting buffers could not be created.");
             return false;
         }
 
@@ -311,7 +343,7 @@ namespace NLS::Engine::Rendering
 
         if (injectionBindingSet == nullptr || compactBindingSet == nullptr || m_graphicsPassBindingSet == nullptr)
         {
-            NLS_LOG_ERROR("LightGridPrepass::Prepare failed: one or more clustered lighting binding sets could not be created.");
+            LogLightGridHotPathFailure(m_driver, "LightGridPrepass::Prepare failed: one or more clustered lighting binding sets could not be created.");
             return false;
         }
 
@@ -373,19 +405,22 @@ namespace NLS::Engine::Rendering
         const auto& preparedFrameInputs = preparedComputeRequest.preparedFrameInputs;
         if (lightGridPrepass == nullptr)
         {
-            NLS_LOG_ERROR("LightGridPrepass::BuildPreparedComputeDispatchSource failed: LightGridPrepass instance is null.");
             return {};
         }
 
         if (!preparedFrameInputs.has_value())
         {
-            NLS_LOG_ERROR("LightGridPrepass::BuildPreparedComputeDispatchSource failed: prepared frame inputs are missing.");
+            LogLightGridHotPathFailure(
+                lightGridPrepass->m_driver,
+                "LightGridPrepass::BuildPreparedComputeDispatchSource failed: prepared frame inputs are missing.");
             return {};
         }
 
         if (!lightGridPrepass->Prepare(preparedComputeRequest.frameDescriptor, preparedFrameInputs.value()))
         {
-            NLS_LOG_ERROR("LightGridPrepass::BuildPreparedComputeDispatchSource failed: LightGridPrepass::Prepare returned false.");
+            LogLightGridHotPathFailure(
+                lightGridPrepass->m_driver,
+                "LightGridPrepass::BuildPreparedComputeDispatchSource failed: LightGridPrepass::Prepare returned false.");
             return {};
         }
         return lightGridPrepass->GetPreparedComputeDispatchSource();
@@ -410,7 +445,7 @@ namespace NLS::Engine::Rendering
     {
         if (!NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::ShaderManager>())
         {
-            NLS_LOG_ERROR("LightGridPrepass requires ShaderManager to resolve engine shader assets.");
+            LogLightGridHotPathFailure(m_driver, "LightGridPrepass requires ShaderManager to resolve engine shader assets.");
             return false;
         }
 
@@ -420,9 +455,9 @@ namespace NLS::Engine::Rendering
         if (m_compactShader == nullptr)
             m_compactShader = shaderManager[":Shaders/LightGridCompact.hlsl"];
         if (m_injectionShader == nullptr)
-            NLS_LOG_ERROR("LightGridPrepass failed to load :Shaders/LightGridInjection.hlsl.");
+            LogLightGridHotPathFailure(m_driver, "LightGridPrepass failed to load :Shaders/LightGridInjection.hlsl.");
         if (m_compactShader == nullptr)
-            NLS_LOG_ERROR("LightGridPrepass failed to load :Shaders/LightGridCompact.hlsl.");
+            LogLightGridHotPathFailure(m_driver, "LightGridPrepass failed to load :Shaders/LightGridCompact.hlsl.");
         return m_injectionShader != nullptr && m_compactShader != nullptr;
     }
 
@@ -435,7 +470,7 @@ namespace NLS::Engine::Rendering
         auto pipelineCache = NLS::Render::Context::DriverRendererAccess::GetPipelineCache(m_driver);
         if (device == nullptr || m_injectionShader == nullptr || m_compactShader == nullptr)
         {
-            NLS_LOG_ERROR("LightGridPrepass::EnsurePipelines failed: device or shader asset is null.");
+            LogLightGridHotPathFailure(m_driver, "LightGridPrepass::EnsurePipelines failed: device or shader asset is null.");
             return false;
         }
 
@@ -505,13 +540,13 @@ namespace NLS::Engine::Rendering
             auto shaderModule = shader->GetOrCreateExplicitShaderModule(device, NLS::Render::ShaderCompiler::ShaderStage::Compute);
             if (shaderModule == nullptr)
             {
-                NLS_LOG_ERROR("LightGridPrepass::EnsurePipelines failed: compute shader module is null for " + std::string(label) + ".");
+                LogLightGridHotPathFailure(m_driver, "LightGridPrepass::EnsurePipelines failed: compute shader module is null for " + std::string(label) + ".");
                 return std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>{};
             }
 
             if (pipelineCache == nullptr)
             {
-                NLS_LOG_ERROR("LightGridPrepass::EnsurePipelines failed: pipeline cache is null for " + std::string(label) + ".");
+                LogLightGridHotPathFailure(m_driver, "LightGridPrepass::EnsurePipelines failed: pipeline cache is null for " + std::string(label) + ".");
                 return std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>{};
             }
 
@@ -532,9 +567,9 @@ namespace NLS::Engine::Rendering
         m_injectionPipeline = createComputePipeline(m_injectionShader, m_injectionPipelineLayout, m_injectionPipeline, "LightGridInjectionPipeline");
         m_compactPipeline = createComputePipeline(m_compactShader, m_compactPipelineLayout, m_compactPipeline, "LightGridCompactPipeline");
         if (m_injectionPipeline == nullptr)
-            NLS_LOG_ERROR("LightGridPrepass::EnsurePipelines failed: LightGridInjectionPipeline is null.");
+            LogLightGridHotPathFailure(m_driver, "LightGridPrepass::EnsurePipelines failed: LightGridInjectionPipeline is null.");
         if (m_compactPipeline == nullptr)
-            NLS_LOG_ERROR("LightGridPrepass::EnsurePipelines failed: LightGridCompactPipeline is null.");
+            LogLightGridHotPathFailure(m_driver, "LightGridPrepass::EnsurePipelines failed: LightGridCompactPipeline is null.");
         return m_injectionPipeline != nullptr && m_compactPipeline != nullptr;
     }
 
@@ -559,7 +594,7 @@ namespace NLS::Engine::Rendering
     {
         if (frameDescriptor.camera == nullptr)
         {
-            NLS_LOG_ERROR("LightGridPrepass::BuildFrameData failed: frame descriptor camera is null.");
+            LogLightGridHotPathFailure(m_driver, "LightGridPrepass::BuildFrameData failed: frame descriptor camera is null.");
             return false;
         }
 

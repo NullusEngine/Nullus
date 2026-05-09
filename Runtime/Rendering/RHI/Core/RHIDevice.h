@@ -6,12 +6,38 @@
 
 namespace NLS::Render::RHI
 {
+    enum class RHIReadbackStatusCode : uint8_t
+    {
+        Success,
+        InvalidArgument,
+        UnsupportedFormat,
+        BackendFailure
+    };
+
+    struct NLS_RENDER_API RHIReadbackResult
+    {
+        RHIReadbackStatusCode code = RHIReadbackStatusCode::InvalidArgument;
+        std::string message;
+        std::shared_ptr<RHICompletionToken> completion;
+
+        bool Succeeded() const { return code == RHIReadbackStatusCode::Success; }
+    };
+
     class NLS_RENDER_API RHIAdapter : public RHIObject
     {
     public:
         virtual NativeBackendType GetBackendType() const = 0;
         virtual std::string_view GetVendor() const = 0;
         virtual std::string_view GetHardware() const = 0;
+    };
+
+    class NLS_RENDER_API RHIUIDeviceBridge
+    {
+    public:
+        virtual ~RHIUIDeviceBridge() = default;
+        virtual bool PrepareUIRender() = 0;
+        virtual void ReleaseUITextureHandles() = 0;
+        virtual void SetCurrentCommandBuffer(NativeHandle commandBuffer) = 0;
     };
 
     class NLS_RENDER_API RHIDevice : public RHIObject
@@ -23,8 +49,16 @@ namespace NLS::Render::RHI
         virtual bool IsBackendReady() const = 0;
         virtual std::shared_ptr<RHIQueue> GetQueue(QueueType queueType) = 0;
         virtual std::shared_ptr<RHISwapchain> CreateSwapchain(const SwapchainDesc& desc) = 0;
-        virtual std::shared_ptr<RHIBuffer> CreateBuffer(const RHIBufferDesc& desc, const void* initialData = nullptr) = 0;
-        virtual std::shared_ptr<RHITexture> CreateTexture(const RHITextureDesc& desc, const void* initialData = nullptr) = 0;
+        virtual std::shared_ptr<RHIBuffer> CreateBuffer(const RHIBufferDesc& desc, const RHIBufferUploadDesc& uploadDesc) = 0;
+        virtual std::shared_ptr<RHITexture> CreateTexture(const RHITextureDesc& desc, const RHITextureUploadDesc& uploadDesc) = 0;
+        virtual std::shared_ptr<RHIBuffer> CreateBuffer(const RHIBufferDesc& desc)
+        {
+            return CreateBuffer(desc, RHIBufferUploadDesc{});
+        }
+        virtual std::shared_ptr<RHITexture> CreateTexture(const RHITextureDesc& desc)
+        {
+            return CreateTexture(desc, RHITextureUploadDesc{});
+        }
         virtual std::shared_ptr<RHITextureView> CreateTextureView(const std::shared_ptr<RHITexture>& texture, const RHITextureViewDesc& desc) = 0;
         virtual std::shared_ptr<RHISampler> CreateSampler(const SamplerDesc& desc, std::string debugName = {}) = 0;
         virtual std::shared_ptr<RHIBindingLayout> CreateBindingLayout(const RHIBindingLayoutDesc& desc) = 0;
@@ -36,6 +70,11 @@ namespace NLS::Render::RHI
         virtual std::shared_ptr<RHICommandPool> CreateCommandPool(QueueType queueType, std::string debugName = {}) = 0;
         virtual std::shared_ptr<RHIFence> CreateFence(std::string debugName = {}) = 0;
         virtual std::shared_ptr<RHISemaphore> CreateSemaphore(std::string debugName = {}) = 0;
+        virtual RHIUpdateResult UpdateTexture(const RHITextureUpdateDesc& desc)
+        {
+            (void)desc;
+            return { RHIUpdateStatusCode::Unsupported, "RHI device does not support in-place texture updates" };
+        }
 
         // Readback support - read pixels from a texture
         // Used by picking/system text rendering that needs to read back from textures
@@ -48,11 +87,32 @@ namespace NLS::Render::RHI
             Settings::EPixelDataFormat format,
             Settings::EPixelDataType type,
             void* data) = 0;
+        virtual RHIReadbackResult ReadPixelsChecked(
+            const std::shared_ptr<RHITexture>& texture,
+            uint32_t x,
+            uint32_t y,
+            uint32_t width,
+            uint32_t height,
+            Settings::EPixelDataFormat format,
+            Settings::EPixelDataType type,
+            void* data)
+        {
+            ReadPixels(texture, x, y, width, height, format, type, data);
+            return { RHIReadbackStatusCode::Success, {} };
+        }
+        virtual RHIReadbackResult BeginReadPixels(
+            const std::shared_ptr<RHITexture>& texture,
+            uint32_t x,
+            uint32_t y,
+            uint32_t width,
+            uint32_t height,
+            Settings::EPixelDataFormat format,
+            Settings::EPixelDataType type,
+            void* data)
+        {
+            return ReadPixelsChecked(texture, x, y, width, height, format, type, data);
+        }
 
-        // UI rendering support - default implementations for formal RHI devices
-        virtual bool PrepareUIRender() { return true; }
-        virtual void ReleaseUITextureHandles() {}
-        // Sets the current command buffer for UI rendering - used by Vulkan and other explicit RHI backends
-        virtual void SetCurrentCommandBuffer(void* commandBuffer) {}
+        virtual RHIUIDeviceBridge* GetUIBridgeDevice() { return nullptr; }
     };
 }

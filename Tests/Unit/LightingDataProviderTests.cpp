@@ -208,3 +208,16 @@ TEST(LightingDataProviderTests, LightGridBuildPreparedComputeRequestWithoutPrepa
     EXPECT_TRUE(preparedSource.dispatchInputs.empty());
     EXPECT_TRUE(preparedSource.metadata.empty());
 }
+
+TEST(LightingDataProviderTests, LightGridHotPathFailureDiagnosticsAreControlledByRenderDrawTraceSwitch)
+{
+    NLS::Render::Settings::EngineDiagnosticsSettings diagnostics;
+    EXPECT_FALSE(NLS::Engine::Rendering::LightGridPrepass::ShouldLogHotPathFailureDiagnostics(diagnostics));
+
+    diagnostics.logMaterialBindings = true;
+    diagnostics.dx12LogFrameFlow = true;
+    EXPECT_FALSE(NLS::Engine::Rendering::LightGridPrepass::ShouldLogHotPathFailureDiagnostics(diagnostics));
+
+    diagnostics.logRenderDrawPath = true;
+    EXPECT_TRUE(NLS::Engine::Rendering::LightGridPrepass::ShouldLogHotPathFailureDiagnostics(diagnostics));
+}

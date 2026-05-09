@@ -195,6 +195,24 @@ TEST(GraphicsBackendUtilsTests, EditorPickingReadbackRequiresDedicatedPickingSup
     EXPECT_TRUE(NLS::Render::Settings::GetEditorPickingReadbackWarning(capabilities).has_value());
 }
 
+TEST(GraphicsBackendUtilsTests, DeviceCapabilitiesExposeFeatureReasonsAndStructuredLimits)
+{
+    NLS::Render::RHI::RHIDeviceCapabilities capabilities;
+    capabilities.SetFeature(
+        NLS::Render::RHI::RHIDeviceFeature::EditorPickingReadback,
+        false,
+        "Readback queue is not wired for this backend");
+    capabilities.limits.maxTextureDimension2D = 8192u;
+    capabilities.limits.maxColorAttachments = 4u;
+
+    const auto feature = capabilities.GetFeature(NLS::Render::RHI::RHIDeviceFeature::EditorPickingReadback);
+
+    EXPECT_FALSE(feature.supported);
+    EXPECT_EQ(feature.reason, "Readback queue is not wired for this backend");
+    EXPECT_EQ(capabilities.limits.maxTextureDimension2D, 8192u);
+    EXPECT_EQ(capabilities.limits.maxColorAttachments, 4u);
+}
+
 TEST(GraphicsBackendUtilsTests, GameMainRuntimeRequiresSwapchainAndSceneRenderer)
 {
     NLS::Render::RHI::RHIDeviceCapabilities capabilities;
@@ -291,6 +309,31 @@ TEST(GraphicsBackendUtilsTests, EditorRuntimeReadinessDecisionExplainsCapability
 #endif
     ASSERT_TRUE(decision.detailWarning.has_value());
     EXPECT_NE(decision.detailWarning->find("only active runtime backend"), std::string::npos);
+}
+
+TEST(GraphicsBackendUtilsTests, EditorRuntimeReadinessDecisionIncludesStructuredCapabilityReason)
+{
+    NLS::Render::RHI::RHIDeviceCapabilities capabilities;
+    capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::BackendReady, true);
+    capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::CurrentSceneRenderer, true);
+    capabilities.SetFeature(
+        NLS::Render::RHI::RHIDeviceFeature::OffscreenFramebuffers,
+        false,
+        "Offscreen target allocator is disabled");
+    capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::UITextureHandles, true);
+    capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::DepthBlit, true);
+    capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::Cubemaps, true);
+
+    const auto decision = NLS::Render::Settings::EvaluateEditorMainRuntimeReadiness(
+        NLS::Render::Settings::EGraphicsBackend::DX12,
+        capabilities);
+
+    ASSERT_TRUE(decision.primaryWarning.has_value());
+#if defined(_WIN32)
+    EXPECT_NE(decision.primaryWarning->find("Offscreen target allocator is disabled"), std::string::npos);
+#else
+    EXPECT_NE(decision.primaryWarning->find("only supports DX12"), std::string::npos);
+#endif
 }
 
 TEST(GraphicsBackendUtilsTests, GameRuntimeReadinessDecisionExplainsBackendNotReady)
@@ -506,4 +549,49 @@ TEST(GraphicsBackendUtilsTests, WindowsPhase1DefaultBackendMatchesTheOnlyAccepte
         NLS::Render::Settings::GetPlatformDefaultGraphicsBackend(),
         NLS::Render::Settings::GetPhase1RequiredRuntimeBackend());
 #endif
+}
+
+TEST(GraphicsBackendUtilsTests, BackendPhaseGateReportExplainsUnsupportedBackendFallback)
+{
+    NLS::Render::RHI::RHIDeviceCapabilities capabilities;
+    capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::BackendReady, true);
+
+    const auto report = NLS::Render::Settings::EvaluateBackendPhaseGate(
+        NLS::Render::Settings::EGraphicsBackend::VULKAN,
+        NLS::Render::Settings::RuntimeConsumer::Editor,
+        capabilities);
+
+    EXPECT_EQ(report.requestedBackend, NLS::Render::Settings::EGraphicsBackend::VULKAN);
+    EXPECT_EQ(report.fallbackBackend, NLS::Render::Settings::EGraphicsBackend::NONE);
+    ASSERT_FALSE(report.gates.empty());
+    EXPECT_EQ(report.gates.front().phase, NLS::Render::Settings::BackendPhaseGate::BackendSelection);
+    EXPECT_EQ(report.gates.front().severity, NLS::Render::Settings::BackendPhaseGateSeverity::Error);
+    EXPECT_NE(report.gates.front().reason.find("only supports DX12"), std::string::npos);
+    EXPECT_NE(report.summary.find("Vulkan"), std::string::npos);
+    EXPECT_NE(report.summary.find("fallback=None"), std::string::npos);
+}
+
+TEST(GraphicsBackendUtilsTests, BackendPhaseGateReportIncludesMissingCapabilityReason)
+{
+    NLS::Render::RHI::RHIDeviceCapabilities capabilities;
+    capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::BackendReady, true);
+    capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::CurrentSceneRenderer, true);
+    capabilities.SetFeature(
+        NLS::Render::RHI::RHIDeviceFeature::OffscreenFramebuffers,
+        false,
+        "Offscreen allocator missing for this backend");
+    capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::UITextureHandles, true);
+    capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::DepthBlit, true);
+    capabilities.SetFeature(NLS::Render::RHI::RHIDeviceFeature::Cubemaps, true);
+
+    const auto report = NLS::Render::Settings::EvaluateBackendPhaseGate(
+        NLS::Render::Settings::EGraphicsBackend::DX12,
+        NLS::Render::Settings::RuntimeConsumer::Editor,
+        capabilities);
+
+    ASSERT_FALSE(report.gates.empty());
+    EXPECT_EQ(report.gates.front().phase, NLS::Render::Settings::BackendPhaseGate::CapabilityValidation);
+    EXPECT_EQ(report.fallbackBackend, NLS::Render::Settings::EGraphicsBackend::NONE);
+    EXPECT_NE(report.gates.front().reason.find("Offscreen allocator missing"), std::string::npos);
+    EXPECT_NE(report.summary.find("CapabilityValidation"), std::string::npos);
 }

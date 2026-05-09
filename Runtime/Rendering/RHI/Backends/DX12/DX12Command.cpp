@@ -1,6 +1,7 @@
 #include "Rendering/RHI/Backends/DX12/DX12Command.h"
 
 #include "Profiling/Profiler.h"
+#include "Rendering/RHI/Backends/DX12/DX12FormatUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12RenderPassUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12Resource.h"
 
@@ -234,12 +235,12 @@ namespace NLS::Render::Backend
 		return m_recording;
 	}
 
-	void* NativeDX12CommandBuffer::GetNativeCommandBuffer() const
+	NLS::Render::RHI::NativeHandle NativeDX12CommandBuffer::GetNativeCommandBuffer() const
 	{
 #if defined(_WIN32)
-		return m_commandList.Get();
+		return { NLS::Render::RHI::BackendType::DX12, m_commandList.Get() };
 #else
-		return nullptr;
+		return {};
 #endif
 	}
 
@@ -277,87 +278,95 @@ namespace NLS::Render::Backend
 		m_activeRenderPassTransitions.clear();
 		const auto clearPlan = NLS::Render::RHI::DX12::BuildDX12RenderPassClearPlan(desc);
 		const bool isBackbufferPass = desc.debugName == "BackbufferRenderPass";
-		for (const auto& colorAttachment : desc.colorAttachments)
+		if (!desc.attachmentsRequireExternalStateTransitions)
 		{
-			if (colorAttachment.view == nullptr)
-				continue;
-
-			const auto& texture = colorAttachment.view->GetTexture();
-			if (texture == nullptr)
-				continue;
-
-			const auto textureHandle = texture->GetNativeImageHandle();
-			auto* resource = textureHandle.backend == NLS::Render::RHI::BackendType::DX12
-				? static_cast<ID3D12Resource*>(textureHandle.handle)
-				: nullptr;
-			if (resource == nullptr)
-				continue;
-
-			D3D12_RESOURCE_STATES stateBefore = isBackbufferPass
-				? D3D12_RESOURCE_STATE_PRESENT
-				: ToD3D12ResourceState(texture->GetState());
-			if (!isBackbufferPass && stateBefore == D3D12_RESOURCE_STATE_COMMON && texture->GetState() == NLS::Render::RHI::ResourceState::Unknown)
-				stateBefore = D3D12_RESOURCE_STATE_COMMON;
-			const D3D12_RESOURCE_STATES stateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-			const D3D12_RESOURCE_STATES stateAfterPass = isBackbufferPass
-				? D3D12_RESOURCE_STATE_PRESENT
-				: D3D12_RESOURCE_STATE_COMMON;
-
-			D3D12_RESOURCE_BARRIER barrier{};
-			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-			barrier.Transition.pResource = resource;
-			barrier.Transition.StateBefore = stateBefore;
-			barrier.Transition.StateAfter = stateAfter;
-			barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			m_commandList->ResourceBarrier(1, &barrier);
-
-			m_activeRenderPassTransitions.push_back({
-				resource,
-				stateAfter,
-				stateAfterPass,
-				texture.get(),
-				isBackbufferPass
-					? NLS::Render::RHI::ResourceState::Present
-					: NLS::Render::RHI::ResourceState::Unknown
-			});
-			if (auto* nativeTexture = dynamic_cast<NativeDX12Texture*>(texture.get()))
-				nativeTexture->SetState(NLS::Render::RHI::ResourceState::RenderTarget);
-			m_recordedTextureViewKeepAlive.push_back(colorAttachment.view);
-		}
-
-		if (desc.depthStencilAttachment.has_value() && desc.depthStencilAttachment->view != nullptr)
-		{
-			const auto& texture = desc.depthStencilAttachment->view->GetTexture();
-			if (texture != nullptr)
+			for (const auto& colorAttachment : desc.colorAttachments)
 			{
+				if (colorAttachment.view == nullptr)
+					continue;
+
+				const auto& texture = colorAttachment.view->GetTexture();
+				if (texture == nullptr)
+					continue;
+
 				const auto textureHandle = texture->GetNativeImageHandle();
 				auto* resource = textureHandle.backend == NLS::Render::RHI::BackendType::DX12
 					? static_cast<ID3D12Resource*>(textureHandle.handle)
 					: nullptr;
-				if (resource != nullptr)
-				{
-					D3D12_RESOURCE_BARRIER barrier{};
-					barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-					barrier.Transition.pResource = resource;
-					const D3D12_RESOURCE_STATES stateBefore = ToD3D12ResourceState(texture->GetState());
-					barrier.Transition.StateBefore = stateBefore;
-					barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-					barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-					m_commandList->ResourceBarrier(1, &barrier);
+				if (resource == nullptr)
+					continue;
 
-					m_activeRenderPassTransitions.push_back({
-						resource,
-						D3D12_RESOURCE_STATE_DEPTH_WRITE,
-						D3D12_RESOURCE_STATE_COMMON,
-						texture.get(),
-						NLS::Render::RHI::ResourceState::Unknown
-					});
-					if (auto* nativeTexture = dynamic_cast<NativeDX12Texture*>(texture.get()))
-						nativeTexture->SetState(NLS::Render::RHI::ResourceState::DepthWrite);
-					m_recordedTextureViewKeepAlive.push_back(desc.depthStencilAttachment->view);
+				D3D12_RESOURCE_STATES stateBefore = isBackbufferPass
+					? D3D12_RESOURCE_STATE_PRESENT
+					: ToD3D12ResourceState(texture->GetState());
+				if (!isBackbufferPass && stateBefore == D3D12_RESOURCE_STATE_COMMON && texture->GetState() == NLS::Render::RHI::ResourceState::Unknown)
+					stateBefore = D3D12_RESOURCE_STATE_COMMON;
+				const D3D12_RESOURCE_STATES stateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+				const D3D12_RESOURCE_STATES stateAfterPass = isBackbufferPass
+					? D3D12_RESOURCE_STATE_PRESENT
+					: D3D12_RESOURCE_STATE_COMMON;
+
+				D3D12_RESOURCE_BARRIER barrier{};
+				barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+				barrier.Transition.pResource = resource;
+				barrier.Transition.StateBefore = stateBefore;
+				barrier.Transition.StateAfter = stateAfter;
+				barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+				m_commandList->ResourceBarrier(1, &barrier);
+
+				m_activeRenderPassTransitions.push_back({
+					resource,
+					stateAfter,
+					stateAfterPass,
+					texture.get(),
+					isBackbufferPass
+						? NLS::Render::RHI::ResourceState::Present
+						: NLS::Render::RHI::ResourceState::Unknown
+				});
+				if (auto* nativeTexture = dynamic_cast<NativeDX12Texture*>(texture.get()))
+					nativeTexture->SetState(NLS::Render::RHI::ResourceState::RenderTarget);
+			}
+
+			if (desc.depthStencilAttachment.has_value() && desc.depthStencilAttachment->view != nullptr)
+			{
+				const auto& texture = desc.depthStencilAttachment->view->GetTexture();
+				if (texture != nullptr)
+				{
+					const auto textureHandle = texture->GetNativeImageHandle();
+					auto* resource = textureHandle.backend == NLS::Render::RHI::BackendType::DX12
+						? static_cast<ID3D12Resource*>(textureHandle.handle)
+						: nullptr;
+					if (resource != nullptr)
+					{
+						D3D12_RESOURCE_BARRIER barrier{};
+						barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+						barrier.Transition.pResource = resource;
+						const D3D12_RESOURCE_STATES stateBefore = ToD3D12ResourceState(texture->GetState());
+						barrier.Transition.StateBefore = stateBefore;
+						barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+						barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+						m_commandList->ResourceBarrier(1, &barrier);
+
+						m_activeRenderPassTransitions.push_back({
+							resource,
+							D3D12_RESOURCE_STATE_DEPTH_WRITE,
+							D3D12_RESOURCE_STATE_COMMON,
+							texture.get(),
+							NLS::Render::RHI::ResourceState::Unknown
+						});
+						if (auto* nativeTexture = dynamic_cast<NativeDX12Texture*>(texture.get()))
+							nativeTexture->SetState(NLS::Render::RHI::ResourceState::DepthWrite);
+					}
 				}
 			}
 		}
+		for (const auto& colorAttachment : desc.colorAttachments)
+		{
+			if (colorAttachment.view != nullptr)
+				m_recordedTextureViewKeepAlive.push_back(colorAttachment.view);
+		}
+		if (desc.depthStencilAttachment.has_value() && desc.depthStencilAttachment->view != nullptr)
+			m_recordedTextureViewKeepAlive.push_back(desc.depthStencilAttachment->view);
 
 		std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> rtvHandles;
 		rtvHandles.reserve(desc.colorAttachments.size());
@@ -1056,35 +1065,14 @@ namespace NLS::Render::Backend
 
 	DXGI_FORMAT NativeDX12CommandBuffer::ToDXGIFormat(NLS::Render::RHI::TextureFormat format)
 	{
-		switch (format)
-		{
-		case NLS::Render::RHI::TextureFormat::RGBA8: return DXGI_FORMAT_R8G8B8A8_UNORM;
-		case NLS::Render::RHI::TextureFormat::RGBA16F: return DXGI_FORMAT_R16G16B16A16_FLOAT;
-		case NLS::Render::RHI::TextureFormat::Depth24Stencil8: return DXGI_FORMAT_D24_UNORM_S8_UINT;
-		case NLS::Render::RHI::TextureFormat::RGB8: return DXGI_FORMAT_R8G8B8A8_UNORM;
-		default: return DXGI_FORMAT_R8G8B8A8_UNORM;
-		}
+		const DXGI_FORMAT dxgiFormat = NLS::Render::RHI::DX12::ToDXGIFormat(format);
+		return dxgiFormat != DXGI_FORMAT_UNKNOWN ? dxgiFormat : DXGI_FORMAT_R8G8B8A8_UNORM;
 	}
 
 	uint32_t NativeDX12CommandBuffer::GetBytesPerPixel(DXGI_FORMAT format)
 	{
-		switch (format)
-		{
-		case DXGI_FORMAT_R8G8B8A8_UNORM:
-		case DXGI_FORMAT_R8G8B8A8_UINT:
-		case DXGI_FORMAT_R8G8B8A8_SNORM:
-		case DXGI_FORMAT_R8G8B8A8_SINT:
-		case DXGI_FORMAT_D24_UNORM_S8_UINT:
-			return 4;
-		case DXGI_FORMAT_R16G16B16A16_FLOAT:
-		case DXGI_FORMAT_R16G16B16A16_UNORM:
-		case DXGI_FORMAT_R16G16B16A16_UINT:
-		case DXGI_FORMAT_R16G16B16A16_SNORM:
-		case DXGI_FORMAT_R16G16B16A16_SINT:
-			return 8;
-		default:
-			return 4;
-		}
+		const uint32_t bytesPerPixel = NLS::Render::RHI::DX12::GetDXGIFormatBytesPerPixel(format);
+		return bytesPerPixel != 0u ? bytesPerPixel : 4u;
 	}
 
 	D3D12_RESOURCE_STATES NativeDX12CommandBuffer::ToD3D12ResourceState(NLS::Render::RHI::ResourceState state)

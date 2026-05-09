@@ -47,7 +47,7 @@ namespace NLS::Render::Context
         uint32_t pendingSwapchainWidth = 0u;
         uint32_t pendingSwapchainHeight = 0u;
         std::chrono::steady_clock::time_point lastSwapchainResizeRequestTime{};
-        void* uiRenderFinishedSemaphore = nullptr;
+        Render::RHI::NativeHandle uiRenderFinishedSemaphore;
         uint64_t uiRenderFinishedValue = 0u;
         std::function<void()> swapchainWillResizeCallback;
         std::unique_ptr<ThreadedRenderingLifecycle> threadedLifecycle;
@@ -183,8 +183,12 @@ namespace NLS::Render::Context
             Render::RHI::RHICommandBuffer& commandBuffer,
             const std::shared_ptr<Render::RHI::RHITextureView>& swapchainBackbufferView,
             const std::shared_ptr<Render::RHI::RHITextureView>& swapchainDepthStencilView,
-            const RenderPassCommandInput& input);
-        NLS_RENDER_API void EndPassCommandPlan(Render::RHI::RHICommandBuffer& commandBuffer);
+            const RenderPassCommandInput& input,
+            Render::RHI::RHIFrameContext* frameContext = nullptr);
+        NLS_RENDER_API void EndPassCommandPlan(
+            Render::RHI::RHICommandBuffer& commandBuffer,
+            const RenderPassCommandInput* input = nullptr,
+            Render::RHI::RHIFrameContext* frameContext = nullptr);
         NLS_RENDER_API bool HasResourceVisibilityTransitions(const RenderPassCommandInput& input);
         NLS_RENDER_API bool RecordResourceVisibilityTransitions(
             Render::RHI::RHICommandBuffer& commandBuffer,

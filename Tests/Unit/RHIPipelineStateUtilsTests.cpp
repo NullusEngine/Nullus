@@ -113,3 +113,33 @@ TEST(RHIPipelineStateUtilsTests, MapsGeneralPipelineStateToCentralGraphicsPipeli
     EXPECT_EQ(desc.depthStencilState.stencilDepthFailOp, NLS::Render::Settings::EOperation::INCREMENT);
     EXPECT_EQ(desc.depthStencilState.stencilPassOp, NLS::Render::Settings::EOperation::DECREMENT);
 }
+
+TEST(RHIPipelineStateUtilsTests, MapsLegacyPipelineStateToExpandedBlendAndMsaaState)
+{
+    NLS::Render::Data::PipelineState pipelineState;
+    pipelineState.blending = true;
+    pipelineState.sampleAlphaToCoverage = true;
+    pipelineState.multisample = true;
+    pipelineState.colorWriting.r = true;
+    pipelineState.colorWriting.g = false;
+    pipelineState.colorWriting.b = true;
+    pipelineState.colorWriting.a = false;
+
+    NLS::Render::RHI::RHIGraphicsPipelineDesc desc;
+    desc.renderTargetLayout.colorFormats = {
+        NLS::Render::RHI::TextureFormat::RGBA8,
+        NLS::Render::RHI::TextureFormat::RGBA16F
+    };
+    desc.renderTargetLayout.sampleCount = 4u;
+
+    NLS::Render::RHI::ApplyPipelineStateToGraphicsPipelineDesc(pipelineState, desc);
+
+    EXPECT_TRUE(desc.blendState.enabled);
+    EXPECT_TRUE(desc.blendState.alphaToCoverageEnable);
+    EXPECT_FALSE(desc.blendState.independentBlendEnable);
+    EXPECT_EQ(desc.blendState.renderTargets.size(), 2u);
+    EXPECT_EQ(desc.blendState.renderTargets[0].colorWriteMask, NLS::Render::RHI::RHIColorWriteMask::Red | NLS::Render::RHI::RHIColorWriteMask::Blue);
+    EXPECT_EQ(desc.blendState.renderTargets[1].colorWriteMask, NLS::Render::RHI::RHIColorWriteMask::Red | NLS::Render::RHI::RHIColorWriteMask::Blue);
+    EXPECT_TRUE(desc.rasterState.multisampleEnable);
+    EXPECT_EQ(desc.renderTargetLayout.sampleCount, 4u);
+}

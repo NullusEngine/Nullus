@@ -582,7 +582,7 @@ void UIManager::ReleaseTextureViewHandle(const std::shared_ptr<NLS::Render::RHI:
         m_uiBridge->ReleaseTextureViewHandle(textureView);
 }
 
-void UIManager::SetWaitSemaphore(void* semaphore)
+void UIManager::SetWaitSemaphore(NLS::Render::RHI::NativeHandle semaphore)
 {
     waitSemaphore_ = semaphore;
     if (m_uiBridge != nullptr)
@@ -591,7 +591,7 @@ void UIManager::SetWaitSemaphore(void* semaphore)
     }
 }
 
-void UIManager::SetSignalSemaphore(void* semaphore)
+void UIManager::SetSignalSemaphore(NLS::Render::RHI::NativeHandle semaphore)
 {
     signalSemaphore_ = semaphore;
     if (m_uiBridge != nullptr)
@@ -613,14 +613,7 @@ NLS::Render::RHI::NativeHandle UIManager::ResolveUISignalSemaphore()
 {
     if (m_uiBridge != nullptr)
     {
-        void* sem = m_uiBridge->GetUISignalSemaphore();
-        if (sem != nullptr)
-        {
-            NLS::Render::RHI::NativeHandle handle;
-            handle.backend = ToTaggedBackendType(m_uiBridge->GetNativeBackendType());
-            handle.handle = sem;
-            return handle;
-        }
+        return m_uiBridge->GetUISignalSemaphore();
     }
     return NLS::Render::RHI::NativeHandle{};
 }

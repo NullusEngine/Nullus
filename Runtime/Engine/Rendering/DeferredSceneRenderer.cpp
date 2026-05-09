@@ -14,6 +14,7 @@
 #include <Rendering/RHI/BindingPointMap.h>
 #include <Rendering/Resources/Loaders/ShaderLoader.h>
 #include <Rendering/Resources/Material.h>
+#include <Rendering/Resources/MaterialVariantKey.h>
 #include <Rendering/Resources/Mesh.h>
 #include <Rendering/Resources/Texture2D.h>
 #include <Rendering/Resources/TextureCube.h>
@@ -61,6 +62,22 @@ namespace
 		const auto vertexCount = rhiMesh->GetVertexCount();
 		if (vertexCount > 0u)
 			commandBuffer->Draw(vertexCount, instanceCount, 0, 0);
+	}
+
+	NLS::Render::Resources::MaterialPipelineStateOverrides BuildGBufferMaterialOverrides(
+		const NLS::Render::Resources::Material& sourceMaterial)
+	{
+		NLS::Render::Resources::MaterialPipelineStateOverrides overrides;
+		overrides.depthTest = sourceMaterial.HasDepthTest();
+		overrides.depthWrite = sourceMaterial.HasDepthWriting();
+		overrides.colorWrite = true;
+		overrides.culling = sourceMaterial.HasBackfaceCulling() || sourceMaterial.HasFrontfaceCulling();
+		overrides.cullFace = sourceMaterial.HasBackfaceCulling() && sourceMaterial.HasFrontfaceCulling()
+			? NLS::Render::Settings::ECullFace::FRONT_AND_BACK
+			: sourceMaterial.HasFrontfaceCulling()
+				? NLS::Render::Settings::ECullFace::FRONT
+				: NLS::Render::Settings::ECullFace::BACK;
+		return overrides;
 	}
 
 }
@@ -366,9 +383,15 @@ namespace NLS::Engine::Rendering
 
 	NLS::Render::Resources::Material& DeferredSceneRenderer::GetOrCreateGBufferMaterial(NLS::Render::Resources::Material& sourceMaterial)
 	{
-		auto found = m_gBufferMaterialCache.find(&sourceMaterial);
+		const NLS::Render::Data::PipelineState pipelineState;
+		const auto cacheKey = NLS::Render::Resources::BuildMaterialPassVariantKey(
+			sourceMaterial,
+			"DeferredGBuffer",
+			pipelineState,
+			BuildGBufferMaterialOverrides(sourceMaterial)).stableKey;
+		auto found = m_gBufferMaterialCache.find(cacheKey);
 		if (found == m_gBufferMaterialCache.end())
-			found = m_gBufferMaterialCache.emplace(&sourceMaterial, CreateGBufferMaterial()).first;
+			found = m_gBufferMaterialCache.emplace(cacheKey, CreateGBufferMaterial()).first;
 
 		SyncGBufferMaterial(*found->second, sourceMaterial);
 		return *found->second;

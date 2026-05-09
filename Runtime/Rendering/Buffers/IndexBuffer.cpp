@@ -26,7 +26,11 @@ NLS::Render::Buffers::IndexBuffer::IndexBuffer(unsigned int* p_data, size_t p_el
 	auto device = GetExplicitDevice();
 	if (device != nullptr)
 	{
-		m_explicitBuffer = device->CreateBuffer(desc, p_data);
+		NLS::Render::RHI::RHIBufferUploadDesc uploadDesc;
+		uploadDesc.data = p_data;
+		uploadDesc.dataSize = desc.size;
+		uploadDesc.debugName = "IndexBufferInitialUpload";
+		m_explicitBuffer = device->CreateBuffer(desc, uploadDesc);
 	}
 }
 

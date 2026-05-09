@@ -1,7 +1,9 @@
 #include "Rendering/Resources/ShaderBindingLayoutUtils.h"
 
 #include <algorithm>
+#include <map>
 #include <string>
+#include <tuple>
 
 #include "Rendering/RHI/BindingPointMap.h"
 
@@ -73,14 +75,123 @@ namespace
 			registerSpace
 		});
 	}
+
+	std::string BindingCoordinate(
+		const uint32_t registerSpace,
+		const uint32_t bindingIndex)
+	{
+		return "space" + std::to_string(registerSpace) + "/binding" + std::to_string(bindingIndex);
+	}
+
+	void AddValidationError(
+		NLS::Render::Resources::ShaderBindingValidationResult& result,
+		std::string message)
+	{
+		result.diagnostics.push_back({
+			NLS::Render::Resources::ShaderBindingValidationSeverity::Error,
+			std::move(message)
+		});
+	}
 }
 
 namespace NLS::Render::Resources
 {
+	ShaderBindingValidationResult ValidateShaderBindingReflection(
+		const ShaderReflection& reflection)
+	{
+		ShaderBindingValidationResult result;
+		struct SeenBinding
+		{
+			std::string name;
+			RHI::BindingType type = RHI::BindingType::UniformBuffer;
+		};
+		std::map<std::tuple<uint32_t, uint32_t, uint32_t, RHI::BindingType>, SeenBinding> seenBindings;
+
+		auto validateBinding = [&result, &seenBindings](
+			const std::string& name,
+			const RHI::BindingType bindingType,
+			const uint32_t registerSpace,
+			const uint32_t bindingIndex,
+			const int32_t arraySize)
+		{
+			if (name.empty())
+			{
+				AddValidationError(
+					result,
+					"Shader binding reflection contains an unnamed resource at " +
+					BindingCoordinate(registerSpace, bindingIndex) + ".");
+			}
+
+			if (arraySize <= 0)
+			{
+				AddValidationError(
+					result,
+					"Shader binding \"" + name + "\" has invalid arraySize " +
+					std::to_string(arraySize) + " at " +
+					BindingCoordinate(registerSpace, bindingIndex) + ".");
+			}
+
+			const uint32_t setIndex = RHI::BindingPointMap::GetDescriptorSetIndex(registerSpace);
+			const auto key = std::make_tuple(setIndex, registerSpace, bindingIndex, bindingType);
+			if (const auto found = seenBindings.find(key); found != seenBindings.end())
+			{
+				if (found->second.name != name)
+				{
+					AddValidationError(
+						result,
+						"Shader binding reflection conflict at " +
+						BindingCoordinate(registerSpace, bindingIndex) +
+						": \"" + found->second.name + "\" and \"" + name +
+						"\" map to the same descriptor slot.");
+				}
+				return;
+			}
+
+			seenBindings.emplace(key, SeenBinding{ name, bindingType });
+		};
+
+		for (const auto& constantBuffer : reflection.constantBuffers)
+		{
+			if (constantBuffer.byteSize == 0)
+			{
+				AddValidationError(
+					result,
+					"Shader constant buffer \"" + constantBuffer.name +
+					"\" has zero byteSize at " +
+					BindingCoordinate(constantBuffer.bindingSpace, constantBuffer.bindingIndex) + ".");
+			}
+
+			validateBinding(
+				constantBuffer.name,
+				RHI::BindingType::UniformBuffer,
+				constantBuffer.bindingSpace,
+				constantBuffer.bindingIndex,
+				1);
+		}
+
+		for (const auto& property : reflection.properties)
+		{
+			if (property.kind == ShaderResourceKind::Value)
+				continue;
+
+			validateBinding(
+				property.name,
+				ToBindingType(property.kind),
+				property.bindingSpace,
+				property.bindingIndex,
+				property.arraySize);
+		}
+
+		return result;
+	}
+
 	std::vector<RHI::RHIBindingLayoutDesc> BuildExplicitBindingLayoutDescsBySet(
 		const ShaderReflection& reflection,
 		std::string_view debugNamePrefix)
 	{
+		if (ValidateShaderBindingReflection(reflection).HasErrors())
+			return {};
+
 		uint32_t maxSetIndex = 0u;
 		bool hasAnyBinding = false;
 

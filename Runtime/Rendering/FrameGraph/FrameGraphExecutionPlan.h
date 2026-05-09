@@ -9,7 +9,9 @@
 #include <Math/Vector4.h>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -234,6 +236,64 @@ namespace NLS::Render::FrameGraph
 	{
 		PreparedComputeDispatchSource source;
 		std::function<void(Context::RenderScenePackage&)> applyToPackage;
+	};
+
+	enum class FrameGraphCompileDiagnosticSeverity : uint8_t
+	{
+		Info = 0,
+		Warning,
+		Error
+	};
+
+	enum class FrameGraphCompileDiagnosticCode : uint8_t
+	{
+		EmptyGraphPassName = 0,
+		MissingPassMetadata,
+		NullBufferResourceAccess,
+		NullTextureResourceAccess,
+		NullBufferVisibilityTransition,
+		NullTextureVisibilityTransition,
+		RecordedPassPropagatesOutput,
+		ComputePassUsesNonComputeQueue,
+		ComputePassPropagatesOutput,
+		MissingQueueDependencySource
+	};
+
+	struct FrameGraphCompileDiagnostic
+	{
+		FrameGraphCompileDiagnosticSeverity severity = FrameGraphCompileDiagnosticSeverity::Error;
+		FrameGraphCompileDiagnosticCode code = FrameGraphCompileDiagnosticCode::EmptyGraphPassName;
+		size_t passIndex = 0u;
+		Context::RenderPassCommandKind passKind = Context::RenderPassCommandKind::Opaque;
+		std::string message;
+	};
+
+	struct FrameGraphCompileValidationResult
+	{
+		std::vector<FrameGraphCompileDiagnostic> diagnostics;
+
+		bool HasErrors() const
+		{
+			return std::any_of(
+				diagnostics.begin(),
+				diagnostics.end(),
+				[](const FrameGraphCompileDiagnostic& diagnostic)
+				{
+					return diagnostic.severity == FrameGraphCompileDiagnosticSeverity::Error;
+				});
+		}
+
+		bool ContainsError(const FrameGraphCompileDiagnosticCode code) const
+		{
+			return std::any_of(
+				diagnostics.begin(),
+				diagnostics.end(),
+				[code](const FrameGraphCompileDiagnostic& diagnostic)
+				{
+					return diagnostic.severity == FrameGraphCompileDiagnosticSeverity::Error &&
+						diagnostic.code == code;
+				});
+		}
 	};
 
 	inline std::vector<ThreadedRenderScenePassMetadata> BuildPreparedComputeDispatchPassMetadata(
@@ -661,6 +721,256 @@ namespace NLS::Render::FrameGraph
 
 	inline Context::RenderPassCommandInput MakeCompiledThreadedRenderPassCommandInput(
 		const CompiledThreadedRenderSceneGraphPass& compiledPass);
+
+	inline const char* ToFrameGraphCompileDiagnosticCodeName(const FrameGraphCompileDiagnosticCode code)
+	{
+		switch (code)
+		{
+		case FrameGraphCompileDiagnosticCode::EmptyGraphPassName:
+			return "EmptyGraphPassName";
+		case FrameGraphCompileDiagnosticCode::MissingPassMetadata:
+			return "MissingPassMetadata";
+		case FrameGraphCompileDiagnosticCode::NullBufferResourceAccess:
+			return "NullBufferResourceAccess";
+		case FrameGraphCompileDiagnosticCode::NullTextureResourceAccess:
+			return "NullTextureResourceAccess";
+		case FrameGraphCompileDiagnosticCode::NullBufferVisibilityTransition:
+			return "NullBufferVisibilityTransition";
+		case FrameGraphCompileDiagnosticCode::NullTextureVisibilityTransition:
+			return "NullTextureVisibilityTransition";
+		case FrameGraphCompileDiagnosticCode::RecordedPassPropagatesOutput:
+			return "RecordedPassPropagatesOutput";
+		case FrameGraphCompileDiagnosticCode::ComputePassUsesNonComputeQueue:
+			return "ComputePassUsesNonComputeQueue";
+		case FrameGraphCompileDiagnosticCode::ComputePassPropagatesOutput:
+			return "ComputePassPropagatesOutput";
+		case FrameGraphCompileDiagnosticCode::MissingQueueDependencySource:
+			return "MissingQueueDependencySource";
+		default:
+			return "Unknown";
+		}
+	}
+
+	inline bool ThreadedPassMetadataHasGraphPassName(const ThreadedRenderScenePassMetadata& metadata)
+	{
+		return metadata.graphPassName != nullptr && metadata.graphPassName[0] != '\0';
+	}
+
+	inline bool IsRecordedThreadedPassOutputContractInvalid(const ThreadedRenderScenePassMetadata& metadata)
+	{
+		return metadata.executionMode == ThreadedRenderScenePassExecutionMode::Recorded &&
+			(metadata.propagatesColorOutput || metadata.propagatesDepthOutput);
+	}
+
+	inline bool IsComputeThreadedPassMetadata(const ThreadedRenderScenePassMetadata& metadata)
+	{
+		return metadata.commandKind == Context::RenderPassCommandKind::Compute;
+	}
+
+	template<typename TMetadataRange>
+	inline bool HasThreadedPassMetadataForInput(
+		const TMetadataRange& metadataRange,
+		const Context::RenderPassCommandInput& passInput,
+		const size_t passIndex,
+		const bool usePositionalMapping)
+	{
+		if (usePositionalMapping)
+			return passIndex < static_cast<size_t>(std::distance(std::begin(metadataRange), std::end(metadataRange)));
+
+		return std::any_of(
+			std::begin(metadataRange),
+			std::end(metadataRange),
+			[&passInput](const auto& metadataEntry)
+			{
+				return ResolveThreadedRenderScenePassMetadata(metadataEntry).commandKind == passInput.kind;
+			});
+	}
+
+	inline void AddFrameGraphCompileDiagnostic(
+		FrameGraphCompileValidationResult& result,
+		const FrameGraphCompileDiagnosticCode code,
+		const size_t passIndex,
+		const Context::RenderPassCommandKind passKind,
+		std::string message)
+	{
+		result.diagnostics.push_back({
+			FrameGraphCompileDiagnosticSeverity::Error,
+			code,
+			passIndex,
+			passKind,
+			std::move(message)
+		});
+	}
+
+	template<typename TMetadataRange>
+	inline FrameGraphCompileValidationResult ValidateThreadedRenderSceneExecutionInputs(
+		const std::vector<Context::RenderPassCommandInput>& passInputs,
+		const TMetadataRange& metadataRange)
+	{
+		FrameGraphCompileValidationResult result;
+		const auto metadataCount = static_cast<size_t>(std::distance(std::begin(metadataRange), std::end(metadataRange)));
+		const bool usePositionalMapping = metadataCount == passInputs.size();
+
+		bool hasPreviousGraphicsPass = false;
+		bool hasPreviousComputePass = false;
+		size_t metadataIndex = 0u;
+		for (const auto& metadataEntry : metadataRange)
+		{
+			const auto& metadata = ResolveThreadedRenderScenePassMetadata(metadataEntry);
+			if (!ThreadedPassMetadataHasGraphPassName(metadata))
+			{
+				AddFrameGraphCompileDiagnostic(
+					result,
+					FrameGraphCompileDiagnosticCode::EmptyGraphPassName,
+					metadataIndex,
+					metadata.commandKind,
+					"Threaded FrameGraph pass metadata has an empty graph pass name.");
+			}
+
+			if (IsRecordedThreadedPassOutputContractInvalid(metadata))
+			{
+				AddFrameGraphCompileDiagnostic(
+					result,
+					FrameGraphCompileDiagnosticCode::RecordedPassPropagatesOutput,
+					metadataIndex,
+					metadata.commandKind,
+					"Recorded threaded FrameGraph passes must not propagate scene color or depth outputs.");
+			}
+
+			if (IsComputeThreadedPassMetadata(metadata))
+			{
+				if (metadata.queueType != RHI::QueueType::Compute)
+				{
+					AddFrameGraphCompileDiagnostic(
+						result,
+						FrameGraphCompileDiagnosticCode::ComputePassUsesNonComputeQueue,
+						metadataIndex,
+						metadata.commandKind,
+						"Compute threaded FrameGraph passes must use the compute queue.");
+				}
+
+				if (metadata.propagatesColorOutput || metadata.propagatesDepthOutput)
+				{
+					AddFrameGraphCompileDiagnostic(
+						result,
+						FrameGraphCompileDiagnosticCode::ComputePassPropagatesOutput,
+						metadataIndex,
+						metadata.commandKind,
+						"Compute threaded FrameGraph passes must not propagate scene color or depth outputs.");
+				}
+			}
+
+			if (metadata.queueDependencyPolicy == Context::QueueDependencyPolicy::LastGraphics && !hasPreviousGraphicsPass)
+			{
+				AddFrameGraphCompileDiagnostic(
+					result,
+					FrameGraphCompileDiagnosticCode::MissingQueueDependencySource,
+					metadataIndex,
+					metadata.commandKind,
+					"Threaded FrameGraph pass depends on the last graphics queue pass, but no previous graphics pass exists.");
+			}
+			else if (metadata.queueDependencyPolicy == Context::QueueDependencyPolicy::LastCompute && !hasPreviousComputePass)
+			{
+				AddFrameGraphCompileDiagnostic(
+					result,
+					FrameGraphCompileDiagnosticCode::MissingQueueDependencySource,
+					metadataIndex,
+					metadata.commandKind,
+					"Threaded FrameGraph pass depends on the last compute queue pass, but no previous compute pass exists.");
+			}
+
+			if (metadata.queueType == RHI::QueueType::Graphics)
+				hasPreviousGraphicsPass = true;
+			else if (metadata.queueType == RHI::QueueType::Compute)
+				hasPreviousComputePass = true;
+			++metadataIndex;
+		}
+
+		for (size_t passIndex = 0u; passIndex < passInputs.size(); ++passIndex)
+		{
+			const auto& passInput = passInputs[passIndex];
+			if (!HasThreadedPassMetadataForInput(metadataRange, passInput, passIndex, usePositionalMapping))
+			{
+				AddFrameGraphCompileDiagnostic(
+					result,
+					FrameGraphCompileDiagnosticCode::MissingPassMetadata,
+					passIndex,
+					passInput.kind,
+					"Threaded FrameGraph pass input has no matching pass metadata.");
+			}
+
+			for (const auto& access : passInput.bufferResourceAccesses)
+			{
+				if (access.buffer != nullptr)
+					continue;
+
+				AddFrameGraphCompileDiagnostic(
+					result,
+					FrameGraphCompileDiagnosticCode::NullBufferResourceAccess,
+					passIndex,
+					passInput.kind,
+					"Threaded FrameGraph pass declares a buffer resource access with a null buffer.");
+			}
+
+			for (const auto& access : passInput.textureResourceAccesses)
+			{
+				if (access.texture != nullptr)
+					continue;
+
+				AddFrameGraphCompileDiagnostic(
+					result,
+					FrameGraphCompileDiagnosticCode::NullTextureResourceAccess,
+					passIndex,
+					passInput.kind,
+					"Threaded FrameGraph pass declares a texture resource access with a null texture.");
+			}
+
+			for (const auto& transition : passInput.bufferVisibilityTransitions)
+			{
+				if (transition.buffer != nullptr)
+					continue;
+
+				AddFrameGraphCompileDiagnostic(
+					result,
+					FrameGraphCompileDiagnosticCode::NullBufferVisibilityTransition,
+					passIndex,
+					passInput.kind,
+					"Threaded FrameGraph pass declares a buffer visibility transition with a null buffer.");
+			}
+
+			for (const auto& transition : passInput.textureVisibilityTransitions)
+			{
+				if (transition.texture != nullptr)
+					continue;
+
+				AddFrameGraphCompileDiagnostic(
+					result,
+					FrameGraphCompileDiagnosticCode::NullTextureVisibilityTransition,
+					passIndex,
+					passInput.kind,
+					"Threaded FrameGraph pass declares a texture visibility transition with a null texture.");
+			}
+		}
+
+		return result;
+	}
+
+	inline std::string BuildFrameGraphCompileValidationErrorMessage(
+		const FrameGraphCompileValidationResult& validation)
+	{
+		std::ostringstream stream;
+		stream << "Invalid threaded FrameGraph compile inputs";
+		for (const auto& diagnostic : validation.diagnostics)
+		{
+			if (diagnostic.severity != FrameGraphCompileDiagnosticSeverity::Error)
+				continue;
+
+			stream << "; pass[" << diagnostic.passIndex << "] "
+				<< ToFrameGraphCompileDiagnosticCodeName(diagnostic.code)
+				<< ": " << diagnostic.message;
+		}
+		return stream.str();
+	}
 
 	template<typename TPreparedComputeSource>
 	inline std::vector<Context::RenderPassCommandInput> BuildPreparedComputeAndScenePassInputs(
@@ -1454,6 +1764,10 @@ namespace NLS::Render::FrameGraph
 		const std::vector<Context::RenderPassCommandInput>& passInputs,
 		const TMetadataRange& metadataRange)
 	{
+		const auto validation = ValidateThreadedRenderSceneExecutionInputs(passInputs, metadataRange);
+		if (validation.HasErrors())
+			throw std::invalid_argument(BuildFrameGraphCompileValidationErrorMessage(validation));
+
 		ThreadedRenderSceneExecutionPlan plan;
 		plan.passes.reserve(passInputs.size());
 		const auto metadataCount = static_cast<size_t>(std::distance(std::begin(metadataRange), std::end(metadataRange)));

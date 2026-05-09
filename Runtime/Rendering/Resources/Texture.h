@@ -30,7 +30,7 @@ namespace NLS::Render::Resources
 		std::shared_ptr<RHI::RHITextureView> GetOrCreateExplicitTextureView(const std::string& debugName = {}) const;
 
 	protected:
-		void RecreateRHITextureIfNeeded(
+		bool RecreateRHITextureIfNeeded(
 		    uint32_t width,
 		    uint32_t height,
 		    RHI::TextureFormat format,
@@ -39,7 +39,8 @@ namespace NLS::Render::Resources
 		    RHI::TextureWrap wrapS,
 		    RHI::TextureWrap wrapT,
 		    bool generateMimaps,
-		    const void* initialData);
+		    const void* initialData,
+		    size_t initialDataSize);
 
 		RHI::TextureDimension m_dimension = RHI::TextureDimension::Texture2D;
 		std::shared_ptr<RHI::RHITexture> m_explicitTexture;

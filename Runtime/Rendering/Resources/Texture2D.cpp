@@ -96,9 +96,8 @@ void Texture2D::SetTextureResource(const Image* image)
 	if (image == nullptr)
 		return;
 
-	width = image->GetWidth();
-	height = image->GetHeight();
-	bitsPerPixel = 4;
+	const uint32_t nextWidth = static_cast<uint32_t>(image->GetWidth());
+	const uint32_t nextHeight = static_cast<uint32_t>(image->GetHeight());
 
 	const auto uploadData = ConvertImageToRGBA8(*image);
 	if (uploadData.empty())
@@ -108,15 +107,26 @@ void Texture2D::SetTextureResource(const Image* image)
 	// The initial CreateRHITexture() only creates a 1x1 placeholder
 	if (m_explicitTexture != nullptr)
 	{
-		RecreateRHITextureIfNeeded(
-		    width,
-		    height,
+		if (!RecreateRHITextureIfNeeded(
+		    nextWidth,
+		    nextHeight,
 		    NLS::Render::RHI::TextureFormat::RGBA8,
 		    ToRHITextureFilter(firstFilter),
 		    ToRHITextureFilter(secondFilter),
 		    NLS::Render::RHI::TextureWrap::Repeat,
 		    NLS::Render::RHI::TextureWrap::Repeat,
 		    isMimapped,
-		    uploadData.data());
+		    uploadData.data(),
+		    uploadData.size()))
+		{
+			width = m_explicitTexture->GetDesc().extent.width;
+			height = m_explicitTexture->GetDesc().extent.height;
+			bitsPerPixel = 4;
+			return;
+		}
 	}
+
+	width = nextWidth;
+	height = nextHeight;
+	bitsPerPixel = 4;
 }

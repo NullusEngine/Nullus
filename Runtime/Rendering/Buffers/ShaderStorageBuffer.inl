@@ -33,7 +33,11 @@ namespace NLS::Render::Buffers
 		desc.memoryUsage = NLS::Render::RHI::MemoryUsage::GPUOnly;
 		desc.debugName = "ShaderStorageBuffer";
 
-		m_explicitBuffer = device->CreateBuffer(desc, p_data);
+		NLS::Render::RHI::RHIBufferUploadDesc uploadDesc;
+		uploadDesc.data = p_data;
+		uploadDesc.dataSize = p_size;
+		uploadDesc.debugName = "ShaderStorageBufferInitialUpload";
+		m_explicitBuffer = device->CreateBuffer(desc, uploadDesc);
 		m_currentSize = p_size;
 	}
 }

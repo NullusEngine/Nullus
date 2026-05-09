@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string>
 #include <memory>
+#include <vector>
+#include <mutex>
 
 #include "RenderDef.h"
 #include "Rendering/RHI/Core/RHIBinding.h"
@@ -45,10 +47,62 @@ namespace NLS::Render::RHI
         uint64_t transientUsed = 0u;
         uint64_t transientPeak = 0u;
         uint64_t transientRetired = 0u;
+        uint64_t persistentCapacity = 0u;
         uint64_t persistentUsed = 0u;
         uint64_t persistentPeak = 0u;
         uint64_t persistentReleased = 0u;
         uint64_t allocationFailures = 0u;
+    };
+
+    struct NLS_RENDER_API DescriptorAllocationBatch
+    {
+        std::vector<DescriptorAllocation> allocations;
+        uint64_t totalRequested = 0u;
+        uint64_t totalAllocated = 0u;
+        bool allSucceeded = true;
+        std::string diagnostic;
+    };
+
+    struct NLS_RENDER_API DescriptorRangeAllocatorDesc
+    {
+        uint64_t transientCapacity = 65536u;
+        uint64_t persistentCapacity = 0u;
+        bool boundPersistentCapacity = false;
+        std::string debugName;
+    };
+
+    class NLS_RENDER_API DescriptorRangeAllocator
+    {
+    public:
+        DescriptorRangeAllocator() = default;
+        explicit DescriptorRangeAllocator(const DescriptorRangeAllocatorDesc& desc);
+
+        void Configure(const DescriptorRangeAllocatorDesc& desc);
+        void BeginFrame(uint64_t frameIndex);
+        DescriptorAllocation Allocate(const DescriptorAllocationRequest& request);
+        DescriptorAllocationBatch AllocateBatch(const std::vector<DescriptorAllocationRequest>& requests);
+        void Release(const DescriptorAllocation& allocation);
+        void Reset();
+        DescriptorAllocatorStats GetStats() const;
+
+    private:
+        struct FreeRange
+        {
+            uint64_t offset = 0;
+            uint32_t count = 0;
+        };
+
+        DescriptorAllocation AllocateLocked(const DescriptorAllocationRequest& request);
+        void ReleasePersistentLocked(const DescriptorAllocation& allocation);
+
+    private:
+        mutable std::mutex m_mutex;
+        DescriptorRangeAllocatorDesc m_desc{};
+        DescriptorAllocatorStats m_stats{};
+        uint64_t m_currentFrameIndex = 0u;
+        uint64_t m_transientOffset = 0u;
+        uint64_t m_persistentOffset = 0u;
+        std::vector<FreeRange> m_persistentFreeRanges;
     };
 
     class NLS_RENDER_API DescriptorAllocator
@@ -58,6 +112,7 @@ namespace NLS::Render::RHI
         virtual void BeginFrame(uint64_t frameIndex) = 0;
         virtual void EndFrame(uint64_t frameIndex) = 0;
         virtual DescriptorAllocation Allocate(const DescriptorAllocationRequest& request) = 0;
+        virtual DescriptorAllocationBatch AllocateBatch(const std::vector<DescriptorAllocationRequest>& requests) = 0;
         virtual void Release(const DescriptorAllocation& allocation) = 0;
         virtual void Reset() = 0;
         virtual DescriptorAllocatorStats GetStats() const = 0;

@@ -92,7 +92,7 @@ namespace NLS::Render::Backend
 			const std::shared_ptr<NLS::Render::RHI::RHIFence>& fence) override;
 		std::shared_ptr<NLS::Render::RHI::RHITextureView> GetBackbufferView(uint32_t index) override;
 		bool Resize(uint32_t width, uint32_t height) override;
-		void* GetNativeSwapchainHandle() override;
+		NLS::Render::RHI::NativeHandle GetNativeSwapchainHandle() override;
 
 	private:
 		void ReleaseBackbufferViews();

@@ -1,6 +1,7 @@
 #include "Rendering/Resources/Shader.h"
 
 #include <algorithm>
+#include <string>
 
 #include "Math/Matrix4.h"
 #include "Math/Vector2.h"
@@ -37,6 +38,19 @@ namespace
 		}
 	}
 
+	std::string ToFingerprintLabel(const NLS::Render::ShaderCompiler::ShaderTargetPlatform targetPlatform)
+	{
+		switch (targetPlatform)
+		{
+		case NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL: return "DXIL";
+		case NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV: return "SPIRV";
+		case NLS::Render::ShaderCompiler::ShaderTargetPlatform::GLSL: return "GLSL";
+		case NLS::Render::ShaderCompiler::ShaderTargetPlatform::Unknown:
+		default:
+			return "Unknown";
+		}
+	}
+
 	std::any CreateDefaultValue(UniformType type)
 	{
 		switch (type)
@@ -69,6 +83,24 @@ namespace
 
 namespace NLS::Render::Resources
 {
+	std::string BuildShaderArtifactToolchainFingerprint(
+		ShaderCompiler::ShaderTargetPlatform targetPlatform,
+		std::string_view targetProfile,
+		std::string_view entryPoint,
+		const ShaderCompiler::ShaderCompilationOutput& output)
+	{
+		std::string fingerprint = ToFingerprintLabel(targetPlatform);
+		fingerprint += "|";
+		fingerprint += targetProfile;
+		fingerprint += "|";
+		fingerprint += entryPoint;
+		fingerprint += "|";
+		fingerprint += output.cacheKey;
+		fingerprint += "|";
+		fingerprint += output.artifactPath;
+		return fingerprint;
+	}
+
 	Shader::Shader(const std::string p_path, ShaderCompiler::ShaderSourceLanguage p_sourceLanguage)
 		: path(p_path)
 		, m_sourceLanguage(p_sourceLanguage)
@@ -132,6 +164,11 @@ namespace NLS::Render::Resources
 		desc.targetBackend = backend;
 		desc.entryPoint = artifact->entryPoint;
 		desc.bytecode = artifact->output.bytecode;
+		desc.shaderToolchainFingerprint = BuildShaderArtifactToolchainFingerprint(
+			artifact->targetPlatform,
+			artifact->targetProfile,
+			artifact->entryPoint,
+			artifact->output);
 		desc.debugName = path + ":" + artifact->entryPoint;
 
 		auto module = device->CreateShaderModule(desc);

@@ -26,6 +26,7 @@ namespace NLS::Render::RHI
         NativeBackendType targetBackend = NativeBackendType::None;
         std::string entryPoint = "main";
         std::vector<uint8_t> bytecode;
+        std::string shaderToolchainFingerprint;
         std::string debugName;
     };
 
@@ -49,12 +50,71 @@ namespace NLS::Render::RHI
         bool cullEnabled = true;
         NLS::Render::Settings::ECullFace cullFace = NLS::Render::Settings::ECullFace::BACK;
         bool wireframe = false;
+        bool multisampleEnable = false;
+    };
+
+    enum class NLS_RENDER_API RHIBlendFactor : uint8_t
+    {
+        Zero,
+        One,
+        SrcColor,
+        InvSrcColor,
+        SrcAlpha,
+        InvSrcAlpha,
+        DstAlpha,
+        InvDstAlpha,
+        DstColor,
+        InvDstColor
+    };
+
+    enum class NLS_RENDER_API RHIBlendOp : uint8_t
+    {
+        Add,
+        Subtract,
+        ReverseSubtract,
+        Min,
+        Max
+    };
+
+    enum class NLS_RENDER_API RHIColorWriteMask : uint8_t
+    {
+        None = 0,
+        Red = 1u << 0,
+        Green = 1u << 1,
+        Blue = 1u << 2,
+        Alpha = 1u << 3,
+        All = Red | Green | Blue | Alpha
+    };
+
+    inline constexpr RHIColorWriteMask operator|(RHIColorWriteMask lhs, RHIColorWriteMask rhs)
+    {
+        return static_cast<RHIColorWriteMask>(static_cast<uint8_t>(lhs) | static_cast<uint8_t>(rhs));
+    }
+
+    inline constexpr bool HasColorWriteMask(RHIColorWriteMask mask, RHIColorWriteMask flag)
+    {
+        return (static_cast<uint8_t>(mask) & static_cast<uint8_t>(flag)) != 0u;
+    }
+
+    struct NLS_RENDER_API RHIRenderTargetBlendStateDesc
+    {
+        bool blendEnable = false;
+        RHIBlendFactor srcColor = RHIBlendFactor::SrcAlpha;
+        RHIBlendFactor dstColor = RHIBlendFactor::InvSrcAlpha;
+        RHIBlendOp colorOp = RHIBlendOp::Add;
+        RHIBlendFactor srcAlpha = RHIBlendFactor::One;
+        RHIBlendFactor dstAlpha = RHIBlendFactor::InvSrcAlpha;
+        RHIBlendOp alphaOp = RHIBlendOp::Add;
+        RHIColorWriteMask colorWriteMask = RHIColorWriteMask::All;
     };
 
     struct NLS_RENDER_API RHIBlendStateDesc
     {
         bool enabled = false;
         bool colorWrite = true;
+        bool alphaToCoverageEnable = false;
+        bool independentBlendEnable = false;
+        std::vector<RHIRenderTargetBlendStateDesc> renderTargets;
     };
 
     struct NLS_RENDER_API RHIDepthStencilStateDesc

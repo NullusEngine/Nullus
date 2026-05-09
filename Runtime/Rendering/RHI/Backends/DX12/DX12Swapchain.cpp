@@ -384,12 +384,12 @@ namespace NLS::Render::Backend
 		return true;
 	}
 
-	void* NativeDX12Swapchain::GetNativeSwapchainHandle()
+	NLS::Render::RHI::NativeHandle NativeDX12Swapchain::GetNativeSwapchainHandle()
 	{
 #if defined(_WIN32)
-		return m_swapchain.Get();
+		return { NLS::Render::RHI::BackendType::DX12, m_swapchain.Get() };
 #else
-		return nullptr;
+		return {};
 #endif
 	}
 

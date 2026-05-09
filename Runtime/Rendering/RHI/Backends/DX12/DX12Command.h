@@ -92,7 +92,7 @@ namespace NLS::Render::Backend
 		void End() override;
 		void Reset() override;
 		bool IsRecording() const override;
-		void* GetNativeCommandBuffer() const override;
+		NLS::Render::RHI::NativeHandle GetNativeCommandBuffer() const override;
 		void BeginGpuProfileScope(std::string_view name, std::string_view sourceFunction) override;
 		void EndGpuProfileScope() override;
 		void BeginRenderPass(const NLS::Render::RHI::RHIRenderPassDesc& desc) override;

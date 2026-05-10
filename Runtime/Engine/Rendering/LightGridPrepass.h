@@ -100,10 +100,13 @@ namespace NLS::Engine::Rendering
             NLS::Maths::Matrix4 viewMatrix;
             NLS::Maths::Matrix4 projectionMatrix;
             NLS::Maths::Matrix4 inverseViewProjection;
+            NLS::Maths::Matrix4 clipToView;
             NLS::Maths::Vector4 cameraWorldPositionNearPlane;
             NLS::Maths::Vector4 renderSizeFarPlane;
             NLS::Maths::Vector4 gridParams;
             NLS::Maths::Vector4 lightingParams;
+            NLS::Maths::Vector4 zParams;
+            NLS::Maths::Vector4 pixelParams;
         };
 
         struct PackedFrameData
@@ -112,6 +115,7 @@ namespace NLS::Engine::Rendering
             std::vector<uint32_t> packedLights;
             std::vector<uint32_t> clusterLightCounts;
             std::vector<uint32_t> clusterScratchIndices;
+            std::vector<uint32_t> linkCounter;
             std::vector<uint32_t> compactCounter;
             std::vector<uint32_t> clusterRecords;
             std::vector<uint32_t> compactLightIndices;

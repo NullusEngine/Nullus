@@ -723,9 +723,15 @@ void Profiler::EndEvent()
 	std::scoped_lock lock(m_ThreadDataLock);
 	EventTrack& track = GetCurrentThreadTrackLocked();
 
-	gAssert(track.EventStack.GetSize() > 0, "Event mismatch. Called EndEvent more than BeginEvent");
+	if (track.EventStack.GetSize() == 0)
+		return;
+
 	const Profiler::EventTrack::EventStackEntry eventStackEntry = track.EventStack.Pop();
-	ProfilerEvent& event	  = track.GetFrameData(eventStackEntry.FrameIndex)[eventStackEntry.EventIndex];
+	ProfilerEventData& eventData = track.GetFrameData(eventStackEntry.FrameIndex);
+	if (eventStackEntry.EventIndex >= eventData.size())
+		return;
+
+	ProfilerEvent& event	  = eventData[eventStackEntry.EventIndex];
 	QueryPerformanceCounter((LARGE_INTEGER*)(&event.TicksEnd));
 }
 

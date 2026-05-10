@@ -1,13 +1,17 @@
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <memory>
+#include <vector>
 
 #include "Core/ServiceLocator.h"
 #include "Components/LightComponent.h"
+#include "Math/Transform.h"
 #include "Rendering/BaseSceneRenderer.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/Data/LightingDescriptor.h"
+#include "Rendering/Entities/Light.h"
 #include "Rendering/LightGridPrepass.h"
 #include "Rendering/SceneLightingProvider.h"
 #include "Rendering/Settings/DriverSettings.h"
@@ -220,4 +224,98 @@ TEST(LightingDataProviderTests, LightGridHotPathFailureDiagnosticsAreControlledB
 
     diagnostics.logRenderDrawPath = true;
     EXPECT_TRUE(NLS::Engine::Rendering::LightGridPrepass::ShouldLogHotPathFailureDiagnostics(diagnostics));
+}
+
+TEST(LightingDataProviderTests, LightGridDefaultsMatchUESourceReference)
+{
+    const NLS::Engine::Rendering::ClusteredShadingSettings settings;
+
+    EXPECT_EQ(settings.lightGridPixelSize, 64u);
+    EXPECT_EQ(settings.gridSizeZ, 32u);
+    EXPECT_EQ(settings.maxLightsPerCluster, 32u);
+    EXPECT_TRUE(settings.linkedListCulling);
+}
+
+TEST(LightingDataProviderTests, LightGridDimensionsDeriveFromRenderSizeAndPixelSize)
+{
+    const NLS::Engine::Rendering::ClusteredShadingSettings settings;
+
+    const auto fullHdGrid = NLS::Engine::Rendering::CalculateLightGridDimensions(settings, 1920u, 1080u);
+    EXPECT_EQ(fullHdGrid.x, 30u);
+    EXPECT_EQ(fullHdGrid.y, 17u);
+    EXPECT_EQ(fullHdGrid.z, 32u);
+
+    const auto tinyGrid = NLS::Engine::Rendering::CalculateLightGridDimensions(settings, 1u, 1u);
+    EXPECT_EQ(tinyGrid.x, 1u);
+    EXPECT_EQ(tinyGrid.y, 1u);
+    EXPECT_EQ(tinyGrid.z, 32u);
+}
+
+TEST(LightingDataProviderTests, LightGridZParamsMatchUESourceFormula)
+{
+    const auto zParams = NLS::Engine::Rendering::CalculateLightGridZParams(10.0f, 1010.0f, 32u);
+
+    const double nearOffset = 0.095 * 100.0;
+    const double scale = 4.05;
+    const double nearValue = 10.0 + nearOffset;
+    const double farValue = 1010.0;
+    const double expectedO = (farValue - nearValue * std::exp2((32.0 - 1.0) / scale)) / (farValue - nearValue);
+    const double expectedB = (1.0 - expectedO) / nearValue;
+
+    EXPECT_NEAR(zParams.x, static_cast<float>(expectedB), 1e-5f);
+    EXPECT_NEAR(zParams.y, static_cast<float>(expectedO), 1e-4f);
+    EXPECT_FLOAT_EQ(zParams.z, static_cast<float>(scale));
+}
+
+TEST(LightingDataProviderTests, LightGridDispatchShapeMatchesUESourceReference)
+{
+    const NLS::Engine::Rendering::ClusteredShadingSettings settings;
+    const auto grid = NLS::Engine::Rendering::CalculateLightGridDimensions(settings, 1920u, 1080u);
+    const auto dispatch = NLS::Engine::Rendering::CalculateLightGridDispatchGroups(grid);
+
+    EXPECT_EQ(NLS::Engine::Rendering::GetLightGridInjectionGroupSize(), 4u);
+    EXPECT_EQ(dispatch.x, 8u);
+    EXPECT_EQ(dispatch.y, 5u);
+    EXPECT_EQ(dispatch.z, 8u);
+}
+
+TEST(LightingDataProviderTests, LightGridCpuBuildUsesDerivedGridDimensionsForCapacityClamp)
+{
+    NLS::Engine::Rendering::ClusteredShadingSettings settings;
+    settings.lightGridPixelSize = 64u;
+    settings.maxLightsPerCluster = 2u;
+
+    NLS::Maths::Transform lightTransform;
+    NLS::Render::Entities::Light firstLight(&lightTransform);
+    firstLight.type = NLS::Render::Settings::ELightType::DIRECTIONAL;
+    NLS::Render::Entities::Light secondLight(&lightTransform);
+    secondLight.type = NLS::Render::Settings::ELightType::DIRECTIONAL;
+    NLS::Render::Entities::Light thirdLight(&lightTransform);
+    thirdLight.type = NLS::Render::Settings::ELightType::DIRECTIONAL;
+
+    const std::vector<std::reference_wrapper<const NLS::Render::Entities::Light>> lights{
+        firstLight,
+        secondLight,
+        thirdLight
+    };
+    NLS::Render::Entities::Camera camera;
+
+    const auto grid = NLS::Engine::Rendering::BuildClusteredLightGrid(
+        settings,
+        lights,
+        camera,
+        NLS::Maths::Matrix4::Identity,
+        NLS::Maths::Matrix4::Identity,
+        1920u,
+        1080u,
+        0.1f,
+        1000.0f);
+
+    ASSERT_EQ(grid.settings.gridSizeX, 30u);
+    ASSERT_EQ(grid.settings.gridSizeY, 17u);
+    ASSERT_EQ(grid.settings.gridSizeZ, 32u);
+    ASSERT_EQ(grid.records.size(), 30u * 17u * 32u);
+    ASSERT_EQ(grid.lightIndices.size(), grid.records.size() * settings.maxLightsPerCluster);
+    for (const auto& record : grid.records)
+        EXPECT_EQ(record.count, settings.maxLightsPerCluster);
 }

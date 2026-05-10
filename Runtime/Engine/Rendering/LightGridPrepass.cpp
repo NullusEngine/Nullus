@@ -24,6 +24,7 @@ namespace
 {
     constexpr uint32_t kLightWordStride = 16u;
     constexpr uint32_t kRecordWordStride = 2u;
+    constexpr uint32_t kLightLinkStride = 2u;
     constexpr float kDefaultAmbientFloor = 0.05f;
 
     template<typename TValue>
@@ -250,6 +251,7 @@ namespace NLS::Engine::Rendering
         auto packedLightsBuffer = createStorageBuffer("LightGridPackedLights", frameData.packedLights);
         auto clusterCountsBuffer = createStorageBuffer("LightGridClusterCounts", frameData.clusterLightCounts);
         auto clusterScratchBuffer = createStorageBuffer("LightGridClusterScratchIndices", frameData.clusterScratchIndices);
+        auto linkCounterBuffer = createStorageBuffer("LightGridLinkCounter", frameData.linkCounter);
         auto compactCounterBuffer = createStorageBuffer("LightGridCompactCounter", frameData.compactCounter);
         auto clusterRecordsBuffer = createStorageBuffer("LightGridClusterRecords", frameData.clusterRecords);
         auto compactLightIndicesBuffer = createStorageBuffer("LightGridCompactLightIndices", frameData.compactLightIndices);
@@ -258,6 +260,7 @@ namespace NLS::Engine::Rendering
             packedLightsBuffer == nullptr ||
             clusterCountsBuffer == nullptr ||
             clusterScratchBuffer == nullptr ||
+            linkCounterBuffer == nullptr ||
             compactCounterBuffer == nullptr ||
             clusterRecordsBuffer == nullptr ||
             compactLightIndicesBuffer == nullptr)
@@ -277,7 +280,8 @@ namespace NLS::Engine::Rendering
             { 0u, NLS::Render::RHI::BindingType::UniformBuffer, constantsBuffer, 0u, sizeof(LightGridPassConstants), nullptr, nullptr },
             { 0u, NLS::Render::RHI::BindingType::StructuredBuffer, packedLightsBuffer, 0u, frameData.packedLights.size() * sizeof(uint32_t), nullptr, nullptr },
             { 1u, NLS::Render::RHI::BindingType::StorageBuffer, clusterCountsBuffer, 0u, frameData.clusterLightCounts.size() * sizeof(uint32_t), nullptr, nullptr },
-            { 2u, NLS::Render::RHI::BindingType::StorageBuffer, clusterScratchBuffer, 0u, frameData.clusterScratchIndices.size() * sizeof(uint32_t), nullptr, nullptr }
+            { 2u, NLS::Render::RHI::BindingType::StorageBuffer, clusterScratchBuffer, 0u, frameData.clusterScratchIndices.size() * sizeof(uint32_t), nullptr, nullptr },
+            { 3u, NLS::Render::RHI::BindingType::StorageBuffer, linkCounterBuffer, 0u, frameData.linkCounter.size() * sizeof(uint32_t), nullptr, nullptr }
         };
         auto injectionBindingSet = NLS::Render::Context::DriverRendererAccess::CreateExplicitBindingSet(
             m_driver,
@@ -320,23 +324,23 @@ namespace NLS::Engine::Rendering
             return false;
         }
 
-        uint32_t lightDispatchCount = static_cast<uint32_t>((preparedFrameInputs.lights.size() + 63u) / 64u);
-        if (lightDispatchCount == 0u)
-            lightDispatchCount = 1u;
-        const uint32_t clusterCount =
-            m_settings.gridSizeX * m_settings.gridSizeY * m_settings.gridSizeZ;
-        const uint32_t clusterDispatchCount = (clusterCount + 63u) / 64u;
+        const LightGridDimensions gridDimensions{
+            static_cast<uint32_t>(frameData.constants.gridParams.x),
+            static_cast<uint32_t>(frameData.constants.gridParams.y),
+            static_cast<uint32_t>(frameData.constants.gridParams.z)
+        };
+        const auto gridDispatchGroups = CalculateLightGridDispatchGroups(gridDimensions);
 
         m_computeDispatchInputs = {
             {
                 "LightGridInjection",
                 m_injectionPipeline,
                 { { NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, injectionBindingSet } },
-                lightDispatchCount,
-                1u,
-                1u,
+                gridDispatchGroups.x,
+                gridDispatchGroups.y,
+                gridDispatchGroups.z,
                 { packedLightsBuffer },
-                { clusterCountsBuffer, clusterScratchBuffer },
+                { clusterCountsBuffer, clusterScratchBuffer, linkCounterBuffer },
                 {},
                 {},
                 {}
@@ -345,9 +349,9 @@ namespace NLS::Engine::Rendering
                 "LightGridCompact",
                 m_compactPipeline,
                 { { NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, compactBindingSet } },
-                clusterDispatchCount,
-                1u,
-                1u,
+                gridDispatchGroups.x,
+                gridDispatchGroups.y,
+                gridDispatchGroups.z,
                 { clusterCountsBuffer, clusterScratchBuffer },
                 { compactCounterBuffer, clusterRecordsBuffer, compactLightIndicesBuffer },
                 {},
@@ -461,7 +465,8 @@ namespace NLS::Engine::Rendering
                 { "LightGridPassConstants", NLS::Render::RHI::BindingType::UniformBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 0u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
                 { "u_LightGridLights", NLS::Render::RHI::BindingType::StructuredBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 0u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
                 { "u_LightGridClusterLightCounts", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 1u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-                { "u_LightGridClusterScratchIndices", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 2u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace }
+                { "u_LightGridClusterScratchIndices", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 2u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
+                { "u_LightGridLinkCounter", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 3u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace }
             }, "LightGridInjectionBindingLayout"));
         }
 
@@ -594,6 +599,8 @@ namespace NLS::Engine::Rendering
         outFrameData.constants.projectionMatrix = NLS::Maths::Matrix4::Transpose(frameDescriptor.camera->GetProjectionMatrix());
         const auto viewProjection = frameDescriptor.camera->GetProjectionMatrix() * frameDescriptor.camera->GetViewMatrix();
         outFrameData.constants.inverseViewProjection = NLS::Maths::Matrix4::Transpose(NLS::Maths::Matrix4::Inverse(viewProjection));
+        outFrameData.constants.clipToView = NLS::Maths::Matrix4::Transpose(
+            NLS::Maths::Matrix4::Inverse(frameDescriptor.camera->GetProjectionMatrix()));
         outFrameData.constants.cameraWorldPositionNearPlane = {
             frameDescriptor.camera->GetPosition().x,
             frameDescriptor.camera->GetPosition().y,
@@ -606,10 +613,19 @@ namespace NLS::Engine::Rendering
             1.0f / static_cast<float>(frameDescriptor.renderWidth == 0u ? 1u : frameDescriptor.renderWidth),
             frameDescriptor.camera->GetFar()
         };
+        const auto gridDimensions = CalculateLightGridDimensions(
+            m_settings,
+            frameDescriptor.renderWidth,
+            frameDescriptor.renderHeight);
+        const auto zParams = CalculateLightGridZParams(
+            frameDescriptor.camera->GetNear(),
+            frameDescriptor.camera->GetFar() + 10.0f,
+            gridDimensions.z);
+
         outFrameData.constants.gridParams = {
-            static_cast<float>(m_settings.gridSizeX),
-            static_cast<float>(m_settings.gridSizeY),
-            static_cast<float>(m_settings.gridSizeZ),
+            static_cast<float>(gridDimensions.x),
+            static_cast<float>(gridDimensions.y),
+            static_cast<float>(gridDimensions.z),
             static_cast<float>(m_settings.maxLightsPerCluster)
         };
         outFrameData.constants.lightingParams = {
@@ -618,15 +634,28 @@ namespace NLS::Engine::Rendering
             kDefaultAmbientFloor,
             hasSkyboxTexture ? 1.0f : 0.0f
         };
+        outFrameData.constants.zParams = {
+            zParams.x,
+            zParams.y,
+            zParams.z,
+            m_settings.linkedListCulling ? 1.0f : 0.0f
+        };
+        outFrameData.constants.pixelParams = {
+            static_cast<float>(m_settings.lightGridPixelSize),
+            1.0f / static_cast<float>(frameDescriptor.renderHeight == 0u ? 1u : frameDescriptor.renderHeight),
+            0.0f,
+            0.0f
+        };
 
         outFrameData.packedLights.clear();
         outFrameData.packedLights.reserve(preparedFrameInputs.lights.size() * kLightWordStride);
         for (const auto& light : preparedFrameInputs.lights)
             PackCapturedLight(light, outFrameData.packedLights);
 
-        const uint32_t clusterCount = m_settings.gridSizeX * m_settings.gridSizeY * m_settings.gridSizeZ;
-        outFrameData.clusterLightCounts.assign(clusterCount, 0u);
-        outFrameData.clusterScratchIndices.assign(clusterCount * m_settings.maxLightsPerCluster, 0u);
+        const uint32_t clusterCount = gridDimensions.x * gridDimensions.y * gridDimensions.z;
+        outFrameData.clusterLightCounts.assign(clusterCount, 0xFFFFFFFFu);
+        outFrameData.clusterScratchIndices.assign(clusterCount * m_settings.maxLightsPerCluster * kLightLinkStride, 0u);
+        outFrameData.linkCounter.assign(1u, 0u);
         outFrameData.compactCounter.assign(1u, 0u);
         outFrameData.clusterRecords.assign(clusterCount * kRecordWordStride, 0u);
         outFrameData.compactLightIndices.assign(clusterCount * m_settings.maxLightsPerCluster, 0u);

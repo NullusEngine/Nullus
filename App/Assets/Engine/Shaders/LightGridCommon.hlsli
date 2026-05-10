@@ -13,10 +13,13 @@ cbuffer LightGridPassConstants : register(b0, space1)
     float4x4 u_LightGridView;
     float4x4 u_LightGridProjection;
     float4x4 u_LightGridInverseViewProjection;
+    float4x4 u_LightGridClipToView;
     float4 u_LightGridCameraWorldPositionNearPlane;
     float4 u_LightGridRenderSizeFarPlane;
     float4 u_LightGridGridParams;
     float4 u_LightGridLightingParams;
+    float4 u_LightGridZParams;
+    float4 u_LightGridPixelParams;
 };
 
 struct NLSLightGridLight
@@ -43,6 +46,87 @@ float NLSGetAmbientFloor() { return u_LightGridLightingParams.z; }
 float NLSGetNearPlane() { return u_LightGridCameraWorldPositionNearPlane.w; }
 float NLSGetFarPlane() { return u_LightGridRenderSizeFarPlane.w; }
 float3 NLSGetCameraWorldPosition() { return u_LightGridCameraWorldPositionNearPlane.xyz; }
+float3 NLSGetLightGridZParams() { return u_LightGridZParams.xyz; }
+bool NLSUsesLinkedListCulling() { return u_LightGridZParams.w > 0.5f; }
+
+float NLSComputeCellNearViewDepthFromZSlice(uint zSlice)
+{
+    const float3 zParams = NLSGetLightGridZParams();
+    float sliceDepth = (exp2((float)zSlice / zParams.z) - zParams.y) / zParams.x;
+
+    if (zSlice == NLSGetGridSizeZ())
+        sliceDepth = 2000000.0f;
+    if (zSlice == 0u)
+        sliceDepth = 0.0f;
+    return sliceDepth;
+}
+
+float NLSConvertViewDepthToDeviceZ(float viewDepth)
+{
+    const float nearPlane = max(NLSGetNearPlane(), 1e-4f);
+    const float farPlane = max(NLSGetFarPlane(), nearPlane + 1.0f);
+    return saturate((viewDepth - nearPlane) / (farPlane - nearPlane));
+}
+
+void NLSComputeCellViewAABB(uint3 gridCoordinate, out float3 viewTileMin, out float3 viewTileMax)
+{
+    const float2 invRenderSize = float2(u_LightGridRenderSizeFarPlane.z, u_LightGridPixelParams.y);
+    const float pixelSize = max(1.0f, u_LightGridPixelParams.x);
+    const float2 tileSize = float2(2.0f, -2.0f) * pixelSize * invRenderSize;
+    const float2 unitPlaneMin = float2(-1.0f, 1.0f);
+
+    const float2 tileMin = (float2)gridCoordinate.xy * tileSize + unitPlaneMin;
+    const float2 tileMax = ((float2)gridCoordinate.xy + 1.0f) * tileSize + unitPlaneMin;
+    const float minTileZ = NLSComputeCellNearViewDepthFromZSlice(gridCoordinate.z);
+    const float maxTileZ = NLSComputeCellNearViewDepthFromZSlice(gridCoordinate.z + 1u);
+    const float minDeviceZ = NLSConvertViewDepthToDeviceZ(minTileZ);
+    const float maxDeviceZ = NLSConvertViewDepthToDeviceZ(maxTileZ);
+
+    const float4 minCorner0 = mul(float4(tileMin.x, tileMin.y, minDeviceZ, 1.0f), u_LightGridClipToView);
+    const float4 minCorner1 = mul(float4(tileMax.x, tileMin.y, minDeviceZ, 1.0f), u_LightGridClipToView);
+    const float4 minCorner2 = mul(float4(tileMin.x, tileMax.y, minDeviceZ, 1.0f), u_LightGridClipToView);
+    const float4 minCorner3 = mul(float4(tileMax.x, tileMax.y, minDeviceZ, 1.0f), u_LightGridClipToView);
+    const float4 maxCorner0 = mul(float4(tileMin.x, tileMin.y, maxDeviceZ, 1.0f), u_LightGridClipToView);
+    const float4 maxCorner1 = mul(float4(tileMax.x, tileMin.y, maxDeviceZ, 1.0f), u_LightGridClipToView);
+    const float4 maxCorner2 = mul(float4(tileMin.x, tileMax.y, maxDeviceZ, 1.0f), u_LightGridClipToView);
+    const float4 maxCorner3 = mul(float4(tileMax.x, tileMax.y, maxDeviceZ, 1.0f), u_LightGridClipToView);
+
+    const float2 viewMin0 = minCorner0.xy / max(abs(minCorner0.w), 1e-5f);
+    const float2 viewMin1 = minCorner1.xy / max(abs(minCorner1.w), 1e-5f);
+    const float2 viewMin2 = minCorner2.xy / max(abs(minCorner2.w), 1e-5f);
+    const float2 viewMin3 = minCorner3.xy / max(abs(minCorner3.w), 1e-5f);
+    const float2 viewMax0 = maxCorner0.xy / max(abs(maxCorner0.w), 1e-5f);
+    const float2 viewMax1 = maxCorner1.xy / max(abs(maxCorner1.w), 1e-5f);
+    const float2 viewMax2 = maxCorner2.xy / max(abs(maxCorner2.w), 1e-5f);
+    const float2 viewMax3 = maxCorner3.xy / max(abs(maxCorner3.w), 1e-5f);
+
+    viewTileMin.xy = min(min(min(viewMin0, viewMin1), min(viewMin2, viewMin3)), min(min(viewMax0, viewMax1), min(viewMax2, viewMax3)));
+    viewTileMax.xy = max(max(max(viewMin0, viewMin1), max(viewMin2, viewMin3)), max(max(viewMax0, viewMax1), max(viewMax2, viewMax3)));
+    viewTileMin.z = minTileZ;
+    viewTileMax.z = maxTileZ;
+}
+
+float NLSComputeSquaredDistanceFromBoxToPoint(float3 boxCenter, float3 boxExtent, float3 point)
+{
+    const float3 offset = abs(point - boxCenter) - boxExtent;
+    const float3 outside = max(offset, 0.0f.xxx);
+    return dot(outside, outside);
+}
+
+bool NLSIsAabbOutsideInfiniteAcuteConeApprox(
+    float3 coneVertex,
+    float3 coneAxis,
+    float tanConeAngle,
+    float3 aabbCenter,
+    float3 aabbExtent)
+{
+    const float3 d = aabbCenter - coneVertex;
+    const float3 m = -normalize(cross(cross(d, coneAxis), coneAxis));
+    const float3 n = -tanConeAngle * coneAxis + m;
+    const float dist = dot(d, n);
+    const float radius = dot(aabbExtent, abs(n));
+    return dist > radius;
+}
 
 float NLSClamp01(float value)
 {
@@ -61,7 +145,8 @@ float NLSViewDepthToSlice(float depth)
     if (farPlane <= nearPlane || NLSGetGridSizeZ() == 0u)
         return 0.0f;
 
-    return NLSClamp01((depth - nearPlane) / (farPlane - nearPlane)) * (float)(NLSGetGridSizeZ() - 1u);
+    const float3 zParams = NLSGetLightGridZParams();
+    return max(0.0f, log2(depth * zParams.x + zParams.y) * zParams.z);
 }
 
 NLSLightGridLight NLSLoadLight(StructuredBuffer<uint> packedLights, uint lightIndex)

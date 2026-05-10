@@ -1424,6 +1424,11 @@ bool DriverRendererAccess::IsThreadedRenderingEnabled(const Driver& driver)
     return RenderThreadCoordinator::IsThreadedRenderingEnabled(driver);
 }
 
+bool DriverRendererAccess::IsLightGridEnabled(const Driver& driver)
+{
+    return driver.m_impl != nullptr && driver.m_impl->lightGridEnabled;
+}
+
 std::shared_ptr<Render::RHI::RHIDevice> DriverRendererAccess::GetExplicitDevice(const Driver& driver)
 {
 	return driver.m_impl->explicitDevice;
@@ -2048,6 +2053,7 @@ Driver::Driver(const Render::Settings::DriverSettings& p_driverSettings)
     : m_impl(std::make_unique<DriverImpl>())
 {
     m_impl->requestedGraphicsBackend = p_driverSettings.graphicsBackend;
+    m_impl->lightGridEnabled = p_driverSettings.enableLightGrid;
     if (m_impl->requestedGraphicsBackend != Render::Settings::EGraphicsBackend::NONE &&
         !Render::Settings::IsBackendSelectableForPhase1(m_impl->requestedGraphicsBackend))
     {

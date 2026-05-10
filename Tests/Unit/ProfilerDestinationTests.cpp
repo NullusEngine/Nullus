@@ -398,6 +398,26 @@ TEST_F(ProfilerDestinationTest, TimelineSinkRecordsScopesWhenEnabled)
 #endif
 }
 
+TEST_F(ProfilerDestinationTest, TimelineSinkEndScopeIgnoresUnmatchedEvent)
+{
+    using namespace NLS::Base::Profiling;
+
+#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+    TimelineProfilerSink timeline;
+    const auto state = timeline.GetState();
+    ASSERT_EQ(state.availability, ProfilerAvailability::Available);
+
+    ProfilerScopeEvent event;
+    event.name = "Long Running Timeline Scope";
+    event.sourceFunction = __FUNCTION__;
+    event.active = true;
+
+    EXPECT_NO_FATAL_FAILURE(timeline.EndScope(event));
+#else
+    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+#endif
+}
+
 TEST_F(ProfilerDestinationTest, UnavailableDestinationDoesNotBlockAvailableDestination)
 {
     using namespace NLS::Base::Profiling;

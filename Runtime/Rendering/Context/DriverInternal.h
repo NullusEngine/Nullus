@@ -63,6 +63,7 @@ namespace NLS::Render::Context
         std::unique_lock<std::mutex> uiStandaloneFrameSubmissionLock;
         uint64_t nextThreadedFrameId = 1u;
         uint32_t threadedPublishRetirementWaitMs = 0u;
+        bool lightGridEnabled = true;
         Render::Settings::EngineDiagnosticsSettings diagnostics;
         uint64_t queueOperationFailureCount = 0u;
         std::string lastQueueOperationFailure;

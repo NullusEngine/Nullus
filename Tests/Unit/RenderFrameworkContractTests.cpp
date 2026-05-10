@@ -1219,6 +1219,70 @@ TEST(RenderFrameworkContractTests, LightGridPrepassReusesFrameScratchStorage)
     EXPECT_NE(source.find("outFrameData.packedLights.clear()"), std::string::npos);
 }
 
+TEST(RenderFrameworkContractTests, BaseSceneRendererCachesLightGridCompileContextPerFrame)
+{
+    const std::filesystem::path rendererHeaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/BaseSceneRenderer.h";
+    const std::filesystem::path rendererSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/BaseSceneRenderer.cpp";
+
+    const auto readFile = [](const std::filesystem::path& path)
+    {
+        std::ifstream stream(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+    };
+
+    const std::string headerSource = readFile(rendererHeaderPath);
+    const std::string source = readFile(rendererSourcePath);
+
+    ASSERT_FALSE(headerSource.empty());
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(headerSource.find("LightGridCompileContextCache"), std::string::npos);
+    EXPECT_NE(headerSource.find("m_lightGridCompileContextCache"), std::string::npos);
+    EXPECT_NE(source.find("InvalidateLightGridCompileContextCache();"), std::string::npos);
+    EXPECT_NE(source.find("IsLightGridCompileContextCacheHit(frameSnapshot, hasSkyboxTexture)"), std::string::npos);
+    EXPECT_NE(source.find("m_lightGridCompileContextCache.context = context"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, DriverLightGridSettingDefaultsEnabledAndCanBeDisabled)
+{
+    NLS::Render::Settings::DriverSettings defaultSettings;
+    defaultSettings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    NLS::Render::Context::Driver defaultDriver(defaultSettings);
+
+    EXPECT_TRUE(NLS::Render::Context::DriverRendererAccess::IsLightGridEnabled(defaultDriver));
+
+    NLS::Render::Settings::DriverSettings disabledSettings;
+    disabledSettings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    disabledSettings.enableLightGrid = false;
+    NLS::Render::Context::Driver disabledDriver(disabledSettings);
+
+    EXPECT_FALSE(NLS::Render::Context::DriverRendererAccess::IsLightGridEnabled(disabledDriver));
+}
+
+TEST(RenderFrameworkContractTests, DisabledLightGridContextReturnsBeforePreparingDispatches)
+{
+    const std::filesystem::path rendererSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/BaseSceneRenderer.cpp";
+
+    std::ifstream stream(rendererSourcePath, std::ios::binary);
+    const std::string source{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(source.empty());
+    const auto disabledBranch = source.find("if (!NLS::Render::Context::DriverRendererAccess::IsLightGridEnabled(m_driver))");
+    const auto preparedRequest = source.find("LightGridPrepass::BuildPreparedComputeRequest(");
+    const auto preparedSource = source.find("LightGridPrepass::BuildPreparedComputeDispatchSource(preparedComputeRequest)");
+
+    ASSERT_NE(disabledBranch, std::string::npos);
+    ASSERT_NE(preparedRequest, std::string::npos);
+    ASSERT_NE(preparedSource, std::string::npos);
+    EXPECT_LT(disabledBranch, preparedRequest);
+    EXPECT_LT(disabledBranch, preparedSource);
+    EXPECT_NE(source.find("return NLS::Render::FrameGraph::BuildLightGridCompileContext(\n\t\t\tframeSnapshot,\n\t\t\t{},\n\t\t\t{});", disabledBranch), std::string::npos);
+}
+
 TEST(RenderFrameworkContractTests, ThreadedDrainResultIsActionableForCallers)
 {
     NLS::Render::Context::Driver driver(MakeContractDriverSettings(true));
@@ -1251,6 +1315,60 @@ TEST(RenderFrameworkContractTests, LightGridPipelineMemberCacheTracksPipelineCac
     EXPECT_NE(headerSource.find("m_compactPipelineKey"), std::string::npos);
     EXPECT_NE(lightGridSource.find("MatchesPipelineCacheKey"), std::string::npos);
     EXPECT_EQ(lightGridSource.find("if (m_injectionPipeline != nullptr && m_compactPipeline != nullptr)"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, LightGridShaderUsesCellOwnedUEInjectionShape)
+{
+    const std::filesystem::path shaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders/LightGridInjection.hlsl";
+    const std::filesystem::path commonShaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders/LightGridCommon.hlsli";
+
+    std::ifstream stream(shaderPath, std::ios::binary);
+    const std::string shaderSource{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+    std::ifstream commonStream(commonShaderPath, std::ios::binary);
+    const std::string commonShaderSource{
+        std::istreambuf_iterator<char>(commonStream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(shaderSource.empty());
+    ASSERT_FALSE(commonShaderSource.empty());
+    EXPECT_NE(shaderSource.find("[numthreads(4, 4, 4)]"), std::string::npos);
+    EXPECT_NE(shaderSource.find("NLSComputeCellViewAABB"), std::string::npos);
+    EXPECT_NE(shaderSource.find("for (uint lightIndex = 0u; lightIndex < NLSGetSceneLightCount(); ++lightIndex)"), std::string::npos);
+    EXPECT_NE(shaderSource.find("u_LightGridStartOffsetGrid"), std::string::npos);
+    EXPECT_NE(shaderSource.find("u_LightGridCulledLightLinks"), std::string::npos);
+    EXPECT_NE(shaderSource.find("InterlockedExchange(u_LightGridStartOffsetGrid[clusterIndex]"), std::string::npos);
+    EXPECT_EQ(shaderSource.find("const uint lightIndex = dispatchThreadId.x;"), std::string::npos);
+    EXPECT_NE(commonShaderSource.find("u_LightGridClipToView"), std::string::npos);
+    EXPECT_NE(commonShaderSource.find("mul(float4(tileMin.x, tileMin.y, minDeviceZ, 1.0f), u_LightGridClipToView)"), std::string::npos);
+    EXPECT_EQ(commonShaderSource.find("mul(u_LightGridInverseViewProjection, float4(tileMin.x, tileMin.y, minDeviceZ, 1.0f))"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, LightGridLinkedListPathCapsGlobalLinksLikeUESource)
+{
+    const std::filesystem::path injectionShaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders/LightGridInjection.hlsl";
+    const std::filesystem::path compactShaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders/LightGridCompact.hlsl";
+
+    std::ifstream injectionStream(injectionShaderPath, std::ios::binary);
+    std::ifstream compactStream(compactShaderPath, std::ios::binary);
+    const std::string injectionShaderSource{
+        std::istreambuf_iterator<char>(injectionStream),
+        std::istreambuf_iterator<char>()};
+    const std::string compactShaderSource{
+        std::istreambuf_iterator<char>(compactStream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(injectionShaderSource.empty());
+    ASSERT_FALSE(compactShaderSource.empty());
+    EXPECT_NE(injectionShaderSource.find("NLSGetGridSizeX() * NLSGetGridSizeY() * NLSGetGridSizeZ() * NLSGetMaxLightsPerCluster()"), std::string::npos);
+    EXPECT_NE(injectionShaderSource.find("if (nextLink < maxAvailableLinks)"), std::string::npos);
+    EXPECT_NE(compactShaderSource.find("while (linkOffset != 0xFFFFFFFFu && count < NLSGetSceneLightCount())"), std::string::npos);
+    EXPECT_NE(compactShaderSource.find("InterlockedAdd(u_LightGridCompactCounter[0], count, offset)"), std::string::npos);
 }
 
 TEST(RenderFrameworkContractTests, UiCompositionContractPropagatesSignalToPresentAndClearsAfterSubmit)

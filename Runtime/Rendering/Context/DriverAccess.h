@@ -87,6 +87,7 @@ namespace NLS::Render::Context
     {
         static bool HasExplicitRHI(const Driver& driver);
         static bool IsThreadedRenderingEnabled(const Driver& driver);
+        static bool IsLightGridEnabled(const Driver& driver);
         static std::shared_ptr<RHI::RHIDevice> GetExplicitDevice(const Driver& driver);
         static bool TryPublishPreparedFrameBuilder(
             Driver& driver,

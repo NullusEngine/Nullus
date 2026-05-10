@@ -356,6 +356,19 @@ TEST(ShaderCompilerTests, ShaderCompilerProcessUsesJobObjectInsteadOfPipePolling
     EXPECT_NE(source.find("TerminateJobObject"), std::string::npos);
 }
 
+TEST(ShaderCompilerTests, ShaderCompilerProcessReadPipeHasSingleOwner)
+{
+    const auto shaderCompilerSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/ShaderCompiler/ShaderCompiler.cpp";
+    std::ifstream stream(shaderCompilerSourcePath, std::ios::binary);
+    const std::string source((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(source.find("const HANDLE outputReadPipe = readPipe;"), std::string::npos);
+    EXPECT_NE(source.find("readPipe = nullptr;"), std::string::npos);
+    EXPECT_NE(source.find("if (readPipe != nullptr)\n\t\t\tCloseHandle(readPipe);"), std::string::npos);
+}
+
 TEST(ShaderCompilerTests, ShaderCompilerProcessCancellationReturnsDiagnostics)
 {
 #if defined(_WIN32)

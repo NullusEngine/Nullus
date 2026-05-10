@@ -59,6 +59,7 @@ namespace NLS::Render::Settings
 		uint32_t framesInFlight = 2;
 		bool enableExplicitRHI = true;
 		bool enableThreadedRendering = false;
+		bool enableLightGrid = true;
 		uint32_t threadedFrameSlotCount = 0;
 		uint32_t threadedPublishRetirementWaitMs = 0;
 		RenderDocSettings renderDoc{};

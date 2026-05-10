@@ -170,6 +170,8 @@ Game::Context::Context(
 		projectSettings.Add<bool>("vsync", true);
 	if (!projectSettings.IsKeyExisting("multi_sampling"))
 		projectSettings.Add<bool>("multi_sampling", true);
+	if (!projectSettings.IsKeyExisting("enable_light_grid"))
+		projectSettings.Add<bool>("enable_light_grid", true);
 
 	if (!resolvedProjectPaths.settingsPath.empty())
 		NLS_LOG_INFO("Game runtime using project settings: " + resolvedProjectPaths.settingsPath);
@@ -215,6 +217,7 @@ Game::Context::Context(
 	driverSettings.debugMode = false;
 #endif
 	driverSettings.enableThreadedRendering = m_enableThreadedRendering;
+	driverSettings.enableLightGrid = projectSettings.GetOrDefault<bool>("enable_light_grid", true);
 	driverSettings.threadedFrameSlotCount = driverSettings.framesInFlight;
 	driverSettings.diagnostics = m_diagnosticsSettings;
 	driverSettings.defaultPipelineState = basePSO;

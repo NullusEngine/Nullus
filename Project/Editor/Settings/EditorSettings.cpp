@@ -16,6 +16,12 @@ EditorSceneToolSettingsObject& EditorSettings::GetSceneToolSettingsObject()
     return object;
 }
 
+EditorRenderingSettingsObject& EditorSettings::GetRenderingSettingsObject()
+{
+    static EditorRenderingSettingsObject object;
+    return object;
+}
+
 void EditorSettings::RegisterSettingObjects(EditorSettingsRegistry& p_registry)
 {
     meta::ReflectionDatabase::Instance();
@@ -34,6 +40,14 @@ void EditorSettings::RegisterSettingObjects(EditorSettingsRegistry& p_registry)
         EditorSettingPersistenceScope::User,
         [] { return meta::Variant(GetSceneToolSettingsObject(), meta::variant_policy::NoCopy {}); },
         NLS_TYPEOF(EditorSceneToolSettingsObject)
+    });
+    p_registry.Register({
+        "editor.rendering",
+        "Rendering",
+        "Editor/Rendering",
+        EditorSettingPersistenceScope::User,
+        [] { return meta::Variant(GetRenderingSettingsObject(), meta::variant_policy::NoCopy {}); },
+        NLS_TYPEOF(EditorRenderingSettingsObject)
     });
 }
 }

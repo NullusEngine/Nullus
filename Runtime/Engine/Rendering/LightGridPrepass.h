@@ -90,6 +90,9 @@ namespace NLS::Engine::Rendering
         static bool ShouldLogHotPathFailureDiagnostics(
             const NLS::Render::Settings::EngineDiagnosticsSettings& diagnostics);
 
+        bool EnsureFallbackGraphicsPassBindingSet(
+            const NLS::Render::Data::FrameDescriptor& frameDescriptor,
+            bool hasSkyboxTexture);
         const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& GetGraphicsPassBindingSet() const;
         NLS::Render::FrameGraph::PreparedComputeDispatchSource GetPreparedComputeDispatchSource() const;
         std::vector<NLS::Render::Context::RecordedComputeDispatchInput> GetPreparedComputeDispatchInputs() const;
@@ -113,13 +116,61 @@ namespace NLS::Engine::Rendering
         {
             LightGridPassConstants constants{};
             std::vector<uint32_t> packedLights;
-            std::vector<uint32_t> clusterLightCounts;
-            std::vector<uint32_t> clusterScratchIndices;
+            std::vector<uint32_t> startOffsetGrid;
+            std::vector<uint32_t> culledLightLinks;
             std::vector<uint32_t> linkCounter;
             std::vector<uint32_t> compactCounter;
             std::vector<uint32_t> clusterRecords;
             std::vector<uint32_t> compactLightIndices;
         };
+
+        struct PreparedResourceCacheKey
+        {
+            uint32_t renderWidth = 0u;
+            uint32_t renderHeight = 0u;
+            float nearPlane = 0.0f;
+            float farPlane = 0.0f;
+            NLS::Maths::Vector3 cameraPosition{};
+            NLS::Maths::Matrix4 viewMatrix{};
+            NLS::Maths::Matrix4 projectionMatrix{};
+            ClusteredShadingSettings settings{};
+            bool hasSkyboxTexture = false;
+            std::vector<CapturedLight> lights;
+        };
+
+        struct PreparedResourceCache
+        {
+            bool valid = false;
+            PreparedResourceCacheKey key{};
+            std::shared_ptr<NLS::Render::RHI::RHIBindingSet> graphicsPassBindingSet;
+            std::vector<NLS::Render::Context::RecordedComputeDispatchInput> computeDispatchInputs;
+        };
+
+        struct PreparedBufferCache
+        {
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> startOffsetGrid;
+            size_t startOffsetGridSize = 0u;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> culledLightLinks;
+            size_t culledLightLinksSize = 0u;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> linkCounter;
+            size_t linkCounterSize = 0u;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> compactCounter;
+            size_t compactCounterSize = 0u;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> clusterRecords;
+            size_t clusterRecordsSize = 0u;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> compactLightIndices;
+            size_t compactLightIndicesSize = 0u;
+        };
+
+        std::optional<PreparedResourceCacheKey> BuildPreparedResourceCacheKey(
+            const NLS::Render::Data::FrameDescriptor& frameDescriptor,
+            const PreparedFrameInputs& preparedFrameInputs) const;
+        bool TryReusePreparedResources(const PreparedResourceCacheKey& key);
+        void StorePreparedResourceCache(const PreparedResourceCacheKey& key);
+        static bool AreSamePreparedResourceCacheKeys(
+            const PreparedResourceCacheKey& lhs,
+            const PreparedResourceCacheKey& rhs);
+        bool EnsureGraphicsBindingLayout();
 
         bool EnsureShadersLoaded();
         bool EnsurePipelines();
@@ -137,20 +188,28 @@ namespace NLS::Engine::Rendering
     private:
         NLS::Render::Context::Driver& m_driver;
         ClusteredShadingSettings m_settings;
+        NLS::Render::Resources::Shader* m_resetShader = nullptr;
         NLS::Render::Resources::Shader* m_injectionShader = nullptr;
         NLS::Render::Resources::Shader* m_compactShader = nullptr;
+        std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> m_resetPipelineLayout;
         std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> m_injectionPipelineLayout;
         std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> m_compactPipelineLayout;
+        std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> m_resetBindingLayout;
         std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> m_injectionBindingLayout;
         std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> m_compactBindingLayout;
         std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> m_graphicsBindingLayout;
+        std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> m_resetPipeline;
         std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> m_injectionPipeline;
         std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> m_compactPipeline;
+        NLS::Render::RHI::PipelineCacheKey m_resetPipelineKey;
         NLS::Render::RHI::PipelineCacheKey m_injectionPipelineKey;
         NLS::Render::RHI::PipelineCacheKey m_compactPipelineKey;
         std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_graphicsPassBindingSet;
+        std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_fallbackGraphicsPassBindingSet;
         std::vector<NLS::Render::Context::RecordedComputeDispatchInput> m_computeDispatchInputs;
         mutable PackedFrameData m_frameScratch;
+        PreparedResourceCache m_preparedResourceCache;
+        PreparedBufferCache m_preparedBufferCache;
     };
 
     template<typename TMetadataRange, typename TMutatePackageFn, typename TBuildPassInputsFn>

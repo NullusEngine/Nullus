@@ -1219,6 +1219,104 @@ TEST(RenderFrameworkContractTests, LightGridPrepassReusesFrameScratchStorage)
     EXPECT_NE(source.find("outFrameData.packedLights.clear()"), std::string::npos);
 }
 
+TEST(RenderFrameworkContractTests, LightGridPrepassCachesPreparedResourcesForStableFrameInputs)
+{
+    const std::filesystem::path lightGridHeaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/LightGridPrepass.h";
+    const std::filesystem::path lightGridSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/LightGridPrepass.cpp";
+
+    const auto readFile = [](const std::filesystem::path& path)
+    {
+        std::ifstream stream(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+    };
+
+    const std::string headerSource = readFile(lightGridHeaderPath);
+    const std::string source = readFile(lightGridSourcePath);
+
+    ASSERT_FALSE(headerSource.empty());
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(headerSource.find("PreparedResourceCacheKey"), std::string::npos);
+    EXPECT_NE(headerSource.find("PreparedResourceCache"), std::string::npos);
+    EXPECT_NE(headerSource.find("m_preparedResourceCache"), std::string::npos);
+    EXPECT_NE(source.find("BuildPreparedResourceCacheKey"), std::string::npos);
+    EXPECT_NE(source.find("TryReusePreparedResources"), std::string::npos);
+    EXPECT_NE(source.find("StorePreparedResourceCache"), std::string::npos);
+    EXPECT_NE(source.find("m_computeDispatchInputs.clear();\n        return true;"), std::string::npos);
+    EXPECT_NE(source.find("DescriptorAllocationLifetime::Persistent"), std::string::npos);
+    EXPECT_EQ(source.find("m_graphicsPassBindingSet.reset();"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, LightGridPrepassUsesGpuResetAndBufferSizeCacheForDynamicFrames)
+{
+    const std::filesystem::path lightGridHeaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/LightGridPrepass.h";
+    const std::filesystem::path lightGridSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/LightGridPrepass.cpp";
+    const std::filesystem::path resetShaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders/LightGridReset.hlsl";
+
+    const auto readFile = [](const std::filesystem::path& path)
+    {
+        std::ifstream stream(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+    };
+
+    const std::string headerSource = readFile(lightGridHeaderPath);
+    const std::string source = readFile(lightGridSourcePath);
+    const std::string resetShaderSource = readFile(resetShaderPath);
+
+    ASSERT_FALSE(headerSource.empty());
+    ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(resetShaderSource.empty());
+    EXPECT_NE(headerSource.find("PreparedBufferCache"), std::string::npos);
+    EXPECT_NE(headerSource.find("m_preparedBufferCache"), std::string::npos);
+    EXPECT_NE(headerSource.find("m_resetPipeline"), std::string::npos);
+    EXPECT_NE(headerSource.find("startOffsetGrid"), std::string::npos);
+    EXPECT_NE(headerSource.find("culledLightLinks"), std::string::npos);
+    EXPECT_NE(source.find("CreateOrReusePreparedBuffer"), std::string::npos);
+    EXPECT_NE(source.find("\"LightGridReset\""), std::string::npos);
+    EXPECT_NE(source.find("\":Shaders/LightGridReset.hlsl\""), std::string::npos);
+    EXPECT_NE(source.find("\"LightGridStartOffsetGrid\""), std::string::npos);
+    EXPECT_NE(source.find("\"LightGridCulledLightLinks\""), std::string::npos);
+    EXPECT_NE(source.find("\"u_LightGridStartOffsetGrid\""), std::string::npos);
+    EXPECT_NE(source.find("\"u_LightGridCulledLightLinks\""), std::string::npos);
+    EXPECT_EQ(source.find("\"u_LightGridClusterLightCounts\""), std::string::npos);
+    EXPECT_EQ(source.find("outFrameData.startOffsetGrid.assign"), std::string::npos);
+    EXPECT_EQ(source.find("outFrameData.culledLightLinks.assign"), std::string::npos);
+    EXPECT_EQ(source.find("outFrameData.clusterRecords.assign"), std::string::npos);
+    EXPECT_EQ(source.find("outFrameData.compactLightIndices.assign"), std::string::npos);
+    EXPECT_NE(resetShaderSource.find("0xFFFFFFFFu"), std::string::npos);
+    EXPECT_NE(resetShaderSource.find("u_LightGridLinkCounter[0] = 0u"), std::string::npos);
+    EXPECT_NE(resetShaderSource.find("u_LightGridCompactCounter[0] = 0u"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, DeferredThreadedGBufferCaptureUsesPassBindingPlaceholder)
+{
+    const std::filesystem::path deferredRendererPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/DeferredSceneRenderer.cpp";
+
+    std::ifstream deferredStream(deferredRendererPath, std::ios::binary);
+    const std::string source{
+        std::istreambuf_iterator<char>(deferredStream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(source.empty());
+    const auto threadedBranch = source.find("if (usesThreadedRendering)");
+    const auto gbufferLoop = source.find("for (const auto& [_, drawable] : drawables.opaques)", threadedBranch);
+    const auto lightingPass = source.find("m_lightingMaterial->GetParameterBlock().Set(\"u_GBufferAlbedo\"", gbufferLoop);
+    const auto placeholderBeforeGBuffer =
+        source.find("SetActivePreparedPassBindingSet(BaseSceneRenderer::GetPreparedPassBindingSetPlaceholder())", threadedBranch);
+    const auto clearAfterLighting = source.find("SetActivePreparedPassBindingSet(nullptr)", lightingPass);
+
+    ASSERT_NE(threadedBranch, std::string::npos);
+    ASSERT_NE(gbufferLoop, std::string::npos);
+    ASSERT_NE(lightingPass, std::string::npos);
+    EXPECT_LT(placeholderBeforeGBuffer, gbufferLoop);
+    EXPECT_GT(clearAfterLighting, lightingPass);
+}
+
 TEST(RenderFrameworkContractTests, BaseSceneRendererCachesLightGridCompileContextPerFrame)
 {
     const std::filesystem::path rendererHeaderPath =
@@ -1280,7 +1378,10 @@ TEST(RenderFrameworkContractTests, DisabledLightGridContextReturnsBeforePreparin
     ASSERT_NE(preparedSource, std::string::npos);
     EXPECT_LT(disabledBranch, preparedRequest);
     EXPECT_LT(disabledBranch, preparedSource);
-    EXPECT_NE(source.find("return NLS::Render::FrameGraph::BuildLightGridCompileContext(\n\t\t\tframeSnapshot,\n\t\t\t{},\n\t\t\t{});", disabledBranch), std::string::npos);
+    EXPECT_EQ(source.find("return NLS::Render::FrameGraph::BuildLightGridCompileContext(\n\t\t\tframeSnapshot,\n\t\t\t{},\n\t\t\t{});", disabledBranch), std::string::npos);
+    EXPECT_NE(source.find("EnsureFallbackGraphicsPassBindingSet(frameSnapshot, hasSkyboxTexture)", disabledBranch), std::string::npos);
+    EXPECT_NE(source.find("GetLightGridGraphicsPassBindingSet()", disabledBranch), std::string::npos);
+    EXPECT_NE(source.find("EnsureFallbackGraphicsPassBindingSet(frameSnapshot, hasSkyboxTexture)", preparedSource), std::string::npos);
 }
 
 TEST(RenderFrameworkContractTests, ThreadedDrainResultIsActionableForCallers)
@@ -1345,6 +1446,22 @@ TEST(RenderFrameworkContractTests, LightGridShaderUsesCellOwnedUEInjectionShape)
     EXPECT_NE(commonShaderSource.find("u_LightGridClipToView"), std::string::npos);
     EXPECT_NE(commonShaderSource.find("mul(float4(tileMin.x, tileMin.y, minDeviceZ, 1.0f), u_LightGridClipToView)"), std::string::npos);
     EXPECT_EQ(commonShaderSource.find("mul(u_LightGridInverseViewProjection, float4(tileMin.x, tileMin.y, minDeviceZ, 1.0f))"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, LightGridCommonAvoidsDxcReservedPointParameterName)
+{
+    const std::filesystem::path commonShaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders/LightGridCommon.hlsli";
+
+    std::ifstream commonStream(commonShaderPath, std::ios::binary);
+    const std::string commonShaderSource{
+        std::istreambuf_iterator<char>(commonStream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(commonShaderSource.empty());
+    EXPECT_EQ(commonShaderSource.find("float3 point)"), std::string::npos);
+    EXPECT_EQ(commonShaderSource.find("abs(point -"), std::string::npos);
+    EXPECT_NE(commonShaderSource.find("float3 queryPoint)"), std::string::npos);
 }
 
 TEST(RenderFrameworkContractTests, LightGridLinkedListPathCapsGlobalLinksLikeUESource)
@@ -1498,4 +1615,57 @@ TEST(RenderFrameworkContractTests, FrameGraphResourceLifetimeContractKeepsTransi
     EXPECT_TRUE(weakTexture.expired());
     EXPECT_TRUE(weakTextureView.expired());
     EXPECT_TRUE(weakBuffer.expired());
+}
+
+TEST(RenderFrameworkContractTests, UE427RhiCommandListSubmissionMetadataTracksLifecycleAndChildOrder)
+{
+    NLS::Render::RHI::RHICommandListSubmissionMetadata emptyList;
+    emptyList.debugName = "EmptyImmediate";
+    emptyList.queueType = NLS::Render::RHI::QueueType::Graphics;
+    emptyList.lifecycleState = NLS::Render::RHI::RHICommandListLifecycleState::Closed;
+
+    EXPECT_TRUE(emptyList.IsSubmittable());
+    EXPECT_FALSE(emptyList.HasVisibleWork());
+    EXPECT_EQ(emptyList.commandCount, 0u);
+    EXPECT_EQ(emptyList.visibleDrawCount, 0u);
+
+    NLS::Render::RHI::RHICommandListSubmissionMetadata basePass;
+    basePass.debugName = "BasePass";
+    basePass.queueType = NLS::Render::RHI::QueueType::Graphics;
+    basePass.lifecycleState = NLS::Render::RHI::RHICommandListLifecycleState::Recording;
+    basePass.RecordCommand(NLS::Render::RHI::RHICommandListCommandKind::DrawIndexed, 2u);
+
+    EXPECT_FALSE(basePass.IsSubmittable());
+    EXPECT_TRUE(basePass.HasVisibleWork());
+    EXPECT_EQ(basePass.commandCount, 1u);
+    EXPECT_EQ(basePass.visibleDrawCount, 2u);
+
+    basePass.Close();
+    EXPECT_EQ(basePass.lifecycleState, NLS::Render::RHI::RHICommandListLifecycleState::Closed);
+    EXPECT_TRUE(basePass.IsSubmittable());
+
+    NLS::Render::RHI::RHICommandListSubmissionMetadata lightGrid;
+    lightGrid.debugName = "LightGrid";
+    lightGrid.queueType = NLS::Render::RHI::QueueType::Compute;
+    lightGrid.lifecycleState = NLS::Render::RHI::RHICommandListLifecycleState::Closed;
+    lightGrid.RecordCommand(NLS::Render::RHI::RHICommandListCommandKind::Dispatch, 0u);
+
+    NLS::Render::RHI::RHICommandListSubmissionMetadata immediate;
+    immediate.debugName = "Immediate";
+    immediate.queueType = NLS::Render::RHI::QueueType::Graphics;
+    immediate.lifecycleState = NLS::Render::RHI::RHICommandListLifecycleState::Recording;
+    immediate.QueueChildSubmission(lightGrid);
+    immediate.QueueChildSubmission(basePass);
+    immediate.Close();
+
+    ASSERT_EQ(immediate.childSubmissions.size(), 2u);
+    EXPECT_EQ(immediate.childSubmissions[0].debugName, "LightGrid");
+    EXPECT_EQ(immediate.childSubmissions[0].queueType, NLS::Render::RHI::QueueType::Compute);
+    EXPECT_EQ(immediate.childSubmissions[0].submitOrder, 0u);
+    EXPECT_EQ(immediate.childSubmissions[1].debugName, "BasePass");
+    EXPECT_EQ(immediate.childSubmissions[1].queueType, NLS::Render::RHI::QueueType::Graphics);
+    EXPECT_EQ(immediate.childSubmissions[1].submitOrder, 1u);
+    EXPECT_EQ(immediate.commandCount, 2u);
+    EXPECT_EQ(immediate.visibleDrawCount, 2u);
+    EXPECT_TRUE(immediate.HasVisibleWork());
 }

@@ -153,7 +153,7 @@ void BaseSceneRenderer::RefreshFrameSnapshotVisibility(
 const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& BaseSceneRenderer::GetLightGridGraphicsPassBindingSet() const
 {
 	static const std::shared_ptr<NLS::Render::RHI::RHIBindingSet> kNullBindingSet{};
-	return NLS::Render::Context::DriverRendererAccess::IsLightGridEnabled(m_driver) && m_lightGridPrepass != nullptr
+	return m_lightGridPrepass != nullptr
 		? m_lightGridPrepass->GetGraphicsPassBindingSet()
 		: kNullBindingSet;
 }
@@ -167,10 +167,12 @@ NLS::Render::FrameGraph::LightGridCompileContext BaseSceneRenderer::BuildLightGr
 
 	if (!NLS::Render::Context::DriverRendererAccess::IsLightGridEnabled(m_driver))
 	{
+		if (m_lightGridPrepass != nullptr)
+			m_lightGridPrepass->EnsureFallbackGraphicsPassBindingSet(frameSnapshot, hasSkyboxTexture);
 		return NLS::Render::FrameGraph::BuildLightGridCompileContext(
 			frameSnapshot,
 			{},
-			{});
+			GetLightGridGraphicsPassBindingSet());
 	}
 
 	std::lock_guard lock(m_lightGridCompileContextCacheMutex);
@@ -182,6 +184,8 @@ NLS::Render::FrameGraph::LightGridCompileContext BaseSceneRenderer::BuildLightGr
 		GetLightGridPrepass(),
 		BuildLightGridFrameInputs(hasSkyboxTexture));
 	auto preparedComputeSource = LightGridPrepass::BuildPreparedComputeDispatchSource(preparedComputeRequest);
+	if (GetLightGridGraphicsPassBindingSet() == nullptr && m_lightGridPrepass != nullptr)
+		m_lightGridPrepass->EnsureFallbackGraphicsPassBindingSet(frameSnapshot, hasSkyboxTexture);
 	auto graphicsPassBindingSet = GetLightGridGraphicsPassBindingSet();
 	auto context = NLS::Render::FrameGraph::BuildLightGridCompileContext(
 		frameSnapshot,

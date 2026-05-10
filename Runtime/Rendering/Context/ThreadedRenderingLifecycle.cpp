@@ -9,6 +9,27 @@ namespace NLS::Render::Context
 {
 namespace
 {
+    ParallelDrawCommandPassRole ResolveParallelDrawCommandPassRole(const RenderPassCommandKind kind)
+    {
+        switch (kind)
+        {
+        case RenderPassCommandKind::Opaque:
+        case RenderPassCommandKind::GBuffer:
+        case RenderPassCommandKind::Lighting:
+            return ParallelDrawCommandPassRole::Opaque;
+        case RenderPassCommandKind::Transparent:
+            return ParallelDrawCommandPassRole::Transparent;
+        case RenderPassCommandKind::Skybox:
+            return ParallelDrawCommandPassRole::Skybox;
+        case RenderPassCommandKind::Helper:
+            return ParallelDrawCommandPassRole::Helper;
+        case RenderPassCommandKind::Compute:
+            return ParallelDrawCommandPassRole::Compute;
+        default:
+            return ParallelDrawCommandPassRole::Auxiliary;
+        }
+    }
+
     RenderFrameInput BuildRenderFrameInput(const FrameSnapshot& snapshot)
     {
         RenderFrameInput input;
@@ -87,6 +108,38 @@ namespace
             return 0;
         }
     }
+}
+
+std::vector<ParallelDrawCommandBatchMetadata> BuildUE427ParallelDrawCommandBatches(
+    const std::vector<ParallelCommandWorkUnit>& workUnits)
+{
+    std::vector<ParallelDrawCommandBatchMetadata> batches;
+    batches.reserve(workUnits.size());
+
+    for (const auto& workUnit : workUnits)
+    {
+        const auto& commandInput = workUnit.commandInput;
+        const uint64_t recordedDrawCommandCount =
+            static_cast<uint64_t>(commandInput.recordedDrawCommands.size());
+        ParallelDrawCommandBatchMetadata batch;
+        batch.passRole = ResolveParallelDrawCommandPassRole(commandInput.kind);
+        batch.workUnitIndex = workUnit.workUnitIndex;
+        batch.submissionOrder = workUnit.submissionOrder;
+        batch.debugName = !workUnit.debugName.empty()
+            ? workUnit.debugName
+            : commandInput.debugName;
+        batch.queueType = commandInput.queueType;
+        batch.drawCommandCount = commandInput.drawCount > 0u
+            ? commandInput.drawCount
+            : recordedDrawCommandCount;
+        batch.recordedDrawCommandCount = recordedDrawCommandCount;
+        batch.eligibleForParallelRecording = workUnit.eligibleForParallelRecording;
+        batch.eligibleForParallelTranslation = workUnit.eligibleForParallelTranslation;
+        batch.incomingDependencyEdges = workUnit.incomingDependencyEdges;
+        batches.push_back(std::move(batch));
+    }
+
+    return batches;
 }
 
 ThreadedRenderingLifecycle::ThreadedRenderingLifecycle(const uint32_t slotCount)

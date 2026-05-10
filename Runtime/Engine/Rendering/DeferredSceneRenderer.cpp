@@ -128,6 +128,7 @@ namespace NLS::Engine::Rendering
 		if (usesThreadedRendering)
 		{
 			EnsureGBufferTargets(frameDescriptor.renderWidth, frameDescriptor.renderHeight);
+			SetActivePreparedPassBindingSet(BaseSceneRenderer::GetPreparedPassBindingSetPlaceholder());
 
 			auto gbufferPso = CreateSceneDefaultPipelineState(*this);
 			for (const auto& [_, drawable] : drawables.opaques)
@@ -154,8 +155,6 @@ namespace NLS::Engine::Rendering
 			}
 
 			{
-				SetActivePreparedPassBindingSet(BaseSceneRenderer::GetPreparedPassBindingSetPlaceholder());
-
 				m_lightingMaterial->GetParameterBlock().Set("u_GBufferAlbedo", m_gBufferAlbedoTexture.get());
 				m_lightingMaterial->GetParameterBlock().Set("u_GBufferNormal", m_gBufferNormalTexture.get());
 				m_lightingMaterial->GetParameterBlock().Set("u_GBufferMaterial", m_gBufferMaterialTexture.get());

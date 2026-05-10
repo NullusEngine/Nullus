@@ -67,6 +67,7 @@ namespace NLS::Render::Context
         {
             package.parallelCommandWorkUnits.clear();
             package.workUnitDependencyEdges.clear();
+            package.parallelDrawCommandBatches.clear();
             package.parallelCommandWorkUnits.reserve(package.passCommandInputs.size());
             for (size_t index = 0; index < package.passCommandInputs.size(); ++index)
             {
@@ -81,6 +82,7 @@ namespace NLS::Render::Context
             }
             package.parallelCommandWorkUnitCount = static_cast<uint64_t>(package.parallelCommandWorkUnits.size());
             package.containsParallelCommandWorkUnits = !package.parallelCommandWorkUnits.empty();
+            package.parallelDrawCommandBatches = BuildUE427ParallelDrawCommandBatches(package.parallelCommandWorkUnits);
         }
     }
 
@@ -148,6 +150,7 @@ namespace NLS::Render::Context
             package.containsCommandInputs = false;
             package.parallelCommandWorkUnits.clear();
             package.workUnitDependencyEdges.clear();
+            package.parallelDrawCommandBatches.clear();
             package.parallelCommandWorkUnitCount = 0u;
             package.containsParallelCommandWorkUnits = false;
         }

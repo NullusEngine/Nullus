@@ -113,6 +113,21 @@ namespace
         NLS::Render::RHI::RHIBufferDesc m_desc {};
     };
 
+    class TestBindingSet final : public NLS::Render::RHI::RHIBindingSet
+    {
+    public:
+        explicit TestBindingSet(std::string debugName)
+        {
+            m_desc.debugName = std::move(debugName);
+        }
+
+        std::string_view GetDebugName() const override { return m_desc.debugName; }
+        const NLS::Render::RHI::RHIBindingSetDesc& GetDesc() const override { return m_desc; }
+
+    private:
+        NLS::Render::RHI::RHIBindingSetDesc m_desc {};
+    };
+
     class TestTextureView final : public NLS::Render::RHI::RHITextureView
     {
     public:
@@ -1607,6 +1622,136 @@ TEST(FrameGraphSceneTargetsTests, ValidateThreadedExecutionInputsAcceptsComplete
     EXPECT_TRUE(validation.diagnostics.empty());
 }
 
+TEST(FrameGraphSceneTargetsTests, UE427RdgPassContractRetainsSideEffectsAndReportsUndeclaredResourceUse)
+{
+    NLS::Render::FrameGraph::RDGPassContract sideEffectPass;
+    sideEffectPass.name = "LightGridInjection";
+    sideEffectPass.queueType = NLS::Render::RHI::QueueType::Compute;
+    sideEffectPass.hasSideEffect = true;
+
+    EXPECT_TRUE(NLS::Render::FrameGraph::RDGPassMustExecute(sideEffectPass));
+    EXPECT_FALSE(NLS::Render::FrameGraph::RDGPassCanCull(sideEffectPass));
+
+    NLS::Render::FrameGraph::RDGPassContract invalidPass;
+    invalidPass.name = "DeferredLighting";
+    invalidPass.queueType = NLS::Render::RHI::QueueType::Graphics;
+    invalidPass.declaredResourceNames.push_back("SceneColor");
+    invalidPass.usedResourceNames.push_back("SceneColor");
+    invalidPass.usedResourceNames.push_back("LightGridLinks");
+
+    const auto validation = NLS::Render::FrameGraph::ValidateRDGPassContract(invalidPass);
+
+    EXPECT_TRUE(validation.HasErrors());
+    EXPECT_TRUE(validation.ContainsError(
+        NLS::Render::FrameGraph::FrameGraphCompileDiagnosticCode::UndeclaredRDGResourceUse));
+    ASSERT_FALSE(validation.diagnostics.empty());
+    EXPECT_NE(validation.diagnostics.front().message.find("LightGridLinks"), std::string::npos);
+}
+
+TEST(FrameGraphSceneTargetsTests, UE427RdgPassContractCanBeBuiltFromThreadedPassDeclaredResourceAccesses)
+{
+    auto sceneColor = std::make_shared<TestTexture>(NLS::Render::RHI::RHITextureDesc{});
+    auto lightLinks = std::make_shared<TestBuffer>(NLS::Render::RHI::RHIBufferDesc{});
+
+    NLS::Render::Context::RenderPassCommandInput lightingPass;
+    lightingPass.kind = NLS::Render::Context::RenderPassCommandKind::Lighting;
+    lightingPass.textureResourceAccesses.push_back({
+        sceneColor,
+        {},
+        NLS::Render::Context::ResourceAccessMode::Read,
+        NLS::Render::RHI::ResourceState::ShaderRead,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::AccessMask::ShaderRead
+    });
+    lightingPass.bufferResourceAccesses.push_back({
+        lightLinks,
+        NLS::Render::Context::ResourceAccessMode::Read,
+        NLS::Render::RHI::ResourceState::ShaderRead,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::AccessMask::ShaderRead
+    });
+
+    auto metadata = MakeThreadedPassMetadata(
+        NLS::Render::Context::RenderPassCommandKind::Lighting,
+        NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Auxiliary,
+        "DeferredLighting");
+    metadata.propagatesColorOutput = false;
+    metadata.propagatesDepthOutput = false;
+
+    const auto contract = NLS::Render::FrameGraph::BuildRDGPassContract(lightingPass, metadata);
+
+    EXPECT_EQ(contract.name, "DeferredLighting");
+    EXPECT_TRUE(contract.hasSideEffect);
+    EXPECT_FALSE(NLS::Render::FrameGraph::RDGPassCanCull(contract));
+    EXPECT_EQ(contract.declaredResourceNames.size(), 2u);
+    EXPECT_EQ(contract.usedResourceNames, contract.declaredResourceNames);
+    EXPECT_FALSE(NLS::Render::FrameGraph::ValidateRDGPassContract(contract).HasErrors());
+}
+
+TEST(FrameGraphSceneTargetsTests, UE427ParallelDrawCommandBatchesPromoteComputeToGraphicsDependencyEdges)
+{
+    auto visibilityBuffer = std::make_shared<TestBuffer>(NLS::Render::RHI::RHIBufferDesc{});
+
+    NLS::Render::FrameGraph::ThreadedRenderSceneExecutionPlan plan;
+    NLS::Render::Context::RenderPassCommandInput computePass;
+    computePass.kind = NLS::Render::Context::RenderPassCommandKind::Compute;
+    computePass.queueType = NLS::Render::RHI::QueueType::Compute;
+    computePass.debugName = "VisibilityCompute";
+    computePass.bufferResourceAccesses.push_back({
+        visibilityBuffer,
+        NLS::Render::Context::ResourceAccessMode::Write,
+        NLS::Render::RHI::ResourceState::ShaderWrite,
+        NLS::Render::RHI::PipelineStageMask::ComputeShader,
+        NLS::Render::RHI::AccessMask::ShaderWrite
+    });
+
+    NLS::Render::Context::RenderPassCommandInput opaquePass;
+    opaquePass.kind = NLS::Render::Context::RenderPassCommandKind::Opaque;
+    opaquePass.queueType = NLS::Render::RHI::QueueType::Graphics;
+    opaquePass.debugName = "ForwardOpaque";
+    opaquePass.drawCount = 1u;
+    opaquePass.bufferResourceAccesses.push_back({
+        visibilityBuffer,
+        NLS::Render::Context::ResourceAccessMode::Read,
+        NLS::Render::RHI::ResourceState::ShaderRead,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::AccessMask::ShaderRead
+    });
+
+    plan.passes.push_back(MakeThreadedPassPlan(
+        computePass,
+        NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Auxiliary,
+        "VisibilityCompute",
+        0u,
+        NLS::Render::RHI::QueueType::Compute,
+        NLS::Render::Context::QueueDependencyPolicy::None));
+    plan.passes.push_back(MakeThreadedPassPlan(
+        opaquePass,
+        NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Opaque,
+        "ForwardOpaque",
+        1u,
+        NLS::Render::RHI::QueueType::Graphics,
+        NLS::Render::Context::QueueDependencyPolicy::LastCompute));
+    plan.dependencies = NLS::Render::FrameGraph::BuildThreadedRenderSceneDependencyEdges(plan.passes);
+
+    NLS::Render::Context::RenderScenePackage package;
+    NLS::Render::FrameGraph::ApplyThreadedRenderSceneExecutionPlan(package, plan);
+
+    ASSERT_EQ(package.parallelDrawCommandBatches.size(), 2u);
+    EXPECT_EQ(
+        package.parallelDrawCommandBatches[0].passRole,
+        NLS::Render::Context::ParallelDrawCommandPassRole::Compute);
+    EXPECT_EQ(
+        package.parallelDrawCommandBatches[1].passRole,
+        NLS::Render::Context::ParallelDrawCommandPassRole::Opaque);
+    ASSERT_EQ(package.parallelDrawCommandBatches[1].incomingDependencyEdges.size(), 1u);
+    EXPECT_EQ(package.parallelDrawCommandBatches[1].incomingDependencyEdges[0].sourceWorkUnitIndex, 0u);
+    EXPECT_EQ(package.parallelDrawCommandBatches[1].incomingDependencyEdges[0].targetWorkUnitIndex, 1u);
+    EXPECT_EQ(
+        package.parallelDrawCommandBatches[1].incomingDependencyEdges[0].resourceKind,
+        NLS::Render::Context::ThreadedDependencyResourceKind::Buffer);
+}
+
 TEST(FrameGraphSceneTargetsTests, ValidateThreadedExecutionInputsReportsIllegalMetadataAndQueueContracts)
 {
     std::vector<NLS::Render::Context::RenderPassCommandInput> passInputs;
@@ -1950,6 +2095,46 @@ TEST(FrameGraphSceneTargetsTests, SceneRenderGraphBuilderExposesExpectedForwardA
     EXPECT_EQ(deferredDescriptors[1].metadata.commandKind, NLS::Render::Context::RenderPassCommandKind::Lighting);
     EXPECT_FALSE(deferredDescriptors[0].metadata.propagatesColorOutput);
     EXPECT_TRUE(deferredDescriptors[1].metadata.propagatesColorOutput);
+}
+
+TEST(FrameGraphSceneTargetsTests, DeferredLightGridCompilationUsesResolvedPassBindingsForPassInputs)
+{
+    NLS::Render::Context::RenderScenePackage package;
+    package.opaqueDrawCount = 1u;
+    package.drawCommandCount = 2u;
+    package.renderWidth = 320u;
+    package.renderHeight = 180u;
+
+    auto placeholder = std::make_shared<TestBindingSet>("PreparedPassBindingPlaceholder");
+    auto lightGridBindingSet = std::make_shared<TestBindingSet>("LightGridGraphicsBindingSet");
+
+    package.recordedDrawCommands.resize(2u);
+    package.recordedDrawCommands[0].passBindingSet = placeholder;
+    package.recordedDrawCommands[1].passBindingSet = placeholder;
+
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 320u;
+    frameDescriptor.renderHeight = 180u;
+
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor = frameDescriptor;
+    lightGridContext.graphicsPassBindingSet = lightGridBindingSet;
+
+    NLS::Render::FrameGraph::DeferredPreparedSceneResources resources;
+    NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
+        package,
+        lightGridContext,
+        resources);
+
+    ASSERT_EQ(package.passCommandInputs.size(), 2u);
+    ASSERT_EQ(package.passCommandInputs[0].kind, NLS::Render::Context::RenderPassCommandKind::GBuffer);
+    ASSERT_EQ(package.passCommandInputs[1].kind, NLS::Render::Context::RenderPassCommandKind::Lighting);
+    ASSERT_EQ(package.passCommandInputs[0].recordedDrawCommands.size(), 1u);
+    ASSERT_EQ(package.passCommandInputs[1].recordedDrawCommands.size(), 1u);
+    EXPECT_EQ(package.recordedDrawCommands[0].passBindingSet, lightGridBindingSet);
+    EXPECT_EQ(package.recordedDrawCommands[1].passBindingSet, lightGridBindingSet);
+    EXPECT_EQ(package.passCommandInputs[0].recordedDrawCommands[0].passBindingSet, lightGridBindingSet);
+    EXPECT_EQ(package.passCommandInputs[1].recordedDrawCommands[0].passBindingSet, lightGridBindingSet);
 }
 
 TEST(FrameGraphSceneTargetsTests, BuildPreparedComputeDispatchSourceCarriesDispatchInputsAndMetadataInOrder)

@@ -259,7 +259,8 @@ namespace NLS::Render::FrameGraph
 		MissingQueueDependencySource,
 		ConflictingBufferResourceAccess,
 		ConflictingTextureResourceAccess,
-		InvalidQueueDependency
+		InvalidQueueDependency,
+		UndeclaredRDGResourceUse
 	};
 
 	struct FrameGraphCompileDiagnostic
@@ -312,6 +313,69 @@ namespace NLS::Render::FrameGraph
 		CompiledThreadedRenderSceneExecution execution;
 		FrameGraphCompileValidationResult validation;
 	};
+
+	struct RDGPassContract
+	{
+		std::string name;
+		RHI::QueueType queueType = RHI::QueueType::Graphics;
+		bool hasSideEffect = false;
+		std::vector<std::string> declaredResourceNames;
+		std::vector<std::string> usedResourceNames;
+	};
+
+	inline bool RDGPassMustExecute(const RDGPassContract& pass)
+	{
+		return pass.hasSideEffect || !pass.declaredResourceNames.empty();
+	}
+
+	inline bool RDGPassCanCull(const RDGPassContract& pass)
+	{
+		return !RDGPassMustExecute(pass);
+	}
+
+	inline std::string MakeRDGBufferResourceName(
+		const Context::BufferResourceAccess& access,
+		const size_t index)
+	{
+		std::ostringstream stream;
+		stream << "Buffer[" << index << "]";
+		if (access.buffer != nullptr && !access.buffer->GetDebugName().empty())
+			stream << ":" << access.buffer->GetDebugName();
+		return stream.str();
+	}
+
+	inline std::string MakeRDGTextureResourceName(
+		const Context::TextureResourceAccess& access,
+		const size_t index)
+	{
+		std::ostringstream stream;
+		stream << "Texture[" << index << "]";
+		if (access.texture != nullptr && !access.texture->GetDebugName().empty())
+			stream << ":" << access.texture->GetDebugName();
+		return stream.str();
+	}
+
+	inline RDGPassContract BuildRDGPassContract(
+		const Context::RenderPassCommandInput& passInput,
+		const ThreadedRenderScenePassMetadata& metadata)
+	{
+		RDGPassContract contract;
+		contract.name = metadata.graphPassName != nullptr && metadata.graphPassName[0] != '\0'
+			? std::string(metadata.graphPassName)
+			: passInput.debugName;
+		contract.queueType = metadata.queueType;
+		contract.hasSideEffect = !metadata.propagatesColorOutput && !metadata.propagatesDepthOutput;
+
+		contract.declaredResourceNames.reserve(
+			passInput.bufferResourceAccesses.size() + passInput.textureResourceAccesses.size());
+		for (size_t index = 0u; index < passInput.bufferResourceAccesses.size(); ++index)
+			contract.declaredResourceNames.push_back(MakeRDGBufferResourceName(passInput.bufferResourceAccesses[index], index));
+		for (size_t index = 0u; index < passInput.textureResourceAccesses.size(); ++index)
+			contract.declaredResourceNames.push_back(MakeRDGTextureResourceName(passInput.textureResourceAccesses[index], index));
+
+		contract.usedResourceNames = contract.declaredResourceNames;
+		return contract;
+	}
 
 	inline std::vector<ThreadedRenderScenePassMetadata> BuildPreparedComputeDispatchPassMetadata(
 		const std::vector<Context::RecordedComputeDispatchInput>& dispatchInputs)
@@ -785,6 +849,8 @@ namespace NLS::Render::FrameGraph
 			return "ConflictingTextureResourceAccess";
 		case FrameGraphCompileDiagnosticCode::InvalidQueueDependency:
 			return "InvalidQueueDependency";
+		case FrameGraphCompileDiagnosticCode::UndeclaredRDGResourceUse:
+			return "UndeclaredRDGResourceUse";
 		default:
 			return "Unknown";
 		}
@@ -839,6 +905,31 @@ namespace NLS::Render::FrameGraph
 			passKind,
 			std::move(message)
 		});
+	}
+
+	inline FrameGraphCompileValidationResult ValidateRDGPassContract(const RDGPassContract& pass)
+	{
+		FrameGraphCompileValidationResult result;
+		for (const auto& usedResourceName : pass.usedResourceNames)
+		{
+			if (std::find(
+				pass.declaredResourceNames.begin(),
+				pass.declaredResourceNames.end(),
+				usedResourceName) != pass.declaredResourceNames.end())
+			{
+				continue;
+			}
+
+			AddFrameGraphCompileDiagnostic(
+				result,
+				FrameGraphCompileDiagnosticCode::UndeclaredRDGResourceUse,
+				0u,
+				pass.queueType == RHI::QueueType::Compute
+					? Context::RenderPassCommandKind::Compute
+					: Context::RenderPassCommandKind::Opaque,
+				"RDG pass '" + pass.name + "' uses undeclared resource '" + usedResourceName + "'.");
+		}
+		return result;
 	}
 
 	inline bool ResourceAccessModeWrites(const Context::ResourceAccessMode mode)
@@ -2285,6 +2376,7 @@ namespace NLS::Render::FrameGraph
 		package.parallelCommandWorkUnits.clear();
 		package.parallelCommandWorkUnits.reserve(additionalWorkUnits.size() + plan.passes.size());
 		package.workUnitDependencyEdges.clear();
+		package.parallelDrawCommandBatches.clear();
 
 		package.visibleDrawCount = 0u;
 		package.opaqueDrawCount = 0u;
@@ -2379,6 +2471,7 @@ namespace NLS::Render::FrameGraph
 		package.containsCommandInputs = !package.passCommandInputs.empty();
 		package.parallelCommandWorkUnitCount = static_cast<uint64_t>(package.parallelCommandWorkUnits.size());
 		package.containsParallelCommandWorkUnits = !package.parallelCommandWorkUnits.empty();
+		package.parallelDrawCommandBatches = Context::BuildUE427ParallelDrawCommandBatches(package.parallelCommandWorkUnits);
 		package.computeDispatchInputs.clear();
 		package.containsComputeDispatchInputs = false;
 		package.asyncComputeWorkloadCount = static_cast<uint64_t>(std::count_if(

@@ -549,7 +549,6 @@ namespace NLS::Render::FrameGraph
     {
         NLS_PROFILE_SCOPE();
         const auto opaqueDrawCount = package.opaqueDrawCount;
-        const auto recordedDrawCommands = package.recordedDrawCommands;
         return CompileAndApplyThreadedRenderSceneExecution(
             package,
             lightGridContext.frameDescriptor,
@@ -564,14 +563,14 @@ namespace NLS::Render::FrameGraph
                 Detail::ResolvePreparedLightGridPassBindings(scenePackage, lightGridContext);
             },
             GetDeferredScenePassDescriptors(),
-            [&package, &resources, opaqueDrawCount, &recordedDrawCommands](const auto& lightGridComputeSource, const auto& compiledPasses)
+            [&package, &resources, opaqueDrawCount](const auto& lightGridComputeSource, const auto& compiledPasses)
             {
                 return BuildDeferredScenePassInputs(
                     compiledPasses,
                     package,
                     lightGridComputeSource,
                     opaqueDrawCount,
-                    recordedDrawCommands,
+                    package.recordedDrawCommands,
                     resources);
             });
     }

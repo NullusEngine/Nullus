@@ -1938,6 +1938,7 @@ namespace NLS::Render::Context
                 renderScenePackage,
                 parallelRecordingReady,
                 parallelTranslationReady);
+            submissionFrame->parallelDrawCommandBatches = BuildUE427ParallelDrawCommandBatches(workUnits);
             if (supportsOrderedWorkUnitSubmission && !workUnits.empty())
             {
                 const auto recordedBatch = RecordParallelCommandWorkUnits(

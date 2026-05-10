@@ -1519,6 +1519,167 @@ TEST(ThreadedRenderingLifecycleTests, RetiresSlotsBeforeTheyCanBeReused)
     EXPECT_EQ(lifecycle.GetInFlightDepth(), 1u);
 }
 
+TEST(ThreadedRenderingLifecycleTests, UE427RhiSubmissionFrameRetainsCommandListSubmissionMetadata)
+{
+    NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(1u);
+
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 427u;
+
+    NLS::Render::Context::RenderScenePackage scenePackage;
+    scenePackage.frameId = snapshot.frameId;
+
+    NLS::Render::RHI::RHICommandListSubmissionMetadata computeList;
+    computeList.debugName = "LightGrid";
+    computeList.queueType = NLS::Render::RHI::QueueType::Compute;
+    computeList.lifecycleState = NLS::Render::RHI::RHICommandListLifecycleState::Closed;
+    computeList.RecordCommand(NLS::Render::RHI::RHICommandListCommandKind::Dispatch);
+
+    NLS::Render::RHI::RHICommandListSubmissionMetadata graphicsList;
+    graphicsList.debugName = "BasePass";
+    graphicsList.queueType = NLS::Render::RHI::QueueType::Graphics;
+    graphicsList.lifecycleState = NLS::Render::RHI::RHICommandListLifecycleState::Closed;
+    graphicsList.RecordCommand(NLS::Render::RHI::RHICommandListCommandKind::DrawIndexed, 3u);
+
+    NLS::Render::Context::RhiSubmissionFrame submissionFrame;
+    submissionFrame.frameId = snapshot.frameId;
+    submissionFrame.commandListSubmission.debugName = "Immediate";
+    submissionFrame.commandListSubmission.queueType = NLS::Render::RHI::QueueType::Graphics;
+    submissionFrame.commandListSubmission.lifecycleState =
+        NLS::Render::RHI::RHICommandListLifecycleState::Recording;
+    submissionFrame.commandListSubmission.QueueChildSubmission(computeList);
+    submissionFrame.commandListSubmission.QueueChildSubmission(graphicsList);
+    submissionFrame.commandListSubmission.Close();
+
+    size_t slotIndex = 0u;
+    ASSERT_TRUE(lifecycle.TryPublishFrameSnapshot(snapshot, &slotIndex));
+    ASSERT_TRUE(lifecycle.TryBeginRenderScene(slotIndex));
+    ASSERT_TRUE(lifecycle.CompleteRenderScene(slotIndex, scenePackage));
+    ASSERT_TRUE(lifecycle.TryBeginRhiSubmission(slotIndex));
+    ASSERT_TRUE(lifecycle.CompleteRhiSubmission(slotIndex, submissionFrame));
+
+    const auto copiedSlot = lifecycle.CopySlot(slotIndex);
+    ASSERT_TRUE(copiedSlot.has_value());
+    ASSERT_TRUE(copiedSlot->submissionFrame.has_value());
+    const auto& commandListSubmission = copiedSlot->submissionFrame->commandListSubmission;
+    EXPECT_EQ(commandListSubmission.debugName, "Immediate");
+    EXPECT_EQ(commandListSubmission.lifecycleState, NLS::Render::RHI::RHICommandListLifecycleState::Closed);
+    EXPECT_EQ(commandListSubmission.commandCount, 2u);
+    EXPECT_EQ(commandListSubmission.visibleDrawCount, 3u);
+    ASSERT_EQ(commandListSubmission.childSubmissions.size(), 2u);
+    EXPECT_EQ(commandListSubmission.childSubmissions[0].debugName, "LightGrid");
+    EXPECT_EQ(commandListSubmission.childSubmissions[0].queueType, NLS::Render::RHI::QueueType::Compute);
+    EXPECT_EQ(commandListSubmission.childSubmissions[0].submitOrder, 0u);
+    EXPECT_EQ(commandListSubmission.childSubmissions[1].debugName, "BasePass");
+    EXPECT_EQ(commandListSubmission.childSubmissions[1].queueType, NLS::Render::RHI::QueueType::Graphics);
+    EXPECT_EQ(commandListSubmission.childSubmissions[1].submitOrder, 1u);
+}
+
+TEST(ThreadedRenderingLifecycleTests, UE427ParallelDrawCommandBatchesGroupPreparedWorkByPassRole)
+{
+    auto opaquePipeline = std::make_shared<TestGraphicsPipeline>("OpaquePipeline");
+    auto transparentPipeline = std::make_shared<TestGraphicsPipeline>("TransparentPipeline");
+    auto materialBindingSet = std::make_shared<TestBindingSet>("MaterialBindingSet");
+    auto mesh = std::make_shared<TestMesh>();
+
+    NLS::Render::Context::RenderPassCommandInput opaquePass;
+    opaquePass.kind = NLS::Render::Context::RenderPassCommandKind::Opaque;
+    opaquePass.drawCount = 1u;
+    opaquePass.recordedDrawCommands.push_back({ opaquePipeline, nullptr, nullptr, nullptr, materialBindingSet, mesh, 1u });
+
+    NLS::Render::Context::RenderPassCommandInput transparentPass;
+    transparentPass.kind = NLS::Render::Context::RenderPassCommandKind::Transparent;
+    transparentPass.drawCount = 2u;
+    transparentPass.recordedDrawCommands.push_back({ transparentPipeline, nullptr, nullptr, nullptr, materialBindingSet, mesh, 1u });
+    transparentPass.recordedDrawCommands.push_back({ transparentPipeline, nullptr, nullptr, nullptr, materialBindingSet, mesh, 1u });
+
+    NLS::Render::Context::ParallelCommandWorkUnit opaqueWorkUnit;
+    opaqueWorkUnit.workUnitIndex = 4u;
+    opaqueWorkUnit.submissionOrder = 2u;
+    opaqueWorkUnit.debugName = "OpaqueBasePass";
+    opaqueWorkUnit.commandInput = opaquePass;
+    opaqueWorkUnit.eligibleForParallelRecording = true;
+    opaqueWorkUnit.eligibleForParallelTranslation = true;
+
+    NLS::Render::Context::ParallelCommandWorkUnit transparentWorkUnit;
+    transparentWorkUnit.workUnitIndex = 5u;
+    transparentWorkUnit.submissionOrder = 3u;
+    transparentWorkUnit.debugName = "TranslucencyPass";
+    transparentWorkUnit.commandInput = transparentPass;
+    transparentWorkUnit.eligibleForParallelTranslation = true;
+
+    const auto batches = NLS::Render::Context::BuildUE427ParallelDrawCommandBatches({
+        opaqueWorkUnit,
+        transparentWorkUnit
+    });
+
+    ASSERT_EQ(batches.size(), 2u);
+    EXPECT_EQ(batches[0].passRole, NLS::Render::Context::ParallelDrawCommandPassRole::Opaque);
+    EXPECT_EQ(batches[0].workUnitIndex, 4u);
+    EXPECT_EQ(batches[0].submissionOrder, 2u);
+    EXPECT_EQ(batches[0].drawCommandCount, 1u);
+    EXPECT_TRUE(batches[0].eligibleForParallelRecording);
+    EXPECT_TRUE(batches[0].eligibleForParallelTranslation);
+
+    EXPECT_EQ(batches[1].passRole, NLS::Render::Context::ParallelDrawCommandPassRole::Transparent);
+    EXPECT_EQ(batches[1].workUnitIndex, 5u);
+    EXPECT_EQ(batches[1].submissionOrder, 3u);
+    EXPECT_EQ(batches[1].drawCommandCount, 2u);
+    EXPECT_FALSE(batches[1].eligibleForParallelRecording);
+    EXPECT_TRUE(batches[1].eligibleForParallelTranslation);
+}
+
+TEST(ThreadedRenderingLifecycleTests, UE427RhiSubmissionFrameRetainsParallelDrawCommandBatchMetadata)
+{
+    NLS::Render::Context::RhiSubmissionFrame submissionFrame;
+    submissionFrame.frameId = 720u;
+    submissionFrame.parallelDrawCommandBatches.push_back({
+        NLS::Render::Context::ParallelDrawCommandPassRole::Opaque,
+        1u,
+        1u,
+        "OpaqueBasePass",
+        NLS::Render::RHI::QueueType::Graphics,
+        3u,
+        3u,
+        true,
+        true,
+        {}
+    });
+
+    NLS::Render::Context::WorkUnitDependencyEdge dependency;
+    dependency.sourceWorkUnitIndex = 0u;
+    dependency.targetWorkUnitIndex = 1u;
+    dependency.kind = NLS::Render::Context::ThreadedDependencyKind::QueueSynchronization;
+    submissionFrame.parallelDrawCommandBatches[0].incomingDependencyEdges.push_back(dependency);
+
+    NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(1u);
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = submissionFrame.frameId;
+
+    NLS::Render::Context::RenderScenePackage scenePackage;
+    scenePackage.frameId = snapshot.frameId;
+
+    size_t slotIndex = 0u;
+    ASSERT_TRUE(lifecycle.TryPublishFrameSnapshot(snapshot, &slotIndex));
+    ASSERT_TRUE(lifecycle.TryBeginRenderScene(slotIndex));
+    ASSERT_TRUE(lifecycle.CompleteRenderScene(slotIndex, scenePackage));
+    ASSERT_TRUE(lifecycle.TryBeginRhiSubmission(slotIndex));
+    ASSERT_TRUE(lifecycle.CompleteRhiSubmission(slotIndex, submissionFrame));
+
+    const auto copiedSlot = lifecycle.CopySlot(slotIndex);
+    ASSERT_TRUE(copiedSlot.has_value());
+    ASSERT_TRUE(copiedSlot->submissionFrame.has_value());
+    ASSERT_EQ(copiedSlot->submissionFrame->parallelDrawCommandBatches.size(), 1u);
+    EXPECT_EQ(
+        copiedSlot->submissionFrame->parallelDrawCommandBatches[0].passRole,
+        NLS::Render::Context::ParallelDrawCommandPassRole::Opaque);
+    EXPECT_EQ(copiedSlot->submissionFrame->parallelDrawCommandBatches[0].drawCommandCount, 3u);
+    ASSERT_EQ(copiedSlot->submissionFrame->parallelDrawCommandBatches[0].incomingDependencyEdges.size(), 1u);
+    EXPECT_EQ(
+        copiedSlot->submissionFrame->parallelDrawCommandBatches[0].incomingDependencyEdges[0].sourceWorkUnitIndex,
+        0u);
+}
+
 TEST(ThreadedRenderingLifecycleTests, CompositeRendererPublishesThreadedFrameTelemetryWhenThreadedModeIsEnabled)
 {
     NLS::Render::Settings::DriverSettings settings;

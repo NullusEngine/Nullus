@@ -100,3 +100,88 @@ TEST(ShaderBindingLayoutUtilsTests, ValidatesConflictingReflectionBindingsBefore
     EXPECT_NE(validation.diagnostics[0].message.find("space2"), std::string::npos);
     EXPECT_NE(validation.diagnostics[1].message.find("arraySize"), std::string::npos);
 }
+
+TEST(ShaderBindingLayoutUtilsTests, UE427ShaderParameterGroupsPreserveFrameMaterialObjectPassOrder)
+{
+    ShaderReflection reflection;
+    reflection.constantBuffers = {
+        { "PassConstants", ShaderStage::Pixel, NLS::Render::RHI::BindingPointMap::kPassBindingSpace, 0u, 64u, {} },
+        { "ObjectConstants", ShaderStage::Vertex, NLS::Render::RHI::BindingPointMap::kObjectBindingSpace, 0u, 64u, {} },
+        { "FrameConstants", ShaderStage::Vertex, NLS::Render::RHI::BindingPointMap::kFrameBindingSpace, 0u, 64u, {} }
+    };
+    reflection.properties = {
+        { "u_BaseColor", UniformType::UNIFORM_SAMPLER_2D, ShaderResourceKind::SampledTexture, ShaderStage::Pixel, NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace, 0u, -1, 1, 0u, 0u, {} }
+    };
+
+    const auto groups = NLS::Render::Resources::BuildShaderParameterGroupContracts(
+        reflection,
+        "LitMesh");
+
+    ASSERT_EQ(groups.size(), 4u);
+    EXPECT_EQ(groups[0].groupKind, NLS::Render::Resources::ShaderParameterGroupKind::Frame);
+    EXPECT_EQ(groups[0].descriptorSet, NLS::Render::RHI::BindingPointMap::kFrameDescriptorSet);
+    ASSERT_EQ(groups[0].parameters.size(), 1u);
+    EXPECT_EQ(groups[0].parameters[0].name, "FrameConstants");
+
+    EXPECT_EQ(groups[1].groupKind, NLS::Render::Resources::ShaderParameterGroupKind::Material);
+    EXPECT_EQ(groups[1].descriptorSet, NLS::Render::RHI::BindingPointMap::kMaterialDescriptorSet);
+    ASSERT_EQ(groups[1].parameters.size(), 1u);
+    EXPECT_EQ(groups[1].parameters[0].name, "u_BaseColor");
+
+    EXPECT_EQ(groups[2].groupKind, NLS::Render::Resources::ShaderParameterGroupKind::Object);
+    EXPECT_EQ(groups[2].descriptorSet, NLS::Render::RHI::BindingPointMap::kObjectDescriptorSet);
+    ASSERT_EQ(groups[2].parameters.size(), 1u);
+    EXPECT_EQ(groups[2].parameters[0].name, "ObjectConstants");
+
+    EXPECT_EQ(groups[3].groupKind, NLS::Render::Resources::ShaderParameterGroupKind::Pass);
+    EXPECT_EQ(groups[3].descriptorSet, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet);
+    ASSERT_EQ(groups[3].parameters.size(), 1u);
+    EXPECT_EQ(groups[3].parameters[0].name, "PassConstants");
+}
+
+TEST(ShaderBindingLayoutUtilsTests, UE427ShaderParameterGroupValidationReportsMissingAndStalePassBindings)
+{
+    ShaderReflection reflection;
+    reflection.constantBuffers = {
+        { "PassConstants", ShaderStage::Pixel, NLS::Render::RHI::BindingPointMap::kPassBindingSpace, 0u, 64u, {} }
+    };
+    reflection.properties = {
+        { "u_PassTexture", UniformType::UNIFORM_SAMPLER_2D, ShaderResourceKind::SampledTexture, ShaderStage::Pixel, NLS::Render::RHI::BindingPointMap::kPassBindingSpace, 1u, -1, 1, 0u, 0u, {} }
+    };
+
+    const auto groups = NLS::Render::Resources::BuildShaderParameterGroupContracts(
+        reflection,
+        "DeferredLighting");
+
+    const std::vector<NLS::Render::Resources::ShaderParameterBindingResourceState> resources = {
+        {
+            "PassConstants",
+            NLS::Render::Resources::ShaderParameterGroupKind::Pass,
+            NLS::Render::RHI::BindingPointMap::kPassDescriptorSet,
+            NLS::Render::RHI::BindingType::UniformBuffer,
+            0u,
+            false,
+            7u,
+            7u
+        },
+        {
+            "u_PassTexture",
+            NLS::Render::Resources::ShaderParameterGroupKind::Pass,
+            NLS::Render::RHI::BindingPointMap::kPassDescriptorSet,
+            NLS::Render::RHI::BindingType::Texture,
+            1u,
+            true,
+            4u,
+            7u
+        }
+    };
+
+    const auto validation = NLS::Render::Resources::ValidateShaderParameterGroupResources(groups, resources);
+
+    EXPECT_TRUE(validation.HasErrors());
+    ASSERT_EQ(validation.diagnostics.size(), 2u);
+    EXPECT_NE(validation.diagnostics[0].message.find("missing"), std::string::npos);
+    EXPECT_NE(validation.diagnostics[0].message.find("PassConstants"), std::string::npos);
+    EXPECT_NE(validation.diagnostics[1].message.find("stale"), std::string::npos);
+    EXPECT_NE(validation.diagnostics[1].message.find("u_PassTexture"), std::string::npos);
+}

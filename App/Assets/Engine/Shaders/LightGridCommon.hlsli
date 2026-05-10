@@ -106,9 +106,9 @@ void NLSComputeCellViewAABB(uint3 gridCoordinate, out float3 viewTileMin, out fl
     viewTileMax.z = maxTileZ;
 }
 
-float NLSComputeSquaredDistanceFromBoxToPoint(float3 boxCenter, float3 boxExtent, float3 point)
+float NLSComputeSquaredDistanceFromBoxToPoint(float3 boxCenter, float3 boxExtent, float3 queryPoint)
 {
-    const float3 offset = abs(point - boxCenter) - boxExtent;
+    const float3 offset = abs(queryPoint - boxCenter) - boxExtent;
     const float3 outside = max(offset, 0.0f.xxx);
     return dot(outside, outside);
 }

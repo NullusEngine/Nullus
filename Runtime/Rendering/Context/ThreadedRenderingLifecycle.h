@@ -15,6 +15,7 @@
 #include "Rendering/Context/RenderFrameBuild.h"
 #include "Rendering/Context/RenderFrameInput.h"
 #include "Rendering/Data/FrameInfo.h"
+#include "Rendering/RHI/Core/RHICommand.h"
 #include "Rendering/RHI/Core/RHIEnums.h"
 #include "RenderDef.h"
 
@@ -200,6 +201,33 @@ namespace NLS::Render::Context
         bool eligibleForParallelTranslation = false;
     };
 
+    enum class ParallelDrawCommandPassRole : uint8_t
+    {
+        Opaque = 0,
+        Transparent,
+        Skybox,
+        Helper,
+        Auxiliary,
+        Compute
+    };
+
+    struct NLS_RENDER_API ParallelDrawCommandBatchMetadata
+    {
+        ParallelDrawCommandPassRole passRole = ParallelDrawCommandPassRole::Auxiliary;
+        uint64_t workUnitIndex = 0u;
+        uint64_t submissionOrder = 0u;
+        std::string debugName;
+        RHI::QueueType queueType = RHI::QueueType::Graphics;
+        uint64_t drawCommandCount = 0u;
+        uint64_t recordedDrawCommandCount = 0u;
+        bool eligibleForParallelRecording = false;
+        bool eligibleForParallelTranslation = false;
+        std::vector<WorkUnitDependencyEdge> incomingDependencyEdges;
+    };
+
+    NLS_RENDER_API std::vector<ParallelDrawCommandBatchMetadata> BuildUE427ParallelDrawCommandBatches(
+        const std::vector<ParallelCommandWorkUnit>& workUnits);
+
     enum class AsyncComputeDisposition : uint8_t
     {
         NotRequested = 0,
@@ -271,6 +299,7 @@ namespace NLS::Render::Context
         bool containsParallelCommandWorkUnits = false;
         uint64_t parallelCommandWorkUnitCount = 0u;
         std::vector<ParallelCommandWorkUnit> parallelCommandWorkUnits;
+        std::vector<ParallelDrawCommandBatchMetadata> parallelDrawCommandBatches;
         std::vector<WorkUnitDependencyEdge> workUnitDependencyEdges;
         bool hasAsyncComputeWorkload = false;
         uint64_t asyncComputeWorkloadCount = 0u;
@@ -294,6 +323,8 @@ namespace NLS::Render::Context
         uint64_t recordedDrawCount = 0u;
         uint64_t recordedPassCount = 0u;
         uint64_t recordedWorkUnitCount = 0u;
+        RHI::RHICommandListSubmissionMetadata commandListSubmission;
+        std::vector<ParallelDrawCommandBatchMetadata> parallelDrawCommandBatches;
         uint32_t parallelRecordingWorkerCount = 0u;
         uint64_t translatedWorkUnitCount = 0u;
         bool usedParallelCommandPath = false;

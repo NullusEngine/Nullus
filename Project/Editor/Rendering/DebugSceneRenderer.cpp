@@ -355,7 +355,7 @@ protected:
 	virtual void Draw(Render::Data::PipelineState p_pso) override
 	{
 		auto& sceneDescriptor = m_renderer.GetDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>();
-		p_pso = Editor::Rendering::CreateEditorOverlayPipelineState(p_pso);
+		p_pso = Editor::Rendering::CreateEditorTransparentOverlayPipelineState(p_pso);
 
 		m_lightMaterial.Set<float>("u_Scale", Editor::Settings::EditorSettings::GetDebugDrawSettingsObject().lightBillboardScale * 0.1f);
 
@@ -946,7 +946,12 @@ NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRe
             },
             [&lightGridContext](NLS::Render::Context::RenderScenePackage& scenePackage)
             {
-                ResolvePreparedPassBindingSetPlaceholders(scenePackage, lightGridContext.graphicsPassBindingSet);
+                ResolvePreparedScenePassBindingSetPlaceholders(
+                    scenePackage,
+                    lightGridContext.graphicsPassBindingSet,
+                    scenePackage.opaqueDrawCount +
+                    scenePackage.skyboxDrawCount +
+                    scenePackage.transparentDrawCount);
             },
             metadata,
             [&package, &gridPassInput, &selectionPassInput, &pickingPassInput](const auto& lightGridComputeSource, const auto& compiledPasses)

@@ -25,6 +25,7 @@
 #include "Rendering/Resources/Loaders/ShaderLoader.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Shader.h"
+#include "Rendering/Resources/ShaderParameterStruct.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Components/MeshRenderer.h"
 
@@ -218,6 +219,51 @@ namespace
         NLS::Render::RHI::RHIBindingLayoutDesc m_desc {};
     };
 
+    class TestPipelineLayout final : public NLS::Render::RHI::RHIPipelineLayout
+    {
+    public:
+        explicit TestPipelineLayout(NLS::Render::RHI::RHIPipelineLayoutDesc desc)
+            : m_desc(std::move(desc))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return m_desc.debugName; }
+        const NLS::Render::RHI::RHIPipelineLayoutDesc& GetDesc() const override { return m_desc; }
+
+    private:
+        NLS::Render::RHI::RHIPipelineLayoutDesc m_desc {};
+    };
+
+    class TestShaderModule final : public NLS::Render::RHI::RHIShaderModule
+    {
+    public:
+        explicit TestShaderModule(NLS::Render::RHI::RHIShaderModuleDesc desc)
+            : m_desc(std::move(desc))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return m_desc.debugName; }
+        const NLS::Render::RHI::RHIShaderModuleDesc& GetDesc() const override { return m_desc; }
+
+    private:
+        NLS::Render::RHI::RHIShaderModuleDesc m_desc {};
+    };
+
+    class TestGraphicsPipeline final : public NLS::Render::RHI::RHIGraphicsPipeline
+    {
+    public:
+        explicit TestGraphicsPipeline(NLS::Render::RHI::RHIGraphicsPipelineDesc desc)
+            : m_desc(std::move(desc))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return m_desc.debugName; }
+        const NLS::Render::RHI::RHIGraphicsPipelineDesc& GetDesc() const override { return m_desc; }
+
+    private:
+        NLS::Render::RHI::RHIGraphicsPipelineDesc m_desc {};
+    };
+
     class TestSampler final : public NLS::Render::RHI::RHISampler
     {
     public:
@@ -319,9 +365,23 @@ namespace
             lastBindingSetDesc = desc;
             return std::make_shared<TestBindingSet>(desc);
         }
-        std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> CreatePipelineLayout(const NLS::Render::RHI::RHIPipelineLayoutDesc&) override { return nullptr; }
-        std::shared_ptr<NLS::Render::RHI::RHIShaderModule> CreateShaderModule(const NLS::Render::RHI::RHIShaderModuleDesc&) override { return nullptr; }
-        std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline> CreateGraphicsPipeline(const NLS::Render::RHI::RHIGraphicsPipelineDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> CreatePipelineLayout(const NLS::Render::RHI::RHIPipelineLayoutDesc& desc) override
+        {
+            ++pipelineLayoutCreateCalls;
+            lastPipelineLayoutDesc = desc;
+            return std::make_shared<TestPipelineLayout>(desc);
+        }
+        std::shared_ptr<NLS::Render::RHI::RHIShaderModule> CreateShaderModule(const NLS::Render::RHI::RHIShaderModuleDesc& desc) override
+        {
+            ++shaderModuleCreateCalls;
+            return std::make_shared<TestShaderModule>(desc);
+        }
+        std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline> CreateGraphicsPipeline(const NLS::Render::RHI::RHIGraphicsPipelineDesc& desc) override
+        {
+            ++graphicsPipelineCreateCalls;
+            lastGraphicsPipelineDesc = desc;
+            return std::make_shared<TestGraphicsPipeline>(desc);
+        }
         std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> CreateComputePipeline(const NLS::Render::RHI::RHIComputePipelineDesc&) override { return nullptr; }
         std::shared_ptr<NLS::Render::RHI::RHICommandPool> CreateCommandPool(NLS::Render::RHI::QueueType, std::string = {}) override { return nullptr; }
         std::shared_ptr<NLS::Render::RHI::RHIFence> CreateFence(std::string = {}) override { return nullptr; }
@@ -338,8 +398,13 @@ namespace
 
         uint32_t bindingLayoutCreateCalls = 0u;
         uint32_t bindingSetCreateCalls = 0u;
+        uint32_t pipelineLayoutCreateCalls = 0u;
+        uint32_t shaderModuleCreateCalls = 0u;
+        uint32_t graphicsPipelineCreateCalls = 0u;
         bool failSamplerCreation = false;
         NLS::Render::RHI::RHIBindingSetDesc lastBindingSetDesc {};
+        NLS::Render::RHI::RHIPipelineLayoutDesc lastPipelineLayoutDesc {};
+        NLS::Render::RHI::RHIGraphicsPipelineDesc lastGraphicsPipelineDesc {};
 
     private:
         std::shared_ptr<NLS::Render::RHI::RHIAdapter> m_adapter;
@@ -354,6 +419,7 @@ namespace
         if (shader == nullptr)
             return nullptr;
 
+        const_cast<std::vector<NLS::Render::Resources::ShaderParameterStruct>&>(shader->GetParameterStructs()).clear();
         NLS::Render::Resources::ShaderReflection reflection;
         reflection.properties.push_back({
             "u_MaterialSampler",
@@ -378,6 +444,7 @@ namespace
         if (shader == nullptr)
             return nullptr;
 
+        const_cast<std::vector<NLS::Render::Resources::ShaderParameterStruct>&>(shader->GetParameterStructs()).clear();
         NLS::Render::Resources::ShaderReflection reflection;
         reflection.properties.push_back({
             "u_MissingStructuredBuffer",
@@ -402,6 +469,7 @@ namespace
         if (shader == nullptr)
             return nullptr;
 
+        const_cast<std::vector<NLS::Render::Resources::ShaderParameterStruct>&>(shader->GetParameterStructs()).clear();
         NLS::Render::Resources::ShaderReflection reflection;
         reflection.properties = {
             {
@@ -730,6 +798,124 @@ TEST(RendererFrameObjectBindingTests, MaterialExplicitBindingSetReportsShaderRef
     EXPECT_EQ(diagnostic.severity, NLS::Render::Resources::MaterialBindingDiagnosticSeverity::Error);
     EXPECT_NE(diagnostic.message.find("conflict"), std::string::npos);
     EXPECT_TRUE(material.HasExplicitBindingErrors());
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RendererFrameObjectBindingTests, EngineGraphicsShadersExposeRendererOwnedParameterStructs)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    const std::vector<std::string> shaderPaths = {
+        "App/Assets/Engine/Shaders/Standard.hlsl",
+        "App/Assets/Engine/Shaders/Lambert.hlsl",
+        "App/Assets/Engine/Shaders/StandardPBR.hlsl",
+        "App/Assets/Engine/Shaders/DeferredLighting.hlsl"
+    };
+
+    for (const auto& shaderPath : shaderPaths)
+    {
+        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(shaderPath);
+        ASSERT_NE(shader, nullptr) << shaderPath;
+        ASSERT_TRUE(shader->HasParameterStructs()) << shaderPath;
+
+        const auto& parameterStructs = shader->GetParameterStructs();
+        ASSERT_EQ(parameterStructs.size(), 4u) << shaderPath;
+        EXPECT_EQ(parameterStructs[0].groupKind, NLS::Render::Resources::ShaderParameterGroupKind::Frame);
+        EXPECT_EQ(parameterStructs[1].groupKind, NLS::Render::Resources::ShaderParameterGroupKind::Material);
+        EXPECT_EQ(parameterStructs[2].groupKind, NLS::Render::Resources::ShaderParameterGroupKind::Object);
+        EXPECT_EQ(parameterStructs[3].groupKind, NLS::Render::Resources::ShaderParameterGroupKind::Pass);
+        EXPECT_FALSE(parameterStructs[1].members.empty()) << shaderPath;
+        EXPECT_FALSE(parameterStructs[3].members.empty()) << shaderPath;
+
+        EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    }
+}
+
+TEST(RendererFrameObjectBindingTests, MaterialPipelineLayoutUsesRendererOwnedShaderParameterStructs)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+    ASSERT_TRUE(shader->HasParameterStructs());
+
+    NLS::Render::Resources::Material material(shader);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+
+    const auto& materialLayout = material.GetExplicitBindingLayout(explicitDevice);
+    ASSERT_NE(materialLayout, nullptr);
+    ASSERT_EQ(materialLayout->GetDesc().entries.size(), 7u);
+    EXPECT_EQ(materialLayout->GetDesc().entries[0].name, "MaterialConstants");
+    EXPECT_EQ(materialLayout->GetDesc().entries[1].name, "u_DiffuseMap");
+    EXPECT_EQ(materialLayout->GetDesc().entries[6].name, "u_LinearWrapSampler");
+
+    const auto& pipelineLayout = material.GetExplicitPipelineLayout(explicitDevice);
+    ASSERT_NE(pipelineLayout, nullptr);
+    ASSERT_EQ(explicitDevice->lastPipelineLayoutDesc.bindingLayouts.size(), 4u);
+    EXPECT_EQ(explicitDevice->lastPipelineLayoutDesc.bindingLayouts[0]->GetDesc().entries[0].name, "FrameConstants");
+    EXPECT_EQ(explicitDevice->lastPipelineLayoutDesc.bindingLayouts[1]->GetDesc().entries[0].name, "MaterialConstants");
+    EXPECT_EQ(explicitDevice->lastPipelineLayoutDesc.bindingLayouts[2]->GetDesc().entries[0].name, "ObjectConstants");
+    ASSERT_EQ(explicitDevice->lastPipelineLayoutDesc.bindingLayouts[3]->GetDesc().entries.size(), 4u);
+    EXPECT_EQ(explicitDevice->lastPipelineLayoutDesc.bindingLayouts[3]->GetDesc().entries[0].name, "ForwardLightData");
+    EXPECT_EQ(explicitDevice->lastPipelineLayoutDesc.bindingLayouts[3]->GetDesc().entries[0].type, NLS::Render::RHI::BindingType::UniformBuffer);
+    EXPECT_EQ(explicitDevice->lastPipelineLayoutDesc.bindingLayouts[3]->GetDesc().entries[0].binding, 0u);
+    EXPECT_EQ(explicitDevice->lastPipelineLayoutDesc.bindingLayouts[3]->GetDesc().entries[0].registerSpace, NLS::Render::RHI::BindingPointMap::kPassBindingSpace);
+    EXPECT_EQ(explicitDevice->lastPipelineLayoutDesc.bindingLayouts[3]->GetDesc().entries[1].name, "u_ForwardLocalLightBuffer");
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RendererFrameObjectBindingTests, DeferredGBufferPipelineOverridesUseThreeRenderTargets)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::DX12;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
+    ASSERT_NE(shader, nullptr);
+
+    NLS::Render::Resources::Material material(shader);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    auto pipelineCache = NLS::Render::RHI::CreateDefaultPipelineCache();
+
+    NLS::Render::Resources::MaterialPipelineStateOverrides overrides;
+    overrides.colorWrite = true;
+    overrides.colorFormats = {
+        NLS::Render::RHI::TextureFormat::RGBA8,
+        NLS::Render::RHI::TextureFormat::RGBA8,
+        NLS::Render::RHI::TextureFormat::RGBA8
+    };
+
+    const NLS::Render::Data::PipelineState pipelineState;
+    const auto pipeline = material.BuildRecordedGraphicsPipeline(
+        explicitDevice,
+        pipelineCache,
+        NLS::Render::Settings::EPrimitiveMode::TRIANGLES,
+        pipelineState,
+        overrides);
+
+    ASSERT_NE(pipeline, nullptr);
+    EXPECT_EQ(explicitDevice->graphicsPipelineCreateCalls, 1u);
+    ASSERT_EQ(explicitDevice->lastGraphicsPipelineDesc.renderTargetLayout.colorFormats.size(), 3u);
+    ASSERT_EQ(explicitDevice->lastGraphicsPipelineDesc.blendState.renderTargets.size(), 3u);
+    for (const auto colorFormat : explicitDevice->lastGraphicsPipelineDesc.renderTargetLayout.colorFormats)
+        EXPECT_EQ(colorFormat, NLS::Render::RHI::TextureFormat::RGBA8);
+    for (const auto& renderTargetBlend : explicitDevice->lastGraphicsPipelineDesc.blendState.renderTargets)
+        EXPECT_EQ(renderTargetBlend.colorWriteMask, NLS::Render::RHI::RHIColorWriteMask::All);
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
 }

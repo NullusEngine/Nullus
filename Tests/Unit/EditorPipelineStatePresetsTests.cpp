@@ -22,12 +22,30 @@ TEST(EditorPipelineStatePresetsTests, OverlayPresetDisablesDepthWritingDepthTest
     baseState.depthWriting = true;
     baseState.depthTest = true;
     baseState.culling = true;
+    baseState.blending = false;
 
     const auto overlayState = NLS::Editor::Rendering::CreateEditorOverlayPipelineState(baseState);
 
     EXPECT_FALSE(overlayState.depthWriting);
     EXPECT_FALSE(overlayState.depthTest);
     EXPECT_FALSE(overlayState.culling);
+    EXPECT_FALSE(overlayState.blending);
+}
+
+TEST(EditorPipelineStatePresetsTests, TransparentOverlayPresetEnablesBlending)
+{
+    NLS::Render::Data::PipelineState baseState;
+    baseState.depthWriting = true;
+    baseState.depthTest = true;
+    baseState.culling = true;
+    baseState.blending = false;
+
+    const auto overlayState = NLS::Editor::Rendering::CreateEditorTransparentOverlayPipelineState(baseState);
+
+    EXPECT_FALSE(overlayState.depthWriting);
+    EXPECT_FALSE(overlayState.depthTest);
+    EXPECT_FALSE(overlayState.culling);
+    EXPECT_TRUE(overlayState.blending);
 }
 
 TEST(EditorPipelineStatePresetsTests, NoDepthPresetOnlyDisablesDepthTest)

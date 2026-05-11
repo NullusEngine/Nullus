@@ -17,6 +17,7 @@ public:
 
     void RefreshStatus();
     void BeginProfilerFrame();
+    bool IsRecordingEnabled() const;
     NLS::Base::Profiling::TimelineProfilerSink& GetTimelineSink();
 
 private:

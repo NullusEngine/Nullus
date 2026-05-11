@@ -10,6 +10,7 @@
 
 #include "Rendering/Data/StateMask.h"
 #include "Rendering/Data/PipelineState.h"
+#include "Rendering/RHI/RHITypes.h"
 #include "Rendering/Resources/MaterialLayout.h"
 #include "Rendering/Resources/MaterialParameterBlock.h"
 #include "Rendering/Resources/ResourceBinding.h"
@@ -58,6 +59,7 @@ struct MaterialPipelineStateOverrides
     std::optional<bool> hasDepthAttachment;
     std::optional<bool> culling;
     std::optional<Settings::ECullFace> cullFace;
+    std::optional<std::vector<RHI::TextureFormat>> colorFormats;
 };
 
 enum class MaterialBindingDiagnosticSeverity : uint8_t

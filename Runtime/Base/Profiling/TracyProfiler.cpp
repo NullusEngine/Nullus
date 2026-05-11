@@ -18,6 +18,9 @@ namespace NLS::Base::Profiling
 void TracyProfiler::BeginScope(const ProfilerScopeEvent& event)
 {
 #if defined(NLS_ENABLE_TRACY) && !defined(NLS_TRACY_UNAVAILABLE)
+    if (!IsConnected())
+        return;
+
     const std::string_view name = event.name;
     const std::string_view function = event.sourceFunction;
     const uint64_t sourceLocation = ___tracy_alloc_srcloc_name(
@@ -53,12 +56,13 @@ void TracyProfiler::EndScope(const ProfilerScopeEvent& event)
 ProfilerDestinationState TracyProfiler::GetState() const
 {
 #if defined(NLS_ENABLE_TRACY) && !defined(NLS_TRACY_UNAVAILABLE)
+    const bool connected = IsConnected();
     return {
         ProfilerDestinationId::Tracy,
-        true,
-        ProfilerAvailability::Available,
-        ProfilerCapability_CPUScopes,
-        ""
+        connected,
+        connected ? ProfilerAvailability::Available : ProfilerAvailability::Disabled,
+        connected ? ProfilerCapability_CPUScopes : ProfilerCapability_None,
+        connected ? "" : "Tracy profiler is not connected"
     };
 #else
     return {
@@ -68,6 +72,15 @@ ProfilerDestinationState TracyProfiler::GetState() const
         ProfilerCapability_None,
         "Tracy destination is not enabled or ThirdParty/Tracy is unavailable"
     };
+#endif
+}
+
+bool TracyProfiler::IsConnected()
+{
+#if defined(NLS_ENABLE_TRACY) && !defined(NLS_TRACY_UNAVAILABLE)
+    return TracyCIsConnected != 0;
+#else
+    return false;
 #endif
 }
 }

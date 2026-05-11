@@ -32,9 +32,9 @@ Texture2D u_NormalMap : register(t2, space2);
 Texture2D u_HeightMap : register(t3, space2);
 Texture2D u_MaskMap : register(t4, space2);
 SamplerState u_LinearWrapSampler : register(s0, space2);
-StructuredBuffer<uint> u_LightGridLights : register(t0, space1);
-StructuredBuffer<uint> u_LightGridClusterRecords : register(t1, space1);
-StructuredBuffer<uint> u_LightGridCompactIndices : register(t2, space1);
+StructuredBuffer<uint> u_ForwardLocalLightBuffer : register(t0, space1);
+StructuredBuffer<uint> u_NumCulledLightsGrid : register(t1, space1);
+StructuredBuffer<uint> u_CulledLightDataGrid : register(t2, space1);
 
 VSOutput VSMain(VSInput input)
 {
@@ -97,9 +97,9 @@ float4 PSMain(VSOutput input) : SV_Target0
     const float3 normalWS = ComputeNormal(input, texCoord);
 
     const float3 lighting = NLSAccumulateClusteredLightingPhong(
-        u_LightGridLights,
-        u_LightGridClusterRecords,
-        u_LightGridCompactIndices,
+        u_ForwardLocalLightBuffer,
+        u_NumCulledLightsGrid,
+        u_CulledLightDataGrid,
         input.PositionWS,
         normalWS,
         diffuseSample.rgb,

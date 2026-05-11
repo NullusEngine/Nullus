@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <map>
+#include <optional>
 #include <string>
 #include <tuple>
 
@@ -91,6 +92,71 @@ namespace
 			NLS::Render::Resources::ShaderBindingValidationSeverity::Error,
 			std::move(message)
 		});
+	}
+
+	NLS::Render::Resources::ShaderParameterGroupKind ToShaderParameterGroupKind(const uint32_t registerSpace)
+	{
+		switch (registerSpace)
+		{
+		case NLS::Render::RHI::BindingPointMap::kFrameBindingSpace:
+			return NLS::Render::Resources::ShaderParameterGroupKind::Frame;
+		case NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace:
+			return NLS::Render::Resources::ShaderParameterGroupKind::Material;
+		case NLS::Render::RHI::BindingPointMap::kObjectBindingSpace:
+			return NLS::Render::Resources::ShaderParameterGroupKind::Object;
+		case NLS::Render::RHI::BindingPointMap::kPassBindingSpace:
+		default:
+			return NLS::Render::Resources::ShaderParameterGroupKind::Pass;
+		}
+	}
+
+	uint32_t GetShaderParameterGroupRegisterSpace(const NLS::Render::Resources::ShaderParameterGroupKind groupKind)
+	{
+		switch (groupKind)
+		{
+		case NLS::Render::Resources::ShaderParameterGroupKind::Frame:
+			return NLS::Render::RHI::BindingPointMap::kFrameBindingSpace;
+		case NLS::Render::Resources::ShaderParameterGroupKind::Material:
+			return NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace;
+		case NLS::Render::Resources::ShaderParameterGroupKind::Object:
+			return NLS::Render::RHI::BindingPointMap::kObjectBindingSpace;
+		case NLS::Render::Resources::ShaderParameterGroupKind::Pass:
+		default:
+			return NLS::Render::RHI::BindingPointMap::kPassBindingSpace;
+		}
+	}
+
+	const char* GetShaderParameterGroupName(const NLS::Render::Resources::ShaderParameterGroupKind groupKind)
+	{
+		switch (groupKind)
+		{
+		case NLS::Render::Resources::ShaderParameterGroupKind::Frame: return "Frame";
+		case NLS::Render::Resources::ShaderParameterGroupKind::Material: return "Material";
+		case NLS::Render::Resources::ShaderParameterGroupKind::Object: return "Object";
+		case NLS::Render::Resources::ShaderParameterGroupKind::Pass:
+		default:
+			return "Pass";
+		}
+	}
+
+	NLS::Render::Resources::ShaderParameterBindingContract MakeShaderParameterBindingContract(
+		const std::string& name,
+		const NLS::Render::RHI::BindingType bindingType,
+		const uint32_t registerSpace,
+		const uint32_t bindingIndex,
+		const uint32_t count,
+		const NLS::Render::RHI::ShaderStageMask stageMask)
+	{
+		return {
+			name,
+			bindingType,
+			NLS::Render::RHI::BindingPointMap::GetDescriptorSetIndex(registerSpace),
+			registerSpace,
+			bindingIndex,
+			count,
+			stageMask,
+			true
+		};
 	}
 }
 
@@ -253,5 +319,135 @@ namespace NLS::Render::Resources
 		}
 
 		return layoutDescs;
+	}
+
+	std::vector<ShaderParameterGroupContract> BuildShaderParameterGroupContracts(
+		const ShaderReflection& reflection,
+		std::string_view debugNamePrefix)
+	{
+		if (ValidateShaderBindingReflection(reflection).HasErrors())
+			return {};
+
+		std::vector<ShaderParameterGroupContract> groups;
+		groups.reserve(4u);
+		for (const auto groupKind : {
+			ShaderParameterGroupKind::Frame,
+			ShaderParameterGroupKind::Material,
+			ShaderParameterGroupKind::Object,
+			ShaderParameterGroupKind::Pass })
+		{
+			const uint32_t registerSpace = GetShaderParameterGroupRegisterSpace(groupKind);
+			const uint32_t descriptorSet = RHI::BindingPointMap::GetDescriptorSetIndex(registerSpace);
+			groups.push_back({
+				debugNamePrefix.empty()
+					? std::string(GetShaderParameterGroupName(groupKind)) + "ShaderParameters"
+					: std::string(debugNamePrefix) + ":" + GetShaderParameterGroupName(groupKind) + "ShaderParameters",
+				groupKind,
+				descriptorSet,
+				registerSpace,
+				true,
+				{}
+			});
+		}
+
+		auto findGroup = [&groups](const ShaderParameterGroupKind groupKind) -> ShaderParameterGroupContract&
+		{
+			auto found = std::find_if(
+				groups.begin(),
+				groups.end(),
+				[groupKind](const ShaderParameterGroupContract& group)
+				{
+					return group.groupKind == groupKind;
+				});
+			return *found;
+		};
+
+		for (const auto& constantBuffer : reflection.constantBuffers)
+		{
+			auto& group = findGroup(ToShaderParameterGroupKind(constantBuffer.bindingSpace));
+			group.parameters.push_back(MakeShaderParameterBindingContract(
+				constantBuffer.name,
+				RHI::BindingType::UniformBuffer,
+				constantBuffer.bindingSpace,
+				constantBuffer.bindingIndex,
+				1u,
+				ToShaderStageMask(constantBuffer.stage)));
+		}
+
+		for (const auto& property : reflection.properties)
+		{
+			if (property.kind == ShaderResourceKind::Value)
+				continue;
+
+			auto& group = findGroup(ToShaderParameterGroupKind(property.bindingSpace));
+			group.parameters.push_back(MakeShaderParameterBindingContract(
+				property.name,
+				ToBindingType(property.kind),
+				property.bindingSpace,
+				property.bindingIndex,
+				property.arraySize > 0 ? static_cast<uint32_t>(property.arraySize) : 1u,
+				ToShaderStageMask(property.stage)));
+		}
+
+		return groups;
+	}
+
+	ShaderBindingValidationResult ValidateShaderParameterGroupResources(
+		const std::vector<ShaderParameterGroupContract>& groups,
+		const std::vector<ShaderParameterBindingResourceState>& resources)
+	{
+		ShaderBindingValidationResult result;
+
+		auto findResource = [&resources](const ShaderParameterGroupKind groupKind, const ShaderParameterBindingContract& parameter)
+			-> std::optional<ShaderParameterBindingResourceState>
+		{
+			const auto found = std::find_if(
+				resources.begin(),
+				resources.end(),
+				[groupKind, &parameter](const ShaderParameterBindingResourceState& resource)
+				{
+					return resource.groupKind == groupKind &&
+						resource.descriptorSet == parameter.descriptorSet &&
+						resource.binding == parameter.binding &&
+						resource.type == parameter.type &&
+						resource.name == parameter.name;
+				});
+
+			if (found == resources.end())
+				return std::nullopt;
+
+			return *found;
+		};
+
+		for (const auto& group : groups)
+		{
+			for (const auto& parameter : group.parameters)
+			{
+				if (!group.required || !parameter.required)
+					continue;
+
+				const auto resource = findResource(group.groupKind, parameter);
+				if (!resource.has_value() || !resource->hasResource)
+				{
+					AddValidationError(
+						result,
+						"Shader parameter binding missing required resource \"" +
+						parameter.name + "\" in " + GetShaderParameterGroupName(group.groupKind) + " group.");
+					continue;
+				}
+
+				if (resource->resourceVersion < resource->requiredVersion)
+				{
+					AddValidationError(
+						result,
+						"Shader parameter binding stale resource \"" +
+						parameter.name + "\" in " + GetShaderParameterGroupName(group.groupKind) +
+						" group: resourceVersion " + std::to_string(resource->resourceVersion) +
+						" is older than requiredVersion " + std::to_string(resource->requiredVersion) + ".");
+				}
+			}
+		}
+
+		return result;
 	}
 }

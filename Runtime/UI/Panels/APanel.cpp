@@ -2,6 +2,8 @@
 
 #include "UI/Panels/APanel.h"
 
+#include "Profiling/Profiler.h"
+
 namespace NLS::UI
 {
 	uint64_t APanel::__PANEL_ID_INCREMENT = 0;
@@ -13,13 +15,16 @@ namespace NLS::UI
 
 	void APanel::Draw()
 	{
-		if (enabled)
-			_Draw_Impl();
+		if (!enabled)
+			return;
+
+		NLS_PROFILE_NAMED_SCOPE("APanel::DrawPanel");
+		_Draw_Impl();
 	}
 
 	const std::string& APanel::GetPanelID() const
 	{
 		return m_panelID;
 	}
-}
 
+}

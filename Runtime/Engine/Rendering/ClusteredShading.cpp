@@ -7,6 +7,10 @@ namespace NLS::Engine::Rendering
 {
     namespace
     {
+        constexpr uint32_t kLightGridInjectionGroupSize = 4u;
+        constexpr uint32_t kNumCulledLightsGridStride = 2u;
+        constexpr uint32_t kLightLinkStride = 2u;
+
         struct ClusterRange
         {
             uint32_t minX;
@@ -120,19 +124,86 @@ namespace NLS::Engine::Rendering
         }
     } // namespace
 
+    uint32_t GetLightGridInjectionGroupSize()
+    {
+        return kLightGridInjectionGroupSize;
+    }
+
+    uint32_t GetNumCulledLightsGridStride()
+    {
+        return kNumCulledLightsGridStride;
+    }
+
+    uint32_t GetLightLinkStride()
+    {
+        return kLightLinkStride;
+    }
+
+    LightGridDimensions CalculateLightGridDimensions(
+        const ClusteredShadingSettings& settings,
+        const uint32_t renderWidth,
+        const uint32_t renderHeight)
+    {
+        const uint32_t pixelSize = std::max(1u, settings.lightGridPixelSize);
+        return {
+            std::max(1u, (renderWidth + pixelSize - 1u) / pixelSize),
+            std::max(1u, (renderHeight + pixelSize - 1u) / pixelSize),
+            std::max(1u, settings.gridSizeZ)
+        };
+    }
+
+    LightGridDimensions CalculateLightGridDispatchGroups(
+        const LightGridDimensions& gridDimensions)
+    {
+        const auto groupSize = GetLightGridInjectionGroupSize();
+        return {
+            (gridDimensions.x + groupSize - 1u) / groupSize,
+            (gridDimensions.y + groupSize - 1u) / groupSize,
+            (gridDimensions.z + groupSize - 1u) / groupSize
+        };
+    }
+
+    Maths::Vector3 CalculateLightGridZParams(
+        const float nearPlane,
+        const float farPlane,
+        const uint32_t gridSizeZ)
+    {
+        const double nearOffset = 0.095 * 100.0;
+        const double scale = 4.05;
+        const double nearValue = static_cast<double>(nearPlane) + nearOffset;
+        const double farValue = std::max(
+            static_cast<double>(farPlane),
+            nearValue + 1.0);
+        const double sliceCount = std::max(1u, gridSizeZ);
+        const double offset =
+            (farValue - nearValue * std::exp2((sliceCount - 1.0) / scale)) /
+            (farValue - nearValue);
+        const double bias = (1.0 - offset) / nearValue;
+        return {
+            static_cast<float>(bias),
+            static_cast<float>(offset),
+            static_cast<float>(scale)
+        };
+    }
+
     ClusteredLightGrid BuildClusteredLightGrid(
         const ClusteredShadingSettings& settings,
         const std::vector<std::reference_wrapper<const NLS::Render::Entities::Light>>& lights,
         const NLS::Render::Entities::Camera&,
         const Maths::Matrix4& view,
         const Maths::Matrix4& projection,
-        uint32_t,
-        uint32_t,
+        uint32_t renderWidth,
+        uint32_t renderHeight,
         float nearPlane,
         float farPlane)
     {
         ClusteredLightGrid grid;
         grid.settings = settings;
+        const auto dimensions = CalculateLightGridDimensions(settings, renderWidth, renderHeight);
+        grid.settings.gridSizeX = dimensions.x;
+        grid.settings.gridSizeY = dimensions.y;
+        grid.settings.gridSizeZ = dimensions.z;
+        const auto& effectiveSettings = grid.settings;
         grid.bounds.resize(grid.GetClusterCount());
         grid.records.resize(grid.GetClusterCount());
 
@@ -140,7 +211,7 @@ namespace NLS::Engine::Rendering
 
         for (uint32_t lightIndex = 0; lightIndex < lights.size(); ++lightIndex)
         {
-            const auto range = CalculateLightRange(settings, lights[lightIndex].get(), view, projection, nearPlane, farPlane);
+            const auto range = CalculateLightRange(effectiveSettings, lights[lightIndex].get(), view, projection, nearPlane, farPlane);
             if (range.minX > range.maxX || range.minY > range.maxY || range.minZ > range.maxZ)
                 continue;
 
@@ -150,8 +221,8 @@ namespace NLS::Engine::Rendering
                 {
                     for (uint32_t x = range.minX; x <= range.maxX; ++x)
                     {
-                        auto& clusterLights = perClusterLights[GetClusterIndex(settings, x, y, z)];
-                        if (clusterLights.size() < settings.maxLightsPerCluster)
+                        auto& clusterLights = perClusterLights[GetClusterIndex(effectiveSettings, x, y, z)];
+                        if (clusterLights.size() < effectiveSettings.maxLightsPerCluster)
                             clusterLights.push_back(lightIndex);
                     }
                 }
@@ -159,16 +230,16 @@ namespace NLS::Engine::Rendering
         }
 
         uint32_t runningOffset = 0;
-        for (uint32_t z = 0; z < settings.gridSizeZ; ++z)
+        for (uint32_t z = 0; z < effectiveSettings.gridSizeZ; ++z)
         {
-            const float z0 = nearPlane + (farPlane - nearPlane) * (static_cast<float>(z) / static_cast<float>(settings.gridSizeZ));
-            const float z1 = nearPlane + (farPlane - nearPlane) * (static_cast<float>(z + 1) / static_cast<float>(settings.gridSizeZ));
+            const float z0 = nearPlane + (farPlane - nearPlane) * (static_cast<float>(z) / static_cast<float>(effectiveSettings.gridSizeZ));
+            const float z1 = nearPlane + (farPlane - nearPlane) * (static_cast<float>(z + 1) / static_cast<float>(effectiveSettings.gridSizeZ));
 
-            for (uint32_t y = 0; y < settings.gridSizeY; ++y)
+            for (uint32_t y = 0; y < effectiveSettings.gridSizeY; ++y)
             {
-                for (uint32_t x = 0; x < settings.gridSizeX; ++x)
+                for (uint32_t x = 0; x < effectiveSettings.gridSizeX; ++x)
                 {
-                    const uint32_t clusterIndex = GetClusterIndex(settings, x, y, z);
+                    const uint32_t clusterIndex = GetClusterIndex(effectiveSettings, x, y, z);
                     auto& bounds = grid.bounds[clusterIndex];
                     bounds.minPoint = { static_cast<float>(x), static_cast<float>(y), z0, 1.0f };
                     bounds.maxPoint = { static_cast<float>(x + 1), static_cast<float>(y + 1), z1, 1.0f };

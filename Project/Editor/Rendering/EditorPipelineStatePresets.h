@@ -43,6 +43,21 @@ namespace NLS::Editor::Rendering
         return CreateEditorOverlayPipelineState(renderer.CreatePipelineState());
     }
 
+    inline NLS::Render::Data::PipelineState CreateEditorTransparentOverlayPipelineState(
+        NLS::Render::Data::PipelineState baseState)
+    {
+        baseState = CreateEditorOverlayPipelineState(baseState);
+        baseState.blending = true;
+        return baseState;
+    }
+
+    template<PipelineStateProvider T>
+    inline NLS::Render::Data::PipelineState CreateEditorTransparentOverlayPipelineState(
+        const T& renderer)
+    {
+        return CreateEditorTransparentOverlayPipelineState(renderer.CreatePipelineState());
+    }
+
     inline NLS::Render::Data::PipelineState CreateEditorGridPipelineState(
         NLS::Render::Data::PipelineState baseState)
     {

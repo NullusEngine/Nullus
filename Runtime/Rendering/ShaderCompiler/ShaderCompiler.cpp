@@ -1275,16 +1275,18 @@ namespace NLS::Render::ShaderCompiler
 		}
 
 		std::string processOutput;
-		std::thread outputReader([readPipe, &processOutput]()
+		const HANDLE outputReadPipe = readPipe;
+		readPipe = nullptr;
+		std::thread outputReader([outputReadPipe, &processOutput]()
 		{
 			char buffer[4096];
 			DWORD bytesRead = 0;
-			while (ReadFile(readPipe, buffer, static_cast<DWORD>(sizeof(buffer) - 1), &bytesRead, nullptr) && bytesRead > 0)
+			while (ReadFile(outputReadPipe, buffer, static_cast<DWORD>(sizeof(buffer) - 1), &bytesRead, nullptr) && bytesRead > 0)
 			{
 				buffer[bytesRead] = '\0';
 				processOutput += buffer;
 			}
-			CloseHandle(readPipe);
+			CloseHandle(outputReadPipe);
 		});
 
 		ResumeThread(processInfo.hThread);
@@ -1360,7 +1362,8 @@ namespace NLS::Render::ShaderCompiler
 				result.diagnostics = "Shader compiler process exited with code " + std::to_string(result.exitCode) + ": " + result.commandLine;
 		}
 
-		CloseHandle(readPipe);
+		if (readPipe != nullptr)
+			CloseHandle(readPipe);
 		CloseHandle(processInfo.hThread);
 		CloseHandle(processInfo.hProcess);
 		if (jobObject != nullptr)

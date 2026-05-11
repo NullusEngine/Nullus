@@ -79,3 +79,37 @@ TEST(MaterialVariantKeyTests, BuildsPassAndPipelineVariantKeysFromMaterialPipeli
     EXPECT_NE(gbufferKey.stableKey, lightingKey.stableKey);
     EXPECT_NE(gbufferKey.stableKey, changedPipelineKey.stableKey);
 }
+
+TEST(MaterialVariantKeyTests, IncludesRenderTargetFormatsInPassVariantKey)
+{
+    NLS::Render::Resources::Material material;
+    const_cast<std::string&>(material.path) = "App/Assets/GBuffer.nmat";
+
+    const NLS::Render::Data::PipelineState pipelineState;
+
+    NLS::Render::Resources::MaterialPipelineStateOverrides singleTargetOverrides;
+    singleTargetOverrides.colorFormats = {
+        NLS::Render::RHI::TextureFormat::RGBA8
+    };
+
+    NLS::Render::Resources::MaterialPipelineStateOverrides gbufferOverrides;
+    gbufferOverrides.colorFormats = {
+        NLS::Render::RHI::TextureFormat::RGBA8,
+        NLS::Render::RHI::TextureFormat::RGBA8,
+        NLS::Render::RHI::TextureFormat::RGBA8
+    };
+
+    const auto singleTargetKey = NLS::Render::Resources::BuildMaterialPassVariantKey(
+        material,
+        "DeferredGBuffer",
+        pipelineState,
+        singleTargetOverrides);
+    const auto gbufferKey = NLS::Render::Resources::BuildMaterialPassVariantKey(
+        material,
+        "DeferredGBuffer",
+        pipelineState,
+        gbufferOverrides);
+
+    EXPECT_NE(singleTargetKey.stableKey, gbufferKey.stableKey);
+    EXPECT_NE(gbufferKey.stableKey.find("overrideColorFormats:3"), std::string::npos);
+}

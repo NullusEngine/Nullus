@@ -1,6 +1,7 @@
 #include "Profiling/Profiler.h"
 
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 #include <optional>
 #include <vector>
@@ -10,7 +11,7 @@ namespace NLS::Base::Profiling
 namespace
 {
 std::mutex g_profilerMutex;
-bool g_enabled = false;
+std::atomic_bool g_enabled = false;
 std::vector<IProfilerDestination*> g_destinations;
 ProfilerSessionStats g_stats;
 ProfilerGpuContextEvent g_lastGpuContext;
@@ -97,14 +98,12 @@ void IProfilerDestination::SubmitGpuCommandLists(const ProfilerGpuCommandListSub
 
 void Profiler::SetEnabled(const bool enabled)
 {
-    std::lock_guard lock(g_profilerMutex);
-    g_enabled = enabled;
+    g_enabled.store(enabled, std::memory_order_release);
 }
 
 bool Profiler::IsEnabled()
 {
-    std::lock_guard lock(g_profilerMutex);
-    return g_enabled;
+    return g_enabled.load(std::memory_order_acquire);
 }
 
 void Profiler::RegisterDestination(IProfilerDestination& destination)
@@ -132,10 +131,23 @@ void Profiler::UnregisterDestination(IProfilerDestination& destination)
         g_destinations.end());
 }
 
+void Profiler::ReplayGpuContextIfAvailable(IProfilerDestination& destination)
+{
+    std::optional<ProfilerGpuContextEvent> contextToReplay;
+    {
+        std::lock_guard lock(g_profilerMutex);
+        if (g_hasGpuContext && AcceptsGPUContextInitialization(destination.GetState()))
+            contextToReplay = g_lastGpuContext;
+    }
+
+    if (contextToReplay.has_value())
+        destination.InitializeGpuContext(contextToReplay.value());
+}
+
 void Profiler::ResetForTesting()
 {
     std::lock_guard lock(g_profilerMutex);
-    g_enabled = false;
+    g_enabled.store(false, std::memory_order_release);
     g_destinations.clear();
     g_stats = {};
     g_lastGpuContext = {};
@@ -159,6 +171,21 @@ void Profiler::RegisterThread(const std::string_view name)
 ProfilerScopeEvent Profiler::BeginScope(const std::string_view name, const std::string_view sourceFunction)
 {
     ProfilerScopeEvent event;
+
+    const bool enabled = IsEnabled();
+    if (!enabled)
+        return event;
+
+    uint64_t skippedDestinationCount = 0u;
+    auto destinations = GetAvailableDestinations(AcceptsCPUScopes, &skippedDestinationCount);
+    if (destinations.empty())
+    {
+        std::lock_guard lock(g_profilerMutex);
+        ++g_stats.droppedEventCount;
+        g_stats.droppedEventCount += skippedDestinationCount;
+        return event;
+    }
+
     event.name = name.empty() ? std::string(sourceFunction) : std::string(name);
     event.sourceFunction = std::string(sourceFunction);
     event.threadName = g_threadName;
@@ -166,19 +193,6 @@ ProfilerScopeEvent Profiler::BeginScope(const std::string_view name, const std::
 
     if (event.name.empty())
         event.name = "Unnamed Scope";
-
-    const bool enabled = IsEnabled();
-    uint64_t skippedDestinationCount = 0u;
-    auto destinations = enabled
-        ? GetAvailableDestinations(AcceptsCPUScopes, &skippedDestinationCount)
-        : std::vector<IProfilerDestination*> {};
-    if (!enabled || destinations.empty())
-    {
-        std::lock_guard lock(g_profilerMutex);
-        ++g_stats.droppedEventCount;
-        g_stats.droppedEventCount += skippedDestinationCount;
-        return event;
-    }
 
     event.destinations = destinations;
     event.active = true;
@@ -216,6 +230,21 @@ ProfilerGpuScopeEvent Profiler::BeginGpuScope(
     const std::string_view sourceFunction)
 {
     ProfilerGpuScopeEvent event;
+
+    const bool enabled = IsEnabled();
+    if (!enabled)
+        return event;
+
+    uint64_t skippedDestinationCount = 0u;
+    auto destinations = GetAvailableDestinations(AcceptsGPUScopes, &skippedDestinationCount);
+    if (destinations.empty())
+    {
+        std::lock_guard lock(g_profilerMutex);
+        ++g_stats.droppedEventCount;
+        g_stats.droppedEventCount += skippedDestinationCount;
+        return event;
+    }
+
     event.nativeCommandBuffer = nativeCommandBuffer;
     event.name = name.empty() ? std::string(sourceFunction) : std::string(name);
     event.sourceFunction = std::string(sourceFunction);
@@ -224,19 +253,6 @@ ProfilerGpuScopeEvent Profiler::BeginGpuScope(
 
     if (event.name.empty())
         event.name = "Unnamed GPU Scope";
-
-    const bool enabled = IsEnabled();
-    uint64_t skippedDestinationCount = 0u;
-    auto destinations = enabled
-        ? GetAvailableDestinations(AcceptsGPUScopes, &skippedDestinationCount)
-        : std::vector<IProfilerDestination*> {};
-    if (!enabled || destinations.empty())
-    {
-        std::lock_guard lock(g_profilerMutex);
-        ++g_stats.droppedEventCount;
-        g_stats.droppedEventCount += skippedDestinationCount;
-        return event;
-    }
 
     event.destinations = destinations;
     event.active = true;

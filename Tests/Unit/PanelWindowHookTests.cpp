@@ -202,13 +202,13 @@ TEST(PanelWindowHookTests, FrameInfoPanelReadsRendererOwnedStats)
 
 TEST(PanelWindowHookTests, ProfilerPanelReportsTimelineDisabledByDefault)
 {
-    NLS::Editor::Panels::ProfilerPanel panel("Profiler", true, {});
+    NLS::Editor::Panels::ProfilerPanel panel("Profiler", false, {});
     const auto& status = TextWidgetAt(panel, 0u);
     const auto& detail = TextWidgetAt(panel, 1u);
 
 #if defined(NLS_ENABLE_TIMELINE_PROFILER)
-    EXPECT_TRUE(status.content.empty());
-    EXPECT_TRUE(detail.content.empty());
+    EXPECT_EQ(status.content, "TimelineProfiler: Disabled");
+    EXPECT_NE(detail.content.find("Profiler panel is closed"), std::string::npos);
 #else
     EXPECT_EQ(status.content, "TimelineProfiler: Disabled");
     EXPECT_NE(detail.content.find("NLS_ENABLE_TIMELINE_PROFILER"), std::string::npos);

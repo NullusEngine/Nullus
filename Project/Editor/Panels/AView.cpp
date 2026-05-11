@@ -41,16 +41,26 @@ void Editor::Panels::AView::_Draw_Impl()
 
 void Editor::Panels::AView::OnBeforeDrawWidgets()
 {
-	SyncViewToCurrentContentRegion();
-    UpdatePreRenderOverlayCameraMatrices();
-    BeginViewportOverlayDrawListChannels();
-    DrawPreRenderViewportOverlay();
-    FinishPreRenderViewportOverlayDrawList();
-	Render(m_lastResolvedViewSize.first, m_lastResolvedViewSize.second);
+    {
+        NLS_PROFILE_NAMED_SCOPE("AView::SyncViewToCurrentContentRegion");
+	    SyncViewToCurrentContentRegion();
+    }
+    {
+        NLS_PROFILE_NAMED_SCOPE("AView::DrawPreRenderOverlay");
+        UpdatePreRenderOverlayCameraMatrices();
+        BeginViewportOverlayDrawListChannels();
+        DrawPreRenderViewportOverlay();
+        FinishPreRenderViewportOverlayDrawList();
+    }
+    {
+        NLS_PROFILE_NAMED_SCOPE("AView::RenderView");
+	    Render(m_lastResolvedViewSize.first, m_lastResolvedViewSize.second);
+    }
 }
 
 void Editor::Panels::AView::OnAfterDrawWidgets()
 {
+    NLS_PROFILE_NAMED_SCOPE("AView::DrawViewportOverlay");
     DrawViewportOverlay();
     EndViewportOverlayDrawListChannels();
 }
@@ -100,7 +110,10 @@ void Editor::Panels::AView::SyncViewToCurrentContentRegion()
             RequiresRetiredFrameConsumption(),
             telemetry))
         {
-            Render::Context::DriverRendererAccess::DrainThreadedRendering(*driver);
+            {
+                NLS_PROFILE_NAMED_SCOPE("AView::DrainBeforeResize");
+                Render::Context::DriverRendererAccess::DrainThreadedRendering(*driver);
+            }
             telemetry = Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(*driver);
         }
     }
@@ -142,7 +155,10 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
             Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver);
         if (threadedRendering)
             beforeTelemetry = Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(*driver);
-		InitFrame();
+        {
+            NLS_PROFILE_NAMED_SCOPE("AView::InitFrame");
+		    InitFrame();
+        }
 
 		Render::Data::FrameDescriptor frameDescriptor;
 		frameDescriptor.renderWidth = p_width;
@@ -153,7 +169,10 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
 		m_image->textureView = m_fbo.GetOrCreateExplicitColorView("Editor.AView.Output");
         NLS::Render::FrameGraph::SetExternalSceneOutputFramebuffer(frameDescriptor, &m_fbo);
 
-		m_renderer->BeginFrame(frameDescriptor);
+        {
+            NLS_PROFILE_NAMED_SCOPE("AView::RendererBeginFrame");
+		    m_renderer->BeginFrame(frameDescriptor);
+        }
         ViewOverlayCameraMatrices submittedOverlayMatrices;
         submittedOverlayMatrices.view = camera->GetViewMatrix();
         submittedOverlayMatrices.projection = camera->GetProjectionMatrix();
@@ -161,7 +180,10 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
 			NLS_PROFILE_NAMED_SCOPE("AView::DrawFrame");
 			DrawFrame();
 		}
-		m_renderer->EndFrame();
+        {
+            NLS_PROFILE_NAMED_SCOPE("AView::RendererEndFrame");
+		    m_renderer->EndFrame();
+        }
         if (Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
             RequiresRetiredFrameConsumption(),
             RequiresImmediateRetiredFrameReadback(),
@@ -173,7 +195,10 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
             {
                 // Immediate readback consumers need the just-submitted offscreen frame retired.
                 // Texture-only consumers can present the latest available texture without a CPU drain.
-                Render::Context::DriverRendererAccess::DrainThreadedRendering(*driver);
+                {
+                    NLS_PROFILE_NAMED_SCOPE("AView::DrainThreadedRendering");
+                    Render::Context::DriverRendererAccess::DrainThreadedRendering(*driver);
+                }
             }
         }
         bool framePublished = !threadedRendering;
@@ -186,13 +211,19 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
             latestPublishedFrameId = afterTelemetry.latestPublishedFrameId;
             latestRetiredFrameId = afterTelemetry.latestRetiredFrameId;
         }
-        UpdateSubmittedOverlayCameraMatrices(
-            submittedOverlayMatrices,
-            threadedRendering,
-            framePublished,
-            latestPublishedFrameId,
-            latestRetiredFrameId);
-		AfterRenderFrame();
+        {
+            NLS_PROFILE_NAMED_SCOPE("AView::UpdateSubmittedOverlayCameraMatrices");
+            UpdateSubmittedOverlayCameraMatrices(
+                submittedOverlayMatrices,
+                threadedRendering,
+                framePublished,
+                latestPublishedFrameId,
+                latestRetiredFrameId);
+        }
+        {
+            NLS_PROFILE_NAMED_SCOPE("AView::AfterRenderFrame");
+		    AfterRenderFrame();
+        }
 	}
 }
 

@@ -14,6 +14,8 @@
 #include "Debug/FileHandler.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/Tooling/RenderDocEnvironment.h"
+#include "Settings/EditorSettings.h"
+#include "Settings/EditorSettingsPersistence.h"
 #include "Utils/PathParser.h"
 #include "Resource/Actor/ActorManager.h"
 
@@ -22,6 +24,16 @@ namespace NLS
 {
 namespace
 {
+	bool ResolveEditorLightGridEnabled(const std::filesystem::path& projectPath)
+	{
+		NLS::Editor::Settings::EditorSettingsRegistry registry;
+		NLS::Editor::Settings::EditorSettings::RegisterSettingObjects(registry);
+		NLS::Editor::Settings::EditorSettingsPersistence::Load(
+			projectPath / "UserSettings" / "editor-settings.json",
+			registry);
+		return NLS::Editor::Settings::EditorSettings::GetRenderingSettingsObject().enableLightGrid;
+	}
+
 	bool IsEditorLayoutFileHealthy(const std::string& content)
 	{
 		return content.find("[Docking][Data]") != std::string::npos &&
@@ -224,6 +236,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     driverSettings.graphicsBackend = graphicsBackend;
     driverSettings.debugMode = m_enableRhiDebugValidation;
     driverSettings.enableThreadedRendering = m_enableThreadedRendering;
+    driverSettings.enableLightGrid = ResolveEditorLightGridEnabled(p_projectPath);
     driverSettings.threadedFrameSlotCount = Editor::Core::ResolveEditorThreadedFrameSlotCount(driverSettings.framesInFlight);
     driverSettings.diagnostics = m_diagnosticsSettings;
 

@@ -24,6 +24,7 @@
 #include "Rendering/Resources/MaterialResourceSet.h"
 #include "Rendering/Resources/ShaderBindingLayoutUtils.h"
 #include "Rendering/Resources/Shader.h"
+#include "Rendering/Resources/ShaderParameterStruct.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/Resources/Texture2D.h"
 #include "Rendering/Resources/TextureCube.h"
@@ -125,6 +126,15 @@ namespace
 		NLS::Render::RHI::RHIGraphicsPipelineDesc& desc,
 		const NLS::Render::Resources::MaterialPipelineStateOverrides& overrides)
 	{
+		if (overrides.colorFormats.has_value())
+		{
+			desc.renderTargetLayout.colorFormats = *overrides.colorFormats;
+			const size_t renderTargetCount = std::max<size_t>(1u, desc.renderTargetLayout.colorFormats.size());
+			const auto templateTarget = desc.blendState.renderTargets.empty()
+				? NLS::Render::RHI::RHIRenderTargetBlendStateDesc{}
+				: desc.blendState.renderTargets.front();
+			desc.blendState.renderTargets.assign(renderTargetCount, templateTarget);
+		}
 		if (overrides.colorWrite.has_value())
 		{
 			desc.blendState.colorWrite = *overrides.colorWrite;
@@ -326,6 +336,20 @@ namespace
 		entry.count = std::max(1u, count);
 		entry.stageMask = stageMask;
 		layoutDesc.entries.push_back(std::move(entry));
+	}
+
+	std::vector<NLS::Render::RHI::RHIBindingLayoutDesc> BuildExplicitBindingLayoutDescs(
+		const NLS::Render::Resources::Shader& shader,
+		std::string_view debugNamePrefix)
+	{
+		if (shader.HasParameterStructs())
+			return NLS::Render::Resources::BuildBindingLayoutDescsFromShaderParameters(
+				shader.GetParameterStructs(),
+				debugNamePrefix);
+
+		return NLS::Render::Resources::BuildExplicitBindingLayoutDescsBySet(
+			shader.GetReflection(),
+			debugNamePrefix);
 	}
 
 }
@@ -822,26 +846,29 @@ namespace NLS::Render::Resources
 			return state.explicitBindingLayout;
 		}
 
-		const auto validation = ValidateShaderBindingReflection(m_shader->GetReflection());
-		if (validation.HasErrors())
+		if (!m_shader->HasParameterStructs())
 		{
-			for (const auto& diagnostic : validation.diagnostics)
+			const auto validation = ValidateShaderBindingReflection(m_shader->GetReflection());
+			if (validation.HasErrors())
 			{
-				if (diagnostic.severity == ShaderBindingValidationSeverity::Error)
+				for (const auto& diagnostic : validation.diagnostics)
 				{
-					state.explicitBindingDiagnostics.push_back({
-						MaterialBindingDiagnosticSeverity::Error,
-						{},
-						diagnostic.message
-					});
+					if (diagnostic.severity == ShaderBindingValidationSeverity::Error)
+					{
+						state.explicitBindingDiagnostics.push_back({
+							MaterialBindingDiagnosticSeverity::Error,
+							{},
+							diagnostic.message
+						});
+					}
 				}
+				state.explicitBindingLayoutDirty = false;
+				return state.explicitBindingLayout;
 			}
-			state.explicitBindingLayoutDirty = false;
-			return state.explicitBindingLayout;
 		}
 
-		const auto layoutDescs = BuildExplicitBindingLayoutDescsBySet(
-			m_shader->GetReflection(),
+		const auto layoutDescs = BuildExplicitBindingLayoutDescs(
+			*m_shader,
 			path.empty() ? "Material" : path);
 		constexpr uint32_t materialSetIndex = NLS::Render::RHI::BindingPointMap::kMaterialDescriptorSet;
 		if (device != nullptr &&
@@ -1045,8 +1072,8 @@ namespace NLS::Render::Resources
 		if (m_shader == nullptr)
 			return state.explicitPipelineLayout;
 
-		const auto layoutDescs = BuildExplicitBindingLayoutDescsBySet(
-			m_shader->GetReflection(),
+		const auto layoutDescs = BuildExplicitBindingLayoutDescs(
+			*m_shader,
 			path.empty() ? "Material" : path);
 		if (layoutDescs.empty())
 			return state.explicitPipelineLayout;

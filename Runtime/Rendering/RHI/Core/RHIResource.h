@@ -120,6 +120,11 @@ namespace NLS::Render::RHI
         virtual const RHIBufferDesc& GetDesc() const = 0;
         virtual ResourceState GetState() const = 0;
         virtual uint64_t GetGPUAddress() const = 0;
+        virtual RHIUpdateResult UpdateData(const RHIBufferUploadDesc& uploadDesc)
+        {
+            (void)uploadDesc;
+            return { RHIUpdateStatusCode::Unsupported, "RHI buffer does not support in-place data updates" };
+        }
         virtual NativeHandle GetNativeBufferHandle() { return {}; } // Type-safe native handle
     };
 

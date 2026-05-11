@@ -36,6 +36,25 @@ namespace NLS::Render::Resources
                 : std::string("unset");
         }
 
+        void AppendOptionalColorFormats(
+            std::string& key,
+            const std::optional<std::vector<NLS::Render::RHI::TextureFormat>>& value)
+        {
+            key += "|overrideColorFormats:";
+            if (!value.has_value())
+            {
+                key += "unset";
+                return;
+            }
+
+            key += std::to_string(value->size());
+            for (const auto format : *value)
+            {
+                key += ",";
+                key += std::to_string(static_cast<uint32_t>(format));
+            }
+        }
+
         std::string BuildPipelineStateKey(const Data::PipelineState& pipelineState)
         {
             std::string key = "pipeline:";
@@ -69,6 +88,7 @@ namespace NLS::Render::Resources
             AppendOptionalBool(key, "overrideHasDepth", overrides.hasDepthAttachment);
             AppendOptionalBool(key, "overrideCulling", overrides.culling);
             AppendOptionalCullFace(key, "overrideCullFace", overrides.cullFace);
+            AppendOptionalColorFormats(key, overrides.colorFormats);
             return key;
         }
     }

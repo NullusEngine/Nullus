@@ -10,5 +10,7 @@ public:
     void BeginScope(const ProfilerScopeEvent& event) override;
     void EndScope(const ProfilerScopeEvent& event) override;
     ProfilerDestinationState GetState() const override;
+
+    static bool IsConnected();
 };
 }

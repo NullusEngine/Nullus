@@ -400,7 +400,41 @@ namespace NLS::Render::Backend
 		}
 		if (FAILED(hr))
 		{
-			NLS_LOG_ERROR("NativeDX12GraphicsPipeline: CreateGraphicsPipelineState failed with hr=" + std::to_string(hr));
+			std::ostringstream diagnostics;
+			diagnostics
+				<< "NativeDX12GraphicsPipeline: CreateGraphicsPipelineState failed"
+				<< " hr=" << hr
+				<< " debugName=\"" << m_desc.debugName << "\""
+				<< " rootSignature=" << (m_rootSignature != nullptr ? "valid" : "null")
+				<< " pipelineLayout=" << (m_desc.pipelineLayout != nullptr ? "set" : "null")
+				<< " vsModule=" << (m_desc.vertexShader != nullptr ? "set" : "null")
+				<< " psModule=" << (m_desc.fragmentShader != nullptr ? "set" : "null")
+				<< " vsName=\"" << (m_desc.vertexShader != nullptr ? std::string(m_desc.vertexShader->GetDebugName()) : std::string{}) << "\""
+				<< " psName=\"" << (m_desc.fragmentShader != nullptr ? std::string(m_desc.fragmentShader->GetDebugName()) : std::string{}) << "\""
+				<< " vsBytes=" << psoDesc.VS.BytecodeLength
+				<< " psBytes=" << psoDesc.PS.BytecodeLength
+				<< " inputElements=" << psoDesc.InputLayout.NumElements
+				<< " vertexBuffers=" << m_desc.vertexBuffers.size()
+				<< " vertexAttributes=" << m_desc.vertexAttributes.size()
+				<< " numRT=" << psoDesc.NumRenderTargets
+				<< " hasDepth=" << (hasDepthAttachment ? "true" : "false")
+				<< " dsvFormat=" << static_cast<int>(psoDesc.DSVFormat)
+				<< " sampleCount=" << psoDesc.SampleDesc.Count
+				<< " primitiveTopologyType=" << static_cast<int>(psoDesc.PrimitiveTopologyType);
+			for (UINT formatIndex = 0; formatIndex < psoDesc.NumRenderTargets && formatIndex < 8u; ++formatIndex)
+				diagnostics << " rtv" << formatIndex << "=" << static_cast<int>(psoDesc.RTVFormats[formatIndex]);
+			for (size_t attributeIndex = 0; attributeIndex < m_desc.vertexAttributes.size(); ++attributeIndex)
+			{
+				const auto& attribute = m_desc.vertexAttributes[attributeIndex];
+				diagnostics
+					<< " attr" << attributeIndex
+					<< "{loc=" << attribute.location
+					<< ",binding=" << attribute.binding
+					<< ",offset=" << attribute.offset
+					<< ",size=" << attribute.elementSize
+					<< "}";
+			}
+			NLS_LOG_ERROR(diagnostics.str());
 			LogDx12DebugMessages(m_device, "NativeDX12GraphicsPipeline");
 			return;
 		}

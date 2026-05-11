@@ -1159,6 +1159,7 @@ namespace
 
     bool DrainThreadedLifecycleSynchronously(DriverImpl& impl, Driver* driver = nullptr)
     {
+        NLS_PROFILE_SCOPE();
         if (impl.threadedLifecycle == nullptr || driver == nullptr)
             return true;
 
@@ -1167,16 +1168,22 @@ namespace
         {
             bool progressed = false;
 
-            if (RenderThreadCoordinator::DrainPendingRenderFrameBuildsSynchronously(*driver))
             {
-                progressed = true;
+                NLS_PROFILE_NAMED_SCOPE("Driver::DrainRenderFrameBuilds");
+                if (RenderThreadCoordinator::DrainPendingRenderFrameBuildsSynchronously(*driver))
+                {
+                    progressed = true;
+                }
             }
 
-            if (RhiThreadCoordinator::DrainPendingThreadedSubmissions(
-                *driver,
-                RhiSubmissionAttribution::SynchronousDrain))
             {
-                progressed = true;
+                NLS_PROFILE_NAMED_SCOPE("Driver::DrainRhiSubmissions");
+                if (RhiThreadCoordinator::DrainPendingThreadedSubmissions(
+                    *driver,
+                    RhiSubmissionAttribution::SynchronousDrain))
+                {
+                    progressed = true;
+                }
             }
 
             if (!progressed)
@@ -1193,7 +1200,10 @@ namespace
                 // Another worker may currently own a RenderScenePreparing/RhiSubmitting slot.
                 // UI composition and shutdown are synchronization points, so wait for ownership
                 // to return instead of presenting stale backbuffers or exposing unfinished readback.
-                WaitForThreadedWorkerWake(impl, observedWakeGeneration, kThreadedDrainWakeTimeout);
+                {
+                    NLS_PROFILE_NAMED_SCOPE("Driver::WaitForThreadedDrainWake");
+                    WaitForThreadedWorkerWake(impl, observedWakeGeneration, kThreadedDrainWakeTimeout);
+                }
             }
         }
         return true;
@@ -1201,6 +1211,7 @@ namespace
 
     void NotifyThreadedWorkers(DriverImpl& impl)
     {
+        NLS_PROFILE_SCOPE();
         impl.threadedWorkerWakeGeneration.fetch_add(1u, std::memory_order_release);
         impl.threadedWorkerWake.notify_all();
     }
@@ -1210,6 +1221,7 @@ namespace
         const uint64_t observedGeneration,
         const std::chrono::milliseconds timeout)
     {
+        NLS_PROFILE_SCOPE();
         std::unique_lock<std::mutex> lock(impl.threadedWorkerWakeMutex);
         impl.threadedWorkerWake.wait_for(
             lock,
@@ -1422,6 +1434,11 @@ bool DriverRendererAccess::HasExplicitRHI(const Driver& driver)
 bool DriverRendererAccess::IsThreadedRenderingEnabled(const Driver& driver)
 {
     return RenderThreadCoordinator::IsThreadedRenderingEnabled(driver);
+}
+
+bool DriverRendererAccess::IsLightGridEnabled(const Driver& driver)
+{
+    return driver.m_impl != nullptr && driver.m_impl->lightGridEnabled;
 }
 
 std::shared_ptr<Render::RHI::RHIDevice> DriverRendererAccess::GetExplicitDevice(const Driver& driver)
@@ -2048,6 +2065,7 @@ Driver::Driver(const Render::Settings::DriverSettings& p_driverSettings)
     : m_impl(std::make_unique<DriverImpl>())
 {
     m_impl->requestedGraphicsBackend = p_driverSettings.graphicsBackend;
+    m_impl->lightGridEnabled = p_driverSettings.enableLightGrid;
     if (m_impl->requestedGraphicsBackend != Render::Settings::EGraphicsBackend::NONE &&
         !Render::Settings::IsBackendSelectableForPhase1(m_impl->requestedGraphicsBackend))
     {
@@ -2420,14 +2438,23 @@ void Driver::StartThreadedRenderingWorkers()
                 nullptr))
             {
                 const auto resolutionDesc = Detail::BuildRenderScenePreparingResolutionDesc();
-                m_impl->threadedLifecycle->ResolveRenderScenePreparing(
-                    slotIndex,
-                    resolutionDesc);
-                NotifyThreadedWorkers(*m_impl);
+                {
+                    NLS_PROFILE_NAMED_SCOPE("RenderThread::ResolveRenderScenePreparing");
+                    m_impl->threadedLifecycle->ResolveRenderScenePreparing(
+                        slotIndex,
+                        resolutionDesc);
+                }
+                {
+                    NLS_PROFILE_NAMED_SCOPE("RenderThread::NotifyThreadedWorkers");
+                    NotifyThreadedWorkers(*m_impl);
+                }
                 continue;
             }
 
-            WaitForThreadedWorkerWake(*m_impl, observedWakeGeneration);
+            {
+                NLS_PROFILE_NAMED_SCOPE("RenderThread::WaitForWake");
+                WaitForThreadedWorkerWake(*m_impl, observedWakeGeneration);
+            }
         }
     });
     m_impl->rhiWorker = std::thread([this]()
@@ -2439,14 +2466,20 @@ void Driver::StartThreadedRenderingWorkers()
             NLS_PROFILE_NAMED_SCOPE("RHI Thread Tick");
             const uint64_t observedWakeGeneration =
                 m_impl->threadedWorkerWakeGeneration.load(std::memory_order_acquire);
-            if (RhiThreadCoordinator::TryExecuteNextThreadedSubmission(
-                *this,
-                RhiSubmissionAttribution::Worker))
             {
-                continue;
+                NLS_PROFILE_NAMED_SCOPE("RhiThread::TryExecuteNextThreadedSubmission");
+                if (RhiThreadCoordinator::TryExecuteNextThreadedSubmission(
+                    *this,
+                    RhiSubmissionAttribution::Worker))
+                {
+                    continue;
+                }
             }
 
-            WaitForThreadedWorkerWake(*m_impl, observedWakeGeneration);
+            {
+                NLS_PROFILE_NAMED_SCOPE("RhiThread::WaitForWake");
+                WaitForThreadedWorkerWake(*m_impl, observedWakeGeneration);
+            }
         }
     });
 }

@@ -1,10 +1,134 @@
 #pragma once
 
+#include <algorithm>
+#include <utility>
+
 #include "Rendering/RHI/Core/RHIPipeline.h"
 #include "Rendering/RHI/Core/RHISync.h"
 
 namespace NLS::Render::RHI
 {
+    enum class NLS_RENDER_API RHICommandListLifecycleState : uint8_t
+    {
+        Available = 0,
+        Recording,
+        Closed,
+        Submitted,
+        Retired
+    };
+
+    enum class NLS_RENDER_API RHICommandListCommandKind : uint8_t
+    {
+        Unknown = 0,
+        Draw,
+        DrawIndexed,
+        Dispatch,
+        Copy,
+        Barrier,
+        BeginRenderPass,
+        EndRenderPass,
+        BindPipeline,
+        BindResources
+    };
+
+    enum class NLS_RENDER_API RHICommandListDependencyPolicy : uint8_t
+    {
+        None = 0,
+        Previous,
+        LastGraphics,
+        LastCompute
+    };
+
+    struct NLS_RENDER_API RHICommandListCommandMetadata
+    {
+        RHICommandListCommandKind kind = RHICommandListCommandKind::Unknown;
+        uint64_t visibleDrawCount = 0u;
+    };
+
+    struct NLS_RENDER_API RHICommandListChildSubmissionMetadata
+    {
+        std::string debugName;
+        QueueType queueType = QueueType::Graphics;
+        RHICommandListLifecycleState lifecycleState = RHICommandListLifecycleState::Available;
+        RHICommandListDependencyPolicy dependencyPolicy = RHICommandListDependencyPolicy::Previous;
+        uint64_t submitOrder = 0u;
+        uint64_t commandCount = 0u;
+        uint64_t visibleDrawCount = 0u;
+    };
+
+    struct NLS_RENDER_API RHICommandListSubmissionMetadata
+    {
+        std::string debugName;
+        QueueType queueType = QueueType::Graphics;
+        RHICommandListLifecycleState lifecycleState = RHICommandListLifecycleState::Available;
+        RHICommandListDependencyPolicy dependencyPolicy = RHICommandListDependencyPolicy::Previous;
+        uint64_t submitOrder = 0u;
+        uint64_t commandCount = 0u;
+        uint64_t visibleDrawCount = 0u;
+        std::vector<RHICommandListCommandMetadata> commands;
+        std::vector<RHICommandListChildSubmissionMetadata> childSubmissions;
+
+        bool IsSubmittable() const
+        {
+            return lifecycleState == RHICommandListLifecycleState::Closed;
+        }
+
+        bool HasVisibleWork() const
+        {
+            if (visibleDrawCount > 0u)
+                return true;
+
+            return std::any_of(
+                childSubmissions.begin(),
+                childSubmissions.end(),
+                [](const RHICommandListChildSubmissionMetadata& child)
+                {
+                    return child.visibleDrawCount > 0u;
+                });
+        }
+
+        void Close()
+        {
+            lifecycleState = RHICommandListLifecycleState::Closed;
+        }
+
+        void MarkSubmitted()
+        {
+            lifecycleState = RHICommandListLifecycleState::Submitted;
+        }
+
+        void MarkRetired()
+        {
+            lifecycleState = RHICommandListLifecycleState::Retired;
+        }
+
+        void RecordCommand(
+            const RHICommandListCommandKind kind,
+            const uint64_t recordedVisibleDrawCount = 0u)
+        {
+            commands.push_back({ kind, recordedVisibleDrawCount });
+            commandCount = static_cast<uint64_t>(commands.size()) +
+                static_cast<uint64_t>(childSubmissions.size());
+            visibleDrawCount += recordedVisibleDrawCount;
+        }
+
+        void QueueChildSubmission(const RHICommandListSubmissionMetadata& child)
+        {
+            RHICommandListChildSubmissionMetadata childMetadata;
+            childMetadata.debugName = child.debugName;
+            childMetadata.queueType = child.queueType;
+            childMetadata.lifecycleState = child.lifecycleState;
+            childMetadata.dependencyPolicy = child.dependencyPolicy;
+            childMetadata.submitOrder = static_cast<uint64_t>(childSubmissions.size());
+            childMetadata.commandCount = child.commandCount;
+            childMetadata.visibleDrawCount = child.visibleDrawCount;
+            childSubmissions.push_back(std::move(childMetadata));
+            commandCount = static_cast<uint64_t>(commands.size()) +
+                static_cast<uint64_t>(childSubmissions.size());
+            visibleDrawCount += child.visibleDrawCount;
+        }
+    };
+
     struct NLS_RENDER_API RHIViewport
     {
         float x = 0.0f;

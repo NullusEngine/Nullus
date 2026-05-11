@@ -48,6 +48,16 @@ namespace NLS::Editor::Settings
 
 namespace NLS::Editor::Settings
 {
+    STRUCT(EditorRenderingSettingsObject)
+    {
+        GENERATED_BODY()
+        PROPERTY()
+        bool enableLightGrid = true;
+    };
+}
+
+namespace NLS::Editor::Settings
+{
 	/**
 	* Accessible from anywhere editor settings
 	*/
@@ -61,6 +71,7 @@ namespace NLS::Editor::Settings
 
         static EditorDebugDrawSettingsObject& GetDebugDrawSettingsObject();
         static EditorSceneToolSettingsObject& GetSceneToolSettingsObject();
+        static EditorRenderingSettingsObject& GetRenderingSettingsObject();
         static void RegisterSettingObjects(EditorSettingsRegistry& p_registry);
 	};
 }

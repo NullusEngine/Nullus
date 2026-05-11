@@ -45,6 +45,7 @@ TEST(EditorSettingsRegistryTests, RegistersDefaultSettingsWithoutCallerPrewarmin
 
     EXPECT_TRUE(registry.Contains("editor.debug-draw"));
     EXPECT_TRUE(registry.Contains("editor.scene-tools"));
+    EXPECT_TRUE(registry.Contains("editor.rendering"));
 }
 
 TEST(EditorSettingsRegistryTests, OrdersSettingsByCategoryDisplayNameAndId)
@@ -90,6 +91,18 @@ TEST(EditorSettingsRegistryTests, SearchMatchesCategoryNameAndReflectedPropertyL
     auto propertyMatches = registry.Search("Light Billboard");
     ASSERT_EQ(propertyMatches.size(), 1u);
     EXPECT_EQ(propertyMatches[0]->id, "debug");
+
+    EXPECT_TRUE(registry.Register({
+        "editor.rendering",
+        "Rendering",
+        "Editor/Rendering",
+        NLS::Editor::Settings::EditorSettingPersistenceScope::User,
+        [] { return NLS::meta::Variant(NLS::Editor::Settings::EditorSettings::GetRenderingSettingsObject(), NLS::meta::variant_policy::NoCopy {}); },
+        NLS_TYPEOF(NLS::Editor::Settings::EditorRenderingSettingsObject)
+    }));
+    auto lightGridMatches = registry.Search("LightGrid");
+    ASSERT_EQ(lightGridMatches.size(), 1u);
+    EXPECT_EQ(lightGridMatches[0]->id, "editor.rendering");
 
     EXPECT_TRUE(registry.Search("does-not-exist").empty());
 }

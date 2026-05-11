@@ -1,4 +1,5 @@
 #include <Rendering/Data/LightingDescriptor.h>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 
@@ -54,6 +55,34 @@ namespace
         }
     }
 
+    void ResolvePreparedPassBindingPlaceholders(
+        std::vector<NLS::Render::Context::RecordedDrawCommandInput>& drawCommands,
+        const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& resolvedBindingSet,
+        const size_t firstDrawIndex,
+        const size_t lastDrawIndex)
+    {
+        const auto resolvedLastDrawIndex = std::min(lastDrawIndex, drawCommands.size());
+        if (firstDrawIndex >= resolvedLastDrawIndex)
+            return;
+
+        for (size_t drawIndex = firstDrawIndex; drawIndex < resolvedLastDrawIndex; ++drawIndex)
+        {
+            auto& drawCommand = drawCommands[drawIndex];
+            if (IsPreparedPassBindingPlaceholder(drawCommand.passBindingSet))
+                drawCommand.passBindingSet = resolvedBindingSet;
+        }
+    }
+
+    void ClearPreparedPassBindingPlaceholders(
+        std::vector<NLS::Render::Context::RecordedDrawCommandInput>& drawCommands)
+    {
+        for (auto& drawCommand : drawCommands)
+        {
+            if (IsPreparedPassBindingPlaceholder(drawCommand.passBindingSet))
+                drawCommand.passBindingSet.reset();
+        }
+    }
+
 }
 
 using namespace Components;
@@ -76,6 +105,7 @@ void BaseSceneRenderer::BeginFrame(const Render::Data::FrameDescriptor& p_frameD
 {
 	NLS_PROFILE_SCOPE();
 	NLS_ASSERT(HasDescriptor<SceneDescriptor>(), "Cannot find SceneDescriptor attached to this renderer");
+	InvalidateLightGridCompileContextCache();
 
 	auto& sceneDescriptor = GetDescriptor<SceneDescriptor>();
 	RefreshSceneLightingDescriptor(sceneDescriptor.scene);
@@ -123,7 +153,9 @@ void BaseSceneRenderer::RefreshFrameSnapshotVisibility(
 const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& BaseSceneRenderer::GetLightGridGraphicsPassBindingSet() const
 {
 	static const std::shared_ptr<NLS::Render::RHI::RHIBindingSet> kNullBindingSet{};
-	return m_lightGridPrepass != nullptr ? m_lightGridPrepass->GetGraphicsPassBindingSet() : kNullBindingSet;
+	return m_lightGridPrepass != nullptr
+		? m_lightGridPrepass->GetGraphicsPassBindingSet()
+		: kNullBindingSet;
 }
 
 NLS::Render::FrameGraph::LightGridCompileContext BaseSceneRenderer::BuildLightGridCompileContext(
@@ -132,16 +164,39 @@ NLS::Render::FrameGraph::LightGridCompileContext BaseSceneRenderer::BuildLightGr
 	NLS_PROFILE_SCOPE();
 	const auto frameSnapshot =
 		NLS::Render::FrameGraph::CaptureExternalSceneOutputSnapshot(GetFrameDescriptor());
+
+	if (!NLS::Render::Context::DriverRendererAccess::IsLightGridEnabled(m_driver))
+	{
+		if (m_lightGridPrepass != nullptr)
+			m_lightGridPrepass->EnsureFallbackGraphicsPassBindingSet(frameSnapshot, hasSkyboxTexture);
+		return NLS::Render::FrameGraph::BuildLightGridCompileContext(
+			frameSnapshot,
+			{},
+			GetLightGridGraphicsPassBindingSet());
+	}
+
+	std::lock_guard lock(m_lightGridCompileContextCacheMutex);
+	if (IsLightGridCompileContextCacheHit(frameSnapshot, hasSkyboxTexture))
+		return m_lightGridCompileContextCache.context;
+
 	const auto preparedComputeRequest = LightGridPrepass::BuildPreparedComputeRequest(
 		frameSnapshot,
 		GetLightGridPrepass(),
 		BuildLightGridFrameInputs(hasSkyboxTexture));
 	auto preparedComputeSource = LightGridPrepass::BuildPreparedComputeDispatchSource(preparedComputeRequest);
+	if (GetLightGridGraphicsPassBindingSet() == nullptr && m_lightGridPrepass != nullptr)
+		m_lightGridPrepass->EnsureFallbackGraphicsPassBindingSet(frameSnapshot, hasSkyboxTexture);
 	auto graphicsPassBindingSet = GetLightGridGraphicsPassBindingSet();
-	return NLS::Render::FrameGraph::BuildLightGridCompileContext(
+	auto context = NLS::Render::FrameGraph::BuildLightGridCompileContext(
 		frameSnapshot,
 		std::move(preparedComputeSource),
 		std::move(graphicsPassBindingSet));
+
+	m_lightGridCompileContextCache.valid = true;
+	m_lightGridCompileContextCache.hasSkyboxTexture = hasSkyboxTexture;
+	m_lightGridCompileContextCache.frameDescriptor = frameSnapshot;
+	m_lightGridCompileContextCache.context = context;
+	return context;
 }
 
 std::optional<LightGridPrepass::PreparedFrameInputs> BaseSceneRenderer::BuildLightGridFrameInputs(
@@ -161,6 +216,36 @@ const std::shared_ptr<LightGridPrepass>& BaseSceneRenderer::GetLightGridPrepass(
 	return m_lightGridPrepass;
 }
 
+void BaseSceneRenderer::InvalidateLightGridCompileContextCache() const
+{
+	std::lock_guard lock(m_lightGridCompileContextCacheMutex);
+	m_lightGridCompileContextCache.valid = false;
+	m_lightGridCompileContextCache.context = {};
+}
+
+bool BaseSceneRenderer::IsLightGridCompileContextCacheHit(
+	const NLS::Render::Data::FrameDescriptor& frameDescriptor,
+	const bool hasSkyboxTexture) const
+{
+	return m_lightGridCompileContextCache.valid &&
+		m_lightGridCompileContextCache.hasSkyboxTexture == hasSkyboxTexture &&
+		AreSameLightGridFrameInputs(m_lightGridCompileContextCache.frameDescriptor, frameDescriptor);
+}
+
+bool BaseSceneRenderer::AreSameLightGridFrameInputs(
+	const NLS::Render::Data::FrameDescriptor& left,
+	const NLS::Render::Data::FrameDescriptor& right)
+{
+	return left.renderWidth == right.renderWidth &&
+		left.renderHeight == right.renderHeight &&
+		left.camera == right.camera &&
+		left.outputBuffer == right.outputBuffer &&
+		left.outputColorTexture == right.outputColorTexture &&
+		left.outputDepthStencilTexture == right.outputDepthStencilTexture &&
+		left.outputColorView == right.outputColorView &&
+		left.outputDepthStencilView == right.outputDepthStencilView;
+}
+
 const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& BaseSceneRenderer::GetPreparedPassBindingSetPlaceholder()
 {
 	return GetPreparedPassBindingPlaceholderInstance();
@@ -173,6 +258,41 @@ void BaseSceneRenderer::ResolvePreparedPassBindingSetPlaceholders(
 	ResolvePreparedPassBindingPlaceholders(package.recordedDrawCommands, resolvedBindingSet);
 	for (auto& passInput : package.passCommandInputs)
 		ResolvePreparedPassBindingPlaceholders(passInput.recordedDrawCommands, resolvedBindingSet);
+}
+
+void BaseSceneRenderer::ResolvePreparedScenePassBindingSetPlaceholders(
+	Render::Context::RenderScenePackage& package,
+	const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& resolvedBindingSet,
+	const uint64_t sceneDrawCount)
+{
+	const auto sceneDrawEnd = static_cast<size_t>(
+		std::min<uint64_t>(
+			sceneDrawCount,
+			static_cast<uint64_t>(package.recordedDrawCommands.size())));
+	ResolvePreparedPassBindingPlaceholders(package.recordedDrawCommands, resolvedBindingSet, 0u, sceneDrawEnd);
+	for (size_t drawIndex = sceneDrawEnd; drawIndex < package.recordedDrawCommands.size(); ++drawIndex)
+	{
+		auto& drawCommand = package.recordedDrawCommands[drawIndex];
+		if (IsPreparedPassBindingPlaceholder(drawCommand.passBindingSet))
+			drawCommand.passBindingSet.reset();
+	}
+
+	for (auto& passInput : package.passCommandInputs)
+	{
+		switch (passInput.kind)
+		{
+		case NLS::Render::Context::RenderPassCommandKind::Opaque:
+		case NLS::Render::Context::RenderPassCommandKind::Skybox:
+		case NLS::Render::Context::RenderPassCommandKind::Transparent:
+		case NLS::Render::Context::RenderPassCommandKind::GBuffer:
+		case NLS::Render::Context::RenderPassCommandKind::Lighting:
+			ResolvePreparedPassBindingPlaceholders(passInput.recordedDrawCommands, resolvedBindingSet);
+			break;
+		default:
+			ClearPreparedPassBindingPlaceholders(passInput.recordedDrawCommands);
+			break;
+		}
+	}
 }
 
 bool BaseSceneRenderer::CaptureThreadedPreparedDraw(

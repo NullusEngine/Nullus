@@ -7,16 +7,21 @@ static const uint NLS_LIGHT_TYPE_SPOT = 2u;
 static const uint NLS_LIGHT_TYPE_AMBIENT_BOX = 3u;
 static const uint NLS_LIGHT_TYPE_AMBIENT_SPHERE = 4u;
 static const uint NLS_LIGHT_WORD_STRIDE = 16u;
+static const uint NLS_NUM_CULLED_LIGHTS_GRID_STRIDE = 2u;
+static const uint NLS_LIGHT_LINK_STRIDE = 2u;
 
-cbuffer LightGridPassConstants : register(b0, space1)
+cbuffer ForwardLightData : register(b0, space1)
 {
     float4x4 u_LightGridView;
     float4x4 u_LightGridProjection;
     float4x4 u_LightGridInverseViewProjection;
+    float4x4 u_LightGridClipToView;
     float4 u_LightGridCameraWorldPositionNearPlane;
     float4 u_LightGridRenderSizeFarPlane;
     float4 u_LightGridGridParams;
     float4 u_LightGridLightingParams;
+    float4 u_LightGridZParams;
+    float4 u_LightGridPixelParams;
 };
 
 struct NLSLightGridLight
@@ -37,12 +42,95 @@ uint NLSGetGridSizeX() { return (uint)u_LightGridGridParams.x; }
 uint NLSGetGridSizeY() { return (uint)u_LightGridGridParams.y; }
 uint NLSGetGridSizeZ() { return (uint)u_LightGridGridParams.z; }
 uint NLSGetMaxLightsPerCluster() { return (uint)u_LightGridGridParams.w; }
+uint NLSGetNumLocalLights() { return (uint)u_LightGridLightingParams.x; }
 uint NLSGetSceneLightCount() { return (uint)u_LightGridLightingParams.x; }
 float NLSGetDepthFogFactor() { return u_LightGridLightingParams.y; }
 float NLSGetAmbientFloor() { return u_LightGridLightingParams.z; }
 float NLSGetNearPlane() { return u_LightGridCameraWorldPositionNearPlane.w; }
 float NLSGetFarPlane() { return u_LightGridRenderSizeFarPlane.w; }
 float3 NLSGetCameraWorldPosition() { return u_LightGridCameraWorldPositionNearPlane.xyz; }
+float3 NLSGetLightGridZParams() { return u_LightGridZParams.xyz; }
+bool NLSUsesLinkedListCulling() { return u_LightGridZParams.w > 0.5f; }
+uint3 NLSGetCulledGridSize() { return uint3(NLSGetGridSizeX(), NLSGetGridSizeY(), NLSGetGridSizeZ()); }
+
+float NLSComputeCellNearViewDepthFromZSlice(uint zSlice)
+{
+    const float3 zParams = NLSGetLightGridZParams();
+    float sliceDepth = (exp2((float)zSlice / zParams.z) - zParams.y) / zParams.x;
+
+    if (zSlice == NLSGetGridSizeZ())
+        sliceDepth = 2000000.0f;
+    if (zSlice == 0u)
+        sliceDepth = 0.0f;
+    return sliceDepth;
+}
+
+float NLSConvertViewDepthToDeviceZ(float viewDepth)
+{
+    const float nearPlane = max(NLSGetNearPlane(), 1e-4f);
+    const float farPlane = max(NLSGetFarPlane(), nearPlane + 1.0f);
+    return saturate((viewDepth - nearPlane) / (farPlane - nearPlane));
+}
+
+void NLSComputeCellViewAABB(uint3 gridCoordinate, out float3 viewTileMin, out float3 viewTileMax)
+{
+    const float2 invRenderSize = float2(u_LightGridRenderSizeFarPlane.z, u_LightGridPixelParams.y);
+    const float pixelSize = max(1.0f, u_LightGridPixelParams.x);
+    const float2 tileSize = float2(2.0f, -2.0f) * pixelSize * invRenderSize;
+    const float2 unitPlaneMin = float2(-1.0f, 1.0f);
+
+    const float2 tileMin = (float2)gridCoordinate.xy * tileSize + unitPlaneMin;
+    const float2 tileMax = ((float2)gridCoordinate.xy + 1.0f) * tileSize + unitPlaneMin;
+    const float minTileZ = NLSComputeCellNearViewDepthFromZSlice(gridCoordinate.z);
+    const float maxTileZ = NLSComputeCellNearViewDepthFromZSlice(gridCoordinate.z + 1u);
+    const float minDeviceZ = NLSConvertViewDepthToDeviceZ(minTileZ);
+    const float maxDeviceZ = NLSConvertViewDepthToDeviceZ(maxTileZ);
+
+    const float4 minCorner0 = mul(float4(tileMin.x, tileMin.y, minDeviceZ, 1.0f), u_LightGridClipToView);
+    const float4 minCorner1 = mul(float4(tileMax.x, tileMin.y, minDeviceZ, 1.0f), u_LightGridClipToView);
+    const float4 minCorner2 = mul(float4(tileMin.x, tileMax.y, minDeviceZ, 1.0f), u_LightGridClipToView);
+    const float4 minCorner3 = mul(float4(tileMax.x, tileMax.y, minDeviceZ, 1.0f), u_LightGridClipToView);
+    const float4 maxCorner0 = mul(float4(tileMin.x, tileMin.y, maxDeviceZ, 1.0f), u_LightGridClipToView);
+    const float4 maxCorner1 = mul(float4(tileMax.x, tileMin.y, maxDeviceZ, 1.0f), u_LightGridClipToView);
+    const float4 maxCorner2 = mul(float4(tileMin.x, tileMax.y, maxDeviceZ, 1.0f), u_LightGridClipToView);
+    const float4 maxCorner3 = mul(float4(tileMax.x, tileMax.y, maxDeviceZ, 1.0f), u_LightGridClipToView);
+
+    const float2 viewMin0 = minCorner0.xy / max(abs(minCorner0.w), 1e-5f);
+    const float2 viewMin1 = minCorner1.xy / max(abs(minCorner1.w), 1e-5f);
+    const float2 viewMin2 = minCorner2.xy / max(abs(minCorner2.w), 1e-5f);
+    const float2 viewMin3 = minCorner3.xy / max(abs(minCorner3.w), 1e-5f);
+    const float2 viewMax0 = maxCorner0.xy / max(abs(maxCorner0.w), 1e-5f);
+    const float2 viewMax1 = maxCorner1.xy / max(abs(maxCorner1.w), 1e-5f);
+    const float2 viewMax2 = maxCorner2.xy / max(abs(maxCorner2.w), 1e-5f);
+    const float2 viewMax3 = maxCorner3.xy / max(abs(maxCorner3.w), 1e-5f);
+
+    viewTileMin.xy = min(min(min(viewMin0, viewMin1), min(viewMin2, viewMin3)), min(min(viewMax0, viewMax1), min(viewMax2, viewMax3)));
+    viewTileMax.xy = max(max(max(viewMin0, viewMin1), max(viewMin2, viewMin3)), max(max(viewMax0, viewMax1), max(viewMax2, viewMax3)));
+    viewTileMin.z = minTileZ;
+    viewTileMax.z = maxTileZ;
+}
+
+float NLSComputeSquaredDistanceFromBoxToPoint(float3 boxCenter, float3 boxExtent, float3 queryPoint)
+{
+    const float3 offset = abs(queryPoint - boxCenter) - boxExtent;
+    const float3 outside = max(offset, 0.0f.xxx);
+    return dot(outside, outside);
+}
+
+bool NLSIsAabbOutsideInfiniteAcuteConeApprox(
+    float3 coneVertex,
+    float3 coneAxis,
+    float tanConeAngle,
+    float3 aabbCenter,
+    float3 aabbExtent)
+{
+    const float3 d = aabbCenter - coneVertex;
+    const float3 m = -normalize(cross(cross(d, coneAxis), coneAxis));
+    const float3 n = -tanConeAngle * coneAxis + m;
+    const float dist = dot(d, n);
+    const float radius = dot(aabbExtent, abs(n));
+    return dist > radius;
+}
 
 float NLSClamp01(float value)
 {
@@ -61,23 +149,24 @@ float NLSViewDepthToSlice(float depth)
     if (farPlane <= nearPlane || NLSGetGridSizeZ() == 0u)
         return 0.0f;
 
-    return NLSClamp01((depth - nearPlane) / (farPlane - nearPlane)) * (float)(NLSGetGridSizeZ() - 1u);
+    const float3 zParams = NLSGetLightGridZParams();
+    return max(0.0f, log2(depth * zParams.x + zParams.y) * zParams.z);
 }
 
-NLSLightGridLight NLSLoadLight(StructuredBuffer<uint> packedLights, uint lightIndex)
+NLSLightGridLight NLSLoadLight(StructuredBuffer<uint> forwardLocalLightBuffer, uint lightIndex)
 {
     const uint baseIndex = lightIndex * NLS_LIGHT_WORD_STRIDE;
     NLSLightGridLight light;
-    light.positionWS = float3(asfloat(packedLights[baseIndex + 0u]), asfloat(packedLights[baseIndex + 1u]), asfloat(packedLights[baseIndex + 2u]));
-    light.range = asfloat(packedLights[baseIndex + 3u]);
-    light.directionWS = normalize(float3(asfloat(packedLights[baseIndex + 4u]), asfloat(packedLights[baseIndex + 5u]), asfloat(packedLights[baseIndex + 6u])));
-    light.type = packedLights[baseIndex + 7u];
-    light.color = float3(asfloat(packedLights[baseIndex + 8u]), asfloat(packedLights[baseIndex + 9u]), asfloat(packedLights[baseIndex + 10u]));
-    light.intensity = asfloat(packedLights[baseIndex + 11u]);
-    light.constantAttenuation = asfloat(packedLights[baseIndex + 12u]);
-    light.linearAttenuation = asfloat(packedLights[baseIndex + 13u]);
-    light.quadraticAttenuation = asfloat(packedLights[baseIndex + 14u]);
-    light.outerCutoffDegrees = asfloat(packedLights[baseIndex + 15u]);
+    light.positionWS = float3(asfloat(forwardLocalLightBuffer[baseIndex + 0u]), asfloat(forwardLocalLightBuffer[baseIndex + 1u]), asfloat(forwardLocalLightBuffer[baseIndex + 2u]));
+    light.range = asfloat(forwardLocalLightBuffer[baseIndex + 3u]);
+    light.directionWS = normalize(float3(asfloat(forwardLocalLightBuffer[baseIndex + 4u]), asfloat(forwardLocalLightBuffer[baseIndex + 5u]), asfloat(forwardLocalLightBuffer[baseIndex + 6u])));
+    light.type = forwardLocalLightBuffer[baseIndex + 7u];
+    light.color = float3(asfloat(forwardLocalLightBuffer[baseIndex + 8u]), asfloat(forwardLocalLightBuffer[baseIndex + 9u]), asfloat(forwardLocalLightBuffer[baseIndex + 10u]));
+    light.intensity = asfloat(forwardLocalLightBuffer[baseIndex + 11u]);
+    light.constantAttenuation = asfloat(forwardLocalLightBuffer[baseIndex + 12u]);
+    light.linearAttenuation = asfloat(forwardLocalLightBuffer[baseIndex + 13u]);
+    light.quadraticAttenuation = asfloat(forwardLocalLightBuffer[baseIndex + 14u]);
+    light.outerCutoffDegrees = asfloat(forwardLocalLightBuffer[baseIndex + 15u]);
     return light;
 }
 
@@ -166,9 +255,9 @@ float NLSComputePointAttenuation(NLSLightGridLight light, float distanceToLight)
 }
 
 float3 NLSAccumulateClusteredLightingPhong(
-    StructuredBuffer<uint> packedLights,
-    StructuredBuffer<uint> clusterRecords,
-    StructuredBuffer<uint> compactIndices,
+    StructuredBuffer<uint> forwardLocalLightBuffer,
+    StructuredBuffer<uint> numCulledLightsGrid,
+    StructuredBuffer<uint> culledLightDataGrid,
     float3 worldPosition,
     float3 normalWS,
     float3 baseColor,
@@ -176,16 +265,16 @@ float3 NLSAccumulateClusteredLightingPhong(
     float shininess)
 {
     const uint clusterIndex = NLSComputeClusterIndexFromWorldPosition(worldPosition);
-    const uint recordBase = clusterIndex * 2u;
-    const uint offset = clusterRecords[recordBase + 0u];
-    const uint count = clusterRecords[recordBase + 1u];
+    const uint recordBase = clusterIndex * NLS_NUM_CULLED_LIGHTS_GRID_STRIDE;
+    const uint offset = numCulledLightsGrid[recordBase + 0u];
+    const uint count = numCulledLightsGrid[recordBase + 1u];
     const float3 viewDir = normalize(NLSGetCameraWorldPosition() - worldPosition);
     float3 lighting = baseColor * NLSGetAmbientFloor();
 
     [loop]
     for (uint i = 0u; i < count; ++i)
     {
-        const NLSLightGridLight light = NLSLoadLight(packedLights, compactIndices[offset + i]);
+        const NLSLightGridLight light = NLSLoadLight(forwardLocalLightBuffer, culledLightDataGrid[offset + i]);
         if (light.type == NLS_LIGHT_TYPE_AMBIENT_BOX || light.type == NLS_LIGHT_TYPE_AMBIENT_SPHERE)
         {
             lighting += baseColor * light.color * max(light.intensity, 0.0f);
@@ -226,9 +315,9 @@ float3 NLSAccumulateClusteredLightingPhong(
 }
 
 float3 NLSAccumulateClusteredLightingPBR(
-    StructuredBuffer<uint> packedLights,
-    StructuredBuffer<uint> clusterRecords,
-    StructuredBuffer<uint> compactIndices,
+    StructuredBuffer<uint> forwardLocalLightBuffer,
+    StructuredBuffer<uint> numCulledLightsGrid,
+    StructuredBuffer<uint> culledLightDataGrid,
     float3 worldPosition,
     float3 normalWS,
     float3 albedo,
@@ -237,16 +326,16 @@ float3 NLSAccumulateClusteredLightingPBR(
     float ao)
 {
     const uint clusterIndex = NLSComputeClusterIndexFromWorldPosition(worldPosition);
-    const uint recordBase = clusterIndex * 2u;
-    const uint offset = clusterRecords[recordBase + 0u];
-    const uint count = clusterRecords[recordBase + 1u];
+    const uint recordBase = clusterIndex * NLS_NUM_CULLED_LIGHTS_GRID_STRIDE;
+    const uint offset = numCulledLightsGrid[recordBase + 0u];
+    const uint count = numCulledLightsGrid[recordBase + 1u];
     const float3 viewDir = normalize(NLSGetCameraWorldPosition() - worldPosition);
     float3 lighting = albedo * (NLSGetAmbientFloor() * ao);
 
     [loop]
     for (uint i = 0u; i < count; ++i)
     {
-        const NLSLightGridLight light = NLSLoadLight(packedLights, compactIndices[offset + i]);
+        const NLSLightGridLight light = NLSLoadLight(forwardLocalLightBuffer, culledLightDataGrid[offset + i]);
         if (light.type == NLS_LIGHT_TYPE_AMBIENT_BOX || light.type == NLS_LIGHT_TYPE_AMBIENT_SPHERE)
         {
             lighting += albedo * light.color * max(light.intensity, 0.0f) * ao;

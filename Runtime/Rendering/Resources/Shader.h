@@ -9,6 +9,7 @@
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/Resources/UniformInfo.h"
 #include "Rendering/Resources/ShaderReflection.h"
+#include "Rendering/Resources/ShaderParameterStruct.h"
 #include "Rendering/ShaderCompiler/ShaderCompilationTypes.h"
 #include "RenderDef.h"
 
@@ -38,6 +39,8 @@ namespace NLS::Render::Resources
 	public:
 		const UniformInfo* GetUniformInfo(const std::string& p_name) const;
 		const ShaderReflection& GetReflection() const;
+		const std::vector<ShaderParameterStruct>& GetParameterStructs() const;
+		bool HasParameterStructs() const;
 		ShaderCompiler::ShaderSourceLanguage GetSourceLanguage() const;
 		const ShaderCompiledArtifact* FindCompiledArtifact(
 			ShaderCompiler::ShaderStage stage,
@@ -52,6 +55,7 @@ namespace NLS::Render::Resources
 		~Shader();
 		void RebuildUniformInfosFromReflection();
 		void SetReflection(ShaderReflection reflection);
+		void SetParameterStructs(std::vector<ShaderParameterStruct> parameterStructs);
 		void SetCompiledArtifact(ShaderCompiledArtifact artifact);
 		void ClearCompiledArtifacts();
 
@@ -62,6 +66,7 @@ namespace NLS::Render::Resources
 		std::vector<UniformInfo> m_uniforms;
 		ShaderCompiler::ShaderSourceLanguage m_sourceLanguage;
 		ShaderReflection m_reflection;
+		std::vector<ShaderParameterStruct> m_parameterStructs;
 		std::vector<ShaderCompiledArtifact> m_compiledArtifacts;
 		uint64_t m_generation = 0u;
 		mutable std::map<std::tuple<RHI::NativeBackendType, ShaderCompiler::ShaderStage, uint64_t>, std::shared_ptr<RHI::RHIShaderModule>> m_explicitShaderModules;

@@ -6,9 +6,9 @@ Texture2D u_GBufferMaterial : register(t2, space2);
 Texture2D u_GBufferDepth : register(t3, space2);
 TextureCube u_SkyboxCube : register(t4, space2);
 SamplerState u_LinearWrapSampler : register(s0, space2);
-StructuredBuffer<uint> u_LightGridLights : register(t0, space1);
-StructuredBuffer<uint> u_LightGridClusterRecords : register(t1, space1);
-StructuredBuffer<uint> u_LightGridCompactIndices : register(t2, space1);
+StructuredBuffer<uint> u_ForwardLocalLightBuffer : register(t0, space1);
+StructuredBuffer<uint> u_NumCulledLightsGrid : register(t1, space1);
+StructuredBuffer<uint> u_CulledLightDataGrid : register(t2, space1);
 
 struct VSInput
 {
@@ -68,9 +68,9 @@ float4 PSMain(VSOutput input) : SV_Target0
     const float roughness = materialParams.y;
     const float ao = materialParams.z;
     const float3 litColor = NLSAccumulateClusteredLightingPBR(
-        u_LightGridLights,
-        u_LightGridClusterRecords,
-        u_LightGridCompactIndices,
+        u_ForwardLocalLightBuffer,
+        u_NumCulledLightsGrid,
+        u_CulledLightDataGrid,
         worldPosition,
         normalWS,
         albedo.rgb,

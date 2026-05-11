@@ -14,11 +14,37 @@ namespace NLS::Engine::Rendering
 {
     struct NLS_ENGINE_API ClusteredShadingSettings
     {
+        uint32_t lightGridPixelSize = 64;
         uint32_t gridSizeX = 16;
         uint32_t gridSizeY = 9;
-        uint32_t gridSizeZ = 24;
-        uint32_t maxLightsPerCluster = 128;
+        uint32_t gridSizeZ = 32;
+        uint32_t maxLightsPerCluster = 32;
+        bool linkedListCulling = true;
     };
+
+    struct NLS_ENGINE_API LightGridDimensions
+    {
+        uint32_t x = 1;
+        uint32_t y = 1;
+        uint32_t z = 1;
+    };
+
+    NLS_ENGINE_API uint32_t GetLightGridInjectionGroupSize();
+    NLS_ENGINE_API uint32_t GetNumCulledLightsGridStride();
+    NLS_ENGINE_API uint32_t GetLightLinkStride();
+
+    NLS_ENGINE_API LightGridDimensions CalculateLightGridDimensions(
+        const ClusteredShadingSettings& settings,
+        uint32_t renderWidth,
+        uint32_t renderHeight);
+
+    NLS_ENGINE_API LightGridDimensions CalculateLightGridDispatchGroups(
+        const LightGridDimensions& gridDimensions);
+
+    NLS_ENGINE_API Maths::Vector3 CalculateLightGridZParams(
+        float nearPlane,
+        float farPlane,
+        uint32_t gridSizeZ);
 
     struct NLS_ENGINE_API ClusterBounds
     {

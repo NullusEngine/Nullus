@@ -248,11 +248,15 @@ namespace NLS::Render::Context
             nullptr))
         {
             const auto resolutionDesc = Detail::BuildRenderScenePreparingResolutionDesc();
-            if (driver.m_impl->threadedLifecycle->ResolveRenderScenePreparing(
-                slotIndex,
-                resolutionDesc))
             {
-                Detail::NotifyThreadedWorkers(*driver.m_impl);
+                NLS_PROFILE_NAMED_SCOPE("RenderThreadCoordinator::ResolveRenderScenePreparing");
+                if (driver.m_impl->threadedLifecycle->ResolveRenderScenePreparing(
+                    slotIndex,
+                    resolutionDesc))
+                {
+                    NLS_PROFILE_NAMED_SCOPE("RenderThreadCoordinator::NotifyThreadedWorkers");
+                    Detail::NotifyThreadedWorkers(*driver.m_impl);
+                }
             }
             progressed = true;
         }

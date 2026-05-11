@@ -1,6 +1,8 @@
 #pragma once
 
 #include <map>
+#include <mutex>
+#include <optional>
 
 #include <Rendering/Core/CompositeRenderer.h>
 #include <Rendering/Resources/Mesh.h>
@@ -110,9 +112,31 @@ namespace NLS::Engine::Rendering
 		static void ResolvePreparedPassBindingSetPlaceholders(
 			NLS::Render::Context::RenderScenePackage& package,
 			const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& resolvedBindingSet);
+		static void ResolvePreparedScenePassBindingSetPlaceholders(
+			NLS::Render::Context::RenderScenePackage& package,
+			const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& resolvedBindingSet,
+			uint64_t sceneDrawCount);
 
 	private:
+		struct LightGridCompileContextCache
+		{
+			bool valid = false;
+			bool hasSkyboxTexture = false;
+			NLS::Render::Data::FrameDescriptor frameDescriptor{};
+			NLS::Render::FrameGraph::LightGridCompileContext context;
+		};
+
+		void InvalidateLightGridCompileContextCache() const;
+		bool IsLightGridCompileContextCacheHit(
+			const NLS::Render::Data::FrameDescriptor& frameDescriptor,
+			bool hasSkyboxTexture) const;
+		static bool AreSameLightGridFrameInputs(
+			const NLS::Render::Data::FrameDescriptor& left,
+			const NLS::Render::Data::FrameDescriptor& right);
+
 		std::shared_ptr<LightGridPrepass> m_lightGridPrepass;
 		std::unique_ptr<SceneLightingProvider> m_sceneLightingProvider;
+		mutable std::mutex m_lightGridCompileContextCacheMutex;
+		mutable LightGridCompileContextCache m_lightGridCompileContextCache;
 	};
 }

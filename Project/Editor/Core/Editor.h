@@ -51,6 +51,7 @@ public:
     void ApplyStartupValidationDirectives();
     void RestoreStartupScene();
     void RememberLastOpenedScene(const std::string& p_scenePath);
+    void RefreshProfilerRecordingState();
 
     /**
      * Update the current editor mode

@@ -21,17 +21,21 @@ public:
     bool PrepareTimelineUI();
     void TickFrame();
     void DrawTimeline();
+    void SetRecordingEnabled(bool enabled);
 
     size_t GetRecordedTrackCountForTesting() const;
     size_t GetTickFrameCountForTesting() const;
+    size_t GetSkippedScopeCountForTesting() const;
 
     static const char* FormatAvailability(ProfilerAvailability availability);
 
 private:
 #if defined(NLS_ENABLE_TIMELINE_PROFILER)
+    bool m_recordingEnabled = false;
     bool m_frameStarted = false;
     bool m_gpuInitialized = false;
     size_t m_tickFrameCount = 0u;
+    size_t m_skippedScopeCount = 0u;
 #endif
 };
 }

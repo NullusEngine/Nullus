@@ -55,6 +55,24 @@ TEST(EditorSettingsPersistenceTests, SavesAndLoadsSupportedValues)
     EXPECT_FLOAT_EQ(sceneTools.rotationSnapUnit, 45.0f);
 }
 
+TEST(EditorSettingsPersistenceTests, SavesAndLoadsLightGridRenderingSetting)
+{
+    auto path = MakeTempSettingsPath("lightgrid-rendering.json");
+    auto registry = MakeRegistry();
+
+    auto& rendering = NLS::Editor::Settings::EditorSettings::GetRenderingSettingsObject();
+    EXPECT_TRUE(rendering.enableLightGrid);
+
+    rendering.enableLightGrid = false;
+    ASSERT_TRUE(NLS::Editor::Settings::EditorSettingsPersistence::Save(path, registry));
+
+    rendering.enableLightGrid = true;
+    ASSERT_TRUE(NLS::Editor::Settings::EditorSettingsPersistence::Load(path, registry));
+
+    EXPECT_FALSE(rendering.enableLightGrid);
+    rendering.enableLightGrid = true;
+}
+
 TEST(EditorSettingsPersistenceTests, IgnoresInvalidValueTypes)
 {
     auto path = MakeTempSettingsPath("invalid.json");

@@ -35,6 +35,8 @@ namespace NLS::Render::Backend
 		NLS::Render::RHI::ResourceState GetState() const override;
 		void SetState(NLS::Render::RHI::ResourceState state);
 		uint64_t GetGPUAddress() const override;
+		NLS::Render::RHI::RHIUpdateResult UpdateData(
+			const NLS::Render::RHI::RHIBufferUploadDesc& uploadDesc) override;
 		NLS::Render::RHI::NativeHandle GetNativeBufferHandle() override;
 
 	private:

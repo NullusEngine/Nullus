@@ -287,6 +287,36 @@ TEST_F(ProfilerDestinationTest, RegisteredTimelineDestinationReceivesGpuContextB
     EXPECT_EQ(timeline.lastGpuContextQueueCount, 1u);
 }
 
+TEST_F(ProfilerDestinationTest, ReplaysGpuContextWhenDestinationBecomesAvailableAfterRegistration)
+{
+    using namespace NLS::Base::Profiling;
+
+    RecordingProfilerDestination timeline(ProfilerDestinationId::Timeline);
+    timeline.m_state.enabled = false;
+    timeline.m_state.availability = ProfilerAvailability::Disabled;
+    timeline.m_state.capabilities = ProfilerCapability_None;
+    Profiler::RegisterDestination(timeline);
+    Profiler::SetEnabled(true);
+
+    int fakeDevice = 0;
+    int fakeQueue = 0;
+    ProfilerGpuContextEvent context;
+    context.nativeDevice = &fakeDevice;
+    context.nativeCommandQueues.push_back(&fakeQueue);
+    context.frameLatency = 2u;
+    Profiler::InitializeGpuContext(context);
+
+    EXPECT_EQ(timeline.gpuContextInitializeCalls, 0);
+
+    timeline.m_state.enabled = true;
+    timeline.m_state.availability = ProfilerAvailability::Available;
+    timeline.m_state.capabilities = ProfilerCapability_CPUScopes | ProfilerCapability_EditorTimeline;
+    Profiler::ReplayGpuContextIfAvailable(timeline);
+
+    EXPECT_EQ(timeline.gpuContextInitializeCalls, 1);
+    EXPECT_EQ(timeline.lastGpuContextQueueCount, 1u);
+}
+
 TEST_F(ProfilerDestinationTest, ResetForTestingClearsDestinationsAndCounters)
 {
     using namespace NLS::Base::Profiling;
@@ -317,7 +347,7 @@ TEST_F(ProfilerDestinationTest, DisabledProfilerDoesNotCallDestinations)
 
     EXPECT_TRUE(destination.events.empty());
     EXPECT_EQ(Profiler::GetSessionStats().acceptedEventCount, 0u);
-    EXPECT_EQ(Profiler::GetSessionStats().droppedEventCount, 1u);
+    EXPECT_EQ(Profiler::GetSessionStats().droppedEventCount, 0u);
 }
 
 TEST_F(ProfilerDestinationTest, TracyProfilerReportsUnavailableWhenThirdPartyIsNotEnabled)
@@ -329,9 +359,18 @@ TEST_F(ProfilerDestinationTest, TracyProfilerReportsUnavailableWhenThirdPartyIsN
 
     EXPECT_EQ(state.id, ProfilerDestinationId::Tracy);
 #if defined(NLS_ENABLE_TRACY) && !defined(NLS_TRACY_UNAVAILABLE)
-    EXPECT_EQ(state.availability, ProfilerAvailability::Available);
-    EXPECT_TRUE(state.enabled);
-    EXPECT_TRUE(state.lastError.empty());
+    if (TracyProfiler::IsConnected())
+    {
+        EXPECT_EQ(state.availability, ProfilerAvailability::Available);
+        EXPECT_TRUE(state.enabled);
+        EXPECT_TRUE(state.lastError.empty());
+    }
+    else
+    {
+        EXPECT_EQ(state.availability, ProfilerAvailability::Disabled);
+        EXPECT_FALSE(state.enabled);
+        EXPECT_NE(state.lastError.find("not connected"), std::string::npos);
+    }
 #else
     EXPECT_EQ(state.availability, ProfilerAvailability::Unavailable);
     EXPECT_FALSE(state.enabled);
@@ -358,12 +397,10 @@ TEST_F(ProfilerDestinationTest, TimelineSinkReportsDisabledWhenBuildOptionIsOff)
 
     EXPECT_EQ(state.id, ProfilerDestinationId::Timeline);
 #if defined(NLS_ENABLE_TIMELINE_PROFILER)
-    EXPECT_EQ(state.availability, ProfilerAvailability::Available);
-    EXPECT_TRUE(state.enabled);
-    EXPECT_TRUE(state.lastError.empty());
-    EXPECT_NE(state.capabilities & ProfilerCapability_CPUScopes, 0u);
-    EXPECT_EQ(state.capabilities & ProfilerCapability_GPUScopes, 0u);
-    EXPECT_NE(state.capabilities & ProfilerCapability_EditorTimeline, 0u);
+    EXPECT_EQ(state.availability, ProfilerAvailability::Disabled);
+    EXPECT_FALSE(state.enabled);
+    EXPECT_EQ(state.capabilities, ProfilerCapability_None);
+    EXPECT_NE(state.lastError.find("Profiler panel is closed"), std::string::npos);
 #else
     EXPECT_EQ(state.availability, ProfilerAvailability::Disabled);
     EXPECT_FALSE(state.enabled);
@@ -379,6 +416,7 @@ TEST_F(ProfilerDestinationTest, TimelineSinkRecordsScopesWhenEnabled)
 
 #if defined(NLS_ENABLE_TIMELINE_PROFILER)
     TimelineProfilerSink timeline;
+    timeline.SetRecordingEnabled(true);
     const auto state = timeline.GetState();
     ASSERT_EQ(state.availability, ProfilerAvailability::Available);
 
@@ -395,6 +433,53 @@ TEST_F(ProfilerDestinationTest, TimelineSinkRecordsScopesWhenEnabled)
     EXPECT_EQ(timeline.GetTickFrameCountForTesting(), 1u);
 #else
     SUCCEED() << "TimelineProfiler is disabled in this build.";
+#endif
+}
+
+TEST_F(ProfilerDestinationTest, TimelineSinkEndScopeIgnoresUnmatchedEvent)
+{
+    using namespace NLS::Base::Profiling;
+
+#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+    TimelineProfilerSink timeline;
+    timeline.SetRecordingEnabled(true);
+    const auto state = timeline.GetState();
+    ASSERT_EQ(state.availability, ProfilerAvailability::Available);
+
+    ProfilerScopeEvent event;
+    event.name = "Long Running Timeline Scope";
+    event.sourceFunction = __FUNCTION__;
+    event.active = true;
+
+    EXPECT_NO_FATAL_FAILURE(timeline.EndScope(event));
+#else
+    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+#endif
+}
+
+TEST_F(ProfilerDestinationTest, TimelineSinkSuppressesScopesBeyondInternalStackLimit)
+{
+    using namespace NLS::Base::Profiling;
+
+#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+    TimelineProfilerSink timeline;
+    timeline.SetRecordingEnabled(true);
+    ASSERT_EQ(timeline.GetState().availability, ProfilerAvailability::Available);
+
+    ProfilerScopeEvent event;
+    event.name = "Deep Timeline Scope";
+    event.sourceFunction = __FUNCTION__;
+    event.active = true;
+
+    for (size_t i = 0u; i < 40u; ++i)
+        timeline.BeginScope(event);
+
+    EXPECT_GT(timeline.GetSkippedScopeCountForTesting(), 0u);
+
+    for (size_t i = 0u; i < 40u; ++i)
+        EXPECT_NO_FATAL_FAILURE(timeline.EndScope(event));
+#else
+    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
 #endif
 }
 

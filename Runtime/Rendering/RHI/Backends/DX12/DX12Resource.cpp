@@ -693,6 +693,61 @@ namespace NLS::Render::Backend
 #endif
 	}
 
+	NLS::Render::RHI::RHIUpdateResult NativeDX12Buffer::UpdateData(
+		const NLS::Render::RHI::RHIBufferUploadDesc& uploadDesc)
+	{
+#if defined(_WIN32)
+		if (m_resource == nullptr || uploadDesc.data == nullptr || uploadDesc.dataSize == 0u)
+		{
+			return {
+				NLS::Render::RHI::RHIUpdateStatusCode::InvalidArgument,
+				"NativeDX12Buffer::UpdateData requires a valid buffer and non-empty upload data"
+			};
+		}
+		if (uploadDesc.destinationOffset + uploadDesc.dataSize > m_desc.size)
+		{
+			return {
+				NLS::Render::RHI::RHIUpdateStatusCode::InvalidArgument,
+				"NativeDX12Buffer::UpdateData upload exceeds destination buffer size"
+			};
+		}
+		if (m_desc.memoryUsage != NLS::Render::RHI::MemoryUsage::CPUToGPU &&
+			(static_cast<uint32_t>(m_desc.usage) & static_cast<uint32_t>(NLS::Render::RHI::BufferUsageFlags::Uniform)) == 0u)
+		{
+			return {
+				NLS::Render::RHI::RHIUpdateStatusCode::Unsupported,
+				"NativeDX12Buffer::UpdateData only supports CPU-to-GPU/upload heap buffers"
+			};
+		}
+
+		void* mappedData = nullptr;
+		D3D12_RANGE readRange{};
+		readRange.Begin = 0;
+		readRange.End = 0;
+		const HRESULT mapResult = m_resource->Map(0, &readRange, &mappedData);
+		if (FAILED(mapResult) || mappedData == nullptr)
+		{
+			return {
+				NLS::Render::RHI::RHIUpdateStatusCode::BackendFailure,
+				"NativeDX12Buffer::UpdateData failed to map destination buffer"
+			};
+		}
+
+		std::memcpy(
+			static_cast<uint8_t*>(mappedData) + uploadDesc.destinationOffset,
+			uploadDesc.data,
+			uploadDesc.dataSize);
+		D3D12_RANGE writeRange{};
+		writeRange.Begin = static_cast<SIZE_T>(uploadDesc.destinationOffset);
+		writeRange.End = static_cast<SIZE_T>(uploadDesc.destinationOffset + uploadDesc.dataSize);
+		m_resource->Unmap(0, &writeRange);
+		return { NLS::Render::RHI::RHIUpdateStatusCode::Success, {} };
+#else
+		(void)uploadDesc;
+		return { NLS::Render::RHI::RHIUpdateStatusCode::Unsupported, "DX12 buffer updates are only supported on Windows" };
+#endif
+	}
+
 	NLS::Render::RHI::NativeHandle NativeDX12Buffer::GetNativeBufferHandle()
 	{
 #if defined(_WIN32)

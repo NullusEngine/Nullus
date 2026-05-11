@@ -139,6 +139,7 @@ namespace NLS::Render::Backend
 	NLS::Render::RHI::RHIQueueOperationResult NativeDX12Queue::SubmitChecked(
 		const NLS::Render::RHI::RHISubmitDesc& submitDesc)
 	{
+		NLS_PROFILE_SCOPE();
 #if defined(_WIN32)
 		if (m_queue == nullptr)
 			return {
@@ -146,37 +147,43 @@ namespace NLS::Render::Backend
 				"NativeDX12Queue::Submit: queue is null"
 			};
 
-		for (const auto& semaphore : submitDesc.waitSemaphores)
 		{
-			auto* nativeSemaphore = dynamic_cast<NativeDX12Semaphore*>(semaphore.get());
-			if (nativeSemaphore == nullptr || nativeSemaphore->GetFence() == nullptr)
-				continue;
-
-			const HRESULT waitHr = m_queue->Wait(
-				nativeSemaphore->GetFence(),
-				nativeSemaphore->GetWaitValue());
-			if (FAILED(waitHr))
+			NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::WaitSubmitSemaphores");
+			for (const auto& semaphore : submitDesc.waitSemaphores)
 			{
-				const std::string message =
-					"NativeDX12Queue::Submit: queue wait on semaphore failed hr=" +
-					std::to_string(waitHr);
-				NLS_LOG_ERROR(message);
-				return { NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure, message };
+				auto* nativeSemaphore = dynamic_cast<NativeDX12Semaphore*>(semaphore.get());
+				if (nativeSemaphore == nullptr || nativeSemaphore->GetFence() == nullptr)
+					continue;
+
+				const HRESULT waitHr = m_queue->Wait(
+					nativeSemaphore->GetFence(),
+					nativeSemaphore->GetWaitValue());
+				if (FAILED(waitHr))
+				{
+					const std::string message =
+						"NativeDX12Queue::Submit: queue wait on semaphore failed hr=" +
+						std::to_string(waitHr);
+					NLS_LOG_ERROR(message);
+					return { NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure, message };
+				}
 			}
 		}
 
 		std::vector<ID3D12CommandList*> commandLists;
-		for (const auto& cmdBuffer : submitDesc.commandBuffers)
 		{
-			if (cmdBuffer == nullptr)
-				continue;
+			NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::CollectCommandLists");
+			for (const auto& cmdBuffer : submitDesc.commandBuffers)
+			{
+				if (cmdBuffer == nullptr)
+					continue;
 
-			const auto nativeCommandBuffer = cmdBuffer->GetNativeCommandBuffer();
-			auto* nativeCommandList = nativeCommandBuffer.backend == NLS::Render::RHI::BackendType::DX12
-				? static_cast<ID3D12CommandList*>(nativeCommandBuffer.handle)
-				: nullptr;
-			if (nativeCommandList != nullptr)
-				commandLists.push_back(nativeCommandList);
+				const auto nativeCommandBuffer = cmdBuffer->GetNativeCommandBuffer();
+				auto* nativeCommandList = nativeCommandBuffer.backend == NLS::Render::RHI::BackendType::DX12
+					? static_cast<ID3D12CommandList*>(nativeCommandBuffer.handle)
+					: nullptr;
+				if (nativeCommandList != nullptr)
+					commandLists.push_back(nativeCommandList);
+			}
 		}
 
 		if (!commandLists.empty())
@@ -185,7 +192,10 @@ namespace NLS::Render::Backend
 			{
 				NLS_LOG_INFO("NativeDX12Queue::Submit: executing " + std::to_string(commandLists.size()) + " command lists");
 			}
-			m_queue->ExecuteCommandLists(static_cast<UINT>(commandLists.size()), commandLists.data());
+			{
+				NLS_PROFILE_NAMED_SCOPE("ID3D12CommandQueue::ExecuteCommandLists");
+				m_queue->ExecuteCommandLists(static_cast<UINT>(commandLists.size()), commandLists.data());
+			}
 			NLS::Base::Profiling::ProfilerGpuCommandListSubmitEvent profilerSubmit;
 			profilerSubmit.nativeCommandQueue = m_queue;
 			profilerSubmit.nativeCommandLists.reserve(commandLists.size());
@@ -221,22 +231,26 @@ namespace NLS::Render::Backend
 			NLS_LOG_INFO("NativeDX12Queue::Submit: no command lists to execute");
 		}
 
-		for (const auto& semaphore : submitDesc.signalSemaphores)
 		{
-			auto* nativeSemaphore = dynamic_cast<NativeDX12Semaphore*>(semaphore.get());
-			if (nativeSemaphore == nullptr || nativeSemaphore->GetFence() == nullptr)
-				continue;
-
-			if (!nativeSemaphore->SignalOnQueue(m_queue))
+			NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::SignalSubmitSemaphores");
+			for (const auto& semaphore : submitDesc.signalSemaphores)
 			{
-				const std::string message = "NativeDX12Queue::Submit: queue signal semaphore failed";
-				NLS_LOG_ERROR(message);
-				return { NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure, message };
+				auto* nativeSemaphore = dynamic_cast<NativeDX12Semaphore*>(semaphore.get());
+				if (nativeSemaphore == nullptr || nativeSemaphore->GetFence() == nullptr)
+					continue;
+
+				if (!nativeSemaphore->SignalOnQueue(m_queue))
+				{
+					const std::string message = "NativeDX12Queue::Submit: queue signal semaphore failed";
+					NLS_LOG_ERROR(message);
+					return { NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure, message };
+				}
 			}
 		}
 
 		if (submitDesc.signalFence != nullptr)
 		{
+			NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::SignalSubmitFence");
 			auto* nativeFence = dynamic_cast<NativeDX12Fence*>(submitDesc.signalFence.get());
 			if (nativeFence != nullptr && nativeFence->GetFence() != nullptr)
 			{
@@ -268,6 +282,7 @@ namespace NLS::Render::Backend
 	NLS::Render::RHI::RHIQueueOperationResult NativeDX12Queue::PresentChecked(
 		const NLS::Render::RHI::RHIPresentDesc& presentDesc)
 	{
+		NLS_PROFILE_SCOPE();
 #if defined(_WIN32)
 		if (ShouldLogDx12FrameFlow())
 		{
@@ -307,22 +322,25 @@ namespace NLS::Render::Backend
 				std::to_string(presentDesc.uiSignalValue));
 		}
 
-		for (const auto& semaphore : presentDesc.waitSemaphores)
 		{
-			auto* nativeSemaphore = dynamic_cast<NativeDX12Semaphore*>(semaphore.get());
-			if (nativeSemaphore == nullptr || nativeSemaphore->GetFence() == nullptr)
-				continue;
-
-			const HRESULT waitHr = m_queue->Wait(
-				nativeSemaphore->GetFence(),
-				nativeSemaphore->GetWaitValue());
-			if (FAILED(waitHr))
+			NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::WaitPresentSemaphores");
+			for (const auto& semaphore : presentDesc.waitSemaphores)
 			{
-				const std::string message =
-					"NativeDX12Queue::Present: queue wait on present semaphore failed hr=" +
-					std::to_string(waitHr);
-				NLS_LOG_ERROR(message);
-				return { NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure, message };
+				auto* nativeSemaphore = dynamic_cast<NativeDX12Semaphore*>(semaphore.get());
+				if (nativeSemaphore == nullptr || nativeSemaphore->GetFence() == nullptr)
+					continue;
+
+				const HRESULT waitHr = m_queue->Wait(
+					nativeSemaphore->GetFence(),
+					nativeSemaphore->GetWaitValue());
+				if (FAILED(waitHr))
+				{
+					const std::string message =
+						"NativeDX12Queue::Present: queue wait on present semaphore failed hr=" +
+						std::to_string(waitHr);
+					NLS_LOG_ERROR(message);
+					return { NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure, message };
+				}
 			}
 		}
 
@@ -330,6 +348,7 @@ namespace NLS::Render::Backend
 			presentDesc.uiSignalSemaphore.handle != nullptr &&
 			presentDesc.uiSignalValue != 0u)
 		{
+			NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::WaitUiFenceBeforePresent");
 			auto* uiFence = reinterpret_cast<ID3D12Fence*>(presentDesc.uiSignalSemaphore.handle);
 			if (uiFence != nullptr)
 			{

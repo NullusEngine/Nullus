@@ -9,12 +9,17 @@
 
 namespace
 {
+constexpr uint32_t kTimelineProfilerHistoryFrameCount = 32u;
+constexpr uint32_t kTimelineProfilerMaxCpuScopeDepth = 6u;
+thread_local uint32_t g_timelineScopeDepth = 0u;
+thread_local uint32_t g_timelineSuppressedScopeDepth = 0u;
+
 void EnsureTimelineProfilerInitialized()
 {
     static const bool initialized = []
     {
         if (!gProfiler.IsInitialized())
-            gProfiler.Initialize(256u);
+            gProfiler.Initialize(kTimelineProfilerHistoryFrameCount);
         return true;
     }();
     (void)initialized;
@@ -34,9 +39,21 @@ TimelineProfilerSink::TimelineProfilerSink()
 void TimelineProfilerSink::BeginScope(const ProfilerScopeEvent& event)
 {
 #if defined(NLS_ENABLE_TIMELINE_PROFILER)
+    if (!m_recordingEnabled)
+        return;
+
+    if (g_timelineSuppressedScopeDepth > 0u ||
+        g_timelineScopeDepth >= kTimelineProfilerMaxCpuScopeDepth)
+    {
+        ++g_timelineSuppressedScopeDepth;
+        ++m_skippedScopeCount;
+        return;
+    }
+
     if (!event.threadName.empty())
         gProfiler.RegisterCurrentThread(event.threadName.c_str());
     gProfiler.BeginEvent(event.name.c_str(), 0u, "", 0u);
+    ++g_timelineScopeDepth;
 #else
     (void)event;
 #endif
@@ -45,8 +62,21 @@ void TimelineProfilerSink::BeginScope(const ProfilerScopeEvent& event)
 void TimelineProfilerSink::EndScope(const ProfilerScopeEvent& event)
 {
 #if defined(NLS_ENABLE_TIMELINE_PROFILER)
+    if (!m_recordingEnabled)
+        return;
+
     (void)event;
+    if (g_timelineSuppressedScopeDepth > 0u)
+    {
+        --g_timelineSuppressedScopeDepth;
+        return;
+    }
+
+    if (g_timelineScopeDepth == 0u)
+        return;
+
     gProfiler.EndEvent();
+    --g_timelineScopeDepth;
 #else
     (void)event;
 #endif
@@ -55,7 +85,7 @@ void TimelineProfilerSink::EndScope(const ProfilerScopeEvent& event)
 void TimelineProfilerSink::BeginGpuScope(const ProfilerGpuScopeEvent& event)
 {
 #if defined(NLS_ENABLE_TIMELINE_PROFILER) && defined(_WIN32)
-    if (!m_gpuInitialized || event.nativeCommandBuffer == nullptr)
+    if (!m_recordingEnabled || !m_gpuInitialized || event.nativeCommandBuffer == nullptr)
         return;
 
     auto* commandList = static_cast<ID3D12GraphicsCommandList*>(event.nativeCommandBuffer);
@@ -68,7 +98,7 @@ void TimelineProfilerSink::BeginGpuScope(const ProfilerGpuScopeEvent& event)
 void TimelineProfilerSink::EndGpuScope(const ProfilerGpuScopeEvent& event)
 {
 #if defined(NLS_ENABLE_TIMELINE_PROFILER) && defined(_WIN32)
-    if (!m_gpuInitialized || event.nativeCommandBuffer == nullptr)
+    if (!m_recordingEnabled || !m_gpuInitialized || event.nativeCommandBuffer == nullptr)
         return;
 
     auto* commandList = static_cast<ID3D12GraphicsCommandList*>(event.nativeCommandBuffer);
@@ -107,7 +137,7 @@ void TimelineProfilerSink::InitializeGpuContext(const ProfilerGpuContextEvent& e
 void TimelineProfilerSink::SubmitGpuCommandLists(const ProfilerGpuCommandListSubmitEvent& event)
 {
 #if defined(NLS_ENABLE_TIMELINE_PROFILER) && defined(_WIN32)
-    if (!m_gpuInitialized || event.nativeCommandQueue == nullptr || event.nativeCommandLists.empty())
+    if (!m_recordingEnabled || !m_gpuInitialized || event.nativeCommandQueue == nullptr || event.nativeCommandLists.empty())
         return;
 
     std::vector<ID3D12CommandList*> commandLists;
@@ -141,6 +171,11 @@ bool TimelineProfilerSink::PrepareTimelineUI()
 void TimelineProfilerSink::TickFrame()
 {
 #if defined(NLS_ENABLE_TIMELINE_PROFILER)
+    if (!m_recordingEnabled)
+        return;
+
+    g_timelineScopeDepth = 0u;
+    g_timelineSuppressedScopeDepth = 0u;
     ++m_tickFrameCount;
     if (!m_frameStarted)
     {
@@ -164,11 +199,37 @@ size_t TimelineProfilerSink::GetTickFrameCountForTesting() const
 #endif
 }
 
+size_t TimelineProfilerSink::GetSkippedScopeCountForTesting() const
+{
+#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+    return m_skippedScopeCount;
+#else
+    return 0u;
+#endif
+}
+
 void TimelineProfilerSink::DrawTimeline()
 {
 #if defined(NLS_ENABLE_TIMELINE_PROFILER)
     if (PrepareTimelineUI())
         DrawProfilerHUD();
+#endif
+}
+
+void TimelineProfilerSink::SetRecordingEnabled(const bool enabled)
+{
+#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+    const bool wasRecordingEnabled = m_recordingEnabled;
+    m_recordingEnabled = enabled;
+    if (enabled && !wasRecordingEnabled)
+        Profiler::ReplayGpuContextIfAvailable(*this);
+    if (!enabled)
+    {
+        g_timelineScopeDepth = 0u;
+        g_timelineSuppressedScopeDepth = 0u;
+    }
+#else
+    (void)enabled;
 #endif
 }
 
@@ -184,6 +245,17 @@ size_t TimelineProfilerSink::GetRecordedTrackCountForTesting() const
 ProfilerDestinationState TimelineProfilerSink::GetState() const
 {
 #if defined(NLS_ENABLE_TIMELINE_PROFILER)
+    if (!m_recordingEnabled)
+    {
+        return {
+            ProfilerDestinationId::Timeline,
+            false,
+            ProfilerAvailability::Disabled,
+            ProfilerCapability_None,
+            "TimelineProfiler destination is disabled because the Profiler panel is closed."
+        };
+    }
+
     return {
         ProfilerDestinationId::Timeline,
         true,

@@ -4,6 +4,26 @@
 
 namespace NLS::Render::FrameGraph
 {
+    namespace
+    {
+        constexpr uint32_t kForwardLightGridInjectionGroupSize = 4u;
+        constexpr uint32_t kForwardNumCulledLightsGridStride = 2u;
+        constexpr uint32_t kForwardLightLinkStride = 2u;
+
+        ForwardLightingResources BuildForwardLightingResources()
+        {
+            ForwardLightingResources resources;
+            resources.forwardLightDataUniformBufferName = "ForwardLightDataUniformBuffer";
+            resources.forwardLocalLightBufferName = "ForwardLocalLightBuffer";
+            resources.numCulledLightsGridName = "NumCulledLightsGrid";
+            resources.culledLightDataGridName = "CulledLightDataGrid";
+            resources.numCulledLightsGridStride = kForwardNumCulledLightsGridStride;
+            resources.lightLinkStride = kForwardLightLinkStride;
+            resources.lightGridInjectionGroupSize = kForwardLightGridInjectionGroupSize;
+            return resources;
+        }
+    }
+
     LightGridCompileContext BuildLightGridCompileContext(
         const NLS::Render::Data::FrameDescriptor& frameDescriptor,
         PreparedComputeDispatchSource preparedComputeSource,
@@ -12,6 +32,7 @@ namespace NLS::Render::FrameGraph
         LightGridCompileContext context;
         context.frameDescriptor = frameDescriptor;
         context.preparedComputeSource = std::move(preparedComputeSource);
+        context.forwardLightingResources = BuildForwardLightingResources();
         context.graphicsPassBindingSet = std::move(graphicsPassBindingSet);
         return context;
     }

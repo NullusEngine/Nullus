@@ -10,6 +10,7 @@ ProfilerPanel::ProfilerPanel(
       m_statusText(CreateWidget<UI::Widgets::Text>("TimelineProfiler: Unknown")),
       m_detailText(CreateWidget<UI::Widgets::Text>("No timeline data has been recorded yet."))
 {
+    m_timelineSink.SetRecordingEnabled(IsRecordingEnabled());
     RefreshStatus();
     m_timelineSink.PrepareTimelineUI();
 }
@@ -40,7 +41,14 @@ void ProfilerPanel::RefreshStatus()
 
 void ProfilerPanel::BeginProfilerFrame()
 {
-    m_timelineSink.TickFrame();
+    m_timelineSink.SetRecordingEnabled(IsRecordingEnabled());
+    if (IsRecordingEnabled())
+        m_timelineSink.TickFrame();
+}
+
+bool ProfilerPanel::IsRecordingEnabled() const
+{
+    return enabled && IsOpened();
 }
 
 NLS::Base::Profiling::TimelineProfilerSink& ProfilerPanel::GetTimelineSink()
@@ -50,6 +58,7 @@ NLS::Base::Profiling::TimelineProfilerSink& ProfilerPanel::GetTimelineSink()
 
 void ProfilerPanel::OnBeforeDrawWidgets()
 {
+    m_timelineSink.SetRecordingEnabled(IsRecordingEnabled());
     RefreshStatus();
     if (m_timelineSink.GetState().availability == NLS::Base::Profiling::ProfilerAvailability::Available)
         m_timelineSink.DrawTimeline();

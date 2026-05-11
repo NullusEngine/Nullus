@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <sstream>
 #include <cstring>
 #include <exception>
@@ -14,6 +15,7 @@
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Resources/Loaders/ShaderLoader.h"
 #include "Rendering/RHI/RHITypes.h"
+#include "Rendering/Resources/ShaderType.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/ShaderCompiler/ShaderAsset.h"
 #include "Rendering/ShaderCompiler/ShaderCompiler.h"
@@ -261,6 +263,27 @@ namespace
 
         return NLS::Render::Settings::GetPhase1RequiredRuntimeBackend();
     }
+
+	std::vector<NLS::Render::Resources::ShaderParameterStruct> BuildRegisteredShaderParameterStructs(const std::string& shaderPath)
+	{
+		const auto shaderTypes = NLS::Render::Resources::GetShaderTypeRegistry().FindBySourcePath(shaderPath);
+		const auto materialStageType = std::find_if(
+			shaderTypes.begin(),
+			shaderTypes.end(),
+			[](const NLS::Render::Resources::ShaderType* shaderType)
+			{
+				return shaderType != nullptr &&
+					shaderType->GetKind() == NLS::Render::Resources::ShaderTypeKind::Material &&
+					shaderType->GetStage() == NLS::Render::ShaderCompiler::ShaderStage::Pixel;
+			});
+		if (materialStageType != shaderTypes.end())
+			return (*materialStageType)->GetRootParameterStructs();
+
+		if (!shaderTypes.empty())
+			return shaderTypes.front()->GetRootParameterStructs();
+
+		return {};
+	}
 }
 
 namespace NLS::Render::Resources::Loaders
@@ -280,6 +303,7 @@ void ShaderLoader::Recompile(Shader& p_shader, const std::string& p_filePath)
 	if (Shader* refreshed = CreateHLSLShaderAsset(p_filePath); refreshed != nullptr)
 	{
 		p_shader.SetReflection(refreshed->GetReflection());
+		p_shader.SetParameterStructs(refreshed->GetParameterStructs());
 		p_shader.ClearCompiledArtifacts();
 		for (const auto* artifact : {
 			refreshed->FindCompiledArtifact(ShaderStage::Vertex, ShaderTargetPlatform::DXIL),
@@ -431,6 +455,7 @@ Shader* ShaderLoader::CreateHLSLShaderAsset(const std::string& p_filePath)
 
 	auto* shader = new Shader(p_filePath, ShaderSourceLanguage::HLSL);
 	shader->SetReflection(std::move(reflection));
+	shader->SetParameterStructs(BuildRegisteredShaderParameterStructs(p_filePath));
 	if (HasUsableCompilationResult(vertexDxilResult))
 		shader->SetCompiledArtifact({ ShaderStage::Vertex, ShaderTargetPlatform::DXIL, vertexDxilOptions.entryPoint, vertexDxilOptions.targetProfile, vertexDxilResult });
 	if (HasUsableCompilationResult(pixelDxilResult))

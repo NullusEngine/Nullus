@@ -567,6 +567,7 @@ public:
 	}
 
 	uint64 GetFirstFrameAnchorTicks() const { return m_BeginFrameTicks[(m_FrameIndex + m_BeginFrameTicks.size() + 1) % m_BeginFrameTicks.size()]; }
+	uint64 GetFrameAnchorTicks(uint32 frameIndex) const { return m_BeginFrameTicks[frameIndex % m_BeginFrameTicks.size()]; }
 
 	Span<const EventTrack> GetTracks() const { return m_Tracks; }
 

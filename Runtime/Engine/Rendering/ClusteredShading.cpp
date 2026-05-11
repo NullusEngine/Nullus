@@ -8,6 +8,8 @@ namespace NLS::Engine::Rendering
     namespace
     {
         constexpr uint32_t kLightGridInjectionGroupSize = 4u;
+        constexpr uint32_t kNumCulledLightsGridStride = 2u;
+        constexpr uint32_t kLightLinkStride = 2u;
 
         struct ClusterRange
         {
@@ -125,6 +127,16 @@ namespace NLS::Engine::Rendering
     uint32_t GetLightGridInjectionGroupSize()
     {
         return kLightGridInjectionGroupSize;
+    }
+
+    uint32_t GetNumCulledLightsGridStride()
+    {
+        return kNumCulledLightsGridStride;
+    }
+
+    uint32_t GetLightLinkStride()
+    {
+        return kLightLinkStride;
     }
 
     LightGridDimensions CalculateLightGridDimensions(

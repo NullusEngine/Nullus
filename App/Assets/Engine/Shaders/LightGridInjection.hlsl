@@ -1,11 +1,9 @@
 #include "LightGridCommon.hlsli"
 
-StructuredBuffer<uint> u_LightGridLights : register(t0, space1);
+StructuredBuffer<uint> u_ForwardLocalLightBuffer : register(t0, space1);
 RWStructuredBuffer<uint> u_LightGridStartOffsetGrid : register(u1, space1);
 RWStructuredBuffer<uint> u_LightGridCulledLightLinks : register(u2, space1);
 RWStructuredBuffer<uint> u_LightGridLinkCounter : register(u3, space1);
-
-static const uint NLS_LIGHT_LINK_STRIDE = 2u;
 
 [numthreads(4, 4, 4)]
 void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
@@ -25,7 +23,7 @@ void CSMain(uint3 dispatchThreadId : SV_DispatchThreadID)
     [loop]
     for (uint lightIndex = 0u; lightIndex < NLSGetSceneLightCount(); ++lightIndex)
     {
-        const NLSLightGridLight light = NLSLoadLight(u_LightGridLights, lightIndex);
+        const NLSLightGridLight light = NLSLoadLight(u_ForwardLocalLightBuffer, lightIndex);
         bool intersectsCell = NLSIsGlobalLight(light);
         if (!intersectsCell)
         {

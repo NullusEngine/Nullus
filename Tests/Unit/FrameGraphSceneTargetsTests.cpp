@@ -2137,6 +2137,34 @@ TEST(FrameGraphSceneTargetsTests, DeferredLightGridCompilationUsesResolvedPassBi
     EXPECT_EQ(package.passCommandInputs[1].recordedDrawCommands[0].passBindingSet, lightGridBindingSet);
 }
 
+TEST(FrameGraphSceneTargetsTests, LightGridCompileContextCarriesUEForwardLightingResourceContract)
+{
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 320u;
+    frameDescriptor.renderHeight = 180u;
+
+    NLS::Render::FrameGraph::PreparedComputeDispatchSource preparedSource;
+    preparedSource.dispatchInputs.resize(3u);
+    preparedSource.dispatchInputs[0].debugName = "LightGridReset";
+    preparedSource.dispatchInputs[1].debugName = "LightGridInjection";
+    preparedSource.dispatchInputs[2].debugName = "LightGridCompact";
+
+    auto lightGridBindingSet = std::make_shared<TestBindingSet>("LightGridGraphicsBindingSet");
+    const auto context = NLS::Render::FrameGraph::BuildLightGridCompileContext(
+        frameDescriptor,
+        std::move(preparedSource),
+        lightGridBindingSet);
+
+    EXPECT_EQ(context.forwardLightingResources.forwardLightDataUniformBufferName, "ForwardLightDataUniformBuffer");
+    EXPECT_EQ(context.forwardLightingResources.forwardLocalLightBufferName, "ForwardLocalLightBuffer");
+    EXPECT_EQ(context.forwardLightingResources.numCulledLightsGridName, "NumCulledLightsGrid");
+    EXPECT_EQ(context.forwardLightingResources.culledLightDataGridName, "CulledLightDataGrid");
+    EXPECT_EQ(context.forwardLightingResources.numCulledLightsGridStride, 2u);
+    EXPECT_EQ(context.forwardLightingResources.lightLinkStride, 2u);
+    EXPECT_EQ(context.forwardLightingResources.lightGridInjectionGroupSize, 4u);
+    EXPECT_EQ(context.graphicsPassBindingSet, lightGridBindingSet);
+}
+
 TEST(FrameGraphSceneTargetsTests, BuildPreparedComputeDispatchSourceCarriesDispatchInputsAndMetadataInOrder)
 {
     std::vector<NLS::Render::Context::RecordedComputeDispatchInput> preparedDispatchInputs(2u);

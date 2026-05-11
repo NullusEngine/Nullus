@@ -23,9 +23,9 @@ cbuffer MaterialConstants : register(b0, space2)
 
 Texture2D u_DiffuseMap : register(t0, space2);
 SamplerState u_LinearWrapSampler : register(s0, space2);
-StructuredBuffer<uint> u_LightGridLights : register(t0, space1);
-StructuredBuffer<uint> u_LightGridClusterRecords : register(t1, space1);
-StructuredBuffer<uint> u_LightGridCompactIndices : register(t2, space1);
+StructuredBuffer<uint> u_ForwardLocalLightBuffer : register(t0, space1);
+StructuredBuffer<uint> u_NumCulledLightsGrid : register(t1, space1);
+StructuredBuffer<uint> u_CulledLightDataGrid : register(t2, space1);
 
 VSOutput VSMain(VSInput input)
 {
@@ -47,9 +47,9 @@ float4 PSMain(VSOutput input) : SV_Target0
     const float4 diffuse = u_DiffuseMap.Sample(u_LinearWrapSampler, tiledTexCoord) * u_Diffuse;
     const float3 normalWS = normalize(input.NormalWS);
     const float3 lighting = saturate(NLSAccumulateClusteredLightingPhong(
-        u_LightGridLights,
-        u_LightGridClusterRecords,
-        u_LightGridCompactIndices,
+        u_ForwardLocalLightBuffer,
+        u_NumCulledLightsGrid,
+        u_CulledLightDataGrid,
         input.PositionWS,
         normalWS,
         diffuse.rgb,

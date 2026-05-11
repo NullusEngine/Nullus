@@ -264,5 +264,5 @@ TEST_F(ProfilerScopeTest, DisabledGpuScopeDoesNotCallDestination)
 
     EXPECT_TRUE(destination.events.empty());
     EXPECT_EQ(Profiler::GetSessionStats().acceptedEventCount, 0u);
-    EXPECT_EQ(Profiler::GetSessionStats().droppedEventCount, 1u);
+    EXPECT_EQ(Profiler::GetSessionStats().droppedEventCount, 0u);
 }

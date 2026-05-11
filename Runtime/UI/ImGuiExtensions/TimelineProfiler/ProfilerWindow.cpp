@@ -64,8 +64,8 @@ public:
 
 struct StyleOptions
 {
-	int	  MaxDepth = 10;
-	float MaxTime  = 200;
+	int	  MaxDepth = 6;
+	float MaxTime  = 80;
 
 	float BarHeight		= 1.5f;
 	float BarPadding	= 2;
@@ -221,8 +221,6 @@ void EndTrace(TraceContext& context)
 
 static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 {
-	PROFILE_CPU_SCOPE();
-
 	HUDContext&	  context = gHUDContext;
 	StyleOptions& style	  = context.Style;
 
@@ -258,7 +256,10 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 		float ticksInTimeline = MsToTicks * style.MaxTime;
 
 		URange cpuRange	   = gProfiler.GetFrameRange();
-		uint64 beginAnchor = gProfiler.GetFirstFrameAnchorTicks();
+		constexpr uint32 VisibleFrameCount = 8;
+		if (cpuRange.End > cpuRange.Begin + VisibleFrameCount)
+			cpuRange.Begin = cpuRange.End - VisibleFrameCount;
+		uint64 beginAnchor = gProfiler.GetFrameAnchorTicks(cpuRange.Begin);
 
 		// How many pixels is one tick
 		const float TicksToPixels = timelineWidth / ticksInTimeline;
@@ -469,8 +470,6 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 
 		for (const Profiler::EventTrack* pTrack : sorted_tracks)
 		{
-			PROFILE_CPU_SCOPE("Timeline Track");
-
 			// Add thread name for track
 			const char* pHeaderText;
 			ImFormatStringToTempBuffer(&pHeaderText, nullptr, "%s [%d]", pTrack->Name, pTrack->ID);

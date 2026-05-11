@@ -274,6 +274,8 @@ TEST(LightingDataProviderTests, LightGridDispatchShapeMatchesUESourceReference)
     const auto dispatch = NLS::Engine::Rendering::CalculateLightGridDispatchGroups(grid);
 
     EXPECT_EQ(NLS::Engine::Rendering::GetLightGridInjectionGroupSize(), 4u);
+    EXPECT_EQ(NLS::Engine::Rendering::GetNumCulledLightsGridStride(), 2u);
+    EXPECT_EQ(NLS::Engine::Rendering::GetLightLinkStride(), 2u);
     EXPECT_EQ(dispatch.x, 8u);
     EXPECT_EQ(dispatch.y, 5u);
     EXPECT_EQ(dispatch.z, 8u);

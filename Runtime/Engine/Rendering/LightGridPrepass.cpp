@@ -16,6 +16,8 @@
 #include <Rendering/RHI/BindingPointMap.h>
 #include <Rendering/RHI/Core/RHIDevice.h>
 #include <Rendering/RHI/Utils/PipelineCache/PipelineCache.h>
+#include <Rendering/Resources/ComputeShaderUtils.h>
+#include <Rendering/Shaders/LightGridShaders.h>
 #include <Rendering/Settings/DriverSettings.h>
 
 #include <Profiling/Profiler.h>
@@ -23,8 +25,6 @@
 namespace
 {
     constexpr uint32_t kLightWordStride = 16u;
-    constexpr uint32_t kRecordWordStride = 2u;
-    constexpr uint32_t kLightLinkStride = 2u;
     constexpr float kDefaultAmbientFloor = 0.05f;
 
     template<typename TValue>
@@ -168,10 +168,67 @@ namespace
         return true;
     }
 
+    std::shared_ptr<NLS::Render::RHI::RHIBuffer> FindBindingBuffer(
+        const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& bindingSet,
+        const std::string_view name,
+        const NLS::Render::RHI::BindingType type,
+        const uint32_t binding)
+    {
+        if (bindingSet == nullptr || bindingSet->GetDesc().layout == nullptr)
+            return nullptr;
+
+        const auto& layoutEntries = bindingSet->GetDesc().layout->GetDesc().entries;
+        const auto layoutEntry = std::find_if(
+            layoutEntries.begin(),
+            layoutEntries.end(),
+            [name, type, binding](const NLS::Render::RHI::RHIBindingLayoutEntry& entry)
+            {
+                return entry.name == name && entry.type == type && entry.binding == binding;
+            });
+        if (layoutEntry == layoutEntries.end())
+            return nullptr;
+
+        const auto& bindingEntries = bindingSet->GetDesc().entries;
+        const auto bindingEntry = std::find_if(
+            bindingEntries.begin(),
+            bindingEntries.end(),
+            [layoutEntry](const NLS::Render::RHI::RHIBindingSetEntry& entry)
+            {
+                return entry.type == layoutEntry->type && entry.binding == layoutEntry->binding;
+            });
+        return bindingEntry != bindingEntries.end() ? bindingEntry->buffer : nullptr;
+    }
+
 }
 
 namespace NLS::Engine::Rendering
 {
+    NLS::Render::Resources::ShaderParameterStruct LightGridPrepass::LightGridResetParameters::Build()
+    {
+        return NLS::Render::Engine::Shaders::LightGridResetCS::GetStaticShaderType().GetRootParameterStructs().front();
+    }
+
+    NLS::Render::Resources::ShaderParameterStruct LightGridPrepass::LightGridInjectionParameters::Build()
+    {
+        return NLS::Render::Engine::Shaders::LightGridInjectionCS::GetStaticShaderType().GetRootParameterStructs().front();
+    }
+
+    NLS::Render::Resources::ShaderParameterStruct LightGridPrepass::LightGridCompactParameters::Build()
+    {
+        return NLS::Render::Engine::Shaders::LightGridCompactCS::GetStaticShaderType().GetRootParameterStructs().front();
+    }
+
+    NLS::Render::Resources::ShaderParameterStruct LightGridPrepass::LightGridGraphicsParameters::Build()
+    {
+        return NLS::Render::Resources::ShaderParameterStructBuilder("LightGridGraphicsParameters")
+            .SetGroup(NLS::Render::Resources::ShaderParameterGroupKind::Pass)
+            .AddUniformBuffer("ForwardLightData", 0u, sizeof(ForwardLightData), NLS::Render::RHI::ShaderStageMask::AllGraphics)
+            .AddStructuredBuffer("ForwardLocalLightBuffer", 0u, NLS::Render::RHI::ShaderStageMask::AllGraphics)
+            .AddStructuredBuffer("NumCulledLightsGrid", 1u, NLS::Render::RHI::ShaderStageMask::AllGraphics)
+            .AddStructuredBuffer("CulledLightDataGrid", 2u, NLS::Render::RHI::ShaderStageMask::AllGraphics)
+            .Build();
+    }
+
     LightGridPrepass::LightGridPrepass(NLS::Render::Context::Driver& driver)
         : m_driver(driver)
     {
@@ -252,9 +309,6 @@ namespace NLS::Engine::Rendering
             return false;
         }
 
-        if (preparedCacheKey.has_value() && TryReusePreparedResources(preparedCacheKey.value()))
-            return true;
-
         auto& frameData = m_frameScratch;
         if (!BuildFrameData(frameDescriptor, preparedFrameInputs, preparedFrameInputs.hasSkyboxTexture, frameData))
         {
@@ -262,15 +316,18 @@ namespace NLS::Engine::Rendering
             return false;
         }
 
+        if (preparedCacheKey.has_value() && TryReusePreparedResources(preparedCacheKey.value(), frameData.forwardLightData))
+            return true;
+
         NLS::Render::RHI::RHIBufferDesc constantsDesc;
-        constantsDesc.size = sizeof(LightGridPassConstants);
+        constantsDesc.size = sizeof(ForwardLightData);
         constantsDesc.usage = NLS::Render::RHI::BufferUsageFlags::Uniform;
         constantsDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
-        constantsDesc.debugName = "LightGridPassConstants";
+        constantsDesc.debugName = "ForwardLightDataUniformBuffer";
         NLS::Render::RHI::RHIBufferUploadDesc constantsUploadDesc;
-        constantsUploadDesc.data = &frameData.constants;
-        constantsUploadDesc.dataSize = sizeof(frameData.constants);
-        constantsUploadDesc.debugName = "LightGridPassConstantsInitialUpload";
+        constantsUploadDesc.data = &frameData.forwardLightData;
+        constantsUploadDesc.dataSize = sizeof(frameData.forwardLightData);
+        constantsUploadDesc.debugName = "ForwardLightDataInitialUpload";
         auto constantsBuffer = device->CreateBuffer(constantsDesc, constantsUploadDesc);
 
         auto createStorageBuffer = [&](std::string_view debugName, const std::vector<uint32_t>& data)
@@ -310,7 +367,7 @@ namespace NLS::Engine::Rendering
             return cachedBuffer;
         };
 
-        auto packedLightsBuffer = createStorageBuffer("LightGridPackedLights", frameData.packedLights);
+        auto forwardLocalLightBuffer = createStorageBuffer("ForwardLocalLightBuffer", frameData.forwardLocalLightData);
         auto startOffsetGridBuffer = CreateOrReusePreparedBuffer(
             m_preparedBufferCache.startOffsetGrid,
             m_preparedBufferCache.startOffsetGridSize,
@@ -331,25 +388,25 @@ namespace NLS::Engine::Rendering
             m_preparedBufferCache.compactCounterSize,
             "LightGridCompactCounter",
             frameData.compactCounter);
-        auto clusterRecordsBuffer = CreateOrReusePreparedBuffer(
-            m_preparedBufferCache.clusterRecords,
-            m_preparedBufferCache.clusterRecordsSize,
-            "LightGridClusterRecords",
-            frameData.clusterRecords);
-        auto compactLightIndicesBuffer = CreateOrReusePreparedBuffer(
-            m_preparedBufferCache.compactLightIndices,
-            m_preparedBufferCache.compactLightIndicesSize,
-            "LightGridCompactLightIndices",
-            frameData.compactLightIndices);
+        auto numCulledLightsGridBuffer = CreateOrReusePreparedBuffer(
+            m_preparedBufferCache.numCulledLightsGrid,
+            m_preparedBufferCache.numCulledLightsGridSize,
+            "NumCulledLightsGrid",
+            frameData.numCulledLightsGrid);
+        auto culledLightDataGridBuffer = CreateOrReusePreparedBuffer(
+            m_preparedBufferCache.culledLightDataGrid,
+            m_preparedBufferCache.culledLightDataGridSize,
+            "CulledLightDataGrid",
+            frameData.culledLightDataGrid);
 
         if (constantsBuffer == nullptr ||
-            packedLightsBuffer == nullptr ||
+            forwardLocalLightBuffer == nullptr ||
             startOffsetGridBuffer == nullptr ||
             culledLightLinksBuffer == nullptr ||
             linkCounterBuffer == nullptr ||
             compactCounterBuffer == nullptr ||
-            clusterRecordsBuffer == nullptr ||
-            compactLightIndicesBuffer == nullptr)
+            numCulledLightsGridBuffer == nullptr ||
+            culledLightDataGridBuffer == nullptr)
         {
             LogLightGridHotPathFailure(m_driver, "LightGridPrepass::Prepare failed: one or more clustered lighting buffers could not be created.");
             return false;
@@ -357,63 +414,67 @@ namespace NLS::Engine::Rendering
 
         const auto descriptorLifetime = NLS::Render::RHI::DescriptorAllocationLifetime::Persistent;
 
-        NLS::Render::RHI::RHIBindingSetDesc injectionSetDesc;
-        injectionSetDesc.layout = m_injectionBindingLayout;
-        injectionSetDesc.debugName = "LightGridInjectionBindingSet";
-        injectionSetDesc.entries = {
-            { 0u, NLS::Render::RHI::BindingType::UniformBuffer, constantsBuffer, 0u, sizeof(LightGridPassConstants), nullptr, nullptr },
-            { 0u, NLS::Render::RHI::BindingType::StructuredBuffer, packedLightsBuffer, 0u, frameData.packedLights.size() * sizeof(uint32_t), nullptr, nullptr },
-            { 1u, NLS::Render::RHI::BindingType::StorageBuffer, startOffsetGridBuffer, 0u, frameData.startOffsetGrid.size() * sizeof(uint32_t), nullptr, nullptr },
-            { 2u, NLS::Render::RHI::BindingType::StorageBuffer, culledLightLinksBuffer, 0u, frameData.culledLightLinks.size() * sizeof(uint32_t), nullptr, nullptr },
-            { 3u, NLS::Render::RHI::BindingType::StorageBuffer, linkCounterBuffer, 0u, frameData.linkCounter.size() * sizeof(uint32_t), nullptr, nullptr }
-        };
+        auto injectionSetDesc = NLS::Render::Resources::BuildBindingSetDescFromShaderParameters(
+            m_injectionGlobalShader.parameters,
+            m_injectionBindingLayout,
+            {
+                NLS::Render::Resources::ShaderParameterBindingValue::UniformBuffer("Forward", constantsBuffer, sizeof(ForwardLightData)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("ForwardLocalLightBuffer", forwardLocalLightBuffer, frameData.forwardLocalLightData.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWStartOffsetGrid", startOffsetGridBuffer, frameData.startOffsetGrid.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWCulledLightLinks", culledLightLinksBuffer, frameData.culledLightLinks.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWLinkCounter", linkCounterBuffer, frameData.linkCounter.size() * sizeof(uint32_t))
+            },
+            "LightGridInjectionBindingSet");
         auto injectionBindingSet = NLS::Render::Context::DriverRendererAccess::CreateExplicitBindingSet(
             m_driver,
             injectionSetDesc,
             descriptorLifetime);
 
-        NLS::Render::RHI::RHIBindingSetDesc resetSetDesc;
-        resetSetDesc.layout = m_resetBindingLayout;
-        resetSetDesc.debugName = "LightGridResetBindingSet";
-        resetSetDesc.entries = {
-            { 0u, NLS::Render::RHI::BindingType::UniformBuffer, constantsBuffer, 0u, sizeof(LightGridPassConstants), nullptr, nullptr },
-            { 1u, NLS::Render::RHI::BindingType::StorageBuffer, startOffsetGridBuffer, 0u, frameData.startOffsetGrid.size() * sizeof(uint32_t), nullptr, nullptr },
-            { 2u, NLS::Render::RHI::BindingType::StorageBuffer, culledLightLinksBuffer, 0u, frameData.culledLightLinks.size() * sizeof(uint32_t), nullptr, nullptr },
-            { 3u, NLS::Render::RHI::BindingType::StorageBuffer, linkCounterBuffer, 0u, frameData.linkCounter.size() * sizeof(uint32_t), nullptr, nullptr },
-            { 4u, NLS::Render::RHI::BindingType::StorageBuffer, compactCounterBuffer, 0u, frameData.compactCounter.size() * sizeof(uint32_t), nullptr, nullptr },
-            { 5u, NLS::Render::RHI::BindingType::StorageBuffer, clusterRecordsBuffer, 0u, frameData.clusterRecords.size() * sizeof(uint32_t), nullptr, nullptr },
-            { 6u, NLS::Render::RHI::BindingType::StorageBuffer, compactLightIndicesBuffer, 0u, frameData.compactLightIndices.size() * sizeof(uint32_t), nullptr, nullptr }
-        };
+        auto resetSetDesc = NLS::Render::Resources::BuildBindingSetDescFromShaderParameters(
+            m_resetGlobalShader.parameters,
+            m_resetBindingLayout,
+            {
+                NLS::Render::Resources::ShaderParameterBindingValue::UniformBuffer("Forward", constantsBuffer, sizeof(ForwardLightData)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWStartOffsetGrid", startOffsetGridBuffer, frameData.startOffsetGrid.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWCulledLightLinks", culledLightLinksBuffer, frameData.culledLightLinks.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWLinkCounter", linkCounterBuffer, frameData.linkCounter.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWCompactCounter", compactCounterBuffer, frameData.compactCounter.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWNumCulledLightsGrid", numCulledLightsGridBuffer, frameData.numCulledLightsGrid.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWCulledLightDataGrid", culledLightDataGridBuffer, frameData.culledLightDataGrid.size() * sizeof(uint32_t))
+            },
+            "LightGridResetBindingSet");
         auto resetBindingSet = NLS::Render::Context::DriverRendererAccess::CreateExplicitBindingSet(
             m_driver,
             resetSetDesc,
             descriptorLifetime);
 
-        NLS::Render::RHI::RHIBindingSetDesc compactSetDesc;
-        compactSetDesc.layout = m_compactBindingLayout;
-        compactSetDesc.debugName = "LightGridCompactBindingSet";
-        compactSetDesc.entries = {
-            { 0u, NLS::Render::RHI::BindingType::UniformBuffer, constantsBuffer, 0u, sizeof(LightGridPassConstants), nullptr, nullptr },
-            { 1u, NLS::Render::RHI::BindingType::StructuredBuffer, startOffsetGridBuffer, 0u, frameData.startOffsetGrid.size() * sizeof(uint32_t), nullptr, nullptr },
-            { 2u, NLS::Render::RHI::BindingType::StructuredBuffer, culledLightLinksBuffer, 0u, frameData.culledLightLinks.size() * sizeof(uint32_t), nullptr, nullptr },
-            { 3u, NLS::Render::RHI::BindingType::StorageBuffer, compactCounterBuffer, 0u, frameData.compactCounter.size() * sizeof(uint32_t), nullptr, nullptr },
-            { 4u, NLS::Render::RHI::BindingType::StorageBuffer, clusterRecordsBuffer, 0u, frameData.clusterRecords.size() * sizeof(uint32_t), nullptr, nullptr },
-            { 5u, NLS::Render::RHI::BindingType::StorageBuffer, compactLightIndicesBuffer, 0u, frameData.compactLightIndices.size() * sizeof(uint32_t), nullptr, nullptr }
-        };
+        auto compactSetDesc = NLS::Render::Resources::BuildBindingSetDescFromShaderParameters(
+            m_compactGlobalShader.parameters,
+            m_compactBindingLayout,
+            {
+                NLS::Render::Resources::ShaderParameterBindingValue::UniformBuffer("Forward", constantsBuffer, sizeof(ForwardLightData)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("StartOffsetGrid", startOffsetGridBuffer, frameData.startOffsetGrid.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("CulledLightLinks", culledLightLinksBuffer, frameData.culledLightLinks.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWCompactCounter", compactCounterBuffer, frameData.compactCounter.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWNumCulledLightsGrid", numCulledLightsGridBuffer, frameData.numCulledLightsGrid.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWCulledLightDataGrid", culledLightDataGridBuffer, frameData.culledLightDataGrid.size() * sizeof(uint32_t))
+            },
+            "LightGridCompactBindingSet");
         auto compactBindingSet = NLS::Render::Context::DriverRendererAccess::CreateExplicitBindingSet(
             m_driver,
             compactSetDesc,
             descriptorLifetime);
 
-        NLS::Render::RHI::RHIBindingSetDesc graphicsSetDesc;
-        graphicsSetDesc.layout = m_graphicsBindingLayout;
-        graphicsSetDesc.debugName = "LightGridGraphicsBindingSet";
-        graphicsSetDesc.entries = {
-            { 0u, NLS::Render::RHI::BindingType::UniformBuffer, constantsBuffer, 0u, sizeof(LightGridPassConstants), nullptr, nullptr },
-            { 0u, NLS::Render::RHI::BindingType::StructuredBuffer, packedLightsBuffer, 0u, frameData.packedLights.size() * sizeof(uint32_t), nullptr, nullptr },
-            { 1u, NLS::Render::RHI::BindingType::StructuredBuffer, clusterRecordsBuffer, 0u, frameData.clusterRecords.size() * sizeof(uint32_t), nullptr, nullptr },
-            { 2u, NLS::Render::RHI::BindingType::StructuredBuffer, compactLightIndicesBuffer, 0u, frameData.compactLightIndices.size() * sizeof(uint32_t), nullptr, nullptr }
-        };
+        auto graphicsSetDesc = NLS::Render::Resources::BuildBindingSetDescFromShaderParameters(
+            LightGridGraphicsParameters::Build(),
+            m_graphicsBindingLayout,
+            {
+                NLS::Render::Resources::ShaderParameterBindingValue::UniformBuffer("ForwardLightData", constantsBuffer, sizeof(ForwardLightData)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("ForwardLocalLightBuffer", forwardLocalLightBuffer, frameData.forwardLocalLightData.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("NumCulledLightsGrid", numCulledLightsGridBuffer, frameData.numCulledLightsGrid.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("CulledLightDataGrid", culledLightDataGridBuffer, frameData.culledLightDataGrid.size() * sizeof(uint32_t))
+            },
+            "LightGridGraphicsBindingSet");
         m_graphicsPassBindingSet = NLS::Render::Context::DriverRendererAccess::CreateExplicitBindingSet(
             m_driver,
             graphicsSetDesc,
@@ -426,52 +487,58 @@ namespace NLS::Engine::Rendering
         }
 
         const LightGridDimensions gridDimensions{
-            static_cast<uint32_t>(frameData.constants.gridParams.x),
-            static_cast<uint32_t>(frameData.constants.gridParams.y),
-            static_cast<uint32_t>(frameData.constants.gridParams.z)
+            static_cast<uint32_t>(frameData.forwardLightData.gridParams.x),
+            static_cast<uint32_t>(frameData.forwardLightData.gridParams.y),
+            static_cast<uint32_t>(frameData.forwardLightData.gridParams.z)
         };
         const auto gridDispatchGroups = CalculateLightGridDispatchGroups(gridDimensions);
 
+        auto resetDispatchInput = NLS::Render::Resources::ComputeShaderUtils::BuildRecordedDispatch(
+            m_resetGlobalShader,
+            m_resetPipeline,
+            resetBindingSet,
+            { gridDispatchGroups.x, gridDispatchGroups.y, gridDispatchGroups.z },
+            "LightGridReset");
+        resetDispatchInput.shaderWriteBuffersBefore = {
+            startOffsetGridBuffer,
+            culledLightLinksBuffer,
+            linkCounterBuffer,
+            compactCounterBuffer,
+            numCulledLightsGridBuffer,
+            culledLightDataGridBuffer
+        };
+
+        auto injectionDispatchInput = NLS::Render::Resources::ComputeShaderUtils::BuildRecordedDispatch(
+            m_injectionGlobalShader,
+            m_injectionPipeline,
+            injectionBindingSet,
+            { gridDispatchGroups.x, gridDispatchGroups.y, gridDispatchGroups.z },
+            "LightGridInjection");
+        injectionDispatchInput.shaderReadBuffersBefore = { forwardLocalLightBuffer };
+        injectionDispatchInput.shaderWriteBuffersBefore = {
+            startOffsetGridBuffer,
+            culledLightLinksBuffer,
+            linkCounterBuffer
+        };
+
+        auto compactDispatchInput = NLS::Render::Resources::ComputeShaderUtils::BuildRecordedDispatch(
+            m_compactGlobalShader,
+            m_compactPipeline,
+            compactBindingSet,
+            { gridDispatchGroups.x, gridDispatchGroups.y, gridDispatchGroups.z },
+            "LightGridCompact");
+        compactDispatchInput.shaderReadBuffersBefore = { startOffsetGridBuffer, culledLightLinksBuffer };
+        compactDispatchInput.shaderWriteBuffersBefore = {
+            compactCounterBuffer,
+            numCulledLightsGridBuffer,
+            culledLightDataGridBuffer
+        };
+        compactDispatchInput.shaderReadBuffersAfter = { numCulledLightsGridBuffer, culledLightDataGridBuffer };
+
         m_computeDispatchInputs = {
-            {
-                "LightGridReset",
-                m_resetPipeline,
-                { { NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, resetBindingSet } },
-                gridDispatchGroups.x,
-                gridDispatchGroups.y,
-                gridDispatchGroups.z,
-                {},
-                { startOffsetGridBuffer, culledLightLinksBuffer, linkCounterBuffer, compactCounterBuffer, clusterRecordsBuffer, compactLightIndicesBuffer },
-                {},
-                {},
-                {}
-            },
-            {
-                "LightGridInjection",
-                m_injectionPipeline,
-                { { NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, injectionBindingSet } },
-                gridDispatchGroups.x,
-                gridDispatchGroups.y,
-                gridDispatchGroups.z,
-                { packedLightsBuffer },
-                { startOffsetGridBuffer, culledLightLinksBuffer, linkCounterBuffer },
-                {},
-                {},
-                {}
-            },
-            {
-                "LightGridCompact",
-                m_compactPipeline,
-                { { NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, compactBindingSet } },
-                gridDispatchGroups.x,
-                gridDispatchGroups.y,
-                gridDispatchGroups.z,
-                { startOffsetGridBuffer, culledLightLinksBuffer },
-                { compactCounterBuffer, clusterRecordsBuffer, compactLightIndicesBuffer },
-                {},
-                {},
-                { clusterRecordsBuffer, compactLightIndicesBuffer }
-            }
+            std::move(resetDispatchInput),
+            std::move(injectionDispatchInput),
+            std::move(compactDispatchInput)
         };
 
         if (preparedCacheKey.has_value())
@@ -492,19 +559,19 @@ namespace NLS::Engine::Rendering
         key.renderHeight = frameDescriptor.renderHeight;
         key.nearPlane = frameDescriptor.camera->GetNear();
         key.farPlane = frameDescriptor.camera->GetFar();
-        key.cameraPosition = frameDescriptor.camera->GetPosition();
-        key.viewMatrix = frameDescriptor.camera->GetViewMatrix();
-        key.projectionMatrix = frameDescriptor.camera->GetProjectionMatrix();
         key.settings = m_settings;
         key.hasSkyboxTexture = preparedFrameInputs.hasSkyboxTexture;
         key.lights = preparedFrameInputs.lights;
         return key;
     }
 
-    bool LightGridPrepass::TryReusePreparedResources(const PreparedResourceCacheKey& key)
+    bool LightGridPrepass::TryReusePreparedResources(
+        const PreparedResourceCacheKey& key,
+        const ForwardLightData& forwardLightData)
     {
         if (!m_preparedResourceCache.valid ||
             !LightGridPrepass::AreSamePreparedResourceCacheKeys(m_preparedResourceCache.key, key) ||
+            m_preparedResourceCache.forwardLightDataBuffer == nullptr ||
             m_preparedResourceCache.graphicsPassBindingSet == nullptr ||
             m_preparedResourceCache.computeDispatchInputs.size() != 3u ||
             m_preparedResourceCache.computeDispatchInputs[0].pipeline != m_resetPipeline ||
@@ -512,8 +579,20 @@ namespace NLS::Engine::Rendering
             m_preparedResourceCache.computeDispatchInputs[2].pipeline != m_compactPipeline)
             return false;
 
+        NLS::Render::RHI::RHIBufferUploadDesc constantsUploadDesc;
+        constantsUploadDesc.data = &forwardLightData;
+        constantsUploadDesc.dataSize = sizeof(forwardLightData);
+        constantsUploadDesc.debugName = "ForwardLightDataCameraMotionUpload";
+        const auto updateResult = m_preparedResourceCache.forwardLightDataBuffer->UpdateData(constantsUploadDesc);
+        if (!updateResult.Succeeded())
+            return false;
+
         m_graphicsPassBindingSet = m_preparedResourceCache.graphicsPassBindingSet;
-        m_computeDispatchInputs.clear();
+        if (AreSameForwardLightData(m_preparedResourceCache.forwardLightData, forwardLightData))
+            m_computeDispatchInputs.clear();
+        else
+            m_computeDispatchInputs = m_preparedResourceCache.computeDispatchInputs;
+        m_preparedResourceCache.forwardLightData = forwardLightData;
         return true;
     }
 
@@ -529,14 +608,9 @@ namespace NLS::Engine::Rendering
             return false;
         }
 
-        NLS::Render::RHI::RHIBindingLayoutDesc desc;
-        desc.debugName = "LightGridGraphicsBindingLayout";
-        desc.entries = {
-            { "LightGridPassConstants", NLS::Render::RHI::BindingType::UniformBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 0u, 1u, NLS::Render::RHI::ShaderStageMask::All, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-            { "u_LightGridLights", NLS::Render::RHI::BindingType::StructuredBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 0u, 1u, NLS::Render::RHI::ShaderStageMask::AllGraphics, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-            { "u_LightGridClusterRecords", NLS::Render::RHI::BindingType::StructuredBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 1u, 1u, NLS::Render::RHI::ShaderStageMask::AllGraphics, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-            { "u_LightGridCompactIndices", NLS::Render::RHI::BindingType::StructuredBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 2u, 1u, NLS::Render::RHI::ShaderStageMask::AllGraphics, NLS::Render::RHI::BindingPointMap::kPassBindingSpace }
-        };
+        auto desc = NLS::Render::Resources::BuildBindingLayoutDescFromShaderParameters(
+            LightGridGraphicsParameters::Build(),
+            "LightGridGraphicsBindingLayout");
         m_graphicsBindingLayout = device->CreateBindingLayout(desc);
         return m_graphicsBindingLayout != nullptr;
     }
@@ -562,14 +636,14 @@ namespace NLS::Engine::Rendering
             return false;
 
         NLS::Render::RHI::RHIBufferDesc constantsDesc;
-        constantsDesc.size = sizeof(LightGridPassConstants);
+        constantsDesc.size = sizeof(ForwardLightData);
         constantsDesc.usage = NLS::Render::RHI::BufferUsageFlags::Uniform;
         constantsDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
-        constantsDesc.debugName = "LightGridFallbackPassConstants";
+        constantsDesc.debugName = "ForwardLightDataUniformBuffer";
         NLS::Render::RHI::RHIBufferUploadDesc constantsUploadDesc;
-        constantsUploadDesc.data = &frameData.constants;
-        constantsUploadDesc.dataSize = sizeof(frameData.constants);
-        constantsUploadDesc.debugName = "LightGridFallbackPassConstantsInitialUpload";
+        constantsUploadDesc.data = &frameData.forwardLightData;
+        constantsUploadDesc.dataSize = sizeof(frameData.forwardLightData);
+        constantsUploadDesc.debugName = "ForwardLightDataFallbackInitialUpload";
         auto constantsBuffer = device->CreateBuffer(constantsDesc, constantsUploadDesc);
 
         auto createStructuredBuffer = [&device](std::string_view debugName, const std::vector<uint32_t>& data)
@@ -589,27 +663,28 @@ namespace NLS::Engine::Rendering
             return device->CreateBuffer(desc, uploadDesc);
         };
 
-        auto packedLightsBuffer = createStructuredBuffer("LightGridFallbackPackedLights", frameData.packedLights);
-        auto clusterRecordsBuffer = createStructuredBuffer("LightGridFallbackClusterRecords", frameData.clusterRecords);
-        auto compactLightIndicesBuffer = createStructuredBuffer("LightGridFallbackCompactLightIndices", frameData.compactLightIndices);
+        auto forwardLocalLightBuffer = createStructuredBuffer("ForwardLocalLightBuffer", frameData.forwardLocalLightData);
+        auto numCulledLightsGridBuffer = createStructuredBuffer("NumCulledLightsGrid", frameData.numCulledLightsGrid);
+        auto culledLightDataGridBuffer = createStructuredBuffer("CulledLightDataGrid", frameData.culledLightDataGrid);
         if (constantsBuffer == nullptr ||
-            packedLightsBuffer == nullptr ||
-            clusterRecordsBuffer == nullptr ||
-            compactLightIndicesBuffer == nullptr)
+            forwardLocalLightBuffer == nullptr ||
+            numCulledLightsGridBuffer == nullptr ||
+            culledLightDataGridBuffer == nullptr)
         {
             LogLightGridHotPathFailure(m_driver, "LightGridPrepass::EnsureFallbackGraphicsPassBindingSet failed: one or more fallback buffers could not be created.");
             return false;
         }
 
-        NLS::Render::RHI::RHIBindingSetDesc graphicsSetDesc;
-        graphicsSetDesc.layout = m_graphicsBindingLayout;
-        graphicsSetDesc.debugName = "LightGridFallbackGraphicsBindingSet";
-        graphicsSetDesc.entries = {
-            { 0u, NLS::Render::RHI::BindingType::UniformBuffer, constantsBuffer, 0u, sizeof(LightGridPassConstants), nullptr, nullptr },
-            { 0u, NLS::Render::RHI::BindingType::StructuredBuffer, packedLightsBuffer, 0u, frameData.packedLights.size() * sizeof(uint32_t), nullptr, nullptr },
-            { 1u, NLS::Render::RHI::BindingType::StructuredBuffer, clusterRecordsBuffer, 0u, frameData.clusterRecords.size() * sizeof(uint32_t), nullptr, nullptr },
-            { 2u, NLS::Render::RHI::BindingType::StructuredBuffer, compactLightIndicesBuffer, 0u, frameData.compactLightIndices.size() * sizeof(uint32_t), nullptr, nullptr }
-        };
+        auto graphicsSetDesc = NLS::Render::Resources::BuildBindingSetDescFromShaderParameters(
+            LightGridGraphicsParameters::Build(),
+            m_graphicsBindingLayout,
+            {
+                NLS::Render::Resources::ShaderParameterBindingValue::UniformBuffer("ForwardLightData", constantsBuffer, sizeof(ForwardLightData)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("ForwardLocalLightBuffer", forwardLocalLightBuffer, frameData.forwardLocalLightData.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("NumCulledLightsGrid", numCulledLightsGridBuffer, frameData.numCulledLightsGrid.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("CulledLightDataGrid", culledLightDataGridBuffer, frameData.culledLightDataGrid.size() * sizeof(uint32_t))
+            },
+            "LightGridFallbackGraphicsBindingSet");
         m_fallbackGraphicsPassBindingSet = NLS::Render::Context::DriverRendererAccess::CreateExplicitBindingSet(
             m_driver,
             graphicsSetDesc,
@@ -631,6 +706,12 @@ namespace NLS::Engine::Rendering
         }
 
         m_preparedResourceCache.key = key;
+        m_preparedResourceCache.forwardLightData = m_frameScratch.forwardLightData;
+        m_preparedResourceCache.forwardLightDataBuffer = FindBindingBuffer(
+            m_graphicsPassBindingSet,
+            "ForwardLightData",
+            NLS::Render::RHI::BindingType::UniformBuffer,
+            0u);
         m_preparedResourceCache.graphicsPassBindingSet = m_graphicsPassBindingSet;
         m_preparedResourceCache.computeDispatchInputs = m_computeDispatchInputs;
     }
@@ -639,26 +720,20 @@ namespace NLS::Engine::Rendering
         const PreparedResourceCacheKey& lhs,
         const PreparedResourceCacheKey& rhs)
     {
-        const auto areSameMatrices = [](const NLS::Maths::Matrix4& left, const NLS::Maths::Matrix4& right)
-        {
-            for (size_t index = 0u; index < std::size(left.data); ++index)
-            {
-                if (left.data[index] != right.data[index])
-                    return false;
-            }
-            return true;
-        };
-
         return lhs.renderWidth == rhs.renderWidth &&
             lhs.renderHeight == rhs.renderHeight &&
             lhs.nearPlane == rhs.nearPlane &&
             lhs.farPlane == rhs.farPlane &&
-            lhs.cameraPosition == rhs.cameraPosition &&
-            areSameMatrices(lhs.viewMatrix, rhs.viewMatrix) &&
-            areSameMatrices(lhs.projectionMatrix, rhs.projectionMatrix) &&
             AreSameLightGridSettings(lhs.settings, rhs.settings) &&
             lhs.hasSkyboxTexture == rhs.hasSkyboxTexture &&
             AreSameCapturedLights(lhs.lights, rhs.lights);
+    }
+
+    bool LightGridPrepass::AreSameForwardLightData(
+        const ForwardLightData& lhs,
+        const ForwardLightData& rhs)
+    {
+        return std::memcmp(&lhs, &rhs, sizeof(lhs)) == 0;
     }
 
     LightGridPrepass::PreparedComputeRequest LightGridPrepass::BuildPreparedComputeRequest(
@@ -753,48 +828,44 @@ namespace NLS::Engine::Rendering
             return false;
         }
 
-        auto makePassSetLayoutDesc = [](const std::vector<NLS::Render::RHI::RHIBindingLayoutEntry>& entries, std::string_view debugName)
-        {
-            NLS::Render::RHI::RHIBindingLayoutDesc desc;
-            desc.debugName = std::string(debugName);
-            desc.entries = entries;
-            return desc;
+        m_resetGlobalShader = {
+            "LightGridResetCS",
+            NLS::Render::ShaderCompiler::ShaderStage::Compute,
+            m_resetShader,
+            LightGridResetParameters::Build()
+        };
+        m_injectionGlobalShader = {
+            "LightGridInjectionCS",
+            NLS::Render::ShaderCompiler::ShaderStage::Compute,
+            m_injectionShader,
+            LightGridInjectionParameters::Build()
+        };
+        m_compactGlobalShader = {
+            "LightGridCompactCS",
+            NLS::Render::ShaderCompiler::ShaderStage::Compute,
+            m_compactShader,
+            LightGridCompactParameters::Build()
         };
 
         if (m_resetBindingLayout == nullptr)
         {
-            m_resetBindingLayout = device->CreateBindingLayout(makePassSetLayoutDesc({
-                { "LightGridPassConstants", NLS::Render::RHI::BindingType::UniformBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 0u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-                { "u_LightGridStartOffsetGrid", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 1u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-                { "u_LightGridCulledLightLinks", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 2u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-                { "u_LightGridLinkCounter", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 3u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-                { "u_LightGridCompactCounter", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 4u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-                { "u_LightGridClusterRecords", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 5u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-                { "u_LightGridCompactIndices", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 6u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace }
-            }, "LightGridResetBindingLayout"));
+            m_resetBindingLayout = NLS::Render::Resources::ComputeShaderUtils::CreatePassBindingLayout(
+                device,
+                m_resetGlobalShader.parameters);
         }
 
         if (m_injectionBindingLayout == nullptr)
         {
-            m_injectionBindingLayout = device->CreateBindingLayout(makePassSetLayoutDesc({
-                { "LightGridPassConstants", NLS::Render::RHI::BindingType::UniformBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 0u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-                { "u_LightGridLights", NLS::Render::RHI::BindingType::StructuredBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 0u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-                { "u_LightGridStartOffsetGrid", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 1u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-                { "u_LightGridCulledLightLinks", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 2u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-                { "u_LightGridLinkCounter", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 3u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace }
-            }, "LightGridInjectionBindingLayout"));
+            m_injectionBindingLayout = NLS::Render::Resources::ComputeShaderUtils::CreatePassBindingLayout(
+                device,
+                m_injectionGlobalShader.parameters);
         }
 
         if (m_compactBindingLayout == nullptr)
         {
-            m_compactBindingLayout = device->CreateBindingLayout(makePassSetLayoutDesc({
-                { "LightGridPassConstants", NLS::Render::RHI::BindingType::UniformBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 0u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-                { "u_LightGridStartOffsetGrid", NLS::Render::RHI::BindingType::StructuredBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 1u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-                { "u_LightGridCulledLightLinks", NLS::Render::RHI::BindingType::StructuredBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 2u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-                { "u_LightGridCompactCounter", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 3u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-                { "u_LightGridClusterRecords", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 4u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace },
-                { "u_LightGridCompactIndices", NLS::Render::RHI::BindingType::StorageBuffer, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, 5u, 1u, NLS::Render::RHI::ShaderStageMask::Compute, NLS::Render::RHI::BindingPointMap::kPassBindingSpace }
-            }, "LightGridCompactBindingLayout"));
+            m_compactBindingLayout = NLS::Render::Resources::ComputeShaderUtils::CreatePassBindingLayout(
+                device,
+                m_compactGlobalShader.parameters);
         }
 
         if (!EnsureGraphicsBindingLayout())
@@ -802,86 +873,48 @@ namespace NLS::Engine::Rendering
 
         if (m_resetPipelineLayout == nullptr)
         {
-            NLS::Render::RHI::RHIPipelineLayoutDesc desc;
-            desc.debugName = "LightGridResetPipelineLayout";
-            desc.bindingLayouts.resize(NLS::Render::RHI::BindingPointMap::kPassDescriptorSet + 1u);
-            desc.bindingLayouts[NLS::Render::RHI::BindingPointMap::kPassDescriptorSet] = m_resetBindingLayout;
-            m_resetPipelineLayout = device->CreatePipelineLayout(desc);
+            m_resetPipelineLayout = NLS::Render::Resources::ComputeShaderUtils::CreatePipelineLayout(
+                device,
+                m_resetBindingLayout,
+                "LightGridResetPipelineLayout");
         }
 
         if (m_injectionPipelineLayout == nullptr)
         {
-            NLS::Render::RHI::RHIPipelineLayoutDesc desc;
-            desc.debugName = "LightGridInjectionPipelineLayout";
-            desc.bindingLayouts.resize(NLS::Render::RHI::BindingPointMap::kPassDescriptorSet + 1u);
-            desc.bindingLayouts[NLS::Render::RHI::BindingPointMap::kPassDescriptorSet] = m_injectionBindingLayout;
-            m_injectionPipelineLayout = device->CreatePipelineLayout(desc);
+            m_injectionPipelineLayout = NLS::Render::Resources::ComputeShaderUtils::CreatePipelineLayout(
+                device,
+                m_injectionBindingLayout,
+                "LightGridInjectionPipelineLayout");
         }
 
         if (m_compactPipelineLayout == nullptr)
         {
-            NLS::Render::RHI::RHIPipelineLayoutDesc desc;
-            desc.debugName = "LightGridCompactPipelineLayout";
-            desc.bindingLayouts.resize(NLS::Render::RHI::BindingPointMap::kPassDescriptorSet + 1u);
-            desc.bindingLayouts[NLS::Render::RHI::BindingPointMap::kPassDescriptorSet] = m_compactBindingLayout;
-            m_compactPipelineLayout = device->CreatePipelineLayout(desc);
+            m_compactPipelineLayout = NLS::Render::Resources::ComputeShaderUtils::CreatePipelineLayout(
+                device,
+                m_compactBindingLayout,
+                "LightGridCompactPipelineLayout");
         }
 
-        auto createComputePipeline = [&](
-            NLS::Render::Resources::Shader* shader,
-            const std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout>& pipelineLayout,
-            const std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>& existingPipeline,
-            NLS::Render::RHI::PipelineCacheKey& existingPipelineKey,
-            std::string_view label)
-        {
-            auto shaderModule = shader->GetOrCreateExplicitShaderModule(device, NLS::Render::ShaderCompiler::ShaderStage::Compute);
-            if (shaderModule == nullptr)
-            {
-                LogLightGridHotPathFailure(m_driver, "LightGridPrepass::EnsurePipelines failed: compute shader module is null for " + std::string(label) + ".");
-                return std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>{};
-            }
-
-            if (pipelineCache == nullptr)
-            {
-                LogLightGridHotPathFailure(m_driver, "LightGridPrepass::EnsurePipelines failed: pipeline cache is null for " + std::string(label) + ".");
-                return std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>{};
-            }
-
-            NLS::Render::RHI::RHIComputePipelineDesc desc;
-            desc.pipelineLayout = pipelineLayout;
-            desc.computeShader = shaderModule;
-            desc.debugName = std::string(label);
-            const auto cacheKey = NLS::Render::RHI::BuildComputePipelineCacheKey(desc);
-            if (existingPipeline != nullptr && MatchesPipelineCacheKey(existingPipelineKey, cacheKey))
-            {
-                existingPipelineKey = cacheKey;
-                return existingPipeline;
-            }
-
-            existingPipelineKey = cacheKey;
-            return pipelineCache->GetOrCreateComputePipeline(
-                cacheKey,
-                [device, desc]()
-                {
-                    return device->CreateComputePipeline(desc);
-                },
-                NLS::Render::RHI::PipelineCacheRequestMode::Prewarm);
-        };
-
-        m_resetPipeline = createComputePipeline(
-            m_resetShader,
+        m_resetPipeline = NLS::Render::Resources::ComputeShaderUtils::CreateComputePipeline(
+            device,
+            pipelineCache,
+            m_resetGlobalShader,
             m_resetPipelineLayout,
             m_resetPipeline,
             m_resetPipelineKey,
             "LightGridResetPipeline");
-        m_injectionPipeline = createComputePipeline(
-            m_injectionShader,
+        m_injectionPipeline = NLS::Render::Resources::ComputeShaderUtils::CreateComputePipeline(
+            device,
+            pipelineCache,
+            m_injectionGlobalShader,
             m_injectionPipelineLayout,
             m_injectionPipeline,
             m_injectionPipelineKey,
             "LightGridInjectionPipeline");
-        m_compactPipeline = createComputePipeline(
-            m_compactShader,
+        m_compactPipeline = NLS::Render::Resources::ComputeShaderUtils::CreateComputePipeline(
+            device,
+            pipelineCache,
+            m_compactGlobalShader,
             m_compactPipelineLayout,
             m_compactPipeline,
             m_compactPipelineKey,
@@ -920,19 +953,19 @@ namespace NLS::Engine::Rendering
             return false;
         }
 
-        outFrameData.constants.viewMatrix = NLS::Maths::Matrix4::Transpose(frameDescriptor.camera->GetViewMatrix());
-        outFrameData.constants.projectionMatrix = NLS::Maths::Matrix4::Transpose(frameDescriptor.camera->GetProjectionMatrix());
+        outFrameData.forwardLightData.viewMatrix = NLS::Maths::Matrix4::Transpose(frameDescriptor.camera->GetViewMatrix());
+        outFrameData.forwardLightData.projectionMatrix = NLS::Maths::Matrix4::Transpose(frameDescriptor.camera->GetProjectionMatrix());
         const auto viewProjection = frameDescriptor.camera->GetProjectionMatrix() * frameDescriptor.camera->GetViewMatrix();
-        outFrameData.constants.inverseViewProjection = NLS::Maths::Matrix4::Transpose(NLS::Maths::Matrix4::Inverse(viewProjection));
-        outFrameData.constants.clipToView = NLS::Maths::Matrix4::Transpose(
+        outFrameData.forwardLightData.inverseViewProjection = NLS::Maths::Matrix4::Transpose(NLS::Maths::Matrix4::Inverse(viewProjection));
+        outFrameData.forwardLightData.clipToView = NLS::Maths::Matrix4::Transpose(
             NLS::Maths::Matrix4::Inverse(frameDescriptor.camera->GetProjectionMatrix()));
-        outFrameData.constants.cameraWorldPositionNearPlane = {
+        outFrameData.forwardLightData.cameraWorldPositionNearPlane = {
             frameDescriptor.camera->GetPosition().x,
             frameDescriptor.camera->GetPosition().y,
             frameDescriptor.camera->GetPosition().z,
             frameDescriptor.camera->GetNear()
         };
-        outFrameData.constants.renderSizeFarPlane = {
+        outFrameData.forwardLightData.renderSizeFarPlane = {
             static_cast<float>(frameDescriptor.renderWidth),
             static_cast<float>(frameDescriptor.renderHeight),
             1.0f / static_cast<float>(frameDescriptor.renderWidth == 0u ? 1u : frameDescriptor.renderWidth),
@@ -947,43 +980,43 @@ namespace NLS::Engine::Rendering
             frameDescriptor.camera->GetFar() + 10.0f,
             gridDimensions.z);
 
-        outFrameData.constants.gridParams = {
+        outFrameData.forwardLightData.gridParams = {
             static_cast<float>(gridDimensions.x),
             static_cast<float>(gridDimensions.y),
             static_cast<float>(gridDimensions.z),
             static_cast<float>(m_settings.maxLightsPerCluster)
         };
-        outFrameData.constants.lightingParams = {
+        outFrameData.forwardLightData.lightingParams = {
             static_cast<float>(preparedFrameInputs.lights.size()),
             0.15f,
             kDefaultAmbientFloor,
             hasSkyboxTexture ? 1.0f : 0.0f
         };
-        outFrameData.constants.zParams = {
+        outFrameData.forwardLightData.zParams = {
             zParams.x,
             zParams.y,
             zParams.z,
             m_settings.linkedListCulling ? 1.0f : 0.0f
         };
-        outFrameData.constants.pixelParams = {
+        outFrameData.forwardLightData.pixelParams = {
             static_cast<float>(m_settings.lightGridPixelSize),
             1.0f / static_cast<float>(frameDescriptor.renderHeight == 0u ? 1u : frameDescriptor.renderHeight),
             0.0f,
             0.0f
         };
 
-        outFrameData.packedLights.clear();
-        outFrameData.packedLights.reserve(preparedFrameInputs.lights.size() * kLightWordStride);
+        outFrameData.forwardLocalLightData.clear();
+        outFrameData.forwardLocalLightData.reserve(preparedFrameInputs.lights.size() * kLightWordStride);
         for (const auto& light : preparedFrameInputs.lights)
-            PackCapturedLight(light, outFrameData.packedLights);
+            PackCapturedLight(light, outFrameData.forwardLocalLightData);
 
         const uint32_t clusterCount = gridDimensions.x * gridDimensions.y * gridDimensions.z;
         outFrameData.startOffsetGrid.resize(clusterCount);
-        outFrameData.culledLightLinks.resize(clusterCount * m_settings.maxLightsPerCluster * kLightLinkStride);
+        outFrameData.culledLightLinks.resize(clusterCount * m_settings.maxLightsPerCluster * NLS::Engine::Rendering::GetLightLinkStride());
         outFrameData.linkCounter.resize(1u);
         outFrameData.compactCounter.resize(1u);
-        outFrameData.clusterRecords.resize(clusterCount * kRecordWordStride);
-        outFrameData.compactLightIndices.resize(clusterCount * m_settings.maxLightsPerCluster);
+        outFrameData.numCulledLightsGrid.resize(clusterCount * NLS::Engine::Rendering::GetNumCulledLightsGridStride());
+        outFrameData.culledLightDataGrid.resize(clusterCount * m_settings.maxLightsPerCluster);
         return true;
     }
 }

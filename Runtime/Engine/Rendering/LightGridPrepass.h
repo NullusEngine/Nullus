@@ -11,6 +11,7 @@
 #include <Rendering/Data/LightingDescriptor.h>
 #include <Rendering/FrameGraph/FrameGraphExecutionPlan.h>
 #include <Rendering/Resources/Shader.h>
+#include <Rendering/Resources/ShaderParameterStruct.h>
 #include <Rendering/RHI/Utils/PipelineCache/PipelineCache.h>
 
 #include "Rendering/ClusteredShading.h"
@@ -98,7 +99,7 @@ namespace NLS::Engine::Rendering
         std::vector<NLS::Render::Context::RecordedComputeDispatchInput> GetPreparedComputeDispatchInputs() const;
 
     private:
-        struct LightGridPassConstants
+        struct ForwardLightData
         {
             NLS::Maths::Matrix4 viewMatrix;
             NLS::Maths::Matrix4 projectionMatrix;
@@ -114,14 +115,14 @@ namespace NLS::Engine::Rendering
 
         struct PackedFrameData
         {
-            LightGridPassConstants constants{};
-            std::vector<uint32_t> packedLights;
+            ForwardLightData forwardLightData{};
+            std::vector<uint32_t> forwardLocalLightData;
             std::vector<uint32_t> startOffsetGrid;
             std::vector<uint32_t> culledLightLinks;
             std::vector<uint32_t> linkCounter;
             std::vector<uint32_t> compactCounter;
-            std::vector<uint32_t> clusterRecords;
-            std::vector<uint32_t> compactLightIndices;
+            std::vector<uint32_t> numCulledLightsGrid;
+            std::vector<uint32_t> culledLightDataGrid;
         };
 
         struct PreparedResourceCacheKey
@@ -130,9 +131,6 @@ namespace NLS::Engine::Rendering
             uint32_t renderHeight = 0u;
             float nearPlane = 0.0f;
             float farPlane = 0.0f;
-            NLS::Maths::Vector3 cameraPosition{};
-            NLS::Maths::Matrix4 viewMatrix{};
-            NLS::Maths::Matrix4 projectionMatrix{};
             ClusteredShadingSettings settings{};
             bool hasSkyboxTexture = false;
             std::vector<CapturedLight> lights;
@@ -142,6 +140,8 @@ namespace NLS::Engine::Rendering
         {
             bool valid = false;
             PreparedResourceCacheKey key{};
+            ForwardLightData forwardLightData{};
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> forwardLightDataBuffer;
             std::shared_ptr<NLS::Render::RHI::RHIBindingSet> graphicsPassBindingSet;
             std::vector<NLS::Render::Context::RecordedComputeDispatchInput> computeDispatchInputs;
         };
@@ -156,20 +156,67 @@ namespace NLS::Engine::Rendering
             size_t linkCounterSize = 0u;
             std::shared_ptr<NLS::Render::RHI::RHIBuffer> compactCounter;
             size_t compactCounterSize = 0u;
-            std::shared_ptr<NLS::Render::RHI::RHIBuffer> clusterRecords;
-            size_t clusterRecordsSize = 0u;
-            std::shared_ptr<NLS::Render::RHI::RHIBuffer> compactLightIndices;
-            size_t compactLightIndicesSize = 0u;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> numCulledLightsGrid;
+            size_t numCulledLightsGridSize = 0u;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> culledLightDataGrid;
+            size_t culledLightDataGridSize = 0u;
+        };
+
+        struct LightGridResetParameters
+        {
+            static NLS::Render::Resources::ShaderParameterStruct Build();
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> Forward;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> RWStartOffsetGrid;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> RWCulledLightLinks;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> RWLinkCounter;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> RWCompactCounter;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> RWNumCulledLightsGrid;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> RWCulledLightDataGrid;
+        };
+
+        struct LightGridInjectionParameters
+        {
+            static NLS::Render::Resources::ShaderParameterStruct Build();
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> Forward;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> ForwardLocalLightBuffer;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> RWStartOffsetGrid;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> RWCulledLightLinks;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> RWLinkCounter;
+        };
+
+        struct LightGridCompactParameters
+        {
+            static NLS::Render::Resources::ShaderParameterStruct Build();
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> Forward;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> StartOffsetGrid;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> CulledLightLinks;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> RWCompactCounter;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> RWNumCulledLightsGrid;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> RWCulledLightDataGrid;
+        };
+
+        struct LightGridGraphicsParameters
+        {
+            static NLS::Render::Resources::ShaderParameterStruct Build();
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> Forward;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> ForwardLocalLightBuffer;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> NumCulledLightsGrid;
+            std::shared_ptr<NLS::Render::RHI::RHIBuffer> CulledLightDataGrid;
         };
 
         std::optional<PreparedResourceCacheKey> BuildPreparedResourceCacheKey(
             const NLS::Render::Data::FrameDescriptor& frameDescriptor,
             const PreparedFrameInputs& preparedFrameInputs) const;
-        bool TryReusePreparedResources(const PreparedResourceCacheKey& key);
+        bool TryReusePreparedResources(
+            const PreparedResourceCacheKey& key,
+            const ForwardLightData& forwardLightData);
         void StorePreparedResourceCache(const PreparedResourceCacheKey& key);
         static bool AreSamePreparedResourceCacheKeys(
             const PreparedResourceCacheKey& lhs,
             const PreparedResourceCacheKey& rhs);
+        static bool AreSameForwardLightData(
+            const ForwardLightData& lhs,
+            const ForwardLightData& rhs);
         bool EnsureGraphicsBindingLayout();
 
         bool EnsureShadersLoaded();
@@ -191,6 +238,9 @@ namespace NLS::Engine::Rendering
         NLS::Render::Resources::Shader* m_resetShader = nullptr;
         NLS::Render::Resources::Shader* m_injectionShader = nullptr;
         NLS::Render::Resources::Shader* m_compactShader = nullptr;
+        NLS::Render::Resources::GlobalShader m_resetGlobalShader;
+        NLS::Render::Resources::GlobalShader m_injectionGlobalShader;
+        NLS::Render::Resources::GlobalShader m_compactGlobalShader;
         std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> m_resetPipelineLayout;
         std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> m_injectionPipelineLayout;
         std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> m_compactPipelineLayout;

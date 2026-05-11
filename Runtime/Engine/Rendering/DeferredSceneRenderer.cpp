@@ -28,6 +28,15 @@ namespace
 {
 	using LightingDescriptor = NLS::Render::Data::LightingDescriptor;
 
+	std::vector<NLS::Render::RHI::TextureFormat> BuildDeferredGBufferColorFormats()
+	{
+		return {
+			NLS::Render::RHI::TextureFormat::RGBA8,
+			NLS::Render::RHI::TextureFormat::RGBA8,
+			NLS::Render::RHI::TextureFormat::RGBA8
+		};
+	}
+
 	NLS::Render::Geometry::Vertex MakeFullscreenVertex(float x, float y, float u, float v)
 	{
 		NLS::Render::Geometry::Vertex vertex{};
@@ -73,6 +82,7 @@ namespace
 		overrides.depthTest = sourceMaterial.HasDepthTest();
 		overrides.depthWrite = sourceMaterial.HasDepthWriting();
 		overrides.colorWrite = true;
+		overrides.colorFormats = BuildDeferredGBufferColorFormats();
 		overrides.culling = sourceMaterial.HasBackfaceCulling() || sourceMaterial.HasFrontfaceCulling();
 		overrides.cullFace = sourceMaterial.HasBackfaceCulling() && sourceMaterial.HasFrontfaceCulling()
 			? NLS::Render::Settings::ECullFace::FRONT_AND_BACK
@@ -142,6 +152,7 @@ namespace NLS::Engine::Rendering
 				gBufferOverrides.depthTest = drawable.material->HasDepthTest();
 				gBufferOverrides.depthWrite = drawable.material->HasDepthWriting();
 				gBufferOverrides.colorWrite = true;
+				gBufferOverrides.colorFormats = BuildDeferredGBufferColorFormats();
 				gBufferOverrides.culling = drawable.material->HasBackfaceCulling() || drawable.material->HasFrontfaceCulling();
 				gBufferOverrides.cullFace = drawable.material->HasBackfaceCulling() && drawable.material->HasFrontfaceCulling()
 					? NLS::Render::Settings::ECullFace::FRONT_AND_BACK
@@ -262,62 +273,88 @@ namespace NLS::Engine::Rendering
 			};
 			const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
 			const auto lightGridContext = BuildLightGridCompileContext(scene.hasSkyboxTexture);
-			const auto resourceRequest = NLS::Render::FrameGraph::BuildDeferredGraphSceneResourceRequest(
-				frameGraph,
-				blackboard,
-				frame,
-				deferredResourceRequest);
-			NLS::Render::FrameGraph::ReserveDeferredSceneGraph(frameGraph, resourceRequest);
-			const auto preparedGraph = NLS::Render::FrameGraph::PrepareDeferredSceneGraph(
-				resourceRequest,
-				lightGridContext);
-			NLS::Render::FrameGraph::ExecutePreparedDeferredSceneGraph(
-				frameGraph,
-				preparedGraph,
-				{
-					[this](const auto& beginDesc) -> bool
+			NLS::Render::FrameGraph::DeferredGraphSceneResourceRequest resourceRequest;
+			{
+				NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BuildGraphResourceRequest");
+				resourceRequest = NLS::Render::FrameGraph::BuildDeferredGraphSceneResourceRequest(
+					frameGraph,
+					blackboard,
+					frame,
+					deferredResourceRequest);
+			}
+			{
+				NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::ReserveDeferredSceneGraph");
+				NLS::Render::FrameGraph::ReserveDeferredSceneGraph(frameGraph, resourceRequest);
+			}
+			NLS::Render::FrameGraph::PreparedDeferredSceneGraph preparedGraph;
+			{
+				NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::PrepareDeferredSceneGraph");
+				preparedGraph = NLS::Render::FrameGraph::PrepareDeferredSceneGraph(
+					resourceRequest,
+					lightGridContext);
+			}
+			{
+				NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::ExecutePreparedDeferredSceneGraph");
+				NLS::Render::FrameGraph::ExecutePreparedDeferredSceneGraph(
+					frameGraph,
+					preparedGraph,
 					{
-						return BeginRecordedRenderPass(
-							&m_gBuffer,
-							beginDesc.renderWidth,
-							beginDesc.renderHeight,
-							beginDesc.clearColor,
-							beginDesc.clearDepth,
-							beginDesc.clearStencil,
-							beginDesc.clearValue);
-					},
-					[this]()
-					{
-						DrawGBufferOpaques(CreateSceneDefaultPipelineState(*this));
-					},
-					[this]()
-					{
-						EndRecordedRenderPass();
-					},
-					[this](const auto& beginDesc) -> bool
-					{
-						return BeginOutputRenderPass(
-							beginDesc.renderWidth,
-							beginDesc.renderHeight,
-							beginDesc.clearColor,
-							beginDesc.clearDepth,
-							beginDesc.clearStencil,
-							beginDesc.clearValue);
-					},
-					[this]()
-					{
-						DrawLightingPass(CreateSceneFullscreenCompositePipelineState(*this));
-					},
-					[this](bool startedRenderPass, const auto& endDesc)
-					{
-						(void)endDesc;
-						EndOutputRenderPass(startedRenderPass);
-					}
-				});
+						[this](const auto& beginDesc) -> bool
+						{
+							NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginGBufferPass");
+							return BeginRecordedRenderPass(
+								&m_gBuffer,
+								beginDesc.renderWidth,
+								beginDesc.renderHeight,
+								beginDesc.clearColor,
+								beginDesc.clearDepth,
+								beginDesc.clearStencil,
+								beginDesc.clearValue);
+						},
+						[this]()
+						{
+							NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::DrawGBufferOpaquesCallback");
+							DrawGBufferOpaques(CreateSceneDefaultPipelineState(*this));
+						},
+						[this]()
+						{
+							NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::EndGBufferPass");
+							EndRecordedRenderPass();
+						},
+						[this](const auto& beginDesc) -> bool
+						{
+							NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginLightingPass");
+							return BeginOutputRenderPass(
+								beginDesc.renderWidth,
+								beginDesc.renderHeight,
+								beginDesc.clearColor,
+								beginDesc.clearDepth,
+								beginDesc.clearStencil,
+								beginDesc.clearValue);
+						},
+						[this]()
+						{
+							NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::DrawLightingPassCallback");
+							DrawLightingPass(CreateSceneFullscreenCompositePipelineState(*this));
+						},
+						[this](bool startedRenderPass, const auto& endDesc)
+						{
+							NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::EndLightingPass");
+							(void)endDesc;
+							EndOutputRenderPass(startedRenderPass);
+						}
+					});
+			}
 
-			frameGraph.compile();
+			{
+				NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::FrameGraphCompile");
+				frameGraph.compile();
+			}
 			auto executionContext = CreateFrameGraphExecutionContext();
-			frameGraph.execute(&executionContext, &executionContext);
+			{
+				NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::FrameGraphExecute");
+				frameGraph.execute(&executionContext, &executionContext);
+			}
 		}
 
 		DrawRegisteredPasses();
@@ -435,6 +472,7 @@ namespace NLS::Engine::Rendering
 			gBufferOverrides.depthTest = drawable.material->HasDepthTest();
 			gBufferOverrides.depthWrite = drawable.material->HasDepthWriting();
 			gBufferOverrides.colorWrite = true;
+			gBufferOverrides.colorFormats = BuildDeferredGBufferColorFormats();
 			gBufferOverrides.culling = drawable.material->HasBackfaceCulling() || drawable.material->HasFrontfaceCulling();
 			gBufferOverrides.cullFace = drawable.material->HasBackfaceCulling() && drawable.material->HasFrontfaceCulling()
 				? NLS::Render::Settings::ECullFace::FRONT_AND_BACK

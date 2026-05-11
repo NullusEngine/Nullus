@@ -7,8 +7,10 @@ static const uint NLS_LIGHT_TYPE_SPOT = 2u;
 static const uint NLS_LIGHT_TYPE_AMBIENT_BOX = 3u;
 static const uint NLS_LIGHT_TYPE_AMBIENT_SPHERE = 4u;
 static const uint NLS_LIGHT_WORD_STRIDE = 16u;
+static const uint NLS_NUM_CULLED_LIGHTS_GRID_STRIDE = 2u;
+static const uint NLS_LIGHT_LINK_STRIDE = 2u;
 
-cbuffer LightGridPassConstants : register(b0, space1)
+cbuffer ForwardLightData : register(b0, space1)
 {
     float4x4 u_LightGridView;
     float4x4 u_LightGridProjection;
@@ -40,6 +42,7 @@ uint NLSGetGridSizeX() { return (uint)u_LightGridGridParams.x; }
 uint NLSGetGridSizeY() { return (uint)u_LightGridGridParams.y; }
 uint NLSGetGridSizeZ() { return (uint)u_LightGridGridParams.z; }
 uint NLSGetMaxLightsPerCluster() { return (uint)u_LightGridGridParams.w; }
+uint NLSGetNumLocalLights() { return (uint)u_LightGridLightingParams.x; }
 uint NLSGetSceneLightCount() { return (uint)u_LightGridLightingParams.x; }
 float NLSGetDepthFogFactor() { return u_LightGridLightingParams.y; }
 float NLSGetAmbientFloor() { return u_LightGridLightingParams.z; }
@@ -48,6 +51,7 @@ float NLSGetFarPlane() { return u_LightGridRenderSizeFarPlane.w; }
 float3 NLSGetCameraWorldPosition() { return u_LightGridCameraWorldPositionNearPlane.xyz; }
 float3 NLSGetLightGridZParams() { return u_LightGridZParams.xyz; }
 bool NLSUsesLinkedListCulling() { return u_LightGridZParams.w > 0.5f; }
+uint3 NLSGetCulledGridSize() { return uint3(NLSGetGridSizeX(), NLSGetGridSizeY(), NLSGetGridSizeZ()); }
 
 float NLSComputeCellNearViewDepthFromZSlice(uint zSlice)
 {
@@ -149,20 +153,20 @@ float NLSViewDepthToSlice(float depth)
     return max(0.0f, log2(depth * zParams.x + zParams.y) * zParams.z);
 }
 
-NLSLightGridLight NLSLoadLight(StructuredBuffer<uint> packedLights, uint lightIndex)
+NLSLightGridLight NLSLoadLight(StructuredBuffer<uint> forwardLocalLightBuffer, uint lightIndex)
 {
     const uint baseIndex = lightIndex * NLS_LIGHT_WORD_STRIDE;
     NLSLightGridLight light;
-    light.positionWS = float3(asfloat(packedLights[baseIndex + 0u]), asfloat(packedLights[baseIndex + 1u]), asfloat(packedLights[baseIndex + 2u]));
-    light.range = asfloat(packedLights[baseIndex + 3u]);
-    light.directionWS = normalize(float3(asfloat(packedLights[baseIndex + 4u]), asfloat(packedLights[baseIndex + 5u]), asfloat(packedLights[baseIndex + 6u])));
-    light.type = packedLights[baseIndex + 7u];
-    light.color = float3(asfloat(packedLights[baseIndex + 8u]), asfloat(packedLights[baseIndex + 9u]), asfloat(packedLights[baseIndex + 10u]));
-    light.intensity = asfloat(packedLights[baseIndex + 11u]);
-    light.constantAttenuation = asfloat(packedLights[baseIndex + 12u]);
-    light.linearAttenuation = asfloat(packedLights[baseIndex + 13u]);
-    light.quadraticAttenuation = asfloat(packedLights[baseIndex + 14u]);
-    light.outerCutoffDegrees = asfloat(packedLights[baseIndex + 15u]);
+    light.positionWS = float3(asfloat(forwardLocalLightBuffer[baseIndex + 0u]), asfloat(forwardLocalLightBuffer[baseIndex + 1u]), asfloat(forwardLocalLightBuffer[baseIndex + 2u]));
+    light.range = asfloat(forwardLocalLightBuffer[baseIndex + 3u]);
+    light.directionWS = normalize(float3(asfloat(forwardLocalLightBuffer[baseIndex + 4u]), asfloat(forwardLocalLightBuffer[baseIndex + 5u]), asfloat(forwardLocalLightBuffer[baseIndex + 6u])));
+    light.type = forwardLocalLightBuffer[baseIndex + 7u];
+    light.color = float3(asfloat(forwardLocalLightBuffer[baseIndex + 8u]), asfloat(forwardLocalLightBuffer[baseIndex + 9u]), asfloat(forwardLocalLightBuffer[baseIndex + 10u]));
+    light.intensity = asfloat(forwardLocalLightBuffer[baseIndex + 11u]);
+    light.constantAttenuation = asfloat(forwardLocalLightBuffer[baseIndex + 12u]);
+    light.linearAttenuation = asfloat(forwardLocalLightBuffer[baseIndex + 13u]);
+    light.quadraticAttenuation = asfloat(forwardLocalLightBuffer[baseIndex + 14u]);
+    light.outerCutoffDegrees = asfloat(forwardLocalLightBuffer[baseIndex + 15u]);
     return light;
 }
 
@@ -251,9 +255,9 @@ float NLSComputePointAttenuation(NLSLightGridLight light, float distanceToLight)
 }
 
 float3 NLSAccumulateClusteredLightingPhong(
-    StructuredBuffer<uint> packedLights,
-    StructuredBuffer<uint> clusterRecords,
-    StructuredBuffer<uint> compactIndices,
+    StructuredBuffer<uint> forwardLocalLightBuffer,
+    StructuredBuffer<uint> numCulledLightsGrid,
+    StructuredBuffer<uint> culledLightDataGrid,
     float3 worldPosition,
     float3 normalWS,
     float3 baseColor,
@@ -261,16 +265,16 @@ float3 NLSAccumulateClusteredLightingPhong(
     float shininess)
 {
     const uint clusterIndex = NLSComputeClusterIndexFromWorldPosition(worldPosition);
-    const uint recordBase = clusterIndex * 2u;
-    const uint offset = clusterRecords[recordBase + 0u];
-    const uint count = clusterRecords[recordBase + 1u];
+    const uint recordBase = clusterIndex * NLS_NUM_CULLED_LIGHTS_GRID_STRIDE;
+    const uint offset = numCulledLightsGrid[recordBase + 0u];
+    const uint count = numCulledLightsGrid[recordBase + 1u];
     const float3 viewDir = normalize(NLSGetCameraWorldPosition() - worldPosition);
     float3 lighting = baseColor * NLSGetAmbientFloor();
 
     [loop]
     for (uint i = 0u; i < count; ++i)
     {
-        const NLSLightGridLight light = NLSLoadLight(packedLights, compactIndices[offset + i]);
+        const NLSLightGridLight light = NLSLoadLight(forwardLocalLightBuffer, culledLightDataGrid[offset + i]);
         if (light.type == NLS_LIGHT_TYPE_AMBIENT_BOX || light.type == NLS_LIGHT_TYPE_AMBIENT_SPHERE)
         {
             lighting += baseColor * light.color * max(light.intensity, 0.0f);
@@ -311,9 +315,9 @@ float3 NLSAccumulateClusteredLightingPhong(
 }
 
 float3 NLSAccumulateClusteredLightingPBR(
-    StructuredBuffer<uint> packedLights,
-    StructuredBuffer<uint> clusterRecords,
-    StructuredBuffer<uint> compactIndices,
+    StructuredBuffer<uint> forwardLocalLightBuffer,
+    StructuredBuffer<uint> numCulledLightsGrid,
+    StructuredBuffer<uint> culledLightDataGrid,
     float3 worldPosition,
     float3 normalWS,
     float3 albedo,
@@ -322,16 +326,16 @@ float3 NLSAccumulateClusteredLightingPBR(
     float ao)
 {
     const uint clusterIndex = NLSComputeClusterIndexFromWorldPosition(worldPosition);
-    const uint recordBase = clusterIndex * 2u;
-    const uint offset = clusterRecords[recordBase + 0u];
-    const uint count = clusterRecords[recordBase + 1u];
+    const uint recordBase = clusterIndex * NLS_NUM_CULLED_LIGHTS_GRID_STRIDE;
+    const uint offset = numCulledLightsGrid[recordBase + 0u];
+    const uint count = numCulledLightsGrid[recordBase + 1u];
     const float3 viewDir = normalize(NLSGetCameraWorldPosition() - worldPosition);
     float3 lighting = albedo * (NLSGetAmbientFloor() * ao);
 
     [loop]
     for (uint i = 0u; i < count; ++i)
     {
-        const NLSLightGridLight light = NLSLoadLight(packedLights, compactIndices[offset + i]);
+        const NLSLightGridLight light = NLSLoadLight(forwardLocalLightBuffer, culledLightDataGrid[offset + i]);
         if (light.type == NLS_LIGHT_TYPE_AMBIENT_BOX || light.type == NLS_LIGHT_TYPE_AMBIENT_SPHERE)
         {
             lighting += albedo * light.color * max(light.intensity, 0.0f) * ao;

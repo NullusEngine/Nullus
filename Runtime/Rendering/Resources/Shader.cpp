@@ -124,6 +124,16 @@ namespace NLS::Render::Resources
 		return m_reflection;
 	}
 
+	const std::vector<ShaderParameterStruct>& Shader::GetParameterStructs() const
+	{
+		return m_parameterStructs;
+	}
+
+	bool Shader::HasParameterStructs() const
+	{
+		return !m_parameterStructs.empty();
+	}
+
 	ShaderCompiler::ShaderSourceLanguage Shader::GetSourceLanguage() const
 	{
 		return m_sourceLanguage;
@@ -209,6 +219,13 @@ namespace NLS::Render::Resources
 		++m_generation;
 		m_explicitShaderModules.clear();
 		RebuildUniformInfosFromReflection();
+	}
+
+	void Shader::SetParameterStructs(std::vector<ShaderParameterStruct> parameterStructs)
+	{
+		m_parameterStructs = std::move(parameterStructs);
+		++m_generation;
+		m_explicitShaderModules.clear();
 	}
 
 	void Shader::SetCompiledArtifact(ShaderCompiledArtifact artifact)

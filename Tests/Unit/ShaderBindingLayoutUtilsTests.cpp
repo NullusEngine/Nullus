@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 
 #include "Rendering/RHI/BindingPointMap.h"
+#include "Rendering/Resources/ComputeShaderUtils.h"
 #include "Rendering/Resources/ShaderBindingLayoutUtils.h"
+#include "Rendering/Resources/ShaderParameterStruct.h"
 #include "Rendering/Resources/ShaderReflection.h"
 
 namespace
@@ -12,6 +14,38 @@ namespace
     using NLS::Render::Resources::ShaderResourceKind;
     using NLS::Render::Resources::UniformType;
     using NLS::Render::ShaderCompiler::ShaderStage;
+
+    class ContractBuffer final : public NLS::Render::RHI::RHIBuffer
+    {
+    public:
+        explicit ContractBuffer(NLS::Render::RHI::RHIBufferDesc desc)
+            : m_desc(std::move(desc))
+        {
+        }
+
+        std::string_view GetDebugName() const override
+        {
+            return m_desc.debugName.empty() ? std::string_view("ContractBuffer") : std::string_view(m_desc.debugName);
+        }
+
+        const NLS::Render::RHI::RHIBufferDesc& GetDesc() const override
+        {
+            return m_desc;
+        }
+
+        NLS::Render::RHI::ResourceState GetState() const override
+        {
+            return NLS::Render::RHI::ResourceState::Unknown;
+        }
+
+        uint64_t GetGPUAddress() const override
+        {
+            return 0u;
+        }
+
+    private:
+        NLS::Render::RHI::RHIBufferDesc m_desc;
+    };
 
     ShaderReflection BuildGridLikeReflection()
     {
@@ -184,4 +218,142 @@ TEST(ShaderBindingLayoutUtilsTests, UE427ShaderParameterGroupValidationReportsMi
     EXPECT_NE(validation.diagnostics[0].message.find("PassConstants"), std::string::npos);
     EXPECT_NE(validation.diagnostics[1].message.find("stale"), std::string::npos);
     EXPECT_NE(validation.diagnostics[1].message.find("u_PassTexture"), std::string::npos);
+}
+
+TEST(ShaderBindingLayoutUtilsTests, ShaderParameterStructBuildsPassLayoutAndBindingSetLikeGlobalShaderParameters)
+{
+    using namespace NLS::Render::Resources;
+
+    const auto parameters = ShaderParameterStructBuilder("LightGridInjectionParameters")
+        .SetGroup(ShaderParameterGroupKind::Pass)
+        .AddUniformBuffer("Forward", 0u, sizeof(uint32_t) * 16u, NLS::Render::RHI::ShaderStageMask::Compute)
+        .AddStructuredBuffer("ForwardLocalLightBuffer", 0u, NLS::Render::RHI::ShaderStageMask::Compute)
+        .AddStorageBuffer("RWStartOffsetGrid", 1u, NLS::Render::RHI::ShaderStageMask::Compute)
+        .AddStorageBuffer("RWCulledLightLinks", 2u, NLS::Render::RHI::ShaderStageMask::Compute)
+        .Build();
+
+    const auto layoutDesc = BuildBindingLayoutDescFromShaderParameters(parameters);
+
+    ASSERT_EQ(layoutDesc.debugName, "LightGridInjectionParametersBindingLayout");
+    ASSERT_EQ(layoutDesc.entries.size(), 4u);
+    EXPECT_EQ(layoutDesc.entries[0].name, "Forward");
+    EXPECT_EQ(layoutDesc.entries[0].type, NLS::Render::RHI::BindingType::UniformBuffer);
+    EXPECT_EQ(layoutDesc.entries[0].set, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet);
+    EXPECT_EQ(layoutDesc.entries[0].registerSpace, NLS::Render::RHI::BindingPointMap::kPassBindingSpace);
+    EXPECT_EQ(layoutDesc.entries[1].name, "ForwardLocalLightBuffer");
+    EXPECT_EQ(layoutDesc.entries[1].binding, 0u);
+    EXPECT_EQ(layoutDesc.entries[2].name, "RWStartOffsetGrid");
+    EXPECT_EQ(layoutDesc.entries[2].binding, 1u);
+    EXPECT_EQ(layoutDesc.entries[3].name, "RWCulledLightLinks");
+    EXPECT_EQ(layoutDesc.entries[3].binding, 2u);
+
+    auto constants = std::make_shared<ContractBuffer>(NLS::Render::RHI::RHIBufferDesc{});
+    auto lightBuffer = std::make_shared<ContractBuffer>(NLS::Render::RHI::RHIBufferDesc{});
+    auto startOffsetGrid = std::make_shared<ContractBuffer>(NLS::Render::RHI::RHIBufferDesc{});
+    auto culledLightLinks = std::make_shared<ContractBuffer>(NLS::Render::RHI::RHIBufferDesc{});
+
+    const auto bindingSetDesc = BuildBindingSetDescFromShaderParameters(
+        parameters,
+        nullptr,
+        {
+            ShaderParameterBindingValue::UniformBuffer("Forward", constants, sizeof(uint32_t) * 16u),
+            ShaderParameterBindingValue::StructuredBuffer("ForwardLocalLightBuffer", lightBuffer, 64u),
+            ShaderParameterBindingValue::StorageBuffer("RWStartOffsetGrid", startOffsetGrid, 128u),
+            ShaderParameterBindingValue::StorageBuffer("RWCulledLightLinks", culledLightLinks, 256u)
+        },
+        "LightGridInjectionBindingSet");
+
+    EXPECT_EQ(bindingSetDesc.debugName, "LightGridInjectionBindingSet");
+    ASSERT_EQ(bindingSetDesc.entries.size(), 4u);
+    EXPECT_EQ(bindingSetDesc.entries[0].binding, 0u);
+    EXPECT_EQ(bindingSetDesc.entries[0].type, NLS::Render::RHI::BindingType::UniformBuffer);
+    EXPECT_EQ(bindingSetDesc.entries[1].binding, 0u);
+    EXPECT_EQ(bindingSetDesc.entries[1].type, NLS::Render::RHI::BindingType::StructuredBuffer);
+    EXPECT_EQ(bindingSetDesc.entries[2].binding, 1u);
+    EXPECT_EQ(bindingSetDesc.entries[2].type, NLS::Render::RHI::BindingType::StorageBuffer);
+}
+
+TEST(ShaderBindingLayoutUtilsTests, ShaderParameterStructsBuildDenseGraphicsPipelineLayouts)
+{
+    using namespace NLS::Render::Resources;
+
+    const std::vector<ShaderParameterStruct> parameters = {
+        ShaderParameterStructBuilder("StandardFrameParameters")
+            .SetGroup(ShaderParameterGroupKind::Frame)
+            .AddUniformBuffer("FrameConstants", 0u, 144u, NLS::Render::RHI::ShaderStageMask::AllGraphics)
+            .Build(),
+        ShaderParameterStructBuilder("StandardMaterialParameters")
+            .SetGroup(ShaderParameterGroupKind::Material)
+            .AddUniformBuffer("MaterialConstants", 0u, 64u, NLS::Render::RHI::ShaderStageMask::Fragment)
+            .AddTexture("u_DiffuseMap", 0u, NLS::Render::RHI::ShaderStageMask::Fragment)
+            .AddSampler("u_LinearWrapSampler", 0u, NLS::Render::RHI::ShaderStageMask::Fragment)
+            .Build(),
+        ShaderParameterStructBuilder("StandardObjectParameters")
+            .SetGroup(ShaderParameterGroupKind::Object)
+            .AddUniformBuffer("ObjectConstants", 0u, 64u, NLS::Render::RHI::ShaderStageMask::Vertex)
+            .Build(),
+        ShaderParameterStructBuilder("StandardPassParameters")
+            .SetGroup(ShaderParameterGroupKind::Pass)
+            .AddUniformBuffer("ForwardLightData", 0u, 352u, NLS::Render::RHI::ShaderStageMask::Fragment)
+            .AddStructuredBuffer("u_ForwardLocalLightBuffer", 0u, NLS::Render::RHI::ShaderStageMask::Fragment)
+            .AddStructuredBuffer("u_NumCulledLightsGrid", 1u, NLS::Render::RHI::ShaderStageMask::Fragment)
+            .AddStructuredBuffer("u_CulledLightDataGrid", 2u, NLS::Render::RHI::ShaderStageMask::Fragment)
+            .Build()
+    };
+
+    const auto layouts = BuildBindingLayoutDescsFromShaderParameters(parameters, "Standard");
+
+    ASSERT_EQ(layouts.size(), 4u);
+    ASSERT_EQ(layouts[0].entries.size(), 1u);
+    EXPECT_EQ(layouts[0].entries[0].name, "FrameConstants");
+    EXPECT_EQ(layouts[0].entries[0].set, NLS::Render::RHI::BindingPointMap::kFrameDescriptorSet);
+    EXPECT_EQ(layouts[0].entries[0].registerSpace, NLS::Render::RHI::BindingPointMap::kFrameBindingSpace);
+
+    ASSERT_EQ(layouts[1].entries.size(), 3u);
+    EXPECT_EQ(layouts[1].entries[0].name, "MaterialConstants");
+    EXPECT_EQ(layouts[1].entries[1].name, "u_DiffuseMap");
+    EXPECT_EQ(layouts[1].entries[1].type, NLS::Render::RHI::BindingType::Texture);
+    EXPECT_EQ(layouts[1].entries[2].name, "u_LinearWrapSampler");
+    EXPECT_EQ(layouts[1].entries[2].type, NLS::Render::RHI::BindingType::Sampler);
+
+    ASSERT_EQ(layouts[2].entries.size(), 1u);
+    EXPECT_EQ(layouts[2].entries[0].name, "ObjectConstants");
+    EXPECT_EQ(layouts[2].entries[0].set, NLS::Render::RHI::BindingPointMap::kObjectDescriptorSet);
+
+    ASSERT_EQ(layouts[3].entries.size(), 4u);
+    EXPECT_EQ(layouts[3].entries[0].name, "ForwardLightData");
+    EXPECT_EQ(layouts[3].entries[0].type, NLS::Render::RHI::BindingType::UniformBuffer);
+    EXPECT_EQ(layouts[3].entries[0].binding, 0u);
+    EXPECT_EQ(layouts[3].entries[1].name, "u_ForwardLocalLightBuffer");
+    EXPECT_EQ(layouts[3].entries[2].name, "u_NumCulledLightsGrid");
+    EXPECT_EQ(layouts[3].entries[3].name, "u_CulledLightDataGrid");
+    EXPECT_EQ(layouts[3].entries[3].set, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet);
+}
+
+TEST(ShaderBindingLayoutUtilsTests, ComputeShaderUtilsBuildsRecordedDispatchFromGlobalShaderParameterStruct)
+{
+    using namespace NLS::Render::Resources;
+
+    GlobalShader lightGridInjectionShader;
+    lightGridInjectionShader.debugName = "LightGridInjectionCS";
+    lightGridInjectionShader.stage = NLS::Render::ShaderCompiler::ShaderStage::Compute;
+    lightGridInjectionShader.parameters = ShaderParameterStructBuilder("LightGridInjectionParameters")
+        .SetGroup(ShaderParameterGroupKind::Pass)
+        .AddUniformBuffer("Forward", 0u, sizeof(uint32_t) * 16u, NLS::Render::RHI::ShaderStageMask::Compute)
+        .AddStorageBuffer("RWStartOffsetGrid", 1u, NLS::Render::RHI::ShaderStageMask::Compute)
+        .Build();
+
+    const auto dispatchInput = ComputeShaderUtils::BuildRecordedDispatch(
+        lightGridInjectionShader,
+        nullptr,
+        nullptr,
+        { 4u, 5u, 6u },
+        "LightGridInjection");
+
+    EXPECT_EQ(dispatchInput.debugName, "LightGridInjection");
+    ASSERT_EQ(dispatchInput.bindingSets.size(), 1u);
+    EXPECT_EQ(dispatchInput.bindingSets[0].setIndex, NLS::Render::RHI::BindingPointMap::kPassDescriptorSet);
+    EXPECT_EQ(dispatchInput.groupCountX, 4u);
+    EXPECT_EQ(dispatchInput.groupCountY, 5u);
+    EXPECT_EQ(dispatchInput.groupCountZ, 6u);
 }

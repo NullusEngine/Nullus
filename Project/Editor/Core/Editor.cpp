@@ -145,7 +145,7 @@ Editor::Core::Editor::Editor(Context& p_context)
     : m_context(p_context), m_panelsManager(m_canvas),
     m_editorActions(m_context, m_panelsManager)
 {
-    NLS::Base::Profiling::Profiler::SetEnabled(true);
+    NLS::Base::Profiling::Profiler::SetEnabled(false);
     NLS::Base::Profiling::Profiler::RegisterDestination(g_tracyProfiler);
 
     NLS::Core::ServiceLocator::Provide<NLS::Editor::Core::Context>(m_context);
@@ -226,12 +226,14 @@ void Editor::Core::Editor::SetupUI()
 
 void Editor::Core::Editor::PreUpdate()
 {
+    RefreshProfilerRecordingState();
+    m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler").BeginProfilerFrame();
+    NLS_PROFILE_SCOPE();
     m_context.device->PollEvents();
 }
 
 void Editor::Core::Editor::Update(float p_deltaTime)
 {
-    m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler").BeginProfilerFrame();
     NLS_PROFILE_SCOPE();
 
     m_currentDeltaTime = p_deltaTime;
@@ -251,13 +253,40 @@ void Editor::Core::Editor::Update(float p_deltaTime)
         }
     }
 
-    HandleGlobalShortcuts();
-    UpdateCurrentEditorMode(p_deltaTime);
-    UpdateViews(p_deltaTime);
-    UpdateEditorPanels(p_deltaTime);
+    {
+        NLS_PROFILE_NAMED_SCOPE("Editor::HandleGlobalShortcuts");
+        HandleGlobalShortcuts();
+    }
+    {
+        NLS_PROFILE_NAMED_SCOPE("Editor::UpdateCurrentEditorMode");
+        UpdateCurrentEditorMode(p_deltaTime);
+    }
+    {
+        NLS_PROFILE_NAMED_SCOPE("Editor::UpdateViews");
+        UpdateViews(p_deltaTime);
+    }
+    {
+        NLS_PROFILE_NAMED_SCOPE("Editor::UpdateEditorPanels");
+        UpdateEditorPanels(p_deltaTime);
+    }
     RenderEditorUI(p_deltaTime);
-    m_editorActions.ExecuteDelayedActions();
-    PublishReflectionDiagnosticsToLog();
+    {
+        NLS_PROFILE_NAMED_SCOPE("EditorActions::ExecuteDelayedActions");
+        m_editorActions.ExecuteDelayedActions();
+    }
+    {
+        NLS_PROFILE_NAMED_SCOPE("Editor::PublishReflectionDiagnosticsToLog");
+        PublishReflectionDiagnosticsToLog();
+    }
+}
+
+void Editor::Core::Editor::RefreshProfilerRecordingState()
+{
+    auto& profilerPanel = m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler");
+    profilerPanel.GetTimelineSink().SetRecordingEnabled(profilerPanel.IsRecordingEnabled());
+
+    const bool tracyConnected = NLS::Base::Profiling::TracyProfiler::IsConnected();
+    NLS::Base::Profiling::Profiler::SetEnabled(tracyConnected || profilerPanel.IsRecordingEnabled());
 }
 
 void Editor::Core::Editor::HandleGlobalShortcuts()
@@ -670,12 +699,16 @@ void Editor::Core::Editor::ApplyStartupValidationDirectives()
 
 void Editor::Core::Editor::UpdateCurrentEditorMode(float p_deltaTime)
 {
-    if (auto editorMode = m_editorActions.GetCurrentEditorMode(); editorMode == EditorActions::EEditorMode::PLAY || editorMode == EditorActions::EEditorMode::FRAME_BY_FRAME)
-        UpdatePlayMode(p_deltaTime);
-    else
-        UpdateEditMode(p_deltaTime);
+    {
+        NLS_PROFILE_NAMED_SCOPE("Editor::UpdateModeState");
+        if (auto editorMode = m_editorActions.GetCurrentEditorMode(); editorMode == EditorActions::EEditorMode::PLAY || editorMode == EditorActions::EEditorMode::FRAME_BY_FRAME)
+            UpdatePlayMode(p_deltaTime);
+        else
+            UpdateEditMode(p_deltaTime);
+    }
 
     {
+        NLS_PROFILE_NAMED_SCOPE("SceneManager::CollectGarbagesAndUpdate");
         m_context.sceneManager.GetCurrentScene()->CollectGarbages();
         m_context.sceneManager.Update();
     }
@@ -683,13 +716,16 @@ void Editor::Core::Editor::UpdateCurrentEditorMode(float p_deltaTime)
 
 void Editor::Core::Editor::UpdatePlayMode(float p_deltaTime)
 {
+    NLS_PROFILE_SCOPE();
     auto currentScene = m_context.sceneManager.GetCurrentScene();
 
     {
+        NLS_PROFILE_NAMED_SCOPE("Scene::Update");
         currentScene->Update(p_deltaTime);
     }
 
     {
+        NLS_PROFILE_NAMED_SCOPE("Scene::LateUpdate");
         currentScene->LateUpdate(p_deltaTime);
     }
 
@@ -700,18 +736,23 @@ void Editor::Core::Editor::UpdatePlayMode(float p_deltaTime)
 
 void Editor::Core::Editor::UpdateEditMode(float p_deltaTime)
 {
+    NLS_PROFILE_SCOPE();
     (void)p_deltaTime;
 }
 
 void Editor::Core::Editor::UpdateEditorPanels(float p_deltaTime)
 {
+    NLS_PROFILE_SCOPE();
     auto& topBar = m_panelsManager.GetPanelAs<NLS::Editor::Panels::EditorTopBar>("Editor Top Bar");
     auto& frameInfo = m_panelsManager.GetPanelAs<NLS::Editor::Panels::FrameInfo>("Frame Info");
     auto& sceneView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::SceneView>("Scene View");
     auto& gameView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::GameView>("Game View");
     auto& assetView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::AssetView>("Asset View");
 
-    topBar.HandleShortcuts(p_deltaTime);
+    {
+        NLS_PROFILE_NAMED_SCOPE("EditorTopBar::HandleShortcuts");
+        topBar.HandleShortcuts(p_deltaTime);
+    }
 
     const bool keepDefaultSceneFocus =
         ResolveValidationFocusTarget(m_context.GetDiagnosticsSettings().editorValidationFocusView) ==
@@ -743,13 +784,21 @@ void Editor::Core::Editor::UpdateEditorPanels(float p_deltaTime)
 
 void Editor::Core::Editor::UpdateViews(float p_deltaTime)
 {
+    NLS_PROFILE_SCOPE();
     auto& assetView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::AssetView>("Asset View");
     auto& sceneView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::SceneView>("Scene View");
     auto& gameView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::GameView>("Game View");
 
     {
+        NLS_PROFILE_NAMED_SCOPE("AssetView::Update");
         assetView.Update(p_deltaTime);
+    }
+    {
+        NLS_PROFILE_NAMED_SCOPE("GameView::Update");
         gameView.Update(p_deltaTime);
+    }
+    {
+        NLS_PROFILE_NAMED_SCOPE("SceneView::Update");
         sceneView.Update(p_deltaTime);
     }
 }
@@ -762,41 +811,64 @@ void Editor::Core::Editor::RenderEditorUI(float p_deltaTime)
         NLS_LOG_INFO("Editor::RenderEditorUI: begin");
 
     // Set up the explicit scene -> UI -> present synchronization boundary.
-    auto uiSyncBoundary = Render::Context::DriverUIAccess::BuildUICompositionSyncBoundary(*m_context.driver);
+    Render::Context::DriverUIAccess::UICompositionSyncBoundary uiSyncBoundary;
+    {
+        NLS_PROFILE_NAMED_SCOPE("Editor::BuildUICompositionSyncBoundary");
+        uiSyncBoundary = Render::Context::DriverUIAccess::BuildUICompositionSyncBoundary(*m_context.driver);
+    }
     if (uiSyncBoundary.sceneToUiWaitSemaphore.IsValid())
     {
+        NLS_PROFILE_NAMED_SCOPE("UIManager::SetWaitSemaphore");
         m_context.uiManager->SetWaitSemaphore(uiSyncBoundary.sceneToUiWaitSemaphore);
     }
 
-    NLS::Render::RHI::NativeHandle uiSignalSemaphore = m_context.uiManager->ResolveUISignalSemaphore();
+    NLS::Render::RHI::NativeHandle uiSignalSemaphore;
+    {
+        NLS_PROFILE_NAMED_SCOPE("UIManager::ResolveUISignalSemaphore");
+        uiSignalSemaphore = m_context.uiManager->ResolveUISignalSemaphore();
+    }
 
-    EDITOR_CONTEXT(uiManager)->Render();
+    {
+        NLS_PROFILE_NAMED_SCOPE("Editor::UIManagerRender");
+        EDITOR_CONTEXT(uiManager)->Render();
+    }
     if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
         NLS_LOG_INFO("Editor::RenderEditorUI: UIManager::Render returned");
 
     if (uiSignalSemaphore.IsValid())
     {
+        NLS_PROFILE_NAMED_SCOPE("Editor::SetUICompositionSignal");
         Render::Context::DriverUIAccess::SetUICompositionSignal(
             *m_context.driver,
             uiSignalSemaphore,
             m_context.uiManager->ResolveUISignalValue());
     }
 
-    m_context.uiManager->SubmitUIRendering();
+    {
+        NLS_PROFILE_NAMED_SCOPE("UIManager::SubmitUIRendering");
+        m_context.uiManager->SubmitUIRendering();
+    }
     if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
         NLS_LOG_INFO("Editor::RenderEditorUI: SubmitUIRendering returned");
 }
 
 void Editor::Core::Editor::PostUpdate()
 {
+    NLS_PROFILE_SCOPE();
     if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
         NLS_LOG_INFO("Editor::PostUpdate: begin");
 
-    Render::Context::DriverUIAccess::PresentSwapchain(*m_context.driver);
+    {
+        NLS_PROFILE_NAMED_SCOPE("DriverUIAccess::PresentSwapchain");
+        Render::Context::DriverUIAccess::PresentSwapchain(*m_context.driver);
+    }
     if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
         NLS_LOG_INFO("Editor::PostUpdate: PresentSwapchain returned");
 
-    m_context.inputManager->ClearEvents();
+    {
+        NLS_PROFILE_NAMED_SCOPE("InputManager::ClearEvents");
+        m_context.inputManager->ClearEvents();
+    }
     ++m_elapsedFrames;
     if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
         NLS_LOG_INFO("Editor::PostUpdate: end");

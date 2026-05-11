@@ -30,6 +30,8 @@ namespace NLS::Engine::Rendering
     };
 
     NLS_ENGINE_API uint32_t GetLightGridInjectionGroupSize();
+    NLS_ENGINE_API uint32_t GetNumCulledLightsGridStride();
+    NLS_ENGINE_API uint32_t GetLightLinkStride();
 
     NLS_ENGINE_API LightGridDimensions CalculateLightGridDimensions(
         const ClusteredShadingSettings& settings,

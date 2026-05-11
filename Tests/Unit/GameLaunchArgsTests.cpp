@@ -45,6 +45,7 @@ TEST(GameLaunchArgsTests, ParsesShortBackendFlagAndRenderDocCaptureOptions)
 	{
 		EXPECT_TRUE(parsed.renderDocSettings.enabled);
 		EXPECT_EQ(parsed.renderDocSettings.startupCaptureAfterFrames, 42u);
+		EXPECT_TRUE(parsed.hasRenderDocOverride);
 		ASSERT_TRUE(parsed.projectPathOverride.has_value());
 		EXPECT_EQ(parsed.projectPathOverride.value(), "TestProject");
 	}
@@ -56,15 +57,14 @@ TEST(GameLaunchArgsTests, ParsesShortBackendFlagAndRenderDocCaptureOptions)
 	}
 }
 
-TEST(GameLaunchArgsTests, DefaultsToThreadedRenderingMainlineWithoutOptInFlag)
+TEST(GameLaunchArgsTests, RejectsRemovedThreadedRenderingFlag)
 {
 	std::vector<std::string> storage;
-	char** argv = MutableArgv({"Game.exe", "TestProject"}, storage);
+	char** argv = MutableArgv({"Game.exe", "--threaded-rendering", "TestProject"}, storage);
 
 	const auto parsed = NLS::Game::Launch::ParseGameArgs(static_cast<int>(storage.size()), argv);
 
-	EXPECT_FALSE(parsed.hasError);
-	EXPECT_TRUE(parsed.enableThreadedRendering);
+	EXPECT_TRUE(parsed.hasError);
 }
 
 TEST(GameLaunchArgsTests, RejectsUnknownBackendName)

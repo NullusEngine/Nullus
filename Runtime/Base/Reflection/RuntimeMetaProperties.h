@@ -180,4 +180,15 @@ public:
 
     std::string path;
 };
+
+CLASS(RequiresRestart) : public NLS::meta::MetaProperty
+{
+public:
+    GENERATED_BODY()
+
+    bool IsRestartRequired() const
+    {
+        return true;
+    }
+};
 } // namespace NLS::meta

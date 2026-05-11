@@ -310,7 +310,8 @@ internal static partial class MetaParserTool
                     typeName,
                     $"&{cls.FullName}::{field.Name}",
                     $"&{cls.FullName}::{field.Name}",
-                false));
+                    false,
+                    ExtractPropertyMetas(propertyAttributes)));
             }
             catch (Exception ex)
             {
@@ -468,6 +469,27 @@ internal static partial class MetaParserTool
         }
 
         return null;
+    }
+
+    private static List<ReflectTypeMetaInfo> ExtractPropertyMetas(IEnumerable<string> propertyAttributes)
+    {
+        var metas = new List<ReflectTypeMetaInfo>();
+        foreach (var attribute in propertyAttributes)
+        {
+            foreach (var token in SplitTopLevel(StripAttributeMarker(attribute, "Property"), ','))
+            {
+                var trimmed = token.Trim();
+                if (string.IsNullOrWhiteSpace(trimmed))
+                    continue;
+
+                if (string.Equals(trimmed, "RequiresRestart", StringComparison.Ordinal))
+                    metas.Add(new ReflectTypeMetaInfo("NLS::meta::RequiresRestart", ""));
+            }
+        }
+
+        return metas
+            .DistinctBy(static meta => $"{meta.PropertyTypeName}:{meta.InitializerArguments}")
+            .ToList();
     }
 
     private static string BuildGeneratedFileId(string headerPath)

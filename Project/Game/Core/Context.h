@@ -28,18 +28,14 @@ namespace NLS::Game
 	public:
 		/**
 		* Constructor
-		* @param renderDocSettings RenderDoc settings from command line
+		* @param renderDocOverride optional one-shot RenderDoc override from command line
 		* @param backendOverride optional backend override from command line
 		* @param projectPathOverride optional project path override from command line
-		* @param enableThreadedRendering enable threaded rendering from command line
-		* @param diagnosticsSettings Engine diagnostics settings from command line
 		*/
 		Context(
-			const Render::Settings::RenderDocSettings& renderDocSettings = {},
+			std::optional<Render::Settings::RenderDocSettings> renderDocOverride = std::nullopt,
 			std::optional<Render::Settings::EGraphicsBackend> backendOverride = std::nullopt,
-			std::optional<std::string> projectPathOverride = std::nullopt,
-			bool enableThreadedRendering = false,
-			const Render::Settings::EngineDiagnosticsSettings& diagnosticsSettings = {});
+			std::optional<std::string> projectPathOverride = std::nullopt);
 
 		/**
 		* Destructor
@@ -68,10 +64,8 @@ namespace NLS::Game
 		NLS::Filesystem::IniFile projectSettings;
 
 	private:
-		Render::Settings::RenderDocSettings m_renderDocSettings;
+		std::optional<Render::Settings::RenderDocSettings> m_renderDocOverride;
 		std::optional<Render::Settings::EGraphicsBackend> m_backendOverride;
 		std::optional<std::string> m_projectPathOverride;
-		bool m_enableThreadedRendering;
-		Render::Settings::EngineDiagnosticsSettings m_diagnosticsSettings;
 	};
 }

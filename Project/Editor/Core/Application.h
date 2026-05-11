@@ -23,16 +23,11 @@ namespace NLS
 			* @param p_projectPath
 			* @param p_projectName
 			* @param p_backendOverride optional backend override from command line
-			* @param p_renderDocSettings RenderDoc settings from command line
-			* @param p_enableThreadedRendering enable threaded rendering from command line
-			* @param p_diagnosticsSettings Engine diagnostics settings from command line
+			* @param p_renderDocOverride optional one-shot RenderDoc override from command line
 			*/
 			Application(const std::string& p_projectPath, const std::string& p_projectName,
 			            std::optional<Render::Settings::EGraphicsBackend> p_backendOverride = std::nullopt,
-			            const Render::Settings::RenderDocSettings& p_renderDocSettings = {},
-			            bool p_enableThreadedRendering = false,
-			            bool p_enableRhiDebugValidation = false,
-			            const Render::Settings::EngineDiagnosticsSettings& p_diagnosticsSettings = {});
+			            std::optional<Render::Settings::RenderDocSettings> p_renderDocOverride = std::nullopt);
 
 			/**
 			* Destructor

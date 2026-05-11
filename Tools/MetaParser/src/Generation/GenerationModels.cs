@@ -4,7 +4,8 @@ public sealed record GeneratedFieldTemplateModel(
     string GetterExpression,
     string SetterExpression,
     bool IsPrivate,
-    string AccessorName);
+    string AccessorName,
+    List<GeneratedTypeMetaTemplateModel> FieldMetas);
 
 public sealed record GeneratedMethodTemplateModel(
     string Name,

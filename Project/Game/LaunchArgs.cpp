@@ -15,12 +15,6 @@ namespace NLS::Game::Launch
 		std::printf("  --renderdoc                  Enable RenderDoc debugging\n");
 		std::printf("  --no-renderdoc               Disable RenderDoc debugging\n");
 		std::printf("  --capture-after-frames <N>  Automatically capture frame after N presents\n");
-		std::printf("  --threaded-rendering         Threaded rendering is the default DX12 mainline\n");
-		std::printf("  --log-render-draw-path      Enable render draw path logging\n");
-		std::printf("  --diag-skip-skybox          Skip skybox draw for diagnostics\n");
-		std::printf("  --log-material-bindings      Enable material bindings logging\n");
-		std::printf("  --dx12-log-messages          Enable DX12 message logging\n");
-		std::printf("  --dx12-log-frame-flow       Enable DX12 frame flow logging\n");
 		std::printf("  --help, -h                  Show this help message\n");
 		std::printf("\nArguments:\n");
 		std::printf("  project_path   Path to .nullus project file or project directory\n");
@@ -59,10 +53,12 @@ namespace NLS::Game::Launch
 			else if (arg == "--renderdoc")
 			{
 				parsed.renderDocSettings.enabled = true;
+				parsed.hasRenderDocOverride = true;
 			}
 			else if (arg == "--no-renderdoc")
 			{
 				parsed.renderDocSettings.enabled = false;
+				parsed.hasRenderDocOverride = true;
 			}
 			else if (arg == "--capture-after-frames" && i + 1 < argc)
 			{
@@ -71,6 +67,7 @@ namespace NLS::Game::Launch
 					const uint32_t frames = static_cast<uint32_t>(std::stoul(argv[++i]));
 					parsed.renderDocSettings.startupCaptureAfterFrames = frames;
 					parsed.renderDocSettings.enabled = true;
+					parsed.hasRenderDocOverride = true;
 				}
 				catch (...)
 				{
@@ -78,30 +75,6 @@ namespace NLS::Game::Launch
 					parsed.hasError = true;
 					return parsed;
 				}
-			}
-			else if (arg == "--threaded-rendering")
-			{
-				parsed.enableThreadedRendering = true;
-			}
-			else if (arg == "--log-render-draw-path")
-			{
-				parsed.diagnosticsSettings.logRenderDrawPath = true;
-			}
-			else if (arg == "--diag-skip-skybox")
-			{
-				parsed.diagnosticsSettings.diagSkipSkyboxDraw = true;
-			}
-			else if (arg == "--log-material-bindings")
-			{
-				parsed.diagnosticsSettings.logMaterialBindings = true;
-			}
-			else if (arg == "--dx12-log-messages")
-			{
-				parsed.diagnosticsSettings.dx12LogMessages = true;
-			}
-			else if (arg == "--dx12-log-frame-flow")
-			{
-				parsed.diagnosticsSettings.dx12LogFrameFlow = true;
 			}
 			else if (arg == "--help" || arg == "-h")
 			{

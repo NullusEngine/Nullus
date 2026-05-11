@@ -11,12 +11,9 @@ namespace NLS::Editor::Launch
     struct ParsedEditorLaunchArgs
     {
         Render::Settings::RenderDocSettings renderDocSettings;
-        Render::Settings::EngineDiagnosticsSettings diagnosticsSettings;
         std::optional<Render::Settings::EGraphicsBackend> backendOverride;
         std::optional<std::string> projectPathArgument;
-        bool enableThreadedRendering = true;
-        bool enableRhiDebugValidation = false;
-        bool enablePerformanceMode = false;
+        bool hasRenderDocOverride = false;
         bool showHelp = false;
         bool hasError = false;
     };

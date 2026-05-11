@@ -167,8 +167,12 @@ void <#= registerFunctionName #>(NLS::meta::ReflectionDatabase& db, NLS::meta::R
        var setterExpression = field.SetterExpression;
        var fieldAccessorName = field.AccessorName;
        var isPrivateField = field.IsPrivate;
+       var fieldMetaInitializers = new List<string>();
+       foreach (var meta in field.FieldMetas) {
+           fieldMetaInitializers.Add($"{{ resolveRegisteredType(\"{meta.PropertyTypeName}\"), NLS::meta::MetaPropertyInitializer<{meta.PropertyTypeName}>({meta.InitializerArguments}) }}");
+       }
 #>
-    type.AddField<<#= qualifiedName #>, <#= fieldType #>>("<#= fieldName #>", <#= isPrivateField ? $"::NLS::meta_generated::{accessStructName}::{fieldAccessorName}()" : getterExpression #>, <#= isPrivateField ? $"::NLS::meta_generated::{accessStructName}::{fieldAccessorName}()" : setterExpression #>, {});
+    type.AddField<<#= qualifiedName #>, <#= fieldType #>>("<#= fieldName #>", <#= isPrivateField ? $"::NLS::meta_generated::{accessStructName}::{fieldAccessorName}()" : getterExpression #>, <#= isPrivateField ? $"::NLS::meta_generated::{accessStructName}::{fieldAccessorName}()" : setterExpression #>, { <#= string.Join(", ", fieldMetaInitializers) #> });
     type.OverrideLastFieldTypes(resolveRegisteredFieldType("<#= fieldType #>"), resolveRegisteredType("<#= qualifiedName #>"));
 <# }
    foreach (var method in methods) {

@@ -1109,9 +1109,9 @@ Render::Settings::EGraphicsBackend ResolveLauncherGraphicsBackend()
 
 Launcher::Launcher(
     std::optional<Render::Settings::EGraphicsBackend> backendOverride,
-    const Render::Settings::RenderDocSettings& renderDocSettings)
+    std::optional<Render::Settings::RenderDocSettings> renderDocOverride)
     : m_backendOverride(backendOverride)
-    , m_renderDocSettings(renderDocSettings)
+    , m_renderDocOverride(std::move(renderDocOverride))
 {
     SetupContext();
     m_mainPanel = std::make_unique<LauncherPanel>(*m_window, m_readyToGo, m_projectPath, m_projectName, m_editorExecutablePath, m_brandTextureView, m_templateManager);
@@ -1183,12 +1183,13 @@ void Launcher::SetupContext()
     driverSettings.debugMode = false;
     driverSettings.enableThreadedRendering = Render::Settings::IsEnvironmentFlagEnabled("NLS_ENABLE_THREADED_RENDERING");
     driverSettings.threadedFrameSlotCount = driverSettings.framesInFlight;
-    if (m_renderDocSettings.enabled || m_renderDocSettings.startupCaptureAfterFrames > 0)
+    if (m_renderDocOverride.has_value() &&
+        (m_renderDocOverride->enabled || m_renderDocOverride->startupCaptureAfterFrames > 0))
     {
-        driverSettings.renderDoc = m_renderDocSettings;
+        driverSettings.renderDoc = m_renderDocOverride.value();
         NLS_LOG_INFO("Launcher RenderDoc: applied command-line settings (enabled=" +
-            std::string(m_renderDocSettings.enabled ? "true" : "false") +
-            ", captureAfterFrames=" + std::to_string(m_renderDocSettings.startupCaptureAfterFrames) + ")");
+            std::string(driverSettings.renderDoc.enabled ? "true" : "false") +
+            ", captureAfterFrames=" + std::to_string(driverSettings.renderDoc.startupCaptureAfterFrames) + ")");
     }
     Render::Tooling::ApplyRenderDocEnvironmentOverrides(
         driverSettings.renderDoc,

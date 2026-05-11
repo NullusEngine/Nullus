@@ -40,11 +40,11 @@ public:
     /**
      * Constructor
      * @param backendOverride Optional backend override from command line
-     * @param renderDocSettings Optional RenderDoc settings from command line
+     * @param renderDocOverride Optional one-shot RenderDoc override from command line
      */
     Launcher(
         std::optional<Render::Settings::EGraphicsBackend> backendOverride = std::nullopt,
-        const Render::Settings::RenderDocSettings& renderDocSettings = {});
+        std::optional<Render::Settings::RenderDocSettings> renderDocOverride = std::nullopt);
 
     ~Launcher();
 
@@ -82,7 +82,7 @@ private:
     bool m_readyToGo = false;
     Render::Settings::EGraphicsBackend m_graphicsBackend = Render::Settings::EGraphicsBackend::NONE;
     std::optional<Render::Settings::EGraphicsBackend> m_backendOverride = std::nullopt;
-    Render::Settings::RenderDocSettings m_renderDocSettings;
+    std::optional<Render::Settings::RenderDocSettings> m_renderDocOverride;
 
     TemplateManager m_templateManager;
 };

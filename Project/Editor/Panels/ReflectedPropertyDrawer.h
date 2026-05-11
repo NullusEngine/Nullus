@@ -38,6 +38,7 @@ struct ReflectedPropertyDrawerOptions
     float labelWidth = 104.0f;
     std::string searchText;
     std::function<void(const meta::Field&)> onFieldChanged;
+    std::function<std::string(const meta::Field&)> fieldBadgeProvider;
 };
 
 std::string FormatReflectedFieldLabel(const std::string& p_name);

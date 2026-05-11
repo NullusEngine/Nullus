@@ -14,10 +14,7 @@ using namespace NLS;
 int main(int argc, char** argv);
 static void TryRun(const std::string& projectPath, const std::string& projectName,
                   std::optional<Render::Settings::EGraphicsBackend> backendOverride,
-                  const Render::Settings::RenderDocSettings& renderDocSettings,
-                  bool enableThreadedRendering,
-                  bool enableRhiDebugValidation,
-                  const Render::Settings::EngineDiagnosticsSettings& diagnosticsSettings);
+                  const std::optional<Render::Settings::RenderDocSettings>& renderDocOverride);
 
 namespace
 {
@@ -99,20 +96,16 @@ int main(int argc, char** argv)
 			projectPath,
 			projectName,
 			launchArgs.backendOverride,
-			launchArgs.renderDocSettings,
-			launchArgs.enableThreadedRendering,
-			launchArgs.enableRhiDebugValidation,
-			launchArgs.diagnosticsSettings);
+			launchArgs.hasRenderDocOverride
+				? std::optional<Render::Settings::RenderDocSettings>(launchArgs.renderDocSettings)
+				: std::nullopt);
 	}
 	return EXIT_SUCCESS;
 }
 
 static void TryRun(const std::string& projectPath, const std::string& projectName,
                    std::optional<Render::Settings::EGraphicsBackend> backendOverride,
-                   const Render::Settings::RenderDocSettings& renderDocSettings,
-                   bool enableThreadedRendering,
-                   bool enableRhiDebugValidation,
-                   const Render::Settings::EngineDiagnosticsSettings& diagnosticsSettings)
+                   const std::optional<Render::Settings::RenderDocSettings>& renderDocOverride)
 {
 	auto errorEvent =
 		[](NLS::EDeviceError, std::string errMsg)
@@ -126,7 +119,7 @@ static void TryRun(const std::string& projectPath, const std::string& projectNam
 	try
 	{
 		auto listenerId = NLS::Context::Device::ErrorEvent += errorEvent;
-		app = std::make_unique<Editor::Core::Application>(projectPath, projectName, backendOverride, renderDocSettings, enableThreadedRendering, enableRhiDebugValidation, diagnosticsSettings);
+		app = std::make_unique<Editor::Core::Application>(projectPath, projectName, backendOverride, renderDocOverride);
 		NLS::Context::Device::ErrorEvent -= listenerId;
 	}
 	catch (const std::exception& e)

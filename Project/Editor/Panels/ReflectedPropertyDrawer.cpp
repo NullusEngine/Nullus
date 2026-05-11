@@ -73,13 +73,27 @@ void NotifyChanged(const NLS::Editor::Panels::ReflectedPropertyDrawerOptions& p_
         p_options.onFieldChanged(p_field);
 }
 
+std::string BuildFieldLabel(
+    const meta::Field& p_field,
+    const NLS::Editor::Panels::ReflectedPropertyDrawerOptions& p_options)
+{
+    std::string label = NLS::Editor::Panels::FormatReflectedFieldLabel(p_field.GetName());
+    if (p_options.fieldBadgeProvider)
+    {
+        const std::string badge = p_options.fieldBadgeProvider(p_field);
+        if (!badge.empty())
+            label += " (" + badge + ")";
+    }
+    return label;
+}
+
 void DrawFloatArrayField(
     NLS::UI::Internal::WidgetContainer& p_root,
     const ReflectedVariantHandle& p_instance,
     const meta::Field& p_field,
     const NLS::Editor::Panels::ReflectedPropertyDrawerOptions& p_options)
 {
-    const auto label = NLS::Editor::Panels::FormatReflectedFieldLabel(p_field.GetName());
+    const auto label = BuildFieldLabel(p_field, p_options);
     auto values = GetFieldValue<NLS::Array<float>>(*p_instance, p_field);
     if (values.empty())
         values.resize(16, 0.0f);
@@ -123,7 +137,7 @@ void DrawStringArrayField(
     const meta::Field& p_field,
     const NLS::Editor::Panels::ReflectedPropertyDrawerOptions& p_options)
 {
-    const auto label = NLS::Editor::Panels::FormatReflectedFieldLabel(p_field.GetName());
+    const auto label = BuildFieldLabel(p_field, p_options);
     auto values = GetFieldValue<NLS::Array<std::string>>(*p_instance, p_field);
     if (values.empty())
         values.resize(1);
@@ -157,7 +171,7 @@ void DrawBoundingSphereField(
     const meta::Field& p_field,
     const NLS::Editor::Panels::ReflectedPropertyDrawerOptions& p_options)
 {
-    const auto label = NLS::Editor::Panels::FormatReflectedFieldLabel(p_field.GetName());
+    const auto label = BuildFieldLabel(p_field, p_options);
 
     NLS::UI::GUIDrawer::DrawVec3(
         p_root,
@@ -203,7 +217,7 @@ void DrawEnumField(
     const std::map<int, std::string>& p_choices,
     const NLS::Editor::Panels::ReflectedPropertyDrawerOptions& p_options)
 {
-    const auto label = NLS::Editor::Panels::FormatReflectedFieldLabel(p_field.GetName());
+    const auto label = BuildFieldLabel(p_field, p_options);
     NLS::UI::GUIDrawer::CreateTitle(p_root, label);
     auto& combo = p_root.CreateWidget<NLS::UI::Widgets::ComboBox>(GetFieldValue<int>(*p_instance, p_field));
     combo.choices = p_choices;
@@ -424,7 +438,7 @@ bool DrawReflectedFieldInternal(
         return false;
 
     const auto fieldType = p_field.GetType();
-    const auto label = NLS::Editor::Panels::FormatReflectedFieldLabel(p_field.GetName());
+    const auto label = BuildFieldLabel(p_field, p_options);
     const auto support = NLS::Editor::Panels::GetReflectedPropertySupport(p_field);
 
     switch (support)

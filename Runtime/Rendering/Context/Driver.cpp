@@ -1792,6 +1792,12 @@ const Settings::EngineDiagnosticsSettings& DriverRendererAccess::GetDiagnosticsS
 	return driver.m_impl->diagnostics;
 }
 
+void DriverRendererAccess::SetDiagnosticsSettings(Driver& driver, const Settings::EngineDiagnosticsSettings& settings)
+{
+	driver.m_impl->diagnostics = settings;
+	Settings::SetThreadDiagnosticsSettings(settings);
+}
+
 Render::RHI::NativeRenderDeviceInfo DriverUIAccess::GetNativeDeviceInfo(const Driver& driver)
 {
 	// Use explicit device - it has its own UI resources (renderPass, descriptorPool)

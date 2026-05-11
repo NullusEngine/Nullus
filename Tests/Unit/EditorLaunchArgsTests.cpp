@@ -5,6 +5,7 @@
 #include "Core/EditorFrameLatency.h"
 #include "Core/EditorLaunchArgs.h"
 #include "Rendering/RHI/Backends/DX12/DX12Device.h"
+#include "Settings/EditorSettings.h"
 
 namespace
 {
@@ -19,72 +20,33 @@ namespace
     }
 }
 
-TEST(EditorLaunchArgsTests, DefaultsToPerformanceFriendlyRhiValidation)
+TEST(EditorLaunchArgsTests, RuntimeSettingsDefaultToPerformanceFriendlyRhiValidation)
 {
-    std::vector<std::string> storage;
-    char** argv = MutableArgv({"Editor.exe", "TestProject.nullus"}, storage);
-
-    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
-
-    EXPECT_FALSE(parsed.hasError);
-    EXPECT_FALSE(parsed.enableRhiDebugValidation);
+    EXPECT_FALSE(NLS::Editor::Settings::EditorSettings::GetRuntimeSettingsObject().enableRhiDebugValidation);
 }
 
-TEST(EditorLaunchArgsTests, ExplicitDebugValidationFlagEnablesRhiDebugValidation)
+TEST(EditorLaunchArgsTests, RuntimeSettingsBuildDiagnosticsSettings)
 {
-    std::vector<std::string> storage;
-    char** argv = MutableArgv({"Editor.exe", "--rhi-debug-validation", "TestProject.nullus"}, storage);
+    auto& runtime = NLS::Editor::Settings::EditorSettings::GetRuntimeSettingsObject();
+    const auto oldRuntime = runtime;
+    runtime.editorLogScenePicking = true;
+    runtime.dx12LogFrameFlow = false;
 
-    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+    const auto diagnostics = NLS::Editor::Settings::EditorSettings::BuildDiagnosticsSettings();
 
-    EXPECT_FALSE(parsed.hasError);
-    EXPECT_TRUE(parsed.enableRhiDebugValidation);
+    EXPECT_TRUE(diagnostics.editorLogScenePicking);
+    EXPECT_FALSE(diagnostics.dx12LogFrameFlow);
+    runtime = oldRuntime;
 }
 
-TEST(EditorLaunchArgsTests, PerformanceModeDisablesRhiDebugValidation)
-{
-    std::vector<std::string> storage;
-    char** argv = MutableArgv({"Editor.exe", "--editor-performance-mode", "TestProject.nullus"}, storage);
-
-    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
-
-    EXPECT_FALSE(parsed.hasError);
-    EXPECT_TRUE(parsed.enablePerformanceMode);
-    EXPECT_FALSE(parsed.enableRhiDebugValidation);
-}
-
-TEST(EditorLaunchArgsTests, ExplicitNoDebugValidationFlagDisablesRhiDebugValidation)
-{
-    std::vector<std::string> storage;
-    char** argv = MutableArgv({"Editor.exe", "--no-rhi-debug-validation", "TestProject.nullus"}, storage);
-
-    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
-
-    EXPECT_FALSE(parsed.hasError);
-    EXPECT_FALSE(parsed.enableRhiDebugValidation);
-}
-
-TEST(EditorLaunchArgsTests, ScenePickingDiagnosticsCanBeEnabledWithoutDx12FrameFlowLogging)
-{
-    std::vector<std::string> storage;
-    char** argv = MutableArgv({"Editor.exe", "--editor-log-scene-picking", "TestProject.nullus"}, storage);
-
-    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
-
-    EXPECT_FALSE(parsed.hasError);
-    EXPECT_TRUE(parsed.diagnosticsSettings.editorLogScenePicking);
-    EXPECT_FALSE(parsed.diagnosticsSettings.dx12LogFrameFlow);
-}
-
-TEST(EditorLaunchArgsTests, EditorFpsDiagnosticsCanBeEnabled)
+TEST(EditorLaunchArgsTests, RejectsRemovedDebugCliFlags)
 {
     std::vector<std::string> storage;
     char** argv = MutableArgv({"Editor.exe", "--log-editor-fps", "TestProject.nullus"}, storage);
 
     const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
 
-    EXPECT_FALSE(parsed.hasError);
-    EXPECT_TRUE(parsed.diagnosticsSettings.logEditorFps);
+    EXPECT_TRUE(parsed.hasError);
 }
 
 TEST(EditorLaunchArgsTests, EditorThreadedRenderingUsesFramesInFlightSlotsForThroughput)
@@ -99,9 +61,8 @@ TEST(EditorLaunchArgsTests, DefaultDx12DeviceCreationSkipsDredDiagnostics)
 {
     std::vector<std::string> storage;
     char** argv = MutableArgv({"Editor.exe", "TestProject.nullus"}, storage);
-    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
 
-    const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(parsed.enableRhiDebugValidation);
+    const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
 
     EXPECT_TRUE(resources.IsValid());
     EXPECT_FALSE(resources.dredDiagnosticsEnabled);
@@ -110,22 +71,20 @@ TEST(EditorLaunchArgsTests, DefaultDx12DeviceCreationSkipsDredDiagnostics)
 TEST(EditorLaunchArgsTests, ExplicitDebugValidationDx12DeviceCreationEnablesDredDiagnostics)
 {
     std::vector<std::string> storage;
-    char** argv = MutableArgv({"Editor.exe", "--rhi-debug-validation", "TestProject.nullus"}, storage);
-    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+    char** argv = MutableArgv({"Editor.exe", "TestProject.nullus"}, storage);
 
-    const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(parsed.enableRhiDebugValidation);
+    const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(true);
 
     EXPECT_TRUE(resources.IsValid());
     EXPECT_TRUE(resources.dredDiagnosticsEnabled);
 }
 
-TEST(EditorLaunchArgsTests, PerformanceModeDx12DeviceCreationSkipsDredDiagnostics)
+TEST(EditorLaunchArgsTests, DisabledDebugValidationDx12DeviceCreationSkipsDredDiagnostics)
 {
     std::vector<std::string> storage;
-    char** argv = MutableArgv({"Editor.exe", "--editor-performance-mode", "TestProject.nullus"}, storage);
-    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+    char** argv = MutableArgv({"Editor.exe", "TestProject.nullus"}, storage);
 
-    const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(parsed.enableRhiDebugValidation);
+    const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
 
     EXPECT_TRUE(resources.IsValid());
     EXPECT_FALSE(resources.dredDiagnosticsEnabled);

@@ -192,6 +192,7 @@ namespace NLS::Render::Context
             bool stencilBuffer,
             const Maths::Vector4& color);
         static const Settings::EngineDiagnosticsSettings& GetDiagnosticsSettings(const Driver& driver);
+        static void SetDiagnosticsSettings(Driver& driver, const Settings::EngineDiagnosticsSettings& settings);
     };
 
     struct NLS_RENDER_API DriverUIAccess final

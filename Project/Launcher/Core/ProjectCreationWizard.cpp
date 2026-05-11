@@ -715,6 +715,9 @@ bool ProjectCreationWizard::CreateProjectFiles()
     ofs << "fullscreen=false\n";
     ofs << "multi_sampling=" << (m_config.multiSampling ? "true" : "false") << "\n";
     ofs << "vsync=" << (m_config.vsync ? "true" : "false") << "\n";
+    ofs << "enable_threaded_rendering=true\n";
+    ofs << "renderdoc_enabled=false\n";
+    ofs << "renderdoc_capture_after_frames=0\n";
     ofs << "samples=" << m_config.sampleCount << "\n";
     ofs << "graphics_backend=" << Render::Settings::ToString(m_config.selectedBackend) << "\n";
     ofs << "opengl_major=4\n";

@@ -22,9 +22,64 @@ EditorRenderingSettingsObject& EditorSettings::GetRenderingSettingsObject()
     return object;
 }
 
+EditorRuntimeSettingsObject& EditorSettings::GetRuntimeSettingsObject()
+{
+    static EditorRuntimeSettingsObject object;
+    return object;
+}
+
+Render::Settings::RenderDocSettings EditorSettings::BuildRenderDocSettings()
+{
+    const auto& runtime = GetRuntimeSettingsObject();
+
+    Render::Settings::RenderDocSettings settings;
+    settings.enabled = runtime.renderDocEnabled;
+    settings.autoOpenReplayUI = runtime.renderDocAutoOpenReplayUI;
+    settings.startupCaptureAfterFrames = runtime.renderDocStartupCaptureAfterFrames > 0
+        ? static_cast<uint32_t>(runtime.renderDocStartupCaptureAfterFrames)
+        : 0u;
+    if (settings.startupCaptureAfterFrames > 0u)
+        settings.enabled = true;
+    return settings;
+}
+
+Render::Settings::EngineDiagnosticsSettings EditorSettings::BuildDiagnosticsSettings()
+{
+    const auto& runtime = GetRuntimeSettingsObject();
+
+    Render::Settings::EngineDiagnosticsSettings settings;
+    settings.logRenderDrawPath = runtime.logRenderDrawPath;
+    settings.diagSkipSkyboxDraw = runtime.diagSkipSkyboxDraw;
+    settings.logMaterialBindings = runtime.logMaterialBindings;
+    settings.dx12LogMessages = runtime.dx12LogMessages;
+    settings.dx12LogFrameFlow = runtime.dx12LogFrameFlow;
+    settings.logEditorFps = runtime.logEditorFps;
+    settings.editorGridSkipPlane = runtime.editorGridSkipPlane;
+    settings.editorGridSkipAxes = runtime.editorGridSkipAxes;
+    settings.editorDisableGridPass = runtime.editorDisableGridPass;
+    settings.editorDisableDebugCamerasPass = runtime.editorDisableDebugCamerasPass;
+    settings.editorDisableDebugLightsPass = runtime.editorDisableDebugLightsPass;
+    settings.editorDisableDebugActorPass = runtime.editorDisableDebugActorPass;
+    settings.editorDisableDebugDrawPass = runtime.editorDisableDebugDrawPass;
+    settings.editorDisablePickingPass = runtime.editorDisablePickingPass;
+    settings.editorLogScenePicking = runtime.editorLogScenePicking;
+    settings.editorValidationFocusView = runtime.editorValidationFocusView;
+    settings.editorValidationExclusiveView = runtime.editorValidationExclusiveView;
+    settings.editorValidationSelectActor = runtime.editorValidationSelectActor;
+    return settings;
+}
+
 void EditorSettings::RegisterSettingObjects(EditorSettingsRegistry& p_registry)
 {
     meta::ReflectionDatabase::Instance();
+    p_registry.Register({
+        "editor.runtime",
+        "Runtime",
+        "Editor/Runtime",
+        EditorSettingPersistenceScope::User,
+        [] { return meta::Variant(GetRuntimeSettingsObject(), meta::variant_policy::NoCopy {}); },
+        NLS_TYPEOF(EditorRuntimeSettingsObject)
+    });
     p_registry.Register({
         "editor.debug-draw",
         "Debug Draw",

@@ -147,7 +147,12 @@ internal static partial class MetaParserTool
                     field.GetterExpression,
                     field.SetterExpression,
                     field.IsPrivate,
-                    BuildPrivateFieldAccessorName(field.Name, index)))
+                    BuildPrivateFieldAccessorName(field.Name, index),
+                    (field.FieldMetas ?? [])
+                        .Select(static meta => new GeneratedTypeMetaTemplateModel(
+                            meta.PropertyTypeName,
+                            meta.InitializerArguments))
+                        .ToList()))
                 .ToList();
 
             var methodModels = type.Methods

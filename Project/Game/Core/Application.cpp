@@ -3,12 +3,10 @@
 #include "Core/Application.h"
 using namespace NLS;
 Game::Core::Application::Application(
-	const Render::Settings::RenderDocSettings& renderDocSettings,
+	std::optional<Render::Settings::RenderDocSettings> renderDocOverride,
 	std::optional<Render::Settings::EGraphicsBackend> backendOverride,
-	std::optional<std::string> projectPathOverride,
-	bool enableThreadedRendering,
-	const Render::Settings::EngineDiagnosticsSettings& diagnosticsSettings) :
-	m_context(renderDocSettings, backendOverride, projectPathOverride, enableThreadedRendering, diagnosticsSettings),
+	std::optional<std::string> projectPathOverride) :
+	m_context(renderDocOverride, backendOverride, projectPathOverride),
 	m_game(m_context)
 {
 

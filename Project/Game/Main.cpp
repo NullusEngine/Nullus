@@ -46,11 +46,11 @@ int main(int argc, char** argv)
 	try
 	{
 		Game::Core::Application app(
-			launchArgs.renderDocSettings,
+			launchArgs.hasRenderDocOverride
+				? std::optional<Render::Settings::RenderDocSettings>(launchArgs.renderDocSettings)
+				: std::nullopt,
 			launchArgs.backendOverride,
-			launchArgs.projectPathOverride,
-			launchArgs.enableThreadedRendering,
-			launchArgs.diagnosticsSettings);
+			launchArgs.projectPathOverride);
 		app.Run();
 		return EXIT_SUCCESS;
 	}

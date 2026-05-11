@@ -15,8 +15,11 @@
 #include "ResourceManagement/MaterialManager.h"
 #include "Resource/Actor/ActorManager.h"
 #include "EditorResources.h"
+#include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
 #include "Rendering/Settings/DriverSettings.h"
+#include "Rendering/Settings/GraphicsBackendUtils.h"
+#include "Settings/EditorSettings.h"
 namespace NLS
 {
 namespace Editor::Core
@@ -32,16 +35,11 @@ class Context
      * @param p_projectPath
      * @param p_projectName
      * @param p_backendOverride optional backend override from command line, if not provided uses project settings
-     * @param p_renderDocSettings RenderDoc settings from command line
-     * @param p_enableThreadedRendering enable threaded rendering from command line
-     * @param p_diagnosticsSettings Engine diagnostics settings from command line
+     * @param p_renderDocOverride optional one-shot RenderDoc override from command line
      */
     Context(const std::string& p_projectPath, const std::string& p_projectName,
             std::optional<Render::Settings::EGraphicsBackend> p_backendOverride = std::nullopt,
-            const Render::Settings::RenderDocSettings& p_renderDocSettings = {},
-            bool p_enableThreadedRendering = false,
-            bool p_enableRhiDebugValidation = false,
-            const Render::Settings::EngineDiagnosticsSettings& p_diagnosticsSettings = {});
+            std::optional<Render::Settings::RenderDocSettings> p_renderDocOverride = std::nullopt);
 
     /**
      * Destructor
@@ -65,6 +63,20 @@ class Context
      * Apply project settings to the ini file
      */
     void ApplyProjectSettings();
+    void ApplyEditorSettings()
+    {
+        m_diagnosticsSettings = Settings::EditorSettings::BuildDiagnosticsSettings();
+        Render::Settings::SetThreadDiagnosticsSettings(m_diagnosticsSettings);
+
+        if (driver != nullptr)
+        {
+            Render::Context::DriverRendererAccess::SetDiagnosticsSettings(*driver, m_diagnosticsSettings);
+
+            const auto renderDocSettings = Settings::EditorSettings::BuildRenderDocSettings();
+            Render::Context::DriverUIAccess::SetRenderDocEnabled(*driver, renderDocSettings.enabled);
+            Render::Context::DriverUIAccess::SetRenderDocAutoOpenEnabled(*driver, renderDocSettings.autoOpenReplayUI);
+        }
+    }
 
     const Render::Settings::EngineDiagnosticsSettings& GetDiagnosticsSettings() const;
 
@@ -96,9 +108,7 @@ class Context
 
 private:
     std::optional<Render::Settings::EGraphicsBackend> m_backendOverride;
-    Render::Settings::RenderDocSettings m_renderDocSettings;
-    bool m_enableThreadedRendering;
-    bool m_enableRhiDebugValidation;
+    std::optional<Render::Settings::RenderDocSettings> m_renderDocOverride;
     Render::Settings::EngineDiagnosticsSettings m_diagnosticsSettings;
 };
 } // namespace Editor::Core

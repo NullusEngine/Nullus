@@ -1,5 +1,7 @@
 #include "Panels/ProjectSettings.h"
 
+#include <Reflection/Field.h>
+#include <Reflection/RuntimeMetaProperties.h>
 #include <Reflection/Variant.h>
 #include <ServiceLocator.h>
 #include <imgui.h>
@@ -26,6 +28,11 @@ void CopyToBuffer(const std::string& p_value, char (&p_buffer)[128])
     const auto copyLength = (std::min)(p_value.size(), sizeof(p_buffer) - 1);
     if (copyLength > 0)
         std::memcpy(p_buffer, p_value.data(), copyLength);
+}
+
+bool RequiresRestart(const NLS::meta::Field& p_field)
+{
+    return p_field.GetMeta().GetProperty<NLS::meta::RequiresRestart>() != nullptr;
 }
 }
 
@@ -215,9 +222,16 @@ void ProjectSettings::DrawSelectedSettings()
         ReflectedPropertyDrawerOptions options;
         options.labelWidth = 180.0f;
         options.searchText = m_searchText;
-        options.onFieldChanged = [this, id = selected->id](const meta::Field&)
+        options.fieldBadgeProvider = [](const meta::Field& field)
+        {
+            return RequiresRestart(field) ? std::string("Requires restart") : std::string{};
+        };
+        options.onFieldChanged = [this, id = selected->id](const meta::Field& field)
         {
             m_dirtySettings.insert(id);
+            if (RequiresRestart(field))
+                m_restartRequiredFields.insert(id + "." + field.GetName());
+            ApplyLiveSettings();
         };
         DrawReflectedObject(*this, instance, options);
         m_reflectedWidgetsSelectionId = selected->id;
@@ -225,6 +239,21 @@ void ProjectSettings::DrawSelectedSettings()
     }
 
     DrawWidgets();
+
+    if (!m_restartRequiredFields.empty())
+    {
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextColored(
+            ImVec4(1.0f, 0.68f, 0.26f, 1.0f),
+            "Some changes require restart to take effect.");
+    }
+}
+
+void ProjectSettings::ApplyLiveSettings()
+{
+    if (NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::Context>())
+        NLS::Core::ServiceLocator::Get<NLS::Editor::Core::Context>().ApplyEditorSettings();
 }
 
 void ProjectSettings::SaveIfDirty()

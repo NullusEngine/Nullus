@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <Reflection/ReflectionDatabase.h>
+#include <Reflection/RuntimeMetaProperties.h>
 #include <imgui.h>
 
 #include "Core/EditorInteractionBlocker.h"
@@ -43,6 +44,20 @@ TEST(ProjectSettingsPanelTests, SettingsModalParticipatesInSceneInputBlocking)
     EXPECT_TRUE(NLS::Editor::Core::DoesEditorModalBlockSceneInput());
     NLS::Editor::Core::SetSettingsWindowBlocksSceneInput(false);
     EXPECT_FALSE(NLS::Editor::Core::DoesEditorModalBlockSceneInput());
+}
+
+TEST(ProjectSettingsPanelTests, RuntimeRestartFieldsAreMarkedByMetadata)
+{
+    NLS::meta::ReflectionDatabase::Instance();
+    const auto runtimeType = NLS_TYPEOF(NLS::Editor::Settings::EditorRuntimeSettingsObject);
+
+    const auto& threadedRendering = runtimeType.GetField("enableThreadedRendering");
+    const auto& renderDocEnabled = runtimeType.GetField("renderDocEnabled");
+
+    ASSERT_TRUE(threadedRendering.IsValid());
+    ASSERT_TRUE(renderDocEnabled.IsValid());
+    EXPECT_NE(threadedRendering.GetMeta().GetProperty<NLS::meta::RequiresRestart>(), nullptr);
+    EXPECT_EQ(renderDocEnabled.GetMeta().GetProperty<NLS::meta::RequiresRestart>(), nullptr);
 }
 
 TEST(ProjectSettingsPanelTests, SettingsModalCanDrawWhenPanelIsDisabledForDocking)

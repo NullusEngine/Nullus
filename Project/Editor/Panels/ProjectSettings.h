@@ -38,6 +38,7 @@ private:
     void DrawSearchRow();
     void DrawCategoryList(const std::vector<const Settings::EditorSettingObject*>& p_visibleObjects);
     void DrawSelectedSettings();
+    void ApplyLiveSettings();
     void SaveIfDirty();
     std::filesystem::path GetSettingsPath() const;
 
@@ -50,5 +51,6 @@ private:
     std::string m_reflectedWidgetsSelectionId;
     std::string m_reflectedWidgetsSearchText;
     std::set<std::string> m_dirtySettings;
+    std::set<std::string> m_restartRequiredFields;
 };
 }

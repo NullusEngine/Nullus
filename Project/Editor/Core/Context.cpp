@@ -12,6 +12,7 @@
 #include "Core/Context.h"
 #include "Core/EditorFrameLatency.h"
 #include "Debug/FileHandler.h"
+#include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/Tooling/RenderDocEnvironment.h"
 #include "Settings/EditorSettings.h"
@@ -173,17 +174,11 @@ namespace
 
 Editor::Core::Context::Context(const std::string& p_projectPath, const std::string& p_projectName,
     std::optional<Render::Settings::EGraphicsBackend> p_backendOverride,
-    const Render::Settings::RenderDocSettings& p_renderDocSettings,
-    bool p_enableThreadedRendering,
-    bool p_enableRhiDebugValidation,
-    const Render::Settings::EngineDiagnosticsSettings& p_diagnosticsSettings)
+    std::optional<Render::Settings::RenderDocSettings> p_renderDocOverride)
     : projectPath(p_projectPath),
     projectName(p_projectName),
     m_backendOverride(p_backendOverride),
-    m_renderDocSettings(p_renderDocSettings),
-    m_enableThreadedRendering(p_enableThreadedRendering),
-    m_enableRhiDebugValidation(p_enableRhiDebugValidation),
-    m_diagnosticsSettings(p_diagnosticsSettings), 
+    m_renderDocOverride(std::move(p_renderDocOverride)),
     projectFilePath(p_projectPath + Utils::PathParser::Separator() + p_projectName + ".nullus"), 
     engineAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets/Engine")).string() + Utils::PathParser::Separator()), 
     projectAssetsPath(p_projectPath + Utils::PathParser::Separator() + "Assets" + Utils::PathParser::Separator()), 
@@ -207,6 +202,17 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
         projectSettings.Add<std::string>("last_opened_scene", "");
         projectSettings.Rewrite();
     }
+
+    Editor::Settings::EditorSettingsRegistry editorSettingsRegistry;
+    Editor::Settings::EditorSettings::RegisterSettingObjects(editorSettingsRegistry);
+    Editor::Settings::EditorSettingsPersistence::Load(
+        std::filesystem::path(p_projectPath) / "UserSettings" / "editor-settings.json",
+        editorSettingsRegistry);
+    auto renderDocSettings = Editor::Settings::EditorSettings::BuildRenderDocSettings();
+    if (m_renderDocOverride.has_value())
+        renderDocSettings = m_renderDocOverride.value();
+    m_diagnosticsSettings = Editor::Settings::EditorSettings::BuildDiagnosticsSettings();
+    const auto& runtimeSettings = Editor::Settings::EditorSettings::GetRuntimeSettingsObject();
 
     const auto logDirectory = std::filesystem::path(p_projectPath) / "Logs";
     std::error_code logDirectoryError;
@@ -234,19 +240,20 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     /* Graphics context creation */
     NLS::Render::Settings::DriverSettings driverSettings;
     driverSettings.graphicsBackend = graphicsBackend;
-    driverSettings.debugMode = m_enableRhiDebugValidation;
-    driverSettings.enableThreadedRendering = m_enableThreadedRendering;
-    driverSettings.enableLightGrid = ResolveEditorLightGridEnabled(p_projectPath);
+    driverSettings.debugMode = runtimeSettings.enableRhiDebugValidation;
+    driverSettings.enableThreadedRendering = runtimeSettings.enableThreadedRendering;
+    driverSettings.enableLightGrid = Editor::Settings::EditorSettings::GetRenderingSettingsObject().enableLightGrid;
     driverSettings.threadedFrameSlotCount = Editor::Core::ResolveEditorThreadedFrameSlotCount(driverSettings.framesInFlight);
     driverSettings.diagnostics = m_diagnosticsSettings;
 
-    // Apply command-line RenderDoc settings first, then let environment variables override if set
-    if (m_renderDocSettings.enabled || m_renderDocSettings.startupCaptureAfterFrames > 0)
+    if (renderDocSettings.enabled || renderDocSettings.startupCaptureAfterFrames > 0)
     {
-        driverSettings.renderDoc = m_renderDocSettings;
-        NLS_LOG_INFO("RenderDoc: applied command-line settings (enabled=" +
-            std::string(m_renderDocSettings.enabled ? "true" : "false") +
-            ", captureAfterFrames=" + std::to_string(m_renderDocSettings.startupCaptureAfterFrames) + ")");
+        driverSettings.renderDoc = renderDocSettings;
+        NLS_LOG_INFO(
+            std::string("RenderDoc: applied ") +
+            (m_renderDocOverride.has_value() ? "command-line override" : "editor settings") +
+            " (enabled=" + std::string(renderDocSettings.enabled ? "true" : "false") +
+            ", captureAfterFrames=" + std::to_string(renderDocSettings.startupCaptureAfterFrames) + ")");
     }
 
 	Render::Tooling::ApplyRenderDocEnvironmentOverrides(

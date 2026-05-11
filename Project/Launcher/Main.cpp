@@ -15,6 +15,7 @@ using namespace NLS;
 
 static std::optional<Render::Settings::EGraphicsBackend> backendOverride;
 static Render::Settings::RenderDocSettings renderDocSettings;
+static bool hasRenderDocOverride = false;
 
 static void LaunchEditor(const std::string& projectPath, const std::string& preferredEditorExecutablePath)
 {
@@ -52,15 +53,18 @@ static void LaunchEditor(const std::string& projectPath, const std::string& pref
         args.push_back(Render::Settings::ToString(backendOverride.value()));
     }
 
-    if (renderDocSettings.enabled)
-        args.push_back("--renderdoc");
-    else
-        args.push_back("--no-renderdoc");
-
-    if (renderDocSettings.startupCaptureAfterFrames > 0)
+    if (hasRenderDocOverride)
     {
-        args.push_back("--capture-after-frames");
-        args.push_back(std::to_string(renderDocSettings.startupCaptureAfterFrames));
+        if (renderDocSettings.enabled)
+            args.push_back("--renderdoc");
+        else
+            args.push_back("--no-renderdoc");
+
+        if (renderDocSettings.startupCaptureAfterFrames > 0)
+        {
+            args.push_back("--capture-after-frames");
+            args.push_back(std::to_string(renderDocSettings.startupCaptureAfterFrames));
+        }
     }
 
     // Project path as positional argument (use .nullus file if available)
@@ -107,10 +111,12 @@ int main(int argc, char** argv)
         else if (arg == "--renderdoc")
         {
             renderDocSettings.enabled = true;
+            hasRenderDocOverride = true;
         }
         else if (arg == "--no-renderdoc")
         {
             renderDocSettings.enabled = false;
+            hasRenderDocOverride = true;
         }
         else if (arg == "--capture-after-frames" && i + 1 < argc)
         {
@@ -119,6 +125,7 @@ int main(int argc, char** argv)
                 uint32_t frames = static_cast<uint32_t>(std::stoul(argv[++i]));
                 renderDocSettings.startupCaptureAfterFrames = frames;
                 renderDocSettings.enabled = true;
+                hasRenderDocOverride = true;
             }
             catch (...)
             {
@@ -140,7 +147,11 @@ int main(int argc, char** argv)
     }
 
     // Run Launcher UI
-    Launcher launcher(backendOverride, renderDocSettings);
+    Launcher launcher(
+        backendOverride,
+        hasRenderDocOverride
+            ? std::optional<Render::Settings::RenderDocSettings>(renderDocSettings)
+            : std::nullopt);
     const auto result = launcher.Run();
 
     if (result.ready)

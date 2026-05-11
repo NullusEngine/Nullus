@@ -1,4 +1,10 @@
-internal sealed record ReflectFieldInfo(string Name, string TypeName, string GetterExpression, string SetterExpression, bool IsPrivate);
+internal sealed record ReflectFieldInfo(
+    string Name,
+    string TypeName,
+    string GetterExpression,
+    string SetterExpression,
+    bool IsPrivate,
+    List<ReflectTypeMetaInfo>? FieldMetas = null);
 
 internal sealed record ReflectMethodInfo(string Name, string PointerExpression, bool IsStatic, bool IsPrivate);
 

@@ -50,3 +50,19 @@ TEST(EditorProjectSettingsTests, EditorSwapchainUsesProjectVsyncSetting)
     EXPECT_NE(contextSource.find("projectSettings.GetOrDefault<bool>(\"vsync\", true)"), std::string::npos);
     EXPECT_EQ(contextSource.find("static_cast<uint32_t>(initialFramebufferSize.y),\n        true)"), std::string::npos);
 }
+
+TEST(EditorProjectSettingsTests, GameRuntimeSettingsLiveInNullusProjectFile)
+{
+    const std::filesystem::path contextSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Game/Core/Context.cpp";
+
+    std::ifstream stream(contextSourcePath, std::ios::binary);
+    const std::string contextSource{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>() };
+
+    ASSERT_FALSE(contextSource.empty());
+    EXPECT_NE(contextSource.find("enable_threaded_rendering"), std::string::npos);
+    EXPECT_NE(contextSource.find("renderdoc_enabled"), std::string::npos);
+    EXPECT_NE(contextSource.find("renderdoc_capture_after_frames"), std::string::npos);
+}

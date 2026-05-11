@@ -136,20 +136,16 @@ namespace
 }
 
 Game::Context::Context(
-	const Render::Settings::RenderDocSettings& p_renderDocSettings,
+	std::optional<Render::Settings::RenderDocSettings> p_renderDocOverride,
 	std::optional<Render::Settings::EGraphicsBackend> p_backendOverride,
-	std::optional<std::string> p_projectPathOverride,
-	bool p_enableThreadedRendering,
-	const Render::Settings::EngineDiagnosticsSettings& p_diagnosticsSettings)
+	std::optional<std::string> p_projectPathOverride)
     : engineAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets/Engine")).string() + Utils::PathParser::Separator()), projectAssetsPath(ResolveGameProjectPaths(p_projectPathOverride).assetsPath),
 	projectScriptsPath(ResolveGameProjectPaths(p_projectPathOverride).scriptsPath),
 	projectSettings(ResolveGameProjectPaths(p_projectPathOverride).settingsPath),
 	sceneManager(projectAssetsPath),
-	m_renderDocSettings(p_renderDocSettings),
+	m_renderDocOverride(std::move(p_renderDocOverride)),
 	m_backendOverride(p_backendOverride),
-	m_projectPathOverride(p_projectPathOverride),
-	m_enableThreadedRendering(p_enableThreadedRendering),
-	m_diagnosticsSettings(p_diagnosticsSettings)
+	m_projectPathOverride(p_projectPathOverride)
 {
 	const auto resolvedProjectPaths = ResolveGameProjectPaths(m_projectPathOverride);
 
@@ -172,6 +168,12 @@ Game::Context::Context(
 		projectSettings.Add<bool>("multi_sampling", true);
 	if (!projectSettings.IsKeyExisting("enable_light_grid"))
 		projectSettings.Add<bool>("enable_light_grid", true);
+	if (!projectSettings.IsKeyExisting("enable_threaded_rendering"))
+		projectSettings.Add<bool>("enable_threaded_rendering", true);
+	if (!projectSettings.IsKeyExisting("renderdoc_enabled"))
+		projectSettings.Add<bool>("renderdoc_enabled", false);
+	if (!projectSettings.IsKeyExisting("renderdoc_capture_after_frames"))
+		projectSettings.Add<int>("renderdoc_capture_after_frames", 0);
 
 	if (!resolvedProjectPaths.settingsPath.empty())
 		NLS_LOG_INFO("Game runtime using project settings: " + resolvedProjectPaths.settingsPath);
@@ -216,19 +218,28 @@ Game::Context::Context(
 #else
 	driverSettings.debugMode = false;
 #endif
-	driverSettings.enableThreadedRendering = m_enableThreadedRendering;
+	driverSettings.enableThreadedRendering = projectSettings.GetOrDefault<bool>("enable_threaded_rendering", true);
 	driverSettings.enableLightGrid = projectSettings.GetOrDefault<bool>("enable_light_grid", true);
 	driverSettings.threadedFrameSlotCount = driverSettings.framesInFlight;
-	driverSettings.diagnostics = m_diagnosticsSettings;
 	driverSettings.defaultPipelineState = basePSO;
 
-	// Apply command-line RenderDoc settings first, then let environment variables override if set
-	if (m_renderDocSettings.enabled || m_renderDocSettings.startupCaptureAfterFrames > 0)
+	Render::Settings::RenderDocSettings renderDocSettings;
+	renderDocSettings.enabled = projectSettings.GetOrDefault<bool>("renderdoc_enabled", false);
+	const int captureAfterFrames = projectSettings.GetOrDefault<int>("renderdoc_capture_after_frames", 0);
+	renderDocSettings.startupCaptureAfterFrames = captureAfterFrames > 0 ? static_cast<uint32_t>(captureAfterFrames) : 0u;
+	if (renderDocSettings.startupCaptureAfterFrames > 0u)
+		renderDocSettings.enabled = true;
+	if (m_renderDocOverride.has_value())
+		renderDocSettings = m_renderDocOverride.value();
+
+	if (renderDocSettings.enabled || renderDocSettings.startupCaptureAfterFrames > 0)
 	{
-		driverSettings.renderDoc = m_renderDocSettings;
-		NLS_LOG_INFO("RenderDoc: applied command-line settings (enabled=" +
-			std::string(m_renderDocSettings.enabled ? "true" : "false") +
-			", captureAfterFrames=" + std::to_string(m_renderDocSettings.startupCaptureAfterFrames) + ")");
+		driverSettings.renderDoc = renderDocSettings;
+		NLS_LOG_INFO(
+			std::string("RenderDoc: applied ") +
+			(m_renderDocOverride.has_value() ? "command-line override" : "project settings") +
+			" (enabled=" + std::string(renderDocSettings.enabled ? "true" : "false") +
+			", captureAfterFrames=" + std::to_string(renderDocSettings.startupCaptureAfterFrames) + ")");
 	}
 
 	Render::Tooling::ApplyRenderDocEnvironmentOverrides(

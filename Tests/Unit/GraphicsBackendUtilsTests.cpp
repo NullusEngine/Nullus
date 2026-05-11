@@ -590,8 +590,15 @@ TEST(GraphicsBackendUtilsTests, BackendPhaseGateReportIncludesMissingCapabilityR
         capabilities);
 
     ASSERT_FALSE(report.gates.empty());
+#if defined(_WIN32)
     EXPECT_EQ(report.gates.front().phase, NLS::Render::Settings::BackendPhaseGate::CapabilityValidation);
     EXPECT_EQ(report.fallbackBackend, NLS::Render::Settings::EGraphicsBackend::NONE);
     EXPECT_NE(report.gates.front().reason.find("Offscreen allocator missing"), std::string::npos);
     EXPECT_NE(report.summary.find("CapabilityValidation"), std::string::npos);
+#else
+    EXPECT_EQ(report.gates.front().phase, NLS::Render::Settings::BackendPhaseGate::BackendSelection);
+    EXPECT_EQ(report.fallbackBackend, NLS::Render::Settings::EGraphicsBackend::NONE);
+    EXPECT_NE(report.gates.front().reason.find("only supports DX12"), std::string::npos);
+    EXPECT_NE(report.summary.find("BackendSelection"), std::string::npos);
+#endif
 }

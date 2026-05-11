@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -374,7 +375,11 @@ namespace NLS::Render::ShaderCompiler
 			stream << "size=" << (error ? 0u : fileSize);
 			stream << ";mtime=";
 			if (!error)
-				stream << writeTime.time_since_epoch().count();
+			{
+				const auto writeTimeNanoseconds =
+					std::chrono::duration_cast<std::chrono::nanoseconds>(writeTime.time_since_epoch()).count();
+				stream << static_cast<std::int64_t>(writeTimeNanoseconds);
+			}
 			else
 				stream << 0;
 			return stream.str();

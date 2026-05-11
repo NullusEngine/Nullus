@@ -878,6 +878,10 @@ TEST(RendererFrameObjectBindingTests, MaterialPipelineLayoutUsesRendererOwnedSha
 
 TEST(RendererFrameObjectBindingTests, DeferredGBufferPipelineOverridesUseThreeRenderTargets)
 {
+#if !defined(_WIN32)
+    GTEST_SKIP() << "DX12 recorded material pipeline override test requires the phase-1 Windows DX12 runtime.";
+#endif
+
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::DX12;
     settings.enableExplicitRHI = false;

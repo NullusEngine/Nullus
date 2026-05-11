@@ -366,7 +366,9 @@ TEST(ShaderCompilerTests, ShaderCompilerProcessReadPipeHasSingleOwner)
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("const HANDLE outputReadPipe = readPipe;"), std::string::npos);
     EXPECT_NE(source.find("readPipe = nullptr;"), std::string::npos);
-    EXPECT_NE(source.find("if (readPipe != nullptr)\n\t\t\tCloseHandle(readPipe);"), std::string::npos);
+    EXPECT_NE(source.find("CloseHandle(outputReadPipe);"), std::string::npos);
+    EXPECT_NE(source.find("if (readPipe != nullptr)"), std::string::npos);
+    EXPECT_NE(source.find("CloseHandle(readPipe);"), std::string::npos);
 }
 
 TEST(ShaderCompilerTests, ShaderCompilerProcessCancellationReturnsDiagnostics)

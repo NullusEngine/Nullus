@@ -4,11 +4,8 @@
 
 #include <Eventing/Event.h>
 
-#include "ImGui/imgui.h"
-
 #include "UI/Plugins/IPlugin.h"
-#include "UI/UIManager.h"
-#include "Core/ServiceLocator.h"
+#include "UI/Plugins/DragDrop.h"
 
 namespace NLS::UI
 {
@@ -32,25 +29,25 @@ namespace NLS::UI
 		*/
 		virtual void Execute() override
 		{
-            if (NLS_SERVICE(UIManager).BeginDragDropTarget())
+			if (BeginDragDropTarget())
 			{
 				if (!m_isHovered)
 					HoverStartEvent.Invoke();
 
 				m_isHovered = true;
 
-				ImGuiDragDropFlags target_flags = 0;
+				DragDropTargetFlags target_flags = DragDropTargetFlags::None;
 				// target_flags |= ImGuiDragDropFlags_AcceptBeforeDelivery;    // Don't wait until the delivery (release mouse button on a target) to do something
 				
 				if (!showYellowRect)
-					target_flags |= ImGuiDragDropFlags_AcceptNoDrawDefaultRect; // Don't display the yellow rectangle
+					target_flags |= DragDropTargetFlags::AcceptNoDrawDefaultRect; // Don't display the yellow rectangle
 
-				if (const ImGuiPayload* payload = NLS_SERVICE(UIManager).AcceptDragDropPayload(identifier.c_str(), target_flags))
+				if (const DragDropPayloadView payload = AcceptDragDropPayload(identifier.c_str(), target_flags); payload.data != nullptr)
 				{
-					T data = *(T*)payload->Data;
+					T data = *static_cast<const T*>(payload.data);
 					DataReceivedEvent.Invoke(data);
 				}
-                NLS_SERVICE(UIManager).EndDragDropTarget();
+				EndDragDropTarget();
 			}
 			else
 			{

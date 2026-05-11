@@ -3,6 +3,7 @@
 #include <utility>
 
 #include "Profiling/Profiler.h"
+#include "Rendering/FrameGraph/FrameGraphExecutionPlan.h"
 #include "Rendering/FrameGraph/SceneRenderGraphBuilderInternal.h"
 
 namespace NLS::Render::FrameGraph

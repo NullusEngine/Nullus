@@ -12,6 +12,7 @@
 #include <UI/Widgets/Visual/Separator.h>
 #include <UI/Widgets/Layout/Group.h>
 #include <UI/Widgets/Layout/GroupCollapsable.h>
+#include <UI/Widgets/Layout/Columns.h>
 #include <UI/Widgets/Layout/NewLine.h>
 #include <UI/Widgets/Buttons/Button.h>
 #include <UI/Widgets/Selection/ComboBox.h>

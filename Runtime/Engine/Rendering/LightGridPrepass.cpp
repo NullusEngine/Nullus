@@ -13,6 +13,7 @@
 #include <Math/Vector3.h>
 #include <Math/Vector4.h>
 #include <Rendering/Context/DriverAccess.h>
+#include <Rendering/FrameGraph/FrameGraphExecutionPlan.h>
 #include <Rendering/RHI/BindingPointMap.h>
 #include <Rendering/RHI/Core/RHIDevice.h>
 #include <Rendering/RHI/Utils/PipelineCache/PipelineCache.h>

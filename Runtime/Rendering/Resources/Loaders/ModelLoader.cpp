@@ -1,14 +1,19 @@
 #include "Rendering/Resources/Loaders/ModelLoader.h"
 
+#include "Rendering/Resources/Parsers/AssimpParser.h"
+
 namespace NLS::Render::Resources::Loaders
 {
-Parsers::AssimpParser ModelLoader::__ASSIMP;
+namespace
+{
+Parsers::AssimpParser GAssimpParser;
+}
 
 Model* ModelLoader::Create(const std::string& p_filepath, Parsers::EModelParserFlags p_parserFlags)
 {
     Model* result = new Model(p_filepath);
 
-    if (__ASSIMP.LoadModel(p_filepath, result->m_meshes, result->m_materialNames, p_parserFlags))
+    if (GAssimpParser.LoadModel(p_filepath, result->m_meshes, result->m_materialNames, p_parserFlags))
     {
         result->ComputeBoundingSphere();
         return result;

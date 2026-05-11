@@ -4,8 +4,10 @@
 #include <Vector4.h>
 
 #include "UI/UIDef.h"
-#include "ImGui/imgui.h"
 #include "Color.h"
+
+struct ImVec2;
+struct ImVec4;
 
 namespace NLS::UI::Internal
 {

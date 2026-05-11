@@ -11,8 +11,8 @@
 #include <thread>
 
 #include "Rendering/RHI/RHITypes.h"
+#include "Rendering/Settings/EngineDiagnosticsSettings.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
-#include "Rendering/Settings/DriverSettings.h"
 
 #ifndef NLS_HAS_IMGUI_DX12_BACKEND
 #define NLS_HAS_IMGUI_DX12_BACKEND 0

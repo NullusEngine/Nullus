@@ -35,3 +35,5 @@ target_link_libraries(
     PUBLIC
     NLS_Engine
 )
+
+nls_target_precompile_headers(Launcher "${NLS_ROOT_DIR}/Project/NullusProjectPch.h")

@@ -6,6 +6,7 @@
 #include "Math/Matrix3.h"
 #include "Math/Vector3.h"
 #include "Math/Vector4.h"
+#include "Rendering/Resources/Model.h"
 #include "Settings/EditorSettings.h"
 
 namespace NLS::Editor::Core

@@ -1,17 +1,24 @@
 ﻿#pragma once
 
-#include <Rendering/Resources/Loaders/TextureLoader.h>
-
 #include <UI/Panels/PanelWindow.h>
-#include <UI/Widgets/Layout/GroupCollapsable.h>
-#include <UI/Widgets/InputFields/InputText.h>
-#include <UI/Widgets/Visual/Separator.h>
-#include <UI/Widgets/Selection/CheckBox.h>
-#include <UI/Widgets/Buttons/Button.h>
-#include <UI/Widgets/Selection/ComboBox.h>
 
 #include "Panels/Hierarchy.h"
 #include "Panels/AssetBrowser.h"
+
+namespace NLS::Engine
+{
+class GameObject;
+}
+
+namespace NLS::Engine::Components
+{
+class Component;
+}
+
+namespace NLS::UI::Widgets
+{
+class Group;
+}
 
 namespace NLS::Editor::Panels
 {

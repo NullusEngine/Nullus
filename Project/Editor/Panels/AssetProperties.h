@@ -5,14 +5,23 @@
 #include <Filesystem/IniFile.h>
 #include <Eventing/Event.h>
 
-#include <UI/Widgets/Texts/Text.h>
 #include <UI/Panels/PanelWindow.h>
-#include <UI/Widgets/Layout/Group.h>
-#include <UI/Widgets/Layout/Columns.h>
 
-#include <Rendering/Resources/Model.h>
-#include <Rendering/Resources/Material.h>
-#include <Rendering/Resources/Texture2D.h>
+namespace NLS::Render::Resources
+{
+	class Material;
+	class Model;
+	class Texture2D;
+}
+
+namespace NLS::UI::Widgets
+{
+	class AWidget;
+	class Button;
+	class Columns;
+	class Group;
+	class Text;
+}
 
 namespace NLS::Editor::Panels
 {

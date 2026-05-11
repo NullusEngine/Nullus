@@ -6,12 +6,18 @@
 #include <tuple>
 #include <vector>
 
-#include "Rendering/RHI/Core/RHIDevice.h"
+#include "Rendering/RHI/RHITypes.h"
 #include "Rendering/Resources/UniformInfo.h"
 #include "Rendering/Resources/ShaderReflection.h"
 #include "Rendering/Resources/ShaderParameterStruct.h"
 #include "Rendering/ShaderCompiler/ShaderCompilationTypes.h"
 #include "RenderDef.h"
+
+namespace NLS::Render::RHI
+{
+	class RHIDevice;
+	class RHIShaderModule;
+}
 
 namespace NLS::Render::Resources
 {

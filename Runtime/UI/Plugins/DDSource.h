@@ -4,11 +4,8 @@
 
 #include <Eventing/Event.h>
 
-#include "ImGui/imgui.h"
-
+#include "UI/Plugins/DragDrop.h"
 #include "UI/Plugins/IPlugin.h"
-#include "ServiceLocator.h"
-#include "UI/UIManager.h"
 
 namespace NLS::UI
 {
@@ -38,24 +35,23 @@ namespace NLS::UI
 		*/
 		virtual void Execute() override
 		{
-			ImGuiDragDropFlags src_flags = 0;
-			src_flags |= ImGuiDragDropFlags_SourceNoDisableHover;     // Keep the source displayed as hovered
-			src_flags |= ImGuiDragDropFlags_SourceNoHoldToOpenOthers; // Because our dragging is local, we disable the feature of opening foreign treenodes/tabs while dragging
+			DragDropSourceFlags src_flags = DragDropSourceFlags::NoDisableHover; // Keep the source displayed as hovered
+			src_flags |= DragDropSourceFlags::NoHoldToOpenOthers; // Because our dragging is local, we disable the feature of opening foreign treenodes/tabs while dragging
 
 			if (!hasTooltip)
-				src_flags |= ImGuiDragDropFlags_SourceNoPreviewTooltip; // Hide the tooltip
+				src_flags |= DragDropSourceFlags::NoPreviewTooltip; // Hide the tooltip
 
-			if (NLS_SERVICE(UIManager).BeginDragDropSource(src_flags))
+			if (BeginDragDropSource(src_flags))
 			{
 				if (!m_isDragged)
 					DragStartEvent.Invoke();
 
 				m_isDragged = true;
 
-				if (!(src_flags & ImGuiDragDropFlags_SourceNoPreviewTooltip))
-					ImGui::Text(tooltip.c_str());
-                NLS_SERVICE(UIManager).SetDragDropPayload(identifier.c_str(), &data, sizeof(data));
-                NLS_SERVICE(UIManager).EndDragDropSource();
+				if (!HasFlag(src_flags, DragDropSourceFlags::NoPreviewTooltip))
+					DrawDragDropTooltipText(tooltip.c_str());
+				SetDragDropPayload(identifier.c_str(), &data, sizeof(data));
+				EndDragDropSource();
 			}
 			else
 			{

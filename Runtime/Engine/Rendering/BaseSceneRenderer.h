@@ -5,7 +5,6 @@
 #include <optional>
 
 #include <Rendering/Core/CompositeRenderer.h>
-#include <Rendering/Resources/Mesh.h>
 #include <Rendering/Data/Frustum.h>
 #include <Rendering/Entities/Drawable.h>
 #include <Rendering/Context/RenderScenePackageBuilder.h>
@@ -13,10 +12,6 @@
 #include <Rendering/FrameGraph/SceneRenderGraphBuilder.h>
 #include "Rendering/LightGridPrepass.h"
 
-#include "Rendering/Resources/Material.h"
-#include "GameObject.h"
-#include "Components/CameraComponent.h"
-#include "SceneSystem/Scene.h"
 #include "EngineDef.h"
 
 class FrameGraph;
@@ -25,6 +20,17 @@ namespace NLS::Render::FrameGraph
 {
 	struct CompiledThreadedRenderSceneGraphPass;
 	struct ThreadedRenderScenePassMetadata;
+}
+
+namespace NLS::Render::Resources
+{
+	class Material;
+	class Model;
+}
+
+namespace NLS::Engine::SceneSystem
+{
+	class Scene;
 }
 
 namespace NLS::Engine::Rendering

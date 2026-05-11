@@ -1,6 +1,7 @@
 #include "Guid.h"
 
 #include <algorithm>
+#include <Json/json.hpp>
 #include <random>
 #include <stdexcept>
 

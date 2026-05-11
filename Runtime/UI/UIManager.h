@@ -11,6 +11,7 @@
 #include "UI/Styling/EStyle.h"
 #include "UI/UIDef.h"
 #include "Windowing/Cursor/ECursorShape.h"
+#include "ImGui/imgui.h"
 
 struct GLFWwindow;
 
@@ -24,6 +25,12 @@ enum class NLS_UI_API ImGuiGlfwInitBackend : uint8_t
 };
 
 NLS_UI_API ImGuiGlfwInitBackend ResolveImGuiGlfwInitBackend(NLS::Render::Settings::EGraphicsBackend backend);
+
+enum class ImGuiPlatformBackend : uint8_t
+{
+    GLFW,
+    Win32
+};
 
 /**
  * Handle the creation and drawing of the UI
@@ -213,6 +220,7 @@ private:
     bool m_inFrame = false;
     Canvas* m_currentCanvas = nullptr;
     NLS::Render::Settings::EGraphicsBackend m_backend = NLS::Render::Settings::EGraphicsBackend::OPENGL;
+    ImGuiPlatformBackend m_platformBackend = ImGuiPlatformBackend::GLFW;
     std::unique_ptr<NLS::Render::RHI::RHIUIBridge> m_uiBridge;
     uint32_t m_currentSwapchainImageIndex = 0;
     NLS::Render::RHI::NativeHandle waitSemaphore_;

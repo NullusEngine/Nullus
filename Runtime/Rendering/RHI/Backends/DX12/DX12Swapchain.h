@@ -4,6 +4,7 @@
 #include <string_view>
 #include <vector>
 
+#include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/RHI/Core/RHISwapchain.h"
 
 struct ID3D12DescriptorHeap;

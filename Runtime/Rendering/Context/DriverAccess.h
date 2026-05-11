@@ -9,7 +9,7 @@
 #include <string_view>
 
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
-#include "Rendering/RHI/Core/RHIDevice.h"
+#include "Rendering/RHI/Core/RHIEnums.h"
 #include "Rendering/RHI/Utils/DescriptorAllocator/DescriptorAllocator.h"
 #include "RenderDef.h"
 
@@ -62,6 +62,7 @@ namespace NLS::Render::RHI
     class RHITextureView;
     class RHISwapchain;
     enum class TextureDimension : uint8_t;
+    struct RHIReadbackResult;
     struct NativeRenderDeviceInfo;
     struct FramebufferDesc;
     struct RHIBufferDesc;

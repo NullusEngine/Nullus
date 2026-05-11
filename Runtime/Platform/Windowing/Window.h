@@ -327,9 +327,12 @@ namespace NLS::Windowing
 			return &m_device;
         }
 #ifdef _WIN32
+        using NativeMessageHandler = long long (*)(void*, unsigned int, unsigned long long, long long);
+
         bool HasValidNativeWindowProc() const;
         void InstallNativeWindowProc();
         void RestoreNativeWindowProc();
+        void SetNativeMessageHandler(NativeMessageHandler p_handler);
         long long HandleNativeWindowMessage(void* p_hwnd, unsigned int p_msg, unsigned long long p_wParam, long long p_lParam);
 #endif
 	private:
@@ -379,6 +382,7 @@ namespace NLS::Windowing
         uint16_t m_nativeTitleBarDragRightInset = 0;
 #ifdef _WIN32
         void* m_originalWindowProc = nullptr;
+        NativeMessageHandler m_nativeMessageHandler;
         bool m_nativeResizeInProgress = false;
         bool m_dispatchingNativeResizeRefresh = false;
 #endif

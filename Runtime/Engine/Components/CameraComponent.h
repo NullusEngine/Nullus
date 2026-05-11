@@ -1,11 +1,18 @@
 
 #pragma once
 
-#include "Rendering/Entities/Camera.h"
 #include "Components/Component.h"
 #include "EngineDef.h"
+#include "Math/Vector3.h"
 #include "Reflection/Macros.h"
+#include "Rendering/Settings/EProjectionMode.h"
 #include "Components/CameraComponent.generated.h"
+
+namespace NLS::Render::Entities
+{
+	class Camera;
+}
+
 namespace NLS::Engine::Components
 {
 	/**

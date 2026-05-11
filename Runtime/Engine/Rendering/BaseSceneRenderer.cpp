@@ -12,10 +12,13 @@
 #include "Rendering/Context/RenderScenePackageBuilder.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/FrameGraph/ExternalResourceBridge.h"
+#include "Rendering/Resources/Material.h"
+#include "Rendering/Resources/Model.h"
 #include "Profiling/Profiler.h"
 #include "Components/MeshRenderer.h"
 #include "Components/MaterialRenderer.h"
 #include "Components/TransformComponent.h"
+#include "SceneSystem/Scene.h"
 
 namespace NLS::Engine::Rendering
 {

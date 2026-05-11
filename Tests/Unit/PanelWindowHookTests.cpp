@@ -257,6 +257,7 @@ TEST(PanelWindowHookTests, ProfilerPanelDrawDoesNotAdvanceTimelineFrameInsideAct
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2(1280.0f, 720.0f);
 
+    NLS::Base::Profiling::Profiler::ResetForTesting();
     NLS::Editor::Panels::ProfilerPanel panel("Profiler", true, {});
 
     unsigned char* pixels = nullptr;
@@ -265,7 +266,6 @@ TEST(PanelWindowHookTests, ProfilerPanelDrawDoesNotAdvanceTimelineFrameInsideAct
     io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
     ASSERT_NE(pixels, nullptr);
 
-    NLS::Base::Profiling::Profiler::ResetForTesting();
     NLS::Base::Profiling::Profiler::SetEnabled(true);
     NLS::Base::Profiling::Profiler::RegisterDestination(panel.GetTimelineSink());
 

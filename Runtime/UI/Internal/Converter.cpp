@@ -1,6 +1,8 @@
 
 #include "UI/Internal/Converter.h"
 
+#include "ImGui/imgui.h"
+
 namespace NLS::UI
 {
     ImVec4 Internal::Converter::ToImVec4(const Maths::Color& p_value)

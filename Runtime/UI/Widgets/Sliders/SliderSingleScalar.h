@@ -6,6 +6,7 @@
 #include "UI/Widgets/DataWidget.h"
 #include "UI/Widgets/Sliders/ESliderOrientation.h"
 #include "UI/Internal/Converter.h"
+#include "ImGui/imgui.h"
 
 namespace NLS::UI::Widgets
 {

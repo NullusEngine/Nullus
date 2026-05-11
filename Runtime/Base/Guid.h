@@ -5,10 +5,11 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <Json/json.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
+
+#include "JsonFwd.h"
 
 namespace NLS
 {

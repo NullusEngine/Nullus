@@ -1,9 +1,19 @@
 #pragma once
+
+#include <memory>
+#include <string>
+#include <vector>
+
 #include "PlatformDef.h"
 #ifdef APIENTRY
 #undef APIENTRY
 #endif
-#include "portable-file-dialogs.h"
+
+namespace pfd
+{
+class open_file;
+}
+
 namespace NLS::Dialogs
 {
 /**
@@ -16,11 +26,13 @@ public:
                    std::string const& default_path = "",
                    std::vector<std::string> const& filters = {"All Files", "*"},
                    bool allow_multiselecte = false);
+    ~OpenFileDialog();
+
     std::vector<std::string> Result();
     bool Ready(int timeout = 20) const;
     bool Kill() const;
 
 private:
-    pfd::open_file op;
+    std::unique_ptr<pfd::open_file> op;
 };
 } // namespace NLS::Dialogs

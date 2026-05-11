@@ -1,10 +1,18 @@
 #pragma once
 
+#include <memory>
+#include <string>
+#include <vector>
+
 #include "PlatformDef.h"
 #ifdef APIENTRY
 #undef APIENTRY
 #endif
-#include "portable-file-dialogs.h"
+
+namespace pfd
+{
+class save_file;
+}
 
 namespace NLS::Dialogs
 {
@@ -18,11 +26,13 @@ namespace NLS::Dialogs
                        std::string const& initial_path = "",
                        std::vector<std::string> filters = {"All Files", "*"},
                        bool confirm_overwrite = false);
+        ~SaveFileDialog();
+
         std::string Result();
         bool Ready(int timeout = 20) const;
         bool Kill() const;
 
     private:
-        pfd::save_file sv;
+        std::unique_ptr<pfd::save_file> sv;
 	};
 }

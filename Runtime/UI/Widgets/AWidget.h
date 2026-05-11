@@ -6,7 +6,6 @@
 #include "UI/API/IDrawable.h"
 #include "UI/Plugins/Pluginable.h"
 #include "UI/Plugins/DataDispatcher.h"
-#include "ImGui/imgui.h"
 
 namespace  NLS::UI::Internal { class WidgetContainer; }
 

@@ -1,15 +1,21 @@
 #pragma once
 
+#include <memory>
 #include <string>
+
 #include "PlatformDef.h"
 #ifdef APIENTRY
 #undef APIENTRY
 #endif
-#include "portable-file-dialogs.h"
 /* Prevent enum and class name to be replaced by standard macros */
 #undef MessageBox
 #undef ERROR
 #undef IGNORE
+
+namespace pfd
+{
+class message;
+}
 
 namespace NLS::Dialogs
 {
@@ -68,6 +74,7 @@ public:
      * @param p_autoSpawn
      */
     MessageBox(std::string p_title, std::string p_message, EMessageType p_messageType = EMessageType::INFORMATION, EButtonLayout p_buttonLayout = EButtonLayout::OK);
+    ~MessageBox();
 
     bool Ready(int timeout = 20) const;
     bool Kill() const;
@@ -77,6 +84,6 @@ public:
     const EUserAction GetUserAction();
 
 private:
-    pfd::message msg;
+    std::unique_ptr<pfd::message> msg;
 };
 } // namespace NLS::Dialogs

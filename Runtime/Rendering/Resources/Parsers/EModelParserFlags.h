@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 namespace NLS::Render::Resources::Parsers
 {
 	/**

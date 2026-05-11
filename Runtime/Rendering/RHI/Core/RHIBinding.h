@@ -1,9 +1,13 @@
 #pragma once
 
-#include "Rendering/RHI/Core/RHIResource.h"
+#include "Rendering/RHI/Core/RHIEnums.h"
 
 namespace NLS::Render::RHI
 {
+    class RHIBuffer;
+    class RHISampler;
+    class RHITextureView;
+
     struct NLS_RENDER_API RHIBindingLayoutEntry
     {
         std::string name;

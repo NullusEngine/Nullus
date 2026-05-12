@@ -3,6 +3,11 @@
 
 namespace NLS::UI::Widgets
 {
+ButtonArrow::ButtonArrow()
+    : ButtonArrow(ImGuiDir_None)
+{
+}
+
 ButtonArrow::ButtonArrow(ImGuiDir p_direction)
     : direction(p_direction)
 {

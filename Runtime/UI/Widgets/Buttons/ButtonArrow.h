@@ -4,6 +4,8 @@
 
 #include "UI/Widgets/Buttons/AButton.h"
 
+enum ImGuiDir : int;
+
 namespace NLS::UI::Widgets
 {
 	/**
@@ -16,7 +18,8 @@ namespace NLS::UI::Widgets
 		* Create the button
 		* @param p_direction
 		*/
-		ButtonArrow(ImGuiDir p_direction = ImGuiDir_None);
+		ButtonArrow();
+		ButtonArrow(ImGuiDir p_direction);
 
 	protected:
 		void _Draw_Impl() override;

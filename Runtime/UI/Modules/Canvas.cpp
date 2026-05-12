@@ -1,6 +1,7 @@
 #include "UI/Modules/Canvas.h"
 #include "UI/Panels/PanelViewportBar.h"
 
+#include "ImGui/imgui.h"
 #include "Profiling/Profiler.h"
 
 namespace NLS::UI

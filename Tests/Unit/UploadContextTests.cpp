@@ -6,6 +6,7 @@
 #include "Rendering/RHI/Backends/DX12/DX12Resource.h"
 #endif
 
+#include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/RHI/Utils/UploadContext/UploadContext.h"
 
 namespace

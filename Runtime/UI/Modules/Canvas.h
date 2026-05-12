@@ -6,7 +6,6 @@
 
 #include "UI/API/IDrawable.h"
 #include "UI/Panels/APanel.h"
-#include "ImGui/imgui.h"
 
 namespace NLS::UI
 {

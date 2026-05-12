@@ -4,7 +4,7 @@
 #include <string>
 
 #include "Rendering/Resources/Model.h"
-#include "Rendering/Resources/Parsers/AssimpParser.h"
+#include "Rendering/Resources/Parsers/EModelParserFlags.h"
 
 namespace NLS::Render::Resources::Loaders
 {
@@ -44,6 +44,5 @@ namespace NLS::Render::Resources::Loaders
 		static bool Destroy(Model*& p_modelInstance);
 
 	private:
-		static Parsers::AssimpParser __ASSIMP;
 	};
 }

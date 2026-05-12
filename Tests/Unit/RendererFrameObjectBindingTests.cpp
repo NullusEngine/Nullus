@@ -27,7 +27,9 @@
 #include "Rendering/Resources/Shader.h"
 #include "Rendering/Resources/ShaderParameterStruct.h"
 #include "Rendering/Settings/DriverSettings.h"
+#include "Components/LightComponent.h"
 #include "Components/MeshRenderer.h"
+#include "SceneSystem/Scene.h"
 
 namespace
 {

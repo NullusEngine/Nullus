@@ -3,6 +3,7 @@
 #include <Eventing/Event.h>
 
 #include "UI/Widgets/DataWidget.h"
+#include "ImGui/imgui.h"
 
 namespace NLS::UI::Widgets
 {

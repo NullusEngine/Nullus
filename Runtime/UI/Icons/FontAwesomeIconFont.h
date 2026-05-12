@@ -1,9 +1,13 @@
 #pragma once
 
+#include <cstdint>
+
 #include <UI/UIDef.h>
 
-#include "ImGui/imgui.h"
 #include "UI/ImGuiExtensions/TimelineProfiler/IconsFontAwesome4.h"
+
+struct ImFont;
+using ImWchar = uint16_t;
 
 namespace NLS::UI::Icons
 {

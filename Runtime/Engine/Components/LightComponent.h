@@ -1,11 +1,18 @@
 #pragma once
 
-#include <Rendering/Entities/Light.h>
+#include "Math/Vector3.h"
 
 #include "Components/Component.h"
 #include "EngineDef.h"
 #include "Reflection/Macros.h"
+#include "Rendering/Settings/ELightType.h"
 #include "Components/LightComponent.generated.h"
+
+namespace NLS::Render::Entities
+{
+    class Light;
+}
+
 namespace NLS::Engine::Components
 {
 /**

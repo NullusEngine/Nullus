@@ -603,9 +603,17 @@ void NLS::Windowing::Window::RestoreNativeWindowProc()
     m_originalWindowProc = nullptr;
 }
 
+void NLS::Windowing::Window::SetNativeMessageHandler(NativeMessageHandler p_handler)
+{
+    m_nativeMessageHandler = p_handler;
+}
+
 long long NLS::Windowing::Window::HandleNativeWindowMessage(void* p_hwnd, unsigned int p_msg, unsigned long long p_wParam, long long p_lParam)
 {
     HWND hwnd = static_cast<HWND>(p_hwnd);
+
+    if (m_nativeMessageHandler)
+        m_nativeMessageHandler(p_hwnd, p_msg, p_wParam, p_lParam);
 
     if (p_msg == WM_ENTERSIZEMOVE)
     {

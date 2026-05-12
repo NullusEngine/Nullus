@@ -8,6 +8,9 @@
 
 namespace NLS::Render::RHI
 {
+    struct RHIIndexBufferView;
+    struct RHIVertexBufferView;
+
     enum class NLS_RENDER_API RHICommandListLifecycleState : uint8_t
     {
         Available = 0,

@@ -6,6 +6,7 @@
 #include "Components/MeshRenderer.h"
 #include "Core/ServiceLocator.h"
 #include "Core/ResourceManagement/MaterialManager.h"
+#include "Rendering/Resources/Model.h"
 
 namespace NLS::Engine::Components
 {

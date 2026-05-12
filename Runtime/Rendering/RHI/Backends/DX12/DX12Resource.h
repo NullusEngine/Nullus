@@ -6,7 +6,6 @@
 
 #include "RenderDef.h"
 #include "Rendering/RHI/Core/RHIResource.h"
-#include "Rendering/RHI/Utils/UploadContext/UploadContext.h"
 
 struct ID3D12CommandQueue;
 struct ID3D12Device;
@@ -17,6 +16,11 @@ struct ID3D12Resource;
 #include <wrl/client.h>
 #undef CreateSemaphore
 #endif
+
+namespace NLS::Render::RHI
+{
+	class UploadBackend;
+}
 
 namespace NLS::Render::Backend
 {

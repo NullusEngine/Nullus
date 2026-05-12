@@ -1,6 +1,7 @@
 #include "Components/LightComponent.h"
 #include "Components/TransformComponent.h"
 #include "GameObject.h"
+#include "Rendering/Entities/Light.h"
 
 namespace NLS::Engine::Components
 {

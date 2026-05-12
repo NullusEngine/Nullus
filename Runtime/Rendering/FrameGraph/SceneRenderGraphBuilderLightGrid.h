@@ -4,7 +4,7 @@
 #include <memory>
 #include <string>
 
-#include "Rendering/FrameGraph/FrameGraphExecutionPlan.h"
+#include "Rendering/FrameGraph/FrameGraphExecutionTypes.h"
 
 namespace NLS::Render::FrameGraph
 {

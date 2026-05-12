@@ -5,6 +5,7 @@
 #include "Core/ServiceLocator.h"
 #include "UI/UIManager.h"
 #include "UI/Widgets/DataWidget.h"
+#include "ImGui/imgui.h"
 
 namespace NLS::UI::Widgets
 {

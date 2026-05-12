@@ -4,8 +4,14 @@
 #include <string>
 #include <stdint.h>
 
-#include "Rendering/RHI/Core/RHIResource.h"
+#include "Rendering/RHI/Core/RHIEnums.h"
 #include "RenderDef.h"
+
+namespace NLS::Render::RHI
+{
+	class RHITexture;
+	class RHITextureView;
+}
 
 namespace NLS::Render::Resources
 {

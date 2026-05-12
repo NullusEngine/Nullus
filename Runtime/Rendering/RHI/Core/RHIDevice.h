@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/RHI/Core/RHISwapchain.h"
 #include "Rendering/Settings/EPixelDataFormat.h"
 #include "Rendering/Settings/EPixelDataType.h"

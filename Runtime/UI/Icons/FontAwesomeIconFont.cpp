@@ -1,5 +1,6 @@
 #include "UI/Icons/FontAwesomeIconFont.h"
 
+#include "ImGui/imgui.h"
 #include "UI/ImGuiExtensions/TimelineProfiler/IconsFontAwesome4_data.h"
 
 namespace NLS::UI::Icons

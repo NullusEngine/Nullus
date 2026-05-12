@@ -1,4 +1,5 @@
 #include <Components/CameraComponent.h>
+#include <Rendering/Buffers/UniformBuffer.h>
 #include <Rendering/SceneRendererFactory.h>
 #include "Panels/GameView.h"
 #include "Core/EditorActions.h"

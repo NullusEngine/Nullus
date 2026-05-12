@@ -12,6 +12,7 @@
 #include "Rendering/RHI/Backends/DX12/DX12ReadbackUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12TextureUploadUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12TextureViewUtils.h"
+#include "Rendering/RHI/Utils/UploadContext/UploadContext.h"
 
 #if defined(_WIN32)
 #include <Windows.h>

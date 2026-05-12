@@ -51,8 +51,8 @@ internal static partial class MetaParserTool
                 MetaParserTemplateCatalog.ResolvePath(templateRoot, manifest.Templates.HeaderRule.SourceTemplate),
                 headerSession);
 
-            File.WriteAllText(generatedHeaderPath, generatedHeaderText, new UTF8Encoding(false));
-            File.WriteAllText(generatedSourcePath, generatedSourceText, new UTF8Encoding(false));
+            WriteAllTextIfChanged(generatedHeaderPath, generatedHeaderText);
+            WriteAllTextIfChanged(generatedSourcePath, generatedSourceText);
             generatedSourceIncludes.Add($"{generatedBase}{manifest.Outputs.HeaderGeneratedSourceSuffix}".Replace('\\', '/'));
         }
 
@@ -68,12 +68,11 @@ internal static partial class MetaParserTool
             CreateTemplateSession(moduleModel));
 
         var sanitizedTargetName = moduleModel.SanitizedTargetName;
-        File.WriteAllText(Path.Combine(outputDir, manifest.Outputs.ModuleHeaderFileName), moduleHeaderText, new UTF8Encoding(false));
-        File.WriteAllText(
+        WriteAllTextIfChanged(Path.Combine(outputDir, manifest.Outputs.ModuleHeaderFileName), moduleHeaderText);
+        WriteAllTextIfChanged(
             Path.Combine(outputDir, manifest.Outputs.TargetModuleHeaderFileNamePattern.Replace("{SanitizedTargetName}", sanitizedTargetName, StringComparison.Ordinal)),
-            moduleHeaderText,
-            new UTF8Encoding(false));
-        File.WriteAllText(Path.Combine(outputDir, manifest.Outputs.ModuleSourceFileName), moduleSourceText, new UTF8Encoding(false));
+            moduleHeaderText);
+        WriteAllTextIfChanged(Path.Combine(outputDir, manifest.Outputs.ModuleSourceFileName), moduleSourceText);
 
         RemoveStaleGeneratedOutputs(outputDir, manifest, expectedHeaderOutputs, expectedSourceOutputs);
     }
@@ -354,9 +353,23 @@ internal static partial class MetaParserTool
                     builder.AppendLine($"#define {macroName}");
                 }
 
-                File.WriteAllText(generatedHeaderPath, builder.ToString(), new UTF8Encoding(false));
+                WriteAllTextIfChanged(generatedHeaderPath, builder.ToString());
             }
         }
+    }
+
+    private static void WriteAllTextIfChanged(string path, string text)
+    {
+        var encoding = new UTF8Encoding(false);
+        var bytes = encoding.GetBytes(text);
+        if (File.Exists(path))
+        {
+            var existingBytes = File.ReadAllBytes(path);
+            if (existingBytes.AsSpan().SequenceEqual(bytes))
+                return;
+        }
+
+        File.WriteAllBytes(path, bytes);
     }
 
     private static bool IsPathInside(string path, string directory)

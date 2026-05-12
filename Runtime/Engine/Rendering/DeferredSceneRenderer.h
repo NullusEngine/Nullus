@@ -4,8 +4,6 @@
 #include <string>
 #include <unordered_map>
 
-#include <fg/FrameGraph.hpp>
-
 #include <Rendering/Buffers/MultiFramebuffer.h>
 
 #include "Rendering/BaseSceneRenderer.h"

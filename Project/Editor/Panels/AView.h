@@ -7,10 +7,8 @@
 
 #include <UI/Panels/PanelWindow.h>
 #include <UI/Widgets/Visual/Image.h>
-#include <Rendering/Buffers/UniformBuffer.h>
 #include <Rendering/Buffers/Framebuffer.h>
 #include <Rendering/Entities/Camera.h>
-#include <Rendering/Core/CompositeRenderer.h>
 #include <Rendering/BaseSceneRenderer.h>
 
 namespace NLS::Editor::Panels

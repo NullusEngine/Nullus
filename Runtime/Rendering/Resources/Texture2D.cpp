@@ -2,6 +2,7 @@
 #include <memory>
 #include <vector>
 
+#include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/Resources/Texture2D.h"
 
 using namespace NLS::Render::Resources;

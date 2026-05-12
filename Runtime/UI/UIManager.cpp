@@ -17,6 +17,28 @@
 #include "ImGui/backends/imgui_impl_glfw.h"
 #include "ImGui/imgui_internal.h"
 #include <GLFW/glfw3.h>
+#ifdef _WIN32
+    #ifndef NOMINMAX
+        #define NOMINMAX
+    #endif
+    #ifndef GLFW_EXPOSE_NATIVE_WIN32
+        #define GLFW_EXPOSE_NATIVE_WIN32
+    #endif
+    #ifdef APIENTRY
+        #undef APIENTRY
+    #endif
+    #include <GLFW/glfw3native.h>
+    #include "ImGui/backends/imgui_impl_win32.h"
+    #include <Windows.h>
+    #ifdef min
+        #undef min
+    #endif
+    #ifdef max
+        #undef max
+    #endif
+
+    extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+#endif
 
 namespace NLS::UI
 {
@@ -61,6 +83,78 @@ NLS::Render::RHI::BackendType ToTaggedBackendType(const NLS::Render::RHI::Native
         return NLS::Render::RHI::BackendType::Unknown;
     }
 }
+
+#ifdef _WIN32
+bool ShouldUseWin32ImGuiPlatformBackend(const NLS::Render::Settings::EGraphicsBackend backend)
+{
+    return backend == NLS::Render::Settings::EGraphicsBackend::DX11 ||
+        backend == NLS::Render::Settings::EGraphicsBackend::DX12;
+}
+
+const char* ToGlfwPlatformName(const int platform)
+{
+    switch (platform)
+    {
+    case GLFW_PLATFORM_WIN32:
+        return "Win32";
+    case GLFW_PLATFORM_COCOA:
+        return "Cocoa";
+    case GLFW_PLATFORM_WAYLAND:
+        return "Wayland";
+    case GLFW_PLATFORM_X11:
+        return "X11";
+    case GLFW_PLATFORM_NULL:
+        return "Null";
+    default:
+        return "Unknown";
+    }
+}
+
+void ValidateWin32GlfwWindowForImGui(GLFWwindow* glfwWindow)
+{
+    if (glfwWindow == nullptr)
+    {
+        const std::string message = "UIManager startup failed: GLFW window is null.";
+        NLS_LOG_ERROR(message);
+        throw std::runtime_error(message);
+    }
+
+    const int platform = glfwGetPlatform();
+    if (platform != GLFW_PLATFORM_WIN32)
+    {
+        const std::string message =
+            "UIManager startup failed: GLFW platform is " +
+            std::string(ToGlfwPlatformName(platform)) +
+            ", but the Win32 ImGui GLFW backend requires GLFW_PLATFORM_WIN32.";
+        NLS_LOG_ERROR(message);
+        throw std::runtime_error(message);
+    }
+
+    HWND hwnd = glfwGetWin32Window(glfwWindow);
+    if (hwnd == nullptr)
+    {
+        const char* glfwDescription = nullptr;
+        const int glfwError = glfwGetError(&glfwDescription);
+        std::string message = "UIManager startup failed: GLFW did not provide a Win32 native window handle.";
+        if (glfwError != GLFW_NO_ERROR)
+        {
+            message += " GLFW error " + std::to_string(glfwError);
+            if (glfwDescription != nullptr)
+                message += ": " + std::string(glfwDescription);
+            message += ".";
+        }
+        NLS_LOG_ERROR(message);
+        throw std::runtime_error(message);
+    }
+
+    if (GetWindowLongPtr(hwnd, GWLP_WNDPROC) == 0)
+    {
+        const std::string message = "UIManager startup failed: Win32 native window procedure is not available.";
+        NLS_LOG_ERROR(message);
+        throw std::runtime_error(message);
+    }
+}
+#endif
 }
 
 ImGuiGlfwInitBackend ResolveImGuiGlfwInitBackend(const NLS::Render::Settings::EGraphicsBackend backend)
@@ -100,16 +194,37 @@ UIManager::UIManager(
     ApplyStyle(p_style);
 
 #ifdef _WIN32
+    m_platformBackend = ShouldUseWin32ImGuiPlatformBackend(m_backend)
+        ? ImGuiPlatformBackend::Win32
+        : ImGuiPlatformBackend::GLFW;
+
     if (auto* window = NLS::Windowing::Window::FindInstance(p_glfwWindow))
     {
-        if (window->GetNativeWindowHandle() == nullptr)
+        if (m_platformBackend == ImGuiPlatformBackend::Win32)
         {
-            const std::string message = "UIManager startup failed: GLFW did not provide a Win32 native window handle.";
-            NLS_LOG_ERROR(message);
-            throw std::runtime_error(message);
-        }
+            void* hwnd = window->GetNativeWindowHandle();
+            if (hwnd == nullptr)
+            {
+                const std::string message = "UIManager startup failed: Win32 native window handle is not available.";
+                NLS_LOG_ERROR(message);
+                throw std::runtime_error(message);
+            }
 
-        if (!window->HasValidNativeWindowProc())
+            ImGui_ImplWin32_Init(hwnd);
+            window->SetNativeMessageHandler([](
+                                                void* hwnd,
+                                                unsigned int msg,
+                                                unsigned long long wParam,
+                                                long long lParam) -> long long
+            {
+                return static_cast<long long>(ImGui_ImplWin32_WndProcHandler(
+                    static_cast<HWND>(hwnd),
+                    static_cast<UINT>(msg),
+                    static_cast<WPARAM>(wParam),
+                    static_cast<LPARAM>(lParam)));
+            });
+        }
+        else if (!window->HasValidNativeWindowProc())
         {
             const std::string message = "UIManager startup failed: Win32 native window procedure is not available.";
             NLS_LOG_ERROR(message);
@@ -118,17 +233,23 @@ UIManager::UIManager(
     }
 #endif
 
-    switch (ResolveImGuiGlfwInitBackend(m_backend))
+    if (m_platformBackend == ImGuiPlatformBackend::GLFW)
     {
-    case ImGuiGlfwInitBackend::OpenGL:
-        ImGui_ImplGlfw_InitForOpenGL(p_glfwWindow, true);
-        break;
-    case ImGuiGlfwInitBackend::Vulkan:
-        ImGui_ImplGlfw_InitForVulkan(p_glfwWindow, true);
-        break;
-    case ImGuiGlfwInitBackend::Other:
-        ImGui_ImplGlfw_InitForOther(p_glfwWindow, true);
-        break;
+#ifdef _WIN32
+        ValidateWin32GlfwWindowForImGui(p_glfwWindow);
+#endif
+        switch (ResolveImGuiGlfwInitBackend(m_backend))
+        {
+        case ImGuiGlfwInitBackend::OpenGL:
+            ImGui_ImplGlfw_InitForOpenGL(p_glfwWindow, true);
+            break;
+        case ImGuiGlfwInitBackend::Vulkan:
+            ImGui_ImplGlfw_InitForVulkan(p_glfwWindow, true);
+            break;
+        case ImGuiGlfwInitBackend::Other:
+            ImGui_ImplGlfw_InitForOther(p_glfwWindow, true);
+            break;
+        }
     }
 
 #ifdef _WIN32
@@ -171,11 +292,24 @@ UIManager::~UIManager()
 {
 #ifdef _WIN32
     if (auto* window = NLS::Windowing::Window::FindInstance(m_glfwWindow))
+    {
+        if (m_platformBackend == ImGuiPlatformBackend::Win32)
+            window->SetNativeMessageHandler(nullptr);
         window->RestoreNativeWindowProc();
+    }
 #endif
 
     m_uiBridge.reset();
-    ImGui_ImplGlfw_Shutdown();
+    if (m_platformBackend == ImGuiPlatformBackend::Win32)
+    {
+#ifdef _WIN32
+        ImGui_ImplWin32_Shutdown();
+#endif
+    }
+    else
+    {
+        ImGui_ImplGlfw_Shutdown();
+    }
     ImGui::DestroyContext();
 }
 
@@ -230,7 +364,16 @@ void UIManager::BeginFrame()
         }
     }
 
-    ImGui_ImplGlfw_NewFrame();
+    if (m_platformBackend == ImGuiPlatformBackend::Win32)
+    {
+#ifdef _WIN32
+        ImGui_ImplWin32_NewFrame();
+#endif
+    }
+    else
+    {
+        ImGui_ImplGlfw_NewFrame();
+    }
     if (m_uiBridge != nullptr)
         m_uiBridge->BeginFrame();
 

@@ -35,3 +35,5 @@ target_link_libraries(
     PUBLIC # 使用该库时必须依赖的库
     NLS_Engine
 )
+
+nls_target_precompile_headers(Game "${NLS_ROOT_DIR}/Project/NullusProjectPch.h")

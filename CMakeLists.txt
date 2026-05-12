@@ -64,10 +64,24 @@ endif()
 
 # 设置c++版本要求
 # ##############################################################################
+option(NLS_ENABLE_MSVC_MULTIPROCESSOR_COMPILATION "Enable MSVC /MP target-internal parallel compilation" ON)
+set(NLS_MSVC_MP_JOBS "" CACHE STRING "Optional MSVC /MP process count; empty uses compiler default")
+
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_STANDARD 20)
 if(MSVC)
-    add_compile_options(/FS /bigobj /source-charset:utf-8 /execution-charset:utf-8)
+    set(_nls_msvc_compile_options /FS /bigobj /source-charset:utf-8 /execution-charset:utf-8)
+    if(NLS_ENABLE_MSVC_MULTIPROCESSOR_COMPILATION)
+        if(NLS_MSVC_MP_JOBS)
+            if(NOT NLS_MSVC_MP_JOBS MATCHES "^[1-9][0-9]*$")
+                message(FATAL_ERROR "NLS_MSVC_MP_JOBS must be empty or a positive integer.")
+            endif()
+            list(APPEND _nls_msvc_compile_options "/MP${NLS_MSVC_MP_JOBS}")
+        else()
+            list(APPEND _nls_msvc_compile_options /MP)
+        endif()
+    endif()
+    add_compile_options(${_nls_msvc_compile_options})
 endif()
 
 # 确定编译目标为32位还是64位
@@ -106,6 +120,8 @@ option(NLS_ENABLE_PROFILING "Enable Nullus shared profiling instrumentation" ON)
 option(NLS_ENABLE_TRACY "Enable Tracy profiler destination" OFF)
 option(NLS_ENABLE_TIMELINE_PROFILER "Enable TimelineProfiler editor destination" OFF)
 option(NLS_BUILD_TRACY_PROFILER "Build Tracy GUI profiler tool" ${NLS_ENABLE_TRACY})
+option(NLS_ENABLE_PCH "Enable precompiled headers for supported C++ targets" ON)
+option(NLS_ENABLE_CXX_MODULES "Enable experimental C++20 modules pilot targets" OFF)
 
 set(NLS_RENDER_API_LIST "OpenGL" "Vulkan" "DX12" "Metal")
 if(WIN32)
@@ -160,6 +176,84 @@ function(nls_copy_shared_runtime_to_target TARGET_NAME)
         )
     endif()
 endfunction()
+
+function(nls_target_precompile_headers TARGET_NAME PCH_HEADER)
+    if(NOT NLS_ENABLE_PCH)
+        return()
+    endif()
+
+    if(NOT TARGET ${TARGET_NAME})
+        message(FATAL_ERROR "Cannot apply PCH to missing target: ${TARGET_NAME}")
+    endif()
+
+    if(NOT EXISTS "${PCH_HEADER}")
+        message(FATAL_ERROR "PCH header does not exist: ${PCH_HEADER}")
+    endif()
+
+    target_precompile_headers(${TARGET_NAME}
+        PRIVATE
+            "$<$<COMPILE_LANGUAGE:CXX>:${PCH_HEADER}>"
+    )
+endfunction()
+
+if(NLS_ENABLE_CXX_MODULES)
+    if(MSVC AND CMAKE_GENERATOR MATCHES "Visual Studio")
+        set(_nls_modules_pilot_source_dir "${NLS_ROOT_DIR}/Runtime/Math/_DISABLED/ModulesPilot")
+        set(_nls_modules_pilot_binary_dir "${CMAKE_BINARY_DIR}/ModulesPilot/$<CONFIG>")
+        set(_nls_modules_pilot_ifc "${_nls_modules_pilot_binary_dir}/NullusMathPilot.ifc")
+        set(_nls_modules_pilot_interface_obj "${_nls_modules_pilot_binary_dir}/NullusMathPilot.obj")
+        set(_nls_modules_pilot_consumer_obj "${_nls_modules_pilot_binary_dir}/NullusMathPilotConsumer.obj")
+
+        add_custom_command(
+            OUTPUT
+                "${_nls_modules_pilot_ifc}"
+                "${_nls_modules_pilot_interface_obj}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_nls_modules_pilot_binary_dir}"
+            COMMAND
+                "${CMAKE_CXX_COMPILER}"
+                /nologo
+                /std:c++20
+                /EHsc
+                /c
+                "${_nls_modules_pilot_source_dir}/NullusMathPilot.ixx"
+                "/Fo${_nls_modules_pilot_interface_obj}"
+                "/ifcOutput"
+                "${_nls_modules_pilot_ifc}"
+            DEPENDS "${_nls_modules_pilot_source_dir}/NullusMathPilot.ixx"
+            VERBATIM
+            COMMENT "Building Nullus C++20 modules pilot interface"
+        )
+
+        add_custom_command(
+            OUTPUT "${_nls_modules_pilot_consumer_obj}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${_nls_modules_pilot_binary_dir}"
+            COMMAND
+                "${CMAKE_CXX_COMPILER}"
+                /nologo
+                /std:c++20
+                /EHsc
+                /c
+                "${_nls_modules_pilot_source_dir}/NullusMathPilotConsumer.cpp"
+                "/Fo${_nls_modules_pilot_consumer_obj}"
+                "/reference"
+                "nullus.math.pilot=${_nls_modules_pilot_ifc}"
+            DEPENDS
+                "${_nls_modules_pilot_source_dir}/NullusMathPilotConsumer.cpp"
+                "${_nls_modules_pilot_ifc}"
+            VERBATIM
+            COMMENT "Building Nullus C++20 modules pilot consumer"
+        )
+
+        add_custom_target(NLS_ModulesPilot
+            DEPENDS
+                "${_nls_modules_pilot_interface_obj}"
+                "${_nls_modules_pilot_consumer_obj}"
+        )
+        set_target_properties(NLS_ModulesPilot PROPERTIES FOLDER Experimental)
+    else()
+        message(WARNING "NLS_ENABLE_CXX_MODULES is ON, but the pilot currently supports only MSVC with the Visual Studio generator. No module pilot target will be generated.")
+    endif()
+endif()
 
 add_subdirectory("ThirdParty")
 add_subdirectory("Tools")

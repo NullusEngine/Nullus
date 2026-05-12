@@ -40,6 +40,8 @@ target_link_libraries(
     NLS_Engine
 )
 
+nls_target_precompile_headers(Editor "${NLS_ROOT_DIR}/Project/NullusProjectPch.h")
+
 if(APPLE)
   target_link_libraries(Editor PUBLIC "-framework CoreServices")
 endif()

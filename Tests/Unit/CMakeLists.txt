@@ -120,6 +120,8 @@ target_link_libraries(NullusUnitTests PRIVATE
     NLS_Engine
 )
 
+nls_target_precompile_headers(NullusUnitTests "${CMAKE_SOURCE_DIR}/Tests/NullusTestsPch.h")
+
 if(APPLE)
     target_link_libraries(NullusUnitTests PRIVATE "-framework CoreServices")
 endif()

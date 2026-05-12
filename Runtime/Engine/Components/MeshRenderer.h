@@ -1,14 +1,19 @@
 #pragma once
 
-#include <Rendering/Geometry/Vertex.h>
-#include <Rendering/Resources/Model.h>
 #include <string>
 
 #include "Components/Component.h"
 #include "Eventing/Event.h"
 #include "EngineDef.h"
 #include "Reflection/Macros.h"
+#include "Rendering/Geometry/BoundingSphere.h"
 #include "Components/MeshRenderer.generated.h"
+
+namespace NLS::Render::Resources
+{
+    class Model;
+}
+
 namespace NLS::Engine::Components
 {
 	/**
@@ -18,7 +23,7 @@ namespace NLS::Engine::Components
 	{
     public:
 		GENERATED_BODY()
-        using Model = Render::Resources::Model;
+        using Model = NLS::Render::Resources::Model;
 
 		/**
 		* Defines how the model renderer bounding sphere should be interpreted

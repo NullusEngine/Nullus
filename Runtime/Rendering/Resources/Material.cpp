@@ -17,6 +17,7 @@
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Geometry/Vertex.h"
 #include "Rendering/RHI/BindingPointMap.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Core/RHIPipeline.h"
 #include "Rendering/RHI/Core/RHIPipelineStateUtils.h"
 #include "Rendering/RHI/Utils/PipelineCache/PipelineCache.h"

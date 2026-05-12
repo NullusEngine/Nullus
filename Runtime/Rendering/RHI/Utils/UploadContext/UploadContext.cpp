@@ -5,6 +5,8 @@
 #include <cstring>
 #include <vector>
 
+#include "Rendering/RHI/Core/RHIResource.h"
+
 namespace NLS::Render::RHI
 {
     namespace

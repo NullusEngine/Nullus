@@ -84,8 +84,12 @@ if(NLS_META_PARSER_WINDOWS_NATIVE)
 else()
     project(MetaParser LANGUAGES NONE)
 
-    add_custom_target(MetaParser ALL
+    set(NLS_META_PARSER_STAMP "${CMAKE_CURRENT_BINARY_DIR}/MetaParser_$<CONFIG>.stamp")
+
+    add_custom_command(
+        OUTPUT "${NLS_META_PARSER_STAMP}"
         COMMAND "${DOTNET_EXECUTABLE}" publish "${NLS_META_PARSER_PROJECT}" --configuration "$<CONFIG>" --runtime "${NLS_META_PARSER_RUNTIME_ID}" --self-contained false --nologo -o "${NLS_META_PARSER_OUTPUT_DIR}"
+        COMMAND "${CMAKE_COMMAND}" -E touch "${NLS_META_PARSER_STAMP}"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         DEPENDS
             "${NLS_META_PARSER_PROJECT}"
@@ -93,8 +97,13 @@ else()
             ${NLS_META_PARSER_SOURCE_FILES}
             ${NLS_META_PARSER_TEMPLATE_FILES}
             "${NLS_META_PARSER_CPPAST_CSPROJ}"
+        BYPRODUCTS "${NLS_META_PARSER_EXECUTABLE}"
         COMMENT "Building C# MetaParser via generated SDK project"
         VERBATIM
+    )
+
+    add_custom_target(MetaParser ALL
+        DEPENDS "${NLS_META_PARSER_STAMP}"
     )
 endif()
 

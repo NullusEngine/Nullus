@@ -4,7 +4,7 @@
 #include <string_view>
 #include <vector>
 
-#include "Rendering/RHI/Backends/DX12/DX12Command.h"
+#include "Rendering/RHI/Backends/DX12/DX12Access.h"
 #include "Rendering/RHI/Backends/DX12/DX12PipelineLayoutUtils.h"
 #include "Rendering/RHI/Core/RHIPipeline.h"
 

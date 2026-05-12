@@ -1,6 +1,6 @@
 #pragma once
 #include "CoreDef.h"
-#include <Json/json.hpp>
+#include "JsonFwd.h"
 #include "Reflection/Variant.h"
 #include "Reflection/Type.h"
 #include <limits>

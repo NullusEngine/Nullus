@@ -1,4 +1,5 @@
 #include "UI/Widgets/AWidget.h"
+#include "ImGui/imgui.h"
 
 namespace NLS
 {

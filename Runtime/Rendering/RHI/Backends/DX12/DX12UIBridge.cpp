@@ -1,4 +1,5 @@
 #include "Rendering/RHI/Utils/RHIUIBridgeInternal.h"
+#include "ImGui/imgui.h"
 
 #if defined(_WIN32) && NLS_HAS_IMGUI_DX12_BACKEND
 

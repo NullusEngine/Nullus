@@ -1,5 +1,6 @@
 
 #include "UI/Widgets/Layout/NewLine.h"
+#include "ImGui/imgui.h"
 
 namespace NLS::UI::Widgets
 {

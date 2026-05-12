@@ -1,4 +1,5 @@
 #include "UI/Panels/PanelViewportBar.h"
+#include "ImGui/imgui.h"
 
 #include <algorithm>
 

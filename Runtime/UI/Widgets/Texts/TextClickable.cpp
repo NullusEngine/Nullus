@@ -1,4 +1,5 @@
 #include "UI/Widgets/Texts/TextClickable.h"
+#include "ImGui/imgui.h"
 #include <cfloat>
 #include "Core/ServiceLocator.h"
 #include "UI/UIManager.h"

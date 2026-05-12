@@ -1,5 +1,6 @@
 
 #include "UI/Panels/PanelUndecorated.h"
+#include "ImGui/imgui.h"
 
 namespace NLS::UI
 {

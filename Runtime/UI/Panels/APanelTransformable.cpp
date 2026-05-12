@@ -1,4 +1,5 @@
 #include "UI/Panels/APanelTransformable.h"
+#include "ImGui/imgui.h"
 #include "UI/Internal/Converter.h"
 
 namespace NLS::UI

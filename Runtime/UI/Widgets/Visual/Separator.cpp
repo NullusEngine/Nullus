@@ -1,4 +1,5 @@
 #include "UI/Widgets/Visual/Separator.h"
+#include "ImGui/imgui.h"
 
 namespace NLS::UI::Widgets
 {

@@ -1,4 +1,5 @@
 #include "UI/Widgets/Texts/TextLabelled.h"
+#include "ImGui/imgui.h"
 
 namespace NLS::UI::Widgets
 {

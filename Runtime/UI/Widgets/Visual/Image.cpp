@@ -1,4 +1,5 @@
 #include "UI/Widgets/Visual/Image.h"
+#include "ImGui/imgui.h"
 #include "Core/ServiceLocator.h"
 #include "UI/Internal/Converter.h"
 #include "UI/UIManager.h"

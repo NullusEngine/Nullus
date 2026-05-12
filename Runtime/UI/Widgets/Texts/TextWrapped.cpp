@@ -1,4 +1,5 @@
 #include "UI/Widgets/Texts/TextWrapped.h"
+#include "ImGui/imgui.h"
 
 namespace NLS::UI::Widgets
 {

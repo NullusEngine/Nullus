@@ -1,4 +1,5 @@
 #include "UI/Plugins/ContextualMenu.h"
+#include "ImGui/imgui.h"
 
 namespace NLS::UI
 {

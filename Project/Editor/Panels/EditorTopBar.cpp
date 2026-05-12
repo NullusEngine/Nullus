@@ -1,4 +1,5 @@
 #include "Panels/EditorTopBar.h"
+#include "ImGui/imgui.h"
 
 #include <algorithm>
 #include <memory>

@@ -1,5 +1,6 @@
 
 #include "UI/Widgets/Selection/ColorEdit.h"
+#include "ImGui/imgui.h"
 
 namespace NLS::UI::Widgets
 {

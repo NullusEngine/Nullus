@@ -1,4 +1,5 @@
 #include "UI/Widgets/Texts/TextDisabled.h"
+#include "ImGui/imgui.h"
 
 namespace NLS::UI::Widgets
 {

@@ -1,4 +1,5 @@
-﻿#include <UI/Widgets/Layout/Spacing.h>
+#include <UI/Widgets/Layout/Spacing.h>
+#include "ImGui/imgui.h"
 #include <UI/Widgets/Selection/ComboBox.h>
 
 #include "Panels/Toolbar.h"

@@ -1,4 +1,5 @@
 #include "UI/Widgets/Visual/Bullet.h"
+#include "ImGui/imgui.h"
 
 namespace NLS::UI::Widgets
 {

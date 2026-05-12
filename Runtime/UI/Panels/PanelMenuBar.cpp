@@ -1,4 +1,5 @@
 #include "UI/Panels/PanelMenuBar.h"
+#include "ImGui/imgui.h"
 
 namespace NLS::UI
 {

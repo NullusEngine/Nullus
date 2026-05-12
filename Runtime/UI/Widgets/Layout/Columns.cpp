@@ -1,4 +1,5 @@
 #include "Columns.h"
+#include "ImGui/imgui.h"
 
 namespace NLS::UI::Widgets
 {

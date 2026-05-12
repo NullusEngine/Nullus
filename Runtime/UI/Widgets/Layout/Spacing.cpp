@@ -1,4 +1,5 @@
 #include "UI/Widgets/Layout/Spacing.h"
+#include "ImGui/imgui.h"
 
 namespace NLS::UI::Widgets
 {

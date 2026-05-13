@@ -49,6 +49,50 @@ TEST(EditorLaunchArgsTests, RejectsRemovedDebugCliFlags)
     EXPECT_TRUE(parsed.hasError);
 }
 
+TEST(EditorLaunchArgsTests, ParsesSceneViewValidationCameraDirective)
+{
+    std::vector<std::string> storage;
+    char** argv = MutableArgv({
+        "Editor.exe",
+        "--editor-validation-scene-camera",
+        "1,2,3;10,20,30",
+        "TestProject.nullus"
+    }, storage);
+
+    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+
+    EXPECT_FALSE(parsed.hasError);
+    EXPECT_TRUE(parsed.hasDiagnosticsOverride);
+    EXPECT_EQ(parsed.diagnosticsSettings.editorValidationSceneCamera, "1,2,3;10,20,30");
+    EXPECT_EQ(parsed.projectPathArgument, "TestProject.nullus");
+}
+
+TEST(EditorLaunchArgsTests, ParsesEditorValidationViewAndCameraInputDiagnostics)
+{
+    std::vector<std::string> storage;
+    char** argv = MutableArgv({
+        "Editor.exe",
+        "--editor-validation-focus-view",
+        "scene",
+        "--editor-validation-exclusive-view",
+        "game",
+        "--editor-validation-select-actor",
+        "Validation Cube",
+        "--editor-log-scene-camera-input",
+        "TestProject.nullus"
+    }, storage);
+
+    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+
+    EXPECT_FALSE(parsed.hasError);
+    EXPECT_TRUE(parsed.hasDiagnosticsOverride);
+    EXPECT_EQ(parsed.diagnosticsSettings.editorValidationFocusView, "scene");
+    EXPECT_EQ(parsed.diagnosticsSettings.editorValidationExclusiveView, "game");
+    EXPECT_EQ(parsed.diagnosticsSettings.editorValidationSelectActor, "Validation Cube");
+    EXPECT_TRUE(parsed.diagnosticsSettings.editorLogSceneCameraInput);
+    EXPECT_EQ(parsed.projectPathArgument, "TestProject.nullus");
+}
+
 TEST(EditorLaunchArgsTests, EditorThreadedRenderingUsesFramesInFlightSlotsForThroughput)
 {
     EXPECT_EQ(NLS::Editor::Core::ResolveEditorThreadedFrameSlotCount(0u), 1u);

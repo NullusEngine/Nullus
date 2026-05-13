@@ -802,6 +802,8 @@ namespace NLS::Render::Backend
 			: layerCount;
 		resourceDesc.MipLevels = desc.mipLevels;
 		resourceDesc.Format = ToDxgiFormat(desc.format);
+		if (desc.format == NLS::Render::RHI::TextureFormat::Depth24Stencil8)
+			resourceDesc.Format = DXGI_FORMAT_R24G8_TYPELESS;
 		resourceDesc.SampleDesc.Count = desc.sampleCount;
 		resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 		resourceDesc.Flags = D3D12_RESOURCE_FLAG_NONE;

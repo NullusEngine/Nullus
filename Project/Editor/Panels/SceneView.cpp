@@ -103,10 +103,31 @@ bool ShouldLogScenePickingDiagnostics()
     return diagnostics.dx12LogFrameFlow || diagnostics.editorLogScenePicking;
 }
 
+bool ShouldLogSceneCameraInputDiagnostics()
+{
+    const auto& diagnostics = NLS::Render::Settings::GetThreadDiagnosticsSettings();
+    if (diagnostics.dx12LogFrameFlow || diagnostics.editorLogSceneCameraInput)
+        return true;
+
+    if (NLS::Core::ServiceLocator::Contains<NLS::Editor::Core::EditorActions>())
+    {
+        const auto& editorDiagnostics = EDITOR_EXEC(GetContext()).GetDiagnosticsSettings();
+        return editorDiagnostics.dx12LogFrameFlow || editorDiagnostics.editorLogSceneCameraInput;
+    }
+
+    return false;
+}
+
 void LogScenePickingDiagnostics(const std::string& message)
 {
     if (ShouldLogScenePickingDiagnostics())
         NLS_LOG_INFO("[SceneViewPicking] " + message);
+}
+
+void LogSceneCameraInputDiagnostics(const std::string& message)
+{
+    if (ShouldLogSceneCameraInputDiagnostics())
+        NLS_LOG_INFO("[SceneViewCamera] " + message);
 }
 }
 Editor::Panels::SceneView::SceneView(
@@ -155,9 +176,12 @@ Editor::Panels::SceneView::~SceneView()
 void Editor::Panels::SceneView::Update(float p_deltaTime)
 {
     using namespace Windowing::Inputs;
+    const auto previousCameraPosition = m_camera.GetPosition();
+    const auto previousCameraRotation = m_camera.GetRotation();
     const Maths::Vector2 mousePosition = EDITOR_CONTEXT(inputManager)->GetMousePosition();
     const bool shortcutsWindowOpen = Editor::Core::DoesShortcutSettingsWindowBlockSceneInput();
-    const bool mouseOverSceneView = IsMouseWithinView(mousePosition);
+    const bool mouseOverSceneView = IsMouseWithinView(mousePosition) ||
+        (m_image != nullptr && m_image->WasHoveredLastDraw());
     const bool sceneViewActive = !shortcutsWindowOpen && (IsFocused() || IsHovered() || mouseOverSceneView);
     const bool editingUiControlOutsideSceneView =
         NLS_SERVICE(UI::UIManager).IsAnyItemActive() && !mouseOverSceneView;
@@ -181,6 +205,29 @@ void Editor::Panels::SceneView::Update(float p_deltaTime)
     }
 
     AViewControllable::Update(p_deltaTime);
+    m_cameraMovedForPresentation = HasSceneViewCameraMotionForPresentation(
+        previousCameraPosition,
+        previousCameraRotation,
+        m_camera.GetPosition(),
+        m_camera.GetRotation());
+    if (ShouldLogSceneCameraInputDiagnostics())
+    {
+        std::ostringstream stream;
+        stream << "dt=" << p_deltaTime
+            << " focused=" << IsFocused()
+            << " hovered=" << IsHovered()
+            << " mouseOver=" << mouseOverSceneView
+            << " hasBounds=" << HasViewportImageBounds()
+            << " active=" << sceneViewActive
+            << " editingOutside=" << editingUiControlOutsideSceneView
+            << " shortcutsBlocked=" << shortcutsWindowOpen
+            << " cameraControl=" << m_cameraController.IsCameraControlActive()
+            << " moved=" << m_cameraMovedForPresentation
+            << " mouse=(" << mousePosition.x << "," << mousePosition.y << ")"
+            << " pos=(" << m_camera.GetPosition().x << "," << m_camera.GetPosition().y << "," << m_camera.GetPosition().z << ")"
+            << " rot=(" << m_camera.GetRotation().x << "," << m_camera.GetRotation().y << "," << m_camera.GetRotation().z << "," << m_camera.GetRotation().w << ")";
+        LogSceneCameraInputDiagnostics(stream.str());
+    }
 }
 
 Editor::Core::EGizmoOperation Editor::Panels::SceneView::GetCurrentGizmoOperation() const
@@ -257,6 +304,9 @@ Engine::Rendering::BaseSceneRenderer::SceneDescriptor Editor::Panels::SceneView:
 
 bool Editor::Panels::SceneView::RequiresSynchronizedRetiredFramePresentation() const
 {
+    if (ShouldSceneViewSynchronizeRetiredFramePresentation())
+        return true;
+
     using Windowing::Inputs::EMouseButton;
 
     const bool clickPickingRequested =
@@ -265,6 +315,7 @@ bool Editor::Panels::SceneView::RequiresSynchronizedRetiredFramePresentation() c
         !m_cameraController.IsCameraControlActive();
 
     return m_cameraController.IsCameraControlActive() ||
+        m_cameraMovedForPresentation ||
         m_gizmoInteraction.isUsing ||
         m_gizmoInteraction.isViewUsing ||
         clickPickingRequested ||
@@ -290,8 +341,12 @@ void Editor::Panels::SceneView::DrawViewportOverlay()
     if (Editor::Core::DoesShortcutSettingsWindowBlockSceneInput())
         return;
 
-    const auto imageMin = GetCurrentViewportImageMin();
-    const auto imageMax = GetCurrentViewportImageMax();
+    const auto imageMin = HasViewportImageBounds()
+        ? GetViewportImageMin()
+        : GetCurrentViewportImageMin();
+    const auto imageMax = HasViewportImageBounds()
+        ? GetViewportImageMax()
+        : GetCurrentViewportImageMax();
     const auto imageWidth = imageMax.x - imageMin.x;
     const auto imageHeight = imageMax.y - imageMin.y;
     if (imageWidth <= 0.0f || imageHeight <= 0.0f)
@@ -356,6 +411,7 @@ void Editor::Panels::SceneView::DrawViewportOverlay()
         m_cameraFocus.focusDistance = Maths::Vector3::Distance(m_camera.GetPosition(), m_cameraFocus.focusPoint);
         m_cameraFocus.hasFocus = true;
         m_camera.CacheViewMatrix();
+        m_cameraMovedForPresentation = true;
     }
 
     if (!EDITOR_EXEC(IsAnyActorSelected()))

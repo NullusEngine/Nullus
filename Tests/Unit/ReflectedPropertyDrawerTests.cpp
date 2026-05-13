@@ -4,8 +4,11 @@
 #include <UI/Plugins/DataDispatcher.h>
 #include <UI/Widgets/Drags/DragSingleScalar.h>
 #include <UI/Widgets/Layout/Columns.h>
+#include <UI/Widgets/Selection/ComboBox.h>
 
+#include "Components/LightComponent.h"
 #include "Panels/ReflectedPropertyDrawer.h"
+#include "SceneSystem/Scene.h"
 #include "Settings/EditorSettings.h"
 
 TEST(ReflectedPropertyDrawerTests, FormatsFieldAndEnumLabels)
@@ -82,4 +85,28 @@ TEST(ReflectedPropertyDrawerTests, ReflectedObjectFieldWidgetWritesBackToOrigina
     EXPECT_FLOAT_EQ(object.translationSnapUnit, 1.0f);
     EXPECT_FLOAT_EQ(object.rotationSnapUnit, 30.0f);
     EXPECT_FLOAT_EQ(object.scalingSnapUnit, 1.0f);
+}
+
+TEST(ReflectedPropertyDrawerTests, EnumFieldWidgetReadsUnderlyingUint8EnumValue)
+{
+    NLS::meta::ReflectionDatabase::Instance();
+
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& lightActor = scene.CreateGameObject("Ambient Light");
+    auto* light = lightActor.AddComponent<NLS::Engine::Components::LightComponent>();
+    ASSERT_NE(light, nullptr);
+    light->SetLightType(NLS::Render::Settings::ELightType::AMBIENT_SPHERE);
+
+    NLS::UI::Internal::WidgetContainer root;
+    auto instance = NLS::meta::Variant(*light, NLS::meta::variant_policy::NoCopy {});
+    const auto type = NLS_TYPEOF(NLS::Engine::Components::LightComponent);
+    const auto& field = type.GetField("lightType");
+
+    ASSERT_TRUE(field.IsValid());
+    ASSERT_TRUE(NLS::Editor::Panels::DrawReflectedField(root, instance, field));
+    ASSERT_EQ(root.GetWidgets().size(), 2u);
+
+    auto* combo = dynamic_cast<NLS::UI::Widgets::ComboBox*>(root.GetWidgets()[1].first);
+    ASSERT_NE(combo, nullptr);
+    EXPECT_EQ(combo->currentChoice, static_cast<int>(NLS::Render::Settings::ELightType::AMBIENT_SPHERE));
 }

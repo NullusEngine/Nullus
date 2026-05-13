@@ -1,6 +1,7 @@
 #include "Rendering/RHI/Backends/DX12/DX12Command.h"
 
 #include "Profiling/Profiler.h"
+#include "Rendering/RHI/Backends/DX12/DX12DebugNameUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12FormatUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12RenderPassUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12Resource.h"
@@ -46,6 +47,27 @@ namespace NLS::Render::Backend
 			const std::wstring wideName = Utf8ToWideString(debugName);
 			if (!wideName.empty())
 				object->SetName(wideName.c_str());
+		}
+
+		constexpr UINT kPixEventAnsiVersion = 1u;
+
+		void BeginDx12DebugEvent(ID3D12GraphicsCommandList* commandList, const std::string& label)
+		{
+			if (commandList == nullptr || label.empty())
+				return;
+
+			commandList->BeginEvent(
+				kPixEventAnsiVersion,
+				label.c_str(),
+				static_cast<UINT>(label.size() + 1u));
+		}
+
+		void EndDx12DebugEvent(ID3D12GraphicsCommandList* commandList)
+		{
+			if (commandList == nullptr)
+				return;
+
+			commandList->EndEvent();
 		}
 
 		IDX12BindingSetAccess* ResolveDX12BindingSetAccess(
@@ -131,6 +153,12 @@ namespace NLS::Render::Backend
 	void NativeDX12CommandBuffer::EndPendingGpuProfileScopes()
 	{
 #if defined(_WIN32)
+		while (!m_debugEventScopeStack.empty())
+		{
+			EndDx12DebugEvent(m_commandList.Get());
+			m_debugEventScopeStack.pop_back();
+		}
+
 		while (!m_gpuProfileScopeStack.empty())
 		{
 			auto event = std::move(m_gpuProfileScopeStack.back());
@@ -143,6 +171,9 @@ namespace NLS::Render::Backend
 	void NativeDX12CommandBuffer::Begin()
 	{
 #if defined(_WIN32)
+		if (m_recording)
+			EndPendingGpuProfileScopes();
+
 		if (m_allocator == nullptr || m_commandList == nullptr)
 		{
 			NLS_LOG_ERROR("NativeDX12CommandBuffer::Begin failed: allocator or command list is null name=" + m_debugName);
@@ -184,6 +215,7 @@ namespace NLS::Render::Backend
 #if defined(_WIN32)
 		if (m_commandList != nullptr)
 		{
+			EndPendingGpuProfileScopes();
 			m_commandList->Close();
 			m_recording = false;
 		}
@@ -193,6 +225,9 @@ namespace NLS::Render::Backend
 	void NativeDX12CommandBuffer::Reset()
 	{
 #if defined(_WIN32)
+		if (m_recording)
+			EndPendingGpuProfileScopes();
+
 		m_activeRenderPassTransitions.clear();
 		m_currentResourceDescriptorHeap = nullptr;
 		m_currentSamplerDescriptorHeap = nullptr;
@@ -249,6 +284,10 @@ namespace NLS::Render::Backend
 		const std::string_view sourceFunction)
 	{
 #if defined(_WIN32)
+		const auto debugLabel = NLS::Render::RHI::DX12::BuildDX12GpuScopeDebugLabel(name, sourceFunction);
+		BeginDx12DebugEvent(m_commandList.Get(), debugLabel);
+		m_debugEventScopeStack.push_back({ DebugEventScopeKind::GpuProfile, debugLabel });
+
 		auto event = NLS::Base::Profiling::Profiler::BeginGpuScope(m_commandList.Get(), name, sourceFunction);
 		if (event.active)
 			m_gpuProfileScopeStack.push_back(std::move(event));
@@ -261,11 +300,22 @@ namespace NLS::Render::Backend
 	void NativeDX12CommandBuffer::EndGpuProfileScope()
 	{
 #if defined(_WIN32)
-		if (m_gpuProfileScopeStack.empty())
-			return;
-		auto event = std::move(m_gpuProfileScopeStack.back());
-		m_gpuProfileScopeStack.pop_back();
-		NLS::Base::Profiling::Profiler::EndGpuScope(event);
+		if (!m_gpuProfileScopeStack.empty())
+		{
+			auto event = std::move(m_gpuProfileScopeStack.back());
+			m_gpuProfileScopeStack.pop_back();
+			NLS::Base::Profiling::Profiler::EndGpuScope(event);
+		}
+
+		if (!m_debugEventScopeStack.empty())
+		{
+			auto& scope = m_debugEventScopeStack.back();
+			if (scope.kind == DebugEventScopeKind::GpuProfile)
+			{
+				EndDx12DebugEvent(m_commandList.Get());
+				m_debugEventScopeStack.pop_back();
+			}
+		}
 #endif
 	}
 
@@ -274,6 +324,10 @@ namespace NLS::Render::Backend
 #if defined(_WIN32)
 		if (m_commandList == nullptr)
 			return;
+
+		const auto debugLabel = NLS::Render::RHI::DX12::BuildDX12GpuScopeDebugLabel(desc.debugName, "BeginRenderPass");
+		BeginDx12DebugEvent(m_commandList.Get(), debugLabel);
+		m_debugEventScopeStack.push_back({ DebugEventScopeKind::RenderPass, debugLabel });
 
 		m_activeRenderPassTransitions.clear();
 		const auto clearPlan = NLS::Render::RHI::DX12::BuildDX12RenderPassClearPlan(desc);
@@ -466,35 +520,48 @@ namespace NLS::Render::Backend
 	void NativeDX12CommandBuffer::EndRenderPass()
 	{
 #if defined(_WIN32)
-		if (m_commandList == nullptr || m_activeRenderPassTransitions.empty())
+		if (m_commandList == nullptr)
 			return;
 
-		std::vector<D3D12_RESOURCE_BARRIER> barriers;
-		barriers.reserve(m_activeRenderPassTransitions.size());
-		for (const auto& transition : m_activeRenderPassTransitions)
+		if (!m_activeRenderPassTransitions.empty())
 		{
-			if (transition.resource == nullptr)
-				continue;
-			if (transition.stateAfterBegin == transition.stateAfterEnd)
-				continue;
+			std::vector<D3D12_RESOURCE_BARRIER> barriers;
+			barriers.reserve(m_activeRenderPassTransitions.size());
+			for (const auto& transition : m_activeRenderPassTransitions)
+			{
+				if (transition.resource == nullptr)
+					continue;
+				if (transition.stateAfterBegin == transition.stateAfterEnd)
+					continue;
 
-			D3D12_RESOURCE_BARRIER barrier{};
-			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-			barrier.Transition.pResource = transition.resource;
-			barrier.Transition.StateBefore = transition.stateAfterBegin;
-			barrier.Transition.StateAfter = transition.stateAfterEnd;
-			barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			barriers.push_back(barrier);
+				D3D12_RESOURCE_BARRIER barrier{};
+				barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+				barrier.Transition.pResource = transition.resource;
+				barrier.Transition.StateBefore = transition.stateAfterBegin;
+				barrier.Transition.StateAfter = transition.stateAfterEnd;
+				barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+				barriers.push_back(barrier);
+			}
+
+			if (!barriers.empty())
+				m_commandList->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+			for (const auto& transition : m_activeRenderPassTransitions)
+			{
+				if (auto* nativeTexture = dynamic_cast<NativeDX12Texture*>(transition.texture))
+					nativeTexture->SetState(transition.textureStateAfterEnd);
+			}
+			m_activeRenderPassTransitions.clear();
 		}
 
-		if (!barriers.empty())
-			m_commandList->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
-		for (const auto& transition : m_activeRenderPassTransitions)
+		if (!m_debugEventScopeStack.empty())
 		{
-			if (auto* nativeTexture = dynamic_cast<NativeDX12Texture*>(transition.texture))
-				nativeTexture->SetState(transition.textureStateAfterEnd);
+			auto& scope = m_debugEventScopeStack.back();
+			if (scope.kind == DebugEventScopeKind::RenderPass)
+			{
+				EndDx12DebugEvent(m_commandList.Get());
+				m_debugEventScopeStack.pop_back();
+			}
 		}
-		m_activeRenderPassTransitions.clear();
 #endif
 	}
 

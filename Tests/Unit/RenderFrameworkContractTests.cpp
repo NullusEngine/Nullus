@@ -26,6 +26,8 @@
 #include "Rendering/RHI/Utils/ResourceStateTracker/ResourceStateTracker.h"
 #include "Rendering/Resources/ShaderType.h"
 #include "Rendering/Settings/DriverSettings.h"
+#include "Rendering/SceneRendererFactory.h"
+#include "Core/ServiceLocator.h"
 
 namespace
 {
@@ -1197,6 +1199,23 @@ TEST(RenderFrameworkContractTests, ShaderGenerationParticipatesInExplicitModuleC
     EXPECT_NE(source.find("++m_generation"), std::string::npos);
 }
 
+TEST(RenderFrameworkContractTests, DefaultSceneRendererFactoryCreatesDeferredRenderer)
+{
+    EXPECT_EQ(
+        NLS::Engine::Rendering::GetDefaultSceneRendererKind(),
+        NLS::Engine::Rendering::SceneRendererKind::Deferred);
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+
+    const auto renderer = NLS::Engine::Rendering::CreateSceneRenderer(driver);
+    ASSERT_NE(renderer, nullptr);
+    EXPECT_NE(dynamic_cast<NLS::Engine::Rendering::DeferredSceneRenderer*>(renderer.get()), nullptr);
+}
+
 TEST(RenderFrameworkContractTests, LightGridPrepassReusesFrameScratchStorage)
 {
     const std::filesystem::path lightGridHeaderPath =
@@ -1314,8 +1333,8 @@ TEST(RenderFrameworkContractTests, LightGridPrepassUsesGpuResetAndBufferSizeCach
     EXPECT_NE(source.find("\":Shaders/LightGridReset.hlsl\""), std::string::npos);
     EXPECT_NE(source.find("\"LightGridStartOffsetGrid\""), std::string::npos);
     EXPECT_NE(source.find("\"LightGridCulledLightLinks\""), std::string::npos);
-    EXPECT_NE(source.find("\"RWStartOffsetGrid\""), std::string::npos);
-    EXPECT_NE(source.find("\"RWCulledLightLinks\""), std::string::npos);
+    EXPECT_NE(source.find("\"u_LightGridStartOffsetGrid\""), std::string::npos);
+    EXPECT_NE(source.find("\"u_LightGridCulledLightLinks\""), std::string::npos);
     EXPECT_EQ(source.find("\"u_LightGridClusterLightCounts\""), std::string::npos);
     EXPECT_EQ(source.find("outFrameData.startOffsetGrid.assign"), std::string::npos);
     EXPECT_EQ(source.find("outFrameData.culledLightLinks.assign"), std::string::npos);
@@ -1399,7 +1418,11 @@ TEST(RenderFrameworkContractTests, DeferredThreadedGBufferCaptureUsesPassBinding
     ASSERT_FALSE(source.empty());
     const auto threadedBranch = source.find("if (usesThreadedRendering)");
     const auto gbufferLoop = source.find("for (const auto& [_, drawable] : drawables.opaques)", threadedBranch);
-    const auto lightingPass = source.find("m_lightingMaterial->GetParameterBlock().Set(\"u_GBufferAlbedo\"", gbufferLoop);
+    const auto lightingPass = source.find("m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>(\"u_GBufferAlbedo\"", gbufferLoop);
+    const auto directLightingGBufferSet =
+        source.find("m_lightingMaterial->GetParameterBlock().Set(\"u_GBuffer", gbufferLoop);
+    const auto directLightingSkyboxSet =
+        source.find("m_lightingMaterial->GetParameterBlock().Set(\"u_SkyboxCube", gbufferLoop);
     const auto placeholderBeforeGBuffer =
         source.find("SetActivePreparedPassBindingSet(BaseSceneRenderer::GetPreparedPassBindingSetPlaceholder())", threadedBranch);
     const auto clearAfterLighting = source.find("SetActivePreparedPassBindingSet(nullptr)", lightingPass);
@@ -1407,6 +1430,8 @@ TEST(RenderFrameworkContractTests, DeferredThreadedGBufferCaptureUsesPassBinding
     ASSERT_NE(threadedBranch, std::string::npos);
     ASSERT_NE(gbufferLoop, std::string::npos);
     ASSERT_NE(lightingPass, std::string::npos);
+    EXPECT_EQ(directLightingGBufferSet, std::string::npos);
+    EXPECT_EQ(directLightingSkyboxSet, std::string::npos);
     EXPECT_LT(placeholderBeforeGBuffer, gbufferLoop);
     EXPECT_GT(clearAfterLighting, lightingPass);
 }
@@ -1434,6 +1459,32 @@ TEST(RenderFrameworkContractTests, BaseSceneRendererCachesLightGridCompileContex
     EXPECT_NE(source.find("InvalidateLightGridCompileContextCache();"), std::string::npos);
     EXPECT_NE(source.find("IsLightGridCompileContextCacheHit(frameSnapshot, hasSkyboxTexture)"), std::string::npos);
     EXPECT_NE(source.find("m_lightGridCompileContextCache.context = context"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, BaseSceneRendererLightGridContextCacheTracksCameraMotion)
+{
+    const std::filesystem::path rendererHeaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/BaseSceneRenderer.h";
+    const std::filesystem::path rendererSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/BaseSceneRenderer.cpp";
+
+    const auto readFile = [](const std::filesystem::path& path)
+    {
+        std::ifstream stream(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+    };
+
+    const std::string headerSource = readFile(rendererHeaderPath);
+    const std::string source = readFile(rendererSourcePath);
+
+    ASSERT_FALSE(headerSource.empty());
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(headerSource.find("cameraPosition"), std::string::npos);
+    EXPECT_NE(headerSource.find("cameraRotation"), std::string::npos);
+    EXPECT_NE(source.find("m_lightGridCompileContextCache.cameraPosition = frameSnapshot.camera->GetPosition()"), std::string::npos);
+    EXPECT_NE(source.find("m_lightGridCompileContextCache.cameraRotation = frameSnapshot.camera->GetRotation()"), std::string::npos);
+    EXPECT_NE(source.find("Maths::Vector3::Distance(cached.cameraPosition, current.camera->GetPosition())"), std::string::npos);
+    EXPECT_NE(source.find("cached.cameraRotation.w - current.camera->GetRotation().w"), std::string::npos);
 }
 
 TEST(RenderFrameworkContractTests, DriverLightGridSettingDefaultsEnabledAndCanBeDisabled)
@@ -1559,6 +1610,138 @@ TEST(RenderFrameworkContractTests, LightGridCommonAvoidsDxcReservedPointParamete
     EXPECT_EQ(commonShaderSource.find("float3 point)"), std::string::npos);
     EXPECT_EQ(commonShaderSource.find("abs(point -"), std::string::npos);
     EXPECT_NE(commonShaderSource.find("float3 queryPoint)"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, DeferredLightingUsesFullSceneLightListForPhaseOneLighting)
+{
+    const std::filesystem::path commonShaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders/LightGridCommon.hlsli";
+    const std::filesystem::path deferredLightingShaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders/DeferredLighting.hlsl";
+
+    const auto readFile = [](const std::filesystem::path& path)
+    {
+        std::ifstream stream(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+    };
+
+    const std::string commonShaderSource = readFile(commonShaderPath);
+    const std::string deferredLightingShaderSource = readFile(deferredLightingShaderPath);
+
+    ASSERT_FALSE(commonShaderSource.empty());
+    ASSERT_FALSE(deferredLightingShaderSource.empty());
+    EXPECT_NE(commonShaderSource.find("NLSAccumulateSceneLightingPBR"), std::string::npos);
+    EXPECT_NE(commonShaderSource.find("for (uint lightIndex = 0u; lightIndex < NLSGetSceneLightCount(); ++lightIndex)"), std::string::npos);
+    EXPECT_NE(deferredLightingShaderSource.find("NLSAccumulateSceneLightingPBR("), std::string::npos);
+    EXPECT_EQ(deferredLightingShaderSource.find("NLSAccumulateClusteredLightingPBR("), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, DeferredSceneLightingTreatsAmbientSphereAsGlobalAmbient)
+{
+    const std::filesystem::path commonShaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders/LightGridCommon.hlsli";
+
+    std::ifstream commonStream(commonShaderPath, std::ios::binary);
+    const std::string commonShaderSource{
+        std::istreambuf_iterator<char>(commonStream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(commonShaderSource.empty());
+    EXPECT_NE(commonShaderSource.find("NLSIsGlobalDeferredLight"), std::string::npos);
+    EXPECT_NE(commonShaderSource.find("light.type == NLS_LIGHT_TYPE_AMBIENT_SPHERE"), std::string::npos);
+    EXPECT_NE(commonShaderSource.find("NLSIsAmbientLight(light)"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, DX12BindingSetAllowsSampledDepthTextureDescriptors)
+{
+    const std::filesystem::path descriptorSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12Descriptor.cpp";
+
+    std::ifstream stream(descriptorSourcePath, std::ios::binary);
+    const std::string source{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(source.empty());
+    const auto writeDescriptorSwitch = source.find("void NativeDX12BindingSet::WriteResourceDescriptor");
+    const auto textureBindingCase = source.find("case NLS::Render::RHI::BindingType::Texture:", writeDescriptorSwitch);
+    const auto samplerCase = source.find("case NLS::Render::RHI::BindingType::Sampler:", textureBindingCase);
+    ASSERT_NE(writeDescriptorSwitch, std::string::npos);
+    ASSERT_NE(textureBindingCase, std::string::npos);
+    ASSERT_NE(samplerCase, std::string::npos);
+
+    const std::string textureBindingBlock =
+        source.substr(textureBindingCase, samplerCase - textureBindingCase);
+    EXPECT_EQ(textureBindingBlock.find("!NLS::Render::RHI::DX12::IsDepthStencilFormat(viewDesc->format)"), std::string::npos);
+    EXPECT_EQ(textureBindingBlock.find("!NLS::Render::RHI::DX12::IsDepthStencilFormat(texture->GetDesc().format)"), std::string::npos);
+    EXPECT_NE(textureBindingBlock.find("BuildDX12TextureViewDescriptorSet(texture->GetDesc(), *viewDesc)"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, DeferredLightingReconstructsWorldPositionFromStoredDeviceDepth)
+{
+    const std::filesystem::path deferredLightingShaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders/DeferredLighting.hlsl";
+
+    std::ifstream stream(deferredLightingShaderPath, std::ios::binary);
+    const std::string shaderSource{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(shaderSource.empty());
+    const auto reconstructFunction = shaderSource.find("float3 ReconstructWorldPosition");
+    const auto psMain = shaderSource.find("float4 PSMain", reconstructFunction);
+    ASSERT_NE(reconstructFunction, std::string::npos);
+    ASSERT_NE(psMain, std::string::npos);
+
+    const std::string reconstructBlock = shaderSource.substr(reconstructFunction, psMain - reconstructFunction);
+    EXPECT_EQ(reconstructBlock.find("depth01 * 2.0f - 1.0f"), std::string::npos);
+    EXPECT_NE(reconstructBlock.find("const float clipZ = depth01;"), std::string::npos);
+    EXPECT_NE(reconstructBlock.find("float4(clipXY, clipZ, 1.0f)"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, DeferredLightingUsesProceduralSkyWhenNoSkyboxTextureIsBound)
+{
+    const std::filesystem::path deferredLightingShaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders/DeferredLighting.hlsl";
+
+    std::ifstream stream(deferredLightingShaderPath, std::ios::binary);
+    const std::string shaderSource{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(shaderSource.empty());
+    EXPECT_NE(shaderSource.find("float3 EvalProceduralSky"), std::string::npos);
+    EXPECT_NE(shaderSource.find("return float4(EvalProceduralSky(skyDirection), 1.0f);"), std::string::npos);
+    EXPECT_EQ(shaderSource.find("return float4(0.55f, 0.70f, 0.92f, 1.0f);"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, DeferredLightingFlipsScreenYWhenReconstructingWorldSpace)
+{
+    const std::filesystem::path deferredLightingShaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders/DeferredLighting.hlsl";
+
+    std::ifstream stream(deferredLightingShaderPath, std::ios::binary);
+    const std::string shaderSource{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(shaderSource.empty());
+    const auto helperFunction = shaderSource.find("float2 ToDeferredClipXY");
+    const auto farReconstruct = shaderSource.find("float3 ReconstructFarWorldDirection", helperFunction);
+    const auto positionReconstruct = shaderSource.find("float3 ReconstructWorldPosition", farReconstruct);
+    const auto psMain = shaderSource.find("float4 PSMain", positionReconstruct);
+    ASSERT_NE(helperFunction, std::string::npos);
+    ASSERT_NE(farReconstruct, std::string::npos);
+    ASSERT_NE(positionReconstruct, std::string::npos);
+    ASSERT_NE(psMain, std::string::npos);
+
+    const std::string helperBlock = shaderSource.substr(helperFunction, farReconstruct - helperFunction);
+    EXPECT_NE(helperBlock.find("texCoord.x * 2.0f - 1.0f"), std::string::npos);
+    EXPECT_NE(helperBlock.find("1.0f - texCoord.y * 2.0f"), std::string::npos);
+
+    const std::string reconstructBlock = shaderSource.substr(farReconstruct, psMain - farReconstruct);
+    EXPECT_EQ(reconstructBlock.find("texCoord * 2.0f - 1.0f"), std::string::npos);
+    EXPECT_NE(reconstructBlock.find("const float2 clipXY = ToDeferredClipXY(texCoord);"), std::string::npos);
 }
 
 TEST(RenderFrameworkContractTests, LightGridLinkedListPathCapsGlobalLinksLikeUESource)

@@ -105,5 +105,6 @@ float4 PSMain(GridVSOutput input) : SV_Target0
         zAxisColor * saturate(zAxisAlpha);
 
     const float alpha = saturate(minorAlpha + midAlpha + majorAlpha + axisAlpha + xAxisAlpha + zAxisAlpha) * angleFade;
-    return float4(color, alpha);
+    const float3 blendColor = color / max(alpha, 1e-4f);
+    return float4(blendColor, alpha);
 }

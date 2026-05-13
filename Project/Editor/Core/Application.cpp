@@ -26,8 +26,9 @@ bool IsResizeCursor(const ImGuiMouseCursor cursor)
 
 Editor::Core::Application::Application(const std::string& p_projectPath, const std::string& p_projectName,
     std::optional<Render::Settings::EGraphicsBackend> p_backendOverride,
-    std::optional<Render::Settings::RenderDocSettings> p_renderDocOverride)
-    : m_context(p_projectPath, p_projectName, p_backendOverride, p_renderDocOverride), m_editor(m_context)
+    std::optional<Render::Settings::RenderDocSettings> p_renderDocOverride,
+    std::optional<Render::Settings::EngineDiagnosticsSettings> p_diagnosticsOverride)
+    : m_context(p_projectPath, p_projectName, p_backendOverride, p_renderDocOverride, p_diagnosticsOverride), m_editor(m_context)
 {
     const auto tickWhileResizing = [this]()
     {

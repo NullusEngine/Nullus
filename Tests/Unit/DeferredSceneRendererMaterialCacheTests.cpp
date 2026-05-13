@@ -17,6 +17,7 @@
 #include "Rendering/Geometry/Vertex.h"
 #include "Rendering/Resources/Loaders/ModelLoader.h"
 #include "Rendering/Resources/Loaders/ShaderLoader.h"
+#include "Rendering/Resources/Loaders/TextureLoader.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Resources/Model.h"
@@ -125,4 +126,70 @@ TEST(DeferredSceneRendererMaterialCacheTests, ReusesGBufferMaterialForStableMate
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ModelLoader::Destroy(model));
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(DeferredSceneRendererMaterialCacheTests, ProvidesVisibleDeferredGBufferFallbackInputsForLambertMaterials)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver);
+
+    auto* lambertShader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Lambert.hlsl");
+    ASSERT_NE(lambertShader, nullptr);
+    auto* gbufferShader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
+    ASSERT_NE(gbufferShader, nullptr);
+
+    auto* diffuseTexture = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(128, 64, 32, 255);
+    ASSERT_NE(diffuseTexture, nullptr);
+
+    NLS::Render::Resources::Material source(lambertShader);
+    source.Set<NLS::Maths::Vector4>("u_Diffuse", { 0.25f, 0.5f, 0.75f, 1.0f });
+    source.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", diffuseTexture);
+
+    auto* model = CreateSingleTriangleModel();
+    ASSERT_NE(model, nullptr);
+
+    NLS::Engine::SceneSystem::Scene scene;
+    AttachRenderable(scene, *model, source);
+    RenderOneDeferredCacheFrame(renderer, scene);
+
+    ASSERT_EQ(renderer.m_gBufferMaterialCache.size(), 1u);
+    const auto& gbuffer = *renderer.m_gBufferMaterialCache.begin()->second;
+
+    const auto* albedoValue = gbuffer.GetParameterBlock().TryGet("u_Albedo");
+    ASSERT_NE(albedoValue, nullptr);
+    ASSERT_EQ(albedoValue->type(), typeid(NLS::Maths::Vector4));
+    const auto& albedo = std::any_cast<const NLS::Maths::Vector4&>(*albedoValue);
+    EXPECT_FLOAT_EQ(albedo.x, 1.0f);
+    EXPECT_FLOAT_EQ(albedo.y, 1.0f);
+    EXPECT_FLOAT_EQ(albedo.z, 1.0f);
+    EXPECT_FLOAT_EQ(albedo.w, 1.0f);
+
+    const auto* albedoMapValue = gbuffer.GetParameterBlock().TryGet("u_AlbedoMap");
+    ASSERT_NE(albedoMapValue, nullptr);
+    ASSERT_EQ(albedoMapValue->type(), typeid(NLS::Render::Resources::Texture2D*));
+    EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*albedoMapValue), nullptr);
+
+    for (const char* textureName : {
+        "u_MetallicMap",
+        "u_RoughnessMap",
+        "u_AmbientOcclusionMap",
+        "u_NormalMap"
+    })
+    {
+        const auto* textureValue = gbuffer.GetParameterBlock().TryGet(textureName);
+        ASSERT_NE(textureValue, nullptr) << textureName;
+        ASSERT_EQ(textureValue->type(), typeid(NLS::Render::Resources::Texture2D*)) << textureName;
+    }
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ModelLoader::Destroy(model));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(diffuseTexture));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(gbufferShader));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(lambertShader));
 }

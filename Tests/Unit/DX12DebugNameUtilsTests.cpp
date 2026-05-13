@@ -101,4 +101,19 @@ TEST(DX12DebugNameUtilsTests, BuildsPipelineLabelsWithStableKeyAndShaderNames)
     EXPECT_NE(computeLabel.find("LightGridCS"), std::string::npos);
     EXPECT_NE(computeLabel.find("key=def456"), std::string::npos);
 }
+
+TEST(DX12DebugNameUtilsTests, BuildsGpuScopeLabelsForRenderDocEventBrowser)
+{
+    const auto namedLabel = NLS::Render::RHI::DX12::BuildDX12GpuScopeDebugLabel(
+        "DeferredLighting",
+        "RecordPass");
+
+    EXPECT_EQ(namedLabel, "Nullus/DeferredLighting");
+
+    const auto fallbackLabel = NLS::Render::RHI::DX12::BuildDX12GpuScopeDebugLabel(
+        {},
+        "RecordPass");
+
+    EXPECT_EQ(fallbackLabel, "Nullus/RecordPass");
+}
 #endif

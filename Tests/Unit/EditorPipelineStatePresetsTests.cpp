@@ -96,6 +96,24 @@ TEST(EditorPipelineStatePresetsTests, OutlineStrokePresetConfiguresLineRasteriza
     EXPECT_FALSE(outlineState.depthTest);
 }
 
+TEST(EditorPipelineStatePresetsTests, OutlineShellPresetKeepsDepthTestAndDisablesDepthWriting)
+{
+    NLS::Render::Data::PipelineState baseState;
+    baseState.depthWriting = true;
+    baseState.depthTest = true;
+
+    const auto outlineState = NLS::Editor::Rendering::CreateEditorOutlineShellPipelineState(baseState, 7, 0xAAu);
+
+    EXPECT_TRUE(outlineState.stencilTest);
+    EXPECT_EQ(outlineState.stencilFuncOp, NLS::Render::Settings::EComparaisonAlgorithm::NOTEQUAL);
+    EXPECT_EQ(outlineState.stencilFuncRef, 7);
+    EXPECT_EQ(outlineState.stencilFuncMask, 0xAAu);
+    EXPECT_TRUE(outlineState.depthTest);
+    EXPECT_FALSE(outlineState.depthWriting);
+    EXPECT_TRUE(outlineState.culling);
+    EXPECT_EQ(outlineState.cullFace, NLS::Render::Settings::ECullFace::FRONT);
+}
+
 TEST(EditorPipelineStatePresetsTests, UnculledPresetDisablesCullingOnly)
 {
     NLS::Render::Data::PipelineState baseState;
@@ -110,7 +128,7 @@ TEST(EditorPipelineStatePresetsTests, UnculledPresetDisablesCullingOnly)
     EXPECT_FALSE(unculledState.culling);
 }
 
-TEST(EditorPipelineStatePresetsTests, GridPresetDisablesDepthWritingAndCulling)
+TEST(EditorPipelineStatePresetsTests, GridPresetDisablesDepthWritingAndCullingWhileKeepingDepthTest)
 {
     NLS::Render::Data::PipelineState baseState;
     baseState.depthWriting = true;

@@ -2,7 +2,9 @@
 #include <filesystem>
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <limits>
+#include <optional>
 #include <string_view>
 #include <Debug/Logger.h>
 #include <Profiling/Profiler.h>
@@ -30,6 +32,7 @@
 #include "Panels/SceneView.h"
 #include "Panels/GameView.h"
 #include "Panels/AssetView.h"
+#include "Panels/ViewFrameLifecycle.h"
 #include "Panels/MaterialEditor.h"
 #include "Panels/ProjectSettings.h"
 #include "Panels/AssetProperties.h"
@@ -82,6 +85,34 @@ ValidationFocusTarget ResolveValidationFocusTarget(std::string_view value)
     if (normalized == "game" || normalized == "gameview" || normalized == "game-view")
         return ValidationFocusTarget::GameView;
     return ValidationFocusTarget::None;
+}
+
+struct ValidationSceneCameraTransform
+{
+    Maths::Vector3 position;
+    Maths::Vector3 rotationEulerDegrees;
+};
+
+std::optional<ValidationSceneCameraTransform> ParseValidationSceneCamera(std::string_view value)
+{
+    std::string text(value);
+    ValidationSceneCameraTransform transform;
+    char trailing = 0;
+    const int parsedCount = std::sscanf(
+        text.c_str(),
+        " %f , %f , %f ; %f , %f , %f %c",
+        &transform.position.x,
+        &transform.position.y,
+        &transform.position.z,
+        &transform.rotationEulerDegrees.x,
+        &transform.rotationEulerDegrees.y,
+        &transform.rotationEulerDegrees.z,
+        &trailing);
+
+    if (parsedCount != 6)
+        return std::nullopt;
+
+    return transform;
 }
 
 void RenameFileReplacingDestination(const std::filesystem::path& source, const std::filesystem::path& destination)
@@ -695,6 +726,28 @@ void Editor::Core::Editor::ApplyStartupValidationDirectives()
             }
         }
     }
+
+    if (!diagnostics.editorValidationSceneCamera.empty())
+    {
+        const auto cameraTransform = ParseValidationSceneCamera(diagnostics.editorValidationSceneCamera);
+        if (!cameraTransform.has_value())
+        {
+            NLS_LOG_WARNING(
+                "Editor validation scene camera directive has invalid format: " +
+                diagnostics.editorValidationSceneCamera);
+            return;
+        }
+
+        auto* camera = sceneView.GetCamera();
+        if (camera == nullptr)
+            return;
+
+        camera->SetPosition(cameraTransform->position);
+        camera->SetRotation(Maths::Quaternion(cameraTransform->rotationEulerDegrees));
+        camera->CacheViewMatrix();
+        sceneView.GetCameraController().ResetMouseInteractionState();
+        NLS_LOG_INFO("Editor validation applied Scene View camera: " + diagnostics.editorValidationSceneCamera);
+    }
 }
 
 void Editor::Core::Editor::UpdateCurrentEditorMode(float p_deltaTime)
@@ -757,6 +810,25 @@ void Editor::Core::Editor::UpdateEditorPanels(float p_deltaTime)
     const bool keepDefaultSceneFocus =
         ResolveValidationFocusTarget(m_context.GetDiagnosticsSettings().editorValidationFocusView) ==
         ValidationFocusTarget::None;
+    constexpr uint64_t kStartupValidationFocusWarmupFrames = 8u;
+    if (Panels::ShouldKeepStartupValidationFocusActive(
+            m_context.GetDiagnosticsSettings().editorValidationFocusView,
+            m_elapsedFrames,
+            kStartupValidationFocusWarmupFrames))
+    {
+        switch (ResolveValidationFocusTarget(m_context.GetDiagnosticsSettings().editorValidationFocusView))
+        {
+        case ValidationFocusTarget::SceneView:
+            sceneView.Focus();
+            break;
+        case ValidationFocusTarget::GameView:
+            gameView.Focus();
+            break;
+        case ValidationFocusTarget::None:
+        default:
+            break;
+        }
+    }
     if (m_elapsedFrames == 1 && keepDefaultSceneFocus) // Let the first frame happen and then make the scene view the first seen view
         sceneView.Focus();
 

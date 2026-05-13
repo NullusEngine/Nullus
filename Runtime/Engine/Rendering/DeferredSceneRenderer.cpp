@@ -2,6 +2,8 @@
 
 #include <fg/Blackboard.hpp>
 
+#include <filesystem>
+
 #include <Debug/Logger.h>
 #include <Math/Matrix4.h>
 #include <Rendering/Context/DriverAccess.h>
@@ -18,6 +20,7 @@
 #include <Rendering/Resources/Mesh.h>
 #include <Rendering/Resources/Texture2D.h>
 #include <Rendering/Resources/TextureCube.h>
+#include <Rendering/Settings/GraphicsBackendUtils.h>
 #include <Rendering/Settings/EPrimitiveMode.h>
 
 #include <Profiling/Profiler.h>
@@ -27,6 +30,13 @@
 namespace
 {
 	using LightingDescriptor = NLS::Render::Data::LightingDescriptor;
+
+	struct DeferredPreparedFrameDescriptorSnapshot
+	{
+		NLS::Render::Data::FrameDescriptor descriptor{};
+		std::shared_ptr<NLS::Maths::Transform> cameraTransform;
+		std::shared_ptr<NLS::Render::Entities::Camera> camera;
+	};
 
 	std::vector<NLS::Render::RHI::TextureFormat> BuildDeferredGBufferColorFormats()
 	{
@@ -49,6 +59,163 @@ namespace
 		vertex.tangent[0] = 1.0f;
 		vertex.bitangent[1] = 1.0f;
 		return vertex;
+	}
+
+	DeferredPreparedFrameDescriptorSnapshot FreezeDeferredPreparedFrameDescriptor(
+		const NLS::Render::Data::FrameDescriptor& source)
+	{
+		DeferredPreparedFrameDescriptorSnapshot snapshot;
+		snapshot.descriptor =
+			NLS::Render::FrameGraph::CaptureExternalSceneOutputSnapshot(source);
+
+		if (source.camera == nullptr)
+			return snapshot;
+
+		snapshot.cameraTransform = std::make_shared<NLS::Maths::Transform>();
+		snapshot.camera = std::make_shared<NLS::Render::Entities::Camera>(snapshot.cameraTransform.get());
+		snapshot.cameraTransform->SetWorldPosition(source.camera->GetPosition());
+		snapshot.cameraTransform->SetWorldRotation(source.camera->GetRotation());
+		snapshot.camera->SetProjectionMode(source.camera->GetProjectionMode());
+		snapshot.camera->SetFov(source.camera->GetFov());
+		snapshot.camera->SetSize(source.camera->GetSize());
+		snapshot.camera->SetNear(source.camera->GetNear());
+		snapshot.camera->SetFar(source.camera->GetFar());
+		snapshot.camera->SetClearColor(source.camera->GetClearColor());
+		snapshot.camera->SetClearColorBuffer(source.camera->GetClearColorBuffer());
+		snapshot.camera->SetClearDepthBuffer(source.camera->GetClearDepthBuffer());
+		snapshot.camera->SetClearStencilBuffer(source.camera->GetClearStencilBuffer());
+		snapshot.camera->SetFrustumGeometryCulling(source.camera->HasFrustumGeometryCulling());
+		snapshot.camera->SetFrustumLightCulling(source.camera->HasFrustumLightCulling());
+		snapshot.camera->CacheMatrices(source.renderWidth, source.renderHeight);
+		snapshot.descriptor.camera = snapshot.camera.get();
+		return snapshot;
+	}
+
+	std::string ResolveEngineShaderPath(const std::string& fileName)
+	{
+		const auto relativeShaderPath = std::filesystem::path("App") / "Assets" / "Engine" / "Shaders" / fileName;
+		const auto appRelativeShaderPath = std::filesystem::path("..") / "Assets" / "Engine" / "Shaders" / fileName;
+		for (auto probe = std::filesystem::current_path(); !probe.empty(); probe = probe.parent_path())
+		{
+			const auto repoCandidate = probe / relativeShaderPath;
+			if (std::filesystem::exists(repoCandidate))
+				return std::filesystem::weakly_canonical(repoCandidate).string();
+
+			const auto appCandidate = probe / appRelativeShaderPath;
+			if (std::filesystem::exists(appCandidate))
+				return std::filesystem::weakly_canonical(appCandidate).string();
+
+			if (probe == probe.root_path())
+				break;
+		}
+
+		return relativeShaderPath.string();
+	}
+
+	const std::any* FindMaterialParameter(
+		const NLS::Render::Resources::Material& material,
+		const char* name)
+	{
+		return material.GetParameterBlock().TryGet(name);
+	}
+
+	void SetMaterialParameterAndInvalidate(
+		NLS::Render::Resources::Material& target,
+		const char* targetName,
+		const std::any& value)
+	{
+		target.GetParameterBlock().Set(targetName, value);
+		target.InvalidateExplicitBindingSetCache();
+	}
+
+	void CopyMaterialParameterIfPresent(
+		NLS::Render::Resources::Material& target,
+		const char* targetName,
+		const NLS::Render::Resources::Material& source,
+		const char* sourceName)
+	{
+		if (const auto* value = FindMaterialParameter(source, sourceName); value != nullptr)
+			SetMaterialParameterAndInvalidate(target, targetName, *value);
+	}
+
+	void EnsureDeferredLightingSkyParameters(
+		NLS::Render::Resources::Material& lightingMaterial,
+		const NLS::Render::Resources::Material* skyboxMaterial)
+	{
+		if (skyboxMaterial != nullptr)
+		{
+			for (const char* parameterName : {
+				"u_UseProceduralSky",
+				"u_SkyTint",
+				"u_GroundColor",
+				"u_SunDirection",
+				"u_Exposure",
+				"u_AtmosphereThickness",
+				"u_SunSize",
+				"u_SunSizeConvergence"
+			})
+			{
+				CopyMaterialParameterIfPresent(lightingMaterial, parameterName, *skyboxMaterial, parameterName);
+			}
+			return;
+		}
+
+		lightingMaterial.Set<bool>("u_UseProceduralSky", true);
+		lightingMaterial.Set<NLS::Maths::Vector3>("u_SkyTint", NLS::Maths::Vector3(0.50f, 0.62f, 0.82f));
+		lightingMaterial.Set<NLS::Maths::Vector3>("u_GroundColor", NLS::Maths::Vector3(0.46f, 0.44f, 0.42f));
+		lightingMaterial.Set<NLS::Maths::Vector3>("u_SunDirection", NLS::Maths::Vector3(-0.35f, 0.78f, -0.18f));
+		lightingMaterial.Set<float>("u_Exposure", 1.02f);
+		lightingMaterial.Set<float>("u_AtmosphereThickness", 0.85f);
+		lightingMaterial.Set<float>("u_SunSize", 0.0f);
+		lightingMaterial.Set<float>("u_SunSizeConvergence", 1.0f);
+	}
+
+	bool IsZeroColor(const NLS::Maths::Vector4& color)
+	{
+		return color.x == 0.0f &&
+			color.y == 0.0f &&
+			color.z == 0.0f &&
+			color.w == 0.0f;
+	}
+
+	void EnsureDeferredGBufferFallbackParameters(NLS::Render::Resources::Material& target)
+	{
+		auto& parameters = target.GetParameterBlock();
+		auto* albedo = parameters.TryGet("u_Albedo");
+		if (albedo == nullptr ||
+			(albedo->type() == typeid(NLS::Maths::Vector4) &&
+				IsZeroColor(std::any_cast<const NLS::Maths::Vector4&>(*albedo))))
+		{
+			parameters.Set("u_Albedo", NLS::Maths::Vector4(1.0f, 1.0f, 1.0f, 1.0f));
+		}
+
+		auto* roughness = parameters.TryGet("u_Roughness");
+		if (roughness == nullptr ||
+			(roughness->type() == typeid(float) &&
+				std::any_cast<float>(*roughness) == 0.0f))
+		{
+			parameters.Set("u_Roughness", 1.0f);
+		}
+
+		auto* ambientOcclusion = parameters.TryGet("u_AmbientOcclusion");
+		if (ambientOcclusion == nullptr ||
+			(ambientOcclusion->type() == typeid(float) &&
+				std::any_cast<float>(*ambientOcclusion) == 0.0f))
+		{
+			parameters.Set("u_AmbientOcclusion", 1.0f);
+		}
+
+		for (const char* textureName : {
+			"u_AlbedoMap",
+			"u_MetallicMap",
+			"u_RoughnessMap",
+			"u_AmbientOcclusionMap",
+			"u_NormalMap"
+		})
+		{
+			if (!parameters.Contains(textureName))
+				parameters.Set(textureName, static_cast<NLS::Render::Resources::Texture2D*>(nullptr));
+		}
 	}
 
 	void SubmitMeshDraw(
@@ -102,6 +269,15 @@ namespace NLS::Engine::Rendering
 		LoadPipelineResources();
 	}
 
+	void DeferredSceneRenderer::SynchronizeThreadedDeferredSnapshot(
+		NLS::Render::Context::FrameSnapshot& snapshot,
+		const uint64_t queuedGBufferDrawCount)
+	{
+		const auto totalRecordedDrawCount =
+			static_cast<uint64_t>(snapshot.recordedDrawCommands.size());
+		snapshot.visibleOpaqueDrawCount = (std::min)(queuedGBufferDrawCount, totalRecordedDrawCount);
+	}
+
 	DeferredSceneRenderer::~DeferredSceneRenderer()
 	{
 		m_gBufferMaterialCache.clear();
@@ -111,6 +287,122 @@ namespace NLS::Engine::Rendering
 		NLS::Render::Resources::Loaders::ShaderLoader::Destroy(m_gBufferShader);
 	}
 
+	NLS::Render::FrameGraph::DeferredPreparedSceneResourceRequest DeferredSceneRenderer::BuildDeferredPreparedSceneResourceRequest() const
+	{
+		return {
+			&m_gBuffer,
+			m_gBufferAlbedoTexture.get(),
+			m_gBufferNormalTexture.get(),
+			m_gBufferMaterialTexture.get(),
+			m_gBufferDepthTexture.get()
+		};
+	}
+
+	void DeferredSceneRenderer::LogPreparedDrawResult(
+		const char* stage,
+		const bool captured,
+		const bool queued,
+		const PreparedRecordedDraw& preparedDraw) const
+	{
+		if (!NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver).logRenderDrawPath)
+			return;
+
+		NLS_LOG_INFO(
+			std::string("[DeferredSceneRenderer] ") + stage +
+			" captured=" + std::to_string(captured ? 1 : 0) +
+			" queued=" + std::to_string(queued ? 1 : 0) +
+			" pipeline=" + std::to_string(preparedDraw.pipeline != nullptr ? 1 : 0) +
+			" materialBindingSet=" + std::to_string(preparedDraw.materialBindingSet != nullptr ? 1 : 0) +
+			" passBindingSet=" + std::to_string(preparedDraw.passBindingSet != nullptr ? 1 : 0) +
+			" frameBindingSet=" + std::to_string(preparedDraw.frameBindingSet != nullptr ? 1 : 0) +
+			" objectBindingSet=" + std::to_string(preparedDraw.objectBindingSet != nullptr ? 1 : 0) +
+			" mesh=" + std::to_string(preparedDraw.mesh != nullptr ? 1 : 0) +
+			" vertexBuffer=" + std::to_string(preparedDraw.mesh != nullptr && preparedDraw.mesh->GetVertexBuffer() != nullptr ? 1 : 0) +
+			" indexBuffer=" + std::to_string(preparedDraw.mesh != nullptr && preparedDraw.mesh->GetIndexBuffer() != nullptr ? 1 : 0) +
+			" vertices=" + std::to_string(preparedDraw.mesh != nullptr ? preparedDraw.mesh->GetVertexCount() : 0u) +
+			" indices=" + std::to_string(preparedDraw.mesh != nullptr ? preparedDraw.mesh->GetIndexCount() : 0u) +
+			" instances=" + std::to_string(preparedDraw.instanceCount));
+	}
+
+	NLS::Render::Context::PreparedRenderSceneBuilder DeferredSceneRenderer::BuildDeferredPreparedRenderSceneBuilder(
+		NLS::Render::Context::FrameSnapshot snapshot,
+		const bool hasSkyboxTexture,
+		const std::vector<NLS::Render::Context::RenderPassCommandInput>& appendedPassInputs,
+		const std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata>& appendedPassMetadata,
+		std::shared_ptr<NLS::Render::RHI::RHITexture> preferredReadbackTexture,
+		const uint64_t additionalRenderTargetUseCount) const
+	{
+		auto lightGridContext = BuildLightGridCompileContext(hasSkyboxTexture);
+		auto frozenFrameDescriptor = FreezeDeferredPreparedFrameDescriptor(GetFrameDescriptor());
+		auto frameDescriptorForBuilder = frozenFrameDescriptor.descriptor;
+		lightGridContext.frameDescriptor = frozenFrameDescriptor.descriptor;
+		auto externalSceneOutputAttachments =
+			NLS::Render::FrameGraph::ResolveExternalSceneOutputAttachments(
+				frameDescriptorForBuilder,
+				"DeferredEditorOverlayColorView",
+				"DeferredEditorOverlayDepthView");
+		auto deferredResources = NLS::Render::FrameGraph::CaptureDeferredPreparedSceneResources(
+			BuildDeferredPreparedSceneResourceRequest());
+
+		return [snapshot = std::move(snapshot),
+				frameDescriptorForBuilder,
+				externalSceneOutputAttachments = std::move(externalSceneOutputAttachments),
+				lightGridContext = std::move(lightGridContext),
+				deferredResources = std::move(deferredResources),
+				appendedPassInputs,
+				appendedPassMetadata,
+				preferredReadbackTexture = std::move(preferredReadbackTexture),
+				additionalRenderTargetUseCount,
+				queuedLightingDrawCount = m_threadedQueuedLightingDrawCount,
+				frozenFrameDescriptor = std::move(frozenFrameDescriptor)]() mutable
+		{
+			frameDescriptorForBuilder.camera = frozenFrameDescriptor.camera.get();
+			lightGridContext.frameDescriptor.camera = frozenFrameDescriptor.camera.get();
+			auto package = BuildSnapshotOwnedRenderScenePackage(
+				snapshot,
+				SnapshotRenderScenePackageBuildMode::SkipDefaultPassInputs);
+			auto resolvedAppendedPassInputs = appendedPassInputs;
+			if (!package.targetsSwapchain)
+			{
+				NLS::Render::FrameGraph::ApplyExternalSceneOutputAttachments(
+					resolvedAppendedPassInputs,
+					externalSceneOutputAttachments,
+					{
+						NLS::Render::Context::RenderPassCommandKind::Helper
+					});
+			}
+			NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
+				package,
+				lightGridContext,
+				deferredResources,
+				resolvedAppendedPassInputs,
+				appendedPassMetadata,
+				queuedLightingDrawCount);
+			if (preferredReadbackTexture != nullptr)
+				NLS::Render::FrameGraph::RegisterPreferredReadbackTexture(
+					package,
+					preferredReadbackTexture);
+			package.renderTargetUseCount += additionalRenderTargetUseCount;
+			NLS::Render::FrameGraph::FinalizePreparedDeferredScenePackage(package, frameDescriptorForBuilder);
+			return package;
+		};
+	}
+
+	NLS::Render::Context::PreparedRenderSceneBuilder DeferredSceneRenderer::BuildPreparedRenderSceneBuilder(
+		const NLS::Render::Context::FrameSnapshot& snapshot) const
+	{
+		if (m_pendingPreparedRenderSceneBuilder)
+			return m_pendingPreparedRenderSceneBuilder;
+
+		bool hasSkyboxTexture = false;
+		if (HasDescriptor<DeferredSceneDescriptor>())
+			hasSkyboxTexture = GetDescriptor<DeferredSceneDescriptor>().hasSkyboxTexture;
+
+		return BuildDeferredPreparedRenderSceneBuilder(
+			snapshot,
+			hasSkyboxTexture);
+	}
+
 	void DeferredSceneRenderer::BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor)
 	{
 		NLS_PROFILE_SCOPE();
@@ -118,14 +410,21 @@ namespace NLS::Engine::Rendering
 		BaseSceneRenderer::BeginFrame(p_frameDescriptor);
 
 		const bool usesThreadedRendering = NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
+		uint64_t queuedGBufferDrawCount = 0u;
+		uint64_t queuedLightingDrawCount = 0u;
+		m_threadedQueuedGBufferDrawCount = 0u;
+		m_threadedQueuedLightingDrawCount = 0u;
 
 		auto drawables = ParseScene();
 		const auto& frameDescriptor = GetFrameDescriptor();
 		NLS::Render::Resources::TextureCube* skyboxTexture = nullptr;
+		NLS::Render::Resources::Material* skyboxMaterial = nullptr;
 		for (const auto& [_, drawable] : drawables.skyboxes)
 		{
 			if (drawable.material == nullptr)
 				continue;
+			if (skyboxMaterial == nullptr)
+				skyboxMaterial = drawable.material;
 			const auto* skyboxParameter = drawable.material->GetParameterBlock().TryGet("cubeTex");
 			if (skyboxParameter != nullptr && skyboxParameter->type() == typeid(NLS::Render::Resources::TextureCube*))
 			{
@@ -161,18 +460,30 @@ namespace NLS::Engine::Rendering
 						: NLS::Render::Settings::ECullFace::BACK;
 
 				PreparedRecordedDraw preparedDraw;
-				if (CaptureThreadedPreparedDraw(gbufferDrawable, gBufferOverrides, gbufferPso.depthFunc, preparedDraw))
-					QueueThreadedRecordedDraw(preparedDraw);
+				const bool captured = CaptureThreadedPreparedDraw(
+					gbufferDrawable,
+					gBufferOverrides,
+					gbufferPso.depthFunc,
+					preparedDraw);
+				bool queued = false;
+				if (captured)
+				{
+					queued = QueueThreadedRecordedDraw(preparedDraw);
+					if (queued)
+						++queuedGBufferDrawCount;
+				}
+				LogPreparedDrawResult("GBuffer", captured, queued, preparedDraw);
 			}
 
 			{
-				m_lightingMaterial->GetParameterBlock().Set("u_GBufferAlbedo", m_gBufferAlbedoTexture.get());
-				m_lightingMaterial->GetParameterBlock().Set("u_GBufferNormal", m_gBufferNormalTexture.get());
-				m_lightingMaterial->GetParameterBlock().Set("u_GBufferMaterial", m_gBufferMaterialTexture.get());
+				m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferAlbedo", m_gBufferAlbedoTexture.get());
+				m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferNormal", m_gBufferNormalTexture.get());
+				m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferMaterial", m_gBufferMaterialTexture.get());
 				if (m_gBufferDepthTexture)
-					m_lightingMaterial->GetParameterBlock().Set("u_GBufferDepth", m_gBufferDepthTexture.get());
+					m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferDepth", m_gBufferDepthTexture.get());
 				if (m_lightingMaterial->GetParameterBlock().Contains("u_SkyboxCube"))
-					m_lightingMaterial->GetParameterBlock().Set("u_SkyboxCube", skyboxTexture);
+					m_lightingMaterial->Set<NLS::Render::Resources::TextureCube*>("u_SkyboxCube", skyboxTexture);
+				EnsureDeferredLightingSkyParameters(*m_lightingMaterial, skyboxMaterial);
 
 				NLS::Render::Entities::Drawable lightingDrawable;
 				lightingDrawable.mesh = m_fullscreenQuad.get();
@@ -186,10 +497,20 @@ namespace NLS::Engine::Rendering
 				compositeOverrides.colorWrite = true;
 
 				PreparedRecordedDraw preparedDraw;
-				if (CaptureThreadedPreparedDraw(lightingDrawable, compositeOverrides, gbufferPso.depthFunc, preparedDraw))
-					QueueThreadedRecordedDraw(preparedDraw);
+				const bool captured = CaptureThreadedPreparedDraw(
+					lightingDrawable,
+					compositeOverrides,
+					gbufferPso.depthFunc,
+					preparedDraw);
+				const bool queued = captured && QueueThreadedRecordedDraw(preparedDraw);
+				if (queued)
+					++queuedLightingDrawCount;
+				LogPreparedDrawResult("Lighting", captured, queued, preparedDraw);
 				SetActivePreparedPassBindingSet(nullptr);
 			}
+
+			m_threadedQueuedGBufferDrawCount = queuedGBufferDrawCount;
+			m_threadedQueuedLightingDrawCount = queuedLightingDrawCount;
 
 		}
 
@@ -197,6 +518,19 @@ namespace NLS::Engine::Rendering
 		if (pendingFrameSnapshot.has_value())
 		{
 			RefreshFrameSnapshotVisibility(pendingFrameSnapshot.value(), drawables);
+			if (usesThreadedRendering)
+				SynchronizeThreadedDeferredSnapshot(pendingFrameSnapshot.value(), queuedGBufferDrawCount);
+			if (usesThreadedRendering &&
+				NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver).logRenderDrawPath)
+			{
+				NLS_LOG_INFO(
+					"[DeferredSceneRenderer] Snapshot recordedDraws=" +
+					std::to_string(pendingFrameSnapshot->recordedDrawCommands.size()) +
+					" queuedGBufferDraws=" + std::to_string(queuedGBufferDrawCount) +
+					" queuedLightingDraws=" + std::to_string(queuedLightingDrawCount) +
+					" visibleOpaqueDraws=" + std::to_string(pendingFrameSnapshot->visibleOpaqueDrawCount) +
+					" sceneOpaqueDrawables=" + std::to_string(drawables.opaques.size()));
+			}
 			SetPendingFrameSnapshot(pendingFrameSnapshot.value());
 		}
 
@@ -209,38 +543,6 @@ namespace NLS::Engine::Rendering
 			std::move(scenePackage),
 			hasSkyboxTexture });
 
-		if (usesThreadedRendering && pendingFrameSnapshot.has_value())
-		{
-			auto snapshot = pendingFrameSnapshot.value();
-			const NLS::Render::FrameGraph::DeferredPreparedSceneResourceRequest deferredResourceRequest{
-				&m_gBuffer,
-				m_gBufferAlbedoTexture.get(),
-				m_gBufferNormalTexture.get(),
-				m_gBufferMaterialTexture.get(),
-				m_gBufferDepthTexture.get()
-			};
-			auto lightGridContext = BuildLightGridCompileContext(hasSkyboxTexture);
-			auto frameDescriptorForBuilder =
-				NLS::Render::FrameGraph::CaptureExternalSceneOutputSnapshot(GetFrameDescriptor());
-			auto deferredResources = NLS::Render::FrameGraph::CaptureDeferredPreparedSceneResources(deferredResourceRequest);
-
-			SetPendingPreparedRenderSceneBuilder(
-				[snapshot = std::move(snapshot),
-				 frameDescriptorForBuilder,
-				 lightGridContext = std::move(lightGridContext),
-				 deferredResources = std::move(deferredResources)]() mutable
-			{
-				auto package = BuildSnapshotOwnedRenderScenePackage(
-					snapshot,
-					SnapshotRenderScenePackageBuildMode::SkipDefaultPassInputs);
-				NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
-					package,
-					lightGridContext,
-					deferredResources);
-				NLS::Render::FrameGraph::FinalizePreparedDeferredScenePackage(package, frameDescriptorForBuilder);
-				return package;
-			});
-		}
 	}
 
 	void DeferredSceneRenderer::DrawFrame()
@@ -264,13 +566,7 @@ namespace NLS::Engine::Rendering
 
 			FrameGraph frameGraph;
 			FrameGraphBlackboard blackboard;
-			const NLS::Render::FrameGraph::DeferredPreparedSceneResourceRequest deferredResourceRequest{
-				&m_gBuffer,
-				m_gBufferAlbedoTexture.get(),
-				m_gBufferNormalTexture.get(),
-				m_gBufferMaterialTexture.get(),
-				m_gBufferDepthTexture.get()
-			};
+			const auto deferredResourceRequest = BuildDeferredPreparedSceneResourceRequest();
 			const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
 			const auto lightGridContext = BuildLightGridCompileContext(scene.hasSkyboxTexture);
 			NLS::Render::FrameGraph::DeferredGraphSceneResourceRequest resourceRequest;
@@ -358,6 +654,18 @@ namespace NLS::Engine::Rendering
 		}
 
 		DrawRegisteredPasses();
+
+		if (usesThreadedRendering)
+		{
+			const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
+			auto pendingFrameSnapshot = BuildFrameSnapshot(m_frameDescriptor);
+			if (pendingFrameSnapshot.has_value())
+			{
+				RefreshFrameSnapshotVisibility(pendingFrameSnapshot.value(), scene.drawables);
+				SynchronizeThreadedDeferredSnapshot(pendingFrameSnapshot.value(), m_threadedQueuedGBufferDrawCount);
+				SetPendingFrameSnapshot(pendingFrameSnapshot.value());
+			}
+		}
 	}
 
 	void DeferredSceneRenderer::LoadPipelineResources()
@@ -365,8 +673,8 @@ namespace NLS::Engine::Rendering
 		NLS_PROFILE_SCOPE();
 		using ShaderLoader = NLS::Render::Resources::Loaders::ShaderLoader;
 
-		m_gBufferShader = ShaderLoader::Create("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
-		m_lightingShader = ShaderLoader::Create("App/Assets/Engine/Shaders/DeferredLighting.hlsl");
+		m_gBufferShader = ShaderLoader::Create(ResolveEngineShaderPath("DeferredGBuffer.hlsl"));
+		m_lightingShader = ShaderLoader::Create(ResolveEngineShaderPath("DeferredLighting.hlsl"));
 
 		if (m_lightingShader)
 		{
@@ -448,8 +756,12 @@ namespace NLS::Engine::Rendering
 		for (const auto& [name, value] : sourceMaterial.GetParameterBlock().Data())
 		{
 			if (target.GetParameterBlock().Contains(name))
-				target.GetParameterBlock().Set(name, value);
+				SetMaterialParameterAndInvalidate(target, name.c_str(), value);
 		}
+
+		CopyMaterialParameterIfPresent(target, "u_Albedo", sourceMaterial, "u_Diffuse");
+		CopyMaterialParameterIfPresent(target, "u_AlbedoMap", sourceMaterial, "u_DiffuseMap");
+		EnsureDeferredGBufferFallbackParameters(target);
 	}
 
 	void DeferredSceneRenderer::DrawGBufferOpaques(NLS::Render::Data::PipelineState pso)
@@ -491,11 +803,14 @@ namespace NLS::Engine::Rendering
 			return;
 
 		NLS::Render::Resources::TextureCube* skyboxTexture = nullptr;
+		NLS::Render::Resources::Material* skyboxMaterial = nullptr;
 		const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
 		for (const auto& [_, drawable] : scene.drawables.skyboxes)
 		{
 			if (drawable.material == nullptr)
 				continue;
+			if (skyboxMaterial == nullptr)
+				skyboxMaterial = drawable.material;
 
 			const auto* skyboxParameter = drawable.material->GetParameterBlock().TryGet("cubeTex");
 			if (skyboxParameter != nullptr && skyboxParameter->type() == typeid(NLS::Render::Resources::TextureCube*))
@@ -505,13 +820,14 @@ namespace NLS::Engine::Rendering
 			}
 		}
 
-		m_lightingMaterial->GetParameterBlock().Set("u_GBufferAlbedo", m_gBufferAlbedoTexture.get());
-		m_lightingMaterial->GetParameterBlock().Set("u_GBufferNormal", m_gBufferNormalTexture.get());
-		m_lightingMaterial->GetParameterBlock().Set("u_GBufferMaterial", m_gBufferMaterialTexture.get());
+		m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferAlbedo", m_gBufferAlbedoTexture.get());
+		m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferNormal", m_gBufferNormalTexture.get());
+		m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferMaterial", m_gBufferMaterialTexture.get());
 		if (m_gBufferDepthTexture)
-			m_lightingMaterial->GetParameterBlock().Set("u_GBufferDepth", m_gBufferDepthTexture.get());
+			m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferDepth", m_gBufferDepthTexture.get());
 		if (m_lightingMaterial->GetParameterBlock().Contains("u_SkyboxCube"))
-			m_lightingMaterial->GetParameterBlock().Set("u_SkyboxCube", skyboxTexture);
+			m_lightingMaterial->Set<NLS::Render::Resources::TextureCube*>("u_SkyboxCube", skyboxTexture);
+		EnsureDeferredLightingSkyParameters(*m_lightingMaterial, skyboxMaterial);
 
 		auto commandBuffer = GetActiveExplicitCommandBuffer();
 		auto device = GetExplicitDevice();

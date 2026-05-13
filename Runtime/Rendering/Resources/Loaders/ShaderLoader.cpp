@@ -344,6 +344,10 @@ Shader* ShaderLoader::CreateHLSLShaderAsset(const std::string& p_filePath)
 {
 	NLS::Render::ShaderCompiler::ShaderCompiler compiler;
 	const auto sourceText = ReadTextFile(p_filePath);
+	if (sourceText.empty())
+	{
+		NLS_LOG_ERROR("[HLSL] \"" + p_filePath + "\": shader source could not be read or is empty.");
+	}
 	const bool hasVertexEntryPoint = HasEntryPointToken(sourceText, "VSMain");
 	const bool hasPixelEntryPoint = HasEntryPointToken(sourceText, "PSMain");
 	const bool hasComputeEntryPoint = HasEntryPointToken(sourceText, "CSMain");

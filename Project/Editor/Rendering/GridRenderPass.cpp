@@ -25,6 +25,14 @@ namespace
 	{
 		return NLS::Render::Settings::GetThreadDiagnosticsSettings().editorGridSkipAxes;
 	}
+
+    Maths::Matrix4 BuildGridPlaneModelMatrix(
+        const NLS::Editor::Rendering::GridRenderPass::GridDescriptor& gridDescriptor,
+        const float gridSize)
+    {
+        return Maths::Matrix4::Translation({ gridDescriptor.viewPosition.x, 0.0f, gridDescriptor.viewPosition.z }) *
+            Maths::Matrix4::Scaling({ gridSize * 2.0f, 1.f, gridSize * 2.0f });
+    }
 }
 
 Editor::Rendering::GridRenderPass::GridRenderPass(NLS::Render::Core::CompositeRenderer& p_renderer) :
@@ -66,24 +74,11 @@ void Editor::Rendering::GridRenderPass::Draw(NLS::Render::Data::PipelineState p_
 
 	auto pso = Editor::Rendering::CreateEditorGridPipelineState(p_pso);
 
-    if (NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_renderer.GetDriver()))
-    {
-        m_preparedThreadedPassInput = BuildThreadedPassInput(pso);
-        return;
-    }
-
 	constexpr float gridSize = 5000.0f;
 
-	Maths::Matrix4 model =
-		Maths::Matrix4::Translation({ gridDescriptor.viewPosition.x, 0.0f, gridDescriptor.viewPosition.z }) *
-		Maths::Matrix4::Scaling({ gridSize * 2.0f, 1.f, gridSize * 2.0f });
+	Maths::Matrix4 model = BuildGridPlaneModelMatrix(gridDescriptor, gridSize);
 
 	m_gridMaterial.Set("u_Color", gridDescriptor.gridColor);
-
-	if (!ShouldSkipEditorGridPlane())
-	{
-		m_debugModelRenderer.DrawModelWithSingleMaterial(pso, *EDITOR_CONTEXT(editorResources)->GetModel("Plane"), m_gridMaterial, model);
-	}
 
 	if (!ShouldSkipEditorGridAxes())
 	{
@@ -92,6 +87,17 @@ void Editor::Rendering::GridRenderPass::Draw(NLS::Render::Data::PipelineState p_
 		debugDrawService.SubmitLine(Maths::Vector3(-gridSize + gridDescriptor.viewPosition.x, 0.0f, 0.0f), Maths::Vector3(gridSize + gridDescriptor.viewPosition.x, 0.0f, 0.0f), Maths::Vector3(1.0f, 0.0f, 0.0f), 1.0f, gridOptions);
 		debugDrawService.SubmitLine(Maths::Vector3(0.0f, -gridSize + gridDescriptor.viewPosition.y, 0.0f), Maths::Vector3(0.0f, gridSize + gridDescriptor.viewPosition.y, 0.0f), Maths::Vector3(0.0f, 1.0f, 0.0f), 1.0f, gridOptions);
 		debugDrawService.SubmitLine(Maths::Vector3(0.0f, 0.0f, -gridSize + gridDescriptor.viewPosition.z), Maths::Vector3(0.0f, 0.0f, gridSize + gridDescriptor.viewPosition.z), Maths::Vector3(0.0f, 0.0f, 1.0f), 1.0f, gridOptions);
+	}
+
+    if (NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_renderer.GetDriver()))
+    {
+        m_preparedThreadedPassInput = BuildThreadedPassInput(pso);
+        return;
+    }
+
+	if (!ShouldSkipEditorGridPlane())
+	{
+		m_debugModelRenderer.DrawModelWithSingleMaterial(pso, *EDITOR_CONTEXT(editorResources)->GetModel("Plane"), m_gridMaterial, model);
 	}
 }
 
@@ -110,9 +116,7 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::G
     const auto& frameDescriptor = m_renderer.GetFrameDescriptor();
 
     constexpr float gridSize = 5000.0f;
-    Maths::Matrix4 model =
-        Maths::Matrix4::Translation({ gridDescriptor.viewPosition.x, 0.0f, gridDescriptor.viewPosition.z }) *
-        Maths::Matrix4::Scaling({ gridSize * 2.0f, 1.f, gridSize * 2.0f });
+    Maths::Matrix4 model = BuildGridPlaneModelMatrix(gridDescriptor, gridSize);
 
     m_gridMaterial.Set("u_Color", gridDescriptor.gridColor);
 

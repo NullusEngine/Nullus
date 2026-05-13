@@ -174,11 +174,13 @@ namespace
 
 Editor::Core::Context::Context(const std::string& p_projectPath, const std::string& p_projectName,
     std::optional<Render::Settings::EGraphicsBackend> p_backendOverride,
-    std::optional<Render::Settings::RenderDocSettings> p_renderDocOverride)
+    std::optional<Render::Settings::RenderDocSettings> p_renderDocOverride,
+    std::optional<Render::Settings::EngineDiagnosticsSettings> p_diagnosticsOverride)
     : projectPath(p_projectPath),
     projectName(p_projectName),
     m_backendOverride(p_backendOverride),
     m_renderDocOverride(std::move(p_renderDocOverride)),
+    m_diagnosticsOverride(std::move(p_diagnosticsOverride)),
     projectFilePath(p_projectPath + Utils::PathParser::Separator() + p_projectName + ".nullus"), 
     engineAssetsPath(std::filesystem::canonical(std::filesystem::path("../Assets/Engine")).string() + Utils::PathParser::Separator()), 
     projectAssetsPath(p_projectPath + Utils::PathParser::Separator() + "Assets" + Utils::PathParser::Separator()), 
@@ -212,6 +214,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     if (m_renderDocOverride.has_value())
         renderDocSettings = m_renderDocOverride.value();
     m_diagnosticsSettings = Editor::Settings::EditorSettings::BuildDiagnosticsSettings();
+    ApplyDiagnosticsOverride(m_diagnosticsSettings);
     const auto& runtimeSettings = Editor::Settings::EditorSettings::GetRuntimeSettingsObject();
 
     const auto logDirectory = std::filesystem::path(p_projectPath) / "Logs";

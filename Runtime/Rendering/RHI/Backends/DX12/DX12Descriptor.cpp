@@ -666,9 +666,7 @@ namespace NLS::Render::Backend
 
 			if (resource != nullptr &&
 				viewDesc != nullptr &&
-				texture != nullptr &&
-				!NLS::Render::RHI::DX12::IsDepthStencilFormat(viewDesc->format) &&
-				!NLS::Render::RHI::DX12::IsDepthStencilFormat(texture->GetDesc().format))
+				texture != nullptr)
 			{
 				if (layoutEntry->type == NLS::Render::RHI::BindingType::RWTexture)
 				{

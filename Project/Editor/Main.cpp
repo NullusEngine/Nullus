@@ -14,7 +14,8 @@ using namespace NLS;
 int main(int argc, char** argv);
 static void TryRun(const std::string& projectPath, const std::string& projectName,
                   std::optional<Render::Settings::EGraphicsBackend> backendOverride,
-                  const std::optional<Render::Settings::RenderDocSettings>& renderDocOverride);
+                  const std::optional<Render::Settings::RenderDocSettings>& renderDocOverride,
+                  const std::optional<Render::Settings::EngineDiagnosticsSettings>& diagnosticsOverride);
 
 namespace
 {
@@ -98,6 +99,9 @@ int main(int argc, char** argv)
 			launchArgs.backendOverride,
 			launchArgs.hasRenderDocOverride
 				? std::optional<Render::Settings::RenderDocSettings>(launchArgs.renderDocSettings)
+				: std::nullopt,
+			launchArgs.hasDiagnosticsOverride
+				? std::optional<Render::Settings::EngineDiagnosticsSettings>(launchArgs.diagnosticsSettings)
 				: std::nullopt);
 	}
 	return EXIT_SUCCESS;
@@ -105,7 +109,8 @@ int main(int argc, char** argv)
 
 static void TryRun(const std::string& projectPath, const std::string& projectName,
                    std::optional<Render::Settings::EGraphicsBackend> backendOverride,
-                   const std::optional<Render::Settings::RenderDocSettings>& renderDocOverride)
+                   const std::optional<Render::Settings::RenderDocSettings>& renderDocOverride,
+                   const std::optional<Render::Settings::EngineDiagnosticsSettings>& diagnosticsOverride)
 {
 	auto errorEvent =
 		[](NLS::EDeviceError, std::string errMsg)
@@ -119,7 +124,12 @@ static void TryRun(const std::string& projectPath, const std::string& projectNam
 	try
 	{
 		auto listenerId = NLS::Context::Device::ErrorEvent += errorEvent;
-		app = std::make_unique<Editor::Core::Application>(projectPath, projectName, backendOverride, renderDocOverride);
+		app = std::make_unique<Editor::Core::Application>(
+			projectPath,
+			projectName,
+			backendOverride,
+			renderDocOverride,
+			diagnosticsOverride);
 		NLS::Context::Device::ErrorEvent -= listenerId;
 	}
 	catch (const std::exception& e)

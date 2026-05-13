@@ -141,6 +141,7 @@ namespace
                 .Build(),
             ShaderParameterStructBuilder("DeferredLightingMaterialParameters")
                 .SetGroup(ShaderParameterGroupKind::Material)
+                .AddUniformBuffer("MaterialConstants", 0u, 96u, NLS::Render::RHI::ShaderStageMask::Fragment)
                 .AddTexture("u_GBufferAlbedo", 0u, NLS::Render::RHI::ShaderStageMask::Fragment)
                 .AddTexture("u_GBufferNormal", 1u, NLS::Render::RHI::ShaderStageMask::Fragment)
                 .AddTexture("u_GBufferMaterial", 2u, NLS::Render::RHI::ShaderStageMask::Fragment)
@@ -177,12 +178,12 @@ namespace
             ShaderParameterStructBuilder("LightGridResetParameters")
                 .SetGroup(ShaderParameterGroupKind::Pass)
                 .AddUniformBuffer("Forward", 0u, 64u, NLS::Render::RHI::ShaderStageMask::Compute)
-                .AddStorageBuffer("RWStartOffsetGrid", 1u, NLS::Render::RHI::ShaderStageMask::Compute)
-                .AddStorageBuffer("RWCulledLightLinks", 2u, NLS::Render::RHI::ShaderStageMask::Compute)
-                .AddStorageBuffer("RWLinkCounter", 3u, NLS::Render::RHI::ShaderStageMask::Compute)
-                .AddStorageBuffer("RWCompactCounter", 4u, NLS::Render::RHI::ShaderStageMask::Compute)
-                .AddStorageBuffer("RWNumCulledLightsGrid", 5u, NLS::Render::RHI::ShaderStageMask::Compute)
-                .AddStorageBuffer("RWCulledLightDataGrid", 6u, NLS::Render::RHI::ShaderStageMask::Compute)
+                .AddStorageBuffer("u_LightGridStartOffsetGrid", 1u, NLS::Render::RHI::ShaderStageMask::Compute)
+                .AddStorageBuffer("u_LightGridCulledLightLinks", 2u, NLS::Render::RHI::ShaderStageMask::Compute)
+                .AddStorageBuffer("u_LightGridLinkCounter", 3u, NLS::Render::RHI::ShaderStageMask::Compute)
+                .AddStorageBuffer("u_LightGridCompactCounter", 4u, NLS::Render::RHI::ShaderStageMask::Compute)
+                .AddStorageBuffer("u_NumCulledLightsGrid", 5u, NLS::Render::RHI::ShaderStageMask::Compute)
+                .AddStorageBuffer("u_CulledLightDataGrid", 6u, NLS::Render::RHI::ShaderStageMask::Compute)
                 .Build()
         });
     }
@@ -193,10 +194,10 @@ namespace
             ShaderParameterStructBuilder("LightGridInjectionParameters")
                 .SetGroup(ShaderParameterGroupKind::Pass)
                 .AddUniformBuffer("Forward", 0u, 64u, NLS::Render::RHI::ShaderStageMask::Compute)
-                .AddStructuredBuffer("ForwardLocalLightBuffer", 0u, NLS::Render::RHI::ShaderStageMask::Compute)
-                .AddStorageBuffer("RWStartOffsetGrid", 1u, NLS::Render::RHI::ShaderStageMask::Compute)
-                .AddStorageBuffer("RWCulledLightLinks", 2u, NLS::Render::RHI::ShaderStageMask::Compute)
-                .AddStorageBuffer("RWLinkCounter", 3u, NLS::Render::RHI::ShaderStageMask::Compute)
+                .AddStructuredBuffer("u_ForwardLocalLightBuffer", 0u, NLS::Render::RHI::ShaderStageMask::Compute)
+                .AddStorageBuffer("u_LightGridStartOffsetGrid", 1u, NLS::Render::RHI::ShaderStageMask::Compute)
+                .AddStorageBuffer("u_LightGridCulledLightLinks", 2u, NLS::Render::RHI::ShaderStageMask::Compute)
+                .AddStorageBuffer("u_LightGridLinkCounter", 3u, NLS::Render::RHI::ShaderStageMask::Compute)
                 .Build()
         });
     }
@@ -207,11 +208,11 @@ namespace
             ShaderParameterStructBuilder("LightGridCompactParameters")
                 .SetGroup(ShaderParameterGroupKind::Pass)
                 .AddUniformBuffer("Forward", 0u, 64u, NLS::Render::RHI::ShaderStageMask::Compute)
-                .AddStructuredBuffer("StartOffsetGrid", 1u, NLS::Render::RHI::ShaderStageMask::Compute)
-                .AddStructuredBuffer("CulledLightLinks", 2u, NLS::Render::RHI::ShaderStageMask::Compute)
-                .AddStorageBuffer("RWCompactCounter", 3u, NLS::Render::RHI::ShaderStageMask::Compute)
-                .AddStorageBuffer("RWNumCulledLightsGrid", 4u, NLS::Render::RHI::ShaderStageMask::Compute)
-                .AddStorageBuffer("RWCulledLightDataGrid", 5u, NLS::Render::RHI::ShaderStageMask::Compute)
+                .AddStructuredBuffer("u_LightGridStartOffsetGrid", 1u, NLS::Render::RHI::ShaderStageMask::Compute)
+                .AddStructuredBuffer("u_LightGridCulledLightLinks", 2u, NLS::Render::RHI::ShaderStageMask::Compute)
+                .AddStorageBuffer("u_LightGridCompactCounter", 3u, NLS::Render::RHI::ShaderStageMask::Compute)
+                .AddStorageBuffer("u_NumCulledLightsGrid", 4u, NLS::Render::RHI::ShaderStageMask::Compute)
+                .AddStorageBuffer("u_CulledLightDataGrid", 5u, NLS::Render::RHI::ShaderStageMask::Compute)
                 .Build()
         });
     }

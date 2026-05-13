@@ -2,6 +2,7 @@
 #include <functional>
 #include <fstream>
 #include <filesystem>
+#include <sstream>
 #include "Profiling/Profiler.h"
 #include "Rendering/Core/ABaseRenderer.h"
 #include "Rendering/Buffers/Framebuffer.h"
@@ -16,8 +17,10 @@
 #include "Rendering/RHI/BindingPointMap.h"
 #include "Rendering/RHI/Core/RHIBinding.h"
 #include "Rendering/RHI/Core/RHICommand.h"
+#include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Shader.h"
 #include "Rendering/Resources/Loaders/TextureLoader.h"
+#include "Rendering/Settings/EngineDiagnosticsSettings.h"
 #include <Debug/Assertion.h>
 
 namespace NLS::Render::Core
@@ -77,6 +80,72 @@ namespace
             std::to_string(static_cast<uint32_t>(desc.stageMask)) + "|" +
             desc.entryName + "|" +
             desc.layoutDebugName;
+    }
+
+    bool ShouldLogRecordedDrawPreparation(const Context::Driver& driver)
+    {
+        return Context::DriverRendererAccess::GetDiagnosticsSettings(driver).logRenderDrawPath;
+    }
+
+    const char* BoolFlag(const bool value)
+    {
+        return value ? "1" : "0";
+    }
+
+    void LogRecordedDrawPreparationState(
+        const Context::Driver& driver,
+        const char* overloadName,
+        const char* reason,
+        const Entities::Drawable& drawable,
+        const std::shared_ptr<RHI::RHIDevice>& device = nullptr,
+        const std::shared_ptr<RHI::PipelineCache>& pipelineCache = nullptr,
+        const std::shared_ptr<RHI::RHIGraphicsPipeline>& pipeline = nullptr,
+        const std::shared_ptr<RHI::RHIBindingSet>& bindingSet = nullptr,
+        const std::shared_ptr<RHI::RHIMesh>& rhiMesh = nullptr,
+        const bool hasPipelineLayout = false,
+        const bool hasVertexShader = false,
+        const bool hasFragmentShader = false)
+    {
+        if (!ShouldLogRecordedDrawPreparation(driver))
+            return;
+
+        const auto* material = drawable.material;
+        const auto* mesh = drawable.mesh;
+        const auto* shader = material != nullptr ? material->GetShader() : nullptr;
+
+        std::ostringstream message;
+        message << "[ABaseRenderer] PrepareRecordedDraw(" << overloadName << ") failed"
+            << " reason=" << reason
+            << " material=" << BoolFlag(material != nullptr)
+            << " shader=" << BoolFlag(shader != nullptr)
+            << " shaderPath=\"" << (shader != nullptr ? shader->path : std::string{}) << "\""
+            << " mesh=" << BoolFlag(mesh != nullptr)
+            << " meshVertices=" << (mesh != nullptr ? mesh->GetVertexCount() : 0u)
+            << " meshIndices=" << (mesh != nullptr ? mesh->GetIndexCount() : 0u)
+            << " gpuInstances=" << (material != nullptr ? material->GetGPUInstances() : 0)
+            << " device=" << BoolFlag(device != nullptr)
+            << " pipelineCache=" << BoolFlag(pipelineCache != nullptr)
+            << " pipelineLayout=" << BoolFlag(hasPipelineLayout)
+            << " vertexShader=" << BoolFlag(hasVertexShader)
+            << " fragmentShader=" << BoolFlag(hasFragmentShader)
+            << " pipeline=" << BoolFlag(pipeline != nullptr)
+            << " materialBindingSet=" << BoolFlag(bindingSet != nullptr)
+            << " rhiMesh=" << BoolFlag(rhiMesh != nullptr)
+            << " vertexBuffer=" << BoolFlag(rhiMesh != nullptr && rhiMesh->GetVertexBuffer() != nullptr)
+            << " indexBuffer=" << BoolFlag(rhiMesh != nullptr && rhiMesh->GetIndexBuffer() != nullptr);
+        NLS_LOG_INFO(message.str());
+
+        if (material == nullptr)
+            return;
+
+        for (const auto& diagnostic : material->GetLastExplicitBindingDiagnostics())
+        {
+            NLS_LOG_INFO(
+                "[ABaseRenderer] PrepareRecordedDraw(" + std::string(overloadName) +
+                ") bindingDiagnostic severity=" + std::to_string(static_cast<int>(diagnostic.severity)) +
+                " binding=\"" + diagnostic.bindingName +
+                "\" message=\"" + diagnostic.message + "\"");
+        }
     }
 
     bool MaterialUsesPassDescriptorSet(const NLS::Render::Resources::Material& material)
@@ -634,32 +703,63 @@ bool ABaseRenderer::PrepareRecordedDraw(
 {
     auto material = p_drawable.material;
     if (material == nullptr)
+    {
+        LogRecordedDrawPreparationState(m_driver, "pso", "material_null", p_drawable);
         return false;
+    }
 
     const auto pipelineOverrides = BuildMaterialPipelineStateOverrides(p_pso, *material, m_frameDescriptor);
 
     auto mesh = p_drawable.mesh;
     if (mesh == nullptr)
+    {
+        LogRecordedDrawPreparationState(m_driver, "pso", "mesh_null", p_drawable);
         return false;
+    }
 
     const auto gpuInstances = material->GetGPUInstances();
     if (gpuInstances <= 0)
+    {
+        LogRecordedDrawPreparationState(m_driver, "pso", "gpu_instances_zero", p_drawable);
         return false;
+    }
 
     auto commandBuffer = GetActiveExplicitCommandBuffer();
     auto device = GetExplicitDevice();
     auto pipelineCache = Context::DriverRendererAccess::GetPipelineCache(m_driver);
+    bool hasPipelineLayout = false;
+    bool hasVertexShader = false;
+    bool hasFragmentShader = false;
     auto pipeline = material->BuildRecordedGraphicsPipeline(
         device,
         pipelineCache,
         p_drawable.primitiveMode,
         p_pso,
-        pipelineOverrides);
+        pipelineOverrides,
+        &hasPipelineLayout,
+        &hasVertexShader,
+        &hasFragmentShader);
     auto bindingSet = material->GetRecordedBindingSet(device);
     auto rhiMesh = mesh->GetRHIMesh();
 
     if (pipeline == nullptr || bindingSet == nullptr || rhiMesh == nullptr)
+    {
+        LogRecordedDrawPreparationState(
+            m_driver,
+            "pso",
+            pipeline == nullptr ? "pipeline_null" :
+                bindingSet == nullptr ? "material_binding_set_null" : "rhi_mesh_null",
+            p_drawable,
+            device,
+            pipelineCache,
+            pipeline,
+            bindingSet,
+            rhiMesh,
+            hasPipelineLayout,
+            hasVertexShader,
+            hasFragmentShader);
         return false;
+    }
 
     outDraw.commandBuffer = std::move(commandBuffer);
     outDraw.pipeline = std::move(pipeline);
@@ -680,11 +780,21 @@ bool ABaseRenderer::PrepareRecordedDraw(
     auto mesh = p_drawable.mesh;
 
     if (material == nullptr || mesh == nullptr)
+    {
+        LogRecordedDrawPreparationState(
+            m_driver,
+            "overrides",
+            material == nullptr ? "material_null" : "mesh_null",
+            p_drawable);
         return false;
+    }
 
     const auto gpuInstances = material->GetGPUInstances();
     if (!(mesh && gpuInstances > 0))
+    {
+        LogRecordedDrawPreparationState(m_driver, "overrides", "gpu_instances_zero", p_drawable);
         return false;
+    }
 
     auto commandBuffer = GetActiveExplicitCommandBuffer();
     auto device = GetExplicitDevice();
@@ -697,13 +807,39 @@ bool ABaseRenderer::PrepareRecordedDraw(
             NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(m_frameDescriptor) != nullptr ||
             NLS::Render::FrameGraph::FrameTargetsSwapchain(m_frameDescriptor);
     }
+    bool hasPipelineLayout = false;
+    bool hasVertexShader = false;
+    bool hasFragmentShader = false;
     auto pipeline = material->BuildRecordedGraphicsPipeline(
-        device, pipelineCache, p_drawable.primitiveMode, effectivePipelineState, pipelineOverrides);
+        device,
+        pipelineCache,
+        p_drawable.primitiveMode,
+        effectivePipelineState,
+        pipelineOverrides,
+        &hasPipelineLayout,
+        &hasVertexShader,
+        &hasFragmentShader);
     auto bindingSet = material->GetRecordedBindingSet(device);
     auto rhiMesh = mesh->GetRHIMesh();
 
     if (pipeline == nullptr || bindingSet == nullptr || rhiMesh == nullptr)
+    {
+        LogRecordedDrawPreparationState(
+            m_driver,
+            "overrides",
+            pipeline == nullptr ? "pipeline_null" :
+                bindingSet == nullptr ? "material_binding_set_null" : "rhi_mesh_null",
+            p_drawable,
+            device,
+            pipelineCache,
+            pipeline,
+            bindingSet,
+            rhiMesh,
+            hasPipelineLayout,
+            hasVertexShader,
+            hasFragmentShader);
         return false;
+    }
 
     outDraw.commandBuffer = std::move(commandBuffer);
     outDraw.pipeline = std::move(pipeline);

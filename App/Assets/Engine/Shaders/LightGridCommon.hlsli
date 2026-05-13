@@ -175,6 +175,16 @@ bool NLSIsGlobalLight(NLSLightGridLight light)
     return light.type == NLS_LIGHT_TYPE_DIRECTIONAL || light.type == NLS_LIGHT_TYPE_AMBIENT_BOX;
 }
 
+bool NLSIsAmbientLight(NLSLightGridLight light)
+{
+    return light.type == NLS_LIGHT_TYPE_AMBIENT_BOX || light.type == NLS_LIGHT_TYPE_AMBIENT_SPHERE;
+}
+
+bool NLSIsGlobalDeferredLight(NLSLightGridLight light)
+{
+    return light.type == NLS_LIGHT_TYPE_DIRECTIONAL || NLSIsAmbientLight(light);
+}
+
 bool NLSComputeLightClusterRange(
     NLSLightGridLight light,
     out uint3 minRange,
@@ -337,6 +347,61 @@ float3 NLSAccumulateClusteredLightingPBR(
     {
         const NLSLightGridLight light = NLSLoadLight(forwardLocalLightBuffer, culledLightDataGrid[offset + i]);
         if (light.type == NLS_LIGHT_TYPE_AMBIENT_BOX || light.type == NLS_LIGHT_TYPE_AMBIENT_SPHERE)
+        {
+            lighting += albedo * light.color * max(light.intensity, 0.0f) * ao;
+            continue;
+        }
+
+        float3 lightDir = 0.0f.xxx;
+        float attenuation = 1.0f;
+        if (light.type == NLS_LIGHT_TYPE_DIRECTIONAL)
+        {
+            lightDir = normalize(-light.directionWS);
+        }
+        else
+        {
+            const float3 toLight = light.positionWS - worldPosition;
+            const float distanceToLight = length(toLight);
+            if (distanceToLight > max(light.range, 0.0001f))
+                continue;
+
+            lightDir = toLight / max(distanceToLight, 1e-4f);
+            attenuation = NLSComputePointAttenuation(light, distanceToLight);
+            if (light.type == NLS_LIGHT_TYPE_SPOT)
+            {
+                const float spotCos = dot(normalize(-light.directionWS), lightDir);
+                const float outerCutoffCos = cos(radians(light.outerCutoffDegrees));
+                attenuation *= saturate((spotCos - outerCutoffCos) / max(1.0f - outerCutoffCos, 1e-3f));
+            }
+        }
+
+        const float ndotl = saturate(dot(normalWS, lightDir));
+        const float3 halfVector = normalize(lightDir + viewDir);
+        const float specularHint = pow(saturate(dot(normalWS, halfVector)), max(4.0f, (1.0f - roughness) * 64.0f));
+        lighting += albedo * light.color * (ndotl * light.intensity * attenuation);
+        lighting += light.color * (specularHint * metallic * (1.0f - roughness) * light.intensity * attenuation);
+    }
+
+    return lighting;
+}
+
+float3 NLSAccumulateSceneLightingPBR(
+    StructuredBuffer<uint> forwardLocalLightBuffer,
+    float3 worldPosition,
+    float3 normalWS,
+    float3 albedo,
+    float metallic,
+    float roughness,
+    float ao)
+{
+    const float3 viewDir = normalize(NLSGetCameraWorldPosition() - worldPosition);
+    float3 lighting = albedo * (NLSGetAmbientFloor() * ao);
+
+    [loop]
+    for (uint lightIndex = 0u; lightIndex < NLSGetSceneLightCount(); ++lightIndex)
+    {
+        const NLSLightGridLight light = NLSLoadLight(forwardLocalLightBuffer, lightIndex);
+        if (NLSIsAmbientLight(light))
         {
             lighting += albedo * light.color * max(light.intensity, 0.0f) * ao;
             continue;

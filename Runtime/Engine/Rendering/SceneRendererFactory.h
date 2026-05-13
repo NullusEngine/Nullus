@@ -18,12 +18,12 @@ namespace NLS::Engine::Rendering
 
 	inline SceneRendererKind GetDefaultSceneRendererKind()
 	{
-		return SceneRendererKind::Forward;
+		return SceneRendererKind::Deferred;
 	}
 
 	inline std::unique_ptr<BaseSceneRenderer> CreateSceneRenderer(
 		NLS::Render::Context::Driver& driver,
-		const SceneRendererKind kind = SceneRendererKind::Forward)
+		const SceneRendererKind kind = SceneRendererKind::Deferred)
 	{
 		switch (kind)
 		{

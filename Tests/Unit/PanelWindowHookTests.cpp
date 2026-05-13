@@ -456,9 +456,58 @@ TEST(PanelWindowHookTests, RetirementAwareRenderPolicyDrainsDuringSynchronizedPr
         true));
 }
 
+TEST(PanelWindowHookTests, SceneViewCameraMotionRequestsSynchronizedPresentation)
+{
+    const NLS::Maths::Vector3 previousPosition { -10.0f, 3.0f, 10.0f };
+    const NLS::Maths::Quaternion previousRotation({ 0.0f, 135.0f, 0.0f });
+
+    EXPECT_FALSE(NLS::Editor::Panels::HasSceneViewCameraMotionForPresentation(
+        previousPosition,
+        previousRotation,
+        previousPosition,
+        previousRotation));
+
+    EXPECT_TRUE(NLS::Editor::Panels::HasSceneViewCameraMotionForPresentation(
+        previousPosition,
+        previousRotation,
+        previousPosition + NLS::Maths::Vector3 { 0.0f, 0.0f, 0.01f },
+        previousRotation));
+
+    EXPECT_TRUE(NLS::Editor::Panels::HasSceneViewCameraMotionForPresentation(
+        previousPosition,
+        previousRotation,
+        previousPosition,
+        NLS::Maths::Quaternion({ 1.0f, 135.0f, 0.0f })));
+}
+
 TEST(PanelWindowHookTests, SceneViewPickingUsesDelayedReadbackByDefault)
 {
     EXPECT_FALSE(NLS::Editor::Panels::ShouldSceneViewRequestImmediatePickingReadback());
+}
+
+TEST(PanelWindowHookTests, SceneViewDoesNotSynchronizeRetiredFramePresentationByDefault)
+{
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldSceneViewSynchronizeRetiredFramePresentation());
+}
+
+TEST(PanelWindowHookTests, StartupValidationFocusPersistsForDockingWarmupFrames)
+{
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldKeepStartupValidationFocusActive(
+        "scene",
+        0u,
+        3u));
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldKeepStartupValidationFocusActive(
+        "scene",
+        2u,
+        3u));
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldKeepStartupValidationFocusActive(
+        "scene",
+        3u,
+        3u));
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldKeepStartupValidationFocusActive(
+        "",
+        0u,
+        3u));
 }
 
 TEST(PanelWindowHookTests, SceneViewPickingRendersOnlyWhenSampleIsNeeded)

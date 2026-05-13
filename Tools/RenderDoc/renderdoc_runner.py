@@ -27,9 +27,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--project", help="Path to a .nullus project file for Editor or Game launches.")
     parser.add_argument("--exe", help="Explicit executable path. Bypasses auto-discovery.")
     parser.add_argument("--capture", action="store_true", help="Queue a startup capture.")
+    parser.add_argument("--capture-label", help="Capture label override used by Nullus/RenderDoc.")
     parser.add_argument("--capture-after-frames", type=int, default=120)
     parser.add_argument("--threaded-rendering", action="store_true", help="Pass --threaded-rendering to the launched app.")
+    parser.add_argument(
+        "--app-arg",
+        action="append",
+        default=[],
+        help="Additional argument to pass to the launched app. Repeat for multiple args.",
+    )
     parser.add_argument("--open-capture-ui", action="store_true", help="Open qrenderdoc after capture.")
+    parser.add_argument(
+        "--terminate-after-capture",
+        action="store_true",
+        help="Terminate the launched process after a capture has been found.",
+    )
     parser.add_argument("--timeout", type=int, default=180, help="Seconds to wait for a capture file.")
     parser.add_argument("--no-wait", action="store_true", help="Do not wait for capture completion.")
     return parser.parse_args()
@@ -194,6 +206,31 @@ def discover_new_capture(
     return newest_capture
 
 
+def wait_for_stable_file(path: Path, timeout_seconds: float = 20.0, stable_seconds: float = 2.0) -> bool:
+    deadline = time.time() + max(0.1, timeout_seconds)
+    stable_since: float | None = None
+    previous_size = -1
+    while time.time() < deadline:
+        try:
+            current_size = path.stat().st_size
+        except FileNotFoundError:
+            current_size = -1
+
+        now = time.time()
+        if current_size > 0 and current_size == previous_size:
+            if stable_since is None:
+                stable_since = now
+            elif now - stable_since >= stable_seconds:
+                return True
+        else:
+            stable_since = None
+            previous_size = current_size
+
+        time.sleep(0.25)
+
+    return False
+
+
 def open_capture_ui(qrenderdoc_path: Path, capture_path: Path) -> None:
     subprocess.Popen(
         [str(qrenderdoc_path), str(capture_path)],
@@ -231,12 +268,13 @@ def main() -> int:
     launch_env = os.environ.copy()
     launch_env["NLS_RENDERDOC_ENABLE"] = "1"
     launch_env["NLS_RENDERDOC_CAPTURE_DIR"] = str(capture_dir)
-    launch_env["NLS_RENDERDOC_CAPTURE_LABEL"] = f"{args.target}_{args.backend}"
+    launch_env["NLS_RENDERDOC_CAPTURE_LABEL"] = args.capture_label or f"{args.target}_{args.backend}"
     launch_env["NLS_RENDERDOC_AUTO_OPEN"] = "1" if args.open_capture_ui else "0"
 
     command = [str(executable_path), "--backend", args.backend]
     if args.threaded_rendering:
         command.append("--threaded-rendering")
+    command.extend(args.app_arg)
     if project_path is not None:
         command.append(str(project_path))
 
@@ -300,6 +338,20 @@ def main() -> int:
         return 2
 
     print(f"[renderdoc_runner] latest_capture={capture_path}")
+    if wait_for_stable_file(capture_path):
+        print("[renderdoc_runner] capture file is stable")
+    else:
+        print("[renderdoc_runner] capture file did not become stable before timeout", file=sys.stderr)
+
+    if args.terminate_after_capture and process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+        print("[renderdoc_runner] terminated launched process")
+
     if args.open_capture_ui and qrenderdoc_path is not None:
         open_capture_ui(qrenderdoc_path, capture_path)
         print(f"[renderdoc_runner] opened qrenderdoc={qrenderdoc_path}")

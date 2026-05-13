@@ -67,6 +67,29 @@ void SetFieldValue(meta::Variant& p_instance, const meta::Field& p_field, const 
     p_field.SetValue(p_instance, updatedValue);
 }
 
+int GetEnumFieldValue(meta::Variant& p_instance, const meta::Field& p_field)
+{
+    return p_field.GetValue(p_instance).ToInt();
+}
+
+void SetEnumFieldValue(meta::Variant& p_instance, const meta::Field& p_field, int p_value)
+{
+    const auto fieldType = p_field.GetType();
+    if (!fieldType.IsValid() || !fieldType.IsEnum())
+        return;
+
+    const auto enumType = fieldType.GetEnum();
+    for (const auto& key : enumType.GetKeys())
+    {
+        auto enumValue = enumType.GetValue(key);
+        if (enumValue.IsValid() && enumValue.ToInt() == p_value)
+        {
+            p_field.SetValue(p_instance, enumValue);
+            return;
+        }
+    }
+}
+
 void NotifyChanged(const NLS::Editor::Panels::ReflectedPropertyDrawerOptions& p_options, const meta::Field& p_field)
 {
     if (p_options.onFieldChanged)
@@ -219,11 +242,11 @@ void DrawEnumField(
 {
     const auto label = BuildFieldLabel(p_field, p_options);
     NLS::UI::GUIDrawer::CreateTitle(p_root, label);
-    auto& combo = p_root.CreateWidget<NLS::UI::Widgets::ComboBox>(GetFieldValue<int>(*p_instance, p_field));
+    auto& combo = p_root.CreateWidget<NLS::UI::Widgets::ComboBox>(GetEnumFieldValue(*p_instance, p_field));
     combo.choices = p_choices;
     combo.ValueChangedEvent += [p_instance, p_field, p_options](int p_value) mutable
     {
-        SetFieldValue(*p_instance, p_field, p_value);
+        SetEnumFieldValue(*p_instance, p_field, p_value);
         NotifyChanged(p_options, p_field);
     };
 }

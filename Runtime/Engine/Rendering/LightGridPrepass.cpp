@@ -224,9 +224,9 @@ namespace NLS::Engine::Rendering
         return NLS::Render::Resources::ShaderParameterStructBuilder("LightGridGraphicsParameters")
             .SetGroup(NLS::Render::Resources::ShaderParameterGroupKind::Pass)
             .AddUniformBuffer("ForwardLightData", 0u, sizeof(ForwardLightData), NLS::Render::RHI::ShaderStageMask::AllGraphics)
-            .AddStructuredBuffer("ForwardLocalLightBuffer", 0u, NLS::Render::RHI::ShaderStageMask::AllGraphics)
-            .AddStructuredBuffer("NumCulledLightsGrid", 1u, NLS::Render::RHI::ShaderStageMask::AllGraphics)
-            .AddStructuredBuffer("CulledLightDataGrid", 2u, NLS::Render::RHI::ShaderStageMask::AllGraphics)
+            .AddStructuredBuffer("u_ForwardLocalLightBuffer", 0u, NLS::Render::RHI::ShaderStageMask::AllGraphics)
+            .AddStructuredBuffer("u_NumCulledLightsGrid", 1u, NLS::Render::RHI::ShaderStageMask::AllGraphics)
+            .AddStructuredBuffer("u_CulledLightDataGrid", 2u, NLS::Render::RHI::ShaderStageMask::AllGraphics)
             .Build();
     }
 
@@ -420,10 +420,10 @@ namespace NLS::Engine::Rendering
             m_injectionBindingLayout,
             {
                 NLS::Render::Resources::ShaderParameterBindingValue::UniformBuffer("Forward", constantsBuffer, sizeof(ForwardLightData)),
-                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("ForwardLocalLightBuffer", forwardLocalLightBuffer, frameData.forwardLocalLightData.size() * sizeof(uint32_t)),
-                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWStartOffsetGrid", startOffsetGridBuffer, frameData.startOffsetGrid.size() * sizeof(uint32_t)),
-                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWCulledLightLinks", culledLightLinksBuffer, frameData.culledLightLinks.size() * sizeof(uint32_t)),
-                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWLinkCounter", linkCounterBuffer, frameData.linkCounter.size() * sizeof(uint32_t))
+                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("u_ForwardLocalLightBuffer", forwardLocalLightBuffer, frameData.forwardLocalLightData.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("u_LightGridStartOffsetGrid", startOffsetGridBuffer, frameData.startOffsetGrid.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("u_LightGridCulledLightLinks", culledLightLinksBuffer, frameData.culledLightLinks.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("u_LightGridLinkCounter", linkCounterBuffer, frameData.linkCounter.size() * sizeof(uint32_t))
             },
             "LightGridInjectionBindingSet");
         auto injectionBindingSet = NLS::Render::Context::DriverRendererAccess::CreateExplicitBindingSet(
@@ -436,12 +436,12 @@ namespace NLS::Engine::Rendering
             m_resetBindingLayout,
             {
                 NLS::Render::Resources::ShaderParameterBindingValue::UniformBuffer("Forward", constantsBuffer, sizeof(ForwardLightData)),
-                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWStartOffsetGrid", startOffsetGridBuffer, frameData.startOffsetGrid.size() * sizeof(uint32_t)),
-                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWCulledLightLinks", culledLightLinksBuffer, frameData.culledLightLinks.size() * sizeof(uint32_t)),
-                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWLinkCounter", linkCounterBuffer, frameData.linkCounter.size() * sizeof(uint32_t)),
-                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWCompactCounter", compactCounterBuffer, frameData.compactCounter.size() * sizeof(uint32_t)),
-                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWNumCulledLightsGrid", numCulledLightsGridBuffer, frameData.numCulledLightsGrid.size() * sizeof(uint32_t)),
-                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWCulledLightDataGrid", culledLightDataGridBuffer, frameData.culledLightDataGrid.size() * sizeof(uint32_t))
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("u_LightGridStartOffsetGrid", startOffsetGridBuffer, frameData.startOffsetGrid.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("u_LightGridCulledLightLinks", culledLightLinksBuffer, frameData.culledLightLinks.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("u_LightGridLinkCounter", linkCounterBuffer, frameData.linkCounter.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("u_LightGridCompactCounter", compactCounterBuffer, frameData.compactCounter.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("u_NumCulledLightsGrid", numCulledLightsGridBuffer, frameData.numCulledLightsGrid.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("u_CulledLightDataGrid", culledLightDataGridBuffer, frameData.culledLightDataGrid.size() * sizeof(uint32_t))
             },
             "LightGridResetBindingSet");
         auto resetBindingSet = NLS::Render::Context::DriverRendererAccess::CreateExplicitBindingSet(
@@ -454,11 +454,11 @@ namespace NLS::Engine::Rendering
             m_compactBindingLayout,
             {
                 NLS::Render::Resources::ShaderParameterBindingValue::UniformBuffer("Forward", constantsBuffer, sizeof(ForwardLightData)),
-                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("StartOffsetGrid", startOffsetGridBuffer, frameData.startOffsetGrid.size() * sizeof(uint32_t)),
-                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("CulledLightLinks", culledLightLinksBuffer, frameData.culledLightLinks.size() * sizeof(uint32_t)),
-                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWCompactCounter", compactCounterBuffer, frameData.compactCounter.size() * sizeof(uint32_t)),
-                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWNumCulledLightsGrid", numCulledLightsGridBuffer, frameData.numCulledLightsGrid.size() * sizeof(uint32_t)),
-                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("RWCulledLightDataGrid", culledLightDataGridBuffer, frameData.culledLightDataGrid.size() * sizeof(uint32_t))
+                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("u_LightGridStartOffsetGrid", startOffsetGridBuffer, frameData.startOffsetGrid.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("u_LightGridCulledLightLinks", culledLightLinksBuffer, frameData.culledLightLinks.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("u_LightGridCompactCounter", compactCounterBuffer, frameData.compactCounter.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("u_NumCulledLightsGrid", numCulledLightsGridBuffer, frameData.numCulledLightsGrid.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StorageBuffer("u_CulledLightDataGrid", culledLightDataGridBuffer, frameData.culledLightDataGrid.size() * sizeof(uint32_t))
             },
             "LightGridCompactBindingSet");
         auto compactBindingSet = NLS::Render::Context::DriverRendererAccess::CreateExplicitBindingSet(
@@ -471,9 +471,9 @@ namespace NLS::Engine::Rendering
             m_graphicsBindingLayout,
             {
                 NLS::Render::Resources::ShaderParameterBindingValue::UniformBuffer("ForwardLightData", constantsBuffer, sizeof(ForwardLightData)),
-                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("ForwardLocalLightBuffer", forwardLocalLightBuffer, frameData.forwardLocalLightData.size() * sizeof(uint32_t)),
-                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("NumCulledLightsGrid", numCulledLightsGridBuffer, frameData.numCulledLightsGrid.size() * sizeof(uint32_t)),
-                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("CulledLightDataGrid", culledLightDataGridBuffer, frameData.culledLightDataGrid.size() * sizeof(uint32_t))
+                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("u_ForwardLocalLightBuffer", forwardLocalLightBuffer, frameData.forwardLocalLightData.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("u_NumCulledLightsGrid", numCulledLightsGridBuffer, frameData.numCulledLightsGrid.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("u_CulledLightDataGrid", culledLightDataGridBuffer, frameData.culledLightDataGrid.size() * sizeof(uint32_t))
             },
             "LightGridGraphicsBindingSet");
         m_graphicsPassBindingSet = NLS::Render::Context::DriverRendererAccess::CreateExplicitBindingSet(
@@ -681,9 +681,9 @@ namespace NLS::Engine::Rendering
             m_graphicsBindingLayout,
             {
                 NLS::Render::Resources::ShaderParameterBindingValue::UniformBuffer("ForwardLightData", constantsBuffer, sizeof(ForwardLightData)),
-                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("ForwardLocalLightBuffer", forwardLocalLightBuffer, frameData.forwardLocalLightData.size() * sizeof(uint32_t)),
-                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("NumCulledLightsGrid", numCulledLightsGridBuffer, frameData.numCulledLightsGrid.size() * sizeof(uint32_t)),
-                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("CulledLightDataGrid", culledLightDataGridBuffer, frameData.culledLightDataGrid.size() * sizeof(uint32_t))
+                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("u_ForwardLocalLightBuffer", forwardLocalLightBuffer, frameData.forwardLocalLightData.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("u_NumCulledLightsGrid", numCulledLightsGridBuffer, frameData.numCulledLightsGrid.size() * sizeof(uint32_t)),
+                NLS::Render::Resources::ShaderParameterBindingValue::StructuredBuffer("u_CulledLightDataGrid", culledLightDataGridBuffer, frameData.culledLightDataGrid.size() * sizeof(uint32_t))
             },
             "LightGridFallbackGraphicsBindingSet");
         m_fallbackGraphicsPassBindingSet = NLS::Render::Context::DriverRendererAccess::CreateExplicitBindingSet(

@@ -11,9 +11,11 @@ namespace NLS::Editor::Launch
     struct ParsedEditorLaunchArgs
     {
         Render::Settings::RenderDocSettings renderDocSettings;
+        Render::Settings::EngineDiagnosticsSettings diagnosticsSettings;
         std::optional<Render::Settings::EGraphicsBackend> backendOverride;
         std::optional<std::string> projectPathArgument;
         bool hasRenderDocOverride = false;
+        bool hasDiagnosticsOverride = false;
         bool showHelp = false;
         bool hasError = false;
     };

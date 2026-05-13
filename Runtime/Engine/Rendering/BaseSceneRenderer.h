@@ -10,6 +10,8 @@
 #include <Rendering/Context/RenderScenePackageBuilder.h>
 #include <Rendering/Context/ThreadedRenderingLifecycle.h>
 #include <Rendering/FrameGraph/SceneRenderGraphBuilder.h>
+#include <Math/Quaternion.h>
+#include <Vector3.h>
 #include "Rendering/LightGridPrepass.h"
 
 #include "EngineDef.h"
@@ -129,6 +131,8 @@ namespace NLS::Engine::Rendering
 			bool valid = false;
 			bool hasSkyboxTexture = false;
 			NLS::Render::Data::FrameDescriptor frameDescriptor{};
+			Maths::Vector3 cameraPosition{};
+			Maths::Quaternion cameraRotation{};
 			NLS::Render::FrameGraph::LightGridCompileContext context;
 		};
 
@@ -136,9 +140,9 @@ namespace NLS::Engine::Rendering
 		bool IsLightGridCompileContextCacheHit(
 			const NLS::Render::Data::FrameDescriptor& frameDescriptor,
 			bool hasSkyboxTexture) const;
-		static bool AreSameLightGridFrameInputs(
-			const NLS::Render::Data::FrameDescriptor& left,
-			const NLS::Render::Data::FrameDescriptor& right);
+		bool AreSameLightGridFrameInputs(
+			const LightGridCompileContextCache& cached,
+			const NLS::Render::Data::FrameDescriptor& current) const;
 
 		std::shared_ptr<LightGridPrepass> m_lightGridPrepass;
 		std::unique_ptr<SceneLightingProvider> m_sceneLightingProvider;

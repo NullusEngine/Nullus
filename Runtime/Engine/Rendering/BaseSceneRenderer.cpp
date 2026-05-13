@@ -198,6 +198,16 @@ NLS::Render::FrameGraph::LightGridCompileContext BaseSceneRenderer::BuildLightGr
 	m_lightGridCompileContextCache.valid = true;
 	m_lightGridCompileContextCache.hasSkyboxTexture = hasSkyboxTexture;
 	m_lightGridCompileContextCache.frameDescriptor = frameSnapshot;
+	if (frameSnapshot.camera != nullptr)
+	{
+		m_lightGridCompileContextCache.cameraPosition = frameSnapshot.camera->GetPosition();
+		m_lightGridCompileContextCache.cameraRotation = frameSnapshot.camera->GetRotation();
+	}
+	else
+	{
+		m_lightGridCompileContextCache.cameraPosition = {};
+		m_lightGridCompileContextCache.cameraRotation = {};
+	}
 	m_lightGridCompileContextCache.context = context;
 	return context;
 }
@@ -232,21 +242,31 @@ bool BaseSceneRenderer::IsLightGridCompileContextCacheHit(
 {
 	return m_lightGridCompileContextCache.valid &&
 		m_lightGridCompileContextCache.hasSkyboxTexture == hasSkyboxTexture &&
-		AreSameLightGridFrameInputs(m_lightGridCompileContextCache.frameDescriptor, frameDescriptor);
+		AreSameLightGridFrameInputs(m_lightGridCompileContextCache, frameDescriptor);
 }
 
 bool BaseSceneRenderer::AreSameLightGridFrameInputs(
-	const NLS::Render::Data::FrameDescriptor& left,
-	const NLS::Render::Data::FrameDescriptor& right)
+	const LightGridCompileContextCache& cached,
+	const NLS::Render::Data::FrameDescriptor& current) const
 {
-	return left.renderWidth == right.renderWidth &&
-		left.renderHeight == right.renderHeight &&
-		left.camera == right.camera &&
-		left.outputBuffer == right.outputBuffer &&
-		left.outputColorTexture == right.outputColorTexture &&
-		left.outputDepthStencilTexture == right.outputDepthStencilTexture &&
-		left.outputColorView == right.outputColorView &&
-		left.outputDepthStencilView == right.outputDepthStencilView;
+	const auto& cachedFrame = cached.frameDescriptor;
+	const bool sameCameraTransform =
+		current.camera == nullptr ||
+		(Maths::Vector3::Distance(cached.cameraPosition, current.camera->GetPosition()) <= 1e-5f &&
+			std::fabs(cached.cameraRotation.x - current.camera->GetRotation().x) <= 1e-5f &&
+			std::fabs(cached.cameraRotation.y - current.camera->GetRotation().y) <= 1e-5f &&
+			std::fabs(cached.cameraRotation.z - current.camera->GetRotation().z) <= 1e-5f &&
+			std::fabs(cached.cameraRotation.w - current.camera->GetRotation().w) <= 1e-5f);
+
+	return cachedFrame.renderWidth == current.renderWidth &&
+		cachedFrame.renderHeight == current.renderHeight &&
+		cachedFrame.camera == current.camera &&
+		sameCameraTransform &&
+		cachedFrame.outputBuffer == current.outputBuffer &&
+		cachedFrame.outputColorTexture == current.outputColorTexture &&
+		cachedFrame.outputDepthStencilTexture == current.outputDepthStencilTexture &&
+		cachedFrame.outputColorView == current.outputColorView &&
+		cachedFrame.outputDepthStencilView == current.outputDepthStencilView;
 }
 
 const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& BaseSceneRenderer::GetPreparedPassBindingSetPlaceholder()

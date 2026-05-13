@@ -33,8 +33,10 @@ namespace NLS::Render::Settings
         bool editorDisableDebugDrawPass = false;
         bool editorDisablePickingPass = false;
         bool editorLogScenePicking = false;
+        bool editorLogSceneCameraInput = false;
         std::string editorValidationFocusView;
         std::string editorValidationExclusiveView;
         std::string editorValidationSelectActor;
+        std::string editorValidationSceneCamera;
     };
 }

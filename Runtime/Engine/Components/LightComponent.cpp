@@ -3,8 +3,36 @@
 #include "GameObject.h"
 #include "Rendering/Entities/Light.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace NLS::Engine::Components
 {
+namespace
+{
+	constexpr float kPointLightVisibilityThreshold = 1.0f / 255.0f;
+	constexpr float kDefaultPointConstant = 1.0f;
+	constexpr float kDefaultPointLinear = 0.09f;
+	constexpr float kDefaultPointQuadratic = 0.032f;
+
+	void ApplyPointLightDefaults(Render::Entities::Light& light)
+	{
+		light.constant = kDefaultPointConstant;
+		light.linear = kDefaultPointLinear;
+		light.quadratic = kDefaultPointQuadratic;
+	}
+
+	void SetPointLightEffectRadius(Render::Entities::Light& light, float radius)
+	{
+		const float safeRadius = std::max(radius, 0.001f);
+		const float targetDenominator = std::abs(light.intensity) / kPointLightVisibilityThreshold;
+		const float quadratic =
+			(targetDenominator - light.constant - light.linear * safeRadius) /
+			(safeRadius * safeRadius);
+		light.quadratic = std::max(quadratic, 0.0f);
+	}
+}
+
 LightComponent::LightComponent()
 {
 }
@@ -12,6 +40,7 @@ LightComponent::LightComponent()
 void LightComponent::OnCreate()
 {
 	m_data = new Render::Entities::Light(&m_owner->GetTransform()->GetTransform());
+	ApplyPointLightDefaults(*m_data);
 }
 
 void LightComponent::SetLightType(Render::Settings::ELightType type)
@@ -20,10 +49,12 @@ void LightComponent::SetLightType(Render::Settings::ELightType type)
 	switch (type)
 	{
 	case Render::Settings::ELightType::POINT:
+		ApplyPointLightDefaults(*m_data);
 		break;
 	case Render::Settings::ELightType::DIRECTIONAL:
 		break;
 	case Render::Settings::ELightType::SPOT:
+		ApplyPointLightDefaults(*m_data);
 		break;
 	case Render::Settings::ELightType::AMBIENT_BOX:
 		break;
@@ -113,12 +144,31 @@ void LightComponent::SetOuterCutoff(float p_outerCutoff)
 
 float LightComponent::GetRadius() const
 {
-	return m_data->quadratic;
+	switch (m_data->type)
+	{
+	case Render::Settings::ELightType::POINT:
+	case Render::Settings::ELightType::SPOT:
+		return m_data->GetEffectRange();
+	case Render::Settings::ELightType::AMBIENT_SPHERE:
+		return m_data->constant;
+	default:
+		return m_data->constant;
+	}
 }
 
 void LightComponent::SetRadius(float p_radius)
 {
-	m_data->constant = p_radius;
+	switch (m_data->type)
+	{
+	case Render::Settings::ELightType::POINT:
+	case Render::Settings::ELightType::SPOT:
+		SetPointLightEffectRadius(*m_data, p_radius);
+		break;
+	case Render::Settings::ELightType::AMBIENT_SPHERE:
+	default:
+		m_data->constant = p_radius;
+		break;
+	}
 }
 
 Maths::Vector3 LightComponent::GetSize() const

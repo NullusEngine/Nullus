@@ -15,6 +15,11 @@ namespace NLS::Editor::Launch
         std::printf("  --renderdoc                  Enable RenderDoc debugging\n");
         std::printf("  --no-renderdoc               Disable RenderDoc debugging\n");
         std::printf("  --capture-after-frames <N>   Automatically capture frame after N presents\n");
+        std::printf("  --editor-validation-focus-view <scene|game>  Focus a view during startup validation\n");
+        std::printf("  --editor-validation-exclusive-view <scene|game>  Close the other view during startup validation\n");
+        std::printf("  --editor-validation-select-actor <name>  Select an actor during startup validation\n");
+        std::printf("  --editor-validation-scene-camera <pos;rot>  Force Scene View camera, e.g. 1,2,3;10,20,30\n");
+        std::printf("  --editor-log-scene-camera-input  Log Scene View input and camera movement diagnostics\n");
         std::printf("  --help, -h                  Show this help message\n");
         std::printf("\nArguments:\n");
         std::printf("  project_path   Path to .nullus project file or project directory (required)\n");
@@ -77,6 +82,31 @@ namespace NLS::Editor::Launch
                     parsed.hasError = true;
                     return parsed;
                 }
+            }
+            else if (arg == "--editor-validation-scene-camera" && i + 1 < argc)
+            {
+                parsed.diagnosticsSettings.editorValidationSceneCamera = argv[++i];
+                parsed.hasDiagnosticsOverride = true;
+            }
+            else if (arg == "--editor-validation-focus-view" && i + 1 < argc)
+            {
+                parsed.diagnosticsSettings.editorValidationFocusView = argv[++i];
+                parsed.hasDiagnosticsOverride = true;
+            }
+            else if (arg == "--editor-validation-exclusive-view" && i + 1 < argc)
+            {
+                parsed.diagnosticsSettings.editorValidationExclusiveView = argv[++i];
+                parsed.hasDiagnosticsOverride = true;
+            }
+            else if (arg == "--editor-validation-select-actor" && i + 1 < argc)
+            {
+                parsed.diagnosticsSettings.editorValidationSelectActor = argv[++i];
+                parsed.hasDiagnosticsOverride = true;
+            }
+            else if (arg == "--editor-log-scene-camera-input")
+            {
+                parsed.diagnosticsSettings.editorLogSceneCameraInput = true;
+                parsed.hasDiagnosticsOverride = true;
             }
             else if (arg == "--help" || arg == "-h")
             {

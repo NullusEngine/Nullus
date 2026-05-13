@@ -137,3 +137,6 @@ set_target_properties(NullusUnitTests PROPERTIES
 nls_copy_shared_runtime_to_target(NullusUnitTests)
 
 add_test(NAME NullusUnitTests COMMAND NullusUnitTests)
+set_tests_properties(NullusUnitTests PROPERTIES
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+)

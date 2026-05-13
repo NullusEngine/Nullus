@@ -10,6 +10,24 @@ StructuredBuffer<uint> u_ForwardLocalLightBuffer : register(t0, space1);
 StructuredBuffer<uint> u_NumCulledLightsGrid : register(t1, space1);
 StructuredBuffer<uint> u_CulledLightDataGrid : register(t2, space1);
 
+cbuffer MaterialConstants : register(b0, space2)
+{
+    int u_UseProceduralSky;
+    float u_PaddingUseProceduralSky0;
+    float u_PaddingUseProceduralSky1;
+    float u_PaddingUseProceduralSky2;
+    float3 u_SkyTint;
+    float u_Exposure;
+    float3 u_GroundColor;
+    float3 u_SunDirection;
+    float u_AtmosphereThickness;
+    float u_SunSize;
+    float u_SunSizeConvergence;
+    float u_Padding0;
+    float u_Padding1;
+    float u_Padding2;
+};
+
 struct VSInput
 {
     float3 Position : POSITION;
@@ -30,9 +48,14 @@ VSOutput VSMain(VSInput input)
     return output;
 }
 
+float2 ToDeferredClipXY(float2 texCoord)
+{
+    return float2(texCoord.x * 2.0f - 1.0f, 1.0f - texCoord.y * 2.0f);
+}
+
 float3 ReconstructFarWorldDirection(float2 texCoord)
 {
-    const float2 clipXY = texCoord * 2.0f - 1.0f;
+    const float2 clipXY = ToDeferredClipXY(texCoord);
     const float4 worldPosition = mul(u_LightGridInverseViewProjection, float4(clipXY, 1.0f, 1.0f));
     const float3 world = worldPosition.xyz / max(abs(worldPosition.w), 1e-5f);
     return normalize(world - NLSGetCameraWorldPosition());
@@ -40,10 +63,31 @@ float3 ReconstructFarWorldDirection(float2 texCoord)
 
 float3 ReconstructWorldPosition(float2 texCoord, float depth01)
 {
-    const float2 clipXY = texCoord * 2.0f - 1.0f;
-    const float clipZ = depth01 * 2.0f - 1.0f;
+    const float2 clipXY = ToDeferredClipXY(texCoord);
+    const float clipZ = depth01;
     const float4 worldPosition = mul(u_LightGridInverseViewProjection, float4(clipXY, clipZ, 1.0f));
     return worldPosition.xyz / max(abs(worldPosition.w), 1e-5f);
+}
+
+float3 EvalProceduralSky(float3 direction)
+{
+    const float atmosphere = clamp(u_AtmosphereThickness, 0.25f, 2.0f);
+    const float horizon = clamp(direction.y * 0.5f + 0.5f, 0.0f, 1.0f);
+
+    const float3 zenithColor = lerp(float3(0.42f, 0.56f, 0.79f), u_SkyTint, 0.60f);
+    const float3 skyMidColor = lerp(float3(0.58f, 0.74f, 0.92f), u_SkyTint, 0.30f);
+    const float3 horizonColor = float3(0.86f, 0.97f, 0.99f);
+
+    const float upperBlend = pow(smoothstep(0.52f, 1.0f, horizon), lerp(1.10f, 0.82f, atmosphere * 0.45f));
+    const float midBlend = smoothstep(0.50f, 0.74f, horizon);
+    const float horizonGlow = 1.0f - smoothstep(0.47f, 0.56f, horizon);
+    const float skyBlend = smoothstep(0.49f, 0.53f, horizon);
+
+    float3 sky = lerp(horizonColor, skyMidColor, midBlend);
+    sky = lerp(sky, zenithColor, upperBlend);
+    sky += horizonColor * horizonGlow * 0.06f;
+
+    return lerp(u_GroundColor, sky, skyBlend) * u_Exposure;
 }
 
 float4 PSMain(VSOutput input) : SV_Target0
@@ -55,7 +99,7 @@ float4 PSMain(VSOutput input) : SV_Target0
         if (u_LightGridLightingParams.w > 0.5f)
             return u_SkyboxCube.Sample(u_LinearWrapSampler, skyDirection);
 
-        return float4(0.55f, 0.70f, 0.92f, 1.0f);
+        return float4(EvalProceduralSky(skyDirection), 1.0f);
     }
 
     const float4 albedo = u_GBufferAlbedo.Sample(u_LinearWrapSampler, input.TexCoord);
@@ -67,10 +111,8 @@ float4 PSMain(VSOutput input) : SV_Target0
     const float metallic = materialParams.x;
     const float roughness = materialParams.y;
     const float ao = materialParams.z;
-    const float3 litColor = NLSAccumulateClusteredLightingPBR(
+    const float3 litColor = NLSAccumulateSceneLightingPBR(
         u_ForwardLocalLightBuffer,
-        u_NumCulledLightsGrid,
-        u_CulledLightDataGrid,
         worldPosition,
         normalWS,
         albedo.rgb,

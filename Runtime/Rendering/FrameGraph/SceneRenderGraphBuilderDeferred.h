@@ -3,6 +3,7 @@
 #include <array>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "Rendering/Buffers/MultiFramebuffer.h"
@@ -110,7 +111,10 @@ namespace NLS::Render::FrameGraph
     NLS_RENDER_API CompiledThreadedRenderSceneExecution CompileAndApplyPreparedDeferredLightGridSceneExecution(
         NLS::Render::Context::RenderScenePackage& package,
         const LightGridCompileContext& lightGridContext,
-        const DeferredPreparedSceneResources& resources);
+        const DeferredPreparedSceneResources& resources,
+        const std::vector<NLS::Render::Context::RenderPassCommandInput>& appendedPassInputs = {},
+        const std::vector<ThreadedRenderScenePassMetadata>& appendedPassMetadata = {},
+        std::optional<uint64_t> queuedLightingDrawCount = std::nullopt);
 
     NLS_RENDER_API void FinalizePreparedDeferredScenePackage(
         NLS::Render::Context::RenderScenePackage& package,

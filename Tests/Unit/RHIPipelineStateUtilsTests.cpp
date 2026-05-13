@@ -71,7 +71,7 @@ TEST(RHIPipelineStateUtilsTests, MapsOutlineShellPresetToFrontCulledSolidStencil
     EXPECT_EQ(desc.depthStencilState.stencilReadMask, 0x3Fu);
     EXPECT_EQ(desc.depthStencilState.stencilWriteMask, 0u);
     EXPECT_EQ(desc.depthStencilState.stencilCompare, NLS::Render::Settings::EComparaisonAlgorithm::NOTEQUAL);
-    EXPECT_FALSE(desc.depthStencilState.depthTest);
+    EXPECT_TRUE(desc.depthStencilState.depthTest);
     EXPECT_FALSE(desc.depthStencilState.depthWrite);
 }
 

@@ -19,7 +19,7 @@ namespace NLS::Render::Resources
 
 namespace NLS::Engine::Rendering
 {
-	class NLS_ENGINE_API DeferredSceneRenderer final : public BaseSceneRenderer
+	class NLS_ENGINE_API DeferredSceneRenderer : public BaseSceneRenderer
 	{
 	public:
 		explicit DeferredSceneRenderer(NLS::Render::Context::Driver& p_driver);
@@ -28,7 +28,7 @@ namespace NLS::Engine::Rendering
 		void BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor) override;
 		void DrawFrame() override;
 
-	private:
+	protected:
 		struct DeferredSceneDescriptor
 		{
 			AllDrawables drawables;
@@ -36,6 +36,26 @@ namespace NLS::Engine::Rendering
 			bool hasSkyboxTexture = false;
 		};
 
+		static void SynchronizeThreadedDeferredSnapshot(
+			NLS::Render::Context::FrameSnapshot& snapshot,
+			uint64_t queuedGBufferDrawCount);
+		NLS::Render::FrameGraph::DeferredPreparedSceneResourceRequest BuildDeferredPreparedSceneResourceRequest() const;
+		void LogPreparedDrawResult(
+			const char* stage,
+			bool captured,
+			bool queued,
+			const PreparedRecordedDraw& preparedDraw) const;
+		NLS::Render::Context::PreparedRenderSceneBuilder BuildDeferredPreparedRenderSceneBuilder(
+			NLS::Render::Context::FrameSnapshot snapshot,
+			bool hasSkyboxTexture,
+			const std::vector<NLS::Render::Context::RenderPassCommandInput>& appendedPassInputs = {},
+			const std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata>& appendedPassMetadata = {},
+			std::shared_ptr<NLS::Render::RHI::RHITexture> preferredReadbackTexture = nullptr,
+			uint64_t additionalRenderTargetUseCount = 0u) const;
+		NLS::Render::Context::PreparedRenderSceneBuilder BuildPreparedRenderSceneBuilder(
+			const NLS::Render::Context::FrameSnapshot& snapshot) const override;
+
+	private:
 		void LoadPipelineResources();
 		void EnsureGBufferTargets(uint16_t width, uint16_t height);
 		std::unique_ptr<NLS::Render::Resources::Material> CreateGBufferMaterial() const;
@@ -55,5 +75,7 @@ namespace NLS::Engine::Rendering
 		std::unordered_map<std::string, std::unique_ptr<NLS::Render::Resources::Material>> m_gBufferMaterialCache;
 		NLS::Render::Resources::Shader* m_gBufferShader = nullptr;
 		NLS::Render::Resources::Shader* m_lightingShader = nullptr;
+		uint64_t m_threadedQueuedGBufferDrawCount = 0u;
+		uint64_t m_threadedQueuedLightingDrawCount = 0u;
 	};
 }

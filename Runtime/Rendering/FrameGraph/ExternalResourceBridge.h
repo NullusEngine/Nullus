@@ -64,6 +64,11 @@ namespace NLS::Render::FrameGraph
         std::initializer_list<NLS::Render::Context::RenderPassCommandKind> passKinds);
 
     NLS_RENDER_API bool ApplyExternalSceneOutputAttachments(
+        std::vector<NLS::Render::Context::RenderPassCommandInput>& passInputs,
+        const ExternalSceneOutputAttachments& attachments,
+        std::initializer_list<NLS::Render::Context::RenderPassCommandKind> passKinds);
+
+    NLS_RENDER_API bool ApplyExternalSceneOutputAttachments(
         NLS::Render::Context::RenderScenePackage& package,
         const NLS::Render::Data::FrameDescriptor& frame,
         const char* colorViewName,

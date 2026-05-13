@@ -9,6 +9,37 @@ namespace NLS::Render::RHI::DX12
 #if defined(_WIN32)
     namespace
     {
+        DXGI_FORMAT ResolveSrvFormat(const TextureFormat format)
+        {
+            switch (format)
+            {
+            case TextureFormat::Depth24Stencil8:
+                return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
+            case TextureFormat::Depth32F:
+                return DXGI_FORMAT_R32_FLOAT;
+            default:
+                return ToDXGIFormat(format);
+            }
+        }
+
+        DXGI_FORMAT ResolveDsvFormat(const TextureFormat format)
+        {
+            switch (format)
+            {
+            case TextureFormat::Depth24Stencil8:
+                return DXGI_FORMAT_D24_UNORM_S8_UINT;
+            case TextureFormat::Depth32F:
+                return DXGI_FORMAT_D32_FLOAT;
+            default:
+                return ToDXGIFormat(format);
+            }
+        }
+
+        DXGI_FORMAT ResolveRtvFormat(const TextureFormat format)
+        {
+            return ToDXGIFormat(format);
+        }
+
         UINT ResolveMipLevels(const RHITextureViewDesc& viewDesc)
         {
             return viewDesc.subresourceRange.mipLevelCount > 0
@@ -56,10 +87,12 @@ namespace NLS::Render::RHI::DX12
         const UINT mipLevels = ResolveMipLevels(viewDesc);
         const UINT arraySize = ResolveArraySize(textureDesc, viewDesc);
 
-        descriptors.hasSrv = !isDepth;
+        descriptors.hasSrv =
+            !isDepth ||
+            HasTextureUsage(textureDesc.usage, TextureUsageFlags::Sampled);
         if (descriptors.hasSrv)
         {
-            descriptors.srvDesc.Format = ToDXGIFormat(viewDesc.format);
+            descriptors.srvDesc.Format = ResolveSrvFormat(viewDesc.format);
             descriptors.srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
             if (isCube)
             {
@@ -109,7 +142,7 @@ namespace NLS::Render::RHI::DX12
             HasTextureUsage(textureDesc.usage, TextureUsageFlags::ColorAttachment);
         if (descriptors.hasRtv)
         {
-            descriptors.rtvDesc.Format = ToDXGIFormat(viewDesc.format);
+            descriptors.rtvDesc.Format = ResolveRtvFormat(viewDesc.format);
             if (isCube || isCubeArray || is2DArray)
             {
                 descriptors.rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
@@ -138,7 +171,7 @@ namespace NLS::Render::RHI::DX12
             HasTextureUsage(textureDesc.usage, TextureUsageFlags::DepthStencilAttachment);
         if (descriptors.hasDsv)
         {
-            descriptors.dsvDesc.Format = ToDXGIFormat(viewDesc.format);
+            descriptors.dsvDesc.Format = ResolveDsvFormat(viewDesc.format);
             if (isCube || isCubeArray || is2DArray)
             {
                 descriptors.dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;

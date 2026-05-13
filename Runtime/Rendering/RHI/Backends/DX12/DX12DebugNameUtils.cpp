@@ -150,4 +150,12 @@ namespace NLS::Render::RHI::DX12
 			stream << " key=" << stableCacheKey;
 		return stream.str();
 	}
+
+	std::string BuildDX12GpuScopeDebugLabel(std::string_view name, std::string_view sourceFunction)
+	{
+		const auto label = !name.empty()
+			? std::string(name)
+			: SemanticNameOrFallback(sourceFunction, "UnnamedGpuScope");
+		return "Nullus/" + label;
+	}
 }

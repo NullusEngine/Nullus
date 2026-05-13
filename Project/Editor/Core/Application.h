@@ -27,7 +27,8 @@ namespace NLS
 			*/
 			Application(const std::string& p_projectPath, const std::string& p_projectName,
 			            std::optional<Render::Settings::EGraphicsBackend> p_backendOverride = std::nullopt,
-			            std::optional<Render::Settings::RenderDocSettings> p_renderDocOverride = std::nullopt);
+			            std::optional<Render::Settings::RenderDocSettings> p_renderDocOverride = std::nullopt,
+			            std::optional<Render::Settings::EngineDiagnosticsSettings> p_diagnosticsOverride = std::nullopt);
 
 			/**
 			* Destructor

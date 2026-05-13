@@ -7,7 +7,7 @@
 #include "Components/MeshRenderer.h"
 #include <Rendering/Resources/Material.h>
 #include "Components/LightComponent.h"
-#include <Engine/Rendering/ForwardSceneRenderer.h>
+#include <Engine/Rendering/DeferredSceneRenderer.h>
 #include "Core/Context.h"
 
 namespace NLS::Editor::Panels { class AView; }
@@ -18,7 +18,7 @@ namespace NLS::Editor::Rendering
 	* Provide a debug layer on top of the default scene renderer to see "invisible" entities such as
 	* lights, cameras, 
 	*/
-class DebugSceneRenderer : public Engine::Rendering::ForwardSceneRenderer
+class DebugSceneRenderer : public Engine::Rendering::DeferredSceneRenderer
 	{
 	public:
 		struct DebugSceneDescriptor

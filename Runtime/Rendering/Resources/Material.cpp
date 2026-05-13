@@ -1083,7 +1083,12 @@ namespace NLS::Render::Resources
 		pipelineLayoutDesc.debugName = path.empty() ? "MaterialPipelineLayout" : path + ":MaterialPipelineLayout";
 		pipelineLayoutDesc.bindingLayouts.reserve(layoutDescs.size());
 		for (const auto& layoutDesc : layoutDescs)
+		{
+			if (layoutDesc.entries.empty())
+				continue;
+
 			pipelineLayoutDesc.bindingLayouts.push_back(device->CreateBindingLayout(layoutDesc));
+		}
 		state.explicitPipelineLayout = device->CreatePipelineLayout(pipelineLayoutDesc);
 		return state.explicitPipelineLayout;
 	}

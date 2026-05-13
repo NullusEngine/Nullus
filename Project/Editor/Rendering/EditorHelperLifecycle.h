@@ -13,6 +13,9 @@ namespace NLS::Editor::Rendering
         bool lightPassEnabled = true;
         bool actorPassEnabled = true;
         bool debugDrawPassEnabled = true;
+        bool debugDrawEnabled = true;
+        bool debugDrawCamera = true;
+        bool debugDrawLighting = true;
         bool gridEnabled = false;
         uint64_t sceneCameraCount = 0u;
         uint64_t sceneLightCount = 0u;
@@ -27,12 +30,18 @@ namespace NLS::Editor::Rendering
 
     inline bool HasThreadedCameraHelperPass(const ThreadedEditorHelperState& state)
     {
-        return state.cameraPassEnabled && state.sceneCameraCount > 0u;
+        return state.cameraPassEnabled &&
+            state.debugDrawEnabled &&
+            state.debugDrawCamera &&
+            state.sceneCameraCount > 0u;
     }
 
     inline bool HasThreadedLightHelperPass(const ThreadedEditorHelperState& state)
     {
-        return state.lightPassEnabled && state.sceneLightCount > 0u;
+        return state.lightPassEnabled &&
+            state.debugDrawEnabled &&
+            state.debugDrawLighting &&
+            state.sceneLightCount > 0u;
     }
 
     inline bool HasThreadedOutlineHelperPass(const ThreadedEditorHelperState& state)

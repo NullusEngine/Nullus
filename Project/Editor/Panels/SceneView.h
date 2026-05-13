@@ -78,5 +78,6 @@ namespace NLS::Editor::Panels
         uint64_t m_pendingClickMinReadablePickingFrameSerial = 0u;
 		bool m_hasPickingSample = false;
         bool m_requestPickingFrame = true;
+        bool m_cameraMovedForPresentation = true;
 	};
 }

@@ -39,7 +39,8 @@ class Context
      */
     Context(const std::string& p_projectPath, const std::string& p_projectName,
             std::optional<Render::Settings::EGraphicsBackend> p_backendOverride = std::nullopt,
-            std::optional<Render::Settings::RenderDocSettings> p_renderDocOverride = std::nullopt);
+            std::optional<Render::Settings::RenderDocSettings> p_renderDocOverride = std::nullopt,
+            std::optional<Render::Settings::EngineDiagnosticsSettings> p_diagnosticsOverride = std::nullopt);
 
     /**
      * Destructor
@@ -66,6 +67,7 @@ class Context
     void ApplyEditorSettings()
     {
         m_diagnosticsSettings = Settings::EditorSettings::BuildDiagnosticsSettings();
+        ApplyDiagnosticsOverride(m_diagnosticsSettings);
         Render::Settings::SetThreadDiagnosticsSettings(m_diagnosticsSettings);
 
         if (driver != nullptr)
@@ -107,8 +109,26 @@ class Context
     NLS::Filesystem::IniFile projectSettings;
 
 private:
+    void ApplyDiagnosticsOverride(Render::Settings::EngineDiagnosticsSettings& settings) const
+    {
+        if (!m_diagnosticsOverride.has_value())
+            return;
+
+        if (!m_diagnosticsOverride->editorValidationSceneCamera.empty())
+            settings.editorValidationSceneCamera = m_diagnosticsOverride->editorValidationSceneCamera;
+        if (!m_diagnosticsOverride->editorValidationFocusView.empty())
+            settings.editorValidationFocusView = m_diagnosticsOverride->editorValidationFocusView;
+        if (!m_diagnosticsOverride->editorValidationExclusiveView.empty())
+            settings.editorValidationExclusiveView = m_diagnosticsOverride->editorValidationExclusiveView;
+        if (!m_diagnosticsOverride->editorValidationSelectActor.empty())
+            settings.editorValidationSelectActor = m_diagnosticsOverride->editorValidationSelectActor;
+        if (m_diagnosticsOverride->editorLogSceneCameraInput)
+            settings.editorLogSceneCameraInput = true;
+    }
+
     std::optional<Render::Settings::EGraphicsBackend> m_backendOverride;
     std::optional<Render::Settings::RenderDocSettings> m_renderDocOverride;
+    std::optional<Render::Settings::EngineDiagnosticsSettings> m_diagnosticsOverride;
     Render::Settings::EngineDiagnosticsSettings m_diagnosticsSettings;
 };
 } // namespace Editor::Core

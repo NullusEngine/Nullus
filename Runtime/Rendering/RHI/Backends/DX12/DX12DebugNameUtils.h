@@ -13,4 +13,5 @@ namespace NLS::Render::RHI::DX12
 	NLS_RENDER_API std::string BuildDX12TextureViewDebugLabel(const RHITextureViewDesc& desc, std::string_view textureDebugName);
 	NLS_RENDER_API std::string BuildDX12GraphicsPipelineDebugLabel(const RHIGraphicsPipelineDesc& desc, std::string_view stableCacheKey);
 	NLS_RENDER_API std::string BuildDX12ComputePipelineDebugLabel(const RHIComputePipelineDesc& desc, std::string_view stableCacheKey);
+	NLS_RENDER_API std::string BuildDX12GpuScopeDebugLabel(std::string_view name, std::string_view sourceFunction);
 }

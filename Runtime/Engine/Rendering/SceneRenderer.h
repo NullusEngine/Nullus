@@ -1,9 +1,9 @@
 ﻿
 #pragma once
 
-#include "Rendering/ForwardSceneRenderer.h"
+#include "Rendering/DeferredSceneRenderer.h"
 
 namespace NLS::Engine::Rendering
 {
-	using SceneRenderer = ForwardSceneRenderer;
+	using SceneRenderer = DeferredSceneRenderer;
 }

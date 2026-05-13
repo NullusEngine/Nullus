@@ -109,6 +109,30 @@ TEST(DX12TextureViewUtilsTests, Builds3DSrvForTexture3D)
     EXPECT_FALSE(descriptors.hasDsv);
 }
 
+TEST(DX12TextureViewUtilsTests, BuildsDepthStencilSrvAndDsvForSampledDepthAttachment)
+{
+    NLS::Render::RHI::RHITextureDesc textureDesc;
+    textureDesc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
+    textureDesc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
+    textureDesc.usage = static_cast<NLS::Render::RHI::TextureUsageFlags>(
+        static_cast<uint32_t>(NLS::Render::RHI::TextureUsageFlags::Sampled) |
+        static_cast<uint32_t>(NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment));
+
+    NLS::Render::RHI::RHITextureViewDesc viewDesc;
+    viewDesc.viewType = NLS::Render::RHI::TextureViewType::Texture2D;
+    viewDesc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
+
+    const auto descriptors = NLS::Render::RHI::DX12::BuildDX12TextureViewDescriptorSet(textureDesc, viewDesc);
+
+    ASSERT_TRUE(descriptors.hasSrv);
+    EXPECT_EQ(descriptors.srvDesc.Format, DXGI_FORMAT_R24_UNORM_X8_TYPELESS);
+    EXPECT_EQ(descriptors.srvDesc.ViewDimension, D3D12_SRV_DIMENSION_TEXTURE2D);
+    ASSERT_TRUE(descriptors.hasDsv);
+    EXPECT_EQ(descriptors.dsvDesc.Format, DXGI_FORMAT_D24_UNORM_S8_UINT);
+    EXPECT_EQ(descriptors.dsvDesc.ViewDimension, D3D12_DSV_DIMENSION_TEXTURE2D);
+    EXPECT_FALSE(descriptors.hasRtv);
+}
+
 TEST(DX12TextureViewUtilsTests, ReturnsInvalidSrvHandleForZeroSizedTextureView)
 {
     const auto device = NLS::Render::Backend::CreateDX12RhiDevice(false);

@@ -1,8 +1,12 @@
 #pragma once
 
+#include <cmath>
 #include <cstdint>
+#include <string_view>
 #include <utility>
 
+#include "Math/Quaternion.h"
+#include "Vector3.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 
 namespace NLS::Editor::Panels
@@ -59,6 +63,24 @@ namespace NLS::Editor::Panels
             (requiresImmediateReadback || resizedViewThisFrame || requiresSynchronizedPresentation);
     }
 
+    inline bool HasSceneViewCameraMotionForPresentation(
+        const Maths::Vector3& previousPosition,
+        const Maths::Quaternion& previousRotation,
+        const Maths::Vector3& currentPosition,
+        const Maths::Quaternion& currentRotation)
+    {
+        constexpr float kPositionEpsilon = 1e-5f;
+        constexpr float kRotationEpsilon = 1e-5f;
+        const bool rotationChanged =
+            std::fabs(previousRotation.x - currentRotation.x) > kRotationEpsilon ||
+            std::fabs(previousRotation.y - currentRotation.y) > kRotationEpsilon ||
+            std::fabs(previousRotation.z - currentRotation.z) > kRotationEpsilon ||
+            std::fabs(previousRotation.w - currentRotation.w) > kRotationEpsilon;
+
+        return Maths::Vector3::Distance(previousPosition, currentPosition) > kPositionEpsilon ||
+            rotationChanged;
+    }
+
     inline bool ShouldDelayRetirementAwareViewOverlayMatrices(
         const bool requiresRetiredFrameConsumption,
         const bool requiresImmediateReadback,
@@ -73,5 +95,18 @@ namespace NLS::Editor::Panels
     inline bool ShouldSceneViewRequestImmediatePickingReadback()
     {
         return false;
+    }
+
+    inline bool ShouldSceneViewSynchronizeRetiredFramePresentation()
+    {
+        return false;
+    }
+
+    inline bool ShouldKeepStartupValidationFocusActive(
+        const std::string_view validationFocusView,
+        const uint64_t elapsedFrames,
+        const uint64_t warmupFrameCount)
+    {
+        return !validationFocusView.empty() && elapsedFrames < warmupFrameCount;
     }
 }

@@ -287,6 +287,37 @@ namespace NLS::Render::FrameGraph
     }
 
     bool ApplyExternalSceneOutputAttachments(
+        std::vector<NLS::Render::Context::RenderPassCommandInput>& passInputs,
+        const ExternalSceneOutputAttachments& attachments,
+        std::initializer_list<NLS::Render::Context::RenderPassCommandKind> passKinds)
+    {
+        if (attachments.colorView == nullptr && attachments.depthStencilView == nullptr)
+            return false;
+
+        auto matchesPassKind = [&passKinds](NLS::Render::Context::RenderPassCommandKind kind)
+        {
+            for (const auto expectedKind : passKinds)
+            {
+                if (expectedKind == kind)
+                    return true;
+            }
+
+            return false;
+        };
+
+        bool applied = false;
+        for (auto& passInput : passInputs)
+        {
+            if (!matchesPassKind(passInput.kind))
+                continue;
+
+            applied = ApplyExternalSceneOutputAttachmentsToPassInput(passInput, attachments) || applied;
+        }
+
+        return applied;
+    }
+
+    bool ApplyExternalSceneOutputAttachments(
         NLS::Render::Context::RenderScenePackage& package,
         const NLS::Render::Data::FrameDescriptor& frame,
         const char* colorViewName,

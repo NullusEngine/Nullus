@@ -102,7 +102,18 @@ namespace NLS::Render::Backend
 			NLS::Render::RHI::RHITexture* texture = nullptr;
 			NLS::Render::RHI::ResourceState textureStateAfterEnd = NLS::Render::RHI::ResourceState::Unknown;
 		};
+		enum class DebugEventScopeKind : uint8_t
+		{
+			GpuProfile,
+			RenderPass
+		};
+		struct DebugEventScope
+		{
+			DebugEventScopeKind kind = DebugEventScopeKind::GpuProfile;
+			std::string label;
+		};
 		std::vector<ActiveRenderPassTransition> m_activeRenderPassTransitions;
+		std::vector<DebugEventScope> m_debugEventScopeStack;
 #endif
 		std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline> m_boundPipeline;
 		std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> m_boundComputePipeline;
@@ -114,7 +125,9 @@ namespace NLS::Render::Backend
 		std::vector<std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline>> m_recordedPipelineKeepAlive;
 		std::vector<std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>> m_recordedComputePipelineKeepAlive;
 		std::vector<NLS::Base::Profiling::ProfilerGpuScopeEvent> m_gpuProfileScopeStack;
+#if defined(_WIN32)
 		bool m_bindingComputePipeline = false;
+#endif
 	};
 
 	class NativeDX12CommandPool final : public NLS::Render::RHI::RHICommandPool

@@ -624,6 +624,16 @@ namespace NLS::Render::FrameGraph
 		return metadata.graphPassName != nullptr && metadata.graphPassName[0] != '\0';
 	}
 
+	inline bool ThreadedPassMetadataMatchesInput(
+		const ThreadedRenderScenePassMetadata& metadata,
+		const Context::RenderPassCommandInput& passInput)
+	{
+		if (!passInput.debugName.empty() && ThreadedPassMetadataHasGraphPassName(metadata))
+			return passInput.debugName == metadata.graphPassName;
+
+		return metadata.commandKind == passInput.kind;
+	}
+
 	inline bool IsRecordedThreadedPassOutputContractInvalid(const ThreadedRenderScenePassMetadata& metadata)
 	{
 		return metadata.executionMode == ThreadedRenderScenePassExecutionMode::Recorded &&
@@ -650,7 +660,9 @@ namespace NLS::Render::FrameGraph
 			std::end(metadataRange),
 			[&passInput](const auto& metadataEntry)
 			{
-				return ResolveThreadedRenderScenePassMetadata(metadataEntry).commandKind == passInput.kind;
+				return ThreadedPassMetadataMatchesInput(
+					ResolveThreadedRenderScenePassMetadata(metadataEntry),
+					passInput);
 			});
 	}
 
@@ -1828,7 +1840,7 @@ namespace NLS::Render::FrameGraph
 				for (; metadataIt != std::end(metadataRange); ++metadataIt)
 				{
 					const auto& metadata = ResolveThreadedRenderScenePassMetadata(*metadataIt);
-					if (metadata.commandKind == passInput.kind)
+					if (ThreadedPassMetadataMatchesInput(metadata, passInput))
 						break;
 				}
 			}

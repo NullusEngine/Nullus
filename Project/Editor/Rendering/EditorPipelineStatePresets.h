@@ -177,7 +177,7 @@ namespace NLS::Editor::Rendering
         baseState.stencilFuncMask = stencilMask;
         baseState.stencilWriteMask = 0x00;
         baseState.rasterizationMode = NLS::Render::Settings::ERasterizationMode::FILL;
-        baseState.depthTest = false;
+        baseState.depthTest = true;
         baseState.depthWriting = false;
         baseState.culling = true;
         baseState.cullFace = NLS::Render::Settings::ECullFace::FRONT;

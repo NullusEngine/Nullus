@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -189,23 +190,46 @@ TEST_F(ProfilerScopeTest, ScopesFromMultipleThreadsAreAccepted)
     Profiler::RegisterDestination(destination);
     Profiler::SetEnabled(true);
 
-    auto emitScope = []
     {
-        ProfilerScope scope("Worker Scope", __FUNCTION__);
+        ProfilerScope unrelatedScope("Unrelated Scope", __FUNCTION__);
+    }
+
+    std::atomic<unsigned> readyThreadCount = 0u;
+    std::atomic<bool> startThreads = false;
+
+    auto emitScope = [&](const char* scopeName)
+    {
+        readyThreadCount.fetch_add(1u, std::memory_order_release);
+        while (!startThreads.load(std::memory_order_acquire))
+            std::this_thread::yield();
+
+        ProfilerScope scope(scopeName, __FUNCTION__);
     };
 
-    std::thread first(emitScope);
-    std::thread second(emitScope);
+    std::thread first(emitScope, "Worker Scope A");
+    std::thread second(emitScope, "Worker Scope B");
+    while (readyThreadCount.load(std::memory_order_acquire) < 2u)
+        std::this_thread::yield();
+    startThreads.store(true, std::memory_order_release);
+
     first.join();
     second.join();
 
-    size_t beginCount = 0u;
-    for (const auto& event : destination.events)
+    const auto countEvents = [&destination](const char* name, const char* phase)
     {
-        if (event.phase == "begin")
-            ++beginCount;
-    }
-    EXPECT_EQ(beginCount, 2u);
+        size_t count = 0u;
+        for (const auto& event : destination.events)
+        {
+            if (event.name == name && event.phase == phase)
+                ++count;
+        }
+        return count;
+    };
+
+    EXPECT_EQ(countEvents("Worker Scope A", "begin"), 1u);
+    EXPECT_EQ(countEvents("Worker Scope A", "end"), 1u);
+    EXPECT_EQ(countEvents("Worker Scope B", "begin"), 1u);
+    EXPECT_EQ(countEvents("Worker Scope B", "end"), 1u);
 }
 
 TEST_F(ProfilerScopeTest, GpuScopedObjectEndsScopeWhenLeavingBlock)

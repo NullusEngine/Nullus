@@ -12,7 +12,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: 'true'
+          submodules: false
+
+      - name: Sync submodules
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule sync --recursive
+          git submodule update --init --recursive --jobs 4
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4

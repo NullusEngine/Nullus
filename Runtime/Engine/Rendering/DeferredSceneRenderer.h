@@ -108,8 +108,16 @@ namespace NLS::Engine::Rendering
 
 	struct NLS_ENGINE_API DeferredSceneRendererTestAccess final
 	{
+		using GBufferMaterialCache = std::unordered_map<std::string, DeferredSceneRenderer::GBufferMaterialCacheEntry>;
+
 		static NLS::Render::Resources::Material& GetOrCreateGBufferMaterial(
 			DeferredSceneRenderer& renderer,
 			NLS::Render::Resources::Material& sourceMaterial);
+		static GBufferMaterialCache& GetGBufferMaterialCache(DeferredSceneRenderer& renderer);
+		static const GBufferMaterialCache& GetGBufferMaterialCache(const DeferredSceneRenderer& renderer);
+		static void SetGBufferShader(DeferredSceneRenderer& renderer, NLS::Render::Resources::Shader* shader);
+		static NLS::Render::Resources::Shader* GetGBufferShader(const DeferredSceneRenderer& renderer);
+		static void ResetFrameGBufferMaterialSyncCount(DeferredSceneRenderer& renderer);
+		static uint64_t GetFrameGBufferMaterialSyncCount(const DeferredSceneRenderer& renderer);
 	};
 }

@@ -935,4 +935,41 @@ namespace NLS::Engine::Rendering
 	{
 		return renderer.GetOrCreateGBufferMaterial(sourceMaterial);
 	}
+
+	DeferredSceneRendererTestAccess::GBufferMaterialCache& DeferredSceneRendererTestAccess::GetGBufferMaterialCache(
+		DeferredSceneRenderer& renderer)
+	{
+		return renderer.m_gBufferMaterialCache;
+	}
+
+	const DeferredSceneRendererTestAccess::GBufferMaterialCache& DeferredSceneRendererTestAccess::GetGBufferMaterialCache(
+		const DeferredSceneRenderer& renderer)
+	{
+		return renderer.m_gBufferMaterialCache;
+	}
+
+	void DeferredSceneRendererTestAccess::SetGBufferShader(
+		DeferredSceneRenderer& renderer,
+		NLS::Render::Resources::Shader* shader)
+	{
+		renderer.m_gBufferShader = shader;
+	}
+
+	NLS::Render::Resources::Shader* DeferredSceneRendererTestAccess::GetGBufferShader(
+		const DeferredSceneRenderer& renderer)
+	{
+		return renderer.m_gBufferShader;
+	}
+
+	void DeferredSceneRendererTestAccess::ResetFrameGBufferMaterialSyncCount(
+		DeferredSceneRenderer& renderer)
+	{
+		renderer.m_frameGBufferMaterialSyncCount = 0u;
+	}
+
+	uint64_t DeferredSceneRendererTestAccess::GetFrameGBufferMaterialSyncCount(
+		const DeferredSceneRenderer& renderer)
+	{
+		return renderer.m_frameGBufferMaterialSyncCount;
+	}
 }

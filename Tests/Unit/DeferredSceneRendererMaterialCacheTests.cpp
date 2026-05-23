@@ -3,9 +3,7 @@
 #include <fstream>
 #include <tuple>
 
-#define private public
 #include "Rendering/DeferredSceneRenderer.h"
-#undef private
 
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverAccess.h"
@@ -112,7 +110,7 @@ namespace
         NLS::Engine::Rendering::DeferredSceneRenderer& renderer,
         NLS::Render::Resources::Material& sourceMaterial)
     {
-        renderer.m_frameGBufferMaterialSyncCount = 0u;
+        NLS::Engine::Rendering::DeferredSceneRendererTestAccess::ResetFrameGBufferMaterialSyncCount(renderer);
         return NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetOrCreateGBufferMaterial(
             renderer,
             sourceMaterial);
@@ -144,7 +142,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, ReusesGBufferMaterialForStableMate
     SyncOneDeferredCacheMaterial(renderer, firstMaterial);
     SyncOneDeferredCacheMaterial(renderer, secondMaterial);
 
-    EXPECT_EQ(renderer.m_gBufferMaterialCache.size(), 1u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer).size(), 1u);
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
 }
@@ -167,7 +165,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, ProvidesVisibleDeferredGBufferFall
     ASSERT_NE(lambertShader, nullptr);
     auto* gbufferShader = CreateTestShader("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
     ASSERT_NE(gbufferShader, nullptr);
-    renderer.m_gBufferShader = gbufferShader;
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, gbufferShader);
 
     auto* diffuseTexture = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(128, 64, 32, 255);
     ASSERT_NE(diffuseTexture, nullptr);
@@ -178,8 +176,9 @@ TEST(DeferredSceneRendererMaterialCacheTests, ProvidesVisibleDeferredGBufferFall
 
     SyncOneDeferredCacheMaterial(renderer, source);
 
-    ASSERT_EQ(renderer.m_gBufferMaterialCache.size(), 1u);
-    const auto& gbuffer = *renderer.m_gBufferMaterialCache.begin()->second.material;
+    const auto& gbufferCache = NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer);
+    ASSERT_EQ(gbufferCache.size(), 1u);
+    const auto& gbuffer = *gbufferCache.begin()->second.material;
 
     const auto* albedoValue = gbuffer.GetParameterBlock().TryGet("u_Albedo");
     ASSERT_NE(albedoValue, nullptr);
@@ -211,7 +210,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, ProvidesVisibleDeferredGBufferFall
     }
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(diffuseTexture));
-    renderer.m_gBufferShader = nullptr;
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, nullptr);
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(gbufferShader));
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(lambertShader));
 }
@@ -234,26 +233,26 @@ TEST(DeferredSceneRendererMaterialCacheTests, SkipsGBufferMaterialSyncUntilSourc
     ASSERT_NE(lambertShader, nullptr);
     auto* gbufferShader = CreateTestShader("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
     ASSERT_NE(gbufferShader, nullptr);
-    renderer.m_gBufferShader = gbufferShader;
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, gbufferShader);
 
     NLS::Render::Resources::Material source(lambertShader);
     source.Set<NLS::Maths::Vector4>("u_Diffuse", { 0.15f, 0.25f, 0.35f, 1.0f });
 
     SyncOneDeferredCacheMaterial(renderer, source);
-    ASSERT_EQ(renderer.m_gBufferMaterialCache.size(), 1u);
-    EXPECT_EQ(renderer.m_frameGBufferMaterialSyncCount, 1u);
-    EXPECT_EQ(renderer.m_gBufferMaterialCache.begin()->second.syncCount, 1u);
+    ASSERT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer).size(), 1u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialSyncCount(renderer), 1u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer).begin()->second.syncCount, 1u);
 
     SyncOneDeferredCacheMaterial(renderer, source);
-    EXPECT_EQ(renderer.m_frameGBufferMaterialSyncCount, 0u);
-    EXPECT_EQ(renderer.m_gBufferMaterialCache.begin()->second.syncCount, 1u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialSyncCount(renderer), 0u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer).begin()->second.syncCount, 1u);
 
     source.Set<NLS::Maths::Vector4>("u_Diffuse", { 0.8f, 0.7f, 0.6f, 1.0f });
     SyncOneDeferredCacheMaterial(renderer, source);
-    EXPECT_EQ(renderer.m_frameGBufferMaterialSyncCount, 1u);
-    EXPECT_EQ(renderer.m_gBufferMaterialCache.begin()->second.syncCount, 2u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialSyncCount(renderer), 1u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer).begin()->second.syncCount, 2u);
 
-    const auto& gbuffer = *renderer.m_gBufferMaterialCache.begin()->second.material;
+    const auto& gbuffer = *NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer).begin()->second.material;
     const auto* albedoValue = gbuffer.GetParameterBlock().TryGet("u_Albedo");
     ASSERT_NE(albedoValue, nullptr);
     ASSERT_EQ(albedoValue->type(), typeid(NLS::Maths::Vector4));
@@ -263,7 +262,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, SkipsGBufferMaterialSyncUntilSourc
     EXPECT_FLOAT_EQ(albedo.z, 0.6f);
     EXPECT_FLOAT_EQ(albedo.w, 1.0f);
 
-    renderer.m_gBufferShader = nullptr;
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, nullptr);
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(gbufferShader));
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(lambertShader));
 }
@@ -286,7 +285,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, ResyncsSharedRuntimeVariantWhenSou
     ASSERT_NE(lambertShader, nullptr);
     auto* gbufferShader = CreateTestShader("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
     ASSERT_NE(gbufferShader, nullptr);
-    renderer.m_gBufferShader = gbufferShader;
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, gbufferShader);
 
     NLS::Render::Resources::Material firstSource(lambertShader);
     NLS::Render::Resources::Material secondSource(lambertShader);
@@ -295,20 +294,20 @@ TEST(DeferredSceneRendererMaterialCacheTests, ResyncsSharedRuntimeVariantWhenSou
 
     SyncOneDeferredCacheMaterial(renderer, firstSource);
 
-    ASSERT_EQ(renderer.m_gBufferMaterialCache.size(), 1u);
-    EXPECT_EQ(renderer.m_frameGBufferMaterialSyncCount, 1u);
-    EXPECT_EQ(renderer.m_gBufferMaterialCache.begin()->second.syncCount, 1u);
+    ASSERT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer).size(), 1u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialSyncCount(renderer), 1u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer).begin()->second.syncCount, 1u);
 
     SyncOneDeferredCacheMaterial(renderer, secondSource);
 
-    ASSERT_EQ(renderer.m_gBufferMaterialCache.size(), 2u);
-    EXPECT_EQ(renderer.m_frameGBufferMaterialSyncCount, 1u);
+    ASSERT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer).size(), 2u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialSyncCount(renderer), 1u);
 
     SyncOneDeferredCacheMaterial(renderer, secondSource);
-    EXPECT_EQ(renderer.m_frameGBufferMaterialSyncCount, 0u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialSyncCount(renderer), 0u);
     uint64_t totalSyncCount = 0u;
     const NLS::Render::Resources::Material* secondGBufferMaterial = nullptr;
-    for (const auto& [_, entry] : renderer.m_gBufferMaterialCache)
+    for (const auto& [_, entry] : NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer))
     {
         totalSyncCount += entry.syncCount;
         if (entry.syncedStamp.sourceMaterialInstanceId == secondSource.GetInstanceId())
@@ -327,7 +326,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, ResyncsSharedRuntimeVariantWhenSou
     EXPECT_FLOAT_EQ(albedo.z, 0.5f);
     EXPECT_FLOAT_EQ(albedo.w, 1.0f);
 
-    renderer.m_gBufferShader = nullptr;
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, nullptr);
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(gbufferShader));
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(lambertShader));
 }

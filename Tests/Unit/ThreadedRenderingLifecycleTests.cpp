@@ -6154,6 +6154,8 @@ TEST(ThreadedRenderingLifecycleTests, ThreadedUiRenderIsRejectedWhileThreadedSwa
     EXPECT_EQ(commandBuffer->resetCalls, 0u);
     EXPECT_EQ(commandBuffer->beginCalls, 0u);
     EXPECT_EQ(swapchain->acquireCalls, 0u);
+
+    NLS::Render::Context::DriverTestAccess::DrainThreadedRendering(driver);
 }
 
 TEST(ThreadedRenderingLifecycleTests, ThreadedUiPresentSubmitsStandaloneExplicitFrameWithoutOnDemandAcquireBypass)

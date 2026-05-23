@@ -928,4 +928,11 @@ namespace NLS::Engine::Rendering
 		commandBuffer->BindBindingSet(NLS::Render::RHI::BindingPointMap::kMaterialDescriptorSet, bindingSet);
 		SubmitMeshDraw(commandBuffer, rhiMesh, material->GetGPUInstances());
 	}
+
+	NLS::Render::Resources::Material& DeferredSceneRendererTestAccess::GetOrCreateGBufferMaterial(
+		DeferredSceneRenderer& renderer,
+		NLS::Render::Resources::Material& sourceMaterial)
+	{
+		return renderer.GetOrCreateGBufferMaterial(sourceMaterial);
+	}
 }

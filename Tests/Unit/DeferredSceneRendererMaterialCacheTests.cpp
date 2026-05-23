@@ -1,12 +1,7 @@
 #include <gtest/gtest.h>
 
-#include <vector>
-#include <unordered_map>
-
-#include <fg/FrameGraph.hpp>
-
-#include "Rendering/BaseSceneRenderer.h"
-#include "Rendering/Buffers/MultiFramebuffer.h"
+#include <fstream>
+#include <tuple>
 
 #define private public
 #include "Rendering/DeferredSceneRenderer.h"
@@ -14,73 +9,113 @@
 
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverAccess.h"
-#include "Rendering/Geometry/Vertex.h"
 #include "Rendering/Resources/Loaders/ShaderLoader.h"
 #include "Rendering/Resources/Loaders/TextureLoader.h"
 #include "Rendering/Resources/Material.h"
-#include "Rendering/Resources/Mesh.h"
 #include "Rendering/Settings/DriverSettings.h"
-#include "Rendering/Entities/Camera.h"
-#include "Rendering/Data/FrameDescriptor.h"
-#include "Components/MeshFilter.h"
-#include "Components/MeshRenderer.h"
+#include "Rendering/Assets/ShaderArtifact.h"
+#include "Rendering/RHI/BindingPointMap.h"
 #include "Core/ServiceLocator.h"
-#include "SceneSystem/Scene.h"
+#include "Guid.h"
 
 namespace
 {
-    NLS::Render::Geometry::Vertex MakeVertex(const float x, const float y, const float z)
+    NLS::Render::Resources::ShaderReflection MakeDeferredMaterialShaderReflection()
     {
-        NLS::Render::Geometry::Vertex vertex{};
-        vertex.position[0] = x;
-        vertex.position[1] = y;
-        vertex.position[2] = z;
-        vertex.normals[2] = 1.0f;
-        vertex.tangent[0] = 1.0f;
-        vertex.bitangent[1] = 1.0f;
-        return vertex;
+        NLS::Render::Resources::ShaderReflection reflection;
+        reflection.constantBuffers.push_back({
+            "MaterialConstants",
+            NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+            NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+            0u,
+            64u,
+            {
+                {"u_Diffuse", NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4, 0u, 16u, 1u},
+                {"u_DiffuseMap", NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D, 16u, 0u, 1u},
+                {"u_Albedo", NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4, 32u, 16u, 1u},
+                {"u_AlbedoMap", NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D, 48u, 0u, 1u}
+            }
+        });
+        for (const auto& [name, type, kind, offset, size] : {
+            std::tuple{"u_Diffuse", NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4, NLS::Render::Resources::ShaderResourceKind::Value, 0u, 16u},
+            std::tuple{"u_DiffuseMap", NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D, NLS::Render::Resources::ShaderResourceKind::SampledTexture, 16u, 0u},
+            std::tuple{"u_Albedo", NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4, NLS::Render::Resources::ShaderResourceKind::Value, 32u, 16u},
+            std::tuple{"u_AlbedoMap", NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D, NLS::Render::Resources::ShaderResourceKind::SampledTexture, 48u, 0u}
+        })
+        {
+            reflection.properties.push_back({
+                name,
+                type,
+                kind,
+                NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+                NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+                0u,
+                -1,
+                1,
+                offset,
+                size,
+                kind == NLS::Render::Resources::ShaderResourceKind::Value ? "MaterialConstants" : ""
+            });
+        }
+        return reflection;
     }
 
-    NLS::Render::Resources::Mesh* CreateSingleTriangleMesh()
+    NLS::Render::Resources::Shader* CreateTestShader(const std::string& sourcePath)
     {
-        return new NLS::Render::Resources::Mesh(
-            std::vector<NLS::Render::Geometry::Vertex>{
-                MakeVertex(-0.5f, -0.5f, 0.0f),
-                MakeVertex(0.5f, -0.5f, 0.0f),
-                MakeVertex(0.0f, 0.5f, 0.0f)
-            },
-            std::vector<uint32_t>{ 0u, 1u, 2u },
-            0u);
-    }
-
-    void AttachRenderable(
-        NLS::Engine::SceneSystem::Scene& scene,
-        NLS::Render::Resources::Mesh& mesh,
-        NLS::Render::Resources::Material& material)
-    {
-        auto& actor = scene.CreateGameObject("DeferredCacheActor");
-        actor.AddComponent<NLS::Engine::Components::MeshFilter>()->SetMesh(&mesh);
-        actor.AddComponent<NLS::Engine::Components::MeshRenderer>()->FillWithMaterial(material);
-    }
-
-    void RenderOneDeferredCacheFrame(
-        NLS::Engine::Rendering::DeferredSceneRenderer& renderer,
-        NLS::Engine::SceneSystem::Scene& scene)
-    {
-        renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
-            scene,
-            std::nullopt,
-            nullptr
+        NLS::Render::Assets::ShaderArtifact artifact;
+        artifact.sourcePath = sourcePath;
+        artifact.subAssetKey = "shader:test";
+        artifact.reflection = MakeDeferredMaterialShaderReflection();
+        artifact.stages.push_back({
+            NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+            NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL,
+            "VSMain",
+            "vs_6_0",
+            {
+                NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded,
+                {1u, 2u, 3u, 4u},
+                {},
+                {},
+                "test-vertex",
+                "test.nshader"
+            }
+        });
+        artifact.stages.push_back({
+            NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+            NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL,
+            "PSMain",
+            "ps_6_0",
+            {
+                NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded,
+                {5u, 6u, 7u, 8u},
+                {},
+                {},
+                "test-pixel",
+                "test.nshader"
+            }
         });
 
-        NLS::Render::Entities::Camera camera;
-        NLS::Render::Data::FrameDescriptor frameDescriptor;
-        frameDescriptor.renderWidth = 128u;
-        frameDescriptor.renderHeight = 96u;
-        frameDescriptor.camera = &camera;
+        const auto root = std::filesystem::temp_directory_path() /
+            ("nullus_deferred_shader_" + NLS::Guid::New().ToString());
+        const auto path = root / "shader.nshader";
+        std::filesystem::create_directories(path.parent_path());
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        const auto bytes = NLS::Render::Assets::SerializeShaderArtifact(artifact);
+        output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        output.close();
+        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(path.string());
+        std::filesystem::remove_all(root);
+        return shader;
+    }
 
-        renderer.BeginFrame(frameDescriptor);
-        renderer.EndFrame();
+    NLS::Render::Resources::Material& SyncOneDeferredCacheMaterial(
+        NLS::Engine::Rendering::DeferredSceneRenderer& renderer,
+        NLS::Render::Resources::Material& sourceMaterial)
+    {
+        renderer.m_frameGBufferMaterialSyncCount = 0u;
+        return NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetOrCreateGBufferMaterial(
+            renderer,
+            sourceMaterial);
     }
 }
 
@@ -94,33 +129,23 @@ TEST(DeferredSceneRendererMaterialCacheTests, ReusesGBufferMaterialForStableMate
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
-    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver);
+    NLS::Engine::Rendering::DeferredSceneRenderer::ConstructionOptions options;
+    options.loadPipelineResources = false;
+    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver, options);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    auto* shader = CreateTestShader("App/Assets/Engine/Shaders/Standard.hlsl");
     ASSERT_NE(shader, nullptr);
-
-    auto* mesh = CreateSingleTriangleMesh();
-    ASSERT_NE(mesh, nullptr);
 
     NLS::Render::Resources::Material firstMaterial(shader);
     NLS::Render::Resources::Material secondMaterial(shader);
     const_cast<std::string&>(firstMaterial.path) = "App/Assets/Test/SharedDeferredMaterial.nmat";
     const_cast<std::string&>(secondMaterial.path) = "App/Assets/Test/SharedDeferredMaterial.nmat";
 
-    {
-        NLS::Engine::SceneSystem::Scene scene;
-        AttachRenderable(scene, *mesh, firstMaterial);
-        RenderOneDeferredCacheFrame(renderer, scene);
-    }
-    {
-        NLS::Engine::SceneSystem::Scene scene;
-        AttachRenderable(scene, *mesh, secondMaterial);
-        RenderOneDeferredCacheFrame(renderer, scene);
-    }
+    SyncOneDeferredCacheMaterial(renderer, firstMaterial);
+    SyncOneDeferredCacheMaterial(renderer, secondMaterial);
 
     EXPECT_EQ(renderer.m_gBufferMaterialCache.size(), 1u);
 
-    delete mesh;
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
 }
 
@@ -134,12 +159,15 @@ TEST(DeferredSceneRendererMaterialCacheTests, ProvidesVisibleDeferredGBufferFall
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
-    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver);
+    NLS::Engine::Rendering::DeferredSceneRenderer::ConstructionOptions options;
+    options.loadPipelineResources = false;
+    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver, options);
 
-    auto* lambertShader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Lambert.hlsl");
+    auto* lambertShader = CreateTestShader("App/Assets/Engine/Shaders/Lambert.hlsl");
     ASSERT_NE(lambertShader, nullptr);
-    auto* gbufferShader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
+    auto* gbufferShader = CreateTestShader("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
     ASSERT_NE(gbufferShader, nullptr);
+    renderer.m_gBufferShader = gbufferShader;
 
     auto* diffuseTexture = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(128, 64, 32, 255);
     ASSERT_NE(diffuseTexture, nullptr);
@@ -148,12 +176,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, ProvidesVisibleDeferredGBufferFall
     source.Set<NLS::Maths::Vector4>("u_Diffuse", { 0.25f, 0.5f, 0.75f, 1.0f });
     source.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", diffuseTexture);
 
-    auto* mesh = CreateSingleTriangleMesh();
-    ASSERT_NE(mesh, nullptr);
-
-    NLS::Engine::SceneSystem::Scene scene;
-    AttachRenderable(scene, *mesh, source);
-    RenderOneDeferredCacheFrame(renderer, scene);
+    SyncOneDeferredCacheMaterial(renderer, source);
 
     ASSERT_EQ(renderer.m_gBufferMaterialCache.size(), 1u);
     const auto& gbuffer = *renderer.m_gBufferMaterialCache.begin()->second.material;
@@ -187,8 +210,8 @@ TEST(DeferredSceneRendererMaterialCacheTests, ProvidesVisibleDeferredGBufferFall
         ASSERT_EQ(textureValue->type(), typeid(NLS::Render::Resources::Texture2D*)) << textureName;
     }
 
-    delete mesh;
     EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(diffuseTexture));
+    renderer.m_gBufferShader = nullptr;
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(gbufferShader));
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(lambertShader));
 }
@@ -203,31 +226,30 @@ TEST(DeferredSceneRendererMaterialCacheTests, SkipsGBufferMaterialSyncUntilSourc
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
-    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver);
+    NLS::Engine::Rendering::DeferredSceneRenderer::ConstructionOptions options;
+    options.loadPipelineResources = false;
+    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver, options);
 
-    auto* lambertShader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Lambert.hlsl");
+    auto* lambertShader = CreateTestShader("App/Assets/Engine/Shaders/Lambert.hlsl");
     ASSERT_NE(lambertShader, nullptr);
+    auto* gbufferShader = CreateTestShader("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
+    ASSERT_NE(gbufferShader, nullptr);
+    renderer.m_gBufferShader = gbufferShader;
 
     NLS::Render::Resources::Material source(lambertShader);
     source.Set<NLS::Maths::Vector4>("u_Diffuse", { 0.15f, 0.25f, 0.35f, 1.0f });
 
-    auto* mesh = CreateSingleTriangleMesh();
-    ASSERT_NE(mesh, nullptr);
-
-    NLS::Engine::SceneSystem::Scene scene;
-    AttachRenderable(scene, *mesh, source);
-
-    RenderOneDeferredCacheFrame(renderer, scene);
+    SyncOneDeferredCacheMaterial(renderer, source);
     ASSERT_EQ(renderer.m_gBufferMaterialCache.size(), 1u);
     EXPECT_EQ(renderer.m_frameGBufferMaterialSyncCount, 1u);
     EXPECT_EQ(renderer.m_gBufferMaterialCache.begin()->second.syncCount, 1u);
 
-    RenderOneDeferredCacheFrame(renderer, scene);
+    SyncOneDeferredCacheMaterial(renderer, source);
     EXPECT_EQ(renderer.m_frameGBufferMaterialSyncCount, 0u);
     EXPECT_EQ(renderer.m_gBufferMaterialCache.begin()->second.syncCount, 1u);
 
     source.Set<NLS::Maths::Vector4>("u_Diffuse", { 0.8f, 0.7f, 0.6f, 1.0f });
-    RenderOneDeferredCacheFrame(renderer, scene);
+    SyncOneDeferredCacheMaterial(renderer, source);
     EXPECT_EQ(renderer.m_frameGBufferMaterialSyncCount, 1u);
     EXPECT_EQ(renderer.m_gBufferMaterialCache.begin()->second.syncCount, 2u);
 
@@ -241,7 +263,8 @@ TEST(DeferredSceneRendererMaterialCacheTests, SkipsGBufferMaterialSyncUntilSourc
     EXPECT_FLOAT_EQ(albedo.z, 0.6f);
     EXPECT_FLOAT_EQ(albedo.w, 1.0f);
 
-    delete mesh;
+    renderer.m_gBufferShader = nullptr;
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(gbufferShader));
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(lambertShader));
 }
 
@@ -255,37 +278,33 @@ TEST(DeferredSceneRendererMaterialCacheTests, ResyncsSharedRuntimeVariantWhenSou
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
-    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver);
+    NLS::Engine::Rendering::DeferredSceneRenderer::ConstructionOptions options;
+    options.loadPipelineResources = false;
+    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver, options);
 
-    auto* lambertShader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Lambert.hlsl");
+    auto* lambertShader = CreateTestShader("App/Assets/Engine/Shaders/Lambert.hlsl");
     ASSERT_NE(lambertShader, nullptr);
+    auto* gbufferShader = CreateTestShader("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
+    ASSERT_NE(gbufferShader, nullptr);
+    renderer.m_gBufferShader = gbufferShader;
 
     NLS::Render::Resources::Material firstSource(lambertShader);
     NLS::Render::Resources::Material secondSource(lambertShader);
     firstSource.Set<NLS::Maths::Vector4>("u_Diffuse", { 0.1f, 0.2f, 0.3f, 1.0f });
     secondSource.Set<NLS::Maths::Vector4>("u_Diffuse", { 0.7f, 0.6f, 0.5f, 1.0f });
 
-    auto* mesh = CreateSingleTriangleMesh();
-    ASSERT_NE(mesh, nullptr);
-
-    {
-        NLS::Engine::SceneSystem::Scene scene;
-        AttachRenderable(scene, *mesh, firstSource);
-        RenderOneDeferredCacheFrame(renderer, scene);
-    }
+    SyncOneDeferredCacheMaterial(renderer, firstSource);
 
     ASSERT_EQ(renderer.m_gBufferMaterialCache.size(), 1u);
     EXPECT_EQ(renderer.m_frameGBufferMaterialSyncCount, 1u);
     EXPECT_EQ(renderer.m_gBufferMaterialCache.begin()->second.syncCount, 1u);
 
-    NLS::Engine::SceneSystem::Scene secondScene;
-    AttachRenderable(secondScene, *mesh, secondSource);
-    RenderOneDeferredCacheFrame(renderer, secondScene);
+    SyncOneDeferredCacheMaterial(renderer, secondSource);
 
     ASSERT_EQ(renderer.m_gBufferMaterialCache.size(), 2u);
     EXPECT_EQ(renderer.m_frameGBufferMaterialSyncCount, 1u);
 
-    RenderOneDeferredCacheFrame(renderer, secondScene);
+    SyncOneDeferredCacheMaterial(renderer, secondSource);
     EXPECT_EQ(renderer.m_frameGBufferMaterialSyncCount, 0u);
     uint64_t totalSyncCount = 0u;
     const NLS::Render::Resources::Material* secondGBufferMaterial = nullptr;
@@ -308,6 +327,7 @@ TEST(DeferredSceneRendererMaterialCacheTests, ResyncsSharedRuntimeVariantWhenSou
     EXPECT_FLOAT_EQ(albedo.z, 0.5f);
     EXPECT_FLOAT_EQ(albedo.w, 1.0f);
 
-    delete mesh;
+    renderer.m_gBufferShader = nullptr;
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(gbufferShader));
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(lambertShader));
 }

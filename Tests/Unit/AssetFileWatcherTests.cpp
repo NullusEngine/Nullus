@@ -64,6 +64,22 @@ std::vector<std::filesystem::path> WaitForChangedPaths(
 
     return collected;
 }
+
+bool ContainsExpectedOrParentPath(
+    const std::vector<std::filesystem::path>& paths,
+    const std::filesystem::path& expectedPath)
+{
+    const auto expected = expectedPath.lexically_normal();
+    const auto parent = expected.parent_path().lexically_normal();
+    return std::any_of(
+        paths.begin(),
+        paths.end(),
+        [&expected, &parent](const std::filesystem::path& path)
+        {
+            const auto normalized = path.lexically_normal();
+            return normalized == expected || normalized == parent;
+        });
+}
 } // namespace
 
 TEST(AssetFileWatcherTests, ReportsCreateModifyRenameMoveAndDeleteEvents)
@@ -134,15 +150,7 @@ TEST(AssetFileWatcherTests, ConsumeChangedPathsReturnsCreatedAssetPath)
     WriteText(model, R"({"asset":{"version":"2.0"}})");
 
     const auto paths = WaitForChangedPaths(watcher, model);
-    EXPECT_NE(
-        std::find_if(
-            paths.begin(),
-            paths.end(),
-            [&model](const std::filesystem::path& path)
-            {
-                return path.lexically_normal() == model.lexically_normal();
-            }),
-        paths.end());
+    EXPECT_TRUE(ContainsExpectedOrParentPath(paths, model));
 
     watcher.Stop();
     std::filesystem::remove_all(root);

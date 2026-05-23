@@ -169,13 +169,181 @@ NLS::Render::Resources::ShaderReflection MakeAlbedoMapShaderReflection()
     return reflection;
 }
 
-NLS::Render::Assets::ShaderArtifact MakeAlbedoMapShaderArtifact()
+NLS::Render::Resources::ShaderReflection MakeStandardPbrShaderReflection()
+{
+    auto reflection = MakeAlbedoMapShaderReflection();
+    reflection.constantBuffers.push_back({
+        "MaterialConstants",
+        NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+        NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+        0u,
+        32u,
+        {
+            {
+                "u_Albedo",
+                NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4,
+                0u,
+                16u,
+                1u
+            },
+            {
+                "u_Metallic",
+                NLS::Render::Resources::UniformType::UNIFORM_FLOAT,
+                16u,
+                4u,
+                1u
+            },
+            {
+                "u_Roughness",
+                NLS::Render::Resources::UniformType::UNIFORM_FLOAT,
+                20u,
+                4u,
+                1u
+            }
+        }
+    });
+    reflection.properties.push_back({
+        "u_Albedo",
+        NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4,
+        NLS::Render::Resources::ShaderResourceKind::Value,
+        NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+        NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+        0u,
+        -1,
+        1,
+        0u,
+        16u,
+        "MaterialConstants"
+    });
+    reflection.properties.push_back({
+        "u_Metallic",
+        NLS::Render::Resources::UniformType::UNIFORM_FLOAT,
+        NLS::Render::Resources::ShaderResourceKind::Value,
+        NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+        NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+        0u,
+        -1,
+        1,
+        16u,
+        4u,
+        "MaterialConstants"
+    });
+    reflection.properties.push_back({
+        "u_Roughness",
+        NLS::Render::Resources::UniformType::UNIFORM_FLOAT,
+        NLS::Render::Resources::ShaderResourceKind::Value,
+        NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+        NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+        0u,
+        -1,
+        1,
+        20u,
+        4u,
+        "MaterialConstants"
+    });
+    reflection.properties.push_back({
+        "u_NormalMap",
+        NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D,
+        NLS::Render::Resources::ShaderResourceKind::SampledTexture,
+        NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+        NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+        1u,
+        -1,
+        1,
+        0u,
+        0u,
+        {}
+    });
+    reflection.properties.push_back({
+        "u_MetallicMap",
+        NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D,
+        NLS::Render::Resources::ShaderResourceKind::SampledTexture,
+        NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+        NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+        2u,
+        -1,
+        1,
+        0u,
+        0u,
+        {}
+    });
+    reflection.properties.push_back({
+        "u_RoughnessMap",
+        NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D,
+        NLS::Render::Resources::ShaderResourceKind::SampledTexture,
+        NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+        NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+        3u,
+        -1,
+        1,
+        0u,
+        0u,
+        {}
+    });
+    return reflection;
+}
+
+NLS::Render::Assets::ShaderArtifact MakeShaderArtifact(
+    std::string sourcePath,
+    std::string subAssetKey,
+    NLS::Render::Resources::ShaderReflection reflection)
 {
     NLS::Render::Assets::ShaderArtifact artifact;
-    artifact.sourcePath = "App/Assets/Engine/Shaders/StandardPBR.hlsl";
-    artifact.subAssetKey = "shader:StandardPBR";
-    artifact.reflection = MakeAlbedoMapShaderReflection();
+    artifact.sourcePath = std::move(sourcePath);
+    artifact.subAssetKey = std::move(subAssetKey);
+    artifact.reflection = std::move(reflection);
+    artifact.stages.push_back({
+        NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL,
+        "VSMain",
+        "vs_6_0",
+        {
+            NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded,
+            {1u, 2u, 3u, 4u},
+            {},
+            {},
+            "test-vertex",
+            "Library/Artifacts/shader-guid/shader.nshader"
+        }
+    });
+    artifact.stages.push_back({
+        NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL,
+        "PSMain",
+        "ps_6_0",
+        {
+            NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded,
+            {5u, 6u, 7u, 8u},
+            {},
+            {},
+            "test-pixel",
+            "Library/Artifacts/shader-guid/shader.nshader"
+        }
+    });
     return artifact;
+}
+
+NLS::Render::Assets::ShaderArtifact MakeAlbedoMapShaderArtifact()
+{
+    return MakeShaderArtifact(
+        "App/Assets/Engine/Shaders/StandardPBR.hlsl",
+        "shader:StandardPBR",
+        MakeAlbedoMapShaderReflection());
+}
+
+NLS::Render::Assets::ShaderArtifact MakeStandardPbrShaderArtifact()
+{
+    return MakeShaderArtifact(
+        "App/Assets/Engine/Shaders/StandardPBR.hlsl",
+        "shader:StandardPBR",
+        MakeStandardPbrShaderReflection());
+}
+
+std::filesystem::path WriteStandardPbrShaderArtifact(const std::filesystem::path& root)
+{
+    const auto shaderArtifactPath = root / "Library" / "Artifacts" / "shader-guid" / "shader.nshader";
+    WriteBinaryFile(shaderArtifactPath, NLS::Render::Assets::SerializeShaderArtifact(MakeStandardPbrShaderArtifact()));
+    return shaderArtifactPath;
 }
 
 std::vector<uint8_t> TinyPng()
@@ -492,6 +660,10 @@ TEST(AssetMaterialConversionTests, EngineDefaultMaterialIsDoubleSidedForDeferred
 
 TEST(AssetMaterialConversionTests, ShaderReflectionFallsBackToRuntimeCompileBackendWhenLocatedDriverHasNoRhi)
 {
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_reflection_artifact_" + NLS::Guid::New().ToString());
+    const auto shaderArtifactPath = WriteStandardPbrShaderArtifact(root);
+
     static NLS::Render::Settings::DriverSettings settings = []()
     {
         NLS::Render::Settings::DriverSettings driverSettings;
@@ -504,14 +676,14 @@ TEST(AssetMaterialConversionTests, ShaderReflectionFallsBackToRuntimeCompileBack
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(
-        "App/Assets/Engine/Shaders/StandardPBR.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(shaderArtifactPath.string());
     ASSERT_NE(shader, nullptr);
 
     EXPECT_NE(shader->GetUniformInfo("u_Albedo"), nullptr);
     EXPECT_FALSE(shader->GetReflection().constantBuffers.empty());
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    std::filesystem::remove_all(root);
 }
 
 TEST(AssetMaterialConversionTests, ConvertedMaterialPayloadLoadsAsRuntimeMaterialResource)
@@ -542,10 +714,12 @@ TEST(AssetMaterialConversionTests, ConvertedMaterialPayloadLoadsAsRuntimeMateria
         scene.materials.front(),
         MaterialSourceModel::GltfPbrMetallicRoughness);
 
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_converted_material_" + NLS::Guid::New().ToString());
+    const auto shaderArtifactPath = WriteStandardPbrShaderArtifact(root);
     static NLS::Core::ResourceManagement::ShaderManager shaderManager;
     NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::ShaderManager>(shaderManager);
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(
-        "App/Assets/Engine/Shaders/StandardPBR.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(shaderArtifactPath.string());
     ASSERT_NE(shader, nullptr);
     shaderManager.RegisterResource(":Shaders/StandardPBR.hlsl", shader);
 
@@ -558,8 +732,7 @@ TEST(AssetMaterialConversionTests, ConvertedMaterialPayloadLoadsAsRuntimeMateria
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
 
-    const auto materialPath = std::filesystem::temp_directory_path() /
-        ("nullus_converted_material_" + NLS::Guid::New().ToString() + ".nmat");
+    const auto materialPath = root / "Hero.nmat";
     {
         std::ofstream output(materialPath, std::ios::binary | std::ios::trunc);
         output << converted.serializedPayload;
@@ -582,7 +755,8 @@ TEST(AssetMaterialConversionTests, ConvertedMaterialPayloadLoadsAsRuntimeMateria
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(loaded));
     shaderManager.UnloadResources();
-    std::filesystem::remove(materialPath);
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::ShaderManager>();
+    std::filesystem::remove_all(root);
 }
 
 TEST(AssetMaterialConversionTests, MaterialLoaderResolvesShaderArtifactPayloadWithoutRuntimeSourceCompile)
@@ -725,8 +899,8 @@ TEST(AssetMaterialConversionTests, ConvertedMaterialPayloadLoadsDeclaredTextureS
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(
-        "App/Assets/Engine/Shaders/StandardPBR.hlsl");
+    const auto shaderArtifactPath = WriteStandardPbrShaderArtifact(root);
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(shaderArtifactPath.string());
     ASSERT_NE(shader, nullptr);
     shaderManager.RegisterResource(":Shaders/StandardPBR.hlsl", shader);
 
@@ -788,8 +962,8 @@ TEST(AssetMaterialConversionTests, MaterialLoaderKeepsDistinctTextureSlotsWhenTe
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(
-        "App/Assets/Engine/Shaders/StandardPBR.hlsl");
+    const auto shaderArtifactPath = WriteStandardPbrShaderArtifact(root);
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(shaderArtifactPath.string());
     ASSERT_NE(shader, nullptr);
     shaderManager.RegisterResource(":Shaders/StandardPBR.hlsl", shader);
 

@@ -19,8 +19,12 @@ namespace NLS::Render::Resources
 
 namespace NLS::Engine::Rendering
 {
+	struct DeferredSceneRendererTestAccess;
+
 	class NLS_ENGINE_API DeferredSceneRenderer : public BaseSceneRenderer
 	{
+		friend struct DeferredSceneRendererTestAccess;
+
 	public:
 		struct ConstructionOptions
 		{
@@ -100,5 +104,12 @@ namespace NLS::Engine::Rendering
 		uint64_t m_threadedQueuedGBufferDrawCount = 0u;
 		uint64_t m_threadedQueuedLightingDrawCount = 0u;
 		uint64_t m_frameGBufferMaterialSyncCount = 0u;
+	};
+
+	struct NLS_ENGINE_API DeferredSceneRendererTestAccess final
+	{
+		static NLS::Render::Resources::Material& GetOrCreateGBufferMaterial(
+			DeferredSceneRenderer& renderer,
+			NLS::Render::Resources::Material& sourceMaterial);
 	};
 }

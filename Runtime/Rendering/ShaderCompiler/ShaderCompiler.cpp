@@ -22,6 +22,14 @@
 #if defined(_WIN32)
 #include <Windows.h>
 #include <stdio.h>
+#else
+#include <cerrno>
+#include <csignal>
+#include <cstring>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 namespace NLS::Render::ShaderCompiler
@@ -1451,11 +1459,222 @@ namespace NLS::Render::ShaderCompiler
 		if (jobObject != nullptr)
 			CloseHandle(jobObject);
 #else
-		(void)executable;
-		(void)arguments;
-		(void)options;
-		result.status = ShaderProcessStatus::FailedToStart;
-		result.diagnostics = "Shader compiler process execution is only implemented on Windows: " + result.commandLine;
+		int outputPipe[2] = {-1, -1};
+		if (pipe(outputPipe) != 0)
+		{
+			result.status = ShaderProcessStatus::FailedToStart;
+			result.diagnostics = "Failed to create shader compiler process pipe for: " + result.commandLine +
+				" (" + std::strerror(errno) + ")";
+			return result;
+		}
+
+		std::vector<std::string> storedArgs;
+		storedArgs.reserve(arguments.size() + 1u);
+		storedArgs.push_back(std::string(executable));
+		for (const auto& argument : arguments)
+			storedArgs.push_back(argument);
+
+		std::vector<char*> argv;
+		argv.reserve(storedArgs.size() + 1u);
+		for (auto& argument : storedArgs)
+			argv.push_back(argument.data());
+		argv.push_back(nullptr);
+		char** argvData = argv.data();
+
+		pid_t childPid = fork();
+		if (childPid < 0)
+		{
+			result.status = ShaderProcessStatus::FailedToStart;
+			result.diagnostics = "Failed to fork shader compiler process for: " + result.commandLine +
+				" (" + std::strerror(errno) + ")";
+			close(outputPipe[0]);
+			close(outputPipe[1]);
+			return result;
+		}
+
+		if (childPid == 0)
+		{
+			close(outputPipe[0]);
+			setpgid(0, 0);
+			dup2(outputPipe[1], STDOUT_FILENO);
+			dup2(outputPipe[1], STDERR_FILENO);
+			close(outputPipe[1]);
+
+			execvp(argvData[0], argvData);
+			const char message[] = "Failed to spawn shader compiler process\n";
+			write(STDERR_FILENO, message, sizeof(message) - 1u);
+			_exit(127);
+		}
+
+		close(outputPipe[1]);
+		bool processGroupAvailable = true;
+		if (setpgid(childPid, childPid) != 0 && errno != EACCES)
+			processGroupAvailable = false;
+
+		const int pipeFlags = fcntl(outputPipe[0], F_GETFL, 0);
+		if (pipeFlags < 0 || fcntl(outputPipe[0], F_SETFL, pipeFlags | O_NONBLOCK) != 0)
+		{
+			const auto errorMessage = std::string(std::strerror(errno));
+			if (processGroupAvailable)
+				kill(-childPid, SIGKILL);
+			kill(childPid, SIGKILL);
+			const auto cleanupDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while (std::chrono::steady_clock::now() < cleanupDeadline)
+			{
+				const pid_t cleanupWait = waitpid(childPid, nullptr, WNOHANG);
+				if (cleanupWait == childPid || (cleanupWait < 0 && errno != EINTR))
+					break;
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			}
+			close(outputPipe[0]);
+			result.status = ShaderProcessStatus::FailedToStart;
+			result.diagnostics = "Failed to configure shader compiler process pipe for: " +
+				result.commandLine + " (" + errorMessage + ")";
+			return result;
+		}
+
+		std::string processOutput;
+		int waitStatus = 0;
+		auto drainOutput = [&]()
+		{
+			char buffer[4096];
+			for (;;)
+			{
+				const ssize_t bytesRead = read(outputPipe[0], buffer, sizeof(buffer));
+				if (bytesRead > 0)
+				{
+					processOutput.append(buffer, static_cast<std::size_t>(bytesRead));
+					continue;
+				}
+				if (bytesRead == 0)
+					break;
+				if (errno == EINTR)
+					continue;
+				if (errno == EAGAIN || errno == EWOULDBLOCK)
+					break;
+				break;
+			}
+		};
+		auto requestTermination = [&]()
+		{
+			if (processGroupAvailable && kill(-childPid, SIGKILL) == 0)
+				return;
+			kill(childPid, SIGKILL);
+		};
+		auto waitForExit = [&](const std::chrono::milliseconds timeoutLimit)
+		{
+			const auto waitDeadline = std::chrono::steady_clock::now() + timeoutLimit;
+			while (timeoutLimit.count() == 0 || std::chrono::steady_clock::now() < waitDeadline)
+			{
+				drainOutput();
+				const pid_t waitResult = waitpid(childPid, &waitStatus, WNOHANG);
+				if (waitResult == childPid)
+					return true;
+				if (waitResult < 0 && errno != EINTR)
+					return true;
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			}
+			return false;
+		};
+
+		const auto timeout = std::chrono::milliseconds(options.timeoutMilliseconds);
+		const auto startTime = std::chrono::steady_clock::now();
+		bool processExited = false;
+		bool terminationRequested = false;
+
+		while (!processExited)
+		{
+			drainOutput();
+
+			const pid_t waitResult = waitpid(childPid, &waitStatus, WNOHANG);
+			if (waitResult == childPid)
+			{
+				processExited = true;
+				break;
+			}
+			if (waitResult < 0 && errno != EINTR)
+			{
+				result.status = ShaderProcessStatus::Failed;
+				result.diagnostics = "Shader compiler process wait failed: " + result.commandLine +
+					" (" + std::strerror(errno) + ")";
+				break;
+			}
+
+			if (options.cancellationFlag != nullptr && options.cancellationFlag->load())
+			{
+				requestTermination();
+				result.status = ShaderProcessStatus::Cancelled;
+				result.diagnostics = "Shader compiler process cancelled: " + result.commandLine;
+				terminationRequested = true;
+				break;
+			}
+
+			if (options.timeoutMilliseconds != 0u && std::chrono::steady_clock::now() - startTime >= timeout)
+			{
+				requestTermination();
+				result.status = ShaderProcessStatus::TimedOut;
+				result.diagnostics = "Shader compiler process timed out after " + std::to_string(options.timeoutMilliseconds) + " ms: " + result.commandLine;
+				terminationRequested = true;
+				break;
+			}
+
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+
+		if (!processExited)
+		{
+			processExited = waitForExit(std::chrono::seconds(5));
+			if (!processExited && result.diagnostics.empty())
+				result.diagnostics = "Shader compiler process cleanup wait timed out: " + result.commandLine;
+		}
+
+		if (terminationRequested)
+			requestTermination();
+
+		for (;;)
+		{
+			char buffer[4096];
+			const ssize_t bytesRead = read(outputPipe[0], buffer, sizeof(buffer));
+			if (bytesRead > 0)
+			{
+				processOutput.append(buffer, static_cast<std::size_t>(bytesRead));
+				continue;
+			}
+			if (bytesRead < 0 && errno == EINTR)
+				continue;
+			if (bytesRead < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+			{
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+				const ssize_t retryBytesRead = read(outputPipe[0], buffer, sizeof(buffer));
+				if (retryBytesRead > 0)
+				{
+					processOutput.append(buffer, static_cast<std::size_t>(retryBytesRead));
+					continue;
+				}
+			}
+			break;
+		}
+		close(outputPipe[0]);
+
+		result.output = std::move(processOutput);
+		if (WIFEXITED(waitStatus))
+			result.exitCode = WEXITSTATUS(waitStatus);
+		else if (WIFSIGNALED(waitStatus))
+			result.exitCode = -WTERMSIG(waitStatus);
+		else
+			result.exitCode = -1;
+
+		if (result.status != ShaderProcessStatus::TimedOut &&
+			result.status != ShaderProcessStatus::Cancelled &&
+			result.status != ShaderProcessStatus::FailedToStart &&
+			result.diagnostics.empty())
+		{
+			result.status = WIFEXITED(waitStatus) && WEXITSTATUS(waitStatus) == 0
+				? ShaderProcessStatus::Succeeded
+				: ShaderProcessStatus::Failed;
+			if (result.status == ShaderProcessStatus::Failed)
+				result.diagnostics = "Shader compiler process exited with code " + std::to_string(result.exitCode) + ": " + result.commandLine;
+		}
 #endif
 
 		return result;

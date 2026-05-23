@@ -2,11 +2,15 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <vector>
 
+#include "Guid.h"
 #include "Core/ResourceManagement/ShaderManager.h"
 #include "Core/ServiceLocator.h"
+#include "Rendering/Assets/ShaderArtifact.h"
 #include "Rendering/Buffers/Framebuffer.h"
 #include "Rendering/Core/CompositeRenderer.h"
 #include "Rendering/Core/FrameObjectBindingProvider.h"
@@ -69,6 +73,52 @@ namespace
         ScopedShaderManagerService(const ScopedShaderManagerService&) = delete;
         ScopedShaderManagerService& operator=(const ScopedShaderManagerService&) = delete;
     };
+
+    NLS::Render::Resources::Shader* CreateTestComputeShader(const std::string& sourcePath)
+    {
+        NLS::Render::Assets::ShaderArtifact artifact;
+        artifact.sourcePath = sourcePath;
+        artifact.subAssetKey = "shader:test-compute";
+        artifact.stages.push_back({
+            NLS::Render::ShaderCompiler::ShaderStage::Compute,
+            NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL,
+            "CSMain",
+            "cs_6_0",
+            {
+                NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded,
+                {1u, 2u, 3u, 4u},
+                {},
+                {},
+                "test-compute",
+                "test-compute.nshader"
+            }
+        });
+
+        const auto root = std::filesystem::temp_directory_path() /
+            ("nullus_compute_shader_" + NLS::Guid::New().ToString());
+        const auto path = root / "shader.nshader";
+        std::filesystem::create_directories(path.parent_path());
+        const auto bytes = NLS::Render::Assets::SerializeShaderArtifact(artifact);
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        output.close();
+        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(path.string());
+        std::filesystem::remove_all(root);
+        return shader;
+    }
+
+    void RegisterLightGridTestShaders(NLS::Core::ResourceManagement::ShaderManager& shaderManager)
+    {
+        shaderManager.RegisterResource(
+            ":Shaders/LightGridReset.hlsl",
+            CreateTestComputeShader("App/Assets/Engine/Shaders/LightGridReset.hlsl"));
+        shaderManager.RegisterResource(
+            ":Shaders/LightGridInjection.hlsl",
+            CreateTestComputeShader("App/Assets/Engine/Shaders/LightGridInjection.hlsl"));
+        shaderManager.RegisterResource(
+            ":Shaders/LightGridCompact.hlsl",
+            CreateTestComputeShader("App/Assets/Engine/Shaders/LightGridCompact.hlsl"));
+    }
 
     class TestCommandBuffer final : public NLS::Render::RHI::RHICommandBuffer
     {
@@ -3064,6 +3114,7 @@ TEST(RendererFrameObjectBindingTests, LightGridComputeBindingSetsUseShaderExpect
     const ScopedShaderManagerAssetPaths shaderAssetPaths("", "App/Assets/Engine/");
     static auto shaderManager = std::make_unique<NLS::Core::ResourceManagement::ShaderManager>();
     const ScopedShaderManagerService shaderManagerService(*shaderManager);
+    RegisterLightGridTestShaders(*shaderManager);
 
     NLS::Render::Context::Driver driver(settings);
     const ScopedDriverService driverService(driver);
@@ -3139,6 +3190,7 @@ TEST(RendererFrameObjectBindingTests, LightGridComputeBindingSetsUseShaderExpect
     EXPECT_TRUE(hasEntry(*compactSet, "u_LightGridCulledLightLinks", NLS::Render::RHI::BindingType::StructuredBuffer, 2u));
 
     NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+    shaderManager->UnloadResources();
 }
 
 TEST(RendererFrameObjectBindingTests, DeferredGBufferPipelineOverridesUseThreeRenderTargets)

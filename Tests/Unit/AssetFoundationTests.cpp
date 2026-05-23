@@ -281,10 +281,17 @@ TEST(AssetFoundationTests, ScanRepairsDuplicateGuidAliasesForEditableAssets)
     EXPECT_EQ(database.GetDiagnostics().front().code, "duplicate-asset-guid-repaired");
     EXPECT_NE(database.FindById(NLS::Core::Assets::AssetId(duplicatedGuid)), nullptr);
 
+    const auto firstMeta = NLS::Core::Assets::AssetMeta::Load(NLS::Core::Assets::GetAssetMetaPath(firstPath));
     const auto secondMeta = NLS::Core::Assets::AssetMeta::Load(NLS::Core::Assets::GetAssetMetaPath(secondPath));
+    ASSERT_TRUE(firstMeta.has_value());
     ASSERT_TRUE(secondMeta.has_value());
+    EXPECT_TRUE(firstMeta->id.IsValid());
     EXPECT_TRUE(secondMeta->id.IsValid());
-    EXPECT_NE(secondMeta->id, NLS::Core::Assets::AssetId(duplicatedGuid));
+    EXPECT_NE(firstMeta->id, secondMeta->id);
+    EXPECT_TRUE(
+        firstMeta->id == NLS::Core::Assets::AssetId(duplicatedGuid) ||
+        secondMeta->id == NLS::Core::Assets::AssetId(duplicatedGuid));
+    EXPECT_NE(database.FindById(firstMeta->id), nullptr);
     EXPECT_NE(database.FindById(secondMeta->id), nullptr);
 
     std::filesystem::remove_all(root);

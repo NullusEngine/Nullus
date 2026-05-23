@@ -438,48 +438,51 @@ TEST(ShaderCompilerTests, ShaderArtifactLockReportsOwnerAndRecoversStaleLocks)
 
 TEST(ShaderCompilerTests, ShaderCompilerProcessReportsCommandLineAndOutputForSucceededProcess)
 {
-#if defined(_WIN32)
     NLS::Render::ShaderCompiler::ShaderProcessOptions options;
     options.timeoutMilliseconds = 2000u;
 
+#if defined(_WIN32)
     const auto result = NLS::Render::ShaderCompiler::ExecuteShaderCompilerProcess(
         "powershell.exe",
         { "-NoProfile", "-NonInteractive", "-Command", "Write-Output shader-process-ready" },
         options);
+#else
+    const auto result = NLS::Render::ShaderCompiler::ExecuteShaderCompilerProcess(
+        "/bin/sh",
+        { "-c", "printf shader-process-ready" },
+        options);
+#endif
 
     EXPECT_EQ(result.status, NLS::Render::ShaderCompiler::ShaderProcessStatus::Succeeded)
         << "exit=" << result.exitCode << "\noutput=" << result.output << "\ndiagnostics=" << result.diagnostics
         << "\ncommand=" << result.commandLine;
     EXPECT_EQ(result.exitCode, 0);
     EXPECT_NE(result.output.find("shader-process-ready"), std::string::npos);
-    EXPECT_NE(result.commandLine.find("powershell.exe"), std::string::npos);
-#else
-    GTEST_SKIP() << "Shader compiler process execution is currently Windows-only.";
-#endif
 }
 
 TEST(ShaderCompilerTests, ShaderCompilerProcessTimeoutReturnsDiagnostics)
 {
-#if defined(_WIN32)
     NLS::Render::ShaderCompiler::ShaderProcessOptions options;
     options.timeoutMilliseconds = 100u;
 
+#if defined(_WIN32)
     const auto result = NLS::Render::ShaderCompiler::ExecuteShaderCompilerProcess(
         "powershell.exe",
         { "-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 3" },
         options);
+#else
+    const auto result = NLS::Render::ShaderCompiler::ExecuteShaderCompilerProcess(
+        "/bin/sh",
+        { "-c", "sleep 3" },
+        options);
+#endif
 
     EXPECT_EQ(result.status, NLS::Render::ShaderCompiler::ShaderProcessStatus::TimedOut);
     EXPECT_NE(result.diagnostics.find("timed out"), std::string::npos);
-    EXPECT_NE(result.commandLine.find("powershell.exe"), std::string::npos);
-#else
-    GTEST_SKIP() << "Shader compiler process execution is currently Windows-only.";
-#endif
 }
 
 TEST(ShaderCompilerTests, ShaderCompilerProcessTimeoutTerminatesChildProcessTree)
 {
-#if defined(_WIN32)
     const auto markerPath = std::filesystem::temp_directory_path() / "NullusShaderCompilerTests" / "shader-child-survived.txt";
     std::filesystem::create_directories(markerPath.parent_path());
     std::filesystem::remove(markerPath);
@@ -487,6 +490,7 @@ TEST(ShaderCompilerTests, ShaderCompilerProcessTimeoutTerminatesChildProcessTree
     NLS::Render::ShaderCompiler::ShaderProcessOptions options;
     options.timeoutMilliseconds = 150u;
 
+#if defined(_WIN32)
     const std::string childCommand =
         "Start-Process powershell.exe -ArgumentList '-NoProfile','-NonInteractive','-Command','Start-Sleep -Milliseconds 700; Set-Content -LiteralPath \"" +
         markerPath.string() +
@@ -496,15 +500,21 @@ TEST(ShaderCompilerTests, ShaderCompilerProcessTimeoutTerminatesChildProcessTree
         "powershell.exe",
         { "-NoProfile", "-NonInteractive", "-Command", childCommand },
         options);
+#else
+    const std::string childCommand =
+        "(sleep 1; printf child-survived > \"$1\") & sleep 5";
+
+    const auto result = NLS::Render::ShaderCompiler::ExecuteShaderCompilerProcess(
+        "/bin/sh",
+        { "-c", childCommand, "shader-child-timeout-test", markerPath.string() },
+        options);
+#endif
 
     EXPECT_EQ(result.status, NLS::Render::ShaderCompiler::ShaderProcessStatus::TimedOut)
         << result.diagnostics << "\n" << result.output;
 
     std::this_thread::sleep_for(std::chrono::milliseconds(1200));
     EXPECT_FALSE(std::filesystem::exists(markerPath));
-#else
-    GTEST_SKIP() << "Shader compiler process execution is currently Windows-only.";
-#endif
 }
 
 TEST(ShaderCompilerTests, ShaderCompilerProcessUsesJobObjectInsteadOfPipePolling)
@@ -906,21 +916,24 @@ TEST(ShaderCompilerTests, ShaderManagerConfiguredCachePathDoesNotCreateAppLibrar
 
 TEST(ShaderCompilerTests, ShaderCompilerProcessCancellationReturnsDiagnostics)
 {
-#if defined(_WIN32)
     std::atomic_bool cancelled{ true };
     NLS::Render::ShaderCompiler::ShaderProcessOptions options;
     options.timeoutMilliseconds = 2000u;
     options.cancellationFlag = &cancelled;
 
+#if defined(_WIN32)
     const auto result = NLS::Render::ShaderCompiler::ExecuteShaderCompilerProcess(
         "cmd.exe",
         { "/C", "echo should-not-run" },
         options);
+#else
+    const auto result = NLS::Render::ShaderCompiler::ExecuteShaderCompilerProcess(
+        "/bin/sh",
+        { "-c", "printf should-not-run" },
+        options);
+#endif
 
     EXPECT_EQ(result.status, NLS::Render::ShaderCompiler::ShaderProcessStatus::Cancelled);
     EXPECT_NE(result.diagnostics.find("cancelled"), std::string::npos);
     EXPECT_TRUE(result.output.empty());
-#else
-    GTEST_SKIP() << "Shader compiler process execution is currently Windows-only.";
-#endif
 }

@@ -25,6 +25,15 @@ std::string NormalizeExtension(std::filesystem::path path)
     return extension;
 }
 
+bool HasWindowsRootNameSyntax(const std::string& path)
+{
+    if (path.size() < 2u)
+        return false;
+
+    const auto first = static_cast<unsigned char>(path[0]);
+    return std::isalpha(first) && path[1] == ':';
+}
+
 bool ContainsEntry(const RuntimeAssetManifest& manifest, const RuntimeAssetRef& reference)
 {
     return std::any_of(
@@ -509,6 +518,9 @@ RuntimeManifestBuildResult RuntimeManifestBuilder::BuildAssetPacks(
 bool IsRuntimePackagedAssetPath(const std::string& path)
 {
     if (path.empty())
+        return false;
+
+    if (HasWindowsRootNameSyntax(path))
         return false;
 
     const auto rawPath = std::filesystem::path(path);

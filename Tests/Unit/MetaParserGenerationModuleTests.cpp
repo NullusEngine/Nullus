@@ -432,7 +432,7 @@ TEST(MetaParserGenerationModuleTests, MetaParserKeepsCrossHeaderReflectedBasesAn
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserBaseFilteringFixture";
     const auto runtimeDir = tempRoot / "Runtime" / "Fixture";
-    const auto outputDir = tempRoot / "Gen";
+    const auto outputDir = runtimeDir / "Gen";
     ResetTempDirectory(tempRoot);
     std::filesystem::create_directories(runtimeDir);
     std::filesystem::create_directories(outputDir);
@@ -444,6 +444,7 @@ TEST(MetaParserGenerationModuleTests, MetaParserKeepsCrossHeaderReflectedBasesAn
             << "#pragma once\n"
             << "#include \"Object/Object.h\"\n"
             << "#include \"Reflection/Macros.h\"\n"
+            << "#include \"ReflectedBase.generated.h\"\n"
             << "namespace NLS::Fixture {\n"
             << "CLASS(ReflectedBase) : public NLS::Object\n"
             << "{\n"
@@ -459,6 +460,7 @@ TEST(MetaParserGenerationModuleTests, MetaParserKeepsCrossHeaderReflectedBasesAn
             << "#pragma once\n"
             << "#include \"ReflectedBase.h\"\n"
             << "#include \"Reflection/Macros.h\"\n"
+            << "#include \"DerivedWithInterface.generated.h\"\n"
             << "namespace NLS::Fixture {\n"
             << "class RuntimeOnlyInterface\n"
             << "{\n"
@@ -481,6 +483,7 @@ TEST(MetaParserGenerationModuleTests, MetaParserKeepsCrossHeaderReflectedBasesAn
         derivedHeaderPath,
         {
             runtimeDir,
+            outputDir,
             root / "Runtime" / "Base"
         });
 

@@ -830,7 +830,7 @@ namespace NLS::Render::Resources
 
 	const Data::StateMask Material::GenerateStateMask() const
 	{
-		Data::StateMask stateMask;
+		Data::StateMask stateMask{};
 		stateMask.depthWriting = m_depthWriting;
 		stateMask.colorWriting = m_colorWriting;
 		stateMask.blendable = m_blendable;

@@ -276,6 +276,25 @@ TEST(RenderSceneCacheTests, MaterialStateChangeInvalidatesOnlyAffectedCachedComm
     EXPECT_EQ(renderScene.GetCachedCommandBuildCountForTesting(), 2u);
 }
 
+TEST(RenderSceneCacheTests, GeneratedMaterialStateMaskClearsUnusedBits)
+{
+    constexpr uint8_t kUsedRenderStateBitsMask = 0x3Fu;
+    constexpr uint8_t kUnusedRenderStateBitsMask = static_cast<uint8_t>(~kUsedRenderStateBitsMask);
+    NLS::Render::Resources::Material material;
+
+    material.SetDepthWriting(true);
+    material.SetColorWriting(true);
+    material.SetBlendable(true);
+    material.SetDepthTest(true);
+    material.SetBackfaceCulling(true);
+    material.SetFrontfaceCulling(true);
+
+    const auto stateMask = material.GenerateStateMask();
+
+    EXPECT_EQ(stateMask.mask & kUnusedRenderStateBitsMask, 0u);
+    EXPECT_EQ(stateMask.mask & kUsedRenderStateBitsMask, kUsedRenderStateBitsMask);
+}
+
 TEST(RenderSceneCacheTests, TransformAndUserMatrixUpdateVisibleObjectDescriptorWithoutRebuildingCommand)
 {
     RenderableFixture fixture;

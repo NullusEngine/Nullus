@@ -21,7 +21,7 @@ struct NLS_RENDER_API StateMask
             uint8_t frontfaceCulling : 1;
         };
 
-        uint8_t mask;
+        uint8_t mask = 0u;
     };
 };
 } // namespace NLS::Render::Data

@@ -769,6 +769,10 @@ std::optional<NLS::Core::Assets::ArtifactManifest> ManifestFromJson(const nlohma
 
 std::optional<NLS::Core::Assets::ArtifactManifest> LoadManifestFile(const std::filesystem::path& manifestPath)
 {
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(manifestPath, error))
+        return std::nullopt;
+
     std::ifstream input(manifestPath, std::ios::binary);
     if (!input)
         return std::nullopt;

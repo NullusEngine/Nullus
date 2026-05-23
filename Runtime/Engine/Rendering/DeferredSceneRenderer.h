@@ -22,7 +22,15 @@ namespace NLS::Engine::Rendering
 	class NLS_ENGINE_API DeferredSceneRenderer : public BaseSceneRenderer
 	{
 	public:
-		explicit DeferredSceneRenderer(NLS::Render::Context::Driver& p_driver);
+		struct ConstructionOptions
+		{
+			// Allows contract tests to validate factory selection without compiling renderer-owned shaders.
+			bool loadPipelineResources = true;
+		};
+
+		explicit DeferredSceneRenderer(
+			NLS::Render::Context::Driver& p_driver,
+			ConstructionOptions options = {});
 		~DeferredSceneRenderer() override;
 
 		void BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor) override;

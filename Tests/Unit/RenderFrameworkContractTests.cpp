@@ -1217,7 +1217,12 @@ TEST(RenderFrameworkContractTests, DefaultSceneRendererFactoryCreatesDeferredRen
     NLS::Render::Context::Driver driver(settings);
     NLS::Core::ServiceLocator::Provide(driver);
 
-    const auto renderer = NLS::Engine::Rendering::CreateSceneRenderer(driver);
+    NLS::Engine::Rendering::DeferredSceneRenderer::ConstructionOptions options;
+    options.loadPipelineResources = false;
+    const auto renderer = NLS::Engine::Rendering::CreateSceneRenderer(
+        driver,
+        NLS::Engine::Rendering::GetDefaultSceneRendererKind(),
+        options);
     ASSERT_NE(renderer, nullptr);
     EXPECT_NE(dynamic_cast<NLS::Engine::Rendering::DeferredSceneRenderer*>(renderer.get()), nullptr);
 }

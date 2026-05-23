@@ -2,6 +2,7 @@
 
 #include "Rendering/Assets/MaterialConversion.h"
 #include "Rendering/Assets/SceneImportPipeline.h"
+#include "Rendering/Assets/ShaderArtifact.h"
 #include "Rendering/Assets/TextureArtifact.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverAccess.h"
@@ -145,6 +146,36 @@ void WriteNativeArtifactTextFile(
 
     const auto payload = std::vector<uint8_t>(contents.begin(), contents.end());
     WriteBinaryFile(path, NLS::Core::Assets::WriteNativeArtifactContainer(std::move(metadata), payload));
+}
+
+NLS::Render::Resources::ShaderReflection MakeAlbedoMapShaderReflection()
+{
+    NLS::Render::Resources::ShaderReflection reflection;
+    reflection.properties = {
+        {
+            "u_AlbedoMap",
+            NLS::Render::Resources::UniformType::UNIFORM_SAMPLER_2D,
+            NLS::Render::Resources::ShaderResourceKind::SampledTexture,
+            NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+            NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
+            0u,
+            -1,
+            1,
+            0u,
+            0u,
+            {}
+        }
+    };
+    return reflection;
+}
+
+NLS::Render::Assets::ShaderArtifact MakeAlbedoMapShaderArtifact()
+{
+    NLS::Render::Assets::ShaderArtifact artifact;
+    artifact.sourcePath = "App/Assets/Engine/Shaders/StandardPBR.hlsl";
+    artifact.subAssetKey = "shader:StandardPBR";
+    artifact.reflection = MakeAlbedoMapShaderReflection();
+    return artifact;
 }
 
 std::vector<uint8_t> TinyPng()
@@ -1184,6 +1215,8 @@ TEST(AssetMaterialConversionTests, MaterialArtifactCanLoadShaderWhileDeferringTe
         "  <shader>:Shaders/StandardPBR.hlsl</shader>\n"
         "  <uniform name=\"u_AlbedoMap\" type=\"sampler2D\" value=\"Library/Artifacts/texture-guid/textures/BaseColor.ntex\"/>\n"
         "</root>\n");
+    const auto shaderArtifactPath = root / "Library" / "Artifacts" / "shader-guid" / "shader.nshader";
+    WriteBinaryFile(shaderArtifactPath, NLS::Render::Assets::SerializeShaderArtifact(MakeAlbedoMapShaderArtifact()));
 
     NLS::Core::ResourceManagement::ShaderManager shaderManager;
     NLS::Core::ResourceManagement::TextureManager textureManager;
@@ -1208,8 +1241,7 @@ TEST(AssetMaterialConversionTests, MaterialArtifactCanLoadShaderWhileDeferringTe
     const ScopedDriverService driverService(driver);
     NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(
-        "App/Assets/Engine/Shaders/StandardPBR.hlsl");
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(shaderArtifactPath.string());
     ASSERT_NE(shader, nullptr);
     shaderManager.RegisterResource(":Shaders/StandardPBR.hlsl", shader);
 

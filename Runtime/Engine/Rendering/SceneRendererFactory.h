@@ -22,12 +22,13 @@ namespace NLS::Engine::Rendering
 
 	inline std::unique_ptr<BaseSceneRenderer> CreateSceneRenderer(
 		NLS::Render::Context::Driver& driver,
-		const SceneRendererKind kind = SceneRendererKind::Deferred)
+		const SceneRendererKind kind = SceneRendererKind::Deferred,
+		const DeferredSceneRenderer::ConstructionOptions deferredOptions = {})
 	{
 		switch (kind)
 		{
 		case SceneRendererKind::Deferred:
-			return std::make_unique<DeferredSceneRenderer>(driver);
+			return std::make_unique<DeferredSceneRenderer>(driver, deferredOptions);
 		case SceneRendererKind::Forward:
 		default:
 			return std::make_unique<ForwardSceneRenderer>(driver);

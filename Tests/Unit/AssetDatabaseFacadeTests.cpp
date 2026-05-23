@@ -759,6 +759,9 @@ float4 PSMain() : SV_Target { return float4(1, 1, 1, 1); }
 
 TEST(AssetDatabaseFacadeTests, ImportShaderSourceWritesShaderArtifactManifestAndCentralIndex)
 {
+#if !defined(_WIN32)
+    GTEST_SKIP() << "Shader artifact import success currently requires Windows DXC process execution.";
+#else
     using namespace NLS::Core::Assets;
     using namespace NLS::Editor::Assets;
 
@@ -844,6 +847,7 @@ float4 PSMain() : SV_Target { return float4(1, 1, 1, 1); }
     EXPECT_EQ(record->artifactPath, "Library/Artifacts/" + sourceId.ToString() + "/shader.nshader");
 
     std::filesystem::remove_all(root);
+#endif
 }
 
 TEST(AssetDatabaseFacadeTests, ShaderArtifactRoundTripsDependencyPathsWithSemicolons)
@@ -874,6 +878,9 @@ TEST(AssetDatabaseFacadeTests, ShaderArtifactRoundTripsDependencyPathsWithSemico
 
 TEST(AssetDatabaseFacadeTests, StartupPreimportPlanIncludesShaderSourceAssetsAndSkipsWarmShaderArtifacts)
 {
+#if !defined(_WIN32)
+    GTEST_SKIP() << "Warm shader artifact preimport currently requires Windows DXC process execution.";
+#else
     using namespace NLS::Editor::Assets;
 
     const auto root = MakeAssetDatabaseFacadeRoot();
@@ -913,6 +920,7 @@ float4 PSMain() : SV_Target { return float4(0, 1, 0, 1); }
         changedPlan.assetPaths.end());
 
     std::filesystem::remove_all(root);
+#endif
 }
 
 TEST(AssetDatabaseFacadeTests, StartupPreimportPlanReimportsShaderArtifactsWithoutUsableStages)

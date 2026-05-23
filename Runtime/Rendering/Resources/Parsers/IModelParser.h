@@ -1,12 +1,25 @@
 #pragma once
 
+#include <cstdint>
+#include <limits>
 #include <string>
+#include <vector>
 
+#include "Rendering/Geometry/Vertex.h"
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Resources/Parsers/EModelParserFlags.h"
 
 namespace NLS::Render::Resources::Parsers
 {
+	struct ParsedMeshData
+	{
+		std::vector<Geometry::Vertex> vertices;
+		std::vector<uint32_t> indices;
+		uint32_t materialIndex = 0u;
+		uint32_t sourceMeshIndex = std::numeric_limits<uint32_t>::max();
+		std::string sourceKey;
+	};
+
 	/**
 	* Interface for any model parser
 	*/

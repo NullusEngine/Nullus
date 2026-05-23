@@ -19,6 +19,7 @@ Editor::Panels::AViewControllable::AViewControllable(
 	ResetCameraTransform();
 	ResetGridColor();
 	ResetClearColor();
+	m_camera.SetFrustumGeometryCulling(true);
 }
 
 void Editor::Panels::AViewControllable::Update(float p_deltaTime)

@@ -21,10 +21,13 @@ TEST(MetaParserGenerationDataTests, GeneratesExpectedRenderEnumAndStructBindings
     const std::string lightTypeText = ReadAllText(lightTypeSource);
     const std::string boundingSphereText = ReadAllText(boundingSphereSource);
 
+    ExpectContains(projectionModeText, "#include \"Settings/EProjectionMode.generated.h\"");
     ExpectContains(projectionModeText, "type.SetEnum<NLS::Render::Settings::EProjectionMode>");
     ExpectContains(projectionModeText, "\"PERSPECTIVE\"");
+    ExpectContains(lightTypeText, "#include \"Settings/ELightType.generated.h\"");
     ExpectContains(lightTypeText, "type.SetEnum<NLS::Render::Settings::ELightType>");
     ExpectContains(lightTypeText, "\"DIRECTIONAL\"");
+    ExpectContains(boundingSphereText, "#include \"Geometry/BoundingSphere.generated.h\"");
     ExpectContains(boundingSphereText, "AddField<NLS::Render::Geometry::BoundingSphere, NLS::Maths::Vector3>(\"position\"");
     ExpectContains(boundingSphereText, "AddField<NLS::Render::Geometry::BoundingSphere, float>(\"radius\"");
 }

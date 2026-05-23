@@ -16,7 +16,14 @@ using namespace NLS;
 using namespace NLS::UI;
 using namespace NLS::UI::Widgets;
 
-void DrawHybridVec3(Internal::WidgetContainer& p_root, const std::string& p_name, Maths::Vector3& p_data, float p_step, float p_min, float p_max)
+void DrawHybridVec3(
+	Internal::WidgetContainer& p_root,
+	const std::string& p_name,
+	std::function<Maths::Vector3(void)> p_gatherer,
+	std::function<void(Maths::Vector3)> p_provider,
+	float p_step,
+	float p_min,
+	float p_max)
 {
 	GUIDrawer::CreateTitle(p_root, p_name);
 
@@ -24,12 +31,29 @@ void DrawHybridVec3(Internal::WidgetContainer& p_root, const std::string& p_name
 
 	auto& xyzWidget = rightSide.CreateWidget<Widgets::DragMultipleScalars<float, 3>>(GUIDrawer::GetDataType<float>(), p_min, p_max, 0.f, p_step, "", GUIDrawer::GetFormat<float>());
 	auto& xyzDispatcher = xyzWidget.AddPlugin<DataDispatcher<std::array<float, 3>>>();
-	xyzDispatcher.RegisterReference(reinterpret_cast<std::array<float, 3>&>(p_data));
+	xyzDispatcher.RegisterGatherer([p_gatherer]()
+	{
+		const auto value = p_gatherer();
+		return std::array<float, 3>{value.x, value.y, value.z};
+	});
+	xyzDispatcher.RegisterProvider([p_provider](std::array<float, 3> value)
+	{
+		p_provider({ value[0], value[1], value[2] });
+	});
 	xyzWidget.lineBreak = false;
 
-	auto& rgbWidget = rightSide.CreateWidget<Widgets::ColorEdit>(false, Maths::Color{p_data.x, p_data.y, p_data.z});
+	const auto initialValue = p_gatherer();
+	auto& rgbWidget = rightSide.CreateWidget<Widgets::ColorEdit>(false, Maths::Color{initialValue.x, initialValue.y, initialValue.z});
     auto& rgbDispatcher = rgbWidget.AddPlugin<DataDispatcher<Maths::Color>>();
-    rgbDispatcher.RegisterReference(reinterpret_cast<Maths::Color&>(p_data));
+	rgbDispatcher.RegisterGatherer([p_gatherer]()
+	{
+		const auto value = p_gatherer();
+		return Maths::Color{ value.x, value.y, value.z };
+	});
+	rgbDispatcher.RegisterProvider([p_provider](Maths::Color value)
+	{
+		p_provider({ value.r, value.g, value.b });
+	});
 	rgbWidget.enabled = false;
 	rgbWidget.lineBreak = false;
 
@@ -53,7 +77,14 @@ void DrawHybridVec3(Internal::WidgetContainer& p_root, const std::string& p_name
 	};
 }
 
-void DrawHybridVec4(Internal::WidgetContainer& p_root, const std::string& p_name, Maths::Vector4& p_data, float p_step, float p_min, float p_max)
+void DrawHybridVec4(
+	Internal::WidgetContainer& p_root,
+	const std::string& p_name,
+	std::function<Maths::Vector4(void)> p_gatherer,
+	std::function<void(Maths::Vector4)> p_provider,
+	float p_step,
+	float p_min,
+	float p_max)
 {
 	GUIDrawer::CreateTitle(p_root, p_name);
 
@@ -61,12 +92,29 @@ void DrawHybridVec4(Internal::WidgetContainer& p_root, const std::string& p_name
 
 	auto& xyzWidget = rightSide.CreateWidget<Widgets::DragMultipleScalars<float, 4>>(GUIDrawer::GetDataType<float>(), p_min, p_max, 0.f, p_step, "", GUIDrawer::GetFormat<float>());
 	auto& xyzDispatcher = xyzWidget.AddPlugin<DataDispatcher<std::array<float, 4>>>();
-	xyzDispatcher.RegisterReference(reinterpret_cast<std::array<float, 4>&>(p_data));
+	xyzDispatcher.RegisterGatherer([p_gatherer]()
+	{
+		const auto value = p_gatherer();
+		return std::array<float, 4>{value.x, value.y, value.z, value.w};
+	});
+	xyzDispatcher.RegisterProvider([p_provider](std::array<float, 4> value)
+	{
+		p_provider({ value[0], value[1], value[2], value[3] });
+	});
 	xyzWidget.lineBreak = false;
 
-	auto& rgbaWidget = rightSide.CreateWidget<Widgets::ColorEdit>(true, Maths::Color{ p_data.x, p_data.y, p_data.z, p_data.w });
+	const auto initialValue = p_gatherer();
+	auto& rgbaWidget = rightSide.CreateWidget<Widgets::ColorEdit>(true, Maths::Color{ initialValue.x, initialValue.y, initialValue.z, initialValue.w });
 	auto& rgbaDispatcher = rgbaWidget.AddPlugin<DataDispatcher<Maths::Color>>();
-	rgbaDispatcher.RegisterReference(reinterpret_cast<Maths::Color&>(p_data));
+	rgbaDispatcher.RegisterGatherer([p_gatherer]()
+	{
+		const auto value = p_gatherer();
+		return Maths::Color{ value.x, value.y, value.z, value.w };
+	});
+	rgbaDispatcher.RegisterProvider([p_provider](Maths::Color value)
+	{
+		p_provider({ value.r, value.g, value.b, value.a });
+	});
 	rgbaWidget.enabled = false;
 	rgbaWidget.lineBreak = false;
 
@@ -111,6 +159,11 @@ Editor::Panels::MaterialEditor::MaterialEditor
 
 	m_materialDroppedEvent	+= std::bind(&MaterialEditor::OnMaterialDropped, this);
 	m_shaderDroppedEvent	+= std::bind(&MaterialEditor::OnShaderDropped, this);
+	m_materialParametersChangedEvent += [this]
+	{
+		if (m_target)
+			m_target->MarkParametersDirty();
+	};
 }
 
 void Editor::Panels::MaterialEditor::Refresh()
@@ -303,9 +356,9 @@ void Editor::Panels::MaterialEditor::GenerateShaderSettingsContent()
 
 	m_shaderSettingsColumns->RemoveAllWidgets(); // Ensure that the m_shaderSettingsColumns is empty
 
-	std::multimap<int, std::pair<std::string, std::any*>> sortedUniformsData;
+	std::multimap<int, std::string> sortedUniformNames;
 
-	for (auto&[name, value] : m_target->GetUniformsData())
+	for (const auto& [name, value] : m_target->GetUniformsData())
 	{
 		int orderID = 0;
 
@@ -324,25 +377,136 @@ void Editor::Panels::MaterialEditor::GenerateShaderSettingsContent()
 			case UniformType::UNIFORM_BOOL:			orderID = 6; break;
 			}
 
-			sortedUniformsData.emplace(orderID, std::pair<std::string, std::any*>{ name, & value });
+			sortedUniformNames.emplace(orderID, name);
 		}
 	}
 
-	for (auto& [order, info] : sortedUniformsData)
+	for (const auto& [order, uniformName] : sortedUniformNames)
 	{
-		auto uniformData = m_target->GetShader()->GetUniformInfo(info.first);
+		auto uniformData = m_target->GetShader()->GetUniformInfo(uniformName);
 		
 		if (uniformData)
 		{
 			switch (uniformData->type)
 			{
-			case UniformType::UNIFORM_BOOL:			GUIDrawer::DrawBoolean(*m_shaderSettingsColumns, UniformFormat(info.first), reinterpret_cast<bool&>(*info.second));																	break;
-			case UniformType::UNIFORM_INT:			GUIDrawer::DrawScalar<int>(*m_shaderSettingsColumns, UniformFormat(info.first), reinterpret_cast<int&>(*info.second));																break;
-			case UniformType::UNIFORM_FLOAT:		GUIDrawer::DrawScalar<float>(*m_shaderSettingsColumns, UniformFormat(info.first), reinterpret_cast<float&>(*info.second), 0.01f, GUIDrawer::_MIN_FLOAT, GUIDrawer::_MAX_FLOAT);		break;
-			case UniformType::UNIFORM_FLOAT_VEC2:	GUIDrawer::DrawVec2(*m_shaderSettingsColumns, UniformFormat(info.first), reinterpret_cast<Maths::Vector2&>(*info.second), 0.01f, GUIDrawer::_MIN_FLOAT, GUIDrawer::_MAX_FLOAT);	break;
-			case UniformType::UNIFORM_FLOAT_VEC3:	DrawHybridVec3(*m_shaderSettingsColumns, UniformFormat(info.first), reinterpret_cast<Maths::Vector3&>(*info.second), 0.01f, GUIDrawer::_MIN_FLOAT, GUIDrawer::_MAX_FLOAT);			break;
-			case UniformType::UNIFORM_FLOAT_VEC4:	DrawHybridVec4(*m_shaderSettingsColumns, UniformFormat(info.first), reinterpret_cast<Maths::Vector4&>(*info.second), 0.01f, GUIDrawer::_MIN_FLOAT, GUIDrawer::_MAX_FLOAT);			break;
-			case UniformType::UNIFORM_SAMPLER_2D:	GUIDrawer::DrawTexture(*m_shaderSettingsColumns, UniformFormat(info.first), reinterpret_cast<Texture2D * &>(*info.second));																break;
+			case UniformType::UNIFORM_BOOL:
+			{
+				GUIDrawer::DrawBoolean(
+					*m_shaderSettingsColumns,
+					UniformFormat(uniformName),
+					[name = uniformName, this]()
+					{
+						return std::any_cast<bool>(m_target->GetUniformsData().at(name));
+					},
+					[name = uniformName, this](bool value)
+					{
+						m_target->Set<bool>(name, value);
+					});
+				break;
+			}
+			case UniformType::UNIFORM_INT:
+			{
+				GUIDrawer::DrawScalar<int>(
+					*m_shaderSettingsColumns,
+					UniformFormat(uniformName),
+					[name = uniformName, this]()
+					{
+						return std::any_cast<int>(m_target->GetUniformsData().at(name));
+					},
+					[name = uniformName, this](int value)
+					{
+						m_target->Set<int>(name, value);
+					});
+				break;
+			}
+			case UniformType::UNIFORM_FLOAT:
+			{
+				GUIDrawer::DrawScalar<float>(
+					*m_shaderSettingsColumns,
+					UniformFormat(uniformName),
+					[name = uniformName, this]()
+					{
+						return std::any_cast<float>(m_target->GetUniformsData().at(name));
+					},
+					[name = uniformName, this](float value)
+					{
+						m_target->Set<float>(name, value);
+					},
+					0.01f,
+					GUIDrawer::_MIN_FLOAT,
+					GUIDrawer::_MAX_FLOAT);
+				break;
+			}
+			case UniformType::UNIFORM_FLOAT_VEC2:
+			{
+				GUIDrawer::DrawVec2(
+					*m_shaderSettingsColumns,
+					UniformFormat(uniformName),
+					[name = uniformName, this]()
+					{
+						return std::any_cast<Maths::Vector2>(m_target->GetUniformsData().at(name));
+					},
+					[name = uniformName, this](Maths::Vector2 value)
+					{
+						m_target->Set<Maths::Vector2>(name, value);
+					},
+					0.01f,
+					GUIDrawer::_MIN_FLOAT,
+					GUIDrawer::_MAX_FLOAT);
+				break;
+			}
+			case UniformType::UNIFORM_FLOAT_VEC3:
+			{
+				DrawHybridVec3(
+					*m_shaderSettingsColumns,
+					UniformFormat(uniformName),
+					[name = uniformName, this]()
+					{
+						return std::any_cast<Maths::Vector3>(m_target->GetUniformsData().at(name));
+					},
+					[name = uniformName, this](Maths::Vector3 value)
+					{
+						m_target->Set<Maths::Vector3>(name, value);
+					},
+					0.01f,
+					GUIDrawer::_MIN_FLOAT,
+					GUIDrawer::_MAX_FLOAT);
+				break;
+			}
+			case UniformType::UNIFORM_FLOAT_VEC4:
+			{
+				DrawHybridVec4(
+					*m_shaderSettingsColumns,
+					UniformFormat(uniformName),
+					[name = uniformName, this]()
+					{
+						return std::any_cast<Maths::Vector4>(m_target->GetUniformsData().at(name));
+					},
+					[name = uniformName, this](Maths::Vector4 value)
+					{
+						m_target->Set<Maths::Vector4>(name, value);
+					},
+					0.01f,
+					GUIDrawer::_MIN_FLOAT,
+					GUIDrawer::_MAX_FLOAT);
+				break;
+			}
+			case UniformType::UNIFORM_SAMPLER_2D:
+			{
+				GUIDrawer::DrawTexture(
+					*m_shaderSettingsColumns,
+					UniformFormat(uniformName),
+					[name = uniformName, this]()
+					{
+						return std::any_cast<Texture2D*>(m_target->GetUniformsData().at(name));
+					},
+					[name = uniformName, this](Texture2D* value)
+					{
+						m_target->Set<Texture2D*>(name, value);
+					},
+					&m_materialParametersChangedEvent);
+				break;
+			}
 			}
 		}
 	}

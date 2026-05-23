@@ -8,6 +8,8 @@
 
 #include "Array.h"
 
+#include <vector>
+
 namespace NLS::meta_traits
 {
     template<typename T, typename = void>
@@ -40,6 +42,12 @@ namespace NLS::meta_traits
         typedef T type;
     };
 
+    template<typename T, typename Allocator>
+    struct RemoveArray<std::vector<T, Allocator>>
+    {
+        typedef T type;
+    };
+
         ///////////////////////////////////////////////////////////////////////////
 
     template<typename T>
@@ -50,6 +58,12 @@ namespace NLS::meta_traits
 
     template<typename T>
     struct IsArray<Array<T>>
+    {
+        static const bool value = true;
+    };
+
+    template<typename T, typename Allocator>
+    struct IsArray<std::vector<T, Allocator>>
     {
         static const bool value = true;
     };

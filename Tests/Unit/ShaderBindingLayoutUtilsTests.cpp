@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 #include "Rendering/RHI/BindingPointMap.h"
+#include "Math/Matrix4.h"
 #include "Rendering/Resources/ComputeShaderUtils.h"
 #include "Rendering/Resources/ShaderBindingLayoutUtils.h"
 #include "Rendering/Resources/ShaderParameterStruct.h"
@@ -173,6 +176,101 @@ TEST(ShaderBindingLayoutUtilsTests, UE427ShaderParameterGroupsPreserveFrameMater
     EXPECT_EQ(groups[3].parameters[0].name, "PassConstants");
 }
 
+TEST(ShaderBindingLayoutUtilsTests, RendererOwnedObjectIndexConstantsAreSkippedForExplicitDescriptorLayouts)
+{
+    ShaderReflection reflection;
+    reflection.constantBuffers = {
+        { "FrameConstants", ShaderStage::Vertex, NLS::Render::RHI::BindingPointMap::kFrameBindingSpace, 0u, 64u, {} },
+        { "ObjectIndexConstants", ShaderStage::Vertex, NLS::Render::RHI::BindingPointMap::kObjectBindingSpace, 1u, sizeof(uint32_t), {} }
+    };
+    reflection.properties = {
+        { "ObjectData", UniformType::UNIFORM_FLOAT_MAT4, ShaderResourceKind::StructuredBuffer, ShaderStage::Vertex, NLS::Render::RHI::BindingPointMap::kObjectBindingSpace, 0u, -1, 1, 0u, sizeof(NLS::Maths::Matrix4), {} }
+    };
+
+    const auto layouts = NLS::Render::Resources::BuildExplicitBindingLayoutDescsBySet(
+        reflection,
+        "IndexedShader");
+
+    ASSERT_EQ(layouts.size(), 3u);
+    ASSERT_EQ(layouts[0].entries.size(), 1u);
+    EXPECT_EQ(layouts[0].entries[0].name, "FrameConstants");
+    ASSERT_EQ(layouts[2].entries.size(), 1u);
+    EXPECT_EQ(layouts[2].entries[0].name, "ObjectData");
+    EXPECT_EQ(layouts[2].entries[0].binding, 0u);
+    EXPECT_NE(layouts[2].entries[0].name, "ObjectIndexConstants");
+}
+
+TEST(ShaderBindingLayoutUtilsTests, ReflectionStructuredBuffersCarryElementStrideFromByteSize)
+{
+    ShaderReflection reflection;
+    reflection.properties = {
+        { "BoneMatrices", UniformType::UNIFORM_FLOAT_MAT4, ShaderResourceKind::StructuredBuffer, ShaderStage::Vertex, NLS::Render::RHI::BindingPointMap::kObjectBindingSpace, 4u, -1, 1, 0u, sizeof(NLS::Maths::Matrix4), {} }
+    };
+
+    const auto layouts = NLS::Render::Resources::BuildExplicitBindingLayoutDescsBySet(
+        reflection,
+        "SkinnedShader");
+
+    ASSERT_EQ(layouts.size(), 3u);
+    ASSERT_EQ(layouts[2].entries.size(), 1u);
+    EXPECT_EQ(layouts[2].entries[0].name, "BoneMatrices");
+    EXPECT_EQ(layouts[2].entries[0].type, NLS::Render::RHI::BindingType::StructuredBuffer);
+    EXPECT_EQ(layouts[2].entries[0].elementStride, sizeof(NLS::Maths::Matrix4));
+}
+
+TEST(ShaderBindingLayoutUtilsTests, RendererOwnedObjectIndexConstantsAreSkippedForParameterGroupContracts)
+{
+    ShaderReflection reflection;
+    reflection.constantBuffers = {
+        { "ObjectIndexConstants", ShaderStage::Vertex, NLS::Render::RHI::BindingPointMap::kObjectBindingSpace, 1u, sizeof(uint32_t), {} }
+    };
+    reflection.properties = {
+        { "ObjectData", UniformType::UNIFORM_FLOAT_MAT4, ShaderResourceKind::StructuredBuffer, ShaderStage::Vertex, NLS::Render::RHI::BindingPointMap::kObjectBindingSpace, 0u, -1, 1, 0u, sizeof(NLS::Maths::Matrix4), {} }
+    };
+
+    const auto groups = NLS::Render::Resources::BuildShaderParameterGroupContracts(
+        reflection,
+        "IndexedShader");
+
+    ASSERT_EQ(groups.size(), 4u);
+    const auto objectGroup = std::find_if(
+        groups.begin(),
+        groups.end(),
+        [](const NLS::Render::Resources::ShaderParameterGroupContract& group)
+        {
+            return group.groupKind == NLS::Render::Resources::ShaderParameterGroupKind::Object;
+        });
+    ASSERT_NE(objectGroup, groups.end());
+    ASSERT_EQ(objectGroup->parameters.size(), 1u);
+    EXPECT_EQ(objectGroup->parameters[0].name, "ObjectData");
+    EXPECT_EQ(objectGroup->parameters[0].binding, 0u);
+}
+
+TEST(ShaderBindingLayoutUtilsTests, ReflectionParameterGroupContractsCarryStructuredBufferElementStride)
+{
+    ShaderReflection reflection;
+    reflection.properties = {
+        { "BoneMatrices", UniformType::UNIFORM_FLOAT_MAT4, ShaderResourceKind::StructuredBuffer, ShaderStage::Vertex, NLS::Render::RHI::BindingPointMap::kObjectBindingSpace, 4u, -1, 1, 0u, sizeof(NLS::Maths::Matrix4), {} }
+    };
+
+    const auto groups = NLS::Render::Resources::BuildShaderParameterGroupContracts(
+        reflection,
+        "SkinnedShader");
+
+    const auto objectGroup = std::find_if(
+        groups.begin(),
+        groups.end(),
+        [](const NLS::Render::Resources::ShaderParameterGroupContract& group)
+        {
+            return group.groupKind == NLS::Render::Resources::ShaderParameterGroupKind::Object;
+        });
+    ASSERT_NE(objectGroup, groups.end());
+    ASSERT_EQ(objectGroup->parameters.size(), 1u);
+    EXPECT_EQ(objectGroup->parameters[0].name, "BoneMatrices");
+    EXPECT_EQ(objectGroup->parameters[0].type, NLS::Render::RHI::BindingType::StructuredBuffer);
+    EXPECT_EQ(objectGroup->parameters[0].elementStride, sizeof(NLS::Maths::Matrix4));
+}
+
 TEST(ShaderBindingLayoutUtilsTests, UE427ShaderParameterGroupValidationReportsMissingAndStalePassBindings)
 {
     ShaderReflection reflection;
@@ -273,6 +371,73 @@ TEST(ShaderBindingLayoutUtilsTests, ShaderParameterStructBuildsPassLayoutAndBind
     EXPECT_EQ(bindingSetDesc.entries[2].type, NLS::Render::RHI::BindingType::StorageBuffer);
 }
 
+TEST(ShaderBindingLayoutUtilsTests, ShaderParameterStructCarriesStructuredBufferElementStride)
+{
+    using namespace NLS::Render::Resources;
+
+    const auto parameters = ShaderParameterStructBuilder("ObjectParameters")
+        .SetGroup(ShaderParameterGroupKind::Object)
+        .AddStructuredBuffer("ObjectData", 0u, NLS::Render::RHI::ShaderStageMask::Vertex, sizeof(NLS::Maths::Matrix4))
+        .Build();
+
+    const auto layoutDesc = BuildBindingLayoutDescFromShaderParameters(parameters);
+
+    ASSERT_EQ(layoutDesc.entries.size(), 1u);
+    EXPECT_EQ(layoutDesc.entries[0].type, NLS::Render::RHI::BindingType::StructuredBuffer);
+    EXPECT_EQ(layoutDesc.entries[0].elementStride, sizeof(NLS::Maths::Matrix4));
+
+    auto objectBuffer = std::make_shared<ContractBuffer>(NLS::Render::RHI::RHIBufferDesc{});
+    const auto bindingSetDesc = BuildBindingSetDescFromShaderParameters(
+        parameters,
+        nullptr,
+        {
+            ShaderParameterBindingValue::StructuredBuffer(
+                "ObjectData",
+                objectBuffer,
+                sizeof(NLS::Maths::Matrix4) * 4u,
+                0u,
+                sizeof(NLS::Maths::Matrix4))
+        },
+        "ObjectBindingSet");
+
+    ASSERT_EQ(bindingSetDesc.entries.size(), 1u);
+    EXPECT_EQ(bindingSetDesc.entries[0].elementStride, sizeof(NLS::Maths::Matrix4));
+}
+
+TEST(ShaderBindingLayoutUtilsTests, ShaderParameterStructCarriesStorageBufferElementStride)
+{
+    using namespace NLS::Render::Resources;
+
+    const auto parameters = ShaderParameterStructBuilder("StorageParameters")
+        .SetGroup(ShaderParameterGroupKind::Pass)
+        .AddStorageBuffer("RWFloat4Data", 2u, NLS::Render::RHI::ShaderStageMask::Compute, sizeof(float) * 4u)
+        .Build();
+
+    const auto layoutDesc = BuildBindingLayoutDescFromShaderParameters(parameters);
+
+    ASSERT_EQ(layoutDesc.entries.size(), 1u);
+    EXPECT_EQ(layoutDesc.entries[0].type, NLS::Render::RHI::BindingType::StorageBuffer);
+    EXPECT_EQ(layoutDesc.entries[0].elementStride, sizeof(float) * 4u);
+
+    auto storageBuffer = std::make_shared<ContractBuffer>(NLS::Render::RHI::RHIBufferDesc{});
+    const auto bindingSetDesc = BuildBindingSetDescFromShaderParameters(
+        parameters,
+        nullptr,
+        {
+            ShaderParameterBindingValue::StorageBuffer(
+                "RWFloat4Data",
+                storageBuffer,
+                sizeof(float) * 4u * 8u,
+                0u,
+                sizeof(float) * 4u)
+        },
+        "StorageBindingSet");
+
+    ASSERT_EQ(bindingSetDesc.entries.size(), 1u);
+    EXPECT_EQ(bindingSetDesc.entries[0].type, NLS::Render::RHI::BindingType::StorageBuffer);
+    EXPECT_EQ(bindingSetDesc.entries[0].elementStride, sizeof(float) * 4u);
+}
+
 TEST(ShaderBindingLayoutUtilsTests, ShaderParameterStructsBuildDenseGraphicsPipelineLayouts)
 {
     using namespace NLS::Render::Resources;
@@ -290,7 +455,7 @@ TEST(ShaderBindingLayoutUtilsTests, ShaderParameterStructsBuildDenseGraphicsPipe
             .Build(),
         ShaderParameterStructBuilder("StandardObjectParameters")
             .SetGroup(ShaderParameterGroupKind::Object)
-            .AddUniformBuffer("ObjectConstants", 0u, 64u, NLS::Render::RHI::ShaderStageMask::Vertex)
+            .AddStructuredBuffer("ObjectData", 0u, NLS::Render::RHI::ShaderStageMask::Vertex, sizeof(NLS::Maths::Matrix4))
             .Build(),
         ShaderParameterStructBuilder("StandardPassParameters")
             .SetGroup(ShaderParameterGroupKind::Pass)
@@ -317,7 +482,9 @@ TEST(ShaderBindingLayoutUtilsTests, ShaderParameterStructsBuildDenseGraphicsPipe
     EXPECT_EQ(layouts[1].entries[2].type, NLS::Render::RHI::BindingType::Sampler);
 
     ASSERT_EQ(layouts[2].entries.size(), 1u);
-    EXPECT_EQ(layouts[2].entries[0].name, "ObjectConstants");
+    EXPECT_EQ(layouts[2].entries[0].name, "ObjectData");
+    EXPECT_EQ(layouts[2].entries[0].type, NLS::Render::RHI::BindingType::StructuredBuffer);
+    EXPECT_EQ(layouts[2].entries[0].elementStride, sizeof(NLS::Maths::Matrix4));
     EXPECT_EQ(layouts[2].entries[0].set, NLS::Render::RHI::BindingPointMap::kObjectDescriptorSet);
 
     ASSERT_EQ(layouts[3].entries.size(), 4u);

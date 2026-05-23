@@ -82,7 +82,7 @@ namespace NLS::meta
             void onSerialize(
                 Json::object &output,
                 typename std::enable_if<
-                    !std::is_pointer<U>::value && std::is_base_of<Object, U>::value
+                    !std::is_pointer<U>::value && std::is_base_of<NLS::Object, U>::value
                 >::type* = nullptr
             ) const;
 
@@ -90,7 +90,7 @@ namespace NLS::meta
             void onSerialize(
                 Json::object &output,
                 typename std::enable_if<
-                    std::is_pointer<U>::value || !std::is_base_of<Object, U>::value
+                    std::is_pointer<U>::value || !std::is_base_of<NLS::Object, U>::value
                 >::type* = nullptr
             ) const;
 
@@ -98,7 +98,7 @@ namespace NLS::meta
             void onDeserialize(
                 const Json &input,
                 typename std::enable_if<
-                    !std::is_pointer<U>::value && std::is_base_of<Object, U>::value
+                    !std::is_pointer<U>::value && std::is_base_of<NLS::Object, U>::value
                 >::type* = nullptr
             );
 
@@ -106,7 +106,7 @@ namespace NLS::meta
             void onDeserialize(
                 const Json &input,
                 typename std::enable_if<
-                    std::is_pointer<U>::value || !std::is_base_of<Object, U>::value
+                    std::is_pointer<U>::value || !std::is_base_of<NLS::Object, U>::value
                 >::type* = nullptr
             );
     };

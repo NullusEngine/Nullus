@@ -108,6 +108,11 @@ namespace NLS::Render::Context
         static Data::PipelineState CreatePipelineState(const Driver& driver);
         static bool SupportsEditorPickingReadback(const Driver& driver);
         static FrameGraph::FrameGraphExecutionContext CreateFrameGraphExecutionContext(const Driver& driver);
+        static std::optional<size_t> GetActiveFrameContextSlotIndex(const Driver& driver);
+        static size_t GetFrameContextSlotCount(const Driver& driver);
+        static std::optional<size_t> ReserveReusableFrameContextSlotIndex(Driver& driver);
+        static bool ReleaseReservedFrameContextSlotIndex(Driver& driver, size_t slotIndex);
+        static std::optional<size_t> GetReservedFrameContextSlotIndex(const Driver& driver);
         static std::shared_ptr<RHI::RHICommandBuffer> GetActiveExplicitCommandBuffer(const Driver& driver);
         static std::shared_ptr<RHI::RHITextureView> GetSwapchainBackbufferView(const Driver& driver);
         static std::shared_ptr<RHI::RHITextureView> GetSwapchainDepthStencilView(const Driver& driver);

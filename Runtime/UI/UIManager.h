@@ -137,6 +137,7 @@ public:
      * @param p_canvas
      */
     void SetCanvas(Canvas& p_canvas);
+    Canvas* GetCanvas() const;
 
     /**
      * Stop considering the current canvas (if any)

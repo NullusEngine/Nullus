@@ -45,7 +45,9 @@ DebugDrawPass::DebugDrawPass(Core::CompositeRenderer& renderer)
     }
     else
     {
-        m_primitiveShader = Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/DebugPrimitive.hlsl");
+        m_primitiveShader = Resources::Loaders::ShaderLoader::Create(
+            "App/Assets/Engine/Shaders/DebugPrimitive.hlsl",
+            ::NLS::Core::ResourceManagement::ShaderManager::ProjectAssetsRoot());
         m_ownsPrimitiveShader = m_primitiveShader != nullptr;
     }
 

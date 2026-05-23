@@ -2,7 +2,7 @@
 
 #include "EngineDef.h"
 
-#include <Rendering/Resources/Model.h>
+#include <Rendering/Resources/Mesh.h>
 #include <Rendering/Resources/TextureCube.h>
 #include <Rendering/Resources/Material.h>
 
@@ -13,13 +13,13 @@
 namespace NLS::Engine::Components
 {
 	/**
-	* A ModelRenderer is necessary in combination with a MaterialRenderer to render a model in the world
+	* A MeshRenderer makes a mesh renderable in the world.
 	*/
 	CLASS(NLS_ENGINE_API SkyBoxComponent) : public Component
 	{
     public:
 		GENERATED_BODY()
-        using Model = Render::Resources::Model;
+        using Mesh = Render::Resources::Mesh;
         using Material = Render::Resources::Material;
         using TextureCube = Render::Resources::TextureCube;
 
@@ -34,12 +34,12 @@ namespace NLS::Engine::Components
         FUNCTION()
 		void SetCubeMap(TextureCube* cubmap);
 
-		/**
+        /**
 		 * @brief
 		 * @return
 		 */
         FUNCTION()
-		Model* GetModel() const { return mModel; }
+		Mesh* GetMesh() const { return mMesh; }
 
 		/**
 		 * @brief 
@@ -48,7 +48,7 @@ namespace NLS::Engine::Components
 		Material* GetMaterial() const { return mMaterial; }
 
 	private:
-		Model* mModel = nullptr;
+		Mesh* mMesh = nullptr;
 		Material* mMaterial = nullptr;
 	};
 }

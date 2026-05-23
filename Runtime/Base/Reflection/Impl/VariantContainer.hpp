@@ -129,8 +129,17 @@ namespace NLS::meta
         template<typename T>
         VariantBase *VariantContainer<T>::Clone(void) const
         {
-            // use the non reference type to ensure a copy is made
-            return new VariantContainer<NonRefType>( m_value );
+            if constexpr (
+                std::is_reference<T>::value &&
+                std::is_base_of<NLS::Object, typename std::remove_cv<NonRefType>::type>::value)
+            {
+                return new VariantContainer<T>(m_value);
+            }
+            else
+            {
+                // use the non reference type to ensure a copy is made
+                return new VariantContainer<NonRefType>( m_value );
+            }
         }
 
         template<typename T>
@@ -179,11 +188,12 @@ namespace NLS::meta
         void VariantContainer<T>::onSerialize(
             Json::object &output, 
             typename std::enable_if<
-                !std::is_pointer<U>::value && std::is_base_of<Object, U>::value
+                !std::is_pointer<U>::value && std::is_base_of<NLS::Object, U>::value
             >::type*
         ) const
         {
-            m_value.OnSerialize( output );
+            // Unity-style Object is a runtime identity root. Reflection no longer
+            // serializes Object values through virtual Object hooks.
         }
         
         template<typename T>
@@ -191,7 +201,7 @@ namespace NLS::meta
         void VariantContainer<T>::onSerialize(
             Json::object &output,
             typename std::enable_if<
-            std::is_pointer<U>::value || !std::is_base_of<Object, U>::value
+            std::is_pointer<U>::value || !std::is_base_of<NLS::Object, U>::value
             >::type*
         ) const
         {
@@ -203,11 +213,12 @@ namespace NLS::meta
         void VariantContainer<T>::onDeserialize(
             const Json &input,
             typename std::enable_if<
-                !std::is_pointer<U>::value && std::is_base_of<Object, U>::value
+                !std::is_pointer<U>::value && std::is_base_of<NLS::Object, U>::value
             >::type*
         ) 
         {
-            m_value.OnDeserialize( input );
+            // Unity-style Object is a runtime identity root. Reflection no longer
+            // deserializes Object values through virtual Object hooks.
         }
         
         template<typename T>
@@ -215,7 +226,7 @@ namespace NLS::meta
         void VariantContainer<T>::onDeserialize(
             const Json &input,
             typename std::enable_if<
-                std::is_pointer<U>::value || !std::is_base_of<Object, U>::value
+                std::is_pointer<U>::value || !std::is_base_of<NLS::Object, U>::value
             >::type*
         )
         {

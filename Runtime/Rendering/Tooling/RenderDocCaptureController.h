@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <cstdint>
 
 #include "Rendering/RHI/RHITypes.h"
 #include "Rendering/Settings/DriverSettings.h"
@@ -9,9 +10,21 @@
 
 namespace NLS::Render::Tooling
 {
+	enum class RenderDocQueuedCaptureAction
+	{
+		None,
+		WaitForFutureFrame,
+		StartExplicitFrameCapture,
+	};
+
 	NLS_RENDER_API ::NLS::Render::RHI::NativeRenderDeviceHandle ResolveRenderDocCaptureDeviceHandle(
 		const ::NLS::Render::RHI::NativeRenderDeviceInfo& nativeInfo);
 	NLS_RENDER_API void* ResolveRenderDocCaptureDevice(const ::NLS::Render::RHI::NativeRenderDeviceInfo& nativeInfo);
+	NLS_RENDER_API RenderDocQueuedCaptureAction ResolveRenderDocQueuedCapturePreFrameAction(
+		bool available,
+		bool captureQueued,
+		bool frameWillPresent,
+		uint32_t presentCountdown);
 
 	class NLS_RENDER_API RenderDocCaptureController final
 	{

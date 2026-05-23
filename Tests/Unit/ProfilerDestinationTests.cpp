@@ -1,10 +1,16 @@
 #include <gtest/gtest.h>
 
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <cstdint>
 #include <string>
 #include <vector>
 
 #include "Profiling/Profiler.h"
 #include "UI/Profiling/TimelineProfilerSink.h"
+#include "UI/Profiling/TimelineProfilerLimits.h"
+#include "ImGuiExtensions/TimelineProfiler/ProfilerTraceCursor.h"
 #include "Profiling/TracyProfiler.h"
 
 namespace
@@ -478,6 +484,120 @@ TEST_F(ProfilerDestinationTest, TimelineSinkSuppressesScopesBeyondInternalStackL
 
     for (size_t i = 0u; i < 40u; ++i)
         EXPECT_NO_FATAL_FAILURE(timeline.EndScope(event));
+#else
+    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+#endif
+}
+
+TEST_F(ProfilerDestinationTest, TimelineSinkKeepsEditorPanelDepthScopes)
+{
+    using namespace NLS::Base::Profiling;
+
+#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+    TimelineProfilerSink timeline;
+    timeline.SetRecordingEnabled(true);
+    ASSERT_EQ(timeline.GetState().availability, ProfilerAvailability::Available);
+
+    std::vector<ProfilerScopeEvent> events;
+    events.reserve(NLS::UI::Profiling::kTimelineProfilerMaxCpuScopeDepth);
+    for (size_t index = 0u; index < NLS::UI::Profiling::kTimelineProfilerMaxCpuScopeDepth; ++index)
+    {
+        ProfilerScopeEvent event;
+        event.name = "Nested Editor UI Scope " + std::to_string(index);
+        event.sourceFunction = __FUNCTION__;
+        event.active = true;
+        events.push_back(std::move(event));
+        timeline.BeginScope(events.back());
+    }
+
+    EXPECT_EQ(timeline.GetSkippedScopeCountForTesting(), 0u);
+
+    for (auto it = events.rbegin(); it != events.rend(); ++it)
+        EXPECT_NO_FATAL_FAILURE(timeline.EndScope(*it));
+#else
+    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+#endif
+}
+
+TEST_F(ProfilerDestinationTest, TimelineTraceExporterWritesEachFrameOnce)
+{
+#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+    using NLS::UI::TimelineProfilerDetail::ResolveTraceFrameExportRange;
+
+    std::uint32_t lastExportedFrame = 0u;
+
+    auto exportRange = ResolveTraceFrameExportRange({1u, 4u}, lastExportedFrame);
+    EXPECT_EQ(exportRange.Begin, 1u);
+    EXPECT_EQ(exportRange.End, 4u);
+    lastExportedFrame = exportRange.End - 1u;
+
+    exportRange = ResolveTraceFrameExportRange({1u, 4u}, lastExportedFrame);
+    EXPECT_EQ(exportRange.Begin, 0u);
+    EXPECT_EQ(exportRange.End, 0u);
+    EXPECT_EQ(lastExportedFrame, 3u);
+
+    exportRange = ResolveTraceFrameExportRange({1u, 6u}, lastExportedFrame);
+    EXPECT_EQ(exportRange.Begin, 4u);
+    EXPECT_EQ(exportRange.End, 6u);
+    lastExportedFrame = exportRange.End - 1u;
+
+    exportRange = ResolveTraceFrameExportRange({10u, 13u}, lastExportedFrame);
+    EXPECT_EQ(exportRange.Begin, 10u);
+    EXPECT_EQ(exportRange.End, 13u);
+    EXPECT_EQ(lastExportedFrame, 9u);
+
+    const auto profilerWindowPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/ImGuiExtensions/TimelineProfiler/ProfilerWindow.cpp";
+
+    std::ifstream stream(profilerWindowPath, std::ios::binary);
+    const std::string source{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(source.find("MaxDepth = static_cast<int>(NLS::UI::Profiling::kTimelineProfilerMaxCpuScopeDepth)"), std::string::npos);
+    EXPECT_NE(source.find("ImGui::SliderInt(\"Depth\", &style.MaxDepth, 1, static_cast<int>(NLS::UI::Profiling::kTimelineProfilerMaxCpuScopeDepth))"), std::string::npos);
+    EXPECT_NE(source.find("LastExportedFrame"), std::string::npos);
+    EXPECT_NE(source.find("ResolveTraceFrameExportRange("), std::string::npos);
+    EXPECT_NE(source.find("{ cpuRange.Begin, cpuRange.End }"), std::string::npos);
+    EXPECT_NE(source.find("context.LastExportedFrame = cpuRange.End > 0 ? cpuRange.End - 1 : 0;"), std::string::npos);
+    EXPECT_NE(source.find("context.LastExportedFrame = frameIndex;"), std::string::npos);
+#else
+    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+#endif
+}
+
+TEST_F(ProfilerDestinationTest, TimelineTraceRecordingContinuesDrawingTimelineWhileExporting)
+{
+#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+    const auto profilerWindowPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/ImGuiExtensions/TimelineProfiler/ProfilerWindow.cpp";
+
+    std::ifstream stream(profilerWindowPath, std::ios::binary);
+    const std::string source{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(source.empty());
+    EXPECT_EQ(source.find("DrawProfilerTraceControls(traceContext"), std::string::npos);
+    EXPECT_EQ(source.find("IsTraceRecording(traceContext)"), std::string::npos);
+    EXPECT_EQ(source.find("Trace recording active; timeline drawing is paused."), std::string::npos);
+    EXPECT_EQ(source.find("return; // Keep trace capture from profiling the profiler timeline UI."), std::string::npos);
+
+    const auto drawBegin = source.find("static void DrawProfilerTimeline(");
+    ASSERT_NE(drawBegin, std::string::npos);
+    const auto drawEnd = source.find("void DrawProfilerHUD()", drawBegin);
+    ASSERT_NE(drawEnd, std::string::npos);
+    const auto drawCode = source.substr(drawBegin, drawEnd - drawBegin);
+    const auto updateTrace = drawCode.find("UpdateTrace(traceContext);");
+    ASSERT_NE(updateTrace, std::string::npos);
+    const auto sizeActual = drawCode.find("ImVec2 sizeActual", updateTrace);
+    ASSERT_NE(sizeActual, std::string::npos);
+    EXPECT_EQ(drawCode.find("return;", updateTrace), std::string::npos);
+    EXPECT_LT(updateTrace, sizeActual);
+    EXPECT_NE(drawCode.find("if (!traceContext.TraceStream.is_open())"), std::string::npos);
+    EXPECT_NE(drawCode.find("BeginTrace(pTracePath, traceContext)"), std::string::npos);
+    EXPECT_NE(drawCode.find("EndTrace(traceContext)"), std::string::npos);
 #else
     GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
 #endif

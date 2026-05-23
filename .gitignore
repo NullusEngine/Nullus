@@ -1,5 +1,6 @@
 # CMake build directory
 [Bb]uild/
+Build*/
 obj/
 out/
 *.o
@@ -32,7 +33,7 @@ App/Linux_*/
 
 # Runtime generated reflection code
 Runtime/*/Gen/
-Project/Editor/Gen/
+Project/*/Gen/
 
 # C# build artifacts
 Tools/MetaParser/src/bin/
@@ -53,11 +54,9 @@ AGENTS.md
 CLAUDE.md
 Docs/AIWorkflow.md
 Docs/superpowers/
-specs/
 imgui.ini
 .specify/cache/
 .specify/tmp/
 specs/.tmp/
 .worktrees/
-
-
+ThirdParty/FBX/

@@ -1,6 +1,7 @@
 public sealed record GeneratedFieldTemplateModel(
     string Name,
     string TypeName,
+    string FieldTypeResolverExpression,
     string GetterExpression,
     string SetterExpression,
     bool IsPrivate,
@@ -35,9 +36,11 @@ public sealed record GeneratedTypeTemplateModel(
     string RegisterFunctionName,
     string RegistrarClassName,
     string GeneratedBodyMacroName,
+    bool HasGeneratedBody,
     bool IsEnum,
     List<string> EnumValues,
     List<string> Bases,
+    List<string> PPtrFieldTypeRegistrations,
     List<GeneratedTypeMetaTemplateModel> TypeMetas,
     List<GeneratedFieldTemplateModel> Fields,
     List<GeneratedMethodTemplateModel> Methods);

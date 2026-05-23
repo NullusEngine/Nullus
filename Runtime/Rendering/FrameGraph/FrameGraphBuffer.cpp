@@ -29,19 +29,25 @@ namespace NLS::Render::FrameGraph
 				break;
 			}
 
-			if (desc.usage != NLS::Render::RHI::BufferUsage::StaticDraw)
+			if (desc.type != NLS::Render::RHI::BufferType::Uniform &&
+				desc.usage != NLS::Render::RHI::BufferUsage::StaticDraw)
+			{
 				flags = flags | NLS::Render::RHI::BufferUsageFlags::CopyDst;
+			}
 
 			return flags;
 		}
 
-		NLS::Render::RHI::MemoryUsage ToExplicitMemoryUsage(const NLS::Render::RHI::BufferUsage usage)
+		NLS::Render::RHI::MemoryUsage ToExplicitMemoryUsage(const FrameGraphBuffer::Desc& desc)
 		{
-			switch (usage)
+			if (desc.type == NLS::Render::RHI::BufferType::Uniform)
+				return NLS::Render::RHI::MemoryUsage::CPUToGPU;
+
+			switch (desc.usage)
 			{
 			case NLS::Render::RHI::BufferUsage::DynamicDraw:
 			case NLS::Render::RHI::BufferUsage::StreamDraw:
-				return NLS::Render::RHI::MemoryUsage::CPUToGPU;
+				return NLS::Render::RHI::MemoryUsage::GPUOnly;
 			case NLS::Render::RHI::BufferUsage::StaticDraw:
 			default:
 				return NLS::Render::RHI::MemoryUsage::GPUOnly;
@@ -53,7 +59,7 @@ namespace NLS::Render::FrameGraph
 			NLS::Render::RHI::RHIBufferDesc explicitDesc;
 			explicitDesc.size = desc.size;
 			explicitDesc.usage = ToExplicitBufferUsage(desc);
-			explicitDesc.memoryUsage = ToExplicitMemoryUsage(desc.usage);
+			explicitDesc.memoryUsage = ToExplicitMemoryUsage(desc);
 			explicitDesc.debugName = !desc.debugName.empty()
 				? desc.debugName
 				: "FrameGraphBuffer";
@@ -78,7 +84,7 @@ namespace NLS::Render::FrameGraph
 				};
 			case NLS::Render::RHI::BufferType::Uniform:
 				return {
-					NLS::Render::RHI::ResourceState::UniformBuffer,
+					NLS::Render::RHI::ResourceState::GenericRead,
 					NLS::Render::RHI::PipelineStageMask::AllGraphics | NLS::Render::RHI::PipelineStageMask::ComputeShader,
 					NLS::Render::RHI::AccessMask::UniformRead
 				};

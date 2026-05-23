@@ -69,9 +69,10 @@ internal static partial class MetaParserTool
             .ThenBy(static type => type.QualifiedName, StringComparer.Ordinal)
             .ToList();
 
-        ValidateReflectTypes(rootDir, config, orderedTypes);
+        var reflectionTypeCatalog = BuildReflectionTypeCatalog(rootDir, config, orderedTypes);
+        ValidateReflectTypes(orderedTypes, reflectionTypeCatalog);
         foreach (var generator in MetaParserGeneratorRegistry.All)
-            generator.Generate(config, orderedTypes, outputDir);
+            generator.Generate(config, orderedTypes, reflectionTypeCatalog, outputDir);
 
         Console.WriteLine($"[MetaParser] Target={config.TargetName}, Types={orderedTypes.Count}, Output={outputDir}");
         return 0;

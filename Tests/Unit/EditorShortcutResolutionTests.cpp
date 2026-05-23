@@ -123,7 +123,7 @@ TEST(EditorShortcutResolutionTests, RegistersDefaultEditorShortcutCommandIds)
     service.RegisterCommand(MakeCommand("scene-view.transform-tool", ShortcutContexts::SceneView, ShortcutBinding::FromKey(EKey::KEY_Y), callCount));
     service.RegisterCommand(MakeCommand("scene-view.toggle-pivot-position", ShortcutContexts::SceneView, ShortcutBinding::FromKey(EKey::KEY_Z), callCount));
     service.RegisterCommand(MakeCommand("scene-view.toggle-pivot-orientation", ShortcutContexts::SceneView, ShortcutBinding::FromKey(EKey::KEY_X), callCount));
-    service.RegisterCommand(MakeCommand("edit.delete-selected-actor", ShortcutContexts::SceneView, ShortcutBinding::FromKey(EKey::KEY_DELETE), callCount));
+    service.RegisterCommand(MakeCommand("edit.delete-selected-gameobject", ShortcutContexts::SceneView, ShortcutBinding::FromKey(EKey::KEY_DELETE), callCount));
 
     EXPECT_EQ(service.GetBindingDisplayText("file.new-scene"), "Ctrl + N");
     EXPECT_EQ(service.GetBindingDisplayText("file.save-scene"), "Ctrl + S");
@@ -146,7 +146,7 @@ TEST(EditorShortcutResolutionTests, RegistersDefaultEditorShortcutCommandIds)
     EXPECT_EQ(service.GetBindingDisplayText("scene-view.transform-tool"), "Y");
     EXPECT_EQ(service.GetBindingDisplayText("scene-view.toggle-pivot-position"), "Z");
     EXPECT_EQ(service.GetBindingDisplayText("scene-view.toggle-pivot-orientation"), "X");
-    EXPECT_EQ(service.GetBindingDisplayText("edit.delete-selected-actor"), "Delete");
+    EXPECT_EQ(service.GetBindingDisplayText("edit.delete-selected-gameobject"), "Delete");
 }
 
 TEST(EditorShortcutResolutionTests, ListsCommandsBySearchText)

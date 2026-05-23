@@ -1,6 +1,10 @@
 ﻿#pragma once
 
 #include <filesystem>
+#include <functional>
+#include <memory>
+#include <future>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <queue>
@@ -9,6 +13,8 @@
 #include <UI/Panels/PanelWindow.h>
 #include <UI/Widgets/Layout/TreeNode.h>
 #include <Rendering/Resources/Loaders/TextureLoader.h>
+#include "Assets/EditorAssetDatabase.h"
+#include "Assets/EditorStartupAssetPreimport.h"
 namespace UI::Widgets::Layout
 {
 class Group;
@@ -57,10 +63,23 @@ namespace NLS::Editor::Panels
 		* Refresh the asset browser widgets (Clear + Fill)
 		*/
 		void Refresh();
+		void PrepareStartupWatchers();
+		void AdoptStartupWatchers(
+			Core::AssetFileWatcher engineAssetsWatcher,
+			Core::AssetFileWatcher projectAssetsWatcher);
+		bool RunStartupWatcherPreimport(
+			const NLS::Editor::Assets::StartupAssetPreimportProgressSink& progressSink = {});
+		bool CompleteStartupWatcherPreimportGate(
+			const NLS::Editor::Assets::StartupAssetPreimportProgressSink& progressSink = {});
 
 	private:
 		void OnBeforeDrawWidgets() override;
+		void StartWatchersAsync();
+		void StartWatchersSynchronously();
+		void CompleteWatcherStartupIfReady();
+		void ConsumeWatcherChangesAndSchedulePreimport();
 		void RequestRefresh();
+		void ScheduleProjectAssetPreimport(NLS::Editor::Assets::AssetPreimportRequest request);
 		void RefreshPreservingExpandedFolders();
 		void ParseFolder(UI::Widgets::TreeNode& p_root, const std::filesystem::directory_entry& p_directory, bool p_isEngineItem, bool p_scriptFolder = false);
 		void ConsiderItem(UI::Widgets::TreeNode* p_root, const std::filesystem::directory_entry& p_entry, bool p_isEngineItem, bool p_autoOpen = false, bool p_scriptFolder = false);
@@ -77,6 +96,12 @@ namespace NLS::Editor::Panels
 		std::unordered_set<std::string> m_expandedFolders;
 		Core::AssetFileWatcher m_engineAssetsWatcher;
 		Core::AssetFileWatcher m_projectAssetsWatcher;
+		std::future<void> m_watcherStartup;
+		bool m_watchersStartupQueued = false;
+		bool m_watchersReadyRefreshQueued = false;
 		bool m_refreshRequested = false;
+		bool m_startupWatcherPreimportGateOpen = true;
+		bool m_projectAssetPreimportRunning = false;
+		std::optional<NLS::Editor::Assets::AssetPreimportRequest> m_pendingProjectAssetPreimportRequest;
 	};
 }

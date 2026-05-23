@@ -318,7 +318,8 @@ namespace NLS::Render::Backend
 		{
 			if (m_device == nullptr)
 				return nullptr;
-			return std::make_shared<NativeDX12Buffer>(m_device.Get(), m_graphicsQueue.Get(), desc, uploadDesc);
+			auto buffer = std::make_shared<NativeDX12Buffer>(m_device.Get(), m_graphicsQueue.Get(), desc, uploadDesc);
+			return buffer->GetNativeBufferHandle().IsValid() ? buffer : nullptr;
 		}
 
 		std::shared_ptr<NLS::Render::RHI::RHITexture> NativeDX12ExplicitDevice::CreateTexture(
@@ -372,7 +373,8 @@ namespace NLS::Render::Backend
 
 		std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> NativeDX12ExplicitDevice::CreatePipelineLayout(const NLS::Render::RHI::RHIPipelineLayoutDesc& desc)
 		{
-			return std::make_shared<NativeDX12PipelineLayout>(m_device.Get(), desc);
+			auto layout = std::make_shared<NativeDX12PipelineLayout>(m_device.Get(), desc);
+			return layout->IsValid() ? layout : nullptr;
 		}
 
 		std::shared_ptr<NLS::Render::RHI::RHIShaderModule> NativeDX12ExplicitDevice::CreateShaderModule(const NLS::Render::RHI::RHIShaderModuleDesc& desc)
@@ -382,12 +384,14 @@ namespace NLS::Render::Backend
 
 		std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline> NativeDX12ExplicitDevice::CreateGraphicsPipeline(const NLS::Render::RHI::RHIGraphicsPipelineDesc& desc)
 		{
-			return std::make_shared<NativeDX12GraphicsPipeline>(m_device.Get(), desc);
+			auto pipeline = std::make_shared<NativeDX12GraphicsPipeline>(m_device.Get(), desc);
+			return pipeline->IsValid() ? pipeline : nullptr;
 		}
 
 		std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> NativeDX12ExplicitDevice::CreateComputePipeline(const NLS::Render::RHI::RHIComputePipelineDesc& desc)
 		{
-			return std::make_shared<NativeDX12ComputePipeline>(m_device.Get(), desc);
+			auto pipeline = std::make_shared<NativeDX12ComputePipeline>(m_device.Get(), desc);
+			return pipeline->IsValid() ? pipeline : nullptr;
 		}
 
 		void NativeDX12ExplicitDevice::ReadPixels(

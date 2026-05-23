@@ -61,6 +61,7 @@ namespace NLS::Editor::Panels
 		* Prepare the renderer for rendering
 		*/
 		virtual void InitFrame();
+        virtual void EnsureRenderer();
 
 		/**
 		* Render the view

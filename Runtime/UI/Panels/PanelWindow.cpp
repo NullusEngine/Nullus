@@ -93,6 +93,11 @@ bool PanelWindow::IsScrolledToTop() const
     return m_scrolledToTop;
 }
 
+const std::string& PanelWindow::GetProfilerName() const
+{
+    return name.empty() ? GetPanelID() : name;
+}
+
 void PanelWindow::_Draw_Impl()
 {
     if (m_opened)

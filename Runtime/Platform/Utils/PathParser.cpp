@@ -55,6 +55,7 @@ std::string NLS::Utils::PathParser::FileTypeToString(EFileType p_fileType)
 	case NLS::Utils::PathParser::EFileType::MATERIAL:	return "Material";
 	case NLS::Utils::PathParser::EFileType::SOUND:		return "Sound";
 	case NLS::Utils::PathParser::EFileType::SCENE:		return "Scene";
+	case NLS::Utils::PathParser::EFileType::PREFAB:		return "Prefab";
 	case NLS::Utils::PathParser::EFileType::SCRIPT:		return "Script";
 	case NLS::Utils::PathParser::EFileType::FONT:		return "Font";
 	}
@@ -73,6 +74,7 @@ NLS::Utils::PathParser::EFileType NLS::Utils::PathParser::GetFileType(const std:
 	else if (ext == "mat")														return EFileType::MATERIAL;
 	else if (ext == "wav" || ext == "mp3" || ext == "ogg")						return EFileType::SOUND;
 	else if (ext == "scene")													return EFileType::SCENE;
+	else if (ext == "prefab")													return EFileType::PREFAB;
 	else if (ext == "lua")														return EFileType::SCRIPT;
 	else if (ext == "ttf")														return EFileType::FONT;
 

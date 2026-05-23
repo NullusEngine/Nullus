@@ -28,6 +28,19 @@ namespace NLS::Engine::Rendering
 		void BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor) override;
 		void DrawFrame() override;
 
+		struct GBufferMaterialSyncStamp
+		{
+			uint64_t sourceMaterialInstanceId = 0u;
+			uint64_t parameterRevision = 0u;
+			uint64_t renderStateRevision = 0u;
+		};
+		struct GBufferMaterialCacheEntry
+		{
+			std::unique_ptr<NLS::Render::Resources::Material> material;
+			GBufferMaterialSyncStamp syncedStamp;
+			uint64_t syncCount = 0u;
+		};
+
 	protected:
 		struct DeferredSceneDescriptor
 		{
@@ -72,10 +85,11 @@ namespace NLS::Engine::Rendering
 		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferNormalTexture;
 		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferMaterialTexture;
 		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferDepthTexture;
-		std::unordered_map<std::string, std::unique_ptr<NLS::Render::Resources::Material>> m_gBufferMaterialCache;
+		std::unordered_map<std::string, GBufferMaterialCacheEntry> m_gBufferMaterialCache;
 		NLS::Render::Resources::Shader* m_gBufferShader = nullptr;
 		NLS::Render::Resources::Shader* m_lightingShader = nullptr;
 		uint64_t m_threadedQueuedGBufferDrawCount = 0u;
 		uint64_t m_threadedQueuedLightingDrawCount = 0u;
+		uint64_t m_frameGBufferMaterialSyncCount = 0u;
 	};
 }

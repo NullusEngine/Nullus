@@ -7,10 +7,12 @@
 #include "Rendering/EditorPipelineStatePresets.h"
 
 #include <Components/CameraComponent.h>
+#include <Components/MeshFilter.h>
 #include <Components/MeshRenderer.h>
 #include <Components/TransformComponent.h>
 
 #include <algorithm>
+#include <Rendering/Resources/Mesh.h>
 
 constexpr uint32_t kStencilMask = 0xFF;
 constexpr int32_t kStencilReference = 1;
@@ -24,17 +26,21 @@ namespace
 {
 bool IsEditorCameraIconModel(Engine::Components::MeshRenderer& modelRenderer)
 {
-    auto* editorCameraModel = EDITOR_CONTEXT(editorResources)->GetModel("Camera");
-    return editorCameraModel != nullptr && modelRenderer.GetModel() == editorCameraModel;
+    auto* editorCameraMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Camera");
+    auto* owner = modelRenderer.gameobject();
+    auto* meshFilter = owner != nullptr ? owner->GetComponent<Engine::Components::MeshFilter>() : nullptr;
+    return editorCameraMesh != nullptr &&
+        meshFilter != nullptr &&
+        meshFilter->ResolveMesh() == editorCameraMesh;
 }
 
 Maths::Matrix4 BuildOutlineShellMatrix(
     const Maths::Matrix4& worldMatrix,
     const Maths::Vector3& worldScale,
-    NLS::Render::Resources::Model& model,
+    NLS::Render::Resources::Mesh& mesh,
     const float thickness)
 {
-    const auto& bounds = model.GetBoundingSphere();
+    const auto& bounds = mesh.GetBoundingSphere();
     const float worldScaleMagnitude = std::max(worldScale.GetAbsMaxElement(), kMinimumOutlineRadius);
     const float worldRadius = std::max(bounds.radius * worldScaleMagnitude, kMinimumOutlineRadius);
     const float outlineWorldThickness = std::max(
@@ -91,7 +97,7 @@ void Editor::Rendering::OutlineRenderer::CaptureStencilPass(
         kStencilMask,
         kStencilReference);
 
-    CaptureActorToStencil(pso, actor, outDrawCommands);
+    CaptureGameObjectToStencil(pso, actor, outDrawCommands);
 }
 
 void Editor::Rendering::OutlineRenderer::CaptureOutlinePass(
@@ -106,7 +112,7 @@ void Editor::Rendering::OutlineRenderer::CaptureOutlinePass(
         kStencilMask);
 
     m_outlineMaterial.Set("u_Diffuse", color);
-    CaptureActorOutline(pso, actor, thickness, outDrawCommands);
+    CaptureGameObjectOutline(pso, actor, thickness, outDrawCommands);
 }
 
 void Editor::Rendering::OutlineRenderer::DrawStencilPass(Engine::GameObject& actor)
@@ -116,7 +122,7 @@ void Editor::Rendering::OutlineRenderer::DrawStencilPass(Engine::GameObject& act
         kStencilMask,
         kStencilReference);
 
-    DrawActorToStencil(pso, actor);
+    DrawGameObjectToStencil(pso, actor);
 }
 
 void Editor::Rendering::OutlineRenderer::DrawOutlinePass(
@@ -130,10 +136,10 @@ void Editor::Rendering::OutlineRenderer::DrawOutlinePass(
         kStencilMask);
 
     m_outlineMaterial.Set("u_Diffuse", color);
-    DrawActorOutline(pso, actor, thickness);
+    DrawGameObjectOutline(pso, actor, thickness);
 }
 
-void Editor::Rendering::OutlineRenderer::CaptureActorToStencil(
+void Editor::Rendering::OutlineRenderer::CaptureGameObjectToStencil(
     NLS::Render::Data::PipelineState pso,
     Engine::GameObject& actor,
     std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
@@ -143,10 +149,17 @@ void Editor::Rendering::OutlineRenderer::CaptureActorToStencil(
 
     const bool hasCameraComponent = actor.GetComponent<Engine::Components::CameraComponent>() != nullptr;
 
-    if (auto modelRenderer = actor.GetComponent<Engine::Components::MeshRenderer>(); modelRenderer && modelRenderer->GetModel())
+    if (auto modelRenderer = actor.GetComponent<Engine::Components::MeshRenderer>(); modelRenderer)
     {
-        if (!(hasCameraComponent && IsEditorCameraIconModel(*modelRenderer)))
-            CaptureModelToStencil(pso, actor.GetTransform()->GetWorldMatrix(), *modelRenderer->GetModel(), outDrawCommands);
+        auto* meshFilter = actor.GetComponent<Engine::Components::MeshFilter>();
+        auto* mesh = meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr;
+        if (mesh != nullptr && !(hasCameraComponent && IsEditorCameraIconModel(*modelRenderer)))
+            m_debugModelRenderer.CaptureMeshDrawCommandsWithSingleMaterial(
+                pso,
+                *mesh,
+                m_stencilFillMaterial,
+                actor.GetTransform()->GetWorldMatrix(),
+                outDrawCommands);
     }
 
     if (auto cameraComponent = actor.GetComponent<Engine::Components::CameraComponent>(); cameraComponent)
@@ -154,14 +167,15 @@ void Editor::Rendering::OutlineRenderer::CaptureActorToStencil(
         auto translation = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
         auto rotation = Maths::Quaternion::ToMatrix4(actor.GetTransform()->GetWorldRotation());
         auto model = translation * rotation;
-        CaptureModelToStencil(pso, model, *EDITOR_CONTEXT(editorResources)->GetModel("Camera"), outDrawCommands);
+        if (auto* cameraMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Camera"))
+            CaptureMeshToStencil(pso, model, *cameraMesh, outDrawCommands);
     }
 
     for (auto& child : actor.GetChildren())
-        CaptureActorToStencil(pso, *child, outDrawCommands);
+        CaptureGameObjectToStencil(pso, *child, outDrawCommands);
 }
 
-void Editor::Rendering::OutlineRenderer::DrawActorToStencil(
+void Editor::Rendering::OutlineRenderer::DrawGameObjectToStencil(
     NLS::Render::Data::PipelineState pso,
     Engine::GameObject& actor)
 {
@@ -170,10 +184,16 @@ void Editor::Rendering::OutlineRenderer::DrawActorToStencil(
 
     const bool hasCameraComponent = actor.GetComponent<Engine::Components::CameraComponent>() != nullptr;
 
-    if (auto modelRenderer = actor.GetComponent<Engine::Components::MeshRenderer>(); modelRenderer && modelRenderer->GetModel())
+    if (auto modelRenderer = actor.GetComponent<Engine::Components::MeshRenderer>(); modelRenderer)
     {
-        if (!(hasCameraComponent && IsEditorCameraIconModel(*modelRenderer)))
-            DrawModelToStencil(pso, actor.GetTransform()->GetWorldMatrix(), *modelRenderer->GetModel());
+        auto* meshFilter = actor.GetComponent<Engine::Components::MeshFilter>();
+        auto* mesh = meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr;
+        if (mesh != nullptr && !(hasCameraComponent && IsEditorCameraIconModel(*modelRenderer)))
+            m_debugModelRenderer.DrawMeshWithSingleMaterial(
+                pso,
+                *mesh,
+                m_stencilFillMaterial,
+                actor.GetTransform()->GetWorldMatrix());
     }
 
     if (auto cameraComponent = actor.GetComponent<Engine::Components::CameraComponent>(); cameraComponent)
@@ -181,14 +201,15 @@ void Editor::Rendering::OutlineRenderer::DrawActorToStencil(
         auto translation = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
         auto rotation = Maths::Quaternion::ToMatrix4(actor.GetTransform()->GetWorldRotation());
         auto model = translation * rotation;
-        DrawModelToStencil(pso, model, *EDITOR_CONTEXT(editorResources)->GetModel("Camera"));
+        if (auto* cameraMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Camera"))
+            DrawMeshToStencil(pso, model, *cameraMesh);
     }
 
     for (auto& child : actor.GetChildren())
-        DrawActorToStencil(pso, *child);
+        DrawGameObjectToStencil(pso, *child);
 }
 
-void Editor::Rendering::OutlineRenderer::CaptureActorOutline(
+void Editor::Rendering::OutlineRenderer::CaptureGameObjectOutline(
     NLS::Render::Data::PipelineState pso,
     Engine::GameObject& actor,
     const float thickness,
@@ -199,38 +220,47 @@ void Editor::Rendering::OutlineRenderer::CaptureActorOutline(
 
     const bool hasCameraComponent = actor.GetComponent<Engine::Components::CameraComponent>() != nullptr;
 
-    if (auto modelRenderer = actor.GetComponent<Engine::Components::MeshRenderer>(); modelRenderer && modelRenderer->GetModel())
+    if (auto modelRenderer = actor.GetComponent<Engine::Components::MeshRenderer>(); modelRenderer)
     {
-        if (!(hasCameraComponent && IsEditorCameraIconModel(*modelRenderer)))
+        auto* meshFilter = actor.GetComponent<Engine::Components::MeshFilter>();
+        auto* mesh = meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr;
+        if (mesh != nullptr && !(hasCameraComponent && IsEditorCameraIconModel(*modelRenderer)))
         {
             const auto outlineModel = BuildOutlineShellMatrix(
                 actor.GetTransform()->GetWorldMatrix(),
                 actor.GetTransform()->GetWorldScale(),
-                *modelRenderer->GetModel(),
+                *mesh,
                 thickness);
-            CaptureModelOutline(pso, outlineModel, *modelRenderer->GetModel(), outDrawCommands);
+            m_debugModelRenderer.CaptureMeshDrawCommandsWithSingleMaterial(
+                pso,
+                *mesh,
+                m_outlineMaterial,
+                outlineModel,
+                outDrawCommands);
         }
     }
 
     if (auto cameraComponent = actor.GetComponent<Engine::Components::CameraComponent>(); cameraComponent)
     {
-        auto& cameraModel = *EDITOR_CONTEXT(editorResources)->GetModel("Camera");
+        auto* cameraMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Camera");
+        if (cameraMesh == nullptr)
+            return;
         auto translation = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
         auto rotation = Maths::Quaternion::ToMatrix4(actor.GetTransform()->GetWorldRotation());
         auto model = translation * rotation;
         const auto outlineModel = BuildOutlineShellMatrix(
             model,
             Maths::Vector3::One,
-            cameraModel,
+            *cameraMesh,
             thickness);
-        CaptureModelOutline(pso, outlineModel, cameraModel, outDrawCommands);
+        CaptureMeshOutline(pso, outlineModel, *cameraMesh, outDrawCommands);
     }
 
     for (auto& child : actor.GetChildren())
-        CaptureActorOutline(pso, *child, thickness, outDrawCommands);
+        CaptureGameObjectOutline(pso, *child, thickness, outDrawCommands);
 }
 
-void Editor::Rendering::OutlineRenderer::DrawActorOutline(
+void Editor::Rendering::OutlineRenderer::DrawGameObjectOutline(
     NLS::Render::Data::PipelineState pso,
     Engine::GameObject& actor,
     const float thickness)
@@ -240,77 +270,85 @@ void Editor::Rendering::OutlineRenderer::DrawActorOutline(
 
     const bool hasCameraComponent = actor.GetComponent<Engine::Components::CameraComponent>() != nullptr;
 
-    if (auto modelRenderer = actor.GetComponent<Engine::Components::MeshRenderer>(); modelRenderer && modelRenderer->GetModel())
+    if (auto modelRenderer = actor.GetComponent<Engine::Components::MeshRenderer>(); modelRenderer)
     {
-        if (!(hasCameraComponent && IsEditorCameraIconModel(*modelRenderer)))
+        auto* meshFilter = actor.GetComponent<Engine::Components::MeshFilter>();
+        auto* mesh = meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr;
+        if (mesh != nullptr && !(hasCameraComponent && IsEditorCameraIconModel(*modelRenderer)))
         {
             const auto outlineModel = BuildOutlineShellMatrix(
                 actor.GetTransform()->GetWorldMatrix(),
                 actor.GetTransform()->GetWorldScale(),
-                *modelRenderer->GetModel(),
+                *mesh,
                 thickness);
-            DrawModelOutline(pso, outlineModel, *modelRenderer->GetModel());
+            m_debugModelRenderer.DrawMeshWithSingleMaterial(
+                pso,
+                *mesh,
+                m_outlineMaterial,
+                outlineModel);
         }
     }
 
     if (auto cameraComponent = actor.GetComponent<Engine::Components::CameraComponent>(); cameraComponent)
     {
-        auto& cameraModel = *EDITOR_CONTEXT(editorResources)->GetModel("Camera");
+        auto* cameraMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Camera");
+        if (cameraMesh == nullptr)
+            return;
         auto translation = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
         auto rotation = Maths::Quaternion::ToMatrix4(actor.GetTransform()->GetWorldRotation());
         auto model = translation * rotation;
         const auto outlineModel = BuildOutlineShellMatrix(
             model,
             Maths::Vector3::One,
-            cameraModel,
+            *cameraMesh,
             thickness);
-        DrawModelOutline(pso, outlineModel, cameraModel);
+        DrawMeshOutline(pso, outlineModel, *cameraMesh);
     }
 
     for (auto& child : actor.GetChildren())
-        DrawActorOutline(pso, *child, thickness);
+        DrawGameObjectOutline(pso, *child, thickness);
 }
 
-void Editor::Rendering::OutlineRenderer::CaptureModelToStencil(
+void Editor::Rendering::OutlineRenderer::CaptureMeshToStencil(
     NLS::Render::Data::PipelineState pso,
     const Maths::Matrix4& worldMatrix,
-    NLS::Render::Resources::Model& model,
+    NLS::Render::Resources::Mesh& mesh,
     std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
 {
-    m_debugModelRenderer.CaptureModelDrawCommandsWithSingleMaterial(
+    m_debugModelRenderer.CaptureMeshDrawCommandsWithSingleMaterial(
         pso,
-        model,
+        mesh,
         m_stencilFillMaterial,
         worldMatrix,
         outDrawCommands);
 }
 
-void Editor::Rendering::OutlineRenderer::DrawModelToStencil(
+void Editor::Rendering::OutlineRenderer::DrawMeshToStencil(
     NLS::Render::Data::PipelineState pso,
     const Maths::Matrix4& worldMatrix,
-    NLS::Render::Resources::Model& model)
+    NLS::Render::Resources::Mesh& mesh)
 {
-    m_debugModelRenderer.DrawModelWithSingleMaterial(pso, model, m_stencilFillMaterial, worldMatrix);
+    m_debugModelRenderer.DrawMeshWithSingleMaterial(pso, mesh, m_stencilFillMaterial, worldMatrix);
 }
 
-void Editor::Rendering::OutlineRenderer::CaptureModelOutline(
+void Editor::Rendering::OutlineRenderer::CaptureMeshOutline(
     NLS::Render::Data::PipelineState pso,
     const Maths::Matrix4& worldMatrix,
-    NLS::Render::Resources::Model& model,
+    NLS::Render::Resources::Mesh& mesh,
     std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
 {
-    m_debugModelRenderer.CaptureModelDrawCommandsWithSingleMaterial(
+    m_debugModelRenderer.CaptureMeshDrawCommandsWithSingleMaterial(
         pso,
-        model,
+        mesh,
         m_outlineMaterial,
         worldMatrix,
         outDrawCommands);
 }
 
-void Editor::Rendering::OutlineRenderer::DrawModelOutline(
+void Editor::Rendering::OutlineRenderer::DrawMeshOutline(
     NLS::Render::Data::PipelineState pso,
     const Maths::Matrix4& worldMatrix,
-    NLS::Render::Resources::Model& model)
+    NLS::Render::Resources::Mesh& mesh)
 {
-    m_debugModelRenderer.DrawModelWithSingleMaterial(pso, model, m_outlineMaterial, worldMatrix);
+    m_debugModelRenderer.DrawMeshWithSingleMaterial(pso, mesh, m_outlineMaterial, worldMatrix);
 }

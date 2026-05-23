@@ -424,15 +424,15 @@ TEST(ImGuizmoTransformAdapterTests, AllowsViewGizmoCameraToPitchUpAndDownBeforeP
     EXPECT_NEAR(Maths::Vector3::Dot(stabilized.rotation * Maths::Vector3::Up, Maths::Vector3::Up), 0.866f, 0.001f);
 }
 
-TEST(ImGuizmoTransformAdapterTests, ReadsAndAppliesActorWorldTransform)
+TEST(ImGuizmoTransformAdapterTests, ReadsAndAppliesGameObjectWorldTransform)
 {
     Engine::GameObject actor("GizmoTarget");
     actor.GetTransform()->SetWorldPosition({1.0f, 2.0f, 3.0f});
     actor.GetTransform()->SetWorldRotation(Maths::Quaternion(Maths::Vector3(0.0f, 45.0f, 0.0f)));
     actor.GetTransform()->SetWorldScale({2.0f, 3.0f, 4.0f});
 
-    const auto gizmoMatrix = Editor::Core::GetActorWorldGizmoMatrix(actor);
-    Editor::Core::ApplyActorWorldGizmoMatrix(actor, gizmoMatrix);
+    const auto gizmoMatrix = Editor::Core::GetGameObjectWorldGizmoMatrix(actor);
+    Editor::Core::ApplyGameObjectWorldGizmoMatrix(actor, gizmoMatrix);
 
     EXPECT_NEAR(actor.GetTransform()->GetWorldPosition().x, 1.0f, kTolerance);
     EXPECT_NEAR(actor.GetTransform()->GetWorldPosition().y, 2.0f, kTolerance);
@@ -442,18 +442,18 @@ TEST(ImGuizmoTransformAdapterTests, ReadsAndAppliesActorWorldTransform)
     EXPECT_NEAR(actor.GetTransform()->GetWorldScale().z, 4.0f, kTolerance);
 }
 
-TEST(ImGuizmoTransformAdapterTests, CenterPivotFallsBackToActorPivotWhenNoRenderableBoundsExist)
+TEST(ImGuizmoTransformAdapterTests, CenterPivotFallsBackToGameObjectPivotWhenNoRenderableBoundsExist)
 {
     Engine::GameObject actor("GizmoTarget");
     actor.GetTransform()->SetWorldPosition({1.0f, 2.0f, 3.0f});
 
-    const auto pivotPosition = Editor::Core::GetActorGizmoPivotPosition(
+    const auto pivotPosition = Editor::Core::GetGameObjectGizmoPivotPosition(
         actor,
         Editor::Core::SceneViewGizmoPivot::Pivot);
-    const auto centerPosition = Editor::Core::GetActorGizmoPivotPosition(
+    const auto centerPosition = Editor::Core::GetGameObjectGizmoPivotPosition(
         actor,
         Editor::Core::SceneViewGizmoPivot::Center);
-    const auto centerMatrix = Editor::Core::FromImGuizmoMatrix(Editor::Core::GetActorWorldGizmoMatrix(
+    const auto centerMatrix = Editor::Core::FromImGuizmoMatrix(Editor::Core::GetGameObjectWorldGizmoMatrix(
         actor,
         Editor::Core::SceneViewGizmoPivot::Center));
 
@@ -480,10 +480,10 @@ TEST(ImGuizmoTransformAdapterTests, CenterPivotUsesChildRenderableBounds)
     meshRenderer->SetFrustumBehaviour(Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_CUSTOM);
     meshRenderer->SetCustomBoundingSphere({{0.0f, 0.0f, 0.0f}, 1.0f});
 
-    const auto centerPosition = Editor::Core::GetActorGizmoPivotPosition(
+    const auto centerPosition = Editor::Core::GetGameObjectGizmoPivotPosition(
         parent,
         Editor::Core::SceneViewGizmoPivot::Center);
-    const auto centerMatrix = Editor::Core::FromImGuizmoMatrix(Editor::Core::GetActorWorldGizmoMatrix(
+    const auto centerMatrix = Editor::Core::FromImGuizmoMatrix(Editor::Core::GetGameObjectWorldGizmoMatrix(
         parent,
         Editor::Core::SceneViewGizmoPivot::Center));
 
@@ -497,19 +497,19 @@ TEST(ImGuizmoTransformAdapterTests, CenterPivotUsesChildRenderableBounds)
     child.DetachFromParent();
 }
 
-TEST(ImGuizmoTransformAdapterTests, CenterPivotTranslationAppliesDeltaToActorPosition)
+TEST(ImGuizmoTransformAdapterTests, CenterPivotTranslationAppliesDeltaToGameObjectPosition)
 {
     Engine::GameObject actor("GizmoTarget");
     actor.GetTransform()->SetWorldPosition({1.0f, 2.0f, 3.0f});
 
-    auto gizmoMatrix = Editor::Core::GetActorWorldGizmoMatrix(
+    auto gizmoMatrix = Editor::Core::GetGameObjectWorldGizmoMatrix(
         actor,
         Editor::Core::SceneViewGizmoPivot::Center);
     gizmoMatrix[12] += 5.0f;
     gizmoMatrix[13] += 6.0f;
     gizmoMatrix[14] += 7.0f;
 
-    Editor::Core::ApplyActorWorldGizmoMatrix(
+    Editor::Core::ApplyGameObjectWorldGizmoMatrix(
         actor,
         gizmoMatrix,
         Editor::Core::EGizmoOperation::TRANSLATE,
@@ -532,10 +532,10 @@ TEST(ImGuizmoTransformAdapterTests, CenterPivotRotationKeepsRenderableCenterAtGi
     meshRenderer->SetFrustumBehaviour(Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_CUSTOM);
     meshRenderer->SetCustomBoundingSphere({{0.0f, 0.0f, 0.0f}, 1.0f});
 
-    auto gizmoMatrix = Editor::Core::GetActorWorldGizmoMatrix(
+    auto gizmoMatrix = Editor::Core::GetGameObjectWorldGizmoMatrix(
         parent,
         Editor::Core::SceneViewGizmoPivot::Center);
-    const auto centerBefore = Editor::Core::GetActorGizmoPivotPosition(
+    const auto centerBefore = Editor::Core::GetGameObjectGizmoPivotPosition(
         parent,
         Editor::Core::SceneViewGizmoPivot::Center);
 
@@ -544,13 +544,13 @@ TEST(ImGuizmoTransformAdapterTests, CenterPivotRotationKeepsRenderableCenterAtGi
         Maths::Quaternion::ToMatrix4(Maths::Quaternion(Maths::Vector3(0.0f, 90.0f, 0.0f)));
     gizmoMatrix = Editor::Core::ToImGuizmoMatrix(rotatedCenterMatrix);
 
-    Editor::Core::ApplyActorWorldGizmoMatrix(
+    Editor::Core::ApplyGameObjectWorldGizmoMatrix(
         parent,
         gizmoMatrix,
         Editor::Core::EGizmoOperation::ROTATE,
         Editor::Core::SceneViewGizmoPivot::Center);
 
-    const auto centerAfter = Editor::Core::GetActorGizmoPivotPosition(
+    const auto centerAfter = Editor::Core::GetGameObjectGizmoPivotPosition(
         parent,
         Editor::Core::SceneViewGizmoPivot::Center);
 
@@ -576,20 +576,20 @@ TEST(ImGuizmoTransformAdapterTests, CenterPivotScaleKeepsRenderableCenterAtGizmo
     meshRenderer->SetFrustumBehaviour(Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_CUSTOM);
     meshRenderer->SetCustomBoundingSphere({{0.0f, 0.0f, 0.0f}, 1.0f});
 
-    const auto centerBefore = Editor::Core::GetActorGizmoPivotPosition(
+    const auto centerBefore = Editor::Core::GetGameObjectGizmoPivotPosition(
         parent,
         Editor::Core::SceneViewGizmoPivot::Center);
     const Maths::Matrix4 scaledCenterMatrix =
         Maths::Matrix4::Translation(centerBefore) *
         Maths::Matrix4::Scaling({2.0f, 2.0f, 2.0f});
 
-    Editor::Core::ApplyActorWorldGizmoMatrix(
+    Editor::Core::ApplyGameObjectWorldGizmoMatrix(
         parent,
         Editor::Core::ToImGuizmoMatrix(scaledCenterMatrix),
         Editor::Core::EGizmoOperation::SCALE,
         Editor::Core::SceneViewGizmoPivot::Center);
 
-    const auto centerAfter = Editor::Core::GetActorGizmoPivotPosition(
+    const auto centerAfter = Editor::Core::GetGameObjectGizmoPivotPosition(
         parent,
         Editor::Core::SceneViewGizmoPivot::Center);
 
@@ -621,7 +621,7 @@ TEST(ImGuizmoTransformAdapterTests, AppliesRotationFromGizmoMatrixWithoutChangin
         Maths::Quaternion::ToMatrix4(expectedRotation) *
         Maths::Matrix4::Scaling({8.0f, 9.0f, 10.0f});
 
-    Editor::Core::ApplyActorWorldGizmoMatrix(
+    Editor::Core::ApplyGameObjectWorldGizmoMatrix(
         actor,
         Editor::Core::ToImGuizmoMatrix(targetMatrix),
         Editor::Core::EGizmoOperation::ROTATE);
@@ -651,7 +651,7 @@ TEST(ImGuizmoTransformAdapterTests, RotationOperationDoesNotApplyGizmoMatrixScal
         Maths::Matrix4::Scaling({8.0f, 9.0f, 10.0f});
     targetMatrix.data[1] += 0.25f;
 
-    Editor::Core::ApplyActorWorldGizmoMatrix(
+    Editor::Core::ApplyGameObjectWorldGizmoMatrix(
         actor,
         Editor::Core::ToImGuizmoMatrix(targetMatrix),
         Editor::Core::EGizmoOperation::ROTATE);

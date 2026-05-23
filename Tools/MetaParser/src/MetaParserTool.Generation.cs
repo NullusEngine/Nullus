@@ -2,7 +2,11 @@ using System.Text;
 
 internal static partial class MetaParserTool
 {
-    internal static void GenerateReflectionOutputs(PrecompileParams config, IReadOnlyList<ReflectTypeInfo> orderedTypes, string outputDir)
+    internal static void GenerateReflectionOutputs(
+        PrecompileParams config,
+        IReadOnlyList<ReflectTypeInfo> orderedTypes,
+        ReflectionTypeCatalog reflectionTypeCatalog,
+        string outputDir)
     {
         var manifest = MetaParserGeneratorRegistry.ReflectionManifest;
         var templateRoot = Path.Combine(AppContext.BaseDirectory, "Templates");
@@ -43,7 +47,7 @@ internal static partial class MetaParserTool
                     .OrderBy(static type => type.GeneratedBodyLine ?? int.MaxValue)
                     .ThenBy(static type => type.QualifiedName, StringComparer.Ordinal)
                     .ToList(),
-                orderedTypes);
+                reflectionTypeCatalog);
             var generatedHeaderText = MetaParserTemplateRenderer.Render(
                 MetaParserTemplateCatalog.ResolvePath(templateRoot, manifest.Templates.HeaderRule.HeaderTemplate),
                 headerSession);
@@ -125,7 +129,9 @@ internal static partial class MetaParserTool
             []);
     }
 
-    private static Dictionary<string, object?> BuildHeaderTemplateSession(IReadOnlyList<ReflectTypeInfo> types, IReadOnlyList<ReflectTypeInfo> allTypes)
+    private static Dictionary<string, object?> BuildHeaderTemplateSession(
+        IReadOnlyList<ReflectTypeInfo> types,
+        ReflectionTypeCatalog reflectionTypeCatalog)
     {
         var headerPath = types[0].HeaderPath;
         var fileId = BuildGeneratedFileId(headerPath);
@@ -143,6 +149,7 @@ internal static partial class MetaParserTool
                 .Select((field, index) => new GeneratedFieldTemplateModel(
                     field.Name,
                     field.TypeName,
+                    BuildFieldTypeResolverExpression(field.TypeName),
                     field.GetterExpression,
                     field.SetterExpression,
                     field.IsPrivate,
@@ -172,14 +179,16 @@ internal static partial class MetaParserTool
             typeModels.Add(new GeneratedTypeTemplateModel(
                 type.ClassName,
                 type.QualifiedName,
-                ShouldEnableObjectBridge(type, allTypes),
+                ShouldEnableObjectBridge(type, reflectionTypeCatalog),
                 BuildPrivateAccessStructName(type.QualifiedName),
                 BuildRegisterFunctionName(type.QualifiedName),
                 BuildRegistrarClassName(type.QualifiedName),
                 generatedBodyLine.HasValue ? BuildGeneratedBodyMacroName(fileId, generatedBodyLine.Value) : string.Empty,
+                generatedBodyLine.HasValue,
                 type.IsEnum,
                 (type.EnumValues ?? []).Select(static value => value.Name).ToList(),
-                type.Bases.Select(static baseInfo => baseInfo.TypeName).Distinct().ToList(),
+                BuildReflectedBaseTypeNames(type, reflectionTypeCatalog),
+                BuildPPtrFieldTypeRegistrations(type.Fields),
                 typeMetaModels,
                 fieldModels,
                 methodModels));
@@ -195,7 +204,7 @@ internal static partial class MetaParserTool
             privateTypeModels.Add(new GeneratedPrivateTypeTemplateModel(
                 type.ClassName,
                 type.QualifiedName,
-                ShouldEnableObjectBridge(type, allTypes),
+                ShouldEnableObjectBridge(type, reflectionTypeCatalog),
                 BuildPrivateAccessStructName(type.QualifiedName),
                 BuildRegisterFunctionName(type.QualifiedName),
                 BuildRegistrarClassName(type.QualifiedName),
@@ -213,46 +222,142 @@ internal static partial class MetaParserTool
             fileId,
             headerIncludePath,
             generatedHeaderIncludePath,
-            types.All(static type => !type.GeneratedBodyLine.HasValue),
+            types.Any(static type => type.GeneratedBodyLine.HasValue),
             typeModels,
             privateTypeModels));
     }
 
-    private static bool ShouldEnableObjectBridge(ReflectTypeInfo type, IReadOnlyList<ReflectTypeInfo> allTypes)
+    private static List<string> BuildReflectedBaseTypeNames(ReflectTypeInfo type, ReflectionTypeCatalog reflectionTypeCatalog)
+    {
+        return type.Bases
+            .Select(static baseInfo => NormalizeTypeName(baseInfo.TypeName))
+            .Select(baseName => ResolveReflectedBaseTypeName(baseName, type.NamespacePrefix, reflectionTypeCatalog.ReflectedBaseTypeNames))
+            .Where(static baseName => !string.IsNullOrWhiteSpace(baseName))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private static void AddReflectedTypeName(Dictionary<string, string> reflectedTypeNames, string qualifiedName)
+    {
+        if (string.IsNullOrWhiteSpace(qualifiedName))
+            return;
+
+        reflectedTypeNames[qualifiedName] = qualifiedName;
+
+        var simpleName = ExtractSimpleClassName(qualifiedName);
+        if (string.IsNullOrWhiteSpace(simpleName))
+            return;
+
+        if (reflectedTypeNames.TryGetValue(simpleName, out var existingName)
+            && !string.Equals(existingName, qualifiedName, StringComparison.Ordinal))
+        {
+            reflectedTypeNames[simpleName] = string.Empty;
+            return;
+        }
+
+        reflectedTypeNames[simpleName] = qualifiedName;
+    }
+
+    private static string ResolveReflectedBaseTypeName(
+        string baseName,
+        string namespacePrefix,
+        IReadOnlyDictionary<string, string> reflectedTypeNames)
+    {
+        if (string.IsNullOrWhiteSpace(baseName))
+            return string.Empty;
+
+        var rootQualifiedBaseName = QualifyRootNamespaceType(baseName);
+        if (!string.Equals(rootQualifiedBaseName, baseName, StringComparison.Ordinal)
+            && reflectedTypeNames.TryGetValue(rootQualifiedBaseName, out var rootResolvedName))
+        {
+            return rootResolvedName;
+        }
+
+        if (!baseName.Contains("::", StringComparison.Ordinal))
+        {
+            foreach (var namespaceCandidate in EnumerateNamespaceSearchOrder(namespacePrefix))
+            {
+                var qualifiedCandidate = $"{namespaceCandidate}::{baseName}";
+                if (reflectedTypeNames.TryGetValue(qualifiedCandidate, out var namespaceResolvedName))
+                    return namespaceResolvedName;
+            }
+        }
+
+        return reflectedTypeNames.TryGetValue(baseName, out var qualifiedName)
+            ? qualifiedName
+            : string.Empty;
+    }
+
+    private static bool ShouldEnableObjectBridge(ReflectTypeInfo type, ReflectionTypeCatalog reflectionTypeCatalog)
     {
         if (type.IsEnum)
             return false;
 
-        var byName = allTypes.ToDictionary(static item => item.QualifiedName, StringComparer.Ordinal);
         var visited = new HashSet<string>(StringComparer.Ordinal);
-        return InheritsFromMetaObject(type, byName, visited);
+        return InheritsFromUnityObject(type.QualifiedName, reflectionTypeCatalog.ReflectedDirectBaseTypeNames, visited);
     }
 
-    private static bool InheritsFromMetaObject(
-        ReflectTypeInfo type,
-        IReadOnlyDictionary<string, ReflectTypeInfo> byName,
+    private static bool InheritsFromUnityObject(
+        string typeName,
+        IReadOnlyDictionary<string, List<string>> reflectedDirectBaseTypeNames,
         HashSet<string> visited)
     {
-        if (!visited.Add(type.QualifiedName))
+        if (!visited.Add(typeName))
             return false;
 
-        foreach (var baseInfo in type.Bases)
+        if (!reflectedDirectBaseTypeNames.TryGetValue(typeName, out var baseNames))
+            return false;
+
+        foreach (var baseName in baseNames)
         {
-            var baseName = NormalizeTypeName(baseInfo.TypeName);
-            if (string.Equals(baseName, "NLS::meta::Object", StringComparison.Ordinal)
-                || string.Equals(baseName, "meta::Object", StringComparison.Ordinal))
+            if (string.Equals(baseName, "NLS::Object", StringComparison.Ordinal)
+                || string.Equals(baseName, "NLS::NamedObject", StringComparison.Ordinal))
             {
                 return true;
             }
 
-            if (byName.TryGetValue(baseName, out var reflectedBase)
-                && InheritsFromMetaObject(reflectedBase, byName, visited))
-            {
+            if (InheritsFromUnityObject(baseName, reflectedDirectBaseTypeNames, visited))
                 return true;
-            }
         }
 
         return false;
+    }
+
+    private static string BuildFieldTypeResolverExpression(string fieldTypeName)
+    {
+        var normalizedTypeName = NormalizePropertyTypeName(fieldTypeName);
+        if (TryGetArrayElementType(normalizedTypeName, out var arrayElementTypeName))
+        {
+            if (TryGetPPtrElementType(arrayElementTypeName, out var arrayPPtrElementTypeName))
+                return $"db.ResolveRegisteredPPtrArrayFieldType(moduleKey, \"{arrayPPtrElementTypeName}\", reportMissingType)";
+
+            return $"db.ResolveRegisteredArrayFieldType(moduleKey, \"{arrayElementTypeName}\", reportMissingType)";
+        }
+
+        if (TryGetPPtrElementType(normalizedTypeName, out var pptrElementTypeName))
+            return $"db.ResolveRegisteredPPtrFieldType(moduleKey, \"{pptrElementTypeName}\", reportMissingType)";
+
+        return $"db.ResolveRegisteredType(moduleKey, \"{normalizedTypeName}\", reportMissingType)";
+    }
+
+    private static List<string> BuildPPtrFieldTypeRegistrations(IEnumerable<ReflectFieldInfo> fields)
+    {
+        return fields
+            .Select(static field => ResolvePPtrRegistrationType(field.TypeName))
+            .Where(static pptrTypeName => !string.IsNullOrEmpty(pptrTypeName))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+    }
+
+    private static string ResolvePPtrRegistrationType(string fieldTypeName)
+    {
+        var normalizedTypeName = NormalizePropertyTypeName(fieldTypeName);
+        if (TryGetArrayElementType(normalizedTypeName, out var arrayElementTypeName))
+            normalizedTypeName = arrayElementTypeName;
+
+        return TryGetPPtrElementType(normalizedTypeName, out _)
+            ? normalizedTypeName
+            : string.Empty;
     }
 
     private static bool ShouldParseHeader(string headerPath, IReadOnlyList<MetaParserGeneratorDefinition> generators)
@@ -326,7 +431,8 @@ internal static partial class MetaParserTool
                 var generatedHeaderPath = Path.Combine(
                     stubOutputDir,
                     $"{GetGeneratedRelativeBasePath(includePath)}{generator.Manifest.Outputs.HeaderGeneratedHeaderSuffix}");
-                if (File.Exists(generatedHeaderPath) && !IsPathInside(generatedHeaderPath, outputDir))
+                var isExternalGeneratedHeader = !IsPathInside(generatedHeaderPath, outputDir);
+                if (isExternalGeneratedHeader && File.Exists(generatedHeaderPath))
                     continue;
 
                 var generatedDirectory = Path.GetDirectoryName(generatedHeaderPath);
@@ -353,8 +459,28 @@ internal static partial class MetaParserTool
                     builder.AppendLine($"#define {macroName}");
                 }
 
-                WriteAllTextIfChanged(generatedHeaderPath, builder.ToString());
+                if (isExternalGeneratedHeader)
+                    WriteAllTextIfMissing(generatedHeaderPath, builder.ToString());
+                else
+                    WriteAllTextIfChanged(generatedHeaderPath, builder.ToString());
             }
+        }
+    }
+
+    private static void WriteAllTextIfMissing(string path, string text)
+    {
+        if (File.Exists(path))
+            return;
+
+        var encoding = new UTF8Encoding(false);
+        var bytes = encoding.GetBytes(text);
+        try
+        {
+            using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read);
+            stream.Write(bytes, 0, bytes.Length);
+        }
+        catch (IOException)
+        {
         }
     }
 

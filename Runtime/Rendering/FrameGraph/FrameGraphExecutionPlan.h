@@ -1429,6 +1429,16 @@ namespace NLS::Render::FrameGraph
 			outputState.depth = writtenDepth;
 	}
 
+	inline void SeedScenePassOutputResourceState(
+		ScenePassOutputResourceState& outputState,
+		const ScenePassOutputChain& outputChain)
+	{
+		if (outputState.color < 0 && outputChain.color >= 0)
+			outputState.color = outputChain.color;
+		if (outputState.depth < 0 && outputChain.depth >= 0)
+			outputState.depth = outputChain.depth;
+	}
+
 	template<typename TMetadataRange>
 	inline std::vector<CompiledThreadedRenderSceneGraphPass> CompileThreadedRenderSceneGraphPasses(
 		const Data::FrameDescriptor& frame,

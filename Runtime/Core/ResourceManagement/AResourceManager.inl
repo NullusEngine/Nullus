@@ -13,11 +13,36 @@ namespace NLS::Core::ResourceManagement
 			return resource;
 		else
 		{
+			const auto* resourceType = GetResourceTypeName();
+			ResourceLoadProgressScope::Report({
+				resourceType,
+				p_path,
+				std::string("Loading ") + resourceType + ": " + p_path,
+				false,
+				false
+			});
 			auto newResource = CreateResource(p_path);
-			if (newResource)
-				return RegisterResource(p_path, newResource);
-			else
+			ResourceLoadProgressScope::Report({
+				resourceType,
+				p_path,
+				std::string(newResource ? "Loaded " : "Failed to load ") + resourceType + ": " + p_path,
+				true,
+				newResource != nullptr
+			});
+			if (!newResource)
 				return nullptr;
+
+			const auto alreadyRegistered = std::find_if(
+				m_resources.begin(),
+				m_resources.end(),
+				[newResource](const auto& resource)
+				{
+					return resource.second == newResource;
+				});
+			if (alreadyRegistered != m_resources.end())
+				return alreadyRegistered->second;
+
+			return RegisterResource(p_path, newResource);
 		}
 	}
 
@@ -129,6 +154,20 @@ namespace NLS::Core::ResourceManagement
 		if (std::filesystem::path(p_path).is_absolute())
 			return p_path;
 
+		const auto genericPath = std::filesystem::path(p_path).generic_string();
+		if (genericPath == "Library" || genericPath.rfind("Library/", 0) == 0)
+		{
+			auto projectAssetsPath = __PROJECT_ASSETS_PATH;
+			while (!projectAssetsPath.empty() &&
+				(projectAssetsPath.back() == '/' || projectAssetsPath.back() == '\\'))
+			{
+				projectAssetsPath.pop_back();
+			}
+			const auto projectRoot = std::filesystem::path(projectAssetsPath).parent_path();
+			if (!projectRoot.empty())
+				return (projectRoot / std::filesystem::path(genericPath)).string();
+		}
+
 		std::string result;
 
 		if (p_path[0] == ':') // The path is an engine path
@@ -141,5 +180,17 @@ namespace NLS::Core::ResourceManagement
 		}
 
 		return result;
+	}
+
+	template<typename T>
+	const std::string& AResourceManager<T>::GetProjectAssetsPath()
+	{
+		return __PROJECT_ASSETS_PATH;
+	}
+
+	template<typename T>
+	const std::string& AResourceManager<T>::GetEngineAssetsPath()
+	{
+		return __ENGINE_ASSETS_PATH;
 	}
 }

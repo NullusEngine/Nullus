@@ -24,7 +24,12 @@ namespace NLS::Render::Settings
 #else
 			EGraphicsBackend::OPENGL;
 #endif
-		bool debugMode = false;
+		bool debugMode =
+#if defined(_DEBUG)
+			true;
+#else
+			false;
+#endif
 		uint32_t framesInFlight = 2;
 		bool enableExplicitRHI = true;
 		bool enableThreadedRendering = false;

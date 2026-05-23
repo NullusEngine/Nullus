@@ -51,19 +51,9 @@
         }                                                        \
 
     #define META_OBJECT                                      \
-        NLS::meta::Type GetType(void) const override         \
+        const char* GetObjectTypeName(void) const override   \
         {                                                    \
-            return NLS_TYPEOF(decltype(*this));              \
-        }                                                    \
-        NLS::meta::Object *Clone(void) const override        \
-        {                                                    \
-            typedef                                          \
-            std::remove_const<                               \
-                std::remove_reference<                       \
-                    decltype(*this)                          \
-                >::type                                      \
-            >::type ClassType;                               \
-            return new ClassType(*this);                     \
+            return StaticMetaTypeName();                     \
         }                                                    \
 
 #endif

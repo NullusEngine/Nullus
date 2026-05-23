@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include "Core/ServiceLocator.h"
+#include "Engine/Assets/RuntimeAssetDatabase.h"
+#include "GameObject.h"
 #include "Serialize/ObjectGraphInstantiator.h"
 #include "Serialize/ObjectGraphDocument.h"
 #include "Serialize/SerializationDiagnostic.h"
@@ -71,11 +74,13 @@ NLS::Engine::Serialize::ObjectGraphDocument MakeUnknownTypeSceneDocument()
 
     ObjectRecord scene;
     scene.id = sceneId;
+    scene.localIdentifierInFile = MakeLocalIdentifierInFile(sceneId);
     scene.typeName = "NLS::Engine::SceneSystem::Scene";
     scene.properties.push_back({"gameObjects", PropertyValue::Array({PropertyValue::OwnedReference(unknownId)})});
 
     ObjectRecord unknown;
     unknown.id = unknownId;
+    unknown.localIdentifierInFile = MakeLocalIdentifierInFile(unknownId);
     unknown.typeName = "Plugin.UnknownGameObject";
     unknown.debugName = "Unknown Plugin Object";
     unknown.properties.push_back({"raw", PropertyValue::String("preserve me")});
@@ -118,6 +123,112 @@ TEST(SerializationDiagnosticTests, RuntimeLoadPolicyFailsUnknownTypes)
         SerializationDiagnosticSeverity::Error));
 }
 
+TEST(SerializationDiagnosticTests, RuntimeManifestMissReportsMissingObjectReferenceAsset)
+{
+    using namespace NLS::Engine::Serialize;
+
+    const auto assetGuid = NLS::Guid::Parse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    const auto assetId = AssetId(assetGuid);
+    const auto sceneId = MakeDiagnosticObjectId("RuntimeManifestMiss.Scene");
+    const auto meshFilterId = MakeDiagnosticObjectId("RuntimeManifestMiss.MeshFilter");
+
+    ObjectGraphDocument document;
+    document.documentId = NLS::Guid::NewDeterministic("RuntimeManifestMiss.Document");
+    document.root = sceneId;
+
+    ObjectRecord scene;
+    scene.id = sceneId;
+    scene.localIdentifierInFile = MakeLocalIdentifierInFile(sceneId);
+    scene.typeName = "NLS::Engine::SceneSystem::Scene";
+    scene.properties.push_back({"gameObjects", PropertyValue::Array({})});
+
+    ObjectRecord meshFilter;
+    meshFilter.id = meshFilterId;
+    meshFilter.localIdentifierInFile = MakeLocalIdentifierInFile(meshFilterId);
+    meshFilter.typeName = "NLS::Engine::Components::MeshFilter";
+    meshFilter.properties.push_back({"mesh", PropertyValue::ObjectReference(ObjectIdentifier::Asset(
+        assetId,
+        MakeLocalIdentifierInFile(assetGuid, "mesh:Missing"),
+        "Library/Artifacts/Stale/wrong.nmesh"))});
+
+    document.objects.push_back(std::move(scene));
+    document.objects.push_back(std::move(meshFilter));
+
+    NLS::Engine::Assets::RuntimeAssetManifest manifest;
+    manifest.entries.push_back({
+        NLS::Core::Assets::AssetId(assetGuid),
+        "mesh:Existing",
+        NLS::Core::Assets::ArtifactType::Mesh,
+        "Nullus.Mesh",
+        "Library/Artifacts/Hero/meshes/existing.nmesh",
+        "sha256:existing",
+        {}
+    });
+    NLS::Engine::Assets::RuntimeAssetDatabase runtimeAssets(manifest);
+    NLS::Core::ServiceLocator::Provide<NLS::Engine::Assets::RuntimeAssetDatabase>(runtimeAssets);
+
+    LoadPolicy policy;
+    policy.missingAssetPolicy = MissingAssetPolicy::Fail;
+    const auto result = ObjectGraphInstantiator::AnalyzeDocument(document, policy);
+
+    EXPECT_TRUE(result.diagnostics.HasErrors());
+    EXPECT_TRUE(HasDiagnostic(
+        result.diagnostics,
+        SerializationDiagnosticCode::MissingAsset,
+        SerializationDiagnosticSeverity::Error));
+
+    NLS::Core::ServiceLocator::Remove<NLS::Engine::Assets::RuntimeAssetDatabase>();
+}
+
+TEST(SerializationDiagnosticTests, RuntimeManifestMissReportsMissingBasePrefabReference)
+{
+    using namespace NLS::Engine::Serialize;
+
+    const auto prefabGuid = NLS::Guid::Parse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+    const auto prefabId = AssetId(prefabGuid);
+    const auto sceneId = MakeDiagnosticObjectId("RuntimeBasePrefabManifestMiss.Scene");
+
+    ObjectGraphDocument document;
+    document.documentId = NLS::Guid::NewDeterministic("RuntimeBasePrefabManifestMiss.Document");
+    document.root = sceneId;
+    document.basePrefab = ObjectIdentifier::Asset(
+        prefabId,
+        MakeLocalIdentifierInFile(prefabGuid, "prefab:Missing"),
+        "Library/Artifacts/Stale/wrong.nprefab");
+
+    ObjectRecord scene;
+    scene.id = sceneId;
+    scene.localIdentifierInFile = MakeLocalIdentifierInFile(sceneId);
+    scene.typeName = "NLS::Engine::SceneSystem::Scene";
+    scene.properties.push_back({"gameObjects", PropertyValue::Array({})});
+    document.objects.push_back(std::move(scene));
+
+    NLS::Engine::Assets::RuntimeAssetManifest manifest;
+    manifest.entries.push_back({
+        NLS::Core::Assets::AssetId(prefabGuid),
+        "prefab:Existing",
+        NLS::Core::Assets::ArtifactType::Prefab,
+        "Nullus.Prefab",
+        "Library/Artifacts/Hero/prefab.nprefab",
+        "sha256:existing",
+        {}
+    });
+    NLS::Engine::Assets::RuntimeAssetDatabase runtimeAssets(manifest);
+    NLS::Core::ServiceLocator::Provide<NLS::Engine::Assets::RuntimeAssetDatabase>(runtimeAssets);
+
+    LoadPolicy policy;
+    policy.missingAssetPolicy = MissingAssetPolicy::Fail;
+    const auto result = ObjectGraphInstantiator::AnalyzeDocument(document, policy);
+
+    EXPECT_TRUE(result.diagnostics.HasErrors());
+    EXPECT_TRUE(HasDiagnostic(
+        result.diagnostics,
+        SerializationDiagnosticCode::MissingAsset,
+        SerializationDiagnosticSeverity::Error));
+
+    NLS::Core::ServiceLocator::Remove<NLS::Engine::Assets::RuntimeAssetDatabase>();
+}
+
 TEST(SerializationDiagnosticTests, SceneInstantiationWithRuntimePolicyRejectsUnknownTypes)
 {
     using namespace NLS::Engine::Serialize;
@@ -132,5 +243,54 @@ TEST(SerializationDiagnosticTests, SceneInstantiationWithRuntimePolicyRejectsUnk
     EXPECT_TRUE(HasDiagnostic(
         result.diagnostics,
         SerializationDiagnosticCode::UnknownType,
+        SerializationDiagnosticSeverity::Error));
+}
+
+TEST(SerializationDiagnosticTests, RuntimeLoadPolicyRejectsMalformedPPtrPropertyShape)
+{
+    using namespace NLS::Engine::Serialize;
+
+    const auto sceneId = MakeDiagnosticObjectId("MalformedPPtr.Scene");
+    const auto gameObjectId = MakeDiagnosticObjectId("MalformedPPtr.GameObject");
+    const auto meshFilterId = MakeDiagnosticObjectId("MalformedPPtr.MeshFilter");
+
+    ObjectGraphDocument document;
+    document.documentId = NLS::Guid::NewDeterministic("MalformedPPtr.Document");
+    document.root = sceneId;
+
+    ObjectRecord scene;
+    scene.id = sceneId;
+    scene.localIdentifierInFile = MakeLocalIdentifierInFile(sceneId);
+    scene.typeName = "NLS::Engine::SceneSystem::Scene";
+    scene.properties.push_back({"gameObjects", PropertyValue::Array({PropertyValue::OwnedReference(gameObjectId)})});
+
+    ObjectRecord gameObject;
+    gameObject.id = gameObjectId;
+    gameObject.localIdentifierInFile = MakeLocalIdentifierInFile(gameObjectId);
+    gameObject.typeName = "NLS::Engine::GameObject";
+    gameObject.properties.push_back({"name", PropertyValue::String("Malformed PPtr")});
+    gameObject.properties.push_back({"tag", PropertyValue::String("")});
+    gameObject.properties.push_back({"parent", PropertyValue::Null()});
+    gameObject.properties.push_back({"components", PropertyValue::Array({PropertyValue::OwnedReference(meshFilterId)})});
+
+    ObjectRecord meshFilter;
+    meshFilter.id = meshFilterId;
+    meshFilter.localIdentifierInFile = MakeLocalIdentifierInFile(meshFilterId);
+    meshFilter.typeName = "NLS::Engine::Components::MeshFilter";
+    meshFilter.properties.push_back({"mesh", PropertyValue::String("Assets/Meshes/Hero.fbx")});
+
+    document.objects.push_back(std::move(scene));
+    document.objects.push_back(std::move(gameObject));
+    document.objects.push_back(std::move(meshFilter));
+
+    LoadPolicy policy;
+    policy.invalidReferencePolicy = InvalidReferencePolicy::Fail;
+    const auto result = ObjectGraphInstantiator::InstantiateScene(document, policy);
+
+    EXPECT_EQ(result.scene, nullptr);
+    EXPECT_TRUE(result.diagnostics.HasErrors());
+    EXPECT_TRUE(HasDiagnostic(
+        result.diagnostics,
+        SerializationDiagnosticCode::InvalidPropertyType,
         SerializationDiagnosticSeverity::Error));
 }

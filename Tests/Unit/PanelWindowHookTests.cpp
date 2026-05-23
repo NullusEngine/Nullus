@@ -1,8 +1,14 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <thread>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "Core/ServiceLocator.h"
@@ -22,6 +28,7 @@
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "UI/Panels/PanelWindow.h"
+#include "UI/Widgets/AWidget.h"
 #include "UI/Widgets/Texts/Text.h"
 #include "ImGui/imgui.h"
 
@@ -117,6 +124,89 @@ protected:
     }
 };
 
+class NoopProfiledPanel final : public NLS::UI::PanelWindow
+{
+public:
+    NoopProfiledPanel()
+        : NLS::UI::PanelWindow("Probe Panel", true, {})
+    {
+    }
+
+protected:
+    void _Draw_Impl() override
+    {
+    }
+};
+
+class RecordingProfilerDestination final : public NLS::Base::Profiling::IProfilerDestination
+{
+public:
+    void BeginScope(const NLS::Base::Profiling::ProfilerScopeEvent& event) override
+    {
+        events.push_back({ "begin", event.name });
+    }
+
+    void EndScope(const NLS::Base::Profiling::ProfilerScopeEvent& event) override
+    {
+        events.push_back({ "end", event.name });
+    }
+
+    NLS::Base::Profiling::ProfilerDestinationState GetState() const override
+    {
+        return {
+            NLS::Base::Profiling::ProfilerDestinationId::Test,
+            true,
+            NLS::Base::Profiling::ProfilerAvailability::Available,
+            NLS::Base::Profiling::ProfilerCapability_CPUScopes,
+            ""
+        };
+    }
+
+    std::vector<std::pair<std::string, std::string>> events;
+};
+
+class GarbageProbeWidget final : public NLS::UI::Widgets::AWidget
+{
+public:
+    void _Draw_Impl() override
+    {
+        ++drawCount;
+    }
+
+    int drawCount = 0;
+};
+
+class SelfDestroyingProbeWidget final : public NLS::UI::Widgets::AWidget
+{
+public:
+    SelfDestroyingProbeWidget()
+    {
+        Destroy();
+    }
+
+    void _Draw_Impl() override
+    {
+        ++drawCount;
+    }
+
+    int drawCount = 0;
+};
+
+class DestructionProbeWidget final : public NLS::UI::Widgets::AWidget
+{
+public:
+    ~DestructionProbeWidget() override
+    {
+        ++destroyedCount;
+    }
+
+    void _Draw_Impl() override
+    {
+    }
+
+    inline static int destroyedCount = 0;
+};
+
 const NLS::UI::Widgets::Text& TextWidgetAt(NLS::UI::PanelWindow& panel, const size_t index)
 {
     const auto& widgets = panel.GetWidgets();
@@ -124,6 +214,21 @@ const NLS::UI::Widgets::Text& TextWidgetAt(NLS::UI::PanelWindow& panel, const si
     auto* text = dynamic_cast<NLS::UI::Widgets::Text*>(widgets[index].first);
     EXPECT_NE(text, nullptr);
     return *text;
+}
+
+void ExpectTextWidgetContent(NLS::UI::PanelWindow& panel, const std::string& expectedContent)
+{
+    const auto& widgets = panel.GetWidgets();
+    const auto found = std::any_of(
+        widgets.begin(),
+        widgets.end(),
+        [&expectedContent](const auto& widget)
+        {
+            const auto* text = dynamic_cast<NLS::UI::Widgets::Text*>(widget.first);
+            return text != nullptr && text->content == expectedContent;
+        });
+
+    EXPECT_TRUE(found) << "Missing FrameInfo text: " << expectedContent;
 }
 
 }
@@ -166,6 +271,167 @@ TEST(PanelWindowHookTests, BeforeDrawHookSeesCurrentFrameWindowSize)
     ImGui::DestroyContext();
 }
 
+TEST(PanelWindowHookTests, PanelDrawProfilerScopeUsesVisiblePanelName)
+{
+#if defined(NLS_ENABLE_PROFILING)
+    NLS::Base::Profiling::Profiler::ResetForTesting();
+    RecordingProfilerDestination destination;
+    NLS::Base::Profiling::Profiler::RegisterDestination(destination);
+    NLS::Base::Profiling::Profiler::SetEnabled(true);
+
+    NoopProfiledPanel panel;
+    panel.Draw();
+
+    NLS::Base::Profiling::Profiler::ResetForTesting();
+
+    ASSERT_EQ(destination.events.size(), 2u);
+    EXPECT_EQ(destination.events.front().first, "begin");
+    EXPECT_EQ(destination.events.front().second, "Panel::Draw:Probe Panel");
+    EXPECT_EQ(destination.events.back().first, "end");
+    EXPECT_EQ(destination.events.back().second, "Panel::Draw:Probe Panel");
+#else
+    SUCCEED() << "Profiling macros compile to no-ops when NLS_ENABLE_PROFILING is disabled.";
+#endif
+}
+
+TEST(PanelWindowHookTests, PanelDrawRecordsLastDrawDurationForFrameInfo)
+{
+    NoopProfiledPanel panel;
+
+    EXPECT_EQ(panel.GetLastDrawDurationUs(), 0u);
+    panel.Draw();
+
+    EXPECT_GT(panel.GetLastDrawDurationUs(), 0u);
+}
+
+TEST(PanelWindowHookTests, WidgetContainerGarbageCollectionRunsOnlyAfterDestroyMarksDirty)
+{
+    NLS::UI::Internal::WidgetContainer container;
+    GarbageProbeWidget first;
+    container.ConsiderWidget(first, false);
+    auto& second = container.CreateWidget<GarbageProbeWidget>();
+    auto& third = container.CreateWidget<GarbageProbeWidget>();
+
+    EXPECT_EQ(container.GetWidgets().size(), 3u);
+    container.CollectGarbages();
+    EXPECT_EQ(container.GetWidgets().size(), 3u);
+
+    second.Destroy();
+    container.UnconsiderWidget(first);
+    container.CollectGarbages();
+
+    ASSERT_EQ(container.GetWidgets().size(), 1u);
+    EXPECT_EQ(container.GetWidgets().front().first, &third);
+}
+
+TEST(PanelWindowHookTests, DestroyedWidgetMarksNewContainerDirtyWhenMovedBeforeCollection)
+{
+    NLS::UI::Internal::WidgetContainer firstContainer;
+    NLS::UI::Internal::WidgetContainer secondContainer;
+    GarbageProbeWidget widget;
+
+    firstContainer.ConsiderWidget(widget, false);
+    widget.Destroy();
+    firstContainer.UnconsiderWidget(widget);
+
+    secondContainer.ConsiderWidget(widget, false);
+    secondContainer.CollectGarbages();
+
+    EXPECT_TRUE(secondContainer.GetWidgets().empty());
+}
+
+TEST(PanelWindowHookTests, CreateWidgetCollectsWidgetsDestroyedDuringConstruction)
+{
+    NLS::UI::Internal::WidgetContainer container;
+
+    container.CreateWidget<SelfDestroyingProbeWidget>();
+    container.CollectGarbages();
+
+    EXPECT_TRUE(container.GetWidgets().empty());
+}
+
+TEST(PanelWindowHookTests, ConsideringWidgetInNewContainerDetachesItFromPreviousContainer)
+{
+    NLS::UI::Internal::WidgetContainer firstContainer;
+    NLS::UI::Internal::WidgetContainer secondContainer;
+    GarbageProbeWidget widget;
+
+    firstContainer.ConsiderWidget(widget, false);
+    secondContainer.ConsiderWidget(widget, false);
+    widget.Destroy();
+
+    firstContainer.CollectGarbages();
+    secondContainer.CollectGarbages();
+
+    EXPECT_TRUE(firstContainer.GetWidgets().empty());
+    EXPECT_TRUE(secondContainer.GetWidgets().empty());
+    EXPECT_FALSE(widget.HasParent());
+}
+
+TEST(PanelWindowHookTests, ConsideringWidgetAlreadyInContainerDoesNotDuplicateOwnership)
+{
+    NLS::UI::Internal::WidgetContainer container;
+    GarbageProbeWidget widget;
+
+    container.ConsiderWidget(widget, false);
+    container.ConsiderWidget(widget, false);
+
+    ASSERT_EQ(container.GetWidgets().size(), 1u);
+    EXPECT_EQ(container.GetWidgets().front().first, &widget);
+}
+
+TEST(PanelWindowHookTests, AutomaticReparentPreservesInternalWidgetOwnership)
+{
+    DestructionProbeWidget::destroyedCount = 0;
+    NLS::UI::Internal::WidgetContainer firstContainer;
+    NLS::UI::Internal::WidgetContainer secondContainer;
+
+    auto* widget = &firstContainer.CreateWidget<DestructionProbeWidget>();
+    secondContainer.ConsiderWidget(*widget, false);
+    secondContainer.RemoveAllWidgets();
+
+    EXPECT_EQ(DestructionProbeWidget::destroyedCount, 1);
+    if (DestructionProbeWidget::destroyedCount == 0)
+        delete widget;
+}
+
+TEST(PanelWindowHookTests, AutomaticReparentPreservesExternalWidgetOwnership)
+{
+    DestructionProbeWidget::destroyedCount = 0;
+    auto* widget = new DestructionProbeWidget();
+    NLS::UI::Internal::WidgetContainer firstContainer;
+    NLS::UI::Internal::WidgetContainer secondContainer;
+
+    firstContainer.ConsiderWidget(*widget, false);
+    secondContainer.ConsiderWidget(*widget);
+    secondContainer.RemoveAllWidgets();
+
+    EXPECT_EQ(DestructionProbeWidget::destroyedCount, 0);
+    if (DestructionProbeWidget::destroyedCount == 0)
+        delete widget;
+}
+
+TEST(PanelWindowHookTests, ExternalWidgetsClearParentWhenRemovedFromContainer)
+{
+    NLS::UI::Internal::WidgetContainer container;
+    GarbageProbeWidget removedWidget;
+    GarbageProbeWidget clearedWidget;
+    GarbageProbeWidget collectedWidget;
+
+    container.ConsiderWidget(removedWidget, false);
+    container.RemoveWidget(removedWidget);
+    EXPECT_FALSE(removedWidget.HasParent());
+
+    container.ConsiderWidget(clearedWidget, false);
+    container.RemoveAllWidgets();
+    EXPECT_FALSE(clearedWidget.HasParent());
+
+    container.ConsiderWidget(collectedWidget, false);
+    collectedWidget.Destroy();
+    container.CollectGarbages();
+    EXPECT_FALSE(collectedWidget.HasParent());
+}
+
 TEST(PanelWindowHookTests, FrameInfoPanelReadsRendererOwnedStats)
 {
     NLS::Render::Settings::DriverSettings settings;
@@ -196,8 +462,14 @@ TEST(PanelWindowHookTests, FrameInfoPanelReadsRendererOwnedStats)
     EXPECT_EQ(TextWidgetAt(panel, 3u).content, "Instances: 2");
     EXPECT_EQ(TextWidgetAt(panel, 4u).content, "Polygons: 2");
     EXPECT_EQ(TextWidgetAt(panel, 5u).content, "Vertices: 6");
-    EXPECT_EQ(TextWidgetAt(panel, 9u).content, "Frame Stage: Direct");
-    EXPECT_EQ(TextWidgetAt(panel, 10u).content, "Retirement State: Direct");
+    ExpectTextWidgetContent(panel, "ParseScene Calls: 0");
+    ExpectTextWidgetContent(panel, "Drawables O/T/S: 0/0/0");
+    ExpectTextWidgetContent(panel, "GBuffer Material Syncs: 0");
+    ExpectTextWidgetContent(panel, "Binding Sets Created: 0");
+    ExpectTextWidgetContent(panel, "Snapshot Buffers Created: 0");
+    ExpectTextWidgetContent(panel, "Target Panel Draw: 0 us");
+    ExpectTextWidgetContent(panel, "Frame Stage: Direct");
+    ExpectTextWidgetContent(panel, "Retirement State: Direct");
 }
 
 TEST(PanelWindowHookTests, ProfilerPanelReportsTimelineDisabledByDefault)
@@ -291,6 +563,21 @@ TEST(PanelWindowHookTests, ProfilerPanelDrawDoesNotAdvanceTimelineFrameInsideAct
 #endif
 }
 
+TEST(PanelWindowHookTests, ProfilerPanelTimelineDrawHasDedicatedTraceAttributionScope)
+{
+    const auto profilerPanelPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Panels/ProfilerPanel.cpp";
+
+    std::ifstream stream(profilerPanelPath, std::ios::binary);
+    const std::string source{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(source.find("#include \"Profiling/Profiler.h\""), std::string::npos);
+    EXPECT_NE(source.find("NLS_PROFILE_NAMED_SCOPE(\"ProfilerPanel::DrawTimeline\")"), std::string::npos);
+}
+
 TEST(PanelWindowHookTests, FrameInfoPanelReadsThreadedPublishDiagnostics)
 {
     NLS::Render::Settings::DriverSettings settings;
@@ -316,11 +603,11 @@ TEST(PanelWindowHookTests, FrameInfoPanelReadsThreadedPublishDiagnostics)
     NLS::Editor::Panels::FrameInfo panel("Frame Info", true, {});
     panel.UpdateForRenderer("Threaded View", renderer);
 
-    EXPECT_EQ(TextWidgetAt(panel, 6u).content, "Frames In Flight: 1");
-    EXPECT_EQ(TextWidgetAt(panel, 7u).content, "Blocked Frames: 0");
-    EXPECT_EQ(TextWidgetAt(panel, 8u).content, "Publish State: Open");
-    EXPECT_EQ(TextWidgetAt(panel, 9u).content, "Frame Stage: Logic");
-    EXPECT_EQ(TextWidgetAt(panel, 10u).content, "Retirement State: Pending");
+    ExpectTextWidgetContent(panel, "Frames In Flight: 1");
+    ExpectTextWidgetContent(panel, "Blocked Frames: 0");
+    ExpectTextWidgetContent(panel, "Publish State: Open");
+    ExpectTextWidgetContent(panel, "Frame Stage: Logic");
+    ExpectTextWidgetContent(panel, "Retirement State: Pending");
 }
 
 TEST(PanelWindowHookTests, FrameInfoPanelRefreshesThreadedDiagnosticsAfterFrameRetirement)
@@ -358,10 +645,10 @@ TEST(PanelWindowHookTests, FrameInfoPanelRefreshesThreadedDiagnosticsAfterFrameR
     NLS::Editor::Panels::FrameInfo panel("Frame Info", true, {});
     panel.UpdateForRenderer("Threaded View", renderer);
 
-    EXPECT_EQ(TextWidgetAt(panel, 6u).content, "Frames In Flight: 0");
-    EXPECT_EQ(TextWidgetAt(panel, 7u).content, "Blocked Frames: 0");
-    EXPECT_EQ(TextWidgetAt(panel, 9u).content, "Frame Stage: Retired");
-    EXPECT_EQ(TextWidgetAt(panel, 10u).content, "Retirement State: Ready");
+    ExpectTextWidgetContent(panel, "Frames In Flight: 0");
+    ExpectTextWidgetContent(panel, "Blocked Frames: 0");
+    ExpectTextWidgetContent(panel, "Frame Stage: Retired");
+    ExpectTextWidgetContent(panel, "Retirement State: Ready");
 }
 
 TEST(PanelWindowHookTests, RetirementAwareResizePolicyDefersViewResizeWhileFramesRemainInFlight)
@@ -441,7 +728,7 @@ TEST(PanelWindowHookTests, RetirementAwareRenderPolicyDrainsAfterViewResize)
         true));
 }
 
-TEST(PanelWindowHookTests, RetirementAwareRenderPolicyDrainsDuringSynchronizedPresentation)
+TEST(PanelWindowHookTests, RetirementAwareRenderPolicyDrainsOnlyForExplicitSynchronizationNeeds)
 {
     EXPECT_TRUE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
         true,
@@ -456,7 +743,7 @@ TEST(PanelWindowHookTests, RetirementAwareRenderPolicyDrainsDuringSynchronizedPr
         true));
 }
 
-TEST(PanelWindowHookTests, SceneViewCameraMotionRequestsSynchronizedPresentation)
+TEST(PanelWindowHookTests, SceneViewCameraMotionIsTrackedWithoutForcingSynchronizedPresentation)
 {
     const NLS::Maths::Vector3 previousPosition { -10.0f, 3.0f, 10.0f };
     const NLS::Maths::Quaternion previousRotation({ 0.0f, 135.0f, 0.0f });
@@ -488,6 +775,52 @@ TEST(PanelWindowHookTests, SceneViewPickingUsesDelayedReadbackByDefault)
 TEST(PanelWindowHookTests, SceneViewDoesNotSynchronizeRetiredFramePresentationByDefault)
 {
     EXPECT_FALSE(NLS::Editor::Panels::ShouldSceneViewSynchronizeRetiredFramePresentation());
+}
+
+TEST(PanelWindowHookTests, SceneViewInteractionHintsDoNotForceThreadedRenderingDrain)
+{
+    constexpr bool requiresRetiredFrameConsumption = true;
+    constexpr bool requiresImmediateReadback = false;
+    constexpr bool resizedViewThisFrame = false;
+
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
+        requiresRetiredFrameConsumption,
+        requiresImmediateReadback,
+        resizedViewThisFrame,
+        NLS::Editor::Panels::ShouldSceneViewSynchronizeRetiredFramePresentation()));
+
+    const bool cameraMovedForPresentation = true;
+    const bool cameraControlActive = true;
+    const bool transformGizmoActive = true;
+    const bool pendingDelayedPick = true;
+    const bool ordinarySceneViewPresentationNeedsSync =
+        NLS::Editor::Panels::ShouldSceneViewSynchronizeRetiredFramePresentation() &&
+        (cameraMovedForPresentation ||
+            cameraControlActive ||
+            transformGizmoActive ||
+            pendingDelayedPick);
+
+    EXPECT_FALSE(ordinarySceneViewPresentationNeedsSync);
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
+        requiresRetiredFrameConsumption,
+        requiresImmediateReadback,
+        resizedViewThisFrame,
+        ordinarySceneViewPresentationNeedsSync));
+}
+
+TEST(PanelWindowHookTests, SceneViewRetainsExplicitReadbackAndResizeDrains)
+{
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
+        true,
+        true,
+        false,
+        false));
+
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
+        true,
+        false,
+        true,
+        false));
 }
 
 TEST(PanelWindowHookTests, StartupValidationFocusPersistsForDockingWarmupFrames)

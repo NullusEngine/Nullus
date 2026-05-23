@@ -57,6 +57,7 @@ namespace NLS::Render::RHI
                 HashCombine(seed, entry.count);
                 HashCombine(seed, static_cast<uint32_t>(entry.stageMask));
                 HashCombine(seed, entry.registerSpace);
+                HashCombine(seed, entry.elementStride);
             }
         }
 
@@ -78,6 +79,8 @@ namespace NLS::Render::RHI
                 HashCombine(seed, static_cast<uint32_t>(pushConstant.stageMask));
                 HashCombine(seed, pushConstant.offset);
                 HashCombine(seed, pushConstant.size);
+                HashCombine(seed, pushConstant.shaderRegister);
+                HashCombine(seed, pushConstant.registerSpace);
             }
         }
 

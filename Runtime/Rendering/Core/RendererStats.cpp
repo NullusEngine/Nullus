@@ -36,6 +36,13 @@ void RendererStats::BeginFrame()
     m_frameInfo.pipelineCacheComputeMisses = 0u;
     m_frameInfo.pipelineCacheComputeStores = 0u;
     m_frameInfo.pipelineCacheComputeEntries = 0u;
+    m_frameInfo.parseSceneCallCount = 0u;
+    m_frameInfo.parsedOpaqueDrawableCount = 0u;
+    m_frameInfo.parsedTransparentDrawableCount = 0u;
+    m_frameInfo.parsedSkyboxDrawableCount = 0u;
+    m_frameInfo.gBufferMaterialSyncCount = 0u;
+    m_frameInfo.renderBindingSetCreationCount = 0u;
+    m_frameInfo.renderSnapshotBufferCreationCount = 0u;
     m_isFrameInfoValid = false;
 }
 
@@ -55,6 +62,32 @@ void RendererStats::RecordSubmittedDraw(const Entities::Drawable& drawable, cons
     m_frameInfo.instanceCount += instanceCount;
     m_frameInfo.polyCount += (drawable.mesh->GetIndexCount() / kVertexCountPerPolygon) * instanceCount;
     m_frameInfo.vertexCount += drawable.mesh->GetVertexCount() * instanceCount;
+}
+
+void RendererStats::RecordSceneParse(
+    const uint64_t opaqueCount,
+    const uint64_t transparentCount,
+    const uint64_t skyboxCount)
+{
+    ++m_frameInfo.parseSceneCallCount;
+    m_frameInfo.parsedOpaqueDrawableCount = opaqueCount;
+    m_frameInfo.parsedTransparentDrawableCount = transparentCount;
+    m_frameInfo.parsedSkyboxDrawableCount = skyboxCount;
+}
+
+void RendererStats::RecordGBufferMaterialSync()
+{
+    ++m_frameInfo.gBufferMaterialSyncCount;
+}
+
+void RendererStats::RecordRenderBindingSetCreation(const uint64_t count)
+{
+    m_frameInfo.renderBindingSetCreationCount += count;
+}
+
+void RendererStats::RecordRenderSnapshotBufferCreation(const uint64_t count)
+{
+    m_frameInfo.renderSnapshotBufferCreationCount += count;
 }
 
 void RendererStats::SetThreadedFrameTelemetry(const NLS::Render::Context::ThreadedFrameTelemetry& telemetry)

@@ -7,6 +7,8 @@ namespace NLS
 	template<class... ArgTypes>
 	ListenerID Event<ArgTypes...>::AddListener(Callback p_callback)
 	{
+		while (m_availableListenerID == InvalidListenerID || m_callbacks.contains(m_availableListenerID))
+			++m_availableListenerID;
 		ListenerID listenerID = m_availableListenerID++;
 		m_callbacks.emplace(listenerID, p_callback);
 		return listenerID;

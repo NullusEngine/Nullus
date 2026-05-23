@@ -1,4 +1,5 @@
 #include "Assembly.h"
+#include "GuidReflection.h"
 #include "Reflection/PrivateReflectionExternalSample.h"
 
 namespace NLS

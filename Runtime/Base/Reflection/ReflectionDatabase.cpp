@@ -59,7 +59,13 @@ namespace NLS::meta
             REGISTER_NATIVE_TYPE_VARIANTS_W_ARRAY( float );
             REGISTER_NATIVE_TYPE_VARIANTS_W_ARRAY( double );
             REGISTER_NATIVE_TYPE_VARIANTS_W_ARRAY( std::string );
-            REGISTER_NATIVE_TYPE_VARIANTS( NLS::meta::Object );
+            REGISTER_NATIVE_TYPE_VARIANTS( NLS::Object );
+            REGISTER_NATIVE_TYPE_VARIANTS( NLS::NamedObject );
+            types[ NLS_TYPEIDOF( NLS::NamedObject ) ].LoadBaseClasses(
+                *this,
+                NLS_TYPEIDOF( NLS::NamedObject ),
+                { NLS_TYPEOF( NLS::Object ) }
+            );
 
             auto &stringType = types[ NLS_TYPEIDOF( std::string ) ];
 
@@ -210,6 +216,61 @@ namespace NLS::meta
                 return;
 
             moduleDependencies[ ownerModuleKey ].insert(referencedTypeKey);
+        }
+
+        Type ReflectionDatabase::ResolveRegisteredType(
+            TypeKey ownerModuleKey,
+            const char* name,
+            const MissingTypeReporter& reportMissingType)
+        {
+            const auto referencedKey = MakeTypeKey(name);
+            AddDependency(ownerModuleKey, referencedKey);
+            const auto id = FindType(referencedKey);
+            if (id != InvalidTypeID)
+                return Type(id);
+
+            if (reportMissingType)
+                reportMissingType("missing referenced type", name);
+            return Type::Invalid();
+        }
+
+        Type ReflectionDatabase::ResolveRegisteredArrayFieldType(
+            TypeKey ownerModuleKey,
+            const char* elementName,
+            const MissingTypeReporter& reportMissingType)
+        {
+            const auto elementType = ResolveRegisteredType(ownerModuleKey, elementName, reportMissingType);
+            return elementType.IsValid() ? Type(elementType.GetID(), true) : Type::Invalid();
+        }
+
+        Type ReflectionDatabase::ResolveRegisteredPPtrFieldType(
+            TypeKey ownerModuleKey,
+            const char* elementName,
+            const MissingTypeReporter& reportMissingType)
+        {
+            const auto elementType = ResolveRegisteredType(ownerModuleKey, elementName, reportMissingType);
+            if (!elementType.IsValid())
+                return Type::Invalid();
+
+            const auto pptrName = std::string("NLS::Engine::Serialize::PPtr<") + elementName + ">";
+            const auto pptrKey = MakeTypeKey(pptrName.c_str());
+            AddDependency(ownerModuleKey, pptrKey);
+            auto pptrId = FindType(pptrKey);
+            if (pptrId == InvalidTypeID)
+            {
+                pptrId = AllocateType(pptrKey, pptrName, ownerModuleKey);
+            }
+
+            return pptrId != InvalidTypeID ? Type(pptrId) : Type::Invalid();
+        }
+
+        Type ReflectionDatabase::ResolveRegisteredPPtrArrayFieldType(
+            TypeKey ownerModuleKey,
+            const char* elementName,
+            const MissingTypeReporter& reportMissingType)
+        {
+            const auto pptrType = ResolveRegisteredPPtrFieldType(ownerModuleKey, elementName, reportMissingType);
+            return pptrType.IsValid() ? Type(pptrType.GetID(), true) : Type::Invalid();
         }
 
         ///////////////////////////////////////////////////////////////////////

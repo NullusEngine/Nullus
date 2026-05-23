@@ -17,6 +17,7 @@ namespace NLS::Render::RHI
         uint32_t count = 1;
         ShaderStageMask stageMask = ShaderStageMask::AllGraphics;
         uint32_t registerSpace = 0;
+        uint32_t elementStride = 0;
     };
 
     struct NLS_RENDER_API RHIBindingLayoutDesc
@@ -32,6 +33,7 @@ namespace NLS::Render::RHI
         std::shared_ptr<class RHIBuffer> buffer;
         uint64_t bufferOffset = 0;
         uint64_t bufferRange = 0;
+        uint32_t elementStride = 0;
         std::shared_ptr<class RHITextureView> textureView;
         std::shared_ptr<class RHISampler> sampler;
     };

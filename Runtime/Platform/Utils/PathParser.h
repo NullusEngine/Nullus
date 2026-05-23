@@ -19,6 +19,7 @@ namespace NLS::Utils
 			MATERIAL,
 			SOUND,
 			SCENE,
+			PREFAB,
 			SCRIPT,
 			FONT
 		};

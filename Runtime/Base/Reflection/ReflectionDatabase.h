@@ -10,6 +10,7 @@
 #include "TypeData.h"
 #include "TypeInfo.h"
 
+#include <functional>
 #include <vector>
 #include <mutex>
 #include <unordered_map>
@@ -20,6 +21,8 @@ namespace NLS::meta
     class NLS_BASE_API ReflectionDatabase
     {
     public:
+        using MissingTypeReporter = std::function<void(const char* subject, const char* missingType)>;
+
         ReflectionDatabase(void);
         ReflectionDatabase(const ReflectionDatabase &) = delete;
         ReflectionDatabase &operator=(const ReflectionDatabase &) = delete;
@@ -57,6 +60,22 @@ namespace NLS::meta
             void UnloadModule(TypeKey moduleKey);
             bool CanUnloadModule(TypeKey moduleKey) const;
             void AddDependency(TypeKey ownerModuleKey, TypeKey referencedTypeKey);
+            Type ResolveRegisteredType(
+                TypeKey ownerModuleKey,
+                const char* name,
+                const MissingTypeReporter& reportMissingType);
+            Type ResolveRegisteredArrayFieldType(
+                TypeKey ownerModuleKey,
+                const char* elementName,
+                const MissingTypeReporter& reportMissingType);
+            Type ResolveRegisteredPPtrFieldType(
+                TypeKey ownerModuleKey,
+                const char* elementName,
+                const MissingTypeReporter& reportMissingType);
+            Type ResolveRegisteredPPtrArrayFieldType(
+                TypeKey ownerModuleKey,
+                const char* elementName,
+                const MissingTypeReporter& reportMissingType);
 
             mutable std::recursive_mutex mutex;
 

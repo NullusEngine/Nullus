@@ -30,10 +30,13 @@ namespace NLS::Render::Backend
 
 		std::string_view GetDebugName() const override;
 		const NLS::Render::RHI::RHIPipelineLayoutDesc& GetDesc() const override;
+		bool IsValid() const;
 #if defined(_WIN32)
 		ID3D12RootSignature* GetRootSignature() const override;
 #endif
 		const std::vector<NLS::Render::RHI::DX12::DX12DescriptorTableDesc>& GetDescriptorTables() const override;
+		uint32_t GetPushConstantRootParameterOffset() const override;
+		const std::vector<NLS::Render::RHI::DX12::DX12PushConstantRootParameterDesc>& GetPushConstantRootParameters() const override;
 
 	private:
 		ID3D12Device* m_device = nullptr;
@@ -42,6 +45,8 @@ namespace NLS::Render::Backend
 		Microsoft::WRL::ComPtr<ID3D12RootSignature> m_rootSignature;
 #endif
 		std::vector<NLS::Render::RHI::DX12::DX12DescriptorTableDesc> m_descriptorTables;
+		uint32_t m_pushConstantRootParameterOffset = 0u;
+		std::vector<NLS::Render::RHI::DX12::DX12PushConstantRootParameterDesc> m_pushConstantRootParameters;
 	};
 
 	class NativeDX12ShaderModule final : public NLS::Render::RHI::RHIShaderModule
@@ -66,6 +71,7 @@ namespace NLS::Render::Backend
 
 		std::string_view GetDebugName() const override;
 		const NLS::Render::RHI::RHIGraphicsPipelineDesc& GetDesc() const override;
+		bool IsValid() const;
 #if defined(_WIN32)
 		ID3D12PipelineState* GetPipelineState() const override;
 		ID3D12RootSignature* GetRootSignature() const override;
@@ -92,6 +98,7 @@ namespace NLS::Render::Backend
 
 		std::string_view GetDebugName() const override;
 		const NLS::Render::RHI::RHIComputePipelineDesc& GetDesc() const override;
+		bool IsValid() const;
 #if defined(_WIN32)
 		ID3D12PipelineState* GetPipelineState() const override;
 		ID3D12RootSignature* GetRootSignature() const override;

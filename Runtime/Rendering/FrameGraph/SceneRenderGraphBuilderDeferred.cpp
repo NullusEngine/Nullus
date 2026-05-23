@@ -184,10 +184,7 @@ namespace NLS::Render::FrameGraph
                     continue;
                 }
 
-                if (outputState.color < 0 && compiledPass.outputChain.color >= 0)
-                    outputState.color = compiledPass.outputChain.color;
-                if (outputState.depth < 0 && compiledPass.outputChain.depth >= 0)
-                    outputState.depth = compiledPass.outputChain.depth;
+                SeedScenePassOutputResourceState(outputState, compiledPass.outputChain);
 
                 switch (GetDeferredScenePassExecutionKind(compiledPass.metadata.commandKind))
                 {
@@ -659,7 +656,8 @@ namespace NLS::Render::FrameGraph
         const DeferredSceneGraphExecutionCallbacks& callbacks)
     {
         NLS_PROFILE_SCOPE();
-        const auto addCompiledGBufferPass = [&frameGraph, &preparedGraph, &callbacks](
+        const auto capturedCallbacks = callbacks;
+        const auto addCompiledGBufferPass = [&frameGraph, &preparedGraph, capturedCallbacks](
             const CompiledThreadedRenderSceneGraphPass& compiledPass) -> const DeferredGBufferGraphPassData&
         {
             return AddDeferredCompiledGBufferPass(
@@ -669,27 +667,27 @@ namespace NLS::Render::FrameGraph
                 preparedGraph.resources.gbufferNormal,
                 preparedGraph.resources.gbufferMaterial,
                 preparedGraph.resources.gbufferDepth,
-                [&callbacks](const DeferredGBufferGraphPassData&, FrameGraphPassResources&, void*, const auto& desc)
+                [capturedCallbacks](const DeferredGBufferGraphPassData&, FrameGraphPassResources&, void*, const auto& desc)
                 {
                     ExecuteRecordedRenderPass(
                         desc,
-                        [&callbacks](const auto& beginDesc) -> bool
+                        [&capturedCallbacks](const auto& beginDesc) -> bool
                         {
-                            return callbacks.beginGBufferPass ? callbacks.beginGBufferPass(beginDesc) : false;
+                            return capturedCallbacks.beginGBufferPass ? capturedCallbacks.beginGBufferPass(beginDesc) : false;
                         },
-                        [&callbacks]()
+                        [&capturedCallbacks]()
                         {
-                            if (callbacks.executeGBufferPass)
-                                callbacks.executeGBufferPass();
+                            if (capturedCallbacks.executeGBufferPass)
+                                capturedCallbacks.executeGBufferPass();
                         },
-                        [&callbacks]()
+                        [&capturedCallbacks]()
                         {
-                            if (callbacks.endGBufferPass)
-                                callbacks.endGBufferPass();
+                            if (capturedCallbacks.endGBufferPass)
+                                capturedCallbacks.endGBufferPass();
                         });
                 });
         };
-        const auto addCompiledLightingPass = [&frameGraph, &callbacks](
+        const auto addCompiledLightingPass = [&frameGraph, capturedCallbacks](
             const CompiledThreadedRenderSceneGraphPass& compiledPass,
             ScenePassOutputResourceState& outputState,
             const DeferredGBufferGraphPassData* gBufferPassData)
@@ -699,23 +697,23 @@ namespace NLS::Render::FrameGraph
                 compiledPass,
                 outputState,
                 gBufferPassData,
-                [&callbacks](const DeferredLightingGraphPassData&, FrameGraphPassResources&, void*, const auto& desc)
+                [capturedCallbacks](const DeferredLightingGraphPassData&, FrameGraphPassResources&, void*, const auto& desc)
                 {
                     ExecuteOutputRenderPass(
                         desc,
-                        [&callbacks](const auto& beginDesc) -> bool
+                        [&capturedCallbacks](const auto& beginDesc) -> bool
                         {
-                            return callbacks.beginLightingPass ? callbacks.beginLightingPass(beginDesc) : false;
+                            return capturedCallbacks.beginLightingPass ? capturedCallbacks.beginLightingPass(beginDesc) : false;
                         },
-                        [&callbacks]()
+                        [&capturedCallbacks]()
                         {
-                            if (callbacks.executeLightingPass)
-                                callbacks.executeLightingPass();
+                            if (capturedCallbacks.executeLightingPass)
+                                capturedCallbacks.executeLightingPass();
                         },
-                        [&callbacks](bool startedRenderPass, const auto& endDesc)
+                        [&capturedCallbacks](bool startedRenderPass, const auto& endDesc)
                         {
-                            if (callbacks.endLightingPass)
-                                callbacks.endLightingPass(startedRenderPass, endDesc);
+                            if (capturedCallbacks.endLightingPass)
+                                capturedCallbacks.endLightingPass(startedRenderPass, endDesc);
                         });
                 });
         };

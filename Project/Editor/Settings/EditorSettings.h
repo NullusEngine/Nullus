@@ -2,7 +2,7 @@
 
 #include "Reflection/Macros.h"
 #include "Reflection/RuntimeMetaProperties.h"
-#include "Rendering/Settings/DriverSettings.h"
+#include "Rendering/Settings/EngineDiagnosticsSettings.h"
 #include "Settings/EditorSettingsRegistry.h"
 #include "Project/Editor/Settings/EditorSettings.generated.h"
 
@@ -23,14 +23,6 @@ namespace NLS::Editor::Settings
         bool debugDrawCamera = true;
         PROPERTY()
         bool debugDrawLighting = true;
-        PROPERTY()
-        bool showGeometryBounds = false;
-        PROPERTY()
-        bool showLightBounds = false;
-        PROPERTY()
-        bool showGeometryFrustumCullingInSceneView = false;
-        PROPERTY()
-        bool showLightFrustumCullingInSceneView = false;
         PROPERTY()
         float lightBillboardScale = 0.5f;
     };
@@ -67,50 +59,12 @@ namespace NLS::Editor::Settings
         GENERATED_BODY()
         PROPERTY(RequiresRestart)
         bool enableThreadedRendering = true;
-        PROPERTY(RequiresRestart)
-        bool enableRhiDebugValidation = false;
         PROPERTY()
         bool renderDocEnabled = false;
         PROPERTY()
         bool renderDocAutoOpenReplayUI = false;
         PROPERTY(RequiresRestart)
         int renderDocStartupCaptureAfterFrames = 0;
-        PROPERTY()
-        bool logRenderDrawPath = false;
-        PROPERTY()
-        bool diagSkipSkyboxDraw = false;
-        PROPERTY()
-        bool logMaterialBindings = false;
-        PROPERTY()
-        bool dx12LogMessages = false;
-        PROPERTY()
-        bool dx12LogFrameFlow = false;
-        PROPERTY()
-        bool logEditorFps = false;
-        PROPERTY()
-        bool editorGridSkipPlane = false;
-        PROPERTY()
-        bool editorGridSkipAxes = false;
-        PROPERTY()
-        bool editorDisableGridPass = false;
-        PROPERTY()
-        bool editorDisableDebugCamerasPass = false;
-        PROPERTY()
-        bool editorDisableDebugLightsPass = false;
-        PROPERTY()
-        bool editorDisableDebugActorPass = false;
-        PROPERTY()
-        bool editorDisableDebugDrawPass = false;
-        PROPERTY()
-        bool editorDisablePickingPass = false;
-        PROPERTY()
-        bool editorLogScenePicking = false;
-        PROPERTY()
-        std::string editorValidationFocusView;
-        PROPERTY()
-        std::string editorValidationExclusiveView;
-        PROPERTY()
-        std::string editorValidationSelectActor;
     };
 }
 

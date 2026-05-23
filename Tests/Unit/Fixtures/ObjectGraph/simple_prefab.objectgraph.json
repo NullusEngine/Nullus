@@ -4,6 +4,7 @@
     "objects": [
         {
             "debugName": "NLS::Engine::Components::LightComponent",
+            "fileID": 8352872037496144140,
             "id": "182f3893-825a-4b44-b740-d3967ac70b82",
             "properties": {
                 "color": {
@@ -31,6 +32,7 @@
         {
             "debugName": "Lamp",
             "debugPath": "/Lamp",
+            "fileID": 901375963291918772,
             "id": "31cbedb2-f20b-4d89-8522-11f642eecceb",
             "properties": {
                 "active": true,
@@ -43,6 +45,7 @@
                         "$owned": "182f3893-825a-4b44-b740-d3967ac70b82"
                     }
                 ],
+                "layer": 0,
                 "name": "Lamp",
                 "parent": null,
                 "tag": "Prop"
@@ -52,6 +55,7 @@
         },
         {
             "debugName": "NLS::Engine::Components::TransformComponent",
+            "fileID": 7857195377552477357,
             "id": "c7a286ad-1388-4447-8c26-7c16b7350f41",
             "properties": {
                 "localPosition": {

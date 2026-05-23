@@ -15,11 +15,16 @@ class NLS_RESOURCE_MANAGEMENT_API MaterialManager : public AResourceManager<Rend
 	public:
         using Material = Render::Resources::Material;
 
+		const char* GetResourceTypeName() const override { return "Material"; }
+
 		/**
 		* Create the resource identified by the given path
 		* @param p_path
 		*/
         virtual Material* CreateResource(const std::string& p_path) override;
+        Material* CreateResource(const std::string& p_path, const NLS::Render::Resources::Loaders::MaterialLoader::LoadOptions& options);
+
+        static std::string ResolveResourcePath(const std::string& path);
 
 		/**
 		* Destroy the given resource
@@ -33,5 +38,8 @@ class NLS_RESOURCE_MANAGEMENT_API MaterialManager : public AResourceManager<Rend
 		* @param p_path
 		*/
         virtual void ReloadResource(Material* p_resource, const std::string& p_path) override;
+
+        virtual Material* PrewarmArtifact(const std::string& p_path);
+        virtual Material* LoadArtifactWithoutTextures(const std::string& p_path);
 	};
 }

@@ -54,6 +54,7 @@ namespace NLS::Render::Resources
 		uint32_t registerSpace = 0u;
 		uint32_t binding = 0u;
 		uint32_t count = 1u;
+		uint32_t elementStride = 0u;
 		RHI::ShaderStageMask stageMask = RHI::ShaderStageMask::AllGraphics;
 		bool required = true;
 	};

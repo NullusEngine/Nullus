@@ -46,6 +46,7 @@ uint NLSGetNumLocalLights() { return (uint)u_LightGridLightingParams.x; }
 uint NLSGetSceneLightCount() { return (uint)u_LightGridLightingParams.x; }
 float NLSGetDepthFogFactor() { return u_LightGridLightingParams.y; }
 float NLSGetAmbientFloor() { return u_LightGridLightingParams.z; }
+float NLSGetVisibleAmbientFloor() { return max(NLSGetAmbientFloor(), 0.18f); }
 float NLSGetNearPlane() { return u_LightGridCameraWorldPositionNearPlane.w; }
 float NLSGetFarPlane() { return u_LightGridRenderSizeFarPlane.w; }
 float3 NLSGetCameraWorldPosition() { return u_LightGridCameraWorldPositionNearPlane.xyz; }
@@ -340,7 +341,7 @@ float3 NLSAccumulateClusteredLightingPBR(
     const uint offset = numCulledLightsGrid[recordBase + 0u];
     const uint count = numCulledLightsGrid[recordBase + 1u];
     const float3 viewDir = normalize(NLSGetCameraWorldPosition() - worldPosition);
-    float3 lighting = albedo * (NLSGetAmbientFloor() * ao);
+    float3 lighting = albedo * (NLSGetVisibleAmbientFloor() * ao);
 
     [loop]
     for (uint i = 0u; i < count; ++i)
@@ -395,7 +396,7 @@ float3 NLSAccumulateSceneLightingPBR(
     float ao)
 {
     const float3 viewDir = normalize(NLSGetCameraWorldPosition() - worldPosition);
-    float3 lighting = albedo * (NLSGetAmbientFloor() * ao);
+    float3 lighting = albedo * (NLSGetVisibleAmbientFloor() * ao);
 
     [loop]
     for (uint lightIndex = 0u; lightIndex < NLSGetSceneLightCount(); ++lightIndex)

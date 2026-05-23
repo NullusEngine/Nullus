@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include "Rendering/RHI/Backends/DX12/DX12ExplicitDeviceFactory.h"
+#include "Rendering/RHI/Backends/DX12/DX12FormatUtils.h"
+#include "Rendering/RHI/Backends/DX12/DX12Resource.h"
 #include "Rendering/RHI/Backends/DX12/DX12TextureViewUtils.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
 
@@ -87,6 +89,155 @@ TEST(DX12TextureViewUtilsTests, BuildsArraySrvAndRtvFor2DArrayColorTexture)
     EXPECT_EQ(descriptors.rtvDesc.Texture2DArray.ArraySize, 2u);
 }
 
+TEST(DX12TextureViewUtilsTests, ResolvesSingleBarrierSubresourceFromMipAndArrayLayer)
+{
+    NLS::Render::RHI::RHITextureDesc textureDesc;
+    textureDesc.dimension = NLS::Render::RHI::TextureDimension::Texture2DArray;
+    textureDesc.mipLevels = 4u;
+    textureDesc.arrayLayers = 3u;
+
+    NLS::Render::RHI::RHISubresourceRange singleRange;
+    singleRange.baseMipLevel = 2u;
+    singleRange.mipLevelCount = 1u;
+    singleRange.baseArrayLayer = 1u;
+    singleRange.arrayLayerCount = 1u;
+
+    EXPECT_EQ(
+        NLS::Render::RHI::DX12::ResolveDX12BarrierSubresourceIndex(textureDesc, singleRange),
+        6u);
+
+    const auto singleIndices =
+        NLS::Render::RHI::DX12::BuildDX12BarrierSubresourceIndices(textureDesc, singleRange);
+    ASSERT_EQ(singleIndices.size(), 1u);
+    EXPECT_EQ(singleIndices[0], 6u);
+
+    UINT resolvedIndex = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    EXPECT_TRUE(NLS::Render::RHI::DX12::TryResolveDX12BarrierSubresourceIndex(
+        textureDesc,
+        singleRange,
+        resolvedIndex));
+    EXPECT_EQ(resolvedIndex, 6u);
+}
+
+TEST(DX12TextureViewUtilsTests, ExpandsMultiMipAndLayerBarrierSubresourceRange)
+{
+    NLS::Render::RHI::RHITextureDesc textureDesc;
+    textureDesc.dimension = NLS::Render::RHI::TextureDimension::Texture2DArray;
+    textureDesc.mipLevels = 4u;
+    textureDesc.arrayLayers = 3u;
+
+    NLS::Render::RHI::RHISubresourceRange range;
+    range.baseMipLevel = 1u;
+    range.mipLevelCount = 2u;
+    range.baseArrayLayer = 1u;
+    range.arrayLayerCount = 2u;
+
+    const auto indices =
+        NLS::Render::RHI::DX12::BuildDX12BarrierSubresourceIndices(textureDesc, range);
+    ASSERT_EQ(indices.size(), 4u);
+    EXPECT_EQ(indices[0], 5u);
+    EXPECT_EQ(indices[1], 6u);
+    EXPECT_EQ(indices[2], 9u);
+    EXPECT_EQ(indices[3], 10u);
+    UINT resolvedIndex = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    EXPECT_FALSE(NLS::Render::RHI::DX12::TryResolveDX12BarrierSubresourceIndex(
+        textureDesc,
+        range,
+        resolvedIndex));
+    EXPECT_EQ(
+        NLS::Render::RHI::DX12::ResolveDX12BarrierSubresourceIndex(textureDesc, range),
+        D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
+}
+
+TEST(DX12TextureViewUtilsTests, ExpandsDepthStencilBarrierAcrossDepthAndStencilPlanes)
+{
+    NLS::Render::RHI::RHITextureDesc textureDesc;
+    textureDesc.dimension = NLS::Render::RHI::TextureDimension::Texture2DArray;
+    textureDesc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
+    textureDesc.mipLevels = 4u;
+    textureDesc.arrayLayers = 3u;
+
+    NLS::Render::RHI::RHISubresourceRange singleRange;
+    singleRange.baseMipLevel = 2u;
+    singleRange.mipLevelCount = 1u;
+    singleRange.baseArrayLayer = 1u;
+    singleRange.arrayLayerCount = 1u;
+
+    const auto indices =
+        NLS::Render::RHI::DX12::BuildDX12BarrierSubresourceIndices(textureDesc, singleRange);
+    ASSERT_EQ(indices.size(), 2u);
+    EXPECT_EQ(indices[0], 6u);
+    EXPECT_EQ(indices[1], 18u);
+    UINT resolvedIndex = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    EXPECT_FALSE(NLS::Render::RHI::DX12::TryResolveDX12BarrierSubresourceIndex(
+        textureDesc,
+        singleRange,
+        resolvedIndex));
+    EXPECT_EQ(
+        NLS::Render::RHI::DX12::ResolveDX12BarrierSubresourceIndex(textureDesc, singleRange),
+        D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
+}
+
+TEST(DX12TextureViewUtilsTests, DetectsWholeTextureBarrierRange)
+{
+    NLS::Render::RHI::RHITextureDesc textureDesc;
+    textureDesc.dimension = NLS::Render::RHI::TextureDimension::Texture2DArray;
+    textureDesc.mipLevels = 4u;
+    textureDesc.arrayLayers = 3u;
+
+    NLS::Render::RHI::RHISubresourceRange allRange;
+    allRange.mipLevelCount = 0u;
+    allRange.arrayLayerCount = 0u;
+    EXPECT_TRUE(NLS::Render::RHI::DX12::DoesDX12BarrierRangeCoverWholeTexture(textureDesc, allRange));
+
+    NLS::Render::RHI::RHISubresourceRange fullRange;
+    fullRange.baseMipLevel = 0u;
+    fullRange.mipLevelCount = 4u;
+    fullRange.baseArrayLayer = 0u;
+    fullRange.arrayLayerCount = 3u;
+    EXPECT_TRUE(NLS::Render::RHI::DX12::DoesDX12BarrierRangeCoverWholeTexture(textureDesc, fullRange));
+
+    auto partialRange = fullRange;
+    partialRange.arrayLayerCount = 2u;
+    EXPECT_FALSE(NLS::Render::RHI::DX12::DoesDX12BarrierRangeCoverWholeTexture(textureDesc, partialRange));
+}
+
+TEST(DX12TextureViewUtilsTests, TreatsTexture3DBarrierRangeAsMipSubresourceNotWSlice)
+{
+    NLS::Render::RHI::RHITextureDesc textureDesc;
+    textureDesc.dimension = NLS::Render::RHI::TextureDimension::Texture3D;
+    textureDesc.extent = { 16u, 16u, 8u };
+    textureDesc.mipLevels = 4u;
+    textureDesc.arrayLayers = 1u;
+
+    NLS::Render::RHI::RHISubresourceRange mipRange;
+    mipRange.baseMipLevel = 2u;
+    mipRange.mipLevelCount = 1u;
+    mipRange.baseArrayLayer = 3u;
+    mipRange.arrayLayerCount = 2u;
+
+    const auto indices =
+        NLS::Render::RHI::DX12::BuildDX12BarrierSubresourceIndices(textureDesc, mipRange);
+    ASSERT_EQ(indices.size(), 1u);
+    EXPECT_EQ(indices[0], 2u);
+
+    UINT resolvedIndex = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    EXPECT_TRUE(NLS::Render::RHI::DX12::TryResolveDX12BarrierSubresourceIndex(
+        textureDesc,
+        mipRange,
+        resolvedIndex));
+    EXPECT_EQ(resolvedIndex, 2u);
+
+    NLS::Render::RHI::RHISubresourceRange allMipsForPartialWSlices;
+    allMipsForPartialWSlices.baseMipLevel = 0u;
+    allMipsForPartialWSlices.mipLevelCount = 4u;
+    allMipsForPartialWSlices.baseArrayLayer = 3u;
+    allMipsForPartialWSlices.arrayLayerCount = 2u;
+    EXPECT_TRUE(NLS::Render::RHI::DX12::DoesDX12BarrierRangeCoverWholeTexture(
+        textureDesc,
+        allMipsForPartialWSlices));
+}
+
 TEST(DX12TextureViewUtilsTests, Builds3DSrvForTexture3D)
 {
     NLS::Render::RHI::RHITextureDesc textureDesc;
@@ -133,7 +284,17 @@ TEST(DX12TextureViewUtilsTests, BuildsDepthStencilSrvAndDsvForSampledDepthAttach
     EXPECT_FALSE(descriptors.hasRtv);
 }
 
-TEST(DX12TextureViewUtilsTests, ReturnsInvalidSrvHandleForZeroSizedTextureView)
+TEST(DX12TextureViewUtilsTests, UsesTypelessDepthResourceWithDsvClearFormat)
+{
+    EXPECT_EQ(
+        NLS::Render::RHI::DX12::ToDX12ResourceFormat(NLS::Render::RHI::TextureFormat::Depth24Stencil8),
+        DXGI_FORMAT_R24G8_TYPELESS);
+    EXPECT_EQ(
+        NLS::Render::RHI::DX12::ToDX12OptimizedClearFormat(NLS::Render::RHI::TextureFormat::Depth24Stencil8),
+        DXGI_FORMAT_D24_UNORM_S8_UINT);
+}
+
+TEST(DX12TextureViewUtilsTests, RejectsZeroSizedTextures)
 {
     const auto device = NLS::Render::Backend::CreateDX12RhiDevice(false);
     if (device == nullptr || !device->IsBackendReady())
@@ -151,18 +312,139 @@ TEST(DX12TextureViewUtilsTests, ReturnsInvalidSrvHandleForZeroSizedTextureView)
     textureDesc.debugName = "ZeroSizedDX12Texture";
 
     const auto texture = device->CreateTexture(textureDesc);
-    ASSERT_NE(texture, nullptr);
-
-    NLS::Render::RHI::RHITextureViewDesc viewDesc;
-    viewDesc.viewType = NLS::Render::RHI::TextureViewType::Texture2D;
-    viewDesc.format = NLS::Render::RHI::TextureFormat::RGBA8;
-    viewDesc.debugName = "ZeroSizedDX12TextureView";
-
-    const auto view = device->CreateTextureView(texture, viewDesc);
-    ASSERT_NE(view, nullptr);
-
-    const auto srvHandle = view->GetNativeShaderResourceView();
-    EXPECT_FALSE(srvHandle.IsValid());
-    EXPECT_EQ(srvHandle, nullptr);
+    EXPECT_EQ(texture, nullptr);
 }
+
+TEST(DX12TextureViewUtilsTests, UploadHeapBuffersKeepGenericReadStateAndRejectWritableStorage)
+{
+    const auto device = NLS::Render::Backend::CreateDX12RhiDevice(false);
+    if (device == nullptr || !device->IsBackendReady())
+        GTEST_SKIP() << "DX12 device is not available in this environment";
+
+    const uint32_t vertexData[] = { 1u, 2u, 3u, 4u };
+    NLS::Render::RHI::RHIBufferUploadDesc uploadDesc;
+    uploadDesc.data = vertexData;
+    uploadDesc.dataSize = sizeof(vertexData);
+
+    NLS::Render::RHI::RHIBufferDesc vertexDesc;
+    vertexDesc.size = sizeof(vertexData);
+    vertexDesc.usage = NLS::Render::RHI::BufferUsageFlags::Vertex;
+    vertexDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
+    vertexDesc.debugName = "UploadHeapVertexBufferStateTest";
+    const auto vertexBuffer = device->CreateBuffer(vertexDesc, uploadDesc);
+    ASSERT_NE(vertexBuffer, nullptr);
+    EXPECT_EQ(vertexBuffer->GetState(), NLS::Render::RHI::ResourceState::GenericRead);
+
+    NLS::Render::RHI::RHIBufferDesc indexDesc;
+    indexDesc.size = sizeof(vertexData);
+    indexDesc.usage = NLS::Render::RHI::BufferUsageFlags::Index;
+    indexDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
+    indexDesc.debugName = "UploadHeapIndexBufferStateTest";
+    const auto indexBuffer = device->CreateBuffer(indexDesc, uploadDesc);
+    ASSERT_NE(indexBuffer, nullptr);
+    EXPECT_EQ(indexBuffer->GetState(), NLS::Render::RHI::ResourceState::GenericRead);
+
+    NLS::Render::RHI::RHIBufferDesc uniformDesc;
+    uniformDesc.size = sizeof(vertexData);
+    uniformDesc.usage = NLS::Render::RHI::BufferUsageFlags::Uniform;
+    uniformDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
+    uniformDesc.debugName = "UploadHeapUniformBufferStateTest";
+    const auto uniformBuffer = device->CreateBuffer(uniformDesc, uploadDesc);
+    ASSERT_NE(uniformBuffer, nullptr);
+    EXPECT_EQ(uniformBuffer->GetState(), NLS::Render::RHI::ResourceState::GenericRead);
+    EXPECT_EQ(uniformBuffer->GetDesc().memoryUsage, NLS::Render::RHI::MemoryUsage::CPUToGPU);
+
+    NLS::Render::RHI::RHIBufferDesc defaultUniformDesc;
+    defaultUniformDesc.size = sizeof(vertexData);
+    defaultUniformDesc.usage = NLS::Render::RHI::BufferUsageFlags::Uniform;
+    defaultUniformDesc.debugName = "DefaultUniformBufferEffectiveUploadHeapStateTest";
+    const auto defaultUniformBuffer = device->CreateBuffer(defaultUniformDesc, uploadDesc);
+    ASSERT_NE(defaultUniformBuffer, nullptr);
+    EXPECT_EQ(defaultUniformBuffer->GetState(), NLS::Render::RHI::ResourceState::GenericRead);
+    EXPECT_EQ(defaultUniformBuffer->GetDesc().memoryUsage, NLS::Render::RHI::MemoryUsage::CPUToGPU);
+
+    NLS::Render::RHI::RHIBufferDesc shaderReadDesc;
+    shaderReadDesc.size = sizeof(vertexData);
+    shaderReadDesc.usage = NLS::Render::RHI::BufferUsageFlags::ShaderRead;
+    shaderReadDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
+    shaderReadDesc.debugName = "UploadHeapShaderReadBufferStateTest";
+    const auto shaderReadBuffer = device->CreateBuffer(shaderReadDesc, uploadDesc);
+    ASSERT_NE(shaderReadBuffer, nullptr);
+    EXPECT_EQ(shaderReadBuffer->GetState(), NLS::Render::RHI::ResourceState::GenericRead);
+    EXPECT_EQ(shaderReadBuffer->GetDesc().memoryUsage, NLS::Render::RHI::MemoryUsage::CPUToGPU);
+
+    NLS::Render::RHI::RHIBufferDesc storageDesc;
+    storageDesc.size = sizeof(vertexData);
+    storageDesc.usage = NLS::Render::RHI::BufferUsageFlags::Storage;
+    storageDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
+    storageDesc.debugName = "UploadHeapStorageBufferStateTest";
+    const auto storageBuffer = device->CreateBuffer(storageDesc, uploadDesc);
+    EXPECT_EQ(storageBuffer, nullptr);
+
+    NLS::Render::RHI::RHIBufferDesc copySrcDesc;
+    copySrcDesc.size = sizeof(vertexData);
+    copySrcDesc.usage = NLS::Render::RHI::BufferUsageFlags::CopySrc;
+    copySrcDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
+    copySrcDesc.debugName = "UploadHeapCopySourceBufferStateTest";
+    const auto copySrcBuffer = device->CreateBuffer(copySrcDesc, uploadDesc);
+    ASSERT_NE(copySrcBuffer, nullptr);
+    EXPECT_EQ(copySrcBuffer->GetState(), NLS::Render::RHI::ResourceState::GenericRead);
+
+    NLS::Render::RHI::RHIBufferDesc copyDstUploadDesc;
+    copyDstUploadDesc.size = sizeof(vertexData);
+    copyDstUploadDesc.usage = NLS::Render::RHI::BufferUsageFlags::CopyDst;
+    copyDstUploadDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
+    copyDstUploadDesc.debugName = "UploadHeapCopyDestinationBufferStateTest";
+    const auto copyDstUploadBuffer = device->CreateBuffer(copyDstUploadDesc, uploadDesc);
+    EXPECT_EQ(copyDstUploadBuffer, nullptr);
+
+    NLS::Render::RHI::RHIBufferDesc readbackDesc;
+    readbackDesc.size = sizeof(vertexData);
+    readbackDesc.usage = NLS::Render::RHI::BufferUsageFlags::CopyDst;
+    readbackDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::GPUToCPU;
+    readbackDesc.debugName = "ReadbackHeapCopyDestinationBufferStateTest";
+    const auto readbackBuffer = device->CreateBuffer(readbackDesc);
+    ASSERT_NE(readbackBuffer, nullptr);
+    EXPECT_EQ(readbackBuffer->GetState(), NLS::Render::RHI::ResourceState::CopyDst);
+    EXPECT_EQ(readbackBuffer->GetDesc().memoryUsage, NLS::Render::RHI::MemoryUsage::GPUToCPU);
+
+    NLS::Render::RHI::RHIBufferDesc readbackStorageDesc;
+    readbackStorageDesc.size = sizeof(vertexData);
+    readbackStorageDesc.usage = NLS::Render::RHI::BufferUsageFlags::Storage;
+    readbackStorageDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::GPUToCPU;
+    readbackStorageDesc.debugName = "ReadbackHeapStorageBufferStateTest";
+    const auto readbackStorageBuffer = device->CreateBuffer(readbackStorageDesc);
+    EXPECT_EQ(readbackStorageBuffer, nullptr);
+}
+
+TEST(DX12TextureViewUtilsTests, TexturesRejectCpuVisibleMemoryUsage)
+{
+    const auto device = NLS::Render::Backend::CreateDX12RhiDevice(false);
+    if (device == nullptr || !device->IsBackendReady())
+        GTEST_SKIP() << "DX12 device is not available in this environment";
+
+    const uint32_t pixels[] = { 0xffffffffu, 0xff000000u, 0xffff0000u, 0xff00ff00u };
+    NLS::Render::RHI::RHITextureUploadDesc uploadDesc;
+    uploadDesc.data = pixels;
+    uploadDesc.dataSize = sizeof(pixels);
+    uploadDesc.extent = { 2u, 2u, 1u };
+    uploadDesc.rowPitch = 8u;
+    uploadDesc.slicePitch = sizeof(pixels);
+
+    NLS::Render::RHI::RHITextureDesc desc;
+    desc.extent = { 2u, 2u, 1u };
+    desc.usage = NLS::Render::RHI::TextureUsageFlags::Sampled;
+    desc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
+    desc.debugName = "CpuToGpuTextureShouldBeRejected";
+    EXPECT_EQ(device->CreateTexture(desc, uploadDesc), nullptr);
+
+    desc.memoryUsage = NLS::Render::RHI::MemoryUsage::GPUToCPU;
+    desc.debugName = "GpuToCpuTextureShouldBeRejected";
+    EXPECT_EQ(device->CreateTexture(desc), nullptr);
+
+    desc.memoryUsage = NLS::Render::RHI::MemoryUsage::GPUOnly;
+    desc.debugName = "GpuOnlyTextureShouldBeAccepted";
+    EXPECT_NE(device->CreateTexture(desc, uploadDesc), nullptr);
+}
+
 #endif

@@ -1,11 +1,6 @@
 #include "GameObject.h"
 #include <algorithm>
 #include "Components/TransformComponent.h"
-#include "Components/CameraComponent.h"
-#include "Components/LightComponent.h"
-#include "Components/MaterialRenderer.h"
-#include "Components/MeshRenderer.h"
-#include "Components/SkyBoxComponent.h"
 #include "Reflection/TypeCreator.h"
 
 namespace NLS::Engine
@@ -19,7 +14,7 @@ Event<GameObject&> GameObject::DettachEvent;
 
 GameObject::GameObject(const std::string& p_name, const std::string& p_tag):
 m_name(p_name),
-m_tag(p_tag),
+m_tag(p_tag.empty() ? "Untagged" : p_tag),
 m_active(true),
 m_transform(nullptr)
 {
@@ -79,7 +74,11 @@ Component* GameObject::AddComponent(meta::Type type, const std::function<void(Co
 
 Component* GameObject::GetComponent(meta::Type type, bool includeSubType) const
 {
-    if (!type.IsValid() || !(type == NLS_TYPEOF(Component) || type.DerivesFrom(NLS_TYPEOF(Component))))
+    if (!type.IsValid())
+        return nullptr;
+
+    const auto componentBaseType = NLS_TYPEOF(Component);
+    if (type != componentBaseType && !type.DerivesFrom(componentBaseType))
         return nullptr;
 
     for (const auto& component : m_vComponents)
@@ -110,9 +109,10 @@ bool GameObject::RemoveComponent(Component* component)
     {
         if (it->get() == component)
         {
-            component->DestroyFromOwner();
+            auto removedComponent = std::move(*it);
             m_vComponents.erase(it);
-            ComponentRemovedEvent.Invoke(nullptr);
+            component->DestroyFromOwner();
+            ComponentRemovedEvent.Invoke(component);
             return true;
         }
     }
@@ -233,8 +233,9 @@ void GameObject::DetachFromParent()
     /* Remove the actor from the parent children list */
     if (m_parent)
     {
-        m_parent->m_children.erase(std::remove_if(m_parent->m_children.begin(), m_parent->m_children.end(), [this](GameObject* p_element)
-                                                  { return p_element == this; }));
+        m_parent->m_children.erase(
+            std::remove(m_parent->m_children.begin(), m_parent->m_children.end(), this),
+            m_parent->m_children.end());
     }
 
     m_parent = nullptr;
@@ -251,7 +252,8 @@ void GameObject::SetParent(GameObject& p_parent)
     m_transform->SetParent(*p_parent.m_transform);
 
     /* Store the actor in the parent children list */
-    p_parent.m_children.push_back(this);
+    if (std::find(p_parent.m_children.begin(), p_parent.m_children.end(), this) == p_parent.m_children.end())
+        p_parent.m_children.push_back(this);
 
     AttachEvent.Invoke(*this, p_parent);
 }

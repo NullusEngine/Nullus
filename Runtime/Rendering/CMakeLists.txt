@@ -8,12 +8,17 @@ nls_add_runtime_target(
   NLS_Core
   NLS_Platform
   ImGui
+  Autodesk::FbxSdk
   assimp
   fg::FrameGraph
   spirv-cross-core
   spirv-cross-glsl
   spirv-cross-util
   )
+
+if(TARGET AutodeskFbxSdkRuntime)
+  add_dependencies(NLS_Render AutodeskFbxSdkRuntime)
+endif()
 
 get_target_property(_nls_render_sources NLS_Render SOURCES)
 if(_nls_render_sources)
@@ -60,10 +65,20 @@ target_include_directories(
 target_sources(
   NLS_Render
   PRIVATE
+    "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/MeshArtifact.cpp"
+    "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/MeshArtifact.h"
+    "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/ShaderArtifact.cpp"
+    "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/ShaderArtifact.h"
+    "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/TextureArtifact.cpp"
+    "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/TextureArtifact.h"
+    "${NLS_ROOT_DIR}/Runtime/Rendering/Geometry/BoundingSphereUtils.h"
     "${NLS_ROOT_DIR}/Runtime/Core/ResourceManagement/MaterialManager.cpp"
-    "${NLS_ROOT_DIR}/Runtime/Core/ResourceManagement/ModelManager.cpp"
+    "${NLS_ROOT_DIR}/Runtime/Core/ResourceManagement/MeshManager.cpp"
     "${NLS_ROOT_DIR}/Runtime/Core/ResourceManagement/ShaderManager.cpp"
     "${NLS_ROOT_DIR}/Runtime/Core/ResourceManagement/TextureManager.cpp"
 )
 
 target_compile_definitions(NLS_Render PRIVATE NLS_RESOURCE_MANAGEMENT_EXPORT)
+target_compile_definitions(NLS_Render PRIVATE
+  $<$<BOOL:${NLS_ENABLE_TEST_HOOKS}>:NLS_ENABLE_TEST_HOOKS=1>
+)

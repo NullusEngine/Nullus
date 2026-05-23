@@ -14,6 +14,11 @@ namespace NLS::Core::ResourceManagement
 	public:
         using Shader = Render::Resources::Shader;
 
+		const char* GetResourceTypeName() const override { return "Shader"; }
+
+		static void ProvideAssetPaths(const std::string& p_projectAssetsPath, const std::string& p_engineAssetsPath);
+		static const std::string& ProjectAssetsRoot();
+
 		/**
 		* Create the resource identified by the given path
 		* @param p_path

@@ -32,6 +32,13 @@ namespace NLS::meta
 
         const MetaManager &MetaManager::operator=(const MetaManager &rhs)
         {
+            if (this == &rhs)
+                return *this;
+
+            for (auto &prop : m_properties)
+                delete prop.second;
+            m_properties.clear( );
+
             copy( rhs );
 
             return *this;
@@ -114,7 +121,7 @@ namespace NLS::meta
         for (auto &prop : rhs.m_properties)
         {
             m_properties[ prop.first ] =
-                static_cast<MetaProperty*>( prop.second->Clone( ) );
+                prop.second->CloneMetaProperty();
         }
     }
 }

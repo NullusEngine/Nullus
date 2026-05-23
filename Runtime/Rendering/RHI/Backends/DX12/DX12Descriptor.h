@@ -82,6 +82,8 @@ namespace NLS::Render::Backend
 		ID3D12DescriptorHeap* GetDescriptorHeap(
 			NLS::Render::RHI::DX12::DX12DescriptorHeapKind heapKind) const override;
 #endif
+		bool IsCompatibleWithDescriptorTable(
+			const NLS::Render::RHI::DX12::DX12DescriptorTableDesc& table) const override;
 
 	private:
 #if defined(_WIN32)
@@ -107,8 +109,12 @@ namespace NLS::Render::Backend
 		void WriteSamplerDescriptor(
 			const NLS::Render::RHI::RHIBindingSetEntry* boundEntry,
 			D3D12_CPU_DESCRIPTOR_HANDLE destination) const;
-		void WriteNullStructuredBufferDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE destination) const;
-		void WriteNullStorageBufferDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE destination) const;
+		void WriteNullStructuredBufferDescriptor(
+			D3D12_CPU_DESCRIPTOR_HANDLE destination,
+			uint32_t elementStride) const;
+		void WriteNullStorageBufferDescriptor(
+			D3D12_CPU_DESCRIPTOR_HANDLE destination,
+			uint32_t elementStride) const;
 		void WriteResourceDescriptor(
 			const NLS::Render::RHI::RHIBindingLayoutEntry* layoutEntry,
 			const NLS::Render::RHI::RHIBindingSetEntry* boundEntry,
@@ -123,6 +129,7 @@ namespace NLS::Render::Backend
 		UINT m_samplerDescriptorSize = 0;
 #endif
 
+		std::vector<NLS::Render::RHI::DX12::DX12DescriptorTableDesc> m_descriptorTableDescs;
 		ID3D12Device* m_device = nullptr;
 		NLS::Render::RHI::RHIBindingSetDesc m_desc;
 		DX12ShaderVisibleDescriptorHeapAllocator* m_resourceHeapAllocator = nullptr;

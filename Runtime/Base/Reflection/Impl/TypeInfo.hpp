@@ -73,6 +73,7 @@ namespace NLS::meta
                 TypeData &data, 
                 typename std::enable_if<
                     IsMetaDefaultConstructible(U)
+                    && std::is_move_constructible<U>::value
                 >::type*
             )
         {
@@ -81,6 +82,22 @@ namespace NLS::meta
 
              // add the good 'ol dynamic default constructor
             data.AddConstructor<T, true, false>( { } );
+        }
+
+        template<typename T>
+        template<typename U>
+        void TypeInfo<T>::addDefaultConstructor(
+                TypeData &data,
+                typename std::enable_if<
+                    IsMetaDefaultConstructible(U)
+                    && !std::is_move_constructible<U>::value
+                >::type*
+            )
+        {
+            // Unity-style Object instances are identity objects and are not
+            // returned by value from reflection constructors. They can still
+            // be dynamically produced and wrapped as object pointers.
+            data.AddConstructor<T, true, std::is_base_of<NLS::Object, T>::value>( { } );
         }
 
         template<typename T>

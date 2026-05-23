@@ -29,14 +29,17 @@ namespace NLS::Render::Settings
         bool editorDisableGridPass = false;
         bool editorDisableDebugCamerasPass = false;
         bool editorDisableDebugLightsPass = false;
-        bool editorDisableDebugActorPass = false;
+        bool editorDisableDebugGameObjectPass = false;
         bool editorDisableDebugDrawPass = false;
         bool editorDisablePickingPass = false;
         bool editorLogScenePicking = false;
         bool editorLogSceneCameraInput = false;
         std::string editorValidationFocusView;
         std::string editorValidationExclusiveView;
-        std::string editorValidationSelectActor;
+        std::string editorValidationSelectGameObject;
         std::string editorValidationSceneCamera;
+        std::string editorValidationCreateAsset;
+        std::string editorValidationSceneReadbackOutput;
+        std::string editorValidationSceneReadbackSummary;
     };
 }

@@ -15,6 +15,9 @@ namespace NLS::Game::Launch
 		std::printf("  --renderdoc                  Enable RenderDoc debugging\n");
 		std::printf("  --no-renderdoc               Disable RenderDoc debugging\n");
 		std::printf("  --capture-after-frames <N>  Automatically capture frame after N presents\n");
+		std::printf("  --material-validation-output <path>   Write a renderer readback PNG for material validation\n");
+		std::printf("  --material-validation-summary <path>  Write material validation analysis text\n");
+		std::printf("  --material-validation-after-frames <N> Capture material validation after N presents\n");
 		std::printf("  --help, -h                  Show this help message\n");
 		std::printf("\nArguments:\n");
 		std::printf("  project_path   Path to .nullus project file or project directory\n");
@@ -72,6 +75,33 @@ namespace NLS::Game::Launch
 				catch (...)
 				{
 					std::fprintf(stderr, "[Game main] Invalid value for --capture-after-frames: %s\n", argv[i]);
+					parsed.hasError = true;
+					return parsed;
+				}
+			}
+			else if (arg == "--material-validation-output" && i + 1 < argc)
+			{
+				if (!parsed.materialValidation.has_value())
+					parsed.materialValidation = MaterialValidationLaunchSettings {};
+				parsed.materialValidation->outputPath = argv[++i];
+			}
+			else if (arg == "--material-validation-summary" && i + 1 < argc)
+			{
+				if (!parsed.materialValidation.has_value())
+					parsed.materialValidation = MaterialValidationLaunchSettings {};
+				parsed.materialValidation->summaryPath = argv[++i];
+			}
+			else if (arg == "--material-validation-after-frames" && i + 1 < argc)
+			{
+				try
+				{
+					if (!parsed.materialValidation.has_value())
+						parsed.materialValidation = MaterialValidationLaunchSettings {};
+					parsed.materialValidation->captureAfterFrames = static_cast<uint32_t>(std::stoul(argv[++i]));
+				}
+				catch (...)
+				{
+					std::fprintf(stderr, "[Game main] Invalid value for --material-validation-after-frames: %s\n", argv[i]);
 					parsed.hasError = true;
 					return parsed;
 				}

@@ -12,6 +12,8 @@
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/Tooling/RenderDocCaptureController.h"
 #include "UI/UIManager.h"
+#include "UI/Widgets/Buttons/ButtonImage.h"
+#include "UI/Widgets/Visual/Image.h"
 
 namespace
 {
@@ -47,6 +49,41 @@ namespace
         : std::true_type
     {
     };
+
+    struct ImGuiContextGuard
+    {
+        ImGuiContextGuard()
+        {
+            IMGUI_CHECKVERSION();
+            context = ImGui::CreateContext();
+            ImGui::GetIO().DisplaySize = ImVec2(320.0f, 200.0f);
+            unsigned char* pixels = nullptr;
+            int width = 0;
+            int height = 0;
+            ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+            ImGui::GetIO().Fonts->TexID = reinterpret_cast<ImTextureID>(static_cast<uintptr_t>(0x1));
+        }
+
+        ~ImGuiContextGuard()
+        {
+            ImGui::DestroyContext(context);
+        }
+
+        ImGuiContext* context = nullptr;
+    };
+
+    int CountDrawElementsWithTextureId(const ImDrawList& commandList, ImTextureID textureId)
+    {
+        int elementCount = 0;
+        for (int commandIndex = 0; commandIndex < commandList.CmdBuffer.Size; ++commandIndex)
+        {
+            const ImDrawCmd& command = commandList.CmdBuffer[commandIndex];
+            if (command.GetTexID() == textureId && command.ElemCount > 0)
+                elementCount += static_cast<int>(command.ElemCount);
+        }
+
+        return elementCount;
+    }
 }
 
 TEST(UIAndToolingBackendAwarenessTests, ResolvesImGuiGlfwInitBackendByGraphicsBackend)
@@ -115,11 +152,70 @@ TEST(UIAndToolingBackendAwarenessTests, NativeRenderDeviceInfoExposesTaggedHandl
     EXPECT_EQ(NLS::Render::Tooling::ResolveRenderDocCaptureDeviceHandle(info).handle, info.device);
 }
 
+TEST(UIAndToolingBackendAwarenessTests, QueuedRenderDocStartupCaptureUsesExplicitFrameBoundary)
+{
+    using NLS::Render::Tooling::RenderDocQueuedCaptureAction;
+    using NLS::Render::Tooling::ResolveRenderDocQueuedCapturePreFrameAction;
+
+    EXPECT_EQ(
+        ResolveRenderDocQueuedCapturePreFrameAction(false, true, true, 1u),
+        RenderDocQueuedCaptureAction::None);
+    EXPECT_EQ(
+        ResolveRenderDocQueuedCapturePreFrameAction(true, false, true, 1u),
+        RenderDocQueuedCaptureAction::None);
+    EXPECT_EQ(
+        ResolveRenderDocQueuedCapturePreFrameAction(true, true, false, 1u),
+        RenderDocQueuedCaptureAction::None);
+    EXPECT_EQ(
+        ResolveRenderDocQueuedCapturePreFrameAction(true, true, true, 2u),
+        RenderDocQueuedCaptureAction::WaitForFutureFrame);
+    EXPECT_EQ(
+        ResolveRenderDocQueuedCapturePreFrameAction(true, true, true, 1u),
+        RenderDocQueuedCaptureAction::StartExplicitFrameCapture);
+}
+
 TEST(UIAndToolingBackendAwarenessTests, RhiDeviceBaseDoesNotExposeDefaultUiBridgeHooks)
 {
     EXPECT_FALSE(HasDevicePrepareUIRender<NLS::Render::RHI::RHIDevice>::value);
     EXPECT_FALSE(HasDeviceReleaseUITextureHandles<NLS::Render::RHI::RHIDevice>::value);
     EXPECT_FALSE(HasDeviceSetCurrentCommandBuffer<NLS::Render::RHI::RHIDevice>::value);
+}
+
+TEST(UIAndToolingBackendAwarenessTests, ImageWithUnresolvedTextureDoesNotSubmitNullTextureDrawCommand)
+{
+    ImGuiContextGuard guard;
+
+    ImGui::NewFrame();
+    ImGui::Begin("Unresolved Image Test");
+    const ImDrawList* drawList = ImGui::GetWindowDrawList();
+    ASSERT_NE(drawList, nullptr);
+    const int nullTextureElementsBeforeImage = CountDrawElementsWithTextureId(*drawList, nullptr);
+    {
+        NLS::UI::Widgets::Image image(nullptr, { 16.0f, 16.0f });
+        image.Draw();
+        EXPECT_TRUE(image.HasLastDrawBounds());
+    }
+    EXPECT_EQ(CountDrawElementsWithTextureId(*drawList, nullptr), nullTextureElementsBeforeImage);
+    ImGui::End();
+    ImGui::Render();
+}
+
+TEST(UIAndToolingBackendAwarenessTests, ButtonImageWithUnresolvedTextureDoesNotSubmitNullTextureDrawCommand)
+{
+    ImGuiContextGuard guard;
+
+    ImGui::NewFrame();
+    ImGui::Begin("Unresolved Button Image Test");
+    const ImDrawList* drawList = ImGui::GetWindowDrawList();
+    ASSERT_NE(drawList, nullptr);
+    const int nullTextureElementsBeforeButtonImage = CountDrawElementsWithTextureId(*drawList, nullptr);
+    {
+        NLS::UI::Widgets::ButtonImage button(nullptr, { 20.0f, 20.0f });
+        button.Draw();
+    }
+    EXPECT_EQ(CountDrawElementsWithTextureId(*drawList, nullptr), nullTextureElementsBeforeButtonImage);
+    ImGui::End();
+    ImGui::Render();
 }
 
 TEST(UIAndToolingBackendAwarenessTests, CreatesNullRendererBridgeForDX11Backend)

@@ -218,7 +218,6 @@ void ProjectSettings::DrawSelectedSettings()
     {
         RemoveAllWidgets();
 
-        auto instance = selected->makeVariant();
         ReflectedPropertyDrawerOptions options;
         options.labelWidth = 180.0f;
         options.searchText = m_searchText;
@@ -233,7 +232,15 @@ void ProjectSettings::DrawSelectedSettings()
                 m_restartRequiredFields.insert(id + "." + field.GetName());
             ApplyLiveSettings();
         };
-        DrawReflectedObject(*this, instance, options);
+        options.onFieldLayoutChanged = [this, id = selected->id](const meta::Field& field)
+        {
+            m_dirtySettings.insert(id);
+            if (RequiresRestart(field))
+                m_restartRequiredFields.insert(id + "." + field.GetName());
+            m_reflectedWidgetsSelectionId.clear();
+            ApplyLiveSettings();
+        };
+        DrawReflectedObject(*this, selected->makeVariant(), options);
         m_reflectedWidgetsSelectionId = selected->id;
         m_reflectedWidgetsSearchText = m_searchText;
     }

@@ -23,7 +23,11 @@ void Image::_Draw_Impl()
 
     const ImVec2 uv0 = flipVertically ? ImVec2(0.f, 1.f) : ImVec2(0.f, 0.f);
     const ImVec2 uv1 = flipVertically ? ImVec2(1.f, 0.f) : ImVec2(1.f, 1.f);
-    ImGui::Image(resolvedTextureId, Internal::Converter::ToImVec2(size), uv0, uv1);
+    const ImVec2 imageSize = Internal::Converter::ToImVec2(size);
+    if (resolvedTextureId != nullptr)
+        ImGui::Image(resolvedTextureId, imageSize, uv0, uv1);
+    else
+        ImGui::Dummy(imageSize);
     m_lastDrawMin = Internal::Converter::ToFVector2(ImGui::GetItemRectMin());
     m_lastDrawMax = Internal::Converter::ToFVector2(ImGui::GetItemRectMax());
     m_hasLastDrawBounds = true;

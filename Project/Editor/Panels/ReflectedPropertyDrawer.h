@@ -24,12 +24,17 @@ enum class ReflectedPropertySupport
     Int,
     Float,
     String,
+    Vector2,
     Vector3,
     Vector4,
     Quaternion,
+    Color,
+    Rect,
+    Bounds,
     BoundingSphere,
-    StringArray,
-    FloatArray,
+    ObjectReference,
+    Array,
+    LayerMask,
     Enum
 };
 
@@ -38,6 +43,7 @@ struct ReflectedPropertyDrawerOptions
     float labelWidth = 104.0f;
     std::string searchText;
     std::function<void(const meta::Field&)> onFieldChanged;
+    std::function<void(const meta::Field&)> onFieldLayoutChanged;
     std::function<std::string(const meta::Field&)> fieldBadgeProvider;
 };
 
@@ -51,13 +57,13 @@ bool ReflectedFieldMatchesSearch(const meta::Field& p_field, std::string_view p_
 
 bool DrawReflectedField(
     UI::Internal::WidgetContainer& p_root,
-    meta::Variant& p_instance,
+    meta::Variant&& p_instance,
     const meta::Field& p_field,
     const ReflectedPropertyDrawerOptions& p_options = {});
 
 int DrawReflectedObject(
     UI::Internal::WidgetContainer& p_root,
-    meta::Variant& p_instance,
+    meta::Variant&& p_instance,
     const ReflectedPropertyDrawerOptions& p_options = {});
 
 std::vector<std::string> GetReflectedPropertyLabels(const meta::Type& p_type);

@@ -2,6 +2,8 @@
 
 #include <unordered_map>
 
+#include "Rendering/RHI/Core/RHIResource.h"
+
 namespace NLS::Render::RHI
 {
     namespace
@@ -71,6 +73,65 @@ namespace NLS::Render::RHI
             uint64_t retireAfterFrameIndex = 0u;
         };
 
+        bool IsCpuVisibleBuffer(const std::shared_ptr<RHIBuffer>& buffer)
+        {
+            if (buffer == nullptr)
+                return false;
+
+            const auto memoryUsage = buffer->GetDesc().memoryUsage;
+            return memoryUsage == MemoryUsage::CPUToGPU ||
+                memoryUsage == MemoryUsage::GPUToCPU;
+        }
+
+        bool IsLegalCpuVisibleBufferState(const std::shared_ptr<RHIBuffer>& buffer, ResourceState state)
+        {
+            if (!IsCpuVisibleBuffer(buffer))
+                return false;
+
+            const auto memoryUsage = buffer->GetDesc().memoryUsage;
+            if (memoryUsage == MemoryUsage::CPUToGPU)
+                return state == ResourceState::Unknown || state == ResourceState::GenericRead;
+            if (memoryUsage == MemoryUsage::GPUToCPU)
+                return state == ResourceState::Unknown || state == ResourceState::CopyDst;
+            return false;
+        }
+
+        bool IsLegalCpuVisibleBufferTransition(
+            const std::shared_ptr<RHIBuffer>& buffer,
+            ResourceState before,
+            ResourceState after)
+        {
+            return IsLegalCpuVisibleBufferState(buffer, before) &&
+                IsLegalCpuVisibleBufferState(buffer, after);
+        }
+
+        bool IsEmptySubresourceRange(const RHISubresourceRange& range)
+        {
+            return range.mipLevelCount == 0u && range.arrayLayerCount == 0u;
+        }
+
+        uint64_t SubresourceRangeEnd(uint32_t base, uint32_t count)
+        {
+            return static_cast<uint64_t>(base) + static_cast<uint64_t>(count);
+        }
+
+        bool DoesSubresourceRangeCover(
+            const RHISubresourceRange& coveringRange,
+            const RHISubresourceRange& requestedRange)
+        {
+            if (IsEmptySubresourceRange(coveringRange))
+                return true;
+            if (IsEmptySubresourceRange(requestedRange))
+                return false;
+
+            return coveringRange.baseMipLevel <= requestedRange.baseMipLevel &&
+                SubresourceRangeEnd(requestedRange.baseMipLevel, requestedRange.mipLevelCount) <=
+                    SubresourceRangeEnd(coveringRange.baseMipLevel, coveringRange.mipLevelCount) &&
+                coveringRange.baseArrayLayer <= requestedRange.baseArrayLayer &&
+                SubresourceRangeEnd(requestedRange.baseArrayLayer, requestedRange.arrayLayerCount) <=
+                    SubresourceRangeEnd(coveringRange.baseArrayLayer, coveringRange.arrayLayerCount);
+        }
+
         class DefaultResourceStateTracker final : public ResourceStateTracker
         {
         public:
@@ -117,10 +178,21 @@ namespace NLS::Render::RHI
                     return std::nullopt;
 
                 const auto it = m_textureStates.find(TextureKey{ texture.get(), subresourceRange });
-                if (it == m_textureStates.end())
-                    return std::nullopt;
+                if (it != m_textureStates.end())
+                    return it->second;
 
-                return it->second;
+                const auto coveringIt = std::find_if(
+                    m_textureStates.begin(),
+                    m_textureStates.end(),
+                    [&](const auto& entry)
+                    {
+                        return entry.first.texture == texture.get() &&
+                            DoesSubresourceRangeCover(entry.first.subresourceRange, subresourceRange);
+                    });
+                if (coveringIt != m_textureStates.end())
+                    return coveringIt->second;
+
+                return std::nullopt;
             }
 
             RHIBarrierDesc BuildTransitionBarriers(
@@ -133,7 +205,6 @@ namespace NLS::Render::RHI
                 {
                     if (barrier.buffer == nullptr)
                         continue;
-
                     if (barrier.before == ResourceState::Unknown)
                     {
                         if (const auto tracked = GetBufferState(barrier.buffer); tracked.has_value())
@@ -143,6 +214,9 @@ namespace NLS::Render::RHI
                             barrier.sourceAccessMask = tracked->accessMask;
                         }
                     }
+
+                    if (IsLegalCpuVisibleBufferTransition(barrier.buffer, barrier.before, barrier.after))
+                        continue;
 
                     resolved.bufferBarriers.push_back(barrier);
                 }
@@ -252,6 +326,8 @@ namespace NLS::Render::RHI
                 for (const auto& barrier : barriers.bufferBarriers)
                 {
                     if (barrier.buffer == nullptr)
+                        continue;
+                    if (IsCpuVisibleBuffer(barrier.buffer))
                         continue;
 
                     m_bufferStates[BufferKey{ barrier.buffer.get() }] = TrackedBufferState{

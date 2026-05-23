@@ -15,7 +15,6 @@
 #include "Components/CameraComponent.h"
 #include "Components/Component.h"
 #include "Components/LightComponent.h"
-#include "Components/MaterialRenderer.h"
 #include "Components/MeshRenderer.h"
 #include "Components/SkyBoxComponent.h"
 #include "Components/TransformComponent.h"
@@ -155,15 +154,15 @@ ComponentSearchPanel::ComponentSearchPanel()
     lineBreak = true;
 }
 
-void ComponentSearchPanel::SetTargetActor(Engine::GameObject* p_actor)
+void ComponentSearchPanel::SetTargetGameObject(Engine::GameObject* p_GameObject)
 {
-    m_targetActor = p_actor;
+    m_targetGameObject = p_GameObject;
     RefreshEntries();
 }
 
-void ComponentSearchPanel::OpenForActor(Engine::GameObject* p_actor)
+void ComponentSearchPanel::OpenForGameObject(Engine::GameObject* p_GameObject)
 {
-    m_targetActor = p_actor;
+    m_targetGameObject = p_GameObject;
     m_query.clear();
     std::memset(m_queryBuffer, 0, sizeof(m_queryBuffer));
     RefreshEntries();
@@ -172,11 +171,11 @@ void ComponentSearchPanel::OpenForActor(Engine::GameObject* p_actor)
 
 void ComponentSearchPanel::RefreshEntries()
 {
-    m_entries = BuildComponentEntries(m_targetActor, m_query);
-    m_categories = BuildCategoryTree(BuildComponentEntries(m_targetActor));
+    m_entries = BuildComponentEntries(m_targetGameObject, m_query);
+    m_categories = BuildCategoryTree(BuildComponentEntries(m_targetGameObject));
 
-    if (!m_targetActor)
-        SetStatusMessage("No actor selected", true);
+    if (!m_targetGameObject)
+        SetStatusMessage("No GameObject selected", true);
     else if (GetViewModeForQuery(m_query) == ComponentPickerViewMode::SearchResults && m_entries.empty())
         SetStatusMessage("No components match your search", true);
     else if (m_categories.empty())
@@ -187,23 +186,23 @@ void ComponentSearchPanel::RefreshEntries()
 
 void ComponentSearchPanel::ClearTarget()
 {
-    m_targetActor = nullptr;
+    m_targetGameObject = nullptr;
     m_entries.clear();
     m_categories.clear();
     m_query.clear();
     std::memset(m_queryBuffer, 0, sizeof(m_queryBuffer));
-    SetStatusMessage("No actor selected", true);
+    SetStatusMessage("No GameObject selected", true);
     ClosePopup();
 }
 
-void ComponentSearchPanel::NotifyActorComponentsChanged()
+void ComponentSearchPanel::NotifyGameObjectComponentsChanged()
 {
     RefreshEntries();
 }
 
-Engine::GameObject* ComponentSearchPanel::GetTargetActor() const
+Engine::GameObject* ComponentSearchPanel::GetTargetGameObject() const
 {
-    return m_targetActor;
+    return m_targetGameObject;
 }
 
 void ComponentSearchPanel::SetAnchorRect(const ImVec2& p_min, const ImVec2& p_max)
@@ -250,18 +249,18 @@ std::string ComponentSearchPanel::GetComponentMenuPath(const meta::Type& p_type)
     return MakeDisplayName(p_type);
 }
 
-bool ComponentSearchPanel::IsTypeAddableToActor(const meta::Type& p_type, const Engine::GameObject* p_actor)
+bool ComponentSearchPanel::IsTypeAddableToGameObject(const meta::Type& p_type, const Engine::GameObject* p_GameObject)
 {
-    if (!p_actor || !IsCandidateComponentType(p_type))
+    if (!p_GameObject || !IsCandidateComponentType(p_type))
         return false;
 
-    return p_actor->GetComponent(p_type, false) == nullptr;
+    return p_GameObject->GetComponent(p_type, false) == nullptr;
 }
 
-std::vector<ComponentSearchEntry> ComponentSearchPanel::BuildComponentEntries(Engine::GameObject* p_actor, std::string_view p_query)
+std::vector<ComponentSearchEntry> ComponentSearchPanel::BuildComponentEntries(Engine::GameObject* p_GameObject, std::string_view p_query)
 {
     std::vector<ComponentSearchEntry> entries;
-    if (!p_actor)
+    if (!p_GameObject)
         return entries;
 
     const std::string normalizedQuery = NormalizeSearchText(p_query);
@@ -276,7 +275,7 @@ std::vector<ComponentSearchEntry> ComponentSearchPanel::BuildComponentEntries(En
         entry.displayName = MakeDisplayName(type);
         entry.menuPath = GetComponentMenuPath(type);
         entry.searchKey = NormalizeSearchText(entry.displayName + " " + entry.menuPath);
-        entry.isAddable = IsTypeAddableToActor(type, p_actor);
+        entry.isAddable = IsTypeAddableToGameObject(type, p_GameObject);
         if (!entry.isAddable)
             entry.availabilityReason = "Already added";
 
@@ -333,15 +332,15 @@ ComponentPickerViewMode ComponentSearchPanel::GetViewModeForQuery(std::string_vi
         : ComponentPickerViewMode::SearchResults;
 }
 
-bool ComponentSearchPanel::TryAddComponentFromEntry(Engine::GameObject* p_actor, const ComponentSearchEntry& p_entry)
+bool ComponentSearchPanel::TryAddComponentFromEntry(Engine::GameObject* p_GameObject, const ComponentSearchEntry& p_entry)
 {
-    if (!p_actor || !p_entry.componentType.IsValid() || !p_entry.isAddable)
+    if (!p_GameObject || !p_entry.componentType.IsValid() || !p_entry.isAddable)
         return false;
 
-    if (!IsTypeAddableToActor(p_entry.componentType, p_actor))
+    if (!IsTypeAddableToGameObject(p_entry.componentType, p_GameObject))
         return false;
 
-    return p_actor->AddComponent(p_entry.componentType) != nullptr;
+    return p_GameObject->AddComponent(p_entry.componentType) != nullptr;
 }
 
 void ComponentSearchPanel::_Draw_Impl()
@@ -406,7 +405,7 @@ void ComponentSearchPanel::ClosePopup()
 
 bool ComponentSearchPanel::TryCommitEntry(const ComponentSearchEntry& p_entry)
 {
-    if (TryAddComponentFromEntry(m_targetActor, p_entry))
+    if (TryAddComponentFromEntry(m_targetGameObject, p_entry))
     {
         SetStatusMessage("Added " + p_entry.displayName, false);
         RefreshEntries();

@@ -1,16 +1,18 @@
 namespace NLS::Editor::Core
 {
 	template<typename T>
-	inline Engine::GameObject & EditorActions::CreateMonoComponentActor(bool p_focusOnCreation, Engine::GameObject* p_parent)
+	inline Engine::GameObject* EditorActions::CreateMonoComponentGameObject(bool p_focusOnCreation, Engine::GameObject* p_parent)
 	{
-		auto& instance = CreateEmptyActor(false, p_parent);
+		auto* instance = CreateEmptyGameObject(false, p_parent);
+        if (!instance)
+            return nullptr;
 
-		instance.AddComponent<T>();
+		instance->AddComponent<T>();
 
-        instance.SetName(std::string(NLS_TYPEOF(T).GetName()));
+        instance->SetName(std::string(NLS_TYPEOF(T).GetName()));
 
 		if (p_focusOnCreation)
-			SelectActor(instance);
+			SelectGameObject(*instance);
 
 		return instance;
 	}

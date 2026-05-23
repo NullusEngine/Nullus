@@ -148,27 +148,6 @@ namespace
         }
     }
 
-    bool MaterialUsesPassDescriptorSet(const NLS::Render::Resources::Material& material)
-    {
-        const auto* shader = material.GetShader();
-        if (shader == nullptr)
-            return false;
-
-        const auto& reflection = shader->GetReflection();
-        for (const auto& constantBuffer : reflection.constantBuffers)
-        {
-            if (constantBuffer.bindingSpace == NLS::Render::RHI::BindingPointMap::kPassBindingSpace)
-                return true;
-        }
-
-        for (const auto& property : reflection.properties)
-        {
-            if (property.bindingSpace == NLS::Render::RHI::BindingPointMap::kPassBindingSpace)
-                return true;
-        }
-
-        return false;
-    }
 }
 
 ABaseRenderer::ABaseRenderer(Context::Driver& p_driver) :
@@ -338,11 +317,11 @@ std::optional<NLS::Render::Context::FrameSnapshot> ABaseRenderer::BuildFrameSnap
     NLS::Render::Context::FrameSnapshot snapshot;
     snapshot.renderWidth = frameDescriptor.renderWidth;
     snapshot.renderHeight = frameDescriptor.renderHeight;
-    const bool hasExternalOutput =
-        NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(frameDescriptor) != nullptr;
-    snapshot.targetsSwapchain = !hasExternalOutput;
-    snapshot.hasExternalOutput = hasExternalOutput;
-    snapshot.externalOutputTextureCount = hasExternalOutput ? 1u : 0u;
+    const auto externalOutputSummary =
+        NLS::Render::FrameGraph::BuildExternalSceneOutputSummary(frameDescriptor);
+    snapshot.targetsSwapchain = externalOutputSummary.targetsSwapchain;
+    snapshot.hasExternalOutput = externalOutputSummary.hasExternalOutput;
+    snapshot.externalOutputTextureCount = externalOutputSummary.textureCount;
     const auto& camera = *frameDescriptor.camera;
     const auto& clearColor = camera.GetClearColor();
     snapshot.clearColor = Maths::Vector4(clearColor.x, clearColor.y, clearColor.z, 1.0f);
@@ -385,6 +364,9 @@ bool ABaseRenderer::BeginRecordedRenderPass(
     NLS::Render::RHI::RHIRenderPassDesc renderPassDesc;
     renderPassDesc.renderArea = { 0, 0, p_width, p_height };
     renderPassDesc.debugName = p_framebuffer != nullptr ? "FramebufferRenderPass" : "BackbufferRenderPass";
+    const bool useResourceStateTracker =
+        Context::DriverRendererAccess::CreateFrameGraphExecutionContext(m_driver).CanTrackExplicitResourceState();
+    renderPassDesc.attachmentsRequireExternalStateTransitions = useResourceStateTracker;
 
     NLS::Render::RHI::RHIRenderPassColorAttachmentDesc colorAttachment;
     colorAttachment.loadOp = p_clearColor ? NLS::Render::RHI::LoadOp::Clear : NLS::Render::RHI::LoadOp::Load;
@@ -436,6 +418,50 @@ bool ABaseRenderer::BeginRecordedRenderPass(
         }
     }
 
+    if (useResourceStateTracker)
+    {
+        NLS::Render::RHI::RHIBarrierDesc attachmentBarriers;
+        attachmentBarriers.textureBarriers.reserve(
+            renderPassDesc.colorAttachments.size() +
+            (renderPassDesc.depthStencilAttachment.has_value() ? 1u : 0u));
+        for (const auto& colorAttachment : renderPassDesc.colorAttachments)
+        {
+            if (colorAttachment.view == nullptr || colorAttachment.view->GetTexture() == nullptr)
+                continue;
+
+            attachmentBarriers.textureBarriers.push_back({
+                colorAttachment.view->GetTexture(),
+                NLS::Render::RHI::ResourceState::Unknown,
+                NLS::Render::RHI::ResourceState::RenderTarget,
+                colorAttachment.view->GetDesc().subresourceRange,
+                NLS::Render::RHI::PipelineStageMask::AllCommands,
+                NLS::Render::RHI::PipelineStageMask::RenderTarget,
+                NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite,
+                NLS::Render::RHI::AccessMask::ColorAttachmentRead | NLS::Render::RHI::AccessMask::ColorAttachmentWrite
+            });
+        }
+        if (renderPassDesc.depthStencilAttachment.has_value() &&
+            renderPassDesc.depthStencilAttachment->view != nullptr &&
+            renderPassDesc.depthStencilAttachment->view->GetTexture() != nullptr)
+        {
+            attachmentBarriers.textureBarriers.push_back({
+                renderPassDesc.depthStencilAttachment->view->GetTexture(),
+                NLS::Render::RHI::ResourceState::Unknown,
+                NLS::Render::RHI::ResourceState::DepthWrite,
+                renderPassDesc.depthStencilAttachment->view->GetDesc().subresourceRange,
+                NLS::Render::RHI::PipelineStageMask::AllCommands,
+                NLS::Render::RHI::PipelineStageMask::DepthStencil,
+                NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite,
+                NLS::Render::RHI::AccessMask::DepthStencilRead | NLS::Render::RHI::AccessMask::DepthStencilWrite
+            });
+        }
+        if (!attachmentBarriers.textureBarriers.empty())
+        {
+            auto executionContext = CreateFrameGraphExecutionContext();
+            executionContext.RecordResourceBarriers(attachmentBarriers);
+        }
+    }
+
     commandBuffer->BeginRenderPass(renderPassDesc);
     commandBuffer->BeginGpuProfileScope(renderPassDesc.debugName, __FUNCTION__);
     commandBuffer->SetViewport({ 0.0f, 0.0f, static_cast<float>(p_width), static_cast<float>(p_height), 0.0f, 1.0f });
@@ -463,6 +489,9 @@ bool ABaseRenderer::BeginRecordedRenderPass(
     NLS::Render::RHI::RHIRenderPassDesc renderPassDesc;
     renderPassDesc.renderArea = { 0, 0, p_width, p_height };
     renderPassDesc.debugName = "MultiFramebufferRenderPass";
+    const bool useResourceStateTracker =
+        Context::DriverRendererAccess::CreateFrameGraphExecutionContext(m_driver).CanTrackExplicitResourceState();
+    renderPassDesc.attachmentsRequireExternalStateTransitions = useResourceStateTracker;
 
     const auto& colorTextures = p_framebuffer->GetExplicitColorTextureHandles();
     for (size_t i = 0; i < colorTextures.size(); ++i)
@@ -486,6 +515,50 @@ bool ABaseRenderer::BeginRecordedRenderPass(
         depthAttachment.clearValue.stencil = 0u;
         depthAttachment.view = p_framebuffer->GetOrCreateExplicitDepthView("MultiFramebufferDepthView");
         renderPassDesc.depthStencilAttachment = std::move(depthAttachment);
+    }
+
+    if (useResourceStateTracker)
+    {
+        NLS::Render::RHI::RHIBarrierDesc attachmentBarriers;
+        attachmentBarriers.textureBarriers.reserve(
+            renderPassDesc.colorAttachments.size() +
+            (renderPassDesc.depthStencilAttachment.has_value() ? 1u : 0u));
+        for (const auto& colorAttachment : renderPassDesc.colorAttachments)
+        {
+            if (colorAttachment.view == nullptr || colorAttachment.view->GetTexture() == nullptr)
+                continue;
+
+            attachmentBarriers.textureBarriers.push_back({
+                colorAttachment.view->GetTexture(),
+                NLS::Render::RHI::ResourceState::Unknown,
+                NLS::Render::RHI::ResourceState::RenderTarget,
+                colorAttachment.view->GetDesc().subresourceRange,
+                NLS::Render::RHI::PipelineStageMask::AllCommands,
+                NLS::Render::RHI::PipelineStageMask::RenderTarget,
+                NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite,
+                NLS::Render::RHI::AccessMask::ColorAttachmentRead | NLS::Render::RHI::AccessMask::ColorAttachmentWrite
+            });
+        }
+        if (renderPassDesc.depthStencilAttachment.has_value() &&
+            renderPassDesc.depthStencilAttachment->view != nullptr &&
+            renderPassDesc.depthStencilAttachment->view->GetTexture() != nullptr)
+        {
+            attachmentBarriers.textureBarriers.push_back({
+                renderPassDesc.depthStencilAttachment->view->GetTexture(),
+                NLS::Render::RHI::ResourceState::Unknown,
+                NLS::Render::RHI::ResourceState::DepthWrite,
+                renderPassDesc.depthStencilAttachment->view->GetDesc().subresourceRange,
+                NLS::Render::RHI::PipelineStageMask::AllCommands,
+                NLS::Render::RHI::PipelineStageMask::DepthStencil,
+                NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite,
+                NLS::Render::RHI::AccessMask::DepthStencilRead | NLS::Render::RHI::AccessMask::DepthStencilWrite
+            });
+        }
+        if (!attachmentBarriers.textureBarriers.empty())
+        {
+            auto executionContext = CreateFrameGraphExecutionContext();
+            executionContext.RecordResourceBarriers(attachmentBarriers);
+        }
     }
 
     commandBuffer->BeginRenderPass(renderPassDesc);
@@ -523,8 +596,60 @@ void ABaseRenderer::EndRecordedRenderPass()
     if (commandBuffer == nullptr || !m_recordedRenderPassActive)
         return;
 
+    std::vector<std::shared_ptr<NLS::Render::RHI::RHITextureView>> colorViews;
+    std::shared_ptr<NLS::Render::RHI::RHITextureView> depthStencilView;
+    if (auto* outputFramebuffer = NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(m_frameDescriptor);
+        outputFramebuffer != nullptr)
+    {
+        colorViews.push_back(outputFramebuffer->GetOrCreateExplicitColorView("FramebufferColorView"));
+        depthStencilView = outputFramebuffer->GetOrCreateExplicitDepthStencilView("FramebufferDepthView");
+    }
+
     commandBuffer->EndGpuProfileScope();
     commandBuffer->EndRenderPass();
+
+    if (!colorViews.empty() || depthStencilView != nullptr)
+    {
+        auto executionContext = CreateFrameGraphExecutionContext();
+        if (executionContext.CanTrackExplicitResourceState())
+        {
+            NLS::Render::RHI::RHIBarrierDesc attachmentBarriers;
+            for (const auto& colorView : colorViews)
+            {
+                const auto transition =
+                    NLS::Render::FrameGraph::BuildSampledAttachmentEndTransition(colorView, false);
+                if (transition.has_value())
+                    attachmentBarriers.textureBarriers.push_back({
+                        transition->texture,
+                        transition->before,
+                        transition->after,
+                        transition->subresourceRange,
+                        transition->sourceStages,
+                        transition->destinationStages,
+                        transition->sourceAccess,
+                        transition->destinationAccess
+                    });
+            }
+
+            const auto depthTransition =
+                NLS::Render::FrameGraph::BuildSampledAttachmentEndTransition(depthStencilView, true);
+            if (depthTransition.has_value())
+                attachmentBarriers.textureBarriers.push_back({
+                    depthTransition->texture,
+                    depthTransition->before,
+                    depthTransition->after,
+                    depthTransition->subresourceRange,
+                    depthTransition->sourceStages,
+                    depthTransition->destinationStages,
+                    depthTransition->sourceAccess,
+                    depthTransition->destinationAccess
+                });
+
+            if (!attachmentBarriers.textureBarriers.empty())
+                executionContext.RecordResourceBarriers(attachmentBarriers);
+        }
+    }
+
     m_recordedRenderPassActive = false;
 }
 
@@ -580,7 +705,8 @@ std::shared_ptr<NLS::Render::RHI::RHIBindingSet> ABaseRenderer::CreateExplicitUn
             desc.binding,
             1u,
             desc.stageMask,
-            desc.registerSpace
+            desc.registerSpace,
+            0u
         });
         layout = Context::DriverRendererAccess::CreateExplicitBindingLayout(m_driver, layoutDesc);
         if (layout != nullptr)
@@ -591,6 +717,8 @@ std::shared_ptr<NLS::Render::RHI::RHIBindingSet> ABaseRenderer::CreateExplicitUn
         return nullptr;
 
     const auto snapshotBuffer = buffer.CreateExplicitSnapshotBuffer(desc.snapshotDebugName);
+    if (snapshotBuffer != nullptr)
+        ++m_explicitUniformSnapshotBufferCreationCount;
     const auto bufferHandle = snapshotBuffer != nullptr
         ? snapshotBuffer
         : buffer.GetExplicitRHIBufferHandle();
@@ -606,20 +734,34 @@ std::shared_ptr<NLS::Render::RHI::RHIBindingSet> ABaseRenderer::CreateExplicitUn
         bufferHandle,
         0u,
         desc.range != 0u ? desc.range : bufferHandle->GetDesc().size,
+        0u,
         nullptr,
         nullptr
     });
     const auto allocationLifetime = Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver)
         ? NLS::Render::RHI::DescriptorAllocationLifetime::Persistent
         : NLS::Render::RHI::DescriptorAllocationLifetime::TransientFrame;
-    return Context::DriverRendererAccess::CreateExplicitBindingSet(m_driver,
+    auto bindingSet = Context::DriverRendererAccess::CreateExplicitBindingSet(m_driver,
         bindingSetDesc,
         allocationLifetime);
+    if (bindingSet != nullptr)
+        ++m_explicitUniformBindingSetCreationCount;
+    return bindingSet;
 }
 
 bool ABaseRenderer::IsRenderCoordinateInBounds(uint32_t p_x, uint32_t p_y) const
 {
     return p_x < m_frameDescriptor.renderWidth && p_y < m_frameDescriptor.renderHeight;
+}
+
+uint64_t ABaseRenderer::GetExplicitUniformBindingSetCreationCount() const
+{
+    return m_explicitUniformBindingSetCreationCount;
+}
+
+uint64_t ABaseRenderer::GetExplicitUniformSnapshotBufferCreationCount() const
+{
+    return m_explicitUniformSnapshotBufferCreationCount;
 }
 
 void ABaseRenderer::ReadPixels(
@@ -764,9 +906,11 @@ bool ABaseRenderer::PrepareRecordedDraw(
     outDraw.commandBuffer = std::move(commandBuffer);
     outDraw.pipeline = std::move(pipeline);
     outDraw.materialBindingSet = std::move(bindingSet);
-    outDraw.passBindingSet = MaterialUsesPassDescriptorSet(*material) ? m_activePreparedPassBindingSet : nullptr;
+    outDraw.passBindingSet = material->RequiresPassDescriptorSet() ? m_activePreparedPassBindingSet : nullptr;
     outDraw.mesh = std::move(rhiMesh);
-    outDraw.instanceCount = gpuInstances;
+    outDraw.instanceCount = p_drawable.instanceCount != 0u
+        ? p_drawable.instanceCount
+        : static_cast<uint32_t>(gpuInstances);
     return true;
 }
 
@@ -844,9 +988,11 @@ bool ABaseRenderer::PrepareRecordedDraw(
     outDraw.commandBuffer = std::move(commandBuffer);
     outDraw.pipeline = std::move(pipeline);
     outDraw.materialBindingSet = std::move(bindingSet);
-    outDraw.passBindingSet = MaterialUsesPassDescriptorSet(*material) ? m_activePreparedPassBindingSet : nullptr;
+    outDraw.passBindingSet = material->RequiresPassDescriptorSet() ? m_activePreparedPassBindingSet : nullptr;
     outDraw.mesh = std::move(rhiMesh);
-    outDraw.instanceCount = gpuInstances;
+    outDraw.instanceCount = p_drawable.instanceCount != 0u
+        ? p_drawable.instanceCount
+        : static_cast<uint32_t>(gpuInstances);
     return true;
 }
 
@@ -876,6 +1022,15 @@ void ABaseRenderer::SubmitPreparedDraw(const PreparedRecordedDraw& preparedDraw)
 {
     if (preparedDraw.commandBuffer == nullptr || preparedDraw.mesh == nullptr)
         return;
+
+    if (preparedDraw.usesObjectIndex)
+    {
+        preparedDraw.commandBuffer->PushConstants(
+            RHI::ShaderStageMask::Vertex,
+            0u,
+            sizeof(preparedDraw.objectIndex),
+            &preparedDraw.objectIndex);
+    }
 
     const auto vertexBuffer = preparedDraw.mesh->GetVertexBuffer();
     if (vertexBuffer == nullptr)
@@ -923,6 +1078,8 @@ bool ABaseRenderer::QueueThreadedRecordedDraw(const PreparedRecordedDraw& prepar
     drawCommand.materialBindingSet = preparedDraw.materialBindingSet;
     drawCommand.mesh = preparedDraw.mesh;
     drawCommand.instanceCount = preparedDraw.instanceCount;
+    drawCommand.objectIndex = preparedDraw.objectIndex;
+    drawCommand.usesObjectIndex = preparedDraw.usesObjectIndex;
     m_threadedRecordedDrawCommands.push_back(std::move(drawCommand));
     return true;
 }

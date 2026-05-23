@@ -20,16 +20,16 @@ ShortcutCommand Command(std::string id, std::string displayName, ShortcutContext
 
 TEST(ShortcutSettingsPanelTests, AppendsContextToDuplicateCommandDisplayNames)
 {
-    const auto sceneDelete = Command("edit.delete-selected-actor", "Delete Selected Actor", ShortcutContexts::SceneView);
-    const auto hierarchyDelete = Command("edit.delete-selected-actor-hierarchy", "Delete Selected Actor", ShortcutContexts::Hierarchy);
+    const auto sceneDelete = Command("edit.delete-selected-gameobject", "Delete Selected GameObject", ShortcutContexts::SceneView);
+    const auto hierarchyDelete = Command("edit.delete-selected-gameobject-hierarchy", "Delete Selected GameObject", ShortcutContexts::Hierarchy);
     const std::vector<const ShortcutCommand*> commands { &sceneDelete, &hierarchyDelete };
 
     EXPECT_EQ(
         Panels::ShortcutSettingsPanel::GetCommandListDisplayName(sceneDelete, commands),
-        "Delete Selected Actor (Scene View)");
+        "Delete Selected GameObject (Scene View)");
     EXPECT_EQ(
         Panels::ShortcutSettingsPanel::GetCommandListDisplayName(hierarchyDelete, commands),
-        "Delete Selected Actor (Hierarchy)");
+        "Delete Selected GameObject (Hierarchy)");
 }
 
 TEST(ShortcutSettingsPanelTests, LeavesUniqueCommandDisplayNamesUnchanged)

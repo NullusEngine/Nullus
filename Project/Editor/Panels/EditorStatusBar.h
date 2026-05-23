@@ -11,5 +11,6 @@ namespace NLS::Editor::Panels
 
     protected:
         void DrawBarContent() override;
+
     };
 }

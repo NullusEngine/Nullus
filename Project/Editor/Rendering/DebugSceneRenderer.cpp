@@ -1,4 +1,4 @@
-﻿#include <Components/CameraComponent.h>
+#include <Components/CameraComponent.h>
 #include <Components/LightComponent.h>
 #include <Components/TransformComponent.h>
 #include <Rendering/Debug/DebugDrawPass.h>
@@ -51,12 +51,16 @@ namespace
 	std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata> BuildDebugDeferredThreadedPassMetadata(
 		const uint64_t helperVisibleCount,
         const bool includeGridPass,
+        const bool includeCameraPass,
+        const bool includeLightPass,
         const bool includeSelectionPass,
         const bool includePickingPass)
 	{
 		std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata> metadata;
 		metadata.reserve(
             (includeGridPass ? 1u : 0u) +
+            (includeCameraPass ? 1u : 0u) +
+            (includeLightPass ? 1u : 0u) +
             (includeSelectionPass ? 1u : 0u) +
             1u +
             (includePickingPass ? 1u : 0u));
@@ -73,6 +77,34 @@ namespace
                 gridMetadata,
                 "EditorGridPass");
             metadata.push_back(std::move(gridMetadata));
+        }
+
+        if (includeCameraPass)
+        {
+            NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata cameraMetadata;
+            cameraMetadata.commandKind = NLS::Render::Context::RenderPassCommandKind::Helper;
+            cameraMetadata.role = NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Helper;
+            cameraMetadata.queueType = NLS::Render::RHI::QueueType::Graphics;
+            cameraMetadata.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
+            cameraMetadata.visibleDrawCountContribution = 1u;
+            NLS::Render::FrameGraph::SetThreadedRenderScenePassGraphPassName(
+                cameraMetadata,
+                "EditorDebugCamerasPass");
+            metadata.push_back(std::move(cameraMetadata));
+        }
+
+        if (includeLightPass)
+        {
+            NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata lightMetadata;
+            lightMetadata.commandKind = NLS::Render::Context::RenderPassCommandKind::Helper;
+            lightMetadata.role = NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Helper;
+            lightMetadata.queueType = NLS::Render::RHI::QueueType::Graphics;
+            lightMetadata.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
+            lightMetadata.visibleDrawCountContribution = 1u;
+            NLS::Render::FrameGraph::SetThreadedRenderScenePassGraphPassName(
+                lightMetadata,
+                "EditorDebugLightsPass");
+            metadata.push_back(std::move(lightMetadata));
         }
 
         if (includeSelectionPass)
@@ -122,17 +154,27 @@ namespace
 
 	std::vector<NLS::Render::Context::RenderPassCommandInput> BuildDebugDeferredAppendedPassInputs(
         const std::optional<NLS::Render::Context::RenderPassCommandInput>& gridPassInput,
+        const std::optional<NLS::Render::Context::RenderPassCommandInput>& cameraPassInput,
+        const std::optional<NLS::Render::Context::RenderPassCommandInput>& lightPassInput,
         const std::optional<NLS::Render::Context::RenderPassCommandInput>& selectionPassInput,
         const std::optional<NLS::Render::Context::RenderPassCommandInput>& pickingPassInput)
 	{
 		std::vector<NLS::Render::Context::RenderPassCommandInput> passInputs;
 		passInputs.reserve(
             (gridPassInput.has_value() ? 1u : 0u) +
+            (cameraPassInput.has_value() ? 1u : 0u) +
+            (lightPassInput.has_value() ? 1u : 0u) +
             (selectionPassInput.has_value() ? 1u : 0u) +
             (pickingPassInput.has_value() ? 1u : 0u));
 
         if (gridPassInput.has_value())
             passInputs.push_back(*gridPassInput);
+
+        if (cameraPassInput.has_value())
+            passInputs.push_back(*cameraPassInput);
+
+        if (lightPassInput.has_value())
+            passInputs.push_back(*lightPassInput);
 
         if (selectionPassInput.has_value())
             passInputs.push_back(*selectionPassInput);
@@ -165,9 +207,9 @@ namespace
 		return NLS::Render::Settings::GetThreadDiagnosticsSettings().editorDisableDebugLightsPass;
 	}
 
-	bool ShouldDisableDebugActorPass()
+	bool ShouldDisableDebugGameObjectPass()
 	{
-		return NLS::Render::Settings::GetThreadDiagnosticsSettings().editorDisableDebugActorPass;
+		return NLS::Render::Settings::GetThreadDiagnosticsSettings().editorDisableDebugGameObjectPass;
 	}
 
 	bool ShouldDisableDebugDrawPass()
@@ -215,14 +257,30 @@ public:
 		m_cameraMaterial.Set("u_Diffuse", Vector4(0.0f, 0.3f, 0.7f, 1.0f));
 	}
 
+    std::optional<NLS::Render::Context::RenderPassCommandInput> GetPreparedThreadedPassInput() const
+    {
+        return m_preparedThreadedPassInput;
+    }
+
 protected:
+    void OnBeginFrame(const NLS::Render::Data::FrameDescriptor&) override
+    {
+        m_preparedThreadedPassInput.reset();
+    }
+
 	virtual void Draw(Render::Data::PipelineState p_pso) override
 	{
         const auto& debugSettings = Editor::Settings::EditorSettings::GetDebugDrawSettingsObject();
         if (!debugSettings.debugDrawEnabled || !debugSettings.debugDrawCamera)
             return;
 
-        auto& sceneDescriptor = m_renderer.GetDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>();
+        p_pso = Editor::Rendering::CreateEditorOverlayPipelineState(p_pso);
+		auto& sceneDescriptor = m_renderer.GetDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>();
+        if (NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_renderer.GetDriver()))
+        {
+            m_preparedThreadedPassInput = BuildThreadedPassInput(sceneDescriptor.scene, p_pso);
+            return;
+        }
 
 		for (auto camera : sceneDescriptor.scene.GetFastAccessComponents().cameras)
 		{
@@ -230,17 +288,62 @@ protected:
 
 			if (actor->IsActive())
 			{
-				auto& model = *EDITOR_CONTEXT(editorResources)->GetModel("Camera");
+				auto& mesh = *EDITOR_CONTEXT(editorResources)->GetMesh("Camera");
 				auto modelMatrix = CalculateCameraModelMatrix(*actor);
 
-				m_debugModelRenderer.DrawModelWithSingleMaterial(p_pso, model, m_cameraMaterial, modelMatrix);
+				m_debugModelRenderer.DrawMeshWithSingleMaterial(p_pso, mesh, m_cameraMaterial, modelMatrix);
 			}
 		}
 	}
 
 private:
+    std::optional<NLS::Render::Context::RenderPassCommandInput> BuildThreadedPassInput(
+        Engine::SceneSystem::Scene& scene,
+        Render::Data::PipelineState pso)
+    {
+        auto* cameraMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Camera");
+        if (cameraMesh == nullptr)
+            return std::nullopt;
+
+        const auto& frameDescriptor = m_renderer.GetFrameDescriptor();
+        NLS::Render::Context::RenderPassCommandInput passInput;
+        passInput.kind = NLS::Render::Context::RenderPassCommandKind::Helper;
+        passInput.debugName = "EditorDebugCamerasPass";
+        passInput.queueType = NLS::Render::RHI::QueueType::Graphics;
+        passInput.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
+        passInput.requiresFrameData = true;
+        passInput.requiresObjectData = true;
+        passInput.targetsSwapchain = NLS::Render::FrameGraph::FrameTargetsSwapchain(frameDescriptor);
+        passInput.renderWidth = frameDescriptor.renderWidth;
+        passInput.renderHeight = frameDescriptor.renderHeight;
+        passInput.usesColorAttachment = true;
+        passInput.usesDepthStencilAttachment = true;
+
+        for (auto camera : scene.GetFastAccessComponents().cameras)
+        {
+            auto* actor = camera != nullptr ? camera->gameobject() : nullptr;
+            if (actor == nullptr || !actor->IsActive())
+                continue;
+
+            auto modelMatrix = CalculateCameraModelMatrix(*actor);
+            m_debugModelRenderer.CaptureMeshDrawCommandsWithSingleMaterial(
+                pso,
+                *cameraMesh,
+                m_cameraMaterial,
+                modelMatrix,
+                passInput.recordedDrawCommands);
+        }
+
+        passInput.drawCount = static_cast<uint64_t>(passInput.recordedDrawCommands.size());
+        if (passInput.drawCount == 0u)
+            return std::nullopt;
+
+        return passInput;
+    }
+
     Editor::Rendering::DebugModelRenderer m_debugModelRenderer;
     NLS::Render::Resources::Material m_cameraMaterial;
+    std::optional<NLS::Render::Context::RenderPassCommandInput> m_preparedThreadedPassInput;
 };
 
 class DebugLightsRenderPass : public Render::Core::ARenderPass
@@ -257,7 +360,17 @@ public:
 		m_lightMaterial.SetBlendable(true);
 	}
 
+    std::optional<NLS::Render::Context::RenderPassCommandInput> GetPreparedThreadedPassInput() const
+    {
+        return m_preparedThreadedPassInput;
+    }
+
 protected:
+    void OnBeginFrame(const NLS::Render::Data::FrameDescriptor&) override
+    {
+        m_preparedThreadedPassInput.reset();
+    }
+
 	virtual void Draw(Render::Data::PipelineState p_pso) override
 	{
         const auto& debugSettings = Editor::Settings::EditorSettings::GetDebugDrawSettingsObject();
@@ -268,6 +381,11 @@ protected:
 		p_pso = Editor::Rendering::CreateEditorTransparentOverlayPipelineState(p_pso);
 
 		m_lightMaterial.Set<float>("u_Scale", debugSettings.lightBillboardScale * 0.1f);
+        if (NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_renderer.GetDriver()))
+        {
+            m_preparedThreadedPassInput = BuildThreadedPassInput(sceneDescriptor.scene, p_pso);
+            return;
+        }
 
 		for (auto light : sceneDescriptor.scene.GetFastAccessComponents().lights)
 		{
@@ -275,7 +393,7 @@ protected:
 
 			if (actor->IsActive())
 			{
-				auto& model = *EDITOR_CONTEXT(editorResources)->GetModel("Vertical_Plane");
+				auto& mesh = *EDITOR_CONTEXT(editorResources)->GetMesh("Vertical_Plane");
                 auto modelMatrix = Maths::Matrix4::Translation(actor->GetTransform()->GetWorldPosition());
 
 				auto lightTypeTextureName = GetLightTypeTextureName(light->GetData()->type);
@@ -289,20 +407,74 @@ protected:
 				m_lightMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", lightTexture);
 				m_lightMaterial.Set<Maths::Vector4>("u_Diffuse", Maths::Vector4(lightColor.x, lightColor.y, lightColor.z, 0.75f));
 
-				m_debugModelRenderer.DrawModelWithSingleMaterial(p_pso, model, m_lightMaterial, modelMatrix);
+				m_debugModelRenderer.DrawMeshWithSingleMaterial(p_pso, mesh, m_lightMaterial, modelMatrix);
 			}
 		}
 	}
 
 private:
+    std::optional<NLS::Render::Context::RenderPassCommandInput> BuildThreadedPassInput(
+        Engine::SceneSystem::Scene& scene,
+        Render::Data::PipelineState pso)
+    {
+        auto* lightMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Vertical_Plane");
+        if (lightMesh == nullptr)
+            return std::nullopt;
+
+        const auto& frameDescriptor = m_renderer.GetFrameDescriptor();
+        NLS::Render::Context::RenderPassCommandInput passInput;
+        passInput.kind = NLS::Render::Context::RenderPassCommandKind::Helper;
+        passInput.debugName = "EditorDebugLightsPass";
+        passInput.queueType = NLS::Render::RHI::QueueType::Graphics;
+        passInput.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
+        passInput.requiresFrameData = true;
+        passInput.requiresObjectData = true;
+        passInput.targetsSwapchain = NLS::Render::FrameGraph::FrameTargetsSwapchain(frameDescriptor);
+        passInput.renderWidth = frameDescriptor.renderWidth;
+        passInput.renderHeight = frameDescriptor.renderHeight;
+        passInput.usesColorAttachment = true;
+        passInput.usesDepthStencilAttachment = true;
+
+        for (auto light : scene.GetFastAccessComponents().lights)
+        {
+            auto* actor = light != nullptr ? light->gameobject() : nullptr;
+            if (actor == nullptr || !actor->IsActive())
+                continue;
+
+            auto lightTypeTextureName = GetLightTypeTextureName(light->GetData()->type);
+            auto lightTexture =
+                lightTypeTextureName ?
+                EDITOR_CONTEXT(editorResources)->GetTexture(lightTypeTextureName.value()) :
+                nullptr;
+            const auto& lightColor = light->GetColor();
+            m_lightMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", lightTexture);
+            m_lightMaterial.Set<Maths::Vector4>("u_Diffuse", Maths::Vector4(lightColor.x, lightColor.y, lightColor.z, 0.75f));
+
+            auto modelMatrix = Maths::Matrix4::Translation(actor->GetTransform()->GetWorldPosition());
+            m_debugModelRenderer.CaptureMeshDrawCommandsWithSingleMaterial(
+                pso,
+                *lightMesh,
+                m_lightMaterial,
+                modelMatrix,
+                passInput.recordedDrawCommands);
+        }
+
+        passInput.drawCount = static_cast<uint64_t>(passInput.recordedDrawCommands.size());
+        if (passInput.drawCount == 0u)
+            return std::nullopt;
+
+        return passInput;
+    }
+
     Editor::Rendering::DebugModelRenderer m_debugModelRenderer;
     NLS::Render::Resources::Material m_lightMaterial;
+    std::optional<NLS::Render::Context::RenderPassCommandInput> m_preparedThreadedPassInput;
 };
 
-class DebugActorRenderPass : public Render::Core::ARenderPass
+class DebugGameObjectRenderPass : public Render::Core::ARenderPass
 {
 public:
-	DebugActorRenderPass(Render::Core::CompositeRenderer& p_renderer)
+	DebugGameObjectRenderPass(Render::Core::CompositeRenderer& p_renderer)
         : Render::Core::ARenderPass(p_renderer)
         , m_debugModelRenderer(p_renderer)
         , m_outlineRenderer(p_renderer, m_debugModelRenderer)
@@ -324,26 +496,26 @@ protected:
 	virtual void Draw(Render::Data::PipelineState p_pso) override
 	{
 		auto& debugSceneDescriptor = m_renderer.GetDescriptor<Editor::Rendering::DebugSceneRenderer::DebugSceneDescriptor>();
-        auto* selectedActor = debugSceneDescriptor.selectedActor;
+        auto* selectedGameObject = debugSceneDescriptor.selectedGameObject;
 
-		if (selectedActor == nullptr)
+		if (selectedGameObject == nullptr)
             return;
 
-        if (Editor::Rendering::OutlineRenderer::ShouldIncludeInThreadedFrame(true, selectedActor))
+        if (Editor::Rendering::OutlineRenderer::ShouldIncludeInThreadedFrame(true, selectedGameObject))
 		{
-			DrawActorDebugElements(*selectedActor);
+			DrawGameObjectDebugElements(*selectedGameObject);
 
             if (NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_renderer.GetDriver()))
             {
-                m_preparedThreadedPassInput = BuildThreadedPassInput(*selectedActor, debugSceneDescriptor, p_pso);
+                m_preparedThreadedPassInput = BuildThreadedPassInput(*selectedGameObject, debugSceneDescriptor, p_pso);
                 return;
             }
 
-            m_outlineRenderer.DrawOutline(*selectedActor, kSelectedOutlineColor, kSelectedOutlineWidth);
+            m_outlineRenderer.DrawOutline(*selectedGameObject, kSelectedOutlineColor, kSelectedOutlineWidth);
 		}
 	}
 
-	void DrawActorDebugElements(Engine::GameObject& p_actor)
+	void DrawGameObjectDebugElements(Engine::GameObject& p_actor)
 	{
 		if (p_actor.IsActive())
 		{
@@ -352,11 +524,12 @@ protected:
 			/* Render static mesh outline and bounding spheres */
 			if (Editor::Settings::EditorSettings::GetDebugDrawSettingsObject().debugDrawBounds)
 			{
-				auto modelRenderer = p_actor.GetComponent<Engine::Components::MeshRenderer>();
+				auto meshRenderer = p_actor.GetComponent<Engine::Components::MeshRenderer>();
+				auto meshFilter = p_actor.GetComponent<Engine::Components::MeshFilter>();
 
-				if (modelRenderer && modelRenderer->GetModel())
+				if (meshRenderer && meshFilter)
 				{
-					DrawBoundingSpheres(*modelRenderer);
+					DrawBoundingSpheres(*meshRenderer);
 				}
 			}
 
@@ -369,7 +542,7 @@ protected:
 // 			/* Render the actor collider */
 // 			if (p_actor.GetComponent<Engine::Components::CPhysicalObject>())
 // 			{
-// 				DrawActorCollider(p_actor);
+// 				DrawGameObjectCollider(p_actor);
 // 			}
 
 			/* Render the actor ambient light */
@@ -383,7 +556,7 @@ protected:
 
 			for (auto& child : p_actor.GetChildren())
 			{
-				DrawActorDebugElements(*child);
+				DrawGameObjectDebugElements(*child);
 			}
 		}
 	}
@@ -506,7 +679,7 @@ protected:
 		}
 	}
 
-	void DrawActorCollider(Engine::GameObject& p_actor)
+	void DrawGameObjectCollider(Engine::GameObject& p_actor)
 	{
 // 		using namespace Engine::Components;
 // 		using namespace OvPhysics::Entities;
@@ -573,23 +746,25 @@ protected:
 		Render::Debug::SubmitLightVolume(GetDebugDrawService(), *p_light.GetData(), options);
 	}
 
-	void DrawBoundingSpheres(Engine::Components::MeshRenderer& p_modelRenderer)
+	void DrawBoundingSpheres(Engine::Components::MeshRenderer& p_meshRenderer)
 	{
 		using namespace Engine::Components;
 
 		/* Draw the sphere collider if any */
-		if (auto model = p_modelRenderer.GetModel())
+		auto* owner = p_meshRenderer.gameobject();
+		auto* meshFilter = owner != nullptr ? owner->GetComponent<MeshFilter>() : nullptr;
+		if (auto* mesh = meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr)
 		{
-			auto& actor = *p_modelRenderer.gameobject();
+			auto& actor = *p_meshRenderer.gameobject();
 
 			Maths::Vector3 actorScale = actor.GetTransform()->GetWorldScale();
             Maths::Quaternion actorRotation = actor.GetTransform()->GetWorldRotation();
             Maths::Vector3 actorPosition = actor.GetTransform()->GetWorldPosition();
 
 			const auto& modelBoundingsphere =
-				p_modelRenderer.GetFrustumBehaviour() == Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_CUSTOM ?
-				p_modelRenderer.GetCustomBoundingSphere() :
-				model->GetBoundingSphere();
+				p_meshRenderer.GetFrustumBehaviour() == Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_CUSTOM ?
+				p_meshRenderer.GetCustomBoundingSphere() :
+				mesh->GetBoundingSphere();
 
 			float radiusScale = std::max(std::max(std::max(actorScale.x, actorScale.y), actorScale.z), 0.0f);
 			float scaledRadius = modelBoundingsphere.radius * radiusScale;
@@ -604,29 +779,7 @@ protected:
 				Render::Debug::DebugDrawCategory::Bounds
 			);
 
-			if (p_modelRenderer.GetFrustumBehaviour() == Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MESHES)
-			{
-				const auto& meshes = model->GetMeshes();
-
-				if (meshes.size() > 1) // One mesh would result into the same bounding sphere for mesh and model
-				{
-					for (auto mesh : meshes)
-					{
-						auto& meshBoundingSphere = mesh->GetBoundingSphere();
-						float scaledRadius = meshBoundingSphere.radius * radiusScale;
-						auto sphereOffset = Maths::Quaternion::RotatePoint(meshBoundingSphere.position, actorRotation) * radiusScale;
-
-						SubmitSphere(
-							actorPosition + sphereOffset,
-							actorRotation,
-							scaledRadius,
-							kDebugBoundsColor,
-							1.0f,
-							Render::Debug::DebugDrawCategory::Bounds
-						);
-					}
-				}
-			}
+			(void)mesh;
 		}
 	}
 
@@ -710,7 +863,7 @@ private:
     }
 
     std::optional<NLS::Render::Context::RenderPassCommandInput> BuildThreadedPassInput(
-        Engine::GameObject& selectedActor,
+        Engine::GameObject& selectedGameObject,
         const Editor::Rendering::DebugSceneRenderer::DebugSceneDescriptor& debugSceneDescriptor,
         NLS::Render::Data::PipelineState p_pso)
     {
@@ -730,7 +883,7 @@ private:
         passInput.usesDepthStencilAttachment = true;
 
         m_outlineRenderer.CaptureOutlineDrawCommands(
-            selectedActor,
+            selectedGameObject,
             kSelectedOutlineColor,
             kSelectedOutlineWidth,
             passInput.recordedDrawCommands);
@@ -762,8 +915,8 @@ Editor::Rendering::DebugSceneRenderer::DebugSceneRenderer(NLS::Render::Context::
     auto& debugLightsPass = AddPass<DebugLightsRenderPass>("Debug Lights", NLS::Render::Settings::ERenderPassOrder::Transparent + 2);
     debugLightsPass.SetEnabled(!ShouldDisableDebugLightsPass());
 
-    auto& debugActorPass = AddPass<DebugActorRenderPass>("Debug Actor", NLS::Render::Settings::ERenderPassOrder::Transparent + 3);
-    debugActorPass.SetEnabled(!ShouldDisableDebugActorPass());
+    auto& debugGameObjectPass = AddPass<DebugGameObjectRenderPass>("Debug GameObject", NLS::Render::Settings::ERenderPassOrder::Transparent + 3);
+    debugGameObjectPass.SetEnabled(!ShouldDisableDebugGameObjectPass());
     auto& debugDrawPass = AddPass<NLS::Render::Debug::DebugDrawPass>("Debug Draw", NLS::Render::Settings::ERenderPassOrder::Transparent + 4);
     debugDrawPass.SetEnabled(!ShouldDisableDebugDrawPass());
     auto& pickingPass = AddPass<PickingRenderPass>("Picking", NLS::Render::Settings::ERenderPassOrder::PostProcessing + 1);
@@ -781,14 +934,14 @@ std::optional<NLS::Render::Context::FrameSnapshot> Editor::Rendering::DebugScene
     const bool gridPassEnabled = !ShouldDisableEditorGridPass();
     const bool cameraPassEnabled = !ShouldDisableDebugCamerasPass();
     const bool lightPassEnabled = !ShouldDisableDebugLightsPass();
-    const bool actorPassEnabled = !ShouldDisableDebugActorPass();
+    const bool gameObjectPassEnabled = !ShouldDisableDebugGameObjectPass();
     const bool debugDrawPassEnabled = !ShouldDisableDebugDrawPass();
 
     ThreadedEditorHelperState helperState;
     helperState.gridPassEnabled = gridPassEnabled;
     helperState.cameraPassEnabled = cameraPassEnabled;
     helperState.lightPassEnabled = lightPassEnabled;
-    helperState.actorPassEnabled = actorPassEnabled;
+    helperState.gameObjectPassEnabled = gameObjectPassEnabled;
     helperState.debugDrawPassEnabled = debugDrawPassEnabled;
     const auto& debugSettings = Editor::Settings::EditorSettings::GetDebugDrawSettingsObject();
     helperState.debugDrawEnabled = debugSettings.debugDrawEnabled;
@@ -803,9 +956,9 @@ std::optional<NLS::Render::Context::FrameSnapshot> Editor::Rendering::DebugScene
     helperState.sceneLightCount = static_cast<uint64_t>(scene.GetFastAccessComponents().lights.size());
     if (HasDescriptor<DebugSceneDescriptor>())
     {
-        const auto* selectedActor = GetDescriptor<DebugSceneDescriptor>().selectedActor;
-        helperState.hasSelectedActor =
-            OutlineRenderer::ShouldIncludeInThreadedFrame(actorPassEnabled, selectedActor);
+        const auto* selectedGameObject = GetDescriptor<DebugSceneDescriptor>().selectedGameObject;
+        helperState.hasSelectedGameObject =
+            OutlineRenderer::ShouldIncludeInThreadedFrame(gameObjectPassEnabled, selectedGameObject);
     }
 
     if (const auto* debugDrawService = GetDebugDrawService(); debugDrawService != nullptr)
@@ -819,10 +972,14 @@ NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRe
     const NLS::Render::Context::FrameSnapshot& snapshot) const
 {
     const auto gridPassInput = GetPass<GridRenderPass>("Grid").GetPreparedThreadedPassInput();
-    const auto selectionPassInput = GetPass<DebugActorRenderPass>("Debug Actor").GetPreparedThreadedPassInput();
+    const auto cameraPassInput = GetPass<DebugCamerasRenderPass>("Debug Cameras").GetPreparedThreadedPassInput();
+    const auto lightPassInput = GetPass<DebugLightsRenderPass>("Debug Lights").GetPreparedThreadedPassInput();
+    const auto selectionPassInput = GetPass<DebugGameObjectRenderPass>("Debug GameObject").GetPreparedThreadedPassInput();
     const auto pickingPassInput = GetPass<PickingRenderPass>("Picking").GetPreparedThreadedPassInput();
     const auto explicitHelperContribution =
         static_cast<uint64_t>(gridPassInput.has_value() ? 1u : 0u) +
+        static_cast<uint64_t>(cameraPassInput.has_value() ? 1u : 0u) +
+        static_cast<uint64_t>(lightPassInput.has_value() ? 1u : 0u) +
         static_cast<uint64_t>(selectionPassInput.has_value() ? 2u : 0u);
     const auto aggregateHelperVisibleCount =
         snapshot.visibleHelperDrawCount >= explicitHelperContribution
@@ -831,10 +988,16 @@ NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRe
     auto metadata = BuildDebugDeferredThreadedPassMetadata(
         aggregateHelperVisibleCount,
         gridPassInput.has_value(),
+        cameraPassInput.has_value(),
+        lightPassInput.has_value(),
         selectionPassInput.has_value(),
         pickingPassInput.has_value());
-    const auto appendedPassInputs =
-        BuildDebugDeferredAppendedPassInputs(gridPassInput, selectionPassInput, pickingPassInput);
+    const auto appendedPassInputs = BuildDebugDeferredAppendedPassInputs(
+        gridPassInput,
+        cameraPassInput,
+        lightPassInput,
+        selectionPassInput,
+        pickingPassInput);
 
     std::shared_ptr<NLS::Render::RHI::RHITexture> preferredReadbackTexture;
     uint64_t additionalRenderTargetUseCount = 0u;

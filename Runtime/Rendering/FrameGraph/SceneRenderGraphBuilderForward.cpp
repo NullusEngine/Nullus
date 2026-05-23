@@ -146,10 +146,7 @@ namespace NLS::Render::FrameGraph
                     continue;
                 }
 
-                if (outputState.color < 0 && compiledPass.outputChain.color >= 0)
-                    outputState.color = compiledPass.outputChain.color;
-                if (outputState.depth < 0 && compiledPass.outputChain.depth >= 0)
-                    outputState.depth = compiledPass.outputChain.depth;
+                SeedScenePassOutputResourceState(outputState, compiledPass.outputChain);
 
                 AddForwardCompiledScenePass(
                     frameGraph,
@@ -242,27 +239,28 @@ namespace NLS::Render::FrameGraph
         const ForwardSceneGraphExecutionCallbacks& callbacks)
     {
         NLS_PROFILE_SCOPE();
+        const auto capturedCallbacks = callbacks;
         DispatchForwardCompiledGraphPasses(
             frameGraph,
             preparedGraph.execution.preparedComputeSource,
             preparedGraph.execution.compiledExecution.graphPasses,
-            [&callbacks](const auto& compiledPass, const ForwardGraphPassData&, FrameGraphPassResources&, void*, const auto& desc)
+            [capturedCallbacks](const auto& compiledPass, const ForwardGraphPassData&, FrameGraphPassResources&, void*, const auto& desc)
             {
                 ExecuteOutputRenderPass(
                     desc,
-                    [&callbacks](const auto& beginDesc) -> bool
+                    [&capturedCallbacks](const auto& beginDesc) -> bool
                     {
-                        return callbacks.beginOutputPass ? callbacks.beginOutputPass(beginDesc) : false;
+                        return capturedCallbacks.beginOutputPass ? capturedCallbacks.beginOutputPass(beginDesc) : false;
                     },
-                    [&callbacks, &compiledPass]()
+                    [&capturedCallbacks, &compiledPass]()
                     {
-                        if (callbacks.executePass)
-                            callbacks.executePass(compiledPass);
+                        if (capturedCallbacks.executePass)
+                            capturedCallbacks.executePass(compiledPass);
                     },
-                    [&callbacks](bool startedRenderPass, const auto& endDesc)
+                    [&capturedCallbacks](bool startedRenderPass, const auto& endDesc)
                     {
-                        if (callbacks.endOutputPass)
-                            callbacks.endOutputPass(startedRenderPass, endDesc);
+                        if (capturedCallbacks.endOutputPass)
+                            capturedCallbacks.endOutputPass(startedRenderPass, endDesc);
                     });
             });
     }

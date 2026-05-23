@@ -60,6 +60,8 @@ namespace NLS::Render::RHI::DX12
 				append("Uniform");
 			if (HasBufferUsage(usage, BufferUsageFlags::Storage))
 				append("Storage");
+			if (HasBufferUsage(usage, BufferUsageFlags::ShaderRead))
+				append("ShaderRead");
 			if (HasBufferUsage(usage, BufferUsageFlags::CopySrc))
 				append("CopySrc");
 			if (HasBufferUsage(usage, BufferUsageFlags::CopyDst))

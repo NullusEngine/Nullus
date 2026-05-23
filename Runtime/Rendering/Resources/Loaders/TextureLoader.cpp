@@ -1,16 +1,77 @@
 #include "Rendering/Resources/Loaders/TextureLoader.h"
 
+#include "Rendering/Assets/TextureArtifact.h"
 #include "Rendering/Resources/Texture2D.h"
 #include "Rendering/Resources/TextureCube.h"
 
 #include <Image.h>
 #include <array>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <optional>
+#include <algorithm>
+#include <vector>
+
+namespace
+{
+std::vector<uint8_t> ReadBinaryFile(const std::string& path)
+{
+	std::ifstream input(path, std::ios::binary);
+	if (!input)
+		return {};
+
+	return {
+		std::istreambuf_iterator<char>(input),
+		std::istreambuf_iterator<char>()
+	};
+}
+
+std::optional<std::vector<uint8_t>> ExtractImportedTexturePayload(const std::string& path)
+{
+	if (std::filesystem::path(path).extension() != ".ntex")
+		return std::nullopt;
+
+	auto bytes = ReadBinaryFile(path);
+	if (bytes.empty())
+		return std::vector<uint8_t> {};
+
+	const std::string marker = "PAYLOAD_BEGIN\n";
+	const auto found = std::search(bytes.begin(), bytes.end(), marker.begin(), marker.end());
+	if (found == bytes.end())
+		return std::vector<uint8_t> {};
+
+	const auto payloadBegin = found + static_cast<std::ptrdiff_t>(marker.size());
+	return std::vector<uint8_t>(payloadBegin, bytes.end());
+}
+}
 
 namespace NLS::Render::Resources::Loaders
 {
 Texture2D* TextureLoader::Create(const std::string& p_filepath, Settings::ETextureFilteringMode p_firstFilter, Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap)
 {
-	Image image(p_filepath, true);
+	if (std::filesystem::path(p_filepath).extension() == ".ntex")
+	{
+		if (auto artifact = NLS::Render::Assets::LoadTextureArtifact(p_filepath))
+		{
+			Texture2D* texture = new Texture2D;
+			texture->firstFilter = p_firstFilter;
+			texture->secondFilter = p_secondFilter;
+			texture->isMimapped = artifact->mips.size() > 1u || p_generateMipmap;
+			if (!texture->SetTextureResource(*artifact))
+			{
+				delete texture;
+				return nullptr;
+			}
+			texture->path = p_filepath;
+			return texture;
+		}
+	}
+
+	const auto importedTexturePayload = ExtractImportedTexturePayload(p_filepath);
+	Image image = importedTexturePayload.has_value()
+		? Image(importedTexturePayload->data(), importedTexturePayload->size(), true)
+		: Image(p_filepath, true);
 	if (image.GetData() == nullptr)
 		return nullptr;
 
@@ -97,7 +158,7 @@ void TextureLoader::Reload(Texture2D* p_texture, const std::string& p_filePath, 
 
 	if (newTexture)
 	{
-		*p_texture = std::move(*newTexture);
+		p_texture->ReloadFrom(*newTexture);
 		delete newTexture;
 	}
 }

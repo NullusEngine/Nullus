@@ -10,6 +10,7 @@
 #include <algorithm>
 
 #include <Components/LightComponent.h>
+#include <Components/MeshFilter.h>
 #include <Components/TransformComponent.h>
 #include "UI/UIManager.h"
 #include "ServiceLocator.h"
@@ -75,25 +76,26 @@ bool IsFlyModeCommandDown(
 }
 }
 
-float GetActorFocusDist(Engine::GameObject& p_actor)
+float GetActorFocusDist(Engine::GameObject& p_gameObject)
 {
 	float distance = 4.0f;
 
-	if (p_actor.IsActive())
+	if (p_gameObject.IsActive())
 	{
-		if (auto modelRenderer = p_actor.GetComponent<Engine::Components::MeshRenderer>())
+		if (auto modelRenderer = p_gameObject.GetComponent<Engine::Components::MeshRenderer>())
 		{
             const bool hasCustomBoundingSphere = modelRenderer->GetFrustumBehaviour() == Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_CUSTOM;
-			const bool hasModel = modelRenderer->GetModel();
-			const auto boundingSphere = hasCustomBoundingSphere ? &modelRenderer->GetCustomBoundingSphere() : hasModel ? &modelRenderer->GetModel()->GetBoundingSphere() : nullptr;
-			const auto& actorPosition = p_actor.GetTransform()->GetWorldPosition();
-            const auto& actorScale = p_actor.GetTransform()->GetWorldScale();
+			auto* meshFilter = p_gameObject.GetComponent<Engine::Components::MeshFilter>();
+			const auto* mesh = meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr;
+			const auto boundingSphere = hasCustomBoundingSphere ? &modelRenderer->GetCustomBoundingSphere() : mesh != nullptr ? &mesh->GetBoundingSphere() : nullptr;
+			const auto& actorPosition = p_gameObject.GetTransform()->GetWorldPosition();
+            const auto& actorScale = p_gameObject.GetTransform()->GetWorldScale();
 			const auto scaleFactor = std::max(std::max(actorScale.x, actorScale.y), actorScale.z);
 
 			distance = std::max(distance, boundingSphere ? (boundingSphere->radius + Maths::Vector3::Length(boundingSphere->position)) * scaleFactor * 2.0f : 10.0f);
 		}
 
-		for (auto child : p_actor.GetChildren())
+		for (auto child : p_gameObject.GetChildren())
 			distance = std::max(distance, GetActorFocusDist(*child));
 	}
 
@@ -125,7 +127,7 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
 
 		if (mouseOverView && !NLS_SERVICE(NLS::UI::UIManager).IsAnyItemActive())
 		{
-			if (auto target = GetTargetActor())
+			if (auto target = GetTargetGameObject())
 			{
                 auto targetPos = target->GetTransform()->GetWorldPosition();
 
@@ -224,7 +226,7 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
                     {
                         if (m_inputManager.GetKeyState(Windowing::Inputs::EKey::KEY_LEFT_ALT) == Windowing::Inputs::EKeyState::KEY_DOWN)
                         {
-                            if (auto target = GetTargetActor())
+                            if (auto target = GetTargetGameObject())
                             {
                                 HandleCameraOrbit(*target, mouseOffset, wasFirstMouse);
                             }
@@ -380,25 +382,25 @@ bool Editor::Core::CameraController::IsInputBlocked() const
     return m_inputBlocked;
 }
 
-void Editor::Core::CameraController::LockTargetActor(Engine::GameObject& p_actor)
+void Editor::Core::CameraController::LockTargetGameObject(Engine::GameObject& p_gameObject)
 {
-	m_lockedActor = &p_actor;
+	m_lockedGameObject = &p_gameObject;
 }
 
-void Editor::Core::CameraController::UnlockTargetActor()
+void Editor::Core::CameraController::UnLockTargetGameObject()
 {
-	m_lockedActor = nullptr;
+	m_lockedGameObject = nullptr;
 }
 
-Engine::GameObject* Editor::Core::CameraController::GetTargetActor() const
+Engine::GameObject* Editor::Core::CameraController::GetTargetGameObject() const
 {
-	if (m_lockedActor)
+	if (m_lockedGameObject)
 	{
-		return m_lockedActor;
+		return m_lockedGameObject;
 	}
-	else if (EDITOR_EXEC(IsAnyActorSelected()))
+	else if (EDITOR_EXEC(IsAnyGameObjectSelected()))
 	{
-		return EDITOR_EXEC(GetSelectedActor());
+		return EDITOR_EXEC(GetSelectedGameObject());
 	}
 
 	return nullptr;

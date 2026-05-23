@@ -250,4 +250,11 @@ namespace NLS::Render::Resources
 		++m_generation;
 		m_explicitShaderModules.clear();
 	}
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+	void Shader::SetReflectionForTesting(ShaderReflection reflection)
+	{
+		SetReflection(std::move(reflection));
+	}
+#endif
 }

@@ -21,7 +21,7 @@
 namespace NLS::Editor::Rendering
 {
 	/**
-	* Draw the scene for actor picking
+	* Draw the scene for GameObject picking
 	*/
 	class PickingRenderPass : public NLS::Render::Core::ARenderPass
 	{
@@ -80,12 +80,12 @@ namespace NLS::Editor::Rendering
         void DrawPickableModels(NLS::Render::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
         void DrawPickableCameras(NLS::Render::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
         void DrawPickableLights(NLS::Render::Data::PipelineState p_pso, Engine::SceneSystem::Scene& p_scene);
-        uint32_t RegisterPickableActor(Engine::GameObject& actor);
+        uint32_t RegisterPickableGameObject(Engine::GameObject& actor);
 
 	private:
         DebugModelRenderer m_debugModelRenderer;
-		NLS::Render::Buffers::Framebuffer m_actorPickingFramebuffer;
-		NLS::Render::Resources::Material m_actorPickingMaterial;
+		NLS::Render::Buffers::Framebuffer m_gameObjectPickingFramebuffer;
+		NLS::Render::Resources::Material m_gameObjectPickingMaterial;
         NLS::Render::Resources::Material m_lightMaterial;
         mutable PickingReadbackLifecycle<Engine::SceneSystem::Scene> m_readbackLifecycle;
         std::optional<NLS::Render::Context::RenderPassCommandInput> m_preparedThreadedPassInput;

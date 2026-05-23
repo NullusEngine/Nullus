@@ -3,6 +3,7 @@
 #include <atomic>
 #include <filesystem>
 #include <memory>
+#include <vector>
 
 namespace NLS::Editor::Core
 {
@@ -20,7 +21,10 @@ public:
     bool Start(const std::filesystem::path& root);
     void Stop();
     bool ConsumeChanged();
+    std::vector<std::filesystem::path> ConsumeChangedPaths();
     bool IsRunning() const;
+    // True after the platform watcher has registered/armed its first change request.
+    bool IsReady() const;
 
 private:
     struct Impl;

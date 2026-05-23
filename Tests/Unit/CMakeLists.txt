@@ -16,6 +16,10 @@ set(NULLUS_RENDER_ALIGNMENT_CONTRACT_TEST_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/EditorRenderPathContractTests.cpp"
 )
 
+set(NULLUS_RENDERING_TEST_FILES
+    "${CMAKE_SOURCE_DIR}/Tests/Rendering/AssetMaterialViewportTests.cpp"
+)
+
 set(NULLUS_EDITOR_META_GENERATED_CPP
     "${CMAKE_SOURCE_DIR}/Project/Editor/Gen/MetaGenerated.cpp"
 )
@@ -30,10 +34,12 @@ set_source_files_properties(
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${NULLUS_UNIT_TEST_FILES})
 source_group("Contract Tests" FILES ${NULLUS_RENDER_ALIGNMENT_CONTRACT_TEST_FILES})
+source_group("Rendering Tests" FILES ${NULLUS_RENDERING_TEST_FILES})
 
 add_executable(NullusUnitTests
     ${NULLUS_UNIT_TEST_FILES}
     ${NULLUS_RENDER_ALIGNMENT_CONTRACT_TEST_FILES}
+    ${NULLUS_RENDERING_TEST_FILES}
 )
 
 target_sources(NullusUnitTests PRIVATE
@@ -48,6 +54,8 @@ target_sources(NullusUnitTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettingsPersistence.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettingsRegistry.cpp
     ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettingsRegistry.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/TagLayerSettings.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/TagLayerSettings.h
     ${NULLUS_EDITOR_META_GENERATED_CPP}
     ${NULLUS_EDITOR_META_GENERATED_H}
     ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutProfile.cpp
@@ -64,6 +72,34 @@ target_sources(NullusUnitTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneViewImGuizmo.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/AssetFileWatcher.cpp
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/AssetFileWatcher.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/EditorAssetDatabase.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/EditorAssetDatabase.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/AssetDragDropWorkflow.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/AssetDragDropWorkflow.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/AssetBrowserPresentation.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/AssetBrowserPresentation.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/EditorAssetPathUtils.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/EditorAssetPathUtils.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/EditorAssetDragPayload.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/EditorAssetDragPayload.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/EditorAssetDragDropBridge.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/EditorAssetDragDropBridge.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/EditorStartupAssetPreimport.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/EditorStartupAssetPreimport.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/ImportProgressTracker.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/ImportProgressTracker.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/PrefabEditorWorkflow.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/PrefabEditorWorkflow.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/AssetDatabaseFacade.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/AssetDatabaseFacade.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/AssetImporterSettings.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/AssetImporterSettings.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/AssetImporterFacade.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/AssetImporterFacade.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/ExternalAssetImporter.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/ExternalAssetImporter.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/PrefabUtilityFacade.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/PrefabUtilityFacade.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ComponentSearchPanel.cpp
     ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ComponentSearchPanel.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/EditorLaunchArgs.cpp
@@ -78,6 +114,8 @@ target_sources(NullusUnitTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ShortcutSettingsPanel.h
     ${CMAKE_SOURCE_DIR}/Project/Game/LaunchArgs.cpp
     ${CMAKE_SOURCE_DIR}/Project/Game/LaunchArgs.h
+    ${CMAKE_SOURCE_DIR}/Project/Game/RuntimeAssetManifestStartup.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Game/RuntimeAssetManifestStartup.h
     ${CMAKE_SOURCE_DIR}/Project/Launcher/Core/LauncherLocalization.cpp
     ${CMAKE_SOURCE_DIR}/Project/Launcher/Core/LauncherLocalization.h
     ${CMAKE_SOURCE_DIR}/Project/Launcher/Core/LauncherProjectMetadata.cpp
@@ -107,6 +145,7 @@ target_include_directories(NullusUnitTests PRIVATE
 target_compile_definitions(NullusUnitTests PRIVATE
     NLS_ROOT_DIR="${CMAKE_SOURCE_DIR}"
     NLS_BUILD_DIR="${CMAKE_BINARY_DIR}"
+    $<$<BOOL:${NLS_ENABLE_TEST_HOOKS}>:NLS_ENABLE_TEST_HOOKS=1>
     WITH_PROFILING=$<AND:$<BOOL:${WIN32}>,$<BOOL:${NLS_ENABLE_TIMELINE_PROFILER}>>
 )
 

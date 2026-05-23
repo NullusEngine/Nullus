@@ -2,6 +2,9 @@
 
 #include "GameObject.h"
 #include "Components/TransformComponent.h"
+
+#include <type_traits>
+
 namespace NLS::Engine
 {
     template<typename T>
@@ -31,23 +34,10 @@ namespace NLS::Engine
     template<typename T>
     T* GameObject::GetComponent(bool includeSubType) const
     {
-        for (const auto& component : m_vComponents)
-        {
-            if (!component)
-                continue;
+        static_assert(std::is_base_of_v<Components::Component, T>, "T must derive from Component");
 
-            if (includeSubType)
-            {
-                if (auto* match = dynamic_cast<T*>(component.get()))
-                    return match;
-                continue;
-            }
-
-            if (typeid(*component) == typeid(T))
-                return static_cast<T*>(component.get());
-        }
-
-        return nullptr;
+        auto* component = GetComponent(NLS_TYPEOF(T), includeSubType);
+        return component ? static_cast<T*>(component) : nullptr;
     }
 }
 

@@ -8,12 +8,12 @@ English version: [ReflectionWorkflow.en.md](./ReflectionWorkflow.en.md)
 
 Nullus 当前维护中的反射路径只有一条：
 
-- 在运行时头文件里声明反射输入
+- 在运行时和项目头文件里声明反射输入
 - 正常走 CMake 构建，让 `Tools/MetaParser` 在构建期解析这些声明
-- 生成胶水代码到 `Runtime/<Module>/Gen/`
+- 生成胶水代码到 `Runtime/<Module>/Gen/` 或 `Project/<Target>/Gen/`
 - 运行时通过生成出来的模块 link 函数把类型和成员注册进反射数据库
 
-不要手改 `Runtime/*/Gen/` 下的任何文件。
+不要手改 `Runtime/*/Gen/` 或 `Project/*/Gen/` 下的任何文件。
 
 ## 当前系统的真实行为
 
@@ -180,7 +180,7 @@ PROPERTY(name = active, getter = IsSelfActive, setter = SetActive)
 当前仓库的典型例子：
 
 - `GameObject.active`
-- `MeshRenderer.model`
+- `MeshFilter.mesh`
 
 ### 模式 3：类外反射声明
 
@@ -230,7 +230,7 @@ REFLECT_EXTERNAL(
 | 内联反射类型 | 引擎拥有该类型，且消费者需要稳定运行时元数据 | `CLASS` / `STRUCT` / `GENERATED_BODY` / `FUNCTION` | `TransformComponent`、`CameraComponent`、`GameObject`、`Scene` |
 | 反射枚举 | 枚举会出现在反射字段或编辑器选项中 | `ENUM` | `EProjectionMode`、`ELightType`、`MeshRenderer::EFrustumBehaviour` |
 | 自动属性 | getter / setter 命名能自然形成 `GetXxx` / `SetXxx` | 对两个访问器都加 `FUNCTION` | `fov`、`near`、`far`、`lightType`、`materialPaths` |
-| 显式属性 | 暴露名和访问器命名不一致 | `PROPERTY(...)` + 对应访问器 | `GameObject.active`、`MeshRenderer.model` |
+| 显式属性 | 暴露名和访问器命名不一致 | `PROPERTY(...)` + 对应访问器 | `GameObject.active`、`MeshFilter.mesh` |
 | 类外反射 | 类型本体不适合加内联反射宏 | `MetaExternal` + `REFLECT_EXTERNAL` | `NLS::Maths::Vector3`、`NLS::Maths::Quaternion` |
 | 私有类外反射 | 私有成员确实需要被有意识地暴露 | `REFLECT_PRIVATE_*` | `PrivateReflectionExternalSample` |
 
@@ -241,8 +241,8 @@ REFLECT_EXTERNAL(
 - `TransformComponent`
 - `CameraComponent`
 - `LightComponent`
+- `MeshFilter`
 - `MeshRenderer`
-- `MaterialRenderer`
 - `GameObject`
 - `Scene`
 - `BoundingSphere`
@@ -260,7 +260,9 @@ REFLECT_EXTERNAL(
 
 Object Graph 序列化把反射字段作为维护中的普通属性面。`ObjectGraphSerializer` 会遍历 `object.GetType().GetFields()`，并通过反射 JSON 路径把字段值转换成 Object Graph property。
 
-定义图结构的关系不属于普通反射字段。Scene 对 GameObject 的拥有关系、GameObject 对组件或子物体的拥有关系、父级对象引用、Prefab override、资产引用，分别用 `Runtime/Engine/Serialize` 里的 `$owned`、`$ref`、`$asset` 或 patch operation 显式表达。
+定义图结构的关系不属于普通反射字段。Scene 对 GameObject 的拥有关系、GameObject 对组件或子物体的拥有关系用 `$owned` 表达。父级对象引用和资产引用使用当前 Object Graph 的对象引用形状：`fileID`、`guid`、`type`，以及可选的 `filePath`。Prefab override 使用 `Runtime/Engine/Serialize` 里的 patch operation 表达。
+
+不要再写旧的 `$ref` 或 `$asset` 对象。`ObjectGraphReader` 会拒绝这些形状；本地对象引用使用空 `guid` 加非零 `fileID`，资产引用必须有有效 `guid`、非零 `fileID` 和资产 `type`。
 
 因此，准备进入场景或预制体持久化的类型，应通过反射字段暴露稳定状态；需要跳过的字段应通过 transient / editor-only / runtime-only 等运行时元数据表达；原始指针默认不应持久化，除非明确建模为 owned、object reference、asset reference 或 transient。旧的 `SerializedSceneData`、`SerializedActorData`、`SerializedComponentData` 和 `GameobjectSerialize` adapter 路径不再是维护中的场景持久化面。
 
@@ -306,11 +308,11 @@ ctest --test-dir build --output-on-failure
 
 ## 已知约束
 
-- `Runtime/*/Gen/` 是生成输出，不能手改
+- `Runtime/*/Gen/` 和 `Project/*/Gen/` 是生成输出，不能手改
 - 结论只能覆盖真实跑过的验证证据
 - Windows 上的反射验证不能自动推导 Linux / macOS 一样成立
 - 如果某个属性类型不被支持，应该补这个类型的反射支持，而不是在生成代码里临时适配
-- 如果声明里写成了未限定的 `Array<...>`，MetaParser 现在会直接提示把它改成 `NLS::Array<...>`
+- 反射值字段支持 `std::vector<T>` 和 `NLS::Array<T>`；MetaParser 也会在 CppAst 解析后规范化本地简写（如 `vector<T>`、`Array<T>`），但源码风格仍优先使用完整限定写法。
 
 ## 相关文档
 

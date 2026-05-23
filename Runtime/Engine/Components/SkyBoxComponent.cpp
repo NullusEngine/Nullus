@@ -4,10 +4,9 @@
 
 #include "Core/ServiceLocator.h"
 #include "Core/ResourceManagement/TextureManager.h"
-#include "Core/ResourceManagement/ModelManager.h"
+#include "Core/ResourceManagement/MeshManager.h"
 #include "Core/ResourceManagement/ShaderManager.h"
 #include "Components/MeshRenderer.h"
-#include "Components/MaterialRenderer.h"
 #include "GameObject.h"
 #include <Debug/Logger.h>
 #include <fstream>
@@ -24,8 +23,8 @@ namespace NLS::Engine::Components
 {
 SkyBoxComponent::SkyBoxComponent()
 {
-    AppendSkyboxTrace("loading sky cube model");
-    mModel = NLS_SERVICE(NLS::Core::ResourceManagement::ModelManager)[":Models/SkyCube.obj"];
+    AppendSkyboxTrace("loading sky cube mesh");
+    mMesh = NLS_SERVICE(NLS::Core::ResourceManagement::MeshManager)[":Models/SkyCube.obj"];
 
     AppendSkyboxTrace("loading skybox shader");
     auto shader = NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager)[":Shaders/Skybox.hlsl"];

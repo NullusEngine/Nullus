@@ -45,28 +45,7 @@ Render::Settings::RenderDocSettings EditorSettings::BuildRenderDocSettings()
 
 Render::Settings::EngineDiagnosticsSettings EditorSettings::BuildDiagnosticsSettings()
 {
-    const auto& runtime = GetRuntimeSettingsObject();
-
-    Render::Settings::EngineDiagnosticsSettings settings;
-    settings.logRenderDrawPath = runtime.logRenderDrawPath;
-    settings.diagSkipSkyboxDraw = runtime.diagSkipSkyboxDraw;
-    settings.logMaterialBindings = runtime.logMaterialBindings;
-    settings.dx12LogMessages = runtime.dx12LogMessages;
-    settings.dx12LogFrameFlow = runtime.dx12LogFrameFlow;
-    settings.logEditorFps = runtime.logEditorFps;
-    settings.editorGridSkipPlane = runtime.editorGridSkipPlane;
-    settings.editorGridSkipAxes = runtime.editorGridSkipAxes;
-    settings.editorDisableGridPass = runtime.editorDisableGridPass;
-    settings.editorDisableDebugCamerasPass = runtime.editorDisableDebugCamerasPass;
-    settings.editorDisableDebugLightsPass = runtime.editorDisableDebugLightsPass;
-    settings.editorDisableDebugActorPass = runtime.editorDisableDebugActorPass;
-    settings.editorDisableDebugDrawPass = runtime.editorDisableDebugDrawPass;
-    settings.editorDisablePickingPass = runtime.editorDisablePickingPass;
-    settings.editorLogScenePicking = runtime.editorLogScenePicking;
-    settings.editorValidationFocusView = runtime.editorValidationFocusView;
-    settings.editorValidationExclusiveView = runtime.editorValidationExclusiveView;
-    settings.editorValidationSelectActor = runtime.editorValidationSelectActor;
-    return settings;
+    return {};
 }
 
 void EditorSettings::RegisterSettingObjects(EditorSettingsRegistry& p_registry)

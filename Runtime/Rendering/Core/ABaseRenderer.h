@@ -10,6 +10,7 @@
 
 #include "Rendering/Core/IRenderer.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Data/DrawableObjectDescriptor.h"
 #include "Rendering/Data/FrameInfo.h"
 #include "Rendering/Data/PipelineState.h"
 #include "Rendering/FrameGraph/FrameGraphExecutionContext.h"
@@ -165,6 +166,8 @@ public:
         const Entities::Drawable& p_drawable,
         Resources::MaterialPipelineStateOverrides pipelineOverrides = {},
         Settings::EComparaisonAlgorithm depthCompareOverride = Settings::EComparaisonAlgorithm::LESS);
+    uint64_t GetExplicitUniformBindingSetCreationCount() const;
+    uint64_t GetExplicitUniformSnapshotBufferCreationCount() const;
 
 protected:
     virtual std::optional<NLS::Render::Context::FrameSnapshot> BuildFrameSnapshot(
@@ -186,6 +189,8 @@ protected:
         std::shared_ptr<RHI::RHIBindingSet> materialBindingSet;
         std::shared_ptr<RHI::RHIMesh> mesh;
         uint32_t instanceCount = 0u;
+        uint32_t objectIndex = Data::DrawableObjectDescriptor::kInvalidObjectIndex;
+        bool usesObjectIndex = false;
     };
 
     virtual bool PrepareRecordedDraw(
@@ -220,5 +225,7 @@ protected:
 private:
     static std::atomic_bool s_isDrawing;
     mutable std::unordered_map<std::string, std::weak_ptr<NLS::Render::RHI::RHIBindingLayout>> m_explicitUniformBindingLayouts;
+    mutable uint64_t m_explicitUniformBindingSetCreationCount = 0u;
+    mutable uint64_t m_explicitUniformSnapshotBufferCreationCount = 0u;
 };
 }

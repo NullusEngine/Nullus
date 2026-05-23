@@ -5,6 +5,8 @@
 #include "Rendering/PickingRenderPass.h"
 #include "Rendering/SceneRendererFactory.h"
 #include "Core/EditorActions.h"
+#include "Assets/EditorAssetDragPayload.h"
+#include "Assets/EditorAssetPathUtils.h"
 #include "Panels/SceneView.h"
 #include "Panels/GameView.h"
 #include "Panels/SceneViewPickingPolicy.h"
@@ -14,13 +16,20 @@
 #include "Core/SceneCameraFocus.h"
 #include "ImGuizmo.h"
 #include "Debug/Logger.h"
+#include "Rendering/Context/DriverAccess.h"
+#include "Rendering/Settings/EPixelDataFormat.h"
+#include "Rendering/Settings/EPixelDataType.h"
+#include "Rendering/Tooling/MaterialVisualEvidence.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include <ServiceLocator.h>
 #include <UI/UIManager.h>
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
 #include <sstream>
+#include <vector>
 using namespace NLS;
 
 namespace
@@ -49,7 +58,7 @@ ImGuizmo::MODE ToNativeImGuizmoMode(const Editor::Core::SceneViewGizmoSpace spac
         : ImGuizmo::WORLD;
 }
 
-Engine::GameObject* PickActorAtRenderCoordinate(
+Engine::GameObject* PickGameObjectAtRenderCoordinate(
     Editor::Rendering::PickingRenderPass& pickingPass,
     const float x,
     const float y)
@@ -60,14 +69,14 @@ Engine::GameObject* PickActorAtRenderCoordinate(
 
     if (pickingResult.has_value())
     {
-        if (const auto pickedActor = std::get_if<Engine::GameObject*>(&pickingResult.value()))
-            return *pickedActor;
+        if (const auto pickedGameObject = std::get_if<Engine::GameObject*>(&pickingResult.value()))
+            return *pickedGameObject;
     }
 
     return nullptr;
 }
 
-Engine::GameObject* PickActorNearRenderCoordinate(
+Engine::GameObject* PickGameObjectNearRenderCoordinate(
     Editor::Rendering::PickingRenderPass& pickingPass,
     const Maths::Vector2& mousePos,
     const float maxRenderX,
@@ -90,8 +99,8 @@ Engine::GameObject* PickActorNearRenderCoordinate(
     {
         const float sampleX = std::clamp(mousePos.x + offset.x, 0.0f, maxRenderX);
         const float sampleY = std::clamp(mousePos.y + offset.y, 0.0f, maxRenderY);
-        if (auto* pickedActor = PickActorAtRenderCoordinate(pickingPass, sampleX, sampleY))
-            return pickedActor;
+        if (auto* pickedGameObject = PickGameObjectAtRenderCoordinate(pickingPass, sampleX, sampleY))
+            return pickedGameObject;
     }
 
     return nullptr;
@@ -136,8 +145,10 @@ Editor::Panels::SceneView::SceneView(
     const UI::PanelWindowSettings& p_windowSettings)
     : AViewControllable(p_title, p_opened, p_windowSettings), m_sceneManager(EDITOR_CONTEXT(sceneManager))
 {
-    // Scene View should always render editor overlays (grid/gizmo/light billboards),
-    // so use the editor renderer on every backend.
+    // Scene View always renders editor overlays (grid/gizmo/light billboards),
+    // so create the editor renderer during startup while the native startup
+    // progress window is still visible.
+    NLS_LOG_INFO("[Startup] Creating Scene View renderer");
     m_renderer = std::make_unique<Editor::Rendering::DebugSceneRenderer>(*EDITOR_CONTEXT(driver));
     SetRequiresRetiredFrameConsumption(true);
     SetRequiresImmediateRetiredFrameReadback(ShouldSceneViewRequestImmediatePickingReadback());
@@ -154,16 +165,25 @@ Editor::Panels::SceneView::SceneView(
                 EDITOR_EXEC(LoadSceneFromDisk(path));
                 break;
             case Utils::PathParser::EFileType::MODEL:
-                EDITOR_EXEC(CreateActor(path, true));
+            case Utils::PathParser::EFileType::PREFAB:
+                EDITOR_EXEC(CreateGameObjectFromAsset(path, true));
+                break;
+            default:
                 break;
         }
     };
 
+    m_image->AddPlugin<UI::DDTarget<NLS::Editor::Assets::EditorAssetDragPayload>>(
+        NLS::Editor::Assets::kEditorAssetDragPayloadType).DataReceivedEvent += [](auto payload)
+    {
+        EDITOR_EXEC(CreateGameObjectFromAsset(payload, true));
+    };
+
     m_destroyedListener = Engine::GameObject::DestroyedEvent += [this](const Engine::GameObject& actor)
     {
-        if (m_highlightedActor == &actor)
+        if (m_highlightedGameObject == &actor)
         {
-            m_highlightedActor = nullptr;
+            m_highlightedGameObject = nullptr;
         }
     };
 }
@@ -171,6 +191,15 @@ Editor::Panels::SceneView::SceneView(
 Editor::Panels::SceneView::~SceneView()
 {
     Engine::GameObject::DestroyedEvent -= m_destroyedListener;
+}
+
+void Editor::Panels::SceneView::EnsureRenderer()
+{
+    if (m_renderer != nullptr)
+        return;
+
+    NLS_LOG_INFO("[Startup] Creating Scene View renderer");
+    m_renderer = std::make_unique<Editor::Rendering::DebugSceneRenderer>(*EDITOR_CONTEXT(driver));
 }
 
 void Editor::Panels::SceneView::Update(float p_deltaTime)
@@ -191,7 +220,7 @@ void Editor::Panels::SceneView::Update(float p_deltaTime)
         m_cameraController.ResetMouseInteractionState();
         m_gizmoInteraction = {};
         m_pendingClickPickRenderPos.reset();
-        m_highlightedActor = nullptr;
+        m_highlightedGameObject = nullptr;
         m_hasPickingSample = false;
     }
     EnsureCameraFocus();
@@ -278,22 +307,25 @@ void Editor::Panels::SceneView::InitFrame()
     if (debugRenderer == nullptr)
         return;
 
-    Engine::GameObject* selectedActor = nullptr;
+    Engine::GameObject* selectedGameObject = nullptr;
 
-    if (EDITOR_EXEC(IsAnyActorSelected()))
+    if (EDITOR_EXEC(IsAnyGameObjectSelected()))
     {
-        selectedActor = EDITOR_EXEC(GetSelectedActor());
+        selectedGameObject = EDITOR_EXEC(GetSelectedGameObject());
     }
 
     m_requestPickingFrame = ShouldRequestPickingFrame();
     debugRenderer->AddDescriptor<Rendering::DebugSceneRenderer::DebugSceneDescriptor>({
-        m_highlightedActor,
-        selectedActor,
+        m_highlightedGameObject,
+        selectedGameObject,
         m_requestPickingFrame});
 }
 
 Engine::SceneSystem::Scene* Editor::Panels::SceneView::GetScene()
 {
+    if (EDITOR_CONTEXT(activePrefabStage).has_value() && EDITOR_CONTEXT(activePrefabStage)->stageScene)
+        return EDITOR_CONTEXT(activePrefabStage)->stageScene.get();
+
     return m_sceneManager.GetCurrentScene();
 }
 
@@ -304,22 +336,7 @@ Engine::Rendering::BaseSceneRenderer::SceneDescriptor Editor::Panels::SceneView:
 
 bool Editor::Panels::SceneView::RequiresSynchronizedRetiredFramePresentation() const
 {
-    if (ShouldSceneViewSynchronizeRetiredFramePresentation())
-        return true;
-
-    using Windowing::Inputs::EMouseButton;
-
-    const bool clickPickingRequested =
-        m_requestPickingFrame &&
-        EDITOR_CONTEXT(inputManager)->IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT) &&
-        !m_cameraController.IsCameraControlActive();
-
-    return m_cameraController.IsCameraControlActive() ||
-        m_cameraMovedForPresentation ||
-        m_gizmoInteraction.isUsing ||
-        m_gizmoInteraction.isViewUsing ||
-        clickPickingRequested ||
-        m_pendingClickPickRenderPos.has_value();
+    return ShouldSceneViewSynchronizeRetiredFramePresentation();
 }
 
 void Editor::Panels::SceneView::DrawPreRenderViewportOverlay()
@@ -331,8 +348,152 @@ void Editor::Panels::SceneView::DrawPreRenderViewportOverlay()
 void Editor::Panels::SceneView::OnAfterDrawWidgets()
 {
     if (ShouldResolveViewportPicking(ViewportOverlayLifecyclePhase::AfterWidgetDraw))
-        HandleActorPicking();
+        HandleGameObjectPicking();
     EndViewportOverlayDrawListChannels();
+}
+
+void Editor::Panels::SceneView::AfterRenderFrame()
+{
+    AViewControllable::AfterRenderFrame();
+    TryWriteValidationReadback();
+}
+
+void Editor::Panels::SceneView::TryWriteValidationReadback()
+{
+    if (m_validationReadbackWritten)
+        return;
+
+    const auto& diagnostics = EDITOR_EXEC(GetContext()).GetDiagnosticsSettings();
+    if (diagnostics.editorValidationSceneReadbackOutput.empty() &&
+        diagnostics.editorValidationSceneReadbackSummary.empty())
+    {
+        return;
+    }
+
+    if (!diagnostics.editorValidationCreateAsset.empty())
+    {
+        const auto expectedName = std::filesystem::path(diagnostics.editorValidationCreateAsset).stem().string();
+        auto* scene = GetScene();
+        if (scene == nullptr || scene->FindGameObjectByName(expectedName) == nullptr)
+        {
+            m_validationReadbackReadyFrames = 0u;
+            return;
+        }
+
+        if (EDITOR_EXEC(GetContext()).importProgressTracker.HasRunningJobs())
+        {
+            m_validationReadbackReadyFrames = 0u;
+            return;
+        }
+
+        constexpr uint32_t kStableFramesAfterAssetCreation = 4u;
+        if (m_validationReadbackReadyFrames < kStableFramesAfterAssetCreation)
+        {
+            ++m_validationReadbackReadyFrames;
+            return;
+        }
+    }
+
+    const auto width = static_cast<uint32_t>(m_lastResolvedViewSize.first);
+    const auto height = static_cast<uint32_t>(m_lastResolvedViewSize.second);
+    if (width == 0u || height == 0u)
+        return;
+
+    auto* driver = Render::Context::TryGetLocatedDriver();
+    if (driver == nullptr)
+        return;
+
+    if (Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver))
+        Render::Context::DriverRendererAccess::DrainThreadedRendering(*driver);
+
+    auto texture = m_fbo.GetExplicitTextureHandle();
+    std::vector<uint8_t> pixels(static_cast<size_t>(width) * static_cast<size_t>(height) * 4u, 0u);
+    const auto readback = Render::Context::DriverRendererAccess::ReadPixelsChecked(
+        *driver,
+        texture,
+        0u,
+        0u,
+        width,
+        height,
+        Render::Settings::EPixelDataFormat::RGBA,
+        Render::Settings::EPixelDataType::UNSIGNED_BYTE,
+        pixels.data());
+
+    if (!readback.Succeeded())
+    {
+        NLS_LOG_ERROR("Scene View validation readback failed: " + readback.message);
+        m_validationReadbackWritten = true;
+        EDITOR_CONTEXT(window)->SetShouldClose(true);
+        return;
+    }
+
+    uint64_t nonBlackPixels = 0u;
+    uint64_t nonZeroAlphaPixels = 0u;
+    uint64_t rgbSum = 0u;
+    uint8_t maxChannel = 0u;
+    for (size_t index = 0u; index + 3u < pixels.size(); index += 4u)
+    {
+        const auto r = pixels[index + 0u];
+        const auto g = pixels[index + 1u];
+        const auto b = pixels[index + 2u];
+        const auto a = pixels[index + 3u];
+        if (r != 0u || g != 0u || b != 0u)
+            ++nonBlackPixels;
+        if (a != 0u)
+            ++nonZeroAlphaPixels;
+        rgbSum += static_cast<uint64_t>(r) + static_cast<uint64_t>(g) + static_cast<uint64_t>(b);
+        maxChannel = std::max(maxChannel, std::max(r, std::max(g, b)));
+    }
+
+    const auto pixelCount = static_cast<uint64_t>(width) * static_cast<uint64_t>(height);
+    const double averageRgb = pixelCount > 0u
+        ? static_cast<double>(rgbSum) / static_cast<double>(pixelCount * 3u)
+        : 0.0;
+
+    std::string pngError;
+    if (!diagnostics.editorValidationSceneReadbackOutput.empty())
+    {
+        std::error_code error;
+        std::filesystem::create_directories(
+            std::filesystem::path(diagnostics.editorValidationSceneReadbackOutput).parent_path(),
+            error);
+        if (!Render::Tooling::WriteMaterialVisualEvidencePng(
+            diagnostics.editorValidationSceneReadbackOutput,
+            pixels.data(),
+            width,
+            height,
+            4u,
+            width * 4u,
+            &pngError))
+        {
+            NLS_LOG_ERROR("Scene View validation PNG write failed: " + pngError);
+        }
+    }
+
+    std::ostringstream summary;
+    summary << "width=" << width << "\n";
+    summary << "height=" << height << "\n";
+    summary << "pixels=" << pixelCount << "\n";
+    summary << "nonBlackPixels=" << nonBlackPixels << "\n";
+    summary << "nonZeroAlphaPixels=" << nonZeroAlphaPixels << "\n";
+    summary << "averageRgb=" << averageRgb << "\n";
+    summary << "maxChannel=" << static_cast<uint32_t>(maxChannel) << "\n";
+    summary << "readbackStatus=success\n";
+
+    NLS_LOG_INFO("Scene View validation readback: " + summary.str());
+    if (!diagnostics.editorValidationSceneReadbackSummary.empty())
+    {
+        std::error_code error;
+        std::filesystem::create_directories(
+            std::filesystem::path(diagnostics.editorValidationSceneReadbackSummary).parent_path(),
+            error);
+        std::ofstream output(diagnostics.editorValidationSceneReadbackSummary, std::ios::trunc);
+        if (output)
+            output << summary.str();
+    }
+
+    m_validationReadbackWritten = true;
+    EDITOR_CONTEXT(window)->SetShouldClose(true);
 }
 
 void Editor::Panels::SceneView::DrawViewportOverlay()
@@ -414,14 +575,14 @@ void Editor::Panels::SceneView::DrawViewportOverlay()
         m_cameraMovedForPresentation = true;
     }
 
-    if (!EDITOR_EXEC(IsAnyActorSelected()))
+    if (!EDITOR_EXEC(IsAnyGameObjectSelected()))
         return;
 
-    auto* selectedActor = EDITOR_EXEC(GetSelectedActor());
-    if (selectedActor == nullptr || selectedActor->GetTransform() == nullptr)
+    auto* selectedGameObject = EDITOR_EXEC(GetSelectedGameObject());
+    if (selectedGameObject == nullptr || selectedGameObject->GetTransform() == nullptr)
         return;
 
-    auto modelMatrix = Core::GetActorWorldGizmoMatrix(*selectedActor, m_currentPivot);
+    auto modelMatrix = Core::GetGameObjectWorldGizmoMatrix(*selectedGameObject, m_currentPivot);
 
     using namespace Windowing::Inputs;
     const bool snapEnabled = Core::IsSnapModifierActive(
@@ -444,7 +605,7 @@ void Editor::Panels::SceneView::DrawViewportOverlay()
 
     if (!cameraControlActive && manipulated)
     {
-        Core::ApplyActorWorldGizmoMatrix(*selectedActor, modelMatrix, m_currentOperation, m_currentPivot);
+        Core::ApplyGameObjectWorldGizmoMatrix(*selectedGameObject, modelMatrix, m_currentOperation, m_currentPivot);
         EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
     }
 }
@@ -563,11 +724,11 @@ bool Editor::Panels::SceneView::ShouldRequestPickingFrame() const
     return request;
 }
 
-void Editor::Panels::SceneView::HandleActorPicking()
+void Editor::Panels::SceneView::HandleGameObjectPicking()
 {
     if (Editor::Core::DoesShortcutSettingsWindowBlockSceneInput())
     {
-        m_highlightedActor = nullptr;
+        m_highlightedGameObject = nullptr;
         m_hasPickingSample = false;
         return;
     }
@@ -575,7 +736,7 @@ void Editor::Panels::SceneView::HandleActorPicking()
     auto* debugRenderer = dynamic_cast<Editor::Rendering::DebugSceneRenderer*>(m_renderer.get());
     if (debugRenderer == nullptr)
     {
-        m_highlightedActor = nullptr;
+        m_highlightedGameObject = nullptr;
         m_hasPickingSample = false;
         return;
     }
@@ -612,10 +773,10 @@ void Editor::Panels::SceneView::HandleActorPicking()
 
     if (mouseOverView && !IsResizing())
     {
-        auto& actorPickingFeature = debugRenderer->GetPass<Rendering::PickingRenderPass>("Picking");
-        if (!actorPickingFeature.SupportsPickingReadback())
+        auto& gameObjectPickingFeature = debugRenderer->GetPass<Rendering::PickingRenderPass>("Picking");
+        if (!gameObjectPickingFeature.SupportsPickingReadback())
         {
-            m_highlightedActor = nullptr;
+            m_highlightedGameObject = nullptr;
             m_hasPickingSample = false;
             return;
         }
@@ -623,7 +784,7 @@ void Editor::Panels::SceneView::HandleActorPicking()
         const auto localMousePos = GetLocalViewPosition(screenMousePos);
         if (!localMousePos.has_value())
         {
-            m_highlightedActor = nullptr;
+            m_highlightedGameObject = nullptr;
             m_hasPickingSample = false;
             return;
         }
@@ -655,12 +816,12 @@ void Editor::Panels::SceneView::HandleActorPicking()
         {
             m_pendingClickPickRenderPos = mousePos;
             m_pendingClickMinReadablePickingFrameSerial =
-                actorPickingFeature.GetSubmittedPickingFrameSerial();
+                gameObjectPickingFeature.GetSubmittedPickingFrameSerial();
             std::ostringstream stream;
             stream << "queued click"
                 << " local=(" << mousePos.x << "," << mousePos.y << ")"
                 << " minReadableSerial=" << m_pendingClickMinReadablePickingFrameSerial
-                << " currentReadableSerial=" << actorPickingFeature.GetReadablePickingFrameSerial()
+                << " currentReadableSerial=" << gameObjectPickingFeature.GetReadablePickingFrameSerial()
                 << " requestThisFrame=" << m_requestPickingFrame;
             LogScenePickingDiagnostics(stream.str());
         }
@@ -677,22 +838,22 @@ void Editor::Panels::SceneView::HandleActorPicking()
             m_hasPickingSample);
         if (shouldRepick)
         {
-            m_highlightedActor = nullptr;
+            m_highlightedGameObject = nullptr;
 
-            const bool pickingFrameReadable = actorPickingFeature.HasReadablePickingFrame();
+            const bool pickingFrameReadable = gameObjectPickingFeature.HasReadablePickingFrame();
             const bool resolvePendingClickPick = ShouldResolvePendingSceneClickPick(
                 m_pendingClickPickRenderPos.has_value(),
                 queuedClickPickThisFrame,
                 cameraControlActive,
                 m_pendingClickMinReadablePickingFrameSerial,
-                actorPickingFeature.GetReadablePickingFrameSerial());
+                gameObjectPickingFeature.GetReadablePickingFrameSerial());
             if (queuedClickPickThisFrame || m_pendingClickPickRenderPos.has_value())
             {
                 std::ostringstream stream;
                 stream << "repick"
                     << " shouldRepick=" << shouldRepick
                     << " readable=" << pickingFrameReadable
-                    << " readableSerial=" << actorPickingFeature.GetReadablePickingFrameSerial()
+                    << " readableSerial=" << gameObjectPickingFeature.GetReadablePickingFrameSerial()
                     << " minReadableSerial=" << m_pendingClickMinReadablePickingFrameSerial
                     << " resolvePending=" << resolvePendingClickPick
                     << " requestThisFrame=" << m_requestPickingFrame;
@@ -705,15 +866,15 @@ void Editor::Panels::SceneView::HandleActorPicking()
                 const auto samplePos = resolveClickPick
                     ? m_pendingClickPickRenderPos.value()
                     : mousePos;
-                m_highlightedActor = resolveClickPick
-                    ? PickActorNearRenderCoordinate(actorPickingFeature, samplePos, maxRenderX, maxRenderY)
-                    : PickActorAtRenderCoordinate(actorPickingFeature, mousePos.x, mousePos.y);
+                m_highlightedGameObject = resolveClickPick
+                    ? PickGameObjectNearRenderCoordinate(gameObjectPickingFeature, samplePos, maxRenderX, maxRenderY)
+                    : PickGameObjectAtRenderCoordinate(gameObjectPickingFeature, mousePos.x, mousePos.y);
                 if (resolveClickPick)
                 {
                     std::ostringstream stream;
                     stream << "resolved click"
-                        << " hit=" << (m_highlightedActor != nullptr)
-                        << " actor=" << (m_highlightedActor != nullptr ? m_highlightedActor->GetName() : std::string("<none>"));
+                        << " hit=" << (m_highlightedGameObject != nullptr)
+                        << " actor=" << (m_highlightedGameObject != nullptr ? m_highlightedGameObject->GetName() : std::string("<none>"));
                     LogScenePickingDiagnostics(stream.str());
                 }
             }
@@ -727,7 +888,7 @@ void Editor::Panels::SceneView::HandleActorPicking()
         }
         else if (cameraControlActive)
         {
-            m_highlightedActor = {};
+            m_highlightedGameObject = {};
         }
 
         const bool resolvePendingClickPick = ShouldResolvePendingSceneClickPick(
@@ -735,19 +896,19 @@ void Editor::Panels::SceneView::HandleActorPicking()
             queuedClickPickThisFrame,
             cameraControlActive,
             m_pendingClickMinReadablePickingFrameSerial,
-            actorPickingFeature.GetReadablePickingFrameSerial());
+            gameObjectPickingFeature.GetReadablePickingFrameSerial());
         if (resolvePendingClickPick)
         {
-            if (m_highlightedActor)
+            if (m_highlightedGameObject)
             {
-                LogScenePickingDiagnostics("select actor=" + m_highlightedActor->GetName());
-                EDITOR_EXEC(SelectActor(*m_highlightedActor));
+                LogScenePickingDiagnostics("select GameObject=" + m_highlightedGameObject->GetName());
+                EDITOR_EXEC(SelectGameObject(*m_highlightedGameObject));
                 m_pendingClickPickRenderPos.reset();
             }
-            else if (actorPickingFeature.HasReadablePickingFrame())
+            else if (gameObjectPickingFeature.HasReadablePickingFrame())
             {
-                LogScenePickingDiagnostics("unselect actor from click");
-                EDITOR_EXEC(UnselectActor());
+                LogScenePickingDiagnostics("unselect GameObject from click");
+                EDITOR_EXEC(UnselectGameObject());
                 m_pendingClickPickRenderPos.reset();
             }
             m_pendingClickMinReadablePickingFrameSerial = 0u;
@@ -766,7 +927,7 @@ void Editor::Panels::SceneView::HandleActorPicking()
                 << " hasBounds=" << HasViewportImageBounds();
             LogScenePickingDiagnostics(stream.str());
         }
-        m_highlightedActor = nullptr;
+        m_highlightedGameObject = nullptr;
         m_hasPickingSample = false;
     }
 }

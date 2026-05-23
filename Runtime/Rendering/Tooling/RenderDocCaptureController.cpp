@@ -53,6 +53,19 @@ namespace NLS::Render::Tooling
 		return ResolveRenderDocCaptureDeviceHandle(nativeInfo).handle;
 	}
 
+	RenderDocQueuedCaptureAction ResolveRenderDocQueuedCapturePreFrameAction(
+		const bool available,
+		const bool captureQueued,
+		const bool frameWillPresent,
+		const uint32_t presentCountdown)
+	{
+		if (!available || !captureQueued || !frameWillPresent)
+			return RenderDocQueuedCaptureAction::None;
+		if (presentCountdown > 1)
+			return RenderDocQueuedCaptureAction::WaitForFutureFrame;
+		return RenderDocQueuedCaptureAction::StartExplicitFrameCapture;
+	}
+
 namespace
 {
 #if defined(_WIN32)
@@ -627,10 +640,14 @@ namespace
 	void RenderDocCaptureController::OnPreFrame(const bool frameWillPresent)
 	{
 #if defined(_WIN32)
-		if (!IsAvailable() || !m_impl->captureQueued || !frameWillPresent)
+		const RenderDocQueuedCaptureAction action = ResolveRenderDocQueuedCapturePreFrameAction(
+			IsAvailable(),
+			m_impl->captureQueued,
+			frameWillPresent,
+			m_impl->presentCountdown);
+		if (action == RenderDocQueuedCaptureAction::None)
 			return;
-
-		if (m_impl->presentCountdown > 1)
+		if (action == RenderDocQueuedCaptureAction::WaitForFutureFrame)
 		{
 			--m_impl->presentCountdown;
 			return;
@@ -639,12 +656,18 @@ namespace
 		m_impl->PrepareCaptureMetadata(m_impl->pendingCaptureLabel);
 		m_impl->captureQueued = false;
 		m_impl->presentCountdown = 0;
+		m_impl->api->StartFrameCapture(m_impl->captureDevice, m_impl->captureWindow);
+		m_impl->queuedCaptureActive = m_impl->api->IsFrameCapturing() == 1;
+		m_impl->waitingForTriggeredCapture = false;
+		if (m_impl->queuedCaptureActive)
+		{
+			NLS_LOG_INFO("RenderDoc queued StartFrameCapture before presentable frame -> success");
+			return;
+		}
+
 		m_impl->api->TriggerCapture();
-		// Startup captures use RenderDoc's next-frame trigger so the tooling path
-		// does not depend on a specific threaded-present callback branch.
-		m_impl->queuedCaptureActive = false;
 		m_impl->waitingForTriggeredCapture = true;
-		NLS_LOG_INFO("RenderDoc queued TriggerCapture before presentable frame -> requested");
+		NLS_LOG_INFO("RenderDoc queued StartFrameCapture before presentable frame -> failed, fell back to TriggerCapture().");
 #endif
 	}
 

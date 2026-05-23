@@ -1180,7 +1180,6 @@ void Launcher::SetupContext()
 
     Render::Settings::DriverSettings driverSettings;
     driverSettings.graphicsBackend = m_graphicsBackend;
-    driverSettings.debugMode = false;
     driverSettings.enableThreadedRendering = Render::Settings::IsEnvironmentFlagEnabled("NLS_ENABLE_THREADED_RENDERING");
     driverSettings.threadedFrameSlotCount = driverSettings.framesInFlight;
     if (m_renderDocOverride.has_value() &&

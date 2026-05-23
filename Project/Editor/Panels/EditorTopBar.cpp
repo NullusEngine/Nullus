@@ -292,12 +292,15 @@ bool EditorTopBar::DrawIconTextButton(const char* p_iconId, const char* p_label,
     const ImVec2 iconPos(
         buttonMin.x + framePadding.x,
         buttonMin.y + (buttonMax.y - buttonMin.y - Scaled(kSceneToolIconSize)) * 0.5f);
-    ImGui::GetWindowDrawList()->AddImage(
-        ResolveTextureId(textureView),
-        iconPos,
-        ImVec2(iconPos.x + Scaled(kSceneToolIconSize), iconPos.y + Scaled(kSceneToolIconSize)),
-        ImVec2(0.0f, 1.0f),
-        ImVec2(1.0f, 0.0f));
+    if (void* textureId = ResolveTextureId(textureView))
+    {
+        ImGui::GetWindowDrawList()->AddImage(
+            textureId,
+            iconPos,
+            ImVec2(iconPos.x + Scaled(kSceneToolIconSize), iconPos.y + Scaled(kSceneToolIconSize)),
+            ImVec2(0.0f, 1.0f),
+            ImVec2(1.0f, 0.0f));
+    }
 
     const ImVec2 textPos(
         iconPos.x + Scaled(kSceneToolIconSize) + framePadding.x,

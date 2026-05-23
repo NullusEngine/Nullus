@@ -23,6 +23,24 @@ namespace NLS::Render::RHI::DX12
         }
     }
 
+    DXGI_FORMAT ToDX12ResourceFormat(TextureFormat format)
+    {
+        switch (format)
+        {
+        case TextureFormat::Depth24Stencil8: return DXGI_FORMAT_R24G8_TYPELESS;
+        default: return ToDXGIFormat(format);
+        }
+    }
+
+    DXGI_FORMAT ToDX12OptimizedClearFormat(TextureFormat format)
+    {
+        switch (format)
+        {
+        case TextureFormat::Depth24Stencil8: return DXGI_FORMAT_D24_UNORM_S8_UINT;
+        default: return ToDXGIFormat(format);
+        }
+    }
+
     uint32_t GetDXGIFormatBytesPerPixel(DXGI_FORMAT format)
     {
         switch (format)

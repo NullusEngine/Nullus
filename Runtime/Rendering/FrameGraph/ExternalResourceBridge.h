@@ -4,6 +4,7 @@
 #include <fg/FrameGraph.hpp>
 
 #include <initializer_list>
+#include <optional>
 
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/Data/FrameDescriptor.h"
@@ -100,6 +101,9 @@ namespace NLS::Render::FrameGraph
 
     NLS_RENDER_API std::shared_ptr<NLS::Render::RHI::RHITexture> ResolveActiveExplicitReadbackTexture(
         const NLS::Render::RHI::RHIFrameContext* frameContext);
+    NLS_RENDER_API std::optional<NLS::Render::Context::TextureVisibilityTransition> BuildSampledAttachmentEndTransition(
+        const std::shared_ptr<NLS::Render::RHI::RHITextureView>& view,
+        bool depthStencilAttachment);
     NLS_RENDER_API void TransitionExternalSceneOutputToShaderRead(
         NLS::Render::Context::Driver& driver,
         const NLS::Render::Data::FrameDescriptor& frame);

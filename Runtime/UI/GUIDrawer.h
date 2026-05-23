@@ -20,7 +20,7 @@
 namespace NLS::Render::Resources
 {
 class Material;
-class Model;
+class Mesh;
 class Shader;
 class Texture;
 } // namespace NLS::Render::Resources
@@ -34,7 +34,7 @@ class NLS_UI_API GUIDrawer
 {
 public:
     using Material = Render::Resources::Material;
-    using Model = Render::Resources::Model;
+    using Mesh = Render::Resources::Mesh;
     using Shader = Render::Resources::Shader;
     using Texture2D = Render::Resources::Texture2D;
 
@@ -74,7 +74,7 @@ public:
     static void DrawQuat(Internal::WidgetContainer& p_root, const std::string& p_name, Maths::Quaternion& p_data, float p_step = 1.f, float p_min = _MIN_FLOAT, float p_max = _MAX_FLOAT);
     static void DrawString(Internal::WidgetContainer& p_root, const std::string& p_name, std::string& p_data);
     static void DrawColor(Internal::WidgetContainer& p_root, const std::string& p_name, Maths::Color& p_color, bool p_hasAlpha = false);
-    static Widgets::Text& DrawMesh(Internal::WidgetContainer& p_root, const std::string& p_name, Model*& p_data, Event<>* p_updateNotifier = nullptr);
+    static Widgets::Text& DrawMesh(Internal::WidgetContainer& p_root, const std::string& p_name, Mesh*& p_data, Event<>* p_updateNotifier = nullptr);
     static Widgets::Image& DrawTexture(Internal::WidgetContainer& p_root, const std::string& p_name, Texture2D*& p_data, Event<>* p_updateNotifier = nullptr);
     static Widgets::Text& DrawShader(Internal::WidgetContainer& p_root, const std::string& p_name, Shader*& p_data, Event<>* p_updateNotifier = nullptr);
     static Widgets::Text& DrawMaterial(Internal::WidgetContainer& p_root, const std::string& p_name, Material*& p_data, Event<>* p_updateNotifier = nullptr);
@@ -100,6 +100,7 @@ public:
     static void DrawDDString(Internal::WidgetContainer& p_root, const std::string& p_name, std::function<std::string(void)> p_gatherer, std::function<void(std::string)> p_provider, const std::string& p_identifier);
     static void DrawString(Internal::WidgetContainer& p_root, const std::string& p_name, std::function<std::string(void)> p_gatherer, std::function<void(std::string)> p_provider);
     static void DrawColor(Internal::WidgetContainer& p_root, const std::string& p_name, std::function<Maths::Color(void)> p_gatherer, std::function<void(Maths::Color)> p_provider, bool p_hasAlpha = false);
+    static Widgets::Image& DrawTexture(Internal::WidgetContainer& p_root, const std::string& p_name, std::function<Texture2D*(void)> p_gatherer, std::function<void(Texture2D*)> p_provider, Event<>* p_updateNotifier = nullptr);
 
     template<typename T>
     static ImGuiDataType_ GetDataType()

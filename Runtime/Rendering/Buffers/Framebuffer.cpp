@@ -30,7 +30,7 @@ namespace
 		desc.extent.height = height;
 		desc.extent.depth = 1;
 		desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
-		desc.format = NLS::Render::RHI::TextureFormat::RGB8;
+		desc.format = NLS::Render::RHI::TextureFormat::RGBA8;
 		desc.usage = NLS::Render::RHI::TextureUsageFlags::Sampled | NLS::Render::RHI::TextureUsageFlags::ColorAttachment;
 		desc.optimizedClearValue = optimizedClearValue;
 		desc.debugName = "FramebufferColorTexture";

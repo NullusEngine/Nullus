@@ -1,7 +1,10 @@
 #include <Image.h>
+#include <algorithm>
 #include <memory>
 #include <vector>
 
+#include "Rendering/Context/DriverAccess.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/Resources/Texture2D.h"
 
@@ -37,6 +40,12 @@ namespace
 				converted[dstIndex + 1] = source[srcIndex + 0];
 				converted[dstIndex + 2] = source[srcIndex + 0];
 				break;
+			case 2:
+				converted[dstIndex + 0] = source[srcIndex + 0];
+				converted[dstIndex + 1] = source[srcIndex + 0];
+				converted[dstIndex + 2] = source[srcIndex + 0];
+				converted[dstIndex + 3] = source[srcIndex + 1];
+				break;
 			case 3:
 				converted[dstIndex + 0] = source[srcIndex + 0];
 				converted[dstIndex + 1] = source[srcIndex + 1];
@@ -55,29 +64,6 @@ namespace
 
 		return converted;
 	}
-}
-
-Texture2D::Texture2D(Texture2D&& rhs) noexcept : Texture(std::move(rhs))
-{
-	width = rhs.width;
-	height = rhs.height;
-	bitsPerPixel = rhs.bitsPerPixel;
-	firstFilter = rhs.firstFilter;
-	secondFilter = rhs.secondFilter;
-	isMimapped = rhs.isMimapped;
-}
-
-Texture2D& Texture2D::operator=(Texture2D&& rhs) noexcept
-{
-	Texture::operator=(std::move(rhs));
-
-	width = rhs.width;
-	height = rhs.height;
-	bitsPerPixel = rhs.bitsPerPixel;
-	firstFilter = rhs.firstFilter;
-	secondFilter = rhs.secondFilter;
-	isMimapped = rhs.isMimapped;
-	return *this;
 }
 
 std::unique_ptr<Texture2D> Texture2D::WrapExternal(
@@ -130,4 +116,77 @@ void Texture2D::SetTextureResource(const Image* image)
 	width = nextWidth;
 	height = nextHeight;
 	bitsPerPixel = 4;
+}
+
+bool Texture2D::SetTextureResource(const NLS::Render::Assets::TextureArtifactData& artifact)
+{
+	if (artifact.width == 0u || artifact.height == 0u || artifact.mips.empty())
+		return false;
+
+	size_t totalBytes = 0u;
+	for (const auto& mip : artifact.mips)
+		totalBytes += mip.pixels.size();
+	if (totalBytes == 0u)
+		return false;
+
+	std::vector<uint8_t> uploadData;
+	uploadData.reserve(totalBytes);
+	for (const auto& mip : artifact.mips)
+		uploadData.insert(uploadData.end(), mip.pixels.begin(), mip.pixels.end());
+
+	if (m_explicitTexture == nullptr)
+		CreateRHITexture();
+	if (m_explicitTexture != nullptr)
+	{
+		auto& driver = NLS::Render::Context::RequireLocatedDriver("Texture2D::SetTextureResource(TextureArtifact)");
+		auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver);
+		if (device != nullptr)
+		{
+			NLS::Render::RHI::RHITextureDesc desc{};
+			desc.extent.width = artifact.width;
+			desc.extent.height = artifact.height;
+			desc.extent.depth = 1u;
+			desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
+			desc.format = artifact.format;
+			desc.mipLevels = static_cast<uint32_t>(artifact.mips.size());
+			desc.usage = NLS::Render::RHI::TextureUsageFlags::Sampled;
+			desc.debugName = "TextureArtifactResource";
+
+			NLS::Render::RHI::RHITextureUploadDesc uploadDesc{};
+			uploadDesc.data = uploadData.data();
+			uploadDesc.dataSize = uploadData.size();
+			uploadDesc.extent = desc.extent;
+			uploadDesc.rowPitch = artifact.mips.front().rowPitch;
+			uploadDesc.slicePitch = artifact.mips.front().slicePitch;
+			uploadDesc.debugName = "TextureArtifactInitialUpload";
+
+			auto texture = device->CreateTexture(desc, uploadDesc);
+			if (texture != nullptr)
+			{
+				SetRHITexture(std::move(texture));
+			}
+		}
+	}
+
+	width = artifact.width;
+	height = artifact.height;
+	bitsPerPixel = NLS::Render::RHI::GetTextureFormatBytesPerPixel(artifact.format);
+	isMimapped = artifact.mips.size() > 1u;
+	return true;
+}
+
+void Texture2D::ReloadFrom(const Texture2D& source)
+{
+	ReleaseRHITexture();
+	m_dimension = source.m_dimension;
+	m_explicitTexture = source.m_explicitTexture;
+	m_explicitTextureView = source.m_explicitTextureView;
+	SetName(source.GetName());
+	width = source.width;
+	height = source.height;
+	bitsPerPixel = source.bitsPerPixel;
+	firstFilter = source.firstFilter;
+	secondFilter = source.secondFilter;
+	path = source.path;
+	isMimapped = source.isMimapped;
 }

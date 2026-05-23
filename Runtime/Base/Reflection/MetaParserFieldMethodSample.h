@@ -6,16 +6,11 @@
 
 namespace NLS::meta
 {
-    CLASS(MetaParserFieldMethodSample) : public NLS::meta::Object
+    CLASS(MetaParserFieldMethodSample) : public NLS::Object
     {
     public:
         GENERATED_BODY()
         int Value = 7;
-
-        void OnSerialize(Json::object& output) const override
-        {
-            output["Value"] = Value;
-        }
 
         FUNCTION()
         int GetValue() const

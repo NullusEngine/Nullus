@@ -1,5 +1,6 @@
-﻿
+
 #include <algorithm>
+#include <functional>
 #include <string>
 
 #include <Debug/Logger.h>
@@ -7,6 +8,25 @@
 #include "GameObject.h"
 using namespace NLS;
 using namespace NLS::Engine::SceneSystem;
+
+namespace
+{
+	template<typename ComponentType>
+	void CollectExactComponents(
+		NLS::Engine::GameObject& gameObject,
+		std::vector<ComponentType*>& output)
+	{
+		const auto requestedType = NLS_TYPEOF(ComponentType);
+		for (const auto& component : gameObject.GetComponents())
+		{
+			if (!component || component->GetType() != requestedType)
+				continue;
+
+			output.push_back(static_cast<ComponentType*>(component.get()));
+		}
+	}
+}
+
 Scene::Scene()
 {
 
@@ -18,7 +38,15 @@ Scene::~Scene()
     for (auto* actor : m_gameobject)
     {
         if (actor)
-            NotifyActorDestroyed(*actor, notifiedActors);
+            NotifyGameObjectDestroyed(*actor, notifiedActors);
+    }
+
+    for (auto* actor : m_gameobject)
+    {
+        if (!actor || !actor->HasParent())
+            continue;
+
+        actor->DetachFromParent();
     }
 
     std::for_each(m_gameobject.begin(), m_gameobject.end(), [](GameObject* element)
@@ -81,6 +109,9 @@ Engine::GameObject& Scene::CreateGameObject(const std::string& p_name, const std
 
 bool Scene::AddGameObject(GameObject* gameObject)
 {
+	if (!gameObject)
+		return false;
+
 	// check added...
 
 	m_gameobject.push_back(gameObject);
@@ -88,6 +119,9 @@ bool Scene::AddGameObject(GameObject* gameObject)
 
 	auto AddComponents = [this](GameObject* go)
 		{
+			if (!go)
+				return;
+
 			for (auto&& component : go->GetComponents())
 			{
 				OnComponentAdded(component.get());
@@ -98,6 +132,9 @@ bool Scene::AddGameObject(GameObject* gameObject)
 
 	std::function<void(GameObject*)> AddGameObjectRecursively = [this, &AddComponents, &AddGameObjectRecursively](GameObject* go)
 		{
+			if (!go)
+				return;
+
 			AddComponents(go);
 			for (auto&& child : go->GetChildren())
 			{
@@ -119,44 +156,35 @@ bool Scene::AddGameObject(GameObject* gameObject)
 	return true;
 }
 
-bool Scene::AddActor(Actor* actor)
+bool Scene::DestroyGameObject(GameObject& p_target)
 {
-	return AddGameObject(actor->GetGameObject());
-}
-
-bool Scene::DestroyActor(GameObject& p_target)
-{
-	auto found = std::find_if(m_gameobject.begin(), m_gameobject.end(), [&p_target](Engine::GameObject* element)
+	const auto found = std::find_if(m_gameobject.begin(), m_gameobject.end(), [&p_target](Engine::GameObject* element)
 	{
 		return element == &p_target;
 	});
 
-	if (found != m_gameobject.end())
-	{
-        DestroyActorInstance(p_target);
-		m_gameobject.erase(found);
-		return true;
-	}
-	else
-	{
+	if (found == m_gameobject.end())
 		return false;
-	}
+
+    DestroyGameObjectSubtree(p_target);
+	return true;
 }
 
 void Scene::CollectGarbages()
 {
-	m_gameobject.erase(std::remove_if(m_gameobject.begin(), m_gameobject.end(), [this](GameObject* element)
-	{ 
-		bool isGarbage = !element->IsAlive();
-		if (isGarbage)
-		{
-            DestroyActorInstance(*element);
-		}
-		return isGarbage;
-	}), m_gameobject.end());
+    auto garbage = std::vector<GameObject*> {};
+    auto collected = std::unordered_set<GameObject*> {};
+    for (auto* element : m_gameobject)
+    {
+        if (element && !element->IsAlive())
+            CollectGameObjectSubtree(*element, garbage, collected);
+    }
+
+    RemoveGameObjectsFromSceneList(collected);
+    DestroyCollectedGameObjects(garbage);
 }
 
-Engine::GameObject* Scene::FindActorByName(const std::string& p_name) const
+Engine::GameObject* Scene::FindGameObjectByName(const std::string& p_name) const
 {
 	auto result = std::find_if(m_gameobject.begin(), m_gameobject.end(), [p_name](Engine::GameObject* element)
 	{ 
@@ -169,7 +197,7 @@ Engine::GameObject* Scene::FindActorByName(const std::string& p_name) const
 		return nullptr;
 }
 
-Engine::GameObject* Scene::FindActorByTag(const std::string & p_tag) const
+Engine::GameObject* Scene::FindGameObjectByTag(const std::string & p_tag) const
 {
 	auto result = std::find_if(m_gameobject.begin(), m_gameobject.end(), [p_tag](Engine::GameObject* element)
 	{
@@ -182,7 +210,7 @@ Engine::GameObject* Scene::FindActorByTag(const std::string & p_tag) const
 		return nullptr;
 }
 
-std::vector<std::reference_wrapper<Engine::GameObject>> Scene::FindActorsByName(const std::string & p_name) const
+std::vector<std::reference_wrapper<Engine::GameObject>> Scene::FindGameObjectsByName(const std::string & p_name) const
 {
 	std::vector<std::reference_wrapper<Engine::GameObject>> actors;
 
@@ -195,7 +223,7 @@ std::vector<std::reference_wrapper<Engine::GameObject>> Scene::FindActorsByName(
 	return actors;
 }
 
-std::vector<std::reference_wrapper<Engine::GameObject>> Scene::FindActorsByTag(const std::string & p_tag) const
+std::vector<std::reference_wrapper<Engine::GameObject>> Scene::FindGameObjectsByTag(const std::string & p_tag) const
 {
 	std::vector<std::reference_wrapper<Engine::GameObject>> actors;
 
@@ -248,12 +276,12 @@ void Scene::OnComponentRemoved(Components::Component* p_compononent)
     RebuildFastAccessComponents();
 }
 
-std::vector<Engine::GameObject*>& Scene::GetActors()
+std::vector<Engine::GameObject*>& Scene::GetGameObjects()
 {
 	return m_gameobject;
 }
 
-const std::vector<Engine::GameObject*>& Scene::GetActors() const
+const std::vector<Engine::GameObject*>& Scene::GetGameObjects() const
 {
 	return m_gameobject;
 }
@@ -270,41 +298,93 @@ const Scene::FastAccessComponents& Scene::GetFastAccessComponents() const
 	return m_fastAccessComponents;
 }
 
-void Scene::NotifyActorDestroyed(GameObject& p_actor)
+void Scene::NotifyGameObjectDestroyed(GameObject& p_actor)
 {
     std::unordered_set<GameObject*> notifiedActors;
-    NotifyActorDestroyed(p_actor, notifiedActors);
+    NotifyGameObjectDestroyed(p_actor, notifiedActors);
 }
 
-void Scene::NotifyActorDestroyed(GameObject& p_actor, std::unordered_set<GameObject*>& p_notifiedActors)
+void Scene::NotifyGameObjectDestroyed(GameObject& p_actor, std::unordered_set<GameObject*>& p_notifiedActors)
 {
     if (!p_notifiedActors.insert(&p_actor).second)
         return;
-
-    for (auto* child : p_actor.GetChildren())
-    {
-        if (child)
-            NotifyActorDestroyed(*child, p_notifiedActors);
-    }
-
-    GameObject::DestroyedEvent.Invoke(p_actor);
-}
-
-void Scene::DestroyActorInstance(GameObject& p_actor)
-{
-    NotifyActorDestroyed(p_actor);
-
-    if (p_actor.HasParent())
-        p_actor.DetachFromParent();
 
     const auto children = p_actor.GetChildren();
     for (auto* child : children)
     {
         if (child)
-            child->DetachFromParent();
+            NotifyGameObjectDestroyed(*child, p_notifiedActors);
     }
 
-    delete &p_actor;
+    GameObject::DestroyedEvent.Invoke(p_actor);
+}
+
+void Scene::CollectGameObjectSubtree(
+    GameObject& p_actor,
+    std::vector<GameObject*>& p_outGameObjects,
+    std::unordered_set<GameObject*>& p_visitedGameObjects)
+{
+    if (!p_visitedGameObjects.insert(&p_actor).second)
+        return;
+
+    p_outGameObjects.push_back(&p_actor);
+    const auto children = p_actor.GetChildren();
+    for (auto* child : children)
+    {
+        if (child)
+            CollectGameObjectSubtree(*child, p_outGameObjects, p_visitedGameObjects);
+    }
+}
+
+void Scene::RemoveGameObjectsFromSceneList(const std::unordered_set<GameObject*>& p_gameObjects)
+{
+    m_gameobject.erase(std::remove_if(
+        m_gameobject.begin(),
+        m_gameobject.end(),
+        [&p_gameObjects](GameObject* element)
+        {
+            return p_gameObjects.contains(element);
+        }),
+        m_gameobject.end());
+}
+
+void Scene::DestroyGameObjectSubtree(GameObject& p_actor)
+{
+    auto gameObjects = std::vector<GameObject*> {};
+    auto collected = std::unordered_set<GameObject*> {};
+    CollectGameObjectSubtree(p_actor, gameObjects, collected);
+    RemoveGameObjectsFromSceneList(collected);
+    DestroyCollectedGameObjects(gameObjects);
+}
+
+void Scene::DestroyCollectedGameObjects(std::vector<GameObject*>& p_gameObjects)
+{
+    std::unordered_set<GameObject*> notifiedActors;
+    for (auto* gameObject : p_gameObjects)
+    {
+        if (gameObject)
+            NotifyGameObjectDestroyed(*gameObject, notifiedActors);
+    }
+
+    for (auto it = p_gameObjects.rbegin(); it != p_gameObjects.rend(); ++it)
+    {
+        auto* gameObject = *it;
+        if (!gameObject)
+            continue;
+
+        if (gameObject->HasParent())
+            gameObject->DetachFromParent();
+
+        const auto children = gameObject->GetChildren();
+        for (auto* child : children)
+        {
+            if (child)
+                child->DetachFromParent();
+        }
+
+        delete gameObject;
+    }
+
     RebuildFastAccessComponents();
 }
 
@@ -315,26 +395,26 @@ void Scene::RebuildFastAccessComponents()
 	m_fastAccessComponents.lights.clear();
 	m_fastAccessComponents.skyboxs.clear();
 
-	for (auto* go : m_gameobject)
+	std::unordered_set<GameObject*> visited;
+	std::function<void(GameObject*)> collectComponents = [this, &visited, &collectComponents](GameObject* go)
 	{
 		if (!go)
-			continue;
+			return;
+		if (!visited.insert(go).second)
+			return;
 
-		for (auto& component : go->GetComponents())
-		{
-			auto* baseComponent = component.get();
-			if (!baseComponent)
-				continue;
+		CollectExactComponents(*go, m_fastAccessComponents.modelRenderers);
+		CollectExactComponents(*go, m_fastAccessComponents.cameras);
+		CollectExactComponents(*go, m_fastAccessComponents.lights);
+		CollectExactComponents(*go, m_fastAccessComponents.skyboxs);
 
-			if (auto* ptr = dynamic_cast<Engine::Components::MeshRenderer*>(baseComponent))
-				m_fastAccessComponents.modelRenderers.push_back(ptr);
-			else if (auto* ptr = dynamic_cast<Engine::Components::CameraComponent*>(baseComponent))
-				m_fastAccessComponents.cameras.push_back(ptr);
-			else if (auto* ptr = dynamic_cast<Engine::Components::LightComponent*>(baseComponent))
-				m_fastAccessComponents.lights.push_back(ptr);
-			else if (auto* ptr = dynamic_cast<Engine::Components::SkyBoxComponent*>(baseComponent))
-				m_fastAccessComponents.skyboxs.push_back(ptr);
-		}
+		for (auto* child : go->GetChildren())
+			collectComponents(child);
+	};
+
+	for (auto* go : m_gameobject)
+	{
+		collectComponents(go);
 	}
 }
 

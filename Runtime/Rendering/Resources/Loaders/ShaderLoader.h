@@ -2,6 +2,8 @@
 
 #include "Rendering/Resources/Shader.h"
 
+#include <string>
+
 namespace NLS::Render::Resources::Loaders
 {
 	/**
@@ -20,6 +22,12 @@ namespace NLS::Render::Resources::Loaders
 		* @param p_filePath
 		*/
 		static Shader* Create(const std::string& p_filePath);
+		static Shader* Create(const std::string& p_filePath, const std::string& p_projectAssetsPath);
+		static void SetDefaultProjectAssetsPath(const std::string& p_projectAssetsPath);
+
+		static std::string GetCacheDatabasePath(
+			const std::string& p_filePath,
+			const std::string& p_projectAssetsPath = {});
 
 		/**
 		* Recompile a shader
@@ -27,6 +35,7 @@ namespace NLS::Render::Resources::Loaders
 		* @param p_filePath
 		*/
 		static void	Recompile(Shader& p_shader, const std::string& p_filePath);
+		static void	Recompile(Shader& p_shader, const std::string& p_filePath, const std::string& p_projectAssetsPath);
 
 		/**
 		* Destroy a shader
@@ -35,7 +44,12 @@ namespace NLS::Render::Resources::Loaders
 		static bool Destroy(Shader*& p_shader);
 
 	private:
-		static Shader* CreateHLSLShaderAsset(const std::string& p_filePath);
+		static const std::string& ResolveProjectAssetsPath(const std::string& p_projectAssetsPath);
+		static void CopyRuntimeData(Shader& p_destination, const Shader& p_source);
+		static Shader* CreateImportedShaderArtifact(const std::string& p_filePath);
+		static Shader* CreateHLSLShaderAsset(
+			const std::string& p_filePath,
+			const std::string& p_projectAssetsPath = {});
 
 		static std::string __FILE_TRACE;
 	};

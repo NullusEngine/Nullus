@@ -1,4 +1,7 @@
 #include <filesystem>
+#include <sstream>
+#include <utility>
+#include <vector>
 
 #include "Core/Context.h"
 
@@ -8,6 +11,7 @@
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/Tooling/RenderDocEnvironment.h"
 #include "Utils/PathParser.h"
+#include "RuntimeAssetManifestStartup.h"
 using namespace NLS;
 using namespace NLS::Core;
 using namespace NLS::Core::ResourceManagement;
@@ -133,6 +137,26 @@ namespace
 
 		return NLS::Render::Settings::GetPhase1RequiredRuntimeBackend();
 	}
+
+	std::vector<std::pair<std::string, std::string>> ParseRuntimePrewarmAssetPacks(
+		const std::string& value)
+	{
+		std::vector<std::pair<std::string, std::string>> packs;
+		std::stringstream stream(value);
+		std::string item;
+		while (std::getline(stream, item, ';'))
+		{
+			if (item.empty())
+				continue;
+
+			const auto separator = item.find(':');
+			if (separator == std::string::npos)
+				packs.emplace_back(item, std::string {});
+			else
+				packs.emplace_back(item.substr(0u, separator), item.substr(separator + 1u));
+		}
+		return packs;
+	}
 }
 
 Game::Context::Context(
@@ -149,7 +173,7 @@ Game::Context::Context(
 {
 	const auto resolvedProjectPaths = ResolveGameProjectPaths(m_projectPathOverride);
 
-	ModelManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
+	MeshManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
 	TextureManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
 	ShaderManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
     MaterialManager::ProvideAssetPaths(projectAssetsPath, engineAssetsPath);
@@ -179,6 +203,14 @@ Game::Context::Context(
 		NLS_LOG_INFO("Game runtime using project settings: " + resolvedProjectPaths.settingsPath);
 	else
 		NLS_LOG_WARNING("Game runtime could not resolve a project settings file. Falling back to in-memory defaults.");
+
+	runtimeAssetDatabase = RuntimeAssets::LoadRuntimeAssetDatabaseForProjectSettings(resolvedProjectPaths.settingsPath);
+	if (runtimeAssetDatabase.has_value())
+	{
+		const auto manifestPath =
+			RuntimeAssets::ResolveRuntimeAssetManifestPathForProjectSettings(resolvedProjectPaths.settingsPath);
+		NLS_LOG_INFO("Game runtime loaded asset manifest: " + manifestPath.string());
+	}
 
 	/* Settings */
 	Windowing::Settings::DeviceSettings deviceSettings;
@@ -213,11 +245,6 @@ Game::Context::Context(
 
 	NLS::Render::Settings::DriverSettings driverSettings;
 	driverSettings.graphicsBackend = graphicsBackend;
-#ifdef _DEBUG
-	driverSettings.debugMode = true;
-#else
-	driverSettings.debugMode = false;
-#endif
 	driverSettings.enableThreadedRendering = projectSettings.GetOrDefault<bool>("enable_threaded_rendering", true);
 	driverSettings.enableLightGrid = projectSettings.GetOrDefault<bool>("enable_light_grid", true);
 	driverSettings.threadedFrameSlotCount = driverSettings.framesInFlight;
@@ -299,16 +326,24 @@ Game::Context::Context(
 
 	/* Service Locator providing */
 	ServiceLocator::Provide<NLS::Render::Context::Driver>(*driver);
-	ServiceLocator::Provide<ModelManager>(modelManager);
+	ServiceLocator::Provide<MeshManager>(meshManager);
 	ServiceLocator::Provide<TextureManager>(textureManager);
 	ServiceLocator::Provide<ShaderManager>(shaderManager);
 	ServiceLocator::Provide<MaterialManager>(materialManager);
+	if (runtimeAssetDatabase.has_value())
+	{
+		ServiceLocator::Provide<NLS::Engine::Assets::RuntimeAssetDatabase>(*runtimeAssetDatabase);
+		RuntimeAssets::RuntimeMaterialPrewarmOptions prewarmOptions;
+		prewarmOptions.assetPacks = ParseRuntimePrewarmAssetPacks(
+			projectSettings.GetOrDefault<std::string>("runtime_prewarm_asset_packs", ""));
+		RuntimeAssets::PrewarmRuntimeMaterialAssets(*runtimeAssetDatabase, materialManager, prewarmOptions);
+	}
 }
 
 Game::Context::~Context()
 {
 	ShutdownThreadedRendering();
-	modelManager.UnloadResources();
+	meshManager.UnloadResources();
 	textureManager.UnloadResources();
 	shaderManager.UnloadResources();
 	materialManager.UnloadResources();

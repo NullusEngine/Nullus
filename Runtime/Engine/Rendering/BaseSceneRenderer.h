@@ -1,8 +1,9 @@
 #pragma once
 
-#include <map>
 #include <mutex>
 #include <optional>
+#include <utility>
+#include <vector>
 
 #include <Rendering/Core/CompositeRenderer.h>
 #include <Rendering/Data/Frustum.h>
@@ -13,6 +14,7 @@
 #include <Math/Quaternion.h>
 #include <Vector3.h>
 #include "Rendering/LightGridPrepass.h"
+#include "Rendering/RenderScene.h"
 
 #include "EngineDef.h"
 
@@ -27,7 +29,7 @@ namespace NLS::Render::FrameGraph
 namespace NLS::Render::Resources
 {
 	class Material;
-	class Model;
+	class Mesh;
 }
 
 namespace NLS::Engine::SceneSystem
@@ -47,12 +49,13 @@ namespace NLS::Engine::Rendering
         using Frustum = Render::Data::Frustum;
         using PipelineState = Render::Data::PipelineState;
         using Material = Render::Resources::Material;
-        using Model = Render::Resources::Model;
+        using Mesh = Render::Resources::Mesh;
         using Driver = Render::Context::Driver;
 
-		using OpaqueDrawables = std::multimap<float, Drawable, std::less<float>>;
-		using TransparentDrawables = std::multimap<float, Drawable, std::greater<float>>;
-		using SkyboxDrawables = std::multimap<float, Drawable, std::less<float>>;
+		using SceneDrawables = std::vector<std::pair<float, Drawable>>;
+		using OpaqueDrawables = SceneDrawables;
+		using TransparentDrawables = SceneDrawables;
+		using SkyboxDrawables = SceneDrawables;
 
 		struct AllDrawables
 		{
@@ -77,7 +80,7 @@ namespace NLS::Engine::Rendering
 
 		virtual void DrawModelWithSingleMaterial(
 			PipelineState p_pso,
-			Model& p_model,
+			Mesh& p_mesh,
 			Material& p_material,
 			const Maths::Matrix4& p_modelMatrix
 		);
@@ -146,6 +149,7 @@ namespace NLS::Engine::Rendering
 
 		std::shared_ptr<LightGridPrepass> m_lightGridPrepass;
 		std::unique_ptr<SceneLightingProvider> m_sceneLightingProvider;
+		RenderScene m_renderScene;
 		mutable std::mutex m_lightGridCompileContextCacheMutex;
 		mutable LightGridCompileContextCache m_lightGridCompileContextCache;
 	};

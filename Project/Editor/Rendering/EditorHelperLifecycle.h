@@ -11,7 +11,7 @@ namespace NLS::Editor::Rendering
         bool gridPassEnabled = true;
         bool cameraPassEnabled = true;
         bool lightPassEnabled = true;
-        bool actorPassEnabled = true;
+        bool gameObjectPassEnabled = true;
         bool debugDrawPassEnabled = true;
         bool debugDrawEnabled = true;
         bool debugDrawCamera = true;
@@ -19,7 +19,7 @@ namespace NLS::Editor::Rendering
         bool gridEnabled = false;
         uint64_t sceneCameraCount = 0u;
         uint64_t sceneLightCount = 0u;
-        bool hasSelectedActor = false;
+        bool hasSelectedGameObject = false;
         bool hasVisibleDebugDrawPrimitives = false;
     };
 
@@ -46,12 +46,12 @@ namespace NLS::Editor::Rendering
 
     inline bool HasThreadedOutlineHelperPass(const ThreadedEditorHelperState& state)
     {
-        return state.actorPassEnabled && state.hasSelectedActor;
+        return state.gameObjectPassEnabled && state.hasSelectedGameObject;
     }
 
     inline bool HasThreadedGizmoHelperPass(const ThreadedEditorHelperState& state)
     {
-        return state.actorPassEnabled && state.hasSelectedActor;
+        return state.gameObjectPassEnabled && state.hasSelectedGameObject;
     }
 
     inline bool HasThreadedDebugDrawHelperPass(const ThreadedEditorHelperState& state)

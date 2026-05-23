@@ -8,14 +8,12 @@
 #>
 #pragma once
 
-#include <type_traits>
 #include "Reflection/Type.h"
 
 namespace NLS::meta
 {
 class ReflectionDatabase;
 enum class ReflectionRegistrationPhase;
-class Object;
 }
 
 #ifdef CURRENT_FILE_ID
@@ -25,27 +23,6 @@ class Object;
 
 namespace NLS::meta_generated
 {
-#ifndef NLS_META_GENERATED_OBJECT_CLONE_HELPER
-#define NLS_META_GENERATED_OBJECT_CLONE_HELPER
-template<typename T, bool CanCopy = ::std::is_copy_constructible_v<T>>
-struct ObjectCloneHelper
-{
-    static ::NLS::meta::Object* Clone(const T*)
-    {
-        return nullptr;
-    }
-};
-
-template<typename T>
-struct ObjectCloneHelper<T, true>
-{
-    static ::NLS::meta::Object* Clone(const T* instance)
-    {
-        return new T(*instance);
-    }
-};
-#endif
-
 <# foreach (var type in types) {
        var registerFunctionName = type.RegisterFunctionName;
        var registrarClassName = type.RegistrarClassName;
@@ -67,8 +44,7 @@ public:
     static constexpr const char* StaticMetaTypeName() { return "<#= type.QualifiedName #>"; } \
     static constexpr ::NLS::meta::TypeKey StaticMetaTypeKey() { return ::NLS::meta::HashTypeKey("<#= type.QualifiedName #>"); } \
 <# if (enableObjectBridge) { #>
-    ::NLS::meta::Type GetType(void) const override { return NLS_TYPEOF(<#= type.QualifiedName #>); } \
-    ::NLS::meta::Object *Clone(void) const override { return ::NLS::meta_generated::ObjectCloneHelper<<#= type.QualifiedName #>>::Clone(this); } \
+    const char* GetObjectTypeName(void) const override { return "<#= type.QualifiedName #>"; } \
 <# } #>
     friend void ::NLS::meta_generated::<#= registerFunctionName #>(::NLS::meta::ReflectionDatabase& db, ::NLS::meta::ReflectionRegistrationPhase phase); \
     friend class ::NLS::meta_generated::<#= registrarClassName #>;
@@ -109,8 +85,7 @@ struct <#= accessStructName #>
     static constexpr const char* StaticMetaTypeName() { return "<#= type.QualifiedName #>"; } \
     static constexpr ::NLS::meta::TypeKey StaticMetaTypeKey() { return ::NLS::meta::HashTypeKey("<#= type.QualifiedName #>"); } \
 <# if (enableObjectBridge) { #>
-    ::NLS::meta::Type GetType(void) const override { return NLS_TYPEOF(<#= type.QualifiedName #>); } \
-    ::NLS::meta::Object *Clone(void) const override { return ::NLS::meta_generated::ObjectCloneHelper<<#= type.QualifiedName #>>::Clone(this); } \
+    const char* GetObjectTypeName(void) const override { return "<#= type.QualifiedName #>"; } \
 <# } #>
     friend void ::NLS::meta_generated::<#= registerFunctionName #>(::NLS::meta::ReflectionDatabase& db, ::NLS::meta::ReflectionRegistrationPhase phase); \
     friend class ::NLS::meta_generated::<#= registrarClassName #>; \

@@ -9,10 +9,11 @@
 #include <Rendering/Context/Driver.h>
 
 
-#include <Core/ResourceManagement/ModelManager.h>
+#include <Core/ResourceManagement/MeshManager.h>
 #include <Core/ResourceManagement/TextureManager.h>
 #include <Core/ResourceManagement/ShaderManager.h>
 #include <Core/ResourceManagement/MaterialManager.h>
+#include <Engine/Assets/RuntimeAssetDatabase.h>
 #include <SceneSystem/SceneManager.h>
 #include "Core/Filesystem/IniFile.h"
 #include "Rendering/Settings/DriverSettings.h"
@@ -56,10 +57,11 @@ namespace NLS::Game
 
 		Engine::SceneSystem::SceneManager sceneManager;
 
-		NLS::Core::ResourceManagement::ModelManager modelManager;
+		NLS::Core::ResourceManagement::MeshManager meshManager;
 		NLS::Core::ResourceManagement::TextureManager textureManager;
 		NLS::Core::ResourceManagement::ShaderManager shaderManager;
 		NLS::Core::ResourceManagement::MaterialManager materialManager;
+		std::optional<NLS::Engine::Assets::RuntimeAssetDatabase> runtimeAssetDatabase;
 
 		NLS::Filesystem::IniFile projectSettings;
 

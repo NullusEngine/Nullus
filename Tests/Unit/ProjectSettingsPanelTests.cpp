@@ -4,6 +4,8 @@
 #include <Reflection/RuntimeMetaProperties.h>
 #include <imgui.h>
 
+#include <array>
+
 #include "Core/EditorInteractionBlocker.h"
 #include "Panels/ProjectSettings.h"
 #include "Settings/EditorSettings.h"
@@ -58,6 +60,86 @@ TEST(ProjectSettingsPanelTests, RuntimeRestartFieldsAreMarkedByMetadata)
     ASSERT_TRUE(renderDocEnabled.IsValid());
     EXPECT_NE(threadedRendering.GetMeta().GetProperty<NLS::meta::RequiresRestart>(), nullptr);
     EXPECT_EQ(renderDocEnabled.GetMeta().GetProperty<NLS::meta::RequiresRestart>(), nullptr);
+}
+
+TEST(ProjectSettingsPanelTests, PersistentSettingsExcludeDiagnosticsAndNoOpVisualizerFields)
+{
+    NLS::meta::ReflectionDatabase::Instance();
+    const auto runtimeType = NLS_TYPEOF(NLS::Editor::Settings::EditorRuntimeSettingsObject);
+    const auto debugDrawType = NLS_TYPEOF(NLS::Editor::Settings::EditorDebugDrawSettingsObject);
+
+    constexpr std::array removedRuntimeFields {
+        "logRenderDrawPath",
+        "diagSkipSkyboxDraw",
+        "logMaterialBindings",
+        "dx12LogMessages",
+        "dx12LogFrameFlow",
+        "logEditorFps",
+        "editorGridSkipPlane",
+        "editorGridSkipAxes",
+        "editorDisableGridPass",
+        "editorDisableDebugCamerasPass",
+        "editorDisableDebugLightsPass",
+        "editorDisableDebugActorPass",
+        "editorDisableDebugGameObjectPass",
+        "editorDisableDebugDrawPass",
+        "editorDisablePickingPass",
+        "editorLogScenePicking",
+        "editorValidationFocusView",
+        "editorValidationExclusiveView",
+        "editorValidationSelectActor",
+        "editorValidationSelectGameObject"
+    };
+
+    for (const auto* fieldName : removedRuntimeFields)
+        EXPECT_FALSE(runtimeType.GetField(fieldName).IsValid()) << fieldName;
+
+    constexpr std::array removedDebugDrawFields {
+        "showGeometryBounds",
+        "showLightBounds",
+        "showGeometryFrustumCullingInSceneView",
+        "showLightFrustumCullingInSceneView"
+    };
+
+    for (const auto* fieldName : removedDebugDrawFields)
+        EXPECT_FALSE(debugDrawType.GetField(fieldName).IsValid()) << fieldName;
+}
+
+TEST(ProjectSettingsPanelTests, RuntimeSettingsBuildDefaultDiagnosticsOnly)
+{
+    auto& runtime = NLS::Editor::Settings::EditorSettings::GetRuntimeSettingsObject();
+    const auto oldRuntime = runtime;
+    runtime.renderDocEnabled = true;
+    runtime.renderDocAutoOpenReplayUI = true;
+    runtime.renderDocStartupCaptureAfterFrames = 3;
+
+    const auto diagnostics = NLS::Editor::Settings::EditorSettings::BuildDiagnosticsSettings();
+
+    EXPECT_FALSE(diagnostics.logRenderDrawPath);
+    EXPECT_FALSE(diagnostics.diagSkipSkyboxDraw);
+    EXPECT_FALSE(diagnostics.logMaterialBindings);
+    EXPECT_FALSE(diagnostics.dx12LogMessages);
+    EXPECT_FALSE(diagnostics.dx12LogFrameFlow);
+    EXPECT_FALSE(diagnostics.logEditorFps);
+    EXPECT_FALSE(diagnostics.editorGridSkipPlane);
+    EXPECT_FALSE(diagnostics.editorGridSkipAxes);
+    EXPECT_FALSE(diagnostics.editorDisableGridPass);
+    EXPECT_FALSE(diagnostics.editorDisableDebugCamerasPass);
+    EXPECT_FALSE(diagnostics.editorDisableDebugLightsPass);
+    EXPECT_FALSE(diagnostics.editorDisableDebugGameObjectPass);
+    EXPECT_FALSE(diagnostics.editorDisableDebugDrawPass);
+    EXPECT_FALSE(diagnostics.editorDisablePickingPass);
+    EXPECT_FALSE(diagnostics.editorLogScenePicking);
+    EXPECT_FALSE(diagnostics.editorLogSceneCameraInput);
+    EXPECT_TRUE(diagnostics.editorValidationFocusView.empty());
+    EXPECT_TRUE(diagnostics.editorValidationExclusiveView.empty());
+    EXPECT_TRUE(diagnostics.editorValidationSelectGameObject.empty());
+    EXPECT_TRUE(diagnostics.editorValidationSceneCamera.empty());
+    EXPECT_TRUE(diagnostics.editorValidationCreateAsset.empty());
+    EXPECT_TRUE(diagnostics.editorValidationSceneReadbackOutput.empty());
+    EXPECT_TRUE(diagnostics.editorValidationSceneReadbackSummary.empty());
+
+    runtime = oldRuntime;
 }
 
 TEST(ProjectSettingsPanelTests, SettingsModalCanDrawWhenPanelIsDisabledForDocking)

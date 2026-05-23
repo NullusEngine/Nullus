@@ -38,6 +38,12 @@ namespace NLS::Core
 			return __SERVICES.find(typeid(T).hash_code()) != __SERVICES.end();
 		}
 
+		template<typename T>
+		static void Remove()
+		{
+			__SERVICES.erase(typeid(T).hash_code());
+		}
+
 	private:
 		static std::unordered_map<std::size_t, std::any> __SERVICES;
 	};

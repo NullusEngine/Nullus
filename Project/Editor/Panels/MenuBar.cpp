@@ -1,4 +1,4 @@
-﻿#include <Utils/SystemCalls.h>
+#include <Utils/SystemCalls.h>
 
 #include <UI/Widgets/Visual/Separator.h>
 #include <UI/Widgets/Sliders/SliderInt.h>
@@ -12,7 +12,7 @@
 #include "Panels/ProjectSettings.h"
 #include "Core/EditorActions.h"
 #include "Settings/EditorSettings.h"
-#include "Utils/ActorCreationMenu.h"
+#include "Utils/GameObjectCreationMenu.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Shortcuts/EditorShortcutService.h"
 #include "UI/Widgets/Texts/Text.h"
@@ -26,7 +26,7 @@ Editor::Panels::MenuBar::MenuBar()
     CreateEditMenu();
 	CreateBuildMenu();
 	CreateWindowMenu();
-	CreateActorsMenu();
+	createGameObjectsMenu();
 	CreateResourcesMenu();
 	CreateLayoutMenu();
 	CreateHelpMenu();
@@ -55,7 +55,7 @@ void Editor::Panels::MenuBar::InitializeSettingsMenu()
     if (!m_settingsMenu)
         return;
 
-    m_settingsMenu->CreateWidget<Widgets::MenuItem>("Spawn actors at origin", "", true, true).ValueChangedEvent += EDITOR_BIND(SetActorSpawnAtOrigin, std::placeholders::_1);
+	m_settingsMenu->CreateWidget<Widgets::MenuItem>("Spawn GameObjects at origin", "", true, true).ValueChangedEvent += EDITOR_BIND(SetGameObjectSpawnAtOrigin, std::placeholders::_1);
 	m_settingsMenu->CreateWidget<Widgets::MenuItem>("Vertical Synchronization", "", true, true).ValueChangedEvent += [this](bool p_value) { EDITOR_CONTEXT(device)->SetVsync(p_value); };
 	auto& cameraSpeedMenu = m_settingsMenu->CreateWidget<Widgets::MenuList>("Camera Speed");
 	cameraSpeedMenu.CreateWidget<Widgets::SliderInt>(1, 50, 15, Widgets::ESliderOrientation::HORIZONTAL, "Scene View").ValueChangedEvent += EDITOR_BIND(SetSceneViewCameraSpeed, std::placeholders::_1);
@@ -133,17 +133,9 @@ void Editor::Panels::MenuBar::InitializeSettingsMenu()
 	auto& debugDrawMenu = debuggingMenu.CreateWidget<Widgets::MenuList>("Debug Draw");
 	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Enabled", "", true, debugSettings->debugDrawEnabled).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawEnabled = p_value; };
 	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Grid", "", true, debugSettings->debugDrawGrid).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawGrid = p_value; };
-	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Bounds", "", true, debugSettings->debugDrawBounds).ValueChangedEvent += [debugSettings](bool p_value)
-	{
-		debugSettings->debugDrawBounds = p_value;
-		debugSettings->showGeometryBounds = p_value;
-	};
+	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Bounds", "", true, debugSettings->debugDrawBounds).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawBounds = p_value; };
 	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Cameras", "", true, debugSettings->debugDrawCamera).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawCamera = p_value; };
-	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Lights", "", true, debugSettings->debugDrawLighting).ValueChangedEvent += [debugSettings](bool p_value)
-	{
-		debugSettings->debugDrawLighting = p_value;
-		debugSettings->showLightBounds = p_value;
-	};
+	debugDrawMenu.CreateWidget<Widgets::MenuItem>("Lights", "", true, debugSettings->debugDrawLighting).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->debugDrawLighting = p_value; };
     debuggingMenu.CreateWidget<Widgets::MenuItem>("Wireframe Mode", "", true, false).ValueChangedEvent += [this](bool p_value)
     {
         Render::Context::DriverUIAccess::SetPolygonMode(
@@ -188,9 +180,6 @@ void Editor::Panels::MenuBar::InitializeSettingsMenu()
 	{
 		Render::Context::DriverUIAccess::SetRenderDocAutoOpenEnabled(*EDITOR_CONTEXT(driver), enabled);
 	};
-	auto& subMenu = debuggingMenu.CreateWidget<Widgets::MenuList>("Frustum culling visualizer...");
-	subMenu.CreateWidget<Widgets::MenuItem>("For geometry", "", true, debugSettings->showGeometryFrustumCullingInSceneView).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->showGeometryFrustumCullingInSceneView = p_value; };
-	subMenu.CreateWidget<Widgets::MenuItem>("For lights", "", true, debugSettings->showLightFrustumCullingInSceneView).ValueChangedEvent += [debugSettings](bool p_value) { debugSettings->showLightFrustumCullingInSceneView = p_value; };
 }
 
 void Editor::Panels::MenuBar::CreateFileMenu()
@@ -235,10 +224,10 @@ void Editor::Panels::MenuBar::CreateWindowMenu()
 	m_windowMenu->ClickedEvent += std::bind(&MenuBar::UpdateToggleableItems, this);
 }
 
-void Editor::Panels::MenuBar::CreateActorsMenu()
+void Editor::Panels::MenuBar::createGameObjectsMenu()
 {
-	auto& actorsMenu = CreateWidget<Widgets::MenuList>("Actors");
-    Utils::ActorCreationMenu::GenerateActorCreationMenu(actorsMenu);
+	auto& gameObjectsMenu = CreateWidget<Widgets::MenuList>("GameObjects");
+    Utils::GameObjectCreationMenu::GenerateGameObjectCreationMenu(gameObjectsMenu);
 }
 
 void Editor::Panels::MenuBar::CreateResourcesMenu()

@@ -6,11 +6,14 @@
 #include <tuple>
 #include <vector>
 
+#include "Object/Object.h"
+#include "Reflection/Macros.h"
 #include "Rendering/RHI/RHITypes.h"
 #include "Rendering/Resources/UniformInfo.h"
 #include "Rendering/Resources/ShaderReflection.h"
 #include "Rendering/Resources/ShaderParameterStruct.h"
 #include "Rendering/ShaderCompiler/ShaderCompilationTypes.h"
+#include "Resources/Shader.generated.h"
 #include "RenderDef.h"
 
 namespace NLS::Render::RHI
@@ -38,11 +41,13 @@ namespace NLS::Render::Resources
 		std::string_view entryPoint,
 		const ShaderCompiler::ShaderCompilationOutput& output);
 
-	class NLS_RENDER_API Shader
+	CLASS(NLS_RENDER_API Shader) : public NLS::NamedObject
 	{
 		friend class Loaders::ShaderLoader;
 
 	public:
+		GENERATED_BODY()
+
 		const UniformInfo* GetUniformInfo(const std::string& p_name) const;
 		const ShaderReflection& GetReflection() const;
 		const std::vector<ShaderParameterStruct>& GetParameterStructs() const;
@@ -55,6 +60,9 @@ namespace NLS::Render::Resources
 		std::shared_ptr<RHI::RHIShaderModule> GetOrCreateExplicitShaderModule(
 			const std::shared_ptr<RHI::RHIDevice>& device,
 			ShaderCompiler::ShaderStage stage) const;
+#if defined(NLS_ENABLE_TEST_HOOKS)
+		void SetReflectionForTesting(ShaderReflection reflection);
+#endif
 
 	private:
 		Shader(const std::string p_path, ShaderCompiler::ShaderSourceLanguage p_sourceLanguage = ShaderCompiler::ShaderSourceLanguage::HLSL);

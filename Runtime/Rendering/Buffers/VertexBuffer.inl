@@ -17,7 +17,10 @@ namespace
 namespace NLS::Render::Buffers
 {
 	template <class T>
-	inline VertexBuffer<T>::VertexBuffer(const T* p_data, size_t p_elements)
+	inline VertexBuffer<T>::VertexBuffer(
+		const T* p_data,
+		size_t p_elements,
+		const NLS::Render::RHI::MemoryUsage memoryUsage)
 	{
 		if (p_data == nullptr || p_elements == 0u)
 			return;
@@ -25,7 +28,7 @@ namespace NLS::Render::Buffers
 		NLS::Render::RHI::RHIBufferDesc desc;
 		desc.size = p_elements * sizeof(T);
 		desc.usage = NLS::Render::RHI::BufferUsageFlags::Vertex;
-		desc.memoryUsage = NLS::Render::RHI::MemoryUsage::GPUOnly;
+		desc.memoryUsage = memoryUsage;
 		desc.debugName = "VertexBuffer";
 
 		auto device = GetExplicitDevice();
@@ -40,7 +43,9 @@ namespace NLS::Render::Buffers
 	}
 
 	template<class T>
-	inline VertexBuffer<T>::VertexBuffer(const std::vector<T>& p_data) : VertexBuffer(p_data.data(), p_data.size())
+	inline VertexBuffer<T>::VertexBuffer(
+		const std::vector<T>& p_data,
+		const NLS::Render::RHI::MemoryUsage memoryUsage) : VertexBuffer(p_data.data(), p_data.size(), memoryUsage)
 	{
 	}
 

@@ -2,6 +2,7 @@
 
 #include <fg/Blackboard.hpp>
 
+#include <cstdint>
 #include <filesystem>
 
 #include <Debug/Logger.h>
@@ -22,6 +23,7 @@
 #include <Rendering/Resources/TextureCube.h>
 #include <Rendering/Settings/GraphicsBackendUtils.h>
 #include <Rendering/Settings/EPrimitiveMode.h>
+#include <ResourceManagement/ShaderManager.h>
 
 #include <Profiling/Profiler.h>
 
@@ -119,13 +121,12 @@ namespace
 		return material.GetParameterBlock().TryGet(name);
 	}
 
-	void SetMaterialParameterAndInvalidate(
+	void SetMaterialParameter(
 		NLS::Render::Resources::Material& target,
 		const char* targetName,
 		const std::any& value)
 	{
-		target.GetParameterBlock().Set(targetName, value);
-		target.InvalidateExplicitBindingSetCache();
+		target.SetRawParameter(targetName, value);
 	}
 
 	void CopyMaterialParameterIfPresent(
@@ -135,7 +136,7 @@ namespace
 		const char* sourceName)
 	{
 		if (const auto* value = FindMaterialParameter(source, sourceName); value != nullptr)
-			SetMaterialParameterAndInvalidate(target, targetName, *value);
+			SetMaterialParameter(target, targetName, *value);
 	}
 
 	void EnsureDeferredLightingSkyParameters(
@@ -180,13 +181,13 @@ namespace
 
 	void EnsureDeferredGBufferFallbackParameters(NLS::Render::Resources::Material& target)
 	{
-		auto& parameters = target.GetParameterBlock();
+		const auto& parameters = target.GetParameterBlock();
 		auto* albedo = parameters.TryGet("u_Albedo");
 		if (albedo == nullptr ||
 			(albedo->type() == typeid(NLS::Maths::Vector4) &&
 				IsZeroColor(std::any_cast<const NLS::Maths::Vector4&>(*albedo))))
 		{
-			parameters.Set("u_Albedo", NLS::Maths::Vector4(1.0f, 1.0f, 1.0f, 1.0f));
+			target.SetRawParameter("u_Albedo", NLS::Maths::Vector4(1.0f, 1.0f, 1.0f, 1.0f));
 		}
 
 		auto* roughness = parameters.TryGet("u_Roughness");
@@ -194,7 +195,7 @@ namespace
 			(roughness->type() == typeid(float) &&
 				std::any_cast<float>(*roughness) == 0.0f))
 		{
-			parameters.Set("u_Roughness", 1.0f);
+			target.SetRawParameter("u_Roughness", 1.0f);
 		}
 
 		auto* ambientOcclusion = parameters.TryGet("u_AmbientOcclusion");
@@ -202,7 +203,7 @@ namespace
 			(ambientOcclusion->type() == typeid(float) &&
 				std::any_cast<float>(*ambientOcclusion) == 0.0f))
 		{
-			parameters.Set("u_AmbientOcclusion", 1.0f);
+			target.SetRawParameter("u_AmbientOcclusion", 1.0f);
 		}
 
 		for (const char* textureName : {
@@ -210,11 +211,14 @@ namespace
 			"u_MetallicMap",
 			"u_RoughnessMap",
 			"u_AmbientOcclusionMap",
-			"u_NormalMap"
+			"u_NormalMap",
+			"u_OpacityMap",
+			"u_EmissiveMap",
+			"u_SpecularMap"
 		})
 		{
 			if (!parameters.Contains(textureName))
-				parameters.Set(textureName, static_cast<NLS::Render::Resources::Texture2D*>(nullptr));
+				target.SetRawParameter(textureName, static_cast<NLS::Render::Resources::Texture2D*>(nullptr));
 		}
 	}
 
@@ -257,6 +261,49 @@ namespace
 				? NLS::Render::Settings::ECullFace::FRONT
 				: NLS::Render::Settings::ECullFace::BACK;
 		return overrides;
+	}
+
+	NLS::Engine::Rendering::DeferredSceneRenderer::GBufferMaterialSyncStamp BuildGBufferMaterialSyncStamp(
+		const NLS::Render::Resources::Material& sourceMaterial)
+	{
+		return {
+			sourceMaterial.GetInstanceId(),
+			sourceMaterial.GetParameterRevision(),
+			sourceMaterial.GetRenderStateRevision()
+		};
+	}
+
+	bool operator==(
+		const NLS::Engine::Rendering::DeferredSceneRenderer::GBufferMaterialSyncStamp& lhs,
+		const NLS::Engine::Rendering::DeferredSceneRenderer::GBufferMaterialSyncStamp& rhs)
+	{
+		return lhs.sourceMaterialInstanceId == rhs.sourceMaterialInstanceId &&
+			lhs.parameterRevision == rhs.parameterRevision &&
+			lhs.renderStateRevision == rhs.renderStateRevision;
+	}
+
+	bool operator!=(
+		const NLS::Engine::Rendering::DeferredSceneRenderer::GBufferMaterialSyncStamp& lhs,
+		const NLS::Engine::Rendering::DeferredSceneRenderer::GBufferMaterialSyncStamp& rhs)
+	{
+		return !(lhs == rhs);
+	}
+
+	std::string BuildGBufferMaterialCacheKey(
+		const NLS::Render::Resources::Material& sourceMaterial,
+		const NLS::Render::Data::PipelineState& pipelineState)
+	{
+		auto key = NLS::Render::Resources::BuildMaterialPassVariantKey(
+			sourceMaterial,
+			"DeferredGBuffer",
+			pipelineState,
+			BuildGBufferMaterialOverrides(sourceMaterial)).stableKey;
+		if (sourceMaterial.path.empty())
+		{
+			key += "|source:";
+			key += std::to_string(sourceMaterial.GetInstanceId());
+		}
+		return key;
 	}
 
 }
@@ -414,13 +461,15 @@ namespace NLS::Engine::Rendering
 		uint64_t queuedLightingDrawCount = 0u;
 		m_threadedQueuedGBufferDrawCount = 0u;
 		m_threadedQueuedLightingDrawCount = 0u;
+		m_frameGBufferMaterialSyncCount = 0u;
 
 		auto drawables = ParseScene();
 		const auto& frameDescriptor = GetFrameDescriptor();
 		NLS::Render::Resources::TextureCube* skyboxTexture = nullptr;
 		NLS::Render::Resources::Material* skyboxMaterial = nullptr;
-		for (const auto& [_, drawable] : drawables.skyboxes)
+		for (const auto& entry : drawables.skyboxes)
 		{
+			const auto& drawable = entry.second;
 			if (drawable.material == nullptr)
 				continue;
 			if (skyboxMaterial == nullptr)
@@ -440,8 +489,9 @@ namespace NLS::Engine::Rendering
 			SetActivePreparedPassBindingSet(BaseSceneRenderer::GetPreparedPassBindingSetPlaceholder());
 
 			auto gbufferPso = CreateSceneDefaultPipelineState(*this);
-			for (const auto& [_, drawable] : drawables.opaques)
+			for (const auto& entry : drawables.opaques)
 			{
+				const auto& drawable = entry.second;
 				if (!drawable.material)
 					continue;
 				auto gbufferDrawable = drawable;
@@ -672,9 +722,10 @@ namespace NLS::Engine::Rendering
 	{
 		NLS_PROFILE_SCOPE();
 		using ShaderLoader = NLS::Render::Resources::Loaders::ShaderLoader;
+		const auto& projectAssetsRoot = NLS::Core::ResourceManagement::ShaderManager::ProjectAssetsRoot();
 
-		m_gBufferShader = ShaderLoader::Create(ResolveEngineShaderPath("DeferredGBuffer.hlsl"));
-		m_lightingShader = ShaderLoader::Create(ResolveEngineShaderPath("DeferredLighting.hlsl"));
+		m_gBufferShader = ShaderLoader::Create(ResolveEngineShaderPath("DeferredGBuffer.hlsl"), projectAssetsRoot);
+		m_lightingShader = ShaderLoader::Create(ResolveEngineShaderPath("DeferredLighting.hlsl"), projectAssetsRoot);
 
 		if (m_lightingShader)
 		{
@@ -735,17 +786,27 @@ namespace NLS::Engine::Rendering
 	{
 		NLS_PROFILE_SCOPE();
 		const NLS::Render::Data::PipelineState pipelineState;
-		const auto cacheKey = NLS::Render::Resources::BuildMaterialPassVariantKey(
-			sourceMaterial,
-			"DeferredGBuffer",
-			pipelineState,
-			BuildGBufferMaterialOverrides(sourceMaterial)).stableKey;
+		const auto cacheKey = BuildGBufferMaterialCacheKey(sourceMaterial, pipelineState);
 		auto found = m_gBufferMaterialCache.find(cacheKey);
 		if (found == m_gBufferMaterialCache.end())
-			found = m_gBufferMaterialCache.emplace(cacheKey, CreateGBufferMaterial()).first;
+		{
+			GBufferMaterialCacheEntry entry;
+			entry.material = CreateGBufferMaterial();
+			found = m_gBufferMaterialCache.emplace(cacheKey, std::move(entry)).first;
+		}
 
-		SyncGBufferMaterial(*found->second, sourceMaterial);
-		return *found->second;
+		auto& entry = found->second;
+		const auto sourceStamp = BuildGBufferMaterialSyncStamp(sourceMaterial);
+		if (entry.material != nullptr && entry.syncedStamp != sourceStamp)
+		{
+			NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::SyncGBufferMaterial");
+			SyncGBufferMaterial(*entry.material, sourceMaterial);
+			entry.syncedStamp = sourceStamp;
+			++entry.syncCount;
+			++m_frameGBufferMaterialSyncCount;
+			m_rendererStats.RecordGBufferMaterialSync();
+		}
+		return *entry.material;
 	}
 
 	void DeferredSceneRenderer::SyncGBufferMaterial(NLS::Render::Resources::Material& target, const NLS::Render::Resources::Material& sourceMaterial) const
@@ -756,7 +817,7 @@ namespace NLS::Engine::Rendering
 		for (const auto& [name, value] : sourceMaterial.GetParameterBlock().Data())
 		{
 			if (target.GetParameterBlock().Contains(name))
-				SetMaterialParameterAndInvalidate(target, name.c_str(), value);
+				SetMaterialParameter(target, name.c_str(), value);
 		}
 
 		CopyMaterialParameterIfPresent(target, "u_Albedo", sourceMaterial, "u_Diffuse");
@@ -772,8 +833,9 @@ namespace NLS::Engine::Rendering
 
 		const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
 
-		for (const auto& [_, drawable] : scene.drawables.opaques)
+		for (const auto& entry : scene.drawables.opaques)
 		{
+			const auto& drawable = entry.second;
 			if (!drawable.material)
 				continue;
 
@@ -805,8 +867,9 @@ namespace NLS::Engine::Rendering
 		NLS::Render::Resources::TextureCube* skyboxTexture = nullptr;
 		NLS::Render::Resources::Material* skyboxMaterial = nullptr;
 		const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
-		for (const auto& [_, drawable] : scene.drawables.skyboxes)
+		for (const auto& entry : scene.drawables.skyboxes)
 		{
+			const auto& drawable = entry.second;
 			if (drawable.material == nullptr)
 				continue;
 			if (skyboxMaterial == nullptr)

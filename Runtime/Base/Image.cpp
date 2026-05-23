@@ -6,12 +6,37 @@
 #include "Image.h"
 #include <iostream>
 #include <cstring>
+#include <limits>
 namespace NLS
 {
 Image::Image(const std::string& filename, bool flipVertically)
     : data(nullptr)
 {
         Load(filename, flipVertically);
+}
+
+Image::Image(const uint8_t* encodedData, size_t encodedDataSize, bool flipVertically)
+    : data(nullptr)
+{
+    stbi_set_flip_vertically_on_load(flipVertically);
+    if (encodedData == nullptr || encodedDataSize == 0u || encodedDataSize > static_cast<size_t>(std::numeric_limits<int>::max()))
+    {
+        width = height = channels = 0;
+        return;
+    }
+
+    data = stbi_load_from_memory(
+        encodedData,
+        static_cast<int>(encodedDataSize),
+        &width,
+        &height,
+        &channels,
+        0);
+    if (!data)
+    {
+        std::cerr << "Failed to load image from memory." << std::endl;
+        width = height = channels = 0;
+    }
 }
 // 创建指定大小的空白图像
 Image::Image(int width, int height, int channels) : width(width), height(height), channels(channels), data(nullptr) {

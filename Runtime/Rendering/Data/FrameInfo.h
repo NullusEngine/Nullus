@@ -64,5 +64,12 @@ namespace NLS::Render::Data
         uint64_t pipelineCacheComputeMisses = 0;
         uint64_t pipelineCacheComputeStores = 0;
         uint64_t pipelineCacheComputeEntries = 0;
+        uint64_t parseSceneCallCount = 0;
+        uint64_t parsedOpaqueDrawableCount = 0;
+        uint64_t parsedTransparentDrawableCount = 0;
+        uint64_t parsedSkyboxDrawableCount = 0;
+        uint64_t gBufferMaterialSyncCount = 0;
+        uint64_t renderBindingSetCreationCount = 0;
+        uint64_t renderSnapshotBufferCreationCount = 0;
 	};
 }

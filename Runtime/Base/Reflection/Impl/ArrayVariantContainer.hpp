@@ -10,20 +10,20 @@
 
 namespace NLS::meta
 {
-    template<typename T, typename StorageType>
-    ArrayVariantContainer<T, StorageType>::ArrayVariantContainer(StorageType &rhs)
+    template<typename T, typename ContainerType, typename StorageType>
+    ArrayVariantContainer<T, ContainerType, StorageType>::ArrayVariantContainer(StorageType &rhs)
         : m_array( rhs )
     {
     }
 
-        template<typename T, typename StorageType>
-        Type ArrayVariantContainer<T, StorageType>::GetType(void) const
+        template<typename T, typename ContainerType, typename StorageType>
+        Type ArrayVariantContainer<T, ContainerType, StorageType>::GetType(void) const
         {
-            return NLS_TYPEOF( Array<T> );
+            return NLS_TYPEOF( ContainerType );
         }
 
-        template<typename T, typename StorageType>
-        void *ArrayVariantContainer<T, StorageType>::GetPtr(void) const
+        template<typename T, typename ContainerType, typename StorageType>
+        void *ArrayVariantContainer<T, ContainerType, StorageType>::GetPtr(void) const
         {
             return const_cast<void*>(
                 reinterpret_cast<const void*>( 
@@ -32,51 +32,54 @@ namespace NLS::meta
             );
         }
 
-        template<typename T, typename StorageType>
-        int ArrayVariantContainer<T, StorageType>::ToInt(void) const
+        template<typename T, typename ContainerType, typename StorageType>
+        int ArrayVariantContainer<T, ContainerType, StorageType>::ToInt(void) const
         {
             return int( );
         }
 
-        template<typename T, typename StorageType>
-        bool ArrayVariantContainer<T, StorageType>::ToBool(void) const
+        template<typename T, typename ContainerType, typename StorageType>
+        bool ArrayVariantContainer<T, ContainerType, StorageType>::ToBool(void) const
         {
             return bool( );
         }
 
-        template<typename T, typename StorageType>
-        float ArrayVariantContainer<T, StorageType>::ToFloat(void) const
+        template<typename T, typename ContainerType, typename StorageType>
+        float ArrayVariantContainer<T, ContainerType, StorageType>::ToFloat(void) const
         {
             return float( );
         }
 
-        template<typename T, typename StorageType>
-        double ArrayVariantContainer<T, StorageType>::ToDouble(void) const
+        template<typename T, typename ContainerType, typename StorageType>
+        double ArrayVariantContainer<T, ContainerType, StorageType>::ToDouble(void) const
         {
             return double( );
         }
 
-        template<typename T, typename StorageType>
-        std::string ArrayVariantContainer<T, StorageType>::ToString(void) const
+        template<typename T, typename ContainerType, typename StorageType>
+        std::string ArrayVariantContainer<T, ContainerType, StorageType>::ToString(void) const
         {
             return std::string( );
         }
 
-        template<typename T, typename StorageType>
-        bool ArrayVariantContainer<T, StorageType>::IsArray(void) const
+        template<typename T, typename ContainerType, typename StorageType>
+        bool ArrayVariantContainer<T, ContainerType, StorageType>::IsArray(void) const
         {
             return true;
         }
 
-        template<typename T, typename StorageType>
-        ArrayWrapper ArrayVariantContainer<T, StorageType>::GetArray(void) const
+        template<typename T, typename ContainerType, typename StorageType>
+        ArrayWrapper ArrayVariantContainer<T, ContainerType, StorageType>::GetArray(void) const
         {
-            return ArrayWrapper( const_cast<Array<T>&>( m_array ) );
+            if constexpr (std::is_const_v<std::remove_reference_t<StorageType>>)
+                return ArrayWrapper( static_cast<const ContainerType&>( m_array ) );
+            else
+                return ArrayWrapper( const_cast<ContainerType&>( m_array ) );
         }
 
-        template<typename T, typename StorageType>
-        VariantBase *ArrayVariantContainer<T, StorageType>::Clone(void) const
+        template<typename T, typename ContainerType, typename StorageType>
+        VariantBase *ArrayVariantContainer<T, ContainerType, StorageType>::Clone(void) const
         {
-            return new ArrayVariantContainer<T, StorageType>( const_cast<Array<T>&>( m_array ) );
+            return new ArrayVariantContainer<T, ContainerType, StorageType>( const_cast<StorageType&>( m_array ) );
         }
 }

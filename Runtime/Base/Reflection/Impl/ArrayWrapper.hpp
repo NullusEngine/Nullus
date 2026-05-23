@@ -23,4 +23,18 @@ namespace NLS::meta
         , m_base( new ArrayWrapperContainer<T>( const_cast<Array<T> &>( rhs ) ) )
     {
     }
+
+    template<typename T, typename Allocator>
+    ArrayWrapper::ArrayWrapper(std::vector<T, Allocator> &rhs)
+        : m_isConst( false )
+        , m_base( new ArrayWrapperContainer<T, std::vector<T, Allocator>>( rhs ) )
+    {
+    }
+
+    template<typename T, typename Allocator>
+    ArrayWrapper::ArrayWrapper(const std::vector<T, Allocator> &rhs)
+        : m_isConst( true )
+        , m_base( new ArrayWrapperContainer<T, std::vector<T, Allocator>>( const_cast<std::vector<T, Allocator> &>( rhs ) ) )
+    {
+    }
 }

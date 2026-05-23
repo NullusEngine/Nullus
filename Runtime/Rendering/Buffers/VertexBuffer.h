@@ -19,13 +19,18 @@ public:
      * @param p_data
      * @param p_elements
      */
-    VertexBuffer(const T* p_data, size_t p_elements);
+    VertexBuffer(
+        const T* p_data,
+        size_t p_elements,
+        RHI::MemoryUsage memoryUsage = RHI::MemoryUsage::GPUOnly);
 
     /**
      * Create the vertex buffer from a vector.
      * @param p_data
      */
-    VertexBuffer(const std::vector<T>& p_data);
+    explicit VertexBuffer(
+        const std::vector<T>& p_data,
+        RHI::MemoryUsage memoryUsage = RHI::MemoryUsage::GPUOnly);
 
     /**
      * Destructor

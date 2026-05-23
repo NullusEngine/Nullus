@@ -1,4 +1,5 @@
 #include "UI/Widgets/Layout/TreeNode.h"
+#include "UI/Internal/Converter.h"
 #include "ImGui/imgui.h"
 
 namespace NLS::UI::Widgets
@@ -24,6 +25,18 @@ void TreeNode::Close()
 bool TreeNode::IsOpened() const
 {
     return m_opened;
+}
+
+const char* TreeNode::GetImGuiLabel()
+{
+    if (m_imguiLabel.empty() || m_cachedName != name || m_cachedWidgetID != m_widgetID)
+    {
+        m_cachedName = name;
+        m_cachedWidgetID = m_widgetID;
+        m_imguiLabel = name + "###" + m_widgetID;
+    }
+
+    return m_imguiLabel.c_str();
 }
 
 void TreeNode::_Draw_Impl()
@@ -52,8 +65,11 @@ void TreeNode::_Draw_Impl()
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 4.0f));
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.20f, 0.29f, 0.40f, 0.68f));
     ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.24f, 0.36f, 0.52f, 0.82f));
-    const std::string label = name + "###" + m_widgetID;
-    bool opened = ImGui::TreeNodeEx(label.c_str(), flags);
+    if (useTextColor)
+        ImGui::PushStyleColor(ImGuiCol_Text, Internal::Converter::ToImVec4(textColor));
+    bool opened = ImGui::TreeNodeEx(GetImGuiLabel(), flags);
+    if (useTextColor)
+        ImGui::PopStyleColor();
     ImGui::PopStyleColor(2);
     ImGui::PopStyleVar();
 

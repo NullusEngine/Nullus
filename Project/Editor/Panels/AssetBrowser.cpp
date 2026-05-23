@@ -1,5 +1,13 @@
-﻿#include <fstream>
+#include <fstream>
 #include <iostream>
+#include <chrono>
+#include <future>
+#include <optional>
+#include <system_error>
+#include <vector>
+
+#include "ImGui/imgui.h"
+#include <Json/json.hpp>
 
 #include <UI/Widgets/Texts/TextClickable.h>
 #include <UI/Widgets/Visual/Image.h>
@@ -19,7 +27,7 @@
 #include <Utils/String.h>
 
 #include <ServiceLocator.h>
-#include <ResourceManagement/ModelManager.h>
+#include <ResourceManagement/MeshManager.h>
 #include <ResourceManagement/TextureManager.h>
 #include <ResourceManagement/ShaderManager.h>
 
@@ -29,8 +37,20 @@
 #include "Panels/AssetBrowser.h"
 #include "Panels/AssetView.h"
 #include "Panels/AssetProperties.h"
+#include "Panels/SceneView.h"
+#include "Assets/AssetBrowserPresentation.h"
+#include "Assets/AssetDatabaseFacade.h"
+#include "Assets/EditorAssetManifestJson.h"
+#include "Assets/EditorAssetDragPayload.h"
+#include "Assets/AssetMeta.h"
+#include "Assets/AssetImporterFacade.h"
+#include "Assets/EditorAssetDatabase.h"
+#include "Assets/AssetDragDropWorkflow.h"
+#include "Assets/PrefabUtilityFacade.h"
 #include "Core/EditorActions.h"
 #include "Core/EditorResources.h"
+#include "GameObject.h"
+#include "SceneSystem/SceneManager.h"
 #include "UI/Widgets/InputFields/InputText.h"
 #include "UI/UIManager.h"
 
@@ -45,6 +65,367 @@ const std::string FILENAMES_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ
 std::string GetAssociatedMetaFile(const std::string& p_assetPath)
 {
 	return p_assetPath + ".meta";
+}
+
+std::filesystem::path ProjectRootFromAssetsFolder(const std::string& projectAssetsFolder)
+{
+	auto assetsPath = std::filesystem::path(projectAssetsFolder).lexically_normal();
+	while (!assetsPath.empty() && !assetsPath.has_filename())
+		assetsPath = assetsPath.parent_path();
+	return assetsPath.parent_path();
+}
+
+std::filesystem::path EditorAssetFolderFromAbsolutePath(
+	const std::string& projectAssetsFolder,
+	const std::string& absoluteFolderPath)
+{
+	const auto projectRoot = ProjectRootFromAssetsFolder(projectAssetsFolder);
+	auto relative = std::filesystem::path(absoluteFolderPath).lexically_normal().lexically_relative(projectRoot);
+	if (relative.empty() || relative.is_absolute())
+		return {};
+
+	for (const auto& part : relative)
+	{
+		if (part == "..")
+			return {};
+	}
+
+	return relative;
+}
+
+std::filesystem::path EditorAssetPathFromAbsolutePath(
+	const std::string& projectAssetsFolder,
+	const std::string& absolutePath)
+{
+	return EditorAssetFolderFromAbsolutePath(projectAssetsFolder, absolutePath);
+}
+
+std::string AssetBrowserFileStamp(const std::filesystem::path& path)
+{
+	std::error_code error;
+	const auto size = std::filesystem::file_size(path, error);
+	if (error)
+		return {};
+
+	error.clear();
+	const auto writeTime = std::filesystem::last_write_time(path, error);
+	if (error)
+		return {};
+
+	return std::to_string(size) + ":" + std::to_string(writeTime.time_since_epoch().count());
+}
+
+bool ManifestDependencyStampsAreCurrent(
+	const nlohmann::json& manifest,
+	const std::string& projectAssetsFolder,
+	const std::string& absolutePath)
+{
+	const auto meta = NLS::Core::Assets::AssetMeta::Load(
+		NLS::Core::Assets::GetAssetMetaPath(absolutePath));
+	const auto importerId = NLS::Editor::Assets::JsonString(manifest, "importerId");
+	const auto importerVersion = NLS::Editor::Assets::JsonUInt(manifest, "importerVersion");
+	const auto targetPlatform = NLS::Editor::Assets::JsonString(manifest, "targetPlatform");
+	if (!meta.has_value() ||
+		!importerId.has_value() ||
+		!importerVersion.has_value() ||
+		!targetPlatform.has_value() ||
+		*importerId != meta->importerId ||
+		*importerVersion != meta->importerVersion ||
+		*targetPlatform != "editor")
+	{
+		return false;
+	}
+
+	const auto dependencies = manifest.find("dependencies");
+	if (dependencies == manifest.end() || !dependencies->is_array())
+		return false;
+
+	const auto assetPath = NLS::Editor::Assets::NormalizeEditorAssetPath(
+		EditorAssetPathFromAbsolutePath(projectAssetsFolder, absolutePath));
+	const auto metaAbsolutePath = NLS::Core::Assets::GetAssetMetaPath(absolutePath);
+	const auto metaPath = NLS::Editor::Assets::NormalizeEditorAssetPath(
+		EditorAssetPathFromAbsolutePath(projectAssetsFolder, metaAbsolutePath.string()));
+	const auto projectRoot = ProjectRootFromAssetsFolder(projectAssetsFolder);
+
+	bool checkedAsset = false;
+	bool checkedMeta = false;
+	for (const auto& dependency : *dependencies)
+	{
+		if (!dependency.is_object())
+			continue;
+
+		const auto kind = NLS::Editor::Assets::JsonStringOrDefault(dependency, "kind");
+		const auto valueText = NLS::Editor::Assets::JsonStringOrDefault(dependency, "value");
+		const auto stamp = NLS::Editor::Assets::JsonStringOrDefault(dependency, "hashOrVersion");
+		if (!kind.has_value() || !valueText.has_value() || !stamp.has_value())
+			return false;
+
+		const auto value = NLS::Editor::Assets::NormalizeEditorAssetPath(*valueText);
+		if (*kind == "source-file-hash")
+		{
+			if (value == assetPath)
+				checkedAsset = true;
+
+			const auto dependencyPath = NLS::Editor::Assets::ResolveEditorManifestDependencyPath(projectRoot, value);
+			if (!dependencyPath.has_value() || *stamp != AssetBrowserFileStamp(*dependencyPath))
+				return false;
+			continue;
+		}
+		if (*kind == "path-to-guid-mapping")
+		{
+			if (value == metaPath)
+				checkedMeta = true;
+
+			const auto dependencyPath = NLS::Editor::Assets::ResolveEditorManifestDependencyPath(projectRoot, value);
+			if (!dependencyPath.has_value() || *stamp != AssetBrowserFileStamp(*dependencyPath))
+				return false;
+			continue;
+		}
+	}
+
+	return checkedAsset && checkedMeta;
+}
+
+std::filesystem::path ResolveArtifactPathForManifest(
+	const std::filesystem::path& projectRoot,
+	const nlohmann::json& subAsset)
+{
+	const auto artifactPathText = NLS::Editor::Assets::JsonStringOrDefault(subAsset, "artifactPath");
+	if (!artifactPathText.has_value() || artifactPathText->empty())
+		return {};
+
+	const auto artifactPath = std::filesystem::path(*artifactPathText);
+	const auto resolvedPath = artifactPath.is_absolute()
+		? artifactPath.lexically_normal()
+		: (projectRoot / artifactPath).lexically_normal();
+
+	const auto relative = resolvedPath.lexically_relative(projectRoot.lexically_normal());
+	if (relative.empty() || relative.is_absolute())
+		return {};
+
+	for (const auto& part : relative)
+	{
+		if (part == "..")
+			return {};
+	}
+
+	return resolvedPath;
+}
+
+void ReimportProjectAssetAsync(const std::string& projectAssetsFolder, const std::string& absolutePath)
+{
+	const auto projectRoot = ProjectRootFromAssetsFolder(projectAssetsFolder);
+	const auto assetPath = EditorAssetPathFromAbsolutePath(projectAssetsFolder, absolutePath);
+	if (projectRoot.empty() || assetPath.empty())
+	{
+		NLS_LOG_ERROR("Failed to resolve project asset path for reimport: " + absolutePath);
+		return;
+	}
+
+	auto& tracker = EDITOR_CONTEXT(importProgressTracker);
+	EDITOR_EXEC(TrackBackgroundTask([projectRoot, assetPath = assetPath.generic_string(), &tracker]
+	{
+		NLS::Editor::Assets::AssetImporterFacade importer(
+			NLS::Editor::Assets::MakeProjectEditorAssetRoots(projectRoot));
+		const auto imported = importer.SaveAndReimport(assetPath, tracker);
+		EDITOR_EXEC(DelayAction([assetPath, imported]
+		{
+			EDITOR_PANEL(NLS::Editor::Panels::AssetBrowser, "Asset Browser").Refresh();
+			EDITOR_PANEL(NLS::Editor::Panels::AssetProperties, "Asset Properties").Refresh();
+			if (imported)
+				NLS_LOG_INFO("Reimported asset: " + assetPath);
+			else
+				NLS_LOG_ERROR("Failed to reimport asset: " + assetPath);
+		}));
+	}));
+}
+
+const char* AssetPreimportReasonLabel(const NLS::Editor::Assets::AssetPreimportReason reason)
+{
+	using NLS::Editor::Assets::AssetPreimportReason;
+	switch (reason)
+	{
+	case AssetPreimportReason::EditorStartup:
+		return "editor startup";
+	case AssetPreimportReason::FileWatcherChanged:
+		return "file watcher change";
+	case AssetPreimportReason::AssetCopiedOrMoved:
+		return "asset copy or move";
+	default:
+		return "asset preimport";
+	}
+}
+
+NLS::Editor::Assets::AssetPreimportReason MergeAssetPreimportReasons(
+	const NLS::Editor::Assets::AssetPreimportReason current,
+	const NLS::Editor::Assets::AssetPreimportReason incoming)
+{
+	using NLS::Editor::Assets::AssetPreimportReason;
+	if (current == AssetPreimportReason::FileWatcherChanged ||
+		incoming == AssetPreimportReason::FileWatcherChanged)
+	{
+		return AssetPreimportReason::FileWatcherChanged;
+	}
+	if (current == AssetPreimportReason::AssetCopiedOrMoved ||
+		incoming == AssetPreimportReason::AssetCopiedOrMoved)
+	{
+		return AssetPreimportReason::AssetCopiedOrMoved;
+	}
+	return AssetPreimportReason::EditorStartup;
+}
+
+NLS::Editor::Assets::AssetPreimportRequest MergeAssetPreimportRequests(
+	NLS::Editor::Assets::AssetPreimportRequest current,
+	const NLS::Editor::Assets::AssetPreimportRequest& incoming)
+{
+	current.reason = MergeAssetPreimportReasons(current.reason, incoming.reason);
+	current.changedPaths.insert(
+		current.changedPaths.end(),
+		incoming.changedPaths.begin(),
+		incoming.changedPaths.end());
+	for (auto& path : current.changedPaths)
+		path = path.lexically_normal();
+	std::sort(current.changedPaths.begin(), current.changedPaths.end());
+	current.changedPaths.erase(
+		std::unique(current.changedPaths.begin(), current.changedPaths.end()),
+		current.changedPaths.end());
+	return current;
+}
+
+std::optional<NLS::Editor::Assets::EditorAssetDragPayload> BuildEditorAssetDragPayloadForFile(
+	const std::string& projectAssetsFolder,
+	const std::string& absolutePath,
+	const std::string& resourceFormatPath,
+	Utils::PathParser::EFileType fileType)
+{
+	using namespace NLS::Editor::Assets;
+
+	if (fileType != Utils::PathParser::EFileType::MODEL &&
+		fileType != Utils::PathParser::EFileType::PREFAB &&
+		fileType != Utils::PathParser::EFileType::MATERIAL &&
+		fileType != Utils::PathParser::EFileType::TEXTURE &&
+		fileType != Utils::PathParser::EFileType::SHADER)
+	{
+		return std::nullopt;
+	}
+
+	const auto meta = NLS::Core::Assets::AssetMeta::Load(
+		NLS::Core::Assets::GetAssetMetaPath(absolutePath));
+	if (!meta.has_value() || !meta->id.IsValid())
+		return std::nullopt;
+
+	NLS::Core::Assets::ArtifactType artifactType = NLS::Core::Assets::ArtifactType::Unknown;
+	std::string subAssetKey;
+	bool imported = false;
+
+	if (fileType == Utils::PathParser::EFileType::MODEL &&
+		subAssetKey.empty())
+	{
+		subAssetKey = "prefab:" + std::filesystem::path(resourceFormatPath).stem().generic_string();
+		artifactType = NLS::Core::Assets::ArtifactType::Prefab;
+	}
+
+	if (fileType == Utils::PathParser::EFileType::PREFAB &&
+		subAssetKey.empty())
+	{
+		subAssetKey = "prefab:" + std::filesystem::path(resourceFormatPath).stem().generic_string();
+		artifactType = NLS::Core::Assets::ArtifactType::Prefab;
+	}
+
+	if (fileType == Utils::PathParser::EFileType::MATERIAL &&
+		subAssetKey.empty())
+	{
+		subAssetKey = "material:" + std::filesystem::path(resourceFormatPath).stem().generic_string();
+		artifactType = NLS::Core::Assets::ArtifactType::Material;
+	}
+
+	if (fileType == Utils::PathParser::EFileType::TEXTURE &&
+		subAssetKey.empty())
+	{
+		subAssetKey = "texture:" + std::filesystem::path(resourceFormatPath).stem().generic_string();
+		artifactType = NLS::Core::Assets::ArtifactType::Texture;
+	}
+
+	if (fileType == Utils::PathParser::EFileType::SHADER &&
+		subAssetKey.empty())
+	{
+		subAssetKey = "shader:" + std::filesystem::path(resourceFormatPath).stem().generic_string();
+		artifactType = NLS::Core::Assets::ArtifactType::Shader;
+	}
+
+	const auto manifestPath =
+		ProjectRootFromAssetsFolder(projectAssetsFolder) / "Library" / "Artifacts" / meta->id.ToString() / "manifest.json";
+	if (std::filesystem::exists(manifestPath))
+	{
+		std::ifstream input(manifestPath, std::ios::binary);
+		const auto manifest = nlohmann::json::parse(input, nullptr, false);
+		if (manifest.is_object())
+		{
+			const auto currentManifest = ManifestDependencyStampsAreCurrent(
+				manifest,
+				projectAssetsFolder,
+				absolutePath);
+			if (fileType == Utils::PathParser::EFileType::PREFAB ||
+				fileType == Utils::PathParser::EFileType::MATERIAL ||
+				fileType == Utils::PathParser::EFileType::TEXTURE ||
+				fileType == Utils::PathParser::EFileType::SHADER)
+			{
+				auto manifestPrimaryKey = JsonString(manifest, "primarySubAssetKey");
+				if (manifestPrimaryKey.has_value() && !manifestPrimaryKey->empty())
+					subAssetKey = std::move(*manifestPrimaryKey);
+			}
+
+			if (const auto subAssets = manifest.find("subAssets");
+				subAssets != manifest.end() && subAssets->is_array())
+			{
+				for (const auto& subAsset : *subAssets)
+				{
+					const auto subAssetKeyText = JsonString(subAsset, "subAssetKey");
+					if (!subAsset.is_object() ||
+						!subAssetKeyText.has_value() ||
+						*subAssetKeyText != subAssetKey)
+					{
+						continue;
+					}
+
+					const auto resolvedArtifactPath =
+						ResolveArtifactPathForManifest(ProjectRootFromAssetsFolder(projectAssetsFolder), subAsset);
+					if (resolvedArtifactPath.empty() || !std::filesystem::is_regular_file(resolvedArtifactPath))
+						continue;
+
+					const auto artifactTypeText = JsonStringOrDefault(subAsset, "artifactType");
+					if (!artifactTypeText.has_value())
+						continue;
+					if (artifactTypeText == "Prefab" || artifactTypeText == "prefab")
+						artifactType = NLS::Core::Assets::ArtifactType::Prefab;
+					else if (artifactTypeText == "Material" || artifactTypeText == "material")
+						artifactType = NLS::Core::Assets::ArtifactType::Material;
+					else if (artifactTypeText == "Texture" || artifactTypeText == "texture")
+						artifactType = NLS::Core::Assets::ArtifactType::Texture;
+					else if (artifactTypeText == "Mesh" || artifactTypeText == "mesh")
+						artifactType = NLS::Core::Assets::ArtifactType::Mesh;
+					else if (artifactTypeText == "Model" || artifactTypeText == "model")
+						artifactType = NLS::Core::Assets::ArtifactType::Model;
+					imported = currentManifest && artifactType != NLS::Core::Assets::ArtifactType::Unknown;
+					break;
+				}
+			}
+		}
+	}
+
+	if (!CanStoreEditorAssetDragPayload(resourceFormatPath, meta->id, subAssetKey))
+		return std::nullopt;
+
+	const bool generatedModelPrefab =
+		fileType == Utils::PathParser::EFileType::MODEL &&
+		artifactType == NLS::Core::Assets::ArtifactType::Prefab;
+	return MakeEditorAssetDragPayload(
+		resourceFormatPath,
+		meta->id,
+		subAssetKey,
+		artifactType,
+		generatedModelPrefab,
+		imported);
 }
 
 void RenameAsset(const std::string& p_prev, const std::string& p_new)
@@ -84,22 +465,27 @@ public:
 
 	void SetPath(const std::string& p_path)
 	{
-        texture = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::TextureManager>()[p_path];
-        image.textureView = texture != nullptr
-            ? texture->GetOrCreateExplicitTextureView("AssetBrowser.Preview")
-            : nullptr;
+        resourcePath = p_path;
 	}
 
 	virtual void Execute() override
 	{
         if (NLS_SERVICE(NLS::UI::UIManager).IsItemHovered())
 		{
+            if (!texture && !resourcePath.empty())
+            {
+                texture = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::TextureManager>()[resourcePath];
+                image.textureView = texture != nullptr
+                    ? texture->GetOrCreateExplicitTextureView("AssetBrowser.Preview")
+                    : nullptr;
+            }
 			NLS_SERVICE(NLS::UI::UIManager).BeginTooltip();
 			image.Draw();
             NLS_SERVICE(NLS::UI::UIManager).EndTooltip();
 		}
 	}
 
+	std::string resourcePath;
 	Render::Resources::Texture2D* texture = nullptr;
 	NLS::UI::Widgets::Image image;
 };
@@ -271,8 +657,12 @@ public:
 					++fails;
 				} while (std::filesystem::exists(finalPath));
 
-				std::ofstream outfile(finalPath);
-				outfile << "<root><scene><actors><actor><name>Directional Light</name><tag></tag><active>true</active><id>1</id><parent>0</parent><components><component><type>class NLS::Core::ECS::Components::CDirectionalLight</type><data><diffuse><x>1</x><y>1</y><z>1</z></diffuse><specular><x>1</x><y>1</y><z>1</z></specular><intensity>0.75</intensity></data></component><component><type>class NLS::Core::ECS::Components::CTransform</type><data><position><x>0</x><y>10</y><z>0</z></position><rotation><x>0.81379771</x><y>-0.17101006</y><z>0.29619816</z><w>0.46984628</w></rotation><scale><x>1</x><y>1</y><z>1</z></scale></data></component></components><behaviours/></actor><actor><name>Ambient Light</name><tag></tag><active>true</active><id>2</id><parent>0</parent><components><component><type>class NLS::Core::ECS::Components::CAmbientSphereLight</type><data><ambient><x>1</x><y>1</y><z>1</z></ambient><intensity>0.1</intensity><radius>10000</radius></data></component><component><type>class NLS::Core::ECS::Components::CTransform</type><data><position><x>0</x><y>0</y><z>0</z></position><rotation><x>0</x><y>0</y><z>0</z><w>1</w></rotation><scale><x>1</x><y>1</y><z>1</z></scale></data></component></components><behaviours/></actor><actor><name>Main Camera</name><tag></tag><active>true</active><id>3</id><parent>0</parent><components><component><type>class NLS::Core::ECS::Components::CCamera</type><data><fov>45</fov><near>0.1</near><far>1000</far><clear_color><x>0.1921569</x><y>0.3019608</y><z>0.47450981</z></clear_color></data></component><component><type>class NLS::Core::ECS::Components::CTransform</type><data><position><x>0</x><y>3</y><z>8</z></position><rotation><x>-7.5904039e-09</x><y>0.98480773</y><z>-0.17364819</z><w>-4.3047311e-08</w></rotation><scale><x>1</x><y>1</y><z>1</z></scale></data></component></components><behaviours/></actor></actors></scene></root>" << std::endl; // Empty scene content
+				Engine::SceneSystem::Scene scene;
+				if (!Engine::SceneSystem::SceneManager::SaveSceneToPath(scene, finalPath))
+				{
+					NLS_LOG_ERROR("Failed to create scene asset: " + finalPath);
+					return;
+				}
 
 				ItemAddedEvent.Invoke(finalPath);
 				Close();
@@ -682,7 +1072,10 @@ public:
 			if (shaderManager.IsResourceRegistered(resourcePath))
 			{
 				/* Trying to recompile */
-				Render::Resources::Loaders::ShaderLoader::Recompile(*shaderManager[resourcePath], filePath);
+				Render::Resources::Loaders::ShaderLoader::Recompile(
+                    *shaderManager[resourcePath],
+                    filePath,
+                    ShaderManager::ProjectAssetsRoot());
 			}
 			else
 			{
@@ -696,141 +1089,22 @@ public:
 	}
 };
 
-class ModelContextualMenu : public PreviewableContextualMenu<Render::Resources::Model, NLS::Core::ResourceManagement::ModelManager>
+class ModelContextualMenu : public PreviewableContextualMenu<Render::Resources::Mesh, NLS::Core::ResourceManagement::MeshManager>
 {
 public:
 	ModelContextualMenu(const std::string& p_filePath, bool p_protected = false) : PreviewableContextualMenu(p_filePath, p_protected) {}
 
 	virtual void CreateList() override
 	{
-		auto& reloadAction = CreateWidget<MenuItem>("Reload");
+		auto& reimportAction = CreateWidget<MenuItem>("Reimport");
 
-		reloadAction.ClickedEvent += [this]
+		reimportAction.ClickedEvent += [this]
 		{
-			auto& modelManager = NLS_SERVICE(NLS::Core::ResourceManagement::ModelManager);
-			std::string resourcePath = EDITOR_EXEC(GetResourcePath(filePath, m_protected));
-			if (modelManager.IsResourceRegistered(resourcePath))
-			{
-				modelManager.AResourceManager::ReloadResource(resourcePath);
-			}
+			if (m_protected)
+				return;
+
+			ReimportProjectAssetAsync(EDITOR_CONTEXT(projectAssetsPath), filePath);
 		};
-
-		if (!m_protected)
-		{
-			auto& generateMaterialsMenu = CreateWidget<MenuList>("Generate materials...");
-
-			generateMaterialsMenu.CreateWidget<MenuItem>("Standard").ClickedEvent += [this]
-			{
-				auto& modelManager = NLS_SERVICE(NLS::Core::ResourceManagement::ModelManager);
-				std::string resourcePath = EDITOR_EXEC(GetResourcePath(filePath, m_protected));
-				if (auto model = modelManager.GetResource(resourcePath))
-				{
-					for (const std::string& materialName : model->GetMaterialNames())
-					{
-						size_t fails = 0;
-						std::string finalPath;
-
-						do
-						{
-							finalPath = Utils::PathParser::GetContainingFolder(filePath) + (!fails ? materialName : materialName + " (" + std::to_string(fails) + ')') + ".mat";
-
-							++fails;
-						} while (std::filesystem::exists(finalPath));
-
-						{
-							std::ofstream outfile(finalPath);
-							outfile << "<root><shader>:Shaders\\Standard.hlsl</shader></root>" << std::endl; // Empty standard material content
-						}
-
-						DuplicateEvent.Invoke(finalPath);
-					}
-				}
-			};
-
-			generateMaterialsMenu.CreateWidget<MenuItem>("StandardPBR").ClickedEvent += [this]
-			{
-				auto& modelManager = NLS_SERVICE(NLS::Core::ResourceManagement::ModelManager);
-				std::string resourcePath = EDITOR_EXEC(GetResourcePath(filePath, m_protected));
-				if (auto model = modelManager.GetResource(resourcePath))
-				{
-					for (const std::string& materialName : model->GetMaterialNames())
-					{
-						size_t fails = 0;
-						std::string finalPath;
-
-						do
-						{
-							finalPath = Utils::PathParser::GetContainingFolder(filePath) + (!fails ? materialName : materialName + " (" + std::to_string(fails) + ')') + ".mat";
-
-							++fails;
-						} while (std::filesystem::exists(finalPath));
-
-						{
-							std::ofstream outfile(finalPath);
-							outfile << "<root><shader>:Shaders\\Standard.hlsl</shader></root>" << std::endl;
-						}
-
-						DuplicateEvent.Invoke(finalPath);
-					}
-				}
-			};
-
-			generateMaterialsMenu.CreateWidget<MenuItem>("Unlit").ClickedEvent += [this]
-			{
-				auto& modelManager = NLS_SERVICE(NLS::Core::ResourceManagement::ModelManager);
-				std::string resourcePath = EDITOR_EXEC(GetResourcePath(filePath, m_protected));
-				if (auto model = modelManager.GetResource(resourcePath))
-				{
-					for (const std::string& materialName : model->GetMaterialNames())
-					{
-						size_t fails = 0;
-						std::string finalPath;
-
-						do
-						{
-							finalPath = Utils::PathParser::GetContainingFolder(filePath) + (!fails ? materialName : materialName + " (" + std::to_string(fails) + ')') + ".mat";
-
-							++fails;
-						} while (std::filesystem::exists(finalPath));
-
-						{
-							std::ofstream outfile(finalPath);
-							outfile << "<root><shader>:Shaders\\Unlit.hlsl</shader></root>" << std::endl; // Empty standard material content
-						}
-
-						DuplicateEvent.Invoke(finalPath);
-					}
-				}
-			};
-
-			generateMaterialsMenu.CreateWidget<MenuItem>("Lambert").ClickedEvent += [this]
-			{
-				auto& modelManager = NLS_SERVICE(NLS::Core::ResourceManagement::ModelManager);
-				std::string resourcePath = EDITOR_EXEC(GetResourcePath(filePath, m_protected));
-				if (auto model = modelManager.GetResource(resourcePath))
-				{
-					for (const std::string& materialName : model->GetMaterialNames())
-					{
-						size_t fails = 0;
-						std::string finalPath;
-
-						do
-						{
-							finalPath = Utils::PathParser::GetContainingFolder(filePath) + (!fails ? materialName : materialName + " (" + std::to_string(fails) + ')') + ".mat";
-
-							++fails;
-						} while (std::filesystem::exists(finalPath));
-
-						{
-							std::ofstream outfile(finalPath);
-							outfile << "<root><shader>:Shaders\\Lambert.hlsl</shader></root>" << std::endl; // Empty standard material content
-						}
-
-						DuplicateEvent.Invoke(finalPath);
-					}
-				}
-			};
-		}
 
 		PreviewableContextualMenu::CreateList();
 	}
@@ -936,6 +1210,9 @@ Editor::Panels::AssetBrowser::AssetBrowser
 	m_engineAssetFolder(p_engineAssetFolder),
 	m_projectAssetFolder(p_projectAssetFolder)
 {
+	NLS::Editor::Assets::SetObjectReferencePickerAssetRoots(
+		NLS::Editor::Assets::MakeProjectEditorAssetRoots(ProjectRootFromAssetsFolder(m_projectAssetFolder)));
+
 	if (!std::filesystem::exists(m_projectAssetFolder))
 	{
 		std::filesystem::create_directories(m_projectAssetFolder);
@@ -969,8 +1246,6 @@ Editor::Panels::AssetBrowser::AssetBrowser
 	m_assetList = &CreateWidget<Group>();
 
 	Fill();
-	m_engineAssetsWatcher.Start(m_engineAssetFolder);
-	m_projectAssetsWatcher.Start(m_projectAssetFolder);
 }
 
 void Editor::Panels::AssetBrowser::Fill()
@@ -993,8 +1268,12 @@ void Editor::Panels::AssetBrowser::Refresh()
 
 void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()
 {
-	if (m_engineAssetsWatcher.ConsumeChanged() || m_projectAssetsWatcher.ConsumeChanged())
-		RequestRefresh();
+	if (!m_watchersStartupQueued)
+		StartWatchersAsync();
+
+	CompleteWatcherStartupIfReady();
+	if (m_startupWatcherPreimportGateOpen)
+		ConsumeWatcherChangesAndSchedulePreimport();
 
 	if (m_refreshRequested)
 	{
@@ -1003,13 +1282,209 @@ void Editor::Panels::AssetBrowser::OnBeforeDrawWidgets()
 	}
 }
 
+void Editor::Panels::AssetBrowser::PrepareStartupWatchers()
+{
+	if (!m_watchersStartupQueued)
+		StartWatchersSynchronously();
+
+	if (m_watcherStartup.valid() &&
+		m_watcherStartup.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+	{
+		m_watcherStartup.wait();
+	}
+
+	CompleteWatcherStartupIfReady();
+	ConsumeWatcherChangesAndSchedulePreimport();
+	RequestRefresh();
+}
+
+void Editor::Panels::AssetBrowser::AdoptStartupWatchers(
+	Core::AssetFileWatcher engineAssetsWatcher,
+	Core::AssetFileWatcher projectAssetsWatcher)
+{
+	if (m_watcherStartup.valid())
+		m_watcherStartup.wait();
+
+	m_engineAssetsWatcher = std::move(engineAssetsWatcher);
+	m_projectAssetsWatcher = std::move(projectAssetsWatcher);
+	m_watchersStartupQueued = true;
+	m_watchersReadyRefreshQueued = true;
+	m_startupWatcherPreimportGateOpen = false;
+	RequestRefresh();
+}
+
+bool Editor::Panels::AssetBrowser::RunStartupWatcherPreimport(
+	const NLS::Editor::Assets::StartupAssetPreimportProgressSink& progressSink)
+{
+	using namespace NLS::Editor::Assets;
+
+	CompleteWatcherStartupIfReady();
+	bool allImported = true;
+	for (;;)
+	{
+		const auto projectAssetChanges = m_projectAssetsWatcher.ConsumeChangedPaths();
+		const auto engineAssetChanges = m_engineAssetsWatcher.ConsumeChangedPaths();
+		if (!engineAssetChanges.empty())
+			RequestRefresh();
+		if (projectAssetChanges.empty())
+			return allImported;
+
+		std::vector<std::filesystem::path> relativeChanges;
+		relativeChanges.reserve(projectAssetChanges.size());
+		const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
+		for (const auto& changedPath : projectAssetChanges)
+		{
+			auto relative = changedPath.lexically_relative(projectRoot);
+			if (relative.empty() || relative.is_absolute())
+				relative = changedPath;
+			relativeChanges.push_back(relative.lexically_normal());
+		}
+
+		AssetDatabaseFacade database(MakeProjectEditorAssetRoots(projectRoot));
+		ImportProgressTracker tracker;
+		if (progressSink)
+			tracker.Subscribe(progressSink);
+		AssetPreimportScheduler preimportScheduler;
+		const auto imported = preimportScheduler.Run(
+			database,
+			tracker,
+			{AssetPreimportReason::FileWatcherChanged, std::move(relativeChanges)});
+		allImported = allImported && imported;
+	}
+}
+
+bool Editor::Panels::AssetBrowser::CompleteStartupWatcherPreimportGate(
+	const NLS::Editor::Assets::StartupAssetPreimportProgressSink& progressSink)
+{
+	const auto imported = RunStartupWatcherPreimport(progressSink);
+	if (!imported)
+		return false;
+
+	m_startupWatcherPreimportGateOpen = true;
+	RequestRefresh();
+	return true;
+}
+
+void Editor::Panels::AssetBrowser::CompleteWatcherStartupIfReady()
+{
+	if (m_watcherStartup.valid() &&
+		m_watcherStartup.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+	{
+		m_watcherStartup.get();
+		if (!m_watchersReadyRefreshQueued)
+		{
+			m_watchersReadyRefreshQueued = true;
+			RequestRefresh();
+		}
+	}
+}
+
+void Editor::Panels::AssetBrowser::ConsumeWatcherChangesAndSchedulePreimport()
+{
+	if (!m_startupWatcherPreimportGateOpen)
+		return;
+
+	const auto engineAssetChanges = m_engineAssetsWatcher.ConsumeChangedPaths();
+	const auto projectAssetChanges = m_projectAssetsWatcher.ConsumeChangedPaths();
+	const bool engineAssetsChanged = !engineAssetChanges.empty();
+	const bool projectAssetsChanged = !projectAssetChanges.empty();
+	if (projectAssetsChanged)
+	{
+		std::vector<std::filesystem::path> relativeChanges;
+		relativeChanges.reserve(projectAssetChanges.size());
+		const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
+		for (const auto& changedPath : projectAssetChanges)
+		{
+			auto relative = changedPath.lexically_relative(projectRoot);
+			if (relative.empty() || relative.is_absolute())
+				relative = changedPath;
+			relativeChanges.push_back(relative.lexically_normal());
+		}
+		ScheduleProjectAssetPreimport({
+			NLS::Editor::Assets::AssetPreimportReason::FileWatcherChanged,
+			std::move(relativeChanges)
+		});
+	}
+	if (engineAssetsChanged || projectAssetsChanged)
+		RequestRefresh();
+}
+
 void Editor::Panels::AssetBrowser::RequestRefresh()
 {
 	m_refreshRequested = true;
 }
 
+void Editor::Panels::AssetBrowser::ScheduleProjectAssetPreimport(
+	NLS::Editor::Assets::AssetPreimportRequest request)
+{
+	using namespace NLS::Editor::Assets;
+
+	AssetPreimportScheduler scheduler;
+	if (!scheduler.ShouldRunForReason(request.reason))
+		return;
+
+	const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
+	if (projectRoot.empty())
+	{
+		NLS_LOG_ERROR("Failed to resolve project root for asset preimport.");
+		return;
+	}
+
+	if (m_projectAssetPreimportRunning)
+	{
+		m_pendingProjectAssetPreimportRequest = m_pendingProjectAssetPreimportRequest.has_value()
+			? MergeAssetPreimportRequests(std::move(*m_pendingProjectAssetPreimportRequest), request)
+			: std::move(request);
+		return;
+	}
+	m_projectAssetPreimportRunning = true;
+
+	auto& tracker = EDITOR_CONTEXT(importProgressTracker);
+	EDITOR_EXEC(TrackBackgroundTask([projectRoot, request = std::move(request), &tracker]
+	{
+		AssetDatabaseFacade database(MakeProjectEditorAssetRoots(projectRoot));
+		AssetPreimportScheduler preimportScheduler;
+		const auto imported = preimportScheduler.Run(database, tracker, request);
+		EDITOR_EXEC(DelayAction([reason = request.reason, imported]
+		{
+			auto& assetBrowser = EDITOR_PANEL(NLS::Editor::Panels::AssetBrowser, "Asset Browser");
+			assetBrowser.m_projectAssetPreimportRunning = false;
+			if (assetBrowser.m_pendingProjectAssetPreimportRequest.has_value())
+			{
+				auto pendingRequest = std::move(*assetBrowser.m_pendingProjectAssetPreimportRequest);
+				assetBrowser.m_pendingProjectAssetPreimportRequest.reset();
+				assetBrowser.ScheduleProjectAssetPreimport(std::move(pendingRequest));
+			}
+			assetBrowser.RequestRefresh();
+			if (imported)
+			{
+				NLS_LOG_INFO(std::string("Asset preimport completed after ") + AssetPreimportReasonLabel(reason));
+			}
+			else
+			{
+				NLS_LOG_ERROR(std::string("Asset preimport failed after ") + AssetPreimportReasonLabel(reason));
+			}
+		}));
+	}));
+}
+
 void Editor::Panels::AssetBrowser::RefreshPreservingExpandedFolders()
 {
+	const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
+	if (!projectRoot.empty())
+	{
+		NLS::Editor::Assets::AssetDatabaseFacade database(
+			NLS::Editor::Assets::MakeProjectEditorAssetRoots(projectRoot));
+		NLS::Editor::Assets::SetObjectReferencePickerEntries(
+			database.Refresh()
+				? NLS::Editor::Assets::BuildObjectReferencePickerEntries(database)
+				: std::vector<NLS::Editor::Assets::ObjectReferencePickerEntry> {});
+	}
+	else
+	{
+		NLS::Editor::Assets::SetObjectReferencePickerEntries({});
+	}
+
 	Clear();
 	Fill();
 }
@@ -1138,11 +1613,13 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 					}
 				};
 
-				treeNode.AddPlugin<UI::DDTarget<std::pair<std::string, Group*>>>("File").DataReceivedEvent += [this, &treeNode, path, p_isEngineItem](std::pair<std::string, Group*> p_data)
+				auto moveOrCopyFileIntoFolder = [this, &treeNode, path, p_isEngineItem](
+					const std::string& receivedResourcePath,
+					UI::Widgets::Group* receivedGroup)
 				{
-					if (!p_data.first.empty())
+					if (!receivedResourcePath.empty())
 					{
-						std::string fileReceivedPath = EDITOR_EXEC(GetRealPath(p_data.first));
+						std::string fileReceivedPath = EDITOR_EXEC(GetRealPath(receivedResourcePath));
 
 						std::string fileName = Utils::PathParser::GetElementName(fileReceivedPath);
 						std::string prevPath = fileReceivedPath;
@@ -1151,7 +1628,7 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 
 						if (!std::filesystem::exists(newPath))
 						{
-							bool isEngineFile = p_data.first.at(0) == ':';
+							bool isEngineFile = receivedResourcePath.at(0) == ':';
 
 							if (isEngineFile) /* Copy dd file from Engine resources */
 								std::filesystem::copy_file(prevPath, newPath);
@@ -1165,8 +1642,14 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 							treeNode.RemoveAllWidgets();
 							ParseFolder(treeNode, std::filesystem::directory_entry(correctPath), p_isEngineItem);
 
-							if (!isEngineFile)
-								p_data.second->Destroy();
+							if (!isEngineFile && receivedGroup)
+								receivedGroup->Destroy();
+
+							if (!p_isEngineItem)
+								ScheduleProjectAssetPreimport({
+									NLS::Editor::Assets::AssetPreimportReason::AssetCopiedOrMoved,
+									{EditorAssetPathFromAbsolutePath(m_projectAssetFolder, newPath)}
+								});
 						}
 						else if (prevPath == newPath)
 						{
@@ -1179,6 +1662,59 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 							MessageBox errorMessage("File already exists", "You can't move this file to this location because the name is already taken", MessageBox::EMessageType::ERROR, MessageBox::EButtonLayout::OK);
 						}
 					}
+				};
+
+				treeNode.AddPlugin<UI::DDTarget<std::pair<std::string, Group*>>>("File").DataReceivedEvent += [moveOrCopyFileIntoFolder](std::pair<std::string, Group*> p_data)
+				{
+					moveOrCopyFileIntoFolder(p_data.first, p_data.second);
+				};
+
+				treeNode.AddPlugin<UI::DDTarget<NLS::Editor::Assets::EditorAssetDragPayload>>(
+					NLS::Editor::Assets::kEditorAssetDragPayloadType).DataReceivedEvent += [moveOrCopyFileIntoFolder](NLS::Editor::Assets::EditorAssetDragPayload p_data)
+				{
+					moveOrCopyFileIntoFolder(NLS::Editor::Assets::GetEditorAssetDragPayloadPath(p_data), nullptr);
+				};
+
+				treeNode.AddPlugin<UI::DDTarget<std::pair<Engine::GameObject*, UI::Widgets::TreeNode*>>>("GameObject").DataReceivedEvent += [this, &treeNode, path, p_isEngineItem](std::pair<Engine::GameObject*, UI::Widgets::TreeNode*> p_data)
+				{
+					if (!p_data.first || p_isEngineItem)
+						return;
+
+					const std::string correctPath = m_pathUpdate.find(&treeNode) != m_pathUpdate.end() ? m_pathUpdate.at(&treeNode) : path;
+					const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
+					const auto destinationFolder = EditorAssetFolderFromAbsolutePath(m_projectAssetFolder, correctPath);
+					if (projectRoot.empty() || destinationFolder.empty())
+					{
+						NLS_LOG_ERROR("Failed to resolve prefab destination folder for hierarchy drop: " + correctPath);
+						return;
+					}
+
+					NLS::Editor::Assets::AssetDatabaseFacade database(
+						NLS::Editor::Assets::MakeProjectEditorAssetRoots(projectRoot));
+					if (!database.Refresh())
+					{
+						NLS_LOG_ERROR("Failed to refresh asset database before saving prefab from hierarchy drop.");
+						return;
+					}
+
+					const auto result = NLS::Editor::Assets::AssetDragDropWorkflow().Execute({
+						{NLS::Editor::Assets::DragPayloadKind::HierarchyObject, {}, {}, nullptr, p_data.first},
+						{NLS::Editor::Assets::DropTargetKind::AssetBrowserFolder, nullptr, nullptr, 0u, false, destinationFolder},
+						{},
+						NLS::Editor::Assets::DragDropOperationKind::SaveAsPrefab,
+						&database
+					});
+
+					if (result.status != NLS::Editor::Assets::DragDropOperationStatus::Committed)
+					{
+						for (const auto& diagnostic : result.diagnostics)
+							NLS_LOG_ERROR(diagnostic.code + ": " + diagnostic.message);
+						return;
+					}
+
+					treeNode.Open();
+					treeNode.RemoveAllWidgets();
+					ParseFolder(treeNode, std::filesystem::directory_entry(correctPath), p_isEngineItem);
 				};
 			}
 
@@ -1259,12 +1795,55 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 				EDITOR_CONTEXT(sceneManager).ForgetCurrentSceneSourcePath();
 		};
 
+		const auto assetPayload = p_isEngineItem
+			? std::optional<NLS::Editor::Assets::EditorAssetDragPayload> {}
+			: BuildEditorAssetDragPayloadForFile(m_projectAssetFolder, path, resourceFormatPath, fileType);
 		auto& ddSource = clickableText.AddPlugin<UI::DDSource<std::pair<std::string, Group*>>>
 		(
 			"File",
 			resourceFormatPath,
 			std::make_pair(resourceFormatPath, &itemGroup)
 		);
+		if (assetPayload)
+		{
+			clickableText.AddPlugin<UI::DDSource<NLS::Editor::Assets::EditorAssetDragPayload>>(
+				NLS::Editor::Assets::kEditorAssetDragPayloadType,
+				resourceFormatPath,
+				*assetPayload);
+		}
+
+		if (!p_isEngineItem && fileType == Utils::PathParser::EFileType::MODEL)
+		{
+			NLS::Editor::Assets::AssetDatabaseFacade database(
+				NLS::Editor::Assets::MakeProjectEditorAssetRoots(ProjectRootFromAssetsFolder(m_projectAssetFolder)));
+			if (database.Refresh())
+			{
+				for (const auto& subAsset : NLS::Editor::Assets::BuildAssetBrowserSubAssetEntries(
+					database,
+					resourceFormatPath))
+				{
+					if (!NLS::Editor::Assets::CanStoreEditorAssetDragPayload(
+						subAsset.dragResourcePath,
+						subAsset.assetId,
+						subAsset.subAssetKey))
+					{
+						continue;
+					}
+
+					auto& subAssetText = itemGroup.CreateWidget<TextClickable>("  " + subAsset.displayName);
+					subAssetText.AddPlugin<UI::DDSource<NLS::Editor::Assets::EditorAssetDragPayload>>(
+						NLS::Editor::Assets::kEditorAssetDragPayloadType,
+						subAsset.dragResourcePath,
+						NLS::Editor::Assets::MakeEditorAssetDragPayload(
+							subAsset.dragResourcePath,
+							subAsset.assetId,
+							subAsset.subAssetKey,
+							subAsset.artifactType,
+							false,
+							true));
+				}
+			}
+		}
 
 		clickableText.ClickedEvent += [this, &clickableText, resourceFormatPath]
 		{
@@ -1322,7 +1901,49 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 			texturePreview.SetPath(resourceFormatPath);
 		}
 
-		if (fileType == Utils::PathParser::EFileType::MODEL ||
+		if (fileType == Utils::PathParser::EFileType::PREFAB)
+		{
+			clickableText.DoubleClickedEvent += [this, resourceFormatPath]
+			{
+				const auto projectRoot = ProjectRootFromAssetsFolder(m_projectAssetFolder);
+				NLS::Editor::Assets::AssetDatabaseFacade database(
+					NLS::Editor::Assets::MakeProjectEditorAssetRoots(projectRoot));
+				if (!database.Refresh())
+				{
+					NLS_LOG_ERROR("Failed to refresh asset database before opening prefab: " + resourceFormatPath);
+					return;
+				}
+
+				const auto prefabSubAssetKey = "prefab:" + std::filesystem::path(resourceFormatPath).stem().generic_string();
+				auto prefab = database.LoadPrefabArtifactAtPath(resourceFormatPath, prefabSubAssetKey);
+				if (!prefab.has_value())
+				{
+					NLS_LOG_ERROR("Failed to load prefab artifact for prefab stage: " + resourceFormatPath);
+					return;
+				}
+
+				auto stage = NLS::Editor::Assets::PrefabUtilityFacade().LoadPrefabContents({
+					&*prefab,
+					prefab->assetId,
+					prefabSubAssetKey,
+					prefab->generatedModelPrefab,
+					resourceFormatPath
+				});
+				if (stage.status != NLS::Editor::Assets::PrefabOperationStatus::Committed)
+				{
+					for (const auto& diagnostic : stage.diagnostics)
+						NLS_LOG_ERROR(diagnostic.code + ": " + diagnostic.message);
+					return;
+				}
+
+				EDITOR_EXEC(GetContext()).activePrefabStage = std::move(stage.stage);
+				EDITOR_EXEC(NotifyPrefabStageOpened());
+				EDITOR_PANEL(NLS::Editor::Panels::Hierarchy, "Hierarchy").RebuildFromCurrentScene();
+				EDITOR_PANEL(NLS::Editor::Panels::SceneView, "Scene View").Focus();
+				NLS_LOG_INFO("Opened prefab stage: " + resourceFormatPath);
+			};
+		}
+		else if (fileType == Utils::PathParser::EFileType::MODEL ||
 			fileType == Utils::PathParser::EFileType::TEXTURE ||
 			fileType == Utils::PathParser::EFileType::MATERIAL)
 		{
@@ -1344,5 +1965,39 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 				EDITOR_EXEC(LoadSceneFromDisk(EDITOR_EXEC(GetResourcePath(path))));
 			};
 		}
+
 	}
+}
+
+void Editor::Panels::AssetBrowser::StartWatchersAsync()
+{
+	m_watchersStartupQueued = true;
+	m_watcherStartup = std::async(
+		std::launch::async,
+		[this]
+		{
+			const auto engineWatcherStarted = m_engineAssetsWatcher.Start(m_engineAssetFolder);
+			const auto projectWatcherStarted = m_projectAssetsWatcher.Start(m_projectAssetFolder);
+			auto report = NLS::Editor::Assets::BuildAssetWatcherStartupReport(
+				m_engineAssetFolder,
+				engineWatcherStarted,
+				m_projectAssetFolder,
+				projectWatcherStarted);
+			for (const auto& diagnostic : report.diagnostics)
+				NLS_LOG_WARNING(diagnostic.message);
+		});
+}
+
+void Editor::Panels::AssetBrowser::StartWatchersSynchronously()
+{
+	m_watchersStartupQueued = true;
+	const auto engineWatcherStarted = m_engineAssetsWatcher.Start(m_engineAssetFolder);
+	const auto projectWatcherStarted = m_projectAssetsWatcher.Start(m_projectAssetFolder);
+	auto report = NLS::Editor::Assets::BuildAssetWatcherStartupReport(
+		m_engineAssetFolder,
+		engineWatcherStarted,
+		m_projectAssetFolder,
+		projectWatcherStarted);
+	for (const auto& diagnostic : report.diagnostics)
+		NLS_LOG_WARNING(diagnostic.message);
 }

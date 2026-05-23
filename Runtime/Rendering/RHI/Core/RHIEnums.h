@@ -54,7 +54,8 @@ namespace NLS::Render::RHI
         Index = 1u << 3,
         Uniform = 1u << 4,
         Storage = 1u << 5,
-        Indirect = 1u << 6
+        Indirect = 1u << 6,
+        ShaderRead = 1u << 7
     };
 
     inline constexpr BufferUsageFlags operator|(BufferUsageFlags lhs, BufferUsageFlags rhs)
@@ -149,7 +150,8 @@ namespace NLS::Render::RHI
         RenderTarget = 1u << 7,
         DepthRead = 1u << 8,
         DepthWrite = 1u << 9,
-        Present = 1u << 10
+        Present = 1u << 10,
+        GenericRead = CopySrc | VertexBuffer | IndexBuffer | UniformBuffer | ShaderRead
     };
 
     enum class NLS_RENDER_API TextureViewType : uint8_t

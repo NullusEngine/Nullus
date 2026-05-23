@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
 #include "GameObject.h"
+#include "Components/CameraComponent.h"
+#include "Components/MeshRenderer.h"
+#include "Components/MeshFilter.h"
 #include "SceneSystem/Scene.h"
 #include "Rendering/BaseSceneRenderer.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
@@ -8,9 +11,23 @@
 #include "Rendering/RHI/Core/RHIBinding.h"
 #include "Rendering/EditorHelperLifecycle.h"
 #include "Rendering/OutlineRenderer.h"
+#include "Rendering/Resources/Material.h"
+#include "Rendering/Resources/Mesh.h"
+
+#include <fstream>
+#include <filesystem>
+#include <sstream>
 
 namespace
 {
+    std::string ReadTextFile(const std::filesystem::path& path)
+    {
+        std::ifstream file(path);
+        std::ostringstream stream;
+        stream << file.rdbuf();
+        return stream.str();
+    }
+
     class TestBindingSet final : public NLS::Render::RHI::RHIBindingSet
     {
     public:
@@ -38,7 +55,7 @@ TEST(DebugSceneLifecycleTests, CountsActiveEditorHelpersForThreadedSnapshotPlann
     helperState.gridEnabled = true;
     helperState.sceneCameraCount = 2u;
     helperState.sceneLightCount = 3u;
-    helperState.hasSelectedActor = true;
+    helperState.hasSelectedGameObject = true;
     helperState.hasVisibleDebugDrawPrimitives = true;
 
     EXPECT_EQ(NLS::Editor::Rendering::CountThreadedEditorHelperPasses(helperState), 6u);
@@ -50,7 +67,7 @@ TEST(DebugSceneLifecycleTests, SkipsDisabledOrEmptyEditorHelpersForThreadedSnaps
     helperState.gridEnabled = false;
     helperState.sceneCameraCount = 0u;
     helperState.sceneLightCount = 0u;
-    helperState.hasSelectedActor = false;
+    helperState.hasSelectedGameObject = false;
     helperState.hasVisibleDebugDrawPrimitives = false;
 
     EXPECT_EQ(NLS::Editor::Rendering::CountThreadedEditorHelperPasses(helperState), 0u);
@@ -62,12 +79,12 @@ TEST(DebugSceneLifecycleTests, SkipsEditorHelpersWhosePassesAreDisabledForThread
     helperState.gridPassEnabled = false;
     helperState.cameraPassEnabled = false;
     helperState.lightPassEnabled = false;
-    helperState.actorPassEnabled = false;
+    helperState.gameObjectPassEnabled = false;
     helperState.debugDrawPassEnabled = false;
     helperState.gridEnabled = true;
     helperState.sceneCameraCount = 2u;
     helperState.sceneLightCount = 3u;
-    helperState.hasSelectedActor = true;
+    helperState.hasSelectedGameObject = true;
     helperState.hasVisibleDebugDrawPrimitives = true;
 
     EXPECT_EQ(NLS::Editor::Rendering::CountThreadedEditorHelperPasses(helperState), 0u);
@@ -80,7 +97,7 @@ TEST(DebugSceneLifecycleTests, SceneVisibilityRefreshPreservesEditorHelperDrawCo
 
     NLS::Engine::Rendering::BaseSceneRenderer::AllDrawables drawables;
     NLS::Render::Entities::Drawable opaqueDrawable;
-    drawables.opaques.emplace(0.0f, opaqueDrawable);
+    drawables.opaques.emplace_back(0.0f, opaqueDrawable);
 
     SceneSnapshotVisibilityHarness::RefreshFrameSnapshotVisibility(snapshot, drawables);
 
@@ -99,7 +116,7 @@ TEST(DebugSceneLifecycleTests, GridHelperRequiresPassDescriptorAndDebugDrawSetti
     EXPECT_FALSE(GridRenderPass::ShouldIncludeInThreadedFrame(true, true, true, false));
 }
 
-TEST(DebugSceneLifecycleTests, SelectionHelpersRequireActorPassAndSelectedActor)
+TEST(DebugSceneLifecycleTests, SelectionHelpersRequireGameObjectPassAndSelectedGameObject)
 {
     using NLS::Editor::Rendering::OutlineRenderer;
 
@@ -195,7 +212,7 @@ TEST(DebugSceneLifecycleTests, DeferredGBufferDrawsReceiveLightGridPassBindingPl
     EXPECT_EQ(package.passCommandInputs[1].recordedDrawCommands[0].passBindingSet, lightGridBindingSet);
 }
 
-TEST(DebugSceneLifecycleTests, SceneDestructionBroadcastsActorDestroyedBeforeDeletingActors)
+TEST(DebugSceneLifecycleTests, SceneDestructionBroadcastsGameObjectDestroyedBeforeDeletingGameObjects)
 {
     size_t destroyedCount = 0u;
     const auto listener = NLS::Engine::GameObject::DestroyedEvent +=
@@ -215,4 +232,137 @@ TEST(DebugSceneLifecycleTests, SceneDestructionBroadcastsActorDestroyedBeforeDel
 
     NLS::Engine::GameObject::DestroyedEvent -= listener;
     EXPECT_EQ(destroyedCount, 1u);
+}
+
+TEST(DebugSceneLifecycleTests, DestroyGameObjectRebuildsFastAccessAfterRemovedPointerLeavesSceneList)
+{
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& first = scene.CreateGameObject("First");
+    first.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    auto& second = scene.CreateGameObject("Second");
+    second.AddComponent<NLS::Engine::Components::MeshRenderer>();
+
+    ASSERT_EQ(scene.GetFastAccessComponents().modelRenderers.size(), 2u);
+
+    ASSERT_TRUE(scene.DestroyGameObject(first));
+
+    const auto& fastAccess = scene.GetFastAccessComponents();
+    ASSERT_EQ(fastAccess.modelRenderers.size(), 1u);
+    ASSERT_NE(fastAccess.modelRenderers[0], nullptr);
+    EXPECT_EQ(fastAccess.modelRenderers[0]->gameobject(), &second);
+}
+
+TEST(DebugSceneLifecycleTests, FastAccessRebuildKeepsDuplicateComponentsOnSameGameObject)
+{
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& actor = scene.CreateGameObject("Renderer");
+    auto* first = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    auto* second = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+
+    const auto& fastAccess = scene.GetFastAccessComponents();
+    ASSERT_EQ(fastAccess.modelRenderers.size(), 2u);
+    EXPECT_EQ(fastAccess.modelRenderers[0], first);
+    EXPECT_EQ(fastAccess.modelRenderers[1], second);
+}
+
+TEST(DebugSceneLifecycleTests, DestroyGameObjectRemovesPointerBeforeDeletingAndRebuildingFastAccess)
+{
+    const auto sceneSource = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/SceneSystem/Scene.cpp");
+    const auto destroyFunction = sceneSource.substr(sceneSource.find("bool Scene::DestroyGameObject"));
+
+    const auto removePosition = destroyFunction.find("RemoveGameObjectsFromSceneList(collected)");
+    const auto destroyPosition = destroyFunction.find("DestroyCollectedGameObjects(gameObjects)");
+
+    ASSERT_NE(removePosition, std::string::npos);
+    ASSERT_NE(destroyPosition, std::string::npos);
+    EXPECT_LT(removePosition, destroyPosition);
+}
+
+TEST(DebugSceneLifecycleTests, DestroyGameObjectDestroysChildSubtreeOnceAndRebuildsFastAccess)
+{
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& parent = scene.CreateGameObject("Parent");
+    parent.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    auto& child = scene.CreateGameObject("Child");
+    child.AddComponent<NLS::Engine::Components::CameraComponent>();
+    child.SetParent(parent);
+
+    ASSERT_EQ(scene.GetGameObjects().size(), 2u);
+    ASSERT_EQ(scene.GetFastAccessComponents().modelRenderers.size(), 1u);
+    ASSERT_EQ(scene.GetFastAccessComponents().cameras.size(), 1u);
+
+    size_t parentDestroyed = 0u;
+    size_t childDestroyed = 0u;
+    const auto listener = NLS::Engine::GameObject::DestroyedEvent +=
+        [&parentDestroyed, &childDestroyed](NLS::Engine::GameObject& actor)
+        {
+            if (actor.GetName() == "Parent")
+                ++parentDestroyed;
+            if (actor.GetName() == "Child")
+                ++childDestroyed;
+        };
+
+    ASSERT_TRUE(scene.DestroyGameObject(parent));
+
+    NLS::Engine::GameObject::DestroyedEvent -= listener;
+    EXPECT_EQ(parentDestroyed, 1u);
+    EXPECT_EQ(childDestroyed, 1u);
+    EXPECT_TRUE(scene.GetGameObjects().empty());
+    EXPECT_TRUE(scene.GetFastAccessComponents().modelRenderers.empty());
+    EXPECT_TRUE(scene.GetFastAccessComponents().cameras.empty());
+}
+
+TEST(DebugSceneLifecycleTests, CollectGarbagesDestroysMarkedChildSubtreeOnce)
+{
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& parent = scene.CreateGameObject("Parent");
+    auto& child = scene.CreateGameObject("Child");
+    child.SetParent(parent);
+
+    size_t parentDestroyed = 0u;
+    size_t childDestroyed = 0u;
+    const auto listener = NLS::Engine::GameObject::DestroyedEvent +=
+        [&parentDestroyed, &childDestroyed](NLS::Engine::GameObject& actor)
+        {
+            if (actor.GetName() == "Parent")
+                ++parentDestroyed;
+            if (actor.GetName() == "Child")
+                ++childDestroyed;
+        };
+
+    parent.MarkAsDestroy();
+    scene.CollectGarbages();
+
+    NLS::Engine::GameObject::DestroyedEvent -= listener;
+    EXPECT_EQ(parentDestroyed, 1u);
+    EXPECT_EQ(childDestroyed, 1u);
+    EXPECT_TRUE(scene.GetGameObjects().empty());
+}
+
+TEST(DebugSceneLifecycleTests, MeshRendererUpdateMaterialListClampsMeshMaterialSlotsToCapacity)
+{
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& actor = scene.CreateGameObject("Renderer");
+    auto* meshFilter = actor.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+
+    NLS::Render::Resources::Mesh mesh(
+        std::vector<NLS::Render::Geometry::Vertex> {},
+        std::vector<uint32_t> {},
+        static_cast<uint32_t>(NLS::Engine::Components::MeshRenderer::kMaxMaterialCount));
+
+    meshFilter->SetMesh(&mesh);
+    meshRenderer->UpdateMaterialList();
+    NLS::Render::Resources::Material fallbackMaterial;
+    meshRenderer->FillWithMaterial(fallbackMaterial);
+
+    const auto& resolvedMaterials = meshRenderer->GetMaterials();
+    EXPECT_EQ(
+        std::count(resolvedMaterials.begin(), resolvedMaterials.end(), &fallbackMaterial),
+        static_cast<std::ptrdiff_t>(NLS::Engine::Components::MeshRenderer::kMaxMaterialCount));
 }

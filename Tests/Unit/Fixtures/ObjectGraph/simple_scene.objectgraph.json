@@ -4,6 +4,7 @@
     "objects": [
         {
             "debugName": "Main Scene",
+            "fileID": 2608510311789766819,
             "id": "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb",
             "properties": {
                 "gameObjects": [
@@ -18,6 +19,7 @@
         {
             "debugName": "Player",
             "debugPath": "/Player",
+            "fileID": 6977929527664035075,
             "id": "cccccccc-cccc-4ccc-cccc-cccccccccccc",
             "properties": {
                 "components": [
@@ -27,7 +29,9 @@
                 ],
                 "name": "Player",
                 "parent": {
-                    "$ref": "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb"
+                    "fileID": 2608510311789766819,
+                    "guid": "",
+                    "type": 0
                 },
                 "tag": "Player"
             },
@@ -36,6 +40,7 @@
         },
         {
             "debugName": "Transform",
+            "fileID": 1572507640923052259,
             "id": "dddddddd-dddd-4ddd-9ddd-dddddddddddd",
             "properties": {},
             "state": "Alive",

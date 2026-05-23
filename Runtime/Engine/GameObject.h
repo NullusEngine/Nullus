@@ -14,11 +14,11 @@ namespace Components
 {
     class TransformComponent;
 }
-CLASS(NLS_ENGINE_API GameObject) : public NLS::meta::Object
+CLASS(NLS_ENGINE_API GameObject) : public NLS::Object
 {
 public:
     GENERATED_BODY()
-    GameObject(const std::string& p_name, const std::string& p_tag = "");
+    GameObject(const std::string& p_name, const std::string& p_tag = "Untagged");
     ~GameObject();
     template<typename T>
     T* AddComponent(const std::function<void(Components::Component*)>& func = {});
@@ -90,7 +90,7 @@ public:
     FUNCTION()
     void SetTag(const std::string& p_tag)
     {
-        m_tag = p_tag;
+        m_tag = p_tag.empty() ? "Untagged" : p_tag;
     }
     /**
      * Return the current tag of the actor
@@ -99,6 +99,18 @@ public:
     const std::string& GetTag() const
     {
         return m_tag;
+    }
+
+    FUNCTION()
+    void SetLayer(int p_layer)
+    {
+        m_layer = p_layer < 0 ? 0 : (p_layer > 31 ? 31 : p_layer);
+    }
+
+    FUNCTION()
+    int GetLayer() const
+    {
+        return m_layer;
     }
     /**
      * Called when the actor enter in collision with another physical object
@@ -271,6 +283,7 @@ protected:
     std::string m_name;
     /* Settings */
     std::string m_tag;
+    int m_layer = 0;
 
     /* Internal settings */
     bool m_destroyed = false;

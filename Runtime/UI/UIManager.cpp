@@ -502,8 +502,8 @@ void UIManager::ApplyStyle(EStyle p_style)
         style->WindowMenuButtonPosition = ImGuiDir_None;
 
         ImVec4* colors = ImGui::GetStyle().Colors;
-        const ImVec4 unityBlue = ImVec4(0.23f, 0.49f, 0.82f, 1.00f);
-        const ImVec4 unityBlueHover = ImVec4(0.29f, 0.58f, 0.93f, 1.00f);
+        const ImVec4 accentBlue = ImVec4(0.23f, 0.49f, 0.82f, 1.00f);
+        const ImVec4 accentBlueHover = ImVec4(0.29f, 0.58f, 0.93f, 1.00f);
         colors[ImGuiCol_Text] = ImVec4(0.84f, 0.86f, 0.90f, 1.00f);
         colors[ImGuiCol_TextDisabled] = ImVec4(0.46f, 0.49f, 0.55f, 1.00f);
         colors[ImGuiCol_WindowBg] = ImVec4(0.11f, 0.12f, 0.13f, 1.00f);
@@ -522,9 +522,9 @@ void UIManager::ApplyStyle(EStyle p_style)
         colors[ImGuiCol_ScrollbarGrab] = ImVec4(0.24f, 0.25f, 0.27f, 1.00f);
         colors[ImGuiCol_ScrollbarGrabHovered] = ImVec4(0.31f, 0.33f, 0.36f, 1.00f);
         colors[ImGuiCol_ScrollbarGrabActive] = ImVec4(0.38f, 0.40f, 0.43f, 1.00f);
-        colors[ImGuiCol_CheckMark] = unityBlue;
-        colors[ImGuiCol_SliderGrab] = unityBlue;
-        colors[ImGuiCol_SliderGrabActive] = unityBlueHover;
+        colors[ImGuiCol_CheckMark] = accentBlue;
+        colors[ImGuiCol_SliderGrab] = accentBlue;
+        colors[ImGuiCol_SliderGrabActive] = accentBlueHover;
         colors[ImGuiCol_Button] = ImVec4(0.18f, 0.19f, 0.21f, 1.00f);
         colors[ImGuiCol_ButtonHovered] = ImVec4(0.24f, 0.25f, 0.27f, 1.00f);
         colors[ImGuiCol_ButtonActive] = ImVec4(0.28f, 0.30f, 0.33f, 1.00f);
@@ -532,8 +532,8 @@ void UIManager::ApplyStyle(EStyle p_style)
         colors[ImGuiCol_HeaderHovered] = ImVec4(0.23f, 0.24f, 0.26f, 1.00f);
         colors[ImGuiCol_HeaderActive] = ImVec4(0.26f, 0.28f, 0.31f, 1.00f);
         colors[ImGuiCol_Separator] = ImVec4(1.00f, 1.00f, 1.00f, 0.08f);
-        colors[ImGuiCol_SeparatorHovered] = unityBlue;
-        colors[ImGuiCol_SeparatorActive] = unityBlueHover;
+        colors[ImGuiCol_SeparatorHovered] = accentBlue;
+        colors[ImGuiCol_SeparatorActive] = accentBlueHover;
         colors[ImGuiCol_ResizeGrip] = ImVec4(0.26f, 0.59f, 0.98f, 0.00f);
         colors[ImGuiCol_ResizeGripHovered] = ImVec4(0.26f, 0.59f, 0.98f, 0.00f);
         colors[ImGuiCol_ResizeGripActive] = ImVec4(0.26f, 0.59f, 0.98f, 0.00f);
@@ -549,8 +549,8 @@ void UIManager::ApplyStyle(EStyle p_style)
         colors[ImGuiCol_PlotHistogram] = ImVec4(0.96f, 0.96f, 0.99f, 1.00f);
         colors[ImGuiCol_PlotHistogramHovered] = ImVec4(0.12f, 1.00f, 0.12f, 1.00f);
         colors[ImGuiCol_TextSelectedBg] = ImVec4(0.23f, 0.49f, 0.82f, 0.35f);
-        colors[ImGuiCol_DragDropTarget] = unityBlueHover;
-        colors[ImGuiCol_NavHighlight] = unityBlueHover;
+        colors[ImGuiCol_DragDropTarget] = accentBlueHover;
+        colors[ImGuiCol_NavHighlight] = accentBlueHover;
         colors[ImGuiCol_NavWindowingHighlight] = ImVec4(1.00f, 1.00f, 1.00f, 0.70f);
         colors[ImGuiCol_NavWindowingDimBg] = ImVec4(0.80f, 0.80f, 0.80f, 0.20f);
         colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0.80f, 0.80f, 0.80f, 0.35f);
@@ -665,6 +665,11 @@ void UIManager::SetCanvas(Canvas& p_canvas)
     RemoveCanvas();
 
     m_currentCanvas = &p_canvas;
+}
+
+Canvas* UIManager::GetCanvas() const
+{
+    return m_currentCanvas;
 }
 
 void UIManager::RemoveCanvas()

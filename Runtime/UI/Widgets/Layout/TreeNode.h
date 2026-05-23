@@ -3,6 +3,7 @@
 #include <vector>
 
 #include <Eventing/Event.h>
+#include <Math/Color.h>
 
 #include "UI/Internal/WidgetContainer.h"
 #include "UI/Widgets/DataWidget.h"
@@ -40,10 +41,15 @@ namespace NLS::UI::Widgets
 	protected:
 		virtual void _Draw_Impl() override;
 
+	private:
+		const char* GetImGuiLabel();
+
 	public:
 		std::string name;
 		bool selected = false;
-		bool leaf = false;
+        bool leaf = false;
+        bool useTextColor = false;
+        Maths::Color textColor = Maths::Color(1.0f, 1.0f, 1.0f, 1.0f);
 
 		NLS::Event<> ClickedEvent;
 		NLS::Event<> DoubleClickedEvent;
@@ -55,5 +61,8 @@ namespace NLS::UI::Widgets
 		bool m_shouldOpen = false;
 		bool m_shouldClose = false;
 		bool m_opened = false;
+		std::string m_imguiLabel;
+		std::string m_cachedName;
+		std::string m_cachedWidgetID;
 	};
 }

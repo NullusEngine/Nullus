@@ -80,6 +80,7 @@ private:
 
     Event<> m_materialDroppedEvent;
     Event<> m_shaderDroppedEvent;
+    Event<> m_materialParametersChangedEvent;
 
     NLS::UI::Widgets::Group* m_settings = nullptr;
     NLS::UI::Widgets::Group* m_materialSettings = nullptr;

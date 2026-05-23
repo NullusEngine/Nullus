@@ -3,9 +3,13 @@
 #include <Reflection/ReflectionDatabase.h>
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 
 #include "Settings/EditorSettings.h"
+#include "Settings/EditorSettingsPersistence.h"
 #include "Settings/EditorSettingsRegistry.h"
+#include "Guid.h"
 
 namespace
 {
@@ -105,4 +109,58 @@ TEST(EditorSettingsRegistryTests, SearchMatchesCategoryNameAndReflectedPropertyL
     EXPECT_EQ(lightGridMatches[0]->id, "editor.rendering");
 
     EXPECT_TRUE(registry.Search("does-not-exist").empty());
+}
+
+TEST(EditorSettingsRegistryTests, LoadingLegacyDebugDrawSettingsKeepsSceneIconsVisible)
+{
+    using namespace NLS::Editor::Settings;
+
+    auto& debugSettings = EditorSettings::GetDebugDrawSettingsObject();
+    debugSettings.debugDrawEnabled = true;
+    debugSettings.debugDrawCamera = true;
+    debugSettings.debugDrawLighting = true;
+
+    EditorSettingsRegistry registry;
+    EditorSettings::RegisterSettingObjects(registry);
+
+    const auto path = std::filesystem::temp_directory_path() /
+        ("nullus_editor_settings_" + NLS::Guid::New().ToString() + ".json");
+    {
+        std::ofstream file(path, std::ios::trunc);
+        file <<
+            R"({"version":1,"objects":{"editor.debug-draw":{"fields":{"debugDrawEnabled":true,"debugDrawCamera":false,"debugDrawLighting":false}}}})";
+    }
+
+    ASSERT_TRUE(EditorSettingsPersistence::Load(path, registry));
+    EXPECT_TRUE(debugSettings.debugDrawCamera);
+    EXPECT_TRUE(debugSettings.debugDrawLighting);
+
+    std::filesystem::remove(path);
+}
+
+TEST(EditorSettingsRegistryTests, LoadingCurrentDebugDrawSettingsPreservesUserSceneIconToggles)
+{
+    using namespace NLS::Editor::Settings;
+
+    auto& debugSettings = EditorSettings::GetDebugDrawSettingsObject();
+    debugSettings.debugDrawEnabled = true;
+    debugSettings.debugDrawCamera = true;
+    debugSettings.debugDrawLighting = true;
+
+    EditorSettingsRegistry registry;
+    EditorSettings::RegisterSettingObjects(registry);
+
+    const auto path = std::filesystem::temp_directory_path() /
+        ("nullus_editor_settings_" + NLS::Guid::New().ToString() + ".json");
+    {
+        std::ofstream file(path, std::ios::trunc);
+        file <<
+            R"({"version":2,"objects":{"editor.debug-draw":{"fields":{"debugDrawEnabled":true,"debugDrawCamera":false,"debugDrawLighting":false}}}})";
+    }
+
+    ASSERT_TRUE(EditorSettingsPersistence::Load(path, registry));
+    EXPECT_FALSE(debugSettings.debugDrawCamera);
+    EXPECT_FALSE(debugSettings.debugDrawLighting);
+
+    std::filesystem::remove(path);
 }

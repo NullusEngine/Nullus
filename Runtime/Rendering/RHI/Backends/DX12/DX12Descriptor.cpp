@@ -264,6 +264,7 @@ namespace NLS::Render::Backend
 		NLS::Render::RHI::RHIPipelineLayoutDesc pipelineLayoutDesc;
 		pipelineLayoutDesc.bindingLayouts.push_back(m_desc.layout);
 		const auto tables = NLS::Render::RHI::DX12::BuildDX12DescriptorTableDescs(pipelineLayoutDesc);
+		m_descriptorTableDescs = tables;
 
 		m_resourceDescriptorCount = 0;
 		m_samplerDescriptorCount = 0;
@@ -415,7 +416,24 @@ namespace NLS::Render::Backend
 			? (m_samplerHeapAllocator != nullptr ? m_samplerHeapAllocator->GetHeap() : nullptr)
 			: (m_resourceHeapAllocator != nullptr ? m_resourceHeapAllocator->GetHeap() : nullptr);
 	}
+#endif
 
+	bool NativeDX12BindingSet::IsCompatibleWithDescriptorTable(
+		const NLS::Render::RHI::DX12::DX12DescriptorTableDesc& table) const
+	{
+		const auto found = std::find_if(
+			m_descriptorTableDescs.begin(),
+			m_descriptorTableDescs.end(),
+			[&table](const auto& candidate)
+			{
+				return candidate.set == table.set &&
+					candidate.heapKind == table.heapKind;
+			});
+		return found != m_descriptorTableDescs.end() &&
+			NLS::Render::RHI::DX12::AreDX12DescriptorTablesCompatible(table, *found);
+	}
+
+#if defined(_WIN32)
 	NLS::Render::RHI::DX12::DX12DescriptorRangeCategory NativeDX12BindingSet::ToRangeCategory(
 		NLS::Render::RHI::BindingType type)
 	{
@@ -505,7 +523,9 @@ namespace NLS::Render::Backend
 		m_device->CreateSampler(&nativeSamplerDesc, destination);
 	}
 
-	void NativeDX12BindingSet::WriteNullStructuredBufferDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE destination) const
+	void NativeDX12BindingSet::WriteNullStructuredBufferDescriptor(
+		D3D12_CPU_DESCRIPTOR_HANDLE destination,
+		const uint32_t elementStride) const
 	{
 		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
 		srvDesc.Format = DXGI_FORMAT_UNKNOWN;
@@ -513,19 +533,21 @@ namespace NLS::Render::Backend
 		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 		srvDesc.Buffer.FirstElement = 0;
 		srvDesc.Buffer.NumElements = 1;
-		srvDesc.Buffer.StructureByteStride = sizeof(uint32_t);
+		srvDesc.Buffer.StructureByteStride = elementStride != 0u ? elementStride : sizeof(uint32_t);
 		srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 		m_device->CreateShaderResourceView(nullptr, &srvDesc, destination);
 	}
 
-	void NativeDX12BindingSet::WriteNullStorageBufferDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE destination) const
+	void NativeDX12BindingSet::WriteNullStorageBufferDescriptor(
+		D3D12_CPU_DESCRIPTOR_HANDLE destination,
+		const uint32_t elementStride) const
 	{
 		D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc{};
 		uavDesc.Format = DXGI_FORMAT_UNKNOWN;
 		uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
 		uavDesc.Buffer.FirstElement = 0;
 		uavDesc.Buffer.NumElements = 1;
-		uavDesc.Buffer.StructureByteStride = sizeof(uint32_t);
+		uavDesc.Buffer.StructureByteStride = elementStride != 0u ? elementStride : sizeof(uint32_t);
 		uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
 		m_device->CreateUnorderedAccessView(nullptr, nullptr, &uavDesc, destination);
 	}
@@ -581,9 +603,9 @@ namespace NLS::Render::Backend
 			const auto writeNullDescriptor = [&]()
 			{
 				if (layoutEntry->type == NLS::Render::RHI::BindingType::StructuredBuffer)
-					WriteNullStructuredBufferDescriptor(destination);
+					WriteNullStructuredBufferDescriptor(destination, layoutEntry->elementStride);
 				else
-					WriteNullStorageBufferDescriptor(destination);
+					WriteNullStorageBufferDescriptor(destination, layoutEntry->elementStride);
 			};
 
 			if (boundEntry == nullptr || boundEntry->buffer == nullptr)
@@ -613,8 +635,27 @@ namespace NLS::Render::Backend
 				return;
 			}
 
-			const UINT firstElement = static_cast<UINT>(boundEntry->bufferOffset / sizeof(uint32_t));
-			const UINT numElements = static_cast<UINT>(bufferSize / sizeof(uint32_t));
+			const auto elementStride =
+				boundEntry->elementStride != 0u
+					? boundEntry->elementStride
+					: layoutEntry->elementStride != 0u
+						? layoutEntry->elementStride
+						: sizeof(uint32_t);
+			if (elementStride == 0u ||
+				(boundEntry->bufferOffset % elementStride) != 0u ||
+				(bufferSize % elementStride) != 0u)
+			{
+				NLS_LOG_ERROR(
+					"NativeDX12BindingSet: rejected unaligned structured/storage buffer range for binding " +
+					std::to_string(layoutEntry->binding) +
+					" offset=" + std::to_string(boundEntry->bufferOffset) +
+					" range=" + std::to_string(bufferSize) +
+					" stride=" + std::to_string(elementStride));
+				writeNullDescriptor();
+				return;
+			}
+			const UINT firstElement = static_cast<UINT>(boundEntry->bufferOffset / elementStride);
+			const UINT numElements = static_cast<UINT>(bufferSize / elementStride);
 			if (numElements == 0u)
 			{
 				writeNullDescriptor();
@@ -629,7 +670,7 @@ namespace NLS::Render::Backend
 				srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 				srvDesc.Buffer.FirstElement = firstElement;
 				srvDesc.Buffer.NumElements = numElements;
-				srvDesc.Buffer.StructureByteStride = sizeof(uint32_t);
+				srvDesc.Buffer.StructureByteStride = elementStride;
 				srvDesc.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
 				m_device->CreateShaderResourceView(resource, &srvDesc, destination);
 				return;
@@ -640,7 +681,7 @@ namespace NLS::Render::Backend
 			uavDesc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
 			uavDesc.Buffer.FirstElement = firstElement;
 			uavDesc.Buffer.NumElements = numElements;
-			uavDesc.Buffer.StructureByteStride = sizeof(uint32_t);
+			uavDesc.Buffer.StructureByteStride = elementStride;
 			uavDesc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_NONE;
 			m_device->CreateUnorderedAccessView(resource, nullptr, &uavDesc, destination);
 			return;

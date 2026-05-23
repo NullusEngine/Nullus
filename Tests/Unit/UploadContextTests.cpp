@@ -8,6 +8,7 @@
 
 #include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/RHI/Utils/UploadContext/UploadContext.h"
+#include "Rendering/RHI/Utils/ResourceStateTracker/ResourceStateTracker.h"
 
 namespace
 {
@@ -19,14 +20,20 @@ namespace
             : m_desc(std::move(desc))
         {
         }
+        TestBuffer(NLS::Render::RHI::RHIBufferDesc desc, NLS::Render::RHI::ResourceState state)
+            : m_desc(std::move(desc))
+            , m_state(state)
+        {
+        }
 
         std::string_view GetDebugName() const override { return "UploadContextTestsBuffer"; }
         const NLS::Render::RHI::RHIBufferDesc& GetDesc() const override { return m_desc; }
-        NLS::Render::RHI::ResourceState GetState() const override { return NLS::Render::RHI::ResourceState::Unknown; }
+        NLS::Render::RHI::ResourceState GetState() const override { return m_state; }
         uint64_t GetGPUAddress() const override { return 0u; }
 
     private:
         NLS::Render::RHI::RHIBufferDesc m_desc{};
+        NLS::Render::RHI::ResourceState m_state = NLS::Render::RHI::ResourceState::Unknown;
     };
 
     class TestTexture final : public NLS::Render::RHI::RHITexture
@@ -292,6 +299,194 @@ TEST(UploadContextTests, BackendUploadContextRecordsBufferCopyAndKeepsStagingAli
     EXPECT_EQ(commandBuffer.lastBufferCopyRegion.size, data.size());
     ASSERT_NE(submission.completion, nullptr);
     EXPECT_TRUE(submission.completion->Wait().Succeeded());
+}
+
+TEST(UploadContextTests, BackendUploadContextRejectsCpuVisibleBufferDestinations)
+{
+    auto backend = std::make_shared<TestUploadBackend>();
+    auto context = NLS::Render::RHI::CreateBackendUploadContext(backend);
+    TestCommandBuffer commandBuffer;
+
+    NLS::Render::RHI::RHIBufferDesc destinationDesc;
+    destinationDesc.size = 16u;
+    destinationDesc.usage = NLS::Render::RHI::BufferUsageFlags::Vertex;
+    destinationDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
+    destinationDesc.debugName = "UploadHeapDestination";
+    auto destination = std::make_shared<TestBuffer>(
+        destinationDesc,
+        NLS::Render::RHI::ResourceState::GenericRead);
+
+    const std::array<std::byte, 4> data {
+        std::byte{ 1 },
+        std::byte{ 2 },
+        std::byte{ 3 },
+        std::byte{ 4 }
+    };
+
+    NLS::Render::RHI::UploadBatchRequest request;
+    request.debugName = "RejectUploadHeapDestinationBatch";
+    request.requireRecordedBackendWork = true;
+    request.bufferUploads.push_back({
+        destination,
+        0u,
+        data.data(),
+        data.size(),
+        1u,
+        "RejectUploadHeapDestination"
+    });
+
+    const auto submission = context->SubmitUploadBatch(commandBuffer, request);
+
+    EXPECT_FALSE(submission.accepted);
+    EXPECT_FALSE(submission.recordedBackendWork);
+    EXPECT_EQ(backend->createStagingBufferCalls, 0u);
+    EXPECT_EQ(commandBuffer.barrierCalls, 0u);
+    EXPECT_EQ(commandBuffer.copyBufferCalls, 0u);
+    ASSERT_NE(submission.completion, nullptr);
+    EXPECT_EQ(submission.completion->Wait().code, NLS::Render::RHI::RHICompletionStatusCode::Failed);
+    EXPECT_NE(submission.diagnostic.find("CPUToGPU"), std::string::npos);
+
+    destinationDesc.usage = NLS::Render::RHI::BufferUsageFlags::CopyDst;
+    destinationDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::GPUToCPU;
+    destinationDesc.debugName = "ReadbackHeapUploadDestination";
+    request.bufferUploads.front().destination = std::make_shared<TestBuffer>(
+        destinationDesc,
+        NLS::Render::RHI::ResourceState::CopyDst);
+
+    const auto readbackSubmission = context->SubmitUploadBatch(commandBuffer, request);
+
+    EXPECT_FALSE(readbackSubmission.accepted);
+    EXPECT_FALSE(readbackSubmission.recordedBackendWork);
+    EXPECT_EQ(backend->createStagingBufferCalls, 0u);
+    EXPECT_EQ(commandBuffer.barrierCalls, 0u);
+    EXPECT_EQ(commandBuffer.copyBufferCalls, 0u);
+    ASSERT_NE(readbackSubmission.completion, nullptr);
+    EXPECT_EQ(readbackSubmission.completion->Wait().code, NLS::Render::RHI::RHICompletionStatusCode::Failed);
+    EXPECT_NE(readbackSubmission.diagnostic.find("GPUToCPU"), std::string::npos);
+}
+
+TEST(UploadContextTests, BackendUploadContextRejectsCpuVisibleTextureDestinations)
+{
+    auto backend = std::make_shared<TestUploadBackend>();
+    auto context = NLS::Render::RHI::CreateBackendUploadContext(backend, 256u);
+    TestCommandBuffer commandBuffer;
+    const uint32_t pixels[] = { 0xffffffffu, 0xff000000u, 0xffff0000u, 0xff00ff00u };
+
+    NLS::Render::RHI::RHITextureDesc textureDesc;
+    textureDesc.extent = { 2u, 2u, 1u };
+    textureDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
+    auto destination = std::make_shared<TestTexture>(textureDesc);
+
+    NLS::Render::RHI::UploadTextureRequest request;
+    request.destination = destination;
+    request.data = pixels;
+    request.dataSize = sizeof(pixels);
+    request.extent = textureDesc.extent;
+    request.rowPitch = 8u;
+    request.slicePitch = sizeof(pixels);
+
+    const auto submission = context->SubmitUploadTexture(commandBuffer, request);
+
+    EXPECT_FALSE(submission.accepted);
+    EXPECT_EQ(commandBuffer.copyBufferToTextureCalls, 0u);
+    EXPECT_EQ(commandBuffer.barrierCalls, 0u);
+    EXPECT_EQ(backend->createStagingBufferCalls, 0u);
+    EXPECT_NE(submission.diagnostic.find("CPUToGPU"), std::string::npos);
+
+    textureDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::GPUToCPU;
+    request.destination = std::make_shared<TestTexture>(textureDesc);
+
+    const auto readbackSubmission = context->SubmitUploadTexture(commandBuffer, request);
+
+    EXPECT_FALSE(readbackSubmission.accepted);
+    EXPECT_EQ(commandBuffer.copyBufferToTextureCalls, 0u);
+    EXPECT_EQ(commandBuffer.barrierCalls, 0u);
+    EXPECT_EQ(backend->createStagingBufferCalls, 0u);
+    EXPECT_NE(readbackSubmission.diagnostic.find("GPUToCPU"), std::string::npos);
+}
+
+TEST(UploadContextTests, ResourceStateTrackerIgnoresOnlyLegalCpuVisibleBufferStates)
+{
+    auto tracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    NLS::Render::RHI::RHIBufferDesc uploadDesc;
+    uploadDesc.size = 16u;
+    uploadDesc.usage = NLS::Render::RHI::BufferUsageFlags::Vertex;
+    uploadDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
+    auto uploadBuffer = std::make_shared<TestBuffer>(
+        uploadDesc,
+        NLS::Render::RHI::ResourceState::GenericRead);
+
+    NLS::Render::RHI::RHIBufferDesc gpuDesc;
+    gpuDesc.size = 16u;
+    gpuDesc.usage = NLS::Render::RHI::BufferUsageFlags::CopyDst;
+    gpuDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::GPUOnly;
+    auto gpuBuffer = std::make_shared<TestBuffer>(gpuDesc);
+
+    NLS::Render::RHI::RHIBarrierDesc barriers;
+    barriers.bufferBarriers.push_back({
+        uploadBuffer,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::CopyDst
+    });
+    barriers.bufferBarriers.push_back({
+        gpuBuffer,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::CopyDst
+    });
+
+    const auto resolved = tracker->BuildTransitionBarriers(
+        barriers.bufferBarriers,
+        barriers.textureBarriers);
+    ASSERT_EQ(resolved.bufferBarriers.size(), 2u);
+    EXPECT_EQ(resolved.bufferBarriers[0].buffer, uploadBuffer);
+    EXPECT_EQ(resolved.bufferBarriers[0].after, NLS::Render::RHI::ResourceState::CopyDst);
+    EXPECT_EQ(resolved.bufferBarriers[1].buffer, gpuBuffer);
+
+    tracker->Commit(barriers);
+    EXPECT_FALSE(tracker->GetBufferState(uploadBuffer).has_value());
+    ASSERT_TRUE(tracker->GetBufferState(gpuBuffer).has_value());
+    EXPECT_EQ(
+        tracker->GetBufferState(gpuBuffer)->state,
+        NLS::Render::RHI::ResourceState::CopyDst);
+
+    NLS::Render::RHI::RHIBarrierDesc legalCpuVisibleBarriers;
+    legalCpuVisibleBarriers.bufferBarriers.push_back({
+        uploadBuffer,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::GenericRead
+    });
+    legalCpuVisibleBarriers.bufferBarriers.push_back({
+        uploadBuffer,
+        NLS::Render::RHI::ResourceState::GenericRead,
+        NLS::Render::RHI::ResourceState::GenericRead
+    });
+
+    const auto resolvedLegal = tracker->BuildTransitionBarriers(
+        legalCpuVisibleBarriers.bufferBarriers,
+        legalCpuVisibleBarriers.textureBarriers);
+    EXPECT_TRUE(resolvedLegal.bufferBarriers.empty());
+
+    NLS::Render::RHI::RHIBarrierDesc illegalBeforeBarriers;
+    illegalBeforeBarriers.bufferBarriers.push_back({
+        uploadBuffer,
+        NLS::Render::RHI::ResourceState::CopyDst,
+        NLS::Render::RHI::ResourceState::GenericRead
+    });
+    illegalBeforeBarriers.bufferBarriers.push_back({
+        uploadBuffer,
+        NLS::Render::RHI::ResourceState::GenericRead,
+        NLS::Render::RHI::ResourceState::CopyDst
+    });
+
+    const auto resolvedIllegalBefore = tracker->BuildTransitionBarriers(
+        illegalBeforeBarriers.bufferBarriers,
+        illegalBeforeBarriers.textureBarriers);
+    ASSERT_EQ(resolvedIllegalBefore.bufferBarriers.size(), 2u);
+    EXPECT_EQ(resolvedIllegalBefore.bufferBarriers[0].before, NLS::Render::RHI::ResourceState::CopyDst);
+    EXPECT_EQ(resolvedIllegalBefore.bufferBarriers[0].after, NLS::Render::RHI::ResourceState::GenericRead);
+    EXPECT_EQ(resolvedIllegalBefore.bufferBarriers[1].before, NLS::Render::RHI::ResourceState::GenericRead);
+    EXPECT_EQ(resolvedIllegalBefore.bufferBarriers[1].after, NLS::Render::RHI::ResourceState::CopyDst);
 }
 
 TEST(UploadContextTests, BackendUploadContextCompletionCanTrackSubmittedGpuFence)

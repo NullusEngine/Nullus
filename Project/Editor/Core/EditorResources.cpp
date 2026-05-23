@@ -2,10 +2,11 @@
 
 #include <chrono>
 
+#include <Core/ServiceLocator.h>
 #include <Debug/Logger.h>
-#include <Rendering/Resources/Loaders/ModelLoader.h>
 #include <Rendering/Resources/Loaders/ShaderLoader.h>
 #include <Rendering/Resources/Loaders/TextureLoader.h>
+#include <Rendering/Resources/Mesh.h>
 #include <Rendering/Resources/Texture2D.h>
 #include <Rendering/Settings/ETextureFilteringMode.h>
 #include <Utils/PathParser.h>
@@ -32,29 +33,19 @@ namespace
     }
 }
 
-Editor::Core::EditorResources::EditorResources(const std::string& p_editorAssetsPath)
+Editor::Core::EditorResources::EditorResources(
+    const std::string& p_editorAssetsPath,
+    const std::string& p_projectAssetsPath)
 {
     using namespace NLS::Render::Resources::Loaders;
     const auto constructorStart = Clock::now();
+    m_projectAssetsPath = p_projectAssetsPath;
 
     const std::string buttonsFolder = p_editorAssetsPath + "Textures/Buttons/";
     const std::string iconsFolder = p_editorAssetsPath + "Textures/Icons/";
     const std::string editorIconFolder = p_editorAssetsPath + "Icon/";
     m_modelsFolder = p_editorAssetsPath + "Models/";
     m_shadersFolder = p_editorAssetsPath + "Shaders/";
-
-    m_modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE;
-    m_modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::GEN_SMOOTH_NORMALS;
-    m_modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::OPTIMIZE_MESHES;
-    m_modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::OPTIMIZE_GRAPH;
-    m_modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::FIND_INSTANCES;
-    m_modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::CALC_TANGENT_SPACE;
-    m_modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::JOIN_IDENTICAL_VERTICES;
-    m_modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::DEBONE;
-    m_modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::FIND_INVALID_DATA;
-    m_modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::IMPROVE_CACHE_LOCALITY;
-    m_modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::GEN_UV_COORDS;
-    m_modelParserFlags |= NLS::Render::Resources::Parsers::EModelParserFlags::GLOBAL_SCALE;
 
     const auto firstFilterEditor = NLS::Render::Settings::ETextureFilteringMode::LINEAR;
     const auto secondFilterEditor = NLS::Render::Settings::ETextureFilteringMode::LINEAR;
@@ -159,13 +150,12 @@ Editor::Core::EditorResources::EditorResources(const std::string& p_editorAssets
         m_textures["Bill_Ambient_Sphere_Light"] = TextureLoader::CreateFromMemory(reinterpret_cast<uint8_t*>(raw.data()), 128, 128, firstFilterBillboard, secondFilterBillboard, false);
     }
 
-    m_modelPaths["Cube"] = m_modelsFolder + "Cube.fbx";
-    m_modelPaths["Cylinder"] = m_modelsFolder + "Cylinder.fbx";
-    m_modelPaths["Plane"] = m_modelsFolder + "Plane.fbx";
-    m_modelPaths["Vertical_Plane"] = m_modelsFolder + "Vertical_Plane.fbx";
-    m_modelPaths["Roll"] = m_modelsFolder + "Roll.fbx";
-    m_modelPaths["Sphere"] = m_modelsFolder + "Sphere.fbx";
-    m_modelPaths["Camera"] = m_modelsFolder + "Camera.fbx";
+    m_meshPaths["Cylinder"] = m_modelsFolder + "Cylinder.fbx";
+    m_meshPaths["Plane"] = m_modelsFolder + "Plane.fbx";
+    m_meshPaths["Vertical_Plane"] = m_modelsFolder + "Vertical_Plane.fbx";
+    m_meshPaths["Roll"] = m_modelsFolder + "Roll.fbx";
+    m_meshPaths["Sphere"] = m_modelsFolder + "Sphere.fbx";
+    m_meshPaths["Camera"] = m_modelsFolder + "Camera.fbx";
 
     m_shaderPaths["Grid"] = m_shadersFolder + "Grid.hlsl";
     m_shaderPaths["Billboard"] = m_shadersFolder + "Billboard.hlsl";
@@ -187,9 +177,6 @@ Editor::Core::EditorResources::~EditorResources()
     for (auto [id, texture] : m_textures)
         NLS::Render::Resources::Loaders::TextureLoader::Destroy(texture);
 
-    for (auto [id, mesh] : m_models)
-        NLS::Render::Resources::Loaders::ModelLoader::Destroy(mesh);
-
     for (auto [id, shader] : m_shaders)
         NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader);
 }
@@ -208,12 +195,12 @@ NLS::Render::Resources::Texture2D* Editor::Core::EditorResources::GetTexture(con
     return nullptr;
 }
 
-NLS::Render::Resources::Model* Editor::Core::EditorResources::GetModel(const std::string& p_id)
+NLS::Render::Resources::Mesh* Editor::Core::EditorResources::GetMesh(const std::string& p_id)
 {
-    if (const auto found = m_models.find(p_id); found != m_models.end())
+    if (const auto found = m_meshes.find(p_id); found != m_meshes.end())
         return found->second;
 
-    return LoadModel(p_id);
+    return LoadMesh(p_id);
 }
 
 NLS::Render::Resources::Shader* Editor::Core::EditorResources::GetShader(const std::string& p_id)
@@ -224,21 +211,39 @@ NLS::Render::Resources::Shader* Editor::Core::EditorResources::GetShader(const s
     return LoadShader(p_id);
 }
 
-NLS::Render::Resources::Model* Editor::Core::EditorResources::LoadModel(const std::string& p_id)
+NLS::Render::Resources::Shader* Editor::Core::EditorResources::GetLoadedShader(const std::string& p_id) const
 {
-    const auto found = m_modelPaths.find(p_id);
-    if (found == m_modelPaths.end())
+    const auto found = m_shaders.find(p_id);
+    return found != m_shaders.end() ? found->second : nullptr;
+}
+
+void Editor::Core::EditorResources::PreloadStartupResources()
+{
+    GetShader("Grid");
+    GetShader("Billboard");
+    GetShader("DebugLitColor");
+
+    GetMesh("Plane");
+    GetMesh("Vertical_Plane");
+    GetMesh("Camera");
+}
+
+NLS::Render::Resources::Mesh* Editor::Core::EditorResources::LoadMesh(const std::string& p_id)
+{
+    const auto found = m_meshPaths.find(p_id);
+    if (found == m_meshPaths.end())
         return nullptr;
 
     const auto loadStart = Clock::now();
-    auto* model = NLS::Render::Resources::Loaders::ModelLoader::Create(found->second, m_modelParserFlags);
-    if (model != nullptr)
+    auto& meshManager = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::MeshManager>();
+    auto* mesh = meshManager.GetResource(found->second, true);
+    if (mesh != nullptr)
     {
-        m_models[p_id] = model;
-        LogEditorResourceLoad("model", p_id, loadStart);
+        m_meshes[p_id] = mesh;
+        LogEditorResourceLoad("mesh", p_id, loadStart);
     }
 
-    return model;
+    return mesh;
 }
 
 NLS::Render::Resources::Shader* Editor::Core::EditorResources::LoadShader(const std::string& p_id)
@@ -248,7 +253,7 @@ NLS::Render::Resources::Shader* Editor::Core::EditorResources::LoadShader(const 
         return nullptr;
 
     const auto loadStart = Clock::now();
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(found->second);
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(found->second, m_projectAssetsPath);
     if (shader != nullptr)
     {
         m_shaders[p_id] = shader;

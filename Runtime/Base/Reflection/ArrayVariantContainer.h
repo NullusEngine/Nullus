@@ -12,7 +12,7 @@ namespace NLS::meta
 {
     class ArrayWrapper;
 
-    template<typename T, typename StorageType>
+    template<typename T, typename ContainerType, typename StorageType>
     class ArrayVariantContainer : public VariantBase
     {
     public:

@@ -41,7 +41,7 @@ namespace
         input.hasExternalOutput = snapshot.hasExternalOutput;
         input.immutable = true;
         input.hasSceneInput = snapshot.hasSceneInput;
-        input.sceneActorCount = snapshot.sceneActorCount;
+        input.sceneGameObjectCount = snapshot.sceneGameObjectCount;
         input.visibleDrawCount =
             snapshot.visibleOpaqueDrawCount +
             snapshot.visibleTransparentDrawCount +
@@ -188,7 +188,7 @@ bool ThreadedRenderingLifecycle::PublishPreparedFrameBuilder(
 {
     NLS_PROFILE_SCOPE();
     std::unique_lock<std::mutex> lock(m_mutex);
-    InFlightFrameSlot* slot = FindReusableSlotLocked();
+    const InFlightFrameSlot* slot = FindReusableSlotReadOnlyLocked(true);
     if (slot == nullptr)
     {
         ++m_telemetry.blockedPublishCount;
@@ -200,7 +200,7 @@ bool ThreadedRenderingLifecycle::PublishPreparedFrameBuilder(
 
         const bool hasReusableSlot = m_slotAvailable.wait_for(lock, retirementWaitTimeout, [this]()
         {
-            return FindReusableSlotLocked() != nullptr;
+            return FindReusableSlotReadOnlyLocked(true) != nullptr;
         });
 
         if (!hasReusableSlot)
@@ -217,7 +217,7 @@ bool ThreadedRenderingLifecycle::PublishFrameSnapshot(
 {
     NLS_PROFILE_SCOPE();
     std::unique_lock<std::mutex> lock(m_mutex);
-    InFlightFrameSlot* slot = FindReusableSlotLocked();
+    const InFlightFrameSlot* slot = FindReusableSlotReadOnlyLocked();
     if (slot == nullptr)
     {
         ++m_telemetry.blockedPublishCount;
@@ -229,7 +229,7 @@ bool ThreadedRenderingLifecycle::PublishFrameSnapshot(
 
         const bool hasReusableSlot = m_slotAvailable.wait_for(lock, retirementWaitTimeout, [this]()
         {
-            return FindReusableSlotLocked() != nullptr;
+            return FindReusableSlotReadOnlyLocked() != nullptr;
         });
 
         if (!hasReusableSlot)
@@ -271,10 +271,11 @@ bool ThreadedRenderingLifecycle::PublishPreparedFrameLocked(
     const RenderScenePackage& renderScenePackage,
     size_t* publishedSlotIndex)
 {
-    InFlightFrameSlot* slot = FindReusableSlotLocked();
+    InFlightFrameSlot* slot = FindReusableSlotLocked(true);
     if (slot == nullptr)
         return false;
 
+    ClearReservedSlotLocked(slot->slotIndex);
     slot->snapshot = snapshot;
     slot->renderFrameInput = BuildRenderFrameInput(snapshot);
     slot->renderFrameBuild = BuildRenderFrameBuild(renderScenePackage);
@@ -304,10 +305,11 @@ bool ThreadedRenderingLifecycle::PublishPreparedFrameBuilderLocked(
     PreparedRenderSceneBuilder renderSceneBuilder,
     size_t* publishedSlotIndex)
 {
-    InFlightFrameSlot* slot = FindReusableSlotLocked();
+    InFlightFrameSlot* slot = FindReusableSlotLocked(true);
     if (slot == nullptr || !renderSceneBuilder)
         return false;
 
+    ClearReservedSlotLocked(slot->slotIndex);
     slot->snapshot = snapshot;
     slot->renderFrameInput = BuildRenderFrameInput(snapshot);
     slot->renderFrameBuild.reset();
@@ -573,6 +575,46 @@ uint64_t ThreadedRenderingLifecycle::GetPublishedFrameCount() const
     return m_telemetry.publishedFrameCount;
 }
 
+std::optional<size_t> ThreadedRenderingLifecycle::ReserveReusableSlotIndex()
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_reservedReusableSlotIndex.has_value())
+    {
+        const auto* reservedSlot = PeekSlotLocked(m_reservedReusableSlotIndex.value());
+        if (reservedSlot != nullptr &&
+            (reservedSlot->stage == ThreadedFrameStage::Available || reservedSlot->stage == ThreadedFrameStage::Retired))
+        {
+            return m_reservedReusableSlotIndex;
+        }
+
+        m_reservedReusableSlotIndex.reset();
+    }
+
+    const auto* slot = FindReusableSlotReadOnlyLocked(false);
+    if (slot == nullptr)
+        return std::nullopt;
+
+    m_reservedReusableSlotIndex = slot->slotIndex;
+    return m_reservedReusableSlotIndex;
+}
+
+bool ThreadedRenderingLifecycle::ReleaseReservedReusableSlotIndex(const size_t slotIndex)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (!m_reservedReusableSlotIndex.has_value() || m_reservedReusableSlotIndex.value() != slotIndex)
+        return false;
+
+    m_reservedReusableSlotIndex.reset();
+    m_slotAvailable.notify_one();
+    return true;
+}
+
+std::optional<size_t> ThreadedRenderingLifecycle::GetReservedReusableSlotIndex() const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_reservedReusableSlotIndex;
+}
+
 const InFlightFrameSlot* ThreadedRenderingLifecycle::PeekSlot(const size_t slotIndex) const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -631,18 +673,43 @@ void ThreadedRenderingLifecycle::ReleaseRetainedFrameResources()
             slot.stage = ThreadedFrameStage::Available;
         }
 
+        m_reservedReusableSlotIndex.reset();
         RefreshTelemetryLocked();
     }
 
     m_slotAvailable.notify_all();
 }
 
-InFlightFrameSlot* ThreadedRenderingLifecycle::FindReusableSlotLocked()
+InFlightFrameSlot* ThreadedRenderingLifecycle::FindReusableSlotLocked(const bool allowReservedSlot)
 {
+    if (allowReservedSlot && m_reservedReusableSlotIndex.has_value())
+    {
+        auto* reservedSlot = const_cast<InFlightFrameSlot*>(PeekSlotLocked(m_reservedReusableSlotIndex.value()));
+        if (reservedSlot != nullptr &&
+            (reservedSlot->stage == ThreadedFrameStage::Available || reservedSlot->stage == ThreadedFrameStage::Retired))
+        {
+            reservedSlot->publishOrigin = ThreadedFramePublishOrigin::Unknown;
+            reservedSlot->renderSceneAttribution = RenderSceneAttribution::Unknown;
+            reservedSlot->rhiSubmissionAttribution = RhiSubmissionAttribution::Unknown;
+            reservedSlot->renderFrameInput.reset();
+            reservedSlot->renderFrameBuild.reset();
+            reservedSlot->snapshot.reset();
+            reservedSlot->preparedRenderSceneBuilder.reset();
+            reservedSlot->renderScenePackage.reset();
+            reservedSlot->submissionFrame.reset();
+            return reservedSlot;
+        }
+
+        return nullptr;
+    }
+
     for (auto& slot : m_slots)
     {
         if (slot.stage == ThreadedFrameStage::Available || slot.stage == ThreadedFrameStage::Retired)
         {
+            if (!allowReservedSlot && IsSlotReservedLocked(slot.slotIndex))
+                continue;
+
             slot.publishOrigin = ThreadedFramePublishOrigin::Unknown;
             slot.renderSceneAttribution = RenderSceneAttribution::Unknown;
             slot.rhiSubmissionAttribution = RhiSubmissionAttribution::Unknown;
@@ -657,6 +724,44 @@ InFlightFrameSlot* ThreadedRenderingLifecycle::FindReusableSlotLocked()
     }
 
     return nullptr;
+}
+
+const InFlightFrameSlot* ThreadedRenderingLifecycle::FindReusableSlotReadOnlyLocked(const bool allowReservedSlot) const
+{
+    if (allowReservedSlot && m_reservedReusableSlotIndex.has_value())
+    {
+        const auto* reservedSlot = PeekSlotLocked(m_reservedReusableSlotIndex.value());
+        if (reservedSlot != nullptr &&
+            (reservedSlot->stage == ThreadedFrameStage::Available || reservedSlot->stage == ThreadedFrameStage::Retired))
+        {
+            return reservedSlot;
+        }
+
+        return nullptr;
+    }
+
+    for (const auto& slot : m_slots)
+    {
+        if (slot.stage == ThreadedFrameStage::Available || slot.stage == ThreadedFrameStage::Retired)
+        {
+            if (!allowReservedSlot && IsSlotReservedLocked(slot.slotIndex))
+                continue;
+            return &slot;
+        }
+    }
+
+    return nullptr;
+}
+
+bool ThreadedRenderingLifecycle::IsSlotReservedLocked(const size_t slotIndex) const
+{
+    return m_reservedReusableSlotIndex.has_value() && m_reservedReusableSlotIndex.value() == slotIndex;
+}
+
+void ThreadedRenderingLifecycle::ClearReservedSlotLocked(const size_t slotIndex)
+{
+    if (IsSlotReservedLocked(slotIndex))
+        m_reservedReusableSlotIndex.reset();
 }
 
 const InFlightFrameSlot* ThreadedRenderingLifecycle::PeekSlotLocked(const size_t slotIndex) const

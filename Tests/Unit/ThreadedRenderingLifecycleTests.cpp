@@ -19,6 +19,7 @@
 #include "Rendering/Entities/Camera.h"
 #include "Rendering/DeferredSceneRenderer.h"
 #include "Rendering/ForwardSceneRenderer.h"
+#include "Rendering/Buffers/Framebuffer.h"
 #include "Rendering/RHI/BindingPointMap.h"
 #include "Rendering/RHI/Core/RHICommand.h"
 #include "Rendering/RHI/Core/RHIBinding.h"
@@ -72,7 +73,7 @@ namespace
 
     struct DescriptorRequiredForPreparedBuilder
     {
-        uint64_t sceneActorCount = 0u;
+        uint64_t sceneGameObjectCount = 0u;
     };
 
     class DescriptorDependentPreparedBuilderRenderer final : public NLS::Render::Core::CompositeRenderer
@@ -96,11 +97,11 @@ namespace
         NLS::Render::Context::PreparedRenderSceneBuilder BuildPreparedRenderSceneBuilder(
             const NLS::Render::Context::FrameSnapshot& snapshot) const override
         {
-            const uint64_t sceneActorCount = HasDescriptor<DescriptorRequiredForPreparedBuilder>()
-                ? GetDescriptor<DescriptorRequiredForPreparedBuilder>().sceneActorCount
+            const uint64_t sceneGameObjectCount = HasDescriptor<DescriptorRequiredForPreparedBuilder>()
+                ? GetDescriptor<DescriptorRequiredForPreparedBuilder>().sceneGameObjectCount
                 : 0u;
 
-            return [snapshot, sceneActorCount]()
+            return [snapshot, sceneGameObjectCount]()
             {
                 NLS::Render::Context::RenderScenePackage package;
                 package.frameId = snapshot.frameId;
@@ -108,7 +109,7 @@ namespace
                 package.visibleDrawCount = 1u;
                 package.frameDataReady = true;
                 package.objectDataReady = true;
-                package.sceneActorCount = sceneActorCount;
+                package.sceneGameObjectCount = sceneGameObjectCount;
                 return package;
             };
         }
@@ -1313,7 +1314,7 @@ TEST(ThreadedRenderingLifecycleTests, GameThreadPublicationProducesImmutableRend
     snapshot.renderHeight = 1080u;
     snapshot.targetsSwapchain = true;
     snapshot.hasSceneInput = true;
-    snapshot.sceneActorCount = 9u;
+    snapshot.sceneGameObjectCount = 9u;
     snapshot.visibleOpaqueDrawCount = 3u;
     snapshot.visibleSkyboxDrawCount = 1u;
 
@@ -1331,7 +1332,7 @@ TEST(ThreadedRenderingLifecycleTests, GameThreadPublicationProducesImmutableRend
     EXPECT_EQ(renderFrameInput.renderHeight, snapshot.renderHeight);
     EXPECT_TRUE(renderFrameInput.targetsSwapchain);
     EXPECT_TRUE(renderFrameInput.hasSceneInput);
-    EXPECT_EQ(renderFrameInput.sceneActorCount, snapshot.sceneActorCount);
+    EXPECT_EQ(renderFrameInput.sceneGameObjectCount, snapshot.sceneGameObjectCount);
     EXPECT_EQ(renderFrameInput.visibleDrawCount, 4u);
 
     const auto copiedSlot = lifecycle.CopySlot(slotIndex);
@@ -1517,6 +1518,58 @@ TEST(ThreadedRenderingLifecycleTests, RetiresSlotsBeforeTheyCanBeReused)
     EXPECT_TRUE(lifecycle.TryPublishFrameSnapshot(secondSnapshot, &publishedSlot));
     EXPECT_EQ(publishedSlot, 0u);
     EXPECT_EQ(lifecycle.GetInFlightDepth(), 1u);
+}
+
+TEST(ThreadedRenderingLifecycleTests, ReservedReusableSlotIsOnlyConsumedByPreparedPublication)
+{
+    NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(2u);
+
+    const auto reservedSlot = lifecycle.ReserveReusableSlotIndex();
+    ASSERT_TRUE(reservedSlot.has_value());
+    EXPECT_EQ(reservedSlot.value(), 0u);
+
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 1u;
+
+    size_t snapshotSlot = 99u;
+    ASSERT_TRUE(lifecycle.TryPublishFrameSnapshot(snapshot, &snapshotSlot));
+    EXPECT_EQ(snapshotSlot, 1u);
+
+    NLS::Render::Context::FrameSnapshot preparedSnapshot;
+    preparedSnapshot.frameId = 2u;
+    size_t preparedSlot = 99u;
+    ASSERT_TRUE(lifecycle.TryPublishPreparedFrameBuilder(
+        preparedSnapshot,
+        []()
+        {
+            NLS::Render::Context::RenderScenePackage package;
+            package.frameId = 2u;
+            return package;
+        },
+        &preparedSlot));
+    EXPECT_EQ(preparedSlot, 0u);
+
+    NLS::Render::Context::FrameSnapshot backPressuredSnapshot;
+    backPressuredSnapshot.frameId = 3u;
+    EXPECT_FALSE(lifecycle.TryPublishFrameSnapshot(backPressuredSnapshot));
+    EXPECT_EQ(lifecycle.GetBlockedPublishCount(), 1u);
+}
+
+TEST(ThreadedRenderingLifecycleTests, ReleasedReusableSlotCanBeUsedBySnapshotPublication)
+{
+    NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(1u);
+
+    const auto reservedSlot = lifecycle.ReserveReusableSlotIndex();
+    ASSERT_TRUE(reservedSlot.has_value());
+    EXPECT_EQ(reservedSlot.value(), 0u);
+    EXPECT_TRUE(lifecycle.ReleaseReservedReusableSlotIndex(reservedSlot.value()));
+
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 1u;
+
+    size_t publishedSlot = 99u;
+    ASSERT_TRUE(lifecycle.TryPublishFrameSnapshot(snapshot, &publishedSlot));
+    EXPECT_EQ(publishedSlot, 0u);
 }
 
 TEST(ThreadedRenderingLifecycleTests, UE427RhiSubmissionFrameRetainsCommandListSubmissionMetadata)
@@ -1775,7 +1828,7 @@ TEST(ThreadedRenderingLifecycleTests, CompositeRendererKeepsFrameDescriptorsUnti
     const auto* retiredSlot = lifecycle->PeekSlot(0u);
     ASSERT_NE(retiredSlot, nullptr);
     ASSERT_TRUE(retiredSlot->renderScenePackage.has_value());
-    EXPECT_EQ(retiredSlot->renderScenePackage->sceneActorCount, 7u);
+    EXPECT_EQ(retiredSlot->renderScenePackage->sceneGameObjectCount, 7u);
 }
 
 TEST(ThreadedRenderingLifecycleTests, ThreadedRenderingIsDisabledForNonTierAExplicitBackends)
@@ -2432,12 +2485,49 @@ TEST(ThreadedRenderingLifecycleTests, FrameSnapshotMarksFramebufferTargetsAsOffs
     frameDescriptor.renderWidth = 320u;
     frameDescriptor.renderHeight = 180u;
     frameDescriptor.camera = &camera;
-    frameDescriptor.outputBuffer = reinterpret_cast<NLS::Render::Buffers::Framebuffer*>(1);
+    NLS::Render::Buffers::Framebuffer outputBuffer(320u, 180u);
+    frameDescriptor.outputBuffer = &outputBuffer;
 
     const auto snapshot = renderer.CaptureFrameSnapshot(frameDescriptor);
 
     ASSERT_TRUE(snapshot.has_value());
     EXPECT_FALSE(snapshot->targetsSwapchain);
+    EXPECT_FALSE(snapshot->hasExternalOutput);
+    EXPECT_EQ(snapshot->externalOutputTextureCount, 0u);
+}
+
+TEST(ThreadedRenderingLifecycleTests, FrameSnapshotCountsDirectExternalOutputTextures)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+    SnapshotPublishingRenderer renderer(*driver);
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::RHI::RHITextureDesc colorDesc;
+    colorDesc.debugName = "DirectOutputColor";
+    colorDesc.extent = { 320u, 180u, 1u };
+    auto colorTexture = std::make_shared<TestTexture>(colorDesc);
+    NLS::Render::RHI::RHITextureDesc depthDesc = colorDesc;
+    depthDesc.debugName = "DirectOutputDepth";
+    auto depthTexture = std::make_shared<TestTexture>(depthDesc);
+
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 320u;
+    frameDescriptor.renderHeight = 180u;
+    frameDescriptor.camera = &camera;
+    frameDescriptor.outputColorTexture = colorTexture;
+    frameDescriptor.outputDepthStencilTexture = depthTexture;
+
+    const auto snapshot = renderer.CaptureFrameSnapshot(frameDescriptor);
+
+    ASSERT_TRUE(snapshot.has_value());
+    EXPECT_FALSE(snapshot->targetsSwapchain);
+    EXPECT_TRUE(snapshot->hasExternalOutput);
+    EXPECT_EQ(snapshot->externalOutputTextureCount, 2u);
 }
 
 TEST(ThreadedRenderingLifecycleTests, BaseSceneRendererAddsSceneInputSummaryToFrameSnapshot)
@@ -2468,7 +2558,7 @@ TEST(ThreadedRenderingLifecycleTests, BaseSceneRendererAddsSceneInputSummaryToFr
 
     ASSERT_TRUE(snapshot.has_value());
     EXPECT_TRUE(snapshot->hasSceneInput);
-    EXPECT_EQ(snapshot->sceneActorCount, 1u);
+    EXPECT_EQ(snapshot->sceneGameObjectCount, 1u);
     EXPECT_EQ(snapshot->sceneModelRendererCount, 0u);
     EXPECT_EQ(snapshot->sceneLightCount, 0u);
     EXPECT_EQ(snapshot->sceneSkyboxCount, 0u);
@@ -2561,7 +2651,7 @@ TEST(ThreadedRenderingLifecycleTests, RenderScenePackageUsesSnapshotAfterLiveSce
     const auto package = renderer.CaptureRenderScenePackage(snapshot.value());
 
     EXPECT_EQ(package.frameId, snapshot->frameId);
-    EXPECT_EQ(package.sceneActorCount, 1u);
+    EXPECT_EQ(package.sceneGameObjectCount, 1u);
     EXPECT_EQ(package.visibleDrawCount, 0u);
     EXPECT_FALSE(package.hasVisibleDraws);
     EXPECT_EQ(package.opaqueDrawCount, 0u);
@@ -2665,7 +2755,7 @@ TEST(ThreadedRenderingLifecycleTests, BaseSceneRendererPublishesPreparedBuilderI
     EXPECT_EQ(retiredSlot->stage, NLS::Render::Context::ThreadedFrameStage::Retired);
     EXPECT_EQ(retiredSlot->renderSceneAttribution, NLS::Render::Context::RenderSceneAttribution::RendererPrepared);
     ASSERT_TRUE(retiredSlot->renderScenePackage.has_value());
-    EXPECT_EQ(retiredSlot->renderScenePackage->sceneActorCount, 1u);
+    EXPECT_EQ(retiredSlot->renderScenePackage->sceneGameObjectCount, 1u);
 }
 
 TEST(ThreadedRenderingLifecycleTests, BaseRendererPublishesPreparedBuilderInsteadOfRawSnapshotWhenThreadedWorkersArePaused)
@@ -2886,7 +2976,7 @@ TEST(ThreadedRenderingLifecycleTests, ForwardSceneRendererPublishesSnapshotOwned
     ASSERT_NE(slot, nullptr);
     ASSERT_TRUE(slot->snapshot.has_value());
     EXPECT_TRUE(slot->snapshot->hasSceneInput);
-    EXPECT_EQ(slot->snapshot->sceneActorCount, 2u);
+    EXPECT_EQ(slot->snapshot->sceneGameObjectCount, 2u);
     EXPECT_EQ(slot->snapshot->sceneModelRendererCount, 1u);
     EXPECT_EQ(slot->snapshot->sceneLightCount, 1u);
     EXPECT_EQ(slot->snapshot->sceneSkyboxCount, 0u);
@@ -2933,7 +3023,7 @@ TEST(ThreadedRenderingLifecycleTests, DeferredSceneRendererPublishesSnapshotOwne
     ASSERT_NE(slot, nullptr);
     ASSERT_TRUE(slot->snapshot.has_value());
     EXPECT_TRUE(slot->snapshot->hasSceneInput);
-    EXPECT_EQ(slot->snapshot->sceneActorCount, 2u);
+    EXPECT_EQ(slot->snapshot->sceneGameObjectCount, 2u);
     EXPECT_EQ(slot->snapshot->sceneModelRendererCount, 1u);
     EXPECT_EQ(slot->snapshot->sceneLightCount, 1u);
     EXPECT_EQ(slot->snapshot->sceneSkyboxCount, 0u);
@@ -3014,7 +3104,7 @@ TEST(ThreadedRenderingLifecycleTests, DriverRenderSceneWorkerRejectsPublishedSna
     snapshot.hasSceneInput = true;
     snapshot.renderWidth = 160u;
     snapshot.renderHeight = 90u;
-    snapshot.sceneActorCount = 5u;
+    snapshot.sceneGameObjectCount = 5u;
     snapshot.sceneLightCount = 1u;
     snapshot.visibleOpaqueDrawCount = 2u;
     snapshot.visibleTransparentDrawCount = 1u;
@@ -3036,7 +3126,7 @@ TEST(ThreadedRenderingLifecycleTests, DriverRenderSceneWorkerRejectsPublishedSna
     EXPECT_EQ(readySlot->publishOrigin, NLS::Render::Context::ThreadedFramePublishOrigin::SnapshotHarness);
     EXPECT_EQ(readySlot->renderSceneAttribution, NLS::Render::Context::RenderSceneAttribution::SnapshotHarness);
     EXPECT_EQ(readySlot->renderScenePackage->frameId, 71u);
-    EXPECT_EQ(readySlot->renderScenePackage->sceneActorCount, 5u);
+    EXPECT_EQ(readySlot->renderScenePackage->sceneGameObjectCount, 5u);
     EXPECT_EQ(readySlot->renderScenePackage->visibleDrawCount, 0u);
     EXPECT_FALSE(readySlot->renderScenePackage->hasVisibleDraws);
     EXPECT_FALSE(readySlot->renderScenePackage->frameDataReady);
@@ -4508,6 +4598,7 @@ TEST(ThreadedRenderingLifecycleTests, ExternalSceneOutputUsesSerialCommandPathEv
     package.parallelCommandWorkUnitCount = 2u;
     package.parallelCommandWorkUnits = { opaqueWorkUnit, transparentWorkUnit };
     package.extractedTextures = { colorTexture, depthTexture };
+    package.externalSceneOutputTextureCount = 2u;
 
     ASSERT_TRUE(lifecycle->CompleteRenderScene(slotIndex, package));
 
@@ -4616,6 +4707,7 @@ TEST(ThreadedRenderingLifecycleTests, ExternalSceneOutputTelemetryIgnoresPreferr
     package.passCommandInputs = { opaquePassInput };
     package.extractedTextures = { sceneTexture, pickingTexture };
     package.preferredReadbackTexture = pickingTexture;
+    package.externalSceneOutputTextureCount = 1u;
 
     ASSERT_TRUE(lifecycle->CompleteRenderScene(slotIndex, package));
 
@@ -5267,21 +5359,32 @@ TEST(ThreadedRenderingLifecycleTests, TranslationMergeInsertsBarrierBatchForDefe
     gbufferTextureDesc.extent.width = 64u;
     gbufferTextureDesc.extent.height = 64u;
     gbufferTextureDesc.extent.depth = 1u;
-    gbufferTextureDesc.arrayLayers = 1u;
-    gbufferTextureDesc.mipLevels = 1u;
+    gbufferTextureDesc.arrayLayers = 2u;
+    gbufferTextureDesc.mipLevels = 2u;
+    gbufferTextureDesc.usage =
+        NLS::Render::RHI::TextureUsageFlags::ColorAttachment |
+        NLS::Render::RHI::TextureUsageFlags::Sampled;
     auto gbufferTexture = std::make_shared<TestTexture>(gbufferTextureDesc);
+    NLS::Render::RHI::RHITextureViewDesc gbufferViewDesc;
+    gbufferViewDesc.subresourceRange.baseMipLevel = 0u;
+    gbufferViewDesc.subresourceRange.mipLevelCount = 1u;
+    gbufferViewDesc.subresourceRange.baseArrayLayer = 0u;
+    gbufferViewDesc.subresourceRange.arrayLayerCount = 1u;
     auto gbufferColorView = std::make_shared<TestTextureView>(
         gbufferTexture,
-        NLS::Render::RHI::RHITextureViewDesc{});
-    auto gbufferDepthTexture = std::make_shared<TestTexture>(gbufferTextureDesc);
+        gbufferViewDesc);
+
+    NLS::Render::RHI::RHITextureDesc gbufferDepthTextureDesc = gbufferTextureDesc;
+    gbufferDepthTextureDesc.debugName = "GBufferDepth";
+    gbufferDepthTextureDesc.usage =
+        NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment |
+        NLS::Render::RHI::TextureUsageFlags::Sampled;
+    auto gbufferDepthTexture = std::make_shared<TestTexture>(gbufferDepthTextureDesc);
     auto gbufferDepthView = std::make_shared<TestTextureView>(
         gbufferDepthTexture,
-        NLS::Render::RHI::RHITextureViewDesc{});
-    NLS::Render::RHI::RHISubresourceRange gbufferFullRange;
-    gbufferFullRange.baseMipLevel = 0u;
-    gbufferFullRange.mipLevelCount = gbufferTexture->GetDesc().mipLevels;
-    gbufferFullRange.baseArrayLayer = 0u;
-    gbufferFullRange.arrayLayerCount = gbufferTexture->GetDesc().arrayLayers;
+        gbufferViewDesc);
+    const auto viewTrackedRange = gbufferDepthView->GetDesc().subresourceRange;
+    const auto colorViewTrackedRange = gbufferColorView->GetDesc().subresourceRange;
 
     NLS::Render::Context::RenderPassCommandInput gbufferPassInput;
     gbufferPassInput.kind = NLS::Render::Context::RenderPassCommandKind::GBuffer;
@@ -5298,11 +5401,20 @@ TEST(ThreadedRenderingLifecycleTests, TranslationMergeInsertsBarrierBatchForDefe
     gbufferPassInput.colorAttachmentViews.push_back(gbufferColorView);
     gbufferPassInput.depthStencilAttachmentView = gbufferDepthView;
     gbufferPassInput.gbufferTextures.push_back(gbufferTexture);
+    gbufferPassInput.gbufferTextures.push_back(gbufferDepthTexture);
     gbufferPassInput.textureResourceAccesses.push_back({
         gbufferTexture,
-        gbufferFullRange,
+        colorViewTrackedRange,
         NLS::Render::Context::ResourceAccessMode::Write,
         NLS::Render::RHI::ResourceState::RenderTarget,
+        NLS::Render::RHI::PipelineStageMask::AllCommands,
+        NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite
+    });
+    gbufferPassInput.textureResourceAccesses.push_back({
+        gbufferDepthTexture,
+        viewTrackedRange,
+        NLS::Render::Context::ResourceAccessMode::Write,
+        NLS::Render::RHI::ResourceState::DepthWrite,
         NLS::Render::RHI::PipelineStageMask::AllCommands,
         NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite
     });
@@ -5320,7 +5432,15 @@ TEST(ThreadedRenderingLifecycleTests, TranslationMergeInsertsBarrierBatchForDefe
     lightingPassInput.requiresDependencyVisibility = true;
     lightingPassInput.textureResourceAccesses.push_back({
         gbufferTexture,
-        gbufferFullRange,
+        colorViewTrackedRange,
+        NLS::Render::Context::ResourceAccessMode::Read,
+        NLS::Render::RHI::ResourceState::ShaderRead,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader | NLS::Render::RHI::PipelineStageMask::ComputeShader,
+        NLS::Render::RHI::AccessMask::ShaderRead
+    });
+    lightingPassInput.textureResourceAccesses.push_back({
+        gbufferDepthTexture,
+        viewTrackedRange,
         NLS::Render::Context::ResourceAccessMode::Read,
         NLS::Render::RHI::ResourceState::ShaderRead,
         NLS::Render::RHI::PipelineStageMask::FragmentShader | NLS::Render::RHI::PipelineStageMask::ComputeShader,
@@ -5351,6 +5471,7 @@ TEST(ThreadedRenderingLifecycleTests, TranslationMergeInsertsBarrierBatchForDefe
     package.containsParallelCommandWorkUnits = true;
     package.parallelCommandWorkUnitCount = 2u;
     package.parallelCommandWorkUnits = { gbufferWorkUnit, lightingWorkUnit };
+    package.extractedTextures = { gbufferTexture, gbufferDepthTexture };
 
     ASSERT_TRUE(lifecycle->CompleteRenderScene(slotIndex, package));
 
@@ -5368,7 +5489,7 @@ TEST(ThreadedRenderingLifecycleTests, TranslationMergeInsertsBarrierBatchForDefe
     EXPECT_TRUE(copiedSlot->submissionFrame->usedTranslationMerge);
     EXPECT_FALSE(copiedSlot->submissionFrame->usedSerialCommandPath);
     ASSERT_EQ(explicitDevice->GetTestQueue()->submitCalls, 1u);
-    EXPECT_EQ(explicitDevice->GetTestQueue()->lastSubmitDesc.commandBuffers.size(), 3u);
+    ASSERT_GE(explicitDevice->GetTestQueue()->lastSubmitDesc.commandBuffers.size(), 3u);
     auto firstSubmittedBuffer = GetSubmittedTestCommandBuffer(explicitDevice->GetTestQueue(), 0u);
     auto secondSubmittedBuffer = GetSubmittedTestCommandBuffer(explicitDevice->GetTestQueue(), 1u);
     auto thirdSubmittedBuffer = GetSubmittedTestCommandBuffer(explicitDevice->GetTestQueue(), 2u);
@@ -5378,6 +5499,96 @@ TEST(ThreadedRenderingLifecycleTests, TranslationMergeInsertsBarrierBatchForDefe
     EXPECT_EQ(firstSubmittedBuffer->beginRenderPassCalls, 1u);
     EXPECT_GT(secondSubmittedBuffer->barrierCalls, 0u);
     EXPECT_EQ(thirdSubmittedBuffer->beginRenderPassCalls, 1u);
+
+    const auto matchesRange =
+        [](const NLS::Render::RHI::RHISubresourceRange& lhs, const NLS::Render::RHI::RHISubresourceRange& rhs)
+    {
+        return lhs.baseMipLevel == rhs.baseMipLevel &&
+            lhs.mipLevelCount == rhs.mipLevelCount &&
+            lhs.baseArrayLayer == rhs.baseArrayLayer &&
+            lhs.arrayLayerCount == rhs.arrayLayerCount;
+    };
+    const auto isColorAttachmentEndTransition =
+        [&gbufferTexture, &colorViewTrackedRange, &matchesRange](const NLS::Render::RHI::RHITextureBarrier& textureBarrier)
+    {
+        return textureBarrier.texture == gbufferTexture &&
+            textureBarrier.before == NLS::Render::RHI::ResourceState::RenderTarget &&
+            textureBarrier.after == NLS::Render::RHI::ResourceState::ShaderRead &&
+            matchesRange(textureBarrier.subresourceRange, colorViewTrackedRange);
+    };
+    const auto countColorAttachmentEndTransitions =
+        [&isColorAttachmentEndTransition](const TestCommandBuffer& submittedBuffer)
+    {
+        uint32_t count = 0u;
+        for (const auto& barrierDesc : submittedBuffer.barrierHistory)
+        {
+            for (const auto& textureBarrier : barrierDesc.textureBarriers)
+            {
+                if (isColorAttachmentEndTransition(textureBarrier))
+                    ++count;
+            }
+        }
+        return count;
+    };
+
+    EXPECT_EQ(countColorAttachmentEndTransitions(*firstSubmittedBuffer), 1u);
+    EXPECT_EQ(countColorAttachmentEndTransitions(*secondSubmittedBuffer), 0u);
+    EXPECT_EQ(countColorAttachmentEndTransitions(*thirdSubmittedBuffer), 0u);
+    for (size_t commandBufferIndex = 1u;
+        commandBufferIndex < explicitDevice->GetTestQueue()->lastSubmitDesc.commandBuffers.size();
+        ++commandBufferIndex)
+    {
+        const auto submittedBuffer = GetSubmittedTestCommandBuffer(
+            explicitDevice->GetTestQueue(),
+            commandBufferIndex);
+        ASSERT_NE(submittedBuffer, nullptr);
+        EXPECT_EQ(countColorAttachmentEndTransitions(*submittedBuffer), 0u);
+    }
+
+    bool foundDepthVisibilityTransition = false;
+    bool foundStaleColorVisibilityTransition = false;
+    bool foundStaleDepthVisibilityTransition = false;
+    for (const auto& submittedBufferBase : explicitDevice->GetTestQueue()->lastSubmitDesc.commandBuffers)
+    {
+        const auto submittedBuffer = std::dynamic_pointer_cast<TestCommandBuffer>(submittedBufferBase);
+        if (submittedBuffer == nullptr)
+            continue;
+
+        for (const auto& barrierDesc : submittedBuffer->barrierHistory)
+        {
+            for (const auto& textureBarrier : barrierDesc.textureBarriers)
+            {
+                if (textureBarrier.texture == gbufferDepthTexture &&
+                    textureBarrier.before == NLS::Render::RHI::ResourceState::DepthRead &&
+                    textureBarrier.after == NLS::Render::RHI::ResourceState::ShaderRead)
+                {
+                    foundDepthVisibilityTransition = true;
+                    EXPECT_TRUE(matchesRange(textureBarrier.subresourceRange, viewTrackedRange));
+                    EXPECT_EQ(
+                        textureBarrier.sourceAccessMask,
+                        NLS::Render::RHI::AccessMask::DepthStencilRead | NLS::Render::RHI::AccessMask::ShaderRead);
+                }
+
+                if (textureBarrier.texture == gbufferTexture &&
+                    textureBarrier.before == NLS::Render::RHI::ResourceState::RenderTarget &&
+                    textureBarrier.after == NLS::Render::RHI::ResourceState::ShaderRead &&
+                    !matchesRange(textureBarrier.subresourceRange, colorViewTrackedRange))
+                {
+                    foundStaleColorVisibilityTransition = true;
+                }
+
+                if (textureBarrier.texture == gbufferDepthTexture &&
+                    textureBarrier.before == NLS::Render::RHI::ResourceState::DepthWrite &&
+                    textureBarrier.after == NLS::Render::RHI::ResourceState::ShaderRead)
+                {
+                    foundStaleDepthVisibilityTransition = true;
+                }
+            }
+        }
+    }
+    EXPECT_TRUE(foundDepthVisibilityTransition);
+    EXPECT_FALSE(foundStaleColorVisibilityTransition);
+    EXPECT_FALSE(foundStaleDepthVisibilityTransition);
 
     uint32_t barrierBatchCount = 0u;
     for (const auto& submittedBufferBase : explicitDevice->GetTestQueue()->lastSubmitDesc.commandBuffers)
@@ -5643,7 +5854,11 @@ TEST(ThreadedRenderingLifecycleTests, ThreadedRendererSkipsStandaloneExplicitFra
     frameDescriptor.renderWidth = 64u;
     frameDescriptor.renderHeight = 64u;
     frameDescriptor.camera = &camera;
-    frameDescriptor.outputBuffer = reinterpret_cast<NLS::Render::Buffers::Framebuffer*>(1);
+    NLS::Render::RHI::RHITextureDesc outputTextureDesc;
+    outputTextureDesc.extent = { 64u, 64u, 1u };
+    outputTextureDesc.usage = NLS::Render::RHI::TextureUsageFlags::ColorAttachment;
+    outputTextureDesc.debugName = "OffscreenThreadedOutput";
+    frameDescriptor.outputColorTexture = std::make_shared<TestTexture>(outputTextureDesc);
 
     ASSERT_NO_THROW(renderer.BeginFrame(frameDescriptor));
     EXPECT_EQ(NLS::Render::Context::DriverRendererAccess::GetActiveExplicitCommandBuffer(driver), nullptr);

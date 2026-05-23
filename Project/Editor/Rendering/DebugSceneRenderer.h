@@ -4,6 +4,7 @@
 
 #include "GameObject.h"
 #include <Engine/SceneSystem/SceneManager.h>
+#include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
 #include <Rendering/Resources/Material.h>
 #include "Components/LightComponent.h"
@@ -23,8 +24,8 @@ class DebugSceneRenderer : public Engine::Rendering::DeferredSceneRenderer
 	public:
 		struct DebugSceneDescriptor
 		{
-			Engine::GameObject* highlightedActor;
-            Engine::GameObject* selectedActor;
+			Engine::GameObject* highlightedGameObject;
+            Engine::GameObject* selectedGameObject;
             bool requestPickingFrame = false;
 		};
 

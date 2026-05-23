@@ -192,6 +192,25 @@ namespace
         return Render::Settings::GetThreadDiagnosticsSettings().logRenderDrawPath;
     }
 
+    void AppendTextureVisibilityTransitionBarrier(
+        Render::RHI::RHIBarrierDesc& barriers,
+        const TextureVisibilityTransition& transition)
+    {
+        if (transition.texture == nullptr)
+            return;
+
+        barriers.textureBarriers.push_back({
+            transition.texture,
+            transition.before,
+            transition.after,
+            transition.subresourceRange,
+            transition.sourceStages,
+            transition.destinationStages,
+            transition.sourceAccess,
+            transition.destinationAccess
+        });
+    }
+
     void LogSkippedPass(const RenderScenePackage& package, const RenderPassCommandInput& passInput, const char* reason)
     {
         if (!ShouldLogThreadedRenderingDiagnostics())
@@ -376,35 +395,35 @@ namespace
 
         Render::RHI::RHIBarrierDesc attachmentBarriers;
 
-        const auto addColorAttachmentEndBarrier =
-            [&attachmentBarriers](
-                const std::shared_ptr<Render::RHI::RHITextureView>& view,
-                const Render::RHI::ResourceState after,
-                const Render::RHI::PipelineStageMask destinationStage,
-                const Render::RHI::AccessMask destinationAccess)
+        if (input->targetsSwapchain)
+        {
+            const auto& view = frameContext->swapchainBackbufferView;
+            if (view != nullptr && view->GetTexture() != nullptr)
             {
-                if (view == nullptr || view->GetTexture() == nullptr)
-                    return;
-
                 attachmentBarriers.textureBarriers.push_back({
                     view->GetTexture(),
                     Render::RHI::ResourceState::Unknown,
-                    after,
+                    Render::RHI::ResourceState::Present,
                     view->GetDesc().subresourceRange,
                     Render::RHI::PipelineStageMask::RenderTarget,
-                    destinationStage,
+                    Render::RHI::PipelineStageMask::Present,
                     Render::RHI::AccessMask::ColorAttachmentRead | Render::RHI::AccessMask::ColorAttachmentWrite,
-                    destinationAccess
+                    Render::RHI::AccessMask::Present
                 });
-            };
-
-        if (input->targetsSwapchain)
+            }
+        }
+        else
         {
-            addColorAttachmentEndBarrier(
-                frameContext->swapchainBackbufferView,
-                Render::RHI::ResourceState::Present,
-                Render::RHI::PipelineStageMask::Present,
-                Render::RHI::AccessMask::Present);
+            for (const auto& colorView : input->colorAttachmentViews)
+            {
+                const auto transition = FrameGraph::BuildSampledAttachmentEndTransition(colorView, false);
+                if (transition.has_value())
+                    AppendTextureVisibilityTransitionBarrier(attachmentBarriers, *transition);
+            }
+
+            const auto transition = FrameGraph::BuildSampledAttachmentEndTransition(input->depthStencilAttachmentView, true);
+            if (transition.has_value())
+                AppendTextureVisibilityTransitionBarrier(attachmentBarriers, *transition);
         }
         if (!attachmentBarriers.textureBarriers.empty())
         {
@@ -440,14 +459,38 @@ namespace
         return range.mipLevelCount == 0u && range.arrayLayerCount == 0u;
     }
 
-    bool AreEqualSubresourceRanges(
-        const Render::RHI::RHISubresourceRange& lhs,
-        const Render::RHI::RHISubresourceRange& rhs)
+    bool HasWriteAccess(const Render::RHI::AccessMask accessMask)
     {
-        return lhs.baseMipLevel == rhs.baseMipLevel &&
-            lhs.mipLevelCount == rhs.mipLevelCount &&
-            lhs.baseArrayLayer == rhs.baseArrayLayer &&
-            lhs.arrayLayerCount == rhs.arrayLayerCount;
+        constexpr uint32_t kWriteAccessMask =
+            static_cast<uint32_t>(Render::RHI::AccessMask::CopyWrite) |
+            static_cast<uint32_t>(Render::RHI::AccessMask::ShaderWrite) |
+            static_cast<uint32_t>(Render::RHI::AccessMask::ColorAttachmentWrite) |
+            static_cast<uint32_t>(Render::RHI::AccessMask::DepthStencilWrite) |
+            static_cast<uint32_t>(Render::RHI::AccessMask::HostWrite) |
+            static_cast<uint32_t>(Render::RHI::AccessMask::MemoryWrite);
+        return (static_cast<uint32_t>(accessMask) & kWriteAccessMask) != 0u;
+    }
+
+    uint64_t SubresourceRangeEnd(const uint32_t base, const uint32_t count)
+    {
+        return static_cast<uint64_t>(base) + static_cast<uint64_t>(count);
+    }
+
+    bool DoesSubresourceRangeCover(
+        const Render::RHI::RHISubresourceRange& coveringRange,
+        const Render::RHI::RHISubresourceRange& requestedRange)
+    {
+        if (IsEmptySubresourceRange(coveringRange))
+            return true;
+        if (IsEmptySubresourceRange(requestedRange))
+            return false;
+
+        return coveringRange.baseMipLevel <= requestedRange.baseMipLevel &&
+            SubresourceRangeEnd(requestedRange.baseMipLevel, requestedRange.mipLevelCount) <=
+                SubresourceRangeEnd(coveringRange.baseMipLevel, coveringRange.mipLevelCount) &&
+            coveringRange.baseArrayLayer <= requestedRange.baseArrayLayer &&
+            SubresourceRangeEnd(requestedRange.baseArrayLayer, requestedRange.arrayLayerCount) <=
+                SubresourceRangeEnd(coveringRange.baseArrayLayer, coveringRange.arrayLayerCount);
     }
 
     const BufferResourceAccess* FindSourceBufferWriteAccess(
@@ -477,9 +520,7 @@ namespace
             {
                 return access.mode == ResourceAccessMode::Write &&
                     access.texture == texture &&
-                    (IsEmptySubresourceRange(subresourceRange) ||
-                        IsEmptySubresourceRange(access.subresourceRange) ||
-                        AreEqualSubresourceRanges(access.subresourceRange, subresourceRange));
+                    DoesSubresourceRangeCover(access.subresourceRange, subresourceRange);
             });
         return it != input.textureResourceAccesses.rend() ? &(*it) : nullptr;
     }
@@ -509,11 +550,55 @@ namespace
             [&texture, &subresourceRange](const TextureVisibilityTransition& transition)
             {
                 return transition.texture == texture &&
-                    (IsEmptySubresourceRange(subresourceRange) ||
-                        IsEmptySubresourceRange(transition.subresourceRange) ||
-                        AreEqualSubresourceRanges(transition.subresourceRange, subresourceRange));
+                    DoesSubresourceRangeCover(transition.subresourceRange, subresourceRange);
             });
         return it != input.exportedTextureVisibilityTransitions.end() ? &(*it) : nullptr;
+    }
+
+    std::optional<TextureVisibilityTransition> BuildAttachmentEndVisibilityTransition(
+        const RenderPassCommandInput& input,
+        const std::shared_ptr<Render::RHI::RHITexture>& texture,
+        const Render::RHI::RHISubresourceRange& subresourceRange)
+    {
+        if (texture == nullptr || input.targetsSwapchain)
+            return std::nullopt;
+
+        const auto matchesViewTexture =
+            [&texture, &subresourceRange](const std::shared_ptr<Render::RHI::RHITextureView>& view)
+        {
+            return view != nullptr &&
+                view->GetTexture() == texture &&
+                DoesSubresourceRangeCover(view->GetDesc().subresourceRange, subresourceRange);
+        };
+
+        for (const auto& colorView : input.colorAttachmentViews)
+        {
+            if (!matchesViewTexture(colorView))
+                continue;
+
+            auto transition = FrameGraph::BuildSampledAttachmentEndTransition(colorView, false);
+            if (!transition.has_value())
+                continue;
+
+            transition->subresourceRange = !IsEmptySubresourceRange(subresourceRange)
+                ? subresourceRange
+                : colorView->GetDesc().subresourceRange;
+            return transition;
+        }
+
+        if (matchesViewTexture(input.depthStencilAttachmentView))
+        {
+            auto transition = FrameGraph::BuildSampledAttachmentEndTransition(input.depthStencilAttachmentView, true);
+            if (!transition.has_value())
+                return std::nullopt;
+
+            transition->subresourceRange = !IsEmptySubresourceRange(subresourceRange)
+                ? subresourceRange
+                : input.depthStencilAttachmentView->GetDesc().subresourceRange;
+            return transition;
+        }
+
+        return std::nullopt;
     }
 
     bool HasBufferVisibilityTransitionForResource(
@@ -540,9 +625,7 @@ namespace
             [&texture, &subresourceRange](const TextureVisibilityTransition& transition)
             {
                 return transition.texture == texture &&
-                    (IsEmptySubresourceRange(subresourceRange) ||
-                        IsEmptySubresourceRange(transition.subresourceRange) ||
-                        AreEqualSubresourceRanges(transition.subresourceRange, subresourceRange));
+                    DoesSubresourceRangeCover(transition.subresourceRange, subresourceRange);
             });
     }
 
@@ -596,32 +679,51 @@ namespace
             sourceInput,
             targetAccess.texture,
             targetAccess.subresourceRange);
-        if (sourceWriteAccess == nullptr && exportedTransition == nullptr)
+        const auto inferredAttachmentEndTransition =
+            exportedTransition == nullptr
+                ? BuildAttachmentEndVisibilityTransition(
+                    sourceInput,
+                    targetAccess.texture,
+                    targetAccess.subresourceRange)
+                : std::nullopt;
+        // Exported texture transitions describe the source pass final visible state.
+        // Dependency visibility starts from that completed state, not from the original write state.
+        const auto* completedSourceTransition =
+            exportedTransition != nullptr
+                ? exportedTransition
+                : (inferredAttachmentEndTransition.has_value() ? &inferredAttachmentEndTransition.value() : nullptr);
+        if (sourceWriteAccess == nullptr && completedSourceTransition == nullptr)
             return std::nullopt;
 
         TextureVisibilityTransition transition;
         transition.texture = targetAccess.texture;
         transition.subresourceRange = !IsEmptySubresourceRange(targetAccess.subresourceRange)
             ? targetAccess.subresourceRange
-            : (exportedTransition != nullptr ? exportedTransition->subresourceRange : Render::RHI::RHISubresourceRange{});
-        transition.before = sourceWriteAccess != nullptr
-            ? sourceWriteAccess->state
-            : exportedTransition->before;
+            : (completedSourceTransition != nullptr ? completedSourceTransition->subresourceRange : Render::RHI::RHISubresourceRange{});
+        transition.before = completedSourceTransition != nullptr
+            ? completedSourceTransition->after
+            : sourceWriteAccess->state;
         transition.after = targetAccess.state != Render::RHI::ResourceState::Unknown
             ? targetAccess.state
-            : (exportedTransition != nullptr ? exportedTransition->after : Render::RHI::ResourceState::Unknown);
-        transition.sourceStages = sourceWriteAccess != nullptr
-            ? sourceWriteAccess->stages
-            : exportedTransition->sourceStages;
+            : (completedSourceTransition != nullptr ? completedSourceTransition->after : Render::RHI::ResourceState::Unknown);
+        transition.sourceStages = completedSourceTransition != nullptr
+            ? completedSourceTransition->destinationStages
+            : sourceWriteAccess->stages;
         transition.destinationStages = targetAccess.stages != Render::RHI::PipelineStageMask::None
             ? targetAccess.stages
-            : (exportedTransition != nullptr ? exportedTransition->destinationStages : Render::RHI::PipelineStageMask::None);
-        transition.sourceAccess = sourceWriteAccess != nullptr
-            ? sourceWriteAccess->access
-            : exportedTransition->sourceAccess;
+            : (completedSourceTransition != nullptr ? completedSourceTransition->destinationStages : Render::RHI::PipelineStageMask::None);
+        transition.sourceAccess = completedSourceTransition != nullptr
+            ? completedSourceTransition->destinationAccess
+            : sourceWriteAccess->access;
         transition.destinationAccess = targetAccess.access != Render::RHI::AccessMask::None
             ? targetAccess.access
-            : (exportedTransition != nullptr ? exportedTransition->destinationAccess : Render::RHI::AccessMask::None);
+            : (completedSourceTransition != nullptr ? completedSourceTransition->destinationAccess : Render::RHI::AccessMask::None);
+        if (transition.before == transition.after &&
+            !HasWriteAccess(transition.sourceAccess) &&
+            !HasWriteAccess(transition.destinationAccess))
+        {
+            return std::nullopt;
+        }
         return transition;
     }
 
@@ -784,6 +886,14 @@ namespace
         if (drawCommand.passBindingSet != nullptr)
             commandBuffer.BindBindingSet(::NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, drawCommand.passBindingSet);
         commandBuffer.BindBindingSet(::NLS::Render::RHI::BindingPointMap::kMaterialDescriptorSet, drawCommand.materialBindingSet);
+        if (drawCommand.usesObjectIndex)
+        {
+            commandBuffer.PushConstants(
+                ::NLS::Render::RHI::ShaderStageMask::Vertex,
+                0u,
+                sizeof(drawCommand.objectIndex),
+                &drawCommand.objectIndex);
+        }
 
         const auto vertexBuffer = drawCommand.mesh->GetVertexBuffer();
         if (vertexBuffer == nullptr)
@@ -1547,6 +1657,71 @@ Render::FrameGraph::FrameGraphExecutionContext DriverRendererAccess::CreateFrame
 	};
 }
 
+std::optional<size_t> DriverRendererAccess::GetActiveFrameContextSlotIndex(const Driver& driver)
+{
+    if (driver.m_impl == nullptr || driver.m_impl->frameContexts.empty())
+        return std::nullopt;
+
+    if (Detail::GetActiveFrameContext(*driver.m_impl) == nullptr)
+        return std::nullopt;
+
+    return driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size();
+}
+
+size_t DriverRendererAccess::GetFrameContextSlotCount(const Driver& driver)
+{
+    if (driver.m_impl == nullptr)
+        return 0u;
+
+    const auto* threadedLifecycle = driver.m_impl->threadedLifecycle.get();
+    if (threadedLifecycle != nullptr)
+        return threadedLifecycle->GetSlotCount();
+
+    if (!driver.m_impl->frameContexts.empty())
+        return driver.m_impl->frameContexts.size();
+
+    return 0u;
+}
+
+std::optional<size_t> DriverRendererAccess::ReserveReusableFrameContextSlotIndex(Driver& driver)
+{
+    if (driver.m_impl == nullptr)
+        return std::nullopt;
+
+    auto* threadedLifecycle = driver.m_impl->threadedLifecycle.get();
+    if (threadedLifecycle != nullptr)
+        return threadedLifecycle->ReserveReusableSlotIndex();
+
+    if (!driver.m_impl->frameContexts.empty())
+        return driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size();
+
+    return 0u;
+}
+
+bool DriverRendererAccess::ReleaseReservedFrameContextSlotIndex(Driver& driver, const size_t slotIndex)
+{
+    if (driver.m_impl == nullptr)
+        return false;
+
+    auto* threadedLifecycle = driver.m_impl->threadedLifecycle.get();
+    if (threadedLifecycle != nullptr)
+        return threadedLifecycle->ReleaseReservedReusableSlotIndex(slotIndex);
+
+    return true;
+}
+
+std::optional<size_t> DriverRendererAccess::GetReservedFrameContextSlotIndex(const Driver& driver)
+{
+    if (driver.m_impl == nullptr)
+        return std::nullopt;
+
+    const auto* threadedLifecycle = driver.m_impl->threadedLifecycle.get();
+    if (threadedLifecycle == nullptr)
+        return std::nullopt;
+
+    return threadedLifecycle->GetReservedReusableSlotIndex();
+}
+
 std::shared_ptr<Render::RHI::RHICommandBuffer> DriverRendererAccess::GetActiveExplicitCommandBuffer(const Driver& driver)
 {
 	const auto* frameContext = Detail::GetActiveFrameContext(*driver.m_impl);
@@ -1602,6 +1777,16 @@ std::shared_ptr<Render::RHI::PipelineCache> DriverRendererAccess::GetPipelineCac
 std::shared_ptr<Render::RHI::DescriptorAllocator> DriverRendererAccess::GetActiveDescriptorAllocator(const Driver& driver)
 {
     const auto* frameContext = Detail::GetActiveFrameContext(*driver.m_impl);
+    if (frameContext == nullptr)
+    {
+        const auto reservedSlotIndex = GetReservedFrameContextSlotIndex(driver);
+        if (reservedSlotIndex.has_value() &&
+            reservedSlotIndex.value() < driver.m_impl->frameContexts.size())
+        {
+            frameContext = &driver.m_impl->frameContexts[reservedSlotIndex.value()];
+        }
+    }
+
     if (frameContext == nullptr &&
         driver.m_impl->threadedLifecycle != nullptr &&
         !driver.m_impl->frameContexts.empty())
@@ -1626,10 +1811,22 @@ std::shared_ptr<Render::RHI::RHIBindingSet> DriverRendererAccess::CreateExplicit
     const Render::RHI::DescriptorAllocationLifetime allocationLifetime)
 {
     const auto descriptorAllocator = GetActiveDescriptorAllocator(driver);
-    const auto frameIndex =
-        !driver.m_impl->frameContexts.empty()
-            ? driver.m_impl->frameContexts[driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size()].frameIndex
-            : 0u;
+    uint64_t frameIndex = 0u;
+    if (const auto activeSlotIndex = GetActiveFrameContextSlotIndex(driver);
+        activeSlotIndex.has_value() && activeSlotIndex.value() < driver.m_impl->frameContexts.size())
+    {
+        frameIndex = driver.m_impl->frameContexts[activeSlotIndex.value()].frameIndex;
+    }
+    else if (const auto reservedSlotIndex = GetReservedFrameContextSlotIndex(driver);
+        reservedSlotIndex.has_value() && reservedSlotIndex.value() < driver.m_impl->frameContexts.size())
+    {
+        frameIndex = driver.m_impl->frameContexts[reservedSlotIndex.value()].frameIndex;
+    }
+    else if (!driver.m_impl->frameContexts.empty())
+    {
+        frameIndex = driver.m_impl->frameContexts[
+            driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size()].frameIndex;
+    }
 	return CreateTrackedBindingSet(
         driver.m_impl->explicitDevice,
         descriptorAllocator,

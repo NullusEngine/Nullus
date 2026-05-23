@@ -1,7 +1,13 @@
 #include <Time/Clock.h>
 
+#include <filesystem>
+#include <stdexcept>
+
 #include "Core/Application.h"
+#include "Core/AssetFileWatcher.h"
 #include "Core/ResizeRefreshPolicy.h"
+#include "Assets/AssetBrowserPresentation.h"
+#include "Assets/EditorStartupAssetPreimport.h"
 #include "Windowing/Inputs/EMouseButton.h"
 #include "Windowing/Inputs/EMouseButtonState.h"
 #include "Assembly.h"
@@ -28,8 +34,74 @@ Editor::Core::Application::Application(const std::string& p_projectPath, const s
     std::optional<Render::Settings::EGraphicsBackend> p_backendOverride,
     std::optional<Render::Settings::RenderDocSettings> p_renderDocOverride,
     std::optional<Render::Settings::EngineDiagnosticsSettings> p_diagnosticsOverride)
-    : m_context(p_projectPath, p_projectName, p_backendOverride, p_renderDocOverride, p_diagnosticsOverride), m_editor(m_context)
+    : m_context(p_projectPath, p_projectName, p_backendOverride, p_renderDocOverride, p_diagnosticsOverride)
 {
+    m_context.PresentStartupProgressFrame("Watching project assets", 0.88f);
+    std::error_code projectAssetFolderError;
+    std::filesystem::create_directories(m_context.projectAssetsPath, projectAssetFolderError);
+    if (projectAssetFolderError)
+    {
+        throw std::runtime_error(
+            "Failed to create project Assets folder before startup asset watching: " +
+            projectAssetFolderError.message());
+    }
+
+    NLS::Editor::Core::AssetFileWatcher startupEngineAssetsWatcher;
+    NLS::Editor::Core::AssetFileWatcher startupProjectAssetsWatcher;
+    const auto engineWatcherStarted = startupEngineAssetsWatcher.Start(m_context.engineAssetsPath);
+    const auto projectWatcherStarted = startupProjectAssetsWatcher.Start(m_context.projectAssetsPath);
+    const auto watcherStartupReport = NLS::Editor::Assets::BuildAssetWatcherStartupReport(
+        m_context.engineAssetsPath,
+        engineWatcherStarted,
+        m_context.projectAssetsPath,
+        projectWatcherStarted);
+    for (const auto& diagnostic : watcherStartupReport.diagnostics)
+        NLS_LOG_WARNING(diagnostic.message);
+    if (!watcherStartupReport.succeeded)
+    {
+        throw std::runtime_error(
+            "Startup asset watcher failed; editor UI will not open because post-open asset changes could be missed.");
+    }
+
+    m_context.PresentStartupProgressFrame("Importing project assets", 0.90f);
+    const auto startupPreimport = NLS::Editor::Assets::RunBlockingStartupAssetPreimport(
+        {std::filesystem::path(m_context.projectPath)},
+        [this](const NLS::Editor::Assets::ImportProgressEvent& event)
+        {
+            const float progress =
+                0.90f + static_cast<float>(event.normalizedProgress) * 0.05f;
+            m_context.PresentStartupProgressFrame(
+                NLS::Editor::Assets::FormatStartupAssetPreimportProgressLabel(event),
+                progress);
+        });
+    if (startupPreimport.succeeded && !startupPreimport.hadRunningJobsAfterCompletion)
+    {
+        NLS_LOG_INFO(
+            "Startup asset preimport completed: " +
+            std::to_string(startupPreimport.importedAssetCount) +
+            " imported / " +
+            std::to_string(startupPreimport.plannedAssetCount) +
+            " planned.");
+    }
+    else
+    {
+        NLS_LOG_ERROR(
+            "Startup asset preimport failed: " +
+            std::to_string(startupPreimport.importedAssetCount) +
+            " imported / " +
+            std::to_string(startupPreimport.plannedAssetCount) +
+            " planned.");
+        if (startupPreimport.hadRunningJobsAfterCompletion)
+            NLS_LOG_ERROR("Startup asset preimport returned with running jobs still active.");
+        throw std::runtime_error(
+            "Startup asset preimport failed; editor UI will not open until project assets are imported.");
+    }
+
+    m_editor = std::make_unique<Editor>(m_context);
+    m_editor->AdoptStartupAssetWatchers(
+        std::move(startupEngineAssetsWatcher),
+        std::move(startupProjectAssetsWatcher));
+
     const auto tickWhileResizing = [this]()
     {
         if (!IsRunning())
@@ -79,6 +151,49 @@ Editor::Core::Application::Application(const std::string& p_projectPath, const s
     {
         handleResizeEvent();
     });
+
+    const auto runStartupWatcherPreimport = [this](const std::string& label, const float baseProgress)
+    {
+        m_context.PresentStartupProgressFrame(label, baseProgress);
+        const auto imported = m_editor->RunStartupWatcherPreimport(
+            [this, baseProgress](const NLS::Editor::Assets::ImportProgressEvent& event)
+            {
+                const float progress =
+                    baseProgress + static_cast<float>(event.normalizedProgress) * 0.01f;
+                m_context.PresentStartupProgressFrame(
+                    NLS::Editor::Assets::FormatStartupAssetPreimportProgressLabel(event),
+                    progress);
+            });
+        if (!imported)
+        {
+            throw std::runtime_error(
+                "Startup watcher asset preimport failed; editor UI will not open until changed assets are imported.");
+        }
+    };
+
+    runStartupWatcherPreimport("Importing startup asset changes", 0.94f);
+    m_editor->RefreshProjectAssetBrowser();
+    m_context.PresentStartupProgressFrame("Rendering first editor frame", 0.96f);
+    RunEditorFrame(0.0f);
+    m_context.PresentStartupProgressFrame("Importing final startup asset changes", 0.97f);
+    const auto finalStartupWatcherImport = m_editor->CompleteStartupWatcherPreimportGate(
+        [this](const NLS::Editor::Assets::ImportProgressEvent& event)
+        {
+            const float progress =
+                0.97f + static_cast<float>(event.normalizedProgress) * 0.01f;
+            m_context.PresentStartupProgressFrame(
+                NLS::Editor::Assets::FormatStartupAssetPreimportProgressLabel(event),
+                progress);
+        });
+    if (!finalStartupWatcherImport)
+    {
+        throw std::runtime_error(
+            "Final startup watcher asset preimport failed; editor UI will not open until changed assets are imported.");
+    }
+    m_context.PresentStartupProgressFrame("Opening editor", 1.0f);
+    NLS_LOG_INFO("[Startup] CompleteStartupProgress begin");
+    m_context.CompleteStartupProgress();
+    NLS_LOG_INFO("[Startup] CompleteStartupProgress end");
 }
 
 Editor::Core::Application::~Application()
@@ -109,7 +224,7 @@ void Editor::Core::Application::TickFrame(float p_deltaTime, bool p_pollEvents)
     if (p_pollEvents)
     {
         m_isPollingEvents = true;
-        m_editor.PreUpdate();
+        m_editor->PreUpdate();
         m_isPollingEvents = false;
     }
 
@@ -170,8 +285,11 @@ bool Editor::Core::Application::IsRunning() const
 
 void Editor::Core::Application::RunEditorFrame(const float deltaTime)
 {
-    m_editor.Update(deltaTime);
-    m_editor.PostUpdate();
+    if (m_editor == nullptr)
+        return;
+
+    m_editor->Update(deltaTime);
+    m_editor->PostUpdate();
 }
 
 void Editor::Core::Application::SyncPlatformSwapchainToFramebufferSize()

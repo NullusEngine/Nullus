@@ -72,6 +72,10 @@ void Editor::Panels::AView::InitFrame()
 	);
 }
 
+void Editor::Panels::AView::EnsureRenderer()
+{
+}
+
 void Editor::Panels::AView::Render()
 {
 	auto [winWidth, winHeight] = GetSafeSize();
@@ -148,6 +152,13 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
 
 	if (p_width > 0 && p_height > 0 && camera && scene)
 	{
+        {
+            NLS_PROFILE_NAMED_SCOPE("AView::EnsureRenderer");
+            EnsureRenderer();
+        }
+        if (m_renderer == nullptr)
+            return;
+
         Render::Context::ThreadedFrameTelemetry beforeTelemetry {};
         auto* driver = Render::Context::TryGetLocatedDriver();
         const bool threadedRendering =

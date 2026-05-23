@@ -48,6 +48,7 @@ namespace NLS::Render::Backend
 		ID3D12CommandQueue* m_graphicsQueue = nullptr;
 		NLS::Render::RHI::RHIBufferDesc m_desc{};
 		NLS::Render::RHI::ResourceState m_state = NLS::Render::RHI::ResourceState::Unknown;
+		bool m_valid = false;
 #if defined(_WIN32)
 		Microsoft::WRL::ComPtr<ID3D12Resource> m_resource;
 #endif
@@ -66,6 +67,8 @@ namespace NLS::Render::Backend
 		const NLS::Render::RHI::RHITextureDesc& GetDesc() const override;
 		NLS::Render::RHI::ResourceState GetState() const override;
 		void SetState(NLS::Render::RHI::ResourceState state);
+		bool HasPartialStateDirty() const;
+		void MarkPartialStateDirty();
 		NLS::Render::RHI::NativeHandle GetNativeImageHandle() override;
 #if defined(_WIN32)
 		ID3D12Resource* GetResource() const;
@@ -76,6 +79,7 @@ namespace NLS::Render::Backend
 		ID3D12Device* m_device = nullptr;
 		NLS::Render::RHI::RHITextureDesc m_desc{};
 		NLS::Render::RHI::ResourceState m_state = NLS::Render::RHI::ResourceState::Unknown;
+		bool m_partialStateDirty = false;
 #if defined(_WIN32)
 		Microsoft::WRL::ComPtr<ID3D12Resource> m_resource;
 #endif

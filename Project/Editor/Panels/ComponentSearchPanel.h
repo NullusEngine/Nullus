@@ -46,23 +46,23 @@ class ComponentSearchPanel : public NLS::UI::Widgets::AWidget
 public:
     ComponentSearchPanel();
 
-    void SetTargetActor(Engine::GameObject* p_actor);
-    void OpenForActor(Engine::GameObject* p_actor);
+    void SetTargetGameObject(Engine::GameObject* p_GameObject);
+    void OpenForGameObject(Engine::GameObject* p_GameObject);
     void RefreshEntries();
     void ClearTarget();
-    void NotifyActorComponentsChanged();
+    void NotifyGameObjectComponentsChanged();
 
-    Engine::GameObject* GetTargetActor() const;
+    Engine::GameObject* GetTargetGameObject() const;
     void SetAnchorRect(const ImVec2& p_min, const ImVec2& p_max);
 
     static std::string NormalizeSearchText(std::string_view p_value);
     static std::string MakeDisplayName(const meta::Type& p_type);
     static std::string GetComponentMenuPath(const meta::Type& p_type);
-    static bool IsTypeAddableToActor(const meta::Type& p_type, const Engine::GameObject* p_actor);
-    static std::vector<ComponentSearchEntry> BuildComponentEntries(Engine::GameObject* p_actor, std::string_view p_query = {});
+    static bool IsTypeAddableToGameObject(const meta::Type& p_type, const Engine::GameObject* p_GameObject);
+    static std::vector<ComponentSearchEntry> BuildComponentEntries(Engine::GameObject* p_GameObject, std::string_view p_query = {});
     static std::vector<ComponentCategoryNode> BuildCategoryTree(const std::vector<ComponentSearchEntry>& p_entries);
     static ComponentPickerViewMode GetViewModeForQuery(std::string_view p_query);
-    static bool TryAddComponentFromEntry(Engine::GameObject* p_actor, const ComponentSearchEntry& p_entry);
+    static bool TryAddComponentFromEntry(Engine::GameObject* p_GameObject, const ComponentSearchEntry& p_entry);
 
     NLS::Event<> ComponentAddedEvent;
 
@@ -79,7 +79,7 @@ private:
     void SetStatusMessage(std::string p_message, bool p_isError);
 
 private:
-    Engine::GameObject* m_targetActor = nullptr;
+    Engine::GameObject* m_targetGameObject = nullptr;
     std::vector<ComponentSearchEntry> m_entries;
     std::vector<ComponentCategoryNode> m_categories;
     std::string m_query;

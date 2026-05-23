@@ -16,7 +16,7 @@ namespace NLS::Render::Context
         bool hasExternalOutput = false;
         bool immutable = true;
         bool hasSceneInput = false;
-        uint64_t sceneActorCount = 0u;
+        uint64_t sceneGameObjectCount = 0u;
         uint64_t visibleDrawCount = 0u;
         uint32_t externalOutputTextureCount = 0u;
     };

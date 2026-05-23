@@ -1,8 +1,9 @@
-﻿
+
 #include <filesystem>
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <exception>
 #include <limits>
 #include <optional>
 #include <string_view>
@@ -45,8 +46,6 @@
 #include <Windowing/Inputs/EMouseButtonState.h>
 using namespace NLS::Core::ResourceManagement;
 using namespace NLS::Editor::Panels;
-using namespace NLS::Render::Resources::Loaders;
-using namespace NLS::Render::Resources::Parsers;
 namespace NLS
 {
 namespace
@@ -184,20 +183,56 @@ Editor::Core::Editor::Editor(Context& p_context)
     NLS::Core::ServiceLocator::Provide<NLS::Editor::Shortcuts::EditorShortcutService>(m_shortcutService);
     Assembly::Instance().Instance().Load<AssemblyMath>().Load<AssemblyCore>().Load<AssemblyPlatform>().Load<AssemblyRender>().Load<Engine::AssemblyEngine>();
 	
+    m_context.PresentStartupProgressFrame("Preparing editor panels", 0.55f);
+    NLS_LOG_INFO("[Startup] SetupUI begin");
     SetupUI();
+    NLS_LOG_INFO("[Startup] SetupUI end");
+    m_context.PresentStartupProgressFrame("Preparing editor shortcuts", 0.62f);
     PublishReflectionDiagnosticsToLog();
     RegisterShortcutContexts();
     RegisterDefaultShortcuts();
-    MigrateLegacyMaterialAssets(m_editorActions, m_context.projectAssetsPath);
+    m_editorActions.DelayAction([this]
+    {
+        NLS_LOG_INFO("[Startup] Deferred legacy material migration begin");
+        MigrateLegacyMaterialAssets(m_editorActions, m_context.projectAssetsPath);
+        NLS_LOG_INFO("[Startup] Deferred legacy material migration end");
+    }, 1);
 
     m_sceneSourcePathChangedListener = m_context.sceneManager.CurrentSceneSourcePathChangedEvent += [this](const std::string& p_scenePath)
     {
         RememberLastOpenedScene(p_scenePath);
     };
 
-    RestoreStartupScene();
+    m_context.PresentStartupProgressFrame("Loading startup scene models and shaders", 0.65f);
 
-    ApplyStartupValidationDirectives();
+    try
+    {
+        NLS::Core::ResourceManagement::ResourceLoadProgressScope resourceLoadProgressScope(
+            [this](const NLS::Core::ResourceManagement::ResourceLoadProgress& progress)
+            {
+                const float startupProgress = progress.completed ? 0.86f : 0.82f;
+                m_context.PresentStartupProgressFrame(progress.message, startupProgress);
+            });
+        NLS_LOG_INFO("[Startup] RestoreStartupScene begin");
+        RestoreStartupScene();
+        NLS_LOG_INFO("[Startup] RestoreStartupScene end");
+
+        m_context.PresentStartupProgressFrame("Applying startup editor state", 0.90f);
+        NLS_LOG_INFO("[Startup] ApplyStartupValidationDirectives begin");
+        ApplyStartupValidationDirectives();
+        NLS_LOG_INFO("[Startup] ApplyStartupValidationDirectives end");
+        m_context.PresentStartupProgressFrame("Preparing first editor frame", 0.94f);
+    }
+    catch (const std::exception& exception)
+    {
+        NLS_LOG_ERROR(std::string("Startup scene load failed: ") + exception.what());
+        throw;
+    }
+    catch (...)
+    {
+        NLS_LOG_ERROR("Startup scene load failed with an unknown exception.");
+        throw;
+    }
 }
 
 Editor::Core::Editor::~Editor()
@@ -583,27 +618,27 @@ void Editor::Core::Editor::RegisterDefaultShortcuts()
         [](Panels::SceneView& p_sceneView) { p_sceneView.ToggleCurrentGizmoSpace(); });
 
     registerCommand(makeCommand(
-        "edit.delete-selected-actor",
-        "Delete Selected Actor",
+        "edit.delete-selected-gameobject",
+        "Delete Selected GameObject",
         "Edit",
         ShortcutContexts::SceneView,
         ShortcutBinding::FromKey(EKey::KEY_DELETE),
         [this]
         {
-            if (m_editorActions.IsAnyActorSelected())
-                m_editorActions.DestroyActor(*m_editorActions.GetSelectedActor());
+            if (m_editorActions.IsAnyGameObjectSelected())
+                m_editorActions.DestroyGameObject(*m_editorActions.GetSelectedGameObject());
         }));
 
     registerCommand(makeCommand(
-        "edit.delete-selected-actor-hierarchy",
-        "Delete Selected Actor",
+        "edit.delete-selected-gameobject-hierarchy",
+        "Delete Selected GameObject",
         "Edit",
         ShortcutContexts::Hierarchy,
         ShortcutBinding::FromKey(EKey::KEY_DELETE),
         [this]
         {
-            if (m_editorActions.IsAnyActorSelected())
-                m_editorActions.DestroyActor(*m_editorActions.GetSelectedActor());
+            if (m_editorActions.IsAnyGameObjectSelected())
+                m_editorActions.DestroyGameObject(*m_editorActions.GetSelectedGameObject());
         }));
 
     m_shortcutService.LoadProfile(std::filesystem::path(m_context.projectPath) / "UserSettings" / "shortcuts.json");
@@ -624,7 +659,14 @@ void Editor::Core::Editor::RestoreStartupScene()
         if (!std::filesystem::exists(resolvedPath))
             return false;
 
-        return m_context.sceneManager.LoadScene(resolvedPath.string(), true);
+        return m_context.sceneManager.LoadScene(
+            resolvedPath.string(),
+            true,
+            [this](const Engine::SceneSystem::SceneLoadProgress& progress)
+            {
+                const float startupProgress = 0.65f + progress.normalizedProgress * 0.22f;
+                m_context.PresentStartupProgressFrame(progress.message, startupProgress);
+            });
     };
 
     const auto lastOpenedScene = m_context.projectSettings.GetOrDefault<std::string>("last_opened_scene", "");
@@ -635,12 +677,53 @@ void Editor::Core::Editor::RestoreStartupScene()
     const auto startScenePath = m_context.projectAssetsPath + startScene;
     if (!startScene.empty() && startScene != "NULL" && std::filesystem::exists(startScenePath))
     {
-        m_context.sceneManager.LoadScene(startScenePath, true);
-        return;
+        if (m_context.sceneManager.LoadScene(
+            startScenePath,
+            true,
+            [this](const Engine::SceneSystem::SceneLoadProgress& progress)
+            {
+                const float startupProgress = 0.65f + progress.normalizedProgress * 0.22f;
+                m_context.PresentStartupProgressFrame(progress.message, startupProgress);
+            }))
+        {
+            return;
+        }
     }
 
+    m_context.PresentStartupProgressFrame("Creating default startup scene", 0.78f);
     m_context.sceneManager.LoadEmptyLightedScene();
     m_context.sceneManager.MarkCurrentSceneDirty();
+}
+
+void Editor::Core::Editor::RefreshProjectAssetBrowser()
+{
+    m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser").Refresh();
+}
+
+void Editor::Core::Editor::PrepareProjectAssetWatchersForStartup()
+{
+    m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser").PrepareStartupWatchers();
+}
+
+void Editor::Core::Editor::AdoptStartupAssetWatchers(
+    AssetFileWatcher engineAssetsWatcher,
+    AssetFileWatcher projectAssetsWatcher)
+{
+    m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser").AdoptStartupWatchers(
+        std::move(engineAssetsWatcher),
+        std::move(projectAssetsWatcher));
+}
+
+bool Editor::Core::Editor::RunStartupWatcherPreimport(
+    const NLS::Editor::Assets::StartupAssetPreimportProgressSink& progressSink)
+{
+    return m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser").RunStartupWatcherPreimport(progressSink);
+}
+
+bool Editor::Core::Editor::CompleteStartupWatcherPreimportGate(
+    const NLS::Editor::Assets::StartupAssetPreimportProgressSink& progressSink)
+{
+    return m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser").CompleteStartupWatcherPreimportGate(progressSink);
 }
 
 void Editor::Core::Editor::RememberLastOpenedScene(const std::string& p_scenePath)
@@ -707,22 +790,48 @@ void Editor::Core::Editor::ApplyStartupValidationDirectives()
         break;
     }
 
-    if (!diagnostics.editorValidationSelectActor.empty())
+    if (!diagnostics.editorValidationCreateAsset.empty())
+    {
+        const auto assetPath = diagnostics.editorValidationCreateAsset;
+        m_editorActions.DelayAction(
+            [this, assetPath]
+            {
+                if (auto* created = m_editorActions.CreateGameObjectFromAsset(assetPath, true);
+                    created != nullptr)
+                {
+                    NLS_LOG_INFO(
+                        "Editor validation created asset instance: " +
+                        assetPath +
+                        " root=" +
+                        created->GetName());
+                }
+                else
+                {
+                    NLS_LOG_WARNING(
+                        "Editor validation failed to create asset instance: " +
+                        assetPath);
+                }
+            },
+            1);
+        NLS_LOG_INFO("Editor validation queued asset instance creation: " + assetPath);
+    }
+
+    if (!diagnostics.editorValidationSelectGameObject.empty())
     {
         if (auto* currentScene = m_context.sceneManager.GetCurrentScene();
             currentScene != nullptr)
         {
-            if (auto* actor = currentScene->FindActorByName(diagnostics.editorValidationSelectActor);
+            if (auto* actor = currentScene->FindGameObjectByName(diagnostics.editorValidationSelectGameObject);
                 actor != nullptr)
             {
-                m_editorActions.SelectActor(*actor);
-                NLS_LOG_INFO("Editor validation pre-selected actor: " + diagnostics.editorValidationSelectActor);
+                m_editorActions.SelectGameObject(*actor);
+                NLS_LOG_INFO("Editor validation pre-selected GameObject: " + diagnostics.editorValidationSelectGameObject);
             }
             else
             {
                 NLS_LOG_WARNING(
-                    "Editor validation could not find actor during startup: " +
-                    diagnostics.editorValidationSelectActor);
+                    "Editor validation could not find GameObject during startup: " +
+                    diagnostics.editorValidationSelectGameObject);
             }
         }
     }

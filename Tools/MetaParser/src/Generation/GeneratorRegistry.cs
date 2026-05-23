@@ -1,6 +1,6 @@
 internal sealed record MetaParserGeneratorDefinition(
     MetaParserGeneratorManifest Manifest,
-    Action<PrecompileParams, IReadOnlyList<ReflectTypeInfo>, string> Generate);
+    Action<PrecompileParams, IReadOnlyList<ReflectTypeInfo>, ReflectionTypeCatalog, string> Generate);
 
 internal static class MetaParserGeneratorRegistry
 {

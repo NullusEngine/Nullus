@@ -310,6 +310,11 @@ namespace
 
 namespace NLS::Engine::Rendering
 {
+	DeferredSceneRenderer::DeferredSceneRenderer(NLS::Render::Context::Driver& p_driver)
+		: DeferredSceneRenderer(p_driver, {})
+	{
+	}
+
 	DeferredSceneRenderer::DeferredSceneRenderer(
 		NLS::Render::Context::Driver& p_driver,
 		ConstructionOptions options)

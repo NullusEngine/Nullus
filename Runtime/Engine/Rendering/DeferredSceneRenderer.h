@@ -28,9 +28,10 @@ namespace NLS::Engine::Rendering
 			bool loadPipelineResources = true;
 		};
 
-		explicit DeferredSceneRenderer(
+		explicit DeferredSceneRenderer(NLS::Render::Context::Driver& p_driver);
+		DeferredSceneRenderer(
 			NLS::Render::Context::Driver& p_driver,
-			ConstructionOptions options = {});
+			ConstructionOptions options);
 		~DeferredSceneRenderer() override;
 
 		void BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor) override;

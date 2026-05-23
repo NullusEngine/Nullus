@@ -569,10 +569,7 @@ TEST(EditorRenderPathContractTests, GeneratedModelDropLoadsMaterialsOnlyThroughR
     const auto actionsSourcePath =
         std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
 
-    std::ifstream stream(actionsSourcePath, std::ios::binary);
-    const std::string source{
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>()};
+    const std::string source = ReadSourceText(actionsSourcePath);
 
     ASSERT_FALSE(source.empty());
     const auto collector = source.find("void CollectPrefabAssetResolutionTasks(");
@@ -950,10 +947,7 @@ TEST(EditorRenderPathContractTests, GeneratedModelDeferredMeshBindUsesNonBlockin
     const auto actionsSourcePath =
         std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
 
-    std::ifstream stream(actionsSourcePath, std::ios::binary);
-    const std::string source{
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>()};
+    const std::string source = ReadSourceText(actionsSourcePath);
 
     ASSERT_FALSE(source.empty());
     const auto bindBegin = source.find("bool BindDeferredMeshPath(");
@@ -993,10 +987,7 @@ TEST(EditorRenderPathContractTests, GeneratedModelDeferredMeshLoadStaysCpuOnlyUn
     const auto actionsSourcePath =
         std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
 
-    std::ifstream stream(actionsSourcePath, std::ios::binary);
-    const std::string source{
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>()};
+    const std::string source = ReadSourceText(actionsSourcePath);
 
     ASSERT_FALSE(source.empty());
     const auto stateBegin = source.find("struct MeshArtifactLoadState");
@@ -1038,10 +1029,7 @@ TEST(EditorRenderPathContractTests, GeneratedModelDeferredMeshArtifactFailureFai
     const auto actionsSourcePath =
         std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
 
-    std::ifstream stream(actionsSourcePath, std::ios::binary);
-    const std::string source{
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>()};
+    const std::string source = ReadSourceText(actionsSourcePath);
 
     ASSERT_FALSE(source.empty());
     const auto taskBegin = source.find("struct RendererResourceResolutionTask");
@@ -1294,10 +1282,7 @@ TEST(EditorRenderPathContractTests, PendingImportedAssetPayloadDropsUseAsyncComp
     const auto actionsSourcePath =
         std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
 
-    std::ifstream stream(actionsSourcePath, std::ios::binary);
-    const std::string source{
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>()};
+    const std::string source = ReadSourceText(actionsSourcePath);
 
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("BuildPrefabResourcePathFromPayload("), std::string::npos);
@@ -1323,10 +1308,7 @@ TEST(EditorRenderPathContractTests, AssetDropsTargetActivePrefabStageSceneWhenOp
     const auto actionsSourcePath =
         std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
 
-    std::ifstream stream(actionsSourcePath, std::ios::binary);
-    const std::string source{
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>()};
+    const std::string source = ReadSourceText(actionsSourcePath);
 
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("ResolveGameObjectCreationScene("), std::string::npos);
@@ -1437,10 +1419,7 @@ TEST(EditorRenderPathContractTests, RendererResourceResolutionUsesExactCachedPre
     const auto actionsSourcePath =
         std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
 
-    std::ifstream stream(actionsSourcePath, std::ios::binary);
-    const std::string source{
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>()};
+    const std::string source = ReadSourceText(actionsSourcePath);
 
     ASSERT_FALSE(source.empty());
     const auto resolveBegin = source.find("const NLS::Editor::Assets::PrefabInstanceRecord* ResolveLivePrefabInstance(");
@@ -1474,10 +1453,7 @@ TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionIndexesAsset
     const auto actionsSourcePath =
         std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
 
-    std::ifstream stream(actionsSourcePath, std::ios::binary);
-    const std::string source{
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>()};
+    const std::string source = ReadSourceText(actionsSourcePath);
 
     ASSERT_FALSE(source.empty());
     const auto collector = source.find("void CollectPrefabAssetResolutionTasks(");

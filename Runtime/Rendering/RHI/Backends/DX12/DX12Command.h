@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -83,6 +84,12 @@ namespace NLS::Render::Backend
 
 	private:
 		void EndPendingGpuProfileScopes();
+		void ClearBoundPipelineState();
+#if defined(_WIN32)
+		bool IsBoundGraphicsPipelineNativeValid() const;
+		bool IsBoundComputePipelineNativeValid() const;
+		bool HasInitializedRequiredRootDescriptorTables(std::string_view operationName) const;
+#endif
 
 		std::string m_debugName;
 		bool m_recording = false;
@@ -101,6 +108,8 @@ namespace NLS::Render::Backend
 			D3D12_RESOURCE_STATES stateAfterEnd = D3D12_RESOURCE_STATE_COMMON;
 			NLS::Render::RHI::RHITexture* texture = nullptr;
 			NLS::Render::RHI::ResourceState textureStateAfterEnd = NLS::Render::RHI::ResourceState::Unknown;
+			NLS::Render::RHI::RHISubresourceRange subresourceRange{};
+			bool coversWholeTexture = true;
 		};
 		enum class DebugEventScopeKind : uint8_t
 		{
@@ -113,11 +122,13 @@ namespace NLS::Render::Backend
 			std::string label;
 		};
 		std::vector<ActiveRenderPassTransition> m_activeRenderPassTransitions;
+		std::unordered_set<const NLS::Render::RHI::RHITexture*> m_partialTextureStateDirty;
 		std::vector<DebugEventScope> m_debugEventScopeStack;
 #endif
 		std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline> m_boundPipeline;
 		std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> m_boundComputePipeline;
 		std::vector<NLS::Render::RHI::DX12::DX12DescriptorTableDesc> m_boundDescriptorTables;
+		std::vector<NLS::Render::RHI::DX12::DX12PushConstantRootParameterDesc> m_boundPushConstantRootParameters;
 		std::vector<bool> m_initializedRootDescriptorTables;
 		std::vector<std::pair<uint32_t, std::shared_ptr<NLS::Render::RHI::RHIBindingSet>>> m_boundBindingSets;
 		std::vector<std::shared_ptr<NLS::Render::RHI::RHITextureView>> m_recordedTextureViewKeepAlive;

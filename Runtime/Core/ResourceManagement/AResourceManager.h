@@ -1,12 +1,41 @@
 ﻿#pragma once
 
-#include <unordered_map>
 #include <any>
+#include <functional>
 #include <string>
+#include <unordered_map>
+
+#include "CoreDef.h"
 
 
 namespace NLS::Core::ResourceManagement
 {
+	struct ResourceLoadProgress
+	{
+		std::string resourceType;
+		std::string path;
+		std::string message;
+		bool completed = false;
+		bool succeeded = false;
+	};
+
+	using ResourceLoadProgressCallback = std::function<void(const ResourceLoadProgress&)>;
+
+	class NLS_RESOURCE_MANAGEMENT_API ResourceLoadProgressScope
+	{
+	public:
+		explicit ResourceLoadProgressScope(ResourceLoadProgressCallback callback);
+		~ResourceLoadProgressScope();
+
+		ResourceLoadProgressScope(const ResourceLoadProgressScope&) = delete;
+		ResourceLoadProgressScope& operator=(const ResourceLoadProgressScope&) = delete;
+
+		static void Report(const ResourceLoadProgress& progress);
+
+	private:
+		ResourceLoadProgressCallback m_previousCallback;
+	};
+
 	/**
 	* Handle the management of various resources of variable type
 	*/
@@ -95,10 +124,13 @@ namespace NLS::Core::ResourceManagement
 		std::unordered_map<std::string, T*>& GetResources();
 
 	protected:
+		virtual const char* GetResourceTypeName() const { return "Resource"; }
 		virtual T* CreateResource(const std::string& p_path) = 0;
 		virtual void DestroyResource(T* p_resource) = 0;
 		virtual void ReloadResource(T* p_resource, const std::string& p_path) = 0;
 		static std::string GetRealPath(const std::string& p_path);
+		static const std::string& GetProjectAssetsPath();
+		static const std::string& GetEngineAssetsPath();
 
 	private:
 		inline static std::string __PROJECT_ASSETS_PATH = "";

@@ -25,10 +25,10 @@ void FrameObjectBindingProvider::EndFrame()
     m_preparedDrawCount = 0u;
 }
 
-void FrameObjectBindingProvider::PrepareDraw(PipelineState& pso, const Entities::Drawable& drawable)
+bool FrameObjectBindingProvider::PrepareDraw(PipelineState& pso, const Entities::Drawable& drawable)
 {
-    OnPrepareDraw(pso, drawable);
-    m_objectPrepared = true;
+    m_objectPrepared = OnPrepareDraw(pso, drawable);
+    return m_objectPrepared;
 }
 
 void FrameObjectBindingProvider::PrepareExplicitDraw(
@@ -71,8 +71,9 @@ void FrameObjectBindingProvider::OnEndFrame()
 {
 }
 
-void FrameObjectBindingProvider::OnPrepareDraw(PipelineState&, const Entities::Drawable&)
+bool FrameObjectBindingProvider::OnPrepareDraw(PipelineState&, const Entities::Drawable&)
 {
+    return true;
 }
 
 void FrameObjectBindingProvider::OnPrepareExplicitDraw(RHI::RHICommandBuffer&, PipelineState&, const Entities::Drawable&)

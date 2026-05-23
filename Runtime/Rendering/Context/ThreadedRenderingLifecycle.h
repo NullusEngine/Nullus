@@ -52,6 +52,8 @@ namespace NLS::Render::Context
         std::shared_ptr<RHI::RHIBindingSet> materialBindingSet;
         std::shared_ptr<RHI::RHIMesh> mesh;
         uint32_t instanceCount = 0u;
+        uint32_t objectIndex = 0u;
+        bool usesObjectIndex = false;
     };
 
     struct NLS_RENDER_API RecordedComputeBindingSetInput
@@ -253,7 +255,7 @@ namespace NLS::Render::Context
         bool hasGeometryFrustum = false;
         bool hasLightFrustum = false;
         bool hasSceneInput = false;
-        uint64_t sceneActorCount = 0u;
+        uint64_t sceneGameObjectCount = 0u;
         uint64_t sceneModelRendererCount = 0u;
         uint64_t sceneLightCount = 0u;
         uint64_t sceneSkyboxCount = 0u;
@@ -280,7 +282,7 @@ namespace NLS::Render::Context
         bool clearStencilBuffer = true;
         uint32_t renderWidth = 0u;
         uint32_t renderHeight = 0u;
-        uint64_t sceneActorCount = 0u;
+        uint64_t sceneGameObjectCount = 0u;
         uint64_t visibleDrawCount = 0u;
         uint64_t opaqueDrawCount = 0u;
         uint64_t transparentDrawCount = 0u;
@@ -308,6 +310,7 @@ namespace NLS::Render::Context
         std::vector<RecordedDrawCommandInput> recordedDrawCommands;
         std::vector<std::shared_ptr<RHI::RHITexture>> extractedTextures;
         std::shared_ptr<RHI::RHITexture> preferredReadbackTexture;
+        uint32_t externalSceneOutputTextureCount = 0u;
     };
 
     using PreparedRenderSceneBuilder = std::function<RenderScenePackage()>;
@@ -499,6 +502,9 @@ namespace NLS::Render::Context
         bool IsBackPressured() const;
         uint64_t GetBlockedPublishCount() const;
         uint64_t GetPublishedFrameCount() const;
+        std::optional<size_t> ReserveReusableSlotIndex();
+        bool ReleaseReservedReusableSlotIndex(size_t slotIndex);
+        std::optional<size_t> GetReservedReusableSlotIndex() const;
         const InFlightFrameSlot* PeekSlot(size_t slotIndex) const;
         std::optional<InFlightFrameSlot> CopySlot(size_t slotIndex) const;
         std::vector<InFlightFrameSlot> CopySlots() const;
@@ -515,7 +521,10 @@ namespace NLS::Render::Context
             const FrameSnapshot& snapshot,
             PreparedRenderSceneBuilder renderSceneBuilder,
             size_t* publishedSlotIndex);
-        InFlightFrameSlot* FindReusableSlotLocked();
+        InFlightFrameSlot* FindReusableSlotLocked(bool allowReservedSlot = false);
+        const InFlightFrameSlot* FindReusableSlotReadOnlyLocked(bool allowReservedSlot = false) const;
+        bool IsSlotReservedLocked(size_t slotIndex) const;
+        void ClearReservedSlotLocked(size_t slotIndex);
         const InFlightFrameSlot* PeekSlotLocked(size_t slotIndex) const;
         void RefreshTelemetryLocked();
 
@@ -523,6 +532,7 @@ namespace NLS::Render::Context
         std::condition_variable m_slotAvailable;
         std::vector<InFlightFrameSlot> m_slots;
         ThreadedFrameTelemetry m_telemetry;
+        std::optional<size_t> m_reservedReusableSlotIndex;
         uint64_t m_latestPublishedFrameId = 0u;
         uint64_t m_latestRetiredFrameId = 0u;
     };

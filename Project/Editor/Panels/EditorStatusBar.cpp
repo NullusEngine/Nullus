@@ -88,4 +88,5 @@ void EditorStatusBar::DrawBarContent()
         }
     }
 }
+
 }

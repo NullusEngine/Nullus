@@ -60,6 +60,8 @@ internal static partial class MetaParserTool
             return QualifyRootNamespaceType(typeName);
         if (BuiltinTypeNames.Contains(typeName))
             return typeName;
+        if (string.Equals(typeName, "PPtr", StringComparison.Ordinal))
+            return "NLS::Engine::Serialize::PPtr";
         if (typeName.IndexOfAny(new[] { ' ', '&', '*', '<', '>', '[', ']', '(', ')', ',' }) >= 0)
             return QualifyTypeNameInExpression(typeName, namespacePrefix, visibleTypes);
         if (typeName.Contains("::", StringComparison.Ordinal))
@@ -95,6 +97,9 @@ internal static partial class MetaParserTool
 
                 if (IsAlreadyQualifiedAt(qualified, match.Index, match.Length))
                     return token;
+
+                if (string.Equals(token, "PPtr", StringComparison.Ordinal))
+                    return "NLS::Engine::Serialize::PPtr";
 
                 var resolved = ResolveVisibleTypeName(token, namespacePrefix, visibleTypes);
                 return resolved ?? token;

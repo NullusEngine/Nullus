@@ -482,9 +482,11 @@ function(nls_add_meta_generation TARGET_NAME SOURCE_DIR HEADERS)
     file(GLOB _meta_parser_template_files CONFIGURE_DEPENDS
         "${NLS_ROOT_DIR}/Tools/MetaParser/src/Templates/*.tt"
     )
-    file(GLOB _meta_parser_tool_sources CONFIGURE_DEPENDS
+    file(GLOB_RECURSE _meta_parser_tool_sources CONFIGURE_DEPENDS
         "${NLS_ROOT_DIR}/Tools/MetaParser/src/*.cs"
     )
+    list(FILTER _meta_parser_tool_sources EXCLUDE REGEX [[/bin/]])
+    list(FILTER _meta_parser_tool_sources EXCLUDE REGEX [[/obj/]])
 
     nls_get_common_meta_include_dirs(_common_include_dirs)
     set(_include_dirs ${_common_include_dirs} ${_source_dir} ${_gen_dir} ${TARGET_APPEND_INCLUDE_DIR})

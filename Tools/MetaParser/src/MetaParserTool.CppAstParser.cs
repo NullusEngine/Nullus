@@ -39,6 +39,8 @@ internal static partial class MetaParserTool
             }
             catch (Exception ex)
             {
+                if (ex is FormatException || ex is NotSupportedException)
+                    throw;
                 Console.Error.WriteLine($"[MetaParser] Warning: partial reflection fallback for {fullTypeName}: {ex.Message}");
                 bases = TryExtract(() => ExtractBases(cls));
                 fields = TryExtract(() => ExtractFields(cls, visibleTypes));

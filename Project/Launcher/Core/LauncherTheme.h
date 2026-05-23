@@ -10,7 +10,7 @@
 namespace NLS
 {
 
-// ─── Hub Theme Colors (Unity Hub dark palette) ───
+// ─── Hub Theme Colors (dark editor palette) ───
 namespace HubColors
 {
     inline const Maths::Color Background      {0.118f, 0.118f, 0.118f, 1.0f};

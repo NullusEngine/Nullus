@@ -1,0 +1,72 @@
+#pragma once
+
+#include "Rendering/Assets/ImportedScene.h"
+
+#include <cstdint>
+#include <map>
+#include <string>
+#include <vector>
+
+namespace NLS::Editor::Assets
+{
+struct ModelImporterSettings
+{
+    double globalScale = 1.0;
+    std::string axisConversion;
+    std::string unitConversion;
+    std::string hierarchyPolicy = "preserve";
+    bool importNormals = true;
+    bool importTangents = true;
+    bool importUvs = true;
+    bool importMaterials = true;
+    bool importSkeleton = true;
+    bool importAnimations = true;
+    bool importMorphTargets = true;
+    bool importCameras = false;
+    bool importLights = false;
+};
+
+struct TexturePlatformOverride
+{
+    std::string platform;
+    uint32_t maxTextureSize = 0u;
+    std::string format;
+    std::string compressionQuality;
+};
+
+struct TextureImporterSettings
+{
+    std::string textureType = "default";
+    bool srgbTexture = true;
+    bool alphaIsTransparency = false;
+    bool mipmapEnabled = false;
+    std::string wrapMode = "repeat";
+    std::string filterMode = "bilinear";
+    uint32_t maxTextureSize = 2048u;
+    std::string compressionIntent = "default";
+    std::vector<TexturePlatformOverride> platformOverrides;
+};
+
+std::string BoolToImporterSettingString(bool value);
+bool BoolFromImporterSettings(
+    const std::map<std::string, std::string>& settings,
+    const char* key,
+    bool fallback);
+double DoubleFromImporterSettings(
+    const std::map<std::string, std::string>& settings,
+    const char* key,
+    double fallback);
+uint32_t UIntFromImporterSettings(
+    const std::map<std::string, std::string>& settings,
+    const char* key,
+    uint32_t fallback);
+std::string StringFromImporterSettings(
+    const std::map<std::string, std::string>& settings,
+    const char* key,
+    std::string fallback = {});
+ModelImporterSettings ModelImporterSettingsFromSerialized(
+    const std::map<std::string, std::string>& settings);
+NLS::Render::Assets::SceneImportSettings ToSceneImportSettings(const ModelImporterSettings& settings);
+NLS::Render::Assets::SceneImportSettings ToSceneImportSettings(
+    const std::map<std::string, std::string>& settings);
+}

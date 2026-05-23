@@ -5,6 +5,7 @@
 #include "Rendering/RHI/Backends/DX12/DX12FormatUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12RenderPassUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12Resource.h"
+#include "Rendering/RHI/Backends/DX12/DX12TextureViewUtils.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -68,6 +69,82 @@ namespace NLS::Render::Backend
 				return;
 
 			commandList->EndEvent();
+		}
+
+		void AppendDX12TextureTransitionBarriers(
+			std::vector<D3D12_RESOURCE_BARRIER>& barriers,
+			ID3D12Resource* resource,
+			const NLS::Render::RHI::RHITextureDesc& textureDesc,
+			const NLS::Render::RHI::RHISubresourceRange& subresourceRange,
+			const D3D12_RESOURCE_STATES stateBefore,
+			const D3D12_RESOURCE_STATES stateAfter)
+		{
+			if (resource == nullptr)
+				return;
+
+			D3D12_RESOURCE_BARRIER barrier{};
+			barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+			barrier.Transition.pResource = resource;
+			barrier.Transition.StateBefore = stateBefore;
+			barrier.Transition.StateAfter = stateAfter;
+
+			if (NLS::Render::RHI::DX12::DoesDX12BarrierRangeCoverWholeTexture(textureDesc, subresourceRange))
+			{
+				barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+				barriers.push_back(barrier);
+				return;
+			}
+
+			const auto subresourceIndices =
+				NLS::Render::RHI::DX12::BuildDX12BarrierSubresourceIndices(textureDesc, subresourceRange);
+			for (const auto subresourceIndex : subresourceIndices)
+			{
+				barrier.Transition.Subresource = subresourceIndex;
+				barriers.push_back(barrier);
+			}
+		}
+
+		bool IsLegalCpuVisibleBufferState(
+			const NLS::Render::RHI::RHIBuffer& buffer,
+			const NLS::Render::RHI::ResourceState state)
+		{
+			const auto memoryUsage = buffer.GetDesc().memoryUsage;
+			if (memoryUsage == NLS::Render::RHI::MemoryUsage::CPUToGPU)
+				return state == NLS::Render::RHI::ResourceState::Unknown ||
+					state == NLS::Render::RHI::ResourceState::GenericRead;
+			if (memoryUsage == NLS::Render::RHI::MemoryUsage::GPUToCPU)
+				return state == NLS::Render::RHI::ResourceState::Unknown ||
+					state == NLS::Render::RHI::ResourceState::CopyDst;
+			return true;
+		}
+
+		bool IsLegalCpuVisibleBufferTransition(
+			const NLS::Render::RHI::RHIBuffer& buffer,
+			const NLS::Render::RHI::ResourceState before,
+			const NLS::Render::RHI::ResourceState after)
+		{
+			return IsLegalCpuVisibleBufferState(buffer, before) &&
+				IsLegalCpuVisibleBufferState(buffer, after);
+		}
+
+		bool IsValidDX12BufferCopyEndpoint(
+			const NLS::Render::RHI::RHIBuffer& source,
+			const NLS::Render::RHI::RHIBuffer& destination,
+			const std::string& debugName)
+		{
+			const auto sourceMemory = source.GetDesc().memoryUsage;
+			const auto destinationMemory = destination.GetDesc().memoryUsage;
+			if (destinationMemory == NLS::Render::RHI::MemoryUsage::CPUToGPU)
+			{
+				NLS_LOG_ERROR("NativeDX12CommandBuffer::CopyBuffer rejected CPUToGPU destination: " + debugName);
+				return false;
+			}
+			if (sourceMemory == NLS::Render::RHI::MemoryUsage::GPUToCPU)
+			{
+				NLS_LOG_ERROR("NativeDX12CommandBuffer::CopyBuffer rejected GPUToCPU source: " + debugName);
+				return false;
+			}
+			return true;
 		}
 
 		IDX12BindingSetAccess* ResolveDX12BindingSetAccess(
@@ -168,6 +245,66 @@ namespace NLS::Render::Backend
 #endif
 	}
 
+	void NativeDX12CommandBuffer::ClearBoundPipelineState()
+	{
+		m_boundPipeline.reset();
+		m_boundComputePipeline.reset();
+		m_boundDescriptorTables.clear();
+		m_boundPushConstantRootParameters.clear();
+		m_initializedRootDescriptorTables.clear();
+		m_boundBindingSets.clear();
+#if defined(_WIN32)
+		m_bindingComputePipeline = false;
+#endif
+	}
+
+#if defined(_WIN32)
+	bool NativeDX12CommandBuffer::IsBoundGraphicsPipelineNativeValid() const
+	{
+		if (m_boundPipeline == nullptr)
+			return false;
+
+		const auto* nativePipeline = dynamic_cast<const IDX12GraphicsPipelineAccess*>(m_boundPipeline.get());
+		return nativePipeline != nullptr &&
+			nativePipeline->GetRootSignature() != nullptr &&
+			nativePipeline->GetPipelineState() != nullptr;
+	}
+
+	bool NativeDX12CommandBuffer::IsBoundComputePipelineNativeValid() const
+	{
+		if (m_boundComputePipeline == nullptr)
+			return false;
+
+		const auto* nativePipeline = dynamic_cast<const IDX12ComputePipelineAccess*>(m_boundComputePipeline.get());
+		return nativePipeline != nullptr &&
+			nativePipeline->GetRootSignature() != nullptr &&
+			nativePipeline->GetPipelineState() != nullptr;
+	}
+
+	bool NativeDX12CommandBuffer::HasInitializedRequiredRootDescriptorTables(std::string_view operationName) const
+	{
+		bool allRequiredTablesInitialized = true;
+		for (size_t rootParameterIndex = 0; rootParameterIndex < m_boundDescriptorTables.size(); ++rootParameterIndex)
+		{
+			if (rootParameterIndex < m_initializedRootDescriptorTables.size() &&
+				m_initializedRootDescriptorTables[rootParameterIndex])
+			{
+				continue;
+			}
+
+			allRequiredTablesInitialized = false;
+			const auto& table = m_boundDescriptorTables[rootParameterIndex];
+			NLS_LOG_ERROR(
+				"NativeDX12CommandBuffer::" + std::string(operationName) +
+				" missing root descriptor table: commandList=" + m_debugName +
+				" rootIndex=" + std::to_string(rootParameterIndex) +
+				" set=" + std::to_string(table.set) +
+				" heap=" + ToDescriptorHeapKindName(table.heapKind));
+		}
+		return allRequiredTablesInitialized;
+	}
+#endif
+
 	void NativeDX12CommandBuffer::Begin()
 	{
 #if defined(_WIN32)
@@ -197,12 +334,14 @@ namespace NLS::Render::Backend
 			m_currentResourceDescriptorHeap = nullptr;
 			m_currentSamplerDescriptorHeap = nullptr;
 			m_boundDescriptorTables.clear();
+			m_boundPushConstantRootParameters.clear();
 			m_initializedRootDescriptorTables.clear();
 			m_boundBindingSets.clear();
 			m_recordedTextureViewKeepAlive.clear();
 			m_recordedBindingSetKeepAlive.clear();
 			m_recordedPipelineKeepAlive.clear();
 			m_recordedComputePipelineKeepAlive.clear();
+			m_partialTextureStateDirty.clear();
 			EndPendingGpuProfileScopes();
 			m_bindingComputePipeline = false;
 			m_recording = true;
@@ -232,12 +371,14 @@ namespace NLS::Render::Backend
 		m_currentResourceDescriptorHeap = nullptr;
 		m_currentSamplerDescriptorHeap = nullptr;
 		m_boundDescriptorTables.clear();
+		m_boundPushConstantRootParameters.clear();
 		m_initializedRootDescriptorTables.clear();
 		m_boundBindingSets.clear();
 		m_recordedTextureViewKeepAlive.clear();
 		m_recordedBindingSetKeepAlive.clear();
 		m_recordedPipelineKeepAlive.clear();
 		m_recordedComputePipelineKeepAlive.clear();
+		m_partialTextureStateDirty.clear();
 		EndPendingGpuProfileScopes();
 		m_bindingComputePipeline = false;
 		m_boundPipeline.reset();
@@ -334,6 +475,7 @@ namespace NLS::Render::Backend
 		const bool isBackbufferPass = desc.debugName == "BackbufferRenderPass";
 		if (!desc.attachmentsRequireExternalStateTransitions)
 		{
+			std::vector<D3D12_RESOURCE_BARRIER> beginBarriers;
 			for (const auto& colorAttachment : desc.colorAttachments)
 			{
 				if (colorAttachment.view == nullptr)
@@ -359,14 +501,19 @@ namespace NLS::Render::Backend
 				const D3D12_RESOURCE_STATES stateAfterPass = isBackbufferPass
 					? D3D12_RESOURCE_STATE_PRESENT
 					: D3D12_RESOURCE_STATE_COMMON;
+				const auto& subresourceRange = colorAttachment.view->GetDesc().subresourceRange;
+				const bool coversWholeTexture =
+					NLS::Render::RHI::DX12::DoesDX12BarrierRangeCoverWholeTexture(
+						texture->GetDesc(),
+						subresourceRange);
 
-				D3D12_RESOURCE_BARRIER barrier{};
-				barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-				barrier.Transition.pResource = resource;
-				barrier.Transition.StateBefore = stateBefore;
-				barrier.Transition.StateAfter = stateAfter;
-				barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-				m_commandList->ResourceBarrier(1, &barrier);
+				AppendDX12TextureTransitionBarriers(
+					beginBarriers,
+					resource,
+					texture->GetDesc(),
+					subresourceRange,
+					stateBefore,
+					stateAfter);
 
 				m_activeRenderPassTransitions.push_back({
 					resource,
@@ -375,10 +522,20 @@ namespace NLS::Render::Backend
 					texture.get(),
 					isBackbufferPass
 						? NLS::Render::RHI::ResourceState::Present
-						: NLS::Render::RHI::ResourceState::Unknown
+						: NLS::Render::RHI::ResourceState::Unknown,
+					subresourceRange,
+					coversWholeTexture
 				});
 				if (auto* nativeTexture = dynamic_cast<NativeDX12Texture*>(texture.get()))
-					nativeTexture->SetState(NLS::Render::RHI::ResourceState::RenderTarget);
+				{
+					if (coversWholeTexture)
+						nativeTexture->SetState(NLS::Render::RHI::ResourceState::RenderTarget);
+					else
+					{
+						nativeTexture->MarkPartialStateDirty();
+						m_partialTextureStateDirty.insert(texture.get());
+					}
+				}
 			}
 
 			if (desc.depthStencilAttachment.has_value() && desc.depthStencilAttachment->view != nullptr)
@@ -392,27 +549,44 @@ namespace NLS::Render::Backend
 						: nullptr;
 					if (resource != nullptr)
 					{
-						D3D12_RESOURCE_BARRIER barrier{};
-						barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-						barrier.Transition.pResource = resource;
 						const D3D12_RESOURCE_STATES stateBefore = ToD3D12ResourceState(texture->GetState());
-						barrier.Transition.StateBefore = stateBefore;
-						barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_DEPTH_WRITE;
-						barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-						m_commandList->ResourceBarrier(1, &barrier);
+						const auto& subresourceRange = desc.depthStencilAttachment->view->GetDesc().subresourceRange;
+						const bool coversWholeTexture =
+							NLS::Render::RHI::DX12::DoesDX12BarrierRangeCoverWholeTexture(
+								texture->GetDesc(),
+								subresourceRange);
+						AppendDX12TextureTransitionBarriers(
+							beginBarriers,
+							resource,
+							texture->GetDesc(),
+							subresourceRange,
+							stateBefore,
+							D3D12_RESOURCE_STATE_DEPTH_WRITE);
 
 						m_activeRenderPassTransitions.push_back({
 							resource,
 							D3D12_RESOURCE_STATE_DEPTH_WRITE,
 							D3D12_RESOURCE_STATE_COMMON,
 							texture.get(),
-							NLS::Render::RHI::ResourceState::Unknown
+							NLS::Render::RHI::ResourceState::Unknown,
+							subresourceRange,
+							coversWholeTexture
 						});
 						if (auto* nativeTexture = dynamic_cast<NativeDX12Texture*>(texture.get()))
-							nativeTexture->SetState(NLS::Render::RHI::ResourceState::DepthWrite);
+						{
+							if (coversWholeTexture)
+								nativeTexture->SetState(NLS::Render::RHI::ResourceState::DepthWrite);
+							else
+							{
+								nativeTexture->MarkPartialStateDirty();
+								m_partialTextureStateDirty.insert(texture.get());
+							}
+						}
 					}
 				}
 			}
+			if (!beginBarriers.empty())
+				m_commandList->ResourceBarrier(static_cast<UINT>(beginBarriers.size()), beginBarriers.data());
 		}
 		for (const auto& colorAttachment : desc.colorAttachments)
 		{
@@ -534,13 +708,16 @@ namespace NLS::Render::Backend
 				if (transition.stateAfterBegin == transition.stateAfterEnd)
 					continue;
 
-				D3D12_RESOURCE_BARRIER barrier{};
-				barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-				barrier.Transition.pResource = transition.resource;
-				barrier.Transition.StateBefore = transition.stateAfterBegin;
-				barrier.Transition.StateAfter = transition.stateAfterEnd;
-				barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-				barriers.push_back(barrier);
+				if (transition.texture == nullptr)
+					continue;
+
+				AppendDX12TextureTransitionBarriers(
+					barriers,
+					transition.resource,
+					transition.texture->GetDesc(),
+					transition.subresourceRange,
+					transition.stateAfterBegin,
+					transition.stateAfterEnd);
 			}
 
 			if (!barriers.empty())
@@ -548,7 +725,15 @@ namespace NLS::Render::Backend
 			for (const auto& transition : m_activeRenderPassTransitions)
 			{
 				if (auto* nativeTexture = dynamic_cast<NativeDX12Texture*>(transition.texture))
-					nativeTexture->SetState(transition.textureStateAfterEnd);
+				{
+					if (transition.coversWholeTexture)
+						nativeTexture->SetState(transition.textureStateAfterEnd);
+					else
+					{
+						nativeTexture->MarkPartialStateDirty();
+						m_partialTextureStateDirty.insert(transition.texture);
+					}
+				}
 			}
 			m_activeRenderPassTransitions.clear();
 		}
@@ -609,11 +794,15 @@ namespace NLS::Render::Backend
 
 		ID3D12RootSignature* rootSig = nativePipeline->GetRootSignature();
 		ID3D12PipelineState* pso = nativePipeline->GetPipelineState();
+		if (rootSig == nullptr || pso == nullptr)
+		{
+			NLS_LOG_ERROR("NativeDX12CommandBuffer::BindGraphicsPipeline rejected invalid native pipeline: " + std::string(pipeline->GetDebugName()));
+			ClearBoundPipelineState();
+			return;
+		}
 
-		if (rootSig != nullptr)
-			m_commandList->SetGraphicsRootSignature(rootSig);
-		if (pso != nullptr)
-			m_commandList->SetPipelineState(pso);
+		m_commandList->SetGraphicsRootSignature(rootSig);
+		m_commandList->SetPipelineState(pso);
 
 		D3D12_PRIMITIVE_TOPOLOGY primitiveTopology = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
 		switch (pipeline->GetDesc().primitiveTopology)
@@ -634,12 +823,16 @@ namespace NLS::Render::Backend
 			m_commandList->OMSetStencilRef(pipeline->GetDesc().depthStencilState.stencilReference);
 
 		m_boundDescriptorTables.clear();
+		m_boundPushConstantRootParameters.clear();
 		m_boundBindingSets.clear();
 		if (pipeline->GetDesc().pipelineLayout != nullptr)
 		{
 			auto* nativePipelineLayout = dynamic_cast<IDX12PipelineLayoutAccess*>(pipeline->GetDesc().pipelineLayout.get());
 			if (nativePipelineLayout != nullptr)
+			{
 				m_boundDescriptorTables = nativePipelineLayout->GetDescriptorTables();
+				m_boundPushConstantRootParameters = nativePipelineLayout->GetPushConstantRootParameters();
+			}
 		}
 		m_initializedRootDescriptorTables.assign(m_boundDescriptorTables.size(), false);
 
@@ -664,19 +857,27 @@ namespace NLS::Render::Backend
 
 		ID3D12RootSignature* rootSig = nativePipeline->GetRootSignature();
 		ID3D12PipelineState* pso = nativePipeline->GetPipelineState();
+		if (rootSig == nullptr || pso == nullptr)
+		{
+			NLS_LOG_ERROR("NativeDX12CommandBuffer::BindComputePipeline rejected invalid native pipeline: " + std::string(pipeline->GetDebugName()));
+			ClearBoundPipelineState();
+			return;
+		}
 
-		if (rootSig != nullptr)
-			m_commandList->SetComputeRootSignature(rootSig);
-		if (pso != nullptr)
-			m_commandList->SetPipelineState(pso);
+		m_commandList->SetComputeRootSignature(rootSig);
+		m_commandList->SetPipelineState(pso);
 
 		m_boundDescriptorTables.clear();
+		m_boundPushConstantRootParameters.clear();
 		m_boundBindingSets.clear();
 		if (pipeline->GetDesc().pipelineLayout != nullptr)
 		{
 			auto* nativePipelineLayout = dynamic_cast<IDX12PipelineLayoutAccess*>(pipeline->GetDesc().pipelineLayout.get());
 			if (nativePipelineLayout != nullptr)
+			{
 				m_boundDescriptorTables = nativePipelineLayout->GetDescriptorTables();
+				m_boundPushConstantRootParameters = nativePipelineLayout->GetPushConstantRootParameters();
+			}
 		}
 		m_initializedRootDescriptorTables.assign(m_boundDescriptorTables.size(), false);
 
@@ -759,6 +960,8 @@ namespace NLS::Render::Backend
 				const auto& table = m_boundDescriptorTables[rootParameterIndex];
 				if (table.set != boundSetIndex)
 					continue;
+				if (!boundNativeBindingSet->IsCompatibleWithDescriptorTable(table))
+					continue;
 
 				const auto gpuHandle = boundNativeBindingSet->GetGPUHandle(table.set, table.heapKind);
 				if (gpuHandle.ptr == 0)
@@ -779,16 +982,42 @@ namespace NLS::Render::Backend
 	}
 
 	void NativeDX12CommandBuffer::PushConstants(
-		NLS::Render::RHI::ShaderStageMask,
+		NLS::Render::RHI::ShaderStageMask stageMask,
 		uint32_t offset,
 		uint32_t size,
 		const void* data)
 	{
 #if defined(_WIN32)
-		if (m_commandList == nullptr)
+		if (m_commandList == nullptr || data == nullptr || size == 0u || (size % sizeof(uint32_t)) != 0u || (offset % sizeof(uint32_t)) != 0u)
 			return;
-		m_commandList->SetGraphicsRoot32BitConstants(0, size / sizeof(uint32_t), data, offset / sizeof(uint32_t));
+
+		const uint64_t writeBegin = offset;
+		const uint64_t writeEnd = writeBegin + size;
+		const auto rootParameterIt = std::find_if(
+			m_boundPushConstantRootParameters.begin(),
+			m_boundPushConstantRootParameters.end(),
+			[stageMask, writeBegin, writeEnd](const auto& rootParameter)
+			{
+				const auto stageOverlap = rootParameter.stageMask & stageMask;
+				if (stageOverlap == NLS::Render::RHI::ShaderStageMask::None)
+					return false;
+
+				const uint64_t rangeBegin = rootParameter.offset;
+				const uint64_t rangeEnd = rangeBegin + rootParameter.size;
+				return writeBegin >= rangeBegin && writeEnd <= rangeEnd;
+			});
+		if (rootParameterIt == m_boundPushConstantRootParameters.end())
+			return;
+
+		const uint32_t destinationOffsetIn32BitValues = (offset - rootParameterIt->offset) / sizeof(uint32_t);
+		const uint32_t valueCount = size / sizeof(uint32_t);
+		const auto rootParameterIndex = rootParameterIt->rootParameterIndex;
+		if (m_bindingComputePipeline)
+			m_commandList->SetComputeRoot32BitConstants(rootParameterIndex, valueCount, data, destinationOffsetIn32BitValues);
+		else
+			m_commandList->SetGraphicsRoot32BitConstants(rootParameterIndex, valueCount, data, destinationOffsetIn32BitValues);
 #else
+		(void)stageMask;
 		(void)offset;
 		(void)size;
 		(void)data;
@@ -831,23 +1060,11 @@ namespace NLS::Render::Backend
 	void NativeDX12CommandBuffer::Draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)
 	{
 #if defined(_WIN32)
-		for (size_t rootParameterIndex = 0; rootParameterIndex < m_boundDescriptorTables.size(); ++rootParameterIndex)
-		{
-			if (rootParameterIndex < m_initializedRootDescriptorTables.size() &&
-				m_initializedRootDescriptorTables[rootParameterIndex])
-			{
-				continue;
-			}
-
-			const auto& table = m_boundDescriptorTables[rootParameterIndex];
-			NLS_LOG_ERROR(
-				"NativeDX12CommandBuffer::Draw missing root descriptor table: commandList=" + m_debugName +
-				" rootIndex=" + std::to_string(rootParameterIndex) +
-				" set=" + std::to_string(table.set) +
-				" heap=" + ToDescriptorHeapKindName(table.heapKind));
-		}
-		if (m_commandList != nullptr)
-			m_commandList->DrawInstanced(vertexCount, instanceCount, firstVertex, firstInstance);
+		if (m_commandList == nullptr || m_boundPipeline == nullptr || !IsBoundGraphicsPipelineNativeValid())
+			return;
+		if (!HasInitializedRequiredRootDescriptorTables("Draw"))
+			return;
+		m_commandList->DrawInstanced(vertexCount, instanceCount, firstVertex, firstInstance);
 #else
 		(void)vertexCount;
 		(void)instanceCount;
@@ -859,23 +1076,10 @@ namespace NLS::Render::Backend
 	void NativeDX12CommandBuffer::DrawIndexed(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance)
 	{
 #if defined(_WIN32)
-		if (m_commandList == nullptr || m_boundPipeline == nullptr)
+		if (m_commandList == nullptr || m_boundPipeline == nullptr || !IsBoundGraphicsPipelineNativeValid())
 			return;
-		for (size_t rootParameterIndex = 0; rootParameterIndex < m_boundDescriptorTables.size(); ++rootParameterIndex)
-		{
-			if (rootParameterIndex < m_initializedRootDescriptorTables.size() &&
-				m_initializedRootDescriptorTables[rootParameterIndex])
-			{
-				continue;
-			}
-
-			const auto& table = m_boundDescriptorTables[rootParameterIndex];
-			NLS_LOG_ERROR(
-				"NativeDX12CommandBuffer::DrawIndexed missing root descriptor table: commandList=" + m_debugName +
-				" rootIndex=" + std::to_string(rootParameterIndex) +
-				" set=" + std::to_string(table.set) +
-				" heap=" + ToDescriptorHeapKindName(table.heapKind));
-		}
+		if (!HasInitializedRequiredRootDescriptorTables("DrawIndexed"))
+			return;
 		m_commandList->DrawIndexedInstanced(indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
 #else
 		(void)indexCount;
@@ -889,23 +1093,13 @@ namespace NLS::Render::Backend
 	void NativeDX12CommandBuffer::Dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
 	{
 #if defined(_WIN32)
-		for (size_t rootParameterIndex = 0; rootParameterIndex < m_boundDescriptorTables.size(); ++rootParameterIndex)
+		if (m_commandList != nullptr &&
+			m_boundComputePipeline != nullptr &&
+			IsBoundComputePipelineNativeValid() &&
+			HasInitializedRequiredRootDescriptorTables("Dispatch"))
 		{
-			if (rootParameterIndex < m_initializedRootDescriptorTables.size() &&
-				m_initializedRootDescriptorTables[rootParameterIndex])
-			{
-				continue;
-			}
-
-			const auto& table = m_boundDescriptorTables[rootParameterIndex];
-			NLS_LOG_ERROR(
-				"NativeDX12CommandBuffer::Dispatch missing root descriptor table: commandList=" + m_debugName +
-				" rootIndex=" + std::to_string(rootParameterIndex) +
-				" set=" + std::to_string(table.set) +
-				" heap=" + ToDescriptorHeapKindName(table.heapKind));
-		}
-		if (m_commandList != nullptr && m_boundComputePipeline != nullptr)
 			m_commandList->Dispatch(groupCountX, groupCountY, groupCountZ);
+		}
 #else
 		(void)groupCountX;
 		(void)groupCountY;
@@ -920,6 +1114,8 @@ namespace NLS::Render::Backend
 	{
 #if defined(_WIN32)
 		if (m_commandList == nullptr || source == nullptr || destination == nullptr)
+			return;
+		if (!IsValidDX12BufferCopyEndpoint(*source, *destination, m_debugName))
 			return;
 
 		auto srcHandle = source->GetNativeBufferHandle();
@@ -1050,6 +1246,21 @@ namespace NLS::Render::Backend
 		{
 			if (bufferBarrier.buffer == nullptr)
 				continue;
+			const auto& bufferDesc = bufferBarrier.buffer->GetDesc();
+			if (bufferDesc.memoryUsage == NLS::Render::RHI::MemoryUsage::CPUToGPU ||
+				bufferDesc.memoryUsage == NLS::Render::RHI::MemoryUsage::GPUToCPU)
+			{
+				auto effectiveBefore = bufferBarrier.before;
+				if (effectiveBefore == NLS::Render::RHI::ResourceState::Unknown)
+					effectiveBefore = bufferBarrier.buffer->GetState();
+				if (IsLegalCpuVisibleBufferTransition(*bufferBarrier.buffer, effectiveBefore, bufferBarrier.after))
+					continue;
+
+				NLS_LOG_ERROR(
+					"NativeDX12CommandBuffer::Barrier rejected illegal CPU-visible buffer state transition: " +
+					std::string(bufferBarrier.buffer->GetDebugName()));
+				continue;
+			}
 
 			auto bufferHandle = bufferBarrier.buffer->GetNativeBufferHandle();
 			auto* resource = bufferHandle.backend == NLS::Render::RHI::BackendType::DX12
@@ -1096,9 +1307,27 @@ namespace NLS::Render::Backend
 			if (resource == nullptr)
 				continue;
 
+			const bool coversWholeTexture =
+				NLS::Render::RHI::DX12::DoesDX12BarrierRangeCoverWholeTexture(
+					textureBarrier.texture->GetDesc(),
+					textureBarrier.subresourceRange);
 			auto effectiveBefore = textureBarrier.before;
-			if (effectiveBefore == NLS::Render::RHI::ResourceState::Unknown && textureBarrier.texture != nullptr)
+			auto* nativeTexture = dynamic_cast<NativeDX12Texture*>(textureBarrier.texture.get());
+			const bool wholeTextureStateKnown =
+				nativeTexture == nullptr
+					? m_partialTextureStateDirty.find(textureBarrier.texture.get()) == m_partialTextureStateDirty.end()
+					: !nativeTexture->HasPartialStateDirty();
+			if (effectiveBefore == NLS::Render::RHI::ResourceState::Unknown && wholeTextureStateKnown)
+			{
 				effectiveBefore = textureBarrier.texture->GetState();
+			}
+			if (effectiveBefore == NLS::Render::RHI::ResourceState::Unknown && !wholeTextureStateKnown)
+			{
+				NLS_LOG_ERROR(
+					"NativeDX12CommandBuffer::Barrier rejected texture transition with unresolved before-state: " +
+					std::string(textureBarrier.texture->GetDebugName()));
+				continue;
+			}
 			const auto stateBefore = ToD3D12ResourceState(effectiveBefore);
 			const auto stateAfter = ToD3D12ResourceState(textureBarrier.after);
 			D3D12_RESOURCE_BARRIER barrier{};
@@ -1116,10 +1345,36 @@ namespace NLS::Render::Backend
 			barrier.Transition.pResource = resource;
 			barrier.Transition.StateBefore = stateBefore;
 			barrier.Transition.StateAfter = ToD3D12ResourceState(textureBarrier.after);
-			barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-			barriers.push_back(barrier);
-			if (auto* nativeTexture = dynamic_cast<NativeDX12Texture*>(textureBarrier.texture.get()))
-				nativeTexture->SetState(textureBarrier.after);
+			if (coversWholeTexture)
+			{
+				barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+				barriers.push_back(barrier);
+			}
+			else
+			{
+				const auto subresourceIndices =
+					NLS::Render::RHI::DX12::BuildDX12BarrierSubresourceIndices(
+						textureBarrier.texture->GetDesc(),
+						textureBarrier.subresourceRange);
+				if (subresourceIndices.empty())
+					continue;
+				for (const auto subresourceIndex : subresourceIndices)
+				{
+					barrier.Transition.Subresource = subresourceIndex;
+					barriers.push_back(barrier);
+				}
+			}
+			if (coversWholeTexture)
+			{
+				if (nativeTexture != nullptr)
+					nativeTexture->SetState(textureBarrier.after);
+			}
+			else
+			{
+				if (nativeTexture != nullptr)
+					nativeTexture->MarkPartialStateDirty();
+				m_partialTextureStateDirty.insert(textureBarrier.texture.get());
+			}
 		}
 
 		if (!barriers.empty())
@@ -1172,6 +1427,8 @@ namespace NLS::Render::Backend
 			result |= D3D12_RESOURCE_STATE_DEPTH_WRITE;
 		if (static_cast<uint32_t>(state) & static_cast<uint32_t>(NLS::Render::RHI::ResourceState::Present))
 			result |= D3D12_RESOURCE_STATE_PRESENT;
+		if (state == NLS::Render::RHI::ResourceState::GenericRead)
+			result = D3D12_RESOURCE_STATE_GENERIC_READ;
 		return result;
 	}
 #endif

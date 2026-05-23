@@ -188,5 +188,125 @@ namespace NLS::Render::RHI::DX12
 
         return descriptors;
     }
+
+    bool DoesDX12BarrierRangeCoverWholeTexture(
+        const RHITextureDesc& textureDesc,
+        const RHISubresourceRange& subresourceRange)
+    {
+        const uint32_t mipLevels = (std::max)(textureDesc.mipLevels, 1u);
+        const uint32_t layerCount = GetTextureLayerCount(textureDesc.dimension, textureDesc.arrayLayers);
+        if (subresourceRange.mipLevelCount == 0u && subresourceRange.arrayLayerCount == 0u)
+            return true;
+        if (textureDesc.dimension == TextureDimension::Texture3D)
+        {
+            return subresourceRange.baseMipLevel == 0u &&
+                subresourceRange.mipLevelCount >= mipLevels;
+        }
+
+        return subresourceRange.baseMipLevel == 0u &&
+            subresourceRange.mipLevelCount >= mipLevels &&
+            subresourceRange.baseArrayLayer == 0u &&
+            subresourceRange.arrayLayerCount >= layerCount;
+    }
+
+    namespace
+    {
+        uint32_t ResolveBarrierPlaneCount(const TextureFormat format)
+        {
+            switch (format)
+            {
+            case TextureFormat::Depth24Stencil8:
+                return 2u;
+            default:
+                return 1u;
+            }
+        }
+
+        UINT CalculateDX12BarrierSubresourceIndex(
+            const uint32_t mipLevel,
+            const uint32_t arrayLayer,
+            const uint32_t planeSlice,
+            const uint32_t mipLevels,
+            const uint32_t layerCount)
+        {
+            return static_cast<UINT>(
+                mipLevel +
+                arrayLayer * mipLevels +
+                planeSlice * mipLevels * layerCount);
+        }
+    }
+
+    bool TryResolveDX12BarrierSubresourceIndex(
+        const RHITextureDesc& textureDesc,
+        const RHISubresourceRange& subresourceRange,
+        UINT& outSubresourceIndex)
+    {
+        const auto indices = BuildDX12BarrierSubresourceIndices(textureDesc, subresourceRange);
+        if (indices.size() != 1u)
+            return false;
+
+        outSubresourceIndex = indices.front();
+        return true;
+    }
+
+    UINT ResolveDX12BarrierSubresourceIndex(
+        const RHITextureDesc& textureDesc,
+        const RHISubresourceRange& subresourceRange)
+    {
+        UINT subresourceIndex = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        if (!TryResolveDX12BarrierSubresourceIndex(textureDesc, subresourceRange, subresourceIndex))
+            return D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+        return subresourceIndex;
+    }
+
+    std::vector<UINT> BuildDX12BarrierSubresourceIndices(
+        const RHITextureDesc& textureDesc,
+        const RHISubresourceRange& subresourceRange)
+    {
+        std::vector<UINT> indices;
+        const uint32_t mipLevels = (std::max)(textureDesc.mipLevels, 1u);
+        const uint32_t layerCount = GetTextureLayerCount(textureDesc.dimension, textureDesc.arrayLayers);
+        const bool is3DTexture = textureDesc.dimension == TextureDimension::Texture3D;
+        if (subresourceRange.mipLevelCount == 0u ||
+            subresourceRange.arrayLayerCount == 0u ||
+            subresourceRange.baseMipLevel >= mipLevels ||
+            (!is3DTexture && subresourceRange.baseArrayLayer >= layerCount))
+        {
+            return indices;
+        }
+
+        const uint32_t mipEnd = (std::min)(
+            subresourceRange.baseMipLevel + subresourceRange.mipLevelCount,
+            mipLevels);
+        const uint32_t layerBegin = is3DTexture ? 0u : subresourceRange.baseArrayLayer;
+        const uint32_t layerEnd = is3DTexture
+            ? 1u
+            : (std::min)(
+                subresourceRange.baseArrayLayer + subresourceRange.arrayLayerCount,
+                layerCount);
+        const uint32_t planeCount = ResolveBarrierPlaneCount(textureDesc.format);
+
+        indices.reserve(
+            static_cast<size_t>(mipEnd - subresourceRange.baseMipLevel) *
+            static_cast<size_t>(layerEnd - layerBegin) *
+            static_cast<size_t>(planeCount));
+        for (uint32_t planeSlice = 0u; planeSlice < planeCount; ++planeSlice)
+        {
+            for (uint32_t arrayLayer = layerBegin; arrayLayer < layerEnd; ++arrayLayer)
+            {
+                for (uint32_t mipLevel = subresourceRange.baseMipLevel; mipLevel < mipEnd; ++mipLevel)
+                {
+                    indices.push_back(CalculateDX12BarrierSubresourceIndex(
+                        mipLevel,
+                        arrayLayer,
+                        planeSlice,
+                        mipLevels,
+                        layerCount));
+                }
+            }
+        }
+        return indices;
+    }
 #endif
 }

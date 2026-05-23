@@ -1,6 +1,5 @@
-#include <algorithm>
-
 #include "Rendering/Resources/Mesh.h"
+#include "Rendering/Geometry/BoundingSphereUtils.h"
 #include "Rendering/RHI/Core/RHIMeshAdapter.h"
 
 namespace NLS::Render::Resources
@@ -13,13 +12,51 @@ MeshVertexUploadView BuildMeshVertexUploadView(const std::vector<Geometry::Verte
 	return view;
 }
 
-Mesh::Mesh(const std::vector<Geometry::Vertex>& vertices, const std::vector<uint32_t>& indices, uint32_t materialIndex)
+namespace
+{
+NLS::Render::RHI::MemoryUsage ToBufferMemoryUsage(const MeshBufferUploadMode uploadMode)
+{
+	return uploadMode == MeshBufferUploadMode::CpuToGpu
+		? NLS::Render::RHI::MemoryUsage::CPUToGPU
+		: NLS::Render::RHI::MemoryUsage::GPUOnly;
+}
+}
+
+Mesh::Mesh(
+	const std::vector<Geometry::Vertex>& vertices,
+	const std::vector<uint32_t>& indices,
+	uint32_t materialIndex)
+	: Mesh(vertices, indices, materialIndex, MeshBufferUploadMode::GpuOnly)
+{
+}
+
+Mesh::Mesh(
+	const std::vector<Geometry::Vertex>& vertices,
+	const std::vector<uint32_t>& indices,
+	uint32_t materialIndex,
+	const MeshBufferUploadMode uploadMode)
 	: m_vertexCount(static_cast<uint32_t>(vertices.size()))
 	, m_indicesCount(static_cast<uint32_t>(indices.size()))
 	, m_materialIndex(materialIndex)
 {
-	CreateBuffers(vertices, indices);
+	CreateBuffers(vertices, indices, uploadMode);
 	ComputeBoundingSphere(vertices);
+	m_rhiMesh = std::make_shared<RHI::RHIMeshAdapter>(*this);
+}
+
+Mesh::Mesh(
+	const std::vector<Geometry::Vertex>& vertices,
+	const std::vector<uint32_t>& indices,
+	uint32_t materialIndex,
+	const MeshBufferUploadMode uploadMode,
+	const Geometry::BoundingSphere& boundingSphere)
+	: m_vertexCount(static_cast<uint32_t>(vertices.size()))
+	, m_indicesCount(static_cast<uint32_t>(indices.size()))
+	, m_materialIndex(materialIndex)
+	, m_boundingSphere(boundingSphere)
+{
+	CreateBuffers(vertices, indices, uploadMode);
+	m_rhiMesh = std::make_shared<RHI::RHIMeshAdapter>(*this);
 }
 
 uint32_t Mesh::GetVertexCount() const
@@ -63,13 +100,36 @@ const Render::Geometry::BoundingSphere& Mesh::GetBoundingSphere() const
 	return m_boundingSphere;
 }
 
-void Mesh::CreateBuffers(const std::vector<Geometry::Vertex>& vertices, const std::vector<uint32_t>& indices)
+void Mesh::Reload(
+	const std::vector<Geometry::Vertex>& vertices,
+	const std::vector<uint32_t>& indices,
+	const uint32_t materialIndex,
+	const MeshBufferUploadMode uploadMode,
+	const Geometry::BoundingSphere& boundingSphere)
 {
+	m_vertexCount = static_cast<uint32_t>(vertices.size());
+	m_indicesCount = static_cast<uint32_t>(indices.size());
+	m_materialIndex = materialIndex;
+	m_boundingSphere = boundingSphere;
+	CreateBuffers(vertices, indices, uploadMode);
+	m_rhiMesh = std::make_shared<RHI::RHIMeshAdapter>(*this);
+}
+
+void Mesh::CreateBuffers(
+	const std::vector<Geometry::Vertex>& vertices,
+	const std::vector<uint32_t>& indices,
+	const MeshBufferUploadMode uploadMode)
+{
+	const auto memoryUsage = ToBufferMemoryUsage(uploadMode);
 	m_vertexBuffer = std::make_unique<Buffers::VertexBuffer<Geometry::Vertex>>(
 		BuildMeshVertexUploadView(vertices).data,
-		vertices.size());
+		vertices.size(),
+		memoryUsage);
 	if (!indices.empty())
-		m_indexBuffer = std::make_unique<Buffers::IndexBuffer>(const_cast<uint32_t*>(indices.data()), indices.size());
+		m_indexBuffer = std::make_unique<Buffers::IndexBuffer>(
+			const_cast<uint32_t*>(indices.data()),
+			indices.size(),
+			memoryUsage);
 
 	uint64_t vertexSize = sizeof(Geometry::Vertex);
 
@@ -82,42 +142,11 @@ void Mesh::CreateBuffers(const std::vector<Geometry::Vertex>& vertices, const st
 
 void Mesh::ComputeBoundingSphere(const std::vector<Geometry::Vertex>& vertices)
 {
-	m_boundingSphere.position = Maths::Vector3::Zero;
-	m_boundingSphere.radius = 0.0f;
-
-	if (!vertices.empty())
-	{
-		float minX = std::numeric_limits<float>::max();
-		float minY = std::numeric_limits<float>::max();
-		float minZ = std::numeric_limits<float>::max();
-
-		float maxX = std::numeric_limits<float>::lowest();
-		float maxY = std::numeric_limits<float>::lowest();
-		float maxZ = std::numeric_limits<float>::lowest();
-
-		for (const auto& vertex : vertices)
-		{
-			minX = std::min(minX, vertex.position[0]);
-			minY = std::min(minY, vertex.position[1]);
-			minZ = std::min(minZ, vertex.position[2]);
-
-			maxX = std::max(maxX, vertex.position[0]);
-			maxY = std::max(maxY, vertex.position[1]);
-			maxZ = std::max(maxZ, vertex.position[2]);
-		}
-
-		m_boundingSphere.position = Maths::Vector3{ minX + maxX, minY + maxY, minZ + maxZ } / 2.0f;
-
-		for (const auto& vertex : vertices)
-		{
-			const auto& position = reinterpret_cast<const Maths::Vector3&>(vertex.position);
-			m_boundingSphere.radius = std::max(m_boundingSphere.radius, Maths::Vector3::Distance(m_boundingSphere.position, position));
-		}
-	}
+	m_boundingSphere = Geometry::ComputeBoundingSphere(vertices);
 }
 
 std::shared_ptr<NLS::Render::RHI::RHIMesh> Mesh::GetRHIMesh() const
 {
-	return std::make_shared<RHI::RHIMeshAdapter>(*this);
+	return m_rhiMesh;
 }
 }

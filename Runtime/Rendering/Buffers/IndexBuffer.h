@@ -18,13 +18,18 @@ public:
      * @param p_data
      * @param p_elements
      */
-    IndexBuffer(unsigned int* p_data, size_t p_elements);
+    IndexBuffer(
+        unsigned int* p_data,
+        size_t p_elements,
+        RHI::MemoryUsage memoryUsage = RHI::MemoryUsage::GPUOnly);
 
     /**
      * Create the index buffer from a vector.
      * @param p_data
      */
-    IndexBuffer(std::vector<uint32_t>& p_data);
+    explicit IndexBuffer(
+        std::vector<uint32_t>& p_data,
+        RHI::MemoryUsage memoryUsage = RHI::MemoryUsage::GPUOnly);
 
     /**
      * Destructor

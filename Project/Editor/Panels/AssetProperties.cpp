@@ -1,13 +1,14 @@
 ﻿#include <filesystem>
-
 #include <Utils/PathParser.h>
 #include <Utils/SizeConverter.h>
 
 #include <UI/GUIDrawer.h>
 #include <ServiceLocator.h>
-#include <ResourceManagement/ModelManager.h>
+#include <ResourceManagement/MeshManager.h>
 #include <ResourceManagement/MaterialManager.h>
 #include <ResourceManagement/TextureManager.h>
+
+#include <Debug/Logger.h>
 
 #include <UI/Widgets/Visual/Separator.h>
 #include <UI/Widgets/Layout/Group.h>
@@ -18,9 +19,37 @@
 #include <UI/Widgets/Selection/ComboBox.h>
 
 #include "Panels/AssetProperties.h"
+#include "Panels/AssetBrowser.h"
 #include "Panels/AssetView.h"
+#include "Assets/AssetImporterFacade.h"
+#include "Assets/EditorAssetPath.h"
 #include "Core/EditorActions.h"
 using namespace NLS;
+
+namespace
+{
+std::filesystem::path ProjectRootFromAssetsPath(const std::string& projectAssetsPath)
+{
+    auto assetsPath = std::filesystem::path(projectAssetsPath).lexically_normal();
+    while (!assetsPath.empty() && !assetsPath.has_filename())
+        assetsPath = assetsPath.parent_path();
+    return assetsPath.parent_path();
+}
+
+std::string ToEditorAssetPathFromResource(const std::string& resource)
+{
+    if (resource.empty() || resource.front() == ':')
+        return {};
+
+    const auto normalizedResource = std::filesystem::path(resource).lexically_normal();
+    if (!normalizedResource.empty() && *normalizedResource.begin() == "Assets")
+        return NLS::Editor::Assets::NormalizeEditorAssetPath(normalizedResource);
+
+    return NLS::Editor::Assets::NormalizeEditorAssetPath(
+        std::filesystem::path("Assets") / normalizedResource);
+}
+}
+
 Editor::Panels::AssetProperties::AssetProperties
 (
 	const std::string& p_title,
@@ -71,6 +100,7 @@ void Editor::Panels::AssetProperties::Refresh()
     m_applyButton->enabled = m_settings->enabled;
     m_resetButton->enabled = m_settings->enabled;
     m_revertButton->enabled = m_settings->enabled;
+    m_reimportButton->enabled = false;
 
     switch (Utils::PathParser::GetFileType(m_resource))
     {
@@ -84,8 +114,15 @@ void Editor::Panels::AssetProperties::Refresh()
         break;
     }
 
+    if (Utils::PathParser::GetFileType(m_resource) == Utils::PathParser::EFileType::MODEL &&
+        !m_resource.empty() &&
+        m_resource.front() != ':')
+    {
+        m_reimportButton->enabled = true;
+    }
+
     // Enables the header separator (And the line break) if at least one button is enabled
-    m_headerSeparator->enabled = m_applyButton->enabled || m_resetButton->enabled || m_revertButton->enabled || m_previewButton->enabled;
+    m_headerSeparator->enabled = m_applyButton->enabled || m_reimportButton->enabled || m_resetButton->enabled || m_revertButton->enabled || m_previewButton->enabled;
     m_headerLineBreak->enabled = m_headerSeparator->enabled;
 }
 
@@ -97,7 +134,7 @@ void Editor::Panels::AssetProperties::Preview()
 
 	if (fileType == Utils::PathParser::EFileType::MODEL)
 	{
-		if (auto resource = NLS_SERVICE(NLS::Core::ResourceManagement::ModelManager).GetResource(m_resource))
+		if (auto resource = NLS_SERVICE(NLS::Core::ResourceManagement::MeshManager).GetResource(m_resource))
 		{
 			assetView.SetResource(resource);
 		}
@@ -130,6 +167,14 @@ void Editor::Panels::AssetProperties::CreateHeaderButtons()
     m_applyButton->enabled = false;
     m_applyButton->lineBreak = false;
     m_applyButton->ClickedEvent += std::bind(&AssetProperties::Apply, this);
+
+    m_reimportButton = &CreateWidget<UI::Widgets::Button>("Reimport");
+    m_reimportButton->idleBackgroundColor = { 0.18f, 0.19f, 0.21f };
+    m_reimportButton->hoveredBackgroundColor = { 0.23f, 0.24f, 0.26f };
+    m_reimportButton->clickedBackgroundColor = { 0.26f, 0.28f, 0.31f };
+    m_reimportButton->enabled = false;
+    m_reimportButton->lineBreak = false;
+    m_reimportButton->ClickedEvent += std::bind(&AssetProperties::Reimport, this);
 
 	m_revertButton = &CreateWidget<UI::Widgets::Button>("Revert");
 	m_revertButton->idleBackgroundColor = { 0.18f, 0.19f, 0.21f };
@@ -332,10 +377,10 @@ void Editor::Panels::AssetProperties::Apply()
 
 	if (fileType == Utils::PathParser::EFileType::MODEL)
 	{
-		auto& modelManager = NLS_SERVICE(NLS::Core::ResourceManagement::ModelManager);
-		if (modelManager.IsResourceRegistered(resourcePath))
+		auto& meshManager = NLS_SERVICE(NLS::Core::ResourceManagement::MeshManager);
+		if (meshManager.IsResourceRegistered(resourcePath))
 		{
-			modelManager.AResourceManager::ReloadResource(resourcePath);
+			meshManager.AResourceManager::ReloadResource(resourcePath);
 		}
 	}
 	else if (fileType == Utils::PathParser::EFileType::TEXTURE)
@@ -348,4 +393,45 @@ void Editor::Panels::AssetProperties::Apply()
 	}
 
     Refresh();
+}
+
+void Editor::Panels::AssetProperties::Reimport()
+{
+    const auto assetPath = ToEditorAssetPathFromResource(m_resource);
+    if (assetPath.empty())
+    {
+        NLS_LOG_ERROR("Reimport is only available for project assets.");
+        return;
+    }
+
+    if (m_metadata)
+        m_metadata->Rewrite();
+
+    const auto projectRoot = ProjectRootFromAssetsPath(EDITOR_EXEC(GetContext()).projectAssetsPath);
+    auto& tracker = EDITOR_EXEC(GetContext()).importProgressTracker;
+    const auto resourcePath = m_resource;
+
+    EDITOR_EXEC(TrackBackgroundTask([projectRoot, assetPath, resourcePath, &tracker]
+    {
+        NLS::Editor::Assets::AssetImporterFacade importer(
+            NLS::Editor::Assets::MakeProjectEditorAssetRoots(projectRoot));
+        const auto imported = importer.SaveAndReimport(assetPath, tracker);
+        EDITOR_EXEC(DelayAction([assetPath, resourcePath, imported]
+        {
+            if (imported)
+            {
+                auto& meshManager = NLS_SERVICE(NLS::Core::ResourceManagement::MeshManager);
+                if (meshManager.IsResourceRegistered(resourcePath))
+                    meshManager.AResourceManager::ReloadResource(resourcePath);
+
+                EDITOR_PANEL(NLS::Editor::Panels::AssetBrowser, "Asset Browser").Refresh();
+                EDITOR_PANEL(NLS::Editor::Panels::AssetProperties, "Asset Properties").Refresh();
+                NLS_LOG_INFO("Reimported asset: " + assetPath);
+            }
+            else
+            {
+                NLS_LOG_ERROR("Failed to reimport asset: " + assetPath);
+            }
+        }));
+    }));
 }

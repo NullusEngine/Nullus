@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <map>
+#include <cstddef>
 
 namespace
 {
@@ -92,7 +93,8 @@ namespace NLS::Render::RHI::DX12
                     category,
                     entry.registerSpace,
                     entry.binding,
-                    entry.count
+                    entry.count,
+                    entry.elementStride
                 });
             }
         }
@@ -126,15 +128,46 @@ namespace NLS::Render::RHI::DX12
         return tables;
     }
 
+    bool AreDX12DescriptorTablesCompatible(
+        const DX12DescriptorTableDesc& expected,
+        const DX12DescriptorTableDesc& actual)
+    {
+        if (expected.heapKind != actual.heapKind ||
+            expected.category != actual.category ||
+            expected.set != actual.set ||
+            expected.registerSpace != actual.registerSpace ||
+            expected.ranges.size() != actual.ranges.size())
+        {
+            return false;
+        }
+
+        for (size_t index = 0u; index < expected.ranges.size(); ++index)
+        {
+            const auto& expectedRange = expected.ranges[index];
+            const auto& actualRange = actual.ranges[index];
+            if (expectedRange.category != actualRange.category ||
+                expectedRange.registerSpace != actualRange.registerSpace ||
+                expectedRange.binding != actualRange.binding ||
+                expectedRange.descriptorCount != actualRange.descriptorCount ||
+                expectedRange.elementStride != actualRange.elementStride)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
 #if defined(_WIN32)
     DX12OwnedRootParameters BuildDX12OwnedRootParameters(const RHIPipelineLayoutDesc& desc)
     {
         DX12OwnedRootParameters owned;
         owned.descriptorTables = BuildDX12DescriptorTableDescs(desc);
         const auto& tables = owned.descriptorTables;
+        owned.pushConstantRootParameterOffset = static_cast<uint32_t>(tables.size());
 
         owned.descriptorRanges.reserve(tables.size());
-        owned.rootParameters.reserve(tables.size());
+        owned.rootParameters.reserve(tables.size() + desc.pushConstants.size());
 
         for (const DX12DescriptorTableDesc& table : tables)
         {
@@ -158,6 +191,24 @@ namespace NLS::Render::RHI::DX12
             rootParam.DescriptorTable.pDescriptorRanges = ranges.empty() ? nullptr : ranges.data();
             rootParam.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
             owned.rootParameters.push_back(rootParam);
+        }
+
+        for (const RHIPushConstantRange& pushConstant : desc.pushConstants)
+        {
+            const auto rootParameterIndex = static_cast<uint32_t>(owned.rootParameters.size());
+            D3D12_ROOT_PARAMETER rootParam = {};
+            rootParam.ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+            rootParam.Constants.ShaderRegister = pushConstant.shaderRegister;
+            rootParam.Constants.RegisterSpace = pushConstant.registerSpace;
+            rootParam.Constants.Num32BitValues = pushConstant.size / sizeof(uint32_t);
+            rootParam.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+            owned.rootParameters.push_back(rootParam);
+            owned.pushConstantRootParameters.push_back({
+                pushConstant.stageMask,
+                pushConstant.offset,
+                pushConstant.size,
+                rootParameterIndex
+            });
         }
 
         return owned;

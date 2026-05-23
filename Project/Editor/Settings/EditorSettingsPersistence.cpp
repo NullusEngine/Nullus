@@ -6,15 +6,20 @@
 #include <fstream>
 
 #include "Math/Quaternion.h"
+#include "Math/Rect.h"
 #include "Math/Vector3.h"
 #include "Math/Vector4.h"
 #include "Panels/ReflectedPropertyDrawer.h"
 #include "Reflection/JsonConfig.h"
+#include "Rendering/Geometry/Bounds.h"
+#include "Settings/EditorSettings.h"
 
 namespace
 {
 using NLS::Json;
 using namespace NLS;
+
+constexpr int kEditorSettingsVersion = 2;
 
 template <typename TValue>
 TValue GetFieldValue(meta::Variant& p_instance, const meta::Field& p_field)
@@ -42,6 +47,16 @@ Json SerializeVector4(const Maths::Vector4& p_value)
 Json SerializeQuaternion(const Maths::Quaternion& p_value)
 {
     return Json::object { { "x", p_value.x }, { "y", p_value.y }, { "z", p_value.z }, { "w", p_value.w } };
+}
+
+Json SerializeRect(const Maths::Rect& p_value)
+{
+    return Json::object { { "x", p_value.x }, { "y", p_value.y }, { "width", p_value.width }, { "height", p_value.height } };
+}
+
+Json SerializeBounds(const Render::Geometry::Bounds& p_value)
+{
+    return Json::object { { "center", SerializeVector3(p_value.center) }, { "size", SerializeVector3(p_value.size) } };
 }
 
 bool TryReadVector3(const Json& p_json, Maths::Vector3& p_value)
@@ -79,6 +94,26 @@ bool TryReadQuaternion(const Json& p_json, Maths::Quaternion& p_value)
     return true;
 }
 
+bool TryReadRect(const Json& p_json, Maths::Rect& p_value)
+{
+    if (!p_json.is_object())
+        return false;
+    p_value = Maths::Rect(
+        p_json["x"].number_value(),
+        p_json["y"].number_value(),
+        p_json["width"].number_value(),
+        p_json["height"].number_value());
+    return true;
+}
+
+bool TryReadBounds(const Json& p_json, Render::Geometry::Bounds& p_value)
+{
+    if (!p_json.is_object())
+        return false;
+    return TryReadVector3(p_json["center"], p_value.center) &&
+           TryReadVector3(p_json["size"], p_value.size);
+}
+
 Json SerializeField(meta::Variant& p_instance, const meta::Field& p_field)
 {
     using NLS::Editor::Panels::ReflectedPropertySupport;
@@ -94,6 +129,10 @@ Json SerializeField(meta::Variant& p_instance, const meta::Field& p_field)
         return GetFieldValue<float>(p_instance, p_field);
     case ReflectedPropertySupport::String:
         return GetFieldValue<std::string>(p_instance, p_field);
+    case ReflectedPropertySupport::Rect:
+        return SerializeRect(GetFieldValue<Maths::Rect>(p_instance, p_field));
+    case ReflectedPropertySupport::Bounds:
+        return SerializeBounds(GetFieldValue<Render::Geometry::Bounds>(p_instance, p_field));
     case ReflectedPropertySupport::Vector3:
         return SerializeVector3(GetFieldValue<Maths::Vector3>(p_instance, p_field));
     case ReflectedPropertySupport::Vector4:
@@ -128,6 +167,20 @@ void DeserializeField(meta::Variant& p_instance, const meta::Field& p_field, con
         if (p_json.is_string())
             SetFieldValue(p_instance, p_field, p_json.string_value());
         break;
+    case ReflectedPropertySupport::Rect:
+    {
+        Maths::Rect value;
+        if (TryReadRect(p_json, value))
+            SetFieldValue(p_instance, p_field, value);
+        break;
+    }
+    case ReflectedPropertySupport::Bounds:
+    {
+        Render::Geometry::Bounds value;
+        if (TryReadBounds(p_json, value))
+            SetFieldValue(p_instance, p_field, value);
+        break;
+    }
     case ReflectedPropertySupport::Vector3:
     {
         Maths::Vector3 value;
@@ -152,6 +205,19 @@ void DeserializeField(meta::Variant& p_instance, const meta::Field& p_field, con
     default:
         break;
     }
+}
+
+void ApplyPostLoadMigrations(const Json& p_root)
+{
+    const auto version = p_root["version"].is_number()
+        ? static_cast<int>(p_root["version"].number_value())
+        : 0;
+    if (version >= kEditorSettingsVersion)
+        return;
+
+    auto& debugSettings = NLS::Editor::Settings::EditorSettings::GetDebugDrawSettingsObject();
+    debugSettings.debugDrawCamera = true;
+    debugSettings.debugDrawLighting = true;
 }
 }
 
@@ -197,6 +263,7 @@ bool EditorSettingsPersistence::Load(const std::filesystem::path& p_path, const 
         }
     }
 
+    ApplyPostLoadMigrations(root);
     return true;
 }
 
@@ -230,7 +297,7 @@ bool EditorSettingsPersistence::Save(const std::filesystem::path& p_path, const 
     }
 
     const Json root = Json::object {
-        { "version", 1 },
+        { "version", kEditorSettingsVersion },
         { "objects", objects }
     };
 

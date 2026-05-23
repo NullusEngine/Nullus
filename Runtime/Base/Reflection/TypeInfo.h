@@ -39,6 +39,16 @@ namespace NLS::meta
             TypeData &data,
             typename std::enable_if<
                 IsMetaDefaultConstructible(U)
+                && std::is_move_constructible<U>::value
+            >::type* = nullptr
+        );
+
+        template<typename U = T>
+        static void addDefaultConstructor(
+            TypeData &data,
+            typename std::enable_if<
+                IsMetaDefaultConstructible(U)
+                && !std::is_move_constructible<U>::value
             >::type* = nullptr
         );
 

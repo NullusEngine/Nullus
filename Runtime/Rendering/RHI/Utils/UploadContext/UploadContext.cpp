@@ -87,6 +87,21 @@ namespace NLS::Render::RHI
             std::shared_ptr<RHIBuffer> staging;
         };
 
+        std::string MemoryUsageName(const MemoryUsage memoryUsage)
+        {
+            switch (memoryUsage)
+            {
+            case MemoryUsage::GPUOnly:
+                return "GPUOnly";
+            case MemoryUsage::CPUToGPU:
+                return "CPUToGPU";
+            case MemoryUsage::GPUToCPU:
+                return "GPUToCPU";
+            default:
+                return "Unknown";
+            }
+        }
+
         ResourceState ResolveUploadedTextureState(const RHITextureDesc& desc)
         {
             if (HasTextureUsage(desc.usage, TextureUsageFlags::Sampled))
@@ -329,16 +344,24 @@ namespace NLS::Render::RHI
 
             static std::string ValidateUploadBufferRequest(const UploadBufferRequest& request)
             {
-                return request.destination != nullptr && request.data != nullptr && request.size != 0
-                    ? std::string{}
-                    : "UploadBuffer request is missing destination, data, or size";
+                if (request.destination == nullptr || request.data == nullptr || request.size == 0)
+                    return "UploadBuffer request is missing destination, data, or size";
+                if (request.destination->GetDesc().memoryUsage != MemoryUsage::GPUOnly)
+                    return "UploadBuffer destination uses " +
+                        MemoryUsageName(request.destination->GetDesc().memoryUsage) +
+                        " memory; buffer upload destinations must be GPUOnly";
+                return {};
             }
 
             static std::string ValidateUploadTextureRequest(const UploadTextureRequest& request)
             {
-                return request.destination != nullptr && request.data != nullptr && request.dataSize != 0
-                    ? std::string{}
-                    : "UploadTexture request is missing destination, data, or dataSize";
+                if (request.destination == nullptr || request.data == nullptr || request.dataSize == 0)
+                    return "UploadTexture request is missing destination, data, or dataSize";
+                if (request.destination->GetDesc().memoryUsage != MemoryUsage::GPUOnly)
+                    return "UploadTexture destination uses " +
+                        MemoryUsageName(request.destination->GetDesc().memoryUsage) +
+                        " memory; texture upload destinations must be GPUOnly";
+                return {};
             }
 
             static std::shared_ptr<RHICompletionToken> BuildImmediateToken(bool accepted, const std::string& diagnostic)

@@ -10,6 +10,7 @@
 #include <Rendering/Data/FrameInfo.h>
 
 namespace NLS::Render::Core { class CompositeRenderer; }
+namespace NLS::UI { class APanel; }
 
 namespace NLS::Editor::Panels
 {
@@ -34,6 +35,7 @@ namespace NLS::Editor::Panels
 		*/
         void Update(AView* p_targetView);
         void UpdateForRenderer(const std::string& viewName, const Render::Core::CompositeRenderer& renderer);
+        void SetTargetPanelDrawTime(const UI::APanel* panel);
 
 	private:
 		UI::Widgets::Text& m_viewNameText;
@@ -42,6 +44,12 @@ namespace NLS::Editor::Panels
 		UI::Widgets::Text& m_instanceCountText;
 		UI::Widgets::Text& m_polyCountText;
 		UI::Widgets::Text& m_vertexCountText;
+		UI::Widgets::Text& m_parseSceneText;
+		UI::Widgets::Text& m_drawableCountText;
+		UI::Widgets::Text& m_gBufferMaterialSyncText;
+		UI::Widgets::Text& m_bindingSetCreationText;
+		UI::Widgets::Text& m_snapshotBufferCreationText;
+		UI::Widgets::Text& m_targetPanelDrawText;
 		UI::Widgets::Text& m_framesInFlightText;
 		UI::Widgets::Text& m_blockedFramesText;
 		UI::Widgets::Text& m_publishStateText;

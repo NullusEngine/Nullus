@@ -46,4 +46,8 @@ if(APPLE)
   target_link_libraries(Editor PUBLIC "-framework CoreServices")
 endif()
 
+if(WIN32)
+  target_link_libraries(Editor PUBLIC Comctl32)
+endif()
+
 nls_add_meta_generation(Editor "${CMAKE_CURRENT_SOURCE_DIR}" "${EDITOR_HEAD_FILES}")

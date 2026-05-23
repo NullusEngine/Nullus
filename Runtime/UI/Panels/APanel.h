@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <vector>
 #include <unordered_map>
 
@@ -28,6 +29,11 @@ namespace NLS::UI
 		* Returns the panel identifier
 		*/
 		const std::string& GetPanelID() const;
+		uint64_t GetLastDrawDurationUs() const;
+
+	protected:
+		virtual const std::string& GetProfilerName() const;
+		const char* GetProfilerScopeName();
 
 	protected:
 		virtual void _Draw_Impl() = 0;
@@ -37,6 +43,9 @@ namespace NLS::UI
 
 	protected:
 		std::string m_panelID;
+		std::string m_cachedProfilerName;
+		std::string m_cachedProfilerScopeName;
+		uint64_t m_lastDrawDurationUs = 0u;
 
 	private:
 		static uint64_t __PANEL_ID_INCREMENT;

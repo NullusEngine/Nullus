@@ -24,6 +24,7 @@ namespace NLS::Render::Resources
         uint32_t binding = 0u;
         uint32_t count = 1u;
         uint32_t byteSize = 0u;
+        uint32_t elementStride = 0u;
         RHI::ShaderStageMask stageMask = RHI::ShaderStageMask::Compute;
         bool required = true;
     };
@@ -52,6 +53,7 @@ namespace NLS::Render::Resources
         std::shared_ptr<RHI::RHIBuffer> buffer;
         uint64_t bufferOffset = 0u;
         uint64_t bufferRange = 0u;
+        uint32_t elementStride = 0u;
         std::shared_ptr<RHI::RHITextureView> textureView;
         std::shared_ptr<RHI::RHISampler> sampler;
 
@@ -67,6 +69,7 @@ namespace NLS::Render::Resources
                 std::move(buffer),
                 offset,
                 range,
+                0u,
                 nullptr,
                 nullptr
             };
@@ -76,7 +79,8 @@ namespace NLS::Render::Resources
             std::string name,
             std::shared_ptr<RHI::RHIBuffer> buffer,
             const uint64_t range,
-            const uint64_t offset = 0u)
+            const uint64_t offset = 0u,
+            const uint32_t elementStride = sizeof(uint32_t))
         {
             return {
                 std::move(name),
@@ -84,6 +88,7 @@ namespace NLS::Render::Resources
                 std::move(buffer),
                 offset,
                 range,
+                elementStride,
                 nullptr,
                 nullptr
             };
@@ -93,7 +98,8 @@ namespace NLS::Render::Resources
             std::string name,
             std::shared_ptr<RHI::RHIBuffer> buffer,
             const uint64_t range,
-            const uint64_t offset = 0u)
+            const uint64_t offset = 0u,
+            const uint32_t elementStride = sizeof(uint32_t))
         {
             return {
                 std::move(name),
@@ -101,6 +107,7 @@ namespace NLS::Render::Resources
                 std::move(buffer),
                 offset,
                 range,
+                elementStride,
                 nullptr,
                 nullptr
             };
@@ -151,17 +158,19 @@ namespace NLS::Render::Resources
         ShaderParameterStructBuilder& AddStructuredBuffer(
             std::string name,
             const uint32_t binding,
-            const RHI::ShaderStageMask stageMask)
+            const RHI::ShaderStageMask stageMask,
+            const uint32_t elementStride = sizeof(uint32_t))
         {
-            return AddMember(std::move(name), RHI::BindingType::StructuredBuffer, binding, 0u, stageMask);
+            return AddMember(std::move(name), RHI::BindingType::StructuredBuffer, binding, 0u, stageMask, elementStride);
         }
 
         ShaderParameterStructBuilder& AddStorageBuffer(
             std::string name,
             const uint32_t binding,
-            const RHI::ShaderStageMask stageMask)
+            const RHI::ShaderStageMask stageMask,
+            const uint32_t elementStride = sizeof(uint32_t))
         {
-            return AddMember(std::move(name), RHI::BindingType::StorageBuffer, binding, 0u, stageMask);
+            return AddMember(std::move(name), RHI::BindingType::StorageBuffer, binding, 0u, stageMask, elementStride);
         }
 
         ShaderParameterStructBuilder& AddTexture(
@@ -191,7 +200,8 @@ namespace NLS::Render::Resources
             const RHI::BindingType type,
             const uint32_t binding,
             const uint32_t byteSize,
-            const RHI::ShaderStageMask stageMask)
+            const RHI::ShaderStageMask stageMask,
+            const uint32_t elementStride = 0u)
         {
             m_struct.members.push_back({
                 std::move(name),
@@ -199,6 +209,7 @@ namespace NLS::Render::Resources
                 binding,
                 1u,
                 byteSize,
+                elementStride,
                 stageMask,
                 true
             });
@@ -226,7 +237,8 @@ namespace NLS::Render::Resources
                 member.binding,
                 member.count,
                 member.stageMask,
-                parameters.registerSpace
+                parameters.registerSpace,
+                member.elementStride
             });
         }
         return desc;
@@ -269,7 +281,8 @@ namespace NLS::Render::Resources
                     member.binding,
                     member.count,
                     member.stageMask,
-                    parameters.registerSpace
+                    parameters.registerSpace,
+                    member.elementStride
                 });
             }
         }
@@ -306,6 +319,7 @@ namespace NLS::Render::Resources
                 found->buffer,
                 found->bufferOffset,
                 found->bufferRange,
+                found->elementStride,
                 found->textureView,
                 found->sampler
             });

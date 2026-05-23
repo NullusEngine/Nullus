@@ -4,6 +4,7 @@
 #include "Math/AssemblyMath.h"
 #include "Components/CameraComponent.h"
 #include "Components/LightComponent.h"
+#include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
 #include "Components/TransformComponent.h"
 #include "GameObject.h"
@@ -84,6 +85,15 @@ bool RequireValidType(const TypeExpectation& expectation)
     }
 
     std::cout << "[PASS] " << expectation.name << std::endl;
+    return true;
+}
+
+bool RequireInvalidType(const std::string& typeName)
+{
+    if (!Require(!Type::GetFromName(typeName).IsValid(), "Type should not be registered: " + typeName))
+        return false;
+
+    std::cout << "[PASS] " << typeName << " is absent" << std::endl;
     return true;
 }
 
@@ -287,18 +297,18 @@ int main()
         // Core transform component used by the editor inspector
         {"NLS::Engine::Components::TransformComponent", {"SetLocalPosition", "GetWorldMatrix"}, {}, {"localPosition", "localRotation", "localScale"}, "NLS::Engine::Components::Component"},
         // Engine type with explicit property + nested enum/struct-backed fields
-        {"NLS::Engine::Components::MeshRenderer", {"SetModel", "GetModel"}, {}, {"model", "frustumBehaviour", "customBoundingSphere"}, "NLS::Engine::Components::Component"},
-        // Engine type with auto-inferred array properties
-        {"NLS::Engine::Components::MaterialRenderer", {"FillWithMaterial", "GetUserMatrix"}, {}, {"materialPaths", "userMatrixValues"}, "NLS::Engine::Components::Component"},
+        {"NLS::Engine::Components::MeshFilter", {}, {}, {"mesh"}, "NLS::Engine::Components::Component"},
+        {"NLS::Engine::Components::MeshRenderer", {"FillWithMaterial", "GetUserMatrix"}, {}, {"frustumBehaviour", "customBoundingSphere", "materials", "userMatrixValues"}, "NLS::Engine::Components::Component"},
         // Engine object with auto-inferred properties
-        {"NLS::Engine::GameObject", {"GetName", "SetTag"}, {}, {"name", "tag"}, "NLS::meta::Object"},
-        {"NLS::Engine::SceneSystem::Scene", {"Play", "GetActors"}, {}, {}, "NLS::meta::Object"},
+        {"NLS::Engine::GameObject", {"GetName", "SetTag"}, {}, {"name", "tag"}, "NLS::Object"},
+        {"NLS::Engine::SceneSystem::Scene", {"Play", "GetGameObjects"}, {}, {}, "NLS::Object"},
     };
 
     bool allPassed = true;
     for (const TypeExpectation& expectation : expectations)
         allPassed = RequireValidType(expectation) && allPassed;
 
+    allPassed = RequireInvalidType("NLS::Engine::Components::MaterialRenderer") && allPassed;
     allPassed = RequireTypeDrivenComponentLookup() && allPassed;
     allPassed = RequireEnumChoiceMetadata() && allPassed;
     allPassed = RequireInspectorPropertySupport() && allPassed;

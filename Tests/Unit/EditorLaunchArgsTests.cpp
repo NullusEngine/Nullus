@@ -5,7 +5,7 @@
 #include "Core/EditorFrameLatency.h"
 #include "Core/EditorLaunchArgs.h"
 #include "Rendering/RHI/Backends/DX12/DX12Device.h"
-#include "Settings/EditorSettings.h"
+#include "Rendering/Settings/DriverSettings.h"
 
 namespace
 {
@@ -20,23 +20,14 @@ namespace
     }
 }
 
-TEST(EditorLaunchArgsTests, RuntimeSettingsDefaultToPerformanceFriendlyRhiValidation)
+TEST(EditorLaunchArgsTests, DriverSettingsDebugModeFollowsBuildConfiguration)
 {
-    EXPECT_FALSE(NLS::Editor::Settings::EditorSettings::GetRuntimeSettingsObject().enableRhiDebugValidation);
-}
-
-TEST(EditorLaunchArgsTests, RuntimeSettingsBuildDiagnosticsSettings)
-{
-    auto& runtime = NLS::Editor::Settings::EditorSettings::GetRuntimeSettingsObject();
-    const auto oldRuntime = runtime;
-    runtime.editorLogScenePicking = true;
-    runtime.dx12LogFrameFlow = false;
-
-    const auto diagnostics = NLS::Editor::Settings::EditorSettings::BuildDiagnosticsSettings();
-
-    EXPECT_TRUE(diagnostics.editorLogScenePicking);
-    EXPECT_FALSE(diagnostics.dx12LogFrameFlow);
-    runtime = oldRuntime;
+    NLS::Render::Settings::DriverSettings settings;
+#ifdef _DEBUG
+    EXPECT_TRUE(settings.debugMode);
+#else
+    EXPECT_FALSE(settings.debugMode);
+#endif
 }
 
 TEST(EditorLaunchArgsTests, RejectsRemovedDebugCliFlags)
@@ -76,8 +67,9 @@ TEST(EditorLaunchArgsTests, ParsesEditorValidationViewAndCameraInputDiagnostics)
         "scene",
         "--editor-validation-exclusive-view",
         "game",
-        "--editor-validation-select-actor",
+        "--editor-validation-select-gameobject",
         "Validation Cube",
+        "--editor-log-render-draw-path",
         "--editor-log-scene-camera-input",
         "TestProject.nullus"
     }, storage);
@@ -88,8 +80,31 @@ TEST(EditorLaunchArgsTests, ParsesEditorValidationViewAndCameraInputDiagnostics)
     EXPECT_TRUE(parsed.hasDiagnosticsOverride);
     EXPECT_EQ(parsed.diagnosticsSettings.editorValidationFocusView, "scene");
     EXPECT_EQ(parsed.diagnosticsSettings.editorValidationExclusiveView, "game");
-    EXPECT_EQ(parsed.diagnosticsSettings.editorValidationSelectActor, "Validation Cube");
+    EXPECT_EQ(parsed.diagnosticsSettings.editorValidationSelectGameObject, "Validation Cube");
+    EXPECT_TRUE(parsed.diagnosticsSettings.logRenderDrawPath);
+    EXPECT_TRUE(parsed.diagnosticsSettings.dx12LogFrameFlow);
     EXPECT_TRUE(parsed.diagnosticsSettings.editorLogSceneCameraInput);
+    EXPECT_EQ(parsed.projectPathArgument, "TestProject.nullus");
+}
+
+TEST(EditorLaunchArgsTests, ParsesSceneViewReadbackValidationOutputs)
+{
+    std::vector<std::string> storage;
+    char** argv = MutableArgv({
+        "Editor.exe",
+        "--editor-validation-scene-readback-output",
+        "Build/SceneViewReadback/output.png",
+        "--editor-validation-scene-readback-summary",
+        "Build/SceneViewReadback/output.txt",
+        "TestProject.nullus"
+    }, storage);
+
+    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+
+    EXPECT_FALSE(parsed.hasError);
+    EXPECT_TRUE(parsed.hasDiagnosticsOverride);
+    EXPECT_EQ(parsed.diagnosticsSettings.editorValidationSceneReadbackOutput, "Build/SceneViewReadback/output.png");
+    EXPECT_EQ(parsed.diagnosticsSettings.editorValidationSceneReadbackSummary, "Build/SceneViewReadback/output.txt");
     EXPECT_EQ(parsed.projectPathArgument, "TestProject.nullus");
 }
 

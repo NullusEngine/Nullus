@@ -84,14 +84,14 @@ SceneViewCameraTransform StabilizeViewGizmoCameraTransform(
     float p_cameraLength,
     const Maths::Vector3& p_orbitFocus,
     const Maths::Vector3* p_targetForward = nullptr);
-Maths::Vector3 GetActorGizmoPivotPosition(const Engine::GameObject& p_actor, SceneViewGizmoPivot p_pivot);
+Maths::Vector3 GetGameObjectGizmoPivotPosition(const Engine::GameObject& p_actor, SceneViewGizmoPivot p_pivot);
 SceneViewViewGizmoRect GetSceneViewViewGizmoRect(
     const Maths::Vector2& p_viewMin,
     const Maths::Vector2& p_viewMax);
-SceneViewGizmoMatrix GetActorWorldGizmoMatrix(
+SceneViewGizmoMatrix GetGameObjectWorldGizmoMatrix(
     const Engine::GameObject& p_actor,
     SceneViewGizmoPivot p_pivot = SceneViewGizmoPivot::Pivot);
-void ApplyActorWorldGizmoMatrix(
+void ApplyGameObjectWorldGizmoMatrix(
     Engine::GameObject& p_actor,
     const SceneViewGizmoMatrix& p_matrix,
     EGizmoOperation p_operation = EGizmoOperation::TRANSLATE,

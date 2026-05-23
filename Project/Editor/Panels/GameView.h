@@ -25,6 +25,7 @@ namespace NLS::Editor::Panels
 		* Returns the main camera used by the attached scene
 		*/
 		virtual Render::Entities::Camera* GetCamera();
+        void EnsureRenderer() override;
 
 		/**
 		* Returns the scene used by this view

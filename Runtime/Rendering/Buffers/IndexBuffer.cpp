@@ -12,7 +12,10 @@ namespace
 	}
 }
 
-NLS::Render::Buffers::IndexBuffer::IndexBuffer(unsigned int* p_data, size_t p_elements)
+NLS::Render::Buffers::IndexBuffer::IndexBuffer(
+	unsigned int* p_data,
+	size_t p_elements,
+	const NLS::Render::RHI::MemoryUsage memoryUsage)
 {
 	if (p_data == nullptr || p_elements == 0u)
 		return;
@@ -20,7 +23,7 @@ NLS::Render::Buffers::IndexBuffer::IndexBuffer(unsigned int* p_data, size_t p_el
 	NLS::Render::RHI::RHIBufferDesc desc;
 	desc.size = p_elements * sizeof(unsigned int);
 	desc.usage = NLS::Render::RHI::BufferUsageFlags::Index;
-	desc.memoryUsage = NLS::Render::RHI::MemoryUsage::GPUOnly;
+	desc.memoryUsage = memoryUsage;
 	desc.debugName = "IndexBuffer";
 
 	auto device = GetExplicitDevice();
@@ -34,7 +37,9 @@ NLS::Render::Buffers::IndexBuffer::IndexBuffer(unsigned int* p_data, size_t p_el
 	}
 }
 
-NLS::Render::Buffers::IndexBuffer::IndexBuffer(std::vector<uint32_t>& p_data) : IndexBuffer(p_data.data(), p_data.size())
+NLS::Render::Buffers::IndexBuffer::IndexBuffer(
+	std::vector<uint32_t>& p_data,
+	const NLS::Render::RHI::MemoryUsage memoryUsage) : IndexBuffer(p_data.data(), p_data.size(), memoryUsage)
 {
 }
 

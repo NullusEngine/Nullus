@@ -46,7 +46,7 @@ namespace NLS::Editor::Panels
         void CreateEditMenu();
 		void CreateBuildMenu();
 		void CreateWindowMenu();
-		void CreateActorsMenu();
+		void createGameObjectsMenu();
 		void CreateResourcesMenu();
 		void CreateLayoutMenu();
 		void CreateHelpMenu();

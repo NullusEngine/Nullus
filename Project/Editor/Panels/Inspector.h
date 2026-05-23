@@ -1,6 +1,8 @@
-﻿#pragma once
+#pragma once
 
 #include <UI/Panels/PanelWindow.h>
+
+#include <memory>
 
 #include "Panels/Hierarchy.h"
 #include "Panels/AssetBrowser.h"
@@ -47,7 +49,7 @@ public:
      * Focus the given actor
      * @param p_target
      */
-    void FocusActor(Engine::GameObject& p_target);
+    void FocusGameObject(Engine::GameObject& p_target);
 
     /**
      * Unfocus the currently targeted actor
@@ -62,12 +64,12 @@ public:
     /**
      * Returns the currently selected actor
      */
-    Engine::GameObject* GetTargetActor() const;
+    Engine::GameObject* GetTargetGameObject() const;
 
     /**
      * Create the actor inspector for the given actor
      */
-    void CreateActorInspector(Engine::GameObject& p_target);
+    void CreateGameObjectInspector(Engine::GameObject& p_target);
 
     /**
      * Draw the given component in inspector
@@ -82,10 +84,11 @@ public:
 private:
     void SyncComponentPicker();
 
-    Engine::GameObject* m_targetActor = nullptr;
-    UI::Widgets::Group* m_actorInfo;
+    Engine::GameObject* m_targetGameObject = nullptr;
+    UI::Widgets::Group* m_gameObjectInfo;
     UI::Widgets::Group* m_inspectorHeader;
     ComponentSearchPanel* m_componentPicker = nullptr;
+    std::shared_ptr<bool> m_lifetimeToken;
 
     uint64_t m_componentAddedListener = 0;
     uint64_t m_componentRemovedListener = 0;

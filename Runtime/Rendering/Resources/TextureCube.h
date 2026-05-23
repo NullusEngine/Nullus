@@ -2,7 +2,9 @@
 
 
 #include "RenderDef.h"
+#include "Reflection/Macros.h"
 #include "Rendering/Resources/Texture.h"
+#include "Resources/TextureCube.generated.h"
 
 #include <vector>
 
@@ -15,10 +17,12 @@ namespace NLS::Render::Resources
 	/**
 	* Texture CubeMap
 	*/
-	class NLS_RENDER_API TextureCube : public Texture
+	CLASS(NLS_RENDER_API TextureCube) : public Texture
 	{
 
 	public:
+		GENERATED_BODY()
+
 		TextureCube();
 		~TextureCube() = default;
 

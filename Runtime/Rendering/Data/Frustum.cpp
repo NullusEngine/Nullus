@@ -27,9 +27,7 @@ enum PlaneData
 namespace
 {
 using Mesh = NLS::Render::Resources::Mesh;
-using Model = NLS::Render::Resources::Model;
 using BoundingSphere = NLS::Render::Geometry::BoundingSphere;
-using ECullingOptions = NLS::Render::Settings::ECullingOptions;
 
 void NormalizePlane(float frustum[6][4], int side)
 {
@@ -152,31 +150,6 @@ bool Frustum::BoundingSphereInFrustum(const BoundingSphere& boundingSphere, cons
 bool Frustum::IsMeshInFrustum(const Mesh& mesh, const Maths::Transform& transform) const
 {
 	return BoundingSphereInFrustum(mesh.GetBoundingSphere(), transform);
-}
-
-std::vector<Mesh*> Frustum::GetMeshesInFrustum(const Model& model, const BoundingSphere& modelBoundingSphere, const Maths::Transform& modelTransform, ECullingOptions cullingOptions) const
-{
-	const bool frustumPerModel = Render::Settings::IsFlagSet(Settings::ECullingOptions::FRUSTUM_PER_MODEL, cullingOptions);
-
-	if (!frustumPerModel || BoundingSphereInFrustum(modelBoundingSphere, modelTransform))
-	{
-		std::vector<Mesh*> result;
-
-		const bool frustumPerMesh = Render::Settings::IsFlagSet(Settings::ECullingOptions::FRUSTUM_PER_MESH, cullingOptions);
-		const auto& meshes = model.GetMeshes();
-
-		for (auto mesh : meshes)
-		{
-			if (meshes.size() == 1 || !frustumPerMesh || IsMeshInFrustum(*mesh, modelTransform))
-			{
-				result.push_back(mesh);
-			}
-		}
-
-		return result;
-	}
-
-	return {};
 }
 
 std::array<float, 4> Frustum::GetNearPlane() const

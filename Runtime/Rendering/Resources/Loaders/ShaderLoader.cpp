@@ -1,18 +1,16 @@
 #include <algorithm>
+#include <cctype>
 #include <sstream>
-#include <cstring>
-#include <exception>
 #include <fstream>
 #include <filesystem>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
 #include <Debug/Logger.h>
 
-#include <spirv_glsl.hpp>
-#include <spirv_cross_util.hpp>
-
 #include "Rendering/Context/DriverAccess.h"
+#include "Rendering/Assets/ShaderArtifact.h"
 #include "Rendering/Resources/Loaders/ShaderLoader.h"
 #include "Rendering/RHI/RHITypes.h"
 #include "Rendering/Resources/ShaderType.h"
@@ -35,43 +33,110 @@ namespace
 	using ShaderPropertyDesc = NLS::Render::Resources::ShaderPropertyDesc;
 	using ShaderConstantBufferDesc = NLS::Render::Resources::ShaderConstantBufferDesc;
 
-	uint32_t GetOpenGLTextureBindingPoint(uint32_t bindingSpace, uint32_t bindingIndex)
+	constexpr const char* kAppDirectoryName = "App";
+	constexpr const char* kAssetsDirectoryName = "Assets";
+	constexpr const char* kEngineDirectoryName = "Engine";
+	constexpr const char* kEditorDirectoryName = "Editor";
+	constexpr const char* kLibraryDirectoryName = "Library";
+	constexpr const char* kShaderCacheDirectoryName = "ShaderCache";
+	constexpr const char* kShaderCacheDatabaseFileName = "ShaderCache.tsv";
+
+	std::string ToLowerAscii(std::string value)
 	{
-		return bindingSpace * 16u + bindingIndex;
+		std::transform(
+			value.begin(),
+			value.end(),
+			value.begin(),
+			[](const unsigned char character)
+			{
+				return static_cast<char>(std::tolower(character));
+			});
+		return value;
 	}
 
-	uint32_t GetOpenGLUniformBufferBindingPoint(uint32_t bindingSpace, uint32_t bindingIndex)
+	bool PathNameEquals(const std::filesystem::path& path, const char* expected)
 	{
-		return 8u + bindingSpace * 4u + bindingIndex;
+		return ToLowerAscii(path.filename().string()) == ToLowerAscii(expected);
 	}
 
-	std::vector<uint32_t> ToSpirvWords(const std::vector<uint8_t>& bytecode)
+	std::string MakeShaderCacheDatabasePath(const std::filesystem::path& projectRoot)
 	{
-		if (bytecode.size() % sizeof(uint32_t) != 0)
+		return (projectRoot /
+			kLibraryDirectoryName /
+			kShaderCacheDirectoryName /
+			kShaderCacheDatabaseFileName).string();
+	}
+
+	bool IsBuiltInAppAssetsPath(
+		const std::filesystem::path& assetsRoot,
+		const std::filesystem::path& sourcePath)
+	{
+		if (!PathNameEquals(assetsRoot.parent_path(), kAppDirectoryName))
+			return false;
+
+		const auto relativeSourcePath = sourcePath.lexically_relative(assetsRoot);
+		if (relativeSourcePath.empty())
+			return false;
+
+		const auto firstAssetSegment = relativeSourcePath.begin();
+		return firstAssetSegment != relativeSourcePath.end() &&
+			(PathNameEquals(*firstAssetSegment, kEngineDirectoryName) ||
+			 PathNameEquals(*firstAssetSegment, kEditorDirectoryName));
+	}
+
+	std::string GetShaderCacheDatabasePath(const std::string& sourcePath)
+	{
+		std::filesystem::path path(sourcePath);
+		if (path.is_relative())
+			path = std::filesystem::absolute(path);
+
+		std::error_code error;
+		path = std::filesystem::weakly_canonical(path, error);
+		if (error)
+			path = std::filesystem::absolute(std::filesystem::path(sourcePath));
+		path = path.lexically_normal();
+
+		for (auto probe = path.parent_path(); !probe.empty(); probe = probe.parent_path())
+		{
+			if (PathNameEquals(probe, kAssetsDirectoryName))
+			{
+				const auto assetRoot = probe.parent_path();
+				if (IsBuiltInAppAssetsPath(probe, path))
+					return {};
+
+				return MakeShaderCacheDatabasePath(assetRoot);
+			}
+
+			if (probe == probe.parent_path())
+				break;
+		}
+		return {};
+	}
+
+	std::string GetConfiguredProjectShaderCacheDatabasePath(const std::string& projectAssetsPath)
+	{
+		if (projectAssetsPath.empty())
 			return {};
 
-		std::vector<uint32_t> words(bytecode.size() / sizeof(uint32_t));
-		std::memcpy(words.data(), bytecode.data(), bytecode.size());
-		return words;
-	}
+		std::filesystem::path assetsPath(projectAssetsPath);
+		if (assetsPath.is_relative())
+			assetsPath = std::filesystem::absolute(assetsPath);
 
-	std::string GetGLSLCachePath(const std::string& spirvArtifactPath, ShaderStage stage)
-	{
-		auto path = std::filesystem::path(spirvArtifactPath);
-		switch (stage)
+		std::error_code error;
+		assetsPath = std::filesystem::weakly_canonical(assetsPath, error);
+		if (error)
+			assetsPath = std::filesystem::absolute(std::filesystem::path(projectAssetsPath));
+		assetsPath = assetsPath.lexically_normal();
+		while (!assetsPath.empty() && assetsPath.filename().empty())
 		{
-		case ShaderStage::Vertex:
-			path.replace_extension(".vert.glsl");
-			break;
-		case ShaderStage::Compute:
-			path.replace_extension(".comp.glsl");
-			break;
-		case ShaderStage::Pixel:
-		default:
-			path.replace_extension(".frag.glsl");
-			break;
+			const auto parent = assetsPath.parent_path();
+			if (parent == assetsPath)
+				break;
+			assetsPath = parent;
 		}
-		return path.string();
+
+		const auto projectRoot = PathNameEquals(assetsPath, kAssetsDirectoryName) ? assetsPath.parent_path() : assetsPath;
+		return MakeShaderCacheDatabasePath(projectRoot);
 	}
 
 	std::vector<uint8_t> ReadBinaryFile(const std::string& path)
@@ -121,104 +186,6 @@ namespace
 			std::filesystem::exists(output.artifactPath);
 	}
 
-	const char* ShaderStageLabel(ShaderStage stage)
-	{
-		switch (stage)
-		{
-		case ShaderStage::Vertex: return "VS";
-		case ShaderStage::Pixel: return "PS";
-		case ShaderStage::Compute: return "CS";
-		default: return "Unknown";
-		}
-	}
-
-	std::string CrossCompileSpirvToGLSL(const ShaderCompilationOutput& spirvOutput, ShaderStage stage)
-	{
-		const auto spirv = ToSpirvWords(spirvOutput.bytecode);
-		if (spirv.empty())
-			return {};
-
-		try
-		{
-			spirv_cross::CompilerGLSL compiler(spirv);
-			auto options = compiler.get_common_options();
-			options.version = 430;
-			options.es = false;
-			options.vulkan_semantics = true;
-			options.separate_shader_objects = false;
-			options.enable_420pack_extension = true;
-			options.vertex.flip_vert_y = false;
-			options.vertex.fixup_clipspace = true;
-			compiler.set_common_options(options);
-
-			auto resources = compiler.get_shader_resources();
-			compiler.build_combined_image_samplers();
-			spirv_cross_util::inherit_combined_sampler_bindings(compiler);
-
-			for (const auto& resource : resources.uniform_buffers)
-			{
-				const auto descriptorSet = compiler.has_decoration(resource.id, spv::DecorationDescriptorSet)
-					? compiler.get_decoration(resource.id, spv::DecorationDescriptorSet)
-					: 0u;
-				const auto binding = compiler.has_decoration(resource.id, spv::DecorationBinding)
-					? compiler.get_decoration(resource.id, spv::DecorationBinding)
-					: 0u;
-				compiler.unset_decoration(resource.id, spv::DecorationDescriptorSet);
-				compiler.set_decoration(resource.id, spv::DecorationBinding, GetOpenGLUniformBufferBindingPoint(descriptorSet, binding));
-			}
-
-			for (const auto& resource : resources.sampled_images)
-			{
-				const auto descriptorSet = compiler.has_decoration(resource.id, spv::DecorationDescriptorSet)
-					? compiler.get_decoration(resource.id, spv::DecorationDescriptorSet)
-					: 0u;
-				const auto binding = compiler.has_decoration(resource.id, spv::DecorationBinding)
-					? compiler.get_decoration(resource.id, spv::DecorationBinding)
-					: 0u;
-				compiler.unset_decoration(resource.id, spv::DecorationDescriptorSet);
-				compiler.set_decoration(resource.id, spv::DecorationBinding, GetOpenGLTextureBindingPoint(descriptorSet, binding));
-			}
-
-			for (const auto& combined : compiler.get_combined_image_samplers())
-			{
-				const auto descriptorSet = compiler.has_decoration(combined.combined_id, spv::DecorationDescriptorSet)
-					? compiler.get_decoration(combined.combined_id, spv::DecorationDescriptorSet)
-					: (compiler.has_decoration(combined.image_id, spv::DecorationDescriptorSet)
-						? compiler.get_decoration(combined.image_id, spv::DecorationDescriptorSet)
-						: 0u);
-				const auto binding = compiler.has_decoration(combined.combined_id, spv::DecorationBinding)
-					? compiler.get_decoration(combined.combined_id, spv::DecorationBinding)
-					: (compiler.has_decoration(combined.image_id, spv::DecorationBinding)
-						? compiler.get_decoration(combined.image_id, spv::DecorationBinding)
-						: 0u);
-
-				compiler.unset_decoration(combined.combined_id, spv::DecorationDescriptorSet);
-				compiler.set_decoration(combined.combined_id, spv::DecorationBinding, GetOpenGLTextureBindingPoint(descriptorSet, binding));
-				compiler.set_name(combined.combined_id, compiler.get_name(combined.image_id));
-			}
-
-			const auto glsl = compiler.compile();
-			std::string diagnostics;
-			if (!NLS::Render::ShaderCompiler::WriteShaderArtifactTextAtomic(GetGLSLCachePath(spirvOutput.artifactPath, stage), glsl, &diagnostics))
-				NLS_LOG_WARNING("[HLSL][OpenGL][" + std::string(ShaderStageLabel(stage)) + "] Failed to write GLSL cache artifact atomically: " + diagnostics);
-			return glsl;
-		}
-		catch (const spirv_cross::CompilerError& error)
-		{
-			NLS_LOG_ERROR("[HLSL][OpenGL][" + std::string(ShaderStageLabel(stage)) + "] Cross-compilation failed for artifact \"" + spirvOutput.artifactPath + "\":\n" + error.what());
-		}
-		catch (const std::exception& error)
-		{
-			NLS_LOG_ERROR("[HLSL][OpenGL][" + std::string(ShaderStageLabel(stage)) + "] Unexpected exception while generating GLSL for artifact \"" + spirvOutput.artifactPath + "\":\n" + error.what());
-		}
-		catch (...)
-		{
-			NLS_LOG_ERROR("[HLSL][OpenGL][" + std::string(ShaderStageLabel(stage)) + "] Unknown exception while generating GLSL for artifact \"" + spirvOutput.artifactPath + "\".");
-		}
-
-		return {};
-	}
-
 	void MergeReflection(ShaderReflection& destination, const ShaderReflection& source)
 	{
 		auto upsertProperty = [&destination](const ShaderPropertyDesc& property)
@@ -256,13 +223,16 @@ namespace
 			upsertConstantBuffer(buffer);
 	}
 
-    NLS::Render::Settings::EGraphicsBackend ResolveActiveGraphicsBackend()
-    {
-        if (const auto backend = NLS::Render::Context::TryGetLocatedActiveGraphicsBackend(); backend.has_value())
-            return backend.value();
+	std::optional<NLS::Render::Settings::EGraphicsBackend> ResolveActiveGraphicsBackend()
+	{
+		if (const auto backend = NLS::Render::Context::TryGetLocatedActiveGraphicsBackend();
+			backend.has_value() && backend.value() != NLS::Render::Settings::EGraphicsBackend::NONE)
+		{
+			return backend.value();
+		}
 
-        return NLS::Render::Settings::GetPhase1RequiredRuntimeBackend();
-    }
+		return std::nullopt;
+	}
 
 	std::vector<NLS::Render::Resources::ShaderParameterStruct> BuildRegisteredShaderParameterStructs(const std::string& shaderPath)
 	{
@@ -284,48 +254,176 @@ namespace
 
 		return {};
 	}
+
+	NLS::Render::Assets::ShaderArtifactStage MakeSpirvArtifactStage(
+		const ShaderCompilationInput& input,
+		ShaderCompilationOutput output)
+	{
+		NLS::Render::Assets::ShaderArtifactStage stage;
+		stage.stage = input.stage;
+		stage.targetPlatform = ShaderTargetPlatform::SPIRV;
+		stage.entryPoint = input.options.entryPoint;
+		stage.targetProfile = input.options.targetProfile;
+		stage.output = std::move(output);
+		return stage;
+	}
+
+	NLS::Render::Assets::ShaderArtifact BuildGlslRuntimeFallbackArtifact(
+		const std::string& sourcePath,
+		const ShaderCompilationInput& vertexSpirvInput,
+		const ShaderCompilationOutput& vertexSpirvResult,
+		const ShaderCompilationInput& pixelSpirvInput,
+		const ShaderCompilationOutput& pixelSpirvResult,
+		const ShaderCompilationInput& computeSpirvInput,
+		const ShaderCompilationOutput& computeSpirvResult)
+	{
+		NLS::Render::Assets::ShaderArtifact artifact;
+		artifact.sourcePath = sourcePath;
+		artifact.subAssetKey = "runtime:" + std::filesystem::path(sourcePath).stem().generic_string();
+		artifact.targetPlatform = "runtime";
+
+		if (HasUsableCompilationResult(vertexSpirvResult))
+			artifact.stages.push_back(MakeSpirvArtifactStage(vertexSpirvInput, vertexSpirvResult));
+		if (HasUsableCompilationResult(pixelSpirvResult))
+			artifact.stages.push_back(MakeSpirvArtifactStage(pixelSpirvInput, pixelSpirvResult));
+		if (HasUsableCompilationResult(computeSpirvResult))
+			artifact.stages.push_back(MakeSpirvArtifactStage(computeSpirvInput, computeSpirvResult));
+
+		NLS::Render::Assets::AppendGlslShaderArtifactStages(artifact);
+		return artifact;
+	}
+
+	bool HasGlslArtifactStage(
+		const NLS::Render::Assets::ShaderArtifact& artifact,
+		ShaderStage stage)
+	{
+		return std::any_of(
+			artifact.stages.begin(),
+			artifact.stages.end(),
+			[stage](const NLS::Render::Assets::ShaderArtifactStage& candidate)
+			{
+				return candidate.stage == stage &&
+					candidate.targetPlatform == ShaderTargetPlatform::GLSL &&
+					candidate.output.status == ShaderCompilationStatus::Succeeded &&
+					!candidate.output.bytecode.empty();
+			});
+	}
 }
 
 namespace NLS::Render::Resources::Loaders
 {
 std::string ShaderLoader::__FILE_TRACE;
+namespace
+{
+	std::string g_defaultProjectAssetsPath;
+}
 
 Shader* ShaderLoader::Create(const std::string& p_filePath)
 {
 	__FILE_TRACE = p_filePath;
-	return CreateHLSLShaderAsset(p_filePath);
+	auto extension = std::filesystem::path(p_filePath).extension().string();
+	std::transform(
+		extension.begin(),
+		extension.end(),
+		extension.begin(),
+		[](const unsigned char character)
+		{
+			return static_cast<char>(std::tolower(character));
+		});
+	if (extension == ".nshader")
+		return CreateImportedShaderArtifact(p_filePath);
+	return CreateHLSLShaderAsset(p_filePath, ResolveProjectAssetsPath({}));
+}
+
+Shader* ShaderLoader::Create(const std::string& p_filePath, const std::string& p_projectAssetsPath)
+{
+	__FILE_TRACE = p_filePath;
+	auto extension = std::filesystem::path(p_filePath).extension().string();
+	std::transform(
+		extension.begin(),
+		extension.end(),
+		extension.begin(),
+		[](const unsigned char character)
+		{
+			return static_cast<char>(std::tolower(character));
+		});
+	if (extension == ".nshader")
+		return CreateImportedShaderArtifact(p_filePath);
+	return CreateHLSLShaderAsset(p_filePath, ResolveProjectAssetsPath(p_projectAssetsPath));
+}
+
+std::string ShaderLoader::GetCacheDatabasePath(
+	const std::string& p_filePath,
+	const std::string& p_projectAssetsPath)
+{
+	const auto configuredProjectPath = GetConfiguredProjectShaderCacheDatabasePath(
+		ResolveProjectAssetsPath(p_projectAssetsPath));
+	if (!configuredProjectPath.empty())
+		return configuredProjectPath;
+	return GetShaderCacheDatabasePath(p_filePath);
+}
+
+void ShaderLoader::CopyRuntimeData(Shader& p_destination, const Shader& p_source)
+{
+	p_destination.SetReflection(p_source.GetReflection());
+	p_destination.SetParameterStructs(p_source.GetParameterStructs());
+	p_destination.ClearCompiledArtifacts();
+	for (const auto* artifact : {
+		p_source.FindCompiledArtifact(ShaderStage::Vertex, ShaderTargetPlatform::DXIL),
+		p_source.FindCompiledArtifact(ShaderStage::Pixel, ShaderTargetPlatform::DXIL),
+		p_source.FindCompiledArtifact(ShaderStage::Compute, ShaderTargetPlatform::DXIL),
+		p_source.FindCompiledArtifact(ShaderStage::Vertex, ShaderTargetPlatform::SPIRV),
+		p_source.FindCompiledArtifact(ShaderStage::Pixel, ShaderTargetPlatform::SPIRV),
+		p_source.FindCompiledArtifact(ShaderStage::Compute, ShaderTargetPlatform::SPIRV),
+		p_source.FindCompiledArtifact(ShaderStage::Vertex, ShaderTargetPlatform::GLSL),
+		p_source.FindCompiledArtifact(ShaderStage::Pixel, ShaderTargetPlatform::GLSL),
+		p_source.FindCompiledArtifact(ShaderStage::Compute, ShaderTargetPlatform::GLSL) })
+	{
+		if (artifact != nullptr)
+			p_destination.SetCompiledArtifact(*artifact);
+	}
 }
 
 void ShaderLoader::Recompile(Shader& p_shader, const std::string& p_filePath)
 {
 	__FILE_TRACE = p_filePath;
 
-	if (Shader* refreshed = CreateHLSLShaderAsset(p_filePath); refreshed != nullptr)
+	if (Shader* refreshed = Create(p_filePath, ResolveProjectAssetsPath({})); refreshed != nullptr)
 	{
-		p_shader.SetReflection(refreshed->GetReflection());
-		p_shader.SetParameterStructs(refreshed->GetParameterStructs());
-		p_shader.ClearCompiledArtifacts();
-		for (const auto* artifact : {
-			refreshed->FindCompiledArtifact(ShaderStage::Vertex, ShaderTargetPlatform::DXIL),
-			refreshed->FindCompiledArtifact(ShaderStage::Pixel, ShaderTargetPlatform::DXIL),
-			refreshed->FindCompiledArtifact(ShaderStage::Compute, ShaderTargetPlatform::DXIL),
-			refreshed->FindCompiledArtifact(ShaderStage::Vertex, ShaderTargetPlatform::SPIRV),
-			refreshed->FindCompiledArtifact(ShaderStage::Pixel, ShaderTargetPlatform::SPIRV),
-			refreshed->FindCompiledArtifact(ShaderStage::Compute, ShaderTargetPlatform::SPIRV),
-            refreshed->FindCompiledArtifact(ShaderStage::Vertex, ShaderTargetPlatform::GLSL),
-            refreshed->FindCompiledArtifact(ShaderStage::Pixel, ShaderTargetPlatform::GLSL),
-            refreshed->FindCompiledArtifact(ShaderStage::Compute, ShaderTargetPlatform::GLSL) })
-		{
-			if (artifact != nullptr)
-				p_shader.SetCompiledArtifact(*artifact);
-		}
+		CopyRuntimeData(p_shader, *refreshed);
 		delete refreshed;
-		NLS_LOG_INFO("[COMPILE] \"" + __FILE_TRACE + "\": HLSL shader refreshed.");
+		NLS_LOG_INFO("[COMPILE] \"" + __FILE_TRACE + "\": shader refreshed.");
 	}
 	else
 	{
-		NLS_LOG_ERROR("[COMPILE] \"" + __FILE_TRACE + "\": Failed to refresh HLSL shader.");
+		NLS_LOG_ERROR("[COMPILE] \"" + __FILE_TRACE + "\": Failed to refresh shader.");
 	}
+}
+
+void ShaderLoader::Recompile(Shader& p_shader, const std::string& p_filePath, const std::string& p_projectAssetsPath)
+{
+	__FILE_TRACE = p_filePath;
+
+	if (Shader* refreshed = Create(p_filePath, ResolveProjectAssetsPath(p_projectAssetsPath)); refreshed != nullptr)
+	{
+		CopyRuntimeData(p_shader, *refreshed);
+		delete refreshed;
+		NLS_LOG_INFO("[COMPILE] \"" + __FILE_TRACE + "\": shader refreshed.");
+	}
+	else
+	{
+		NLS_LOG_ERROR("[COMPILE] \"" + __FILE_TRACE + "\": Failed to refresh shader.");
+	}
+}
+
+void ShaderLoader::SetDefaultProjectAssetsPath(const std::string& p_projectAssetsPath)
+{
+	g_defaultProjectAssetsPath = p_projectAssetsPath;
+}
+
+const std::string& ShaderLoader::ResolveProjectAssetsPath(const std::string& p_projectAssetsPath)
+{
+	return p_projectAssetsPath.empty() ? g_defaultProjectAssetsPath : p_projectAssetsPath;
 }
 
 bool ShaderLoader::Destroy(Shader*& p_shader)
@@ -340,9 +438,41 @@ bool ShaderLoader::Destroy(Shader*& p_shader)
 	return false;
 }
 
-Shader* ShaderLoader::CreateHLSLShaderAsset(const std::string& p_filePath)
+Shader* ShaderLoader::CreateImportedShaderArtifact(const std::string& p_filePath)
+{
+	const auto artifact = NLS::Render::Assets::LoadShaderArtifact(p_filePath);
+	if (!artifact.has_value())
+	{
+		NLS_LOG_ERROR("[SHADER ARTIFACT] \"" + p_filePath + "\": imported shader artifact could not be read.");
+		return nullptr;
+	}
+
+	auto* shader = new Shader(p_filePath, ShaderSourceLanguage::HLSL);
+	shader->SetReflection(artifact->reflection);
+	for (const auto& stage : artifact->stages)
+	{
+		if (stage.output.status != ShaderCompilationStatus::Succeeded || stage.output.bytecode.empty())
+			continue;
+
+		shader->SetCompiledArtifact({
+			stage.stage,
+			stage.targetPlatform,
+			stage.entryPoint,
+			stage.targetProfile,
+			stage.output
+		});
+	}
+
+	shader->SetParameterStructs(BuildRegisteredShaderParameterStructs(artifact->sourcePath));
+	return shader;
+}
+
+Shader* ShaderLoader::CreateHLSLShaderAsset(
+	const std::string& p_filePath,
+	const std::string& p_projectAssetsPath)
 {
 	NLS::Render::ShaderCompiler::ShaderCompiler compiler;
+	compiler.SetCacheDatabasePath(GetCacheDatabasePath(p_filePath, p_projectAssetsPath));
 	const auto sourceText = ReadTextFile(p_filePath);
 	if (sourceText.empty())
 	{
@@ -352,10 +482,14 @@ Shader* ShaderLoader::CreateHLSLShaderAsset(const std::string& p_filePath)
 	const bool hasPixelEntryPoint = HasEntryPointToken(sourceText, "PSMain");
 	const bool hasComputeEntryPoint = HasEntryPointToken(sourceText, "CSMain");
     const auto activeBackend = ResolveActiveGraphicsBackend();
-    const bool compileDxil = activeBackend == NLS::Render::Settings::EGraphicsBackend::DX12;
-    const bool compileSpirv = activeBackend == NLS::Render::Settings::EGraphicsBackend::VULKAN ||
-        activeBackend == NLS::Render::Settings::EGraphicsBackend::OPENGL;
-    const bool compileGlsl = activeBackend == NLS::Render::Settings::EGraphicsBackend::OPENGL;
+    const bool compileAllRuntimeBackends = !activeBackend.has_value();
+    const bool compileDxil = compileAllRuntimeBackends ||
+        activeBackend.value_or(NLS::Render::Settings::EGraphicsBackend::NONE) == NLS::Render::Settings::EGraphicsBackend::DX12;
+    const bool compileSpirv = compileAllRuntimeBackends ||
+        activeBackend.value_or(NLS::Render::Settings::EGraphicsBackend::NONE) == NLS::Render::Settings::EGraphicsBackend::VULKAN ||
+        activeBackend.value_or(NLS::Render::Settings::EGraphicsBackend::NONE) == NLS::Render::Settings::EGraphicsBackend::OPENGL;
+    const bool compileGlsl = compileAllRuntimeBackends ||
+        activeBackend.value_or(NLS::Render::Settings::EGraphicsBackend::NONE) == NLS::Render::Settings::EGraphicsBackend::OPENGL;
 	ShaderCompileOptions vertexDxilOptions;
 	vertexDxilOptions.sourceLanguage = ShaderSourceLanguage::HLSL;
 	vertexDxilOptions.targetPlatform = ShaderTargetPlatform::DXIL;
@@ -447,15 +581,20 @@ Shader* ShaderLoader::CreateHLSLShaderAsset(const std::string& p_filePath)
 		for (const auto& reflectedStage : compiler.ReflectBatch(spirvReflectionInputs))
 			MergeReflection(reflection, reflectedStage);
 	}
-	const auto vertexGLSL = compileGlsl && HasUsableCompilationResult(vertexSpirvResult)
-		? CrossCompileSpirvToGLSL(vertexSpirvResult, ShaderStage::Vertex)
-		: std::string{};
-	const auto pixelGLSL = compileGlsl && HasUsableCompilationResult(pixelSpirvResult)
-		? CrossCompileSpirvToGLSL(pixelSpirvResult, ShaderStage::Pixel)
-		: std::string{};
-	const auto computeGLSL = compileGlsl && HasUsableCompilationResult(computeSpirvResult)
-		? CrossCompileSpirvToGLSL(computeSpirvResult, ShaderStage::Compute)
-		: std::string{};
+	const bool hasAnySpirvResult =
+		HasUsableCompilationResult(vertexSpirvResult) ||
+		HasUsableCompilationResult(pixelSpirvResult) ||
+		HasUsableCompilationResult(computeSpirvResult);
+	const auto glslFallbackArtifact = compileGlsl && hasAnySpirvResult
+		? BuildGlslRuntimeFallbackArtifact(
+			p_filePath,
+			vertexSpirvInput,
+			vertexSpirvResult,
+			pixelSpirvInput,
+			pixelSpirvResult,
+			computeSpirvInput,
+			computeSpirvResult)
+		: NLS::Render::Assets::ShaderArtifact {};
 
 	auto* shader = new Shader(p_filePath, ShaderSourceLanguage::HLSL);
 	shader->SetReflection(std::move(reflection));
@@ -472,29 +611,22 @@ Shader* ShaderLoader::CreateHLSLShaderAsset(const std::string& p_filePath)
 		shader->SetCompiledArtifact({ ShaderStage::Pixel, ShaderTargetPlatform::SPIRV, pixelSpirvOptions.entryPoint, pixelSpirvOptions.targetProfile, pixelSpirvResult });
 	if (HasUsableCompilationResult(computeSpirvResult))
 		shader->SetCompiledArtifact({ ShaderStage::Compute, ShaderTargetPlatform::SPIRV, computeSpirvOptions.entryPoint, computeSpirvOptions.targetProfile, computeSpirvResult });
-	if (!vertexGLSL.empty())
+	for (const auto& stage : glslFallbackArtifact.stages)
 	{
-		ShaderCompilationOutput glslVertexOutput;
-		glslVertexOutput.status = ShaderCompilationStatus::Succeeded;
-		glslVertexOutput.bytecode.assign(vertexGLSL.begin(), vertexGLSL.end());
-		glslVertexOutput.diagnostics = "Generated from SPIR-V.";
-		shader->SetCompiledArtifact({ ShaderStage::Vertex, ShaderTargetPlatform::GLSL, "main", "glsl_430", std::move(glslVertexOutput) });
-	}
-	if (!pixelGLSL.empty())
-	{
-		ShaderCompilationOutput glslPixelOutput;
-		glslPixelOutput.status = ShaderCompilationStatus::Succeeded;
-		glslPixelOutput.bytecode.assign(pixelGLSL.begin(), pixelGLSL.end());
-		glslPixelOutput.diagnostics = "Generated from SPIR-V.";
-		shader->SetCompiledArtifact({ ShaderStage::Pixel, ShaderTargetPlatform::GLSL, "main", "glsl_430", std::move(glslPixelOutput) });
-	}
-	if (!computeGLSL.empty())
-	{
-		ShaderCompilationOutput glslComputeOutput;
-		glslComputeOutput.status = ShaderCompilationStatus::Succeeded;
-		glslComputeOutput.bytecode.assign(computeGLSL.begin(), computeGLSL.end());
-		glslComputeOutput.diagnostics = "Generated from SPIR-V.";
-		shader->SetCompiledArtifact({ ShaderStage::Compute, ShaderTargetPlatform::GLSL, "main", "glsl_430", std::move(glslComputeOutput) });
+		if (stage.targetPlatform != ShaderTargetPlatform::GLSL ||
+			stage.output.status != ShaderCompilationStatus::Succeeded ||
+			stage.output.bytecode.empty())
+		{
+			continue;
+		}
+
+		shader->SetCompiledArtifact({
+			stage.stage,
+			stage.targetPlatform,
+			stage.entryPoint,
+			stage.targetProfile,
+			stage.output
+		});
 	}
 
 	if (compileDxil && hasVertexEntryPoint && !HasUsableCompilationResult(vertexDxilResult))
@@ -510,9 +642,9 @@ Shader* ShaderLoader::CreateHLSLShaderAsset(const std::string& p_filePath)
 	if (compileSpirv && hasComputeEntryPoint && !HasUsableCompilationResult(computeSpirvResult))
 		NLS_LOG_ERROR("[HLSL][SPIR-V][CS] \"" + __FILE_TRACE + "\" status=" + std::to_string(static_cast<int>(computeSpirvResult.status)) + " artifact=\"" + computeSpirvResult.artifactPath + "\":\n" + computeSpirvResult.diagnostics);
 	if (compileGlsl &&
-        ((HasUsableCompilationResult(vertexSpirvResult) && vertexGLSL.empty()) ||
-		 (HasUsableCompilationResult(pixelSpirvResult) && pixelGLSL.empty()) ||
-		 (HasUsableCompilationResult(computeSpirvResult) && computeGLSL.empty())))
+        ((HasUsableCompilationResult(vertexSpirvResult) && !HasGlslArtifactStage(glslFallbackArtifact, ShaderStage::Vertex)) ||
+		 (HasUsableCompilationResult(pixelSpirvResult) && !HasGlslArtifactStage(glslFallbackArtifact, ShaderStage::Pixel)) ||
+		 (HasUsableCompilationResult(computeSpirvResult) && !HasGlslArtifactStage(glslFallbackArtifact, ShaderStage::Compute))))
 	{
 		NLS_LOG_ERROR("[HLSL][OpenGL] \"" + __FILE_TRACE + "\": Failed to generate GLSL artifacts from SPIR-V.");
 	}

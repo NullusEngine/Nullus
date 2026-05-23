@@ -26,6 +26,7 @@ nls_register_imgui_extension(
     IconsFontAwesome4_data.h
     Roboto_data.h
     NullusTimelineProfilerImGuiCompat.h
+    ProfilerTraceCursor.h
   COMPILE_DEFINITIONS
     IMGUI_DEFINE_MATH_OPERATORS
     WITH_PROFILING=${_timeline_profiler_with_profiling}

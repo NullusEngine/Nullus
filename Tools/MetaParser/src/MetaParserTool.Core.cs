@@ -1,4 +1,5 @@
 using System.Linq;
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using CppAst;
@@ -125,12 +126,227 @@ internal static partial class MetaParserTool
     }
 
     private static bool ContainsReflectedDeclaration(string text)
-        => ContainsGeneratedBody(text)
-           || text.Contains("CLASS(", StringComparison.Ordinal)
-           || text.Contains("STRUCT(", StringComparison.Ordinal)
-           || text.Contains("ENUM(", StringComparison.Ordinal)
-           || text.Contains("PROPERTY(", StringComparison.Ordinal)
-           || text.Contains("FUNCTION(", StringComparison.Ordinal);
+    {
+        var reflectedText = StripCommentsAndDisabledPreprocessorBlocks(text);
+        return ContainsGeneratedBody(reflectedText)
+               || reflectedText.Contains("CLASS(", StringComparison.Ordinal)
+               || reflectedText.Contains("STRUCT(", StringComparison.Ordinal)
+               || reflectedText.Contains("ENUM(", StringComparison.Ordinal)
+               || reflectedText.Contains("PROPERTY(", StringComparison.Ordinal)
+               || reflectedText.Contains("FUNCTION(", StringComparison.Ordinal)
+               || reflectedText.Contains("NLS_META_EXTERNAL_TYPE_NAME(", StringComparison.Ordinal);
+    }
+
+    private static IEnumerable<string> ExtractExternalReflectionTypeNames(string text)
+    {
+        foreach (Match match in Regex.Matches(
+                     StripCommentsAndDisabledPreprocessorBlocks(text),
+                     @"\bNLS_META_EXTERNAL_TYPE_NAME\s*\(([^)]*)\)",
+                     RegexOptions.CultureInvariant))
+        {
+            var typeName = NormalizePropertyTypeName(match.Groups[1].Value);
+            if (!string.IsNullOrWhiteSpace(typeName))
+                yield return typeName;
+        }
+    }
+
+    private static string StripCommentsAndDisabledPreprocessorBlocks(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return string.Empty;
+
+        return StripDisabledIfZeroBlocks(StripCommentsAndStrings(text));
+    }
+
+    private static string StripCommentsAndStrings(string text)
+    {
+        var result = new StringBuilder(text.Length);
+        var inLineComment = false;
+        var inBlockComment = false;
+        var inString = false;
+        var inRawString = false;
+        string rawStringTerminator = string.Empty;
+        char stringDelimiter = '\0';
+
+        for (var index = 0; index < text.Length; ++index)
+        {
+            var current = text[index];
+            var next = index + 1 < text.Length ? text[index + 1] : '\0';
+
+            if (inLineComment)
+            {
+                if (current == '\r' || current == '\n')
+                {
+                    inLineComment = false;
+                    result.Append(current);
+                }
+                continue;
+            }
+
+            if (inBlockComment)
+            {
+                if (current == '*' && next == '/')
+                {
+                    inBlockComment = false;
+                    ++index;
+                }
+                else if (current == '\r' || current == '\n')
+                {
+                    result.Append(current);
+                }
+                continue;
+            }
+
+            if (inRawString)
+            {
+                if (current == '\r' || current == '\n')
+                    result.Append(current);
+                if (!string.IsNullOrEmpty(rawStringTerminator) &&
+                    index + rawStringTerminator.Length <= text.Length &&
+                    string.Compare(text, index, rawStringTerminator, 0, rawStringTerminator.Length, StringComparison.Ordinal) == 0)
+                {
+                    index += rawStringTerminator.Length - 1;
+                    inRawString = false;
+                    rawStringTerminator = string.Empty;
+                }
+                continue;
+            }
+
+            if (inString)
+            {
+                if (current == '\r' || current == '\n')
+                    result.Append(current);
+                if (current == '\\' && next != '\0')
+                {
+                    ++index;
+                    continue;
+                }
+                if (current == stringDelimiter)
+                    inString = false;
+                continue;
+            }
+
+            if (current == 'R' && next == '"')
+            {
+                var delimiterEnd = text.IndexOf('(', index + 2);
+                if (delimiterEnd >= 0)
+                {
+                    var delimiter = text.Substring(index + 2, delimiterEnd - (index + 2));
+                    rawStringTerminator = ")" + delimiter + "\"";
+                    inRawString = true;
+                    index = delimiterEnd;
+                    continue;
+                }
+            }
+
+            if (current == '/' && next == '/')
+            {
+                inLineComment = true;
+                ++index;
+                continue;
+            }
+
+            if (current == '/' && next == '*')
+            {
+                inBlockComment = true;
+                ++index;
+                continue;
+            }
+
+            if (current == '"' || current == '\'')
+            {
+                inString = true;
+                stringDelimiter = current;
+            }
+
+            result.Append(current);
+        }
+
+        return result.ToString();
+    }
+
+    private static string StripDisabledIfZeroBlocks(string text)
+    {
+        var lines = text.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        var result = new StringBuilder(text.Length);
+        var stack = new Stack<(bool ParentActive, bool BranchActive, bool AnyBranchTaken)>();
+        var active = true;
+
+        foreach (var line in lines)
+        {
+            var trimmed = line.TrimStart();
+            if (Regex.IsMatch(trimmed, @"^#\s*if\s+0(?:\s|$)", RegexOptions.CultureInvariant))
+            {
+                stack.Push((active, false, false));
+                active = false;
+                result.AppendLine();
+                continue;
+            }
+
+            if (Regex.IsMatch(trimmed, @"^#\s*if(?:\s|$)", RegexOptions.CultureInvariant))
+            {
+                stack.Push((active, active, active));
+                result.AppendLine();
+                continue;
+            }
+
+            if (stack.Count > 0 &&
+                Regex.IsMatch(trimmed, @"^#\s*elif(?:\s|$)", RegexOptions.CultureInvariant))
+            {
+                var state = stack.Pop();
+                var branchActive = state.ParentActive && !state.AnyBranchTaken && !IsDisabledElifDirective(trimmed);
+                stack.Push((state.ParentActive, branchActive, state.AnyBranchTaken || branchActive));
+                active = branchActive;
+                result.AppendLine();
+                continue;
+            }
+
+            if (stack.Count > 0 &&
+                Regex.IsMatch(trimmed, @"^#\s*else(?:\s|$)", RegexOptions.CultureInvariant))
+            {
+                var state = stack.Pop();
+                var branchActive = state.ParentActive && !state.AnyBranchTaken;
+                stack.Push((state.ParentActive, branchActive, true));
+                active = branchActive;
+                result.AppendLine();
+                continue;
+            }
+
+            if (stack.Count > 0 &&
+                Regex.IsMatch(trimmed, @"^#\s*endif(?:\s|$)", RegexOptions.CultureInvariant))
+            {
+                var state = stack.Pop();
+                active = state.ParentActive;
+                result.AppendLine();
+                continue;
+            }
+
+            if (!active)
+            {
+                result.AppendLine();
+                continue;
+            }
+
+            result.AppendLine(line);
+        }
+
+        return result.ToString();
+    }
+
+    private static bool IsDisabledElifDirective(string trimmedDirective)
+    {
+        var match = Regex.Match(trimmedDirective, @"^#\s*elif\s+(.+)$", RegexOptions.CultureInvariant);
+        if (!match.Success)
+            return true;
+
+        var expression = match.Groups[1].Value.Trim();
+        if (Regex.IsMatch(expression, @"^0(?:\s|$)", RegexOptions.CultureInvariant))
+            return true;
+        if (Regex.IsMatch(expression, @"^1(?:\s|$)", RegexOptions.CultureInvariant))
+            return false;
+
+        return false;
+    }
 
     private static bool ContainsGeneratedBody(string text)
         => text.Contains("GENERATED_BODY(", StringComparison.Ordinal);
@@ -294,7 +510,9 @@ internal static partial class MetaParserTool
                 var propertyAttributes = GetReflectionAttributes(field, "Property").ToList();
                 if (propertyAttributes.Count == 0)
                     continue;
-                if (field.Visibility != CppVisibility.Public && field.Visibility != CppVisibility.Default)
+                if (field.Visibility != CppVisibility.Public &&
+                    field.Visibility != CppVisibility.Private &&
+                    field.Visibility != CppVisibility.Default)
                     continue;
                 if (field.StorageQualifier == CppStorageQualifier.Static)
                     continue;
@@ -305,17 +523,22 @@ internal static partial class MetaParserTool
                 if (string.IsNullOrWhiteSpace(typeName) || ContainsUnsupportedReflectionType(typeName))
                     continue;
 
+                var isPrivateField = field.Visibility == CppVisibility.Private ||
+                                     (field.Visibility == CppVisibility.Default && cls.ClassKind == CppClassKind.Class);
+
                 result.Add(new ReflectFieldInfo(
                     field.Name,
                     typeName,
                     $"&{cls.FullName}::{field.Name}",
                     $"&{cls.FullName}::{field.Name}",
-                    false,
+                    isPrivateField,
                     ExtractPropertyMetas(propertyAttributes)));
             }
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"[MetaParser] Warning: skipping field on {cls.FullName}: {ex.Message}");
+                if (ex is FormatException)
+                    throw;
             }
         }
 
@@ -349,6 +572,12 @@ internal static partial class MetaParserTool
             {
                 if (!HasFunctionMarker(method))
                     continue;
+                if (method.Visibility == CppVisibility.Private)
+                {
+                    throw new NotSupportedException(
+                        "Private reflected accessor methods are not supported. " +
+                        $"Move '{cls.FullName}::{method.Name}' to public visibility or reflect the backing field directly.");
+                }
                 if (method.Visibility != CppVisibility.Public && method.Visibility != CppVisibility.Default)
                     continue;
                 if (method.IsStatic || method.IsConstructor || method.IsDestructor)
@@ -390,6 +619,8 @@ internal static partial class MetaParserTool
             catch (Exception ex)
             {
                 Console.Error.WriteLine($"[MetaParser] Warning: skipping auto-property discovery on {cls.FullName}: {ex.Message}");
+                if (ex is NotSupportedException)
+                    throw;
             }
         }
 
@@ -481,9 +712,15 @@ internal static partial class MetaParserTool
                 var trimmed = token.Trim();
                 if (string.IsNullOrWhiteSpace(trimmed))
                     continue;
+                if (IsCppAstEmptyReflectionArgumentArtifact(trimmed))
+                    continue;
 
                 if (string.Equals(trimmed, "RequiresRestart", StringComparison.Ordinal))
                     metas.Add(new ReflectTypeMetaInfo("NLS::meta::RequiresRestart", ""));
+                else if (TryParseRangeMeta(trimmed, out var rangeInitializer))
+                    metas.Add(new ReflectTypeMetaInfo("NLS::meta::Range", rangeInitializer));
+                else
+                    throw new FormatException($"Unsupported PROPERTY metadata token `{trimmed}`.");
             }
         }
 
@@ -491,6 +728,49 @@ internal static partial class MetaParserTool
             .DistinctBy(static meta => $"{meta.PropertyTypeName}:{meta.InitializerArguments}")
             .ToList();
     }
+
+    private static bool IsCppAstEmptyReflectionArgumentArtifact(string token)
+        => token.StartsWith("=", StringComparison.Ordinal) &&
+           token.Contains("System.Collections.Generic.List", StringComparison.Ordinal);
+
+    private static bool TryParseRangeMeta(string token, out string initializerArguments)
+    {
+        initializerArguments = string.Empty;
+        if (!token.StartsWith("Range(", StringComparison.Ordinal) ||
+            !token.EndsWith(")", StringComparison.Ordinal))
+            return false;
+
+        var body = token.Substring("Range(".Length, token.Length - "Range(".Length - 1);
+        var parts = SplitTopLevel(body, ',');
+        if (parts.Count != 2 ||
+            !TryParseFiniteFloatLiteral(parts[0], out var min) ||
+            !TryParseFiniteFloatLiteral(parts[1], out var max))
+        {
+            throw new FormatException($"Range metadata must be Range(<finite-number>, <finite-number>), got `{token}`.");
+        }
+
+        if (min > max)
+            throw new FormatException($"Range metadata min must be less than or equal to max, got `{token}`.");
+
+        initializerArguments =
+            $"{FormatFloatInitializer(min)}, {FormatFloatInitializer(max)}";
+        return true;
+    }
+
+    private static bool TryParseFiniteFloatLiteral(string text, out float value)
+    {
+        var trimmed = text.Trim();
+        if (trimmed.EndsWith("f", StringComparison.OrdinalIgnoreCase))
+            trimmed = trimmed[..^1];
+
+        if (!float.TryParse(trimmed, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+            return false;
+
+        return float.IsFinite(value);
+    }
+
+    private static string FormatFloatInitializer(float value)
+        => value.ToString("R", CultureInfo.InvariantCulture) + "f";
 
     private static string BuildGeneratedFileId(string headerPath)
         => $"NLS_FID_{SanitizeIdentifier(headerPath.Replace('\\', '_').Replace('/', '_').Replace('.', '_'))}";

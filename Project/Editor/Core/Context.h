@@ -6,24 +6,29 @@
 #include "UI/UIManager.h"
 #include "Context/Driver.h"
 #include <memory>
+#include <functional>
+#include <mutex>
 #include <optional>
 #include "SceneSystem/SceneManager.h"
 #include "Filesystem/IniFile.h"
-#include "ResourceManagement/ModelManager.h"
+#include "ResourceManagement/MeshManager.h"
 #include "ResourceManagement/TextureManager.h"
 #include "ResourceManagement/ShaderManager.h"
 #include "ResourceManagement/MaterialManager.h"
-#include "Resource/Actor/ActorManager.h"
 #include "EditorResources.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Settings/EditorSettings.h"
+#include "Assets/ImportProgressTracker.h"
+#include "Assets/PrefabEditorWorkflow.h"
 namespace NLS
 {
 namespace Editor::Core
 {
+class NativeProgressDialog;
+
 /**
  * The Context handle the engine features setup
  */
@@ -64,6 +69,15 @@ class Context
      * Apply project settings to the ini file
      */
     void ApplyProjectSettings();
+    void PresentStartupProgressFrame(const std::string& label, float normalizedProgress);
+    void CompleteStartupProgress();
+    bool IsNativeStartupProgressAvailable() const;
+    void PresentTaskProgress(
+        uint64_t taskKey,
+        const std::string& label,
+        float normalizedProgress,
+        std::function<void()> cancelHandler = {});
+    void CompleteTaskProgress(const std::string& label = "Task complete");
     void ApplyEditorSettings()
     {
         m_diagnosticsSettings = Settings::EditorSettings::BuildDiagnosticsSettings();
@@ -97,12 +111,14 @@ class Context
     std::unique_ptr<NLS::UI::UIManager> uiManager;
     std::unique_ptr<Editor::Core::EditorResources> editorResources;
     NLS::Engine::SceneSystem::SceneManager sceneManager;
+    NLS::Editor::Assets::PrefabInstanceRegistry prefabInstanceRegistry;
+    NLS::Editor::Assets::ImportProgressTracker importProgressTracker;
+    std::optional<NLS::Editor::Assets::PrefabStageState> activePrefabStage;
 
-    NLS::Core::ResourceManagement::ModelManager modelManager;
+    NLS::Core::ResourceManagement::MeshManager meshManager;
     NLS::Core::ResourceManagement::TextureManager textureManager;
     NLS::Core::ResourceManagement::ShaderManager shaderManager;
     NLS::Core::ResourceManagement::MaterialManager materialManager;
-    NLS::Engine::ActorManager actorManager;
 
     NLS::Windowing::Settings::WindowSettings windowSettings;
 
@@ -120,8 +136,18 @@ private:
             settings.editorValidationFocusView = m_diagnosticsOverride->editorValidationFocusView;
         if (!m_diagnosticsOverride->editorValidationExclusiveView.empty())
             settings.editorValidationExclusiveView = m_diagnosticsOverride->editorValidationExclusiveView;
-        if (!m_diagnosticsOverride->editorValidationSelectActor.empty())
-            settings.editorValidationSelectActor = m_diagnosticsOverride->editorValidationSelectActor;
+        if (!m_diagnosticsOverride->editorValidationSelectGameObject.empty())
+            settings.editorValidationSelectGameObject = m_diagnosticsOverride->editorValidationSelectGameObject;
+        if (!m_diagnosticsOverride->editorValidationCreateAsset.empty())
+            settings.editorValidationCreateAsset = m_diagnosticsOverride->editorValidationCreateAsset;
+        if (!m_diagnosticsOverride->editorValidationSceneReadbackOutput.empty())
+            settings.editorValidationSceneReadbackOutput = m_diagnosticsOverride->editorValidationSceneReadbackOutput;
+        if (!m_diagnosticsOverride->editorValidationSceneReadbackSummary.empty())
+            settings.editorValidationSceneReadbackSummary = m_diagnosticsOverride->editorValidationSceneReadbackSummary;
+        if (m_diagnosticsOverride->logRenderDrawPath)
+            settings.logRenderDrawPath = true;
+        if (m_diagnosticsOverride->dx12LogFrameFlow)
+            settings.dx12LogFrameFlow = true;
         if (m_diagnosticsOverride->editorLogSceneCameraInput)
             settings.editorLogSceneCameraInput = true;
     }
@@ -130,6 +156,12 @@ private:
     std::optional<Render::Settings::RenderDocSettings> m_renderDocOverride;
     std::optional<Render::Settings::EngineDiagnosticsSettings> m_diagnosticsOverride;
     Render::Settings::EngineDiagnosticsSettings m_diagnosticsSettings;
+    std::unique_ptr<NativeProgressDialog> m_nativeProgressDialog;
+    mutable std::mutex m_progressDialogMutex;
+    float m_lastStartupProgress = 0.0f;
+    uint64_t m_activeTaskProgressKey = 0u;
+    float m_lastTaskProgress = 0.0f;
+    bool m_taskProgressVisible = false;
 };
 } // namespace Editor::Core
 } // namespace NLS

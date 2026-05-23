@@ -61,9 +61,10 @@ namespace
         }
 
     protected:
-        void OnPrepareDraw(PipelineState&, const NLS::Render::Entities::Drawable&) override
+        bool OnPrepareDraw(PipelineState&, const NLS::Render::Entities::Drawable&) override
         {
             m_events.push_back("provider-before");
+            return true;
         }
 
         void OnPrepareExplicitDraw(

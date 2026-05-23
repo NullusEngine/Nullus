@@ -6,8 +6,12 @@
 #include "Components/Component.h"
 #include "GameObject.h"
 #include "Reflection/Field.h"
+#include "Rendering/ExternalReflection.h"
+#include "Rendering/Resources/Material.h"
 #include "SceneSystem/Scene.h"
 #include "Serialize/ObjectGraphDocument.h"
+#include "Serialize/ObjectGraphPPtr.h"
+#include "Serialize/PPtr.h"
 #include "Serialize/PrefabDocument.h"
 
 namespace NLS::Engine::Serialize
@@ -35,11 +39,12 @@ namespace NLS::Engine::Serialize
 
             ObjectRecord sceneRecord;
             sceneRecord.id = sceneId;
-            sceneRecord.typeName = "NLS::Engine::SceneSystem::Scene";
+            sceneRecord.localIdentifierInFile = MakeLocalIdentifierInFile(sceneId);
+            sceneRecord.typeName = NLS_TYPEOF(SceneSystem::Scene).GetName();
             sceneRecord.debugName = "Scene";
 
             size_t gameObjectIndex = 0;
-            for (auto* gameObject : scene.GetActors())
+            for (auto* gameObject : scene.GetGameObjects())
             {
                 if (!gameObject)
                     continue;
@@ -48,7 +53,7 @@ namespace NLS::Engine::Serialize
             }
 
             PropertyValue::ArrayValue gameObjects;
-            for (auto* gameObject : scene.GetActors())
+            for (auto* gameObject : scene.GetGameObjects())
             {
                 if (!gameObject)
                     continue;
@@ -79,13 +84,16 @@ namespace NLS::Engine::Serialize
             return prefab;
         }
 
-        static ObjectRecord SerializeObjectRecord(const NLS::meta::Object& object, ObjectId objectId)
+        static ObjectRecord SerializeObjectRecord(const NLS::Object& object, ObjectId objectId)
         {
+            const auto type = object.GetType();
             ObjectRecord record;
             record.id = objectId;
-            record.typeName = object.GetType().GetName();
+            record.localIdentifierInFile = MakeLocalIdentifierInFile(objectId);
+            record.typeName = type.IsValid() ? type.GetName() : object.GetObjectTypeName();
             record.debugName = record.typeName;
-            WriteReflectedFields(object, record);
+            if (type.IsValid())
+                WriteReflectedFields(object, type, record);
             return record;
         }
 
@@ -114,7 +122,9 @@ namespace NLS::Engine::Serialize
 
         static std::string MakeComponentLabel(const ObjectId& ownerId, const Components::Component& component, size_t index)
         {
-            return "Component:" + ownerId.GetGuid().ToString() + ":" + std::to_string(index) + ":" + component.GetType().GetName();
+            const auto type = component.GetType();
+            return "Component:" + ownerId.GetGuid().ToString() + ":" + std::to_string(index) + ":" +
+                   (type.IsValid() ? type.GetName() : component.GetObjectTypeName());
         }
 
         static void WriteGameObject(
@@ -129,7 +139,13 @@ namespace NLS::Engine::Serialize
             record.debugPath = "/" + gameObject.GetName();
 
             if (auto* parent = gameObject.GetParent())
-                record.properties.push_back({"parent", PropertyValue::ObjectReference(context.GetId(parent, ""))});
+            {
+                record.properties.push_back({
+                    "parent",
+                    PropertyValue::ObjectReference(
+                        ObjectIdentifier::LocalObject(MakeLocalIdentifierInFile(context.GetId(parent, ""))))
+                });
+            }
             else
                 record.properties.push_back({"parent", PropertyValue::Null()});
 
@@ -197,17 +213,49 @@ namespace NLS::Engine::Serialize
         static void WriteComponent(const Components::Component& component, ObjectId componentId, ObjectGraphDocument& document)
         {
             auto record = SerializeObjectRecord(component, componentId);
-            record.debugName = component.GetType().GetName();
+            const auto type = component.GetType();
+            record.debugName = type.IsValid() ? type.GetName() : component.GetObjectTypeName();
             document.objects.push_back(std::move(record));
         }
 
-        static void WriteReflectedFields(const NLS::meta::Object& object, ObjectRecord& record)
+        static void WriteReflectedFields(const NLS::Object& object, const NLS::meta::Type& type, ObjectRecord& record)
         {
-            for (const auto& field : object.GetType().GetFields())
+            auto instance = NLS::meta::Variant(
+                const_cast<NLS::Object*>(&object),
+                NLS::meta::variant_policy::WrapObject {});
+            for (const auto& field : type.GetFields())
             {
-                const auto value = field.GetValue(NLS::meta::Variant(const_cast<NLS::meta::Object*>(&object), NLS::meta::variant_policy::WrapObject {}));
-                record.properties.push_back({field.GetName(), ConvertJsonValue(value.SerializeJson().native())});
+                const auto value = field.GetValue(instance);
+                record.properties.push_back({field.GetName(), ConvertVariantValue(value)});
             }
+        }
+
+        static PropertyValue ConvertVariantValue(const NLS::meta::Variant& value)
+        {
+            const auto valueType = value.GetType();
+            if (valueType.IsArray())
+            {
+                if (Internal::IsPPtrTypeName(valueType.GetArrayType()))
+                {
+                    PropertyValue::ArrayValue values;
+                    const auto array = value.GetArray();
+                    values.reserve(array.Size());
+                    for (size_t index = 0; index < array.Size(); ++index)
+                        values.push_back(Internal::SerializePPtrValueOrThrow(array.GetValue(index)));
+                    return PropertyValue::Array(std::move(values));
+                }
+
+                PropertyValue::ArrayValue values;
+                const auto array = value.GetArray();
+                values.reserve(array.Size());
+                for (size_t index = 0; index < array.Size(); ++index)
+                    values.push_back(ConvertVariantValue(array.GetValue(index)));
+                return PropertyValue::Array(std::move(values));
+            }
+            if (Internal::IsPPtrTypeName(valueType))
+                return Internal::SerializePPtrValueOrThrow(value);
+
+            return ConvertJsonValue(value.SerializeJson().native());
         }
 
         static PropertyValue ConvertJsonValue(const nlohmann::json& json)

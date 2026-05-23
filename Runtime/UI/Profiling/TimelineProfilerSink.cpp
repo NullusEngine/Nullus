@@ -1,4 +1,5 @@
 #include "UI/Profiling/TimelineProfilerSink.h"
+#include "UI/Profiling/TimelineProfilerLimits.h"
 
 #if defined(NLS_ENABLE_TIMELINE_PROFILER)
 #include <Profiler.h>
@@ -9,8 +10,6 @@
 
 namespace
 {
-constexpr uint32_t kTimelineProfilerHistoryFrameCount = 32u;
-constexpr uint32_t kTimelineProfilerMaxCpuScopeDepth = 6u;
 thread_local uint32_t g_timelineScopeDepth = 0u;
 thread_local uint32_t g_timelineSuppressedScopeDepth = 0u;
 
@@ -19,7 +18,7 @@ void EnsureTimelineProfilerInitialized()
     static const bool initialized = []
     {
         if (!gProfiler.IsInitialized())
-            gProfiler.Initialize(kTimelineProfilerHistoryFrameCount);
+            gProfiler.Initialize(NLS::UI::Profiling::kTimelineProfilerHistoryFrameCount);
         return true;
     }();
     (void)initialized;
@@ -43,7 +42,7 @@ void TimelineProfilerSink::BeginScope(const ProfilerScopeEvent& event)
         return;
 
     if (g_timelineSuppressedScopeDepth > 0u ||
-        g_timelineScopeDepth >= kTimelineProfilerMaxCpuScopeDepth)
+        g_timelineScopeDepth >= NLS::UI::Profiling::kTimelineProfilerMaxCpuScopeDepth)
     {
         ++g_timelineSuppressedScopeDepth;
         ++m_skippedScopeCount;

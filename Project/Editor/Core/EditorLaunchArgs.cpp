@@ -17,8 +17,12 @@ namespace NLS::Editor::Launch
         std::printf("  --capture-after-frames <N>   Automatically capture frame after N presents\n");
         std::printf("  --editor-validation-focus-view <scene|game>  Focus a view during startup validation\n");
         std::printf("  --editor-validation-exclusive-view <scene|game>  Close the other view during startup validation\n");
-        std::printf("  --editor-validation-select-actor <name>  Select an actor during startup validation\n");
+        std::printf("  --editor-validation-select-gameobject <name>  Select a GameObject during startup validation\n");
+        std::printf("  --editor-validation-create-asset <path>  Create an asset instance during startup validation\n");
+        std::printf("  --editor-validation-scene-readback-output <path>  Write Scene View render target PNG during validation\n");
+        std::printf("  --editor-validation-scene-readback-summary <path>  Write Scene View readback summary during validation\n");
         std::printf("  --editor-validation-scene-camera <pos;rot>  Force Scene View camera, e.g. 1,2,3;10,20,30\n");
+        std::printf("  --editor-log-render-draw-path  Log renderer draw/package diagnostics\n");
         std::printf("  --editor-log-scene-camera-input  Log Scene View input and camera movement diagnostics\n");
         std::printf("  --help, -h                  Show this help message\n");
         std::printf("\nArguments:\n");
@@ -98,14 +102,35 @@ namespace NLS::Editor::Launch
                 parsed.diagnosticsSettings.editorValidationExclusiveView = argv[++i];
                 parsed.hasDiagnosticsOverride = true;
             }
-            else if (arg == "--editor-validation-select-actor" && i + 1 < argc)
+            else if (arg == "--editor-validation-select-gameobject" && i + 1 < argc)
             {
-                parsed.diagnosticsSettings.editorValidationSelectActor = argv[++i];
+                parsed.diagnosticsSettings.editorValidationSelectGameObject = argv[++i];
+                parsed.hasDiagnosticsOverride = true;
+            }
+            else if (arg == "--editor-validation-create-asset" && i + 1 < argc)
+            {
+                parsed.diagnosticsSettings.editorValidationCreateAsset = argv[++i];
+                parsed.hasDiagnosticsOverride = true;
+            }
+            else if (arg == "--editor-validation-scene-readback-output" && i + 1 < argc)
+            {
+                parsed.diagnosticsSettings.editorValidationSceneReadbackOutput = argv[++i];
+                parsed.hasDiagnosticsOverride = true;
+            }
+            else if (arg == "--editor-validation-scene-readback-summary" && i + 1 < argc)
+            {
+                parsed.diagnosticsSettings.editorValidationSceneReadbackSummary = argv[++i];
                 parsed.hasDiagnosticsOverride = true;
             }
             else if (arg == "--editor-log-scene-camera-input")
             {
                 parsed.diagnosticsSettings.editorLogSceneCameraInput = true;
+                parsed.hasDiagnosticsOverride = true;
+            }
+            else if (arg == "--editor-log-render-draw-path")
+            {
+                parsed.diagnosticsSettings.logRenderDrawPath = true;
+                parsed.diagnosticsSettings.dx12LogFrameFlow = true;
                 parsed.hasDiagnosticsOverride = true;
             }
             else if (arg == "--help" || arg == "-h")

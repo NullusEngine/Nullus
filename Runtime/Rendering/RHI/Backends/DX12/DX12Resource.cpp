@@ -134,7 +134,7 @@ namespace NLS::Render::Backend
 			return ResourceState::Unknown;
 		}
 
-		class DX12InitialUploadContext final
+	class DX12InitialUploadContext final
 		{
 		public:
 			DX12InitialUploadContext(ID3D12Device* device, ID3D12CommandQueue* graphicsQueue)
@@ -158,7 +158,31 @@ namespace NLS::Render::Backend
 		private:
 			ID3D12Device* m_device = nullptr;
 			ID3D12CommandQueue* m_graphicsQueue = nullptr;
-		};
+	};
+
+	bool HasBufferUsageFlag(
+		const NLS::Render::RHI::BufferUsageFlags usage,
+		const NLS::Render::RHI::BufferUsageFlags flag)
+	{
+		return (static_cast<uint32_t>(usage) & static_cast<uint32_t>(flag)) != 0u;
+	}
+
+	bool IsValidUploadHeapBufferUsage(const NLS::Render::RHI::BufferUsageFlags usage)
+	{
+		constexpr auto allowed =
+			static_cast<uint32_t>(NLS::Render::RHI::BufferUsageFlags::CopySrc) |
+			static_cast<uint32_t>(NLS::Render::RHI::BufferUsageFlags::Vertex) |
+			static_cast<uint32_t>(NLS::Render::RHI::BufferUsageFlags::Index) |
+			static_cast<uint32_t>(NLS::Render::RHI::BufferUsageFlags::Uniform) |
+			static_cast<uint32_t>(NLS::Render::RHI::BufferUsageFlags::ShaderRead);
+		const auto bits = static_cast<uint32_t>(usage);
+		return bits != 0u && (bits & ~allowed) == 0u;
+	}
+
+	bool IsValidReadbackHeapBufferUsage(const NLS::Render::RHI::BufferUsageFlags usage)
+	{
+		return usage == NLS::Render::RHI::BufferUsageFlags::CopyDst;
+	}
 
 		class DX12UploadBackend final : public NLS::Render::RHI::UploadBackend
 		{
@@ -588,27 +612,46 @@ namespace NLS::Render::Backend
 		resourceDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
 		D3D12_HEAP_TYPE heapType = D3D12_HEAP_TYPE_DEFAULT;
-		if (static_cast<uint32_t>(desc.usage) & static_cast<uint32_t>(NLS::Render::RHI::BufferUsageFlags::Uniform))
+		if (HasBufferUsageFlag(desc.usage, NLS::Render::RHI::BufferUsageFlags::Uniform))
 			heapType = D3D12_HEAP_TYPE_UPLOAD;
 		else if (desc.memoryUsage == NLS::Render::RHI::MemoryUsage::CPUToGPU)
 			heapType = D3D12_HEAP_TYPE_UPLOAD;
 		else if (desc.memoryUsage == NLS::Render::RHI::MemoryUsage::GPUToCPU)
 			heapType = D3D12_HEAP_TYPE_READBACK;
+		if (heapType == D3D12_HEAP_TYPE_UPLOAD)
+			m_desc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
+		else if (heapType == D3D12_HEAP_TYPE_READBACK)
+			m_desc.memoryUsage = NLS::Render::RHI::MemoryUsage::GPUToCPU;
+		if (heapType == D3D12_HEAP_TYPE_UPLOAD && !IsValidUploadHeapBufferUsage(desc.usage))
+		{
+			NLS_LOG_ERROR("NativeDX12Buffer: upload heap buffer usage is not supported for \"" + desc.debugName + "\"");
+			return;
+		}
+		if (heapType == D3D12_HEAP_TYPE_READBACK && !IsValidReadbackHeapBufferUsage(desc.usage))
+		{
+			NLS_LOG_ERROR("NativeDX12Buffer: readback heap buffers only support CopyDst usage for \"" + desc.debugName + "\"");
+			return;
+		}
 
 		const bool isUniformBuffer =
-			(static_cast<uint32_t>(desc.usage) & static_cast<uint32_t>(NLS::Render::RHI::BufferUsageFlags::Uniform)) != 0u;
+			HasBufferUsageFlag(desc.usage, NLS::Render::RHI::BufferUsageFlags::Uniform);
 		const UINT64 resourceSize = isUniformBuffer
 			? AlignUp(static_cast<UINT64>(desc.size), D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT)
 			: static_cast<UINT64>(desc.size);
 		resourceDesc.Width = resourceSize;
 		const bool isStorageBuffer =
-			(static_cast<uint32_t>(desc.usage) & static_cast<uint32_t>(NLS::Render::RHI::BufferUsageFlags::Storage)) != 0u;
+			HasBufferUsageFlag(desc.usage, NLS::Render::RHI::BufferUsageFlags::Storage);
 		if (isStorageBuffer && heapType == D3D12_HEAP_TYPE_DEFAULT)
 			resourceDesc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
 		const bool hasInitialData = uploadDesc.HasData();
 		if (hasInitialData && uploadDesc.destinationOffset + uploadDesc.dataSize > desc.size)
 		{
 			NLS_LOG_ERROR("NativeDX12Buffer: initial upload exceeds buffer size for \"" + desc.debugName + "\"");
+			return;
+		}
+		if (heapType == D3D12_HEAP_TYPE_UPLOAD && isStorageBuffer)
+		{
+			NLS_LOG_ERROR("NativeDX12Buffer: CPUToGPU storage buffers are not supported for \"" + desc.debugName + "\"");
 			return;
 		}
 		const bool needsDefaultHeapUpload = hasInitialData && heapType == D3D12_HEAP_TYPE_DEFAULT;
@@ -662,11 +705,12 @@ namespace NLS::Render::Backend
 		}
 
 		if (heapType == D3D12_HEAP_TYPE_UPLOAD)
-			m_state = NLS::Render::RHI::ResourceState::ShaderRead;
+			m_state = NLS::Render::RHI::ResourceState::GenericRead;
 		else if (heapType == D3D12_HEAP_TYPE_READBACK)
 			m_state = NLS::Render::RHI::ResourceState::CopyDst;
 		else
 			m_state = NLS::Render::RHI::ResourceState::Unknown;
+		m_valid = m_resource != nullptr;
 #endif
 	}
 
@@ -713,7 +757,7 @@ namespace NLS::Render::Backend
 			};
 		}
 		if (m_desc.memoryUsage != NLS::Render::RHI::MemoryUsage::CPUToGPU &&
-			(static_cast<uint32_t>(m_desc.usage) & static_cast<uint32_t>(NLS::Render::RHI::BufferUsageFlags::Uniform)) == 0u)
+			!HasBufferUsageFlag(m_desc.usage, NLS::Render::RHI::BufferUsageFlags::Uniform))
 		{
 			return {
 				NLS::Render::RHI::RHIUpdateStatusCode::Unsupported,
@@ -752,6 +796,8 @@ namespace NLS::Render::Backend
 	NLS::Render::RHI::NativeHandle NativeDX12Buffer::GetNativeBufferHandle()
 	{
 #if defined(_WIN32)
+		if (!m_valid)
+			return {};
 		return { NLS::Render::RHI::BackendType::DX12, static_cast<void*>(m_resource.Get()) };
 #else
 		return {};
@@ -766,6 +812,11 @@ namespace NLS::Render::Backend
 		, m_desc(desc)
 	{
 #if defined(_WIN32)
+		if (desc.memoryUsage != NLS::Render::RHI::MemoryUsage::GPUOnly)
+		{
+			NLS_LOG_ERROR("NativeDX12Texture: textures only support GPUOnly memory usage for \"" + desc.debugName + "\"");
+			return;
+		}
 		if (device == nullptr)
 			return;
 		if (desc.extent.width == 0u || desc.extent.height == 0u || desc.extent.depth == 0u)
@@ -801,9 +852,7 @@ namespace NLS::Render::Backend
 			? static_cast<UINT16>((std::max)(desc.extent.depth, 1u))
 			: layerCount;
 		resourceDesc.MipLevels = desc.mipLevels;
-		resourceDesc.Format = ToDxgiFormat(desc.format);
-		if (desc.format == NLS::Render::RHI::TextureFormat::Depth24Stencil8)
-			resourceDesc.Format = DXGI_FORMAT_R24G8_TYPELESS;
+		resourceDesc.Format = NLS::Render::RHI::DX12::ToDX12ResourceFormat(desc.format);
 		resourceDesc.SampleDesc.Count = desc.sampleCount;
 		resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 		resourceDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
@@ -829,7 +878,7 @@ namespace NLS::Render::Backend
 			: D3D12_RESOURCE_STATE_COMMON;
 
 		D3D12_CLEAR_VALUE clearValue{};
-		clearValue.Format = ToDxgiFormat(desc.format);
+		clearValue.Format = NLS::Render::RHI::DX12::ToDX12OptimizedClearFormat(desc.format);
 		if (isDepthTexture)
 		{
 			clearValue.DepthStencil = {
@@ -875,7 +924,13 @@ namespace NLS::Render::Backend
 	std::string_view NativeDX12Texture::GetDebugName() const { return m_desc.debugName; }
 	const NLS::Render::RHI::RHITextureDesc& NativeDX12Texture::GetDesc() const { return m_desc; }
 	NLS::Render::RHI::ResourceState NativeDX12Texture::GetState() const { return m_state; }
-	void NativeDX12Texture::SetState(NLS::Render::RHI::ResourceState state) { m_state = state; }
+	void NativeDX12Texture::SetState(NLS::Render::RHI::ResourceState state)
+	{
+		m_state = state;
+		m_partialStateDirty = false;
+	}
+	bool NativeDX12Texture::HasPartialStateDirty() const { return m_partialStateDirty; }
+	void NativeDX12Texture::MarkPartialStateDirty() { m_partialStateDirty = true; }
 
 	NLS::Render::RHI::NativeHandle NativeDX12Texture::GetNativeImageHandle()
 	{
@@ -1030,6 +1085,11 @@ namespace NLS::Render::Backend
 		auto texture = std::make_shared<NativeDX12Texture>(device, desc, uploadDesc);
 		if (texture == nullptr)
 			return nullptr;
+		if (!texture->GetNativeImageHandle().IsValid())
+		{
+			NLS_LOG_ERROR("CreateNativeDX12Texture: texture resource creation failed for \"" + desc.debugName + "\"");
+			return nullptr;
+		}
 
 		const bool needsInitialUpload =
 			uploadDesc.HasData() &&

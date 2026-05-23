@@ -40,3 +40,10 @@ internal sealed record ReflectTypeInfo(
 {
     public string QualifiedName => FullTypeName;
 }
+
+internal sealed class ReflectionTypeCatalog
+{
+    public HashSet<string> SupportedTypeNames { get; } = new(StringComparer.Ordinal);
+    public Dictionary<string, string> ReflectedBaseTypeNames { get; } = new(StringComparer.Ordinal);
+    public Dictionary<string, List<string>> ReflectedDirectBaseTypeNames { get; } = new(StringComparer.Ordinal);
+}

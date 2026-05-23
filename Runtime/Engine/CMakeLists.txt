@@ -6,3 +6,11 @@ nls_add_runtime_target(
     NLS_Core
     NLS_UI
   )
+
+target_sources(
+  NLS_Engine
+  PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/PrimitiveFactory.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/PrimitiveFactory.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/PrimitiveType.h"
+)

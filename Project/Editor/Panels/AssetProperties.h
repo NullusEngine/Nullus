@@ -10,7 +10,7 @@
 namespace NLS::Render::Resources
 {
 	class Material;
-	class Model;
+	class Mesh;
 	class Texture2D;
 }
 
@@ -28,7 +28,7 @@ namespace NLS::Editor::Panels
 	class AssetProperties : public UI::PanelWindow
 	{
 	public:
-		using EditableAssets = std::variant<Render::Resources::Model*, Render::Resources::Material*, Render::Resources::Texture2D*>;
+		using EditableAssets = std::variant<Render::Resources::Mesh*, Render::Resources::Material*, Render::Resources::Texture2D*>;
 
 		/**
 		* Constructor
@@ -66,6 +66,7 @@ namespace NLS::Editor::Panels
 		void CreateModelSettings();
 		void CreateTextureSettings();
 		void Apply();
+		void Reimport();
 
 	private:
 		std::string m_resource;
@@ -74,6 +75,7 @@ namespace NLS::Editor::Panels
         UI::Widgets::Group* m_settings = nullptr;
         UI::Widgets::Group* m_info = nullptr;
         UI::Widgets::Button* m_applyButton = nullptr;
+        UI::Widgets::Button* m_reimportButton = nullptr;
         UI::Widgets::Button* m_revertButton = nullptr;
         UI::Widgets::Button* m_previewButton = nullptr;
         UI::Widgets::Button* m_resetButton = nullptr;

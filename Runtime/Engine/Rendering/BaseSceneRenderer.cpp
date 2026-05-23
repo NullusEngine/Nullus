@@ -8,15 +8,16 @@
 #include "Rendering/EngineFrameObjectBindingProvider.h"
 #include "Rendering/LightGridPrepass.h"
 #include "Rendering/SceneLightingProvider.h"
+#include "Core/ResourceManagement/MaterialManager.h"
+#include "Core/ServiceLocator.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Context/RenderScenePackageBuilder.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/FrameGraph/ExternalResourceBridge.h"
 #include "Rendering/Resources/Material.h"
-#include "Rendering/Resources/Model.h"
+#include "Rendering/Resources/Mesh.h"
 #include "Profiling/Profiler.h"
 #include "Components/MeshRenderer.h"
-#include "Components/MaterialRenderer.h"
 #include "Components/TransformComponent.h"
 #include "SceneSystem/Scene.h"
 
@@ -24,6 +25,27 @@ namespace NLS::Engine::Rendering
 {
 namespace
 {
+	template <typename Compare>
+	void SortSceneDrawables(BaseSceneRenderer::SceneDrawables& drawables, Compare compare)
+	{
+		std::stable_sort(
+			drawables.begin(),
+			drawables.end(),
+			[compare](const auto& lhs, const auto& rhs)
+			{
+				return compare(lhs.first, rhs.first);
+			});
+	}
+
+	NLS::Render::Resources::Material* ResolveDefaultSceneMaterial()
+	{
+		if (!NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::MaterialManager>())
+			return nullptr;
+
+		return NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager)
+			.GetResource(":Materials\\Default.mat", false);
+	}
+
     class PreparedPassBindingPlaceholder final : public NLS::Render::RHI::RHIBindingSet
     {
     public:
@@ -90,7 +112,6 @@ namespace
 
 using namespace Components;
 using RenderMaterial = Render::Resources::Material;
-using RenderModel = Render::Resources::Model;
 using RenderMesh = Render::Resources::Mesh;
 using LightingDescriptor = Render::Data::LightingDescriptor;
 
@@ -133,7 +154,7 @@ std::optional<Render::Context::FrameSnapshot> BaseSceneRenderer::BuildFrameSnaps
 	const auto& scene = GetDescriptor<SceneDescriptor>().scene;
 	const auto& fastAccess = scene.GetFastAccessComponents();
 	snapshot->hasSceneInput = true;
-	snapshot->sceneActorCount = static_cast<uint64_t>(scene.GetActors().size());
+	snapshot->sceneGameObjectCount = static_cast<uint64_t>(scene.GetGameObjects().size());
 	snapshot->sceneModelRendererCount = static_cast<uint64_t>(fastAccess.modelRenderers.size());
 	snapshot->sceneLightCount = static_cast<uint64_t>(fastAccess.lights.size());
 	snapshot->sceneSkyboxCount = static_cast<uint64_t>(fastAccess.skyboxs.size());
@@ -325,8 +346,8 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 {
 	NLS_PROFILE_SCOPE();
 	auto* bindingProvider = GetFrameObjectBindingProvider();
-	if (bindingProvider != nullptr)
-		bindingProvider->PrepareDraw(pso, drawable);
+	if (bindingProvider != nullptr && !bindingProvider->PrepareDraw(pso, drawable))
+		return false;
 
 	if (!PrepareRecordedDraw(pso, drawable, outDraw))
 		return false;
@@ -338,6 +359,8 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 		{
 			outDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
 			outDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
+			outDraw.objectIndex = bindingSets.objectIndex;
+			outDraw.usesObjectIndex = bindingSets.usesObjectIndex;
 		}
 	}
 
@@ -357,8 +380,8 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 	NLS_PROFILE_SCOPE();
 	auto effectivePso = CreatePipelineState();
 	auto* bindingProvider = GetFrameObjectBindingProvider();
-	if (bindingProvider != nullptr)
-		bindingProvider->PrepareDraw(effectivePso, drawable);
+	if (bindingProvider != nullptr && !bindingProvider->PrepareDraw(effectivePso, drawable))
+		return false;
 
 	if (!PrepareRecordedDraw(drawable, pipelineOverrides, depthCompareOverride, outDraw))
 		return false;
@@ -370,6 +393,8 @@ bool BaseSceneRenderer::CaptureThreadedPreparedDraw(
 		{
 			outDraw.frameBindingSet = std::move(bindingSets.frameBindingSet);
 			outDraw.objectBindingSet = std::move(bindingSets.objectBindingSet);
+			outDraw.objectIndex = bindingSets.objectIndex;
+			outDraw.usesObjectIndex = bindingSets.usesObjectIndex;
 		}
 	}
 
@@ -413,7 +438,7 @@ void BaseSceneRenderer::RefreshSceneLightingDescriptor(SceneSystem::Scene& scene
 
 void BaseSceneRenderer::DrawModelWithSingleMaterial(
 	Render::Data::PipelineState p_pso,
-	RenderModel& p_model,
+	RenderMesh& p_mesh,
 	RenderMaterial& p_material,
 	const Maths::Matrix4& p_modelMatrix
 )
@@ -426,16 +451,13 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 		userMatrix
 	};
 
-	for (auto mesh : p_model.GetMeshes())
-	{
-		Render::Entities::Drawable element;
-		element.mesh = mesh;
-		element.material = &p_material;
-		element.stateMask = stateMask;
-		element.AddDescriptor(engineDrawableDescriptor);
+	Render::Entities::Drawable element;
+	element.mesh = &p_mesh;
+	element.material = &p_material;
+	element.stateMask = stateMask;
+	element.AddDescriptor(engineDrawableDescriptor);
 
-		DrawEntity(element);
-	}
+	DrawEntity(element);
 }
 
 BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
@@ -456,71 +478,21 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 		frustum = frustumOverride ? frustumOverride : camera.GetFrustum();
 	}
 
-	for (auto* modelRenderer : scene.GetFastAccessComponents().modelRenderers)
-	{
-		if (!modelRenderer)
-			continue;
+	m_renderScene.Synchronize(scene, {
+		ResolveDefaultSceneMaterial(),
+		overrideMaterial
+	});
+	auto retainedDrawables = m_renderScene.GatherVisibleCommands({
+		frustum ? &frustum.value() : nullptr,
+		camera.GetPosition()
+	});
+	opaques = std::move(retainedDrawables.opaques);
+	transparents = std::move(retainedDrawables.transparents);
 
-		auto* owner = modelRenderer->gameobject();
-		if (!owner || !owner->IsActive())
-			continue;
+	const auto& fastAccess = scene.GetFastAccessComponents();
+	skyboxes.reserve(fastAccess.skyboxs.size());
 
-		auto model = modelRenderer->GetModel();
-		auto materialRenderer = owner->GetComponent<MaterialRenderer>();
-		if (!model || !materialRenderer)
-			continue;
-
-		auto& transform = owner->GetTransform()->GetTransform();
-		auto cullingOptions = Render::Settings::ECullingOptions::NONE;
-
-		if (modelRenderer->GetFrustumBehaviour() != MeshRenderer::EFrustumBehaviour::DISABLED)
-			cullingOptions |= Render::Settings::ECullingOptions::FRUSTUM_PER_MODEL;
-		if (modelRenderer->GetFrustumBehaviour() == MeshRenderer::EFrustumBehaviour::CULL_MESHES)
-			cullingOptions |= Render::Settings::ECullingOptions::FRUSTUM_PER_MESH;
-
-		auto modelBoundingSphere = modelRenderer->GetFrustumBehaviour() == MeshRenderer::EFrustumBehaviour::CULL_CUSTOM
-			? modelRenderer->GetCustomBoundingSphere()
-			: model->GetBoundingSphere();
-
-		std::vector<RenderMesh*> meshes;
-		if (frustum)
-			meshes = frustum.value().GetMeshesInFrustum(*model, modelBoundingSphere, transform, cullingOptions);
-		else
-			meshes = model->GetMeshes();
-
-		if (meshes.empty())
-			continue;
-
-		float distanceToActor = Maths::Vector3::Distance(transform.GetWorldPosition(), camera.GetPosition());
-		const MaterialRenderer::MaterialList& materials = materialRenderer->GetMaterials();
-
-		for (const auto mesh : meshes)
-		{
-			RenderMaterial* material = nullptr;
-			if (mesh->GetMaterialIndex() < kMaxMaterialCount)
-			{
-				if (overrideMaterial && overrideMaterial->IsValid())
-					material = overrideMaterial;
-				else
-					material = materials.at(mesh->GetMaterialIndex());
-			}
-
-			if (material && material->IsValid())
-			{
-				Render::Entities::Drawable drawable;
-				drawable.mesh = mesh;
-				drawable.material = material;
-				drawable.stateMask = material->GenerateStateMask();
-				drawable.AddDescriptor<EngineDrawableDescriptor>({ transform.GetWorldMatrix(), materialRenderer->GetUserMatrix() });
-
-				if (material->IsBlendable())
-					transparents.emplace(distanceToActor, drawable);
-				else
-					opaques.emplace(distanceToActor, drawable);
-			}
-		}
-	}
-	for (auto* skybox : scene.GetFastAccessComponents().skyboxs)
+	for (auto* skybox : fastAccess.skyboxs)
 	{
 		if (!skybox)
 			continue;
@@ -528,20 +500,25 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 		if (!owner || !owner->IsActive())
 			continue;
 
-		if (auto model = skybox->GetModel())
+		if (auto mesh = skybox->GetMesh())
 		{
 			if (auto material = skybox->GetMaterial())
 			{
 				auto& transform = owner->GetTransform()->GetTransform();
 				Render::Entities::Drawable drawable;
-				drawable.mesh = model->GetMeshes()[0];
+				drawable.mesh = mesh;
 				drawable.material = material;
 				drawable.stateMask = material->GenerateStateMask();
 				drawable.AddDescriptor<EngineDrawableDescriptor>({ transform.GetWorldMatrix() });
-				skyboxes.emplace(0.0f, drawable);
+				skyboxes.emplace_back(0.0f, std::move(drawable));
 			}
 		}
 	}
+	SortSceneDrawables(skyboxes, std::less<float>{});
+	m_rendererStats.RecordSceneParse(
+		static_cast<uint64_t>(opaques.size()),
+		static_cast<uint64_t>(transparents.size()),
+		static_cast<uint64_t>(skyboxes.size()));
 	return { opaques, transparents, skyboxes };
 }
 }

@@ -44,7 +44,8 @@ namespace
 		const uint32_t registerSpace,
 		const uint32_t bindingIndex,
 		const uint32_t count,
-		const NLS::Render::RHI::ShaderStageMask stageMask)
+		const NLS::Render::RHI::ShaderStageMask stageMask,
+		const uint32_t elementStride = 0u)
 	{
 		auto existingEntry = std::find_if(
 			layoutDesc.entries.begin(),
@@ -61,6 +62,7 @@ namespace
 		if (existingEntry != layoutDesc.entries.end())
 		{
 			existingEntry->count = std::max(existingEntry->count, count);
+			existingEntry->elementStride = std::max(existingEntry->elementStride, elementStride);
 			existingEntry->stageMask = static_cast<NLS::Render::RHI::ShaderStageMask>(
 				static_cast<uint32_t>(existingEntry->stageMask) | static_cast<uint32_t>(stageMask));
 			return;
@@ -73,8 +75,22 @@ namespace
 			bindingIndex,
 			count,
 			stageMask,
-			registerSpace
+			registerSpace,
+			elementStride
 		});
+	}
+
+	uint32_t ResolveResourceElementStride(
+		const NLS::Render::RHI::BindingType bindingType,
+		const uint32_t reflectedByteSize)
+	{
+		if (bindingType != NLS::Render::RHI::BindingType::StructuredBuffer &&
+			bindingType != NLS::Render::RHI::BindingType::StorageBuffer)
+		{
+			return 0u;
+		}
+
+		return reflectedByteSize != 0u ? reflectedByteSize : sizeof(uint32_t);
 	}
 
 	std::string BindingCoordinate(
@@ -145,7 +161,8 @@ namespace
 		const uint32_t registerSpace,
 		const uint32_t bindingIndex,
 		const uint32_t count,
-		const NLS::Render::RHI::ShaderStageMask stageMask)
+		const NLS::Render::RHI::ShaderStageMask stageMask,
+		const uint32_t elementStride = 0u)
 	{
 		return {
 			name,
@@ -154,9 +171,19 @@ namespace
 			registerSpace,
 			bindingIndex,
 			count,
+			elementStride,
 			stageMask,
 			true
 		};
+	}
+
+	bool IsRendererOwnedObjectIndexConstantBuffer(
+		const NLS::Render::Resources::ShaderConstantBufferDesc& constantBuffer)
+	{
+		return constantBuffer.name == "ObjectIndexConstants" &&
+			constantBuffer.bindingSpace == NLS::Render::RHI::BindingPointMap::kObjectBindingSpace &&
+			constantBuffer.bindingIndex == 1u &&
+			constantBuffer.byteSize == sizeof(uint32_t);
 	}
 }
 
@@ -263,6 +290,9 @@ namespace NLS::Render::Resources
 
 		for (const auto& constantBuffer : reflection.constantBuffers)
 		{
+			if (IsRendererOwnedObjectIndexConstantBuffer(constantBuffer))
+				continue;
+
 			maxSetIndex = std::max(maxSetIndex, RHI::BindingPointMap::GetDescriptorSetIndex(constantBuffer.bindingSpace));
 			hasAnyBinding = true;
 		}
@@ -289,6 +319,9 @@ namespace NLS::Render::Resources
 
 		for (const auto& constantBuffer : reflection.constantBuffers)
 		{
+			if (IsRendererOwnedObjectIndexConstantBuffer(constantBuffer))
+				continue;
+
 			const uint32_t setIndex = RHI::BindingPointMap::GetDescriptorSetIndex(constantBuffer.bindingSpace);
 			UpsertBindingLayoutEntry(
 				layoutDescs[setIndex],
@@ -298,7 +331,8 @@ namespace NLS::Render::Resources
 				constantBuffer.bindingSpace,
 				constantBuffer.bindingIndex,
 				1u,
-				ToShaderStageMask(constantBuffer.stage));
+				ToShaderStageMask(constantBuffer.stage),
+				0u);
 		}
 
 		for (const auto& property : reflection.properties)
@@ -307,15 +341,17 @@ namespace NLS::Render::Resources
 				continue;
 
 			const uint32_t setIndex = RHI::BindingPointMap::GetDescriptorSetIndex(property.bindingSpace);
+			const auto bindingType = ToBindingType(property.kind);
 			UpsertBindingLayoutEntry(
 				layoutDescs[setIndex],
 				property.name,
-				ToBindingType(property.kind),
+				bindingType,
 				setIndex,
 				property.bindingSpace,
 				property.bindingIndex,
 				property.arraySize > 0 ? static_cast<uint32_t>(property.arraySize) : 1u,
-				ToShaderStageMask(property.stage));
+				ToShaderStageMask(property.stage),
+				ResolveResourceElementStride(bindingType, property.byteSize));
 		}
 
 		return layoutDescs;
@@ -364,6 +400,9 @@ namespace NLS::Render::Resources
 
 		for (const auto& constantBuffer : reflection.constantBuffers)
 		{
+			if (IsRendererOwnedObjectIndexConstantBuffer(constantBuffer))
+				continue;
+
 			auto& group = findGroup(ToShaderParameterGroupKind(constantBuffer.bindingSpace));
 			group.parameters.push_back(MakeShaderParameterBindingContract(
 				constantBuffer.name,
@@ -371,7 +410,8 @@ namespace NLS::Render::Resources
 				constantBuffer.bindingSpace,
 				constantBuffer.bindingIndex,
 				1u,
-				ToShaderStageMask(constantBuffer.stage)));
+				ToShaderStageMask(constantBuffer.stage),
+				0u));
 		}
 
 		for (const auto& property : reflection.properties)
@@ -380,13 +420,15 @@ namespace NLS::Render::Resources
 				continue;
 
 			auto& group = findGroup(ToShaderParameterGroupKind(property.bindingSpace));
+			const auto bindingType = ToBindingType(property.kind);
 			group.parameters.push_back(MakeShaderParameterBindingContract(
 				property.name,
-				ToBindingType(property.kind),
+				bindingType,
 				property.bindingSpace,
 				property.bindingIndex,
 				property.arraySize > 0 ? static_cast<uint32_t>(property.arraySize) : 1u,
-				ToShaderStageMask(property.stage)));
+				ToShaderStageMask(property.stage),
+				ResolveResourceElementStride(bindingType, property.byteSize)));
 		}
 
 		return groups;

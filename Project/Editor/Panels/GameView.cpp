@@ -15,9 +15,19 @@ Editor::Panels::GameView::GameView
 	AView(p_title, p_opened, p_windowSettings),
 	m_sceneManager(EDITOR_CONTEXT(sceneManager))
 {
+    NLS_LOG_INFO("[Startup] Creating Game View renderer");
 	m_renderer = Engine::Rendering::CreateSceneRenderer(*EDITOR_CONTEXT(driver));
     SetRequiresRetiredFrameConsumption(true);
 	Render::Buffers::UniformBuffer test(1024, 1);
+}
+
+void Editor::Panels::GameView::EnsureRenderer()
+{
+    if (m_renderer != nullptr)
+        return;
+
+    NLS_LOG_INFO("[Startup] Creating Game View renderer");
+    m_renderer = Engine::Rendering::CreateSceneRenderer(*EDITOR_CONTEXT(driver));
 }
 
 Render::Entities::Camera* Editor::Panels::GameView::GetCamera()

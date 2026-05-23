@@ -2,6 +2,7 @@
 
 #include "Core/Context.h"
 #include "Core/Game.h"
+#include "LaunchArgs.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include <cstdint>
 #include <optional>
@@ -24,7 +25,8 @@ namespace NLS::Game::Core
 		Application(
 			std::optional<Render::Settings::RenderDocSettings> renderDocOverride = std::nullopt,
 			std::optional<Render::Settings::EGraphicsBackend> backendOverride = std::nullopt,
-			std::optional<std::string> projectPathOverride = std::nullopt);
+			std::optional<std::string> projectPathOverride = std::nullopt,
+			std::optional<Launch::MaterialValidationLaunchSettings> materialValidation = std::nullopt);
 
 		/**
 		* Destructor

@@ -16,7 +16,7 @@ namespace NLS::Render::Data
 	template<typename T>
 	inline void Describable::RemoveDescriptor()
 	{
-		NLS_ASSERT(!HasDescriptor<T>(), "Descriptor doesn't exist.");
+		NLS_ASSERT(HasDescriptor<T>(), "Descriptor doesn't exist.");
 
 		auto it = m_descriptors.find(typeid(T));
 		if (it != m_descriptors.end())

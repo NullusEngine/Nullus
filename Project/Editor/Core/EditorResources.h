@@ -3,10 +3,9 @@
 #include <string>
 #include <unordered_map>
 
+#include <ResourceManagement/MeshManager.h>
 #include <ResourceManagement/TextureManager.h>
-#include <ResourceManagement/ModelManager.h>
 #include <ResourceManagement/ShaderManager.h>
-#include <Rendering/Resources/Parsers/EModelParserFlags.h>
 
 namespace NLS::Editor::Core
 {
@@ -20,7 +19,7 @@ namespace NLS::Editor::Core
 		* Constructor
 		* @param p_editorAssetsPath
 		*/
-		EditorResources(const std::string& p_editorAssetsPath);
+		EditorResources(const std::string& p_editorAssetsPath, const std::string& p_projectAssetsPath = {});
 
 		/**
 		* Destructor
@@ -40,10 +39,10 @@ namespace NLS::Editor::Core
         NLS::Render::Resources::Texture2D* GetTexture(const std::string& p_id);
 
 		/**
-		* Returns the model identified by the given string or nullptr on fail
+		* Returns the helper mesh identified by the given string or nullptr on fail
 		* @param p_id
 		*/
-        NLS::Render::Resources::Model* GetModel(const std::string& p_id);
+        NLS::Render::Resources::Mesh* GetMesh(const std::string& p_id);
 
 		/**
 		* Returns the shader identified by the given string or nullptr on fail
@@ -51,19 +50,30 @@ namespace NLS::Editor::Core
 		*/
         NLS::Render::Resources::Shader* GetShader(const std::string& p_id);
 
+		/**
+		* Returns an already-loaded shader without trying to load it.
+		* @param p_id
+		*/
+        NLS::Render::Resources::Shader* GetLoadedShader(const std::string& p_id) const;
+
+        /**
+         * Loads editor-owned shaders and helper meshes that are needed by the
+         * default editor views before the main window is shown.
+         */
+        void PreloadStartupResources();
+
 	private:
-        NLS::Render::Resources::Model* LoadModel(const std::string& p_id);
+        NLS::Render::Resources::Mesh* LoadMesh(const std::string& p_id);
         NLS::Render::Resources::Shader* LoadShader(const std::string& p_id);
 
 	private:
         std::string m_modelsFolder;
         std::string m_shadersFolder;
-        NLS::Render::Resources::Parsers::EModelParserFlags m_modelParserFlags =
-            NLS::Render::Resources::Parsers::EModelParserFlags::NONE;
+        std::string m_projectAssetsPath;
         std::unordered_map<std::string, NLS::Render::Resources::Texture2D*> m_textures;
-        std::unordered_map<std::string, NLS::Render::Resources::Model*> m_models;
+        std::unordered_map<std::string, NLS::Render::Resources::Mesh*> m_meshes;
         std::unordered_map<std::string, NLS::Render::Resources::Shader*> m_shaders;
-        std::unordered_map<std::string, std::string> m_modelPaths;
+        std::unordered_map<std::string, std::string> m_meshPaths;
         std::unordered_map<std::string, std::string> m_shaderPaths;
 	};
 }

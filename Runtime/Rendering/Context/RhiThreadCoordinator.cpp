@@ -425,7 +425,7 @@ namespace NLS::Render::Context
             transition.subresourceRange = !IsEmptySubresourceRange(edge.targetTextureAccess->subresourceRange)
                 ? edge.targetTextureAccess->subresourceRange
                 : edge.sourceTextureAccess->subresourceRange;
-            transition.before = edge.sourceTextureAccess->state;
+            transition.before = Render::RHI::ResourceState::Unknown;
             transition.after = edge.targetTextureAccess->state;
             transition.sourceStages = edge.sourceTextureAccess->stages;
             transition.destinationStages = edge.targetTextureAccess->stages;
@@ -638,11 +638,11 @@ namespace NLS::Render::Context
             frameContext.explicitReadbackTexture =
                 Render::FrameGraph::ResolveFrameReadbackTexture(nullptr, &frameContext);
 
-            if (frameContext.commandBuffer != nullptr)
-                frameContext.commandBuffer->Begin();
-
             if (impl.renderDocCaptureController != nullptr)
                 impl.renderDocCaptureController->OnPreFrame(true);
+
+            if (frameContext.commandBuffer != nullptr)
+                frameContext.commandBuffer->Begin();
 
             impl.uiStandaloneFrameActive = true;
             impl.explicitFrameActive = true;
@@ -2517,11 +2517,11 @@ namespace NLS::Render::Context
         frameContext.explicitReadbackTexture =
             Render::FrameGraph::ResolveFrameReadbackTexture(nullptr, &frameContext);
 
-        if (frameContext.commandBuffer != nullptr)
-            frameContext.commandBuffer->Begin();
-
         if (driver.m_impl->renderDocCaptureController != nullptr)
             driver.m_impl->renderDocCaptureController->OnPreFrame(acquireSwapchainImage);
+
+        if (frameContext.commandBuffer != nullptr)
+            frameContext.commandBuffer->Begin();
 
         driver.m_impl->explicitFrameActive = true;
     }

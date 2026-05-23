@@ -5,9 +5,10 @@ using namespace NLS;
 Game::Core::Application::Application(
 	std::optional<Render::Settings::RenderDocSettings> renderDocOverride,
 	std::optional<Render::Settings::EGraphicsBackend> backendOverride,
-	std::optional<std::string> projectPathOverride) :
+	std::optional<std::string> projectPathOverride,
+	std::optional<Launch::MaterialValidationLaunchSettings> materialValidation) :
 	m_context(renderDocOverride, backendOverride, projectPathOverride),
-	m_game(m_context)
+	m_game(m_context, std::move(materialValidation))
 {
 
 }

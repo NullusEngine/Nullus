@@ -27,6 +27,8 @@ namespace NLS::Render::Backend
 		virtual ID3D12DescriptorHeap* GetDescriptorHeap(
 			NLS::Render::RHI::DX12::DX12DescriptorHeapKind heapKind) const = 0;
 #endif
+		virtual bool IsCompatibleWithDescriptorTable(
+			const NLS::Render::RHI::DX12::DX12DescriptorTableDesc& table) const = 0;
 	};
 
 	class IDX12PipelineLayoutAccess
@@ -37,6 +39,8 @@ namespace NLS::Render::Backend
 		virtual ID3D12RootSignature* GetRootSignature() const = 0;
 #endif
 		virtual const std::vector<NLS::Render::RHI::DX12::DX12DescriptorTableDesc>& GetDescriptorTables() const = 0;
+		virtual uint32_t GetPushConstantRootParameterOffset() const = 0;
+		virtual const std::vector<NLS::Render::RHI::DX12::DX12PushConstantRootParameterDesc>& GetPushConstantRootParameters() const = 0;
 	};
 
 	class IDX12GraphicsPipelineAccess

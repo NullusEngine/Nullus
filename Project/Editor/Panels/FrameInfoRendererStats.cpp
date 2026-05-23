@@ -1,6 +1,7 @@
 #include "Panels/FrameInfo.h"
 
 #include "Rendering/Core/CompositeRenderer.h"
+#include "UI/Panels/APanel.h"
 #include "Utils/String.h"
 
 using namespace NLS;
@@ -21,6 +22,12 @@ Editor::Panels::FrameInfo::FrameInfo
 	m_instanceCountText(CreateWidget<Widgets::Text>("")),
 	m_polyCountText(CreateWidget<Widgets::Text>("")),
 	m_vertexCountText(CreateWidget<Widgets::Text>("")),
+	m_parseSceneText(CreateWidget<Widgets::Text>("")),
+	m_drawableCountText(CreateWidget<Widgets::Text>("")),
+	m_gBufferMaterialSyncText(CreateWidget<Widgets::Text>("")),
+	m_bindingSetCreationText(CreateWidget<Widgets::Text>("")),
+	m_snapshotBufferCreationText(CreateWidget<Widgets::Text>("")),
+	m_targetPanelDrawText(CreateWidget<Widgets::Text>("")),
 	m_framesInFlightText(CreateWidget<Widgets::Text>("")),
 	m_blockedFramesText(CreateWidget<Widgets::Text>("")),
 	m_publishStateText(CreateWidget<Widgets::Text>("")),
@@ -44,6 +51,16 @@ void Editor::Panels::FrameInfo::UpdateForRenderer(
 	m_instanceCountText.content = "Instances: " + String::ToString(frameInfo.instanceCount);
 	m_polyCountText.content = "Polygons: " + String::ToString(frameInfo.polyCount);
 	m_vertexCountText.content = "Vertices: " + String::ToString(frameInfo.vertexCount);
+	m_parseSceneText.content = "ParseScene Calls: " + String::ToString(frameInfo.parseSceneCallCount);
+	m_drawableCountText.content =
+		"Drawables O/T/S: " +
+		String::ToString(frameInfo.parsedOpaqueDrawableCount) + "/" +
+		String::ToString(frameInfo.parsedTransparentDrawableCount) + "/" +
+		String::ToString(frameInfo.parsedSkyboxDrawableCount);
+	m_gBufferMaterialSyncText.content = "GBuffer Material Syncs: " + String::ToString(frameInfo.gBufferMaterialSyncCount);
+	m_bindingSetCreationText.content = "Binding Sets Created: " + String::ToString(frameInfo.renderBindingSetCreationCount);
+	m_snapshotBufferCreationText.content = "Snapshot Buffers Created: " + String::ToString(frameInfo.renderSnapshotBufferCreationCount);
+	SetTargetPanelDrawTime(nullptr);
 	m_framesInFlightText.content = "Frames In Flight: " + String::ToString(frameInfo.inFlightFrameCount);
 	m_blockedFramesText.content = "Blocked Frames: " + String::ToString(frameInfo.blockedFrameCount);
 	const char* publishState = "Direct";
@@ -99,4 +116,11 @@ void Editor::Panels::FrameInfo::UpdateForRenderer(
 		break;
 	}
 	m_retirementStateText.content = std::string("Retirement State: ") + retirementState;
+}
+
+void Editor::Panels::FrameInfo::SetTargetPanelDrawTime(const UI::APanel* panel)
+{
+	using namespace Utils;
+	const auto durationUs = panel != nullptr ? panel->GetLastDrawDurationUs() : 0u;
+	m_targetPanelDrawText.content = "Target Panel Draw: " + String::ToString(durationUs) + " us";
 }

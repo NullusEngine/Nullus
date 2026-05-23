@@ -20,4 +20,9 @@ struct VSOutput
     float2 TexCoord : TEXCOORD4;
 };
 
+cbuffer ObjectIndexConstants : register(b1, space3)
+{
+    uint u_ObjectIndex;
+};
+
 #endif

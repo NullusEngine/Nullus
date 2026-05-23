@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <stdexcept>
 #include <string>
 
 #include <Json/json.hpp>
@@ -20,7 +21,7 @@ namespace NLS::Engine::Serialize
             root["documentId"] = document.documentId.ToString();
             root["root"] = document.root.GetGuid().ToString();
             if (document.basePrefab.has_value())
-                root["basePrefab"] = WriteValue(PropertyValue::AssetReference(*document.basePrefab));
+                root["basePrefab"] = WriteObjectReference(*document.basePrefab);
 
             auto objects = document.objects;
             std::sort(objects.begin(), objects.end(), [](const ObjectRecord& lhs, const ObjectRecord& rhs)
@@ -47,6 +48,7 @@ namespace NLS::Engine::Serialize
         {
             nlohmann::json json;
             json["id"] = object.id.GetGuid().ToString();
+            json["fileID"] = object.localIdentifierInFile;
             json["type"] = object.typeName;
             if (!object.debugName.empty())
                 json["debugName"] = object.debugName;
@@ -85,18 +87,7 @@ namespace NLS::Engine::Serialize
             case PropertyValue::Kind::OwnedReference:
                 return nlohmann::json{{"$owned", value.GetObjectId().GetGuid().ToString()}};
             case PropertyValue::Kind::ObjectReference:
-                return nlohmann::json{{"$ref", value.GetObjectId().GetGuid().ToString()}};
-            case PropertyValue::Kind::AssetReference:
-            {
-                const auto& asset = value.GetAssetReference();
-                nlohmann::json output;
-                output["$asset"] = asset.asset.GetGuid().ToString();
-                if (!asset.expectedType.empty())
-                    output["type"] = asset.expectedType;
-                if (!asset.pathHint.empty())
-                    output["pathHint"] = asset.pathHint;
-                return output;
-            }
+                return WriteObjectReference(value.GetObjectReference());
             case PropertyValue::Kind::Array:
             {
                 nlohmann::json output = nlohmann::json::array();
@@ -114,6 +105,29 @@ namespace NLS::Engine::Serialize
             default:
                 return nullptr;
             }
+        }
+
+        static nlohmann::json WriteObjectReference(const ObjectIdentifier& reference)
+        {
+            if (!IsSerializableObjectReference(reference))
+                throw std::invalid_argument("ObjectIdentifier must be empty or a complete Unity-style object reference.");
+
+            nlohmann::json output;
+            output["fileID"] = reference.localIdentifierInFile;
+            output["guid"] = reference.guid.IsValid() ? reference.guid.ToString() : std::string {};
+            output["type"] = static_cast<int32_t>(reference.fileType);
+            if (!reference.filePath.empty())
+                output["filePath"] = reference.filePath;
+            return output;
+        }
+
+        static bool IsSerializableObjectReference(const ObjectIdentifier& reference)
+        {
+            return reference.IsValid() ||
+                (reference.localIdentifierInFile == 0 &&
+                    !reference.guid.IsValid() &&
+                    reference.fileType == FileType::NonAssetType &&
+                    reference.filePath.empty());
         }
 
         static nlohmann::json WritePatchOperation(const PatchOperation& operation)
@@ -149,9 +163,12 @@ namespace NLS::Engine::Serialize
                 if (operation.hasIndex)
                     json["index"] = operation.index;
                 break;
-            default:
-                json["op"] = "unknown";
+            case PatchOperationType::RemoveObject:
+                json["op"] = "removeObject";
+                json["target"] = operation.target.GetGuid().ToString();
                 break;
+            default:
+                throw std::invalid_argument("Unsupported patch operation type.");
             }
             return json;
         }

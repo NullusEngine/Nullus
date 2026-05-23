@@ -1,12 +1,16 @@
 #include "Rendering/Resources/Loaders/MaterialLoader.h"
 
-#include <fstream>
 #include <array>
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <optional>
 #include <sstream>
 #include <string_view>
 
 #include <Debug/Logger.h>
 
+#include "Assets/NativeArtifactContainer.h"
 #include "Core/ResourceManagement/ShaderManager.h"
 #include "Core/ResourceManagement/TextureManager.h"
 #include "Core/ServiceLocator.h"
@@ -23,15 +27,43 @@ namespace
     using UniformInfo = NLS::Render::Resources::UniformInfo;
     using Texture2D = NLS::Render::Resources::Texture2D;
 
-    std::string ReadAllText(const std::string& path)
+    std::vector<uint8_t> ReadAllBytes(const std::string& path)
     {
-        std::ifstream stream(path);
+        std::ifstream stream(path, std::ios::binary);
         if (!stream)
             return {};
 
-        std::ostringstream buffer;
-        buffer << stream.rdbuf();
-        return buffer.str();
+        return {
+            std::istreambuf_iterator<char>(stream),
+            std::istreambuf_iterator<char>()};
+    }
+
+    bool IsGeneratedImportedMaterialArtifactPath(const std::string& path)
+    {
+        const auto normalized = std::filesystem::path(path).lexically_normal().generic_string();
+        return normalized.find("/Library/Artifacts/") != std::string::npos &&
+            normalized.find("/materials/") != std::string::npos &&
+            normalized.ends_with(".nmat");
+    }
+
+    std::string ReadMaterialPayloadText(const std::string& path)
+    {
+        const auto bytes = ReadAllBytes(path);
+        if (bytes.empty())
+            return {};
+
+        if (IsGeneratedImportedMaterialArtifactPath(path))
+        {
+            const auto container = NLS::Core::Assets::ReadNativeArtifactContainer(
+                bytes,
+                NLS::Core::Assets::ArtifactType::Material,
+                1u);
+            if (!container.has_value())
+                return {};
+            return std::string(container->payload.begin(), container->payload.end());
+        }
+
+        return std::string(bytes.begin(), bytes.end());
     }
 
     std::string Trim(std::string value)
@@ -156,6 +188,81 @@ namespace
         return fallback;
     }
 
+    std::string ToLower(std::string value)
+    {
+        std::transform(
+            value.begin(),
+            value.end(),
+            value.begin(),
+            [](const unsigned char character)
+            {
+                return static_cast<char>(std::tolower(character));
+            });
+        return value;
+    }
+
+    std::optional<NLS::Render::RHI::TextureWrap> ParseTextureWrap(const std::string& value)
+    {
+        const auto lowered = ToLower(value);
+        if (lowered == "clamp" || lowered == "clamptoedge")
+            return NLS::Render::RHI::TextureWrap::ClampToEdge;
+        if (lowered == "mirror" || lowered == "mirroredrepeat" || lowered == "mirrorrepeat")
+            return NLS::Render::RHI::TextureWrap::MirrorRepeat;
+        if (lowered == "clamptoborder")
+            return NLS::Render::RHI::TextureWrap::ClampToBorder;
+        if (lowered == "repeat")
+            return NLS::Render::RHI::TextureWrap::Repeat;
+        return std::nullopt;
+    }
+
+    std::optional<NLS::Render::RHI::TextureFilter> ParseTextureFilter(const std::string& value)
+    {
+        const auto lowered = ToLower(value);
+        if (lowered == "nearest" || lowered == "point")
+            return NLS::Render::RHI::TextureFilter::Nearest;
+        if (lowered == "linear" || lowered == "bilinear")
+            return NLS::Render::RHI::TextureFilter::Linear;
+        return std::nullopt;
+    }
+
+    std::string SamplerBindingNameForTextureSlot(const std::string& slotName)
+    {
+        return slotName == "BaseColor" ||
+            slotName == "MetallicRoughness" ||
+            slotName == "Metallic" ||
+            slotName == "Roughness" ||
+            slotName == "Occlusion" ||
+            slotName == "Normal" ||
+            slotName == "Opacity" ||
+            slotName == "Emissive" ||
+            slotName == "Specular"
+            ? "u_LinearWrapSampler"
+            : std::string {};
+    }
+
+    void ApplyTextureSlotSamplerOverrides(Material& material, const std::string& xml)
+    {
+        for (const auto& block : GetBlocks(xml, "textureSlot"))
+        {
+            const auto samplerName = SamplerBindingNameForTextureSlot(GetAttributeValue(block, "name"));
+            if (samplerName.empty())
+                continue;
+
+            NLS::Render::RHI::SamplerDesc sampler;
+            if (const auto wrap = ParseTextureWrap(GetAttributeValue(block, "wrapS")); wrap.has_value())
+                sampler.wrapU = *wrap;
+            if (const auto wrap = ParseTextureWrap(GetAttributeValue(block, "wrapT")); wrap.has_value())
+                sampler.wrapV = *wrap;
+            sampler.wrapW = sampler.wrapV;
+            if (const auto filter = ParseTextureFilter(GetAttributeValue(block, "minFilter")); filter.has_value())
+                sampler.minFilter = *filter;
+            if (const auto filter = ParseTextureFilter(GetAttributeValue(block, "magFilter")); filter.has_value())
+                sampler.magFilter = *filter;
+
+            material.SetSamplerOverride(samplerName, sampler);
+        }
+    }
+
     std::string UniformTypeToString(UniformType type)
     {
         switch (type)
@@ -226,13 +333,16 @@ namespace
         case UniformType::UNIFORM_SAMPLER_2D:
         {
             const auto texture = std::any_cast<Texture2D*>(value);
-            return texture ? texture->path : "";
+            if (texture)
+                return texture->path;
+            break;
         }
         case UniformType::UNIFORM_SAMPLER_CUBE:
             return "";
         default:
             return {};
         }
+        return {};
     }
 
     template <size_t N>
@@ -248,7 +358,11 @@ namespace
         return true;
     }
 
-    void ApplyUniformValue(Material& material, const UniformInfo& uniform, const std::string& value)
+    void ApplyUniformValue(
+        Material& material,
+        const UniformInfo& uniform,
+        const std::string& value,
+        const NLS::Render::Resources::Loaders::MaterialLoader::LoadOptions& options)
     {
         using NLS::Maths::Matrix4;
         using NLS::Maths::Vector2;
@@ -301,7 +415,16 @@ namespace
         }
         case UniformType::UNIFORM_SAMPLER_2D:
         {
-            auto* texture = value.empty() ? nullptr : NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager)[value];
+            if (!value.empty())
+                material.SetTextureResourcePath(uniform.name, value);
+            else
+                material.ClearTextureResourcePath(uniform.name);
+
+            auto* texture = static_cast<Texture2D*>(nullptr);
+            if (!value.empty() && options.loadMissingTextures)
+                texture = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).GetResource(value, true);
+            if (!value.empty() && options.loadMissingTextures && !texture)
+                NLS_LOG_WARNING("Material texture failed to load and will use the default white texture: " + value);
             material.Set<Texture2D*>(uniform.name, texture);
             break;
         }
@@ -312,10 +435,19 @@ namespace
         }
     }
 
-    void ApplySerializedMaterial(Material& material, const std::string& xml)
+    void ApplySerializedMaterial(
+        Material& material,
+        const std::string& xml,
+        const NLS::Render::Resources::Loaders::MaterialLoader::LoadOptions& options)
     {
+        material.ClearSamplerOverrides();
+
         const auto shaderPath = GetTagValue(xml, "shader");
-        auto* shader = shaderPath.empty() || shaderPath == "?" ? nullptr : NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager)[shaderPath];
+        auto* shader = shaderPath.empty() || shaderPath == "?"
+            ? nullptr
+            : NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager).GetResource(
+                shaderPath,
+                options.loadMissingShaders);
         material.SetShader(shader);
 
         if (!shader)
@@ -357,16 +489,24 @@ namespace
                 continue;
 
             if (const auto* uniformInfo = shader->GetUniformInfo(uniformName))
-                ApplyUniformValue(material, *uniformInfo, uniformValue);
+                ApplyUniformValue(material, *uniformInfo, uniformValue, options);
         }
+
+        ApplyTextureSlotSamplerOverrides(material, xml);
     }
+
 }
 
 namespace NLS::Render::Resources::Loaders
 {
 Material* MaterialLoader::Create(const std::string& p_path)
 {
-    const auto xml = ReadAllText(p_path);
+    return Create(p_path, {});
+}
+
+Material* MaterialLoader::Create(const std::string& p_path, const LoadOptions& options)
+{
+    const auto xml = ReadMaterialPayloadText(p_path);
     if (xml.empty())
     {
         NLS_LOG_ERROR("Failed to load material: " + p_path);
@@ -374,21 +514,36 @@ Material* MaterialLoader::Create(const std::string& p_path)
     }
 
     auto* material = new Material();
-    ApplySerializedMaterial(*material, xml);
+    ApplySerializedMaterial(*material, xml, options);
     const_cast<std::string&>(material->path) = p_path;
+    if (IsGeneratedImportedMaterialArtifactPath(p_path))
+    {
+        material->SetBackfaceCulling(false);
+        material->SetFrontfaceCulling(false);
+    }
     return material;
 }
 
 void MaterialLoader::Reload(Material& p_material, const std::string& p_path)
 {
-    const auto xml = ReadAllText(p_path);
+    Reload(p_material, p_path, {});
+}
+
+void MaterialLoader::Reload(Material& p_material, const std::string& p_path, const LoadOptions& options)
+{
+    const auto xml = ReadMaterialPayloadText(p_path);
     if (xml.empty())
     {
         NLS_LOG_ERROR("Failed to reload material: " + p_path);
         return;
     }
 
-    ApplySerializedMaterial(p_material, xml);
+    ApplySerializedMaterial(p_material, xml, options);
+    if (IsGeneratedImportedMaterialArtifactPath(p_path))
+    {
+        p_material.SetBackfaceCulling(false);
+        p_material.SetFrontfaceCulling(false);
+    }
 }
 
 void MaterialLoader::Save(Material& p_material, const std::string& p_path)
@@ -422,8 +577,12 @@ void MaterialLoader::Save(Material& p_material, const std::string& p_path)
             if (type.empty())
                 continue;
 
+            auto serializedValue = SerializeUniformValue(uniformInfo->type, value);
+            if (uniformInfo->type == UniformType::UNIFORM_SAMPLER_2D && serializedValue.empty())
+                serializedValue = p_material.GetTextureResourcePath(name);
+
             output << "  <uniform name=\"" << EscapeXml(name) << "\" type=\"" << type
-                << "\" value=\"" << EscapeXml(SerializeUniformValue(uniformInfo->type, value)) << "\"/>\n";
+                << "\" value=\"" << EscapeXml(serializedValue) << "\"/>\n";
         }
     }
 

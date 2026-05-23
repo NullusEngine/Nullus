@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Data/Describable.h"
@@ -18,5 +20,6 @@ namespace NLS::Render::Entities
 		Material* material = nullptr;
 		Data::StateMask stateMask;
 		Settings::EPrimitiveMode primitiveMode = Settings::EPrimitiveMode::TRIANGLES;
+		uint32_t instanceCount = 0u;
 	};
 }

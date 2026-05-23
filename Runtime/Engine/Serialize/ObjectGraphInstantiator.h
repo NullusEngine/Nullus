@@ -3,15 +3,28 @@
 #include <memory>
 #include <optional>
 #include <algorithm>
+#include <filesystem>
+#include <functional>
+#include <stdexcept>
 #include <unordered_map>
+#include <vector>
 
 #include "Components/Component.h"
+#include "Components/MeshFilter.h"
+#include "Components/MeshRenderer.h"
 #include "Components/TransformComponent.h"
+#include "Core/ResourceManagement/MaterialManager.h"
+#include "Core/ResourceManagement/MeshManager.h"
+#include "Core/ServiceLocator.h"
 #include "GameObject.h"
 #include "Reflection/Field.h"
+#include "Rendering/ExternalReflection.h"
+#include "Rendering/Resources/Material.h"
 #include "Reflection/TypeCreator.h"
 #include "SceneSystem/Scene.h"
 #include "Serialize/ObjectGraphDocument.h"
+#include "Serialize/ObjectGraphPPtr.h"
+#include "Serialize/ObjectReferenceResolver.h"
 #include "Serialize/PrefabDocument.h"
 
 namespace NLS::Engine::Serialize
@@ -39,6 +52,7 @@ namespace NLS::Engine::Serialize
         UnknownTypePolicy unknownTypePolicy = UnknownTypePolicy::Fail;
         MissingAssetPolicy missingAssetPolicy = MissingAssetPolicy::Preserve;
         InvalidReferencePolicy invalidReferencePolicy = InvalidReferencePolicy::Fail;
+        bool deferAssetReferenceResolution = false;
     };
 
     struct DocumentAnalysisResult
@@ -52,6 +66,14 @@ namespace NLS::Engine::Serialize
         SerializationDiagnosticList diagnostics;
     };
 
+    struct InstantiationProgress
+    {
+        float normalizedProgress = 0.0f;
+        std::string message;
+    };
+
+    using InstantiationProgressCallback = std::function<void(const InstantiationProgress&)>;
+
     class ObjectGraphInstantiator
     {
     public:
@@ -61,6 +83,7 @@ namespace NLS::Engine::Serialize
             result.diagnostics = document.Validate();
 
             AnalyzeObjectTypes(document, policy, result.diagnostics);
+            AnalyzeReflectedObjectReferenceShapes(document, policy, result.diagnostics);
             AnalyzeAssetReferences(document, policy, result.diagnostics);
             return result;
         }
@@ -72,12 +95,20 @@ namespace NLS::Engine::Serialize
 
         static SceneInstantiationResult InstantiateScene(const ObjectGraphDocument& document, const LoadPolicy& policy)
         {
+            return InstantiateScene(document, policy, {});
+        }
+
+        static SceneInstantiationResult InstantiateScene(
+            const ObjectGraphDocument& document,
+            const LoadPolicy& policy,
+            const InstantiationProgressCallback& progressCallback)
+        {
             SceneInstantiationResult result;
             result.diagnostics = AnalyzeDocument(document, policy).diagnostics;
             if (result.diagnostics.HasErrors())
                 return result;
 
-            result.scene = InstantiateSceneStrict(document);
+            result.scene = InstantiateSceneStrict(document, progressCallback, policy);
             if (!result.scene)
             {
                 result.diagnostics.Add({
@@ -91,27 +122,49 @@ namespace NLS::Engine::Serialize
 
         static std::unique_ptr<SceneSystem::Scene> InstantiateSceneStrict(const ObjectGraphDocument& document)
         {
+            return InstantiateSceneStrict(document, {});
+        }
+
+        static std::unique_ptr<SceneSystem::Scene> InstantiateSceneStrict(
+            const ObjectGraphDocument& document,
+            const InstantiationProgressCallback& progressCallback)
+        {
+            return InstantiateSceneStrict(document, progressCallback, {});
+        }
+
+        static std::unique_ptr<SceneSystem::Scene> InstantiateSceneStrict(
+            const ObjectGraphDocument& document,
+            const InstantiationProgressCallback& progressCallback,
+            const LoadPolicy& policy)
+        {
             if (document.Validate().HasErrors())
                 return nullptr;
 
             const auto* sceneRecord = FindRecord(document, document.root);
-            if (!sceneRecord || sceneRecord->typeName != "NLS::Engine::SceneSystem::Scene")
+            if (!sceneRecord || !RecordTypeMatches<NLS::Engine::SceneSystem::Scene>(*sceneRecord))
                 return nullptr;
 
             auto scene = std::make_unique<SceneSystem::Scene>();
             InstanceContext context;
+            context.document = &document;
 
             const auto* gameObjects = FindProperty(*sceneRecord, "gameObjects");
             if (!gameObjects || gameObjects->value.GetKind() != PropertyValue::Kind::Array)
                 return scene;
 
-            for (const auto& reference : gameObjects->value.GetArray())
+            const auto& gameObjectReferences = gameObjects->value.GetArray();
+            const auto gameObjectCount = std::max<size_t>(gameObjectReferences.size(), 1u);
+            size_t createdGameObjectCount = 0;
+            for (const auto& reference : gameObjectReferences)
             {
-                if (reference.GetKind() != PropertyValue::Kind::OwnedReference)
+                const auto objectId = ResolveObjectId(document, reference);
+                if (!objectId.has_value())
                     continue;
 
-                const auto* record = FindRecord(document, reference.GetObjectId());
-                if (!record || record->typeName != "NLS::Engine::GameObject")
+                const auto* record = FindRecord(document, *objectId);
+                if (!record ||
+                    record->state == ObjectRecordState::Removed ||
+                    !RecordTypeMatches<GameObject>(*record))
                     continue;
 
                 auto* gameObject = CreateGameObject(*record);
@@ -120,42 +173,87 @@ namespace NLS::Engine::Serialize
 
                 context.gameObjects.emplace(record->id, gameObject);
                 scene->AddGameObject(gameObject);
+                ++createdGameObjectCount;
+                ReportProgress(
+                    progressCallback,
+                    0.25f + 0.20f * (static_cast<float>(createdGameObjectCount) / static_cast<float>(gameObjectCount)),
+                    "Creating GameObject: " + gameObject->GetName());
             }
 
+            const auto objectCount = std::max<size_t>(document.objects.size(), 1u);
+            size_t appliedObjectCount = 0;
             for (const auto& object : document.objects)
             {
-                if (object.typeName != "NLS::Engine::GameObject")
+                ++appliedObjectCount;
+                if (object.state == ObjectRecordState::Removed)
+                    continue;
+
+                if (!RecordTypeMatches<GameObject>(object))
                     continue;
 
                 auto* gameObject = FindGameObject(context, object.id);
                 if (!gameObject)
                     continue;
 
+                ReportProgress(
+                    progressCallback,
+                    0.45f + 0.30f * (static_cast<float>(appliedObjectCount) / static_cast<float>(objectCount)),
+                    "Restoring components: " + gameObject->GetName());
                 ApplyGameObjectState(*gameObject, object);
-                InstantiateComponents(document, object, *gameObject, context);
+                InstantiateComponents(document, object, *gameObject, context, policy);
             }
 
+            size_t resolvedObjectCount = 0;
             for (const auto& object : document.objects)
             {
-                if (object.typeName == "NLS::Engine::GameObject")
+                ++resolvedObjectCount;
+                if (object.state == ObjectRecordState::Removed)
+                    continue;
+
+                if (RecordTypeMatches<GameObject>(object))
+                {
+                    ReportProgress(
+                        progressCallback,
+                        0.75f + 0.15f * (static_cast<float>(resolvedObjectCount) / static_cast<float>(objectCount)),
+                        "Restoring hierarchy");
                     ResolveParent(context, object);
+                }
             }
 
+            ReportProgress(progressCallback, 0.92f, "Rebuilding scene runtime caches");
             scene->RebuildRuntimeCachesAfterLoad();
             return scene;
         }
 
         static PrefabInstantiationResult InstantiatePrefab(const PrefabDocument& prefab, SceneSystem::Scene& scene)
         {
+            return InstantiatePrefab(prefab, scene, {});
+        }
+
+        static PrefabInstantiationResult InstantiatePrefab(
+            const PrefabDocument& prefab,
+            SceneSystem::Scene& scene,
+            const LoadPolicy& policy)
+        {
             auto graph = prefab.graph;
             ApplyOverrides(graph);
 
             PrefabInstantiationResult result;
+            AnalyzeObjectTypes(graph, policy, result.diagnostics);
+            AnalyzeReflectedObjectReferenceShapes(graph, policy, result.diagnostics);
+            AnalyzeAssetReferences(graph, policy, result.diagnostics);
+            if (result.diagnostics.HasErrors())
+                return result;
+
             InstanceContext context;
+            context.document = &graph;
 
             for (const auto& object : graph.objects)
             {
-                if (object.typeName != "NLS::Engine::GameObject")
+                if (object.state == ObjectRecordState::Removed)
+                    continue;
+
+                if (!RecordTypeMatches<GameObject>(object))
                     continue;
 
                 auto* gameObject = CreateGameObject(object);
@@ -164,12 +262,16 @@ namespace NLS::Engine::Serialize
 
                 const auto instanceId = ObjectId(NLS::Guid::NewDeterministic("Prefab.Instance:" + object.id.GetGuid().ToString()));
                 result.sourceToInstance.emplace(object.id, instanceId);
+                result.sourceByInstanceObject.emplace(gameObject, object.id);
                 context.gameObjects.emplace(object.id, gameObject);
             }
 
             for (const auto& object : graph.objects)
             {
-                if (object.typeName != "NLS::Engine::GameObject")
+                if (object.state == ObjectRecordState::Removed)
+                    continue;
+
+                if (!RecordTypeMatches<GameObject>(object))
                     continue;
 
                 auto* gameObject = FindGameObject(context, object.id);
@@ -177,13 +279,16 @@ namespace NLS::Engine::Serialize
                     continue;
 
                 ApplyGameObjectState(*gameObject, object);
-                InstantiateComponents(graph, object, *gameObject, context);
+                InstantiateComponents(graph, object, *gameObject, context, policy);
                 RegisterComponentMappings(object, result, graph);
             }
 
             for (const auto& object : graph.objects)
             {
-                if (object.typeName == "NLS::Engine::GameObject")
+                if (object.state == ObjectRecordState::Removed)
+                    continue;
+
+                if (RecordTypeMatches<GameObject>(object))
                     ResolveParent(context, object);
             }
 
@@ -228,6 +333,7 @@ namespace NLS::Engine::Serialize
     private:
         struct InstanceContext
         {
+            const ObjectGraphDocument* document = nullptr;
             std::unordered_map<ObjectId, GameObject*> gameObjects;
             std::unordered_map<ObjectId, Components::Component*> components;
         };
@@ -240,6 +346,25 @@ namespace NLS::Engine::Serialize
                     return &object;
             }
             return nullptr;
+        }
+
+        static const ObjectRecord* FindRecord(
+            const ObjectGraphDocument& document,
+            const ObjectIdentifier& reference)
+        {
+            const auto id = document.ResolveObjectReference(reference);
+            return id.has_value() ? FindRecord(document, *id) : nullptr;
+        }
+
+        static std::optional<ObjectId> ResolveObjectId(
+            const ObjectGraphDocument& document,
+            const PropertyValue& value)
+        {
+            if (value.GetKind() == PropertyValue::Kind::OwnedReference)
+                return value.GetObjectId();
+            if (value.GetKind() == PropertyValue::Kind::ObjectReference)
+                return document.ResolveObjectReference(value.GetObjectReference());
+            return std::nullopt;
         }
 
         static const PropertyRecord* FindProperty(const ObjectRecord& record, const char* name)
@@ -272,6 +397,15 @@ namespace NLS::Engine::Serialize
             return nullptr;
         }
 
+        static void ReportProgress(
+            const InstantiationProgressCallback& callback,
+            const float normalizedProgress,
+            const std::string& message)
+        {
+            if (callback)
+                callback({std::clamp(normalizedProgress, 0.0f, 1.0f), message});
+        }
+
         static std::optional<std::string> ReadString(const ObjectRecord& record, const char* name)
         {
             const auto* property = FindProperty(record, name);
@@ -287,6 +421,28 @@ namespace NLS::Engine::Serialize
 
         static bool IsNoGraphProperty(const std::string&)
         {
+            return false;
+        }
+
+        template<typename ComponentType>
+        static bool RecordTypeMatchesComponent(const ObjectRecord& record)
+        {
+            return RecordTypeMatches<ComponentType>(record);
+        }
+
+        template<typename ObjectType>
+        static bool RecordTypeMatches(const ObjectRecord& record)
+        {
+            static const std::string typeName = NLS_TYPEOF(ObjectType).GetName();
+            return record.typeName == typeName;
+        }
+
+        static bool IsDeferredAssetProperty(const ObjectRecord& record, const std::string& name)
+        {
+            if (RecordTypeMatchesComponent<Components::MeshFilter>(record))
+                return name == "mesh";
+            if (RecordTypeMatchesComponent<Components::MeshRenderer>(record))
+                return name == "materials";
             return false;
         }
 
@@ -312,7 +468,8 @@ namespace NLS::Engine::Serialize
             const ObjectGraphDocument& document,
             const ObjectRecord& gameObjectRecord,
             GameObject& gameObject,
-            InstanceContext& context)
+            InstanceContext& context,
+            const LoadPolicy& policy = {})
         {
             const auto* components = FindProperty(gameObjectRecord, "components");
             if (!components || components->value.GetKind() != PropertyValue::Kind::Array)
@@ -321,10 +478,11 @@ namespace NLS::Engine::Serialize
             for (size_t index = 0; index < components->value.GetArray().size(); ++index)
             {
                 const auto& reference = components->value.GetArray()[index];
-                if (reference.GetKind() != PropertyValue::Kind::OwnedReference)
+                const auto componentId = ResolveObjectId(document, reference);
+                if (!componentId.has_value())
                     continue;
 
-                const auto* componentRecord = FindRecord(document, reference.GetObjectId());
+                const auto* componentRecord = FindRecord(document, *componentId);
                 if (!componentRecord)
                     continue;
 
@@ -333,14 +491,14 @@ namespace NLS::Engine::Serialize
                     continue;
 
                 context.components.emplace(componentRecord->id, component);
-                ApplyComponentState(*component, *componentRecord);
+                ApplyComponentState(*component, *componentRecord, policy);
                 gameObject.MoveComponent(component, index);
             }
         }
 
         static Components::Component* EnsureComponent(GameObject& gameObject, const ObjectRecord& record, size_t index)
         {
-            if (record.typeName == "NLS::Engine::Components::TransformComponent")
+            if (RecordTypeMatchesComponent<Components::TransformComponent>(record))
             {
                 auto* transform = gameObject.GetTransform();
                 if (transform)
@@ -362,18 +520,26 @@ namespace NLS::Engine::Serialize
             return gameObject.AddComponent(type);
         }
 
-        static void ApplyComponentState(Components::Component& component, const ObjectRecord& record)
+        static void ApplyComponentState(
+            Components::Component& component,
+            const ObjectRecord& record,
+            const LoadPolicy& policy = {})
         {
-            ApplyReflectedFields(component, record, IsNoGraphProperty);
+            if (policy.deferAssetReferenceResolution)
+                ApplyDeferredAssetReferenceHints(component, record);
+            ApplyReflectedFields(component, record, IsNoGraphProperty, &policy);
         }
 
         static void ApplyReflectedFields(
-            NLS::meta::Object& object,
+            NLS::Object& object,
             const ObjectRecord& record,
-            bool (*isGraphProperty)(const std::string&))
+            bool (*isGraphProperty)(const std::string&),
+            const LoadPolicy* policy = nullptr)
         {
             auto instance = NLS::meta::Variant(&object, NLS::meta::variant_policy::WrapObject {});
             const auto type = object.GetType();
+            if (!type.IsValid())
+                return;
 
             for (const auto& property : record.properties)
             {
@@ -384,9 +550,133 @@ namespace NLS::Engine::Serialize
                 if (!field.IsValid() || field.IsReadOnly())
                     continue;
 
+                if (policy &&
+                    policy->deferAssetReferenceResolution &&
+                    (ContainsAssetReference(property.value) || IsDeferredAssetProperty(record, property.name)))
+                {
+                    continue;
+                }
+
+                const auto objectReferenceResult = TrySetUnityObjectReferenceField(instance, field, property.value);
+                if (objectReferenceResult == UnityObjectReferenceApplyResult::Applied)
+                {
+                    ResolveRuntimeAssetReference(object, record, property);
+                    continue;
+                }
+
+                if (objectReferenceResult == UnityObjectReferenceApplyResult::ShapeMismatch)
+                {
+                    if (policy != nullptr &&
+                        policy->invalidReferencePolicy == InvalidReferencePolicy::Preserve)
+                    {
+                        continue;
+                    }
+
+                    throw std::invalid_argument(
+                        "Object graph property \"" + record.typeName + "." + property.name +
+                        "\" must use a Unity-style object reference shape.");
+                }
+
                 const auto json = ConvertPropertyValue(property.value);
                 auto value = field.GetType().DeserializeJson(NLS::Json(json));
                 field.SetValue(instance, value);
+            }
+        }
+
+        enum class UnityObjectReferenceApplyResult
+        {
+            NotObjectReferenceField,
+            Applied,
+            ShapeMismatch
+        };
+
+        static UnityObjectReferenceApplyResult TrySetUnityObjectReferenceField(
+            NLS::meta::Variant& instance,
+            const NLS::meta::Field& field,
+            const PropertyValue& value)
+        {
+            const auto fieldType = field.GetType();
+            if (fieldType.IsArray() && Internal::IsPPtrTypeName(fieldType.GetArrayType()))
+            {
+                switch (Internal::ApplyPPtrArrayOrThrow(instance, field, value))
+                {
+                case Internal::PPtrApplyResult::Applied:
+                    return UnityObjectReferenceApplyResult::Applied;
+                case Internal::PPtrApplyResult::ShapeMismatch:
+                    return UnityObjectReferenceApplyResult::ShapeMismatch;
+                }
+            }
+
+            if (Internal::IsPPtrTypeName(fieldType))
+            {
+                switch (Internal::ApplyPPtrValueOrThrow(instance, field, value))
+                {
+                case Internal::PPtrApplyResult::Applied:
+                    return UnityObjectReferenceApplyResult::Applied;
+                case Internal::PPtrApplyResult::ShapeMismatch:
+                    return UnityObjectReferenceApplyResult::ShapeMismatch;
+                }
+            }
+
+            return UnityObjectReferenceApplyResult::NotObjectReferenceField;
+        }
+
+        static void ResolveRuntimeAssetReference(
+            NLS::Object& object,
+            const ObjectRecord& record,
+            const PropertyRecord& property)
+        {
+            if (RecordTypeMatchesComponent<Components::MeshFilter>(record) && property.name == "mesh")
+            {
+                if (object.GetType() != NLS_TYPEOF(Components::MeshFilter) ||
+                    property.value.GetKind() != PropertyValue::Kind::ObjectReference ||
+                    !property.value.GetObjectReference().guid.IsValid())
+                {
+                    return;
+                }
+                auto* meshFilter = static_cast<Components::MeshFilter*>(&object);
+
+                const auto path = ResolveAssetReferencePath(property.value.GetObjectReference());
+                if (path.empty() ||
+                    !Core::ServiceLocator::Contains<Core::ResourceManagement::MeshManager>())
+                {
+                    return;
+                }
+
+                auto& meshManager = NLS_SERVICE(Core::ResourceManagement::MeshManager);
+                if (auto* mesh = FindCachedMeshResource(meshManager, path))
+                    meshFilter->SetResolvedMeshFromReference(mesh);
+                return;
+            }
+
+            if (RecordTypeMatchesComponent<Components::MeshRenderer>(record) && property.name == "materials")
+            {
+                if (object.GetType() != NLS_TYPEOF(Components::MeshRenderer) ||
+                    property.value.GetKind() != PropertyValue::Kind::Array ||
+                    !Core::ServiceLocator::Contains<Core::ResourceManagement::MaterialManager>())
+                {
+                    return;
+                }
+                auto* meshRenderer = static_cast<Components::MeshRenderer*>(&object);
+
+                auto& materialManager = NLS_SERVICE(Core::ResourceManagement::MaterialManager);
+                const auto& values = property.value.GetArray();
+                for (size_t index = 0; index < values.size() && index < Components::MeshRenderer::kMaxMaterialCount; ++index)
+                {
+                    const auto& value = values[index];
+                    if (value.GetKind() != PropertyValue::Kind::ObjectReference ||
+                        !value.GetObjectReference().guid.IsValid())
+                    {
+                        continue;
+                    }
+
+                    const auto path = ResolveAssetReferencePath(value.GetObjectReference());
+                    if (path.empty())
+                        continue;
+
+                    if (auto* material = materialManager.GetResource(path, false))
+                        meshRenderer->SetResolvedMaterialFromReference(static_cast<uint8_t>(index), *material);
+                }
             }
         }
 
@@ -400,7 +690,10 @@ namespace NLS::Engine::Serialize
             if (!parentProperty || parentProperty->value.GetKind() != PropertyValue::Kind::ObjectReference)
                 return;
 
-            auto* parent = FindGameObject(context, parentProperty->value.GetObjectId());
+            const auto parentId = context.document != nullptr
+                ? context.document->ResolveObjectReference(parentProperty->value.GetObjectReference())
+                : std::optional<ObjectId> {};
+            auto* parent = parentId.has_value() ? FindGameObject(context, *parentId) : nullptr;
             if (parent)
                 child->SetParent(*parent);
         }
@@ -416,10 +709,11 @@ namespace NLS::Engine::Serialize
 
             for (const auto& reference : components->value.GetArray())
             {
-                if (reference.GetKind() != PropertyValue::Kind::OwnedReference)
+                const auto componentId = ResolveObjectId(graph, reference);
+                if (!componentId.has_value())
                     continue;
 
-                const auto* componentRecord = FindRecord(graph, reference.GetObjectId());
+                const auto* componentRecord = FindRecord(graph, *componentId);
                 if (!componentRecord)
                     continue;
 
@@ -446,6 +740,9 @@ namespace NLS::Engine::Serialize
                     break;
                 case PatchOperationType::MoveOwned:
                     ApplyMoveOwned(graph, operation);
+                    break;
+                case PatchOperationType::RemoveObject:
+                    ApplyRemoveObject(graph, operation);
                     break;
                 default:
                     break;
@@ -529,6 +826,34 @@ namespace NLS::Engine::Serialize
             property->value = PropertyValue::Array(std::move(values));
         }
 
+        static void ApplyRemoveObject(ObjectGraphDocument& graph, const PatchOperation& operation)
+        {
+            auto* record = FindMutableRecord(graph, operation.target);
+            if (!record)
+                return;
+
+            std::vector<ObjectId> ownedChildren;
+            for (const auto& property : record->properties)
+            {
+                if (property.value.GetKind() != PropertyValue::Kind::Array)
+                    continue;
+
+                for (const auto& value : property.value.GetArray())
+                {
+                    if (value.GetKind() == PropertyValue::Kind::OwnedReference)
+                        ownedChildren.push_back(value.GetObjectId());
+                }
+            }
+
+            record->state = ObjectRecordState::Removed;
+            for (const auto& child : ownedChildren)
+            {
+                PatchOperation childOperation;
+                childOperation.target = child;
+                ApplyRemoveObject(graph, childOperation);
+            }
+        }
+
         static nlohmann::json ConvertPropertyValue(const PropertyValue& value)
         {
             switch (value.GetKind())
@@ -545,6 +870,11 @@ namespace NLS::Engine::Serialize
                 return value.GetString();
             case PropertyValue::Kind::Guid:
                 return value.GetGuid().ToString();
+            case PropertyValue::Kind::ObjectReference:
+            {
+                const auto& reference = value.GetObjectReference();
+                return reference.guid.IsValid() ? nlohmann::json(reference.filePath) : nlohmann::json(nullptr);
+            }
             case PropertyValue::Kind::Array:
             {
                 nlohmann::json output = nlohmann::json::array();
@@ -564,6 +894,146 @@ namespace NLS::Engine::Serialize
             }
         }
 
+        static bool ContainsAssetReference(const PropertyValue& value)
+        {
+            switch (value.GetKind())
+            {
+            case PropertyValue::Kind::ObjectReference:
+                return value.GetObjectReference().guid.IsValid();
+            case PropertyValue::Kind::Array:
+                return std::any_of(
+                    value.GetArray().begin(),
+                    value.GetArray().end(),
+                    [](const PropertyValue& item)
+                    {
+                        return ContainsAssetReference(item);
+                    });
+            case PropertyValue::Kind::Object:
+                return std::any_of(
+                    value.GetObject().begin(),
+                    value.GetObject().end(),
+                    [](const auto& property)
+                    {
+                        return ContainsAssetReference(property.second);
+                    });
+            default:
+                return false;
+            }
+        }
+
+        static void ApplyDeferredAssetReferenceHints(
+            Components::Component& component,
+            const ObjectRecord& record)
+        {
+            if (RecordTypeMatchesComponent<Components::MeshFilter>(record) &&
+                component.GetType() == NLS_TYPEOF(Components::MeshFilter))
+            {
+                auto* meshFilter = static_cast<Components::MeshFilter*>(&component);
+                const auto* mesh = FindProperty(record, "mesh");
+                if (mesh && mesh->value.GetKind() == PropertyValue::Kind::ObjectReference &&
+                    mesh->value.GetObjectReference().guid.IsValid())
+                {
+                    const auto& reference = mesh->value.GetObjectReference();
+                    const auto path = ResolveAssetReferencePath(reference);
+                    meshFilter->SetMeshObjectIdentifier(reference);
+                    if (Core::ServiceLocator::Contains<Core::ResourceManagement::MeshManager>())
+                    {
+                        auto& meshManager = NLS_SERVICE(Core::ResourceManagement::MeshManager);
+                        if (auto* cached = FindCachedMeshResource(meshManager, path))
+                        {
+                            meshFilter->SetResolvedMeshFromReference(cached);
+                            return;
+                        }
+                    }
+                }
+                return;
+            }
+
+            if (RecordTypeMatchesComponent<Components::MeshRenderer>(record) &&
+                component.GetType() == NLS_TYPEOF(Components::MeshRenderer))
+            {
+                auto* meshRenderer = static_cast<Components::MeshRenderer*>(&component);
+                const auto* materials = FindProperty(record, "materials");
+                if (!materials || materials->value.GetKind() != PropertyValue::Kind::Array)
+                    return;
+
+                NLS::Array<NLS::Engine::Serialize::ObjectIdentifier> references;
+                NLS::Array<std::string> paths;
+                for (const auto& value : materials->value.GetArray())
+                {
+                    if (value.GetKind() == PropertyValue::Kind::ObjectReference && value.GetObjectReference().guid.IsValid())
+                    {
+                        references.push_back(value.GetObjectReference());
+                        paths.push_back(ResolveAssetReferencePath(value.GetObjectReference()));
+                    }
+                    else
+                    {
+                        references.push_back({});
+                        paths.push_back({});
+                    }
+                }
+                meshRenderer->SetMaterialObjectIdentifiers(references);
+                if (Core::ServiceLocator::Contains<Core::ResourceManagement::MaterialManager>())
+                {
+                    for (size_t index = 0; index < paths.size() && index < Components::MeshRenderer::kMaxMaterialCount; ++index)
+                    {
+                        if (paths[index].empty())
+                            continue;
+
+                        if (auto* cached = NLS_SERVICE(Core::ResourceManagement::MaterialManager).GetResource(paths[index], false))
+                            meshRenderer->SetResolvedMaterialFromReference(static_cast<uint8_t>(index), *cached);
+                    }
+                }
+            }
+        }
+
+        static Core::ResourceManagement::MeshManager::Mesh* FindCachedMeshResource(
+            Core::ResourceManagement::MeshManager& meshManager,
+            const std::string& path)
+        {
+            if (auto* cached = meshManager.GetResource(path, false))
+                return cached;
+
+            const auto projectRelative = ToProjectRelativeResourcePath(
+                path,
+                Core::ResourceManagement::MeshManager::ProjectAssetsRoot());
+            return projectRelative.empty()
+                ? nullptr
+                : meshManager.GetResource(projectRelative, false);
+        }
+
+        static std::string ToProjectRelativeResourcePath(
+            const std::string& path,
+            const std::string& projectAssetsRoot)
+        {
+            if (path.empty() || projectAssetsRoot.empty())
+                return {};
+
+            const auto absolutePath = std::filesystem::path(path).lexically_normal();
+            if (!absolutePath.is_absolute())
+                return {};
+
+            auto assetsRoot = std::filesystem::path(projectAssetsRoot).lexically_normal();
+            while (!assetsRoot.empty() && !assetsRoot.has_filename())
+                assetsRoot = assetsRoot.parent_path();
+
+            const auto projectRoot = assetsRoot.parent_path();
+            if (projectRoot.empty())
+                return {};
+
+            const auto relative = absolutePath.lexically_relative(projectRoot.lexically_normal());
+            if (relative.empty() || relative.is_absolute())
+                return {};
+
+            for (const auto& part : relative)
+            {
+                if (part == "..")
+                    return {};
+            }
+
+            return relative.generic_string();
+        }
+
         static void AnalyzeObjectTypes(
             const ObjectGraphDocument& document,
             const LoadPolicy& policy,
@@ -571,6 +1041,9 @@ namespace NLS::Engine::Serialize
         {
             for (const auto& object : document.objects)
             {
+                if (object.state == ObjectRecordState::Removed)
+                    continue;
+
                 const auto type = NLS::meta::Type::GetFromName(object.typeName);
                 if (type.IsValid())
                     continue;
@@ -585,41 +1058,130 @@ namespace NLS::Engine::Serialize
             }
         }
 
+        static void AnalyzeReflectedObjectReferenceShapes(
+            const ObjectGraphDocument& document,
+            const LoadPolicy& policy,
+            SerializationDiagnosticList& diagnostics)
+        {
+            for (const auto& object : document.objects)
+            {
+                if (object.state == ObjectRecordState::Removed)
+                    continue;
+
+                const auto type = NLS::meta::Type::GetFromName(object.typeName);
+                if (!type.IsValid())
+                    continue;
+
+                for (const auto& property : object.properties)
+                {
+                    const auto field = type.GetField(property.name);
+                    if (!field.IsValid())
+                        continue;
+
+                    if (policy.deferAssetReferenceResolution &&
+                        IsDeferredAssetProperty(object, property.name))
+                    {
+                        continue;
+                    }
+
+                    const auto fieldType = field.GetType();
+                    if (fieldType.IsArray() && Internal::IsPPtrTypeName(fieldType.GetArrayType()))
+                    {
+                        if (!IsPPtrArrayPropertyValue(property.value))
+                            AddInvalidObjectReferenceDiagnostic(policy, diagnostics, object, property);
+                        continue;
+                    }
+
+                    if (Internal::IsPPtrTypeName(fieldType) && !IsPPtrPropertyValue(property.value))
+                        AddInvalidObjectReferenceDiagnostic(policy, diagnostics, object, property);
+                }
+            }
+        }
+
+        static bool IsPPtrPropertyValue(const PropertyValue& value)
+        {
+            return value.GetKind() == PropertyValue::Kind::ObjectReference;
+        }
+
+        static bool IsPPtrArrayPropertyValue(const PropertyValue& value)
+        {
+            if (value.GetKind() != PropertyValue::Kind::Array)
+                return false;
+
+            for (const auto& item : value.GetArray())
+            {
+                if (!IsPPtrPropertyValue(item))
+                    return false;
+            }
+            return true;
+        }
+
+        static void AddInvalidObjectReferenceDiagnostic(
+            const LoadPolicy& policy,
+            SerializationDiagnosticList& diagnostics,
+            const ObjectRecord& object,
+            const PropertyRecord& property)
+        {
+            diagnostics.Add({
+                SerializationDiagnosticCode::InvalidPropertyType,
+                policy.invalidReferencePolicy == InvalidReferencePolicy::Fail
+                    ? SerializationDiagnosticSeverity::Error
+                    : SerializationDiagnosticSeverity::Warning,
+                "Object graph property \"" + object.typeName + "." + property.name +
+                    "\" must use a Unity-style object reference shape."
+            });
+        }
+
         static void AnalyzeAssetReferences(
             const ObjectGraphDocument& document,
             const LoadPolicy& policy,
             SerializationDiagnosticList& diagnostics)
         {
-            if (document.basePrefab.has_value() && !document.basePrefab->asset.IsValid())
-            {
-                AddMissingAssetDiagnostic(policy, diagnostics);
-            }
+            if (document.basePrefab.has_value())
+                AnalyzeObjectIdentifier(PropertyValue::ObjectReference(*document.basePrefab), policy, diagnostics);
 
             for (const auto& object : document.objects)
             {
+                if (object.state == ObjectRecordState::Removed)
+                    continue;
+
                 for (const auto& property : object.properties)
-                    AnalyzeAssetReferenceValue(property.value, policy, diagnostics);
+                    AnalyzeObjectIdentifier(property.value, policy, diagnostics);
             }
         }
 
-        static void AnalyzeAssetReferenceValue(
+        static void AnalyzeObjectIdentifier(
             const PropertyValue& value,
             const LoadPolicy& policy,
             SerializationDiagnosticList& diagnostics)
         {
             switch (value.GetKind())
             {
-            case PropertyValue::Kind::AssetReference:
-                if (!value.GetAssetReference().asset.IsValid())
+            case PropertyValue::Kind::ObjectReference:
+            {
+                const auto& reference = value.GetObjectReference();
+                if (reference.IsAsset() &&
+                    Core::ServiceLocator::Contains<Assets::RuntimeAssetDatabase>() &&
+                    ResolveRuntimeAssetReferenceEntry(reference) == nullptr)
+                {
                     AddMissingAssetDiagnostic(policy, diagnostics);
+                    break;
+                }
+
+                if (!reference.guid.IsValid() &&
+                    (reference.fileType != FileType::NonAssetType || !reference.filePath.empty()))
+                {
+                    AddMissingAssetDiagnostic(policy, diagnostics);
+                }
                 break;
+            }
             case PropertyValue::Kind::Array:
                 for (const auto& item : value.GetArray())
-                    AnalyzeAssetReferenceValue(item, policy, diagnostics);
+                    AnalyzeObjectIdentifier(item, policy, diagnostics);
                 break;
             case PropertyValue::Kind::Object:
                 for (const auto& property : value.GetObject())
-                    AnalyzeAssetReferenceValue(property.second, policy, diagnostics);
+                    AnalyzeObjectIdentifier(property.second, policy, diagnostics);
                 break;
             default:
                 break;

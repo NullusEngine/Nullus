@@ -33,9 +33,12 @@ namespace NLS::Engine::Serialize
             if (const auto basePrefab = root.find("basePrefab"); basePrefab != root.end())
             {
                 auto value = ReadValue(*basePrefab);
-                if (!value.has_value() || value->GetKind() != PropertyValue::Kind::AssetReference)
+                if (!value.has_value() || value->GetKind() != PropertyValue::Kind::ObjectReference)
                     return std::nullopt;
-                document.basePrefab = value->GetAssetReference();
+                const auto& reference = value->GetObjectReference();
+                if (!reference.guid.IsValid())
+                    return std::nullopt;
+                document.basePrefab = reference;
             }
 
             const auto objects = root.find("objects");
@@ -77,8 +80,13 @@ namespace NLS::Engine::Serialize
             if (!id.has_value())
                 return std::nullopt;
 
+            const auto fileID = json.find("fileID");
+            if (fileID == json.end() || !fileID->is_number_integer())
+                return std::nullopt;
+
             ObjectRecord record;
             record.id = ObjectId(*id);
+            record.localIdentifierInFile = fileID->get<int64_t>();
             record.typeName = json.value("type", std::string {});
             record.debugName = json.value("debugName", std::string {});
             record.debugPath = json.value("debugPath", std::string {});
@@ -136,29 +144,59 @@ namespace NLS::Engine::Serialize
 
             if (json.is_object())
             {
+                if (ContainsLegacyOrIncompleteObjectReferenceShape(json))
+                    return std::nullopt;
+
                 if (auto found = json.find("$owned"); found != json.end() && found->is_string())
                 {
                     auto id = NLS::Guid::TryParse(found->get<std::string>());
                     return id.has_value() ? std::optional<PropertyValue>(PropertyValue::OwnedReference(ObjectId(*id))) : std::nullopt;
                 }
 
-                if (auto found = json.find("$ref"); found != json.end() && found->is_string())
+                if (auto found = json.find("fileID"); found != json.end() && found->is_number_integer())
                 {
-                    auto id = NLS::Guid::TryParse(found->get<std::string>());
-                    return id.has_value() ? std::optional<PropertyValue>(PropertyValue::ObjectReference(ObjectId(*id))) : std::nullopt;
-                }
-
-                if (auto found = json.find("$asset"); found != json.end() && found->is_string())
-                {
-                    auto id = NLS::Guid::TryParse(found->get<std::string>());
-                    if (!id.has_value())
+                    const auto type = json.find("type");
+                    const auto guidNode = json.find("guid");
+                    if (type == json.end() || !type->is_number_integer() || guidNode == json.end() || !guidNode->is_string())
                         return std::nullopt;
 
-                    return PropertyValue::AssetReference({
-                        AssetId(*id),
-                        json.value("type", std::string {}),
-                        json.value("pathHint", std::string {})
-                    });
+                    auto referenceGuid = NLS::Guid::Empty();
+                    const auto guidText = json.value("guid", std::string {});
+                    if (!guidText.empty())
+                    {
+                        auto parsedGuid = NLS::Guid::TryParse(guidText);
+                        if (!parsedGuid.has_value())
+                            return std::nullopt;
+                        referenceGuid = *parsedGuid;
+                    }
+
+                    ObjectIdentifier reference;
+                    reference.guid = referenceGuid;
+                    reference.localIdentifierInFile = found->get<int64_t>();
+                    reference.fileType = static_cast<FileType>(type->get<int32_t>());
+                    if (!IsKnownFileType(reference.fileType))
+                        return std::nullopt;
+                    reference.filePath = json.value("filePath", std::string {});
+
+                    if (reference.guid.IsValid())
+                    {
+                        if (reference.localIdentifierInFile == 0 ||
+                            reference.fileType == FileType::NonAssetType)
+                        {
+                            return std::nullopt;
+                        }
+                    }
+                    else if (reference.localIdentifierInFile == 0 &&
+                        (reference.fileType != FileType::NonAssetType || !reference.filePath.empty()))
+                    {
+                        return std::nullopt;
+                    }
+                    else if (!reference.guid.IsValid() && !reference.filePath.empty())
+                    {
+                        return std::nullopt;
+                    }
+
+                    return PropertyValue::ObjectReference(std::move(reference));
                 }
 
                 PropertyValue::ObjectValue values;
@@ -173,6 +211,39 @@ namespace NLS::Engine::Serialize
             }
 
             return PropertyValue::Null();
+        }
+
+        static bool ContainsLegacyOrIncompleteObjectReferenceShape(const nlohmann::json& json)
+        {
+            const bool hasLegacyReference = json.contains("$ref") || json.contains("$asset");
+            const bool hasFileID = json.contains("fileID");
+            const bool hasGuid = json.contains("guid");
+            const bool hasFilePath = json.contains("filePath");
+            const bool hasObjectReferenceKey = hasFileID || hasGuid || hasFilePath;
+            const auto type = json.find("type");
+            const bool hasNumericObjectReferenceType = type != json.end() && type->is_number_integer();
+            const bool hasNonIntegerFileID = hasFileID && !json["fileID"].is_number_integer();
+            const bool hasIncompleteObjectReferenceShape =
+                hasObjectReferenceKey &&
+                !(hasFileID &&
+                    json["fileID"].is_number_integer() &&
+                    hasGuid &&
+                    type != json.end() &&
+                    type->is_number_integer());
+            const bool hasHalfShapedAssetReference =
+                !hasFileID &&
+                hasGuid &&
+                hasNumericObjectReferenceType;
+            const bool hasPathOnlyObjectReferenceHint =
+                !hasFileID &&
+                hasFilePath &&
+                (hasGuid || hasNumericObjectReferenceType);
+
+            return hasLegacyReference ||
+                hasNonIntegerFileID ||
+                hasIncompleteObjectReferenceShape ||
+                hasHalfShapedAssetReference ||
+                hasPathOnlyObjectReferenceHint;
         }
 
         static std::optional<PatchOperation> ReadPatchOperation(const nlohmann::json& json)
@@ -223,6 +294,18 @@ namespace NLS::Engine::Serialize
                     property,
                     ObjectId(*object),
                     json.value("index", static_cast<size_t>(0)));
+            }
+
+            if (op == "removeObject")
+            {
+                auto target = NLS::Guid::TryParse(json.value("target", std::string {}));
+                if (!target.has_value())
+                    return std::nullopt;
+
+                PatchOperation operation;
+                operation.type = PatchOperationType::RemoveObject;
+                operation.target = ObjectId(*target);
+                return operation;
             }
 
             return std::nullopt;

@@ -3,23 +3,65 @@
 #include <cstdint>
 #include <optional>
 #include <string>
-#include <unordered_map>
+#include <string_view>
 #include <unordered_set>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
 
 #include "Serialize/ObjectId.h"
+#include "Serialize/PPtr.h"
 #include "Serialize/SerializationDiagnostic.h"
 
 namespace NLS::Engine::Serialize
 {
-    struct AssetReferenceValue
+    inline int64_t MakeLocalIdentifierInFile(const NLS::Guid& guid)
     {
-        AssetId asset;
-        std::string expectedType;
-        std::string pathHint;
-    };
+        if (!guid.IsValid())
+            return 0;
+
+        uint64_t hash = 1469598103934665603ull;
+        for (const auto byte : guid.GetBytes())
+        {
+            hash ^= static_cast<uint64_t>(byte);
+            hash *= 1099511628211ull;
+        }
+
+        hash &= 0x7fffffffffffffffull;
+        if (hash == 0)
+            hash = 1;
+        return static_cast<int64_t>(hash);
+    }
+
+    inline int64_t MakeLocalIdentifierInFile(const ObjectId& object)
+    {
+        return MakeLocalIdentifierInFile(object.GetGuid());
+    }
+
+    inline int64_t MakeLocalIdentifierInFile(const NLS::Guid& guid, std::string_view localIdentifierKey)
+    {
+        if (!guid.IsValid())
+            return 0;
+
+        uint64_t hash = 1469598103934665603ull;
+        for (const auto byte : guid.GetBytes())
+        {
+            hash ^= static_cast<uint64_t>(byte);
+            hash *= 1099511628211ull;
+        }
+
+        for (const auto character : localIdentifierKey)
+        {
+            hash ^= static_cast<uint64_t>(static_cast<unsigned char>(character));
+            hash *= 1099511628211ull;
+        }
+
+        hash &= 0x7fffffffffffffffull;
+        if (hash == 0)
+            hash = 1;
+        return static_cast<int64_t>(hash);
+    }
 
     class PropertyValue
     {
@@ -37,7 +79,6 @@ namespace NLS::Engine::Serialize
             Guid,
             OwnedReference,
             ObjectReference,
-            AssetReference,
             Array,
             Object
         };
@@ -97,18 +138,10 @@ namespace NLS::Engine::Serialize
             return result;
         }
 
-        static PropertyValue ObjectReference(ObjectId value)
+        static PropertyValue ObjectReference(ObjectIdentifier value)
         {
             PropertyValue result;
             result.m_kind = Kind::ObjectReference;
-            result.m_value = value;
-            return result;
-        }
-
-        static PropertyValue AssetReference(AssetReferenceValue value)
-        {
-            PropertyValue result;
-            result.m_kind = Kind::AssetReference;
             result.m_value = std::move(value);
             return result;
         }
@@ -139,6 +172,16 @@ namespace NLS::Engine::Serialize
             return std::get<ObjectId>(m_value);
         }
 
+        const ObjectIdentifier& GetObjectReference() const
+        {
+            return std::get<ObjectIdentifier>(m_value);
+        }
+
+        ObjectIdentifier& GetMutableObjectReference()
+        {
+            return std::get<ObjectIdentifier>(m_value);
+        }
+
         bool GetBool() const
         {
             return std::get<bool>(m_value);
@@ -164,11 +207,6 @@ namespace NLS::Engine::Serialize
             return std::get<NLS::Guid>(m_value);
         }
 
-        const AssetReferenceValue& GetAssetReference() const
-        {
-            return std::get<AssetReferenceValue>(m_value);
-        }
-
         const ArrayValue& GetArray() const
         {
             return std::get<ArrayValue>(m_value);
@@ -189,7 +227,7 @@ namespace NLS::Engine::Serialize
             std::string,
             NLS::Guid,
             ObjectId,
-            AssetReferenceValue,
+            ObjectIdentifier,
             ArrayValue,
             ObjectValue> m_value;
     };
@@ -208,12 +246,33 @@ namespace NLS::Engine::Serialize
 
     struct ObjectRecord
     {
+        ObjectRecord() = default;
+
+        ObjectRecord(
+            ObjectId objectId,
+            std::string objectTypeName,
+            std::string objectDebugName,
+            std::string objectDebugPath,
+            ObjectRecordState objectState,
+            std::vector<PropertyRecord> objectProperties,
+            int64_t objectLocalIdentifierInFile = 0)
+            : id(std::move(objectId)),
+              typeName(std::move(objectTypeName)),
+              debugName(std::move(objectDebugName)),
+              debugPath(std::move(objectDebugPath)),
+              state(objectState),
+              properties(std::move(objectProperties)),
+              localIdentifierInFile(objectLocalIdentifierInFile)
+        {
+        }
+
         ObjectId id;
         std::string typeName;
         std::string debugName;
         std::string debugPath;
         ObjectRecordState state = ObjectRecordState::Alive;
         std::vector<PropertyRecord> properties;
+        int64_t localIdentifierInFile = 0;
     };
 
     enum class PatchOperationType
@@ -288,18 +347,60 @@ namespace NLS::Engine::Serialize
         int version = 1;
         NLS::Guid documentId;
         ObjectId root;
-        std::optional<AssetReferenceValue> basePrefab;
+        std::optional<ObjectIdentifier> basePrefab;
         std::vector<ObjectRecord> objects;
         std::vector<PatchOperation> overrides;
+
+        static ObjectIdentifier MakeLocalObjectReference(const ObjectRecord& object)
+        {
+            return ObjectIdentifier::LocalObject(object.localIdentifierInFile);
+        }
+
+        int64_t GetLocalIdentifierInFileForObject(const ObjectId& id) const
+        {
+            for (const auto& object : objects)
+            {
+                if (object.id == id)
+                    return object.localIdentifierInFile;
+            }
+            return 0;
+        }
+
+        std::optional<ObjectIdentifier> TryMakeObjectReference(const ObjectId& id) const
+        {
+            const auto localIdentifierInFile = GetLocalIdentifierInFileForObject(id);
+            if (localIdentifierInFile == 0)
+                return std::nullopt;
+            return ObjectIdentifier::LocalObject(localIdentifierInFile);
+        }
+
+        std::optional<ObjectId> ResolveObjectReference(const ObjectIdentifier& reference) const
+        {
+            if (reference.localIdentifierInFile == 0 || reference.guid.IsValid())
+                return std::nullopt;
+
+            for (const auto& object : objects)
+            {
+                if (object.state == ObjectRecordState::Removed)
+                    continue;
+                if (object.localIdentifierInFile == reference.localIdentifierInFile)
+                    return object.id;
+            }
+            return std::nullopt;
+        }
 
         SerializationDiagnosticList Validate() const
         {
             SerializationDiagnosticList diagnostics;
             std::unordered_map<ObjectId, size_t> indexById;
+            std::unordered_map<int64_t, ObjectId> objectIdByFileID;
 
             for (size_t index = 0; index < objects.size(); ++index)
             {
                 const auto& object = objects[index];
+                if (object.state == ObjectRecordState::Removed)
+                    continue;
+
                 if (!object.id.IsValid())
                 {
                     AddError(diagnostics, SerializationDiagnosticCode::InvalidGuid, "Object record has an invalid id.");
@@ -310,6 +411,15 @@ namespace NLS::Engine::Serialize
                 {
                     AddError(diagnostics, SerializationDiagnosticCode::DuplicateObjectId, "Object graph contains duplicate object ids.");
                 }
+
+                if (object.localIdentifierInFile == 0)
+                {
+                    AddError(diagnostics, SerializationDiagnosticCode::InvalidPropertyType, "Object record has a missing fileID.");
+                }
+                else if (!objectIdByFileID.emplace(object.localIdentifierInFile, object.id).second)
+                {
+                    AddError(diagnostics, SerializationDiagnosticCode::DuplicateObjectId, "Object graph contains duplicate fileID values.");
+                }
             }
 
             if (!root.IsValid() || indexById.find(root) == indexById.end())
@@ -317,10 +427,16 @@ namespace NLS::Engine::Serialize
                 AddError(diagnostics, SerializationDiagnosticCode::MissingObject, "Object graph root is missing.");
             }
 
+            if (basePrefab.has_value())
+                ValidateAssetReference(*basePrefab, diagnostics);
+
             for (const auto& object : objects)
             {
+                if (object.state == ObjectRecordState::Removed)
+                    continue;
+
                 for (const auto& property : object.properties)
-                    ValidateReferences(property.value, indexById, diagnostics);
+                    ValidateReferences(property.value, indexById, objectIdByFileID, diagnostics);
             }
 
             if (root.IsValid() && indexById.find(root) != indexById.end())
@@ -338,33 +454,80 @@ namespace NLS::Engine::Serialize
             diagnostics.Add({code, SerializationDiagnosticSeverity::Error, std::move(message)});
         }
 
+        static void ValidateAssetReference(
+            const ObjectIdentifier& reference,
+            SerializationDiagnosticList& diagnostics)
+        {
+            if (!IsKnownFileType(reference.fileType))
+            {
+                AddError(diagnostics, SerializationDiagnosticCode::MissingAsset, "Object graph contains an invalid object reference file type.");
+                return;
+            }
+
+            if (!reference.guid.IsValid() ||
+                reference.localIdentifierInFile == 0 ||
+                reference.fileType == FileType::NonAssetType)
+            {
+                AddError(diagnostics, SerializationDiagnosticCode::MissingAsset, "Object graph contains an invalid asset reference.");
+            }
+        }
+
         static void ValidateReferences(
             const PropertyValue& value,
             const std::unordered_map<ObjectId, size_t>& indexById,
+            const std::unordered_map<int64_t, ObjectId>& objectIdByFileID,
             SerializationDiagnosticList& diagnostics)
         {
             switch (value.GetKind())
             {
             case PropertyValue::Kind::OwnedReference:
-            case PropertyValue::Kind::ObjectReference:
                 if (!value.GetObjectId().IsValid() || indexById.find(value.GetObjectId()) == indexById.end())
                 {
                     AddError(diagnostics, SerializationDiagnosticCode::DanglingReference, "Object graph contains a missing object reference.");
                 }
                 break;
-            case PropertyValue::Kind::AssetReference:
-                if (!value.GetAssetReference().asset.IsValid())
+            case PropertyValue::Kind::ObjectReference:
+            {
+                const auto& reference = value.GetObjectReference();
+                if (!IsKnownFileType(reference.fileType))
+                {
+                    AddError(diagnostics, SerializationDiagnosticCode::MissingAsset, "Object graph contains an invalid object reference file type.");
+                    break;
+                }
+                if (!reference.IsValid())
+                {
+                    if (reference.guid.IsValid() ||
+                        reference.fileType != FileType::NonAssetType ||
+                        !reference.filePath.empty())
+                    {
+                        AddError(diagnostics, SerializationDiagnosticCode::MissingAsset, "Object graph contains an invalid asset reference.");
+                    }
+                    break;
+                }
+                if (reference.guid.IsValid())
+                {
+                    if (reference.localIdentifierInFile == 0 ||
+                        reference.fileType == FileType::NonAssetType)
+                        AddError(diagnostics, SerializationDiagnosticCode::MissingAsset, "Object graph contains an invalid asset reference.");
+                    break;
+                }
+                if (reference.fileType != FileType::NonAssetType ||
+                    !reference.filePath.empty())
                 {
                     AddError(diagnostics, SerializationDiagnosticCode::MissingAsset, "Object graph contains an invalid asset reference.");
+                    break;
                 }
+                if (reference.localIdentifierInFile == 0 || objectIdByFileID.find(reference.localIdentifierInFile) == objectIdByFileID.end())
+                    AddError(diagnostics, SerializationDiagnosticCode::DanglingReference, "Object graph contains a missing object reference.");
                 break;
+            }
             case PropertyValue::Kind::Array:
                 for (const auto& item : value.GetArray())
-                    ValidateReferences(item, indexById, diagnostics);
+                    ValidateReferences(item, indexById, objectIdByFileID, diagnostics);
                 break;
             case PropertyValue::Kind::Object:
                 for (const auto& property : value.GetObject())
-                    ValidateReferences(property.second, indexById, diagnostics);
+                    ValidateReferences(property.second, indexById, objectIdByFileID, diagnostics);
                 break;
             default:
                 break;
@@ -378,6 +541,9 @@ namespace NLS::Engine::Serialize
             std::unordered_map<ObjectId, std::vector<ObjectId>> ownedChildren;
             for (const auto& object : objects)
             {
+                if (object.state == ObjectRecordState::Removed)
+                    continue;
+
                 for (const auto& property : object.properties)
                     CollectOwnedReferences(object.id, property.value, ownedChildren);
             }
@@ -388,6 +554,9 @@ namespace NLS::Engine::Serialize
 
             for (const auto& object : objects)
             {
+                if (object.state == ObjectRecordState::Removed)
+                    continue;
+
                 if (!object.id.IsValid())
                     continue;
 

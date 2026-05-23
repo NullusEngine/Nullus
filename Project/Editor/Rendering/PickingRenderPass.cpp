@@ -7,8 +7,9 @@
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/RHI/Core/RHIResource.h"
 #include <Debug/Logger.h>
+#include <Components/MeshFilter.h>
+#include <Components/MeshRenderer.h>
 #include <Components/TransformComponent.h>
-#include <Components/MaterialRenderer.h>
 #include <Rendering/EngineDrawableDescriptor.h>
 #include <algorithm>
 #include <iterator>
@@ -23,11 +24,11 @@ Editor::Rendering::PickingRenderPass::PickingRenderPass(NLS::Render::Core::Compo
 	m_lightMaterial.Set("u_TextureOffset", Maths::Vector2(0.0f, 0.0f));
 
 	/* Picking Material */
-	m_actorPickingMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders\\Unlit.hlsl"]);
-	m_actorPickingMaterial.Set("u_Diffuse", Maths::Vector4(1.f, 1.f, 1.f, 1.0f));
-	m_actorPickingMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", Editor::Rendering::GetEditorDefaultWhiteTexture());
-	m_actorPickingMaterial.Set("u_TextureTiling", Maths::Vector2(1.0f, 1.0f));
-	m_actorPickingMaterial.Set("u_TextureOffset", Maths::Vector2(0.0f, 0.0f));
+	m_gameObjectPickingMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders\\Unlit.hlsl"]);
+	m_gameObjectPickingMaterial.Set("u_Diffuse", Maths::Vector4(1.f, 1.f, 1.f, 1.0f));
+	m_gameObjectPickingMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", Editor::Rendering::GetEditorDefaultWhiteTexture());
+	m_gameObjectPickingMaterial.Set("u_TextureTiling", Maths::Vector2(1.0f, 1.0f));
+	m_gameObjectPickingMaterial.Set("u_TextureOffset", Maths::Vector2(0.0f, 0.0f));
 }
 
 Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRenderPass::DecodePickingResult(
@@ -38,10 +39,10 @@ Editor::Rendering::PickingRenderPass::PickingResult Editor::Rendering::PickingRe
     if (pickID == 0u || pickID > frame.pickRegistry.size())
         return std::nullopt;
 
-	auto* actorUnderMouse = frame.pickRegistry[pickID - 1u];
-	if (actorUnderMouse)
+	auto* gameObjectUnderMouse = frame.pickRegistry[pickID - 1u];
+	if (gameObjectUnderMouse)
 	{
-        return actorUnderMouse;
+        return gameObjectUnderMouse;
 	}
 
 	return std::nullopt;
@@ -161,7 +162,7 @@ Editor::Rendering::PickingRenderPass::BuildSubmittedReadbackFrame(
         frameDescriptor.renderWidth,
         frameDescriptor.renderHeight,
         serial,
-        m_actorPickingFramebuffer.GetExplicitTextureHandle(),
+        m_gameObjectPickingFramebuffer.GetExplicitTextureHandle(),
         m_submittedPickRegistry
     };
 }
@@ -188,7 +189,7 @@ void Editor::Rendering::PickingRenderPass::Draw(NLS::Render::Data::PipelineState
 
     const uint64_t submittedSerial = ++m_submittedPickingFrameSerial;
     m_submittedPickRegistry.clear();
-	m_actorPickingFramebuffer.Resize(frameDescriptor.renderWidth, frameDescriptor.renderHeight);
+	m_gameObjectPickingFramebuffer.Resize(frameDescriptor.renderWidth, frameDescriptor.renderHeight);
     if (NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_renderer.GetDriver()))
     {
         m_preparedThreadedPassInput = BuildThreadedPassInput(p_pso);
@@ -227,7 +228,7 @@ bool Editor::Rendering::PickingRenderPass::RenderPickingScene(NLS::Render::Data:
 
 	const auto& frameDescriptor = m_renderer.GetFrameDescriptor();
 	const bool startedPickingPass = m_renderer.BeginRecordedRenderPass(
-		&m_actorPickingFramebuffer,
+		&m_gameObjectPickingFramebuffer,
 		frameDescriptor.renderWidth,
 		frameDescriptor.renderHeight,
 		true,
@@ -273,10 +274,10 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::P
     passInput.usesColorAttachment = true;
     passInput.usesDepthStencilAttachment = true;
     passInput.colorAttachmentViews = {
-        m_actorPickingFramebuffer.GetOrCreateExplicitColorView("EditorPickingColorView")
+        m_gameObjectPickingFramebuffer.GetOrCreateExplicitColorView("EditorPickingColorView")
     };
     passInput.depthStencilAttachmentView =
-        m_actorPickingFramebuffer.GetOrCreateExplicitDepthStencilView("EditorPickingDepthView");
+        m_gameObjectPickingFramebuffer.GetOrCreateExplicitDepthStencilView("EditorPickingDepthView");
 
     CapturePickableModels(p_pso, scene, passInput.recordedDrawCommands);
     CapturePickableCameras(p_pso, scene, passInput.recordedDrawCommands);
@@ -294,7 +295,7 @@ void PreparePickingMaterial(uint32_t pickID, NLS::Render::Resources::Material& p
 	p_material.Set("u_Diffuse", color);
 }
 
-uint32_t Editor::Rendering::PickingRenderPass::RegisterPickableActor(Engine::GameObject& actor)
+uint32_t Editor::Rendering::PickingRenderPass::RegisterPickableGameObject(Engine::GameObject& actor)
 {
     auto found = std::find(m_submittedPickRegistry.begin(), m_submittedPickRegistry.end(), &actor);
     if (found != m_submittedPickRegistry.end())
@@ -317,41 +318,41 @@ void Editor::Rendering::PickingRenderPass::CapturePickableModels(
         if (!actor.IsActive())
             continue;
 
-        auto model = modelRenderer->GetModel();
-        auto materialRenderer = modelRenderer->gameobject()->GetComponent<Engine::Components::MaterialRenderer>();
-        if (model == nullptr || materialRenderer == nullptr)
+        auto* meshFilter = actor.GetComponent<Engine::Components::MeshFilter>();
+        auto* mesh = meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr;
+        if (mesh == nullptr)
             continue;
 
-        const auto& materials = materialRenderer->GetMaterials();
+        const auto* materials = &modelRenderer->ResolveMaterials();
         const auto& modelMatrix = actor.GetTransform()->GetWorldMatrix();
-        PreparePickingMaterial(RegisterPickableActor(actor), m_actorPickingMaterial);
+        PreparePickingMaterial(RegisterPickableGameObject(actor), m_gameObjectPickingMaterial);
 
-        for (auto mesh : model->GetMeshes())
+        auto stateMask = m_gameObjectPickingMaterial.GenerateStateMask();
+        if (materials && mesh->GetMaterialIndex() < materials->size())
         {
-            auto stateMask = m_actorPickingMaterial.GenerateStateMask();
-            if (auto material = materials.at(mesh->GetMaterialIndex()); material && material->IsValid())
+            if (auto material = materials->at(mesh->GetMaterialIndex()); material && material->IsValid())
                 stateMask = material->GenerateStateMask();
+        }
 
-            NLS::Render::Entities::Drawable drawable;
-            drawable.mesh = mesh;
-            drawable.material = &m_actorPickingMaterial;
-            drawable.stateMask = stateMask;
-            drawable.AddDescriptor<Engine::Rendering::EngineDrawableDescriptor>({
-                modelMatrix
-            });
+        NLS::Render::Entities::Drawable drawable;
+        drawable.mesh = mesh;
+        drawable.material = &m_gameObjectPickingMaterial;
+        drawable.stateMask = stateMask;
+        drawable.AddDescriptor<Engine::Rendering::EngineDrawableDescriptor>({
+            modelMatrix
+        });
 
-            NLS::Render::Resources::MaterialPipelineStateOverrides unculledOverrides;
-            unculledOverrides.culling = false;
+        NLS::Render::Resources::MaterialPipelineStateOverrides unculledOverrides;
+        unculledOverrides.culling = false;
 
-            NLS::Render::Context::RecordedDrawCommandInput drawCommand;
-            if (m_renderer.CaptureRecordedDrawCommand(
-                drawable,
-                unculledOverrides,
-                NLS::Render::Settings::EComparaisonAlgorithm::LESS,
-                drawCommand))
-            {
-                outDrawCommands.push_back(std::move(drawCommand));
-            }
+        NLS::Render::Context::RecordedDrawCommandInput drawCommand;
+        if (m_renderer.CaptureRecordedDrawCommand(
+            drawable,
+            unculledOverrides,
+            NLS::Render::Settings::EComparaisonAlgorithm::LESS,
+            drawCommand))
+        {
+            outDrawCommands.push_back(std::move(drawCommand));
         }
     }
 }
@@ -369,39 +370,35 @@ void Editor::Rendering::PickingRenderPass::DrawPickableModels(
 
 		if (actor.IsActive())
 		{
-			if (auto model = modelRenderer->GetModel())
+            auto* meshFilter = actor.GetComponent<Engine::Components::MeshFilter>();
+            if (auto* mesh = meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr)
 			{
-                if (auto materialRenderer = modelRenderer->gameobject()->GetComponent<Engine::Components::MaterialRenderer>())
-				{
-					const auto& materials = materialRenderer->GetMaterials();
+                const auto* materials = &modelRenderer->ResolveMaterials();
 					const auto& modelMatrix = actor.GetTransform()->GetWorldMatrix();
 
-					PreparePickingMaterial(RegisterPickableActor(actor), m_actorPickingMaterial);
+					PreparePickingMaterial(RegisterPickableGameObject(actor), m_gameObjectPickingMaterial);
 
-					for (auto mesh : model->GetMeshes())
+					auto stateMask = m_gameObjectPickingMaterial.GenerateStateMask();
+
+					// Override the state mask to use the material state mask (if this one is valid)
+					if (materials && mesh->GetMaterialIndex() < materials->size())
 					{
-						auto stateMask = m_actorPickingMaterial.GenerateStateMask();
-
-						// Override the state mask to use the material state mask (if this one is valid)
-						if (auto material = materials.at(mesh->GetMaterialIndex()); material && material->IsValid())
-						{
-							stateMask = material->GenerateStateMask();
-						}
-
-						NLS::Render::Entities::Drawable drawable;
-						drawable.mesh = mesh;
-						drawable.material = &m_actorPickingMaterial;
-						drawable.stateMask = stateMask;
-
-						drawable.AddDescriptor<Engine::Rendering::EngineDrawableDescriptor>({
-							modelMatrix
-						});
-
-						NLS::Render::Resources::MaterialPipelineStateOverrides unculledOverrides;
-						unculledOverrides.culling = false;
-						m_renderer.DrawEntity(drawable, unculledOverrides);
+                        if (auto material = materials->at(mesh->GetMaterialIndex()); material && material->IsValid())
+						    stateMask = material->GenerateStateMask();
 					}
-				}
+
+					NLS::Render::Entities::Drawable drawable;
+					drawable.mesh = mesh;
+					drawable.material = &m_gameObjectPickingMaterial;
+					drawable.stateMask = stateMask;
+
+					drawable.AddDescriptor<Engine::Rendering::EngineDrawableDescriptor>({
+						modelMatrix
+					});
+
+					NLS::Render::Resources::MaterialPipelineStateOverrides unculledOverrides;
+					unculledOverrides.culling = false;
+					m_renderer.DrawEntity(drawable, unculledOverrides);
 			}
 		}
 	}
@@ -420,13 +417,13 @@ void Editor::Rendering::PickingRenderPass::DrawPickableCameras(
 
 		if (actor.IsActive())
 		{
-			PreparePickingMaterial(RegisterPickableActor(actor), m_actorPickingMaterial);
-			auto& cameraModel = *EDITOR_CONTEXT(editorResources)->GetModel("Camera");
+			PreparePickingMaterial(RegisterPickableGameObject(actor), m_gameObjectPickingMaterial);
+			auto& cameraMesh = *EDITOR_CONTEXT(editorResources)->GetMesh("Camera");
             auto translation = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
             auto rotation = Maths::Quaternion::ToMatrix4(actor.GetTransform()->GetWorldRotation());
 			auto modelMatrix = translation * rotation;
 
-			m_debugModelRenderer.DrawModelWithSingleMaterial(cameraPickingPso, cameraModel, m_actorPickingMaterial, modelMatrix);
+			m_debugModelRenderer.DrawMeshWithSingleMaterial(cameraPickingPso, cameraMesh, m_gameObjectPickingMaterial, modelMatrix);
 		}
 	}
 }
@@ -437,8 +434,8 @@ void Editor::Rendering::PickingRenderPass::CapturePickableCameras(
     std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
 {
     auto cameraPickingPso = Editor::Rendering::CreateEditorUnculledPipelineState(p_pso);
-    auto* cameraModel = EDITOR_CONTEXT(editorResources)->GetModel("Camera");
-    if (cameraModel == nullptr)
+    auto* cameraMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Camera");
+    if (cameraMesh == nullptr)
         return;
 
     for (auto camera : p_scene.GetFastAccessComponents().cameras)
@@ -447,14 +444,14 @@ void Editor::Rendering::PickingRenderPass::CapturePickableCameras(
         if (!actor.IsActive())
             continue;
 
-        PreparePickingMaterial(RegisterPickableActor(actor), m_actorPickingMaterial);
+        PreparePickingMaterial(RegisterPickableGameObject(actor), m_gameObjectPickingMaterial);
         auto translation = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
         auto rotation = Maths::Quaternion::ToMatrix4(actor.GetTransform()->GetWorldRotation());
         auto modelMatrix = translation * rotation;
-        m_debugModelRenderer.CaptureModelDrawCommandsWithSingleMaterial(
+        m_debugModelRenderer.CaptureMeshDrawCommandsWithSingleMaterial(
             cameraPickingPso,
-            *cameraModel,
-            m_actorPickingMaterial,
+            *cameraMesh,
+            m_gameObjectPickingMaterial,
             modelMatrix,
             outDrawCommands);
     }
@@ -478,11 +475,11 @@ void Editor::Rendering::PickingRenderPass::DrawPickableLights(
 
 			if (actor.IsActive())
 			{
-				PreparePickingMaterial(RegisterPickableActor(actor), m_lightMaterial);
-				auto& lightModel = *EDITOR_CONTEXT(editorResources)->GetModel("Vertical_Plane");
+				PreparePickingMaterial(RegisterPickableGameObject(actor), m_lightMaterial);
+				auto& lightMesh = *EDITOR_CONTEXT(editorResources)->GetMesh("Vertical_Plane");
 				auto modelMatrix = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
 
-				m_debugModelRenderer.DrawModelWithSingleMaterial(lightPickingPso, lightModel, m_lightMaterial, modelMatrix);
+				m_debugModelRenderer.DrawMeshWithSingleMaterial(lightPickingPso, lightMesh, m_lightMaterial, modelMatrix);
 			}
 		}
 	}
@@ -498,8 +495,8 @@ void Editor::Rendering::PickingRenderPass::CapturePickableLights(
         return;
 
     auto lightPickingPso = Editor::Rendering::CreateEditorOverlayPipelineState(p_pso);
-    auto* lightModel = EDITOR_CONTEXT(editorResources)->GetModel("Vertical_Plane");
-    if (lightModel == nullptr)
+    auto* lightMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Vertical_Plane");
+    if (lightMesh == nullptr)
         return;
     m_lightMaterial.Set<float>("u_Scale", lightBillboardScale * 0.1f);
 
@@ -509,11 +506,11 @@ void Editor::Rendering::PickingRenderPass::CapturePickableLights(
         if (!actor.IsActive())
             continue;
 
-        PreparePickingMaterial(RegisterPickableActor(actor), m_lightMaterial);
+        PreparePickingMaterial(RegisterPickableGameObject(actor), m_lightMaterial);
         auto modelMatrix = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
-        m_debugModelRenderer.CaptureModelDrawCommandsWithSingleMaterial(
+        m_debugModelRenderer.CaptureMeshDrawCommandsWithSingleMaterial(
             lightPickingPso,
-            *lightModel,
+            *lightMesh,
             m_lightMaterial,
             modelMatrix,
             outDrawCommands);

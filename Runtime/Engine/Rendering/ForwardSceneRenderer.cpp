@@ -77,15 +77,17 @@ namespace NLS::Engine::Rendering
 			const auto opaquePso = CreateSceneDefaultPipelineState(*this);
 			const auto skyboxPso = CreateSceneSkyboxPipelineState(*this);
 
-			for (const auto& [_, drawable] : drawables.opaques)
+			for (const auto& entry : drawables.opaques)
 			{
+				const auto& drawable = entry.second;
 				PreparedRecordedDraw preparedDraw;
 				if (CaptureThreadedPreparedDraw(opaquePso, drawable, preparedDraw))
 					QueueThreadedRecordedDraw(preparedDraw);
 			}
 
-			for (const auto& [_, drawable] : drawables.skyboxes)
+			for (const auto& entry : drawables.skyboxes)
 			{
+				const auto& drawable = entry.second;
 				PreparedRecordedDraw preparedDraw;
 				if (CaptureThreadedPreparedDraw(skyboxPso, drawable, preparedDraw))
 					QueueThreadedRecordedDraw(preparedDraw);
@@ -93,8 +95,9 @@ namespace NLS::Engine::Rendering
 
 			auto transparentOverrides = NLS::Render::Resources::MaterialPipelineStateOverrides{};
 			transparentOverrides.depthWrite = false;
-			for (const auto& [_, drawable] : drawables.transparents)
+			for (const auto& entry : drawables.transparents)
 			{
+				const auto& drawable = entry.second;
 				PreparedRecordedDraw preparedDraw;
 				if (CaptureThreadedPreparedDraw(drawable, transparentOverrides, opaquePso.depthFunc, preparedDraw))
 					QueueThreadedRecordedDraw(preparedDraw);
@@ -221,8 +224,9 @@ namespace NLS::Engine::Rendering
 		NLS_PROFILE_SCOPE();
 		const auto& scene = GetDescriptor<ForwardSceneDescriptor>();
 
-		for (const auto& [_, drawable] : scene.drawables.opaques)
+		for (const auto& entry : scene.drawables.opaques)
 		{
+			const auto& drawable = entry.second;
 			if (drawable.material == nullptr || drawable.mesh == nullptr)
 				continue;
 			DrawEntity(pso, drawable);
@@ -245,8 +249,9 @@ namespace NLS::Engine::Rendering
 			return;
 		}
 
-		for (const auto& [_, drawable] : scene.drawables.skyboxes)
+		for (const auto& entry : scene.drawables.skyboxes)
 		{
+			const auto& drawable = entry.second;
 			if (drawable.mesh == nullptr || drawable.material == nullptr)
 				continue;
 			DrawEntity(pso, drawable);
@@ -261,8 +266,9 @@ namespace NLS::Engine::Rendering
 		NLS::Render::Resources::MaterialPipelineStateOverrides transparentOverrides;
 		transparentOverrides.depthWrite = false;
 
-		for (const auto& [_, drawable] : scene.drawables.transparents)
+		for (const auto& entry : scene.drawables.transparents)
 		{
+			const auto& drawable = entry.second;
 			if (drawable.material == nullptr || drawable.mesh == nullptr)
 				continue;
 			DrawEntity(drawable, transparentOverrides, pso.depthFunc);

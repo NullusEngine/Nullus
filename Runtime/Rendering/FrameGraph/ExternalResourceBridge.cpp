@@ -45,6 +45,40 @@ namespace NLS::Render::FrameGraph
                 textures.push_back(texture);
         }
 
+        void AppendUniqueExtractionRange(
+            std::vector<NLS::Render::Context::TextureVisibilityTransition>& transitions,
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+            const NLS::Render::RHI::RHISubresourceRange& range)
+        {
+            if (texture == nullptr)
+                return;
+
+            const auto found = std::find_if(
+                transitions.begin(),
+                transitions.end(),
+                [&texture, &range](const NLS::Render::Context::TextureVisibilityTransition& transition)
+                {
+                    return transition.texture == texture &&
+                        transition.subresourceRange.baseMipLevel == range.baseMipLevel &&
+                        transition.subresourceRange.mipLevelCount == range.mipLevelCount &&
+                        transition.subresourceRange.baseArrayLayer == range.baseArrayLayer &&
+                        transition.subresourceRange.arrayLayerCount == range.arrayLayerCount;
+                });
+            if (found != transitions.end())
+                return;
+
+            transitions.push_back({
+                texture,
+                range,
+                NLS::Render::RHI::ResourceState::Unknown,
+                NLS::Render::RHI::ResourceState::ShaderRead,
+                NLS::Render::RHI::PipelineStageMask::AllGraphics,
+                NLS::Render::RHI::PipelineStageMask::FragmentShader | NLS::Render::RHI::PipelineStageMask::ComputeShader,
+                NLS::Render::RHI::AccessMask::ColorAttachmentWrite | NLS::Render::RHI::AccessMask::DepthStencilWrite,
+                NLS::Render::RHI::AccessMask::ShaderRead
+            });
+        }
+
         std::vector<std::shared_ptr<NLS::Render::RHI::RHITexture>> CollectExternalSceneOutputTextures(
             const NLS::Render::Context::RenderScenePackage& renderScenePackage)
         {
@@ -91,7 +125,7 @@ namespace NLS::Render::FrameGraph
         desc.extent.width = width;
         desc.extent.height = height;
         desc.extent.depth = 1u;
-        desc.format = NLS::Render::RHI::TextureFormat::RGB8;
+        desc.format = NLS::Render::RHI::TextureFormat::RGBA8;
         desc.usage = NLS::Render::RHI::TextureUsageFlags::ColorAttachment | NLS::Render::RHI::TextureUsageFlags::Sampled;
         desc.debugName = "SceneColor";
         return desc;
@@ -342,6 +376,7 @@ namespace NLS::Render::FrameGraph
             return false;
 
         bool registered = false;
+        uint32_t externalOutputTextureCount = 0u;
         const auto appendIfMissing = [&package, &registered](const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture)
         {
             if (texture == nullptr)
@@ -358,10 +393,23 @@ namespace NLS::Render::FrameGraph
             }
         };
 
-        appendIfMissing(
+        const auto colorTexture =
             frame.outputColorTexture != nullptr
                 ? frame.outputColorTexture
-                : (outputBuffer != nullptr ? outputBuffer->GetExplicitTextureHandle() : nullptr));
+                : (outputBuffer != nullptr ? outputBuffer->GetExplicitTextureHandle() : nullptr);
+        appendIfMissing(colorTexture);
+        if (colorTexture != nullptr)
+            ++externalOutputTextureCount;
+
+        // Depth/stencil attachments contribute to the external output summary, but are not
+        // pushed into extractedTextures unless a later consumer explicitly samples/reads them.
+        if ((frame.outputDepthStencilTexture != nullptr) ||
+            (outputBuffer != nullptr && outputBuffer->GetExplicitDepthStencilTextureHandle() != nullptr))
+        {
+            ++externalOutputTextureCount;
+        }
+
+        package.externalSceneOutputTextureCount = externalOutputTextureCount;
         return registered;
     }
 
@@ -408,7 +456,7 @@ namespace NLS::Render::FrameGraph
     {
         ExternalSceneOutputSummary summary;
         summary.targetsSwapchain = renderScenePackage.targetsSwapchain;
-        summary.textureCount = CountExternalSceneOutputTextures(renderScenePackage);
+        summary.textureCount = renderScenePackage.externalSceneOutputTextureCount;
         summary.hasExternalOutput = !summary.targetsSwapchain && summary.textureCount > 0u;
         return summary;
     }
@@ -492,6 +540,52 @@ namespace NLS::Render::FrameGraph
         return frameContext->swapchainBackbufferView->GetTexture();
     }
 
+    std::optional<NLS::Render::Context::TextureVisibilityTransition> BuildSampledAttachmentEndTransition(
+        const std::shared_ptr<NLS::Render::RHI::RHITextureView>& view,
+        const bool depthStencilAttachment)
+    {
+        const auto& texture = view != nullptr ? view->GetTexture() : nullptr;
+        if (texture == nullptr ||
+            !NLS::Render::RHI::HasTextureUsage(
+                texture->GetDesc().usage,
+                NLS::Render::RHI::TextureUsageFlags::Sampled))
+        {
+            return std::nullopt;
+        }
+
+        NLS::Render::Context::TextureVisibilityTransition transition;
+        transition.texture = texture;
+        transition.subresourceRange = view->GetDesc().subresourceRange;
+        transition.before = NLS::Render::RHI::ResourceState::Unknown;
+        if (depthStencilAttachment)
+        {
+            transition.after = NLS::Render::RHI::ResourceState::DepthRead;
+            transition.sourceStages = NLS::Render::RHI::PipelineStageMask::DepthStencil;
+            transition.destinationStages =
+                NLS::Render::RHI::PipelineStageMask::DepthStencil |
+                NLS::Render::RHI::PipelineStageMask::FragmentShader;
+            transition.sourceAccess =
+                NLS::Render::RHI::AccessMask::DepthStencilRead |
+                NLS::Render::RHI::AccessMask::DepthStencilWrite;
+            transition.destinationAccess =
+                NLS::Render::RHI::AccessMask::DepthStencilRead |
+                NLS::Render::RHI::AccessMask::ShaderRead;
+        }
+        else
+        {
+            transition.after = NLS::Render::RHI::ResourceState::ShaderRead;
+            transition.sourceStages = NLS::Render::RHI::PipelineStageMask::RenderTarget;
+            transition.destinationStages =
+                NLS::Render::RHI::PipelineStageMask::FragmentShader |
+                NLS::Render::RHI::PipelineStageMask::ComputeShader;
+            transition.sourceAccess =
+                NLS::Render::RHI::AccessMask::ColorAttachmentRead |
+                NLS::Render::RHI::AccessMask::ColorAttachmentWrite;
+            transition.destinationAccess = NLS::Render::RHI::AccessMask::ShaderRead;
+        }
+        return transition;
+    }
+
     void TransitionExternalSceneOutputToShaderRead(
         NLS::Render::Context::Driver& driver,
         const NLS::Render::Data::FrameDescriptor& frame)
@@ -542,9 +636,54 @@ namespace NLS::Render::FrameGraph
         passInput.requiresDependencyVisibility = !renderScenePackage.extractedTextures.empty();
         passInput.textureVisibilityTransitions.reserve(renderScenePackage.extractedTextures.size());
 
+        const auto appendAttachmentRanges = [&](const NLS::Render::Context::RenderPassCommandInput& commandInput)
+        {
+            for (const auto& colorView : commandInput.colorAttachmentViews)
+            {
+                if (colorView != nullptr &&
+                    std::find(
+                        renderScenePackage.extractedTextures.begin(),
+                        renderScenePackage.extractedTextures.end(),
+                        colorView->GetTexture()) != renderScenePackage.extractedTextures.end())
+                {
+                    AppendUniqueExtractionRange(
+                        passInput.textureVisibilityTransitions,
+                        colorView->GetTexture(),
+                        colorView->GetDesc().subresourceRange);
+                }
+            }
+
+            if (commandInput.depthStencilAttachmentView != nullptr &&
+                std::find(
+                    renderScenePackage.extractedTextures.begin(),
+                    renderScenePackage.extractedTextures.end(),
+                    commandInput.depthStencilAttachmentView->GetTexture()) != renderScenePackage.extractedTextures.end())
+            {
+                AppendUniqueExtractionRange(
+                    passInput.textureVisibilityTransitions,
+                    commandInput.depthStencilAttachmentView->GetTexture(),
+                    commandInput.depthStencilAttachmentView->GetDesc().subresourceRange);
+            }
+        };
+
+        for (const auto& passCommandInput : renderScenePackage.passCommandInputs)
+            appendAttachmentRanges(passCommandInput);
+        for (const auto& workUnit : renderScenePackage.parallelCommandWorkUnits)
+            appendAttachmentRanges(workUnit.commandInput);
+
         for (const auto& texture : renderScenePackage.extractedTextures)
         {
             if (texture == nullptr)
+                continue;
+
+            const auto alreadyCovered = std::any_of(
+                passInput.textureVisibilityTransitions.begin(),
+                passInput.textureVisibilityTransitions.end(),
+                [&texture](const NLS::Render::Context::TextureVisibilityTransition& transition)
+                {
+                    return transition.texture == texture;
+                });
+            if (alreadyCovered)
                 continue;
 
             NLS::Render::RHI::RHISubresourceRange fullRange;
@@ -552,16 +691,10 @@ namespace NLS::Render::FrameGraph
             fullRange.mipLevelCount = texture->GetDesc().mipLevels;
             fullRange.baseArrayLayer = 0u;
             fullRange.arrayLayerCount = texture->GetDesc().arrayLayers;
-            passInput.textureVisibilityTransitions.push_back({
+            AppendUniqueExtractionRange(
+                passInput.textureVisibilityTransitions,
                 texture,
-                fullRange,
-                NLS::Render::RHI::ResourceState::Unknown,
-                NLS::Render::RHI::ResourceState::ShaderRead,
-                NLS::Render::RHI::PipelineStageMask::AllGraphics,
-                NLS::Render::RHI::PipelineStageMask::FragmentShader | NLS::Render::RHI::PipelineStageMask::ComputeShader,
-                NLS::Render::RHI::AccessMask::ColorAttachmentWrite | NLS::Render::RHI::AccessMask::DepthStencilWrite,
-                NLS::Render::RHI::AccessMask::ShaderRead
-            });
+                fullRange);
         }
 
         return passInput;

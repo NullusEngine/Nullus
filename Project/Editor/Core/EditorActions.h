@@ -1,11 +1,21 @@
-﻿#pragma once
+#pragma once
 
 #include <ServiceLocator.h>
 #include <Filesystem/IniFile.h>
 #include <Utils/PathParser.h>
+#include <atomic>
+#include <condition_variable>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <queue>
+#include <thread>
+#include <vector>
 
+#include "Engine/PrimitiveType.h"
 #include "Context.h"
 #include "PanelsManager.h"
+#include "Assets/EditorAssetDragDropBridge.h"
 
 #define EDITOR_EXEC(action)                 NLS::Core::ServiceLocator::Get<NLS::Editor::Core::EditorActions>().action
 #define EDITOR_BIND(method, ...)            std::bind(&NLS::Editor::Core::EditorActions::method, &NLS::Core::ServiceLocator::Get<NLS::Editor::Core::EditorActions>(), ##__VA_ARGS__)
@@ -27,6 +37,7 @@ namespace NLS::Editor::Core
 		* @param p_panelsManager
 		*/
 		EditorActions(Context& p_context, PanelsManager& p_panelsManager);
+		~EditorActions();
 
 		#pragma region TOOLS
 		/**
@@ -42,21 +53,21 @@ namespace NLS::Editor::Core
 
 		#pragma region SETTINGS
 		/**
-		* A simple enumeration that define two actor spawn modes
+		* A simple enumeration that define two GameObject spawn modes
 		*/
-		enum class EActorSpawnMode { ORIGIN, FRONT };
+		enum class EGameObjectSpawnMode { ORIGIN, FRONT };
 
 		/**
-		* Defines if new actors should be spawned at origin
+		* Defines if new GameObjects should be spawned at origin
 		* @param p_value
 		*/
-		void SetActorSpawnAtOrigin(bool p_value);
+		void SetGameObjectSpawnAtOrigin(bool p_value);
 
 		/**
-		* Defines how new actors should be spawned
+		* Defines how new GameObjects should be spawned
 		* @param p_value
 		*/
-		void SetActorSpawnMode(EActorSpawnMode p_value);
+		void SetGameObjectSpawnMode(EGameObjectSpawnMode p_value);
 
 		/**
 		* Reset the editor layout
@@ -135,80 +146,82 @@ namespace NLS::Editor::Core
 		void NextFrame();
 		#pragma endregion
 
-		#pragma region ACTOR_CREATION_DESTRUCTION
+		#pragma region GameObject_CREATION_DESTRUCTION
 		/**
-		* Create an actor with the given component type
+		* Create an GameObject with the given component type
 		* @param p_focusOnCreation
 		* @param p_parent
 		*/
-		template<typename T> Engine::GameObject& CreateMonoComponentActor(bool p_focusOnCreation = true, Engine::GameObject* p_parent = nullptr);
+		template<typename T> Engine::GameObject* CreateMonoComponentGameObject(bool p_focusOnCreation = true, Engine::GameObject* p_parent = nullptr);
 
 		/**
-		* Calculate the position where to spawn the actor using the current camera position and forward
+		* Calculate the position where to spawn the GameObject using the current camera position and forward
 		* @param p_distanceToCamera
 		*/
-		Maths::Vector3 CalculateActorSpawnPoint(float p_distanceToCamera);
+		Maths::Vector3 CalculateGameObjectSpawnPoint(float p_distanceToCamera);
 
 		/**
-		* Create an empty actor
+		* Create an empty GameObject
 		* @param p_focusOnCreation
 		* @param p_parent
         * @param p_name
 		*/
-        Engine::GameObject& CreateEmptyActor(bool p_focusOnCreation = true, Engine::GameObject* p_parent = nullptr, const std::string& p_name = "");
+        Engine::GameObject* CreateEmptyGameObject(bool p_focusOnCreation = true, Engine::GameObject* p_parent = nullptr, const std::string& p_name = "");
 
 		/**
-		* Create an actor with a model renderer and a material renderer. The model renderer with use the model identified
+		* Create an GameObject with a model renderer and a material renderer. The model renderer with use the model identified
 		* by the given path
 		* @param p_path
 		* @param p_focusOnCreation
 		* @param p_parent
         * @param p_name
 		*/
-        Engine::GameObject& CreateActorWithModel(const std::string& p_path, bool p_focusOnCreation = true, Engine::GameObject* p_parent = nullptr, const std::string& p_name = "");
-        Engine::GameObject& CreateActor(const std::string& path, bool focusOnCreation = true, Engine::GameObject* p_parent = nullptr);
+        Engine::GameObject* CreatePrimitive(Engine::PrimitiveType p_type, bool p_focusOnCreation = true, Engine::GameObject* p_parent = nullptr);
+        Engine::GameObject* CreateGameObjectWithModel(const std::string& p_path, bool p_focusOnCreation = true, Engine::GameObject* p_parent = nullptr, const std::string& p_name = "");
+        Engine::GameObject* CreateGameObjectFromAsset(const std::string& path, bool focusOnCreation = true, Engine::GameObject* p_parent = nullptr);
+        Engine::GameObject* CreateGameObjectFromAsset(const NLS::Editor::Assets::EditorAssetDragPayload& payload, bool focusOnCreation = true, Engine::GameObject* p_parent = nullptr);
 
 		/**
-		* Destroy an actor from his scene
+		* Destroy an GameObject from his scene
 		* @param p_focusOnCreation
 		* @param p_parent
 		*/
-        bool DestroyActor(Engine::GameObject& p_actor);
+        bool DestroyGameObject(Engine::GameObject& p_GameObject);
 
 		/**
-		* Duplicate an actor
+		* Duplicate an GameObject
 		* @param p_toDuplicate
 		* @param p_forcedParent
 		* @param bool
 		*/
-        void DuplicateActor(Engine::GameObject& p_toDuplicate, Engine::GameObject* p_forcedParent = nullptr, bool p_focus = true);
+        void DuplicateGameObject(Engine::GameObject& p_toDuplicate, Engine::GameObject* p_forcedParent = nullptr, bool p_focus = true);
 		#pragma endregion
 
-		#pragma region ACTOR_MANIPULATION
+		#pragma region GameObject_MANIPULATION
 		/**
-		* Select an actor and show him in inspector
+		* Select an GameObject and show him in inspector
 		* @param p_target
 		*/
-        void SelectActor(Engine::GameObject& p_target);
+        void SelectGameObject(Engine::GameObject& p_target);
 
 		/**
-		* Unselect any selected actor and clearing the inspector
+		* Unselect any selected GameObject and clearing the inspector
 		*/
-		void UnselectActor();
+		void UnselectGameObject();
 
 		/**
-		* Returns true if any actor is selected
+		* Returns true if any GameObject is selected
 		*/
-		bool IsAnyActorSelected() const;
+		bool IsAnyGameObjectSelected() const;
 
 		/**
-		* Returns the selected actor. Make sur you verified that an actor is selected
-		* with IsAnyActorSelected() before calling this method
+		* Returns the selected GameObject. Make sur you verified that an GameObject is selected
+		* with IsAnyGameObjectSelected() before calling this method
 		*/
-        Engine::GameObject* GetSelectedActor() const;
+        Engine::GameObject* GetSelectedGameObject() const;
 
 		/**
-		* Moves the camera to the target actor
+		* Moves the camera to the target GameObject
 		*/
         void MoveToTarget(Engine::GameObject& p_target);
 		#pragma endregion
@@ -313,6 +326,8 @@ namespace NLS::Editor::Core
 		* Save the current scene to its disk location
 		*/
 		void SaveSceneChanges();
+		bool SaveActivePrefabStage();
+		bool CloseActivePrefabStage(bool saveBeforeClose);
 
 		/**
 		* Save the current scene to a new disk location (Can create a duplication of the scene file)
@@ -355,6 +370,34 @@ namespace NLS::Editor::Core
 		* @param p_frames
 		*/
 		void DelayAction(std::function<void()> p_action, uint32_t p_frames = 1);
+		bool TrackBackgroundTask(std::function<void()> task);
+        struct SceneMutationToken
+        {
+            uint64_t mainSceneGeneration = 0u;
+            uint64_t prefabStageGeneration = 0u;
+        };
+        SceneMutationToken CaptureSceneMutationToken() const;
+        void NotifyPrefabStageOpened();
+        ListenerID TrackGameObjectDestroyedListener(std::function<void(Engine::GameObject&)> callback);
+        void ReleaseGameObjectDestroyedListener(ListenerID listener);
+        void ReleaseTrackedGameObjectDestroyedListeners();
+        struct PendingAssetDropParentGuard
+        {
+            const Engine::GameObject* parentAddress = nullptr;
+            ListenerID destroyedListener = InvalidListenerID;
+            std::shared_ptr<bool> parentDestroyed;
+        };
+		void CompletePendingAssetDrop(
+			std::string path,
+			bool focusOnCreation,
+			Engine::SceneSystem::Scene* scene,
+            SceneMutationToken sceneToken,
+            PendingAssetDropParentGuard parentGuard,
+			NLS::Editor::Assets::EditorAssetDragDropBridgeResult importResult);
+		void QueuePrefabInstanceAssetResolution(
+			NLS::Editor::Assets::PrefabInstanceRecord* instance,
+			const NLS::Engine::Assets::PrefabArtifact* prefab,
+			std::string label);
 
 		/**
 		* Execute every actions that should be executed at this frame (Decrement the frame counter for each actions)
@@ -363,8 +406,8 @@ namespace NLS::Editor::Core
 		#pragma endregion
 
 	public:
-        Event<Engine::GameObject&> ActorSelectedEvent;
-        Event<Engine::GameObject&> ActorUnselectedEvent;
+        Event<Engine::GameObject&> GameObjectSelectedEvent;
+        Event<Engine::GameObject&> GameObjectUnselectedEvent;
 		Event<EEditorMode> EditorModeChangedEvent;
 		Event<> PlayEvent;
 
@@ -372,12 +415,35 @@ namespace NLS::Editor::Core
 		Context& m_context;
 		PanelsManager& m_panelsManager;
 
-		EActorSpawnMode m_actorSpawnMode = EActorSpawnMode::ORIGIN;
+		EGameObjectSpawnMode m_gameObjectSpawnMode = EGameObjectSpawnMode::ORIGIN;
 		EEditorMode m_editorMode = EEditorMode::EDIT;
 
 		std::vector<std::pair<uint32_t, std::function<void()>>> m_delayedActions;
+		std::mutex m_delayedActionsMutex;
+		struct BackgroundWorker
+		{
+			std::thread worker;
+		};
+		std::vector<BackgroundWorker> m_backgroundWorkers;
+		std::queue<std::function<void()>> m_backgroundTaskQueue;
+		std::mutex m_backgroundTasksMutex;
+		std::condition_variable m_backgroundTaskCondition;
+        std::vector<ListenerID> m_gameObjectDestroyedListeners;
+        std::mutex m_gameObjectDestroyedListenersMutex;
+		size_t m_runningBackgroundTaskCount = 0u;
+		size_t m_completedBackgroundTaskCount = 0u;
+		bool m_stopBackgroundWorkers = false;
+        uint64_t m_mainSceneGeneration = 0u;
+        uint64_t m_prefabStageGeneration = 0u;
+        ListenerID m_sceneSourcePathChangedListener = InvalidListenerID;
+        ListenerID m_sceneDirtyStateChangedListener = InvalidListenerID;
+        ListenerID m_sceneLoadListener = InvalidListenerID;
+        ListenerID m_sceneUnloadListener = InvalidListenerID;
 
 		//tinyxml2::XMLDocument m_sceneBackup;
+		void EnsureBackgroundWorkersStarted();
+		void RunBackgroundWorker();
+		void CollectFinishedBackgroundTasks();
 		void RefreshWindowTitle();
 	};
 }

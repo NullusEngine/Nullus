@@ -4,7 +4,10 @@
 #include <string>
 #include <stdint.h>
 
+#include "Object/Object.h"
+#include "Reflection/Macros.h"
 #include "Rendering/RHI/Core/RHIEnums.h"
+#include "Resources/Texture.generated.h"
 #include "RenderDef.h"
 
 namespace NLS::Render::RHI
@@ -18,14 +21,18 @@ namespace NLS::Render::Resources
 	/**
 	* Backend-neutral texture wrapper over the formal RHI surface.
 	*/
-	class NLS_RENDER_API Texture
+	CLASS(NLS_RENDER_API Texture) : public NLS::NamedObject
 	{
 	public:
+		GENERATED_BODY()
+
 		explicit Texture(RHI::TextureDimension dimension = RHI::TextureDimension::Texture2D);
 		~Texture();
 
-		Texture(Texture&&) noexcept;
-		Texture& operator=(Texture&&) noexcept;
+		Texture(const Texture&) = delete;
+		Texture& operator=(const Texture&) = delete;
+		Texture(Texture&&) = delete;
+		Texture& operator=(Texture&&) = delete;
 
 		void CreateRHITexture();
 		void ReleaseRHITexture();

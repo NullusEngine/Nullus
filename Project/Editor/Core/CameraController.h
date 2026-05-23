@@ -60,7 +60,7 @@ public:
     void HandleInputs(float p_deltaTime);
 
     /**
-     * Asks the camera to move to the target actor
+     * Asks the camera to move to the target GameObject
      * @param p_target
      */
     void MoveToTarget(Engine::GameObject& p_target);
@@ -112,19 +112,19 @@ public:
     bool IsInputBlocked() const;
 
     /**
-     * Lock the target actor to the given actor.
+     * Lock the target GameObject to the given actor.
      * @note Usefull to force orbital camera or camera focus to target a specific actor
-     * @param p_actor
+     * @param p_gameObject
      */
-    void LockTargetActor(Engine::GameObject& p_actor);
+    void LockTargetGameObject(Engine::GameObject& p_gameObject);
 
     /**
-     * Removes any locked actor
+     * Removes any locked GameObject
      */
-    void UnlockTargetActor();
+    void UnLockTargetGameObject();
 
 private:
-    Engine::GameObject* GetTargetActor() const;
+    Engine::GameObject* GetTargetGameObject() const;
     void ResetLastMousePosition(const Maths::Vector2& p_mousePosition);
     void SuppressMouseDeltaAfterCursorCapture();
     bool ConsumeSuppressedMouseDelta(const Maths::Vector2& p_mousePosition);
@@ -170,6 +170,6 @@ private:
     bool m_inputBlocked = false;
     bool m_forcedNoMouseCursorChange = false;
 
-    Engine::GameObject* m_lockedActor = nullptr;
+    Engine::GameObject* m_lockedGameObject = nullptr;
 };
 } // namespace NLS::Editor::Core

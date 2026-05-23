@@ -1,5 +1,7 @@
 #include "Rendering/ShaderCompiler/ShaderCompiler.h"
 
+#include "Rendering/ShaderCompiler/ShaderCacheDatabase.h"
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -8,6 +10,7 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <mutex>
 #include <optional>
 #include <regex>
 #include <set>
@@ -443,6 +446,18 @@ namespace NLS::Render::ShaderCompiler
 			}
 		}
 
+		std::mutex& GetShaderCacheDatabaseMutex(const std::string& path)
+		{
+			static std::mutex registryMutex;
+			static std::unordered_map<std::string, std::unique_ptr<std::mutex>> mutexByPath;
+
+			std::lock_guard registryLock(registryMutex);
+			auto& mutex = mutexByPath[path];
+			if (!mutex)
+				mutex = std::make_unique<std::mutex>();
+			return *mutex;
+		}
+
 		std::optional<std::filesystem::path> FindDxcExecutable()
 		{
 			if (const char* envPath = std::getenv("DXC_PATH"); envPath != nullptr && *envPath != '\0')
@@ -679,6 +694,11 @@ namespace NLS::Render::ShaderCompiler
 			uint32_t space = 0;
 		};
 
+		struct ResourceBindInfo
+		{
+			uint32_t byteSize = 0u;
+		};
+
 		std::optional<BindingInfo> ParseHlslBinding(const std::string& token)
 		{
 			static const std::regex bindingRegex(R"(([a-z]+)(\d+)(?:,space(\d+))?)", std::regex::icase);
@@ -719,6 +739,28 @@ namespace NLS::Render::ShaderCompiler
 			return UniformType::UNIFORM_INT;
 		}
 
+		ShaderResourceKind ParseDxcResourceKind(
+			const std::string& typeToken,
+			const std::string& formatToken,
+			const std::string& dimToken)
+		{
+			if (typeToken == "cbuffer")
+				return ShaderResourceKind::UniformBuffer;
+			if (typeToken == "sampler")
+				return ShaderResourceKind::Sampler;
+			if (typeToken == "texture" && formatToken == "struct")
+				return ShaderResourceKind::StructuredBuffer;
+			if (typeToken == "UAV" && formatToken == "struct")
+				return ShaderResourceKind::StorageBuffer;
+			if (typeToken == "texture")
+				return ShaderResourceKind::SampledTexture;
+			if (typeToken.find("StructuredBuffer") != std::string::npos)
+				return ShaderResourceKind::StructuredBuffer;
+			if (typeToken.rfind("RW", 0) == 0 || typeToken == "UAV")
+				return ShaderResourceKind::StorageBuffer;
+			return ShaderResourceKind::Value;
+		}
+
 		ShaderReflection ParseReflectionDump(const std::string& dumpText, ShaderStage stage)
 		{
 			ShaderReflection reflection;
@@ -733,10 +775,14 @@ namespace NLS::Render::ShaderCompiler
 
 			Section section = Section::None;
 			ShaderConstantBufferDesc* currentBuffer = nullptr;
+			std::string currentResourceBindInfoName;
+			std::unordered_map<std::string, ResourceBindInfo> resourceBindInfoByName;
 
 			static const std::regex memberRegex(R"(^(.+?)\s+([A-Za-z_][A-Za-z0-9_]*)(?:\[(\d+)\])?;\s*;\s*Offset:\s*(\d+))");
 			static const std::regex bufferSizeRegex(R"(^\}\s*([A-Za-z_][A-Za-z0-9_]*)\s*;\s*;\s*Offset:\s*\d+\s+Size:\s*(\d+))");
 			static const std::regex bindingLineRegex(R"(^(.+?)\s{2,}(\S+)\s{2,}(\S+)\s{2,}(\S+)\s{2,}(\S+)\s{2,}(\S+)\s{2,}(\S+)\s*$)");
+			static const std::regex resourceBindInfoRegex(R"(^Resource bind info for\s+([A-Za-z_][A-Za-z0-9_]*))");
+			static const std::regex resourceBindInfoSizeRegex(R"(;\s*Offset:\s*\d+\s+Size:\s*(\d+))");
 
 			std::istringstream stream(dumpText);
 			std::string rawLine;
@@ -746,10 +792,37 @@ namespace NLS::Render::ShaderCompiler
 				if (line.empty())
 					continue;
 
+				std::smatch resourceInfoMatch;
+				if (std::regex_search(line, resourceInfoMatch, resourceBindInfoRegex))
+				{
+					currentResourceBindInfoName = resourceInfoMatch[1].str();
+					section = Section::None;
+					currentBuffer = nullptr;
+					continue;
+				}
+
+				if (!currentResourceBindInfoName.empty())
+				{
+					std::smatch sizeMatch;
+					if (std::regex_search(line, sizeMatch, resourceBindInfoSizeRegex))
+					{
+						resourceBindInfoByName[currentResourceBindInfoName].byteSize =
+							static_cast<uint32_t>(std::stoul(sizeMatch[1].str()));
+						continue;
+					}
+
+					if (line == "}")
+					{
+						currentResourceBindInfoName.clear();
+						continue;
+					}
+				}
+
 				if (line == "Buffer Definitions:")
 				{
 					section = Section::BufferDefinitions;
 					currentBuffer = nullptr;
+					currentResourceBindInfoName.clear();
 					continue;
 				}
 
@@ -757,6 +830,7 @@ namespace NLS::Render::ShaderCompiler
 				{
 					section = Section::ResourceBindings;
 					currentBuffer = nullptr;
+					currentResourceBindInfoName.clear();
 					continue;
 				}
 
@@ -809,6 +883,7 @@ namespace NLS::Render::ShaderCompiler
 
 					const std::string resourceName = Trim(match[1].str());
 					const std::string typeToken = match[2].str();
+					const std::string formatToken = match[3].str();
 					const std::string dimToken = match[4].str();
 					const std::string bindToken = match[6].str();
 					const std::string countToken = match[7].str();
@@ -831,12 +906,14 @@ namespace NLS::Render::ShaderCompiler
 
 					ShaderPropertyDesc property;
 					property.name = resourceName;
-					property.kind = ParseResourceKind(typeToken);
+					property.kind = ParseDxcResourceKind(typeToken, formatToken, dimToken);
 					property.type = ParseResourceUniformType(typeToken, dimToken);
 					property.stage = stage;
 					property.bindingIndex = binding->index;
 					property.bindingSpace = binding->space;
 					property.arraySize = static_cast<int32_t>(std::stoul(countToken));
+					if (const auto info = resourceBindInfoByName.find(resourceName); info != resourceBindInfoByName.end())
+						property.byteSize = info->second.byteSize;
 					reflection.properties.push_back(property);
 				}
 			}
@@ -1406,7 +1483,57 @@ namespace NLS::Render::ShaderCompiler
 
 	ShaderCompilationOutput ShaderCompiler::Compile(const ShaderCompilationInput& input) const
 	{
-		return m_backend->Compile(input);
+		auto output = m_backend->Compile(input);
+		PersistCacheRecord(input, output);
+		return output;
+	}
+
+	void ShaderCompiler::PersistCacheRecord(
+		const ShaderCompilationInput& input,
+		const ShaderCompilationOutput& output) const
+	{
+		PersistCacheRecords({ input }, { output });
+	}
+
+	void ShaderCompiler::PersistCacheRecords(
+		const std::vector<ShaderCompilationInput>& inputs,
+		const std::vector<ShaderCompilationOutput>& outputs) const
+	{
+		if (!m_cacheDatabasePath.has_value() || inputs.empty() || outputs.empty())
+			return;
+
+		std::lock_guard databaseLock(GetShaderCacheDatabaseMutex(*m_cacheDatabasePath));
+		ShaderCacheDatabase database;
+		if (std::filesystem::exists(*m_cacheDatabasePath) && !database.Load(*m_cacheDatabasePath))
+			database.Clear();
+
+		const auto recordCount = (std::min)(inputs.size(), outputs.size());
+		bool hasRecordsToPersist = false;
+		for (size_t index = 0u; index < recordCount; ++index)
+		{
+			const auto& output = outputs[index];
+			if (output.cacheKey.empty())
+				continue;
+
+			database.Upsert(inputs[index], output, output.cacheKey, m_backend->GetBackendName());
+			hasRecordsToPersist = true;
+		}
+
+		if (hasRecordsToPersist)
+			database.Save(*m_cacheDatabasePath);
+	}
+
+	void ShaderCompiler::SetCacheDatabasePath(std::string path)
+	{
+		if (path.empty())
+			m_cacheDatabasePath.reset();
+		else
+			m_cacheDatabasePath = std::move(path);
+	}
+
+	const std::optional<std::string>& ShaderCompiler::GetCacheDatabasePath() const
+	{
+		return m_cacheDatabasePath;
 	}
 
 	std::vector<ShaderCompilationOutput> ShaderCompiler::CompileBatch(const std::vector<ShaderCompilationInput>& inputs) const
@@ -1423,12 +1550,13 @@ namespace NLS::Render::ShaderCompiler
 				std::launch::async,
 				[this, input]()
 				{
-					return Compile(input);
+					return m_backend->Compile(input);
 				}));
 		}
 
 		for (size_t index = 0u; index < futures.size(); ++index)
 			outputs[index] = futures[index].get();
+		PersistCacheRecords(inputs, outputs);
 		return outputs;
 	}
 

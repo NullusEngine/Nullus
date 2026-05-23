@@ -1,5 +1,7 @@
 #include "Panels/ProfilerPanel.h"
 
+#include "Profiling/Profiler.h"
+
 namespace NLS::Editor::Panels
 {
 ProfilerPanel::ProfilerPanel(
@@ -61,7 +63,10 @@ void ProfilerPanel::OnBeforeDrawWidgets()
     m_timelineSink.SetRecordingEnabled(IsRecordingEnabled());
     RefreshStatus();
     if (m_timelineSink.GetState().availability == NLS::Base::Profiling::ProfilerAvailability::Available)
+    {
+        NLS_PROFILE_NAMED_SCOPE("ProfilerPanel::DrawTimeline");
         m_timelineSink.DrawTimeline();
+    }
 }
 
 void ProfilerPanel::OnAfterDrawWidgets()

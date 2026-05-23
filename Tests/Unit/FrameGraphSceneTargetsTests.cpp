@@ -1,10 +1,14 @@
 #include <gtest/gtest.h>
 
+#include <fg/GraphvizWriter.hpp>
+
 #include <array>
+#include <sstream>
 
 #include "Core/ServiceLocator.h"
 #include "Rendering/Buffers/Framebuffer.h"
 #include "Rendering/Buffers/MultiFramebuffer.h"
+#include "Rendering/Core/CompositeRenderer.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Context/DriverInternal.h"
@@ -248,6 +252,7 @@ namespace
             const NLS::Render::RHI::RHIBufferDesc& desc,
             const NLS::Render::RHI::RHIBufferUploadDesc&) override
         {
+            bufferDescs.push_back(desc);
             return std::make_shared<TestBuffer>(desc);
         }
         std::shared_ptr<NLS::Render::RHI::RHITexture> CreateTexture(
@@ -288,6 +293,7 @@ namespace
 
         size_t textureCreateCalls = 0u;
         size_t failTextureCreateCall = 0u;
+        std::vector<NLS::Render::RHI::RHIBufferDesc> bufferDescs;
 
     private:
         std::shared_ptr<NLS::Render::RHI::RHIAdapter> m_adapter;
@@ -304,7 +310,7 @@ TEST(FrameGraphSceneTargetsTests, SceneColorTargetSupportsSamplingForEditorViews
     EXPECT_EQ(desc.debugName, "SceneColor");
     EXPECT_EQ(desc.extent.width, 1280u);
     EXPECT_EQ(desc.extent.height, 720u);
-    EXPECT_EQ(desc.format, NLS::Render::RHI::TextureFormat::RGB8);
+    EXPECT_EQ(desc.format, NLS::Render::RHI::TextureFormat::RGBA8);
     EXPECT_TRUE(NLS::Render::RHI::HasTextureUsage(
         desc.usage,
         NLS::Render::RHI::TextureUsageFlags::ColorAttachment));
@@ -672,6 +678,52 @@ TEST(FrameGraphSceneTargetsTests, FrameGraphCreatedResourcesRegisterAndRetireTra
     EXPECT_TRUE(transientTexture.expired());
     EXPECT_TRUE(transientTextureView.expired());
     EXPECT_TRUE(transientBuffer.expired());
+}
+
+TEST(FrameGraphSceneTargetsTests, DynamicUniformFrameGraphBuffersDoNotRequestCopyDstUsage)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 8u;
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+    frameContext.resourceStateTracker->BeginFrame(frameContext.frameIndex);
+
+    NLS::Render::FrameGraph::FrameGraphExecutionContext executionContext{
+        driver,
+        explicitDevice.get(),
+        nullptr,
+        &frameContext
+    };
+
+    NLS::Render::FrameGraph::FrameGraphBuffer uniformBuffer;
+    NLS::Render::FrameGraph::FrameGraphBuffer::Desc uniformDesc;
+    uniformDesc.size = 256u;
+    uniformDesc.type = NLS::Render::RHI::BufferType::Uniform;
+    uniformDesc.usage = NLS::Render::RHI::BufferUsage::DynamicDraw;
+    uniformDesc.debugName = "DynamicPassConstants";
+
+    uniformBuffer.create(uniformDesc, &executionContext);
+
+    ASSERT_EQ(explicitDevice->bufferDescs.size(), 1u);
+    EXPECT_TRUE(NLS::Render::RHI::HasBufferUsage(
+        explicitDevice->bufferDescs.front().usage,
+        NLS::Render::RHI::BufferUsageFlags::Uniform));
+    EXPECT_FALSE(NLS::Render::RHI::HasBufferUsage(
+        explicitDevice->bufferDescs.front().usage,
+        NLS::Render::RHI::BufferUsageFlags::CopyDst));
+    EXPECT_EQ(
+        explicitDevice->bufferDescs.front().memoryUsage,
+        NLS::Render::RHI::MemoryUsage::CPUToGPU);
+
+    uniformBuffer.destroy(uniformDesc, &executionContext);
 }
 
 TEST(FrameGraphSceneTargetsTests, DeferredSceneGraphImportsGBufferResourcesWithStableDebugNames)
@@ -1042,6 +1094,123 @@ TEST(FrameGraphSceneTargetsTests, EndSwapchainPassTransitionsTrackedBackbufferTo
     const auto trackedTextureState = frameContext.resourceStateTracker->GetTextureState(texture, fullRange);
     ASSERT_TRUE(trackedTextureState.has_value());
     EXPECT_EQ(trackedTextureState->state, NLS::Render::RHI::ResourceState::Present);
+}
+
+TEST(FrameGraphSceneTargetsTests, EndExternalAttachmentPassTransitionsTrackedColorToShaderRead)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 46u;
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+    frameContext.resourceStateTracker->BeginFrame(frameContext.frameIndex);
+
+    NLS::Render::RHI::RHITextureDesc textureDesc;
+    textureDesc.debugName = "ExternalSceneColor";
+    textureDesc.extent = { 64u, 64u, 1u };
+    textureDesc.mipLevels = 1u;
+    textureDesc.arrayLayers = 1u;
+    textureDesc.usage =
+        NLS::Render::RHI::TextureUsageFlags::ColorAttachment |
+        NLS::Render::RHI::TextureUsageFlags::Sampled;
+    auto texture = std::make_shared<TestTexture>(textureDesc);
+
+    NLS::Render::RHI::RHITextureViewDesc viewDesc;
+    viewDesc.debugName = "ExternalSceneColorView";
+    viewDesc.format = textureDesc.format;
+    viewDesc.subresourceRange.baseMipLevel = 0u;
+    viewDesc.subresourceRange.mipLevelCount = 1u;
+    viewDesc.subresourceRange.baseArrayLayer = 0u;
+    viewDesc.subresourceRange.arrayLayerCount = 1u;
+    auto view = std::make_shared<TestTextureView>(texture, viewDesc);
+
+    NLS::Render::Context::RenderPassCommandInput passInput;
+    passInput.kind = NLS::Render::Context::RenderPassCommandKind::Opaque;
+    passInput.debugName = "TrackedExternalColorPass";
+    passInput.renderWidth = 64u;
+    passInput.renderHeight = 64u;
+    passInput.usesColorAttachment = true;
+    passInput.colorAttachmentViews.push_back(view);
+
+    ASSERT_TRUE(NLS::Render::Context::Detail::BeginPassCommandPlan(
+        *commandBuffer,
+        nullptr,
+        nullptr,
+        passInput,
+        &frameContext));
+    NLS::Render::Context::Detail::EndPassCommandPlan(
+        *commandBuffer,
+        &passInput,
+        &frameContext);
+
+    ASSERT_GE(commandBuffer->barrierHistory.size(), 2u);
+    const auto& endBarrier = commandBuffer->barrierHistory.back();
+    ASSERT_EQ(endBarrier.textureBarriers.size(), 1u);
+    EXPECT_EQ(endBarrier.textureBarriers[0].texture, texture);
+    EXPECT_EQ(endBarrier.textureBarriers[0].before, NLS::Render::RHI::ResourceState::RenderTarget);
+    EXPECT_EQ(endBarrier.textureBarriers[0].after, NLS::Render::RHI::ResourceState::ShaderRead);
+
+    const auto trackedTextureState =
+        frameContext.resourceStateTracker->GetTextureState(texture, viewDesc.subresourceRange);
+    ASSERT_TRUE(trackedTextureState.has_value());
+    EXPECT_EQ(trackedTextureState->state, NLS::Render::RHI::ResourceState::ShaderRead);
+}
+
+TEST(FrameGraphSceneTargetsTests, RendererOutputPassTransitionsExternalFramebufferColorToShaderRead)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 47u;
+    frameContext.commandBuffer = std::make_shared<TestCommandBuffer>();
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+    frameContext.resourceStateTracker->BeginFrame(frameContext.frameIndex);
+
+    NLS::Render::Buffers::Framebuffer outputBuffer(64u, 64u);
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 64u;
+    frameDescriptor.renderHeight = 64u;
+    frameDescriptor.camera = &camera;
+    NLS::Render::FrameGraph::SetExternalSceneOutputFramebuffer(frameDescriptor, &outputBuffer);
+
+    NLS::Render::Core::CompositeRenderer renderer(driver);
+    renderer.BeginFrame(frameDescriptor);
+    const bool startedPass = renderer.BeginOutputRenderPass(
+        frameDescriptor.renderWidth,
+        frameDescriptor.renderHeight,
+        true,
+        true,
+        true);
+    ASSERT_TRUE(startedPass);
+    renderer.EndOutputRenderPass(startedPass);
+    renderer.EndFrame();
+
+    const auto colorTexture = outputBuffer.GetExplicitTextureHandle();
+    ASSERT_NE(colorTexture, nullptr);
+    NLS::Render::RHI::RHISubresourceRange fullRange;
+    fullRange.baseMipLevel = 0u;
+    fullRange.mipLevelCount = colorTexture->GetDesc().mipLevels;
+    fullRange.baseArrayLayer = 0u;
+    fullRange.arrayLayerCount = colorTexture->GetDesc().arrayLayers;
+    const auto trackedTextureState =
+        frameContext.resourceStateTracker->GetTextureState(colorTexture, fullRange);
+    ASSERT_TRUE(trackedTextureState.has_value());
+    EXPECT_EQ(trackedTextureState->state, NLS::Render::RHI::ResourceState::ShaderRead);
 }
 
 TEST(FrameGraphSceneTargetsTests, ApplyExternalSceneOutputAttachmentsOnlyTouchesSelectedPassKinds)
@@ -1506,6 +1675,65 @@ TEST(FrameGraphSceneTargetsTests, BuildThreadedExecutionPlanEmitsResourceAccessD
     ASSERT_TRUE(plan.dependencies[0].targetTextureAccess.has_value());
     EXPECT_EQ(plan.dependencies[0].sourceTextureAccess->texture, testTexture);
     EXPECT_EQ(plan.dependencies[0].targetTextureAccess->texture, testTexture);
+}
+
+TEST(FrameGraphSceneTargetsTests, DerivedVisibilityUsesExportedAttachmentEndStateForSampledDepth)
+{
+    auto depthTexture = std::make_shared<TestTexture>(NLS::Render::RHI::RHITextureDesc{});
+    NLS::Render::RHI::RHISubresourceRange fullRange;
+    fullRange.baseMipLevel = 0u;
+    fullRange.mipLevelCount = 1u;
+    fullRange.baseArrayLayer = 0u;
+    fullRange.arrayLayerCount = 1u;
+
+    std::vector<NLS::Render::Context::ParallelCommandWorkUnit> workUnits(2);
+
+    auto& gbuffer = workUnits[0];
+    gbuffer.workUnitIndex = 0u;
+    gbuffer.commandInput.textureResourceAccesses.push_back({
+        depthTexture,
+        fullRange,
+        NLS::Render::Context::ResourceAccessMode::Write,
+        NLS::Render::RHI::ResourceState::DepthWrite,
+        NLS::Render::RHI::PipelineStageMask::DepthStencil,
+        NLS::Render::RHI::AccessMask::DepthStencilWrite
+    });
+    gbuffer.commandInput.exportedTextureVisibilityTransitions.push_back({
+        depthTexture,
+        fullRange,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::DepthRead,
+        NLS::Render::RHI::PipelineStageMask::DepthStencil,
+        NLS::Render::RHI::PipelineStageMask::DepthStencil | NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::AccessMask::DepthStencilRead | NLS::Render::RHI::AccessMask::DepthStencilWrite,
+        NLS::Render::RHI::AccessMask::DepthStencilRead | NLS::Render::RHI::AccessMask::ShaderRead
+    });
+
+    auto& lighting = workUnits[1];
+    lighting.workUnitIndex = 1u;
+    lighting.commandInput.dependencySourceWorkUnitIndex = 0u;
+    lighting.commandInput.textureResourceAccesses.push_back({
+        depthTexture,
+        fullRange,
+        NLS::Render::Context::ResourceAccessMode::Read,
+        NLS::Render::RHI::ResourceState::ShaderRead,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::AccessMask::ShaderRead
+    });
+
+    NLS::Render::Context::Detail::PopulateVisibilityTransitionsFromResourceUsage(workUnits);
+
+    ASSERT_EQ(lighting.commandInput.textureVisibilityTransitions.size(), 1u);
+    const auto& transition = lighting.commandInput.textureVisibilityTransitions.front();
+    EXPECT_EQ(transition.before, NLS::Render::RHI::ResourceState::DepthRead);
+    EXPECT_EQ(transition.after, NLS::Render::RHI::ResourceState::ShaderRead);
+    EXPECT_EQ(
+        transition.sourceStages,
+        NLS::Render::RHI::PipelineStageMask::DepthStencil | NLS::Render::RHI::PipelineStageMask::FragmentShader);
+    EXPECT_EQ(
+        transition.sourceAccess,
+        NLS::Render::RHI::AccessMask::DepthStencilRead | NLS::Render::RHI::AccessMask::ShaderRead);
+    EXPECT_TRUE(lighting.commandInput.requiresDependencyVisibility);
 }
 
 TEST(FrameGraphSceneTargetsTests, ValidateThreadedExecutionInputsReportsPassAndResourceContractErrors)
@@ -2816,6 +3044,7 @@ TEST(FrameGraphSceneTargetsTests, RegisterExternalSceneOutputExtractionsAddsSamp
     ASSERT_EQ(package.extractedTextures.size(), 1u);
     EXPECT_NE(package.extractedTextures[0], nullptr);
     EXPECT_EQ(package.extractedTextures[0], outputBuffer.GetExplicitTextureHandle());
+    EXPECT_EQ(package.externalSceneOutputTextureCount, 2u);
     EXPECT_EQ(NLS::Render::FrameGraph::CountExternalSceneOutputSampledTextures(package), 1u);
 }
 
@@ -2932,6 +3161,79 @@ TEST(FrameGraphSceneTargetsTests, PrepareForwardSceneGraphImportsExternalTargets
     EXPECT_TRUE(preparedGraph.execution.compiledExecution.threadedPlan.passes.empty());
 }
 
+TEST(FrameGraphSceneTargetsTests, ForwardExternalOutputPassExecutesWithoutDownstreamConsumer)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Render::Buffers::Framebuffer outputBuffer(320u, 180u);
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 320u;
+    frameDescriptor.renderHeight = 180u;
+    frameDescriptor.camera = &camera;
+    NLS::Render::FrameGraph::SetExternalSceneOutputFramebuffer(frameDescriptor, &outputBuffer);
+
+    FrameGraph frameGraph;
+    NLS::Render::FrameGraph::ReserveForwardSceneGraph(frameGraph, frameDescriptor);
+    FrameGraphBlackboard blackboard;
+
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor =
+        NLS::Render::FrameGraph::CaptureExternalSceneOutputSnapshot(frameDescriptor);
+
+    const auto preparedGraph = NLS::Render::FrameGraph::PrepareForwardSceneGraph(
+        frameGraph,
+        blackboard,
+        lightGridContext);
+
+    int beginCount = 0;
+    int drawCount = 0;
+    int endCount = 0;
+    NLS::Render::FrameGraph::ExecutePreparedForwardSceneGraph(
+        frameGraph,
+        preparedGraph,
+        {
+            [&](const auto&) -> bool
+            {
+                ++beginCount;
+                return true;
+            },
+            [&](const NLS::Render::FrameGraph::CompiledThreadedRenderSceneGraphPass& compiledPass)
+            {
+                if (compiledPass.metadata.commandKind == NLS::Render::Context::RenderPassCommandKind::Opaque)
+                    ++drawCount;
+            },
+            [&](bool startedRenderPass, const auto&)
+            {
+                EXPECT_TRUE(startedRenderPass);
+                ++endCount;
+            }
+        });
+
+    frameGraph.compile();
+    std::ostringstream frameGraphDebug;
+    frameGraph.debugOutput(frameGraphDebug, graphviz::Writer{});
+    NLS::Render::FrameGraph::FrameGraphExecutionContext executionContext{
+        driver,
+        explicitDevice.get(),
+        nullptr,
+        nullptr
+    };
+    frameGraph.execute(&executionContext, &executionContext);
+
+    EXPECT_GE(beginCount, 1) << frameGraphDebug.str();
+    EXPECT_GE(drawCount, 1) << frameGraphDebug.str();
+    EXPECT_GE(endCount, 1) << frameGraphDebug.str();
+}
+
 TEST(FrameGraphSceneTargetsTests, FinalizePreparedForwardScenePackageRegistersExtractionVisibilityAndReadbackSource)
 {
     NLS::Render::Settings::DriverSettings settings;
@@ -2971,6 +3273,7 @@ TEST(FrameGraphSceneTargetsTests, FinalizePreparedForwardScenePackageRegistersEx
     ASSERT_EQ(package.extractedTextures.size(), 1u);
     EXPECT_NE(package.extractedTextures[0], nullptr);
     EXPECT_EQ(package.extractedTextures[0], outputBuffer.GetExplicitTextureHandle());
+    EXPECT_EQ(package.externalSceneOutputTextureCount, 2u);
     EXPECT_EQ(NLS::Render::FrameGraph::CountExternalSceneOutputSampledTextures(package), 1u);
 
     const auto visibilityPassInput =
@@ -3034,6 +3337,7 @@ TEST(FrameGraphSceneTargetsTests, PreferredReadbackTextureIsNotCountedAsExternal
     package.extractedTextures.push_back(sceneTexture);
     package.extractedTextures.push_back(pickingTexture);
     package.preferredReadbackTexture = pickingTexture;
+    package.externalSceneOutputTextureCount = 1u;
 
     EXPECT_EQ(NLS::Render::FrameGraph::CountExternalSceneOutputSampledTextures(package), 1u);
 
@@ -3046,4 +3350,72 @@ TEST(FrameGraphSceneTargetsTests, PreferredReadbackTextureIsNotCountedAsExternal
     ASSERT_EQ(visibilityPassInput.textureVisibilityTransitions.size(), 2u);
     EXPECT_EQ(visibilityPassInput.textureVisibilityTransitions[0].texture, sceneTexture);
     EXPECT_EQ(visibilityPassInput.textureVisibilityTransitions[1].texture, pickingTexture);
+}
+
+TEST(FrameGraphSceneTargetsTests, OrdinaryExtractedTexturesDoNotImplyExternalSceneOutput)
+{
+    NLS::Render::RHI::RHITextureDesc sceneDesc;
+    sceneDesc.debugName = "SceneColor";
+    sceneDesc.extent = { 320u, 180u, 1u };
+    sceneDesc.usage =
+        NLS::Render::RHI::TextureUsageFlags::ColorAttachment |
+        NLS::Render::RHI::TextureUsageFlags::Sampled;
+    auto sceneTexture = std::make_shared<TestTexture>(sceneDesc);
+
+    NLS::Render::Context::RenderScenePackage package;
+    package.targetsSwapchain = false;
+    package.extractedTextures.push_back(sceneTexture);
+
+    const auto summary = NLS::Render::FrameGraph::BuildExternalSceneOutputSummary(package);
+    EXPECT_FALSE(summary.targetsSwapchain);
+    EXPECT_FALSE(summary.hasExternalOutput);
+    EXPECT_EQ(summary.textureCount, 0u);
+
+    const auto visibilityPassInput =
+        NLS::Render::FrameGraph::BuildExtractionVisibilityPassInput(package);
+    ASSERT_EQ(visibilityPassInput.textureVisibilityTransitions.size(), 1u);
+    EXPECT_EQ(visibilityPassInput.textureVisibilityTransitions[0].texture, sceneTexture);
+}
+
+TEST(FrameGraphSceneTargetsTests, ExtractionVisibilityUsesAttachmentViewRangesForExternalOutput)
+{
+    NLS::Render::RHI::RHITextureDesc sceneDesc;
+    sceneDesc.debugName = "SceneColorArray";
+    sceneDesc.extent = { 320u, 180u, 1u };
+    sceneDesc.mipLevels = 4u;
+    sceneDesc.arrayLayers = 3u;
+    sceneDesc.usage =
+        NLS::Render::RHI::TextureUsageFlags::ColorAttachment |
+        NLS::Render::RHI::TextureUsageFlags::Sampled;
+    auto sceneTexture = std::make_shared<TestTexture>(sceneDesc);
+
+    NLS::Render::RHI::RHITextureViewDesc viewDesc;
+    viewDesc.subresourceRange.baseMipLevel = 1u;
+    viewDesc.subresourceRange.mipLevelCount = 1u;
+    viewDesc.subresourceRange.baseArrayLayer = 2u;
+    viewDesc.subresourceRange.arrayLayerCount = 1u;
+    auto sceneView = std::make_shared<TestTextureView>(sceneTexture, viewDesc);
+
+    NLS::Render::Context::RenderPassCommandInput passInput;
+    passInput.kind = NLS::Render::Context::RenderPassCommandKind::Opaque;
+    passInput.usesColorAttachment = true;
+    passInput.colorAttachmentViews.push_back(sceneView);
+
+    NLS::Render::Context::RenderScenePackage package;
+    package.targetsSwapchain = false;
+    package.passCommandInputs.push_back(passInput);
+    package.extractedTextures.push_back(sceneTexture);
+    package.externalSceneOutputTextureCount = 1u;
+
+    const auto visibilityPassInput =
+        NLS::Render::FrameGraph::BuildExtractionVisibilityPassInput(package);
+    ASSERT_EQ(visibilityPassInput.textureVisibilityTransitions.size(), 1u);
+    const auto& transition = visibilityPassInput.textureVisibilityTransitions[0];
+    EXPECT_EQ(transition.texture, sceneTexture);
+    EXPECT_EQ(transition.before, NLS::Render::RHI::ResourceState::Unknown);
+    EXPECT_EQ(transition.after, NLS::Render::RHI::ResourceState::ShaderRead);
+    EXPECT_EQ(transition.subresourceRange.baseMipLevel, viewDesc.subresourceRange.baseMipLevel);
+    EXPECT_EQ(transition.subresourceRange.mipLevelCount, viewDesc.subresourceRange.mipLevelCount);
+    EXPECT_EQ(transition.subresourceRange.baseArrayLayer, viewDesc.subresourceRange.baseArrayLayer);
+    EXPECT_EQ(transition.subresourceRange.arrayLayerCount, viewDesc.subresourceRange.arrayLayerCount);
 }

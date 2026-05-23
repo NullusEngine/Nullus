@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 
 #include <unordered_set>
@@ -8,7 +8,6 @@
 #include "Components/LightComponent.h"
 #include "Components/SkyBoxComponent.h"
 #include "Components/MeshRenderer.h"
-#include "Resource/Actor/Actor.h"
 
 #include "EngineDef.h"
 #include "Reflection/Macros.h"
@@ -18,9 +17,9 @@
 namespace NLS::Engine::SceneSystem
 {
 	/**
-	* The scene is a set of actors
+	* The scene is a set of GameObjects
 	*/
-	CLASS(NLS_ENGINE_API Scene) : public NLS::meta::Object
+	CLASS(NLS_ENGINE_API Scene) : public NLS::Object
 	{
     public:
 		GENERATED_BODY()
@@ -42,7 +41,7 @@ namespace NLS::Engine::SceneSystem
 		Scene();
 
 		/**
-		* Handle the memory de-allocation of every actors
+		* Handle the memory de-allocation of every GameObjects
 		*/
 		~Scene();
 
@@ -58,30 +57,30 @@ namespace NLS::Engine::SceneSystem
 		bool IsPlaying() const;
 
 		/**
-		* Update every actors
+		* Update every GameObjects
 		* @param p_deltaTime
 		*/
 		void Update(float p_deltaTime);
 
 		/**
-		* Update every actors 60 frames per seconds
+		* Update every GameObjects 60 frames per seconds
 		* @param p_deltaTime
 		*/
 		void FixedUpdate(float p_deltaTime);
 
 		/**
-		* Update every actors lately
+		* Update every GameObjects lately
 		* @param p_deltaTime
 		*/
 		void LateUpdate(float p_deltaTime);
 
 		/**
-		* Create an actor with a default name and return a reference to it.
+		* Create an GameObject with a default name and return a reference to it.
 		*/
 		GameObject& CreateGameObject();
 
 		/**
-		* Create an actor with the given name and return a reference to it.
+		* Create an GameObject with the given name and return a reference to it.
 		* @param p_name
 		* @param p_tag
 		*/
@@ -89,42 +88,40 @@ namespace NLS::Engine::SceneSystem
 
 		bool AddGameObject(GameObject* gameObject);
 
-		bool AddActor(Actor* actor);
-
 		/**
-		* Destroy and actor and return true on success
-		* @param p_target (The actor to remove from the scene)
+		* Destroy and GameObject and return true on success
+		* @param p_target (The GameObject to remove from the scene)
 		*/
-		bool DestroyActor(GameObject& p_target);
+		bool DestroyGameObject(GameObject& p_target);
 
 		/**
-		* Collect garbages by removing Destroyed-marked actors
+		* Collect garbages by removing Destroyed-marked GameObjects
 		*/
 		void CollectGarbages();
 
 		/**
-		* Return the first actor identified by the given name, or nullptr on fail
+		* Return the first GameObject identified by the given name, or nullptr on fail
 		* @param p_name
 		*/
-		GameObject* FindActorByName(const std::string& p_name) const;
+		GameObject* FindGameObjectByName(const std::string& p_name) const;
 
 		/**
-		* Return the first actor identified by the given tag, or nullptr on fail
+		* Return the first GameObject identified by the given tag, or nullptr on fail
 		* @param p_tag
 		*/
-		GameObject* FindActorByTag(const std::string& p_tag) const;
+		GameObject* FindGameObjectByTag(const std::string& p_tag) const;
 
 		/**
-		* Return every actors identified by the given name
+		* Return every GameObjects identified by the given name
 		* @param p_name
 		*/
-		std::vector<std::reference_wrapper<GameObject>> FindActorsByName(const std::string& p_name) const;
+		std::vector<std::reference_wrapper<GameObject>> FindGameObjectsByName(const std::string& p_name) const;
 
 		/**
-		* Return every actors identified by the given tag
+		* Return every GameObjects identified by the given tag
 		* @param p_tag
 		*/
-		std::vector<std::reference_wrapper<GameObject>> FindActorsByTag(const std::string& p_tag) const;
+		std::vector<std::reference_wrapper<GameObject>> FindGameObjectsByTag(const std::string& p_tag) const;
 
 		/**
 		* Parse the scene to find the main camera
@@ -132,23 +129,23 @@ namespace NLS::Engine::SceneSystem
 		Components::CameraComponent* FindMainCamera() const;
 
 		/**
-		* Callback method called everytime a component is added on an actor of the scene
+		* Callback method called everytime a component is added on an GameObject of the scene
 		* @param p_component
 		*/
         void OnComponentAdded(Components::Component* p_compononent);
 
 		/**
-		* Callback method called everytime a component is removed on an actor of the scene
+		* Callback method called everytime a component is removed on an GameObject of the scene
 		* @param p_component
 		*/
         void OnComponentRemoved(Components::Component* p_compononent);
 
 		/**
-		* Return a reference on the actor map
+		* Return a reference on the GameObject map
 		*/
-		std::vector<GameObject*>& GetActors();
+		std::vector<GameObject*>& GetGameObjects();
         FUNCTION()
-		const std::vector<GameObject*>& GetActors() const;
+		const std::vector<GameObject*>& GetGameObjects() const;
 
 		/**
 		* Return the fast access components data structure
@@ -161,9 +158,12 @@ namespace NLS::Engine::SceneSystem
 		}
 
 	private:
-        void NotifyActorDestroyed(GameObject& p_actor);
-        void NotifyActorDestroyed(GameObject& p_actor, std::unordered_set<GameObject*>& p_notifiedActors);
-        void DestroyActorInstance(GameObject& p_actor);
+        void CollectGameObjectSubtree(GameObject& p_GameObject, std::vector<GameObject*>& p_outGameObjects, std::unordered_set<GameObject*>& p_visitedGameObjects);
+        void RemoveGameObjectsFromSceneList(const std::unordered_set<GameObject*>& p_GameObjects);
+        void NotifyGameObjectDestroyed(GameObject& p_GameObject);
+        void NotifyGameObjectDestroyed(GameObject& p_GameObject, std::unordered_set<GameObject*>& p_notifiedGameObjects);
+        void DestroyGameObjectSubtree(GameObject& p_GameObject);
+        void DestroyCollectedGameObjects(std::vector<GameObject*>& p_GameObjects);
 		void RebuildFastAccessComponents();
 		bool m_isPlaying = false;
 		std::vector<GameObject*> m_gameobject;

@@ -25,6 +25,8 @@
 
 #include "Debug/Assertion.h"
 
+#include <cctype>
+
 namespace NLS::meta
 {
     namespace
@@ -134,14 +136,14 @@ namespace NLS::meta
 
         bool Type::operator==(const Type &rhs) const
         {
-            return m_id == rhs.m_id && m_generation == rhs.m_generation;
+            return m_id == rhs.m_id && m_isArray == rhs.m_isArray;
         }
 
         ///////////////////////////////////////////////////////////////////////
 
         bool Type::operator!=(const Type &rhs) const
         {
-            return m_id != rhs.m_id;
+            return !(*this == rhs);
         }
 
         ///////////////////////////////////////////////////////////////////////
@@ -413,10 +415,26 @@ namespace NLS::meta
 
         Type Type::GetDecayedType(void) const
         {
-            NLS_ASSERT( false, "Type::GetDecayedType() not implemented." );
+            if (!IsValid( ))
+                return Type::Invalid( );
 
-            // @@@TODO: convert to non pointer/const pointer type
-            return Type( );
+            if (!IsPointer( ))
+                return Type( m_id, false, m_generation );
+
+            std::string typeName = GetName( );
+            constexpr std::string_view constPrefix = "const ";
+            if (typeName.rfind( constPrefix, 0 ) == 0)
+                typeName.erase( 0, constPrefix.size( ) );
+
+            while (!typeName.empty( ) && typeName.back( ) == '*')
+            {
+                typeName.pop_back( );
+                while (!typeName.empty( ) && std::isspace( static_cast<unsigned char>(typeName.back( )) ))
+                    typeName.pop_back( );
+            }
+
+            return Type::GetFromName( typeName );
+
         }
 
         ///////////////////////////////////////////////////////////////////////

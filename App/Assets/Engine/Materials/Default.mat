@@ -1,7 +1,7 @@
 <root>
   <shader>:Shaders\Lambert.hlsl</shader>
   <blendable>false</blendable>
-  <backfaceCulling>true</backfaceCulling>
+  <backfaceCulling>false</backfaceCulling>
   <frontfaceCulling>false</frontfaceCulling>
   <depthTest>true</depthTest>
   <depthWriting>true</depthWriting>

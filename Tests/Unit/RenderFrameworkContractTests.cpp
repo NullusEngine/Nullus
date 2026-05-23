@@ -245,12 +245,18 @@ namespace
             const NLS::Render::RHI::RHIBufferCopyRegion&) override {}
         void CopyBufferToTexture(const NLS::Render::RHI::RHIBufferToTextureCopyDesc&) override {}
         void CopyTexture(const NLS::Render::RHI::RHITextureCopyDesc&) override {}
-        void Barrier(const NLS::Render::RHI::RHIBarrierDesc&) override {}
+        void Barrier(const NLS::Render::RHI::RHIBarrierDesc& barrierDesc) override
+        {
+            ++barrierCalls;
+            lastBarrierDesc = barrierDesc;
+        }
 
         bool recording = false;
         size_t beginCalls = 0u;
         size_t endCalls = 0u;
         size_t resetCalls = 0u;
+        size_t barrierCalls = 0u;
+        NLS::Render::RHI::RHIBarrierDesc lastBarrierDesc;
     };
 
     class ContractCommandPool final : public NLS::Render::RHI::RHICommandPool
@@ -1417,7 +1423,7 @@ TEST(RenderFrameworkContractTests, DeferredThreadedGBufferCaptureUsesPassBinding
 
     ASSERT_FALSE(source.empty());
     const auto threadedBranch = source.find("if (usesThreadedRendering)");
-    const auto gbufferLoop = source.find("for (const auto& [_, drawable] : drawables.opaques)", threadedBranch);
+    const auto gbufferLoop = source.find("for (const auto& entry : drawables.opaques)", threadedBranch);
     const auto lightingPass = source.find("m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>(\"u_GBufferAlbedo\"", gbufferLoop);
     const auto directLightingGBufferSet =
         source.find("m_lightingMaterial->GetParameterBlock().Set(\"u_GBuffer", gbufferLoop);
@@ -1715,6 +1721,37 @@ TEST(RenderFrameworkContractTests, DeferredLightingUsesProceduralSkyWhenNoSkybox
     EXPECT_EQ(shaderSource.find("return float4(0.55f, 0.70f, 0.92f, 1.0f);"), std::string::npos);
 }
 
+TEST(RenderFrameworkContractTests, DeferredLightingPresentsSceneAsOpaqueTexture)
+{
+    const std::filesystem::path deferredLightingShaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders/DeferredLighting.hlsl";
+
+    std::ifstream stream(deferredLightingShaderPath, std::ios::binary);
+    const std::string shaderSource{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(shaderSource.empty());
+    EXPECT_NE(shaderSource.find("return float4(litColor, 1.0f);"), std::string::npos);
+    EXPECT_EQ(shaderSource.find("return float4(litColor, albedo.a);"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, DeferredLightingHasVisibleAmbientFloorForUnlitImportedModels)
+{
+    const std::filesystem::path commonShaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders/LightGridCommon.hlsli";
+
+    std::ifstream stream(commonShaderPath, std::ios::binary);
+    const std::string shaderSource{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(shaderSource.empty());
+    EXPECT_NE(shaderSource.find("NLSGetVisibleAmbientFloor"), std::string::npos);
+    EXPECT_NE(shaderSource.find("max(NLSGetAmbientFloor(), 0.18f)"), std::string::npos);
+    EXPECT_NE(shaderSource.find("NLSGetVisibleAmbientFloor() * ao"), std::string::npos);
+}
+
 TEST(RenderFrameworkContractTests, DeferredLightingFlipsScreenYWhenReconstructingWorldSpace)
 {
     const std::filesystem::path deferredLightingShaderPath =
@@ -1875,6 +1912,64 @@ TEST(RenderFrameworkContractTests, UiCompositionContractPropagatesSignalToPresen
     EXPECT_EQ(boundary.uiToPresentSignalValue, 0u);
 }
 
+TEST(RenderFrameworkContractTests, StandaloneRenderDocCaptureBeginsBeforeCommandRecording)
+{
+    const std::filesystem::path coordinatorPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Context/RhiThreadCoordinator.cpp";
+
+    std::ifstream stream(coordinatorPath, std::ios::binary);
+    const std::string source{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(source.empty());
+    const auto beginStandaloneFrame =
+        source.find("void RhiThreadCoordinator::BeginStandaloneExplicitFrame");
+    const auto endStandaloneFrame =
+        source.find("void RhiThreadCoordinator::EndStandaloneExplicitFrame", beginStandaloneFrame);
+    ASSERT_NE(beginStandaloneFrame, std::string::npos);
+    ASSERT_NE(endStandaloneFrame, std::string::npos);
+
+    const auto commandRecordingBegin =
+        source.find("frameContext.commandBuffer->Begin()", beginStandaloneFrame);
+    const auto renderDocPreFrame =
+        source.find("renderDocCaptureController->OnPreFrame(acquireSwapchainImage)", beginStandaloneFrame);
+
+    ASSERT_NE(commandRecordingBegin, std::string::npos);
+    ASSERT_LT(commandRecordingBegin, endStandaloneFrame);
+    ASSERT_NE(renderDocPreFrame, std::string::npos);
+    ASSERT_LT(renderDocPreFrame, endStandaloneFrame);
+    EXPECT_LT(renderDocPreFrame, commandRecordingBegin);
+}
+
+TEST(RenderFrameworkContractTests, StandaloneUiRenderDocCaptureBeginsBeforeCommandRecording)
+{
+    const std::filesystem::path coordinatorPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Context/RhiThreadCoordinator.cpp";
+
+    std::ifstream stream(coordinatorPath, std::ios::binary);
+    const std::string source{
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(source.empty());
+    const auto beginStandaloneFrame = source.find("bool BeginStandaloneUiExplicitFrame");
+    const auto endStandaloneFrame = source.find("bool PresentStandaloneUiFrame", beginStandaloneFrame);
+    ASSERT_NE(beginStandaloneFrame, std::string::npos);
+    ASSERT_NE(endStandaloneFrame, std::string::npos);
+
+    const auto commandRecordingBegin =
+        source.find("frameContext.commandBuffer->Begin()", beginStandaloneFrame);
+    const auto renderDocPreFrame =
+        source.find("renderDocCaptureController->OnPreFrame(true)", beginStandaloneFrame);
+
+    ASSERT_NE(commandRecordingBegin, std::string::npos);
+    ASSERT_LT(commandRecordingBegin, endStandaloneFrame);
+    ASSERT_NE(renderDocPreFrame, std::string::npos);
+    ASSERT_LT(renderDocPreFrame, endStandaloneFrame);
+    EXPECT_LT(renderDocPreFrame, commandRecordingBegin);
+}
+
 TEST(RenderFrameworkContractTests, FrameGraphResourceLifetimeContractKeepsTransientResourcesUntilRetiredFrame)
 {
     NLS::Render::Context::Driver driver(MakeContractDriverSettings());
@@ -1945,6 +2040,45 @@ TEST(RenderFrameworkContractTests, FrameGraphResourceLifetimeContractKeepsTransi
     EXPECT_TRUE(weakTexture.expired());
     EXPECT_TRUE(weakTextureView.expired());
     EXPECT_TRUE(weakBuffer.expired());
+}
+
+TEST(RenderFrameworkContractTests, FrameGraphUniformBufferUsesGenericReadStateForExplicitTracking)
+{
+    NLS::Render::Context::Driver driver(MakeContractDriverSettings());
+    auto explicitDevice = std::make_shared<ContractDevice>();
+    auto commandBuffer = std::make_shared<ContractCommandBuffer>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 11u;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+    frameContext.resourceStateTracker->BeginFrame(frameContext.frameIndex);
+
+    NLS::Render::FrameGraph::FrameGraphExecutionContext executionContext{
+        driver,
+        explicitDevice.get(),
+        commandBuffer.get(),
+        &frameContext
+    };
+
+    NLS::Render::FrameGraph::FrameGraphBuffer buffer;
+    NLS::Render::FrameGraph::FrameGraphBuffer::Desc desc;
+    desc.size = 256u;
+    desc.type = NLS::Render::RHI::BufferType::Uniform;
+    desc.usage = NLS::Render::RHI::BufferUsage::DynamicDraw;
+    desc.debugName = "ContractTransientUniform";
+    buffer.create(desc, &executionContext);
+
+    ASSERT_NE(buffer.explicitBuffer, nullptr);
+    EXPECT_EQ(buffer.explicitBuffer->GetDesc().memoryUsage, NLS::Render::RHI::MemoryUsage::CPUToGPU);
+
+    buffer.preRead(desc, 0u, &executionContext);
+    EXPECT_EQ(commandBuffer->barrierCalls, 0u);
+
+    commandBuffer->lastBarrierDesc = {};
+    buffer.preWrite(desc, 0u, &executionContext);
+    EXPECT_EQ(commandBuffer->barrierCalls, 0u);
 }
 
 TEST(RenderFrameworkContractTests, UE427RhiCommandListSubmissionMetadataTracksLifecycleAndChildOrder)

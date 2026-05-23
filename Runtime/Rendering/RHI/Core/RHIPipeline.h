@@ -11,6 +11,8 @@ namespace NLS::Render::RHI
         ShaderStageMask stageMask = ShaderStageMask::AllGraphics;
         uint32_t offset = 0;
         uint32_t size = 0;
+        uint32_t shaderRegister = 0;
+        uint32_t registerSpace = 0;
     };
 
     struct NLS_RENDER_API RHIPipelineLayoutDesc

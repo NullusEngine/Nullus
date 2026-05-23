@@ -8,6 +8,8 @@
 #include <string>
 #include <vector>
 
+#include "Object/Object.h"
+#include "Reflection/Macros.h"
 #include "Rendering/Data/StateMask.h"
 #include "Rendering/Data/PipelineState.h"
 #include "Rendering/RHI/RHITypes.h"
@@ -17,6 +19,7 @@
 #include "Rendering/Settings/EComparaisonAlgorithm.h"
 #include "Rendering/Settings/ECullFace.h"
 #include "Rendering/Settings/EPrimitiveMode.h"
+#include "Resources/Material.generated.h"
 #include "RenderDef.h"
 
 namespace NLS::Render::Resources
@@ -79,9 +82,11 @@ struct MaterialBindingDiagnostic
 /**
  * A material is a combination of a shader and some settings (Material settings and shader settings)
  */
-class NLS_RENDER_API Material
+CLASS(NLS_RENDER_API Material) : public NLS::NamedObject
 {
 public:
+    GENERATED_BODY()
+
     using ShaderType = Shader;
     using Texture2DType = Texture2D;
 
@@ -221,13 +226,12 @@ public:
      */
     const Data::StateMask GenerateStateMask() const;
 
-    MaterialParameterBlock& GetParameterBlock();
     const MaterialParameterBlock& GetParameterBlock() const;
 
     /**
      * Returns the uniforms data of the material
      */
-    std::map<std::string, std::any>& GetUniformsData();
+    const std::map<std::string, std::any>& GetUniformsData() const;
 
     struct MaterialRuntimeState;  // Forward declaration for public methods
 
@@ -243,6 +247,7 @@ public:
         bool* hasFragmentShader = nullptr) const;
     MaterialRuntimeState& GetRuntimeState() const;
     void ResetRuntimeState() const;
+    void EnsureShaderGenerationCacheCurrent() const;
     void InvalidateExplicitBindingSetCache() const;
     std::shared_ptr<RHI::RHIBindingSet> GetRecordedBindingSet(const std::shared_ptr<RHI::RHIDevice>& device) const;
     const MaterialResourceSet& GetBindingSet() const;
@@ -251,6 +256,25 @@ public:
     const std::shared_ptr<RHI::RHIPipelineLayout>& GetExplicitPipelineLayout(const std::shared_ptr<RHI::RHIDevice>& device) const;
     const std::vector<MaterialBindingDiagnostic>& GetLastExplicitBindingDiagnostics() const;
     bool HasExplicitBindingErrors() const;
+    bool RequiresPassDescriptorSet() const;
+    void SetRawParameter(const std::string& name, std::any value);
+    void MarkParametersDirty();
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    uint64_t GetCachedShaderGenerationForTesting() const;
+#endif
+    void SetTextureResourcePath(const std::string& name, std::string path);
+    void ClearTextureResourcePath(const std::string& name);
+    std::string GetTextureResourcePath(const std::string& name) const;
+    const std::map<std::string, std::string>& GetTextureResourcePaths() const;
+    void SetSamplerOverride(const std::string& name, const RHI::SamplerDesc& sampler);
+    void ClearSamplerOverride(const std::string& name);
+    void ClearSamplerOverrides();
+    const RHI::SamplerDesc* GetSamplerOverride(const std::string& name) const;
+    uint64_t GetInstanceId() const;
+    uint64_t GetParameterRevision() const;
+    uint64_t GetRenderStateRevision() const;
+    uint64_t GetExplicitBindingSetCreationCount() const;
+    uint64_t GetExplicitSnapshotBufferCreationCount() const;
 
     const std::string path;
 
@@ -260,6 +284,8 @@ protected:
 
     Shader* m_shader = nullptr;
     MaterialParameterBlock m_parameterBlock;
+    std::map<std::string, std::string> m_textureResourcePaths;
+    std::map<std::string, RHI::SamplerDesc> m_samplerOverrides;
     MaterialLayout m_materialLayout;
     ResourceBindingLayout m_bindingLayout;
     mutable std::unique_ptr<MaterialRuntimeState> m_runtimeState;
@@ -271,6 +297,8 @@ protected:
     bool m_depthWriting = true;
     bool m_colorWriting = true;
     int m_gpuInstances = 1;
+    uint64_t m_instanceId = 0u;
+    uint64_t m_renderStateRevision = 1u;
 
 private:
     friend class NLS::Render::Context::Driver;

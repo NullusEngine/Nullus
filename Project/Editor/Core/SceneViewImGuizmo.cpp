@@ -1,12 +1,12 @@
 #include "Core/SceneViewImGuizmo.h"
 
+#include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
 #include "Components/TransformComponent.h"
 #include "GameObject.h"
 #include "Math/Matrix3.h"
 #include "Math/Vector3.h"
 #include "Math/Vector4.h"
-#include "Rendering/Resources/Model.h"
 #include "Settings/EditorSettings.h"
 
 namespace NLS::Editor::Core
@@ -401,7 +401,7 @@ bool ExpandWorldBounds(
     return true;
 }
 
-bool AccumulateActorWorldBounds(const Engine::GameObject& actor, WorldBounds& bounds, bool& hasBounds)
+bool AccumulateGameObjectWorldBounds(const Engine::GameObject& actor, WorldBounds& bounds, bool& hasBounds)
 {
     const auto* transform = actor.GetTransform();
     if (transform != nullptr)
@@ -419,12 +419,16 @@ bool AccumulateActorWorldBounds(const Engine::GameObject& actor, WorldBounds& bo
                 radius = customBounds.radius;
                 hasRenderableBounds = true;
             }
-            else if (const auto* model = meshRenderer->GetModel())
+            else if (auto* meshFilter = actor.GetComponent<Engine::Components::MeshFilter>();
+                meshFilter != nullptr)
             {
-                const auto& modelBounds = model->GetBoundingSphere();
-                localCenter = modelBounds.position;
-                radius = modelBounds.radius;
-                hasRenderableBounds = true;
+                if (auto* mesh = meshFilter->ResolveMesh())
+                {
+                    const auto& modelBounds = mesh->GetBoundingSphere();
+                    localCenter = modelBounds.position;
+                    radius = modelBounds.radius;
+                    hasRenderableBounds = true;
+                }
             }
 
             if (hasRenderableBounds)
@@ -441,13 +445,13 @@ bool AccumulateActorWorldBounds(const Engine::GameObject& actor, WorldBounds& bo
     for (const auto* child : const_cast<Engine::GameObject&>(actor).GetChildren())
     {
         if (child != nullptr)
-            AccumulateActorWorldBounds(*child, bounds, hasBounds);
+            AccumulateGameObjectWorldBounds(*child, bounds, hasBounds);
     }
 
     return hasBounds;
 }
 
-void RestoreActorCenterPivotPosition(
+void RestoreGameObjectCenterPivotPosition(
     Engine::GameObject& actor,
     const Maths::Vector3& targetPivotPosition,
     const SceneViewGizmoPivot pivot)
@@ -459,17 +463,17 @@ void RestoreActorCenterPivotPosition(
     if (transform == nullptr)
         return;
 
-    const Maths::Vector3 currentPivotPosition = GetActorGizmoPivotPosition(actor, pivot);
+    const Maths::Vector3 currentPivotPosition = GetGameObjectGizmoPivotPosition(actor, pivot);
     transform->SetWorldPosition(transform->GetWorldPosition() + (targetPivotPosition - currentPivotPosition));
 }
 
-SceneViewGizmoMatrix GetActorWorldGizmoMatrix(const Engine::GameObject& p_actor)
+SceneViewGizmoMatrix GetGameObjectWorldGizmoMatrix(const Engine::GameObject& p_actor)
 {
     const auto* transform = p_actor.GetTransform();
-    return GetActorWorldGizmoMatrix(p_actor, SceneViewGizmoPivot::Pivot);
+    return GetGameObjectWorldGizmoMatrix(p_actor, SceneViewGizmoPivot::Pivot);
 }
 
-Maths::Vector3 GetActorGizmoPivotPosition(
+Maths::Vector3 GetGameObjectGizmoPivotPosition(
     const Engine::GameObject& p_actor,
     const SceneViewGizmoPivot p_pivot)
 {
@@ -481,7 +485,7 @@ Maths::Vector3 GetActorGizmoPivotPosition(
     {
         WorldBounds bounds {};
         bool hasBounds = false;
-        if (AccumulateActorWorldBounds(p_actor, bounds, hasBounds))
+        if (AccumulateGameObjectWorldBounds(p_actor, bounds, hasBounds))
             return (bounds.min + bounds.max) * 0.5f;
     }
 
@@ -502,7 +506,7 @@ SceneViewViewGizmoRect GetSceneViewViewGizmoRect(
     };
 }
 
-SceneViewGizmoMatrix GetActorWorldGizmoMatrix(
+SceneViewGizmoMatrix GetGameObjectWorldGizmoMatrix(
     const Engine::GameObject& p_actor,
     const SceneViewGizmoPivot p_pivot)
 {
@@ -511,14 +515,14 @@ SceneViewGizmoMatrix GetActorWorldGizmoMatrix(
         return ToImGuizmoMatrix(Maths::Matrix4::Identity);
 
     auto matrix = transform->GetWorldMatrix();
-    const auto pivotPosition = GetActorGizmoPivotPosition(p_actor, p_pivot);
+    const auto pivotPosition = GetGameObjectGizmoPivotPosition(p_actor, p_pivot);
     matrix.data[3] = pivotPosition.x;
     matrix.data[7] = pivotPosition.y;
     matrix.data[11] = pivotPosition.z;
     return ToImGuizmoMatrix(matrix);
 }
 
-void ApplyActorWorldGizmoMatrix(
+void ApplyGameObjectWorldGizmoMatrix(
     Engine::GameObject& p_actor,
     const SceneViewGizmoMatrix& p_matrix,
     const EGizmoOperation p_operation,
@@ -528,18 +532,18 @@ void ApplyActorWorldGizmoMatrix(
     if (transform == nullptr)
         return;
 
-    const Maths::Vector3 previousPivotPosition = GetActorGizmoPivotPosition(p_actor, p_pivot);
+    const Maths::Vector3 previousPivotPosition = GetGameObjectGizmoPivotPosition(p_actor, p_pivot);
     const Maths::Matrix4 worldMatrix = FromImGuizmoMatrix(p_matrix);
 
     switch (p_operation)
     {
     case EGizmoOperation::ROTATE:
         transform->SetWorldRotation(ExtractRotation(worldMatrix));
-        RestoreActorCenterPivotPosition(p_actor, ExtractPosition(worldMatrix), p_pivot);
+        RestoreGameObjectCenterPivotPosition(p_actor, ExtractPosition(worldMatrix), p_pivot);
         break;
     case EGizmoOperation::SCALE:
         transform->SetWorldScale(ExtractScale(worldMatrix));
-        RestoreActorCenterPivotPosition(p_actor, ExtractPosition(worldMatrix), p_pivot);
+        RestoreGameObjectCenterPivotPosition(p_actor, ExtractPosition(worldMatrix), p_pivot);
         break;
     case EGizmoOperation::TRANSLATE:
     default:

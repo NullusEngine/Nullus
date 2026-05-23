@@ -6,7 +6,7 @@
 #include <Math/Transform.h>
 #include "RenderDef.h"
 #include "Rendering/Geometry/BoundingSphere.h"
-#include "Rendering/Resources/Model.h"
+#include "Rendering/Resources/Mesh.h"
 #include "Rendering/Settings/ECullingOptions.h"
 namespace NLS::Render::Data
 {
@@ -17,7 +17,6 @@ namespace NLS::Render::Data
 	{
 	public:
         using Mesh = Resources::Mesh;
-        using Model = Resources::Model;
         using BoundingSphere = Render::Geometry::BoundingSphere;
 
 		/**
@@ -65,21 +64,6 @@ namespace NLS::Render::Data
 		* @param p_transform
 		*/
 		bool IsMeshInFrustum(const Mesh& p_mesh, const Maths::Transform& p_transform) const;
-
-		/**
-		* Returns the list of meshes from a model that should be rendered
-		* @param p_model
-		* @param p_modelBoundingSphere
-		* @param p_modelTransform
-		* @param p_frustum
-		* @param p_cullingOptions
-		*/
-		std::vector<Mesh*> GetMeshesInFrustum(
-			const Model& p_model,
-			const BoundingSphere& p_modelBoundingSphere,
-			const Maths::Transform& p_modelTransform,
-			Settings::ECullingOptions p_cullingOptions
-		) const;
 
 		/**
 		* Returns the near plane

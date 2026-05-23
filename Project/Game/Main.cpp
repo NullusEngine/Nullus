@@ -50,7 +50,8 @@ int main(int argc, char** argv)
 				? std::optional<Render::Settings::RenderDocSettings>(launchArgs.renderDocSettings)
 				: std::nullopt,
 			launchArgs.backendOverride,
-			launchArgs.projectPathOverride);
+			launchArgs.projectPathOverride,
+			launchArgs.materialValidation);
 		app.Run();
 		return EXIT_SUCCESS;
 	}

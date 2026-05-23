@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cstring>
 #include <cstdlib>
@@ -25,6 +26,7 @@
 #include "Rendering/Resources/MaterialResourceSet.h"
 #include "Rendering/Resources/ShaderBindingLayoutUtils.h"
 #include "Rendering/Resources/Shader.h"
+#include "Rendering/Resources/IndexedObjectDataShaderSupport.h"
 #include "Rendering/Resources/ShaderParameterStruct.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/Resources/Texture2D.h"
@@ -35,6 +37,15 @@ namespace
 	using ShaderSourceLanguage = NLS::Render::ShaderCompiler::ShaderSourceLanguage;
 	using ShaderResourceKind = NLS::Render::Resources::ShaderResourceKind;
 	using UniformType = NLS::Render::Resources::UniformType;
+
+	uint64_t NextMaterialInstanceId()
+	{
+		static std::atomic<uint64_t> nextInstanceId { 1u };
+		auto instanceId = nextInstanceId.fetch_add(1u, std::memory_order_relaxed);
+		if (instanceId == 0u)
+			instanceId = nextInstanceId.fetch_add(1u, std::memory_order_relaxed);
+		return instanceId;
+	}
 
 	NLS::Render::RHI::SamplerDesc BuildDefaultSamplerDesc(const std::string& bindingName)
 	{
@@ -121,6 +132,11 @@ namespace
 			(property.kind == ShaderResourceKind::Value ||
 			 property.kind == ShaderResourceKind::SampledTexture ||
 			 property.kind == ShaderResourceKind::Sampler);
+	}
+
+	bool IsMaterialTextureBindingName(const std::string& name)
+	{
+		return name.size() >= 3u && name.rfind("Map") == name.size() - 3u;
 	}
 
 	void ApplyPipelineStateOverrides(
@@ -309,7 +325,8 @@ namespace
 		const uint32_t setIndex,
 		const uint32_t bindingIndex,
 		const uint32_t count,
-		const NLS::Render::RHI::ShaderStageMask stageMask)
+		const NLS::Render::RHI::ShaderStageMask stageMask,
+		const uint32_t elementStride = 0u)
 	{
 		auto existingEntry = std::find_if(
 			layoutDesc.entries.begin(),
@@ -324,6 +341,7 @@ namespace
 		{
 			existingEntry->stageMask = existingEntry->stageMask | stageMask;
 			existingEntry->count = std::max(existingEntry->count, count);
+			existingEntry->elementStride = std::max(existingEntry->elementStride, elementStride);
 			if (existingEntry->name.empty())
 				existingEntry->name = name;
 			return;
@@ -336,7 +354,21 @@ namespace
 		entry.binding = bindingIndex;
 		entry.count = std::max(1u, count);
 		entry.stageMask = stageMask;
+		entry.elementStride = elementStride;
 		layoutDesc.entries.push_back(std::move(entry));
+	}
+
+	uint32_t ResolveResourceElementStride(
+		const NLS::Render::RHI::BindingType bindingType,
+		const uint32_t reflectedByteSize)
+	{
+		if (bindingType != NLS::Render::RHI::BindingType::StructuredBuffer &&
+			bindingType != NLS::Render::RHI::BindingType::StorageBuffer)
+		{
+			return 0u;
+		}
+
+		return reflectedByteSize != 0u ? reflectedByteSize : sizeof(uint32_t);
 	}
 
 	std::vector<NLS::Render::RHI::RHIBindingLayoutDesc> BuildExplicitBindingLayoutDescs(
@@ -374,6 +406,9 @@ namespace NLS::Render::Resources
 		RHI::NativeBackendType explicitBindingLayoutBackend = RHI::NativeBackendType::None;
 		RHI::NativeBackendType explicitBindingSetBackend = RHI::NativeBackendType::None;
 		RHI::NativeBackendType explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
+		uint64_t shaderGeneration = 0u;
+		uint64_t explicitBindingSetCreationCount = 0u;
+		uint64_t explicitSnapshotBufferCreationCount = 0u;
 		bool explicitBindingLayoutDirty = true;
 		bool explicitBindingSetDirty = true;
 	};
@@ -397,8 +432,37 @@ namespace NLS::Render::Resources
 		state.explicitBindingLayoutBackend = RHI::NativeBackendType::None;
 		state.explicitBindingSetBackend = RHI::NativeBackendType::None;
 		state.explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
+		state.shaderGeneration = m_shader != nullptr ? m_shader->GetGeneration() : 0u;
 		state.explicitBindingLayoutDirty = true;
 		state.explicitBindingSetDirty = true;
+	}
+
+	void Material::EnsureShaderGenerationCacheCurrent() const
+	{
+		auto& state = GetRuntimeState();
+		const auto currentGeneration = m_shader != nullptr ? m_shader->GetGeneration() : 0u;
+		if (state.shaderGeneration == currentGeneration)
+			return;
+
+		const auto bindingSetCreationCount = state.explicitBindingSetCreationCount;
+		const auto snapshotBufferCreationCount = state.explicitSnapshotBufferCreationCount;
+		auto* material = const_cast<Material*>(this);
+		const auto previousParameters = material->m_parameterBlock.Data();
+		const auto previousTextureResourcePaths = material->m_textureResourcePaths;
+		const auto previousSamplerOverrides = material->m_samplerOverrides;
+
+		material->FillUniform();
+		GetRuntimeState().explicitBindingSetCreationCount = bindingSetCreationCount;
+		GetRuntimeState().explicitSnapshotBufferCreationCount = snapshotBufferCreationCount;
+		for (const auto& [name, value] : previousParameters)
+		{
+			if (material->m_parameterBlock.Contains(name))
+				material->m_parameterBlock.Set(name, value);
+		}
+		material->m_textureResourcePaths = previousTextureResourcePaths;
+		material->m_samplerOverrides = previousSamplerOverrides;
+		material->RebuildBindingSet();
+		GetRuntimeState().shaderGeneration = currentGeneration;
 	}
 
 	void Material::InvalidateExplicitBindingSetCache() const
@@ -413,6 +477,7 @@ namespace NLS::Render::Resources
 	}
 
 	Material::Material(Shader* p_shader)
+		: m_instanceId(NextMaterialInstanceId())
 	{
 		m_runtimeState = std::make_unique<MaterialRuntimeState>();
 		SetShader(p_shader);
@@ -423,6 +488,7 @@ namespace NLS::Render::Resources
 	void Material::SetShader(Shader* p_shader)
 	{
 		m_shader = p_shader;
+		++m_renderStateRevision;
 		ResetRuntimeState();
 
 		if (m_shader)
@@ -430,6 +496,8 @@ namespace NLS::Render::Resources
 		else
 		{
 			m_parameterBlock.Clear();
+			m_textureResourcePaths.clear();
+			m_samplerOverrides.clear();
 			m_bindingLayout.bindings.clear();
 		}
 	}
@@ -437,6 +505,8 @@ namespace NLS::Render::Resources
 	void Material::FillUniform()
 	{
 		m_parameterBlock.Clear();
+		m_textureResourcePaths.clear();
+		m_samplerOverrides.clear();
 		m_bindingLayout.bindings.clear();
 		ResetRuntimeState();
 
@@ -548,6 +618,7 @@ namespace NLS::Render::Resources
 	void Material::RebuildBindingSet() const
 	{
 		auto& state = GetRuntimeState();
+		EnsureShaderGenerationCacheCurrent();
 		InvalidateExplicitBindingSetCache();
 		state.bindingSet.SetLayout(m_bindingLayout);
 
@@ -555,24 +626,36 @@ namespace NLS::Render::Resources
 		{
 			if (binding.kind == ShaderResourceKind::Sampler)
 			{
-				state.bindingSet.SetSampler(binding.name, BuildDefaultSamplerDesc(binding.name));
+				const auto override = m_samplerOverrides.find(binding.name);
+				state.bindingSet.SetSampler(
+					binding.name,
+					override != m_samplerOverrides.end()
+						? override->second
+						: BuildDefaultSamplerDesc(binding.name));
 				continue;
 			}
 
 			const auto* parameter = m_parameterBlock.TryGet(binding.name);
-			if (!parameter)
+			if (!parameter && !(binding.type == UniformType::UNIFORM_SAMPLER_2D && IsMaterialTextureBindingName(binding.name)))
 				continue;
 
 			switch (binding.type)
 			{
 			case UniformType::UNIFORM_SAMPLER_2D:
-				if (parameter->type() == typeid(Texture2D*))
+				if (parameter && parameter->type() == typeid(Texture2D*))
 				{
 					auto* texture = std::any_cast<Texture2D*>(*parameter);
 					const auto resolvedTexture = texture != nullptr ? texture : GetDefaultWhiteTexture2D();
 					state.bindingSet.SetTexture(
 						binding.name,
 						resolvedTexture != nullptr ? resolvedTexture->GetTextureHandle() : nullptr);
+				}
+				else if (IsMaterialTextureBindingName(binding.name))
+				{
+					auto* texture = GetDefaultWhiteTexture2D();
+					state.bindingSet.SetTexture(
+						binding.name,
+						texture != nullptr ? texture->GetTextureHandle() : nullptr);
 				}
 				break;
 			case UniformType::UNIFORM_SAMPLER_CUBE:
@@ -682,13 +765,61 @@ namespace NLS::Render::Resources
 		return HasShader();
 	}
 
-	void Material::SetBlendable(bool p_transparent) { m_blendable = p_transparent; }
-	void Material::SetBackfaceCulling(bool p_backfaceCulling) { m_backfaceCulling = p_backfaceCulling; }
-	void Material::SetFrontfaceCulling(bool p_frontfaceCulling) { m_frontfaceCulling = p_frontfaceCulling; }
-	void Material::SetDepthTest(bool p_depthTest) { m_depthTest = p_depthTest; }
-	void Material::SetDepthWriting(bool p_depthWriting) { m_depthWriting = p_depthWriting; }
-	void Material::SetColorWriting(bool p_colorWriting) { m_colorWriting = p_colorWriting; }
-	void Material::SetGPUInstances(int p_instances) { m_gpuInstances = p_instances; }
+	void Material::SetBlendable(bool p_transparent)
+	{
+		if (m_blendable == p_transparent)
+			return;
+		m_blendable = p_transparent;
+		++m_renderStateRevision;
+	}
+
+	void Material::SetBackfaceCulling(bool p_backfaceCulling)
+	{
+		if (m_backfaceCulling == p_backfaceCulling)
+			return;
+		m_backfaceCulling = p_backfaceCulling;
+		++m_renderStateRevision;
+	}
+
+	void Material::SetFrontfaceCulling(bool p_frontfaceCulling)
+	{
+		if (m_frontfaceCulling == p_frontfaceCulling)
+			return;
+		m_frontfaceCulling = p_frontfaceCulling;
+		++m_renderStateRevision;
+	}
+
+	void Material::SetDepthTest(bool p_depthTest)
+	{
+		if (m_depthTest == p_depthTest)
+			return;
+		m_depthTest = p_depthTest;
+		++m_renderStateRevision;
+	}
+
+	void Material::SetDepthWriting(bool p_depthWriting)
+	{
+		if (m_depthWriting == p_depthWriting)
+			return;
+		m_depthWriting = p_depthWriting;
+		++m_renderStateRevision;
+	}
+
+	void Material::SetColorWriting(bool p_colorWriting)
+	{
+		if (m_colorWriting == p_colorWriting)
+			return;
+		m_colorWriting = p_colorWriting;
+		++m_renderStateRevision;
+	}
+
+	void Material::SetGPUInstances(int p_instances)
+	{
+		if (m_gpuInstances == p_instances)
+			return;
+		m_gpuInstances = p_instances;
+		++m_renderStateRevision;
+	}
 	bool Material::IsBlendable() const { return m_blendable; }
 	bool Material::HasBackfaceCulling() const { return m_backfaceCulling; }
 	bool Material::HasFrontfaceCulling() const { return m_frontfaceCulling; }
@@ -812,11 +943,6 @@ namespace NLS::Render::Resources
 		return GetExplicitBindingSet(device);
 	}
 
-	MaterialParameterBlock& Material::GetParameterBlock()
-	{
-		return m_parameterBlock;
-	}
-
 	const MaterialParameterBlock& Material::GetParameterBlock() const
 	{
 		return m_parameterBlock;
@@ -830,6 +956,7 @@ namespace NLS::Render::Resources
 
 	const std::shared_ptr<RHI::RHIBindingLayout>& Material::GetExplicitBindingLayout(const std::shared_ptr<RHI::RHIDevice>& device) const
 	{
+		EnsureShaderGenerationCacheCurrent();
 		auto& state = GetRuntimeState();
 		const auto backend = ResolveDeviceBackendType(device);
 		if (!state.explicitBindingLayoutDirty &&
@@ -886,6 +1013,7 @@ namespace NLS::Render::Resources
 
 	const std::shared_ptr<RHI::RHIBindingSet>& Material::GetExplicitBindingSet(const std::shared_ptr<RHI::RHIDevice>& device) const
 	{
+		EnsureShaderGenerationCacheCurrent();
 		auto& state = GetRuntimeState();
 		const auto backend = ResolveDeviceBackendType(device);
 		if (!state.explicitBindingSetDirty &&
@@ -950,6 +1078,8 @@ namespace NLS::Render::Resources
 				}
 
 				bindingEntry.buffer = bufferState->second.buffer->CreateExplicitSnapshotBuffer(entry.name + "Snapshot");
+				if (bindingEntry.buffer != nullptr)
+					++state.explicitSnapshotBufferCreationCount;
 				if (bindingEntry.buffer == nullptr)
 				bindingEntry.buffer = bufferState->second.buffer->GetBufferHandle();
 				if (bindingEntry.buffer == nullptr)
@@ -961,6 +1091,7 @@ namespace NLS::Render::Resources
 					continue;
 				}
 				bindingEntry.bufferRange = bufferState->second.size;
+				bindingEntry.elementStride = entry.elementStride;
 				break;
 			}
 			case RHI::BindingType::Texture:
@@ -969,6 +1100,17 @@ namespace NLS::Render::Resources
 				const auto* parameter = m_parameterBlock.TryGet(entry.name);
 				if (parameter == nullptr)
 				{
+					if (IsMaterialTextureBindingName(entry.name))
+					{
+						const auto* texture = GetDefaultWhiteTexture2D();
+						if (texture != nullptr && texture->GetTextureHandle())
+						{
+							bindingEntry.textureView = texture->GetOrCreateExplicitTextureView(entry.name + "View");
+							if (bindingEntry.textureView != nullptr)
+								break;
+						}
+					}
+
 					addBindingDiagnostic(
 						MaterialBindingDiagnosticSeverity::Error,
 						entry.name,
@@ -1054,14 +1196,23 @@ namespace NLS::Render::Resources
 			NLS_LOG_INFO("[SkyboxMaterial] Explicit binding set entry count = " + std::to_string(bindingSetDesc.entries.size()));
 
 		state.explicitBindingSet = device->CreateBindingSet(bindingSetDesc);
+		if (state.explicitBindingSet != nullptr)
+			++state.explicitBindingSetCreationCount;
 		state.explicitBindingSetDirty = false;
 		return state.explicitBindingSet;
 	}
 
 	const std::shared_ptr<RHI::RHIPipelineLayout>& Material::GetExplicitPipelineLayout(const std::shared_ptr<RHI::RHIDevice>& device) const
 	{
+		EnsureShaderGenerationCacheCurrent();
 		auto& state = GetRuntimeState();
-		const auto backend = ResolveDeviceBackendType(device);
+		auto backend = ResolveDeviceBackendType(device);
+		if (device != nullptr)
+		{
+			const auto nativeInfo = device->GetNativeDeviceInfo();
+			if (nativeInfo.backend != RHI::NativeBackendType::None)
+				backend = nativeInfo.backend;
+		}
 		if (state.explicitPipelineLayout != nullptr && state.explicitPipelineLayoutBackend == backend)
 			return state.explicitPipelineLayout;
 
@@ -1079,8 +1230,22 @@ namespace NLS::Render::Resources
 		if (layoutDescs.empty())
 			return state.explicitPipelineLayout;
 
+		const bool requiresIndexedObjectData = ShaderSupportsIndexedObjectData(*m_shader);
+		if (requiresIndexedObjectData && !BackendSupportsIndexedObjectDataPushConstants(backend))
+			return state.explicitPipelineLayout;
+
 		RHI::RHIPipelineLayoutDesc pipelineLayoutDesc;
 		pipelineLayoutDesc.debugName = path.empty() ? "MaterialPipelineLayout" : path + ":MaterialPipelineLayout";
+		if (requiresIndexedObjectData)
+		{
+			pipelineLayoutDesc.pushConstants.push_back({
+				RHI::ShaderStageMask::Vertex,
+				0u,
+				sizeof(uint32_t),
+				1u,
+				NLS::Render::RHI::BindingPointMap::kObjectBindingSpace
+			});
+		}
 		pipelineLayoutDesc.bindingLayouts.reserve(layoutDescs.size());
 		for (const auto& layoutDesc : layoutDescs)
 		{
@@ -1110,7 +1275,142 @@ namespace NLS::Render::Resources
 			});
 	}
 
-	std::map<std::string, std::any>& Material::GetUniformsData()
+	bool Material::RequiresPassDescriptorSet() const
+	{
+		EnsureShaderGenerationCacheCurrent();
+		if (m_shader == nullptr)
+			return false;
+
+		if (m_shader->HasParameterStructs())
+		{
+			const auto layoutDescs = BuildExplicitBindingLayoutDescs(
+				*m_shader,
+				path.empty() ? "Material" : path);
+			constexpr uint32_t passSetIndex = NLS::Render::RHI::BindingPointMap::kPassDescriptorSet;
+			return layoutDescs.size() > passSetIndex && !layoutDescs[passSetIndex].entries.empty();
+		}
+
+		const auto& reflection = m_shader->GetReflection();
+		for (const auto& constantBuffer : reflection.constantBuffers)
+		{
+			if (constantBuffer.bindingSpace == NLS::Render::RHI::BindingPointMap::kPassBindingSpace)
+				return true;
+		}
+
+		for (const auto& property : reflection.properties)
+		{
+			if (property.bindingSpace == NLS::Render::RHI::BindingPointMap::kPassBindingSpace)
+				return true;
+		}
+
+		return false;
+	}
+
+	void Material::SetRawParameter(const std::string& name, std::any value)
+	{
+		m_parameterBlock.Set(name, std::move(value));
+		InvalidateExplicitBindingSetCache();
+	}
+
+	void Material::MarkParametersDirty()
+	{
+		m_parameterBlock.MarkDirty();
+		InvalidateExplicitBindingSetCache();
+	}
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+	uint64_t Material::GetCachedShaderGenerationForTesting() const
+	{
+		return GetRuntimeState().shaderGeneration;
+	}
+#endif
+
+	void Material::SetTextureResourcePath(const std::string& name, std::string path)
+	{
+		if (name.empty())
+			return;
+
+		if (path.empty())
+		{
+			ClearTextureResourcePath(name);
+			return;
+		}
+
+		m_textureResourcePaths[name] = std::move(path);
+	}
+
+	void Material::ClearTextureResourcePath(const std::string& name)
+	{
+		m_textureResourcePaths.erase(name);
+	}
+
+	std::string Material::GetTextureResourcePath(const std::string& name) const
+	{
+		const auto found = m_textureResourcePaths.find(name);
+		return found != m_textureResourcePaths.end() ? found->second : std::string {};
+	}
+
+	const std::map<std::string, std::string>& Material::GetTextureResourcePaths() const
+	{
+		return m_textureResourcePaths;
+	}
+
+	void Material::SetSamplerOverride(const std::string& name, const RHI::SamplerDesc& sampler)
+	{
+		if (name.empty())
+			return;
+
+		m_samplerOverrides[name] = sampler;
+		InvalidateExplicitBindingSetCache();
+	}
+
+	void Material::ClearSamplerOverride(const std::string& name)
+	{
+		if (m_samplerOverrides.erase(name) > 0u)
+			InvalidateExplicitBindingSetCache();
+	}
+
+	void Material::ClearSamplerOverrides()
+	{
+		if (m_samplerOverrides.empty())
+			return;
+
+		m_samplerOverrides.clear();
+		InvalidateExplicitBindingSetCache();
+	}
+
+	const RHI::SamplerDesc* Material::GetSamplerOverride(const std::string& name) const
+	{
+		const auto found = m_samplerOverrides.find(name);
+		return found != m_samplerOverrides.end() ? &found->second : nullptr;
+	}
+
+	uint64_t Material::GetInstanceId() const
+	{
+		return m_instanceId;
+	}
+
+	uint64_t Material::GetParameterRevision() const
+	{
+		return m_parameterBlock.GetRevision();
+	}
+
+	uint64_t Material::GetRenderStateRevision() const
+	{
+		return m_renderStateRevision;
+	}
+
+	uint64_t Material::GetExplicitBindingSetCreationCount() const
+	{
+		return GetRuntimeState().explicitBindingSetCreationCount;
+	}
+
+	uint64_t Material::GetExplicitSnapshotBufferCreationCount() const
+	{
+		return GetRuntimeState().explicitSnapshotBufferCreationCount;
+	}
+
+	const std::map<std::string, std::any>& Material::GetUniformsData() const
 	{
 		return m_parameterBlock.Data();
 	}

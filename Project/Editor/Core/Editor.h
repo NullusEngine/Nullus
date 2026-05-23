@@ -1,7 +1,9 @@
 ﻿#pragma once
 #include "Core/Context.h"
 #include "Core/EditorActions.h"
+#include "Core/AssetFileWatcher.h"
 #include "Core/PanelsManager.h"
+#include "Assets/EditorStartupAssetPreimport.h"
 #include "Shortcuts/EditorShortcutService.h"
 #include <UI/Modules/Canvas.h>
 namespace NLS
@@ -50,6 +52,15 @@ public:
     void RegisterDefaultShortcuts();
     void ApplyStartupValidationDirectives();
     void RestoreStartupScene();
+    void RefreshProjectAssetBrowser();
+    void PrepareProjectAssetWatchersForStartup();
+    void AdoptStartupAssetWatchers(
+        AssetFileWatcher engineAssetsWatcher,
+        AssetFileWatcher projectAssetsWatcher);
+    bool RunStartupWatcherPreimport(
+        const NLS::Editor::Assets::StartupAssetPreimportProgressSink& progressSink = {});
+    bool CompleteStartupWatcherPreimportGate(
+        const NLS::Editor::Assets::StartupAssetPreimportProgressSink& progressSink = {});
     void RememberLastOpenedScene(const std::string& p_scenePath);
     void RefreshProfilerRecordingState();
 

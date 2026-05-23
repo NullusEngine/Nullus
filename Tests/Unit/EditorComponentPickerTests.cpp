@@ -6,7 +6,6 @@
 #include "Components/CameraComponent.h"
 #include "Components/Component.h"
 #include "Components/LightComponent.h"
-#include "Components/MaterialRenderer.h"
 #include "Components/MeshRenderer.h"
 #include "Components/SkyBoxComponent.h"
 #include "Components/TransformComponent.h"
@@ -24,16 +23,15 @@ using NLS::Editor::Panels::ComponentPickerViewMode;
 using NLS::Engine::Components::CameraComponent;
 using NLS::Engine::Components::Component;
 using NLS::Engine::Components::LightComponent;
-using NLS::Engine::Components::MaterialRenderer;
 using NLS::Engine::Components::MeshRenderer;
 using NLS::Engine::Components::SkyBoxComponent;
 using NLS::Engine::Components::TransformComponent;
 using NLS::Engine::GameObject;
 using NLS::meta::Type;
 
-GameObject MakeActor()
+GameObject MakeGameObject()
 {
-    return GameObject("Actor", "Untagged");
+    return GameObject("GameObject", "Untagged");
 }
 
 bool ContainsDisplayName(const std::vector<ComponentSearchEntry>& p_entries, const std::string& p_displayName)
@@ -77,13 +75,11 @@ TEST_F(ReflectionRuntimeTestFixture, MakeDisplayNameRemovesNamespacesAndSplitsCa
 TEST_F(ReflectionRuntimeTestFixture, ComponentEntriesReadComponentMenuMetadataAndUseRootFallback)
 {
     const auto meshRendererType = Type::GetFromName("NLS::Engine::Components::MeshRenderer");
-    const auto materialRendererType = Type::GetFromName("NLS::Engine::Components::MaterialRenderer");
 
     ASSERT_TRUE(meshRendererType.IsValid());
-    ASSERT_TRUE(materialRendererType.IsValid());
 
     EXPECT_EQ(ComponentSearchPanel::GetComponentMenuPath(meshRendererType), "Rendering/Mesh Renderer");
-    EXPECT_EQ(ComponentSearchPanel::GetComponentMenuPath(materialRendererType), "Rendering/Material Renderer");
+    EXPECT_FALSE(Type::GetFromName("NLS::Engine::Components::MaterialRenderer").IsValid());
     EXPECT_EQ(
         ComponentSearchPanel::GetComponentMenuPath(Type::GetFromName("NLS::Engine::Components::SkyBoxComponent")),
         "Sky Box");
@@ -91,7 +87,7 @@ TEST_F(ReflectionRuntimeTestFixture, ComponentEntriesReadComponentMenuMetadataAn
 
 TEST_F(ReflectionRuntimeTestFixture, BuildComponentEntriesUsesReflectionAndSortsReadableNames)
 {
-    auto actor = MakeActor();
+    auto actor = MakeGameObject();
 
     const std::vector<ComponentSearchEntry> entries = ComponentSearchPanel::BuildComponentEntries(&actor);
 
@@ -107,7 +103,7 @@ TEST_F(ReflectionRuntimeTestFixture, BuildComponentEntriesUsesReflectionAndSorts
 
 TEST_F(ReflectionRuntimeTestFixture, BuildComponentEntriesFiltersBaseAndTransformTypes)
 {
-    auto actor = MakeActor();
+    auto actor = MakeGameObject();
 
     const std::vector<ComponentSearchEntry> entries = ComponentSearchPanel::BuildComponentEntries(&actor);
 
@@ -117,7 +113,7 @@ TEST_F(ReflectionRuntimeTestFixture, BuildComponentEntriesFiltersBaseAndTransfor
 
 TEST_F(ReflectionRuntimeTestFixture, SearchFilteringIsCaseInsensitiveAndSupportsCollapsedSpacing)
 {
-    auto actor = MakeActor();
+    auto actor = MakeGameObject();
 
     const std::vector<ComponentSearchEntry> entries = ComponentSearchPanel::BuildComponentEntries(&actor, "mesh renderer");
 
@@ -134,7 +130,7 @@ TEST_F(ReflectionRuntimeTestFixture, PickerViewModeUsesCategoriesForEmptyQueryAn
 
 TEST_F(ReflectionRuntimeTestFixture, BuildComponentMenuTreeUsesMetadataCategories)
 {
-    auto actor = MakeActor();
+    auto actor = MakeGameObject();
 
     const auto entries = ComponentSearchPanel::BuildComponentEntries(&actor);
     const auto roots = ComponentSearchPanel::BuildCategoryTree(entries);
@@ -162,7 +158,7 @@ TEST_F(ReflectionRuntimeTestFixture, BuildComponentMenuTreeUsesMetadataCategorie
 
 TEST_F(ReflectionRuntimeTestFixture, BuildComponentMenuTreePlacesComponentsWithoutMenuMetadataAtRoot)
 {
-    auto actor = MakeActor();
+    auto actor = MakeGameObject();
 
     const auto entries = ComponentSearchPanel::BuildComponentEntries(&actor);
     const auto roots = ComponentSearchPanel::BuildCategoryTree(entries);
@@ -182,7 +178,7 @@ TEST_F(ReflectionRuntimeTestFixture, BuildComponentMenuTreePlacesComponentsWitho
 
 TEST_F(ReflectionRuntimeTestFixture, AddabilityBlocksDuplicateSingleInstanceComponents)
 {
-    auto actor = MakeActor();
+    auto actor = MakeGameObject();
     actor.AddComponent<CameraComponent>();
 
     const std::vector<ComponentSearchEntry> entries = ComponentSearchPanel::BuildComponentEntries(&actor);
@@ -194,7 +190,7 @@ TEST_F(ReflectionRuntimeTestFixture, AddabilityBlocksDuplicateSingleInstanceComp
 
 TEST_F(ReflectionRuntimeTestFixture, AddabilityAllowsComponentsNotAlreadyPresent)
 {
-    auto actor = MakeActor();
+    auto actor = MakeGameObject();
 
     const std::vector<ComponentSearchEntry> entries = ComponentSearchPanel::BuildComponentEntries(&actor);
     const ComponentSearchEntry* lightEntry = FindEntry(entries, "Light");
@@ -205,7 +201,7 @@ TEST_F(ReflectionRuntimeTestFixture, AddabilityAllowsComponentsNotAlreadyPresent
 
 TEST_F(ReflectionRuntimeTestFixture, TryAddComponentFromEntryUsesDynamicAddPath)
 {
-    auto actor = MakeActor();
+    auto actor = MakeGameObject();
     const auto type = Type::GetFromName("NLS::Engine::Components::LightComponent");
 
     ComponentSearchEntry entry;
@@ -220,7 +216,7 @@ TEST_F(ReflectionRuntimeTestFixture, TryAddComponentFromEntryUsesDynamicAddPath)
 
 TEST_F(ReflectionRuntimeTestFixture, TryAddComponentFromEntryRejectsInvalidOrBlockedEntries)
 {
-    auto actor = MakeActor();
+    auto actor = MakeGameObject();
     actor.AddComponent<CameraComponent>();
 
     const auto type = Type::GetFromName("NLS::Engine::Components::CameraComponent");

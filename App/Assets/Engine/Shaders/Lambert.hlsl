@@ -9,10 +9,7 @@ cbuffer FrameConstants : register(b0, space0)
     float4x4 u_ViewProjectionNoTranslation;
 };
 
-cbuffer ObjectConstants : register(b0, space3)
-{
-    float4x4 u_Model;
-};
+StructuredBuffer<float4x4> ObjectData : register(t0, space3);
 
 cbuffer MaterialConstants : register(b0, space2)
 {
@@ -27,16 +24,17 @@ StructuredBuffer<uint> u_ForwardLocalLightBuffer : register(t0, space1);
 StructuredBuffer<uint> u_NumCulledLightsGrid : register(t1, space1);
 StructuredBuffer<uint> u_CulledLightDataGrid : register(t2, space1);
 
-VSOutput VSMain(VSInput input)
+VSOutput VSMain(VSInput input, uint instanceId : SV_InstanceID)
 {
     VSOutput output;
+    const float4x4 model = ObjectData[u_ObjectIndex + instanceId];
 
-    const float4 worldPosition = mul(u_Model, float4(input.Position, 1.0f));
+    const float4 worldPosition = mul(model, float4(input.Position, 1.0f));
     output.PositionCS = mul(u_ViewProjection, worldPosition);
     output.PositionWS = worldPosition.xyz;
-    output.NormalWS = normalize(mul((float3x3)u_Model, input.Normal));
-    output.TangentWS = mul((float3x3)u_Model, input.Tangent);
-    output.BitangentWS = mul((float3x3)u_Model, input.Bitangent);
+    output.NormalWS = normalize(mul((float3x3)model, input.Normal));
+    output.TangentWS = mul((float3x3)model, input.Tangent);
+    output.BitangentWS = mul((float3x3)model, input.Bitangent);
     output.TexCoord = input.TexCoord;
     return output;
 }

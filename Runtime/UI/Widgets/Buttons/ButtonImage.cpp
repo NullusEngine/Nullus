@@ -23,7 +23,12 @@ void ButtonImage::_Draw_Impl()
             resolvedTextureId = nativeHandle.handle;
     }
 
-    if (ImGui::ImageButton(resolvedTextureId, Internal::Converter::ToImVec2(size), ImVec2(0.f, 1.f), ImVec2(1.f, 0.f), -1, bg, tn))
+    const ImVec2 imageSize = Internal::Converter::ToImVec2(size);
+    const bool clicked = resolvedTextureId != nullptr
+        ? ImGui::ImageButton(resolvedTextureId, imageSize, ImVec2(0.f, 1.f), ImVec2(1.f, 0.f), -1, bg, tn)
+        : ImGui::InvisibleButton(m_widgetID.c_str(), imageSize);
+
+    if (clicked)
         ClickedEvent.Invoke();
 }
 } // namespace NLS

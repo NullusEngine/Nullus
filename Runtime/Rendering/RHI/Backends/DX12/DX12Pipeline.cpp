@@ -136,16 +136,16 @@ namespace NLS::Render::Backend
 		, m_desc(std::move(desc))
 	{
 #if defined(_WIN32)
-		if (m_device != nullptr && !m_desc.bindingLayouts.empty())
+		if (m_device != nullptr)
 		{
 			const auto ownedRootParameters = NLS::Render::RHI::DX12::BuildDX12OwnedRootParameters(m_desc);
 			m_descriptorTables = ownedRootParameters.descriptorTables;
-			if (ownedRootParameters.rootParameters.empty())
-				return;
+			m_pushConstantRootParameterOffset = ownedRootParameters.pushConstantRootParameterOffset;
+			m_pushConstantRootParameters = ownedRootParameters.pushConstantRootParameters;
 
 			D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
 			rootSigDesc.NumParameters = static_cast<UINT>(ownedRootParameters.rootParameters.size());
-			rootSigDesc.pParameters = ownedRootParameters.rootParameters.data();
+			rootSigDesc.pParameters = ownedRootParameters.rootParameters.empty() ? nullptr : ownedRootParameters.rootParameters.data();
 			rootSigDesc.NumStaticSamplers = 0;
 			rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
 
@@ -178,10 +178,20 @@ namespace NLS::Render::Backend
 
 	std::string_view NativeDX12PipelineLayout::GetDebugName() const { return m_desc.debugName; }
 	const NLS::Render::RHI::RHIPipelineLayoutDesc& NativeDX12PipelineLayout::GetDesc() const { return m_desc; }
+	bool NativeDX12PipelineLayout::IsValid() const
+	{
+#if defined(_WIN32)
+		return m_rootSignature != nullptr;
+#else
+		return true;
+#endif
+	}
 #if defined(_WIN32)
 	ID3D12RootSignature* NativeDX12PipelineLayout::GetRootSignature() const { return m_rootSignature.Get(); }
 #endif
 	const std::vector<NLS::Render::RHI::DX12::DX12DescriptorTableDesc>& NativeDX12PipelineLayout::GetDescriptorTables() const { return m_descriptorTables; }
+	uint32_t NativeDX12PipelineLayout::GetPushConstantRootParameterOffset() const { return m_pushConstantRootParameterOffset; }
+	const std::vector<NLS::Render::RHI::DX12::DX12PushConstantRootParameterDesc>& NativeDX12PipelineLayout::GetPushConstantRootParameters() const { return m_pushConstantRootParameters; }
 
 	NativeDX12ShaderModule::NativeDX12ShaderModule(NLS::Render::RHI::RHIShaderModuleDesc desc)
 		: m_desc(std::move(desc))
@@ -217,6 +227,12 @@ namespace NLS::Render::Backend
 			}
 		}
 
+		if (m_desc.pipelineLayout != nullptr && !usedLayoutRootSignature)
+		{
+			NLS_LOG_ERROR("NativeDX12GraphicsPipeline: pipeline layout has no valid native root signature: " + m_desc.debugName);
+			return;
+		}
+
 		if (!usedLayoutRootSignature)
 			CreateDefaultRootSignature();
 
@@ -237,6 +253,14 @@ namespace NLS::Render::Backend
 
 	std::string_view NativeDX12GraphicsPipeline::GetDebugName() const { return m_desc.debugName; }
 	const NLS::Render::RHI::RHIGraphicsPipelineDesc& NativeDX12GraphicsPipeline::GetDesc() const { return m_desc; }
+	bool NativeDX12GraphicsPipeline::IsValid() const
+	{
+#if defined(_WIN32)
+		return m_rootSignature != nullptr && m_pipelineState != nullptr;
+#else
+		return true;
+#endif
+	}
 #if defined(_WIN32)
 	ID3D12PipelineState* NativeDX12GraphicsPipeline::GetPipelineState() const { return m_pipelineState; }
 	ID3D12RootSignature* NativeDX12GraphicsPipeline::GetRootSignature() const { return m_rootSignature; }
@@ -475,6 +499,12 @@ namespace NLS::Render::Backend
 			}
 		}
 
+		if (m_desc.pipelineLayout != nullptr && m_rootSignature == nullptr)
+		{
+			NLS_LOG_ERROR("NativeDX12ComputePipeline: pipeline layout has no valid native root signature: " + m_desc.debugName);
+			return;
+		}
+
 		if (m_rootSignature != nullptr)
 			CreatePipelineState();
 #endif
@@ -492,6 +522,14 @@ namespace NLS::Render::Backend
 
 	std::string_view NativeDX12ComputePipeline::GetDebugName() const { return m_desc.debugName; }
 	const NLS::Render::RHI::RHIComputePipelineDesc& NativeDX12ComputePipeline::GetDesc() const { return m_desc; }
+	bool NativeDX12ComputePipeline::IsValid() const
+	{
+#if defined(_WIN32)
+		return m_rootSignature != nullptr && m_pipelineState != nullptr;
+#else
+		return true;
+#endif
+	}
 #if defined(_WIN32)
 	ID3D12PipelineState* NativeDX12ComputePipeline::GetPipelineState() const { return m_pipelineState; }
 	ID3D12RootSignature* NativeDX12ComputePipeline::GetRootSignature() const { return m_rootSignature; }

@@ -26,28 +26,6 @@ Texture::~Texture()
 	ReleaseRHITexture();
 }
 
-Texture::Texture(Texture&& rhs) noexcept
-{
-	ReleaseRHITexture();
-	m_dimension = rhs.m_dimension;
-	m_explicitTexture = std::move(rhs.m_explicitTexture);
-	m_explicitTextureView = std::move(rhs.m_explicitTextureView);
-	rhs.m_dimension = RHI::TextureDimension::Texture2D;
-}
-
-Texture& Texture::operator=(Texture&& rhs) noexcept
-{
-	if (this != &rhs)
-	{
-		ReleaseRHITexture();
-		m_dimension = rhs.m_dimension;
-		m_explicitTexture = std::move(rhs.m_explicitTexture);
-		m_explicitTextureView = std::move(rhs.m_explicitTextureView);
-		rhs.m_dimension = RHI::TextureDimension::Texture2D;
-	}
-	return *this;
-}
-
 void Texture::CreateRHITexture()
 {
 	if (m_explicitTexture != nullptr)

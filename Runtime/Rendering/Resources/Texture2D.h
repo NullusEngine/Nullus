@@ -4,9 +4,12 @@
 #include <memory>
 #include <string>
 
+#include "Rendering/Assets/TextureArtifact.h"
+#include "Reflection/Macros.h"
 #include "RenderDef.h"
 #include "Rendering/Settings/ETextureFilteringMode.h"
 #include "Rendering/Resources/Texture.h"
+#include "Resources/Texture2D.generated.h"
 
 namespace NLS
 {
@@ -17,20 +20,25 @@ namespace NLS::Render::Resources
 {
 	namespace Loaders { class TextureLoader; }
 
-	class NLS_RENDER_API Texture2D : public Texture
+	CLASS(NLS_RENDER_API Texture2D) : public Texture
 	{
 		friend class Loaders::TextureLoader;
 
 	public:
+		GENERATED_BODY()
+
 		~Texture2D() = default;
+		Texture2D(const Texture2D&) = delete;
+		Texture2D& operator=(const Texture2D&) = delete;
+		Texture2D(Texture2D&&) = delete;
+		Texture2D& operator=(Texture2D&&) = delete;
 
 	private:
 		Texture2D() = default;
 
-		Texture2D(Texture2D&&) noexcept;
-		Texture2D& operator=(Texture2D&&) noexcept;
-
 		void SetTextureResource(const Image*);
+		bool SetTextureResource(const NLS::Render::Assets::TextureArtifactData& artifact);
+		void ReloadFrom(const Texture2D& source);
 
 	public:
 		static std::unique_ptr<Texture2D> WrapExternal(

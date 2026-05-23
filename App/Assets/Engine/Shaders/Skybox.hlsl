@@ -8,11 +8,6 @@ cbuffer FrameConstants : register(b0, space0)
     float4x4 u_ViewProjectionNoTranslation;
 };
 
-cbuffer ObjectConstants : register(b0, space3)
-{
-    float4x4 u_Model;
-};
-
 cbuffer MaterialConstants : register(b0, space2)
 {
     int u_UseProceduralSky;

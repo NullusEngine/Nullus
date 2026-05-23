@@ -105,7 +105,7 @@ TEST(UE5RenderArchitectureContractTests, OwnershipStagesFlowFromRenderFrameInput
     snapshot.renderHeight = 720u;
     snapshot.targetsSwapchain = true;
     snapshot.hasSceneInput = true;
-    snapshot.sceneActorCount = 4u;
+    snapshot.sceneGameObjectCount = 4u;
     snapshot.visibleOpaqueDrawCount = 2u;
     ASSERT_TRUE(lifecycle.TryPublishFrameSnapshot(snapshot));
 

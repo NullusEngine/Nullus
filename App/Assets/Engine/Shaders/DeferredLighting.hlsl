@@ -120,5 +120,5 @@ float4 PSMain(VSOutput input) : SV_Target0
         roughness,
         ao);
 
-    return float4(litColor, albedo.a);
+    return float4(litColor, 1.0f);
 }

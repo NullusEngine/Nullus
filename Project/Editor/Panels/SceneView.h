@@ -30,6 +30,7 @@ namespace NLS::Editor::Panels
 		* Update the scene view
 		*/
 		virtual void Update(float p_deltaTime) override;
+        void EnsureRenderer() override;
 
         Editor::Core::EGizmoOperation GetCurrentGizmoOperation() const;
         void SetCurrentGizmoOperation(Editor::Core::EGizmoOperation p_operation);
@@ -53,14 +54,16 @@ namespace NLS::Editor::Panels
 	protected:
         virtual Engine::Rendering::BaseSceneRenderer::SceneDescriptor CreateSceneDescriptor() override;
         bool RequiresSynchronizedRetiredFramePresentation() const override;
+        void AfterRenderFrame() override;
         void DrawPreRenderViewportOverlay() override;
         void OnAfterDrawWidgets() override;
         void DrawViewportOverlay() override;
 
 	private:
-		void HandleActorPicking();
+		void HandleGameObjectPicking();
         void EnsureCameraFocus();
         bool ShouldRequestPickingFrame() const;
+        void TryWriteValidationReadback();
 
 	private:
 		Engine::SceneSystem::SceneManager& m_sceneManager;
@@ -68,7 +71,7 @@ namespace NLS::Editor::Panels
 		Editor::Core::SceneViewGizmoPivot m_currentPivot = Editor::Core::SceneViewGizmoPivot::Pivot;
 		Editor::Core::SceneViewGizmoSpace m_currentSpace = Editor::Core::SceneViewGizmoSpace::Global;
 
-		Engine::GameObject* m_highlightedActor = nullptr;
+		Engine::GameObject* m_highlightedGameObject = nullptr;
 		uint64_t m_destroyedListener = 0;
         Editor::Core::SceneViewGizmoInteraction m_gizmoInteraction;
         Editor::Core::SceneCameraFocusState m_cameraFocus;
@@ -79,5 +82,7 @@ namespace NLS::Editor::Panels
 		bool m_hasPickingSample = false;
         bool m_requestPickingFrame = true;
         bool m_cameraMovedForPresentation = true;
+        bool m_validationReadbackWritten = false;
+        uint32_t m_validationReadbackReadyFrames = 0u;
 	};
 }

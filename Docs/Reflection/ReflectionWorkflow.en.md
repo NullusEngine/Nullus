@@ -8,12 +8,12 @@ For the Chinese version, see [ReflectionWorkflow.zh-CN.md](./ReflectionWorkflow.
 
 Nullus uses one maintained reflection path:
 
-- declare reflected types in runtime headers
+- declare reflected types in runtime and project headers
 - let `Tools/MetaParser` parse the declarations during the normal CMake build
-- generate glue into `Runtime/<Module>/Gen/`
+- generate glue into `Runtime/<Module>/Gen/` or `Project/<Target>/Gen/`
 - register types and members through the generated module link functions at runtime
 
-Do not hand-edit files under `Runtime/*/Gen/`.
+Do not hand-edit files under `Runtime/*/Gen/` or `Project/*/Gen/`.
 
 ## How the current system really works
 
@@ -172,7 +172,7 @@ PROPERTY(name = active, getter = IsSelfActive, setter = SetActive)
 Current repository examples:
 
 - `GameObject.active`
-- `MeshRenderer.model`
+- `MeshFilter.mesh`
 
 ### Pattern 3: External reflection declaration
 
@@ -222,7 +222,7 @@ This works through generated access helpers and should remain the exception, not
 | Inline reflected type | The engine owns the type and consumers need stable runtime metadata | `CLASS` / `STRUCT` / `GENERATED_BODY` / `FUNCTION` | `TransformComponent`, `CameraComponent`, `GameObject`, `Scene` |
 | Reflected enum | The enum appears in reflected fields or editor choices | `ENUM` | `EProjectionMode`, `ELightType`, `MeshRenderer::EFrustumBehaviour` |
 | Auto property | Getter and setter names line up cleanly as `GetXxx` / `SetXxx` | `FUNCTION` on both accessors | `fov`, `near`, `far`, `lightType`, `materialPaths` |
-| Explicit property | The exposed property name differs from accessor naming | `PROPERTY(...)` plus matching accessors | `GameObject.active`, `MeshRenderer.model` |
+| Explicit property | The exposed property name differs from accessor naming | `PROPERTY(...)` plus matching accessors | `GameObject.active`, `MeshFilter.mesh` |
 | External reflection | The target type should stay free of inline reflection macros | `MetaExternal` + `REFLECT_EXTERNAL` | `NLS::Maths::Vector3`, `NLS::Maths::Quaternion` |
 | Private external reflection | A private member must be exposed deliberately and exceptionally | `REFLECT_PRIVATE_*` | `PrivateReflectionExternalSample` |
 
@@ -233,8 +233,8 @@ Correct inline reflection coverage today includes:
 - `TransformComponent`
 - `CameraComponent`
 - `LightComponent`
+- `MeshFilter`
 - `MeshRenderer`
-- `MaterialRenderer`
 - `GameObject`
 - `Scene`
 - `BoundingSphere`
@@ -252,7 +252,9 @@ Correct external reflection usage today includes:
 
 Object Graph serialization uses reflected object fields as the maintained ordinary-property surface. `ObjectGraphSerializer` walks `object.GetType().GetFields()` for value fields and converts each reflected value through the reflection JSON path before writing Object Graph properties.
 
-Relationships that define graph structure are not ordinary reflected fields. Scene ownership of game objects, game object ownership of components or children, parent object references, prefab overrides, and asset references are represented explicitly as `$owned`, `$ref`, `$asset`, or patch operations in `Runtime/Engine/Serialize`.
+Relationships that define graph structure are not ordinary reflected fields. Scene ownership of game objects and game object ownership of components or children are represented with `$owned`. Parent object references and asset references are represented with the current Object Graph object-reference shape: `fileID`, `guid`, `type`, and optional `filePath`. Prefab overrides are represented as patch operations in `Runtime/Engine/Serialize`.
+
+Do not write legacy `$ref` or `$asset` objects. `ObjectGraphReader` rejects those shapes; local object references use an empty `guid` with a non-zero `fileID`, while asset references require a valid `guid`, non-zero `fileID`, and asset `type`.
 
 Types intended for scene or prefab persistence should therefore expose stable serializable state through reflected fields, mark transient/editor-only/runtime-only intent with runtime metadata where appropriate, and avoid raw pointer persistence unless the field is explicitly modeled as owned, object reference, asset reference, or transient. The legacy `SerializedSceneData`, `SerializedActorData`, `SerializedComponentData`, and `GameobjectSerialize` adapter path are no longer the maintained scene persistence surface.
 
@@ -298,11 +300,11 @@ ctest --test-dir build --output-on-failure
 
 ## Known constraints
 
-- `Runtime/*/Gen/` is generated output only
+- `Runtime/*/Gen/` and `Project/*/Gen/` are generated output only
 - support claims must be tied to exact tested evidence
 - Windows-first reflection evidence does not prove Linux or macOS generation behavior
 - if a reflected property uses an unsupported type, fix the reflected type support instead of adapting it implicitly in generated code
-- if a reflected declaration uses `Array<...>` without the `NLS::` qualifier, MetaParser now reports that it should be written as `NLS::Array<...>`
+- `std::vector<T>` and `NLS::Array<T>` reflected value fields are supported; MetaParser also normalizes local shorthand spellings such as `vector<T>` and `Array<T>` after CppAst resolves them, but fully qualified spellings remain the preferred source style.
 
 ## Related docs
 

@@ -5,6 +5,8 @@
 
 #include "IconsFontAwesome4.h"
 #include "UI/Icons/FontAwesomeIconFont.h"
+#include "UI/Profiling/TimelineProfilerLimits.h"
+#include "ProfilerTraceCursor.h"
 #include <fstream>
 #include <algorithm>
 #include <imgui_internal.h>
@@ -64,7 +66,7 @@ public:
 
 struct StyleOptions
 {
-	int	  MaxDepth = 6;
+	int	  MaxDepth = static_cast<int>(NLS::UI::Profiling::kTimelineProfilerMaxCpuScopeDepth);
 	float MaxTime  = 80;
 
 	float BarHeight		= 1.5f;
@@ -135,7 +137,7 @@ static HUDContext& Context()
 static void EditStyle(StyleOptions& style)
 {
 	ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x * 0.7f);
-	ImGui::SliderInt("Depth", &style.MaxDepth, 1, 12);
+	ImGui::SliderInt("Depth", &style.MaxDepth, 1, static_cast<int>(NLS::UI::Profiling::kTimelineProfilerMaxCpuScopeDepth));
 	ImGui::SliderFloat("Max Time", &style.MaxTime, 8, 500, "%.1f");
 	ImGui::SliderFloat("Bar Height", &style.BarHeight, 1, 4);
 	ImGui::SliderFloat("Bar Padding", &style.BarPadding, 0, 5);
@@ -176,6 +178,7 @@ struct TraceContext
 
 	std::ofstream TraceStream;
 	uint64		  BaseTime = 0;
+	uint32		  LastExportedFrame = 0;
 };
 
 void BeginTrace(const char* pPath, TraceContext& context)
@@ -185,6 +188,8 @@ void BeginTrace(const char* pPath, TraceContext& context)
 
 	context.TraceStream.open(pPath);
 	context.TraceStream << "{\n\"traceEvents\": [\n";
+	URange cpuRange = gProfiler.GetFrameRange();
+	context.LastExportedFrame = cpuRange.End > 0 ? cpuRange.End - 1 : 0;
 
 	context.TraceStream << Sprintf("{\"name\":\"process_name\",\"ph\":\"M\",\"pid\":0,\"args\":{\"name\":\"Track\"}},\n");
 	for (const Profiler::EventTrack& track : gProfiler.GetTracks())
@@ -203,10 +208,20 @@ void UpdateTrace(TraceContext& context)
 	const float TicksToMs = 1000.0f / frequency;
 
 	URange cpuRange = gProfiler.GetFrameRange();
-	for (const Profiler::EventTrack& track : gProfiler.GetTracks())
+	const auto exportRange = NLS::UI::TimelineProfilerDetail::ResolveTraceFrameExportRange(
+		{ cpuRange.Begin, cpuRange.End },
+		context.LastExportedFrame);
+	if (exportRange.Begin == exportRange.End)
+		return;
+
+	for (uint32 frameIndex = exportRange.Begin; frameIndex < exportRange.End; ++frameIndex)
 	{
-		for (const ProfilerEvent& event : track.GetFrameData(cpuRange.Begin))
-			context.TraceStream << Sprintf("{\"pid\":0,\"tid\":%d,\"ts\":%d,\"dur\":%d,\"ph\":\"X\",\"name\":\"%s\"},\n", track.Index, (int)(1000 * TicksToMs * (event.TicksBegin - context.BaseTime)), (int)(1000 * TicksToMs * (event.TicksEnd - event.TicksBegin)), event.pName);
+		for (const Profiler::EventTrack& track : gProfiler.GetTracks())
+		{
+			for (const ProfilerEvent& event : track.GetFrameData(frameIndex))
+				context.TraceStream << Sprintf("{\"pid\":0,\"tid\":%d,\"ts\":%d,\"dur\":%d,\"ph\":\"X\",\"name\":\"%s\"},\n", track.Index, (int)(1000 * TicksToMs * (event.TicksBegin - context.BaseTime)), (int)(1000 * TicksToMs * (event.TicksEnd - event.TicksBegin)), event.pName);
+		}
+		context.LastExportedFrame = frameIndex;
 	}
 }
 

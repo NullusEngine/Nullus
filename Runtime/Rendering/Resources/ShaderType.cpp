@@ -50,7 +50,7 @@ namespace
     {
         return ShaderParameterStructBuilder(std::move(debugName))
             .SetGroup(ShaderParameterGroupKind::Object)
-            .AddUniformBuffer("ObjectConstants", 0u, 64u, NLS::Render::RHI::ShaderStageMask::Vertex)
+            .AddStructuredBuffer("ObjectData", 0u, NLS::Render::RHI::ShaderStageMask::Vertex, 64u)
             .Build();
     }
 
@@ -120,12 +120,15 @@ namespace
             BuildFrameParameters("StandardPBRFrameParameters"),
             ShaderParameterStructBuilder("StandardPBRMaterialParameters")
                 .SetGroup(ShaderParameterGroupKind::Material)
-                .AddUniformBuffer("MaterialConstants", 0u, 32u, NLS::Render::RHI::ShaderStageMask::Fragment)
+                .AddUniformBuffer("MaterialConstants", 0u, 64u, NLS::Render::RHI::ShaderStageMask::Fragment)
                 .AddTexture("u_AlbedoMap", 0u, NLS::Render::RHI::ShaderStageMask::Fragment)
                 .AddTexture("u_MetallicMap", 1u, NLS::Render::RHI::ShaderStageMask::Fragment)
                 .AddTexture("u_RoughnessMap", 2u, NLS::Render::RHI::ShaderStageMask::Fragment)
                 .AddTexture("u_AmbientOcclusionMap", 3u, NLS::Render::RHI::ShaderStageMask::Fragment)
                 .AddTexture("u_NormalMap", 4u, NLS::Render::RHI::ShaderStageMask::Fragment)
+                .AddTexture("u_OpacityMap", 5u, NLS::Render::RHI::ShaderStageMask::Fragment)
+                .AddTexture("u_EmissiveMap", 6u, NLS::Render::RHI::ShaderStageMask::Fragment)
+                .AddTexture("u_SpecularMap", 7u, NLS::Render::RHI::ShaderStageMask::Fragment)
                 .AddSampler("u_LinearWrapSampler", 0u, NLS::Render::RHI::ShaderStageMask::Fragment)
                 .Build(),
             BuildObjectParameters("StandardPBRObjectParameters"),
@@ -160,12 +163,15 @@ namespace
             BuildFrameParameters("DeferredGBufferFrameParameters"),
             ShaderParameterStructBuilder("DeferredGBufferMaterialParameters")
                 .SetGroup(ShaderParameterGroupKind::Material)
-                .AddUniformBuffer("MaterialConstants", 0u, 32u, NLS::Render::RHI::ShaderStageMask::Fragment)
+                .AddUniformBuffer("MaterialConstants", 0u, 64u, NLS::Render::RHI::ShaderStageMask::Fragment)
                 .AddTexture("u_AlbedoMap", 0u, NLS::Render::RHI::ShaderStageMask::Fragment)
                 .AddTexture("u_MetallicMap", 1u, NLS::Render::RHI::ShaderStageMask::Fragment)
                 .AddTexture("u_RoughnessMap", 2u, NLS::Render::RHI::ShaderStageMask::Fragment)
                 .AddTexture("u_AmbientOcclusionMap", 3u, NLS::Render::RHI::ShaderStageMask::Fragment)
                 .AddTexture("u_NormalMap", 4u, NLS::Render::RHI::ShaderStageMask::Fragment)
+                .AddTexture("u_OpacityMap", 5u, NLS::Render::RHI::ShaderStageMask::Fragment)
+                .AddTexture("u_EmissiveMap", 6u, NLS::Render::RHI::ShaderStageMask::Fragment)
+                .AddTexture("u_SpecularMap", 7u, NLS::Render::RHI::ShaderStageMask::Fragment)
                 .AddSampler("u_LinearWrapSampler", 0u, NLS::Render::RHI::ShaderStageMask::Fragment)
                 .Build(),
             BuildObjectParameters("DeferredGBufferObjectParameters")

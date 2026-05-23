@@ -3,12 +3,13 @@
 #include "Components/TransformComponent.h"
 #include "Components/CameraComponent.h"
 #include "Components/LightComponent.h"
+#include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
-#include "Components/MaterialRenderer.h"
 #include "Components/SkyBoxComponent.h"
 #include "GameObject.h"
 #include "Gen/MetaGenerated.h"
 #include "SceneSystem/Scene.h"
+#include "Serialize/ExternalReflection.h"
 
 namespace NLS::Engine
 {

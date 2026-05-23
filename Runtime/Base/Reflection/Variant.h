@@ -46,7 +46,7 @@ namespace NLS::meta
     public:
         Variant(void);
 
-        // Given a type that inherits from a meta::Object and
+        // Given a type that inherits from the Unity-style Object root and
         // supplied with the "WrapObject" policy, use the object wrapper
         // variant base 
         template<typename T>
@@ -54,7 +54,7 @@ namespace NLS::meta
             T *data,
             variant_policy::WrapObject,
             typename std::enable_if<
-                std::is_base_of<Object, T>::value
+                std::is_base_of<NLS::Object, T>::value
             >::type* = nullptr
         );
 
@@ -70,6 +70,12 @@ namespace NLS::meta
             variant_policy::NoCopy,
             DISABLE_VARIANT_DECL
         );
+
+        template<typename T>
+        Variant(Array<T> &rhs, variant_policy::NoCopy);
+
+        template<typename T, typename Allocator>
+        Variant(std::vector<T, Allocator> &rhs, variant_policy::NoCopy);
 
         // non-const r-value references, excluding other variants and arguments
         template<typename T>
@@ -94,6 +100,18 @@ namespace NLS::meta
         // r-value array types (const)
         template<typename T>
         Variant(const Array<T> &&rhs);
+
+        template<typename T, typename Allocator>
+        Variant(std::vector<T, Allocator> &rhs);
+
+        template<typename T, typename Allocator>
+        Variant(const std::vector<T, Allocator> &rhs);
+
+        template<typename T, typename Allocator>
+        Variant(std::vector<T, Allocator> &&rhs);
+
+        template<typename T, typename Allocator>
+        Variant(const std::vector<T, Allocator> &&rhs);
 
         // copy constructor
         Variant(const Variant &rhs);

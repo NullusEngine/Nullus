@@ -13,6 +13,12 @@ namespace NLS::Render::Resources::Loaders
 class NLS_RENDER_API MaterialLoader
 {
 public:
+    struct LoadOptions
+    {
+        bool loadMissingTextures = true;
+        bool loadMissingShaders = true;
+    };
+
     /**
      * Disabled constructor
      */
@@ -23,6 +29,7 @@ public:
      * @param p_path
      */
     static Material* Create(const std::string& p_path);
+    static Material* Create(const std::string& p_path, const LoadOptions& options);
 
     /**
      * Reload the material using the given file path
@@ -30,6 +37,7 @@ public:
      * @param p_path
      */
     static void Reload(Material& p_material, const std::string& p_path);
+    static void Reload(Material& p_material, const std::string& p_path, const LoadOptions& options);
 
     /**
      * Save the material to the given path

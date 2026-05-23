@@ -2,7 +2,9 @@
 
 #include <array>
 #include <chrono>
+#include <mutex>
 #include <thread>
+#include <vector>
 
 #if defined(_WIN32)
 #define NOMINMAX
@@ -36,10 +38,14 @@ struct AssetFileWatcher::Impl
     std::filesystem::path root;
     std::atomic_bool changed{false};
     std::atomic_bool running{false};
+    std::atomic_bool ready{false};
+    std::mutex changedPathsMutex;
+    std::vector<std::filesystem::path> changedPaths;
     std::thread worker;
 
 #if defined(_WIN32)
     HANDLE directoryHandle = INVALID_HANDLE_VALUE;
+    HANDLE wakeEvent = nullptr;
 #elif defined(__linux__)
     int inotifyFd = -1;
     std::unordered_map<int, std::filesystem::path> watches;
@@ -61,6 +67,11 @@ struct AssetFileWatcher::Impl
 
         root = watchRoot;
         changed = false;
+        {
+            std::lock_guard lock(changedPathsMutex);
+            changedPaths.clear();
+        }
+        ready = false;
         running = true;
 
 #if defined(_WIN32)
@@ -77,25 +88,42 @@ struct AssetFileWatcher::Impl
 
     void Stop()
     {
-        if (!running.exchange(false))
+        const bool wasRunning = running.exchange(false);
+        if (!wasRunning && !worker.joinable())
+        {
+            ready = false;
             return;
+        }
 
 #if defined(_WIN32)
+        ready = false;
+        if (wakeEvent)
+            SetEvent(wakeEvent);
         if (directoryHandle != INVALID_HANDLE_VALUE)
             CancelIoEx(directoryHandle, nullptr);
 #elif defined(__APPLE__)
+        ready = false;
         if (runLoop)
             CFRunLoopStop(runLoop);
+#else
+        ready = false;
 #endif
 
         if (worker.joinable())
             worker.join();
+
+        ready = false;
 
 #if defined(_WIN32)
         if (directoryHandle != INVALID_HANDLE_VALUE)
         {
             CloseHandle(directoryHandle);
             directoryHandle = INVALID_HANDLE_VALUE;
+        }
+        if (wakeEvent)
+        {
+            CloseHandle(wakeEvent);
+            wakeEvent = nullptr;
         }
 #elif defined(__linux__)
         if (inotifyFd >= 0)
@@ -118,18 +146,47 @@ struct AssetFileWatcher::Impl
     }
 
 #if defined(_WIN32)
+    void RecordWindowsChanges(const std::array<char, 64 * 1024>& buffer, DWORD bytesReturned)
+    {
+        changed = true;
+
+        std::lock_guard lock(changedPathsMutex);
+        size_t offset = 0u;
+        while (offset < static_cast<size_t>(bytesReturned))
+        {
+            const auto* notification =
+                reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(buffer.data() + offset);
+            const auto characterCount =
+                notification->FileNameLength / static_cast<DWORD>(sizeof(wchar_t));
+            changedPaths.push_back((root / std::wstring(notification->FileName, characterCount)).lexically_normal());
+
+            if (notification->NextEntryOffset == 0u)
+                break;
+            offset += notification->NextEntryOffset;
+        }
+    }
+
     bool StartWindows()
     {
+        wakeEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        if (!wakeEvent)
+        {
+            running = false;
+            return false;
+        }
+
         directoryHandle = CreateFileW(
             ToWidePath(root).c_str(),
             FILE_LIST_DIRECTORY,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             nullptr,
             OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED,
             nullptr);
         if (directoryHandle == INVALID_HANDLE_VALUE)
         {
+            CloseHandle(wakeEvent);
+            wakeEvent = nullptr;
             running = false;
             return false;
         }
@@ -137,8 +194,17 @@ struct AssetFileWatcher::Impl
         worker = std::thread([this]
         {
             std::array<char, 64 * 1024> buffer{};
+            OVERLAPPED overlapped{};
+            overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            if (!overlapped.hEvent)
+            {
+                running = false;
+                return;
+            }
+
             while (running)
             {
+                ResetEvent(overlapped.hEvent);
                 DWORD bytesReturned = 0;
                 const BOOL ok = ReadDirectoryChangesW(
                     directoryHandle,
@@ -150,21 +216,65 @@ struct AssetFileWatcher::Impl
                         FILE_NOTIFY_CHANGE_SIZE |
                         FILE_NOTIFY_CHANGE_LAST_WRITE |
                         FILE_NOTIFY_CHANGE_CREATION,
-                    &bytesReturned,
                     nullptr,
+                    &overlapped,
                     nullptr);
+                const DWORD error = ok ? ERROR_SUCCESS : GetLastError();
+
+                if (!ready)
+                    ready = ok != FALSE || error == ERROR_IO_PENDING;
+
+                if (!ok && error != ERROR_IO_PENDING)
+                    break;
+
+                const HANDLE waitHandles[] = {overlapped.hEvent, wakeEvent};
+                const DWORD waitResult = WaitForMultipleObjects(2, waitHandles, FALSE, INFINITE);
 
                 if (!running)
                     break;
-                if (ok && bytesReturned > 0)
-                    changed = true;
+                if (waitResult != WAIT_OBJECT_0)
+                    continue;
+
+                if (!GetOverlappedResult(directoryHandle, &overlapped, &bytesReturned, FALSE))
+                    continue;
+
+                if (bytesReturned > 0)
+                    RecordWindowsChanges(buffer, bytesReturned);
             }
+
+            CancelIoEx(directoryHandle, &overlapped);
+            CloseHandle(overlapped.hEvent);
         });
-        return true;
+
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            if (ready)
+                return true;
+            if (!running)
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        Stop();
+        return false;
     }
 #endif
 
 #if defined(__linux__)
+    void RecordLinuxChange(const int watchDescriptor, const char* name)
+    {
+        changed = true;
+
+        const auto found = watches.find(watchDescriptor);
+        if (found == watches.end())
+            return;
+
+        std::lock_guard lock(changedPathsMutex);
+        const auto relativeName = name ? std::filesystem::path(name) : std::filesystem::path {};
+        changedPaths.push_back((found->second / relativeName).lexically_normal());
+    }
+
     void AddLinuxWatchRecursive(const std::filesystem::path& path)
     {
         constexpr uint32_t mask =
@@ -203,6 +313,7 @@ struct AssetFileWatcher::Impl
             return false;
         }
 
+        ready = true;
         worker = std::thread([this]
         {
             std::array<char, 64 * 1024> buffer{};
@@ -219,11 +330,11 @@ struct AssetFileWatcher::Impl
                 if (bytesRead <= 0)
                     continue;
 
-                changed = true;
                 size_t offset = 0;
                 while (offset < static_cast<size_t>(bytesRead))
                 {
                     const auto* event = reinterpret_cast<const inotify_event*>(buffer.data() + offset);
+                    RecordLinuxChange(event->wd, event->len > 0 ? event->name : nullptr);
                     if ((event->mask & IN_ISDIR) && (event->mask & (IN_CREATE | IN_MOVED_TO)) && event->len > 0)
                     {
                         if (auto found = watches.find(event->wd); found != watches.end())
@@ -241,12 +352,17 @@ struct AssetFileWatcher::Impl
     static void OnMacEvent(
         ConstFSEventStreamRef,
         void* clientCallBackInfo,
-        size_t,
-        void*,
+        size_t eventCount,
+        void* eventPaths,
         const FSEventStreamEventFlags[],
         const FSEventStreamEventId[])
     {
-        static_cast<Impl*>(clientCallBackInfo)->changed = true;
+        auto& impl = *static_cast<Impl*>(clientCallBackInfo);
+        impl.changed = true;
+        std::lock_guard lock(impl.changedPathsMutex);
+        auto** paths = static_cast<char**>(eventPaths);
+        for (size_t index = 0u; index < eventCount; ++index)
+            impl.changedPaths.push_back(std::filesystem::path(paths[index]).lexically_normal());
     }
 
     bool StartMac()
@@ -278,11 +394,28 @@ struct AssetFileWatcher::Impl
 
             runLoop = CFRunLoopGetCurrent();
             FSEventStreamScheduleWithRunLoop(stream, runLoop, kCFRunLoopDefaultMode);
-            FSEventStreamStart(stream);
+            if (!FSEventStreamStart(stream))
+            {
+                running = false;
+                return;
+            }
+
+            ready = true;
             CFRunLoopRun();
             FSEventStreamStop(stream);
         });
-        return true;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            if (ready)
+                return true;
+            if (!running)
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+
+        Stop();
+        return false;
     }
 #endif
 };
@@ -309,11 +442,37 @@ void AssetFileWatcher::Stop()
 
 bool AssetFileWatcher::ConsumeChanged()
 {
-    return m_impl->changed.exchange(false);
+    const bool hadChanged = m_impl->changed.exchange(false);
+    if (hadChanged)
+    {
+        std::lock_guard lock(m_impl->changedPathsMutex);
+        m_impl->changedPaths.clear();
+    }
+    return hadChanged;
+}
+
+std::vector<std::filesystem::path> AssetFileWatcher::ConsumeChangedPaths()
+{
+    const bool hadChanged = m_impl->changed.exchange(false);
+    std::vector<std::filesystem::path> paths;
+    {
+        std::lock_guard lock(m_impl->changedPathsMutex);
+        paths = std::move(m_impl->changedPaths);
+        m_impl->changedPaths.clear();
+    }
+
+    if (hadChanged && paths.empty())
+        paths.push_back(m_impl->root.lexically_normal());
+    return paths;
 }
 
 bool AssetFileWatcher::IsRunning() const
 {
     return m_impl->running;
+}
+
+bool AssetFileWatcher::IsReady() const
+{
+    return m_impl->ready;
 }
 } // namespace NLS::Editor::Core

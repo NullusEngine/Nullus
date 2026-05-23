@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -109,6 +110,8 @@ namespace NLS::Render::ShaderCompiler
 
 		void SetBackend(std::unique_ptr<IShaderCompilerBackend> backend);
 		const IShaderCompilerBackend* GetBackend() const;
+		void SetCacheDatabasePath(std::string path);
+		const std::optional<std::string>& GetCacheDatabasePath() const;
 
 		ShaderCompilationOutput Compile(const ShaderCompilationInput& input) const;
 		std::vector<ShaderCompilationOutput> CompileBatch(const std::vector<ShaderCompilationInput>& inputs) const;
@@ -118,6 +121,13 @@ namespace NLS::Render::ShaderCompiler
 		std::vector<Resources::ShaderReflection> ReflectBatch(const std::vector<ShaderReflectionInput>& inputs) const;
 
 	private:
+		void PersistCacheRecord(
+			const ShaderCompilationInput& input,
+			const ShaderCompilationOutput& output) const;
+		void PersistCacheRecords(
+			const std::vector<ShaderCompilationInput>& inputs,
+			const std::vector<ShaderCompilationOutput>& outputs) const;
 		std::unique_ptr<IShaderCompilerBackend> m_backend;
+		std::optional<std::string> m_cacheDatabasePath;
 	};
 }

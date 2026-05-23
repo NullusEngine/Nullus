@@ -3,7 +3,7 @@
 #include "Engine/Rendering/EngineDrawableDescriptor.h"
 #include "Rendering/Core/CompositeRenderer.h"
 #include "Rendering/Resources/Material.h"
-#include "Rendering/Resources/Model.h"
+#include "Rendering/Resources/Mesh.h"
 
 using namespace NLS;
 
@@ -31,31 +31,25 @@ namespace
     }
 }
 
-void Editor::Rendering::DebugModelRenderer::DrawModelWithSingleMaterial(
+void Editor::Rendering::DebugModelRenderer::DrawMeshWithSingleMaterial(
     NLS::Render::Data::PipelineState pso,
-    NLS::Render::Resources::Model& model,
+    NLS::Render::Resources::Mesh& mesh,
     NLS::Render::Resources::Material& material,
     const Maths::Matrix4& modelMatrix)
 {
-    for (auto mesh : model.GetMeshes())
-    {
-        auto element = BuildDebugModelDrawable(material, modelMatrix, mesh);
-        m_renderer.DrawEntity(pso, element);
-    }
+    auto element = BuildDebugModelDrawable(material, modelMatrix, &mesh);
+    m_renderer.DrawEntity(pso, element);
 }
 
-void Editor::Rendering::DebugModelRenderer::CaptureModelDrawCommandsWithSingleMaterial(
+void Editor::Rendering::DebugModelRenderer::CaptureMeshDrawCommandsWithSingleMaterial(
     NLS::Render::Data::PipelineState pso,
-    NLS::Render::Resources::Model& model,
+    NLS::Render::Resources::Mesh& mesh,
     NLS::Render::Resources::Material& material,
     const Maths::Matrix4& modelMatrix,
     std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
 {
-    for (auto mesh : model.GetMeshes())
-    {
-        auto element = BuildDebugModelDrawable(material, modelMatrix, mesh);
-        NLS::Render::Context::RecordedDrawCommandInput drawCommand;
-        if (m_renderer.CaptureRecordedDrawCommand(pso, element, drawCommand))
-            outDrawCommands.push_back(std::move(drawCommand));
-    }
+    auto element = BuildDebugModelDrawable(material, modelMatrix, &mesh);
+    NLS::Render::Context::RecordedDrawCommandInput drawCommand;
+    if (m_renderer.CaptureRecordedDrawCommand(pso, element, drawCommand))
+        outDrawCommands.push_back(std::move(drawCommand));
 }

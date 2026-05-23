@@ -34,7 +34,7 @@ namespace NLS::Render::Context
             package.clearStencilBuffer = snapshot.clearStencilBuffer;
             package.renderWidth = snapshot.renderWidth;
             package.renderHeight = snapshot.renderHeight;
-            package.sceneActorCount = snapshot.sceneActorCount;
+            package.sceneGameObjectCount = snapshot.sceneGameObjectCount;
             package.recordedDrawCommands.clear();
             package.visibleDrawCount = 0u;
             package.opaqueDrawCount = 0u;

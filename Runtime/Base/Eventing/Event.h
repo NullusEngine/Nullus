@@ -2,6 +2,7 @@
 
 #include <functional>
  #include <stdint.h>
+#include <unordered_map>
 #include "BaseDef.h"
 namespace NLS
 {
@@ -10,6 +11,7 @@ namespace NLS
 	* 从事件中删除侦听器需要此值
 	*/
 	using ListenerID = uint64_t;
+	inline constexpr ListenerID InvalidListenerID = 0u;
 
 	/**
 	* 包含一组函数回调的简单事件。
@@ -67,7 +69,7 @@ namespace NLS
 
 	private:
 		std::unordered_map<ListenerID, Callback>	m_callbacks;
-		ListenerID									m_availableListenerID = 0;
+		ListenerID									m_availableListenerID = InvalidListenerID + 1u;
 	};
 }
 

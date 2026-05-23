@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <vector>
 
 #include "UI/Widgets/AWidget.h"
@@ -51,6 +52,8 @@ namespace NLS::UI::Internal
 		*/
 		void CollectGarbages();
 
+		void MarkGarbageCollectionDirty();
+
 		/**
 		* Draw every widgets
 		*/
@@ -71,16 +74,22 @@ namespace NLS::UI::Internal
 			m_widgets.emplace_back(new T(p_args...), Internal::EMemoryMode::INTERNAL_MANAGMENT);
 			T& instance = *reinterpret_cast<T*>(m_widgets.back().first);
 			instance.SetParent(this);
+			if (instance.IsDestroyed())
+				MarkGarbageCollectionDirty();
 			return instance;
 		}
 
 		/**
 		* Returns the widgets and their memory management mode
 		*/
-		std::vector<std::pair<UI::Widgets::AWidget*, Internal::EMemoryMode>>& GetWidgets();
+		const std::vector<std::pair<UI::Widgets::AWidget*, Internal::EMemoryMode>>& GetWidgets() const;
+
+	protected:
+		std::optional<Internal::EMemoryMode> ExtractWidget(Widgets::AWidget& p_widget);
 
 	protected:
 		std::vector<std::pair<UI::Widgets::AWidget*, Internal::EMemoryMode>> m_widgets;
         bool m_reversedDrawOrder = false;
+		bool m_garbageCollectionDirty = false;
 	};
 }

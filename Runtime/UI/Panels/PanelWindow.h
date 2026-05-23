@@ -89,6 +89,7 @@ namespace NLS::UI
         bool IsScrolledToTop() const;
 
 	protected:
+		const std::string& GetProfilerName() const override;
 		void _Draw_Impl() override;
 		virtual void OnBeforeDrawWidgets();
 		virtual void OnAfterDrawWidgets();

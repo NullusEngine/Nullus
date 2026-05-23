@@ -97,7 +97,8 @@ void Editor::Rendering::GridRenderPass::Draw(NLS::Render::Data::PipelineState p_
 
 	if (!ShouldSkipEditorGridPlane())
 	{
-		m_debugModelRenderer.DrawModelWithSingleMaterial(pso, *EDITOR_CONTEXT(editorResources)->GetModel("Plane"), m_gridMaterial, model);
+		if (auto* planeMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Plane"))
+			m_debugModelRenderer.DrawMeshWithSingleMaterial(pso, *planeMesh, m_gridMaterial, model);
 	}
 }
 
@@ -107,8 +108,8 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::G
     if (ShouldSkipEditorGridPlane())
         return std::nullopt;
 
-    auto* planeModel = EDITOR_CONTEXT(editorResources)->GetModel("Plane");
-    if (planeModel == nullptr)
+    auto* planeMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Plane");
+    if (planeMesh == nullptr)
         return std::nullopt;
 
     NLS_ASSERT(m_renderer.HasDescriptor<GridDescriptor>(), "Cannot find GridDescriptor attached to this renderer");
@@ -133,9 +134,9 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::G
     passInput.usesColorAttachment = true;
     passInput.usesDepthStencilAttachment = true;
 
-    m_debugModelRenderer.CaptureModelDrawCommandsWithSingleMaterial(
+    m_debugModelRenderer.CaptureMeshDrawCommandsWithSingleMaterial(
         p_pso,
-        *planeModel,
+        *planeMesh,
         m_gridMaterial,
         model,
         passInput.recordedDrawCommands);

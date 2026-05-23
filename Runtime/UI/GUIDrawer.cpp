@@ -15,7 +15,7 @@
 #include <UI/Plugins/DDTarget.h>
 
 #include <ServiceLocator.h>
-#include <ResourceManagement/ModelManager.h>
+#include <ResourceManagement/MeshManager.h>
 #include <ResourceManagement/TextureManager.h>
 #include <ResourceManagement/ShaderManager.h>
 #include <ResourceManagement/MaterialManager.h>
@@ -26,7 +26,7 @@
 namespace NLS::UI
 {
 using Material = GUIDrawer::Material;
-using Model = GUIDrawer::Model;
+using Mesh = GUIDrawer::Mesh;
 using Shader = GUIDrawer::Shader;
 using Texture2D = GUIDrawer::Texture2D;
 
@@ -187,11 +187,13 @@ void GUIDrawer::DrawColor(Internal::WidgetContainer& p_root, const std::string& 
     dispatcher.RegisterReference(p_color);
 }
 
-Widgets::Text& GUIDrawer::DrawMesh(Internal::WidgetContainer& p_root, const std::string& p_name, Model*& p_data, Event<>* p_updateNotifier)
+Widgets::Text& GUIDrawer::DrawMesh(Internal::WidgetContainer& p_root, const std::string& p_name, Mesh*& p_data, Event<>* p_updateNotifier)
 {
     CreateTitle(p_root, p_name);
 
-    std::string displayedText = (p_data ? p_data->path : std::string("Empty"));
+    const std::string displayedText = p_data != nullptr && !p_data->GetName().empty()
+        ? p_data->GetName()
+        : (p_data != nullptr ? std::string("Mesh") : std::string("Empty"));
     auto& rightSide = p_root.CreateWidget<Widgets::Group>();
 
     auto& widget = rightSide.CreateWidget<Widgets::Text>(displayedText);
@@ -200,7 +202,7 @@ Widgets::Text& GUIDrawer::DrawMesh(Internal::WidgetContainer& p_root, const std:
     {
         if (Utils::PathParser::GetFileType(p_receivedData.first) == Utils::PathParser::EFileType::MODEL)
         {
-            if (auto resource = NLS_SERVICE(Core::ResourceManagement::ModelManager).GetResource(p_receivedData.first); resource)
+            if (auto resource = NLS_SERVICE(Core::ResourceManagement::MeshManager).GetResource(p_receivedData.first); resource)
             {
                 p_data = resource;
                 widget.content = p_receivedData.first;
@@ -257,6 +259,53 @@ Widgets::Image& GUIDrawer::DrawTexture(Internal::WidgetContainer& p_root, const 
     resetButton.ClickedEvent += [&widget, &p_data, p_updateNotifier]
     {
         p_data = nullptr;
+        widget.textureView = ResolveUITextureView(__EMPTY_TEXTURE, "GUIDrawer.Texture");
+        if (p_updateNotifier)
+            p_updateNotifier->Invoke();
+    };
+
+    return widget;
+}
+
+Widgets::Image& GUIDrawer::DrawTexture(
+    Internal::WidgetContainer& p_root,
+    const std::string& p_name,
+    std::function<Texture2D*(void)> p_gatherer,
+    std::function<void(Texture2D*)> p_provider,
+    Event<>* p_updateNotifier)
+{
+    CreateTitle(p_root, p_name);
+
+    auto* texture = p_gatherer ? p_gatherer() : nullptr;
+    auto& rightSide = p_root.CreateWidget<Widgets::Group>();
+
+    auto& widget = rightSide.CreateWidget<Widgets::Image>(
+        ResolveUITextureView(texture != nullptr ? texture : __EMPTY_TEXTURE, "GUIDrawer.Texture"),
+        Maths::Vector2{75, 75});
+
+    widget.AddPlugin<DDTarget<std::pair<std::string, Widgets::Group*>>>("File").DataReceivedEvent +=
+        [&widget, p_provider, p_updateNotifier](auto p_receivedData)
+    {
+        if (Utils::PathParser::GetFileType(p_receivedData.first) == Utils::PathParser::EFileType::TEXTURE)
+        {
+            if (auto resource = NLS_SERVICE(Core::ResourceManagement::TextureManager).GetResource(p_receivedData.first); resource)
+            {
+                auto* texture = static_cast<Texture2D*>(resource);
+                p_provider(texture);
+                widget.textureView = ResolveUITextureView(texture, "GUIDrawer.Texture");
+                if (p_updateNotifier)
+                    p_updateNotifier->Invoke();
+            }
+        }
+    };
+
+    widget.lineBreak = false;
+
+    auto& resetButton = rightSide.CreateWidget<Widgets::Button>("Clear");
+    resetButton.idleBackgroundColor = ClearButtonColor;
+    resetButton.ClickedEvent += [&widget, p_provider, p_updateNotifier]
+    {
+        p_provider(nullptr);
         widget.textureView = ResolveUITextureView(__EMPTY_TEXTURE, "GUIDrawer.Texture");
         if (p_updateNotifier)
             p_updateNotifier->Invoke();

@@ -2,6 +2,7 @@
 
 #include "Context.h"
 #include "Editor.h"
+#include <memory>
 #include <string>
 #include <optional>
 #include "Math/Vector2.h"
@@ -60,7 +61,7 @@ namespace NLS
         bool m_hasLastNativeResizeTickSize = false;
         Maths::Vector2 m_lastNativeResizeTickSize;
 		Context m_context;
-		Editor m_editor;
+		std::unique_ptr<Editor> m_editor;
 	};
 }
 

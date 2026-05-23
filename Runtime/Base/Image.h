@@ -1,5 +1,7 @@
 ﻿#pragma once
 #include <string>
+#include <cstddef>
+#include <cstdint>
 #include "BaseDef.h"
 namespace NLS
 {
@@ -10,6 +12,7 @@ namespace NLS
 
     public:
         Image(const std::string& filename, bool flipVertically = false);
+        Image(const uint8_t* encodedData, size_t encodedDataSize, bool flipVertically = false);
         Image(int width, int height, int channels); // 创建指定大小的空白图像
         Image(const Image& other, bool copyData); // 从另一个图像对象复制数据
         Image(const Image& other); // 拷贝构造函数

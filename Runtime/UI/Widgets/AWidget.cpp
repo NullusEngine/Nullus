@@ -1,4 +1,5 @@
 #include "UI/Widgets/AWidget.h"
+#include "UI/Internal/WidgetContainer.h"
 #include "ImGui/imgui.h"
 
 namespace NLS
@@ -18,6 +19,8 @@ void UI::Widgets::AWidget::LinkTo(const AWidget& p_widget)
 void UI::Widgets::AWidget::Destroy()
 {
     m_destroyed = true;
+    if (m_parent)
+        m_parent->MarkGarbageCollectionDirty();
 }
 
 bool UI::Widgets::AWidget::IsDestroyed() const

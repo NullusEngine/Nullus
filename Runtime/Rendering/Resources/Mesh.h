@@ -4,11 +4,14 @@
 #include <vector>
 #include <memory>
 
+#include "Object/Object.h"
+#include "Reflection/Macros.h"
 #include "Rendering/Buffers/VertexArray.h"
 #include "Rendering/Buffers/IndexBuffer.h"
 #include "Rendering/Resources/IMesh.h"
 #include "Rendering/Geometry/Vertex.h"
 #include "Rendering/Geometry/BoundingSphere.h"
+#include "Resources/Mesh.generated.h"
 #include "RenderDef.h"
 namespace NLS::Render::Resources
 {
@@ -26,19 +29,45 @@ namespace NLS::Render::Resources
 
 	NLS_RENDER_API MeshVertexUploadView BuildMeshVertexUploadView(const std::vector<Geometry::Vertex>& vertices);
 
+	enum class MeshBufferUploadMode
+	{
+		GpuOnly,
+		CpuToGpu
+	};
+
 	/**
 	* Standard mesh of Rendering
 	*/
-	class NLS_RENDER_API Mesh : public IMesh
+	CLASS(NLS_RENDER_API Mesh) : public NLS::NamedObject, public IMesh
 	{
 	public:
+		GENERATED_BODY()
+
 		/**
 		* Create a mesh with the given vertices, indices and material index
 		* @param p_vertices
 		* @param p_indices
 		* @param p_materialIndex
 		*/
-		Mesh(const std::vector<Geometry::Vertex>& p_vertices, const std::vector<uint32_t>& p_indices, uint32_t p_materialIndex);
+		Mesh(
+			const std::vector<Geometry::Vertex>& p_vertices,
+			const std::vector<uint32_t>& p_indices,
+			uint32_t p_materialIndex);
+		Mesh(
+			const std::vector<Geometry::Vertex>& p_vertices,
+			const std::vector<uint32_t>& p_indices,
+			uint32_t p_materialIndex,
+			MeshBufferUploadMode uploadMode);
+		Mesh(
+			const std::vector<Geometry::Vertex>& p_vertices,
+			const std::vector<uint32_t>& p_indices,
+			uint32_t p_materialIndex,
+			MeshBufferUploadMode uploadMode,
+			const Geometry::BoundingSphere& boundingSphere);
+		Mesh(const Mesh&) = delete;
+		Mesh& operator=(const Mesh&) = delete;
+		Mesh(Mesh&&) = delete;
+		Mesh& operator=(Mesh&&) = delete;
 
 		/**
 		* Returns the number of vertices
@@ -70,16 +99,26 @@ namespace NLS::Render::Resources
 		* Returns the bounding sphere of the mesh
 		*/
 		const Render::Geometry::BoundingSphere& GetBoundingSphere() const;
+		void Reload(
+			const std::vector<Geometry::Vertex>& p_vertices,
+			const std::vector<uint32_t>& p_indices,
+			uint32_t p_materialIndex,
+			MeshBufferUploadMode uploadMode,
+			const Geometry::BoundingSphere& boundingSphere);
 
 	private:
-		void CreateBuffers(const std::vector<Geometry::Vertex>& p_vertices, const std::vector<uint32_t>& p_indices);
+		void CreateBuffers(
+			const std::vector<Geometry::Vertex>& p_vertices,
+			const std::vector<uint32_t>& p_indices,
+			MeshBufferUploadMode uploadMode);
 		void ComputeBoundingSphere(const std::vector<Geometry::Vertex>& p_vertices);
 
 	private:
-		const uint32_t m_vertexCount;
-		const uint32_t m_indicesCount;
-		const uint32_t m_materialIndex;
+		uint32_t m_vertexCount;
+		uint32_t m_indicesCount;
+		uint32_t m_materialIndex;
 		const size_t m_vertexStride = sizeof(Geometry::Vertex);
+		std::shared_ptr<NLS::Render::RHI::RHIMesh> m_rhiMesh;
 
 		Buffers::VertexArray							m_vertexArray;
 		std::unique_ptr<Buffers::VertexBuffer<Geometry::Vertex>>	m_vertexBuffer;

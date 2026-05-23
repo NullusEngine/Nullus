@@ -2,14 +2,15 @@
 
 #include "SceneSystem/SceneManager.h"
 #include "Components/LightComponent.h"
-#include "Components/MaterialRenderer.h"
+#include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
 #include "Components/SkyBoxComponent.h"
 #include "Components/CameraComponent.h"
 #include "Components/TransformComponent.h"
 #include "ResourceManagement/MaterialManager.h"
-#include "ResourceManagement/ModelManager.h"
+#include "ResourceManagement/MeshManager.h"
 #include "ResourceManagement/TextureManager.h"
+#include "PrimitiveFactory.h"
 #include "ServiceLocator.h"
 #include "Serialize/ObjectGraphInstantiator.h"
 #include "Serialize/ObjectGraphReader.h"
@@ -17,6 +18,7 @@
 #include "Serialize/ObjectGraphWriter.h"
 #include <filesystem>
 #include <fstream>
+#include <algorithm>
 #include <memory>
 #include <sstream>
 
@@ -67,6 +69,15 @@ namespace
         std::ostringstream stream;
         stream << file.rdbuf();
         return stream.str();
+    }
+
+    void ReportSceneLoadProgress(
+        const NLS::Engine::SceneSystem::SceneLoadProgressCallback& callback,
+        const float progress,
+        const std::string& message)
+    {
+        if (callback)
+            callback({std::clamp(progress, 0.0f, 1.0f), message});
     }
 }
 
@@ -154,6 +165,7 @@ void SceneManager::LoadEmptyLightedScene()
     if (auto cameraComponent = camera.AddComponent<Engine::Components::CameraComponent>())
     {
         cameraComponent->SetClearColor({0.08f, 0.12f, 0.2f});
+        cameraComponent->SetFrustumGeometryCulling(true);
     }
     if (auto tr = camera.GetTransform())
     {
@@ -161,7 +173,7 @@ void SceneManager::LoadEmptyLightedScene()
         tr->SetLocalRotation(Maths::Quaternion::Identity);
     }
 
-    if (Core::ServiceLocator::Contains<Core::ResourceManagement::ModelManager>() &&
+    if (Core::ServiceLocator::Contains<Core::ResourceManagement::MeshManager>() &&
         Core::ServiceLocator::Contains<Core::ResourceManagement::MaterialManager>())
     {
         auto& validationCube = m_currentScene->CreateGameObject("Validation Cube");
@@ -171,22 +183,12 @@ void SceneManager::LoadEmptyLightedScene()
             tr->SetLocalScale({1.5f, 1.5f, 1.5f});
         }
 
-        auto* meshRenderer = validationCube.AddComponent<Engine::Components::MeshRenderer>();
-        auto* materialRenderer = validationCube.AddComponent<Engine::Components::MaterialRenderer>();
-        if (meshRenderer != nullptr)
-        {
-            meshRenderer->SetModel(
-                NLS_SERVICE(Core::ResourceManagement::ModelManager)[":Models\\Cube.fbx"]);
-        }
-        if (materialRenderer != nullptr)
-        {
-            if (auto* defaultMaterial =
-                    NLS_SERVICE(Core::ResourceManagement::MaterialManager)[":Materials\\Default.mat"];
-                defaultMaterial != nullptr)
-            {
-                materialRenderer->FillWithMaterial(*defaultMaterial);
-            }
-        }
+        auto* defaultMaterial =
+            NLS_SERVICE(Core::ResourceManagement::MaterialManager)[":Materials\\Default.mat"];
+        Engine::ConfigurePrimitiveGameObject(
+            validationCube,
+            Engine::PrimitiveType::Cube,
+            defaultMaterial);
     }
 
     AppendSceneManagerTrace("LoadEmptyLightedScene end");
@@ -194,19 +196,43 @@ void SceneManager::LoadEmptyLightedScene()
 
 bool SceneManager::LoadScene(const std::string& p_path, bool p_absolute)
 {
+    return LoadScene(p_path, p_absolute, {});
+}
+
+bool SceneManager::LoadScene(
+    const std::string& p_path,
+    bool p_absolute,
+    const SceneLoadProgressCallback& p_progressCallback)
+{
     std::string completePath = (p_absolute ? "" : m_sceneRootFolder) + p_path;
 
+    ReportSceneLoadProgress(p_progressCallback, 0.02f, "Reading scene file");
     const auto fileText = ReadTextFile(completePath);
     if (!fileText.has_value())
         return false;
 
+    ReportSceneLoadProgress(p_progressCallback, 0.12f, "Parsing scene object graph");
     const auto document = Engine::Serialize::ObjectGraphReader::Read(*fileText);
     if (!document.has_value() || document->format != "Nullus.ObjectGraph.Scene")
         return false;
 
+    ReportSceneLoadProgress(p_progressCallback, 0.20f, "Unloading previous scene");
     UnloadCurrentScene();
 
-    auto scene = Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(*document);
+    Engine::Serialize::LoadPolicy loadPolicy;
+    loadPolicy.deferAssetReferenceResolution = true;
+    loadPolicy.invalidReferencePolicy = Engine::Serialize::InvalidReferencePolicy::Preserve;
+    auto sceneResult = Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(
+        *document,
+        loadPolicy,
+        [&p_progressCallback](const Engine::Serialize::InstantiationProgress& progress)
+        {
+            ReportSceneLoadProgress(
+                p_progressCallback,
+                0.20f + progress.normalizedProgress * 0.70f,
+                progress.message);
+        });
+    auto& scene = sceneResult.scene;
     if (!scene)
     {
         m_currentScene = new Scene();
@@ -216,9 +242,11 @@ bool SceneManager::LoadScene(const std::string& p_path, bool p_absolute)
     }
 
     m_currentScene = scene.release();
+    ReportSceneLoadProgress(p_progressCallback, 0.92f, "Activating loaded scene");
     SceneLoadEvent.Invoke();
     StoreCurrentSceneSourcePath(completePath);
     MarkCurrentSceneClean();
+    ReportSceneLoadProgress(p_progressCallback, 1.0f, "Scene loaded");
     return true;
 }
 
@@ -227,17 +255,24 @@ bool SceneManager::SaveCurrentScene(const std::string& p_path)
     if (!m_currentScene || p_path.empty())
         return false;
 
-    const auto document = Engine::Serialize::ObjectGraphSerializer::SerializeScene(*m_currentScene);
-    if (document.Validate().HasErrors())
-        return false;
-
-    const auto text = Engine::Serialize::ObjectGraphWriter::Write(document);
-    if (!WriteTextFileAtomically(p_path, text))
+    if (!SaveSceneToPath(*m_currentScene, p_path))
         return false;
 
     StoreCurrentSceneSourcePath(p_path);
     MarkCurrentSceneClean();
     return true;
+}
+
+bool SceneManager::SaveSceneToPath(const Scene& p_scene, const std::string& p_path)
+{
+    if (p_path.empty())
+        return false;
+
+    const auto document = Engine::Serialize::ObjectGraphSerializer::SerializeScene(p_scene);
+    if (document.Validate().HasErrors())
+        return false;
+
+    return WriteTextFileAtomically(p_path, Engine::Serialize::ObjectGraphWriter::Write(document));
 }
 
 // bool SceneManager::LoadSceneFromMemory(tinyxml2::XMLDocument& p_doc)

@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -9,7 +10,13 @@
 #include <thread>
 #include <vector>
 
+#include "Guid.h"
+#include "Core/ServiceLocator.h"
+#include "Core/ResourceManagement/ShaderManager.h"
+#include "Rendering/Context/Driver.h"
+#include "Rendering/Resources/Loaders/ShaderLoader.h"
 #include "Rendering/ShaderCompiler/ShaderCompiler.h"
+#include "Rendering/ShaderCompiler/ShaderCacheDatabase.h"
 
 namespace
 {
@@ -69,6 +76,73 @@ namespace
         std::atomic<int> m_activeCompiles{ 0 };
     };
 
+    class PersistentShaderCompilerBackend final : public NLS::Render::ShaderCompiler::IShaderCompilerBackend
+    {
+    public:
+        NLS::Render::ShaderCompiler::ShaderCompilationOutput Compile(
+            const NLS::Render::ShaderCompiler::ShaderCompilationInput& input) override
+        {
+            NLS::Render::ShaderCompiler::ShaderCompilationOutput output;
+            output.status = NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded;
+            output.cacheKey = "persistent-" + input.options.entryPoint;
+            output.artifactPath = "Library/ShaderCache/" + output.cacheKey + ".dxil";
+            output.bytecode = {7u, 8u, 9u};
+            output.dependencyPaths = {input.assetPath, ":Shaders/Common.hlsl"};
+            return output;
+        }
+
+        NLS::Render::Resources::ShaderReflection Reflect(
+            const NLS::Render::ShaderCompiler::ShaderCompilationInput&) override
+        {
+            return {};
+        }
+
+        NLS::Render::Resources::ShaderReflection Reflect(
+            const NLS::Render::ShaderCompiler::ShaderCompilationInput&,
+            const NLS::Render::ShaderCompiler::ShaderCompilationOutput&) override
+        {
+            return {};
+        }
+
+        const char* GetBackendName() const override
+        {
+            return "PersistentShaderCompilerBackend";
+        }
+    };
+
+    class ScopedShaderLoaderProjectAssetsRoot final
+    {
+    public:
+        explicit ScopedShaderLoaderProjectAssetsRoot(const std::string& projectAssetsPath)
+        {
+            NLS::Render::Resources::Loaders::ShaderLoader::SetDefaultProjectAssetsPath(projectAssetsPath);
+        }
+
+        ~ScopedShaderLoaderProjectAssetsRoot()
+        {
+            NLS::Render::Resources::Loaders::ShaderLoader::SetDefaultProjectAssetsPath({});
+        }
+    };
+
+    class ScopedShaderManagerAssetPaths final
+    {
+    public:
+        ScopedShaderManagerAssetPaths(
+            const std::string& projectAssetsPath,
+            const std::string& engineAssetsPath)
+        {
+            NLS::Core::ResourceManagement::ShaderManager::ProvideAssetPaths(
+                projectAssetsPath,
+                engineAssetsPath);
+        }
+
+        ~ScopedShaderManagerAssetPaths()
+        {
+            NLS::Core::ResourceManagement::ShaderManager::ProvideAssetPaths({}, {});
+            NLS::Render::Resources::Loaders::ShaderLoader::SetDefaultProjectAssetsPath({});
+        }
+    };
+
     NLS::Render::ShaderCompiler::ShaderCompilationInput MakeShaderInput(
         NLS::Render::ShaderCompiler::ShaderStage stage,
         std::string entryPoint)
@@ -101,6 +175,27 @@ TEST(ShaderCompilerTests, CompileBatchRunsIndependentStagesConcurrentlyAndPreser
     EXPECT_EQ(outputs[0].diagnostics, "VSMain");
     EXPECT_EQ(outputs[1].diagnostics, "PSMain");
     EXPECT_EQ(outputs[2].diagnostics, "CSMain");
+}
+
+TEST(ShaderCompilerTests, CompileBatchPersistsShaderCacheWithSingleDatabaseFlush)
+{
+    const auto shaderCompilerSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/ShaderCompiler/ShaderCompiler.cpp";
+    std::ifstream stream(shaderCompilerSourcePath, std::ios::binary);
+    const std::string source((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+
+    const auto compileBatch = source.find("std::vector<ShaderCompilationOutput> ShaderCompiler::CompileBatch");
+    ASSERT_NE(compileBatch, std::string::npos);
+    const auto nextFunction = source.find("ShaderCompilationOutput ShaderCompiler::Compile(ShaderAsset&", compileBatch);
+    ASSERT_NE(nextFunction, std::string::npos);
+    const auto body = source.substr(compileBatch, nextFunction - compileBatch);
+
+    EXPECT_EQ(body.find("return Compile(input);"), std::string::npos);
+    const auto futureJoin = body.find("outputs[index] = futures[index].get()");
+    const auto cacheFlush = body.find("PersistCacheRecords(inputs, outputs)");
+    ASSERT_NE(futureJoin, std::string::npos);
+    ASSERT_NE(cacheFlush, std::string::npos);
+    EXPECT_LT(futureJoin, cacheFlush);
 }
 
 TEST(ShaderCompilerTests, ReflectBatchPreservesInputOrderForCompiledOutputs)
@@ -169,6 +264,67 @@ TEST(ShaderCompilerTests, ShaderCompilationCacheKeyIncludesDxcIdentityAndArgumen
     EXPECT_NE(baseKey, pathKey);
     EXPECT_NE(baseKey, versionKey);
     EXPECT_NE(baseKey, argumentsKey);
+}
+
+TEST(ShaderCompilerTests, ReflectDxcStructuredBuffersAsStructuredBuffersWithElementStride)
+{
+    const auto directory = std::filesystem::temp_directory_path() / "NullusShaderCompilerTests";
+    std::filesystem::create_directories(directory);
+    const auto sourcePath = directory / ("structured-buffer-reflection-" + NLS::Guid::New().ToString() + ".hlsl");
+    {
+        std::ofstream source(sourcePath, std::ios::binary | std::ios::trunc);
+        source <<
+            "StructuredBuffer<float4x4> ObjectData : register(t0, space3);\n"
+            "RWStructuredBuffer<uint> OutputData : register(u1, space2);\n"
+            "[numthreads(1, 1, 1)]\n"
+            "void Main(uint3 id : SV_DispatchThreadID) {\n"
+            "    OutputData[id.x] = asuint(ObjectData[id.x][0][0]);\n"
+            "}\n";
+    }
+
+    NLS::Render::ShaderCompiler::ShaderCompilationInput input;
+    input.assetPath = sourcePath.string();
+    input.stage = NLS::Render::ShaderCompiler::ShaderStage::Compute;
+    input.options.targetPlatform = NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL;
+    input.options.targetProfile = "cs_6_0";
+    input.options.entryPoint = "Main";
+
+    NLS::Render::ShaderCompiler::ShaderCompiler compiler;
+    const auto output = compiler.Compile(input);
+    if (output.status != NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded)
+    {
+        std::filesystem::remove(sourcePath);
+        GTEST_SKIP() << "DXC is unavailable for shader reflection regression test: " << output.diagnostics;
+    }
+
+    const auto reflection = compiler.Reflect(input, output);
+    const auto objectData = std::find_if(
+        reflection.properties.begin(),
+        reflection.properties.end(),
+        [](const NLS::Render::Resources::ShaderPropertyDesc& property)
+        {
+            return property.name == "ObjectData";
+        });
+    ASSERT_NE(objectData, reflection.properties.end());
+    EXPECT_EQ(objectData->kind, NLS::Render::Resources::ShaderResourceKind::StructuredBuffer);
+    EXPECT_EQ(objectData->bindingIndex, 0u);
+    EXPECT_EQ(objectData->bindingSpace, 3u);
+    EXPECT_EQ(objectData->byteSize, 64u);
+
+    const auto outputData = std::find_if(
+        reflection.properties.begin(),
+        reflection.properties.end(),
+        [](const NLS::Render::Resources::ShaderPropertyDesc& property)
+        {
+            return property.name == "OutputData";
+        });
+    ASSERT_NE(outputData, reflection.properties.end());
+    EXPECT_EQ(outputData->kind, NLS::Render::Resources::ShaderResourceKind::StorageBuffer);
+    EXPECT_EQ(outputData->bindingIndex, 1u);
+    EXPECT_EQ(outputData->bindingSpace, 2u);
+    EXPECT_EQ(outputData->byteSize, 4u);
+
+    std::filesystem::remove(sourcePath);
 }
 
 TEST(ShaderCompilerTests, ShaderArtifactStagingPlanUsesSameDirectoryTempFileAndLock)
@@ -369,6 +525,373 @@ TEST(ShaderCompilerTests, ShaderCompilerProcessReadPipeHasSingleOwner)
     EXPECT_NE(source.find("CloseHandle(outputReadPipe);"), std::string::npos);
     EXPECT_NE(source.find("if (readPipe != nullptr)"), std::string::npos);
     EXPECT_NE(source.find("CloseHandle(readPipe);"), std::string::npos);
+}
+
+TEST(ShaderCompilerTests, ShaderCacheDatabasePersistsCompiledArtifactsAndFailureDiagnostics)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_cache_db_" + NLS::Guid::New().ToString());
+    const auto databasePath = root / "Library" / "ShaderCache" / "ShaderCache.tsv";
+
+    auto vertexInput = MakeShaderInput(NLS::Render::ShaderCompiler::ShaderStage::Vertex, "VSMain");
+    vertexInput.assetPath = ":Shaders/Deferred.hlsl";
+    vertexInput.options.targetPlatform = NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL;
+
+    NLS::Render::ShaderCompiler::ShaderCompilationOutput vertexOutput;
+    vertexOutput.status = NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded;
+    vertexOutput.cacheKey = "cache-key-vs";
+    vertexOutput.artifactPath = "Library/ShaderCache/cache-key-vs.dxil";
+    vertexOutput.bytecode = {1u, 2u, 3u};
+    vertexOutput.dependencyPaths = {":Shaders/Common.hlsl"};
+
+    auto pixelInput = MakeShaderInput(NLS::Render::ShaderCompiler::ShaderStage::Pixel, "PSMain");
+    pixelInput.assetPath = ":Shaders/Deferred.hlsl";
+    pixelInput.options.targetPlatform = NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL;
+
+    NLS::Render::ShaderCompiler::ShaderCompilationOutput pixelOutput;
+    pixelOutput.status = NLS::Render::ShaderCompiler::ShaderCompilationStatus::Failed;
+    pixelOutput.cacheKey = "cache-key-ps";
+    pixelOutput.diagnostics = "missing texture binding";
+
+    NLS::Render::ShaderCompiler::ShaderCacheDatabase cache;
+    cache.Upsert(vertexInput, vertexOutput, "sha256:shader-source", "dxc-1.9");
+    cache.Upsert(pixelInput, pixelOutput, "sha256:shader-source", "dxc-1.9");
+    ASSERT_TRUE(cache.Save(databasePath));
+
+    NLS::Render::ShaderCompiler::ShaderCacheDatabase loaded;
+    ASSERT_TRUE(loaded.Load(databasePath));
+
+    const auto* vertex = loaded.Find(
+        "cache-key-vs",
+        NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL);
+    ASSERT_NE(vertex, nullptr);
+    EXPECT_EQ(vertex->assetPath, ":Shaders/Deferred.hlsl");
+    EXPECT_EQ(vertex->entryPoint, "VSMain");
+    EXPECT_EQ(vertex->artifactPath, "Library/ShaderCache/cache-key-vs.dxil");
+    EXPECT_EQ(vertex->status, NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded);
+    EXPECT_EQ(vertex->dependencyCount, 1u);
+
+    const auto* failed = loaded.Find(
+        "cache-key-ps",
+        NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL);
+    ASSERT_NE(failed, nullptr);
+    EXPECT_EQ(failed->status, NLS::Render::ShaderCompiler::ShaderCompilationStatus::Failed);
+    EXPECT_EQ(failed->diagnostics, "missing texture binding");
+    EXPECT_TRUE(failed->artifactPath.empty());
+    EXPECT_EQ(loaded.GetStats().failedRecords, 1u);
+    EXPECT_EQ(loaded.GetStats().succeededRecords, 1u);
+
+    loaded.RemoveByAssetPath(":Shaders/Deferred.hlsl");
+    EXPECT_EQ(loaded.GetStats().totalRecords, 0u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderCompilerPersistsConfiguredShaderCacheDatabase)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_compiler_cache_" + NLS::Guid::New().ToString());
+    const auto databasePath = root / "Library" / "ShaderCache" / "ShaderCache.tsv";
+
+    NLS::Render::ShaderCompiler::ShaderCompiler compiler(
+        std::make_unique<PersistentShaderCompilerBackend>());
+    compiler.SetCacheDatabasePath(databasePath.string());
+
+    auto input = MakeShaderInput(NLS::Render::ShaderCompiler::ShaderStage::Vertex, "VSMain");
+    input.assetPath = ":Shaders/Deferred.hlsl";
+    input.options.targetPlatform = NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL;
+
+    const auto output = compiler.Compile(input);
+    ASSERT_EQ(output.status, NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded);
+
+    NLS::Render::ShaderCompiler::ShaderCacheDatabase loaded;
+    ASSERT_TRUE(loaded.Load(databasePath));
+    const auto* record = loaded.Find(
+        output.cacheKey,
+        NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL);
+    ASSERT_NE(record, nullptr);
+    EXPECT_EQ(record->assetPath, ":Shaders/Deferred.hlsl");
+    EXPECT_EQ(record->artifactPath, "Library/ShaderCache/persistent-VSMain.dxil");
+    EXPECT_EQ(record->toolchainIdentity, "PersistentShaderCompilerBackend");
+    EXPECT_EQ(record->dependencyCount, 2u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderCompilerCacheDatabaseKeepsConcurrentStageRecords)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_compiler_cache_concurrent_" + NLS::Guid::New().ToString());
+    const auto databasePath = root / "Library" / "ShaderCache" / "ShaderCache.tsv";
+
+    NLS::Render::ShaderCompiler::ShaderCompiler compiler(
+        std::make_unique<PersistentShaderCompilerBackend>());
+    compiler.SetCacheDatabasePath(databasePath.string());
+
+    std::vector<NLS::Render::ShaderCompiler::ShaderCompilationInput> inputs = {
+        MakeShaderInput(NLS::Render::ShaderCompiler::ShaderStage::Vertex, "VSMain"),
+        MakeShaderInput(NLS::Render::ShaderCompiler::ShaderStage::Pixel, "PSMain"),
+        MakeShaderInput(NLS::Render::ShaderCompiler::ShaderStage::Compute, "CSMain")
+    };
+    for (auto& input : inputs)
+    {
+        input.assetPath = ":Shaders/Deferred.hlsl";
+        input.options.targetPlatform = NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL;
+    }
+
+    const auto outputs = compiler.CompileBatch(inputs);
+    ASSERT_EQ(outputs.size(), inputs.size());
+
+    NLS::Render::ShaderCompiler::ShaderCacheDatabase loaded;
+    ASSERT_TRUE(loaded.Load(databasePath));
+    EXPECT_EQ(loaded.GetStats().succeededRecords, 3u);
+    EXPECT_NE(loaded.Find(
+        "persistent-VSMain",
+        NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL), nullptr);
+    EXPECT_NE(loaded.Find(
+        "persistent-PSMain",
+        NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL), nullptr);
+    EXPECT_NE(loaded.Find(
+        "persistent-CSMain",
+        NLS::Render::ShaderCompiler::ShaderStage::Compute,
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL), nullptr);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderLoaderCacheDatabasePathPrefersConfiguredProjectLibrary)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_loader_cache_root_" + NLS::Guid::New().ToString());
+    const auto projectAssets = (root / "Project" / "Assets").string() + std::string(1, std::filesystem::path::preferred_separator);
+    const auto engineShader = root / "App" / "Assets" / "Engine" / "Shaders" / "Standard.hlsl";
+
+    const auto databasePath = NLS::Render::Resources::Loaders::ShaderLoader::GetCacheDatabasePath(
+        engineShader.string(),
+        projectAssets);
+
+    EXPECT_EQ(
+        std::filesystem::path(databasePath).lexically_normal(),
+        (root / "Project" / "Library" / "ShaderCache" / "ShaderCache.tsv").lexically_normal());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderLoaderCacheDatabasePathDoesNotInferAppLibraryForDirectEngineShader)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_loader_app_cache_root_" + NLS::Guid::New().ToString());
+    const auto engineShader = root / "App" / "Assets" / "Engine" / "Shaders" / "Standard.hlsl";
+
+    const auto databasePath = NLS::Render::Resources::Loaders::ShaderLoader::GetCacheDatabasePath(
+        engineShader.string());
+
+    EXPECT_TRUE(databasePath.empty());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderLoaderCacheDatabasePathDoesNotInferAppLibraryCaseInsensitively)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_loader_app_cache_case_root_" + NLS::Guid::New().ToString());
+    const auto engineShader = root / "app" / "Assets" / "Engine" / "Shaders" / "Standard.hlsl";
+
+    const auto databasePath = NLS::Render::Resources::Loaders::ShaderLoader::GetCacheDatabasePath(
+        engineShader.string());
+
+    EXPECT_TRUE(databasePath.empty());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderLoaderCacheDatabasePathKeepsDirectNonAppAssetFallback)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_loader_non_app_cache_root_" + NLS::Guid::New().ToString());
+    const auto projectShader = root / "StandaloneProject" / "Assets" / "Shaders" / "Standard.hlsl";
+
+    const auto databasePath = NLS::Render::Resources::Loaders::ShaderLoader::GetCacheDatabasePath(
+        projectShader.string());
+
+    EXPECT_EQ(
+        std::filesystem::path(databasePath).lexically_normal(),
+        (root / "StandaloneProject" / "Library" / "ShaderCache" / "ShaderCache.tsv").lexically_normal());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderLoaderCacheDatabasePathKeepsProjectNamedAppFallback)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_loader_project_named_app_cache_root_" + NLS::Guid::New().ToString());
+    const auto projectShader = root / "App" / "Assets" / "Shaders" / "Standard.hlsl";
+
+    const auto databasePath = NLS::Render::Resources::Loaders::ShaderLoader::GetCacheDatabasePath(
+        projectShader.string());
+
+    EXPECT_EQ(
+        std::filesystem::path(databasePath).lexically_normal(),
+        (root / "App" / "Library" / "ShaderCache" / "ShaderCache.tsv").lexically_normal());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderLoaderDefaultProjectAssetsRootRoutesDirectEngineShaderToProjectLibrary)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_loader_default_project_root_" + NLS::Guid::New().ToString());
+    const auto projectAssets = (root / "Project" / "Assets").string() + std::string(1, std::filesystem::path::preferred_separator);
+    const auto engineShader = root / "App" / "Assets" / "Engine" / "Shaders" / "DebugPrimitive.hlsl";
+    const ScopedShaderLoaderProjectAssetsRoot scopedRoot(projectAssets);
+
+    const auto databasePath = NLS::Render::Resources::Loaders::ShaderLoader::GetCacheDatabasePath(
+        engineShader.string());
+
+    EXPECT_EQ(
+        std::filesystem::path(databasePath).lexically_normal(),
+        (root / "Project" / "Library" / "ShaderCache" / "ShaderCache.tsv").lexically_normal());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderManagerProvideAssetPathsConfiguresShaderLoaderDefaultProjectLibrary)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_manager_default_project_root_" + NLS::Guid::New().ToString());
+    const auto projectAssets = (root / "Project" / "Assets").string() + std::string(1, std::filesystem::path::preferred_separator);
+    const auto engineAssets = (root / "App" / "Assets" / "Engine").string() + std::string(1, std::filesystem::path::preferred_separator);
+    const auto engineShader = root / "App" / "Assets" / "Engine" / "Shaders" / "DebugPrimitive.hlsl";
+    const ScopedShaderManagerAssetPaths scopedPaths(projectAssets, engineAssets);
+
+    const auto databasePath = NLS::Render::Resources::Loaders::ShaderLoader::GetCacheDatabasePath(
+        engineShader.string());
+
+    EXPECT_EQ(
+        std::filesystem::path(databasePath).lexically_normal(),
+        (root / "Project" / "Library" / "ShaderCache" / "ShaderCache.tsv").lexically_normal());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderLoaderCreateRoutesConfiguredEngineShaderCacheToProjectLibrary)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_loader_create_no_app_library_" + NLS::Guid::New().ToString());
+    const auto projectAssets = (root / "Project" / "Assets").string() + std::string(1, std::filesystem::path::preferred_separator);
+    const auto engineShader = root / "App" / "Assets" / "Engine" / "Shaders" / "DebugPrimitive.hlsl";
+    std::filesystem::create_directories(engineShader.parent_path());
+    std::filesystem::create_directories(root / "Project" / "Assets");
+    std::ofstream shaderFile(engineShader, std::ios::binary);
+    shaderFile
+        << "struct VSOutput { float4 position : SV_Position; };\n"
+        << "VSOutput VSMain(uint vertexId : SV_VertexID) {\n"
+        << "    VSOutput output;\n"
+        << "    output.position = float4(0.0f, 0.0f, 0.0f, 1.0f);\n"
+        << "    return output;\n"
+        << "}\n"
+        << "float4 PSMain(VSOutput input) : SV_Target0 {\n"
+        << "    return float4(1.0f, 1.0f, 1.0f, 1.0f);\n"
+        << "}\n";
+    shaderFile.close();
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(
+        engineShader.string(),
+        projectAssets);
+
+    ASSERT_NE(shader, nullptr);
+    EXPECT_TRUE(std::filesystem::exists(root / "Project" / "Library" / "ShaderCache" / "ShaderCache.tsv"));
+    EXPECT_FALSE(std::filesystem::exists(root / "App" / "Library" / "ShaderCache" / "ShaderCache.tsv"));
+    EXPECT_FALSE(std::filesystem::exists(root / "App" / "Library"));
+
+    NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader);
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderLoaderCreateWithoutActiveDriverCompilesCrossBackendArtifacts)
+{
+    NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
+
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_loader_no_driver_artifacts_" + NLS::Guid::New().ToString());
+    const auto projectAssets = (root / "Project" / "Assets").string() + std::string(1, std::filesystem::path::preferred_separator);
+    const auto shaderPath = root / "Project" / "Assets" / "Shaders" / "NoDriverPortable.hlsl";
+    std::filesystem::create_directories(shaderPath.parent_path());
+    std::ofstream shaderFile(shaderPath, std::ios::binary);
+    shaderFile
+        << "struct VSOutput { float4 position : SV_Position; };\n"
+        << "VSOutput VSMain(uint vertexId : SV_VertexID) {\n"
+        << "    VSOutput output;\n"
+        << "    output.position = float4(0.0f, 0.0f, 0.0f, 1.0f);\n"
+        << "    return output;\n"
+        << "}\n"
+        << "float4 PSMain(VSOutput input) : SV_Target0 {\n"
+        << "    return float4(1.0f, 1.0f, 1.0f, 1.0f);\n"
+        << "}\n";
+    shaderFile.close();
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(
+        shaderPath.string(),
+        projectAssets);
+    ASSERT_NE(shader, nullptr);
+
+    const auto* dxilVertex = shader->FindCompiledArtifact(
+        NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL);
+    if (dxilVertex == nullptr)
+    {
+        NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader);
+        std::filesystem::remove_all(root);
+        GTEST_SKIP() << "DXC is unavailable for no-driver shader loader artifact coverage.";
+    }
+
+    EXPECT_NE(shader->FindCompiledArtifact(
+        NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV), nullptr);
+    EXPECT_NE(shader->FindCompiledArtifact(
+        NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform::GLSL), nullptr);
+    EXPECT_NE(shader->FindCompiledArtifact(
+        NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV), nullptr);
+    EXPECT_NE(shader->FindCompiledArtifact(
+        NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+        NLS::Render::ShaderCompiler::ShaderTargetPlatform::GLSL), nullptr);
+
+    NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader);
+    std::filesystem::remove_all(root);
+}
+
+TEST(ShaderCompilerTests, ShaderManagerConfiguredCachePathDoesNotCreateAppLibraryDatabase)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_shader_manager_no_app_library_" + NLS::Guid::New().ToString());
+    const auto projectAssets = (root / "Project" / "Assets").string() + std::string(1, std::filesystem::path::preferred_separator);
+    const auto engineAssets = (root / "App" / "Assets" / "Engine").string() + std::string(1, std::filesystem::path::preferred_separator);
+    const auto engineShader = root / "App" / "Assets" / "Engine" / "Shaders" / "DebugPrimitive.hlsl";
+    const ScopedShaderManagerAssetPaths scopedPaths(projectAssets, engineAssets);
+
+    NLS::Render::ShaderCompiler::ShaderCompiler compiler(
+        std::make_unique<PersistentShaderCompilerBackend>());
+    compiler.SetCacheDatabasePath(
+        NLS::Render::Resources::Loaders::ShaderLoader::GetCacheDatabasePath(engineShader.string()));
+
+    auto input = MakeShaderInput(NLS::Render::ShaderCompiler::ShaderStage::Vertex, "VSMain");
+    input.assetPath = engineShader.string();
+    input.options.targetPlatform = NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL;
+    const auto output = compiler.Compile(input);
+
+    ASSERT_EQ(output.status, NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded);
+    EXPECT_TRUE(std::filesystem::exists(root / "Project" / "Library" / "ShaderCache" / "ShaderCache.tsv"));
+    EXPECT_FALSE(std::filesystem::exists(root / "App" / "Library" / "ShaderCache" / "ShaderCache.tsv"));
+    EXPECT_FALSE(std::filesystem::exists(root / "App" / "Library"));
+
+    std::filesystem::remove_all(root);
 }
 
 TEST(ShaderCompilerTests, ShaderCompilerProcessCancellationReturnsDiagnostics)

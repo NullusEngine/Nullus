@@ -5,6 +5,7 @@
 #include <Rendering/Debug/DebugDrawService.h>
 #include <Components/TransformComponent.h>
 #include <Components/LightComponent.h>
+#include <Components/MeshFilter.h>
 #include <Engine/Rendering/SceneRendererFactory.h>
 
 #include "Core/EditorActions.h"
@@ -41,10 +42,10 @@ Editor::Panels::AssetView::AssetView
     ambientLight->SetRadius(10000.0f);
 
 	m_assetActor = &m_scene.CreateGameObject("Asset");
+    m_meshFilter = m_assetActor->AddComponent<Engine::Components::MeshFilter>();
     m_modelRenderer = m_assetActor->AddComponent<Engine::Components::MeshRenderer>();
-    m_materialRenderer = m_assetActor->AddComponent<Engine::Components::MaterialRenderer>();
 
-	m_cameraController.LockTargetActor(*m_assetActor);
+	m_cameraController.LockTargetGameObject(*m_assetActor);
 	
 	/* Default Material */
 	m_defaultMaterial.SetShader(EDITOR_CONTEXT(shaderManager)[":Shaders/Standard.hlsl"]);
@@ -65,10 +66,6 @@ Editor::Panels::AssetView::AssetView
 
 		switch (Utils::PathParser::GetFileType(path))
 		{
-		case Utils::PathParser::EFileType::MODEL:
-			if (auto resource = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::ModelManager>().GetResource(path); resource)
-				SetModel(*resource);
-			break;
 		case Utils::PathParser::EFileType::TEXTURE:
             if (auto resource = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::TextureManager>().GetResource(path); resource)
 				SetTexture(*resource);
@@ -89,9 +86,9 @@ NLS::Engine::SceneSystem::Scene* Editor::Panels::AssetView::GetScene()
 
 void Editor::Panels::AssetView::SetResource(ViewableResource p_resource)
 {
-	if (auto pval = std::get_if<Render::Resources::Model*>(&p_resource); pval && *pval)
+	if (auto pval = std::get_if<Render::Resources::Mesh*>(&p_resource); pval && *pval)
 	{
-		SetModel(**pval);
+		SetMesh(**pval);
 	}
 	else if (auto pval = std::get_if<Render::Resources::Texture2D*>(&p_resource); pval && *pval)
 	{
@@ -106,7 +103,7 @@ void Editor::Panels::AssetView::SetResource(ViewableResource p_resource)
 void Editor::Panels::AssetView::ClearResource()
 {
 	m_resource = static_cast<Render::Resources::Texture2D*>(nullptr);
-	m_modelRenderer->SetModel(nullptr);
+	m_meshFilter->SetMesh(nullptr);
 }
 
 void Editor::Panels::AssetView::SetTexture(Render::Resources::Texture2D& p_texture)
@@ -114,20 +111,20 @@ void Editor::Panels::AssetView::SetTexture(Render::Resources::Texture2D& p_textu
 	m_resource = &p_texture;
 	m_assetActor->GetTransform()->SetLocalRotation(Maths::Quaternion::Identity);
 	m_assetActor->GetTransform()->SetLocalScale(Maths::Vector3::One * 3.0f);
-	m_modelRenderer->SetModel(EDITOR_CONTEXT(editorResources)->GetModel("Plane"));
+	m_meshFilter->SetMesh(EDITOR_CONTEXT(editorResources)->GetMesh("Plane"));
 	m_textureMaterial.Set<Render::Resources::Texture2D*>("u_DiffuseMap", &p_texture);
-	m_materialRenderer->FillWithMaterial(m_textureMaterial);
+	m_modelRenderer->FillWithMaterial(m_textureMaterial);
 
 	m_cameraController.MoveToTarget(*m_assetActor);
 }
 
-void Editor::Panels::AssetView::SetModel(Render::Resources::Model& p_model)
+void Editor::Panels::AssetView::SetMesh(Render::Resources::Mesh& p_mesh)
 {
-	m_resource = &p_model;
+	m_resource = &p_mesh;
     m_assetActor->GetTransform()->SetLocalRotation(Maths::Quaternion::Identity);
     m_assetActor->GetTransform()->SetLocalScale(Maths::Vector3::One);
-	m_modelRenderer->SetModel(&p_model);
-	m_materialRenderer->FillWithMaterial(m_defaultMaterial);
+	m_meshFilter->SetMesh(&p_mesh);
+	m_modelRenderer->FillWithMaterial(m_defaultMaterial);
 
 	m_cameraController.MoveToTarget(*m_assetActor);
 }
@@ -137,8 +134,8 @@ void Editor::Panels::AssetView::SetMaterial(Render::Resources::Material& p_mater
 	m_resource = &p_material;
     m_assetActor->GetTransform()->SetLocalRotation(Maths::Quaternion::Identity);
     m_assetActor->GetTransform()->SetLocalScale(Maths::Vector3::One);
-	m_modelRenderer->SetModel(EDITOR_CONTEXT(editorResources)->GetModel("Sphere"));
-	m_materialRenderer->FillWithMaterial(p_material);
+	m_meshFilter->SetMesh(EDITOR_CONTEXT(editorResources)->GetMesh("Sphere"));
+	m_modelRenderer->FillWithMaterial(p_material);
 
 	m_cameraController.MoveToTarget(*m_assetActor);
 }

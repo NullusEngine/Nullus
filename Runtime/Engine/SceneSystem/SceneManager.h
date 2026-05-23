@@ -1,11 +1,20 @@
 #pragma once
 
 
+#include <functional>
 #include <string>
 #include "SceneSystem/Scene.h"
 #include "EngineDef.h"
 namespace NLS::Engine::SceneSystem
 {
+    struct SceneLoadProgress
+    {
+        float normalizedProgress = 0.0f;
+        std::string message;
+    };
+
+    using SceneLoadProgressCallback = std::function<void(const SceneLoadProgress&)>;
+
 	/**
 	* The scene manager of the current scene
 	*/
@@ -52,6 +61,10 @@ namespace NLS::Engine::SceneSystem
 		* @param p_absolute (If this setting is set to true, the scene loader will ignore the "SceneRootFolder" given on SceneManager construction)
 		*/
 		bool LoadScene(const std::string& p_path, bool p_absolute = false);
+		bool LoadScene(
+            const std::string& p_path,
+            bool p_absolute,
+            const SceneLoadProgressCallback& p_progressCallback);
 
 		/**
 		* Load specific scene in memory
@@ -64,6 +77,14 @@ namespace NLS::Engine::SceneSystem
 		* @param p_path
 		*/
 		bool SaveCurrentScene(const std::string& p_path);
+
+		/**
+		* Save any scene to the given path using the engine scene file format.
+		* This does not mutate the current scene manager state.
+		* @param p_scene
+		* @param p_path
+		*/
+		static bool SaveSceneToPath(const Scene& p_scene, const std::string& p_path);
 
 		/**
 		* Destroy current scene from memory

@@ -19,6 +19,8 @@ namespace NLS::Core::ResourceManagement
         using Texture2D = Render::Resources::Texture2D;
         using TextureCube = Render::Resources::TextureCube;
 
+		const char* GetResourceTypeName() const override { return "Texture"; }
+
 		/**
 		* Create the resource identified by the given path
 		* @param p_path

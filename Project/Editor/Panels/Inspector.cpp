@@ -6,9 +6,9 @@
 #include <UI/Widgets/Texts/Text.h>
 #include <UI/Widgets/Visual/Separator.h>
 #include <UI/Widgets/Layout/GroupCollapsable.h>
+#include <UI/Widgets/Selection/ComboBox.h>
 #include <UI/GUIDrawer.h>
 #include <ServiceLocator.h>
-#include <ResourceManagement/ModelManager.h>
 #include <ResourceManagement/TextureManager.h>
 #include <ResourceManagement/ShaderManager.h>
 #include <Reflection/Variant.h>
@@ -18,7 +18,10 @@
 #include "Panels/ComponentSearchPanel.h"
 #include "Panels/ReflectedPropertyDrawer.h"
 #include "GameObject.h"
+#include "Settings/TagLayerSettings.h"
 #include <algorithm>
+#include <functional>
+#include <map>
 
 namespace
 {
@@ -38,6 +41,52 @@ void DrawComponentFallback(NLS::UI::Internal::WidgetContainer &root, Engine::Com
     root.CreateWidget<NLS::UI::Widgets::Text>("No reflected fields");
     root.CreateWidget<NLS::UI::Widgets::Text>(component.GetType().GetName());
 }
+
+class HeaderComboBox final : public NLS::UI::Widgets::ComboBox
+{
+public:
+    HeaderComboBox(
+        std::map<int, std::string> p_choices,
+        std::function<int()> p_gatherer,
+        std::function<void(int)> p_provider)
+        : HeaderComboBox(
+              [choices = std::move(p_choices)] { return choices; },
+              std::move(p_gatherer),
+              std::move(p_provider))
+    {
+    }
+
+    HeaderComboBox(
+        std::function<std::map<int, std::string>()> p_choicesProvider,
+        std::function<int()> p_gatherer,
+        std::function<void(int)> p_provider)
+        : NLS::UI::Widgets::ComboBox(0),
+          m_choicesProvider(std::move(p_choicesProvider)),
+          m_gatherer(std::move(p_gatherer)),
+          m_provider(std::move(p_provider))
+    {
+        ValueChangedEvent += [this](int p_choice)
+        {
+            if (m_provider)
+                m_provider(p_choice);
+        };
+    }
+
+protected:
+    void _Draw_Impl() override
+    {
+        if (m_choicesProvider)
+            choices = m_choicesProvider();
+        if (m_gatherer)
+            currentChoice = m_gatherer();
+        NLS::UI::Widgets::ComboBox::_Draw_Impl();
+    }
+
+private:
+    std::function<std::map<int, std::string>()> m_choicesProvider;
+    std::function<int()> m_gatherer;
+    std::function<void(int)> m_provider;
+};
 } // namespace
 
 namespace NLS::Editor::Panels
@@ -45,47 +94,95 @@ namespace NLS::Editor::Panels
 Inspector::Inspector(const std::string& p_title, bool p_opened, const NLS::UI::PanelWindowSettings& p_windowSettings)
     : NLS::UI::PanelWindow(p_title, p_opened, p_windowSettings)
 {
+    m_lifetimeToken = std::make_shared<bool>(true);
     m_inspectorHeader = &CreateWidget<UI::Widgets::Group>();
     m_inspectorHeader->enabled = false;
-    m_actorInfo = &CreateWidget<UI::Widgets::Group>();
+    m_gameObjectInfo = &CreateWidget<UI::Widgets::Group>();
 
     auto& headerColumns = m_inspectorHeader->CreateWidget<UI::Widgets::Columns>(2);
     headerColumns.widths[0] = 88;
 
     /* Name field */
     auto nameGatherer = [this]
-    { return m_targetActor ? m_targetActor->GetName() : "%undef%"; };
+    { return m_targetGameObject ? m_targetGameObject->GetName() : "%undef%"; };
     auto nameProvider = [this](const std::string& p_newName)
     {
-        if (m_targetActor)
+        if (m_targetGameObject)
         {
-            m_targetActor->SetName(p_newName);
+            m_targetGameObject->SetName(p_newName);
             EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
         }
     };
     UI::GUIDrawer::DrawString(headerColumns, "Name", nameGatherer, nameProvider);
 
     /* Tag field */
-    auto tagGatherer = [this]
-    { return m_targetActor ? m_targetActor->GetTag() : "%undef%"; };
-    auto tagProvider = [this](const std::string& p_newName)
-    {
-        if (m_targetActor)
+    UI::GUIDrawer::CreateTitle(headerColumns, "Tag");
+    headerColumns.CreateWidget<HeaderComboBox>(
+        [this]()
         {
-            m_targetActor->SetTag(p_newName);
-            EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
-        }
-    };
-    UI::GUIDrawer::DrawString(headerColumns, "Tag", tagGatherer, tagProvider);
+            auto choices = Settings::TagLayerSettings::BuildTagChoices();
+            if (m_targetGameObject)
+            {
+                const auto tag = m_targetGameObject->GetTag();
+                if (Settings::TagLayerSettings::FindTagIndex(tag) == 0 &&
+                    tag != Settings::TagLayerSettings::GetTagAt(0))
+                    choices.emplace(-1, tag);
+            }
+            return choices;
+        },
+        [this]()
+        {
+            if (!m_targetGameObject)
+                return 0;
+
+            const auto tag = m_targetGameObject->GetTag();
+            if (Settings::TagLayerSettings::FindTagIndex(tag) == 0 &&
+                tag != Settings::TagLayerSettings::GetTagAt(0))
+                return -1;
+            return Settings::TagLayerSettings::FindTagIndex(tag);
+        },
+        [this](int p_choice)
+        {
+            if (m_targetGameObject)
+            {
+                if (p_choice < 0)
+                    return;
+                m_targetGameObject->SetTag(Settings::TagLayerSettings::GetTagAt(p_choice));
+                EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+            }
+        });
+
+    /* Layer field */
+    UI::GUIDrawer::CreateTitle(headerColumns, "Layer");
+    headerColumns.CreateWidget<HeaderComboBox>(
+        Settings::TagLayerSettings::BuildLayerChoices(),
+        [this]()
+        {
+            if (!m_targetGameObject)
+                return 0;
+
+            const int layer = m_targetGameObject->GetLayer();
+            if (layer < 0 || layer >= static_cast<int>(Settings::TagLayerSettings::LayerCount))
+                return 0;
+            return layer;
+        },
+        [this](int p_choice)
+        {
+            if (m_targetGameObject)
+            {
+                m_targetGameObject->SetLayer(p_choice);
+                EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+            }
+        });
 
     /* Active field */
     auto activeGatherer = [this]
-    { return m_targetActor ? m_targetActor->IsSelfActive() : false; };
+    { return m_targetGameObject ? m_targetGameObject->IsSelfActive() : false; };
     auto activeProvider = [this](bool p_active)
     {
-        if (m_targetActor)
+        if (m_targetGameObject)
         {
-            m_targetActor->SetActive(p_active);
+            m_targetGameObject->SetActive(p_active);
             EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
         }
     };
@@ -100,10 +197,10 @@ Inspector::Inspector(const std::string& p_title, bool p_opened, const NLS::UI::P
     {
         SyncComponentPicker();
 
-        if (m_targetActor && m_componentPicker)
+        if (m_targetGameObject && m_componentPicker)
         {
             m_componentPicker->SetAnchorRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
-            m_componentPicker->OpenForActor(m_targetActor);
+            m_componentPicker->OpenForGameObject(m_targetGameObject);
         }
     };
 
@@ -118,48 +215,63 @@ Inspector::Inspector(const std::string& p_title, bool p_opened, const NLS::UI::P
 
     m_destroyedListener = Engine::GameObject::DestroyedEvent += [this](Engine::GameObject& p_destroyed)
     {
-        if (&p_destroyed == m_targetActor)
+        if (&p_destroyed == m_targetGameObject)
             UnFocus();
     };
 }
 Inspector::~Inspector()
 {
+    if (m_lifetimeToken)
+        *m_lifetimeToken = false;
     Engine::GameObject::DestroyedEvent -= m_destroyedListener;
 
     UnFocus();
 }
 
-void Inspector::FocusActor(Engine::GameObject& p_target)
+void Inspector::FocusGameObject(Engine::GameObject& p_target)
 {
-    if (m_targetActor)
+    if (m_targetGameObject)
         UnFocus();
 
-    m_actorInfo->RemoveAllWidgets();
+    m_gameObjectInfo->RemoveAllWidgets();
 
-    m_targetActor = &p_target;
+    m_targetGameObject = &p_target;
 
-    m_componentAddedListener = m_targetActor->ComponentAddedEvent += [this](auto useless)
-    { EDITOR_EXEC(DelayAction([this]
-                              { Refresh(); })); };
+    m_componentAddedListener = m_targetGameObject->ComponentAddedEvent += [this](auto useless)
+    {
+        auto lifetimeToken = m_lifetimeToken;
+        EDITOR_EXEC(DelayAction([this, lifetimeToken]
+        {
+            if (lifetimeToken && *lifetimeToken)
+                Refresh();
+        }));
+    };
 
-    m_componentRemovedListener = m_targetActor->ComponentRemovedEvent += [this](auto useless)
-    { EDITOR_EXEC(DelayAction([this]
-                              { Refresh(); })); };
+    m_componentRemovedListener = m_targetGameObject->ComponentRemovedEvent += [this](auto useless)
+    {
+        m_gameObjectInfo->RemoveAllWidgets();
+        auto lifetimeToken = m_lifetimeToken;
+        EDITOR_EXEC(DelayAction([this, lifetimeToken]
+        {
+            if (lifetimeToken && *lifetimeToken)
+                Refresh();
+        }));
+    };
 
     m_inspectorHeader->enabled = true;
 
-    CreateActorInspector(p_target);
+    CreateGameObjectInspector(p_target);
     SyncComponentPicker();
 
-    EDITOR_EVENT(ActorSelectedEvent).Invoke(*m_targetActor);
+    EDITOR_EVENT(GameObjectSelectedEvent).Invoke(*m_targetGameObject);
 }
 
 void Inspector::UnFocus()
 {
-    if (m_targetActor)
+    if (m_targetGameObject)
     {
-        m_targetActor->ComponentAddedEvent -= m_componentAddedListener;
-        m_targetActor->ComponentRemovedEvent -= m_componentRemovedListener;
+        m_targetGameObject->ComponentAddedEvent -= m_componentAddedListener;
+        m_targetGameObject->ComponentRemovedEvent -= m_componentRemovedListener;
     }
 
     SoftUnFocus();
@@ -167,23 +279,23 @@ void Inspector::UnFocus()
 
 void Inspector::SoftUnFocus()
 {
-    if (m_targetActor)
+    if (m_targetGameObject)
     {
-        EDITOR_EVENT(ActorUnselectedEvent).Invoke(*m_targetActor);
+        EDITOR_EVENT(GameObjectUnselectedEvent).Invoke(*m_targetGameObject);
         if (m_componentPicker)
             m_componentPicker->ClearTarget();
         m_inspectorHeader->enabled = false;
-        m_targetActor = nullptr;
-        m_actorInfo->RemoveAllWidgets();
+        m_targetGameObject = nullptr;
+        m_gameObjectInfo->RemoveAllWidgets();
     }
 }
 
-Engine::GameObject* Inspector::GetTargetActor() const
+Engine::GameObject* Inspector::GetTargetGameObject() const
 {
-    return m_targetActor;
+    return m_targetGameObject;
 }
 
-void Inspector::CreateActorInspector(Engine::GameObject& p_target)
+void Inspector::CreateGameObjectInspector(Engine::GameObject& p_target)
 {
     using namespace NLS::Engine::Components;
     std::vector<Component*> components;
@@ -194,7 +306,7 @@ void Inspector::CreateActorInspector(Engine::GameObject& p_target)
             continue;
 
         auto* rawComponent = component.get();
-        if (dynamic_cast<TransformComponent*>(rawComponent))
+        if (rawComponent->GetType() == NLS_TYPEOF(TransformComponent))
             continue;
 
         components.push_back(rawComponent);
@@ -224,12 +336,12 @@ void Inspector::DrawComponent(Engine::Components::Component* p_component)
     if (!p_component)
         return;
 
-    const bool isTransform = dynamic_cast<TransformComponent*>(p_component) != nullptr;
+    const bool isTransform = p_component->GetType() == NLS_TYPEOF(TransformComponent);
     std::string title = GetComponentDisplayName(*p_component);
     if (title.empty())
         title = "Component";
 
-    auto& header = m_actorInfo->CreateWidget<UI::Widgets::GroupCollapsable>(title);
+    auto& header = m_gameObjectInfo->CreateWidget<UI::Widgets::GroupCollapsable>(title);
     header.closable = !isTransform;
     header.opened = true;
     header.CloseEvent += [this, p_component]
@@ -241,36 +353,47 @@ void Inspector::DrawComponent(Engine::Components::Component* p_component)
         if (!owner)
             return;
 
-        auto* ownerActor = owner;
+        const auto ownerInstanceID = owner->GetInstanceID();
         const auto componentType = p_component->GetType();
-        EDITOR_EXEC(DelayAction([this, ownerActor, componentType]
+        auto lifetimeToken = m_lifetimeToken;
+        EDITOR_EXEC(DelayAction([this, lifetimeToken, ownerInstanceID, componentType]
         {
+            if (!lifetimeToken || !*lifetimeToken)
+                return;
+
             auto* scene = EDITOR_CONTEXT(sceneManager).GetCurrentScene();
             if (!scene)
                 return;
 
-            const auto& actors = scene->GetActors();
-            if (std::find(actors.begin(), actors.end(), ownerActor) == actors.end())
+            auto* owner = NLS::Object::IDToPointer<NLS::Engine::GameObject>(ownerInstanceID);
+            if (!owner)
                 return;
 
-            auto* component = ownerActor->GetComponent(componentType, true);
+            const auto& actors = scene->GetGameObjects();
+            if (std::find(actors.begin(), actors.end(), owner) == actors.end())
+                return;
+
+            auto* component = owner->GetComponent(componentType, true);
             if (!component)
                 return;
 
-            if (ownerActor->RemoveComponent(component))
+            if (m_targetGameObject == owner)
+                m_gameObjectInfo->RemoveAllWidgets();
+
+            if (owner->RemoveComponent(component))
             {
                 EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
                 SyncComponentPicker();
+                Refresh();
             }
         }));
     };
-    meta::Variant componentInstance(p_component, meta::variant_policy::WrapObject {});
     const auto componentType = p_component->GetType();
     const auto &fields = componentType.GetFields();
     if (fields.empty())
     {
         DrawComponentFallback(header, *p_component);
-        m_actorInfo->CreateWidget<UI::Widgets::Spacing>(1);
+        m_gameObjectInfo->CreateWidget<UI::Widgets::Spacing>(1);
         return;
     }
 
@@ -280,17 +403,27 @@ void Inspector::DrawComponent(Engine::Components::Component* p_component)
     {
         EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
     };
-    DrawReflectedObject(header, componentInstance, options);
+    options.onFieldLayoutChanged = [this](const meta::Field&)
+    {
+        EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+        auto lifetimeToken = m_lifetimeToken;
+        EDITOR_EXEC(DelayAction([this, lifetimeToken]
+        {
+            if (lifetimeToken && *lifetimeToken)
+                Refresh();
+        }));
+    };
+    DrawReflectedObject(header, meta::Variant(p_component, meta::variant_policy::WrapObject {}), options);
 
-    m_actorInfo->CreateWidget<UI::Widgets::Spacing>(1);
+    m_gameObjectInfo->CreateWidget<UI::Widgets::Spacing>(1);
 }
 
 void Inspector::Refresh()
 {
-    if (m_targetActor)
+    if (m_targetGameObject)
     {
-        m_actorInfo->RemoveAllWidgets();
-        CreateActorInspector(*m_targetActor);
+        m_gameObjectInfo->RemoveAllWidgets();
+        CreateGameObjectInspector(*m_targetGameObject);
         SyncComponentPicker();
     }
 }
@@ -300,12 +433,12 @@ void Inspector::SyncComponentPicker()
     if (!m_componentPicker)
         return;
 
-    if (m_targetActor)
+    if (m_targetGameObject)
     {
-        if (m_componentPicker->GetTargetActor() != m_targetActor)
-            m_componentPicker->SetTargetActor(m_targetActor);
+        if (m_componentPicker->GetTargetGameObject() != m_targetGameObject)
+            m_componentPicker->SetTargetGameObject(m_targetGameObject);
         else
-            m_componentPicker->NotifyActorComponentsChanged();
+            m_componentPicker->NotifyGameObjectComponentsChanged();
     }
     else
     {

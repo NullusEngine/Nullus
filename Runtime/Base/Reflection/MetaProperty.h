@@ -13,10 +13,23 @@
 
 namespace NLS::meta
 {
-    CLASS(MetaProperty) : public Object
+    CLASS(MetaProperty) : public NLS::Object
     {
     public:
         GENERATED_BODY()
+        MetaProperty() = default;
+        MetaProperty(const MetaProperty&)
+            : NLS::Object()
+        {
+        }
+        MetaProperty& operator=(const MetaProperty&)
+        {
+            return *this;
+        }
+        virtual MetaProperty* CloneMetaProperty() const
+        {
+            return new MetaProperty(*this);
+        }
     };
 
     template<typename PropertyType, typename ...Args>
@@ -28,7 +41,7 @@ namespace NLS::meta
 #if (!defined(__REFLECTION_PARSER__) && defined(__INTELLISENSE__))
 
 /** @brief Enables introspection of this type.
- *         You can also enable a class type by inheriting from NLS::meta::Object.
+ *         You can also enable a class type by inheriting from NLS::Object.
  */
 class Enable : public NLS::meta::MetaProperty { };
 

@@ -16,6 +16,11 @@ using namespace NLS;
 
 namespace
 {
+    bool ShouldLogGridPassDiagnostics(const NLS::Render::Context::Driver& driver)
+    {
+        return NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(driver).logRenderDrawPath;
+    }
+
 	bool ShouldSkipEditorGridPlane()
 	{
 		return NLS::Render::Settings::GetThreadDiagnosticsSettings().editorGridSkipPlane;
@@ -106,11 +111,19 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::G
     NLS::Render::Data::PipelineState p_pso)
 {
     if (ShouldSkipEditorGridPlane())
+    {
+        if (ShouldLogGridPassDiagnostics(m_renderer.GetDriver()))
+            NLS_LOG_INFO("[EditorGridPass] threaded input skipped: plane disabled");
         return std::nullopt;
+    }
 
     auto* planeMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Plane");
     if (planeMesh == nullptr)
+    {
+        if (ShouldLogGridPassDiagnostics(m_renderer.GetDriver()))
+            NLS_LOG_INFO("[EditorGridPass] threaded input skipped: Plane mesh unavailable");
         return std::nullopt;
+    }
 
     NLS_ASSERT(m_renderer.HasDescriptor<GridDescriptor>(), "Cannot find GridDescriptor attached to this renderer");
     auto& gridDescriptor = m_renderer.GetDescriptor<GridDescriptor>();
@@ -143,7 +156,18 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::G
 
     passInput.drawCount = static_cast<uint64_t>(passInput.recordedDrawCommands.size());
     if (passInput.drawCount == 0u)
+    {
+        if (ShouldLogGridPassDiagnostics(m_renderer.GetDriver()))
+            NLS_LOG_INFO("[EditorGridPass] threaded input skipped: captured draw count is zero");
         return std::nullopt;
+    }
+
+    if (ShouldLogGridPassDiagnostics(m_renderer.GetDriver()))
+    {
+        NLS_LOG_INFO(
+            "[EditorGridPass] threaded input captured drawCount=" +
+            std::to_string(passInput.drawCount));
+    }
 
     return passInput;
 }

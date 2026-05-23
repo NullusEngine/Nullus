@@ -127,6 +127,28 @@ namespace NLS::Render::Backend
 				IsLegalCpuVisibleBufferState(buffer, after);
 		}
 
+		bool IsD3D12CommonPromotionAllowedForTexture(const NLS::Render::RHI::ResourceState state)
+		{
+			constexpr uint32_t promotableStates =
+				static_cast<uint32_t>(NLS::Render::RHI::ResourceState::CopySrc) |
+				static_cast<uint32_t>(NLS::Render::RHI::ResourceState::CopyDst) |
+				static_cast<uint32_t>(NLS::Render::RHI::ResourceState::ShaderRead);
+			const auto stateMask = static_cast<uint32_t>(state);
+			return stateMask != 0u && (stateMask & ~promotableStates) == 0u;
+		}
+
+		bool ShouldFilterUnresolvedPartialTextureBarrier(
+			const NLS::Render::RHI::RHITexture& texture,
+			const NLS::Render::RHI::RHITextureBarrier& barrier)
+		{
+			const bool coversWholeTexture =
+				NLS::Render::RHI::DX12::DoesDX12BarrierRangeCoverWholeTexture(
+					texture.GetDesc(),
+					barrier.subresourceRange);
+			return barrier.before == NLS::Render::RHI::ResourceState::Unknown &&
+				!coversWholeTexture;
+		}
+
 		bool IsValidDX12BufferCopyEndpoint(
 			const NLS::Render::RHI::RHIBuffer& source,
 			const NLS::Render::RHI::RHIBuffer& destination,
@@ -1234,15 +1256,47 @@ namespace NLS::Render::Backend
 #endif
 	}
 
+	NLS::Render::RHI::RHIBarrierDesc NativeDX12CommandBuffer::FilterBarrierDesc(
+		const NLS::Render::RHI::RHIBarrierDesc& barrier) const
+	{
+#if defined(_WIN32)
+		NLS::Render::RHI::RHIBarrierDesc filtered;
+		filtered.bufferBarriers = barrier.bufferBarriers;
+		filtered.textureBarriers.reserve(barrier.textureBarriers.size());
+
+		for (const auto& textureBarrier : barrier.textureBarriers)
+		{
+			if (textureBarrier.texture == nullptr)
+				continue;
+
+			if (auto* nativeTexture = dynamic_cast<NativeDX12Texture*>(textureBarrier.texture.get());
+				nativeTexture != nullptr &&
+				ShouldFilterUnresolvedPartialTextureBarrier(*nativeTexture, textureBarrier))
+			{
+				nativeTexture->MarkPartialStateDirty();
+				continue;
+			}
+
+			filtered.textureBarriers.push_back(textureBarrier);
+		}
+
+		return filtered;
+#else
+		(void)barrier;
+		return {};
+#endif
+	}
+
 	void NativeDX12CommandBuffer::Barrier(const NLS::Render::RHI::RHIBarrierDesc& barrierDesc)
 	{
 #if defined(_WIN32)
 		if (m_commandList == nullptr)
 			return;
 
+		const auto filteredBarrierDesc = FilterBarrierDesc(barrierDesc);
 		std::vector<D3D12_RESOURCE_BARRIER> barriers;
 
-		for (const auto& bufferBarrier : barrierDesc.bufferBarriers)
+		for (const auto& bufferBarrier : filteredBarrierDesc.bufferBarriers)
 		{
 			if (bufferBarrier.buffer == nullptr)
 				continue;
@@ -1295,7 +1349,7 @@ namespace NLS::Render::Backend
 				nativeBuffer->SetState(bufferBarrier.after);
 		}
 
-		for (const auto& textureBarrier : barrierDesc.textureBarriers)
+		for (const auto& textureBarrier : filteredBarrierDesc.textureBarriers)
 		{
 			if (textureBarrier.texture == nullptr)
 				continue;
@@ -1321,11 +1375,14 @@ namespace NLS::Render::Backend
 			{
 				effectiveBefore = textureBarrier.texture->GetState();
 			}
-			if (effectiveBefore == NLS::Render::RHI::ResourceState::Unknown && !wholeTextureStateKnown)
+			if (effectiveBefore == NLS::Render::RHI::ResourceState::Unknown &&
+				!wholeTextureStateKnown &&
+				!coversWholeTexture &&
+				IsD3D12CommonPromotionAllowedForTexture(textureBarrier.after))
 			{
-				NLS_LOG_ERROR(
-					"NativeDX12CommandBuffer::Barrier rejected texture transition with unresolved before-state: " +
-					std::string(textureBarrier.texture->GetDebugName()));
+				if (nativeTexture != nullptr)
+					nativeTexture->MarkPartialStateDirty();
+				m_partialTextureStateDirty.insert(textureBarrier.texture.get());
 				continue;
 			}
 			const auto stateBefore = ToD3D12ResourceState(effectiveBefore);

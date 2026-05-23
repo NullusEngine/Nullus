@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <limits>
+
 #include "Rendering/RHI/Backends/DX12/DX12ExplicitDeviceFactory.h"
 #include "Rendering/RHI/Backends/DX12/DX12FormatUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12Resource.h"
@@ -102,10 +104,6 @@ TEST(DX12TextureViewUtilsTests, ResolvesSingleBarrierSubresourceFromMipAndArrayL
     singleRange.baseArrayLayer = 1u;
     singleRange.arrayLayerCount = 1u;
 
-    EXPECT_EQ(
-        NLS::Render::RHI::DX12::ResolveDX12BarrierSubresourceIndex(textureDesc, singleRange),
-        6u);
-
     const auto singleIndices =
         NLS::Render::RHI::DX12::BuildDX12BarrierSubresourceIndices(textureDesc, singleRange);
     ASSERT_EQ(singleIndices.size(), 1u);
@@ -144,9 +142,6 @@ TEST(DX12TextureViewUtilsTests, ExpandsMultiMipAndLayerBarrierSubresourceRange)
         textureDesc,
         range,
         resolvedIndex));
-    EXPECT_EQ(
-        NLS::Render::RHI::DX12::ResolveDX12BarrierSubresourceIndex(textureDesc, range),
-        D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
 }
 
 TEST(DX12TextureViewUtilsTests, ExpandsDepthStencilBarrierAcrossDepthAndStencilPlanes)
@@ -173,9 +168,6 @@ TEST(DX12TextureViewUtilsTests, ExpandsDepthStencilBarrierAcrossDepthAndStencilP
         textureDesc,
         singleRange,
         resolvedIndex));
-    EXPECT_EQ(
-        NLS::Render::RHI::DX12::ResolveDX12BarrierSubresourceIndex(textureDesc, singleRange),
-        D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
 }
 
 TEST(DX12TextureViewUtilsTests, DetectsWholeTextureBarrierRange)
@@ -197,9 +189,70 @@ TEST(DX12TextureViewUtilsTests, DetectsWholeTextureBarrierRange)
     fullRange.arrayLayerCount = 3u;
     EXPECT_TRUE(NLS::Render::RHI::DX12::DoesDX12BarrierRangeCoverWholeTexture(textureDesc, fullRange));
 
+    NLS::Render::RHI::RHISubresourceRange halfDefaultFullRange;
+    halfDefaultFullRange.baseMipLevel = 0u;
+    halfDefaultFullRange.mipLevelCount = 0u;
+    halfDefaultFullRange.baseArrayLayer = 0u;
+    halfDefaultFullRange.arrayLayerCount = 0u;
+    EXPECT_TRUE(NLS::Render::RHI::DX12::DoesDX12BarrierRangeCoverWholeTexture(textureDesc, halfDefaultFullRange));
+
+    halfDefaultFullRange.mipLevelCount = 4u;
+    halfDefaultFullRange.arrayLayerCount = 0u;
+    EXPECT_TRUE(NLS::Render::RHI::DX12::DoesDX12BarrierRangeCoverWholeTexture(textureDesc, halfDefaultFullRange));
+
     auto partialRange = fullRange;
     partialRange.arrayLayerCount = 2u;
     EXPECT_FALSE(NLS::Render::RHI::DX12::DoesDX12BarrierRangeCoverWholeTexture(textureDesc, partialRange));
+}
+
+TEST(DX12TextureViewUtilsTests, ExpandsHalfSpecifiedBarrierRangesAcrossRemainingMipsOrLayers)
+{
+    NLS::Render::RHI::RHITextureDesc textureDesc;
+    textureDesc.dimension = NLS::Render::RHI::TextureDimension::Texture2DArray;
+    textureDesc.mipLevels = 4u;
+    textureDesc.arrayLayers = 3u;
+
+    NLS::Render::RHI::RHISubresourceRange mipOnlyRange;
+    mipOnlyRange.baseMipLevel = 1u;
+    mipOnlyRange.mipLevelCount = 1u;
+    mipOnlyRange.baseArrayLayer = 0u;
+    mipOnlyRange.arrayLayerCount = 0u;
+    const auto mipOnlyIndices =
+        NLS::Render::RHI::DX12::BuildDX12BarrierSubresourceIndices(textureDesc, mipOnlyRange);
+    ASSERT_EQ(mipOnlyIndices.size(), 3u);
+    EXPECT_EQ(mipOnlyIndices[0], 1u);
+    EXPECT_EQ(mipOnlyIndices[1], 5u);
+    EXPECT_EQ(mipOnlyIndices[2], 9u);
+
+    NLS::Render::RHI::RHISubresourceRange layerOnlyRange;
+    layerOnlyRange.baseMipLevel = 2u;
+    layerOnlyRange.mipLevelCount = 0u;
+    layerOnlyRange.baseArrayLayer = 1u;
+    layerOnlyRange.arrayLayerCount = 1u;
+    const auto layerOnlyIndices =
+        NLS::Render::RHI::DX12::BuildDX12BarrierSubresourceIndices(textureDesc, layerOnlyRange);
+    ASSERT_EQ(layerOnlyIndices.size(), 2u);
+    EXPECT_EQ(layerOnlyIndices[0], 6u);
+    EXPECT_EQ(layerOnlyIndices[1], 7u);
+}
+
+TEST(DX12TextureViewUtilsTests, ClampsBarrierRangeEndsWithoutUint32Overflow)
+{
+    NLS::Render::RHI::RHITextureDesc textureDesc;
+    textureDesc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
+    textureDesc.mipLevels = (std::numeric_limits<uint32_t>::max)();
+    textureDesc.arrayLayers = 1u;
+
+    NLS::Render::RHI::RHISubresourceRange range;
+    range.baseMipLevel = (std::numeric_limits<uint32_t>::max)() - 1u;
+    range.mipLevelCount = (std::numeric_limits<uint32_t>::max)();
+    range.baseArrayLayer = 0u;
+    range.arrayLayerCount = 1u;
+
+    const auto indices =
+        NLS::Render::RHI::DX12::BuildDX12BarrierSubresourceIndices(textureDesc, range);
+    ASSERT_EQ(indices.size(), 1u);
+    EXPECT_EQ(indices[0], (std::numeric_limits<uint32_t>::max)() - 1u);
 }
 
 TEST(DX12TextureViewUtilsTests, TreatsTexture3DBarrierRangeAsMipSubresourceNotWSlice)

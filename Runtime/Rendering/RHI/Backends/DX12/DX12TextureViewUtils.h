@@ -36,10 +36,6 @@ namespace NLS::Render::RHI::DX12
         const RHISubresourceRange& subresourceRange,
         UINT& outSubresourceIndex);
 
-    NLS_RENDER_API UINT ResolveDX12BarrierSubresourceIndex(
-        const RHITextureDesc& textureDesc,
-        const RHISubresourceRange& subresourceRange);
-
     NLS_RENDER_API std::vector<UINT> BuildDX12BarrierSubresourceIndices(
         const RHITextureDesc& textureDesc,
         const RHISubresourceRange& subresourceRange);

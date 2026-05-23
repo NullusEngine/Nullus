@@ -489,6 +489,543 @@ TEST(UploadContextTests, ResourceStateTrackerIgnoresOnlyLegalCpuVisibleBufferSta
     EXPECT_EQ(resolvedIllegalBefore.bufferBarriers[1].after, NLS::Render::RHI::ResourceState::CopyDst);
 }
 
+TEST(UploadContextTests, ResourceStateTrackerInvalidatesOverlappingTextureRangesOnCommit)
+{
+    auto tracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    NLS::Render::RHI::RHITextureDesc desc;
+    desc.debugName = "OverlappingTrackedTexture";
+    desc.dimension = NLS::Render::RHI::TextureDimension::Texture2DArray;
+    desc.extent = { 64u, 64u, 1u };
+    desc.mipLevels = 2u;
+    desc.arrayLayers = 2u;
+    auto texture = std::make_shared<TestTexture>(desc);
+
+    NLS::Render::RHI::RHISubresourceRange fullRange;
+    fullRange.baseMipLevel = 0u;
+    fullRange.mipLevelCount = 2u;
+    fullRange.baseArrayLayer = 0u;
+    fullRange.arrayLayerCount = 2u;
+
+    NLS::Render::RHI::RHISubresourceRange partialRange;
+    partialRange.baseMipLevel = 1u;
+    partialRange.mipLevelCount = 1u;
+    partialRange.baseArrayLayer = 1u;
+    partialRange.arrayLayerCount = 1u;
+
+    NLS::Render::RHI::RHIBarrierDesc initialFullState;
+    initialFullState.textureBarriers.push_back({
+        texture,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::ShaderRead,
+        fullRange,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::AccessMask::ShaderRead,
+        NLS::Render::RHI::AccessMask::ShaderRead
+    });
+    tracker->Commit(initialFullState);
+
+    NLS::Render::RHI::RHIBarrierDesc partialWriteState;
+    partialWriteState.textureBarriers.push_back({
+        texture,
+        NLS::Render::RHI::ResourceState::ShaderRead,
+        NLS::Render::RHI::ResourceState::RenderTarget,
+        partialRange,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::PipelineStageMask::RenderTarget,
+        NLS::Render::RHI::AccessMask::ShaderRead,
+        NLS::Render::RHI::AccessMask::ColorAttachmentWrite
+    });
+    tracker->Commit(partialWriteState);
+
+    auto trackedPartial = tracker->GetTextureState(texture, partialRange);
+    ASSERT_TRUE(trackedPartial.has_value());
+    EXPECT_EQ(trackedPartial->state, NLS::Render::RHI::ResourceState::RenderTarget);
+    EXPECT_FALSE(tracker->GetTextureState(texture, fullRange).has_value());
+
+    NLS::Render::RHI::RHIBarrierDesc fullCopyState;
+    fullCopyState.textureBarriers.push_back({
+        texture,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::CopySrc,
+        fullRange,
+        NLS::Render::RHI::PipelineStageMask::AllCommands,
+        NLS::Render::RHI::PipelineStageMask::Copy,
+        NLS::Render::RHI::AccessMask::MemoryRead,
+        NLS::Render::RHI::AccessMask::CopyRead
+    });
+    tracker->Commit(fullCopyState);
+
+    trackedPartial = tracker->GetTextureState(texture, partialRange);
+    ASSERT_TRUE(trackedPartial.has_value());
+    EXPECT_EQ(trackedPartial->state, NLS::Render::RHI::ResourceState::CopySrc);
+
+    const auto resolved = tracker->BuildTransitionBarriers(
+        {},
+        {
+            {
+                texture,
+                NLS::Render::RHI::ResourceState::Unknown,
+                NLS::Render::RHI::ResourceState::ShaderRead,
+                partialRange,
+                NLS::Render::RHI::PipelineStageMask::Copy,
+                NLS::Render::RHI::PipelineStageMask::FragmentShader,
+                NLS::Render::RHI::AccessMask::CopyRead,
+                NLS::Render::RHI::AccessMask::ShaderRead
+            }
+        });
+    ASSERT_EQ(resolved.textureBarriers.size(), 1u);
+    EXPECT_EQ(resolved.textureBarriers[0].before, NLS::Render::RHI::ResourceState::CopySrc);
+}
+
+TEST(UploadContextTests, ResourceStateTrackerKeepsSameStateTextureRangesNonOverlapping)
+{
+    auto tracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    NLS::Render::RHI::RHITextureDesc desc;
+    desc.debugName = "SameStateOverlapTrackedTexture";
+    desc.dimension = NLS::Render::RHI::TextureDimension::Texture2DArray;
+    desc.extent = { 64u, 64u, 1u };
+    desc.mipLevels = 1u;
+    desc.arrayLayers = 3u;
+    auto texture = std::make_shared<TestTexture>(desc);
+
+    NLS::Render::RHI::RHISubresourceRange firstRange;
+    firstRange.baseMipLevel = 0u;
+    firstRange.mipLevelCount = 1u;
+    firstRange.baseArrayLayer = 0u;
+    firstRange.arrayLayerCount = 2u;
+
+    NLS::Render::RHI::RHISubresourceRange secondRange;
+    secondRange.baseMipLevel = 0u;
+    secondRange.mipLevelCount = 1u;
+    secondRange.baseArrayLayer = 1u;
+    secondRange.arrayLayerCount = 2u;
+
+    NLS::Render::RHI::RHIBarrierDesc firstState;
+    firstState.textureBarriers.push_back({
+        texture,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::ShaderRead,
+        firstRange,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::AccessMask::ShaderRead,
+        NLS::Render::RHI::AccessMask::ShaderRead
+    });
+    tracker->Commit(firstState);
+
+    NLS::Render::RHI::RHIBarrierDesc overlappingSameState;
+    overlappingSameState.textureBarriers.push_back({
+        texture,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::ShaderRead,
+        secondRange,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::AccessMask::ShaderRead,
+        NLS::Render::RHI::AccessMask::ShaderRead
+    });
+    tracker->Commit(overlappingSameState);
+
+    NLS::Render::RHI::RHISubresourceRange fullRange;
+    fullRange.baseMipLevel = 0u;
+    fullRange.mipLevelCount = 1u;
+    fullRange.baseArrayLayer = 0u;
+    fullRange.arrayLayerCount = 3u;
+
+    const auto resolved = tracker->BuildTransitionBarriers(
+        {},
+        {
+            {
+                texture,
+                NLS::Render::RHI::ResourceState::Unknown,
+                NLS::Render::RHI::ResourceState::CopySrc,
+                fullRange,
+                NLS::Render::RHI::PipelineStageMask::FragmentShader,
+                NLS::Render::RHI::PipelineStageMask::Copy,
+                NLS::Render::RHI::AccessMask::ShaderRead,
+                NLS::Render::RHI::AccessMask::CopyRead
+            }
+        });
+
+    ASSERT_EQ(resolved.textureBarriers.size(), 2u);
+    EXPECT_EQ(resolved.textureBarriers[0].before, NLS::Render::RHI::ResourceState::ShaderRead);
+    EXPECT_EQ(resolved.textureBarriers[0].after, NLS::Render::RHI::ResourceState::CopySrc);
+    EXPECT_EQ(resolved.textureBarriers[1].before, NLS::Render::RHI::ResourceState::ShaderRead);
+    EXPECT_EQ(resolved.textureBarriers[1].after, NLS::Render::RHI::ResourceState::CopySrc);
+
+    const auto totalLayerCount =
+        resolved.textureBarriers[0].subresourceRange.arrayLayerCount +
+        resolved.textureBarriers[1].subresourceRange.arrayLayerCount;
+    EXPECT_EQ(totalLayerCount, 3u);
+}
+
+TEST(UploadContextTests, ResourceStateTrackerPreservesUnknownHolesWhenResolvingPartialTextureState)
+{
+    auto tracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    NLS::Render::RHI::RHITextureDesc desc;
+    desc.debugName = "PartialTrackedTextureWithHole";
+    desc.dimension = NLS::Render::RHI::TextureDimension::Texture2DArray;
+    desc.extent = { 64u, 64u, 1u };
+    desc.mipLevels = 1u;
+    desc.arrayLayers = 3u;
+    auto texture = std::make_shared<TestTexture>(desc);
+
+    NLS::Render::RHI::RHISubresourceRange trackedRange;
+    trackedRange.baseMipLevel = 0u;
+    trackedRange.mipLevelCount = 1u;
+    trackedRange.baseArrayLayer = 0u;
+    trackedRange.arrayLayerCount = 1u;
+
+    NLS::Render::RHI::RHIBarrierDesc trackedState;
+    trackedState.textureBarriers.push_back({
+        texture,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::RenderTarget,
+        trackedRange,
+        NLS::Render::RHI::PipelineStageMask::AllCommands,
+        NLS::Render::RHI::PipelineStageMask::RenderTarget,
+        NLS::Render::RHI::AccessMask::MemoryRead,
+        NLS::Render::RHI::AccessMask::ColorAttachmentWrite
+    });
+    tracker->Commit(trackedState);
+
+    NLS::Render::RHI::RHISubresourceRange fullRange;
+    fullRange.baseMipLevel = 0u;
+    fullRange.mipLevelCount = 1u;
+    fullRange.baseArrayLayer = 0u;
+    fullRange.arrayLayerCount = 3u;
+
+    const auto resolved = tracker->BuildTransitionBarriers(
+        {},
+        {
+            {
+                texture,
+                NLS::Render::RHI::ResourceState::Unknown,
+                NLS::Render::RHI::ResourceState::ShaderRead,
+                fullRange,
+                NLS::Render::RHI::PipelineStageMask::AllCommands,
+                NLS::Render::RHI::PipelineStageMask::FragmentShader,
+                NLS::Render::RHI::AccessMask::MemoryRead,
+                NLS::Render::RHI::AccessMask::ShaderRead
+            }
+        });
+
+    ASSERT_EQ(resolved.textureBarriers.size(), 2u);
+    EXPECT_EQ(resolved.textureBarriers[0].before, NLS::Render::RHI::ResourceState::RenderTarget);
+    EXPECT_EQ(resolved.textureBarriers[0].after, NLS::Render::RHI::ResourceState::ShaderRead);
+    EXPECT_EQ(resolved.textureBarriers[0].subresourceRange.baseArrayLayer, 0u);
+    EXPECT_EQ(resolved.textureBarriers[0].subresourceRange.arrayLayerCount, 1u);
+    EXPECT_EQ(resolved.textureBarriers[1].before, NLS::Render::RHI::ResourceState::Unknown);
+    EXPECT_EQ(resolved.textureBarriers[1].after, NLS::Render::RHI::ResourceState::ShaderRead);
+    EXPECT_EQ(resolved.textureBarriers[1].subresourceRange.baseArrayLayer, 1u);
+    EXPECT_EQ(resolved.textureBarriers[1].subresourceRange.arrayLayerCount, 2u);
+}
+
+TEST(UploadContextTests, ResourceStateTrackerSuppressesFullRangeNoOpAcrossFragmentedSameStateRanges)
+{
+    auto tracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    NLS::Render::RHI::RHITextureDesc desc;
+    desc.debugName = "FragmentedSameStateTexture";
+    desc.dimension = NLS::Render::RHI::TextureDimension::Texture2DArray;
+    desc.extent = { 64u, 64u, 1u };
+    desc.mipLevels = 1u;
+    desc.arrayLayers = 3u;
+    auto texture = std::make_shared<TestTexture>(desc);
+
+    NLS::Render::RHI::RHISubresourceRange firstRange;
+    firstRange.baseMipLevel = 0u;
+    firstRange.mipLevelCount = 1u;
+    firstRange.baseArrayLayer = 0u;
+    firstRange.arrayLayerCount = 1u;
+
+    NLS::Render::RHI::RHISubresourceRange secondRange;
+    secondRange.baseMipLevel = 0u;
+    secondRange.mipLevelCount = 1u;
+    secondRange.baseArrayLayer = 1u;
+    secondRange.arrayLayerCount = 2u;
+
+    NLS::Render::RHI::RHIBarrierDesc fragmentedState;
+    fragmentedState.textureBarriers.push_back({
+        texture,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::ShaderRead,
+        firstRange,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::AccessMask::ShaderRead,
+        NLS::Render::RHI::AccessMask::ShaderRead
+    });
+    fragmentedState.textureBarriers.push_back({
+        texture,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::ShaderRead,
+        secondRange,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::AccessMask::ShaderRead,
+        NLS::Render::RHI::AccessMask::ShaderRead
+    });
+    tracker->Commit(fragmentedState);
+
+    NLS::Render::RHI::RHISubresourceRange fullRange;
+    fullRange.baseMipLevel = 0u;
+    fullRange.mipLevelCount = 1u;
+    fullRange.baseArrayLayer = 0u;
+    fullRange.arrayLayerCount = 3u;
+
+    const auto resolved = tracker->BuildTransitionBarriers(
+        {},
+        {
+            {
+                texture,
+                NLS::Render::RHI::ResourceState::Unknown,
+                NLS::Render::RHI::ResourceState::ShaderRead,
+                fullRange,
+                NLS::Render::RHI::PipelineStageMask::FragmentShader,
+                NLS::Render::RHI::PipelineStageMask::FragmentShader,
+                NLS::Render::RHI::AccessMask::ShaderRead,
+                NLS::Render::RHI::AccessMask::ShaderRead
+            }
+        });
+    EXPECT_TRUE(resolved.textureBarriers.empty());
+}
+
+TEST(UploadContextTests, ResourceStateTrackerExpandsHalfSpecifiedTextureRanges)
+{
+    auto tracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    NLS::Render::RHI::RHITextureDesc desc;
+    desc.debugName = "HalfSpecifiedTrackedTexture";
+    desc.dimension = NLS::Render::RHI::TextureDimension::Texture2DArray;
+    desc.extent = { 64u, 64u, 1u };
+    desc.mipLevels = 4u;
+    desc.arrayLayers = 3u;
+    auto texture = std::make_shared<TestTexture>(desc);
+
+    NLS::Render::RHI::RHISubresourceRange mipOnlyRange;
+    mipOnlyRange.baseMipLevel = 1u;
+    mipOnlyRange.mipLevelCount = 1u;
+    mipOnlyRange.baseArrayLayer = 0u;
+    mipOnlyRange.arrayLayerCount = 0u;
+
+    NLS::Render::RHI::RHIBarrierDesc mipOnlyState;
+    mipOnlyState.textureBarriers.push_back({
+        texture,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::ShaderRead,
+        mipOnlyRange,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::AccessMask::ShaderRead,
+        NLS::Render::RHI::AccessMask::ShaderRead
+    });
+    tracker->Commit(mipOnlyState);
+
+    NLS::Render::RHI::RHISubresourceRange expandedMipRange;
+    expandedMipRange.baseMipLevel = 1u;
+    expandedMipRange.mipLevelCount = 1u;
+    expandedMipRange.baseArrayLayer = 2u;
+    expandedMipRange.arrayLayerCount = 1u;
+    auto trackedMipOnly = tracker->GetTextureState(texture, expandedMipRange);
+    ASSERT_TRUE(trackedMipOnly.has_value());
+    EXPECT_EQ(trackedMipOnly->state, NLS::Render::RHI::ResourceState::ShaderRead);
+
+    NLS::Render::RHI::RHISubresourceRange layerOnlyRange;
+    layerOnlyRange.baseMipLevel = 2u;
+    layerOnlyRange.mipLevelCount = 0u;
+    layerOnlyRange.baseArrayLayer = 1u;
+    layerOnlyRange.arrayLayerCount = 1u;
+
+    NLS::Render::RHI::RHIBarrierDesc layerOnlyState;
+    layerOnlyState.textureBarriers.push_back({
+        texture,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::CopySrc,
+        layerOnlyRange,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::PipelineStageMask::Copy,
+        NLS::Render::RHI::AccessMask::ShaderRead,
+        NLS::Render::RHI::AccessMask::CopyRead
+    });
+    tracker->Commit(layerOnlyState);
+
+    NLS::Render::RHI::RHISubresourceRange expandedLayerRange;
+    expandedLayerRange.baseMipLevel = 3u;
+    expandedLayerRange.mipLevelCount = 1u;
+    expandedLayerRange.baseArrayLayer = 1u;
+    expandedLayerRange.arrayLayerCount = 1u;
+    auto trackedLayerOnly = tracker->GetTextureState(texture, expandedLayerRange);
+    ASSERT_TRUE(trackedLayerOnly.has_value());
+    EXPECT_EQ(trackedLayerOnly->state, NLS::Render::RHI::ResourceState::CopySrc);
+}
+
+TEST(UploadContextTests, ResourceStateTrackerRetiresAllTrackedRangesForTransientTexture)
+{
+    auto tracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    NLS::Render::RHI::RHITextureDesc desc;
+    desc.debugName = "TransientTrackedTexture";
+    desc.dimension = NLS::Render::RHI::TextureDimension::Texture2DArray;
+    desc.extent = { 64u, 64u, 1u };
+    desc.mipLevels = 1u;
+    desc.arrayLayers = 3u;
+    auto texture = std::make_shared<TestTexture>(desc);
+
+    NLS::Render::RHI::RHISubresourceRange firstRange;
+    firstRange.baseMipLevel = 0u;
+    firstRange.mipLevelCount = 1u;
+    firstRange.baseArrayLayer = 0u;
+    firstRange.arrayLayerCount = 1u;
+
+    NLS::Render::RHI::RHISubresourceRange secondRange;
+    secondRange.baseMipLevel = 0u;
+    secondRange.mipLevelCount = 1u;
+    secondRange.baseArrayLayer = 1u;
+    secondRange.arrayLayerCount = 2u;
+
+    NLS::Render::RHI::RHIBarrierDesc barriers;
+    barriers.textureBarriers.push_back({
+        texture,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::ShaderRead,
+        firstRange,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::AccessMask::ShaderRead,
+        NLS::Render::RHI::AccessMask::ShaderRead
+    });
+    barriers.textureBarriers.push_back({
+        texture,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::CopySrc,
+        secondRange,
+        NLS::Render::RHI::PipelineStageMask::Copy,
+        NLS::Render::RHI::PipelineStageMask::Copy,
+        NLS::Render::RHI::AccessMask::CopyRead,
+        NLS::Render::RHI::AccessMask::CopyRead
+    });
+    tracker->Commit(barriers);
+
+    NLS::Render::RHI::RHISubresourceRange fullRange;
+    fullRange.baseMipLevel = 0u;
+    fullRange.mipLevelCount = 1u;
+    fullRange.baseArrayLayer = 0u;
+    fullRange.arrayLayerCount = 3u;
+
+    EXPECT_EQ(tracker->GetStats().trackedTextureCount, 2u);
+    tracker->RegisterTransientTexture(texture, fullRange, 7u);
+    tracker->RetireTransientResources(7u);
+
+    EXPECT_EQ(tracker->GetStats().trackedTextureCount, 0u);
+    EXPECT_FALSE(tracker->GetTextureState(texture, firstRange).has_value());
+    EXPECT_FALSE(tracker->GetTextureState(texture, secondRange).has_value());
+}
+
+TEST(UploadContextTests, ResourceStateTrackerRetiresOnlyRegisteredTransientTextureRange)
+{
+    auto tracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    NLS::Render::RHI::RHITextureDesc desc;
+    desc.debugName = "TransientPartialTrackedTexture";
+    desc.dimension = NLS::Render::RHI::TextureDimension::Texture2DArray;
+    desc.extent = { 64u, 64u, 1u };
+    desc.mipLevels = 1u;
+    desc.arrayLayers = 3u;
+    auto texture = std::make_shared<TestTexture>(desc);
+
+    NLS::Render::RHI::RHISubresourceRange firstRange;
+    firstRange.baseMipLevel = 0u;
+    firstRange.mipLevelCount = 1u;
+    firstRange.baseArrayLayer = 0u;
+    firstRange.arrayLayerCount = 1u;
+
+    NLS::Render::RHI::RHISubresourceRange secondRange;
+    secondRange.baseMipLevel = 0u;
+    secondRange.mipLevelCount = 1u;
+    secondRange.baseArrayLayer = 1u;
+    secondRange.arrayLayerCount = 2u;
+
+    NLS::Render::RHI::RHIBarrierDesc barriers;
+    barriers.textureBarriers.push_back({
+        texture,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::ShaderRead,
+        firstRange,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::PipelineStageMask::FragmentShader,
+        NLS::Render::RHI::AccessMask::ShaderRead,
+        NLS::Render::RHI::AccessMask::ShaderRead
+    });
+    barriers.textureBarriers.push_back({
+        texture,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::CopySrc,
+        secondRange,
+        NLS::Render::RHI::PipelineStageMask::Copy,
+        NLS::Render::RHI::PipelineStageMask::Copy,
+        NLS::Render::RHI::AccessMask::CopyRead,
+        NLS::Render::RHI::AccessMask::CopyRead
+    });
+    tracker->Commit(barriers);
+
+    tracker->RegisterTransientTexture(texture, firstRange, 7u);
+    tracker->RetireTransientResources(7u);
+
+    EXPECT_FALSE(tracker->GetTextureState(texture, firstRange).has_value());
+    const auto trackedSecondRange = tracker->GetTextureState(texture, secondRange);
+    ASSERT_TRUE(trackedSecondRange.has_value());
+    EXPECT_EQ(trackedSecondRange->state, NLS::Render::RHI::ResourceState::CopySrc);
+}
+
+TEST(UploadContextTests, ResourceStateTrackerCanonicalizesTexture3DWSlicesToMipSubresources)
+{
+    auto tracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+
+    NLS::Render::RHI::RHITextureDesc desc;
+    desc.debugName = "Tracked3DTexture";
+    desc.dimension = NLS::Render::RHI::TextureDimension::Texture3D;
+    desc.extent = { 16u, 16u, 8u };
+    desc.mipLevels = 3u;
+    desc.arrayLayers = 1u;
+    auto texture = std::make_shared<TestTexture>(desc);
+
+    NLS::Render::RHI::RHISubresourceRange firstWSlice;
+    firstWSlice.baseMipLevel = 1u;
+    firstWSlice.mipLevelCount = 1u;
+    firstWSlice.baseArrayLayer = 0u;
+    firstWSlice.arrayLayerCount = 1u;
+
+    NLS::Render::RHI::RHISubresourceRange anotherWSlice = firstWSlice;
+    anotherWSlice.baseArrayLayer = 4u;
+    anotherWSlice.arrayLayerCount = 2u;
+
+    NLS::Render::RHI::RHIBarrierDesc barriers;
+    barriers.textureBarriers.push_back({
+        texture,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::RenderTarget,
+        firstWSlice,
+        NLS::Render::RHI::PipelineStageMask::AllCommands,
+        NLS::Render::RHI::PipelineStageMask::RenderTarget,
+        NLS::Render::RHI::AccessMask::MemoryRead,
+        NLS::Render::RHI::AccessMask::ColorAttachmentWrite
+    });
+    tracker->Commit(barriers);
+
+    const auto tracked = tracker->GetTextureState(texture, anotherWSlice);
+    ASSERT_TRUE(tracked.has_value());
+    EXPECT_EQ(tracked->state, NLS::Render::RHI::ResourceState::RenderTarget);
+    EXPECT_EQ(tracked->subresourceRange.baseMipLevel, 1u);
+    EXPECT_EQ(tracked->subresourceRange.mipLevelCount, 1u);
+    EXPECT_EQ(tracked->subresourceRange.baseArrayLayer, 0u);
+    EXPECT_EQ(tracked->subresourceRange.arrayLayerCount, 1u);
+}
+
 TEST(UploadContextTests, BackendUploadContextCompletionCanTrackSubmittedGpuFence)
 {
     auto backend = std::make_shared<TestUploadBackend>();

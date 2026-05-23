@@ -210,6 +210,7 @@ protected:
     std::shared_ptr<NLS::Render::RHI::RHICommandBuffer> GetActiveExplicitCommandBuffer() const;
     std::shared_ptr<NLS::Render::RHI::RHIDevice> GetExplicitDevice() const;
     void SetActivePreparedPassBindingSet(const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& bindingSet);
+    void CaptureRecordedPassAttachmentViews(const NLS::Render::RHI::RHIRenderPassDesc& renderPassDesc);
 
     Data::FrameDescriptor m_frameDescriptor;
     Context::Driver& m_driver;
@@ -221,6 +222,8 @@ protected:
     std::optional<Context::FrameSnapshot> m_pendingFrameSnapshot;
     Context::PreparedRenderSceneBuilder m_pendingPreparedRenderSceneBuilder;
     std::vector<Context::RecordedDrawCommandInput> m_threadedRecordedDrawCommands;
+    std::vector<std::shared_ptr<NLS::Render::RHI::RHITextureView>> m_activeRecordedPassColorViews;
+    std::shared_ptr<NLS::Render::RHI::RHITextureView> m_activeRecordedPassDepthStencilView;
 
 private:
     static std::atomic_bool s_isDrawing;

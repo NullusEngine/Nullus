@@ -5559,7 +5559,9 @@ TEST(ThreadedRenderingLifecycleTests, TranslationMergeInsertsBarrierBatchForDefe
             for (const auto& textureBarrier : barrierDesc.textureBarriers)
             {
                 if (textureBarrier.texture == gbufferDepthTexture &&
-                    textureBarrier.before == NLS::Render::RHI::ResourceState::DepthRead &&
+                    textureBarrier.before ==
+                        (NLS::Render::RHI::ResourceState::DepthRead |
+                         NLS::Render::RHI::ResourceState::ShaderRead) &&
                     textureBarrier.after == NLS::Render::RHI::ResourceState::ShaderRead)
                 {
                     foundDepthVisibilityTransition = true;

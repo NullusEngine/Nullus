@@ -19,6 +19,7 @@
 
 #include "Rendering/FrameGraph/FrameGraphExecutionTypes.h"
 #include "Rendering/FrameGraph/FrameGraphExecutionContext.h"
+#include "Rendering/RHI/Core/RHISubresourceRangeUtils.h"
 
 namespace NLS::Render::FrameGraph
 {
@@ -716,14 +717,34 @@ namespace NLS::Render::FrameGraph
 		const RHI::RHISubresourceRange& left,
 		const RHI::RHISubresourceRange& right)
 	{
-		const auto leftMipEnd = left.baseMipLevel + left.mipLevelCount;
-		const auto rightMipEnd = right.baseMipLevel + right.mipLevelCount;
-		const auto leftLayerEnd = left.baseArrayLayer + left.arrayLayerCount;
-		const auto rightLayerEnd = right.baseArrayLayer + right.arrayLayerCount;
-		return left.baseMipLevel < rightMipEnd &&
-			right.baseMipLevel < leftMipEnd &&
-			left.baseArrayLayer < rightLayerEnd &&
-			right.baseArrayLayer < leftLayerEnd;
+		return RHI::DoesSubresourceRangeOverlap(left, right);
+	}
+
+	inline std::vector<RHI::RHISubresourceRange> SubtractTextureAccessRange(
+		std::vector<RHI::RHISubresourceRange> ranges,
+		const RHI::RHISubresourceRange& consumedRange)
+	{
+		std::vector<RHI::RHISubresourceRange> remaining;
+		for (const auto& range : ranges)
+		{
+			const auto remainders = RHI::SubtractSubresourceRange(range, consumedRange);
+			for (const auto& remainder : remainders)
+			{
+				if (!RHI::IsEmptySubresourceRange(remainder))
+					remaining.push_back(remainder);
+			}
+		}
+		return remaining;
+	}
+
+	inline std::optional<RHI::RHISubresourceRange> NormalizeTextureAccessRange(
+		const std::shared_ptr<RHI::RHITexture>& texture,
+		const RHI::RHISubresourceRange& range)
+	{
+		if (texture == nullptr)
+			return std::nullopt;
+
+		return RHI::NormalizeTextureSubresourceRange(texture->GetDesc(), range);
 	}
 
 	inline bool BufferVectorContains(
@@ -1167,25 +1188,6 @@ namespace NLS::Render::FrameGraph
 				latestSourceIndex = sourceIndex;
 		};
 
-		const auto isEmptySubresourceRange = [](const RHI::RHISubresourceRange& range)
-		{
-			return range.mipLevelCount == 0u && range.arrayLayerCount == 0u;
-		};
-
-		const auto isCompatibleSubresourceRange =
-			[&isEmptySubresourceRange](
-				const RHI::RHISubresourceRange& lhs,
-				const RHI::RHISubresourceRange& rhs)
-		{
-			if (isEmptySubresourceRange(lhs) || isEmptySubresourceRange(rhs))
-				return true;
-
-			return lhs.baseMipLevel == rhs.baseMipLevel &&
-				lhs.mipLevelCount == rhs.mipLevelCount &&
-				lhs.baseArrayLayer == rhs.baseArrayLayer &&
-				lhs.arrayLayerCount == rhs.arrayLayerCount;
-		};
-
 		const auto& targetPass = passes[passIndex];
 		for (size_t sourceIndex = 0u; sourceIndex < passIndex; ++sourceIndex)
 		{
@@ -1216,11 +1218,23 @@ namespace NLS::Render::FrameGraph
 				const auto sourceIt = std::find_if(
 					sourcePass.commandInput.textureResourceAccesses.rbegin(),
 					sourcePass.commandInput.textureResourceAccesses.rend(),
-					[&targetAccess, &isCompatibleSubresourceRange](const Context::TextureResourceAccess& sourceAccess)
+					[&targetAccess](const Context::TextureResourceAccess& sourceAccess)
 					{
-						return sourceAccess.mode == Context::ResourceAccessMode::Write &&
-							sourceAccess.texture == targetAccess.texture &&
-							isCompatibleSubresourceRange(sourceAccess.subresourceRange, targetAccess.subresourceRange);
+						if (sourceAccess.mode != Context::ResourceAccessMode::Write ||
+							sourceAccess.texture != targetAccess.texture)
+						{
+							return false;
+						}
+
+						const auto normalizedSourceRange = NormalizeTextureAccessRange(
+							sourceAccess.texture,
+							sourceAccess.subresourceRange);
+						const auto normalizedTargetRange = NormalizeTextureAccessRange(
+							targetAccess.texture,
+							targetAccess.subresourceRange);
+						return normalizedSourceRange.has_value() &&
+							normalizedTargetRange.has_value() &&
+							RHI::DoesSubresourceRangeCover(*normalizedSourceRange, *normalizedTargetRange);
 					});
 				if (sourceIt != sourcePass.commandInput.textureResourceAccesses.rend())
 					updateLatestSource(sourceIndex);
@@ -1243,25 +1257,6 @@ namespace NLS::Render::FrameGraph
 		std::vector<ThreadedRenderSceneDependencyEdge> edges;
 		if (passIndex >= passes.size())
 			return edges;
-
-		const auto isEmptySubresourceRange = [](const RHI::RHISubresourceRange& range)
-		{
-			return range.mipLevelCount == 0u && range.arrayLayerCount == 0u;
-		};
-
-		const auto isCompatibleSubresourceRange =
-			[&isEmptySubresourceRange](
-				const RHI::RHISubresourceRange& lhs,
-				const RHI::RHISubresourceRange& rhs)
-		{
-			if (isEmptySubresourceRange(lhs) || isEmptySubresourceRange(rhs))
-				return true;
-
-			return lhs.baseMipLevel == rhs.baseMipLevel &&
-				lhs.mipLevelCount == rhs.mipLevelCount &&
-				lhs.baseArrayLayer == rhs.baseArrayLayer &&
-				lhs.arrayLayerCount == rhs.arrayLayerCount;
-		};
 
 		const auto& targetPass = passes[passIndex];
 		for (size_t sourceIndex = 0u; sourceIndex < passIndex; ++sourceIndex)
@@ -1296,32 +1291,76 @@ namespace NLS::Render::FrameGraph
 				edge.targetBufferAccess = targetAccess;
 				edges.push_back(std::move(edge));
 			}
+		}
 
-			for (const auto& targetAccess : targetPass.commandInput.textureResourceAccesses)
+		for (const auto& targetAccess : targetPass.commandInput.textureResourceAccesses)
+		{
+			if (targetAccess.mode != Context::ResourceAccessMode::Read || targetAccess.texture == nullptr)
+				continue;
+
+			const auto normalizedTargetRange = NormalizeTextureAccessRange(
+				targetAccess.texture,
+				targetAccess.subresourceRange);
+			if (!normalizedTargetRange.has_value())
+				continue;
+
+			std::vector<RHI::RHISubresourceRange> remainingTargetRanges{ *normalizedTargetRange };
+
+			for (size_t reverseSourceIndex = passIndex; reverseSourceIndex > 0u && !remainingTargetRanges.empty(); --reverseSourceIndex)
 			{
-				if (targetAccess.mode != Context::ResourceAccessMode::Read || targetAccess.texture == nullptr)
-					continue;
+				const size_t sourceIndex = reverseSourceIndex - 1u;
+				const auto& sourcePass = passes[sourceIndex];
+				const auto edgeKind = sourcePass.queueType != targetPass.queueType
+					? ThreadedRenderSceneDependencyKind::QueueSynchronization
+					: ThreadedRenderSceneDependencyKind::ResourceVisibility;
 
-				const auto sourceIt = std::find_if(
-					sourcePass.commandInput.textureResourceAccesses.rbegin(),
-					sourcePass.commandInput.textureResourceAccesses.rend(),
-					[&targetAccess, &isCompatibleSubresourceRange](const Context::TextureResourceAccess& sourceAccess)
+				for (auto sourceIt = sourcePass.commandInput.textureResourceAccesses.rbegin();
+					sourceIt != sourcePass.commandInput.textureResourceAccesses.rend() && !remainingTargetRanges.empty();
+					++sourceIt)
+				{
+					if (sourceIt->mode != Context::ResourceAccessMode::Write ||
+						sourceIt->texture != targetAccess.texture)
 					{
-						return sourceAccess.mode == Context::ResourceAccessMode::Write &&
-							sourceAccess.texture == targetAccess.texture &&
-							isCompatibleSubresourceRange(sourceAccess.subresourceRange, targetAccess.subresourceRange);
-					});
-				if (sourceIt == sourcePass.commandInput.textureResourceAccesses.rend())
-					continue;
+						continue;
+					}
 
-				ThreadedRenderSceneDependencyEdge edge;
-				edge.sourcePassIndex = sourceIndex;
-				edge.targetPassIndex = passIndex;
-				edge.kind = edgeKind;
-				edge.resourceKind = ThreadedRenderSceneDependencyResourceKind::Texture;
-				edge.sourceTextureAccess = *sourceIt;
-				edge.targetTextureAccess = targetAccess;
-				edges.push_back(std::move(edge));
+					const auto normalizedSourceRange = NormalizeTextureAccessRange(
+						sourceIt->texture,
+						sourceIt->subresourceRange);
+					if (!normalizedSourceRange.has_value())
+						continue;
+
+					std::vector<RHI::RHISubresourceRange> nextRemaining = remainingTargetRanges;
+					for (const auto& remainingRange : remainingTargetRanges)
+					{
+						const auto intersection = RHI::IntersectSubresourceRanges(
+							*normalizedSourceRange,
+							remainingRange);
+						if (!intersection.has_value())
+							continue;
+
+						auto sourceAccess = *sourceIt;
+						sourceAccess.subresourceRange = *intersection;
+						auto slicedTargetAccess = targetAccess;
+						slicedTargetAccess.subresourceRange = *intersection;
+
+						ThreadedRenderSceneDependencyEdge edge;
+						edge.sourcePassIndex = sourceIndex;
+						edge.targetPassIndex = passIndex;
+						edge.kind = edgeKind;
+						edge.resourceKind = ThreadedRenderSceneDependencyResourceKind::Texture;
+						edge.sourceTextureAccess = sourceAccess;
+						edge.targetTextureAccess = slicedTargetAccess;
+						edges.push_back(std::move(edge));
+
+						nextRemaining = SubtractTextureAccessRange(
+							std::move(nextRemaining),
+							*intersection);
+						if (nextRemaining.empty())
+							break;
+					}
+					remainingTargetRanges = std::move(nextRemaining);
+				}
 			}
 		}
 

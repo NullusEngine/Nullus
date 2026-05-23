@@ -60,6 +60,83 @@ namespace NLS::Render::FrameGraph
             });
         }
 
+        bool HasTextureWriteResourceAccess(
+            const NLS::Render::Context::RenderPassCommandInput& passInput,
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+            const NLS::Render::RHI::RHISubresourceRange& subresourceRange)
+        {
+            if (texture == nullptr)
+                return true;
+
+            return std::any_of(
+                passInput.textureResourceAccesses.begin(),
+                passInput.textureResourceAccesses.end(),
+                [&texture, &subresourceRange](const NLS::Render::Context::TextureResourceAccess& access)
+                {
+                    if (access.texture != texture ||
+                        access.mode != NLS::Render::Context::ResourceAccessMode::Write)
+                    {
+                        return false;
+                    }
+
+                    const auto accessRange = NLS::Render::RHI::NormalizeTextureSubresourceRange(
+                        texture->GetDesc(),
+                        access.subresourceRange);
+                    const auto requestedRange = NLS::Render::RHI::NormalizeTextureSubresourceRange(
+                        texture->GetDesc(),
+                        subresourceRange);
+                    return accessRange.has_value() &&
+                        requestedRange.has_value() &&
+                        NLS::Render::RHI::DoesSubresourceRangeCover(*accessRange, *requestedRange);
+                });
+        }
+
+        void AddTextureResourceAccess(
+            NLS::Render::Context::RenderPassCommandInput& passInput,
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+            const NLS::Render::RHI::RHISubresourceRange& subresourceRange,
+            const NLS::Render::Context::ResourceAccessMode mode,
+            const NLS::Render::RHI::ResourceState state,
+            const NLS::Render::RHI::PipelineStageMask stages,
+            const NLS::Render::RHI::AccessMask access)
+        {
+            if (texture == nullptr)
+                return;
+
+            passInput.textureResourceAccesses.push_back({
+                texture,
+                subresourceRange,
+                mode,
+                state,
+                stages,
+                access
+            });
+        }
+
+        void AddColorAttachmentWriteResourceAccesses(
+            NLS::Render::Context::RenderPassCommandInput& passInput)
+        {
+            for (const auto& colorView : passInput.colorAttachmentViews)
+            {
+                const auto& texture = colorView != nullptr ? colorView->GetTexture() : nullptr;
+                const auto subresourceRange = colorView != nullptr
+                    ? colorView->GetDesc().subresourceRange
+                    : NLS::Render::RHI::RHISubresourceRange{};
+                if (HasTextureWriteResourceAccess(passInput, texture, subresourceRange))
+                    continue;
+
+                AddTextureResourceAccess(
+                    passInput,
+                    texture,
+                    subresourceRange,
+                    NLS::Render::Context::ResourceAccessMode::Write,
+                    NLS::Render::RHI::ResourceState::RenderTarget,
+                    NLS::Render::RHI::PipelineStageMask::RenderTarget,
+                    NLS::Render::RHI::AccessMask::ColorAttachmentRead |
+                        NLS::Render::RHI::AccessMask::ColorAttachmentWrite);
+            }
+        }
+
         void AttachDeferredGBufferDepthForHelperPasses(
             NLS::Render::Context::RenderPassCommandInput& passInput,
             const DeferredPreparedSceneResources& resources)
@@ -815,6 +892,8 @@ namespace NLS::Render::FrameGraph
                             NLS::Render::Context::RenderPassCommandKind::Lighting,
                             NLS::Render::Context::RenderPassCommandKind::Helper
                         });
+                    for (auto& passInput : passInputs)
+                        AddColorAttachmentWriteResourceAccesses(passInput);
                 }
                 return passInputs;
             });

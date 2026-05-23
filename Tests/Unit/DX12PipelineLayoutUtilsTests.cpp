@@ -293,6 +293,33 @@ TEST(DX12PipelineLayoutUtilsTests, DX12CommandRejectsInvalidNativePipelinesBefor
     EXPECT_GT(dispatchNativeGuard, dispatch);
 }
 
+TEST(DX12PipelineLayoutUtilsTests, DX12CommandAllowsCommonPromotableUnresolvedPartialTextureBarriers)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime/Rendering/RHI/Backends/DX12/DX12Command.cpp");
+
+    const auto barrier = source.find("void NativeDX12CommandBuffer::Barrier");
+    ASSERT_NE(barrier, std::string::npos);
+    const auto wholeTextureStateKnown = source.find("wholeTextureStateKnown", barrier);
+    ASSERT_NE(wholeTextureStateKnown, std::string::npos);
+    const auto promotionGuard = source.find(
+        "IsD3D12CommonPromotionAllowedForTexture(textureBarrier.after)",
+        wholeTextureStateKnown);
+    ASSERT_NE(promotionGuard, std::string::npos);
+    const auto promotionContinue = source.find("continue;", promotionGuard);
+    ASSERT_NE(promotionContinue, std::string::npos);
+    const auto stateConversion = source.find(
+        "const auto stateBefore = ToD3D12ResourceState(effectiveBefore)",
+        wholeTextureStateKnown);
+    ASSERT_NE(stateConversion, std::string::npos);
+    const auto partialDirtyGuard = source.rfind("!wholeTextureStateKnown", stateConversion);
+    ASSERT_NE(partialDirtyGuard, std::string::npos);
+    EXPECT_GT(partialDirtyGuard, wholeTextureStateKnown);
+    EXPECT_LT(promotionGuard, stateConversion);
+    EXPECT_LT(promotionContinue, stateConversion);
+}
+
 TEST(DX12PipelineLayoutUtilsTests, DX12PipelineCreationRejectsMissingNativeRootSignatureOrPso)
 {
     const auto pipelineSource = ReadTextFile(

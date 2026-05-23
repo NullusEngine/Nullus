@@ -559,7 +559,9 @@ namespace NLS::Render::FrameGraph
         transition.before = NLS::Render::RHI::ResourceState::Unknown;
         if (depthStencilAttachment)
         {
-            transition.after = NLS::Render::RHI::ResourceState::DepthRead;
+            transition.after =
+                NLS::Render::RHI::ResourceState::DepthRead |
+                NLS::Render::RHI::ResourceState::ShaderRead;
             transition.sourceStages = NLS::Render::RHI::PipelineStageMask::DepthStencil;
             transition.destinationStages =
                 NLS::Render::RHI::PipelineStageMask::DepthStencil |

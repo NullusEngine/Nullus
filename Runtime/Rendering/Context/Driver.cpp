@@ -20,6 +20,7 @@
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/RHI/Backends/RHIDeviceFactory.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
+#include "Rendering/RHI/Core/RHISubresourceRangeUtils.h"
 #include "Rendering/RHI/Core/RHISwapchain.h"
 #include "Rendering/RHI/BindingPointMap.h"
 #include "Rendering/RHI/RHITypes.h"
@@ -454,11 +455,6 @@ namespace
             });
     }
 
-    bool IsEmptySubresourceRange(const Render::RHI::RHISubresourceRange& range)
-    {
-        return range.mipLevelCount == 0u && range.arrayLayerCount == 0u;
-    }
-
     bool HasWriteAccess(const Render::RHI::AccessMask accessMask)
     {
         constexpr uint32_t kWriteAccessMask =
@@ -469,28 +465,6 @@ namespace
             static_cast<uint32_t>(Render::RHI::AccessMask::HostWrite) |
             static_cast<uint32_t>(Render::RHI::AccessMask::MemoryWrite);
         return (static_cast<uint32_t>(accessMask) & kWriteAccessMask) != 0u;
-    }
-
-    uint64_t SubresourceRangeEnd(const uint32_t base, const uint32_t count)
-    {
-        return static_cast<uint64_t>(base) + static_cast<uint64_t>(count);
-    }
-
-    bool DoesSubresourceRangeCover(
-        const Render::RHI::RHISubresourceRange& coveringRange,
-        const Render::RHI::RHISubresourceRange& requestedRange)
-    {
-        if (IsEmptySubresourceRange(coveringRange))
-            return true;
-        if (IsEmptySubresourceRange(requestedRange))
-            return false;
-
-        return coveringRange.baseMipLevel <= requestedRange.baseMipLevel &&
-            SubresourceRangeEnd(requestedRange.baseMipLevel, requestedRange.mipLevelCount) <=
-                SubresourceRangeEnd(coveringRange.baseMipLevel, coveringRange.mipLevelCount) &&
-            coveringRange.baseArrayLayer <= requestedRange.baseArrayLayer &&
-            SubresourceRangeEnd(requestedRange.baseArrayLayer, requestedRange.arrayLayerCount) <=
-                SubresourceRangeEnd(coveringRange.baseArrayLayer, coveringRange.arrayLayerCount);
     }
 
     const BufferResourceAccess* FindSourceBufferWriteAccess(
@@ -518,9 +492,22 @@ namespace
             input.textureResourceAccesses.rend(),
             [&texture, &subresourceRange](const TextureResourceAccess& access)
             {
-                return access.mode == ResourceAccessMode::Write &&
-                    access.texture == texture &&
-                    DoesSubresourceRangeCover(access.subresourceRange, subresourceRange);
+                if (access.mode != ResourceAccessMode::Write ||
+                    access.texture != texture ||
+                    texture == nullptr)
+                {
+                    return false;
+                }
+
+                const auto sourceRange = Render::RHI::NormalizeTextureSubresourceRange(
+                    texture->GetDesc(),
+                    access.subresourceRange);
+                const auto requestedRange = Render::RHI::NormalizeTextureSubresourceRange(
+                    texture->GetDesc(),
+                    subresourceRange);
+                return sourceRange.has_value() &&
+                    requestedRange.has_value() &&
+                    Render::RHI::DoesSubresourceRangeCover(*sourceRange, *requestedRange);
             });
         return it != input.textureResourceAccesses.rend() ? &(*it) : nullptr;
     }
@@ -549,8 +536,18 @@ namespace
             input.exportedTextureVisibilityTransitions.end(),
             [&texture, &subresourceRange](const TextureVisibilityTransition& transition)
             {
-                return transition.texture == texture &&
-                    DoesSubresourceRangeCover(transition.subresourceRange, subresourceRange);
+                if (transition.texture != texture || texture == nullptr)
+                    return false;
+
+                const auto sourceRange = Render::RHI::NormalizeTextureSubresourceRange(
+                    texture->GetDesc(),
+                    transition.subresourceRange);
+                const auto requestedRange = Render::RHI::NormalizeTextureSubresourceRange(
+                    texture->GetDesc(),
+                    subresourceRange);
+                return sourceRange.has_value() &&
+                    requestedRange.has_value() &&
+                    Render::RHI::DoesSubresourceRangeCover(*sourceRange, *requestedRange);
             });
         return it != input.exportedTextureVisibilityTransitions.end() ? &(*it) : nullptr;
     }
@@ -568,7 +565,7 @@ namespace
         {
             return view != nullptr &&
                 view->GetTexture() == texture &&
-                DoesSubresourceRangeCover(view->GetDesc().subresourceRange, subresourceRange);
+                Render::RHI::DoesSubresourceRangeOverlap(view->GetDesc().subresourceRange, subresourceRange);
         };
 
         for (const auto& colorView : input.colorAttachmentViews)
@@ -580,7 +577,7 @@ namespace
             if (!transition.has_value())
                 continue;
 
-            transition->subresourceRange = !IsEmptySubresourceRange(subresourceRange)
+            transition->subresourceRange = !Render::RHI::IsEmptySubresourceRange(subresourceRange)
                 ? subresourceRange
                 : colorView->GetDesc().subresourceRange;
             return transition;
@@ -592,7 +589,7 @@ namespace
             if (!transition.has_value())
                 return std::nullopt;
 
-            transition->subresourceRange = !IsEmptySubresourceRange(subresourceRange)
+            transition->subresourceRange = !Render::RHI::IsEmptySubresourceRange(subresourceRange)
                 ? subresourceRange
                 : input.depthStencilAttachmentView->GetDesc().subresourceRange;
             return transition;
@@ -624,8 +621,18 @@ namespace
             input.textureVisibilityTransitions.end(),
             [&texture, &subresourceRange](const TextureVisibilityTransition& transition)
             {
-                return transition.texture == texture &&
-                    DoesSubresourceRangeCover(transition.subresourceRange, subresourceRange);
+                if (transition.texture != texture || texture == nullptr)
+                    return false;
+
+                const auto transitionRange = Render::RHI::NormalizeTextureSubresourceRange(
+                    texture->GetDesc(),
+                    transition.subresourceRange);
+                const auto requestedRange = Render::RHI::NormalizeTextureSubresourceRange(
+                    texture->GetDesc(),
+                    subresourceRange);
+                return transitionRange.has_value() &&
+                    requestedRange.has_value() &&
+                    Render::RHI::DoesSubresourceRangeCover(*transitionRange, *requestedRange);
             });
     }
 
@@ -697,12 +704,10 @@ namespace
 
         TextureVisibilityTransition transition;
         transition.texture = targetAccess.texture;
-        transition.subresourceRange = !IsEmptySubresourceRange(targetAccess.subresourceRange)
+        transition.subresourceRange = !Render::RHI::IsEmptySubresourceRange(targetAccess.subresourceRange)
             ? targetAccess.subresourceRange
             : (completedSourceTransition != nullptr ? completedSourceTransition->subresourceRange : Render::RHI::RHISubresourceRange{});
-        transition.before = completedSourceTransition != nullptr
-            ? completedSourceTransition->after
-            : sourceWriteAccess->state;
+        transition.before = Render::RHI::ResourceState::Unknown;
         transition.after = targetAccess.state != Render::RHI::ResourceState::Unknown
             ? targetAccess.state
             : (completedSourceTransition != nullptr ? completedSourceTransition->after : Render::RHI::ResourceState::Unknown);

@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "Rendering/RHI/Backends/DX12/DX12FormatUtils.h"
+#include "Rendering/RHI/Core/RHISubresourceRangeUtils.h"
 
 namespace NLS::Render::RHI::DX12
 {
@@ -197,16 +198,32 @@ namespace NLS::Render::RHI::DX12
         const uint32_t layerCount = GetTextureLayerCount(textureDesc.dimension, textureDesc.arrayLayers);
         if (subresourceRange.mipLevelCount == 0u && subresourceRange.arrayLayerCount == 0u)
             return true;
-        if (textureDesc.dimension == TextureDimension::Texture3D)
-        {
-            return subresourceRange.baseMipLevel == 0u &&
-                subresourceRange.mipLevelCount >= mipLevels;
-        }
 
-        return subresourceRange.baseMipLevel == 0u &&
-            subresourceRange.mipLevelCount >= mipLevels &&
-            subresourceRange.baseArrayLayer == 0u &&
-            subresourceRange.arrayLayerCount >= layerCount;
+        if (subresourceRange.baseMipLevel != 0u)
+            return false;
+
+        const uint32_t requestedMipCount = subresourceRange.mipLevelCount != 0u
+            ? subresourceRange.mipLevelCount
+            : (mipLevels - subresourceRange.baseMipLevel);
+        const uint64_t mipEnd = (std::min)(
+            static_cast<uint64_t>(subresourceRange.baseMipLevel) + static_cast<uint64_t>(requestedMipCount),
+            static_cast<uint64_t>(mipLevels));
+        if (mipEnd < mipLevels)
+            return false;
+
+        if (textureDesc.dimension == TextureDimension::Texture3D)
+            return true;
+
+        if (subresourceRange.baseArrayLayer != 0u)
+            return false;
+
+        const uint32_t requestedLayerCount = subresourceRange.arrayLayerCount != 0u
+            ? subresourceRange.arrayLayerCount
+            : (layerCount - subresourceRange.baseArrayLayer);
+        const uint64_t layerEnd = (std::min)(
+            static_cast<uint64_t>(subresourceRange.baseArrayLayer) + static_cast<uint64_t>(requestedLayerCount),
+            static_cast<uint64_t>(layerCount));
+        return layerEnd >= layerCount;
     }
 
     namespace
@@ -234,6 +251,7 @@ namespace NLS::Render::RHI::DX12
                 arrayLayer * mipLevels +
                 planeSlice * mipLevels * layerCount);
         }
+
     }
 
     bool TryResolveDX12BarrierSubresourceIndex(
@@ -249,17 +267,6 @@ namespace NLS::Render::RHI::DX12
         return true;
     }
 
-    UINT ResolveDX12BarrierSubresourceIndex(
-        const RHITextureDesc& textureDesc,
-        const RHISubresourceRange& subresourceRange)
-    {
-        UINT subresourceIndex = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        if (!TryResolveDX12BarrierSubresourceIndex(textureDesc, subresourceRange, subresourceIndex))
-            return D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-
-        return subresourceIndex;
-    }
-
     std::vector<UINT> BuildDX12BarrierSubresourceIndices(
         const RHITextureDesc& textureDesc,
         const RHISubresourceRange& subresourceRange)
@@ -268,23 +275,29 @@ namespace NLS::Render::RHI::DX12
         const uint32_t mipLevels = (std::max)(textureDesc.mipLevels, 1u);
         const uint32_t layerCount = GetTextureLayerCount(textureDesc.dimension, textureDesc.arrayLayers);
         const bool is3DTexture = textureDesc.dimension == TextureDimension::Texture3D;
-        if (subresourceRange.mipLevelCount == 0u ||
-            subresourceRange.arrayLayerCount == 0u ||
-            subresourceRange.baseMipLevel >= mipLevels ||
+        if (subresourceRange.baseMipLevel >= mipLevels ||
             (!is3DTexture && subresourceRange.baseArrayLayer >= layerCount))
         {
             return indices;
         }
 
-        const uint32_t mipEnd = (std::min)(
-            subresourceRange.baseMipLevel + subresourceRange.mipLevelCount,
-            mipLevels);
+        const uint32_t requestedMipCount = subresourceRange.mipLevelCount != 0u
+            ? subresourceRange.mipLevelCount
+            : (mipLevels - subresourceRange.baseMipLevel);
+        const uint32_t requestedLayerCount = subresourceRange.arrayLayerCount != 0u
+            ? subresourceRange.arrayLayerCount
+            : (layerCount - subresourceRange.baseArrayLayer);
+        const uint64_t mipEnd64 = (std::min)(
+            NLS::Render::RHI::SubresourceRangeEnd(subresourceRange.baseMipLevel, requestedMipCount),
+            static_cast<uint64_t>(mipLevels));
+        const uint32_t mipEnd = static_cast<uint32_t>(mipEnd64);
         const uint32_t layerBegin = is3DTexture ? 0u : subresourceRange.baseArrayLayer;
-        const uint32_t layerEnd = is3DTexture
+        const uint64_t layerEnd64 = is3DTexture
             ? 1u
             : (std::min)(
-                subresourceRange.baseArrayLayer + subresourceRange.arrayLayerCount,
-                layerCount);
+                NLS::Render::RHI::SubresourceRangeEnd(subresourceRange.baseArrayLayer, requestedLayerCount),
+                static_cast<uint64_t>(layerCount));
+        const uint32_t layerEnd = static_cast<uint32_t>(layerEnd64);
         const uint32_t planeCount = ResolveBarrierPlaneCount(textureDesc.format);
 
         indices.reserve(

@@ -30,6 +30,10 @@
 - [x] T012 Run targeted renderer/debug tests from `specs/024-deferred-editor-overlays/quickstart.md`.
 - [x] T013 Run full `NullusUnitTests`.
 - [x] T014 Self-review runtime/editor boundary, generated file boundary, and pass ordering assumptions.
+- [x] T015 [US2] Add regression coverage that deferred Scene View grid/camera/light helper passes declare external color writes in `Tests/Unit/EditorRenderPathContractTests.cpp`.
+- [x] T016 [US2] Ensure deferred Scene View helper pass inputs append external color write resource accesses in `Runtime/Rendering/FrameGraph/SceneRenderGraphBuilderDeferred.cpp`.
+- [x] T017 Run targeted editor overlay contract validation for the helper color write regression.
+- [ ] T018 Run plan-review quality gate for this regression fix.
 
 ## Dependencies
 

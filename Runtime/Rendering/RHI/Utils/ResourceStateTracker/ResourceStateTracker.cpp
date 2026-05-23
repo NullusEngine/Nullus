@@ -1,7 +1,9 @@
 #include "Rendering/RHI/Utils/ResourceStateTracker/ResourceStateTracker.h"
 
+#include <algorithm>
 #include <unordered_map>
 
+#include "Rendering/RHI/Core/RHISubresourceRangeUtils.h"
 #include "Rendering/RHI/Core/RHIResource.h"
 
 namespace NLS::Render::RHI
@@ -18,21 +20,6 @@ namespace NLS::Render::RHI
             }
         };
 
-        struct TextureKey
-        {
-            const RHITexture* texture = nullptr;
-            RHISubresourceRange subresourceRange{};
-
-            bool operator==(const TextureKey& rhs) const
-            {
-                return texture == rhs.texture &&
-                    subresourceRange.baseMipLevel == rhs.subresourceRange.baseMipLevel &&
-                    subresourceRange.mipLevelCount == rhs.subresourceRange.mipLevelCount &&
-                    subresourceRange.baseArrayLayer == rhs.subresourceRange.baseArrayLayer &&
-                    subresourceRange.arrayLayerCount == rhs.subresourceRange.arrayLayerCount;
-            }
-        };
-
         struct BufferKeyHash
         {
             size_t operator()(const BufferKey& key) const
@@ -41,18 +28,7 @@ namespace NLS::Render::RHI
             }
         };
 
-        struct TextureKeyHash
-        {
-            size_t operator()(const TextureKey& key) const
-            {
-                size_t hash = std::hash<const RHITexture*>{}(key.texture);
-                hash ^= std::hash<uint32_t>{}(key.subresourceRange.baseMipLevel) + 0x9e3779b9u + (hash << 6) + (hash >> 2);
-                hash ^= std::hash<uint32_t>{}(key.subresourceRange.mipLevelCount) + 0x9e3779b9u + (hash << 6) + (hash >> 2);
-                hash ^= std::hash<uint32_t>{}(key.subresourceRange.baseArrayLayer) + 0x9e3779b9u + (hash << 6) + (hash >> 2);
-                hash ^= std::hash<uint32_t>{}(key.subresourceRange.arrayLayerCount) + 0x9e3779b9u + (hash << 6) + (hash >> 2);
-                return hash;
-            }
-        };
+        using TextureStateBucket = std::vector<TrackedTextureState>;
 
         struct TransientBufferRetirement
         {
@@ -105,31 +81,60 @@ namespace NLS::Render::RHI
                 IsLegalCpuVisibleBufferState(buffer, after);
         }
 
-        bool IsEmptySubresourceRange(const RHISubresourceRange& range)
+        uint64_t CountTrackedTextureStates(
+            const std::unordered_map<const RHITexture*, TextureStateBucket>& textureStates)
         {
-            return range.mipLevelCount == 0u && range.arrayLayerCount == 0u;
+            uint64_t count = 0u;
+            for (const auto& [_, bucket] : textureStates)
+                count += static_cast<uint64_t>(bucket.size());
+            return count;
         }
 
-        uint64_t SubresourceRangeEnd(uint32_t base, uint32_t count)
+        std::vector<RHISubresourceRange> SubtractCoveredRanges(
+            const RHISubresourceRange& sourceRange,
+            const TextureStateBucket& coveringStates,
+            const ResourceState requiredState)
         {
-            return static_cast<uint64_t>(base) + static_cast<uint64_t>(count);
+            std::vector<RHISubresourceRange> remainingRanges{ sourceRange };
+            for (const auto& trackedState : coveringStates)
+            {
+                if (trackedState.state != requiredState)
+                    continue;
+
+                std::vector<RHISubresourceRange> nextRemaining;
+                for (const auto& remainingRange : remainingRanges)
+                {
+                    const auto remainders = SubtractSubresourceRange(
+                        remainingRange,
+                        trackedState.subresourceRange);
+                    for (const auto& remainder : remainders)
+                    {
+                        if (remainder.mipLevelCount != 0u && remainder.arrayLayerCount != 0u)
+                            nextRemaining.push_back(remainder);
+                    }
+                }
+                remainingRanges = std::move(nextRemaining);
+                if (remainingRanges.empty())
+                    break;
+            }
+            return remainingRanges;
         }
 
-        bool DoesSubresourceRangeCover(
-            const RHISubresourceRange& coveringRange,
-            const RHISubresourceRange& requestedRange)
+        std::vector<RHISubresourceRange> SubtractRangesFromRemaining(
+            std::vector<RHISubresourceRange> remainingRanges,
+            const RHISubresourceRange& subtractRange)
         {
-            if (IsEmptySubresourceRange(coveringRange))
-                return true;
-            if (IsEmptySubresourceRange(requestedRange))
-                return false;
-
-            return coveringRange.baseMipLevel <= requestedRange.baseMipLevel &&
-                SubresourceRangeEnd(requestedRange.baseMipLevel, requestedRange.mipLevelCount) <=
-                    SubresourceRangeEnd(coveringRange.baseMipLevel, coveringRange.mipLevelCount) &&
-                coveringRange.baseArrayLayer <= requestedRange.baseArrayLayer &&
-                SubresourceRangeEnd(requestedRange.baseArrayLayer, requestedRange.arrayLayerCount) <=
-                    SubresourceRangeEnd(coveringRange.baseArrayLayer, coveringRange.arrayLayerCount);
+            std::vector<RHISubresourceRange> nextRemaining;
+            for (const auto& remainingRange : remainingRanges)
+            {
+                const auto remainders = SubtractSubresourceRange(remainingRange, subtractRange);
+                for (const auto& remainder : remainders)
+                {
+                    if (remainder.mipLevelCount != 0u && remainder.arrayLayerCount != 0u)
+                        nextRemaining.push_back(remainder);
+                }
+            }
+            return nextRemaining;
         }
 
         class DefaultResourceStateTracker final : public ResourceStateTracker
@@ -177,20 +182,37 @@ namespace NLS::Render::RHI
                 if (texture == nullptr)
                     return std::nullopt;
 
-                const auto it = m_textureStates.find(TextureKey{ texture.get(), subresourceRange });
-                if (it != m_textureStates.end())
-                    return it->second;
+                const auto normalizedRange = NormalizeTextureSubresourceRange(texture->GetDesc(), subresourceRange);
+                if (!normalizedRange.has_value())
+                    return std::nullopt;
+
+                const auto bucketIt = m_textureStates.find(texture.get());
+                if (bucketIt == m_textureStates.end())
+                    return std::nullopt;
+
+                const auto& bucket = bucketIt->second;
+                const auto it = std::find_if(
+                    bucket.begin(),
+                    bucket.end(),
+                    [&](const TrackedTextureState& trackedState)
+                    {
+                        return trackedState.subresourceRange.baseMipLevel == normalizedRange->baseMipLevel &&
+                            trackedState.subresourceRange.mipLevelCount == normalizedRange->mipLevelCount &&
+                            trackedState.subresourceRange.baseArrayLayer == normalizedRange->baseArrayLayer &&
+                            trackedState.subresourceRange.arrayLayerCount == normalizedRange->arrayLayerCount;
+                    });
+                if (it != bucket.end())
+                    return *it;
 
                 const auto coveringIt = std::find_if(
-                    m_textureStates.begin(),
-                    m_textureStates.end(),
-                    [&](const auto& entry)
+                    bucket.begin(),
+                    bucket.end(),
+                    [&](const TrackedTextureState& trackedState)
                     {
-                        return entry.first.texture == texture.get() &&
-                            DoesSubresourceRangeCover(entry.first.subresourceRange, subresourceRange);
+                        return DoesSubresourceRangeCover(trackedState.subresourceRange, *normalizedRange);
                     });
-                if (coveringIt != m_textureStates.end())
-                    return coveringIt->second;
+                if (coveringIt != bucket.end())
+                    return *coveringIt;
 
                 return std::nullopt;
             }
@@ -227,6 +249,12 @@ namespace NLS::Render::RHI
                     if (barrier.texture == nullptr)
                         continue;
 
+                    const auto normalizedRange = NormalizeTextureSubresourceRange(
+                        barrier.texture->GetDesc(),
+                        barrier.subresourceRange);
+                    if (normalizedRange.has_value())
+                        barrier.subresourceRange = *normalizedRange;
+
                     if (barrier.before == ResourceState::Unknown)
                     {
                         if (const auto tracked = GetTextureState(barrier.texture, barrier.subresourceRange); tracked.has_value())
@@ -234,6 +262,69 @@ namespace NLS::Render::RHI
                             barrier.before = tracked->state;
                             barrier.sourceStageMask = tracked->stageMask;
                             barrier.sourceAccessMask = tracked->accessMask;
+                        }
+                        else if (normalizedRange.has_value())
+                        {
+                            const auto bucketIt = m_textureStates.find(barrier.texture.get());
+                            if (bucketIt == m_textureStates.end())
+                            {
+                                resolved.textureBarriers.push_back(barrier);
+                                continue;
+                            }
+
+                            std::vector<RHISubresourceRange> remainingRanges{ *normalizedRange };
+                            for (const auto& trackedState : bucketIt->second)
+                            {
+                                if (!DoesSubresourceRangeOverlap(trackedState.subresourceRange, *normalizedRange))
+                                    continue;
+
+                                if (trackedState.state == barrier.after)
+                                {
+                                    remainingRanges = SubtractRangesFromRemaining(
+                                        std::move(remainingRanges),
+                                        trackedState.subresourceRange);
+                                    if (remainingRanges.empty())
+                                        break;
+                                    continue;
+                                }
+
+                                const auto intersection = IntersectSubresourceRanges(
+                                    trackedState.subresourceRange,
+                                    *normalizedRange);
+                                if (!intersection.has_value())
+                                    continue;
+
+                                resolved.textureBarriers.push_back({
+                                    barrier.texture,
+                                    trackedState.state,
+                                    barrier.after,
+                                    *intersection,
+                                    trackedState.stageMask,
+                                    barrier.destinationStageMask,
+                                    trackedState.accessMask,
+                                    barrier.destinationAccessMask
+                                });
+                                remainingRanges = SubtractRangesFromRemaining(
+                                    std::move(remainingRanges),
+                                    *intersection);
+                                if (remainingRanges.empty())
+                                    break;
+                            }
+
+                            for (const auto& remainingRange : remainingRanges)
+                            {
+                                resolved.textureBarriers.push_back({
+                                    barrier.texture,
+                                    barrier.before,
+                                    barrier.after,
+                                    remainingRange,
+                                    barrier.sourceStageMask,
+                                    barrier.destinationStageMask,
+                                    barrier.sourceAccessMask,
+                                    barrier.destinationAccessMask
+                                });
+                            }
+                            continue;
                         }
                     }
 
@@ -262,7 +353,11 @@ namespace NLS::Render::RHI
                 if (texture == nullptr)
                     return;
 
-                m_transientTextures.push_back({ texture, subresourceRange, retireAfterFrameIndex });
+                const auto normalizedRange = NormalizeTextureSubresourceRange(texture->GetDesc(), subresourceRange);
+                if (!normalizedRange.has_value())
+                    return;
+
+                m_transientTextures.push_back({ texture, *normalizedRange, retireAfterFrameIndex });
                 ++m_stats.transientTextureRegistrations;
             }
 
@@ -300,7 +395,49 @@ namespace NLS::Render::RHI
                         continue;
                     }
 
-                    m_textureStates.erase(TextureKey{ it->texture.get(), it->subresourceRange });
+                    const auto bucketIt = m_textureStates.find(it->texture.get());
+                    if (bucketIt != m_textureStates.end())
+                    {
+                        if (IsFullTextureSubresourceRange(it->texture->GetDesc(), it->subresourceRange))
+                        {
+                            m_textureStates.erase(bucketIt);
+                        }
+                        else
+                        {
+                            TextureStateBucket remainingBucket;
+                            remainingBucket.reserve(bucketIt->second.size());
+                            for (const auto& trackedState : bucketIt->second)
+                            {
+                                if (!DoesSubresourceRangeOverlap(trackedState.subresourceRange, it->subresourceRange))
+                                {
+                                    remainingBucket.push_back(trackedState);
+                                    continue;
+                                }
+
+                                const auto remainders = SubtractSubresourceRange(
+                                    trackedState.subresourceRange,
+                                    it->subresourceRange);
+                                for (const auto& remainder : remainders)
+                                {
+                                    if (remainder.mipLevelCount == 0u || remainder.arrayLayerCount == 0u)
+                                        continue;
+
+                                    remainingBucket.push_back({
+                                        trackedState.texture,
+                                        remainder,
+                                        trackedState.state,
+                                        trackedState.stageMask,
+                                        trackedState.accessMask
+                                    });
+                                }
+                            }
+
+                            if (remainingBucket.empty())
+                                m_textureStates.erase(bucketIt);
+                            else
+                                bucketIt->second = std::move(remainingBucket);
+                        }
+                    }
                     ++m_stats.retiredTransientTextures;
                     it = m_transientTextures.erase(it);
                 }
@@ -318,7 +455,7 @@ namespace NLS::Render::RHI
                 }
 
                 m_stats.trackedBufferCount = static_cast<uint64_t>(m_bufferStates.size());
-                m_stats.trackedTextureCount = static_cast<uint64_t>(m_textureStates.size());
+                m_stats.trackedTextureCount = CountTrackedTextureStates(m_textureStates);
             }
 
             void Commit(const RHIBarrierDesc& barriers) override
@@ -343,17 +480,81 @@ namespace NLS::Render::RHI
                     if (barrier.texture == nullptr)
                         continue;
 
-                    m_textureStates[TextureKey{ barrier.texture.get(), barrier.subresourceRange }] = TrackedTextureState{
+                    const auto normalizedRange = NormalizeTextureSubresourceRange(
+                        barrier.texture->GetDesc(),
+                        barrier.subresourceRange);
+                    if (!normalizedRange.has_value())
+                        continue;
+
+                    const auto& textureDesc = barrier.texture->GetDesc();
+                    if (IsFullTextureSubresourceRange(textureDesc, *normalizedRange))
+                    {
+                        auto& bucket = m_textureStates[barrier.texture.get()];
+                        bucket.clear();
+                        bucket.push_back({
+                            barrier.texture,
+                            *normalizedRange,
+                            barrier.after,
+                            barrier.destinationStageMask,
+                            barrier.destinationAccessMask
+                        });
+                        continue;
+                    }
+
+                    auto& bucket = m_textureStates[barrier.texture.get()];
+                    bool isCoveredBySameState = false;
+                    for (const auto& trackedState : bucket)
+                    {
+                        if (trackedState.state != barrier.after)
+                            continue;
+
+                        if (DoesSubresourceRangeCover(trackedState.subresourceRange, *normalizedRange))
+                        {
+                            isCoveredBySameState = true;
+                            break;
+                        }
+                    }
+                    if (isCoveredBySameState)
+                        continue;
+
+                    TextureStateBucket updatedBucket;
+                    updatedBucket.reserve(bucket.size() + 4u);
+                    for (const auto& trackedState : bucket)
+                    {
+                        if (!DoesSubresourceRangeOverlap(trackedState.subresourceRange, *normalizedRange))
+                        {
+                            updatedBucket.push_back(trackedState);
+                            continue;
+                        }
+
+                        const auto remainders = SubtractSubresourceRange(trackedState.subresourceRange, *normalizedRange);
+                        for (const auto& remainder : remainders)
+                        {
+                            if (remainder.mipLevelCount == 0u || remainder.arrayLayerCount == 0u)
+                                continue;
+
+                            updatedBucket.push_back({
+                                barrier.texture,
+                                remainder,
+                                trackedState.state,
+                                trackedState.stageMask,
+                                trackedState.accessMask
+                            });
+                        }
+                    }
+
+                    updatedBucket.push_back({
                         barrier.texture,
-                        barrier.subresourceRange,
+                        *normalizedRange,
                         barrier.after,
                         barrier.destinationStageMask,
                         barrier.destinationAccessMask
-                    };
+                    });
+                    bucket = std::move(updatedBucket);
                 }
 
                 m_stats.trackedBufferCount = static_cast<uint64_t>(m_bufferStates.size());
-                m_stats.trackedTextureCount = static_cast<uint64_t>(m_textureStates.size());
+                m_stats.trackedTextureCount = CountTrackedTextureStates(m_textureStates);
             }
 
             ResourceStateTrackerStats GetStats() const override
@@ -364,7 +565,7 @@ namespace NLS::Render::RHI
         private:
             ResourceStateTrackerStats m_stats{};
             std::unordered_map<BufferKey, TrackedBufferState, BufferKeyHash> m_bufferStates;
-            std::unordered_map<TextureKey, TrackedTextureState, TextureKeyHash> m_textureStates;
+            std::unordered_map<const RHITexture*, TextureStateBucket> m_textureStates;
             std::vector<TransientBufferRetirement> m_transientBuffers;
             std::vector<TransientTextureRetirement> m_transientTextures;
             std::vector<TransientTextureViewRetirement> m_transientTextureViews;

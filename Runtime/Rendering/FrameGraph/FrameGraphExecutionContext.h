@@ -114,8 +114,12 @@ namespace NLS::Render::FrameGraph
 			if (resolvedBarriers.bufferBarriers.empty() && resolvedBarriers.textureBarriers.empty())
 				return;
 
-			commandBuffer->Barrier(resolvedBarriers);
-			frameContext->resourceStateTracker->Commit(resolvedBarriers);
+			const auto filteredBarriers = commandBuffer->FilterBarrierDesc(resolvedBarriers);
+			if (filteredBarriers.bufferBarriers.empty() && filteredBarriers.textureBarriers.empty())
+				return;
+
+			commandBuffer->Barrier(filteredBarriers);
+			frameContext->resourceStateTracker->Commit(filteredBarriers);
 		}
 	};
 }

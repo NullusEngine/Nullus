@@ -2457,6 +2457,23 @@ TEST(EditorRenderPathContractTests, GridPlaneModelKeepsEditorPlaneOnWorldXZGroun
     EXPECT_EQ(source.find("Maths::Matrix4::Scaling({ gridSize * 2.0f, gridSize * 2.0f, 1.f })"), std::string::npos);
 }
 
+TEST(EditorRenderPathContractTests, EditorHelperMeshesLoadThroughGeneratedMeshArtifacts)
+{
+    const std::filesystem::path editorResourcesSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorResources.cpp";
+
+    const std::string source = ReadSourceText(editorResourcesSourcePath);
+
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(source.find("EnsureEditorHelperMeshArtifact"), std::string::npos);
+    EXPECT_NE(source.find("projectRoot / \"Library\""), std::string::npos);
+    EXPECT_NE(source.find("\"EditorHelperArtifacts\""), std::string::npos);
+    EXPECT_NE(source.find("\"Models\""), std::string::npos);
+    EXPECT_NE(source.find("GenerateEditorHelperMeshArtifact"), std::string::npos);
+    EXPECT_NE(source.find("meshManager.GetResource(resourcePath->string(), true)"), std::string::npos);
+    EXPECT_EQ(source.find("meshManager.GetResource(found->second, true)"), std::string::npos);
+}
+
 TEST(EditorRenderPathContractTests, DeferredEditorOverlayInputsReceiveExternalSceneOutputDepthBeforePlanning)
 {
     NLS::Render::RHI::RHITextureDesc colorDesc;
@@ -2642,6 +2659,140 @@ TEST(EditorRenderPathContractTests, DeferredSceneViewEditorOverlayWritesExternal
     EXPECT_EQ(depthAccess->state, NLS::Render::RHI::ResourceState::DepthRead);
     EXPECT_EQ(depthAccess->stages, NLS::Render::RHI::PipelineStageMask::DepthStencil);
     EXPECT_EQ(depthAccess->access, NLS::Render::RHI::AccessMask::DepthStencilRead);
+}
+
+TEST(EditorRenderPathContractTests, DeferredSceneViewEditorVisualHelpersDeclareExternalColorWrites)
+{
+    NLS::Render::RHI::RHITextureDesc colorDesc;
+    colorDesc.debugName = "SceneViewColor";
+    colorDesc.extent = { 320u, 180u, 1u };
+    colorDesc.dimension = NLS::Render::RHI::TextureDimension::Texture2DArray;
+    colorDesc.mipLevels = 3u;
+    colorDesc.arrayLayers = 4u;
+    auto colorTexture = std::make_shared<TestTexture>(colorDesc);
+
+    NLS::Render::RHI::RHITextureViewDesc colorViewDesc;
+    colorViewDesc.debugName = "SceneViewColorView";
+    colorViewDesc.subresourceRange.baseMipLevel = 1u;
+    colorViewDesc.subresourceRange.mipLevelCount = 1u;
+    colorViewDesc.subresourceRange.baseArrayLayer = 2u;
+    colorViewDesc.subresourceRange.arrayLayerCount = 1u;
+    auto colorView = std::make_shared<TestTextureView>(colorTexture, colorViewDesc);
+
+    NLS::Render::RHI::RHITextureDesc depthDesc;
+    depthDesc.debugName = "SceneViewDepth";
+    depthDesc.extent = { 320u, 180u, 1u };
+    auto depthTexture = std::make_shared<TestTexture>(depthDesc);
+
+    NLS::Render::RHI::RHITextureViewDesc depthViewDesc;
+    depthViewDesc.debugName = "SceneViewDepthView";
+    auto depthView = std::make_shared<TestTextureView>(depthTexture, depthViewDesc);
+
+    NLS::Render::RHI::RHITextureDesc gbufferDepthDesc;
+    gbufferDepthDesc.debugName = "DeferredGBufferDepth";
+    gbufferDepthDesc.extent = { 320u, 180u, 1u };
+    auto gbufferDepthTexture = std::make_shared<TestTexture>(gbufferDepthDesc);
+
+    NLS::Render::RHI::RHITextureViewDesc gbufferDepthViewDesc;
+    gbufferDepthViewDesc.debugName = "DeferredGBufferDepthView";
+    auto gbufferDepthView = std::make_shared<TestTextureView>(gbufferDepthTexture, gbufferDepthViewDesc);
+
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 320u;
+    frameDescriptor.renderHeight = 180u;
+    frameDescriptor.outputColorTexture = colorTexture;
+    frameDescriptor.outputDepthStencilTexture = depthTexture;
+    frameDescriptor.outputColorView = colorView;
+    frameDescriptor.outputDepthStencilView = depthView;
+
+    NLS::Render::Context::RenderScenePackage package;
+    package.targetsSwapchain = false;
+    package.opaqueDrawCount = 1u;
+    package.drawCommandCount = 4u;
+    package.helperDrawCount = 3u;
+    package.renderWidth = frameDescriptor.renderWidth;
+    package.renderHeight = frameDescriptor.renderHeight;
+    package.recordedDrawCommands.resize(4u);
+
+    const auto makeHelperPass =
+        [](const char* debugName)
+        {
+            NLS::Render::Context::RenderPassCommandInput passInput;
+            passInput.kind = NLS::Render::Context::RenderPassCommandKind::Helper;
+            passInput.debugName = debugName;
+            passInput.drawCount = 1u;
+            passInput.usesColorAttachment = true;
+            passInput.usesDepthStencilAttachment = true;
+            return passInput;
+        };
+
+    const auto makeHelperMetadata =
+        [](const char* debugName)
+        {
+            NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata metadata;
+            metadata.commandKind = NLS::Render::Context::RenderPassCommandKind::Helper;
+            metadata.role = NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Helper;
+            metadata.queueType = NLS::Render::RHI::QueueType::Graphics;
+            metadata.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
+            NLS::Render::FrameGraph::SetThreadedRenderScenePassGraphPassName(metadata, debugName);
+            return metadata;
+        };
+
+    const std::vector<NLS::Render::Context::RenderPassCommandInput> appendedPassInputs {
+        makeHelperPass("EditorGridPass"),
+        makeHelperPass("EditorDebugCamerasPass"),
+        makeHelperPass("EditorDebugLightsPass")
+    };
+    const std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata> appendedMetadata {
+        makeHelperMetadata("EditorGridPass"),
+        makeHelperMetadata("EditorDebugCamerasPass"),
+        makeHelperMetadata("EditorDebugLightsPass")
+    };
+
+    const auto lightGridContext = NLS::Render::FrameGraph::BuildLightGridCompileContext(
+        frameDescriptor,
+        NLS::Render::FrameGraph::PreparedComputeDispatchSource{},
+        nullptr);
+
+    NLS::Render::FrameGraph::DeferredPreparedSceneResources resources;
+    resources.gbufferDepthView = gbufferDepthView;
+
+    NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
+        package,
+        lightGridContext,
+        resources,
+        appendedPassInputs,
+        appendedMetadata);
+
+    ASSERT_EQ(package.passCommandInputs.size(), 5u);
+    for (size_t passIndex = 2u; passIndex < package.passCommandInputs.size(); ++passIndex)
+    {
+        const auto& overlayPass = package.passCommandInputs[passIndex];
+        SCOPED_TRACE(overlayPass.debugName);
+        ASSERT_EQ(overlayPass.colorAttachmentViews.size(), 1u);
+        EXPECT_EQ(overlayPass.colorAttachmentViews[0], colorView);
+        EXPECT_EQ(overlayPass.depthStencilAttachmentView, gbufferDepthView);
+
+        const auto colorAccess = std::find_if(
+            overlayPass.textureResourceAccesses.begin(),
+            overlayPass.textureResourceAccesses.end(),
+            [&colorTexture](const NLS::Render::Context::TextureResourceAccess& access)
+            {
+                return access.texture == colorTexture;
+            });
+        ASSERT_NE(colorAccess, overlayPass.textureResourceAccesses.end());
+        EXPECT_EQ(colorAccess->subresourceRange.baseMipLevel, colorViewDesc.subresourceRange.baseMipLevel);
+        EXPECT_EQ(colorAccess->subresourceRange.mipLevelCount, colorViewDesc.subresourceRange.mipLevelCount);
+        EXPECT_EQ(colorAccess->subresourceRange.baseArrayLayer, colorViewDesc.subresourceRange.baseArrayLayer);
+        EXPECT_EQ(colorAccess->subresourceRange.arrayLayerCount, colorViewDesc.subresourceRange.arrayLayerCount);
+        EXPECT_EQ(colorAccess->mode, NLS::Render::Context::ResourceAccessMode::Write);
+        EXPECT_EQ(colorAccess->state, NLS::Render::RHI::ResourceState::RenderTarget);
+        EXPECT_EQ(colorAccess->stages, NLS::Render::RHI::PipelineStageMask::RenderTarget);
+        EXPECT_EQ(
+            colorAccess->access,
+            NLS::Render::RHI::AccessMask::ColorAttachmentRead |
+                NLS::Render::RHI::AccessMask::ColorAttachmentWrite);
+    }
 }
 
 TEST(EditorRenderPathContractTests, DeferredSceneViewEditorOverlayKeepsGBufferDepthWhenExternalAttachmentsWerePreapplied)

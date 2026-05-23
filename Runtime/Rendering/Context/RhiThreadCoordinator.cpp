@@ -19,6 +19,7 @@
 #include "Rendering/Context/RenderThreadCoordinator.h"
 #include "Rendering/Context/RhiThreadCoordinator.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
+#include "Rendering/RHI/Core/RHISubresourceRangeUtils.h"
 #include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/FrameGraph/ExternalResourceBridge.h"
 #include "Rendering/RHI/Utils/DescriptorAllocator/DescriptorAllocator.h"
@@ -354,11 +355,6 @@ namespace NLS::Render::Context
             }
         }
 
-        bool IsEmptySubresourceRange(const Render::RHI::RHISubresourceRange& range)
-        {
-            return range.mipLevelCount == 0u && range.arrayLayerCount == 0u;
-        }
-
         bool HasWriteAccess(const Render::RHI::AccessMask accessMask)
         {
             constexpr uint32_t kWriteAccessMask =
@@ -369,16 +365,6 @@ namespace NLS::Render::Context
                 static_cast<uint32_t>(Render::RHI::AccessMask::HostWrite) |
                 static_cast<uint32_t>(Render::RHI::AccessMask::MemoryWrite);
             return (static_cast<uint32_t>(accessMask) & kWriteAccessMask) != 0u;
-        }
-
-        bool AreEqualSubresourceRanges(
-            const Render::RHI::RHISubresourceRange& lhs,
-            const Render::RHI::RHISubresourceRange& rhs)
-        {
-            return lhs.baseMipLevel == rhs.baseMipLevel &&
-                lhs.mipLevelCount == rhs.mipLevelCount &&
-                lhs.baseArrayLayer == rhs.baseArrayLayer &&
-                lhs.arrayLayerCount == rhs.arrayLayerCount;
         }
 
         std::optional<BufferVisibilityTransition> BuildVisibilityTransitionFromDependencyEdge(
@@ -422,7 +408,7 @@ namespace NLS::Render::Context
 
             TextureVisibilityTransition transition;
             transition.texture = edge.targetTextureAccess->texture;
-            transition.subresourceRange = !IsEmptySubresourceRange(edge.targetTextureAccess->subresourceRange)
+            transition.subresourceRange = !Render::RHI::IsEmptySubresourceRange(edge.targetTextureAccess->subresourceRange)
                 ? edge.targetTextureAccess->subresourceRange
                 : edge.sourceTextureAccess->subresourceRange;
             transition.before = Render::RHI::ResourceState::Unknown;
@@ -463,10 +449,18 @@ namespace NLS::Render::Context
                 input.textureVisibilityTransitions.end(),
                 [&texture, &subresourceRange](const TextureVisibilityTransition& transition)
                 {
-                    return transition.texture == texture &&
-                        (IsEmptySubresourceRange(subresourceRange) ||
-                            IsEmptySubresourceRange(transition.subresourceRange) ||
-                            AreEqualSubresourceRanges(transition.subresourceRange, subresourceRange));
+                    if (transition.texture != texture || texture == nullptr)
+                        return false;
+
+                    const auto transitionRange = Render::RHI::NormalizeTextureSubresourceRange(
+                        texture->GetDesc(),
+                        transition.subresourceRange);
+                    const auto requestedRange = Render::RHI::NormalizeTextureSubresourceRange(
+                        texture->GetDesc(),
+                        subresourceRange);
+                    return transitionRange.has_value() &&
+                        requestedRange.has_value() &&
+                        Render::RHI::DoesSubresourceRangeCover(*transitionRange, *requestedRange);
                 });
         }
 

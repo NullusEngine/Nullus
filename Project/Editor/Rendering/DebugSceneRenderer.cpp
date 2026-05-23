@@ -48,6 +48,11 @@ constexpr float kSelectedOutlineWidth = 5.0f;
 
 namespace
 {
+    bool ShouldLogEditorHelperDiagnostics(const NLS::Render::Context::Driver& driver)
+    {
+        return NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(driver).logRenderDrawPath;
+    }
+
 	std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata> BuildDebugDeferredThreadedPassMetadata(
 		const uint64_t helperVisibleCount,
         const bool includeGridPass,
@@ -303,7 +308,11 @@ private:
     {
         auto* cameraMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Camera");
         if (cameraMesh == nullptr)
+        {
+            if (ShouldLogEditorHelperDiagnostics(m_renderer.GetDriver()))
+                NLS_LOG_INFO("[EditorDebugCamerasPass] threaded input skipped: Camera mesh unavailable");
             return std::nullopt;
+        }
 
         const auto& frameDescriptor = m_renderer.GetFrameDescriptor();
         NLS::Render::Context::RenderPassCommandInput passInput;
@@ -336,7 +345,24 @@ private:
 
         passInput.drawCount = static_cast<uint64_t>(passInput.recordedDrawCommands.size());
         if (passInput.drawCount == 0u)
+        {
+            if (ShouldLogEditorHelperDiagnostics(m_renderer.GetDriver()))
+            {
+                NLS_LOG_INFO(
+                    "[EditorDebugCamerasPass] threaded input skipped: captured draw count is zero sceneCameraCount=" +
+                    std::to_string(scene.GetFastAccessComponents().cameras.size()));
+            }
             return std::nullopt;
+        }
+
+        if (ShouldLogEditorHelperDiagnostics(m_renderer.GetDriver()))
+        {
+            NLS_LOG_INFO(
+                "[EditorDebugCamerasPass] threaded input captured drawCount=" +
+                std::to_string(passInput.drawCount) +
+                " sceneCameraCount=" +
+                std::to_string(scene.GetFastAccessComponents().cameras.size()));
+        }
 
         return passInput;
     }
@@ -419,7 +445,11 @@ private:
     {
         auto* lightMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Vertical_Plane");
         if (lightMesh == nullptr)
+        {
+            if (ShouldLogEditorHelperDiagnostics(m_renderer.GetDriver()))
+                NLS_LOG_INFO("[EditorDebugLightsPass] threaded input skipped: Vertical_Plane mesh unavailable");
             return std::nullopt;
+        }
 
         const auto& frameDescriptor = m_renderer.GetFrameDescriptor();
         NLS::Render::Context::RenderPassCommandInput passInput;
@@ -461,7 +491,24 @@ private:
 
         passInput.drawCount = static_cast<uint64_t>(passInput.recordedDrawCommands.size());
         if (passInput.drawCount == 0u)
+        {
+            if (ShouldLogEditorHelperDiagnostics(m_renderer.GetDriver()))
+            {
+                NLS_LOG_INFO(
+                    "[EditorDebugLightsPass] threaded input skipped: captured draw count is zero sceneLightCount=" +
+                    std::to_string(scene.GetFastAccessComponents().lights.size()));
+            }
             return std::nullopt;
+        }
+
+        if (ShouldLogEditorHelperDiagnostics(m_renderer.GetDriver()))
+        {
+            NLS_LOG_INFO(
+                "[EditorDebugLightsPass] threaded input captured drawCount=" +
+                std::to_string(passInput.drawCount) +
+                " sceneLightCount=" +
+                std::to_string(scene.GetFastAccessComponents().lights.size()));
+        }
 
         return passInput;
     }
@@ -976,6 +1023,22 @@ NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRe
     const auto lightPassInput = GetPass<DebugLightsRenderPass>("Debug Lights").GetPreparedThreadedPassInput();
     const auto selectionPassInput = GetPass<DebugGameObjectRenderPass>("Debug GameObject").GetPreparedThreadedPassInput();
     const auto pickingPassInput = GetPass<PickingRenderPass>("Picking").GetPreparedThreadedPassInput();
+    if (ShouldLogEditorHelperDiagnostics(m_driver))
+    {
+        NLS_LOG_INFO(
+            "[DebugSceneRenderer] prepared helper inputs grid=" +
+            std::to_string(gridPassInput.has_value() ? gridPassInput->drawCount : 0u) +
+            " cameras=" +
+            std::to_string(cameraPassInput.has_value() ? cameraPassInput->drawCount : 0u) +
+            " lights=" +
+            std::to_string(lightPassInput.has_value() ? lightPassInput->drawCount : 0u) +
+            " selection=" +
+            std::to_string(selectionPassInput.has_value() ? selectionPassInput->drawCount : 0u) +
+            " picking=" +
+            std::to_string(pickingPassInput.has_value() ? pickingPassInput->drawCount : 0u) +
+            " snapshotVisibleHelpers=" +
+            std::to_string(snapshot.visibleHelperDrawCount));
+    }
     const auto explicitHelperContribution =
         static_cast<uint64_t>(gridPassInput.has_value() ? 1u : 0u) +
         static_cast<uint64_t>(cameraPassInput.has_value() ? 1u : 0u) +

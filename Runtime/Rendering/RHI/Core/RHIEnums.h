@@ -154,6 +154,11 @@ namespace NLS::Render::RHI
         GenericRead = CopySrc | VertexBuffer | IndexBuffer | UniformBuffer | ShaderRead
     };
 
+    inline constexpr ResourceState operator|(ResourceState lhs, ResourceState rhs)
+    {
+        return static_cast<ResourceState>(static_cast<uint32_t>(lhs) | static_cast<uint32_t>(rhs));
+    }
+
     enum class NLS_RENDER_API TextureViewType : uint8_t
     {
         Auto,

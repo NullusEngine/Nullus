@@ -1,12 +1,17 @@
 #include <UI/GUIDrawer.h>
 
 #include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <optional>
 
 #include <Core/ServiceLocator.h>
 #include <Debug/Logger.h>
+#include <Rendering/Assets/MeshArtifact.h>
 #include <Rendering/Resources/Loaders/ShaderLoader.h>
 #include <Rendering/Resources/Loaders/TextureLoader.h>
 #include <Rendering/Resources/Mesh.h>
+#include <Rendering/Resources/Parsers/FbxSdkParser.h>
 #include <Rendering/Resources/Texture2D.h>
 #include <Rendering/Settings/ETextureFilteringMode.h>
 #include <Utils/PathParser.h>
@@ -30,6 +35,92 @@ namespace
         NLS_LOG_INFO(
             "[EditorResources] Loaded " + category + " \"" + id + "\" in " +
             std::to_string(MillisecondsSince(start)) + " ms");
+    }
+
+    std::optional<std::filesystem::path> ResolveProjectLibraryRoot(const std::string& projectAssetsPath)
+    {
+        if (projectAssetsPath.empty())
+            return std::nullopt;
+
+        auto assetsPath = std::filesystem::path(projectAssetsPath).lexically_normal();
+        while (!assetsPath.empty() && assetsPath.filename().empty())
+        {
+            const auto parent = assetsPath.parent_path();
+            if (parent == assetsPath)
+                break;
+            assetsPath = parent;
+        }
+
+        const auto projectRoot = assetsPath.filename() == "Assets" ? assetsPath.parent_path() : assetsPath;
+        if (projectRoot.empty())
+            return std::nullopt;
+
+        return projectRoot / "Library";
+    }
+
+    bool GenerateEditorHelperMeshArtifact(
+        const std::filesystem::path& sourcePath,
+        const std::filesystem::path& artifactPath)
+    {
+        std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> meshes;
+        std::vector<std::string> materials;
+        NLS::Render::Resources::Parsers::FbxSdkParser parser;
+        const bool loaded = parser.LoadModelData(
+            sourcePath.string(),
+            meshes,
+            materials,
+            NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE |
+                NLS::Render::Resources::Parsers::EModelParserFlags::GLOBAL_SCALE,
+            nullptr,
+            true);
+        if (!loaded || meshes.size() != 1u)
+        {
+            NLS_LOG_WARNING(
+                "[EditorResources] Failed to generate editor helper mesh artifact from " +
+                sourcePath.string());
+            return false;
+        }
+
+        std::error_code error;
+        std::filesystem::create_directories(artifactPath.parent_path(), error);
+        if (error)
+            return false;
+
+        NLS::Render::Assets::MeshArtifactData artifact;
+        artifact.vertices = meshes.front().vertices;
+        artifact.indices = meshes.front().indices;
+        artifact.materialIndex = meshes.front().materialIndex;
+        const auto bytes = NLS::Render::Assets::SerializeMeshArtifact(artifact);
+        if (bytes.empty())
+            return false;
+
+        std::ofstream output(artifactPath, std::ios::binary | std::ios::trunc);
+        if (!output)
+            return false;
+
+        output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        return output.good();
+    }
+
+    std::optional<std::filesystem::path> EnsureEditorHelperMeshArtifact(
+        const std::string& projectAssetsPath,
+        const std::string& meshId,
+        const std::string& sourcePath)
+    {
+        const auto libraryRoot = ResolveProjectLibraryRoot(projectAssetsPath);
+        if (!libraryRoot.has_value())
+            return std::nullopt;
+
+        const auto resourcePath =
+            *libraryRoot / "EditorHelperArtifacts" / "Models" / (meshId + ".nmesh");
+        std::error_code error;
+        if (std::filesystem::is_regular_file(resourcePath, error))
+            return resourcePath;
+
+        if (GenerateEditorHelperMeshArtifact(sourcePath, resourcePath))
+            return resourcePath;
+
+        return std::nullopt;
     }
 }
 
@@ -236,7 +327,10 @@ NLS::Render::Resources::Mesh* Editor::Core::EditorResources::LoadMesh(const std:
 
     const auto loadStart = Clock::now();
     auto& meshManager = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::MeshManager>();
-    auto* mesh = meshManager.GetResource(found->second, true);
+    const auto resourcePath = EnsureEditorHelperMeshArtifact(m_projectAssetsPath, p_id, found->second);
+    auto* mesh = resourcePath.has_value()
+        ? meshManager.GetResource(resourcePath->string(), true)
+        : nullptr;
     if (mesh != nullptr)
     {
         m_meshes[p_id] = mesh;

@@ -92,6 +92,22 @@ namespace
         return value ? "1" : "0";
     }
 
+    void AppendTextureVisibilityTransitionBarrier(
+        NLS::Render::RHI::RHIBarrierDesc& barriers,
+        const NLS::Render::Context::TextureVisibilityTransition& transition)
+    {
+        barriers.textureBarriers.push_back({
+            transition.texture,
+            transition.before,
+            transition.after,
+            transition.subresourceRange,
+            transition.sourceStages,
+            transition.destinationStages,
+            transition.sourceAccess,
+            transition.destinationAccess
+        });
+    }
+
     void LogRecordedDrawPreparationState(
         const Context::Driver& driver,
         const char* overloadName,
@@ -170,6 +186,8 @@ void ABaseRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
 
     m_frameDescriptor = p_frameDescriptor;
     m_threadedRecordedDrawCommands.clear();
+    m_activeRecordedPassColorViews.clear();
+    m_activeRecordedPassDepthStencilView.reset();
     m_pendingFrameSnapshot.reset();
     m_pendingPreparedRenderSceneBuilder = {};
     const bool targetsSwapchain = NLS::Render::FrameGraph::FrameTargetsSwapchain(p_frameDescriptor);
@@ -462,6 +480,7 @@ bool ABaseRenderer::BeginRecordedRenderPass(
         }
     }
 
+    CaptureRecordedPassAttachmentViews(renderPassDesc);
     commandBuffer->BeginRenderPass(renderPassDesc);
     commandBuffer->BeginGpuProfileScope(renderPassDesc.debugName, __FUNCTION__);
     commandBuffer->SetViewport({ 0.0f, 0.0f, static_cast<float>(p_width), static_cast<float>(p_height), 0.0f, 1.0f });
@@ -561,6 +580,7 @@ bool ABaseRenderer::BeginRecordedRenderPass(
         }
     }
 
+    CaptureRecordedPassAttachmentViews(renderPassDesc);
     commandBuffer->BeginRenderPass(renderPassDesc);
     commandBuffer->BeginGpuProfileScope(renderPassDesc.debugName, __FUNCTION__);
     commandBuffer->SetViewport({ 0.0f, 0.0f, static_cast<float>(p_width), static_cast<float>(p_height), 0.0f, 1.0f });
@@ -596,14 +616,8 @@ void ABaseRenderer::EndRecordedRenderPass()
     if (commandBuffer == nullptr || !m_recordedRenderPassActive)
         return;
 
-    std::vector<std::shared_ptr<NLS::Render::RHI::RHITextureView>> colorViews;
-    std::shared_ptr<NLS::Render::RHI::RHITextureView> depthStencilView;
-    if (auto* outputFramebuffer = NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(m_frameDescriptor);
-        outputFramebuffer != nullptr)
-    {
-        colorViews.push_back(outputFramebuffer->GetOrCreateExplicitColorView("FramebufferColorView"));
-        depthStencilView = outputFramebuffer->GetOrCreateExplicitDepthStencilView("FramebufferDepthView");
-    }
+    const auto& colorViews = m_activeRecordedPassColorViews;
+    const auto depthStencilView = m_activeRecordedPassDepthStencilView;
 
     commandBuffer->EndGpuProfileScope();
     commandBuffer->EndRenderPass();
@@ -619,31 +633,13 @@ void ABaseRenderer::EndRecordedRenderPass()
                 const auto transition =
                     NLS::Render::FrameGraph::BuildSampledAttachmentEndTransition(colorView, false);
                 if (transition.has_value())
-                    attachmentBarriers.textureBarriers.push_back({
-                        transition->texture,
-                        transition->before,
-                        transition->after,
-                        transition->subresourceRange,
-                        transition->sourceStages,
-                        transition->destinationStages,
-                        transition->sourceAccess,
-                        transition->destinationAccess
-                    });
+                    AppendTextureVisibilityTransitionBarrier(attachmentBarriers, *transition);
             }
 
             const auto depthTransition =
                 NLS::Render::FrameGraph::BuildSampledAttachmentEndTransition(depthStencilView, true);
             if (depthTransition.has_value())
-                attachmentBarriers.textureBarriers.push_back({
-                    depthTransition->texture,
-                    depthTransition->before,
-                    depthTransition->after,
-                    depthTransition->subresourceRange,
-                    depthTransition->sourceStages,
-                    depthTransition->destinationStages,
-                    depthTransition->sourceAccess,
-                    depthTransition->destinationAccess
-                });
+                AppendTextureVisibilityTransitionBarrier(attachmentBarriers, *depthTransition);
 
             if (!attachmentBarriers.textureBarriers.empty())
                 executionContext.RecordResourceBarriers(attachmentBarriers);
@@ -651,6 +647,8 @@ void ABaseRenderer::EndRecordedRenderPass()
     }
 
     m_recordedRenderPassActive = false;
+    m_activeRecordedPassColorViews.clear();
+    m_activeRecordedPassDepthStencilView.reset();
 }
 
 void ABaseRenderer::EndOutputRenderPass(const bool p_startedRecordedPass)
@@ -762,6 +760,21 @@ uint64_t ABaseRenderer::GetExplicitUniformBindingSetCreationCount() const
 uint64_t ABaseRenderer::GetExplicitUniformSnapshotBufferCreationCount() const
 {
     return m_explicitUniformSnapshotBufferCreationCount;
+}
+
+void ABaseRenderer::CaptureRecordedPassAttachmentViews(const NLS::Render::RHI::RHIRenderPassDesc& renderPassDesc)
+{
+    m_activeRecordedPassColorViews.clear();
+    m_activeRecordedPassColorViews.reserve(renderPassDesc.colorAttachments.size());
+    for (const auto& colorAttachment : renderPassDesc.colorAttachments)
+    {
+        if (colorAttachment.view != nullptr)
+            m_activeRecordedPassColorViews.push_back(colorAttachment.view);
+    }
+
+    m_activeRecordedPassDepthStencilView = renderPassDesc.depthStencilAttachment.has_value()
+        ? renderPassDesc.depthStencilAttachment->view
+        : nullptr;
 }
 
 void ABaseRenderer::ReadPixels(

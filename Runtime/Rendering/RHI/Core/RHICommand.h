@@ -279,6 +279,10 @@ namespace NLS::Render::RHI
         virtual void CopyBuffer(const std::shared_ptr<RHIBuffer>& source, const std::shared_ptr<RHIBuffer>& destination, const RHIBufferCopyRegion& region) = 0;
         virtual void CopyBufferToTexture(const RHIBufferToTextureCopyDesc& desc) = 0;
         virtual void CopyTexture(const RHITextureCopyDesc& desc) = 0;
+        virtual RHIBarrierDesc FilterBarrierDesc(const RHIBarrierDesc& barrier) const
+        {
+            return barrier;
+        }
         virtual void Barrier(const RHIBarrierDesc& barrier) = 0;
     };
 

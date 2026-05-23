@@ -44,7 +44,7 @@ jobs:
 
       - name: Configure
         shell: powershell
-        run: cmake -S . -B build\windows -G "Visual Studio 17 2022" -A ${{ matrix.platform }} -DCMAKE_CONFIGURATION_TYPES=${{ matrix.configuration }}
+        run: cmake -S . -B build\windows -G "Visual Studio 17 2022" -A ${{ matrix.platform }} -DCMAKE_CONFIGURATION_TYPES=${{ matrix.configuration }} -DNLS_BUILD_TESTS=ON
 
       - name: Restore MetaParser
         shell: powershell

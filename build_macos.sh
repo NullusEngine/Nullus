@@ -36,7 +36,7 @@ else
     GENERATOR="Xcode"
 fi
 
-cmake -S . -B "${BUILD_DIR}" -G "${GENERATOR}"
+cmake -S . -B "${BUILD_DIR}" -G "${GENERATOR}" ${NLS_CMAKE_OPTIONS:-}
 BUILD_JOBS="${NLS_BUILD_JOBS:-1}"
 if [ -n "${NLS_BUILD_TARGETS}" ]; then
     cmake --build "${BUILD_DIR}" --config "${CONFIG}" --target ${NLS_BUILD_TARGETS} --parallel "${BUILD_JOBS}" --verbose

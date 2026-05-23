@@ -29,7 +29,7 @@ jobs:
             libgl1-mesa-dev libglu1-mesa-dev libvulkan-dev
 
       - name: Build
-        run: NLS_BUILD_TARGETS="NullusUnitTests ReflectionTest" NLS_BUILD_JOBS=1 ./build_linux.sh debug
+        run: NLS_CMAKE_OPTIONS="-DNLS_BUILD_TESTS=ON" NLS_BUILD_TARGETS="NullusUnitTests ReflectionTest" NLS_BUILD_JOBS=1 ./build_linux.sh debug
 
       - name: Run unit tests
         run: |

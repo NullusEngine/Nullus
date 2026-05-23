@@ -1,6 +1,6 @@
 # Quickstart: Editor Top And Bottom Bars
 
-**Feature**: `010-editor-top-bottom-bars`  
+**Feature**: `010-editor-top-bottom-bars`
 **Date**: 2026-05-03
 
 ## Prerequisites

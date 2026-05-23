@@ -1,7 +1,7 @@
 # Specification Quality Checklist: ImGuizmo Transform Gizmo
 
-**Purpose**: Validate specification completeness and quality before proceeding to planning  
-**Created**: 2026-05-04  
+**Purpose**: Validate specification completeness and quality before proceeding to planning
+**Created**: 2026-05-04
 **Feature**: [spec.md](../spec.md)
 
 ## Content Quality

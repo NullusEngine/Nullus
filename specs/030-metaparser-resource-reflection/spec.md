@@ -1,8 +1,8 @@
 # Feature Specification: MetaParser Resource Reflection
 
-**Feature Branch**: `030-metaparser-resource-reflection`  
-**Created**: 2026-05-22  
-**Status**: Implementation Review  
+**Feature Branch**: `030-metaparser-resource-reflection`
+**Created**: 2026-05-22
+**Status**: Implementation Review
 **Input**: User description: "所有反射 class 必须走 MetaParser；改掉 Mesh/Material/Texture/Shader 等手写 StaticMetaTypeName/GetObjectTypeName 字符串写法"
 
 **Scope Note**: Final implementation also includes the asset/runtime/render integration needed to preserve resource references after the reflection migration: runtime asset manifest loading, material artifact prewarming, editor artifact database indexing, object-graph resource `PPtr` resolution, and FrameGraph material-binding safety checks.

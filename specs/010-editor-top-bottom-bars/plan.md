@@ -9,14 +9,14 @@
 
 ## Technical Context
 
-**Language/Version**: C++20  
-**Primary Dependencies**: NLS_Engine, ImGui, GLFW  
-**Storage**: 文件系统（现有 ImGui layout ini；本特性本身不新增持久化数据）  
-**Testing**: CTest + NullusUnitTests（回归保障），手动验证（Editor UI 行为）  
-**Target Platform**: Windows DX12 Editor 主路径；设计上不引入后端专有 UI 分叉  
-**Project Type**: Desktop application（游戏引擎编辑器）  
-**Performance Goals**: 顶栏和脚栏加入后，Editor 常规交互保持实时响应；FPS 状态读数持续更新且不阻塞主编辑循环  
-**Constraints**: 不修改 `Runtime/*/Gen/`；不把 Unity 生态入口错误伪装成可用功能；Editor 与 Game 必须继续可运行；优先复用现有 ImGui/UI 框架而不是引入新 UI 系统；窗口 resize 后栏位必须稳定贴边且不遮挡主内容  
+**Language/Version**: C++20
+**Primary Dependencies**: NLS_Engine, ImGui, GLFW
+**Storage**: 文件系统（现有 ImGui layout ini；本特性本身不新增持久化数据）
+**Testing**: CTest + NullusUnitTests（回归保障），手动验证（Editor UI 行为）
+**Target Platform**: Windows DX12 Editor 主路径；设计上不引入后端专有 UI 分叉
+**Project Type**: Desktop application（游戏引擎编辑器）
+**Performance Goals**: 顶栏和脚栏加入后，Editor 常规交互保持实时响应；FPS 状态读数持续更新且不阻塞主编辑循环
+**Constraints**: 不修改 `Runtime/*/Gen/`；不把 Unity 生态入口错误伪装成可用功能；Editor 与 Game 必须继续可运行；优先复用现有 ImGui/UI 框架而不是引入新 UI 系统；窗口 resize 后栏位必须稳定贴边且不遮挡主内容
 **Scale/Scope**: 1 个 Editor 产品路径，涉及 `Runtime/UI` 与 `Project/Editor` 两层；首版范围限定为固定顶栏 + FPS 脚栏 + 与现有编辑模式/播放模式对接
 
 ## Constitution Check

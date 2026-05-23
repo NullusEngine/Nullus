@@ -1,7 +1,7 @@
 # Specification Quality Checklist: UE4.27 Render Architecture Alignment
 
-**Purpose**: Validate specification completeness and quality before proceeding to planning  
-**Created**: 2026-05-10  
+**Purpose**: Validate specification completeness and quality before proceeding to planning
+**Created**: 2026-05-10
 **Feature**: [spec.md](../spec.md)
 
 ## Content Quality

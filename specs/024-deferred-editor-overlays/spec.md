@@ -1,8 +1,8 @@
 # Feature Specification: Deferred Editor Overlays
 
-**Feature Branch**: `024-deferred-editor-overlays`  
-**Created**: 2026-05-12  
-**Status**: Draft  
+**Feature Branch**: `024-deferred-editor-overlays`
+**Created**: 2026-05-12
+**Status**: Draft
 **Input**: User description: "DeferredSceneRenderer 增加 editor overlay/debug pass 支持"
 
 ## User Scenarios & Testing *(mandatory)*

@@ -1,6 +1,6 @@
 # Implementation Plan: UE4.27 Deferred Lighting Alignment
 
-**Branch**: `025-ue427-deferred-alignment` | **Date**: 2026-05-12 | **Spec**: [spec.md](spec.md)  
+**Branch**: `025-ue427-deferred-alignment` | **Date**: 2026-05-12 | **Spec**: [spec.md](spec.md)
 **Input**: Feature specification from `specs/025-ue427-deferred-alignment/spec.md`
 
 ## Summary
@@ -9,14 +9,14 @@ Align Nullus deferred rendering with the first visible stage pattern of UE4.27: 
 
 ## Technical Context
 
-**Language/Version**: C++20-style engine code and HLSL shaders  
-**Primary Dependencies**: Nullus RHI, FrameGraph, Material/ShaderType metadata, LightGridPrepass, RenderDoc tooling  
-**Storage**: N/A  
-**Testing**: GoogleTest `NullusUnitTests`, CMake build targets, RenderDoc DX12 capture analysis  
-**Target Platform**: Windows editor with DX12 validation; other backends are not claimed by this phase  
-**Project Type**: Desktop game/editor engine runtime  
-**Performance Goals**: Restore visible lighting with one fullscreen deferred lighting pass; defer tiled optimization for a later phase  
-**Constraints**: Do not hand-edit generated files; preserve editor/game runtime viability; do not remove existing forward/clustered light-grid support  
+**Language/Version**: C++20-style engine code and HLSL shaders
+**Primary Dependencies**: Nullus RHI, FrameGraph, Material/ShaderType metadata, LightGridPrepass, RenderDoc tooling
+**Storage**: N/A
+**Testing**: GoogleTest `NullusUnitTests`, CMake build targets, RenderDoc DX12 capture analysis
+**Target Platform**: Windows editor with DX12 validation; other backends are not claimed by this phase
+**Project Type**: Desktop game/editor engine runtime
+**Performance Goals**: Restore visible lighting with one fullscreen deferred lighting pass; defer tiled optimization for a later phase
+**Constraints**: Do not hand-edit generated files; preserve editor/game runtime viability; do not remove existing forward/clustered light-grid support
 **Scale/Scope**: One phase-one deferred renderer alignment across shader, light data contract, frame graph labels, and focused tests
 
 ## Constitution Check

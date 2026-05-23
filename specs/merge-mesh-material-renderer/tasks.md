@@ -1,6 +1,6 @@
 # Tasks: Merge Mesh And Material Renderer
 
-**Input**: Design documents from `specs/merge-mesh-material-renderer/`  
+**Input**: Design documents from `specs/merge-mesh-material-renderer/`
 **Prerequisites**: plan.md, spec.md
 
 **Tests**: Required. This change affects runtime rendering, reflection, serialization, asset import, and editor workflows.

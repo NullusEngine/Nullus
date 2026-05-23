@@ -1,8 +1,8 @@
 # Feature Specification: LightGrid Performance Toggle
 
-**Feature Branch**: `020-lightgrid-performance-toggle`  
-**Created**: 2026-05-10  
-**Status**: Draft  
+**Feature Branch**: `020-lightgrid-performance-toggle`
+**Created**: 2026-05-10
+**Status**: Draft
 **Input**: User description: "LightGrid做成可以控制的开关；修复性能卡点；开关 + 缓存优化，同时加 Editor Project Settings UI"
 
 ## User Scenarios & Testing *(mandatory)*

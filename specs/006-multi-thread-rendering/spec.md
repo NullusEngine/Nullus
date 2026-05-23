@@ -1,8 +1,8 @@
 # Feature Specification: Multi-Thread Rendering Framework
 
-**Feature Branch**: `006-multi-thread-rendering`  
-**Created**: 2026-04-18  
-**Status**: Draft  
+**Feature Branch**: `006-multi-thread-rendering`
+**Created**: 2026-04-18
+**Status**: Draft
 **Input**: User description: "检查当前渲染框架，实现多线程渲染，框架。分为逻辑主线程，渲染现场，和RHI线程"
 
 ## User Scenarios & Testing *(mandatory)*

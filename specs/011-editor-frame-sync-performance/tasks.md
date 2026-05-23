@@ -1,6 +1,6 @@
 # Tasks: Editor Frame Sync Performance
 
-**Input**: Design documents from `/specs/011-editor-frame-sync-performance/`  
+**Input**: Design documents from `/specs/011-editor-frame-sync-performance/`
 **Prerequisites**: plan.md, spec.md
 
 ## Phase 1: Setup

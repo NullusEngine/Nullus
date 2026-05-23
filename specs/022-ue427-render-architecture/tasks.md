@@ -216,4 +216,3 @@
 - [x] Move LightGrid compute parameter definitions to the shader type metadata path used by the new shader classes.
 - [ ] Follow-up: collect DX12 runtime evidence and RenderDoc/Tracy capture before claiming full runtime parity.
 - [ ] Follow-up: replace remaining raw `Shader*` ownership in `Material` and renderer passes with live shader-map-owned compiled shader instances.
-

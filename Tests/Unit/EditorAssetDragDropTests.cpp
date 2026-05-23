@@ -581,4 +581,3 @@ TEST(EditorAssetDragDropTests, EditorAssetDatabaseExposesDragDropCommandSurface)
     });
     EXPECT_TRUE(HasCommand(textureToRenderer, "dragdrop.create-material-and-assign", true));
 }
-

@@ -16,14 +16,14 @@ The first slices have already landed the foundation layer. The remaining work in
 
 ## Technical Context
 
-**Language/Version**: C++17  
-**Primary Dependencies**: Nullus Runtime/Engine rendering stack, DX12, Vulkan, GoogleTest, CMake/MSBuild, RenderDoc  
-**Storage**: N/A  
-**Testing**: `NullusUnitTests`, targeted runtime validation, RenderDoc captures for rendering acceptance  
-**Target Platform**: Windows editor/game validation first, DX12 and Vulkan as Tier A backends for this feature  
-**Project Type**: Desktop engine/runtime  
-**Performance Goals**: Preserve runnable editor/game flows while moving frame execution toward threaded, graph-driven submission; enable future parallel recording and async compute without architecture forks  
-**Constraints**: Must preserve `Driver` as the top-level graphics entry point during this phase; must not overclaim unsupported backend features; must keep editor/game runnable during migration  
+**Language/Version**: C++17
+**Primary Dependencies**: Nullus Runtime/Engine rendering stack, DX12, Vulkan, GoogleTest, CMake/MSBuild, RenderDoc
+**Storage**: N/A
+**Testing**: `NullusUnitTests`, targeted runtime validation, RenderDoc captures for rendering acceptance
+**Target Platform**: Windows editor/game validation first, DX12 and Vulkan as Tier A backends for this feature
+**Project Type**: Desktop engine/runtime
+**Performance Goals**: Preserve runnable editor/game flows while moving frame execution toward threaded, graph-driven submission; enable future parallel recording and async compute without architecture forks
+**Constraints**: Must preserve `Driver` as the top-level graphics entry point during this phase; must not overclaim unsupported backend features; must keep editor/game runnable during migration
 **Scale/Scope**: Multi-subsystem rendering foundation spanning `Runtime/Rendering`, `Runtime/Engine/Rendering`, and `Tests/Unit`
 
 ## Constitution Check

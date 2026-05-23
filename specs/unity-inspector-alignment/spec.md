@@ -1,8 +1,8 @@
 # Feature Specification: Unity Inspector Alignment
 
-**Feature Branch**: `unity-inspector-alignment`  
-**Created**: 2026-05-20  
-**Status**: First slice implemented; visual/manual parity and full scene object picker remain pending  
+**Feature Branch**: `unity-inspector-alignment`
+**Created**: 2026-05-20
+**Status**: First slice implemented; visual/manual parity and full scene object picker remain pending
 **Input**: User description: "Align the Nullus editor Inspector controls and behavior with Unity 2018.4 Inspector, including core field types, Unity-style layout, ObjectReference support for assets, scene GameObjects, Components, and script/resource objects, arrays/lists, Range sliders, LayerMask, Tag, and Layer selectors. ObjectReference must match Unity's underlying `PPtr<T>`/`InstanceID`/PersistentManager data model, not only mimic UI behavior or serialize a similar DTO."
 
 **Implemented Slice Note**: This bundle currently documents both the Unity-aligned target and the verified first slice. The first slice supports reflected Rect, Bounds, Range sliders, supported-element arrays, Tag/Layer selectors, LayerMask editing, typed resource `PPtr<T>` ObjectReference display/clear/asset drag-drop, and transient raw pointer display/clear. The next array/list slice upgrades the array path from a hard-coded element whitelist to reflected `NLS::Array<T>` and `std::vector<T>` containers with recursive value-type element drawing, explicit unsupported fallbacks, and recursion guards. It does not yet provide Unity's full searchable object picker, scene GameObject/Component assignment flow, prefab override UI, or manually verified pixel-level style parity.

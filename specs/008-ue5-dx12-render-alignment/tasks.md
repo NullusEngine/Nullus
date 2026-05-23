@@ -1,6 +1,6 @@
 # Tasks: UE5-Style DX12 Render Alignment
 
-**Input**: Design documents from `/specs/008-ue5-dx12-render-alignment/`  
+**Input**: Design documents from `/specs/008-ue5-dx12-render-alignment/`
 **Prerequisites**: `spec.md`, `plan.md`, `research.md`, `data-model.md`, `contracts/render-architecture-contract.md`
 
 **Tests**: This feature requires targeted unit tests, DX12 runtime smoke, explicit startup-failure validation, and RenderDoc evidence.

@@ -1,7 +1,7 @@
 # Specification Quality Checklist: Render Framework Optimization
 
-**Purpose**: Validate specification completeness and quality before proceeding with the long-running optimization tracker  
-**Created**: 2026-05-08  
+**Purpose**: Validate specification completeness and quality before proceeding with the long-running optimization tracker
+**Created**: 2026-05-08
 **Feature**: [spec.md](../spec.md)
 
 ## Content Quality

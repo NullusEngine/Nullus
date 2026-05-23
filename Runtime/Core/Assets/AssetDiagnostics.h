@@ -27,4 +27,3 @@ struct NLS_CORE_API AssetDiagnostic
 
 using AssetDiagnostics = std::vector<AssetDiagnostic>;
 }
-

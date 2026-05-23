@@ -8,14 +8,14 @@ Fix a DX12 device-removal bug caused by stale texture transition barriers in the
 
 ## Technical Context
 
-**Language/Version**: C++20 project code  
-**Primary Dependencies**: Nullus Rendering RHI, FrameGraph, threaded rendering lifecycle  
-**Storage**: N/A  
-**Testing**: GoogleTest unit tests in `Tests/Unit/ThreadedRenderingLifecycleTests.cpp`  
-**Target Platform**: Windows DX12 path, with no regression to other RHI backends  
-**Project Type**: Desktop engine/editor runtime  
-**Performance Goals**: No additional per-frame heavy synchronization; barrier filtering remains linear in requested barrier count  
-**Constraints**: Do not hand-edit generated files; do not assume Vulkan/OpenGL correctness from DX12-only evidence; preserve product runtime viability  
+**Language/Version**: C++20 project code
+**Primary Dependencies**: Nullus Rendering RHI, FrameGraph, threaded rendering lifecycle
+**Storage**: N/A
+**Testing**: GoogleTest unit tests in `Tests/Unit/ThreadedRenderingLifecycleTests.cpp`
+**Target Platform**: Windows DX12 path, with no regression to other RHI backends
+**Project Type**: Desktop engine/editor runtime
+**Performance Goals**: No additional per-frame heavy synchronization; barrier filtering remains linear in requested barrier count
+**Constraints**: Do not hand-edit generated files; do not assume Vulkan/OpenGL correctness from DX12-only evidence; preserve product runtime viability
 **Scale/Scope**: One rendering bugfix touching threaded RHI barrier planning and focused tests
 
 ## Constitution Check

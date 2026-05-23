@@ -1,6 +1,6 @@
 # Implementation Plan: UE5-Style DX12 Render Alignment
 
-**Branch**: `008-ue5-dx12-render-alignment` | **Date**: 2026-04-21 | **Spec**: [spec.md](D:/VSProject/Nullus/specs/008-ue5-dx12-render-alignment/spec.md)  
+**Branch**: `008-ue5-dx12-render-alignment` | **Date**: 2026-04-21 | **Spec**: [spec.md](D:/VSProject/Nullus/specs/008-ue5-dx12-render-alignment/spec.md)
 **Input**: Feature specification from `/specs/008-ue5-dx12-render-alignment/spec.md`
 
 ## Summary
@@ -11,14 +11,14 @@ This plan is intentionally a purity and closure plan rather than an incremental 
 
 ## Technical Context
 
-**Language/Version**: C++17  
-**Primary Dependencies**: Nullus Runtime/Engine rendering stack, DX12, GoogleTest, CMake/MSBuild, RenderDoc, UE 5.7 public rendering documentation as the alignment baseline  
-**Storage**: N/A  
-**Testing**: `NullusUnitTests`, focused runtime smoke, RenderDoc captures, explicit startup-failure validation  
-**Target Platform**: Windows DX12 Editor and Game for phase 1  
-**Project Type**: Desktop engine/runtime  
-**Performance Goals**: Preserve runnable Editor and Game products while converging to a single authoritative rendering architecture; remove architectural ambiguity without sacrificing frame retirement correctness  
-**Constraints**: No runtime fallback or compatibility rendering path in the accepted DX12 mainline; Editor and Game must share one authoritative frame pipeline; `Driver` remains the repository graphics entry point per constitution but must lose mixed render orchestration duties  
+**Language/Version**: C++17
+**Primary Dependencies**: Nullus Runtime/Engine rendering stack, DX12, GoogleTest, CMake/MSBuild, RenderDoc, UE 5.7 public rendering documentation as the alignment baseline
+**Storage**: N/A
+**Testing**: `NullusUnitTests`, focused runtime smoke, RenderDoc captures, explicit startup-failure validation
+**Target Platform**: Windows DX12 Editor and Game for phase 1
+**Project Type**: Desktop engine/runtime
+**Performance Goals**: Preserve runnable Editor and Game products while converging to a single authoritative rendering architecture; remove architectural ambiguity without sacrificing frame retirement correctness
+**Constraints**: No runtime fallback or compatibility rendering path in the accepted DX12 mainline; Editor and Game must share one authoritative frame pipeline; `Driver` remains the repository graphics entry point per constitution but must lose mixed render orchestration duties
 **Scale/Scope**: Multi-subsystem rendering architecture work spanning `Runtime/Rendering`, `Runtime/Engine/Rendering`, `Project/Editor/Rendering`, `Project/Editor/Panels`, `Project/Game`, and `Tests/Unit`
 
 ## Constitution Check

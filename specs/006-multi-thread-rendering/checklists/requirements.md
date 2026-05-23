@@ -1,7 +1,7 @@
 # Specification Quality Checklist: Multi-Thread Rendering Framework
 
-**Purpose**: Validate specification completeness and quality before proceeding to planning  
-**Created**: 2026-04-18  
+**Purpose**: Validate specification completeness and quality before proceeding to planning
+**Created**: 2026-04-18
 **Feature**: [spec.md](../spec.md)
 
 ## Content Quality

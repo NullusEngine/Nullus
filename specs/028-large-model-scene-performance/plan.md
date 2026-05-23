@@ -9,14 +9,14 @@ Imported models were entering the scene with culling disabled and with per-frame
 
 ## Technical Context
 
-**Language/Version**: C++17 project code  
-**Primary Dependencies**: Nullus editor/runtime/rendering components, GoogleTest-based unit tests  
-**Storage**: `Library/ArtifactDB` and `Library/Artifacts` cache manifests for imported assets  
-**Testing**: `NullusUnitTests` focused test filters plus Release build  
-**Target Platform**: Windows editor/runtime development build  
-**Project Type**: Desktop editor and engine runtime  
-**Performance Goals**: Large imported model scenes remain interactive by avoiding unnecessary visible draw work and hot-path allocations  
-**Constraints**: Do not hand-edit generated files under `Runtime/*/Gen/`; preserve existing asset cache semantics except for intentional model-scene importer invalidation  
+**Language/Version**: C++17 project code
+**Primary Dependencies**: Nullus editor/runtime/rendering components, GoogleTest-based unit tests
+**Storage**: `Library/ArtifactDB` and `Library/Artifacts` cache manifests for imported assets
+**Testing**: `NullusUnitTests` focused test filters plus Release build
+**Target Platform**: Windows editor/runtime development build
+**Project Type**: Desktop editor and engine runtime
+**Performance Goals**: Large imported model scenes remain interactive by avoiding unnecessary visible draw work and hot-path allocations
+**Constraints**: Do not hand-edit generated files under `Runtime/*/Gen/`; preserve existing asset cache semantics except for intentional model-scene importer invalidation
 **Scale/Scope**: Imported FBX/glTF/OBJ model prefabs and editor scene rendering paths
 
 ## Constitution Check

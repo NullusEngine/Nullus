@@ -9,14 +9,14 @@ Introduce an editor-only Scene View camera focus state shared by manual camera c
 
 ## Technical Context
 
-**Language/Version**: C++20  
-**Primary Dependencies**: Existing Nullus editor camera, ImGui, ImGuizmo, Runtime Math  
-**Storage**: N/A, transient editor state only  
-**Testing**: GoogleTest via `NullusUnitTests`; Editor Debug build for integration compile validation  
-**Target Platform**: Windows Debug Editor for current validation  
-**Project Type**: Desktop editor application  
-**Performance Goals**: Camera updates remain per-frame O(1) and suitable for interactive 60 FPS editor navigation  
-**Constraints**: Preserve generated-file boundaries; do not hand-edit `Runtime/*/Gen/`; keep Editor runnable; avoid changing runtime game cameras  
+**Language/Version**: C++20
+**Primary Dependencies**: Existing Nullus editor camera, ImGui, ImGuizmo, Runtime Math
+**Storage**: N/A, transient editor state only
+**Testing**: GoogleTest via `NullusUnitTests`; Editor Debug build for integration compile validation
+**Target Platform**: Windows Debug Editor for current validation
+**Project Type**: Desktop editor application
+**Performance Goals**: Camera updates remain per-frame O(1) and suitable for interactive 60 FPS editor navigation
+**Constraints**: Preserve generated-file boundaries; do not hand-edit `Runtime/*/Gen/`; keep Editor runnable; avoid changing runtime game cameras
 **Scale/Scope**: Scene View camera navigation only, integrated with existing ImGuizmo adapter and CameraController
 
 ## Constitution Check

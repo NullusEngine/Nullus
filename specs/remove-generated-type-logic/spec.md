@@ -1,8 +1,8 @@
 # Feature Specification: Remove Generated Type Logic
 
-**Feature Branch**: `remove-generated-type-logic`  
-**Created**: 2026-05-22  
-**Status**: Draft  
+**Feature Branch**: `remove-generated-type-logic`
+**Created**: 2026-05-22
+**Status**: Draft
 **Input**: User description: "不要在生成代码里做逻辑判断"
 
 ## User Scenarios & Testing

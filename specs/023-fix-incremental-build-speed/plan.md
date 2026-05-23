@@ -9,14 +9,14 @@ Fix the high-cost no-change build path by preventing MetaParser from touching ge
 
 ## Technical Context
 
-**Language/Version**: C# .NET 8 MetaParser, CMake 3.18+, MSBuild/Visual Studio 2022, C++20  
-**Primary Dependencies**: CMake custom targets, generated SDK-style MetaParser project, MSBuild  
-**Storage**: Generated files under `Runtime/*/Gen/` and `Project/Editor/Gen/`  
-**Testing**: PowerShell timestamp checks, targeted CMake/MSBuild builds, `NullusUnitTests`, `ReflectionTest`  
-**Target Platform**: Windows first; generator behavior is cross-platform  
-**Project Type**: C++ engine with C# build-time code generator  
-**Performance Goals**: repeated no-change targeted builds must not recompile due to unchanged generated files  
-**Constraints**: preserve MetaParser pipeline, do not hand-edit generated output, keep clean builds correct  
+**Language/Version**: C# .NET 8 MetaParser, CMake 3.18+, MSBuild/Visual Studio 2022, C++20
+**Primary Dependencies**: CMake custom targets, generated SDK-style MetaParser project, MSBuild
+**Storage**: Generated files under `Runtime/*/Gen/` and `Project/Editor/Gen/`
+**Testing**: PowerShell timestamp checks, targeted CMake/MSBuild builds, `NullusUnitTests`, `ReflectionTest`
+**Target Platform**: Windows first; generator behavior is cross-platform
+**Project Type**: C++ engine with C# build-time code generator
+**Performance Goals**: repeated no-change targeted builds must not recompile due to unchanged generated files
+**Constraints**: preserve MetaParser pipeline, do not hand-edit generated output, keep clean builds correct
 **Scale/Scope**: MetaParser generator writes and Windows build script only
 
 ## Constitution Check

@@ -9,14 +9,14 @@ Align Nullus LightGrid with the supplied UE 4.27 forward local light grid source
 
 ## Technical Context
 
-**Language/Version**: C++20 and HLSL  
-**Primary Dependencies**: Nullus Runtime Rendering, Engine scene renderers, FrameGraph, RHI buffer/binding/pipeline APIs, ShaderManager, GoogleTest  
-**Storage**: Existing editor settings JSON only for the existing LightGrid enabled toggle; UE-aligned runtime defaults live in renderer settings/code  
-**Testing**: `NullusUnitTests`, shader compile/build validation, RenderDoc DX12 frame capture for runtime evidence  
-**Target Platform**: Windows DX12 for first validation; backend-neutral contracts where existing RHI support allows  
-**Project Type**: Desktop engine/editor runtime  
-**Performance Goals**: Match UE-style culling work granularity; avoid CPU duplicate preparation already fixed by the previous LightGrid cache work; prevent unbounded buffer writes on dense light scenes  
-**Constraints**: Do not hand-edit generated files; do not claim cross-backend parity without evidence; use `F:\Epic Games\UE_4.27\Engine` as local reference but keep Nullus code original and adapted to Nullus RHI/material data  
+**Language/Version**: C++20 and HLSL
+**Primary Dependencies**: Nullus Runtime Rendering, Engine scene renderers, FrameGraph, RHI buffer/binding/pipeline APIs, ShaderManager, GoogleTest
+**Storage**: Existing editor settings JSON only for the existing LightGrid enabled toggle; UE-aligned runtime defaults live in renderer settings/code
+**Testing**: `NullusUnitTests`, shader compile/build validation, RenderDoc DX12 frame capture for runtime evidence
+**Target Platform**: Windows DX12 for first validation; backend-neutral contracts where existing RHI support allows
+**Project Type**: Desktop engine/editor runtime
+**Performance Goals**: Match UE-style culling work granularity; avoid CPU duplicate preparation already fixed by the previous LightGrid cache work; prevent unbounded buffer writes on dense light scenes
+**Constraints**: Do not hand-edit generated files; do not claim cross-backend parity without evidence; use `F:\Epic Games\UE_4.27\Engine` as local reference but keep Nullus code original and adapted to Nullus RHI/material data
 **Scale/Scope**: Runtime LightGrid settings/data layout, LightGrid compute shaders, frame-graph integration tests, forward/deferred graphics binding consumers
 
 ## Constitution Check

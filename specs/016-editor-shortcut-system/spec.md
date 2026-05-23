@@ -1,8 +1,8 @@
 # Feature Specification: Editor Shortcut System
 
-**Feature Branch**: `016-editor-shortcut-system`  
-**Created**: 2026-05-05  
-**Status**: Draft  
+**Feature Branch**: `016-editor-shortcut-system`
+**Created**: 2026-05-05
+**Status**: Draft
 **Input**: User description: "Design and implement an Editor-only shortcut system inspired by Unity Shortcuts Manager. It must register editor commands with categories and contexts, resolve shortcuts based on active editor context, prevent conflicting shortcut assignments, support user-editable profiles persisted to disk, replace existing hard-coded editor shortcuts, and optionally reuse imgui_keyboard only as a visual keyboard/recording control in the shortcut settings UI. Runtime/Game input is out of scope."
 
 ## User Scenarios & Testing *(mandatory)*

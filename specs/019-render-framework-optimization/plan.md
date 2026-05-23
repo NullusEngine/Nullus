@@ -1,6 +1,6 @@
 # Implementation Plan: Render Framework Optimization
 
-**Branch**: `019-render-framework-optimization` | **Date**: 2026-05-08 | **Spec**: [spec.md](spec.md)  
+**Branch**: `019-render-framework-optimization` | **Date**: 2026-05-08 | **Spec**: [spec.md](spec.md)
 **Input**: Feature specification from `/specs/019-render-framework-optimization/spec.md`
 
 ## Summary
@@ -9,14 +9,14 @@ Persist and execute the prioritized rendering-framework optimization TODO. Work 
 
 ## Technical Context
 
-**Language/Version**: C++20, C#/.NET 8 MetaParser tooling  
-**Primary Dependencies**: CMake/MSBuild, GoogleTest, DX12 RHI, FrameGraph, RenderDoc workflows where needed  
-**Storage**: Repository source files and spec/task markdown under `specs/019-render-framework-optimization/`  
-**Testing**: `NullusUnitTests`, targeted GoogleTest filters, relevant runtime/RenderDoc verification for rendering-path issues  
-**Target Platform**: Windows Debug/Release currently, with cross-platform assumptions called out when affected  
-**Project Type**: Desktop game/editor engine runtime and rendering framework  
-**Performance Goals**: Reduce avoidable GPU sync, upload/readback churn, shader/pipeline cold-start overhead, and hot-path logging overhead  
-**Constraints**: Do not edit generated files; preserve existing build/test workflow; prefer narrow, testable changes; avoid broad architecture rewrites without additional planning  
+**Language/Version**: C++20, C#/.NET 8 MetaParser tooling
+**Primary Dependencies**: CMake/MSBuild, GoogleTest, DX12 RHI, FrameGraph, RenderDoc workflows where needed
+**Storage**: Repository source files and spec/task markdown under `specs/019-render-framework-optimization/`
+**Testing**: `NullusUnitTests`, targeted GoogleTest filters, relevant runtime/RenderDoc verification for rendering-path issues
+**Target Platform**: Windows Debug/Release currently, with cross-platform assumptions called out when affected
+**Project Type**: Desktop game/editor engine runtime and rendering framework
+**Performance Goals**: Reduce avoidable GPU sync, upload/readback churn, shader/pipeline cold-start overhead, and hot-path logging overhead
+**Constraints**: Do not edit generated files; preserve existing build/test workflow; prefer narrow, testable changes; avoid broad architecture rewrites without additional planning
 **Scale/Scope**: Rendering, RHI, FrameGraph, pipeline/material, performance, shader tooling, and diagnostics tasks listed in tasks.md
 
 ## Constitution Check

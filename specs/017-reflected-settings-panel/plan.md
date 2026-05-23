@@ -17,14 +17,14 @@ Build an editor-only Unity-style Settings modal opened from `Edit > Settings`, w
   the iteration process.
 -->
 
-**Language/Version**: C++20 in existing CMake project  
-**Primary Dependencies**: Existing Nullus editor UI widgets, ImGui integration, Nullus reflection runtime, json11 for lightweight persistence  
-**Storage**: File-based editor settings JSON under the project/user settings area selected by existing editor path conventions  
-**Testing**: `NullusUnitTests` plus `Editor` target build  
+**Language/Version**: C++20 in existing CMake project
+**Primary Dependencies**: Existing Nullus editor UI widgets, ImGui integration, Nullus reflection runtime, json11 for lightweight persistence
+**Storage**: File-based editor settings JSON under the project/user settings area selected by existing editor path conventions
+**Testing**: `NullusUnitTests` plus `Editor` target build
 **Target Platform**: Editor desktop app, validated first on Windows Debug build
-**Project Type**: C++ desktop editor application  
-**Performance Goals**: Search and category selection complete within the current frame for the initial editor settings set; no per-frame disk IO while the modal is open  
-**Constraints**: Editor-only scope, modal rather than dockable, Scene view mouse input blocked while open, no hand-edits under `Runtime/*/Gen/`, preserve existing Inspector behavior  
+**Project Type**: C++ desktop editor application
+**Performance Goals**: Search and category selection complete within the current frame for the initial editor settings set; no per-frame disk IO while the modal is open
+**Constraints**: Editor-only scope, modal rather than dockable, Scene view mouse input blocked while open, no hand-edits under `Runtime/*/Gen/`, preserve existing Inspector behavior
 **Scale/Scope**: Initial implementation supports a small set of editor/project settings objects and the reflected field types currently used by Inspector workflows
 
 ## Constitution Check

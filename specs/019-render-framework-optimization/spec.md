@@ -1,8 +1,8 @@
 # Feature Specification: Render Framework Optimization
 
-**Feature Branch**: `019-render-framework-optimization`  
-**Created**: 2026-05-08  
-**Status**: Active  
+**Feature Branch**: `019-render-framework-optimization`
+**Created**: 2026-05-08
+**Status**: Active
 **Input**: User-provided prioritized rendering framework optimization TODO covering correctness, resource synchronization, RHI architecture, pipeline/material, FrameGraph, performance, and tooling.
 
 ## User Scenarios & Testing

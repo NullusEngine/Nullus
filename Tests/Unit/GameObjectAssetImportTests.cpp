@@ -1560,4 +1560,3 @@ TEST(GameObjectAssetImportTests, GeneratedModelDragDoesNotSynchronouslyPrewarmLa
 
     std::filesystem::remove_all(root);
 }
-

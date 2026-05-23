@@ -1,8 +1,8 @@
 # Feature Specification: Asset Management System
 
-**Feature Branch**: `026-asset-management-system`  
-**Created**: 2026-05-13  
-**Status**: Draft  
+**Feature Branch**: `026-asset-management-system`
+**Created**: 2026-05-13
+**Status**: Draft
 **Input**: User description: "Design and implement a complete engine-level asset management system for Nullus, using the provided local reference source tree for workflow semantics. Support external asset import, stable GUID-backed references, source scanning, meta files, imported artifacts, dependencies, runtime resolution, build manifests, hot reload, conversion of glTF/GLB/FBX/OBJ into Nullus engine assets, and a complete Prefab implementation."
 
 ## Pipeline Scope

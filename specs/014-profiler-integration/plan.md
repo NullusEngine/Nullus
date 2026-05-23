@@ -9,14 +9,14 @@ Introduce a low-level Nullus profiler facade that lets engine/editor code mark o
 
 ## Technical Context
 
-**Language/Version**: C++20  
-**Primary Dependencies**: Existing Nullus runtime/editor modules, ImGui, Tracy, TimelineProfiler as a UI-owned ImGui extension  
-**Storage**: N/A for v1; profiling data is transient per process/session  
-**Testing**: GoogleTest via `NullusUnitTests`; focused Editor Debug build and manual editor profiler verification  
-**Target Platform**: Windows Debug Editor for initial validation; design must degrade explicitly on unsupported platforms/backends  
-**Project Type**: Desktop game engine runtime and editor tooling  
-**Performance Goals**: Disabled profiling markers compile or execute with negligible overhead; enabled CPU scopes avoid avoidable allocations in hot paths and remain suitable for per-frame editor/runtime instrumentation; GPU scopes are limited to command-recording boundaries where timestamp overhead is intentional  
-**Constraints**: Do not hand-edit `Runtime/*/Gen/`; keep Editor and Game runnable; do not introduce a parallel build/test workflow; profiler destinations must be independently optional; GPU timeline support is reported only for validated DX12 TimelineProfiler capability and degrades explicitly elsewhere  
+**Language/Version**: C++20
+**Primary Dependencies**: Existing Nullus runtime/editor modules, ImGui, Tracy, TimelineProfiler as a UI-owned ImGui extension
+**Storage**: N/A for v1; profiling data is transient per process/session
+**Testing**: GoogleTest via `NullusUnitTests`; focused Editor Debug build and manual editor profiler verification
+**Target Platform**: Windows Debug Editor for initial validation; design must degrade explicitly on unsupported platforms/backends
+**Project Type**: Desktop game engine runtime and editor tooling
+**Performance Goals**: Disabled profiling markers compile or execute with negligible overhead; enabled CPU scopes avoid avoidable allocations in hot paths and remain suitable for per-frame editor/runtime instrumentation; GPU scopes are limited to command-recording boundaries where timestamp overhead is intentional
+**Constraints**: Do not hand-edit `Runtime/*/Gen/`; keep Editor and Game runnable; do not introduce a parallel build/test workflow; profiler destinations must be independently optional; GPU timeline support is reported only for validated DX12 TimelineProfiler capability and degrades explicitly elsewhere
 **Scale/Scope**: Runtime-wide scoped CPU instrumentation facade, DX12-capable shared GPU scope surface, render/RHI thread markers, two profiler destinations, one dockable editor panel, unit tests, documentation, and focused manual validation
 
 ## Constitution Check

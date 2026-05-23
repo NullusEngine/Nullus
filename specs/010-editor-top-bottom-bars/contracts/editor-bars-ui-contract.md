@@ -1,6 +1,6 @@
 # Contract: Editor Top And Bottom Bars UI
 
-**Feature**: `010-editor-top-bottom-bars`  
+**Feature**: `010-editor-top-bottom-bars`
 **Date**: 2026-05-03
 
 ## Purpose

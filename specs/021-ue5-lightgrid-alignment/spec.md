@@ -1,8 +1,8 @@
 # Feature Specification: UE5 LightGrid Alignment
 
-**Feature Branch**: `020-lightgrid-performance-toggle`  
-**Created**: 2026-05-10  
-**Status**: Draft  
+**Feature Branch**: `020-lightgrid-performance-toggle`
+**Created**: 2026-05-10
+**Status**: Draft
 **Input**: User description: "继续LightGrid ，要求和UE5实现方式完全对齐"; licensed reference path supplied: `F:\Epic Games\UE_4.27\Engine`
 
 ## User Scenarios & Testing

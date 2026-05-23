@@ -1,6 +1,6 @@
 # Implementation Plan: Unity Inspector Alignment
 
-**Branch**: `unity-inspector-alignment` | **Date**: 2026-05-20 | **Spec**: `specs/unity-inspector-alignment/spec.md`  
+**Branch**: `unity-inspector-alignment` | **Date**: 2026-05-20 | **Spec**: `specs/unity-inspector-alignment/spec.md`
 **Input**: Feature specification from `specs/unity-inspector-alignment/spec.md`
 
 ## Summary
@@ -9,14 +9,14 @@ Align the Nullus editor Inspector with Unity 2018.4 common `PropertyField` behav
 
 ## Technical Context
 
-**Language/Version**: C++20  
-**Primary Dependencies**: Nullus reflection runtime, MetaParser-generated registration, ImGui, existing `Runtime/UI` widgets, `UI::GUIDrawer`, existing editor asset database/drag-drop services, existing scene/GameObject/Component APIs  
+**Language/Version**: C++20
+**Primary Dependencies**: Nullus reflection runtime, MetaParser-generated registration, ImGui, existing `Runtime/UI` widgets, `UI::GUIDrawer`, existing editor asset database/drag-drop services, existing scene/GameObject/Component APIs
 **Storage**: Existing ObjectGraph storage updated so persistent component references are typed `PPtr<T>` fields in memory and serialize through PersistentManager to Unity-like `fileID`/`guid`/`type` identity data; raw C++ pointers are resolver outputs only. Runtime object identity lives in a lower module (`NLS_Core`) so rendering resources can derive from the Unity-style Object base without depending on `NLS_Engine`.
-**Testing**: `NullusUnitTests`, especially `Tests/Unit/ReflectedPropertyDrawerTests.cpp`, plus focused editor runtime/manual verification for visual layout  
-**Target Platform**: Desktop editor; first verified platform Windows  
-**Project Type**: Native engine/editor UI feature across `Project/Editor`, `Runtime/UI`, `Runtime/Base/Reflection`, `Runtime/Engine`, and `Tests`  
-**Performance Goals**: Inspector property drawing remains per-frame predictable for typical selected GameObjects; type classification and row creation remain O(number of reflected fields)  
-**Constraints**: Do not hand-edit generated files under `Runtime/*/Gen/`; preserve current MetaParser flow; keep Editor and Game runnable; avoid rewiring rendering or platform code  
+**Testing**: `NullusUnitTests`, especially `Tests/Unit/ReflectedPropertyDrawerTests.cpp`, plus focused editor runtime/manual verification for visual layout
+**Target Platform**: Desktop editor; first verified platform Windows
+**Project Type**: Native engine/editor UI feature across `Project/Editor`, `Runtime/UI`, `Runtime/Base/Reflection`, `Runtime/Engine`, and `Tests`
+**Performance Goals**: Inspector property drawing remains per-frame predictable for typical selected GameObjects; type classification and row creation remain O(number of reflected fields)
+**Constraints**: Do not hand-edit generated files under `Runtime/*/Gen/`; preserve current MetaParser flow; keep Editor and Game runnable; avoid rewiring rendering or platform code
 **Scale/Scope**: First phase covers core Unity Inspector field controls, first-slice resource ObjectReference behavior, supported-element arrays, Range metadata, Tag/Layer selectors, and LayerMask editing. Full Unity style parity, scene GameObject/Component assignment, and advanced Unity custom editors are deferred.
 
 ## Constitution Check

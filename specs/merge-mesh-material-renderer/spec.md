@@ -1,8 +1,8 @@
 # Feature Specification: Merge Mesh And Material Renderer
 
-**Feature Branch**: `merge-mesh-material-renderer`  
-**Created**: 2026-05-22  
-**Status**: Draft  
+**Feature Branch**: `merge-mesh-material-renderer`
+**Created**: 2026-05-22
+**Status**: Draft
 **Input**: User description: "合并MaterialRenderer MeshRenderer" with explicit choice "C" for destructive merge
 
 ## User Scenarios & Testing *(mandatory)*

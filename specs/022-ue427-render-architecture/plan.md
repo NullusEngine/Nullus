@@ -9,14 +9,14 @@ Align Nullus rendering architecture with UE4.27's core data-flow contracts by ad
 
 ## Technical Context
 
-**Language/Version**: C++20 and HLSL where shader binding/runtime validation touches shader assets  
-**Primary Dependencies**: Nullus Runtime Rendering, Engine scene renderers, FrameGraph, RHI command/binding/pipeline APIs, Shader reflection utilities, ThreadedRenderingLifecycle, GoogleTest  
-**Storage**: N/A for the first architecture slice; existing settings remain unchanged  
-**Testing**: `NullusUnitTests`, targeted renderer contract tests, Editor Debug build, DX12 RenderDoc evidence before runtime parity claims  
-**Target Platform**: Windows DX12 for first runtime validation; backend-neutral contracts where possible  
-**Project Type**: Desktop engine/editor runtime  
-**Performance Goals**: Reduce hidden synchronization and repeated binding/graph work by making command list, graph dependency, shader parameter, and draw batch ownership explicit; preserve current performance while enabling later parallel recording optimizations  
-**Constraints**: Do not hand-edit generated files; do not directly copy UE source; do not claim backend/platform parity without evidence; keep Editor and Game runnable during staged migration  
+**Language/Version**: C++20 and HLSL where shader binding/runtime validation touches shader assets
+**Primary Dependencies**: Nullus Runtime Rendering, Engine scene renderers, FrameGraph, RHI command/binding/pipeline APIs, Shader reflection utilities, ThreadedRenderingLifecycle, GoogleTest
+**Storage**: N/A for the first architecture slice; existing settings remain unchanged
+**Testing**: `NullusUnitTests`, targeted renderer contract tests, Editor Debug build, DX12 RenderDoc evidence before runtime parity claims
+**Target Platform**: Windows DX12 for first runtime validation; backend-neutral contracts where possible
+**Project Type**: Desktop engine/editor runtime
+**Performance Goals**: Reduce hidden synchronization and repeated binding/graph work by making command list, graph dependency, shader parameter, and draw batch ownership explicit; preserve current performance while enabling later parallel recording optimizations
+**Constraints**: Do not hand-edit generated files; do not directly copy UE source; do not claim backend/platform parity without evidence; keep Editor and Game runnable during staged migration
 **Scale/Scope**: Runtime Rendering RHI command contracts, FrameGraph execution plan validation, shader binding layout utilities, Engine scene package preparation, threaded rendering lifecycle telemetry/tests
 
 ## Constitution Check

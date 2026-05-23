@@ -1,6 +1,6 @@
 # Implementation Plan: Asset Management System
 
-**Branch**: `026-asset-management-system` | **Date**: 2026-05-13 | **Spec**: `specs/026-asset-management-system/spec.md`  
+**Branch**: `026-asset-management-system` | **Date**: 2026-05-13 | **Spec**: `specs/026-asset-management-system/spec.md`
 **Input**: Feature specification from `specs/026-asset-management-system/spec.md`
 
 ## Summary
@@ -9,14 +9,14 @@ Build a reference-informed but Nullus-native asset management system that starts
 
 ## Technical Context
 
-**Language/Version**: C++20  
-**Primary Dependencies**: Nullus runtime modules, nlohmann JSON, existing `Guid`, existing `.meta`/`IniFile`, existing `Runtime/Engine/Serialize` object graph and `PrefabDocument`; Assimp remains available for model parsing; glTF may use a dedicated parser in a later slice  
-**Storage**: Filesystem sidecar `.meta` files, `.prefab` object graph source files, JSON/text asset database files in project cache, per-import artifact manifests, runtime artifact files and build manifests  
-**Testing**: `NullusUnitTests`, targeted CTest runs, fixture-based import tests  
-**Target Platform**: Desktop editor and game runtime; first verified platform Windows, path logic kept portable  
-**Project Type**: Native engine/editor/runtime feature across `Runtime/Core`, `Runtime/Engine`, `Runtime/Rendering`, `Project/Editor`, `Project/Game`, and `Tests`  
-**Performance Goals**: 1,000 source assets can be scanned without duplicate GUID aliases; incremental refresh avoids full-project reimport when only one dependency changes  
-**Constraints**: Preserve `Runtime/*/Gen/`; keep Editor/Game runnable during staged delivery; keep existing `AResourceManager` path loading as a migration bridge  
+**Language/Version**: C++20
+**Primary Dependencies**: Nullus runtime modules, nlohmann JSON, existing `Guid`, existing `.meta`/`IniFile`, existing `Runtime/Engine/Serialize` object graph and `PrefabDocument`; Assimp remains available for model parsing; glTF may use a dedicated parser in a later slice
+**Storage**: Filesystem sidecar `.meta` files, `.prefab` object graph source files, JSON/text asset database files in project cache, per-import artifact manifests, runtime artifact files and build manifests
+**Testing**: `NullusUnitTests`, targeted CTest runs, fixture-based import tests
+**Target Platform**: Desktop editor and game runtime; first verified platform Windows, path logic kept portable
+**Project Type**: Native engine/editor/runtime feature across `Runtime/Core`, `Runtime/Engine`, `Runtime/Rendering`, `Project/Editor`, `Project/Game`, and `Tests`
+**Performance Goals**: 1,000 source assets can be scanned without duplicate GUID aliases; incremental refresh avoids full-project reimport when only one dependency changes
+**Constraints**: Preserve `Runtime/*/Gen/`; keep Editor/Game runnable during staged delivery; keep existing `AResourceManager` path loading as a migration bridge
 **Scale/Scope**: Full asset identity, import, artifact, dependency, prefab, runtime, build, and model-scene conversion architecture, delivered in independent slices
 
 ## Constitution Check

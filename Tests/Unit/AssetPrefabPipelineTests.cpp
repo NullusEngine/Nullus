@@ -1053,4 +1053,3 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabReportsSkinningAndMorphRuntim
     EXPECT_TRUE(foundSkinningGap);
     EXPECT_TRUE(foundMorphGap);
 }
-

@@ -364,4 +364,3 @@ TEST(AssetMaterialViewportTests, MeshWithoutPrimitiveDetailsDoesNotFallbackToEve
 
     EXPECT_TRUE(bindings.empty());
 }
-

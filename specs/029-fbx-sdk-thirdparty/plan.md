@@ -9,14 +9,14 @@ Integrate Autodesk FBX SDK as the required FBX parser dependency for Nullus desk
 
 ## Technical Context
 
-**Language/Version**: C++20, CMake, platform toolchains already used by Nullus  
-**Primary Dependencies**: Autodesk FBX SDK 2020.3.9, existing Assimp for non-FBX formats  
-**Storage**: Source assets under `Assets`, imported artifacts under `Library/Artifacts`, third-party archives under `ThirdParty/FBX/packages`, unpacked SDK contents under `ThirdParty/FBX/sdk/<platform>`  
-**Testing**: `NullusUnitTests` plus focused CMake/source contract checks  
-**Target Platform**: Windows, Linux, macOS desktop editor/game builds  
-**Project Type**: Desktop game engine/editor  
-**Performance Goals**: Remove Assimp FBX `ReadFile` from FBX import path; large FBX source parsing should use Autodesk SDK.  
-**Constraints**: No Assimp fallback for `.fbx`; SDK discovery must fail loudly if the engine-bundled SDK is incomplete; Autodesk EULA acceptance is required before installer output can be used.  
+**Language/Version**: C++20, CMake, platform toolchains already used by Nullus
+**Primary Dependencies**: Autodesk FBX SDK 2020.3.9, existing Assimp for non-FBX formats
+**Storage**: Source assets under `Assets`, imported artifacts under `Library/Artifacts`, third-party archives under `ThirdParty/FBX/packages`, unpacked SDK contents under `ThirdParty/FBX/sdk/<platform>`
+**Testing**: `NullusUnitTests` plus focused CMake/source contract checks
+**Target Platform**: Windows, Linux, macOS desktop editor/game builds
+**Project Type**: Desktop game engine/editor
+**Performance Goals**: Remove Assimp FBX `ReadFile` from FBX import path; large FBX source parsing should use Autodesk SDK.
+**Constraints**: No Assimp fallback for `.fbx`; SDK discovery must fail loudly if the engine-bundled SDK is incomplete; Autodesk EULA acceptance is required before installer output can be used.
 **Scale/Scope**: CMake integration, runtime rendering parser, editor asset importer, runtime model load path, unit/contract tests.
 
 ## Constitution Check

@@ -1,8 +1,8 @@
 # Feature Specification: Reflection-Driven Component Search Dropdown
 
-**Feature Branch**: `[009-component-search-panel]`  
-**Created**: 2026-05-02  
-**Status**: Draft  
+**Feature Branch**: `[009-component-search-panel]`
+**Created**: 2026-05-02
+**Status**: Draft
 **Input**: User description: "点击AddComponent按钮应该用反射遍历所有组件，制作一个类似Unity的组件添加面板，支持搜索"
 
 ## User Scenarios & Testing *(mandatory)*

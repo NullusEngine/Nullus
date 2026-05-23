@@ -1,8 +1,8 @@
 # Feature Specification: Scene Camera Focus
 
-**Feature Branch**: `013-scene-camera-focus`  
-**Created**: 2026-05-04  
-**Status**: Draft  
+**Feature Branch**: `013-scene-camera-focus`
+**Created**: 2026-05-04
+**Status**: Draft
 **Input**: User description: "Design a camera focus concept: click rotation always orbits the focus; camera focus changes as the camera pans, rotates, zooms, or focuses; middle mouse panning distance scales by focus distance so focus movement appears synchronized with mouse movement."
 
 ## User Scenarios & Testing *(mandatory)*

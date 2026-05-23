@@ -9,14 +9,14 @@ Implement an Editor-only shortcut system inspired by Unity Shortcuts Manager. Th
 
 ## Technical Context
 
-**Language/Version**: C++20, matching existing `NullusUnitTests` and editor build settings  
-**Primary Dependencies**: Existing Nullus Editor, Windowing `InputManager`, ImGui UI layer, `nlohmann::json` already available under `ThirdParty/Json`  
-**Storage**: Project user settings file under `UserSettings`, using JSON for shortcut profile overrides  
-**Testing**: GoogleTest via `NullusUnitTests`; focused manual editor verification for UI and runtime command behavior  
-**Target Platform**: Nullus Editor desktop targets, with Windows as the initial validation target and no unverified cross-platform claims  
-**Project Type**: Desktop editor application subsystem  
-**Performance Goals**: Shortcut resolution must stay frame-cheap for the expected editor command set; lookup should be deterministic and bounded by registered commands  
-**Constraints**: Do not edit generated files under `Runtime/*/Gen/`; do not change Runtime/Game input semantics; preserve Editor and Game product runnability  
+**Language/Version**: C++20, matching existing `NullusUnitTests` and editor build settings
+**Primary Dependencies**: Existing Nullus Editor, Windowing `InputManager`, ImGui UI layer, `nlohmann::json` already available under `ThirdParty/Json`
+**Storage**: Project user settings file under `UserSettings`, using JSON for shortcut profile overrides
+**Testing**: GoogleTest via `NullusUnitTests`; focused manual editor verification for UI and runtime command behavior
+**Target Platform**: Nullus Editor desktop targets, with Windows as the initial validation target and no unverified cross-platform claims
+**Project Type**: Desktop editor application subsystem
+**Performance Goals**: Shortcut resolution must stay frame-cheap for the expected editor command set; lookup should be deterministic and bounded by registered commands
+**Constraints**: Do not edit generated files under `Runtime/*/Gen/`; do not change Runtime/Game input semantics; preserve Editor and Game product runnability
 **Scale/Scope**: Initial command set migrates current editor shortcuts and supports future editor panels/tools through registration APIs
 
 ## Constitution Check

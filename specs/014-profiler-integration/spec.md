@@ -1,8 +1,8 @@
 # Feature Specification: Unified Profiler Integration
 
-**Feature Branch**: `014-profiler-integration`  
-**Created**: 2026-05-05  
-**Status**: Draft  
+**Feature Branch**: `014-profiler-integration`
+**Created**: 2026-05-05
+**Status**: Draft
 **Input**: User description: "设计一个Profiler系统同时接入tracy 和https://github.com/simco50/TimelineProfiler，TimelineProfiler作为一个docker窗口内置在引擎编辑器中。两套方案共用一个埋点，支持自动传入调用函数名"
 
 ## User Scenarios & Testing *(mandatory)*

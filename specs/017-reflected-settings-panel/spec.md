@@ -1,8 +1,8 @@
 # Feature Specification: Reflected Editor Settings Panel
 
-**Feature Branch**: `017-reflected-settings-panel`  
-**Created**: 2026-05-05  
-**Status**: Draft  
+**Feature Branch**: `017-reflected-settings-panel`
+**Created**: 2026-05-05
+**Status**: Draft
 **Input**: User description: "Implement a Unity-like Project Settings panel for the editor where settings pages are backed by reflected SettingObject instances. The settings panel lists settings categories on the left, shows selected settings on the right, supports search, renders and edits properties using the same reflection-based property drawing pipeline shared with Inspector, and persists edited settings."
 
 ## User Scenarios & Testing *(mandatory)*
@@ -11,7 +11,7 @@
   IMPORTANT: User stories should be PRIORITIZED as user journeys ordered by importance.
   Each user story/journey must be INDEPENDENTLY TESTABLE - meaning if you implement just ONE of them,
   you should still have a viable MVP (Minimum Viable Product) that delivers value.
-  
+
   Assign priorities (P1, P2, P3, etc.) to each story, where P1 is the most critical.
   Think of each story as a standalone slice of functionality that can be:
   - Developed independently

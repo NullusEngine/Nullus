@@ -1,8 +1,8 @@
 # Feature Specification: Editor Frame Sync Performance
 
-**Feature Branch**: `011-editor-frame-sync-performance`  
-**Created**: 2026-05-03  
-**Status**: Draft  
+**Feature Branch**: `011-editor-frame-sync-performance`
+**Created**: 2026-05-03
+**Status**: Draft
 **Input**: User description: "Editor FPS is only around 20; investigate the performance bottleneck and start fixing it."
 
 ## User Scenarios & Testing *(mandatory)*

@@ -1,8 +1,8 @@
 # Feature Specification: UE5-Style RHI/RDG Threading Foundation
 
-**Feature Branch**: `007-rhi-rdg-threading-foundation`  
-**Created**: 2026-04-19  
-**Status**: Draft  
+**Feature Branch**: `007-rhi-rdg-threading-foundation`
+**Created**: 2026-04-19
+**Status**: Draft
 **Input**: User description: "按 DX12 + Vulkan 作为第一阶段主目标，对标 UE5 的 Render Thread / RHI Thread / RDG / 并行命令录制 / 资源生命周期 / async compute / PSO 与 descriptor 管理，并直接开始落实"
 
 ## User Scenarios & Testing *(mandatory)*

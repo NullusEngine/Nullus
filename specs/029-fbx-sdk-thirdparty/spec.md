@@ -1,8 +1,8 @@
 # Feature Specification: Autodesk FBX SDK ThirdParty Integration
 
-**Feature Branch**: `029-fbx-sdk-thirdparty`  
-**Created**: 2026-05-18  
-**Status**: Draft  
+**Feature Branch**: `029-fbx-sdk-thirdparty`
+**Created**: 2026-05-18
+**Status**: Draft
 **Input**: User description: "Put the official Autodesk FBX SDK packages into ThirdParty/FBX without a versioned path, integrate them into the engine, support Windows/Linux/macOS, and make FBX parsing use FBX SDK only with no fallback."
 
 ## User Scenarios & Testing *(mandatory)*

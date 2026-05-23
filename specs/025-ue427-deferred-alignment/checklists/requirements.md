@@ -1,7 +1,7 @@
 # Specification Quality Checklist: UE4.27 Deferred Lighting Alignment
 
-**Purpose**: Validate specification completeness and quality before proceeding to planning  
-**Created**: 2026-05-12  
+**Purpose**: Validate specification completeness and quality before proceeding to planning
+**Created**: 2026-05-12
 **Feature**: [spec.md](../spec.md)
 
 ## Content Quality

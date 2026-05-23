@@ -1,8 +1,8 @@
 # Feature Specification: UE4.27 Render Architecture Alignment
 
-**Feature Branch**: `022-ue427-render-architecture`  
-**Created**: 2026-05-10  
-**Status**: Draft  
+**Feature Branch**: `022-ue427-render-architecture`
+**Created**: 2026-05-10
+**Status**: Draft
 **Input**: User description: "RHI、frame graph、shader binding，多线程渲染也做到和UE4.27源码对齐"; licensed reference path supplied: `F:\Epic Games\UE_4.27\Engine`
 
 ## User Scenarios & Testing

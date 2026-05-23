@@ -1,8 +1,8 @@
 # Feature Specification: Fix DX12 MultiFramebuffer Barriers
 
-**Feature Branch**: `031-fix-dx12-multiframebuffer-barriers`  
-**Created**: 2026-05-23  
-**Status**: Draft  
+**Feature Branch**: `031-fix-dx12-multiframebuffer-barriers`
+**Created**: 2026-05-23
+**Status**: Draft
 **Input**: User reported DX12 debug-layer message 527 failures for `MultiFramebufferColorTexture0/1/2` and `MultiFramebufferDepthTexture` where transition `Before` states no longer match the previous barrier state.
 
 ## User Scenarios & Testing

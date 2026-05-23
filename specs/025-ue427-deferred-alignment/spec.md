@@ -1,8 +1,8 @@
 # Feature Specification: UE4.27 Deferred Lighting Alignment
 
-**Feature Branch**: `025-ue427-deferred-alignment`  
-**Created**: 2026-05-12  
-**Status**: Draft  
+**Feature Branch**: `025-ue427-deferred-alignment`
+**Created**: 2026-05-12
+**Status**: Draft
 **Input**: User description: "Align Nullus deferred renderer with UE4.27 phase-one deferred lighting: GBuffer, SceneColor initialization, ambient, per-light additive deferred lighting, and editor overlay/debug pass; exclude shadows, SSAO, reflections, translucency, and full tiled deferred optimization."
 
 ## User Scenarios & Testing *(mandatory)*

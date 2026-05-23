@@ -1,6 +1,6 @@
 # Tasks: MetaParser Resource Reflection
 
-**Input**: Design documents from `specs/030-metaparser-resource-reflection/`  
+**Input**: Design documents from `specs/030-metaparser-resource-reflection/`
 **Prerequisites**: plan.md, spec.md, research.md, data-model.md, quickstart.md
 
 **Tests**: Required. This migration follows test-first source-contract coverage plus focused runtime reflection validation.

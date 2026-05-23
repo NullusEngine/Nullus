@@ -1,6 +1,6 @@
 # Research: Editor Top And Bottom Bars
 
-**Feature**: `010-editor-top-bottom-bars`  
+**Feature**: `010-editor-top-bottom-bars`
 **Date**: 2026-05-03
 
 ## Decision 1: Build top and bottom bars on a fixed viewport-anchored panel abstraction

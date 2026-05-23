@@ -1,7 +1,7 @@
 # Specification Quality Checklist: UE5-Style RHI/RDG Threading Foundation
 
-**Purpose**: Validate specification completeness and quality before proceeding to planning  
-**Created**: 2026-04-19  
+**Purpose**: Validate specification completeness and quality before proceeding to planning
+**Created**: 2026-04-19
 **Feature**: [spec.md](../spec.md)
 
 ## Content Quality

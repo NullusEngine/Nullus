@@ -1,8 +1,8 @@
 # Feature Specification: Blocking Startup Preimport
 
-**Feature Branch**: `027-blocking-startup-preimport`  
-**Created**: 2026-05-17  
-**Status**: Draft  
+**Feature Branch**: `027-blocking-startup-preimport`
+**Created**: 2026-05-17
+**Status**: Draft
 **Input**: User description: "Ensure all resources are imported before the editor UI opens. After the editor opens, only newly added or changed assets should be handled."
 
 ## User Scenarios & Testing *(mandatory)*

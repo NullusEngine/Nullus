@@ -1,8 +1,8 @@
 # Feature Specification: Reduce Scene View Frame Stalls
 
-**Feature Branch**: `015-fix-sceneview-drain`  
-**Created**: 2026-05-05  
-**Status**: Draft  
+**Feature Branch**: `015-fix-sceneview-drain`
+**Created**: 2026-05-05
+**Status**: Draft
 **Input**: User description: "Editor frame rate is around 20 FPS; investigate and begin fixing the low frame rate caused by Scene View synchronous threaded-rendering drains."
 
 ## User Scenarios & Testing *(mandatory)*

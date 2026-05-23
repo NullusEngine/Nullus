@@ -1,8 +1,8 @@
 # Feature Specification: Fix Incremental Build Speed
 
-**Feature Branch**: `023-fix-incremental-build-speed`  
-**Created**: 2026-05-11  
-**Status**: Draft  
+**Feature Branch**: `023-fix-incremental-build-speed`
+**Created**: 2026-05-11
+**Status**: Draft
 **Input**: User description: "Current compile speed is very slow; investigate the cause and start implementing the optimization plan."
 
 ## User Scenarios & Testing

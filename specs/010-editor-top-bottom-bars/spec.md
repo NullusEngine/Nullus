@@ -1,8 +1,8 @@
 # Feature Specification: Editor Top And Bottom Bars
 
-**Feature Branch**: `[010-editor-top-bottom-bars]`  
-**Created**: 2026-05-03  
-**Status**: Draft  
+**Feature Branch**: `[010-editor-top-bottom-bars]`
+**Created**: 2026-05-03
+**Status**: Draft
 **Input**: User description: "给编辑器增加一个顶栏和脚栏，顶栏的功能和unity对齐。底栏暂时就只要显示帧率就行"
 
 ## User Scenarios & Testing *(mandatory)*

@@ -1,6 +1,6 @@
 # Implementation Plan: Blocking Startup Preimport
 
-**Branch**: `027-blocking-startup-preimport` | **Date**: 2026-05-17 | **Spec**: `specs/027-blocking-startup-preimport/spec.md`  
+**Branch**: `027-blocking-startup-preimport` | **Date**: 2026-05-17 | **Spec**: `specs/027-blocking-startup-preimport/spec.md`
 **Input**: Feature specification from `specs/027-blocking-startup-preimport/spec.md`
 
 ## Summary
@@ -10,14 +10,14 @@ Generated model drag/drop then instantiates the imported prefab immediately and 
 
 ## Technical Context
 
-**Language/Version**: C++20  
-**Primary Dependencies**: Existing `AssetDatabaseFacade`, `AssetPreimportScheduler`, `ImportProgressTracker`, editor startup progress window  
-**Storage**: Existing project `Library/Artifacts/<asset-guid>/manifest.json` artifact cache  
-**Testing**: `NullusUnitTests`, focused gtest filters, Editor target build  
-**Target Platform**: Desktop editor; window remains hidden until startup completion on all platforms  
-**Project Type**: Native editor/runtime C++ project  
-**Performance Goals**: UI is not visible until initial scene-droppable asset imports are complete; post-open changes avoid full-project reimport  
-**Constraints**: Preserve generated directories, do not revert existing dirty work, keep watcher/copy incremental behavior  
+**Language/Version**: C++20
+**Primary Dependencies**: Existing `AssetDatabaseFacade`, `AssetPreimportScheduler`, `ImportProgressTracker`, editor startup progress window
+**Storage**: Existing project `Library/Artifacts/<asset-guid>/manifest.json` artifact cache
+**Testing**: `NullusUnitTests`, focused gtest filters, Editor target build
+**Target Platform**: Desktop editor; window remains hidden until startup completion on all platforms
+**Project Type**: Native editor/runtime C++ project
+**Performance Goals**: UI is not visible until initial scene-droppable asset imports are complete; post-open changes avoid full-project reimport
+**Constraints**: Preserve generated directories, do not revert existing dirty work, keep watcher/copy incremental behavior
 **Scale/Scope**: Startup ordering and preimport orchestration only; importer parse-speed optimization is out of scope
 
 ## Constitution Check

@@ -1,6 +1,6 @@
 # Tasks: Reduce Scene View Frame Stalls
 
-**Input**: Design documents from `specs/015-fix-sceneview-drain/`  
+**Input**: Design documents from `specs/015-fix-sceneview-drain/`
 **Prerequisites**: `spec.md`, `plan.md`
 
 ## Phase 1: Setup

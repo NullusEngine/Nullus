@@ -1,6 +1,6 @@
 # Implementation Plan: Editor Frame Sync Performance
 
-**Branch**: `011-editor-frame-sync-performance` | **Date**: 2026-05-03 | **Spec**: [spec.md](spec.md)  
+**Branch**: `011-editor-frame-sync-performance` | **Date**: 2026-05-03 | **Spec**: [spec.md](spec.md)
 **Input**: Feature specification from `/specs/011-editor-frame-sync-performance/spec.md`
 
 ## Summary
@@ -9,14 +9,14 @@ Reduce DX12 editor frame stalls by replacing per-frame CPU drains in UI renderin
 
 ## Technical Context
 
-**Language/Version**: C++20  
-**Primary Dependencies**: Nullus RHI, DX12 backend, ImGui DX12 backend, GoogleTest  
-**Storage**: N/A  
-**Testing**: `NullusUnitTests`, `Editor` target build, focused DX12 editor runtime verification  
-**Target Platform**: Windows DX12 for this change  
-**Project Type**: Desktop editor / rendering runtime  
-**Performance Goals**: Remove the measured per-frame UI bridge CPU fence drain; improve editor frame rate from the observed 20-26 FPS bottleneck toward interactive DX12 editor responsiveness  
-**Constraints**: Preserve editor runtime, preserve resize/shutdown resource lifetime safety, do not hand-edit generated files, do not claim validation for non-DX12 backends  
+**Language/Version**: C++20
+**Primary Dependencies**: Nullus RHI, DX12 backend, ImGui DX12 backend, GoogleTest
+**Storage**: N/A
+**Testing**: `NullusUnitTests`, `Editor` target build, focused DX12 editor runtime verification
+**Target Platform**: Windows DX12 for this change
+**Project Type**: Desktop editor / rendering runtime
+**Performance Goals**: Remove the measured per-frame UI bridge CPU fence drain; improve editor frame rate from the observed 20-26 FPS bottleneck toward interactive DX12 editor responsiveness
+**Constraints**: Preserve editor runtime, preserve resize/shutdown resource lifetime safety, do not hand-edit generated files, do not claim validation for non-DX12 backends
 **Scale/Scope**: DX12 UI bridge synchronization, RHI present synchronization metadata, driver/UI handoff, SceneView retirement-aware drain policy, threaded picking readback lifecycle, UI/offscreen threaded frame boundary policy, editor launch performance-mode diagnostics gate, targeted unit tests
 
 ## Constitution Check
@@ -83,36 +83,36 @@ Tests/Unit/
 
 ## Phase 0 Research
 
-- **Decision**: Track UI fence values per backbuffer and wait before allocator reset only when the prior value for that backbuffer is incomplete.  
-  **Rationale**: Command allocators cannot be reset while GPU work using them may still execute, but waiting immediately after every submit serializes CPU/GPU every frame.  
+- **Decision**: Track UI fence values per backbuffer and wait before allocator reset only when the prior value for that backbuffer is incomplete.
+  **Rationale**: Command allocators cannot be reset while GPU work using them may still execute, but waiting immediately after every submit serializes CPU/GPU every frame.
   **Alternatives considered**: Delete the wait entirely (unsafe allocator reuse), keep current wait (known performance bottleneck), globally rotate more allocators (higher memory and still lacks explicit reuse safety).
 
-- **Decision**: Add a UI signal value to the existing RHI present path.  
-  **Rationale**: DX12 present currently waits on a raw fence pointer with hardcoded value `1`; the present queue must wait on the actual value submitted by the UI bridge.  
+- **Decision**: Add a UI signal value to the existing RHI present path.
+  **Rationale**: DX12 present currently waits on a raw fence pointer with hardcoded value `1`; the present queue must wait on the actual value submitted by the UI bridge.
   **Alternatives considered**: Wrap fence and value in an opaque allocation (more lifetime complexity), rely on CPU wait (keeps bottleneck), signal fixed value every frame (invalid after first frame).
 
-- **Decision**: Preserve lifecycle drains on resize and shutdown.  
-  **Rationale**: Resource release requires stronger synchronization than steady-state rendering.  
+- **Decision**: Preserve lifecycle drains on resize and shutdown.
+  **Rationale**: Resource release requires stronger synchronization than steady-state rendering.
   **Alternatives considered**: Fully async release (requires a deferred deletion system outside this fix).
 
-- **Decision**: Do not drain after every retirement-aware view render unless the consumer requires immediate readback.  
-  **Rationale**: Runtime probing showed the post-render view drain remained a dominant frame-time cost; texture-only UI composition can use retired textures at the composition boundary.  
+- **Decision**: Do not drain after every retirement-aware view render unless the consumer requires immediate readback.
+  **Rationale**: Runtime probing showed the post-render view drain remained a dominant frame-time cost; texture-only UI composition can use retired textures at the composition boundary.
   **Alternatives considered**: Keep same-frame drains (preserves the bottleneck), remove all drains (unsafe for readback consumers), make picking force same-frame retirement (keeps hitching during selection).
 
-- **Decision**: Treat threaded picking readback as delayed by one readable frame.  
-  **Rationale**: Picking needs CPU-visible readback data, but it can return no result until a submitted picking frame has become readable instead of blocking the frame.  
+- **Decision**: Treat threaded picking readback as delayed by one readable frame.
+  **Rationale**: Picking needs CPU-visible readback data, but it can return no result until a submitted picking frame has become readable instead of blocking the frame.
   **Alternatives considered**: Same-frame drain before every pick (performance regression), decode against stale metadata (incorrect selection), disable picking under threaded rendering (feature regression).
 
-- **Decision**: Remove the UI composition boundary drain for offscreen-only threaded work while continuing to reject UI composition during in-flight swapchain-targeting threaded frames.  
-  **Rationale**: Follow-up probes showed `PrepareUIRender()` spent roughly 20-40 ms draining offscreen render-build and RHI submission work before UI composition, which held the editor near 30 FPS after the UI fence fix. Offscreen-only frames do not own the swapchain frame context, while swapchain-targeting frames still must block standalone UI composition.  
+- **Decision**: Remove the UI composition boundary drain for offscreen-only threaded work while continuing to reject UI composition during in-flight swapchain-targeting threaded frames.
+  **Rationale**: Follow-up probes showed `PrepareUIRender()` spent roughly 20-40 ms draining offscreen render-build and RHI submission work before UI composition, which held the editor near 30 FPS after the UI fence fix. Offscreen-only frames do not own the swapchain frame context, while swapchain-targeting frames still must block standalone UI composition.
   **Alternatives considered**: Drain all threaded work before UI composition (preserves 30 FPS bottleneck), allow UI composition during swapchain threaded frames (unsafe frame-context ownership), increase frames-in-flight (masks pressure without removing the sync point).
 
-- **Decision**: Guard standalone UI frame setup with a non-blocking threaded RHI submission mutex and hold that guard until UI present finalizes the standalone frame.  
-  **Rationale**: Runtime startup verification showed allowing UI composition during offscreen-only in-flight work could still deadlock the window thread because offscreen RHI submission and standalone UI composition share `frameContexts[currentFrameIndex]`. A non-blocking guard preserves the no-drain policy while preventing frame-context reset/fence waits during worker ownership.  
+- **Decision**: Guard standalone UI frame setup with a non-blocking threaded RHI submission mutex and hold that guard until UI present finalizes the standalone frame.
+  **Rationale**: Runtime startup verification showed allowing UI composition during offscreen-only in-flight work could still deadlock the window thread because offscreen RHI submission and standalone UI composition share `frameContexts[currentFrameIndex]`. A non-blocking guard preserves the no-drain policy while preventing frame-context reset/fence waits during worker ownership.
   **Alternatives considered**: Restore full offscreen drain (fixes hang but restores 30 FPS bottleneck), wait on the mutex (can freeze UI), allocate a separate UI frame-context ring (larger architectural change).
 
-- **Decision**: Add explicit `--editor-performance-mode` and `--no-rhi-debug-validation` launch flags instead of changing normal debug defaults.  
-  **Rationale**: After synchronization fixes, the remaining empty-scene ~80 FPS report coincided with DX12 Debug Layer, GPU-based validation, and DRED being enabled by default in Debug editor launches. Profiling needs a clean non-validation mode, but day-to-day debug launches should retain safety diagnostics.  
+- **Decision**: Add explicit `--editor-performance-mode` and `--no-rhi-debug-validation` launch flags instead of changing normal debug defaults.
+  **Rationale**: After synchronization fixes, the remaining empty-scene ~80 FPS report coincided with DX12 Debug Layer, GPU-based validation, and DRED being enabled by default in Debug editor launches. Profiling needs a clean non-validation mode, but day-to-day debug launches should retain safety diagnostics.
   **Alternatives considered**: Disable validation by default (faster but less safe), require Release builds for profiling (slower iteration), only disable GPU-based validation while leaving DRED forced on (still leaves debug diagnostic overhead in the measured path).
 
 ## Phase 1 Design

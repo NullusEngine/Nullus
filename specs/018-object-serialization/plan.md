@@ -1,6 +1,6 @@
 # Implementation Plan: Object Graph Serialization
 
-**Branch**: `018-object-serialization` | **Date**: 2026-05-08 | **Spec**: [spec.md](./spec.md)  
+**Branch**: `018-object-serialization` | **Date**: 2026-05-08 | **Spec**: [spec.md](./spec.md)
 **Input**: Feature specification from `specs/018-object-serialization/spec.md`
 
 ## Summary
@@ -9,14 +9,14 @@ Replace the current scene-specific GameObject serialization path with a unified 
 
 ## Technical Context
 
-**Language/Version**: C++20  
-**Primary Dependencies**: Nullus reflection/MetaParser pipeline, json11-based JSON support already present in the repository, existing GTest test infrastructure  
-**Storage**: Deterministic text Object Graph documents for `.scene` and `.prefab`; future cooked/binary output generated from the same document model  
-**Testing**: `NullusUnitTests`, `ReflectionTest`, targeted golden-file style serialization tests  
-**Target Platform**: Nullus desktop runtime/editor targets, with validation first on Windows Debug build  
-**Project Type**: Native game engine runtime/editor architecture change  
-**Performance Goals**: Scene/prefab save/load must be deterministic and correct first; text format remains appropriate for editor workflows and version control  
-**Constraints**: No hand edits to generated files; reflection changes must use MetaParser input declarations; Editor and Game must remain runnable during staged work; no old scene-format runtime compatibility path  
+**Language/Version**: C++20
+**Primary Dependencies**: Nullus reflection/MetaParser pipeline, json11-based JSON support already present in the repository, existing GTest test infrastructure
+**Storage**: Deterministic text Object Graph documents for `.scene` and `.prefab`; future cooked/binary output generated from the same document model
+**Testing**: `NullusUnitTests`, `ReflectionTest`, targeted golden-file style serialization tests
+**Target Platform**: Nullus desktop runtime/editor targets, with validation first on Windows Debug build
+**Project Type**: Native game engine runtime/editor architecture change
+**Performance Goals**: Scene/prefab save/load must be deterministic and correct first; text format remains appropriate for editor workflows and version control
+**Constraints**: No hand edits to generated files; reflection changes must use MetaParser input declarations; Editor and Game must remain runnable during staged work; no old scene-format runtime compatibility path
 **Scale/Scope**: Foundational serialization architecture for scenes, game objects, components, prefabs, asset references, and future cooked runtime packages
 
 ## Constitution Check

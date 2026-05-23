@@ -1,8 +1,8 @@
 # Feature Specification: Editor Settings Trim
 
-**Feature Branch**: `024-editor-settings-trim`  
-**Created**: 2026-05-21  
-**Status**: Draft  
+**Feature Branch**: `024-editor-settings-trim`
+**Created**: 2026-05-21
+**Status**: Draft
 **Input**: User description: "移除诊断/自动化开关 和无用项，剩下的能合并成一个就合并成一个，只留下真正对用户有用的"
 
 ## User Scenarios & Testing

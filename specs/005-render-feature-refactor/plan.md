@@ -11,14 +11,14 @@ Refactor the current `ARenderFeature` model so it no longer owns core draw-time 
 
 ## Technical Context
 
-**Language/Version**: C++20  
-**Primary Dependencies**: Nullus runtime rendering modules, Formal RHI, FrameGraph, ImGui/editor integration, GoogleTest/CTest  
-**Storage**: Not applicable: this refactor changes runtime rendering ownership and transient frame data, not persistent project data  
-**Testing**: `NullusUnitTests` through CTest, targeted rendering unit tests, editor/game smoke checks, RenderDoc evidence when visual backend correctness is claimed  
-**Target Platform**: Desktop runtime/editor; current validated backend matrix is DX12 and Vulkan on Windows, with unsupported backends kept explicitly gated by existing runtime policy  
-**Project Type**: Desktop game engine/editor with multi-backend rendering runtime  
-**Performance Goals**: Avoid per-draw overhead regressions while preserving current scene rendering behavior; debug draw batching and renderer stats must remain frame-stable under current debug draw limits  
-**Constraints**: Keep Editor and Game runnable throughout staged migration; do not hand-edit generated files under `Runtime/*/Gen/`; do not expand this feature into a full shader variant or pipeline cache implementation  
+**Language/Version**: C++20
+**Primary Dependencies**: Nullus runtime rendering modules, Formal RHI, FrameGraph, ImGui/editor integration, GoogleTest/CTest
+**Storage**: Not applicable: this refactor changes runtime rendering ownership and transient frame data, not persistent project data
+**Testing**: `NullusUnitTests` through CTest, targeted rendering unit tests, editor/game smoke checks, RenderDoc evidence when visual backend correctness is claimed
+**Target Platform**: Desktop runtime/editor; current validated backend matrix is DX12 and Vulkan on Windows, with unsupported backends kept explicitly gated by existing runtime policy
+**Project Type**: Desktop game engine/editor with multi-backend rendering runtime
+**Performance Goals**: Avoid per-draw overhead regressions while preserving current scene rendering behavior; debug draw batching and renderer stats must remain frame-stable under current debug draw limits
+**Constraints**: Keep Editor and Game runnable throughout staged migration; do not hand-edit generated files under `Runtime/*/Gen/`; do not expand this feature into a full shader variant or pipeline cache implementation
 **Scale/Scope**: Rendering framework ownership boundary refactor spanning `Runtime/Rendering`, `Runtime/Engine/Rendering`, `Project/Editor/Rendering`, and focused unit/runtime validation
 
 ## Constitution Check

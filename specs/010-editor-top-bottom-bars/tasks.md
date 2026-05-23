@@ -1,6 +1,6 @@
 # Tasks: Editor Top And Bottom Bars
 
-**Input**: Design documents from `/specs/010-editor-top-bottom-bars/`  
+**Input**: Design documents from `/specs/010-editor-top-bottom-bars/`
 **Prerequisites**: `plan.md` (required), `spec.md` (required for user stories), `research.md`, `data-model.md`, `contracts/`
 
 **Tests**: No new automated tests were explicitly requested in the feature spec. Validation for this feature is driven by Editor build checks plus the manual verification flow in `specs/010-editor-top-bottom-bars/quickstart.md`.

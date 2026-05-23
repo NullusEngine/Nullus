@@ -11,14 +11,14 @@ Replace the Inspector's current hardcoded component dropdown with a Unity-style 
 
 ## Technical Context
 
-**Language/Version**: C++20  
-**Primary Dependencies**: Nullus Editor panels, Nullus UI widget system and ImGui popup/menu primitives, Nullus reflection runtime (`meta::Type`, `TypeCreator`, `MetaManager`), C# MetaParser generation templates, Engine `GameObject` component APIs  
-**Storage**: N/A  
-**Testing**: `NullusUnitTests`, targeted editor manual verification  
-**Target Platform**: Nullus Editor desktop runtime on Windows first, with implementation kept backend-agnostic and platform-neutral where possible  
-**Project Type**: Native desktop editor application  
-**Performance Goals**: Component picker opens without perceptible lag in normal editor use and search filtering updates within the same interaction for the current reflected component set  
-**Constraints**: Must not hand-edit generated reflection output under `Runtime/*/Gen/`; must preserve editor runtime viability; must keep actual addability driven by engine component rules rather than a second hand-maintained registry  
+**Language/Version**: C++20
+**Primary Dependencies**: Nullus Editor panels, Nullus UI widget system and ImGui popup/menu primitives, Nullus reflection runtime (`meta::Type`, `TypeCreator`, `MetaManager`), C# MetaParser generation templates, Engine `GameObject` component APIs
+**Storage**: N/A
+**Testing**: `NullusUnitTests`, targeted editor manual verification
+**Target Platform**: Nullus Editor desktop runtime on Windows first, with implementation kept backend-agnostic and platform-neutral where possible
+**Project Type**: Native desktop editor application
+**Performance Goals**: Component picker opens without perceptible lag in normal editor use and search filtering updates within the same interaction for the current reflected component set
+**Constraints**: Must not hand-edit generated reflection output under `Runtime/*/Gen/`; must preserve editor runtime viability; must keep actual addability driven by engine component rules rather than a second hand-maintained registry
 **Scale/Scope**: Single editor workflow centered on Inspector component addition, with one new picker interaction, a small extension to type-level reflection metadata generation, shared reflection-based discovery, and targeted coverage for eligible engine component types
 
 ## Constitution Check

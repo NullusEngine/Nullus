@@ -1,7 +1,7 @@
 # Tasks: Render Framework Optimization
 
-**Input**: User-provided prioritized TODO list and design documents in `specs/019-render-framework-optimization/`  
-**Prerequisites**: [spec.md](spec.md), [plan.md](plan.md), [research.md](research.md)  
+**Input**: User-provided prioritized TODO list and design documents in `specs/019-render-framework-optimization/`
+**Prerequisites**: [spec.md](spec.md), [plan.md](plan.md), [research.md](research.md)
 **Tests**: Behavior changes use TDD where possible; completed items must record validation evidence.
 
 ## Status Legend

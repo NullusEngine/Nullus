@@ -9,14 +9,14 @@ Move generated field type classification policy from generated C++ into MetaPars
 
 ## Technical Context
 
-**Language/Version**: C++20 runtime, C#/.NET 8 MetaParser templates  
-**Primary Dependencies**: Nullus reflection runtime, MetaParser T4 template pipeline  
-**Storage**: N/A  
-**Testing**: GoogleTest `NullusUnitTests`, MetaParser generation fixtures, `ReflectionTest` where practical  
-**Target Platform**: Current Windows development build; no cross-platform claim beyond source-level behavior  
-**Project Type**: Engine/runtime library plus code generator  
-**Performance Goals**: No measurable runtime regression during reflection registration; container classification happens once during generation  
-**Constraints**: Do not hand-edit `Runtime/*/Gen/`; preserve dependency tracking and diagnostics  
+**Language/Version**: C++20 runtime, C#/.NET 8 MetaParser templates
+**Primary Dependencies**: Nullus reflection runtime, MetaParser T4 template pipeline
+**Storage**: N/A
+**Testing**: GoogleTest `NullusUnitTests`, MetaParser generation fixtures, `ReflectionTest` where practical
+**Target Platform**: Current Windows development build; no cross-platform claim beyond source-level behavior
+**Project Type**: Engine/runtime library plus code generator
+**Performance Goals**: No measurable runtime regression during reflection registration; container classification happens once during generation
+**Constraints**: Do not hand-edit `Runtime/*/Gen/`; preserve dependency tracking and diagnostics
 **Scale/Scope**: Typed resolver APIs, one generator model/template update, generated output refresh, targeted tests
 
 ## Constitution Check

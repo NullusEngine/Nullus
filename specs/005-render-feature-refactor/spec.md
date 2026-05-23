@@ -1,8 +1,8 @@
 # Feature Specification: Render Feature Refactor
 
-**Feature Branch**: `005-render-feature-refactor`  
-**Created**: 2026-04-18  
-**Status**: Draft  
+**Feature Branch**: `005-render-feature-refactor`
+**Created**: 2026-04-18
+**Status**: Draft
 **Input**: User description: "Refactor the current ARenderFeature-based rendering extension model so it no longer acts as the core draw-time pipeline and binding assembly mechanism. Preserve current rendering behavior while migrating responsibilities into clearer systems: renderer-owned frame/object binding, explicit render passes for debug draw, lighting as a data provider, renderer-owned stats, and a path to remove or narrow ARenderFeature after responsibilities are migrated. The feature should prevent new rendering work from adding shader-variant, pass-binding, or pipeline-state responsibilities to ARenderFeature, and should support validation for editor/runtime rendering, debug draw, lighting, and stats behavior."
 
 ## User Scenarios & Testing *(mandatory)*

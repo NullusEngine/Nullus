@@ -1,8 +1,8 @@
 # Feature Specification: ImGuizmo Transform Gizmo
 
-**Feature Branch**: `012-imguizmo-transform`  
-**Created**: 2026-05-04  
-**Status**: Draft  
+**Feature Branch**: `012-imguizmo-transform`
+**Created**: 2026-05-04
+**Status**: Draft
 **Input**: User description: "接入 https://github.com/CedricGuillemet/ImGuizmo 这个 Dear ImGui transform gizmo 工具，在编辑器 Scene View 中替换现有自绘坐标轴，保留选中对象后的平移、旋转、缩放操作和快捷键 W/E/R。"
 
 ## User Scenarios & Testing *(mandatory)*

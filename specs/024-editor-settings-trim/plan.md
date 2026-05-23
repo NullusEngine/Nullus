@@ -1,6 +1,6 @@
 # Implementation Plan: Editor Settings Trim
 
-**Branch**: `024-editor-settings-trim` | **Date**: 2026-05-21 | **Spec**: [spec.md](spec.md)  
+**Branch**: `024-editor-settings-trim` | **Date**: 2026-05-21 | **Spec**: [spec.md](spec.md)
 **Input**: Feature specification from `/specs/024-editor-settings-trim/spec.md`
 
 ## Summary
@@ -9,14 +9,14 @@ Trim reflected editor settings to only persistent user preferences, while preser
 
 ## Technical Context
 
-**Language/Version**: C++20  
-**Primary Dependencies**: Nullus reflection/MetaParser, ImGui editor UI, GoogleTest  
-**Storage**: Project `UserSettings/editor-settings.json` via reflected settings persistence  
-**Testing**: `NullusUnitTests`, targeted editor settings and launch args tests  
-**Target Platform**: Windows editor path, cross-platform source compatibility  
-**Project Type**: Desktop editor/runtime  
-**Performance Goals**: No runtime hot-path cost; settings enumeration remains reflection-driven  
-**Constraints**: Do not hand-edit `Project/Editor/Gen`; old settings files must load without failing  
+**Language/Version**: C++20
+**Primary Dependencies**: Nullus reflection/MetaParser, ImGui editor UI, GoogleTest
+**Storage**: Project `UserSettings/editor-settings.json` via reflected settings persistence
+**Testing**: `NullusUnitTests`, targeted editor settings and launch args tests
+**Target Platform**: Windows editor path, cross-platform source compatibility
+**Project Type**: Desktop editor/runtime
+**Performance Goals**: No runtime hot-path cost; settings enumeration remains reflection-driven
+**Constraints**: Do not hand-edit `Project/Editor/Gen`; old settings files must load without failing
 **Scale/Scope**: `Project/Editor/Settings`, `Project/Editor/Panels/MenuBar`, editor launch diagnostics tests, generated Editor reflection
 
 ## Constitution Check

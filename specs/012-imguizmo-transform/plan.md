@@ -9,14 +9,14 @@ Replace the editor Scene View's custom model-rendered transform axes with an ImG
 
 ## Technical Context
 
-**Language/Version**: C++20 with CMake 3.18 project configuration  
-**Primary Dependencies**: Existing `ImGui` static target under `ThirdParty/ImGui`; new vendored ImGuizmo source under `ThirdParty/ImGuizmo`  
-**Storage**: N/A; feature mutates existing in-memory actor transforms and uses existing scene serialization indirectly  
-**Testing**: `cmake --build Build --config Debug --target Editor NullusUnitTests -- /m:1`, `ctest --test-dir Build -C Debug --output-on-failure`, plus focused manual Scene View verification  
-**Target Platform**: Nullus Editor desktop builds; validate on the active local backend first and document backend/platform limits  
-**Project Type**: Desktop editor application inside a multi-backend engine repository  
-**Performance Goals**: Gizmo overlay should add no visible frame hitch during normal Scene View interaction and should remain responsive during continuous drag  
-**Constraints**: Do not hand-edit `Runtime/*/Gen/`; do not alter game/runtime rendering behavior outside editor viewport overlay; preserve runnable Editor and Game products; avoid claiming untested backend parity  
+**Language/Version**: C++20 with CMake 3.18 project configuration
+**Primary Dependencies**: Existing `ImGui` static target under `ThirdParty/ImGui`; new vendored ImGuizmo source under `ThirdParty/ImGuizmo`
+**Storage**: N/A; feature mutates existing in-memory actor transforms and uses existing scene serialization indirectly
+**Testing**: `cmake --build Build --config Debug --target Editor NullusUnitTests -- /m:1`, `ctest --test-dir Build -C Debug --output-on-failure`, plus focused manual Scene View verification
+**Target Platform**: Nullus Editor desktop builds; validate on the active local backend first and document backend/platform limits
+**Project Type**: Desktop editor application inside a multi-backend engine repository
+**Performance Goals**: Gizmo overlay should add no visible frame hitch during normal Scene View interaction and should remain responsive during continuous drag
+**Constraints**: Do not hand-edit `Runtime/*/Gen/`; do not alter game/runtime rendering behavior outside editor viewport overlay; preserve runnable Editor and Game products; avoid claiming untested backend parity
 **Scale/Scope**: Single Scene View transform tool replacement for one selected actor at a time; no runtime gizmos, multi-selection manipulation, pivot mode, or new local/world mode UI in this change
 
 ## Constitution Check

@@ -1,7 +1,7 @@
 # Specification Quality Checklist: Reflection-Driven Component Search Panel
 
-**Purpose**: Validate specification completeness and quality before proceeding to planning  
-**Created**: 2026-05-02  
+**Purpose**: Validate specification completeness and quality before proceeding to planning
+**Created**: 2026-05-02
 **Feature**: [spec.md](../spec.md)
 
 ## Content Quality

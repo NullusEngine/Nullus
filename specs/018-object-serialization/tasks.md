@@ -1,6 +1,6 @@
 # Tasks: Object Graph Serialization
 
-**Input**: Design documents from `specs/018-object-serialization/`  
+**Input**: Design documents from `specs/018-object-serialization/`
 **Prerequisites**: `plan.md`, `spec.md`, `research.md`, `data-model.md`, `contracts/`, `quickstart.md`
 
 **Tests**: Required. This feature changes runtime identity, reflection serialization, scene loading, prefab behavior, and generated reflection inputs. Follow test-first or test-with-change discipline for every behavior-changing task.

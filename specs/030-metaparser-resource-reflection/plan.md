@@ -1,6 +1,6 @@
 # Implementation Plan: MetaParser Resource Reflection
 
-**Branch**: `030-metaparser-resource-reflection` | **Date**: 2026-05-22 | **Spec**: [spec.md](spec.md)  
+**Branch**: `030-metaparser-resource-reflection` | **Date**: 2026-05-22 | **Spec**: [spec.md](spec.md)
 **Input**: Feature specification from `specs/030-metaparser-resource-reflection/spec.md`
 
 ## Summary
@@ -9,14 +9,14 @@ Migrate Nullus-owned rendering resource classes that currently handwrite `Static
 
 ## Technical Context
 
-**Language/Version**: C++20 runtime/editor code; C#/.NET 8 MetaParser generator already present  
-**Primary Dependencies**: Nullus reflection runtime, MetaParser generated registration, existing CMake build flow  
-**Storage**: N/A  
-**Testing**: GoogleTest via `NullusUnitTests`; `ReflectionTest` smoke validation  
-**Target Platform**: Primary local validation on Windows; tests and generator fixtures must not encode Windows Debug-only assumptions  
-**Project Type**: Native engine/runtime reflection migration  
-**Performance Goals**: Preserve existing type lookup behavior; avoid adding runtime string paths beyond generated compile-time names; avoid per-manifest central artifact DB saves during editor import batches  
-**Constraints**: Do not hand-edit `Runtime/*/Gen/`; preserve current generated registration flow; avoid exposing GPU/RHI resource internals as reflected fields; do not revert unrelated dirty workspace changes  
+**Language/Version**: C++20 runtime/editor code; C#/.NET 8 MetaParser generator already present
+**Primary Dependencies**: Nullus reflection runtime, MetaParser generated registration, existing CMake build flow
+**Storage**: N/A
+**Testing**: GoogleTest via `NullusUnitTests`; `ReflectionTest` smoke validation
+**Target Platform**: Primary local validation on Windows; tests and generator fixtures must not encode Windows Debug-only assumptions
+**Project Type**: Native engine/runtime reflection migration
+**Performance Goals**: Preserve existing type lookup behavior; avoid adding runtime string paths beyond generated compile-time names; avoid per-manifest central artifact DB saves during editor import batches
+**Constraints**: Do not hand-edit `Runtime/*/Gen/`; preserve current generated registration flow; avoid exposing GPU/RHI resource internals as reflected fields; do not revert unrelated dirty workspace changes
 **Scale/Scope**: Six rendering resource classes, rendering external reflection cleanup, runtime/editor asset pipeline integration, FrameGraph uniform-buffer state contract, and focused tests
 
 ## Constitution Check

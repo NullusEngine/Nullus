@@ -1,6 +1,6 @@
 # Implementation Plan: 多线程渲染框架
 
-**Branch**: `006-multi-thread-rendering` | **Date**: 2026-04-18 | **Spec**: [spec.md](./spec.md)  
+**Branch**: `006-multi-thread-rendering` | **Date**: 2026-04-18 | **Spec**: [spec.md](./spec.md)
 **Input**: Feature specification from `D:/VSProject/Nullus/specs/006-multi-thread-rendering/spec.md`
 
 **Note**: This template is filled in by the `/speckit.plan` command. See `.specify/templates/plan-template.md` for the execution workflow.
@@ -11,14 +11,14 @@
 
 ## Technical Context
 
-**Language/Version**: C++20  
-**Primary Dependencies**: Nullus `Runtime/Rendering` 与 `Runtime/Engine/Rendering` 模块、Formal RHI、FrameGraph、编辑器渲染辅助路径、GoogleTest/CTest  
-**Storage**: 不涉及持久化存储；本特性只引入运行时瞬态帧数据、线程间移交状态和 GPU 同步生命周期  
-**Testing**: `NullusUnitTests` + `ctest`、聚焦渲染单测、Editor/Game 冒烟验证、对可视正确性声明使用 RenderDoc 证据  
-**Target Platform**: 桌面 Editor/Game 运行时；当前验证重点仍是 Windows 上的 DX12 / Vulkan，同时计划不得把一个后端的结论外推到其他后端  
-**Project Type**: 多后端桌面游戏引擎与编辑器  
-**Performance Goals**: 逻辑主线程不再直接承担后端提交与 present；帧移交必须为有界队列；正常交互场景下应保持现有运行流畅性，不引入无界积压  
-**Constraints**: `Driver` 继续作为图形入口；`Runtime/*/Gen/` 禁止手改；不得把后端特例泄漏回 renderer/editor/game 主线；Editor 与 Game 在分阶段迁移中必须保持可运行；resize 与 shutdown 必须先 drain 再回收  
+**Language/Version**: C++20
+**Primary Dependencies**: Nullus `Runtime/Rendering` 与 `Runtime/Engine/Rendering` 模块、Formal RHI、FrameGraph、编辑器渲染辅助路径、GoogleTest/CTest
+**Storage**: 不涉及持久化存储；本特性只引入运行时瞬态帧数据、线程间移交状态和 GPU 同步生命周期
+**Testing**: `NullusUnitTests` + `ctest`、聚焦渲染单测、Editor/Game 冒烟验证、对可视正确性声明使用 RenderDoc 证据
+**Target Platform**: 桌面 Editor/Game 运行时；当前验证重点仍是 Windows 上的 DX12 / Vulkan，同时计划不得把一个后端的结论外推到其他后端
+**Project Type**: 多后端桌面游戏引擎与编辑器
+**Performance Goals**: 逻辑主线程不再直接承担后端提交与 present；帧移交必须为有界队列；正常交互场景下应保持现有运行流畅性，不引入无界积压
+**Constraints**: `Driver` 继续作为图形入口；`Runtime/*/Gen/` 禁止手改；不得把后端特例泄漏回 renderer/editor/game 主线；Editor 与 Game 在分阶段迁移中必须保持可运行；resize 与 shutdown 必须先 drain 再回收
 **Scale/Scope**: 覆盖 `Runtime/Rendering/Context`、`Runtime/Rendering/Core`、`Runtime/Rendering/FrameGraph`、`Runtime/Rendering/RHI`、`Runtime/Engine/Rendering`、`Project/Editor/Rendering` 与聚焦测试/验证文档
 
 ## Constitution Check

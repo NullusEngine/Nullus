@@ -934,4 +934,3 @@ TEST(PrefabUtilityFacadeTests, CorrespondingSourceAndInstanceRootQueriesUseStabl
     EXPECT_FALSE(facade.GetCorrespondingObjectFromSource(*instance.instance, outsider).has_value());
     EXPECT_EQ(facade.GetNearestPrefabInstanceRoot(*instance.instance, outsider), nullptr);
 }
-

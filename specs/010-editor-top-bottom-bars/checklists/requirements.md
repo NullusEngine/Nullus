@@ -1,7 +1,7 @@
 # Specification Quality Checklist: Editor Top And Bottom Bars
 
-**Purpose**: Validate specification completeness and quality before proceeding to planning  
-**Created**: 2026-05-03  
+**Purpose**: Validate specification completeness and quality before proceeding to planning
+**Created**: 2026-05-03
 **Feature**: [spec.md](D:/VSProject/Nullus/specs/010-editor-top-bottom-bars/spec.md)
 
 ## Content Quality

@@ -1,8 +1,8 @@
 # Feature Specification: UE5-Style DX12 Render Alignment
 
-**Feature Branch**: `008-ue5-dx12-render-alignment`  
-**Created**: 2026-04-21  
-**Status**: Draft  
+**Feature Branch**: `008-ue5-dx12-render-alignment`
+**Created**: 2026-04-21
+**Status**: Draft
 **Input**: User description: "详细研究UE5渲染架构后再制定方案，确保底层渲染框架和UE完全对齐"
 
 ## User Scenarios & Testing *(mandatory)*

@@ -1,6 +1,6 @@
 # Implementation Plan: Reduce Scene View Frame Stalls
 
-**Branch**: `015-fix-sceneview-drain` | **Date**: 2026-05-05 | **Spec**: [spec.md](spec.md)  
+**Branch**: `015-fix-sceneview-drain` | **Date**: 2026-05-05 | **Spec**: [spec.md](spec.md)
 **Input**: Feature specification from `specs/015-fix-sceneview-drain/spec.md`
 
 ## Summary
@@ -9,14 +9,14 @@ Scene View currently requests immediate retired-frame readback for picking, whic
 
 ## Technical Context
 
-**Language/Version**: C++20  
-**Primary Dependencies**: Nullus Editor panels, rendering context, threaded rendering lifecycle, GoogleTest  
-**Storage**: N/A  
-**Testing**: `NullusUnitTests` via GoogleTest  
-**Target Platform**: Windows editor DX12 validation path for this investigation  
-**Project Type**: Desktop editor/runtime engine  
-**Performance Goals**: Remove the steady-state Scene View main-thread drain associated with immediate picking readback; preserve interactive actor picking  
-**Constraints**: Do not hand-edit generated files; do not redesign threaded rendering or RHI submission; retain resize safety for retired-frame resource consumers  
+**Language/Version**: C++20
+**Primary Dependencies**: Nullus Editor panels, rendering context, threaded rendering lifecycle, GoogleTest
+**Storage**: N/A
+**Testing**: `NullusUnitTests` via GoogleTest
+**Target Platform**: Windows editor DX12 validation path for this investigation
+**Project Type**: Desktop editor/runtime engine
+**Performance Goals**: Remove the steady-state Scene View main-thread drain associated with immediate picking readback; preserve interactive actor picking
+**Constraints**: Do not hand-edit generated files; do not redesign threaded rendering or RHI submission; retain resize safety for retired-frame resource consumers
 **Scale/Scope**: Narrow Editor panel/rendering behavior change in `Project/Editor/Panels` with targeted unit tests
 
 ## Constitution Check

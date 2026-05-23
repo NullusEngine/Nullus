@@ -35,4 +35,3 @@ bool IsMetaFilePath(const std::filesystem::path& path)
     return ToLower(path.extension().string()) == ".meta";
 }
 }
-

@@ -9,14 +9,14 @@ Scene View currently renders through `DebugSceneRenderer`, which inherits `Forwa
 
 ## Technical Context
 
-**Language/Version**: C++20 via the existing CMake/MSBuild toolchain  
-**Primary Dependencies**: Existing Nullus Runtime, Engine, Editor, FrameGraph, RHI, GoogleTest  
-**Storage**: N/A  
-**Testing**: `NullusUnitTests` with renderer package and editor debug renderer tests  
-**Target Platform**: Windows/DX12 phase 1 validation; no new backend claims  
-**Project Type**: Desktop engine/editor runtime  
-**Performance Goals**: Preserve current deferred renderer pass count for non-editor views; add editor helper passes only when visible/enabled  
-**Constraints**: Do not edit `Runtime/*/Gen/`; keep runtime free of editor-only type dependencies; preserve Scene View product viability  
+**Language/Version**: C++20 via the existing CMake/MSBuild toolchain
+**Primary Dependencies**: Existing Nullus Runtime, Engine, Editor, FrameGraph, RHI, GoogleTest
+**Storage**: N/A
+**Testing**: `NullusUnitTests` with renderer package and editor debug renderer tests
+**Target Platform**: Windows/DX12 phase 1 validation; no new backend claims
+**Project Type**: Desktop engine/editor runtime
+**Performance Goals**: Preserve current deferred renderer pass count for non-editor views; add editor helper passes only when visible/enabled
+**Constraints**: Do not edit `Runtime/*/Gen/`; keep runtime free of editor-only type dependencies; preserve Scene View product viability
 **Scale/Scope**: One renderer migration spanning `Runtime/Engine/Rendering`, `Runtime/Rendering/FrameGraph`, `Project/Editor/Rendering`, and targeted unit tests
 
 ## Constitution Check

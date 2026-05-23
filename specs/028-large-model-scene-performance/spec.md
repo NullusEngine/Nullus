@@ -1,8 +1,8 @@
 # Feature Specification: Large Model Scene Performance
 
-**Feature Branch**: `028-large-model-scene-performance`  
-**Created**: 2026-05-18  
-**Status**: Draft  
+**Feature Branch**: `028-large-model-scene-performance`
+**Created**: 2026-05-18
+**Status**: Draft
 **Input**: User report: "场景加载了模型后会变得非常卡顿，掉帧严重，基本上用不了"
 
 ## User Scenarios & Testing

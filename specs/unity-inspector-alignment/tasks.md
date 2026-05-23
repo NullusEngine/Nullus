@@ -1,6 +1,6 @@
 # Tasks: Unity Inspector Alignment
 
-**Input**: Design documents from `specs/unity-inspector-alignment/`  
+**Input**: Design documents from `specs/unity-inspector-alignment/`
 **Prerequisites**: `plan.md`, `spec.md`
 
 **Tests**: Required. Behavior changes must use test-first where stable entrypoints exist.

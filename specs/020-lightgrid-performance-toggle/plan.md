@@ -9,14 +9,14 @@ Add a project-level LightGrid rendering toggle exposed through Editor Project Se
 
 ## Technical Context
 
-**Language/Version**: C++20, CMake/Visual Studio 2022 on Windows for current validation  
-**Primary Dependencies**: Nullus Runtime Rendering, Engine scene renderers, Editor settings reflection/persistence, GoogleTest  
-**Storage**: Existing editor settings JSON under `UserSettings/editor-settings.json`  
-**Testing**: `NullusUnitTests` targeted rendering/settings tests  
-**Target Platform**: Windows DX12 validation for this change; logic remains backend-neutral where possible  
-**Project Type**: Desktop engine/editor runtime  
-**Performance Goals**: Avoid duplicate LightGrid preparation in a single threaded scene frame; allow users to bypass LightGrid prep entirely when disabled  
-**Constraints**: Preserve existing rendering by default; do not hand-edit generated files under `Gen/`; do not claim cross-backend visual correctness without backend evidence  
+**Language/Version**: C++20, CMake/Visual Studio 2022 on Windows for current validation
+**Primary Dependencies**: Nullus Runtime Rendering, Engine scene renderers, Editor settings reflection/persistence, GoogleTest
+**Storage**: Existing editor settings JSON under `UserSettings/editor-settings.json`
+**Testing**: `NullusUnitTests` targeted rendering/settings tests
+**Target Platform**: Windows DX12 validation for this change; logic remains backend-neutral where possible
+**Project Type**: Desktop engine/editor runtime
+**Performance Goals**: Avoid duplicate LightGrid preparation in a single threaded scene frame; allow users to bypass LightGrid prep entirely when disabled
+**Constraints**: Preserve existing rendering by default; do not hand-edit generated files under `Gen/`; do not claim cross-backend visual correctness without backend evidence
 **Scale/Scope**: Runtime render settings, forward/deferred scene renderers, editor settings UI/persistence, targeted unit tests
 
 ## Constitution Check

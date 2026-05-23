@@ -1,6 +1,6 @@
 # Implementation Plan: Merge Mesh And Material Renderer
 
-**Branch**: `merge-mesh-material-renderer` | **Date**: 2026-05-22 | **Spec**: [spec.md](spec.md)  
+**Branch**: `merge-mesh-material-renderer` | **Date**: 2026-05-22 | **Spec**: [spec.md](spec.md)
 **Input**: Feature specification from `specs/merge-mesh-material-renderer/spec.md`
 
 ## Summary
@@ -9,14 +9,14 @@ Destructively merge `MaterialRenderer` into `MeshRenderer` so renderable mesh ob
 
 ## Technical Context
 
-**Language/Version**: C++20 runtime/editor code; C#/.NET 8 MetaParser generator already present  
-**Primary Dependencies**: Nullus component system, reflection runtime, MetaParser generated registration, object graph serialization, render scene cache, editor asset workflows  
-**Storage**: Object graph/prefab serialized component records and material asset references  
-**Testing**: GoogleTest via `NullusUnitTests`; `ReflectionTest` smoke validation; source-contract grep where useful  
-**Target Platform**: Primary local validation on Windows; rendering behavior remains backend-agnostic  
-**Project Type**: Native engine/runtime/editor component model refactor  
-**Performance Goals**: Preserve render-scene material resolution cost; avoid additional per-frame component lookups compared with current render scene synchronization  
-**Constraints**: Do not hand-edit `Runtime/*/Gen/` or `Project/*/Gen/`; no silent old-asset compatibility loader; avoid reverting unrelated dirty workspace changes; keep `MeshFilter` separate  
+**Language/Version**: C++20 runtime/editor code; C#/.NET 8 MetaParser generator already present
+**Primary Dependencies**: Nullus component system, reflection runtime, MetaParser generated registration, object graph serialization, render scene cache, editor asset workflows
+**Storage**: Object graph/prefab serialized component records and material asset references
+**Testing**: GoogleTest via `NullusUnitTests`; `ReflectionTest` smoke validation; source-contract grep where useful
+**Target Platform**: Primary local validation on Windows; rendering behavior remains backend-agnostic
+**Project Type**: Native engine/runtime/editor component model refactor
+**Performance Goals**: Preserve render-scene material resolution cost; avoid additional per-frame component lookups compared with current render scene synchronization
+**Constraints**: Do not hand-edit `Runtime/*/Gen/` or `Project/*/Gen/`; no silent old-asset compatibility loader; avoid reverting unrelated dirty workspace changes; keep `MeshFilter` separate
 **Scale/Scope**: Runtime components/rendering/serialization/assets/editor/tests for the `MeshRenderer` and `MaterialRenderer` merge
 
 ## Constitution Check

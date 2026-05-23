@@ -1,8 +1,8 @@
 # Feature Specification: Object Graph Serialization
 
-**Feature Branch**: `018-object-serialization`  
-**Created**: 2026-05-08  
-**Status**: Draft  
+**Feature Branch**: `018-object-serialization`
+**Created**: 2026-05-08
+**Status**: Draft
 **Input**: User description: "Design and implement a modern Object Graph serialization system for Nullus with a shared GUID system, Scene inheriting meta Object, no worldID, no GameObject constructor actor id or playing reference, scene save/load, prefab assets, owned/ref/asset references, deterministic text archives, structured diagnostics, and no legacy GameobjectSerialize adapter."
 
 ## User Scenarios & Testing *(mandatory)*

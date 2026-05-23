@@ -57,4 +57,3 @@ struct hash<NLS::Core::Assets::AssetId>
     }
 };
 }
-

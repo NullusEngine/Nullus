@@ -20,6 +20,13 @@ std::filesystem::path MakeWatcherTestRoot()
     return root;
 }
 
+std::filesystem::path NormalizePathForComparison(const std::filesystem::path& path)
+{
+    std::error_code error;
+    const auto canonical = std::filesystem::weakly_canonical(path, error);
+    return error ? path.lexically_normal() : canonical.lexically_normal();
+}
+
 void WriteText(const std::filesystem::path& path, const std::string& text)
 {
     std::filesystem::create_directories(path.parent_path());
@@ -46,16 +53,16 @@ std::vector<std::filesystem::path> WaitForChangedPaths(
     const std::filesystem::path& expectedPath)
 {
     std::vector<std::filesystem::path> collected;
+    const auto expected = NormalizePathForComparison(expectedPath);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
     while (std::chrono::steady_clock::now() < deadline)
     {
         auto paths = watcher.ConsumeChangedPaths();
         collected.insert(collected.end(), paths.begin(), paths.end());
 
-        const auto expected = expectedPath.lexically_normal();
         for (const auto& path : collected)
         {
-            if (path.lexically_normal() == expected)
+            if (NormalizePathForComparison(path) == expected)
                 return collected;
         }
 
@@ -69,14 +76,14 @@ bool ContainsExpectedOrParentPath(
     const std::vector<std::filesystem::path>& paths,
     const std::filesystem::path& expectedPath)
 {
-    const auto expected = expectedPath.lexically_normal();
-    const auto parent = expected.parent_path().lexically_normal();
+    const auto expected = NormalizePathForComparison(expectedPath);
+    const auto parent = NormalizePathForComparison(expectedPath.parent_path());
     return std::any_of(
         paths.begin(),
         paths.end(),
         [&expected, &parent](const std::filesystem::path& path)
         {
-            const auto normalized = path.lexically_normal();
+            const auto normalized = NormalizePathForComparison(path);
             return normalized == expected || normalized == parent;
         });
 }

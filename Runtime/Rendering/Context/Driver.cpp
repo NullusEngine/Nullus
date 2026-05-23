@@ -467,6 +467,18 @@ namespace
         return (static_cast<uint32_t>(accessMask) & kWriteAccessMask) != 0u;
     }
 
+    Render::RHI::ResourceState AddReadStatesImpliedByAccess(
+        Render::RHI::ResourceState state,
+        const Render::RHI::AccessMask accessMask)
+    {
+        const auto access = static_cast<uint32_t>(accessMask);
+        if ((access & static_cast<uint32_t>(Render::RHI::AccessMask::ShaderRead)) != 0u)
+            state = state | Render::RHI::ResourceState::ShaderRead;
+        if ((access & static_cast<uint32_t>(Render::RHI::AccessMask::DepthStencilRead)) != 0u)
+            state = state | Render::RHI::ResourceState::DepthRead;
+        return state;
+    }
+
     const BufferResourceAccess* FindSourceBufferWriteAccess(
         const RenderPassCommandInput& input,
         const std::shared_ptr<Render::RHI::RHIBuffer>& buffer)
@@ -686,19 +698,19 @@ namespace
             sourceInput,
             targetAccess.texture,
             targetAccess.subresourceRange);
-        const auto inferredAttachmentEndTransition =
-            exportedTransition == nullptr
-                ? BuildAttachmentEndVisibilityTransition(
-                    sourceInput,
-                    targetAccess.texture,
-                    targetAccess.subresourceRange)
-                : std::nullopt;
-        // Exported texture transitions describe the source pass final visible state.
-        // Dependency visibility starts from that completed state, not from the original write state.
+        const auto attachmentEndTransition =
+            BuildAttachmentEndVisibilityTransition(
+                sourceInput,
+                targetAccess.texture,
+                targetAccess.subresourceRange);
         const auto* completedSourceTransition =
             exportedTransition != nullptr
                 ? exportedTransition
-                : (inferredAttachmentEndTransition.has_value() ? &inferredAttachmentEndTransition.value() : nullptr);
+                : (attachmentEndTransition.has_value() ? &attachmentEndTransition.value() : nullptr);
+        const auto* attachmentCompletedTransition =
+            exportedTransition == nullptr && attachmentEndTransition.has_value()
+                ? &attachmentEndTransition.value()
+                : nullptr;
         if (sourceWriteAccess == nullptr && completedSourceTransition == nullptr)
             return std::nullopt;
 
@@ -707,7 +719,12 @@ namespace
         transition.subresourceRange = !Render::RHI::IsEmptySubresourceRange(targetAccess.subresourceRange)
             ? targetAccess.subresourceRange
             : (completedSourceTransition != nullptr ? completedSourceTransition->subresourceRange : Render::RHI::RHISubresourceRange{});
-        transition.before = Render::RHI::ResourceState::Unknown;
+        // Preserve inferred sampled attachment end state when no explicit export exists.
+        transition.before = attachmentCompletedTransition != nullptr
+            ? attachmentCompletedTransition->after
+            : (completedSourceTransition != nullptr
+                ? AddReadStatesImpliedByAccess(completedSourceTransition->after, completedSourceTransition->destinationAccess)
+                : (sourceWriteAccess != nullptr ? sourceWriteAccess->state : Render::RHI::ResourceState::Unknown));
         transition.after = targetAccess.state != Render::RHI::ResourceState::Unknown
             ? targetAccess.state
             : (completedSourceTransition != nullptr ? completedSourceTransition->after : Render::RHI::ResourceState::Unknown);

@@ -7,6 +7,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -20,6 +21,15 @@
 
 namespace
 {
+    std::filesystem::path NormalizeComparablePath(const std::filesystem::path& path)
+    {
+        std::error_code error;
+        auto normalized = std::filesystem::weakly_canonical(path, error);
+        if (error)
+            normalized = path.lexically_normal();
+        return normalized;
+    }
+
     class ConcurrentShaderCompilerBackend final : public NLS::Render::ShaderCompiler::IShaderCompilerBackend
     {
     public:
@@ -676,8 +686,8 @@ TEST(ShaderCompilerTests, ShaderLoaderCacheDatabasePathPrefersConfiguredProjectL
         projectAssets);
 
     EXPECT_EQ(
-        std::filesystem::path(databasePath).lexically_normal(),
-        (root / "Project" / "Library" / "ShaderCache" / "ShaderCache.tsv").lexically_normal());
+        NormalizeComparablePath(databasePath),
+        NormalizeComparablePath(root / "Project" / "Library" / "ShaderCache" / "ShaderCache.tsv"));
 
     std::filesystem::remove_all(root);
 }
@@ -720,8 +730,8 @@ TEST(ShaderCompilerTests, ShaderLoaderCacheDatabasePathKeepsDirectNonAppAssetFal
         projectShader.string());
 
     EXPECT_EQ(
-        std::filesystem::path(databasePath).lexically_normal(),
-        (root / "StandaloneProject" / "Library" / "ShaderCache" / "ShaderCache.tsv").lexically_normal());
+        NormalizeComparablePath(databasePath),
+        NormalizeComparablePath(root / "StandaloneProject" / "Library" / "ShaderCache" / "ShaderCache.tsv"));
 
     std::filesystem::remove_all(root);
 }
@@ -736,8 +746,8 @@ TEST(ShaderCompilerTests, ShaderLoaderCacheDatabasePathKeepsProjectNamedAppFallb
         projectShader.string());
 
     EXPECT_EQ(
-        std::filesystem::path(databasePath).lexically_normal(),
-        (root / "App" / "Library" / "ShaderCache" / "ShaderCache.tsv").lexically_normal());
+        NormalizeComparablePath(databasePath),
+        NormalizeComparablePath(root / "App" / "Library" / "ShaderCache" / "ShaderCache.tsv"));
 
     std::filesystem::remove_all(root);
 }
@@ -754,8 +764,8 @@ TEST(ShaderCompilerTests, ShaderLoaderDefaultProjectAssetsRootRoutesDirectEngine
         engineShader.string());
 
     EXPECT_EQ(
-        std::filesystem::path(databasePath).lexically_normal(),
-        (root / "Project" / "Library" / "ShaderCache" / "ShaderCache.tsv").lexically_normal());
+        NormalizeComparablePath(databasePath),
+        NormalizeComparablePath(root / "Project" / "Library" / "ShaderCache" / "ShaderCache.tsv"));
 
     std::filesystem::remove_all(root);
 }
@@ -773,8 +783,8 @@ TEST(ShaderCompilerTests, ShaderManagerProvideAssetPathsConfiguresShaderLoaderDe
         engineShader.string());
 
     EXPECT_EQ(
-        std::filesystem::path(databasePath).lexically_normal(),
-        (root / "Project" / "Library" / "ShaderCache" / "ShaderCache.tsv").lexically_normal());
+        NormalizeComparablePath(databasePath),
+        NormalizeComparablePath(root / "Project" / "Library" / "ShaderCache" / "ShaderCache.tsv"));
 
     std::filesystem::remove_all(root);
 }

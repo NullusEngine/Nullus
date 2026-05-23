@@ -1156,7 +1156,7 @@ void DrawVectorArrayElement(
         0.01f,
         "",
         NLS::UI::GUIDrawer::GetFormat<float>());
-    auto& dispatcher = widget.AddPlugin<NLS::UI::DataDispatcher<std::array<float, Size>>>();
+    auto& dispatcher = widget.template AddPlugin<NLS::UI::DataDispatcher<std::array<float, Size>>>();
     dispatcher.RegisterGatherer([p_state, p_index, p_toArray]() mutable
     {
         return p_toArray(GetArrayValueOrDefault<TValue>(p_state, p_index));

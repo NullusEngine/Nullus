@@ -1,9 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
-#include <atomic>
 #include <system_error>
 #include <thread>
 
@@ -102,7 +103,8 @@ std::string TestFileStamp(const std::filesystem::path& path)
     if (error)
         return {};
 
-    return std::to_string(size) + ":" + std::to_string(writeTime.time_since_epoch().count());
+    const auto writeTimeTicks = static_cast<std::intmax_t>(writeTime.time_since_epoch().count());
+    return std::to_string(size) + ":" + std::to_string(writeTimeTicks);
 }
 
 NLS::Render::Context::Driver& EnsureGameObjectAssetImportTestDriver()

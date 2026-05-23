@@ -1,5 +1,9 @@
 #include <gtest/gtest.h>
 
+#ifndef NLS_HAS_AUTODESK_FBX_SDK
+#define NLS_HAS_AUTODESK_FBX_SDK 0
+#endif
+
 #include "Assets/ArtifactDatabase.h"
 #include "Assets/ArtifactManifest.h"
 #include "Assets/AssetDatabaseFacade.h"
@@ -1348,6 +1352,10 @@ f 1/1/1 2/2/1 3/3/1
 
 TEST(AssetDatabaseFacadeTests, ImportedAssimpModelManifestRecordsParserTextureDependencies)
 {
+#if !NLS_HAS_AUTODESK_FBX_SDK
+    GTEST_SKIP() << "FBX import success requires Autodesk FBX SDK.";
+#endif
+
     using namespace NLS::Editor::Assets;
 
     EnsureAssetDatabaseFacadeTestDriver();

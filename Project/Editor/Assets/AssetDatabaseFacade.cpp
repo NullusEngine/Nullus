@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <fstream>
 #include <iomanip>
 #include <iterator>
@@ -89,7 +90,8 @@ std::string FileStamp(const std::filesystem::path& path)
     if (error)
         return {};
 
-    return std::to_string(size) + ":" + std::to_string(writeTime.time_since_epoch().count());
+    const auto writeTimeTicks = static_cast<std::intmax_t>(writeTime.time_since_epoch().count());
+    return std::to_string(size) + ":" + std::to_string(writeTimeTicks);
 }
 
 std::string ParentEditorAssetPath(const std::string& assetPath)

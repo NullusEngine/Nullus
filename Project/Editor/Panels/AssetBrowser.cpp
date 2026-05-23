@@ -1,6 +1,7 @@
 #include <fstream>
 #include <iostream>
 #include <chrono>
+#include <cstdint>
 #include <future>
 #include <optional>
 #include <system_error>
@@ -112,7 +113,8 @@ std::string AssetBrowserFileStamp(const std::filesystem::path& path)
 	if (error)
 		return {};
 
-	return std::to_string(size) + ":" + std::to_string(writeTime.time_since_epoch().count());
+	const auto writeTimeTicks = static_cast<std::intmax_t>(writeTime.time_since_epoch().count());
+	return std::to_string(size) + ":" + std::to_string(writeTimeTicks);
 }
 
 bool ManifestDependencyStampsAreCurrent(

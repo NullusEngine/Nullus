@@ -2,11 +2,14 @@
 #include "Rendering/ShaderCompiler/ShaderCompiler.h"
 
 #include <gtest/gtest.h>
+#include <Json/json.hpp>
 
+#include <algorithm>
 #include <array>
 #include <filesystem>
 #include <string>
 #include <fstream>
+#include <stdexcept>
 #include <vector>
 
 namespace
@@ -121,12 +124,19 @@ bool RunMetaParser(
     return result.status == NLS::Render::ShaderCompiler::ShaderProcessStatus::Succeeded;
 }
 
+std::string ReadOptionalText(const std::filesystem::path& path)
+{
+    if (!std::filesystem::exists(path))
+        return {};
+    return ReadAllText(path);
+}
+
 void ExpectMetaParserSuccess(
     const std::filesystem::path& paramsPath,
     const std::filesystem::path& outputPath)
 {
     ASSERT_FALSE(ResolveMetaParserExecutable().empty());
-    EXPECT_TRUE(RunMetaParser(paramsPath, outputPath));
+    EXPECT_TRUE(RunMetaParser(paramsPath, outputPath)) << ReadOptionalText(outputPath);
 }
 
 void ExpectMetaParserFailure(
@@ -134,10 +144,75 @@ void ExpectMetaParserFailure(
     const std::filesystem::path& outputPath)
 {
     ASSERT_FALSE(ResolveMetaParserExecutable().empty());
-    EXPECT_FALSE(RunMetaParser(paramsPath, outputPath));
+    EXPECT_FALSE(RunMetaParser(paramsPath, outputPath)) << ReadOptionalText(outputPath);
 }
 
-void WriteBasicMetaParserConfig(
+std::filesystem::path ResolveBaseMetaParserConfigPath()
+{
+    return std::filesystem::path(NLS_BUILD_DIR) / "Runtime" / "Base" / "NLS_Base.precompile.json";
+}
+
+nlohmann::json LoadBaseMetaParserConfig()
+{
+    const auto configPath = ResolveBaseMetaParserConfigPath();
+    if (!std::filesystem::exists(configPath))
+        throw std::runtime_error(
+            "Missing MetaParser base precompile config: " + configPath.string() +
+            ". Build the NLS_Base target before running MetaParser fixture tests.");
+
+    auto config = nlohmann::json::parse(ReadAllText(configPath), nullptr, false);
+    if (config.is_discarded())
+        throw std::runtime_error("Failed to parse " + configPath.string());
+    return config;
+}
+
+void AddUniqueString(nlohmann::json& values, const std::string& value)
+{
+    if (value.empty())
+        return;
+
+    for (const auto& existing : values)
+    {
+        if (existing.is_string() && existing.get<std::string>() == value)
+            return;
+    }
+
+    values.push_back(value);
+}
+
+nlohmann::json MakeBasicMetaParserConfig(
+    const std::filesystem::path& tempRoot,
+    const std::filesystem::path& runtimeDir,
+    const std::filesystem::path& outputDir,
+    const std::filesystem::path& headerPath,
+    const std::vector<std::filesystem::path>& includeDirs)
+{
+    auto config = LoadBaseMetaParserConfig();
+    config["RootDir"] = tempRoot.generic_string();
+    config["SourceDir"] = runtimeDir.generic_string();
+    config["TargetName"] = "Fixture";
+    config["ModuleName"] = "Fixture";
+    config["OutputDir"] = outputDir.generic_string();
+    config["Headers"] = nlohmann::json::array({headerPath.generic_string()});
+
+    auto mergedIncludeDirs = nlohmann::json::array();
+    for (const auto& includeDir : includeDirs)
+        AddUniqueString(mergedIncludeDirs, includeDir.generic_string());
+    for (const auto& includeDir : config.value("IncludeDirs", nlohmann::json::array()))
+    {
+        if (includeDir.is_string())
+            AddUniqueString(mergedIncludeDirs, includeDir.get<std::string>());
+    }
+    config["IncludeDirs"] = std::move(mergedIncludeDirs);
+
+    auto defines = config.value("Defines", nlohmann::json::array());
+    AddUniqueString(defines, "__REFLECTION_PARSER__");
+    config["Defines"] = std::move(defines);
+
+    return config;
+}
+
+void WriteMetaParserConfig(
     const std::filesystem::path& paramsPath,
     const std::filesystem::path& tempRoot,
     const std::filesystem::path& runtimeDir,
@@ -145,27 +220,8 @@ void WriteBasicMetaParserConfig(
     const std::filesystem::path& headerPath,
     const std::vector<std::filesystem::path>& includeDirs)
 {
-    std::ofstream config(paramsPath);
-    config
-        << "{\n"
-        << "  \"RootDir\": \"" << tempRoot.generic_string() << "\",\n"
-        << "  \"SourceDir\": \"" << runtimeDir.generic_string() << "\",\n"
-        << "  \"TargetName\": \"Fixture\",\n"
-        << "  \"ModuleName\": \"Fixture\",\n"
-        << "  \"OutputDir\": \"" << outputDir.generic_string() << "\",\n"
-        << "  \"Headers\": [\"" << headerPath.generic_string() << "\"],\n"
-        << "  \"IncludeDirs\": [";
-    for (size_t index = 0u; index < includeDirs.size(); ++index)
-    {
-        if (index != 0u)
-            config << ", ";
-        config << "\"" << includeDirs[index].generic_string() << "\"";
-    }
-    config
-        << "],\n"
-        << "  \"Defines\": [\"__REFLECTION_PARSER__\"],\n"
-        << "  \"CompilerOptions\": [\"-std=c++20\"]\n"
-        << "}\n";
+    std::ofstream config(paramsPath, std::ios::binary | std::ios::trunc);
+    config << MakeBasicMetaParserConfig(tempRoot, runtimeDir, outputDir, headerPath, includeDirs).dump(2) << "\n";
 }
 }
 
@@ -184,6 +240,39 @@ TEST(MetaParserGenerationModuleTests, MetaParserFixtureExecutionAvoidsShellComma
     ExpectContains(helperSource, "ExecuteShaderCompilerProcess(");
     ExpectNotContains(helperSource, "std::system(");
     ExpectNotContains(helperSource, "cmd /S /C");
+}
+
+TEST(MetaParserGenerationModuleTests, FixturePrecompileConfigInheritsBuildCompilerEnvironment)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserConfigInheritanceFixture";
+    const auto runtimeDir = tempRoot / "Runtime" / "Fixture";
+    const auto outputDir = tempRoot / "Gen";
+    const auto headerPath = runtimeDir / "Fixture.h";
+
+    const auto baseConfig = LoadBaseMetaParserConfig();
+    const auto fixtureConfig = MakeBasicMetaParserConfig(
+        tempRoot,
+        runtimeDir,
+        outputDir,
+        headerPath,
+        {
+            runtimeDir,
+            root / "Runtime" / "Base"
+        });
+
+    EXPECT_EQ(fixtureConfig["CompilerPath"], baseConfig["CompilerPath"]);
+    EXPECT_EQ(fixtureConfig["CompilerId"], baseConfig["CompilerId"]);
+    EXPECT_EQ(fixtureConfig["CompilerTarget"], baseConfig["CompilerTarget"]);
+    EXPECT_EQ(fixtureConfig["ResourceDir"], baseConfig["ResourceDir"]);
+    EXPECT_EQ(fixtureConfig["Sysroot"], baseConfig["Sysroot"]);
+    EXPECT_EQ(fixtureConfig["SystemIncludeDirs"], baseConfig["SystemIncludeDirs"]);
+    EXPECT_NE(
+        std::find(
+            fixtureConfig["IncludeDirs"].begin(),
+            fixtureConfig["IncludeDirs"].end(),
+            runtimeDir.generic_string()),
+        fixtureConfig["IncludeDirs"].end());
 }
 
 TEST(MetaParserGenerationModuleTests, GeneratesModuleSpecificRegistrationEntrypoints)
@@ -384,24 +473,16 @@ TEST(MetaParserGenerationModuleTests, MetaParserKeepsCrossHeaderReflectedBasesAn
     }
 
     const auto paramsPath = tempRoot / "DerivedWithInterface.precompile.json";
-    {
-        std::ofstream config(paramsPath);
-        config
-            << "{\n"
-            << "  \"RootDir\": \"" << tempRoot.generic_string() << "\",\n"
-            << "  \"SourceDir\": \"" << runtimeDir.generic_string() << "\",\n"
-            << "  \"TargetName\": \"Fixture\",\n"
-            << "  \"ModuleName\": \"Fixture\",\n"
-            << "  \"OutputDir\": \"" << outputDir.generic_string() << "\",\n"
-            << "  \"Headers\": [\"" << derivedHeaderPath.generic_string() << "\"],\n"
-            << "  \"IncludeDirs\": [\n"
-            << "    \"" << runtimeDir.generic_string() << "\",\n"
-            << "    \"" << (root / "Runtime" / "Base").generic_string() << "\"\n"
-            << "  ],\n"
-            << "  \"Defines\": [\"__REFLECTION_PARSER__\"],\n"
-            << "  \"CompilerOptions\": [\"-std=c++20\"]\n"
-            << "}\n";
-    }
+    WriteMetaParserConfig(
+        paramsPath,
+        tempRoot,
+        runtimeDir,
+        outputDir,
+        derivedHeaderPath,
+        {
+            runtimeDir,
+            root / "Runtime" / "Base"
+        });
 
     const auto outputPath = tempRoot / "metaparser.out.txt";
     ExpectMetaParserSuccess(paramsPath, outputPath);
@@ -470,25 +551,17 @@ TEST(MetaParserGenerationModuleTests, MetaParserCreatesTargetGeneratedHeaderStub
     }
 
     const auto paramsPath = tempRoot / "DerivedWithInterface.precompile.json";
-    {
-        std::ofstream config(paramsPath);
-        config
-            << "{\n"
-            << "  \"RootDir\": \"" << tempRoot.generic_string() << "\",\n"
-            << "  \"SourceDir\": \"" << runtimeDir.generic_string() << "\",\n"
-            << "  \"TargetName\": \"Fixture\",\n"
-            << "  \"ModuleName\": \"Fixture\",\n"
-            << "  \"OutputDir\": \"" << outputDir.generic_string() << "\",\n"
-            << "  \"Headers\": [\"" << derivedHeaderPath.generic_string() << "\"],\n"
-            << "  \"IncludeDirs\": [\n"
-            << "    \"" << runtimeDir.generic_string() << "\",\n"
-            << "    \"" << outputDir.generic_string() << "\",\n"
-            << "    \"" << (root / "Runtime" / "Base").generic_string() << "\"\n"
-            << "  ],\n"
-            << "  \"Defines\": [\"__REFLECTION_PARSER__\"],\n"
-            << "  \"CompilerOptions\": [\"-std=c++20\"]\n"
-            << "}\n";
-    }
+    WriteMetaParserConfig(
+        paramsPath,
+        tempRoot,
+        runtimeDir,
+        outputDir,
+        derivedHeaderPath,
+        {
+            runtimeDir,
+            outputDir,
+            root / "Runtime" / "Base"
+        });
 
     const auto outputPath = tempRoot / "metaparser.out.txt";
     ExpectMetaParserSuccess(paramsPath, outputPath);
@@ -572,21 +645,15 @@ TEST(MetaParserGenerationModuleTests, ExternalReflectionTypeDiscoveryHandlesComm
     }
 
     const auto paramsPath = tempRoot / "Fixture.precompile.json";
-    {
-        std::ofstream config(paramsPath);
-        config
-            << "{\n"
-            << "  \"RootDir\": \"" << tempRoot.generic_string() << "\",\n"
-            << "  \"SourceDir\": \"" << (tempRoot / "Runtime" / "Fixture").generic_string() << "\",\n"
-            << "  \"TargetName\": \"Fixture\",\n"
-            << "  \"ModuleName\": \"Fixture\",\n"
-            << "  \"OutputDir\": \"" << outputDir.generic_string() << "\",\n"
-            << "  \"Headers\": [\"" << headerPath.generic_string() << "\"],\n"
-            << "  \"IncludeDirs\": [\"" << (root / "Runtime" / "Base").generic_string() << "\"],\n"
-            << "  \"Defines\": [\"__REFLECTION_PARSER__\"],\n"
-            << "  \"CompilerOptions\": [\"-std=c++20\"]\n"
-            << "}\n";
-    }
+    WriteMetaParserConfig(
+        paramsPath,
+        tempRoot,
+        runtimeDir,
+        outputDir,
+        headerPath,
+        {
+            root / "Runtime" / "Base"
+        });
 
     const auto outputPath = tempRoot / "metaparser.out.txt";
     ExpectMetaParserSuccess(paramsPath, outputPath);
@@ -629,25 +696,17 @@ TEST(MetaParserGenerationModuleTests, RejectsPPtrFieldsWhoseTargetsAreNotSupport
     }
 
     const auto paramsPath = tempRoot / "InvalidPPtrFixture.precompile.json";
-    {
-        std::ofstream config(paramsPath);
-        config
-            << "{\n"
-            << "  \"RootDir\": \"" << tempRoot.generic_string() << "\",\n"
-            << "  \"SourceDir\": \"" << (tempRoot / "Runtime" / "Fixture").generic_string() << "\",\n"
-            << "  \"TargetName\": \"Fixture\",\n"
-            << "  \"ModuleName\": \"Fixture\",\n"
-            << "  \"OutputDir\": \"" << outputDir.generic_string() << "\",\n"
-            << "  \"Headers\": [\"" << headerPath.generic_string() << "\"],\n"
-            << "  \"IncludeDirs\": [\n"
-            << "    \"" << (root / "Runtime").generic_string() << "\",\n"
-            << "    \"" << (root / "Runtime" / "Base").generic_string() << "\",\n"
-            << "    \"" << (root / "Runtime" / "Engine").generic_string() << "\"\n"
-            << "  ],\n"
-            << "  \"Defines\": [\"__REFLECTION_PARSER__\"],\n"
-            << "  \"CompilerOptions\": [\"-std=c++20\"]\n"
-            << "}\n";
-    }
+    WriteMetaParserConfig(
+        paramsPath,
+        tempRoot,
+        runtimeDir,
+        outputDir,
+        headerPath,
+        {
+            root / "Runtime",
+            root / "Runtime" / "Base",
+            root / "Runtime" / "Engine"
+        });
 
     const auto outputPath = tempRoot / "metaparser.out.txt";
     ExpectMetaParserFailure(paramsPath, outputPath);
@@ -703,7 +762,7 @@ TEST(MetaParserGenerationModuleTests, PPtrTargetMacroParsingFailsLoudlyAndAccept
     }
 
     const auto paramsPath = tempRoot / "WrappedPPtrFixture.precompile.json";
-    WriteBasicMetaParserConfig(
+    WriteMetaParserConfig(
         paramsPath,
         tempRoot,
         runtimeDir,
@@ -770,21 +829,15 @@ TEST(MetaParserGenerationModuleTests, GeneratesStdVectorAndArrayReflectedValueFi
     }
 
     const auto paramsPath = tempRoot / "VectorArrayFixture.precompile.json";
-    {
-        std::ofstream config(paramsPath);
-        config
-            << "{\n"
-            << "  \"RootDir\": \"" << tempRoot.generic_string() << "\",\n"
-            << "  \"SourceDir\": \"" << (tempRoot / "Runtime" / "Fixture").generic_string() << "\",\n"
-            << "  \"TargetName\": \"Fixture\",\n"
-            << "  \"ModuleName\": \"Fixture\",\n"
-            << "  \"OutputDir\": \"" << outputDir.generic_string() << "\",\n"
-            << "  \"Headers\": [\"" << headerPath.generic_string() << "\"],\n"
-            << "  \"IncludeDirs\": [\"" << (root / "Runtime" / "Base").generic_string() << "\"],\n"
-            << "  \"Defines\": [\"__REFLECTION_PARSER__\"],\n"
-            << "  \"CompilerOptions\": [\"-std=c++20\"]\n"
-            << "}\n";
-    }
+    WriteMetaParserConfig(
+        paramsPath,
+        tempRoot,
+        runtimeDir,
+        outputDir,
+        headerPath,
+        {
+            root / "Runtime" / "Base"
+        });
 
     const auto outputPath = tempRoot / "metaparser.out.txt";
     ExpectMetaParserSuccess(paramsPath, outputPath);
@@ -838,21 +891,15 @@ TEST(MetaParserGenerationModuleTests, GeneratesRangeMetadataAndDefaultPrivateFie
     }
 
     const auto paramsPath = tempRoot / "RangePrivateFixture.precompile.json";
-    {
-        std::ofstream config(paramsPath);
-        config
-            << "{\n"
-            << "  \"RootDir\": \"" << tempRoot.generic_string() << "\",\n"
-            << "  \"SourceDir\": \"" << (tempRoot / "Runtime" / "Fixture").generic_string() << "\",\n"
-            << "  \"TargetName\": \"Fixture\",\n"
-            << "  \"ModuleName\": \"Fixture\",\n"
-            << "  \"OutputDir\": \"" << outputDir.generic_string() << "\",\n"
-            << "  \"Headers\": [\"" << headerPath.generic_string() << "\"],\n"
-            << "  \"IncludeDirs\": [\"" << (root / "Runtime" / "Base").generic_string() << "\"],\n"
-            << "  \"Defines\": [\"__REFLECTION_PARSER__\"],\n"
-            << "  \"CompilerOptions\": [\"-std=c++20\"]\n"
-            << "}\n";
-    }
+    WriteMetaParserConfig(
+        paramsPath,
+        tempRoot,
+        runtimeDir,
+        outputDir,
+        headerPath,
+        {
+            root / "Runtime" / "Base"
+        });
 
     const auto outputPath = tempRoot / "metaparser.out.txt";
     ExpectMetaParserSuccess(paramsPath, outputPath);
@@ -900,21 +947,15 @@ TEST(MetaParserGenerationModuleTests, RejectsPrivateAccessorPropertiesBeforeGene
     }
 
     const auto paramsPath = tempRoot / "PrivateAccessorFixture.precompile.json";
-    {
-        std::ofstream config(paramsPath);
-        config
-            << "{\n"
-            << "  \"RootDir\": \"" << tempRoot.generic_string() << "\",\n"
-            << "  \"SourceDir\": \"" << (tempRoot / "Runtime" / "Fixture").generic_string() << "\",\n"
-            << "  \"TargetName\": \"Fixture\",\n"
-            << "  \"ModuleName\": \"Fixture\",\n"
-            << "  \"OutputDir\": \"" << outputDir.generic_string() << "\",\n"
-            << "  \"Headers\": [\"" << headerPath.generic_string() << "\"],\n"
-            << "  \"IncludeDirs\": [\"" << (root / "Runtime" / "Base").generic_string() << "\"],\n"
-            << "  \"Defines\": [\"__REFLECTION_PARSER__\"],\n"
-            << "  \"CompilerOptions\": [\"-std=c++20\"]\n"
-            << "}\n";
-    }
+    WriteMetaParserConfig(
+        paramsPath,
+        tempRoot,
+        runtimeDir,
+        outputDir,
+        headerPath,
+        {
+            root / "Runtime" / "Base"
+        });
 
     const auto outputPath = tempRoot / "metaparser.out.txt";
     ExpectMetaParserFailure(paramsPath, outputPath);
@@ -950,21 +991,15 @@ TEST(MetaParserGenerationModuleTests, RejectsMalformedRangeMetadataBeforeGenerat
     }
 
     const auto paramsPath = tempRoot / "MalformedRangeFixture.precompile.json";
-    {
-        std::ofstream config(paramsPath);
-        config
-            << "{\n"
-            << "  \"RootDir\": \"" << tempRoot.generic_string() << "\",\n"
-            << "  \"SourceDir\": \"" << (tempRoot / "Runtime" / "Fixture").generic_string() << "\",\n"
-            << "  \"TargetName\": \"Fixture\",\n"
-            << "  \"ModuleName\": \"Fixture\",\n"
-            << "  \"OutputDir\": \"" << outputDir.generic_string() << "\",\n"
-            << "  \"Headers\": [\"" << headerPath.generic_string() << "\"],\n"
-            << "  \"IncludeDirs\": [\"" << (root / "Runtime" / "Base").generic_string() << "\"],\n"
-            << "  \"Defines\": [\"__REFLECTION_PARSER__\"],\n"
-            << "  \"CompilerOptions\": [\"-std=c++20\"]\n"
-            << "}\n";
-    }
+    WriteMetaParserConfig(
+        paramsPath,
+        tempRoot,
+        runtimeDir,
+        outputDir,
+        headerPath,
+        {
+            root / "Runtime" / "Base"
+        });
 
     const auto outputPath = tempRoot / "metaparser.out.txt";
     ExpectMetaParserFailure(paramsPath, outputPath);
@@ -1000,21 +1035,15 @@ TEST(MetaParserGenerationModuleTests, RejectsUnknownPropertyMetadataBeforeGenera
     }
 
     const auto paramsPath = tempRoot / "UnknownPropertyMetaFixture.precompile.json";
-    {
-        std::ofstream config(paramsPath);
-        config
-            << "{\n"
-            << "  \"RootDir\": \"" << tempRoot.generic_string() << "\",\n"
-            << "  \"SourceDir\": \"" << (tempRoot / "Runtime" / "Fixture").generic_string() << "\",\n"
-            << "  \"TargetName\": \"Fixture\",\n"
-            << "  \"ModuleName\": \"Fixture\",\n"
-            << "  \"OutputDir\": \"" << outputDir.generic_string() << "\",\n"
-            << "  \"Headers\": [\"" << headerPath.generic_string() << "\"],\n"
-            << "  \"IncludeDirs\": [\"" << (root / "Runtime" / "Base").generic_string() << "\"],\n"
-            << "  \"Defines\": [\"__REFLECTION_PARSER__\"],\n"
-            << "  \"CompilerOptions\": [\"-std=c++20\"]\n"
-            << "}\n";
-    }
+    WriteMetaParserConfig(
+        paramsPath,
+        tempRoot,
+        runtimeDir,
+        outputDir,
+        headerPath,
+        {
+            root / "Runtime" / "Base"
+        });
 
     const auto outputPath = tempRoot / "metaparser.out.txt";
     ExpectMetaParserFailure(paramsPath, outputPath);
@@ -1050,21 +1079,15 @@ TEST(MetaParserGenerationModuleTests, RejectsInvertedRangeMetadataBeforeGenerati
     }
 
     const auto paramsPath = tempRoot / "InvertedRangeFixture.precompile.json";
-    {
-        std::ofstream config(paramsPath);
-        config
-            << "{\n"
-            << "  \"RootDir\": \"" << tempRoot.generic_string() << "\",\n"
-            << "  \"SourceDir\": \"" << (tempRoot / "Runtime" / "Fixture").generic_string() << "\",\n"
-            << "  \"TargetName\": \"Fixture\",\n"
-            << "  \"ModuleName\": \"Fixture\",\n"
-            << "  \"OutputDir\": \"" << outputDir.generic_string() << "\",\n"
-            << "  \"Headers\": [\"" << headerPath.generic_string() << "\"],\n"
-            << "  \"IncludeDirs\": [\"" << (root / "Runtime" / "Base").generic_string() << "\"],\n"
-            << "  \"Defines\": [\"__REFLECTION_PARSER__\"],\n"
-            << "  \"CompilerOptions\": [\"-std=c++20\"]\n"
-            << "}\n";
-    }
+    WriteMetaParserConfig(
+        paramsPath,
+        tempRoot,
+        runtimeDir,
+        outputDir,
+        headerPath,
+        {
+            root / "Runtime" / "Base"
+        });
 
     const auto outputPath = tempRoot / "metaparser.out.txt";
     ExpectMetaParserFailure(paramsPath, outputPath);

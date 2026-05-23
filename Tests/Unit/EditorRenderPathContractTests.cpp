@@ -3,9 +3,11 @@
 #include <fg/Blackboard.hpp>
 #include <fg/FrameGraph.hpp>
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <sstream>
 #include <type_traits>
 
 #include "Rendering/DebugSceneRenderer.h"
@@ -22,6 +24,20 @@
 
 namespace
 {
+    std::string NormalizeSourceLineEndings(std::string text)
+    {
+        text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
+        return text;
+    }
+
+    std::string ReadSourceText(const std::filesystem::path& path)
+    {
+        std::ifstream stream(path, std::ios::binary);
+        std::ostringstream buffer;
+        buffer << stream.rdbuf();
+        return NormalizeSourceLineEndings(buffer.str());
+    }
+
     struct DeferredSnapshotHarness : NLS::Engine::Rendering::DeferredSceneRenderer
     {
         using NLS::Engine::Rendering::DeferredSceneRenderer::SynchronizeThreadedDeferredSnapshot;
@@ -595,10 +611,7 @@ TEST(EditorRenderPathContractTests, GeneratedModelDropDoesNotQueueExplicitModelP
 {
     const auto actionsSourcePath =
         std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
-    std::ifstream stream(actionsSourcePath, std::ios::binary);
-    const std::string source{
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>()};
+    const std::string source = ReadSourceText(actionsSourcePath);
 
     ASSERT_FALSE(source.empty());
     const auto collector = source.find("void CollectPrefabAssetResolutionTasks(");
@@ -640,10 +653,7 @@ TEST(EditorRenderPathContractTests, GeneratedModelDropChecksCachedMeshAliasesBef
     const auto actionsSourcePath =
         std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
 
-    std::ifstream stream(actionsSourcePath, std::ios::binary);
-    const std::string source{
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>()};
+    const std::string source = ReadSourceText(actionsSourcePath);
 
     ASSERT_FALSE(source.empty());
     const auto resolutionLoop = source.find("void RunRendererResourceResolutionStep(");
@@ -687,10 +697,7 @@ TEST(EditorRenderPathContractTests, GeneratedModelMaterialResolutionKeepsColdMis
     const auto actionsSourcePath =
         std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
 
-    std::ifstream stream(actionsSourcePath, std::ios::binary);
-    const std::string source{
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>()};
+    const std::string source = ReadSourceText(actionsSourcePath);
 
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("BindDeferredMaterialTextures("), std::string::npos);
@@ -836,10 +843,7 @@ TEST(EditorRenderPathContractTests, GeneratedModelMaterialResolutionDoesNotDelay
     const auto actionsSourcePath =
         std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
 
-    std::ifstream stream(actionsSourcePath, std::ios::binary);
-    const std::string source{
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>()};
+    const std::string source = ReadSourceText(actionsSourcePath);
 
     ASSERT_FALSE(source.empty());
     const auto bindBegin = source.find("bool BindDeferredMaterialPaths(");
@@ -864,10 +868,7 @@ TEST(EditorRenderPathContractTests, EditorGeneratedModelFallbackMaterialDoesNotS
     const auto actionsSourcePath =
         std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
 
-    std::ifstream stream(actionsSourcePath, std::ios::binary);
-    const std::string source{
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>()};
+    const std::string source = ReadSourceText(actionsSourcePath);
 
     ASSERT_FALSE(source.empty());
     const auto fallbackBegin = source.find("NLS::Render::Resources::Material* GetOrCreateEditorDefaultMaterial(");
@@ -1530,18 +1531,9 @@ TEST(EditorRenderPathContractTests, SceneAndHierarchyProjectModelDropsUseImporte
     const auto hierarchySourcePath = root / "Project/Editor/Panels/Hierarchy.cpp";
     const auto assetViewSourcePath = root / "Project/Editor/Panels/AssetView.cpp";
 
-    std::ifstream sceneViewStream(sceneViewSourcePath, std::ios::binary);
-    const std::string sceneViewSource{
-        std::istreambuf_iterator<char>(sceneViewStream),
-        std::istreambuf_iterator<char>()};
-    std::ifstream hierarchyStream(hierarchySourcePath, std::ios::binary);
-    const std::string hierarchySource{
-        std::istreambuf_iterator<char>(hierarchyStream),
-        std::istreambuf_iterator<char>()};
-    std::ifstream assetViewStream(assetViewSourcePath, std::ios::binary);
-    const std::string assetViewSource{
-        std::istreambuf_iterator<char>(assetViewStream),
-        std::istreambuf_iterator<char>()};
+    const std::string sceneViewSource = ReadSourceText(sceneViewSourcePath);
+    const std::string hierarchySource = ReadSourceText(hierarchySourcePath);
+    const std::string assetViewSource = ReadSourceText(assetViewSourcePath);
 
     ASSERT_FALSE(sceneViewSource.empty());
     ASSERT_FALSE(hierarchySource.empty());
@@ -1583,10 +1575,7 @@ TEST(EditorRenderPathContractTests, SceneAndHierarchyProjectModelDropsUseImporte
     EXPECT_NE(hierarchySource.find("CreateGameObjectFromAsset(payload"), std::string::npos);
 
     const auto assetBrowserSourcePath = root / "Project/Editor/Panels/AssetBrowser.cpp";
-    std::ifstream assetBrowserStream(assetBrowserSourcePath, std::ios::binary);
-    const std::string assetBrowserSource{
-        std::istreambuf_iterator<char>(assetBrowserStream),
-        std::istreambuf_iterator<char>()};
+    const std::string assetBrowserSource = ReadSourceText(assetBrowserSourcePath);
     ASSERT_FALSE(assetBrowserSource.empty());
     EXPECT_NE(assetBrowserSource.find("BuildEditorAssetDragPayloadForFile("), std::string::npos);
     EXPECT_NE(

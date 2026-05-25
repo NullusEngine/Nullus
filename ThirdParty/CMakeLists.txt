@@ -9,8 +9,11 @@ function(nls_create_fbx_sdk_unavailable_target reason)
         return()
     endif()
 
+    set(_fbx_setup_guidance
+        "Run SetupDependencies before configuring to download and prepare ThirdParty/FBX/sdk/<platform>.")
+
     if(NLS_REQUIRE_BUNDLED_FBX_SDK)
-        message(FATAL_ERROR "${reason}")
+        message(FATAL_ERROR "${reason} ${_fbx_setup_guidance}")
     endif()
 
     add_library(Autodesk::FbxSdk INTERFACE IMPORTED GLOBAL)
@@ -23,6 +26,7 @@ function(nls_create_fbx_sdk_unavailable_target reason)
     message(WARNING
         "${reason} "
         "Autodesk FBX import will be unavailable in this build. "
+        "${_fbx_setup_guidance} "
         "Set NLS_REQUIRE_BUNDLED_FBX_SDK=ON to make this a configure error.")
 endfunction()
 
@@ -91,6 +95,9 @@ function(nls_find_fbx_sdk)
             set(_fbx_link_library "$<$<CONFIG:Debug>:${_fbx_debug_import_library}>$<$<NOT:$<CONFIG:Debug>>:${_fbx_import_library}>")
         else()
             set(_fbx_link_library "${_fbx_import_library}")
+        endif()
+        if(NOT EXISTS "${_fbx_debug_runtime_library}")
+            set(_fbx_debug_runtime_library "${_fbx_runtime_library}")
         endif()
     elseif(APPLE)
         foreach(_path

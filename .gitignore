@@ -8,6 +8,8 @@ out/
 *.so
 *.tmp
 *.swp
+*.pyc
+__pycache__/
 .idea/
 .env*
 
@@ -59,4 +61,7 @@ imgui.ini
 .specify/tmp/
 specs/.tmp/
 .worktrees/
-ThirdParty/FBX/
+
+# Autodesk FBX SDK local payloads. Keep ThirdParty/FBX/README.md tracked.
+ThirdParty/FBX/packages/
+ThirdParty/FBX/sdk/

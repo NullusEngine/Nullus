@@ -50,6 +50,7 @@ Nullus is an evolving C++ 3D engine project focused on the scene system, resourc
 - CMake 3.16 or newer
 - a compiler with C++20 support
 - .NET SDK 8.0 or newer
+- Python 3.8 or newer for the source dependency setup script
 - Git
 
 ### Clone
@@ -59,6 +60,28 @@ git clone https://github.com/NullusEngine/Nullus.git
 cd Nullus
 git submodule update --init --recursive
 ```
+
+### Prepare Third-Party Dependencies
+
+Run the dependency setup script before configuring a source build. After explicit Autodesk FBX SDK EULA acceptance, it downloads the official package, verifies its hash, and installs it to `ThirdParty/FBX/sdk/<platform>`:
+
+```bash
+./SetupDependencies.sh
+```
+
+On Windows, you can also use:
+
+```powershell
+.\SetupDependencies.bat
+```
+
+CI / headless environments must pass the acceptance signal explicitly:
+
+```bash
+NLS_ACCEPT_AUTODESK_FBX_EULA=1 ./SetupDependencies.sh --non-interactive
+```
+
+Windows CI jobs can append `--arch x64` or `--arch ARM64` when the target architecture is fixed.
 
 ### Build on Windows
 

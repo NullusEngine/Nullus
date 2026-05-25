@@ -1,0 +1,107 @@
+{
+  "schemaVersion": "1.0",
+  "dependencies": {
+    "autodesk-fbx-sdk": {
+      "id": "autodesk-fbx-sdk",
+      "name": "Autodesk FBX SDK",
+      "version": "2020.3.9",
+      "eula": {
+        "name": "Autodesk FBX SDK End User License Agreement",
+        "acceptanceArgument": "--accept-autodesk-eula",
+        "acceptanceEnvironment": "NLS_ACCEPT_AUTODESK_FBX_EULA",
+        "url": "https://aps.autodesk.com/developer/overview/fbx-sdk"
+      },
+      "platforms": {
+        "windows": {
+          "url": "https://damassets.autodesk.net/content/dam/autodesk/www/files/fbx202039_fbxsdk_vs2022_win.exe",
+          "fileName": "fbx202039_fbxsdk_vs2022_win.exe",
+          "sha256": "B1DB4330D327C8983C237D8FEA605FD9447E28E9D0D6E08139D87D6A86C1C987",
+          "sdkRoot": "ThirdParty/FBX/sdk/windows",
+          "archiveType": "windows-installer",
+          "validation": {
+            "headers": [
+              "include/fbxsdk.h",
+              "include/fbxsdk/fbxsdk_version.h"
+            ],
+            "versionHeader": "include/fbxsdk/fbxsdk_version.h",
+            "version": {
+              "major": "2020",
+              "minor": "3",
+              "point": "9"
+            },
+            "linkLibraries": [
+              "lib/x64/release/libfbxsdk.lib",
+              "lib/arm64/release/libfbxsdk.lib"
+            ],
+            "runtimeLibraries": [
+              "lib/x64/release/libfbxsdk.dll",
+              "lib/arm64/release/libfbxsdk.dll"
+            ]
+          }
+        },
+        "linux": {
+          "url": "https://damassets.autodesk.net/content/dam/autodesk/www/files/fbx202039_fbxsdk_gcc_linux.tar.gz",
+          "fileName": "fbx202039_fbxsdk_gcc_linux.tar.gz",
+          "sha256": "25D3CFD72A8A02070630A8F939BC2A41D48B9A8D87905488C352E949FA5C8635",
+          "sdkRoot": "ThirdParty/FBX/sdk/linux",
+          "archiveType": "linux-installer-tar",
+          "installerEntry": "fbx202039_fbxsdk_linux",
+          "validation": {
+            "headers": [
+              "include/fbxsdk.h",
+              "include/fbxsdk/fbxsdk_version.h"
+            ],
+            "versionHeader": "include/fbxsdk/fbxsdk_version.h",
+            "version": {
+              "major": "2020",
+              "minor": "3",
+              "point": "9"
+            },
+            "linkLibraries": [
+              "lib/gcc/x64/release/libfbxsdk.so",
+              "lib/gcc/x86_64/release/libfbxsdk.so",
+              "lib/release/libfbxsdk.so",
+              "lib/libfbxsdk.so"
+            ],
+            "runtimeLibraries": [
+              "lib/gcc/x64/release/libfbxsdk.so",
+              "lib/gcc/x86_64/release/libfbxsdk.so",
+              "lib/release/libfbxsdk.so",
+              "lib/libfbxsdk.so"
+            ]
+          }
+        },
+        "macos": {
+          "url": "https://damassets.autodesk.net/content/dam/autodesk/www/files/fbx202039_fbxsdk_clang_mac.pkg.tgz",
+          "fileName": "fbx202039_fbxsdk_clang_mac.pkg.tgz",
+          "sha256": "C2BD9E9882C87368691E546A6EE8676646C81192C178150AC53F7BB3AC04262A",
+          "sdkRoot": "ThirdParty/FBX/sdk/macos",
+          "archiveType": "macos-pkg-tar",
+          "installerEntry": "fbx202039_fbxsdk_clang_macos.pkg",
+          "validation": {
+            "headers": [
+              "include/fbxsdk.h",
+              "include/fbxsdk/fbxsdk_version.h"
+            ],
+            "versionHeader": "include/fbxsdk/fbxsdk_version.h",
+            "version": {
+              "major": "2020",
+              "minor": "3",
+              "point": "9"
+            },
+            "linkLibraries": [
+              "lib/clang/release/libfbxsdk.dylib",
+              "lib/libfbxsdk.dylib",
+              "lib/clang/libfbxsdk.dylib"
+            ],
+            "runtimeLibraries": [
+              "lib/clang/release/libfbxsdk.dylib",
+              "lib/libfbxsdk.dylib",
+              "lib/clang/libfbxsdk.dylib"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

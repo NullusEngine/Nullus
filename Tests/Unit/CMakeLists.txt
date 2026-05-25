@@ -31,6 +31,10 @@ set_source_files_properties(
     "${NULLUS_EDITOR_META_GENERATED_H}"
     PROPERTIES GENERATED TRUE
 )
+set_source_files_properties(
+    "${CMAKE_CURRENT_SOURCE_DIR}/JobSystemBindingCAbiCompileTest.c"
+    PROPERTIES SKIP_PRECOMPILE_HEADERS ON
+)
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${NULLUS_UNIT_TEST_FILES})
 source_group("Contract Tests" FILES ${NULLUS_RENDER_ALIGNMENT_CONTRACT_TEST_FILES})
@@ -70,6 +74,8 @@ target_sources(NullusUnitTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneCameraFocus.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneViewImGuizmo.cpp
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneViewImGuizmo.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/EditorBackgroundTaskTracker.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/EditorBackgroundTaskTracker.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/AssetFileWatcher.cpp
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/AssetFileWatcher.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/EditorAssetDatabase.cpp

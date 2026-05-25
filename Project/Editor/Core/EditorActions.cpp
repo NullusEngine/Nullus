@@ -3,16 +3,12 @@
 #include "ImGui/imgui.h"
 #include <iostream>
 #include <fstream>
-#include <thread>
 #include <chrono>
-#include <condition_variable>
 #include <deque>
-#include <exception>
 #include <iterator>
 #include <mutex>
 #include <memory>
 #include <optional>
-#include <queue>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -73,6 +69,7 @@ using namespace NLS;
 
 namespace
 {
+constexpr size_t kEditorBackgroundTaskQueueCapacity = 256u;
 constexpr auto kRendererResourceResolutionFrameBudget = std::chrono::milliseconds(12);
 constexpr size_t kRendererResourceResolutionBindTasksPerFrame = 12u;
 constexpr size_t kRendererResourceResolutionMeshBindsPerFrame = 1u;
@@ -80,9 +77,6 @@ constexpr size_t kRendererResourceResolutionScheduleTasksPerFrame = 24u;
 constexpr size_t kRendererResourceResolutionMaxInflightMeshLoads = 16u;
 constexpr size_t kRendererResourceResolutionMaterialSlotsPerTask = 8u;
 constexpr size_t kRendererResourceResolutionTextureBindsPerFrame = 1u;
-constexpr size_t kEditorBackgroundWorkerCount = 2u;
-constexpr size_t kEditorBackgroundTaskQueueCapacity = 256u;
-
 enum class RendererResourceResolutionTaskKind
 {
     Mesh,
@@ -1516,7 +1510,9 @@ void RunRendererResourceResolutionStep(
 }
 
 Editor::Core::EditorActions::EditorActions(Context& p_context, PanelsManager& p_panelsManager)
-    : m_context(p_context), m_panelsManager(p_panelsManager)
+    : m_context(p_context)
+    , m_panelsManager(p_panelsManager)
+    , m_backgroundTasks(kEditorBackgroundTaskQueueCapacity)
 {
     NLS::Core::ServiceLocator::Provide<Editor::Core::EditorActions>(*this);
 
@@ -1553,21 +1549,7 @@ Editor::Core::EditorActions::~EditorActions()
     if (m_sceneUnloadListener != InvalidListenerID)
         m_context.sceneManager.SceneUnloadEvent -= m_sceneUnloadListener;
 
-    std::vector<BackgroundWorker> workers;
-    {
-        std::lock_guard lock(m_backgroundTasksMutex);
-        m_stopBackgroundWorkers = true;
-        std::queue<std::function<void()>> emptyQueue;
-        m_backgroundTaskQueue.swap(emptyQueue);
-        workers = std::move(m_backgroundWorkers);
-    }
-    m_backgroundTaskCondition.notify_all();
-
-    for (auto& worker : workers)
-    {
-        if (worker.worker.joinable())
-            worker.worker.join();
-    }
+    m_backgroundTasks.StopAndComplete();
 
     {
         std::lock_guard lock(m_delayedActionsMutex);
@@ -2027,99 +2009,11 @@ void Editor::Core::EditorActions::ReleaseTrackedGameObjectDestroyedListeners()
 
 bool Editor::Core::EditorActions::TrackBackgroundTask(std::function<void()> task)
 {
-    if (!task)
-        return false;
-
-    EnsureBackgroundWorkersStarted();
-
-    std::lock_guard lock(m_backgroundTasksMutex);
-    if (m_stopBackgroundWorkers)
-        return false;
-    if (m_backgroundTaskQueue.size() >= kEditorBackgroundTaskQueueCapacity)
-    {
-        NLS_LOG_WARNING("Editor background task queue is full; dropping queued work");
-        return false;
-    }
-    m_backgroundTaskQueue.push(std::move(task));
-    m_backgroundTaskCondition.notify_one();
-    return true;
-}
-
-void Editor::Core::EditorActions::EnsureBackgroundWorkersStarted()
-{
-    std::lock_guard lock(m_backgroundTasksMutex);
-    if (m_stopBackgroundWorkers || !m_backgroundWorkers.empty())
-        return;
-
-    m_backgroundWorkers.reserve(kEditorBackgroundWorkerCount);
-    for (size_t index = 0u; index < kEditorBackgroundWorkerCount; ++index)
-    {
-        BackgroundWorker worker;
-        worker.worker = std::thread([this] { RunBackgroundWorker(); });
-        m_backgroundWorkers.push_back(std::move(worker));
-    }
-}
-
-void Editor::Core::EditorActions::RunBackgroundWorker()
-{
-    while (true)
-    {
-        std::function<void()> task;
-        {
-            std::unique_lock lock(m_backgroundTasksMutex);
-            m_backgroundTaskCondition.wait(
-                lock,
-                [this]
-                {
-                    return m_stopBackgroundWorkers || !m_backgroundTaskQueue.empty();
-                });
-            if (m_stopBackgroundWorkers && m_backgroundTaskQueue.empty())
-                return;
-
-            task = std::move(m_backgroundTaskQueue.front());
-            m_backgroundTaskQueue.pop();
-            ++m_runningBackgroundTaskCount;
-        }
-
-        try
-        {
-            task();
-        }
-        catch (const std::exception& exception)
-        {
-            NLS_LOG_ERROR(std::string("Editor background task failed: ") + exception.what());
-        }
-        catch (...)
-        {
-            NLS_LOG_ERROR("Editor background task failed with an unknown exception");
-        }
-
-        {
-            std::lock_guard lock(m_backgroundTasksMutex);
-            if (m_runningBackgroundTaskCount > 0u)
-            {
-                --m_runningBackgroundTaskCount;
-            }
-            ++m_completedBackgroundTaskCount;
-        }
-    }
-}
-
-void Editor::Core::EditorActions::CollectFinishedBackgroundTasks()
-{
-    size_t completedTaskCount = 0u;
-    {
-        std::lock_guard lock(m_backgroundTasksMutex);
-        completedTaskCount = m_completedBackgroundTaskCount;
-        m_completedBackgroundTaskCount = 0u;
-    }
-    (void)completedTaskCount;
+    return m_backgroundTasks.Track(std::move(task));
 }
 
 void Editor::Core::EditorActions::ExecuteDelayedActions()
 {
-    CollectFinishedBackgroundTasks();
-
     std::vector<std::pair<uint32_t, std::function<void()>>> pendingActions;
     {
         std::lock_guard lock(m_delayedActionsMutex);

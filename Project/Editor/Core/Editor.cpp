@@ -8,6 +8,8 @@
 #include <optional>
 #include <string_view>
 #include <Debug/Logger.h>
+#include <Jobs/BackgroundJobQueue.h>
+#include <Jobs/JobSystem.h>
 #include <Profiling/Profiler.h>
 #include <Profiling/TracyProfiler.h>
 #include <Reflection/ReflectionDiagnostics.h>
@@ -52,6 +54,8 @@ namespace
 {
 NLS::Base::Profiling::TracyProfiler g_tracyProfiler;
 std::size_t g_publishedReflectionDiagnosticCount = 0;
+constexpr uint32_t kEditorJobSystemBackgroundWorkerCount = 2u;
+constexpr uint32_t kEditorMainThreadContinuationDrainBudget = 64u;
 
 enum class ValidationFocusTarget
 {
@@ -171,8 +175,23 @@ void PublishReflectionDiagnosticsToLog()
 }
 }
 
+Editor::Core::Editor::JobSystemLifetime::JobSystemLifetime()
+{
+    NLS::Base::Jobs::JobSystemConfig config;
+    config.workerCount = NLS::Base::Jobs::kAutoJobWorkerCount;
+    config.backgroundWorkerCount = kEditorJobSystemBackgroundWorkerCount;
+    ownsJobSystem = NLS::Base::Jobs::TryInitializeJobSystem(config);
+}
+
+Editor::Core::Editor::JobSystemLifetime::~JobSystemLifetime()
+{
+    if (ownsJobSystem)
+        NLS::Base::Jobs::ShutdownJobSystem(NLS::Base::Jobs::JobSystemShutdownMode::DrainAcceptedWork);
+}
+
 Editor::Core::Editor::Editor(Context& p_context)
     : m_context(p_context), m_panelsManager(m_canvas),
+    m_jobSystemLifetime(),
     m_editorActions(m_context, m_panelsManager)
 {
     NLS::Base::Profiling::Profiler::SetEnabled(false);
@@ -339,6 +358,10 @@ void Editor::Core::Editor::Update(float p_deltaTime)
     {
         NLS_PROFILE_NAMED_SCOPE("EditorActions::ExecuteDelayedActions");
         m_editorActions.ExecuteDelayedActions();
+    }
+    {
+        NLS_PROFILE_NAMED_SCOPE("JobSystem::DrainMainThreadContinuations");
+        NLS::Base::Jobs::DrainMainThreadContinuations(kEditorMainThreadContinuationDrainBudget);
     }
     {
         NLS_PROFILE_NAMED_SCOPE("Editor::PublishReflectionDiagnosticsToLog");

@@ -3,18 +3,15 @@
 #include <ServiceLocator.h>
 #include <Filesystem/IniFile.h>
 #include <Utils/PathParser.h>
-#include <atomic>
-#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <queue>
-#include <thread>
 #include <vector>
 
 #include "Engine/PrimitiveType.h"
 #include "Context.h"
 #include "PanelsManager.h"
+#include "Core/EditorBackgroundTaskTracker.h"
 #include "Assets/EditorAssetDragDropBridge.h"
 
 #define EDITOR_EXEC(action)                 NLS::Core::ServiceLocator::Get<NLS::Editor::Core::EditorActions>().action
@@ -420,30 +417,17 @@ namespace NLS::Editor::Core
 
 		std::vector<std::pair<uint32_t, std::function<void()>>> m_delayedActions;
 		std::mutex m_delayedActionsMutex;
-		struct BackgroundWorker
-		{
-			std::thread worker;
-		};
-		std::vector<BackgroundWorker> m_backgroundWorkers;
-		std::queue<std::function<void()>> m_backgroundTaskQueue;
-		std::mutex m_backgroundTasksMutex;
-		std::condition_variable m_backgroundTaskCondition;
-        std::vector<ListenerID> m_gameObjectDestroyedListeners;
+		std::vector<ListenerID> m_gameObjectDestroyedListeners;
         std::mutex m_gameObjectDestroyedListenersMutex;
-		size_t m_runningBackgroundTaskCount = 0u;
-		size_t m_completedBackgroundTaskCount = 0u;
-		bool m_stopBackgroundWorkers = false;
         uint64_t m_mainSceneGeneration = 0u;
         uint64_t m_prefabStageGeneration = 0u;
+        EditorBackgroundTaskTracker m_backgroundTasks;
         ListenerID m_sceneSourcePathChangedListener = InvalidListenerID;
         ListenerID m_sceneDirtyStateChangedListener = InvalidListenerID;
         ListenerID m_sceneLoadListener = InvalidListenerID;
         ListenerID m_sceneUnloadListener = InvalidListenerID;
 
 		//tinyxml2::XMLDocument m_sceneBackup;
-		void EnsureBackgroundWorkersStarted();
-		void RunBackgroundWorker();
-		void CollectFinishedBackgroundTasks();
 		void RefreshWindowTitle();
 	};
 }

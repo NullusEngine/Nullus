@@ -1082,11 +1082,13 @@ TEST(EditorRenderPathContractTests, GeneratedModelDeferredMeshArtifactFailureFai
     EXPECT_NE(source.find("++stats->failedMeshTasks"), std::string::npos);
 }
 
-TEST(EditorRenderPathContractTests, EditorBackgroundTasksAreCollectedAfterCompletion)
+TEST(EditorRenderPathContractTests, EditorBackgroundTasksUseSharedJobSystemQueue)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto actionsHeaderPath = root / "Project/Editor/Core/EditorActions.h";
     const auto actionsSourcePath = root / "Project/Editor/Core/EditorActions.cpp";
+    const auto trackerSourcePath = root / "Project/Editor/Core/EditorBackgroundTaskTracker.cpp";
+    const auto editorSourcePath = root / "Project/Editor/Core/Editor.cpp";
 
     std::ifstream headerStream(actionsHeaderPath, std::ios::binary);
     const std::string header{
@@ -1096,29 +1098,43 @@ TEST(EditorRenderPathContractTests, EditorBackgroundTasksAreCollectedAfterComple
     const std::string source{
         std::istreambuf_iterator<char>(sourceStream),
         std::istreambuf_iterator<char>()};
+    std::ifstream trackerSourceStream(trackerSourcePath, std::ios::binary);
+    const std::string trackerSource{
+        std::istreambuf_iterator<char>(trackerSourceStream),
+        std::istreambuf_iterator<char>()};
+    std::ifstream editorSourceStream(editorSourcePath, std::ios::binary);
+    const std::string editorSource{
+        std::istreambuf_iterator<char>(editorSourceStream),
+        std::istreambuf_iterator<char>()};
 
     ASSERT_FALSE(header.empty());
     ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(trackerSource.empty());
+    ASSERT_FALSE(editorSource.empty());
 
-    EXPECT_NE(header.find("struct BackgroundWorker"), std::string::npos);
-    EXPECT_NE(header.find("std::queue<std::function<void()>> m_backgroundTaskQueue"), std::string::npos);
-    EXPECT_NE(header.find("std::condition_variable m_backgroundTaskCondition"), std::string::npos);
-    EXPECT_NE(header.find("size_t m_runningBackgroundTaskCount"), std::string::npos);
     EXPECT_NE(header.find("bool TrackBackgroundTask(std::function<void()> task)"), std::string::npos);
-    EXPECT_EQ(header.find("std::vector<TrackedBackgroundTask> m_backgroundTasks"), std::string::npos);
+    EXPECT_NE(header.find("#include \"Core/EditorBackgroundTaskTracker.h\""), std::string::npos);
+    EXPECT_NE(header.find("EditorBackgroundTaskTracker m_backgroundTasks"), std::string::npos);
+    EXPECT_EQ(header.find("bool m_ownsBackgroundJobSystem"), std::string::npos);
+    EXPECT_EQ(header.find("struct BackgroundWorker"), std::string::npos);
+    EXPECT_EQ(header.find("m_backgroundTaskQueue"), std::string::npos);
+    EXPECT_EQ(header.find("m_backgroundTaskCondition"), std::string::npos);
+    EXPECT_EQ(header.find("m_runningBackgroundTaskCount"), std::string::npos);
+
+    EXPECT_NE(trackerSource.find("#include <Jobs/BackgroundJobQueue.h>"), std::string::npos);
+    EXPECT_NE(trackerSource.find("#include <Jobs/JobSystem.h>"), std::string::npos);
+    EXPECT_NE(trackerSource.find("NLS::Base::Jobs::ScheduleBackgroundJob"), std::string::npos);
+    EXPECT_NE(source.find("return m_backgroundTasks.Track(std::move(task));"), std::string::npos);
+    EXPECT_EQ(source.find("NLS::Base::Jobs::ShutdownJobSystem"), std::string::npos);
+    EXPECT_NE(trackerSource.find("catch (const std::exception& exception)"), std::string::npos);
     EXPECT_NE(source.find("kEditorBackgroundTaskQueueCapacity"), std::string::npos);
-    EXPECT_NE(source.find("void Editor::Core::EditorActions::CollectFinishedBackgroundTasks()"), std::string::npos);
-    EXPECT_NE(source.find("CollectFinishedBackgroundTasks();"), std::string::npos);
-    EXPECT_NE(source.find("void Editor::Core::EditorActions::EnsureBackgroundWorkersStarted()"), std::string::npos);
-    EXPECT_NE(source.find("void Editor::Core::EditorActions::RunBackgroundWorker()"), std::string::npos);
-    EXPECT_NE(source.find("m_backgroundTaskQueue.push(std::move(task))"), std::string::npos);
-    EXPECT_NE(source.find("if (m_stopBackgroundWorkers)"), std::string::npos);
-    EXPECT_NE(source.find("m_backgroundTaskQueue.size() >= kEditorBackgroundTaskQueueCapacity"), std::string::npos);
-    EXPECT_NE(source.find("return false;"), std::string::npos);
-    EXPECT_NE(source.find("m_backgroundTaskCondition.notify_one()"), std::string::npos);
-    EXPECT_NE(source.find("m_backgroundTaskCondition.wait("), std::string::npos);
-    EXPECT_NE(source.find("catch (const std::exception& exception)"), std::string::npos);
-    EXPECT_NE(source.find("++m_completedBackgroundTaskCount"), std::string::npos);
+    EXPECT_EQ(source.find("void Editor::Core::EditorActions::CollectFinishedBackgroundTasks()"), std::string::npos);
+    EXPECT_EQ(source.find("void Editor::Core::EditorActions::EnsureBackgroundWorkersStarted()"), std::string::npos);
+    EXPECT_EQ(source.find("void Editor::Core::EditorActions::RunBackgroundWorker()"), std::string::npos);
+    EXPECT_EQ(source.find("m_backgroundTaskQueue.push(std::move(task))"), std::string::npos);
+    EXPECT_EQ(source.find("m_backgroundTaskCondition.wait("), std::string::npos);
+    EXPECT_NE(editorSource.find("Editor::Core::Editor::JobSystemLifetime::JobSystemLifetime()"), std::string::npos);
+    EXPECT_NE(editorSource.find("NLS::Base::Jobs::ShutdownJobSystem"), std::string::npos);
 }
 
 TEST(EditorRenderPathContractTests, AsyncModelDropsScheduleImportAndCompletionCallbacks)

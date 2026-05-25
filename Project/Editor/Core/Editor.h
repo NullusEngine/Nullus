@@ -121,6 +121,14 @@ private:
     UI::Canvas			m_canvas;
     Context& m_context;
     PanelsManager	m_panelsManager;
+    struct JobSystemLifetime
+    {
+        JobSystemLifetime();
+        ~JobSystemLifetime();
+
+        bool ownsJobSystem = false;
+    };
+    JobSystemLifetime m_jobSystemLifetime;
     EditorActions	m_editorActions;
     Shortcuts::EditorShortcutService m_shortcutService;
 };

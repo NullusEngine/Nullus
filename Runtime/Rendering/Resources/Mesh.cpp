@@ -115,6 +115,22 @@ void Mesh::Reload(
 	m_rhiMesh = std::make_shared<RHI::RHIMeshAdapter>(*this);
 }
 
+bool Mesh::UpdateVertices(
+	const std::vector<Geometry::Vertex>& vertices,
+	const Geometry::BoundingSphere& boundingSphere,
+	const uint32_t destinationVertexOffset)
+{
+	const auto destinationEnd = static_cast<size_t>(destinationVertexOffset) + vertices.size();
+	if (destinationEnd > m_vertexCount || m_vertexBuffer == nullptr || m_indexBuffer != nullptr)
+		return false;
+
+	if (!m_vertexBuffer->Update(vertices.data(), vertices.size(), destinationVertexOffset))
+		return false;
+
+	m_boundingSphere = boundingSphere;
+	return true;
+}
+
 void Mesh::CreateBuffers(
 	const std::vector<Geometry::Vertex>& vertices,
 	const std::vector<uint32_t>& indices,

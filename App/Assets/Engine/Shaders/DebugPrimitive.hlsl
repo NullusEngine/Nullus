@@ -17,7 +17,7 @@ cbuffer MaterialConstants : register(b0, space2)
     float3 u_Point2;
     float u_Padding2;
     float3 u_Color;
-    float u_Padding3;
+    int u_UseVertexPosition;
 };
 
 struct DebugPrimitiveVSOutput
@@ -29,13 +29,13 @@ struct DebugPrimitiveVSOutput
 DebugPrimitiveVSOutput VSMain(VSInput input, uint vertexId : SV_VertexID)
 {
     DebugPrimitiveVSOutput output;
-    float3 positionWS = u_Point0;
+    float3 positionWS = u_UseVertexPosition != 0 ? input.Position : u_Point0;
 
-    if (vertexId == 1)
+    if (u_UseVertexPosition == 0 && vertexId == 1)
     {
         positionWS = u_Point1;
     }
-    else if (vertexId == 2)
+    else if (u_UseVertexPosition == 0 && vertexId == 2)
     {
         positionWS = u_Point2;
     }

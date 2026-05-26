@@ -405,6 +405,7 @@ bool AssetImporterFacade::SetModelImporterSettings(
     meta->settings["MODEL_AXIS_CONVERSION"] = settings.axisConversion;
     meta->settings["MODEL_UNIT_CONVERSION"] = settings.unitConversion;
     meta->settings["MODEL_HIERARCHY_POLICY"] = settings.hierarchyPolicy;
+    meta->settings["MODEL_FBX_READER"] = FbxReaderSelectionToImporterSettingString(settings.fbxReaderSelection);
     meta->settings["MODEL_IMPORT_NORMALS"] = BoolToImporterSettingString(settings.importNormals);
     meta->settings["MODEL_IMPORT_TANGENTS"] = BoolToImporterSettingString(settings.importTangents);
     meta->settings["MODEL_IMPORT_UVS"] = BoolToImporterSettingString(settings.importUvs);

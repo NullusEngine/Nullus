@@ -25,7 +25,25 @@
 - [X] T005 [US1] Pass `ShaderManager` project assets root to shader loader in `Runtime/Core/ResourceManagement/ShaderManager.cpp`
 - [X] T006 [US1] Run focused unit test and related shader compiler cache tests
 
-## Phase 3: Polish
+## Phase 3: User Story 2 - Shader Binaries Stay With Project (Priority: P1)
+
+**Goal**: Configured project shader cache database paths also place generated DXIL/SPIR-V binaries under `<project>/Library/ShaderCache`.
+
+**Independent Test**: Compile a small shader with `ShaderCompiler::SetCacheDatabasePath(<project>/Library/ShaderCache/ShaderCache.tsv)` and verify the successful `.dxil` output path lives in the same directory.
+
+### Tests
+
+- [X] T009 [US2] Add failing unit test in `Tests/Unit/ShaderCompilerTests.cpp` for configured project shader binary artifact output
+
+### Implementation
+
+- [X] T010 [US2] Add compiler artifact directory resolution from configured cache database in `Runtime/Rendering/ShaderCompiler/ShaderCompiler.cpp`
+- [X] T011 [US2] Preserve user-local fallback when no cache database path is configured
+- [X] T012 [US2] Run focused shader compiler cache tests
+
+## Phase 4: Polish
 
 - [X] T007 Self-review for regressions, missing tests, and project/library path assumptions
 - [X] T008 Run plan-review gate before final completion report
+- [X] T013 Self-review updated artifact relocation behavior
+- [X] T014 Run plan-review gate before final completion report

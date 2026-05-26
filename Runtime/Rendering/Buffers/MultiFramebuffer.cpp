@@ -18,7 +18,7 @@ namespace
 		desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
 		desc.format = format;
 		desc.usage = NLS::Render::RHI::TextureUsageFlags::Sampled | NLS::Render::RHI::TextureUsageFlags::ColorAttachment;
-		desc.optimizedClearValue.enabled = true;
+		desc.optimizedClearValue = NLS::Render::RHI::RHITextureDesc::OptimizedClearValue::Color();
 		desc.debugName = "MultiFramebufferColorTexture" + std::to_string(index);
 		return desc;
 	}
@@ -32,9 +32,7 @@ namespace
 		desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
 		desc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
 		desc.usage = NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment | NLS::Render::RHI::TextureUsageFlags::Sampled;
-		desc.optimizedClearValue.enabled = true;
-		desc.optimizedClearValue.depth = 1.0f;
-		desc.optimizedClearValue.stencil = 0u;
+		desc.optimizedClearValue = NLS::Render::RHI::RHITextureDesc::OptimizedClearValue::DepthStencil();
 		desc.debugName = "MultiFramebufferDepthTexture";
 		return desc;
 	}

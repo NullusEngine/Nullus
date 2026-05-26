@@ -46,9 +46,7 @@ namespace
 		desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
 		desc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
 		desc.usage = NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment;
-		desc.optimizedClearValue.enabled = true;
-		desc.optimizedClearValue.depth = 1.0f;
-		desc.optimizedClearValue.stencil = 0u;
+		desc.optimizedClearValue = NLS::Render::RHI::RHITextureDesc::OptimizedClearValue::DepthStencil();
 		desc.debugName = "FramebufferDepthTexture";
 		return desc;
 	}
@@ -191,12 +189,7 @@ void NLS::Render::Buffers::Framebuffer::Resize(uint16_t p_width, uint16_t p_heig
 
 void NLS::Render::Buffers::Framebuffer::SetOptimizedColorClearValue(float r, float g, float b, float a)
 {
-	NLS::Render::RHI::RHITextureDesc::OptimizedClearValue clearValue{};
-	clearValue.enabled = true;
-	clearValue.color[0] = r;
-	clearValue.color[1] = g;
-	clearValue.color[2] = b;
-	clearValue.color[3] = a;
+	const auto clearValue = NLS::Render::RHI::RHITextureDesc::OptimizedClearValue::Color(r, g, b, a);
 
 	if (SameOptimizedColorClearValue(m_colorOptimizedClearValue, clearValue))
 		return;

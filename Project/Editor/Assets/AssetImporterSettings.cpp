@@ -1,5 +1,7 @@
 #include "Assets/AssetImporterSettings.h"
 
+#include "Debug/Assertion.h"
+
 #include <utility>
 
 namespace NLS::Editor::Assets
@@ -7,6 +9,35 @@ namespace NLS::Editor::Assets
 std::string BoolToImporterSettingString(const bool value)
 {
     return value ? "true" : "false";
+}
+
+std::string FbxReaderSelectionToImporterSettingString(const FbxReaderSelection value)
+{
+    switch (value)
+    {
+    case FbxReaderSelection::Assimp:
+        return "assimp";
+    case FbxReaderSelection::AutodeskWithAssimpFallback:
+        return "autodesk-with-assimp-fallback";
+    case FbxReaderSelection::Autodesk:
+        return "autodesk";
+    }
+
+    NLS_ASSERT(false, "Unhandled FBX reader selection.");
+    return "autodesk";
+}
+
+FbxReaderSelection FbxReaderSelectionFromImporterSettingString(
+    const std::string& value,
+    const FbxReaderSelection fallback)
+{
+    if (value == "autodesk")
+        return FbxReaderSelection::Autodesk;
+    if (value == "assimp")
+        return FbxReaderSelection::Assimp;
+    if (value == "autodesk-with-assimp-fallback")
+        return FbxReaderSelection::AutodeskWithAssimpFallback;
+    return fallback;
 }
 
 bool BoolFromImporterSettings(
@@ -75,6 +106,9 @@ ModelImporterSettings ModelImporterSettingsFromSerialized(
     result.axisConversion = StringFromImporterSettings(settings, "MODEL_AXIS_CONVERSION", result.axisConversion);
     result.unitConversion = StringFromImporterSettings(settings, "MODEL_UNIT_CONVERSION", result.unitConversion);
     result.hierarchyPolicy = StringFromImporterSettings(settings, "MODEL_HIERARCHY_POLICY", result.hierarchyPolicy);
+    result.fbxReaderSelection = FbxReaderSelectionFromImporterSettingString(
+        StringFromImporterSettings(settings, "MODEL_FBX_READER"),
+        result.fbxReaderSelection);
     result.importNormals = BoolFromImporterSettings(settings, "MODEL_IMPORT_NORMALS", result.importNormals);
     result.importTangents = BoolFromImporterSettings(settings, "MODEL_IMPORT_TANGENTS", result.importTangents);
     result.importUvs = BoolFromImporterSettings(settings, "MODEL_IMPORT_UVS", result.importUvs);

@@ -158,6 +158,8 @@ namespace NLS::Render::RHI
         float a = 1.0f;
     };
 
+    inline constexpr RHIColorClearValue kDefaultOpaqueColorClearValue{};
+
     struct NLS_RENDER_API RHIDepthStencilClearValue
     {
         float depth = 1.0f;

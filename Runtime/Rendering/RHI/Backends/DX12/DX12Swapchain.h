@@ -37,6 +37,7 @@ namespace NLS::Render::Backend
 		std::string_view GetDebugName() const override;
 		const NLS::Render::RHI::RHITextureDesc& GetDesc() const override;
 		NLS::Render::RHI::ResourceState GetState() const override;
+		bool RequiresExternalClearValueMessageFilter() const override;
 		NLS::Render::RHI::NativeHandle GetNativeImageHandle() override;
 
 	private:

@@ -34,10 +34,15 @@ namespace NLS::Render::FrameGraph
 			explicitDesc.debugName = !desc.debugName.empty()
 				? desc.debugName
 				: "FrameGraphTexture";
-			if (NLS::Render::RHI::HasTextureUsage(desc.usage, NLS::Render::RHI::TextureUsageFlags::ColorAttachment) ||
+			if (!explicitDesc.optimizedClearValue.enabled &&
+				NLS::Render::RHI::HasTextureUsage(desc.usage, NLS::Render::RHI::TextureUsageFlags::ColorAttachment))
+			{
+				explicitDesc.optimizedClearValue = NLS::Render::RHI::RHITextureDesc::OptimizedClearValue::Color();
+			}
+			else if (!explicitDesc.optimizedClearValue.enabled &&
 				NLS::Render::RHI::HasTextureUsage(desc.usage, NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment))
 			{
-				explicitDesc.optimizedClearValue.enabled = true;
+				explicitDesc.optimizedClearValue = NLS::Render::RHI::RHITextureDesc::OptimizedClearValue::DepthStencil();
 			}
 			return explicitDesc;
 		}

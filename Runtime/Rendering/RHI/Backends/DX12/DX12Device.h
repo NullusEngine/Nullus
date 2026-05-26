@@ -32,6 +32,10 @@ namespace NLS::Render::Backend
 		NLS::Render::RHI::RHIDeviceCapabilities capabilities{};
 		std::string vendor;
 		std::string hardware;
+		std::string creationDiagnostics;
+		std::string shaderModelDiagnostics;
+		unsigned int confirmedShaderModel = 0;
+		bool shaderModel6Supported = false;
 		bool dredDiagnosticsEnabled = false;
 
 		bool IsValid() const;

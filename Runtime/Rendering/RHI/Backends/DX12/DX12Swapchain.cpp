@@ -89,7 +89,9 @@ namespace NLS::Render::Backend
 		m_desc.format = format == DXGI_FORMAT_R16G16B16A16_FLOAT
 			? NLS::Render::RHI::TextureFormat::RGBA16F
 			: NLS::Render::RHI::TextureFormat::RGBA8;
-		m_desc.usage = NLS::Render::RHI::TextureUsageFlags::ColorAttachment;
+		m_desc.usage =
+			NLS::Render::RHI::TextureUsageFlags::ColorAttachment |
+			NLS::Render::RHI::TextureUsageFlags::Present;
 		m_desc.debugName = "BackbufferTexture";
 	}
 #endif
@@ -107,6 +109,11 @@ namespace NLS::Render::Backend
 	NLS::Render::RHI::ResourceState NativeDX12BackbufferTexture::GetState() const
 	{
 		return NLS::Render::RHI::ResourceState::Present;
+	}
+
+	bool NativeDX12BackbufferTexture::RequiresExternalClearValueMessageFilter() const
+	{
+		return true;
 	}
 
 	NLS::Render::RHI::NativeHandle NativeDX12BackbufferTexture::GetNativeImageHandle()

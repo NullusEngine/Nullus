@@ -3,6 +3,7 @@
 #include "Profiling/Profiler.h"
 #include "Rendering/RHI/Backends/DX12/DX12DebugNameUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12FormatUtils.h"
+#include "Rendering/RHI/Backends/DX12/DX12InfoQueueUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12RenderPassUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12Resource.h"
 #include "Rendering/RHI/Backends/DX12/DX12TextureViewUtils.h"
@@ -69,6 +70,15 @@ namespace NLS::Render::Backend
 				return;
 
 			commandList->EndEvent();
+		}
+
+		NLS::Render::RHI::DX12::ScopedDx12InfoQueueMessageFilter MakeBackbufferClearValueWarningFilter(
+			ID3D12Device* device,
+			const bool shouldFilter)
+		{
+			return NLS::Render::RHI::DX12::ScopedDx12InfoQueueMessageFilter(
+				shouldFilter ? device : nullptr,
+				D3D12_MESSAGE_ID_CLEARRENDERTARGETVIEW_MISMATCHINGCLEARVALUE);
 		}
 
 		void AppendDX12TextureTransitionBarriers(
@@ -363,6 +373,7 @@ namespace NLS::Render::Backend
 			m_recordedBindingSetKeepAlive.clear();
 			m_recordedPipelineKeepAlive.clear();
 			m_recordedComputePipelineKeepAlive.clear();
+			m_recordedBufferKeepAlive.clear();
 			m_partialTextureStateDirty.clear();
 			EndPendingGpuProfileScopes();
 			m_bindingComputePipeline = false;
@@ -400,6 +411,7 @@ namespace NLS::Render::Backend
 		m_recordedBindingSetKeepAlive.clear();
 		m_recordedPipelineKeepAlive.clear();
 		m_recordedComputePipelineKeepAlive.clear();
+		m_recordedBufferKeepAlive.clear();
 		m_partialTextureStateDirty.clear();
 		EndPendingGpuProfileScopes();
 		m_bindingComputePipeline = false;
@@ -676,8 +688,9 @@ namespace NLS::Render::Backend
 		else if (!boundRtvHandles.empty())
 			m_commandList->OMSetRenderTargets(static_cast<UINT>(boundRtvHandles.size()), boundRtvHandles.data(), FALSE, nullptr);
 
-		for (const uint32_t colorAttachmentIndex : clearPlan.colorAttachmentIndices)
+		for (const auto& clearRequest : clearPlan.colorClearRequests)
 		{
+			const uint32_t colorAttachmentIndex = clearRequest.attachmentIndex;
 			if (colorAttachmentIndex >= rtvHandles.size() || !hasRtvHandle[colorAttachmentIndex])
 				continue;
 
@@ -688,6 +701,12 @@ namespace NLS::Render::Backend
 				clearValue.b,
 				clearValue.a
 			};
+			const auto clearValueWarningFilter = MakeBackbufferClearValueWarningFilter(
+				m_device,
+				clearRequest.suppressClearValueMismatchWarning);
+			const auto clearValueWarningScope = clearRequest.suppressClearValueMismatchWarning
+				? std::unique_ptr<NLS::Render::RHI::DX12::ScopedDx12InfoQueueMessageScope>{}
+				: std::make_unique<NLS::Render::RHI::DX12::ScopedDx12InfoQueueMessageScope>();
 			m_commandList->ClearRenderTargetView(rtvHandles[colorAttachmentIndex], color, 1, &fullRect);
 		}
 
@@ -1056,6 +1075,7 @@ namespace NLS::Render::Backend
 		vbView.SizeInBytes = static_cast<UINT>(view.buffer->GetDesc().size - view.offset);
 		vbView.StrideInBytes = view.stride;
 		m_commandList->IASetVertexBuffers(slot, 1, &vbView);
+		m_recordedBufferKeepAlive.push_back(view.buffer);
 #else
 		(void)slot;
 		(void)view;
@@ -1074,6 +1094,7 @@ namespace NLS::Render::Backend
 			? DXGI_FORMAT_R16_UINT
 			: DXGI_FORMAT_R32_UINT;
 		m_commandList->IASetIndexBuffer(&ibView);
+		m_recordedBufferKeepAlive.push_back(view.buffer);
 #else
 		(void)view;
 #endif

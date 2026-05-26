@@ -33,9 +33,14 @@ namespace NLS::Editor::Panels
 		* Update frame info information
 		* @param p_targetView
 		*/
-        void Update(AView* p_targetView);
-        void UpdateForRenderer(const std::string& viewName, const Render::Core::CompositeRenderer& renderer);
-        void SetTargetPanelDrawTime(const UI::APanel* panel);
+		void RefreshForView(AView* p_targetView);
+		void UpdateForRenderer(const std::string& viewName, const Render::Core::CompositeRenderer& renderer);
+		void SetTargetPanelDrawTime(const UI::APanel* panel);
+		void SetTargetView(AView* p_targetView);
+		AView* GetTargetView() const;
+
+	protected:
+		void OnBeforeDrawWidgets() override;
 
 	private:
 		UI::Widgets::Text& m_viewNameText;
@@ -55,5 +60,6 @@ namespace NLS::Editor::Panels
 		UI::Widgets::Text& m_publishStateText;
 		UI::Widgets::Text& m_frameStageText;
 		UI::Widgets::Text& m_retirementStateText;
+		AView* m_targetView = nullptr;
 	};
 }

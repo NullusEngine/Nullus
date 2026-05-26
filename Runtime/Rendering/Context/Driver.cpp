@@ -90,6 +90,42 @@ namespace
             });
     }
 
+    void AppendDriverTelemetry(const DriverImpl* impl, ThreadedFrameTelemetry& telemetry)
+    {
+        if (impl == nullptr)
+            return;
+
+        telemetry.queueOperationFailureCount = impl->queueOperationFailureCount;
+        telemetry.lastQueueOperationFailure = impl->lastQueueOperationFailure;
+        telemetry.currentFrameQueueOperationFailureCount =
+            impl->currentFrameQueueOperationFailureCount;
+        telemetry.currentFrameLastQueueOperationFailure =
+            impl->currentFrameLastQueueOperationFailure;
+        telemetry.deviceLostDetected = impl->deviceLostDetected;
+        telemetry.deviceLostReason = impl->deviceLostReason;
+
+        if (impl->pipelineCache != nullptr)
+        {
+            telemetry.pipelineMainlineActive = true;
+            telemetry.pipelineBypassCount = 0u;
+
+            const auto pipelineCacheStats = impl->pipelineCache->GetStats();
+            telemetry.pipelineCacheGraphicsHits = pipelineCacheStats.graphicsHits;
+            telemetry.pipelineCacheGraphicsMisses = pipelineCacheStats.graphicsMisses;
+            telemetry.pipelineCacheGraphicsStores = pipelineCacheStats.graphicsStores;
+            telemetry.pipelineCacheGraphicsEntries = pipelineCacheStats.graphicsEntryCount;
+            telemetry.pipelineCacheComputeHits = pipelineCacheStats.computeHits;
+            telemetry.pipelineCacheComputeMisses = pipelineCacheStats.computeMisses;
+            telemetry.pipelineCacheComputeStores = pipelineCacheStats.computeStores;
+            telemetry.pipelineCacheComputeEntries = pipelineCacheStats.computeEntryCount;
+        }
+        else
+        {
+            telemetry.pipelineMainlineActive = false;
+            telemetry.pipelineBypassCount = 1u;
+        }
+    }
+
     constexpr auto kThreadedWorkerWakeTimeout = std::chrono::milliseconds(250);
     constexpr auto kThreadedDrainWakeTimeout = std::chrono::milliseconds(1);
 
@@ -932,10 +968,14 @@ namespace
             return true;
         }
 
-        const auto vertexCount = drawCommand.mesh->GetVertexCount();
+        const auto meshVertexCount = drawCommand.mesh->GetVertexCount();
+        const auto vertexStart = std::min(drawCommand.vertexStart, meshVertexCount);
+        const auto vertexCount = drawCommand.vertexCount != 0u
+            ? std::min(drawCommand.vertexCount, meshVertexCount - vertexStart)
+            : meshVertexCount - vertexStart;
         if (vertexCount > 0u)
         {
-            commandBuffer.Draw(vertexCount, drawCommand.instanceCount, 0, 0);
+            commandBuffer.Draw(vertexCount, drawCommand.instanceCount, vertexStart, 0);
             return true;
         }
 
@@ -1610,38 +1650,17 @@ void DriverRendererAccess::DrainThreadedRendering(Driver& driver)
 ThreadedFrameTelemetry DriverRendererAccess::GetThreadedFrameTelemetry(const Driver& driver)
 {
     auto telemetry = RenderThreadCoordinator::GetThreadedFrameTelemetry(driver);
-    if (driver.m_impl == nullptr)
-        return telemetry;
+    AppendDriverTelemetry(driver.m_impl.get(), telemetry);
+    return telemetry;
+}
 
-    telemetry.queueOperationFailureCount = driver.m_impl->queueOperationFailureCount;
-    telemetry.lastQueueOperationFailure = driver.m_impl->lastQueueOperationFailure;
-    telemetry.currentFrameQueueOperationFailureCount =
-        driver.m_impl->currentFrameQueueOperationFailureCount;
-    telemetry.currentFrameLastQueueOperationFailure =
-        driver.m_impl->currentFrameLastQueueOperationFailure;
-    telemetry.deviceLostDetected = driver.m_impl->deviceLostDetected;
-    telemetry.deviceLostReason = driver.m_impl->deviceLostReason;
+std::optional<ThreadedFrameTelemetry> DriverRendererAccess::TryGetThreadedFrameTelemetry(const Driver& driver)
+{
+    auto telemetry = RenderThreadCoordinator::TryGetThreadedFrameTelemetry(driver);
+    if (!telemetry.has_value())
+        return std::nullopt;
 
-    if (driver.m_impl->pipelineCache != nullptr)
-    {
-        telemetry.pipelineMainlineActive = true;
-        telemetry.pipelineBypassCount = 0u;
-
-        const auto pipelineCacheStats = driver.m_impl->pipelineCache->GetStats();
-        telemetry.pipelineCacheGraphicsHits = pipelineCacheStats.graphicsHits;
-        telemetry.pipelineCacheGraphicsMisses = pipelineCacheStats.graphicsMisses;
-        telemetry.pipelineCacheGraphicsStores = pipelineCacheStats.graphicsStores;
-        telemetry.pipelineCacheGraphicsEntries = pipelineCacheStats.graphicsEntryCount;
-        telemetry.pipelineCacheComputeHits = pipelineCacheStats.computeHits;
-        telemetry.pipelineCacheComputeMisses = pipelineCacheStats.computeMisses;
-        telemetry.pipelineCacheComputeStores = pipelineCacheStats.computeStores;
-        telemetry.pipelineCacheComputeEntries = pipelineCacheStats.computeEntryCount;
-    }
-    else
-    {
-        telemetry.pipelineMainlineActive = false;
-        telemetry.pipelineBypassCount = 1u;
-    }
+    AppendDriverTelemetry(driver.m_impl.get(), telemetry.value());
     return telemetry;
 }
 

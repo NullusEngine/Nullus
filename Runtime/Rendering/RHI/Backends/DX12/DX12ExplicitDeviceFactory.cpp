@@ -521,7 +521,15 @@ namespace NLS::Render::Backend
 	{
 		const DX12DeviceResources resources = CreateDX12DeviceResources(debugMode);
 		if (!resources.IsValid())
+		{
+			if (!resources.creationDiagnostics.empty())
+			{
+				NLS_LOG_ERROR(
+					"CreateDX12RhiDevice: DX12 backend creation failed: " +
+					resources.creationDiagnostics);
+			}
 			return nullptr;
+		}
 
 #if defined(_WIN32)
 		return CreateNativeDX12ExplicitDevice(

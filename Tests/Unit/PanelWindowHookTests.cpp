@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <future>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -229,6 +230,16 @@ void ExpectTextWidgetContent(NLS::UI::PanelWindow& panel, const std::string& exp
         });
 
     EXPECT_TRUE(found) << "Missing FrameInfo text: " << expectedContent;
+}
+
+std::string ReadSourceFile(const std::filesystem::path& path)
+{
+    std::ifstream stream(path, std::ios::binary);
+    EXPECT_TRUE(stream.is_open()) << path.string();
+    return {
+        std::istreambuf_iterator<char>(stream),
+        std::istreambuf_iterator<char>()
+    };
 }
 
 }
@@ -470,6 +481,110 @@ TEST(PanelWindowHookTests, FrameInfoPanelReadsRendererOwnedStats)
     ExpectTextWidgetContent(panel, "Target Panel Draw: 0 us");
     ExpectTextWidgetContent(panel, "Frame Stage: Direct");
     ExpectTextWidgetContent(panel, "Retirement State: Direct");
+}
+
+TEST(PanelWindowHookTests, FrameInfoPanelRefreshesDuringDrawWithoutLiveTelemetryRead)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto editorSource = ReadSourceFile(root / "Project/Editor/Core/Editor.cpp");
+    const auto frameInfoHeader = ReadSourceFile(root / "Project/Editor/Panels/FrameInfo.h");
+    const auto frameInfoSource = ReadSourceFile(root / "Project/Editor/Panels/FrameInfo.cpp");
+    const auto compositeRendererSource = ReadSourceFile(root / "Runtime/Rendering/Core/CompositeRenderer.cpp");
+    const auto driverSource = ReadSourceFile(root / "Runtime/Rendering/Context/Driver.cpp");
+    const auto renderThreadCoordinatorSource =
+        ReadSourceFile(root / "Runtime/Rendering/Context/RenderThreadCoordinator.cpp");
+
+    EXPECT_NE(frameInfoHeader.find("void SetTargetView(AView* p_targetView);"), std::string::npos);
+    EXPECT_NE(frameInfoHeader.find("AView* GetTargetView() const;"), std::string::npos);
+    EXPECT_NE(frameInfoHeader.find("void OnBeforeDrawWidgets() override;"), std::string::npos);
+    EXPECT_NE(frameInfoHeader.find("AView* m_targetView = nullptr;"), std::string::npos);
+
+    EXPECT_NE(
+        frameInfoSource.find("void Editor::Panels::FrameInfo::OnBeforeDrawWidgets()"),
+        std::string::npos);
+    EXPECT_NE(frameInfoSource.find("RefreshForView(m_targetView);"), std::string::npos);
+
+    EXPECT_NE(editorSource.find("if (sceneView.IsOpened() && sceneView.IsFocused())"), std::string::npos);
+    EXPECT_NE(editorSource.find("frameInfo.SetTargetView(&sceneView);"), std::string::npos);
+    EXPECT_NE(editorSource.find("else if (gameView.IsOpened() && gameView.IsFocused())"), std::string::npos);
+    EXPECT_NE(editorSource.find("frameInfo.SetTargetView(&gameView);"), std::string::npos);
+    EXPECT_NE(editorSource.find("else if (assetView.IsOpened() && assetView.IsFocused())"), std::string::npos);
+    EXPECT_NE(editorSource.find("frameInfo.SetTargetView(&assetView);"), std::string::npos);
+    EXPECT_NE(editorSource.find("frameInfo.GetTargetView() == nullptr || !frameInfo.GetTargetView()->IsOpened()"), std::string::npos);
+    EXPECT_NE(editorSource.find("if (sceneView.IsOpened())"), std::string::npos);
+    EXPECT_NE(editorSource.find("else if (gameView.IsOpened())"), std::string::npos);
+    EXPECT_NE(editorSource.find("else if (assetView.IsOpened())"), std::string::npos);
+    EXPECT_NE(frameInfoSource.find("p_targetView == nullptr || !p_targetView->IsOpened()"), std::string::npos);
+
+    const auto frameInfoCreation = editorSource.find("CreatePanel<Panels::FrameInfo>");
+    const auto assetViewCreation = editorSource.find("CreatePanel<Panels::AssetView>");
+    const auto sceneViewCreation = editorSource.find("CreatePanel<Panels::SceneView>");
+    const auto gameViewCreation = editorSource.find("CreatePanel<Panels::GameView>");
+    ASSERT_NE(frameInfoCreation, std::string::npos);
+    ASSERT_NE(assetViewCreation, std::string::npos);
+    ASSERT_NE(sceneViewCreation, std::string::npos);
+    ASSERT_NE(gameViewCreation, std::string::npos);
+    EXPECT_GT(frameInfoCreation, assetViewCreation);
+    EXPECT_GT(frameInfoCreation, sceneViewCreation);
+    EXPECT_GT(frameInfoCreation, gameViewCreation);
+
+    const auto getFrameInfo = compositeRendererSource.find("const Data::FrameInfo& CompositeRenderer::GetFrameInfo() const");
+    ASSERT_NE(getFrameInfo, std::string::npos);
+    const auto isFrameInfoValid = compositeRendererSource.find("bool CompositeRenderer::IsFrameInfoValid() const");
+    ASSERT_NE(isFrameInfoValid, std::string::npos);
+    const auto getFrameInfoBody = compositeRendererSource.substr(getFrameInfo, isFrameInfoValid - getFrameInfo);
+    EXPECT_NE(getFrameInfoBody.find("TryGetThreadedFrameTelemetry"), std::string::npos);
+    EXPECT_EQ(getFrameInfoBody.find("DriverRendererAccess::GetThreadedFrameTelemetry"), std::string::npos);
+
+    const auto tryTelemetry = driverSource.find("DriverRendererAccess::TryGetThreadedFrameTelemetry");
+    ASSERT_NE(tryTelemetry, std::string::npos);
+    const auto setViewport = driverSource.find("void DriverRendererAccess::SetViewport", tryTelemetry);
+    ASSERT_NE(setViewport, std::string::npos);
+    const auto tryTelemetryBody = driverSource.substr(tryTelemetry, setViewport - tryTelemetry);
+    EXPECT_NE(tryTelemetryBody.find("AppendDriverTelemetry"), std::string::npos);
+    EXPECT_NE(tryTelemetryBody.find("return std::nullopt"), std::string::npos);
+
+    const auto coordinatorTryTelemetry =
+        renderThreadCoordinatorSource.find("RenderThreadCoordinator::TryGetThreadedFrameTelemetry");
+    ASSERT_NE(coordinatorTryTelemetry, std::string::npos);
+    const auto coordinatorTryTelemetryBody = renderThreadCoordinatorSource.substr(coordinatorTryTelemetry);
+    EXPECT_NE(coordinatorTryTelemetryBody.find("threadedLifecycle == nullptr"), std::string::npos);
+    EXPECT_NE(coordinatorTryTelemetryBody.find("return std::nullopt"), std::string::npos);
+}
+
+TEST(PanelWindowHookTests, FrameInfoTelemetryReadReturnsImmediatelyWhenLifecycleTelemetryIsBusy)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(*driver);
+
+    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(*driver);
+    ASSERT_NE(lifecycle, nullptr);
+    ASSERT_TRUE(NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::TryLockTelemetry(*lifecycle));
+
+    auto telemetryFuture = std::async(
+        std::launch::async,
+        [&]
+        {
+            return NLS::Render::Context::DriverRendererAccess::TryGetThreadedFrameTelemetry(*driver);
+        });
+
+    const auto status = telemetryFuture.wait_for(std::chrono::milliseconds(50));
+
+    NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::UnlockTelemetry(*lifecycle);
+
+    ASSERT_EQ(status, std::future_status::ready);
+    EXPECT_FALSE(telemetryFuture.get().has_value());
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock lifecycle telemetry in this test.";
+#endif
 }
 
 TEST(PanelWindowHookTests, ProfilerPanelReportsTimelineDisabledByDefault)

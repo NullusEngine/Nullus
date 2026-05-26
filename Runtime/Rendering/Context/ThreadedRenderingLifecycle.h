@@ -14,6 +14,7 @@
 #include "Math/Vector4.h"
 #include "Rendering/Context/RenderFrameBuild.h"
 #include "Rendering/Context/RenderFrameInput.h"
+#include "Rendering/Core/RenderClearValues.h"
 #include "Rendering/Data/FrameInfo.h"
 #include "Rendering/RHI/Core/RHICommand.h"
 #include "Rendering/RHI/Core/RHIEnums.h"
@@ -32,6 +33,10 @@ namespace NLS::Render::RHI
 
 namespace NLS::Render::Context
 {
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    struct ThreadedRenderingLifecycleTestAccess;
+#endif
+
     enum class RenderPassCommandKind : uint8_t
     {
         Opaque = 0,
@@ -52,6 +57,8 @@ namespace NLS::Render::Context
         std::shared_ptr<RHI::RHIBindingSet> materialBindingSet;
         std::shared_ptr<RHI::RHIMesh> mesh;
         uint32_t instanceCount = 0u;
+        uint32_t vertexStart = 0u;
+        uint32_t vertexCount = 0u;
         uint32_t objectIndex = 0u;
         bool usesObjectIndex = false;
     };
@@ -175,7 +182,7 @@ namespace NLS::Render::Context
         bool targetsSwapchain = false;
         uint32_t renderWidth = 0u;
         uint32_t renderHeight = 0u;
-        Maths::Vector4 clearColorValue = Maths::Vector4::Zero;
+        Maths::Vector4 clearColorValue = Core::DefaultOpaqueClearColor();
         bool clearColor = false;
         bool clearDepth = false;
         bool clearStencil = false;
@@ -248,7 +255,7 @@ namespace NLS::Render::Context
         uint32_t renderHeight = 0u;
         bool targetsSwapchain = true;
         bool hasExternalOutput = false;
-        Maths::Vector4 clearColor = Maths::Vector4::Zero;
+        Maths::Vector4 clearColor = Core::DefaultOpaqueClearColor();
         bool clearColorBuffer = true;
         bool clearDepthBuffer = true;
         bool clearStencilBuffer = true;
@@ -276,7 +283,7 @@ namespace NLS::Render::Context
         bool frameDataReady = false;
         bool objectDataReady = false;
         bool lightingDataReady = false;
-        Maths::Vector4 clearColorValue = Maths::Vector4::Zero;
+        Maths::Vector4 clearColorValue = Core::DefaultOpaqueClearColor();
         bool clearColorBuffer = true;
         bool clearDepthBuffer = true;
         bool clearStencilBuffer = true;
@@ -350,6 +357,16 @@ namespace NLS::Render::Context
         bool asyncComputeQueueAvailable = false;
         bool usedAsyncComputeQueueSubmission = false;
         AsyncComputeDisposition asyncComputeDisposition = AsyncComputeDisposition::NotRequested;
+        bool pipelineMainlineActive = false;
+        uint64_t pipelineBypassCount = 0u;
+        uint64_t pipelineCacheGraphicsHits = 0u;
+        uint64_t pipelineCacheGraphicsMisses = 0u;
+        uint64_t pipelineCacheGraphicsStores = 0u;
+        uint64_t pipelineCacheGraphicsEntries = 0u;
+        uint64_t pipelineCacheComputeHits = 0u;
+        uint64_t pipelineCacheComputeMisses = 0u;
+        uint64_t pipelineCacheComputeStores = 0u;
+        uint64_t pipelineCacheComputeEntries = 0u;
         uint64_t queueOperationFailureCount = 0u;
         std::string lastQueueOperationFailure;
         uint64_t currentFrameQueueOperationFailureCount = 0u;
@@ -509,9 +526,14 @@ namespace NLS::Render::Context
         std::optional<InFlightFrameSlot> CopySlot(size_t slotIndex) const;
         std::vector<InFlightFrameSlot> CopySlots() const;
         ThreadedFrameTelemetry GetTelemetry() const;
+        std::optional<ThreadedFrameTelemetry> TryGetTelemetry() const;
         void ReleaseRetainedFrameResources();
 
     private:
+#if defined(NLS_ENABLE_TEST_HOOKS)
+        friend struct ThreadedRenderingLifecycleTestAccess;
+#endif
+
         bool PublishFrameSnapshotLocked(const FrameSnapshot& snapshot, size_t* publishedSlotIndex);
         bool PublishPreparedFrameLocked(
             const FrameSnapshot& snapshot,
@@ -536,4 +558,12 @@ namespace NLS::Render::Context
         uint64_t m_latestPublishedFrameId = 0u;
         uint64_t m_latestRetiredFrameId = 0u;
     };
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    struct NLS_RENDER_API ThreadedRenderingLifecycleTestAccess final
+    {
+        static bool TryLockTelemetry(ThreadedRenderingLifecycle& lifecycle);
+        static void UnlockTelemetry(ThreadedRenderingLifecycle& lifecycle);
+    };
+#endif
 }

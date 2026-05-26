@@ -12,6 +12,7 @@ namespace
 {
     constexpr float kDegreesToRadians = 3.1415926535f / 180.0f;
     constexpr float kDirectionalLightHelperLength = 5.0f;
+    constexpr float kSphereSegmentDegrees = 15.0f;
 
     Maths::Vector3 RotatePoint(const Maths::Quaternion& rotation, const Maths::Vector3& point)
     {
@@ -66,10 +67,10 @@ bool SubmitSphere(
     if (std::isinf(radius))
         return true;
 
-    for (float degrees = 0.0f; degrees <= 360.0f; degrees += 10.0f)
+    for (float degrees = 0.0f; degrees < 360.0f; degrees += kSphereSegmentDegrees)
     {
         const float radians = degrees * kDegreesToRadians;
-        const float nextRadians = (degrees + 10.0f) * kDegreesToRadians;
+        const float nextRadians = (degrees + kSphereSegmentDegrees) * kDegreesToRadians;
 
         if (!service.SubmitLine(
                 position + RotatePoint(rotation, Maths::Vector3{ std::cos(radians), std::sin(radians), 0.0f } * radius),

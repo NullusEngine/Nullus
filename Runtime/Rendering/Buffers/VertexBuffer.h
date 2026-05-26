@@ -39,6 +39,10 @@ public:
 
     const std::shared_ptr<RHI::RHIBuffer>& GetBufferHandle() const { return m_explicitBuffer; }
     const std::shared_ptr<RHI::RHIBuffer>& GetExplicitRHIBufferHandle() const { return GetBufferHandle(); }
+    bool Update(
+        const T* p_data,
+        size_t p_elements,
+        size_t p_destinationElementOffset = 0u);
 
 private:
     std::shared_ptr<RHI::RHIBuffer> m_explicitBuffer;

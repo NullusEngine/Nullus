@@ -369,6 +369,54 @@ TEST(AssetImporterFacadeTests, ModelImporterSettingsPersistAndDriveSceneConversi
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetImporterFacadeTests, ModelImporterSettingsDefaultToAutodeskFbxReader)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetImporterFacadeRoot();
+    WriteTextFile(root / "Assets" / "Models" / "LegacyHero.fbx", "fbx");
+
+    AssetImporterFacade facade({root});
+    ASSERT_TRUE(facade.Refresh());
+
+    const auto settings = facade.GetModelImporterSettings("Assets/Models/LegacyHero.fbx");
+    ASSERT_TRUE(settings.has_value());
+    EXPECT_EQ(settings->fbxReaderSelection, FbxReaderSelection::Autodesk);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImporterFacadeTests, ModelImporterSettingsPersistFbxReaderSelectionAndDirtyState)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetImporterFacadeRoot();
+    WriteTextFile(root / "Assets" / "Models" / "AssimpHero.fbx", "fbx");
+
+    AssetImporterFacade facade({root});
+    ASSERT_TRUE(facade.Refresh());
+
+    auto settings = facade.GetModelImporterSettings("Assets/Models/AssimpHero.fbx");
+    ASSERT_TRUE(settings.has_value());
+    settings->fbxReaderSelection = FbxReaderSelection::Assimp;
+    ASSERT_TRUE(facade.SetModelImporterSettings("Assets/Models/AssimpHero.fbx", *settings));
+
+    const auto stored = facade.GetModelImporterSettings("Assets/Models/AssimpHero.fbx");
+    ASSERT_TRUE(stored.has_value());
+    EXPECT_EQ(stored->fbxReaderSelection, FbxReaderSelection::Assimp);
+
+    const auto importer = facade.GetAtPath("Assets/Models/AssimpHero.fbx");
+    ASSERT_TRUE(importer.has_value());
+    EXPECT_TRUE(importer->dirty);
+
+    const auto loadedMeta = NLS::Core::Assets::AssetMeta::Load(
+        NLS::Core::Assets::GetAssetMetaPath(root / "Assets" / "Models" / "AssimpHero.fbx"));
+    ASSERT_TRUE(loadedMeta.has_value());
+    EXPECT_EQ(loadedMeta->settings.at("MODEL_FBX_READER"), "assimp");
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetImporterFacadeTests, TextureImporterSettingsPersistSamplerColorSpaceAndPlatformOverrides)
 {
     using namespace NLS::Editor::Assets;

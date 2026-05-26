@@ -5,7 +5,7 @@
 
 ## Summary
 
-Shader cache database path selection must prefer the configured project asset root before falling back to source-path inference. The implementation will expose a narrowly testable cache path resolver in the shader loader, pass `ShaderManager`'s configured project assets path into that resolver, and prevent direct `App/Assets` engine shader fallback from creating `App/Library`.
+Shader cache database path selection must prefer the configured project asset root before falling back to source-path inference. Shader compiler DXIL/SPIR-V binary artifact output must also prefer the configured project shader cache database directory, so project cache metadata and compiled binaries live together under `<project>/Library/ShaderCache`.
 
 This mirrors Unity's asset pipeline split: built-in resources can be read from engine/package locations, but imported artifacts and cache metadata are scoped to the current project's `Library`.
 
@@ -13,13 +13,13 @@ This mirrors Unity's asset pipeline split: built-in resources can be read from e
 
 **Language/Version**: C++20
 **Primary Dependencies**: Nullus runtime resource managers, shader loader, shader compiler cache database
-**Storage**: File-based shader cache database at `Library/ShaderCache/ShaderCache.tsv`
+**Storage**: File-based shader cache database and compiled shader binary artifacts under `Library/ShaderCache`
 **Testing**: `NullusUnitTests` with GoogleTest
 **Target Platform**: Desktop editor/game runtime
 **Project Type**: C++ engine/runtime
 **Performance Goals**: O(path-depth) path resolution; no shader compilation hot-path regression beyond existing path normalization
 **Constraints**: Preserve direct `ShaderLoader` fallback behavior for non-`App` asset roots and do not edit generated files
-**Scale/Scope**: One Runtime/Core resource manager and one Runtime/Rendering loader path
+**Scale/Scope**: Existing Runtime/Core resource manager, Runtime/Rendering shader loader, and Runtime/Rendering shader compiler cache path selection
 
 ## Constitution Check
 
@@ -27,7 +27,7 @@ This mirrors Unity's asset pipeline split: built-in resources can be read from e
 - Generated-file boundaries: No `Runtime/*/Gen/` edits planned.
 - Backend/platform validation: Unit-level path resolution is backend-independent; no backend correctness claim will be made.
 - Product runtime viability: Editor/Game continue using existing resource manager flow; fallback remains for direct callers.
-- Evidence path: Focused `NullusUnitTests` filter for shader cache path resolution, `App/Assets` fallback guard, and relevant shader compiler cache tests.
+- Evidence path: Focused `NullusUnitTests` filter for shader cache path resolution, `App/Assets` fallback guard, configured artifact output under project `Library`, and relevant shader compiler cache tests.
 
 ## Project Structure
 
@@ -51,11 +51,15 @@ Runtime/Rendering/Resources/Loaders/
 ├── ShaderLoader.h
 └── ShaderLoader.cpp
 
+Runtime/Rendering/ShaderCompiler/
+├── ShaderCompiler.h
+└── ShaderCompiler.cpp
+
 Tests/Unit/
 └── ShaderCompilerTests.cpp
 ```
 
-**Structure Decision**: Keep the fix in the existing shader resource loading path. The shader compiler remains responsible for persistence once the database path is configured.
+**Structure Decision**: Keep project cache root discovery in the existing shader resource loading path and let the shader compiler derive binary artifact output from the configured database path. Bare compiler calls without a database path keep the current user-local fallback.
 
 **Unity Alignment**: Treat `App/Assets/Engine` like Unity built-in/prebuilt resources and treat `<project>/Library/ShaderCache` like Unity's project-local imported artifact/cache store.
 

@@ -98,6 +98,7 @@ namespace NLS::Render::Context
         static bool TryDrainThreadedRendering(Driver& driver);
         static void DrainThreadedRendering(Driver& driver);
         static ThreadedFrameTelemetry GetThreadedFrameTelemetry(const Driver& driver);
+        static std::optional<ThreadedFrameTelemetry> TryGetThreadedFrameTelemetry(const Driver& driver);
 
         static void SetViewport(
             Driver& driver,

@@ -16,6 +16,10 @@
 #include <Json/json.hpp>
 #include <assimp/Base64.hpp>
 
+#ifndef NLS_HAS_ASSIMP_FBX_IMPORTER
+#define NLS_HAS_ASSIMP_FBX_IMPORTER 0
+#endif
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -1589,6 +1593,108 @@ NLS::Render::Assets::SceneModelSourceFormat SourceFormatForExtension(const std::
     return NLS::Render::Assets::SceneModelSourceFormat::Gltf;
 }
 
+FbxReaderSelection ResolveFbxReaderSelection(const ExternalModelImportRequest& request)
+{
+    return ModelImporterSettingsFromSerialized(request.meta.settings).fbxReaderSelection;
+}
+
+bool IsAssimpFbxImporterAvailable()
+{
+    return NLS_HAS_ASSIMP_FBX_IMPORTER != 0;
+}
+
+bool LoadWithAssimpParser(
+    const ExternalModelImportRequest& request,
+    const std::string& extension,
+    std::vector<NLS::Render::Resources::Parsers::ParsedMeshData>& meshes,
+    std::vector<std::string>& materialNames,
+    const NLS::Render::Resources::Parsers::EModelParserFlags parserFlags,
+    std::vector<std::string>* parserExternalDependencies,
+    NLS::Render::Assets::ImportedScene& detailedScene,
+    bool& hasDetailedScene)
+{
+    NLS::Render::Resources::Parsers::AssimpParser parser;
+    const bool parsed = parser.LoadModelData(
+        request.sourcePath.string(),
+        meshes,
+        materialNames,
+        parserFlags,
+        parserExternalDependencies);
+    hasDetailedScene = parsed && parser.PopulateImportedSceneData(
+        request.sourcePath,
+        SourceFormatForExtension(extension),
+        detailedScene);
+    return parsed;
+}
+
+bool LoadFbxWithAssimp(
+    const ExternalModelImportRequest& request,
+    std::vector<NLS::Render::Resources::Parsers::ParsedMeshData>& meshes,
+    std::vector<std::string>& materialNames,
+    const NLS::Render::Resources::Parsers::EModelParserFlags parserFlags,
+    std::vector<std::string>* parserExternalDependencies,
+    NLS::Render::Assets::ImportedScene& detailedScene,
+    bool& hasDetailedScene,
+    NLS::Core::Assets::AssetDiagnostics& diagnostics)
+{
+    if (!IsAssimpFbxImporterAvailable())
+    {
+        AddError(
+            diagnostics,
+            request.meta.id,
+            request.sourcePath,
+            "external-model-importer-assimp-fbx-unavailable",
+            "Assimp FBX import is not enabled in this build. Reconfigure with NLS_ENABLE_ASSIMP_FBX_IMPORTER=ON or choose the Autodesk FBX reader.");
+        return false;
+    }
+
+    return LoadWithAssimpParser(
+        request,
+        ".fbx",
+        meshes,
+        materialNames,
+        parserFlags,
+        parserExternalDependencies,
+        detailedScene,
+        hasDetailedScene);
+}
+
+bool LoadFbxWithAutodesk(
+    const ExternalModelImportRequest& request,
+    std::vector<NLS::Render::Resources::Parsers::ParsedMeshData>& meshes,
+    std::vector<std::string>& materialNames,
+    const NLS::Render::Resources::Parsers::EModelParserFlags parserFlags,
+    std::vector<std::string>* parserExternalDependencies,
+    NLS::Render::Assets::ImportedScene& detailedScene,
+    bool& hasDetailedScene)
+{
+    NLS::Render::Resources::Parsers::FbxSdkParser parser;
+    const bool parsed = parser.LoadModelData(
+        request.sourcePath.string(),
+        meshes,
+        materialNames,
+        parserFlags,
+        parserExternalDependencies);
+    hasDetailedScene = parsed && parser.PopulateImportedSceneData(
+        request.sourcePath,
+        NLS::Render::Assets::SceneModelSourceFormat::Fbx,
+        detailedScene);
+    return parsed;
+}
+
+void AddFbxReaderFallbackWarning(
+    NLS::Core::Assets::AssetDiagnostics& diagnostics,
+    const ExternalModelImportRequest& request,
+    std::string reason)
+{
+    AddWarning(
+        diagnostics,
+        request.meta.id,
+        request.sourcePath,
+        "external-model-importer-fbx-reader-fallback",
+        "Autodesk FBX reader failed; attempting Assimp FBX reader fallback. Reason: " + std::move(reason));
+}
+
 NLS::Render::Assets::ImportedScene ImportSceneForRequest(
     const ExternalModelImportRequest& request,
     NLS::Core::Assets::AssetDiagnostics& diagnostics,
@@ -1631,32 +1737,63 @@ NLS::Render::Assets::ImportedScene ImportSceneForRequest(
         {
             if (extension == ".fbx")
             {
-                NLS::Render::Resources::Parsers::FbxSdkParser parser;
-                const bool parsed = parser.LoadModelData(
-                    request.sourcePath.string(),
+                const auto fbxReaderSelection = ResolveFbxReaderSelection(request);
+                if (fbxReaderSelection == FbxReaderSelection::Assimp)
+                {
+                    return LoadFbxWithAssimp(
+                        request,
+                        meshes,
+                        materialNames,
+                        parserFlags,
+                        parserExternalDependencies,
+                        detailedScene,
+                        hasDetailedScene,
+                        diagnostics);
+                }
+
+                const bool allowAssimpFallback =
+                    fbxReaderSelection == FbxReaderSelection::AutodeskWithAssimpFallback;
+
+                const bool parsed = LoadFbxWithAutodesk(
+                    request,
                     meshes,
                     materialNames,
                     parserFlags,
-                    parserExternalDependencies);
-                hasDetailedScene = parsed && parser.PopulateImportedSceneData(
-                    request.sourcePath,
-                    SourceFormatForExtension(extension),
-                    detailedScene);
-                return parsed;
+                    parserExternalDependencies,
+                    detailedScene,
+                    hasDetailedScene);
+                if (parsed || !allowAssimpFallback)
+                    return parsed;
+
+                AddFbxReaderFallbackWarning(diagnostics, request, "Autodesk parser failed to load the source file.");
+                meshes.clear();
+                materialNames.clear();
+                hasDetailedScene = false;
+                detailedScene = {};
+                detailedScene.sourceAssetId = request.meta.id;
+                detailedScene.sceneKey = request.sceneKey;
+                if (parserExternalDependencies)
+                    parserExternalDependencies->clear();
+                return LoadFbxWithAssimp(
+                    request,
+                    meshes,
+                    materialNames,
+                    parserFlags,
+                    parserExternalDependencies,
+                    detailedScene,
+                    hasDetailedScene,
+                    diagnostics);
             }
 
-            NLS::Render::Resources::Parsers::AssimpParser parser;
-            const bool parsed = parser.LoadModelData(
-                request.sourcePath.string(),
+            return LoadWithAssimpParser(
+                request,
+                extension,
                 meshes,
                 materialNames,
                 parserFlags,
-                parserExternalDependencies);
-            hasDetailedScene = parsed && parser.PopulateImportedSceneData(
-                request.sourcePath,
-                SourceFormatForExtension(extension),
-                detailedScene);
-            return parsed;
+                parserExternalDependencies,
+                detailedScene,
+                hasDetailedScene);
         }();
         if (!loaded)
         {
@@ -1733,13 +1870,49 @@ std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> LoadSourceMeshData(
     {
         if (extension == ".fbx")
         {
-            NLS::Render::Resources::Parsers::FbxSdkParser parser;
-            return parser.LoadModelData(
-                request.sourcePath.string(),
+            NLS::Render::Assets::ImportedScene unusedScene;
+            bool hasDetailedScene = false;
+            const auto fbxReaderSelection = ResolveFbxReaderSelection(request);
+            if (fbxReaderSelection == FbxReaderSelection::Assimp)
+            {
+                return LoadFbxWithAssimp(
+                    request,
+                    meshes,
+                    materials,
+                    NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE,
+                    externalDependencies,
+                    unusedScene,
+                    hasDetailedScene,
+                    diagnostics);
+            }
+
+            const bool loadedWithAutodesk = LoadFbxWithAutodesk(
+                request,
                 meshes,
                 materials,
                 NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE,
-                externalDependencies);
+                externalDependencies,
+                unusedScene,
+                hasDetailedScene);
+            if (loadedWithAutodesk || fbxReaderSelection != FbxReaderSelection::AutodeskWithAssimpFallback)
+                return loadedWithAutodesk;
+
+            AddFbxReaderFallbackWarning(diagnostics, request, "Autodesk parser failed while building native mesh cache.");
+            meshes.clear();
+            materials.clear();
+            if (externalDependencies)
+                externalDependencies->clear();
+            hasDetailedScene = false;
+            unusedScene = {};
+            return LoadFbxWithAssimp(
+                request,
+                meshes,
+                materials,
+                NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE,
+                externalDependencies,
+                unusedScene,
+                hasDetailedScene,
+                diagnostics);
         }
 
         NLS::Render::Resources::Parsers::AssimpParser parser;

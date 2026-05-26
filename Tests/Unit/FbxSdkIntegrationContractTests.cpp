@@ -583,20 +583,27 @@ void ExpectPosition(
 #endif
 }
 
-TEST(FbxSdkIntegrationContractTests, EditorFbxImportUsesFbxSdkParserWithoutAssimpFallback)
+TEST(FbxSdkIntegrationContractTests, EditorFbxImportDefaultsToFbxSdkParserWithoutAutomaticAssimpFallback)
 {
     const auto source = ReadTextFile(
         std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Assets/ExternalAssetImporter.cpp");
 
     ASSERT_FALSE(source.empty());
     EXPECT_NE(source.find("FbxSdkParser"), std::string::npos);
+    EXPECT_NE(source.find("ResolveFbxReaderSelection"), std::string::npos);
+    EXPECT_NE(source.find("FbxReaderSelection::Autodesk"), std::string::npos);
+    EXPECT_NE(source.find("FbxReaderSelection::AutodeskWithAssimpFallback"), std::string::npos);
 
     const auto importScene = SliceFrom(source, "ImportSceneForRequest(");
     ASSERT_FALSE(importScene.empty());
-    const auto fbxBranch = SliceBetween(importScene, "extension == \".fbx\"", "AssimpParser parser");
+    const auto fbxBranch = SliceBetween(importScene, "extension == \".fbx\"", "extension == \".obj\"");
     ASSERT_FALSE(fbxBranch.empty());
-    EXPECT_NE(fbxBranch.find("FbxSdkParser"), std::string::npos);
-    EXPECT_EQ(fbxBranch.find("AssimpParser parser"), std::string::npos);
+    EXPECT_NE(fbxBranch.find("LoadFbxWithAutodesk"), std::string::npos);
+    EXPECT_NE(fbxBranch.find("FbxReaderSelection::AutodeskWithAssimpFallback"), std::string::npos);
+
+    const auto autodeskReader = SliceBetween(source, "bool LoadFbxWithAutodesk(", "void AddFbxReaderFallbackWarning(");
+    ASSERT_FALSE(autodeskReader.empty());
+    EXPECT_NE(autodeskReader.find("FbxSdkParser"), std::string::npos);
 }
 
 TEST(FbxSdkIntegrationContractTests, ExternalModelImportExposesProfilerScopesForSlowImportStages)
@@ -1014,7 +1021,7 @@ TEST(FbxSdkIntegrationContractTests, RuntimeFbxSourceLoadUsesFbxSdkParserWithout
     EXPECT_EQ(managerFbxBranch.find("AssimpParser parser"), std::string::npos);
 }
 
-TEST(FbxSdkIntegrationContractTests, CMakeUsesOnlyBundledSdkPath)
+TEST(FbxSdkIntegrationContractTests, CMakeUsesBundledSdkPathAndKeepsAutodeskDefault)
 {
     const auto cmake = ReadTextFile(
         std::filesystem::path(NLS_ROOT_DIR) / "ThirdParty/CMakeLists.txt");
@@ -1023,10 +1030,48 @@ TEST(FbxSdkIntegrationContractTests, CMakeUsesOnlyBundledSdkPath)
     EXPECT_NE(cmake.find("FBX/sdk/windows"), std::string::npos);
     EXPECT_NE(cmake.find("FBX/sdk/linux"), std::string::npos);
     EXPECT_NE(cmake.find("FBX/sdk/macos"), std::string::npos);
-    EXPECT_NE(cmake.find("ASSIMP_BUILD_FBX_IMPORTER OFF"), std::string::npos);
-    EXPECT_EQ(cmake.find("ASSIMP_BUILD_FBX_IMPORTER " "ON"), std::string::npos);
+    EXPECT_NE(cmake.find("NLS_ENABLE_ASSIMP_FBX_IMPORTER"), std::string::npos);
+    EXPECT_NE(cmake.find("ASSIMP_BUILD_FBX_IMPORTER ${NLS_ENABLE_ASSIMP_FBX_IMPORTER}"), std::string::npos);
     ExpectNoExternalFbxSdkLookup(cmake);
     ExpectNoVersionedFbxSdkDirectory(cmake);
+}
+
+TEST(FbxSdkIntegrationContractTests, CMakeExposesNarrowAssimpFbxImporterOptionWithoutExporters)
+{
+    const auto cmake = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "ThirdParty/CMakeLists.txt");
+
+    ASSERT_FALSE(cmake.empty());
+    EXPECT_NE(cmake.find("option(NLS_ENABLE_ASSIMP_FBX_IMPORTER"), std::string::npos);
+    EXPECT_NE(cmake.find("set(ASSIMP_BUILD_FBX_IMPORTER ${NLS_ENABLE_ASSIMP_FBX_IMPORTER}"), std::string::npos);
+    EXPECT_NE(cmake.find("set(ASSIMP_BUILD_GLTF_IMPORTER ON"), std::string::npos);
+    EXPECT_NE(cmake.find("set(ASSIMP_BUILD_OBJ_IMPORTER ON"), std::string::npos);
+    EXPECT_NE(cmake.find("set(ASSIMP_NO_EXPORT ON"), std::string::npos);
+}
+
+TEST(FbxSdkIntegrationContractTests, CMakeForcesAssimpFbxImporterOnForAllFormatsMode)
+{
+    const auto cmake = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "ThirdParty/CMakeLists.txt");
+
+    ASSERT_FALSE(cmake.empty());
+    const auto allFormatsBranch = SliceBetween(
+        cmake,
+        "if(NLS_ASSIMP_BUILD_ALL_FORMATS)",
+        "else()");
+    ASSERT_FALSE(allFormatsBranch.empty());
+    EXPECT_NE(allFormatsBranch.find("set(ASSIMP_BUILD_FBX_IMPORTER ON"), std::string::npos);
+}
+
+TEST(FbxSdkIntegrationContractTests, RenderTargetPublishesAssimpFbxAvailabilityDefine)
+{
+    const auto cmake = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/CMakeLists.txt");
+
+    ASSERT_FALSE(cmake.empty());
+    EXPECT_NE(cmake.find("NLS_HAS_ASSIMP_FBX_IMPORTER"), std::string::npos);
+    EXPECT_NE(cmake.find("NLS_ENABLE_ASSIMP_FBX_IMPORTER"), std::string::npos);
+    EXPECT_NE(cmake.find("NLS_ASSIMP_BUILD_ALL_FORMATS"), std::string::npos);
 }
 
 TEST(FbxSdkIntegrationContractTests, CMakeAllowsFreshCloneWithoutFbxSdkUnlessExplicitlyRequired)

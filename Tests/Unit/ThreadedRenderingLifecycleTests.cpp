@@ -1797,6 +1797,23 @@ TEST(ThreadedRenderingLifecycleTests, TelemetryTracksLatestPublishedAndRetiredFr
     EXPECT_EQ(telemetry.latestRetiredFrameId, 41u);
 }
 
+TEST(ThreadedRenderingLifecycleTests, TryThreadedFrameTelemetryReturnsEmptyWhenThreadedLifecycleIsDisabled)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    EXPECT_EQ(NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(*driver), nullptr);
+    EXPECT_FALSE(NLS::Render::Context::DriverRendererAccess::TryGetThreadedFrameTelemetry(*driver).has_value());
+
+    const auto telemetry = NLS::Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(*driver);
+    EXPECT_EQ(telemetry.inFlightFrameCount, 0u);
+}
+
 TEST(ThreadedRenderingLifecycleTests, CompositeRendererKeepsFrameDescriptorsUntilPreparedBuilderIsCaptured)
 {
     NLS::Render::Settings::DriverSettings settings;

@@ -50,6 +50,23 @@ namespace NLS::Render::Buffers
 	}
 
 	template<class T>
+	inline bool VertexBuffer<T>::Update(
+		const T* p_data,
+		const size_t p_elements,
+		const size_t p_destinationElementOffset)
+	{
+		if (m_explicitBuffer == nullptr || p_data == nullptr || p_elements == 0u)
+			return false;
+
+		NLS::Render::RHI::RHIBufferUploadDesc uploadDesc;
+		uploadDesc.data = p_data;
+		uploadDesc.dataSize = p_elements * sizeof(T);
+		uploadDesc.destinationOffset = p_destinationElementOffset * sizeof(T);
+		uploadDesc.debugName = "VertexBufferUpdate";
+		return m_explicitBuffer->UpdateData(uploadDesc).Succeeded();
+	}
+
+	template<class T>
 	inline VertexBuffer<T>::~VertexBuffer()
 	{
 		m_explicitBuffer.reset();

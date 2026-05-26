@@ -13,6 +13,7 @@
 #include "Assets/ArtifactWriter.h"
 #include "Assets/AssetMeta.h"
 #include "Assets/NativeArtifactContainer.h"
+#include "Assets/AssetImporterSettings.h"
 #include "Assets/ExternalAssetImporter.h"
 #include "Guid.h"
 #include "Rendering/Assets/ImportedScene.h"
@@ -22,6 +23,10 @@
 #include "Rendering/Resources/Parsers/AssimpParser.h"
 #include "Rendering/Resources/Parsers/IModelParser.h"
 #include "Serialize/ObjectGraphReader.h"
+
+#ifndef NLS_HAS_ASSIMP_FBX_IMPORTER
+#define NLS_HAS_ASSIMP_FBX_IMPORTER 0
+#endif
 
 namespace
 {
@@ -51,6 +56,20 @@ bool ContainsDiagnosticCode(
         {
             return diagnostic.code == expectedCode;
         });
+}
+
+const NLS::Core::Assets::AssetDiagnostic* FindDiagnosticByCode(
+    const NLS::Core::Assets::AssetDiagnostics& diagnostics,
+    const std::string& expectedCode)
+{
+    const auto found = std::find_if(
+        diagnostics.begin(),
+        diagnostics.end(),
+        [&expectedCode](const NLS::Core::Assets::AssetDiagnostic& diagnostic)
+        {
+            return diagnostic.code == expectedCode;
+        });
+    return found != diagnostics.end() ? &*found : nullptr;
 }
 
 void AppendU32(std::vector<uint8_t>& bytes, const uint32_t value)
@@ -192,6 +211,21 @@ std::string ReadTextFile(const std::filesystem::path& path)
     return std::string(
         std::istreambuf_iterator<char>(input),
         std::istreambuf_iterator<char>());
+}
+
+std::string SliceBetween(
+    const std::string& source,
+    const std::string& beginMarker,
+    const std::string& endMarker)
+{
+    const auto begin = source.find(beginMarker);
+    if (begin == std::string::npos)
+        return {};
+
+    const auto end = source.find(endMarker, begin + beginMarker.size());
+    if (end == std::string::npos)
+        return source.substr(begin);
+    return source.substr(begin, end - begin);
 }
 
 std::vector<uint8_t> ReadBinaryFile(const std::filesystem::path& path)
@@ -2529,6 +2563,278 @@ TEST(AssetImportPipelineTests, AssimpParserClearsOutputsWhenLoadFails)
 
     std::filesystem::remove_all(root);
 }
+
+TEST(AssetImportPipelineTests, ModelImporterSettingsResolveMissingFbxReaderToAutodesk)
+{
+    const std::map<std::string, std::string> settings;
+
+    const auto parsed = NLS::Editor::Assets::ModelImporterSettingsFromSerialized(settings);
+
+    EXPECT_EQ(parsed.fbxReaderSelection, NLS::Editor::Assets::FbxReaderSelection::Autodesk);
+}
+
+TEST(AssetImportPipelineTests, ModelImporterSettingsRejectUnknownFbxReaderToAutodesk)
+{
+    const std::map<std::string, std::string> settings {
+        {"MODEL_FBX_READER", "mystery-reader"}
+    };
+
+    const auto parsed = NLS::Editor::Assets::ModelImporterSettingsFromSerialized(settings);
+
+    EXPECT_EQ(parsed.fbxReaderSelection, NLS::Editor::Assets::FbxReaderSelection::Autodesk);
+}
+
+TEST(AssetImportPipelineTests, ModelImporterSettingsResolveFallbackFbxReaderSelection)
+{
+    const std::map<std::string, std::string> settings {
+        {"MODEL_FBX_READER", "autodesk-with-assimp-fallback"}
+    };
+
+    const auto parsed = NLS::Editor::Assets::ModelImporterSettingsFromSerialized(settings);
+
+    EXPECT_EQ(
+        parsed.fbxReaderSelection,
+        NLS::Editor::Assets::FbxReaderSelection::AutodeskWithAssimpFallback);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportRoutesExplicitAssimpFbxSelection)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Assets/ExternalAssetImporter.cpp");
+
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(source.find("FbxReaderSelection::Assimp"), std::string::npos);
+    EXPECT_NE(source.find("LoadFbxWithAssimp"), std::string::npos);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportRoutesFbxMeshCacheThroughReaderSelection)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Assets/ExternalAssetImporter.cpp");
+
+    ASSERT_FALSE(source.empty());
+    const auto loadSourceMeshData = SliceBetween(
+        source,
+        "std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> LoadSourceMeshData(",
+        "std::vector<uint8_t> SerializeMeshSubAsset(");
+    ASSERT_FALSE(loadSourceMeshData.empty());
+    EXPECT_NE(loadSourceMeshData.find("ResolveFbxReaderSelection"), std::string::npos);
+    EXPECT_NE(loadSourceMeshData.find("LoadFbxWithAssimp"), std::string::npos);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportFallbackIsExplicitAndDiagnosticRich)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Assets/ExternalAssetImporter.cpp");
+
+    ASSERT_FALSE(source.empty());
+    const auto importSceneForRequest = SliceBetween(
+        source,
+        "NLS::Render::Assets::ImportedScene ImportSceneForRequest(",
+        "std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> LoadSourceMeshData(");
+    ASSERT_FALSE(importSceneForRequest.empty());
+    const auto fbxSceneRoute = SliceBetween(
+        importSceneForRequest,
+        "if (extension == \".fbx\")",
+        "return LoadWithAssimpParser(");
+    ASSERT_FALSE(fbxSceneRoute.empty());
+    EXPECT_NE(fbxSceneRoute.find("FbxReaderSelection::AutodeskWithAssimpFallback"), std::string::npos);
+    EXPECT_NE(fbxSceneRoute.find("AddFbxReaderFallbackWarning"), std::string::npos);
+    EXPECT_NE(fbxSceneRoute.find("LoadFbxWithAssimp"), std::string::npos);
+    EXPECT_EQ(fbxSceneRoute.find("fbxReaderSelection != FbxReaderSelection::AutodeskWithAssimpFallback"), std::string::npos);
+    EXPECT_NE(source.find("external-model-importer-fbx-reader-fallback"), std::string::npos);
+}
+
+#if !NLS_HAS_ASSIMP_FBX_IMPORTER
+TEST(AssetImportPipelineTests, ExternalModelImportDefaultFbxReaderDoesNotFallbackToAssimp)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "DefaultNoFallback.fbx";
+    WriteTextFile(sourcePath, "not a valid fbx");
+
+    NLS::Core::Assets::AssetMeta meta;
+    meta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("a5a5a5a5-a5a5-4a5a-8a5a-a5a5a5a5a5a5"));
+    meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    meta.importerId = "scene-model";
+    meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / meta.id.ToString(),
+        meta,
+        "DefaultNoFallback",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        {},
+        root,
+        {}
+    });
+
+    EXPECT_FALSE(result.imported);
+    EXPECT_FALSE(ContainsDiagnosticCode(
+        result.diagnostics,
+        "external-model-importer-fbx-reader-fallback"));
+    EXPECT_FALSE(ContainsDiagnosticCode(
+        result.diagnostics,
+        "external-model-importer-assimp-fbx-unavailable"));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportReportsUnavailableAssimpFbxWhenExplicitlySelected)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "AssimpUnavailable.fbx";
+    WriteTextFile(sourcePath, "not a valid fbx");
+
+    NLS::Core::Assets::AssetMeta meta;
+    meta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("a3a3a3a3-a3a3-4a3a-8a3a-a3a3a3a3a3a3"));
+    meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    meta.importerId = "scene-model";
+    meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+    meta.settings["MODEL_FBX_READER"] = "assimp";
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / meta.id.ToString(),
+        meta,
+        "AssimpUnavailable",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        {},
+        root,
+        {}
+    });
+
+    EXPECT_FALSE(result.imported);
+    EXPECT_TRUE(ContainsDiagnosticCode(
+        result.diagnostics,
+        "external-model-importer-assimp-fbx-unavailable"));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportFallbackModeReportsFallbackBeforeUnavailableAssimp)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "FallbackUnavailable.fbx";
+    WriteTextFile(sourcePath, "not a valid fbx");
+
+    NLS::Core::Assets::AssetMeta meta;
+    meta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("a4a4a4a4-a4a4-4a4a-8a4a-a4a4a4a4a4a4"));
+    meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    meta.importerId = "scene-model";
+    meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+    meta.settings["MODEL_FBX_READER"] = "autodesk-with-assimp-fallback";
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / meta.id.ToString(),
+        meta,
+        "FallbackUnavailable",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        {},
+        root,
+        {}
+    });
+
+    EXPECT_FALSE(result.imported);
+    EXPECT_TRUE(ContainsDiagnosticCode(
+        result.diagnostics,
+        "external-model-importer-fbx-reader-fallback"));
+    EXPECT_TRUE(ContainsDiagnosticCode(
+        result.diagnostics,
+        "external-model-importer-assimp-fbx-unavailable"));
+    const auto* fallbackDiagnostic = FindDiagnosticByCode(
+        result.diagnostics,
+        "external-model-importer-fbx-reader-fallback");
+    ASSERT_NE(fallbackDiagnostic, nullptr);
+    EXPECT_EQ(fallbackDiagnostic->message.find("imported with Assimp"), std::string::npos);
+    EXPECT_NE(fallbackDiagnostic->message.find("attempting Assimp"), std::string::npos);
+
+    std::filesystem::remove_all(root);
+}
+#endif
+
+TEST(AssetImportPipelineTests, FbxReaderSelectionSerializationIsExhaustiveForKnownValues)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Assets/AssetImporterSettings.cpp");
+
+    ASSERT_FALSE(source.empty());
+    const auto serializer = SliceBetween(
+        source,
+        "std::string FbxReaderSelectionToImporterSettingString(",
+        "FbxReaderSelection FbxReaderSelectionFromImporterSettingString(");
+    ASSERT_FALSE(serializer.empty());
+    EXPECT_EQ(serializer.find("default:"), std::string::npos);
+    EXPECT_NE(serializer.find("case FbxReaderSelection::Autodesk:"), std::string::npos);
+    EXPECT_NE(serializer.find("case FbxReaderSelection::Assimp:"), std::string::npos);
+    EXPECT_NE(serializer.find("case FbxReaderSelection::AutodeskWithAssimpFallback:"), std::string::npos);
+}
+
+#if NLS_HAS_ASSIMP_FBX_IMPORTER
+TEST(AssetImportPipelineTests, ExternalModelImportExplicitAssimpFbxBuildsArtifactsWhenEnabled)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "AssimpCube.fbx";
+    std::filesystem::create_directories(sourcePath.parent_path());
+    std::filesystem::copy_file(
+        std::filesystem::path(NLS_ROOT_DIR) / "App" / "Assets" / "Engine" / "Models" / "Cube.fbx",
+        sourcePath,
+        std::filesystem::copy_options::overwrite_existing);
+
+    NLS::Core::Assets::AssetMeta meta;
+    meta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("a6a6a6a6-a6a6-4a6a-8a6a-a6a6a6a6a6a6"));
+    meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    meta.importerId = "scene-model";
+    meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+    meta.settings["MODEL_FBX_READER"] = "assimp";
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / meta.id.ToString(),
+        meta,
+        "AssimpCube",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported);
+    EXPECT_FALSE(ContainsDiagnosticCode(
+        result.diagnostics,
+        "external-model-importer-assimp-fbx-unavailable"));
+
+    const auto* meshArtifact = result.manifest.FindSubAsset("mesh:parser/mesh/0");
+    ASSERT_NE(meshArtifact, nullptr);
+    const auto mesh = NLS::Render::Assets::DeserializeMeshArtifact(ReadBinaryFile(meshArtifact->artifactPath));
+    ASSERT_TRUE(mesh.has_value());
+    EXPECT_FALSE(mesh->vertices.empty());
+    EXPECT_FALSE(mesh->indices.empty());
+
+    std::filesystem::remove_all(root);
+}
+#endif
 
 TEST(AssetImportPipelineTests, FbxImporterConvertsParserDataAndReportsParserExposureLimits)
 {

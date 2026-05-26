@@ -9,12 +9,20 @@
 
 namespace NLS::Editor::Assets
 {
+enum class FbxReaderSelection
+{
+    Autodesk,
+    Assimp,
+    AutodeskWithAssimpFallback
+};
+
 struct ModelImporterSettings
 {
     double globalScale = 1.0;
     std::string axisConversion;
     std::string unitConversion;
     std::string hierarchyPolicy = "preserve";
+    FbxReaderSelection fbxReaderSelection = FbxReaderSelection::Autodesk;
     bool importNormals = true;
     bool importTangents = true;
     bool importUvs = true;
@@ -48,6 +56,10 @@ struct TextureImporterSettings
 };
 
 std::string BoolToImporterSettingString(bool value);
+std::string FbxReaderSelectionToImporterSettingString(FbxReaderSelection value);
+FbxReaderSelection FbxReaderSelectionFromImporterSettingString(
+    const std::string& value,
+    FbxReaderSelection fallback = FbxReaderSelection::Autodesk);
 bool BoolFromImporterSettings(
     const std::map<std::string, std::string>& settings,
     const char* key,

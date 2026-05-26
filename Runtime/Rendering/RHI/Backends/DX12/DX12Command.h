@@ -136,6 +136,7 @@ namespace NLS::Render::Backend
 		std::vector<std::shared_ptr<NLS::Render::RHI::RHIBindingSet>> m_recordedBindingSetKeepAlive;
 		std::vector<std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline>> m_recordedPipelineKeepAlive;
 		std::vector<std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>> m_recordedComputePipelineKeepAlive;
+		std::vector<std::shared_ptr<NLS::Render::RHI::RHIBuffer>> m_recordedBufferKeepAlive;
 		std::vector<NLS::Base::Profiling::ProfilerGpuScopeEvent> m_gpuProfileScopeStack;
 #if defined(_WIN32)
 		bool m_bindingComputePipeline = false;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "RenderDef.h"
@@ -30,5 +31,6 @@ namespace NLS::Render::Context
             size_t* publishedSlotIndex = nullptr);
         static bool DrainPendingRenderFrameBuildsSynchronously(Driver& driver);
         static ThreadedFrameTelemetry GetThreadedFrameTelemetry(const Driver& driver);
+        static std::optional<ThreadedFrameTelemetry> TryGetThreadedFrameTelemetry(const Driver& driver);
     };
 }

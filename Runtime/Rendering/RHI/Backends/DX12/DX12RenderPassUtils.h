@@ -8,9 +8,15 @@
 
 namespace NLS::Render::RHI::DX12
 {
+    struct NLS_RENDER_API DX12ColorClearRequest
+    {
+        uint32_t attachmentIndex = 0u;
+        bool suppressClearValueMismatchWarning = false;
+    };
+
     struct NLS_RENDER_API DX12RenderPassClearPlan
     {
-        std::vector<uint32_t> colorAttachmentIndices;
+        std::vector<DX12ColorClearRequest> colorClearRequests;
         bool clearDepth = false;
         bool clearStencil = false;
     };

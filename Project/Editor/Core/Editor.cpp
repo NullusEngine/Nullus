@@ -275,7 +275,6 @@ void Editor::Core::Editor::SetupUI()
     m_panelsManager.CreatePanel<Panels::EditorTopBar>("Editor Top Bar");
     m_panelsManager.CreatePanel<Panels::EditorStatusBar>("Editor Status Bar");
     m_panelsManager.CreatePanel<Panels::AssetBrowser>("Asset Browser", true, settings, m_context.engineAssetsPath, m_context.projectAssetsPath);
-    m_panelsManager.CreatePanel<Panels::FrameInfo>("Frame Info", false, settings);
     m_panelsManager.CreatePanel<Panels::ProfilerPanel>("Profiler", false, settings);
     auto& profilerPanel = m_panelsManager.GetPanelAs<Panels::ProfilerPanel>("Profiler");
     NLS::Base::Profiling::Profiler::RegisterDestination(profilerPanel.GetTimelineSink());
@@ -285,6 +284,7 @@ void Editor::Core::Editor::SetupUI()
     m_panelsManager.CreatePanel<Panels::Inspector>("Inspector", true, settings);
     m_panelsManager.CreatePanel<Panels::SceneView>("Scene View", true, settings);
     m_panelsManager.CreatePanel<Panels::GameView>("Game View", true, settings);
+    m_panelsManager.CreatePanel<Panels::FrameInfo>("Frame Info", false, settings);
     m_panelsManager.CreatePanel<Panels::MaterialEditor>("Material Editor", false, settings);
     m_panelsManager.CreatePanel<Panels::ProjectSettings>("Project Settings", false, settings);
     m_panelsManager.GetPanelAs<Panels::ProjectSettings>("Project Settings").enabled = false;
@@ -966,22 +966,36 @@ void Editor::Core::Editor::UpdateEditorPanels(float p_deltaTime)
 
     if (frameInfo.IsOpened())
     {
-
-        if (sceneView.IsFocused())
+        if (sceneView.IsOpened() && sceneView.IsFocused())
         {
-            frameInfo.Update(&sceneView);
+            frameInfo.SetTargetView(&sceneView);
         }
-        else if (gameView.IsFocused())
+        else if (gameView.IsOpened() && gameView.IsFocused())
         {
-            frameInfo.Update(&gameView);
+            frameInfo.SetTargetView(&gameView);
         }
-        else if (assetView.IsFocused())
+        else if (assetView.IsOpened() && assetView.IsFocused())
         {
-            frameInfo.Update(&assetView);
+            frameInfo.SetTargetView(&assetView);
         }
-        else
+        else if (frameInfo.GetTargetView() == nullptr || !frameInfo.GetTargetView()->IsOpened())
         {
-            frameInfo.Update(nullptr);
+            if (sceneView.IsOpened())
+            {
+                frameInfo.SetTargetView(&sceneView);
+            }
+            else if (gameView.IsOpened())
+            {
+                frameInfo.SetTargetView(&gameView);
+            }
+            else if (assetView.IsOpened())
+            {
+                frameInfo.SetTargetView(&assetView);
+            }
+            else
+            {
+                frameInfo.SetTargetView(nullptr);
+            }
         }
     }
 }

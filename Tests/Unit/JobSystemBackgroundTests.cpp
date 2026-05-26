@@ -66,7 +66,15 @@ namespace
 
         std::ostringstream buffer;
         buffer << input.rdbuf();
-        return buffer.str();
+        auto text = buffer.str();
+        std::string normalized;
+        normalized.reserve(text.size());
+        for (char value : text)
+        {
+            if (value != '\r')
+                normalized.push_back(value);
+        }
+        return normalized;
     }
 
     struct BlockingJobData

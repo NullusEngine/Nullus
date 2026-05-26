@@ -121,6 +121,7 @@ namespace NLS::Render::ShaderCompiler
 		std::vector<Resources::ShaderReflection> ReflectBatch(const std::vector<ShaderReflectionInput>& inputs) const;
 
 	private:
+		ShaderCompilationInput PrepareCompileInput(const ShaderCompilationInput& input) const;
 		void PersistCacheRecord(
 			const ShaderCompilationInput& input,
 			const ShaderCompilationOutput& output) const;

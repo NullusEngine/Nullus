@@ -2383,6 +2383,26 @@ namespace NLS::Render::Context
         submissionFrame->deviceLostDetected = impl.deviceLostDetected;
         submissionFrame->deviceLostReason = impl.deviceLostReason;
 
+        if (impl.pipelineCache != nullptr)
+        {
+            const auto pipelineCacheStats = impl.pipelineCache->GetStats();
+            submissionFrame->pipelineMainlineActive = true;
+            submissionFrame->pipelineBypassCount = 0u;
+            submissionFrame->pipelineCacheGraphicsHits = pipelineCacheStats.graphicsHits;
+            submissionFrame->pipelineCacheGraphicsMisses = pipelineCacheStats.graphicsMisses;
+            submissionFrame->pipelineCacheGraphicsStores = pipelineCacheStats.graphicsStores;
+            submissionFrame->pipelineCacheGraphicsEntries = pipelineCacheStats.graphicsEntryCount;
+            submissionFrame->pipelineCacheComputeHits = pipelineCacheStats.computeHits;
+            submissionFrame->pipelineCacheComputeMisses = pipelineCacheStats.computeMisses;
+            submissionFrame->pipelineCacheComputeStores = pipelineCacheStats.computeStores;
+            submissionFrame->pipelineCacheComputeEntries = pipelineCacheStats.computeEntryCount;
+        }
+        else
+        {
+            submissionFrame->pipelineMainlineActive = false;
+            submissionFrame->pipelineBypassCount = 1u;
+        }
+
         if (frameContext.resourceStateTracker != nullptr)
         {
             const auto trackerStats = frameContext.resourceStateTracker->GetStats();

@@ -274,6 +274,7 @@ namespace
             const NLS::Render::RHI::RHITextureUploadDesc&) override
         {
             ++textureCreateCalls;
+            textureDescs.push_back(desc);
             if (failTextureCreateCall != 0u && textureCreateCalls == failTextureCreateCall)
                 return nullptr;
 
@@ -307,6 +308,7 @@ namespace
 
         size_t textureCreateCalls = 0u;
         size_t failTextureCreateCall = 0u;
+        std::vector<NLS::Render::RHI::RHITextureDesc> textureDescs;
         std::vector<NLS::Render::RHI::RHIBufferDesc> bufferDescs;
 
     private:
@@ -315,6 +317,25 @@ namespace
         NLS::Render::RHI::NativeRenderDeviceInfo m_nativeDeviceInfo {};
         NLS::Render::RHI::RHIDeviceCapabilities m_capabilities {};
     };
+
+    void ExpectDefaultOptimizedColorClearValue(
+        const NLS::Render::RHI::RHITextureDesc::OptimizedClearValue& clearValue)
+    {
+        EXPECT_TRUE(clearValue.enabled);
+        EXPECT_FLOAT_EQ(clearValue.color[0], 0.0f);
+        EXPECT_FLOAT_EQ(clearValue.color[1], 0.0f);
+        EXPECT_FLOAT_EQ(clearValue.color[2], 0.0f);
+        EXPECT_FLOAT_EQ(clearValue.color[3], 1.0f);
+    }
+
+    void ExpectDefaultOpaqueColorClearValue(
+        const NLS::Render::RHI::RHIColorClearValue& clearValue)
+    {
+        EXPECT_FLOAT_EQ(clearValue.r, 0.0f);
+        EXPECT_FLOAT_EQ(clearValue.g, 0.0f);
+        EXPECT_FLOAT_EQ(clearValue.b, 0.0f);
+        EXPECT_FLOAT_EQ(clearValue.a, 1.0f);
+    }
 }
 
 TEST(FrameGraphSceneTargetsTests, SceneColorTargetSupportsSamplingForEditorViews)
@@ -410,6 +431,164 @@ TEST(FrameGraphSceneTargetsTests, FramebufferClearValueRebuildRetainsPreviousExp
     EXPECT_FLOAT_EQ(optimizedClearValue.color[3], 1.0f);
 }
 
+TEST(FrameGraphSceneTargetsTests, FramebufferDefaultColorAttachmentUsesMatchingOptimizedClearValue)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Render::Buffers::Framebuffer outputBuffer(320u, 180u);
+
+    ASSERT_NE(outputBuffer.GetExplicitTextureHandle(), nullptr);
+    ExpectDefaultOptimizedColorClearValue(outputBuffer.GetExplicitTextureHandle()->GetDesc().optimizedClearValue);
+    ASSERT_NE(outputBuffer.GetExplicitDepthStencilTextureHandle(), nullptr);
+    EXPECT_TRUE(outputBuffer.GetExplicitDepthStencilTextureHandle()->GetDesc().optimizedClearValue.enabled);
+}
+
+TEST(FrameGraphSceneTargetsTests, OptimizedClearValueAggregateEnableDefaultsToOpaqueColor)
+{
+    const NLS::Render::RHI::RHITextureDesc::OptimizedClearValue clearValue{ true };
+
+    ExpectDefaultOptimizedColorClearValue(clearValue);
+}
+
+TEST(FrameGraphSceneTargetsTests, RecordedFramebufferPassDefaultClearMatchesOptimizedClearValue)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 13u;
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+    frameContext.resourceStateTracker->BeginFrame(frameContext.frameIndex);
+
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    NLS::Render::Entities::Camera camera;
+    frameDescriptor.camera = &camera;
+    frameDescriptor.renderWidth = 320u;
+    frameDescriptor.renderHeight = 180u;
+
+    NLS::Render::Core::CompositeRenderer renderer(driver);
+    renderer.BeginFrame(frameDescriptor);
+    NLS::Render::Buffers::Framebuffer outputBuffer(320u, 180u);
+
+    ASSERT_TRUE(renderer.BeginRecordedRenderPass(
+        &outputBuffer,
+        320u,
+        180u,
+        true,
+        true,
+        true));
+    renderer.EndRecordedRenderPass();
+    renderer.EndFrame();
+
+    ASSERT_EQ(commandBuffer->beginRenderPassCalls, 1u);
+    ASSERT_EQ(commandBuffer->lastRenderPassDesc.colorAttachments.size(), 1u);
+    ExpectDefaultOpaqueColorClearValue(commandBuffer->lastRenderPassDesc.colorAttachments[0].clearValue);
+    ExpectDefaultOptimizedColorClearValue(outputBuffer.GetExplicitTextureHandle()->GetDesc().optimizedClearValue);
+}
+
+TEST(FrameGraphSceneTargetsTests, FrameGraphColorAttachmentUsesMatchingOptimizedClearValue)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 11u;
+    frameContext.commandBuffer = std::make_shared<TestCommandBuffer>();
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+    frameContext.resourceStateTracker->BeginFrame(frameContext.frameIndex);
+
+    NLS::Render::FrameGraph::FrameGraphExecutionContext executionContext{
+        driver,
+        explicitDevice.get(),
+        frameContext.commandBuffer.get(),
+        &frameContext
+    };
+
+    NLS::Render::FrameGraph::FrameGraphTexture texture;
+    NLS::Render::FrameGraph::FrameGraphTexture::Desc textureDesc;
+    textureDesc.extent.width = 128u;
+    textureDesc.extent.height = 72u;
+    textureDesc.extent.depth = 1u;
+    textureDesc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    textureDesc.usage =
+        NLS::Render::RHI::TextureUsageFlags::ColorAttachment |
+        NLS::Render::RHI::TextureUsageFlags::Sampled;
+    textureDesc.debugName = "TransientSceneColor";
+
+    texture.create(textureDesc, &executionContext);
+
+    ASSERT_EQ(explicitDevice->textureDescs.size(), 1u);
+    ExpectDefaultOptimizedColorClearValue(explicitDevice->textureDescs[0].optimizedClearValue);
+}
+
+TEST(FrameGraphSceneTargetsTests, FrameGraphDepthAttachmentPreservesExplicitOptimizedClearValue)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 12u;
+    frameContext.commandBuffer = std::make_shared<TestCommandBuffer>();
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+    frameContext.resourceStateTracker->BeginFrame(frameContext.frameIndex);
+
+    NLS::Render::FrameGraph::FrameGraphExecutionContext executionContext{
+        driver,
+        explicitDevice.get(),
+        frameContext.commandBuffer.get(),
+        &frameContext
+    };
+
+    NLS::Render::FrameGraph::FrameGraphTexture texture;
+    NLS::Render::FrameGraph::FrameGraphTexture::Desc textureDesc;
+    textureDesc.extent.width = 128u;
+    textureDesc.extent.height = 72u;
+    textureDesc.extent.depth = 1u;
+    textureDesc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
+    textureDesc.usage =
+        NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment |
+        NLS::Render::RHI::TextureUsageFlags::Sampled;
+    textureDesc.optimizedClearValue.enabled = true;
+    textureDesc.optimizedClearValue.depth = 0.5f;
+    textureDesc.optimizedClearValue.stencil = 7u;
+    textureDesc.debugName = "TransientSceneDepth";
+
+    texture.create(textureDesc, &executionContext);
+
+    ASSERT_EQ(explicitDevice->textureDescs.size(), 1u);
+    const auto& optimizedClearValue = explicitDevice->textureDescs[0].optimizedClearValue;
+    EXPECT_TRUE(optimizedClearValue.enabled);
+    EXPECT_FLOAT_EQ(optimizedClearValue.depth, 0.5f);
+    EXPECT_EQ(optimizedClearValue.stencil, 7u);
+}
+
 TEST(FrameGraphSceneTargetsTests, MultiFramebufferResizeRetainsPreviousExplicitResourcesTemporarily)
 {
     NLS::Render::Settings::DriverSettings settings;
@@ -463,6 +642,38 @@ TEST(FrameGraphSceneTargetsTests, MultiFramebufferResizeRetainsPreviousExplicitR
     EXPECT_NE(resizedColorTextures[0], previousColorTexture0.lock());
     EXPECT_NE(resizedColorTextures[1], previousColorTexture1.lock());
     EXPECT_NE(gBuffer.GetExplicitDepthTextureHandle(), previousDepthTexture.lock());
+}
+
+TEST(FrameGraphSceneTargetsTests, MultiFramebufferColorAttachmentsUseMatchingOptimizedClearValue)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    std::vector<NLS::Render::Buffers::MultiFramebuffer::AttachmentDesc> attachments(2u);
+    attachments[0].format = NLS::Render::RHI::TextureFormat::RGBA8;
+    attachments[1].format = NLS::Render::RHI::TextureFormat::RGB8;
+
+    NLS::Render::Buffers::MultiFramebuffer gBuffer(320u, 180u, attachments, true);
+
+    const auto colorTextures = gBuffer.GetExplicitColorTextureHandles();
+    ASSERT_EQ(colorTextures.size(), 2u);
+    ASSERT_NE(colorTextures[0], nullptr);
+    ASSERT_NE(colorTextures[1], nullptr);
+    ASSERT_NE(gBuffer.GetExplicitDepthTextureHandle(), nullptr);
+
+    ExpectDefaultOptimizedColorClearValue(colorTextures[0]->GetDesc().optimizedClearValue);
+    ExpectDefaultOptimizedColorClearValue(colorTextures[1]->GetDesc().optimizedClearValue);
+
+    const auto& depthClearValue = gBuffer.GetExplicitDepthTextureHandle()->GetDesc().optimizedClearValue;
+    EXPECT_TRUE(depthClearValue.enabled);
+    EXPECT_FLOAT_EQ(depthClearValue.depth, 1.0f);
+    EXPECT_EQ(depthClearValue.stencil, 0u);
 }
 
 TEST(FrameGraphSceneTargetsTests, MultiFramebufferFailedResizeCanRetrySameTargetSize)

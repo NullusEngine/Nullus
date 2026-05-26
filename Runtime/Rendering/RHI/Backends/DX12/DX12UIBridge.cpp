@@ -15,6 +15,7 @@
 
 #include "Debug/Logger.h"
 #include "Profiling/Profiler.h"
+#include "Rendering/RHI/Backends/DX12/DX12InfoQueueUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12UIFrameFenceTracker.h"
 #include "Rendering/RHI/Backends/DX12/DX12TextureViewUtils.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
@@ -230,7 +231,12 @@ namespace NLS::Render::RHI
                 m_commandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
                 const FLOAT clearColor[] = { 0.06f, 0.05f, 0.07f, 1.0f };
-                m_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+                {
+                    const DX12::ScopedDx12InfoQueueMessageFilter backbufferClearValueFilter(
+                        m_device.Get(),
+                        D3D12_MESSAGE_ID_CLEARRENDERTARGETVIEW_MISMATCHINGCLEARVALUE);
+                    m_commandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+                }
 
                 ID3D12DescriptorHeap* heaps[] = { m_srvHeap.Get() };
                 m_commandList->SetDescriptorHeaps(1, heaps);

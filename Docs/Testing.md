@@ -114,9 +114,15 @@ cmake --build build-modules-pilot --config Debug --target NLS_ModulesPilot
 运行时 glob 排除目录中，不会链接进运行时库，也不会参与 MetaParser 反射生成。
 其它生成器或平台启用该选项时会跳过试点并继续使用普通头文件路径。
 
-默认 Assimp 配置只编译 Nullus 当前支持的模型导入格式：FBX 和 OBJ，并关闭
-Assimp exporter。当前内置模型资源使用 `.fbx` 和 `.obj`，编辑器导入入口也只暴露
-`*.fbx;*.obj;`。如果需要做第三方格式兼容性验证，可启用完整 Assimp 格式覆盖：
+默认 Assimp 配置只编译 Nullus 默认路径需要的 OBJ/glTF 导入器，并关闭
+Assimp exporter；FBX 默认仍走 Autodesk FBX SDK。需要按资产选择 Assimp 读取
+`.fbx` 时，使用窄开关只启用 Assimp FBX importer：
+
+```powershell
+cmake -S . -B build-assimp-fbx -G "Visual Studio 17 2022" -A x64 -DNLS_ENABLE_ASSIMP_FBX_IMPORTER=ON
+```
+
+如果需要做第三方格式兼容性验证，可启用完整 Assimp 格式覆盖：
 
 ```powershell
 cmake -S . -B build-assimp-full -G "Visual Studio 17 2022" -A x64 -DNLS_ASSIMP_BUILD_ALL_FORMATS=ON
@@ -125,8 +131,8 @@ cmake -S . -B build-assimp-full -G "Visual Studio 17 2022" -A x64 -DNLS_ASSIMP_B
 全量 Debug 构建基线记录：
 
 - 原始 fresh build：`10:42`
-- 仅 Assimp FBX/OBJ import-only：`10:22`
-- Assimp FBX/OBJ import-only + MSVC `/MP /EHsc`：`4:29`
+- 启用窄开关后的 Assimp OBJ/FBX/glTF import-only：`10:22`
+- 启用窄开关后的 Assimp OBJ/FBX/glTF import-only + MSVC `/MP /EHsc`：`4:29`
 
 Linux / macOS：
 

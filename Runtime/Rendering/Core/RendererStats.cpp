@@ -61,7 +61,10 @@ void RendererStats::RecordSubmittedDraw(const Entities::Drawable& drawable, cons
     ++m_frameInfo.batchCount;
     m_frameInfo.instanceCount += instanceCount;
     m_frameInfo.polyCount += (drawable.mesh->GetIndexCount() / kVertexCountPerPolygon) * instanceCount;
-    m_frameInfo.vertexCount += drawable.mesh->GetVertexCount() * instanceCount;
+    const auto drawableVertexCount = drawable.vertexCount != 0u
+        ? drawable.vertexCount
+        : drawable.mesh->GetVertexCount();
+    m_frameInfo.vertexCount += drawableVertexCount * instanceCount;
 }
 
 void RendererStats::RecordSceneParse(

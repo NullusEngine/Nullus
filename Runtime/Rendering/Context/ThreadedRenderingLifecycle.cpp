@@ -643,6 +643,27 @@ ThreadedFrameTelemetry ThreadedRenderingLifecycle::GetTelemetry() const
     return m_telemetry;
 }
 
+std::optional<ThreadedFrameTelemetry> ThreadedRenderingLifecycle::TryGetTelemetry() const
+{
+    std::unique_lock<std::mutex> lock(m_mutex, std::try_to_lock);
+    if (!lock.owns_lock())
+        return std::nullopt;
+
+    return m_telemetry;
+}
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+bool ThreadedRenderingLifecycleTestAccess::TryLockTelemetry(ThreadedRenderingLifecycle& lifecycle)
+{
+    return lifecycle.m_mutex.try_lock();
+}
+
+void ThreadedRenderingLifecycleTestAccess::UnlockTelemetry(ThreadedRenderingLifecycle& lifecycle)
+{
+    lifecycle.m_mutex.unlock();
+}
+#endif
+
 void ThreadedRenderingLifecycle::ReleaseRetainedFrameResources()
 {
     std::vector<InFlightFrameSlot> retainedSlots;
@@ -897,6 +918,16 @@ void ThreadedRenderingLifecycle::RefreshTelemetryLocked()
         m_telemetry.retiredTransientBufferCount = latestSubmissionFrame->retiredTransientBufferCount;
         m_telemetry.descriptorTransientPeak = latestSubmissionFrame->descriptorTransientPeak;
         m_telemetry.descriptorAllocationFailures = latestSubmissionFrame->descriptorAllocationFailures;
+        m_telemetry.pipelineMainlineActive = latestSubmissionFrame->pipelineMainlineActive;
+        m_telemetry.pipelineBypassCount = latestSubmissionFrame->pipelineBypassCount;
+        m_telemetry.pipelineCacheGraphicsHits = latestSubmissionFrame->pipelineCacheGraphicsHits;
+        m_telemetry.pipelineCacheGraphicsMisses = latestSubmissionFrame->pipelineCacheGraphicsMisses;
+        m_telemetry.pipelineCacheGraphicsStores = latestSubmissionFrame->pipelineCacheGraphicsStores;
+        m_telemetry.pipelineCacheGraphicsEntries = latestSubmissionFrame->pipelineCacheGraphicsEntries;
+        m_telemetry.pipelineCacheComputeHits = latestSubmissionFrame->pipelineCacheComputeHits;
+        m_telemetry.pipelineCacheComputeMisses = latestSubmissionFrame->pipelineCacheComputeMisses;
+        m_telemetry.pipelineCacheComputeStores = latestSubmissionFrame->pipelineCacheComputeStores;
+        m_telemetry.pipelineCacheComputeEntries = latestSubmissionFrame->pipelineCacheComputeEntries;
         m_telemetry.queueOperationFailureCount = latestSubmissionFrame->queueOperationFailureCount;
         m_telemetry.lastQueueOperationFailure = latestSubmissionFrame->lastQueueOperationFailure;
         m_telemetry.currentFrameQueueOperationFailureCount =

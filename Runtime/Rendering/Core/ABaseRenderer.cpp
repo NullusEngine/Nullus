@@ -924,6 +924,8 @@ bool ABaseRenderer::PrepareRecordedDraw(
     outDraw.instanceCount = p_drawable.instanceCount != 0u
         ? p_drawable.instanceCount
         : static_cast<uint32_t>(gpuInstances);
+    outDraw.vertexStart = p_drawable.vertexStart;
+    outDraw.vertexCount = p_drawable.vertexCount;
     return true;
 }
 
@@ -1006,6 +1008,8 @@ bool ABaseRenderer::PrepareRecordedDraw(
     outDraw.instanceCount = p_drawable.instanceCount != 0u
         ? p_drawable.instanceCount
         : static_cast<uint32_t>(gpuInstances);
+    outDraw.vertexStart = p_drawable.vertexStart;
+    outDraw.vertexCount = p_drawable.vertexCount;
     return true;
 }
 
@@ -1068,9 +1072,13 @@ void ABaseRenderer::SubmitPreparedDraw(const PreparedRecordedDraw& preparedDraw)
         return;
     }
 
-    const auto vertexCount = preparedDraw.mesh->GetVertexCount();
+    const auto meshVertexCount = preparedDraw.mesh->GetVertexCount();
+    const auto vertexStart = std::min(preparedDraw.vertexStart, meshVertexCount);
+    const auto vertexCount = preparedDraw.vertexCount != 0u
+        ? std::min(preparedDraw.vertexCount, meshVertexCount - vertexStart)
+        : meshVertexCount - vertexStart;
     if (vertexCount > 0u)
-        preparedDraw.commandBuffer->Draw(vertexCount, preparedDraw.instanceCount, 0, 0);
+        preparedDraw.commandBuffer->Draw(vertexCount, preparedDraw.instanceCount, vertexStart, 0);
 }
 
 bool ABaseRenderer::QueueThreadedRecordedDraw(const PreparedRecordedDraw& preparedDraw)
@@ -1091,6 +1099,8 @@ bool ABaseRenderer::QueueThreadedRecordedDraw(const PreparedRecordedDraw& prepar
     drawCommand.materialBindingSet = preparedDraw.materialBindingSet;
     drawCommand.mesh = preparedDraw.mesh;
     drawCommand.instanceCount = preparedDraw.instanceCount;
+    drawCommand.vertexStart = preparedDraw.vertexStart;
+    drawCommand.vertexCount = preparedDraw.vertexCount;
     drawCommand.objectIndex = preparedDraw.objectIndex;
     drawCommand.usesObjectIndex = preparedDraw.usesObjectIndex;
     m_threadedRecordedDrawCommands.push_back(std::move(drawCommand));

@@ -13,6 +13,7 @@ namespace NLS::Render::Backend
 			graphicsQueue != nullptr &&
 			factory != nullptr &&
 			adapter != nullptr &&
+			shaderModel6Supported &&
 			capabilities.GetFeature(NLS::Render::RHI::RHIDeviceFeature::BackendReady).supported;
 #else
 		return false;
@@ -103,7 +104,80 @@ namespace NLS::Render::Backend
 			return factoryFlags;
 		}
 
-		Microsoft::WRL::ComPtr<IDXGIAdapter1> FindHardwareAdapter(IDXGIFactory6* factory)
+		std::string ShaderModelToString(D3D_SHADER_MODEL shaderModel)
+		{
+			const auto encoded = static_cast<unsigned int>(shaderModel);
+			return std::to_string(encoded >> 4u) + "." + std::to_string(encoded & 0xfu);
+		}
+
+		struct DX12ShaderModelSupport
+		{
+			HRESULT hr = E_FAIL;
+			D3D_SHADER_MODEL highestShaderModel = static_cast<D3D_SHADER_MODEL>(0);
+			bool supported = false;
+		};
+
+		DX12ShaderModelSupport QueryDX12ShaderModel6Support(ID3D12Device* device)
+		{
+			DX12ShaderModelSupport support{};
+			if (device == nullptr)
+				return support;
+
+			const D3D_SHADER_MODEL candidateShaderModels[] = {
+				static_cast<D3D_SHADER_MODEL>(0x68),
+				static_cast<D3D_SHADER_MODEL>(0x67),
+				static_cast<D3D_SHADER_MODEL>(0x66),
+				static_cast<D3D_SHADER_MODEL>(0x65),
+				static_cast<D3D_SHADER_MODEL>(0x64),
+				static_cast<D3D_SHADER_MODEL>(0x63),
+				static_cast<D3D_SHADER_MODEL>(0x62),
+				static_cast<D3D_SHADER_MODEL>(0x61),
+				static_cast<D3D_SHADER_MODEL>(0x60)
+			};
+
+			for (const auto candidateShaderModel : candidateShaderModels)
+			{
+				D3D12_FEATURE_DATA_SHADER_MODEL shaderModelSupport{};
+				shaderModelSupport.HighestShaderModel = candidateShaderModel;
+				const HRESULT hr = device->CheckFeatureSupport(
+					D3D12_FEATURE_SHADER_MODEL,
+					&shaderModelSupport,
+					sizeof(shaderModelSupport));
+				if (FAILED(hr))
+				{
+					support.hr = hr;
+					continue;
+				}
+
+				support.hr = hr;
+				support.highestShaderModel = shaderModelSupport.HighestShaderModel;
+				support.supported = shaderModelSupport.HighestShaderModel >= D3D_SHADER_MODEL_6_0;
+				return support;
+			}
+
+			return support;
+		}
+
+		std::string BuildShaderModelFailureDiagnostic(const DX12ShaderModelSupport& support)
+		{
+			if (FAILED(support.hr))
+			{
+				return "Shader Model 6.0 is required, but CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL) failed hr=" +
+					std::to_string(support.hr);
+			}
+
+			return "Shader Model 6.0 is required, but DX12 reported Shader Model " +
+				ShaderModelToString(support.highestShaderModel);
+		}
+
+		std::string NarrowAdapterName(const DXGI_ADAPTER_DESC1& adapterDesc)
+		{
+			return std::string(adapterDesc.Description, adapterDesc.Description + std::wcslen(adapterDesc.Description));
+		}
+
+		Microsoft::WRL::ComPtr<IDXGIAdapter1> FindHardwareAdapter(
+			IDXGIFactory6* factory,
+			std::string& rejectionDiagnostics)
 		{
 			Microsoft::WRL::ComPtr<IDXGIAdapter1> adapter;
 			if (factory == nullptr)
@@ -123,6 +197,15 @@ namespace NLS::Render::Backend
 				Microsoft::WRL::ComPtr<ID3D12Device> testDevice;
 				if (SUCCEEDED(D3D12CreateDevice(candidate.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&testDevice))))
 				{
+					const auto shaderModelSupport = QueryDX12ShaderModel6Support(testDevice.Get());
+					if (!shaderModelSupport.supported)
+					{
+						rejectionDiagnostics =
+							NarrowAdapterName(adapterDesc) + ": " +
+							BuildShaderModelFailureDiagnostic(shaderModelSupport);
+						continue;
+					}
+
 					adapter = candidate;
 					break;
 				}
@@ -192,26 +275,55 @@ namespace NLS::Render::Backend
 		const UINT factoryFlags = BuildDx12FactoryFlags(debugMode);
 		if (FAILED(CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&resources.factory))))
 		{
-			NLS_LOG_ERROR("CreateDX12RhiDevice: failed to create DXGI factory");
-			return {};
+			resources.creationDiagnostics = "failed to create DXGI factory";
+			NLS_LOG_ERROR("CreateDX12RhiDevice: " + resources.creationDiagnostics);
+			return resources;
 		}
 
-		resources.adapter = FindHardwareAdapter(resources.factory.Get());
+		std::string adapterRejectionDiagnostics;
+		resources.adapter = FindHardwareAdapter(resources.factory.Get(), adapterRejectionDiagnostics);
 		if (resources.adapter == nullptr)
 		{
-			NLS_LOG_ERROR("CreateDX12RhiDevice: failed to find suitable DX12 adapter");
-			return {};
+			resources.creationDiagnostics =
+				"failed to find suitable DX12 adapter" +
+				(adapterRejectionDiagnostics.empty()
+					? std::string{}
+					: "; last rejected adapter: " + adapterRejectionDiagnostics);
+			NLS_LOG_ERROR("CreateDX12RhiDevice: " + resources.creationDiagnostics);
+			return resources;
 		}
 
 		DXGI_ADAPTER_DESC1 adapterDesc{};
 		resources.adapter->GetDesc1(&adapterDesc);
-		resources.hardware.assign(adapterDesc.Description, adapterDesc.Description + std::wcslen(adapterDesc.Description));
+		resources.hardware = NarrowAdapterName(adapterDesc);
 
 		if (FAILED(D3D12CreateDevice(resources.adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&resources.device))))
 		{
-			NLS_LOG_ERROR("CreateDX12RhiDevice: failed to create DX12 device");
-			return {};
+			resources.creationDiagnostics = "failed to create DX12 device";
+			NLS_LOG_ERROR("CreateDX12RhiDevice: " + resources.creationDiagnostics);
+			return resources;
 		}
+
+		const auto shaderModelSupport = QueryDX12ShaderModel6Support(resources.device.Get());
+		if (FAILED(shaderModelSupport.hr))
+		{
+			resources.creationDiagnostics = BuildShaderModelFailureDiagnostic(shaderModelSupport);
+			NLS_LOG_ERROR("CreateDX12RhiDevice: " + resources.creationDiagnostics);
+			return resources;
+		}
+
+		resources.confirmedShaderModel = static_cast<unsigned int>(shaderModelSupport.highestShaderModel);
+		resources.shaderModelDiagnostics = "DX12 reported Shader Model " + ShaderModelToString(shaderModelSupport.highestShaderModel);
+		if (!shaderModelSupport.supported)
+		{
+			resources.creationDiagnostics =
+				BuildShaderModelFailureDiagnostic(shaderModelSupport) +
+				"; DX12 backend initialization stopped before rendering";
+			NLS_LOG_ERROR("CreateDX12RhiDevice: " + resources.creationDiagnostics);
+			return resources;
+		}
+		resources.shaderModel6Supported = true;
+		NLS_LOG_INFO("CreateDX12RhiDevice: " + resources.shaderModelDiagnostics);
 
 		Microsoft::WRL::ComPtr<ID3D12InfoQueue> infoQueue;
 		if (SUCCEEDED(resources.device->QueryInterface(IID_PPV_ARGS(&infoQueue))) && infoQueue != nullptr)
@@ -228,8 +340,9 @@ namespace NLS::Render::Backend
 
 		if (FAILED(resources.device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&resources.graphicsQueue))))
 		{
-			NLS_LOG_ERROR("CreateDX12RhiDevice: failed to create DX12 command queue");
-			return {};
+			resources.creationDiagnostics = "failed to create DX12 command queue";
+			NLS_LOG_ERROR("CreateDX12RhiDevice: " + resources.creationDiagnostics);
+			return resources;
 		}
 
 		const D3D12_COMMAND_QUEUE_DESC computeQueueDesc{

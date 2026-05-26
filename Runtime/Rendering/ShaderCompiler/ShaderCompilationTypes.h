@@ -50,6 +50,7 @@ namespace NLS::Render::ShaderCompiler
 		std::string targetProfile;
 		bool enableDebugInfo = false;
 		bool treatWarningsAsErrors = false;
+		std::string artifactDirectory;
 		std::vector<ShaderMacroDefinition> macros;
 		std::vector<std::string> includeDirectories;
 	};

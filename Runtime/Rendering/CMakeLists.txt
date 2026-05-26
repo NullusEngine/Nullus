@@ -79,6 +79,9 @@ target_sources(
 )
 
 target_compile_definitions(NLS_Render PRIVATE NLS_RESOURCE_MANAGEMENT_EXPORT)
+target_compile_definitions(NLS_Render PUBLIC
+  NLS_HAS_ASSIMP_FBX_IMPORTER=$<OR:$<BOOL:${NLS_ENABLE_ASSIMP_FBX_IMPORTER}>,$<BOOL:${NLS_ASSIMP_BUILD_ALL_FORMATS}>>
+)
 target_compile_definitions(NLS_Render PRIVATE
   $<$<BOOL:${NLS_ENABLE_TEST_HOOKS}>:NLS_ENABLE_TEST_HOOKS=1>
 )

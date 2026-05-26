@@ -21,5 +21,7 @@ namespace NLS::Render::Entities
 		Data::StateMask stateMask;
 		Settings::EPrimitiveMode primitiveMode = Settings::EPrimitiveMode::TRIANGLES;
 		uint32_t instanceCount = 0u;
+		uint32_t vertexStart = 0u;
+		uint32_t vertexCount = 0u;
 	};
 }

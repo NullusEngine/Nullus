@@ -271,4 +271,12 @@ namespace NLS::Render::Context
 
         return driver.m_impl->threadedLifecycle->GetTelemetry();
     }
+
+    std::optional<ThreadedFrameTelemetry> RenderThreadCoordinator::TryGetThreadedFrameTelemetry(const Driver& driver)
+    {
+        if (driver.m_impl->threadedLifecycle == nullptr)
+            return std::nullopt;
+
+        return driver.m_impl->threadedLifecycle->TryGetTelemetry();
+    }
 }

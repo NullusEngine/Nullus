@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Core/RenderClearValues.h"
 #include "Rendering/Data/FrameDescriptor.h"
 
 namespace NLS::Render::FrameGraph
@@ -25,7 +26,7 @@ namespace NLS::Render::FrameGraph
 		bool clearColor = false;
 		bool clearDepth = false;
 		bool clearStencil = false;
-		Maths::Vector4 clearValue = Maths::Vector4::Zero;
+		Maths::Vector4 clearValue = Core::DefaultOpaqueClearColor();
 	};
 
 	enum class ThreadedRenderScenePassRole : uint8_t
@@ -78,7 +79,7 @@ namespace NLS::Render::FrameGraph
 		bool clearColor = false;
 		bool clearDepth = false;
 		bool clearStencil = false;
-		Maths::Vector4 clearValue = Maths::Vector4::Zero;
+		Maths::Vector4 clearValue = Core::DefaultOpaqueClearColor();
 	};
 
 	struct RecordedRenderPassExecutionDesc
@@ -88,7 +89,7 @@ namespace NLS::Render::FrameGraph
 		bool clearColor = false;
 		bool clearDepth = false;
 		bool clearStencil = false;
-		Maths::Vector4 clearValue = Maths::Vector4::Zero;
+		Maths::Vector4 clearValue = Core::DefaultOpaqueClearColor();
 	};
 
 	inline void SetThreadedRenderScenePassGraphPassName(

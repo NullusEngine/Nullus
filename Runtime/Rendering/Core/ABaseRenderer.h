@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "Rendering/Core/IRenderer.h"
+#include "Rendering/Core/RenderClearValues.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/Data/DrawableObjectDescriptor.h"
 #include "Rendering/Data/FrameInfo.h"
@@ -98,7 +99,7 @@ public:
         bool p_clearColor,
         bool p_clearDepth,
         bool p_clearStencil,
-        const Maths::Vector4& p_clearValue = Maths::Vector4::Zero);
+        const Maths::Vector4& p_clearValue = Core::DefaultOpaqueClearColor());
     bool BeginRecordedRenderPass(
         NLS::Render::Buffers::MultiFramebuffer* p_framebuffer,
         uint16_t p_width,
@@ -106,14 +107,14 @@ public:
         bool p_clearColor,
         bool p_clearDepth,
         bool p_clearStencil,
-        const Maths::Vector4& p_clearValue = Maths::Vector4::Zero);
+        const Maths::Vector4& p_clearValue = Core::DefaultOpaqueClearColor());
     bool BeginOutputRenderPass(
         uint16_t p_width,
         uint16_t p_height,
         bool p_clearColor,
         bool p_clearDepth,
         bool p_clearStencil,
-        const Maths::Vector4& p_clearValue = Maths::Vector4::Zero);
+        const Maths::Vector4& p_clearValue = Core::DefaultOpaqueClearColor());
     void EndRecordedRenderPass();
     void EndOutputRenderPass(bool p_startedRecordedPass);
 
@@ -189,6 +190,8 @@ protected:
         std::shared_ptr<RHI::RHIBindingSet> materialBindingSet;
         std::shared_ptr<RHI::RHIMesh> mesh;
         uint32_t instanceCount = 0u;
+        uint32_t vertexStart = 0u;
+        uint32_t vertexCount = 0u;
         uint32_t objectIndex = Data::DrawableObjectDescriptor::kInvalidObjectIndex;
         bool usesObjectIndex = false;
     };

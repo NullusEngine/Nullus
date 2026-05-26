@@ -60,7 +60,8 @@ private:
 
     uint16_t m_width = 0;
     uint16_t m_height = 0;
-    NLS::Render::RHI::RHITextureDesc::OptimizedClearValue m_colorOptimizedClearValue{ true };
+    NLS::Render::RHI::RHITextureDesc::OptimizedClearValue m_colorOptimizedClearValue =
+        NLS::Render::RHI::RHITextureDesc::OptimizedClearValue::Color();
 
     std::shared_ptr<NLS::Render::RHI::RHITexture> m_explicitRenderTexture;
     std::shared_ptr<NLS::Render::RHI::RHITexture> m_explicitDepthStencilTexture;

@@ -1,5 +1,10 @@
 #include <gtest/gtest.h>
 
+#include <any>
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <memory>
 #include <vector>
 
@@ -9,6 +14,7 @@
 #include "Rendering/Debug/DebugDrawPass.h"
 #include "Rendering/Debug/DebugDrawService.h"
 #include "Rendering/Settings/DriverSettings.h"
+#include "Rendering/Utils/Conversions.h"
 
 namespace
 {
@@ -19,6 +25,36 @@ namespace
             : CompositeRenderer(driver)
         {
         }
+
+        void DrawEntity(
+            NLS::Render::Data::PipelineState pipelineState,
+            const NLS::Render::Entities::Drawable& drawable) override
+        {
+            recordedDraws.push_back({
+                pipelineState,
+                drawable.primitiveMode,
+                drawable.mesh != nullptr ? drawable.mesh->GetVertexCount() : 0u,
+                drawable.mesh != nullptr ? drawable.mesh->GetIndexCount() : 0u,
+                drawable.vertexStart,
+                drawable.vertexCount,
+                drawable.material != nullptr
+                    ? std::any_cast<int>(drawable.material->GetUniformsData().at("u_UseVertexPosition"))
+                    : -1
+            });
+        }
+
+        struct RecordedDraw
+        {
+            NLS::Render::Data::PipelineState pipelineState;
+            NLS::Render::Settings::EPrimitiveMode primitiveMode = NLS::Render::Settings::EPrimitiveMode::TRIANGLES;
+            uint32_t vertexCount = 0u;
+            uint32_t indexCount = 0u;
+            uint32_t vertexStart = 0u;
+            uint32_t vertexRangeCount = 0u;
+            int useVertexPosition = -1;
+        };
+
+        std::vector<RecordedDraw> recordedDraws;
     };
 
     class RecordingDebugDrawPass final : public NLS::Render::Debug::DebugDrawPass
@@ -35,11 +71,20 @@ namespace
         }
 
         std::vector<NLS::Render::Debug::DebugDrawPrimitive> recordedPrimitives;
+        std::vector<NLS::Render::Debug::DebugDrawPass::LineBatch> recordedLineBatches;
+        std::vector<NLS::Render::Debug::DebugDrawPrimitiveType> recordedOrder;
 
     protected:
         void RenderPrimitive(const NLS::Render::Debug::DebugDrawPrimitive& primitive, NLS::Render::Data::PipelineState) override
         {
             recordedPrimitives.push_back(primitive);
+            recordedOrder.push_back(primitive.type);
+        }
+
+        void RenderLineBatch(const NLS::Render::Debug::DebugDrawPass::LineBatch& batch, NLS::Render::Data::PipelineState) override
+        {
+            recordedLineBatches.push_back(batch);
+            recordedOrder.push_back(NLS::Render::Debug::DebugDrawPrimitiveType::Line);
         }
     };
 }
@@ -76,12 +121,148 @@ TEST(DebugDrawPassTests, ExplicitPassConsumesOnlyVisiblePrimitivesOncePerExecuti
     RecordingDebugDrawPass pass(renderer);
     pass.ExecuteForTest(NLS::Render::Data::PipelineState{});
 
-    ASSERT_EQ(pass.recordedPrimitives.size(), 3u);
+    ASSERT_EQ(pass.recordedPrimitives.size(), 2u);
     EXPECT_EQ(pass.recordedPrimitives[0].type, DebugDrawPrimitiveType::Point);
-    EXPECT_EQ(pass.recordedPrimitives[1].type, DebugDrawPrimitiveType::Line);
-    EXPECT_EQ(pass.recordedPrimitives[2].type, DebugDrawPrimitiveType::Triangle);
-    EXPECT_EQ(pass.recordedPrimitives[1].points[0], (NLS::Maths::Vector3{ 0.0f, 0.0f, 0.0f }));
-    EXPECT_EQ(pass.recordedPrimitives[1].points[1], (NLS::Maths::Vector3{ 1.0f, 0.0f, 0.0f }));
+    EXPECT_EQ(pass.recordedPrimitives[1].type, DebugDrawPrimitiveType::Triangle);
+    ASSERT_EQ(pass.recordedOrder.size(), 3u);
+    EXPECT_EQ(pass.recordedOrder[0], DebugDrawPrimitiveType::Point);
+    EXPECT_EQ(pass.recordedOrder[1], DebugDrawPrimitiveType::Line);
+    EXPECT_EQ(pass.recordedOrder[2], DebugDrawPrimitiveType::Triangle);
+
+    ASSERT_EQ(pass.recordedLineBatches.size(), 1u);
+    ASSERT_EQ(pass.recordedLineBatches[0].segments.size(), 1u);
+    EXPECT_EQ(pass.recordedLineBatches[0].segments[0].start, (NLS::Maths::Vector3{ 0.0f, 0.0f, 0.0f }));
+    EXPECT_EQ(pass.recordedLineBatches[0].segments[0].end, (NLS::Maths::Vector3{ 1.0f, 0.0f, 0.0f }));
+}
+
+TEST(DebugDrawPassTests, CompatibleLinesRenderAsSingleBatch)
+{
+    using namespace NLS::Render::Debug;
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    PassRecordingRenderer renderer(*driver);
+    renderer.SetDebugDrawService(std::make_unique<DebugDrawService>(8u));
+
+    auto* service = renderer.GetDebugDrawService();
+    ASSERT_NE(service, nullptr);
+
+    DebugDrawSubmitOptions options;
+    options.style.color = { 0.25f, 0.5f, 0.75f };
+    options.style.lineWidth = 2.0f;
+    options.style.depthMode = DebugDrawDepthMode::DepthTest;
+
+    ASSERT_TRUE(service->SubmitLine({ 0.0f, 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f }, options));
+    ASSERT_TRUE(service->SubmitLine({ 0.0f, 1.0f, 0.0f }, { 1.0f, 1.0f, 0.0f }, options));
+    ASSERT_TRUE(service->SubmitLine({ 0.0f, 2.0f, 0.0f }, { 1.0f, 2.0f, 0.0f }, options));
+
+    RecordingDebugDrawPass pass(renderer);
+    pass.ExecuteForTest(NLS::Render::Data::PipelineState{});
+
+    EXPECT_TRUE(pass.recordedPrimitives.empty());
+    ASSERT_EQ(pass.recordedLineBatches.size(), 1u);
+
+    const auto& batch = pass.recordedLineBatches[0];
+    EXPECT_EQ(batch.style.color, (NLS::Maths::Vector3{ 0.25f, 0.5f, 0.75f }));
+    EXPECT_EQ(batch.style.lineWidth, 2.0f);
+    EXPECT_EQ(batch.style.depthMode, DebugDrawDepthMode::DepthTest);
+    ASSERT_EQ(batch.segments.size(), 3u);
+    EXPECT_EQ(batch.segments[0].start, (NLS::Maths::Vector3{ 0.0f, 0.0f, 0.0f }));
+    EXPECT_EQ(batch.segments[0].end, (NLS::Maths::Vector3{ 1.0f, 0.0f, 0.0f }));
+    EXPECT_EQ(batch.segments[2].start, (NLS::Maths::Vector3{ 0.0f, 2.0f, 0.0f }));
+    EXPECT_EQ(batch.segments[2].end, (NLS::Maths::Vector3{ 1.0f, 2.0f, 0.0f }));
+}
+
+TEST(DebugDrawPassTests, LinesWithDifferentRenderStateSplitIntoSeparateBatches)
+{
+    using namespace NLS::Render::Debug;
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    PassRecordingRenderer renderer(*driver);
+    renderer.SetDebugDrawService(std::make_unique<DebugDrawService>(8u));
+
+    auto* service = renderer.GetDebugDrawService();
+    ASSERT_NE(service, nullptr);
+
+    DebugDrawSubmitOptions baseOptions;
+    baseOptions.style.color = { 1.0f, 0.0f, 0.0f };
+    baseOptions.style.lineWidth = 1.0f;
+    baseOptions.style.depthMode = DebugDrawDepthMode::DepthTest;
+
+    auto colorOptions = baseOptions;
+    colorOptions.style.color = { 0.0f, 1.0f, 0.0f };
+
+    auto depthOptions = baseOptions;
+    depthOptions.style.depthMode = DebugDrawDepthMode::AlwaysOnTop;
+
+    auto widthOptions = baseOptions;
+    widthOptions.style.lineWidth = 4.0f;
+
+    ASSERT_TRUE(service->SubmitLine({ 0.0f, 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f }, baseOptions));
+    ASSERT_TRUE(service->SubmitLine({ 0.0f, 1.0f, 0.0f }, { 1.0f, 1.0f, 0.0f }, colorOptions));
+    ASSERT_TRUE(service->SubmitLine({ 0.0f, 2.0f, 0.0f }, { 1.0f, 2.0f, 0.0f }, depthOptions));
+    ASSERT_TRUE(service->SubmitLine({ 0.0f, 3.0f, 0.0f }, { 1.0f, 3.0f, 0.0f }, widthOptions));
+
+    RecordingDebugDrawPass pass(renderer);
+    pass.ExecuteForTest(NLS::Render::Data::PipelineState{});
+
+    EXPECT_TRUE(pass.recordedPrimitives.empty());
+    ASSERT_EQ(pass.recordedLineBatches.size(), 4u);
+    ASSERT_EQ(pass.recordedOrder.size(), 4u);
+
+    EXPECT_EQ(pass.recordedLineBatches[0].style.color, (NLS::Maths::Vector3{ 1.0f, 0.0f, 0.0f }));
+    EXPECT_EQ(pass.recordedLineBatches[1].style.color, (NLS::Maths::Vector3{ 0.0f, 1.0f, 0.0f }));
+    EXPECT_EQ(pass.recordedLineBatches[2].style.depthMode, DebugDrawDepthMode::AlwaysOnTop);
+    EXPECT_EQ(pass.recordedLineBatches[3].style.lineWidth, 4.0f);
+    for (const auto& batch : pass.recordedLineBatches)
+        EXPECT_EQ(batch.segments.size(), 1u);
+}
+
+TEST(DebugDrawPassTests, NonAdjacentCompatibleLinesDoNotReorderAcrossDifferentLineState)
+{
+    using namespace NLS::Render::Debug;
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    PassRecordingRenderer renderer(*driver);
+    renderer.SetDebugDrawService(std::make_unique<DebugDrawService>(8u));
+
+    auto* service = renderer.GetDebugDrawService();
+    ASSERT_NE(service, nullptr);
+
+    DebugDrawSubmitOptions redOptions;
+    redOptions.style.color = { 1.0f, 0.0f, 0.0f };
+
+    DebugDrawSubmitOptions greenOptions;
+    greenOptions.style.color = { 0.0f, 1.0f, 0.0f };
+
+    ASSERT_TRUE(service->SubmitLine({ 0.0f, 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f }, redOptions));
+    ASSERT_TRUE(service->SubmitLine({ 0.0f, 1.0f, 0.0f }, { 1.0f, 1.0f, 0.0f }, greenOptions));
+    ASSERT_TRUE(service->SubmitLine({ 0.0f, 2.0f, 0.0f }, { 1.0f, 2.0f, 0.0f }, redOptions));
+
+    RecordingDebugDrawPass pass(renderer);
+    pass.ExecuteForTest(NLS::Render::Data::PipelineState{});
+
+    ASSERT_EQ(pass.recordedLineBatches.size(), 3u);
+    EXPECT_EQ(pass.recordedLineBatches[0].style.color, (NLS::Maths::Vector3{ 1.0f, 0.0f, 0.0f }));
+    EXPECT_EQ(pass.recordedLineBatches[1].style.color, (NLS::Maths::Vector3{ 0.0f, 1.0f, 0.0f }));
+    EXPECT_EQ(pass.recordedLineBatches[2].style.color, (NLS::Maths::Vector3{ 1.0f, 0.0f, 0.0f }));
 }
 
 TEST(DebugDrawPassTests, ThreadedPassClearsOneFrameHelpersAfterFrameEndWithoutDuplicatingPresentation)
@@ -118,8 +299,164 @@ TEST(DebugDrawPassTests, ThreadedPassClearsOneFrameHelpersAfterFrameEndWithoutDu
     pass.ExecuteForTest(NLS::Render::Data::PipelineState{});
     renderer.EndFrame();
 
-    ASSERT_EQ(pass.recordedPrimitives.size(), 1u);
+    ASSERT_TRUE(pass.recordedPrimitives.empty());
+    ASSERT_EQ(pass.recordedLineBatches.size(), 1u);
     pass.recordedPrimitives.clear();
+    pass.recordedLineBatches.clear();
+    pass.recordedOrder.clear();
     pass.ExecuteForTest(NLS::Render::Data::PipelineState{});
     EXPECT_TRUE(pass.recordedPrimitives.empty());
+    EXPECT_TRUE(pass.recordedLineBatches.empty());
+}
+
+TEST(DebugDrawPassTests, LineBatchDrawUsesVertexPositionsAndNonIndexedLineList)
+{
+    using namespace NLS::Render::Debug;
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    PassRecordingRenderer renderer(*driver);
+    renderer.SetDebugDrawService(std::make_unique<DebugDrawService>(8u));
+
+    auto* service = renderer.GetDebugDrawService();
+    ASSERT_NE(service, nullptr);
+
+    DebugDrawSubmitOptions options;
+    options.style.lineWidth = 4.0f;
+    options.style.depthMode = DebugDrawDepthMode::AlwaysOnTop;
+
+    ASSERT_TRUE(service->SubmitLine({ 0.0f, 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f }, options));
+    ASSERT_TRUE(service->SubmitLine({ 0.0f, 1.0f, 0.0f }, { 1.0f, 1.0f, 0.0f }, options));
+
+    DebugDrawPass pass(renderer);
+    renderer.ExecutePass(pass, NLS::Render::Data::PipelineState{});
+
+    ASSERT_EQ(renderer.recordedDraws.size(), 1u);
+    const auto& draw = renderer.recordedDraws[0];
+    EXPECT_EQ(draw.primitiveMode, NLS::Render::Settings::EPrimitiveMode::LINES);
+    EXPECT_EQ(draw.vertexCount, 4u);
+    EXPECT_EQ(draw.indexCount, 0u);
+    EXPECT_EQ(draw.vertexStart, 0u);
+    EXPECT_EQ(draw.vertexRangeCount, 4u);
+    EXPECT_EQ(draw.useVertexPosition, 1);
+    EXPECT_FALSE(draw.pipelineState.depthWriting);
+    EXPECT_FALSE(draw.pipelineState.depthTest);
+    EXPECT_EQ(draw.pipelineState.rasterizationMode, NLS::Render::Settings::ERasterizationMode::LINE);
+    EXPECT_EQ(draw.pipelineState.lineWidthPow2, NLS::Render::Utils::Conversions::FloatToPow2(4.0f));
+}
+
+TEST(DebugDrawPassTests, SeparateLineStateBatchesShareUploadedMeshAndUseDrawRanges)
+{
+    using namespace NLS::Render::Debug;
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    PassRecordingRenderer renderer(*driver);
+    renderer.SetDebugDrawService(std::make_unique<DebugDrawService>(8u));
+
+    auto* service = renderer.GetDebugDrawService();
+    ASSERT_NE(service, nullptr);
+
+    DebugDrawSubmitOptions redOptions;
+    redOptions.style.color = { 1.0f, 0.0f, 0.0f };
+
+    DebugDrawSubmitOptions greenOptions;
+    greenOptions.style.color = { 0.0f, 1.0f, 0.0f };
+
+    ASSERT_TRUE(service->SubmitLine({ 0.0f, 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f }, redOptions));
+    ASSERT_TRUE(service->SubmitLine({ 0.0f, 1.0f, 0.0f }, { 1.0f, 1.0f, 0.0f }, greenOptions));
+    ASSERT_TRUE(service->SubmitLine({ 0.0f, 2.0f, 0.0f }, { 1.0f, 2.0f, 0.0f }, redOptions));
+
+    DebugDrawPass pass(renderer);
+    renderer.ExecutePass(pass, NLS::Render::Data::PipelineState{});
+
+    ASSERT_EQ(renderer.recordedDraws.size(), 3u);
+    EXPECT_EQ(renderer.recordedDraws[0].vertexCount, 6u);
+    EXPECT_EQ(renderer.recordedDraws[0].vertexStart, 0u);
+    EXPECT_EQ(renderer.recordedDraws[0].vertexRangeCount, 2u);
+    EXPECT_EQ(renderer.recordedDraws[1].vertexCount, 6u);
+    EXPECT_EQ(renderer.recordedDraws[1].vertexStart, 2u);
+    EXPECT_EQ(renderer.recordedDraws[1].vertexRangeCount, 2u);
+    EXPECT_EQ(renderer.recordedDraws[2].vertexCount, 6u);
+    EXPECT_EQ(renderer.recordedDraws[2].vertexStart, 4u);
+    EXPECT_EQ(renderer.recordedDraws[2].vertexRangeCount, 2u);
+}
+
+TEST(DebugDrawPassTests, LineMeshSlotReusesCapacityWhenLaterFramesNeedFewerVertices)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    using namespace NLS::Render::Debug;
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    PassRecordingRenderer renderer(*driver);
+    renderer.SetDebugDrawService(std::make_unique<DebugDrawService>(16u));
+
+    auto* service = renderer.GetDebugDrawService();
+    ASSERT_NE(service, nullptr);
+
+    DebugDrawPass pass(renderer);
+    const auto executeWithLines = [&](const uint32_t lineCount)
+    {
+        for (uint32_t lineIndex = 0u; lineIndex < lineCount; ++lineIndex)
+        {
+            const auto y = static_cast<float>(lineIndex);
+            ASSERT_TRUE(service->SubmitLine({ 0.0f, y, 0.0f }, { 1.0f, y, 0.0f }));
+        }
+        renderer.ExecutePass(pass, NLS::Render::Data::PipelineState{});
+        service->EndFrame();
+        renderer.recordedDraws.clear();
+    };
+
+    executeWithLines(3u);
+    const auto* firstSlotMesh = DebugDrawPassTestAccess::GetLineMeshSlotMesh(pass, 0u);
+    ASSERT_NE(firstSlotMesh, nullptr);
+    EXPECT_EQ(DebugDrawPassTestAccess::GetLineMeshSlotCapacity(pass, 0u), 6u);
+    EXPECT_EQ(firstSlotMesh->GetVertexCount(), 6u);
+
+    executeWithLines(1u);
+    executeWithLines(1u);
+    executeWithLines(1u);
+
+    EXPECT_EQ(DebugDrawPassTestAccess::GetLineMeshSlotMesh(pass, 0u), firstSlotMesh);
+    EXPECT_EQ(DebugDrawPassTestAccess::GetLineMeshSlotCapacity(pass, 0u), 6u);
+    EXPECT_EQ(DebugDrawPassTestAccess::GetLineMeshSlotMesh(pass, 0u)->GetVertexCount(), 6u);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect DebugDrawPass line mesh slots.";
+#endif
+}
+
+TEST(DebugDrawPassTests, LineMeshRingCapacityTracksThreadedFrameSlots)
+{
+    const auto header = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Debug/DebugDrawPass.h";
+    const auto source = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Debug/DebugDrawPass.cpp";
+    std::ifstream headerInput(header);
+    std::ifstream sourceInput(source);
+    const std::string headerText{
+        std::istreambuf_iterator<char>(headerInput),
+        std::istreambuf_iterator<char>()
+    };
+    const std::string sourceText{
+        std::istreambuf_iterator<char>(sourceInput),
+        std::istreambuf_iterator<char>()
+    };
+
+    EXPECT_NE(headerText.find("kMinLineMeshSlotCount"), std::string::npos);
+    EXPECT_NE(headerText.find("std::vector<LineMeshSlot> m_lineMeshSlots"), std::string::npos);
+    EXPECT_NE(sourceText.find("GetFrameContextSlotCount"), std::string::npos);
 }

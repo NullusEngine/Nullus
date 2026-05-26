@@ -45,9 +45,33 @@ namespace NLS::Render::RHI
         struct OptimizedClearValue
         {
             bool enabled = false;
-            float color[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+            float color[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
             float depth = 1.0f;
             uint32_t stencil = 0u;
+
+            static OptimizedClearValue Color(
+                float r = 0.0f,
+                float g = 0.0f,
+                float b = 0.0f,
+                float a = 1.0f)
+            {
+                OptimizedClearValue value{};
+                value.enabled = true;
+                value.color[0] = r;
+                value.color[1] = g;
+                value.color[2] = b;
+                value.color[3] = a;
+                return value;
+            }
+
+            static OptimizedClearValue DepthStencil(float depthValue = 1.0f, uint32_t stencilValue = 0u)
+            {
+                OptimizedClearValue value{};
+                value.enabled = true;
+                value.depth = depthValue;
+                value.stencil = stencilValue;
+                return value;
+            }
         };
 
         RHIExtent3D extent{};
@@ -133,6 +157,7 @@ namespace NLS::Render::RHI
     public:
         virtual const RHITextureDesc& GetDesc() const = 0;
         virtual ResourceState GetState() const = 0;
+        virtual bool RequiresExternalClearValueMessageFilter() const;
         virtual NativeHandle GetNativeImageHandle() { return {}; } // Type-safe native handle
     };
 

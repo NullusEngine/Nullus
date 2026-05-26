@@ -468,42 +468,6 @@ namespace NLS::Render::ShaderCompiler
 
 		std::optional<std::filesystem::path> FindDxcExecutable()
 		{
-			if (const char* envPath = std::getenv("DXC_PATH"); envPath != nullptr && *envPath != '\0')
-			{
-				const std::filesystem::path path(envPath);
-				if (std::filesystem::exists(path))
-					return path;
-			}
-
-			const auto findSdkDxc = [](const std::filesystem::path& sdkRoot) -> std::optional<std::filesystem::path>
-			{
-				const std::filesystem::path candidates[] =
-				{
-					sdkRoot / "Bin/dxc.exe",
-					sdkRoot / "Bin/x64/dxc.exe"
-				};
-
-				for (const auto& candidate : candidates)
-				{
-					if (std::filesystem::exists(candidate))
-						return candidate;
-				}
-
-				return std::nullopt;
-			};
-
-			if (const char* envPath = std::getenv("VULKAN_SDK"); envPath != nullptr && *envPath != '\0')
-			{
-				if (const auto sdkDxc = findSdkDxc(std::filesystem::path(envPath)); sdkDxc.has_value())
-					return sdkDxc;
-			}
-
-			if (const char* envPath = std::getenv("VK_SDK_PATH"); envPath != nullptr && *envPath != '\0')
-			{
-				if (const auto sdkDxc = findSdkDxc(std::filesystem::path(envPath)); sdkDxc.has_value())
-					return sdkDxc;
-			}
-
 			const auto findBundledDxc = [](const std::filesystem::path& root) -> std::optional<std::filesystem::path>
 			{
 				const std::filesystem::path directCandidates[] =
@@ -541,6 +505,15 @@ namespace NLS::Render::ShaderCompiler
 				return std::nullopt;
 			};
 
+			for (auto probe = std::filesystem::path(__FILE__).parent_path(); !probe.empty(); probe = probe.parent_path())
+			{
+				if (const auto bundledPath = findBundledDxc(probe); bundledPath.has_value())
+					return bundledPath;
+
+				if (probe == probe.parent_path())
+					break;
+			}
+
 			for (auto probe = std::filesystem::current_path(); !probe.empty(); probe = probe.parent_path())
 			{
 				if (const auto bundledPath = findBundledDxc(probe); bundledPath.has_value())
@@ -548,6 +521,42 @@ namespace NLS::Render::ShaderCompiler
 
 				if (probe == probe.parent_path())
 					break;
+			}
+
+			if (const char* envPath = std::getenv("DXC_PATH"); envPath != nullptr && *envPath != '\0')
+			{
+				const std::filesystem::path path(envPath);
+				if (std::filesystem::exists(path))
+					return path;
+			}
+
+			const auto findSdkDxc = [](const std::filesystem::path& sdkRoot) -> std::optional<std::filesystem::path>
+			{
+				const std::filesystem::path candidates[] =
+				{
+					sdkRoot / "Bin/dxc.exe",
+					sdkRoot / "Bin/x64/dxc.exe"
+				};
+
+				for (const auto& candidate : candidates)
+				{
+					if (std::filesystem::exists(candidate))
+						return candidate;
+				}
+
+				return std::nullopt;
+			};
+
+			if (const char* envPath = std::getenv("VULKAN_SDK"); envPath != nullptr && *envPath != '\0')
+			{
+				if (const auto sdkDxc = findSdkDxc(std::filesystem::path(envPath)); sdkDxc.has_value())
+					return sdkDxc;
+			}
+
+			if (const char* envPath = std::getenv("VK_SDK_PATH"); envPath != nullptr && *envPath != '\0')
+			{
+				if (const auto sdkDxc = findSdkDxc(std::filesystem::path(envPath)); sdkDxc.has_value())
+					return sdkDxc;
 			}
 
 #if defined(_WIN32)
@@ -588,6 +597,39 @@ namespace NLS::Render::ShaderCompiler
 			const auto path = std::filesystem::temp_directory_path() / "NullusShaderCache";
 			std::filesystem::create_directories(path);
 			return path;
+		}
+
+		bool TryGetShaderArtifactDirectory(
+			const ShaderCompileOptions& options,
+			std::filesystem::path& directory,
+			std::string& diagnostics)
+		{
+			if (!options.artifactDirectory.empty())
+			{
+				directory = std::filesystem::path(options.artifactDirectory);
+				std::error_code error;
+				std::filesystem::create_directories(directory, error);
+				if (error)
+				{
+					diagnostics += "Failed to create shader artifact directory: " + directory.string() +
+						" (" + error.message() + ")";
+					return false;
+				}
+
+				const bool isDirectory = std::filesystem::is_directory(directory, error);
+				if (error || !isDirectory)
+				{
+					diagnostics += "Shader artifact path is not a directory: " + directory.string();
+					if (error)
+						diagnostics += " (" + error.message() + ")";
+					return false;
+				}
+
+				return true;
+			}
+
+			directory = GetShaderCacheDirectory();
+			return true;
 		}
 
 		bool ResolveSourceDependencies(
@@ -1006,7 +1048,7 @@ namespace NLS::Render::ShaderCompiler
 				if (!dxcPath.has_value())
 				{
 					output.status = ShaderCompilationStatus::Failed;
-					output.diagnostics = "Unable to locate dxc.exe. Set DXC_PATH or install the Windows 10 SDK.";
+					output.diagnostics = "Unable to locate dxc.exe. Add Tools/DXC/bin/x64/dxc.exe to the project, set DXC_PATH, or install the Windows 10 SDK.";
 					return output;
 				}
 
@@ -1031,7 +1073,13 @@ namespace NLS::Render::ShaderCompiler
 					hashInput,
 					BuildDxcToolchainIdentity(*dxcPath));
 
-				const auto cacheDirectory = GetShaderCacheDirectory();
+				std::filesystem::path cacheDirectory;
+				if (!TryGetShaderArtifactDirectory(input.options, cacheDirectory, output.diagnostics))
+				{
+					output.status = ShaderCompilationStatus::Failed;
+					return output;
+				}
+
 				const auto baseName = sourcePath.stem().string() + "_" + StageToProfilePrefix(input.stage) + "_" + output.cacheKey;
 				const auto artifactExtension = input.options.targetPlatform == ShaderTargetPlatform::SPIRV ? ".spv" : ".dxil";
 				const auto artifactPath = cacheDirectory / (baseName + artifactExtension);
@@ -1702,9 +1750,23 @@ namespace NLS::Render::ShaderCompiler
 
 	ShaderCompilationOutput ShaderCompiler::Compile(const ShaderCompilationInput& input) const
 	{
-		auto output = m_backend->Compile(input);
-		PersistCacheRecord(input, output);
+		const auto preparedInput = PrepareCompileInput(input);
+		auto output = m_backend->Compile(preparedInput);
+		PersistCacheRecord(preparedInput, output);
 		return output;
+	}
+
+	ShaderCompilationInput ShaderCompiler::PrepareCompileInput(const ShaderCompilationInput& input) const
+	{
+		auto preparedInput = input;
+		if (preparedInput.options.artifactDirectory.empty() && m_cacheDatabasePath.has_value())
+		{
+			const auto databaseDirectory = std::filesystem::path(*m_cacheDatabasePath).parent_path();
+			preparedInput.options.artifactDirectory = databaseDirectory.empty()
+				? std::filesystem::path(".").string()
+				: databaseDirectory.string();
+		}
+		return preparedInput;
 	}
 
 	void ShaderCompiler::PersistCacheRecord(
@@ -1761,9 +1823,14 @@ namespace NLS::Render::ShaderCompiler
 		if (inputs.empty())
 			return outputs;
 
+		std::vector<ShaderCompilationInput> preparedInputs;
+		preparedInputs.reserve(inputs.size());
+		for (const auto& input : inputs)
+			preparedInputs.push_back(PrepareCompileInput(input));
+
 		std::vector<std::future<ShaderCompilationOutput>> futures;
 		futures.reserve(inputs.size());
-		for (const auto& input : inputs)
+		for (const auto& input : preparedInputs)
 		{
 			futures.push_back(std::async(
 				std::launch::async,
@@ -1775,7 +1842,7 @@ namespace NLS::Render::ShaderCompiler
 
 		for (size_t index = 0u; index < futures.size(); ++index)
 			outputs[index] = futures[index].get();
-		PersistCacheRecords(inputs, outputs);
+		PersistCacheRecords(preparedInputs, outputs);
 		return outputs;
 	}
 
@@ -1805,12 +1872,14 @@ namespace NLS::Render::ShaderCompiler
 
 	ShaderReflection ShaderCompiler::Reflect(const ShaderCompilationInput& input) const
 	{
-		return m_backend->Reflect(input);
+		const auto preparedInput = PrepareCompileInput(input);
+		return m_backend->Reflect(preparedInput);
 	}
 
 	ShaderReflection ShaderCompiler::Reflect(const ShaderCompilationInput& input, const ShaderCompilationOutput& compiledOutput) const
 	{
-		return m_backend->Reflect(input, compiledOutput);
+		const auto preparedInput = PrepareCompileInput(input);
+		return m_backend->Reflect(preparedInput, compiledOutput);
 	}
 
 	std::vector<ShaderReflection> ShaderCompiler::ReflectBatch(const std::vector<ShaderReflectionInput>& inputs) const
@@ -1819,15 +1888,20 @@ namespace NLS::Render::ShaderCompiler
 		if (inputs.empty())
 			return reflections;
 
+		std::vector<ShaderReflectionInput> preparedInputs;
+		preparedInputs.reserve(inputs.size());
+		for (const auto& input : inputs)
+			preparedInputs.push_back({ PrepareCompileInput(input.input), input.compiledOutput });
+
 		std::vector<std::future<ShaderReflection>> futures;
 		futures.reserve(inputs.size());
-		for (const auto& input : inputs)
+		for (const auto& input : preparedInputs)
 		{
 			futures.push_back(std::async(
 				std::launch::async,
 				[this, input]()
 				{
-					return Reflect(input.input, input.compiledOutput);
+					return m_backend->Reflect(input.input, input.compiledOutput);
 				}));
 		}
 

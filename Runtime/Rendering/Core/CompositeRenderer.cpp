@@ -315,6 +315,8 @@ bool CompositeRenderer::CaptureRecordedDrawCommand(
         outDraw.materialBindingSet = preparedDraw.materialBindingSet;
         outDraw.mesh = preparedDraw.mesh;
         outDraw.instanceCount = preparedDraw.instanceCount;
+        outDraw.vertexStart = preparedDraw.vertexStart;
+        outDraw.vertexCount = preparedDraw.vertexCount;
         outDraw.objectIndex = preparedDraw.objectIndex;
         outDraw.usesObjectIndex = preparedDraw.usesObjectIndex;
         return true;
@@ -371,6 +373,8 @@ bool CompositeRenderer::CaptureRecordedDrawCommand(
         outDraw.materialBindingSet = preparedDraw.materialBindingSet;
         outDraw.mesh = preparedDraw.mesh;
         outDraw.instanceCount = preparedDraw.instanceCount;
+        outDraw.vertexStart = preparedDraw.vertexStart;
+        outDraw.vertexCount = preparedDraw.vertexCount;
         outDraw.objectIndex = preparedDraw.objectIndex;
         outDraw.usesObjectIndex = preparedDraw.usesObjectIndex;
         return true;
@@ -440,8 +444,11 @@ const Data::FrameInfo& CompositeRenderer::GetFrameInfo() const
 {
     if (Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver))
     {
-        const auto telemetry = Context::DriverRendererAccess::GetThreadedFrameTelemetry(m_driver);
-        const_cast<RendererStats&>(m_rendererStats).SetThreadedFrameTelemetry(telemetry);
+        if (const auto telemetry = Context::DriverRendererAccess::TryGetThreadedFrameTelemetry(m_driver);
+            telemetry.has_value())
+        {
+            const_cast<RendererStats&>(m_rendererStats).SetThreadedFrameTelemetry(telemetry.value());
+        }
     }
 
     return m_rendererStats.GetFrameInfo();

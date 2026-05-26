@@ -105,6 +105,10 @@ namespace NLS::Render::Resources
 			uint32_t p_materialIndex,
 			MeshBufferUploadMode uploadMode,
 			const Geometry::BoundingSphere& boundingSphere);
+		bool UpdateVertices(
+			const std::vector<Geometry::Vertex>& p_vertices,
+			const Geometry::BoundingSphere& boundingSphere,
+			uint32_t destinationVertexOffset = 0u);
 
 	private:
 		void CreateBuffers(

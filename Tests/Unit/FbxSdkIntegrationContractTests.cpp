@@ -1021,7 +1021,7 @@ TEST(FbxSdkIntegrationContractTests, RuntimeFbxSourceLoadUsesFbxSdkParserWithout
     EXPECT_EQ(managerFbxBranch.find("AssimpParser parser"), std::string::npos);
 }
 
-TEST(FbxSdkIntegrationContractTests, CMakeUsesBundledSdkPathAndKeepsAutodeskDefault)
+TEST(FbxSdkIntegrationContractTests, CMakeUsesBundledSdkPathAndDefaultsToAssimpFbx)
 {
     const auto cmake = ReadTextFile(
         std::filesystem::path(NLS_ROOT_DIR) / "ThirdParty/CMakeLists.txt");
@@ -1031,6 +1031,8 @@ TEST(FbxSdkIntegrationContractTests, CMakeUsesBundledSdkPathAndKeepsAutodeskDefa
     EXPECT_NE(cmake.find("FBX/sdk/linux"), std::string::npos);
     EXPECT_NE(cmake.find("FBX/sdk/macos"), std::string::npos);
     EXPECT_NE(cmake.find("NLS_ENABLE_ASSIMP_FBX_IMPORTER"), std::string::npos);
+    EXPECT_NE(cmake.find("option(NLS_ENABLE_ASSIMP_FBX_IMPORTER \"Enable Assimp FBX importer without enabling every Assimp format\" ON)"), std::string::npos);
+    EXPECT_NE(cmake.find("option(NLS_ENABLE_AUTODESK_FBX_SDK \"Enable Autodesk FBX SDK integration when the bundled SDK is available\" OFF)"), std::string::npos);
     EXPECT_NE(cmake.find("ASSIMP_BUILD_FBX_IMPORTER ${NLS_ENABLE_ASSIMP_FBX_IMPORTER}"), std::string::npos);
     ExpectNoExternalFbxSdkLookup(cmake);
     ExpectNoVersionedFbxSdkDirectory(cmake);

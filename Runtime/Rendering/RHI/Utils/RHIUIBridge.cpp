@@ -14,7 +14,7 @@ namespace NLS::Render::RHI
             NativeBackendType GetNativeBackendType() const override { return NativeBackendType::None; }
             bool HasRendererBackend() const override { return false; }
             void BeginFrame() override {}
-            void RenderDrawData(ImDrawData*, uint32_t) override {}
+            void RenderDrawData(ImDrawData*, uint32_t, const WaitSemaphoreResolver& = {}) override {}
             NativeHandle ResolveTextureView(const std::shared_ptr<RHITextureView>&) override { return {}; }
             void ReleaseTextureViewHandle(const std::shared_ptr<RHITextureView>&) override {}
             void SetWaitSemaphore(NativeHandle) override {}

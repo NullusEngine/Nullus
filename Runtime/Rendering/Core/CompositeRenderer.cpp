@@ -64,8 +64,11 @@ CompositeRenderer::CompositeRenderer(Context::Driver& p_driver)
 void CompositeRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
 {
     NLS_PROFILE_SCOPE();
-    ABaseRenderer::BeginFrame(p_frameDescriptor);
     m_rendererStats.BeginFrame();
+    ABaseRenderer::BeginFrame(p_frameDescriptor);
+    m_compositeFrameActive = IsFrameActive();
+    if (!m_compositeFrameActive)
+        return;
 
     if (m_frameObjectBindingProvider != nullptr)
         m_frameObjectBindingProvider->BeginFrame(p_frameDescriptor);
@@ -82,16 +85,25 @@ void CompositeRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescripto
 void CompositeRenderer::DrawFrame()
 {
     NLS_PROFILE_SCOPE();
+    if (!m_compositeFrameActive)
+        return;
+
     DrawRegisteredPasses();
 }
 
 void CompositeRenderer::ExecutePass(Core::ARenderPass& pass)
 {
+    if (!m_compositeFrameActive)
+        return;
+
     ExecutePass(pass, CreatePipelineState());
 }
 
 void CompositeRenderer::ExecutePass(Core::ARenderPass& pass, PipelineState pso)
 {
+    if (!m_compositeFrameActive)
+        return;
+
     std::string passName = "CompositeRenderPass";
     for (const auto& [_, registeredPass] : m_passes)
     {
@@ -128,12 +140,18 @@ void CompositeRenderer::ExecutePass(Core::ARenderPass& pass, PipelineState pso)
 void CompositeRenderer::DrawRegisteredPasses()
 {
     NLS_PROFILE_SCOPE();
+    if (!m_compositeFrameActive)
+        return;
+
     DrawRegisteredPasses(CreatePipelineState());
 }
 
 void CompositeRenderer::DrawRegisteredPasses(PipelineState pso)
 {
     NLS_PROFILE_SCOPE();
+    if (!m_compositeFrameActive)
+        return;
+
     for (const auto& [_, pass] : m_passes)
     {
         if (pass.second->IsEnabled())
@@ -144,6 +162,14 @@ void CompositeRenderer::DrawRegisteredPasses(PipelineState pso)
 void CompositeRenderer::EndFrame()
 {
     NLS_PROFILE_SCOPE();
+    if (!m_compositeFrameActive)
+    {
+        ABaseRenderer::EndFrame();
+        ClearDescriptors();
+        m_compositeFrameActive = false;
+        return;
+    }
+
     for (const auto& [_, pass] : m_passes)
     {
         if (pass.second->IsEnabled())
@@ -158,9 +184,20 @@ void CompositeRenderer::EndFrame()
         m_debugDrawService->EndFrame();
     ABaseRenderer::EndFrame();
     ClearDescriptors();
-    const auto telemetry = Context::DriverRendererAccess::GetThreadedFrameTelemetry(m_driver);
-    m_rendererStats.SetThreadedFrameTelemetry(telemetry);
+    if (Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver))
+    {
+        if (const auto telemetry = Context::DriverRendererAccess::TryGetThreadedFrameTelemetry(m_driver);
+            telemetry.has_value())
+        {
+            m_rendererStats.SetThreadedFrameTelemetry(telemetry.value());
+        }
+        else
+        {
+            m_rendererStats.ReuseLastThreadedFrameTelemetry();
+        }
+    }
     m_rendererStats.EndFrame();
+    m_compositeFrameActive = false;
 }
 
 void CompositeRenderer::DrawEntity(
@@ -169,6 +206,9 @@ void CompositeRenderer::DrawEntity(
 )
 {
     NLS_PROFILE_SCOPE();
+    if (!m_compositeFrameActive)
+        return;
+
     const bool usesThreadedRendering = Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
 
     const bool frameObjectPrepared = m_frameObjectBindingProvider == nullptr ||
@@ -233,6 +273,9 @@ void CompositeRenderer::DrawEntity(
     Settings::EComparaisonAlgorithm depthCompareOverride)
 {
     NLS_PROFILE_SCOPE();
+    if (!m_compositeFrameActive)
+        return;
+
     auto effectivePso = CreatePipelineState();
     const bool usesThreadedRendering = Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
 
@@ -297,6 +340,9 @@ bool CompositeRenderer::CaptureRecordedDrawCommand(
     const Entities::Drawable& p_drawable,
     Context::RecordedDrawCommandInput& outDraw)
 {
+    if (!m_compositeFrameActive)
+        return false;
+
     const auto populateRecordedDrawCommandInput =
         [&outDraw](const PreparedRecordedDraw& preparedDraw)
     {
@@ -355,6 +401,9 @@ bool CompositeRenderer::CaptureRecordedDrawCommand(
     Settings::EComparaisonAlgorithm depthCompareOverride,
     Context::RecordedDrawCommandInput& outDraw)
 {
+    if (!m_compositeFrameActive)
+        return false;
+
     const auto populateRecordedDrawCommandInput =
         [&outDraw](const PreparedRecordedDraw& preparedDraw)
     {
@@ -442,15 +491,6 @@ bool CompositeRenderer::HasDebugDrawService() const
 
 const Data::FrameInfo& CompositeRenderer::GetFrameInfo() const
 {
-    if (Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver))
-    {
-        if (const auto telemetry = Context::DriverRendererAccess::TryGetThreadedFrameTelemetry(m_driver);
-            telemetry.has_value())
-        {
-            const_cast<RendererStats&>(m_rendererStats).SetThreadedFrameTelemetry(telemetry.value());
-        }
-    }
-
     return m_rendererStats.GetFrameInfo();
 }
 

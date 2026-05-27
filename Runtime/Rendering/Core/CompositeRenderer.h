@@ -77,6 +77,7 @@ protected:
     std::unique_ptr<FrameObjectBindingProvider> m_frameObjectBindingProvider;
     std::unique_ptr<Debug::DebugDrawService> m_debugDrawService;
     RendererStats m_rendererStats;
+    bool m_compositeFrameActive = false;
 };
 }
 

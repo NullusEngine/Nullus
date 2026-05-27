@@ -148,7 +148,7 @@ public:
      * Render ImGui current frane
      * @note Should be called once per frame
      */
-    void Render();
+    void Render(const NLS::Render::RHI::WaitSemaphoreResolver& resolveWaitSemaphore = {});
     NLS::Render::RHI::NativeHandle ResolveTextureView(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView);
     void NotifySwapchainWillResize();
     void ReleaseTextureViewHandle(const std::shared_ptr<NLS::Render::RHI::RHITextureView>& textureView);

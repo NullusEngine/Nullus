@@ -2,11 +2,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <future>
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <string>
 #include <utility>
@@ -28,6 +30,7 @@
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Settings/DriverSettings.h"
+#include "SceneSystem/Scene.h"
 #include "UI/Panels/PanelWindow.h"
 #include "UI/Widgets/AWidget.h"
 #include "UI/Widgets/Texts/Text.h"
@@ -101,6 +104,167 @@ protected:
     void BindPreparedGraphicsPipeline(const PreparedRecordedDraw&) const override {}
     void BindPreparedMaterialBindingSet(const PreparedRecordedDraw&) const override {}
     void SubmitPreparedDraw(const PreparedRecordedDraw&) const override {}
+};
+
+class SnapshotProbeRenderer final : public NLS::Engine::Rendering::BaseSceneRenderer
+{
+public:
+    explicit SnapshotProbeRenderer(NLS::Render::Context::Driver& driver)
+        : BaseSceneRenderer(driver)
+    {
+    }
+
+    void BeginFrame(const NLS::Render::Data::FrameDescriptor& frameDescriptor) override
+    {
+        if (m_publishThreadedFrames &&
+            NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver))
+        {
+            NLS::Engine::Rendering::BaseSceneRenderer::BeginFrame(frameDescriptor);
+            return;
+        }
+
+        (void)frameDescriptor;
+        m_rendererStats.BeginFrame();
+    }
+
+    void DrawFrame() override
+    {
+        if (!m_recordFrameStats)
+            return;
+
+        m_rendererStats.RecordSceneParse(3u, 2u, 1u);
+        m_rendererStats.RecordGBufferMaterialSync();
+        m_rendererStats.RecordRenderBindingSetCreation(4u);
+        m_rendererStats.RecordRenderSnapshotBufferCreation(5u);
+    }
+
+    void SetRecordFrameStats(const bool recordFrameStats)
+    {
+        m_recordFrameStats = recordFrameStats;
+    }
+
+    void SetPublishThreadedFrames(const bool publishThreadedFrames)
+    {
+        m_publishThreadedFrames = publishThreadedFrames;
+    }
+
+    void EndFrame() override
+    {
+        if (m_publishThreadedFrames &&
+            NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver))
+        {
+            NLS::Engine::Rendering::BaseSceneRenderer::EndFrame();
+            return;
+        }
+
+        m_rendererStats.EndFrame();
+    }
+
+private:
+    bool m_recordFrameStats = true;
+    bool m_publishThreadedFrames = false;
+};
+
+class SnapshotProbeView final : public NLS::Editor::Panels::AView
+{
+public:
+    SnapshotProbeView(
+        const std::string& title,
+        NLS::Render::Context::Driver& driver)
+        : AView(title, true, {}),
+        m_driver(driver),
+        m_scene(),
+        m_cameraTransform(),
+        m_camera(&m_cameraTransform)
+    {
+    }
+
+    NLS::Render::Entities::Camera* GetCamera() override
+    {
+        return m_cameraAvailable ? &m_camera : nullptr;
+    }
+
+    NLS::Engine::SceneSystem::Scene* GetScene() override
+    {
+        return &m_scene;
+    }
+
+    void EnsureRenderer() override
+    {
+        if (m_renderer != nullptr)
+            return;
+
+        auto renderer = std::make_unique<SnapshotProbeRenderer>(m_driver);
+        m_probeRenderer = renderer.get();
+        m_renderer = std::move(renderer);
+    }
+
+    void RenderForTest()
+    {
+        Render(64u, 64u);
+    }
+
+    void SyncContentRegionForTest()
+    {
+        SyncViewToCurrentContentRegion();
+    }
+
+    void ApplyResolvedViewSizeForTest(const uint16_t width, const uint16_t height)
+    {
+        ApplyResolvedViewSize(width, height);
+    }
+
+    void SetRequiresRetiredFrameConsumptionForTest(const bool requiresRetiredFrameConsumption)
+    {
+        SetRequiresRetiredFrameConsumption(requiresRetiredFrameConsumption);
+    }
+
+    void SetRequiresImmediateRetiredFrameReadbackForTest(const bool requiresImmediateRetiredFrameReadback)
+    {
+        SetRequiresImmediateRetiredFrameReadback(requiresImmediateRetiredFrameReadback);
+    }
+
+    std::pair<uint16_t, uint16_t> GetResolvedViewSizeForTest() const
+    {
+        return m_lastResolvedViewSize;
+    }
+
+    std::optional<std::pair<uint16_t, uint16_t>> GetPendingResolvedViewSizeForTest() const
+    {
+        return m_pendingResolvedViewSize;
+    }
+
+    void SetCameraAvailable(const bool cameraAvailable)
+    {
+        m_cameraAvailable = cameraAvailable;
+    }
+
+    void SetRendererRecordsStats(const bool recordFrameStats)
+    {
+        EnsureRenderer();
+        ASSERT_NE(m_probeRenderer, nullptr);
+        m_probeRenderer->SetRecordFrameStats(recordFrameStats);
+    }
+
+    void SetRendererPublishesThreadedFramesForTest(const bool publishThreadedFrames)
+    {
+        EnsureRenderer();
+        ASSERT_NE(m_probeRenderer, nullptr);
+        m_probeRenderer->SetPublishThreadedFrames(publishThreadedFrames);
+    }
+
+    bool HasRendererForTest() const
+    {
+        return m_probeRenderer != nullptr;
+    }
+
+private:
+    NLS::Render::Context::Driver& m_driver;
+    NLS::Engine::SceneSystem::Scene m_scene;
+    NLS::Maths::Transform m_cameraTransform;
+    NLS::Render::Entities::Camera m_camera;
+    SnapshotProbeRenderer* m_probeRenderer = nullptr;
+    bool m_cameraAvailable = true;
 };
 
 class ProbePanel final : public NLS::UI::PanelWindow
@@ -230,6 +394,21 @@ void ExpectTextWidgetContent(NLS::UI::PanelWindow& panel, const std::string& exp
         });
 
     EXPECT_TRUE(found) << "Missing FrameInfo text: " << expectedContent;
+}
+
+void ExpectNoTextWidgetContent(NLS::UI::PanelWindow& panel, const std::string& unexpectedContent)
+{
+    const auto& widgets = panel.GetWidgets();
+    const auto found = std::any_of(
+        widgets.begin(),
+        widgets.end(),
+        [&unexpectedContent](const auto& widget)
+        {
+            const auto* text = dynamic_cast<NLS::UI::Widgets::Text*>(widget.first);
+            return text != nullptr && text->content == unexpectedContent;
+        });
+
+    EXPECT_FALSE(found) << "Unexpected FrameInfo text: " << unexpectedContent;
 }
 
 std::string ReadSourceFile(const std::filesystem::path& path)
@@ -443,30 +622,16 @@ TEST(PanelWindowHookTests, ExternalWidgetsClearParentWhenRemovedFromContainer)
     EXPECT_FALSE(collectedWidget.HasParent());
 }
 
-TEST(PanelWindowHookTests, FrameInfoPanelReadsRendererOwnedStats)
+TEST(PanelWindowHookTests, FrameInfoPanelFormatsSuppliedRenderViewSnapshot)
 {
-    NLS::Render::Settings::DriverSettings settings;
-    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableExplicitRHI = false;
-
-    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
-    NLS::Core::ServiceLocator::Provide(*driver);
-
-    StatsOnlyRenderer renderer(*driver);
-    NLS::Render::Resources::Material material;
-    material.SetGPUInstances(2);
-    const auto mesh = CreateTriangleMesh();
-
-    NLS::Render::Entities::Drawable drawable;
-    drawable.mesh = mesh.get();
-    drawable.material = &material;
-
-    renderer.ResetFrameStatistics();
-    renderer.DrawEntity(NLS::Render::Data::PipelineState {}, drawable);
-    renderer.FinalizeFrameStatistics();
+    NLS::Render::Data::FrameInfo frameInfo;
+    frameInfo.batchCount = 1u;
+    frameInfo.instanceCount = 2u;
+    frameInfo.polyCount = 2u;
+    frameInfo.vertexCount = 6u;
 
     NLS::Editor::Panels::FrameInfo panel("Frame Info", true, {});
-    panel.UpdateForRenderer("Stats View", renderer);
+    panel.UpdateForFrameInfo("Stats View", frameInfo);
 
     EXPECT_EQ(TextWidgetAt(panel, 0u).content, "Target View: Stats View");
     EXPECT_EQ(TextWidgetAt(panel, 2u).content, "Batches: 1");
@@ -478,78 +643,213 @@ TEST(PanelWindowHookTests, FrameInfoPanelReadsRendererOwnedStats)
     ExpectTextWidgetContent(panel, "GBuffer Material Syncs: 0");
     ExpectTextWidgetContent(panel, "Binding Sets Created: 0");
     ExpectTextWidgetContent(panel, "Snapshot Buffers Created: 0");
-    ExpectTextWidgetContent(panel, "Target Panel Draw: 0 us");
+    ExpectNoTextWidgetContent(panel, "Target Panel Draw: 0 us");
     ExpectTextWidgetContent(panel, "Frame Stage: Direct");
     ExpectTextWidgetContent(panel, "Retirement State: Direct");
 }
 
-TEST(PanelWindowHookTests, FrameInfoPanelRefreshesDuringDrawWithoutLiveTelemetryRead)
+TEST(PanelWindowHookTests, FrameInfoPanelExcludesEditorUiPanelDrawMetrics)
 {
-    const auto root = std::filesystem::path(NLS_ROOT_DIR);
-    const auto editorSource = ReadSourceFile(root / "Project/Editor/Core/Editor.cpp");
-    const auto frameInfoHeader = ReadSourceFile(root / "Project/Editor/Panels/FrameInfo.h");
-    const auto frameInfoSource = ReadSourceFile(root / "Project/Editor/Panels/FrameInfo.cpp");
-    const auto compositeRendererSource = ReadSourceFile(root / "Runtime/Rendering/Core/CompositeRenderer.cpp");
-    const auto driverSource = ReadSourceFile(root / "Runtime/Rendering/Context/Driver.cpp");
-    const auto renderThreadCoordinatorSource =
-        ReadSourceFile(root / "Runtime/Rendering/Context/RenderThreadCoordinator.cpp");
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
 
-    EXPECT_NE(frameInfoHeader.find("void SetTargetView(AView* p_targetView);"), std::string::npos);
-    EXPECT_NE(frameInfoHeader.find("AView* GetTargetView() const;"), std::string::npos);
-    EXPECT_NE(frameInfoHeader.find("void OnBeforeDrawWidgets() override;"), std::string::npos);
-    EXPECT_NE(frameInfoHeader.find("AView* m_targetView = nullptr;"), std::string::npos);
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
 
-    EXPECT_NE(
-        frameInfoSource.find("void Editor::Panels::FrameInfo::OnBeforeDrawWidgets()"),
-        std::string::npos);
-    EXPECT_NE(frameInfoSource.find("RefreshForView(m_targetView);"), std::string::npos);
+    StatsOnlyRenderer renderer(*driver);
+    renderer.ResetFrameStatistics();
+    renderer.FinalizeFrameStatistics();
 
-    EXPECT_NE(editorSource.find("if (sceneView.IsOpened() && sceneView.IsFocused())"), std::string::npos);
-    EXPECT_NE(editorSource.find("frameInfo.SetTargetView(&sceneView);"), std::string::npos);
-    EXPECT_NE(editorSource.find("else if (gameView.IsOpened() && gameView.IsFocused())"), std::string::npos);
-    EXPECT_NE(editorSource.find("frameInfo.SetTargetView(&gameView);"), std::string::npos);
-    EXPECT_NE(editorSource.find("else if (assetView.IsOpened() && assetView.IsFocused())"), std::string::npos);
-    EXPECT_NE(editorSource.find("frameInfo.SetTargetView(&assetView);"), std::string::npos);
-    EXPECT_NE(editorSource.find("frameInfo.GetTargetView() == nullptr || !frameInfo.GetTargetView()->IsOpened()"), std::string::npos);
-    EXPECT_NE(editorSource.find("if (sceneView.IsOpened())"), std::string::npos);
-    EXPECT_NE(editorSource.find("else if (gameView.IsOpened())"), std::string::npos);
-    EXPECT_NE(editorSource.find("else if (assetView.IsOpened())"), std::string::npos);
-    EXPECT_NE(frameInfoSource.find("p_targetView == nullptr || !p_targetView->IsOpened()"), std::string::npos);
+    NLS::Editor::Panels::FrameInfo panel("Frame Info", true, {});
+    const auto frameInfo = renderer.GetFrameInfo();
+    panel.UpdateForFrameInfo("Stats View", frameInfo);
 
-    const auto frameInfoCreation = editorSource.find("CreatePanel<Panels::FrameInfo>");
-    const auto assetViewCreation = editorSource.find("CreatePanel<Panels::AssetView>");
-    const auto sceneViewCreation = editorSource.find("CreatePanel<Panels::SceneView>");
-    const auto gameViewCreation = editorSource.find("CreatePanel<Panels::GameView>");
+    const auto& widgets = panel.GetWidgets();
+    for (const auto& widget : widgets)
+    {
+        const auto* text = dynamic_cast<NLS::UI::Widgets::Text*>(widget.first);
+        if (text != nullptr)
+            EXPECT_EQ(text->content.find("Panel Draw"), std::string::npos) << text->content;
+    }
+}
+
+TEST(PanelWindowHookTests, EditorCreatesFrameInfoAsDockableRenderStatsWindow)
+{
+    const auto editorSource = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Editor.cpp");
+
+    const auto settingsDeclaration = editorSource.find("auto frameInfoSettings = settings;");
+    ASSERT_NE(settingsDeclaration, std::string::npos);
+    const auto frameInfoCreation = editorSource.find("CreatePanel<Panels::FrameInfo>", settingsDeclaration);
     ASSERT_NE(frameInfoCreation, std::string::npos);
-    ASSERT_NE(assetViewCreation, std::string::npos);
-    ASSERT_NE(sceneViewCreation, std::string::npos);
-    ASSERT_NE(gameViewCreation, std::string::npos);
-    EXPECT_GT(frameInfoCreation, assetViewCreation);
-    EXPECT_GT(frameInfoCreation, sceneViewCreation);
-    EXPECT_GT(frameInfoCreation, gameViewCreation);
 
-    const auto getFrameInfo = compositeRendererSource.find("const Data::FrameInfo& CompositeRenderer::GetFrameInfo() const");
-    ASSERT_NE(getFrameInfo, std::string::npos);
-    const auto isFrameInfoValid = compositeRendererSource.find("bool CompositeRenderer::IsFrameInfoValid() const");
-    ASSERT_NE(isFrameInfoValid, std::string::npos);
-    const auto getFrameInfoBody = compositeRendererSource.substr(getFrameInfo, isFrameInfoValid - getFrameInfo);
-    EXPECT_NE(getFrameInfoBody.find("TryGetThreadedFrameTelemetry"), std::string::npos);
-    EXPECT_EQ(getFrameInfoBody.find("DriverRendererAccess::GetThreadedFrameTelemetry"), std::string::npos);
+    const auto frameInfoSetup = editorSource.substr(settingsDeclaration, frameInfoCreation - settingsDeclaration);
+    EXPECT_EQ(frameInfoSetup.find("frameInfoSettings.dockable = false;"), std::string::npos);
+    EXPECT_NE(frameInfoSetup.find("frameInfoSettings.autoSize = true;"), std::string::npos);
+    EXPECT_NE(
+        editorSource.find("CreatePanel<Panels::FrameInfo>(\"Frame Info\", false, frameInfoSettings)"),
+        std::string::npos);
+}
 
-    const auto tryTelemetry = driverSource.find("DriverRendererAccess::TryGetThreadedFrameTelemetry");
-    ASSERT_NE(tryTelemetry, std::string::npos);
-    const auto setViewport = driverSource.find("void DriverRendererAccess::SetViewport", tryTelemetry);
-    ASSERT_NE(setViewport, std::string::npos);
-    const auto tryTelemetryBody = driverSource.substr(tryTelemetry, setViewport - tryTelemetry);
-    EXPECT_NE(tryTelemetryBody.find("AppendDriverTelemetry"), std::string::npos);
-    EXPECT_NE(tryTelemetryBody.find("return std::nullopt"), std::string::npos);
+TEST(PanelWindowHookTests, ContextAppliesFrameInfoStartupValidationOverride)
+{
+    const auto contextHeader = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Context.h");
 
-    const auto coordinatorTryTelemetry =
-        renderThreadCoordinatorSource.find("RenderThreadCoordinator::TryGetThreadedFrameTelemetry");
-    ASSERT_NE(coordinatorTryTelemetry, std::string::npos);
-    const auto coordinatorTryTelemetryBody = renderThreadCoordinatorSource.substr(coordinatorTryTelemetry);
-    EXPECT_NE(coordinatorTryTelemetryBody.find("threadedLifecycle == nullptr"), std::string::npos);
-    EXPECT_NE(coordinatorTryTelemetryBody.find("return std::nullopt"), std::string::npos);
+    const auto applyOverride = contextHeader.find("void ApplyDiagnosticsOverride");
+    ASSERT_NE(applyOverride, std::string::npos);
+    const auto diagnosticsSettingsMember = contextHeader.find("Render::Settings::EngineDiagnosticsSettings m_diagnosticsSettings", applyOverride);
+    ASSERT_NE(diagnosticsSettingsMember, std::string::npos);
+
+    const auto applyBody = contextHeader.substr(applyOverride, diagnosticsSettingsMember - applyOverride);
+    EXPECT_NE(applyBody.find("m_diagnosticsOverride->editorValidationOpenFrameInfo"), std::string::npos);
+    EXPECT_NE(applyBody.find("settings.editorValidationOpenFrameInfo = true;"), std::string::npos);
+}
+
+TEST(PanelWindowHookTests, EditorResolvesUiSceneWaitAfterCanvasDraw)
+{
+    const auto editorSource = ReadSourceFile(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Editor.cpp");
+
+    const auto renderCall = editorSource.find("Editor::UIManagerRender");
+    ASSERT_NE(renderCall, std::string::npos);
+    const auto renderBlockEnd = editorSource.find("Editor::SetUICompositionSignal", renderCall);
+    ASSERT_NE(renderBlockEnd, std::string::npos);
+
+    const auto renderBlock = editorSource.substr(renderCall, renderBlockEnd - renderCall);
+    EXPECT_EQ(renderBlock.find("UIManager::SetWaitSemaphore"), std::string::npos);
+    EXPECT_EQ(
+        renderBlock.find("if (uiSyncBoundary.sceneToUiWaitSemaphore.IsValid())"),
+        std::string::npos);
+    EXPECT_NE(
+        renderBlock.find("DriverUIAccess::GetRenderFinishedSemaphore(*m_context.driver)"),
+        std::string::npos);
+}
+
+TEST(PanelWindowHookTests, FrameInfoPanelRefreshesFromViewOwnedSnapshotAndRetainsLastSuccessfulRender)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    SnapshotProbeView view("Probe View", *driver);
+    NLS::Editor::Panels::FrameInfo panel("Frame Info", true, {});
+
+    view.RenderForTest();
+    panel.RefreshForView(&view);
+
+    ExpectTextWidgetContent(panel, "Target View: Probe View");
+    ExpectTextWidgetContent(panel, "ParseScene Calls: 1");
+    ExpectTextWidgetContent(panel, "Drawables O/T/S: 3/2/1");
+    ExpectTextWidgetContent(panel, "GBuffer Material Syncs: 1");
+    ExpectTextWidgetContent(panel, "Binding Sets Created: 4");
+    ExpectTextWidgetContent(panel, "Snapshot Buffers Created: 5");
+
+    view.SetRendererRecordsStats(false);
+    view.SetCameraAvailable(false);
+    view.RenderForTest();
+    panel.RefreshForView(&view);
+
+    ExpectTextWidgetContent(panel, "ParseScene Calls: 1");
+    ExpectTextWidgetContent(panel, "Drawables O/T/S: 3/2/1");
+    ExpectTextWidgetContent(panel, "GBuffer Material Syncs: 1");
+    ExpectTextWidgetContent(panel, "Binding Sets Created: 4");
+    ExpectTextWidgetContent(panel, "Snapshot Buffers Created: 5");
+}
+
+TEST(PanelWindowHookTests, FrameInfoPanelDisplaysEmptySnapshotWithoutRendererAccess)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    SnapshotProbeView view("Probe View", *driver);
+    NLS::Editor::Panels::FrameInfo panel("Frame Info", true, {});
+
+    panel.RefreshForView(&view);
+
+    ExpectTextWidgetContent(panel, "Target View: Probe View");
+    ExpectTextWidgetContent(panel, "Batches: 0");
+    ExpectTextWidgetContent(panel, "Instances: 0");
+    ExpectTextWidgetContent(panel, "Polygons: 0");
+    ExpectTextWidgetContent(panel, "Vertices: 0");
+    ExpectTextWidgetContent(panel, "ParseScene Calls: 0");
+    ExpectTextWidgetContent(panel, "Drawables O/T/S: 0/0/0");
+    ExpectTextWidgetContent(panel, "GBuffer Material Syncs: 0");
+    ExpectTextWidgetContent(panel, "Binding Sets Created: 0");
+    ExpectTextWidgetContent(panel, "Snapshot Buffers Created: 0");
+    ExpectTextWidgetContent(panel, "Frames In Flight: 0");
+    ExpectTextWidgetContent(panel, "Blocked Frames: 0");
+    ExpectTextWidgetContent(panel, "Publish State: Direct");
+    ExpectTextWidgetContent(panel, "Frame Stage: Direct");
+    ExpectTextWidgetContent(panel, "Retirement State: Direct");
+}
+
+TEST(PanelWindowHookTests, FrameInfoPanelRefreshDoesNotCreateTargetViewRenderer)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    SnapshotProbeView view("Probe View", *driver);
+    NLS::Editor::Panels::FrameInfo panel("Frame Info", true, {});
+
+    panel.RefreshForView(&view);
+
+    EXPECT_FALSE(view.HasRendererForTest());
+    ExpectTextWidgetContent(panel, "Target View: Probe View");
+    ExpectTextWidgetContent(panel, "ParseScene Calls: 0");
+}
+
+TEST(PanelWindowHookTests, FrameInfoPanelRefreshReturnsWhenLifecycleTelemetryIsBusy)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(*driver);
+
+    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(*driver);
+    ASSERT_NE(lifecycle, nullptr);
+    ASSERT_TRUE(NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::TryLockTelemetry(*lifecycle));
+
+    SnapshotProbeView view("Probe View", *driver);
+    view.RenderForTest();
+    NLS::Editor::Panels::FrameInfo panel("Frame Info", true, {});
+
+    auto updateFuture = std::async(
+        std::launch::async,
+        [&]
+        {
+            panel.RefreshForView(&view);
+        });
+
+    const auto status = updateFuture.wait_for(std::chrono::milliseconds(200));
+
+    NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::UnlockTelemetry(*lifecycle);
+
+    ASSERT_EQ(status, std::future_status::ready);
+    updateFuture.get();
+    ExpectTextWidgetContent(panel, "Target View: Probe View");
+    ExpectTextWidgetContent(panel, "ParseScene Calls: 1");
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock lifecycle telemetry in this test.";
+#endif
 }
 
 TEST(PanelWindowHookTests, FrameInfoTelemetryReadReturnsImmediatelyWhenLifecycleTelemetryIsBusy)
@@ -576,12 +876,345 @@ TEST(PanelWindowHookTests, FrameInfoTelemetryReadReturnsImmediatelyWhenLifecycle
             return NLS::Render::Context::DriverRendererAccess::TryGetThreadedFrameTelemetry(*driver);
         });
 
-    const auto status = telemetryFuture.wait_for(std::chrono::milliseconds(50));
+    const auto status = telemetryFuture.wait_for(std::chrono::milliseconds(200));
 
     NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::UnlockTelemetry(*lifecycle);
 
     ASSERT_EQ(status, std::future_status::ready);
     EXPECT_FALSE(telemetryFuture.get().has_value());
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock lifecycle telemetry in this test.";
+#endif
+}
+
+TEST(PanelWindowHookTests, CompositeRendererGetFrameInfoDoesNotBlockWhenLifecycleTelemetryIsBusy)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(*driver);
+
+    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(*driver);
+    ASSERT_NE(lifecycle, nullptr);
+    ASSERT_TRUE(NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::TryLockTelemetry(*lifecycle));
+
+    auto renderer = std::make_unique<StatsOnlyRenderer>(*driver);
+    renderer->ResetFrameStatistics();
+    renderer->FinalizeFrameStatistics();
+
+    auto frameInfoFuture = std::async(
+        std::launch::async,
+        [&]
+        {
+            return renderer->GetFrameInfo().inFlightFrameCount;
+        });
+
+    const auto status = frameInfoFuture.wait_for(std::chrono::milliseconds(200));
+
+    NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::UnlockTelemetry(*lifecycle);
+
+    ASSERT_EQ(status, std::future_status::ready);
+    EXPECT_EQ(frameInfoFuture.get(), 0u);
+    EXPECT_TRUE(renderer->IsFrameInfoValid());
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock lifecycle telemetry in this test.";
+#endif
+}
+
+TEST(PanelWindowHookTests, CompositeRendererGetFrameInfoDoesNotRefreshThreadedTelemetry)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(*driver);
+
+    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(*driver);
+    ASSERT_NE(lifecycle, nullptr);
+
+    auto renderer = std::make_unique<StatsOnlyRenderer>(*driver);
+    renderer->ResetFrameStatistics();
+    renderer->FinalizeFrameStatistics();
+    ASSERT_TRUE(renderer->IsFrameInfoValid());
+    EXPECT_EQ(renderer->GetFrameInfo().inFlightFrameCount, 0u);
+
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 77u;
+    snapshot.renderWidth = 64u;
+    snapshot.renderHeight = 64u;
+    ASSERT_TRUE(lifecycle->TryPublishFrameSnapshot(snapshot));
+
+    const auto telemetry = NLS::Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(*driver);
+    ASSERT_EQ(telemetry.inFlightFrameCount, 1u);
+    EXPECT_EQ(renderer->GetFrameInfo().inFlightFrameCount, 0u);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to publish lifecycle telemetry in this test.";
+#endif
+}
+
+TEST(PanelWindowHookTests, AViewRenderReturnsWhenLifecycleTelemetryIsBusy)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(*driver);
+
+    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(*driver);
+    ASSERT_NE(lifecycle, nullptr);
+    ASSERT_TRUE(NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::TryLockTelemetry(*lifecycle));
+
+    SnapshotProbeView view("Probe View", *driver);
+    auto renderFuture = std::async(
+        std::launch::async,
+        [&]
+        {
+            view.RenderForTest();
+            return view.GetLastRenderedFrameInfoSnapshot().has_value();
+        });
+
+    const auto status = renderFuture.wait_for(std::chrono::milliseconds(200));
+
+    NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::UnlockTelemetry(*lifecycle);
+
+    ASSERT_EQ(status, std::future_status::ready);
+    EXPECT_TRUE(renderFuture.get());
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock lifecycle telemetry in this test.";
+#endif
+}
+
+TEST(PanelWindowHookTests, AViewSnapshotUsesPostRenderDrainTelemetry)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(*driver);
+
+    SnapshotProbeView view("Probe View", *driver);
+    view.SetRendererPublishesThreadedFramesForTest(true);
+    view.SetRequiresRetiredFrameConsumptionForTest(true);
+    view.SetRequiresImmediateRetiredFrameReadbackForTest(true);
+
+    view.RenderForTest();
+
+    const auto& snapshot = view.GetLastRenderedFrameInfoSnapshot();
+    ASSERT_TRUE(snapshot.has_value());
+    EXPECT_EQ(snapshot->inFlightFrameCount, 0u);
+    EXPECT_EQ(snapshot->stageSummary, NLS::Render::Data::ThreadedFrameStageSummary::Retired);
+    EXPECT_EQ(snapshot->retirementState, NLS::Render::Data::FrameRetirementState::Ready);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to pause threaded rendering workers in this test.";
+#endif
+}
+
+TEST(PanelWindowHookTests, AViewResizeDefersWhenThreadedTelemetryIsBusy)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(*driver);
+
+    SnapshotProbeView view("Probe View", *driver);
+    view.SetRequiresRetiredFrameConsumptionForTest(true);
+    view.ApplyResolvedViewSizeForTest(32u, 32u);
+    const std::pair<uint16_t, uint16_t> originalSize { 32u, 32u };
+    ASSERT_EQ(view.GetResolvedViewSizeForTest(), originalSize);
+
+    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(*driver);
+    ASSERT_NE(lifecycle, nullptr);
+    ASSERT_TRUE(NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::TryLockTelemetry(*lifecycle));
+
+    auto resizeFuture = std::async(
+        std::launch::async,
+        [&]
+        {
+            IMGUI_CHECKVERSION();
+            ImGui::CreateContext();
+            ImGuiIO& io = ImGui::GetIO();
+            io.DisplaySize = ImVec2(256.0f, 256.0f);
+            io.Fonts->AddFontDefault();
+            unsigned char* pixels = nullptr;
+            int width = 0;
+            int height = 0;
+            io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+
+            ImGui::NewFrame();
+            ImGui::SetNextWindowSize(ImVec2(128.0f, 128.0f));
+            ImGui::Begin("Probe View Resize Test");
+            view.SyncContentRegionForTest();
+            ImGui::End();
+            ImGui::EndFrame();
+            ImGui::DestroyContext();
+
+            return view.GetResolvedViewSizeForTest();
+        });
+
+    const auto status = resizeFuture.wait_for(std::chrono::milliseconds(200));
+
+    NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::UnlockTelemetry(*lifecycle);
+
+    ASSERT_EQ(status, std::future_status::ready);
+    EXPECT_EQ(resizeFuture.get(), originalSize);
+    ASSERT_TRUE(view.GetPendingResolvedViewSizeForTest().has_value());
+    EXPECT_NE(view.GetPendingResolvedViewSizeForTest().value(), originalSize);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock lifecycle telemetry in this test.";
+#endif
+}
+
+TEST(PanelWindowHookTests, AViewApplyResolvedSizeDefersWhenThreadedTelemetryIsBusy)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(*driver);
+
+    SnapshotProbeView view("Probe View", *driver);
+    view.SetRequiresRetiredFrameConsumptionForTest(true);
+    view.ApplyResolvedViewSizeForTest(32u, 32u);
+    const std::pair<uint16_t, uint16_t> originalSize { 32u, 32u };
+    ASSERT_EQ(view.GetResolvedViewSizeForTest(), originalSize);
+
+    auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(*driver);
+    ASSERT_NE(lifecycle, nullptr);
+    ASSERT_TRUE(NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::TryLockTelemetry(*lifecycle));
+
+    auto resizeFuture = std::async(
+        std::launch::async,
+        [&]
+        {
+            view.ApplyResolvedViewSizeForTest(64u, 64u);
+            return view.GetResolvedViewSizeForTest();
+        });
+
+    const auto status = resizeFuture.wait_for(std::chrono::milliseconds(200));
+
+    NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::UnlockTelemetry(*lifecycle);
+
+    ASSERT_EQ(status, std::future_status::ready);
+    EXPECT_EQ(resizeFuture.get(), originalSize);
+    ASSERT_TRUE(view.GetPendingResolvedViewSizeForTest().has_value());
+    const std::pair<uint16_t, uint16_t> expectedPendingSize { 64u, 64u };
+    EXPECT_EQ(view.GetPendingResolvedViewSizeForTest().value(), expectedPendingSize);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock lifecycle telemetry in this test.";
+#endif
+}
+
+TEST(PanelWindowHookTests, RetirementAwareResizePolicyDefersWhenTelemetryIsUnavailable)
+{
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldDeferRetirementAwareViewResizeUntilTelemetryAvailable(
+        { 640u, 480u },
+        { 480u, 360u },
+        true,
+        false));
+
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldDeferRetirementAwareViewResizeUntilTelemetryAvailable(
+        { 640u, 480u },
+        { 640u, 480u },
+        true,
+        false));
+
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldDeferRetirementAwareViewResizeUntilTelemetryAvailable(
+        { 640u, 480u },
+        { 480u, 360u },
+        false,
+        false));
+
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldDeferRetirementAwareViewResizeUntilTelemetryAvailable(
+        { 640u, 480u },
+        { 480u, 360u },
+        true,
+        true));
+}
+
+TEST(PanelWindowHookTests, ThreadedFramePublishAdvanceUsesPreviousTelemetryWhenBeforeSnapshotIsUnavailable)
+{
+    std::optional<uint64_t> previousPublishedFrameCount = 3u;
+
+    NLS::Render::Context::ThreadedFrameTelemetry afterTelemetry;
+    afterTelemetry.publishedFrameCount = 4u;
+
+    EXPECT_TRUE(NLS::Editor::Panels::DidThreadedFramePublishAdvance(
+        std::nullopt,
+        previousPublishedFrameCount,
+        afterTelemetry));
+
+    afterTelemetry.publishedFrameCount = 3u;
+    EXPECT_FALSE(NLS::Editor::Panels::DidThreadedFramePublishAdvance(
+        std::nullopt,
+        previousPublishedFrameCount,
+        afterTelemetry));
+
+    afterTelemetry.publishedFrameCount = 1u;
+    EXPECT_FALSE(NLS::Editor::Panels::DidThreadedFramePublishAdvance(
+        std::nullopt,
+        std::nullopt,
+        afterTelemetry));
+}
+
+TEST(PanelWindowHookTests, ThreadedPublishWaitsForLifecycleMutexInsteadOfDroppingOnContention)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    NLS::Render::Context::ThreadedRenderingLifecycle lifecycle(1u);
+    ASSERT_TRUE(NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::TryLockTelemetry(lifecycle));
+
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.frameId = 1u;
+    snapshot.renderWidth = 640u;
+    snapshot.renderHeight = 480u;
+
+    auto publishFuture = std::async(
+        std::launch::async,
+        [&]
+        {
+            return lifecycle.PublishFrameSnapshot(
+                snapshot,
+                std::chrono::milliseconds(250));
+        });
+
+    EXPECT_EQ(publishFuture.wait_for(std::chrono::milliseconds(50)), std::future_status::timeout);
+
+    NLS::Render::Context::ThreadedRenderingLifecycleTestAccess::UnlockTelemetry(lifecycle);
+
+    ASSERT_EQ(publishFuture.wait_for(std::chrono::milliseconds(500)), std::future_status::ready);
+    EXPECT_TRUE(publishFuture.get());
+    EXPECT_EQ(lifecycle.GetPublishedFrameCount(), 1u);
 #else
     GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to lock lifecycle telemetry in this test.";
 #endif
@@ -716,7 +1349,8 @@ TEST(PanelWindowHookTests, FrameInfoPanelReadsThreadedPublishDiagnostics)
     renderer.EndFrame();
 
     NLS::Editor::Panels::FrameInfo panel("Frame Info", true, {});
-    panel.UpdateForRenderer("Threaded View", renderer);
+    const auto frameInfo = renderer.GetFrameInfo();
+    panel.UpdateForFrameInfo("Threaded View", frameInfo);
 
     ExpectTextWidgetContent(panel, "Frames In Flight: 1");
     ExpectTextWidgetContent(panel, "Blocked Frames: 0");
@@ -757,8 +1391,18 @@ TEST(PanelWindowHookTests, FrameInfoPanelRefreshesThreadedDiagnosticsAfterFrameR
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
 
+    const auto telemetry = NLS::Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(*driver);
+    ASSERT_EQ(telemetry.inFlightFrameCount, 0u);
+    ASSERT_EQ(telemetry.stageSummary, NLS::Render::Data::ThreadedFrameStageSummary::Retired);
+    ASSERT_EQ(telemetry.retirementState, NLS::Render::Data::FrameRetirementState::Ready);
+
+    NLS::Render::Core::RendererStats stats;
+    stats.BeginFrame();
+    stats.SetThreadedFrameTelemetry(telemetry);
+    stats.EndFrame();
+
     NLS::Editor::Panels::FrameInfo panel("Frame Info", true, {});
-    panel.UpdateForRenderer("Threaded View", renderer);
+    panel.UpdateForFrameInfo("Threaded View", stats.GetFrameInfo());
 
     ExpectTextWidgetContent(panel, "Frames In Flight: 0");
     ExpectTextWidgetContent(panel, "Blocked Frames: 0");
@@ -896,12 +1540,10 @@ TEST(PanelWindowHookTests, SceneViewInteractionHintsDoNotForceThreadedRenderingD
 {
     constexpr bool requiresRetiredFrameConsumption = true;
     constexpr bool requiresImmediateReadback = false;
-    constexpr bool resizedViewThisFrame = false;
-
     EXPECT_FALSE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
         requiresRetiredFrameConsumption,
         requiresImmediateReadback,
-        resizedViewThisFrame,
+        false,
         NLS::Editor::Panels::ShouldSceneViewSynchronizeRetiredFramePresentation()));
 
     const bool cameraMovedForPresentation = true;
@@ -919,7 +1561,7 @@ TEST(PanelWindowHookTests, SceneViewInteractionHintsDoNotForceThreadedRenderingD
     EXPECT_FALSE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
         requiresRetiredFrameConsumption,
         requiresImmediateReadback,
-        resizedViewThisFrame,
+        false,
         ordinarySceneViewPresentationNeedsSync));
 }
 
@@ -928,7 +1570,6 @@ TEST(PanelWindowHookTests, SceneViewRetainsExplicitReadbackAndResizeDrains)
     EXPECT_TRUE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
         true,
         true,
-        false,
         false));
 
     EXPECT_TRUE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(

@@ -76,6 +76,7 @@ TEST(EditorLaunchArgsTests, ParsesEditorValidationViewAndCameraInputDiagnostics)
         "scene",
         "--editor-validation-exclusive-view",
         "game",
+        "--editor-validation-open-frame-info",
         "--editor-validation-select-gameobject",
         "Validation Cube",
         "--editor-log-render-draw-path",
@@ -89,6 +90,7 @@ TEST(EditorLaunchArgsTests, ParsesEditorValidationViewAndCameraInputDiagnostics)
     EXPECT_TRUE(parsed.hasDiagnosticsOverride);
     EXPECT_EQ(parsed.diagnosticsSettings.editorValidationFocusView, "scene");
     EXPECT_EQ(parsed.diagnosticsSettings.editorValidationExclusiveView, "game");
+    EXPECT_TRUE(parsed.diagnosticsSettings.editorValidationOpenFrameInfo);
     EXPECT_EQ(parsed.diagnosticsSettings.editorValidationSelectGameObject, "Validation Cube");
     EXPECT_TRUE(parsed.diagnosticsSettings.logRenderDrawPath);
     EXPECT_TRUE(parsed.diagnosticsSettings.dx12LogFrameFlow);

@@ -466,20 +466,60 @@ namespace NLS::Render::ShaderCompiler
 			return *mutex;
 		}
 
+		bool IsUsableDxcExecutable(const std::filesystem::path& path)
+		{
+			if (!std::filesystem::exists(path) || std::filesystem::is_directory(path))
+				return false;
+
+#if defined(_WIN32)
+			return true;
+#else
+			std::string extension = path.extension().string();
+			std::transform(
+				extension.begin(),
+				extension.end(),
+				extension.begin(),
+				[](const unsigned char ch)
+				{
+					return static_cast<char>(std::tolower(ch));
+				});
+			if (extension == ".exe")
+				return false;
+
+			return access(path.string().c_str(), X_OK) == 0;
+#endif
+		}
+
+		std::string BuildMissingDxcDiagnostic()
+		{
+#if defined(_WIN32)
+			return "Unable to locate dxc.exe. Add Tools/DXC/bin/x64/dxc.exe to the project, set DXC_PATH, or install the Windows 10 SDK.";
+#else
+			return "Unable to locate an executable native dxc. Add Tools/DXC/bin/dxc to the project, set DXC_PATH to a native dxc executable, or install a Vulkan SDK/DirectXShaderCompiler package for this platform.";
+#endif
+		}
+
 		std::optional<std::filesystem::path> FindDxcExecutable()
 		{
 			const auto findBundledDxc = [](const std::filesystem::path& root) -> std::optional<std::filesystem::path>
 			{
 				const std::filesystem::path directCandidates[] =
 				{
+#if defined(_WIN32)
 					root / "Tools/DXC/bin/x64/dxc.exe",
 					root / "Tools/DXC/bin/arm64/dxc.exe",
 					root / "ThirdParty/DirectXShaderCompiler/bin/x64/dxc.exe"
+#else
+					root / "Tools/DXC/bin/dxc",
+					root / "Tools/DXC/bin/x64/dxc",
+					root / "Tools/DXC/bin/arm64/dxc",
+					root / "ThirdParty/DirectXShaderCompiler/bin/dxc"
+#endif
 				};
 
 				for (const auto& candidate : directCandidates)
 				{
-					if (std::filesystem::exists(candidate))
+					if (IsUsableDxcExecutable(candidate))
 						return candidate;
 				}
 
@@ -497,9 +537,23 @@ namespace NLS::Render::ShaderCompiler
 				std::sort(versionDirectories.begin(), versionDirectories.end(), std::greater<>());
 				for (const auto& versionDirectory : versionDirectories)
 				{
-					const auto candidate = versionDirectory / "bin/x64/dxc.exe";
-					if (std::filesystem::exists(candidate))
-						return candidate;
+					const std::filesystem::path versionedCandidates[] =
+					{
+#if defined(_WIN32)
+						versionDirectory / "bin/x64/dxc.exe",
+						versionDirectory / "bin/arm64/dxc.exe"
+#else
+						versionDirectory / "bin/dxc",
+						versionDirectory / "bin/x64/dxc",
+						versionDirectory / "bin/arm64/dxc"
+#endif
+					};
+
+					for (const auto& candidate : versionedCandidates)
+					{
+						if (IsUsableDxcExecutable(candidate))
+							return candidate;
+					}
 				}
 
 				return std::nullopt;
@@ -526,7 +580,7 @@ namespace NLS::Render::ShaderCompiler
 			if (const char* envPath = std::getenv("DXC_PATH"); envPath != nullptr && *envPath != '\0')
 			{
 				const std::filesystem::path path(envPath);
-				if (std::filesystem::exists(path))
+				if (IsUsableDxcExecutable(path))
 					return path;
 			}
 
@@ -534,13 +588,18 @@ namespace NLS::Render::ShaderCompiler
 			{
 				const std::filesystem::path candidates[] =
 				{
+#if defined(_WIN32)
 					sdkRoot / "Bin/dxc.exe",
 					sdkRoot / "Bin/x64/dxc.exe"
+#else
+					sdkRoot / "bin/dxc",
+					sdkRoot / "Bin/dxc"
+#endif
 				};
 
 				for (const auto& candidate : candidates)
 				{
-					if (std::filesystem::exists(candidate))
+					if (IsUsableDxcExecutable(candidate))
 						return candidate;
 				}
 
@@ -1048,7 +1107,7 @@ namespace NLS::Render::ShaderCompiler
 				if (!dxcPath.has_value())
 				{
 					output.status = ShaderCompilationStatus::Failed;
-					output.diagnostics = "Unable to locate dxc.exe. Add Tools/DXC/bin/x64/dxc.exe to the project, set DXC_PATH, or install the Windows 10 SDK.";
+					output.diagnostics = BuildMissingDxcDiagnostic();
 					return output;
 				}
 

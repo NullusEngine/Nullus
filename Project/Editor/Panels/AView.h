@@ -8,6 +8,7 @@
 #include <UI/Panels/PanelWindow.h>
 #include <UI/Widgets/Visual/Image.h>
 #include <Rendering/Buffers/Framebuffer.h>
+#include <Rendering/Data/FrameInfo.h>
 #include <Rendering/Entities/Camera.h>
 #include <Rendering/BaseSceneRenderer.h>
 
@@ -100,6 +101,11 @@ namespace NLS::Editor::Panels
         const Engine::Rendering::BaseSceneRenderer& GetRenderer() const;
 
 		/**
+		* Returns the frame info snapshot published after this view's latest successful render.
+		*/
+		const std::optional<Render::Data::FrameInfo>& GetLastRenderedFrameInfoSnapshot() const;
+
+		/**
 		* Returns true if the given mouse position is inside the rendered view content.
 		*/
 		bool IsMouseWithinView(const Maths::Vector2& mousePosition) const;
@@ -122,7 +128,7 @@ namespace NLS::Editor::Panels
         virtual bool RequiresSynchronizedRetiredFramePresentation() const;
 		void SyncViewToCurrentContentRegion();
 		void Render(uint16_t p_width, uint16_t p_height);
-		void ApplyResolvedViewSize(uint16_t p_width, uint16_t p_height);
+		bool ApplyResolvedViewSize(uint16_t p_width, uint16_t p_height);
         void UpdatePreRenderOverlayCameraMatrices();
         void BeginViewportOverlayDrawListChannels();
         void FinishPreRenderViewportOverlayDrawList();
@@ -152,6 +158,8 @@ namespace NLS::Editor::Panels
         std::optional<ViewOverlayCameraMatrices> m_overlayCameraMatricesForCurrentDraw;
         std::deque<ViewOverlayCameraMatrices> m_submittedOverlayCameraMatrices;
         std::unique_ptr<ImDrawListSplitter> m_viewportOverlayDrawSplitter;
+		std::optional<Render::Data::FrameInfo> m_lastRenderedFrameInfo;
+        std::optional<uint64_t> m_lastAvailablePublishedFrameCount;
         bool m_viewportOverlayDrawListChannelsActive = false;
 		bool m_requiresRetiredFrameConsumption = false;
         bool m_requiresImmediateRetiredFrameReadback = false;

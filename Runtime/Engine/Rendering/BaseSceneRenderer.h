@@ -1,7 +1,9 @@
 #pragma once
 
+#include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -19,6 +21,11 @@
 #include "EngineDef.h"
 
 class FrameGraph;
+
+namespace NLS::Core::ResourceManagement
+{
+	class ShaderManager;
+}
 
 namespace NLS::Render::FrameGraph
 {
@@ -75,6 +82,8 @@ namespace NLS::Engine::Rendering
 
 		explicit BaseSceneRenderer(Driver& p_driver);
 		~BaseSceneRenderer() override;
+
+		static void PreloadSceneFallbackShader(NLS::Core::ResourceManagement::ShaderManager& shaderManager);
 
 		void BeginFrame(const Render::Data::FrameDescriptor& p_frameDescriptor) override;
 
@@ -140,6 +149,7 @@ namespace NLS::Engine::Rendering
 		};
 
 		void InvalidateLightGridCompileContextCache() const;
+		Material* ResolveDefaultSceneMaterial();
 		bool IsLightGridCompileContextCacheHit(
 			const NLS::Render::Data::FrameDescriptor& frameDescriptor,
 			bool hasSkyboxTexture) const;
@@ -149,6 +159,10 @@ namespace NLS::Engine::Rendering
 
 		std::shared_ptr<LightGridPrepass> m_lightGridPrepass;
 		std::unique_ptr<SceneLightingProvider> m_sceneLightingProvider;
+		std::unique_ptr<Material> m_sceneFallbackMaterial;
+		NLS::Render::Resources::Shader* m_sceneFallbackShader = nullptr;
+		uint64_t m_sceneFallbackShaderGeneration = 0u;
+		std::string m_sceneFallbackShaderResourcePath;
 		RenderScene m_renderScene;
 		mutable std::mutex m_lightGridCompileContextCacheMutex;
 		mutable LightGridCompileContextCache m_lightGridCompileContextCache;

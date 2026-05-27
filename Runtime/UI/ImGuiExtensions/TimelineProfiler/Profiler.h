@@ -126,6 +126,36 @@ constexpr bool ShouldAdvanceGpuProfilerFrame(bool hasPendingCommandListQueries, 
 	return !hasPendingCommandListQueries && !hasOpenQueueEvents;
 }
 
+constexpr uint64 GetGpuProfilerResolveFenceValue(uint64 frameIndex)
+{
+	return frameIndex + 1u;
+}
+
+constexpr bool IsGpuProfilerFrameFenceComplete(uint64 completedFenceValue, uint64 frameIndex)
+{
+	return completedFenceValue >= GetGpuProfilerResolveFenceValue(frameIndex);
+}
+
+constexpr bool ShouldWaitForGpuProfilerResolveFence(uint64 completedFenceValue, uint64 submittedFenceValue)
+{
+	return submittedFenceValue != 0u && completedFenceValue < submittedFenceValue;
+}
+
+constexpr bool ShouldReleaseGpuProfilerResolveResourcesAfterFenceWait(bool waitRequired, bool waitSucceeded)
+{
+	return !waitRequired || waitSucceeded;
+}
+
+constexpr uint32 GetGpuProfilerResolveFenceWaitTimeoutMilliseconds()
+{
+	return 5000u;
+}
+
+constexpr bool CanReleaseGpuProfilerWithPendingCommandListQueries(bool hasPendingCommandListQueries)
+{
+	return !hasPendingCommandListQueries;
+}
+
 inline float ComputeTimelineWheelZoomScale(float currentScale, float mouseWheel)
 {
 	const float zoomDelta = mouseWheel / 5.0f;
@@ -291,7 +321,7 @@ class GPUProfiler
 public:
 	void Initialize(ID3D12Device* pDevice, Span<ID3D12CommandQueue*> queues, uint32 frameLatency);
 
-	void Shutdown();
+	bool Shutdown();
 
 	// Allocate and record a GPU event on the commandlist
 	void BeginEvent(ID3D12GraphicsCommandList* pCmd, const char* pName, uint32 color, const char* pFilePath, uint32 lineNumber);
@@ -309,7 +339,7 @@ public:
 	// Notify profiler that these commandlists are executed on a particular queue
 	void ExecuteCommandLists(const ID3D12CommandQueue* pQueue, Span<ID3D12CommandList*> commandLists);
 
-	void SetPaused(bool paused) { m_PauseQueued = paused; }
+	void SetPaused(bool paused);
 
 	// Data of a single GPU queue. Allows converting GPU timestamps to CPU timestamps
 	struct QueueInfo
@@ -322,22 +352,25 @@ public:
 		uint32				Index				= 0;		///< Index of queue
 		uint32				QueryHeapIndex		= 0;		///< Query Heap index (Copy vs. Other queues)
 		uint32				TrackIndex			= 0;		///< The index in the tracks of the profiler
+		Microsoft::WRL::ComPtr<ID3D12CommandQueue> QueueRef; ///< Keeps the queue alive until profiler shutdown drains it
 	};
 
 	Span<const QueueInfo> GetQueues() const { return m_Queues; }
 
-	void SetEventCallback(const GPUProfilerCallbacks& inCallbacks) { m_EventCallback = inCallbacks; }
+	void SetEventCallback(const GPUProfilerCallbacks& inCallbacks);
 
 private:
 	struct QueryHeap
 	{
 	public:
 		void Initialize(ID3D12Device* pDevice, ID3D12CommandQueue* pResolveQueue, uint32 maxNumQueries, uint32 frameLatency);
-		void Shutdown();
+		bool Shutdown();
+		bool DrainSubmittedFence();
+		bool DrainQueue(ID3D12CommandQueue* pQueue);
 
 		uint32 RecordQuery(ID3D12GraphicsCommandList* pCmd);
 		uint32 Resolve(uint32 frameIndex);
-		void   Reset(uint32 frameIndex);
+		bool   Reset(uint32 frameIndex);
 		bool   IsFrameComplete(uint64 frameIndex);
 		uint32 GetQueryCapacity() const { return m_MaxNumQueries; }
 
@@ -362,10 +395,15 @@ private:
 		Microsoft::WRL::ComPtr<ID3D12QueryHeap> m_pQueryHeap; ///< Heap containing MaxNumQueries * FrameLatency queries
 		Microsoft::WRL::ComPtr<ID3D12Resource> m_pReadbackResource; ///< Readback resource storing resolved query dara
 		Span<const uint64>			   m_ReadbackData		= {};	   ///< Mapped readback resource pointer
-		ID3D12CommandQueue*			   m_pResolveQueue		= nullptr; ///< Queue to resolve queries on
+		Microsoft::WRL::ComPtr<ID3D12CommandQueue> m_pResolveQueue; ///< Queue to resolve queries on
 		Microsoft::WRL::ComPtr<ID3D12Fence> m_pResolveFence; ///< Fence for tracking when queries are finished resolving
 		uint64						   m_LastCompletedFence = 0;	   ///< Last finish fence value
+		uint64						   m_LastSubmittedFence = 0;	   ///< Last resolve fence value submitted to the queue
+		uint64						   m_LastDrainFence = 0;		   ///< Last shutdown drain fence value submitted to the queue
 	};
+
+	bool ShutdownUnlocked();
+	bool HasPendingCommandListQueriesUnlocked();
 
 	// Data for a single frame of GPU queries. One for each frame latency
 	struct QueryData
@@ -429,6 +467,7 @@ private:
 	bool m_IsInitialized = false;
 	bool m_IsPaused		 = false;
 	bool m_PauseQueued	 = false;
+	Mutex m_StateLock;
 
 	Array<QueryData>		  m_QueryData;					///< Data containing all intermediate query event data. 1 per frame latency
 	std::atomic<uint32>		  m_EventIndex		 = 0;		///< Current event index

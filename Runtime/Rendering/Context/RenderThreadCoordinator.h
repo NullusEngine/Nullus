@@ -13,7 +13,7 @@ namespace NLS::Render::Context
     struct NLS_RENDER_API RenderThreadCoordinator final
     {
         static bool IsThreadedRenderingEnabled(const Driver& driver);
-        static void BeginRendererFrame(Driver& driver, bool acquireSwapchainImage);
+        static bool BeginRendererFrame(Driver& driver, bool acquireSwapchainImage);
         static void EndRendererFrame(Driver& driver, bool presentSwapchain);
         static bool TryPublishHarnessFrameSnapshot(
             Driver& driver,

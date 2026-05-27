@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <optional>
 #include <string_view>
 #include <utility>
 
@@ -53,6 +54,17 @@ namespace NLS::Editor::Panels
             telemetry);
     }
 
+    inline bool ShouldDeferRetirementAwareViewResizeUntilTelemetryAvailable(
+        const std::pair<uint16_t, uint16_t>& requestedSize,
+        const std::pair<uint16_t, uint16_t>& activeSize,
+        const bool requiresRetiredFrameConsumption,
+        const bool threadedTelemetryAvailable)
+    {
+        return requiresRetiredFrameConsumption &&
+            !threadedTelemetryAvailable &&
+            requestedSize != activeSize;
+    }
+
     inline bool ShouldDrainAfterRetirementAwareViewRender(
         const bool requiresRetiredFrameConsumption,
         const bool requiresImmediateReadback,
@@ -61,6 +73,18 @@ namespace NLS::Editor::Panels
     {
         return requiresRetiredFrameConsumption &&
             (requiresImmediateReadback || resizedViewThisFrame || requiresSynchronizedPresentation);
+    }
+
+    inline bool DidThreadedFramePublishAdvance(
+        const std::optional<Render::Context::ThreadedFrameTelemetry>& beforeFrameTelemetry,
+        const std::optional<uint64_t>& previousAvailablePublishedFrameCount,
+        const Render::Context::ThreadedFrameTelemetry& afterFrameTelemetry)
+    {
+        const std::optional<uint64_t> baselinePublishedFrameCount = beforeFrameTelemetry.has_value()
+            ? std::optional<uint64_t>(beforeFrameTelemetry->publishedFrameCount)
+            : previousAvailablePublishedFrameCount;
+        return baselinePublishedFrameCount.has_value() &&
+            afterFrameTelemetry.publishedFrameCount > baselinePublishedFrameCount.value();
     }
 
     inline bool HasSceneViewCameraMotionForPresentation(

@@ -9,6 +9,12 @@ class NLS_UI_API TimelineProfilerSink final : public IProfilerDestination
 {
 public:
     TimelineProfilerSink();
+    ~TimelineProfilerSink() override;
+
+    TimelineProfilerSink(const TimelineProfilerSink&) = delete;
+    TimelineProfilerSink& operator=(const TimelineProfilerSink&) = delete;
+    TimelineProfilerSink(TimelineProfilerSink&&) = delete;
+    TimelineProfilerSink& operator=(TimelineProfilerSink&&) = delete;
 
     void BeginScope(const ProfilerScopeEvent& event) override;
     void EndScope(const ProfilerScopeEvent& event) override;

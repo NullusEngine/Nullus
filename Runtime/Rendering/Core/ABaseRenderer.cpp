@@ -190,16 +190,23 @@ void ABaseRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
     m_activeRecordedPassDepthStencilView.reset();
     m_pendingFrameSnapshot.reset();
     m_pendingPreparedRenderSceneBuilder = {};
+    m_frameActive = false;
     const bool targetsSwapchain = NLS::Render::FrameGraph::FrameTargetsSwapchain(p_frameDescriptor);
     auto* externalOutputBuffer =
         NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(p_frameDescriptor);
 
     const bool usesThreadedRendering = Context::RenderThreadCoordinator::IsThreadedRenderingEnabled(m_driver);
-    Context::RenderThreadCoordinator::BeginRendererFrame(
+    const bool rendererFrameStarted = Context::RenderThreadCoordinator::BeginRendererFrame(
         m_driver,
         targetsSwapchain);
 
     const bool usesExplicitRecording = GetActiveExplicitCommandBuffer() != nullptr;
+    if (!usesThreadedRendering &&
+        Context::DriverRendererAccess::HasExplicitRHI(m_driver) &&
+        !rendererFrameStarted)
+    {
+        return;
+    }
 
     m_basePipelineState = Context::DriverRendererAccess::CreatePipelineState(m_driver);
     if (!usesThreadedRendering && !usesExplicitRecording)
@@ -221,12 +228,19 @@ void ABaseRenderer::BeginFrame(const Data::FrameDescriptor& p_frameDescriptor)
     p_frameDescriptor.camera->CacheMatrices(p_frameDescriptor.renderWidth, p_frameDescriptor.renderHeight);
 
     m_isDrawing = true;
+    m_frameActive = true;
     s_isDrawing.store(true);
 }
 
 void ABaseRenderer::EndFrame()
 {
     NLS_PROFILE_SCOPE();
+    if (!m_frameActive)
+    {
+        m_isDrawing = false;
+        s_isDrawing.store(false);
+        return;
+    }
     NLS_ASSERT(s_isDrawing, "Cannot call EndFrame() before calling BeginFrame()");
 
     const bool usesThreadedRendering = Context::RenderThreadCoordinator::IsThreadedRenderingEnabled(m_driver);
@@ -252,6 +266,7 @@ void ABaseRenderer::EndFrame()
     }
 
     m_isDrawing = false;
+    m_frameActive = false;
     s_isDrawing.store(false);
 }
 
@@ -278,7 +293,12 @@ ABaseRenderer::PipelineState ABaseRenderer::CreatePipelineState() const
 
 bool ABaseRenderer::IsDrawing() const
 {
-    return m_isDrawing;
+	return m_isDrawing;
+}
+
+bool ABaseRenderer::IsFrameActive() const
+{
+    return m_frameActive;
 }
 
 bool ABaseRenderer::TryPublishThreadedFrame()

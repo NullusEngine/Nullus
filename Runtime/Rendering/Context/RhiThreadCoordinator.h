@@ -25,7 +25,7 @@ namespace NLS::Render::Context
     struct NLS_RENDER_API RhiThreadCoordinator final
     {
         static bool CanBeginStandaloneExplicitFrame(const Driver& driver);
-        static void BeginStandaloneExplicitFrame(Driver& driver, bool acquireSwapchainImage);
+        static bool BeginStandaloneExplicitFrame(Driver& driver, bool acquireSwapchainImage);
         static void EndStandaloneExplicitFrame(Driver& driver, bool presentSwapchain);
         static bool TryExecuteNextThreadedSubmission(Driver& driver, RhiSubmissionAttribution attribution);
         static bool DrainPendingThreadedSubmissions(Driver& driver, RhiSubmissionAttribution attribution);

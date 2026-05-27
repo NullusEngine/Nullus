@@ -221,22 +221,43 @@ namespace
             ++drawCalls;
         }
     };
+
+    NLS::Render::Data::FrameDescriptor MakeFrameDescriptor(NLS::Render::Entities::Camera& camera)
+    {
+        NLS::Render::Data::FrameDescriptor frameDescriptor;
+        frameDescriptor.renderWidth = 64u;
+        frameDescriptor.renderHeight = 64u;
+        frameDescriptor.camera = &camera;
+        return frameDescriptor;
+    }
+
+    NLS::Render::Settings::DriverSettings MakeThreadedDrawOrderSettings()
+    {
+        NLS::Render::Settings::DriverSettings settings;
+        settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+        settings.enableExplicitRHI = false;
+        settings.enableThreadedRendering = true;
+        settings.threadedFrameSlotCount = 1u;
+        return settings;
+    }
 }
 
 TEST(CompositeRendererExplicitDrawOrderTests, SubmitsDrawWithoutOptionalFeatureRegistry)
 {
-    NLS::Render::Settings::DriverSettings settings;
-    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableExplicitRHI = false;
-
-    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
-    NLS::Core::ServiceLocator::Provide(*driver);
+    NLS::Render::Context::Driver driver(MakeThreadedDrawOrderSettings());
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
     std::vector<std::string> events;
-    OrderRecordingRenderer renderer(*driver, events);
+    OrderRecordingRenderer renderer(driver, events);
 
     NLS::Render::Data::PipelineState pipelineState;
     NLS::Render::Entities::Drawable drawable;
+    NLS::Render::Entities::Camera camera;
+    const auto frameDescriptor = MakeFrameDescriptor(camera);
+
+    renderer.BeginFrame(frameDescriptor);
     renderer.DrawEntity(pipelineState, drawable);
+    renderer.EndFrame();
 
     const std::vector<std::string> expected = { "pipeline", "material", "draw" };
     EXPECT_EQ(events, expected);
@@ -244,19 +265,21 @@ TEST(CompositeRendererExplicitDrawOrderTests, SubmitsDrawWithoutOptionalFeatureR
 
 TEST(CompositeRendererExplicitDrawOrderTests, RunsRendererOwnedBindingPreparationBeforeMaterialSubmission)
 {
-    NLS::Render::Settings::DriverSettings settings;
-    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableExplicitRHI = false;
-
-    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
-    NLS::Core::ServiceLocator::Provide(*driver);
+    NLS::Render::Context::Driver driver(MakeThreadedDrawOrderSettings());
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
     std::vector<std::string> events;
-    OrderRecordingRenderer renderer(*driver, events);
+    OrderRecordingRenderer renderer(driver, events);
     renderer.SetFrameObjectBindingProvider(std::make_unique<OrderRecordingBindingProvider>(renderer, events));
 
     NLS::Render::Data::PipelineState pipelineState;
     NLS::Render::Entities::Drawable drawable;
+    NLS::Render::Entities::Camera camera;
+    const auto frameDescriptor = MakeFrameDescriptor(camera);
+
+    renderer.BeginFrame(frameDescriptor);
     renderer.DrawEntity(pipelineState, drawable);
+    renderer.EndFrame();
 
     const std::vector<std::string> expected = {
         "provider-before",

@@ -6,13 +6,17 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <optional>
+#include <string>
 #include <vector>
 
+#include "Guid.h"
 #include "Core/ServiceLocator.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Core/CompositeRenderer.h"
 #include "Rendering/Debug/DebugDrawPass.h"
 #include "Rendering/Debug/DebugDrawService.h"
+#include "Rendering/ShaderCompiler/ShaderCompiler.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/Utils/Conversions.h"
 
@@ -87,6 +91,97 @@ namespace
             recordedOrder.push_back(NLS::Render::Debug::DebugDrawPrimitiveType::Line);
         }
     };
+
+    void WriteDxcProbeShaderFile(const std::filesystem::path& shaderPath)
+    {
+        std::filesystem::create_directories(shaderPath.parent_path());
+        std::ofstream shaderFile(shaderPath, std::ios::binary);
+        shaderFile
+            << "struct VSOutput { float4 position : SV_Position; };\n"
+            << "VSOutput VSMain(uint vertexId : SV_VertexID) {\n"
+            << "    VSOutput output;\n"
+            << "    output.position = float4(0.0f, 0.0f, 0.0f, 1.0f);\n"
+            << "    return output;\n"
+            << "}\n"
+            << "float4 PSMain(VSOutput input) : SV_Target {\n"
+            << "    return float4(input.position.x, 0.0f, 0.0f, 1.0f);\n"
+            << "}\n";
+    }
+
+    NLS::Render::ShaderCompiler::ShaderCompilationInput MakeDxcProbeInput(
+        const std::filesystem::path& shaderPath,
+        const NLS::Render::ShaderCompiler::ShaderStage stage,
+        const NLS::Render::ShaderCompiler::ShaderTargetPlatform targetPlatform)
+    {
+        NLS::Render::ShaderCompiler::ShaderCompilationInput input;
+        input.assetPath = shaderPath.string();
+        input.stage = stage;
+        input.options.entryPoint =
+            stage == NLS::Render::ShaderCompiler::ShaderStage::Vertex ? "VSMain" : "PSMain";
+        input.options.targetProfile =
+            stage == NLS::Render::ShaderCompiler::ShaderStage::Vertex ? "vs_6_0" : "ps_6_0";
+        input.options.targetPlatform = targetPlatform;
+        return input;
+    }
+
+    bool IsDxcUnavailableDiagnostic(const std::string& diagnostics)
+    {
+        return diagnostics.find("Unable to locate dxc.exe.") != std::string::npos ||
+            diagnostics.find("Unable to locate an executable native dxc.") != std::string::npos ||
+            diagnostics.find("Failed to spawn shader compiler process (") != std::string::npos ||
+            diagnostics.find("[dxc-exit-code] 126") != std::string::npos ||
+            diagnostics.find("[dxc-exit-code] 127") != std::string::npos;
+    }
+
+    const std::optional<std::string>& RealDxcProcessExecutionSkipReason()
+    {
+        static const std::optional<std::string> result = []() -> std::optional<std::string>
+        {
+            const auto root = std::filesystem::temp_directory_path() /
+                ("nullus_debugdraw_dxc_probe_" + NLS::Guid::New().ToString());
+            const auto shaderPath = root / "DebugDrawDxcProbe.hlsl";
+            WriteDxcProbeShaderFile(shaderPath);
+
+            const std::vector<NLS::Render::ShaderCompiler::ShaderCompilationInput> inputs = {
+                MakeDxcProbeInput(
+                    shaderPath,
+                    NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+                    NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL),
+                MakeDxcProbeInput(
+                    shaderPath,
+                    NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+                    NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL),
+                MakeDxcProbeInput(
+                    shaderPath,
+                    NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+                    NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV),
+                MakeDxcProbeInput(
+                    shaderPath,
+                    NLS::Render::ShaderCompiler::ShaderStage::Pixel,
+                    NLS::Render::ShaderCompiler::ShaderTargetPlatform::SPIRV)
+            };
+
+            const NLS::Render::ShaderCompiler::ShaderCompiler compiler;
+            const auto outputs = compiler.CompileBatch(inputs);
+            std::filesystem::remove_all(root);
+
+            for (const auto& output : outputs)
+            {
+                if (output.status == NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded)
+                    continue;
+
+                if (IsDxcUnavailableDiagnostic(output.diagnostics))
+                    return "DebugDraw line mesh draw coverage requires an executable DXC toolchain: " +
+                        output.diagnostics;
+
+                return std::nullopt;
+            }
+
+            return std::nullopt;
+        }();
+
+        return result;
+    }
 }
 
 TEST(DebugDrawPassTests, ExplicitPassConsumesOnlyVisiblePrimitivesOncePerExecution)
@@ -311,6 +406,9 @@ TEST(DebugDrawPassTests, ThreadedPassClearsOneFrameHelpersAfterFrameEndWithoutDu
 
 TEST(DebugDrawPassTests, LineBatchDrawUsesVertexPositionsAndNonIndexedLineList)
 {
+    if (const auto& skipReason = RealDxcProcessExecutionSkipReason(); skipReason.has_value())
+        GTEST_SKIP() << *skipReason;
+
     using namespace NLS::Render::Debug;
 
     NLS::Render::Settings::DriverSettings settings;
@@ -352,6 +450,9 @@ TEST(DebugDrawPassTests, LineBatchDrawUsesVertexPositionsAndNonIndexedLineList)
 
 TEST(DebugDrawPassTests, SeparateLineStateBatchesShareUploadedMeshAndUseDrawRanges)
 {
+    if (const auto& skipReason = RealDxcProcessExecutionSkipReason(); skipReason.has_value())
+        GTEST_SKIP() << *skipReason;
+
     using namespace NLS::Render::Debug;
 
     NLS::Render::Settings::DriverSettings settings;
@@ -394,6 +495,9 @@ TEST(DebugDrawPassTests, SeparateLineStateBatchesShareUploadedMeshAndUseDrawRang
 
 TEST(DebugDrawPassTests, LineMeshSlotReusesCapacityWhenLaterFramesNeedFewerVertices)
 {
+    if (const auto& skipReason = RealDxcProcessExecutionSkipReason(); skipReason.has_value())
+        GTEST_SKIP() << *skipReason;
+
 #if defined(NLS_ENABLE_TEST_HOOKS)
     using namespace NLS::Render::Debug;
 

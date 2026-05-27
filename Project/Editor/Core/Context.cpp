@@ -19,6 +19,7 @@
 #include "Core/Context.h"
 #include "Core/EditorFrameLatency.h"
 #include "Debug/FileHandler.h"
+#include "Rendering/BaseSceneRenderer.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/Tooling/RenderDocEnvironment.h"
 #include "Settings/EditorSettings.h"
@@ -876,6 +877,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     NLS::Core::ServiceLocator::Provide<TextureManager>(textureManager);
     NLS::Core::ServiceLocator::Provide<ShaderManager>(shaderManager);
     NLS::Core::ServiceLocator::Provide<MaterialManager>(materialManager);
+    NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager);
 
     PresentStartupProgressFrame("Preparing editor resources", 0.34f);
 

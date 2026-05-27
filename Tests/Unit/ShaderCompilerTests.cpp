@@ -52,6 +52,15 @@ namespace
         return std::string((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
     }
 
+    bool IsDxcUnavailableDiagnostic(const std::string& diagnostics)
+    {
+        return diagnostics.find("Unable to locate dxc.exe.") != std::string::npos ||
+            diagnostics.find("Unable to locate an executable native dxc.") != std::string::npos ||
+            diagnostics.find("Failed to spawn shader compiler process (") != std::string::npos ||
+            diagnostics.find("[dxc-exit-code] 126") != std::string::npos ||
+            diagnostics.find("[dxc-exit-code] 127") != std::string::npos;
+    }
+
     class ScopedEnvironmentVariable final
     {
     public:
@@ -984,7 +993,7 @@ TEST(ShaderCompilerTests, ShaderCompilerConfiguredCacheDatabasePlacesDxilArtifac
 
     const auto output = compiler.Compile(input);
     if (output.status != NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded &&
-        output.diagnostics.find("Unable to locate dxc.exe") != std::string::npos)
+        IsDxcUnavailableDiagnostic(output.diagnostics))
     {
         std::filesystem::remove_all(root);
         GTEST_SKIP() << "DXC is unavailable for configured shader artifact path coverage.";
@@ -1021,7 +1030,7 @@ TEST(ShaderCompilerTests, ShaderCompilerConfiguredCacheDatabasePlacesSpirvArtifa
 
     const auto output = compiler.Compile(input);
     if (output.status != NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded &&
-        output.diagnostics.find("Unable to locate dxc.exe") != std::string::npos)
+        IsDxcUnavailableDiagnostic(output.diagnostics))
     {
         std::filesystem::remove_all(root);
         GTEST_SKIP() << "DXC is unavailable for configured SPIR-V artifact path coverage.";
@@ -1047,13 +1056,26 @@ TEST(ShaderCompilerTests, ShaderCompilerConfiguredArtifactDirectoryConflictRetur
     const auto shaderPath = root / "App" / "Assets" / "Engine" / "Shaders" / "LibraryCacheConflictTest.hlsl";
     const auto artifactDirectory = root / "Project" / "Library" / "ShaderCache";
     const auto databasePath = artifactDirectory / "ShaderCache.tsv";
+#if defined(_WIN32)
     const auto fakeDxcPath = root / "Tools" / "FakeDXC" / "dxc.exe";
+#else
+    const auto fakeDxcPath = root / "Tools" / "FakeDXC" / "dxc";
+#endif
     WriteTinyVertexShaderFile(shaderPath);
     std::filesystem::create_directories(fakeDxcPath.parent_path());
     {
         std::ofstream fakeDxc(fakeDxcPath, std::ios::binary);
         fakeDxc << "fake dxc";
     }
+#if !defined(_WIN32)
+    std::error_code permissionError;
+    std::filesystem::permissions(
+        fakeDxcPath,
+        std::filesystem::perms::owner_exec | std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
+        std::filesystem::perm_options::add,
+        permissionError);
+    ASSERT_FALSE(permissionError) << permissionError.message();
+#endif
     std::filesystem::create_directories(artifactDirectory.parent_path());
     {
         std::ofstream conflict(artifactDirectory, std::ios::binary);

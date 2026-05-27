@@ -10,6 +10,7 @@
 #include <fstream>
 #include <filesystem>
 #include <limits>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -47,6 +48,64 @@ namespace NLS::Render::Context
 {
 namespace
 {
+    constexpr const char* kDriverTelemetryDelimiter = " | driver: ";
+
+    struct DriverQueueTelemetrySnapshot
+    {
+        uint64_t queueOperationFailureCount = 0u;
+        std::string lastQueueOperationFailure;
+        uint64_t currentFrameQueueOperationFailureCount = 0u;
+        std::string currentFrameLastQueueOperationFailure;
+        bool deviceLostDetected = false;
+        std::string deviceLostReason;
+    };
+
+    void AppendMergedDriverTelemetryMessage(
+        std::string& telemetryMessage,
+        const std::string& driverMessage)
+    {
+        if (driverMessage.empty())
+            return;
+
+        if (telemetryMessage.empty())
+        {
+            telemetryMessage = driverMessage;
+            return;
+        }
+
+        if (telemetryMessage != driverMessage)
+            telemetryMessage += std::string(kDriverTelemetryDelimiter) + driverMessage;
+    }
+
+    bool CaptureDriverQueueTelemetrySnapshot(
+        const DriverImpl* impl,
+        DriverQueueTelemetrySnapshot& snapshot,
+        const bool waitForSnapshot)
+    {
+        if (impl == nullptr)
+            return true;
+
+        std::unique_lock<std::mutex> lock(impl->driverTelemetryMutex, std::defer_lock);
+        if (waitForSnapshot)
+        {
+            lock.lock();
+        }
+        else if (!lock.try_lock())
+        {
+            return false;
+        }
+
+        snapshot.queueOperationFailureCount = impl->queueOperationFailureCount;
+        snapshot.lastQueueOperationFailure = impl->lastQueueOperationFailure;
+        snapshot.currentFrameQueueOperationFailureCount =
+            impl->currentFrameQueueOperationFailureCount;
+        snapshot.currentFrameLastQueueOperationFailure =
+            impl->currentFrameLastQueueOperationFailure;
+        snapshot.deviceLostDetected = impl->deviceLostDetected;
+        snapshot.deviceLostReason = impl->deviceLostReason;
+        return true;
+    }
+
     void RememberCompletedReadbackTexture(
         DriverImpl& impl,
         const std::shared_ptr<Render::RHI::RHITexture>& texture)
@@ -90,40 +149,60 @@ namespace
             });
     }
 
-    void AppendDriverTelemetry(const DriverImpl* impl, ThreadedFrameTelemetry& telemetry)
+    bool AppendDriverTelemetry(
+        const DriverImpl* impl,
+        ThreadedFrameTelemetry& telemetry,
+        const bool waitForSnapshot)
     {
-        if (impl == nullptr)
-            return;
+        DriverQueueTelemetrySnapshot snapshot;
+        if (!CaptureDriverQueueTelemetrySnapshot(impl, snapshot, waitForSnapshot))
+            return false;
 
-        telemetry.queueOperationFailureCount = impl->queueOperationFailureCount;
-        telemetry.lastQueueOperationFailure = impl->lastQueueOperationFailure;
-        telemetry.currentFrameQueueOperationFailureCount =
-            impl->currentFrameQueueOperationFailureCount;
-        telemetry.currentFrameLastQueueOperationFailure =
-            impl->currentFrameLastQueueOperationFailure;
-        telemetry.deviceLostDetected = impl->deviceLostDetected;
-        telemetry.deviceLostReason = impl->deviceLostReason;
-
-        if (impl->pipelineCache != nullptr)
+        const auto mergeFailureTelemetry = [](
+            const uint64_t driverFailureCount,
+            const std::string& driverLastFailure,
+            uint64_t& telemetryFailureCount,
+            std::string& telemetryLastFailure)
         {
-            telemetry.pipelineMainlineActive = true;
-            telemetry.pipelineBypassCount = 0u;
+            if (driverFailureCount == 0u && driverLastFailure.empty())
+                return;
 
-            const auto pipelineCacheStats = impl->pipelineCache->GetStats();
-            telemetry.pipelineCacheGraphicsHits = pipelineCacheStats.graphicsHits;
-            telemetry.pipelineCacheGraphicsMisses = pipelineCacheStats.graphicsMisses;
-            telemetry.pipelineCacheGraphicsStores = pipelineCacheStats.graphicsStores;
-            telemetry.pipelineCacheGraphicsEntries = pipelineCacheStats.graphicsEntryCount;
-            telemetry.pipelineCacheComputeHits = pipelineCacheStats.computeHits;
-            telemetry.pipelineCacheComputeMisses = pipelineCacheStats.computeMisses;
-            telemetry.pipelineCacheComputeStores = pipelineCacheStats.computeStores;
-            telemetry.pipelineCacheComputeEntries = pipelineCacheStats.computeEntryCount;
-        }
-        else
+            if (driverFailureCount > telemetryFailureCount)
+            {
+                telemetryFailureCount = driverFailureCount;
+                telemetryLastFailure = driverLastFailure;
+                return;
+            }
+
+            if (!driverLastFailure.empty())
+                AppendMergedDriverTelemetryMessage(telemetryLastFailure, driverLastFailure);
+        };
+
+        mergeFailureTelemetry(
+            snapshot.queueOperationFailureCount,
+            snapshot.lastQueueOperationFailure,
+            telemetry.queueOperationFailureCount,
+            telemetry.lastQueueOperationFailure);
+        mergeFailureTelemetry(
+            snapshot.currentFrameQueueOperationFailureCount,
+            snapshot.currentFrameLastQueueOperationFailure,
+            telemetry.currentFrameQueueOperationFailureCount,
+            telemetry.currentFrameLastQueueOperationFailure);
+
+        if (snapshot.deviceLostDetected)
         {
-            telemetry.pipelineMainlineActive = false;
-            telemetry.pipelineBypassCount = 1u;
+            telemetry.deviceLostDetected = true;
+            if (telemetry.deviceLostReason.empty())
+            {
+                telemetry.deviceLostReason = snapshot.deviceLostReason;
+            }
+            else
+            {
+                AppendMergedDriverTelemetryMessage(telemetry.deviceLostReason, snapshot.deviceLostReason);
+            }
         }
+
+        return true;
     }
 
     constexpr auto kThreadedWorkerWakeTimeout = std::chrono::milliseconds(250);
@@ -1650,7 +1729,7 @@ void DriverRendererAccess::DrainThreadedRendering(Driver& driver)
 ThreadedFrameTelemetry DriverRendererAccess::GetThreadedFrameTelemetry(const Driver& driver)
 {
     auto telemetry = RenderThreadCoordinator::GetThreadedFrameTelemetry(driver);
-    AppendDriverTelemetry(driver.m_impl.get(), telemetry);
+    (void)AppendDriverTelemetry(driver.m_impl.get(), telemetry, true);
     return telemetry;
 }
 
@@ -1660,7 +1739,8 @@ std::optional<ThreadedFrameTelemetry> DriverRendererAccess::TryGetThreadedFrameT
     if (!telemetry.has_value())
         return std::nullopt;
 
-    AppendDriverTelemetry(driver.m_impl.get(), telemetry.value());
+    if (!AppendDriverTelemetry(driver.m_impl.get(), telemetry.value(), false))
+        return std::nullopt;
     return telemetry;
 }
 
@@ -2120,12 +2200,10 @@ bool DriverUIAccess::IsRenderDocEnabled(const Driver& driver)
 
 Render::RHI::NativeHandle DriverUIAccess::GetRenderFinishedSemaphore(Driver& driver)
 {
-	if (driver.m_impl->frameContexts.empty())
-		return {};
-	auto& frameContext = driver.m_impl->frameContexts[driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size()];
-	if (frameContext.renderFinishedSemaphore == nullptr)
-		return {};
-	return frameContext.renderFinishedSemaphore->GetNativeSemaphoreHandle();
+    std::lock_guard lock(driver.m_impl->sceneToUiWaitMutex);
+    auto semaphore = driver.m_impl->sceneToUiWaitSemaphore;
+    driver.m_impl->sceneToUiWaitSemaphore = {};
+    return semaphore;
 }
 
 DriverUIAccess::UICompositionSyncBoundary DriverUIAccess::BuildUICompositionSyncBoundary(Driver& driver)
@@ -2142,6 +2220,13 @@ void DriverUIAccess::SetUICompositionSignal(
 	Render::RHI::NativeHandle semaphore,
 	const uint64_t value)
 {
+	if (!semaphore.IsValid() || value == 0u)
+	{
+		driver.m_impl->uiRenderFinishedSemaphore = {};
+		driver.m_impl->uiRenderFinishedValue = 0u;
+		return;
+	}
+
 	driver.m_impl->uiRenderFinishedSemaphore = semaphore;
 	driver.m_impl->uiRenderFinishedValue = value;
 }
@@ -2216,6 +2301,36 @@ void DriverTestAccess::UnlockThreadedRhiSubmission(Driver& driver)
         driver.m_impl->threadedRhiSubmissionMutex.unlock();
 }
 
+void DriverTestAccess::LockThreadedRhiSubmission(Driver& driver)
+{
+    if (driver.m_impl != nullptr)
+        driver.m_impl->threadedRhiSubmissionMutex.lock();
+}
+
+void DriverTestAccess::SetUiStandaloneFramePending(Driver& driver, const bool pending)
+{
+    if (driver.m_impl == nullptr)
+        return;
+
+    driver.m_impl->uiStandaloneFramePending.store(pending, std::memory_order_release);
+    driver.m_impl->uiStandaloneFramePendingUntilTickNs.store(
+        pending ? std::numeric_limits<uint64_t>::max() : 0u,
+        std::memory_order_release);
+    NotifyThreadedWorkers(*driver.m_impl);
+}
+
+bool DriverTestAccess::TryLockDriverTelemetry(Driver& driver)
+{
+    return driver.m_impl != nullptr &&
+        driver.m_impl->driverTelemetryMutex.try_lock();
+}
+
+void DriverTestAccess::UnlockDriverTelemetry(Driver& driver)
+{
+    if (driver.m_impl != nullptr)
+        driver.m_impl->driverTelemetryMutex.unlock();
+}
+
 const ThreadedRenderingLifecycle* DriverTestAccess::GetThreadedRenderingLifecycle(const Driver& driver)
 {
     return driver.m_impl->threadedLifecycle.get();
@@ -2231,9 +2346,9 @@ bool DriverTestAccess::CanBeginStandaloneExplicitFrame(const Driver& driver)
     return RhiThreadCoordinator::CanBeginStandaloneExplicitFrame(driver);
 }
 
-void DriverTestAccess::BeginStandaloneExplicitFrame(Driver& driver, const bool acquireSwapchainImage)
+bool DriverTestAccess::BeginStandaloneExplicitFrame(Driver& driver, const bool acquireSwapchainImage)
 {
-    RhiThreadCoordinator::BeginStandaloneExplicitFrame(driver, acquireSwapchainImage);
+    return RhiThreadCoordinator::BeginStandaloneExplicitFrame(driver, acquireSwapchainImage);
 }
 
 void DriverTestAccess::EndStandaloneExplicitFrame(Driver& driver, const bool presentSwapchain)
@@ -2420,12 +2535,20 @@ void Driver::ShutdownRhiResources()
     m_impl->uiRenderFinishedSemaphore = {};
     m_impl->uiRenderFinishedValue = 0u;
     {
+        std::lock_guard lock(m_impl->sceneToUiWaitMutex);
+        m_impl->sceneToUiWaitSemaphore = {};
+    }
+    {
         std::lock_guard lock(m_impl->completedReadbackTextureMutex);
         m_impl->completedReadbackTexture = nullptr;
         m_impl->completedReadbackTextureHistory.clear();
     }
     m_impl->explicitFrameActive = false;
     m_impl->uiStandaloneFrameActive = false;
+    m_impl->uiStandaloneFramePending.store(false, std::memory_order_release);
+    m_impl->uiStandaloneFramePendingUntilTickNs.store(0u, std::memory_order_release);
+    if (m_impl->uiStandaloneFrameSubmissionLock.owns_lock())
+        m_impl->uiStandaloneFrameSubmissionLock.unlock();
     m_impl->hasPendingSwapchainResize = false;
 
     if (m_impl->threadedLifecycle != nullptr)
@@ -2589,10 +2712,10 @@ void Driver::ApplyPendingSwapchainResize()
     if (m_impl->threadedLifecycle != nullptr && m_impl->threadedLifecycle->GetInFlightDepth() > 0u)
         return;
 
-    std::unique_lock<std::mutex> threadedSubmissionLock;
+    std::unique_lock<std::timed_mutex> threadedSubmissionLock;
     if (m_impl->threadedLifecycle != nullptr)
     {
-        threadedSubmissionLock = std::unique_lock<std::mutex>(
+        threadedSubmissionLock = std::unique_lock<std::timed_mutex>(
             m_impl->threadedRhiSubmissionMutex,
             std::try_to_lock);
         if (!threadedSubmissionLock.owns_lock())
@@ -2638,6 +2761,10 @@ void Driver::ApplyPendingSwapchainResize()
 		frameContext.swapchainDepthStencilView = nullptr;
 		frameContext.explicitReadbackTexture = nullptr;
 	}
+    {
+        std::lock_guard lock(m_impl->sceneToUiWaitMutex);
+        m_impl->sceneToUiWaitSemaphore = {};
+    }
 
 	if (m_impl->explicitSwapchain != nullptr)
 	{

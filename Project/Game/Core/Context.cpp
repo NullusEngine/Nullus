@@ -8,6 +8,7 @@
 #include <Core/ServiceLocator.h>
 #include <Debug/Logger.h>
 #include <stdexcept>
+#include "Rendering/BaseSceneRenderer.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include "Rendering/Tooling/RenderDocEnvironment.h"
 #include "Utils/PathParser.h"
@@ -330,6 +331,7 @@ Game::Context::Context(
 	ServiceLocator::Provide<TextureManager>(textureManager);
 	ServiceLocator::Provide<ShaderManager>(shaderManager);
 	ServiceLocator::Provide<MaterialManager>(materialManager);
+	NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager);
 	if (runtimeAssetDatabase.has_value())
 	{
 		ServiceLocator::Provide<NLS::Engine::Assets::RuntimeAssetDatabase>(*runtimeAssetDatabase);

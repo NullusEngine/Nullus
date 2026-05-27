@@ -244,6 +244,7 @@ namespace NLS::Render::RHI
     {
         BackendType backend = BackendType::Unknown;
         void* handle = nullptr;
+        uint64_t value = 0u;
 
         bool IsValid() const { return backend != BackendType::Unknown && handle != nullptr; }
 

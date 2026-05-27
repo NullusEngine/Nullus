@@ -1815,6 +1815,7 @@ namespace NLS::Base::Jobs
                     execution.cleanupActions,
                     unusedGroupsToRetire,
                     unusedNotifyCrossQueueDependency);
+                m_workAvailable.notify_one();
             }
         }
         else
@@ -1911,6 +1912,7 @@ namespace NLS::Base::Jobs
                     execution.cleanupActions,
                     unusedGroupsToRetire,
                     unusedNotifyCrossQueueDependency);
+                m_workAvailable.notify_one();
             }
         }
         else

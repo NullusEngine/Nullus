@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include "Rendering/Data/FrameInfo.h"
 #include "Rendering/Entities/Drawable.h"
 #include "RenderDef.h"
@@ -22,6 +24,10 @@ public:
     void RecordRenderBindingSetCreation(uint64_t count = 1u);
     void RecordRenderSnapshotBufferCreation(uint64_t count = 1u);
     void SetThreadedFrameTelemetry(const NLS::Render::Context::ThreadedFrameTelemetry& telemetry);
+    bool ReuseLastThreadedFrameTelemetry();
+    static void ApplyThreadedFrameTelemetry(
+        const NLS::Render::Context::ThreadedFrameTelemetry& telemetry,
+        Data::FrameInfo& frameInfo);
 
     const Data::FrameInfo& GetFrameInfo() const;
     bool IsFrameInfoValid() const;
@@ -29,5 +35,6 @@ public:
 private:
     bool m_isFrameInfoValid = true;
     Data::FrameInfo m_frameInfo;
+    std::optional<Data::FrameInfo> m_lastThreadedFrameInfoTelemetry;
 };
 }

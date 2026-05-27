@@ -8,6 +8,7 @@
 
 #include "Core/ServiceLocator.h"
 #include "Object/Object.h"
+#include "Reflection/Type.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"

@@ -176,8 +176,14 @@ namespace
             m_nativeDeviceInfo.backend = NLS::Render::RHI::NativeBackendType::DX12;
             m_capabilities.backendReady = true;
             m_capabilities.supportsGraphics = true;
+            m_capabilities.supportsCompute = true;
+            m_capabilities.supportsSwapchain = true;
             m_capabilities.supportsCurrentSceneRenderer = true;
+            m_capabilities.supportsOffscreenFramebuffers = true;
+            m_capabilities.supportsMultiRenderTargets = true;
+            m_capabilities.supportsExplicitBarriers = true;
             m_capabilities.supportsCentralizedDescriptorManagement = true;
+            m_capabilities.supportsPipelineStateCache = true;
         }
 
         std::string_view GetDebugName() const override { return "RendererStatsTestsDevice"; }
@@ -289,6 +295,25 @@ namespace
         std::vector<uint32_t> indices { 0u, 1u, 2u };
         return std::make_unique<NLS::Render::Resources::Mesh>(vertices, indices, 0u);
     }
+
+    NLS::Render::Data::FrameDescriptor MakeFrameDescriptor(NLS::Render::Entities::Camera& camera)
+    {
+        NLS::Render::Data::FrameDescriptor frameDescriptor;
+        frameDescriptor.renderWidth = 64u;
+        frameDescriptor.renderHeight = 64u;
+        frameDescriptor.camera = &camera;
+        return frameDescriptor;
+    }
+
+    NLS::Render::Settings::DriverSettings MakeThreadedRendererStatsSettings()
+    {
+        NLS::Render::Settings::DriverSettings settings;
+        settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+        settings.enableExplicitRHI = false;
+        settings.enableThreadedRendering = true;
+        settings.threadedFrameSlotCount = 1u;
+        return settings;
+    }
 }
 
 TEST(RendererStatsTests, RendererStatsTracksSubmittedDrawCounts)
@@ -338,7 +363,9 @@ TEST(RendererStatsTests, RendererStatsTracksRenderPreparationCounters)
 
 TEST(RendererStatsTests, CompositeRendererExposesFinalizedFrameInfoWithoutFeatureRegistration)
 {
-    auto& driver = EnsureTestDriver();
+    NLS::Render::Context::Driver driver(MakeThreadedRendererStatsSettings());
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
 
     StatsOnlyRenderer renderer(driver);
     NLS::Render::Resources::Material material;
@@ -348,10 +375,12 @@ TEST(RendererStatsTests, CompositeRendererExposesFinalizedFrameInfoWithoutFeatur
     NLS::Render::Entities::Drawable drawable;
     drawable.mesh = mesh.get();
     drawable.material = &material;
+    NLS::Render::Entities::Camera camera;
+    const auto frameDescriptor = MakeFrameDescriptor(camera);
 
-    renderer.ResetFrameStatistics();
+    renderer.BeginFrame(frameDescriptor);
     renderer.DrawEntity(NLS::Render::Data::PipelineState {}, drawable);
-    renderer.FinalizeFrameStatistics();
+    renderer.EndFrame();
 
     const auto& frameInfo = renderer.GetFrameInfo();
     EXPECT_EQ(frameInfo.batchCount, 1u);
@@ -362,11 +391,16 @@ TEST(RendererStatsTests, CompositeRendererExposesFinalizedFrameInfoWithoutFeatur
 
 TEST(RendererStatsTests, CompositeRendererFinalizedFrameInfoIsZeroWhenNoDrawsWereSubmitted)
 {
-    auto& driver = EnsureTestDriver();
+    NLS::Render::Context::Driver driver(MakeThreadedRendererStatsSettings());
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
 
     StatsOnlyRenderer renderer(driver);
-    renderer.ResetFrameStatistics();
-    renderer.FinalizeFrameStatistics();
+    NLS::Render::Entities::Camera camera;
+    const auto frameDescriptor = MakeFrameDescriptor(camera);
+
+    renderer.BeginFrame(frameDescriptor);
+    renderer.EndFrame();
 
     const auto& frameInfo = renderer.GetFrameInfo();
     EXPECT_EQ(frameInfo.batchCount, 0u);
@@ -407,8 +441,7 @@ TEST(RendererStatsTests, IndexedObjectDrawsCreateOneObjectBindingSetForRepeatedV
 
     auto* provider = renderer.GetFrameObjectBindingProvider();
     ASSERT_NE(provider, nullptr);
-    renderer.ResetFrameStatistics();
-    provider->BeginFrame(frameDescriptor);
+    renderer.BeginFrame(frameDescriptor);
 
     NLS::Render::Resources::Material material;
     material.SetGPUInstances(1);
@@ -426,8 +459,7 @@ TEST(RendererStatsTests, IndexedObjectDrawsCreateOneObjectBindingSetForRepeatedV
         });
         renderer.DrawEntity(NLS::Render::Data::PipelineState {}, drawable);
     }
-    provider->EndFrame();
-    renderer.FinalizeFrameStatistics();
+    renderer.EndFrame();
 
     const auto& frameInfo = renderer.GetFrameInfo();
     EXPECT_EQ(frameInfo.renderBindingSetCreationCount, 1u);
@@ -467,6 +499,57 @@ TEST(RendererStatsTests, RendererStatsTracksThreadedFrameTelemetryFields)
     EXPECT_EQ(frameInfo.publishState, NLS::Render::Data::FramePublishState::BackPressured);
     EXPECT_EQ(frameInfo.stageSummary, NLS::Render::Data::ThreadedFrameStageSummary::Rhi);
     EXPECT_EQ(frameInfo.retirementState, NLS::Render::Data::FrameRetirementState::Pending);
+}
+
+TEST(RendererStatsTests, RendererStatsReusesLastThreadedTelemetryWhenRefreshIsUnavailable)
+{
+    NLS::Render::Core::RendererStats stats;
+
+    NLS::Render::Context::ThreadedFrameTelemetry telemetry;
+    telemetry.inFlightFrameCount = 2u;
+    telemetry.blockedPublishCount = 1u;
+    telemetry.publishState = NLS::Render::Data::FramePublishState::BackPressured;
+    telemetry.stageSummary = NLS::Render::Data::ThreadedFrameStageSummary::Rhi;
+    telemetry.retirementState = NLS::Render::Data::FrameRetirementState::Pending;
+    telemetry.pipelineMainlineActive = true;
+    telemetry.pipelineCacheGraphicsHits = 4u;
+
+    stats.BeginFrame();
+    stats.SetThreadedFrameTelemetry(telemetry);
+    stats.EndFrame();
+
+    stats.BeginFrame();
+    stats.RecordSceneParse(9u, 8u, 7u);
+    EXPECT_TRUE(stats.ReuseLastThreadedFrameTelemetry());
+    stats.EndFrame();
+
+    const auto& frameInfo = stats.GetFrameInfo();
+    EXPECT_EQ(frameInfo.parseSceneCallCount, 1u);
+    EXPECT_EQ(frameInfo.parsedOpaqueDrawableCount, 9u);
+    EXPECT_EQ(frameInfo.parsedTransparentDrawableCount, 8u);
+    EXPECT_EQ(frameInfo.parsedSkyboxDrawableCount, 7u);
+    EXPECT_EQ(frameInfo.inFlightFrameCount, 2u);
+    EXPECT_EQ(frameInfo.blockedFrameCount, 1u);
+    EXPECT_EQ(frameInfo.publishState, NLS::Render::Data::FramePublishState::BackPressured);
+    EXPECT_EQ(frameInfo.stageSummary, NLS::Render::Data::ThreadedFrameStageSummary::Rhi);
+    EXPECT_EQ(frameInfo.retirementState, NLS::Render::Data::FrameRetirementState::Pending);
+    EXPECT_TRUE(frameInfo.pipelineMainlineActive);
+    EXPECT_EQ(frameInfo.pipelineCacheGraphicsHits, 4u);
+}
+
+TEST(RendererStatsTests, RendererStatsDoesNotReuseThreadedTelemetryBeforeFirstSample)
+{
+    NLS::Render::Core::RendererStats stats;
+
+    stats.BeginFrame();
+    EXPECT_FALSE(stats.ReuseLastThreadedFrameTelemetry());
+    stats.EndFrame();
+
+    const auto& frameInfo = stats.GetFrameInfo();
+    EXPECT_EQ(frameInfo.inFlightFrameCount, 0u);
+    EXPECT_EQ(frameInfo.publishState, NLS::Render::Data::FramePublishState::Direct);
+    EXPECT_EQ(frameInfo.stageSummary, NLS::Render::Data::ThreadedFrameStageSummary::Direct);
+    EXPECT_EQ(frameInfo.retirementState, NLS::Render::Data::FrameRetirementState::Direct);
 }
 
 TEST(RendererStatsTests, RendererStatsTracksInfrastructureMainlineDiagnostics)

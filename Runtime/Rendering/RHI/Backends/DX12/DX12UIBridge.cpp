@@ -69,6 +69,45 @@ namespace NLS::Render::RHI
             return true;
         }
 
+        bool WaitForDX12QueueFence(
+            ID3D12CommandQueue* queue,
+            const NativeHandle& waitSemaphore,
+            const std::string& context)
+        {
+            if (!waitSemaphore.IsValid())
+                return true;
+
+            if (waitSemaphore.backend != NLS::Render::RHI::BackendType::DX12 ||
+                waitSemaphore.value == 0u)
+            {
+                NLS_LOG_ERROR(
+                    context +
+                    ": invalid scene wait semaphore backend=" +
+                    std::to_string(static_cast<int>(waitSemaphore.backend)) +
+                    " value=" +
+                    std::to_string(waitSemaphore.value));
+                return false;
+            }
+
+            auto* fence = reinterpret_cast<ID3D12Fence*>(waitSemaphore.handle);
+            if (queue == nullptr || fence == nullptr)
+                return false;
+
+            const HRESULT waitHr = queue->Wait(fence, waitSemaphore.value);
+            if (FAILED(waitHr))
+            {
+                NLS_LOG_ERROR(
+                    context +
+                    ": queue wait failed hr=" +
+                    std::to_string(waitHr) +
+                    " value=" +
+                    std::to_string(waitSemaphore.value));
+                return false;
+            }
+
+            return true;
+        }
+
         class DX12UIBridge final : public RHIUIBridge
         {
         public:
@@ -140,9 +179,13 @@ namespace NLS::Render::RHI
                 ImGui_ImplDX12_CreateDeviceObjects();
             }
 
-            void RenderDrawData(ImDrawData* drawData, uint32_t) override
+            void RenderDrawData(
+                ImDrawData* drawData,
+                uint32_t,
+                const WaitSemaphoreResolver& resolveWaitSemaphore = {}) override
             {
                 NLS_PROFILE_SCOPE();
+                m_lastSubmittedUiSignalValue = 0u;
                 if (!m_initialized || drawData == nullptr)
                 {
                     DiscardCurrentFrameTextureHandles();
@@ -178,6 +221,11 @@ namespace NLS::Render::RHI
                     return;
                 }
 
+                const NativeHandle sceneWaitSemaphore = resolveWaitSemaphore
+                    ? resolveWaitSemaphore()
+                    : m_waitSemaphore;
+                m_waitSemaphore = {};
+
                 const UINT backBufferIndex = m_swapchain->GetCurrentBackBufferIndex();
                 if (backBufferIndex >= m_commandAllocators.size() || backBufferIndex >= m_backBuffers.size())
                 {
@@ -212,6 +260,15 @@ namespace NLS::Render::RHI
                         DiscardCurrentFrameTextureHandles();
                         return;
                     }
+                }
+
+                if (!WaitForDX12QueueFence(
+                    m_queue.Get(),
+                    sceneWaitSemaphore,
+                    "DX12UIBridge::RenderDrawData(scene wait)"))
+                {
+                    DiscardCurrentFrameTextureHandles();
+                    return;
                 }
 
                 commandAllocator->Reset();
@@ -257,17 +314,49 @@ namespace NLS::Render::RHI
                     NLS_PROFILE_NAMED_SCOPE("DX12UIBridge::ExecuteCommandLists");
                     m_queue->ExecuteCommandLists(1, commandLists);
                 }
+                if (m_device != nullptr)
+                {
+                    const HRESULT deviceStatus = m_device->GetDeviceRemovedReason();
+                    if (FAILED(deviceStatus))
+                    {
+                        NLS_LOG_ERROR(
+                            "DX12UIBridge::RenderDrawData: device status after ExecuteCommandLists hr=" +
+                            std::to_string(deviceStatus));
+                        DiscardCurrentFrameTextureHandles();
+                        return;
+                    }
+                }
                 if (ShouldLogDx12FrameFlow())
                     NLS_LOG_INFO("DX12UIBridge::RenderDrawData: UI command list submitted");
 
                 const UINT64 fenceValue = ++m_fenceValue;
-                m_queue->Signal(m_fence.Get(), fenceValue);
+                const HRESULT frameSignalHr = m_queue->Signal(m_fence.Get(), fenceValue);
+                if (FAILED(frameSignalHr))
+                {
+                    NLS_LOG_ERROR(
+                        "DX12UIBridge::RenderDrawData: UI frame fence signal failed hr=" +
+                        std::to_string(frameSignalHr) +
+                        " value=" +
+                        std::to_string(fenceValue));
+                    DiscardCurrentFrameTextureHandles();
+                    return;
+                }
                 m_frameFenceTracker.RecordSubmitted(backBufferIndex, fenceValue);
                 RetainCurrentFrameTextureHandles(fenceValue);
 
                 if (m_uiFence != nullptr)
                 {
-                    m_queue->Signal(m_uiFence.Get(), fenceValue);
+                    const HRESULT uiSignalHr = m_queue->Signal(m_uiFence.Get(), fenceValue);
+                    if (FAILED(uiSignalHr))
+                    {
+                        NLS_LOG_ERROR(
+                            "DX12UIBridge::RenderDrawData: UI composition fence signal failed hr=" +
+                            std::to_string(uiSignalHr) +
+                            " value=" +
+                            std::to_string(fenceValue));
+                        return;
+                    }
+                    m_lastSubmittedUiSignalValue = fenceValue;
                 }
 
                 RetireCompletedTextureHandles();
@@ -411,7 +500,7 @@ namespace NLS::Render::RHI
 
             uint64_t GetUISignalValue() const override
             {
-                return m_frameFenceTracker.GetLastSubmittedFenceValue();
+                return m_lastSubmittedUiSignalValue;
             }
 
             void SubmitCommandBuffer(uint32_t) override
@@ -895,6 +984,7 @@ namespace NLS::Render::RHI
             UINT m_srvDescriptorSize = 0;
             UINT m_srvDescriptorCapacity = 0;
             UINT m_nextTextureDescriptorIndex = 1;
+            uint64_t m_lastSubmittedUiSignalValue = 0u;
             DXGI_FORMAT m_backbufferFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
             uint32_t m_backbufferWidth = 0;
             uint32_t m_backbufferHeight = 0;

@@ -2,6 +2,7 @@
 #include "Panels/ViewFrameLifecycle.h"
 #include "Core/EditorActions.h"
 #include "Rendering/Context/DriverAccess.h"
+#include "Rendering/Core/RendererStats.h"
 #include "Rendering/FrameGraph/ExternalResourceBridge.h"
 #include "Profiling/Profiler.h"
 #include "ServiceLocator.h"
@@ -12,6 +13,22 @@
 
 using namespace NLS;
 
+namespace
+{
+    std::optional<Render::Context::ThreadedFrameTelemetry> TryGetAvailableThreadedFrameTelemetry(
+        Render::Context::Driver* driver)
+    {
+        if (driver == nullptr ||
+            !Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver))
+        {
+            return std::nullopt;
+        }
+
+        return Render::Context::DriverRendererAccess::TryGetThreadedFrameTelemetry(*driver);
+    }
+
+}
+
 Editor::Panels::AView::AView
 (
 	const std::string& p_title,
@@ -21,7 +38,9 @@ Editor::Panels::AView::AView
     m_viewportOverlayDrawSplitter(std::make_unique<ImDrawListSplitter>())
 {
 	m_image = &CreateWidget<UI::Widgets::Image>(m_fbo.GetOrCreateExplicitColorView("Editor.AView.Output"), Maths::Vector2{ 0.f, 0.f });
-	m_image->flipVertically = NLS_SERVICE(UI::UIManager).ShouldFlipPresentedRenderTargetVertically();
+	m_image->flipVertically =
+        NLS::Core::ServiceLocator::Contains<UI::UIManager>() &&
+        NLS_SERVICE(UI::UIManager).ShouldFlipPresentedRenderTargetVertically();
 	panelSettings.scrollable = false;
 }
 
@@ -100,33 +119,24 @@ void Editor::Panels::AView::SyncViewToCurrentContentRegion()
 	const auto winHeight = static_cast<uint16_t>(clampedHeight);
 
     std::pair<uint16_t, uint16_t> requestedSize { winWidth, winHeight };
-    Render::Context::ThreadedFrameTelemetry telemetry {};
     auto* driver = Render::Context::TryGetLocatedDriver();
     const bool threadedRendering =
         driver != nullptr &&
         Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver);
-    if (threadedRendering)
-    {
-        telemetry = Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(*driver);
-        if (Editor::Panels::ShouldDrainBeforeRetirementAwareViewResize(
-            requestedSize,
-            m_lastResolvedViewSize,
-            RequiresRetiredFrameConsumption(),
-            telemetry))
-        {
-            {
-                NLS_PROFILE_NAMED_SCOPE("AView::DrainBeforeResize");
-                Render::Context::DriverRendererAccess::DrainThreadedRendering(*driver);
-            }
-            telemetry = Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(*driver);
-        }
-    }
+    auto currentTelemetry = TryGetAvailableThreadedFrameTelemetry(driver);
 
-    if (Editor::Panels::ShouldDeferRetirementAwareViewResize(
-        requestedSize,
-        m_lastResolvedViewSize,
-        RequiresRetiredFrameConsumption(),
-        telemetry))
+    if (threadedRendering &&
+        (Editor::Panels::ShouldDeferRetirementAwareViewResizeUntilTelemetryAvailable(
+                requestedSize,
+                m_lastResolvedViewSize,
+                RequiresRetiredFrameConsumption(),
+                currentTelemetry.has_value()) ||
+            (currentTelemetry.has_value() &&
+                Editor::Panels::ShouldDeferRetirementAwareViewResize(
+                    requestedSize,
+                    m_lastResolvedViewSize,
+                    RequiresRetiredFrameConsumption(),
+                    currentTelemetry.value()))))
     {
         m_pendingResolvedViewSize = requestedSize;
         m_image->size = Maths::Vector2(
@@ -138,7 +148,13 @@ void Editor::Panels::AView::SyncViewToCurrentContentRegion()
     if (m_pendingResolvedViewSize.has_value())
         requestedSize = m_pendingResolvedViewSize.value();
 
-    ApplyResolvedViewSize(requestedSize.first, requestedSize.second);
+    if (!ApplyResolvedViewSize(requestedSize.first, requestedSize.second))
+    {
+        m_image->size = Maths::Vector2(
+            static_cast<float>(m_lastResolvedViewSize.first),
+            static_cast<float>(m_lastResolvedViewSize.second));
+        return;
+    }
     m_image->size = Maths::Vector2(
         static_cast<float>(m_lastResolvedViewSize.first),
         static_cast<float>(m_lastResolvedViewSize.second));
@@ -164,8 +180,12 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
         const bool threadedRendering =
             driver != nullptr &&
             Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver);
-        if (threadedRendering)
-            beforeTelemetry = Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(*driver);
+        const auto beforeTelemetrySnapshot = TryGetAvailableThreadedFrameTelemetry(driver);
+        if (beforeTelemetrySnapshot.has_value())
+        {
+            beforeTelemetry = beforeTelemetrySnapshot.value();
+            m_lastAvailablePublishedFrameCount = beforeTelemetry.publishedFrameCount;
+        }
         {
             NLS_PROFILE_NAMED_SCOPE("AView::InitFrame");
 		    InitFrame();
@@ -195,6 +215,11 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
             NLS_PROFILE_NAMED_SCOPE("AView::RendererEndFrame");
 		    m_renderer->EndFrame();
         }
+        if (m_renderer->IsFrameInfoValid())
+        {
+            m_lastRenderedFrameInfo = m_renderer->GetFrameInfo();
+        }
+        std::optional<Render::Context::ThreadedFrameTelemetry> postRenderDrainTelemetry;
         if (Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(
             RequiresRetiredFrameConsumption(),
             RequiresImmediateRetiredFrameReadback(),
@@ -208,7 +233,16 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
                 // Texture-only consumers can present the latest available texture without a CPU drain.
                 {
                     NLS_PROFILE_NAMED_SCOPE("AView::DrainThreadedRendering");
-                    Render::Context::DriverRendererAccess::DrainThreadedRendering(*driver);
+                    if (Render::Context::DriverRendererAccess::TryDrainThreadedRendering(*driver))
+                    {
+                        postRenderDrainTelemetry = TryGetAvailableThreadedFrameTelemetry(driver);
+                        if (postRenderDrainTelemetry.has_value() && m_lastRenderedFrameInfo.has_value())
+                        {
+                            Render::Core::RendererStats::ApplyThreadedFrameTelemetry(
+                                postRenderDrainTelemetry.value(),
+                                m_lastRenderedFrameInfo.value());
+                        }
+                    }
                 }
             }
         }
@@ -217,10 +251,25 @@ void Editor::Panels::AView::Render(const uint16_t p_width, const uint16_t p_heig
         uint64_t latestRetiredFrameId = 0u;
         if (threadedRendering && driver != nullptr)
         {
-            const auto afterTelemetry = Render::Context::DriverRendererAccess::GetThreadedFrameTelemetry(*driver);
-            framePublished = afterTelemetry.publishedFrameCount > beforeTelemetry.publishedFrameCount;
-            latestPublishedFrameId = afterTelemetry.latestPublishedFrameId;
-            latestRetiredFrameId = afterTelemetry.latestRetiredFrameId;
+            const auto afterTelemetrySnapshot = postRenderDrainTelemetry.has_value()
+                ? postRenderDrainTelemetry
+                : TryGetAvailableThreadedFrameTelemetry(driver);
+            if (afterTelemetrySnapshot.has_value())
+            {
+                const auto& afterTelemetry = afterTelemetrySnapshot.value();
+                framePublished = Editor::Panels::DidThreadedFramePublishAdvance(
+                    beforeTelemetrySnapshot,
+                    m_lastAvailablePublishedFrameCount,
+                    afterTelemetry);
+                latestPublishedFrameId = afterTelemetry.latestPublishedFrameId;
+                latestRetiredFrameId = afterTelemetry.latestRetiredFrameId;
+                m_lastAvailablePublishedFrameCount = afterTelemetry.publishedFrameCount;
+            }
+            else if (beforeTelemetrySnapshot.has_value())
+            {
+                latestPublishedFrameId = beforeTelemetry.latestPublishedFrameId;
+                latestRetiredFrameId = beforeTelemetry.latestRetiredFrameId;
+            }
         }
         {
             NLS_PROFILE_NAMED_SCOPE("AView::UpdateSubmittedOverlayCameraMatrices");
@@ -281,17 +330,34 @@ bool Editor::Panels::AView::RequiresSynchronizedRetiredFramePresentation() const
     return false;
 }
 
-void Editor::Panels::AView::ApplyResolvedViewSize(const uint16_t p_width, const uint16_t p_height)
+bool Editor::Panels::AView::ApplyResolvedViewSize(const uint16_t p_width, const uint16_t p_height)
 {
     m_resizedViewThisFrame = m_lastResolvedViewSize.first != p_width ||
         m_lastResolvedViewSize.second != p_height;
 
     if (m_resizedViewThisFrame)
     {
-        if (auto* driver = Render::Context::TryGetLocatedDriver();
-            driver != nullptr && Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver))
+        auto* driver = Render::Context::TryGetLocatedDriver();
+        const bool threadedRendering =
+            driver != nullptr &&
+            Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver);
+        const auto currentTelemetry = TryGetAvailableThreadedFrameTelemetry(driver);
+        if (threadedRendering &&
+            (Editor::Panels::ShouldDeferRetirementAwareViewResizeUntilTelemetryAvailable(
+                    { p_width, p_height },
+                    m_lastResolvedViewSize,
+                    RequiresRetiredFrameConsumption(),
+                    currentTelemetry.has_value()) ||
+                (currentTelemetry.has_value() &&
+                    Editor::Panels::ShouldDeferRetirementAwareViewResize(
+                        { p_width, p_height },
+                        m_lastResolvedViewSize,
+                        RequiresRetiredFrameConsumption(),
+                        currentTelemetry.value()))))
         {
-            Render::Context::DriverRendererAccess::DrainThreadedRendering(*driver);
+            m_pendingResolvedViewSize = { p_width, p_height };
+            m_resizedViewThisFrame = false;
+            return false;
         }
 
         if (m_image != nullptr && m_image->textureView != nullptr &&
@@ -308,6 +374,7 @@ void Editor::Panels::AView::ApplyResolvedViewSize(const uint16_t p_width, const 
     m_fbo.Resize(p_width, p_height);
     m_image->textureView = m_fbo.GetOrCreateExplicitColorView("Editor.AView.Output");
     m_pendingResolvedViewSize.reset();
+    return true;
 }
 
 void Editor::Panels::AView::UpdatePreRenderOverlayCameraMatrices()
@@ -455,6 +522,11 @@ std::pair<uint16_t, uint16_t> Editor::Panels::AView::GetSafeSize() const
 const Engine::Rendering::BaseSceneRenderer& Editor::Panels::AView::GetRenderer() const
 {
 	return *m_renderer.get();
+}
+
+const std::optional<Render::Data::FrameInfo>& Editor::Panels::AView::GetLastRenderedFrameInfoSnapshot() const
+{
+    return m_lastRenderedFrameInfo;
 }
 
 bool Editor::Panels::AView::IsMouseWithinView(const Maths::Vector2& mousePosition) const

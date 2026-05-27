@@ -271,6 +271,8 @@ void Editor::Core::Editor::SetupUI()
     settings.closable = true;
     settings.collapsable = true;
     settings.dockable = true;
+    auto frameInfoSettings = settings;
+    frameInfoSettings.autoSize = true;
 
     m_panelsManager.CreatePanel<Panels::EditorTopBar>("Editor Top Bar");
     m_panelsManager.CreatePanel<Panels::EditorStatusBar>("Editor Status Bar");
@@ -284,7 +286,7 @@ void Editor::Core::Editor::SetupUI()
     m_panelsManager.CreatePanel<Panels::Inspector>("Inspector", true, settings);
     m_panelsManager.CreatePanel<Panels::SceneView>("Scene View", true, settings);
     m_panelsManager.CreatePanel<Panels::GameView>("Game View", true, settings);
-    m_panelsManager.CreatePanel<Panels::FrameInfo>("Frame Info", false, settings);
+    m_panelsManager.CreatePanel<Panels::FrameInfo>("Frame Info", false, frameInfoSettings);
     m_panelsManager.CreatePanel<Panels::MaterialEditor>("Material Editor", false, settings);
     m_panelsManager.CreatePanel<Panels::ProjectSettings>("Project Settings", false, settings);
     m_panelsManager.GetPanelAs<Panels::ProjectSettings>("Project Settings").enabled = false;
@@ -780,6 +782,7 @@ void Editor::Core::Editor::ApplyStartupValidationDirectives()
     const auto& diagnostics = m_context.GetDiagnosticsSettings();
     auto& sceneView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::SceneView>("Scene View");
     auto& gameView = m_panelsManager.GetPanelAs<NLS::Editor::Panels::GameView>("Game View");
+    auto& frameInfo = m_panelsManager.GetPanelAs<NLS::Editor::Panels::FrameInfo>("Frame Info");
 
     switch (ResolveValidationFocusTarget(diagnostics.editorValidationExclusiveView))
     {
@@ -811,6 +814,12 @@ void Editor::Core::Editor::ApplyStartupValidationDirectives()
     case ValidationFocusTarget::None:
     default:
         break;
+    }
+
+    if (diagnostics.editorValidationOpenFrameInfo)
+    {
+        frameInfo.Open();
+        NLS_LOG_INFO("Editor validation opened Frame Info.");
     }
 
     if (!diagnostics.editorValidationCreateAsset.empty())
@@ -1028,18 +1037,6 @@ void Editor::Core::Editor::RenderEditorUI(float p_deltaTime)
     if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
         NLS_LOG_INFO("Editor::RenderEditorUI: begin");
 
-    // Set up the explicit scene -> UI -> present synchronization boundary.
-    Render::Context::DriverUIAccess::UICompositionSyncBoundary uiSyncBoundary;
-    {
-        NLS_PROFILE_NAMED_SCOPE("Editor::BuildUICompositionSyncBoundary");
-        uiSyncBoundary = Render::Context::DriverUIAccess::BuildUICompositionSyncBoundary(*m_context.driver);
-    }
-    if (uiSyncBoundary.sceneToUiWaitSemaphore.IsValid())
-    {
-        NLS_PROFILE_NAMED_SCOPE("UIManager::SetWaitSemaphore");
-        m_context.uiManager->SetWaitSemaphore(uiSyncBoundary.sceneToUiWaitSemaphore);
-    }
-
     NLS::Render::RHI::NativeHandle uiSignalSemaphore;
     {
         NLS_PROFILE_NAMED_SCOPE("UIManager::ResolveUISignalSemaphore");
@@ -1048,7 +1045,12 @@ void Editor::Core::Editor::RenderEditorUI(float p_deltaTime)
 
     {
         NLS_PROFILE_NAMED_SCOPE("Editor::UIManagerRender");
-        EDITOR_CONTEXT(uiManager)->Render();
+        EDITOR_CONTEXT(uiManager)->Render(
+            [this]
+            {
+                NLS_PROFILE_NAMED_SCOPE("Editor::ResolveSceneToUiWaitSemaphore");
+                return Render::Context::DriverUIAccess::GetRenderFinishedSemaphore(*m_context.driver);
+            });
     }
     if (Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow)
         NLS_LOG_INFO("Editor::RenderEditorUI: UIManager::Render returned");

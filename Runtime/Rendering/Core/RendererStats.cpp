@@ -3,6 +3,50 @@
 
 namespace NLS::Render::Core
 {
+namespace
+{
+    template<typename TTelemetry>
+    uint64_t ResolveBlockedFrameCount(const TTelemetry& telemetry)
+    {
+        if constexpr (requires { telemetry.blockedPublishCount; })
+            return telemetry.blockedPublishCount;
+        else
+            return telemetry.blockedFrameCount;
+    }
+
+    template<typename TTelemetry>
+    void ApplyThreadedFrameTelemetryFields(const TTelemetry& telemetry, Data::FrameInfo& frameInfo)
+    {
+        frameInfo.inFlightFrameCount = telemetry.inFlightFrameCount;
+        frameInfo.blockedFrameCount = ResolveBlockedFrameCount(telemetry);
+        frameInfo.publishState = telemetry.publishState;
+        frameInfo.stageSummary = telemetry.stageSummary;
+        frameInfo.retirementState = telemetry.retirementState;
+        frameInfo.descriptorMainlineActive = telemetry.descriptorMainlineActive;
+        frameInfo.pipelineMainlineActive = telemetry.pipelineMainlineActive;
+        frameInfo.transientLifetimeMainlineActive = telemetry.transientLifetimeMainlineActive;
+        frameInfo.retirementMainlineActive = telemetry.retirementMainlineActive;
+        frameInfo.descriptorBypassCount = telemetry.descriptorBypassCount;
+        frameInfo.pipelineBypassCount = telemetry.pipelineBypassCount;
+        frameInfo.transientLifetimeBypassCount = telemetry.transientLifetimeBypassCount;
+        frameInfo.retirementBypassCount = telemetry.retirementBypassCount;
+        frameInfo.transientTextureRegistrationCount = telemetry.transientTextureRegistrationCount;
+        frameInfo.transientBufferRegistrationCount = telemetry.transientBufferRegistrationCount;
+        frameInfo.retiredTransientTextureCount = telemetry.retiredTransientTextureCount;
+        frameInfo.retiredTransientBufferCount = telemetry.retiredTransientBufferCount;
+        frameInfo.descriptorTransientPeak = telemetry.descriptorTransientPeak;
+        frameInfo.descriptorAllocationFailures = telemetry.descriptorAllocationFailures;
+        frameInfo.pipelineCacheGraphicsHits = telemetry.pipelineCacheGraphicsHits;
+        frameInfo.pipelineCacheGraphicsMisses = telemetry.pipelineCacheGraphicsMisses;
+        frameInfo.pipelineCacheGraphicsStores = telemetry.pipelineCacheGraphicsStores;
+        frameInfo.pipelineCacheGraphicsEntries = telemetry.pipelineCacheGraphicsEntries;
+        frameInfo.pipelineCacheComputeHits = telemetry.pipelineCacheComputeHits;
+        frameInfo.pipelineCacheComputeMisses = telemetry.pipelineCacheComputeMisses;
+        frameInfo.pipelineCacheComputeStores = telemetry.pipelineCacheComputeStores;
+        frameInfo.pipelineCacheComputeEntries = telemetry.pipelineCacheComputeEntries;
+    }
+}
+
 void RendererStats::BeginFrame()
 {
     m_frameInfo.batchCount = 0u;
@@ -95,33 +139,24 @@ void RendererStats::RecordRenderSnapshotBufferCreation(const uint64_t count)
 
 void RendererStats::SetThreadedFrameTelemetry(const NLS::Render::Context::ThreadedFrameTelemetry& telemetry)
 {
-    m_frameInfo.inFlightFrameCount = telemetry.inFlightFrameCount;
-    m_frameInfo.blockedFrameCount = telemetry.blockedPublishCount;
-    m_frameInfo.publishState = telemetry.publishState;
-    m_frameInfo.stageSummary = telemetry.stageSummary;
-    m_frameInfo.retirementState = telemetry.retirementState;
-    m_frameInfo.descriptorMainlineActive = telemetry.descriptorMainlineActive;
-    m_frameInfo.pipelineMainlineActive = telemetry.pipelineMainlineActive;
-    m_frameInfo.transientLifetimeMainlineActive = telemetry.transientLifetimeMainlineActive;
-    m_frameInfo.retirementMainlineActive = telemetry.retirementMainlineActive;
-    m_frameInfo.descriptorBypassCount = telemetry.descriptorBypassCount;
-    m_frameInfo.pipelineBypassCount = telemetry.pipelineBypassCount;
-    m_frameInfo.transientLifetimeBypassCount = telemetry.transientLifetimeBypassCount;
-    m_frameInfo.retirementBypassCount = telemetry.retirementBypassCount;
-    m_frameInfo.transientTextureRegistrationCount = telemetry.transientTextureRegistrationCount;
-    m_frameInfo.transientBufferRegistrationCount = telemetry.transientBufferRegistrationCount;
-    m_frameInfo.retiredTransientTextureCount = telemetry.retiredTransientTextureCount;
-    m_frameInfo.retiredTransientBufferCount = telemetry.retiredTransientBufferCount;
-    m_frameInfo.descriptorTransientPeak = telemetry.descriptorTransientPeak;
-    m_frameInfo.descriptorAllocationFailures = telemetry.descriptorAllocationFailures;
-    m_frameInfo.pipelineCacheGraphicsHits = telemetry.pipelineCacheGraphicsHits;
-    m_frameInfo.pipelineCacheGraphicsMisses = telemetry.pipelineCacheGraphicsMisses;
-    m_frameInfo.pipelineCacheGraphicsStores = telemetry.pipelineCacheGraphicsStores;
-    m_frameInfo.pipelineCacheGraphicsEntries = telemetry.pipelineCacheGraphicsEntries;
-    m_frameInfo.pipelineCacheComputeHits = telemetry.pipelineCacheComputeHits;
-    m_frameInfo.pipelineCacheComputeMisses = telemetry.pipelineCacheComputeMisses;
-    m_frameInfo.pipelineCacheComputeStores = telemetry.pipelineCacheComputeStores;
-    m_frameInfo.pipelineCacheComputeEntries = telemetry.pipelineCacheComputeEntries;
+    ApplyThreadedFrameTelemetry(telemetry, m_frameInfo);
+    m_lastThreadedFrameInfoTelemetry = m_frameInfo;
+}
+
+bool RendererStats::ReuseLastThreadedFrameTelemetry()
+{
+    if (!m_lastThreadedFrameInfoTelemetry.has_value())
+        return false;
+
+    ApplyThreadedFrameTelemetryFields(m_lastThreadedFrameInfoTelemetry.value(), m_frameInfo);
+    return true;
+}
+
+void RendererStats::ApplyThreadedFrameTelemetry(
+    const NLS::Render::Context::ThreadedFrameTelemetry& telemetry,
+    Data::FrameInfo& frameInfo)
+{
+    ApplyThreadedFrameTelemetryFields(telemetry, frameInfo);
 }
 
 const Data::FrameInfo& RendererStats::GetFrameInfo() const

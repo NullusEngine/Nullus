@@ -2,13 +2,19 @@
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
+#include <fstream>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "Core/ServiceLocator.h"
 #include "Core/ResourceManagement/MaterialManager.h"
 #include "Core/ResourceManagement/MeshManager.h"
+#include "Core/ResourceManagement/ShaderManager.h"
 #include "Math/Matrix4.h"
+#include "Rendering/Assets/MeshArtifact.h"
+#include "Rendering/BaseSceneRenderer.h"
 #include "Rendering/Data/Frustum.h"
 #include "Rendering/Data/DrawableInstanceCount.h"
 #include "Rendering/Context/Driver.h"
@@ -234,6 +240,121 @@ namespace
     {
         return NLS::Engine::Serialize::PPtr<T>(
             NLS::Engine::Serialize::PersistentManager::Instance().ObjectIdentifierToInstanceID(identifier));
+    }
+
+    class ScopedTempDirectory final
+    {
+    public:
+        explicit ScopedTempDirectory(std::filesystem::path path)
+            : m_path(std::move(path))
+        {
+        }
+
+        ~ScopedTempDirectory()
+        {
+            std::error_code error;
+            std::filesystem::remove_all(m_path, error);
+        }
+
+        const std::filesystem::path& Path() const
+        {
+            return m_path;
+        }
+
+    private:
+        std::filesystem::path m_path;
+    };
+
+    class ScopedRenderSceneResourceManagers final
+    {
+    public:
+        ScopedRenderSceneResourceManagers(
+            NLS::Core::ResourceManagement::MeshManager& meshManager,
+            NLS::Core::ResourceManagement::MaterialManager& materialManager,
+            NLS::Core::ResourceManagement::ShaderManager& shaderManager,
+            const std::string& projectAssetsRoot,
+            const std::string& engineAssetsRoot)
+            : m_meshManager(meshManager)
+            , m_materialManager(materialManager)
+            , m_shaderManager(shaderManager)
+        {
+            NLS::Core::ResourceManagement::MeshManager::ProvideAssetPaths(projectAssetsRoot, engineAssetsRoot);
+            NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths(projectAssetsRoot, engineAssetsRoot);
+            NLS::Core::ResourceManagement::ShaderManager::ProvideAssetPaths(projectAssetsRoot, engineAssetsRoot);
+            NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MeshManager>(m_meshManager);
+            NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MaterialManager>(m_materialManager);
+            NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::ShaderManager>(m_shaderManager);
+        }
+
+        ~ScopedRenderSceneResourceManagers()
+        {
+            m_materialManager.UnloadResources();
+            m_meshManager.UnloadResources();
+            m_shaderManager.UnloadResources();
+            NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::MaterialManager>();
+            NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::MeshManager>();
+            NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::ShaderManager>();
+            NLS::Core::ResourceManagement::MeshManager::ProvideAssetPaths({}, {});
+            NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths({}, {});
+            NLS::Core::ResourceManagement::ShaderManager::ProvideAssetPaths({}, {});
+        }
+
+        ScopedRenderSceneResourceManagers(const ScopedRenderSceneResourceManagers&) = delete;
+        ScopedRenderSceneResourceManagers& operator=(const ScopedRenderSceneResourceManagers&) = delete;
+
+    private:
+        NLS::Core::ResourceManagement::MeshManager& m_meshManager;
+        NLS::Core::ResourceManagement::MaterialManager& m_materialManager;
+        NLS::Core::ResourceManagement::ShaderManager& m_shaderManager;
+    };
+
+    class SceneDrawableProbeRenderer final : public NLS::Engine::Rendering::BaseSceneRenderer
+    {
+    public:
+        explicit SceneDrawableProbeRenderer(NLS::Render::Context::Driver& driver)
+            : BaseSceneRenderer(driver)
+        {
+        }
+
+        AllDrawables CaptureSceneDrawables(const NLS::Render::Data::FrameDescriptor& frameDescriptor)
+        {
+            m_frameDescriptor = frameDescriptor;
+            return ParseScene();
+        }
+    };
+
+    void WriteCubeMeshArtifact(const std::filesystem::path& artifactPath)
+    {
+        std::filesystem::create_directories(artifactPath.parent_path());
+
+        NLS::Render::Assets::MeshArtifactData artifact;
+        artifact.vertices = {
+            VertexAt(-0.5f, -0.5f, 0.0f),
+            VertexAt(0.5f, -0.5f, 0.0f),
+            VertexAt(0.0f, 0.5f, 0.0f)
+        };
+        artifact.indices = {0u, 1u, 2u};
+
+        const auto bytes = NLS::Render::Assets::SerializeMeshArtifact(artifact);
+        std::ofstream output(artifactPath, std::ios::binary | std::ios::trunc);
+        output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+
+    void CopyTextFile(const std::filesystem::path& source, const std::filesystem::path& destination)
+    {
+        std::filesystem::create_directories(destination.parent_path());
+        std::filesystem::copy_file(source, destination, std::filesystem::copy_options::overwrite_existing);
+    }
+
+    void CopyFallbackShaderAssets(const std::filesystem::path& engineAssetsRoot)
+    {
+        const auto sourceRoot = std::filesystem::path(NLS_ROOT_DIR) / "App" / "Assets" / "Engine" / "Shaders";
+        const auto destinationRoot = engineAssetsRoot / "Shaders";
+
+        CopyTextFile(sourceRoot / "Lambert.hlsl", destinationRoot / "Lambert.hlsl");
+        CopyTextFile(sourceRoot / "Standard.hlsl", destinationRoot / "Standard.hlsl");
+        CopyTextFile(sourceRoot / "CommonTypes.hlsli", destinationRoot / "CommonTypes.hlsli");
+        CopyTextFile(sourceRoot / "LightGridCommon.hlsli", destinationRoot / "LightGridCommon.hlsli");
     }
 }
 
@@ -550,6 +671,75 @@ TEST(RenderSceneCacheTests, SynchronizeDrawsDirectMeshReferenceWithoutModelResou
 
     delete mesh;
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RenderSceneCacheTests, SceneRendererDrawsLoadedPrimitiveCubeWithColdDefaultMaterial)
+{
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    NLS::ObjectTestAccess::ClearObjectRegistry();
+    auto& driver = EnsureRenderSceneTestDriver();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_loaded_primitive_cube_" + NLS::Guid::New().ToString()));
+    const auto projectAssetsRoot = (root.Path() / "Project" / "Assets").string() + "/";
+    const auto engineAssetsRoot = (root.Path() / "EngineAssets").string() + "/";
+    WriteCubeMeshArtifact(
+        root.Path() / "EngineAssets" / "Library" / "BuiltinArtifacts" / "Models" / "Cube.nmesh");
+    CopyFallbackShaderAssets(root.Path() / "EngineAssets");
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    NLS::Core::ResourceManagement::MaterialManager materialManager;
+    NLS::Core::ResourceManagement::ShaderManager shaderManager;
+    const ScopedRenderSceneResourceManagers resourceManagers(
+        meshManager,
+        materialManager,
+        shaderManager,
+        projectAssetsRoot,
+        engineAssetsRoot);
+
+    NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager);
+    EXPECT_TRUE(
+        shaderManager.IsResourceRegistered(":Shaders\\Lambert.hlsl") ||
+        shaderManager.IsResourceRegistered(":Shaders/Lambert.hlsl") ||
+        shaderManager.IsResourceRegistered(":Shaders\\Standard.hlsl") ||
+        shaderManager.IsResourceRegistered(":Shaders/Standard.hlsl"));
+
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& actor = scene.CreateGameObject("Loaded Primitive Cube");
+    auto* meshFilter = actor.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+
+    const auto meshGuid = NLS::Guid::Parse("33333333-4444-4555-8666-777777777777");
+    meshFilter->SetMeshReference(MakeRenderScenePPtr<NLS::Render::Resources::Mesh>(
+        NLS::Engine::Serialize::ObjectIdentifier::Asset(
+            NLS::Engine::Serialize::AssetId(meshGuid),
+            NLS::Engine::Serialize::MakeLocalIdentifierInFile(meshGuid, "mesh:Cube"),
+            "builtin:Primitive/Cube")));
+    meshRenderer->SetMaterialReferences({});
+
+    SceneDrawableProbeRenderer renderer(driver);
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        scene,
+        std::nullopt,
+        nullptr
+    });
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 128u;
+    frameDescriptor.camera = &camera;
+
+    const auto drawables = renderer.CaptureSceneDrawables(frameDescriptor);
+
+    EXPECT_FALSE(materialManager.IsResourceRegistered(":Materials\\Default.mat"));
+    ASSERT_EQ(drawables.opaques.size(), 1u);
+    EXPECT_EQ(drawables.opaques.front().second.mesh, meshFilter->ResolveMesh());
+    ASSERT_NE(drawables.opaques.front().second.material, nullptr);
+    EXPECT_TRUE(drawables.opaques.front().second.material->IsValid());
 }
 
 TEST(RenderSceneCacheTests, SynchronizeResolvesOnlyMaterialSlotUsedByMesh)

@@ -342,6 +342,38 @@ TEST(EditorRenderPathContractTests, SceneRenderFrameKeepsMeshesVisibleWhenMateri
     EXPECT_NE(renderSceneSource.find("return options.defaultMaterial != nullptr && options.defaultMaterial->IsValid()"), std::string::npos);
 }
 
+TEST(EditorRenderPathContractTests, SceneFallbackMaterialIsRendererOwnedAndStartupPreloaded)
+{
+    const auto rendererHeaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/BaseSceneRenderer.h";
+    const auto rendererSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/BaseSceneRenderer.cpp";
+    const auto editorContextPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Context.cpp";
+    const auto gameContextPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Game/Core/Context.cpp";
+
+    const auto rendererHeader = ReadSourceText(rendererHeaderPath);
+    const auto rendererSource = ReadSourceText(rendererSourcePath);
+    const auto editorContext = ReadSourceText(editorContextPath);
+    const auto gameContext = ReadSourceText(gameContextPath);
+
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(rendererSource.empty());
+    ASSERT_FALSE(editorContext.empty());
+    ASSERT_FALSE(gameContext.empty());
+
+    EXPECT_NE(rendererHeader.find("std::unique_ptr<Material> m_sceneFallbackMaterial"), std::string::npos);
+    EXPECT_NE(rendererSource.find("void BaseSceneRenderer::PreloadSceneFallbackShader("), std::string::npos);
+    EXPECT_NE(rendererSource.find("shaderManager.GetResource(resourcePath, false)"), std::string::npos);
+    EXPECT_NE(rendererSource.find("shaderManager.GetResource(resourcePath, true)"), std::string::npos);
+    EXPECT_NE(rendererSource.find("BaseSceneRenderer failed to preload a scene fallback shader"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("static NLS::Render::Resources::Material fallbackMaterial"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("static NLS::Render::Resources::Shader* boundShader"), std::string::npos);
+    EXPECT_NE(editorContext.find("BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager)"), std::string::npos);
+    EXPECT_NE(gameContext.find("BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager)"), std::string::npos);
+}
+
 TEST(EditorRenderPathContractTests, SceneDrawableCollectionAvoidsNodeAllocatedMultimapSort)
 {
     const auto rendererHeaderPath =
@@ -771,7 +803,15 @@ TEST(EditorRenderPathContractTests, GeneratedModelMaterialResolutionBindsOnlyCac
     const auto resolveMeshEnd = meshFilterSource.find("std::string MeshFilter::GetModelPath() const", resolveMeshBegin);
     ASSERT_NE(resolveMeshEnd, std::string::npos);
     const auto resolveMeshCode = meshFilterSource.substr(resolveMeshBegin, resolveMeshEnd - resolveMeshBegin);
-    EXPECT_EQ(resolveMeshCode.find("GetResource(path, true)"), std::string::npos);
+    const auto primitiveAliasGuard = resolveMeshCode.find("TryGetPrimitiveTypeFromMeshResourcePath(path)");
+    ASSERT_NE(primitiveAliasGuard, std::string::npos);
+    const auto canonicalAliasGuard = resolveMeshCode.find("path == NLS::Engine::GetPrimitiveMeshResourcePath(*primitiveType)");
+    ASSERT_NE(canonicalAliasGuard, std::string::npos);
+    const auto primitiveAliasLoad = resolveMeshCode.find("GetResource(path, true)", primitiveAliasGuard);
+    ASSERT_NE(primitiveAliasLoad, std::string::npos);
+    EXPECT_LT(canonicalAliasGuard, primitiveAliasLoad);
+    EXPECT_EQ(resolveMeshCode.find("GetResource(path, true)"), primitiveAliasLoad);
+    EXPECT_EQ(resolveMeshCode.find("GetResource(path, true)", primitiveAliasLoad + 1), std::string::npos);
     EXPECT_EQ(resolveMeshCode.find("SetModelPath(m_modelPath)"), std::string::npos);
 
     const auto setModelPathBegin = meshFilterSource.find("void MeshFilter::SetModelPath(");

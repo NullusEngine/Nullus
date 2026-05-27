@@ -132,17 +132,14 @@ namespace NLS::Render::Backend
 	void NativeDX12Semaphore::Reset()
 	{
 #if defined(_WIN32)
-		m_signalValue = 0;
 		m_waitValue = 0;
-		if (m_fence != nullptr)
-			m_fence->Signal(0);
 #endif
 	}
 
 	NLS::Render::RHI::NativeHandle NativeDX12Semaphore::GetNativeSemaphoreHandle()
 	{
 #if defined(_WIN32)
-		return { NLS::Render::RHI::BackendType::DX12, m_fence.Get() };
+		return { NLS::Render::RHI::BackendType::DX12, m_fence.Get(), m_waitValue };
 #else
 		return {};
 #endif

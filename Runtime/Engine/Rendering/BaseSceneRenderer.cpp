@@ -2,13 +2,18 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <string>
 
+#include "Math/Vector2.h"
+#include "Math/Vector4.h"
+#include "Debug/Logger.h"
 #include "Rendering/BaseSceneRenderer.h"
 #include "Rendering/EngineDrawableDescriptor.h"
 #include "Rendering/EngineFrameObjectBindingProvider.h"
 #include "Rendering/LightGridPrepass.h"
 #include "Rendering/SceneLightingProvider.h"
 #include "Core/ResourceManagement/MaterialManager.h"
+#include "Core/ResourceManagement/ShaderManager.h"
 #include "Core/ServiceLocator.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Context/RenderScenePackageBuilder.h"
@@ -16,6 +21,7 @@
 #include "Rendering/FrameGraph/ExternalResourceBridge.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
+#include "Rendering/Resources/Shader.h"
 #include "Profiling/Profiler.h"
 #include "Components/MeshRenderer.h"
 #include "Components/TransformComponent.h"
@@ -37,13 +43,32 @@ namespace
 			});
 	}
 
-	NLS::Render::Resources::Material* ResolveDefaultSceneMaterial()
+	struct LoadedSceneFallbackShader
 	{
-		if (!NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::MaterialManager>())
-			return nullptr;
+		NLS::Render::Resources::Shader* shader = nullptr;
+		std::string resourcePath;
+	};
 
-		return NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager)
-			.GetResource(":Materials\\Default.mat", false);
+	constexpr const char* kSceneFallbackShaderResourcePaths[] = {
+		":Shaders\\Lambert.hlsl",
+		":Shaders/Lambert.hlsl",
+		":Shaders\\Standard.hlsl",
+		":Shaders/Standard.hlsl"
+	};
+
+	LoadedSceneFallbackShader ResolveLoadedSceneFallbackShader()
+	{
+		if (!NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::ShaderManager>())
+			return {};
+
+		auto& shaderManager = NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager);
+		for (const char* resourcePath : kSceneFallbackShaderResourcePaths)
+		{
+			if (auto* shader = shaderManager.GetResource(resourcePath, false))
+				return { shader, resourcePath };
+		}
+
+		return {};
 	}
 
     class PreparedPassBindingPlaceholder final : public NLS::Render::RHI::RHIBindingSet
@@ -124,6 +149,23 @@ BaseSceneRenderer::BaseSceneRenderer(Render::Context::Driver& p_driver)
 }
 
 BaseSceneRenderer::~BaseSceneRenderer() = default;
+
+void BaseSceneRenderer::PreloadSceneFallbackShader(NLS::Core::ResourceManagement::ShaderManager& shaderManager)
+{
+	for (const char* resourcePath : kSceneFallbackShaderResourcePaths)
+	{
+		if (shaderManager.GetResource(resourcePath, false) != nullptr)
+			return;
+	}
+
+	for (const char* resourcePath : kSceneFallbackShaderResourcePaths)
+	{
+		if (shaderManager.GetResource(resourcePath, true) != nullptr)
+			return;
+	}
+
+	NLS_LOG_WARNING("BaseSceneRenderer failed to preload a scene fallback shader; scene objects without explicit materials may be skipped until a default material or fallback shader is loaded.");
+}
 
 void BaseSceneRenderer::BeginFrame(const Render::Data::FrameDescriptor& p_frameDescriptor)
 {
@@ -248,6 +290,46 @@ std::optional<LightGridPrepass::PreparedFrameInputs> BaseSceneRenderer::BuildLig
 const std::shared_ptr<LightGridPrepass>& BaseSceneRenderer::GetLightGridPrepass() const
 {
 	return m_lightGridPrepass;
+}
+
+BaseSceneRenderer::Material* BaseSceneRenderer::ResolveDefaultSceneMaterial()
+{
+	if (NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::MaterialManager>())
+	{
+		auto* defaultMaterial = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager)
+			.GetResource(":Materials\\Default.mat", false);
+		if (defaultMaterial != nullptr && defaultMaterial->IsValid())
+			return defaultMaterial;
+	}
+
+	const auto fallbackShader = ResolveLoadedSceneFallbackShader();
+	if (fallbackShader.shader == nullptr)
+		return nullptr;
+
+	const auto shaderGeneration = fallbackShader.shader->GetGeneration();
+	if (!m_sceneFallbackMaterial ||
+		m_sceneFallbackShader != fallbackShader.shader ||
+		m_sceneFallbackShaderGeneration != shaderGeneration ||
+		m_sceneFallbackShaderResourcePath != fallbackShader.resourcePath)
+	{
+		m_sceneFallbackMaterial = std::make_unique<Render::Resources::Material>();
+		m_sceneFallbackMaterial->SetShader(fallbackShader.shader);
+		const_cast<std::string&>(m_sceneFallbackMaterial->path) = ":Generated/SceneFallbackMaterial";
+		m_sceneFallbackMaterial->Set<Maths::Vector4>("u_Diffuse", Maths::Vector4(1.0f, 1.0f, 1.0f, 1.0f));
+		m_sceneFallbackMaterial->Set<Maths::Vector2>("u_TextureTiling", Maths::Vector2(1.0f, 1.0f));
+		m_sceneFallbackMaterial->Set<Maths::Vector2>("u_TextureOffset", Maths::Vector2::Zero);
+		m_sceneFallbackMaterial->SetBlendable(false);
+		m_sceneFallbackMaterial->SetBackfaceCulling(false);
+		m_sceneFallbackMaterial->SetFrontfaceCulling(false);
+		m_sceneFallbackMaterial->SetDepthTest(true);
+		m_sceneFallbackMaterial->SetDepthWriting(true);
+		m_sceneFallbackMaterial->SetColorWriting(true);
+		m_sceneFallbackShader = fallbackShader.shader;
+		m_sceneFallbackShaderGeneration = shaderGeneration;
+		m_sceneFallbackShaderResourcePath = fallbackShader.resourcePath;
+	}
+
+	return m_sceneFallbackMaterial->IsValid() ? m_sceneFallbackMaterial.get() : nullptr;
 }
 
 void BaseSceneRenderer::InvalidateLightGridCompileContextCache() const

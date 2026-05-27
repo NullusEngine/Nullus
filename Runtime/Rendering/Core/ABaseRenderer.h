@@ -86,6 +86,7 @@ public:
     const Context::Driver& GetDriver() const;
     PipelineState CreatePipelineState() const;
     bool IsDrawing() const;
+    bool IsFrameActive() const;
     bool SupportsEditorPickingReadback() const;
     bool HasActiveReadbackSource() const;
     bool IsRenderCoordinateInBounds(uint32_t p_x, uint32_t p_y) const;
@@ -220,6 +221,7 @@ protected:
     Texture2D* m_emptyTexture;
     PipelineState m_basePipelineState;
     bool m_isDrawing;
+    bool m_frameActive = false;
     bool m_recordedRenderPassActive = false;
     std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_activePreparedPassBindingSet;
     std::optional<Context::FrameSnapshot> m_pendingFrameSnapshot;

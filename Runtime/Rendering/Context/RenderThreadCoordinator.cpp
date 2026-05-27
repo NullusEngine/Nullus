@@ -92,13 +92,13 @@ namespace NLS::Render::Context
         return desc;
     }
 
-    void RenderThreadCoordinator::BeginRendererFrame(Driver& driver, const bool acquireSwapchainImage)
+    bool RenderThreadCoordinator::BeginRendererFrame(Driver& driver, const bool acquireSwapchainImage)
     {
         NLS_PROFILE_SCOPE();
         if (driver.m_impl->explicitDevice == nullptr || IsThreadedRenderingEnabled(driver))
-            return;
+            return true;
 
-        RhiThreadCoordinator::BeginStandaloneExplicitFrame(driver, acquireSwapchainImage);
+        return RhiThreadCoordinator::BeginStandaloneExplicitFrame(driver, acquireSwapchainImage);
     }
 
     void RenderThreadCoordinator::EndRendererFrame(Driver& driver, const bool presentSwapchain)

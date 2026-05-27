@@ -17,6 +17,7 @@ namespace NLS::Editor::Launch
         std::printf("  --capture-after-frames <N>   Automatically capture frame after N presents\n");
         std::printf("  --editor-validation-focus-view <scene|game>  Focus a view during startup validation\n");
         std::printf("  --editor-validation-exclusive-view <scene|game>  Close the other view during startup validation\n");
+        std::printf("  --editor-validation-open-frame-info  Open Frame Info during startup validation\n");
         std::printf("  --editor-validation-select-gameobject <name>  Select a GameObject during startup validation\n");
         std::printf("  --editor-validation-create-asset <path>  Create an asset instance during startup validation\n");
         std::printf("  --editor-validation-scene-readback-output <path>  Write Scene View render target PNG during validation\n");
@@ -100,6 +101,11 @@ namespace NLS::Editor::Launch
             else if (arg == "--editor-validation-exclusive-view" && i + 1 < argc)
             {
                 parsed.diagnosticsSettings.editorValidationExclusiveView = argv[++i];
+                parsed.hasDiagnosticsOverride = true;
+            }
+            else if (arg == "--editor-validation-open-frame-info")
+            {
+                parsed.diagnosticsSettings.editorValidationOpenFrameInfo = true;
                 parsed.hasDiagnosticsOverride = true;
             }
             else if (arg == "--editor-validation-select-gameobject" && i + 1 < argc)

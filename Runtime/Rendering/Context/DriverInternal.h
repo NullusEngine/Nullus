@@ -50,6 +50,8 @@ namespace NLS::Render::Context
         std::chrono::steady_clock::time_point lastSwapchainResizeRequestTime{};
         Render::RHI::NativeHandle uiRenderFinishedSemaphore;
         uint64_t uiRenderFinishedValue = 0u;
+        mutable std::mutex sceneToUiWaitMutex;
+        Render::RHI::NativeHandle sceneToUiWaitSemaphore;
         std::function<void()> swapchainWillResizeCallback;
         std::unique_ptr<ThreadedRenderingLifecycle> threadedLifecycle;
         bool threadedWorkersRunning = false;
@@ -59,12 +61,15 @@ namespace NLS::Render::Context
         std::mutex threadedWorkerWakeMutex;
         std::condition_variable threadedWorkerWake;
         std::atomic_uint64_t threadedWorkerWakeGeneration{ 0u };
-        std::mutex threadedRhiSubmissionMutex;
-        std::unique_lock<std::mutex> uiStandaloneFrameSubmissionLock;
+        std::timed_mutex threadedRhiSubmissionMutex;
+        std::unique_lock<std::timed_mutex> uiStandaloneFrameSubmissionLock;
+        std::atomic_bool uiStandaloneFramePending{ false };
+        std::atomic_uint64_t uiStandaloneFramePendingUntilTickNs{ 0u };
         uint64_t nextThreadedFrameId = 1u;
         uint32_t threadedPublishRetirementWaitMs = 0u;
         bool lightGridEnabled = true;
         Render::Settings::EngineDiagnosticsSettings diagnostics;
+        mutable std::mutex driverTelemetryMutex;
         uint64_t queueOperationFailureCount = 0u;
         std::string lastQueueOperationFailure;
         uint64_t currentFrameQueueOperationFailureCount = 0u;

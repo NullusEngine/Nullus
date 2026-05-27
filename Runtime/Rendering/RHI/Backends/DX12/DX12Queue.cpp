@@ -94,6 +94,21 @@ namespace NLS::Render::Backend
 
 			infoQueue->ClearStoredMessages();
 		}
+
+		NLS::Render::RHI::RHIQueueOperationResult ValidateDX12SemaphoreWaitValue(
+			const NativeDX12Semaphore& semaphore,
+			const std::string& context)
+		{
+			const UINT64 waitValue = semaphore.GetWaitValue();
+			if (waitValue != 0u)
+				return {};
+
+			const std::string message =
+				context +
+				": refusing to wait on an unsignaled DX12 semaphore value=0";
+			NLS_LOG_ERROR(message);
+			return { NLS::Render::RHI::RHIQueueOperationStatusCode::InvalidArgument, message };
+		}
 	}
 #endif
 
@@ -154,6 +169,12 @@ namespace NLS::Render::Backend
 				auto* nativeSemaphore = dynamic_cast<NativeDX12Semaphore*>(semaphore.get());
 				if (nativeSemaphore == nullptr || nativeSemaphore->GetFence() == nullptr)
 					continue;
+
+				const auto waitValueValidation = ValidateDX12SemaphoreWaitValue(
+					*nativeSemaphore,
+					"NativeDX12Queue::Submit");
+				if (!waitValueValidation.Succeeded())
+					return waitValueValidation;
 
 				const HRESULT waitHr = m_queue->Wait(
 					nativeSemaphore->GetFence(),
@@ -330,6 +351,12 @@ namespace NLS::Render::Backend
 				if (nativeSemaphore == nullptr || nativeSemaphore->GetFence() == nullptr)
 					continue;
 
+				const auto waitValueValidation = ValidateDX12SemaphoreWaitValue(
+					*nativeSemaphore,
+					"NativeDX12Queue::Present");
+				if (!waitValueValidation.Succeeded())
+					return waitValueValidation;
+
 				const HRESULT waitHr = m_queue->Wait(
 					nativeSemaphore->GetFence(),
 					nativeSemaphore->GetWaitValue());
@@ -346,7 +373,16 @@ namespace NLS::Render::Backend
 
 		if (presentDesc.uiSignalSemaphore.backend == NLS::Render::RHI::BackendType::DX12 &&
 			presentDesc.uiSignalSemaphore.handle != nullptr &&
-			presentDesc.uiSignalValue != 0u)
+			presentDesc.uiSignalValue == 0u)
+		{
+			const std::string message =
+				"NativeDX12Queue::Present: refusing to wait on UI fence value=0";
+			NLS_LOG_ERROR(message);
+			return { NLS::Render::RHI::RHIQueueOperationStatusCode::InvalidArgument, message };
+		}
+
+		if (presentDesc.uiSignalSemaphore.backend == NLS::Render::RHI::BackendType::DX12 &&
+			presentDesc.uiSignalSemaphore.handle != nullptr)
 		{
 			NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::WaitUiFenceBeforePresent");
 			auto* uiFence = reinterpret_cast<ID3D12Fence*>(presentDesc.uiSignalSemaphore.handle);

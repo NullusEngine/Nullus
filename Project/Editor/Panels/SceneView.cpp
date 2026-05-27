@@ -403,8 +403,11 @@ void Editor::Panels::SceneView::TryWriteValidationReadback()
     if (driver == nullptr)
         return;
 
-    if (Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver))
-        Render::Context::DriverRendererAccess::DrainThreadedRendering(*driver);
+    if (Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(*driver) &&
+        !Render::Context::DriverRendererAccess::TryDrainThreadedRendering(*driver))
+    {
+        return;
+    }
 
     auto texture = m_fbo.GetExplicitTextureHandle();
     std::vector<uint8_t> pixels(static_cast<size_t>(width) * static_cast<size_t>(height) * 4u, 0u);

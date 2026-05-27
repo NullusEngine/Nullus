@@ -4,6 +4,7 @@
 #if WITH_PROFILING
 
 #define NOMINMAX
+#include <Windows.h>
 #include <d3d12.h>
 #include <dxgi.h>
 
@@ -51,7 +52,7 @@ public:
 			Page::Release(pPage);
 			AllocatedPages.pop();
 		}
-		while (FreePages.empty())
+		while (!FreePages.empty())
 		{
 			Page* pPage = FreePages.back();
 			Page::Release(pPage);
@@ -196,9 +197,41 @@ static constexpr const char* GetCommandQueueName(D3D12_COMMAND_LIST_TYPE type)
 	}
 }
 
+static bool WaitForGpuProfilerFenceValue(ID3D12Fence* fence, uint64 fenceValue)
+{
+	if (fence == nullptr || fenceValue == 0u)
+		return false;
+	if (fence->GetCompletedValue() >= fenceValue)
+		return true;
+
+	HANDLE fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+	if (fenceEvent == nullptr)
+		return false;
+
+	const HRESULT hr = fence->SetEventOnCompletion(fenceValue, fenceEvent);
+	if (FAILED(hr))
+	{
+		CloseHandle(fenceEvent);
+		return false;
+	}
+
+	const DWORD waitResult = WaitForSingleObject(
+		fenceEvent,
+		TimelineProfilerDetail::GetGpuProfilerResolveFenceWaitTimeoutMilliseconds());
+	CloseHandle(fenceEvent);
+	return waitResult == WAIT_OBJECT_0;
+}
+
 void GPUProfiler::Initialize(ID3D12Device* pDevice, Span<ID3D12CommandQueue*> queues, uint32 frameLatency)
 {
+	std::lock_guard lock(m_StateLock);
+
 	gAssert(frameLatency >= 1, "Frame Latency must be at least 1");
+	if (m_IsInitialized)
+	{
+		if (!ShutdownUnlocked())
+			return;
+	}
 
 	m_FrameLatency = frameLatency;
 
@@ -218,6 +251,7 @@ void GPUProfiler::Initialize(ID3D12Device* pDevice, Span<ID3D12CommandQueue*> qu
 		if (FAILED(pQueue->GetPrivateData(ID_D3DDebugObjectName, &size, queueInfo.Name)))
 			strcpy_s(queueInfo.Name, GetCommandQueueName(desc.Type));
 		queueInfo.pQueue		 = pQueue;
+		queueInfo.QueueRef		 = pQueue;
 		queueInfo.Index			 = queueIndex;
 		queueInfo.QueryHeapIndex = desc.Type == D3D12_COMMAND_LIST_TYPE_COPY ? 1 : 0;
 		gVerifyHR(pQueue->GetClockCalibration(&queueInfo.GPUCalibrationTicks, &queueInfo.CPUCalibrationTicks));
@@ -245,26 +279,95 @@ void GPUProfiler::Initialize(ID3D12Device* pDevice, Span<ID3D12CommandQueue*> qu
 	m_IsInitialized = true;
 }
 
-void GPUProfiler::Shutdown()
+bool GPUProfiler::Shutdown()
 {
-	for (QueryHeap& heap : m_QueryHeaps)
-		heap.Shutdown();
+	std::lock_guard lock(m_StateLock);
+	return ShutdownUnlocked();
+}
 
+bool GPUProfiler::ShutdownUnlocked()
+{
+	if (!m_IsInitialized)
+		return true;
+
+	if (!TimelineProfilerDetail::CanReleaseGpuProfilerWithPendingCommandListQueries(
+		HasPendingCommandListQueriesUnlocked()))
+	{
+		return false;
+	}
+
+	for (QueryHeap& heap : m_QueryHeaps)
+	{
+		if (!heap.DrainSubmittedFence())
+			return false;
+	}
+
+	for (const QueueInfo& queue : m_Queues)
+	{
+		if (queue.QueryHeapIndex >= m_QueryHeaps.size())
+			return false;
+		if (!m_QueryHeaps[queue.QueryHeapIndex].DrainQueue(queue.QueueRef.Get()))
+			return false;
+	}
+
+	for (QueryHeap& heap : m_QueryHeaps)
+	{
+		if (!heap.Shutdown())
+			return false;
+	}
+
+	AcquireSRWLockExclusive((PSRWLOCK)&m_CommandListMapLock);
 	m_CommandListMap.clear();
+	ReleaseSRWLockExclusive((PSRWLOCK)&m_CommandListMapLock);
 
 	m_QueryData.clear();
 
 	m_Queues.clear();
 	m_QueueIndexMap.clear();
+	m_QueueEventStack.clear();
+	m_EventIndex = 0;
+	m_FrameLatency = 0;
+	m_FrameToReadback = 0;
+	m_FrameIndex = 0;
+	m_IsInitialized = false;
+	m_IsPaused = false;
+	m_PauseQueued = false;
+	m_EventCallback = {};
+	return true;
+}
+
+bool GPUProfiler::HasPendingCommandListQueriesUnlocked()
+{
+	bool hasPendingCommandListQueries = false;
+	AcquireSRWLockShared((PSRWLOCK)&m_CommandListMapLock);
+	for (const auto& data: m_CommandListMap)
+	{
+		if (data.second != nullptr && !data.second->Queries.empty())
+		{
+			hasPendingCommandListQueries = true;
+			break;
+		}
+	}
+	ReleaseSRWLockShared((PSRWLOCK)&m_CommandListMapLock);
+	return hasPendingCommandListQueries;
 }
 
 void GPUProfiler::BeginEvent(ID3D12GraphicsCommandList* pCmd, const char* pName, uint32 color, const char* pFilePath, uint32 lineNumber)
 {
+	GPUProfilerCallbacks callbacks;
+	{
+		std::lock_guard lock(m_StateLock);
+		if (!m_IsInitialized)
+			return;
+		callbacks = m_EventCallback;
+	}
+	if (callbacks.OnEventBegin)
+		callbacks.OnEventBegin(pName, pCmd, callbacks.pUserData);
+
+	std::lock_guard lock(m_StateLock);
+
 	if (!m_IsInitialized)
 		return;
-
-	if (m_EventCallback.OnEventBegin)
-		m_EventCallback.OnEventBegin(pName, pCmd, m_EventCallback.pUserData);
 
 	if (m_IsPaused)
 		return;
@@ -294,11 +397,20 @@ void GPUProfiler::BeginEvent(ID3D12GraphicsCommandList* pCmd, const char* pName,
 
 void GPUProfiler::EndEvent(ID3D12GraphicsCommandList* pCmd)
 {
+	GPUProfilerCallbacks callbacks;
+	{
+		std::lock_guard lock(m_StateLock);
+		if (!m_IsInitialized)
+			return;
+		callbacks = m_EventCallback;
+	}
+	if (callbacks.OnEventEnd)
+		callbacks.OnEventEnd(pCmd, callbacks.pUserData);
+
+	std::lock_guard lock(m_StateLock);
+
 	if (!m_IsInitialized)
 		return;
-
-	if (m_EventCallback.OnEventEnd)
-		m_EventCallback.OnEventEnd(pCmd, m_EventCallback.pUserData);
 
 	if (m_IsPaused)
 		return;
@@ -313,6 +425,8 @@ void GPUProfiler::EndEvent(ID3D12GraphicsCommandList* pCmd)
 // Process the last frame and advance to the next
 void GPUProfiler::Tick()
 {
+	std::lock_guard lock(m_StateLock);
+
 	if (!m_IsInitialized)
 		return;
 
@@ -378,17 +492,7 @@ void GPUProfiler::Tick()
 		}
 	}
 
-	bool hasPendingCommandListQueries = false;
-	AcquireSRWLockShared((PSRWLOCK)&m_CommandListMapLock);
-	for (const auto& data: m_CommandListMap)
-	{
-		if (data.second != nullptr && !data.second->Queries.empty())
-		{
-			hasPendingCommandListQueries = true;
-			break;
-		}
-	}
-	ReleaseSRWLockShared((PSRWLOCK)&m_CommandListMapLock);
+	const bool hasPendingCommandListQueries = HasPendingCommandListQueriesUnlocked();
 	if (!TimelineProfilerDetail::ShouldAdvanceGpuProfilerFrame(hasPendingCommandListQueries, hasOpenQueueEvents))
 		return;
 
@@ -399,7 +503,13 @@ void GPUProfiler::Tick()
 
 	{
 		for (QueryHeap& heap : m_QueryHeaps)
-			heap.Reset(m_FrameIndex);
+		{
+			if (!heap.Reset(m_FrameIndex))
+			{
+				--m_FrameIndex;
+				return;
+			}
+		}
 
 		m_EventIndex = 0;
 	}
@@ -407,6 +517,8 @@ void GPUProfiler::Tick()
 
 void GPUProfiler::ExecuteCommandLists(const ID3D12CommandQueue* pQueue, Span<ID3D12CommandList*> commandLists)
 {
+	std::lock_guard lock(m_StateLock);
+
 	if (!m_IsInitialized)
 		return;
 
@@ -417,7 +529,7 @@ void GPUProfiler::ExecuteCommandLists(const ID3D12CommandQueue* pQueue, Span<ID3
 	if (it == m_QueueIndexMap.end())
 		return;
 
-	std::scoped_lock lock(m_QueryRangeLock);
+	std::scoped_lock queryRangeLock(m_QueryRangeLock);
 
 	uint32			   queueIndex  = it->second;
 	ActiveEventStack&  eventStack  = m_QueueEventStack[queueIndex];
@@ -463,6 +575,18 @@ void GPUProfiler::ExecuteCommandLists(const ID3D12CommandQueue* pQueue, Span<ID3
 			pCommandListQueries->Queries.clear();
 		}
 	}
+}
+
+void GPUProfiler::SetPaused(bool paused)
+{
+	std::lock_guard lock(m_StateLock);
+	m_PauseQueued = paused;
+}
+
+void GPUProfiler::SetEventCallback(const GPUProfilerCallbacks& inCallbacks)
+{
+	std::lock_guard lock(m_StateLock);
+	m_EventCallback = inCallbacks;
 }
 
 
@@ -580,19 +704,69 @@ void GPUProfiler::QueryHeap::Initialize(ID3D12Device* pDevice, ID3D12CommandQueu
 	gVerifyHR(pDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_pResolveFence)));
 }
 
-void GPUProfiler::QueryHeap::Shutdown()
+bool GPUProfiler::QueryHeap::DrainSubmittedFence()
 {
 	if (!IsInitialized())
-		return;
+		return true;
+
+	const bool waitRequired = m_pResolveFence != nullptr &&
+		TimelineProfilerDetail::ShouldWaitForGpuProfilerResolveFence(
+			m_pResolveFence->GetCompletedValue(),
+			m_LastSubmittedFence);
+	if (!waitRequired)
+		return true;
+
+	const bool waitSucceeded = WaitForGpuProfilerFenceValue(m_pResolveFence.Get(), m_LastSubmittedFence);
+	if (TimelineProfilerDetail::ShouldReleaseGpuProfilerResolveResourcesAfterFenceWait(waitRequired, waitSucceeded))
+	{
+		m_LastCompletedFence = m_LastSubmittedFence;
+		return true;
+	}
+	return false;
+}
+
+bool GPUProfiler::QueryHeap::DrainQueue(ID3D12CommandQueue* pQueue)
+{
+	if (!IsInitialized() || pQueue == nullptr)
+		return true;
+	if (!DrainSubmittedFence())
+		return false;
+
+	const uint64 fenceValue = std::max({ m_LastSubmittedFence, m_LastCompletedFence, m_LastDrainFence }) + 1u;
+	const HRESULT hr = pQueue->Signal(m_pResolveFence.Get(), fenceValue);
+	if (FAILED(hr))
+		return false;
+
+	m_LastDrainFence = fenceValue;
+	if (!WaitForGpuProfilerFenceValue(m_pResolveFence.Get(), fenceValue))
+		return false;
+	return true;
+}
+
+bool GPUProfiler::QueryHeap::Shutdown()
+{
+	if (!IsInitialized())
+		return true;
+
+	if (!DrainSubmittedFence())
+		return false;
 
 	if (m_pReadbackResource != nullptr)
 		m_pReadbackResource->Unmap(0, nullptr);
 	m_ReadbackData = {};
-	m_CommandAllocators.clear();
 	m_pCommandList.Reset();
+	m_CommandAllocators.clear();
 	m_pQueryHeap.Reset();
 	m_pReadbackResource.Reset();
 	m_pResolveFence.Reset();
+	m_pResolveQueue = nullptr;
+	m_MaxNumQueries = 0;
+	m_FrameLatency = 0;
+	m_QueryIndex = 0;
+	m_LastCompletedFence = 0;
+	m_LastSubmittedFence = 0;
+	m_LastDrainFence = 0;
+	return true;
 }
 
 uint32 GPUProfiler::QueryHeap::RecordQuery(ID3D12GraphicsCommandList* pCmd)
@@ -617,14 +791,15 @@ uint32 GPUProfiler::QueryHeap::Resolve(uint32 frameIndex)
 	gVerifyHR(m_pCommandList->Close());
 	ID3D12CommandList* pCmdLists[] = { m_pCommandList.Get() };
 	m_pResolveQueue->ExecuteCommandLists(1, pCmdLists);
-	gVerifyHR(m_pResolveQueue->Signal(m_pResolveFence.Get(), frameIndex));
+	m_LastSubmittedFence = TimelineProfilerDetail::GetGpuProfilerResolveFenceValue(frameIndex);
+	gVerifyHR(m_pResolveQueue->Signal(m_pResolveFence.Get(), m_LastSubmittedFence));
 	return numQueries;
 }
 
-void GPUProfiler::QueryHeap::Reset(uint32 frameIndex)
+bool GPUProfiler::QueryHeap::Reset(uint32 frameIndex)
 {
 	if (!IsInitialized())
-		return;
+		return true;
 
 	// Don't advance to the next frame until the GPU has caught up until at least the frame latency
 	if (frameIndex >= m_FrameLatency)
@@ -632,9 +807,10 @@ void GPUProfiler::QueryHeap::Reset(uint32 frameIndex)
 		uint32 wait_frame = frameIndex - m_FrameLatency;
 		if (!IsFrameComplete(wait_frame))
 		{
-			const HRESULT hr = m_pResolveFence->SetEventOnCompletion(wait_frame, nullptr);
-			if (FAILED(hr))
-				return;
+			const uint64 fenceValue = TimelineProfilerDetail::GetGpuProfilerResolveFenceValue(wait_frame);
+			if (!WaitForGpuProfilerFenceValue(m_pResolveFence.Get(), fenceValue))
+				return false;
+			m_LastCompletedFence = std::max(m_LastCompletedFence, fenceValue);
 		}
 	}
 
@@ -642,6 +818,7 @@ void GPUProfiler::QueryHeap::Reset(uint32 frameIndex)
 	ID3D12CommandAllocator* pAllocator = m_CommandAllocators[frameIndex % m_FrameLatency].Get();
 	gVerifyHR(pAllocator->Reset());
 	gVerifyHR(m_pCommandList->Reset(pAllocator, nullptr));
+	return true;
 }
 
 bool GPUProfiler::QueryHeap::IsFrameComplete(uint64 frameIndex)
@@ -649,11 +826,11 @@ bool GPUProfiler::QueryHeap::IsFrameComplete(uint64 frameIndex)
 	if (!IsInitialized())
 		return true;
 
-	uint64 fenceValue = frameIndex;
-	if (fenceValue <= m_LastCompletedFence && m_LastCompletedFence > 0)
+	const uint64 fenceValue = TimelineProfilerDetail::GetGpuProfilerResolveFenceValue(frameIndex);
+	if (TimelineProfilerDetail::IsGpuProfilerFrameFenceComplete(m_LastCompletedFence, frameIndex))
 		return true;
 	m_LastCompletedFence = std::max(m_pResolveFence->GetCompletedValue(), m_LastCompletedFence);
-	return fenceValue <= m_LastCompletedFence;
+	return m_LastCompletedFence >= fenceValue;
 }
 
 //-----------------------------------------------------------------------------

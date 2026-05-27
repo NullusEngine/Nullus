@@ -677,7 +677,7 @@ void UIManager::RemoveCanvas()
     m_currentCanvas = nullptr;
 }
 
-void UIManager::Render()
+void UIManager::Render(const NLS::Render::RHI::WaitSemaphoreResolver& resolveWaitSemaphore)
 {
     NLS_PROFILE_SCOPE();
     if (m_currentCanvas == nullptr || m_isRenderingFrame)
@@ -707,7 +707,10 @@ void UIManager::Render()
         }
         {
             NLS_PROFILE_NAMED_SCOPE("UIBridge::RenderDrawData");
-            m_uiBridge->RenderDrawData(ImGui::GetDrawData(), m_currentSwapchainImageIndex);
+            m_uiBridge->RenderDrawData(
+                ImGui::GetDrawData(),
+                m_currentSwapchainImageIndex,
+                resolveWaitSemaphore);
         }
     }
     m_isRenderingFrame = false;

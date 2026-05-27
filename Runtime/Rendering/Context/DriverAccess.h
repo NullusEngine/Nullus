@@ -248,10 +248,14 @@ namespace NLS::Render::Context
             std::chrono::steady_clock::duration age);
         static bool TryLockThreadedRhiSubmission(Driver& driver);
         static void UnlockThreadedRhiSubmission(Driver& driver);
+        static void LockThreadedRhiSubmission(Driver& driver);
+        static void SetUiStandaloneFramePending(Driver& driver, bool pending);
+        static bool TryLockDriverTelemetry(Driver& driver);
+        static void UnlockDriverTelemetry(Driver& driver);
         static ThreadedRenderingLifecycle* GetThreadedRenderingLifecycle(Driver& driver);
         static const ThreadedRenderingLifecycle* GetThreadedRenderingLifecycle(const Driver& driver);
         static bool CanBeginStandaloneExplicitFrame(const Driver& driver);
-        static void BeginStandaloneExplicitFrame(Driver& driver, bool acquireSwapchainImage = true);
+        static bool BeginStandaloneExplicitFrame(Driver& driver, bool acquireSwapchainImage = true);
         static void EndStandaloneExplicitFrame(Driver& driver, bool presentSwapchain = true);
         static void PauseThreadedRenderingWorkers(Driver& driver);
         static bool TryDrainThreadedRendering(Driver& driver);

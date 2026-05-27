@@ -22,8 +22,11 @@
 #include "Core/ResourceManagement/MaterialManager.h"
 #include "Core/ResourceManagement/MeshManager.h"
 #include "Rendering/Assets/MeshArtifact.h"
+#include "Rendering/Context/Driver.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
+#include "Rendering/Settings/DriverSettings.h"
+#include "Rendering/Settings/EGraphicsBackend.h"
 #include "Serialize/ObjectGraphDocument.h"
 #include "Reflection/Field.h"
 #include "Reflection/MetaParserFieldMethodSample.h"
@@ -207,6 +210,41 @@ public:
 
 private:
     NLS::ListenerID m_listener = NLS::InvalidListenerID;
+};
+
+class ScopedSceneObjectGraphTestDriver final
+{
+public:
+    ScopedSceneObjectGraphTestDriver()
+        : m_previousDriver(
+            NLS::Core::ServiceLocator::Contains<NLS::Render::Context::Driver>()
+                ? &NLS_SERVICE(NLS::Render::Context::Driver)
+                : nullptr)
+        , m_driver([]()
+        {
+            NLS::Render::Settings::DriverSettings settings;
+            settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+            settings.enableExplicitRHI = false;
+            return settings;
+        }())
+    {
+        NLS::Core::ServiceLocator::Provide(m_driver);
+    }
+
+    ~ScopedSceneObjectGraphTestDriver()
+    {
+        if (m_previousDriver != nullptr)
+            NLS::Core::ServiceLocator::Provide(*m_previousDriver);
+        else
+            NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
+    }
+
+    ScopedSceneObjectGraphTestDriver(const ScopedSceneObjectGraphTestDriver&) = delete;
+    ScopedSceneObjectGraphTestDriver& operator=(const ScopedSceneObjectGraphTestDriver&) = delete;
+
+private:
+    NLS::Render::Context::Driver* m_previousDriver = nullptr;
+    NLS::Render::Context::Driver m_driver;
 };
 }
 
@@ -828,6 +866,68 @@ TEST(SceneObjectGraphSerializationTests, MeshFilterDoesNotWarnForColdExistingMes
     EXPECT_EQ(meshFilter.GetMeshReference().Get(), nullptr);
     EXPECT_EQ(meshFilter.GetModelPath(), meshPath);
     EXPECT_FALSE(meshManager.IsResourceRegistered(meshPath));
+}
+
+TEST(SceneObjectGraphSerializationTests, MeshFilterDoesNotWarnForColdBuiltinPrimitiveAliasPath)
+{
+    using namespace NLS::Engine::Components;
+    using namespace NLS::Engine::Serialize;
+
+    PersistentManager::Instance().Clear();
+    NLS::ObjectTestAccess::ClearObjectRegistry();
+    const ScopedSceneObjectGraphTestDriver driverContext;
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_mesh_filter_builtin_lazy_load_" + NLS::Guid::New().ToString()));
+    const auto projectAssetsRoot = (root.Path() / "Project" / "Assets").string() + "/";
+    const auto engineAssetsRoot = (root.Path() / "EngineAssets").string() + "/";
+    const auto artifactPath = root.Path() / "EngineAssets" / "Library" / "BuiltinArtifacts" / "Models" / "Cube.nmesh";
+    std::filesystem::create_directories(artifactPath.parent_path());
+
+    NLS::Render::Assets::MeshArtifactData artifact;
+    artifact.vertices.resize(3u);
+    artifact.indices = {0u, 1u, 2u};
+    const auto bytes = NLS::Render::Assets::SerializeMeshArtifact(artifact);
+    {
+        std::ofstream output(artifactPath, std::ios::binary | std::ios::trunc);
+        output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    const ScopedMeshManagerContext meshManagerContext(meshManager, projectAssetsRoot, engineAssetsRoot);
+
+    const auto meshPath = std::string("builtin:Primitive/Cube");
+    const auto reference = ObjectIdentifier::Asset(
+        AssetId(NLS::Guid::Parse("19191919-1919-4919-8919-191919191919")),
+        MakeLocalIdentifierInFile(
+            NLS::Guid::Parse("19191919-1919-4919-8919-191919191919"),
+            "mesh:Cube"),
+        meshPath);
+
+    MeshFilter meshFilter;
+    meshFilter.SetMeshReference(MakePPtr<MeshFilter::Mesh>(reference));
+
+    bool sawFailedResolveWarning = false;
+    const ScopedLogListener listener(
+        [&sawFailedResolveWarning](const NLS::Debug::LogData& log)
+        {
+            if (log.logLevel == NLS::Debug::ELogLevel::LOG_WARNING &&
+                log.message.find("Failed to resolve mesh filter mesh path during reflection load") != std::string::npos)
+            {
+                sawFailedResolveWarning = true;
+            }
+        });
+
+    EXPECT_FALSE(meshManager.IsResourceRegistered(meshPath));
+    auto* resolvedMesh = meshFilter.ResolveMesh();
+
+    ASSERT_NE(resolvedMesh, nullptr);
+    EXPECT_FALSE(sawFailedResolveWarning);
+    EXPECT_EQ(resolvedMesh->GetVertexCount(), 3u);
+    EXPECT_EQ(meshFilter.GetMeshReference().Get(), resolvedMesh);
+    EXPECT_EQ(meshFilter.GetModelPath(), meshPath);
+    EXPECT_TRUE(meshManager.IsResourceRegistered(meshPath));
 }
 
 TEST(SceneObjectGraphSerializationTests, MeshFilterStillWarnsOnceForMissingColdMeshArtifactPath)

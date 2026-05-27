@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -13,6 +14,7 @@ namespace NLS::Render::RHI
 {
     class RHITextureView;
     struct NativeHandle;
+    using WaitSemaphoreResolver = std::function<NativeHandle()>;
 
     class NLS_RENDER_API RHIUIBridge
     {
@@ -22,7 +24,10 @@ namespace NLS::Render::RHI
         virtual NativeBackendType GetNativeBackendType() const = 0;
         virtual bool HasRendererBackend() const = 0;
         virtual void BeginFrame() = 0;
-        virtual void RenderDrawData(ImDrawData* drawData, uint32_t currentImageIndex) = 0;
+        virtual void RenderDrawData(
+            ImDrawData* drawData,
+            uint32_t currentImageIndex,
+            const WaitSemaphoreResolver& resolveWaitSemaphore = {}) = 0;
         virtual NativeHandle ResolveTextureView(const std::shared_ptr<RHITextureView>& textureView) = 0;
         virtual void NotifySwapchainWillResize() {}
         virtual void ReleaseTextureViewHandle(const std::shared_ptr<RHITextureView>& textureView) { (void)textureView; }

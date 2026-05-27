@@ -5,6 +5,7 @@
 #include "Core/ServiceLocator.h"
 #include "Debug/Logger.h"
 #include "GameObject.h"
+#include "PrimitiveFactory.h"
 #include "Serialize/ObjectReferenceResolver.h"
 
 #include <algorithm>
@@ -230,6 +231,12 @@ Render::Resources::Mesh* MeshFilter::ResolveMesh()
 
         auto& meshManager = NLS_SERVICE(Core::ResourceManagement::MeshManager);
         auto* resolvedMesh = meshManager.GetResource(path, false);
+        if (!resolvedMesh)
+        {
+            const auto primitiveType = NLS::Engine::TryGetPrimitiveTypeFromMeshResourcePath(path);
+            if (primitiveType.has_value() && path == NLS::Engine::GetPrimitiveMeshResourcePath(*primitiveType))
+                resolvedMesh = meshManager.GetResource(path, true);
+        }
         if (!resolvedMesh)
         {
             if (m_failedMeshPath != path && !MeshArtifactPathExists(path))

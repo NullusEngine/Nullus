@@ -1,8 +1,8 @@
 set(third_party_folder "ThirdParty")
 
 option(NLS_ASSIMP_BUILD_ALL_FORMATS "Build Assimp with all upstream default importers/exporters" OFF)
-option(NLS_ENABLE_ASSIMP_FBX_IMPORTER "Enable Assimp FBX importer without enabling every Assimp format" OFF)
-option(NLS_ENABLE_AUTODESK_FBX_SDK "Enable Autodesk FBX SDK integration when the bundled SDK is available" ON)
+option(NLS_ENABLE_ASSIMP_FBX_IMPORTER "Enable Assimp FBX importer without enabling every Assimp format" ON)
+option(NLS_ENABLE_AUTODESK_FBX_SDK "Enable Autodesk FBX SDK integration when the bundled SDK is available" OFF)
 option(NLS_REQUIRE_BUNDLED_FBX_SDK "Require the bundled Autodesk FBX SDK package during configure" OFF)
 
 function(nls_create_fbx_sdk_unavailable_target reason)

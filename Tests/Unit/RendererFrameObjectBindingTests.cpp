@@ -893,6 +893,10 @@ TEST(RendererFrameObjectBindingTests, ProviderPreparesObjectStateDuringDrawsWith
 
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     const ScopedDriverService driverService(*driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(*driver, explicitDevice);
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(*driver, 0u);
+    frameContext.commandBuffer = std::make_shared<TestCommandBuffer>();
 
     std::vector<std::string> events;
     ProviderAwareRenderer renderer(*driver);
@@ -906,7 +910,7 @@ TEST(RendererFrameObjectBindingTests, ProviderPreparesObjectStateDuringDrawsWith
     frameDescriptor.renderHeight = 64u;
     frameDescriptor.camera = &camera;
 
-    providerPtr->BeginFrame(frameDescriptor);
+    renderer.BeginFrame(frameDescriptor);
 
     NLS::Render::Data::PipelineState pipelineState;
     NLS::Render::Entities::Drawable drawable;
@@ -917,7 +921,10 @@ TEST(RendererFrameObjectBindingTests, ProviderPreparesObjectStateDuringDrawsWith
     EXPECT_EQ(providerPtr->GetPreparedDrawCount(), 1u);
     EXPECT_EQ(events, std::vector<std::string>({ "begin", "before", "prepare" }));
 
-    providerPtr->EndFrame();
+    renderer.EndFrame();
+    EXPECT_FALSE(providerPtr->IsFramePrepared());
+    EXPECT_FALSE(providerPtr->IsObjectPrepared());
+    EXPECT_EQ(events, std::vector<std::string>({ "begin", "before", "prepare", "end" }));
 }
 
 TEST(RendererFrameObjectBindingTests, RenderScenePackageMarksFrameAndObjectDataReadyForSnapshotDraws)

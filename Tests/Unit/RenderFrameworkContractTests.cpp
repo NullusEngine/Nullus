@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <concepts>
 #include <filesystem>
@@ -1679,10 +1680,16 @@ TEST(RenderFrameworkContractTests, TimelineProfilerFenceCompletionFailureIsCheck
     ASSERT_NE(waitFunctionStart, std::string::npos);
     const auto waitFunctionEnd = profilerSource.find("void GPUProfiler::Initialize", waitFunctionStart);
     ASSERT_NE(waitFunctionEnd, std::string::npos);
-    const auto waitFunction = profilerSource.substr(waitFunctionStart, waitFunctionEnd - waitFunctionStart);
+    auto waitFunction = profilerSource.substr(waitFunctionStart, waitFunctionEnd - waitFunctionStart);
+    waitFunction.erase(
+        std::remove(waitFunction.begin(), waitFunction.end(), '\r'),
+        waitFunction.end());
     EXPECT_NE(waitFunction.find("const HRESULT hr = fence->SetEventOnCompletion("), std::string::npos);
     EXPECT_NE(waitFunction.find("if (FAILED(hr))"), std::string::npos);
-    EXPECT_NE(waitFunction.find("CloseHandle(fenceEvent);\n\t\treturn false;"), std::string::npos);
+    const auto closeHandleBeforeFailureReturn = waitFunction.find("CloseHandle(fenceEvent);");
+    ASSERT_NE(closeHandleBeforeFailureReturn, std::string::npos);
+    const auto failureReturn = waitFunction.find("return false;", closeHandleBeforeFailureReturn);
+    EXPECT_NE(failureReturn, std::string::npos);
     EXPECT_NE(
         profilerSource.find("if (!WaitForGpuProfilerFenceValue("),
         std::string::npos);

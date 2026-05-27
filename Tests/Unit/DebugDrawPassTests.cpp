@@ -92,6 +92,20 @@ namespace
         }
     };
 
+    class ExecutableDebugDrawPass final : public NLS::Render::Debug::DebugDrawPass
+    {
+    public:
+        explicit ExecutableDebugDrawPass(NLS::Render::Core::CompositeRenderer& renderer)
+            : DebugDrawPass(renderer)
+        {
+        }
+
+        void ExecuteForTest(NLS::Render::Data::PipelineState pipelineState)
+        {
+            Draw(pipelineState);
+        }
+    };
+
     void WriteDxcProbeShaderFile(const std::filesystem::path& shaderPath)
     {
         std::filesystem::create_directories(shaderPath.parent_path());
@@ -431,8 +445,8 @@ TEST(DebugDrawPassTests, LineBatchDrawUsesVertexPositionsAndNonIndexedLineList)
     ASSERT_TRUE(service->SubmitLine({ 0.0f, 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f }, options));
     ASSERT_TRUE(service->SubmitLine({ 0.0f, 1.0f, 0.0f }, { 1.0f, 1.0f, 0.0f }, options));
 
-    DebugDrawPass pass(renderer);
-    renderer.ExecutePass(pass, NLS::Render::Data::PipelineState{});
+    ExecutableDebugDrawPass pass(renderer);
+    pass.ExecuteForTest(NLS::Render::Data::PipelineState{});
 
     ASSERT_EQ(renderer.recordedDraws.size(), 1u);
     const auto& draw = renderer.recordedDraws[0];
@@ -446,6 +460,45 @@ TEST(DebugDrawPassTests, LineBatchDrawUsesVertexPositionsAndNonIndexedLineList)
     EXPECT_FALSE(draw.pipelineState.depthTest);
     EXPECT_EQ(draw.pipelineState.rasterizationMode, NLS::Render::Settings::ERasterizationMode::LINE);
     EXPECT_EQ(draw.pipelineState.lineWidthPow2, NLS::Render::Utils::Conversions::FloatToPow2(4.0f));
+}
+
+TEST(DebugDrawPassTests, CompositeRendererExecutePassDrawsDebugLinesDuringActiveFrame)
+{
+    if (const auto& skipReason = RealDxcProcessExecutionSkipReason(); skipReason.has_value())
+        GTEST_SKIP() << *skipReason;
+
+    using namespace NLS::Render::Debug;
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    NLS::Core::ServiceLocator::Provide(*driver);
+
+    PassRecordingRenderer renderer(*driver);
+    renderer.SetDebugDrawService(std::make_unique<DebugDrawService>(8u));
+
+    auto* service = renderer.GetDebugDrawService();
+    ASSERT_NE(service, nullptr);
+    ASSERT_TRUE(service->SubmitLine({ 0.0f, 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f }));
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 64u;
+    frameDescriptor.renderHeight = 64u;
+    frameDescriptor.camera = &camera;
+
+    DebugDrawPass pass(renderer);
+    renderer.BeginFrame(frameDescriptor);
+    renderer.ExecutePass(pass, NLS::Render::Data::PipelineState{});
+    renderer.EndFrame();
+
+    ASSERT_EQ(renderer.recordedDraws.size(), 1u);
+    EXPECT_EQ(renderer.recordedDraws[0].primitiveMode, NLS::Render::Settings::EPrimitiveMode::LINES);
+    EXPECT_EQ(renderer.recordedDraws[0].vertexCount, 2u);
 }
 
 TEST(DebugDrawPassTests, SeparateLineStateBatchesShareUploadedMeshAndUseDrawRanges)
@@ -478,8 +531,8 @@ TEST(DebugDrawPassTests, SeparateLineStateBatchesShareUploadedMeshAndUseDrawRang
     ASSERT_TRUE(service->SubmitLine({ 0.0f, 1.0f, 0.0f }, { 1.0f, 1.0f, 0.0f }, greenOptions));
     ASSERT_TRUE(service->SubmitLine({ 0.0f, 2.0f, 0.0f }, { 1.0f, 2.0f, 0.0f }, redOptions));
 
-    DebugDrawPass pass(renderer);
-    renderer.ExecutePass(pass, NLS::Render::Data::PipelineState{});
+    ExecutableDebugDrawPass pass(renderer);
+    pass.ExecuteForTest(NLS::Render::Data::PipelineState{});
 
     ASSERT_EQ(renderer.recordedDraws.size(), 3u);
     EXPECT_EQ(renderer.recordedDraws[0].vertexCount, 6u);
@@ -514,7 +567,7 @@ TEST(DebugDrawPassTests, LineMeshSlotReusesCapacityWhenLaterFramesNeedFewerVerti
     auto* service = renderer.GetDebugDrawService();
     ASSERT_NE(service, nullptr);
 
-    DebugDrawPass pass(renderer);
+    ExecutableDebugDrawPass pass(renderer);
     const auto executeWithLines = [&](const uint32_t lineCount)
     {
         for (uint32_t lineIndex = 0u; lineIndex < lineCount; ++lineIndex)
@@ -522,7 +575,7 @@ TEST(DebugDrawPassTests, LineMeshSlotReusesCapacityWhenLaterFramesNeedFewerVerti
             const auto y = static_cast<float>(lineIndex);
             ASSERT_TRUE(service->SubmitLine({ 0.0f, y, 0.0f }, { 1.0f, y, 0.0f }));
         }
-        renderer.ExecutePass(pass, NLS::Render::Data::PipelineState{});
+        pass.ExecuteForTest(NLS::Render::Data::PipelineState{});
         service->EndFrame();
         renderer.recordedDraws.clear();
     };

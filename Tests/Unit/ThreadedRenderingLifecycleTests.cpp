@@ -2525,6 +2525,7 @@ TEST(ThreadedRenderingLifecycleTests, ThreadedRhiWorkerYieldsWhileUiStandaloneFr
 
 TEST(ThreadedRenderingLifecycleTests, ThreadedRhiWorkerResumesAfterUiStandaloneFramePendingLeaseExpires)
 {
+#if defined(NLS_ENABLE_TEST_HOOKS)
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;
@@ -2571,11 +2572,12 @@ TEST(ThreadedRenderingLifecycleTests, ThreadedRhiWorkerResumesAfterUiStandaloneF
     EXPECT_FALSE(NLS::Render::Context::DriverUIAccess::PrepareUIRender(driver));
     NLS::Render::Context::DriverTestAccess::UnlockThreadedRhiSubmission(driver);
 
+    NLS::Render::Context::DriverTestAccess::SetUiStandaloneFramePending(driver, true);
     EXPECT_FALSE(NLS::Render::Context::RhiThreadCoordinator::TryExecuteNextThreadedSubmission(
         driver,
         NLS::Render::Context::RhiSubmissionAttribution::Worker));
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    NLS::Render::Context::DriverTestAccess::ExpireUiStandaloneFramePendingLease(driver);
 
     EXPECT_TRUE(NLS::Render::Context::RhiThreadCoordinator::TryExecuteNextThreadedSubmission(
         driver,
@@ -2585,6 +2587,9 @@ TEST(ThreadedRenderingLifecycleTests, ThreadedRhiWorkerResumesAfterUiStandaloneF
     ASSERT_NE(lifecycle, nullptr);
     EXPECT_EQ(lifecycle->GetInFlightDepth(), 0u);
     EXPECT_EQ(commandPool->resetCalls, 1u);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to expire the UI standalone frame pending lease.";
+#endif
 }
 
 TEST(ThreadedRenderingLifecycleTests, StandaloneExplicitFrameBeginSkipsWhileThreadedFrameOwnsFrameContext)

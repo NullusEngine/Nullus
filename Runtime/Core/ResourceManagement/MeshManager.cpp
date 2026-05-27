@@ -11,6 +11,14 @@
 #include "Rendering/Resources/Parsers/AssimpParser.h"
 #include "Rendering/Resources/Parsers/FbxSdkParser.h"
 
+#ifndef NLS_HAS_ASSIMP_FBX_IMPORTER
+#define NLS_HAS_ASSIMP_FBX_IMPORTER 0
+#endif
+
+#ifndef NLS_HAS_AUTODESK_FBX_SDK
+#define NLS_HAS_AUTODESK_FBX_SDK 0
+#endif
+
 namespace
 {
 using EModelParserFlags = NLS::Render::Resources::Parsers::EModelParserFlags;
@@ -151,17 +159,28 @@ bool GenerateBuiltinMeshArtifact(
     std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> meshes;
     std::vector<std::string> materials;
     const auto extension = ToLower(std::filesystem::path(sourcePath).extension().string());
-    const bool loaded = [&]()
+    bool loaded = false;
+    if (extension == ".fbx")
     {
-        if (extension == ".fbx")
+#if NLS_HAS_ASSIMP_FBX_IMPORTER
+        {
+            NLS::Render::Resources::Parsers::AssimpParser parser;
+            loaded = parser.LoadModelData(sourcePath, meshes, materials, parserFlags, nullptr, true);
+        }
+#endif
+#if NLS_HAS_AUTODESK_FBX_SDK
+        if (!loaded)
         {
             NLS::Render::Resources::Parsers::FbxSdkParser parser;
-            return parser.LoadModelData(sourcePath, meshes, materials, parserFlags, nullptr, true);
+            loaded = parser.LoadModelData(sourcePath, meshes, materials, parserFlags, nullptr, true);
         }
-
+#endif
+    }
+    else
+    {
         NLS::Render::Resources::Parsers::AssimpParser parser;
-        return parser.LoadModelData(sourcePath, meshes, materials, parserFlags, nullptr, true);
-    }();
+        loaded = parser.LoadModelData(sourcePath, meshes, materials, parserFlags, nullptr, true);
+    }
     if (!loaded || meshes.size() != 1u)
         return false;
 

@@ -11,6 +11,7 @@
 #include <Rendering/Resources/Loaders/ShaderLoader.h>
 #include <Rendering/Resources/Loaders/TextureLoader.h>
 #include <Rendering/Resources/Mesh.h>
+#include <Rendering/Resources/Parsers/AssimpParser.h>
 #include <Rendering/Resources/Parsers/FbxSdkParser.h>
 #include <Rendering/Resources/Texture2D.h>
 #include <Rendering/Settings/ETextureFilteringMode.h>
@@ -20,6 +21,14 @@
 #include "Resources/RawTextures.h"
 
 using namespace NLS;
+
+#ifndef NLS_HAS_ASSIMP_FBX_IMPORTER
+#define NLS_HAS_ASSIMP_FBX_IMPORTER 0
+#endif
+
+#ifndef NLS_HAS_AUTODESK_FBX_SDK
+#define NLS_HAS_AUTODESK_FBX_SDK 0
+#endif
 
 namespace
 {
@@ -58,14 +67,14 @@ namespace
         return projectRoot / "Library";
     }
 
-    bool GenerateEditorHelperMeshArtifact(
+    template<typename Parser>
+    bool LoadEditorHelperMeshData(
+        Parser& parser,
         const std::filesystem::path& sourcePath,
-        const std::filesystem::path& artifactPath)
+        std::vector<NLS::Render::Resources::Parsers::ParsedMeshData>& meshes,
+        std::vector<std::string>& materials)
     {
-        std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> meshes;
-        std::vector<std::string> materials;
-        NLS::Render::Resources::Parsers::FbxSdkParser parser;
-        const bool loaded = parser.LoadModelData(
+        return parser.LoadModelData(
             sourcePath.string(),
             meshes,
             materials,
@@ -73,6 +82,28 @@ namespace
                 NLS::Render::Resources::Parsers::EModelParserFlags::GLOBAL_SCALE,
             nullptr,
             true);
+    }
+
+    bool GenerateEditorHelperMeshArtifact(
+        const std::filesystem::path& sourcePath,
+        const std::filesystem::path& artifactPath)
+    {
+        std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> meshes;
+        std::vector<std::string> materials;
+        bool loaded = false;
+#if NLS_HAS_ASSIMP_FBX_IMPORTER
+        {
+            NLS::Render::Resources::Parsers::AssimpParser parser;
+            loaded = LoadEditorHelperMeshData(parser, sourcePath, meshes, materials);
+        }
+#endif
+#if NLS_HAS_AUTODESK_FBX_SDK
+        if (!loaded)
+        {
+            NLS::Render::Resources::Parsers::FbxSdkParser parser;
+            loaded = LoadEditorHelperMeshData(parser, sourcePath, meshes, materials);
+        }
+#endif
         if (!loaded || meshes.size() != 1u)
         {
             NLS_LOG_WARNING(

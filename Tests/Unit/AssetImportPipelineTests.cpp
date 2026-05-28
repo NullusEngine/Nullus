@@ -2564,16 +2564,16 @@ TEST(AssetImportPipelineTests, AssimpParserClearsOutputsWhenLoadFails)
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ModelImporterSettingsResolveMissingFbxReaderToAutodesk)
+TEST(AssetImportPipelineTests, ModelImporterSettingsResolveMissingFbxReaderToAssimp)
 {
     const std::map<std::string, std::string> settings;
 
     const auto parsed = NLS::Editor::Assets::ModelImporterSettingsFromSerialized(settings);
 
-    EXPECT_EQ(parsed.fbxReaderSelection, NLS::Editor::Assets::FbxReaderSelection::Autodesk);
+    EXPECT_EQ(parsed.fbxReaderSelection, NLS::Editor::Assets::FbxReaderSelection::Assimp);
 }
 
-TEST(AssetImportPipelineTests, ModelImporterSettingsRejectUnknownFbxReaderToAutodesk)
+TEST(AssetImportPipelineTests, ModelImporterSettingsRejectUnknownFbxReaderToAssimp)
 {
     const std::map<std::string, std::string> settings {
         {"MODEL_FBX_READER", "mystery-reader"}
@@ -2581,7 +2581,7 @@ TEST(AssetImportPipelineTests, ModelImporterSettingsRejectUnknownFbxReaderToAuto
 
     const auto parsed = NLS::Editor::Assets::ModelImporterSettingsFromSerialized(settings);
 
-    EXPECT_EQ(parsed.fbxReaderSelection, NLS::Editor::Assets::FbxReaderSelection::Autodesk);
+    EXPECT_EQ(parsed.fbxReaderSelection, NLS::Editor::Assets::FbxReaderSelection::Assimp);
 }
 
 TEST(AssetImportPipelineTests, ModelImporterSettingsResolveFallbackFbxReaderSelection)

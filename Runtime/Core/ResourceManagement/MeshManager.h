@@ -16,6 +16,7 @@ namespace NLS::Core::ResourceManagement
         Mesh* CreateResource(const std::string& path) override;
         void DestroyResource(Mesh* resource) override;
         void ReloadResource(Mesh* resource, const std::string& path) override;
+        Mesh* PrewarmArtifact(const std::string& path);
 
         static std::string ResolveResourcePath(const std::string& path);
         static std::string ResolveArtifactResourcePath(const std::string& path);

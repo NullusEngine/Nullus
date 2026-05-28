@@ -272,6 +272,38 @@ MeshManager::Mesh* MeshManager::CreateResource(const std::string& path)
         meshArtifact->boundingSphere);
 }
 
+MeshManager::Mesh* MeshManager::PrewarmArtifact(const std::string& path)
+{
+    if (auto* cached = GetResource(path, false))
+        return cached;
+
+    const auto realPath = ResolveArtifactResourcePath(path);
+    if (!IsMeshArtifactPath(realPath))
+        return nullptr;
+
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(realPath, error))
+        return nullptr;
+
+    const auto* resourceType = GetResourceTypeName();
+    ResourceLoadProgressScope::Report({
+        resourceType,
+        path,
+        std::string("Prewarming ") + resourceType + ": " + path,
+        false,
+        false
+    });
+    auto* prewarmed = GetResource(path, true);
+    ResourceLoadProgressScope::Report({
+        resourceType,
+        path,
+        std::string(prewarmed ? "Prewarmed " : "Failed to prewarm ") + resourceType + ": " + path,
+        true,
+        prewarmed != nullptr
+    });
+    return prewarmed;
+}
+
 void MeshManager::DestroyResource(Mesh* resource)
 {
     delete resource;

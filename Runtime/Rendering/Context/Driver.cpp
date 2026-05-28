@@ -2319,6 +2319,22 @@ void DriverTestAccess::SetUiStandaloneFramePending(Driver& driver, const bool pe
     NotifyThreadedWorkers(*driver.m_impl);
 }
 
+#if defined(NLS_ENABLE_TEST_HOOKS)
+void DriverTestAccess::ExpireUiStandaloneFramePendingLease(Driver& driver)
+{
+    if (driver.m_impl == nullptr)
+        return;
+
+    const auto expiredAt = std::chrono::steady_clock::now() - std::chrono::nanoseconds(1);
+    driver.m_impl->uiStandaloneFramePendingUntilTickNs.store(
+        static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            expiredAt.time_since_epoch()).count()),
+        std::memory_order_release);
+    driver.m_impl->uiStandaloneFramePending.store(true, std::memory_order_release);
+    NotifyThreadedWorkers(*driver.m_impl);
+}
+#endif
+
 bool DriverTestAccess::TryLockDriverTelemetry(Driver& driver)
 {
     return driver.m_impl != nullptr &&

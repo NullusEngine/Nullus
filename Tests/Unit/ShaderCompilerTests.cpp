@@ -61,6 +61,22 @@ namespace
             diagnostics.find("[dxc-exit-code] 127") != std::string::npos;
     }
 
+    bool IsNativeDxcUnavailableForShader(const std::filesystem::path& shaderPath)
+    {
+        NLS::Render::ShaderCompiler::ShaderCompilationInput input;
+        input.assetPath = shaderPath.string();
+        input.stage = NLS::Render::ShaderCompiler::ShaderStage::Vertex;
+        input.options.targetPlatform = NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL;
+        input.options.targetProfile = "vs_6_0";
+        input.options.entryPoint = "VSMain";
+        input.options.includeDirectories.push_back(shaderPath.parent_path().string());
+
+        NLS::Render::ShaderCompiler::ShaderCompiler compiler;
+        const auto output = compiler.Compile(input);
+        return output.status != NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded &&
+            IsDxcUnavailableDiagnostic(output.diagnostics);
+    }
+
     class ScopedEnvironmentVariable final
     {
     public:
@@ -1286,7 +1302,23 @@ TEST(ShaderCompilerTests, ShaderLoaderCreateRoutesConfiguredEngineShaderCacheToP
         projectAssets);
 
     ASSERT_NE(shader, nullptr);
-    EXPECT_TRUE(std::filesystem::exists(root / "Project" / "Library" / "ShaderCache" / "ShaderCache.tsv"));
+    const auto projectCachePath = root / "Project" / "Library" / "ShaderCache" / "ShaderCache.tsv";
+    EXPECT_EQ(
+        NormalizeComparablePath(NLS::Render::Resources::Loaders::ShaderLoader::GetCacheDatabasePath(
+            engineShader.string(),
+            projectAssets)),
+        NormalizeComparablePath(projectCachePath));
+    if (!std::filesystem::exists(projectCachePath))
+    {
+        if (IsNativeDxcUnavailableForShader(engineShader))
+        {
+            NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader);
+            std::filesystem::remove_all(root);
+            GTEST_SKIP() << "DXC is unavailable for shader loader cache routing coverage.";
+        }
+    }
+
+    EXPECT_TRUE(std::filesystem::exists(projectCachePath));
     EXPECT_FALSE(std::filesystem::exists(root / "App" / "Library" / "ShaderCache" / "ShaderCache.tsv"));
     EXPECT_FALSE(std::filesystem::exists(root / "App" / "Library"));
 

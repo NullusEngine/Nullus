@@ -250,6 +250,9 @@ namespace NLS::Render::Context
         static void UnlockThreadedRhiSubmission(Driver& driver);
         static void LockThreadedRhiSubmission(Driver& driver);
         static void SetUiStandaloneFramePending(Driver& driver, bool pending);
+#if defined(NLS_ENABLE_TEST_HOOKS)
+        static void ExpireUiStandaloneFramePendingLease(Driver& driver);
+#endif
         static bool TryLockDriverTelemetry(Driver& driver);
         static void UnlockDriverTelemetry(Driver& driver);
         static ThreadedRenderingLifecycle* GetThreadedRenderingLifecycle(Driver& driver);

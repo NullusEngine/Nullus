@@ -21,6 +21,7 @@
 #include "Assets/NativeArtifactContainer.h"
 #include "Debug/Logger.h"
 #include "Guid.h"
+#include "Image.h"
 #include "Math/Vector4.h"
 
 #include <algorithm>
@@ -358,6 +359,21 @@ std::vector<uint8_t> TinyPng()
         0x03, 0x03, 0x02, 0x00, 0xEF, 0xBF, 0x4A, 0x3B,
         0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
         0xAE, 0x42, 0x60, 0x82
+    };
+}
+
+std::vector<uint8_t> TinyRgb16Png()
+{
+    return {
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x10, 0x02, 0x00, 0x00, 0x00, 0xC0, 0xE7, 0x8F,
+        0x9D, 0x00, 0x00, 0x00, 0x0F, 0x49, 0x44, 0x41,
+        0x54, 0x78, 0x9C, 0x63, 0x10, 0x32, 0x09, 0xAB,
+        0x98, 0xB5, 0x07, 0x00, 0x06, 0x27, 0x02, 0x6B,
+        0x0E, 0xDE, 0xD5, 0x7A, 0x00, 0x00, 0x00, 0x00,
+        0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82
     };
 }
 }
@@ -1485,6 +1501,46 @@ TEST(AssetMaterialConversionTests, TextureLoaderReadsImportedTextureArtifactPayl
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetMaterialConversionTests, TextureLoaderReadsImportedRgb16TextureArtifactPayload)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_imported_rgb16_texture_artifact_load_" + NLS::Guid::New().ToString());
+    const auto texturePath = root / "Library" / "Artifacts" / "Hero" / "textures" / "Render_Main_A.ntex";
+
+    const std::string header =
+        "NULLUS_IMPORTED_TEXTURE_ARTIFACT=1\n"
+        "URI=Render_Main_A.png\n"
+        "MIME_TYPE=image/png\n"
+        "BYTE_LENGTH=72\n"
+        "PAYLOAD_BEGIN\n";
+    auto bytes = std::vector<uint8_t>(header.begin(), header.end());
+    const auto png = TinyRgb16Png();
+    bytes.insert(bytes.end(), png.begin(), png.end());
+    WriteBinaryFile(texturePath, bytes);
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+
+    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::Create(
+        texturePath.string(),
+        NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+        NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+        false);
+
+    ASSERT_NE(texture, nullptr);
+    EXPECT_EQ(texture->width, 1u);
+    EXPECT_EQ(texture->height, 1u);
+    EXPECT_EQ(texture->path, texturePath.string());
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(texture));
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetMaterialConversionTests, TextureLoaderReadsNativeTextureArtifactWithoutEncodedPayload)
 {
     const auto root = std::filesystem::temp_directory_path() /
@@ -1588,6 +1644,46 @@ TEST(AssetMaterialConversionTests, TextureArtifactSerializesNativeRgba8MipChain)
     EXPECT_EQ(decoded->mips[1].width, 1u);
     EXPECT_EQ(decoded->mips[1].height, 1u);
     EXPECT_EQ(decoded->mips[1].pixels, (std::vector<uint8_t>{128u, 128u, 128u, 255u}));
+}
+
+TEST(AssetMaterialConversionTests, TextureArtifactDecodesRgb16PngAsRgba8)
+{
+    const auto png = TinyRgb16Png();
+    const auto decoded = NLS::Render::Assets::DecodeTextureArtifactFromEncodedImage(
+        png.data(),
+        png.size(),
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb,
+        false);
+
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->width, 1u);
+    EXPECT_EQ(decoded->height, 1u);
+    EXPECT_EQ(decoded->format, NLS::Render::RHI::TextureFormat::RGBA8);
+    ASSERT_EQ(decoded->mips.size(), 1u);
+    EXPECT_EQ(decoded->mips[0].pixels, (std::vector<uint8_t>{0x12u, 0x56u, 0x9Au, 0xFFu}));
+}
+
+TEST(AssetMaterialConversionTests, ImageFileLoaderDecodesRgb16Png)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_rgb16_png_image_load_" + NLS::Guid::New().ToString());
+    const auto imagePath = root / "Render_Main_A.png";
+    WriteBinaryFile(imagePath, TinyRgb16Png());
+
+    const NLS::Image image(imagePath.string(), false);
+    const bool loaded = image.GetData() != nullptr;
+    EXPECT_TRUE(loaded);
+    if (loaded)
+    {
+        EXPECT_EQ(image.GetWidth(), 1);
+        EXPECT_EQ(image.GetHeight(), 1);
+        EXPECT_EQ(image.GetChannels(), 3);
+        EXPECT_EQ(image.GetData()[0], 0x12u);
+        EXPECT_EQ(image.GetData()[1], 0x56u);
+        EXPECT_EQ(image.GetData()[2], 0x9Au);
+    }
+
+    std::filesystem::remove_all(root);
 }
 
 TEST(AssetMaterialConversionTests, FbxAndObjChannelsMapOrDiagnoseParserExposedData)

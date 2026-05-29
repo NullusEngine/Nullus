@@ -109,6 +109,62 @@ namespace
         return shader;
     }
 
+    NLS::Render::Resources::Shader* CreateReflectionOnlyImportedShader(
+        const std::string& sourcePath,
+        const NLS::Render::Resources::ShaderReflection& reflection,
+        const std::string& subAssetKey)
+    {
+        NLS::Render::Assets::ShaderArtifact artifact;
+        artifact.sourcePath = sourcePath;
+        artifact.subAssetKey = subAssetKey;
+        artifact.reflection = reflection;
+
+        const auto root = std::filesystem::temp_directory_path() /
+            ("nullus_reflection_shader_" + NLS::Guid::New().ToString());
+        const auto path = root / "shader.nshader";
+        std::filesystem::create_directories(path.parent_path());
+        const auto bytes = NLS::Render::Assets::SerializeShaderArtifact(artifact);
+        std::ofstream output(path, std::ios::binary | std::ios::trunc);
+        output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+        output.close();
+        auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(path.string());
+        std::filesystem::remove_all(root);
+        return shader;
+    }
+
+    NLS::Render::Resources::ShaderReflection MakeIndexedObjectDataReflection()
+    {
+        NLS::Render::Resources::ShaderReflection reflection;
+        reflection.properties.push_back({
+            "ObjectData",
+            NLS::Render::Resources::UniformType::UNIFORM_FLOAT_MAT4,
+            NLS::Render::Resources::ShaderResourceKind::StructuredBuffer,
+            NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+            NLS::Render::RHI::BindingPointMap::kObjectBindingSpace,
+            0u,
+            -1,
+            1,
+            0u,
+            sizeof(NLS::Maths::Matrix4),
+            {}
+        });
+        return reflection;
+    }
+
+    NLS::Render::Resources::ShaderReflection MakeFrameConstantOnlyReflection(const std::string& constantBufferName)
+    {
+        NLS::Render::Resources::ShaderReflection reflection;
+        reflection.constantBuffers.push_back({
+            constantBufferName,
+            NLS::Render::ShaderCompiler::ShaderStage::Vertex,
+            NLS::Render::RHI::BindingPointMap::kFrameBindingSpace,
+            0u,
+            sizeof(NLS::Maths::Matrix4),
+            {}
+        });
+        return reflection;
+    }
+
     void RegisterLightGridTestShaders(NLS::Core::ResourceManagement::ShaderManager& shaderManager)
     {
         shaderManager.RegisterResource(
@@ -3207,7 +3263,10 @@ TEST(RendererFrameObjectBindingTests, SelectionOutlineMaskPipelineLayoutSkipsRen
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     const ScopedDriverService driverService(*driver);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Editor/Shaders/SelectionOutlineMask.hlsl");
+    auto* shader = CreateReflectionOnlyImportedShader(
+        "Tests/Synthetic/SelectionOutlineMask.hlsl",
+        MakeIndexedObjectDataReflection(),
+        "shader:selection-outline-mask");
     ASSERT_NE(shader, nullptr);
     ASSERT_TRUE(NLS::Render::Resources::ShaderSupportsIndexedObjectData(*shader));
 
@@ -3258,7 +3317,10 @@ TEST(RendererFrameObjectBindingTests, SelectionOutlineCompositeShaderDoesNotRequ
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     const ScopedDriverService driverService(*driver);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Editor/Shaders/SelectionOutlineComposite.hlsl");
+    auto* shader = CreateReflectionOnlyImportedShader(
+        "Tests/Synthetic/SelectionOutlineComposite.hlsl",
+        MakeFrameConstantOnlyReflection("FrameConstants"),
+        "shader:selection-outline-composite");
     ASSERT_NE(shader, nullptr);
     EXPECT_FALSE(NLS::Render::Resources::ShaderSupportsIndexedObjectData(*shader));
 
@@ -3367,7 +3429,10 @@ TEST(RendererFrameObjectBindingTests, SharedEditorUnlitShaderKeepsLegacyObjectCo
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     const ScopedDriverService driverService(*driver);
 
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Unlit.hlsl");
+    auto* shader = CreateReflectionOnlyImportedShader(
+        "Tests/Synthetic/Unlit.hlsl",
+        MakeFrameConstantOnlyReflection("FrameConstants"),
+        "shader:shared-editor-unlit");
     ASSERT_NE(shader, nullptr);
     EXPECT_FALSE(NLS::Render::Resources::ShaderSupportsIndexedObjectData(*shader));
 

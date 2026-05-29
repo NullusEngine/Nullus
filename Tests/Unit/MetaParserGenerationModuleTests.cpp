@@ -109,7 +109,7 @@ bool RunMetaParser(
         return false;
 
     NLS::Render::ShaderCompiler::ShaderProcessOptions options;
-    options.timeoutMilliseconds = 60000u;
+    options.timeoutMilliseconds = 180000u;
     const auto result = NLS::Render::ShaderCompiler::ExecuteShaderCompilerProcess(
         metaParserExe.string(),
         {paramsPath.string()},

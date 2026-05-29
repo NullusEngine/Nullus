@@ -1507,15 +1507,20 @@ TEST(AssetDatabaseFacadeTests, ImportedModelMeshArtifactMergesMultiplePrimitives
     ASSERT_TRUE(database.ImportAsset("Assets/Models/TwoTriangles.gltf"));
 
     const auto artifactRoot = root / "Library" / "Artifacts" / database.AssetPathToGUID("Assets/Models/TwoTriangles.gltf");
-    const auto meshArtifact = NLS::Render::Assets::LoadMeshArtifact(
-        artifactRoot / "meshes" / "mesh%3Amesh%2F0.nmesh");
+    const auto firstPrimitiveArtifact = NLS::Render::Assets::LoadMeshArtifact(
+        artifactRoot / "meshes" / "mesh%3Amesh%2F0%2Fprimitive%2F0.nmesh");
+    const auto secondPrimitiveArtifact = NLS::Render::Assets::LoadMeshArtifact(
+        artifactRoot / "meshes" / "mesh%3Amesh%2F0%2Fprimitive%2F1.nmesh");
 
-    ASSERT_TRUE(meshArtifact.has_value());
-    EXPECT_EQ(meshArtifact->vertices.size(), 6u);
-    EXPECT_EQ(meshArtifact->indices.size(), 6u);
-    EXPECT_EQ(meshArtifact->indices[3], 3u);
-    EXPECT_EQ(meshArtifact->indices[4], 4u);
-    EXPECT_EQ(meshArtifact->indices[5], 5u);
+    ASSERT_TRUE(firstPrimitiveArtifact.has_value());
+    ASSERT_TRUE(secondPrimitiveArtifact.has_value());
+    EXPECT_EQ(firstPrimitiveArtifact->vertices.size(), 3u);
+    EXPECT_EQ(firstPrimitiveArtifact->indices.size(), 3u);
+    EXPECT_EQ(secondPrimitiveArtifact->vertices.size(), 3u);
+    EXPECT_EQ(secondPrimitiveArtifact->indices.size(), 3u);
+    EXPECT_EQ(secondPrimitiveArtifact->indices[0], 0u);
+    EXPECT_EQ(secondPrimitiveArtifact->indices[1], 1u);
+    EXPECT_EQ(secondPrimitiveArtifact->indices[2], 2u);
 
     std::filesystem::remove_all(root);
 }
@@ -1611,10 +1616,18 @@ TEST(AssetDatabaseFacadeTests, ReimportAssetRefreshesStaleNativeMeshArtifact)
         })");
 
     ASSERT_TRUE(database.ReimportAsset("Assets/Models/Reimported.gltf"));
-    meshArtifact = NLS::Render::Assets::LoadMeshArtifact(meshPath);
-    ASSERT_TRUE(meshArtifact.has_value());
-    EXPECT_EQ(meshArtifact->vertices.size(), 6u);
-    EXPECT_EQ(meshArtifact->indices.size(), 6u);
+    const auto firstPrimitivePath = artifactRoot / "meshes" / "mesh%3Amesh%2F0%2Fprimitive%2F0.nmesh";
+    const auto secondPrimitivePath = artifactRoot / "meshes" / "mesh%3Amesh%2F0%2Fprimitive%2F1.nmesh";
+    EXPECT_FALSE(std::filesystem::exists(meshPath));
+
+    const auto firstPrimitiveArtifact = NLS::Render::Assets::LoadMeshArtifact(firstPrimitivePath);
+    const auto secondPrimitiveArtifact = NLS::Render::Assets::LoadMeshArtifact(secondPrimitivePath);
+    ASSERT_TRUE(firstPrimitiveArtifact.has_value());
+    ASSERT_TRUE(secondPrimitiveArtifact.has_value());
+    EXPECT_EQ(firstPrimitiveArtifact->vertices.size(), 3u);
+    EXPECT_EQ(firstPrimitiveArtifact->indices.size(), 3u);
+    EXPECT_EQ(secondPrimitiveArtifact->vertices.size(), 3u);
+    EXPECT_EQ(secondPrimitiveArtifact->indices.size(), 3u);
 
     std::filesystem::remove_all(root);
 }

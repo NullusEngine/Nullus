@@ -717,6 +717,28 @@ TEST(FrameGraphSceneTargetsTests, MultiFramebufferResizeRetainsPreviousExplicitR
     EXPECT_NE(gBuffer.GetExplicitDepthTextureHandle(), previousDepthTexture.lock());
 }
 
+TEST(FrameGraphSceneTargetsTests, MultiFramebufferOverloadsSupportZeroSizedInitializationWithoutExplicitDepthDesc)
+{
+    std::vector<NLS::Render::Buffers::MultiFramebuffer::AttachmentDesc> attachments(1u);
+    attachments[0].format = NLS::Render::RHI::TextureFormat::RGBA8;
+
+    NLS::Render::Buffers::MultiFramebuffer framebuffer(0u, 0u, attachments, true);
+
+    EXPECT_FALSE(framebuffer.IsInitialized());
+    EXPECT_TRUE(framebuffer.GetExplicitColorTextureHandles().empty());
+    EXPECT_EQ(framebuffer.GetExplicitDepthTextureHandle(), nullptr);
+
+    NLS::Render::Buffers::MultiFramebuffer::DepthAttachmentDesc customDepthAttachment;
+    customDepthAttachment.format = NLS::Render::RHI::TextureFormat::Depth32F;
+    customDepthAttachment.usage = NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment;
+
+    framebuffer.Init(0u, 0u, attachments, true, customDepthAttachment);
+
+    EXPECT_FALSE(framebuffer.IsInitialized());
+    EXPECT_TRUE(framebuffer.GetExplicitColorTextureHandles().empty());
+    EXPECT_EQ(framebuffer.GetExplicitDepthTextureHandle(), nullptr);
+}
+
 TEST(FrameGraphSceneTargetsTests, MultiFramebufferColorAttachmentsUseMatchingOptimizedClearValue)
 {
     NLS::Render::Settings::DriverSettings settings;

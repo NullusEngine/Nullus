@@ -36,8 +36,13 @@ namespace NLS::Render::Buffers
             uint16_t width,
             uint16_t height,
             const std::vector<AttachmentDesc>& colorAttachments,
-            bool withDepth = true,
-            DepthAttachmentDesc depthAttachment = {});
+            bool withDepth = true);
+        MultiFramebuffer(
+            uint16_t width,
+            uint16_t height,
+            const std::vector<AttachmentDesc>& colorAttachments,
+            bool withDepth,
+            DepthAttachmentDesc depthAttachment);
         ~MultiFramebuffer();
 
         MultiFramebuffer(const MultiFramebuffer&) = delete;
@@ -47,8 +52,13 @@ namespace NLS::Render::Buffers
             uint16_t width,
             uint16_t height,
             const std::vector<AttachmentDesc>& colorAttachments,
-            bool withDepth = true,
-            DepthAttachmentDesc depthAttachment = {});
+            bool withDepth = true);
+        void Init(
+            uint16_t width,
+            uint16_t height,
+            const std::vector<AttachmentDesc>& colorAttachments,
+            bool withDepth,
+            DepthAttachmentDesc depthAttachment);
         void Resize(uint16_t width, uint16_t height);
         bool IsInitialized() const;
 

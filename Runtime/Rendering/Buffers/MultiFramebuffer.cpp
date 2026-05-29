@@ -87,6 +87,15 @@ namespace NLS::Render::Buffers
 		uint16_t width,
 		uint16_t height,
 		const std::vector<AttachmentDesc>& colorAttachments,
+		bool withDepth)
+		: MultiFramebuffer(width, height, colorAttachments, withDepth, DepthAttachmentDesc{})
+	{
+	}
+
+	MultiFramebuffer::MultiFramebuffer(
+		uint16_t width,
+		uint16_t height,
+		const std::vector<AttachmentDesc>& colorAttachments,
 		bool withDepth,
 		DepthAttachmentDesc depthAttachment)
 	{
@@ -96,6 +105,15 @@ namespace NLS::Render::Buffers
 	MultiFramebuffer::~MultiFramebuffer()
 	{
 		Release();
+	}
+
+	void MultiFramebuffer::Init(
+		uint16_t width,
+		uint16_t height,
+		const std::vector<AttachmentDesc>& colorAttachments,
+		bool withDepth)
+	{
+		Init(width, height, colorAttachments, withDepth, DepthAttachmentDesc{});
 	}
 
 	void MultiFramebuffer::Init(

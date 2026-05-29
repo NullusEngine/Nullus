@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "RenderDef.h"
+#include "Rendering/Assets/TextureArtifact.h"
 #include "Rendering/Settings/ETextureFilteringMode.h"
 
 #include <cstdint>
@@ -63,6 +64,7 @@ namespace NLS::Render::Resources::Loaders
 		static Texture2D* CreateFromMemory(uint8_t* p_data, uint32_t p_width, uint32_t p_height, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
 
 		static Texture2D* CreateFromImage(const Image* iamge, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
+		static Texture2D* CreateFromArtifact(const NLS::Render::Assets::TextureArtifactData& artifact, NLS::Render::Settings::ETextureFilteringMode p_firstFilter, NLS::Render::Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap);
 
 		/**
 		* Reload a texture from file

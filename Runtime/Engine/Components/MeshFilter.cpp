@@ -231,6 +231,8 @@ Render::Resources::Mesh* MeshFilter::ResolveMesh()
 
         auto& meshManager = NLS_SERVICE(Core::ResourceManagement::MeshManager);
         auto* resolvedMesh = meshManager.GetResource(path, false);
+        if (!resolvedMesh && MeshArtifactPathExists(path))
+            resolvedMesh = meshManager.GetResource(path, true);
         if (!resolvedMesh)
         {
             const auto primitiveType = NLS::Engine::TryGetPrimitiveTypeFromMeshResourcePath(path);
@@ -262,6 +264,8 @@ Render::Resources::Mesh* MeshFilter::ResolveMesh()
 
     auto& meshManager = NLS_SERVICE(Core::ResourceManagement::MeshManager);
     auto* resolvedMesh = meshManager.GetResource(m_meshPath, false);
+    if (!resolvedMesh && MeshArtifactPathExists(m_meshPath))
+        resolvedMesh = meshManager.GetResource(m_meshPath, true);
     if (!resolvedMesh)
         return nullptr;
 

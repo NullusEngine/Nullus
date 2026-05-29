@@ -1,6 +1,8 @@
 #include "Components/MeshRenderer.h"
 
 #include <algorithm>
+#include <cctype>
+#include <filesystem>
 #include <limits>
 
 #include "Components/MeshFilter.h"
@@ -23,6 +25,28 @@ namespace
 
         const auto materialCount = static_cast<size_t>(materialIndex) + 1u;
         return (std::min)(materialCount, maxSlotCount);
+    }
+
+    bool MaterialArtifactPathExists(const std::string& path)
+    {
+        if (path.empty())
+            return false;
+
+        auto extension = std::filesystem::path(path).extension().string();
+        std::transform(
+            extension.begin(),
+            extension.end(),
+            extension.begin(),
+            [](const unsigned char character)
+            {
+                return static_cast<char>(std::tolower(character));
+            });
+        if (extension != ".nmat")
+            return false;
+
+        std::error_code error;
+        const auto resolvedPath = Core::ResourceManagement::MaterialManager::ResolveResourcePath(path);
+        return !resolvedPath.empty() && std::filesystem::is_regular_file(resolvedPath, error);
     }
 }
 
@@ -215,6 +239,8 @@ MeshRenderer::Material* MeshRenderer::ResolveMaterialSlot(const size_t p_index)
 
     auto& materialManager = NLS_SERVICE(Core::ResourceManagement::MaterialManager);
     auto* material = materialManager.GetResource(path, false);
+    if (!material && MaterialArtifactPathExists(path))
+        material = materialManager.LoadArtifactWithoutTextures(path);
 
     if (material)
     {

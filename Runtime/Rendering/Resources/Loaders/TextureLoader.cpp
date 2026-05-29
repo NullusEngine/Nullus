@@ -147,6 +147,25 @@ Texture2D* TextureLoader::CreateFromImage(const Image* image, Settings::ETexture
 	return texture;
 }
 
+Texture2D* TextureLoader::CreateFromArtifact(
+	const NLS::Render::Assets::TextureArtifactData& artifact,
+	Settings::ETextureFilteringMode p_firstFilter,
+	Settings::ETextureFilteringMode p_secondFilter,
+	bool p_generateMipmap)
+{
+	Texture2D* texture = new Texture2D;
+	texture->firstFilter = p_firstFilter;
+	texture->secondFilter = p_secondFilter;
+	texture->isMimapped = artifact.mips.size() > 1u || p_generateMipmap;
+	if (!texture->SetTextureResource(artifact))
+	{
+		delete texture;
+		return nullptr;
+	}
+
+	return texture;
+}
+
 void TextureLoader::Reload(Texture2D* p_texture, const std::string& p_filePath, Settings::ETextureFilteringMode p_firstFilter, Settings::ETextureFilteringMode p_secondFilter, bool p_generateMipmap)
 {
 	if (!p_texture)

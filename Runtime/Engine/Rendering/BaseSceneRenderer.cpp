@@ -14,6 +14,7 @@
 #include "Rendering/SceneLightingProvider.h"
 #include "Core/ResourceManagement/MaterialManager.h"
 #include "Core/ResourceManagement/ShaderManager.h"
+#include "Core/ResourceManagement/TextureManager.h"
 #include "Core/ServiceLocator.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Context/RenderScenePackageBuilder.h"
@@ -105,10 +106,10 @@ namespace
         }
     }
 
-    void ResolvePreparedPassBindingPlaceholders(
-        std::vector<NLS::Render::Context::RecordedDrawCommandInput>& drawCommands,
-        const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& resolvedBindingSet,
-        const size_t firstDrawIndex,
+	void ResolvePreparedPassBindingPlaceholders(
+		std::vector<NLS::Render::Context::RecordedDrawCommandInput>& drawCommands,
+		const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& resolvedBindingSet,
+		const size_t firstDrawIndex,
         const size_t lastDrawIndex)
     {
         const auto resolvedLastDrawIndex = std::min(lastDrawIndex, drawCommands.size());
@@ -128,10 +129,57 @@ namespace
     {
         for (auto& drawCommand : drawCommands)
         {
-            if (IsPreparedPassBindingPlaceholder(drawCommand.passBindingSet))
-                drawCommand.passBindingSet.reset();
-        }
-    }
+			if (IsPreparedPassBindingPlaceholder(drawCommand.passBindingSet))
+				drawCommand.passBindingSet.reset();
+		}
+	}
+
+	bool TryLoadOneMissingMaterialTexture(NLS::Render::Resources::Material& material)
+	{
+		if (!NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>())
+			return false;
+
+		for (const auto& [uniformName, texturePath] : material.GetTextureResourcePaths())
+		{
+			if (texturePath.empty())
+				continue;
+
+			const auto* parameter = material.GetParameterBlock().TryGet(uniformName);
+			if (parameter != nullptr &&
+				parameter->type() == typeid(NLS::Render::Resources::Texture2D*) &&
+				std::any_cast<NLS::Render::Resources::Texture2D*>(*parameter) != nullptr)
+			{
+				continue;
+			}
+
+			auto& textureManager = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager);
+			if (auto* texture = textureManager.GetResource(texturePath, false))
+			{
+				material.Set<NLS::Render::Resources::Texture2D*>(uniformName, texture);
+				return true;
+			}
+
+			if (auto* texture = textureManager.RequestAsyncArtifact(texturePath))
+			{
+				material.Set<NLS::Render::Resources::Texture2D*>(uniformName, texture);
+				return true;
+			}
+
+			return false;
+		}
+
+		return false;
+	}
+
+	bool PumpOneVisibleMaterialTexture(BaseSceneRenderer::SceneDrawables& drawables)
+	{
+		for (auto& [_, drawable] : drawables)
+		{
+			if (drawable.material != nullptr && TryLoadOneMissingMaterialTexture(*drawable.material))
+				return true;
+		}
+		return false;
+	}
 
 }
 
@@ -544,6 +592,9 @@ void BaseSceneRenderer::DrawModelWithSingleMaterial(
 
 BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 {
+	if (NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>())
+		NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).PumpAsyncLoads(1u);
+
 	OpaqueDrawables opaques;
 	TransparentDrawables transparents;
 	SkyboxDrawables skyboxes;
@@ -570,6 +621,9 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 	});
 	opaques = std::move(retainedDrawables.opaques);
 	transparents = std::move(retainedDrawables.transparents);
+
+	if (!PumpOneVisibleMaterialTexture(opaques))
+		PumpOneVisibleMaterialTexture(transparents);
 
 	const auto& fastAccess = scene.GetFastAccessComponents();
 	skyboxes.reserve(fastAccess.skyboxs.size());

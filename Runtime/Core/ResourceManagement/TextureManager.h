@@ -40,6 +40,9 @@ namespace NLS::Core::ResourceManagement
 		*/
 		virtual void ReloadResource(Texture2D* p_resource, const std::string& p_path) override;
 
+		Texture2D* RequestAsyncArtifact(const std::string& p_path);
+		void PumpAsyncLoads(size_t p_maxCompletions = 1u);
+
 		static TextureCube* CreateCubeMap(const std::vector<std::string>& filePaths);
 	};
 }

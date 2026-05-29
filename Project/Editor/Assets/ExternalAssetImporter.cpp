@@ -20,6 +20,10 @@
 #define NLS_HAS_ASSIMP_FBX_IMPORTER 0
 #endif
 
+#ifndef NLS_HAS_AUTODESK_FBX_SDK
+#define NLS_HAS_AUTODESK_FBX_SDK 0
+#endif
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -1595,12 +1599,25 @@ NLS::Render::Assets::SceneModelSourceFormat SourceFormatForExtension(const std::
 
 FbxReaderSelection ResolveFbxReaderSelection(const ExternalModelImportRequest& request)
 {
-    return ModelImporterSettingsFromSerialized(request.meta.settings).fbxReaderSelection;
+    const auto selection = ModelImporterSettingsFromSerialized(request.meta.settings).fbxReaderSelection;
+#if !NLS_HAS_AUTODESK_FBX_SDK && NLS_HAS_ASSIMP_FBX_IMPORTER
+    if (selection == FbxReaderSelection::Autodesk ||
+        selection == FbxReaderSelection::AutodeskWithAssimpFallback)
+    {
+        return FbxReaderSelection::Assimp;
+    }
+#endif
+    return selection;
 }
 
 bool IsAssimpFbxImporterAvailable()
 {
     return NLS_HAS_ASSIMP_FBX_IMPORTER != 0;
+}
+
+bool IsAutodeskFbxSdkAvailable()
+{
+    return NLS_HAS_AUTODESK_FBX_SDK != 0;
 }
 
 bool LoadWithAssimpParser(
@@ -1668,6 +1685,9 @@ bool LoadFbxWithAutodesk(
     NLS::Render::Assets::ImportedScene& detailedScene,
     bool& hasDetailedScene)
 {
+    if (!IsAutodeskFbxSdkAvailable())
+        return false;
+
     NLS::Render::Resources::Parsers::FbxSdkParser parser;
     const bool parsed = parser.LoadModelData(
         request.sourcePath.string(),

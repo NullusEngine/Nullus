@@ -1,5 +1,8 @@
 #include "Engine/Assets/PrefabAsset.h"
 
+#include "Core/ResourceManagement/MaterialManager.h"
+#include "Core/ResourceManagement/MeshManager.h"
+#include "Core/ServiceLocator.h"
 #include "Serialize/ObjectGraphInstantiator.h"
 #include "Serialize/ObjectGraphReader.h"
 #include "Serialize/PrefabDocument.h"
@@ -479,6 +482,32 @@ Serialize::ObjectGraphDocument BuildRuntimeResolvedGraph(const PrefabArtifact& a
     return graph;
 }
 
+void PrewarmPrefabMeshArtifacts(const PrefabArtifact& artifact)
+{
+    if (!Core::ServiceLocator::Contains<Core::ResourceManagement::MeshManager>())
+        return;
+
+    auto& meshManager = NLS_SERVICE(Core::ResourceManagement::MeshManager);
+    for (const auto& resolved : artifact.resolvedAssets)
+    {
+        if (resolved.expectedType == "Mesh" && !resolved.artifactPath.empty())
+            meshManager.PrewarmArtifact(resolved.artifactPath);
+    }
+}
+
+void PrewarmPrefabMaterialArtifacts(const PrefabArtifact& artifact)
+{
+    if (!Core::ServiceLocator::Contains<Core::ResourceManagement::MaterialManager>())
+        return;
+
+    auto& materialManager = NLS_SERVICE(Core::ResourceManagement::MaterialManager);
+    for (const auto& resolved : artifact.resolvedAssets)
+    {
+        if (resolved.expectedType == "Material" && !resolved.artifactPath.empty())
+            materialManager.LoadArtifactWithoutTextures(resolved.artifactPath);
+    }
+}
+
 bool VisitNestedPrefabDependencies(
     const PrefabArtifact& artifact,
     const std::unordered_map<NLS::Core::Assets::AssetId, const PrefabArtifact*>& artifactsById,
@@ -638,6 +667,9 @@ PrefabArtifactInstantiationResult InstantiatePrefabArtifact(
     result.diagnostics = artifact.Validate();
     if (result.diagnostics.HasErrors())
         return result;
+
+    PrewarmPrefabMeshArtifacts(artifact);
+    PrewarmPrefabMaterialArtifacts(artifact);
 
     Serialize::PrefabDocument document;
     document.graph = BuildRuntimeResolvedGraph(artifact);

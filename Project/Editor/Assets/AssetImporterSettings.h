@@ -22,7 +22,7 @@ struct ModelImporterSettings
     std::string axisConversion;
     std::string unitConversion;
     std::string hierarchyPolicy = "preserve";
-    FbxReaderSelection fbxReaderSelection = FbxReaderSelection::Autodesk;
+    FbxReaderSelection fbxReaderSelection = FbxReaderSelection::Assimp;
     bool importNormals = true;
     bool importTangents = true;
     bool importUvs = true;
@@ -59,7 +59,7 @@ std::string BoolToImporterSettingString(bool value);
 std::string FbxReaderSelectionToImporterSettingString(FbxReaderSelection value);
 FbxReaderSelection FbxReaderSelectionFromImporterSettingString(
     const std::string& value,
-    FbxReaderSelection fallback = FbxReaderSelection::Autodesk);
+    FbxReaderSelection fallback = FbxReaderSelection::Assimp);
 bool BoolFromImporterSettings(
     const std::map<std::string, std::string>& settings,
     const char* key,

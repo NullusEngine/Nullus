@@ -61,6 +61,11 @@ namespace NLS::Render::FrameGraph
                 input.clearStencil = metadata.commandKind == NLS::Render::Context::RenderPassCommandKind::Opaque && package.clearStencilBuffer;
                 input.usesColorAttachment = true;
                 input.usesDepthStencilAttachment = true;
+                input.writesDepthStencilAttachment =
+                    metadata.commandKind == NLS::Render::Context::RenderPassCommandKind::Opaque ||
+                    metadata.commandKind == NLS::Render::Context::RenderPassCommandKind::Skybox ||
+                    input.clearDepth ||
+                    input.clearStencil;
 
                 if (!package.recordedDrawCommands.empty() &&
                     nextRecordedDrawCommandIndex < package.recordedDrawCommands.size())
@@ -97,6 +102,10 @@ namespace NLS::Render::FrameGraph
                     firstOutputPass->clearColor = firstOutputPass->usesColorAttachment && package.clearColorBuffer;
                     firstOutputPass->clearDepth = firstOutputPass->usesDepthStencilAttachment && package.clearDepthBuffer;
                     firstOutputPass->clearStencil = firstOutputPass->usesDepthStencilAttachment && package.clearStencilBuffer;
+                    firstOutputPass->writesDepthStencilAttachment =
+                        firstOutputPass->writesDepthStencilAttachment ||
+                        firstOutputPass->clearDepth ||
+                        firstOutputPass->clearStencil;
                     firstOutputPass->clearColorValue = package.clearColorValue;
                 }
             }

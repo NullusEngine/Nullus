@@ -76,7 +76,8 @@ namespace NLS::Render::RHI::DX12
 
     DX12TextureViewDescriptorSet BuildDX12TextureViewDescriptorSet(
         const RHITextureDesc& textureDesc,
-        const RHITextureViewDesc& viewDesc)
+        const RHITextureViewDesc& viewDesc,
+        const bool readOnlyDepthStencil)
     {
         DX12TextureViewDescriptorSet descriptors;
         const bool isDepth = IsDepthStencilFormat(viewDesc.format);
@@ -173,6 +174,10 @@ namespace NLS::Render::RHI::DX12
         if (descriptors.hasDsv)
         {
             descriptors.dsvDesc.Format = ResolveDsvFormat(viewDesc.format);
+            if (readOnlyDepthStencil)
+                descriptors.dsvDesc.Flags |= D3D12_DSV_FLAG_READ_ONLY_DEPTH;
+            if (readOnlyDepthStencil && viewDesc.format == TextureFormat::Depth24Stencil8)
+                descriptors.dsvDesc.Flags |= D3D12_DSV_FLAG_READ_ONLY_STENCIL;
             if (isCube || isCubeArray || is2DArray)
             {
                 descriptors.dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;

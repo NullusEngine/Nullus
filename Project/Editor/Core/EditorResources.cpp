@@ -282,6 +282,8 @@ Editor::Core::EditorResources::EditorResources(
     m_shaderPaths["Grid"] = m_shadersFolder + "Grid.hlsl";
     m_shaderPaths["Billboard"] = m_shadersFolder + "Billboard.hlsl";
     m_shaderPaths["DebugLitColor"] = m_shadersFolder + "DebugLitColor.hlsl";
+    m_shaderPaths["SelectionOutlineMask"] = m_shadersFolder + "SelectionOutlineMask.hlsl";
+    m_shaderPaths["SelectionOutlineComposite"] = m_shadersFolder + "SelectionOutlineComposite.hlsl";
 
     {
         std::vector<uint64_t> raw = EMPTY_TEXTURE;
@@ -344,6 +346,8 @@ void Editor::Core::EditorResources::PreloadStartupResources()
     GetShader("Grid");
     GetShader("Billboard");
     GetShader("DebugLitColor");
+    GetShader("SelectionOutlineMask");
+    GetShader("SelectionOutlineComposite");
 
     GetMesh("Plane");
     GetMesh("Vertical_Plane");

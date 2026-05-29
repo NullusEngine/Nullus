@@ -9,7 +9,12 @@ namespace
 {
 	constexpr size_t kMaxRetiredMultiFramebufferResourceSets = 16u;
 
-	NLS::Render::RHI::RHITextureDesc CreateColorTextureDesc(uint32_t width, uint32_t height, NLS::Render::RHI::TextureFormat format, uint32_t index)
+	NLS::Render::RHI::RHITextureDesc CreateColorTextureDesc(
+		uint32_t width,
+		uint32_t height,
+		NLS::Render::RHI::TextureFormat format,
+		NLS::Render::RHI::TextureUsageFlags usage,
+		uint32_t index)
 	{
 		NLS::Render::RHI::RHITextureDesc desc{};
 		desc.extent.width = width;
@@ -17,21 +22,25 @@ namespace
 		desc.extent.depth = 1;
 		desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
 		desc.format = format;
-		desc.usage = NLS::Render::RHI::TextureUsageFlags::Sampled | NLS::Render::RHI::TextureUsageFlags::ColorAttachment;
+		desc.usage = usage;
 		desc.optimizedClearValue = NLS::Render::RHI::RHITextureDesc::OptimizedClearValue::Color();
 		desc.debugName = "MultiFramebufferColorTexture" + std::to_string(index);
 		return desc;
 	}
 
-	NLS::Render::RHI::RHITextureDesc CreateDepthTextureDesc(uint32_t width, uint32_t height)
+	NLS::Render::RHI::RHITextureDesc CreateDepthTextureDesc(
+		uint32_t width,
+		uint32_t height,
+		NLS::Render::RHI::TextureFormat format,
+		NLS::Render::RHI::TextureUsageFlags usage)
 	{
 		NLS::Render::RHI::RHITextureDesc desc{};
 		desc.extent.width = width;
 		desc.extent.height = height;
 		desc.extent.depth = 1;
 		desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
-		desc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
-		desc.usage = NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment | NLS::Render::RHI::TextureUsageFlags::Sampled;
+		desc.format = format;
+		desc.usage = usage;
 		desc.optimizedClearValue = NLS::Render::RHI::RHITextureDesc::OptimizedClearValue::DepthStencil();
 		desc.debugName = "MultiFramebufferDepthTexture";
 		return desc;
@@ -74,9 +83,14 @@ void NLS::Render::Buffers::MultiFramebuffer::RetiredResourceSet::Reset()
 
 namespace NLS::Render::Buffers
 {
-	MultiFramebuffer::MultiFramebuffer(uint16_t width, uint16_t height, const std::vector<AttachmentDesc>& colorAttachments, bool withDepth)
+	MultiFramebuffer::MultiFramebuffer(
+		uint16_t width,
+		uint16_t height,
+		const std::vector<AttachmentDesc>& colorAttachments,
+		bool withDepth,
+		DepthAttachmentDesc depthAttachment)
 	{
-		Init(width, height, colorAttachments, withDepth);
+		Init(width, height, colorAttachments, withDepth, depthAttachment);
 	}
 
 	MultiFramebuffer::~MultiFramebuffer()
@@ -84,13 +98,19 @@ namespace NLS::Render::Buffers
 		Release();
 	}
 
-	void MultiFramebuffer::Init(uint16_t width, uint16_t height, const std::vector<AttachmentDesc>& colorAttachments, bool withDepth)
+	void MultiFramebuffer::Init(
+		uint16_t width,
+		uint16_t height,
+		const std::vector<AttachmentDesc>& colorAttachments,
+		bool withDepth,
+		DepthAttachmentDesc depthAttachment)
 	{
 		Release();
 		m_width = width;
 		m_height = height;
 		m_withDepth = withDepth;
 		m_attachmentDescs = colorAttachments;
+		m_depthAttachmentDesc = depthAttachment;
 		if (width == 0u || height == 0u)
 			return;
 
@@ -193,7 +213,12 @@ namespace NLS::Render::Buffers
 
 			for (size_t i = 0; i < m_attachmentDescs.size(); ++i)
 			{
-				auto desc = CreateColorTextureDesc(width, height, m_attachmentDescs[i].format, static_cast<uint32_t>(i));
+				auto desc = CreateColorTextureDesc(
+					width,
+					height,
+					m_attachmentDescs[i].format,
+					m_attachmentDescs[i].usage,
+					static_cast<uint32_t>(i));
 				nextColorTextures[i] = device->CreateTexture(desc);
 				if (nextColorTextures[i] == nullptr)
 				{
@@ -207,7 +232,11 @@ namespace NLS::Render::Buffers
 		// Create depth texture
 		if (m_withDepth)
 		{
-			auto desc = CreateDepthTextureDesc(width, height);
+			auto desc = CreateDepthTextureDesc(
+				width,
+				height,
+				m_depthAttachmentDesc.format,
+				m_depthAttachmentDesc.usage);
 			nextDepthTexture = device->CreateTexture(desc);
 			if (nextDepthTexture == nullptr)
 			{

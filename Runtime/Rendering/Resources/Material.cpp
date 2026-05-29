@@ -143,9 +143,12 @@ namespace
 		NLS::Render::RHI::RHIGraphicsPipelineDesc& desc,
 		const NLS::Render::Resources::MaterialPipelineStateOverrides& overrides)
 	{
-		if (overrides.colorFormats.has_value())
+		const auto colorFormats = overrides.GetColorFormats();
+		if (overrides.HasColorFormatsOverride())
 		{
-			desc.renderTargetLayout.colorFormats = *overrides.colorFormats;
+			desc.renderTargetLayout.colorFormats.assign(
+				colorFormats.begin(),
+				colorFormats.end());
 			const size_t renderTargetCount = std::max<size_t>(1u, desc.renderTargetLayout.colorFormats.size());
 			const auto templateTarget = desc.blendState.renderTargets.empty()
 				? NLS::Render::RHI::RHIRenderTargetBlendStateDesc{}
@@ -162,6 +165,14 @@ namespace
 				desc.blendState.renderTargets.resize(std::max<size_t>(1u, desc.renderTargetLayout.colorFormats.size()));
 			for (auto& target : desc.blendState.renderTargets)
 				target.colorWriteMask = writeMask;
+		}
+		if (overrides.blending.has_value())
+		{
+			desc.blendState.enabled = *overrides.blending;
+			if (desc.blendState.renderTargets.empty())
+				desc.blendState.renderTargets.resize(std::max<size_t>(1u, desc.renderTargetLayout.colorFormats.size()));
+			for (auto& target : desc.blendState.renderTargets)
+				target.blendEnable = *overrides.blending;
 		}
 		if (overrides.depthWrite.has_value())
 			desc.depthStencilState.depthWrite = *overrides.depthWrite;

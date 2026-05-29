@@ -81,6 +81,7 @@ void EngineFrameObjectBindingProvider::OnBeginFrame(const NLS::Render::Data::Fra
     RetireIdleObjectDataSlots();
     m_preparedFrameHasObjectDataSlot = false;
     m_preparedFrameObjectDataSlotReserved = false;
+    m_preparedFrameObjectDataSlotUnavailable = false;
     for (auto& slot : m_objectDataSlots)
     {
         slot.objectDataShadow.clear();
@@ -129,6 +130,31 @@ void EngineFrameObjectBindingProvider::OnEndFrame()
     m_useAltObjectBuffer = !m_useAltObjectBuffer;
 
     OnDeferredReset();
+}
+
+bool EngineFrameObjectBindingProvider::OnTryReservePreparedFrameResources()
+{
+    if (m_preparedFrameObjectDataSlotUnavailable)
+        return false;
+
+    const auto slotIndex = ResolveActiveObjectDataSlotIndex();
+    if (!slotIndex.has_value())
+    {
+        m_preparedFrameObjectDataSlotUnavailable = true;
+        return false;
+    }
+
+    return true;
+}
+
+void EngineFrameObjectBindingProvider::OnReleaseReservedPreparedFrameResources()
+{
+    ReleaseStalePreparedObjectDataSlotReservation();
+}
+
+bool EngineFrameObjectBindingProvider::OnHasReservedPreparedFrameResources() const
+{
+    return m_preparedFrameObjectDataSlotReserved;
 }
 
 bool EngineFrameObjectBindingProvider::OnPrepareDraw(
@@ -302,6 +328,9 @@ void EngineFrameObjectBindingProvider::RefreshExplicitObjectBindingSet()
 
 std::optional<size_t> EngineFrameObjectBindingProvider::ResolveActiveObjectDataSlotIndex()
 {
+    if (m_preparedFrameObjectDataSlotUnavailable)
+        return std::nullopt;
+
     const auto activeSlotIndex =
         NLS::Render::Context::DriverRendererAccess::GetActiveFrameContextSlotIndex(m_renderer.GetDriver());
     if (activeSlotIndex.has_value())
@@ -317,7 +346,10 @@ std::optional<size_t> EngineFrameObjectBindingProvider::ResolveActiveObjectDataS
         const auto reusableSlotIndex =
             NLS::Render::Context::DriverRendererAccess::ReserveReusableFrameContextSlotIndex(m_renderer.GetDriver());
         if (!reusableSlotIndex.has_value())
+        {
+            m_preparedFrameObjectDataSlotUnavailable = true;
             return std::nullopt;
+        }
         m_activeObjectDataSlotIndex = reusableSlotIndex.value();
         m_preparedFrameObjectDataSlotIndex = m_activeObjectDataSlotIndex;
         m_preparedFrameHasObjectDataSlot = true;

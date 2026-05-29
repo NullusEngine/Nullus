@@ -194,7 +194,8 @@ namespace NLS::Render::Context
         Driver& driver,
         const FrameSnapshot& snapshot,
         PreparedRenderSceneBuilder renderSceneBuilder,
-        size_t* publishedSlotIndex)
+        size_t* publishedSlotIndex,
+        uint64_t* publishedFrameId)
     {
         NLS_PROFILE_SCOPE();
         if (driver.m_impl->threadedLifecycle == nullptr)
@@ -230,6 +231,8 @@ namespace NLS::Render::Context
             std::move(resolvedRenderSceneBuilder),
             std::chrono::milliseconds(driver.m_impl->threadedPublishRetirementWaitMs),
             publishedSlotIndex);
+        if (publishedFrameId != nullptr)
+            *publishedFrameId = published ? resolvedSnapshot.frameId : 0u;
         if (published)
             Detail::NotifyThreadedWorkers(*driver.m_impl);
         return published;

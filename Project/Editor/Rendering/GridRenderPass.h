@@ -35,7 +35,8 @@ namespace NLS::Editor::Rendering
 		* @param p_renderer
 		*/
 		GridRenderPass(NLS::Render::Core::CompositeRenderer& p_renderer);
-        std::optional<NLS::Render::Context::RenderPassCommandInput> GetPreparedThreadedPassInput() const;
+        const std::optional<NLS::Render::Context::RenderPassCommandInput>& GetPreparedThreadedPassInput() const;
+        std::optional<NLS::Render::Context::RenderPassCommandInput> ConsumePreparedThreadedPassInput();
 
         static bool ShouldIncludeInThreadedFrame(
             bool passEnabled,

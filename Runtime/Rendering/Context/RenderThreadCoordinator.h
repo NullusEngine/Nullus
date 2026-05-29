@@ -28,7 +28,8 @@ namespace NLS::Render::Context
             Driver& driver,
             const FrameSnapshot& snapshot,
             PreparedRenderSceneBuilder renderSceneBuilder,
-            size_t* publishedSlotIndex = nullptr);
+            size_t* publishedSlotIndex = nullptr,
+            uint64_t* publishedFrameId = nullptr);
         static bool DrainPendingRenderFrameBuildsSynchronously(Driver& driver);
         static ThreadedFrameTelemetry GetThreadedFrameTelemetry(const Driver& driver);
         static std::optional<ThreadedFrameTelemetry> TryGetThreadedFrameTelemetry(const Driver& driver);

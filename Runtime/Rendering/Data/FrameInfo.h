@@ -39,6 +39,9 @@ namespace NLS::Render::Data
 		uint64_t vertexCount = 0;
 		uint64_t inFlightFrameCount = 0;
 		uint64_t blockedFrameCount = 0;
+        uint64_t reservedSlotWaitCount = 0;
+        uint64_t reservedSlotWaitTimeoutCount = 0;
+        uint64_t reservedSlotWaitTotalNs = 0;
 		FramePublishState publishState = FramePublishState::Direct;
 		ThreadedFrameStageSummary stageSummary = ThreadedFrameStageSummary::Direct;
 		FrameRetirementState retirementState = FrameRetirementState::Direct;

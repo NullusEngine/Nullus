@@ -4,14 +4,20 @@
 #include <fg/FrameGraph.hpp>
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
+#include <regex>
 #include <sstream>
 #include <type_traits>
 
 #include "Rendering/DebugSceneRenderer.h"
+#include "Rendering/DebugGameObjectSelectionCollector.h"
 #include "Rendering/EditorHelperLifecycle.h"
+#include "Engine/LayerMask.h"
 #include "Rendering/Data/FrameDescriptor.h"
 #include "Rendering/Entities/Camera.h"
 #include "Rendering/FrameGraph/ExternalResourceBridge.h"
@@ -19,6 +25,7 @@
 #include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/RHI/Core/RHISwapchain.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
+#include "Rendering/SelectionOutlineMaskRenderer.h"
 #include "Rendering/DeferredSceneRenderer.h"
 #include "Rendering/ForwardSceneRenderer.h"
 
@@ -36,6 +43,120 @@ namespace
         std::ostringstream buffer;
         buffer << stream.rdbuf();
         return NormalizeSourceLineEndings(buffer.str());
+    }
+
+    std::size_t CountOccurrences(const std::string& text, const std::string& pattern)
+    {
+        std::size_t count = 0u;
+        std::size_t position = 0u;
+        while ((position = text.find(pattern, position)) != std::string::npos)
+        {
+            ++count;
+            position += pattern.size();
+        }
+        return count;
+    }
+
+    std::map<std::string, int> ParseHlslStaticIntConstants(const std::string& source)
+    {
+        std::map<std::string, int> constants;
+        const std::regex pattern(R"(static\s+const\s+int\s+(\w+)\s*=\s*(-?\d+)\s*;)");
+        for (std::sregex_iterator it(source.begin(), source.end(), pattern), end; it != end; ++it)
+            constants[it->str(1)] = std::stoi(it->str(2));
+        return constants;
+    }
+
+    struct SelectionMaskChannelContract
+    {
+        std::string swizzle;
+        int index = -1;
+    };
+
+    std::map<std::string, SelectionMaskChannelContract> ParseSelectionMaskChannels(
+        const std::string& channelTable)
+    {
+        std::map<std::string, SelectionMaskChannelContract> channels;
+        std::istringstream stream(channelTable);
+        std::string line;
+        while (std::getline(stream, line))
+        {
+            const auto macro = line.find("NLS_SELECTION_OUTLINE_MASK_CHANNEL(");
+            if (macro == std::string::npos)
+                continue;
+
+            const auto argsStart = line.find('(', macro);
+            const auto argsEnd = line.find(')', argsStart);
+            if (argsStart == std::string::npos || argsEnd == std::string::npos)
+                continue;
+
+            const auto args = line.substr(argsStart + 1u, argsEnd - argsStart - 1u);
+            std::array<std::string, 3> parts {};
+            std::istringstream argsStream(args);
+            for (auto& part : parts)
+            {
+                std::getline(argsStream, part, ',');
+                part.erase(std::remove_if(part.begin(), part.end(), [](unsigned char ch) { return std::isspace(ch) != 0; }), part.end());
+            }
+
+            if (!parts[0].empty() && !parts[1].empty() && !parts[2].empty())
+                channels[parts[0]] = { parts[1], std::stoi(parts[2]) };
+        }
+        return channels;
+    }
+
+    std::string ExpandSelectionOutlinePassModeConstantsForTest(const std::string& passModeTable)
+    {
+        std::ostringstream expanded;
+        std::istringstream stream(passModeTable);
+        std::string line;
+        const std::regex pattern(R"(NLS_SELECTION_OUTLINE_MASK_PASS_MODE\((\w+),\s*(-?\d+)\))");
+        while (std::getline(stream, line))
+        {
+            std::smatch match;
+            if (std::regex_search(line, match, pattern))
+                expanded << "static const int SelectionOutlinePassMode" << match[1].str() << " = " << match[2].str() << ";\n";
+        }
+        return expanded.str();
+    }
+
+    std::string ExpandSelectionOutlineChannelIndexConstantsForTest(const std::string& channelTable)
+    {
+        std::ostringstream expanded;
+        const auto channels = ParseSelectionMaskChannels(channelTable);
+        for (const auto& [name, channel] : channels)
+            expanded << "static const int SelectionOutlineMask" << name << "Index = " << channel.index << ";\n";
+        return expanded.str();
+    }
+
+    NLS::Render::Resources::Mesh CreateSelectionTestMesh()
+    {
+        return NLS::Render::Resources::Mesh(
+            {},
+            {},
+            0u,
+            NLS::Render::Resources::MeshBufferUploadMode::GpuOnly,
+            {{0.0f, 0.0f, 0.0f}, 1.0f});
+    }
+
+    class ToggleableMeshRenderer final : public NLS::Engine::Components::MeshRenderer
+    {
+    public:
+        void SetSelfEnabledForTest(const bool enabled)
+        {
+            m_enabled = enabled;
+        }
+    };
+
+    NLS::Render::Data::Frustum CreateForwardSelectionFrustum()
+    {
+        NLS::Render::Data::Frustum frustum;
+        const auto view = NLS::Maths::Matrix4::CreateView(
+            0.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, -1.0f,
+            0.0f, 1.0f, 0.0f);
+        const auto projection = NLS::Maths::Matrix4::CreatePerspective(90.0f, 1.0f, 0.1f, 100.0f);
+        frustum.CalculateFrustum(projection * view);
+        return frustum;
     }
 
     struct DeferredSnapshotHarness : NLS::Engine::Rendering::DeferredSceneRenderer
@@ -79,6 +200,70 @@ namespace
         NLS::Render::RHI::RHITextureViewDesc m_desc {};
     };
 
+    std::shared_ptr<TestTexture> MakeDeferredTestTexture(
+        const char* debugName,
+        const NLS::Render::RHI::TextureFormat format = NLS::Render::RHI::TextureFormat::RGBA8,
+        const NLS::Render::RHI::TextureUsageFlags usage = NLS::Render::RHI::TextureUsageFlags::Sampled)
+    {
+        NLS::Render::RHI::RHITextureDesc desc;
+        desc.debugName = debugName;
+        desc.extent = { 320u, 180u, 1u };
+        desc.format = format;
+        desc.usage = usage;
+        desc.mipLevels = 1u;
+        desc.arrayLayers = 1u;
+        return std::make_shared<TestTexture>(desc);
+    }
+
+    std::shared_ptr<TestTextureView> MakeDeferredTestTextureView(
+        const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+        const char* debugName)
+    {
+        NLS::Render::RHI::RHITextureViewDesc desc;
+        desc.debugName = debugName;
+        desc.format = texture->GetDesc().format;
+        return std::make_shared<TestTextureView>(texture, desc);
+    }
+
+    NLS::Render::FrameGraph::DeferredPreparedSceneResources MakeCompleteDeferredPreparedSceneResources(
+        std::shared_ptr<NLS::Render::RHI::RHITextureView> depthView = nullptr)
+    {
+        NLS::Render::FrameGraph::DeferredPreparedSceneResources resources;
+        const auto albedoTexture = MakeDeferredTestTexture(
+            "DeferredGBufferAlbedo",
+            NLS::Render::FrameGraph::kDeferredGBufferColorFormats[0],
+            NLS::Render::FrameGraph::kDeferredGBufferColorUsage);
+        const auto normalTexture = MakeDeferredTestTexture(
+            "DeferredGBufferNormal",
+            NLS::Render::FrameGraph::kDeferredGBufferColorFormats[1],
+            NLS::Render::FrameGraph::kDeferredGBufferColorUsage);
+        const auto materialTexture = MakeDeferredTestTexture(
+            "DeferredGBufferMaterial",
+            NLS::Render::FrameGraph::kDeferredGBufferColorFormats[2],
+            NLS::Render::FrameGraph::kDeferredGBufferColorUsage);
+        auto depthTexture = depthView != nullptr
+            ? depthView->GetTexture()
+            : std::static_pointer_cast<NLS::Render::RHI::RHITexture>(
+                MakeDeferredTestTexture(
+                    "DeferredGBufferDepth",
+                    NLS::Render::FrameGraph::kDeferredGBufferDepthFormat,
+                    NLS::Render::FrameGraph::kDeferredGBufferDepthUsage));
+
+        resources.gbufferColorViews.push_back(MakeDeferredTestTextureView(albedoTexture, "DeferredGBufferAlbedoView"));
+        resources.gbufferColorViews.push_back(MakeDeferredTestTextureView(normalTexture, "DeferredGBufferNormalView"));
+        resources.gbufferColorViews.push_back(MakeDeferredTestTextureView(materialTexture, "DeferredGBufferMaterialView"));
+        resources.gbufferDepthView = depthView != nullptr
+            ? std::move(depthView)
+            : MakeDeferredTestTextureView(depthTexture, "DeferredGBufferDepthView");
+        resources.gbufferTextures = {
+            resources.gbufferColorViews[0]->GetTexture(),
+            resources.gbufferColorViews[1]->GetTexture(),
+            resources.gbufferColorViews[2]->GetTexture(),
+            resources.gbufferDepthView->GetTexture()
+        };
+        return resources;
+    }
+
     NLS::Render::RHI::RHIDeviceCapabilities MakeEditorReadyCapabilities()
     {
         NLS::Render::RHI::RHIDeviceCapabilities capabilities;
@@ -119,37 +304,15 @@ TEST(EditorRenderPathContractTests, EditorRuntimeAcceptsDx12WhenCapabilitiesAreS
 #endif
 }
 
-TEST(EditorRenderPathContractTests, EditorDeferredPathKeepsGraphOwnedGBufferBeforeLightingOrder)
+TEST(EditorRenderPathContractTests, EditorDeferredPathKeepsGBufferBeforeLightingDescriptorOrder)
 {
-    NLS::Render::Entities::Camera camera;
-    NLS::Render::Data::FrameDescriptor frameDescriptor;
-    frameDescriptor.renderWidth = 320u;
-    frameDescriptor.renderHeight = 180u;
-    frameDescriptor.camera = &camera;
+    const auto passDescriptors = NLS::Render::FrameGraph::GetDeferredScenePassDescriptors();
 
-    FrameGraph frameGraph;
-    FrameGraphBlackboard blackboard;
-
-    const auto resourceRequest = NLS::Render::FrameGraph::BuildDeferredGraphSceneResourceRequest(
-        frameGraph,
-        blackboard,
-        frameDescriptor,
-        {});
-    const auto lightGridContext = NLS::Render::FrameGraph::BuildLightGridCompileContext(
-        frameDescriptor,
-        NLS::Render::FrameGraph::PreparedComputeDispatchSource{},
-        nullptr);
-    const auto preparedGraph = NLS::Render::FrameGraph::PrepareDeferredSceneGraph(
-        resourceRequest,
-        lightGridContext);
-
-    const auto& graphPasses = preparedGraph.execution.compiledExecution.graphPasses;
-    ASSERT_EQ(graphPasses.size(), 2u);
-    EXPECT_EQ(graphPasses[0].metadata.commandKind, NLS::Render::Context::RenderPassCommandKind::GBuffer);
-    EXPECT_EQ(graphPasses[1].metadata.commandKind, NLS::Render::Context::RenderPassCommandKind::Lighting);
-    EXPECT_STREQ(graphPasses[0].metadata.graphPassName, "DeferredGBuffer");
-    EXPECT_STREQ(graphPasses[1].metadata.graphPassName, "DeferredLighting");
-    EXPECT_TRUE(preparedGraph.execution.compiledExecution.threadedPlan.passes.empty());
+    ASSERT_EQ(passDescriptors.size(), 2u);
+    EXPECT_EQ(passDescriptors[0].metadata.commandKind, NLS::Render::Context::RenderPassCommandKind::GBuffer);
+    EXPECT_EQ(passDescriptors[1].metadata.commandKind, NLS::Render::Context::RenderPassCommandKind::Lighting);
+    EXPECT_STREQ(passDescriptors[0].metadata.graphPassName, "DeferredGBuffer");
+    EXPECT_STREQ(passDescriptors[1].metadata.graphPassName, "DeferredLighting");
 }
 
 TEST(EditorRenderPathContractTests, DebugSceneRendererUsesDeferredMainScenePath)
@@ -188,10 +351,10 @@ TEST(EditorRenderPathContractTests, EditorMeshFilterConsumersResolveDeferredMesh
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto meshRendererPath = root / "Runtime/Engine/Components/MeshRenderer.cpp";
+    const auto debugSelectionCollectorPath = root / "Project/Editor/Rendering/DebugGameObjectSelectionCollector.h";
     const std::vector<std::filesystem::path> deferredConsumerPaths = {
         root / "Project/Editor/Core/CameraController.cpp",
-        root / "Project/Editor/Core/SceneViewImGuizmo.cpp",
-        root / "Project/Editor/Rendering/DebugSceneRenderer.cpp"
+        root / "Project/Editor/Core/SceneViewImGuizmo.cpp"
     };
 
     std::ifstream meshRendererStream(meshRendererPath, std::ios::binary);
@@ -213,6 +376,11 @@ TEST(EditorRenderPathContractTests, EditorMeshFilterConsumersResolveDeferredMesh
         EXPECT_NE(source.find("ResolveMesh()"), std::string::npos) << sourcePath.string();
         EXPECT_EQ(source.find("GetModel()"), std::string::npos) << sourcePath.string();
     }
+
+    const auto debugSelectionCollectorSource = ReadSourceText(debugSelectionCollectorPath);
+    ASSERT_FALSE(debugSelectionCollectorSource.empty());
+    EXPECT_NE(debugSelectionCollectorSource.find("meshFilter->ResolveMesh()"), std::string::npos);
+    EXPECT_EQ(debugSelectionCollectorSource.find("GetModel()"), std::string::npos);
 
     const auto editorRoot = root / "Project/Editor";
     const auto resourceLifecyclePath = root / "Project/Editor/Core/EditorActions.cpp";
@@ -466,6 +634,2863 @@ TEST(EditorRenderPathContractTests, RegisteredObjectDataShadersUseInstanceIdOffs
         EXPECT_EQ(shaderSource.find("ObjectData[u_ObjectIndex]"), std::string::npos)
             << shaderPath.string();
     }
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskUsesIndexedObjectDataForLargeSelections)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto shaderSource =
+        ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineMask.hlsl");
+
+    ASSERT_FALSE(shaderSource.empty());
+
+    EXPECT_NE(
+        shaderSource.find("StructuredBuffer<float4x4> ObjectData : register(t0, space3)"),
+        std::string::npos);
+    EXPECT_NE(shaderSource.find("uint instanceId : SV_InstanceID"), std::string::npos);
+    EXPECT_NE(shaderSource.find("ObjectData[u_ObjectIndex + instanceId]"), std::string::npos);
+    EXPECT_EQ(shaderSource.find("cbuffer ObjectConstants : register(b0, space3)"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineCompositeShaderDoesNotUseIndexedObjectData)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto compositeShaderPath = root / "App/Assets/Editor/Shaders/SelectionOutlineComposite.hlsl";
+    const auto compositeCorePath = root / "App/Assets/Editor/Shaders/SelectionOutlineCompositeCore.hlsli";
+    ASSERT_TRUE(std::filesystem::is_regular_file(compositeShaderPath));
+    ASSERT_TRUE(std::filesystem::is_regular_file(compositeCorePath));
+    const auto compositeShader = ReadSourceText(compositeShaderPath);
+    const auto compositeCore = ReadSourceText(compositeCorePath);
+    const auto rendererSource =
+        ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+    const auto editorResourcesSource =
+        ReadSourceText(root / "Project/Editor/Core/EditorResources.cpp");
+
+    ASSERT_FALSE(compositeShader.empty());
+    ASSERT_FALSE(compositeCore.empty());
+    ASSERT_FALSE(rendererSource.empty());
+    ASSERT_FALSE(editorResourcesSource.empty());
+
+    EXPECT_EQ(compositeShader.find("StructuredBuffer<float4x4> ObjectData"), std::string::npos)
+        << "The fullscreen composite draw must not force EngineFrameObjectBindingProvider indexed object-data preparation.";
+    EXPECT_EQ(compositeShader.find("ObjectData["), std::string::npos);
+    EXPECT_EQ(compositeShader.find("u_ObjectIndex"), std::string::npos);
+    EXPECT_NE(compositeShader.find("BuildFullscreenVertex"), std::string::npos);
+    EXPECT_NE(compositeShader.find("#include \"SelectionOutlineCompositeCore.hlsli\""), std::string::npos);
+    EXPECT_NE(compositeCore.find("float4 Composite(VSOutput input) : SV_Target0"), std::string::npos);
+    EXPECT_NE(editorResourcesSource.find("m_shaderPaths[\"SelectionOutlineComposite\"]"), std::string::npos);
+    EXPECT_NE(editorResourcesSource.find("GetShader(\"SelectionOutlineComposite\")"), std::string::npos);
+    EXPECT_NE(rendererSource.find("GetShader(\"SelectionOutlineComposite\")"), std::string::npos);
+    EXPECT_NE(rendererSource.find("EnsureSelectionOutlineCompositeMaterial"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineCompositeLogicHasSingleShaderSourceOfTruth)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto maskShader = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineMask.hlsl");
+    const auto compositeShader = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineComposite.hlsl");
+    const auto compositeCore = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineCompositeCore.hlsli");
+
+    ASSERT_FALSE(maskShader.empty());
+    ASSERT_FALSE(compositeShader.empty());
+    ASSERT_FALSE(compositeCore.empty());
+
+    EXPECT_NE(maskShader.find("#include \"SelectionOutlineCompositeCore.hlsli\""), std::string::npos)
+        << "The legacy mask-shader composite path must consume the same implementation as the runtime split composite shader.";
+    EXPECT_NE(compositeShader.find("#include \"SelectionOutlineCompositeCore.hlsli\""), std::string::npos);
+    EXPECT_EQ(maskShader.find("struct SelectionOutlineMaskNeighborhood"), std::string::npos);
+    EXPECT_EQ(compositeShader.find("struct SelectionOutlineMaskNeighborhood"), std::string::npos);
+    EXPECT_NE(compositeCore.find("struct SelectionOutlineMaskNeighborhood"), std::string::npos);
+    EXPECT_NE(compositeCore.find("SelectionOutlineSoftOutline ComputeSoftOutline"), std::string::npos);
+    EXPECT_NE(compositeCore.find("float4 Composite(VSOutput input) : SV_Target0"), std::string::npos);
+    EXPECT_NE(compositeCore.find("NLS_SELECTION_OUTLINE_COMPOSITE_CORE_HLSLI"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, DebugGameObjectPathExposesNestedPerformanceScopes)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto debugSceneSourcePath = root / "Project/Editor/Rendering/DebugSceneRenderer.cpp";
+    const auto outlineSourcePath = root / "Project/Editor/Rendering/OutlineRenderer.cpp";
+
+    std::ifstream debugSceneStream(debugSceneSourcePath, std::ios::binary);
+    const std::string debugSceneSource{
+        std::istreambuf_iterator<char>(debugSceneStream),
+        std::istreambuf_iterator<char>()};
+    std::ifstream outlineStream(outlineSourcePath, std::ios::binary);
+    const std::string outlineSource{
+        std::istreambuf_iterator<char>(outlineStream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(debugSceneSource.empty());
+    ASSERT_FALSE(outlineSource.empty());
+    EXPECT_NE(debugSceneSource.find("NLS_PROFILE_NAMED_SCOPE(\"DebugGameObject::DrawDebugElements\")"), std::string::npos);
+    EXPECT_NE(debugSceneSource.find("NLS_PROFILE_NAMED_SCOPE(\"DebugGameObject::BuildThreadedPassInput\")"), std::string::npos);
+    EXPECT_NE(outlineSource.find("NLS_PROFILE_NAMED_SCOPE(\"DebugGameObject::CaptureOutlineDrawCommands\")"), std::string::npos);
+    EXPECT_NE(outlineSource.find("NLS_PROFILE_NAMED_SCOPE(\"DebugGameObject::CaptureOutlineStencil\")"), std::string::npos);
+    EXPECT_NE(outlineSource.find("NLS_PROFILE_NAMED_SCOPE(\"DebugGameObject::CaptureOutlineShell\")"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, DebugGameObjectUsesProjectProfilerScopesForSelectedOutlineHotPath)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto debugSceneSource =
+        ReadSourceText(root / "Project/Editor/Rendering/DebugSceneRenderer.cpp");
+    const auto outlineSource =
+        ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(debugSceneSource.empty());
+    ASSERT_FALSE(outlineSource.empty());
+
+    EXPECT_EQ(debugSceneSource.find("#include <Profiler.h>"), std::string::npos);
+    EXPECT_EQ(outlineSource.find("#include <Profiler.h>"), std::string::npos);
+    EXPECT_EQ(debugSceneSource.find("PROFILE_CPU_SCOPE"), std::string::npos);
+    EXPECT_EQ(outlineSource.find("PROFILE_CPU_SCOPE"), std::string::npos);
+
+    EXPECT_NE(debugSceneSource.find("NLS_PROFILE_NAMED_SCOPE(\"DebugGameObject::CollectSelectedItems\")"), std::string::npos);
+    EXPECT_NE(debugSceneSource.find("NLS_PROFILE_NAMED_SCOPE(\"DebugGameObject::BuildThreadedPassInput\")"), std::string::npos);
+    EXPECT_NE(outlineSource.find("NLS_PROFILE_NAMED_SCOPE(\"SelectionOutlineMask::BuildPreparedOutput\")"), std::string::npos);
+    EXPECT_NE(outlineSource.find("NLS_PROFILE_NAMED_SCOPE(\"SelectionOutlineMask::ResolveSelectionCaptureGroups\")"), std::string::npos);
+    EXPECT_NE(outlineSource.find("NLS_PROFILE_NAMED_SCOPE(\"SelectionOutlineMask::CaptureMask\")"), std::string::npos);
+    EXPECT_NE(outlineSource.find("NLS_PROFILE_NAMED_SCOPE(\"SelectionOutlineMask::RecordComposite\")"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, DebugGameObjectDebugDrawSelectionCollectorIgnoresUnrelatedSceneObjects)
+{
+    NLS::Render::Resources::Mesh selectedMesh({}, {}, 0u);
+    NLS::Engine::GameObject selected("Selected");
+    NLS::Engine::GameObject selectedChild("SelectedChild");
+    NLS::Engine::GameObject unrelated("Unrelated");
+    selectedChild.SetParent(selected);
+
+    auto* selectedChildMeshFilter = selectedChild.AddComponent<NLS::Engine::Components::MeshFilter>();
+    selectedChildMeshFilter->SetMesh(&selectedMesh);
+    auto* selectedChildMeshRenderer = selectedChild.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    auto* selectedChildCamera = selectedChild.AddComponent<NLS::Engine::Components::CameraComponent>();
+    auto* selectedChildLight = selectedChild.AddComponent<NLS::Engine::Components::LightComponent>();
+
+    unrelated.AddComponent<NLS::Engine::Components::MeshFilter>();
+    unrelated.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    unrelated.AddComponent<NLS::Engine::Components::CameraComponent>();
+    unrelated.AddComponent<NLS::Engine::Components::LightComponent>();
+
+    NLS::Editor::Rendering::DebugGameObjectDebugDrawItems items;
+    NLS::Editor::Rendering::CollectSelectedDebugGameObjectDebugDrawItems(selected, items);
+
+    EXPECT_EQ(items.visitedGameObjects, 2u);
+    ASSERT_EQ(items.selectionMeshItems.size(), 1u);
+    ASSERT_EQ(items.cameras.size(), 1u);
+    ASSERT_EQ(items.lights.size(), 1u);
+    EXPECT_EQ(items.selectionMeshItems[0].meshRenderer, selectedChildMeshRenderer);
+    EXPECT_EQ(items.selectionMeshItems[0].mesh, &selectedMesh);
+    EXPECT_EQ(items.cameras[0].cameraComponent, selectedChildCamera);
+    EXPECT_EQ(
+        items.cameras[0].selectionClassification,
+        NLS::Editor::Rendering::kSelectionOutlineChildClassification);
+    EXPECT_EQ(items.lights[0], selectedChildLight);
+    EXPECT_NE(selectedChildMeshFilter, nullptr);
+
+    selectedChild.DetachFromParent();
+}
+
+TEST(EditorRenderPathContractTests, DebugGameObjectSelectionCollectorClassifiesRootAndChildCameras)
+{
+    NLS::Engine::GameObject selected("Selected");
+    NLS::Engine::GameObject selectedChild("SelectedChild");
+    selectedChild.SetParent(selected);
+
+    auto* selectedCamera = selected.AddComponent<NLS::Engine::Components::CameraComponent>();
+    auto* selectedChildCamera = selectedChild.AddComponent<NLS::Engine::Components::CameraComponent>();
+
+    NLS::Editor::Rendering::DebugGameObjectDebugDrawItems items;
+    NLS::Editor::Rendering::CollectSelectedDebugGameObjectDebugDrawItems(selected, items);
+
+    ASSERT_EQ(items.cameras.size(), 2u);
+    EXPECT_EQ(items.cameras[0].cameraComponent, selectedCamera);
+    EXPECT_EQ(
+        items.cameras[0].selectionClassification,
+        NLS::Editor::Rendering::kSelectionOutlineParentClassification);
+    EXPECT_EQ(items.cameras[1].cameraComponent, selectedChildCamera);
+    EXPECT_EQ(
+        items.cameras[1].selectionClassification,
+        NLS::Editor::Rendering::kSelectionOutlineChildClassification);
+
+    selectedChild.DetachFromParent();
+}
+
+TEST(EditorRenderPathContractTests, DebugGameObjectSelectionCollectorKeepsMeshItemsWhileSkippingDisabledComponents)
+{
+    NLS::Render::Resources::Mesh selectedMesh({}, {}, 0u);
+    NLS::Engine::GameObject selected("Selected");
+    NLS::Engine::GameObject selectedChild("SelectedChild");
+    selectedChild.SetParent(selected);
+
+    selectedChild.AddComponent<NLS::Engine::Components::MeshFilter>()->SetMesh(&selectedMesh);
+    selectedChild.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    selectedChild.AddComponent<NLS::Engine::Components::CameraComponent>();
+    selectedChild.AddComponent<NLS::Engine::Components::LightComponent>();
+
+    NLS::Editor::Rendering::DebugGameObjectDebugDrawItems items;
+    NLS::Editor::Rendering::CollectSelectedDebugGameObjectDebugDrawItems(
+        selected,
+        items,
+        false,
+        false);
+
+    EXPECT_EQ(items.visitedGameObjects, 2u);
+    ASSERT_EQ(items.selectionMeshItems.size(), 1u);
+    EXPECT_EQ(items.selectionMeshItems[0].mesh, &selectedMesh);
+    EXPECT_TRUE(items.cameras.empty());
+    EXPECT_TRUE(items.lights.empty());
+
+    selectedChild.DetachFromParent();
+}
+
+TEST(EditorRenderPathContractTests, DebugGameObjectSelectionCollectorFiltersMaskRenderEligibility)
+{
+    auto mesh = CreateSelectionTestMesh();
+    NLS::Engine::GameObject selected("Selected");
+    NLS::Engine::GameObject visible("Visible");
+    NLS::Engine::GameObject disabledRenderer("DisabledRenderer");
+    NLS::Engine::GameObject editorOnly("EditorOnly");
+    NLS::Engine::GameObject layerHidden("LayerHidden");
+    NLS::Engine::GameObject layerHiddenVisibleChild("LayerHiddenVisibleChild");
+    NLS::Engine::GameObject missingMesh("MissingMesh");
+    NLS::Engine::GameObject outsideFrustum("OutsideFrustum");
+    NLS::Engine::GameObject cullingDisabledVisible("CullingDisabledVisible");
+
+    visible.SetParent(selected);
+    disabledRenderer.SetParent(selected);
+    editorOnly.SetParent(selected);
+    layerHidden.SetParent(selected);
+    layerHiddenVisibleChild.SetParent(layerHidden);
+    missingMesh.SetParent(selected);
+    outsideFrustum.SetParent(selected);
+    cullingDisabledVisible.SetParent(selected);
+
+    auto addRenderable = [&mesh](NLS::Engine::GameObject& actor)
+    {
+        actor.AddComponent<NLS::Engine::Components::MeshFilter>()->SetMesh(&mesh);
+        auto* renderer = actor.AddComponent<ToggleableMeshRenderer>();
+        renderer->SetFrustumBehaviour(NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MODEL);
+        return renderer;
+    };
+
+    auto* visibleRenderer = addRenderable(visible);
+    visible.GetTransform()->SetWorldPosition({0.0f, 0.0f, -6.0f});
+    auto* disabledRendererComponent = addRenderable(disabledRenderer);
+    disabledRenderer.GetTransform()->SetWorldPosition({0.0f, 0.0f, -6.0f});
+    disabledRendererComponent->SetSelfEnabledForTest(false);
+    addRenderable(editorOnly);
+    editorOnly.GetTransform()->SetWorldPosition({0.0f, 0.0f, -6.0f});
+    editorOnly.SetTag("EditorOnly");
+    addRenderable(layerHidden);
+    layerHidden.GetTransform()->SetWorldPosition({0.0f, 0.0f, -6.0f});
+    layerHidden.SetLayer(7);
+    auto* layerHiddenVisibleChildRenderer = addRenderable(layerHiddenVisibleChild);
+    layerHiddenVisibleChild.GetTransform()->SetWorldPosition({0.0f, 0.0f, -6.0f});
+    missingMesh.AddComponent<NLS::Engine::Components::MeshFilter>();
+    missingMesh.AddComponent<ToggleableMeshRenderer>();
+    addRenderable(outsideFrustum);
+    outsideFrustum.GetTransform()->SetWorldPosition({250.0f, 0.0f, -6.0f});
+    auto* cullingDisabledRenderer = addRenderable(cullingDisabledVisible);
+    cullingDisabledRenderer->SetFrustumBehaviour(NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::DISABLED);
+    cullingDisabledVisible.GetTransform()->SetWorldPosition({250.0f, 0.0f, -6.0f});
+
+    NLS::Editor::Rendering::DebugGameObjectDebugDrawItems items;
+    auto frustum = CreateForwardSelectionFrustum();
+    NLS::Editor::Rendering::DebugGameObjectSelectionFilter filter;
+    filter.visibleLayers = NLS::Engine::LayerMask(1u << 0u);
+    filter.frustum = &frustum;
+
+    NLS::Editor::Rendering::CollectSelectedDebugGameObjectDebugDrawItems(
+        selected,
+        items,
+        true,
+        true,
+        filter);
+
+    ASSERT_EQ(items.selectionMeshItems.size(), 3u);
+    EXPECT_EQ(items.selectionMeshItems[0].meshRenderer, visibleRenderer);
+    EXPECT_EQ(items.selectionMeshItems[1].meshRenderer, layerHiddenVisibleChildRenderer);
+    EXPECT_EQ(items.selectionMeshItems[2].meshRenderer, cullingDisabledRenderer);
+    EXPECT_EQ(items.visitedGameObjects, 9u);
+
+    cullingDisabledVisible.DetachFromParent();
+    outsideFrustum.DetachFromParent();
+    missingMesh.DetachFromParent();
+    layerHiddenVisibleChild.DetachFromParent();
+    layerHidden.DetachFromParent();
+    editorOnly.DetachFromParent();
+    disabledRenderer.DetachFromParent();
+    visible.DetachFromParent();
+}
+
+TEST(EditorRenderPathContractTests, DebugGameObjectSelectionCollectorUsesSelectionMeshItemsAsMeshSsot)
+{
+    const auto collectorHeader = ReadSourceText(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Rendering/DebugGameObjectSelectionCollector.h");
+
+    ASSERT_FALSE(collectorHeader.empty());
+    EXPECT_NE(collectorHeader.find("std::vector<SelectionMeshItem> selectionMeshItems"), std::string::npos);
+    EXPECT_EQ(collectorHeader.find("modelRenderers"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, DebugGameObjectDebugDrawCollectsSelectedSubtreeAfterGate)
+{
+    const auto source = ReadSourceText(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Rendering/DebugSceneRenderer.cpp");
+
+    const auto debugPassStart = source.find("class DebugGameObjectRenderPass");
+    ASSERT_NE(debugPassStart, std::string::npos);
+    const auto drawStart = source.find("virtual void Draw(Render::Data::PipelineState p_pso) override", debugPassStart);
+    ASSERT_NE(drawStart, std::string::npos);
+    const auto debugDrawStart = source.find("void DrawGameObjectDebugElements", drawStart);
+    ASSERT_NE(debugDrawStart, std::string::npos);
+    const auto frustumStart = source.find("void DrawFrustumLines", debugDrawStart);
+    ASSERT_NE(frustumStart, std::string::npos);
+
+    const auto drawBody = source.substr(drawStart, debugDrawStart - drawStart);
+    const auto debugDrawBody = source.substr(debugDrawStart, frustumStart - debugDrawStart);
+
+    const auto settingsLookup = drawBody.find("const auto& debugSettings = Editor::Settings::EditorSettings::GetDebugDrawSettingsObject()");
+    const auto applySettings = drawBody.find("ApplyDebugDrawSettings(debugSettings)");
+    const auto gateCheck = drawBody.find("ShouldSubmitDebugGameObjectElements(debugSettings)");
+    const auto prepareItems = drawBody.find("const auto& debugDrawItems = PrepareDebugGameObjectDebugDrawItems");
+    const auto debugDrawCall = drawBody.find("DrawGameObjectDebugElements(debugDrawItems, debugSettings)");
+
+    ASSERT_NE(settingsLookup, std::string::npos);
+    ASSERT_NE(prepareItems, std::string::npos);
+    ASSERT_NE(applySettings, std::string::npos);
+    ASSERT_NE(gateCheck, std::string::npos);
+    ASSERT_NE(debugDrawCall, std::string::npos);
+    EXPECT_LT(settingsLookup, prepareItems);
+    EXPECT_LT(prepareItems, applySettings);
+    EXPECT_LT(applySettings, gateCheck);
+    EXPECT_LT(gateCheck, debugDrawCall);
+
+    EXPECT_EQ(debugDrawBody.find("ApplyDebugDrawSettings"), std::string::npos);
+    EXPECT_EQ(debugDrawBody.find("PrepareDebugGameObjectDebugDrawItems"), std::string::npos);
+    EXPECT_EQ(debugDrawBody.find("scene.GetFastAccessComponents()"), std::string::npos);
+    EXPECT_EQ(debugDrawBody.find("IsSelectedOrDescendant"), std::string::npos);
+    EXPECT_NE(debugDrawBody.find("debugDrawItems.selectionMeshItems"), std::string::npos);
+    EXPECT_NE(debugDrawBody.find("debugDrawItems.cameras"), std::string::npos);
+    EXPECT_NE(debugDrawBody.find("debugDrawItems.lights"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, DebugGameObjectThreadedPathDoesNotOpenEmptyOutputRenderPass)
+{
+    const auto source = ReadSourceText(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Rendering/DebugSceneRenderer.cpp");
+
+    const auto debugPassStart = source.find("class DebugGameObjectRenderPass");
+    ASSERT_NE(debugPassStart, std::string::npos);
+    const auto drawStart = source.find("virtual void Draw(Render::Data::PipelineState p_pso) override", debugPassStart);
+    ASSERT_NE(drawStart, std::string::npos);
+    const auto drawEnd = source.find("static bool ShouldSubmitDebugGameObjectElements", drawStart);
+    ASSERT_NE(drawEnd, std::string::npos);
+    const auto drawBody = source.substr(drawStart, drawEnd - drawStart);
+
+    EXPECT_NE(
+        source.find("bool ManagesOwnRenderPass() const override", debugPassStart),
+        std::string::npos);
+    EXPECT_NE(drawBody.find("BuildThreadedPassInput("), std::string::npos);
+    EXPECT_NE(drawBody.find("BeginOutputRenderPass("), std::string::npos);
+    EXPECT_NE(drawBody.find("EndOutputRenderPass(startedRenderPass)"), std::string::npos);
+    EXPECT_NE(drawBody.find("m_outlineRenderer.PrepareOutlineDrawItems(debugDrawItems)"), std::string::npos);
+    EXPECT_NE(drawBody.find("m_outlineRenderer.DrawPreparedOutline(kSelectedOutlineColor, kSelectedOutlineWidth)"), std::string::npos);
+    EXPECT_LT(
+        drawBody.find("BuildThreadedPassInput("),
+        drawBody.find("BeginOutputRenderPass("));
+    EXPECT_LT(
+        drawBody.find("m_outlineRenderer.PrepareOutlineDrawItems(debugDrawItems)"),
+        drawBody.find("BeginOutputRenderPass("));
+}
+
+TEST(EditorRenderPathContractTests, DebugGameObjectReusesSelectedTreeItemsForDebugAndOutline)
+{
+    const auto debugSceneSource = ReadSourceText(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Rendering/DebugSceneRenderer.cpp");
+    const auto outlineHeader = ReadSourceText(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Rendering/OutlineRenderer.h");
+    const auto collectorHeader = ReadSourceText(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Rendering/DebugGameObjectSelectionCollector.h");
+
+    const auto debugPassStart = debugSceneSource.find("class DebugGameObjectRenderPass");
+    ASSERT_NE(debugPassStart, std::string::npos);
+    const auto drawStart = debugSceneSource.find("virtual void Draw(Render::Data::PipelineState p_pso) override", debugPassStart);
+    ASSERT_NE(drawStart, std::string::npos);
+    const auto drawEnd = debugSceneSource.find("static bool ShouldSubmitDebugGameObjectElements", drawStart);
+    ASSERT_NE(drawEnd, std::string::npos);
+    const auto drawBody = debugSceneSource.substr(drawStart, drawEnd - drawStart);
+
+    EXPECT_NE(collectorHeader.find("selectionMeshItems"), std::string::npos);
+    EXPECT_NE(outlineHeader.find("const Editor::Rendering::DebugGameObjectDebugDrawItems& debugDrawItems"), std::string::npos);
+    EXPECT_NE(outlineHeader.find("bool PrepareOutlineDrawItems(const Editor::Rendering::DebugGameObjectDebugDrawItems& debugDrawItems)"), std::string::npos);
+    EXPECT_NE(outlineHeader.find("void DrawPreparedOutline(const Maths::Vector4& color, float thickness)"), std::string::npos);
+
+    const auto prepareItems = drawBody.find("const auto& debugDrawItems = PrepareDebugGameObjectDebugDrawItems");
+    const auto drawElements = drawBody.find("DrawGameObjectDebugElements(debugDrawItems, debugSettings)");
+    const auto buildThreaded = drawBody.find("BuildThreadedPassInput(");
+    const auto prepareOutline = drawBody.find("m_outlineRenderer.PrepareOutlineDrawItems(debugDrawItems)");
+    const auto drawOutline = drawBody.find("m_outlineRenderer.DrawPreparedOutline(kSelectedOutlineColor, kSelectedOutlineWidth)");
+    ASSERT_NE(prepareItems, std::string::npos);
+    ASSERT_NE(drawElements, std::string::npos);
+    ASSERT_NE(buildThreaded, std::string::npos);
+    ASSERT_NE(prepareOutline, std::string::npos);
+    ASSERT_NE(drawOutline, std::string::npos);
+    EXPECT_NE(drawBody.find("debugDrawItems", buildThreaded), std::string::npos);
+    EXPECT_LT(prepareItems, drawElements);
+    EXPECT_LT(drawElements, buildThreaded);
+    EXPECT_LT(buildThreaded, prepareOutline);
+    EXPECT_LT(prepareOutline, drawOutline);
+
+    const auto buildInputStart = debugSceneSource.find(
+        "Editor::Rendering::SelectionOutlinePreparedOutput BuildThreadedPassInput",
+        debugPassStart);
+    ASSERT_NE(buildInputStart, std::string::npos);
+    const auto buildInputEnd = debugSceneSource.find("private:", buildInputStart);
+    ASSERT_NE(buildInputEnd, std::string::npos);
+    const auto buildInputBody = debugSceneSource.substr(buildInputStart, buildInputEnd - buildInputStart);
+    const auto captureOutline = buildInputBody.find("m_outlineRenderer.CaptureOutlineDrawCommands(");
+    ASSERT_NE(captureOutline, std::string::npos);
+    EXPECT_NE(buildInputBody.find("debugDrawItems", captureOutline), std::string::npos);
+    EXPECT_EQ(
+        buildInputBody.find("m_outlineRenderer.CaptureOutlineDrawCommands(selectedGameObject"),
+        std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, DebugGameObjectSelectionCollectorKeepsCameraItemsForOutline)
+{
+    const auto source = ReadSourceText(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Rendering/DebugSceneRenderer.cpp");
+
+    const auto prepareItems = source.find(
+        "const Editor::Rendering::DebugGameObjectDebugDrawItems& PrepareDebugGameObjectDebugDrawItems");
+    ASSERT_NE(prepareItems, std::string::npos);
+    const auto prepareEnd = source.find("void ApplyDebugDrawSettings", prepareItems);
+    ASSERT_NE(prepareEnd, std::string::npos);
+    const auto prepareBody = source.substr(prepareItems, prepareEnd - prepareItems);
+
+    EXPECT_NE(prepareBody.find("debugSettings.debugDrawLighting"), std::string::npos);
+    EXPECT_NE(prepareBody.find("true"), std::string::npos);
+    EXPECT_EQ(prepareBody.find("debugSettings.debugDrawBounds"), std::string::npos);
+    EXPECT_EQ(prepareBody.find("debugSettings.debugDrawCamera"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, OutlineCaptureReusesSelectedTreeScratchBeforePassEmission)
+{
+    const auto source = ReadSourceText(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Rendering/OutlineRenderer.cpp");
+
+    const auto selectedCaptureStart = source.find(
+        "void Editor::Rendering::OutlineRenderer::CaptureOutlineDrawCommands(\n    const Editor::Rendering::DebugGameObjectDebugDrawItems& debugDrawItems");
+    ASSERT_NE(selectedCaptureStart, std::string::npos);
+    const auto selectedCaptureEnd = source.find("bool Editor::Rendering::OutlineRenderer::PrepareOutlineScratchItems", selectedCaptureStart);
+    ASSERT_NE(selectedCaptureEnd, std::string::npos);
+    const auto selectedCaptureBody = source.substr(selectedCaptureStart, selectedCaptureEnd - selectedCaptureStart);
+
+    const auto collection = selectedCaptureBody.find("PrepareOutlineScratchItems(debugDrawItems)");
+    const auto reserve = selectedCaptureBody.find("outDrawCommands.reserve(outDrawCommands.size() + m_outlineScratchItems.size() * 2u)");
+    const auto stencilPass = selectedCaptureBody.find("CaptureStencilPass(m_outlineScratchItems, outDrawCommands)");
+    const auto shellPass = selectedCaptureBody.find("CaptureOutlinePass(m_outlineScratchItems, color, thickness, outDrawCommands)");
+
+    ASSERT_NE(collection, std::string::npos);
+    ASSERT_NE(reserve, std::string::npos);
+    ASSERT_NE(stencilPass, std::string::npos);
+    ASSERT_NE(shellPass, std::string::npos);
+    EXPECT_LT(collection, stencilPass);
+    EXPECT_LT(reserve, stencilPass);
+    EXPECT_LT(stencilPass, shellPass);
+
+    const auto selectedPrepareStart = source.find(
+        "bool Editor::Rendering::OutlineRenderer::PrepareOutlineScratchItems(\n    const Editor::Rendering::DebugGameObjectDebugDrawItems& debugDrawItems");
+    ASSERT_NE(selectedPrepareStart, std::string::npos);
+    const auto selectedPrepareEnd = source.find("void Editor::Rendering::OutlineRenderer::CollectOutlineDrawItems", selectedPrepareStart);
+    ASSERT_NE(selectedPrepareEnd, std::string::npos);
+    const auto selectedPrepareBody = source.substr(selectedPrepareStart, selectedPrepareEnd - selectedPrepareStart);
+
+    EXPECT_EQ(selectedPrepareBody.find("GetChildren()"), std::string::npos);
+    EXPECT_EQ(selectedPrepareBody.find("ResolveMesh()"), std::string::npos);
+    EXPECT_NE(selectedPrepareBody.find("debugDrawItems.selectionMeshItems"), std::string::npos);
+    EXPECT_NE(selectedPrepareBody.find("debugDrawItems.cameras"), std::string::npos);
+
+    const auto header = ReadSourceText(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Rendering/OutlineRenderer.h");
+    EXPECT_NE(header.find("std::vector<OutlineDrawItem> m_outlineScratchItems"), std::string::npos);
+    EXPECT_NE(header.find("std::optional<Maths::Vector4> m_lastAppliedOutlineColor"), std::string::npos);
+    EXPECT_NE(header.find("void ApplyOutlineMaterialColor(const Maths::Vector4& color)"), std::string::npos);
+    EXPECT_NE(header.find("bool PrepareOutlineScratchItems(Engine::GameObject& actor)"), std::string::npos);
+    EXPECT_EQ(header.find("std::vector<OutlineDrawItem>& PrepareOutlineScratchItems"), std::string::npos);
+
+    EXPECT_NE(source.find("void Editor::Rendering::OutlineRenderer::ApplyOutlineMaterialColor"), std::string::npos);
+    EXPECT_NE(source.find("m_lastAppliedOutlineColor.has_value() && *m_lastAppliedOutlineColor == color"), std::string::npos);
+    EXPECT_NE(source.find("m_outlineMaterial.GetParameterBlock().TryGet(\"u_Diffuse\")"), std::string::npos);
+    EXPECT_NE(source.find("std::any_cast<const Maths::Vector4&>(*appliedColor) == color"), std::string::npos);
+    EXPECT_NE(source.find("m_lastAppliedOutlineColor.reset()"), std::string::npos);
+    EXPECT_NE(source.find("if (!m_outlineMaterial.HasShader())"), std::string::npos);
+    EXPECT_EQ(source.find("m_outlineMaterial.Set(\"u_Diffuse\", color)"), source.rfind("m_outlineMaterial.Set(\"u_Diffuse\", color)"));
+    EXPECT_NE(source.find("ApplyOutlineMaterialColor(color)"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, DebugGameObjectSelectionHelperDeclaresDepthStencilWrites)
+{
+    const auto source = ReadSourceText(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Rendering/DebugSceneRenderer.cpp");
+
+    const auto debugGameObjectPass = source.find("class DebugGameObjectRenderPass");
+    ASSERT_NE(debugGameObjectPass, std::string::npos);
+    const auto buildInputStart = source.find(
+        "Editor::Rendering::SelectionOutlinePreparedOutput BuildThreadedPassInput",
+        debugGameObjectPass);
+    ASSERT_NE(buildInputStart, std::string::npos);
+    const auto returnPassInput = source.find("maskOutput.passInputs.push_back(std::move(passInput))", buildInputStart);
+    ASSERT_NE(returnPassInput, std::string::npos);
+    const auto buildInputBody = source.substr(buildInputStart, returnPassInput - buildInputStart);
+
+    const auto usesDepth = buildInputBody.find("passInput.usesDepthStencilAttachment = true");
+    const auto writesDepth = buildInputBody.find("passInput.writesDepthStencilAttachment = true");
+    const auto captureOutline = buildInputBody.find("m_outlineRenderer.CaptureOutlineDrawCommands");
+
+    ASSERT_NE(usesDepth, std::string::npos);
+    ASSERT_NE(writesDepth, std::string::npos);
+    ASSERT_NE(captureOutline, std::string::npos);
+    EXPECT_LT(usesDepth, writesDepth);
+    EXPECT_LT(writesDepth, captureOutline);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskRendererFilesAndShaderAreIntegrated)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererHeaderPath = root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h";
+    const auto rendererSourcePath = root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp";
+    const auto channelTablePath = root / "Project/Editor/Rendering/SelectionOutlineMaskChannels.def";
+    const auto shaderPath = root / "App/Assets/Editor/Shaders/SelectionOutlineMask.hlsl";
+    const auto shaderChannelIncludePath = root / "App/Assets/Editor/Shaders/SelectionOutlineMaskChannels.hlsli";
+
+    ASSERT_TRUE(std::filesystem::is_regular_file(rendererHeaderPath));
+    ASSERT_TRUE(std::filesystem::is_regular_file(rendererSourcePath));
+    ASSERT_TRUE(std::filesystem::is_regular_file(channelTablePath));
+    ASSERT_TRUE(std::filesystem::is_regular_file(shaderPath));
+    ASSERT_TRUE(std::filesystem::is_regular_file(shaderChannelIncludePath));
+
+    const auto rendererHeader = ReadSourceText(rendererHeaderPath);
+    const auto rendererSource = ReadSourceText(rendererSourcePath);
+    const auto editorResourcesSource = ReadSourceText(root / "Project/Editor/Core/EditorResources.cpp");
+
+    EXPECT_NE(rendererHeader.find("class SelectionOutlineMaskRenderer"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("SelectionOutlinePreparedOutput"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("SelectionOutlineFallbackReason"), std::string::npos);
+    EXPECT_NE(rendererSource.find("SelectionOutlineMaskChannels.def"), std::string::npos);
+    EXPECT_NE(editorResourcesSource.find("m_shaderPaths[\"SelectionOutlineMask\"]"), std::string::npos);
+    EXPECT_NE(editorResourcesSource.find("GetShader(\"SelectionOutlineMask\")"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskShaderTablesAreAssetLocalDependencies)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto shaderChannelTablePath = root / "App/Assets/Editor/Shaders/SelectionOutlineMaskChannels.def";
+    const auto shaderPassModeTablePath = root / "App/Assets/Editor/Shaders/SelectionOutlineMaskPassModes.def";
+    const auto shaderChannelIncludePath = root / "App/Assets/Editor/Shaders/SelectionOutlineMaskChannels.hlsli";
+    const auto shaderPath = root / "App/Assets/Editor/Shaders/SelectionOutlineMask.hlsl";
+    const auto projectChannelWrapperPath = root / "Project/Editor/Rendering/SelectionOutlineMaskChannels.def";
+    const auto projectPassModeWrapperPath = root / "Project/Editor/Rendering/SelectionOutlineMaskPassModes.def";
+
+    ASSERT_TRUE(std::filesystem::is_regular_file(shaderChannelTablePath))
+        << "Shader include tables must live under App/Assets so shader import dependency hashing sees table edits.";
+    ASSERT_TRUE(std::filesystem::is_regular_file(shaderPassModeTablePath))
+        << "Shader pass-mode tables must live under App/Assets so shader import dependency hashing sees table edits.";
+    ASSERT_TRUE(std::filesystem::is_regular_file(shaderChannelIncludePath));
+    ASSERT_TRUE(std::filesystem::is_regular_file(shaderPath));
+    ASSERT_TRUE(std::filesystem::is_regular_file(projectChannelWrapperPath));
+    ASSERT_TRUE(std::filesystem::is_regular_file(projectPassModeWrapperPath));
+
+    const auto shaderChannelInclude = ReadSourceText(shaderChannelIncludePath);
+    const auto shader = ReadSourceText(shaderPath);
+    const auto projectChannelWrapper = ReadSourceText(projectChannelWrapperPath);
+    const auto projectPassModeWrapper = ReadSourceText(projectPassModeWrapperPath);
+
+    EXPECT_NE(shaderChannelInclude.find("#include \"SelectionOutlineMaskChannels.def\""), std::string::npos);
+    EXPECT_EQ(shaderChannelInclude.find("../../../../Project/Editor/Rendering/SelectionOutlineMaskChannels.def"), std::string::npos);
+    EXPECT_NE(shader.find("#include \"SelectionOutlineMaskPassModes.def\""), std::string::npos);
+    EXPECT_EQ(shader.find("../../../../Project/Editor/Rendering/SelectionOutlineMaskPassModes.def"), std::string::npos);
+    EXPECT_NE(projectChannelWrapper.find("App/Assets/Editor/Shaders/SelectionOutlineMaskChannels.def"), std::string::npos);
+    EXPECT_NE(projectPassModeWrapper.find("App/Assets/Editor/Shaders/SelectionOutlineMaskPassModes.def"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskPassNamesAndMetadataAreOrdered)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererHeaderPath = root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h";
+    const auto rendererSourcePath = root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp";
+    const auto debugSceneSourcePath = root / "Project/Editor/Rendering/DebugSceneRenderer.cpp";
+
+    ASSERT_TRUE(std::filesystem::is_regular_file(rendererHeaderPath));
+    ASSERT_TRUE(std::filesystem::is_regular_file(rendererSourcePath));
+    const auto rendererHeader = ReadSourceText(rendererHeaderPath);
+    const auto rendererSource = ReadSourceText(rendererSourcePath);
+    const auto debugSceneSource = ReadSourceText(debugSceneSourcePath);
+
+    EXPECT_NE(rendererHeader.find("std::vector<NLS::Render::Context::RenderPassCommandInput> passInputs"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata> metadata"), std::string::npos);
+    EXPECT_NE(debugSceneSource.find("std::vector<NLS::Render::Context::RenderPassCommandInput> m_preparedThreadedPassInputs"), std::string::npos);
+    EXPECT_NE(debugSceneSource.find("ConsumePreparedThreadedPassInputs()"), std::string::npos);
+
+    std::size_t previous = 0u;
+    const std::array<const char*, 2> expectedNames = {
+        "SelectionOutlineMask::CaptureMask",
+        "SelectionOutlineMask::Composite"
+    };
+    for (const char* name : expectedNames)
+    {
+        const auto position = rendererHeader.find(name);
+        ASSERT_NE(position, std::string::npos) << name;
+        EXPECT_GE(position, previous) << name;
+        previous = position;
+    }
+
+    EXPECT_NE(debugSceneSource.find("selectionOutlineMetadata"), std::string::npos);
+    EXPECT_NE(debugSceneSource.find("selectionOutlinePassInputs"), std::string::npos);
+    EXPECT_NE(debugSceneSource.find("GetPreparedThreadedPassMetadata()"), std::string::npos);
+    EXPECT_NE(debugSceneSource.find("BuildDebugDeferredThreadedPassMetadata"), std::string::npos);
+    EXPECT_NE(debugSceneSource.find("BuildDebugDeferredAppendedPassInputs"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskPassKindIsClosedBeforeIndexingPassNames)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(rendererSource.empty());
+
+    EXPECT_NE(rendererHeader.find("Count"), std::string::npos)
+        << "SelectionOutlineMaskPassKind must be closed so kPassNames cannot silently drift from the enum.";
+    EXPECT_NE(rendererHeader.find("SelectionOutlineMaskPassKindCount"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("std::array<const char*, 2> kPassNames"), std::string::npos)
+        << "The pass-name table must keep an explicit initializer count so enum additions fail static_asserts until names are filled in.";
+    EXPECT_NE(rendererHeader.find("static_assert(kPassNames.size() == SelectionOutlineMaskPassKindCount"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("SelectionOutlineMaskPassNamesAreComplete"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("SelectionOutlineMaskPassKindIsValid"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("SelectionOutlineMaskPassName("), std::string::npos);
+    EXPECT_NE(rendererHeader.find("passName == nullptr || passName[0] == '\\0'"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("\"SelectionOutlineMask::Invalid\""), std::string::npos);
+    EXPECT_STREQ(
+        NLS::Editor::Rendering::SelectionOutlineMaskPassName(
+            NLS::Editor::Rendering::SelectionOutlineMaskPassKind::CaptureMask),
+        "SelectionOutlineMask::CaptureMask");
+    EXPECT_STREQ(
+        NLS::Editor::Rendering::SelectionOutlineMaskPassName(
+            NLS::Editor::Rendering::SelectionOutlineMaskPassKind::Composite),
+        "SelectionOutlineMask::Composite");
+    EXPECT_STREQ(
+        NLS::Editor::Rendering::SelectionOutlineMaskPassName(
+            NLS::Editor::Rendering::SelectionOutlineMaskPassKind::Count),
+        "SelectionOutlineMask::Invalid");
+    EXPECT_STREQ(
+        NLS::Editor::Rendering::SelectionOutlineMaskPassName(
+            static_cast<NLS::Editor::Rendering::SelectionOutlineMaskPassKind>(255u)),
+        "SelectionOutlineMask::Invalid");
+
+    const auto buildPassStart = rendererSource.find("RenderPassCommandInput SelectionOutlineMaskRenderer::BuildPassInput");
+    ASSERT_NE(buildPassStart, std::string::npos);
+    const auto setFallbackStart = rendererSource.find("SelectionOutlineMaskRenderer::SetFallbackReason", buildPassStart);
+    ASSERT_NE(setFallbackStart, std::string::npos);
+    const auto buildPassBody = rendererSource.substr(buildPassStart, setFallbackStart - buildPassStart);
+
+    EXPECT_NE(buildPassBody.find("SelectionOutlineMaskPassName(kind)"), std::string::npos);
+    const auto passKindGuard = buildPassBody.find("SelectionOutlineMaskPassKindIsValid(kind)");
+    const auto configureCommon = buildPassBody.find("ConfigureCommonPassInput");
+    ASSERT_NE(passKindGuard, std::string::npos);
+    ASSERT_NE(configureCommon, std::string::npos);
+    EXPECT_LT(passKindGuard, configureCommon)
+        << "Invalid pass kinds must be rejected before any debug name is written into RenderPassCommandInput.";
+    EXPECT_NE(buildPassBody.find("return passInput;", passKindGuard), std::string::npos);
+    EXPECT_EQ(buildPassBody.find("kPassNames[static_cast<size_t>(kind)]"), std::string::npos)
+        << "BuildPassInput must not index the pass-name table before validating the enum value.";
+    EXPECT_NE(buildPassBody.find("default:"), std::string::npos);
+    EXPECT_NE(buildPassBody.find("NLS_ASSERT(false"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskMetadataOnlyCompositePropagatesSceneColor)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererSource.empty());
+
+    const auto buildMetadataStart = rendererSource.find(
+        "std::vector<ThreadedRenderScenePassMetadata> SelectionOutlineMaskRenderer::BuildMetadata");
+    ASSERT_NE(buildMetadataStart, std::string::npos);
+    const auto buildPreparedStart = rendererSource.find(
+        "SelectionOutlinePreparedOutput SelectionOutlineMaskRenderer::BuildPreparedOutput",
+        buildMetadataStart);
+    ASSERT_NE(buildPreparedStart, std::string::npos);
+    const auto metadataBody = rendererSource.substr(buildMetadataStart, buildPreparedStart - buildMetadataStart);
+
+    EXPECT_NE(metadataBody.find("entry.propagatesDepthOutput = false"), std::string::npos)
+        << "Selection outline helper passes only write color targets; they must not keep the scene-depth output chain alive.";
+    EXPECT_NE(metadataBody.find("SelectionOutlineMaskPassPropagatesColorOutput"), std::string::npos)
+        << "Only the final composite pass writes back to Scene View color; mask capture writes private intermediates.";
+    EXPECT_EQ(metadataBody.find("passInput.debugName == kPassNames"), std::string::npos)
+        << "Color propagation must not depend on mutable profiler/debug names.";
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineLegacyFallbackMetadataPropagatesSceneOutputs)
+{
+    NLS::Render::Context::RenderPassCommandInput passInput;
+    passInput.debugName = "EditorSelectionPass";
+    passInput.drawCount = 2u;
+
+    const auto metadata = NLS::Editor::Rendering::BuildSelectionOutlineLegacyShellMetadata(passInput);
+
+    EXPECT_EQ(metadata.commandKind, NLS::Render::Context::RenderPassCommandKind::Helper);
+    EXPECT_EQ(metadata.role, NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Helper);
+    EXPECT_EQ(metadata.queueType, NLS::Render::RHI::QueueType::Graphics);
+    EXPECT_EQ(metadata.queueDependencyPolicy, NLS::Render::Context::QueueDependencyPolicy::Previous);
+    EXPECT_EQ(metadata.visibleDrawCountContribution, passInput.drawCount);
+    EXPECT_TRUE(metadata.propagatesColorOutput)
+        << "The legacy shell writes directly into the Scene View color target; otherwise the output chain can go black.";
+    EXPECT_TRUE(metadata.propagatesDepthOutput)
+        << "The legacy shell also writes the depth/stencil attachment and must keep that chain alive.";
+    ASSERT_NE(metadata.graphPassName, nullptr);
+    EXPECT_STREQ(metadata.graphPassName, passInput.debugName.c_str());
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskValidPathDoesNotEmitLegacyShellPass)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto debugSceneSourcePath = root / "Project/Editor/Rendering/DebugSceneRenderer.cpp";
+    const auto rendererHeaderPath = root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h";
+    const auto fallbackReasonTablePath = root / "Project/Editor/Rendering/SelectionOutlineFallbackReasons.def";
+
+    ASSERT_TRUE(std::filesystem::is_regular_file(rendererHeaderPath));
+    ASSERT_TRUE(std::filesystem::is_regular_file(fallbackReasonTablePath));
+    const auto debugSceneSource = ReadSourceText(debugSceneSourcePath);
+    const auto rendererHeader = ReadSourceText(rendererHeaderPath);
+    const auto fallbackReasonTable = ReadSourceText(fallbackReasonTablePath);
+
+    const auto buildInputStart = debugSceneSource.find("SelectionOutlinePreparedOutput BuildThreadedPassInput");
+    ASSERT_NE(buildInputStart, std::string::npos);
+    const auto buildInputEnd = debugSceneSource.find("private:", buildInputStart);
+    ASSERT_NE(buildInputEnd, std::string::npos);
+    const auto buildInputBody = debugSceneSource.substr(buildInputStart, buildInputEnd - buildInputStart);
+
+    const auto maskPrepare = buildInputBody.find("m_selectionOutlineMaskRenderer.BuildPreparedOutput");
+    ASSERT_NE(maskPrepare, std::string::npos);
+    const auto legacyFallback = buildInputBody.find("m_outlineRenderer.CaptureOutlineDrawCommands");
+    ASSERT_NE(legacyFallback, std::string::npos);
+    EXPECT_LT(maskPrepare, legacyFallback);
+    EXPECT_NE(buildInputBody.find("fallbackDecision.has_value()"), std::string::npos);
+    EXPECT_NE(buildInputBody.find("return maskOutput"), std::string::npos);
+    EXPECT_EQ(buildInputBody.find("passInput.debugName = \"EditorSelectionPass\""), std::string::npos);
+
+    EXPECT_NE(rendererHeader.find("SelectionOutlineFallbackReasons.def"), std::string::npos);
+    EXPECT_NE(fallbackReasonTable.find("None"), std::string::npos);
+    EXPECT_NE(fallbackReasonTable.find("MissingSceneDepth"), std::string::npos);
+    EXPECT_NE(fallbackReasonTable.find("ZeroSizeTarget"), std::string::npos);
+    EXPECT_NE(fallbackReasonTable.find("AllocationFailure"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskRuntimeFailuresDoNotFallBackToLegacyShellHotPath)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto debugSceneSource = ReadSourceText(root / "Project/Editor/Rendering/DebugSceneRenderer.cpp");
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+    const auto fallbackReasonTable = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineFallbackReasons.def");
+
+    ASSERT_FALSE(debugSceneSource.empty());
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(fallbackReasonTable.empty());
+
+    const auto buildInputStart = debugSceneSource.find("SelectionOutlinePreparedOutput BuildThreadedPassInput");
+    ASSERT_NE(buildInputStart, std::string::npos);
+    const auto buildInputEnd = debugSceneSource.find("private:", buildInputStart);
+    ASSERT_NE(buildInputEnd, std::string::npos);
+    const auto buildInputBody = debugSceneSource.substr(buildInputStart, buildInputEnd - buildInputStart);
+
+    EXPECT_NE(buildInputBody.find("ResolveSelectionOutlineFallbackAction"), std::string::npos);
+    EXPECT_NE(buildInputBody.find("maskOutput.fallbackDecision->reason"), std::string::npos);
+    EXPECT_EQ(debugSceneSource.find("bool ShouldUseLegacySelectionOutlineFallback"), std::string::npos);
+    EXPECT_EQ(debugSceneSource.find("const char* SelectionOutlineFallbackReasonToString"), std::string::npos);
+
+    EXPECT_NE(rendererHeader.find("enum class SelectionOutlineFallbackAction"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("ResolveSelectionOutlineFallbackAction"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("SelectionOutlineFallbackReasonToString"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("SelectionOutlineFallbackReasons.def"), std::string::npos);
+    EXPECT_NE(fallbackReasonTable.find("NLS_SELECTION_OUTLINE_FALLBACK_REASON(ZeroSizeTarget, SkipFrame)"), std::string::npos);
+    EXPECT_NE(fallbackReasonTable.find("NLS_SELECTION_OUTLINE_FALLBACK_REASON(MissingSceneDepth, SkipFrame)"), std::string::npos);
+    EXPECT_NE(fallbackReasonTable.find("NLS_SELECTION_OUTLINE_FALLBACK_REASON(MissingOutputColor, SkipFrame)"), std::string::npos);
+    EXPECT_NE(fallbackReasonTable.find("NLS_SELECTION_OUTLINE_FALLBACK_REASON(MissingShader, LegacyShell)"), std::string::npos);
+    EXPECT_NE(fallbackReasonTable.find("NLS_SELECTION_OUTLINE_FALLBACK_REASON(AllocationFailure, SkipFrame)"), std::string::npos)
+        << "Transient resource pressure during create/select must skip the current outline frame instead of falling back to the expensive shell path.";
+    EXPECT_NE(fallbackReasonTable.find("NLS_SELECTION_OUTLINE_FALLBACK_REASON(UnsupportedMaterialMask, SkipFrame)"), std::string::npos)
+        << "Unsupported material semantics should not re-enable the old per-mesh inflated shell hot path in threaded Scene View.";
+    EXPECT_NE(fallbackReasonTable.find("NLS_SELECTION_OUTLINE_FALLBACK_REASON(UnsupportedSampleCount, SkipFrame)"), std::string::npos)
+        << "MSAA-incompatible outline paths must not fall back to legacy 1x shell rendering on MSAA attachments.";
+    EXPECT_NE(fallbackReasonTable.find("NLS_SELECTION_OUTLINE_FALLBACK_REASON(StaleFrameAttachment, SkipFrame)"), std::string::npos)
+        << "Stale or resized Scene View attachments must skip the outline frame instead of submitting mismatched color/depth targets.";
+
+    EXPECT_NE(fallbackReasonTable.find("MissingShader"), std::string::npos);
+    EXPECT_NE(fallbackReasonTable.find("ScreenSpaceCommandCaptureFailed"), std::string::npos);
+    EXPECT_NE(fallbackReasonTable.find("UnsupportedBackend"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskCompositeDoesNotReadAndWriteSceneOutputInOnePass)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+    const auto shader = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineCompositeCore.hlsli");
+
+    ASSERT_FALSE(rendererSource.empty());
+    ASSERT_FALSE(shader.empty());
+
+    const auto bindStart = rendererSource.find("bool SelectionOutlineMaskRenderer::BindScreenSpaceMaterialTextures");
+    ASSERT_NE(bindStart, std::string::npos);
+    const auto resetStart = rendererSource.find("void SelectionOutlineMaskRenderer::ResetResources", bindStart);
+    ASSERT_NE(resetStart, std::string::npos);
+    const auto bindBody = rendererSource.substr(bindStart, resetStart - bindStart);
+    EXPECT_EQ(bindBody.find("frameDescriptor.outputColorView"), std::string::npos);
+    EXPECT_EQ(bindBody.find("u_MainTexture"), std::string::npos)
+        << "Sampling the Scene View output while writing it as the composite render target is a read/write hazard.";
+
+    const auto compositeStart = shader.find("float4 Composite(VSOutput input)");
+    ASSERT_NE(compositeStart, std::string::npos);
+    const auto compositeBody = shader.substr(compositeStart);
+    EXPECT_EQ(compositeBody.find("u_MainTexture.Sample"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskMaterializesExternalOutputBufferBeforeResourceValidation)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererSource.empty());
+
+    const auto buildOutputStart = rendererSource.find(
+        "SelectionOutlinePreparedOutput SelectionOutlineMaskRenderer::BuildPreparedOutput");
+    ASSERT_NE(buildOutputStart, std::string::npos);
+    const auto captureStart = rendererSource.find(
+        "void SelectionOutlineMaskRenderer::CaptureMaskDrawCommands",
+        buildOutputStart);
+    ASSERT_NE(captureStart, std::string::npos);
+    const auto buildOutputBody = rendererSource.substr(buildOutputStart, captureStart - buildOutputStart);
+
+    const auto snapshot = buildOutputBody.find("CaptureExternalSceneOutputSnapshot");
+    const auto texelSize = buildOutputBody.find("const auto texelSize");
+    const auto prepareResources = buildOutputBody.find("PrepareResources(selectionFrameDescriptor, resources)");
+    const auto buildPassInput = buildOutputBody.find("BuildPassInput(");
+
+    ASSERT_NE(snapshot, std::string::npos);
+    ASSERT_NE(texelSize, std::string::npos);
+    ASSERT_NE(prepareResources, std::string::npos);
+    ASSERT_NE(buildPassInput, std::string::npos);
+    EXPECT_LT(snapshot, texelSize);
+    EXPECT_LT(snapshot, prepareResources);
+    EXPECT_LT(snapshot, buildPassInput);
+    EXPECT_EQ(buildOutputBody.find("const auto& frameDescriptor = m_renderer.GetFrameDescriptor()"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskPreparedBuilderCountsEveryScreenSpacePass)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto debugSceneSource = ReadSourceText(root / "Project/Editor/Rendering/DebugSceneRenderer.cpp");
+
+    ASSERT_FALSE(debugSceneSource.empty());
+
+    const auto builderStart = debugSceneSource.find(
+        "PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRenderer::BuildPreparedRenderSceneBuilder");
+    ASSERT_NE(builderStart, std::string::npos);
+    const auto consumedStart = debugSceneSource.find(
+        "auto consumedGridPassInput",
+        builderStart);
+    ASSERT_NE(consumedStart, std::string::npos);
+    const auto builderPrefix = debugSceneSource.substr(builderStart, consumedStart - builderStart);
+
+    EXPECT_NE(builderPrefix.find("selectionOutlineMetadata.size()"), std::string::npos)
+        << "Screen-space selection outline emits a dynamic helper pass vector, so aggregate helper accounting must not keep the legacy two-pass constant.";
+    EXPECT_EQ(builderPrefix.find("selectionOutlinePassInputs.empty() ? 0u : 2u"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskLegacyFallbackDiagnosticsExposeReason)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto debugSceneSource = ReadSourceText(root / "Project/Editor/Rendering/DebugSceneRenderer.cpp");
+
+    ASSERT_FALSE(debugSceneSource.empty());
+
+    const auto buildInputStart = debugSceneSource.find("SelectionOutlinePreparedOutput BuildThreadedPassInput");
+    ASSERT_NE(buildInputStart, std::string::npos);
+    const auto buildInputEnd = debugSceneSource.find("private:", buildInputStart);
+    ASSERT_NE(buildInputEnd, std::string::npos);
+    const auto buildInputBody = debugSceneSource.substr(buildInputStart, buildInputEnd - buildInputStart);
+
+    EXPECT_NE(buildInputBody.find("ShouldLogEditorHelperDiagnostics(m_renderer.GetDriver())"), std::string::npos);
+    EXPECT_NE(buildInputBody.find("Selection outline screen-space fallback reason="), std::string::npos);
+    EXPECT_NE(buildInputBody.find("SelectionOutlineFallbackReasonToString"), std::string::npos);
+    EXPECT_NE(buildInputBody.find("selectedItems="), std::string::npos);
+    EXPECT_NE(buildInputBody.find("extent/sample-count compatible"), std::string::npos);
+    EXPECT_EQ(buildInputBody.find("not sample-count compatible"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskChannelsUseSharedSourceOfTruth)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto channelTablePath = root / "App/Assets/Editor/Shaders/SelectionOutlineMaskChannels.def";
+    const auto projectChannelWrapperPath = root / "Project/Editor/Rendering/SelectionOutlineMaskChannels.def";
+    const auto rendererHeaderPath = root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h";
+    const auto shaderIncludePath = root / "App/Assets/Editor/Shaders/SelectionOutlineMaskChannels.hlsli";
+    const auto shaderPath = root / "App/Assets/Editor/Shaders/SelectionOutlineMask.hlsl";
+
+    ASSERT_TRUE(std::filesystem::is_regular_file(channelTablePath));
+    ASSERT_TRUE(std::filesystem::is_regular_file(projectChannelWrapperPath));
+    ASSERT_TRUE(std::filesystem::is_regular_file(rendererHeaderPath));
+    ASSERT_TRUE(std::filesystem::is_regular_file(shaderIncludePath));
+    ASSERT_TRUE(std::filesystem::is_regular_file(shaderPath));
+
+    const auto channelTable = ReadSourceText(channelTablePath);
+    const auto rendererHeader = ReadSourceText(rendererHeaderPath);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+    const auto shaderInclude = ReadSourceText(shaderIncludePath);
+    const auto shader = ReadSourceText(shaderPath);
+    const auto compositeCore = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineCompositeCore.hlsli");
+    const auto projectChannelWrapper = ReadSourceText(projectChannelWrapperPath);
+
+    const std::array<const char*, 4> channels = {
+        "GroupId",
+        "Visible",
+        "Selected",
+        "Classification"
+    };
+    for (const char* channel : channels)
+    {
+        EXPECT_NE(channelTable.find(channel), std::string::npos) << channel;
+    }
+
+    EXPECT_NE(rendererHeader.find("#include \"Rendering/SelectionOutlineMaskChannels.def\""), std::string::npos);
+    EXPECT_NE(rendererHeader.find("SelectionOutlineMaskChannelDesc"), std::string::npos);
+    EXPECT_NE(rendererSource.find("SelectionOutlineMaskChannels.def"), std::string::npos);
+    EXPECT_NE(projectChannelWrapper.find("App/Assets/Editor/Shaders/SelectionOutlineMaskChannels.def"), std::string::npos);
+    EXPECT_NE(shaderInclude.find("#define NLS_SELECTION_OUTLINE_MASK_CHANNEL"), std::string::npos);
+    EXPECT_NE(shaderInclude.find("SelectionOutlineMask##name##Index"), std::string::npos);
+    EXPECT_NE(shaderInclude.find("SelectionOutlineMaskGet##name"), std::string::npos);
+    EXPECT_NE(shaderInclude.find("SelectionOutlineMaskSet##name"), std::string::npos);
+    EXPECT_NE(shaderInclude.find("#include \"SelectionOutlineMaskChannels.def\""), std::string::npos);
+    EXPECT_EQ(shaderInclude.find("../../../../Project/Editor/Rendering/SelectionOutlineMaskChannels.def"), std::string::npos);
+    EXPECT_EQ(shaderInclude.find("// GroupId r 0"), std::string::npos);
+    EXPECT_EQ(shaderInclude.find("#define SELECTION_OUTLINE_MASK_GROUP_SWIZZLE r"), std::string::npos);
+    EXPECT_NE(shader.find("#include \"SelectionOutlineMaskChannels.hlsli\""), std::string::npos);
+    EXPECT_NE(compositeCore.find("SelectionOutlineMaskGetGroupId"), std::string::npos);
+    EXPECT_NE(shader.find("SelectionOutlineMaskSetGroupId"), std::string::npos);
+    EXPECT_EQ(shader.find("SELECTION_OUTLINE_MASK_GROUP_SWIZZLE"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskChannelsKeepVisibleAndSelectedDistinct)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto channelTablePath = root / "App/Assets/Editor/Shaders/SelectionOutlineMaskChannels.def";
+    const auto shaderIncludePath = root / "App/Assets/Editor/Shaders/SelectionOutlineMaskChannels.hlsli";
+
+    ASSERT_TRUE(std::filesystem::is_regular_file(channelTablePath));
+    ASSERT_TRUE(std::filesystem::is_regular_file(shaderIncludePath));
+
+    const auto channelTable = ReadSourceText(channelTablePath);
+    const auto shaderInclude = ReadSourceText(shaderIncludePath);
+    const auto channels = ParseSelectionMaskChannels(channelTable);
+
+    ASSERT_TRUE(channels.contains("GroupId"));
+    ASSERT_TRUE(channels.contains("Visible"));
+    ASSERT_TRUE(channels.contains("Selected"));
+    ASSERT_TRUE(channels.contains("Classification"));
+    ASSERT_FALSE(channels.contains("Occluded"))
+        << "Occlusion is derived as selected coverage minus visible coverage; it must not alias the visible channel.";
+
+    EXPECT_EQ(channels.at("GroupId").swizzle, "r");
+    EXPECT_EQ(channels.at("Visible").swizzle, "g");
+    EXPECT_EQ(channels.at("Selected").swizzle, "b");
+    EXPECT_EQ(channels.at("Classification").swizzle, "a");
+    EXPECT_NE(channels.at("Visible").index, channels.at("Selected").index);
+    EXPECT_NE(channels.at("Visible").swizzle, channels.at("Selected").swizzle);
+
+    EXPECT_NE(shaderInclude.find("SelectionOutlineMask##name##Index"), std::string::npos);
+    EXPECT_NE(shaderInclude.find("float SelectionOutlineMaskGet##name(float4 value)"), std::string::npos);
+    EXPECT_NE(shaderInclude.find("void SelectionOutlineMaskSet##name(inout float4 value, float channelValue)"), std::string::npos);
+    EXPECT_EQ(shaderInclude.find("#define SELECTION_OUTLINE_MASK_GROUP_INDEX 0"), std::string::npos);
+    EXPECT_EQ(shaderInclude.find("#define SELECTION_OUTLINE_MASK_VISIBLE_INDEX 1"), std::string::npos);
+    EXPECT_EQ(shaderInclude.find("#define SELECTION_OUTLINE_MASK_SELECTED_INDEX 2"), std::string::npos);
+    EXPECT_EQ(shaderInclude.find("#define SELECTION_OUTLINE_MASK_CLASSIFICATION_INDEX 3"), std::string::npos);
+    EXPECT_EQ(shaderInclude.find("SELECTION_OUTLINE_MASK_OCCLUDED_SWIZZLE"), std::string::npos);
+    EXPECT_EQ(shaderInclude.find("SELECTION_OUTLINE_MASK_OCCLUDED_INDEX"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskTablesExpandToExpectedHlslConstants)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto channelTable = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineMaskChannels.def");
+    const auto passModeTable = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineMaskPassModes.def");
+
+    ASSERT_FALSE(channelTable.empty());
+    ASSERT_FALSE(passModeTable.empty());
+
+    const auto channelConstants =
+        ParseHlslStaticIntConstants(ExpandSelectionOutlineChannelIndexConstantsForTest(channelTable));
+    const auto passModeConstants =
+        ParseHlslStaticIntConstants(ExpandSelectionOutlinePassModeConstantsForTest(passModeTable));
+
+    ASSERT_EQ(channelConstants.size(), 4u);
+    EXPECT_EQ(channelConstants.at("SelectionOutlineMaskGroupIdIndex"), 0);
+    EXPECT_EQ(channelConstants.at("SelectionOutlineMaskVisibleIndex"), 1);
+    EXPECT_EQ(channelConstants.at("SelectionOutlineMaskSelectedIndex"), 2);
+    EXPECT_EQ(channelConstants.at("SelectionOutlineMaskClassificationIndex"), 3);
+
+    ASSERT_EQ(passModeConstants.size(), 3u);
+    EXPECT_EQ(passModeConstants.at("SelectionOutlinePassModeCaptureVisible"), 0);
+    EXPECT_EQ(passModeConstants.at("SelectionOutlinePassModeCaptureOccluded"), 1);
+    EXPECT_EQ(passModeConstants.at("SelectionOutlinePassModeComposite"), 2);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskMetadataPropagatesColorByPassOrderNotDebugName)
+{
+    EXPECT_FALSE(NLS::Editor::Rendering::SelectionOutlineMaskPassPropagatesColorOutput(
+        NLS::Editor::Rendering::SelectionOutlineMaskPassKind::CaptureMask));
+    EXPECT_TRUE(NLS::Editor::Rendering::SelectionOutlineMaskPassPropagatesColorOutput(
+        NLS::Editor::Rendering::SelectionOutlineMaskPassKind::Composite))
+        << "Color-output propagation is a frame-graph semantic; it must not depend on mutable profiler/debug names.";
+
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererSource.empty());
+    const auto buildMetadataStart = rendererSource.find(
+        "std::vector<ThreadedRenderScenePassMetadata> SelectionOutlineMaskRenderer::BuildMetadata");
+    ASSERT_NE(buildMetadataStart, std::string::npos);
+    const auto buildPreparedStart = rendererSource.find(
+        "SelectionOutlinePreparedOutput SelectionOutlineMaskRenderer::BuildPreparedOutput",
+        buildMetadataStart);
+    ASSERT_NE(buildPreparedStart, std::string::npos);
+    const auto metadataBody = rendererSource.substr(buildMetadataStart, buildPreparedStart - buildMetadataStart);
+
+    EXPECT_NE(metadataBody.find("for (size_t passIndex = 0u; passIndex < passInputs.size(); ++passIndex)"), std::string::npos);
+    EXPECT_NE(metadataBody.find("SelectionOutlineMaskPassPropagatesColorOutput"), std::string::npos);
+    EXPECT_EQ(metadataBody.find("passInput.debugName == kPassNames"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskMetadataPropagatesColorForCompositeOnlyCacheReuse)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(rendererSource.empty());
+
+    EXPECT_NE(rendererHeader.find("std::vector<SelectionOutlineMaskPassKind> passKinds"), std::string::npos)
+        << "Metadata must carry the semantic pass kind; cached-mask frames may emit only Composite.";
+    EXPECT_NE(rendererSource.find("passKinds[passIndex]"), std::string::npos);
+
+    const auto buildMetadataStart = rendererSource.find(
+        "std::vector<ThreadedRenderScenePassMetadata> SelectionOutlineMaskRenderer::BuildMetadata");
+    ASSERT_NE(buildMetadataStart, std::string::npos);
+    const auto buildPreparedStart = rendererSource.find(
+        "SelectionOutlinePreparedOutput SelectionOutlineMaskRenderer::BuildPreparedOutput",
+        buildMetadataStart);
+    ASSERT_NE(buildPreparedStart, std::string::npos);
+    const auto metadataBody = rendererSource.substr(buildMetadataStart, buildPreparedStart - buildMetadataStart);
+    EXPECT_EQ(metadataBody.find("static_cast<SelectionOutlineMaskPassKind>(passIndex)"), std::string::npos)
+        << "Composite-only reuse must not be misclassified as CaptureMask by vector index.";
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskShaderMatchesUnityStylePassSemantics)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto shaderPath = root / "App/Assets/Editor/Shaders/SelectionOutlineMask.hlsl";
+    const auto compositeCorePath = root / "App/Assets/Editor/Shaders/SelectionOutlineCompositeCore.hlsli";
+
+    ASSERT_TRUE(std::filesystem::is_regular_file(shaderPath));
+    ASSERT_TRUE(std::filesystem::is_regular_file(compositeCorePath));
+    const auto shader = ReadSourceText(shaderPath);
+    const auto compositeCore = ReadSourceText(compositeCorePath);
+
+    EXPECT_NE(shader.find("AlphaClip"), std::string::npos);
+    EXPECT_NE(shader.find("CaptureMaskVisible"), std::string::npos);
+    EXPECT_NE(shader.find("CaptureMaskOccluded"), std::string::npos);
+    EXPECT_NE(compositeCore.find("ComputeIdEdge"), std::string::npos);
+    EXPECT_EQ(shader.find("EdgeBlurHorizontal"), std::string::npos);
+    EXPECT_EQ(shader.find("BlurVertical"), std::string::npos)
+        << "Selection outline post-processing is fused into the final composite pass to reduce RHI helper-pass pressure.";
+    EXPECT_NE(shader.find("Composite"), std::string::npos);
+    EXPECT_NE(shader.find("u_ObjectId"), std::string::npos);
+    EXPECT_NE(compositeCore.find("occlusion"), std::string::npos);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+    ASSERT_FALSE(rendererSource.empty());
+    EXPECT_NE(rendererSource.find("SelectionOutlineFallbackReason::UnsupportedMaterialMask"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskScreenSpacePassesCannotFakeSuccessWithEmptyDraws)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererSource.empty());
+    EXPECT_NE(rendererSource.find("HasCompleteScreenSpacePasses"), std::string::npos);
+    EXPECT_NE(rendererSource.find("SelectionOutlineFallbackReason::ScreenSpaceCommandCaptureFailed"), std::string::npos);
+    EXPECT_NE(rendererSource.find("SetFallbackReason(SelectionOutlineFallbackReason::ScreenSpaceCommandCaptureFailed)"), std::string::npos);
+
+    const auto completeCheck = rendererSource.find("HasCompleteScreenSpacePasses");
+    const auto setFallback = rendererSource.find("SelectionOutlineFallbackReason::ScreenSpaceCommandCaptureFailed", completeCheck);
+    const auto buildMetadata = rendererSource.find("output.metadata = BuildMetadata(output.passInputs, output.passKinds)", completeCheck);
+    ASSERT_NE(completeCheck, std::string::npos);
+    ASSERT_NE(setFallback, std::string::npos);
+    ASSERT_NE(buildMetadata, std::string::npos);
+    EXPECT_LT(setFallback, buildMetadata);
+
+    const auto emptyCapture = rendererSource.find("if (maskDrawCommands.empty())");
+    ASSERT_NE(emptyCapture, std::string::npos);
+    const auto emptyCaptureBodyEnd = rendererSource.find("output.passKinds.push_back(SelectionOutlineMaskPassKind::CaptureMask)", emptyCapture);
+    ASSERT_NE(emptyCaptureBodyEnd, std::string::npos);
+    const auto emptyCaptureBody = rendererSource.substr(emptyCapture, emptyCaptureBodyEnd - emptyCapture);
+    EXPECT_NE(emptyCaptureBody.find("SetFallbackReason(SelectionOutlineFallbackReason::ScreenSpaceCommandCaptureFailed)"), std::string::npos);
+    EXPECT_NE(emptyCaptureBody.find("output.fallbackDecision = { m_lastFallbackReason, output.selectedItemCount }"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskPreparedOutputReservesBeforeAppendingPasses)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererSource.empty());
+
+    const auto buildPreparedStart = rendererSource.find(
+        "SelectionOutlinePreparedOutput SelectionOutlineMaskRenderer::BuildPreparedOutput");
+    ASSERT_NE(buildPreparedStart, std::string::npos);
+    const auto captureStart = rendererSource.find("void SelectionOutlineMaskRenderer::CaptureMaskDrawCommands", buildPreparedStart);
+    ASSERT_NE(captureStart, std::string::npos);
+    const auto buildPreparedBody = rendererSource.substr(buildPreparedStart, captureStart - buildPreparedStart);
+
+    const auto reservePassInputs = buildPreparedBody.find("output.passInputs.reserve(kPassNames.size())");
+    const auto reservePassKinds = buildPreparedBody.find("output.passKinds.reserve(kPassNames.size())");
+    const auto firstPassInputPush = buildPreparedBody.find("output.passInputs.push_back");
+    const auto firstPassKindPush = buildPreparedBody.find("output.passKinds.push_back");
+    ASSERT_NE(reservePassInputs, std::string::npos);
+    ASSERT_NE(reservePassKinds, std::string::npos);
+    ASSERT_NE(firstPassInputPush, std::string::npos);
+    ASSERT_NE(firstPassKindPush, std::string::npos);
+
+    EXPECT_LT(reservePassInputs, firstPassInputPush)
+        << "The hot path should reserve before the optional CaptureMask append, otherwise the first push may allocate.";
+    EXPECT_LT(reservePassKinds, firstPassKindPush)
+        << "Pass-kind metadata should mirror pass-input capacity from the start of assembly.";
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskResourceIdentityReportsMissingViewTexturesPrecisely)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererSource.empty());
+
+    const auto prepareStart = rendererSource.find("bool SelectionOutlineMaskRenderer::PrepareResources");
+    ASSERT_NE(prepareStart, std::string::npos);
+    const auto bindStart = rendererSource.find("void SelectionOutlineMaskRenderer::InvalidateSelectionOutlineTextureBindings", prepareStart);
+    ASSERT_NE(bindStart, std::string::npos);
+    const auto prepareBody = rendererSource.substr(prepareStart, bindStart - prepareStart);
+
+    const auto missingDepthTexture = prepareBody.find("frameDescriptor.outputDepthStencilView->GetTexture() == nullptr");
+    const auto missingOutputTexture = prepareBody.find("frameDescriptor.outputColorView->GetTexture() == nullptr");
+    ASSERT_NE(missingDepthTexture, std::string::npos);
+    ASSERT_NE(missingOutputTexture, std::string::npos);
+
+    const auto depthReason = prepareBody.find("SelectionOutlineFallbackReason::MissingSceneDepth", missingDepthTexture);
+    const auto outputReason = prepareBody.find("SelectionOutlineFallbackReason::MissingOutputColor", missingOutputTexture);
+    ASSERT_NE(depthReason, std::string::npos);
+    ASSERT_NE(outputReason, std::string::npos);
+    EXPECT_LT(depthReason, missingOutputTexture);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskUsesDeferredGBufferDepthForValidationAndCapture)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto debugSceneSource = ReadSourceText(root / "Project/Editor/Rendering/DebugSceneRenderer.cpp");
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(debugSceneSource.empty());
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(rendererSource.empty());
+
+    EXPECT_NE(debugSceneSource.find("ResolveDeferredSelectionOutlineDepthView"), std::string::npos);
+    const auto buildInputStart = debugSceneSource.find("SelectionOutlinePreparedOutput BuildThreadedPassInput");
+    ASSERT_NE(buildInputStart, std::string::npos);
+    const auto buildInputEnd = debugSceneSource.find("private:", buildInputStart);
+    ASSERT_NE(buildInputEnd, std::string::npos);
+    const auto buildInputBody = debugSceneSource.substr(buildInputStart, buildInputEnd - buildInputStart);
+    EXPECT_NE(buildInputBody.find("selectionOutlineDepthView"), std::string::npos);
+    EXPECT_NE(buildInputBody.find("BuildPreparedOutput("), std::string::npos);
+    EXPECT_NE(buildInputBody.find("selectionOutlineDepthView)"), std::string::npos);
+
+    EXPECT_NE(rendererHeader.find("sceneDepthViewOverride"), std::string::npos);
+    EXPECT_NE(rendererSource.find("sceneDepthViewOverride"), std::string::npos);
+    EXPECT_NE(rendererSource.find("selectionFrameDescriptor.outputDepthStencilView = sceneDepthViewOverride"), std::string::npos);
+    EXPECT_NE(rendererSource.find("selectionFrameDescriptor.outputDepthStencilTexture = sceneDepthViewOverride->GetTexture()"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskRequiresDeferredGBufferDepthBeforePreparingScreenSpacePath)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto debugSceneSource = ReadSourceText(root / "Project/Editor/Rendering/DebugSceneRenderer.cpp");
+
+    ASSERT_FALSE(debugSceneSource.empty());
+
+    const auto buildInputStart = debugSceneSource.find("SelectionOutlinePreparedOutput BuildThreadedPassInput");
+    ASSERT_NE(buildInputStart, std::string::npos);
+    const auto buildInputEnd = debugSceneSource.find("private:", buildInputStart);
+    ASSERT_NE(buildInputEnd, std::string::npos);
+    const auto buildInputBody = debugSceneSource.substr(buildInputStart, buildInputEnd - buildInputStart);
+
+    const auto depthResolve = buildInputBody.find("const auto selectionOutlineDepthView = ResolveDeferredSelectionOutlineDepthView(m_renderer)");
+    const auto missingDepth = buildInputBody.find("selectionOutlineDepthView == nullptr", depthResolve);
+    const auto buildPreparedOutput = buildInputBody.find("m_selectionOutlineMaskRenderer.BuildPreparedOutput", depthResolve);
+    ASSERT_NE(depthResolve, std::string::npos);
+    ASSERT_NE(missingDepth, std::string::npos);
+    ASSERT_NE(buildPreparedOutput, std::string::npos);
+    EXPECT_LT(missingDepth, buildPreparedOutput)
+        << "Deferred threaded selection outline must not validate or capture against stale external depth when the prepared GBuffer depth is unavailable.";
+
+    const auto missingDepthReturn = buildInputBody.find("return missingDepthOutput", missingDepth);
+    ASSERT_NE(missingDepthReturn, std::string::npos);
+    const auto missingDepthBlock = buildInputBody.substr(missingDepth, missingDepthReturn - missingDepth);
+    EXPECT_NE(missingDepthBlock.find("SelectionOutlineFallbackReason::MissingSceneDepth"), std::string::npos);
+    EXPECT_NE(missingDepthBlock.find("releaseSelectionOwnedPreparedFrameReservation()"), std::string::npos);
+    EXPECT_EQ(missingDepthBlock.find("TryReservePreparedFrameResources"), std::string::npos)
+        << "Missing-depth paths must not wait for a prepared-frame object-data slot before knowing a screen-space capture is possible.";
+    EXPECT_EQ(missingDepthBlock.find("SelectionOutlineFallbackAction::LegacyShell"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskPassInputMovesRecordedMaskCommands)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(rendererSource.empty());
+
+    EXPECT_NE(
+        rendererHeader.find("std::vector<NLS::Render::Context::RecordedDrawCommandInput>&& maskDrawCommands"),
+        std::string::npos);
+
+    const auto buildOutputStart = rendererSource.find(
+        "SelectionOutlinePreparedOutput SelectionOutlineMaskRenderer::BuildPreparedOutput");
+    ASSERT_NE(buildOutputStart, std::string::npos);
+    const auto captureStart = rendererSource.find(
+        "void SelectionOutlineMaskRenderer::CaptureMaskDrawCommands",
+        buildOutputStart);
+    ASSERT_NE(captureStart, std::string::npos);
+    const auto buildOutputBody = rendererSource.substr(buildOutputStart, captureStart - buildOutputStart);
+    EXPECT_NE(buildOutputBody.find("std::move(maskDrawCommands)"), std::string::npos);
+
+    const auto buildPassStart = rendererSource.find("RenderPassCommandInput SelectionOutlineMaskRenderer::BuildPassInput");
+    ASSERT_NE(buildPassStart, std::string::npos);
+    const auto setFallbackStart = rendererSource.find("SelectionOutlineMaskRenderer::SetFallbackReason", buildPassStart);
+    ASSERT_NE(setFallbackStart, std::string::npos);
+    const auto buildPassBody = rendererSource.substr(buildPassStart, setFallbackStart - buildPassStart);
+    EXPECT_NE(buildPassBody.find("passInput.recordedDrawCommands = std::move(maskDrawCommands)"), std::string::npos);
+    EXPECT_EQ(buildPassBody.find("passInput.recordedDrawCommands = maskDrawCommands"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskFullscreenMaterialsSampleIntermediateTextures)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+    const auto shader = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineMask.hlsl");
+
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(rendererSource.empty());
+    ASSERT_FALSE(shader.empty());
+    EXPECT_NE(rendererHeader.find("std::unique_ptr<NLS::Render::Resources::Texture2D> m_maskTexture"), std::string::npos);
+    EXPECT_EQ(rendererHeader.find("std::unique_ptr<NLS::Render::Resources::Texture2D> m_edgeBlurHorizontalTexture"), std::string::npos);
+    EXPECT_EQ(rendererHeader.find("std::unique_ptr<NLS::Render::Resources::Texture2D> m_edgeTexture"), std::string::npos);
+    EXPECT_EQ(rendererHeader.find("std::unique_ptr<NLS::Render::Resources::Texture2D> m_blurHorizontalTexture"), std::string::npos);
+    EXPECT_EQ(rendererHeader.find("std::unique_ptr<NLS::Render::Resources::Texture2D> m_blurVerticalTexture"), std::string::npos);
+
+    EXPECT_NE(rendererSource.find("Texture2D::WrapExternal"), std::string::npos);
+    EXPECT_NE(rendererSource.find("WrapExternalInPlace"), std::string::npos);
+    EXPECT_NE(rendererSource.find("BindScreenSpaceMaterialTextures"), std::string::npos);
+    EXPECT_NE(rendererSource.find("SetMaterialTextureIfChanged(m_compositeMaterial, \"u_SelectionOutlineMask\", m_maskTexture.get())"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("SetMaterialTextureIfChanged(m_compositeMaterial, \"u_SelectionOutlineBlur\""), std::string::npos);
+    EXPECT_EQ(shader.find("u_SelectionOutlineBlur"), std::string::npos);
+    EXPECT_EQ(shader.find("u_SelectionOutlineEdge"), std::string::npos);
+
+    for (const std::string textureName : {
+        "u_SelectionOutlineMask",
+        "u_MainTexture"
+    })
+    {
+        ASSERT_NE(shader.find("Texture2D " + textureName), std::string::npos) << textureName;
+        EXPECT_NE(rendererSource.find("SetMaterialTextureIfChanged(material, \"" + textureName + "\""), std::string::npos)
+            << textureName << " must be bound on the material path so explicit binding creation does not fail and force legacy outline fallback.";
+    }
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskCaptureShaderSelectsPerPassModeAndCompositeUsesSplitShader)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+    const auto shader = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineMask.hlsl");
+    const auto compositeShader = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineComposite.hlsl");
+    const auto passModeTable = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineMaskPassModes.def");
+    const auto projectPassModeWrapper = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskPassModes.def");
+
+    ASSERT_FALSE(rendererSource.empty());
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(shader.empty());
+    ASSERT_FALSE(compositeShader.empty());
+    ASSERT_FALSE(passModeTable.empty());
+    EXPECT_NE(shader.find("u_SelectionOutlinePassMode"), std::string::npos);
+    EXPECT_EQ(compositeShader.find("u_SelectionOutlinePassMode"), std::string::npos);
+    EXPECT_NE(shader.find("SelectionOutlineMaskPassModes.def"), std::string::npos);
+    EXPECT_EQ(compositeShader.find("SelectionOutlineMaskPassModes.def"), std::string::npos);
+    EXPECT_NE(rendererSource.find("SelectionOutlineMaskPassModes.def"), std::string::npos);
+    EXPECT_NE(projectPassModeWrapper.find("App/Assets/Editor/Shaders/SelectionOutlineMaskPassModes.def"), std::string::npos);
+    EXPECT_NE(passModeTable.find("CaptureVisible"), std::string::npos);
+    EXPECT_NE(passModeTable.find("CaptureOccluded"), std::string::npos);
+    EXPECT_EQ(passModeTable.find("EdgeBlurHorizontal"), std::string::npos);
+    EXPECT_EQ(passModeTable.find("DetectIdEdges"), std::string::npos);
+    EXPECT_EQ(passModeTable.find("NLS_SELECTION_OUTLINE_MASK_PASS_MODE(BlurHorizontal"), std::string::npos);
+    EXPECT_EQ(passModeTable.find("BlurVertical"), std::string::npos);
+    EXPECT_NE(passModeTable.find("Composite"), std::string::npos);
+    EXPECT_NE(shader.find("if (u_SelectionOutlinePassMode == SelectionOutlinePassModeCaptureOccluded)"), std::string::npos);
+    EXPECT_EQ(shader.find("if (u_SelectionOutlinePassMode == SelectionOutlinePassModeEdgeBlurHorizontal)"), std::string::npos);
+    EXPECT_NE(shader.find("return CaptureMaskOccluded(input)"), std::string::npos);
+    EXPECT_EQ(shader.find("return EdgeBlurHorizontal(input)"), std::string::npos);
+    EXPECT_EQ(shader.find("return BlurVertical(input)"), std::string::npos);
+    EXPECT_NE(compositeShader.find("return Composite(input)"), std::string::npos);
+
+    std::istringstream passModeStream(passModeTable);
+    std::string passModeLine;
+    std::regex passModePattern(R"(NLS_SELECTION_OUTLINE_MASK_PASS_MODE\((\w+),\s*(-?\d+)\))");
+    size_t parsedPassModeCount = 0u;
+    while (std::getline(passModeStream, passModeLine))
+    {
+        std::smatch match;
+        if (!std::regex_search(passModeLine, match, passModePattern))
+            continue;
+
+        const auto constantName = "SelectionOutlinePassMode" + match[1].str();
+        const auto expectedValue = std::stoi(match[2].str());
+        EXPECT_NE(shader.find("SelectionOutlinePassMode##name = value"), std::string::npos)
+            << "HLSL must define pass-mode constants from the shared table macro.";
+        if (constantName != "SelectionOutlinePassModeComposite")
+            EXPECT_NE(rendererSource.find(constantName), std::string::npos) << constantName;
+        EXPECT_NE(passModeLine.find(std::to_string(expectedValue)), std::string::npos) << constantName;
+        ++parsedPassModeCount;
+    }
+    EXPECT_EQ(parsedPassModeCount, 3u);
+
+    EXPECT_NE(rendererSource.find("u_SelectionOutlinePassMode"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("NLS::Render::Resources::Material m_maskVisibleMaterial"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("NLS::Render::Resources::Material m_maskOccludedMaterial"), std::string::npos);
+    EXPECT_NE(rendererSource.find("SetSelectionMaskPassModeIfChanged(m_maskVisibleMaterial, \"u_SelectionOutlinePassMode\", SelectionOutlinePassModeCaptureVisible)"), std::string::npos);
+    EXPECT_NE(rendererSource.find("SetSelectionMaskPassModeIfChanged(m_maskOccludedMaterial, \"u_SelectionOutlinePassMode\", SelectionOutlinePassModeCaptureOccluded)"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("SetSelectionMaskPassModeIfChanged(m_edgeBlurHorizontalMaterial, \"u_SelectionOutlinePassMode\""), std::string::npos);
+    EXPECT_EQ(rendererSource.find("SetSelectionMaskPassModeIfChanged(m_blurVerticalMaterial, \"u_SelectionOutlinePassMode\""), std::string::npos);
+    EXPECT_EQ(rendererSource.find("SetSelectionMaskPassModeIfChanged(m_compositeMaterial, \"u_SelectionOutlinePassMode\""), std::string::npos);
+    EXPECT_NE(rendererSource.find("EnsureSelectionOutlineCompositeMaterial"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskCompositeBlendsOverSceneColor)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+    const auto shader = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineCompositeCore.hlsli");
+
+    ASSERT_FALSE(rendererSource.empty());
+    ASSERT_FALSE(shader.empty());
+
+    const auto constructorStart = rendererSource.find("SelectionOutlineMaskRenderer::SelectionOutlineMaskRenderer");
+    ASSERT_NE(constructorStart, std::string::npos);
+    const auto metadataStart = rendererSource.find("SelectionOutlineMaskRenderer::BuildMetadata", constructorStart);
+    ASSERT_NE(metadataStart, std::string::npos);
+    const auto constructorBody = rendererSource.substr(constructorStart, metadataStart - constructorStart);
+
+    EXPECT_NE(constructorBody.find("m_compositeMaterial.SetBlendable(true)"), std::string::npos);
+    EXPECT_EQ(constructorBody.find("m_maskVisibleMaterial.SetBlendable(true)"), std::string::npos);
+    EXPECT_EQ(constructorBody.find("m_maskOccludedMaterial.SetBlendable(true)"), std::string::npos);
+    EXPECT_EQ(constructorBody.find("m_edgeBlurHorizontalMaterial"), std::string::npos);
+    EXPECT_EQ(constructorBody.find("m_blurVerticalMaterial.SetBlendable(true)"), std::string::npos);
+    EXPECT_NE(rendererSource.find("CreateSelectionCompositePipelineState"), std::string::npos);
+    EXPECT_NE(rendererSource.find("compositeOverrides.hasDepthAttachment = false"), std::string::npos);
+    EXPECT_NE(rendererSource.find("CaptureRecordedDrawCommand"), std::string::npos);
+    EXPECT_NE(rendererSource.find("compositeOverrides"), std::string::npos);
+    EXPECT_NE(shader.find("const float outlineAlpha = saturate(softOutline.outline)"), std::string::npos);
+    EXPECT_NE(shader.find("return float4(color.rgb, outlineAlpha)"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskCompositeForcesBlendedRecordedPipeline)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+    const auto materialHeader = ReadSourceText(root / "Runtime/Rendering/Resources/Material.h");
+    const auto materialSource = ReadSourceText(root / "Runtime/Rendering/Resources/Material.cpp");
+    const auto materialVariantKeySource = ReadSourceText(root / "Runtime/Rendering/Resources/MaterialVariantKey.cpp");
+
+    ASSERT_FALSE(rendererSource.empty());
+    ASSERT_FALSE(materialHeader.empty());
+    ASSERT_FALSE(materialSource.empty());
+    ASSERT_FALSE(materialVariantKeySource.empty());
+
+    EXPECT_NE(materialHeader.find("std::optional<bool> blending"), std::string::npos)
+        << "Recorded helper passes need an explicit blend override because pipeline state application overwrites material blend state.";
+    EXPECT_NE(materialSource.find("if (overrides.blending.has_value())"), std::string::npos);
+    EXPECT_NE(materialVariantKeySource.find("overrideBlending"), std::string::npos);
+
+    const auto recordFullscreenStart = rendererSource.find("void SelectionOutlineMaskRenderer::RecordFullscreenCommand");
+    ASSERT_NE(recordFullscreenStart, std::string::npos);
+    const auto buildResourceStart = rendererSource.find("SelectionOutlineMaskRenderer::BuildResourceIdentity", recordFullscreenStart);
+    ASSERT_NE(buildResourceStart, std::string::npos);
+    const auto recordFullscreenBody = rendererSource.substr(recordFullscreenStart, buildResourceStart - recordFullscreenStart);
+
+    EXPECT_NE(recordFullscreenBody.find("compositeOverrides.blending = true"), std::string::npos)
+        << "The fullscreen composite must alpha-blend over the existing Scene View color target.";
+    EXPECT_NE(recordFullscreenBody.find("compositeOverrides.SetColorFormats"), std::string::npos)
+        << "The recorded composite pipeline must match the actual Scene View output color format.";
+    EXPECT_NE(recordFullscreenBody.find("frameDescriptor.outputColorView->GetDesc().format"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskCompositeRecordsDepthlessPipeline)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererSource.empty());
+
+    const auto recordFullscreenStart = rendererSource.find("void SelectionOutlineMaskRenderer::RecordFullscreenCommand");
+    ASSERT_NE(recordFullscreenStart, std::string::npos);
+    const auto buildResourceStart = rendererSource.find("SelectionOutlineMaskRenderer::BuildResourceIdentity", recordFullscreenStart);
+    ASSERT_NE(buildResourceStart, std::string::npos);
+    const auto recordFullscreenBody = rendererSource.substr(recordFullscreenStart, buildResourceStart - recordFullscreenStart);
+
+    EXPECT_NE(recordFullscreenBody.find("MaterialPipelineStateOverrides compositeOverrides"), std::string::npos);
+    EXPECT_NE(recordFullscreenBody.find("compositeOverrides.hasDepthAttachment = false"), std::string::npos);
+    EXPECT_NE(recordFullscreenBody.find("compositeOverrides.depthTest = false"), std::string::npos);
+    EXPECT_NE(recordFullscreenBody.find("compositeOverrides.depthWrite = false"), std::string::npos);
+    EXPECT_NE(recordFullscreenBody.find("CaptureRecordedDrawCommand"), std::string::npos);
+    EXPECT_NE(recordFullscreenBody.find("compositeOverrides"), std::string::npos);
+    EXPECT_EQ(recordFullscreenBody.find("CaptureRecordedDrawCommand(pso, drawable"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskCompositeDiscardsTransparentPixelsBeforeBlend)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto shader = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineCompositeCore.hlsli");
+
+    ASSERT_FALSE(shader.empty());
+
+    const auto compositeStart = shader.find("float4 Composite(VSOutput input)");
+    ASSERT_NE(compositeStart, std::string::npos);
+    const auto compositeBody = shader.substr(compositeStart);
+
+    EXPECT_NE(compositeBody.find("const float outlineAlpha = saturate(softOutline.outline)"), std::string::npos);
+    EXPECT_NE(compositeBody.find("clip(outlineAlpha - 0.001f)"), std::string::npos)
+        << "The fullscreen composite draw must not write transparent pixels over the Scene View color target.";
+    EXPECT_NE(compositeBody.find("return float4(color.rgb, outlineAlpha"), std::string::npos);
+    EXPECT_EQ(compositeBody.find("return float4(color.rgb, saturate(outline)"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskCompositeDerivesOcclusionFromSelectedMinusVisible)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto shader = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineCompositeCore.hlsli");
+
+    ASSERT_FALSE(shader.empty());
+
+    const auto softOutlineStart = shader.find("SelectionOutlineSoftOutline ComputeSoftOutline");
+    ASSERT_NE(softOutlineStart, std::string::npos);
+    const auto compositeStart = shader.find("float4 Composite(VSOutput input)");
+    ASSERT_NE(compositeStart, std::string::npos);
+    const auto softOutlineBody = shader.substr(softOutlineStart, compositeStart - softOutlineStart);
+    EXPECT_NE(shader.find("SelectionOutlineMaskGetSelected(sourceMask)"), std::string::npos);
+    EXPECT_NE(shader.find("SelectionOutlineMaskGetVisible(sourceMask)"), std::string::npos);
+    EXPECT_NE(
+        shader.find("saturate(SelectionOutlineMaskGetSelected(sourceMask) - SelectionOutlineMaskGetVisible(sourceMask))"),
+        std::string::npos);
+    EXPECT_EQ(softOutlineBody.find("SELECTION_OUTLINE_MASK_OCCLUDED_SWIZZLE"), std::string::npos);
+
+    const auto compositeBody = shader.substr(compositeStart);
+
+    EXPECT_NE(compositeBody.find("const SelectionOutlineSoftOutline softOutline = ComputeSoftOutline(uv)"), std::string::npos);
+    EXPECT_NE(compositeBody.find("softOutline.occlusionFade"), std::string::npos);
+    EXPECT_EQ(compositeBody.find("const float selected ="), std::string::npos)
+        << "Composite must fade from the edge-source mask samples, not only from the current pixel.";
+    EXPECT_EQ(compositeBody.find("SELECTION_OUTLINE_MASK_OCCLUDED_SWIZZLE"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskBindsTexelSizeForCompositeEdgeFilter)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+    const auto shader = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineCompositeCore.hlsli");
+    const auto compositeShader = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineComposite.hlsl");
+
+    ASSERT_FALSE(rendererSource.empty());
+    ASSERT_FALSE(shader.empty());
+    ASSERT_FALSE(compositeShader.empty());
+
+    EXPECT_NE(compositeShader.find("float4 u_TexelSize"), std::string::npos);
+    EXPECT_NE(shader.find("u_TexelSize.x"), std::string::npos);
+    EXPECT_NE(shader.find("u_TexelSize.y"), std::string::npos);
+
+    EXPECT_NE(rendererSource.find("const auto texelSize = Maths::Vector4("), std::string::npos);
+    EXPECT_EQ(CountOccurrences(rendererSource, "\"u_TexelSize\", texelSize"), 3u);
+    EXPECT_EQ(rendererSource.find("SetMaterialValueIfChanged(m_edgeBlurHorizontalMaterial, \"u_TexelSize\", texelSize)"), std::string::npos);
+    EXPECT_NE(rendererSource.find("SetMaterialValueIfChanged(m_compositeMaterial, \"u_TexelSize\", texelSize)"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskCompositeReusesCachedNeighborhoodSamples)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto shader = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineCompositeCore.hlsli");
+
+    ASSERT_FALSE(shader.empty());
+
+    EXPECT_NE(shader.find("struct SelectionOutlineMaskNeighborhood"), std::string::npos);
+    EXPECT_NE(shader.find("SelectionOutlineMaskNeighborhood BuildSelectionOutlineMaskNeighborhood(float2 uv)"), std::string::npos);
+    EXPECT_NE(shader.find("ComputeIdEdgeFromMasks("), std::string::npos);
+
+    const auto neighborhoodStart = shader.find("SelectionOutlineMaskNeighborhood BuildSelectionOutlineMaskNeighborhood(float2 uv)");
+    ASSERT_NE(neighborhoodStart, std::string::npos);
+    const auto chooseEdgeSourceStart = shader.find("float4 SelectionOutlineMaskChooseEdgeSource", neighborhoodStart);
+    ASSERT_NE(chooseEdgeSourceStart, std::string::npos);
+    const auto neighborhoodBody = shader.substr(neighborhoodStart, chooseEdgeSourceStart - neighborhoodStart);
+
+    EXPECT_EQ(CountOccurrences(neighborhoodBody, "u_SelectionOutlineMask.Sample"), 13u);
+    const std::map<std::string, std::string> expectedNeighborhoodSamples = {
+        { "center", "uv)" },
+        { "left", "uv + float2(-texel.x, 0.0f))" },
+        { "right", "uv + float2(texel.x, 0.0f))" },
+        { "up", "uv + float2(0.0f, -texel.y))" },
+        { "down", "uv + float2(0.0f, texel.y))" },
+        { "left2", "uv + float2(-2.0f * texel.x, 0.0f))" },
+        { "right2", "uv + float2(2.0f * texel.x, 0.0f))" },
+        { "up2", "uv + float2(0.0f, -2.0f * texel.y))" },
+        { "down2", "uv + float2(0.0f, 2.0f * texel.y))" },
+        { "leftUp", "uv + float2(-texel.x, -texel.y))" },
+        { "leftDown", "uv + float2(-texel.x, texel.y))" },
+        { "rightUp", "uv + float2(texel.x, -texel.y))" },
+        { "rightDown", "uv + float2(texel.x, texel.y))" }
+    };
+    std::vector<std::string> sampleOffsets;
+    for (const auto& [field, offset] : expectedNeighborhoodSamples)
+    {
+        const auto assignment = std::string("neighborhood.") + field + " = u_SelectionOutlineMask.Sample(u_LinearClampSampler, " + offset;
+        EXPECT_NE(neighborhoodBody.find(assignment), std::string::npos)
+            << field;
+        sampleOffsets.push_back(offset);
+    }
+    std::sort(sampleOffsets.begin(), sampleOffsets.end());
+    EXPECT_EQ(std::unique(sampleOffsets.begin(), sampleOffsets.end()), sampleOffsets.end())
+        << "The cached neighborhood must keep 13 unique center/cardinal/diagonal/two-texel UV offsets.";
+
+    const auto softOutlineStart = shader.find("SelectionOutlineSoftOutline ComputeSoftOutline");
+    ASSERT_NE(softOutlineStart, std::string::npos);
+    const auto compositeStart = shader.find("float4 Composite(VSOutput input)", softOutlineStart);
+    ASSERT_NE(compositeStart, std::string::npos);
+    const auto softOutlineBody = shader.substr(softOutlineStart, compositeStart - softOutlineStart);
+
+    EXPECT_NE(
+        softOutlineBody.find("const SelectionOutlineMaskNeighborhood neighborhood = BuildSelectionOutlineMaskNeighborhood(uv)"),
+        std::string::npos);
+    EXPECT_EQ(softOutlineBody.find("ComputeIdEdge(uv"), std::string::npos)
+        << "The fused composite pass should not multiply mask texture fetches by nesting five edge-filter calls.";
+    EXPECT_EQ(softOutlineBody.find("u_SelectionOutlineMask.Sample"), std::string::npos)
+        << "Mask samples should be loaded once in BuildSelectionOutlineMaskNeighborhood and reused by the soft outline filter.";
+    EXPECT_EQ(CountOccurrences(softOutlineBody, "ComputeIdEdgeFromMasks("), 5u);
+    EXPECT_NE(
+        softOutlineBody.find(
+            "ComputeIdEdgeFromMasks(\n"
+            "            neighborhood.center,\n"
+            "            neighborhood.left,\n"
+            "            neighborhood.right,\n"
+            "            neighborhood.up,\n"
+            "            neighborhood.down),\n"
+            "        0.36f)"),
+        std::string::npos);
+    EXPECT_NE(
+        softOutlineBody.find(
+            "ComputeIdEdgeFromMasks(\n"
+            "            neighborhood.right,\n"
+            "            neighborhood.center,\n"
+            "            neighborhood.right2,\n"
+            "            neighborhood.rightUp,\n"
+            "            neighborhood.rightDown),\n"
+            "        0.16f)"),
+        std::string::npos);
+    EXPECT_NE(
+        softOutlineBody.find(
+            "ComputeIdEdgeFromMasks(\n"
+            "            neighborhood.left,\n"
+            "            neighborhood.left2,\n"
+            "            neighborhood.center,\n"
+            "            neighborhood.leftUp,\n"
+            "            neighborhood.leftDown),\n"
+            "        0.16f)"),
+        std::string::npos);
+    EXPECT_NE(
+        softOutlineBody.find(
+            "ComputeIdEdgeFromMasks(\n"
+            "            neighborhood.down,\n"
+            "            neighborhood.leftDown,\n"
+            "            neighborhood.rightDown,\n"
+            "            neighborhood.center,\n"
+            "            neighborhood.down2),\n"
+            "        0.16f)"),
+        std::string::npos);
+    EXPECT_NE(
+        softOutlineBody.find(
+            "ComputeIdEdgeFromMasks(\n"
+            "            neighborhood.up,\n"
+            "            neighborhood.leftUp,\n"
+            "            neighborhood.rightUp,\n"
+            "            neighborhood.up2,\n"
+            "            neighborhood.center),\n"
+            "        0.16f)"),
+        std::string::npos);
+    EXPECT_EQ(shader.find("SelectionOutlineEdgeSample ComputeIdEdge(float2 uv)"), std::string::npos)
+        << "Keep the old five-tap edge helper removed so future shader edits cannot accidentally rebuild the full 13-sample neighborhood per offset.";
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskCaptureWritesNonZeroObjectId)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+    const auto collectorHeader = ReadSourceText(root / "Project/Editor/Rendering/DebugGameObjectSelectionCollector.h");
+    const auto shader = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineMask.hlsl");
+
+    ASSERT_FALSE(collectorHeader.empty());
+    ASSERT_FALSE(rendererSource.empty());
+    ASSERT_FALSE(shader.empty());
+
+    EXPECT_NE(shader.find("SelectionOutlineMaskSetGroupId(mask, u_ObjectId)"), std::string::npos);
+    EXPECT_NE(collectorHeader.find("float selectionGroupId"), std::string::npos);
+    EXPECT_NE(collectorHeader.find("float selectionClassification"), std::string::npos);
+    EXPECT_NE(collectorHeader.find("kSelectionOutlineParentClassification"), std::string::npos);
+    EXPECT_NE(collectorHeader.find("kSelectionOutlineChildClassification"), std::string::npos);
+    EXPECT_NE(collectorHeader.find("actorDepth == 0u"), std::string::npos);
+    EXPECT_NE(rendererSource.find("ApplySelectionMaskGroupParameters"), std::string::npos);
+    EXPECT_NE(rendererSource.find("group.selectionGroupId"), std::string::npos);
+    EXPECT_NE(rendererSource.find("group.selectionClassification"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("SetMaterialValueIfChanged(material, \"u_ObjectId\", item.selectionGroupId)"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("constexpr float kSelectionOutlineDefaultObjectId"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("constexpr float kSelectionOutlineParentClassification"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskIntermediatePassesDisableBlendingAndCompositeOnlyBlends)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererSource.empty());
+
+    const auto visiblePsoStart = rendererSource.find("CreateSelectionMaskVisiblePipelineState");
+    ASSERT_NE(visiblePsoStart, std::string::npos);
+    const auto occludedPsoStart = rendererSource.find("CreateSelectionMaskOccludedPipelineState", visiblePsoStart);
+    ASSERT_NE(occludedPsoStart, std::string::npos);
+    const auto fullscreenPsoStart = rendererSource.find("CreateSelectionFullscreenPipelineState", occludedPsoStart);
+    ASSERT_NE(fullscreenPsoStart, std::string::npos);
+    const auto compositePsoStart = rendererSource.find("CreateSelectionCompositePipelineState", fullscreenPsoStart);
+    ASSERT_NE(compositePsoStart, std::string::npos);
+    const auto resourceIdentityStart = rendererSource.find("bool SameViewDesc", compositePsoStart);
+    ASSERT_NE(resourceIdentityStart, std::string::npos);
+
+    const auto visiblePsoBody = rendererSource.substr(visiblePsoStart, occludedPsoStart - visiblePsoStart);
+    const auto occludedPsoBody = rendererSource.substr(occludedPsoStart, fullscreenPsoStart - occludedPsoStart);
+    const auto fullscreenPsoBody = rendererSource.substr(fullscreenPsoStart, compositePsoStart - fullscreenPsoStart);
+    const auto compositePsoBody = rendererSource.substr(compositePsoStart, resourceIdentityStart - compositePsoStart);
+
+    EXPECT_NE(visiblePsoBody.find("pso.blending = false"), std::string::npos);
+    EXPECT_NE(occludedPsoBody.find("pso.blending = false"), std::string::npos);
+    EXPECT_NE(fullscreenPsoBody.find("pso.blending = false"), std::string::npos);
+    EXPECT_NE(compositePsoBody.find("pso.blending = true"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskCaptureBatchesSelectedMeshesWithObjectDataInstances)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+    const auto shader = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineMask.hlsl");
+
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(rendererSource.empty());
+    ASSERT_FALSE(shader.empty());
+
+    EXPECT_NE(rendererHeader.find("struct SelectionMaskCaptureGroup"), std::string::npos);
+    EXPECT_NE(rendererSource.find("BuildSelectionMaskCaptureGroups"), std::string::npos);
+    EXPECT_NE(rendererSource.find("AddSelectionMaskCaptureGroup"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("CaptureMaskDrawCommandsForGroups"), std::string::npos);
+    EXPECT_NE(rendererSource.find("void SelectionOutlineMaskRenderer::CaptureMaskDrawCommandsForGroups"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("const std::vector<SelectionMaskCaptureGroup>& groups"), std::string::npos);
+
+    EXPECT_NE(rendererSource.find("group.instanceModelMatrices"), std::string::npos);
+    EXPECT_NE(rendererSource.find("drawable.instanceCount = static_cast<uint32_t>(group.instanceModelMatrices.size())"), std::string::npos);
+    EXPECT_NE(rendererSource.find("descriptor.objectCount = drawable.instanceCount"), std::string::npos);
+    EXPECT_NE(rendererSource.find("descriptor.instanceModelMatrices = group.instanceModelMatrices"), std::string::npos);
+    EXPECT_NE(rendererSource.find("drawable.AddDescriptor(NLS::Engine::Rendering::EngineDrawableDescriptor{"), std::string::npos);
+
+    const auto captureForGroupsStart = rendererSource.find("void SelectionOutlineMaskRenderer::CaptureMaskDrawCommandsForGroups");
+    ASSERT_NE(captureForGroupsStart, std::string::npos);
+    const auto fullscreenStart = rendererSource.find("void SelectionOutlineMaskRenderer::EnsureFullscreenResources", captureForGroupsStart);
+    ASSERT_NE(fullscreenStart, std::string::npos);
+    const auto captureForGroupsBody = rendererSource.substr(captureForGroupsStart, fullscreenStart - captureForGroupsStart);
+    EXPECT_EQ(captureForGroupsBody.find("debugDrawItems.selectionMeshItems"), std::string::npos)
+        << "Mask capture should consume prebuilt groups instead of recording one draw per selected item.";
+    EXPECT_EQ(captureForGroupsBody.find("BuildSelectionMaskCaptureGroups"), std::string::npos)
+        << "Visible and occluded mask passes must reuse one selected-tree grouping per frame.";
+    EXPECT_EQ(rendererSource.find("ApplySelectionMaskItemParameters"), std::string::npos);
+    EXPECT_NE(shader.find("ObjectData[u_ObjectIndex + instanceId]"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskReusesStableMaskWithoutCachingFrameDrawBindings)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(rendererSource.empty());
+
+    EXPECT_NE(rendererHeader.find("struct MaskReuseSignature"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("m_cachedMaskSignature"), std::string::npos);
+    EXPECT_NE(rendererSource.find("BuildMaskReuseSignature"), std::string::npos);
+    EXPECT_NE(rendererSource.find("CanReuseCachedMask"), std::string::npos);
+    EXPECT_NE(rendererSource.find("MarkCachedMaskPending"), std::string::npos);
+    EXPECT_NE(rendererSource.find("CommitPendingCachedMask"), std::string::npos);
+    EXPECT_NE(rendererSource.find("DiscardPendingCachedMask"), std::string::npos);
+    EXPECT_NE(rendererSource.find("m_cachedMaskSignature.reset()"), std::string::npos);
+    EXPECT_NE(rendererSource.find("signature->selectedItemCount > kSelectionOutlineDualDepthCaptureMaxItems"), std::string::npos)
+        << "Small selections use depth-refined visibility and must recapture when scene depth changes.";
+    EXPECT_EQ(rendererSource.find("GetLatestPublishedThreadedFrameId() + 1u"), std::string::npos)
+        << "The cache target must use the actual published frame id rather than a global next-frame guess.";
+    EXPECT_EQ(rendererHeader.find("GetLatestPublishedThreadedFrameId"), std::string::npos)
+        << "Published-frame telemetry should not remain as dead cache-target helper state.";
+    EXPECT_NE(rendererSource.find("m_cachedMaskRetirementTarget = publishedFrameId"), std::string::npos)
+        << "The cached mask becomes reusable only after the actual frame that contains CaptureMask has retired.";
+    EXPECT_NE(rendererSource.find("GetLatestRetiredThreadedFrameId() >= m_cachedMaskRetirementTarget"), std::string::npos)
+        << "Cached-mask reuse must wait until the capture frame has retired, not just been prepared.";
+    EXPECT_NE(rendererHeader.find("meshContentRevisionHash"), std::string::npos);
+    EXPECT_NE(rendererSource.find("HashCombine(selectedTreeHash, group.mesh->GetContentRevision())"), std::string::npos)
+        << "A stable Mesh pointer can still change geometry through reload/update; stale masks must be invalidated.";
+    EXPECT_EQ(rendererSource.find("GetLatestPublishedThreadedFrameId() >"), std::string::npos);
+
+    const auto buildPreparedStart = rendererSource.find(
+        "SelectionOutlinePreparedOutput SelectionOutlineMaskRenderer::BuildPreparedOutput");
+    ASSERT_NE(buildPreparedStart, std::string::npos);
+    const auto captureStart = rendererSource.find("void SelectionOutlineMaskRenderer::CaptureMaskDrawCommands", buildPreparedStart);
+    ASSERT_NE(captureStart, std::string::npos);
+    const auto buildPreparedBody = rendererSource.substr(buildPreparedStart, captureStart - buildPreparedStart);
+
+    const auto reuseCheck = buildPreparedBody.find("CanReuseCachedMask");
+    const auto captureCommands = buildPreparedBody.find("CaptureMaskDrawCommands");
+    ASSERT_NE(reuseCheck, std::string::npos);
+    ASSERT_NE(captureCommands, std::string::npos);
+    EXPECT_LT(reuseCheck, captureCommands);
+    EXPECT_NE(buildPreparedBody.find("SelectionOutlineMaskPassKind::Composite", reuseCheck), std::string::npos)
+        << "Stable-mask frames should skip the expensive capture pass and emit only composite.";
+    EXPECT_NE(buildPreparedBody.find("MarkCachedMaskPending", captureCommands), std::string::npos);
+
+    EXPECT_EQ(rendererHeader.find("std::vector<NLS::Render::Context::RecordedDrawCommandInput> m_cachedMaskDrawCommands"), std::string::npos)
+        << "Recorded draw commands carry per-frame binding sets/object indices and must not be cached across frames.";
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskReusesPreparedCaptureGroupsBeforeRebuildingThem)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(rendererSource.empty());
+
+    EXPECT_NE(rendererHeader.find("struct SelectionSourceSignature"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("struct PreparedSelectionCaptureGroups"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("m_cachedSelectionSourceSignature"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("m_cachedSelectionCaptureGroups"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("m_cachedSelectionMaskReuseSignature"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("ResolveSelectionCaptureGroups"), std::string::npos);
+
+    EXPECT_NE(rendererSource.find("BuildSelectionSourceSignature"), std::string::npos);
+    EXPECT_NE(rendererSource.find("ResolveSelectionCaptureGroups"), std::string::npos);
+    EXPECT_NE(rendererSource.find("m_cachedSelectionCaptureGroups.groups"), std::string::npos);
+    EXPECT_NE(rendererSource.find("m_cachedSelectionMaskReuseSignature"), std::string::npos);
+    EXPECT_NE(rendererSource.find("cameraMesh->GetContentRevision()"), std::string::npos)
+        << "Camera helper meshes participate in the selected-tree mask and must invalidate prepared groups when reloaded.";
+    EXPECT_NE(rendererHeader.find("hasCameraMesh"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("cameraMeshContentRevision"), std::string::npos);
+    EXPECT_EQ(rendererHeader.find("RecordedDrawCommandInput> m_cached"), std::string::npos)
+        << "The prepared cache may keep selection grouping only; per-frame recorded bindings must still be captured fresh.";
+
+    const auto buildPreparedStart = rendererSource.find(
+        "SelectionOutlinePreparedOutput SelectionOutlineMaskRenderer::BuildPreparedOutput");
+    ASSERT_NE(buildPreparedStart, std::string::npos);
+    const auto captureStart = rendererSource.find("void SelectionOutlineMaskRenderer::CaptureMaskDrawCommands", buildPreparedStart);
+    ASSERT_NE(captureStart, std::string::npos);
+    const auto buildPreparedBody = rendererSource.substr(buildPreparedStart, captureStart - buildPreparedStart);
+
+    EXPECT_NE(buildPreparedBody.find("BuildSelectionSourceSignature"), std::string::npos);
+    EXPECT_NE(buildPreparedBody.find("ResolveSelectionCaptureGroups"), std::string::npos);
+    const auto resolvePrepared = buildPreparedBody.find("ResolveSelectionCaptureGroups");
+    const auto buildGroups = buildPreparedBody.find("BuildSelectionMaskCaptureGroups");
+    ASSERT_NE(resolvePrepared, std::string::npos);
+    EXPECT_EQ(buildGroups, std::string::npos)
+        << "Stable selections should hit a prepared-group cache instead of rebuilding hash groups in BuildPreparedOutput.";
+    EXPECT_NE(buildPreparedBody.find("preparedSelection.maskReuseSignature"), std::string::npos);
+    EXPECT_NE(buildPreparedBody.find("CanReuseCachedMask(maskReuseSignature)"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskCacheCommitsOnlyAfterSuccessfulPublish)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto baseRendererHeader = ReadSourceText(root / "Runtime/Rendering/Core/ABaseRenderer.h");
+    const auto baseRendererSource = ReadSourceText(root / "Runtime/Rendering/Core/ABaseRenderer.cpp");
+    const auto compositeSource = ReadSourceText(root / "Runtime/Rendering/Core/CompositeRenderer.cpp");
+    const auto debugSceneHeader = ReadSourceText(root / "Project/Editor/Rendering/DebugSceneRenderer.h");
+    const auto debugSceneSource = ReadSourceText(root / "Project/Editor/Rendering/DebugSceneRenderer.cpp");
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(baseRendererHeader.empty());
+    ASSERT_FALSE(baseRendererSource.empty());
+    ASSERT_FALSE(compositeSource.empty());
+    ASSERT_FALSE(debugSceneHeader.empty());
+    ASSERT_FALSE(debugSceneSource.empty());
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(rendererSource.empty());
+
+    EXPECT_NE(baseRendererHeader.find("OnThreadedFramePublished(uint64_t publishedFrameId)"), std::string::npos);
+    EXPECT_NE(baseRendererSource.find("uint64_t publishedFrameId = 0u"), std::string::npos);
+    EXPECT_NE(baseRendererSource.find("&publishedFrameId"), std::string::npos);
+    EXPECT_NE(baseRendererSource.find("OnThreadedFramePublished(publishedFrameId)"), std::string::npos);
+
+    EXPECT_NE(debugSceneHeader.find("OnThreadedFramePublished(uint64_t publishedFrameId)"), std::string::npos);
+    EXPECT_NE(debugSceneHeader.find("OnThreadedFramePublishFailed()"), std::string::npos);
+    EXPECT_NE(debugSceneSource.find("CommitPendingSelectionOutlineMaskCache(publishedFrameId)"), std::string::npos);
+    EXPECT_NE(debugSceneSource.find("DiscardPendingSelectionOutlineMaskCache()"), std::string::npos);
+
+    EXPECT_NE(rendererHeader.find("CommitPendingCachedMask(uint64_t publishedFrameId)"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("DiscardPendingCachedMask()"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("m_pendingCachedMaskSignature"), std::string::npos);
+    EXPECT_NE(rendererSource.find("m_cachedMaskSignature = m_pendingCachedMaskSignature"), std::string::npos);
+    EXPECT_NE(rendererSource.find("m_cachedMaskRetirementTarget = publishedFrameId"), std::string::npos);
+    EXPECT_NE(compositeSource.find("CompositeRenderer::OnThreadedFramePublishFailed()"), std::string::npos);
+    EXPECT_NE(compositeSource.find("ABaseRenderer::OnThreadedFramePublishFailed()"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskPreservesRetirementTargetForIdenticalRecaptures)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(rendererSource.empty());
+
+    EXPECT_NE(rendererHeader.find("ShouldKeepCachedMaskRetirementTarget"), std::string::npos)
+        << "Repeated identical captures must not keep moving the cache retirement target forward forever.";
+    EXPECT_NE(rendererHeader.find("m_keepCachedMaskRetirementTargetForPending"), std::string::npos);
+    EXPECT_NE(rendererSource.find("bool SelectionOutlineMaskRenderer::ShouldKeepCachedMaskRetirementTarget"), std::string::npos);
+
+    const auto keepStart = rendererSource.find("bool SelectionOutlineMaskRenderer::ShouldKeepCachedMaskRetirementTarget");
+    ASSERT_NE(keepStart, std::string::npos);
+    const auto markStart = rendererSource.find("void SelectionOutlineMaskRenderer::MarkCachedMaskPending", keepStart);
+    ASSERT_NE(markStart, std::string::npos);
+    const auto keepBody = rendererSource.substr(keepStart, markStart - keepStart);
+    EXPECT_NE(keepBody.find("signature->Matches(*m_cachedMaskSignature)"), std::string::npos);
+    EXPECT_NE(keepBody.find("GetLatestRetiredThreadedFrameId() < m_cachedMaskRetirementTarget"), std::string::npos);
+    EXPECT_NE(keepBody.find("GetLatestFailedRetiredThreadedFrameId() < m_cachedMaskRetirementTarget"), std::string::npos)
+        << "A failed later capture must break preservation so a new successful target is required.";
+
+    const auto discardStart = rendererSource.find("void SelectionOutlineMaskRenderer::DiscardPendingCachedMask", markStart);
+    ASSERT_NE(discardStart, std::string::npos);
+    const auto markBody = rendererSource.substr(markStart, discardStart - markStart);
+    const auto keepCall = markBody.find("ShouldKeepCachedMaskRetirementTarget(signature)");
+    const auto assignPending = markBody.find("m_pendingCachedMaskSignature = signature");
+    ASSERT_NE(keepCall, std::string::npos);
+    ASSERT_NE(assignPending, std::string::npos);
+    EXPECT_LT(keepCall, assignPending)
+        << "The old retirement target must be preserved before staging a newer identical pending target.";
+
+    const auto commitStart = rendererSource.find("void SelectionOutlineMaskRenderer::CommitPendingCachedMask", markStart);
+    ASSERT_NE(commitStart, std::string::npos);
+    ASSERT_LT(commitStart, discardStart);
+    const auto commitBody = rendererSource.substr(commitStart, discardStart - commitStart);
+    EXPECT_NE(commitBody.find("m_keepCachedMaskRetirementTargetForPending"), std::string::npos);
+    EXPECT_NE(commitBody.find("keepRetirementTarget"), std::string::npos);
+    EXPECT_NE(commitBody.find("m_cachedMaskRetirementTarget = publishedFrameId"), std::string::npos);
+    EXPECT_NE(commitBody.find("!keepRetirementTarget"), std::string::npos)
+        << "A repeated identical capture should update the signature but keep the older capture target until it retires or fails.";
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskRejectsFailedRetiredCacheTarget)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto lifecycleHeader = ReadSourceText(root / "Runtime/Rendering/Context/ThreadedRenderingLifecycle.h");
+    const auto lifecycleSource = ReadSourceText(root / "Runtime/Rendering/Context/ThreadedRenderingLifecycle.cpp");
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(lifecycleHeader.empty());
+    ASSERT_FALSE(lifecycleSource.empty());
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(rendererSource.empty());
+
+    EXPECT_NE(lifecycleHeader.find("latestFailedRetiredFrameId"), std::string::npos);
+    EXPECT_NE(lifecycleHeader.find("m_latestFailedRetiredFrameId"), std::string::npos);
+    EXPECT_NE(lifecycleSource.find("m_latestFailedRetiredFrameId = std::max("), std::string::npos)
+        << "The lifecycle must retain the exact failed retired frame id for GPU-produced cache validation.";
+    EXPECT_NE(lifecycleSource.find("m_telemetry.latestFailedRetiredFrameId = m_latestFailedRetiredFrameId"), std::string::npos);
+
+    EXPECT_NE(rendererHeader.find("GetLatestFailedRetiredThreadedFrameId()"), std::string::npos);
+    EXPECT_NE(rendererSource.find("uint64_t SelectionOutlineMaskRenderer::GetLatestFailedRetiredThreadedFrameId() const"), std::string::npos);
+    EXPECT_NE(rendererSource.find("GetLatestFailedRetiredThreadedFrameId() < m_cachedMaskRetirementTarget"), std::string::npos)
+        << "A later unrelated successful retirement must not validate a mask captured by a failed frame.";
+}
+
+TEST(EditorRenderPathContractTests, RhiFailurePathsPoisonSelectionMaskRetirement)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rhiSource = ReadSourceText(root / "Runtime/Rendering/Context/RhiThreadCoordinator.cpp");
+
+    ASSERT_FALSE(rhiSource.empty());
+
+    const auto serialRecordStart = rhiSource.find("void Detail::RecordThreadedRhiWork");
+    ASSERT_NE(serialRecordStart, std::string::npos);
+    const auto executeStart = rhiSource.find("void Detail::ExecuteThreadedSubmitPlan", serialRecordStart);
+    ASSERT_NE(executeStart, std::string::npos);
+    const auto serialRecordBody = rhiSource.substr(serialRecordStart, executeStart - serialRecordStart);
+
+    const auto serialNoDispatch = serialRecordBody.find("No dispatches recorded but commands were expected");
+    ASSERT_NE(serialNoDispatch, std::string::npos);
+    EXPECT_NE(
+        serialRecordBody.find("MarkCommandRecordingFailure", serialNoDispatch),
+        std::string::npos)
+        << "Serial compute passes with expected commands but zero dispatches must retire as failed.";
+
+    const auto serialNoDraw = serialRecordBody.find("No draws recorded but commands were expected");
+    ASSERT_NE(serialNoDraw, std::string::npos);
+    EXPECT_NE(
+        serialRecordBody.find("MarkCommandRecordingFailure", serialNoDraw),
+        std::string::npos)
+        << "External-output serial draw failures must poison the frame so cached selection masks are not reused.";
+
+    const auto translateStart = rhiSource.find("TranslatedParallelCommandBufferBatch TranslateRecordedParallelCommandWorkUnits");
+    ASSERT_NE(translateStart, std::string::npos);
+    const auto namespaceEnd = rhiSource.find("Render::RHI::RHIFrameContext* Detail::BeginThreadedRhiFrame", translateStart);
+    ASSERT_NE(namespaceEnd, std::string::npos);
+    const auto translateBody = rhiSource.substr(translateStart, namespaceEnd - translateStart);
+
+    const auto visibilityFailure = translateBody.find("Dependency visibility transition recording failed");
+    ASSERT_NE(visibilityFailure, std::string::npos);
+    EXPECT_NE(translateBody.find("MarkTranslatedParallelCommandFailure", visibilityFailure), std::string::npos);
+    EXPECT_NE(translateBody.find("continue", visibilityFailure), std::string::npos)
+        << "A work unit that needed an explicit barrier batch must not be submitted after that batch fails.";
+
+    const auto postPassFailure = translateBody.find("Post-pass transition recording failed");
+    ASSERT_NE(postPassFailure, std::string::npos);
+    const auto postPassMarker = translateBody.rfind("MarkTranslatedParallelCommandFailure", postPassFailure);
+    ASSERT_NE(postPassMarker, std::string::npos);
+    const auto postPassCall = translateBody.rfind("RecordPostPassTransitionBatch", postPassMarker);
+    ASSERT_NE(postPassCall, std::string::npos);
+    EXPECT_LT(postPassCall, postPassMarker);
+    EXPECT_NE(translateBody.rfind("HasResourceVisibilityTransitions(extractionVisibilityInput)", postPassCall), std::string::npos)
+        << "An extracted texture list alone does not prove a post-pass barrier was needed.";
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskCaptureGroupingUsesIndexedLookup)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererSource.empty());
+    EXPECT_NE(rendererSource.find("#include <unordered_map>"), std::string::npos);
+    EXPECT_NE(rendererSource.find("SelectionMaskCaptureGroupLookup"), std::string::npos);
+
+    const auto addGroupStart = rendererSource.find("void AddSelectionMaskCaptureGroup");
+    ASSERT_NE(addGroupStart, std::string::npos);
+    const auto buildGroupsStart = rendererSource.find("std::vector<SelectionMaskCaptureGroup> BuildSelectionMaskCaptureGroups", addGroupStart);
+    ASSERT_NE(buildGroupsStart, std::string::npos);
+    const auto addGroupBody = rendererSource.substr(addGroupStart, buildGroupsStart - addGroupStart);
+
+    EXPECT_NE(addGroupBody.find("groupLookup.find"), std::string::npos);
+    EXPECT_NE(addGroupBody.find("groupLookup.emplace"), std::string::npos);
+    EXPECT_EQ(addGroupBody.find("std::find_if("), std::string::npos)
+        << "Grouping selected children must stay O(n) on large selected hierarchies.";
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskFullscreenPassesUseClipSpaceVertexPath)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto shader = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineMask.hlsl");
+
+    ASSERT_FALSE(shader.empty());
+    EXPECT_NE(shader.find("VSOutput BuildObjectMaskVertex"), std::string::npos);
+    EXPECT_NE(shader.find("VSOutput BuildFullscreenVertex"), std::string::npos);
+    EXPECT_NE(shader.find("output.PositionCS = float4(input.Position.xy, 0.0f, 1.0f)"), std::string::npos);
+    EXPECT_NE(shader.find("if (u_SelectionOutlinePassMode == SelectionOutlinePassModeCaptureVisible"), std::string::npos);
+    EXPECT_NE(shader.find("if (u_SelectionOutlinePassMode == SelectionOutlinePassModeCaptureOccluded"), std::string::npos);
+
+    const auto fullscreenStart = shader.find("VSOutput BuildFullscreenVertex");
+    ASSERT_NE(fullscreenStart, std::string::npos);
+    const auto psStart = shader.find("float4 CaptureMaskVisible", fullscreenStart);
+    ASSERT_NE(psStart, std::string::npos);
+    const auto fullscreenBody = shader.substr(fullscreenStart, psStart - fullscreenStart);
+    EXPECT_EQ(fullscreenBody.find("u_Model"), std::string::npos);
+    EXPECT_EQ(fullscreenBody.find("u_ViewProjection"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskUnsupportedMaterialMaskReportsStructuredSkip)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto collectorHeader = ReadSourceText(root / "Project/Editor/Rendering/DebugGameObjectSelectionCollector.h");
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+    const auto fallbackReasonTable = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineFallbackReasons.def");
+    const auto shader = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineMask.hlsl");
+
+    ASSERT_FALSE(collectorHeader.empty());
+    ASSERT_FALSE(rendererSource.empty());
+    ASSERT_FALSE(fallbackReasonTable.empty());
+    ASSERT_FALSE(shader.empty());
+    EXPECT_NE(collectorHeader.find("sourceMaterial"), std::string::npos);
+    EXPECT_NE(rendererSource.find("HasUnsupportedMaterialMask"), std::string::npos);
+    EXPECT_NE(rendererSource.find("SelectionOutlineFallbackReason::UnsupportedMaterialMask"), std::string::npos);
+    EXPECT_NE(rendererSource.find("output.fallbackDecision = { m_lastFallbackReason, output.selectedItemCount }"), std::string::npos);
+    EXPECT_NE(fallbackReasonTable.find("NLS_SELECTION_OUTLINE_FALLBACK_REASON(UnsupportedMaterialMask, SkipFrame)"), std::string::npos)
+        << "Material alpha semantics are intentionally not routed back to the expensive shell path until SceneSelectionPass/alpha-cutout capture is implemented.";
+    EXPECT_EQ(fallbackReasonTable.find("NLS_SELECTION_OUTLINE_FALLBACK_REASON(UnsupportedMaterialMask, LegacyShell)"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("m_maskVisibleMaterial.Set(\"u_AlphaClip\", 0.0f)"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("m_maskOccludedMaterial.Set(\"u_AlphaClip\", 0.0f)"), std::string::npos);
+    EXPECT_EQ(shader.find("SceneSelectionPass equivalent"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskUnsupportedMaterialMaskDetectsActualMaskTexture)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererSource.empty());
+
+    const auto materialMaskStart = rendererSource.find("bool MaterialRequestsAlphaMask");
+    ASSERT_NE(materialMaskStart, std::string::npos);
+    const auto backendStart = rendererSource.find("NLS::Render::RHI::NativeBackendType ResolveSelectionOutlineBackend", materialMaskStart);
+    ASSERT_NE(backendStart, std::string::npos);
+    const auto materialMaskBody = rendererSource.substr(materialMaskStart, backendStart - materialMaskStart);
+
+    EXPECT_NE(materialMaskBody.find("u_AlphaClip"), std::string::npos);
+    EXPECT_NE(materialMaskBody.find("u_MaskMap"), std::string::npos)
+        << "Standard.hlsl discards from u_MaskMap, so the structured skip must see real masked materials even when cutoff parameters are absent.";
+    EXPECT_NE(materialMaskBody.find(":Generated/DefaultWhiteTexture"), std::string::npos)
+        << "Default white mask-map bindings should not make every Standard material skip selection outline.";
+    EXPECT_EQ(materialMaskBody.find("Contains(\"u_AlphaCutoff\") ||"), std::string::npos)
+        << "A cutoff-capable shader parameter is not evidence that alpha clipping is enabled.";
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskReportsUnsupportedBackendForIndexedObjectData)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+    const auto fallbackReasonTable = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineFallbackReasons.def");
+
+    ASSERT_FALSE(rendererSource.empty());
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(fallbackReasonTable.empty());
+
+    EXPECT_NE(rendererSource.find("IndexedObjectDataShaderSupport.h"), std::string::npos);
+    EXPECT_NE(rendererSource.find("ShaderSupportsIndexedObjectData(*shader)"), std::string::npos);
+    EXPECT_NE(rendererSource.find("BackendSupportsIndexedObjectDataPushConstants"), std::string::npos);
+    EXPECT_NE(rendererSource.find("SelectionOutlineFallbackReason::UnsupportedBackend"), std::string::npos);
+    EXPECT_NE(fallbackReasonTable.find("UnsupportedBackend"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskRebindsShaderOnlyWhenPointerChanges)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererSource.empty());
+    EXPECT_NE(rendererSource.find("bool SetShaderIfChanged"), std::string::npos);
+    EXPECT_NE(rendererSource.find("if (material.GetShader() == shader)"), std::string::npos);
+    EXPECT_NE(rendererSource.find("return false"), std::string::npos);
+    EXPECT_NE(rendererSource.find("material.SetShader(shader)"), std::string::npos);
+    EXPECT_NE(rendererSource.find("return true"), std::string::npos);
+    EXPECT_NE(rendererSource.find("EnsureSelectionOutlineMaterial"), std::string::npos);
+    EXPECT_NE(rendererSource.find("if (SetShaderIfChanged(material, shader))"), std::string::npos);
+    EXPECT_NE(rendererSource.find("BindSelectionOutlineTextureFallbacks(material, fallbackTexture)"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("m_maskVisibleMaterial.SetShader(shader)"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("m_edgeMaterial.SetShader(shader)"), std::string::npos);
+
+    const auto buildPreparedStart = rendererSource.find("SelectionOutlinePreparedOutput SelectionOutlineMaskRenderer::BuildPreparedOutput");
+    const auto captureStart = rendererSource.find("void SelectionOutlineMaskRenderer::CaptureMaskDrawCommands", buildPreparedStart);
+    ASSERT_NE(buildPreparedStart, std::string::npos);
+    ASSERT_NE(captureStart, std::string::npos);
+    const auto buildPreparedBody = rendererSource.substr(buildPreparedStart, captureStart - buildPreparedStart);
+    EXPECT_NE(buildPreparedBody.find("EnsureSelectionOutlineMaterials("), std::string::npos);
+    EXPECT_EQ(buildPreparedBody.find("BindSelectionOutlineTextureFallbacks("), std::string::npos)
+        << "Default texture fallbacks must not dirty selection-outline material binding caches every frame.";
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskCaptureEmitsVisibleAndOccludedContributions)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+    const auto shader = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineMask.hlsl");
+
+    ASSERT_FALSE(rendererSource.empty());
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(shader.empty());
+
+    EXPECT_NE(rendererHeader.find("m_maskVisibleMaterial"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("m_maskOccludedMaterial"), std::string::npos);
+    EXPECT_NE(rendererSource.find("SelectionOutlinePassModeCaptureOccluded"), std::string::npos);
+    EXPECT_NE(rendererSource.find("CreateSelectionMaskVisiblePipelineState"), std::string::npos);
+    EXPECT_NE(rendererSource.find("CreateSelectionMaskOccludedPipelineState"), std::string::npos);
+    EXPECT_NE(rendererSource.find("CaptureMaskDrawCommandsForGroups"), std::string::npos);
+
+    const auto visiblePsoStart = rendererSource.find("CreateSelectionMaskVisiblePipelineState");
+    ASSERT_NE(visiblePsoStart, std::string::npos);
+    const auto occludedPsoStart = rendererSource.find("CreateSelectionMaskOccludedPipelineState", visiblePsoStart);
+    ASSERT_NE(occludedPsoStart, std::string::npos);
+    const auto fullscreenPsoStart = rendererSource.find("CreateSelectionFullscreenPipelineState", occludedPsoStart);
+    ASSERT_NE(fullscreenPsoStart, std::string::npos);
+    const auto visiblePsoBody = rendererSource.substr(visiblePsoStart, occludedPsoStart - visiblePsoStart);
+    const auto occludedPsoBody = rendererSource.substr(occludedPsoStart, fullscreenPsoStart - occludedPsoStart);
+
+    EXPECT_NE(visiblePsoBody.find("pso.depthTest = true"), std::string::npos);
+    EXPECT_NE(visiblePsoBody.find("pso.depthFunc = NLS::Render::Settings::EComparaisonAlgorithm::LESS_EQUAL"), std::string::npos);
+    EXPECT_NE(visiblePsoBody.find("pso.depthWriting = false"), std::string::npos);
+    EXPECT_NE(occludedPsoBody.find("pso.depthTest = true"), std::string::npos);
+    EXPECT_NE(occludedPsoBody.find("pso.depthFunc = NLS::Render::Settings::EComparaisonAlgorithm::ALWAYS"), std::string::npos);
+    EXPECT_NE(occludedPsoBody.find("pso.depthWriting = false"), std::string::npos);
+    EXPECT_NE(occludedPsoBody.find("pso.colorWriting.mask = 0x0F"), std::string::npos);
+
+    const auto captureStart = rendererSource.find("void SelectionOutlineMaskRenderer::CaptureMaskDrawCommands(");
+    ASSERT_NE(captureStart, std::string::npos);
+    const auto fullscreenStart = rendererSource.find("void SelectionOutlineMaskRenderer::EnsureFullscreenResources", captureStart);
+    ASSERT_NE(fullscreenStart, std::string::npos);
+    const auto captureBody = rendererSource.substr(captureStart, fullscreenStart - captureStart);
+
+    const auto occludedCapture = captureBody.find("CreateSelectionMaskOccludedPipelineState(pso)");
+    ASSERT_NE(occludedCapture, std::string::npos);
+    const auto visibleCapture = captureBody.find("CreateSelectionMaskVisiblePipelineState(pso)");
+    ASSERT_NE(visibleCapture, std::string::npos);
+    EXPECT_LT(occludedCapture, visibleCapture)
+        << "Without Unity's max-blend RHI override, capture all selected pixels first and overwrite visible pixels second.";
+    EXPECT_NE(captureBody.find("m_maskVisibleMaterial"), std::string::npos);
+    EXPECT_NE(captureBody.find("m_maskOccludedMaterial"), std::string::npos);
+
+    EXPECT_NE(shader.find("SelectionOutlineMaskSetVisible(mask, 1.0f)"), std::string::npos);
+    EXPECT_NE(shader.find("SelectionOutlineMaskSetSelected(mask, 1.0f)"), std::string::npos);
+    EXPECT_EQ(shader.find("SelectionOutlineMaskSetOccluded(mask, 1.0f)"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskKeepsSelectedCoverageForLargeSelectedTrees)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererSource.empty());
+
+    const auto captureStart = rendererSource.find("void SelectionOutlineMaskRenderer::CaptureMaskDrawCommands(");
+    ASSERT_NE(captureStart, std::string::npos);
+    const auto fullscreenStart = rendererSource.find("void SelectionOutlineMaskRenderer::EnsureFullscreenResources", captureStart);
+    ASSERT_NE(fullscreenStart, std::string::npos);
+    const auto captureBody = rendererSource.substr(captureStart, fullscreenStart - captureStart);
+
+    EXPECT_NE(rendererSource.find("kSelectionOutlineDualDepthCaptureMaxItems"), std::string::npos);
+    EXPECT_NE(captureBody.find("enableVisibleDepthRefinement"), std::string::npos);
+    EXPECT_NE(captureBody.find("selectedItemCount <= kSelectionOutlineDualDepthCaptureMaxItems"), std::string::npos);
+    EXPECT_NE(captureBody.find("groups.size() * (enableVisibleDepthRefinement ? 2u : 1u)"), std::string::npos)
+        << "Capture reservation should track grouped draw commands, not raw selected-item count.";
+
+    const auto visibleRefinementGuard = captureBody.find("if (enableVisibleDepthRefinement)");
+    ASSERT_NE(visibleRefinementGuard, std::string::npos);
+    const auto smallBranchOccludedCapture = captureBody.find("m_maskOccludedMaterial", visibleRefinementGuard);
+    const auto smallBranchVisibleCapture = captureBody.find("m_maskVisibleMaterial", visibleRefinementGuard);
+    const auto largeBranchStart = captureBody.find("else", visibleRefinementGuard);
+    ASSERT_NE(smallBranchOccludedCapture, std::string::npos);
+    ASSERT_NE(smallBranchVisibleCapture, std::string::npos);
+    ASSERT_NE(largeBranchStart, std::string::npos);
+    EXPECT_LT(smallBranchOccludedCapture, smallBranchVisibleCapture)
+        << "Small selections should capture all selected pixels first and then refine visible pixels.";
+
+    const auto largeBranchBody = captureBody.substr(largeBranchStart);
+    EXPECT_NE(largeBranchBody.find("m_maskVisibleMaterial"), std::string::npos)
+        << "Large selected trees must keep a one-pass selected-coverage mask instead of dropping hidden selected pixels.";
+    EXPECT_NE(largeBranchBody.find("SelectionOutlinePassModeCaptureVisible"), std::string::npos);
+    EXPECT_NE(largeBranchBody.find("CreateSelectionMaskOccludedPipelineState(pso)"), std::string::npos)
+        << "The one-pass large-selection capture still uses always-depth coverage.";
+    EXPECT_EQ(largeBranchBody.find("m_maskOccludedMaterial"), std::string::npos)
+        << "Large selections must not mark the coverage pass as occluded when the visible-depth refinement is skipped.";
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskTreatsLargeSelectionCoverageAsVisibleUnknown)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererSource.empty());
+
+    const auto captureStart = rendererSource.find("void SelectionOutlineMaskRenderer::CaptureMaskDrawCommands(");
+    ASSERT_NE(captureStart, std::string::npos);
+    const auto fullscreenStart = rendererSource.find("void SelectionOutlineMaskRenderer::EnsureFullscreenResources", captureStart);
+    ASSERT_NE(fullscreenStart, std::string::npos);
+    const auto captureBody = rendererSource.substr(captureStart, fullscreenStart - captureStart);
+
+    const auto refinementGuard = captureBody.find("if (enableVisibleDepthRefinement)");
+    ASSERT_NE(refinementGuard, std::string::npos);
+    const auto largeSelectionBranch = captureBody.find("else", refinementGuard);
+    ASSERT_NE(largeSelectionBranch, std::string::npos);
+    const auto largeBranchBody = captureBody.substr(largeSelectionBranch);
+
+    EXPECT_NE(largeBranchBody.find("m_maskVisibleMaterial"), std::string::npos)
+        << "Large stable selections should encode coverage as visible-unknown, not occluded, because the visible-depth refinement pass is intentionally skipped.";
+    EXPECT_NE(largeBranchBody.find("SelectionOutlinePassModeCaptureVisible"), std::string::npos);
+    EXPECT_NE(largeBranchBody.find("CreateSelectionMaskOccludedPipelineState(pso)"), std::string::npos)
+        << "The large branch still captures all selected coverage with an always-depth state, but the shader must not tag it as occluded.";
+    EXPECT_EQ(largeBranchBody.find("m_maskOccludedMaterial"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskEdgesUseClassificationKey)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto shader = ReadSourceText(root / "App/Assets/Editor/Shaders/SelectionOutlineCompositeCore.hlsli");
+
+    ASSERT_FALSE(shader.empty());
+
+    const auto accumulateStart = shader.find("void AccumulateSelectionOutlineEdge");
+    ASSERT_NE(accumulateStart, std::string::npos);
+    const auto computeStart = shader.find("SelectionOutlineEdgeSample ComputeIdEdgeFromMasks", accumulateStart);
+    ASSERT_NE(computeStart, std::string::npos);
+    const auto accumulateBody = shader.substr(accumulateStart, computeStart - accumulateStart);
+
+    EXPECT_NE(accumulateBody.find("SelectionOutlineMaskGetGroupId(centerMask)"), std::string::npos);
+    EXPECT_NE(accumulateBody.find("SelectionOutlineMaskGetClassification(centerMask)"), std::string::npos)
+        << "Parent and child selected nodes share a group id today, so classification must be part of the edge key.";
+    EXPECT_NE(accumulateBody.find("max("), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlinePreparedOutputRequiresMetadataPairingBeforeCacheCommit)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(rendererSource.empty());
+
+    const auto hasPassesStart = rendererHeader.find("bool HasScreenSpacePasses() const");
+    ASSERT_NE(hasPassesStart, std::string::npos);
+    const auto channelStart = rendererHeader.find("enum class SelectionOutlineMaskChannel", hasPassesStart);
+    ASSERT_NE(channelStart, std::string::npos);
+    const auto hasPassesBody = rendererHeader.substr(hasPassesStart, channelStart - hasPassesStart);
+    EXPECT_NE(hasPassesBody.find("passInputs.size() == passKinds.size()"), std::string::npos);
+    EXPECT_NE(hasPassesBody.find("passInputs.size() == metadata.size()"), std::string::npos)
+        << "Deferred builder handoff must reject incomplete parallel vectors instead of letting cache commit against dropped metadata.";
+
+    const auto buildPreparedStart = rendererSource.find("SelectionOutlinePreparedOutput SelectionOutlineMaskRenderer::BuildPreparedOutput");
+    ASSERT_NE(buildPreparedStart, std::string::npos);
+    const auto captureStart = rendererSource.find("void SelectionOutlineMaskRenderer::CaptureMaskDrawCommands", buildPreparedStart);
+    ASSERT_NE(captureStart, std::string::npos);
+    const auto buildPreparedBody = rendererSource.substr(buildPreparedStart, captureStart - buildPreparedStart);
+    const auto buildMetadata = buildPreparedBody.find("output.metadata = BuildMetadata(output.passInputs, output.passKinds)");
+    const auto markPending = buildPreparedBody.find("MarkCachedMaskPending(maskReuseSignature)");
+    ASSERT_NE(buildMetadata, std::string::npos);
+    ASSERT_NE(markPending, std::string::npos);
+    EXPECT_LT(buildMetadata, markPending)
+        << "A pending cached mask should only be staged after pass inputs, pass kinds, and metadata are known to be paired.";
+    EXPECT_NE(buildPreparedBody.find("output.metadata.size() != output.passInputs.size()"), std::string::npos);
+    EXPECT_NE(buildPreparedBody.find("DiscardPendingCachedMask()"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskKeepsDualDepthCaptureForSmallSelectionsOnly)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererSource.empty());
+
+    const std::regex thresholdPattern(
+        R"(constexpr\s+size_t\s+kSelectionOutlineDualDepthCaptureMaxItems\s*=\s*(\d+)u)");
+    std::smatch match;
+    ASSERT_TRUE(std::regex_search(rendererSource, match, thresholdPattern));
+    ASSERT_GE(match.size(), 2u);
+
+    const auto threshold = static_cast<uint32_t>(std::stoul(match[1].str()));
+    EXPECT_GT(threshold, 0u);
+    EXPECT_LE(threshold, 8u)
+        << "The extra visible-depth refinement pass doubles selected-mesh command preparation; keep it to tiny selections so complex prefab selection does not tank FPS.";
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskUsesColorOnlyIntermediateFramebuffer)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(rendererSource.empty());
+
+    EXPECT_NE(rendererHeader.find("Rendering/Buffers/MultiFramebuffer.h"), std::string::npos);
+    EXPECT_EQ(rendererHeader.find("Rendering/Buffers/Framebuffer.h"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("NLS::Render::Buffers::MultiFramebuffer m_intermediateFramebuffer"), std::string::npos);
+    EXPECT_EQ(rendererHeader.find("m_maskFramebuffer"), std::string::npos);
+    EXPECT_EQ(rendererHeader.find("m_edgeFramebuffer"), std::string::npos);
+    EXPECT_EQ(rendererHeader.find("m_blurHorizontalFramebuffer"), std::string::npos);
+    EXPECT_EQ(rendererHeader.find("m_blurVerticalFramebuffer"), std::string::npos);
+
+    EXPECT_NE(rendererSource.find("m_intermediateFramebuffer.Init("), std::string::npos);
+    EXPECT_NE(rendererSource.find("false);"), std::string::npos);
+    EXPECT_NE(rendererSource.find("GetOrCreateExplicitColorView(kSelectionOutlineMaskAttachmentIndex"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("GetOrCreateExplicitColorView(kSelectionOutlineEdgeBlurHorizontalAttachmentIndex"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("GetOrCreateExplicitColorView(kSelectionOutlineEdgeAttachmentIndex"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("GetOrCreateExplicitColorView(kSelectionOutlineBlurHorizontalAttachmentIndex"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("GetOrCreateExplicitColorView(kSelectionOutlineBlurVerticalAttachmentIndex"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskResourceMatrixDeclaresReadWriteChain)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererSource.empty());
+
+    const auto buildPassStart = rendererSource.find("RenderPassCommandInput SelectionOutlineMaskRenderer::BuildPassInput");
+    ASSERT_NE(buildPassStart, std::string::npos);
+    const auto setFallbackStart = rendererSource.find("SelectionOutlineMaskRenderer::SetFallbackReason", buildPassStart);
+    ASSERT_NE(setFallbackStart, std::string::npos);
+    const auto buildPassBody = rendererSource.substr(buildPassStart, setFallbackStart - buildPassStart);
+
+    const auto captureMask = buildPassBody.find("case SelectionOutlineMaskPassKind::CaptureMask:");
+    const auto composite = buildPassBody.find("case SelectionOutlineMaskPassKind::Composite:");
+    ASSERT_NE(captureMask, std::string::npos);
+    ASSERT_NE(composite, std::string::npos);
+    EXPECT_EQ(buildPassBody.find("SelectionOutlineMaskPassKind::EdgeBlurHorizontal"), std::string::npos);
+    EXPECT_EQ(buildPassBody.find("SelectionOutlineMaskPassKind::DetectIdEdges"), std::string::npos);
+    EXPECT_EQ(buildPassBody.find("SelectionOutlineMaskPassKind::BlurHorizontal"), std::string::npos);
+    EXPECT_EQ(buildPassBody.find("SelectionOutlineMaskPassKind::BlurVertical"), std::string::npos);
+
+    const auto captureBody = buildPassBody.substr(captureMask, composite - captureMask);
+    const auto compositeBody = buildPassBody.substr(composite);
+
+    EXPECT_NE(captureBody.find("passInput.writesDepthStencilAttachment = false"), std::string::npos);
+    EXPECT_NE(captureBody.find("passInput.depthStencilAttachmentView = frameDescriptor.outputDepthStencilView"), std::string::npos);
+    EXPECT_NE(captureBody.find("frameDescriptor.outputDepthStencilView"), std::string::npos);
+    EXPECT_NE(captureBody.find("ResourceAccessMode::Read"), std::string::npos);
+    EXPECT_NE(captureBody.find("ResourceState::DepthRead"), std::string::npos);
+    EXPECT_NE(captureBody.find("AccessMask::DepthStencilRead"), std::string::npos);
+    EXPECT_NE(captureBody.find("resources.maskView"), std::string::npos);
+    EXPECT_NE(captureBody.find("ResourceAccessMode::Write"), std::string::npos);
+
+    EXPECT_EQ(compositeBody.find("resources.edgeBlurHorizontalView"), std::string::npos);
+    EXPECT_NE(compositeBody.find("ResourceAccessMode::Read"), std::string::npos);
+    EXPECT_NE(compositeBody.find("resources.maskView"), std::string::npos);
+    EXPECT_NE(compositeBody.find("frameDescriptor.outputColorView"), std::string::npos);
+    EXPECT_NE(compositeBody.find("AddTextureViewAccess"), std::string::npos);
+    EXPECT_NE(compositeBody.find("ResourceAccessMode::Write"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskResourceMatrixUsesViewSubresourceRanges)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererSource.empty());
+
+    EXPECT_NE(rendererSource.find("AddTextureViewAccess"), std::string::npos);
+    EXPECT_NE(rendererSource.find("NormalizeTextureSubresourceRange"), std::string::npos);
+
+    const auto buildPassStart = rendererSource.find("RenderPassCommandInput SelectionOutlineMaskRenderer::BuildPassInput");
+    ASSERT_NE(buildPassStart, std::string::npos);
+    const auto setFallbackStart = rendererSource.find("SelectionOutlineMaskRenderer::SetFallbackReason", buildPassStart);
+    ASSERT_NE(setFallbackStart, std::string::npos);
+    const auto buildPassBody = rendererSource.substr(buildPassStart, setFallbackStart - buildPassStart);
+
+    EXPECT_EQ(buildPassBody.find("AddTextureAccess("), std::string::npos)
+        << "Access declarations must follow the view range, not the whole texture, or array/mip Scene View targets get over-broadened barriers.";
+    EXPECT_NE(buildPassBody.find("AddTextureViewAccess(\n                passInput,\n                frameDescriptor.outputDepthStencilView"), std::string::npos);
+    EXPECT_NE(buildPassBody.find("AddTextureViewAccess(\n                passInput,\n                resources.maskView"), std::string::npos);
+    EXPECT_NE(buildPassBody.find("AddTextureViewAccess(\n                passInput,\n                frameDescriptor.outputColorView"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskResourceIdentityKeysStableReuse)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(rendererSource.empty());
+
+    EXPECT_NE(rendererHeader.find("uint32_t width"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("uint32_t height"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("NLS::Render::RHI::TextureFormat maskFormat"), std::string::npos);
+    EXPECT_EQ(rendererHeader.find("NLS::Render::RHI::TextureFormat colorFormat"), std::string::npos)
+        << "ResourceIdentity stores the intermediate mask format; the Scene View color format is keyed by outputColorViewDesc.";
+    EXPECT_NE(rendererHeader.find("uint32_t sampleCount"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("std::shared_ptr<NLS::Render::RHI::RHITexture> sceneDepthTexture"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("std::shared_ptr<NLS::Render::RHI::RHITexture> outputColorTexture"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("NLS::Render::RHI::RHITextureViewDesc sceneDepthViewDesc"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("NLS::Render::RHI::RHITextureViewDesc outputColorViewDesc"), std::string::npos);
+
+    const auto matchesStart = rendererSource.find("bool SelectionOutlineMaskRenderer::ResourceIdentity::Matches");
+    ASSERT_NE(matchesStart, std::string::npos);
+    const auto ctorStart = rendererSource.find("SelectionOutlineMaskRenderer::SelectionOutlineMaskRenderer", matchesStart);
+    ASSERT_NE(ctorStart, std::string::npos);
+    const auto matchesBody = rendererSource.substr(matchesStart, ctorStart - matchesStart);
+    EXPECT_NE(matchesBody.find("width == other.width"), std::string::npos);
+    EXPECT_NE(matchesBody.find("height == other.height"), std::string::npos);
+    EXPECT_NE(matchesBody.find("maskFormat == other.maskFormat"), std::string::npos);
+    EXPECT_NE(matchesBody.find("sampleCount == other.sampleCount"), std::string::npos);
+    EXPECT_NE(matchesBody.find("sceneDepthTexture == other.sceneDepthTexture"), std::string::npos);
+    EXPECT_NE(matchesBody.find("outputColorTexture == other.outputColorTexture"), std::string::npos);
+    EXPECT_NE(matchesBody.find("SameViewDesc(sceneDepthViewDesc, other.sceneDepthViewDesc)"), std::string::npos);
+    EXPECT_NE(matchesBody.find("SameViewDesc(outputColorViewDesc, other.outputColorViewDesc)"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskCacheSignaturesUseNamedHashSeed)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererSource.empty());
+
+    EXPECT_NE(rendererSource.find("kSelectionOutlineSignatureHashSeed"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("14695981039346656037ull"), rendererSource.rfind("14695981039346656037ull"))
+        << "The FNV offset seed should have one named definition instead of duplicated literals across cache signatures.";
+
+    const auto maskSignatureStart = rendererSource.find("SelectionOutlineMaskRenderer::BuildMaskReuseSignature");
+    ASSERT_NE(maskSignatureStart, std::string::npos);
+    const auto sourceSignatureStart = rendererSource.find("SelectionOutlineMaskRenderer::BuildSelectionSourceSignature", maskSignatureStart);
+    ASSERT_NE(sourceSignatureStart, std::string::npos);
+    const auto preparedGroupsStart = rendererSource.find("SelectionOutlineMaskRenderer::BuildPreparedSelectionCaptureGroups", sourceSignatureStart);
+    ASSERT_NE(preparedGroupsStart, std::string::npos);
+    const auto maskSignatureBody = rendererSource.substr(maskSignatureStart, sourceSignatureStart - maskSignatureStart);
+    const auto sourceSignatureBody = rendererSource.substr(sourceSignatureStart, preparedGroupsStart - sourceSignatureStart);
+
+    EXPECT_NE(maskSignatureBody.find("kSelectionOutlineSignatureHashSeed"), std::string::npos);
+    EXPECT_NE(sourceSignatureBody.find("kSelectionOutlineSignatureHashSeed"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskRejectsUnsupportedSampleCountsBeforeAllocatingIntermediates)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+    const auto debugSceneSource = ReadSourceText(root / "Project/Editor/Rendering/DebugSceneRenderer.cpp");
+
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(rendererSource.empty());
+    ASSERT_FALSE(debugSceneSource.empty());
+
+    EXPECT_NE(ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineFallbackReasons.def").find("UnsupportedSampleCount"), std::string::npos);
+    EXPECT_NE(rendererHeader.find("uint32_t depthSampleCount"), std::string::npos);
+    EXPECT_FALSE(NLS::Editor::Rendering::SelectionOutlineMaskSampleCountsAreSupported(4u, 4u));
+    EXPECT_FALSE(NLS::Editor::Rendering::SelectionOutlineMaskSampleCountsAreSupported(1u, 4u));
+    EXPECT_TRUE(NLS::Editor::Rendering::SelectionOutlineMaskSampleCountsAreSupported(1u, 1u));
+    EXPECT_EQ(
+        NLS::Editor::Rendering::ResolveSelectionOutlineFallbackAction(
+            NLS::Editor::Rendering::SelectionOutlineFallbackReason::UnsupportedSampleCount),
+        NLS::Editor::Rendering::SelectionOutlineFallbackAction::SkipFrame);
+    EXPECT_STREQ(
+        NLS::Editor::Rendering::SelectionOutlineFallbackReasonToString(
+            NLS::Editor::Rendering::SelectionOutlineFallbackReason::UnsupportedSampleCount),
+        "UnsupportedSampleCount");
+
+    const auto buildIdentityStart = rendererSource.find("SelectionOutlineMaskRenderer::BuildResourceIdentity");
+    ASSERT_NE(buildIdentityStart, std::string::npos);
+    const auto prepareStart = rendererSource.find("bool SelectionOutlineMaskRenderer::PrepareResources", buildIdentityStart);
+    ASSERT_NE(prepareStart, std::string::npos);
+    const auto buildIdentityBody = rendererSource.substr(buildIdentityStart, prepareStart - buildIdentityStart);
+    EXPECT_NE(buildIdentityBody.find("const auto outputSampleCount"), std::string::npos);
+    EXPECT_NE(buildIdentityBody.find("const auto depthSampleCount"), std::string::npos);
+    EXPECT_NE(buildIdentityBody.find("identity.sampleCount = outputSampleCount"), std::string::npos);
+    EXPECT_NE(buildIdentityBody.find("identity.depthSampleCount = depthSampleCount"), std::string::npos);
+
+    const auto bindStart = rendererSource.find("bool SelectionOutlineMaskRenderer::BindScreenSpaceMaterialTextures", prepareStart);
+    ASSERT_NE(bindStart, std::string::npos);
+    const auto prepareBody = rendererSource.substr(prepareStart, bindStart - prepareStart);
+    const auto unsupportedSampleCount = prepareBody.find("SelectionOutlineFallbackReason::UnsupportedSampleCount");
+    const auto resizeDecision = prepareBody.find("const bool needsResize");
+    ASSERT_NE(unsupportedSampleCount, std::string::npos);
+    ASSERT_NE(resizeDecision, std::string::npos);
+    EXPECT_LT(unsupportedSampleCount, resizeDecision);
+    EXPECT_NE(prepareBody.find("SelectionOutlineMaskSampleCountsAreSupported("), std::string::npos);
+    EXPECT_NE(prepareBody.find("nextIdentity->sampleCount"), std::string::npos);
+    EXPECT_NE(
+        prepareBody.find("nextIdentity->depthSampleCount"),
+        std::string::npos);
+    EXPECT_NE(prepareBody.find("ResetResources()"), std::string::npos);
+
+    EXPECT_NE(debugSceneSource.find("ResolveSelectionOutlineFallbackAction(maskOutput.fallbackDecision->reason)"), std::string::npos);
+    EXPECT_EQ(debugSceneSource.find("case Editor::Rendering::SelectionOutlineFallbackReason::UnsupportedSampleCount"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineRejectsFrameAttachmentsWhoseExtentsDoNotMatchRenderTarget)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+
+    ASSERT_FALSE(rendererSource.empty());
+    ASSERT_FALSE(rendererHeader.empty());
+
+    NLS::Render::RHI::RHITextureDesc colorDesc;
+    colorDesc.debugName = "SelectionOutlineExtentColor";
+    colorDesc.extent = { 128u, 64u, 1u };
+    colorDesc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    colorDesc.sampleCount = 1u;
+    const auto colorTexture = std::make_shared<TestTexture>(colorDesc);
+
+    NLS::Render::RHI::RHITextureDesc depthDesc;
+    depthDesc.debugName = "SelectionOutlineExtentDepth";
+    depthDesc.extent = { 128u, 64u, 1u };
+    depthDesc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
+    depthDesc.sampleCount = 1u;
+    const auto depthTexture = std::make_shared<TestTexture>(depthDesc);
+
+    NLS::Render::RHI::RHITextureViewDesc colorViewDesc;
+    colorViewDesc.debugName = "SelectionOutlineExtentColorView";
+    colorViewDesc.format = colorDesc.format;
+    colorViewDesc.subresourceRange.mipLevelCount = 1u;
+    colorViewDesc.subresourceRange.arrayLayerCount = 1u;
+    const auto colorView = std::make_shared<TestTextureView>(colorTexture, colorViewDesc);
+
+    NLS::Render::RHI::RHITextureViewDesc depthViewDesc;
+    depthViewDesc.debugName = "SelectionOutlineExtentDepthView";
+    depthViewDesc.format = depthDesc.format;
+    depthViewDesc.subresourceRange.mipLevelCount = 1u;
+    depthViewDesc.subresourceRange.arrayLayerCount = 1u;
+    const auto depthView = std::make_shared<TestTextureView>(depthTexture, depthViewDesc);
+
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 64u;
+    frameDescriptor.outputColorView = colorView;
+    frameDescriptor.outputDepthStencilView = depthView;
+
+    EXPECT_TRUE(NLS::Editor::Rendering::SelectionOutlineFrameAttachmentsMatchRenderExtent(frameDescriptor));
+    EXPECT_TRUE(NLS::Editor::Rendering::SelectionOutlineLegacyShellFallbackIsAttachmentCompatible(frameDescriptor));
+
+    depthDesc.extent = { 64u, 64u, 1u };
+    const auto staleDepthTexture = std::make_shared<TestTexture>(depthDesc);
+    const auto staleDepthView = std::make_shared<TestTextureView>(staleDepthTexture, depthViewDesc);
+    frameDescriptor.outputDepthStencilView = staleDepthView;
+    EXPECT_FALSE(NLS::Editor::Rendering::SelectionOutlineFrameAttachmentsMatchRenderExtent(frameDescriptor));
+    EXPECT_FALSE(NLS::Editor::Rendering::SelectionOutlineLegacyShellFallbackIsAttachmentCompatible(frameDescriptor));
+
+    frameDescriptor.outputDepthStencilView = depthView;
+    colorDesc.extent = { 128u, 32u, 1u };
+    const auto staleColorTexture = std::make_shared<TestTexture>(colorDesc);
+    const auto staleColorView = std::make_shared<TestTextureView>(staleColorTexture, colorViewDesc);
+    frameDescriptor.outputColorView = staleColorView;
+    EXPECT_FALSE(NLS::Editor::Rendering::SelectionOutlineFrameAttachmentsMatchRenderExtent(frameDescriptor));
+    EXPECT_FALSE(NLS::Editor::Rendering::SelectionOutlineLegacyShellFallbackIsAttachmentCompatible(frameDescriptor));
+
+    frameDescriptor.outputColorView = colorView;
+    frameDescriptor.renderWidth = 256u;
+    EXPECT_FALSE(NLS::Editor::Rendering::SelectionOutlineFrameAttachmentsMatchRenderExtent(frameDescriptor));
+
+    EXPECT_NE(rendererHeader.find("SelectionOutlineFrameAttachmentsMatchRenderExtent"), std::string::npos);
+
+    const auto prepareStart = rendererSource.find("bool SelectionOutlineMaskRenderer::PrepareResources");
+    ASSERT_NE(prepareStart, std::string::npos);
+    const auto bindStart = rendererSource.find("bool SelectionOutlineMaskRenderer::BindScreenSpaceMaterialTextures", prepareStart);
+    ASSERT_NE(bindStart, std::string::npos);
+    const auto prepareBody = rendererSource.substr(prepareStart, bindStart - prepareStart);
+    const auto extentCheck = prepareBody.find("SelectionOutlineFrameAttachmentsMatchRenderExtent(frameDescriptor)");
+    const auto buildIdentity = prepareBody.find("BuildResourceIdentity(frameDescriptor)");
+    ASSERT_NE(extentCheck, std::string::npos);
+    ASSERT_NE(buildIdentity, std::string::npos);
+    EXPECT_LT(extentCheck, buildIdentity)
+        << "Stale or resized Scene View attachments must be rejected before intermediate allocation or pass assembly.";
+    EXPECT_NE(prepareBody.find("SelectionOutlineFallbackReason::StaleFrameAttachment", extentCheck), std::string::npos);
+    EXPECT_NE(prepareBody.find("ResetResources()", extentCheck), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineLegacyFallbackRejectsMsaaFrameDescriptors)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+    const auto debugSceneSource = ReadSourceText(root / "Project/Editor/Rendering/DebugSceneRenderer.cpp");
+
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(debugSceneSource.empty());
+
+    NLS::Render::RHI::RHITextureDesc colorDesc;
+    colorDesc.debugName = "SelectionOutlineLegacyMsaaColor";
+    colorDesc.extent = { 128u, 128u, 1u };
+    colorDesc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    colorDesc.sampleCount = 4u;
+    const auto colorTexture = std::make_shared<TestTexture>(colorDesc);
+
+    NLS::Render::RHI::RHITextureDesc depthDesc;
+    depthDesc.debugName = "SelectionOutlineLegacyMsaaDepth";
+    depthDesc.extent = { 128u, 128u, 1u };
+    depthDesc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
+    depthDesc.sampleCount = 4u;
+    const auto depthTexture = std::make_shared<TestTexture>(depthDesc);
+
+    NLS::Render::RHI::RHITextureViewDesc colorViewDesc;
+    colorViewDesc.debugName = "SelectionOutlineLegacyMsaaColorView";
+    colorViewDesc.format = colorDesc.format;
+    colorViewDesc.subresourceRange.mipLevelCount = 1u;
+    colorViewDesc.subresourceRange.arrayLayerCount = 1u;
+    const auto colorView = std::make_shared<TestTextureView>(colorTexture, colorViewDesc);
+
+    NLS::Render::RHI::RHITextureViewDesc depthViewDesc;
+    depthViewDesc.debugName = "SelectionOutlineLegacyMsaaDepthView";
+    depthViewDesc.format = depthDesc.format;
+    depthViewDesc.subresourceRange.mipLevelCount = 1u;
+    depthViewDesc.subresourceRange.arrayLayerCount = 1u;
+    const auto depthView = std::make_shared<TestTextureView>(depthTexture, depthViewDesc);
+
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 128u;
+    frameDescriptor.outputColorView = colorView;
+    frameDescriptor.outputDepthStencilView = depthView;
+
+    EXPECT_FALSE(NLS::Editor::Rendering::SelectionOutlineLegacyShellFallbackIsAttachmentCompatible(frameDescriptor));
+
+    depthDesc.sampleCount = 1u;
+    const auto mismatchedDepthTexture = std::make_shared<TestTexture>(depthDesc);
+    const auto mismatchedDepthView = std::make_shared<TestTextureView>(mismatchedDepthTexture, depthViewDesc);
+    frameDescriptor.outputDepthStencilView = mismatchedDepthView;
+    EXPECT_FALSE(NLS::Editor::Rendering::SelectionOutlineLegacyShellFallbackIsAttachmentCompatible(frameDescriptor));
+
+    colorDesc.sampleCount = 1u;
+    const auto singleSampleColorTexture = std::make_shared<TestTexture>(colorDesc);
+    const auto singleSampleColorView = std::make_shared<TestTextureView>(singleSampleColorTexture, colorViewDesc);
+    frameDescriptor.outputColorView = singleSampleColorView;
+    EXPECT_TRUE(NLS::Editor::Rendering::SelectionOutlineLegacyShellFallbackIsAttachmentCompatible(frameDescriptor));
+
+    const auto gateCall = debugSceneSource.find("SelectionOutlineLegacyShellFallbackIsAttachmentCompatible");
+    const auto legacyCapture = debugSceneSource.find("m_outlineRenderer.CaptureOutlineDrawCommands");
+    ASSERT_NE(gateCall, std::string::npos);
+    ASSERT_NE(legacyCapture, std::string::npos);
+    const auto gateBody = debugSceneSource.substr(gateCall, legacyCapture - gateCall);
+    EXPECT_NE(gateBody.find("m_renderer.GetFrameDescriptor()"), std::string::npos);
+    EXPECT_NE(gateBody.find("selectionOutlineDepthView"), std::string::npos);
+    EXPECT_LT(gateCall, legacyCapture);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskAvoidsHotPathMaterialAndTextureWrapperChurn)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererHeader = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.h");
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+    const auto textureHeader = ReadSourceText(root / "Runtime/Rendering/Resources/Texture2D.h");
+    const auto textureSource = ReadSourceText(root / "Runtime/Rendering/Resources/Texture2D.cpp");
+
+    ASSERT_FALSE(rendererHeader.empty());
+    ASSERT_FALSE(rendererSource.empty());
+    ASSERT_FALSE(textureHeader.empty());
+    ASSERT_FALSE(textureSource.empty());
+    EXPECT_NE(textureHeader.find("WrapExternalInPlace"), std::string::npos);
+    EXPECT_NE(textureSource.find("void Texture2D::WrapExternalInPlace"), std::string::npos);
+    EXPECT_NE(rendererSource.find("SetMaterialValueIfChanged"), std::string::npos);
+    EXPECT_NE(rendererSource.find("SetSelectionMaskPassModeIfChanged"), std::string::npos);
+    EXPECT_NE(rendererSource.find("SetMaterialTextureIfChanged"), std::string::npos);
+    EXPECT_NE(rendererSource.find("WrapSelectionOutlineExternalTexture"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("m_maskTexture = NLS::Render::Resources::Texture2D::WrapExternal(\n"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("m_edgeBlurHorizontalTexture"), std::string::npos);
+
+    const auto buildPreparedStart = rendererSource.find("SelectionOutlinePreparedOutput SelectionOutlineMaskRenderer::BuildPreparedOutput");
+    const auto captureStart = rendererSource.find("void SelectionOutlineMaskRenderer::CaptureMaskDrawCommands", buildPreparedStart);
+    ASSERT_NE(buildPreparedStart, std::string::npos);
+    ASSERT_NE(captureStart, std::string::npos);
+    const auto buildPreparedBody = rendererSource.substr(buildPreparedStart, captureStart - buildPreparedStart);
+    EXPECT_EQ(buildPreparedBody.find(".Set<int>(\"u_SelectionOutlinePassMode\""), std::string::npos);
+    EXPECT_EQ(buildPreparedBody.find(".Set(\"u_AlphaCutoff\""), std::string::npos);
+    EXPECT_EQ(buildPreparedBody.find(".Set(\"u_TexelSize\""), std::string::npos);
+    EXPECT_EQ(buildPreparedBody.find(".Set(\"u_OutlineColor\""), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskInvalidatesMaterialsWhenExternalTextureHandleChanges)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererSource.empty());
+
+    EXPECT_NE(rendererSource.find("InvalidateSelectionOutlineTextureBindings"), std::string::npos);
+    EXPECT_NE(rendererSource.find("textureHandleChanged"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("m_edgeBlurHorizontalMaterial.InvalidateExplicitBindingSetCache()"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("m_edgeMaterial.InvalidateExplicitBindingSetCache()"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("m_blurHorizontalMaterial.InvalidateExplicitBindingSetCache()"), std::string::npos);
+    EXPECT_EQ(rendererSource.find("m_blurVerticalMaterial.InvalidateExplicitBindingSetCache()"), std::string::npos);
+    EXPECT_NE(rendererSource.find("m_compositeMaterial.InvalidateExplicitBindingSetCache()"), std::string::npos);
+    EXPECT_NE(rendererSource.find("BindSelectionOutlineTextureFallbacks("), std::string::npos)
+        << "ResetResources must clear stale raw wrapper pointers after allocation or identity failures.";
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskPipelineStatesDisableDepthAndStencilWrites)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererSource.empty());
+
+    const auto maskPsoStart = rendererSource.find("CreateSelectionMaskVisiblePipelineState");
+    ASSERT_NE(maskPsoStart, std::string::npos);
+    const auto fullscreenPsoStart = rendererSource.find("CreateSelectionFullscreenPipelineState", maskPsoStart);
+    ASSERT_NE(fullscreenPsoStart, std::string::npos);
+    const auto sameViewStart = rendererSource.find("bool SameViewDesc", fullscreenPsoStart);
+    ASSERT_NE(sameViewStart, std::string::npos);
+
+    const auto maskPsoBody = rendererSource.substr(maskPsoStart, fullscreenPsoStart - maskPsoStart);
+    const auto fullscreenPsoBody = rendererSource.substr(fullscreenPsoStart, sameViewStart - fullscreenPsoStart);
+
+    EXPECT_NE(maskPsoBody.find("pso.depthTest = true"), std::string::npos);
+    EXPECT_NE(maskPsoBody.find("pso.depthFunc = NLS::Render::Settings::EComparaisonAlgorithm::LESS_EQUAL"), std::string::npos);
+    EXPECT_NE(maskPsoBody.find("pso.depthWriting = false"), std::string::npos);
+    EXPECT_NE(maskPsoBody.find("pso.stencilTest = false"), std::string::npos);
+    EXPECT_NE(maskPsoBody.find("pso.stencilWriteMask = 0u"), std::string::npos);
+
+    EXPECT_NE(fullscreenPsoBody.find("pso.depthTest = false"), std::string::npos);
+    EXPECT_NE(fullscreenPsoBody.find("pso.depthWriting = false"), std::string::npos);
+    EXPECT_NE(fullscreenPsoBody.find("pso.stencilTest = false"), std::string::npos);
+    EXPECT_NE(fullscreenPsoBody.find("pso.stencilWriteMask = 0u"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskRetriesIntermediateAllocationAfterFailure)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(rendererSource.empty());
+
+    const auto prepareStart = rendererSource.find("bool SelectionOutlineMaskRenderer::PrepareResources");
+    ASSERT_NE(prepareStart, std::string::npos);
+    const auto bindStart = rendererSource.find("bool SelectionOutlineMaskRenderer::BindScreenSpaceMaterialTextures", prepareStart);
+    ASSERT_NE(bindStart, std::string::npos);
+    const auto prepareBody = rendererSource.substr(prepareStart, bindStart - prepareStart);
+
+    EXPECT_NE(prepareBody.find("!m_intermediateFramebuffer.IsInitialized()"), std::string::npos);
+
+    const auto needsResize = prepareBody.find("const bool needsResize");
+    const auto nullViewCheck = prepareBody.find("outResources.maskView == nullptr");
+    const auto assignIdentity = prepareBody.find("m_resourceIdentity = nextIdentity");
+    ASSERT_NE(needsResize, std::string::npos);
+    ASSERT_NE(nullViewCheck, std::string::npos);
+    ASSERT_NE(assignIdentity, std::string::npos);
+    EXPECT_LT(needsResize, assignIdentity);
+    EXPECT_LT(nullViewCheck, assignIdentity);
+}
+
+TEST(EditorRenderPathContractTests, PreparedEditorHelperInputsAvoidRecordedCommandCopies)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto debugSceneSource = ReadSourceText(root / "Project/Editor/Rendering/DebugSceneRenderer.cpp");
+    const auto gridHeader = ReadSourceText(root / "Project/Editor/Rendering/GridRenderPass.h");
+    const auto pickingHeader = ReadSourceText(root / "Project/Editor/Rendering/PickingRenderPass.h");
+    const auto deferredHeader = ReadSourceText(root / "Runtime/Engine/Rendering/DeferredSceneRenderer.h");
+    const auto deferredSource = ReadSourceText(root / "Runtime/Engine/Rendering/DeferredSceneRenderer.cpp");
+    const auto deferredFrameGraphSource = ReadSourceText(root / "Runtime/Rendering/FrameGraph/SceneRenderGraphBuilderDeferred.cpp");
+    const auto threadedLifecycleSource = ReadSourceText(root / "Runtime/Rendering/Context/ThreadedRenderingLifecycle.cpp");
+
+    ASSERT_FALSE(debugSceneSource.empty());
+    ASSERT_FALSE(gridHeader.empty());
+    ASSERT_FALSE(pickingHeader.empty());
+    ASSERT_FALSE(deferredHeader.empty());
+    ASSERT_FALSE(deferredSource.empty());
+    ASSERT_FALSE(deferredFrameGraphSource.empty());
+    ASSERT_FALSE(threadedLifecycleSource.empty());
+
+    const auto helperGetterSignature =
+        "const std::optional<NLS::Render::Context::RenderPassCommandInput>& GetPreparedThreadedPassInput() const";
+    const auto helperConsumeSignature =
+        "std::optional<NLS::Render::Context::RenderPassCommandInput> ConsumePreparedThreadedPassInput()";
+    const auto selectionGetterSignature =
+        "const std::vector<NLS::Render::Context::RenderPassCommandInput>& GetPreparedThreadedPassInputs() const";
+    const auto selectionConsumeSignature =
+        "std::vector<NLS::Render::Context::RenderPassCommandInput> ConsumePreparedThreadedPassInputs()";
+    EXPECT_NE(gridHeader.find(helperGetterSignature), std::string::npos);
+    EXPECT_NE(pickingHeader.find(helperGetterSignature), std::string::npos);
+    EXPECT_NE(gridHeader.find(helperConsumeSignature), std::string::npos);
+    EXPECT_NE(pickingHeader.find(helperConsumeSignature), std::string::npos);
+    EXPECT_GE(CountOccurrences(debugSceneSource, helperGetterSignature), 2u);
+    EXPECT_GE(CountOccurrences(debugSceneSource, helperConsumeSignature), 2u);
+    EXPECT_NE(debugSceneSource.find(selectionGetterSignature), std::string::npos);
+    EXPECT_NE(debugSceneSource.find(selectionConsumeSignature), std::string::npos);
+    EXPECT_NE(debugSceneSource.find("GetPreparedThreadedPassMetadata()"), std::string::npos);
+
+    EXPECT_NE(debugSceneSource.find("const auto& gridPassInput = GetPass<GridRenderPass>"), std::string::npos);
+    EXPECT_NE(debugSceneSource.find("const auto& cameraPassInput = GetPass<DebugCamerasRenderPass>"), std::string::npos);
+    EXPECT_NE(debugSceneSource.find("const auto& lightPassInput = GetPass<DebugLightsRenderPass>"), std::string::npos);
+    EXPECT_NE(debugSceneSource.find("const auto& selectionOutlinePassInputs = GetPass<DebugGameObjectRenderPass>"), std::string::npos);
+    EXPECT_NE(debugSceneSource.find("const auto& selectionOutlineMetadata = GetPass<DebugGameObjectRenderPass>"), std::string::npos);
+    EXPECT_NE(debugSceneSource.find("const auto& pickingPassInput = GetPass<PickingRenderPass>"), std::string::npos);
+    EXPECT_EQ(debugSceneSource.find("const auto gridPassInput = GetPass<GridRenderPass>"), std::string::npos);
+    EXPECT_EQ(debugSceneSource.find("const auto selectionPassInput = GetPass<DebugGameObjectRenderPass>"), std::string::npos);
+    EXPECT_NE(debugSceneSource.find("auto appendedPassInputs = BuildDebugDeferredAppendedPassInputs"), std::string::npos);
+    EXPECT_EQ(debugSceneSource.find("const auto appendedPassInputs = BuildDebugDeferredAppendedPassInputs"), std::string::npos);
+    EXPECT_NE(debugSceneSource.find("GetPass<GridRenderPass>(\"Grid\").ConsumePreparedThreadedPassInput()"), std::string::npos);
+    EXPECT_NE(debugSceneSource.find("GetPass<DebugGameObjectRenderPass>(\"Debug GameObject\").ConsumePreparedThreadedPassInputs()"), std::string::npos);
+    EXPECT_NE(debugSceneSource.find("passInputs.push_back(std::move(selectionPassInput))"), std::string::npos);
+    EXPECT_EQ(debugSceneSource.find("passInputs.push_back(*selectionPassInput)"), std::string::npos);
+
+    EXPECT_NE(deferredHeader.find(
+        "std::vector<NLS::Render::Context::RenderPassCommandInput> appendedPassInputs"),
+        std::string::npos);
+    EXPECT_NE(deferredSource.find("appendedPassInputs = std::move(appendedPassInputs)"), std::string::npos);
+    EXPECT_EQ(deferredSource.find("const auto* resolvedAppendedPassInputs = &appendedPassInputs"), std::string::npos);
+    EXPECT_EQ(deferredSource.find("auto resolvedAppendedPassInputs = appendedPassInputs"), std::string::npos);
+    EXPECT_EQ(deferredSource.find("auto* resolvedAppendedPassInputs = &appendedPassInputs"), std::string::npos);
+    EXPECT_EQ(deferredSource.find("offscreenAppendedPassInputs = appendedPassInputs"), std::string::npos);
+    EXPECT_NE(deferredSource.find("std::move(appendedPassInputs)"), std::string::npos);
+    EXPECT_EQ(deferredSource.find("std::move(*resolvedAppendedPassInputs)"), std::string::npos);
+
+    const auto deferredFrameGraphHeader = ReadSourceText(root / "Runtime/Rendering/FrameGraph/SceneRenderGraphBuilderDeferred.h");
+    ASSERT_FALSE(deferredFrameGraphHeader.empty());
+    EXPECT_NE(deferredFrameGraphHeader.find("std::vector<NLS::Render::Context::RenderPassCommandInput>&& appendedPassInputs"), std::string::npos);
+    EXPECT_EQ(deferredFrameGraphHeader.find("std::vector<NLS::Render::Context::RenderPassCommandInput> appendedPassInputs"), std::string::npos);
+    EXPECT_NE(deferredFrameGraphSource.find("std::vector<NLS::Render::Context::RenderPassCommandInput>& appendedPassInputs"), std::string::npos);
+    EXPECT_NE(deferredFrameGraphSource.find("passInputs.push_back(std::move(*appendedPassInput))"), std::string::npos);
+    EXPECT_NE(deferredFrameGraphSource.find("appendedPassInputs.erase(appendedPassInput)"), std::string::npos);
+    EXPECT_EQ(deferredFrameGraphSource.find("passInputs.push_back(appendedPassInput)"), std::string::npos);
+
+    EXPECT_NE(threadedLifecycleSource.find("renderSceneBuilder = std::move(slot->preparedRenderSceneBuilder.value())"), std::string::npos);
+    EXPECT_NE(threadedLifecycleSource.find("slot->preparedRenderSceneBuilder.reset()"), std::string::npos);
+    EXPECT_EQ(threadedLifecycleSource.find("renderSceneBuilder = slot->preparedRenderSceneBuilder.value()"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, PickingHelperDeclaresDepthStencilWrites)
+{
+    const auto source = ReadSourceText(
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Rendering/PickingRenderPass.cpp");
+
+    const auto buildInputStart = source.find(
+        "std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::PickingRenderPass::BuildThreadedPassInput");
+    ASSERT_NE(buildInputStart, std::string::npos);
+    const auto captureModels = source.find("CapturePickableModels", buildInputStart);
+    ASSERT_NE(captureModels, std::string::npos);
+    const auto buildInputBody = source.substr(buildInputStart, captureModels - buildInputStart);
+
+    const auto clearDepth = buildInputBody.find("passInput.clearDepth = true");
+    const auto clearStencil = buildInputBody.find("passInput.clearStencil = true");
+    const auto usesDepth = buildInputBody.find("passInput.usesDepthStencilAttachment = true");
+    const auto writesDepth = buildInputBody.find("passInput.writesDepthStencilAttachment = true");
+
+    ASSERT_NE(clearDepth, std::string::npos);
+    ASSERT_NE(clearStencil, std::string::npos);
+    ASSERT_NE(usesDepth, std::string::npos);
+    ASSERT_NE(writesDepth, std::string::npos);
+    EXPECT_LT(clearDepth, writesDepth);
+    EXPECT_LT(clearStencil, writesDepth);
+    EXPECT_LT(usesDepth, writesDepth);
 }
 
 TEST(EditorRenderPathContractTests, UiPanelAndHierarchyDrawPathsExposeActionablePerformanceScopes)
@@ -2038,6 +5063,229 @@ TEST(EditorRenderPathContractTests, DeferredThreadedGBufferCountComesFromBeginFr
     EXPECT_EQ(source.find("recordedDrawCount - 1u"), std::string::npos);
 }
 
+TEST(EditorRenderPathContractTests, DeferredThreadedSkipsPublishWhenOpaqueSceneCannotQueueGBuffer)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto deferredHeader = ReadSourceText(root / "Runtime/Engine/Rendering/DeferredSceneRenderer.h");
+    const auto deferredSource = ReadSourceText(root / "Runtime/Engine/Rendering/DeferredSceneRenderer.cpp");
+
+    ASSERT_FALSE(deferredHeader.empty());
+    ASSERT_FALSE(deferredSource.empty());
+
+    EXPECT_NE(deferredHeader.find("bool TryPublishThreadedFrame() override"), std::string::npos);
+    EXPECT_NE(deferredHeader.find("m_skipThreadedFramePublish"), std::string::npos);
+    EXPECT_NE(deferredSource.find("ShouldSkipThreadedDeferredFramePublish"), std::string::npos);
+    EXPECT_NE(deferredSource.find("snapshot.visibleOpaqueDrawCount > 0u"), std::string::npos);
+    EXPECT_NE(deferredSource.find("queuedGBufferDrawCount == 0u"), std::string::npos);
+    EXPECT_NE(deferredSource.find("m_skipThreadedFramePublish = true"), std::string::npos);
+    EXPECT_NE(deferredSource.find("bool DeferredSceneRenderer::TryPublishThreadedFrame()"), std::string::npos);
+    EXPECT_NE(deferredSource.find("if (m_skipThreadedFramePublish)"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, DeferredThreadedPreflightsPreparedFrameSlotBeforeGBufferCapture)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto deferredSource = ReadSourceText(root / "Runtime/Engine/Rendering/DeferredSceneRenderer.cpp");
+
+    ASSERT_FALSE(deferredSource.empty());
+
+    const auto beginFrame = deferredSource.find("void DeferredSceneRenderer::BeginFrame");
+    ASSERT_NE(beginFrame, std::string::npos);
+    const auto ensureGBuffer = deferredSource.find("EnsureGBufferTargets", beginFrame);
+    ASSERT_NE(ensureGBuffer, std::string::npos);
+    const auto preflight = deferredSource.find("TryReservePreparedFrameResources", beginFrame);
+    ASSERT_NE(preflight, std::string::npos);
+    EXPECT_LT(preflight, ensureGBuffer);
+
+    const auto captureLoop = deferredSource.find("for (const auto& entry : drawables.opaques)", ensureGBuffer);
+    ASSERT_NE(captureLoop, std::string::npos);
+    const auto preflightBlock = deferredSource.substr(preflight, captureLoop - preflight);
+    EXPECT_NE(preflightBlock.find("m_skipThreadedFramePublish = true"), std::string::npos);
+    EXPECT_NE(preflightBlock.find("queuedGBufferDrawCount == 0u"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskDelaysPreparedFrameSlotReservationUntilDrawCaptureNeedsIt)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto debugSceneSource = ReadSourceText(root / "Project/Editor/Rendering/DebugSceneRenderer.cpp");
+    const auto rendererSource = ReadSourceText(root / "Project/Editor/Rendering/SelectionOutlineMaskRenderer.cpp");
+
+    ASSERT_FALSE(debugSceneSource.empty());
+    ASSERT_FALSE(rendererSource.empty());
+
+    const auto buildThreadedPassInput = debugSceneSource.find("SelectionOutlinePreparedOutput BuildThreadedPassInput");
+    ASSERT_NE(buildThreadedPassInput, std::string::npos);
+    const auto buildThreadedPassInputEnd = debugSceneSource.find("private:", buildThreadedPassInput);
+    ASSERT_NE(buildThreadedPassInputEnd, std::string::npos);
+    const auto buildThreadedPassInputBody =
+        debugSceneSource.substr(buildThreadedPassInput, buildThreadedPassInputEnd - buildThreadedPassInput);
+
+    const auto buildPreparedOutput = buildThreadedPassInputBody.find("BuildPreparedOutput");
+    ASSERT_NE(buildPreparedOutput, std::string::npos);
+    const auto earlyReservation = buildThreadedPassInputBody.find(
+        "TryReservePreparedFrameResources",
+        0u);
+    if (earlyReservation != std::string::npos)
+        EXPECT_GT(earlyReservation, buildPreparedOutput)
+            << "Composite-only cached-mask frames must not preflight or wait for an object-data slot before BuildPreparedOutput can decide whether CaptureMask is needed.";
+
+    EXPECT_NE(buildThreadedPassInputBody.find("releaseSelectionOwnedPreparedFrameReservation"), std::string::npos)
+        << "Failure paths must still release a slot if draw capture reserved one later.";
+    EXPECT_NE(rendererSource.find("CaptureMaskDrawCommands("), std::string::npos)
+        << "Mask capture remains the point where indexed object-data draws can reserve prepared-frame resources.";
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskReleasesOnlySelectionOwnedPreparedFrameReservationWhenNoHelperPassIsEmitted)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto debugSceneSource = ReadSourceText(root / "Project/Editor/Rendering/DebugSceneRenderer.cpp");
+
+    ASSERT_FALSE(debugSceneSource.empty());
+
+    const auto buildThreadedPassInput = debugSceneSource.find("SelectionOutlinePreparedOutput BuildThreadedPassInput");
+    ASSERT_NE(buildThreadedPassInput, std::string::npos);
+    const auto buildThreadedPassInputEnd = debugSceneSource.find("private:", buildThreadedPassInput);
+    ASSERT_NE(buildThreadedPassInputEnd, std::string::npos);
+    const auto buildThreadedPassInputBody =
+        debugSceneSource.substr(buildThreadedPassInput, buildThreadedPassInputEnd - buildThreadedPassInput);
+
+    const auto reservationSnapshot =
+        buildThreadedPassInputBody.find("hadPreparedFrameReservationBeforeSelection");
+    const auto releaseHelper = buildThreadedPassInputBody.find("releaseSelectionOwnedPreparedFrameReservation");
+    const auto buildPreparedOutput = buildThreadedPassInputBody.find("BuildPreparedOutput");
+    ASSERT_NE(reservationSnapshot, std::string::npos);
+    ASSERT_NE(releaseHelper, std::string::npos);
+    ASSERT_NE(buildPreparedOutput, std::string::npos);
+    EXPECT_LT(reservationSnapshot, releaseHelper);
+    EXPECT_LT(releaseHelper, buildPreparedOutput);
+    EXPECT_EQ(
+        buildThreadedPassInputBody.find("TryReservePreparedFrameResources()", 0u),
+        std::string::npos)
+        << "Stable composite-only selection frames must not pre-reserve a prepared object-data slot.";
+
+    EXPECT_NE(
+        buildThreadedPassInputBody.find("frameObjectBindingProvider->HasReservedPreparedFrameResources()"),
+        std::string::npos);
+    EXPECT_NE(
+        buildThreadedPassInputBody.find("!hadPreparedFrameReservationBeforeSelection"),
+        std::string::npos)
+        << "Selection fallback paths must not release a GBuffer reservation that existed before the selected-outline pass.";
+    EXPECT_NE(
+        buildThreadedPassInputBody.find("frameObjectBindingProvider->ReleaseReservedPreparedFrameResources()"),
+        std::string::npos);
+
+    const auto fallbackAction = buildThreadedPassInputBody.find("ResolveSelectionOutlineFallbackAction");
+    const auto legacyCapture = buildThreadedPassInputBody.find("m_outlineRenderer.CaptureOutlineDrawCommands");
+    const auto zeroDraw = buildThreadedPassInputBody.find("if (passInput.drawCount == 0u)");
+    ASSERT_NE(fallbackAction, std::string::npos);
+    ASSERT_NE(legacyCapture, std::string::npos);
+    ASSERT_NE(zeroDraw, std::string::npos);
+
+    const auto noFallbackDecision = buildThreadedPassInputBody.find("!maskOutput.fallbackDecision.has_value()");
+    ASSERT_NE(noFallbackDecision, std::string::npos);
+    EXPECT_LT(buildPreparedOutput, noFallbackDecision);
+    EXPECT_LT(noFallbackDecision, fallbackAction);
+
+    const auto noFallbackReturn = buildThreadedPassInputBody.find("return maskOutput;", noFallbackDecision);
+    ASSERT_NE(noFallbackReturn, std::string::npos);
+    const auto noFallbackBlock = buildThreadedPassInputBody.substr(
+        noFallbackDecision,
+        noFallbackReturn - noFallbackDecision);
+    EXPECT_NE(noFallbackBlock.find("releaseSelectionOwnedPreparedFrameReservation()"), std::string::npos)
+        << "No-output paths must release only a reservation created by selected-object draw capture.";
+
+    const auto skipActionReturn = buildThreadedPassInputBody.find("return maskOutput;", fallbackAction);
+    ASSERT_NE(skipActionReturn, std::string::npos);
+    const auto skipActionBlock = buildThreadedPassInputBody.substr(
+        fallbackAction,
+        skipActionReturn - fallbackAction);
+    EXPECT_NE(skipActionBlock.find("releaseSelectionOwnedPreparedFrameReservation()"), std::string::npos)
+        << "Fallback actions that emit no helper pass must release only a selected-object-owned reservation before returning.";
+
+    const auto legacyCompatibility = buildThreadedPassInputBody.find(
+        "SelectionOutlineLegacyShellFallbackIsAttachmentCompatible",
+        fallbackAction);
+    ASSERT_NE(legacyCompatibility, std::string::npos);
+    ASSERT_LT(legacyCompatibility, legacyCapture);
+    const auto compatibilityReturn = buildThreadedPassInputBody.find("return maskOutput;", legacyCompatibility);
+    ASSERT_NE(compatibilityReturn, std::string::npos);
+    ASSERT_LT(compatibilityReturn, legacyCapture);
+    const auto compatibilityBlock = buildThreadedPassInputBody.substr(
+        legacyCompatibility,
+        compatibilityReturn - legacyCompatibility);
+    EXPECT_NE(compatibilityBlock.find("releaseSelectionOwnedPreparedFrameReservation()"), std::string::npos)
+        << "Legacy fallback paths rejected before command capture must release only a selected-object-owned reservation.";
+
+    const auto zeroDrawReturn = buildThreadedPassInputBody.find("return maskOutput;", zeroDraw);
+    ASSERT_NE(zeroDrawReturn, std::string::npos);
+    const auto zeroDrawBlock = buildThreadedPassInputBody.substr(
+        zeroDraw,
+        zeroDrawReturn - zeroDraw);
+    EXPECT_NE(zeroDrawBlock.find("releaseSelectionOwnedPreparedFrameReservation()"), std::string::npos);
+
+    const auto legacyCaptureBlock = buildThreadedPassInputBody.substr(
+        compatibilityReturn,
+        legacyCapture - compatibilityReturn);
+    EXPECT_EQ(legacyCaptureBlock.find("releaseSelectionOwnedPreparedFrameReservation()"), std::string::npos)
+        << "The reservation must remain live while legacy fallback draw commands are captured.";
+}
+
+TEST(EditorRenderPathContractTests, SelectionOutlineMaskSkipsSelectedObjectWorkWhenDeferredPublishIsSkipped)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto deferredHeader = ReadSourceText(root / "Runtime/Engine/Rendering/DeferredSceneRenderer.h");
+    const auto debugSceneSource = ReadSourceText(root / "Project/Editor/Rendering/DebugSceneRenderer.cpp");
+
+    ASSERT_FALSE(deferredHeader.empty());
+    ASSERT_FALSE(debugSceneSource.empty());
+
+    EXPECT_NE(
+        deferredHeader.find("bool IsThreadedFramePublishSkippedForCurrentFrame() const"),
+        std::string::npos);
+
+    const auto passStart = debugSceneSource.find("class DebugGameObjectRenderPass");
+    ASSERT_NE(passStart, std::string::npos);
+    const auto drawStart = debugSceneSource.find("virtual void Draw(Render::Data::PipelineState p_pso) override", passStart);
+    ASSERT_NE(drawStart, std::string::npos);
+    const auto drawEnd = debugSceneSource.find("static bool ShouldSubmitDebugGameObjectElements", drawStart);
+    ASSERT_NE(drawEnd, std::string::npos);
+    const auto drawBody = debugSceneSource.substr(drawStart, drawEnd - drawStart);
+    const auto drawSkip = drawBody.find("IsDeferredThreadedFramePublishSkipped");
+    const auto collectSelectedTree = drawBody.find("PrepareDebugGameObjectDebugDrawItems");
+    ASSERT_NE(drawSkip, std::string::npos);
+    ASSERT_NE(collectSelectedTree, std::string::npos);
+    EXPECT_LT(drawSkip, collectSelectedTree);
+
+    const auto buildThreadedPassInput = debugSceneSource.find("SelectionOutlinePreparedOutput BuildThreadedPassInput", passStart);
+    ASSERT_NE(buildThreadedPassInput, std::string::npos);
+    const auto buildPreparedOutput = debugSceneSource.find("BuildPreparedOutput", buildThreadedPassInput);
+    ASSERT_NE(buildPreparedOutput, std::string::npos);
+    const auto buildSkip = debugSceneSource.find("IsDeferredThreadedFramePublishSkipped", buildThreadedPassInput);
+    ASSERT_NE(buildSkip, std::string::npos);
+    EXPECT_LT(buildSkip, buildPreparedOutput);
+}
+
+TEST(EditorRenderPathContractTests, SceneValidationAssetReadbackWaitsForFocusedCreatedSelection)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto sceneViewSource = ReadSourceText(root / "Project/Editor/Panels/SceneView.cpp");
+
+    ASSERT_FALSE(sceneViewSource.empty());
+
+    const auto validationCreateAssetCheck = sceneViewSource.find("diagnostics.editorValidationCreateAsset.empty()");
+    ASSERT_NE(validationCreateAssetCheck, std::string::npos);
+    const auto stableFrameCheck = sceneViewSource.find("kStableFramesAfterAssetCreation", validationCreateAssetCheck);
+    ASSERT_NE(stableFrameCheck, std::string::npos);
+    const auto readinessBlock = sceneViewSource.substr(
+        validationCreateAssetCheck,
+        stableFrameCheck - validationCreateAssetCheck);
+
+    EXPECT_NE(readinessBlock.find("EDITOR_EXEC(GetSelectedGameObject())"), std::string::npos);
+    EXPECT_NE(readinessBlock.find("selectedGameObject == nullptr"), std::string::npos);
+    EXPECT_EQ(readinessBlock.find("std::filesystem::path(diagnostics.editorValidationCreateAsset).stem()"), std::string::npos);
+    EXPECT_EQ(readinessBlock.find("FindGameObjectByName(expectedName)"), std::string::npos);
+}
+
 TEST(EditorRenderPathContractTests, DeferredPreparedScenePackageAppendsEditorOverlayPassInputsAfterLighting)
 {
     NLS::Render::Context::RenderScenePackage package;
@@ -2052,7 +5300,7 @@ TEST(EditorRenderPathContractTests, DeferredPreparedScenePackageAppendsEditorOve
     lightGridContext.frameDescriptor.renderWidth = 320u;
     lightGridContext.frameDescriptor.renderHeight = 180u;
 
-    NLS::Render::FrameGraph::DeferredPreparedSceneResources resources;
+    auto resources = MakeCompleteDeferredPreparedSceneResources();
 
     NLS::Render::Context::RenderPassCommandInput gridPass;
     gridPass.kind = NLS::Render::Context::RenderPassCommandKind::Helper;
@@ -2131,7 +5379,7 @@ TEST(EditorRenderPathContractTests, DeferredPreparedScenePackageIgnoresDuplicate
     NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
         package,
         lightGridContext,
-        {},
+        MakeCompleteDeferredPreparedSceneResources(),
         { gridPass },
         appendedMetadata);
 
@@ -2154,7 +5402,7 @@ TEST(EditorRenderPathContractTests, DeferredEditorOverlayPassesKeepMetadataMatch
     lightGridContext.frameDescriptor.renderWidth = 320u;
     lightGridContext.frameDescriptor.renderHeight = 180u;
 
-    NLS::Render::FrameGraph::DeferredPreparedSceneResources resources;
+    auto resources = MakeCompleteDeferredPreparedSceneResources();
 
     NLS::Render::Context::RenderPassCommandInput gridPass;
     gridPass.kind = NLS::Render::Context::RenderPassCommandKind::Helper;
@@ -2223,7 +5471,7 @@ TEST(EditorRenderPathContractTests, DeferredEditorCameraAndLightOverlayPassesAre
     lightGridContext.frameDescriptor.renderWidth = 320u;
     lightGridContext.frameDescriptor.renderHeight = 180u;
 
-    NLS::Render::FrameGraph::DeferredPreparedSceneResources resources;
+    auto resources = MakeCompleteDeferredPreparedSceneResources();
 
     NLS::Render::Context::RenderPassCommandInput cameraPass;
     cameraPass.kind = NLS::Render::Context::RenderPassCommandKind::Helper;
@@ -2282,7 +5530,7 @@ TEST(EditorRenderPathContractTests, DeferredEditorAggregateHelperDrawsRemainInEd
     lightGridContext.frameDescriptor.renderWidth = 320u;
     lightGridContext.frameDescriptor.renderHeight = 180u;
 
-    NLS::Render::FrameGraph::DeferredPreparedSceneResources resources;
+    auto resources = MakeCompleteDeferredPreparedSceneResources();
 
     NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata helperMetadata;
     helperMetadata.commandKind = NLS::Render::Context::RenderPassCommandKind::Helper;
@@ -2322,7 +5570,7 @@ TEST(EditorRenderPathContractTests, DeferredEditorAggregateHelperStartsAfterOpaq
     lightGridContext.frameDescriptor.renderWidth = 320u;
     lightGridContext.frameDescriptor.renderHeight = 180u;
 
-    NLS::Render::FrameGraph::DeferredPreparedSceneResources resources;
+    auto resources = MakeCompleteDeferredPreparedSceneResources();
 
     NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata helperMetadata;
     helperMetadata.commandKind = NLS::Render::Context::RenderPassCommandKind::Helper;
@@ -2379,7 +5627,7 @@ TEST(EditorRenderPathContractTests, DeferredLightingDrawIsPreservedWhenGridIsAnE
     NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
         package,
         lightGridContext,
-        {},
+        MakeCompleteDeferredPreparedSceneResources(),
         { gridPass },
         { gridMetadata });
 
@@ -2431,7 +5679,7 @@ TEST(EditorRenderPathContractTests, DeferredEditorOverlayPassInputsFollowMetadat
     NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
         package,
         lightGridContext,
-        {},
+        MakeCompleteDeferredPreparedSceneResources(),
         { gridPass },
         { gridMetadata, helperMetadata });
 
@@ -2442,6 +5690,46 @@ TEST(EditorRenderPathContractTests, DeferredEditorOverlayPassInputsFollowMetadat
     EXPECT_EQ(package.passCommandInputs[3].debugName, "EditorHelperPass");
     EXPECT_EQ(package.passCommandInputs[3].recordedDrawCommands.size(), 1u);
     EXPECT_EQ(package.passCommandInputs[3].recordedDrawCommands[0].instanceCount, 17u);
+}
+
+TEST(EditorRenderPathContractTests, DeferredEditorOverlayPassInputIsConsumedOnceForDuplicateMetadata)
+{
+    NLS::Render::Context::RenderScenePackage package;
+    package.opaqueDrawCount = 1u;
+    package.drawCommandCount = 2u;
+    package.renderWidth = 320u;
+    package.renderHeight = 180u;
+    package.recordedDrawCommands.resize(2u);
+
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor.renderWidth = 320u;
+    lightGridContext.frameDescriptor.renderHeight = 180u;
+
+    NLS::Render::Context::RenderPassCommandInput gridPass;
+    gridPass.kind = NLS::Render::Context::RenderPassCommandKind::Helper;
+    gridPass.debugName = "EditorGridPass";
+    gridPass.drawCount = 1u;
+    gridPass.recordedDrawCommands.resize(1u);
+    gridPass.recordedDrawCommands[0].instanceCount = 23u;
+
+    NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata gridMetadata;
+    gridMetadata.commandKind = NLS::Render::Context::RenderPassCommandKind::Helper;
+    gridMetadata.role = NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Helper;
+    gridMetadata.queueType = NLS::Render::RHI::QueueType::Graphics;
+    gridMetadata.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
+    NLS::Render::FrameGraph::SetThreadedRenderScenePassGraphPassName(gridMetadata, "EditorGridPass");
+
+    NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
+        package,
+        lightGridContext,
+        MakeCompleteDeferredPreparedSceneResources(),
+        { gridPass },
+        { gridMetadata, gridMetadata });
+
+    ASSERT_EQ(package.passCommandInputs.size(), 3u);
+    EXPECT_EQ(package.passCommandInputs[2].debugName, "EditorGridPass");
+    ASSERT_EQ(package.passCommandInputs[2].recordedDrawCommands.size(), 1u);
+    EXPECT_EQ(package.passCommandInputs[2].recordedDrawCommands[0].instanceCount, 23u);
 }
 
 TEST(EditorRenderPathContractTests, DebugDeferredSkyboxUsesActualTextureAvailabilityNotComponentCount)
@@ -2608,7 +5896,7 @@ TEST(EditorRenderPathContractTests, DeferredSceneViewLightingTargetsExternalColo
     NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
         package,
         lightGridContext,
-        {});
+        MakeCompleteDeferredPreparedSceneResources());
 
     ASSERT_EQ(package.passCommandInputs.size(), 2u);
     const auto& lightingPass = package.passCommandInputs[1];
@@ -2641,10 +5929,13 @@ TEST(EditorRenderPathContractTests, DeferredSceneViewEditorOverlayWritesExternal
     NLS::Render::RHI::RHITextureDesc gbufferDepthDesc;
     gbufferDepthDesc.debugName = "DeferredGBufferDepth";
     gbufferDepthDesc.extent = { 320u, 180u, 1u };
+    gbufferDepthDesc.format = NLS::Render::FrameGraph::kDeferredGBufferDepthFormat;
+    gbufferDepthDesc.usage = NLS::Render::FrameGraph::kDeferredGBufferDepthUsage;
     auto gbufferDepthTexture = std::make_shared<TestTexture>(gbufferDepthDesc);
 
     NLS::Render::RHI::RHITextureViewDesc gbufferDepthViewDesc;
     gbufferDepthViewDesc.debugName = "DeferredGBufferDepthView";
+    gbufferDepthViewDesc.format = gbufferDepthDesc.format;
     auto gbufferDepthView = std::make_shared<TestTextureView>(gbufferDepthTexture, gbufferDepthViewDesc);
 
     NLS::Render::Data::FrameDescriptor frameDescriptor;
@@ -2682,8 +5973,7 @@ TEST(EditorRenderPathContractTests, DeferredSceneViewEditorOverlayWritesExternal
         NLS::Render::FrameGraph::PreparedComputeDispatchSource{},
         nullptr);
 
-    NLS::Render::FrameGraph::DeferredPreparedSceneResources resources;
-    resources.gbufferDepthView = gbufferDepthView;
+    auto resources = MakeCompleteDeferredPreparedSceneResources(gbufferDepthView);
 
     NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
         package,
@@ -2747,10 +6037,13 @@ TEST(EditorRenderPathContractTests, DeferredSceneViewEditorVisualHelpersDeclareE
     NLS::Render::RHI::RHITextureDesc gbufferDepthDesc;
     gbufferDepthDesc.debugName = "DeferredGBufferDepth";
     gbufferDepthDesc.extent = { 320u, 180u, 1u };
+    gbufferDepthDesc.format = NLS::Render::FrameGraph::kDeferredGBufferDepthFormat;
+    gbufferDepthDesc.usage = NLS::Render::FrameGraph::kDeferredGBufferDepthUsage;
     auto gbufferDepthTexture = std::make_shared<TestTexture>(gbufferDepthDesc);
 
     NLS::Render::RHI::RHITextureViewDesc gbufferDepthViewDesc;
     gbufferDepthViewDesc.debugName = "DeferredGBufferDepthView";
+    gbufferDepthViewDesc.format = gbufferDepthDesc.format;
     auto gbufferDepthView = std::make_shared<TestTextureView>(gbufferDepthTexture, gbufferDepthViewDesc);
 
     NLS::Render::Data::FrameDescriptor frameDescriptor;
@@ -2794,7 +6087,7 @@ TEST(EditorRenderPathContractTests, DeferredSceneViewEditorVisualHelpersDeclareE
             return metadata;
         };
 
-    const std::vector<NLS::Render::Context::RenderPassCommandInput> appendedPassInputs {
+    std::vector<NLS::Render::Context::RenderPassCommandInput> appendedPassInputs {
         makeHelperPass("EditorGridPass"),
         makeHelperPass("EditorDebugCamerasPass"),
         makeHelperPass("EditorDebugLightsPass")
@@ -2810,14 +6103,13 @@ TEST(EditorRenderPathContractTests, DeferredSceneViewEditorVisualHelpersDeclareE
         NLS::Render::FrameGraph::PreparedComputeDispatchSource{},
         nullptr);
 
-    NLS::Render::FrameGraph::DeferredPreparedSceneResources resources;
-    resources.gbufferDepthView = gbufferDepthView;
+    auto resources = MakeCompleteDeferredPreparedSceneResources(gbufferDepthView);
 
     NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
         package,
         lightGridContext,
         resources,
-        appendedPassInputs,
+        std::move(appendedPassInputs),
         appendedMetadata);
 
     ASSERT_EQ(package.passCommandInputs.size(), 5u);
@@ -2874,10 +6166,13 @@ TEST(EditorRenderPathContractTests, DeferredSceneViewEditorOverlayKeepsGBufferDe
     NLS::Render::RHI::RHITextureDesc gbufferDepthDesc;
     gbufferDepthDesc.debugName = "DeferredGBufferDepth";
     gbufferDepthDesc.extent = { 320u, 180u, 1u };
+    gbufferDepthDesc.format = NLS::Render::FrameGraph::kDeferredGBufferDepthFormat;
+    gbufferDepthDesc.usage = NLS::Render::FrameGraph::kDeferredGBufferDepthUsage;
     auto gbufferDepthTexture = std::make_shared<TestTexture>(gbufferDepthDesc);
 
     NLS::Render::RHI::RHITextureViewDesc gbufferDepthViewDesc;
     gbufferDepthViewDesc.debugName = "DeferredGBufferDepthView";
+    gbufferDepthViewDesc.format = gbufferDepthDesc.format;
     auto gbufferDepthView = std::make_shared<TestTextureView>(gbufferDepthTexture, gbufferDepthViewDesc);
 
     NLS::Render::Data::FrameDescriptor frameDescriptor;
@@ -2928,14 +6223,13 @@ TEST(EditorRenderPathContractTests, DeferredSceneViewEditorOverlayKeepsGBufferDe
         NLS::Render::FrameGraph::PreparedComputeDispatchSource{},
         nullptr);
 
-    NLS::Render::FrameGraph::DeferredPreparedSceneResources resources;
-    resources.gbufferDepthView = gbufferDepthView;
+    auto resources = MakeCompleteDeferredPreparedSceneResources(gbufferDepthView);
 
     NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
         package,
         lightGridContext,
         resources,
-        appendedPassInputs,
+        std::move(appendedPassInputs),
         { gridMetadata });
 
     ASSERT_EQ(package.passCommandInputs.size(), 3u);

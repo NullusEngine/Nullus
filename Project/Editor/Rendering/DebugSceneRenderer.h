@@ -36,9 +36,11 @@ class DebugSceneRenderer : public Engine::Rendering::DeferredSceneRenderer
 		DebugSceneRenderer(NLS::Render::Context::Driver& p_driver);
 
 	protected:
-		std::optional<NLS::Render::Context::FrameSnapshot> BuildFrameSnapshot(
+        std::optional<NLS::Render::Context::FrameSnapshot> BuildFrameSnapshot(
 			const NLS::Render::Data::FrameDescriptor& frameDescriptor) const override;
         NLS::Render::Context::PreparedRenderSceneBuilder BuildPreparedRenderSceneBuilder(
             const NLS::Render::Context::FrameSnapshot& snapshot) const override;
+        void OnThreadedFramePublished(uint64_t publishedFrameId) override;
+        void OnThreadedFramePublishFailed() override;
 	};
 }

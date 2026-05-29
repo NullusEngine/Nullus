@@ -261,6 +261,25 @@ namespace NLS::Render::Context
             submissionFrame.deviceLostReason = impl.deviceLostReason;
         }
 
+        void MarkCommandRecordingFailure(
+            RhiSubmissionFrame* submissionFrame,
+            const char* reason)
+        {
+            if (submissionFrame == nullptr)
+                return;
+
+            ++submissionFrame->commandRecordingFailureCount;
+            submissionFrame->lastCommandRecordingFailure = reason != nullptr
+                ? reason
+                : "command recording failed";
+        }
+
+        bool HasCommandRecordingFailure(const RhiSubmissionFrame* submissionFrame)
+        {
+            return submissionFrame != nullptr &&
+                submissionFrame->commandRecordingFailureCount > 0u;
+        }
+
         bool WaitFrameFenceWithDriverPolicy(
             DriverImpl& impl,
             const std::shared_ptr<Render::RHI::RHIFence>& frameFence,
@@ -397,6 +416,37 @@ namespace NLS::Render::Context
                 impl.uiStandaloneFrameSubmissionLock.unlock();
 
             return submitted;
+        }
+
+        void FinalizeThreadedRhiFrameContext(
+            DriverImpl& impl,
+            Render::RHI::RHIFrameContext& frameContext,
+            Detail::AsyncComputeSubmitPlan& submitPlan)
+        {
+            if (frameContext.commandBuffer != nullptr &&
+                frameContext.commandBuffer->IsRecording())
+            {
+                frameContext.commandBuffer->End();
+            }
+
+            if (frameContext.descriptorAllocator != nullptr)
+            {
+                NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::EndDescriptorAllocatorFrame");
+                frameContext.descriptorAllocator->EndFrame(impl.currentFrameIndex);
+            }
+            if (frameContext.uploadContext != nullptr)
+            {
+                NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::EndUploadContextFrame");
+                frameContext.uploadContext->EndFrame(impl.currentFrameIndex);
+            }
+
+            {
+                NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::RetireFrameResources");
+                submitPlan.batches.clear();
+                submitPlan.temporarySemaphores.clear();
+                RememberCompletedReadbackTexture(impl, frameContext.explicitReadbackTexture);
+                impl.currentFrameIndex = (impl.currentFrameIndex + 1u) % impl.frameContexts.size();
+            }
         }
 
         bool RequiresExplicitQueueWait(const QueueDependencyPolicy policy)
@@ -1400,6 +1450,8 @@ namespace NLS::Render::Context
             uint64_t recordedDrawCount = 0u;
             uint64_t recordedComputeDispatchCount = 0u;
             bool wasRecorded = false;
+            bool recordingFailed = false;
+            std::string failureReason;
         };
 
         struct RecordedParallelCommandBufferBatch
@@ -1413,6 +1465,16 @@ namespace NLS::Render::Context
             bool usedParallelRecording = false;
         };
 
+        void MarkRecordedParallelCommandWorkUnitFailure(
+            RecordedParallelCommandWorkUnit& recordedWorkUnit,
+            const char* reason)
+        {
+            recordedWorkUnit.recordingFailed = true;
+            recordedWorkUnit.failureReason = reason != nullptr
+                ? reason
+                : "Parallel command recording failed";
+        }
+
         struct TranslatedParallelCommandBufferBatch
         {
             std::vector<Detail::ThreadedCommandSubmissionUnit> submissions;
@@ -1421,8 +1483,27 @@ namespace NLS::Render::Context
             uint64_t recordedComputeDispatchCount = 0u;
             uint64_t recordedWorkUnitCount = 0u;
             uint64_t translatedWorkUnitCount = 0u;
+            std::vector<std::string> commandRecordingFailureReasons;
             bool usedTranslationMerge = false;
         };
+
+        void MarkTranslatedParallelCommandFailure(
+            TranslatedParallelCommandBufferBatch& batch,
+            RecordedParallelCommandWorkUnit* recordedWorkUnit,
+            const char* reason)
+        {
+            if (recordedWorkUnit != nullptr)
+            {
+                MarkRecordedParallelCommandWorkUnitFailure(*recordedWorkUnit, reason);
+            }
+            else
+            {
+                batch.commandRecordingFailureReasons.push_back(
+                    reason != nullptr
+                        ? reason
+                        : "Parallel command translation failed");
+            }
+        }
 
         RecordedParallelCommandWorkUnit RecordSingleParallelCommandWorkUnit(
             DriverImpl& impl,
@@ -1449,6 +1530,7 @@ namespace NLS::Render::Context
             if (commandPool == nullptr)
             {
                 Detail::LogSkippedPass(renderScenePackage, passInput, "CreateCommandPool failed");
+                MarkRecordedParallelCommandWorkUnitFailure(recordedWorkUnit, "CreateCommandPool failed");
                 return recordedWorkUnit;
             }
 
@@ -1458,6 +1540,7 @@ namespace NLS::Render::Context
             if (commandBuffer == nullptr)
             {
                 Detail::LogSkippedPass(renderScenePackage, passInput, "CreateCommandBuffer failed");
+                MarkRecordedParallelCommandWorkUnitFailure(recordedWorkUnit, "CreateCommandBuffer failed");
                 return recordedWorkUnit;
             }
 
@@ -1473,6 +1556,8 @@ namespace NLS::Render::Context
                 commandBuffer->EndGpuProfileScope();
                 if (recordedDispatchCount == 0u)
                 {
+                    if (!passInput.computeDispatchInputs.empty())
+                        MarkRecordedParallelCommandWorkUnitFailure(recordedWorkUnit, "No dispatches recorded but commands were expected");
                     if (commandBuffer->IsRecording())
                         commandBuffer->End();
                     return recordedWorkUnit;
@@ -1492,6 +1577,7 @@ namespace NLS::Render::Context
             if (passInput.targetsSwapchain && frameContext.swapchainBackbufferView == nullptr)
             {
                 Detail::LogSkippedPass(renderScenePackage, passInput, "swapchainBackbufferView is null");
+                MarkRecordedParallelCommandWorkUnitFailure(recordedWorkUnit, "swapchainBackbufferView is null");
                 if (commandBuffer->IsRecording())
                     commandBuffer->End();
                 return recordedWorkUnit;
@@ -1506,6 +1592,7 @@ namespace NLS::Render::Context
                 &frameContext))
             {
                 Detail::LogSkippedPass(renderScenePackage, effectivePassInput, "BeginPassCommandPlan failed");
+                MarkRecordedParallelCommandWorkUnitFailure(recordedWorkUnit, "BeginPassCommandPlan failed");
                 if (commandBuffer->IsRecording())
                     commandBuffer->End();
                 return recordedWorkUnit;
@@ -1523,6 +1610,9 @@ namespace NLS::Render::Context
                 Detail::LogSkippedPass(
                     renderScenePackage,
                     effectivePassInput,
+                    "No draws recorded but commands were expected");
+                MarkRecordedParallelCommandWorkUnitFailure(
+                    recordedWorkUnit,
                     "No draws recorded but commands were expected");
                 if (commandBuffer->IsRecording())
                     commandBuffer->End();
@@ -1651,6 +1741,26 @@ namespace NLS::Render::Context
             return batch;
         }
 
+        void MarkParallelCommandRecordingFailures(
+            RhiSubmissionFrame* submissionFrame,
+            const RecordedParallelCommandBufferBatch& recordedBatch)
+        {
+            if (submissionFrame == nullptr)
+                return;
+
+            for (const auto& recordedWorkUnit : recordedBatch.recordedWorkUnits)
+            {
+                if (!recordedWorkUnit.recordingFailed)
+                    continue;
+
+                MarkCommandRecordingFailure(
+                    submissionFrame,
+                    recordedWorkUnit.failureReason.empty()
+                        ? "Parallel command recording failed"
+                        : recordedWorkUnit.failureReason.c_str());
+            }
+        }
+
         Detail::ThreadedCommandSubmissionUnit BuildSubmissionUnitFromRecordedWorkUnit(
             const RecordedParallelCommandWorkUnit& recordedWorkUnit,
             std::vector<WorkUnitDependencyEdge> incomingDependencyEdges,
@@ -1771,27 +1881,26 @@ namespace NLS::Render::Context
 
         bool RecordPostPassTransitionBatch(
             DriverImpl& impl,
-            const RenderScenePackage& renderScenePackage,
+            const RenderPassCommandInput& extractionVisibilityInput,
             TranslatedParallelCommandBufferBatch& batch)
         {
-            if (impl.explicitDevice == nullptr || renderScenePackage.extractedTextures.empty())
+            if (impl.explicitDevice == nullptr ||
+                !Detail::HasResourceVisibilityTransitions(extractionVisibilityInput))
             {
                 return false;
             }
 
             auto commandPool = impl.explicitDevice->CreateCommandPool(
                 Render::RHI::QueueType::Graphics,
-                "ThreadedPostPassPool" + std::to_string(renderScenePackage.frameId));
+                "ThreadedPostPassPool" + std::string(extractionVisibilityInput.debugName));
             if (commandPool == nullptr)
                 return false;
 
             auto commandBuffer = commandPool->CreateCommandBuffer(
-                "ThreadedPostPassTransitions" + std::to_string(renderScenePackage.frameId));
+                "ThreadedPostPassTransitions" + extractionVisibilityInput.debugName);
             if (commandBuffer == nullptr)
                 return false;
 
-            const auto extractionVisibilityInput =
-                Render::FrameGraph::BuildExtractionVisibilityPassInput(renderScenePackage);
             commandBuffer->Begin();
             auto* frameContext = GetCurrentFrameContext(impl);
             const bool recordedTransitions = Detail::RecordResourceVisibilityTransitions(
@@ -1821,20 +1930,20 @@ namespace NLS::Render::Context
         TranslatedParallelCommandBufferBatch TranslateRecordedParallelCommandWorkUnits(
             DriverImpl& impl,
             const RenderScenePackage& renderScenePackage,
-            const RecordedParallelCommandBufferBatch& recordedBatch)
+            RecordedParallelCommandBufferBatch& recordedBatch)
         {
             TranslatedParallelCommandBufferBatch translatedBatch;
             struct PendingTranslatedUnit
             {
-                const RecordedParallelCommandWorkUnit* recordedWorkUnit = nullptr;
+                RecordedParallelCommandWorkUnit* recordedWorkUnit = nullptr;
                 std::vector<WorkUnitDependencyEdge> incomingDependencyEdges;
                 std::optional<uint64_t> dependencySourceSubmissionOrder;
                 bool requiresDependencyVisibility = false;
             };
 
-            std::vector<const RecordedParallelCommandWorkUnit*> orderedRecordedWorkUnits;
+            std::vector<RecordedParallelCommandWorkUnit*> orderedRecordedWorkUnits;
             orderedRecordedWorkUnits.reserve(recordedBatch.recordedWorkUnits.size());
-            for (const auto& recordedWorkUnit : recordedBatch.recordedWorkUnits)
+            for (auto& recordedWorkUnit : recordedBatch.recordedWorkUnits)
             {
                 if (recordedWorkUnit.wasRecorded)
                     orderedRecordedWorkUnits.push_back(&recordedWorkUnit);
@@ -1871,7 +1980,7 @@ namespace NLS::Render::Context
                 translatedBatch.usedTranslationMerge = true;
             };
 
-            for (const auto* recordedWorkUnit : orderedRecordedWorkUnits)
+            for (auto* recordedWorkUnit : orderedRecordedWorkUnits)
             {
                 const auto resourceDependencyEdges = Detail::FilterWorkUnitDependencyEdges(
                     recordedWorkUnit->workUnit,
@@ -1901,6 +2010,14 @@ namespace NLS::Render::Context
                         visibilityInput,
                         resourceDependencyEdges,
                         translatedBatch);
+                    if (!recordedVisibilityBatch)
+                    {
+                        MarkTranslatedParallelCommandFailure(
+                            translatedBatch,
+                            recordedWorkUnit,
+                            "Dependency visibility transition recording failed");
+                        continue;
+                    }
                 }
 
                 const auto dependencySourceSubmissionOrder =
@@ -1943,10 +2060,19 @@ namespace NLS::Render::Context
             }
 
             flushPendingTranslatedUnits();
-            RecordPostPassTransitionBatch(
-                impl,
-                renderScenePackage,
-                translatedBatch);
+            const auto extractionVisibilityInput =
+                Render::FrameGraph::BuildExtractionVisibilityPassInput(renderScenePackage);
+            if (Detail::HasResourceVisibilityTransitions(extractionVisibilityInput) &&
+                !RecordPostPassTransitionBatch(
+                    impl,
+                    extractionVisibilityInput,
+                    translatedBatch))
+            {
+                MarkTranslatedParallelCommandFailure(
+                    translatedBatch,
+                    nullptr,
+                    "Post-pass transition recording failed");
+            }
             return translatedBatch;
         }
     }
@@ -1992,8 +2118,11 @@ namespace NLS::Render::Context
                 return nullptr;
             }
         }
-        if (frameContext.frameFence != nullptr)
+        if (renderScenePackage.targetsSwapchain &&
+            frameContext.frameFence != nullptr)
+        {
             frameContext.frameFence->Reset();
+        }
         if (frameContext.imageAcquiredSemaphore != nullptr)
             frameContext.imageAcquiredSemaphore->Reset();
         if (frameContext.renderFinishedSemaphore != nullptr)
@@ -2093,6 +2222,7 @@ namespace NLS::Render::Context
             const bool parallelRecordingReady =
                 supportsOrderedWorkUnitSubmission &&
                 impl.explicitDevice != nullptr &&
+                frameContext.resourceStateTracker == nullptr &&
                 impl.explicitDevice->GetCapabilities()
                     .GetFeature(Render::RHI::RHIDeviceFeature::ParallelCommandRecording)
                     .supported;
@@ -2109,7 +2239,7 @@ namespace NLS::Render::Context
             submissionFrame->parallelDrawCommandBatches = BuildUE427ParallelDrawCommandBatches(workUnits);
             if (supportsOrderedWorkUnitSubmission && !workUnits.empty())
             {
-                const auto recordedBatch = RecordParallelCommandWorkUnits(
+                auto recordedBatch = RecordParallelCommandWorkUnits(
                     impl,
                     frameContext,
                     renderScenePackage,
@@ -2118,6 +2248,15 @@ namespace NLS::Render::Context
                     impl,
                     renderScenePackage,
                     recordedBatch);
+                MarkParallelCommandRecordingFailures(
+                    submissionFrame,
+                    recordedBatch);
+                for (const auto& failureReason : translatedBatch.commandRecordingFailureReasons)
+                {
+                    MarkCommandRecordingFailure(
+                        submissionFrame,
+                        failureReason.c_str());
+                }
                 *submitPlan = Detail::BuildAsyncComputeSubmitPlan(
                     impl,
                     frameContext,
@@ -2176,7 +2315,19 @@ namespace NLS::Render::Context
                             false);
                         frameContext.commandBuffer->EndGpuProfileScope();
                         if (recordedDispatches == 0u)
+                        {
+                            if (!passInput.computeDispatchInputs.empty())
+                            {
+                                Detail::LogSkippedPass(
+                                    renderScenePackage,
+                                    passInput,
+                                    "No dispatches recorded but commands were expected");
+                                MarkCommandRecordingFailure(
+                                    submissionFrame,
+                                    "No dispatches recorded but commands were expected");
+                            }
                             continue;
+                        }
 
                         recordedAnyCommand = true;
                         submissionFrame->recordedPassCount += 1u;
@@ -2189,10 +2340,18 @@ namespace NLS::Render::Context
                         if (!beginMainCommandBufferIfNeeded())
                             continue;
 
-                        recordedAnyCommand |= Detail::RecordResourceVisibilityTransitions(
+                        const bool recordedVisibilityTransitions = Detail::RecordResourceVisibilityTransitions(
                             *frameContext.commandBuffer,
                             visibilityInput,
                             &frameContext);
+                        recordedAnyCommand |= recordedVisibilityTransitions;
+                        if (!recordedVisibilityTransitions)
+                        {
+                            MarkCommandRecordingFailure(
+                                submissionFrame,
+                                "Dependency visibility transition recording failed");
+                            continue;
+                        }
                     }
 
                     if (passInput.targetsSwapchain &&
@@ -2222,8 +2381,9 @@ namespace NLS::Render::Context
                             renderScenePackage,
                             effectivePassInput,
                             "BeginPassCommandPlan failed");
-                        submissionFrame->recordedPassCount += 1u;
-                        submissionFrame->recordedWorkUnitCount += 1u;
+                        MarkCommandRecordingFailure(
+                            submissionFrame,
+                            "BeginPassCommandPlan failed");
                         continue;
                     }
 
@@ -2243,6 +2403,9 @@ namespace NLS::Render::Context
                             renderScenePackage,
                             effectivePassInput,
                             "No draws recorded but commands were expected");
+                        MarkCommandRecordingFailure(
+                            submissionFrame,
+                            "No draws recorded but commands were expected");
                         continue;
                     }
 
@@ -2261,10 +2424,17 @@ namespace NLS::Render::Context
                 if (Detail::HasResourceVisibilityTransitions(extractionVisibilityInput) &&
                     beginMainCommandBufferIfNeeded())
                 {
-                    recordedAnyCommand |= Detail::RecordResourceVisibilityTransitions(
+                    const bool recordedPostPassTransitions = Detail::RecordResourceVisibilityTransitions(
                         *frameContext.commandBuffer,
                         extractionVisibilityInput,
                         &frameContext);
+                    recordedAnyCommand |= recordedPostPassTransitions;
+                    if (!recordedPostPassTransitions)
+                    {
+                        MarkCommandRecordingFailure(
+                            submissionFrame,
+                            "Post-pass transition recording failed");
+                    }
                 }
 
                 if (recordedAnyCommand)
@@ -2356,7 +2526,14 @@ namespace NLS::Render::Context
                 submitDesc.signalSemaphores.push_back(frameContext.renderFinishedSemaphore);
             }
             if (isLastBatch)
+            {
                 submitDesc.signalFence = frameContext.frameFence;
+                if (!renderScenePackage.targetsSwapchain &&
+                    frameContext.frameFence != nullptr)
+                {
+                    frameContext.frameFence->Reset();
+                }
+            }
             {
                 NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::QueueSubmitChecked");
                 const bool submitted = RecordQueueOperationResult(
@@ -2436,26 +2613,22 @@ namespace NLS::Render::Context
         }
 
         if (submissionFrame != nullptr)
+        {
+            const bool recordingSucceeded = !HasCommandRecordingFailure(submissionFrame);
+            submissionFrame->submittedSuccessfully =
+                submissionSucceeded &&
+                recordingSucceeded &&
+                submissionFrame->currentFrameQueueOperationFailureCount == 0u &&
+                !submissionFrame->deviceLostDetected;
             CopyDriverQueueTelemetryToSubmissionFrame(impl, *submissionFrame);
-
-        if (frameContext.descriptorAllocator != nullptr)
-        {
-            NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::EndDescriptorAllocatorFrame");
-            frameContext.descriptorAllocator->EndFrame(impl.currentFrameIndex);
-        }
-        if (frameContext.uploadContext != nullptr)
-        {
-            NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::EndUploadContextFrame");
-            frameContext.uploadContext->EndFrame(impl.currentFrameIndex);
+            submissionFrame->submittedSuccessfully =
+                submissionSucceeded &&
+                recordingSucceeded &&
+                submissionFrame->currentFrameQueueOperationFailureCount == 0u &&
+                !submissionFrame->deviceLostDetected;
         }
 
-        {
-            NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::RetireFrameResources");
-            submitPlan.batches.clear();
-            submitPlan.temporarySemaphores.clear();
-            RememberCompletedReadbackTexture(impl, frameContext.explicitReadbackTexture);
-            impl.currentFrameIndex = (impl.currentFrameIndex + 1u) % impl.frameContexts.size();
-        }
+        FinalizeThreadedRhiFrameContext(impl, frameContext, submitPlan);
     }
 
     RhiSubmissionFrame Detail::SubmitThreadedRhiFrame(
@@ -2483,6 +2656,7 @@ namespace NLS::Render::Context
         if (preparedFrameContext == nullptr)
         {
             CopyDriverQueueTelemetryToSubmissionFrame(impl, submissionFrame);
+            submissionFrame.submittedSuccessfully = false;
             return submissionFrame;
         }
 
@@ -2498,6 +2672,17 @@ namespace NLS::Render::Context
                 &submissionFrame);
         }
 
+        if (HasCommandRecordingFailure(&submissionFrame))
+        {
+            submissionFrame.submittedSuccessfully = false;
+            CopyDriverQueueTelemetryToSubmissionFrame(impl, submissionFrame);
+            FinalizeThreadedRhiFrameContext(
+                impl,
+                frameContext,
+                submitPlan);
+            return submissionFrame;
+        }
+
         {
             NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::CompleteTelemetry");
             if (!Detail::CompleteThreadedRhiSubmissionTelemetry(
@@ -2509,6 +2694,11 @@ namespace NLS::Render::Context
                 submitPlan,
                 &submissionFrame))
             {
+                submissionFrame.submittedSuccessfully = false;
+                FinalizeThreadedRhiFrameContext(
+                    impl,
+                    frameContext,
+                    submitPlan);
                 return submissionFrame;
             }
         }
@@ -2544,7 +2734,8 @@ namespace NLS::Render::Context
         if (submissionFrame == nullptr)
             return false;
 
-        submissionFrame->recordedVisibleWork =
+            submissionFrame->recordedVisibleWork =
+            !HasCommandRecordingFailure(submissionFrame) &&
             submissionFrame->recordedPassCount > 0u &&
             submissionFrame->recordedDrawCount > 0u;
         submissionFrame->usedAsyncComputeQueueSubmission = submitPlan.usedDedicatedComputeQueueSubmission;

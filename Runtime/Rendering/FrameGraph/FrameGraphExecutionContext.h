@@ -73,10 +73,11 @@ namespace NLS::Render::FrameGraph
 			frameContext->resourceStateTracker->RegisterTransientTextureView(textureView, retireAfterFrameIndex);
 		}
 
-		void RecordResourceBarriers(const NLS::Render::RHI::RHIBarrierDesc& requestedBarriers) const
+		NLS::Render::RHI::RHICommandRecordingResult RecordResourceBarriers(
+			const NLS::Render::RHI::RHIBarrierDesc& requestedBarriers) const
 		{
 			if (!CanTrackExplicitResourceState())
-				return;
+				return {};
 
 			const auto hasWriteAccess = [](const NLS::Render::RHI::AccessMask accessMask)
 			{
@@ -112,14 +113,17 @@ namespace NLS::Render::FrameGraph
 						 !hasWriteAccess(barrier.destinationAccessMask));
 				});
 			if (resolvedBarriers.bufferBarriers.empty() && resolvedBarriers.textureBarriers.empty())
-				return;
+				return {};
 
 			const auto filteredBarriers = commandBuffer->FilterBarrierDesc(resolvedBarriers);
 			if (filteredBarriers.bufferBarriers.empty() && filteredBarriers.textureBarriers.empty())
-				return;
+				return {};
 
-			commandBuffer->Barrier(filteredBarriers);
+			const auto barrierResult = commandBuffer->BarrierChecked(filteredBarriers);
+			if (!barrierResult.Succeeded())
+				return barrierResult;
 			frameContext->resourceStateTracker->Commit(filteredBarriers);
+			return {};
 		}
 	};
 }

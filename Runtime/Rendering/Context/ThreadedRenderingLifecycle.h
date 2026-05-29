@@ -188,6 +188,7 @@ namespace NLS::Render::Context
         bool clearStencil = false;
         bool usesColorAttachment = false;
         bool usesDepthStencilAttachment = false;
+        bool writesDepthStencilAttachment = false;
         std::vector<BufferResourceAccess> bufferResourceAccesses;
         std::vector<TextureResourceAccess> textureResourceAccesses;
         std::vector<BufferVisibilityTransition> bufferVisibilityTransitions;
@@ -371,18 +372,22 @@ namespace NLS::Render::Context
         std::string lastQueueOperationFailure;
         uint64_t currentFrameQueueOperationFailureCount = 0u;
         std::string currentFrameLastQueueOperationFailure;
+        uint64_t commandRecordingFailureCount = 0u;
+        std::string lastCommandRecordingFailure;
         bool deviceLostDetected = false;
         std::string deviceLostReason;
+        bool submittedSuccessfully = true;
     };
 
     enum class ThreadedFrameStage : uint8_t
     {
         Available = 0,
-        Published,
-        RenderScenePreparing,
-        RenderReady,
-        RhiSubmitting,
-        Retired
+        Published = 1,
+        RenderScenePreparing = 2,
+        RenderReady = 3,
+        RhiSubmitting = 4,
+        Retired = 5,
+        RenderSceneResolving = 6
     };
 
     enum class RenderSceneAttribution : uint8_t
@@ -427,9 +432,13 @@ namespace NLS::Render::Context
     {
         uint64_t inFlightFrameCount = 0u;
         uint64_t blockedPublishCount = 0u;
+        uint64_t reservedSlotWaitCount = 0u;
+        uint64_t reservedSlotWaitTimeoutCount = 0u;
+        uint64_t reservedSlotWaitTotalNs = 0u;
         uint64_t publishedFrameCount = 0u;
         uint64_t latestPublishedFrameId = 0u;
         uint64_t latestRetiredFrameId = 0u;
+        uint64_t latestFailedRetiredFrameId = 0u;
         Data::FramePublishState publishState = Data::FramePublishState::Direct;
         Data::ThreadedFrameStageSummary stageSummary = Data::ThreadedFrameStageSummary::Direct;
         Data::FrameRetirementState retirementState = Data::FrameRetirementState::Direct;
@@ -519,7 +528,8 @@ namespace NLS::Render::Context
         bool IsBackPressured() const;
         uint64_t GetBlockedPublishCount() const;
         uint64_t GetPublishedFrameCount() const;
-        std::optional<size_t> ReserveReusableSlotIndex();
+        std::optional<size_t> ReserveReusableSlotIndex(
+            std::chrono::nanoseconds retirementWaitTimeout = std::chrono::nanoseconds::zero());
         bool ReleaseReservedReusableSlotIndex(size_t slotIndex);
         std::optional<size_t> GetReservedReusableSlotIndex() const;
         const InFlightFrameSlot* PeekSlot(size_t slotIndex) const;
@@ -543,6 +553,11 @@ namespace NLS::Render::Context
             const FrameSnapshot& snapshot,
             PreparedRenderSceneBuilder renderSceneBuilder,
             size_t* publishedSlotIndex);
+        bool CompleteRenderSceneLocked(
+            size_t slotIndex,
+            const RenderScenePackage& renderScenePackage,
+            RenderSceneAttribution attribution,
+            ThreadedFrameStage expectedStage);
         InFlightFrameSlot* FindReusableSlotLocked(bool allowReservedSlot = false);
         const InFlightFrameSlot* FindReusableSlotReadOnlyLocked(bool allowReservedSlot = false) const;
         bool IsSlotReservedLocked(size_t slotIndex) const;
@@ -557,6 +572,7 @@ namespace NLS::Render::Context
         std::optional<size_t> m_reservedReusableSlotIndex;
         uint64_t m_latestPublishedFrameId = 0u;
         uint64_t m_latestRetiredFrameId = 0u;
+        uint64_t m_latestFailedRetiredFrameId = 0u;
     };
 
 #if defined(NLS_ENABLE_TEST_HOOKS)

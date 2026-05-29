@@ -8,15 +8,18 @@
 #include <Rendering/FrameGraph/ExternalResourceBridge.h>
 #include <Rendering/FrameGraph/FrameGraphExecutionPlan.h>
 #include <Rendering/FrameGraph/SceneRenderGraphBuilder.h>
+#include <Profiling/Profiler.h>
 
 #include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <cstring>
+#include <utility>
 #include <Rendering/Settings/GraphicsBackendUtils.h>
 
 #include <Debug/Assertion.h>
 
+#include "Rendering/DebugGameObjectSelectionCollector.h"
 #include "Rendering/DebugModelRenderer.h"
 #include "Rendering/DebugSceneRenderer.h"
 #include "Rendering/EditorHelperLifecycle.h"
@@ -25,6 +28,7 @@
 #include "Rendering/GridRenderPass.h"
 #include "Rendering/OutlineRenderer.h"
 #include "Rendering/PickingRenderPass.h"
+#include "Rendering/SelectionOutlineMaskRenderer.h"
 #include "Core/EditorResources.h"
 //#include "Panels/AView.h"
 //#include "Panels/GameView.h"
@@ -53,12 +57,30 @@ namespace
         return NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(driver).logRenderDrawPath;
     }
 
+    bool IsDeferredThreadedFramePublishSkipped(const NLS::Render::Core::CompositeRenderer& renderer)
+    {
+        const auto* deferredRenderer =
+            dynamic_cast<const NLS::Engine::Rendering::DeferredSceneRenderer*>(&renderer);
+        return deferredRenderer != nullptr &&
+            deferredRenderer->IsThreadedFramePublishSkippedForCurrentFrame();
+    }
+
+    std::shared_ptr<NLS::Render::RHI::RHITextureView> ResolveDeferredSelectionOutlineDepthView(
+        const NLS::Render::Core::CompositeRenderer& renderer)
+    {
+        const auto* deferredRenderer =
+            dynamic_cast<const NLS::Engine::Rendering::DeferredSceneRenderer*>(&renderer);
+        return deferredRenderer != nullptr
+            ? deferredRenderer->GetDeferredPreparedSceneDepthViewForEditorHelpers()
+            : nullptr;
+    }
+
 	std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata> BuildDebugDeferredThreadedPassMetadata(
 		const uint64_t helperVisibleCount,
         const bool includeGridPass,
         const bool includeCameraPass,
         const bool includeLightPass,
-        const bool includeSelectionPass,
+        const std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata>& selectionOutlineMetadata,
         const bool includePickingPass)
 	{
 		std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata> metadata;
@@ -66,7 +88,7 @@ namespace
             (includeGridPass ? 1u : 0u) +
             (includeCameraPass ? 1u : 0u) +
             (includeLightPass ? 1u : 0u) +
-            (includeSelectionPass ? 1u : 0u) +
+            selectionOutlineMetadata.size() +
             1u +
             (includePickingPass ? 1u : 0u));
 
@@ -112,19 +134,10 @@ namespace
             metadata.push_back(std::move(lightMetadata));
         }
 
-        if (includeSelectionPass)
-        {
-            NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata selectionMetadata;
-            selectionMetadata.commandKind = NLS::Render::Context::RenderPassCommandKind::Helper;
-            selectionMetadata.role = NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Helper;
-            selectionMetadata.queueType = NLS::Render::RHI::QueueType::Graphics;
-            selectionMetadata.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
-            selectionMetadata.visibleDrawCountContribution = 2u;
-            NLS::Render::FrameGraph::SetThreadedRenderScenePassGraphPassName(
-                selectionMetadata,
-                "EditorSelectionPass");
-            metadata.push_back(std::move(selectionMetadata));
-        }
+        metadata.insert(
+            metadata.end(),
+            selectionOutlineMetadata.begin(),
+            selectionOutlineMetadata.end());
 
 		NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata helperMetadata;
 		helperMetadata.commandKind = NLS::Render::Context::RenderPassCommandKind::Helper;
@@ -158,34 +171,34 @@ namespace
 	}
 
 	std::vector<NLS::Render::Context::RenderPassCommandInput> BuildDebugDeferredAppendedPassInputs(
-        const std::optional<NLS::Render::Context::RenderPassCommandInput>& gridPassInput,
-        const std::optional<NLS::Render::Context::RenderPassCommandInput>& cameraPassInput,
-        const std::optional<NLS::Render::Context::RenderPassCommandInput>& lightPassInput,
-        const std::optional<NLS::Render::Context::RenderPassCommandInput>& selectionPassInput,
-        const std::optional<NLS::Render::Context::RenderPassCommandInput>& pickingPassInput)
+        std::optional<NLS::Render::Context::RenderPassCommandInput> gridPassInput,
+        std::optional<NLS::Render::Context::RenderPassCommandInput> cameraPassInput,
+        std::optional<NLS::Render::Context::RenderPassCommandInput> lightPassInput,
+        std::vector<NLS::Render::Context::RenderPassCommandInput> selectionOutlinePassInputs,
+        std::optional<NLS::Render::Context::RenderPassCommandInput> pickingPassInput)
 	{
 		std::vector<NLS::Render::Context::RenderPassCommandInput> passInputs;
 		passInputs.reserve(
             (gridPassInput.has_value() ? 1u : 0u) +
             (cameraPassInput.has_value() ? 1u : 0u) +
             (lightPassInput.has_value() ? 1u : 0u) +
-            (selectionPassInput.has_value() ? 1u : 0u) +
+            selectionOutlinePassInputs.size() +
             (pickingPassInput.has_value() ? 1u : 0u));
 
         if (gridPassInput.has_value())
-            passInputs.push_back(*gridPassInput);
+            passInputs.push_back(std::move(*gridPassInput));
 
         if (cameraPassInput.has_value())
-            passInputs.push_back(*cameraPassInput);
+            passInputs.push_back(std::move(*cameraPassInput));
 
         if (lightPassInput.has_value())
-            passInputs.push_back(*lightPassInput);
+            passInputs.push_back(std::move(*lightPassInput));
 
-        if (selectionPassInput.has_value())
-            passInputs.push_back(*selectionPassInput);
+        for (auto& selectionPassInput : selectionOutlinePassInputs)
+            passInputs.push_back(std::move(selectionPassInput));
 
         if (pickingPassInput.has_value())
-            passInputs.push_back(*pickingPassInput);
+            passInputs.push_back(std::move(*pickingPassInput));
 
 		return passInputs;
 	}
@@ -226,6 +239,8 @@ namespace
 	{
 		return NLS::Render::Settings::GetThreadDiagnosticsSettings().editorDisablePickingPass;
 	}
+
+    constexpr const char* kLegacyEditorSelectionPassName = "EditorSelectionPass";
 }
 
 Maths::Matrix4 CalculateCameraModelMatrix(Engine::GameObject& p_actor)
@@ -262,9 +277,16 @@ public:
 		m_cameraMaterial.Set("u_Diffuse", Vector4(0.0f, 0.3f, 0.7f, 1.0f));
 	}
 
-    std::optional<NLS::Render::Context::RenderPassCommandInput> GetPreparedThreadedPassInput() const
+    const std::optional<NLS::Render::Context::RenderPassCommandInput>& GetPreparedThreadedPassInput() const
     {
         return m_preparedThreadedPassInput;
+    }
+
+    std::optional<NLS::Render::Context::RenderPassCommandInput> ConsumePreparedThreadedPassInput()
+    {
+        auto passInput = std::move(m_preparedThreadedPassInput);
+        m_preparedThreadedPassInput.reset();
+        return passInput;
     }
 
 protected:
@@ -386,9 +408,16 @@ public:
 		m_lightMaterial.SetBlendable(true);
 	}
 
-    std::optional<NLS::Render::Context::RenderPassCommandInput> GetPreparedThreadedPassInput() const
+    const std::optional<NLS::Render::Context::RenderPassCommandInput>& GetPreparedThreadedPassInput() const
     {
         return m_preparedThreadedPassInput;
+    }
+
+    std::optional<NLS::Render::Context::RenderPassCommandInput> ConsumePreparedThreadedPassInput()
+    {
+        auto passInput = std::move(m_preparedThreadedPassInput);
+        m_preparedThreadedPassInput.reset();
+        return passInput;
     }
 
 protected:
@@ -525,19 +554,46 @@ public:
         : Render::Core::ARenderPass(p_renderer)
         , m_debugModelRenderer(p_renderer)
         , m_outlineRenderer(p_renderer, m_debugModelRenderer)
+        , m_selectionOutlineMaskRenderer(p_renderer)
 	{
 		
 	}
 
-    std::optional<NLS::Render::Context::RenderPassCommandInput> GetPreparedThreadedPassInput() const
+    const std::vector<NLS::Render::Context::RenderPassCommandInput>& GetPreparedThreadedPassInputs() const
     {
-        return m_preparedThreadedPassInput;
+        return m_preparedThreadedPassInputs;
     }
+
+    const std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata>& GetPreparedThreadedPassMetadata() const
+    {
+        return m_preparedThreadedPassMetadata;
+    }
+
+    std::vector<NLS::Render::Context::RenderPassCommandInput> ConsumePreparedThreadedPassInputs()
+    {
+        auto passInputs = std::move(m_preparedThreadedPassInputs);
+        m_preparedThreadedPassInputs.clear();
+        m_preparedThreadedPassMetadata.clear();
+        return passInputs;
+    }
+
+    void CommitPendingSelectionOutlineMaskCache(uint64_t publishedFrameId)
+    {
+        m_selectionOutlineMaskRenderer.CommitPendingCachedMask(publishedFrameId);
+    }
+
+    void DiscardPendingSelectionOutlineMaskCache()
+    {
+        m_selectionOutlineMaskRenderer.DiscardPendingCachedMask();
+    }
+
+    bool ManagesOwnRenderPass() const override { return true; }
 
 protected:
     void OnBeginFrame(const NLS::Render::Data::FrameDescriptor&) override
     {
-        m_preparedThreadedPassInput.reset();
+        m_preparedThreadedPassInputs.clear();
+        m_preparedThreadedPassMetadata.clear();
     }
 
 	virtual void Draw(Render::Data::PipelineState p_pso) override
@@ -548,43 +604,89 @@ protected:
 		if (selectedGameObject == nullptr)
             return;
 
-        if (Editor::Rendering::OutlineRenderer::ShouldIncludeInThreadedFrame(true, selectedGameObject))
-		{
-			DrawGameObjectDebugElements(*selectedGameObject);
-
-            if (NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_renderer.GetDriver()))
+        const bool usesThreadedRendering =
+            NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_renderer.GetDriver());
+        if (usesThreadedRendering && IsDeferredThreadedFramePublishSkipped(m_renderer))
+        {
+            if (ShouldLogEditorHelperDiagnostics(m_renderer.GetDriver()))
             {
-                m_preparedThreadedPassInput = BuildThreadedPassInput(*selectedGameObject, debugSceneDescriptor, p_pso);
+                NLS_LOG_INFO(
+                    "[DebugSceneRenderer] selected-object debug skipped: deferred threaded frame publish unavailable");
+            }
+            return;
+        }
+
+		if (Editor::Rendering::OutlineRenderer::ShouldIncludeInThreadedFrame(true, selectedGameObject))
+		{
+            const auto& debugSettings = Editor::Settings::EditorSettings::GetDebugDrawSettingsObject();
+            const auto& debugDrawItems = PrepareDebugGameObjectDebugDrawItems(*selectedGameObject, debugSettings);
+            ApplyDebugDrawSettings(debugSettings);
+            if (ShouldSubmitDebugGameObjectElements(debugSettings))
+            {
+                NLS_PROFILE_NAMED_SCOPE("DebugGameObject::DrawDebugElements");
+                DrawGameObjectDebugElements(debugDrawItems, debugSettings);
+            }
+
+            if (usesThreadedRendering)
+            {
+                auto selectionOutlineOutput = BuildThreadedPassInput(
+                    *selectedGameObject,
+                    debugSceneDescriptor,
+                    p_pso,
+                    debugDrawItems);
+                m_preparedThreadedPassMetadata = std::move(selectionOutlineOutput.metadata);
+                m_preparedThreadedPassInputs = std::move(selectionOutlineOutput.passInputs);
                 return;
             }
 
-            m_outlineRenderer.DrawOutline(*selectedGameObject, kSelectedOutlineColor, kSelectedOutlineWidth);
+            if (!m_outlineRenderer.PrepareOutlineDrawItems(debugDrawItems))
+                return;
+
+            const auto& frameDescriptor = m_renderer.GetFrameDescriptor();
+            const bool startedRenderPass = m_renderer.BeginOutputRenderPass(
+                frameDescriptor.renderWidth,
+                frameDescriptor.renderHeight,
+                false,
+                false,
+                false);
+            if (!startedRenderPass)
+                return;
+
+            m_outlineRenderer.DrawPreparedOutline(kSelectedOutlineColor, kSelectedOutlineWidth);
+            m_renderer.EndOutputRenderPass(startedRenderPass);
 		}
 	}
 
-	void DrawGameObjectDebugElements(Engine::GameObject& p_actor)
+    static bool ShouldSubmitDebugGameObjectElements(
+        const Editor::Settings::EditorDebugDrawSettingsObject& debugSettings)
+    {
+        return debugSettings.debugDrawEnabled &&
+            (debugSettings.debugDrawBounds ||
+                debugSettings.debugDrawCamera ||
+                debugSettings.debugDrawLighting);
+    }
+
+	void DrawGameObjectDebugElements(
+        const Editor::Rendering::DebugGameObjectDebugDrawItems& debugDrawItems,
+        const Editor::Settings::EditorDebugDrawSettingsObject& debugSettings)
 	{
-		if (p_actor.IsActive())
-		{
-			ApplyDebugDrawSettings();
+        /* Render static mesh outline and bounding spheres */
+        if (debugSettings.debugDrawBounds)
+        {
+            for (const auto& item : debugDrawItems.selectionMeshItems)
+                DrawBoundingSpheres(item);
+        }
 
-			/* Render static mesh outline and bounding spheres */
-			if (Editor::Settings::EditorSettings::GetDebugDrawSettingsObject().debugDrawBounds)
-			{
-				auto meshRenderer = p_actor.GetComponent<Engine::Components::MeshRenderer>();
-				auto meshFilter = p_actor.GetComponent<Engine::Components::MeshFilter>();
-
-				if (meshRenderer && meshFilter)
-				{
-					DrawBoundingSpheres(*meshRenderer);
-				}
-			}
-
-			/* Render camera component outline */
-            if (auto cameraComponent = p_actor.GetComponent<Engine::Components::CameraComponent>(); cameraComponent)
-			{
-				DrawCameraFrustum(*cameraComponent);
-			}
+        /* Render camera component outline */
+        if (debugSettings.debugDrawCamera)
+        {
+            for (const auto& cameraItem : debugDrawItems.cameras)
+            {
+                auto* cameraComponent = cameraItem.cameraComponent;
+                if (cameraComponent != nullptr)
+                    DrawCameraFrustum(*cameraComponent);
+            }
+        }
 
 // 			/* Render the actor collider */
 // 			if (p_actor.GetComponent<Engine::Components::CPhysicalObject>())
@@ -592,27 +694,22 @@ protected:
 // 				DrawGameObjectCollider(p_actor);
 // 			}
 
-			/* Render the actor ambient light */
-            auto plight = p_actor.GetComponent<Engine::Components::LightComponent>();
-            if (plight)
-			{
-				DrawLightVolume(*plight);
-			}
-
-
-
-			for (auto& child : p_actor.GetChildren())
-			{
-				DrawGameObjectDebugElements(*child);
-			}
-		}
+        /* Render the actor ambient light */
+        if (debugSettings.debugDrawLighting)
+        {
+            for (auto* light : debugDrawItems.lights)
+            {
+                if (light != nullptr)
+                    DrawLightVolume(*light);
+            }
+        }
 	}
 
 	void DrawFrustumLines(
 		const Maths::Vector3& pos,
 		const Maths::Vector3& forward,
-		float near,
-		const float far,
+		const float nearPlane,
+		const float farPlane,
 		const Maths::Vector3& a,
 		const Maths::Vector3& b,
 		const Maths::Vector3& c,
@@ -630,14 +727,14 @@ protected:
 		options.style.depthMode = Render::Debug::DebugDrawDepthMode::AlwaysOnTop;
 
 		const std::array<Vector3, 8u> corners = {
-			pos + forward * near + a,
-			pos + forward * near + b,
-			pos + forward * near + c,
-			pos + forward * near + d,
-			pos + forward * far + e,
-			pos + forward * far + f,
-			pos + forward * far + g,
-			pos + forward * far + h
+			pos + forward * nearPlane + a,
+			pos + forward * nearPlane + b,
+			pos + forward * nearPlane + c,
+			pos + forward * nearPlane + d,
+			pos + forward * farPlane + e,
+			pos + forward * farPlane + f,
+			pos + forward * farPlane + g,
+			pos + forward * farPlane + h
 		};
 
 		Render::Debug::SubmitFrustum(GetDebugDrawService(), corners, options);
@@ -654,18 +751,18 @@ protected:
 
 		camera.CacheMatrices(p_size.first, p_size.second); // TODO: We shouldn't cache matrices mid air, we could use another function to get the matrices/calculate
 		const auto proj = Matrix4::Transpose(camera.GetProjectionMatrix());
-		const auto near = camera.GetNear();
-		const auto far = camera.GetFar();
+		const auto nearPlane = camera.GetNear();
+		const auto farPlane = camera.GetFar();
 
-		const auto nLeft = near * (proj.data[2] - 1.0f) / proj.data[0];
-		const auto nRight = near * (1.0f + proj.data[2]) / proj.data[0];
-		const auto nTop = near * (1.0f + proj.data[6]) / proj.data[5];
-		const auto nBottom = near * (proj.data[6] - 1.0f) / proj.data[5];
+		const auto nLeft = nearPlane * (proj.data[2] - 1.0f) / proj.data[0];
+		const auto nRight = nearPlane * (1.0f + proj.data[2]) / proj.data[0];
+		const auto nTop = nearPlane * (1.0f + proj.data[6]) / proj.data[5];
+		const auto nBottom = nearPlane * (proj.data[6] - 1.0f) / proj.data[5];
 
-		const auto fLeft = far * (proj.data[2] - 1.0f) / proj.data[0];
-		const auto fRight = far * (1.0f + proj.data[2]) / proj.data[0];
-		const auto fTop = far * (1.0f + proj.data[6]) / proj.data[5];
-		const auto fBottom = far * (proj.data[6] - 1.0f) / proj.data[5];
+		const auto fLeft = farPlane * (proj.data[2] - 1.0f) / proj.data[0];
+		const auto fRight = farPlane * (1.0f + proj.data[2]) / proj.data[0];
+		const auto fTop = farPlane * (1.0f + proj.data[6]) / proj.data[5];
+		const auto fBottom = farPlane * (proj.data[6] - 1.0f) / proj.data[5];
 
 		auto a = cameraRotation * Vector3{ nLeft, nTop, 0 };
 		auto b = cameraRotation * Vector3{ nRight, nTop, 0 };
@@ -676,7 +773,7 @@ protected:
 		auto g = cameraRotation * Vector3{ fLeft, fBottom, 0 };
 		auto h = cameraRotation * Vector3{ fRight, fBottom, 0 };
 
-		DrawFrustumLines(cameraPos, cameraForward, near, far, a, b, c, d, e, f, g, h);
+		DrawFrustumLines(cameraPos, cameraForward, nearPlane, farPlane, a, b, c, d, e, f, g, h);
 	}
 
 	void DrawCameraOrthographicFrustum(std::pair<uint16_t, uint16_t>& p_size, Engine::Components::CameraComponent& p_camera)
@@ -689,8 +786,8 @@ protected:
         const auto& cameraRotation = owner.GetTransform()->GetWorldRotation();
         const auto& cameraForward = owner.GetTransform()->GetWorldForward();
 
-		const auto near = camera.GetNear();
-		const auto far = camera.GetFar();
+		const auto nearPlane = camera.GetNear();
+		const auto farPlane = camera.GetFar();
 		const auto size = p_camera.GetSize();
 
 		const auto right = ratio * size;
@@ -703,7 +800,7 @@ protected:
 		const auto c = cameraRotation * Vector3{ left, bottom, 0 };
 		const auto d = cameraRotation * Vector3{ right, bottom, 0 };
 
-		DrawFrustumLines(cameraPos, cameraForward, near, far, a, b, c, d, a, b, c, d);
+		DrawFrustumLines(cameraPos, cameraForward, nearPlane, farPlane, a, b, c, d, a, b, c, d);
 	}
 
 	void DrawCameraFrustum(Engine::Components::CameraComponent& p_camera)
@@ -793,48 +890,54 @@ protected:
 		Render::Debug::SubmitLightVolume(GetDebugDrawService(), *p_light.GetData(), options);
 	}
 
-	void DrawBoundingSpheres(Engine::Components::MeshRenderer& p_meshRenderer)
+	void DrawBoundingSpheres(const Editor::Rendering::DebugGameObjectDebugDrawItems::SelectionMeshItem& item)
 	{
-		using namespace Engine::Components;
+        if (item.meshRenderer == nullptr || item.mesh == nullptr)
+            return;
 
-		/* Draw the sphere collider if any */
-		auto* owner = p_meshRenderer.gameobject();
-		auto* meshFilter = owner != nullptr ? owner->GetComponent<MeshFilter>() : nullptr;
-		if (auto* mesh = meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr)
-		{
-			auto& actor = *p_meshRenderer.gameobject();
+		const auto& modelBoundingsphere =
+			item.meshRenderer->GetFrustumBehaviour() == Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_CUSTOM ?
+			item.meshRenderer->GetCustomBoundingSphere() :
+			item.mesh->GetBoundingSphere();
 
-			Maths::Vector3 actorScale = actor.GetTransform()->GetWorldScale();
-            Maths::Quaternion actorRotation = actor.GetTransform()->GetWorldRotation();
-            Maths::Vector3 actorPosition = actor.GetTransform()->GetWorldPosition();
+		float radiusScale = std::max(std::max(std::max(item.worldScale.x, item.worldScale.y), item.worldScale.z), 0.0f);
+		float scaledRadius = modelBoundingsphere.radius * radiusScale;
+		auto sphereOffset = Maths::Quaternion::RotatePoint(modelBoundingsphere.position, item.worldRotation) * radiusScale;
 
-			const auto& modelBoundingsphere =
-				p_meshRenderer.GetFrustumBehaviour() == Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_CUSTOM ?
-				p_meshRenderer.GetCustomBoundingSphere() :
-				mesh->GetBoundingSphere();
-
-			float radiusScale = std::max(std::max(std::max(actorScale.x, actorScale.y), actorScale.z), 0.0f);
-			float scaledRadius = modelBoundingsphere.radius * radiusScale;
-			auto sphereOffset = Maths::Quaternion::RotatePoint(modelBoundingsphere.position, actorRotation) * radiusScale;
-
-			SubmitSphere(
-				actorPosition + sphereOffset,
-				actorRotation,
-				scaledRadius,
-				kDebugBoundsColor,
-				1.0f,
-				Render::Debug::DebugDrawCategory::Bounds
-			);
-
-			(void)mesh;
-		}
+		SubmitSphere(
+			item.worldPosition + sphereOffset,
+			item.worldRotation,
+			scaledRadius,
+			kDebugBoundsColor,
+			1.0f,
+			Render::Debug::DebugDrawCategory::Bounds
+		);
 	}
 
 private:
-	void ApplyDebugDrawSettings()
+    const Editor::Rendering::DebugGameObjectDebugDrawItems& PrepareDebugGameObjectDebugDrawItems(
+        Engine::GameObject& selectedGameObject,
+        const Editor::Settings::EditorDebugDrawSettingsObject& debugSettings)
+    {
+        NLS_PROFILE_NAMED_SCOPE("DebugGameObject::CollectSelectedItems");
+        CollectSelectedDebugGameObjectDebugDrawItems(
+            selectedGameObject,
+            m_debugDrawScratchItems,
+            true,
+            debugSettings.debugDrawLighting,
+            {
+                NLS::Engine::LayerMask(0xFFFFFFFFu),
+                m_renderer.GetFrameDescriptor().camera != nullptr
+                    ? m_renderer.GetFrameDescriptor().camera->GetGeometryFrustum()
+                    : nullptr,
+                true
+            });
+        return m_debugDrawScratchItems;
+    }
+
+	void ApplyDebugDrawSettings(const Editor::Settings::EditorDebugDrawSettingsObject& debugSettings)
 	{
 		auto& debugDrawService = GetDebugDrawService();
-        const auto& debugSettings = Editor::Settings::EditorSettings::GetDebugDrawSettingsObject();
 		debugDrawService.SetEnabled(debugSettings.debugDrawEnabled);
 		debugDrawService.SetCategoryEnabled(Render::Debug::DebugDrawCategory::Grid, debugSettings.debugDrawGrid);
 		debugDrawService.SetCategoryEnabled(Render::Debug::DebugDrawCategory::Bounds, debugSettings.debugDrawBounds);
@@ -909,16 +1012,96 @@ private:
         Render::Debug::SubmitCapsule(GetDebugDrawService(), position, rotation, radius, height, options);
     }
 
-    std::optional<NLS::Render::Context::RenderPassCommandInput> BuildThreadedPassInput(
+    Editor::Rendering::SelectionOutlinePreparedOutput BuildThreadedPassInput(
         Engine::GameObject& selectedGameObject,
         const Editor::Rendering::DebugSceneRenderer::DebugSceneDescriptor& debugSceneDescriptor,
-        NLS::Render::Data::PipelineState p_pso)
+        NLS::Render::Data::PipelineState p_pso,
+        const Editor::Rendering::DebugGameObjectDebugDrawItems& debugDrawItems)
     {
-        const auto& frameDescriptor = m_renderer.GetFrameDescriptor();
+        NLS_PROFILE_NAMED_SCOPE("DebugGameObject::BuildThreadedPassInput");
+
+        if (IsDeferredThreadedFramePublishSkipped(m_renderer))
+            return {};
+
+        auto* frameObjectBindingProvider = m_renderer.GetFrameObjectBindingProvider();
+        const bool hadPreparedFrameReservationBeforeSelection =
+            frameObjectBindingProvider != nullptr &&
+            frameObjectBindingProvider->HasReservedPreparedFrameResources();
+        const auto releaseSelectionOwnedPreparedFrameReservation =
+            [frameObjectBindingProvider, hadPreparedFrameReservationBeforeSelection]()
+        {
+            if (frameObjectBindingProvider != nullptr &&
+                !hadPreparedFrameReservationBeforeSelection &&
+                frameObjectBindingProvider->HasReservedPreparedFrameResources())
+            {
+                frameObjectBindingProvider->ReleaseReservedPreparedFrameResources();
+            }
+        };
+
+        const auto selectionOutlineDepthView = ResolveDeferredSelectionOutlineDepthView(m_renderer);
+        if (selectionOutlineDepthView == nullptr)
+        {
+            releaseSelectionOwnedPreparedFrameReservation();
+
+            Editor::Rendering::SelectionOutlinePreparedOutput missingDepthOutput;
+            missingDepthOutput.selectedItemCount =
+                static_cast<uint64_t>(debugDrawItems.selectionMeshItems.size() + debugDrawItems.cameras.size());
+            if (missingDepthOutput.selectedItemCount > 0u)
+            {
+                missingDepthOutput.fallbackDecision = {
+                    Editor::Rendering::SelectionOutlineFallbackReason::MissingSceneDepth,
+                    missingDepthOutput.selectedItemCount
+                };
+            }
+            return missingDepthOutput;
+        }
+
+        auto maskOutput = m_selectionOutlineMaskRenderer.BuildPreparedOutput(
+            debugDrawItems,
+            kDefaultOutlineColor,
+            kSelectedOutlineColor,
+            p_pso,
+            selectionOutlineDepthView);
+        if (maskOutput.HasScreenSpacePasses())
+            return maskOutput;
+
+        if (!maskOutput.fallbackDecision.has_value())
+        {
+            releaseSelectionOwnedPreparedFrameReservation();
+            return maskOutput;
+        }
+
+        if (ShouldLogEditorHelperDiagnostics(m_renderer.GetDriver()))
+        {
+            NLS_LOG_INFO(
+                "[DebugSceneRenderer] Selection outline screen-space fallback reason=" +
+                    std::string(Editor::Rendering::SelectionOutlineFallbackReasonToString(maskOutput.fallbackDecision->reason)) +
+                " selectedItems=" +
+                std::to_string(maskOutput.fallbackDecision->selectedItemCount));
+        }
+        if (Editor::Rendering::ResolveSelectionOutlineFallbackAction(maskOutput.fallbackDecision->reason) !=
+            Editor::Rendering::SelectionOutlineFallbackAction::LegacyShell)
+        {
+            releaseSelectionOwnedPreparedFrameReservation();
+            return maskOutput;
+        }
+        if (!Editor::Rendering::SelectionOutlineLegacyShellFallbackIsAttachmentCompatible(
+                m_renderer.GetFrameDescriptor(),
+                selectionOutlineDepthView))
+        {
+            if (ShouldLogEditorHelperDiagnostics(m_renderer.GetDriver()))
+            {
+                NLS_LOG_INFO(
+                    "[DebugSceneRenderer] Selection outline legacy fallback skipped because current color/depth attachments are not extent/sample-count compatible.");
+            }
+            releaseSelectionOwnedPreparedFrameReservation();
+            return maskOutput;
+        }
 
         NLS::Render::Context::RenderPassCommandInput passInput;
+        const auto& frameDescriptor = m_renderer.GetFrameDescriptor();
         passInput.kind = NLS::Render::Context::RenderPassCommandKind::Helper;
-        passInput.debugName = "EditorSelectionPass";
+        passInput.debugName = kLegacyEditorSelectionPassName;
         passInput.queueType = NLS::Render::RHI::QueueType::Graphics;
         passInput.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
         passInput.requiresFrameData = true;
@@ -928,24 +1111,35 @@ private:
         passInput.renderHeight = frameDescriptor.renderHeight;
         passInput.usesColorAttachment = true;
         passInput.usesDepthStencilAttachment = true;
+        passInput.writesDepthStencilAttachment = true;
 
         m_outlineRenderer.CaptureOutlineDrawCommands(
-            selectedGameObject,
+            debugDrawItems,
             kSelectedOutlineColor,
             kSelectedOutlineWidth,
             passInput.recordedDrawCommands);
 
         passInput.drawCount = static_cast<uint64_t>(passInput.recordedDrawCommands.size());
         if (passInput.drawCount == 0u)
-            return std::nullopt;
+        {
+            releaseSelectionOwnedPreparedFrameReservation();
+            return maskOutput;
+        }
 
-        return passInput;
+        maskOutput.passInputs.push_back(std::move(passInput));
+        maskOutput.metadata.clear();
+        maskOutput.metadata.push_back(
+            Editor::Rendering::BuildSelectionOutlineLegacyShellMetadata(maskOutput.passInputs.back()));
+        return maskOutput;
     }
 
 private:
     Editor::Rendering::DebugModelRenderer m_debugModelRenderer;
     Editor::Rendering::OutlineRenderer m_outlineRenderer;
-    std::optional<NLS::Render::Context::RenderPassCommandInput> m_preparedThreadedPassInput;
+    Editor::Rendering::SelectionOutlineMaskRenderer m_selectionOutlineMaskRenderer;
+    Editor::Rendering::DebugGameObjectDebugDrawItems m_debugDrawScratchItems;
+    std::vector<NLS::Render::Context::RenderPassCommandInput> m_preparedThreadedPassInputs;
+    std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata> m_preparedThreadedPassMetadata;
 };
 
 Editor::Rendering::DebugSceneRenderer::DebugSceneRenderer(NLS::Render::Context::Driver& p_driver) :
@@ -968,6 +1162,18 @@ Editor::Rendering::DebugSceneRenderer::DebugSceneRenderer(NLS::Render::Context::
     debugDrawPass.SetEnabled(!ShouldDisableDebugDrawPass());
     auto& pickingPass = AddPass<PickingRenderPass>("Picking", NLS::Render::Settings::ERenderPassOrder::PostProcessing + 1);
     pickingPass.SetEnabled(!ShouldDisablePickingPass());
+}
+
+void Editor::Rendering::DebugSceneRenderer::OnThreadedFramePublished(const uint64_t publishedFrameId)
+{
+    Engine::Rendering::DeferredSceneRenderer::OnThreadedFramePublished(publishedFrameId);
+    GetPass<DebugGameObjectRenderPass>("Debug GameObject").CommitPendingSelectionOutlineMaskCache(publishedFrameId);
+}
+
+void Editor::Rendering::DebugSceneRenderer::OnThreadedFramePublishFailed()
+{
+    GetPass<DebugGameObjectRenderPass>("Debug GameObject").DiscardPendingSelectionOutlineMaskCache();
+    Engine::Rendering::DeferredSceneRenderer::OnThreadedFramePublishFailed();
 }
 
 std::optional<NLS::Render::Context::FrameSnapshot> Editor::Rendering::DebugSceneRenderer::BuildFrameSnapshot(
@@ -1005,6 +1211,7 @@ std::optional<NLS::Render::Context::FrameSnapshot> Editor::Rendering::DebugScene
     {
         const auto* selectedGameObject = GetDescriptor<DebugSceneDescriptor>().selectedGameObject;
         helperState.hasSelectedGameObject =
+            !IsThreadedFramePublishSkippedForCurrentFrame() &&
             OutlineRenderer::ShouldIncludeInThreadedFrame(gameObjectPassEnabled, selectedGameObject);
     }
 
@@ -1018,13 +1225,18 @@ std::optional<NLS::Render::Context::FrameSnapshot> Editor::Rendering::DebugScene
 NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRenderer::BuildPreparedRenderSceneBuilder(
     const NLS::Render::Context::FrameSnapshot& snapshot) const
 {
-    const auto gridPassInput = GetPass<GridRenderPass>("Grid").GetPreparedThreadedPassInput();
-    const auto cameraPassInput = GetPass<DebugCamerasRenderPass>("Debug Cameras").GetPreparedThreadedPassInput();
-    const auto lightPassInput = GetPass<DebugLightsRenderPass>("Debug Lights").GetPreparedThreadedPassInput();
-    const auto selectionPassInput = GetPass<DebugGameObjectRenderPass>("Debug GameObject").GetPreparedThreadedPassInput();
-    const auto pickingPassInput = GetPass<PickingRenderPass>("Picking").GetPreparedThreadedPassInput();
+    const auto& gridPassInput = GetPass<GridRenderPass>("Grid").GetPreparedThreadedPassInput();
+    const auto& cameraPassInput = GetPass<DebugCamerasRenderPass>("Debug Cameras").GetPreparedThreadedPassInput();
+    const auto& lightPassInput = GetPass<DebugLightsRenderPass>("Debug Lights").GetPreparedThreadedPassInput();
+    const auto& selectionOutlinePassInputs = GetPass<DebugGameObjectRenderPass>("Debug GameObject").GetPreparedThreadedPassInputs();
+    const auto& selectionOutlineMetadata = GetPass<DebugGameObjectRenderPass>("Debug GameObject").GetPreparedThreadedPassMetadata();
+    const auto& pickingPassInput = GetPass<PickingRenderPass>("Picking").GetPreparedThreadedPassInput();
     if (ShouldLogEditorHelperDiagnostics(m_driver))
     {
+        uint64_t selectionOutlineDrawCount = 0u;
+        for (const auto& input : selectionOutlinePassInputs)
+            selectionOutlineDrawCount += input.drawCount;
+
         NLS_LOG_INFO(
             "[DebugSceneRenderer] prepared helper inputs grid=" +
             std::to_string(gridPassInput.has_value() ? gridPassInput->drawCount : 0u) +
@@ -1033,7 +1245,7 @@ NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRe
             " lights=" +
             std::to_string(lightPassInput.has_value() ? lightPassInput->drawCount : 0u) +
             " selection=" +
-            std::to_string(selectionPassInput.has_value() ? selectionPassInput->drawCount : 0u) +
+            std::to_string(selectionOutlineDrawCount) +
             " picking=" +
             std::to_string(pickingPassInput.has_value() ? pickingPassInput->drawCount : 0u) +
             " snapshotVisibleHelpers=" +
@@ -1043,7 +1255,7 @@ NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRe
         static_cast<uint64_t>(gridPassInput.has_value() ? 1u : 0u) +
         static_cast<uint64_t>(cameraPassInput.has_value() ? 1u : 0u) +
         static_cast<uint64_t>(lightPassInput.has_value() ? 1u : 0u) +
-        static_cast<uint64_t>(selectionPassInput.has_value() ? 2u : 0u);
+        static_cast<uint64_t>(selectionOutlineMetadata.size());
     const auto aggregateHelperVisibleCount =
         snapshot.visibleHelperDrawCount >= explicitHelperContribution
             ? snapshot.visibleHelperDrawCount - explicitHelperContribution
@@ -1053,25 +1265,32 @@ NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRe
         gridPassInput.has_value(),
         cameraPassInput.has_value(),
         lightPassInput.has_value(),
-        selectionPassInput.has_value(),
+        selectionOutlineMetadata,
         pickingPassInput.has_value());
-    const auto appendedPassInputs = BuildDebugDeferredAppendedPassInputs(
-        gridPassInput,
-        cameraPassInput,
-        lightPassInput,
-        selectionPassInput,
-        pickingPassInput);
+
+    auto consumedGridPassInput = GetPass<GridRenderPass>("Grid").ConsumePreparedThreadedPassInput();
+    auto consumedCameraPassInput = GetPass<DebugCamerasRenderPass>("Debug Cameras").ConsumePreparedThreadedPassInput();
+    auto consumedLightPassInput = GetPass<DebugLightsRenderPass>("Debug Lights").ConsumePreparedThreadedPassInput();
+    auto consumedSelectionOutlinePassInputs =
+        GetPass<DebugGameObjectRenderPass>("Debug GameObject").ConsumePreparedThreadedPassInputs();
+    auto consumedPickingPassInput = GetPass<PickingRenderPass>("Picking").ConsumePreparedThreadedPassInput();
 
     std::shared_ptr<NLS::Render::RHI::RHITexture> preferredReadbackTexture;
     uint64_t additionalRenderTargetUseCount = 0u;
-    if (pickingPassInput.has_value())
+    if (consumedPickingPassInput.has_value())
     {
         preferredReadbackTexture =
-            !pickingPassInput->colorAttachmentViews.empty()
-                ? pickingPassInput->colorAttachmentViews.front()->GetTexture()
+            !consumedPickingPassInput->colorAttachmentViews.empty()
+                ? consumedPickingPassInput->colorAttachmentViews.front()->GetTexture()
                 : nullptr;
         additionalRenderTargetUseCount = 2u;
     }
+    auto appendedPassInputs = BuildDebugDeferredAppendedPassInputs(
+        std::move(consumedGridPassInput),
+        std::move(consumedCameraPassInput),
+        std::move(consumedLightPassInput),
+        std::move(consumedSelectionOutlinePassInputs),
+        std::move(consumedPickingPassInput));
 
     const bool hasSkyboxTexture =
         HasDescriptor<DeferredSceneDescriptor>() &&
@@ -1080,8 +1299,8 @@ NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRe
     return BuildDeferredPreparedRenderSceneBuilder(
         snapshot,
         hasSkyboxTexture,
-        appendedPassInputs,
-        metadata,
+        std::move(appendedPassInputs),
+        std::move(metadata),
         std::move(preferredReadbackTexture),
         additionalRenderTargetUseCount);
 }

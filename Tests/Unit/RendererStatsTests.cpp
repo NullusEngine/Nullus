@@ -508,6 +508,9 @@ TEST(RendererStatsTests, RendererStatsReusesLastThreadedTelemetryWhenRefreshIsUn
     NLS::Render::Context::ThreadedFrameTelemetry telemetry;
     telemetry.inFlightFrameCount = 2u;
     telemetry.blockedPublishCount = 1u;
+    telemetry.reservedSlotWaitCount = 3u;
+    telemetry.reservedSlotWaitTimeoutCount = 1u;
+    telemetry.reservedSlotWaitTotalNs = 2400000u;
     telemetry.publishState = NLS::Render::Data::FramePublishState::BackPressured;
     telemetry.stageSummary = NLS::Render::Data::ThreadedFrameStageSummary::Rhi;
     telemetry.retirementState = NLS::Render::Data::FrameRetirementState::Pending;
@@ -530,6 +533,9 @@ TEST(RendererStatsTests, RendererStatsReusesLastThreadedTelemetryWhenRefreshIsUn
     EXPECT_EQ(frameInfo.parsedSkyboxDrawableCount, 7u);
     EXPECT_EQ(frameInfo.inFlightFrameCount, 2u);
     EXPECT_EQ(frameInfo.blockedFrameCount, 1u);
+    EXPECT_EQ(frameInfo.reservedSlotWaitCount, 3u);
+    EXPECT_EQ(frameInfo.reservedSlotWaitTimeoutCount, 1u);
+    EXPECT_EQ(frameInfo.reservedSlotWaitTotalNs, 2400000u);
     EXPECT_EQ(frameInfo.publishState, NLS::Render::Data::FramePublishState::BackPressured);
     EXPECT_EQ(frameInfo.stageSummary, NLS::Render::Data::ThreadedFrameStageSummary::Rhi);
     EXPECT_EQ(frameInfo.retirementState, NLS::Render::Data::FrameRetirementState::Pending);

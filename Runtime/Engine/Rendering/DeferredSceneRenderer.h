@@ -17,6 +17,11 @@ namespace NLS::Render::Resources
 	class TextureCube;
 }
 
+namespace NLS::Render::RHI
+{
+	class RHITextureView;
+}
+
 namespace NLS::Engine::Rendering
 {
 	struct DeferredSceneRendererTestAccess;
@@ -40,6 +45,8 @@ namespace NLS::Engine::Rendering
 
 		void BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor) override;
 		void DrawFrame() override;
+		bool IsThreadedFramePublishSkippedForCurrentFrame() const;
+		std::shared_ptr<NLS::Render::RHI::RHITextureView> GetDeferredPreparedSceneDepthViewForEditorHelpers() const;
 
 		struct GBufferMaterialSyncStamp
 		{
@@ -74,12 +81,13 @@ namespace NLS::Engine::Rendering
 		NLS::Render::Context::PreparedRenderSceneBuilder BuildDeferredPreparedRenderSceneBuilder(
 			NLS::Render::Context::FrameSnapshot snapshot,
 			bool hasSkyboxTexture,
-			const std::vector<NLS::Render::Context::RenderPassCommandInput>& appendedPassInputs = {},
-			const std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata>& appendedPassMetadata = {},
+			std::vector<NLS::Render::Context::RenderPassCommandInput> appendedPassInputs = {},
+			std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata> appendedPassMetadata = {},
 			std::shared_ptr<NLS::Render::RHI::RHITexture> preferredReadbackTexture = nullptr,
 			uint64_t additionalRenderTargetUseCount = 0u) const;
 		NLS::Render::Context::PreparedRenderSceneBuilder BuildPreparedRenderSceneBuilder(
 			const NLS::Render::Context::FrameSnapshot& snapshot) const override;
+		bool TryPublishThreadedFrame() override;
 
 	private:
 		void LoadPipelineResources();
@@ -104,6 +112,7 @@ namespace NLS::Engine::Rendering
 		uint64_t m_threadedQueuedGBufferDrawCount = 0u;
 		uint64_t m_threadedQueuedLightingDrawCount = 0u;
 		uint64_t m_frameGBufferMaterialSyncCount = 0u;
+		bool m_skipThreadedFramePublish = false;
 	};
 
 	struct NLS_ENGINE_API DeferredSceneRendererTestAccess final
@@ -119,5 +128,10 @@ namespace NLS::Engine::Rendering
 		static NLS::Render::Resources::Shader* GetGBufferShader(const DeferredSceneRenderer& renderer);
 		static void ResetFrameGBufferMaterialSyncCount(DeferredSceneRenderer& renderer);
 		static uint64_t GetFrameGBufferMaterialSyncCount(const DeferredSceneRenderer& renderer);
+		static void EnsureGBufferTargets(DeferredSceneRenderer& renderer, uint16_t width, uint16_t height);
+		static const NLS::Render::Resources::Texture2D* GetGBufferAlbedoTexture(const DeferredSceneRenderer& renderer);
+		static const NLS::Render::Resources::Texture2D* GetGBufferNormalTexture(const DeferredSceneRenderer& renderer);
+		static const NLS::Render::Resources::Texture2D* GetGBufferMaterialTexture(const DeferredSceneRenderer& renderer);
+		static const NLS::Render::Resources::Texture2D* GetGBufferDepthTexture(const DeferredSceneRenderer& renderer);
 	};
 }

@@ -100,6 +100,11 @@ const Render::Geometry::BoundingSphere& Mesh::GetBoundingSphere() const
 	return m_boundingSphere;
 }
 
+uint64_t Mesh::GetContentRevision() const
+{
+	return m_contentRevision;
+}
+
 void Mesh::Reload(
 	const std::vector<Geometry::Vertex>& vertices,
 	const std::vector<uint32_t>& indices,
@@ -113,6 +118,7 @@ void Mesh::Reload(
 	m_boundingSphere = boundingSphere;
 	CreateBuffers(vertices, indices, uploadMode);
 	m_rhiMesh = std::make_shared<RHI::RHIMeshAdapter>(*this);
+	TouchContentRevision();
 }
 
 bool Mesh::UpdateVertices(
@@ -128,7 +134,15 @@ bool Mesh::UpdateVertices(
 		return false;
 
 	m_boundingSphere = boundingSphere;
+	TouchContentRevision();
 	return true;
+}
+
+void Mesh::TouchContentRevision()
+{
+	++m_contentRevision;
+	if (m_contentRevision == 0u)
+		m_contentRevision = 1u;
 }
 
 void Mesh::CreateBuffers(

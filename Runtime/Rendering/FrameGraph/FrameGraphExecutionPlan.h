@@ -1106,6 +1106,25 @@ namespace NLS::Render::FrameGraph
 		return metadata.executionMode == ThreadedRenderScenePassExecutionMode::Recorded;
 	}
 
+	inline bool ThreadedRenderScenePassMayWriteDepthStencil(
+		const ThreadedRenderScenePassMetadata& metadata,
+		const bool clearDepth,
+		const bool clearStencil)
+	{
+		if (clearDepth || clearStencil)
+			return true;
+
+		switch (metadata.commandKind)
+		{
+		case Context::RenderPassCommandKind::Opaque:
+		case Context::RenderPassCommandKind::Skybox:
+		case Context::RenderPassCommandKind::GBuffer:
+			return true;
+		default:
+			return false;
+		}
+	}
+
 	template<typename T>
 	inline void ApplyCompiledThreadedRenderSceneExecutionToCommandInput(
 		const T&,
@@ -1128,6 +1147,12 @@ namespace NLS::Render::FrameGraph
 			commandInput.clearDepth = compiledPass.recordedExecution.clearDepth;
 			commandInput.clearStencil = compiledPass.recordedExecution.clearStencil;
 			commandInput.clearColorValue = compiledPass.recordedExecution.clearValue;
+			commandInput.writesDepthStencilAttachment =
+				commandInput.writesDepthStencilAttachment ||
+				ThreadedRenderScenePassMayWriteDepthStencil(
+					compiledPass.metadata,
+					commandInput.clearDepth,
+					commandInput.clearStencil);
 			return;
 		}
 
@@ -1137,6 +1162,12 @@ namespace NLS::Render::FrameGraph
 		commandInput.clearDepth = compiledPass.outputExecution.clearDepth;
 		commandInput.clearStencil = compiledPass.outputExecution.clearStencil;
 		commandInput.clearColorValue = compiledPass.outputExecution.clearValue;
+		commandInput.writesDepthStencilAttachment =
+			commandInput.writesDepthStencilAttachment ||
+			ThreadedRenderScenePassMayWriteDepthStencil(
+				compiledPass.metadata,
+				commandInput.clearDepth,
+				commandInput.clearStencil);
 	}
 
 	inline std::optional<size_t> ResolveThreadedPassDependencySourceIndex(
@@ -1922,6 +1953,12 @@ namespace NLS::Render::FrameGraph
 				plannedCommandInput.clearDepth = explicitClearDepth;
 				plannedCommandInput.clearStencil = explicitClearStencil;
 				plannedCommandInput.clearColorValue = explicitClearValue;
+				plannedCommandInput.writesDepthStencilAttachment =
+					plannedCommandInput.writesDepthStencilAttachment ||
+					ThreadedRenderScenePassMayWriteDepthStencil(
+						metadata,
+						plannedCommandInput.clearDepth,
+						plannedCommandInput.clearStencil);
 			}
 
 			result.plan.passes.push_back({

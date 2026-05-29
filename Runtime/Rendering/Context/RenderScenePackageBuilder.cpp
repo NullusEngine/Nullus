@@ -47,6 +47,11 @@ namespace NLS::Render::Context
             input.clearStencil = kind == RenderPassCommandKind::Opaque && package.clearStencilBuffer;
             input.usesColorAttachment = true;
             input.usesDepthStencilAttachment = kind != RenderPassCommandKind::Compute;
+            input.writesDepthStencilAttachment =
+                kind == RenderPassCommandKind::Opaque ||
+                kind == RenderPassCommandKind::Skybox ||
+                input.clearDepth ||
+                input.clearStencil;
 
             if (!package.recordedDrawCommands.empty() &&
                 nextRecordedDrawCommandIndex < package.recordedDrawCommands.size())

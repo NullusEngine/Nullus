@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <span>
 
 #include <Debug/Logger.h>
 #include <Math/Matrix4.h>
@@ -40,13 +41,16 @@ namespace
 		std::shared_ptr<NLS::Render::Entities::Camera> camera;
 	};
 
-	std::vector<NLS::Render::RHI::TextureFormat> BuildDeferredGBufferColorFormats()
+	std::span<const NLS::Render::RHI::TextureFormat> GetDeferredGBufferColorFormats()
 	{
-		return {
-			NLS::Render::RHI::TextureFormat::RGBA8,
-			NLS::Render::RHI::TextureFormat::RGBA8,
-			NLS::Render::RHI::TextureFormat::RGBA8
-		};
+		return NLS::Render::FrameGraph::kDeferredGBufferColorFormats;
+	}
+
+	bool TryReservePreparedFrameResourcesForThreadedCapture(
+		NLS::Render::Core::CompositeRenderer& renderer)
+	{
+		auto* provider = renderer.GetFrameObjectBindingProvider();
+		return provider == nullptr || provider->TryReservePreparedFrameResources();
 	}
 
 	NLS::Render::Geometry::Vertex MakeFullscreenVertex(float x, float y, float u, float v)
@@ -253,7 +257,7 @@ namespace
 		overrides.depthTest = sourceMaterial.HasDepthTest();
 		overrides.depthWrite = sourceMaterial.HasDepthWriting();
 		overrides.colorWrite = true;
-		overrides.colorFormats = BuildDeferredGBufferColorFormats();
+		overrides.SetColorFormats(GetDeferredGBufferColorFormats());
 		overrides.culling = sourceMaterial.HasBackfaceCulling() || sourceMaterial.HasFrontfaceCulling();
 		overrides.cullFace = sourceMaterial.HasBackfaceCulling() && sourceMaterial.HasFrontfaceCulling()
 			? NLS::Render::Settings::ECullFace::FRONT_AND_BACK
@@ -287,6 +291,31 @@ namespace
 		const NLS::Engine::Rendering::DeferredSceneRenderer::GBufferMaterialSyncStamp& rhs)
 	{
 		return !(lhs == rhs);
+	}
+
+	bool WrappedTextureMatches(
+		const std::unique_ptr<NLS::Render::Resources::Texture2D>& wrapper,
+		const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+		const uint16_t width,
+		const uint16_t height)
+	{
+		return wrapper != nullptr &&
+			texture != nullptr &&
+			wrapper->width == width &&
+			wrapper->height == height &&
+			wrapper->GetExplicitRHITextureHandle() == texture;
+	}
+
+	bool TextureResourceMatchesSize(
+		const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+		const uint16_t width,
+		const uint16_t height)
+	{
+		if (texture == nullptr)
+			return false;
+
+		const auto& desc = texture->GetDesc();
+		return desc.extent.width == width && desc.extent.height == height;
 	}
 
 	std::string BuildGBufferMaterialCacheKey(
@@ -331,6 +360,13 @@ namespace NLS::Engine::Rendering
 		const auto totalRecordedDrawCount =
 			static_cast<uint64_t>(snapshot.recordedDrawCommands.size());
 		snapshot.visibleOpaqueDrawCount = (std::min)(queuedGBufferDrawCount, totalRecordedDrawCount);
+	}
+
+	bool ShouldSkipThreadedDeferredFramePublish(
+		const NLS::Render::Context::FrameSnapshot& snapshot,
+		const uint64_t queuedGBufferDrawCount)
+	{
+		return snapshot.visibleOpaqueDrawCount > 0u && queuedGBufferDrawCount == 0u;
 	}
 
 	DeferredSceneRenderer::~DeferredSceneRenderer()
@@ -382,8 +418,8 @@ namespace NLS::Engine::Rendering
 	NLS::Render::Context::PreparedRenderSceneBuilder DeferredSceneRenderer::BuildDeferredPreparedRenderSceneBuilder(
 		NLS::Render::Context::FrameSnapshot snapshot,
 		const bool hasSkyboxTexture,
-		const std::vector<NLS::Render::Context::RenderPassCommandInput>& appendedPassInputs,
-		const std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata>& appendedPassMetadata,
+		std::vector<NLS::Render::Context::RenderPassCommandInput> appendedPassInputs,
+		std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata> appendedPassMetadata,
 		std::shared_ptr<NLS::Render::RHI::RHITexture> preferredReadbackTexture,
 		const uint64_t additionalRenderTargetUseCount) const
 	{
@@ -404,8 +440,8 @@ namespace NLS::Engine::Rendering
 				externalSceneOutputAttachments = std::move(externalSceneOutputAttachments),
 				lightGridContext = std::move(lightGridContext),
 				deferredResources = std::move(deferredResources),
-				appendedPassInputs,
-				appendedPassMetadata,
+				appendedPassInputs = std::move(appendedPassInputs),
+				appendedPassMetadata = std::move(appendedPassMetadata),
 				preferredReadbackTexture = std::move(preferredReadbackTexture),
 				additionalRenderTargetUseCount,
 				queuedLightingDrawCount = m_threadedQueuedLightingDrawCount,
@@ -416,11 +452,10 @@ namespace NLS::Engine::Rendering
 			auto package = BuildSnapshotOwnedRenderScenePackage(
 				snapshot,
 				SnapshotRenderScenePackageBuildMode::SkipDefaultPassInputs);
-			auto resolvedAppendedPassInputs = appendedPassInputs;
 			if (!package.targetsSwapchain)
 			{
 				NLS::Render::FrameGraph::ApplyExternalSceneOutputAttachments(
-					resolvedAppendedPassInputs,
+					appendedPassInputs,
 					externalSceneOutputAttachments,
 					{
 						NLS::Render::Context::RenderPassCommandKind::Helper
@@ -430,7 +465,7 @@ namespace NLS::Engine::Rendering
 				package,
 				lightGridContext,
 				deferredResources,
-				resolvedAppendedPassInputs,
+				std::move(appendedPassInputs),
 				appendedPassMetadata,
 				queuedLightingDrawCount);
 			if (preferredReadbackTexture != nullptr)
@@ -458,6 +493,26 @@ namespace NLS::Engine::Rendering
 			hasSkyboxTexture);
 	}
 
+	bool DeferredSceneRenderer::TryPublishThreadedFrame()
+	{
+		if (m_skipThreadedFramePublish)
+			return false;
+
+		return BaseSceneRenderer::TryPublishThreadedFrame();
+	}
+
+	bool DeferredSceneRenderer::IsThreadedFramePublishSkippedForCurrentFrame() const
+	{
+		return m_skipThreadedFramePublish;
+	}
+
+	std::shared_ptr<NLS::Render::RHI::RHITextureView>
+	DeferredSceneRenderer::GetDeferredPreparedSceneDepthViewForEditorHelpers() const
+	{
+		return NLS::Render::FrameGraph::CaptureDeferredPreparedSceneResources(
+			BuildDeferredPreparedSceneResourceRequest()).gbufferDepthView;
+	}
+
 	void DeferredSceneRenderer::BeginFrame(const NLS::Render::Data::FrameDescriptor& p_frameDescriptor)
 	{
 		NLS_PROFILE_SCOPE();
@@ -470,6 +525,7 @@ namespace NLS::Engine::Rendering
 		m_threadedQueuedGBufferDrawCount = 0u;
 		m_threadedQueuedLightingDrawCount = 0u;
 		m_frameGBufferMaterialSyncCount = 0u;
+		m_skipThreadedFramePublish = false;
 
 		auto drawables = ParseScene();
 		const auto& frameDescriptor = GetFrameDescriptor();
@@ -493,78 +549,94 @@ namespace NLS::Engine::Rendering
 
 		if (usesThreadedRendering)
 		{
-			EnsureGBufferTargets(frameDescriptor.renderWidth, frameDescriptor.renderHeight);
-			SetActivePreparedPassBindingSet(BaseSceneRenderer::GetPreparedPassBindingSetPlaceholder());
-
-			auto gbufferPso = CreateSceneDefaultPipelineState(*this);
-			for (const auto& entry : drawables.opaques)
+			const bool preparedFrameResourcesAvailable =
+				drawables.opaques.empty() ||
+				TryReservePreparedFrameResourcesForThreadedCapture(*this);
+			if (!preparedFrameResourcesAvailable && queuedGBufferDrawCount == 0u)
 			{
-				const auto& drawable = entry.second;
-				if (!drawable.material)
-					continue;
-				auto gbufferDrawable = drawable;
-				gbufferDrawable.material = &GetOrCreateGBufferMaterial(*drawable.material);
-
-				NLS::Render::Resources::MaterialPipelineStateOverrides gBufferOverrides;
-				gBufferOverrides.depthTest = drawable.material->HasDepthTest();
-				gBufferOverrides.depthWrite = drawable.material->HasDepthWriting();
-				gBufferOverrides.colorWrite = true;
-				gBufferOverrides.colorFormats = BuildDeferredGBufferColorFormats();
-				gBufferOverrides.culling = drawable.material->HasBackfaceCulling() || drawable.material->HasFrontfaceCulling();
-				gBufferOverrides.cullFace = drawable.material->HasBackfaceCulling() && drawable.material->HasFrontfaceCulling()
-					? NLS::Render::Settings::ECullFace::FRONT_AND_BACK
-					: drawable.material->HasFrontfaceCulling()
-						? NLS::Render::Settings::ECullFace::FRONT
-						: NLS::Render::Settings::ECullFace::BACK;
-
-				PreparedRecordedDraw preparedDraw;
-				const bool captured = CaptureThreadedPreparedDraw(
-					gbufferDrawable,
-					gBufferOverrides,
-					gbufferPso.depthFunc,
-					preparedDraw);
-				bool queued = false;
-				if (captured)
+				m_skipThreadedFramePublish = true;
+				if (NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver).logRenderDrawPath)
 				{
-					queued = QueueThreadedRecordedDraw(preparedDraw);
-					if (queued)
-						++queuedGBufferDrawCount;
+					NLS_LOG_INFO(
+						"[DeferredSceneRenderer] Skipping threaded deferred capture: prepared frame resources unavailable sceneOpaqueDrawables=" +
+						std::to_string(drawables.opaques.size()));
 				}
-				LogPreparedDrawResult("GBuffer", captured, queued, preparedDraw);
 			}
-
+			else
 			{
-				m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferAlbedo", m_gBufferAlbedoTexture.get());
-				m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferNormal", m_gBufferNormalTexture.get());
-				m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferMaterial", m_gBufferMaterialTexture.get());
-				if (m_gBufferDepthTexture)
-					m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferDepth", m_gBufferDepthTexture.get());
-				if (m_lightingMaterial->GetParameterBlock().Contains("u_SkyboxCube"))
-					m_lightingMaterial->Set<NLS::Render::Resources::TextureCube*>("u_SkyboxCube", skyboxTexture);
-				EnsureDeferredLightingSkyParameters(*m_lightingMaterial, skyboxMaterial);
+				EnsureGBufferTargets(frameDescriptor.renderWidth, frameDescriptor.renderHeight);
+				SetActivePreparedPassBindingSet(BaseSceneRenderer::GetPreparedPassBindingSetPlaceholder());
 
-				NLS::Render::Entities::Drawable lightingDrawable;
-				lightingDrawable.mesh = m_fullscreenQuad.get();
-				lightingDrawable.material = m_lightingMaterial.get();
-				lightingDrawable.primitiveMode = NLS::Render::Settings::EPrimitiveMode::TRIANGLES;
+				auto gbufferPso = CreateSceneDefaultPipelineState(*this);
+				for (const auto& entry : drawables.opaques)
+				{
+					const auto& drawable = entry.second;
+					if (!drawable.material)
+						continue;
+					auto gbufferDrawable = drawable;
+					gbufferDrawable.material = &GetOrCreateGBufferMaterial(*drawable.material);
 
-				NLS::Render::Resources::MaterialPipelineStateOverrides compositeOverrides;
-				compositeOverrides.depthTest = false;
-				compositeOverrides.depthWrite = false;
-				compositeOverrides.culling = false;
-				compositeOverrides.colorWrite = true;
+					NLS::Render::Resources::MaterialPipelineStateOverrides gBufferOverrides;
+					gBufferOverrides.depthTest = drawable.material->HasDepthTest();
+					gBufferOverrides.depthWrite = drawable.material->HasDepthWriting();
+					gBufferOverrides.colorWrite = true;
+					gBufferOverrides.SetColorFormats(GetDeferredGBufferColorFormats());
+					gBufferOverrides.culling = drawable.material->HasBackfaceCulling() || drawable.material->HasFrontfaceCulling();
+					gBufferOverrides.cullFace = drawable.material->HasBackfaceCulling() && drawable.material->HasFrontfaceCulling()
+						? NLS::Render::Settings::ECullFace::FRONT_AND_BACK
+						: drawable.material->HasFrontfaceCulling()
+							? NLS::Render::Settings::ECullFace::FRONT
+							: NLS::Render::Settings::ECullFace::BACK;
 
-				PreparedRecordedDraw preparedDraw;
-				const bool captured = CaptureThreadedPreparedDraw(
-					lightingDrawable,
-					compositeOverrides,
-					gbufferPso.depthFunc,
-					preparedDraw);
-				const bool queued = captured && QueueThreadedRecordedDraw(preparedDraw);
-				if (queued)
-					++queuedLightingDrawCount;
-				LogPreparedDrawResult("Lighting", captured, queued, preparedDraw);
-				SetActivePreparedPassBindingSet(nullptr);
+					PreparedRecordedDraw preparedDraw;
+					const bool captured = CaptureThreadedPreparedDraw(
+						gbufferDrawable,
+						gBufferOverrides,
+						gbufferPso.depthFunc,
+						preparedDraw);
+					bool queued = false;
+					if (captured)
+					{
+						queued = QueueThreadedRecordedDraw(preparedDraw);
+						if (queued)
+							++queuedGBufferDrawCount;
+					}
+					LogPreparedDrawResult("GBuffer", captured, queued, preparedDraw);
+				}
+
+				{
+					m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferAlbedo", m_gBufferAlbedoTexture.get());
+					m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferNormal", m_gBufferNormalTexture.get());
+					m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferMaterial", m_gBufferMaterialTexture.get());
+					if (m_gBufferDepthTexture)
+						m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferDepth", m_gBufferDepthTexture.get());
+					if (m_lightingMaterial->GetParameterBlock().Contains("u_SkyboxCube"))
+						m_lightingMaterial->Set<NLS::Render::Resources::TextureCube*>("u_SkyboxCube", skyboxTexture);
+					EnsureDeferredLightingSkyParameters(*m_lightingMaterial, skyboxMaterial);
+
+					NLS::Render::Entities::Drawable lightingDrawable;
+					lightingDrawable.mesh = m_fullscreenQuad.get();
+					lightingDrawable.material = m_lightingMaterial.get();
+					lightingDrawable.primitiveMode = NLS::Render::Settings::EPrimitiveMode::TRIANGLES;
+
+					NLS::Render::Resources::MaterialPipelineStateOverrides compositeOverrides;
+					compositeOverrides.depthTest = false;
+					compositeOverrides.depthWrite = false;
+					compositeOverrides.culling = false;
+					compositeOverrides.colorWrite = true;
+
+					PreparedRecordedDraw preparedDraw;
+					const bool captured = CaptureThreadedPreparedDraw(
+						lightingDrawable,
+						compositeOverrides,
+						gbufferPso.depthFunc,
+						preparedDraw);
+					const bool queued = captured && QueueThreadedRecordedDraw(preparedDraw);
+					if (queued)
+						++queuedLightingDrawCount;
+					LogPreparedDrawResult("Lighting", captured, queued, preparedDraw);
+					SetActivePreparedPassBindingSet(nullptr);
+				}
 			}
 
 			m_threadedQueuedGBufferDrawCount = queuedGBufferDrawCount;
@@ -576,6 +648,11 @@ namespace NLS::Engine::Rendering
 		if (pendingFrameSnapshot.has_value())
 		{
 			RefreshFrameSnapshotVisibility(pendingFrameSnapshot.value(), drawables);
+			if (usesThreadedRendering &&
+				ShouldSkipThreadedDeferredFramePublish(pendingFrameSnapshot.value(), queuedGBufferDrawCount))
+			{
+				m_skipThreadedFramePublish = true;
+			}
 			if (usesThreadedRendering)
 				SynchronizeThreadedDeferredSnapshot(pendingFrameSnapshot.value(), queuedGBufferDrawCount);
 			if (usesThreadedRendering &&
@@ -753,20 +830,52 @@ namespace NLS::Engine::Rendering
 	void DeferredSceneRenderer::EnsureGBufferTargets(uint16_t width, uint16_t height)
 	{
 		NLS_PROFILE_SCOPE();
-		static const std::vector<NLS::Render::Buffers::MultiFramebuffer::AttachmentDesc> kAttachments{
-			{ NLS::Render::RHI::TextureFormat::RGBA8 },
-			{ NLS::Render::RHI::TextureFormat::RGBA8 },
-			{ NLS::Render::RHI::TextureFormat::RGBA8 }
+		static const auto kAttachments = []()
+		{
+			std::vector<NLS::Render::Buffers::MultiFramebuffer::AttachmentDesc> attachments;
+			attachments.reserve(NLS::Render::FrameGraph::kDeferredGBufferColorAttachmentCount);
+			for (const auto& slot : NLS::Render::FrameGraph::kDeferredGBufferColorSlots)
+				attachments.push_back({ slot.format, slot.usage });
+			return attachments;
+		}();
+		static constexpr NLS::Render::Buffers::MultiFramebuffer::DepthAttachmentDesc kDepthAttachment{
+			NLS::Render::FrameGraph::kDeferredGBufferDepthFormat,
+			NLS::Render::FrameGraph::kDeferredGBufferDepthUsage
 		};
 
 		if (!m_gBuffer.IsInitialized())
-			m_gBuffer.Init(width, height, kAttachments, true);
+			m_gBuffer.Init(width, height, kAttachments, true, kDepthAttachment);
 		else
 			m_gBuffer.Resize(width, height);
 
 		const auto& colorResources = m_gBuffer.GetExplicitColorTextureHandles();
-		if (colorResources.size() < 3)
+		const auto& depthResource = m_gBuffer.GetExplicitDepthTextureHandle();
+		bool targetsValid =
+			colorResources.size() >= NLS::Render::FrameGraph::kDeferredGBufferColorAttachmentCount &&
+			TextureResourceMatchesSize(depthResource, width, height);
+		for (size_t i = 0u; targetsValid && i < NLS::Render::FrameGraph::kDeferredGBufferColorAttachmentCount; ++i)
+			targetsValid = TextureResourceMatchesSize(colorResources[i], width, height);
+		if (!targetsValid)
+		{
+			m_gBufferAlbedoTexture.reset();
+			m_gBufferNormalTexture.reset();
+			m_gBufferMaterialTexture.reset();
+			m_gBufferDepthTexture.reset();
 			return;
+		}
+
+		std::array<std::unique_ptr<NLS::Render::Resources::Texture2D>*, NLS::Render::FrameGraph::kDeferredGBufferColorAttachmentCount> colorWrappers = {
+			&m_gBufferAlbedoTexture,
+			&m_gBufferNormalTexture,
+			&m_gBufferMaterialTexture
+		};
+		bool wrappersMatch = WrappedTextureMatches(m_gBufferDepthTexture, depthResource, width, height);
+		for (size_t i = 0u; wrappersMatch && i < colorWrappers.size(); ++i)
+			wrappersMatch = WrappedTextureMatches(*colorWrappers[i], colorResources[i], width, height);
+		if (wrappersMatch)
+		{
+			return;
+		}
 
 		auto wrapTexture = [width, height](const std::shared_ptr<NLS::Render::RHI::RHITexture>& textureResource) -> std::unique_ptr<NLS::Render::Resources::Texture2D>
 		{
@@ -775,11 +884,9 @@ namespace NLS::Engine::Rendering
 			return NLS::Render::Resources::Texture2D::WrapExternal(textureResource, width, height);
 		};
 
-		m_gBufferAlbedoTexture = wrapTexture(colorResources[0]);
-		m_gBufferNormalTexture = wrapTexture(colorResources[1]);
-		m_gBufferMaterialTexture = wrapTexture(colorResources[2]);
-		if (m_gBuffer.GetExplicitDepthTextureHandle())
-			m_gBufferDepthTexture = wrapTexture(m_gBuffer.GetExplicitDepthTextureHandle());
+		for (size_t i = 0u; i < colorWrappers.size(); ++i)
+			*colorWrappers[i] = wrapTexture(colorResources[i]);
+		m_gBufferDepthTexture = wrapTexture(depthResource);
 	}
 
 	std::unique_ptr<NLS::Render::Resources::Material> DeferredSceneRenderer::CreateGBufferMaterial() const
@@ -854,7 +961,7 @@ namespace NLS::Engine::Rendering
 			gBufferOverrides.depthTest = drawable.material->HasDepthTest();
 			gBufferOverrides.depthWrite = drawable.material->HasDepthWriting();
 			gBufferOverrides.colorWrite = true;
-			gBufferOverrides.colorFormats = BuildDeferredGBufferColorFormats();
+			gBufferOverrides.SetColorFormats(GetDeferredGBufferColorFormats());
 			gBufferOverrides.culling = drawable.material->HasBackfaceCulling() || drawable.material->HasFrontfaceCulling();
 			gBufferOverrides.cullFace = drawable.material->HasBackfaceCulling() && drawable.material->HasFrontfaceCulling()
 				? NLS::Render::Settings::ECullFace::FRONT_AND_BACK
@@ -971,5 +1078,37 @@ namespace NLS::Engine::Rendering
 		const DeferredSceneRenderer& renderer)
 	{
 		return renderer.m_frameGBufferMaterialSyncCount;
+	}
+
+	void DeferredSceneRendererTestAccess::EnsureGBufferTargets(
+		DeferredSceneRenderer& renderer,
+		const uint16_t width,
+		const uint16_t height)
+	{
+		renderer.EnsureGBufferTargets(width, height);
+	}
+
+	const NLS::Render::Resources::Texture2D* DeferredSceneRendererTestAccess::GetGBufferAlbedoTexture(
+		const DeferredSceneRenderer& renderer)
+	{
+		return renderer.m_gBufferAlbedoTexture.get();
+	}
+
+	const NLS::Render::Resources::Texture2D* DeferredSceneRendererTestAccess::GetGBufferNormalTexture(
+		const DeferredSceneRenderer& renderer)
+	{
+		return renderer.m_gBufferNormalTexture.get();
+	}
+
+	const NLS::Render::Resources::Texture2D* DeferredSceneRendererTestAccess::GetGBufferMaterialTexture(
+		const DeferredSceneRenderer& renderer)
+	{
+		return renderer.m_gBufferMaterialTexture.get();
+	}
+
+	const NLS::Render::Resources::Texture2D* DeferredSceneRendererTestAccess::GetGBufferDepthTexture(
+		const DeferredSceneRenderer& renderer)
+	{
+		return renderer.m_gBufferDepthTexture.get();
 	}
 }

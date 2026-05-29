@@ -25,7 +25,8 @@ namespace NLS::Render::RHI::DX12
 
     NLS_RENDER_API DX12TextureViewDescriptorSet BuildDX12TextureViewDescriptorSet(
         const RHITextureDesc& textureDesc,
-        const RHITextureViewDesc& viewDesc);
+        const RHITextureViewDesc& viewDesc,
+        bool readOnlyDepthStencil = false);
 
     NLS_RENDER_API bool DoesDX12BarrierRangeCoverWholeTexture(
         const RHITextureDesc& textureDesc,

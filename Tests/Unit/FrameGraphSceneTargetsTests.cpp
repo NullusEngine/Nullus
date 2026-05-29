@@ -75,6 +75,21 @@ namespace
         return plan;
     }
 
+    NLS::Render::RHI::RHITextureDesc MakeTestTextureDesc(
+        const char* debugName,
+        const NLS::Render::RHI::TextureFormat format = NLS::Render::FrameGraph::kDeferredGBufferColorFormats[0],
+        const NLS::Render::RHI::TextureUsageFlags usage = NLS::Render::FrameGraph::kDeferredGBufferColorUsage)
+    {
+        NLS::Render::RHI::RHITextureDesc desc;
+        desc.debugName = debugName;
+        desc.extent = { 320u, 180u, 1u };
+        desc.format = format;
+        desc.usage = usage;
+        desc.mipLevels = 1u;
+        desc.arrayLayers = 1u;
+        return desc;
+    }
+
     class TestAdapter final : public NLS::Render::RHI::RHIAdapter
     {
     public:
@@ -154,6 +169,47 @@ namespace
         NLS::Render::RHI::RHITextureViewDesc m_desc {};
     };
 
+    NLS::Render::FrameGraph::DeferredPreparedSceneResources MakeCompleteDeferredPreparedSceneResources(
+        const NLS::Render::RHI::TextureUsageFlags normalUsage = NLS::Render::FrameGraph::kDeferredGBufferColorUsage,
+        const NLS::Render::RHI::TextureUsageFlags depthUsage = NLS::Render::FrameGraph::kDeferredGBufferDepthUsage)
+    {
+        NLS::Render::FrameGraph::DeferredPreparedSceneResources resources;
+        auto albedoTexture = std::make_shared<TestTexture>(
+            MakeTestTextureDesc("DeferredGBufferAlbedo", NLS::Render::FrameGraph::kDeferredGBufferColorFormats[0]));
+        auto normalTexture = std::make_shared<TestTexture>(
+            MakeTestTextureDesc(
+                "DeferredGBufferNormal",
+                NLS::Render::FrameGraph::kDeferredGBufferColorFormats[1],
+                normalUsage));
+        auto materialTexture = std::make_shared<TestTexture>(
+            MakeTestTextureDesc("DeferredGBufferMaterial", NLS::Render::FrameGraph::kDeferredGBufferColorFormats[2]));
+        auto depthTexture = std::make_shared<TestTexture>(
+            MakeTestTextureDesc(
+                "DeferredGBufferDepth",
+                NLS::Render::FrameGraph::kDeferredGBufferDepthFormat,
+                depthUsage));
+
+        auto makeView = [](const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture, const char* debugName)
+        {
+            NLS::Render::RHI::RHITextureViewDesc desc;
+            desc.debugName = debugName;
+            desc.format = texture->GetDesc().format;
+            return std::make_shared<TestTextureView>(texture, desc);
+        };
+
+        resources.gbufferColorViews.push_back(makeView(albedoTexture, "DeferredGBufferAlbedoView"));
+        resources.gbufferColorViews.push_back(makeView(normalTexture, "DeferredGBufferNormalView"));
+        resources.gbufferColorViews.push_back(makeView(materialTexture, "DeferredGBufferMaterialView"));
+        resources.gbufferDepthView = makeView(depthTexture, "DeferredGBufferDepthView");
+        resources.gbufferTextures = {
+            resources.gbufferColorViews[0]->GetTexture(),
+            resources.gbufferColorViews[1]->GetTexture(),
+            resources.gbufferColorViews[2]->GetTexture(),
+            resources.gbufferDepthView->GetTexture()
+        };
+        return resources;
+    }
+
     class TestCommandBuffer final : public NLS::Render::RHI::RHICommandBuffer
     {
     public:
@@ -201,11 +257,28 @@ namespace
             ++barrierCalls;
             barrierHistory.push_back(desc);
         }
+        NLS::Render::RHI::RHICommandRecordingResult BarrierChecked(
+            const NLS::Render::RHI::RHIBarrierDesc& desc) override
+        {
+            ++barrierCheckedCalls;
+            if (failBarrierChecked)
+            {
+                return {
+                    NLS::Render::RHI::RHICommandRecordingStatusCode::BackendFailure,
+                    "test barrier failure"
+                };
+            }
+
+            Barrier(desc);
+            return {};
+        }
 
         size_t barrierCalls = 0u;
+        size_t barrierCheckedCalls = 0u;
         size_t beginRenderPassCalls = 0u;
         size_t endRenderPassCalls = 0u;
         bool dropLastTextureBarrier = false;
+        bool failBarrierChecked = false;
         mutable NLS::Render::RHI::RHIBarrierDesc lastFilteredBarrierDesc;
         NLS::Render::RHI::RHIRenderPassDesc lastRenderPassDesc {};
         std::vector<NLS::Render::RHI::RHIBarrierDesc> barrierHistory;
@@ -951,7 +1024,7 @@ TEST(FrameGraphSceneTargetsTests, DynamicUniformFrameGraphBuffersDoNotRequestCop
     uniformBuffer.destroy(uniformDesc, &executionContext);
 }
 
-TEST(FrameGraphSceneTargetsTests, DeferredSceneGraphImportsGBufferResourcesWithStableDebugNames)
+TEST(FrameGraphSceneTargetsTests, DeferredSceneGraphImportsGBufferResourcesAndCompilesGBufferBeforeLighting)
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
@@ -1031,6 +1104,751 @@ TEST(FrameGraphSceneTargetsTests, DeferredSceneGraphImportsGBufferResourcesWithS
         frameGraph.getDescriptor<NLS::Render::FrameGraph::FrameGraphTexture>(
             preparedGraph.resources.gbufferDepth).debugName,
         "GBufferDepth");
+
+    const auto& graphPasses = preparedGraph.execution.compiledExecution.graphPasses;
+    ASSERT_EQ(graphPasses.size(), 2u);
+    EXPECT_EQ(graphPasses[0].metadata.commandKind, NLS::Render::Context::RenderPassCommandKind::GBuffer);
+    EXPECT_EQ(graphPasses[1].metadata.commandKind, NLS::Render::Context::RenderPassCommandKind::Lighting);
+    EXPECT_STREQ(graphPasses[0].metadata.graphPassName, "DeferredGBuffer");
+    EXPECT_STREQ(graphPasses[1].metadata.graphPassName, "DeferredLighting");
+    EXPECT_TRUE(preparedGraph.execution.compiledExecution.threadedPlan.passes.empty());
+}
+
+TEST(FrameGraphSceneTargetsTests, DeferredSceneGraphUsesGBufferSlotColorViewNames)
+{
+    static_assert(
+        NLS::Render::FrameGraph::kDeferredGBufferColorSlots.size() ==
+        NLS::Render::FrameGraph::kDeferredGBufferColorFormats.size());
+    for (size_t i = 0u; i < NLS::Render::FrameGraph::kDeferredGBufferColorAttachmentCount; ++i)
+    {
+        EXPECT_EQ(
+            NLS::Render::FrameGraph::kDeferredGBufferColorFormats[i],
+            NLS::Render::FrameGraph::kDeferredGBufferColorSlots[i].format);
+    }
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    std::vector<NLS::Render::Buffers::MultiFramebuffer::AttachmentDesc> attachments(
+        NLS::Render::FrameGraph::kDeferredGBufferColorAttachmentCount);
+    for (size_t i = 0u; i < NLS::Render::FrameGraph::kDeferredGBufferColorAttachmentCount; ++i)
+        attachments[i].format = NLS::Render::FrameGraph::kDeferredGBufferColorSlots[i].format;
+    NLS::Render::Buffers::MultiFramebuffer gBuffer(320u, 180u, attachments, true);
+
+    auto albedoTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitColorTextureHandles()[0],
+        320u,
+        180u);
+    auto normalTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitColorTextureHandles()[1],
+        320u,
+        180u);
+    auto materialTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitColorTextureHandles()[2],
+        320u,
+        180u);
+    auto depthTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitDepthTextureHandle(),
+        320u,
+        180u);
+
+    NLS::Render::FrameGraph::DeferredPreparedSceneResourceRequest preparedResources;
+    preparedResources.gBuffer = &gBuffer;
+    preparedResources.gbufferAlbedoTexture = albedoTexture.get();
+    preparedResources.gbufferNormalTexture = normalTexture.get();
+    preparedResources.gbufferMaterialTexture = materialTexture.get();
+    preparedResources.gbufferDepthTexture = depthTexture.get();
+
+    NLS::Render::Buffers::Framebuffer outputBuffer(320u, 180u);
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 320u;
+    frameDescriptor.renderHeight = 180u;
+    frameDescriptor.camera = &camera;
+    frameDescriptor.outputBuffer = &outputBuffer;
+
+    FrameGraph frameGraph;
+    FrameGraphBlackboard blackboard;
+    auto resourceRequest = NLS::Render::FrameGraph::BuildDeferredGraphSceneResourceRequest(
+        frameGraph,
+        blackboard,
+        frameDescriptor,
+        preparedResources);
+
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor = frameDescriptor;
+
+    const auto preparedGraph = NLS::Render::FrameGraph::PrepareDeferredSceneGraph(
+        resourceRequest,
+        lightGridContext);
+
+    ASSERT_GE(preparedGraph.resources.gbufferAlbedo, 0);
+    ASSERT_GE(preparedGraph.resources.gbufferNormal, 0);
+    ASSERT_GE(preparedGraph.resources.gbufferMaterial, 0);
+    ASSERT_EQ(
+        gBuffer.GetOrCreateExplicitColorView(0)->GetDebugName(),
+        NLS::Render::FrameGraph::kDeferredGBufferColorSlots[0].graphViewName);
+    ASSERT_EQ(
+        gBuffer.GetOrCreateExplicitColorView(1)->GetDebugName(),
+        NLS::Render::FrameGraph::kDeferredGBufferColorSlots[1].graphViewName);
+    ASSERT_EQ(
+        gBuffer.GetOrCreateExplicitColorView(2)->GetDebugName(),
+        NLS::Render::FrameGraph::kDeferredGBufferColorSlots[2].graphViewName);
+}
+
+TEST(FrameGraphSceneTargetsTests, DeferredSceneGraphSkipsPassesWhenGBufferResourcesAreIncomplete)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    std::vector<NLS::Render::Buffers::MultiFramebuffer::AttachmentDesc> attachments(3u);
+    attachments[0].format = NLS::Render::RHI::TextureFormat::RGBA8;
+    attachments[1].format = NLS::Render::RHI::TextureFormat::RGBA8;
+    attachments[2].format = NLS::Render::RHI::TextureFormat::RGBA8;
+    NLS::Render::Buffers::MultiFramebuffer gBuffer(320u, 180u, attachments, true);
+
+    auto albedoTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitColorTextureHandles()[0],
+        320u,
+        180u);
+    auto normalTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitColorTextureHandles()[1],
+        320u,
+        180u);
+    auto materialTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitColorTextureHandles()[2],
+        320u,
+        180u);
+    auto depthTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitDepthTextureHandle(),
+        320u,
+        180u);
+
+    NLS::Render::FrameGraph::DeferredPreparedSceneResourceRequest preparedResources;
+    preparedResources.gBuffer = &gBuffer;
+    preparedResources.gbufferAlbedoTexture = albedoTexture.get();
+    preparedResources.gbufferNormalTexture = normalTexture.get();
+    preparedResources.gbufferMaterialTexture = materialTexture.get();
+    preparedResources.gbufferDepthTexture = depthTexture.get();
+
+    NLS::Render::Buffers::Framebuffer outputBuffer(320u, 180u);
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 320u;
+    frameDescriptor.renderHeight = 180u;
+    frameDescriptor.camera = &camera;
+    frameDescriptor.outputBuffer = &outputBuffer;
+
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor = frameDescriptor;
+
+    auto expectSkipped = [&frameDescriptor, &lightGridContext](
+        const char* label,
+        const NLS::Render::FrameGraph::DeferredPreparedSceneResourceRequest& resources)
+    {
+        SCOPED_TRACE(label);
+
+        FrameGraph frameGraph;
+        FrameGraphBlackboard blackboard;
+        const auto resourceRequest = NLS::Render::FrameGraph::BuildDeferredGraphSceneResourceRequest(
+            frameGraph,
+            blackboard,
+            frameDescriptor,
+            resources);
+
+        const auto preparedGraph = NLS::Render::FrameGraph::PrepareDeferredSceneGraph(
+            resourceRequest,
+            lightGridContext);
+        EXPECT_TRUE(preparedGraph.execution.compiledExecution.graphPasses.empty());
+    };
+
+    auto missingResources = preparedResources;
+    missingResources.gbufferAlbedoTexture = nullptr;
+    missingResources.gbufferNormalTexture = nullptr;
+    missingResources.gbufferMaterialTexture = nullptr;
+    missingResources.gbufferDepthTexture = nullptr;
+    expectSkipped("all GBuffer wrappers missing", missingResources);
+
+    missingResources = preparedResources;
+    missingResources.gbufferAlbedoTexture = nullptr;
+    expectSkipped("albedo wrapper missing", missingResources);
+
+    missingResources = preparedResources;
+    missingResources.gbufferNormalTexture = nullptr;
+    expectSkipped("normal wrapper missing", missingResources);
+
+    missingResources = preparedResources;
+    missingResources.gbufferMaterialTexture = nullptr;
+    expectSkipped("material wrapper missing", missingResources);
+
+    missingResources = preparedResources;
+    missingResources.gbufferDepthTexture = nullptr;
+    expectSkipped("depth wrapper missing", missingResources);
+}
+
+TEST(FrameGraphSceneTargetsTests, DeferredPreparedExecutionSkipsDeferredPassesWhenGBufferResourcesAreIncomplete)
+{
+    NLS::Render::Context::RenderScenePackage package;
+    package.opaqueDrawCount = 1u;
+    package.drawCommandCount = 2u;
+    package.renderWidth = 320u;
+    package.renderHeight = 180u;
+    package.recordedDrawCommands.resize(2u);
+
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor.renderWidth = 320u;
+    lightGridContext.frameDescriptor.renderHeight = 180u;
+
+    NLS::Render::FrameGraph::DeferredPreparedSceneResources resources;
+    NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
+        package,
+        lightGridContext,
+        resources);
+
+    EXPECT_TRUE(package.passCommandInputs.empty());
+}
+
+TEST(FrameGraphSceneTargetsTests, DeferredPreparedExecutionRejectsGBufferResourcesWithMissingAttachmentUsage)
+{
+    NLS::Render::Context::RenderScenePackage package;
+    package.opaqueDrawCount = 1u;
+    package.drawCommandCount = 2u;
+    package.renderWidth = 320u;
+    package.renderHeight = 180u;
+    package.recordedDrawCommands.resize(2u);
+
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor.renderWidth = 320u;
+    lightGridContext.frameDescriptor.renderHeight = 180u;
+
+    auto resources = MakeCompleteDeferredPreparedSceneResources(
+        NLS::Render::RHI::TextureUsageFlags::Sampled,
+        NLS::Render::FrameGraph::kDeferredGBufferDepthUsage);
+    NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
+        package,
+        lightGridContext,
+        resources);
+
+    EXPECT_TRUE(package.passCommandInputs.empty());
+}
+
+TEST(FrameGraphSceneTargetsTests, DeferredPreparedExecutionPreservesExplicitHelperWhenGBufferResourcesAreInvalid)
+{
+    NLS::Render::Context::RenderScenePackage package;
+    package.opaqueDrawCount = 1u;
+    package.drawCommandCount = 2u;
+    package.renderWidth = 320u;
+    package.renderHeight = 180u;
+    package.recordedDrawCommands.resize(2u);
+
+    NLS::Render::Context::RenderPassCommandInput helperPass;
+    helperPass.kind = NLS::Render::Context::RenderPassCommandKind::Helper;
+    helperPass.debugName = "EditorGridPass";
+    helperPass.drawCount = 1u;
+
+    NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata helperMetadata;
+    helperMetadata.commandKind = NLS::Render::Context::RenderPassCommandKind::Helper;
+    helperMetadata.role = NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Helper;
+    helperMetadata.queueType = NLS::Render::RHI::QueueType::Graphics;
+    helperMetadata.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
+    NLS::Render::FrameGraph::SetThreadedRenderScenePassGraphPassName(helperMetadata, "EditorGridPass");
+
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor.renderWidth = 320u;
+    lightGridContext.frameDescriptor.renderHeight = 180u;
+
+    NLS::Render::FrameGraph::DeferredPreparedSceneResources invalidResources;
+    NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
+        package,
+        lightGridContext,
+        invalidResources,
+        { helperPass },
+        { helperMetadata });
+
+    ASSERT_EQ(package.passCommandInputs.size(), 1u);
+    EXPECT_EQ(package.passCommandInputs[0].debugName, "EditorGridPass");
+    EXPECT_EQ(package.passCommandInputs[0].kind, NLS::Render::Context::RenderPassCommandKind::Helper);
+}
+
+TEST(FrameGraphSceneTargetsTests, DeferredPreparedExecutionDoesNotAttachStaleGBufferDepthToHelperWhenResourcesMismatch)
+{
+    NLS::Render::Context::RenderScenePackage package;
+    package.opaqueDrawCount = 1u;
+    package.drawCommandCount = 2u;
+    package.renderWidth = 320u;
+    package.renderHeight = 180u;
+    package.recordedDrawCommands.resize(2u);
+    package.targetsSwapchain = true;
+
+    NLS::Render::Context::RenderPassCommandInput helperPass;
+    helperPass.kind = NLS::Render::Context::RenderPassCommandKind::Helper;
+    helperPass.debugName = "EditorSelectionPass";
+    helperPass.drawCount = 1u;
+    helperPass.usesDepthStencilAttachment = true;
+
+    NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata helperMetadata;
+    helperMetadata.commandKind = NLS::Render::Context::RenderPassCommandKind::Helper;
+    helperMetadata.role = NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Helper;
+    helperMetadata.queueType = NLS::Render::RHI::QueueType::Graphics;
+    helperMetadata.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
+    NLS::Render::FrameGraph::SetThreadedRenderScenePassGraphPassName(helperMetadata, "EditorSelectionPass");
+
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor.renderWidth = 320u;
+    lightGridContext.frameDescriptor.renderHeight = 180u;
+
+    auto resources = MakeCompleteDeferredPreparedSceneResources(
+        NLS::Render::RHI::TextureUsageFlags::Sampled,
+        NLS::Render::FrameGraph::kDeferredGBufferDepthUsage);
+    const auto staleDepthTexture = resources.gbufferDepthView->GetTexture();
+
+    NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
+        package,
+        lightGridContext,
+        resources,
+        { helperPass },
+        { helperMetadata });
+
+    ASSERT_EQ(package.passCommandInputs.size(), 1u);
+    const auto& preparedHelperPass = package.passCommandInputs[0];
+    EXPECT_EQ(preparedHelperPass.debugName, "EditorSelectionPass");
+    EXPECT_EQ(preparedHelperPass.kind, NLS::Render::Context::RenderPassCommandKind::Helper);
+    EXPECT_EQ(preparedHelperPass.depthStencilAttachmentView, nullptr);
+    EXPECT_TRUE(std::none_of(
+        preparedHelperPass.textureResourceAccesses.begin(),
+        preparedHelperPass.textureResourceAccesses.end(),
+        [&staleDepthTexture](const NLS::Render::Context::TextureResourceAccess& access)
+        {
+            return access.texture == staleDepthTexture;
+        }));
+}
+
+TEST(FrameGraphSceneTargetsTests, DeferredPreparedExecutionRejectsGBufferResourcesWithMismatchedViewDesc)
+{
+    NLS::Render::Context::RenderScenePackage package;
+    package.opaqueDrawCount = 1u;
+    package.drawCommandCount = 2u;
+    package.renderWidth = 320u;
+    package.renderHeight = 180u;
+    package.recordedDrawCommands.resize(2u);
+    package.targetsSwapchain = true;
+
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor.renderWidth = 320u;
+    lightGridContext.frameDescriptor.renderHeight = 180u;
+
+    auto resources = MakeCompleteDeferredPreparedSceneResources();
+    const auto gbufferDepthView = resources.gbufferDepthView;
+    NLS::Render::RHI::RHITextureViewDesc mismatchedColorViewDesc =
+        resources.gbufferColorViews[0]->GetDesc();
+    mismatchedColorViewDesc.format = NLS::Render::RHI::TextureFormat::RGBA16F;
+    resources.gbufferColorViews[0] = std::make_shared<TestTextureView>(
+        resources.gbufferTextures[0],
+        mismatchedColorViewDesc);
+
+    NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
+        package,
+        lightGridContext,
+        resources);
+
+    ASSERT_EQ(package.passCommandInputs.size(), 0u);
+
+    package.passCommandInputs.clear();
+    resources = MakeCompleteDeferredPreparedSceneResources();
+    NLS::Render::RHI::RHITextureViewDesc mismatchedDepthViewDesc =
+        resources.gbufferDepthView->GetDesc();
+    mismatchedDepthViewDesc.subresourceRange.baseMipLevel = 1u;
+    resources.gbufferDepthView = std::make_shared<TestTextureView>(
+        resources.gbufferTextures[NLS::Render::FrameGraph::kDeferredGBufferDepthTextureIndex],
+        mismatchedDepthViewDesc);
+
+    NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
+        package,
+        lightGridContext,
+        resources);
+
+    ASSERT_EQ(package.passCommandInputs.size(), 0u);
+    EXPECT_NE(gbufferDepthView, nullptr);
+}
+
+TEST(FrameGraphSceneTargetsTests, DeferredPreparedExecutionDeclaresDepthStencilWriteForWritingHelperPass)
+{
+    NLS::Render::Context::RenderScenePackage package;
+    package.opaqueDrawCount = 1u;
+    package.drawCommandCount = 2u;
+    package.renderWidth = 320u;
+    package.renderHeight = 180u;
+    package.recordedDrawCommands.resize(2u);
+    package.targetsSwapchain = true;
+
+    NLS::Render::Context::RenderPassCommandInput helperPass;
+    helperPass.kind = NLS::Render::Context::RenderPassCommandKind::Helper;
+    helperPass.debugName = "EditorSelectionPass";
+    helperPass.drawCount = 1u;
+    helperPass.usesDepthStencilAttachment = true;
+    helperPass.writesDepthStencilAttachment = true;
+
+    NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata helperMetadata;
+    helperMetadata.commandKind = NLS::Render::Context::RenderPassCommandKind::Helper;
+    helperMetadata.role = NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Helper;
+    helperMetadata.queueType = NLS::Render::RHI::QueueType::Graphics;
+    helperMetadata.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
+    NLS::Render::FrameGraph::SetThreadedRenderScenePassGraphPassName(helperMetadata, "EditorSelectionPass");
+
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor.renderWidth = 320u;
+    lightGridContext.frameDescriptor.renderHeight = 180u;
+
+    auto resources = MakeCompleteDeferredPreparedSceneResources();
+    const auto gbufferDepthTexture = resources.gbufferDepthView->GetTexture();
+
+    NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
+        package,
+        lightGridContext,
+        resources,
+        { helperPass },
+        { helperMetadata });
+
+    ASSERT_EQ(package.passCommandInputs.size(), 3u);
+    const auto& preparedHelperPass = package.passCommandInputs[2];
+    EXPECT_EQ(preparedHelperPass.debugName, "EditorSelectionPass");
+    EXPECT_EQ(preparedHelperPass.depthStencilAttachmentView, resources.gbufferDepthView);
+    const auto depthAccess = std::find_if(
+        preparedHelperPass.textureResourceAccesses.begin(),
+        preparedHelperPass.textureResourceAccesses.end(),
+        [&gbufferDepthTexture](const NLS::Render::Context::TextureResourceAccess& access)
+        {
+            return access.texture == gbufferDepthTexture;
+        });
+    ASSERT_NE(depthAccess, preparedHelperPass.textureResourceAccesses.end());
+    EXPECT_EQ(depthAccess->mode, NLS::Render::Context::ResourceAccessMode::Write);
+    EXPECT_EQ(depthAccess->state, NLS::Render::RHI::ResourceState::DepthWrite);
+    EXPECT_EQ(depthAccess->stages, NLS::Render::RHI::PipelineStageMask::DepthStencil);
+    EXPECT_EQ(
+        depthAccess->access,
+        NLS::Render::RHI::AccessMask::DepthStencilRead |
+            NLS::Render::RHI::AccessMask::DepthStencilWrite);
+}
+
+TEST(FrameGraphSceneTargetsTests, DeferredPreparedExecutionReplacesStaleHelperDepthAccessWithGBufferDepth)
+{
+    NLS::Render::Context::RenderScenePackage package;
+    package.opaqueDrawCount = 1u;
+    package.drawCommandCount = 2u;
+    package.renderWidth = 320u;
+    package.renderHeight = 180u;
+    package.recordedDrawCommands.resize(2u);
+    package.targetsSwapchain = true;
+
+    auto staleDepthTexture = std::make_shared<TestTexture>(
+        MakeTestTextureDesc(
+            "SceneViewDepth",
+            NLS::Render::FrameGraph::kDeferredGBufferDepthFormat,
+            NLS::Render::FrameGraph::kDeferredGBufferDepthUsage));
+    NLS::Render::RHI::RHITextureViewDesc staleDepthViewDesc;
+    staleDepthViewDesc.debugName = "SceneViewDepthView";
+    staleDepthViewDesc.format = staleDepthTexture->GetDesc().format;
+    auto staleDepthView = std::make_shared<TestTextureView>(staleDepthTexture, staleDepthViewDesc);
+
+    NLS::Render::Context::RenderPassCommandInput helperPass;
+    helperPass.kind = NLS::Render::Context::RenderPassCommandKind::Helper;
+    helperPass.debugName = "SelectionOutlineMask::CaptureMask";
+    helperPass.drawCount = 1u;
+    helperPass.usesDepthStencilAttachment = true;
+    helperPass.writesDepthStencilAttachment = false;
+    helperPass.depthStencilAttachmentView = staleDepthView;
+    NLS::Render::RHI::RHISubresourceRange staleRange;
+    staleRange.mipLevelCount = staleDepthTexture->GetDesc().mipLevels;
+    staleRange.arrayLayerCount = staleDepthTexture->GetDesc().arrayLayers;
+    helperPass.textureResourceAccesses.push_back({
+        staleDepthTexture,
+        staleRange,
+        NLS::Render::Context::ResourceAccessMode::Read,
+        NLS::Render::RHI::ResourceState::DepthRead,
+        NLS::Render::RHI::PipelineStageMask::DepthStencil,
+        NLS::Render::RHI::AccessMask::DepthStencilRead
+    });
+
+    NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata helperMetadata;
+    helperMetadata.commandKind = NLS::Render::Context::RenderPassCommandKind::Helper;
+    helperMetadata.role = NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Helper;
+    helperMetadata.queueType = NLS::Render::RHI::QueueType::Graphics;
+    helperMetadata.queueDependencyPolicy = NLS::Render::Context::QueueDependencyPolicy::Previous;
+    NLS::Render::FrameGraph::SetThreadedRenderScenePassGraphPassName(helperMetadata, "SelectionOutlineMask::CaptureMask");
+
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor.renderWidth = 320u;
+    lightGridContext.frameDescriptor.renderHeight = 180u;
+
+    auto resources = MakeCompleteDeferredPreparedSceneResources();
+    const auto gbufferDepthTexture = resources.gbufferDepthView->GetTexture();
+
+    NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
+        package,
+        lightGridContext,
+        resources,
+        { helperPass },
+        { helperMetadata });
+
+    ASSERT_EQ(package.passCommandInputs.size(), 3u);
+    const auto& preparedHelperPass = package.passCommandInputs[2];
+    EXPECT_EQ(preparedHelperPass.depthStencilAttachmentView, resources.gbufferDepthView);
+    EXPECT_TRUE(std::none_of(
+        preparedHelperPass.textureResourceAccesses.begin(),
+        preparedHelperPass.textureResourceAccesses.end(),
+        [&staleDepthTexture](const NLS::Render::Context::TextureResourceAccess& access)
+        {
+            return access.texture == staleDepthTexture;
+        }));
+
+    const auto gbufferDepthAccess = std::find_if(
+        preparedHelperPass.textureResourceAccesses.begin(),
+        preparedHelperPass.textureResourceAccesses.end(),
+        [&gbufferDepthTexture](const NLS::Render::Context::TextureResourceAccess& access)
+        {
+            return access.texture == gbufferDepthTexture;
+        });
+    ASSERT_NE(gbufferDepthAccess, preparedHelperPass.textureResourceAccesses.end());
+    EXPECT_EQ(gbufferDepthAccess->mode, NLS::Render::Context::ResourceAccessMode::Read);
+    EXPECT_EQ(gbufferDepthAccess->state, NLS::Render::RHI::ResourceState::DepthRead);
+}
+
+TEST(FrameGraphSceneTargetsTests, DeferredPreparedExecutionDeclaresDepthStencilWriteForGBufferPass)
+{
+    NLS::Render::Context::RenderScenePackage package;
+    package.opaqueDrawCount = 1u;
+    package.drawCommandCount = 2u;
+    package.renderWidth = 320u;
+    package.renderHeight = 180u;
+    package.recordedDrawCommands.resize(2u);
+    package.targetsSwapchain = true;
+
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor.renderWidth = 320u;
+    lightGridContext.frameDescriptor.renderHeight = 180u;
+
+    auto resources = MakeCompleteDeferredPreparedSceneResources();
+
+    NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
+        package,
+        lightGridContext,
+        resources);
+
+    ASSERT_GE(package.passCommandInputs.size(), 1u);
+    const auto& gbufferPass = package.passCommandInputs[0];
+    EXPECT_EQ(gbufferPass.kind, NLS::Render::Context::RenderPassCommandKind::GBuffer);
+    EXPECT_TRUE(gbufferPass.usesDepthStencilAttachment);
+    EXPECT_TRUE(gbufferPass.writesDepthStencilAttachment);
+}
+
+TEST(FrameGraphSceneTargetsTests, DeferredPreparedResourcesRejectMismatchedGBufferWrappers)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    std::vector<NLS::Render::Buffers::MultiFramebuffer::AttachmentDesc> attachments(3u);
+    attachments[0].format = NLS::Render::RHI::TextureFormat::RGBA8;
+    attachments[1].format = NLS::Render::RHI::TextureFormat::RGBA8;
+    attachments[2].format = NLS::Render::RHI::TextureFormat::RGBA8;
+    NLS::Render::Buffers::MultiFramebuffer gBuffer(320u, 180u, attachments, true);
+
+    auto albedoTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        std::make_shared<TestTexture>(MakeTestTextureDesc("ForeignGBufferAlbedo")),
+        320u,
+        180u);
+    auto normalTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitColorTextureHandles()[1],
+        320u,
+        180u);
+    auto materialTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitColorTextureHandles()[2],
+        320u,
+        180u);
+    auto depthTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitDepthTextureHandle(),
+        320u,
+        180u);
+
+    NLS::Render::FrameGraph::DeferredPreparedSceneResourceRequest request;
+    request.gBuffer = &gBuffer;
+    request.gbufferAlbedoTexture = albedoTexture.get();
+    request.gbufferNormalTexture = normalTexture.get();
+    request.gbufferMaterialTexture = materialTexture.get();
+    request.gbufferDepthTexture = depthTexture.get();
+
+    const auto resources = NLS::Render::FrameGraph::CaptureDeferredPreparedSceneResources(request);
+
+    EXPECT_TRUE(resources.gbufferColorViews.empty());
+    EXPECT_EQ(resources.gbufferDepthView, nullptr);
+    EXPECT_TRUE(resources.gbufferTextures.empty());
+
+    FrameGraph frameGraph;
+    FrameGraphBlackboard blackboard;
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 320u;
+    frameDescriptor.renderHeight = 180u;
+    frameDescriptor.camera = &camera;
+
+    const auto resourceRequest = NLS::Render::FrameGraph::BuildDeferredGraphSceneResourceRequest(
+        frameGraph,
+        blackboard,
+        frameDescriptor,
+        request);
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor = frameDescriptor;
+    const auto preparedGraph = NLS::Render::FrameGraph::PrepareDeferredSceneGraph(
+        resourceRequest,
+        lightGridContext);
+    EXPECT_TRUE(preparedGraph.execution.compiledExecution.graphPasses.empty());
+}
+
+TEST(FrameGraphSceneTargetsTests, DeferredSceneGraphRejectsGBufferResourcesWithMismatchedFrameExtent)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    std::vector<NLS::Render::Buffers::MultiFramebuffer::AttachmentDesc> attachments(3u);
+    attachments[0].format = NLS::Render::RHI::TextureFormat::RGBA8;
+    attachments[1].format = NLS::Render::RHI::TextureFormat::RGBA8;
+    attachments[2].format = NLS::Render::RHI::TextureFormat::RGBA8;
+    NLS::Render::Buffers::MultiFramebuffer gBuffer(320u, 180u, attachments, true);
+
+    auto albedoTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitColorTextureHandles()[0],
+        320u,
+        180u);
+    auto normalTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitColorTextureHandles()[1],
+        320u,
+        180u);
+    auto materialTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitColorTextureHandles()[2],
+        320u,
+        180u);
+    auto depthTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitDepthTextureHandle(),
+        320u,
+        180u);
+
+    NLS::Render::FrameGraph::DeferredPreparedSceneResourceRequest request;
+    request.gBuffer = &gBuffer;
+    request.gbufferAlbedoTexture = albedoTexture.get();
+    request.gbufferNormalTexture = normalTexture.get();
+    request.gbufferMaterialTexture = materialTexture.get();
+    request.gbufferDepthTexture = depthTexture.get();
+
+    FrameGraph frameGraph;
+    FrameGraphBlackboard blackboard;
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 640u;
+    frameDescriptor.renderHeight = 360u;
+    frameDescriptor.camera = &camera;
+
+    const auto resourceRequest = NLS::Render::FrameGraph::BuildDeferredGraphSceneResourceRequest(
+        frameGraph,
+        blackboard,
+        frameDescriptor,
+        request);
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor = frameDescriptor;
+    const auto preparedGraph = NLS::Render::FrameGraph::PrepareDeferredSceneGraph(
+        resourceRequest,
+        lightGridContext);
+
+    EXPECT_TRUE(preparedGraph.execution.compiledExecution.graphPasses.empty());
+    EXPECT_LT(preparedGraph.resources.gbufferAlbedo, 0);
+    EXPECT_LT(preparedGraph.resources.gbufferDepth, 0);
+}
+
+TEST(FrameGraphSceneTargetsTests, DeferredSceneGraphRejectsGBufferResourcesWithUnexpectedColorFormat)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    std::vector<NLS::Render::Buffers::MultiFramebuffer::AttachmentDesc> attachments(3u);
+    attachments[0].format = NLS::Render::RHI::TextureFormat::RGBA8;
+    attachments[1].format = NLS::Render::RHI::TextureFormat::RGBA16F;
+    attachments[2].format = NLS::Render::RHI::TextureFormat::RGBA8;
+    NLS::Render::Buffers::MultiFramebuffer gBuffer(320u, 180u, attachments, true);
+
+    auto albedoTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitColorTextureHandles()[0],
+        320u,
+        180u);
+    auto normalTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitColorTextureHandles()[1],
+        320u,
+        180u);
+    auto materialTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitColorTextureHandles()[2],
+        320u,
+        180u);
+    auto depthTexture = NLS::Render::Resources::Texture2D::WrapExternal(
+        gBuffer.GetExplicitDepthTextureHandle(),
+        320u,
+        180u);
+
+    NLS::Render::FrameGraph::DeferredPreparedSceneResourceRequest request;
+    request.gBuffer = &gBuffer;
+    request.gbufferAlbedoTexture = albedoTexture.get();
+    request.gbufferNormalTexture = normalTexture.get();
+    request.gbufferMaterialTexture = materialTexture.get();
+    request.gbufferDepthTexture = depthTexture.get();
+
+    FrameGraph frameGraph;
+    FrameGraphBlackboard blackboard;
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 320u;
+    frameDescriptor.renderHeight = 180u;
+    frameDescriptor.camera = &camera;
+
+    const auto resourceRequest = NLS::Render::FrameGraph::BuildDeferredGraphSceneResourceRequest(
+        frameGraph,
+        blackboard,
+        frameDescriptor,
+        request);
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor = frameDescriptor;
+    const auto preparedGraph = NLS::Render::FrameGraph::PrepareDeferredSceneGraph(
+        resourceRequest,
+        lightGridContext);
+
+    EXPECT_TRUE(preparedGraph.execution.compiledExecution.graphPasses.empty());
+    EXPECT_LT(preparedGraph.resources.gbufferNormal, 0);
+    EXPECT_LT(preparedGraph.resources.gbufferDepth, 0);
 }
 
 TEST(FrameGraphSceneTargetsTests, FrameGraphExecutionContextCommitsTrackedBarriersOnlyWhenStateChanges)
@@ -1167,6 +1985,64 @@ TEST(FrameGraphSceneTargetsTests, FrameGraphExecutionContextCommitsOnlyFilteredB
     EXPECT_EQ(trackedFirstRange->state, NLS::Render::RHI::ResourceState::RenderTarget);
     const auto trackedSecondRange = frameContext.resourceStateTracker->GetTextureState(texture, { 0u, 1u, 1u, 1u });
     ASSERT_FALSE(trackedSecondRange.has_value());
+}
+
+TEST(FrameGraphSceneTargetsTests, FrameGraphExecutionContextDoesNotCommitWhenBarrierRecordingFails)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 25u;
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    commandBuffer->failBarrierChecked = true;
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+    frameContext.resourceStateTracker->BeginFrame(frameContext.frameIndex);
+
+    NLS::Render::FrameGraph::FrameGraphExecutionContext executionContext{
+        driver,
+        explicitDevice.get(),
+        commandBuffer.get(),
+        &frameContext
+    };
+
+    NLS::Render::RHI::RHITextureDesc textureDesc;
+    textureDesc.debugName = "RejectedBarrierTexture";
+    textureDesc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
+    textureDesc.extent = { 64u, 64u, 1u };
+    textureDesc.arrayLayers = 1u;
+    textureDesc.mipLevels = 1u;
+    textureDesc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    textureDesc.usage =
+        NLS::Render::RHI::TextureUsageFlags::ColorAttachment |
+        NLS::Render::RHI::TextureUsageFlags::Sampled;
+    auto texture = std::make_shared<TestTexture>(textureDesc);
+
+    NLS::Render::RHI::RHIBarrierDesc request;
+    request.textureBarriers.push_back({
+        texture,
+        NLS::Render::RHI::ResourceState::Unknown,
+        NLS::Render::RHI::ResourceState::RenderTarget,
+        { 0u, 1u, 0u, 1u },
+        NLS::Render::RHI::PipelineStageMask::AllCommands,
+        NLS::Render::RHI::PipelineStageMask::RenderTarget,
+        NLS::Render::RHI::AccessMask::MemoryRead,
+        NLS::Render::RHI::AccessMask::ColorAttachmentWrite
+    });
+
+    EXPECT_FALSE(executionContext.RecordResourceBarriers(request).Succeeded());
+    EXPECT_EQ(commandBuffer->barrierCheckedCalls, 1u);
+    EXPECT_EQ(commandBuffer->barrierCalls, 0u);
+    const auto trackedState =
+        frameContext.resourceStateTracker->GetTextureState(texture, { 0u, 1u, 0u, 1u });
+    EXPECT_FALSE(trackedState.has_value());
 }
 
 TEST(FrameGraphSceneTargetsTests, DepthAttachmentEndTransitionKeepsShaderReadStateForDX12Sampling)
@@ -1430,6 +2306,152 @@ TEST(FrameGraphSceneTargetsTests, BeginPassAttachmentTransitionsPreferTrackerSta
     EXPECT_EQ(trackedTextureState->state, NLS::Render::RHI::ResourceState::RenderTarget);
     EXPECT_EQ(commandBuffer->beginRenderPassCalls, 1u);
     EXPECT_TRUE(commandBuffer->lastRenderPassDesc.attachmentsRequireExternalStateTransitions);
+}
+
+TEST(FrameGraphSceneTargetsTests, BeginPassDepthStencilAttachmentBarrierFollowsWriteDeclaration)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 42u;
+    auto commandBuffer = std::make_shared<TestCommandBuffer>();
+    frameContext.commandBuffer = commandBuffer;
+    frameContext.resourceStateTracker = NLS::Render::RHI::CreateDefaultResourceStateTracker();
+    frameContext.resourceStateTracker->BeginFrame(frameContext.frameIndex);
+
+    NLS::Render::RHI::RHITextureDesc depthDesc;
+    depthDesc.debugName = "TrackedDepthStencilAttachment";
+    depthDesc.extent = { 64u, 64u, 1u };
+    depthDesc.mipLevels = 1u;
+    depthDesc.arrayLayers = 1u;
+    depthDesc.format = NLS::Render::FrameGraph::kDeferredGBufferDepthFormat;
+    depthDesc.usage = NLS::Render::FrameGraph::kDeferredGBufferDepthUsage;
+    auto depthTexture = std::make_shared<TestTexture>(depthDesc);
+
+    NLS::Render::RHI::RHITextureViewDesc depthViewDesc;
+    depthViewDesc.debugName = "TrackedDepthStencilAttachmentView";
+    depthViewDesc.format = depthDesc.format;
+    depthViewDesc.subresourceRange.baseMipLevel = 0u;
+    depthViewDesc.subresourceRange.mipLevelCount = 1u;
+    depthViewDesc.subresourceRange.baseArrayLayer = 0u;
+    depthViewDesc.subresourceRange.arrayLayerCount = 1u;
+    auto depthView = std::make_shared<TestTextureView>(depthTexture, depthViewDesc);
+
+    auto beginPass = [&](const bool writesDepthStencilAttachment) -> NLS::Render::RHI::RHITextureBarrier
+    {
+        commandBuffer->barrierCalls = 0u;
+        commandBuffer->barrierHistory.clear();
+        commandBuffer->beginRenderPassCalls = 0u;
+
+        NLS::Render::Context::RenderPassCommandInput passInput;
+        passInput.kind = NLS::Render::Context::RenderPassCommandKind::Helper;
+        passInput.debugName = writesDepthStencilAttachment
+            ? "TrackedDepthStencilWritePass"
+            : "TrackedDepthStencilReadPass";
+        passInput.renderWidth = 64u;
+        passInput.renderHeight = 64u;
+        passInput.usesDepthStencilAttachment = true;
+        passInput.depthStencilAttachmentView = depthView;
+        passInput.writesDepthStencilAttachment = writesDepthStencilAttachment;
+
+        const bool startedPass = NLS::Render::Context::Detail::BeginPassCommandPlan(
+            *commandBuffer,
+            nullptr,
+            nullptr,
+            passInput,
+            &frameContext);
+
+        EXPECT_TRUE(startedPass);
+        EXPECT_EQ(commandBuffer->barrierCalls, 1u);
+        EXPECT_EQ(commandBuffer->barrierHistory.size(), 1u);
+        if (!startedPass ||
+            commandBuffer->barrierHistory.empty() ||
+            commandBuffer->barrierHistory[0].textureBarriers.empty())
+        {
+            return {};
+        }
+        EXPECT_EQ(commandBuffer->barrierHistory[0].textureBarriers.size(), 1u);
+        return commandBuffer->barrierHistory[0].textureBarriers[0];
+    };
+
+        const auto readBarrier = beginPass(false);
+        EXPECT_EQ(readBarrier.texture, depthTexture);
+        EXPECT_EQ(readBarrier.after, NLS::Render::RHI::ResourceState::DepthRead);
+        EXPECT_EQ(readBarrier.destinationAccessMask, NLS::Render::RHI::AccessMask::DepthStencilRead);
+        ASSERT_TRUE(commandBuffer->lastRenderPassDesc.depthStencilAttachment.has_value());
+        EXPECT_TRUE(commandBuffer->lastRenderPassDesc.depthStencilAttachment->readOnlyDepthStencil);
+
+        const auto writeBarrier = beginPass(true);
+        EXPECT_EQ(writeBarrier.texture, depthTexture);
+        EXPECT_EQ(writeBarrier.after, NLS::Render::RHI::ResourceState::DepthWrite);
+        EXPECT_EQ(
+            writeBarrier.destinationAccessMask,
+            NLS::Render::RHI::AccessMask::DepthStencilRead |
+                NLS::Render::RHI::AccessMask::DepthStencilWrite);
+        ASSERT_TRUE(commandBuffer->lastRenderPassDesc.depthStencilAttachment.has_value());
+        EXPECT_FALSE(commandBuffer->lastRenderPassDesc.depthStencilAttachment->readOnlyDepthStencil);
+}
+
+TEST(FrameGraphSceneTargetsTests, CompiledThreadedPassInputInfersDepthStencilWrites)
+{
+    NLS::Render::FrameGraph::CompiledThreadedRenderSceneGraphPass compiledPass;
+    compiledPass.metadata.commandKind = NLS::Render::Context::RenderPassCommandKind::Opaque;
+    compiledPass.metadata.executionMode = NLS::Render::FrameGraph::ThreadedRenderScenePassExecutionMode::Output;
+    NLS::Render::FrameGraph::SetThreadedRenderScenePassGraphPassName(compiledPass.metadata, "ForwardOpaque");
+    compiledPass.outputExecution.renderWidth = 320u;
+    compiledPass.outputExecution.renderHeight = 180u;
+    compiledPass.outputExecution.clearDepth = false;
+    compiledPass.outputExecution.clearStencil = false;
+
+    auto opaquePass = NLS::Render::FrameGraph::MakeCompiledThreadedRenderPassCommandInput(compiledPass);
+    EXPECT_TRUE(opaquePass.writesDepthStencilAttachment);
+
+    compiledPass.metadata.commandKind = NLS::Render::Context::RenderPassCommandKind::Helper;
+    NLS::Render::FrameGraph::SetThreadedRenderScenePassGraphPassName(compiledPass.metadata, "EditorGridPass");
+    auto helperPass = NLS::Render::FrameGraph::MakeCompiledThreadedRenderPassCommandInput(compiledPass);
+    EXPECT_FALSE(helperPass.writesDepthStencilAttachment);
+
+    compiledPass.outputExecution.clearDepth = true;
+    auto clearingHelperPass = NLS::Render::FrameGraph::MakeCompiledThreadedRenderPassCommandInput(compiledPass);
+    EXPECT_TRUE(clearingHelperPass.writesDepthStencilAttachment);
+}
+
+TEST(FrameGraphSceneTargetsTests, ThreadedExecutionPlanReinfersDepthStencilWritesAfterExplicitClearOverride)
+{
+    NLS::Render::FrameGraph::CompiledThreadedRenderSceneGraphPass compiledPass;
+    compiledPass.metadata.commandKind = NLS::Render::Context::RenderPassCommandKind::Helper;
+    compiledPass.metadata.executionMode = NLS::Render::FrameGraph::ThreadedRenderScenePassExecutionMode::Output;
+    NLS::Render::FrameGraph::SetThreadedRenderScenePassGraphPassName(compiledPass.metadata, "ExplicitClearHelper");
+    compiledPass.outputExecution.renderWidth = 320u;
+    compiledPass.outputExecution.renderHeight = 180u;
+    compiledPass.outputExecution.clearDepth = false;
+    compiledPass.outputExecution.clearStencil = false;
+
+    NLS::Render::Context::RenderPassCommandInput passInput;
+    passInput.kind = NLS::Render::Context::RenderPassCommandKind::Helper;
+    passInput.debugName = "ExplicitClearHelper";
+    passInput.clearDepth = true;
+    passInput.clearStencil = true;
+
+    const std::vector<NLS::Render::Context::RenderPassCommandInput> passInputs{ passInput };
+    const std::array<NLS::Render::FrameGraph::CompiledThreadedRenderSceneGraphPass, 1> metadata{{
+        compiledPass
+    }};
+
+    const auto plan = NLS::Render::FrameGraph::BuildThreadedRenderSceneExecutionPlan(
+        passInputs,
+        metadata);
+
+    ASSERT_EQ(plan.passes.size(), 1u);
+    const auto& plannedInput = plan.passes[0].commandInput;
+    EXPECT_TRUE(plannedInput.clearDepth);
+    EXPECT_TRUE(plannedInput.clearStencil);
+    EXPECT_TRUE(plannedInput.writesDepthStencilAttachment);
 }
 
 TEST(FrameGraphSceneTargetsTests, EndSwapchainPassTransitionsTrackedBackbufferToPresent)
@@ -2167,6 +3189,145 @@ TEST(FrameGraphSceneTargetsTests, BuildThreadedExecutionPlanEmitsResourceAccessD
     ASSERT_TRUE(plan.dependencies[0].targetTextureAccess.has_value());
     EXPECT_EQ(plan.dependencies[0].sourceTextureAccess->texture, testTexture);
     EXPECT_EQ(plan.dependencies[0].targetTextureAccess->texture, testTexture);
+}
+
+TEST(FrameGraphSceneTargetsTests, SelectionOutlineMaskPassChainEmitsOrderedResourceVisibilityEdges)
+{
+    using NLS::Render::Context::RenderPassCommandInput;
+    using NLS::Render::Context::RenderPassCommandKind;
+    using NLS::Render::Context::ResourceAccessMode;
+    using NLS::Render::FrameGraph::ThreadedRenderSceneDependencyKind;
+    using NLS::Render::FrameGraph::ThreadedRenderSceneDependencyResourceKind;
+    using NLS::Render::FrameGraph::ThreadedRenderScenePassRole;
+    using NLS::Render::RHI::AccessMask;
+    using NLS::Render::RHI::PipelineStageMask;
+    using NLS::Render::RHI::ResourceState;
+
+    auto maskTexture = std::make_shared<TestTexture>(MakeTestTextureDesc("SelectionOutlineMask.Mask"));
+    auto sceneDepthTexture = std::make_shared<TestTexture>(
+        MakeTestTextureDesc(
+            "SceneViewDepth",
+            NLS::Render::FrameGraph::kDeferredGBufferDepthFormat,
+            NLS::Render::FrameGraph::kDeferredGBufferDepthUsage));
+    auto outputColorTexture = std::make_shared<TestTexture>(MakeTestTextureDesc("SceneViewColor"));
+
+    const auto fullRange = [](const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture)
+    {
+        NLS::Render::RHI::RHISubresourceRange range;
+        range.mipLevelCount = texture->GetDesc().mipLevels;
+        range.arrayLayerCount = texture->GetDesc().arrayLayers;
+        return range;
+    };
+    const auto addAccess = [&fullRange](
+        RenderPassCommandInput& pass,
+        const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+        const ResourceAccessMode mode,
+        const ResourceState state,
+        const PipelineStageMask stages,
+        const AccessMask access)
+    {
+        pass.textureResourceAccesses.push_back({
+            texture,
+            fullRange(texture),
+            mode,
+            state,
+            stages,
+            access
+        });
+    };
+    const auto makePass = [](const char* name)
+    {
+        RenderPassCommandInput pass;
+        pass.kind = RenderPassCommandKind::Helper;
+        pass.debugName = name;
+        pass.drawCount = 1u;
+        return pass;
+    };
+
+    std::vector<RenderPassCommandInput> passInputs;
+    passInputs.push_back(makePass("SelectionOutlineMask::CaptureMask"));
+    passInputs.back().usesDepthStencilAttachment = true;
+    passInputs.back().writesDepthStencilAttachment = false;
+    addAccess(
+        passInputs.back(),
+        sceneDepthTexture,
+        ResourceAccessMode::Read,
+        ResourceState::DepthRead,
+        PipelineStageMask::DepthStencil,
+        AccessMask::DepthStencilRead);
+    addAccess(
+        passInputs.back(),
+        maskTexture,
+        ResourceAccessMode::Write,
+        ResourceState::RenderTarget,
+        PipelineStageMask::RenderTarget,
+        AccessMask::ColorAttachmentRead | AccessMask::ColorAttachmentWrite);
+
+    passInputs.push_back(makePass("SelectionOutlineMask::Composite"));
+    addAccess(passInputs.back(), maskTexture, ResourceAccessMode::Read, ResourceState::ShaderRead, PipelineStageMask::FragmentShader, AccessMask::ShaderRead);
+    addAccess(
+        passInputs.back(),
+        outputColorTexture,
+        ResourceAccessMode::Write,
+        ResourceState::RenderTarget,
+        PipelineStageMask::RenderTarget,
+        AccessMask::ColorAttachmentRead | AccessMask::ColorAttachmentWrite);
+
+    const std::array<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata, 2> metadata{{
+        MakeThreadedPassMetadata(RenderPassCommandKind::Helper, ThreadedRenderScenePassRole::Helper, "SelectionOutlineMask::CaptureMask", 1u),
+        MakeThreadedPassMetadata(RenderPassCommandKind::Helper, ThreadedRenderScenePassRole::Helper, "SelectionOutlineMask::Composite", 1u)
+    }};
+
+    const auto plan = NLS::Render::FrameGraph::BuildThreadedRenderSceneExecutionPlan(passInputs, metadata);
+
+    const auto expectTextureEdge =
+        [&plan](
+            const size_t sourcePass,
+            const size_t targetPass,
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+            const ResourceState writtenState,
+            const ResourceState readState)
+    {
+        const auto edge = std::find_if(
+            plan.dependencies.begin(),
+            plan.dependencies.end(),
+            [sourcePass, targetPass, &texture](const NLS::Render::FrameGraph::ThreadedRenderSceneDependencyEdge& candidate)
+            {
+                return candidate.sourcePassIndex == sourcePass &&
+                    candidate.targetPassIndex == targetPass &&
+                    candidate.resourceKind == ThreadedRenderSceneDependencyResourceKind::Texture &&
+                    candidate.sourceTextureAccess.has_value() &&
+                    candidate.targetTextureAccess.has_value() &&
+                    candidate.sourceTextureAccess->texture == texture &&
+                    candidate.targetTextureAccess->texture == texture;
+            });
+        ASSERT_NE(edge, plan.dependencies.end());
+        EXPECT_EQ(edge->kind, ThreadedRenderSceneDependencyKind::ResourceVisibility);
+        EXPECT_EQ(edge->sourceTextureAccess->mode, ResourceAccessMode::Write);
+        EXPECT_EQ(edge->targetTextureAccess->mode, ResourceAccessMode::Read);
+        EXPECT_EQ(edge->sourceTextureAccess->state, writtenState);
+        EXPECT_EQ(edge->targetTextureAccess->state, readState);
+    };
+
+    ASSERT_EQ(plan.passes.size(), 2u);
+    EXPECT_FALSE(plan.passes[0].requiresDependencyVisibility);
+    for (size_t passIndex = 1u; passIndex < plan.passes.size(); ++passIndex)
+    {
+        EXPECT_TRUE(plan.passes[passIndex].requiresDependencyVisibility) << passIndex;
+        ASSERT_TRUE(plan.passes[passIndex].dependencySourcePassIndex.has_value()) << passIndex;
+        EXPECT_EQ(*plan.passes[passIndex].dependencySourcePassIndex, passIndex - 1u);
+    }
+    expectTextureEdge(0u, 1u, maskTexture, ResourceState::RenderTarget, ResourceState::ShaderRead);
+
+    const auto staleDepthWrite = std::find_if(
+        plan.dependencies.begin(),
+        plan.dependencies.end(),
+        [&sceneDepthTexture](const NLS::Render::FrameGraph::ThreadedRenderSceneDependencyEdge& edge)
+        {
+            return edge.sourceTextureAccess.has_value() &&
+                edge.sourceTextureAccess->texture == sceneDepthTexture;
+        });
+    EXPECT_EQ(staleDepthWrite, plan.dependencies.end());
 }
 
 TEST(FrameGraphSceneTargetsTests, ThreadedResourceDependencySlicesPartialTextureWritersForFullRangeRead)
@@ -3090,7 +4251,7 @@ TEST(FrameGraphSceneTargetsTests, DeferredLightGridCompilationUsesResolvedPassBi
     lightGridContext.frameDescriptor = frameDescriptor;
     lightGridContext.graphicsPassBindingSet = lightGridBindingSet;
 
-    NLS::Render::FrameGraph::DeferredPreparedSceneResources resources;
+    auto resources = MakeCompleteDeferredPreparedSceneResources();
     NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
         package,
         lightGridContext,
@@ -3974,6 +5135,44 @@ TEST(FrameGraphSceneTargetsTests, ForwardExternalOutputPassExecutesWithoutDownst
     EXPECT_GE(beginCount, 1) << frameGraphDebug.str();
     EXPECT_GE(drawCount, 1) << frameGraphDebug.str();
     EXPECT_GE(endCount, 1) << frameGraphDebug.str();
+}
+
+TEST(FrameGraphSceneTargetsTests, ForwardPreparedExecutionDeclaresDepthStencilWriteForOpaquePass)
+{
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 320u;
+    frameDescriptor.renderHeight = 180u;
+    frameDescriptor.camera = &camera;
+
+    NLS::Render::Context::RenderScenePackage package;
+    package.targetsSwapchain = true;
+    package.renderWidth = 320u;
+    package.renderHeight = 180u;
+    package.opaqueDrawCount = 1u;
+    package.skyboxDrawCount = 1u;
+    package.transparentDrawCount = 1u;
+    package.drawCommandCount = 3u;
+    package.recordedDrawCommands.resize(3u);
+    package.clearDepthBuffer = true;
+    package.clearStencilBuffer = true;
+
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor = frameDescriptor;
+
+    NLS::Render::FrameGraph::CompileAndApplyPreparedForwardLightGridSceneExecution(
+        package,
+        lightGridContext);
+
+    ASSERT_EQ(package.passCommandInputs.size(), 3u);
+    const auto& opaquePass = package.passCommandInputs[0];
+    const auto& skyboxPass = package.passCommandInputs[1];
+    const auto& transparentPass = package.passCommandInputs[2];
+    EXPECT_EQ(opaquePass.kind, NLS::Render::Context::RenderPassCommandKind::Opaque);
+    EXPECT_TRUE(opaquePass.usesDepthStencilAttachment);
+    EXPECT_TRUE(opaquePass.writesDepthStencilAttachment);
+    EXPECT_TRUE(skyboxPass.writesDepthStencilAttachment);
+    EXPECT_FALSE(transparentPass.writesDepthStencilAttachment);
 }
 
 TEST(FrameGraphSceneTargetsTests, FinalizePreparedForwardScenePackageRegistersExtractionVisibilityAndReadbackSource)

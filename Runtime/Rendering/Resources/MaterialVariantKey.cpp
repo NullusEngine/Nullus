@@ -38,17 +38,18 @@ namespace NLS::Render::Resources
 
         void AppendOptionalColorFormats(
             std::string& key,
-            const std::optional<std::vector<NLS::Render::RHI::TextureFormat>>& value)
+            const bool hasOverride,
+            const std::span<const NLS::Render::RHI::TextureFormat> formats)
         {
             key += "|overrideColorFormats:";
-            if (!value.has_value())
+            if (!hasOverride)
             {
                 key += "unset";
                 return;
             }
 
-            key += std::to_string(value->size());
-            for (const auto format : *value)
+            key += std::to_string(formats.size());
+            for (const auto format : formats)
             {
                 key += ",";
                 key += std::to_string(static_cast<uint32_t>(format));
@@ -84,11 +85,15 @@ namespace NLS::Render::Resources
             std::string key = "overrides";
             AppendOptionalBool(key, "overrideDepthWrite", overrides.depthWrite);
             AppendOptionalBool(key, "overrideColorWrite", overrides.colorWrite);
+            AppendOptionalBool(key, "overrideBlending", overrides.blending);
             AppendOptionalBool(key, "overrideDepthTest", overrides.depthTest);
             AppendOptionalBool(key, "overrideHasDepth", overrides.hasDepthAttachment);
             AppendOptionalBool(key, "overrideCulling", overrides.culling);
             AppendOptionalCullFace(key, "overrideCullFace", overrides.cullFace);
-            AppendOptionalColorFormats(key, overrides.colorFormats);
+            AppendOptionalColorFormats(
+                key,
+                overrides.HasColorFormatsOverride(),
+                overrides.GetColorFormats());
             return key;
         }
     }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <string>
 #include <utility>
 
 #include "Rendering/RHI/Core/RHIPipeline.h"
@@ -182,6 +183,7 @@ namespace NLS::Render::RHI
         LoadOp stencilLoadOp = LoadOp::DontCare;
         StoreOp stencilStoreOp = StoreOp::DontCare;
         RHIDepthStencilClearValue clearValue{};
+        bool readOnlyDepthStencil = false;
     };
 
     struct NLS_RENDER_API RHIRenderPassDesc
@@ -253,6 +255,21 @@ namespace NLS::Render::RHI
         std::vector<RHITextureBarrier> textureBarriers;
     };
 
+    enum class NLS_RENDER_API RHICommandRecordingStatusCode : uint8_t
+    {
+        Success,
+        InvalidArgument,
+        BackendFailure
+    };
+
+    struct NLS_RENDER_API RHICommandRecordingResult
+    {
+        RHICommandRecordingStatusCode code = RHICommandRecordingStatusCode::Success;
+        std::string message;
+
+        bool Succeeded() const { return code == RHICommandRecordingStatusCode::Success; }
+    };
+
     class NLS_RENDER_API RHICommandBuffer : public RHIObject
     {
     public:
@@ -284,6 +301,11 @@ namespace NLS::Render::RHI
         virtual RHIBarrierDesc FilterBarrierDesc(const RHIBarrierDesc& barrier) const
         {
             return barrier;
+        }
+        virtual RHICommandRecordingResult BarrierChecked(const RHIBarrierDesc& barrier)
+        {
+            Barrier(barrier);
+            return {};
         }
         virtual void Barrier(const RHIBarrierDesc& barrier) = 0;
     };

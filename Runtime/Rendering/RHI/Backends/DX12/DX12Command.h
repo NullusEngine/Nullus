@@ -74,6 +74,7 @@ namespace NLS::Render::Backend
 		void CopyBufferToTexture(const NLS::Render::RHI::RHIBufferToTextureCopyDesc& desc) override;
 		void CopyTexture(const NLS::Render::RHI::RHITextureCopyDesc& desc) override;
 		NLS::Render::RHI::RHIBarrierDesc FilterBarrierDesc(const NLS::Render::RHI::RHIBarrierDesc& barrier) const override;
+		NLS::Render::RHI::RHICommandRecordingResult BarrierChecked(const NLS::Render::RHI::RHIBarrierDesc& barrier) override;
 		void Barrier(const NLS::Render::RHI::RHIBarrierDesc& barrier) override;
 
 #if defined(_WIN32)

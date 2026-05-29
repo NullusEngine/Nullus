@@ -337,6 +337,38 @@ TEST(DX12TextureViewUtilsTests, BuildsDepthStencilSrvAndDsvForSampledDepthAttach
     EXPECT_FALSE(descriptors.hasRtv);
 }
 
+TEST(DX12TextureViewUtilsTests, BuildsReadOnlyDepthStencilDsvFlags)
+{
+    NLS::Render::RHI::RHITextureDesc textureDesc;
+    textureDesc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
+    textureDesc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
+    textureDesc.usage = NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment;
+
+    NLS::Render::RHI::RHITextureViewDesc viewDesc;
+    viewDesc.viewType = NLS::Render::RHI::TextureViewType::Texture2D;
+    viewDesc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
+
+    const auto descriptors = NLS::Render::RHI::DX12::BuildDX12TextureViewDescriptorSet(
+        textureDesc,
+        viewDesc,
+        true);
+
+    ASSERT_TRUE(descriptors.hasDsv);
+    EXPECT_EQ(
+        descriptors.dsvDesc.Flags,
+        D3D12_DSV_FLAG_READ_ONLY_DEPTH | D3D12_DSV_FLAG_READ_ONLY_STENCIL);
+
+    textureDesc.format = NLS::Render::RHI::TextureFormat::Depth32F;
+    viewDesc.format = NLS::Render::RHI::TextureFormat::Depth32F;
+    const auto depthOnlyDescriptors = NLS::Render::RHI::DX12::BuildDX12TextureViewDescriptorSet(
+        textureDesc,
+        viewDesc,
+        true);
+
+    ASSERT_TRUE(depthOnlyDescriptors.hasDsv);
+    EXPECT_EQ(depthOnlyDescriptors.dsvDesc.Flags, D3D12_DSV_FLAG_READ_ONLY_DEPTH);
+}
+
 TEST(DX12TextureViewUtilsTests, UsesTypelessDepthResourceWithDsvClearFormat)
 {
     EXPECT_EQ(

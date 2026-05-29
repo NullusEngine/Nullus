@@ -223,6 +223,17 @@ namespace NLS::Render::Resources
         const ShaderParameterStruct& parameters,
         std::string_view debugName = {})
     {
+        auto isRendererOwnedObjectIndexConstant = [&parameters](const ShaderParameterMember& member)
+        {
+            return parameters.groupKind == ShaderParameterGroupKind::Object &&
+                parameters.registerSpace == RHI::BindingPointMap::kObjectBindingSpace &&
+                member.name == "ObjectIndexConstants" &&
+                member.type == RHI::BindingType::UniformBuffer &&
+                member.binding == 1u &&
+                member.byteSize >= sizeof(uint32_t) &&
+                member.byteSize <= 16u;
+        };
+
         RHI::RHIBindingLayoutDesc desc;
         desc.debugName = debugName.empty()
             ? parameters.debugName + "BindingLayout"
@@ -230,6 +241,9 @@ namespace NLS::Render::Resources
         desc.entries.reserve(parameters.members.size());
         for (const auto& member : parameters.members)
         {
+            if (isRendererOwnedObjectIndexConstant(member))
+                continue;
+
             desc.entries.push_back({
                 member.name,
                 member.type,
@@ -274,6 +288,17 @@ namespace NLS::Render::Resources
                 layoutDesc.debugName = std::string(debugNamePrefix) + ":" + parameters.debugName + "BindingLayout";
             for (const auto& member : parameters.members)
             {
+                if (parameters.groupKind == ShaderParameterGroupKind::Object &&
+                    parameters.registerSpace == RHI::BindingPointMap::kObjectBindingSpace &&
+                    member.name == "ObjectIndexConstants" &&
+                    member.type == RHI::BindingType::UniformBuffer &&
+                    member.binding == 1u &&
+                    member.byteSize >= sizeof(uint32_t) &&
+                    member.byteSize <= 16u)
+                {
+                    continue;
+                }
+
                 layoutDesc.entries.push_back({
                     member.name,
                     member.type,

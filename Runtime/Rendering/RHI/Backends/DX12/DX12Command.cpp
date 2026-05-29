@@ -584,6 +584,12 @@ namespace NLS::Render::Backend
 					if (resource != nullptr)
 					{
 						const D3D12_RESOURCE_STATES stateBefore = ToD3D12ResourceState(texture->GetState());
+						const auto depthStencilState = desc.depthStencilAttachment->readOnlyDepthStencil
+							? D3D12_RESOURCE_STATE_DEPTH_READ
+							: D3D12_RESOURCE_STATE_DEPTH_WRITE;
+						const auto textureState = desc.depthStencilAttachment->readOnlyDepthStencil
+							? NLS::Render::RHI::ResourceState::DepthRead
+							: NLS::Render::RHI::ResourceState::DepthWrite;
 						const auto& subresourceRange = desc.depthStencilAttachment->view->GetDesc().subresourceRange;
 						const bool coversWholeTexture =
 							NLS::Render::RHI::DX12::DoesDX12BarrierRangeCoverWholeTexture(
@@ -595,11 +601,11 @@ namespace NLS::Render::Backend
 							texture->GetDesc(),
 							subresourceRange,
 							stateBefore,
-							D3D12_RESOURCE_STATE_DEPTH_WRITE);
+							depthStencilState);
 
 						m_activeRenderPassTransitions.push_back({
 							resource,
-							D3D12_RESOURCE_STATE_DEPTH_WRITE,
+							depthStencilState,
 							D3D12_RESOURCE_STATE_COMMON,
 							texture.get(),
 							NLS::Render::RHI::ResourceState::Unknown,
@@ -609,7 +615,7 @@ namespace NLS::Render::Backend
 						if (auto* nativeTexture = dynamic_cast<NativeDX12Texture*>(texture.get()))
 						{
 							if (coversWholeTexture)
-								nativeTexture->SetState(NLS::Render::RHI::ResourceState::DepthWrite);
+								nativeTexture->SetState(textureState);
 							else
 							{
 								nativeTexture->MarkPartialStateDirty();
@@ -659,7 +665,11 @@ namespace NLS::Render::Backend
 
 		if (desc.depthStencilAttachment.has_value() && desc.depthStencilAttachment->view != nullptr)
 		{
-			NLS::Render::RHI::NativeHandle dsvHandleNative = desc.depthStencilAttachment->view->GetNativeDepthStencilView();
+			const auto access = desc.depthStencilAttachment->readOnlyDepthStencil
+				? NLS::Render::RHI::RHIDepthStencilViewAccess::ReadOnlyDepthStencil
+				: NLS::Render::RHI::RHIDepthStencilViewAccess::ReadWrite;
+			NLS::Render::RHI::NativeHandle dsvHandleNative =
+				desc.depthStencilAttachment->view->GetNativeDepthStencilView(access);
 			void* dsv = dsvHandleNative.handle;
 			if (dsv != nullptr)
 			{
@@ -1308,11 +1318,17 @@ namespace NLS::Render::Backend
 #endif
 	}
 
-	void NativeDX12CommandBuffer::Barrier(const NLS::Render::RHI::RHIBarrierDesc& barrierDesc)
+	NLS::Render::RHI::RHICommandRecordingResult NativeDX12CommandBuffer::BarrierChecked(
+		const NLS::Render::RHI::RHIBarrierDesc& barrierDesc)
 	{
 #if defined(_WIN32)
 		if (m_commandList == nullptr)
-			return;
+		{
+			return {
+				NLS::Render::RHI::RHICommandRecordingStatusCode::InvalidArgument,
+				"NativeDX12CommandBuffer::Barrier: command list is null"
+			};
+		}
 
 		const auto filteredBarrierDesc = FilterBarrierDesc(barrierDesc);
 		std::vector<D3D12_RESOURCE_BARRIER> barriers;
@@ -1457,9 +1473,19 @@ namespace NLS::Render::Backend
 
 		if (!barriers.empty())
 			m_commandList->ResourceBarrier(static_cast<UINT>(barriers.size()), barriers.data());
+		return {};
 #else
 		(void)barrierDesc;
+		return {
+			NLS::Render::RHI::RHICommandRecordingStatusCode::BackendFailure,
+			"DX12 command barrier is only available on Windows"
+		};
 #endif
+	}
+
+	void NativeDX12CommandBuffer::Barrier(const NLS::Render::RHI::RHIBarrierDesc& barrierDesc)
+	{
+		(void)BarrierChecked(barrierDesc);
 	}
 
 #if defined(_WIN32)

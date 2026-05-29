@@ -120,6 +120,21 @@ TEST(DX12RenderPassUtilsTests, SkipsAttachmentsThatDoNotRequestClear)
     EXPECT_FALSE(clearPlan.clearStencil);
 }
 
+TEST(DX12RenderPassUtilsTests, SkipsReadOnlyDepthStencilClearRequests)
+{
+    NLS::Render::RHI::RHIRenderPassDesc renderPassDesc;
+    NLS::Render::RHI::RHIRenderPassDepthStencilAttachmentDesc depthStencilAttachment;
+    depthStencilAttachment.depthLoadOp = NLS::Render::RHI::LoadOp::Clear;
+    depthStencilAttachment.stencilLoadOp = NLS::Render::RHI::LoadOp::Clear;
+    depthStencilAttachment.readOnlyDepthStencil = true;
+    renderPassDesc.depthStencilAttachment = depthStencilAttachment;
+
+    const auto clearPlan = NLS::Render::RHI::DX12::BuildDX12RenderPassClearPlan(renderPassDesc);
+
+    EXPECT_FALSE(clearPlan.clearDepth);
+    EXPECT_FALSE(clearPlan.clearStencil);
+}
+
 TEST(DX12RenderPassUtilsTests, TracksExternalBackbufferClearRequestsSeparatelyFromOwnedRenderTargets)
 {
     NLS::Render::RHI::RHIRenderPassDesc renderPassDesc;

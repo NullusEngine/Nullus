@@ -1,7 +1,11 @@
 #include <gtest/gtest.h>
 
+#include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <memory>
 #include <tuple>
+#include <vector>
 
 #include "Rendering/DeferredSceneRenderer.h"
 
@@ -13,11 +17,140 @@
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/Assets/ShaderArtifact.h"
 #include "Rendering/RHI/BindingPointMap.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
+#include "Rendering/RHI/Core/RHIResource.h"
+#include "Rendering/Resources/Texture2D.h"
 #include "Core/ServiceLocator.h"
 #include "Guid.h"
 
 namespace
 {
+    std::string ReadRepoFile(const std::filesystem::path& relativePath)
+    {
+        std::ifstream input(std::filesystem::path(NLS_ROOT_DIR) / relativePath);
+        return {
+            std::istreambuf_iterator<char>(input),
+            std::istreambuf_iterator<char>()
+        };
+    }
+
+    class DeferredTestAdapter final : public NLS::Render::RHI::RHIAdapter
+    {
+    public:
+        std::string_view GetDebugName() const override { return "DeferredSceneRendererTestsAdapter"; }
+        NLS::Render::RHI::NativeBackendType GetBackendType() const override { return NLS::Render::RHI::NativeBackendType::DX12; }
+        std::string_view GetVendor() const override { return "TestVendor"; }
+        std::string_view GetHardware() const override { return "TestHardware"; }
+    };
+
+    class DeferredTestTexture final : public NLS::Render::RHI::RHITexture
+    {
+    public:
+        explicit DeferredTestTexture(NLS::Render::RHI::RHITextureDesc desc)
+            : m_desc(std::move(desc))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return m_desc.debugName; }
+        const NLS::Render::RHI::RHITextureDesc& GetDesc() const override { return m_desc; }
+        NLS::Render::RHI::ResourceState GetState() const override { return NLS::Render::RHI::ResourceState::Unknown; }
+
+    private:
+        NLS::Render::RHI::RHITextureDesc m_desc {};
+    };
+
+    class DeferredTestTextureView final : public NLS::Render::RHI::RHITextureView
+    {
+    public:
+        DeferredTestTextureView(
+            std::shared_ptr<NLS::Render::RHI::RHITexture> texture,
+            NLS::Render::RHI::RHITextureViewDesc desc)
+            : m_texture(std::move(texture))
+            , m_desc(std::move(desc))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return m_desc.debugName; }
+        const NLS::Render::RHI::RHITextureViewDesc& GetDesc() const override { return m_desc; }
+        const std::shared_ptr<NLS::Render::RHI::RHITexture>& GetTexture() const override { return m_texture; }
+
+    private:
+        std::shared_ptr<NLS::Render::RHI::RHITexture> m_texture;
+        NLS::Render::RHI::RHITextureViewDesc m_desc {};
+    };
+
+    class DeferredTestExplicitDevice final : public NLS::Render::RHI::RHIDevice
+    {
+    public:
+        DeferredTestExplicitDevice()
+            : m_adapter(std::make_shared<DeferredTestAdapter>())
+        {
+            m_nativeDeviceInfo.backend = NLS::Render::RHI::NativeBackendType::DX12;
+            m_capabilities.backendReady = true;
+            m_capabilities.supportsGraphics = true;
+            m_capabilities.supportsOffscreenFramebuffers = true;
+            m_capabilities.supportsMultiRenderTargets = true;
+        }
+
+        std::string_view GetDebugName() const override { return "DeferredSceneRendererTestsDevice"; }
+        const std::shared_ptr<NLS::Render::RHI::RHIAdapter>& GetAdapter() const override { return m_adapter; }
+        const NLS::Render::RHI::RHIDeviceCapabilities& GetCapabilities() const override { return m_capabilities; }
+        NLS::Render::RHI::NativeRenderDeviceInfo GetNativeDeviceInfo() const override { return m_nativeDeviceInfo; }
+        bool IsBackendReady() const override { return true; }
+        std::shared_ptr<NLS::Render::RHI::RHIQueue> GetQueue(NLS::Render::RHI::QueueType) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHISwapchain> CreateSwapchain(const NLS::Render::RHI::SwapchainDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIBuffer> CreateBuffer(
+            const NLS::Render::RHI::RHIBufferDesc&,
+            const NLS::Render::RHI::RHIBufferUploadDesc&) override
+        {
+            return nullptr;
+        }
+        std::shared_ptr<NLS::Render::RHI::RHITexture> CreateTexture(
+            const NLS::Render::RHI::RHITextureDesc& desc,
+            const NLS::Render::RHI::RHITextureUploadDesc&) override
+        {
+            ++textureCreateCalls;
+            if (failTextureCreateCall != 0u && textureCreateCalls == failTextureCreateCall)
+                return nullptr;
+            return std::make_shared<DeferredTestTexture>(desc);
+        }
+        std::shared_ptr<NLS::Render::RHI::RHITextureView> CreateTextureView(
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+            const NLS::Render::RHI::RHITextureViewDesc& desc) override
+        {
+            return std::make_shared<DeferredTestTextureView>(texture, desc);
+        }
+        std::shared_ptr<NLS::Render::RHI::RHISampler> CreateSampler(const NLS::Render::RHI::SamplerDesc&, std::string = {}) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> CreateBindingLayout(const NLS::Render::RHI::RHIBindingLayoutDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIBindingSet> CreateBindingSet(const NLS::Render::RHI::RHIBindingSetDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> CreatePipelineLayout(const NLS::Render::RHI::RHIPipelineLayoutDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIShaderModule> CreateShaderModule(const NLS::Render::RHI::RHIShaderModuleDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline> CreateGraphicsPipeline(const NLS::Render::RHI::RHIGraphicsPipelineDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> CreateComputePipeline(const NLS::Render::RHI::RHIComputePipelineDesc&) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHICommandPool> CreateCommandPool(NLS::Render::RHI::QueueType, std::string = {}) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHIFence> CreateFence(std::string = {}) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHISemaphore> CreateSemaphore(std::string = {}) override { return nullptr; }
+        void ReadPixels(
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>&,
+            uint32_t,
+            uint32_t,
+            uint32_t,
+            uint32_t,
+            NLS::Render::Settings::EPixelDataFormat,
+            NLS::Render::Settings::EPixelDataType,
+            void*) override
+        {
+        }
+
+        size_t textureCreateCalls = 0u;
+        size_t failTextureCreateCall = 0u;
+
+    private:
+        std::shared_ptr<NLS::Render::RHI::RHIAdapter> m_adapter;
+        NLS::Render::RHI::NativeRenderDeviceInfo m_nativeDeviceInfo {};
+        NLS::Render::RHI::RHIDeviceCapabilities m_capabilities {};
+    };
+
     NLS::Render::Resources::ShaderReflection MakeDeferredMaterialShaderReflection()
     {
         NLS::Render::Resources::ShaderReflection reflection;
@@ -115,6 +248,130 @@ namespace
             renderer,
             sourceMaterial);
     }
+}
+
+TEST(DeferredSceneRendererMaterialCacheTests, ReusesStaticGBufferColorFormatOverrides)
+{
+    const auto source = ReadRepoFile("Runtime/Engine/Rendering/DeferredSceneRenderer.cpp");
+
+    EXPECT_NE(source.find("std::span<const NLS::Render::RHI::TextureFormat> GetDeferredGBufferColorFormats()"), std::string::npos);
+    EXPECT_NE(source.find("overrides.SetColorFormats(GetDeferredGBufferColorFormats())"), std::string::npos);
+    EXPECT_EQ(source.find("colorFormatsView"), std::string::npos);
+    EXPECT_EQ(source.find("gBufferOverrides.colorFormats = GetDeferredGBufferColorFormats()"), std::string::npos);
+    EXPECT_EQ(source.find("static const std::vector<NLS::Render::RHI::TextureFormat> kFormats"), std::string::npos);
+}
+
+TEST(DeferredSceneRendererMaterialCacheTests, ReusesWrappedGBufferTargetsUntilSizeChanges)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<DeferredTestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Engine::Rendering::DeferredSceneRenderer::ConstructionOptions options;
+    options.loadPipelineResources = false;
+    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver, options);
+
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::EnsureGBufferTargets(renderer, 320u, 180u);
+
+    const auto* firstAlbedo = NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferAlbedoTexture(renderer);
+    const auto* firstNormal = NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferNormalTexture(renderer);
+    const auto* firstMaterial = NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialTexture(renderer);
+    const auto* firstDepth = NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferDepthTexture(renderer);
+    ASSERT_NE(firstAlbedo, nullptr);
+    ASSERT_NE(firstNormal, nullptr);
+    ASSERT_NE(firstMaterial, nullptr);
+    ASSERT_NE(firstDepth, nullptr);
+    const auto firstAlbedoId = firstAlbedo->GetInstanceID();
+    const auto firstNormalId = firstNormal->GetInstanceID();
+    const auto firstMaterialId = firstMaterial->GetInstanceID();
+    const auto firstDepthId = firstDepth->GetInstanceID();
+    const auto firstTextureCreateCalls = explicitDevice->textureCreateCalls;
+    EXPECT_GE(firstTextureCreateCalls, 4u);
+
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::EnsureGBufferTargets(renderer, 320u, 180u);
+
+    EXPECT_EQ(explicitDevice->textureCreateCalls, firstTextureCreateCalls);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferAlbedoTexture(renderer)->GetInstanceID(), firstAlbedoId);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferNormalTexture(renderer)->GetInstanceID(), firstNormalId);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialTexture(renderer)->GetInstanceID(), firstMaterialId);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferDepthTexture(renderer)->GetInstanceID(), firstDepthId);
+
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::EnsureGBufferTargets(renderer, 640u, 360u);
+
+    EXPECT_GT(explicitDevice->textureCreateCalls, firstTextureCreateCalls);
+    EXPECT_NE(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferAlbedoTexture(renderer)->GetInstanceID(), firstAlbedoId);
+    EXPECT_NE(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferNormalTexture(renderer)->GetInstanceID(), firstNormalId);
+    EXPECT_NE(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialTexture(renderer)->GetInstanceID(), firstMaterialId);
+    EXPECT_NE(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferDepthTexture(renderer)->GetInstanceID(), firstDepthId);
+
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::EnsureGBufferTargets(renderer, 0u, 0u);
+
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferAlbedoTexture(renderer), nullptr);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferNormalTexture(renderer), nullptr);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialTexture(renderer), nullptr);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferDepthTexture(renderer), nullptr);
+}
+
+TEST(DeferredSceneRendererMaterialCacheTests, ClearsWrappedGBufferTargetsWhenResizeAllocationFails)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<DeferredTestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Engine::Rendering::DeferredSceneRenderer::ConstructionOptions options;
+    options.loadPipelineResources = false;
+    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver, options);
+
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::EnsureGBufferTargets(renderer, 320u, 180u);
+
+    ASSERT_NE(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferAlbedoTexture(renderer), nullptr);
+    ASSERT_NE(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferNormalTexture(renderer), nullptr);
+    ASSERT_NE(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialTexture(renderer), nullptr);
+    ASSERT_NE(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferDepthTexture(renderer), nullptr);
+
+    explicitDevice->failTextureCreateCall = explicitDevice->textureCreateCalls + 1u;
+
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::EnsureGBufferTargets(renderer, 640u, 360u);
+
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferAlbedoTexture(renderer), nullptr);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferNormalTexture(renderer), nullptr);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialTexture(renderer), nullptr);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferDepthTexture(renderer), nullptr);
+
+    explicitDevice->failTextureCreateCall = 0u;
+
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::EnsureGBufferTargets(renderer, 640u, 360u);
+
+    const auto* retriedAlbedo = NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferAlbedoTexture(renderer);
+    const auto* retriedNormal = NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferNormalTexture(renderer);
+    const auto* retriedMaterial = NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialTexture(renderer);
+    const auto* retriedDepth = NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferDepthTexture(renderer);
+    ASSERT_NE(retriedAlbedo, nullptr);
+    ASSERT_NE(retriedNormal, nullptr);
+    ASSERT_NE(retriedMaterial, nullptr);
+    ASSERT_NE(retriedDepth, nullptr);
+    EXPECT_EQ(retriedAlbedo->width, 640u);
+    EXPECT_EQ(retriedAlbedo->height, 360u);
+    EXPECT_EQ(retriedNormal->width, 640u);
+    EXPECT_EQ(retriedNormal->height, 360u);
+    EXPECT_EQ(retriedMaterial->width, 640u);
+    EXPECT_EQ(retriedMaterial->height, 360u);
+    EXPECT_EQ(retriedDepth->width, 640u);
+    EXPECT_EQ(retriedDepth->height, 360u);
 }
 
 TEST(DeferredSceneRendererMaterialCacheTests, ReusesGBufferMaterialForStableMaterialAssetPath)

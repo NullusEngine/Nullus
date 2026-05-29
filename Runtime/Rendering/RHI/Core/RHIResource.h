@@ -124,6 +124,12 @@ namespace NLS::Render::RHI
         std::string debugName;
     };
 
+    enum class RHIDepthStencilViewAccess : uint8_t
+    {
+        ReadWrite,
+        ReadOnlyDepthStencil
+    };
+
     struct NLS_RENDER_API RHIVertexBufferView
     {
         std::shared_ptr<class RHIBuffer> buffer;
@@ -168,6 +174,12 @@ namespace NLS::Render::RHI
         virtual const std::shared_ptr<RHITexture>& GetTexture() const = 0;
         virtual NativeHandle GetNativeRenderTargetView() { return {}; } // Type-safe native handle
         virtual NativeHandle GetNativeDepthStencilView() { return {}; } // Type-safe native handle
+        virtual NativeHandle GetNativeDepthStencilView(RHIDepthStencilViewAccess access)
+        {
+            return access == RHIDepthStencilViewAccess::ReadWrite
+                ? GetNativeDepthStencilView()
+                : NativeHandle{};
+        }
         virtual NativeHandle GetNativeShaderResourceView() { return {}; } // Type-safe native handle
     };
 

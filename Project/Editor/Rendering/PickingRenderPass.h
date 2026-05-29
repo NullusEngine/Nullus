@@ -47,7 +47,8 @@ namespace NLS::Editor::Rendering
         bool HasReadablePickingFrame() const;
         uint64_t GetReadablePickingFrameSerial() const;
         uint64_t GetSubmittedPickingFrameSerial() const;
-        std::optional<NLS::Render::Context::RenderPassCommandInput> GetPreparedThreadedPassInput() const;
+        const std::optional<NLS::Render::Context::RenderPassCommandInput>& GetPreparedThreadedPassInput() const;
+        std::optional<NLS::Render::Context::RenderPassCommandInput> ConsumePreparedThreadedPassInput();
 
 		bool ManagesOwnRenderPass() const override { return true; }
 

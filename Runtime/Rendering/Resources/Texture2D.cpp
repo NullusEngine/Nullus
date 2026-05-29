@@ -72,10 +72,20 @@ std::unique_ptr<Texture2D> Texture2D::WrapExternal(
 	uint32_t inHeight)
 {
 	auto texture = std::unique_ptr<Texture2D>(new Texture2D{});
-	texture->SetRHITexture(textureResource);
-	texture->width = inWidth;
-	texture->height = inHeight;
+	texture->WrapExternalInPlace(textureResource, inWidth, inHeight);
 	return texture;
+}
+
+void Texture2D::WrapExternalInPlace(
+	const std::shared_ptr<NLS::Render::RHI::RHITexture>& textureResource,
+	uint32_t inWidth,
+	uint32_t inHeight)
+{
+	if (GetTextureHandle() != textureResource)
+		SetRHITexture(textureResource);
+
+	width = inWidth;
+	height = inHeight;
 }
 
 void Texture2D::SetTextureResource(const Image* image)

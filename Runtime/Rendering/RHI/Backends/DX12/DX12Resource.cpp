@@ -1,6 +1,7 @@
 #include "Rendering/RHI/Backends/DX12/DX12Resource.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -25,6 +26,12 @@ namespace NLS::Render::Backend
 	namespace
 	{
 		constexpr uint64_t kDX12InitialUploadFenceWaitTimeoutNanoseconds = 5'000'000'000ull;
+
+		enum class DX12DepthStencilViewAccess : uint8_t
+		{
+			ReadWrite,
+			ReadOnlyDepthStencil
+		};
 
 		UINT64 AlignUp(UINT64 value, UINT64 alignment)
 		{
@@ -59,6 +66,11 @@ namespace NLS::Render::Backend
 				return;
 
 			object->SetName(wideName.c_str());
+		}
+
+		bool IsDepthStencilFormatWithStencil(const NLS::Render::RHI::TextureFormat format)
+		{
+			return format == NLS::Render::RHI::TextureFormat::Depth24Stencil8;
 		}
 
 		bool WaitForDX12FenceValue(
@@ -1029,6 +1041,7 @@ namespace NLS::Render::Backend
 		m_srvHeap.Reset();
 		m_rtvHeap.Reset();
 		m_dsvHeap.Reset();
+		m_readOnlyDepthStencilDsvHeap.Reset();
 #endif
 	}
 
@@ -1037,6 +1050,56 @@ namespace NLS::Render::Backend
 	const std::shared_ptr<NLS::Render::RHI::RHITexture>& NativeDX12TextureView::GetTexture() const { return m_texture; }
 	NLS::Render::RHI::NativeHandle NativeDX12TextureView::GetNativeRenderTargetView() { return { NLS::Render::RHI::BackendType::DX12, reinterpret_cast<void*>(m_rtvHandle.ptr) }; }
 	NLS::Render::RHI::NativeHandle NativeDX12TextureView::GetNativeDepthStencilView() { return { NLS::Render::RHI::BackendType::DX12, reinterpret_cast<void*>(m_dsvHandle.ptr) }; }
+	NLS::Render::RHI::NativeHandle NativeDX12TextureView::GetNativeDepthStencilView(
+		const NLS::Render::RHI::RHIDepthStencilViewAccess access)
+	{
+#if defined(_WIN32)
+		if (access == NLS::Render::RHI::RHIDepthStencilViewAccess::ReadWrite)
+			return GetNativeDepthStencilView();
+		if (access != NLS::Render::RHI::RHIDepthStencilViewAccess::ReadOnlyDepthStencil)
+			return {};
+
+		if (m_device == nullptr || m_texture == nullptr)
+			return {};
+
+		auto* nativeTexture = dynamic_cast<NativeDX12Texture*>(m_texture.get());
+		ID3D12Resource* resource = nativeTexture != nullptr ? nativeTexture->GetResource() : nullptr;
+		if (resource == nullptr)
+			return {};
+
+		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>* targetHeap = &m_readOnlyDepthStencilDsvHeap;
+		D3D12_CPU_DESCRIPTOR_HANDLE* targetHandle = &m_readOnlyDepthStencilDsvHandle;
+
+		if (*targetHeap == nullptr)
+		{
+			const auto descriptors = NLS::Render::RHI::DX12::BuildDX12TextureViewDescriptorSet(
+				m_texture->GetDesc(),
+				m_desc,
+				true);
+			if (!descriptors.hasDsv)
+				return {};
+
+			D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc{};
+			dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+			dsvHeapDesc.NumDescriptors = 1;
+			dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+			if (FAILED(m_device->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(targetHeap->GetAddressOf()))))
+				return {};
+
+			SetDx12ObjectName(
+				targetHeap->Get(),
+				NLS::Render::RHI::DX12::BuildDX12TextureViewDebugLabel(m_desc, m_texture->GetDebugName()) +
+					" ReadOnlyDSVHeap");
+			*targetHandle = (*targetHeap)->GetCPUDescriptorHandleForHeapStart();
+			m_device->CreateDepthStencilView(resource, &descriptors.dsvDesc, *targetHandle);
+		}
+
+		return { NLS::Render::RHI::BackendType::DX12, reinterpret_cast<void*>(targetHandle->ptr) };
+#else
+		(void)access;
+		return {};
+#endif
+	}
 
 	NLS::Render::RHI::NativeHandle NativeDX12TextureView::GetNativeShaderResourceView()
 	{

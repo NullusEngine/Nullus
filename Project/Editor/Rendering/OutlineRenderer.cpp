@@ -12,6 +12,8 @@
 #include <Components/TransformComponent.h>
 
 #include <algorithm>
+#include <any>
+#include <Profiling/Profiler.h>
 #include <Rendering/Resources/Mesh.h>
 
 constexpr uint32_t kStencilMask = 0xFF;
@@ -24,14 +26,18 @@ using namespace NLS;
 
 namespace
 {
-bool IsEditorCameraIconModel(Engine::Components::MeshRenderer& modelRenderer)
+bool IsEditorCameraIconModel(
+    Engine::Components::MeshRenderer& modelRenderer,
+    NLS::Render::Resources::Mesh* editorCameraMesh,
+    NLS::Render::Resources::Mesh* resolvedMesh = nullptr)
 {
-    auto* editorCameraMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Camera");
     auto* owner = modelRenderer.gameobject();
     auto* meshFilter = owner != nullptr ? owner->GetComponent<Engine::Components::MeshFilter>() : nullptr;
+    auto* mesh = resolvedMesh != nullptr
+        ? resolvedMesh
+        : (meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr);
     return editorCameraMesh != nullptr &&
-        meshFilter != nullptr &&
-        meshFilter->ResolveMesh() == editorCameraMesh;
+        mesh == editorCameraMesh;
 }
 
 Maths::Matrix4 BuildOutlineShellMatrix(
@@ -74,8 +80,31 @@ void Editor::Rendering::OutlineRenderer::DrawOutline(
     const Maths::Vector4& color,
     const float thickness)
 {
-    DrawStencilPass(actor);
-    DrawOutlinePass(actor, color, thickness);
+    if (PrepareOutlineScratchItems(actor))
+        DrawPreparedOutline(color, thickness);
+}
+
+void Editor::Rendering::OutlineRenderer::DrawOutline(
+    const Editor::Rendering::DebugGameObjectDebugDrawItems& debugDrawItems,
+    const Maths::Vector4& color,
+    const float thickness)
+{
+    if (PrepareOutlineDrawItems(debugDrawItems))
+        DrawPreparedOutline(color, thickness);
+}
+
+bool Editor::Rendering::OutlineRenderer::PrepareOutlineDrawItems(
+    const Editor::Rendering::DebugGameObjectDebugDrawItems& debugDrawItems)
+{
+    return PrepareOutlineScratchItems(debugDrawItems);
+}
+
+void Editor::Rendering::OutlineRenderer::DrawPreparedOutline(
+    const Maths::Vector4& color,
+    const float thickness)
+{
+    DrawStencilPass(m_outlineScratchItems);
+    DrawOutlinePass(m_outlineScratchItems, color, thickness);
 }
 
 void Editor::Rendering::OutlineRenderer::CaptureOutlineDrawCommands(
@@ -84,49 +113,165 @@ void Editor::Rendering::OutlineRenderer::CaptureOutlineDrawCommands(
     const float thickness,
     std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
 {
-    CaptureStencilPass(actor, outDrawCommands);
-    CaptureOutlinePass(actor, color, thickness, outDrawCommands);
+    NLS_PROFILE_NAMED_SCOPE("DebugGameObject::CaptureOutlineDrawCommands");
+
+    if (PrepareOutlineScratchItems(actor))
+    {
+        outDrawCommands.reserve(outDrawCommands.size() + m_outlineScratchItems.size() * 2u);
+        CaptureStencilPass(m_outlineScratchItems, outDrawCommands);
+        CaptureOutlinePass(m_outlineScratchItems, color, thickness, outDrawCommands);
+    }
+}
+
+void Editor::Rendering::OutlineRenderer::CaptureOutlineDrawCommands(
+    const Editor::Rendering::DebugGameObjectDebugDrawItems& debugDrawItems,
+    const Maths::Vector4& color,
+    const float thickness,
+    std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
+{
+    NLS_PROFILE_NAMED_SCOPE("DebugGameObject::CaptureOutlineDrawCommands");
+
+    if (PrepareOutlineScratchItems(debugDrawItems))
+    {
+        outDrawCommands.reserve(outDrawCommands.size() + m_outlineScratchItems.size() * 2u);
+        CaptureStencilPass(m_outlineScratchItems, outDrawCommands);
+        CaptureOutlinePass(m_outlineScratchItems, color, thickness, outDrawCommands);
+    }
+}
+
+bool Editor::Rendering::OutlineRenderer::PrepareOutlineScratchItems(Engine::GameObject& actor)
+{
+    m_outlineScratchItems.clear();
+    m_outlineScratchItems.reserve(16u);
+    auto* cameraMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Camera");
+    CollectOutlineDrawItems(actor, m_outlineScratchItems, cameraMesh);
+    return !m_outlineScratchItems.empty();
+}
+
+bool Editor::Rendering::OutlineRenderer::PrepareOutlineScratchItems(
+    const Editor::Rendering::DebugGameObjectDebugDrawItems& debugDrawItems)
+{
+    m_outlineScratchItems.clear();
+    auto* cameraMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Camera");
+    m_outlineScratchItems.reserve(debugDrawItems.selectionMeshItems.size() + debugDrawItems.cameras.size());
+    for (const auto& item : debugDrawItems.selectionMeshItems)
+    {
+        const bool isCameraIconModel =
+            item.meshRenderer != nullptr &&
+            item.meshRenderer->gameobject() != nullptr &&
+            item.meshRenderer->gameobject()->GetComponent<Engine::Components::CameraComponent>() != nullptr &&
+            IsEditorCameraIconModel(*item.meshRenderer, cameraMesh, item.mesh);
+        if (item.mesh != nullptr && !isCameraIconModel)
+            m_outlineScratchItems.push_back({ item.mesh, item.worldMatrix, item.worldScale });
+    }
+
+    if (cameraMesh == nullptr)
+        return !m_outlineScratchItems.empty();
+
+    for (const auto& cameraItem : debugDrawItems.cameras)
+    {
+        auto* cameraComponent = cameraItem.cameraComponent;
+        auto* actor = cameraComponent != nullptr ? cameraComponent->gameobject() : nullptr;
+        if (actor == nullptr)
+            continue;
+
+        auto translation = Maths::Matrix4::Translation(cameraItem.worldPosition);
+        auto rotation = Maths::Quaternion::ToMatrix4(cameraItem.worldRotation);
+        auto model = translation * rotation;
+        m_outlineScratchItems.push_back({ cameraMesh, model, Maths::Vector3::One });
+    }
+
+    return !m_outlineScratchItems.empty();
+}
+
+void Editor::Rendering::OutlineRenderer::CollectOutlineDrawItems(
+    Engine::GameObject& actor,
+    std::vector<OutlineDrawItem>& outItems,
+    NLS::Render::Resources::Mesh* cameraMesh) const
+{
+    if (!actor.IsActive())
+        return;
+
+    auto* cameraComponent = actor.GetComponent<Engine::Components::CameraComponent>();
+    const bool hasCameraComponent = cameraComponent != nullptr;
+
+    if (auto modelRenderer = actor.GetComponent<Engine::Components::MeshRenderer>(); modelRenderer)
+    {
+        auto* meshFilter = actor.GetComponent<Engine::Components::MeshFilter>();
+        auto* mesh = meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr;
+        if (mesh != nullptr && !(hasCameraComponent && IsEditorCameraIconModel(*modelRenderer, cameraMesh, mesh)))
+        {
+            auto* transform = actor.GetTransform();
+            outItems.push_back({ mesh, transform->GetWorldMatrix(), transform->GetWorldScale() });
+        }
+    }
+
+    if (hasCameraComponent)
+    {
+        auto translation = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
+        auto rotation = Maths::Quaternion::ToMatrix4(actor.GetTransform()->GetWorldRotation());
+        auto model = translation * rotation;
+        if (cameraMesh != nullptr)
+            outItems.push_back({ cameraMesh, model, Maths::Vector3::One });
+    }
+
+    for (auto& child : actor.GetChildren())
+        CollectOutlineDrawItems(*child, outItems, cameraMesh);
 }
 
 void Editor::Rendering::OutlineRenderer::CaptureStencilPass(
-    Engine::GameObject& actor,
+    const std::vector<OutlineDrawItem>& outlineItems,
     std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
 {
+    NLS_PROFILE_NAMED_SCOPE("DebugGameObject::CaptureOutlineStencil");
+
     auto pso = Editor::Rendering::CreateEditorOutlineStencilPipelineState(
         m_renderer,
         kStencilMask,
         kStencilReference);
 
-    CaptureGameObjectToStencil(pso, actor, outDrawCommands);
+    for (const auto& item : outlineItems)
+        CaptureMeshToStencil(pso, item.worldMatrix, *item.mesh, outDrawCommands);
 }
 
 void Editor::Rendering::OutlineRenderer::CaptureOutlinePass(
-    Engine::GameObject& actor,
+    const std::vector<OutlineDrawItem>& outlineItems,
     const Maths::Vector4& color,
     const float thickness,
     std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
 {
+    NLS_PROFILE_NAMED_SCOPE("DebugGameObject::CaptureOutlineShell");
+
     auto pso = Editor::Rendering::CreateEditorOutlineShellPipelineState(
         m_renderer,
         kStencilReference,
         kStencilMask);
 
-    m_outlineMaterial.Set("u_Diffuse", color);
-    CaptureGameObjectOutline(pso, actor, thickness, outDrawCommands);
+    ApplyOutlineMaterialColor(color);
+    for (const auto& item : outlineItems)
+    {
+        const auto outlineModel = BuildOutlineShellMatrix(
+            item.worldMatrix,
+            item.worldScale,
+            *item.mesh,
+            thickness);
+        CaptureMeshOutline(pso, outlineModel, *item.mesh, outDrawCommands);
+    }
 }
 
-void Editor::Rendering::OutlineRenderer::DrawStencilPass(Engine::GameObject& actor)
+void Editor::Rendering::OutlineRenderer::DrawStencilPass(const std::vector<OutlineDrawItem>& outlineItems)
 {
     auto pso = Editor::Rendering::CreateEditorOutlineStencilPipelineState(
         m_renderer,
         kStencilMask,
         kStencilReference);
 
-    DrawGameObjectToStencil(pso, actor);
+    for (const auto& item : outlineItems)
+        DrawMeshToStencil(pso, item.worldMatrix, *item.mesh);
 }
 
 void Editor::Rendering::OutlineRenderer::DrawOutlinePass(
-    Engine::GameObject& actor,
+    const std::vector<OutlineDrawItem>& outlineItems,
     const Maths::Vector4& color,
     const float thickness)
 {
@@ -135,178 +280,57 @@ void Editor::Rendering::OutlineRenderer::DrawOutlinePass(
         kStencilReference,
         kStencilMask);
 
+    ApplyOutlineMaterialColor(color);
+    for (const auto& item : outlineItems)
+    {
+        const auto outlineModel = BuildOutlineShellMatrix(
+            item.worldMatrix,
+            item.worldScale,
+            *item.mesh,
+            thickness);
+        DrawMeshOutline(pso, outlineModel, *item.mesh);
+    }
+}
+
+void Editor::Rendering::OutlineRenderer::ApplyOutlineMaterialColor(const Maths::Vector4& color)
+{
+    if (m_lastAppliedOutlineColor.has_value() && *m_lastAppliedOutlineColor == color)
+    {
+        const auto* cachedColor = m_outlineMaterial.GetParameterBlock().TryGet("u_Diffuse");
+        if (cachedColor != nullptr &&
+            cachedColor->type() == typeid(Maths::Vector4) &&
+            std::any_cast<const Maths::Vector4&>(*cachedColor) == color)
+        {
+            return;
+        }
+
+        m_lastAppliedOutlineColor.reset();
+    }
+
+    const auto* appliedColor = m_outlineMaterial.GetParameterBlock().TryGet("u_Diffuse");
+    if (appliedColor != nullptr &&
+        appliedColor->type() == typeid(Maths::Vector4) &&
+        std::any_cast<const Maths::Vector4&>(*appliedColor) == color)
+    {
+        m_lastAppliedOutlineColor = color;
+        return;
+    }
+
+    if (!m_outlineMaterial.HasShader())
+        return;
+
     m_outlineMaterial.Set("u_Diffuse", color);
-    DrawGameObjectOutline(pso, actor, thickness);
-}
-
-void Editor::Rendering::OutlineRenderer::CaptureGameObjectToStencil(
-    NLS::Render::Data::PipelineState pso,
-    Engine::GameObject& actor,
-    std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
-{
-    if (!actor.IsActive())
-        return;
-
-    const bool hasCameraComponent = actor.GetComponent<Engine::Components::CameraComponent>() != nullptr;
-
-    if (auto modelRenderer = actor.GetComponent<Engine::Components::MeshRenderer>(); modelRenderer)
+    appliedColor = m_outlineMaterial.GetParameterBlock().TryGet("u_Diffuse");
+    if (appliedColor != nullptr &&
+        appliedColor->type() == typeid(Maths::Vector4) &&
+        std::any_cast<const Maths::Vector4&>(*appliedColor) == color)
     {
-        auto* meshFilter = actor.GetComponent<Engine::Components::MeshFilter>();
-        auto* mesh = meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr;
-        if (mesh != nullptr && !(hasCameraComponent && IsEditorCameraIconModel(*modelRenderer)))
-            m_debugModelRenderer.CaptureMeshDrawCommandsWithSingleMaterial(
-                pso,
-                *mesh,
-                m_stencilFillMaterial,
-                actor.GetTransform()->GetWorldMatrix(),
-                outDrawCommands);
+        m_lastAppliedOutlineColor = color;
     }
-
-    if (auto cameraComponent = actor.GetComponent<Engine::Components::CameraComponent>(); cameraComponent)
+    else
     {
-        auto translation = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
-        auto rotation = Maths::Quaternion::ToMatrix4(actor.GetTransform()->GetWorldRotation());
-        auto model = translation * rotation;
-        if (auto* cameraMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Camera"))
-            CaptureMeshToStencil(pso, model, *cameraMesh, outDrawCommands);
+        m_lastAppliedOutlineColor.reset();
     }
-
-    for (auto& child : actor.GetChildren())
-        CaptureGameObjectToStencil(pso, *child, outDrawCommands);
-}
-
-void Editor::Rendering::OutlineRenderer::DrawGameObjectToStencil(
-    NLS::Render::Data::PipelineState pso,
-    Engine::GameObject& actor)
-{
-    if (!actor.IsActive())
-        return;
-
-    const bool hasCameraComponent = actor.GetComponent<Engine::Components::CameraComponent>() != nullptr;
-
-    if (auto modelRenderer = actor.GetComponent<Engine::Components::MeshRenderer>(); modelRenderer)
-    {
-        auto* meshFilter = actor.GetComponent<Engine::Components::MeshFilter>();
-        auto* mesh = meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr;
-        if (mesh != nullptr && !(hasCameraComponent && IsEditorCameraIconModel(*modelRenderer)))
-            m_debugModelRenderer.DrawMeshWithSingleMaterial(
-                pso,
-                *mesh,
-                m_stencilFillMaterial,
-                actor.GetTransform()->GetWorldMatrix());
-    }
-
-    if (auto cameraComponent = actor.GetComponent<Engine::Components::CameraComponent>(); cameraComponent)
-    {
-        auto translation = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
-        auto rotation = Maths::Quaternion::ToMatrix4(actor.GetTransform()->GetWorldRotation());
-        auto model = translation * rotation;
-        if (auto* cameraMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Camera"))
-            DrawMeshToStencil(pso, model, *cameraMesh);
-    }
-
-    for (auto& child : actor.GetChildren())
-        DrawGameObjectToStencil(pso, *child);
-}
-
-void Editor::Rendering::OutlineRenderer::CaptureGameObjectOutline(
-    NLS::Render::Data::PipelineState pso,
-    Engine::GameObject& actor,
-    const float thickness,
-    std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands)
-{
-    if (!actor.IsActive())
-        return;
-
-    const bool hasCameraComponent = actor.GetComponent<Engine::Components::CameraComponent>() != nullptr;
-
-    if (auto modelRenderer = actor.GetComponent<Engine::Components::MeshRenderer>(); modelRenderer)
-    {
-        auto* meshFilter = actor.GetComponent<Engine::Components::MeshFilter>();
-        auto* mesh = meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr;
-        if (mesh != nullptr && !(hasCameraComponent && IsEditorCameraIconModel(*modelRenderer)))
-        {
-            const auto outlineModel = BuildOutlineShellMatrix(
-                actor.GetTransform()->GetWorldMatrix(),
-                actor.GetTransform()->GetWorldScale(),
-                *mesh,
-                thickness);
-            m_debugModelRenderer.CaptureMeshDrawCommandsWithSingleMaterial(
-                pso,
-                *mesh,
-                m_outlineMaterial,
-                outlineModel,
-                outDrawCommands);
-        }
-    }
-
-    if (auto cameraComponent = actor.GetComponent<Engine::Components::CameraComponent>(); cameraComponent)
-    {
-        auto* cameraMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Camera");
-        if (cameraMesh == nullptr)
-            return;
-        auto translation = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
-        auto rotation = Maths::Quaternion::ToMatrix4(actor.GetTransform()->GetWorldRotation());
-        auto model = translation * rotation;
-        const auto outlineModel = BuildOutlineShellMatrix(
-            model,
-            Maths::Vector3::One,
-            *cameraMesh,
-            thickness);
-        CaptureMeshOutline(pso, outlineModel, *cameraMesh, outDrawCommands);
-    }
-
-    for (auto& child : actor.GetChildren())
-        CaptureGameObjectOutline(pso, *child, thickness, outDrawCommands);
-}
-
-void Editor::Rendering::OutlineRenderer::DrawGameObjectOutline(
-    NLS::Render::Data::PipelineState pso,
-    Engine::GameObject& actor,
-    const float thickness)
-{
-    if (!actor.IsActive())
-        return;
-
-    const bool hasCameraComponent = actor.GetComponent<Engine::Components::CameraComponent>() != nullptr;
-
-    if (auto modelRenderer = actor.GetComponent<Engine::Components::MeshRenderer>(); modelRenderer)
-    {
-        auto* meshFilter = actor.GetComponent<Engine::Components::MeshFilter>();
-        auto* mesh = meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr;
-        if (mesh != nullptr && !(hasCameraComponent && IsEditorCameraIconModel(*modelRenderer)))
-        {
-            const auto outlineModel = BuildOutlineShellMatrix(
-                actor.GetTransform()->GetWorldMatrix(),
-                actor.GetTransform()->GetWorldScale(),
-                *mesh,
-                thickness);
-            m_debugModelRenderer.DrawMeshWithSingleMaterial(
-                pso,
-                *mesh,
-                m_outlineMaterial,
-                outlineModel);
-        }
-    }
-
-    if (auto cameraComponent = actor.GetComponent<Engine::Components::CameraComponent>(); cameraComponent)
-    {
-        auto* cameraMesh = EDITOR_CONTEXT(editorResources)->GetMesh("Camera");
-        if (cameraMesh == nullptr)
-            return;
-        auto translation = Maths::Matrix4::Translation(actor.GetTransform()->GetWorldPosition());
-        auto rotation = Maths::Quaternion::ToMatrix4(actor.GetTransform()->GetWorldRotation());
-        auto model = translation * rotation;
-        const auto outlineModel = BuildOutlineShellMatrix(
-            model,
-            Maths::Vector3::One,
-            *cameraMesh,
-            thickness);
-        DrawMeshOutline(pso, outlineModel, *cameraMesh);
-    }
-
-    for (auto& child : actor.GetChildren())
-        DrawGameObjectOutline(pso, *child, thickness);
 }
 
 void Editor::Rendering::OutlineRenderer::CaptureMeshToStencil(

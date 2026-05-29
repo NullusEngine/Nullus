@@ -256,13 +256,19 @@ void ABaseRenderer::EndFrame()
             m_driver,
             m_frameDescriptor);
     }
+    bool threadedFramePublished = false;
     if (usesExplicitRecording)
     {
         Context::RenderThreadCoordinator::EndRendererFrame(m_driver, shouldPresentSwapchain);
     }
     else if (usesThreadedRendering)
     {
-        TryPublishThreadedFrame();
+        threadedFramePublished = TryPublishThreadedFrame();
+    }
+
+    if (usesThreadedRendering && !threadedFramePublished)
+    {
+        OnThreadedFramePublishFailed();
     }
 
     m_isDrawing = false;
@@ -314,13 +320,27 @@ bool ABaseRenderer::TryPublishThreadedFrame()
         if (!renderSceneBuilder)
             return false;
 
-        return Context::DriverRendererAccess::TryPublishPreparedFrameBuilder(
+        uint64_t publishedFrameId = 0u;
+        const bool published = Context::DriverRendererAccess::TryPublishPreparedFrameBuilder(
             m_driver,
             snapshot.value(),
-            std::move(renderSceneBuilder));
+            std::move(renderSceneBuilder),
+            nullptr,
+            &publishedFrameId);
+        if (published)
+            OnThreadedFramePublished(publishedFrameId);
+        return published;
     }
 
     return false;
+}
+
+void ABaseRenderer::OnThreadedFramePublished(uint64_t)
+{
+}
+
+void ABaseRenderer::OnThreadedFramePublishFailed()
+{
 }
 
 Context::PreparedRenderSceneBuilder ABaseRenderer::BuildPreparedRenderSceneBuilder(

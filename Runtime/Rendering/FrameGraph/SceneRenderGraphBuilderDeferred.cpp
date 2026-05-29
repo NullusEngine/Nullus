@@ -1,11 +1,13 @@
 #include "Rendering/FrameGraph/SceneRenderGraphBuilderDeferred.h"
 
 #include <algorithm>
+#include <array>
 #include <utility>
 
 #include "Profiling/Profiler.h"
 #include "Rendering/FrameGraph/FrameGraphExecutionPlan.h"
 #include "Rendering/FrameGraph/SceneRenderGraphBuilderInternal.h"
+#include "Rendering/RHI/Core/RHISubresourceRangeUtils.h"
 
 namespace NLS::Render::FrameGraph
 {
@@ -33,6 +35,238 @@ namespace NLS::Render::FrameGraph
             FrameGraphResource outputColor = -1;
             FrameGraphResource outputDepth = -1;
         };
+
+        bool TextureWrapperMatchesHandle(
+            const NLS::Render::Resources::Texture2D* texture,
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>& expectedHandle)
+        {
+            return texture != nullptr &&
+                expectedHandle != nullptr &&
+                texture->GetExplicitRHITextureHandle() == expectedHandle;
+        }
+
+        bool TextureDescHasRequiredUsage(
+            const NLS::Render::RHI::RHITextureDesc& desc,
+            const NLS::Render::RHI::TextureUsageFlags requiredUsage)
+        {
+            return (static_cast<uint32_t>(desc.usage) & static_cast<uint32_t>(requiredUsage)) ==
+                static_cast<uint32_t>(requiredUsage);
+        }
+
+        bool TextureWrapperMatchesHandleFormatAndUsage(
+            const NLS::Render::Resources::Texture2D* texture,
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>& expectedHandle,
+            const NLS::Render::RHI::TextureFormat expectedFormat,
+            const NLS::Render::RHI::TextureUsageFlags requiredUsage)
+        {
+            if (!TextureWrapperMatchesHandle(texture, expectedHandle))
+                return false;
+
+            const auto& desc = expectedHandle->GetDesc();
+            return desc.format == expectedFormat &&
+                TextureDescHasRequiredUsage(desc, requiredUsage);
+        }
+
+        bool TextureDescMatchesFrameDescriptor(
+            const NLS::Render::RHI::RHITextureDesc& desc,
+            const NLS::Render::Data::FrameDescriptor& frameDescriptor)
+        {
+            return desc.extent.width == frameDescriptor.renderWidth &&
+                desc.extent.height == frameDescriptor.renderHeight &&
+                desc.extent.depth == 1u;
+        }
+
+        bool TextureWrapperMatchesHandleAndFrameDesc(
+            const NLS::Render::Resources::Texture2D* texture,
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>& expectedHandle,
+            const NLS::Render::Data::FrameDescriptor& frameDescriptor,
+            const NLS::Render::RHI::TextureFormat expectedFormat,
+            const NLS::Render::RHI::TextureUsageFlags requiredUsage)
+        {
+            if (!TextureWrapperMatchesHandleFormatAndUsage(
+                    texture,
+                    expectedHandle,
+                    expectedFormat,
+                    requiredUsage))
+            {
+                return false;
+            }
+
+            const auto& desc = expectedHandle->GetDesc();
+            return TextureDescMatchesFrameDescriptor(desc, frameDescriptor) &&
+                texture->width == frameDescriptor.renderWidth &&
+                texture->height == frameDescriptor.renderHeight;
+        }
+
+        bool HasCompleteDeferredPreparedSceneResourceRequest(
+            const DeferredPreparedSceneResourceRequest& request)
+        {
+            if (request.gBuffer == nullptr)
+                return false;
+
+            const auto& colorHandles = request.gBuffer->GetExplicitColorTextureHandles();
+            if (colorHandles.size() < kDeferredGBufferColorAttachmentCount)
+                return false;
+
+            const std::array<const NLS::Render::Resources::Texture2D*, kDeferredGBufferColorAttachmentCount> colorWrappers = {
+                request.gbufferAlbedoTexture,
+                request.gbufferNormalTexture,
+                request.gbufferMaterialTexture
+            };
+
+            for (size_t i = 0u; i < kDeferredGBufferColorAttachmentCount; ++i)
+            {
+                const auto& slot = kDeferredGBufferColorSlots[i];
+                if (!TextureWrapperMatchesHandleFormatAndUsage(
+                        colorWrappers[i],
+                        colorHandles[i],
+                        slot.format,
+                        slot.usage))
+                {
+                    return false;
+                }
+            }
+
+            return TextureWrapperMatchesHandleFormatAndUsage(
+                request.gbufferDepthTexture,
+                request.gBuffer->GetExplicitDepthTextureHandle(),
+                kDeferredGBufferDepthSlot.format,
+                kDeferredGBufferDepthSlot.usage);
+        }
+
+        bool HasDeferredPreparedSceneResourceRequestMatchingFrameDesc(
+            const DeferredPreparedSceneResourceRequest& request,
+            const NLS::Render::Data::FrameDescriptor& frameDescriptor)
+        {
+            if (request.gBuffer == nullptr)
+                return false;
+
+            const auto& colorHandles = request.gBuffer->GetExplicitColorTextureHandles();
+            if (colorHandles.size() < kDeferredGBufferColorAttachmentCount)
+                return false;
+
+            const std::array<const NLS::Render::Resources::Texture2D*, kDeferredGBufferColorAttachmentCount> colorWrappers = {
+                request.gbufferAlbedoTexture,
+                request.gbufferNormalTexture,
+                request.gbufferMaterialTexture
+            };
+
+            for (size_t i = 0u; i < kDeferredGBufferColorAttachmentCount; ++i)
+            {
+                const auto& slot = kDeferredGBufferColorSlots[i];
+                if (!TextureWrapperMatchesHandleAndFrameDesc(
+                        colorWrappers[i],
+                        colorHandles[i],
+                        frameDescriptor,
+                        slot.format,
+                        slot.usage))
+                {
+                    return false;
+                }
+            }
+
+            return TextureWrapperMatchesHandleAndFrameDesc(
+                request.gbufferDepthTexture,
+                request.gBuffer->GetExplicitDepthTextureHandle(),
+                frameDescriptor,
+                kDeferredGBufferDepthSlot.format,
+                kDeferredGBufferDepthSlot.usage);
+        }
+
+        bool DeferredPreparedSceneResourceTextureMatchesFrameDesc(
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+            const NLS::Render::Data::FrameDescriptor& frameDescriptor,
+            const NLS::Render::RHI::TextureFormat expectedFormat,
+            const NLS::Render::RHI::TextureUsageFlags requiredUsage)
+        {
+            if (texture == nullptr)
+                return false;
+
+            const auto& desc = texture->GetDesc();
+            return TextureDescMatchesFrameDescriptor(desc, frameDescriptor) &&
+                desc.format == expectedFormat &&
+                TextureDescHasRequiredUsage(desc, requiredUsage);
+        }
+
+        bool DeferredPreparedSceneResourceViewMatchesSlot(
+            const std::shared_ptr<NLS::Render::RHI::RHITextureView>& view,
+            const NLS::Render::RHI::TextureFormat expectedFormat)
+        {
+            if (view == nullptr || view->GetTexture() == nullptr)
+                return false;
+
+            const auto& desc = view->GetDesc();
+            if (desc.format != expectedFormat ||
+                (desc.viewType != NLS::Render::RHI::TextureViewType::Auto &&
+                    desc.viewType != NLS::Render::RHI::TextureViewType::Texture2D))
+            {
+                return false;
+            }
+
+            const auto normalizedRange = NLS::Render::RHI::NormalizeTextureSubresourceRange(
+                view->GetTexture()->GetDesc(),
+                desc.subresourceRange);
+            return normalizedRange.has_value() &&
+                NLS::Render::RHI::IsFullTextureSubresourceRange(
+                    view->GetTexture()->GetDesc(),
+                    *normalizedRange);
+        }
+
+        bool HasCompleteDeferredPreparedSceneResources(const DeferredPreparedSceneResources& resources)
+        {
+            if (resources.gbufferColorViews.size() != kDeferredGBufferColorAttachmentCount ||
+                resources.gbufferTextures.size() != kDeferredGBufferTextureCount ||
+                resources.gbufferDepthView == nullptr)
+            {
+                return false;
+            }
+
+            for (size_t i = 0u; i < kDeferredGBufferColorAttachmentCount; ++i)
+            {
+                if (resources.gbufferColorViews[i] == nullptr ||
+                    resources.gbufferTextures[i] == nullptr ||
+                    resources.gbufferColorViews[i]->GetTexture() != resources.gbufferTextures[i] ||
+                    !DeferredPreparedSceneResourceViewMatchesSlot(
+                        resources.gbufferColorViews[i],
+                        kDeferredGBufferColorSlots[i].format))
+                {
+                    return false;
+                }
+            }
+
+            return resources.gbufferTextures[kDeferredGBufferDepthTextureIndex] != nullptr &&
+                resources.gbufferDepthView->GetTexture() == resources.gbufferTextures[kDeferredGBufferDepthTextureIndex] &&
+                DeferredPreparedSceneResourceViewMatchesSlot(
+                    resources.gbufferDepthView,
+                    kDeferredGBufferDepthSlot.format);
+        }
+
+        bool HasCompleteDeferredPreparedSceneResources(
+            const DeferredPreparedSceneResources& resources,
+            const NLS::Render::Data::FrameDescriptor& frameDescriptor)
+        {
+            if (!HasCompleteDeferredPreparedSceneResources(resources))
+                return false;
+
+            for (size_t i = 0u; i < kDeferredGBufferColorAttachmentCount; ++i)
+            {
+                const auto& slot = kDeferredGBufferColorSlots[i];
+                if (!DeferredPreparedSceneResourceTextureMatchesFrameDesc(
+                        resources.gbufferTextures[i],
+                        frameDescriptor,
+                        slot.format,
+                        slot.usage))
+                {
+                    return false;
+                }
+            }
+
+            return DeferredPreparedSceneResourceTextureMatchesFrameDesc(
+                resources.gbufferTextures[kDeferredGBufferDepthTextureIndex],
+                frameDescriptor,
+                kDeferredGBufferDepthSlot.format,
+                kDeferredGBufferDepthSlot.usage);
+        }
 
         void AddFullTextureResourceAccess(
             NLS::Render::Context::RenderPassCommandInput& passInput,
@@ -113,6 +347,24 @@ namespace NLS::Render::FrameGraph
             });
         }
 
+        void RemoveTextureResourceAccesses(
+            NLS::Render::Context::RenderPassCommandInput& passInput,
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture)
+        {
+            if (texture == nullptr)
+                return;
+
+            passInput.textureResourceAccesses.erase(
+                std::remove_if(
+                    passInput.textureResourceAccesses.begin(),
+                    passInput.textureResourceAccesses.end(),
+                    [&texture](const NLS::Render::Context::TextureResourceAccess& access)
+                    {
+                        return access.texture == texture;
+                    }),
+                passInput.textureResourceAccesses.end());
+        }
+
         void AddColorAttachmentWriteResourceAccesses(
             NLS::Render::Context::RenderPassCommandInput& passInput)
         {
@@ -154,27 +406,47 @@ namespace NLS::Render::FrameGraph
                 return;
             }
 
+            const auto previousDepthTexture = passInput.depthStencilAttachmentView != nullptr
+                ? passInput.depthStencilAttachmentView->GetTexture()
+                : nullptr;
+            const auto gbufferDepthTexture = resources.gbufferDepthView->GetTexture();
+            RemoveTextureResourceAccesses(passInput, previousDepthTexture);
+            RemoveTextureResourceAccesses(passInput, gbufferDepthTexture);
+
+            const auto accessMode = passInput.writesDepthStencilAttachment
+                ? NLS::Render::Context::ResourceAccessMode::Write
+                : NLS::Render::Context::ResourceAccessMode::Read;
+            const auto resourceState = passInput.writesDepthStencilAttachment
+                ? NLS::Render::RHI::ResourceState::DepthWrite
+                : NLS::Render::RHI::ResourceState::DepthRead;
+            const auto accessMask = passInput.writesDepthStencilAttachment
+                ? (NLS::Render::RHI::AccessMask::DepthStencilRead |
+                    NLS::Render::RHI::AccessMask::DepthStencilWrite)
+                : NLS::Render::RHI::AccessMask::DepthStencilRead;
+
             passInput.depthStencilAttachmentView = resources.gbufferDepthView;
             AddFullTextureResourceAccess(
                 passInput,
-                resources.gbufferDepthView->GetTexture(),
-                NLS::Render::Context::ResourceAccessMode::Read,
-                NLS::Render::RHI::ResourceState::DepthRead,
+                gbufferDepthTexture,
+                accessMode,
+                resourceState,
                 NLS::Render::RHI::PipelineStageMask::DepthStencil,
-                NLS::Render::RHI::AccessMask::DepthStencilRead);
+                accessMask);
         }
 
         NLS::Render::FrameGraph::FrameGraphTexture::Desc MakeGBufferColorDesc(
             uint16_t width,
             uint16_t height,
+            size_t attachmentIndex,
             std::string debugName)
         {
             NLS::Render::FrameGraph::FrameGraphTexture::Desc desc;
             desc.extent.width = width;
             desc.extent.height = height;
             desc.extent.depth = 1u;
-            desc.format = NLS::Render::RHI::TextureFormat::RGBA8;
-            desc.usage = NLS::Render::RHI::TextureUsageFlags::ColorAttachment | NLS::Render::RHI::TextureUsageFlags::Sampled;
+            const auto& slot = NLS::Render::FrameGraph::kDeferredGBufferColorSlots[attachmentIndex];
+            desc.format = slot.format;
+            desc.usage = slot.usage;
             desc.debugName = std::move(debugName);
             return desc;
         }
@@ -185,9 +457,9 @@ namespace NLS::Render::FrameGraph
             desc.extent.width = width;
             desc.extent.height = height;
             desc.extent.depth = 1u;
-            desc.format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
-            desc.usage = NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment | NLS::Render::RHI::TextureUsageFlags::Sampled;
-            desc.debugName = "GBufferDepth";
+            desc.format = NLS::Render::FrameGraph::kDeferredGBufferDepthSlot.format;
+            desc.usage = NLS::Render::FrameGraph::kDeferredGBufferDepthSlot.usage;
+            desc.debugName = NLS::Render::FrameGraph::kDeferredGBufferDepthSlot.debugName;
             return desc;
         }
 
@@ -295,61 +567,64 @@ namespace NLS::Render::FrameGraph
                 resources.sceneTargets = ResolveImportedSceneRenderTargets(*request.blackboard);
             }
 
-            if (request.preparedResources.gBuffer == nullptr)
+            if (!HasDeferredPreparedSceneResourceRequestMatchingFrameDesc(
+                    request.preparedResources,
+                    *request.frameDescriptor))
+            {
                 return resources;
+            }
 
             const auto width = request.frameDescriptor->renderWidth;
             const auto height = request.frameDescriptor->renderHeight;
             const auto& colorHandles = request.preparedResources.gBuffer->GetExplicitColorTextureHandles();
 
-            if (request.preparedResources.gbufferAlbedoTexture != nullptr &&
-                colorHandles.size() > 0u &&
-                colorHandles[0] != nullptr)
+            const std::array<const NLS::Render::Resources::Texture2D*, kDeferredGBufferColorAttachmentCount> colorWrappers = {
+                request.preparedResources.gbufferAlbedoTexture,
+                request.preparedResources.gbufferNormalTexture,
+                request.preparedResources.gbufferMaterialTexture
+            };
+            std::array<FrameGraphResource*, kDeferredGBufferColorAttachmentCount> importedColorResources = {
+                &resources.gbufferAlbedo,
+                &resources.gbufferNormal,
+                &resources.gbufferMaterial
+            };
+            for (size_t i = 0u; i < kDeferredGBufferColorAttachmentCount; ++i)
             {
-                resources.gbufferAlbedo = request.frameGraph->import<NLS::Render::FrameGraph::FrameGraphTexture>(
-                    request.gbufferAlbedoResourceName,
-                    MakeGBufferColorDesc(width, height, "GBufferAlbedo"),
-                    NLS::Render::FrameGraph::FrameGraphTexture::WrapExternal(
-                        colorHandles[0],
-                        request.preparedResources.gBuffer->GetOrCreateExplicitColorView(0, request.gbufferAlbedoViewName)));
-            }
+                if (colorWrappers[i] == nullptr || colorHandles[i] == nullptr)
+                    continue;
 
-            if (request.preparedResources.gbufferNormalTexture != nullptr &&
-                colorHandles.size() > 1u &&
-                colorHandles[1] != nullptr)
-            {
-                resources.gbufferNormal = request.frameGraph->import<NLS::Render::FrameGraph::FrameGraphTexture>(
-                    request.gbufferNormalResourceName,
-                    MakeGBufferColorDesc(width, height, "GBufferNormal"),
+                const auto& slot = kDeferredGBufferColorSlots[i];
+                *importedColorResources[i] = request.frameGraph->import<NLS::Render::FrameGraph::FrameGraphTexture>(
+                    slot.graphResourceName,
+                    MakeGBufferColorDesc(width, height, i, slot.debugName),
                     NLS::Render::FrameGraph::FrameGraphTexture::WrapExternal(
-                        colorHandles[1],
-                        request.preparedResources.gBuffer->GetOrCreateExplicitColorView(1, request.gbufferNormalViewName)));
-            }
-
-            if (request.preparedResources.gbufferMaterialTexture != nullptr &&
-                colorHandles.size() > 2u &&
-                colorHandles[2] != nullptr)
-            {
-                resources.gbufferMaterial = request.frameGraph->import<NLS::Render::FrameGraph::FrameGraphTexture>(
-                    request.gbufferMaterialResourceName,
-                    MakeGBufferColorDesc(width, height, "GBufferMaterial"),
-                    NLS::Render::FrameGraph::FrameGraphTexture::WrapExternal(
-                        colorHandles[2],
-                        request.preparedResources.gBuffer->GetOrCreateExplicitColorView(2, request.gbufferMaterialViewName)));
+                        colorHandles[i],
+                        request.preparedResources.gBuffer->GetOrCreateExplicitColorView(
+                            static_cast<uint32_t>(i),
+                            slot.graphViewName)));
             }
 
             const auto depthHandle = request.preparedResources.gBuffer->GetExplicitDepthTextureHandle();
             if (request.preparedResources.gbufferDepthTexture != nullptr && depthHandle != nullptr)
             {
                 resources.gbufferDepth = request.frameGraph->import<NLS::Render::FrameGraph::FrameGraphTexture>(
-                    request.gbufferDepthResourceName,
+                    kDeferredGBufferDepthSlot.graphResourceName,
                     MakeGBufferDepthDesc(width, height),
                     NLS::Render::FrameGraph::FrameGraphTexture::WrapExternal(
                         depthHandle,
-                        request.preparedResources.gBuffer->GetOrCreateExplicitDepthView(request.gbufferDepthViewName)));
+                        request.preparedResources.gBuffer->GetOrCreateExplicitDepthView(
+                            kDeferredGBufferDepthSlot.graphViewName)));
             }
 
             return resources;
+        }
+
+        bool HasCompleteDeferredGraphGBufferResources(const DeferredGraphSceneResources& resources)
+        {
+            return resources.gbufferAlbedo >= 0 &&
+                resources.gbufferNormal >= 0 &&
+                resources.gbufferMaterial >= 0 &&
+                resources.gbufferDepth >= 0;
         }
 
         NLS::Render::Context::RenderPassCommandInput BuildDeferredScenePassInput(
@@ -386,6 +661,7 @@ namespace NLS::Render::FrameGraph
                 passInput.targetsSwapchain = false;
                 passInput.usesColorAttachment = true;
                 passInput.usesDepthStencilAttachment = true;
+                passInput.writesDepthStencilAttachment = true;
                 passInput.gbufferTextures = resources.gbufferTextures;
                 passInput.colorAttachmentViews = resources.gbufferColorViews;
                 passInput.depthStencilAttachmentView = resources.gbufferDepthView;
@@ -454,12 +730,16 @@ namespace NLS::Render::FrameGraph
             const std::vector<CompiledThreadedRenderSceneGraphPass>& compiledPasses,
             const NLS::Render::Context::RenderScenePackage& package,
             const PreparedComputeDispatchSource& preparedComputeSource,
+            const NLS::Render::Data::FrameDescriptor& frameDescriptor,
             const uint64_t opaqueDrawCount,
             const uint64_t lightingDrawCount,
             const std::vector<NLS::Render::Context::RecordedDrawCommandInput>& recordedDrawCommands,
             const DeferredPreparedSceneResources& resources)
         {
             std::vector<NLS::Render::Context::RenderPassCommandInput> passInputs;
+            if (!HasCompleteDeferredPreparedSceneResources(resources, frameDescriptor))
+                return passInputs;
+
             passInputs.reserve(compiledPasses.size());
 
             for (const auto& compiledPass : compiledPasses)
@@ -574,7 +854,7 @@ namespace NLS::Render::FrameGraph
         void AppendDeferredHelperPassInputForMetadata(
             std::vector<NLS::Render::Context::RenderPassCommandInput>& passInputs,
             const NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata& metadata,
-            const std::vector<NLS::Render::Context::RenderPassCommandInput>& appendedPassInputs,
+            std::vector<NLS::Render::Context::RenderPassCommandInput>& appendedPassInputs,
             const std::optional<NLS::Render::Context::RenderPassCommandInput>& aggregateHelperPassInput)
         {
             if (metadata.commandKind != NLS::Render::Context::RenderPassCommandKind::Helper)
@@ -583,12 +863,15 @@ namespace NLS::Render::FrameGraph
             const auto metadataName = metadata.graphPassName != nullptr
                 ? std::string_view(metadata.graphPassName)
                 : std::string_view{};
-            for (const auto& appendedPassInput : appendedPassInputs)
+            for (auto appendedPassInput = appendedPassInputs.begin();
+                appendedPassInput != appendedPassInputs.end();
+                ++appendedPassInput)
             {
-                if (!metadataName.empty() && appendedPassInput.debugName != metadataName)
+                if (!metadataName.empty() && appendedPassInput->debugName != metadataName)
                     continue;
 
-                passInputs.push_back(appendedPassInput);
+                passInputs.push_back(std::move(*appendedPassInput));
+                appendedPassInputs.erase(appendedPassInput);
                 return;
             }
 
@@ -619,25 +902,31 @@ namespace NLS::Render::FrameGraph
     {
         NLS_PROFILE_SCOPE();
         DeferredPreparedSceneResources resources;
-        if (request.gBuffer == nullptr)
+        if (!HasCompleteDeferredPreparedSceneResourceRequest(request))
             return resources;
-        if (request.gbufferAlbedoTexture != nullptr)
-            resources.gbufferColorViews.push_back(request.gBuffer->GetOrCreateExplicitColorView(0, "GBufferAlbedoView"));
-        if (request.gbufferNormalTexture != nullptr)
-            resources.gbufferColorViews.push_back(request.gBuffer->GetOrCreateExplicitColorView(1, "GBufferNormalView"));
-        if (request.gbufferMaterialTexture != nullptr)
-            resources.gbufferColorViews.push_back(request.gBuffer->GetOrCreateExplicitColorView(2, "GBufferMaterialView"));
-        if (request.gbufferDepthTexture != nullptr)
-            resources.gbufferDepthView = request.gBuffer->GetOrCreateExplicitDepthView("GBufferDepthView");
 
-        if (request.gbufferAlbedoTexture != nullptr && request.gbufferAlbedoTexture->GetExplicitRHITextureHandle())
-            resources.gbufferTextures.push_back(request.gbufferAlbedoTexture->GetExplicitRHITextureHandle());
-        if (request.gbufferNormalTexture != nullptr && request.gbufferNormalTexture->GetExplicitRHITextureHandle())
-            resources.gbufferTextures.push_back(request.gbufferNormalTexture->GetExplicitRHITextureHandle());
-        if (request.gbufferMaterialTexture != nullptr && request.gbufferMaterialTexture->GetExplicitRHITextureHandle())
-            resources.gbufferTextures.push_back(request.gbufferMaterialTexture->GetExplicitRHITextureHandle());
-        if (request.gbufferDepthTexture != nullptr && request.gbufferDepthTexture->GetExplicitRHITextureHandle())
-            resources.gbufferTextures.push_back(request.gbufferDepthTexture->GetExplicitRHITextureHandle());
+        const std::array<const NLS::Render::Resources::Texture2D*, kDeferredGBufferColorAttachmentCount> colorWrappers = {
+            request.gbufferAlbedoTexture,
+            request.gbufferNormalTexture,
+            request.gbufferMaterialTexture
+        };
+        resources.gbufferColorViews.reserve(kDeferredGBufferColorAttachmentCount);
+        for (size_t i = 0u; i < kDeferredGBufferColorAttachmentCount; ++i)
+        {
+            resources.gbufferColorViews.push_back(request.gBuffer->GetOrCreateExplicitColorView(
+                static_cast<uint32_t>(i),
+                kDeferredGBufferColorSlots[i].capturedViewName));
+        }
+        resources.gbufferDepthView = request.gBuffer->GetOrCreateExplicitDepthView(
+            kDeferredGBufferDepthSlot.capturedViewName);
+
+        resources.gbufferTextures.reserve(kDeferredGBufferTextureCount);
+        for (const auto* texture : colorWrappers)
+            resources.gbufferTextures.push_back(texture->GetExplicitRHITextureHandle());
+        resources.gbufferTextures.push_back(request.gbufferDepthTexture->GetExplicitRHITextureHandle());
+        if (!HasCompleteDeferredPreparedSceneResources(resources))
+            return {};
+
         return resources;
     }
 
@@ -719,6 +1008,9 @@ namespace NLS::Render::FrameGraph
         NLS_PROFILE_SCOPE();
         PreparedDeferredSceneGraph preparedGraph;
         preparedGraph.resources = ImportDeferredSceneGraphResources(resourceRequest);
+        if (!HasCompleteDeferredGraphGBufferResources(preparedGraph.resources))
+            return preparedGraph;
+
         preparedGraph.execution = Detail::CompilePreparedSceneGraphExecution(
             lightGridContext,
             preparedGraph.resources.sceneTargets.color,
@@ -806,7 +1098,7 @@ namespace NLS::Render::FrameGraph
         NLS::Render::Context::RenderScenePackage& package,
         const LightGridCompileContext& lightGridContext,
         const DeferredPreparedSceneResources& resources,
-        const std::vector<NLS::Render::Context::RenderPassCommandInput>& appendedPassInputs,
+        std::vector<NLS::Render::Context::RenderPassCommandInput>&& appendedPassInputs,
         const std::vector<ThreadedRenderScenePassMetadata>& appendedPassMetadata,
         const std::optional<uint64_t> queuedLightingDrawCount)
     {
@@ -851,7 +1143,7 @@ namespace NLS::Render::FrameGraph
                 Detail::ResolvePreparedLightGridPassBindings(scenePackage, lightGridContext);
             },
             scenePassMetadata,
-            [&package, &resources, &appendedPassInputs, &appendedPassMetadata, &lightGridContext, opaqueDrawCount, lightingDrawCount](const auto& lightGridComputeSource, const auto& compiledPasses)
+            [&package, &resources, &appendedPassInputs, &appendedPassMetadata, &lightGridContext, opaqueDrawCount, lightingDrawCount](const auto& lightGridComputeSource, const auto& compiledPasses) mutable
             {
                 std::vector<CompiledThreadedRenderSceneGraphPass> deferredCompiledPasses;
                 deferredCompiledPasses.reserve(2u);
@@ -860,10 +1152,14 @@ namespace NLS::Render::FrameGraph
                     if (GetDeferredScenePassExecutionKind(compiledPass.metadata.commandKind) != DeferredScenePassExecutionKind::Unknown)
                         deferredCompiledPasses.push_back(compiledPass);
                 }
+                const bool hasValidDeferredResources = HasCompleteDeferredPreparedSceneResources(
+                    resources,
+                    lightGridContext.frameDescriptor);
                 auto passInputs = BuildDeferredScenePassInputs(
                     deferredCompiledPasses,
                     package,
                     lightGridComputeSource,
+                    lightGridContext.frameDescriptor,
                     opaqueDrawCount,
                     lightingDrawCount,
                     package.recordedDrawCommands,
@@ -878,8 +1174,11 @@ namespace NLS::Render::FrameGraph
                         appendedPassInputs,
                         aggregateHelperPassInput);
                 }
-                for (auto& passInput : passInputs)
-                    AttachDeferredGBufferDepthForHelperPasses(passInput, resources);
+                if (hasValidDeferredResources)
+                {
+                    for (auto& passInput : passInputs)
+                        AttachDeferredGBufferDepthForHelperPasses(passInput, resources);
+                }
                 if (!package.targetsSwapchain)
                 {
                     ApplyExternalSceneOutputAttachments(

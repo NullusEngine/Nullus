@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 #include <memory>
 
@@ -99,6 +100,7 @@ namespace NLS::Render::Resources
 		* Returns the bounding sphere of the mesh
 		*/
 		const Render::Geometry::BoundingSphere& GetBoundingSphere() const;
+		uint64_t GetContentRevision() const;
 		void Reload(
 			const std::vector<Geometry::Vertex>& p_vertices,
 			const std::vector<uint32_t>& p_indices,
@@ -111,6 +113,7 @@ namespace NLS::Render::Resources
 			uint32_t destinationVertexOffset = 0u);
 
 	private:
+		void TouchContentRevision();
 		void CreateBuffers(
 			const std::vector<Geometry::Vertex>& p_vertices,
 			const std::vector<uint32_t>& p_indices,
@@ -129,5 +132,6 @@ namespace NLS::Render::Resources
 		std::unique_ptr<Buffers::IndexBuffer>			m_indexBuffer;
 
 		Geometry::BoundingSphere m_boundingSphere;
+		uint64_t m_contentRevision = 1u;
 	};
 }

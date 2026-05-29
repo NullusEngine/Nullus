@@ -35,6 +35,9 @@ public:
 
     void BeginFrame(const Data::FrameDescriptor& frameDescriptor);
     void EndFrame();
+    bool TryReservePreparedFrameResources();
+    void ReleaseReservedPreparedFrameResources();
+    bool HasReservedPreparedFrameResources() const;
     bool PrepareDraw(PipelineState& pso, const Entities::Drawable& drawable);
     void PrepareExplicitDraw(RHI::RHICommandBuffer& commandBuffer, PipelineState& pso, const Entities::Drawable& drawable);
     bool CapturePreparedBindingSets(PipelineState& pso, const Entities::Drawable& drawable, PreparedBindingSets& outBindings);
@@ -46,6 +49,9 @@ public:
 protected:
     virtual void OnBeginFrame(const Data::FrameDescriptor& frameDescriptor);
     virtual void OnEndFrame();
+    virtual bool OnTryReservePreparedFrameResources();
+    virtual void OnReleaseReservedPreparedFrameResources();
+    virtual bool OnHasReservedPreparedFrameResources() const;
     virtual bool OnPrepareDraw(PipelineState& pso, const Entities::Drawable& drawable);
     virtual void OnPrepareExplicitDraw(RHI::RHICommandBuffer& commandBuffer, PipelineState& pso, const Entities::Drawable& drawable);
     virtual bool OnCapturePreparedBindingSets(PipelineState& pso, const Entities::Drawable& drawable, PreparedBindingSets& outBindings);

@@ -181,6 +181,8 @@ protected:
     void SetPendingPreparedRenderSceneBuilder(
         NLS::Render::Context::PreparedRenderSceneBuilder renderSceneBuilder);
     virtual bool TryPublishThreadedFrame();
+    virtual void OnThreadedFramePublished(uint64_t publishedFrameId);
+    virtual void OnThreadedFramePublishFailed();
     struct PreparedRecordedDraw
     {
         std::shared_ptr<RHI::RHICommandBuffer> commandBuffer;

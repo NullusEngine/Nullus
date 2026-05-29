@@ -779,6 +779,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     driverSettings.enableThreadedRendering = runtimeSettings.enableThreadedRendering;
     driverSettings.enableLightGrid = Editor::Settings::EditorSettings::GetRenderingSettingsObject().enableLightGrid;
     driverSettings.threadedFrameSlotCount = Editor::Core::ResolveEditorThreadedFrameSlotCount(driverSettings.framesInFlight);
+    driverSettings.threadedPublishRetirementWaitMs = Editor::Core::ResolveEditorThreadedPublishRetirementWaitMs();
     driverSettings.diagnostics = m_diagnosticsSettings;
 
     if (renderDocSettings.enabled || renderDocSettings.startupCaptureAfterFrames > 0)

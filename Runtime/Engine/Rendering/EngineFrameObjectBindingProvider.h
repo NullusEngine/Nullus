@@ -27,6 +27,9 @@ public:
 protected:
     void OnBeginFrame(const NLS::Render::Data::FrameDescriptor& frameDescriptor) override;
     void OnEndFrame() override;
+    bool OnTryReservePreparedFrameResources() override;
+    void OnReleaseReservedPreparedFrameResources() override;
+    bool OnHasReservedPreparedFrameResources() const override;
     bool OnPrepareDraw(PipelineState& pso, const NLS::Render::Entities::Drawable& drawable) override;
     void OnPrepareExplicitDraw(
         NLS::Render::RHI::RHICommandBuffer& commandBuffer,
@@ -65,6 +68,7 @@ private:
     bool m_currentDrawUsesIndexedObjectData = false;
     bool m_currentDrawRequiresIndexedObjectData = false;
     bool m_currentDrawPrepared = true;
+    bool m_preparedFrameObjectDataSlotUnavailable = false;
     uint32_t m_currentDrawObjectIndex = 0u;
     bool m_preparedFrameHasObjectDataSlot = false;
     bool m_preparedFrameObjectDataSlotReserved = false;

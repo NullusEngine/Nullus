@@ -25,6 +25,21 @@ void FrameObjectBindingProvider::EndFrame()
     m_preparedDrawCount = 0u;
 }
 
+bool FrameObjectBindingProvider::TryReservePreparedFrameResources()
+{
+    return OnTryReservePreparedFrameResources();
+}
+
+void FrameObjectBindingProvider::ReleaseReservedPreparedFrameResources()
+{
+    OnReleaseReservedPreparedFrameResources();
+}
+
+bool FrameObjectBindingProvider::HasReservedPreparedFrameResources() const
+{
+    return OnHasReservedPreparedFrameResources();
+}
+
 bool FrameObjectBindingProvider::PrepareDraw(PipelineState& pso, const Entities::Drawable& drawable)
 {
     m_objectPrepared = OnPrepareDraw(pso, drawable);
@@ -69,6 +84,20 @@ void FrameObjectBindingProvider::OnBeginFrame(const Data::FrameDescriptor&)
 
 void FrameObjectBindingProvider::OnEndFrame()
 {
+}
+
+bool FrameObjectBindingProvider::OnTryReservePreparedFrameResources()
+{
+    return true;
+}
+
+void FrameObjectBindingProvider::OnReleaseReservedPreparedFrameResources()
+{
+}
+
+bool FrameObjectBindingProvider::OnHasReservedPreparedFrameResources() const
+{
+    return false;
 }
 
 bool FrameObjectBindingProvider::OnPrepareDraw(PipelineState&, const Entities::Drawable&)

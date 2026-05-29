@@ -181,7 +181,7 @@ TEST(ShaderBindingLayoutUtilsTests, RendererOwnedObjectIndexConstantsAreSkippedF
     ShaderReflection reflection;
     reflection.constantBuffers = {
         { "FrameConstants", ShaderStage::Vertex, NLS::Render::RHI::BindingPointMap::kFrameBindingSpace, 0u, 64u, {} },
-        { "ObjectIndexConstants", ShaderStage::Vertex, NLS::Render::RHI::BindingPointMap::kObjectBindingSpace, 1u, sizeof(uint32_t), {} }
+        { "ObjectIndexConstants", ShaderStage::Vertex, NLS::Render::RHI::BindingPointMap::kObjectBindingSpace, 1u, 16u, {} }
     };
     reflection.properties = {
         { "ObjectData", UniformType::UNIFORM_FLOAT_MAT4, ShaderResourceKind::StructuredBuffer, ShaderStage::Vertex, NLS::Render::RHI::BindingPointMap::kObjectBindingSpace, 0u, -1, 1, 0u, sizeof(NLS::Maths::Matrix4), {} }
@@ -244,6 +244,35 @@ TEST(ShaderBindingLayoutUtilsTests, RendererOwnedObjectIndexConstantsAreSkippedF
     ASSERT_EQ(objectGroup->parameters.size(), 1u);
     EXPECT_EQ(objectGroup->parameters[0].name, "ObjectData");
     EXPECT_EQ(objectGroup->parameters[0].binding, 0u);
+}
+
+TEST(ShaderBindingLayoutUtilsTests, RendererOwnedObjectIndexConstantsAreSkippedForShaderParameterStructLayouts)
+{
+    const std::vector<NLS::Render::Resources::ShaderParameterStruct> parameterStructs = {
+        NLS::Render::Resources::ShaderParameterStructBuilder("IndexedObjectParameters")
+            .SetGroup(NLS::Render::Resources::ShaderParameterGroupKind::Object)
+            .AddStructuredBuffer(
+                "ObjectData",
+                0u,
+                NLS::Render::RHI::ShaderStageMask::Vertex,
+                sizeof(NLS::Maths::Matrix4))
+            .AddUniformBuffer(
+                "ObjectIndexConstants",
+                1u,
+                sizeof(uint32_t),
+                NLS::Render::RHI::ShaderStageMask::Vertex)
+            .Build()
+    };
+
+    const auto layouts = NLS::Render::Resources::BuildBindingLayoutDescsFromShaderParameters(
+        parameterStructs,
+        "SelectionOutlineMask");
+
+    ASSERT_EQ(layouts.size(), 3u);
+    ASSERT_EQ(layouts[2].entries.size(), 1u);
+    EXPECT_EQ(layouts[2].entries[0].name, "ObjectData");
+    EXPECT_EQ(layouts[2].entries[0].binding, 0u);
+    EXPECT_EQ(layouts[2].entries[0].type, NLS::Render::RHI::BindingType::StructuredBuffer);
 }
 
 TEST(ShaderBindingLayoutUtilsTests, ReflectionParameterGroupContractsCarryStructuredBufferElementStride)

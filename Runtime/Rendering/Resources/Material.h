@@ -1,10 +1,12 @@
 ﻿#pragma once
 
 #include <any>
+#include <array>
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -56,13 +58,52 @@ namespace NLS::Render::Resources
 {
 struct MaterialPipelineStateOverrides
 {
+    static constexpr size_t kInlineColorFormatCapacity = 4u;
+
     std::optional<bool> depthWrite;
     std::optional<bool> colorWrite;
+    std::optional<bool> blending;
     std::optional<bool> depthTest;
     std::optional<bool> hasDepthAttachment;
     std::optional<bool> culling;
     std::optional<Settings::ECullFace> cullFace;
     std::optional<std::vector<RHI::TextureFormat>> colorFormats;
+    std::array<RHI::TextureFormat, kInlineColorFormatCapacity> inlineColorFormats {};
+    size_t inlineColorFormatCount = 0u;
+    bool inlineColorFormatsSet = false;
+
+    void SetColorFormats(std::span<const RHI::TextureFormat> formats)
+    {
+        inlineColorFormatCount = 0u;
+        inlineColorFormatsSet = true;
+        colorFormats.reset();
+        if (formats.size() <= inlineColorFormats.size())
+        {
+            for (size_t i = 0u; i < formats.size(); ++i)
+                inlineColorFormats[i] = formats[i];
+            inlineColorFormatCount = formats.size();
+            return;
+        }
+
+        colorFormats = std::vector<RHI::TextureFormat>(formats.begin(), formats.end());
+        inlineColorFormatsSet = false;
+    }
+
+    bool HasColorFormatsOverride() const
+    {
+        return inlineColorFormatsSet || colorFormats.has_value();
+    }
+
+    std::span<const RHI::TextureFormat> GetColorFormats() const
+    {
+        if (colorFormats.has_value())
+            return std::span<const RHI::TextureFormat>(*colorFormats);
+        if (inlineColorFormatsSet)
+            return std::span<const RHI::TextureFormat>(
+                inlineColorFormats.data(),
+                inlineColorFormatCount);
+        return {};
+    }
 };
 
 enum class MaterialBindingDiagnosticSeverity : uint8_t

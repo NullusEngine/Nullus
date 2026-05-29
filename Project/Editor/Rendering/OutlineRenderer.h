@@ -1,11 +1,15 @@
 #pragma once
 
-#include <vector>
-
 #include <GameObject.h>
+#include <Math/Matrix4.h>
+#include <Math/Vector3.h>
 #include <Resources/Material.h>
 #include <Rendering/Context/ThreadedRenderingLifecycle.h>
 
+#include <optional>
+#include <vector>
+
+#include "Rendering/DebugGameObjectSelectionCollector.h"
 #include "Rendering/EditorHelperLifecycle.h"
 
 namespace NLS::Render::Core { class CompositeRenderer; }
@@ -38,24 +42,38 @@ public:
         const Maths::Vector4& color,
         float thickness,
         std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands);
-    void DrawOutline(Engine::GameObject& actor, const Maths::Vector4& color, float thickness);
-
-private:
-    void CaptureStencilPass(
-        Engine::GameObject& actor,
-        std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands);
-    void CaptureOutlinePass(
-        Engine::GameObject& actor,
+    void CaptureOutlineDrawCommands(
+        const Editor::Rendering::DebugGameObjectDebugDrawItems& debugDrawItems,
         const Maths::Vector4& color,
         float thickness,
         std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands);
-    void CaptureGameObjectToStencil(
-        NLS::Render::Data::PipelineState pso,
+    void DrawOutline(Engine::GameObject& actor, const Maths::Vector4& color, float thickness);
+    void DrawOutline(
+        const Editor::Rendering::DebugGameObjectDebugDrawItems& debugDrawItems,
+        const Maths::Vector4& color,
+        float thickness);
+    bool PrepareOutlineDrawItems(const Editor::Rendering::DebugGameObjectDebugDrawItems& debugDrawItems);
+    void DrawPreparedOutline(const Maths::Vector4& color, float thickness);
+
+private:
+    struct OutlineDrawItem
+    {
+        NLS::Render::Resources::Mesh* mesh = nullptr;
+        Maths::Matrix4 worldMatrix = Maths::Matrix4::Identity;
+        Maths::Vector3 worldScale = Maths::Vector3::One;
+    };
+
+    void CollectOutlineDrawItems(
         Engine::GameObject& actor,
+        std::vector<OutlineDrawItem>& outItems,
+        NLS::Render::Resources::Mesh* cameraMesh) const;
+    bool PrepareOutlineScratchItems(const Editor::Rendering::DebugGameObjectDebugDrawItems& debugDrawItems);
+    void CaptureStencilPass(
+        const std::vector<OutlineDrawItem>& outlineItems,
         std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands);
-    void CaptureGameObjectOutline(
-        NLS::Render::Data::PipelineState pso,
-        Engine::GameObject& actor,
+    void CaptureOutlinePass(
+        const std::vector<OutlineDrawItem>& outlineItems,
+        const Maths::Vector4& color,
         float thickness,
         std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands);
     void CaptureMeshToStencil(
@@ -68,17 +86,22 @@ private:
         const Maths::Matrix4& worldMatrix,
         NLS::Render::Resources::Mesh& mesh,
         std::vector<NLS::Render::Context::RecordedDrawCommandInput>& outDrawCommands);
-    void DrawStencilPass(Engine::GameObject& actor);
-    void DrawOutlinePass(Engine::GameObject& actor, const Maths::Vector4& color, float thickness);
-    void DrawGameObjectToStencil(NLS::Render::Data::PipelineState pso, Engine::GameObject& actor);
-    void DrawGameObjectOutline(NLS::Render::Data::PipelineState pso, Engine::GameObject& actor, float thickness);
+    void DrawStencilPass(const std::vector<OutlineDrawItem>& outlineItems);
+    void DrawOutlinePass(
+        const std::vector<OutlineDrawItem>& outlineItems,
+        const Maths::Vector4& color,
+        float thickness);
+    void ApplyOutlineMaterialColor(const Maths::Vector4& color);
     void DrawMeshToStencil(NLS::Render::Data::PipelineState pso, const Maths::Matrix4& worldMatrix, NLS::Render::Resources::Mesh& mesh);
     void DrawMeshOutline(NLS::Render::Data::PipelineState pso, const Maths::Matrix4& worldMatrix, NLS::Render::Resources::Mesh& mesh);
+    bool PrepareOutlineScratchItems(Engine::GameObject& actor);
 
 private:
     NLS::Render::Core::CompositeRenderer& m_renderer;
     DebugModelRenderer& m_debugModelRenderer;
     NLS::Render::Resources::Material m_stencilFillMaterial;
     NLS::Render::Resources::Material m_outlineMaterial;
+    std::vector<OutlineDrawItem> m_outlineScratchItems;
+    std::optional<Maths::Vector4> m_lastAppliedOutlineColor;
 };
 }

@@ -299,7 +299,7 @@ TEST(DX12PipelineLayoutUtilsTests, DX12CommandAllowsCommonPromotableUnresolvedPa
         std::filesystem::path(NLS_ROOT_DIR) /
         "Runtime/Rendering/RHI/Backends/DX12/DX12Command.cpp");
 
-    const auto barrier = source.find("void NativeDX12CommandBuffer::Barrier");
+    const auto barrier = source.find("NativeDX12CommandBuffer::BarrierChecked");
     ASSERT_NE(barrier, std::string::npos);
     const auto wholeTextureStateKnown = source.find("wholeTextureStateKnown", barrier);
     ASSERT_NE(wholeTextureStateKnown, std::string::npos);

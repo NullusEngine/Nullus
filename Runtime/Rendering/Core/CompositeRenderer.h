@@ -71,6 +71,7 @@ public:
     void FinalizeFrameStatistics();
 
 protected:
+    void OnThreadedFramePublishFailed() override;
     void DrawRegisteredPasses();
     void DrawRegisteredPasses(PipelineState pso);
     std::multimap<uint32_t, std::pair<std::string, std::unique_ptr<Core::ARenderPass>>> m_passes;

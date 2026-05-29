@@ -178,11 +178,11 @@ void CompositeRenderer::EndFrame()
         }
     }
 
-    if (m_frameObjectBindingProvider != nullptr)
-        m_frameObjectBindingProvider->EndFrame();
     if (m_debugDrawService != nullptr)
         m_debugDrawService->EndFrame();
     ABaseRenderer::EndFrame();
+    if (m_frameObjectBindingProvider != nullptr)
+        m_frameObjectBindingProvider->EndFrame();
     ClearDescriptors();
     if (Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver))
     {
@@ -198,6 +198,13 @@ void CompositeRenderer::EndFrame()
     }
     m_rendererStats.EndFrame();
     m_compositeFrameActive = false;
+}
+
+void CompositeRenderer::OnThreadedFramePublishFailed()
+{
+    ABaseRenderer::OnThreadedFramePublishFailed();
+    if (m_frameObjectBindingProvider != nullptr)
+        m_frameObjectBindingProvider->ReleaseReservedPreparedFrameResources();
 }
 
 void CompositeRenderer::DrawEntity(

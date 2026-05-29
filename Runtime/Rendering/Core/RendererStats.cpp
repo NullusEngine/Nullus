@@ -19,6 +19,9 @@ namespace
     {
         frameInfo.inFlightFrameCount = telemetry.inFlightFrameCount;
         frameInfo.blockedFrameCount = ResolveBlockedFrameCount(telemetry);
+        frameInfo.reservedSlotWaitCount = telemetry.reservedSlotWaitCount;
+        frameInfo.reservedSlotWaitTimeoutCount = telemetry.reservedSlotWaitTimeoutCount;
+        frameInfo.reservedSlotWaitTotalNs = telemetry.reservedSlotWaitTotalNs;
         frameInfo.publishState = telemetry.publishState;
         frameInfo.stageSummary = telemetry.stageSummary;
         frameInfo.retirementState = telemetry.retirementState;
@@ -55,6 +58,9 @@ void RendererStats::BeginFrame()
     m_frameInfo.vertexCount = 0u;
     m_frameInfo.inFlightFrameCount = 0u;
     m_frameInfo.blockedFrameCount = 0u;
+    m_frameInfo.reservedSlotWaitCount = 0u;
+    m_frameInfo.reservedSlotWaitTimeoutCount = 0u;
+    m_frameInfo.reservedSlotWaitTotalNs = 0u;
     m_frameInfo.publishState = Data::FramePublishState::Direct;
     m_frameInfo.stageSummary = Data::ThreadedFrameStageSummary::Direct;
     m_frameInfo.retirementState = Data::FrameRetirementState::Direct;

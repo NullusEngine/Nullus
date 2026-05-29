@@ -1,6 +1,7 @@
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 
 #include <algorithm>
+#include <exception>
 #include <utility>
 
 #include "Profiling/Profiler.h"
@@ -68,6 +69,65 @@ namespace
         return build;
     }
 
+    RenderScenePackage BuildFallbackRenderScenePackage(const FrameSnapshot& snapshot)
+    {
+        RenderScenePackage package;
+        package.frameId = snapshot.frameId;
+        package.targetsSwapchain = snapshot.targetsSwapchain;
+        package.clearColorValue = snapshot.clearColor;
+        package.clearColorBuffer = snapshot.clearColorBuffer;
+        package.clearDepthBuffer = snapshot.clearDepthBuffer;
+        package.clearStencilBuffer = snapshot.clearStencilBuffer;
+        package.renderWidth = snapshot.renderWidth;
+        package.renderHeight = snapshot.renderHeight;
+        package.sceneGameObjectCount = snapshot.sceneGameObjectCount;
+        package.renderTargetUseCount = package.targetsSwapchain ? 1u : 2u;
+        return package;
+    }
+
+    RenderScenePackage BuildPreparedBuilderMissingRenderScenePackage(
+        const FrameSnapshot& snapshot,
+        const RenderScenePreparingResolutionDesc& resolutionDesc)
+    {
+        if (resolutionDesc.buildPreparedBuilderMissingRenderScenePackage)
+        {
+            try
+            {
+                return resolutionDesc.buildPreparedBuilderMissingRenderScenePackage(snapshot);
+            }
+            catch (...)
+            {
+            }
+        }
+
+        return BuildFallbackRenderScenePackage(snapshot);
+    }
+
+    RenderScenePackage BuildSnapshotHarnessRenderScenePackage(
+        const FrameSnapshot& snapshot,
+        const RenderScenePreparingResolutionDesc& resolutionDesc)
+    {
+        if (resolutionDesc.buildSnapshotHarnessRenderScenePackage)
+        {
+            try
+            {
+                return resolutionDesc.buildSnapshotHarnessRenderScenePackage(snapshot);
+            }
+            catch (...)
+            {
+            }
+        }
+
+        return BuildFallbackRenderScenePackage(snapshot);
+    }
+
+    bool RhiSubmissionCompletedSuccessfully(const RhiSubmissionFrame& submissionFrame)
+    {
+        return submissionFrame.submittedSuccessfully &&
+            submissionFrame.currentFrameQueueOperationFailureCount == 0u &&
+            !submissionFrame.deviceLostDetected;
+    }
+
     int GetRenderSceneAttributionRank(const InFlightFrameSlot& slot)
     {
         if (slot.renderSceneAttribution == RenderSceneAttribution::Unknown)
@@ -80,6 +140,7 @@ namespace
         case ThreadedFrameStage::RhiSubmitting:
             return 2;
         case ThreadedFrameStage::RenderScenePreparing:
+        case ThreadedFrameStage::RenderSceneResolving:
         case ThreadedFrameStage::RenderReady:
             return 1;
         case ThreadedFrameStage::Available:
@@ -103,6 +164,7 @@ namespace
         case ThreadedFrameStage::Available:
         case ThreadedFrameStage::Published:
         case ThreadedFrameStage::RenderScenePreparing:
+        case ThreadedFrameStage::RenderSceneResolving:
         case ThreadedFrameStage::RenderReady:
         default:
             return 0;
@@ -391,8 +453,21 @@ bool ThreadedRenderingLifecycle::CompleteRenderScene(
 {
     NLS_PROFILE_SCOPE();
     std::lock_guard<std::mutex> lock(m_mutex);
+    return CompleteRenderSceneLocked(
+        slotIndex,
+        renderScenePackage,
+        attribution,
+        ThreadedFrameStage::RenderScenePreparing);
+}
+
+bool ThreadedRenderingLifecycle::CompleteRenderSceneLocked(
+    const size_t slotIndex,
+    const RenderScenePackage& renderScenePackage,
+    const RenderSceneAttribution attribution,
+    const ThreadedFrameStage expectedStage)
+{
     auto* slot = const_cast<InFlightFrameSlot*>(PeekSlotLocked(slotIndex));
-    if (slot == nullptr || slot->stage != ThreadedFrameStage::RenderScenePreparing)
+    if (slot == nullptr || slot->stage != expectedStage)
         return false;
 
     slot->renderScenePackage = renderScenePackage;
@@ -415,8 +490,14 @@ bool ThreadedRenderingLifecycle::ResolveRenderScenePreparing(
 
     {
         std::lock_guard<std::mutex> lock(m_mutex);
-        const auto* slot = PeekSlotLocked(slotIndex);
-        if (slot == nullptr ||
+        auto slot = std::find_if(
+            m_slots.begin(),
+            m_slots.end(),
+            [slotIndex](const InFlightFrameSlot& candidate)
+            {
+                return candidate.slotIndex == slotIndex;
+            });
+        if (slot == m_slots.end() ||
             slot->stage != ThreadedFrameStage::RenderScenePreparing ||
             !slot->snapshot.has_value())
         {
@@ -426,7 +507,12 @@ bool ThreadedRenderingLifecycle::ResolveRenderScenePreparing(
         snapshot = slot->snapshot.value();
         publishOrigin = slot->publishOrigin;
         if (slot->preparedRenderSceneBuilder.has_value())
-            renderSceneBuilder = slot->preparedRenderSceneBuilder.value();
+        {
+            renderSceneBuilder = std::move(slot->preparedRenderSceneBuilder.value());
+            slot->preparedRenderSceneBuilder.reset();
+        }
+        slot->stage = ThreadedFrameStage::RenderSceneResolving;
+        RefreshTelemetryLocked();
     }
 
     RenderScenePackage renderScenePackage;
@@ -434,27 +520,46 @@ bool ThreadedRenderingLifecycle::ResolveRenderScenePreparing(
 
     if (publishOrigin == ThreadedFramePublishOrigin::SnapshotHarness)
     {
-        if (resolutionDesc.buildSnapshotHarnessRenderScenePackage)
-            renderScenePackage = resolutionDesc.buildSnapshotHarnessRenderScenePackage(snapshot);
-
+        renderScenePackage = BuildSnapshotHarnessRenderScenePackage(snapshot, resolutionDesc);
         attribution = RenderSceneAttribution::SnapshotHarness;
     }
     else if (renderSceneBuilder)
     {
-        renderScenePackage = renderSceneBuilder();
-        attribution = RenderSceneAttribution::RendererPrepared;
+        try
+        {
+            renderScenePackage = renderSceneBuilder();
+            attribution = RenderSceneAttribution::RendererPrepared;
+        }
+        catch (const std::exception&)
+        {
+            renderScenePackage = BuildPreparedBuilderMissingRenderScenePackage(snapshot, resolutionDesc);
+            attribution = RenderSceneAttribution::PreparedBuilderMissing;
+        }
+        catch (...)
+        {
+            renderScenePackage = BuildPreparedBuilderMissingRenderScenePackage(snapshot, resolutionDesc);
+            attribution = RenderSceneAttribution::PreparedBuilderMissing;
+        }
     }
     else if (resolutionDesc.buildPreparedBuilderMissingRenderScenePackage)
     {
-        renderScenePackage = resolutionDesc.buildPreparedBuilderMissingRenderScenePackage(snapshot);
+        renderScenePackage = BuildPreparedBuilderMissingRenderScenePackage(snapshot, resolutionDesc);
         attribution = RenderSceneAttribution::PreparedBuilderMissing;
     }
     else
     {
+        renderScenePackage = BuildPreparedBuilderMissingRenderScenePackage(snapshot, resolutionDesc);
         attribution = RenderSceneAttribution::PreparedBuilderMissing;
     }
 
-    return CompleteRenderScene(slotIndex, renderScenePackage, attribution);
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return CompleteRenderSceneLocked(
+            slotIndex,
+            renderScenePackage,
+            attribution,
+            ThreadedFrameStage::RenderSceneResolving);
+    }
 }
 
 bool ThreadedRenderingLifecycle::TryBeginNextRhiFrameExecution(size_t* slotIndex, RenderFrameBuild* renderFrameBuild)
@@ -536,8 +641,17 @@ bool ThreadedRenderingLifecycle::RetireFrame(const size_t slotIndex)
         if (slot == nullptr || slot->stage != ThreadedFrameStage::RhiSubmitting)
             return false;
 
-        if (slot->submissionFrame.has_value())
-            m_latestRetiredFrameId = slot->submissionFrame->frameId;
+        if (slot->submissionFrame.has_value() &&
+            RhiSubmissionCompletedSuccessfully(slot->submissionFrame.value()))
+        {
+            m_latestRetiredFrameId = std::max(m_latestRetiredFrameId, slot->submissionFrame->frameId);
+        }
+        else if (slot->submissionFrame.has_value())
+        {
+            m_latestFailedRetiredFrameId = std::max(
+                m_latestFailedRetiredFrameId,
+                slot->submissionFrame->frameId);
+        }
         slot->stage = ThreadedFrameStage::Retired;
         RefreshTelemetryLocked();
     }
@@ -575,9 +689,10 @@ uint64_t ThreadedRenderingLifecycle::GetPublishedFrameCount() const
     return m_telemetry.publishedFrameCount;
 }
 
-std::optional<size_t> ThreadedRenderingLifecycle::ReserveReusableSlotIndex()
+std::optional<size_t> ThreadedRenderingLifecycle::ReserveReusableSlotIndex(
+    const std::chrono::nanoseconds retirementWaitTimeout)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     if (m_reservedReusableSlotIndex.has_value())
     {
         const auto* reservedSlot = PeekSlotLocked(m_reservedReusableSlotIndex.value());
@@ -588,6 +703,30 @@ std::optional<size_t> ThreadedRenderingLifecycle::ReserveReusableSlotIndex()
         }
 
         m_reservedReusableSlotIndex.reset();
+    }
+
+    if (FindReusableSlotReadOnlyLocked(false) == nullptr)
+    {
+        if (retirementWaitTimeout <= std::chrono::nanoseconds::zero())
+            return std::nullopt;
+
+        const auto waitStart = std::chrono::steady_clock::now();
+        ++m_telemetry.reservedSlotWaitCount;
+        const bool hasReusableSlot = m_slotAvailable.wait_for(
+            lock,
+            retirementWaitTimeout,
+            [this]()
+            {
+                return FindReusableSlotReadOnlyLocked(false) != nullptr;
+            });
+        m_telemetry.reservedSlotWaitTotalNs += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - waitStart).count());
+        if (!hasReusableSlot)
+        {
+            ++m_telemetry.reservedSlotWaitTimeoutCount;
+            return std::nullopt;
+        }
     }
 
     const auto* slot = FindReusableSlotReadOnlyLocked(false);
@@ -795,6 +934,7 @@ void ThreadedRenderingLifecycle::RefreshTelemetryLocked()
     m_telemetry.inFlightFrameCount = 0u;
     m_telemetry.latestPublishedFrameId = m_latestPublishedFrameId;
     m_telemetry.latestRetiredFrameId = m_latestRetiredFrameId;
+    m_telemetry.latestFailedRetiredFrameId = m_latestFailedRetiredFrameId;
     m_telemetry.publishOrigin = ThreadedFramePublishOrigin::Unknown;
     m_telemetry.renderSceneAttribution = RenderSceneAttribution::Unknown;
     m_telemetry.rhiSubmissionAttribution = RhiSubmissionAttribution::Unknown;
@@ -843,6 +983,7 @@ void ThreadedRenderingLifecycle::RefreshTelemetryLocked()
             hasPublishedFrames = true;
             break;
         case ThreadedFrameStage::RenderScenePreparing:
+        case ThreadedFrameStage::RenderSceneResolving:
         case ThreadedFrameStage::RenderReady:
             hasRenderSceneFrames = true;
             break;

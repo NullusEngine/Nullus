@@ -99,6 +99,8 @@ namespace NLS::Render::Backend
 		const std::shared_ptr<NLS::Render::RHI::RHITexture>& GetTexture() const override;
 		NLS::Render::RHI::NativeHandle GetNativeRenderTargetView() override;
 		NLS::Render::RHI::NativeHandle GetNativeDepthStencilView() override;
+		NLS::Render::RHI::NativeHandle GetNativeDepthStencilView(
+			NLS::Render::RHI::RHIDepthStencilViewAccess access) override;
 		NLS::Render::RHI::NativeHandle GetNativeShaderResourceView() override;
 #if defined(_WIN32)
 		D3D12_GPU_DESCRIPTOR_HANDLE GetGPUDescriptorHandle() const;
@@ -113,9 +115,11 @@ namespace NLS::Render::Backend
 		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_srvHeap;
 		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_rtvHeap;
 		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_dsvHeap;
+		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_readOnlyDepthStencilDsvHeap;
 		D3D12_CPU_DESCRIPTOR_HANDLE m_srvHandle = {};
 		D3D12_CPU_DESCRIPTOR_HANDLE m_rtvHandle = {};
 		D3D12_CPU_DESCRIPTOR_HANDLE m_dsvHandle = {};
+		D3D12_CPU_DESCRIPTOR_HANDLE m_readOnlyDepthStencilDsvHandle = {};
 #endif
 	};
 

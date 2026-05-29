@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <span>
+
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/MaterialVariantKey.h"
 
@@ -112,4 +114,104 @@ TEST(MaterialVariantKeyTests, IncludesRenderTargetFormatsInPassVariantKey)
 
     EXPECT_NE(singleTargetKey.stableKey, gbufferKey.stableKey);
     EXPECT_NE(gbufferKey.stableKey.find("overrideColorFormats:3"), std::string::npos);
+}
+
+TEST(MaterialVariantKeyTests, IncludesBlendOverrideInPassVariantKey)
+{
+    NLS::Render::Resources::Material material;
+    const_cast<std::string&>(material.path) = "App/Assets/Overlay.nmat";
+
+    const NLS::Render::Data::PipelineState pipelineState;
+
+    NLS::Render::Resources::MaterialPipelineStateOverrides blendedOverrides;
+    blendedOverrides.blending = true;
+
+    NLS::Render::Resources::MaterialPipelineStateOverrides opaqueOverrides;
+    opaqueOverrides.blending = false;
+
+    const auto blendedKey = NLS::Render::Resources::BuildMaterialPassVariantKey(
+        material,
+        "SelectionOutlineMask::Composite",
+        pipelineState,
+        blendedOverrides);
+    const auto opaqueKey = NLS::Render::Resources::BuildMaterialPassVariantKey(
+        material,
+        "SelectionOutlineMask::Composite",
+        pipelineState,
+        opaqueOverrides);
+
+    EXPECT_NE(blendedKey.stableKey, opaqueKey.stableKey);
+    EXPECT_NE(blendedKey.stableKey.find("overrideBlending:1"), std::string::npos);
+    EXPECT_NE(opaqueKey.stableKey.find("overrideBlending:0"), std::string::npos);
+}
+
+TEST(MaterialVariantKeyTests, InlineColorFormatOverridesMatchOwnedVectorKeySemantics)
+{
+    NLS::Render::Resources::Material material;
+    const_cast<std::string&>(material.path) = "App/Assets/GBufferInline.nmat";
+
+    const NLS::Render::Data::PipelineState pipelineState;
+
+    NLS::Render::Resources::MaterialPipelineStateOverrides vectorOverrides;
+    vectorOverrides.colorFormats = {
+        NLS::Render::RHI::TextureFormat::RGBA8,
+        NLS::Render::RHI::TextureFormat::RGBA8,
+        NLS::Render::RHI::TextureFormat::RGBA8
+    };
+
+    static constexpr NLS::Render::RHI::TextureFormat kSameFormats[] = {
+        NLS::Render::RHI::TextureFormat::RGBA8,
+        NLS::Render::RHI::TextureFormat::RGBA8,
+        NLS::Render::RHI::TextureFormat::RGBA8
+    };
+    NLS::Render::Resources::MaterialPipelineStateOverrides inlineOverrides;
+    inlineOverrides.SetColorFormats(kSameFormats);
+
+    static constexpr NLS::Render::RHI::TextureFormat kDifferentFormats[] = {
+        NLS::Render::RHI::TextureFormat::RGBA8,
+        NLS::Render::RHI::TextureFormat::RGBA16F,
+        NLS::Render::RHI::TextureFormat::RGBA8
+    };
+    NLS::Render::Resources::MaterialPipelineStateOverrides differentInlineOverrides;
+    differentInlineOverrides.SetColorFormats(kDifferentFormats);
+
+    const auto vectorKey = NLS::Render::Resources::BuildMaterialPassVariantKey(
+        material,
+        "DeferredGBuffer",
+        pipelineState,
+        vectorOverrides);
+    const auto inlineKey = NLS::Render::Resources::BuildMaterialPassVariantKey(
+        material,
+        "DeferredGBuffer",
+        pipelineState,
+        inlineOverrides);
+    const auto differentInlineKey = NLS::Render::Resources::BuildMaterialPassVariantKey(
+        material,
+        "DeferredGBuffer",
+        pipelineState,
+        differentInlineOverrides);
+
+    EXPECT_EQ(vectorKey.stableKey, inlineKey.stableKey);
+    EXPECT_NE(vectorKey.stableKey, differentInlineKey.stableKey);
+    EXPECT_EQ(inlineOverrides.GetColorFormats().size(), 3u);
+    EXPECT_FALSE(inlineOverrides.colorFormats.has_value());
+}
+
+TEST(MaterialVariantKeyTests, OwnedColorFormatVectorOverridesInlineSetterStorage)
+{
+    static constexpr NLS::Render::RHI::TextureFormat kInlineFormats[] = {
+        NLS::Render::RHI::TextureFormat::RGBA8,
+        NLS::Render::RHI::TextureFormat::RGBA8,
+        NLS::Render::RHI::TextureFormat::RGBA8
+    };
+
+    NLS::Render::Resources::MaterialPipelineStateOverrides overrides;
+    overrides.SetColorFormats(kInlineFormats);
+    overrides.colorFormats = {
+        NLS::Render::RHI::TextureFormat::RGBA16F
+    };
+
+    const auto formats = overrides.GetColorFormats();
+    ASSERT_EQ(formats.size(), 1u);
+    EXPECT_EQ(formats[0], NLS::Render::RHI::TextureFormat::RGBA16F);
 }

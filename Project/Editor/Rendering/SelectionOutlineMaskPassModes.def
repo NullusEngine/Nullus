@@ -1,0 +1,3 @@
+// The table lives next to the shader asset so shader import dependency hashing
+// sees pass-mode edits. C++ includes this wrapper to keep the same include name.
+#include "../../../App/Assets/Editor/Shaders/SelectionOutlineMaskPassModes.def"

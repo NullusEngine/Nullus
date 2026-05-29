@@ -49,9 +49,16 @@ Editor::Rendering::GridRenderPass::GridRenderPass(NLS::Render::Core::CompositeRe
 	m_gridMaterial.SetBlendable(true);
 }
 
-std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::GridRenderPass::GetPreparedThreadedPassInput() const
+const std::optional<NLS::Render::Context::RenderPassCommandInput>& Editor::Rendering::GridRenderPass::GetPreparedThreadedPassInput() const
 {
     return m_preparedThreadedPassInput;
+}
+
+std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::GridRenderPass::ConsumePreparedThreadedPassInput()
+{
+    auto passInput = std::move(m_preparedThreadedPassInput);
+    m_preparedThreadedPassInput.reset();
+    return passInput;
 }
 
 void Editor::Rendering::GridRenderPass::OnBeginFrame(const NLS::Render::Data::FrameDescriptor&)

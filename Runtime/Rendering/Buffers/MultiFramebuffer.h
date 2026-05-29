@@ -18,16 +18,37 @@ namespace NLS::Render::Buffers
         struct AttachmentDesc
         {
             NLS::Render::RHI::TextureFormat format = NLS::Render::RHI::TextureFormat::RGBA8;
+            NLS::Render::RHI::TextureUsageFlags usage =
+                NLS::Render::RHI::TextureUsageFlags::ColorAttachment |
+                NLS::Render::RHI::TextureUsageFlags::Sampled;
+        };
+
+        struct DepthAttachmentDesc
+        {
+            NLS::Render::RHI::TextureFormat format = NLS::Render::RHI::TextureFormat::Depth24Stencil8;
+            NLS::Render::RHI::TextureUsageFlags usage =
+                NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment |
+                NLS::Render::RHI::TextureUsageFlags::Sampled;
         };
 
         MultiFramebuffer() = default;
-        MultiFramebuffer(uint16_t width, uint16_t height, const std::vector<AttachmentDesc>& colorAttachments, bool withDepth = true);
+        MultiFramebuffer(
+            uint16_t width,
+            uint16_t height,
+            const std::vector<AttachmentDesc>& colorAttachments,
+            bool withDepth = true,
+            DepthAttachmentDesc depthAttachment = {});
         ~MultiFramebuffer();
 
         MultiFramebuffer(const MultiFramebuffer&) = delete;
         MultiFramebuffer& operator=(const MultiFramebuffer&) = delete;
 
-        void Init(uint16_t width, uint16_t height, const std::vector<AttachmentDesc>& colorAttachments, bool withDepth = true);
+        void Init(
+            uint16_t width,
+            uint16_t height,
+            const std::vector<AttachmentDesc>& colorAttachments,
+            bool withDepth = true,
+            DepthAttachmentDesc depthAttachment = {});
         void Resize(uint16_t width, uint16_t height);
         bool IsInitialized() const;
 
@@ -59,6 +80,7 @@ namespace NLS::Render::Buffers
         uint16_t m_height = 0;
         bool m_withDepth = true;
         std::vector<AttachmentDesc> m_attachmentDescs;
+        DepthAttachmentDesc m_depthAttachmentDesc;
         std::vector<std::shared_ptr<NLS::Render::RHI::RHITexture>> m_explicitColorTextures;
         mutable std::vector<std::shared_ptr<NLS::Render::RHI::RHITextureView>> m_explicitColorTextureViews;
         std::shared_ptr<NLS::Render::RHI::RHITexture> m_explicitDepthTexture;

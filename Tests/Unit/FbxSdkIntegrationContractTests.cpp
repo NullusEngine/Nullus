@@ -67,6 +67,34 @@ std::string SliceBetween(
     return source.substr(begin, end - begin);
 }
 
+std::string SliceScopedBlock(const std::string& source, const std::string& beginMarker)
+{
+    const auto begin = source.find(beginMarker);
+    if (begin == std::string::npos)
+        return {};
+
+    const auto openingBrace = source.find('{', begin + beginMarker.size());
+    if (openingBrace == std::string::npos)
+        return {};
+
+    size_t depth = 0u;
+    for (auto position = openingBrace; position < source.size(); ++position)
+    {
+        if (source[position] == '{')
+        {
+            ++depth;
+        }
+        else if (source[position] == '}')
+        {
+            --depth;
+            if (depth == 0u)
+                return source.substr(begin, position - begin + 1u);
+        }
+    }
+
+    return {};
+}
+
 void ExpectNoExternalFbxSdkLookup(const std::string& text)
 {
     EXPECT_EQ(text.find("FBXSDK" "_ROOT"), std::string::npos);
@@ -1006,19 +1034,35 @@ TEST(FbxSdkIntegrationContractTests, FbxSdkParserReusesSharedMeshDataForMultiple
 }
 #endif
 
-TEST(FbxSdkIntegrationContractTests, RuntimeFbxSourceLoadUsesFbxSdkParserWithoutAssimpFallback)
+TEST(FbxSdkIntegrationContractTests, RuntimeFbxSourceLoadUsesAssimpFbxWithAutodeskFallback)
 {
     const auto meshManagerSource = ReadTextFile(
         std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Core/ResourceManagement/MeshManager.cpp");
 
     ASSERT_FALSE(meshManagerSource.empty());
 
+    EXPECT_NE(meshManagerSource.find("AssimpParser"), std::string::npos);
     EXPECT_NE(meshManagerSource.find("FbxSdkParser"), std::string::npos);
 
-    const auto managerFbxBranch = SliceBetween(meshManagerSource, "extension == \".fbx\"", "AssimpParser parser");
+    const auto managerFbxBranch = SliceScopedBlock(meshManagerSource, "if (extension == \".fbx\")");
     ASSERT_FALSE(managerFbxBranch.empty());
-    EXPECT_NE(managerFbxBranch.find("FbxSdkParser"), std::string::npos);
-    EXPECT_EQ(managerFbxBranch.find("AssimpParser parser"), std::string::npos);
+
+    const auto assimpGuard = managerFbxBranch.find("#if NLS_HAS_ASSIMP_FBX_IMPORTER");
+    const auto assimpParser = managerFbxBranch.find("AssimpParser parser");
+    const auto autodeskGuard = managerFbxBranch.find("#if NLS_HAS_AUTODESK_FBX_SDK");
+    const auto autodeskFallback = managerFbxBranch.find("if (!loaded)", autodeskGuard);
+    const auto autodeskParser = managerFbxBranch.find("FbxSdkParser parser");
+
+    ASSERT_NE(assimpGuard, std::string::npos);
+    ASSERT_NE(assimpParser, std::string::npos);
+    ASSERT_NE(autodeskGuard, std::string::npos);
+    ASSERT_NE(autodeskFallback, std::string::npos);
+    ASSERT_NE(autodeskParser, std::string::npos);
+
+    EXPECT_LT(assimpGuard, assimpParser);
+    EXPECT_LT(assimpParser, autodeskGuard);
+    EXPECT_LT(autodeskGuard, autodeskFallback);
+    EXPECT_LT(autodeskFallback, autodeskParser);
 }
 
 TEST(FbxSdkIntegrationContractTests, CMakeUsesBundledSdkPathAndDefaultsToAssimpFbx)

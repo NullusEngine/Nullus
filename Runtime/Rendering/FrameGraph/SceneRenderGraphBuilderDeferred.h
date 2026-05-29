@@ -15,6 +15,88 @@ namespace NLS::Render::FrameGraph
 {
     using DeferredScenePassDescriptor = ThreadedRenderSceneGraphPassDescriptor<>;
 
+    inline constexpr size_t kDeferredGBufferColorAttachmentCount = 3u;
+    inline constexpr size_t kDeferredGBufferDepthTextureIndex = kDeferredGBufferColorAttachmentCount;
+    inline constexpr size_t kDeferredGBufferTextureCount = kDeferredGBufferColorAttachmentCount + 1u;
+    inline constexpr NLS::Render::RHI::TextureFormat kDeferredGBufferDepthFormat =
+        NLS::Render::RHI::TextureFormat::Depth24Stencil8;
+    inline constexpr NLS::Render::RHI::TextureUsageFlags kDeferredGBufferColorUsage =
+        NLS::Render::RHI::TextureUsageFlags::ColorAttachment |
+        NLS::Render::RHI::TextureUsageFlags::Sampled;
+    inline constexpr NLS::Render::RHI::TextureUsageFlags kDeferredGBufferDepthUsage =
+        NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment |
+        NLS::Render::RHI::TextureUsageFlags::Sampled;
+
+    struct DeferredGBufferColorSlotDesc
+    {
+        NLS::Render::RHI::TextureFormat format;
+        NLS::Render::RHI::TextureUsageFlags usage;
+        const char* graphResourceName;
+        const char* graphViewName;
+        const char* capturedViewName;
+        const char* debugName;
+    };
+
+    inline constexpr std::array<DeferredGBufferColorSlotDesc, kDeferredGBufferColorAttachmentCount> kDeferredGBufferColorSlots = {
+        DeferredGBufferColorSlotDesc{
+            NLS::Render::RHI::TextureFormat::RGBA8,
+            kDeferredGBufferColorUsage,
+            "DeferredGBufferAlbedo",
+            "DeferredGBufferAlbedoView",
+            "GBufferAlbedoView",
+            "GBufferAlbedo"
+        },
+        DeferredGBufferColorSlotDesc{
+            NLS::Render::RHI::TextureFormat::RGBA8,
+            kDeferredGBufferColorUsage,
+            "DeferredGBufferNormal",
+            "DeferredGBufferNormalView",
+            "GBufferNormalView",
+            "GBufferNormal"
+        },
+        DeferredGBufferColorSlotDesc{
+            NLS::Render::RHI::TextureFormat::RGBA8,
+            kDeferredGBufferColorUsage,
+            "DeferredGBufferMaterial",
+            "DeferredGBufferMaterialView",
+            "GBufferMaterialView",
+            "GBufferMaterial"
+        }
+    };
+
+    static_assert(kDeferredGBufferColorSlots.size() == kDeferredGBufferColorAttachmentCount);
+
+    constexpr std::array<NLS::Render::RHI::TextureFormat, kDeferredGBufferColorAttachmentCount>
+        BuildDeferredGBufferColorFormats()
+    {
+        std::array<NLS::Render::RHI::TextureFormat, kDeferredGBufferColorAttachmentCount> formats{};
+        for (size_t i = 0u; i < kDeferredGBufferColorAttachmentCount; ++i)
+            formats[i] = kDeferredGBufferColorSlots[i].format;
+        return formats;
+    }
+
+    inline constexpr auto kDeferredGBufferColorFormats = BuildDeferredGBufferColorFormats();
+    static_assert(kDeferredGBufferColorFormats.size() == kDeferredGBufferColorAttachmentCount);
+
+    struct DeferredGBufferDepthSlotDesc
+    {
+        NLS::Render::RHI::TextureFormat format;
+        NLS::Render::RHI::TextureUsageFlags usage;
+        const char* graphResourceName;
+        const char* graphViewName;
+        const char* capturedViewName;
+        const char* debugName;
+    };
+
+    inline constexpr DeferredGBufferDepthSlotDesc kDeferredGBufferDepthSlot{
+        kDeferredGBufferDepthFormat,
+        kDeferredGBufferDepthUsage,
+        "DeferredGBufferDepth",
+        "DeferredGBufferDepthView",
+        "GBufferDepthView",
+        "GBufferDepth"
+    };
+
     enum class DeferredScenePassExecutionKind : uint8_t
     {
         Unknown = 0,
@@ -46,14 +128,6 @@ namespace NLS::Render::FrameGraph
         DeferredPreparedSceneResourceRequest preparedResources;
         const char* outputColorResourceName = "DeferredOutputColor";
         const char* outputDepthResourceName = "DeferredOutputDepth";
-        const char* gbufferAlbedoResourceName = "DeferredGBufferAlbedo";
-        const char* gbufferNormalResourceName = "DeferredGBufferNormal";
-        const char* gbufferMaterialResourceName = "DeferredGBufferMaterial";
-        const char* gbufferDepthResourceName = "DeferredGBufferDepth";
-        const char* gbufferAlbedoViewName = "DeferredGBufferAlbedoView";
-        const char* gbufferNormalViewName = "DeferredGBufferNormalView";
-        const char* gbufferMaterialViewName = "DeferredGBufferMaterialView";
-        const char* gbufferDepthViewName = "DeferredGBufferDepthView";
     };
 
     struct DeferredGraphSceneResources
@@ -112,7 +186,7 @@ namespace NLS::Render::FrameGraph
         NLS::Render::Context::RenderScenePackage& package,
         const LightGridCompileContext& lightGridContext,
         const DeferredPreparedSceneResources& resources,
-        const std::vector<NLS::Render::Context::RenderPassCommandInput>& appendedPassInputs = {},
+        std::vector<NLS::Render::Context::RenderPassCommandInput>&& appendedPassInputs = {},
         const std::vector<ThreadedRenderScenePassMetadata>& appendedPassMetadata = {},
         std::optional<uint64_t> queuedLightingDrawCount = std::nullopt);
 

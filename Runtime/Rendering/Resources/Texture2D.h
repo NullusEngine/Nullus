@@ -45,6 +45,10 @@ namespace NLS::Render::Resources
 			const std::shared_ptr<NLS::Render::RHI::RHITexture>& textureResource,
 			uint32_t width,
 			uint32_t height);
+		void WrapExternalInPlace(
+			const std::shared_ptr<NLS::Render::RHI::RHITexture>& textureResource,
+			uint32_t width,
+			uint32_t height);
 
 		uint32_t width = 0;
 		uint32_t height = 0;

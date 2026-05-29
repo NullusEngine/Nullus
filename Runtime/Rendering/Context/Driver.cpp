@@ -231,7 +231,12 @@ namespace
         input.clearDepth = kind == RenderPassCommandKind::Opaque && package.clearDepthBuffer;
         input.clearStencil = kind == RenderPassCommandKind::Opaque && package.clearStencilBuffer;
         input.usesColorAttachment = true;
-        input.usesDepthStencilAttachment = input.clearDepth || input.clearStencil;
+        input.usesDepthStencilAttachment = kind != RenderPassCommandKind::Compute;
+        input.writesDepthStencilAttachment =
+            kind == RenderPassCommandKind::Opaque ||
+            kind == RenderPassCommandKind::Skybox ||
+            input.clearDepth ||
+            input.clearStencil;
 
         if (!package.recordedDrawCommands.empty() &&
             nextRecordedDrawCommandIndex < package.recordedDrawCommands.size())
@@ -427,6 +432,7 @@ namespace
             depthAttachment.clearValue.depth = 1.0f;
             depthAttachment.clearValue.stencil = 0u;
             depthAttachment.view = depthStencilAttachmentView;
+            depthAttachment.readOnlyDepthStencil = !input.writesDepthStencilAttachment;
             renderPassDesc.depthStencilAttachment = std::move(depthAttachment);
         }
 
@@ -458,15 +464,22 @@ namespace
                 renderPassDesc.depthStencilAttachment->view != nullptr &&
                 renderPassDesc.depthStencilAttachment->view->GetTexture() != nullptr)
             {
+                const auto depthStencilState = input.writesDepthStencilAttachment
+                    ? Render::RHI::ResourceState::DepthWrite
+                    : Render::RHI::ResourceState::DepthRead;
+                const auto depthStencilDestinationAccess = input.writesDepthStencilAttachment
+                    ? (Render::RHI::AccessMask::DepthStencilRead |
+                        Render::RHI::AccessMask::DepthStencilWrite)
+                    : Render::RHI::AccessMask::DepthStencilRead;
                 attachmentBarriers.textureBarriers.push_back({
                     renderPassDesc.depthStencilAttachment->view->GetTexture(),
                     Render::RHI::ResourceState::Unknown,
-                    Render::RHI::ResourceState::DepthWrite,
+                    depthStencilState,
                     renderPassDesc.depthStencilAttachment->view->GetDesc().subresourceRange,
                     Render::RHI::PipelineStageMask::AllCommands,
                     Render::RHI::PipelineStageMask::DepthStencil,
                     Render::RHI::AccessMask::MemoryRead | Render::RHI::AccessMask::MemoryWrite,
-                    Render::RHI::AccessMask::DepthStencilRead | Render::RHI::AccessMask::DepthStencilWrite
+                    depthStencilDestinationAccess
                 });
             }
 
@@ -980,12 +993,10 @@ namespace
                 &commandBuffer,
                 frameContext
             };
-            executionContext.RecordResourceBarriers(barriers);
-            return true;
+            return executionContext.RecordResourceBarriers(barriers).Succeeded();
         }
 
-        commandBuffer.Barrier(barriers);
-        return true;
+        return commandBuffer.BarrierChecked(barriers).Succeeded();
     }
 
     bool RecordPreparedDrawCommand(
@@ -1540,6 +1551,62 @@ namespace
         frameContext.uploadBytesReserved = 0u;
     }
 
+    uint32_t ResolveThreadedLifecycleSlotCount(const Render::Settings::DriverSettings& settings)
+    {
+        return settings.threadedFrameSlotCount != 0u
+            ? settings.threadedFrameSlotCount
+            : std::max<uint32_t>(1u, settings.framesInFlight);
+    }
+
+    uint32_t ResolveExplicitFrameContextCount(const Render::Settings::DriverSettings& settings)
+    {
+        if (settings.enableThreadedRendering)
+            return ResolveThreadedLifecycleSlotCount(settings);
+
+        return std::max<uint32_t>(1u, settings.framesInFlight);
+    }
+
+    void RebuildExplicitFrameContextRing(
+        DriverImpl& impl,
+        const uint32_t frameCount)
+    {
+        for (auto& frameContext : impl.frameContexts)
+            ReleaseFrameContextResources(frameContext);
+        impl.frameContexts.clear();
+
+        if (impl.explicitDevice == nullptr)
+            return;
+
+        impl.frameContexts.reserve(frameCount);
+        for (uint32_t frameIndex = 0; frameIndex < frameCount; ++frameIndex)
+        {
+            Render::RHI::RHIFrameContext frameContext;
+            frameContext.frameIndex = frameIndex;
+            frameContext.commandPool = impl.explicitDevice->CreateCommandPool(
+                Render::RHI::QueueType::Graphics,
+                "FrameCommandPool" + std::to_string(frameIndex));
+            NLS_ASSERT(frameContext.commandPool != nullptr, "Failed to create command pool for explicit RHI");
+            frameContext.commandBuffer = frameContext.commandPool->CreateCommandBuffer(
+                "FrameCommandBuffer" + std::to_string(frameIndex));
+            NLS_ASSERT(frameContext.commandBuffer != nullptr, "Failed to create command buffer for explicit RHI");
+            frameContext.frameFence = impl.explicitDevice->CreateFence("FrameFence" + std::to_string(frameIndex));
+            NLS_ASSERT(frameContext.frameFence != nullptr, "Failed to create fence for explicit RHI");
+            frameContext.imageAcquiredSemaphore =
+                impl.explicitDevice->CreateSemaphore("FrameAcquire" + std::to_string(frameIndex));
+            NLS_ASSERT(frameContext.imageAcquiredSemaphore != nullptr, "Failed to create semaphore for explicit RHI");
+            frameContext.renderFinishedSemaphore =
+                impl.explicitDevice->CreateSemaphore("FramePresent" + std::to_string(frameIndex));
+            NLS_ASSERT(frameContext.renderFinishedSemaphore != nullptr, "Failed to create semaphore for explicit RHI");
+            frameContext.computeFinishedSemaphore =
+                impl.explicitDevice->CreateSemaphore("FrameCompute" + std::to_string(frameIndex));
+            NLS_ASSERT(frameContext.computeFinishedSemaphore != nullptr, "Failed to create compute semaphore for explicit RHI");
+            frameContext.resourceStateTracker = Render::RHI::CreateDefaultResourceStateTracker();
+            frameContext.descriptorAllocator = Render::RHI::CreateDefaultDescriptorAllocator();
+            frameContext.uploadContext = Render::Backend::CreateUploadContextForRhiDevice(impl.explicitDevice);
+            impl.frameContexts.push_back(std::move(frameContext));
+        }
+    }
+
 }
 
 const char* Detail::ToPassDebugName(const RenderPassCommandKind kind)
@@ -1701,13 +1768,15 @@ bool DriverRendererAccess::TryPublishPreparedFrameBuilder(
     Driver& driver,
     const FrameSnapshot& snapshot,
     PreparedRenderSceneBuilder renderSceneBuilder,
-    size_t* publishedSlotIndex)
+    size_t* publishedSlotIndex,
+    uint64_t* publishedFrameId)
 {
     return RenderThreadCoordinator::TryPublishPreparedFrameBuilder(
         driver,
         snapshot,
         std::move(renderSceneBuilder),
-        publishedSlotIndex);
+        publishedSlotIndex,
+        publishedFrameId);
 }
 
 bool DriverRendererAccess::TryDrainThreadedRendering(Driver& driver)
@@ -1794,14 +1863,22 @@ size_t DriverRendererAccess::GetFrameContextSlotCount(const Driver& driver)
     if (driver.m_impl == nullptr)
         return 0u;
 
-    const auto* threadedLifecycle = driver.m_impl->threadedLifecycle.get();
-    if (threadedLifecycle != nullptr)
-        return threadedLifecycle->GetSlotCount();
-
     if (!driver.m_impl->frameContexts.empty())
         return driver.m_impl->frameContexts.size();
 
     return 0u;
+}
+
+size_t DriverRendererAccess::GetLifecycleFrameSlotCount(const Driver& driver)
+{
+    if (driver.m_impl == nullptr)
+        return 0u;
+
+    const auto* threadedLifecycle = driver.m_impl->threadedLifecycle.get();
+    if (threadedLifecycle != nullptr)
+        return threadedLifecycle->GetSlotCount();
+
+    return GetFrameContextSlotCount(driver);
 }
 
 std::optional<size_t> DriverRendererAccess::ReserveReusableFrameContextSlotIndex(Driver& driver)
@@ -1811,7 +1888,10 @@ std::optional<size_t> DriverRendererAccess::ReserveReusableFrameContextSlotIndex
 
     auto* threadedLifecycle = driver.m_impl->threadedLifecycle.get();
     if (threadedLifecycle != nullptr)
-        return threadedLifecycle->ReserveReusableSlotIndex();
+    {
+        return threadedLifecycle->ReserveReusableSlotIndex(
+            std::chrono::milliseconds(driver.m_impl->threadedPublishRetirementWaitMs));
+    }
 
     if (!driver.m_impl->frameContexts.empty())
         return driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size();
@@ -2253,6 +2333,16 @@ void DriverTestAccess::SetExplicitDevice(Driver& driver, std::shared_ptr<Render:
     }
 }
 
+void DriverTestAccess::RebuildExplicitFrameContexts(Driver& driver, const size_t frameContextCount)
+{
+    if (driver.m_impl == nullptr)
+        return;
+
+    RebuildExplicitFrameContextRing(
+        *driver.m_impl,
+        static_cast<uint32_t>(std::max<size_t>(1u, frameContextCount)));
+}
+
 void DriverTestAccess::SetExplicitSwapchain(Driver& driver, std::shared_ptr<Render::RHI::RHISwapchain> explicitSwapchain)
 {
 	driver.m_impl->explicitSwapchain = std::move(explicitSwapchain);
@@ -2490,29 +2580,9 @@ Driver::Driver(const Render::Settings::DriverSettings& p_driverSettings)
 	if (m_impl->explicitDevice != nullptr)
 	{
 		m_impl->pipelineCache = Render::RHI::CreateDefaultPipelineCache();
-		const auto frameCount = std::max<uint32_t>(1u, p_driverSettings.framesInFlight);
-		m_impl->frameContexts.reserve(frameCount);
-		for (uint32_t frameIndex = 0; frameIndex < frameCount; ++frameIndex)
-		{
-			Render::RHI::RHIFrameContext frameContext;
-			frameContext.frameIndex = frameIndex;
-			frameContext.commandPool = m_impl->explicitDevice->CreateCommandPool(Render::RHI::QueueType::Graphics, "FrameCommandPool" + std::to_string(frameIndex));
-			NLS_ASSERT(frameContext.commandPool != nullptr, "Failed to create command pool for explicit RHI");
-			frameContext.commandBuffer = frameContext.commandPool->CreateCommandBuffer("FrameCommandBuffer" + std::to_string(frameIndex));
-			NLS_ASSERT(frameContext.commandBuffer != nullptr, "Failed to create command buffer for explicit RHI");
-			frameContext.frameFence = m_impl->explicitDevice->CreateFence("FrameFence" + std::to_string(frameIndex));
-			NLS_ASSERT(frameContext.frameFence != nullptr, "Failed to create fence for explicit RHI");
-			frameContext.imageAcquiredSemaphore = m_impl->explicitDevice->CreateSemaphore("FrameAcquire" + std::to_string(frameIndex));
-			NLS_ASSERT(frameContext.imageAcquiredSemaphore != nullptr, "Failed to create semaphore for explicit RHI");
-			frameContext.renderFinishedSemaphore = m_impl->explicitDevice->CreateSemaphore("FramePresent" + std::to_string(frameIndex));
-			NLS_ASSERT(frameContext.renderFinishedSemaphore != nullptr, "Failed to create semaphore for explicit RHI");
-			frameContext.computeFinishedSemaphore = m_impl->explicitDevice->CreateSemaphore("FrameCompute" + std::to_string(frameIndex));
-			NLS_ASSERT(frameContext.computeFinishedSemaphore != nullptr, "Failed to create compute semaphore for explicit RHI");
-			frameContext.resourceStateTracker = Render::RHI::CreateDefaultResourceStateTracker();
-			frameContext.descriptorAllocator = Render::RHI::CreateDefaultDescriptorAllocator();
-			frameContext.uploadContext = Render::Backend::CreateUploadContextForRhiDevice(m_impl->explicitDevice);
-			m_impl->frameContexts.push_back(std::move(frameContext));
-		}
+		RebuildExplicitFrameContextRing(
+            *m_impl,
+            ResolveExplicitFrameContextCount(p_driverSettings));
 	}
 
     m_impl->diagnostics = p_driverSettings.diagnostics;
@@ -2520,9 +2590,7 @@ Driver::Driver(const Render::Settings::DriverSettings& p_driverSettings)
 
     if (p_driverSettings.enableThreadedRendering)
     {
-        const auto slotCount = p_driverSettings.threadedFrameSlotCount != 0u
-            ? p_driverSettings.threadedFrameSlotCount
-            : std::max<uint32_t>(1u, p_driverSettings.framesInFlight);
+        const auto slotCount = ResolveThreadedLifecycleSlotCount(p_driverSettings);
         m_impl->threadedLifecycle = std::make_unique<ThreadedRenderingLifecycle>(slotCount);
         m_impl->threadedPublishRetirementWaitMs = p_driverSettings.threadedPublishRetirementWaitMs;
         StartThreadedRenderingWorkers();

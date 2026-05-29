@@ -125,9 +125,16 @@ uint64_t Editor::Rendering::PickingRenderPass::GetSubmittedPickingFrameSerial() 
     return m_submittedPickingFrameSerial;
 }
 
-std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::PickingRenderPass::GetPreparedThreadedPassInput() const
+const std::optional<NLS::Render::Context::RenderPassCommandInput>& Editor::Rendering::PickingRenderPass::GetPreparedThreadedPassInput() const
 {
     return m_preparedThreadedPassInput;
+}
+
+std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::PickingRenderPass::ConsumePreparedThreadedPassInput()
+{
+    auto passInput = std::move(m_preparedThreadedPassInput);
+    m_preparedThreadedPassInput.reset();
+    return passInput;
 }
 
 void Editor::Rendering::PickingRenderPass::OnBeginFrame(const NLS::Render::Data::FrameDescriptor&)
@@ -273,6 +280,7 @@ std::optional<NLS::Render::Context::RenderPassCommandInput> Editor::Rendering::P
     passInput.clearStencil = true;
     passInput.usesColorAttachment = true;
     passInput.usesDepthStencilAttachment = true;
+    passInput.writesDepthStencilAttachment = true;
     passInput.colorAttachmentViews = {
         m_gameObjectPickingFramebuffer.GetOrCreateExplicitColorView("EditorPickingColorView")
     };

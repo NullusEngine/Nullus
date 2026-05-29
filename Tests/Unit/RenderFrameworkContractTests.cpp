@@ -29,6 +29,7 @@
 #include "Rendering/RHI/Core/RHISwapchain.h"
 #include "Rendering/RHI/Utils/ResourceStateTracker/ResourceStateTracker.h"
 #include "Rendering/Resources/ShaderType.h"
+#include "Rendering/Resources/Mesh.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/SceneRendererFactory.h"
 #include "Core/ServiceLocator.h"
@@ -187,6 +188,27 @@ namespace
         NLS::Render::RHI::RHITextureViewDesc m_desc {};
     };
 
+    class WritableOnlyDepthStencilTextureView final : public NLS::Render::RHI::RHITextureView
+    {
+    public:
+        WritableOnlyDepthStencilTextureView()
+            : m_texture(std::make_shared<ContractTexture>())
+        {
+        }
+
+        std::string_view GetDebugName() const override { return "WritableOnlyDepthStencilTextureView"; }
+        const NLS::Render::RHI::RHITextureViewDesc& GetDesc() const override { return m_desc; }
+        const std::shared_ptr<NLS::Render::RHI::RHITexture>& GetTexture() const override { return m_texture; }
+        NLS::Render::RHI::NativeHandle GetNativeDepthStencilView() override
+        {
+            return { NLS::Render::RHI::BackendType::DX12, this };
+        }
+
+    private:
+        std::shared_ptr<NLS::Render::RHI::RHITexture> m_texture;
+        NLS::Render::RHI::RHITextureViewDesc m_desc {};
+    };
+
     class ContractBuffer final : public NLS::Render::RHI::RHIBuffer
     {
     public:
@@ -202,10 +224,22 @@ namespace
         const NLS::Render::RHI::RHIBufferDesc& GetDesc() const override { return m_desc; }
         NLS::Render::RHI::ResourceState GetState() const override { return NLS::Render::RHI::ResourceState::Unknown; }
         uint64_t GetGPUAddress() const override { return 0u; }
+        NLS::Render::RHI::RHIUpdateResult UpdateData(
+            const NLS::Render::RHI::RHIBufferUploadDesc& uploadDesc) override
+        {
+            if (!uploadDesc.HasData())
+                return { NLS::Render::RHI::RHIUpdateStatusCode::InvalidArgument, "missing data" };
+            if (uploadDesc.destinationOffset + uploadDesc.dataSize > m_desc.size)
+                return { NLS::Render::RHI::RHIUpdateStatusCode::InvalidArgument, "out of bounds" };
+            ++updateCalls;
+            return { NLS::Render::RHI::RHIUpdateStatusCode::Success, {} };
+        }
         NLS::Render::RHI::NativeHandle GetNativeBufferHandle() override
         {
             return { NLS::Render::RHI::BackendType::DX12, this };
         }
+
+        size_t updateCalls = 0u;
 
     private:
         NLS::Render::RHI::RHIBufferDesc m_desc {};
@@ -930,6 +964,57 @@ TEST(RenderFrameworkContractTests, DX12UploadAndDescriptorWaitsUseBoundedFencePo
     EXPECT_NE(descriptorSource.find("WaitForDX12FenceValue"), std::string::npos);
 }
 
+TEST(RenderFrameworkContractTests, BaseDepthStencilViewRejectsReadOnlyFallbackToWritableHandle)
+{
+    WritableOnlyDepthStencilTextureView view;
+    auto& baseView = static_cast<NLS::Render::RHI::RHITextureView&>(view);
+
+    const auto writableHandle = baseView.GetNativeDepthStencilView(
+        NLS::Render::RHI::RHIDepthStencilViewAccess::ReadWrite);
+    ASSERT_EQ(writableHandle.handle, &view);
+
+    const auto readOnlyDepthStencilHandle = baseView.GetNativeDepthStencilView(
+        NLS::Render::RHI::RHIDepthStencilViewAccess::ReadOnlyDepthStencil);
+
+    EXPECT_EQ(readOnlyDepthStencilHandle.handle, nullptr);
+}
+
+TEST(RenderFrameworkContractTests, DepthStencilViewAccessContractExposesOnlyReadWriteOrFullyReadOnlyModes)
+{
+    const std::filesystem::path rhiResourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Core/RHIResource.h";
+    const std::filesystem::path rhiCommandPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Core/RHICommand.h";
+    const std::filesystem::path dx12ResourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12Resource.cpp";
+    const std::filesystem::path dx12CommandPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12Command.cpp";
+
+    const auto readFile = [](const std::filesystem::path& path)
+    {
+        std::ifstream stream(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+    };
+
+    const std::string rhiResourceSource = readFile(rhiResourcePath);
+    const std::string rhiCommandSource = readFile(rhiCommandPath);
+    const std::string dx12ResourceSource = readFile(dx12ResourcePath);
+    const std::string dx12CommandSource = readFile(dx12CommandPath);
+
+    ASSERT_FALSE(rhiResourceSource.empty());
+    ASSERT_FALSE(rhiCommandSource.empty());
+    ASSERT_FALSE(dx12ResourceSource.empty());
+    ASSERT_FALSE(dx12CommandSource.empty());
+    EXPECT_EQ(rhiResourceSource.find("ReadOnlyDepth,"), std::string::npos);
+    EXPECT_EQ(rhiResourceSource.find("ReadOnlyStencil,"), std::string::npos);
+    EXPECT_EQ(rhiCommandSource.find("readOnlyDepth ="), std::string::npos);
+    EXPECT_EQ(rhiCommandSource.find("readOnlyStencil ="), std::string::npos);
+    EXPECT_NE(rhiCommandSource.find("readOnlyDepthStencil"), std::string::npos);
+    EXPECT_EQ(dx12ResourceSource.find("DX12DepthStencilViewAccess::ReadOnlyDepth\n"), std::string::npos);
+    EXPECT_EQ(dx12ResourceSource.find("DX12DepthStencilViewAccess::ReadOnlyStencil\n"), std::string::npos);
+    EXPECT_NE(dx12CommandSource.find("RHIDepthStencilViewAccess::ReadOnlyDepthStencil"), std::string::npos);
+}
+
 TEST(RenderFrameworkContractTests, DX12QueueRejectsZeroUiFenceWaitBeforePresent)
 {
     const std::filesystem::path queuePath =
@@ -1126,6 +1211,46 @@ TEST(RenderFrameworkContractTests, QueueOperationFailuresAreExposedThroughDriver
     EXPECT_EQ(queue->presentCalls, 0u);
     EXPECT_EQ(telemetry.queueOperationFailureCount, 1u);
     EXPECT_NE(telemetry.lastQueueOperationFailure.find("submit failed for telemetry"), std::string::npos);
+}
+
+TEST(RenderFrameworkContractTests, MeshContentRevisionChangesWhenGeometryBuffersChange)
+{
+    NLS::Render::Context::Driver driver(MakeContractDriverSettings());
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<ContractDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    std::vector<NLS::Render::Geometry::Vertex> vertices(3u);
+    vertices[0].position[0] = 0.0f;
+    vertices[1].position[0] = 1.0f;
+    vertices[2].position[1] = 1.0f;
+
+    NLS::Render::Resources::Mesh mesh(
+        vertices,
+        {},
+        0u,
+        NLS::Render::Resources::MeshBufferUploadMode::CpuToGpu,
+        {{0.0f, 0.0f, 0.0f}, 1.0f});
+
+    const auto initialRevision = mesh.GetContentRevision();
+
+    vertices[0].position[0] = 2.0f;
+    ASSERT_TRUE(mesh.UpdateVertices(
+        vertices,
+        {{0.0f, 0.0f, 0.0f}, 2.0f}));
+    const auto updatedRevision = mesh.GetContentRevision();
+    EXPECT_GT(updatedRevision, initialRevision)
+        << "Selection-outline mask reuse must be able to detect in-place mesh buffer updates.";
+
+    std::vector<uint32_t> indices{0u, 1u, 2u};
+    mesh.Reload(
+        vertices,
+        indices,
+        0u,
+        NLS::Render::Resources::MeshBufferUploadMode::GpuOnly,
+        {{0.0f, 0.0f, 0.0f}, 3.0f});
+    EXPECT_GT(mesh.GetContentRevision(), updatedRevision)
+        << "Asset hot reload can keep the Mesh pointer stable while replacing geometry content.";
 }
 
 TEST(RenderFrameworkContractTests, StandaloneFrameFenceWaitUsesBoundedDriverPolicy)

@@ -3,7 +3,9 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -519,6 +521,51 @@ TEST_F(ProfilerDestinationTest, TimelineSinkKeepsEditorPanelDepthScopes)
 #endif
 }
 
+TEST_F(ProfilerDestinationTest, SelectionOutlineMaskAggregateScopesRemainExportableAtSceneViewDepth)
+{
+#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+    using namespace NLS::Base::Profiling;
+
+    TimelineProfilerSink timeline;
+    timeline.SetRecordingEnabled(true);
+    ASSERT_EQ(timeline.GetState().availability, ProfilerAvailability::Available);
+
+    std::vector<ProfilerScopeEvent> parentScopes;
+    parentScopes.reserve(NLS::UI::Profiling::kTimelineProfilerMaxCpuScopeDepth - 1u);
+    for (size_t index = 0u; index + 1u < NLS::UI::Profiling::kTimelineProfilerMaxCpuScopeDepth; ++index)
+    {
+        ProfilerScopeEvent event;
+        event.name = "Scene View Parent Scope " + std::to_string(index);
+        event.sourceFunction = __FUNCTION__;
+        event.active = true;
+        parentScopes.push_back(std::move(event));
+        timeline.BeginScope(parentScopes.back());
+    }
+
+    const std::array<const char*, 2> selectionScopeNames = {
+        "SelectionOutlineMask::CaptureMask",
+        "SelectionOutlineMask::Composite"
+    };
+
+    for (const char* name : selectionScopeNames)
+    {
+        ProfilerScopeEvent event;
+        event.name = name;
+        event.sourceFunction = __FUNCTION__;
+        event.active = true;
+        timeline.BeginScope(event);
+        EXPECT_NO_FATAL_FAILURE(timeline.EndScope(event));
+    }
+
+    EXPECT_EQ(timeline.GetSkippedScopeCountForTesting(), 0u);
+
+    for (auto it = parentScopes.rbegin(); it != parentScopes.rend(); ++it)
+        EXPECT_NO_FATAL_FAILURE(timeline.EndScope(*it));
+#else
+    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+#endif
+}
+
 TEST_F(ProfilerDestinationTest, TimelineTraceExporterWritesEachFrameOnce)
 {
 #if defined(NLS_ENABLE_TIMELINE_PROFILER)
@@ -562,6 +609,54 @@ TEST_F(ProfilerDestinationTest, TimelineTraceExporterWritesEachFrameOnce)
     EXPECT_NE(source.find("{ cpuRange.Begin, cpuRange.End }"), std::string::npos);
     EXPECT_NE(source.find("context.LastExportedFrame = cpuRange.End > 0 ? cpuRange.End - 1 : 0;"), std::string::npos);
     EXPECT_NE(source.find("context.LastExportedFrame = frameIndex;"), std::string::npos);
+    EXPECT_NE(source.find("BuildTraceMetadataEventJson("), std::string::npos);
+    EXPECT_NE(source.find("\"thread_name\""), std::string::npos);
+    EXPECT_EQ(source.find("Sprintf(\"{\\\"name\\\":\\\"thread_name\\\""), std::string::npos);
+#else
+    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+#endif
+}
+
+TEST_F(ProfilerDestinationTest, TimelineTraceExporterSkipsIncompleteAndNonPositiveDurationEvents)
+{
+#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+    using NLS::UI::TimelineProfilerDetail::BuildTraceMetadataEventJson;
+    using NLS::UI::TimelineProfilerDetail::BuildTraceDurationEventJson;
+    using NLS::UI::TimelineProfilerDetail::ShouldExportTraceDurationEvent;
+
+    EXPECT_EQ(
+        BuildTraceMetadataEventJson("thread_name", 0u, 7u, "Quote\"Slash\\Line\nTab\t"),
+        "{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":0,\"tid\":7,\"args\":{\"name\":\"Quote\\\"Slash\\\\Line\\nTab\\t\"}}");
+    EXPECT_EQ(
+        BuildTraceMetadataEventJson("process_name", 0u, std::nullopt, "Track"),
+        "{\"name\":\"process_name\",\"ph\":\"M\",\"pid\":0,\"args\":{\"name\":\"Track\"}}");
+
+    EXPECT_FALSE(ShouldExportTraceDurationEvent(0u, 10u));
+    EXPECT_FALSE(ShouldExportTraceDurationEvent(10u, 0u));
+    EXPECT_FALSE(ShouldExportTraceDurationEvent(10u, 10u));
+    EXPECT_FALSE(ShouldExportTraceDurationEvent(20u, 10u));
+    EXPECT_TRUE(ShouldExportTraceDurationEvent(10u, 20u));
+
+    EXPECT_EQ(BuildTraceDurationEventJson(7u, 0u, 20u, 10u, 0.5, "bad"), std::nullopt);
+    EXPECT_EQ(BuildTraceDurationEventJson(7u, 20u, 20u, 10u, 0.5, "bad"), std::nullopt);
+    EXPECT_EQ(BuildTraceDurationEventJson(7u, 30u, 20u, 10u, 0.5, "bad"), std::nullopt);
+
+    const auto exported = BuildTraceDurationEventJson(7u, 20u, 24u, 10u, 0.5, "Valid Scope");
+    ASSERT_TRUE(exported.has_value());
+    EXPECT_NE(exported->find("\"tid\":7"), std::string::npos);
+    EXPECT_NE(exported->find("\"ts\":5000"), std::string::npos);
+    EXPECT_NE(exported->find("\"dur\":2000"), std::string::npos);
+    EXPECT_NE(exported->find("\"name\":\"Valid Scope\""), std::string::npos);
+    EXPECT_EQ(exported->find("\"dur\":0"), std::string::npos);
+
+    const auto tinyDuration = BuildTraceDurationEventJson(7u, 20u, 21u, 10u, 0.0001, "Tiny Scope");
+    ASSERT_TRUE(tinyDuration.has_value());
+    EXPECT_NE(tinyDuration->find("\"dur\":1"), std::string::npos);
+    EXPECT_EQ(tinyDuration->find("\"dur\":0"), std::string::npos);
+
+    const auto escapedName = BuildTraceDurationEventJson(7u, 20u, 24u, 10u, 0.5, "Quote\"Slash\\Line\nTab\t");
+    ASSERT_TRUE(escapedName.has_value());
+    EXPECT_NE(escapedName->find("\"name\":\"Quote\\\"Slash\\\\Line\\nTab\\t\""), std::string::npos);
 #else
     GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
 #endif

@@ -161,14 +161,6 @@ static StringHash GetEventHash(const ProfilerEvent& event)
 	return hash;
 }
 
-template <typename... Args>
-static std::string Sprintf(const char* pFormat, Args... args)
-{
-	static char buffer[1024];
-	sprintf_s(buffer, pFormat, std::forward<Args>(args)...);
-	return buffer; 
-}
-
 struct TraceContext
 {
 	TraceContext()
@@ -191,10 +183,18 @@ void BeginTrace(const char* pPath, TraceContext& context)
 	URange cpuRange = gProfiler.GetFrameRange();
 	context.LastExportedFrame = cpuRange.End > 0 ? cpuRange.End - 1 : 0;
 
-	context.TraceStream << Sprintf("{\"name\":\"process_name\",\"ph\":\"M\",\"pid\":0,\"args\":{\"name\":\"Track\"}},\n");
+	context.TraceStream << NLS::UI::TimelineProfilerDetail::BuildTraceMetadataEventJson(
+		"process_name",
+		0u,
+		std::nullopt,
+		"Track") << ",\n";
 	for (const Profiler::EventTrack& track : gProfiler.GetTracks())
 	{
-		context.TraceStream << Sprintf("{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":0,\"tid\":%d,\"args\":{\"name\":\"%s\"}},\n", track.Index, track.Name);
+		context.TraceStream << NLS::UI::TimelineProfilerDetail::BuildTraceMetadataEventJson(
+			"thread_name",
+			0u,
+			track.Index,
+			track.Name) << ",\n";
 	}
 }
 
@@ -219,7 +219,19 @@ void UpdateTrace(TraceContext& context)
 		for (const Profiler::EventTrack& track : gProfiler.GetTracks())
 		{
 			for (const ProfilerEvent& event : track.GetFrameData(frameIndex))
-				context.TraceStream << Sprintf("{\"pid\":0,\"tid\":%d,\"ts\":%d,\"dur\":%d,\"ph\":\"X\",\"name\":\"%s\"},\n", track.Index, (int)(1000 * TicksToMs * (event.TicksBegin - context.BaseTime)), (int)(1000 * TicksToMs * (event.TicksEnd - event.TicksBegin)), event.pName);
+			{
+				const auto eventJson = NLS::UI::TimelineProfilerDetail::BuildTraceDurationEventJson(
+					track.Index,
+					event.TicksBegin,
+					event.TicksEnd,
+					context.BaseTime,
+					TicksToMs,
+					event.pName);
+				if (!eventJson.has_value())
+					continue;
+
+				context.TraceStream << *eventJson << ",\n";
+			}
 		}
 		context.LastExportedFrame = frameIndex;
 	}

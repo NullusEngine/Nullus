@@ -94,7 +94,8 @@ namespace NLS::Render::Context
             Driver& driver,
             const FrameSnapshot& snapshot,
             PreparedRenderSceneBuilder renderSceneBuilder,
-            size_t* publishedSlotIndex = nullptr);
+            size_t* publishedSlotIndex = nullptr,
+            uint64_t* publishedFrameId = nullptr);
         static bool TryDrainThreadedRendering(Driver& driver);
         static void DrainThreadedRendering(Driver& driver);
         static ThreadedFrameTelemetry GetThreadedFrameTelemetry(const Driver& driver);
@@ -111,6 +112,7 @@ namespace NLS::Render::Context
         static FrameGraph::FrameGraphExecutionContext CreateFrameGraphExecutionContext(const Driver& driver);
         static std::optional<size_t> GetActiveFrameContextSlotIndex(const Driver& driver);
         static size_t GetFrameContextSlotCount(const Driver& driver);
+        static size_t GetLifecycleFrameSlotCount(const Driver& driver);
         static std::optional<size_t> ReserveReusableFrameContextSlotIndex(Driver& driver);
         static bool ReleaseReservedFrameContextSlotIndex(Driver& driver, size_t slotIndex);
         static std::optional<size_t> GetReservedFrameContextSlotIndex(const Driver& driver);
@@ -236,6 +238,7 @@ namespace NLS::Render::Context
     struct NLS_RENDER_API DriverTestAccess final
     {
         static void SetExplicitDevice(Driver& driver, std::shared_ptr<RHI::RHIDevice> explicitDevice);
+        static void RebuildExplicitFrameContexts(Driver& driver, size_t frameContextCount);
         static void SetExplicitSwapchain(Driver& driver, std::shared_ptr<RHI::RHISwapchain> explicitSwapchain);
         static RHI::RHIFrameContext& EnsureFrameContext(Driver& driver, size_t index);
         static const RHI::RHIFrameContext* PeekFrameContext(const Driver& driver, size_t index);

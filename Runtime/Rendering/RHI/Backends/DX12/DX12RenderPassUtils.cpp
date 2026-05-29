@@ -32,8 +32,12 @@ namespace NLS::Render::RHI::DX12
 
         if (desc.depthStencilAttachment.has_value())
         {
-            clearPlan.clearDepth = desc.depthStencilAttachment->depthLoadOp == LoadOp::Clear;
-            clearPlan.clearStencil = desc.depthStencilAttachment->stencilLoadOp == LoadOp::Clear;
+            clearPlan.clearDepth =
+                !desc.depthStencilAttachment->readOnlyDepthStencil &&
+                desc.depthStencilAttachment->depthLoadOp == LoadOp::Clear;
+            clearPlan.clearStencil =
+                !desc.depthStencilAttachment->readOnlyDepthStencil &&
+                desc.depthStencilAttachment->stencilLoadOp == LoadOp::Clear;
         }
 
         return clearPlan;

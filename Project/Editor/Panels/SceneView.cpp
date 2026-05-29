@@ -372,9 +372,8 @@ void Editor::Panels::SceneView::TryWriteValidationReadback()
 
     if (!diagnostics.editorValidationCreateAsset.empty())
     {
-        const auto expectedName = std::filesystem::path(diagnostics.editorValidationCreateAsset).stem().string();
-        auto* scene = GetScene();
-        if (scene == nullptr || scene->FindGameObjectByName(expectedName) == nullptr)
+        auto* selectedGameObject = EDITOR_EXEC(GetSelectedGameObject());
+        if (selectedGameObject == nullptr)
         {
             m_validationReadbackReadyFrames = 0u;
             return;

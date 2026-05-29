@@ -668,8 +668,11 @@ PrefabArtifactInstantiationResult InstantiatePrefabArtifact(
     if (result.diagnostics.HasErrors())
         return result;
 
-    PrewarmPrefabMeshArtifacts(artifact);
-    PrewarmPrefabMaterialArtifacts(artifact);
+    if (!policy.deferAssetReferenceResolution)
+    {
+        PrewarmPrefabMeshArtifacts(artifact);
+        PrewarmPrefabMaterialArtifacts(artifact);
+    }
 
     Serialize::PrefabDocument document;
     document.graph = BuildRuntimeResolvedGraph(artifact);

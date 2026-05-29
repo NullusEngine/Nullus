@@ -49,6 +49,17 @@ bool MeshArtifactPathExists(const std::string& path)
     const auto resolvedPath = Core::ResourceManagement::MeshManager::ResolveResourcePath(path);
     return !resolvedPath.empty() && std::filesystem::is_regular_file(resolvedPath, error);
 }
+
+Render::Resources::Mesh* TryLoadCanonicalPrimitiveMesh(
+    Core::ResourceManagement::MeshManager& meshManager,
+    const std::string& path)
+{
+    const auto primitiveType = NLS::Engine::TryGetPrimitiveTypeFromMeshResourcePath(path);
+    if (!primitiveType.has_value() || path != NLS::Engine::GetPrimitiveMeshResourcePath(*primitiveType))
+        return nullptr;
+
+    return meshManager.GetResource(path, true);
+}
 }
 
 MeshFilter::MeshFilter() = default;
@@ -115,8 +126,6 @@ void MeshFilter::SetMeshPath(const std::string& p_path)
 
     auto& meshManager = NLS_SERVICE(Core::ResourceManagement::MeshManager);
     auto* resolvedMesh = meshManager.GetResource(p_path, false);
-    if (resolvedMesh == nullptr)
-        resolvedMesh = meshManager.GetResource(p_path, true);
 
     if (resolvedMesh == nullptr)
     {
@@ -124,8 +133,13 @@ void MeshFilter::SetMeshPath(const std::string& p_path)
         return;
     }
 
+    NLS::Engine::Serialize::ObjectIdentifier existingMeshIdentifier;
+    const bool meshAlreadyHasPersistentIdentity =
+        NLS::Engine::Serialize::PersistentManager::Instance().InstanceIDToObjectIdentifier(
+            resolvedMesh->GetInstanceID(),
+            existingMeshIdentifier);
     auto identifier = MakeMeshPathObjectIdentifier(p_path);
-    if (identifier.IsValid())
+    if (!meshAlreadyHasPersistentIdentity && identifier.IsValid())
     {
         const auto instanceID =
             NLS::Engine::Serialize::PersistentManager::Instance().BindObjectIdentifier(*resolvedMesh, identifier);
@@ -231,8 +245,6 @@ Render::Resources::Mesh* MeshFilter::ResolveMesh()
 
         auto& meshManager = NLS_SERVICE(Core::ResourceManagement::MeshManager);
         auto* resolvedMesh = meshManager.GetResource(path, false);
-        if (!resolvedMesh && MeshArtifactPathExists(path))
-            resolvedMesh = meshManager.GetResource(path, true);
         if (!resolvedMesh)
         {
             const auto primitiveType = NLS::Engine::TryGetPrimitiveTypeFromMeshResourcePath(path);
@@ -264,10 +276,24 @@ Render::Resources::Mesh* MeshFilter::ResolveMesh()
 
     auto& meshManager = NLS_SERVICE(Core::ResourceManagement::MeshManager);
     auto* resolvedMesh = meshManager.GetResource(m_meshPath, false);
-    if (!resolvedMesh && MeshArtifactPathExists(m_meshPath))
-        resolvedMesh = meshManager.GetResource(m_meshPath, true);
+    if (!resolvedMesh)
+        resolvedMesh = TryLoadCanonicalPrimitiveMesh(meshManager, m_meshPath);
     if (!resolvedMesh)
         return nullptr;
+
+    NLS::Engine::Serialize::ObjectIdentifier existingMeshIdentifier;
+    const bool meshAlreadyHasPersistentIdentity =
+        NLS::Engine::Serialize::PersistentManager::Instance().InstanceIDToObjectIdentifier(
+            resolvedMesh->GetInstanceID(),
+            existingMeshIdentifier);
+    auto meshPathIdentifier = MakeMeshPathObjectIdentifier(m_meshPath);
+    if (!meshAlreadyHasPersistentIdentity && meshPathIdentifier.IsValid())
+    {
+        const auto meshPathInstanceID =
+            NLS::Engine::Serialize::PersistentManager::Instance().BindObjectIdentifier(*resolvedMesh, meshPathIdentifier);
+        if (meshPathInstanceID != NLS::Engine::Serialize::InstanceID_None)
+            mesh.SetInstanceID(meshPathInstanceID);
+    }
 
     SetResolvedMeshFromReference(resolvedMesh);
     return resolvedMesh;

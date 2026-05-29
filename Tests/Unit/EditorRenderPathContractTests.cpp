@@ -4682,6 +4682,27 @@ TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionUsesFrameTim
     EXPECT_EQ(queueCode.find("static_cast<uint32_t>(index + 1u)"), std::string::npos);
 }
 
+TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionQueuesMeshesBeforeMaterials)
+{
+    const auto actionsSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
+
+    const std::string source = ReadSourceText(actionsSourcePath);
+
+    ASSERT_FALSE(source.empty());
+    const auto queue = source.find("void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(");
+    ASSERT_NE(queue, std::string::npos);
+    const auto constructor = source.find("auto state = std::make_shared<RendererResourceResolutionState>();", queue);
+    ASSERT_NE(constructor, std::string::npos);
+    const auto queueCode = source.substr(queue, constructor - queue);
+
+    const auto meshEnqueue = queueCode.find("meshTasks.rbegin()");
+    const auto materialEnqueue = queueCode.find("materialTasks.begin()");
+    ASSERT_NE(meshEnqueue, std::string::npos);
+    ASSERT_NE(materialEnqueue, std::string::npos);
+    EXPECT_LT(meshEnqueue, materialEnqueue);
+}
+
 TEST(EditorRenderPathContractTests, RendererResourceResolutionProgressDoesNotShowNativeBlockingTaskDialog)
 {
     const auto contextSourcePath =

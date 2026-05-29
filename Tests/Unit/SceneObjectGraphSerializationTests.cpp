@@ -582,6 +582,81 @@ TEST(SceneObjectGraphSerializationTests, SetMeshPathSynchronizesMeshPPtrForInspe
     NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::MeshManager>();
 }
 
+TEST(SceneObjectGraphSerializationTests, SetMeshPathBindsMeshPPtrWhenDeferredPathResolvesLater)
+{
+    using namespace NLS::Engine::Components;
+    using namespace NLS::Engine::Serialize;
+
+    PersistentManager::Instance().Clear();
+    NLS::ObjectTestAccess::ClearObjectRegistry();
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MeshManager>(meshManager);
+
+    MeshFilter renderer;
+    renderer.SetMeshPath("Library/Artifacts/Hero/deferred.nmesh");
+
+    EXPECT_EQ(renderer.ResolveMesh(), nullptr);
+    EXPECT_TRUE(renderer.GetMeshReference().IsNull());
+
+    auto* meshResource = new NLS::Render::Resources::Mesh({}, {}, 0u);
+    meshManager.RegisterResource("Library/Artifacts/Hero/deferred.nmesh", meshResource);
+
+    ASSERT_EQ(renderer.ResolveMesh(), meshResource);
+    ASSERT_FALSE(renderer.GetMeshReference().IsNull());
+    ASSERT_EQ(renderer.GetMeshReference().Get(), meshResource);
+
+    ObjectIdentifier identifier;
+    ASSERT_TRUE(PersistentManager::Instance().InstanceIDToObjectIdentifier(
+        renderer.GetMeshReference().GetInstanceID(),
+        identifier));
+    EXPECT_TRUE(identifier.IsAsset());
+    EXPECT_EQ(identifier.filePath, "Library/Artifacts/Hero/deferred.nmesh");
+
+    meshManager.UnloadResources();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::MeshManager>();
+}
+
+TEST(SceneObjectGraphSerializationTests, DeferredMeshPathResolvePreservesExistingMeshAssetIdentity)
+{
+    using namespace NLS::Engine::Components;
+    using namespace NLS::Engine::Serialize;
+
+    PersistentManager::Instance().Clear();
+    NLS::ObjectTestAccess::ClearObjectRegistry();
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MeshManager>(meshManager);
+
+    auto* meshResource = new NLS::Render::Resources::Mesh({}, {}, 0u);
+    const auto realIdentifier = ObjectIdentifier::Asset(
+        AssetId(NLS::Guid::Parse("31313131-3131-4131-8131-313131313131")),
+        MakeLocalIdentifierInFile(
+            NLS::Guid::Parse("31313131-3131-4131-8131-313131313131"),
+            "mesh:Hero/body"),
+        "Library/Artifacts/Hero/body.nmesh");
+    ASSERT_NE(
+        PersistentManager::Instance().BindObjectIdentifier(*meshResource, realIdentifier),
+        InstanceID_None);
+    meshManager.RegisterResource("Library/Artifacts/Hero/deferred-alias.nmesh", meshResource);
+
+    MeshFilter renderer;
+    renderer.SetMeshPath("Library/Artifacts/Hero/deferred-alias.nmesh");
+
+    ASSERT_EQ(renderer.ResolveMesh(), meshResource);
+    ASSERT_FALSE(renderer.GetMeshReference().IsNull());
+    EXPECT_EQ(renderer.GetMeshReference().Get(), meshResource);
+
+    ObjectIdentifier roundTripped;
+    ASSERT_TRUE(PersistentManager::Instance().InstanceIDToObjectIdentifier(
+        renderer.GetMeshReference().GetInstanceID(),
+        roundTripped));
+    EXPECT_EQ(roundTripped, realIdentifier);
+
+    meshManager.UnloadResources();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::MeshManager>();
+}
+
 TEST(SceneObjectGraphSerializationTests, SetMeshSynchronizesTransientMeshPPtrForInspectorDisplay)
 {
     using namespace NLS::Engine::Components;

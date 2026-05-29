@@ -2608,12 +2608,12 @@ void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(
 
     std::deque<RendererResourceResolutionTask> tasks;
     std::move(
-        materialTasks.begin(),
-        materialTasks.end(),
-        std::back_inserter(tasks));
-    std::move(
         meshTasks.rbegin(),
         meshTasks.rend(),
+        std::back_inserter(tasks));
+    std::move(
+        materialTasks.begin(),
+        materialTasks.end(),
         std::back_inserter(tasks));
 
     NLS_LOG_INFO(

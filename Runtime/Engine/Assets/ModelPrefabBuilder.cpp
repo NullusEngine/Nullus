@@ -10,6 +10,7 @@
 #include "Components/MeshRenderer.h"
 #include "Components/TransformComponent.h"
 #include "GameObject.h"
+#include "Rendering/Assets/SceneImportPipeline.h"
 
 namespace NLS::Engine::Assets
 {
@@ -120,6 +121,34 @@ std::string SourceKeyOrName(const ImportedSceneNamedRecord& record)
     return record.sourceKey.empty() ? record.name : record.sourceKey;
 }
 
+void AddMaterialKeyToSlots(
+    const ImportedScene& scene,
+    const std::string& materialKey,
+    std::vector<std::string>& materialKeys)
+{
+    if (materialKey.empty())
+        return;
+
+    const auto material = std::find_if(
+        scene.materials.begin(),
+        scene.materials.end(),
+        [&materialKey](const ImportedSceneNamedRecord& candidate)
+        {
+            return candidate.sourceKey == materialKey;
+        });
+    if (material != scene.materials.end())
+    {
+        const auto materialSlot = static_cast<size_t>(std::distance(scene.materials.begin(), material));
+        if (materialKeys.size() <= materialSlot)
+            materialKeys.resize(materialSlot + 1u);
+        materialKeys[materialSlot] = materialKey;
+    }
+    else if (std::find(materialKeys.begin(), materialKeys.end(), materialKey) == materialKeys.end())
+    {
+        materialKeys.push_back(materialKey);
+    }
+}
+
 std::vector<std::string> CollectMaterialKeysForMesh(
     const ImportedScene& scene,
     const std::string& meshKey)
@@ -130,28 +159,16 @@ std::vector<std::string> CollectMaterialKeysForMesh(
     {
         for (const auto& primitive : mesh->primitives)
         {
-            if (primitive.materialKey.empty())
-                continue;
-            const auto material = std::find_if(
-                scene.materials.begin(),
-                scene.materials.end(),
-                [&primitive](const ImportedSceneNamedRecord& candidate)
-                {
-                    return candidate.sourceKey == primitive.materialKey;
-                });
-            if (material != scene.materials.end())
-            {
-                const auto materialSlot = static_cast<size_t>(std::distance(scene.materials.begin(), material));
-                if (materialKeys.size() <= materialSlot)
-                    materialKeys.resize(materialSlot + 1u);
-                materialKeys[materialSlot] = primitive.materialKey;
-            }
-            else if (std::find(materialKeys.begin(), materialKeys.end(), primitive.materialKey) == materialKeys.end())
-            {
-                materialKeys.push_back(primitive.materialKey);
-            }
+            AddMaterialKeyToSlots(scene, primitive.materialKey, materialKeys);
         }
         return materialKeys;
+    }
+
+    if (const auto parsed = NLS::Render::Assets::ParsePrimitiveMeshSourceKey(meshKey))
+    {
+        const auto* parentMesh = FindRecordBySourceKey(scene.meshes, parsed->first);
+        if (parentMesh && parsed->second < parentMesh->primitives.size())
+            AddMaterialKeyToSlots(scene, parentMesh->primitives[parsed->second].materialKey, materialKeys);
     }
 
     return materialKeys;
@@ -347,14 +364,26 @@ void AddGeneratedRecords(
     const auto transformId = MakeObjectId(scene, "component:" + node.sourceKey + ":transform");
 
     std::vector<ObjectId> components {transformId};
+    std::vector<ObjectId> ownedChildIds = childIds;
 
     const auto hasMesh = !node.meshKey.empty();
+    const auto* meshRecord = hasMesh ? FindRecordBySourceKey(scene.meshes, node.meshKey) : nullptr;
+    const auto splitPrimitiveMesh = meshRecord != nullptr && meshRecord->primitives.size() > 1u;
     const auto meshFilterId = MakeObjectId(scene, "component:" + node.sourceKey + ":mesh-filter");
     const auto meshRendererId = MakeObjectId(scene, "component:" + node.sourceKey + ":mesh-renderer");
-    if (hasMesh)
+    if (hasMesh && !splitPrimitiveMesh)
     {
         components.push_back(meshFilterId);
         components.push_back(meshRendererId);
+    }
+    if (splitPrimitiveMesh)
+    {
+        for (size_t primitiveIndex = 0u; primitiveIndex < meshRecord->primitives.size(); ++primitiveIndex)
+        {
+            ownedChildIds.push_back(MakeObjectId(
+                scene,
+                "node:" + node.sourceKey + ":primitive:" + std::to_string(primitiveIndex)));
+        }
     }
 
     ObjectRecord gameObject;
@@ -364,7 +393,7 @@ void AddGeneratedRecords(
     gameObject.debugName = nodeName;
     gameObject.debugPath = "/" + nodeName;
     gameObject.properties.push_back({"active", PropertyValue::Bool(true)});
-    gameObject.properties.push_back({"children", MakeOwnedArray(childIds)});
+    gameObject.properties.push_back({"children", MakeOwnedArray(ownedChildIds)});
     gameObject.properties.push_back({"components", MakeOwnedArray(components)});
     gameObject.properties.push_back({"name", PropertyValue::String(nodeName)});
     gameObject.properties.push_back({
@@ -381,7 +410,7 @@ void AddGeneratedRecords(
     AddRecordMapping(artifact, gameObjectId);
     AddRecordMapping(artifact, transformId);
 
-    if (hasMesh)
+    if (hasMesh && !splitPrimitiveMesh)
     {
         graph.objects.push_back(MakeMeshFilterRecord(
             scene,
@@ -399,6 +428,28 @@ void AddGeneratedRecords(
             artifact));
         AddRecordMapping(artifact, meshFilterId);
         AddRecordMapping(artifact, meshRendererId);
+    }
+
+    if (splitPrimitiveMesh)
+    {
+        for (size_t primitiveIndex = 0u; primitiveIndex < meshRecord->primitives.size(); ++primitiveIndex)
+        {
+            ImportedSceneNode primitiveNode;
+            primitiveNode.sourceKey = node.sourceKey + ":primitive:" + std::to_string(primitiveIndex);
+            primitiveNode.name = nodeName + " Primitive " + std::to_string(primitiveIndex);
+            primitiveNode.meshKey = NLS::Render::Assets::BuildPrimitiveMeshSourceKey(node.meshKey, primitiveIndex);
+            primitiveNode.scale = {1.0, 1.0, 1.0};
+
+            AddGeneratedRecords(
+                scene,
+                manifest,
+                primitiveNode,
+                MakeObjectId(scene, "node:" + primitiveNode.sourceKey),
+                gameObjectId,
+                {},
+                graph,
+                artifact);
+        }
     }
 }
 }

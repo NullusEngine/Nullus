@@ -1132,18 +1132,22 @@ std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> LoadGltfSourceMeshD
         if (!primitives)
             continue;
 
-        NLS::Render::Resources::Parsers::ParsedMeshData parsedMesh;
-        parsedMesh.sourceMeshIndex = static_cast<uint32_t>(meshIndex);
-        parsedMesh.sourceKey = "mesh/" + std::to_string(meshIndex);
-        bool hasPrimitivePayload = false;
+        const bool hasMultiplePrimitives = primitives->size() > 1u;
+        size_t primitiveIndex = 0u;
         for (const auto& primitive : *primitives)
         {
             if (!primitive.is_object())
+            {
+                ++primitiveIndex;
                 continue;
+            }
 
             auto primitiveMesh = BuildGltfPrimitiveMesh(primitive, buffers, bufferViews, accessors);
             if (!primitiveMesh.has_value())
+            {
+                ++primitiveIndex;
                 continue;
+            }
             PopulateGltfOptionalVertexStreams(
                 primitive,
                 *primitiveMesh,
@@ -1152,22 +1156,19 @@ std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> LoadGltfSourceMeshD
                 bufferViews,
                 accessors);
 
-            if (!hasPrimitivePayload)
-                parsedMesh.materialIndex = primitiveMesh->materialIndex;
-
-            const auto vertexOffset = static_cast<uint32_t>(parsedMesh.vertices.size());
-            parsedMesh.vertices.insert(
-                parsedMesh.vertices.end(),
-                std::make_move_iterator(primitiveMesh->vertices.begin()),
-                std::make_move_iterator(primitiveMesh->vertices.end()));
-            parsedMesh.indices.reserve(parsedMesh.indices.size() + primitiveMesh->indices.size());
-            for (const auto index : primitiveMesh->indices)
-                parsedMesh.indices.push_back(vertexOffset + index);
-            hasPrimitivePayload = true;
-        }
-
-        if (hasPrimitivePayload)
+            NLS::Render::Resources::Parsers::ParsedMeshData parsedMesh;
+            parsedMesh.vertices = std::move(primitiveMesh->vertices);
+            parsedMesh.indices = std::move(primitiveMesh->indices);
+            parsedMesh.materialIndex = primitiveMesh->materialIndex;
+            parsedMesh.sourceMeshIndex = static_cast<uint32_t>(meshIndex);
+            parsedMesh.sourceKey = "mesh/" + std::to_string(meshIndex);
+            if (hasMultiplePrimitives)
+                parsedMesh.sourceKey = NLS::Render::Assets::BuildPrimitiveMeshSourceKey(
+                    parsedMesh.sourceKey,
+                    primitiveIndex);
             meshes.push_back(std::move(parsedMesh));
+            ++primitiveIndex;
+        }
     }
 
     return meshes;

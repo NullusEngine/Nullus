@@ -2,6 +2,7 @@
 
 #include <fg/Blackboard.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <span>
@@ -327,7 +328,16 @@ namespace
 			"DeferredGBuffer",
 			pipelineState,
 			BuildGBufferMaterialOverrides(sourceMaterial)).stableKey;
-		if (sourceMaterial.path.empty())
+		const auto& parameters = sourceMaterial.GetParameterBlock().Data();
+		const bool hasRuntimeTextureBinding = std::any_of(
+			parameters.begin(),
+			parameters.end(),
+			[](const auto& entry)
+			{
+				return entry.second.type() == typeid(NLS::Render::Resources::Texture2D*) &&
+					std::any_cast<NLS::Render::Resources::Texture2D*>(entry.second) != nullptr;
+			});
+		if (sourceMaterial.path.empty() || hasRuntimeTextureBinding)
 		{
 			key += "|source:";
 			key += std::to_string(sourceMaterial.GetInstanceId());

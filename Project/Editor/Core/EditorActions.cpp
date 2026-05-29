@@ -72,11 +72,11 @@ namespace
 constexpr size_t kEditorBackgroundTaskQueueCapacity = 256u;
 constexpr auto kRendererResourceResolutionFrameBudget = std::chrono::milliseconds(12);
 constexpr size_t kRendererResourceResolutionBindTasksPerFrame = 12u;
-constexpr size_t kRendererResourceResolutionMeshBindsPerFrame = 1u;
+constexpr size_t kRendererResourceResolutionMeshBindsPerFrame = 4u;
 constexpr size_t kRendererResourceResolutionScheduleTasksPerFrame = 24u;
 constexpr size_t kRendererResourceResolutionMaxInflightMeshLoads = 16u;
 constexpr size_t kRendererResourceResolutionMaterialSlotsPerTask = 8u;
-constexpr size_t kRendererResourceResolutionTextureBindsPerFrame = 1u;
+constexpr size_t kRendererResourceResolutionTextureBindsPerFrame = 8u;
 enum class RendererResourceResolutionTaskKind
 {
     Mesh,
@@ -905,6 +905,8 @@ bool BindDeferredMaterialTextures(
 
         ++visitedTextures;
         auto* texture = textureManager.GetResource(texturePath, false);
+        if (!texture)
+            texture = textureManager.RequestAsyncArtifact(texturePath);
 
         if (texture)
         {

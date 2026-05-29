@@ -8,6 +8,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace NLS::Render::Resources::Parsers
@@ -77,6 +78,8 @@ private:
 
 NLS_RENDER_API std::vector<GeneratedSceneSubAsset> GenerateSceneSubAssets(const ImportedScene& scene);
 NLS_RENDER_API const char* ToSubAssetPrefix(ImportedSceneSubAssetType type);
+NLS_RENDER_API std::string BuildPrimitiveMeshSourceKey(const std::string& meshKey, size_t primitiveIndex);
+NLS_RENDER_API std::optional<std::pair<std::string, size_t>> ParsePrimitiveMeshSourceKey(const std::string& meshKey);
 NLS_RENDER_API ImportedScene ImportGltfSceneJson(
     const std::string& jsonText,
     NLS::Core::Assets::AssetId sourceAssetId,

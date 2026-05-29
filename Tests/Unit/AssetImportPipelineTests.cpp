@@ -2356,7 +2356,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportResolvesProjectRelativeBufferU
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportDoesNotMergeFollowingGltfMeshesWhenFirstMeshHasMultiplePrimitives)
+TEST(AssetImportPipelineTests, ExternalModelImportExportsGltfMultiPrimitiveMeshesAsPrimitiveArtifacts)
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "TwoMeshFirstSplit.gltf";
@@ -2371,6 +2371,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportDoesNotMergeFollowingGltfMeshe
         sourcePath,
         R"({
             "asset": { "version": "2.0" },
+            "materials": [{ "name": "First" }, { "name": "Second" }],
             "buffers": [
                 { "uri": "mesh.bin", "byteLength": 126 }
             ],
@@ -2400,14 +2401,14 @@ TEST(AssetImportPipelineTests, ExternalModelImportDoesNotMergeFollowingGltfMeshe
                 {
                     "name": "SplitMesh",
                     "primitives": [
-                        { "attributes": { "POSITION": 0 }, "indices": 1 },
-                        { "attributes": { "POSITION": 2 }, "indices": 3 }
+                        { "attributes": { "POSITION": 0 }, "indices": 1, "material": 0 },
+                        { "attributes": { "POSITION": 2 }, "indices": 3, "material": 1 }
                     ]
                 },
                 {
                     "name": "SecondMesh",
                     "primitives": [
-                        { "attributes": { "POSITION": 4 }, "indices": 5 }
+                        { "attributes": { "POSITION": 4 }, "indices": 5, "material": 0 }
                     ]
                 }
             ]
@@ -2436,22 +2437,53 @@ TEST(AssetImportPipelineTests, ExternalModelImportDoesNotMergeFollowingGltfMeshe
     });
 
     ASSERT_TRUE(result.imported);
-    const auto* splitMeshArtifact = result.manifest.FindSubAsset("mesh:mesh/0");
-    ASSERT_NE(splitMeshArtifact, nullptr);
-    const auto splitMesh = NLS::Render::Assets::DeserializeMeshArtifact(ReadBinaryFile(splitMeshArtifact->artifactPath));
-    ASSERT_TRUE(splitMesh.has_value());
-    ASSERT_EQ(splitMesh->vertices.size(), 6u);
-    EXPECT_FLOAT_EQ(splitMesh->vertices[0].position[0], 0.0f);
-    EXPECT_FLOAT_EQ(splitMesh->vertices[3].position[0], 10.0f);
+    EXPECT_EQ(result.manifest.FindSubAsset("mesh:mesh/0"), nullptr);
+
+    const auto* firstPrimitiveArtifact = result.manifest.FindSubAsset("mesh:mesh/0/primitive/0");
+    ASSERT_NE(firstPrimitiveArtifact, nullptr);
+    const auto firstPrimitive =
+        NLS::Render::Assets::DeserializeMeshArtifact(ReadBinaryFile(firstPrimitiveArtifact->artifactPath));
+    ASSERT_TRUE(firstPrimitive.has_value());
+    ASSERT_EQ(firstPrimitive->vertices.size(), 3u);
+    EXPECT_EQ(firstPrimitive->materialIndex, 0u);
+    EXPECT_FLOAT_EQ(firstPrimitive->vertices[0].position[0], 0.0f);
+
+    const auto* secondPrimitiveArtifact = result.manifest.FindSubAsset("mesh:mesh/0/primitive/1");
+    ASSERT_NE(secondPrimitiveArtifact, nullptr);
+    const auto secondPrimitive =
+        NLS::Render::Assets::DeserializeMeshArtifact(ReadBinaryFile(secondPrimitiveArtifact->artifactPath));
+    ASSERT_TRUE(secondPrimitive.has_value());
+    ASSERT_EQ(secondPrimitive->vertices.size(), 3u);
+    EXPECT_EQ(secondPrimitive->materialIndex, 1u);
+    EXPECT_FLOAT_EQ(secondPrimitive->vertices[0].position[0], 10.0f);
 
     const auto* secondMeshArtifact = result.manifest.FindSubAsset("mesh:mesh/1");
     ASSERT_NE(secondMeshArtifact, nullptr);
     const auto secondMesh = NLS::Render::Assets::DeserializeMeshArtifact(ReadBinaryFile(secondMeshArtifact->artifactPath));
     ASSERT_TRUE(secondMesh.has_value());
     ASSERT_EQ(secondMesh->vertices.size(), 3u);
+    EXPECT_EQ(secondMesh->materialIndex, 0u);
     EXPECT_FLOAT_EQ(secondMesh->vertices[0].position[0], 20.0f);
 
     std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, PrimitiveMeshSourceKeyParserRejectsMalformedKeys)
+{
+    const auto key = NLS::Render::Assets::BuildPrimitiveMeshSourceKey("mesh/Body", 7u);
+    EXPECT_EQ(key, "mesh/Body/primitive/7");
+
+    const auto parsed = NLS::Render::Assets::ParsePrimitiveMeshSourceKey(key);
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_EQ(parsed->first, "mesh/Body");
+    EXPECT_EQ(parsed->second, 7u);
+
+    EXPECT_FALSE(NLS::Render::Assets::ParsePrimitiveMeshSourceKey("mesh/Body").has_value());
+    EXPECT_FALSE(NLS::Render::Assets::ParsePrimitiveMeshSourceKey("/primitive/1").has_value());
+    EXPECT_FALSE(NLS::Render::Assets::ParsePrimitiveMeshSourceKey("mesh/Body/primitive/").has_value());
+    EXPECT_FALSE(NLS::Render::Assets::ParsePrimitiveMeshSourceKey("mesh/Body/primitive/not-a-number").has_value());
+    EXPECT_FALSE(NLS::Render::Assets::ParsePrimitiveMeshSourceKey(
+        "mesh/Body/primitive/999999999999999999999999999999999999999").has_value());
 }
 
 TEST(AssetImportPipelineTests, ExternalModelImportDecodesPercentEncodedBufferUris)

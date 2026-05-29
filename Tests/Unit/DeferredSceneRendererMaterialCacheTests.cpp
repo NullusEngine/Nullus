@@ -404,6 +404,55 @@ TEST(DeferredSceneRendererMaterialCacheTests, ReusesGBufferMaterialForStableMate
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
 }
 
+TEST(DeferredSceneRendererMaterialCacheTests, StableMaterialAssetPathDoesNotShareRuntimeGBufferMaterialAcrossDistinctSourceInstances)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    NLS::Engine::Rendering::DeferredSceneRenderer::ConstructionOptions options;
+    options.loadPipelineResources = false;
+    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver, options);
+
+    auto* shader = CreateTestShader("App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+
+    auto* firstTexture = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(255, 0, 0, 255);
+    auto* secondTexture = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(0, 255, 0, 255);
+    ASSERT_NE(firstTexture, nullptr);
+    ASSERT_NE(secondTexture, nullptr);
+
+    NLS::Render::Resources::Material firstMaterial(shader);
+    NLS::Render::Resources::Material secondMaterial(shader);
+    const_cast<std::string&>(firstMaterial.path) = "App/Assets/Test/SharedDeferredMaterial.nmat";
+    const_cast<std::string&>(secondMaterial.path) = "App/Assets/Test/SharedDeferredMaterial.nmat";
+    firstMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", firstTexture);
+    secondMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", secondTexture);
+
+    auto& firstGBufferMaterial = SyncOneDeferredCacheMaterial(renderer, firstMaterial);
+    auto& secondGBufferMaterial = SyncOneDeferredCacheMaterial(renderer, secondMaterial);
+    const auto& cache = NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer);
+
+    const auto* firstAlbedoMap = firstGBufferMaterial.GetParameterBlock().TryGet("u_AlbedoMap");
+    const auto* secondAlbedoMap = secondGBufferMaterial.GetParameterBlock().TryGet("u_AlbedoMap");
+    ASSERT_NE(firstAlbedoMap, nullptr);
+    ASSERT_NE(secondAlbedoMap, nullptr);
+    ASSERT_EQ(firstAlbedoMap->type(), typeid(NLS::Render::Resources::Texture2D*));
+    ASSERT_EQ(secondAlbedoMap->type(), typeid(NLS::Render::Resources::Texture2D*));
+    EXPECT_EQ(cache.size(), 2u);
+    EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*firstAlbedoMap), firstTexture);
+    EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*secondAlbedoMap), secondTexture);
+    EXPECT_NE(&firstGBufferMaterial, &secondGBufferMaterial);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(firstTexture));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(secondTexture));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
 TEST(DeferredSceneRendererMaterialCacheTests, ProvidesVisibleDeferredGBufferFallbackInputsForLambertMaterials)
 {
     NLS::Render::Settings::DriverSettings settings;

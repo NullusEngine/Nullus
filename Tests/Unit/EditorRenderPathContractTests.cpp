@@ -3777,7 +3777,7 @@ TEST(EditorRenderPathContractTests, GeneratedModelMaterialResolutionKeepsColdMis
     EXPECT_EQ(bindCode.find("++stats->failedMaterialSlots"), std::string::npos);
 }
 
-TEST(EditorRenderPathContractTests, GeneratedModelMaterialResolutionBindsOnlyCachedTextures)
+TEST(EditorRenderPathContractTests, GeneratedModelMaterialResolutionBindsCachedTexturesAndQueuesAsyncArtifactLoads)
 {
     const auto actionsSourcePath =
         std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
@@ -3813,6 +3813,7 @@ TEST(EditorRenderPathContractTests, GeneratedModelMaterialResolutionBindsOnlyCac
     EXPECT_NE(textureBindCode.find("textureManager.GetResource(texturePath, false)"), std::string::npos);
     EXPECT_EQ(textureBindCode.find("textureManager.GetResource(texturePath, true)"), std::string::npos);
     EXPECT_EQ(textureBindCode.find("LoadResource(texturePath)"), std::string::npos);
+    EXPECT_NE(textureBindCode.find("textureManager.RequestAsyncArtifact(texturePath)"), std::string::npos);
     EXPECT_NE(textureBindCode.find("material.Set<NLS::Render::Resources::Texture2D*>(uniformName, texture)"), std::string::npos);
     EXPECT_NE(textureBindCode.find("frameBudgetExpired()"), std::string::npos);
 
@@ -4680,6 +4681,20 @@ TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionUsesFrameTim
     EXPECT_NE(source.find("BuildPrefabInstanceObjectIndex"), std::string::npos);
     EXPECT_EQ(queueCode.find("std::make_shared<std::function<void()>>()"), std::string::npos);
     EXPECT_EQ(queueCode.find("static_cast<uint32_t>(index + 1u)"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionUsesMultiBindBudgetsForVisibleDropLatency)
+{
+    const auto actionsSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
+
+    const std::string source = ReadSourceText(actionsSourcePath);
+
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(source.find("constexpr size_t kRendererResourceResolutionMeshBindsPerFrame = 4u;"), std::string::npos);
+    EXPECT_NE(source.find("constexpr size_t kRendererResourceResolutionTextureBindsPerFrame = 8u;"), std::string::npos);
+    EXPECT_EQ(source.find("constexpr size_t kRendererResourceResolutionMeshBindsPerFrame = 1u;"), std::string::npos);
+    EXPECT_EQ(source.find("constexpr size_t kRendererResourceResolutionTextureBindsPerFrame = 1u;"), std::string::npos);
 }
 
 TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionQueuesMeshesBeforeMaterials)

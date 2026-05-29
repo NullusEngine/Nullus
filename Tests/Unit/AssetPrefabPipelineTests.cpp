@@ -859,6 +859,122 @@ TEST(AssetPrefabPipelineTests, GeneratedModelPrefabPreservesSparseMaterialSlots)
     EXPECT_EQ(runtimeMaterialPaths[1], "Library/Artifacts/Sparse/materials/visible.nmat");
 }
 
+TEST(AssetPrefabPipelineTests, GeneratedModelPrefabSplitsMultiPrimitiveMeshIntoPrimitiveRenderers)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("34343434-3434-4434-8434-343434343434"));
+    scene.sceneKey = "MultiPrimitiveHero";
+    scene.nodes.push_back({"node/body", "Body", "", "mesh/body", ""});
+
+    NLS::Render::Assets::ImportedScenePrimitive firstPrimitive;
+    firstPrimitive.materialKey = "parser/material/0";
+    NLS::Render::Assets::ImportedScenePrimitive secondPrimitive;
+    secondPrimitive.materialKey = "parser/material/1";
+    NLS::Render::Assets::ImportedSceneNamedRecord mesh;
+    mesh.sourceKey = "mesh/body";
+    mesh.name = "BodyMesh";
+    mesh.primitiveCount = 2u;
+    mesh.primitives.push_back(std::move(firstPrimitive));
+    mesh.primitives.push_back(std::move(secondPrimitive));
+    scene.meshes.push_back(std::move(mesh));
+    scene.materials.push_back({"parser/material/0", "FirstMaterial"});
+    scene.materials.push_back({"parser/material/1", "SecondMaterial"});
+
+    NLS::Core::Assets::ArtifactManifest manifest;
+    manifest.sourceAssetId = scene.sourceAssetId;
+    manifest.subAssets.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("35353535-3535-4535-8535-353535353535")),
+        "mesh:mesh/body/primitive/0",
+        NLS::Core::Assets::ArtifactType::Mesh,
+        "mesh",
+        "editor-windows",
+        "Library/Artifacts/Multi/meshes/body_primitive_0.nmesh",
+        "mesh-hash-0"
+    });
+    manifest.subAssets.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("36363636-3636-4636-8636-363636363636")),
+        "mesh:mesh/body/primitive/1",
+        NLS::Core::Assets::ArtifactType::Mesh,
+        "mesh",
+        "editor-windows",
+        "Library/Artifacts/Multi/meshes/body_primitive_1.nmesh",
+        "mesh-hash-1"
+    });
+    manifest.subAssets.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("37373737-3737-4737-8737-373737373737")),
+        "material:parser/material/0",
+        NLS::Core::Assets::ArtifactType::Material,
+        "material",
+        "editor-windows",
+        "Library/Artifacts/Multi/materials/first.nmat",
+        "material-hash-0"
+    });
+    manifest.subAssets.push_back({
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("38383838-3838-4838-8838-383838383838")),
+        "material:parser/material/1",
+        NLS::Core::Assets::ArtifactType::Material,
+        "material",
+        "editor-windows",
+        "Library/Artifacts/Multi/materials/second.nmat",
+        "material-hash-1"
+    });
+
+    auto result = NLS::Engine::Assets::BuildGeneratedModelPrefab(
+        scene,
+        NLS::Render::Assets::GenerateSceneSubAssets(scene),
+        manifest);
+
+    ASSERT_FALSE(result.diagnostics.HasErrors());
+
+    const auto* body = FindRecord(result.artifact.graph, "Body", "NLS::Engine::GameObject");
+    ASSERT_NE(body, nullptr);
+    EXPECT_EQ(FindRecord(result.artifact.graph, "Body MeshFilter", "NLS::Engine::Components::MeshFilter"), nullptr);
+    EXPECT_EQ(FindRecord(result.artifact.graph, "Body MeshRenderer", "NLS::Engine::Components::MeshRenderer"), nullptr);
+
+    const auto* firstMeshFilter = FindRecord(
+        result.artifact.graph,
+        "Body Primitive 0 MeshFilter",
+        "NLS::Engine::Components::MeshFilter");
+    ASSERT_NE(firstMeshFilter, nullptr);
+    const auto* firstMesh = FindProperty(*firstMeshFilter, "mesh");
+    ASSERT_NE(firstMesh, nullptr);
+    EXPECT_EQ(firstMesh->value.GetObjectReference().filePath, "mesh:mesh/body/primitive/0");
+
+    const auto* firstMeshRenderer = FindRecord(
+        result.artifact.graph,
+        "Body Primitive 0 MeshRenderer",
+        "NLS::Engine::Components::MeshRenderer");
+    ASSERT_NE(firstMeshRenderer, nullptr);
+    const auto* firstMaterials = FindProperty(*firstMeshRenderer, "materials");
+    ASSERT_NE(firstMaterials, nullptr);
+    ASSERT_EQ(firstMaterials->value.GetArray().size(), 1u);
+    EXPECT_EQ(firstMaterials->value.GetArray()[0].GetObjectReference().filePath, "material:parser/material/0");
+
+    const auto* secondMeshFilter = FindRecord(
+        result.artifact.graph,
+        "Body Primitive 1 MeshFilter",
+        "NLS::Engine::Components::MeshFilter");
+    ASSERT_NE(secondMeshFilter, nullptr);
+    const auto* secondMesh = FindProperty(*secondMeshFilter, "mesh");
+    ASSERT_NE(secondMesh, nullptr);
+    EXPECT_EQ(secondMesh->value.GetObjectReference().filePath, "mesh:mesh/body/primitive/1");
+
+    const auto* secondMeshRenderer = FindRecord(
+        result.artifact.graph,
+        "Body Primitive 1 MeshRenderer",
+        "NLS::Engine::Components::MeshRenderer");
+    ASSERT_NE(secondMeshRenderer, nullptr);
+    const auto* secondMaterials = FindProperty(*secondMeshRenderer, "materials");
+    ASSERT_NE(secondMaterials, nullptr);
+    ASSERT_EQ(secondMaterials->value.GetArray().size(), 2u);
+    EXPECT_FALSE(secondMaterials->value.GetArray()[0].GetObjectReference().IsValid());
+    EXPECT_EQ(secondMaterials->value.GetArray()[1].GetObjectReference().filePath, "material:parser/material/1");
+
+    EXPECT_TRUE(ContainsResolvedAsset(result.artifact.resolvedAssets, "Mesh", "mesh:mesh/body/primitive/0"));
+    EXPECT_TRUE(ContainsResolvedAsset(result.artifact.resolvedAssets, "Mesh", "mesh:mesh/body/primitive/1"));
+}
+
 TEST(AssetPrefabPipelineTests, DeferredAssetResolutionIgnoresLegacyStringMaterialPaths)
 {
     using namespace NLS::Engine::Serialize;

@@ -13,6 +13,7 @@
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <string_view>
 #include <utility>
 
 namespace
@@ -191,6 +192,13 @@ double ReadTextureInfoScalar(
     return textureInfo->value(scalarName, fallback);
 }
 
+std::string BuildSubAssetKey(
+    const NLS::Render::Assets::ImportedSceneSubAssetType type,
+    const std::string& sourceKey)
+{
+    return std::string(NLS::Render::Assets::ToSubAssetPrefix(type)) + ":" + sourceKey;
+}
+
 void AddSubAssets(
     std::vector<NLS::Render::Assets::GeneratedSceneSubAsset>& outRecords,
     const NLS::Render::Assets::ImportedSceneSubAssetType type,
@@ -204,10 +212,54 @@ void AddSubAssets(
 
         outRecords.push_back({
             type,
-            std::string(NLS::Render::Assets::ToSubAssetPrefix(type)) + ":" + sourceKey,
+            BuildSubAssetKey(type, sourceKey),
             sourceKey,
             sourceRecord.name
         });
+    }
+}
+
+void AddSubAsset(
+    std::vector<NLS::Render::Assets::GeneratedSceneSubAsset>& outRecords,
+    const NLS::Render::Assets::ImportedSceneSubAssetType type,
+    const std::string& sourceKey,
+    std::string name)
+{
+    if (sourceKey.empty())
+        return;
+
+    outRecords.push_back({
+        type,
+        BuildSubAssetKey(type, sourceKey),
+        sourceKey,
+        std::move(name)
+    });
+}
+
+void AddMeshSubAssets(
+    std::vector<NLS::Render::Assets::GeneratedSceneSubAsset>& outRecords,
+    const std::vector<NLS::Render::Assets::ImportedSceneNamedRecord>& meshes)
+{
+    for (const auto& mesh : meshes)
+    {
+        const auto sourceKey = mesh.sourceKey.empty() ? mesh.name : mesh.sourceKey;
+        if (sourceKey.empty())
+            continue;
+
+        if (mesh.primitives.size() <= 1u)
+        {
+            AddSubAsset(outRecords, NLS::Render::Assets::ImportedSceneSubAssetType::Mesh, sourceKey, mesh.name);
+            continue;
+        }
+
+        for (size_t index = 0u; index < mesh.primitives.size(); ++index)
+        {
+            AddSubAsset(
+                outRecords,
+                NLS::Render::Assets::ImportedSceneSubAssetType::Mesh,
+                NLS::Render::Assets::BuildPrimitiveMeshSourceKey(sourceKey, index),
+                mesh.name + " Primitive " + std::to_string(index));
+        }
     }
 }
 
@@ -772,11 +824,46 @@ const char* ToSubAssetPrefix(const ImportedSceneSubAssetType type)
     }
 }
 
+std::string BuildPrimitiveMeshSourceKey(const std::string& meshKey, const size_t primitiveIndex)
+{
+    return meshKey + "/primitive/" + std::to_string(primitiveIndex);
+}
+
+std::optional<std::pair<std::string, size_t>> ParsePrimitiveMeshSourceKey(const std::string& meshKey)
+{
+    constexpr std::string_view marker = "/primitive/";
+    const auto markerOffset = meshKey.rfind(marker);
+    if (markerOffset == std::string::npos)
+        return std::nullopt;
+
+    const auto parentKey = meshKey.substr(0u, markerOffset);
+    const auto indexText = meshKey.substr(markerOffset + marker.size());
+    if (parentKey.empty() || indexText.empty())
+        return std::nullopt;
+
+    size_t primitiveIndex = 0u;
+    for (const char character : indexText)
+    {
+        if (character < '0' || character > '9')
+            return std::nullopt;
+        const auto digit = static_cast<size_t>(character - '0');
+        if (primitiveIndex > (std::numeric_limits<size_t>::max() - digit) / 10u)
+            return std::nullopt;
+        primitiveIndex = primitiveIndex * 10u + digit;
+    }
+
+    return std::make_pair(parentKey, primitiveIndex);
+}
+
 std::vector<GeneratedSceneSubAsset> GenerateSceneSubAssets(const ImportedScene& scene)
 {
+    size_t meshSubAssetCount = 0u;
+    for (const auto& mesh : scene.meshes)
+        meshSubAssetCount += (std::max)(size_t {1u}, mesh.primitives.size());
+
     std::vector<GeneratedSceneSubAsset> records;
     records.reserve(
-        scene.meshes.size() +
+        meshSubAssetCount +
         scene.materials.size() +
         scene.textures.size() +
         scene.skeletons.size() +
@@ -787,7 +874,7 @@ std::vector<GeneratedSceneSubAsset> GenerateSceneSubAssets(const ImportedScene& 
 
     AddSubAssets(records, ImportedSceneSubAssetType::AnimationClip, scene.animations);
     AddSubAssets(records, ImportedSceneSubAssetType::Material, scene.materials);
-    AddSubAssets(records, ImportedSceneSubAssetType::Mesh, scene.meshes);
+    AddMeshSubAssets(records, scene.meshes);
     AddSubAssets(records, ImportedSceneSubAssetType::MorphTarget, scene.morphTargets);
     AddSubAssets(records, ImportedSceneSubAssetType::Skeleton, scene.skeletons);
     AddSubAssets(records, ImportedSceneSubAssetType::Skin, scene.skins);

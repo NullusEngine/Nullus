@@ -189,8 +189,8 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
 	} 
 	else
 	{
-		if (IsCameraControlActive())
-		{
+        if (IsCameraControlActive())
+        {
             const Maths::Vector2 wrapCompensation = m_inputManager.PollInfiniteCursorWrap();
 			auto pos = m_inputManager.GetMousePosition();
 
@@ -372,8 +372,10 @@ void Editor::Core::CameraController::SetInputActive(const bool p_inputActive)
 
 void Editor::Core::CameraController::SetInputBlocked(const bool p_inputBlocked)
 {
+    const bool shouldResetMouseInteraction =
+        ShouldResetMouseInteractionForInputBlockChange(m_inputBlocked, p_inputBlocked);
     m_inputBlocked = p_inputBlocked;
-    if (m_inputBlocked)
+    if (shouldResetMouseInteraction)
         ResetMouseInteractionState();
 }
 

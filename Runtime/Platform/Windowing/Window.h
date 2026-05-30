@@ -7,6 +7,7 @@
 #include "Windowing/Settings/WindowSettings.h"
 #include "Windowing/Cursor/ECursorShape.h"
 #include "Windowing/Cursor/ECursorMode.h"
+#include "Windowing/InfiniteCursorWrapState.h"
 #include "Math/Vector2.h"
 #include "PlatformDef.h"
 
@@ -376,7 +377,7 @@ namespace NLS::Windowing
 		int32_t m_refreshRate;
 		Cursor::ECursorMode m_cursorMode;
 		Cursor::ECursorShape m_cursorShape;
-        bool m_infiniteCursorWrapEnabled = false;
+        InfiniteCursorWrapState m_infiniteCursorWrapState;
         bool m_isDecorated = true;
         uint16_t m_nativeTitleBarDragHeight = 0;
         uint16_t m_nativeTitleBarDragRightInset = 0;

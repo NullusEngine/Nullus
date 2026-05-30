@@ -45,6 +45,13 @@ public:
         };
     }
 
+    static constexpr bool ShouldResetMouseInteractionForInputBlockChange(
+        const bool p_wasInputBlocked,
+        const bool p_isInputBlocked)
+    {
+        return !p_wasInputBlocked && p_isInputBlocked;
+    }
+
     /**
      * Constructor
      * @param p_view

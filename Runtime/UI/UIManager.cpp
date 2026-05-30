@@ -323,14 +323,9 @@ void UIManager::BeginFrame()
         auto& window = NLS_SERVICE(NLS::Windowing::Window);
         m_infiniteDragCursorLease.BeginFrame();
         if (m_infiniteDragCursorLease.OwnsCursor())
-        {
-            const auto wrapCompensation = window.PollInfiniteCursorWrap();
-            m_pendingInfiniteCursorWrapCompensation = ImVec2(wrapCompensation.x, wrapCompensation.y);
-        }
+            AccumulateInfiniteDragCursorWrapCompensation(window);
         else
-        {
             m_pendingInfiniteCursorWrapCompensation = ImVec2(0.0f, 0.0f);
-        }
     }
 
     if (m_uiBridge != nullptr && !m_uiBridge->HasRendererBackend())
@@ -917,9 +912,9 @@ void UIManager::ReleaseUnrequestedInfiniteDragCursor()
     auto& window = NLS_SERVICE(NLS::Windowing::Window);
     if (const auto release = m_infiniteDragCursorLease.ReleaseIfUnrequested())
     {
+        window.SetInfiniteCursorWrapEnabled(false);
         if (window.GetCursorShape() == release->activeCursorShape)
         {
-            window.SetInfiniteCursorWrapEnabled(false);
             if (release->previousCursorShape.has_value())
                 window.SetCursorShape(*release->previousCursorShape);
         }
@@ -930,6 +925,16 @@ void UIManager::ReleaseUnrequestedInfiniteDragCursor()
         PopCustomCursorControl();
         m_forcedNoMouseCursorChange = false;
     }
+}
+
+void UIManager::AccumulateInfiniteDragCursorWrapCompensation(NLS::Windowing::Window& p_window)
+{
+    const auto wrapCompensation = p_window.PollInfiniteCursorWrap();
+    if (wrapCompensation.x == 0.0f && wrapCompensation.y == 0.0f)
+        return;
+
+    m_pendingInfiniteCursorWrapCompensation.x += wrapCompensation.x;
+    m_pendingInfiniteCursorWrapCompensation.y += wrapCompensation.y;
 }
 
 void UIManager::RequestInfiniteDragCursor(const NLS::Cursor::ECursorShape p_cursorShape)
@@ -948,6 +953,7 @@ void UIManager::RequestInfiniteDragCursor(const NLS::Cursor::ECursorShape p_curs
     window.SetInfiniteCursorWrapEnabled(true);
     if (acquiredCursor || window.GetCursorShape() != p_cursorShape)
         window.SetCursorShape(p_cursorShape);
+    AccumulateInfiniteDragCursorWrapCompensation(window);
 }
 
 float UIManager::GetMouseWheel()

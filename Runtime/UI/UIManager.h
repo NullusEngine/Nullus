@@ -16,6 +16,11 @@
 
 struct GLFWwindow;
 
+namespace NLS::Windowing
+{
+class Window;
+}
+
 namespace NLS::UI
 {
 enum class NLS_UI_API ImGuiGlfwInitBackend : uint8_t
@@ -208,6 +213,7 @@ private:
     void PopCurrentFont();
     void BeginFrame();
     void ReleaseUnrequestedInfiniteDragCursor();
+    void AccumulateInfiniteDragCursorWrapCompensation(NLS::Windowing::Window& p_window);
 
 private:
     struct FontEntry

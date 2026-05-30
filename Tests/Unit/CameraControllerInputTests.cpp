@@ -47,3 +47,11 @@ TEST(CameraControllerInputTests, FlyStateKeepsCursorOwnershipStableWithoutRepeat
     EXPECT_FALSE(transition.shouldAcquireCursorControl);
     EXPECT_FALSE(transition.shouldSuppressInitialMouseDelta);
 }
+
+TEST(CameraControllerInputTests, InputBlockResetOnlyRunsOnBlockedEntry)
+{
+    EXPECT_TRUE(CameraController::ShouldResetMouseInteractionForInputBlockChange(false, true));
+    EXPECT_FALSE(CameraController::ShouldResetMouseInteractionForInputBlockChange(true, true));
+    EXPECT_FALSE(CameraController::ShouldResetMouseInteractionForInputBlockChange(true, false));
+    EXPECT_FALSE(CameraController::ShouldResetMouseInteractionForInputBlockChange(false, false));
+}

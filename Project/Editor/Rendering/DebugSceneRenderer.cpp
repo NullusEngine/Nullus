@@ -302,6 +302,8 @@ protected:
             return;
 
         p_pso = Editor::Rendering::CreateEditorOverlayPipelineState(p_pso);
+        p_pso.culling = true;
+        p_pso.cullFace = NLS::Render::Settings::ECullFace::BACK;
 		auto& sceneDescriptor = m_renderer.GetDescriptor<Engine::Rendering::BaseSceneRenderer::SceneDescriptor>();
         if (NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_renderer.GetDriver()))
         {

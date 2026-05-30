@@ -950,6 +950,104 @@ TEST(ReflectedPropertyDrawerTests, RectAndBoundsWidgetsWriteBackToOriginalObject
     EXPECT_FLOAT_EQ(object.bounds.size.z, 10.0f);
 }
 
+TEST(ReflectedPropertyDrawerTests, DragWidgetsEnableClickToInputBeforeDrag)
+{
+    NLS::Editor::Panels::Tests::ScopedImGuiContext imguiContext;
+    NLS::meta::ReflectionDatabase::Instance();
+    NLS::Editor::Panels::Tests::InspectorCoreFieldFixture object;
+    const auto type = NLS_TYPEOF(NLS::Editor::Panels::Tests::InspectorCoreFieldFixture);
+
+    NLS::UI::Widgets::DragSingleScalar<float> scalarWidget(
+        ImGuiDataType_Float,
+        -10.0f,
+        10.0f,
+        0.0f,
+        1.0f,
+        "",
+        "%.3f");
+    EXPECT_TRUE(scalarWidget.enableClickToInput);
+
+    NLS::UI::Widgets::DragMultipleScalars<float, 4> vector4Widget(
+        ImGuiDataType_Float,
+        -10.0f,
+        10.0f,
+        0.0f,
+        1.0f,
+        "",
+        "%.3f");
+    EXPECT_TRUE(vector4Widget.enableClickToInput);
+
+    {
+        NLS::UI::Internal::WidgetContainer root;
+        const auto& uvScale = type.GetField("uvScale");
+
+        ASSERT_TRUE(NLS::Editor::Panels::DrawReflectedField(
+            root,
+            NLS::meta::Variant(object, NLS::meta::variant_policy::NoCopy {}),
+            uvScale));
+        ASSERT_EQ(root.GetWidgets().size(), 2u);
+
+        auto* vector2Widget = dynamic_cast<NLS::UI::Widgets::DragMultipleScalars<float, 2>*>(root.GetWidgets()[1].first);
+        ASSERT_NE(vector2Widget, nullptr);
+        EXPECT_TRUE(vector2Widget->enableClickToInput);
+    }
+
+    {
+        NLS::UI::Internal::WidgetContainer root;
+        const auto& bounds = type.GetField("bounds");
+
+        ASSERT_TRUE(NLS::Editor::Panels::DrawReflectedField(
+            root,
+            NLS::meta::Variant(object, NLS::meta::variant_policy::NoCopy {}),
+            bounds));
+        ASSERT_EQ(root.GetWidgets().size(), 4u);
+
+        auto* centerWidget = dynamic_cast<NLS::UI::Widgets::DragMultipleScalars<float, 3>*>(root.GetWidgets()[1].first);
+        ASSERT_NE(centerWidget, nullptr);
+        EXPECT_TRUE(centerWidget->enableClickToInput);
+
+        auto* extentsWidget = dynamic_cast<NLS::UI::Widgets::DragMultipleScalars<float, 3>*>(root.GetWidgets()[3].first);
+        ASSERT_NE(extentsWidget, nullptr);
+        EXPECT_TRUE(extentsWidget->enableClickToInput);
+    }
+}
+
+TEST(ReflectedPropertyDrawerTests, DragTextInputDetectionIgnoresGlobalTextInputCursorState)
+{
+    NLS::Editor::Panels::Tests::ScopedImGuiContext imguiContext;
+    ImGuiContext& context = *ImGui::GetCurrentContext();
+    const ImGuiID previousActiveId = context.ActiveId;
+    const ImGuiID previousTempInputId = context.TempInputId;
+    const ImGuiID previousInputTextId = context.InputTextState.ID;
+    const bool previousWantTextInput = context.IO.WantTextInput;
+    const ImGuiMouseCursor previousMouseCursor = context.MouseCursor;
+
+    constexpr ImGuiID dragItemId = 101;
+    constexpr ImGuiID otherItemId = 202;
+    context.ActiveId = otherItemId;
+    context.TempInputId = otherItemId;
+    context.InputTextState.ID = otherItemId;
+    context.IO.WantTextInput = true;
+    context.MouseCursor = ImGuiMouseCursor_TextInput;
+
+    EXPECT_FALSE(NLS::UI::Widgets::DragScalarInternal::IsDragScalarTextInputActive(dragItemId));
+
+    context.ActiveId = dragItemId;
+    context.TempInputId = 0;
+    context.InputTextState.ID = dragItemId;
+    EXPECT_FALSE(NLS::UI::Widgets::DragScalarInternal::IsDragScalarTextInputActive(dragItemId));
+
+    context.ActiveId = dragItemId;
+    context.TempInputId = dragItemId;
+    EXPECT_TRUE(NLS::UI::Widgets::DragScalarInternal::IsDragScalarTextInputActive(dragItemId));
+
+    context.ActiveId = previousActiveId;
+    context.TempInputId = previousTempInputId;
+    context.InputTextState.ID = previousInputTextId;
+    context.IO.WantTextInput = previousWantTextInput;
+    context.MouseCursor = previousMouseCursor;
+}
+
 TEST(ReflectedPropertyDrawerTests, RangeMetadataUsesSliderWidgetsAndWritesBack)
 {
     NLS::Editor::Panels::Tests::ScopedImGuiContext imguiContext;

@@ -9,6 +9,7 @@
 #include <Rendering/Entities/Camera.h>
 
 #include "Core/SceneCameraFocus.h"
+#include "Core/SceneViewCameraInteractionStateMachine.h"
 #include "Panels/Hierarchy.h"
 #include "Panels/AView.h"
 
@@ -124,6 +125,8 @@ public:
     void UnLockTargetGameObject();
 
 private:
+    void ApplyInteractionTransition(const SceneViewCameraInteractionTransition& p_transition);
+    void ResetNavigationInteractionState();
     Engine::GameObject* GetTargetGameObject() const;
     void ResetLastMousePosition(const Maths::Vector2& p_mousePosition);
     void SuppressMouseDeltaAfterCursorCapture();
@@ -134,7 +137,7 @@ private:
 
     void HandleCameraZoom();
     void HandleCameraFPSKeyboard(float p_deltaTime);
-    void UpdateMouseState();
+    void UpdateMouseState(bool p_sceneInputAllowed);
 
 private:
     Windowing::Inputs::InputManager& m_inputManager;
@@ -146,8 +149,6 @@ private:
     std::queue<std::tuple<Maths::Vector3, Maths::Quaternion>> m_cameraDestinations;
 
     bool m_leftMousePressed = false;
-    bool m_middleMousePressed = false;
-    bool m_rightMousePressed = false;
 
     Maths::Vector3 m_targetSpeed;
     Maths::Vector3 m_currentMovementSpeed;
@@ -169,6 +170,8 @@ private:
     bool m_inputActive = false;
     bool m_inputBlocked = false;
     bool m_forcedNoMouseCursorChange = false;
+    SceneViewCameraCursorShapeLease m_cursorShapeLease;
+    SceneViewCameraInteractionStateId m_interactionState = SceneViewCameraInteractionStateId::Neutral;
 
     Engine::GameObject* m_lockedGameObject = nullptr;
 };

@@ -188,6 +188,7 @@ UIManager::UIManager(
     ImGui::CreateContext();
     m_uiScale = ResolveWindowContentScale();
 
+    ImGui::GetIO().ConfigDragClickToInputText = true;
     ImGui::GetIO().ConfigWindowsMoveFromTitleBarOnly = true; /* Disable moving windows by dragging another thing than the title bar */
     EnableDocking(false);
 
@@ -320,23 +321,8 @@ void UIManager::BeginFrame()
     if (NLS::Core::ServiceLocator::Contains<NLS::Windowing::Window>())
     {
         auto& window = NLS_SERVICE(NLS::Windowing::Window);
-        if (m_ownsInfiniteCursorWrap && !m_infiniteCursorWrapRequestedThisFrame)
-        {
-            if (!window.IsInfiniteCursorWrapEnabled() ||
-                window.GetCursorShape() == NLS::Cursor::ECursorShape::SLIDE_ARROW)
-            {
-                window.SetInfiniteCursorWrapEnabled(false);
-                window.SetCursorShape(NLS::Cursor::ECursorShape::ARROW);
-            }
-            m_ownsInfiniteCursorWrap = false;
-        }
-        if (!m_ownsInfiniteCursorWrap && m_forcedNoMouseCursorChange)
-        {
-            PopCustomCursorControl();
-            m_forcedNoMouseCursorChange = false;
-        }
-
-        if (m_ownsInfiniteCursorWrap)
+        m_infiniteDragCursorLease.BeginFrame();
+        if (m_infiniteDragCursorLease.OwnsCursor())
         {
             const auto wrapCompensation = window.PollInfiniteCursorWrap();
             m_pendingInfiniteCursorWrapCompensation = ImVec2(wrapCompensation.x, wrapCompensation.y);
@@ -393,7 +379,6 @@ void UIManager::BeginFrame()
     }
 
     ImGui::NewFrame();
-    m_infiniteCursorWrapRequestedThisFrame = false;
     if (m_pendingInfiniteCursorWrapCompensation.x != 0.0f || m_pendingInfiniteCursorWrapCompensation.y != 0.0f)
     {
         ImGuiIO& io = ImGui::GetIO();
@@ -697,6 +682,7 @@ void UIManager::Render(const NLS::Render::RHI::WaitSemaphoreResolver& resolveWai
         NLS_PROFILE_NAMED_SCOPE("UIManager::DrawCanvas");
         m_currentCanvas->Draw();
     }
+    ReleaseUnrequestedInfiniteDragCursor();
 
     // All paths: ImGui::Render() must be called before RenderDrawData to build font atlas if needed
     if (m_uiBridge != nullptr)
@@ -923,22 +909,45 @@ void UIManager::PopCustomCursorControl()
         ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
 }
 
+void UIManager::ReleaseUnrequestedInfiniteDragCursor()
+{
+    if (!NLS::Core::ServiceLocator::Contains<NLS::Windowing::Window>())
+        return;
+
+    auto& window = NLS_SERVICE(NLS::Windowing::Window);
+    if (const auto release = m_infiniteDragCursorLease.ReleaseIfUnrequested())
+    {
+        if (window.GetCursorShape() == release->activeCursorShape)
+        {
+            window.SetInfiniteCursorWrapEnabled(false);
+            if (release->previousCursorShape.has_value())
+                window.SetCursorShape(*release->previousCursorShape);
+        }
+    }
+
+    if (!m_infiniteDragCursorLease.OwnsCursor() && m_forcedNoMouseCursorChange)
+    {
+        PopCustomCursorControl();
+        m_forcedNoMouseCursorChange = false;
+    }
+}
+
 void UIManager::RequestInfiniteDragCursor(const NLS::Cursor::ECursorShape p_cursorShape)
 {
     if (!NLS::Core::ServiceLocator::Contains<NLS::Windowing::Window>())
         return;
 
-    if (!m_forcedNoMouseCursorChange)
+    auto& window = NLS_SERVICE(NLS::Windowing::Window);
+    const bool acquiredCursor = m_infiniteDragCursorLease.Request(window.GetCursorShape(), p_cursorShape);
+    if (acquiredCursor && !m_forcedNoMouseCursorChange)
     {
         PushCustomCursorControl();
         m_forcedNoMouseCursorChange = true;
     }
 
-    auto& window = NLS_SERVICE(NLS::Windowing::Window);
     window.SetInfiniteCursorWrapEnabled(true);
-    window.SetCursorShape(p_cursorShape);
-    m_ownsInfiniteCursorWrap = true;
-    m_infiniteCursorWrapRequestedThisFrame = true;
+    if (acquiredCursor || window.GetCursorShape() != p_cursorShape)
+        window.SetCursorShape(p_cursorShape);
 }
 
 float UIManager::GetMouseWheel()

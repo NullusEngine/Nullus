@@ -19,6 +19,16 @@ bool CanCreateHeadlessGlfwWindow()
     return std::getenv("DISPLAY") != nullptr || std::getenv("WAYLAND_DISPLAY") != nullptr;
 #endif
 }
+
+#ifdef _WIN32
+constexpr unsigned int kHandledNativeMessage = 0x8000u + 77u;
+constexpr long long kHandledNativeMessageResult = 12345;
+
+long long TestNativeMessageHandler(void*, unsigned int message, unsigned long long, long long)
+{
+    return message == kHandledNativeMessage ? kHandledNativeMessageResult : 0;
+}
+#endif
 }
 
 TEST(InputManagerTests, ClearEventsClearsWheelMovement)
@@ -77,3 +87,32 @@ TEST(InputManagerTests, MousePressAndReleaseInSameFrameAreBothVisible)
     EXPECT_FALSE(inputManager.IsMouseButtonPressed(Windowing::Inputs::EMouseButton::MOUSE_BUTTON_LEFT));
     EXPECT_FALSE(inputManager.IsMouseButtonReleased(Windowing::Inputs::EMouseButton::MOUSE_BUTTON_LEFT));
 }
+
+#ifdef _WIN32
+TEST(WindowNativeMessageTests, NonZeroNativeMessageHandlerResultShortCircuitsDefaultWindowProcedure)
+{
+    if (!CanCreateHeadlessGlfwWindow())
+        GTEST_SKIP() << "GLFW display is not available in this environment.";
+
+    Windowing::Settings::DeviceSettings deviceSettings;
+    Context::Device device(deviceSettings);
+
+    Windowing::Settings::WindowSettings windowSettings;
+    windowSettings.title = "NativeMessageHandlerTests";
+    windowSettings.width = 64;
+    windowSettings.height = 64;
+    windowSettings.visible = false;
+    windowSettings.clientAPI = Windowing::Settings::WindowClientAPI::NoAPI;
+
+    Windowing::Window window(device, windowSettings);
+    window.SetNativeMessageHandler(&TestNativeMessageHandler);
+
+    EXPECT_EQ(
+        window.HandleNativeWindowMessage(
+            window.GetNativeWindowHandle(),
+            kHandledNativeMessage,
+            0,
+            0),
+        kHandledNativeMessageResult);
+}
+#endif

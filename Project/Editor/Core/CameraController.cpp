@@ -118,12 +118,12 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
     const Maths::Vector2 mousePosition = m_inputManager.GetMousePosition();
     const bool mouseOverView = m_view.IsMouseWithinView(mousePosition);
     const bool inputActive = mouseOverView || m_inputActive;
-    const bool capturingMouse = m_leftMousePressed || m_middleMousePressed || m_rightMousePressed;
+    const bool capturingMouse = m_leftMousePressed || IsCameraControlActive();
     const bool shouldProcessMouseState = inputActive || capturingMouse;
 
 	if (shouldProcessMouseState)
 	{
-		UpdateMouseState();
+		UpdateMouseState(inputActive);
 
 		if (mouseOverView && !NLS_SERVICE(NLS::UI::UIManager).IsAnyItemActive())
 		{
@@ -189,7 +189,7 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
 	} 
 	else
 	{
-		if (m_rightMousePressed || m_middleMousePressed)
+		if (IsCameraControlActive())
 		{
             const Maths::Vector2 wrapCompensation = m_inputManager.PollInfiniteCursorWrap();
 			auto pos = m_inputManager.GetMousePosition();
@@ -209,33 +209,27 @@ void Editor::Core::CameraController::HandleInputs(float p_deltaTime)
                     static_cast<float>(pos.x - m_lastMousePosX - wrapCompensation.x),
                     static_cast<float>(m_lastMousePosY - pos.y + wrapCompensation.y)
                 };
-                const float maxMouseDeltaPerFrame = m_rightMousePressed
+                const float maxMouseDeltaPerFrame = m_interactionState == SceneViewCameraInteractionStateId::Fly
                     ? GetMaxLookMouseDeltaPerFrame()
                     : GetMaxPanOrbitMouseDeltaPerFrame();
                 mouseOffset = ClampMouseDeltaForCameraControl(mouseOffset, maxMouseDeltaPerFrame);
 
                 ResetLastMousePosition(pos);
 
-                if (m_rightMousePressed)
+                if (m_interactionState == SceneViewCameraInteractionStateId::Fly)
                 {
                     HandleCameraFPSMouse(mouseOffset, wasFirstMouse);
                 }
-                else
+                else if (m_interactionState == SceneViewCameraInteractionStateId::Orbit)
                 {
-                    if (m_middleMousePressed)
+                    if (auto target = GetTargetGameObject())
                     {
-                        if (m_inputManager.GetKeyState(Windowing::Inputs::EKey::KEY_LEFT_ALT) == Windowing::Inputs::EKeyState::KEY_DOWN)
-                        {
-                            if (auto target = GetTargetGameObject())
-                            {
-                                HandleCameraOrbit(*target, mouseOffset, wasFirstMouse);
-                            }
-                        }
-                        else
-                        {
-                            HandleCameraPanning(mouseOffset, wasFirstMouse);
-                        }
+                        HandleCameraOrbit(*target, mouseOffset, wasFirstMouse);
                     }
+                }
+                else if (m_interactionState == SceneViewCameraInteractionStateId::Pan)
+                {
+                    HandleCameraPanning(mouseOffset, wasFirstMouse);
                 }
             }
 		}
@@ -273,8 +267,11 @@ void Editor::Core::CameraController::MoveToTarget(Engine::GameObject& p_target)
 void Editor::Core::CameraController::ResetMouseInteractionState()
 {
     m_leftMousePressed = false;
-    m_middleMousePressed = false;
-    m_rightMousePressed = false;
+    ResetNavigationInteractionState();
+}
+
+void Editor::Core::CameraController::ResetNavigationInteractionState()
+{
     m_firstMouse = true;
     m_pendingMouseDeltaSuppressionFrames = 0u;
     if (m_forcedNoMouseCursorChange)
@@ -284,7 +281,9 @@ void Editor::Core::CameraController::ResetMouseInteractionState()
     }
     m_window.SetInfiniteCursorWrapEnabled(false);
     m_window.SetCursorMode(Cursor::ECursorMode::NORMAL);
-    m_window.SetCursorShape(Cursor::ECursorShape::ARROW);
+    if (const auto restoredCursorShape = m_cursorShapeLease.Release())
+        m_window.SetCursorShape(*restoredCursorShape);
+    m_interactionState = SceneViewCameraInteractionStateId::Neutral;
 }
 
 void Editor::Core::CameraController::ResetLastMousePosition(const Maths::Vector2& p_mousePosition)
@@ -342,17 +341,18 @@ const Maths::Quaternion& Editor::Core::CameraController::GetRotation() const
 
 bool Editor::Core::CameraController::IsRightMousePressed() const
 {
-	return m_rightMousePressed;
+	return m_interactionState == SceneViewCameraInteractionStateId::Fly;
 }
 
 bool Editor::Core::CameraController::IsMiddleMousePressed() const
 {
-    return m_middleMousePressed;
+    return m_interactionState == SceneViewCameraInteractionStateId::Pan ||
+        m_interactionState == SceneViewCameraInteractionStateId::Orbit;
 }
 
 bool Editor::Core::CameraController::IsCameraControlActive() const
 {
-    return m_middleMousePressed || m_rightMousePressed;
+    return SceneViewCameraInteractionStateMachine::IsNavigationState(m_interactionState);
 }
 
 void Editor::Core::CameraController::SetFocusState(SceneCameraFocusState* p_focusState)
@@ -532,7 +532,7 @@ void Editor::Core::CameraController::HandleCameraFPSKeyboard(float p_deltaTime)
 {
 	m_targetSpeed = Maths::Vector3(0.f, 0.f, 0.f);
 
-	if (m_rightMousePressed)
+	if (m_interactionState == SceneViewCameraInteractionStateId::Fly)
 	{
         using Windowing::Inputs::EKey;
 
@@ -559,15 +559,60 @@ void Editor::Core::CameraController::HandleCameraFPSKeyboard(float p_deltaTime)
         *m_focusState = UpdateSceneCameraFocusAfterPan(*m_focusState, m_currentMovementSpeed);
 }
 
-void Editor::Core::CameraController::UpdateMouseState()
+void Editor::Core::CameraController::ApplyInteractionTransition(const SceneViewCameraInteractionTransition& p_transition)
+{
+    if (p_transition.shouldReleaseCursorControl && m_forcedNoMouseCursorChange)
+    {
+        NLS_SERVICE(NLS::UI::UIManager).PopCustomCursorControl();
+        m_forcedNoMouseCursorChange = false;
+    }
+
+    if (p_transition.shouldDisableInfiniteWrap)
+        m_window.SetInfiniteCursorWrapEnabled(false);
+
+    if (p_transition.shouldResetTransientMouseState)
+    {
+        m_firstMouse = true;
+        m_pendingMouseDeltaSuppressionFrames = 0u;
+    }
+
+    if (p_transition.shouldAcquireCursorControl && !m_forcedNoMouseCursorChange)
+    {
+        m_cursorShapeLease.CaptureIfNeeded(m_window.GetCursorShape());
+        NLS_SERVICE(NLS::UI::UIManager).PushCustomCursorControl();
+        m_forcedNoMouseCursorChange = true;
+    }
+
+    if (p_transition.shouldEnableInfiniteWrap)
+    {
+        m_window.SetCursorMode(Cursor::ECursorMode::NORMAL);
+        m_window.SetInfiniteCursorWrapEnabled(true);
+    }
+
+    if (p_transition.cursorShape.has_value())
+    {
+        m_window.SetCursorMode(Cursor::ECursorMode::NORMAL);
+        m_window.SetCursorShape(*p_transition.cursorShape);
+    }
+
+    if (p_transition.shouldReleaseCursorControl)
+    {
+        if (const auto restoredCursorShape = m_cursorShapeLease.Release())
+            m_window.SetCursorShape(*restoredCursorShape);
+    }
+
+    if (p_transition.shouldSuppressInitialMouseDelta)
+        SuppressMouseDeltaAfterCursorCapture();
+
+    m_interactionState = p_transition.nextState;
+}
+
+void Editor::Core::CameraController::UpdateMouseState(const bool p_sceneInputAllowed)
 {
     using Windowing::Inputs::EMouseButton;
     using Windowing::Inputs::EMouseButtonState;
 
-    const bool hadCameraCursorInteraction = m_middleMousePressed || m_rightMousePressed;
     const bool leftDown = m_inputManager.GetMouseButtonState(EMouseButton::MOUSE_BUTTON_LEFT) == EMouseButtonState::MOUSE_DOWN;
-    const bool middleDown = m_inputManager.GetMouseButtonState(EMouseButton::MOUSE_BUTTON_MIDDLE) == EMouseButtonState::MOUSE_DOWN;
-    const bool rightDown = m_inputManager.GetMouseButtonState(EMouseButton::MOUSE_BUTTON_RIGHT) == EMouseButtonState::MOUSE_DOWN;
 
 	if (m_inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_LEFT))
     {
@@ -580,77 +625,19 @@ void Editor::Core::CameraController::UpdateMouseState()
 		m_firstMouse = true;
 	}
 
-	if (m_inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_MIDDLE))
-    {
-        m_middleMousePressed = true;
-        m_window.SetInfiniteCursorWrapEnabled(true);
-        if (!m_forcedNoMouseCursorChange)
-        {
-            NLS_SERVICE(NLS::UI::UIManager).PushCustomCursorControl();
-            m_forcedNoMouseCursorChange = true;
-        }
-        SuppressMouseDeltaAfterCursorCapture();
-    }
-
-	if (m_inputManager.IsMouseButtonReleased(EMouseButton::MOUSE_BUTTON_MIDDLE) || (m_middleMousePressed && !middleDown))
-	{
-		m_middleMousePressed = false;
-		m_firstMouse = true;
-        m_pendingMouseDeltaSuppressionFrames = 0u;
-        if (!m_rightMousePressed)
-        {
-		    m_window.SetCursorMode(Cursor::ECursorMode::NORMAL);
-        }
-        if (!m_rightMousePressed)
-            m_window.SetInfiniteCursorWrapEnabled(false);
-	}
-
-	if (m_inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_RIGHT))
-	{
-        m_rightMousePressed = true;
-        m_window.SetInfiniteCursorWrapEnabled(true);
-        if (!m_forcedNoMouseCursorChange)
-        {
-            NLS_SERVICE(NLS::UI::UIManager).PushCustomCursorControl();
-            m_forcedNoMouseCursorChange = true;
-        }
-        SuppressMouseDeltaAfterCursorCapture();
-    }
-
-	if (m_inputManager.IsMouseButtonReleased(EMouseButton::MOUSE_BUTTON_RIGHT) || (m_rightMousePressed && !rightDown))
-	{
-		m_rightMousePressed = false;
-		m_firstMouse = true;
-        m_pendingMouseDeltaSuppressionFrames = 0u;
-        if (!m_middleMousePressed)
-        {
-		    m_window.SetCursorMode(Cursor::ECursorMode::NORMAL);
-        }
-        if (!m_middleMousePressed)
-            m_window.SetInfiniteCursorWrapEnabled(false);
-	}
-
-    if (m_rightMousePressed)
-    {
-        m_window.SetCursorMode(Cursor::ECursorMode::NORMAL);
-        m_window.SetCursorShape(Cursor::ECursorShape::FPS_VIEW);
-    }
-    else if (m_middleMousePressed)
-    {
-        m_window.SetCursorMode(Cursor::ECursorMode::NORMAL);
-        m_window.SetCursorShape(
-            m_inputManager.GetKeyState(Windowing::Inputs::EKey::KEY_LEFT_ALT) == Windowing::Inputs::EKeyState::KEY_DOWN
-                ? Cursor::ECursorShape::ORBIT_VIEW
-                : Cursor::ECursorShape::PAN_VIEW);
-    }
-    else if (hadCameraCursorInteraction)
-    {
-        if (m_forcedNoMouseCursorChange)
-        {
-            NLS_SERVICE(NLS::UI::UIManager).PopCustomCursorControl();
-            m_forcedNoMouseCursorChange = false;
-        }
-        m_window.SetCursorMode(Cursor::ECursorMode::NORMAL);
-        m_window.SetCursorShape(Cursor::ECursorShape::ARROW);
-    }
+    SceneViewCameraInteractionInputSnapshot inputSnapshot;
+    inputSnapshot.sceneInputAllowed = p_sceneInputAllowed;
+    inputSnapshot.cameraInputBlocked = m_inputBlocked;
+    inputSnapshot.windowFocused = m_window.IsFocused();
+    inputSnapshot.wantTextInput = ImGui::GetIO().WantTextInput;
+    inputSnapshot.altDown =
+        m_inputManager.GetKeyState(Windowing::Inputs::EKey::KEY_LEFT_ALT) == Windowing::Inputs::EKeyState::KEY_DOWN;
+    inputSnapshot.middlePressed = m_inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_MIDDLE);
+    inputSnapshot.rightPressed = m_inputManager.IsMouseButtonPressed(EMouseButton::MOUSE_BUTTON_RIGHT);
+    inputSnapshot.middleDown =
+        m_inputManager.GetMouseButtonState(EMouseButton::MOUSE_BUTTON_MIDDLE) == EMouseButtonState::MOUSE_DOWN;
+    inputSnapshot.rightDown =
+        m_inputManager.GetMouseButtonState(EMouseButton::MOUSE_BUTTON_RIGHT) == EMouseButtonState::MOUSE_DOWN;
+    const auto transition = SceneViewCameraInteractionStateMachine::EvaluateTransition(m_interactionState, inputSnapshot);
+    ApplyInteractionTransition(transition);
 }

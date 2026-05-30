@@ -4,6 +4,7 @@
 #include <string>
 #include <unordered_map>
 
+#include "UI/InfiniteDragCursorLease.h"
 #include "Rendering/RHI/Utils/RHIUIBridge.h"
 #include "Rendering/RHI/RHITypes.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
@@ -206,6 +207,7 @@ private:
     void PushCurrentFont();
     void PopCurrentFont();
     void BeginFrame();
+    void ReleaseUnrequestedInfiniteDragCursor();
 
 private:
     struct FontEntry
@@ -232,8 +234,7 @@ private:
     EStyle m_currentStyle = EStyle::IM_DARK_STYLE;
     float m_uiScale = 1.0f;
     ImVec2 m_pendingInfiniteCursorWrapCompensation = ImVec2(0.0f, 0.0f);
-    bool m_ownsInfiniteCursorWrap = false;
-    bool m_infiniteCursorWrapRequestedThisFrame = false;
+    InfiniteDragCursorLease m_infiniteDragCursorLease;
     bool m_forcedNoMouseCursorChange = false;
     uint32_t m_customCursorControlDepth = 0;
 };

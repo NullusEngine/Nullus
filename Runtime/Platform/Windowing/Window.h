@@ -382,7 +382,7 @@ namespace NLS::Windowing
         uint16_t m_nativeTitleBarDragRightInset = 0;
 #ifdef _WIN32
         void* m_originalWindowProc = nullptr;
-        NativeMessageHandler m_nativeMessageHandler;
+        NativeMessageHandler m_nativeMessageHandler = nullptr;
         bool m_nativeResizeInProgress = false;
         bool m_dispatchingNativeResizeRefresh = false;
 #endif

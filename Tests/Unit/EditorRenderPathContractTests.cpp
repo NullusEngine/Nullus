@@ -5854,6 +5854,27 @@ TEST(EditorRenderPathContractTests, EditorHelperMeshesLoadThroughGeneratedMeshAr
     EXPECT_EQ(source.find("meshManager.GetResource(found->second, true)"), std::string::npos);
 }
 
+TEST(EditorRenderPathContractTests, DebugCameraPassKeepsBackfaceCullingForCameraMesh)
+{
+    const std::filesystem::path debugSceneRendererSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Rendering/DebugSceneRenderer.cpp";
+
+    const std::string source = ReadSourceText(debugSceneRendererSourcePath);
+
+    ASSERT_FALSE(source.empty());
+    const auto camerasPassStart = source.find("class DebugCamerasRenderPass");
+    ASSERT_NE(camerasPassStart, std::string::npos);
+    const auto lightsPassStart = source.find("class DebugLightsRenderPass", camerasPassStart);
+    ASSERT_NE(lightsPassStart, std::string::npos);
+
+    const auto camerasPassSource = source.substr(camerasPassStart, lightsPassStart - camerasPassStart);
+    EXPECT_NE(camerasPassSource.find("CreateEditorOverlayPipelineState"), std::string::npos);
+    EXPECT_NE(camerasPassSource.find("p_pso.culling = true;"), std::string::npos);
+    EXPECT_NE(
+        camerasPassSource.find("p_pso.cullFace = NLS::Render::Settings::ECullFace::BACK;"),
+        std::string::npos);
+}
+
 TEST(EditorRenderPathContractTests, DeferredEditorOverlayInputsReceiveExternalSceneOutputDepthBeforePlanning)
 {
     NLS::Render::RHI::RHITextureDesc colorDesc;

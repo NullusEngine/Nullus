@@ -1565,6 +1565,33 @@ TEST(PanelWindowHookTests, SceneViewInteractionHintsDoNotForceThreadedRenderingD
         ordinarySceneViewPresentationNeedsSync));
 }
 
+TEST(PanelWindowHookTests, SceneViewBlocksCameraInputDuringTextEntryEvenInsideView)
+{
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldSceneViewBlockCameraInput(
+        false,
+        true,
+        true,
+        true));
+
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldSceneViewBlockCameraInput(
+        false,
+        false,
+        true,
+        true));
+
+    EXPECT_TRUE(NLS::Editor::Panels::ShouldSceneViewBlockCameraInput(
+        false,
+        true,
+        false,
+        false));
+
+    EXPECT_FALSE(NLS::Editor::Panels::ShouldSceneViewBlockCameraInput(
+        false,
+        false,
+        true,
+        false));
+}
+
 TEST(PanelWindowHookTests, SceneViewRetainsExplicitReadbackAndResizeDrains)
 {
     EXPECT_TRUE(NLS::Editor::Panels::ShouldDrainAfterRetirementAwareViewRender(

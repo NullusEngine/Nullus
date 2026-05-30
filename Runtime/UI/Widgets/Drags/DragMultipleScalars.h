@@ -9,6 +9,7 @@
 #include "UI/Internal/Converter.h"
 #include "UI/UIManager.h"
 #include "UI/Widgets/DataWidget.h"
+#include "UI/Widgets/Drags/DragScalarInteraction.h"
 #include "ImGui/imgui.h"
 
 namespace NLS::UI::Widgets
@@ -41,7 +42,7 @@ namespace NLS::UI::Widgets
 			float p_speed,
 			const std::string& p_label,
 			const std::string& p_format
-		) : DataWidget<std::array<T, _Size>>(values), m_dataType(p_dataType), min(p_min), max(p_max), speed(p_speed), label(p_label), format(p_format)
+		) : DataWidget<std::array<T, _Size>>(values), min(p_min), max(p_max), speed(p_speed), label(p_label), format(p_format), axisStyle(false), enableClickToInput(true), m_dataType(p_dataType)
 		{
 			values.fill(p_value);
 			componentLabels.fill("");
@@ -63,6 +64,7 @@ namespace NLS::UI::Widgets
 			}
 
 			bool valueChanged = false;
+            const ImGuiSliderFlags dragFlags = enableClickToInput ? static_cast<ImGuiSliderFlags>(0) : ImGuiSliderFlags_NoInput;
 			const float uiScale = NLS::Core::ServiceLocator::Contains<UIManager>()
 				? NLS_SERVICE(UIManager).GetScale()
 				: 1.0f;
@@ -94,9 +96,13 @@ namespace NLS::UI::Widgets
 					ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f * uiScale);
 					ImGui::PushItemWidth(perItemWidth);
 
-					if (ImGui::DragScalar(("##Axis" + this->m_widgetID).c_str(), m_dataType, &values[i], speed, &min, &max, format.c_str()))
+                    if (ImGui::DragScalar(("##Axis" + this->m_widgetID).c_str(), m_dataType, &values[i], speed, &min, &max, format.c_str(), dragFlags))
 						valueChanged = true;
-                    if (ImGui::IsItemActive() && NLS::Core::ServiceLocator::Contains<UIManager>())
+                    const ImGuiID itemId = ImGui::GetItemID();
+                    if (ImGui::IsItemActive() &&
+                        ImGui::IsMouseDragging(ImGuiMouseButton_Left) &&
+                        !DragScalarInternal::IsDragScalarTextInputActive(itemId) &&
+                        NLS::Core::ServiceLocator::Contains<UIManager>())
                         NLS_SERVICE(UIManager).RequestInfiniteDragCursor(NLS::Cursor::ECursorShape::SLIDE_ARROW);
 
 					ImGui::PopItemWidth();
@@ -108,11 +114,16 @@ namespace NLS::UI::Widgets
 					ImGui::PopID();
 				}
 			}
-			else if (ImGui::DragScalarN((label + this->m_widgetID).c_str(), m_dataType, values.data(), _Size, speed, &min, &max, format.c_str()))
+			else if (ImGui::DragScalarN((label + this->m_widgetID).c_str(), m_dataType, values.data(), _Size, speed, &min, &max, format.c_str(), dragFlags))
 			{
 				valueChanged = true;
-			}
-            if (!axisStyle && ImGui::IsItemActive() && NLS::Core::ServiceLocator::Contains<UIManager>())
+            }
+            const ImGuiID itemId = ImGui::GetItemID();
+            if (!axisStyle &&
+                ImGui::IsItemActive() &&
+                ImGui::IsMouseDragging(ImGuiMouseButton_Left) &&
+                !DragScalarInternal::IsDragScalarTextInputActive(itemId) &&
+                NLS::Core::ServiceLocator::Contains<UIManager>())
                 NLS_SERVICE(UIManager).RequestInfiniteDragCursor(NLS::Cursor::ECursorShape::SLIDE_ARROW);
 
 			if (valueChanged)
@@ -131,7 +142,8 @@ namespace NLS::UI::Widgets
 		std::array<Maths::Color, _Size> componentColors;
 		std::string label;
 		std::string format;
-		bool axisStyle = false;
+		bool axisStyle;
+        bool enableClickToInput;
 		NLS::Event<std::array<T, _Size>&> ValueChangedEvent;
 
 	protected:

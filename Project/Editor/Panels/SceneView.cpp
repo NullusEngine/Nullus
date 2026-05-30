@@ -212,9 +212,14 @@ void Editor::Panels::SceneView::Update(float p_deltaTime)
     const bool mouseOverSceneView = IsMouseWithinView(mousePosition) ||
         (m_image != nullptr && m_image->WasHoveredLastDraw());
     const bool sceneViewActive = !shortcutsWindowOpen && (IsFocused() || IsHovered() || mouseOverSceneView);
-    const bool editingUiControlOutsideSceneView =
-        NLS_SERVICE(UI::UIManager).IsAnyItemActive() && !mouseOverSceneView;
-    m_cameraController.SetInputBlocked(shortcutsWindowOpen);
+    const bool isAnyItemActive = NLS_SERVICE(UI::UIManager).IsAnyItemActive();
+    const bool blockCameraInput = ShouldSceneViewBlockCameraInput(
+        shortcutsWindowOpen,
+        isAnyItemActive,
+        mouseOverSceneView,
+        ImGui::GetIO().WantTextInput);
+    const bool sceneViewInputContextActive = sceneViewActive && !(isAnyItemActive && !mouseOverSceneView);
+    m_cameraController.SetInputBlocked(blockCameraInput);
     if (shortcutsWindowOpen)
     {
         m_cameraController.ResetMouseInteractionState();
@@ -225,7 +230,7 @@ void Editor::Panels::SceneView::Update(float p_deltaTime)
     }
     EnsureCameraFocus();
     m_cameraController.SetFocusState(&m_cameraFocus);
-    m_cameraController.SetInputActive(sceneViewActive && !editingUiControlOutsideSceneView);
+    m_cameraController.SetInputActive(sceneViewInputContextActive);
     if (HasViewportImageBounds())
     {
         const auto imageMin = GetViewportImageMin();
@@ -248,7 +253,7 @@ void Editor::Panels::SceneView::Update(float p_deltaTime)
             << " mouseOver=" << mouseOverSceneView
             << " hasBounds=" << HasViewportImageBounds()
             << " active=" << sceneViewActive
-            << " editingOutside=" << editingUiControlOutsideSceneView
+            << " blockCamera=" << blockCameraInput
             << " shortcutsBlocked=" << shortcutsWindowOpen
             << " cameraControl=" << m_cameraController.IsCameraControlActive()
             << " moved=" << m_cameraMovedForPresentation

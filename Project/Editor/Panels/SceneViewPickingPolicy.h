@@ -2,6 +2,17 @@
 
 namespace NLS::Editor::Panels
 {
+    inline bool ShouldSceneViewBlockCameraInput(
+        bool shortcutsWindowOpen,
+        bool isAnyItemActive,
+        bool mouseOverView,
+        bool wantTextInput)
+    {
+        return shortcutsWindowOpen ||
+            wantTextInput ||
+            (isAnyItemActive && !mouseOverView);
+    }
+
     inline bool ShouldResolvePendingSceneClickPick(
         bool hasPendingClickPick,
         bool queuedClickPickThisFrame,

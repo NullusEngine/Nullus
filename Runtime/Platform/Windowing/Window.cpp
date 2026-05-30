@@ -613,7 +613,11 @@ long long NLS::Windowing::Window::HandleNativeWindowMessage(void* p_hwnd, unsign
     HWND hwnd = static_cast<HWND>(p_hwnd);
 
     if (m_nativeMessageHandler)
-        m_nativeMessageHandler(p_hwnd, p_msg, p_wParam, p_lParam);
+    {
+        const long long handlerResult = m_nativeMessageHandler(p_hwnd, p_msg, p_wParam, p_lParam);
+        if (handlerResult != 0)
+            return handlerResult;
+    }
 
     if (p_msg == WM_ENTERSIZEMOVE)
     {

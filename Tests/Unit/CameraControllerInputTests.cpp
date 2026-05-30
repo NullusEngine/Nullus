@@ -1,10 +1,14 @@
 #include <gtest/gtest.h>
 
 #include "Core/CameraController.h"
+#include "Core/SceneViewCameraInteractionStateMachine.h"
 
 namespace
 {
 using NLS::Editor::Core::CameraController;
+using NLS::Editor::Core::SceneViewCameraInteractionInputSnapshot;
+using NLS::Editor::Core::SceneViewCameraInteractionStateId;
+using NLS::Editor::Core::SceneViewCameraInteractionStateMachine;
 using NLS::Maths::Vector2;
 }
 
@@ -26,4 +30,20 @@ TEST(CameraControllerInputTests, LookClampAllowsLargerMouseDeltasThanPanOrbit)
     EXPECT_FLOAT_EQ(lookDelta.y, -48.0f);
     EXPECT_FLOAT_EQ(panOrbitDelta.x, 16.0f);
     EXPECT_FLOAT_EQ(panOrbitDelta.y, -16.0f);
+}
+
+TEST(CameraControllerInputTests, FlyStateKeepsCursorOwnershipStableWithoutRepeatedEntryActions)
+{
+    SceneViewCameraInteractionInputSnapshot input;
+    input.windowFocused = true;
+    input.rightDown = true;
+
+    const auto transition = SceneViewCameraInteractionStateMachine::EvaluateTransition(
+        SceneViewCameraInteractionStateId::Fly,
+        input);
+
+    EXPECT_EQ(transition.nextState, SceneViewCameraInteractionStateId::Fly);
+    EXPECT_FALSE(transition.stateChanged);
+    EXPECT_FALSE(transition.shouldAcquireCursorControl);
+    EXPECT_FALSE(transition.shouldSuppressInitialMouseDelta);
 }

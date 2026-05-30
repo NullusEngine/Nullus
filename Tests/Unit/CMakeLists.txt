@@ -72,6 +72,8 @@ target_sources(NullusUnitTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutService.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneCameraFocus.cpp
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneCameraFocus.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneViewCameraInteractionStateMachine.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneViewCameraInteractionStateMachine.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneViewImGuizmo.cpp
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneViewImGuizmo.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Core/EditorBackgroundTaskTracker.cpp

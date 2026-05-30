@@ -5,6 +5,7 @@
 #include "Core/ServiceLocator.h"
 #include "UI/UIManager.h"
 #include "UI/Widgets/DataWidget.h"
+#include "UI/Widgets/Drags/DragScalarInteraction.h"
 #include "ImGui/imgui.h"
 
 namespace NLS::UI::Widgets
@@ -37,7 +38,7 @@ namespace NLS::UI::Widgets
 			float p_speed,
 			const std::string& p_label,
 			const std::string& p_format
-		) : DataWidget<T>(value), m_dataType(p_dataType), min(p_min), max(p_max), value(p_value), speed(p_speed) , label(p_label), format(p_format) {}
+		) : DataWidget<T>(value), min(p_min), max(p_max), value(p_value), speed(p_speed), label(p_label), format(p_format), enableClickToInput(true), m_dataType(p_dataType) {}
 
 	protected:
 		void _Draw_Impl() override
@@ -53,16 +54,21 @@ namespace NLS::UI::Widgets
 			const float uiScale = NLS::Core::ServiceLocator::Contains<UIManager>()
 				? NLS_SERVICE(UIManager).GetScale()
 				: 1.0f;
+            const ImGuiSliderFlags dragFlags = enableClickToInput ? static_cast<ImGuiSliderFlags>(0) : ImGuiSliderFlags_NoInput;
 
 			ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f * uiScale, 4.0f * uiScale));
 			ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f * uiScale);
 
-			if (ImGui::DragScalar((label + this->m_widgetID).c_str(), m_dataType, &value, speed, &min, &max, format.c_str()))
+			if (ImGui::DragScalar((label + this->m_widgetID).c_str(), m_dataType, &value, speed, &min, &max, format.c_str(), dragFlags))
 			{
 				ValueChangedEvent.Invoke(value);
 				this->NotifyChange();
-			}
-            if (ImGui::IsItemActive() && NLS::Core::ServiceLocator::Contains<UIManager>())
+            }
+            const ImGuiID itemId = ImGui::GetItemID();
+            if (ImGui::IsItemActive() &&
+                ImGui::IsMouseDragging(ImGuiMouseButton_Left) &&
+                !DragScalarInternal::IsDragScalarTextInputActive(itemId) &&
+                NLS::Core::ServiceLocator::Contains<UIManager>())
                 NLS_SERVICE(UIManager).RequestInfiniteDragCursor(NLS::Cursor::ECursorShape::SLIDE_ARROW);
 
 			ImGui::PopStyleVar(2);
@@ -75,6 +81,7 @@ namespace NLS::UI::Widgets
 		float speed;
 		std::string label;
 		std::string format;
+        bool enableClickToInput;
 		NLS::Event<T> ValueChangedEvent;
 
 	private:

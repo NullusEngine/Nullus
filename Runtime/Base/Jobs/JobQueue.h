@@ -178,6 +178,10 @@ namespace NLS::Base::Jobs
             bool& notifyCrossQueueDependency);
         void NotifyExternalDependencyChangedLocked();
         void WakeExternalDependencyReadyGroups();
+        void WakeExternalDependencyReadyGroupsForWait(JobHandle waitedHandle);
+        void WakeExternalDependencyReadyGroupsForHandles(
+            const std::vector<JobHandle>* foregroundHandles,
+            uint64_t cleanupDiagnosticGroupId);
         void CollectExternalDependenciesForGroupLocked(
             const GroupPtr& group,
             std::vector<JobHandle>& dependencies) const;

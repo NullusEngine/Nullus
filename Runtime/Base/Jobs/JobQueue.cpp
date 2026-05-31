@@ -822,7 +822,7 @@ namespace NLS::Base::Jobs
         const bool allowNoSyncWaitOpportunisticWork)
     {
         if (allowNoSyncWaitOpportunisticWork)
-            WakeExternalDependencyReadyGroups();
+            WakeExternalDependencyReadyGroupsForWait(waitedHandle);
 
         std::vector<JobHandle> collectedWaitEligibleHandles;
         const std::vector<JobHandle>* effectiveWaitEligibleHandles = &waitEligibleHandles;
@@ -899,7 +899,7 @@ namespace NLS::Base::Jobs
                 NLS::Base::Jobs::CompleteNoClear(dependency);
             }
 
-            WakeExternalDependencyReadyGroups();
+            WakeExternalDependencyReadyGroupsForWait(handle);
             const auto waitEligibleHandles = CollectWaitEligibleForegroundHandles(handle);
             {
                 std::vector<std::pair<JobFunction, void*>> cleanupActions;
@@ -1495,28 +1495,59 @@ namespace NLS::Base::Jobs
 
     void JobQueue::WakeExternalDependencyReadyGroups()
     {
+        WakeExternalDependencyReadyGroupsForHandles(nullptr, 0u);
+    }
+
+    void JobQueue::WakeExternalDependencyReadyGroupsForWait(const JobHandle waitedHandle)
+    {
+        std::vector<JobHandle> foregroundHandles;
+        std::vector<JobHandle> ignoredExternalHandles;
+        CollectWaitEligibleHandles(waitedHandle, foregroundHandles, ignoredExternalHandles);
+        WakeExternalDependencyReadyGroupsForHandles(&foregroundHandles, waitedHandle.id);
+    }
+
+    void JobQueue::WakeExternalDependencyReadyGroupsForHandles(
+        const std::vector<JobHandle>* foregroundHandles,
+        const uint64_t cleanupDiagnosticGroupId)
+    {
+        const bool targetedWait = foregroundHandles != nullptr;
+        if (targetedWait && foregroundHandles->empty())
+            return;
+
         std::vector<JobHandle> dependenciesToCheck;
         {
             std::lock_guard lock(m_mutex);
-            for (const auto& [id, group] : m_groups)
+            if (targetedWait)
             {
-                (void)id;
-                if (group == nullptr ||
-                    group->state != GroupState::WaitingForDependencies)
+                for (const JobHandle foregroundHandle : *foregroundHandles)
                 {
-                    continue;
+                    auto group = FindGroupLocked(foregroundHandle);
+                    if (group != nullptr && group->state == GroupState::WaitingForDependencies)
+                        CollectExternalDependenciesForGroupLocked(group, dependenciesToCheck);
                 }
-
-                if (group->dependencies.empty() &&
-                    group->dependency.id != 0u &&
-                    group->dependency.generation != 0u &&
-                    group->dependency.id == group->id &&
-                    group->dependency.generation == group->generation)
+            }
+            else
+            {
+                for (const auto& [id, group] : m_groups)
                 {
-                    continue;
-                }
+                    (void)id;
+                    if (group == nullptr ||
+                        group->state != GroupState::WaitingForDependencies)
+                    {
+                        continue;
+                    }
 
-                CollectExternalDependenciesForGroupLocked(group, dependenciesToCheck);
+                    if (group->dependencies.empty() &&
+                        group->dependency.id != 0u &&
+                        group->dependency.generation != 0u &&
+                        group->dependency.id == group->id &&
+                        group->dependency.generation == group->generation)
+                    {
+                        continue;
+                    }
+
+                    CollectExternalDependenciesForGroupLocked(group, dependenciesToCheck);
+                }
             }
         }
 
@@ -1531,7 +1562,9 @@ namespace NLS::Base::Jobs
             if (status == JobCompletionStatus::Succeeded ||
                 status == JobCompletionStatus::Cancelled ||
                 status == JobCompletionStatus::Failed)
+            {
                 resolvedDependencies.emplace_back(dependency, status);
+            }
         }
 
         if (resolvedDependencies.empty())
@@ -1544,17 +1577,30 @@ namespace NLS::Base::Jobs
         {
             std::lock_guard lock(m_mutex);
             std::vector<uint64_t> groupsToResolve;
-            for (const auto& [id, group] : m_groups)
+            if (targetedWait)
             {
-                if (group == nullptr || group->state != GroupState::WaitingForDependencies)
-                    continue;
+                groupsToResolve.reserve(foregroundHandles->size());
+                for (const JobHandle foregroundHandle : *foregroundHandles)
+                {
+                    auto group = FindGroupLocked(foregroundHandle);
+                    if (group != nullptr && group->state == GroupState::WaitingForDependencies)
+                        groupsToResolve.push_back(group->id);
+                }
+            }
+            else
+            {
+                for (const auto& [id, group] : m_groups)
+                {
+                    if (group == nullptr || group->state != GroupState::WaitingForDependencies)
+                        continue;
 
-                std::vector<JobHandle> externalDependencies;
-                CollectExternalDependenciesForGroupLocked(group, externalDependencies);
-                if (externalDependencies.empty())
-                    continue;
+                    std::vector<JobHandle> externalDependencies;
+                    CollectExternalDependenciesForGroupLocked(group, externalDependencies);
+                    if (externalDependencies.empty())
+                        continue;
 
-                groupsToResolve.push_back(id);
+                    groupsToResolve.push_back(id);
+                }
             }
 
             for (const uint64_t groupId : groupsToResolve)
@@ -1565,9 +1611,7 @@ namespace NLS::Base::Jobs
 
                 auto group = found->second;
                 if (group->state != GroupState::WaitingForDependencies)
-                {
                     continue;
-                }
 
                 const auto dependencyStatus = GetGroupDependenciesStatusLocked(group, resolvedDependencies);
                 if (dependencyStatus == JobCompletionStatus::Pending)
@@ -1581,42 +1625,40 @@ namespace NLS::Base::Jobs
                         groupsToRetire,
                         notifyCrossQueueDependency);
                     wokeGroup = true;
+                    continue;
                 }
-                else
-            {
+
                 group->state = GroupState::Cancelled;
-                AppendGroupTerminalCleanup(group, cleanupActions);
                 Internal::RecordJobDiagnostic(
                     group->id,
-                        group->generation,
-                        JobLifecycleState::Cancelled,
-                        group->debugName.c_str(),
-                        nullptr,
-                        group->dependency.id == 0u ? 0u : 1u);
-                    if (!group->cleanupConsumed)
-                    {
-                        group->cleanupConsumed = true;
-                        const bool hasGroupCancelFunction = group->cancelFunction != nullptr;
-                        const auto cancelFunction = group->cancelFunction;
-                        const auto cancelUserData = group->cancelUserData;
-                        group->cancelFunction = nullptr;
-                        group->cancelUserData = nullptr;
-                        if (cancelFunction != nullptr)
-                            cleanupActions.emplace_back(cancelFunction, cancelUserData);
-                        if (!hasGroupCancelFunction)
-                            AppendUnstartedJobCancelCallbacks(group, cleanupActions);
-                    }
-                    std::vector<GroupPtr> readyDependents;
-                    WakeDependentsForFinishedGroupLocked(
-                        group,
-                        readyDependents,
-                        cleanupActions,
-                        groupsToRetire,
-                        notifyCrossQueueDependency);
-                    AppendGroupTerminalCleanup(group, cleanupActions);
-                    QueueGroupForRetirementLocked(group, groupsToRetire);
-                    wokeGroup = true;
+                    group->generation,
+                    JobLifecycleState::Cancelled,
+                    group->debugName.c_str(),
+                    nullptr,
+                    group->dependencies.empty() ? (group->dependency.id == 0u ? 0u : 1u) : group->dependencies.size());
+                if (!group->cleanupConsumed)
+                {
+                    group->cleanupConsumed = true;
+                    const bool hasGroupCancelFunction = group->cancelFunction != nullptr;
+                    const auto cancelFunction = group->cancelFunction;
+                    const auto cancelUserData = group->cancelUserData;
+                    group->cancelFunction = nullptr;
+                    group->cancelUserData = nullptr;
+                    if (cancelFunction != nullptr)
+                        cleanupActions.emplace_back(cancelFunction, cancelUserData);
+                    if (!hasGroupCancelFunction)
+                        AppendUnstartedJobCancelCallbacks(group, cleanupActions);
                 }
+                std::vector<GroupPtr> readyDependents;
+                WakeDependentsForFinishedGroupLocked(
+                    group,
+                    readyDependents,
+                    cleanupActions,
+                    groupsToRetire,
+                    notifyCrossQueueDependency);
+                AppendGroupTerminalCleanup(group, cleanupActions);
+                QueueGroupForRetirementLocked(group, groupsToRetire);
+                wokeGroup = true;
             }
         }
 
@@ -1625,7 +1667,7 @@ namespace NLS::Base::Jobs
             RunUserCallback(
                 cleanupFunction,
                 cleanupUserData,
-                0u,
+                cleanupDiagnosticGroupId,
                 "Foreground job cleanup callback threw an exception.");
         }
         RetireQueuedGroupsAfterCallbacks(groupsToRetire, notifyCrossQueueDependency);

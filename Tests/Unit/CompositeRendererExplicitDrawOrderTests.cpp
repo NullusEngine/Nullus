@@ -301,6 +301,7 @@ TEST(CompositeRendererExplicitDrawOrderTests, CompositeRendererFinalizesThreaded
 
     static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
     NLS::Core::ServiceLocator::Provide(*driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(*driver);
     std::vector<std::string> events;
     OrderRecordingRenderer renderer(*driver, events);
 

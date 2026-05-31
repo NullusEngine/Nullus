@@ -3244,7 +3244,22 @@ TEST(AssetImportPipelineTests, ExternalGltfNormalTexturesUseNormalMipIntent)
     const auto* diagnostic = FindDiagnosticByCode(
         result.diagnostics,
         "external-model-importer-texture-format-resolution");
+#if NLS_HAS_DIRECTXTEX
     EXPECT_EQ(diagnostic, nullptr);
+#else
+    ASSERT_NE(diagnostic, nullptr);
+    EXPECT_EQ(diagnostic->severity, NLS::Core::Assets::AssetDiagnosticSeverity::Warning);
+    EXPECT_EQ(diagnostic->assetId, meta.id);
+    EXPECT_EQ(diagnostic->path, sourcePath);
+    EXPECT_NE(diagnostic->message.find("Texture texture:image/0 format resolution"), std::string::npos)
+        << diagnostic->message;
+    EXPECT_NE(diagnostic->message.find("requested BC5 resolved RGBA8"), std::string::npos)
+        << diagnostic->message;
+    EXPECT_NE(diagnostic->message.find("preferred format unavailable"), std::string::npos)
+        << diagnostic->message;
+    EXPECT_NE(diagnostic->message.find("source=../Textures/HeroNormal.png"), std::string::npos)
+        << diagnostic->message;
+#endif
 
     const auto* normalArtifact = result.manifest.FindSubAsset("texture:image/0");
     ASSERT_NE(normalArtifact, nullptr);

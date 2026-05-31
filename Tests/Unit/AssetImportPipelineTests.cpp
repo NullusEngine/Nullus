@@ -3253,7 +3253,7 @@ TEST(AssetImportPipelineTests, ExternalGltfNormalTexturesUseNormalMipIntent)
     EXPECT_EQ(diagnostic->path, sourcePath);
     EXPECT_NE(diagnostic->message.find("Texture texture:image/0 format resolution"), std::string::npos)
         << diagnostic->message;
-    EXPECT_NE(diagnostic->message.find("requested BC5 resolved RGBA8"), std::string::npos)
+    EXPECT_NE(diagnostic->message.find("requested bc5 resolved rgba8"), std::string::npos)
         << diagnostic->message;
     EXPECT_NE(diagnostic->message.find("preferred format unavailable"), std::string::npos)
         << diagnostic->message;

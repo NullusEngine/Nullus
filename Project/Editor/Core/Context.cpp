@@ -382,10 +382,13 @@ public:
         NLS_LOG_INFO("Native progress dialog close requested.");
         const HWND windowHandle = GetWindowHandle();
         if (windowHandle != nullptr)
-            PostMessageW(windowHandle, kProgressCloseMessage, 0, 0);
-
-        if (m_threadId != 0)
+        {
+            SendMessageW(windowHandle, kProgressCloseMessage, 0, 0);
+        }
+        else if (m_threadId != 0)
+        {
             PostThreadMessageW(m_threadId, WM_QUIT, 0, 0);
+        }
 #endif
     }
 
@@ -529,11 +532,6 @@ private:
 
         if (m_progressHandle != nullptr)
             SendMessageW(m_progressHandle, PBM_SETRANGE, 0, MAKELPARAM(0, 1000));
-        CenterProgressDialogWindow(m_windowHandle);
-        ShowWindow(m_windowHandle, SW_SHOWNORMAL);
-        CenterProgressDialogWindow(m_windowHandle);
-        UpdateWindow(m_windowHandle);
-
         MarkReady();
 
         MSG message {};
@@ -549,7 +547,7 @@ private:
             DispatchMessageW(&message);
         }
 
-        if (m_windowHandle != nullptr)
+        if (m_windowHandle != nullptr && IsWindow(m_windowHandle))
             DestroyWindow(m_windowHandle);
         RestoreOwnerWindow();
         m_labelHandle = nullptr;
@@ -615,6 +613,13 @@ private:
             ShowWindow(m_cancelHandle, cancellable ? SW_SHOW : SW_HIDE);
             EnableWindow(m_cancelHandle, cancellable ? TRUE : FALSE);
         }
+        if (m_windowHandle != nullptr && !m_visible)
+        {
+            CenterProgressDialogWindow(m_windowHandle);
+            ShowWindow(m_windowHandle, SW_SHOWNORMAL);
+            CenterProgressDialogWindow(m_windowHandle);
+            m_visible = true;
+        }
         if (m_windowHandle != nullptr)
             UpdateWindow(m_windowHandle);
     }
@@ -653,6 +658,7 @@ private:
     std::atomic_bool m_ownerWindowBlocked = false;
     bool m_ready = false;
     bool m_dirty = false;
+    bool m_visible = false;
     bool m_blockOwnerWindow = false;
     std::string m_label = "Starting editor";
     float m_progress = 0.0f;
@@ -688,6 +694,11 @@ namespace
             return 0;
         }
         else if (message == kProgressCloseMessage)
+        {
+            DestroyWindow(windowHandle);
+            return 0;
+        }
+        else if (message == WM_DESTROY)
         {
             PostQuitMessage(0);
             return 0;
@@ -1072,7 +1083,7 @@ void Editor::Core::Context::PresentTaskProgress(
         m_lastTaskProgress,
         std::move(cancelHandler),
         window != nullptr ? window->GetNativeWindowHandle() : nullptr,
-        true);
+        false);
 }
 
 void Editor::Core::Context::CompleteTaskProgress(const std::string& label)

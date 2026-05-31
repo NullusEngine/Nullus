@@ -19,6 +19,7 @@ struct NLS_CORE_API SourceAssetRecord
     std::filesystem::path relativePath;
     std::filesystem::path metaPath;
     std::string importerId = "unknown";
+    uint32_t importerVersion = 1u;
     AssetType assetType = AssetType::Unknown;
     bool readOnly = false;
 };

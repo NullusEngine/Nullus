@@ -11,6 +11,6 @@ if(_nls_core_sources)
   set_property(TARGET NLS_Core PROPERTY SOURCES "${_nls_core_sources}")
 endif()
 
-target_compile_definitions(NLS_Core PRIVATE
+target_compile_definitions(NLS_Core PUBLIC
   $<$<BOOL:${NLS_ENABLE_TEST_HOOKS}>:NLS_ENABLE_TEST_HOOKS=1>
 )

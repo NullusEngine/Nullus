@@ -258,6 +258,99 @@ const char* AssetPreimportReasonLabel(const NLS::Editor::Assets::AssetPreimportR
 	}
 }
 
+const char* AssetDiagnosticSeverityLabel(const NLS::Core::Assets::AssetDiagnosticSeverity severity)
+{
+	using NLS::Core::Assets::AssetDiagnosticSeverity;
+	switch (severity)
+	{
+	case AssetDiagnosticSeverity::Error:
+		return "error";
+	case AssetDiagnosticSeverity::Warning:
+		return "warning";
+	case AssetDiagnosticSeverity::Info:
+	default:
+		return "info";
+	}
+}
+
+const char* ImportJobTerminalStatusLabel(const NLS::Editor::Assets::ImportJobTerminalStatus status)
+{
+	using NLS::Editor::Assets::ImportJobTerminalStatus;
+	switch (status)
+	{
+	case ImportJobTerminalStatus::Succeeded:
+		return "succeeded";
+	case ImportJobTerminalStatus::Failed:
+		return "failed";
+	case ImportJobTerminalStatus::Cancelled:
+		return "cancelled";
+	case ImportJobTerminalStatus::None:
+	default:
+		return "running";
+	}
+}
+
+void AppendUniqueDiagnostics(
+	NLS::Core::Assets::AssetDiagnostics& diagnostics,
+	const NLS::Core::Assets::AssetDiagnostics& incoming)
+{
+	for (const auto& diagnostic : incoming)
+	{
+		const auto duplicate = std::find_if(
+			diagnostics.begin(),
+			diagnostics.end(),
+			[&diagnostic](const NLS::Core::Assets::AssetDiagnostic& existing)
+			{
+				return existing.severity == diagnostic.severity &&
+					existing.code == diagnostic.code &&
+					existing.path == diagnostic.path &&
+					existing.message == diagnostic.message;
+			});
+		if (duplicate == diagnostics.end())
+			diagnostics.push_back(diagnostic);
+	}
+}
+
+void LogAssetPreimportFailureDetails(
+	const NLS::Editor::Assets::AssetPreimportReason reason,
+	const std::vector<std::filesystem::path>& changedPaths,
+	const std::vector<NLS::Editor::Assets::ImportProgressEvent>& events,
+	const NLS::Core::Assets::AssetDiagnostics& diagnostics)
+{
+	NLS_LOG_ERROR(std::string("Asset preimport failed after ") + AssetPreimportReasonLabel(reason));
+	for (const auto& changedPath : changedPaths)
+		NLS_LOG_ERROR("  changed path: " + changedPath.generic_string());
+
+	for (const auto& event : events)
+	{
+		if (event.terminalStatus == NLS::Editor::Assets::ImportJobTerminalStatus::None)
+			continue;
+
+		NLS_LOG_ERROR(
+			"  job " +
+			std::to_string(event.jobId.value) +
+			" " +
+			ImportJobTerminalStatusLabel(event.terminalStatus) +
+			": " +
+			event.sourcePath +
+			" - " +
+			event.message);
+	}
+
+	for (const auto& diagnostic : diagnostics)
+	{
+		NLS_LOG_ERROR(
+			std::string("  diagnostic [") +
+			AssetDiagnosticSeverityLabel(diagnostic.severity) +
+			"] " +
+			diagnostic.code +
+			" path=" +
+			diagnostic.path.generic_string() +
+			" message=" +
+			diagnostic.message);
+	}
+}
+
 NLS::Editor::Assets::AssetPreimportReason MergeAssetPreimportReasons(
 	const NLS::Editor::Assets::AssetPreimportReason current,
 	const NLS::Editor::Assets::AssetPreimportReason incoming)
@@ -1445,9 +1538,15 @@ void Editor::Panels::AssetBrowser::ScheduleProjectAssetPreimport(
 	EDITOR_EXEC(TrackBackgroundTask([projectRoot, request = std::move(request), &tracker]
 	{
 		AssetDatabaseFacade database(MakeProjectEditorAssetRoots(projectRoot));
+		NLS::Core::Assets::AssetDiagnostics diagnostics;
 		AssetPreimportScheduler preimportScheduler;
 		const auto imported = preimportScheduler.Run(database, tracker, request);
-		EDITOR_EXEC(DelayAction([reason = request.reason, imported]
+		AppendUniqueDiagnostics(diagnostics, database.GetDiagnostics());
+		EDITOR_EXEC(DelayAction([
+			reason = request.reason,
+			changedPaths = request.changedPaths,
+			imported,
+			diagnostics = std::move(diagnostics)]
 		{
 			auto& assetBrowser = EDITOR_PANEL(NLS::Editor::Panels::AssetBrowser, "Asset Browser");
 			assetBrowser.m_projectAssetPreimportRunning = false;
@@ -1464,7 +1563,7 @@ void Editor::Panels::AssetBrowser::ScheduleProjectAssetPreimport(
 			}
 			else
 			{
-				NLS_LOG_ERROR(std::string("Asset preimport failed after ") + AssetPreimportReasonLabel(reason));
+				LogAssetPreimportFailureDetails(reason, changedPaths, {}, diagnostics);
 			}
 		}));
 	}));

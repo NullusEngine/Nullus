@@ -10,7 +10,27 @@ namespace NLS::Render::RHI::DX12
 #if defined(_WIN32)
     namespace
     {
-        DXGI_FORMAT ResolveSrvFormat(const TextureFormat format)
+        bool UsesDefaultViewFormat(const RHITextureViewDesc& viewDesc)
+        {
+            return viewDesc.format == TextureFormat::RGBA8 &&
+                viewDesc.colorSpace == TextureColorSpace::Linear;
+        }
+
+        TextureFormat ResolveViewFormat(const RHITextureDesc& textureDesc, const RHITextureViewDesc& viewDesc)
+        {
+            return UsesDefaultViewFormat(viewDesc)
+                ? textureDesc.format
+                : viewDesc.format;
+        }
+
+        TextureColorSpace ResolveViewColorSpace(const RHITextureDesc& textureDesc, const RHITextureViewDesc& viewDesc)
+        {
+            return UsesDefaultViewFormat(viewDesc)
+                ? textureDesc.colorSpace
+                : viewDesc.colorSpace;
+        }
+
+        DXGI_FORMAT ResolveSrvFormat(const TextureFormat format, const TextureColorSpace colorSpace)
         {
             switch (format)
             {
@@ -19,7 +39,7 @@ namespace NLS::Render::RHI::DX12
             case TextureFormat::Depth32F:
                 return DXGI_FORMAT_R32_FLOAT;
             default:
-                return ToDXGIFormat(format);
+                return ToDXGIFormat(format, colorSpace);
             }
         }
 
@@ -36,16 +56,20 @@ namespace NLS::Render::RHI::DX12
             }
         }
 
-        DXGI_FORMAT ResolveRtvFormat(const TextureFormat format)
+        DXGI_FORMAT ResolveRtvFormat(const TextureFormat format, const TextureColorSpace colorSpace)
         {
-            return ToDXGIFormat(format);
+            return ToDXGIFormat(format, colorSpace);
         }
 
-        UINT ResolveMipLevels(const RHITextureViewDesc& viewDesc)
+        UINT ResolveMipLevels(const RHITextureDesc& textureDesc, const RHITextureViewDesc& viewDesc)
         {
-            return viewDesc.subresourceRange.mipLevelCount > 0
-                ? viewDesc.subresourceRange.mipLevelCount
-                : 1u;
+            if (viewDesc.subresourceRange.mipLevelCount > 0u)
+                return viewDesc.subresourceRange.mipLevelCount;
+
+            const uint32_t mipLevels = (std::max)(textureDesc.mipLevels, 1u);
+            if (viewDesc.subresourceRange.baseMipLevel >= mipLevels)
+                return 1u;
+            return mipLevels - viewDesc.subresourceRange.baseMipLevel;
         }
 
         UINT ResolveArraySize(const RHITextureDesc& textureDesc, const RHITextureViewDesc& viewDesc)
@@ -80,13 +104,15 @@ namespace NLS::Render::RHI::DX12
         const bool readOnlyDepthStencil)
     {
         DX12TextureViewDescriptorSet descriptors;
-        const bool isDepth = IsDepthStencilFormat(viewDesc.format);
+        const TextureFormat viewFormat = ResolveViewFormat(textureDesc, viewDesc);
+        const TextureColorSpace colorSpace = ResolveViewColorSpace(textureDesc, viewDesc);
+        const bool isDepth = IsDepthStencilFormat(viewFormat);
         const TextureViewType resolvedViewType = ResolveViewType(textureDesc, viewDesc);
         const bool isCube = resolvedViewType == TextureViewType::Cube;
         const bool isCubeArray = resolvedViewType == TextureViewType::CubeArray;
         const bool is2DArray = resolvedViewType == TextureViewType::Texture2DArray;
         const bool is3D = resolvedViewType == TextureViewType::Texture3D;
-        const UINT mipLevels = ResolveMipLevels(viewDesc);
+        const UINT mipLevels = ResolveMipLevels(textureDesc, viewDesc);
         const UINT arraySize = ResolveArraySize(textureDesc, viewDesc);
 
         descriptors.hasSrv =
@@ -94,7 +120,15 @@ namespace NLS::Render::RHI::DX12
             HasTextureUsage(textureDesc.usage, TextureUsageFlags::Sampled);
         if (descriptors.hasSrv)
         {
-            descriptors.srvDesc.Format = ResolveSrvFormat(viewDesc.format);
+            descriptors.srvDesc.Format = ResolveSrvFormat(viewFormat, colorSpace);
+            if (descriptors.srvDesc.Format == DXGI_FORMAT_UNKNOWN)
+            {
+                descriptors.hasSrv = false;
+            }
+        }
+
+        if (descriptors.hasSrv)
+        {
             descriptors.srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
             if (isCube)
             {
@@ -144,7 +178,15 @@ namespace NLS::Render::RHI::DX12
             HasTextureUsage(textureDesc.usage, TextureUsageFlags::ColorAttachment);
         if (descriptors.hasRtv)
         {
-            descriptors.rtvDesc.Format = ResolveRtvFormat(viewDesc.format);
+            descriptors.rtvDesc.Format = ResolveRtvFormat(viewFormat, colorSpace);
+            if (descriptors.rtvDesc.Format == DXGI_FORMAT_UNKNOWN)
+            {
+                descriptors.hasRtv = false;
+            }
+        }
+
+        if (descriptors.hasRtv)
+        {
             if (isCube || isCubeArray || is2DArray)
             {
                 descriptors.rtvDesc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;

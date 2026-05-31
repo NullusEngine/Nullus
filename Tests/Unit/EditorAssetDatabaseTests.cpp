@@ -472,6 +472,95 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportSkipsWarmSceneAssetsWhenDepen
     std::filesystem::remove_all(root);
 }
 
+TEST(EditorAssetDatabaseTests, FileWatcherPreimportSkipsStalePlanWhenAssetBecameWarmBeforeExecution)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "ConcurrentHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "ConcurrentHeroRoot" }]
+        })");
+
+    AssetDatabaseFacade planningDatabase({root});
+    ASSERT_TRUE(planningDatabase.Refresh());
+
+    AssetPreimportScheduler scheduler;
+    const AssetPreimportRequest watcherRequest {
+        AssetPreimportReason::FileWatcherChanged,
+        {std::filesystem::path("Assets") / "Models" / "ConcurrentHero.gltf"}
+    };
+    const auto stalePlan = scheduler.BuildPlan(planningDatabase, watcherRequest);
+    ASSERT_EQ(stalePlan.assetPaths, std::vector<std::string>({"Assets/Models/ConcurrentHero.gltf"}));
+
+    AssetDatabaseFacade importingDatabase({root});
+    ASSERT_TRUE(importingDatabase.Refresh());
+    ImportProgressTracker tracker;
+    ASSERT_TRUE(importingDatabase.ImportAsset("Assets/Models/ConcurrentHero.gltf", tracker));
+    ASSERT_EQ(importingDatabase.GetCompletedImportCount(), 1u);
+    ASSERT_TRUE(importingDatabase.IsArtifactManifestCurrentForAssetPath("Assets/Models/ConcurrentHero.gltf"));
+
+    ASSERT_TRUE(scheduler.RunAlreadyPlanned(planningDatabase, tracker, watcherRequest, stalePlan));
+    EXPECT_EQ(planningDatabase.GetCompletedImportCount(), 0u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, FileWatcherPreimportUsesFilteredBatchSizeAfterSkippingWarmStalePlanEntries)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "AlreadyWarmHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "AlreadyWarmHeroRoot" }]
+        })");
+    WriteText(
+        root / "Assets" / "Models" / "StillColdHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "StillColdHeroRoot" }]
+        })");
+
+    AssetDatabaseFacade planningDatabase({root});
+    ASSERT_TRUE(planningDatabase.Refresh());
+
+    AssetPreimportScheduler scheduler;
+    const AssetPreimportRequest watcherRequest {
+        AssetPreimportReason::FileWatcherChanged,
+        {std::filesystem::path("Assets") / "Models"}
+    };
+    const auto stalePlan = scheduler.BuildPlan(planningDatabase, watcherRequest);
+    ASSERT_EQ(stalePlan.assetPaths.size(), 2u);
+
+    AssetDatabaseFacade importingDatabase({root});
+    ASSERT_TRUE(importingDatabase.Refresh());
+    ImportProgressTracker importTracker;
+    ASSERT_TRUE(importingDatabase.ImportAsset("Assets/Models/AlreadyWarmHero.gltf", importTracker));
+    ASSERT_TRUE(importingDatabase.IsArtifactManifestCurrentForAssetPath("Assets/Models/AlreadyWarmHero.gltf"));
+
+    ImportProgressTracker watcherTracker;
+    ASSERT_TRUE(scheduler.RunAlreadyPlanned(planningDatabase, watcherTracker, watcherRequest, stalePlan));
+    EXPECT_EQ(planningDatabase.GetCompletedImportCount(), 1u);
+
+    const auto batch = watcherTracker.GetBatchProgress();
+    EXPECT_EQ(batch.totalAssets, 1u);
+    EXPECT_EQ(batch.completedAssets, 1u);
+    EXPECT_FALSE(batch.activeJob.has_value());
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(EditorAssetDatabaseTests, FileWatcherPreimportSkipsStartupGeneratedMetaForWarmSceneAssets)
 {
     using namespace NLS::Editor::Assets;
@@ -752,7 +841,7 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyManifestStaysWarmWhenDep
     const auto root = MakeEditorAssetTestRoot();
     const auto packageRoot = root / "Packages" / "StarterContent";
     const auto modelPath = packageRoot / "Models" / "MountedDependencyHero.gltf";
-    WriteText(packageRoot / "Textures" / "HeroBaseColor.png", "texture-bytes");
+    WriteBinary(packageRoot / "Textures" / "HeroBaseColor.png", TinyPng());
     WriteText(
         modelPath,
         R"({
@@ -804,8 +893,8 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyUsesOwningRootWhenAnothe
     const auto projectRoot = root / "Project";
     const auto packageRoot = root / "Packages" / "StarterContent";
     const auto modelPath = packageRoot / "Models" / "MountedDependencyCollisionHero.gltf";
-    WriteText(projectRoot / "Textures" / "HeroBaseColor.png", "project-texture-bytes");
-    WriteText(packageRoot / "Textures" / "HeroBaseColor.png", "package-texture-bytes");
+    WriteBinary(projectRoot / "Textures" / "HeroBaseColor.png", TinyPng());
+    WriteBinary(packageRoot / "Textures" / "HeroBaseColor.png", TinyPng());
     WriteText(
         modelPath,
         R"({
@@ -858,7 +947,7 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyChangePlansOwningModel)
     const auto packageRoot = root / "Packages" / "StarterContent";
     const auto texturePath = packageRoot / "Textures" / "HeroBaseColor.png";
     const auto modelPath = packageRoot / "Models" / "MountedDependencyChangedHero.gltf";
-    WriteText(texturePath, "texture-before");
+    WriteBinary(texturePath, TinyPng());
     WriteText(
         modelPath,
         R"({
@@ -913,8 +1002,8 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyChangeIgnoresDisjointRoo
     const auto packageRoot = root / "Packages" / "StarterContent";
     const auto otherRoot = root / "Other";
     const auto modelPath = packageRoot / "Models" / "MountedDependencyDisjointHero.gltf";
-    WriteText(packageRoot / "Textures" / "HeroBaseColor.png", "package-texture");
-    WriteText(otherRoot / "Textures" / "HeroBaseColor.png", "other-texture");
+    WriteBinary(packageRoot / "Textures" / "HeroBaseColor.png", TinyPng());
+    WriteBinary(otherRoot / "Textures" / "HeroBaseColor.png", TinyPng());
     WriteText(
         modelPath,
         R"({
@@ -963,8 +1052,8 @@ TEST(EditorAssetDatabaseTests, MountedExternalDependencyChangeIgnoresNestedMount
     const auto parentRoot = root / "Packages";
     const auto childRoot = parentRoot / "StarterContent";
     const auto modelPath = parentRoot / "Models" / "ParentPackageHero.gltf";
-    WriteText(parentRoot / "Textures" / "HeroBaseColor.png", "parent-texture");
-    WriteText(childRoot / "Textures" / "HeroBaseColor.png", "child-texture");
+    WriteBinary(parentRoot / "Textures" / "HeroBaseColor.png", TinyPng());
+    WriteBinary(childRoot / "Textures" / "HeroBaseColor.png", TinyPng());
     WriteText(
         modelPath,
         R"({
@@ -1953,7 +2042,11 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportReimportsLegacyModelMater
     EXPECT_TRUE(NLS::Render::Assets::IsNativeTextureArtifact(texturePayload));
     const auto nativeTexture = NLS::Render::Assets::DeserializeTextureArtifact(texturePayload);
     ASSERT_TRUE(nativeTexture.has_value());
+#if defined(_WIN32) && NLS_HAS_DIRECTXTEX
+    EXPECT_EQ(nativeTexture->format, NLS::Render::RHI::TextureFormat::BC1);
+#else
     EXPECT_EQ(nativeTexture->format, NLS::Render::RHI::TextureFormat::RGBA8);
+#endif
 
     std::filesystem::remove_all(root);
 }

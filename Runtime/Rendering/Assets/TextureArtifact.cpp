@@ -1,4 +1,5 @@
 #include "Rendering/Assets/TextureArtifact.h"
+#include "Rendering/Assets/TextureMipGenerator.h"
 #include "Assets/NativeArtifactContainer.h"
 
 #define STBI_NO_HDR
@@ -20,15 +21,37 @@ namespace NLS::Render::Assets
 namespace
 {
 constexpr uint32_t kTextureArtifactMagic = 0x5845544Eu; // "NTEX" little-endian.
-constexpr uint32_t kTextureArtifactVersion = 2u;
-constexpr uint32_t kTextureArtifactContainerSchemaVersion = 3u;
-constexpr uint64_t kTextureArtifactHeaderBytes = 32u;
+constexpr uint32_t kTextureArtifactVersion = 3u;
+constexpr uint32_t kLegacyTextureArtifactVersion = 2u;
+constexpr uint32_t kTextureArtifactContainerSchemaVersion = 4u;
+constexpr uint32_t kLegacyTextureArtifactContainerSchemaVersion = 3u;
+constexpr uint64_t kTextureArtifactHeaderBytes = 64u;
+constexpr uint64_t kLegacyTextureArtifactHeaderBytes = 32u;
 constexpr uint64_t kTextureArtifactMipRecordBytes = 36u;
+constexpr uint64_t kTextureArtifactSubresourceRecordBytes = 48u;
 
 struct TextureArtifactHeader
 {
     uint32_t magic = kTextureArtifactMagic;
     uint32_t version = kTextureArtifactVersion;
+    uint32_t width = 0u;
+    uint32_t height = 0u;
+    uint32_t depth = 1u;
+    uint32_t dimension = static_cast<uint32_t>(RHI::TextureDimension::Texture2D);
+    uint32_t arrayLayers = 1u;
+    uint32_t format = static_cast<uint32_t>(RHI::TextureFormat::RGBA8);
+    uint32_t colorSpace = static_cast<uint32_t>(TextureArtifactColorSpace::Linear);
+    uint32_t mipCount = 0u;
+    uint32_t subresourceCount = 0u;
+    uint64_t metadataStringTableOffset = 0u;
+    uint64_t metadataStringTableSize = 0u;
+    uint32_t reserved1 = 0u;
+};
+
+struct LegacyTextureArtifactHeader
+{
+    uint32_t magic = kTextureArtifactMagic;
+    uint32_t version = kLegacyTextureArtifactVersion;
     uint32_t width = 0u;
     uint32_t height = 0u;
     uint32_t format = static_cast<uint32_t>(RHI::TextureFormat::RGBA8);
@@ -48,7 +71,21 @@ struct TextureArtifactMipRecord
     uint64_t dataSize = 0u;
 };
 
-static_assert(sizeof(TextureArtifactHeader) == kTextureArtifactHeaderBytes);
+struct TextureArtifactSubresourceRecord
+{
+    uint32_t level = 0u;
+    uint32_t arrayLayer = 0u;
+    uint32_t face = static_cast<uint32_t>(TextureArtifactCubeFace::None);
+    uint32_t width = 0u;
+    uint32_t height = 0u;
+    uint32_t depth = 1u;
+    uint32_t rowPitch = 0u;
+    uint32_t slicePitch = 0u;
+    uint64_t dataOffset = 0u;
+    uint64_t dataSize = 0u;
+};
+
+static_assert(sizeof(LegacyTextureArtifactHeader) == kLegacyTextureArtifactHeaderBytes);
 
 bool IsSupportedTextureFormat(const RHI::TextureFormat format)
 {
@@ -64,6 +101,10 @@ bool IsSupportedTextureFormat(const RHI::TextureFormat format)
     case RHI::TextureFormat::R32F:
     case RHI::TextureFormat::RG32F:
     case RHI::TextureFormat::RGBA32F:
+    case RHI::TextureFormat::BC1:
+    case RHI::TextureFormat::BC3:
+    case RHI::TextureFormat::BC5:
+    case RHI::TextureFormat::BC7:
         return true;
     case RHI::TextureFormat::Depth32F:
     case RHI::TextureFormat::Depth24Stencil8:
@@ -98,10 +139,16 @@ void AppendHeader(std::vector<uint8_t>& bytes, const TextureArtifactHeader& head
     AppendUInt32(bytes, header.version);
     AppendUInt32(bytes, header.width);
     AppendUInt32(bytes, header.height);
+    AppendUInt32(bytes, header.depth);
+    AppendUInt32(bytes, header.dimension);
+    AppendUInt32(bytes, header.arrayLayers);
     AppendUInt32(bytes, header.format);
     AppendUInt32(bytes, header.colorSpace);
     AppendUInt32(bytes, header.mipCount);
-    AppendUInt32(bytes, header.reserved);
+    AppendUInt32(bytes, header.subresourceCount);
+    AppendUInt64(bytes, header.metadataStringTableOffset);
+    AppendUInt64(bytes, header.metadataStringTableSize);
+    AppendUInt32(bytes, header.reserved1);
 }
 
 void AppendMipRecord(std::vector<uint8_t>& bytes, const TextureArtifactMipRecord& record)
@@ -109,6 +156,20 @@ void AppendMipRecord(std::vector<uint8_t>& bytes, const TextureArtifactMipRecord
     AppendUInt32(bytes, record.level);
     AppendUInt32(bytes, record.width);
     AppendUInt32(bytes, record.height);
+    AppendUInt32(bytes, record.rowPitch);
+    AppendUInt32(bytes, record.slicePitch);
+    AppendUInt64(bytes, record.dataOffset);
+    AppendUInt64(bytes, record.dataSize);
+}
+
+void AppendSubresourceRecord(std::vector<uint8_t>& bytes, const TextureArtifactSubresourceRecord& record)
+{
+    AppendUInt32(bytes, record.level);
+    AppendUInt32(bytes, record.arrayLayer);
+    AppendUInt32(bytes, record.face);
+    AppendUInt32(bytes, record.width);
+    AppendUInt32(bytes, record.height);
+    AppendUInt32(bytes, record.depth);
     AppendUInt32(bytes, record.rowPitch);
     AppendUInt32(bytes, record.slicePitch);
     AppendUInt64(bytes, record.dataOffset);
@@ -143,27 +204,86 @@ bool ReadUInt64(const std::vector<uint8_t>& bytes, size_t& offset, uint64_t& val
 
 bool ReadHeader(const std::vector<uint8_t>& bytes, TextureArtifactHeader& header)
 {
-    if (bytes.size() < kTextureArtifactHeaderBytes)
+    if (bytes.size() < 8u)
         return false;
 
     size_t offset = 0u;
-    if (!ReadUInt32(bytes, offset, header.magic) ||
-        !ReadUInt32(bytes, offset, header.version) ||
-        !ReadUInt32(bytes, offset, header.width) ||
-        !ReadUInt32(bytes, offset, header.height) ||
-        !ReadUInt32(bytes, offset, header.format) ||
-        !ReadUInt32(bytes, offset, header.colorSpace) ||
-        !ReadUInt32(bytes, offset, header.mipCount) ||
-        !ReadUInt32(bytes, offset, header.reserved))
+    uint32_t magic = 0u;
+    uint32_t version = 0u;
+    if (!ReadUInt32(bytes, offset, magic) || !ReadUInt32(bytes, offset, version))
+        return false;
+
+    offset = 0u;
+    if (magic != kTextureArtifactMagic)
+        return false;
+
+    if (version == kLegacyTextureArtifactVersion)
+    {
+        if (bytes.size() < kLegacyTextureArtifactHeaderBytes)
+            return false;
+
+        LegacyTextureArtifactHeader legacyHeader;
+        if (!ReadUInt32(bytes, offset, legacyHeader.magic) ||
+            !ReadUInt32(bytes, offset, legacyHeader.version) ||
+            !ReadUInt32(bytes, offset, legacyHeader.width) ||
+            !ReadUInt32(bytes, offset, legacyHeader.height) ||
+            !ReadUInt32(bytes, offset, legacyHeader.format) ||
+            !ReadUInt32(bytes, offset, legacyHeader.colorSpace) ||
+            !ReadUInt32(bytes, offset, legacyHeader.mipCount) ||
+            !ReadUInt32(bytes, offset, legacyHeader.reserved))
+        {
+            return false;
+        }
+
+        header.magic = legacyHeader.magic;
+        header.version = legacyHeader.version;
+        header.width = legacyHeader.width;
+        header.height = legacyHeader.height;
+        header.depth = 1u;
+        header.dimension = static_cast<uint32_t>(RHI::TextureDimension::Texture2D);
+        header.arrayLayers = 1u;
+        header.format = legacyHeader.format;
+        header.colorSpace = legacyHeader.colorSpace;
+        header.mipCount = legacyHeader.mipCount;
+        header.subresourceCount = legacyHeader.mipCount;
+        header.metadataStringTableOffset = 0u;
+        header.metadataStringTableSize = 0u;
+        header.reserved1 = 0u;
+    }
+    else if (version == kTextureArtifactVersion)
+    {
+        if (bytes.size() < kTextureArtifactHeaderBytes)
+            return false;
+
+        if (!ReadUInt32(bytes, offset, header.magic) ||
+            !ReadUInt32(bytes, offset, header.version) ||
+            !ReadUInt32(bytes, offset, header.width) ||
+            !ReadUInt32(bytes, offset, header.height) ||
+            !ReadUInt32(bytes, offset, header.depth) ||
+            !ReadUInt32(bytes, offset, header.dimension) ||
+            !ReadUInt32(bytes, offset, header.arrayLayers) ||
+            !ReadUInt32(bytes, offset, header.format) ||
+            !ReadUInt32(bytes, offset, header.colorSpace) ||
+            !ReadUInt32(bytes, offset, header.mipCount) ||
+            !ReadUInt32(bytes, offset, header.subresourceCount) ||
+            !ReadUInt64(bytes, offset, header.metadataStringTableOffset) ||
+            !ReadUInt64(bytes, offset, header.metadataStringTableSize) ||
+            !ReadUInt32(bytes, offset, header.reserved1))
+        {
+            return false;
+        }
+    }
+    else
     {
         return false;
     }
 
-    if (header.magic != kTextureArtifactMagic ||
-        header.version != kTextureArtifactVersion ||
-        header.width == 0u ||
+    if (header.width == 0u ||
         header.height == 0u ||
-        header.mipCount == 0u)
+        header.depth == 0u ||
+        header.arrayLayers == 0u ||
+        header.mipCount == 0u ||
+        header.subresourceCount == 0u)
     {
         return false;
     }
@@ -184,6 +304,20 @@ bool ReadMipRecord(const std::vector<uint8_t>& bytes, size_t& offset, TextureArt
         ReadUInt64(bytes, offset, record.dataSize);
 }
 
+bool ReadSubresourceRecord(const std::vector<uint8_t>& bytes, size_t& offset, TextureArtifactSubresourceRecord& record)
+{
+    return ReadUInt32(bytes, offset, record.level) &&
+        ReadUInt32(bytes, offset, record.arrayLayer) &&
+        ReadUInt32(bytes, offset, record.face) &&
+        ReadUInt32(bytes, offset, record.width) &&
+        ReadUInt32(bytes, offset, record.height) &&
+        ReadUInt32(bytes, offset, record.depth) &&
+        ReadUInt32(bytes, offset, record.rowPitch) &&
+        ReadUInt32(bytes, offset, record.slicePitch) &&
+        ReadUInt64(bytes, offset, record.dataOffset) &&
+        ReadUInt64(bytes, offset, record.dataSize);
+}
+
 bool ValidateMip(
     const TextureArtifactMip& mip,
     const RHI::TextureFormat format,
@@ -198,12 +332,28 @@ bool ValidateMip(
         return false;
     }
 
-    const uint32_t bytesPerPixel = RHI::GetTextureFormatBytesPerPixel(format);
-    const uint64_t minimumRowPitch = static_cast<uint64_t>(mip.width) * bytesPerPixel;
-    const uint64_t minimumSlicePitch = minimumRowPitch * mip.height;
-    return mip.rowPitch >= minimumRowPitch &&
-        mip.slicePitch >= minimumSlicePitch &&
+    const uint64_t minimumRowPitch = RHI::CalculateTextureRowPitch(format, mip.width);
+    const uint64_t minimumSlicePitch = RHI::CalculateTextureSlicePitch(format, mip.width, mip.height, 1u);
+    return mip.rowPitch == minimumRowPitch &&
+        mip.slicePitch == minimumSlicePitch &&
         mip.pixels.size() == mip.slicePitch;
+}
+
+bool IsSupportedFace(const TextureArtifactCubeFace face)
+{
+    switch (face)
+    {
+    case TextureArtifactCubeFace::None:
+    case TextureArtifactCubeFace::PositiveX:
+    case TextureArtifactCubeFace::NegativeX:
+    case TextureArtifactCubeFace::PositiveY:
+    case TextureArtifactCubeFace::NegativeY:
+    case TextureArtifactCubeFace::PositiveZ:
+    case TextureArtifactCubeFace::NegativeZ:
+        return true;
+    default:
+        return false;
+    }
 }
 
 uint32_t NextMipDimension(const uint32_t value)
@@ -211,57 +361,171 @@ uint32_t NextMipDimension(const uint32_t value)
     return value > 1u ? value / 2u : 1u;
 }
 
-TextureArtifactMip MakeMip(
-    const uint32_t level,
-    const uint32_t width,
-    const uint32_t height,
-    std::vector<uint8_t> pixels)
+uint32_t MipDimensionAtLevel(uint32_t value, const uint32_t level)
 {
-    const uint32_t rowPitch = width * RHI::GetTextureFormatBytesPerPixel(RHI::TextureFormat::RGBA8);
-    return {
-        level,
-        width,
-        height,
-        rowPitch,
-        rowPitch * height,
-        std::move(pixels)
-    };
+    for (uint32_t index = 0u; index < level; ++index)
+        value = NextMipDimension(value);
+    return value;
 }
 
-std::vector<uint8_t> GenerateNextRgba8Mip(
-    const std::vector<uint8_t>& sourcePixels,
-    const uint32_t sourceWidth,
-    const uint32_t sourceHeight,
-    const uint32_t nextWidth,
-    const uint32_t nextHeight)
+uint32_t CountMipLevels(const std::vector<TextureArtifactMip>& mips)
 {
-    std::vector<uint8_t> nextPixels(static_cast<size_t>(nextWidth) * nextHeight * 4u, 0u);
-    for (uint32_t y = 0u; y < nextHeight; ++y)
+    uint32_t mipCount = 0u;
+    uint32_t lastLevel = std::numeric_limits<uint32_t>::max();
+    for (const auto& mip : mips)
     {
-        for (uint32_t x = 0u; x < nextWidth; ++x)
+        if (mip.level != lastLevel)
         {
-            uint32_t sums[4] = {};
-            uint32_t samples = 0u;
-            for (uint32_t offsetY = 0u; offsetY < 2u; ++offsetY)
-            {
-                const uint32_t sourceY = (std::min)(y * 2u + offsetY, sourceHeight - 1u);
-                for (uint32_t offsetX = 0u; offsetX < 2u; ++offsetX)
-                {
-                    const uint32_t sourceX = (std::min)(x * 2u + offsetX, sourceWidth - 1u);
-                    const size_t sourceIndex = (static_cast<size_t>(sourceY) * sourceWidth + sourceX) * 4u;
-                    for (uint32_t channel = 0u; channel < 4u; ++channel)
-                        sums[channel] += sourcePixels[sourceIndex + channel];
-                    ++samples;
-                }
-            }
-
-            const size_t destinationIndex = (static_cast<size_t>(y) * nextWidth + x) * 4u;
-            for (uint32_t channel = 0u; channel < 4u; ++channel)
-                nextPixels[destinationIndex + channel] = static_cast<uint8_t>(sums[channel] / samples);
+            ++mipCount;
+            lastLevel = mip.level;
         }
     }
-    return nextPixels;
+    return mipCount;
 }
+
+bool HasContiguousMipLevels(const std::vector<TextureArtifactMip>& mips)
+{
+    if (mips.empty())
+        return false;
+
+    uint32_t expectedLevel = 0u;
+    uint32_t lastLevel = std::numeric_limits<uint32_t>::max();
+    for (const auto& mip : mips)
+    {
+        if (mip.level == lastLevel)
+            continue;
+        if (mip.level != expectedLevel)
+            return false;
+        lastLevel = mip.level;
+        ++expectedLevel;
+    }
+    return true;
+}
+
+TextureArtifactCubeFace ExpectedCubeFaceForLayer(const uint32_t arrayLayer)
+{
+    switch (arrayLayer)
+    {
+    case 0u: return TextureArtifactCubeFace::PositiveX;
+    case 1u: return TextureArtifactCubeFace::NegativeX;
+    case 2u: return TextureArtifactCubeFace::PositiveY;
+    case 3u: return TextureArtifactCubeFace::NegativeY;
+    case 4u: return TextureArtifactCubeFace::PositiveZ;
+    case 5u: return TextureArtifactCubeFace::NegativeZ;
+    default: return TextureArtifactCubeFace::None;
+    }
+}
+
+bool HasValidSubresourceLayout(const TextureArtifactData& texture)
+{
+    if (texture.subresources.empty())
+        return texture.dimension == RHI::TextureDimension::Texture2D;
+
+    if (texture.dimension == RHI::TextureDimension::Texture2D)
+    {
+        return std::all_of(
+            texture.subresources.begin(),
+            texture.subresources.end(),
+            [](const TextureArtifactSubresource& subresource)
+            {
+                return subresource.arrayLayer == 0u &&
+                    subresource.face == TextureArtifactCubeFace::None;
+            });
+    }
+
+    if (texture.dimension != RHI::TextureDimension::TextureCube ||
+        texture.arrayLayers != 6u ||
+        texture.subresources.size() != static_cast<size_t>(CountMipLevels(texture.mips)) * 6u)
+    {
+        return false;
+    }
+
+    uint32_t currentLevel = std::numeric_limits<uint32_t>::max();
+    uint32_t faceIndex = 0u;
+    for (const auto& subresource : texture.subresources)
+    {
+        if (subresource.level != currentLevel)
+        {
+            currentLevel = subresource.level;
+            faceIndex = 0u;
+        }
+        if (faceIndex >= 6u ||
+            subresource.arrayLayer != faceIndex ||
+            subresource.face != ExpectedCubeFaceForLayer(faceIndex))
+        {
+            return false;
+        }
+        ++faceIndex;
+    }
+    return true;
+}
+
+uint64_t HeaderSizeForVersion(const uint32_t version)
+{
+    return version == kLegacyTextureArtifactVersion
+        ? kLegacyTextureArtifactHeaderBytes
+        : kTextureArtifactHeaderBytes;
+}
+
+void AppendLengthPrefixedString(std::vector<uint8_t>& bytes, const std::string& value)
+{
+    AppendUInt32(bytes, static_cast<uint32_t>(value.size()));
+    bytes.insert(bytes.end(), value.begin(), value.end());
+}
+
+std::vector<uint8_t> BuildMetadataStringTable(const TextureArtifactData& texture)
+{
+    std::vector<uint8_t> bytes;
+    AppendLengthPrefixedString(bytes, texture.targetPlatform);
+    AppendLengthPrefixedString(bytes, texture.buildIdentity);
+    AppendLengthPrefixedString(bytes, texture.encoderId);
+    AppendUInt32(bytes, texture.encoderVersion);
+    return bytes;
+}
+
+bool ReadLengthPrefixedString(
+    const std::vector<uint8_t>& bytes,
+    size_t& offset,
+    const size_t endOffset,
+    std::string& value)
+{
+    uint32_t length = 0u;
+    if (!ReadUInt32(bytes, offset, length))
+        return false;
+    if (offset > endOffset || length > endOffset - offset)
+        return false;
+
+    value.assign(
+        reinterpret_cast<const char*>(bytes.data() + offset),
+        reinterpret_cast<const char*>(bytes.data() + offset + length));
+    offset += length;
+    return true;
+}
+
+bool ReadMetadataStringTable(const std::vector<uint8_t>& payload, const TextureArtifactHeader& header, TextureArtifactData& texture)
+{
+    if (header.metadataStringTableOffset == 0u && header.metadataStringTableSize == 0u)
+        return true;
+    if (header.metadataStringTableOffset > std::numeric_limits<size_t>::max() ||
+        header.metadataStringTableSize > std::numeric_limits<size_t>::max())
+    {
+        return false;
+    }
+
+    const size_t begin = static_cast<size_t>(header.metadataStringTableOffset);
+    const size_t size = static_cast<size_t>(header.metadataStringTableSize);
+    if (begin > payload.size() || size > payload.size() - begin)
+        return false;
+
+    size_t offset = begin;
+    const size_t endOffset = begin + size;
+    return ReadLengthPrefixedString(payload, offset, endOffset, texture.targetPlatform) &&
+        ReadLengthPrefixedString(payload, offset, endOffset, texture.buildIdentity) &&
+        ReadLengthPrefixedString(payload, offset, endOffset, texture.encoderId) &&
+        ReadUInt32(payload, offset, texture.encoderVersion) &&
+        offset == endOffset;
+}
+
 }
 
 bool IsNativeTextureArtifact(const std::vector<uint8_t>& bytes)
@@ -273,38 +537,100 @@ std::vector<uint8_t> SerializeTextureArtifactPayload(const TextureArtifactData& 
 {
     if (texture.width == 0u ||
         texture.height == 0u ||
+        texture.depth != 1u ||
+        (texture.dimension != RHI::TextureDimension::Texture2D &&
+            texture.dimension != RHI::TextureDimension::TextureCube) ||
+        texture.arrayLayers == 0u ||
         texture.mips.empty() ||
         texture.mips.size() > std::numeric_limits<uint32_t>::max() ||
+        (!texture.subresources.empty() && texture.subresources.size() != texture.mips.size()) ||
         !IsSupportedTextureFormat(texture.format) ||
-        !IsSupportedColorSpace(texture.colorSpace))
+        !IsSupportedColorSpace(texture.colorSpace) ||
+        !HasContiguousMipLevels(texture.mips) ||
+        !HasValidSubresourceLayout(texture))
     {
         return {};
     }
 
-    uint32_t expectedWidth = texture.width;
-    uint32_t expectedHeight = texture.height;
     for (uint32_t mipIndex = 0u; mipIndex < texture.mips.size(); ++mipIndex)
     {
-        if (!ValidateMip(texture.mips[mipIndex], texture.format, mipIndex, expectedWidth, expectedHeight))
+        const auto& mip = texture.mips[mipIndex];
+        if (!ValidateMip(
+                mip,
+                texture.format,
+                mip.level,
+                MipDimensionAtLevel(texture.width, mip.level),
+                MipDimensionAtLevel(texture.height, mip.level)))
+        {
             return {};
-        expectedWidth = NextMipDimension(expectedWidth);
-        expectedHeight = NextMipDimension(expectedHeight);
+        }
+        if (!texture.subresources.empty())
+        {
+            const auto& subresource = texture.subresources[mipIndex];
+            if (!IsSupportedFace(subresource.face) ||
+                subresource.level != mip.level ||
+                subresource.arrayLayer >= texture.arrayLayers ||
+                subresource.width != mip.width ||
+                subresource.height != mip.height ||
+                subresource.depth != 1u ||
+                subresource.rowPitch != mip.rowPitch ||
+                subresource.slicePitch != mip.slicePitch ||
+                (subresource.dataSize != 0u && subresource.dataSize != mip.pixels.size()))
+            {
+                return {};
+            }
+        }
     }
 
     const uint64_t tableBytes = kTextureArtifactHeaderBytes +
-        static_cast<uint64_t>(texture.mips.size()) * kTextureArtifactMipRecordBytes;
+        static_cast<uint64_t>(texture.mips.size()) * kTextureArtifactMipRecordBytes +
+        static_cast<uint64_t>(texture.mips.size()) * kTextureArtifactSubresourceRecordBytes;
     if (tableBytes > std::numeric_limits<size_t>::max())
+        return {};
+
+    const auto metadataBytes = BuildMetadataStringTable(texture);
+    if (metadataBytes.size() > std::numeric_limits<uint64_t>::max() - tableBytes)
         return {};
 
     std::vector<TextureArtifactMipRecord> records;
     records.reserve(texture.mips.size());
-    uint64_t dataOffset = tableBytes;
-    for (const auto& mip : texture.mips)
+    std::vector<TextureArtifactSubresourceRecord> subresourceRecords;
+    subresourceRecords.reserve(texture.mips.size());
+    uint64_t dataOffset = tableBytes + metadataBytes.size();
+    for (size_t mipIndex = 0u; mipIndex < texture.mips.size(); ++mipIndex)
     {
+        const auto& mip = texture.mips[mipIndex];
         records.push_back({
             mip.level,
             mip.width,
             mip.height,
+            mip.rowPitch,
+            mip.slicePitch,
+            dataOffset,
+            static_cast<uint64_t>(mip.pixels.size())
+        });
+        const TextureArtifactSubresource defaultSubresource{
+            mip.level,
+            0u,
+            mip.width,
+            mip.height,
+            1u,
+            TextureArtifactCubeFace::None,
+            mip.rowPitch,
+            mip.slicePitch,
+            dataOffset,
+            static_cast<uint64_t>(mip.pixels.size())
+        };
+        const auto& subresource = texture.subresources.empty()
+            ? defaultSubresource
+            : texture.subresources[mipIndex];
+        subresourceRecords.push_back({
+            mip.level,
+            subresource.arrayLayer,
+            static_cast<uint32_t>(subresource.face),
+            mip.width,
+            mip.height,
+            subresource.depth,
             mip.rowPitch,
             mip.slicePitch,
             dataOffset,
@@ -318,15 +644,24 @@ std::vector<uint8_t> SerializeTextureArtifactPayload(const TextureArtifactData& 
     TextureArtifactHeader header;
     header.width = texture.width;
     header.height = texture.height;
+    header.depth = texture.depth;
+    header.dimension = static_cast<uint32_t>(texture.dimension);
+    header.arrayLayers = texture.arrayLayers;
     header.format = static_cast<uint32_t>(texture.format);
     header.colorSpace = static_cast<uint32_t>(texture.colorSpace);
-    header.mipCount = static_cast<uint32_t>(texture.mips.size());
+    header.mipCount = CountMipLevels(texture.mips);
+    header.subresourceCount = static_cast<uint32_t>(texture.mips.size());
+    header.metadataStringTableOffset = tableBytes;
+    header.metadataStringTableSize = metadataBytes.size();
 
     std::vector<uint8_t> bytes;
     bytes.reserve(static_cast<size_t>(dataOffset));
     AppendHeader(bytes, header);
     for (const auto& record : records)
         AppendMipRecord(bytes, record);
+    for (const auto& record : subresourceRecords)
+        AppendSubresourceRecord(bytes, record);
+    bytes.insert(bytes.end(), metadataBytes.begin(), metadataBytes.end());
     for (const auto& mip : texture.mips)
         bytes.insert(bytes.end(), mip.pixels.begin(), mip.pixels.end());
     return bytes;
@@ -352,6 +687,13 @@ std::optional<TextureArtifactData> DeserializeTextureArtifact(const std::vector<
         NLS::Core::Assets::ArtifactType::Texture,
         kTextureArtifactContainerSchemaVersion);
     if (!container.has_value())
+    {
+        container = NLS::Core::Assets::ReadNativeArtifactContainer(
+            bytes,
+            NLS::Core::Assets::ArtifactType::Texture,
+            kLegacyTextureArtifactContainerSchemaVersion);
+    }
+    if (!container.has_value())
         return std::nullopt;
 
     const auto& payload = container->payload;
@@ -359,35 +701,72 @@ std::optional<TextureArtifactData> DeserializeTextureArtifact(const std::vector<
     if (!ReadHeader(payload, header))
         return std::nullopt;
 
-    const uint64_t tableBytes = kTextureArtifactHeaderBytes +
-        static_cast<uint64_t>(header.mipCount) * kTextureArtifactMipRecordBytes;
+    const uint32_t storedSubresourceCount = header.version == kLegacyTextureArtifactVersion
+        ? header.mipCount
+        : header.subresourceCount;
+    const uint64_t tableBytes = HeaderSizeForVersion(header.version) +
+        static_cast<uint64_t>(storedSubresourceCount) * kTextureArtifactMipRecordBytes +
+        (header.version == kLegacyTextureArtifactVersion
+            ? 0u
+            : static_cast<uint64_t>(storedSubresourceCount) * kTextureArtifactSubresourceRecordBytes);
     if (tableBytes > payload.size() || tableBytes > std::numeric_limits<size_t>::max())
         return std::nullopt;
 
     std::vector<TextureArtifactMipRecord> records;
-    records.resize(header.mipCount);
-    size_t offset = static_cast<size_t>(kTextureArtifactHeaderBytes);
+    records.resize(storedSubresourceCount);
+    size_t offset = static_cast<size_t>(HeaderSizeForVersion(header.version));
     for (auto& record : records)
     {
         if (!ReadMipRecord(payload, offset, record))
             return std::nullopt;
     }
+    std::vector<TextureArtifactSubresourceRecord> subresourceRecords;
+    if (header.version != kLegacyTextureArtifactVersion)
+    {
+        if (header.subresourceCount == 0u)
+            return std::nullopt;
+        subresourceRecords.resize(header.subresourceCount);
+        for (auto& record : subresourceRecords)
+        {
+            if (!ReadSubresourceRecord(payload, offset, record))
+                return std::nullopt;
+        }
+    }
 
     TextureArtifactData texture;
     texture.width = header.width;
     texture.height = header.height;
+    texture.depth = header.depth;
+    texture.dimension = static_cast<RHI::TextureDimension>(header.dimension);
+    texture.arrayLayers = header.arrayLayers;
     texture.format = static_cast<RHI::TextureFormat>(header.format);
     texture.colorSpace = static_cast<TextureArtifactColorSpace>(header.colorSpace);
-    texture.mips.reserve(header.mipCount);
+    texture.mips.reserve(storedSubresourceCount);
+    texture.subresources.reserve(storedSubresourceCount);
+    if (!ReadMetadataStringTable(payload, header, texture))
+        return std::nullopt;
 
-    uint32_t expectedWidth = texture.width;
-    uint32_t expectedHeight = texture.height;
     for (uint32_t mipIndex = 0u; mipIndex < records.size(); ++mipIndex)
     {
         const auto& record = records[mipIndex];
+        const TextureArtifactSubresourceRecord subresourceRecord = header.version == kLegacyTextureArtifactVersion
+            ? TextureArtifactSubresourceRecord{
+                record.level,
+                0u,
+                static_cast<uint32_t>(TextureArtifactCubeFace::None),
+                record.width,
+                record.height,
+                1u,
+                record.rowPitch,
+                record.slicePitch,
+                record.dataOffset,
+                record.dataSize
+            }
+            : subresourceRecords[mipIndex];
         if (record.dataSize > std::numeric_limits<size_t>::max() ||
             record.dataOffset > std::numeric_limits<size_t>::max() ||
-            record.dataOffset + record.dataSize > payload.size())
+            record.dataOffset > payload.size() ||
+            record.dataSize > payload.size() - record.dataOffset)
         {
             return std::nullopt;
         }
@@ -400,12 +779,50 @@ std::optional<TextureArtifactData> DeserializeTextureArtifact(const std::vector<
         mip.slicePitch = record.slicePitch;
         const auto begin = payload.begin() + static_cast<std::ptrdiff_t>(record.dataOffset);
         mip.pixels.assign(begin, begin + static_cast<std::ptrdiff_t>(record.dataSize));
-        if (!ValidateMip(mip, texture.format, mipIndex, expectedWidth, expectedHeight))
+        if (!ValidateMip(
+                mip,
+                texture.format,
+                record.level,
+                MipDimensionAtLevel(texture.width, record.level),
+                MipDimensionAtLevel(texture.height, record.level)))
+        {
             return std::nullopt;
+        }
+        const auto face = static_cast<TextureArtifactCubeFace>(subresourceRecord.face);
+        if (!IsSupportedFace(face) ||
+            subresourceRecord.level != record.level ||
+            subresourceRecord.arrayLayer >= texture.arrayLayers ||
+            subresourceRecord.width != record.width ||
+            subresourceRecord.height != record.height ||
+            subresourceRecord.depth != 1u ||
+            subresourceRecord.rowPitch != record.rowPitch ||
+            subresourceRecord.slicePitch != record.slicePitch ||
+            subresourceRecord.dataOffset != record.dataOffset ||
+            subresourceRecord.dataSize != record.dataSize)
+        {
+            return std::nullopt;
+        }
 
         texture.mips.push_back(std::move(mip));
-        expectedWidth = NextMipDimension(expectedWidth);
-        expectedHeight = NextMipDimension(expectedHeight);
+        texture.subresources.push_back({
+            record.level,
+            subresourceRecord.arrayLayer,
+            record.width,
+            record.height,
+            subresourceRecord.depth,
+            face,
+            record.rowPitch,
+            record.slicePitch,
+            record.dataOffset,
+            record.dataSize
+        });
+    }
+
+    if (CountMipLevels(texture.mips) != header.mipCount ||
+        !HasContiguousMipLevels(texture.mips) ||
+        !HasValidSubresourceLayout(texture))
+    {
+        return std::nullopt;
     }
 
     return texture;
@@ -430,10 +847,24 @@ std::optional<TextureArtifactData> DecodeTextureArtifactFromEncodedImage(
     const TextureArtifactColorSpace colorSpace,
     const bool flipVertically)
 {
+    TextureMipGeneratorSettings settings;
+    settings.intent = TextureMipIntent::Color;
+    settings.colorSpace = colorSpace;
+    settings.format = RHI::TextureFormat::RGBA8;
+    settings.mipmapEnabled = true;
+    return DecodeTextureArtifactFromEncodedImage(encodedData, encodedDataSize, settings, flipVertically);
+}
+
+std::optional<TextureArtifactData> DecodeTextureArtifactFromEncodedImage(
+    const uint8_t* encodedData,
+    const size_t encodedDataSize,
+    const TextureMipGeneratorSettings& settings,
+    const bool flipVertically)
+{
     if (encodedData == nullptr ||
         encodedDataSize == 0u ||
         encodedDataSize > static_cast<size_t>(std::numeric_limits<int>::max()) ||
-        !IsSupportedColorSpace(colorSpace))
+        !IsSupportedColorSpace(settings.colorSpace))
     {
         return std::nullopt;
     }
@@ -456,36 +887,15 @@ std::optional<TextureArtifactData> DecodeTextureArtifactFromEncodedImage(
         return std::nullopt;
     }
 
-    TextureArtifactData artifact;
-    artifact.width = static_cast<uint32_t>(width);
-    artifact.height = static_cast<uint32_t>(height);
-    artifact.format = RHI::TextureFormat::RGBA8;
-    artifact.colorSpace = colorSpace;
-
-    auto currentWidth = artifact.width;
-    auto currentHeight = artifact.height;
-    std::vector<uint8_t> currentPixels(
+    std::vector<uint8_t> basePixels(
         decoded,
-        decoded + static_cast<size_t>(artifact.width) * static_cast<size_t>(artifact.height) * 4u);
+        decoded + static_cast<size_t>(width) * static_cast<size_t>(height) * 4u);
     stbi_image_free(decoded);
 
-    uint32_t mipLevel = 0u;
-    while (!currentPixels.empty())
-    {
-        artifact.mips.push_back(MakeMip(mipLevel, currentWidth, currentHeight, currentPixels));
-        if (currentWidth == 1u && currentHeight == 1u)
-            break;
-
-        const uint32_t nextWidth = NextMipDimension(currentWidth);
-        const uint32_t nextHeight = NextMipDimension(currentHeight);
-        currentPixels = GenerateNextRgba8Mip(currentPixels, currentWidth, currentHeight, nextWidth, nextHeight);
-        currentWidth = nextWidth;
-        currentHeight = nextHeight;
-        ++mipLevel;
-    }
-
-    if (artifact.mips.empty())
-        return std::nullopt;
-    return artifact;
+    return GenerateTextureMipChain(
+        static_cast<uint32_t>(width),
+        static_cast<uint32_t>(height),
+        std::move(basePixels),
+        settings);
 }
 }

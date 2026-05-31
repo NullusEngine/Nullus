@@ -13,3 +13,6 @@
 [submodule "ThirdParty/Tracy"]
 	path = ThirdParty/Tracy
 	url = https://github.com/wolfpld/tracy.git
+[submodule "ThirdParty/DirectXTex/src"]
+	path = ThirdParty/DirectXTex/src
+	url = https://github.com/microsoft/DirectXTex.git

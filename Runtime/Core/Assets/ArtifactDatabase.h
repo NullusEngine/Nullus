@@ -84,8 +84,6 @@ private:
 
     std::vector<ArtifactDatabaseRecord> m_records;
     std::unordered_map<std::string, size_t> m_indexByKey;
-#if defined(NLS_ENABLE_TEST_HOOKS)
     size_t m_indexRebuildCountForTesting = 0u;
-#endif
 };
 }

@@ -21,9 +21,14 @@
 #include "Assets/NativeArtifactContainer.h"
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Assets/ShaderArtifact.h"
+#include "Rendering/Assets/TextureArtifact.h"
 #include "Rendering/Context/Driver.h"
+#include "Rendering/Context/DriverAccess.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
+#include "Rendering/Resources/Loaders/TextureLoader.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
+#include "Rendering/Resources/Texture2D.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
 #include "SceneSystem/Scene.h"
@@ -35,8 +40,11 @@
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <memory>
 #include <string>
+#include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace
@@ -55,6 +63,30 @@ void WriteTextFile(const std::filesystem::path& path, const std::string& content
     std::filesystem::create_directories(path.parent_path());
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     output << contents;
+}
+
+void WriteBinaryFile(const std::filesystem::path& path, const std::vector<uint8_t>& bytes)
+{
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output.write(
+        reinterpret_cast<const char*>(bytes.data()),
+        static_cast<std::streamsize>(bytes.size()));
+}
+
+std::vector<uint8_t> TinyPng()
+{
+    return {
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x04, 0x00, 0x00, 0x00, 0xB5, 0x1C, 0x0C,
+        0x02, 0x00, 0x00, 0x00, 0x0B, 0x49, 0x44, 0x41,
+        0x54, 0x78, 0xDA, 0x63, 0xFC, 0xFF, 0x1F, 0x00,
+        0x03, 0x03, 0x02, 0x00, 0xEF, 0xBF, 0x4A, 0x3B,
+        0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
+        0xAE, 0x42, 0x60, 0x82
+    };
 }
 
 std::string ReadTextFile(const std::filesystem::path& path)
@@ -201,6 +233,153 @@ bool ContainsManifestDependency(
                 !dependency.value("hashOrVersion", std::string {}).empty();
         });
 }
+
+class TextureReimportTestAdapter final : public NLS::Render::RHI::RHIAdapter
+{
+public:
+    std::string_view GetDebugName() const override { return "TextureReimportTestAdapter"; }
+    NLS::Render::RHI::NativeBackendType GetBackendType() const override { return NLS::Render::RHI::NativeBackendType::DX12; }
+    std::string_view GetVendor() const override { return "TestVendor"; }
+    std::string_view GetHardware() const override { return "TestHardware"; }
+};
+
+class TextureReimportTestTexture final : public NLS::Render::RHI::RHITexture
+{
+public:
+    explicit TextureReimportTestTexture(NLS::Render::RHI::RHITextureDesc desc)
+        : m_desc(std::move(desc))
+    {
+    }
+
+    std::string_view GetDebugName() const override { return m_desc.debugName; }
+    const NLS::Render::RHI::RHITextureDesc& GetDesc() const override { return m_desc; }
+    NLS::Render::RHI::ResourceState GetState() const override { return NLS::Render::RHI::ResourceState::Unknown; }
+
+private:
+    NLS::Render::RHI::RHITextureDesc m_desc {};
+};
+
+class TextureReimportTestTextureView final : public NLS::Render::RHI::RHITextureView
+{
+public:
+    TextureReimportTestTextureView(
+        std::shared_ptr<NLS::Render::RHI::RHITexture> texture,
+        NLS::Render::RHI::RHITextureViewDesc desc)
+        : m_texture(std::move(texture))
+        , m_desc(std::move(desc))
+    {
+    }
+
+    std::string_view GetDebugName() const override { return m_desc.debugName; }
+    const NLS::Render::RHI::RHITextureViewDesc& GetDesc() const override { return m_desc; }
+    const std::shared_ptr<NLS::Render::RHI::RHITexture>& GetTexture() const override { return m_texture; }
+
+private:
+    std::shared_ptr<NLS::Render::RHI::RHITexture> m_texture;
+    NLS::Render::RHI::RHITextureViewDesc m_desc {};
+};
+
+class TextureReimportTestDevice final : public NLS::Render::RHI::RHIDevice
+{
+public:
+    TextureReimportTestDevice()
+        : m_adapter(std::make_shared<TextureReimportTestAdapter>())
+    {
+        m_nativeDeviceInfo.backend = NLS::Render::RHI::NativeBackendType::DX12;
+        m_capabilities.backendReady = true;
+        m_capabilities.supportsGraphics = true;
+        m_capabilities.supportsCurrentSceneRenderer = true;
+        for (const auto& descriptor : NLS::Render::RHI::kTextureFormatDescriptors)
+        {
+            m_capabilities.SetTextureFormatCapability(
+                descriptor.format,
+                {
+                    descriptor.format,
+                    descriptor.sampled,
+                    descriptor.supportsUpload,
+                    descriptor.colorAttachment,
+                    descriptor.storage,
+                    descriptor.supportsSrgbView,
+                    descriptor.requiresAlignedTopLevelBlocks,
+                    true,
+                    {}
+                });
+        }
+    }
+
+    std::string_view GetDebugName() const override { return "TextureReimportTestDevice"; }
+    const std::shared_ptr<NLS::Render::RHI::RHIAdapter>& GetAdapter() const override { return m_adapter; }
+    const NLS::Render::RHI::RHIDeviceCapabilities& GetCapabilities() const override { return m_capabilities; }
+    NLS::Render::RHI::NativeRenderDeviceInfo GetNativeDeviceInfo() const override { return m_nativeDeviceInfo; }
+    bool IsBackendReady() const override { return true; }
+    std::shared_ptr<NLS::Render::RHI::RHIQueue> GetQueue(NLS::Render::RHI::QueueType) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHISwapchain> CreateSwapchain(const NLS::Render::RHI::SwapchainDesc&) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHIBuffer> CreateBuffer(
+        const NLS::Render::RHI::RHIBufferDesc&,
+        const NLS::Render::RHI::RHIBufferUploadDesc&) override
+    {
+        return nullptr;
+    }
+    std::shared_ptr<NLS::Render::RHI::RHITexture> CreateTexture(
+        const NLS::Render::RHI::RHITextureDesc& desc,
+        const NLS::Render::RHI::RHITextureUploadDesc& uploadDesc) override
+    {
+        ++textureCreateCalls;
+        lastTextureDesc = desc;
+        lastTextureUploadDesc = uploadDesc;
+        return std::make_shared<TextureReimportTestTexture>(desc);
+    }
+    std::shared_ptr<NLS::Render::RHI::RHITextureView> CreateTextureView(
+        const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+        const NLS::Render::RHI::RHITextureViewDesc& desc) override
+    {
+        lastTextureViewDesc = desc;
+        return std::make_shared<TextureReimportTestTextureView>(texture, desc);
+    }
+    std::shared_ptr<NLS::Render::RHI::RHISampler> CreateSampler(const NLS::Render::RHI::SamplerDesc&, std::string = {}) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> CreateBindingLayout(const NLS::Render::RHI::RHIBindingLayoutDesc&) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHIBindingSet> CreateBindingSet(const NLS::Render::RHI::RHIBindingSetDesc&) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> CreatePipelineLayout(const NLS::Render::RHI::RHIPipelineLayoutDesc&) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHIShaderModule> CreateShaderModule(const NLS::Render::RHI::RHIShaderModuleDesc&) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline> CreateGraphicsPipeline(const NLS::Render::RHI::RHIGraphicsPipelineDesc&) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> CreateComputePipeline(const NLS::Render::RHI::RHIComputePipelineDesc&) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHICommandPool> CreateCommandPool(NLS::Render::RHI::QueueType, std::string = {}) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHIFence> CreateFence(std::string = {}) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHISemaphore> CreateSemaphore(std::string = {}) override { return nullptr; }
+    void ReadPixels(
+        const std::shared_ptr<NLS::Render::RHI::RHITexture>&,
+        uint32_t,
+        uint32_t,
+        uint32_t,
+        uint32_t,
+        NLS::Render::Settings::EPixelDataFormat,
+        NLS::Render::Settings::EPixelDataType,
+        void*) override {}
+
+    size_t textureCreateCalls = 0u;
+    NLS::Render::RHI::RHITextureDesc lastTextureDesc {};
+    NLS::Render::RHI::RHITextureUploadDesc lastTextureUploadDesc {};
+    NLS::Render::RHI::RHITextureViewDesc lastTextureViewDesc {};
+
+private:
+    std::shared_ptr<NLS::Render::RHI::RHIAdapter> m_adapter;
+    NLS::Render::RHI::NativeRenderDeviceInfo m_nativeDeviceInfo {};
+    NLS::Render::RHI::RHIDeviceCapabilities m_capabilities {};
+};
+
+class ScopedAssetDatabaseFacadeDriverService final
+{
+public:
+    explicit ScopedAssetDatabaseFacadeDriverService(NLS::Render::Context::Driver& driver)
+    {
+        NLS::Core::ServiceLocator::Provide(driver);
+    }
+
+    ~ScopedAssetDatabaseFacadeDriverService()
+    {
+        NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
+    }
+};
 
 NLS::Render::Context::Driver& EnsureAssetDatabaseFacadeTestDriver()
 {
@@ -1249,13 +1428,145 @@ TEST(AssetDatabaseFacadeTests, ArtifactManifestCurrentRejectsStaleImporterMetada
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetDatabaseFacadeTests, ArtifactManifestCurrentRejectsPreDx12TextureBuildModelImporterVersion)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    WriteTextFile(
+        root / "Assets" / "Models" / "LegacyTextureBuildHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "LegacyTextureBuildHeroRoot" }]
+        })");
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/LegacyTextureBuildHero.gltf"));
+    EXPECT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/LegacyTextureBuildHero.gltf"));
+
+    auto manifest = database.GetArtifactManifestForAssetPath("Assets/Models/LegacyTextureBuildHero.gltf");
+    ASSERT_TRUE(manifest.has_value());
+    manifest->importerVersion = 5u;
+    database.AddArtifactManifest(*manifest);
+
+    EXPECT_FALSE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/LegacyTextureBuildHero.gltf"));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetDatabaseFacadeTests, ArtifactManifestCurrentRejectsReadOnlyMetaBelowCurrentImporterVersion)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    const auto packageRoot = root / "Packages";
+    WriteTextFile(
+        packageRoot / "Models" / "LegacyReadOnlyHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "LegacyReadOnlyHeroRoot" }]
+        })");
+
+    auto meta = AssetMeta::CreateForAsset(packageRoot / "Models" / "LegacyReadOnlyHero.gltf");
+    meta.importerVersion = 5u;
+    ASSERT_TRUE(meta.Save(packageRoot / "Models" / "LegacyReadOnlyHero.gltf.meta"));
+
+    AssetDatabaseFacade importer({
+        {packageRoot, false, "Packages", root / "Library"}
+    });
+    ASSERT_TRUE(importer.Refresh());
+    ASSERT_TRUE(importer.ImportAsset("Packages/Models/LegacyReadOnlyHero.gltf"));
+    const auto manifestPath =
+        root / "Library" / "Artifacts" /
+        importer.AssetPathToGUID("Packages/Models/LegacyReadOnlyHero.gltf") /
+        "manifest.json";
+    auto manifestJson = nlohmann::json::parse(ReadTextFile(manifestPath));
+    manifestJson["importerVersion"] = 5u;
+    WriteTextFile(manifestPath, manifestJson.dump(2));
+
+    AssetDatabaseFacade readOnlyDatabase({
+        {packageRoot, true, "Packages", root / "Library"}
+    });
+    ASSERT_TRUE(readOnlyDatabase.Refresh());
+
+    EXPECT_FALSE(readOnlyDatabase.IsArtifactManifestCurrentForAssetPath("Packages/Models/LegacyReadOnlyHero.gltf"));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetDatabaseFacadeTests, ArtifactManifestCurrentRejectsTextureModelMissingTexturePipelineDependency)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    WriteBinaryFile(root / "Assets" / "Textures" / "HeroDiffuse.png", TinyPng());
+    WriteTextFile(
+        root / "Assets" / "Models" / "Hero.mtl",
+        R"(
+newmtl HeroMaterial
+map_Kd ../Textures/HeroDiffuse.png
+)");
+    WriteTextFile(
+        root / "Assets" / "Models" / "TexturePipelineHero.obj",
+        R"(
+mtllib Hero.mtl
+o Hero
+v 0 0 0
+v 1 0 0
+v 0 1 0
+vt 0 0
+vt 1 0
+vt 0 1
+vn 0 0 1
+usemtl HeroMaterial
+f 1/1/1 2/2/1 3/3/1
+)");
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/TexturePipelineHero.obj"));
+    ASSERT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/TexturePipelineHero.obj"));
+
+    const auto manifestPath =
+        root / "Library" / "Artifacts" /
+        database.AssetPathToGUID("Assets/Models/TexturePipelineHero.obj") /
+        "manifest.json";
+    auto manifestJson = nlohmann::json::parse(ReadTextFile(manifestPath));
+    auto& dependencies = manifestJson["dependencies"];
+    dependencies.erase(
+        std::remove_if(
+            dependencies.begin(),
+            dependencies.end(),
+            [](const nlohmann::json& dependency)
+            {
+                return dependency.value("kind", "") == "postprocessor-version" &&
+                    dependency.value("value", "") == "external-texture-build-pipeline";
+            }),
+        dependencies.end());
+    WriteTextFile(manifestPath, manifestJson.dump(2));
+
+    AssetDatabaseFacade restartedDatabase({root});
+    ASSERT_TRUE(restartedDatabase.Refresh());
+    EXPECT_FALSE(restartedDatabase.IsArtifactManifestCurrentForAssetPath("Assets/Models/TexturePipelineHero.obj"));
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetDatabaseFacadeTests, ImportedModelManifestRecordsExternalSourceDependencies)
 {
     using namespace NLS::Editor::Assets;
 
     const auto root = MakeAssetDatabaseFacadeRoot();
     WriteTextFile(root / "Assets" / "Models" / "Hero.bin", "mesh-binary");
-    WriteTextFile(root / "Assets" / "Textures" / "HeroBaseColor.png", "texture-bytes");
+    WriteBinaryFile(root / "Assets" / "Textures" / "HeroBaseColor.png", TinyPng());
     WriteTextFile(
         root / "Assets" / "Models" / "Hero.gltf",
         R"({
@@ -1305,8 +1616,8 @@ TEST(AssetDatabaseFacadeTests, ImportedObjManifestRecordsMtlAndTextureDependenci
 
     EnsureAssetDatabaseFacadeTestDriver();
     const auto root = MakeAssetDatabaseFacadeRoot();
-    WriteTextFile(root / "Assets" / "Textures" / "HeroDiffuse.png", "texture-bytes");
-    WriteTextFile(root / "Assets" / "Textures" / "HeroNormal.png", "normal-bytes");
+    WriteBinaryFile(root / "Assets" / "Textures" / "HeroDiffuse.png", TinyPng());
+    WriteBinaryFile(root / "Assets" / "Textures" / "HeroNormal.png", TinyPng());
     WriteTextFile(
         root / "Assets" / "Models" / "Hero.mtl",
         R"(
@@ -1629,6 +1940,110 @@ TEST(AssetDatabaseFacadeTests, ReimportAssetRefreshesStaleNativeMeshArtifact)
     EXPECT_EQ(secondPrimitiveArtifact->vertices.size(), 3u);
     EXPECT_EQ(secondPrimitiveArtifact->indices.size(), 3u);
 
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetDatabaseFacadeTests, ReimportAssetRefreshesNativeTextureArtifactsAndCentralIndex)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    const auto assetPath = root / "Assets" / "Models" / "Textured.gltf";
+    WriteBinaryFile(root / "Assets" / "Textures" / "HeroBaseColor.png", TinyPng());
+    WriteTextFile(
+        assetPath,
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "images": [
+                { "uri": "../Textures/HeroBaseColor.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "HeroMaterial",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "meshes": [
+                {
+                    "name": "HeroMesh",
+                    "primitives": [
+                        { "attributes": {}, "material": 0 }
+                    ]
+                }
+            ],
+            "nodes": [
+                { "name": "HeroRoot", "mesh": 0 }
+            ]
+        })");
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/Textured.gltf"));
+    ASSERT_TRUE(database.ReimportAsset("Assets/Models/Textured.gltf"));
+
+    ArtifactDatabase artifactDatabase;
+    ASSERT_TRUE(artifactDatabase.Load(root / "Library" / "ArtifactDB" / "index.tsv"));
+    const auto sourceId = ParseAssetId(database.AssetPathToGUID("Assets/Models/Textured.gltf"));
+    const auto* textureRecord = artifactDatabase.Find(sourceId, "texture:image/0", "win64-dx12");
+    if (textureRecord == nullptr)
+        textureRecord = artifactDatabase.Find(sourceId, "texture:image/0", "editor");
+    ASSERT_NE(textureRecord, nullptr);
+    EXPECT_EQ(textureRecord->artifactType, ArtifactType::Texture);
+    EXPECT_EQ(textureRecord->loaderId, "texture");
+    EXPECT_FALSE(std::filesystem::path(textureRecord->artifactPath).is_absolute());
+    EXPECT_EQ(textureRecord->artifactPath.find("Library/Artifacts/" + sourceId.ToString() + "/"), 0u)
+        << textureRecord->artifactPath;
+
+    const auto texturePath = root / textureRecord->artifactPath;
+    EXPECT_TRUE(std::filesystem::exists(texturePath));
+
+    const auto textureSubAsset = database.LoadSubAssetAtPath("Assets/Models/Textured.gltf", "texture:image/0");
+    ASSERT_TRUE(textureSubAsset.has_value());
+    EXPECT_EQ(textureSubAsset->artifactType, ArtifactType::Texture);
+    EXPECT_TRUE(std::filesystem::equivalent(textureSubAsset->artifactPath, texturePath));
+
+    const auto artifact = NLS::Render::Assets::LoadTextureArtifact(texturePath);
+    ASSERT_TRUE(artifact.has_value());
+    ASSERT_FALSE(artifact->mips.empty());
+    EXPECT_EQ(artifact->width, 1u);
+    EXPECT_EQ(artifact->height, 1u);
+    EXPECT_FALSE(artifact->targetPlatform.empty());
+    EXPECT_FALSE(artifact->encoderId.empty());
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedAssetDatabaseFacadeDriverService driverService(driver);
+    auto explicitDevice = std::make_shared<TextureReimportTestDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+
+    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::Create(
+        texturePath.string(),
+        NLS::Render::Settings::ETextureFilteringMode::LINEAR,
+        NLS::Render::Settings::ETextureFilteringMode::LINEAR,
+        false);
+    ASSERT_NE(texture, nullptr);
+    EXPECT_EQ(texture->width, artifact->width);
+    EXPECT_EQ(texture->height, artifact->height);
+    EXPECT_EQ(texture->isMimapped, artifact->mips.size() > 1u);
+    EXPECT_EQ(texture->path, texturePath.string());
+    EXPECT_GE(explicitDevice->textureCreateCalls, 1u);
+    EXPECT_EQ(explicitDevice->lastTextureDesc.format, artifact->format);
+    EXPECT_EQ(explicitDevice->lastTextureDesc.mipLevels, artifact->mips.size());
+    EXPECT_GT(explicitDevice->lastTextureUploadDesc.dataSize, 0u);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(texture));
     std::filesystem::remove_all(root);
 }
 
@@ -2088,22 +2503,44 @@ TEST(AssetDatabaseFacadeTests, EditorDragDropBridgeInstantiatesPreimportedModelG
     using namespace NLS::Editor::Assets;
 
     const auto root = MakeAssetDatabaseFacadeRoot();
-    WriteTextFile(
-        root / "Assets" / "Models" / "BridgeHero.gltf",
-        R"({
+    const std::string bridgeHeroGltf = R"({
             "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [
+                { "nodes": [0] }
+            ],
+            "buffers": [
+                {
+                    "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA",
+                    "byteLength": 42
+                }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" }
+            ],
             "meshes": [
                 {
                     "name": "Body",
                     "primitives": [
-                        { "attributes": { "POSITION": 0 } }
+                        {
+                            "attributes": { "POSITION": 0 },
+                            "indices": 1
+                        }
                     ]
                 }
             ],
             "nodes": [
                 { "name": "BridgeHeroRoot", "mesh": 0 }
             ]
-        })");
+        })";
+    WriteTextFile(
+        root / "Assets" / "Models" / "BridgeHero.gltf",
+        bridgeHeroGltf);
 
     NLS::Engine::SceneSystem::Scene scene;
     EditorAssetDragDropBridge bridge(root / "Assets");
@@ -2132,22 +2569,44 @@ TEST(AssetDatabaseFacadeTests, EditorDragDropBridgeInstantiatesGeneratedPrefabSu
     using namespace NLS::Editor::Assets;
 
     const auto root = MakeAssetDatabaseFacadeRoot();
-    WriteTextFile(
-        root / "Assets" / "Models" / "BridgeHero.gltf",
-        R"({
+    const std::string bridgeHeroGltf = R"({
             "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [
+                { "nodes": [0] }
+            ],
+            "buffers": [
+                {
+                    "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA",
+                    "byteLength": 42
+                }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" }
+            ],
             "meshes": [
                 {
                     "name": "Body",
                     "primitives": [
-                        { "attributes": { "POSITION": 0 } }
+                        {
+                            "attributes": { "POSITION": 0 },
+                            "indices": 1
+                        }
                     ]
                 }
             ],
             "nodes": [
                 { "name": "BridgeHeroRoot", "mesh": 0 }
             ]
-        })");
+        })";
+    WriteTextFile(
+        root / "Assets" / "Models" / "BridgeHero.gltf",
+        bridgeHeroGltf);
 
     {
         AssetDatabaseFacade importer({root});

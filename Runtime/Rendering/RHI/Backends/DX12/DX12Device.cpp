@@ -3,6 +3,7 @@
 #include <cwchar>
 
 #include <Debug/Logger.h>
+#include "Rendering/RHI/Backends/DX12/DX12FormatUtils.h"
 
 namespace NLS::Render::Backend
 {
@@ -214,7 +215,88 @@ namespace NLS::Render::Backend
 			return adapter;
 		}
 
-		NLS::Render::RHI::RHIDeviceCapabilities BuildDX12Capabilities(ID3D12CommandQueue* computeQueue)
+		void PopulateDX12TextureFormatCapabilities(
+			ID3D12Device* device,
+			NLS::Render::RHI::RHIDeviceCapabilities& capabilities)
+		{
+			using NLS::Render::RHI::TextureFormat;
+
+			if (device == nullptr)
+				return;
+
+			for (uint32_t formatValue = 0u; formatValue < static_cast<uint32_t>(TextureFormat::Count); ++formatValue)
+			{
+				const auto format = static_cast<TextureFormat>(formatValue);
+				D3D12_FEATURE_DATA_FORMAT_SUPPORT support{};
+				support.Format = NLS::Render::RHI::DX12::ToDXGIFormat(format);
+				bool supportsSrgbView = false;
+
+				std::string diagnosticReason;
+				if (support.Format == DXGI_FORMAT_UNKNOWN)
+				{
+					diagnosticReason = "DX12 has no native format mapping for this texture format";
+					capabilities.SetTextureFormatCapability(
+						format,
+						NLS::Render::RHI::DX12::BuildDX12TextureFormatCapability(
+							format,
+							D3D12_FORMAT_SUPPORT1_NONE,
+							D3D12_FORMAT_SUPPORT2_NONE,
+							false,
+							std::move(diagnosticReason)));
+					continue;
+				}
+
+				const HRESULT hr = device->CheckFeatureSupport(
+					D3D12_FEATURE_FORMAT_SUPPORT,
+					&support,
+					sizeof(support));
+				if (FAILED(hr))
+				{
+					diagnosticReason = "CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT) failed hr=" + std::to_string(hr);
+					capabilities.SetTextureFormatCapability(
+						format,
+						NLS::Render::RHI::DX12::BuildDX12TextureFormatCapability(
+							format,
+							D3D12_FORMAT_SUPPORT1_NONE,
+							D3D12_FORMAT_SUPPORT2_NONE,
+							false,
+							std::move(diagnosticReason)));
+					continue;
+				}
+
+				const auto* descriptor = NLS::Render::RHI::GetTextureFormatDescriptor(format);
+				const DXGI_FORMAT srgbFormat = NLS::Render::RHI::DX12::ToDXGIFormat(
+					format,
+					NLS::Render::RHI::TextureColorSpace::SRGB);
+				if (descriptor != nullptr &&
+					descriptor->supportsSrgbView &&
+					srgbFormat != DXGI_FORMAT_UNKNOWN)
+				{
+					D3D12_FEATURE_DATA_FORMAT_SUPPORT srgbSupport{};
+					srgbSupport.Format = srgbFormat;
+					const HRESULT srgbHr = device->CheckFeatureSupport(
+						D3D12_FEATURE_FORMAT_SUPPORT,
+						&srgbSupport,
+						sizeof(srgbSupport));
+					supportsSrgbView =
+						SUCCEEDED(srgbHr) &&
+						(srgbSupport.Support1 & D3D12_FORMAT_SUPPORT1_TEXTURE2D) != 0 &&
+						(srgbSupport.Support1 & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE) != 0;
+				}
+
+				capabilities.SetTextureFormatCapability(
+					format,
+					NLS::Render::RHI::DX12::BuildDX12TextureFormatCapability(
+						format,
+						support.Support1,
+						support.Support2,
+						supportsSrgbView));
+			}
+		}
+
+		NLS::Render::RHI::RHIDeviceCapabilities BuildDX12Capabilities(
+			ID3D12Device* device,
+			ID3D12CommandQueue* computeQueue)
 		{
 			using NLS::Render::RHI::RHIDeviceFeature;
 
@@ -259,6 +341,7 @@ namespace NLS::Render::Backend
 			capabilities.limits.maxTextureDimension2D = capabilities.maxTextureDimension2D;
 			capabilities.limits.maxColorAttachments = capabilities.maxColorAttachments;
 			capabilities.SetFeature(RHIDeviceFeature::ExplicitBarriers, true);
+			PopulateDX12TextureFormatCapabilities(device, capabilities);
 			capabilities.SynchronizeLegacyFields();
 			return capabilities;
 		}
@@ -357,7 +440,7 @@ namespace NLS::Render::Backend
 			NLS_LOG_WARNING("CreateDX12RhiDevice: failed to create dedicated compute queue hr=" + std::to_string(computeQueueHr));
 		}
 
-		resources.capabilities = BuildDX12Capabilities(resources.computeQueue.Get());
+		resources.capabilities = BuildDX12Capabilities(resources.device.Get(), resources.computeQueue.Get());
 		resources.vendor = "DX12";
 #else
 		(void)debugMode;

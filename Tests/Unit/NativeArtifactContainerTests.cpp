@@ -146,7 +146,7 @@ TEST(NativeArtifactContainerTests, MeshAndTextureArtifactsUseNativeContainer)
     EXPECT_EQ(textureBytes[1], 'L');
     EXPECT_EQ(textureBytes[2], 'S');
     EXPECT_EQ(textureBytes[3], 'A');
-    EXPECT_TRUE(ReadNativeArtifactContainer(textureBytes, ArtifactType::Texture, 3u).has_value());
+    EXPECT_TRUE(ReadNativeArtifactContainer(textureBytes, ArtifactType::Texture, 4u).has_value());
     EXPECT_TRUE(NLS::Render::Assets::DeserializeTextureArtifact(textureBytes).has_value());
 }
 

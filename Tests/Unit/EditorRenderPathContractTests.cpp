@@ -3637,8 +3637,12 @@ TEST(EditorRenderPathContractTests, GeneratedModelDropLoadsMaterialsOnlyThroughR
     EXPECT_NE(queueCode.find("meshRenderer.SetMaterialPathHints(task.materialPaths)"), std::string::npos);
     EXPECT_NE(queueCode.find("if (!task.materialHintsApplied)"), std::string::npos);
     EXPECT_NE(queueCode.find("task.materialHintsApplied = true"), std::string::npos);
-    EXPECT_NE(queueCode.find("FillEmptySlotsWithMaterial"), std::string::npos);
-    EXPECT_NE(queueCode.find("ApplyVisibleFallbackMaterial"), std::string::npos);
+    EXPECT_EQ(queueCode.find("FillEmptySlotsWithMaterial"), std::string::npos);
+    EXPECT_EQ(queueCode.find("ApplyVisibleFallbackMaterial"), std::string::npos);
+    EXPECT_NE(queueCode.find("state->restoreRootSelfActive = instance->instanceRoot->IsSelfActive();"), std::string::npos);
+    EXPECT_NE(queueCode.find("instance->instanceRoot->SetActive(false);"), std::string::npos);
+    EXPECT_NE(queueCode.find("state->rootHiddenUntilRendererResourcesReady = true;"), std::string::npos);
+    EXPECT_NE(source.find("RestoreRendererResourceResolutionRootVisibility(*state);"), std::string::npos);
     EXPECT_EQ(source.find("if (!meshRenderer->GetMaterialPaths().empty())"), std::string::npos);
     EXPECT_NE(source.find("HasResolvedMaterialBindings(*meshRenderer)"), std::string::npos);
     const auto resolvedBegin = source.find("bool HasResolvedMaterialBindings(");
@@ -3813,9 +3817,52 @@ TEST(EditorRenderPathContractTests, GeneratedModelMaterialResolutionBindsCachedT
     EXPECT_NE(textureBindCode.find("textureManager.GetResource(texturePath, false)"), std::string::npos);
     EXPECT_EQ(textureBindCode.find("textureManager.GetResource(texturePath, true)"), std::string::npos);
     EXPECT_EQ(textureBindCode.find("LoadResource(texturePath)"), std::string::npos);
+    EXPECT_EQ(textureBindCode.find("PumpAsyncLoads("), std::string::npos);
+    EXPECT_NE(textureBindCode.find("textureManager.IsAsyncArtifactLoadPending(texturePath)"), std::string::npos);
+    EXPECT_NE(textureBindCode.find("textureManager.IsAsyncArtifactLoadFailed(texturePath)"), std::string::npos);
     EXPECT_NE(textureBindCode.find("textureManager.RequestAsyncArtifact(texturePath)"), std::string::npos);
+    const auto asyncRequest = textureBindCode.find("textureManager.RequestAsyncArtifact(texturePath)");
+    const auto pendingTextureGuard = textureBindCode.find("if (!texture && textureManager.IsAsyncArtifactLoadPending(texturePath))", asyncRequest);
+    const auto pendingTextureReturn = textureBindCode.find("return false;", pendingTextureGuard);
+    const auto failedTextureGuard = textureBindCode.find("if (!texture && textureManager.IsAsyncArtifactLoadFailed(texturePath))", pendingTextureReturn);
+    const auto failedTextureCount = textureBindCode.find("++stats->failedMaterialSlots", failedTextureGuard);
+    const auto nextTextureSlotAdvance = textureBindCode.find("task.nextTextureSlot = textureIndex", asyncRequest);
+    ASSERT_NE(asyncRequest, std::string::npos);
+    ASSERT_NE(pendingTextureGuard, std::string::npos);
+    ASSERT_NE(pendingTextureReturn, std::string::npos);
+    ASSERT_NE(failedTextureGuard, std::string::npos);
+    ASSERT_NE(failedTextureCount, std::string::npos);
+    ASSERT_NE(nextTextureSlotAdvance, std::string::npos);
+    EXPECT_LT(pendingTextureGuard, nextTextureSlotAdvance);
+    EXPECT_LT(pendingTextureReturn, nextTextureSlotAdvance);
+    EXPECT_LT(failedTextureGuard, nextTextureSlotAdvance);
+    EXPECT_LT(failedTextureCount, nextTextureSlotAdvance);
     EXPECT_NE(textureBindCode.find("material.Set<NLS::Render::Resources::Texture2D*>(uniformName, texture)"), std::string::npos);
     EXPECT_NE(textureBindCode.find("frameBudgetExpired()"), std::string::npos);
+
+    const auto resolutionStepBegin = actionsSource.find("void RunRendererResourceResolutionStep(");
+    ASSERT_NE(resolutionStepBegin, std::string::npos);
+    const auto resolutionStepEnd = actionsSource.find("void Editor::Core::EditorActions::LoadEmptyScene()", resolutionStepBegin);
+    ASSERT_NE(resolutionStepEnd, std::string::npos);
+    const auto resolutionStepCode = actionsSource.substr(resolutionStepBegin, resolutionStepEnd - resolutionStepBegin);
+    EXPECT_NE(resolutionStepCode.find("textureManager.PumpAsyncLoads(kRendererResourceResolutionTextureBindsPerFrame)"), std::string::npos);
+    EXPECT_EQ(
+        resolutionStepCode.find(
+            "textureManager.PumpAsyncLoads(kRendererResourceResolutionTextureBindsPerFrame)",
+            resolutionStepCode.find("textureManager.PumpAsyncLoads(kRendererResourceResolutionTextureBindsPerFrame)") + 1u),
+        std::string::npos);
+
+    const auto textureManagerSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Core/ResourceManagement/TextureManager.cpp";
+    const std::string textureManagerSource = ReadSourceText(textureManagerSourcePath);
+    ASSERT_FALSE(textureManagerSource.empty());
+    EXPECT_NE(textureManagerSource.find("std::optional<std::filesystem::file_time_type> writeTime;"), std::string::npos);
+    EXPECT_NE(textureManagerSource.find("request.writeTime = writeTime;"), std::string::npos);
+    EXPECT_NE(textureManagerSource.find("std::string runtimeSignature;"), std::string::npos);
+    EXPECT_NE(textureManagerSource.find("failed->second.runtimeSignature == runtimeSignature"), std::string::npos);
+    EXPECT_NE(textureManagerSource.find("{ request.realPath, request.writeTime, CurrentTextureRuntimeSignature() }"), std::string::npos);
+    EXPECT_NE(textureManagerSource.find("bool TextureManager::IsAsyncArtifactLoadFailed"), std::string::npos);
+    EXPECT_EQ(textureManagerSource.find("g_failedAsyncTextureArtifacts[request.path] = TryGetLastWriteTime"), std::string::npos);
 
     const auto resolveMaterialsBegin = meshRendererSource.find("const MeshRenderer::MaterialList& MeshRenderer::ResolveMaterials()");
     ASSERT_NE(resolveMaterialsBegin, std::string::npos);
@@ -3846,6 +3893,107 @@ TEST(EditorRenderPathContractTests, GeneratedModelMaterialResolutionBindsCachedT
     ASSERT_NE(setModelPathEnd, std::string::npos);
     const auto setModelPathCode = meshFilterSource.substr(setModelPathBegin, setModelPathEnd - setModelPathBegin);
     EXPECT_EQ(setModelPathCode.find("GetResource(p_path, true)"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, GeneratedModelMaterialResolutionFailsUnqueueableTextureMisses)
+{
+    const auto actionsSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
+    const std::string source = ReadSourceText(actionsSourcePath);
+
+    ASSERT_FALSE(source.empty());
+    const auto textureBindBegin = source.find("bool BindDeferredMaterialTextures(");
+    ASSERT_NE(textureBindBegin, std::string::npos);
+    const auto textureBindEnd = source.find("template<typename FrameBudgetExpired>", textureBindBegin);
+    ASSERT_NE(textureBindEnd, std::string::npos);
+    const auto textureBindCode = source.substr(textureBindBegin, textureBindEnd - textureBindBegin);
+
+    const auto request = textureBindCode.find("textureManager.RequestAsyncArtifact(texturePath)");
+    const auto pendingGuard = textureBindCode.find("textureManager.IsAsyncArtifactLoadPending(texturePath)", request);
+    const auto failedGuard = textureBindCode.find("textureManager.IsAsyncArtifactLoadFailed(texturePath)", pendingGuard);
+    const auto unqueueableGuard = textureBindCode.find("if (!texture)", failedGuard + 1u);
+    ASSERT_NE(request, std::string::npos);
+    ASSERT_NE(pendingGuard, std::string::npos);
+    ASSERT_NE(failedGuard, std::string::npos);
+    ASSERT_NE(unqueueableGuard, std::string::npos);
+    EXPECT_NE(textureBindCode.find("++stats->failedMaterialSlots", unqueueableGuard), std::string::npos);
+    EXPECT_NE(textureBindCode.find("task.failed = true", unqueueableGuard), std::string::npos);
+    EXPECT_NE(textureBindCode.find("task.nextTextureSlot = textureIndex", unqueueableGuard), std::string::npos);
+    EXPECT_LT(unqueueableGuard, textureBindCode.find("material.Set<NLS::Render::Resources::Texture2D*>(uniformName, texture)"));
+}
+
+TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionRestoresHiddenRootOnLiveCancellation)
+{
+    const auto actionsSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
+    const std::string source = ReadSourceText(actionsSourcePath);
+
+    ASSERT_FALSE(source.empty());
+    const auto stepBegin = source.find("void RunRendererResourceResolutionStep(");
+    ASSERT_NE(stepBegin, std::string::npos);
+    const auto stepEnd = source.find("void Editor::Core::EditorActions::LoadEmptyScene()", stepBegin);
+    ASSERT_NE(stepEnd, std::string::npos);
+    const auto stepCode = source.substr(stepBegin, stepEnd - stepBegin);
+
+    EXPECT_NE(stepCode.find("auto finishCancelled = [&actions, &tracker, &state]"), std::string::npos);
+    EXPECT_NE(stepCode.find("if (restoreRootVisibility)"), std::string::npos);
+    EXPECT_NE(stepCode.find("RestoreRendererResourceResolutionRootVisibility(*state);"), std::string::npos);
+    EXPECT_NE(stepCode.find("finishCancelled(false);"), std::string::npos);
+    EXPECT_NE(stepCode.find("finishCancelled(true);"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionRollsBackHiddenRootOnFailure)
+{
+    const auto actionsSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
+    const std::string source = ReadSourceText(actionsSourcePath);
+
+    ASSERT_FALSE(source.empty());
+    const auto rollbackBegin = source.find("void RollbackHiddenRendererResourceResolutionRoot(");
+    ASSERT_NE(rollbackBegin, std::string::npos);
+    const auto rollbackEnd = source.find("template<typename ComponentType>", rollbackBegin);
+    ASSERT_NE(rollbackEnd, std::string::npos);
+    const auto rollbackCode = source.substr(rollbackBegin, rollbackEnd - rollbackBegin);
+
+    EXPECT_NE(rollbackCode.find("state.rootHiddenUntilRendererResourcesReady"), std::string::npos);
+    EXPECT_NE(rollbackCode.find("actions.GetSelectedGameObject() == root"), std::string::npos);
+    EXPECT_NE(rollbackCode.find("actions.UnselectGameObject();"), std::string::npos);
+    EXPECT_NE(rollbackCode.find("scene->DestroyGameObject(*root);"), std::string::npos);
+    EXPECT_NE(rollbackCode.find("state.rootHiddenUntilRendererResourcesReady = false;"), std::string::npos);
+    EXPECT_EQ(rollbackCode.find("root->SetActive(state.restoreRootSelfActive);"), std::string::npos);
+
+    const auto stepBegin = source.find("void RunRendererResourceResolutionStep(");
+    ASSERT_NE(stepBegin, std::string::npos);
+    const auto stepEnd = source.find("void Editor::Core::EditorActions::LoadEmptyScene()", stepBegin);
+    ASSERT_NE(stepEnd, std::string::npos);
+    const auto stepCode = source.substr(stepBegin, stepEnd - stepBegin);
+
+    const auto finishFailed = stepCode.find("auto finishFailed = [&actions, &tracker, &state]");
+    ASSERT_NE(finishFailed, std::string::npos);
+    const auto rollbackCall = stepCode.find("RollbackHiddenRendererResourceResolutionRoot(actions, *state);", finishFailed);
+    const auto releaseListener = stepCode.find("actions.ReleaseGameObjectDestroyedListener(state->destroyedListener);", finishFailed);
+    ASSERT_NE(rollbackCall, std::string::npos);
+    ASSERT_NE(releaseListener, std::string::npos);
+    EXPECT_LT(rollbackCall, releaseListener);
+}
+
+TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionFailsUnresolvedMaterialSlots)
+{
+    const auto actionsSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
+    const std::string source = ReadSourceText(actionsSourcePath);
+
+    ASSERT_FALSE(source.empty());
+    const auto stepBegin = source.find("void RunRendererResourceResolutionStep(");
+    ASSERT_NE(stepBegin, std::string::npos);
+    const auto stepEnd = source.find("void Editor::Core::EditorActions::LoadEmptyScene()", stepBegin);
+    ASSERT_NE(stepEnd, std::string::npos);
+    const auto stepCode = source.substr(stepBegin, stepEnd - stepBegin);
+
+    const auto finalFailure = stepCode.find("state->stats->unresolvedMaterialSlots > 0u");
+    ASSERT_NE(finalFailure, std::string::npos);
+    EXPECT_NE(stepCode.find("finishFailed();", finalFailure), std::string::npos);
+    EXPECT_LT(finalFailure, stepCode.find("tracker.ReportProgress(state->job, NLS::Editor::Assets::ImportPhase::Postprocess, 1.0, \"Renderer resources ready\")"));
 }
 
 TEST(EditorRenderPathContractTests, MaterialArtifactPrewarmDoesNotSynchronouslyLoadShaderDependencies)
@@ -4144,7 +4292,9 @@ TEST(EditorRenderPathContractTests, GeneratedModelDeferredMeshArtifactFailureFai
 
     const auto finalBegin = stepEnd;
     const auto finalCode = source.substr(finalBegin);
-    EXPECT_NE(finalCode.find("if (state->failed || (state->stats && state->stats->failedMaterialSlots > 0u))"), std::string::npos);
+    EXPECT_NE(finalCode.find("if (state->failed ||"), std::string::npos);
+    EXPECT_NE(finalCode.find("state->stats->failedMaterialSlots > 0u"), std::string::npos);
+    EXPECT_NE(finalCode.find("state->stats->unresolvedMaterialSlots > 0u"), std::string::npos);
     EXPECT_NE(source.find("++stats->failedMeshTasks"), std::string::npos);
 }
 
@@ -4383,6 +4533,29 @@ TEST(EditorRenderPathContractTests, PendingImportedAssetPayloadDropsUseAsyncComp
     EXPECT_NE(payloadCode.find("return CreateGameObjectFromAsset(resourcePath, focusOnCreation, p_parent)"), std::string::npos);
     EXPECT_EQ(payloadCode.find("Asset drag handle is not imported yet; waiting for background preimport"), std::string::npos);
     EXPECT_EQ(payloadCode.find("return nullptr;\n    }\n\n    if (!result.handled"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, ImportedPayloadDropFailuresLogBridgeDiagnostics)
+{
+    const auto actionsSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
+
+    const std::string source = ReadSourceText(actionsSourcePath);
+
+    ASSERT_FALSE(source.empty());
+    const auto payloadBegin =
+        source.find("Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAsset(\n    const NLS::Editor::Assets::EditorAssetDragPayload& payload");
+    ASSERT_NE(payloadBegin, std::string::npos);
+    const auto completionBegin =
+        source.find("void NLS::Editor::Core::EditorActions::CompletePendingAssetDrop(", payloadBegin);
+    ASSERT_NE(completionBegin, std::string::npos);
+    const auto payloadCode = source.substr(payloadBegin, completionBegin - payloadBegin);
+
+    EXPECT_NE(payloadCode.find("for (const auto& diagnostic : result.dragDrop.diagnostics)"), std::string::npos);
+    EXPECT_NE(payloadCode.find("Imported asset drag diagnostic code="), std::string::npos);
+    EXPECT_NE(payloadCode.find("payloadSubAssetKey="), std::string::npos);
+    EXPECT_NE(payloadCode.find("generatedModelPrefab="), std::string::npos);
+    EXPECT_NE(payloadCode.find("dragDropStatus="), std::string::npos);
 }
 
 TEST(EditorRenderPathContractTests, AssetDropsTargetActivePrefabStageSceneWhenOpen)
@@ -4753,6 +4926,118 @@ TEST(EditorRenderPathContractTests, RendererResourceResolutionProgressDoesNotSho
     EXPECT_LT(hiddenEventCheck, presentTaskProgress);
     EXPECT_NE(actionsSource.find("\"asset-resolution\""), std::string::npos);
     EXPECT_NE(actionsSource.find("Resolving renderer resource "), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, NativeProgressDialogCloseDestroysWindowBeforeQuittingThread)
+{
+    const auto contextSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Context.cpp";
+
+    std::ifstream contextStream(contextSourcePath, std::ios::binary);
+    const std::string contextSource{
+        std::istreambuf_iterator<char>(contextStream),
+        std::istreambuf_iterator<char>()};
+    ASSERT_FALSE(contextSource.empty());
+
+    const auto requestClose = contextSource.find("void RequestClose()");
+    const auto runDialogThread = contextSource.find("void RunDialogThread()", requestClose);
+    ASSERT_NE(requestClose, std::string::npos);
+    ASSERT_NE(runDialogThread, std::string::npos);
+    const auto requestCloseSource = contextSource.substr(requestClose, runDialogThread - requestClose);
+    EXPECT_NE(requestCloseSource.find("SendMessageW(windowHandle, kProgressCloseMessage"), std::string::npos);
+    EXPECT_NE(requestCloseSource.find("else if (m_threadId != 0)"), std::string::npos);
+
+    const auto closeMessage = contextSource.find("message == kProgressCloseMessage");
+    const auto destroyMessage = contextSource.find("message == WM_DESTROY", closeMessage);
+    const auto wmClose = contextSource.find("message == WM_CLOSE", closeMessage);
+    ASSERT_NE(closeMessage, std::string::npos);
+    ASSERT_NE(destroyMessage, std::string::npos);
+    ASSERT_NE(wmClose, std::string::npos);
+    const auto closeMessageSource = contextSource.substr(closeMessage, destroyMessage - closeMessage);
+    EXPECT_NE(closeMessageSource.find("DestroyWindow(windowHandle)"), std::string::npos);
+    EXPECT_EQ(closeMessageSource.find("PostQuitMessage(0)"), std::string::npos);
+
+    EXPECT_NE(contextSource.substr(destroyMessage, wmClose - destroyMessage).find("PostQuitMessage(0)"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, NativeProgressDialogDoesNotShowDefaultStartingEditorBeforeFirstUpdate)
+{
+    const auto contextSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Context.cpp";
+
+    std::ifstream contextStream(contextSourcePath, std::ios::binary);
+    const std::string contextSource{
+        std::istreambuf_iterator<char>(contextStream),
+        std::istreambuf_iterator<char>()};
+    ASSERT_FALSE(contextSource.empty());
+
+    const auto runDialogThread = contextSource.find("void RunDialogThread()");
+    const auto markReady = contextSource.find("MarkReady();", runDialogThread);
+    const auto applyPendingState = contextSource.find("void ApplyPendingState()", markReady);
+    ASSERT_NE(runDialogThread, std::string::npos);
+    ASSERT_NE(markReady, std::string::npos);
+    ASSERT_NE(applyPendingState, std::string::npos);
+
+    const auto constructionSource = contextSource.substr(runDialogThread, applyPendingState - runDialogThread);
+    EXPECT_EQ(constructionSource.find("ShowWindow(m_windowHandle, SW_SHOWNORMAL)"), std::string::npos);
+
+    const auto applyOwnerBlocking = contextSource.find("void ApplyOwnerBlocking", applyPendingState);
+    ASSERT_NE(applyOwnerBlocking, std::string::npos);
+    const auto applySource = contextSource.substr(applyPendingState, applyOwnerBlocking - applyPendingState);
+    EXPECT_NE(applySource.find("!m_visible"), std::string::npos);
+    EXPECT_NE(applySource.find("ShowWindow(m_windowHandle, SW_SHOWNORMAL)"), std::string::npos);
+    EXPECT_NE(applySource.find("m_visible = true"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, FileWatcherPreimportUsesGlobalProgressTracker)
+{
+    const auto assetBrowserSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Panels/AssetBrowser.cpp";
+
+    const std::string source = ReadSourceText(assetBrowserSourcePath);
+    ASSERT_FALSE(source.empty());
+
+    const auto schedulerMethod = source.find(
+        "void Editor::Panels::AssetBrowser::ScheduleProjectAssetPreimport(");
+    const auto refreshMethod = source.find(
+        "void Editor::Panels::AssetBrowser::RefreshPreservingExpandedFolders()",
+        schedulerMethod);
+    ASSERT_NE(schedulerMethod, std::string::npos);
+    ASSERT_NE(refreshMethod, std::string::npos);
+
+    const auto methodSource = source.substr(schedulerMethod, refreshMethod - schedulerMethod);
+    EXPECT_NE(methodSource.find("auto& tracker = EDITOR_CONTEXT(importProgressTracker);"), std::string::npos);
+    EXPECT_NE(methodSource.find("preimportScheduler.Run(database, tracker, request)"), std::string::npos);
+    EXPECT_EQ(methodSource.find("ImportProgressTracker tracker;"), std::string::npos);
+    EXPECT_EQ(methodSource.find("std::make_shared<ImportProgressTracker>()"), std::string::npos);
+    EXPECT_NE(methodSource.find("LogAssetPreimportFailureDetails"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, NativeTaskProgressDoesNotDisableEditorWindow)
+{
+    const auto contextSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Context.cpp";
+
+    const std::string contextSource = ReadSourceText(contextSourcePath);
+    ASSERT_FALSE(contextSource.empty());
+
+    const auto presentTaskProgress = contextSource.find(
+        "void Editor::Core::Context::PresentTaskProgress(");
+    const auto completeTaskProgress = contextSource.find(
+        "void Editor::Core::Context::CompleteTaskProgress(",
+        presentTaskProgress);
+    ASSERT_NE(presentTaskProgress, std::string::npos);
+    ASSERT_NE(completeTaskProgress, std::string::npos);
+
+    const auto methodSource = contextSource.substr(
+        presentTaskProgress,
+        completeTaskProgress - presentTaskProgress);
+    EXPECT_NE(methodSource.find("m_nativeProgressDialog->Update("), std::string::npos);
+    EXPECT_NE(
+        methodSource.find("window != nullptr ? window->GetNativeWindowHandle() : nullptr"),
+        std::string::npos);
+    EXPECT_NE(methodSource.find("false);"), std::string::npos);
+    EXPECT_EQ(methodSource.find("true);"), std::string::npos);
 }
 
 TEST(EditorRenderPathContractTests, SceneValidationReadbackWaitsForDeferredAssetResolution)

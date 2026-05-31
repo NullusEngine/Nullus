@@ -83,6 +83,22 @@ enum class RendererResourceResolutionTaskKind
     Material
 };
 
+const char* DragDropOperationStatusLabel(const NLS::Editor::Assets::DragDropOperationStatus status)
+{
+    using NLS::Editor::Assets::DragDropOperationStatus;
+    switch (status)
+    {
+    case DragDropOperationStatus::Committed:
+        return "committed";
+    case DragDropOperationStatus::Failed:
+        return "failed";
+    case DragDropOperationStatus::Rejected:
+        return "rejected";
+    default:
+        return "unknown";
+    }
+}
+
 struct RendererResourceResolutionTask
 {
     RendererResourceResolutionTaskKind kind = RendererResourceResolutionTaskKind::Mesh;
@@ -131,6 +147,8 @@ struct RendererResourceResolutionState
     std::shared_ptr<struct RendererResourceResolutionStats> stats;
     size_t completedTasks = 0u;
     size_t totalTasks = 0u;
+    bool rootHiddenUntilRendererResourcesReady = false;
+    bool restoreRootSelfActive = true;
 };
 
 struct RendererResourceResolutionStats
@@ -754,18 +772,33 @@ NLS::Engine::GameObject* FindLiveGameObjectByAddress(
     return nullptr;
 }
 
-void ApplyVisibleFallbackMaterial(
-    NLS::Engine::GameObject& object,
-    NLS::Render::Resources::Material& fallback)
+void RestoreRendererResourceResolutionRootVisibility(RendererResourceResolutionState& state)
 {
-    if (auto* meshRenderer = object.GetComponent<NLS::Engine::Components::MeshRenderer>())
-        meshRenderer->FillEmptySlotsWithMaterial(fallback);
+    if (!state.rootHiddenUntilRendererResourcesReady)
+        return;
 
-    for (auto* child : object.GetChildren())
+    auto* root = state.cachedLiveInstance ? state.cachedLiveInstance->instanceRoot : nullptr;
+    if (root && root->IsAlive())
+        root->SetActive(state.restoreRootSelfActive);
+    state.rootHiddenUntilRendererResourcesReady = false;
+}
+
+void RollbackHiddenRendererResourceResolutionRoot(
+    NLS::Editor::Core::EditorActions& actions,
+    RendererResourceResolutionState& state)
+{
+    if (!state.rootHiddenUntilRendererResourcesReady)
+        return;
+
+    auto* root = state.cachedLiveInstance ? state.cachedLiveInstance->instanceRoot : nullptr;
+    auto* scene = state.scene;
+    if (root && root->IsAlive() && scene)
     {
-        if (child && child->IsAlive())
-            ApplyVisibleFallbackMaterial(*child, fallback);
+        if (actions.GetSelectedGameObject() == root)
+            actions.UnselectGameObject();
+        scene->DestroyGameObject(*root);
     }
+    state.rootHiddenUntilRendererResourcesReady = false;
 }
 
 template<typename ComponentType>
@@ -874,13 +907,6 @@ void CollectPrefabAssetResolutionTasks(
     }
 }
 
-NLS::Render::Resources::Material* ResolveRendererFallbackMaterial(NLS::Editor::Core::Context* context)
-{
-    if (!context)
-        return nullptr;
-    return GetOrCreateEditorDefaultMaterial(*context);
-}
-
 template<typename FrameBudgetExpired>
 bool BindDeferredMaterialTextures(
     NLS::Render::Resources::Material& material,
@@ -907,13 +933,29 @@ bool BindDeferredMaterialTextures(
         auto* texture = textureManager.GetResource(texturePath, false);
         if (!texture)
             texture = textureManager.RequestAsyncArtifact(texturePath);
+        if (!texture && textureManager.IsAsyncArtifactLoadPending(texturePath))
+            return false;
+        if (!texture && textureManager.IsAsyncArtifactLoadFailed(texturePath))
+        {
+            if (stats)
+                ++stats->failedMaterialSlots;
+            task.failed = true;
+            task.nextTextureSlot = textureIndex;
+            return true;
+        }
+        if (!texture)
+        {
+            if (stats)
+                ++stats->failedMaterialSlots;
+            task.failed = true;
+            task.nextTextureSlot = textureIndex;
+            return true;
+        }
 
         if (texture)
-        {
             material.Set<NLS::Render::Resources::Texture2D*>(uniformName, texture);
-            if (stats)
-                ++stats->loadedTextureSlots;
-        }
+        if (texture && stats)
+            ++stats->loadedTextureSlots;
 
         task.nextTextureSlot = textureIndex;
         if ((visitedTextures >= kRendererResourceResolutionTextureBindsPerFrame ||
@@ -941,8 +983,6 @@ bool BindDeferredMaterialPaths(
     if (!task.materialHintsApplied)
     {
         meshRenderer.SetMaterialPathHints(task.materialPaths);
-        if (auto* fallback = ResolveRendererFallbackMaterial(&actions.GetContext()))
-            meshRenderer.FillEmptySlotsWithMaterial(*fallback);
         task.materialHintsApplied = true;
     }
     if (!NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::MaterialManager>())
@@ -1307,8 +1347,10 @@ void RunRendererResourceResolutionStep(
     size_t meshBindsThisFrame = 0u;
     size_t scheduledTasksThisFrame = 0u;
 
-    auto finishCancelled = [&actions, &tracker, &state]
+    auto finishCancelled = [&actions, &tracker, &state](const bool restoreRootVisibility)
     {
+        if (restoreRootVisibility)
+            RestoreRendererResourceResolutionRootVisibility(*state);
         actions.ReleaseGameObjectDestroyedListener(state->destroyedListener);
         state->destroyedListener = InvalidListenerID;
         tracker.FinishJob(
@@ -1319,6 +1361,7 @@ void RunRendererResourceResolutionStep(
 
     auto finishFailed = [&actions, &tracker, &state]
     {
+        RollbackHiddenRendererResourceResolutionRoot(actions, *state);
         actions.ReleaseGameObjectDestroyedListener(state->destroyedListener);
         state->destroyedListener = InvalidListenerID;
         tracker.ReportProgress(state->job, NLS::Editor::Assets::ImportPhase::Postprocess, 1.0, "Renderer resource resolution failed");
@@ -1331,7 +1374,7 @@ void RunRendererResourceResolutionStep(
     if (state->cancelled)
     {
         NLS_LOG_INFO("Cancelled renderer resource resolution because the prefab instance was destroyed");
-        finishCancelled();
+        finishCancelled(false);
         return;
     }
 
@@ -1339,7 +1382,7 @@ void RunRendererResourceResolutionStep(
     if (!liveInstance)
     {
         NLS_LOG_INFO("Cancelled renderer resource resolution because the prefab instance is no longer live");
-        finishCancelled();
+        finishCancelled(true);
         return;
     }
 
@@ -1359,6 +1402,17 @@ void RunRendererResourceResolutionStep(
     {
         return std::chrono::steady_clock::now() - frameStart >= kRendererResourceResolutionFrameBudget;
     };
+
+    if (NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>())
+    {
+        auto& textureManager = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager);
+        textureManager.PumpAsyncLoads(kRendererResourceResolutionTextureBindsPerFrame);
+        if (frameBudgetExpired())
+        {
+            scheduleNextStep();
+            return;
+        }
+    }
 
     const auto* liveObjectsBySourceId = EnsureRendererResourceLiveObjectIndex(*state, *liveInstance);
 
@@ -1498,7 +1552,10 @@ void RunRendererResourceResolutionStep(
                 " failedMaterial=" +
                 std::to_string(state->stats->failedMaterialSlots)
             : std::string {}));
-    if (state->failed || (state->stats && state->stats->failedMaterialSlots > 0u))
+    if (state->failed ||
+        (state->stats &&
+            (state->stats->failedMaterialSlots > 0u ||
+                state->stats->unresolvedMaterialSlots > 0u)))
     {
         finishFailed();
         return;
@@ -1506,6 +1563,7 @@ void RunRendererResourceResolutionStep(
 
     actions.ReleaseGameObjectDestroyedListener(state->destroyedListener);
     state->destroyedListener = InvalidListenerID;
+    RestoreRendererResourceResolutionRootVisibility(*state);
     tracker.ReportProgress(state->job, NLS::Editor::Assets::ImportPhase::Postprocess, 1.0, "Renderer resources ready");
     tracker.FinishJob(state->job, NLS::Editor::Assets::ImportJobTerminalStatus::Succeeded, {});
 }
@@ -2399,7 +2457,25 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAsset(
     {
         if (payload.imported != 0u)
         {
-            NLS_LOG_ERROR("Imported asset drag handle could not resolve a committed prefab artifact without reimport: " + path);
+            NLS_LOG_ERROR(
+                "Imported asset drag handle could not resolve a committed prefab artifact without reimport: " +
+                path +
+                " payloadSubAssetKey=" +
+                NLS::Editor::Assets::GetEditorAssetDragPayloadSubAssetKey(payload) +
+                " generatedModelPrefab=" +
+                std::to_string(payload.generatedModelPrefab) +
+                " imported=" +
+                std::to_string(payload.imported) +
+                " dragDropStatus=" +
+                DragDropOperationStatusLabel(result.dragDrop.status));
+            for (const auto& diagnostic : result.dragDrop.diagnostics)
+            {
+                NLS_LOG_ERROR(
+                    "Imported asset drag diagnostic code=" +
+                    diagnostic.code +
+                    " message=" +
+                    diagnostic.message);
+            }
             return nullptr;
         }
 
@@ -2544,9 +2620,6 @@ void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(
         return;
     }
 
-    if (auto* fallback = GetOrCreateEditorDefaultMaterial(m_context))
-        ApplyVisibleFallbackMaterial(*instance->instanceRoot, *fallback);
-
     const auto resolvedStats = CountResolvedRendererResources(*instance->instanceRoot);
     if (resolvedStats.meshRenderers > 0u &&
         resolvedStats.boundMeshes == resolvedStats.meshRenderers &&
@@ -2643,6 +2716,9 @@ void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(
     state->liveObjects = BuildRendererResourceLiveObjectIndex(*instance);
     state->stats = std::move(stats);
     state->totalTasks = state->remainingTasks.size();
+    state->restoreRootSelfActive = instance->instanceRoot->IsSelfActive();
+    instance->instanceRoot->SetActive(false);
+    state->rootHiddenUntilRendererResourcesReady = true;
     state->destroyedListener = TrackGameObjectDestroyedListener(
         [state](NLS::Engine::GameObject& destroyed)
         {

@@ -122,8 +122,9 @@ uint32_t SchemaVersionForArtifactType(const ArtifactType artifactType)
     switch (artifactType)
     {
     case ArtifactType::Mesh:
-    case ArtifactType::Texture:
         return 3u;
+    case ArtifactType::Texture:
+        return 4u;
     case ArtifactType::Material:
     case ArtifactType::Prefab:
     case ArtifactType::Shader:

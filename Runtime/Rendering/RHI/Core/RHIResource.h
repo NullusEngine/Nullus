@@ -77,6 +77,7 @@ namespace NLS::Render::RHI
         RHIExtent3D extent{};
         TextureDimension dimension = TextureDimension::Texture2D;
         TextureFormat format = TextureFormat::RGBA8;
+        TextureColorSpace colorSpace = TextureColorSpace::Linear;
         uint32_t mipLevels = 1;
         uint32_t arrayLayers = 1;
         uint32_t sampleCount = 1;
@@ -88,8 +89,15 @@ namespace NLS::Render::RHI
 
     struct NLS_RENDER_API RHITextureUploadDesc
     {
+        struct SubresourceData
+        {
+            const void* data = nullptr;
+            size_t dataSize = 0u;
+        };
+
         const void* data = nullptr;
         size_t dataSize = 0u;
+        std::vector<SubresourceData> subresources;
         uint32_t mipLevel = 0u;
         uint32_t arrayLayer = 0u;
         RHIExtent3D extent{};
@@ -97,7 +105,7 @@ namespace NLS::Render::RHI
         uint32_t slicePitch = 0u;
         std::string debugName;
 
-        bool HasData() const { return data != nullptr && dataSize != 0u; }
+        bool HasData() const { return (data != nullptr && dataSize != 0u) || !subresources.empty(); }
     };
 
     struct NLS_RENDER_API RHITextureUpdateDesc
@@ -120,6 +128,7 @@ namespace NLS::Render::RHI
     {
         TextureViewType viewType = TextureViewType::Auto;
         TextureFormat format = TextureFormat::RGBA8;
+        TextureColorSpace colorSpace = TextureColorSpace::Linear;
         RHISubresourceRange subresourceRange{};
         std::string debugName;
     };

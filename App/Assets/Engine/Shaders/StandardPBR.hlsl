@@ -50,13 +50,22 @@ VSOutput VSMain(VSInput input, uint instanceId : SV_InstanceID)
     return output;
 }
 
+float3 DecodeNormalMapSample(float4 normalSample)
+{
+    const float2 xy = normalSample.xy * 2.0f - 1.0f;
+    const float rgbZ = normalSample.z * 2.0f - 1.0f;
+    const float reconstructedZ = sqrt(saturate(1.0f - dot(xy, xy)));
+    const float useRgbZ = step(0.0039f, normalSample.z);
+    return normalize(float3(xy, lerp(reconstructedZ, rgbZ, useRgbZ)));
+}
+
 float3 ComputeNormal(VSOutput input, float2 texCoord)
 {
     float3 normalWS = normalize(input.NormalWS);
 
     if (u_EnableNormalMapping > 0.5f)
     {
-        const float3 tangentNormal = u_NormalMap.Sample(u_LinearWrapSampler, texCoord).xyz * 2.0f - 1.0f;
+        const float3 tangentNormal = DecodeNormalMapSample(u_NormalMap.Sample(u_LinearWrapSampler, texCoord));
         const float3x3 tbn = float3x3(
             normalize(input.TangentWS),
             normalize(input.BitangentWS),

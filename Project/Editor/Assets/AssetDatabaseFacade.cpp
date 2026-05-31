@@ -122,6 +122,47 @@ bool IsStampDependencyKind(const NLS::Core::Assets::AssetDependencyKind kind)
         kind == AssetDependencyKind::PathToGuidMapping;
 }
 
+bool HasDependency(
+    const NLS::Core::Assets::ArtifactManifest& manifest,
+    const NLS::Core::Assets::AssetDependencyKind kind,
+    const std::string_view value,
+    const std::string_view hashOrVersion)
+{
+    return std::any_of(
+        manifest.dependencies.begin(),
+        manifest.dependencies.end(),
+        [kind, value, hashOrVersion](const NLS::Core::Assets::AssetDependencyRecord& dependency)
+        {
+            return dependency.kind == kind &&
+                dependency.value == value &&
+                dependency.hashOrVersion == hashOrVersion;
+        });
+}
+
+bool HasCurrentExternalTextureBuildPipelineDependency(
+    const NLS::Core::Assets::ArtifactManifest& manifest,
+    const NLS::Core::Assets::AssetType assetType)
+{
+    if (assetType != NLS::Core::Assets::AssetType::ModelScene)
+        return true;
+
+    const bool hasTextureArtifact = std::any_of(
+        manifest.subAssets.begin(),
+        manifest.subAssets.end(),
+        [](const NLS::Core::Assets::ImportedArtifact& artifact)
+        {
+            return artifact.artifactType == NLS::Core::Assets::ArtifactType::Texture;
+        });
+    if (!hasTextureArtifact)
+        return true;
+
+    return HasDependency(
+        manifest,
+        NLS::Core::Assets::AssetDependencyKind::PostprocessorVersion,
+        "external-texture-build-pipeline",
+        "1");
+}
+
 void AddUniqueDependency(
     std::vector<NLS::Core::Assets::AssetDependencyRecord>& dependencies,
     NLS::Core::Assets::AssetDependencyRecord dependency)
@@ -1543,13 +1584,15 @@ bool AssetDatabaseFacade::IsArtifactManifestCurrentForAssetPath(const std::strin
         manifestCopy = manifest->second;
     }
 
-    const auto meta = NLS::Core::Assets::AssetMeta::Load(record->metaPath);
+    auto meta = NLS::Core::Assets::AssetMeta::Load(record->metaPath);
     if (!meta.has_value())
         return false;
+    meta->importerVersion = std::max(meta->importerVersion, record->importerVersion);
 
     if (manifestCopy.importerId != meta->importerId ||
         manifestCopy.importerVersion != meta->importerVersion ||
-        manifestCopy.targetPlatform != "editor")
+        manifestCopy.targetPlatform != "editor" ||
+        !HasCurrentExternalTextureBuildPipelineDependency(manifestCopy, meta->assetType))
     {
         return false;
     }

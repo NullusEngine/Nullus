@@ -37,13 +37,14 @@ namespace NLS::Render::RHI::DX12
             return result;
 
         const auto semantics = GetDX12TextureUploadFormatSemantics(format);
-        if (semantics.sourceBytesPerPixel == 0u || semantics.nativeBytesPerPixel == 0u)
+        const size_t sourceRowBytes = semantics.expandsPackedRgbToRgba8
+            ? static_cast<size_t>(width) * static_cast<size_t>(semantics.sourceBytesPerPixel)
+            : static_cast<size_t>(CalculateTextureRowPitch(format, width));
+        const size_t nativeRowBytes = semantics.expandsPackedRgbToRgba8
+            ? static_cast<size_t>(width) * static_cast<size_t>(semantics.nativeBytesPerPixel)
+            : static_cast<size_t>(CalculateTextureRowPitch(format, width));
+        if (sourceRowBytes == 0u || nativeRowBytes == 0u)
             return result;
-
-        const size_t sourceRowBytes =
-            static_cast<size_t>(width) * static_cast<size_t>(semantics.sourceBytesPerPixel);
-        const size_t nativeRowBytes =
-            static_cast<size_t>(width) * static_cast<size_t>(semantics.nativeBytesPerPixel);
         if (sourceSize < sourceRowBytes || destinationSize < nativeRowBytes)
             return result;
 
@@ -80,10 +81,7 @@ namespace NLS::Render::RHI::DX12
             return plan;
 
         const auto formatSemantics = GetDX12TextureUploadFormatSemantics(desc.format);
-        const uint32_t sourceBytesPerPixel = formatSemantics.sourceBytesPerPixel;
-        const uint32_t nativeBytesPerPixel = formatSemantics.nativeBytesPerPixel;
-        if (sourceBytesPerPixel == 0u || nativeBytesPerPixel == 0u)
-            return plan;
+        const bool isRgb8Expansion = formatSemantics.expandsPackedRgbToRgba8;
         const uint32_t arrayLayers = GetTextureLayerCount(desc.dimension, desc.arrayLayers);
 
         size_t dataOffset = 0;
@@ -98,11 +96,18 @@ namespace NLS::Render::RHI::DX12
 
             for (uint32_t mipLevel = 0; mipLevel < desc.mipLevels; ++mipLevel)
             {
-                const size_t rowPitch = static_cast<size_t>(mipWidth) * sourceBytesPerPixel;
-                const size_t nativeRowPitch = static_cast<size_t>(mipWidth) * nativeBytesPerPixel;
-                const size_t slicePitch = rowPitch * static_cast<size_t>(mipHeight) * static_cast<size_t>(mipDepth);
-                const size_t nativeSlicePitch =
-                    nativeRowPitch * static_cast<size_t>(mipHeight) * static_cast<size_t>(mipDepth);
+                const size_t rowPitch = isRgb8Expansion
+                    ? static_cast<size_t>(mipWidth) * 3u
+                    : static_cast<size_t>(CalculateTextureRowPitch(desc.format, mipWidth));
+                const size_t nativeRowPitch = isRgb8Expansion
+                    ? static_cast<size_t>(mipWidth) * 4u
+                    : static_cast<size_t>(CalculateTextureRowPitch(desc.format, mipWidth));
+                const size_t slicePitch = isRgb8Expansion
+                    ? rowPitch * static_cast<size_t>(mipHeight) * static_cast<size_t>(mipDepth)
+                    : static_cast<size_t>(CalculateTextureSlicePitch(desc.format, mipWidth, mipHeight, mipDepth));
+                const size_t nativeSlicePitch = isRgb8Expansion
+                    ? nativeRowPitch * static_cast<size_t>(mipHeight) * static_cast<size_t>(mipDepth)
+                    : static_cast<size_t>(CalculateTextureSlicePitch(desc.format, mipWidth, mipHeight, mipDepth));
 
                 plan.subresources.push_back({
                     mipLevel,
@@ -149,7 +154,8 @@ namespace NLS::Render::RHI::DX12
         DX12InitialUploadRequest request;
         request.resourceKind = DX12InitialUploadResourceKind::Buffer;
         request.data = uploadDesc.data;
-        request.dataSize = uploadDesc.HasData() ? uploadDesc.dataSize : 0u;
+        if (request.textureSubresources.empty())
+            request.dataSize = uploadDesc.HasData() ? uploadDesc.dataSize : 0u;
         request.destinationOffset = uploadDesc.destinationOffset;
         request.debugName = uploadDesc.debugName.empty() ? desc.debugName : uploadDesc.debugName;
         return request;
@@ -174,7 +180,21 @@ namespace NLS::Render::RHI::DX12
         request.resourceKind = DX12InitialUploadResourceKind::Texture;
         request.data = uploadDesc.data;
         request.texturePlan = BuildDX12TextureUploadPlan(desc);
-        request.dataSize = uploadDesc.HasData() ? uploadDesc.dataSize : 0u;
+        request.textureSubresources.reserve(uploadDesc.subresources.size());
+        for (const auto& subresource : uploadDesc.subresources)
+        {
+            request.textureSubresources.push_back({
+                subresource.data,
+                subresource.dataSize
+            });
+            request.dataSize += subresource.dataSize;
+        }
+        if (request.textureSubresources.empty())
+            request.dataSize = uploadDesc.HasData() ? uploadDesc.dataSize : 0u;
+        if (!request.textureSubresources.empty())
+        {
+            request.data = nullptr;
+        }
         request.destinationOffset = 0u;
         request.debugName = uploadDesc.debugName.empty() ? desc.debugName : uploadDesc.debugName;
         return request;

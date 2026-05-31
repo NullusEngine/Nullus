@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "Assets/AssetMeta.h"
+#include "Assets/EditorAssetDatabase.h"
 #include "Assets/AssetImporterFacade.h"
 #include "Guid.h"
 #include "Rendering/Assets/SceneImportPipeline.h"
@@ -74,7 +75,7 @@ TEST(AssetImporterFacadeTests, GetAtPathExposesSerializedSettingsDirtyStateAndSa
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetImporterFacadeTests, FailedSaveAndReimportPreservesDirtyStateAndQueuedReimport)
+TEST(AssetImporterFacadeTests, FailedSaveAndReimportPreservesDirtyStateWithoutQueuedReimport)
 {
     using namespace NLS::Editor::Assets;
 
@@ -89,7 +90,7 @@ TEST(AssetImporterFacadeTests, FailedSaveAndReimportPreservesDirtyStateAndQueued
     std::filesystem::remove(assetPath);
 
     EXPECT_FALSE(facade.SaveAndReimport("Assets/Models/MissingAfterEdit.gltf"));
-    EXPECT_EQ(facade.GetQueuedReimportCount(), 1u);
+    EXPECT_EQ(facade.GetQueuedReimportCount(), 0u);
 
     const auto loadedMeta = NLS::Core::Assets::AssetMeta::Load(
         NLS::Core::Assets::GetAssetMetaPath(assetPath));
@@ -125,6 +126,56 @@ TEST(AssetImporterFacadeTests, SaveAndReimportReportsProgressWhenTrackerIsProvid
         NLS::Core::Assets::GetAssetMetaPath(root / "Assets" / "Models" / "ProgressHero.gltf"));
     ASSERT_TRUE(loadedMeta.has_value());
     EXPECT_EQ(loadedMeta->settings.find("NULLUS_IMPORTER_DIRTY"), loadedMeta->settings.end());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImporterFacadeTests, SaveAndReimportCommitsCleanMetaBeforeImportSoWatcherDoesNotReimportAgain)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetImporterFacadeRoot();
+    WriteTextFile(root / "Assets" / "Models" / "NoEchoHero.gltf", R"({"asset":{"version":"2.0"}})");
+
+    AssetImporterFacade facade({root});
+    ASSERT_TRUE(facade.Refresh());
+    ASSERT_TRUE(facade.SetSerializedSetting("Assets/Models/NoEchoHero.gltf", "globalScale", "2.0"));
+
+    ImportProgressTracker manualTracker;
+    ASSERT_TRUE(facade.SaveAndReimport("Assets/Models/NoEchoHero.gltf", manualTracker));
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.IsArtifactManifestCurrentForAssetPath("Assets/Models/NoEchoHero.gltf"));
+
+    AssetPreimportScheduler scheduler;
+    ImportProgressTracker watcherTracker;
+    ASSERT_TRUE(scheduler.Run(database, watcherTracker, {
+        AssetPreimportReason::FileWatcherChanged,
+        {std::filesystem::path("Assets") / "Models" / "NoEchoHero.gltf.meta"}
+    }));
+    EXPECT_EQ(database.GetCompletedImportCount(), 0u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImporterFacadeTests, FailedSaveAndReimportAfterQueueDoesNotLeaveQueuedReimport)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetImporterFacadeRoot();
+    WriteTextFile(root / "Assets" / "Models" / "SaveBlockedHero.gltf", R"({"asset":{"version":"2.0"}})");
+
+    AssetImporterFacade facade({root});
+    ASSERT_TRUE(facade.Refresh());
+    ASSERT_TRUE(facade.SetSerializedSetting("Assets/Models/SaveBlockedHero.gltf", "globalScale", "3.0"));
+
+    std::filesystem::remove(root / "Assets" / "Models" / "SaveBlockedHero.gltf.meta");
+    std::filesystem::create_directory(root / "Assets" / "Models" / "SaveBlockedHero.gltf.meta");
+
+    ImportProgressTracker tracker;
+    EXPECT_FALSE(facade.SaveAndReimport("Assets/Models/SaveBlockedHero.gltf", tracker));
+    EXPECT_EQ(facade.GetQueuedReimportCount(), 0u);
 
     std::filesystem::remove_all(root);
 }
@@ -457,6 +508,45 @@ TEST(AssetImporterFacadeTests, TextureImporterSettingsPersistSamplerColorSpaceAn
     EXPECT_EQ(loadedMeta->settings.at("TEXTURE_TYPE"), "normal-map");
     EXPECT_EQ(loadedMeta->settings.at("TEXTURE_SRGB"), "false");
     EXPECT_EQ(loadedMeta->settings.at("TEXTURE_PLATFORM.win64"), "1024|bc7|high");
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImporterFacadeTests, TextureImporterSettingsPersistResizePolicyExplicitFormatAndPlatformMipOverride)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetImporterFacadeRoot();
+    WriteTextFile(root / "Assets" / "Textures" / "HeroMask.png", "png");
+
+    AssetImporterFacade facade({root});
+    ASSERT_TRUE(facade.Refresh());
+
+    TextureImporterSettings settings;
+    settings.textureType = "mask";
+    settings.mipmapEnabled = true;
+    settings.maxTextureSize = 1024u;
+    settings.resizePolicy = "power-of-two";
+    settings.explicitFormat = "bc5";
+    settings.platformOverrides.push_back({"win64-dx12", 512u, "bc7", "high", "scale-down", false});
+
+    ASSERT_TRUE(facade.SetTextureImporterSettings("Assets/Textures/HeroMask.png", settings));
+    const auto stored = facade.GetTextureImporterSettings("Assets/Textures/HeroMask.png");
+    ASSERT_TRUE(stored.has_value());
+    EXPECT_EQ(stored->resizePolicy, "power-of-two");
+    EXPECT_EQ(stored->explicitFormat, "bc5");
+    ASSERT_EQ(stored->platformOverrides.size(), 1u);
+    EXPECT_EQ(stored->platformOverrides[0].platform, "win64-dx12");
+    EXPECT_EQ(stored->platformOverrides[0].resizePolicy, "scale-down");
+    ASSERT_TRUE(stored->platformOverrides[0].mipmapEnabled.has_value());
+    EXPECT_FALSE(*stored->platformOverrides[0].mipmapEnabled);
+
+    const auto loadedMeta = NLS::Core::Assets::AssetMeta::Load(
+        NLS::Core::Assets::GetAssetMetaPath(root / "Assets" / "Textures" / "HeroMask.png"));
+    ASSERT_TRUE(loadedMeta.has_value());
+    EXPECT_EQ(loadedMeta->settings.at("TEXTURE_RESIZE_POLICY"), "power-of-two");
+    EXPECT_EQ(loadedMeta->settings.at("TEXTURE_EXPLICIT_FORMAT"), "bc5");
+    EXPECT_EQ(loadedMeta->settings.at("TEXTURE_PLATFORM.win64-dx12"), "512|bc7|high|scale-down|false");
 
     std::filesystem::remove_all(root);
 }

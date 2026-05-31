@@ -1,10 +1,13 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Assets/AssetId.h"
@@ -15,11 +18,16 @@
 #include "Assets/NativeArtifactContainer.h"
 #include "Assets/AssetImporterSettings.h"
 #include "Assets/ExternalAssetImporter.h"
+#include "Assets/TextureEncoding/DirectXTexTextureEncoder.h"
 #include "Guid.h"
 #include "Rendering/Assets/ImportedScene.h"
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Assets/SceneImportPipeline.h"
+#include "Rendering/Assets/TextureBuildSettings.h"
 #include "Rendering/Assets/TextureArtifact.h"
+#include "Rendering/Assets/TextureEncoder.h"
+#include "Rendering/Assets/TextureFormatResolver.h"
+#include "Rendering/Assets/TextureMipGenerator.h"
 #include "Rendering/Resources/Parsers/AssimpParser.h"
 #include "Rendering/Resources/Parsers/IModelParser.h"
 #include "Serialize/ObjectGraphReader.h"
@@ -28,8 +36,24 @@
 #define NLS_HAS_ASSIMP_FBX_IMPORTER 0
 #endif
 
+#ifndef NLS_HAS_DIRECTXTEX
+#define NLS_HAS_DIRECTXTEX 0
+#endif
+
 namespace
 {
+std::string JoinDiagnosticSummaries(const NLS::Core::Assets::AssetDiagnostics& diagnostics)
+{
+    std::string summary;
+    for (const auto& diagnostic : diagnostics)
+    {
+        if (!summary.empty())
+            summary += " | ";
+        summary += diagnostic.code + ": " + diagnostic.message;
+    }
+    return summary;
+}
+
 std::vector<std::string> ExtractKeys(
     const std::vector<NLS::Render::Assets::GeneratedSceneSubAsset>& records)
 {
@@ -287,6 +311,89 @@ std::vector<uint8_t> TinyPng()
     };
 }
 
+std::vector<uint8_t> NormalMap2x2Png()
+{
+    return {
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x72, 0xB6, 0x0D,
+        0x24, 0x00, 0x00, 0x00, 0x1B, 0x49, 0x44, 0x41,
+        0x54, 0x78, 0x9C, 0x63, 0x68, 0x68, 0xF8, 0xFF,
+        0xFF, 0x4C, 0xC3, 0xB3, 0xFF, 0x0C, 0x0D, 0x67,
+        0x9E, 0xFD, 0x3F, 0x73, 0xE6, 0xF0, 0x7F, 0x00,
+        0x6D, 0xB5, 0x0C, 0xBB, 0x8F, 0xD2, 0x8D, 0xD5,
+        0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
+        0xAE, 0x42, 0x60, 0x82
+    };
+}
+
+std::vector<uint8_t> UncompressedBmp(
+    const uint32_t width,
+    const uint32_t height,
+    const uint8_t red,
+    const uint8_t green,
+    const uint8_t blue)
+{
+    const uint32_t bytesPerPixel = 3u;
+    const uint32_t rowStride = ((width * bytesPerPixel + 3u) / 4u) * 4u;
+    const uint32_t pixelBytes = rowStride * height;
+    const uint32_t fileHeaderBytes = 14u;
+    const uint32_t dibHeaderBytes = 40u;
+    const uint32_t pixelOffset = fileHeaderBytes + dibHeaderBytes;
+    const uint32_t fileSize = pixelOffset + pixelBytes;
+
+    std::vector<uint8_t> bytes;
+    bytes.reserve(fileSize);
+    const auto appendU16 = [&bytes](const uint16_t value)
+    {
+        bytes.push_back(static_cast<uint8_t>(value & 0xFFu));
+        bytes.push_back(static_cast<uint8_t>((value >> 8u) & 0xFFu));
+    };
+    const auto appendU32 = [&bytes](const uint32_t value)
+    {
+        bytes.push_back(static_cast<uint8_t>(value & 0xFFu));
+        bytes.push_back(static_cast<uint8_t>((value >> 8u) & 0xFFu));
+        bytes.push_back(static_cast<uint8_t>((value >> 16u) & 0xFFu));
+        bytes.push_back(static_cast<uint8_t>((value >> 24u) & 0xFFu));
+    };
+
+    appendU16(0x4D42u);
+    appendU32(fileSize);
+    appendU16(0u);
+    appendU16(0u);
+    appendU32(pixelOffset);
+    appendU32(dibHeaderBytes);
+    appendU32(width);
+    appendU32(height);
+    appendU16(1u);
+    appendU16(24u);
+    appendU32(0u);
+    appendU32(pixelBytes);
+    appendU32(2835u);
+    appendU32(2835u);
+    appendU32(0u);
+    appendU32(0u);
+
+    for (uint32_t y = 0u; y < height; ++y)
+    {
+        for (uint32_t x = 0u; x < width; ++x)
+        {
+            bytes.push_back(blue);
+            bytes.push_back(green);
+            bytes.push_back(red);
+        }
+        while ((bytes.size() - pixelOffset) % rowStride != 0u)
+            bytes.push_back(0u);
+    }
+    return bytes;
+}
+
+float DecodeNormalComponent(const uint8_t component)
+{
+    return (static_cast<float>(component) / 255.0f) * 2.0f - 1.0f;
+}
+
 const NLS::Engine::Serialize::ObjectRecord* FindRecord(
     const NLS::Engine::Serialize::ObjectGraphDocument& document,
     const std::string& debugName,
@@ -395,7 +502,7 @@ TEST(AssetImportPipelineTests, DefaultRegistrySelectsSceneImportersByExtension)
     auto registry = NLS::Render::Assets::SceneImporterRegistry::CreateDefault();
     EXPECT_EQ(
         NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
-        5u);
+        6u);
 
     const auto* gltf = registry.FindImporterForPath("Assets/Models/Hero.gltf");
     ASSERT_NE(gltf, nullptr);
@@ -1642,7 +1749,7 @@ TEST(AssetImportPipelineTests, ExternalModelImportWritesMeshArtifactsBySourceMes
         {}
     });
 
-    ASSERT_TRUE(result.imported);
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
     const auto* leftMesh = result.manifest.FindSubAsset("mesh:mesh/0");
     ASSERT_NE(leftMesh, nullptr);
     const auto* rightMesh = result.manifest.FindSubAsset("mesh:mesh/1");
@@ -1702,8 +1809,8 @@ TEST(AssetImportPipelineTests, ExternalObjModelImportWritesMaterialTextureUnifor
 {
     const auto root = MakeImportTestRoot();
     const auto sourcePath = root / "Assets" / "Models" / "Hero.obj";
-    WriteTextFile(root / "Assets" / "Textures" / "HeroDiffuse.png", "texture-bytes");
-    WriteTextFile(root / "Assets" / "Textures" / "HeroNormal.png", "texture-bytes");
+    WriteBinaryFile(root / "Assets" / "Textures" / "HeroDiffuse.png", TinyPng());
+    WriteBinaryFile(root / "Assets" / "Textures" / "HeroNormal.png", TinyPng());
     WriteTextFile(
         root / "Assets" / "Models" / "Hero.mtl",
         R"(
@@ -1742,7 +1849,7 @@ f 1/1/1 2/2/1 3/3/1
         root / "Library" / "Artifacts" / meta.id.ToString(),
         meta,
         "Hero",
-        "editor",
+        "win64-dx12",
         nullptr,
         nullptr,
         {},
@@ -1819,7 +1926,7 @@ f 1/1/1 2/2/1 3/3/1
         root / "Library" / "Artifacts" / meta.id.ToString(),
         meta,
         "Hero",
-        "editor",
+        "win64-dx12",
         nullptr,
         nullptr,
         {},
@@ -1837,7 +1944,7 @@ f 1/1/1 2/2/1 3/3/1
     const auto payload = ReadArtifactPayloadBytes(
         textureArtifact->artifactPath,
         NLS::Core::Assets::ArtifactType::Texture,
-        3u);
+        4u);
     ASSERT_GE(payload.size(), 4u);
     EXPECT_EQ(payload[0], static_cast<uint8_t>('N'));
     EXPECT_EQ(payload[1], static_cast<uint8_t>('T'));
@@ -1851,11 +1958,780 @@ f 1/1/1 2/2/1 3/3/1
     const auto nativeTexture = NLS::Render::Assets::DeserializeTextureArtifact(
         ReadBinaryFile(textureArtifact->artifactPath));
     ASSERT_TRUE(nativeTexture.has_value());
+#if NLS_HAS_DIRECTXTEX
+    EXPECT_EQ(nativeTexture->format, NLS::Render::RHI::TextureFormat::BC1);
+    EXPECT_EQ(nativeTexture->targetPlatform, "win64-dx12");
+    EXPECT_EQ(nativeTexture->encoderId, "directxtex-bc");
+    EXPECT_EQ(nativeTexture->encoderVersion, 1u);
+#else
     EXPECT_EQ(nativeTexture->format, NLS::Render::RHI::TextureFormat::RGBA8);
+    EXPECT_EQ(nativeTexture->targetPlatform, "win64-dx12");
+    EXPECT_EQ(nativeTexture->encoderId, "rgba8-passthrough");
+    EXPECT_EQ(nativeTexture->encoderVersion, 1u);
+#endif
+    EXPECT_FALSE(nativeTexture->buildIdentity.empty());
+    EXPECT_NE(nativeTexture->buildIdentity.find("|sourceId="), std::string::npos);
+    EXPECT_EQ(nativeTexture->buildIdentity.find("|sourceId=|"), std::string::npos);
+    EXPECT_NE(nativeTexture->buildIdentity.find("|sourceHash="), std::string::npos);
+    EXPECT_EQ(nativeTexture->buildIdentity.find("|sourceHash=|"), std::string::npos);
+    EXPECT_NE(nativeTexture->buildIdentity.find("|importer=" + std::to_string(meta.importerVersion)), std::string::npos);
+    const auto hasTexturePipelineDependency = std::any_of(
+        result.manifest.dependencies.begin(),
+        result.manifest.dependencies.end(),
+        [](const NLS::Core::Assets::AssetDependencyRecord& dependency)
+        {
+            return dependency.kind == NLS::Core::Assets::AssetDependencyKind::PostprocessorVersion &&
+                dependency.value == "external-texture-build-pipeline" &&
+                dependency.hashOrVersion == "1";
+        });
+    EXPECT_TRUE(hasTexturePipelineDependency);
     ASSERT_FALSE(nativeTexture->mips.empty());
     EXPECT_EQ(nativeTexture->mips.front().level, 0u);
+    EXPECT_EQ(nativeTexture->mips.front().rowPitch, NLS::Render::RHI::CalculateTextureRowPitch(nativeTexture->format, nativeTexture->width));
+    EXPECT_EQ(nativeTexture->mips.front().slicePitch, NLS::Render::RHI::CalculateTextureSlicePitch(nativeTexture->format, nativeTexture->width, nativeTexture->height, 1u));
 
     std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalEditorModelImportBuildsTexturesForDx12WhileKeepingEditorManifest)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "Hero.obj";
+    WriteBinaryFile(root / "Assets" / "Textures" / "HeroDiffuse.png", TinyPng());
+    WriteTextFile(
+        root / "Assets" / "Models" / "Hero.mtl",
+        R"(
+newmtl HeroMaterial
+map_Kd ../Textures/HeroDiffuse.png
+)");
+    WriteTextFile(
+        sourcePath,
+        R"(
+mtllib Hero.mtl
+o Hero
+v 0 0 0
+v 1 0 0
+v 0 1 0
+vt 0 0
+vt 1 0
+vt 0 1
+vn 0 0 1
+usemtl HeroMaterial
+f 1/1/1 2/2/1 3/3/1
+)");
+
+    NLS::Core::Assets::AssetMeta meta;
+    meta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("95959595-9595-4595-8595-959595959595"));
+    meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    meta.importerId = "scene-model";
+    meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / meta.id.ToString(),
+        meta,
+        "Hero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported);
+    EXPECT_EQ(result.manifest.targetPlatform, "editor");
+    const auto* textureArtifact = result.manifest.FindSubAsset("texture:parser/texture/0");
+    ASSERT_NE(textureArtifact, nullptr);
+    EXPECT_EQ(textureArtifact->targetPlatform, "editor");
+
+    const auto nativeTexture = NLS::Render::Assets::DeserializeTextureArtifact(
+        ReadBinaryFile(textureArtifact->artifactPath));
+    ASSERT_TRUE(nativeTexture.has_value());
+#if defined(_WIN32)
+    EXPECT_EQ(nativeTexture->targetPlatform, "win64-dx12");
+#if NLS_HAS_DIRECTXTEX
+    EXPECT_EQ(nativeTexture->format, NLS::Render::RHI::TextureFormat::BC1);
+    EXPECT_EQ(nativeTexture->encoderId, "directxtex-bc");
+#else
+    EXPECT_EQ(nativeTexture->format, NLS::Render::RHI::TextureFormat::RGBA8);
+    EXPECT_EQ(nativeTexture->encoderId, "rgba8-passthrough");
+#endif
+#else
+    EXPECT_EQ(nativeTexture->targetPlatform, "editor");
+    EXPECT_EQ(nativeTexture->format, NLS::Render::RHI::TextureFormat::RGBA8);
+    EXPECT_EQ(nativeTexture->encoderId, "rgba8-passthrough");
+#endif
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, TextureFormatResolverMapsWindowsDx12CommonCases)
+{
+    NLS::Render::Assets::TextureImportSettingsSnapshot settings;
+    settings.textureType = "default";
+    settings.compressionIntent = "default";
+    settings.mipmapEnabled = true;
+
+    NLS::Render::Assets::TextureSourceDescriptor source;
+    source.assetPath = "Assets/Textures/HeroBaseColor.png";
+    source.width = 1024u;
+    source.height = 1024u;
+    source.hasAlpha = false;
+    source.isHDR = false;
+
+    NLS::Render::Assets::TextureBackendCapabilities capabilities;
+    capabilities.targetPlatform = "win64-dx12";
+    const auto sampledUpload = [](const NLS::Render::RHI::TextureFormat format, const bool supportsSrgbView = false)
+    {
+        NLS::Render::RHI::TextureFormatCapability capability;
+        capability.format = format;
+        capability.sampled = true;
+        capability.upload = true;
+        capability.supportsSrgbView = supportsSrgbView;
+        return capability;
+    };
+    capabilities.supportedFormats = {
+        {NLS::Render::RHI::TextureFormat::RGBA8, sampledUpload(NLS::Render::RHI::TextureFormat::RGBA8, true)},
+        {NLS::Render::RHI::TextureFormat::RGBA16F, sampledUpload(NLS::Render::RHI::TextureFormat::RGBA16F)},
+        {NLS::Render::RHI::TextureFormat::BC1, sampledUpload(NLS::Render::RHI::TextureFormat::BC1, true)},
+        {NLS::Render::RHI::TextureFormat::BC3, sampledUpload(NLS::Render::RHI::TextureFormat::BC3, true)},
+        {NLS::Render::RHI::TextureFormat::BC5, sampledUpload(NLS::Render::RHI::TextureFormat::BC5)},
+        {NLS::Render::RHI::TextureFormat::BC7, sampledUpload(NLS::Render::RHI::TextureFormat::BC7, true)}
+    };
+
+    const auto color = NLS::Render::Assets::ResolveTextureBuildSettings(
+        settings,
+        std::nullopt,
+        source,
+        capabilities,
+        "directxtex-bc",
+        1u);
+    ASSERT_TRUE(color.has_value());
+    EXPECT_EQ(color->resolvedFormat, NLS::Render::RHI::TextureFormat::BC1);
+
+    const auto incompatibleSettings = settings;
+    auto incompatibleSource = source;
+    incompatibleSource.hasAlpha = true;
+    const auto incompatibleEncoder = NLS::Render::Assets::ResolveTextureBuildSettingsWithDiagnostics(
+        incompatibleSettings,
+        std::nullopt,
+        incompatibleSource,
+        capabilities,
+        "rgba8-passthrough",
+        1u);
+    EXPECT_FALSE(incompatibleEncoder.settings.has_value());
+    ASSERT_FALSE(incompatibleEncoder.diagnostics.empty());
+    EXPECT_NE(incompatibleEncoder.diagnostics.back().reason.find("does not support"), std::string::npos);
+
+    settings.compressionIntent = "uncompressed";
+    const auto uncompressed = NLS::Render::Assets::ResolveTextureBuildSettings(
+        settings,
+        std::nullopt,
+        source,
+        capabilities,
+        "directxtex-bc",
+        1u);
+    ASSERT_TRUE(uncompressed.has_value());
+    EXPECT_EQ(uncompressed->resolvedFormat, NLS::Render::RHI::TextureFormat::RGBA8);
+    settings.compressionIntent = "default";
+
+    source.hasAlpha = true;
+    const auto alphaColor = NLS::Render::Assets::ResolveTextureBuildSettings(
+        settings,
+        std::nullopt,
+        source,
+        capabilities,
+        "directxtex-bc",
+        1u);
+    ASSERT_TRUE(alphaColor.has_value());
+    EXPECT_EQ(alphaColor->resolvedFormat, NLS::Render::RHI::TextureFormat::BC7);
+
+    settings.textureType = "normal";
+    source.hasAlpha = false;
+    const auto normal = NLS::Render::Assets::ResolveTextureBuildSettings(
+        settings,
+        std::nullopt,
+        source,
+        capabilities,
+        "directxtex-bc",
+        1u);
+    ASSERT_TRUE(normal.has_value());
+    EXPECT_EQ(normal->resolvedFormat, NLS::Render::RHI::TextureFormat::BC5);
+
+    settings.textureType = "mask";
+    settings.srgbTexture = false;
+    const auto mask = NLS::Render::Assets::ResolveTextureBuildSettings(
+        settings,
+        std::nullopt,
+        source,
+        capabilities,
+        "directxtex-bc",
+        1u);
+    ASSERT_TRUE(mask.has_value());
+    EXPECT_EQ(mask->resolvedFormat, NLS::Render::RHI::TextureFormat::BC1);
+    EXPECT_EQ(mask->colorSpace, NLS::Render::RHI::TextureColorSpace::Linear);
+    settings.srgbTexture = true;
+
+    settings.textureType = "hdr";
+    source.isHDR = true;
+    const auto hdr = NLS::Render::Assets::ResolveTextureBuildSettings(
+        settings,
+        std::nullopt,
+        source,
+        capabilities,
+        "directxtex-bc",
+        1u);
+    ASSERT_TRUE(hdr.has_value());
+    EXPECT_EQ(hdr->resolvedFormat, NLS::Render::RHI::TextureFormat::RGBA16F);
+
+    auto capabilitiesWithoutHdr = capabilities;
+    capabilitiesWithoutHdr.supportedFormats.erase(NLS::Render::RHI::TextureFormat::RGBA16F);
+    const auto hdrWithoutPreservingFormat = NLS::Render::Assets::ResolveTextureBuildSettings(
+        settings,
+        std::nullopt,
+        source,
+        capabilitiesWithoutHdr,
+        "directxtex-bc",
+        1u);
+    EXPECT_FALSE(hdrWithoutPreservingFormat.has_value());
+
+    settings.textureType = "default";
+    settings.explicitFormat = "bc3";
+    source.isHDR = false;
+    source.hasAlpha = false;
+    const auto explicitBc3 = NLS::Render::Assets::ResolveTextureBuildSettings(
+        settings,
+        std::nullopt,
+        source,
+        capabilities,
+        "directxtex-bc",
+        1u);
+    ASSERT_TRUE(explicitBc3.has_value());
+    EXPECT_EQ(explicitBc3->resolvedFormat, NLS::Render::RHI::TextureFormat::BC3);
+
+    settings.explicitFormat = "bc5";
+    settings.srgbTexture = true;
+    const auto explicitBc5 = NLS::Render::Assets::ResolveTextureBuildSettingsWithDiagnostics(
+        settings,
+        std::nullopt,
+        source,
+        capabilities,
+        "directxtex-bc",
+        1u);
+    ASSERT_TRUE(explicitBc5.settings.has_value());
+    EXPECT_EQ(explicitBc5.settings->resolvedFormat, NLS::Render::RHI::TextureFormat::BC5);
+    EXPECT_EQ(explicitBc5.settings->colorSpace, NLS::Render::RHI::TextureColorSpace::Linear);
+    ASSERT_FALSE(explicitBc5.diagnostics.empty());
+    EXPECT_NE(explicitBc5.diagnostics.back().reason.find("linear"), std::string::npos);
+
+    settings.explicitFormat = "bc3";
+    auto capabilitiesWithoutBc3 = capabilities;
+    capabilitiesWithoutBc3.supportedFormats.erase(NLS::Render::RHI::TextureFormat::BC3);
+    const auto unavailableExplicitBc3 = NLS::Render::Assets::ResolveTextureBuildSettings(
+        settings,
+        std::nullopt,
+        source,
+        capabilitiesWithoutBc3,
+        "directxtex-bc",
+        1u);
+    EXPECT_FALSE(unavailableExplicitBc3.has_value());
+
+    NLS::Render::Assets::TexturePlatformOverrideSettings overrideSettings;
+    overrideSettings.platform = "win64-dx12";
+    overrideSettings.format = "bc3";
+    overrideSettings.maxTextureSize = 512u;
+    overrideSettings.resizePolicy = "scale-down";
+    overrideSettings.mipmapEnabled = false;
+    const auto platformOverride = NLS::Render::Assets::ResolveTextureBuildSettings(
+        settings,
+        overrideSettings,
+        source,
+        capabilities,
+        "directxtex-bc",
+        1u);
+    ASSERT_TRUE(platformOverride.has_value());
+    EXPECT_EQ(platformOverride->resolvedFormat, NLS::Render::RHI::TextureFormat::BC3);
+    EXPECT_EQ(platformOverride->maxTextureSize, 512u);
+    EXPECT_EQ(platformOverride->resizePolicy, "scale-down");
+    EXPECT_FALSE(platformOverride->mipmapEnabled);
+
+    settings.explicitFormat = "bc1";
+    source.width = 2u;
+    source.height = 2u;
+    const auto tinyFallback = NLS::Render::Assets::ResolveTextureBuildSettings(
+        settings,
+        std::nullopt,
+        source,
+        capabilities,
+        "directxtex-bc",
+        1u);
+    ASSERT_TRUE(tinyFallback.has_value());
+    EXPECT_EQ(tinyFallback->resolvedFormat, NLS::Render::RHI::TextureFormat::RGBA8);
+
+    settings.explicitFormat = "does-not-exist";
+    source.width = 1024u;
+    source.height = 1024u;
+    const auto unsupportedOverride = NLS::Render::Assets::ResolveTextureBuildSettings(
+        settings,
+        std::nullopt,
+        source,
+        capabilities,
+        "directxtex-bc",
+        1u);
+    ASSERT_TRUE(unsupportedOverride.has_value());
+    EXPECT_EQ(unsupportedOverride->resolvedFormat, NLS::Render::RHI::TextureFormat::BC1);
+
+    capabilities.supportedFormats.erase(NLS::Render::RHI::TextureFormat::BC1);
+    settings.explicitFormat.clear();
+    const auto capabilityFallback = NLS::Render::Assets::ResolveTextureBuildSettings(
+        settings,
+        std::nullopt,
+        source,
+        capabilities,
+        "directxtex-bc",
+        1u);
+    ASSERT_TRUE(capabilityFallback.has_value());
+    EXPECT_EQ(capabilityFallback->resolvedFormat, NLS::Render::RHI::TextureFormat::RGBA8);
+}
+
+TEST(AssetImportPipelineTests, TextureFormatResolverReportsFallbackAndFailureDiagnostics)
+{
+    NLS::Render::Assets::TextureImportSettingsSnapshot settings;
+    settings.textureType = "default";
+    settings.compressionIntent = "default";
+    settings.mipmapEnabled = true;
+
+    NLS::Render::Assets::TextureSourceDescriptor source;
+    source.assetPath = "Assets/Textures/HeroBaseColor.png";
+    source.width = 1024u;
+    source.height = 1024u;
+    source.hasAlpha = false;
+
+    const auto sampledUpload = [](const NLS::Render::RHI::TextureFormat format, const bool supportsSrgbView = false)
+    {
+        NLS::Render::RHI::TextureFormatCapability capability;
+        capability.format = format;
+        capability.sampled = true;
+        capability.upload = true;
+        capability.supportsSrgbView = supportsSrgbView;
+        return capability;
+    };
+
+    NLS::Render::Assets::TextureBackendCapabilities capabilities;
+    capabilities.targetPlatform = "win64-dx12";
+    capabilities.supportedFormats = {
+        {NLS::Render::RHI::TextureFormat::RGBA8, sampledUpload(NLS::Render::RHI::TextureFormat::RGBA8, true)}
+    };
+
+    const auto fallback = NLS::Render::Assets::ResolveTextureBuildSettingsWithDiagnostics(
+        settings,
+        std::nullopt,
+        source,
+        capabilities,
+        "directxtex-bc",
+        1u);
+    ASSERT_TRUE(fallback.settings.has_value());
+    EXPECT_EQ(fallback.settings->resolvedFormat, NLS::Render::RHI::TextureFormat::RGBA8);
+    ASSERT_EQ(fallback.diagnostics.size(), 1u);
+    EXPECT_EQ(fallback.diagnostics[0].assetPath, source.assetPath);
+    EXPECT_EQ(fallback.diagnostics[0].targetPlatform, capabilities.targetPlatform);
+    EXPECT_EQ(fallback.diagnostics[0].requestedFormat, NLS::Render::RHI::TextureFormat::BC1);
+    EXPECT_EQ(fallback.diagnostics[0].resolvedFormat, NLS::Render::RHI::TextureFormat::RGBA8);
+    EXPECT_NE(fallback.diagnostics[0].reason.find("unavailable"), std::string::npos);
+
+    settings.explicitFormat = "bc3";
+    const auto explicitFailure = NLS::Render::Assets::ResolveTextureBuildSettingsWithDiagnostics(
+        settings,
+        std::nullopt,
+        source,
+        capabilities,
+        "directxtex-bc",
+        1u);
+    EXPECT_FALSE(explicitFailure.settings.has_value());
+    ASSERT_EQ(explicitFailure.diagnostics.size(), 1u);
+    EXPECT_EQ(explicitFailure.diagnostics[0].requestedFormat, NLS::Render::RHI::TextureFormat::BC3);
+    EXPECT_EQ(explicitFailure.diagnostics[0].resolvedFormat, NLS::Render::RHI::TextureFormat::Count);
+    EXPECT_NE(explicitFailure.diagnostics[0].reason.find("explicit"), std::string::npos);
+
+    settings.explicitFormat.clear();
+    settings.textureType = "hdr";
+    source.isHDR = true;
+    const auto hdrFailure = NLS::Render::Assets::ResolveTextureBuildSettingsWithDiagnostics(
+        settings,
+        std::nullopt,
+        source,
+        capabilities,
+        "rgba8-passthrough",
+        1u);
+    EXPECT_FALSE(hdrFailure.settings.has_value());
+    ASSERT_EQ(hdrFailure.diagnostics.size(), 1u);
+    EXPECT_EQ(hdrFailure.diagnostics[0].requestedFormat, NLS::Render::RHI::TextureFormat::RGBA16F);
+    EXPECT_EQ(hdrFailure.diagnostics[0].resolvedFormat, NLS::Render::RHI::TextureFormat::Count);
+    EXPECT_NE(hdrFailure.diagnostics[0].reason.find("HDR"), std::string::npos);
+
+    settings.textureType = "default";
+    settings.explicitFormat = "does-not-exist";
+    source.isHDR = false;
+    capabilities.supportedFormats.emplace(
+        NLS::Render::RHI::TextureFormat::BC1,
+        sampledUpload(NLS::Render::RHI::TextureFormat::BC1, true));
+    const auto unknownExplicit = NLS::Render::Assets::ResolveTextureBuildSettingsWithDiagnostics(
+        settings,
+        std::nullopt,
+        source,
+        capabilities,
+        "directxtex-bc",
+        1u);
+    ASSERT_TRUE(unknownExplicit.settings.has_value());
+    EXPECT_EQ(unknownExplicit.settings->resolvedFormat, NLS::Render::RHI::TextureFormat::BC1);
+    ASSERT_EQ(unknownExplicit.diagnostics.size(), 1u);
+    EXPECT_EQ(unknownExplicit.diagnostics[0].requestedFormat, NLS::Render::RHI::TextureFormat::Count);
+    EXPECT_EQ(unknownExplicit.diagnostics[0].resolvedFormat, NLS::Render::RHI::TextureFormat::BC1);
+    EXPECT_NE(unknownExplicit.diagnostics[0].reason.find("unknown explicit"), std::string::npos);
+    EXPECT_NE(unknownExplicit.diagnostics[0].reason.find("does-not-exist"), std::string::npos);
+}
+
+TEST(AssetImportPipelineTests, TextureFormatResolverKeepsReservedPlatformsAndFormatsExplicitlyUnsupported)
+{
+    NLS::Render::Assets::TextureImportSettingsSnapshot settings;
+    settings.textureType = "default";
+    settings.compressionIntent = "default";
+    settings.mipmapEnabled = true;
+
+    NLS::Render::Assets::TextureSourceDescriptor source;
+    source.assetPath = "Assets/Textures/ReservedPlatform.png";
+    source.width = 1024u;
+    source.height = 1024u;
+    source.hasAlpha = false;
+
+    const auto sampledUpload = [](const NLS::Render::RHI::TextureFormat format, const bool supportsSrgbView = false)
+    {
+        NLS::Render::RHI::TextureFormatCapability capability;
+        capability.format = format;
+        capability.sampled = true;
+        capability.upload = true;
+        capability.supportsSrgbView = supportsSrgbView;
+        return capability;
+    };
+
+    NLS::Render::Assets::TextureBackendCapabilities vulkanCapabilities;
+    vulkanCapabilities.targetPlatform = "linux-vulkan";
+    vulkanCapabilities.supportedFormats = {
+        {NLS::Render::RHI::TextureFormat::RGBA8, sampledUpload(NLS::Render::RHI::TextureFormat::RGBA8, true)},
+        {NLS::Render::RHI::TextureFormat::RGBA16F, sampledUpload(NLS::Render::RHI::TextureFormat::RGBA16F)}
+    };
+
+    const auto vulkanFallback = NLS::Render::Assets::ResolveTextureBuildSettingsWithDiagnostics(
+        settings,
+        std::nullopt,
+        source,
+        vulkanCapabilities,
+        "rgba8-passthrough",
+        1u);
+    ASSERT_TRUE(vulkanFallback.settings.has_value());
+    EXPECT_EQ(vulkanFallback.settings->targetPlatform, "linux-vulkan");
+    EXPECT_EQ(vulkanFallback.settings->resolvedFormat, NLS::Render::RHI::TextureFormat::RGBA8);
+    ASSERT_EQ(vulkanFallback.diagnostics.size(), 1u);
+    EXPECT_EQ(vulkanFallback.diagnostics[0].targetPlatform, "linux-vulkan");
+    EXPECT_EQ(vulkanFallback.diagnostics[0].requestedFormat, NLS::Render::RHI::TextureFormat::BC1);
+
+    for (const auto& reservedFormat : {
+        std::pair{"astc4x4", NLS::Render::RHI::TextureFormat::ASTC4x4},
+        std::pair{"etc2-rgba8", NLS::Render::RHI::TextureFormat::ETC2RGBA8},
+        std::pair{"bc6h", NLS::Render::RHI::TextureFormat::BC6H}
+    })
+    {
+        SCOPED_TRACE(reservedFormat.first);
+        settings.explicitFormat = reservedFormat.first;
+        const auto explicitReserved = NLS::Render::Assets::ResolveTextureBuildSettingsWithDiagnostics(
+            settings,
+            std::nullopt,
+            source,
+            vulkanCapabilities,
+            "rgba8-passthrough",
+            1u);
+        EXPECT_FALSE(explicitReserved.settings.has_value());
+        ASSERT_EQ(explicitReserved.diagnostics.size(), 1u);
+        EXPECT_EQ(explicitReserved.diagnostics[0].requestedFormat, reservedFormat.second);
+        EXPECT_NE(explicitReserved.diagnostics[0].reason.find("explicit"), std::string::npos);
+    }
+
+    settings.explicitFormat.clear();
+    const auto missingEncoder = NLS::Render::Assets::ResolveTextureBuildSettingsWithDiagnostics(
+        settings,
+        std::nullopt,
+        source,
+        vulkanCapabilities,
+        "",
+        0u);
+    EXPECT_FALSE(missingEncoder.settings.has_value());
+    ASSERT_EQ(missingEncoder.diagnostics.size(), 1u);
+    EXPECT_NE(missingEncoder.diagnostics[0].reason.find("encoder"), std::string::npos);
+}
+
+TEST(AssetImportPipelineTests, TextureEncoderRegistryFindsEncodersByIdAndFormat)
+{
+    class FakeTextureEncoder final : public NLS::Render::Assets::ITextureEncoder
+    {
+    public:
+        std::string_view GetId() const override { return "fake-bc"; }
+        uint32_t GetVersion() const override { return 3u; }
+        bool SupportsFormat(const NLS::Render::RHI::TextureFormat format) const override
+        {
+            return format == NLS::Render::RHI::TextureFormat::BC7;
+        }
+        NLS::Render::Assets::TextureEncodeResult Encode(
+            const NLS::Render::Assets::TextureEncodeRequest&) const override
+        {
+            return {};
+        }
+    };
+
+    NLS::Render::Assets::TextureEncoderRegistry registry;
+    EXPECT_TRUE(registry.IsEmpty());
+    EXPECT_TRUE(registry.Register(std::make_shared<FakeTextureEncoder>()));
+    EXPECT_FALSE(registry.IsEmpty());
+    EXPECT_FALSE(registry.Register(std::make_shared<FakeTextureEncoder>()));
+
+    const auto* byId = registry.Find("fake-bc");
+    ASSERT_NE(byId, nullptr);
+    EXPECT_EQ(byId->GetVersion(), 3u);
+    EXPECT_EQ(registry.Find("missing"), nullptr);
+    EXPECT_EQ(registry.FindForFormat(NLS::Render::RHI::TextureFormat::BC7), byId);
+    EXPECT_EQ(registry.FindForFormat(NLS::Render::RHI::TextureFormat::ASTC4x4), nullptr);
+}
+
+TEST(AssetImportPipelineTests, DirectXTexTextureEncoderProducesBC7ArtifactWhenDependencyAvailable)
+{
+    auto encoder = NLS::Editor::Assets::CreateDirectXTexTextureEncoder();
+    ASSERT_NE(encoder, nullptr);
+    EXPECT_EQ(encoder->GetId(), "directxtex-bc");
+    EXPECT_TRUE(encoder->SupportsFormat(NLS::Render::RHI::TextureFormat::BC7));
+
+    NLS::Render::Assets::TextureMipGeneratorSettings mipSettings;
+    mipSettings.intent = NLS::Render::Assets::TextureMipIntent::Color;
+    mipSettings.colorSpace = NLS::Render::Assets::TextureArtifactColorSpace::Srgb;
+    mipSettings.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    mipSettings.mipmapEnabled = true;
+
+    std::vector<uint8_t> basePixels;
+    basePixels.reserve(8u * 8u * 4u);
+    for (uint32_t y = 0u; y < 8u; ++y)
+    {
+        for (uint32_t x = 0u; x < 8u; ++x)
+        {
+            basePixels.push_back(static_cast<uint8_t>(x * 31u));
+            basePixels.push_back(static_cast<uint8_t>(y * 31u));
+            basePixels.push_back(static_cast<uint8_t>((x + y) * 15u));
+            basePixels.push_back(255u);
+        }
+    }
+
+    auto sourceMips = NLS::Render::Assets::GenerateTextureMipChain(
+        8u,
+        8u,
+        std::move(basePixels),
+        mipSettings);
+    ASSERT_TRUE(sourceMips.has_value());
+    ASSERT_EQ(sourceMips->mips.size(), 4u);
+
+    NLS::Render::Assets::TextureBuildSettings buildSettings;
+    buildSettings.targetPlatform = "win64-dx12";
+    buildSettings.resolvedFormat = NLS::Render::RHI::TextureFormat::BC7;
+    buildSettings.mipmapEnabled = true;
+    buildSettings.colorSpace = NLS::Render::RHI::TextureColorSpace::SRGB;
+    buildSettings.encoderId = "directxtex-bc";
+    buildSettings.encoderVersion = encoder->GetVersion();
+    buildSettings.toolVersion = "directxtex:jul2025";
+
+    const auto result = encoder->Encode({ &buildSettings, &*sourceMips });
+
+#if NLS_HAS_DIRECTXTEX
+    ASSERT_TRUE(result.succeeded) << (result.diagnostics.empty() ? "" : result.diagnostics.front().message);
+    EXPECT_TRUE(result.diagnostics.empty());
+    EXPECT_EQ(result.artifact.width, 8u);
+    EXPECT_EQ(result.artifact.height, 8u);
+    EXPECT_EQ(result.artifact.format, NLS::Render::RHI::TextureFormat::BC7);
+    EXPECT_EQ(result.artifact.colorSpace, NLS::Render::Assets::TextureArtifactColorSpace::Srgb);
+    EXPECT_EQ(result.artifact.encoderId, "directxtex-bc");
+    EXPECT_EQ(result.artifact.encoderVersion, encoder->GetVersion());
+    ASSERT_EQ(result.artifact.mips.size(), sourceMips->mips.size());
+    for (const auto& mip : result.artifact.mips)
+    {
+        EXPECT_EQ(mip.rowPitch, NLS::Render::RHI::CalculateTextureRowPitch(result.artifact.format, mip.width));
+        EXPECT_EQ(mip.slicePitch, NLS::Render::RHI::CalculateTextureSlicePitch(result.artifact.format, mip.width, mip.height, 1u));
+        EXPECT_EQ(mip.pixels.size(), mip.slicePitch);
+    }
+
+    const auto serialized = NLS::Render::Assets::SerializeTextureArtifact(result.artifact);
+    ASSERT_FALSE(serialized.empty());
+    const auto decoded = NLS::Render::Assets::DeserializeTextureArtifact(serialized);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->format, NLS::Render::RHI::TextureFormat::BC7);
+#else
+    EXPECT_FALSE(result.succeeded);
+    ASSERT_FALSE(result.diagnostics.empty());
+    EXPECT_NE(result.diagnostics.front().message.find("unavailable"), std::string::npos);
+#endif
+}
+
+TEST(AssetImportPipelineTests, DirectXTexTextureEncoderProducesFirstScopeBCArtifactsWhenDependencyAvailable)
+{
+    auto encoder = NLS::Editor::Assets::CreateDirectXTexTextureEncoder();
+    ASSERT_NE(encoder, nullptr);
+
+    NLS::Render::Assets::TextureMipGeneratorSettings mipSettings;
+    mipSettings.intent = NLS::Render::Assets::TextureMipIntent::Color;
+    mipSettings.colorSpace = NLS::Render::Assets::TextureArtifactColorSpace::Srgb;
+    mipSettings.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    mipSettings.mipmapEnabled = true;
+
+    std::vector<uint8_t> basePixels;
+    basePixels.reserve(8u * 8u * 4u);
+    for (uint32_t y = 0u; y < 8u; ++y)
+    {
+        for (uint32_t x = 0u; x < 8u; ++x)
+        {
+            basePixels.push_back(static_cast<uint8_t>(x * 29u));
+            basePixels.push_back(static_cast<uint8_t>(y * 23u));
+            basePixels.push_back(static_cast<uint8_t>((x * y) * 5u));
+            basePixels.push_back(x < 4u ? 255u : 128u);
+        }
+    }
+
+    auto sourceMips = NLS::Render::Assets::GenerateTextureMipChain(
+        8u,
+        8u,
+        std::move(basePixels),
+        mipSettings);
+    ASSERT_TRUE(sourceMips.has_value());
+
+    for (const auto format : {
+        NLS::Render::RHI::TextureFormat::BC1,
+        NLS::Render::RHI::TextureFormat::BC3,
+        NLS::Render::RHI::TextureFormat::BC5,
+        NLS::Render::RHI::TextureFormat::BC7
+    })
+    {
+        SCOPED_TRACE(NLS::Render::RHI::GetTextureFormatName(format));
+        NLS::Render::Assets::TextureBuildSettings buildSettings;
+        buildSettings.targetPlatform = "win64-dx12";
+        buildSettings.textureIntent = format == NLS::Render::RHI::TextureFormat::BC5 ? "normal" : "default";
+        buildSettings.resolvedFormat = format;
+        buildSettings.mipmapEnabled = true;
+        buildSettings.colorSpace = format == NLS::Render::RHI::TextureFormat::BC5
+            ? NLS::Render::RHI::TextureColorSpace::Linear
+            : NLS::Render::RHI::TextureColorSpace::SRGB;
+        buildSettings.encoderId = "directxtex-bc";
+        buildSettings.encoderVersion = encoder->GetVersion();
+        buildSettings.toolVersion = "directxtex:jul2025";
+
+        const auto result = encoder->Encode({ &buildSettings, &*sourceMips });
+#if NLS_HAS_DIRECTXTEX
+        ASSERT_TRUE(result.succeeded) << (result.diagnostics.empty() ? "" : result.diagnostics.front().message);
+        ASSERT_EQ(result.artifact.mips.size(), sourceMips->mips.size());
+        EXPECT_EQ(result.artifact.format, format);
+        for (const auto& mip : result.artifact.mips)
+            EXPECT_EQ(mip.pixels.size(), NLS::Render::RHI::CalculateTextureSlicePitch(format, mip.width, mip.height, 1u));
+#else
+        EXPECT_FALSE(result.succeeded);
+        ASSERT_FALSE(result.diagnostics.empty());
+        EXPECT_NE(result.diagnostics.front().message.find("unavailable"), std::string::npos);
+#endif
+    }
+}
+
+TEST(AssetImportPipelineTests, TextureBuildIdentityChangesWhenKeyInputsChange)
+{
+    NLS::Render::Assets::TextureBuildSettings base;
+    base.sourceAssetPath = "Assets/Textures/HeroBaseColor.png";
+    base.sourceAssetIdentity = "guid:hero-basecolor";
+    base.sourceContentHash = "sha256:source";
+    base.normalizedSettingsHash = "settings:base";
+    base.platformOverrideHash = "override:sorted";
+    base.importerVersion = 7u;
+    base.postprocessorVersion = 3u;
+    base.dependencyHash = "deps:v1";
+    base.targetPlatform = "win64-dx12";
+    base.resolvedFormat = NLS::Render::RHI::TextureFormat::BC7;
+    base.mipmapEnabled = true;
+    base.colorSpace = NLS::Render::RHI::TextureColorSpace::SRGB;
+    base.encoderId = "directxtex-bc";
+    base.encoderVersion = 2u;
+    base.encoderOptionsHash = "flags:srgb";
+    base.toolVersion = "directxtex:jan-2026";
+    base.artifactSchemaVersion = 4u;
+
+    const auto baseline = NLS::Render::Assets::BuildTextureBuildIdentity(base);
+    EXPECT_FALSE(baseline.empty());
+
+    auto changed = base;
+    changed.sourceAssetIdentity = "guid:hero-basecolor-variant";
+    EXPECT_NE(baseline, NLS::Render::Assets::BuildTextureBuildIdentity(changed));
+
+    changed = base;
+    changed.sourceContentHash = "sha256:changed-source";
+    EXPECT_NE(baseline, NLS::Render::Assets::BuildTextureBuildIdentity(changed));
+
+    changed = base;
+    changed.normalizedSettingsHash = "settings:changed";
+    EXPECT_NE(baseline, NLS::Render::Assets::BuildTextureBuildIdentity(changed));
+
+    changed = base;
+    changed.platformOverrideHash = "override:reordered";
+    EXPECT_NE(baseline, NLS::Render::Assets::BuildTextureBuildIdentity(changed));
+
+    changed = base;
+    changed.importerVersion = 8u;
+    EXPECT_NE(baseline, NLS::Render::Assets::BuildTextureBuildIdentity(changed));
+
+    changed = base;
+    changed.postprocessorVersion = 4u;
+    EXPECT_NE(baseline, NLS::Render::Assets::BuildTextureBuildIdentity(changed));
+
+    changed = base;
+    changed.dependencyHash = "deps:v2";
+    EXPECT_NE(baseline, NLS::Render::Assets::BuildTextureBuildIdentity(changed));
+
+    changed = base;
+    changed.targetPlatform = "linux-vulkan";
+    EXPECT_NE(baseline, NLS::Render::Assets::BuildTextureBuildIdentity(changed));
+
+    changed = base;
+    changed.resolvedFormat = NLS::Render::RHI::TextureFormat::RGBA8;
+    EXPECT_NE(baseline, NLS::Render::Assets::BuildTextureBuildIdentity(changed));
+
+    changed = base;
+    changed.mipmapEnabled = false;
+    EXPECT_NE(baseline, NLS::Render::Assets::BuildTextureBuildIdentity(changed));
+
+    changed = base;
+    changed.colorSpace = NLS::Render::RHI::TextureColorSpace::Linear;
+    EXPECT_NE(baseline, NLS::Render::Assets::BuildTextureBuildIdentity(changed));
+
+    changed = base;
+    changed.encoderId = "rgba8-passthrough";
+    EXPECT_NE(baseline, NLS::Render::Assets::BuildTextureBuildIdentity(changed));
+
+    changed = base;
+    changed.encoderVersion = 3u;
+    EXPECT_NE(baseline, NLS::Render::Assets::BuildTextureBuildIdentity(changed));
+
+    changed = base;
+    changed.encoderOptionsHash = "flags:uniform";
+    EXPECT_NE(baseline, NLS::Render::Assets::BuildTextureBuildIdentity(changed));
+
+    changed = base;
+    changed.toolVersion = "directxtex:feb-2026";
+    EXPECT_NE(baseline, NLS::Render::Assets::BuildTextureBuildIdentity(changed));
+
+    changed = base;
+    changed.artifactSchemaVersion = 5u;
+    EXPECT_NE(baseline, NLS::Render::Assets::BuildTextureBuildIdentity(changed));
 }
 
 TEST(AssetImportPipelineTests, ExternalModelImportUsesMetaModelImporterSettings)
@@ -2118,6 +2994,279 @@ TEST(AssetImportPipelineTests, ExternalGltfModelTextureArtifactsUseMaterialSlotC
     ASSERT_TRUE(normal.has_value());
     EXPECT_EQ(baseColor->colorSpace, NLS::Render::Assets::TextureArtifactColorSpace::Srgb);
     EXPECT_EQ(normal->colorSpace, NLS::Render::Assets::TextureArtifactColorSpace::Linear);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportFailsClosedWhenTextureArtifactPayloadCannotBeSerialized)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "BrokenTextureHero.gltf";
+    WriteTextFile(root / "Assets" / "Textures" / "BrokenBaseColor.png", "not-a-decodable-image");
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/BrokenBaseColor.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta meta;
+    meta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("96969696-9696-4696-8696-969696969696"));
+    meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    meta.importerId = "scene-model";
+    meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / meta.id.ToString(),
+        meta,
+        "BrokenTextureHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    EXPECT_FALSE(result.imported);
+    EXPECT_TRUE(ContainsDiagnosticCode(
+        result.diagnostics,
+        "external-model-importer-texture-decode-failed"))
+        << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_FALSE(std::filesystem::exists(root / "Library" / "Artifacts" / meta.id.ToString() / "textures"));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportKeepsOversizedReferencedTexturesReadableByDefault)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "LargeTextureHero.gltf";
+    WriteBinaryFile(
+        root / "Assets" / "Textures" / "LargeBaseColor.bmp",
+        UncompressedBmp(2049u, 1u, 200u, 120u, 40u));
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/LargeBaseColor.bmp", "mimeType": "image/bmp" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta meta;
+    meta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("94949494-9494-4494-8494-949494949494"));
+    meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    meta.importerId = "scene-model";
+    meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / meta.id.ToString(),
+        meta,
+        "LargeTextureHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_FALSE(ContainsDiagnosticCode(
+        result.diagnostics,
+        "external-model-importer-texture-size-limit"))
+        << JoinDiagnosticSummaries(result.diagnostics);
+    const auto* textureArtifact = result.manifest.FindSubAsset("texture:image/0");
+    ASSERT_NE(textureArtifact, nullptr);
+    const auto texture = NLS::Render::Assets::DeserializeTextureArtifact(
+        ReadBinaryFile(textureArtifact->artifactPath));
+    ASSERT_TRUE(texture.has_value());
+    EXPECT_EQ(texture->width, 2049u);
+    EXPECT_EQ(texture->height, 1u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportFailsClosedForPathologicalTextureDimensions)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "PathologicalTextureHero.gltf";
+    WriteBinaryFile(
+        root / "Assets" / "Textures" / "TooWideBaseColor.bmp",
+        UncompressedBmp(16385u, 1u, 64u, 64u, 64u));
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/TooWideBaseColor.bmp", "mimeType": "image/bmp" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta meta;
+    meta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("92929292-9292-4292-8292-929292929292"));
+    meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    meta.importerId = "scene-model";
+    meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / meta.id.ToString(),
+        meta,
+        "PathologicalTextureHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    EXPECT_FALSE(result.imported);
+    EXPECT_TRUE(ContainsDiagnosticCode(
+        result.diagnostics,
+        "external-model-importer-texture-safety-limit"))
+        << JoinDiagnosticSummaries(result.diagnostics);
+    EXPECT_FALSE(std::filesystem::exists(root / "Library" / "Artifacts" / meta.id.ToString() / "textures"));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalGltfNormalTexturesUseNormalMipIntent)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "NormalMipHero.gltf";
+    WriteBinaryFile(root / "Assets" / "Textures" / "HeroNormal.png", NormalMap2x2Png());
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/HeroNormal.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "normalTexture": { "index": 0 }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })");
+
+    NLS::Core::Assets::AssetMeta meta;
+    meta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("97979797-9797-4797-8797-979797979797"));
+    meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    meta.importerId = "scene-model";
+    meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / meta.id.ToString(),
+        meta,
+        "NormalMipHero",
+        "win64-dx12",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    const auto* diagnostic = FindDiagnosticByCode(
+        result.diagnostics,
+        "external-model-importer-texture-format-resolution");
+    EXPECT_EQ(diagnostic, nullptr);
+
+    const auto* normalArtifact = result.manifest.FindSubAsset("texture:image/0");
+    ASSERT_NE(normalArtifact, nullptr);
+    const auto normal = NLS::Render::Assets::DeserializeTextureArtifact(ReadBinaryFile(normalArtifact->artifactPath));
+    ASSERT_TRUE(normal.has_value());
+#if NLS_HAS_DIRECTXTEX
+    EXPECT_EQ(normal->format, NLS::Render::RHI::TextureFormat::BC5);
+    EXPECT_EQ(normal->colorSpace, NLS::Render::Assets::TextureArtifactColorSpace::Linear);
+    ASSERT_GE(normal->mips.size(), 2u);
+    EXPECT_EQ(normal->mips[1].rowPitch, NLS::Render::RHI::CalculateTextureRowPitch(normal->format, normal->mips[1].width));
+    EXPECT_EQ(normal->mips[1].slicePitch, NLS::Render::RHI::CalculateTextureSlicePitch(normal->format, normal->mips[1].width, normal->mips[1].height, 1u));
+    EXPECT_EQ(normal->encoderId, "directxtex-bc");
+    EXPECT_NE(normal->buildIdentity.find("|encoderOptions=directxtex:parallel,linear,uniform"), std::string::npos);
+    EXPECT_NE(normal->buildIdentity.find(std::string("|toolVersion=") + NLS::Editor::Assets::GetDirectXTexTextureEncoderToolVersion()), std::string::npos);
+    EXPECT_EQ(std::string(NLS::Editor::Assets::GetDirectXTexTextureEncoderToolVersion()).find("unavailable"), std::string::npos);
+#else
+    EXPECT_EQ(normal->format, NLS::Render::RHI::TextureFormat::RGBA8);
+    EXPECT_EQ(normal->colorSpace, NLS::Render::Assets::TextureArtifactColorSpace::Linear);
+    ASSERT_GE(normal->mips.size(), 2u);
+    EXPECT_EQ(normal->encoderId, "rgba8-passthrough");
+    EXPECT_NE(normal->buildIdentity.find("|encoder=rgba8-passthrough"), std::string::npos);
+#endif
 
     std::filesystem::remove_all(root);
 }

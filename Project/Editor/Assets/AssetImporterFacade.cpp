@@ -58,9 +58,17 @@ std::optional<ExternalObjectRemap> DeserializeRemap(
 
 std::string SerializePlatformOverride(const TexturePlatformOverride& platform)
 {
-    return std::to_string(platform.maxTextureSize) + "|" +
+    std::string serialized =
+        std::to_string(platform.maxTextureSize) + "|" +
         platform.format + "|" +
         platform.compressionQuality;
+    if (!platform.resizePolicy.empty() || platform.mipmapEnabled.has_value())
+    {
+        serialized += "|" + platform.resizePolicy + "|";
+        if (platform.mipmapEnabled.has_value())
+            serialized += BoolToImporterSettingString(*platform.mipmapEnabled);
+    }
+    return serialized;
 }
 
 std::optional<TexturePlatformOverride> DeserializePlatformOverride(
@@ -71,17 +79,26 @@ std::optional<TexturePlatformOverride> DeserializePlatformOverride(
     std::string maxSizeText;
     std::string format;
     std::string compressionQuality;
+    std::string resizePolicy;
+    std::string mipmapEnabled;
     if (!std::getline(stream, maxSizeText, '|') ||
         !std::getline(stream, format, '|') ||
-        !std::getline(stream, compressionQuality))
+        !std::getline(stream, compressionQuality, '|'))
     {
         return std::nullopt;
+    }
+
+    if (stream.good())
+    {
+        std::getline(stream, resizePolicy, '|');
+        std::getline(stream, mipmapEnabled);
     }
 
     TexturePlatformOverride platform;
     platform.platform = platformName;
     platform.format = std::move(format);
     platform.compressionQuality = std::move(compressionQuality);
+    platform.resizePolicy = std::move(resizePolicy);
     try
     {
         platform.maxTextureSize = static_cast<uint32_t>(std::stoul(maxSizeText));
@@ -90,6 +107,9 @@ std::optional<TexturePlatformOverride> DeserializePlatformOverride(
     {
         return std::nullopt;
     }
+
+    if (!mipmapEnabled.empty())
+        platform.mipmapEnabled = mipmapEnabled == "true" || mipmapEnabled == "1";
     return platform;
 }
 }
@@ -212,7 +232,7 @@ std::optional<ImporterRecord> AssetImporterFacade::GetAtPath(const std::string& 
     importer.assetPath = ToEditorAssetPath(record->absolutePath);
     importer.assetId = meta.has_value() ? meta->id : record->id;
     importer.importerId = meta.has_value() ? meta->importerId : record->importerId;
-    importer.importerVersion = meta.has_value() ? meta->importerVersion : 1u;
+    importer.importerVersion = meta.has_value() ? std::max(meta->importerVersion, record->importerVersion) : record->importerVersion;
     importer.assetType = meta.has_value() ? meta->assetType : record->assetType;
 
     if (!meta.has_value())
@@ -291,8 +311,18 @@ bool AssetImporterFacade::SaveAndReimport(
     ImportProgressTracker* progressTracker)
 {
     const auto normalized = NormalizeEditorAssetPath(assetPath);
+    const auto resolvedAssetPath = ResolveAssetPath(normalized);
+    if (resolvedAssetPath.empty() || !std::filesystem::is_regular_file(resolvedAssetPath))
+        return false;
+
     if (std::find(m_queuedReimports.begin(), m_queuedReimports.end(), normalized) == m_queuedReimports.end())
         m_queuedReimports.push_back(normalized);
+    const auto removeQueuedReimport = [&]()
+    {
+        m_queuedReimports.erase(
+            std::remove(m_queuedReimports.begin(), m_queuedReimports.end(), normalized),
+            m_queuedReimports.end());
+    };
 
     ImportJobId job;
     if (progressTracker)
@@ -303,6 +333,7 @@ bool AssetImporterFacade::SaveAndReimport(
 
     if (!Refresh())
     {
+        removeQueuedReimport();
         if (progressTracker && job.IsValid())
             progressTracker->FinishJob(job, ImportJobTerminalStatus::Failed, m_diagnostics);
         return false;
@@ -311,6 +342,17 @@ bool AssetImporterFacade::SaveAndReimport(
     auto meta = LoadMetaForPath(assetPath);
     if (!meta.has_value())
     {
+        removeQueuedReimport();
+        if (progressTracker && job.IsValid())
+            progressTracker->FinishJob(job, ImportJobTerminalStatus::Failed, m_diagnostics);
+        return false;
+    }
+
+    auto cleanMeta = *meta;
+    cleanMeta.settings.erase(kDirtySetting);
+    if (!SaveMetaForPath(assetPath, cleanMeta))
+    {
+        removeQueuedReimport();
         if (progressTracker && job.IsValid())
             progressTracker->FinishJob(job, ImportJobTerminalStatus::Failed, m_diagnostics);
         return false;
@@ -321,15 +363,11 @@ bool AssetImporterFacade::SaveAndReimport(
         ? database.ReimportAsset(normalized, *progressTracker, job)
         : database.ReimportAsset(normalized);
     if (!imported)
+    {
+        removeQueuedReimport();
+        SaveMetaForPath(assetPath, *meta);
         return false;
-
-    meta = LoadMetaForPath(assetPath);
-    if (!meta.has_value())
-        return false;
-
-    meta->settings.erase(kDirtySetting);
-    if (!SaveMetaForPath(assetPath, *meta))
-        return false;
+    }
 
     m_dirtyAssets.erase(
         std::remove(m_dirtyAssets.begin(), m_dirtyAssets.end(), normalized),
@@ -444,7 +482,9 @@ bool AssetImporterFacade::SetTextureImporterSettings(
     meta->settings["TEXTURE_WRAP_MODE"] = settings.wrapMode;
     meta->settings["TEXTURE_FILTER_MODE"] = settings.filterMode;
     meta->settings["TEXTURE_MAX_SIZE"] = std::to_string(settings.maxTextureSize);
+    meta->settings["TEXTURE_RESIZE_POLICY"] = settings.resizePolicy;
     meta->settings["TEXTURE_COMPRESSION_INTENT"] = settings.compressionIntent;
+    meta->settings["TEXTURE_EXPLICIT_FORMAT"] = settings.explicitFormat;
 
     for (auto it = meta->settings.begin(); it != meta->settings.end();)
     {
@@ -482,10 +522,15 @@ std::optional<TextureImporterSettings> AssetImporterFacade::GetTextureImporterSe
     settings.wrapMode = StringFromImporterSettings(meta->settings, "TEXTURE_WRAP_MODE", settings.wrapMode);
     settings.filterMode = StringFromImporterSettings(meta->settings, "TEXTURE_FILTER_MODE", settings.filterMode);
     settings.maxTextureSize = UIntFromImporterSettings(meta->settings, "TEXTURE_MAX_SIZE", settings.maxTextureSize);
+    settings.resizePolicy = StringFromImporterSettings(meta->settings, "TEXTURE_RESIZE_POLICY", settings.resizePolicy);
     settings.compressionIntent = StringFromImporterSettings(
         meta->settings,
         "TEXTURE_COMPRESSION_INTENT",
         settings.compressionIntent);
+    settings.explicitFormat = StringFromImporterSettings(
+        meta->settings,
+        "TEXTURE_EXPLICIT_FORMAT",
+        settings.explicitFormat);
 
     for (const auto& [key, value] : meta->settings)
     {

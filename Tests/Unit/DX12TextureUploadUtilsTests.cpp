@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <vector>
 
 #include "Rendering/RHI/Backends/DX12/DX12TextureUploadUtils.h"
 
@@ -88,6 +89,122 @@ TEST(DX12TextureUploadUtilsTests, PacksMipChainInDx12SubresourceOrder)
     EXPECT_EQ(plan.subresources[2].dataOffset, 80u);
     EXPECT_EQ(plan.subresources[2].rowPitch, 4u);
     EXPECT_EQ(plan.subresources[2].slicePitch, 4u);
+}
+
+TEST(DX12TextureUploadUtilsTests, BuildsCompressedBlockTexturePlanWithCeilBlockPitches)
+{
+    struct FormatCase
+    {
+        NLS::Render::RHI::TextureFormat format;
+        size_t expectedTopRowPitch;
+        size_t expectedTopSlicePitch;
+        size_t expectedTotalBytes;
+    };
+
+    const std::array<FormatCase, 4u> cases{{
+        {NLS::Render::RHI::TextureFormat::BC1, 16u, 32u, 48u},
+        {NLS::Render::RHI::TextureFormat::BC3, 32u, 64u, 96u},
+        {NLS::Render::RHI::TextureFormat::BC5, 32u, 64u, 96u},
+        {NLS::Render::RHI::TextureFormat::BC7, 32u, 64u, 96u}
+    }};
+
+    for (const auto& formatCase : cases)
+    {
+        SCOPED_TRACE(static_cast<int>(formatCase.format));
+        NLS::Render::RHI::RHITextureDesc desc;
+        desc.extent.width = 8;
+        desc.extent.height = 8;
+        desc.extent.depth = 1;
+        desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
+        desc.format = formatCase.format;
+        desc.mipLevels = 3;
+
+        const auto plan = NLS::Render::RHI::DX12::BuildDX12TextureUploadPlan(desc);
+
+        ASSERT_EQ(plan.subresources.size(), 3u);
+        EXPECT_EQ(plan.totalBytes, formatCase.expectedTotalBytes);
+        EXPECT_EQ(plan.nativeTotalBytes, formatCase.expectedTotalBytes);
+
+        EXPECT_EQ(plan.subresources[0].width, 8u);
+        EXPECT_EQ(plan.subresources[0].height, 8u);
+        EXPECT_EQ(plan.subresources[0].rowPitch, formatCase.expectedTopRowPitch);
+        EXPECT_EQ(plan.subresources[0].slicePitch, formatCase.expectedTopSlicePitch);
+        EXPECT_EQ(plan.subresources[0].nativeRowPitch, formatCase.expectedTopRowPitch);
+        EXPECT_EQ(plan.subresources[0].nativeSlicePitch, formatCase.expectedTopSlicePitch);
+
+        EXPECT_EQ(plan.subresources[1].width, 4u);
+        EXPECT_EQ(plan.subresources[1].height, 4u);
+        EXPECT_EQ(plan.subresources[1].dataOffset, formatCase.expectedTopSlicePitch);
+        EXPECT_EQ(plan.subresources[1].rowPitch, formatCase.format == NLS::Render::RHI::TextureFormat::BC1 ? 8u : 16u);
+        EXPECT_EQ(plan.subresources[1].slicePitch, formatCase.format == NLS::Render::RHI::TextureFormat::BC1 ? 8u : 16u);
+
+        EXPECT_EQ(plan.subresources[2].width, 2u);
+        EXPECT_EQ(plan.subresources[2].height, 2u);
+        EXPECT_EQ(plan.subresources[2].rowPitch, formatCase.format == NLS::Render::RHI::TextureFormat::BC1 ? 8u : 16u);
+        EXPECT_EQ(plan.subresources[2].slicePitch, formatCase.format == NLS::Render::RHI::TextureFormat::BC1 ? 8u : 16u);
+    }
+}
+
+TEST(DX12TextureUploadUtilsTests, BuildsSingleMipCompressedPlanForUnalignedTopLevelDimensions)
+{
+    NLS::Render::RHI::RHITextureDesc desc;
+    desc.extent.width = 2;
+    desc.extent.height = 2;
+    desc.extent.depth = 1;
+    desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
+    desc.format = NLS::Render::RHI::TextureFormat::BC1;
+    desc.mipLevels = 1;
+
+    const auto plan = NLS::Render::RHI::DX12::BuildDX12TextureUploadPlan(desc);
+
+    ASSERT_EQ(plan.subresources.size(), 1u);
+    EXPECT_EQ(plan.totalBytes, 8u);
+    EXPECT_EQ(plan.nativeTotalBytes, 8u);
+    EXPECT_EQ(plan.subresources[0].rowPitch, 8u);
+    EXPECT_EQ(plan.subresources[0].slicePitch, 8u);
+    EXPECT_EQ(plan.subresources[0].nativeRowPitch, 8u);
+    EXPECT_EQ(plan.subresources[0].nativeSlicePitch, 8u);
+}
+
+TEST(DX12TextureUploadUtilsTests, BuildsRgba16fSingleAndMultiMipPlans)
+{
+    NLS::Render::RHI::RHITextureDesc singleMipDesc;
+    singleMipDesc.extent.width = 4;
+    singleMipDesc.extent.height = 2;
+    singleMipDesc.extent.depth = 1;
+    singleMipDesc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
+    singleMipDesc.format = NLS::Render::RHI::TextureFormat::RGBA16F;
+    singleMipDesc.mipLevels = 1;
+
+    const auto singleMipPlan = NLS::Render::RHI::DX12::BuildDX12TextureUploadPlan(singleMipDesc);
+
+    ASSERT_EQ(singleMipPlan.subresources.size(), 1u);
+    EXPECT_EQ(singleMipPlan.totalBytes, 64u);
+    EXPECT_EQ(singleMipPlan.nativeTotalBytes, 64u);
+    EXPECT_EQ(singleMipPlan.subresources[0].rowPitch, 32u);
+    EXPECT_EQ(singleMipPlan.subresources[0].slicePitch, 64u);
+
+    NLS::Render::RHI::RHITextureDesc multiMipDesc;
+    multiMipDesc.extent.width = 4;
+    multiMipDesc.extent.height = 4;
+    multiMipDesc.extent.depth = 1;
+    multiMipDesc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
+    multiMipDesc.format = NLS::Render::RHI::TextureFormat::RGBA16F;
+    multiMipDesc.mipLevels = 3;
+
+    const auto multiMipPlan = NLS::Render::RHI::DX12::BuildDX12TextureUploadPlan(multiMipDesc);
+
+    ASSERT_EQ(multiMipPlan.subresources.size(), 3u);
+    EXPECT_EQ(multiMipPlan.totalBytes, 168u);
+    EXPECT_EQ(multiMipPlan.nativeTotalBytes, 168u);
+    EXPECT_EQ(multiMipPlan.subresources[0].rowPitch, 32u);
+    EXPECT_EQ(multiMipPlan.subresources[0].slicePitch, 128u);
+    EXPECT_EQ(multiMipPlan.subresources[1].dataOffset, 128u);
+    EXPECT_EQ(multiMipPlan.subresources[1].rowPitch, 16u);
+    EXPECT_EQ(multiMipPlan.subresources[1].slicePitch, 32u);
+    EXPECT_EQ(multiMipPlan.subresources[2].dataOffset, 160u);
+    EXPECT_EQ(multiMipPlan.subresources[2].rowPitch, 8u);
+    EXPECT_EQ(multiMipPlan.subresources[2].slicePitch, 8u);
 }
 
 TEST(DX12TextureUploadUtilsTests, Builds3DTexturePlanWithoutTreatingDepthAsArrayLayers)
@@ -232,6 +349,45 @@ TEST(DX12TextureUploadUtilsTests, CopiesNativeMatchingUploadRowsDirectly)
     EXPECT_EQ(destination, source);
 }
 
+TEST(DX12TextureUploadUtilsTests, CopiesCompressedBlockRowsDirectly)
+{
+    struct FormatCase
+    {
+        NLS::Render::RHI::TextureFormat format;
+        uint32_t width;
+        size_t expectedRowBytes;
+    };
+
+    const std::array<FormatCase, 4u> cases{{
+        {NLS::Render::RHI::TextureFormat::BC1, 4u, 8u},
+        {NLS::Render::RHI::TextureFormat::BC3, 5u, 32u},
+        {NLS::Render::RHI::TextureFormat::BC5, 5u, 32u},
+        {NLS::Render::RHI::TextureFormat::BC7, 5u, 32u}
+    }};
+
+    for (const auto& formatCase : cases)
+    {
+        SCOPED_TRACE(static_cast<int>(formatCase.format));
+        std::vector<uint8_t> source(formatCase.expectedRowBytes);
+        std::vector<uint8_t> destination(formatCase.expectedRowBytes);
+        for (size_t byteIndex = 0u; byteIndex < source.size(); ++byteIndex)
+            source[byteIndex] = static_cast<uint8_t>((byteIndex * 3u) & 0xFFu);
+
+        const auto result = NLS::Render::RHI::DX12::CopyDX12TextureUploadRow(
+            formatCase.format,
+            source.data(),
+            source.size(),
+            destination.data(),
+            destination.size(),
+            formatCase.width);
+
+        ASSERT_TRUE(result.succeeded);
+        EXPECT_EQ(result.sourceBytesConsumed, formatCase.expectedRowBytes);
+        EXPECT_EQ(result.destinationBytesWritten, formatCase.expectedRowBytes);
+        EXPECT_EQ(destination, source);
+    }
+}
+
 TEST(DX12TextureUploadUtilsTests, BuildsInitialBufferUploadRequest)
 {
     std::array<uint32_t, 4> data{ 1u, 2u, 3u, 4u };
@@ -324,5 +480,39 @@ TEST(DX12TextureUploadUtilsTests, BuildsInitialTextureUploadRequestFromExplicitU
     EXPECT_EQ(request.destinationOffset, 0u);
     EXPECT_EQ(request.texturePlan.subresources.size(), 3u);
     EXPECT_EQ(request.texturePlan.totalBytes, 84u);
+    EXPECT_EQ(request.debugName, uploadDesc.debugName);
+}
+
+TEST(DX12TextureUploadUtilsTests, BuildsInitialTextureUploadRequestFromSubresourceSpans)
+{
+    std::vector<uint8_t> mip0(64u, 1u);
+    std::vector<uint8_t> mip1(16u, 2u);
+
+    NLS::Render::RHI::RHITextureDesc desc;
+    desc.extent.width = 4;
+    desc.extent.height = 4;
+    desc.extent.depth = 1;
+    desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
+    desc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    desc.mipLevels = 2;
+    desc.debugName = "InitialTexture";
+
+    NLS::Render::RHI::RHITextureUploadDesc uploadDesc;
+    uploadDesc.subresources.push_back({ mip0.data(), mip0.size() });
+    uploadDesc.subresources.push_back({ mip1.data(), mip1.size() });
+    uploadDesc.debugName = "InitialTextureSpanUpload";
+
+    const auto request = NLS::Render::RHI::DX12::BuildDX12InitialTextureUploadRequest(desc, uploadDesc);
+
+    EXPECT_EQ(request.resourceKind, NLS::Render::RHI::DX12::DX12InitialUploadResourceKind::Texture);
+    EXPECT_EQ(request.data, nullptr);
+    EXPECT_EQ(request.dataSize, mip0.size() + mip1.size());
+    ASSERT_EQ(request.textureSubresources.size(), 2u);
+    EXPECT_EQ(request.textureSubresources[0].data, mip0.data());
+    EXPECT_EQ(request.textureSubresources[0].dataSize, mip0.size());
+    EXPECT_EQ(request.textureSubresources[1].data, mip1.data());
+    EXPECT_EQ(request.textureSubresources[1].dataSize, mip1.size());
+    EXPECT_EQ(request.texturePlan.subresources.size(), 2u);
+    EXPECT_EQ(request.texturePlan.totalBytes, 80u);
     EXPECT_EQ(request.debugName, uploadDesc.debugName);
 }

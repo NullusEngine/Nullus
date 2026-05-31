@@ -12,6 +12,14 @@ using namespace NLS::Render::Resources;
 
 namespace
 {
+	NLS::Render::RHI::TextureColorSpace ToRhiTextureColorSpace(
+		const NLS::Render::Assets::TextureArtifactColorSpace colorSpace)
+	{
+		return colorSpace == NLS::Render::Assets::TextureArtifactColorSpace::Srgb
+			? NLS::Render::RHI::TextureColorSpace::SRGB
+			: NLS::Render::RHI::TextureColorSpace::Linear;
+	}
+
 	NLS::Render::RHI::TextureFilter ToRHITextureFilter(NLS::Render::Settings::ETextureFilteringMode mode)
 	{
 		return mode == NLS::Render::Settings::ETextureFilteringMode::LINEAR
@@ -133,55 +141,76 @@ bool Texture2D::SetTextureResource(const NLS::Render::Assets::TextureArtifactDat
 	if (artifact.width == 0u || artifact.height == 0u || artifact.mips.empty())
 		return false;
 
-	size_t totalBytes = 0u;
-	for (const auto& mip : artifact.mips)
-		totalBytes += mip.pixels.size();
-	if (totalBytes == 0u)
+	if (artifact.mips.front().pixels.empty())
 		return false;
 
-	std::vector<uint8_t> uploadData;
-	uploadData.reserve(totalBytes);
-	for (const auto& mip : artifact.mips)
-		uploadData.insert(uploadData.end(), mip.pixels.begin(), mip.pixels.end());
+	const auto applyArtifactMetadata = [&]()
+	{
+		width = artifact.width;
+		height = artifact.height;
+		bitsPerPixel = NLS::Render::RHI::GetTextureFormatBytesPerPixel(artifact.format);
+		isMimapped = artifact.mips.size() > 1u;
+	};
 
 	if (m_explicitTexture == nullptr)
 		CreateRHITexture();
-	if (m_explicitTexture != nullptr)
+
+	auto& driver = NLS::Render::Context::RequireLocatedDriver("Texture2D::SetTextureResource(TextureArtifact)");
+	auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver);
+	if (device == nullptr)
 	{
-		auto& driver = NLS::Render::Context::RequireLocatedDriver("Texture2D::SetTextureResource(TextureArtifact)");
-		auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver);
-		if (device != nullptr)
-		{
-			NLS::Render::RHI::RHITextureDesc desc{};
-			desc.extent.width = artifact.width;
-			desc.extent.height = artifact.height;
-			desc.extent.depth = 1u;
-			desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
-			desc.format = artifact.format;
-			desc.mipLevels = static_cast<uint32_t>(artifact.mips.size());
-			desc.usage = NLS::Render::RHI::TextureUsageFlags::Sampled;
-			desc.debugName = "TextureArtifactResource";
-
-			NLS::Render::RHI::RHITextureUploadDesc uploadDesc{};
-			uploadDesc.data = uploadData.data();
-			uploadDesc.dataSize = uploadData.size();
-			uploadDesc.extent = desc.extent;
-			uploadDesc.rowPitch = artifact.mips.front().rowPitch;
-			uploadDesc.slicePitch = artifact.mips.front().slicePitch;
-			uploadDesc.debugName = "TextureArtifactInitialUpload";
-
-			auto texture = device->CreateTexture(desc, uploadDesc);
-			if (texture != nullptr)
-			{
-				SetRHITexture(std::move(texture));
-			}
-		}
+		if (NLS::Render::RHI::IsTextureFormatCompressed(artifact.format))
+			return false;
+		applyArtifactMetadata();
+		return true;
+	}
+	if (m_explicitTexture == nullptr)
+		return false;
+	if (NLS::Render::RHI::IsTextureFormatCompressed(artifact.format))
+	{
+		const auto& capability = device->GetCapabilities().GetTextureFormatCapability(artifact.format);
+		if (!capability.sampled || !capability.upload)
+			return false;
+		if (artifact.colorSpace == NLS::Render::Assets::TextureArtifactColorSpace::Srgb && !capability.supportsSrgbView)
+			return false;
 	}
 
-	width = artifact.width;
-	height = artifact.height;
-	bitsPerPixel = NLS::Render::RHI::GetTextureFormatBytesPerPixel(artifact.format);
-	isMimapped = artifact.mips.size() > 1u;
+	NLS::Render::RHI::RHITextureDesc desc{};
+	desc.extent.width = artifact.width;
+	desc.extent.height = artifact.height;
+	desc.extent.depth = 1u;
+	desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
+	desc.format = artifact.format;
+	desc.colorSpace = ToRhiTextureColorSpace(artifact.colorSpace);
+	desc.mipLevels = static_cast<uint32_t>(artifact.mips.size());
+	desc.usage = NLS::Render::RHI::TextureUsageFlags::Sampled;
+	desc.debugName = "TextureArtifactResource";
+
+	NLS::Render::RHI::RHITextureUploadDesc uploadDesc{};
+	size_t uploadDataSize = 0u;
+	uploadDesc.subresources.reserve(artifact.mips.size());
+	for (const auto& mip : artifact.mips)
+	{
+		if (mip.pixels.empty())
+			return false;
+		uploadDataSize += mip.pixels.size();
+		uploadDesc.subresources.push_back({
+			mip.pixels.data(),
+			mip.pixels.size()
+		});
+	}
+	uploadDesc.dataSize = uploadDataSize;
+	uploadDesc.extent = desc.extent;
+	uploadDesc.rowPitch = artifact.mips.front().rowPitch;
+	uploadDesc.slicePitch = artifact.mips.front().slicePitch;
+	uploadDesc.debugName = "TextureArtifactInitialUpload";
+
+	auto texture = device->CreateTexture(desc, uploadDesc);
+	if (texture == nullptr)
+		return false;
+	SetRHITexture(std::move(texture));
+
+	applyArtifactMetadata();
 	return true;
 }
 

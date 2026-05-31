@@ -38,6 +38,8 @@ target_link_libraries(
   Editor
     PUBLIC # 使用该库时必须依赖的库
     NLS_Engine
+    PRIVATE
+    DirectXTex::DirectXTex
 )
 
 nls_target_precompile_headers(Editor "${NLS_ROOT_DIR}/Project/NullusProjectPch.h")

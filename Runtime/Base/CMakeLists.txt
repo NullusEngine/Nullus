@@ -13,6 +13,6 @@ target_compile_definitions(NLS_Base PUBLIC
   $<$<BOOL:${NLS_ENABLE_TIMELINE_PROFILER}>:NLS_ENABLE_TIMELINE_PROFILER=1>
 )
 
-target_compile_definitions(NLS_Base PRIVATE
+target_compile_definitions(NLS_Base PUBLIC
   $<$<BOOL:${NLS_ENABLE_TEST_HOOKS}>:NLS_ENABLE_TEST_HOOKS=1>
 )

@@ -3,6 +3,8 @@
 #include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/Resources/TextureResourceUpdateUtils.h"
 
+#include <algorithm>
+
 using namespace NLS::Render::Resources;
 
 namespace
@@ -78,6 +80,11 @@ std::shared_ptr<NLS::Render::RHI::RHITextureView> Texture::GetOrCreateExplicitTe
 		? RHI::TextureViewType::Cube
 		: RHI::TextureViewType::Texture2D;
 	textureViewDesc.format = m_explicitTexture->GetDesc().format;
+	textureViewDesc.colorSpace = m_explicitTexture->GetDesc().colorSpace;
+	textureViewDesc.subresourceRange.mipLevelCount = (std::max)(m_explicitTexture->GetDesc().mipLevels, 1u);
+	textureViewDesc.subresourceRange.arrayLayerCount = RHI::GetTextureLayerCount(
+		m_explicitTexture->GetDesc().dimension,
+		m_explicitTexture->GetDesc().arrayLayers);
 	textureViewDesc.debugName = debugName;
 
 	m_explicitTextureView = device->CreateTextureView(m_explicitTexture, textureViewDesc);
@@ -110,15 +117,18 @@ bool Texture::RecreateRHITextureIfNeeded(
 		RHI::RHITextureUpdateDesc updateDesc{};
 		updateDesc.texture = m_explicitTexture;
 		updateDesc.data = initialData;
-		const uint32_t bytesPerPixel = RHI::GetTextureFormatBytesPerPixel(format);
 		updateDesc.dataSize = initialDataSize;
 		updateDesc.extent = {
 			static_cast<uint32_t>(width),
 			static_cast<uint32_t>(height),
 			1u
 		};
-		updateDesc.rowPitch = static_cast<uint32_t>(width) * bytesPerPixel;
-		updateDesc.slicePitch = updateDesc.rowPitch * static_cast<uint32_t>(height);
+		updateDesc.rowPitch = RHI::CalculateTextureRowPitch(format, static_cast<uint32_t>(width));
+		updateDesc.slicePitch = RHI::CalculateTextureSlicePitch(
+			format,
+			static_cast<uint32_t>(width),
+			static_cast<uint32_t>(height),
+			1u);
 		updateDesc.debugName = "TextureResourceInPlaceUpdate";
 
 		return device->UpdateTexture(updateDesc).Succeeded();
@@ -141,6 +151,7 @@ bool Texture::RecreateRHITextureIfNeeded(
 	desc.extent.depth = 1;
 	desc.dimension = m_dimension;
 	desc.format = format;
+	desc.colorSpace = RHI::TextureColorSpace::Linear;
 	desc.usage = RHI::TextureUsageFlags::Sampled;
 	desc.debugName = "TextureResource";
 
@@ -154,8 +165,12 @@ bool Texture::RecreateRHITextureIfNeeded(
 		uploadDesc.data = initialData;
 		uploadDesc.dataSize = initialDataSize;
 		uploadDesc.extent = desc.extent;
-		uploadDesc.rowPitch = static_cast<uint32_t>(width) * RHI::GetTextureFormatBytesPerPixel(format);
-		uploadDesc.slicePitch = uploadDesc.rowPitch * static_cast<uint32_t>(height);
+		uploadDesc.rowPitch = RHI::CalculateTextureRowPitch(format, static_cast<uint32_t>(width));
+		uploadDesc.slicePitch = RHI::CalculateTextureSlicePitch(
+			format,
+			static_cast<uint32_t>(width),
+			static_cast<uint32_t>(height),
+			1u);
 		uploadDesc.debugName = "TextureResourceInitialUpload";
 		newTexture = device->CreateTexture(desc, uploadDesc);
 	}

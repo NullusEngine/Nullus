@@ -241,7 +241,7 @@ namespace NLS::Render::Backend
 				m_graphicsQueue == nullptr ||
 				textureResource == nullptr ||
 				uploadRequest.resourceKind != NLS::Render::RHI::DX12::DX12InitialUploadResourceKind::Texture ||
-				uploadRequest.data == nullptr)
+				(uploadRequest.data == nullptr && uploadRequest.textureSubresources.empty()))
 			{
 				return false;
 			}
@@ -254,6 +254,13 @@ namespace NLS::Render::Backend
 			}
 
 			const UINT subresourceCount = static_cast<UINT>(uploadPlan.subresources.size());
+			if (!uploadRequest.textureSubresources.empty() &&
+				uploadRequest.textureSubresources.size() != uploadPlan.subresources.size())
+			{
+				NLS_LOG_ERROR("UploadInitialTextureData: texture subresource span count does not match upload plan for texture \"" + debugName + "\"");
+				return false;
+			}
+
 			std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> layouts(subresourceCount);
 			std::vector<UINT> rowCounts(subresourceCount);
 			std::vector<UINT64> rowSizes(subresourceCount);
@@ -326,15 +333,36 @@ namespace NLS::Render::Backend
 				const auto& layout = layouts[subresourceIndex];
 				const size_t dstRowPitch = static_cast<size_t>(layout.Footprint.RowPitch);
 				const size_t rowByteCount = static_cast<size_t>(rowSizes[subresourceIndex]);
-				const size_t dstSlicePitch = dstRowPitch * static_cast<size_t>(rowCounts[subresourceIndex]);
-				const auto* srcSubresource = sourceBytes + subresource.dataOffset;
+				const uint32_t depthSlices = (std::max)(subresource.depth, 1u);
+				const uint32_t rowsPerDepthSlice = (std::max)(rowCounts[subresourceIndex], 1u);
+				const size_t srcDepthSlicePitch = subresource.slicePitch / depthSlices;
+				const size_t dstSlicePitch = dstRowPitch * static_cast<size_t>(rowsPerDepthSlice);
+				const uint8_t* srcSubresource = nullptr;
+				size_t srcSubresourceSize = 0u;
+				if (!uploadRequest.textureSubresources.empty())
+				{
+					const auto& sourceSpan = uploadRequest.textureSubresources[subresourceIndex];
+					srcSubresource = static_cast<const uint8_t*>(sourceSpan.data);
+					srcSubresourceSize = sourceSpan.dataSize;
+				}
+				else if (sourceBytes != nullptr && subresource.dataOffset <= uploadRequest.dataSize)
+				{
+					srcSubresource = sourceBytes + subresource.dataOffset;
+					srcSubresourceSize = uploadRequest.dataSize - subresource.dataOffset;
+				}
+				if (srcSubresource == nullptr || srcSubresourceSize < subresource.slicePitch)
+				{
+					uploadBuffer->Unmap(0, nullptr);
+					NLS_LOG_ERROR("UploadInitialTextureData: texture subresource data is smaller than required for texture \"" + debugName + "\"");
+					return false;
+				}
 				auto* dstSubresource = uploadBase + static_cast<size_t>(layout.Offset);
 
-				for (uint32_t depthSlice = 0; depthSlice < subresource.depth; ++depthSlice)
+				for (uint32_t depthSlice = 0; depthSlice < depthSlices; ++depthSlice)
 				{
-					const auto* srcSlice = srcSubresource + static_cast<size_t>(depthSlice) * subresource.slicePitch;
+					const auto* srcSlice = srcSubresource + static_cast<size_t>(depthSlice) * srcDepthSlicePitch;
 					auto* dstSlice = dstSubresource + static_cast<size_t>(depthSlice) * dstSlicePitch;
-					for (UINT row = 0; row < rowCounts[subresourceIndex]; ++row)
+					for (UINT row = 0; row < rowsPerDepthSlice; ++row)
 					{
 						const auto rowCopyResult = NLS::Render::RHI::DX12::CopyDX12TextureUploadRow(
 							desc.format,
@@ -864,7 +892,7 @@ namespace NLS::Render::Backend
 			? static_cast<UINT16>((std::max)(desc.extent.depth, 1u))
 			: layerCount;
 		resourceDesc.MipLevels = desc.mipLevels;
-		resourceDesc.Format = NLS::Render::RHI::DX12::ToDX12ResourceFormat(desc.format);
+		resourceDesc.Format = NLS::Render::RHI::DX12::ToDX12ResourceFormat(desc.format, desc.colorSpace);
 		resourceDesc.SampleDesc.Count = desc.sampleCount;
 		resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 		resourceDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
@@ -890,7 +918,7 @@ namespace NLS::Render::Backend
 			: D3D12_RESOURCE_STATE_COMMON;
 
 		D3D12_CLEAR_VALUE clearValue{};
-		clearValue.Format = NLS::Render::RHI::DX12::ToDX12OptimizedClearFormat(desc.format);
+		clearValue.Format = NLS::Render::RHI::DX12::ToDX12OptimizedClearFormat(desc.format, desc.colorSpace);
 		if (isDepthTexture)
 		{
 			clearValue.DepthStencil = {
@@ -986,20 +1014,22 @@ namespace NLS::Render::Backend
 		if (resource == nullptr)
 			return;
 
-		D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc{};
-		srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-		srvHeapDesc.NumDescriptors = 1;
-		srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-		if (FAILED(device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&m_srvHeap))))
-			return;
-		SetDx12ObjectName(
-			m_srvHeap.Get(),
-			NLS::Render::RHI::DX12::BuildDX12TextureViewDebugLabel(desc, texture->GetDebugName()) + " SRVHeap");
-		m_srvHandle = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
-
 		const auto descriptors = NLS::Render::RHI::DX12::BuildDX12TextureViewDescriptorSet(texture->GetDesc(), desc);
 		if (descriptors.hasSrv)
+		{
+			D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc{};
+			srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+			srvHeapDesc.NumDescriptors = 1;
+			srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+			if (FAILED(device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&m_srvHeap))))
+				return;
+			SetDx12ObjectName(
+				m_srvHeap.Get(),
+				NLS::Render::RHI::DX12::BuildDX12TextureViewDebugLabel(desc, texture->GetDebugName()) + " SRVHeap");
+			m_srvHandle = m_srvHeap->GetCPUDescriptorHandleForHeapStart();
 			device->CreateShaderResourceView(resource, &descriptors.srvDesc, m_srvHandle);
+			m_hasSrv = true;
+		}
 
 		if (descriptors.hasRtv)
 		{
@@ -1104,7 +1134,7 @@ namespace NLS::Render::Backend
 	NLS::Render::RHI::NativeHandle NativeDX12TextureView::GetNativeShaderResourceView()
 	{
 #if defined(_WIN32)
-		if (m_srvHeap == nullptr)
+		if (!m_hasSrv || m_srvHeap == nullptr)
 			return {};
 		return { NLS::Render::RHI::BackendType::DX12, reinterpret_cast<void*>(m_srvHeap->GetGPUDescriptorHandleForHeapStart().ptr) };
 #else
@@ -1115,7 +1145,7 @@ namespace NLS::Render::Backend
 #if defined(_WIN32)
 	D3D12_GPU_DESCRIPTOR_HANDLE NativeDX12TextureView::GetGPUDescriptorHandle() const
 	{
-		return m_srvHeap != nullptr ? m_srvHeap->GetGPUDescriptorHandleForHeapStart() : D3D12_GPU_DESCRIPTOR_HANDLE{};
+		return m_hasSrv && m_srvHeap != nullptr ? m_srvHeap->GetGPUDescriptorHandleForHeapStart() : D3D12_GPU_DESCRIPTOR_HANDLE{};
 	}
 
 	ID3D12Resource* NativeDX12TextureView::GetResource() const

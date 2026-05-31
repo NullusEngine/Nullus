@@ -4,6 +4,7 @@
 #include "Rendering/Resources/Texture2D.h"
 #include "Rendering/Resources/TextureCube.h"
 
+#include <Debug/Logger.h>
 #include <Image.h>
 #include <array>
 #include <filesystem>
@@ -60,18 +61,35 @@ Texture2D* TextureLoader::Create(const std::string& p_filepath, Settings::ETextu
 			texture->isMimapped = artifact->mips.size() > 1u || p_generateMipmap;
 			if (!texture->SetTextureResource(*artifact))
 			{
+				if (NLS::Render::RHI::IsTextureFormatCompressed(artifact->format))
+				{
+					NLS_LOG_WARNING(
+						"TextureLoader: unsupported compressed texture artifact \"" +
+						p_filepath +
+						"\" for current runtime backend");
+				}
 				delete texture;
 				return nullptr;
 			}
 			texture->path = p_filepath;
 			return texture;
 		}
+
+		const auto importedTexturePayload = ExtractImportedTexturePayload(p_filepath);
+		if (!importedTexturePayload.has_value() || importedTexturePayload->empty())
+			return nullptr;
+
+		Image image(importedTexturePayload->data(), importedTexturePayload->size(), true);
+		if (image.GetData() == nullptr)
+			return nullptr;
+
+		Texture2D* texture = CreateFromImage(&image, p_firstFilter, p_secondFilter, p_generateMipmap);
+		if (texture)
+			texture->path = p_filepath;
+		return texture;
 	}
 
-	const auto importedTexturePayload = ExtractImportedTexturePayload(p_filepath);
-	Image image = importedTexturePayload.has_value()
-		? Image(importedTexturePayload->data(), importedTexturePayload->size(), true)
-		: Image(p_filepath, true);
+	Image image(p_filepath, true);
 	if (image.GetData() == nullptr)
 		return nullptr;
 

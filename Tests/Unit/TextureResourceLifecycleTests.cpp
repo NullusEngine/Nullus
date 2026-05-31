@@ -262,6 +262,100 @@ TEST(TextureResourceLifecycleTests, FailedCreateFromMemoryUploadKeepsTexture2DMe
     EXPECT_EQ(texture->height, 1u);
 }
 
+TEST(TextureResourceLifecycleTests, FailedTextureArtifactUploadReturnsNull)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Render::Assets::TextureArtifactData artifact;
+    artifact.width = 2u;
+    artifact.height = 2u;
+    artifact.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    artifact.mips.push_back({
+        0u,
+        2u,
+        2u,
+        8u,
+        16u,
+        std::vector<uint8_t>(16u, 255u)
+    });
+
+    explicitDevice->failTextureCreateCall = explicitDevice->textureCreateCalls + 2u;
+    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::CreateFromArtifact(
+        artifact,
+        NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+        NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+        false);
+
+    EXPECT_EQ(texture, nullptr);
+}
+
+TEST(TextureResourceLifecycleTests, DefaultTextureViewCoversUploadedMipChain)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Render::Resources::Texture texture;
+    NLS::Render::RHI::RHITextureDesc desc{};
+    desc.extent.width = 8u;
+    desc.extent.height = 8u;
+    desc.dimension = NLS::Render::RHI::TextureDimension::Texture2D;
+    desc.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    desc.mipLevels = 4u;
+    desc.arrayLayers = 1u;
+    texture.SetRHITexture(std::make_shared<TestTexture>(desc));
+
+    const auto view = texture.GetOrCreateExplicitTextureView("MipChainView");
+    ASSERT_NE(view, nullptr);
+    EXPECT_EQ(view->GetDesc().subresourceRange.mipLevelCount, 4u);
+    EXPECT_EQ(view->GetDesc().subresourceRange.arrayLayerCount, 1u);
+}
+
+TEST(TextureResourceLifecycleTests, CompressedTextureArtifactFailsClosedWhenDeviceLacksFormatCapability)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Render::Assets::TextureArtifactData artifact;
+    artifact.width = 4u;
+    artifact.height = 4u;
+    artifact.format = NLS::Render::RHI::TextureFormat::BC1;
+    artifact.mips.push_back({
+        0u,
+        4u,
+        4u,
+        NLS::Render::RHI::CalculateTextureRowPitch(NLS::Render::RHI::TextureFormat::BC1, 4u),
+        NLS::Render::RHI::CalculateTextureSlicePitch(NLS::Render::RHI::TextureFormat::BC1, 4u, 4u, 1u),
+        std::vector<uint8_t>(8u, 0u)
+    });
+
+    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::CreateFromArtifact(
+        artifact,
+        NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+        NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+        false);
+
+    EXPECT_EQ(texture, nullptr);
+}
+
 TEST(TextureResourceLifecycleTests, FailedTextureCubeUploadReportsFailureAndKeepsFallbackTexture)
 {
     NLS::Render::Settings::DriverSettings settings;

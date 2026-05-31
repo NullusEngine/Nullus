@@ -256,6 +256,51 @@ TEST(AssetFoundationTests, ScanResolvesRenamedAssetsByGuidWhenMetaMovesWithAsset
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetFoundationTests, ScanDeletesOrphanedMetaForMissingEditableAsset)
+{
+    const auto root = MakeAssetTestRoot();
+    const auto modelPath = root / "Models" / "DeletedHero.gltf";
+    WriteTextFile(modelPath, R"({"asset":{"version":"2.0"}})");
+
+    NLS::Core::Assets::SourceAssetDatabase firstScan;
+    ASSERT_TRUE(firstScan.ScanRoot(root));
+
+    const auto metaPath = NLS::Core::Assets::GetAssetMetaPath(modelPath);
+    ASSERT_TRUE(std::filesystem::exists(metaPath));
+
+    ASSERT_TRUE(std::filesystem::remove(modelPath));
+    ASSERT_FALSE(std::filesystem::exists(modelPath));
+
+    NLS::Core::Assets::SourceAssetDatabase secondScan;
+    ASSERT_TRUE(secondScan.ScanRoot(root));
+    EXPECT_TRUE(secondScan.GetRecords().empty());
+    EXPECT_FALSE(std::filesystem::exists(metaPath));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetFoundationTests, ScanPreservesOrphanedMetaForMissingReadOnlyAsset)
+{
+    const auto root = MakeAssetTestRoot();
+    const auto modelPath = root / "Models" / "PackageHero.gltf";
+    WriteTextFile(modelPath, R"({"asset":{"version":"2.0"}})");
+
+    NLS::Core::Assets::SourceAssetDatabase firstScan;
+    ASSERT_TRUE(firstScan.ScanRoot(root));
+
+    const auto metaPath = NLS::Core::Assets::GetAssetMetaPath(modelPath);
+    ASSERT_TRUE(std::filesystem::exists(metaPath));
+
+    std::filesystem::remove(modelPath);
+
+    NLS::Core::Assets::SourceAssetDatabase secondScan;
+    ASSERT_TRUE(secondScan.ScanRoot(root, true));
+    EXPECT_TRUE(secondScan.GetRecords().empty());
+    EXPECT_TRUE(std::filesystem::exists(metaPath));
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetFoundationTests, ScanRepairsDuplicateGuidAliasesForEditableAssets)
 {
     const auto root = MakeAssetTestRoot();

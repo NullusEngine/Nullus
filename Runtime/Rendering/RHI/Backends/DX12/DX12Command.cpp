@@ -179,6 +179,86 @@ namespace NLS::Render::Backend
 			return true;
 		}
 
+		uint32_t MipDimension(uint32_t value, const uint32_t mipLevel)
+		{
+			value = (std::max)(value, 1u);
+			for (uint32_t index = 0u; index < mipLevel; ++index)
+				value = (std::max)(value / 2u, 1u);
+			return value;
+		}
+
+		bool IsValidDX12BufferToTextureCopyDesc(
+			const NLS::Render::RHI::RHIBufferToTextureCopyDesc& desc,
+			const NLS::Render::RHI::RHIBufferDesc& sourceDesc,
+			const NLS::Render::RHI::RHITextureDesc& destinationDesc)
+		{
+			const uint32_t mipLevels = (std::max)(destinationDesc.mipLevels, 1u);
+			if (desc.mipLevel >= mipLevels)
+			{
+				NLS_LOG_ERROR("NativeDX12CommandBuffer::CopyBufferToTexture received an out-of-range mip level");
+				return false;
+			}
+
+			const uint32_t layerCount = NLS::Render::RHI::GetTextureLayerCount(destinationDesc.dimension, destinationDesc.arrayLayers);
+			if (desc.arrayLayer >= layerCount)
+			{
+				NLS_LOG_ERROR("NativeDX12CommandBuffer::CopyBufferToTexture received an out-of-range array layer");
+				return false;
+			}
+
+			if (desc.extent.width == 0u || desc.extent.height == 0u || desc.extent.depth != 1u)
+			{
+				NLS_LOG_ERROR("NativeDX12CommandBuffer::CopyBufferToTexture requires a non-empty single-depth copy extent");
+				return false;
+			}
+
+			const uint32_t mipWidth = MipDimension(destinationDesc.extent.width, desc.mipLevel);
+			const uint32_t mipHeight = MipDimension(destinationDesc.extent.height, desc.mipLevel);
+			if (desc.textureOffset.x >= mipWidth ||
+				desc.textureOffset.y >= mipHeight ||
+				desc.textureOffset.z != 0u ||
+				desc.textureOffset.x + desc.extent.width > mipWidth ||
+				desc.textureOffset.y + desc.extent.height > mipHeight)
+			{
+				NLS_LOG_ERROR("NativeDX12CommandBuffer::CopyBufferToTexture copy box is outside the destination mip bounds");
+				return false;
+			}
+
+			const auto* descriptor = NLS::Render::RHI::GetTextureFormatDescriptor(destinationDesc.format);
+			if (descriptor == nullptr || descriptor->blockWidth == 0u || descriptor->blockHeight == 0u)
+				return false;
+
+			if (descriptor->isCompressed)
+			{
+				const bool rightEdge = desc.textureOffset.x + desc.extent.width == mipWidth;
+				const bool bottomEdge = desc.textureOffset.y + desc.extent.height == mipHeight;
+				if ((desc.textureOffset.x % descriptor->blockWidth) != 0u ||
+					(desc.textureOffset.y % descriptor->blockHeight) != 0u ||
+					(!rightEdge && (desc.extent.width % descriptor->blockWidth) != 0u) ||
+					(!bottomEdge && (desc.extent.height % descriptor->blockHeight) != 0u))
+				{
+					NLS_LOG_ERROR("NativeDX12CommandBuffer::CopyBufferToTexture compressed copy boxes must be block-aligned unless they reach the mip edge");
+					return false;
+				}
+			}
+
+			const uint32_t minimumRowPitch = NLS::Render::RHI::CalculateTextureRowPitch(destinationDesc.format, desc.extent.width);
+			const uint32_t rowPitch = desc.rowPitch != 0u ? desc.rowPitch : minimumRowPitch;
+			const uint32_t blockRows = (desc.extent.height + descriptor->blockHeight - 1u) / descriptor->blockHeight;
+			const uint64_t requiredBytes = blockRows > 0u
+				? (static_cast<uint64_t>(blockRows - 1u) * rowPitch) + minimumRowPitch
+				: 0u;
+			if (requiredBytes == 0u ||
+				desc.bufferOffset > sourceDesc.size ||
+				requiredBytes > sourceDesc.size - desc.bufferOffset)
+			{
+				NLS_LOG_ERROR("NativeDX12CommandBuffer::CopyBufferToTexture source buffer span is smaller than the requested copy");
+				return false;
+			}
+
+			return true;
+		}
+
 		IDX12BindingSetAccess* ResolveDX12BindingSetAccess(
 			const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& bindingSet)
 		{
@@ -1206,11 +1286,39 @@ namespace NLS::Render::Backend
 		if (srcResource == nullptr || dstResource == nullptr)
 			return;
 
-		DXGI_FORMAT format = ToDXGIFormat(desc.destination->GetDesc().format);
-		const uint32_t bytesPerPixel = GetBytesPerPixel(format);
-		const uint32_t rowPitch = desc.rowPitch != 0u
+		const auto& destinationDesc = desc.destination->GetDesc();
+		if (!IsValidDX12BufferToTextureCopyDesc(desc, desc.source->GetDesc(), destinationDesc))
+			return;
+
+		DXGI_FORMAT format = NLS::Render::RHI::DX12::ToDXGIFormat(destinationDesc.format, destinationDesc.colorSpace);
+		if (format == DXGI_FORMAT_UNKNOWN)
+			return;
+
+		const uint32_t sourceRowPitch = desc.rowPitch != 0u
 			? desc.rowPitch
-			: desc.extent.width * bytesPerPixel;
+			: NLS::Render::RHI::CalculateTextureRowPitch(destinationDesc.format, desc.extent.width);
+		const uint32_t minimumRowPitch = NLS::Render::RHI::CalculateTextureRowPitch(
+			destinationDesc.format,
+			desc.extent.width);
+		if (sourceRowPitch == 0u || minimumRowPitch == 0u || sourceRowPitch < minimumRowPitch)
+		{
+			NLS_LOG_ERROR("NativeDX12CommandBuffer::CopyBufferToTexture received an invalid source row pitch");
+			return;
+		}
+
+		const uint32_t alignedRowPitch = (sourceRowPitch + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u) &
+			~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u);
+		if (alignedRowPitch != sourceRowPitch)
+		{
+			NLS_LOG_ERROR(
+				"NativeDX12CommandBuffer::CopyBufferToTexture requires a 256-byte aligned row pitch; use UploadContext for repacked texture uploads");
+			return;
+		}
+		if ((desc.bufferOffset % D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT) != 0u)
+		{
+			NLS_LOG_ERROR("NativeDX12CommandBuffer::CopyBufferToTexture requires a 512-byte aligned buffer offset");
+			return;
+		}
 
 		D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
 		footprint.Offset = desc.bufferOffset;
@@ -1218,7 +1326,7 @@ namespace NLS::Render::Backend
 		footprint.Footprint.Width = desc.extent.width;
 		footprint.Footprint.Height = desc.extent.height;
 		footprint.Footprint.Depth = 1;
-		footprint.Footprint.RowPitch = rowPitch;
+		footprint.Footprint.RowPitch = sourceRowPitch;
 
 		D3D12_TEXTURE_COPY_LOCATION srcLocation{};
 		srcLocation.pResource = srcResource;
@@ -1228,7 +1336,6 @@ namespace NLS::Render::Backend
 		D3D12_TEXTURE_COPY_LOCATION dstLocation{};
 		dstLocation.pResource = dstResource;
 		dstLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-		const auto& destinationDesc = desc.destination->GetDesc();
 		const uint32_t mipLevels = (std::max)(destinationDesc.mipLevels, 1u);
 		dstLocation.SubresourceIndex = desc.arrayLayer * mipLevels + desc.mipLevel;
 

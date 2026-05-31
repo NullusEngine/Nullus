@@ -1,0 +1,7 @@
+Name: DirectXTex
+Upstream: https://github.com/microsoft/DirectXTex
+Pinned-Version: jul2025
+Pinned-Commit: 32b2a8e
+License: MIT
+Nullus-Target: DirectXTex::DirectXTex
+Usage: Optional Windows editor/tool-time texture encoder dependency only.

@@ -573,11 +573,24 @@ bool AssetPreimportScheduler::RunAlreadyPlanned(
     const AssetPreimportRequest& request,
     const AssetPreimportPlan& plan)
 {
-    const auto batchTotalAssets = std::max<size_t>(plan.assetPaths.size(), 1u);
-    bool allSucceeded = true;
+    const bool forcePreimport = ShouldForcePreimport(request.reason);
+    if (forcePreimport && !database.Refresh())
+        return false;
+
+    std::vector<std::string> pendingAssetPaths;
+    pendingAssetPaths.reserve(plan.assetPaths.size());
     for (const auto& assetPath : plan.assetPaths)
     {
-        const auto imported = ShouldForcePreimport(request.reason)
+        if (forcePreimport && IsWarmPreimportableAsset(database, assetPath))
+            continue;
+        pendingAssetPaths.push_back(assetPath);
+    }
+
+    const auto batchTotalAssets = std::max<size_t>(pendingAssetPaths.size(), 1u);
+    bool allSucceeded = true;
+    for (const auto& assetPath : pendingAssetPaths)
+    {
+        const auto imported = forcePreimport
             ? database.ReimportAssetFromCurrentDatabase(assetPath, progressTracker, batchTotalAssets)
             : database.ImportAssetFromCurrentDatabase(assetPath, progressTracker, batchTotalAssets);
         if (!imported)

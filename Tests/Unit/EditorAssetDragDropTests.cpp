@@ -1,7 +1,12 @@
 #include <gtest/gtest.h>
 
+#include <Json/json.hpp>
+
 #include <algorithm>
+#include <cstdint>
 #include <fstream>
+#include <system_error>
+#include <vector>
 
 #include "Assets/AssetDragDropWorkflow.h"
 #include "Assets/AssetDatabaseFacade.h"
@@ -37,6 +42,18 @@ bool HasDiagnosticCode(
         {
             return diagnostic.code == code;
         });
+}
+
+std::string JoinDiagnosticCodes(const NLS::Editor::Assets::AssetDragDropResult& result)
+{
+    std::string output;
+    for (const auto& diagnostic : result.diagnostics)
+    {
+        if (!output.empty())
+            output += "; ";
+        output += diagnostic.code + ":" + diagnostic.message;
+    }
+    return output;
 }
 
 bool HasCommand(
@@ -88,6 +105,95 @@ void WriteTextFile(const std::filesystem::path& path, const std::string& text)
     std::filesystem::create_directories(path.parent_path());
     std::ofstream stream(path, std::ios::binary);
     stream << text;
+}
+
+void WriteBinaryFile(const std::filesystem::path& path, const std::vector<uint8_t>& bytes)
+{
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+    stream.write(
+        reinterpret_cast<const char*>(bytes.data()),
+        static_cast<std::streamsize>(bytes.size()));
+}
+
+std::vector<uint8_t> TinyPng()
+{
+    return {
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x04, 0x00, 0x00, 0x00, 0xB5, 0x1C, 0x0C,
+        0x02, 0x00, 0x00, 0x00, 0x0B, 0x49, 0x44, 0x41,
+        0x54, 0x78, 0xDA, 0x63, 0xFC, 0xFF, 0x1F, 0x00,
+        0x03, 0x03, 0x02, 0x00, 0xEF, 0xBF, 0x4A, 0x3B,
+        0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
+        0xAE, 0x42, 0x60, 0x82
+    };
+}
+
+std::string TexturedSingleNodeGltf(const std::string& rootName)
+{
+    return R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "buffers": [
+                {
+                    "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA",
+                    "byteLength": 42
+                }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" }
+            ],
+            "images": [
+                { "uri": "../Textures/HeroBaseColor.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "meshes": [
+                {
+                    "name": "BodyMesh",
+                    "primitives": [
+                        { "attributes": { "POSITION": 0 }, "indices": 1, "material": 0 }
+                    ]
+                }
+            ],
+            "nodes": [
+                { "name": ")" + rootName + R"(", "mesh": 0 }
+            ]
+        })";
+}
+
+NLS::Editor::Assets::EditorAssetDragPayload MakeImportedGeneratedModelPayload(
+    NLS::Editor::Assets::AssetDatabaseFacade& database,
+    const std::string& assetPath,
+    const std::string& prefabSubAssetKey)
+{
+    const auto guid = database.AssetPathToGUID(assetPath);
+    EXPECT_FALSE(guid.empty());
+    const auto assetId = AssetId(NLS::Guid::Parse(guid));
+    return NLS::Editor::Assets::MakeEditorAssetDragPayloadForTesting(
+        assetPath,
+        assetId,
+        prefabSubAssetKey,
+        NLS::Core::Assets::ArtifactType::Prefab,
+        true,
+        true);
 }
 }
 
@@ -195,6 +301,168 @@ TEST(EditorAssetDragDropTests, DropsGeneratedModelPrefabAsReadOnlyConnectedInsta
     EXPECT_EQ(result.instance->instanceRoot->GetName(), "ImportedHero");
     ASSERT_EQ(scene.GetGameObjects().size(), 1u);
     EXPECT_EQ(scene.GetGameObjects().front(), result.instance->instanceRoot);
+}
+
+TEST(EditorAssetDragDropTests, GeneratedModelDropWaitsWhenRendererTextureArtifactIsMissing)
+{
+    const auto root = MakeAssetDragDropRoot();
+    WriteBinaryFile(root / "Assets" / "Textures" / "HeroBaseColor.png", TinyPng());
+    WriteTextFile(
+        root / "Assets" / "Models" / "ReadyHero.gltf",
+        TexturedSingleNodeGltf("ReadyHeroRoot"));
+
+    NLS::Editor::Assets::AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/ReadyHero.gltf"));
+    auto texture = database.LoadSubAssetAtPath("Assets/Models/ReadyHero.gltf", "texture:image/0");
+    ASSERT_TRUE(texture.has_value());
+    ASSERT_TRUE(std::filesystem::exists(texture->artifactPath));
+    std::filesystem::remove(texture->artifactPath);
+    ASSERT_FALSE(std::filesystem::exists(texture->artifactPath));
+
+    const auto payload = MakeImportedGeneratedModelPayload(
+        database,
+        "Assets/Models/ReadyHero.gltf",
+        "prefab:ReadyHero");
+
+    NLS::Engine::SceneSystem::Scene scene;
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+    const auto result = bridge.DropImportedAssetHandleIntoHierarchy(payload, scene);
+
+    ASSERT_TRUE(result.handled);
+    EXPECT_TRUE(result.pendingImport);
+    EXPECT_NE(result.dragDrop.status, DragDropOperationStatus::Committed);
+    EXPECT_TRUE(HasDiagnosticCode(result.dragDrop, "dragdrop-renderer-dependency-missing"));
+    EXPECT_TRUE(scene.GetGameObjects().empty());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDragDropTests, GeneratedModelDropCommitsWhenRendererTextureArtifactIsReady)
+{
+    const auto root = MakeAssetDragDropRoot();
+    WriteBinaryFile(root / "Assets" / "Textures" / "HeroBaseColor.png", TinyPng());
+    WriteTextFile(
+        root / "Assets" / "Models" / "TexturedHero.gltf",
+        TexturedSingleNodeGltf("TexturedHeroRoot"));
+
+    NLS::Editor::Assets::AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/TexturedHero.gltf"));
+    const auto payload = MakeImportedGeneratedModelPayload(
+        database,
+        "Assets/Models/TexturedHero.gltf",
+        "prefab:TexturedHero");
+
+    NLS::Engine::SceneSystem::Scene scene;
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+    const auto result = bridge.DropImportedAssetHandleIntoHierarchy(payload, scene);
+
+    ASSERT_TRUE(result.handled);
+    EXPECT_FALSE(result.pendingImport) << JoinDiagnosticCodes(result.dragDrop);
+    ASSERT_EQ(result.dragDrop.status, DragDropOperationStatus::Committed) << JoinDiagnosticCodes(result.dragDrop);
+    ASSERT_EQ(scene.GetGameObjects().size(), 1u);
+    EXPECT_EQ(scene.GetGameObjects().front()->GetName(), "TexturedHeroRoot");
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDragDropTests, GeneratedModelDropCommitsAfterReimportRefreshesRendererTextureArtifact)
+{
+    const auto root = MakeAssetDragDropRoot();
+    WriteBinaryFile(root / "Assets" / "Textures" / "HeroBaseColor.png", TinyPng());
+    WriteTextFile(
+        root / "Assets" / "Models" / "ReimportedHero.gltf",
+        TexturedSingleNodeGltf("ReimportedHeroRoot"));
+
+    NLS::Editor::Assets::AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/ReimportedHero.gltf"));
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/ReimportedHero.gltf"));
+    ASSERT_TRUE(database.Refresh());
+
+    const auto payload = MakeImportedGeneratedModelPayload(
+        database,
+        "Assets/Models/ReimportedHero.gltf",
+        "prefab:ReimportedHero");
+
+    NLS::Engine::SceneSystem::Scene scene;
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+    const auto result = bridge.DropImportedAssetHandleIntoHierarchy(payload, scene);
+
+    ASSERT_TRUE(result.handled);
+    EXPECT_FALSE(result.pendingImport) << JoinDiagnosticCodes(result.dragDrop);
+    ASSERT_EQ(result.dragDrop.status, DragDropOperationStatus::Committed) << JoinDiagnosticCodes(result.dragDrop);
+    ASSERT_EQ(scene.GetGameObjects().size(), 1u);
+    EXPECT_EQ(scene.GetGameObjects().front()->GetName(), "ReimportedHeroRoot");
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDragDropTests, GeneratedModelDropWaitsWhenRendererMeshArtifactIsInvalid)
+{
+    const auto root = MakeAssetDragDropRoot();
+    WriteBinaryFile(root / "Assets" / "Textures" / "HeroBaseColor.png", TinyPng());
+    WriteTextFile(
+        root / "Assets" / "Models" / "InvalidMeshHero.gltf",
+        TexturedSingleNodeGltf("InvalidMeshHeroRoot"));
+
+    NLS::Editor::Assets::AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/InvalidMeshHero.gltf"));
+    auto mesh = database.LoadSubAssetAtPath("Assets/Models/InvalidMeshHero.gltf", "mesh:mesh/0");
+    ASSERT_TRUE(mesh.has_value());
+    WriteTextFile(mesh->artifactPath, "not a native mesh artifact");
+
+    const auto payload = MakeImportedGeneratedModelPayload(
+        database,
+        "Assets/Models/InvalidMeshHero.gltf",
+        "prefab:InvalidMeshHero");
+
+    NLS::Engine::SceneSystem::Scene scene;
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+    const auto result = bridge.DropImportedAssetHandleIntoHierarchy(payload, scene);
+
+    ASSERT_TRUE(result.handled);
+    EXPECT_TRUE(result.pendingImport);
+    EXPECT_NE(result.dragDrop.status, DragDropOperationStatus::Committed);
+    EXPECT_TRUE(HasDiagnosticCode(result.dragDrop, "dragdrop-renderer-dependency-missing"));
+    EXPECT_TRUE(scene.GetGameObjects().empty());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDragDropTests, GeneratedModelDropWaitsWhenRendererMaterialArtifactIsInvalid)
+{
+    const auto root = MakeAssetDragDropRoot();
+    WriteBinaryFile(root / "Assets" / "Textures" / "HeroBaseColor.png", TinyPng());
+    WriteTextFile(
+        root / "Assets" / "Models" / "InvalidMaterialHero.gltf",
+        TexturedSingleNodeGltf("InvalidMaterialHeroRoot"));
+
+    NLS::Editor::Assets::AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/InvalidMaterialHero.gltf"));
+    auto material = database.LoadSubAssetAtPath("Assets/Models/InvalidMaterialHero.gltf", "material:material/0");
+    ASSERT_TRUE(material.has_value());
+    WriteTextFile(material->artifactPath, "not a native material artifact");
+
+    const auto payload = MakeImportedGeneratedModelPayload(
+        database,
+        "Assets/Models/InvalidMaterialHero.gltf",
+        "prefab:InvalidMaterialHero");
+
+    NLS::Engine::SceneSystem::Scene scene;
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+    const auto result = bridge.DropImportedAssetHandleIntoHierarchy(payload, scene);
+
+    ASSERT_TRUE(result.handled);
+    EXPECT_TRUE(result.pendingImport);
+    EXPECT_NE(result.dragDrop.status, DragDropOperationStatus::Committed);
+    EXPECT_TRUE(HasDiagnosticCode(result.dragDrop, "dragdrop-renderer-dependency-missing"));
+    EXPECT_TRUE(scene.GetGameObjects().empty());
+
+    std::filesystem::remove_all(root);
 }
 
 TEST(EditorAssetDragDropTests, RejectsPrefabDropIntoReadOnlyHierarchyTarget)

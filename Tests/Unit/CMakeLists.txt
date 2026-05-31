@@ -106,6 +106,8 @@ target_sources(NullusUnitTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/AssetImporterFacade.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/ExternalAssetImporter.cpp
     ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/ExternalAssetImporter.h
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/TextureEncoding/DirectXTexTextureEncoder.cpp
+    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/TextureEncoding/DirectXTexTextureEncoder.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/PrefabUtilityFacade.cpp
     ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/PrefabUtilityFacade.h
     ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ComponentSearchPanel.cpp
@@ -168,6 +170,7 @@ target_link_libraries(NullusUnitTests PRIVATE
     NLS_Render
     NLS_UI
     NLS_Engine
+    DirectXTex::DirectXTex
 )
 
 nls_target_precompile_headers(NullusUnitTests "${CMAKE_SOURCE_DIR}/Tests/NullusTestsPch.h")

@@ -122,6 +122,55 @@ TEST(JobSystemMigrationTests, EditorActionsRequiresSharedJobSystemOwner)
     EXPECT_EQ(methodBody.find("ShutdownJobSystem"), std::string::npos);
 }
 
+TEST(JobSystemMigrationTests, RuntimeTestHookDefinitionsPropagateToExecutableConsumers)
+{
+    const auto baseCmake = ReadRepoFile("Runtime/Base/CMakeLists.txt");
+    const auto coreCmake = ReadRepoFile("Runtime/Core/CMakeLists.txt");
+    const auto renderCmake = ReadRepoFile("Runtime/Rendering/CMakeLists.txt");
+    ASSERT_FALSE(baseCmake.empty());
+    ASSERT_FALSE(coreCmake.empty());
+    ASSERT_FALSE(renderCmake.empty());
+
+    const auto requiresPublicTestHooks = [](const std::string& cmake, const std::string& target)
+    {
+        const std::string marker = "target_compile_definitions(" + target + " PUBLIC";
+        size_t searchOffset = 0u;
+        while (true)
+        {
+            const auto definition = cmake.find(marker, searchOffset);
+            if (definition == std::string::npos)
+                return false;
+
+            const auto blockEnd = cmake.find("\n)", definition);
+            if (blockEnd == std::string::npos)
+                return false;
+
+            if (cmake.substr(definition, blockEnd - definition).find("NLS_ENABLE_TEST_HOOKS") != std::string::npos)
+                return true;
+
+            searchOffset = blockEnd + 2u;
+        }
+    };
+
+    EXPECT_TRUE(requiresPublicTestHooks(baseCmake, "NLS_Base"));
+    EXPECT_TRUE(requiresPublicTestHooks(coreCmake, "NLS_Core"));
+    EXPECT_TRUE(requiresPublicTestHooks(renderCmake, "NLS_Render"));
+}
+
+TEST(JobSystemMigrationTests, RuntimeTestHooksDoNotChangeArtifactDatabaseObjectLayout)
+{
+    const auto header = ReadRepoFile("Runtime/Core/Assets/ArtifactDatabase.h");
+    ASSERT_FALSE(header.empty());
+
+    const auto member = header.find("m_indexRebuildCountForTesting");
+    ASSERT_NE(member, std::string::npos);
+
+    const auto previousGuard = header.rfind("#if defined(NLS_ENABLE_TEST_HOOKS)", member);
+    const auto previousEndif = header.rfind("#endif", member);
+    EXPECT_TRUE(previousGuard == std::string::npos || (previousEndif != std::string::npos && previousEndif > previousGuard))
+        << "Test hook declarations may be conditional, but ArtifactDatabase data members must keep a stable ABI.";
+}
+
 TEST(JobSystemMigrationTests, EditorActionsNoLongerOwnsPrivateBackgroundWorkerThreads)
 {
     const auto header = ReadRepoFile("Project/Editor/Core/EditorActions.h");

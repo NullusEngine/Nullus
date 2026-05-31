@@ -74,6 +74,30 @@ bool ShouldSkipReservedProjectCacheDirectory(
     return begin->generic_string() == "Library" &&
         (directoryName == "Library" || IsReservedAssetCacheDirectoryName(directory));
 }
+
+bool IsInsideReadOnlyMountedRoot(
+    const std::filesystem::path& candidate,
+    const std::filesystem::path& currentRoot,
+    std::span<const NLS::Core::Assets::SourceAssetRoot> mountedRoots)
+{
+    for (const auto& mountedRoot : mountedRoots)
+    {
+        if (!mountedRoot.readOnly)
+            continue;
+
+        const auto normalizedMountedRoot = NLS::Core::Assets::NormalizeAssetPath(mountedRoot.path);
+        if (normalizedMountedRoot == currentRoot)
+            continue;
+
+        if (IsPathInsideRoot(candidate, normalizedMountedRoot) &&
+            IsPhysicalPathInsideRoot(candidate, normalizedMountedRoot))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
 }
 
 namespace NLS::Core::Assets
@@ -171,56 +195,103 @@ bool SourceAssetDatabase::ScanRootInternal(
         return false;
     }
 
-    std::filesystem::recursive_directory_iterator iterator(normalizedRoot, error);
-    if (error)
+    std::vector<std::filesystem::path> orphanMetaCandidates;
     {
-        AddDiagnostic(
-            AssetDiagnosticSeverity::Error,
-            "asset-root-unreadable",
-            AssetId(),
-            normalizedRoot,
-            "Asset root could not be enumerated.");
-        return false;
-    }
-
-    const std::filesystem::recursive_directory_iterator end;
-    for (; iterator != end; iterator.increment(error))
-    {
+        std::filesystem::recursive_directory_iterator iterator(normalizedRoot, error);
         if (error)
         {
             AddDiagnostic(
-                AssetDiagnosticSeverity::Warning,
-                "asset-scan-entry-skipped",
+                AssetDiagnosticSeverity::Error,
+                "asset-root-unreadable",
                 AssetId(),
                 normalizedRoot,
-                "An asset entry could not be read during scan.");
-            error.clear();
-            continue;
-        }
-
-        const auto& entry = *iterator;
-        if (entry.is_directory(error))
-        {
-            const auto path = entry.path().lexically_normal();
-            if (ShouldSkipReservedProjectCacheDirectory(normalizedRoot, path))
-                iterator.disable_recursion_pending();
-            error.clear();
-            continue;
-        }
-        if (error)
-        {
-            error.clear();
-            continue;
-        }
-
-        if (!entry.is_regular_file(error) || error)
-        {
-            error.clear();
-            continue;
-        }
-
-        if (!RegisterSourceAsset(normalizedRoot, entry, readOnly, mountedRoots))
+                "Asset root could not be enumerated.");
             return false;
+        }
+
+        const std::filesystem::recursive_directory_iterator end;
+        for (; iterator != end; iterator.increment(error))
+        {
+            if (error)
+            {
+                AddDiagnostic(
+                    AssetDiagnosticSeverity::Warning,
+                    "asset-scan-entry-skipped",
+                    AssetId(),
+                    normalizedRoot,
+                    "An asset entry could not be read during scan.");
+                error.clear();
+                continue;
+            }
+
+            const auto& entry = *iterator;
+            if (entry.is_directory(error))
+            {
+                const auto path = entry.path().lexically_normal();
+                if (ShouldSkipReservedProjectCacheDirectory(normalizedRoot, path))
+                    iterator.disable_recursion_pending();
+                error.clear();
+                continue;
+            }
+            if (error)
+            {
+                error.clear();
+                continue;
+            }
+
+            if (!entry.is_regular_file(error) || error)
+            {
+                error.clear();
+                continue;
+            }
+
+            const auto path = entry.path().lexically_normal();
+            if (IsMetaFilePath(path))
+            {
+                orphanMetaCandidates.push_back(path);
+                continue;
+            }
+
+            if (!RegisterSourceAsset(normalizedRoot, entry, readOnly, mountedRoots))
+                return false;
+        }
+    }
+
+    if (!readOnly)
+    {
+        for (const auto& metaPath : orphanMetaCandidates)
+        {
+            if (IsInsideReadOnlyMountedRoot(metaPath, normalizedRoot, mountedRoots))
+                continue;
+
+            const auto sourcePath = metaPath.parent_path() / metaPath.stem();
+
+            std::error_code sourceError;
+            if (std::filesystem::exists(sourcePath, sourceError))
+                continue;
+            if (sourceError)
+            {
+                AddDiagnostic(
+                    AssetDiagnosticSeverity::Warning,
+                    "asset-meta-orphan-check-failed",
+                    AssetId(),
+                    metaPath,
+                    "Asset metadata orphan check could not be completed.");
+                continue;
+            }
+
+            std::error_code removeError;
+            std::filesystem::remove(metaPath, removeError);
+            if (removeError)
+            {
+                AddDiagnostic(
+                    AssetDiagnosticSeverity::Warning,
+                    "asset-meta-orphan-delete-failed",
+                    AssetId(),
+                    metaPath,
+                    "Stale asset metadata could not be deleted.");
+            }
+        }
     }
 
     return true;
@@ -416,6 +487,7 @@ bool SourceAssetDatabase::RegisterSourceAsset(
     record.relativePath = relativePath.lexically_normal();
     record.metaPath = metaPath;
     record.importerId = meta.importerId;
+    record.importerVersion = meta.importerVersion;
     record.assetType = meta.assetType;
     record.readOnly = readOnly;
 

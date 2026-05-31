@@ -2,13 +2,18 @@
 
 #include "Assets/AssetImporterSettings.h"
 #include "Assets/ArtifactWriter.h"
+#include "Assets/TextureEncoding/DirectXTexTextureEncoder.h"
 #include "Debug/Logger.h"
 #include "Engine/Assets/ModelPrefabBuilder.h"
 #include "Profiling/Profiler.h"
+#include "Assets/NativeArtifactContainer.h"
 #include "Rendering/Assets/MaterialConversion.h"
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Assets/SceneImportPipeline.h"
 #include "Rendering/Assets/TextureArtifact.h"
+#include "Rendering/Assets/TextureEncoder.h"
+#include "Rendering/Assets/TextureFormatResolver.h"
+#include "Rendering/Assets/TextureMipGenerator.h"
 #include "Rendering/Resources/Parsers/AssimpParser.h"
 #include "Rendering/Resources/Parsers/FbxSdkParser.h"
 #include "Serialize/ObjectGraphWriter.h"
@@ -24,6 +29,10 @@
 #define NLS_HAS_AUTODESK_FBX_SDK 0
 #endif
 
+#ifndef NLS_HAS_DIRECTXTEX
+#define NLS_HAS_DIRECTXTEX 0
+#endif
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -35,6 +44,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -43,6 +53,11 @@ namespace NLS::Editor::Assets
 {
 namespace
 {
+constexpr uint32_t kExternalTexturePostprocessorVersion = 1u;
+constexpr const char* kExternalTextureBuildPipelineDependencyName = "external-texture-build-pipeline";
+constexpr uint32_t kExternalTextureSafetyMaxDimension = 16384u;
+constexpr uint64_t kExternalTextureSafetyMaxPixels = 16384ull * 16384ull;
+
 using ImportedSceneJson = nlohmann::json;
 
 constexpr int64_t kExternalModelImportTimingLogThresholdMilliseconds = 100;
@@ -572,6 +587,49 @@ void AddUniqueDependency(
         });
     if (!exists)
         dependencies.push_back(std::move(dependency));
+}
+
+std::optional<std::string> ReadTextureBuildIdentity(const std::vector<uint8_t>& payload)
+{
+    const auto texture = NLS::Render::Assets::DeserializeTextureArtifact(payload);
+    if (!texture.has_value() || texture->buildIdentity.empty())
+        return std::nullopt;
+    return texture->buildIdentity;
+}
+
+void AddTextureBuildIdentityDependencies(
+    std::vector<NLS::Core::Assets::AssetDependencyRecord>& dependencies,
+    const std::vector<NLS::Core::Assets::ArtifactPayload>& payloads)
+{
+    std::vector<std::pair<std::string, std::string>> identities;
+    for (const auto& payload : payloads)
+    {
+        if (payload.artifactType != NLS::Core::Assets::ArtifactType::Texture)
+            continue;
+
+        auto buildIdentity = ReadTextureBuildIdentity(payload.payload);
+        if (!buildIdentity.has_value())
+            continue;
+
+        identities.emplace_back(payload.subAssetKey, std::move(*buildIdentity));
+    }
+
+    std::sort(
+        identities.begin(),
+        identities.end(),
+        [](const auto& lhs, const auto& rhs)
+        {
+            return lhs.first < rhs.first;
+        });
+
+    for (const auto& [subAssetKey, buildIdentity] : identities)
+    {
+        AddUniqueDependency(dependencies, {
+            NLS::Core::Assets::AssetDependencyKind::PostprocessorVersion,
+            "texture-build:" + subAssetKey,
+            buildIdentity
+        });
+    }
 }
 
 std::vector<NLS::Core::Assets::AssetDependencyRecord> CollectExternalSourceFileDependencies(
@@ -1510,32 +1568,516 @@ std::unordered_map<std::string, std::vector<uint8_t>> LoadTexturePayloads(
     return payloads;
 }
 
+NLS::Render::Assets::TextureMipIntent ResolveSceneTextureMipIntent(
+    const NLS::Render::Assets::ImportedScene& scene,
+    const std::string& textureKey)
+{
+    if (textureKey.empty())
+        return NLS::Render::Assets::TextureMipIntent::Color;
+
+    for (const auto& material : scene.materials)
+    {
+        if (material.normalTextureKey == textureKey)
+            return NLS::Render::Assets::TextureMipIntent::Normal;
+        if (material.metallicRoughnessTextureKey == textureKey ||
+            material.occlusionTextureKey == textureKey)
+        {
+            return NLS::Render::Assets::TextureMipIntent::Mask;
+        }
+
+        for (const auto& channel : material.materialChannels)
+        {
+            if (channel.textureKey != textureKey)
+                continue;
+
+            const auto channelName = ToLower(channel.name);
+            if (channelName.find("normal") != std::string::npos ||
+                channelName.find("bump") != std::string::npos)
+            {
+                return NLS::Render::Assets::TextureMipIntent::Normal;
+            }
+            if (channelName.find("metal") != std::string::npos ||
+                channelName.find("rough") != std::string::npos ||
+                channelName.find("occlusion") != std::string::npos ||
+                channelName.find("mask") != std::string::npos)
+            {
+                return NLS::Render::Assets::TextureMipIntent::Mask;
+            }
+        }
+    }
+
+    return NLS::Render::Assets::TextureMipIntent::Color;
+}
+
+std::string TextureIntentName(const NLS::Render::Assets::TextureMipIntent intent)
+{
+    switch (intent)
+    {
+    case NLS::Render::Assets::TextureMipIntent::Normal: return "normal";
+    case NLS::Render::Assets::TextureMipIntent::Mask: return "mask";
+    case NLS::Render::Assets::TextureMipIntent::UI: return "ui";
+    case NLS::Render::Assets::TextureMipIntent::HDR: return "hdr";
+    case NLS::Render::Assets::TextureMipIntent::Color:
+    default:
+        return "default";
+    }
+}
+
+const char* TextureFormatName(const NLS::Render::RHI::TextureFormat format)
+{
+    return NLS::Render::RHI::GetTextureFormatName(format);
+}
+
+NLS::Render::Assets::TextureImportSettingsSnapshot BuildTextureImportSettingsSnapshot(
+    const NLS::Render::Assets::TextureMipGeneratorSettings& mipSettings)
+{
+    NLS::Render::Assets::TextureImportSettingsSnapshot settings;
+    settings.textureType = TextureIntentName(mipSettings.intent);
+    settings.srgbTexture = mipSettings.colorSpace == NLS::Render::Assets::TextureArtifactColorSpace::Srgb;
+    settings.mipmapEnabled = mipSettings.mipmapEnabled;
+    settings.maxTextureSize = 0u;
+    settings.resizePolicy = "keep";
+    settings.compressionIntent = "default";
+    return settings;
+}
+
+std::string BuildTextureSettingsIdentity(const NLS::Render::Assets::TextureImportSettingsSnapshot& settings)
+{
+    std::ostringstream stream;
+    stream
+        << "type=" << settings.textureType
+        << "|srgb=" << (settings.srgbTexture ? 1u : 0u)
+        << "|alphaTransparency=" << (settings.alphaIsTransparency ? 1u : 0u)
+        << "|mips=" << (settings.mipmapEnabled ? 1u : 0u)
+        << "|maxSize=" << settings.maxTextureSize
+        << "|resize=" << settings.resizePolicy
+        << "|compression=" << settings.compressionIntent
+        << "|explicit=" << settings.explicitFormat;
+    return stream.str();
+}
+
+std::string BuildDirectXTexEncoderOptionsHash(const NLS::Render::Assets::TextureBuildSettings& settings)
+{
+    std::vector<std::string> options;
+    options.push_back("parallel");
+    options.push_back(settings.colorSpace == NLS::Render::RHI::TextureColorSpace::SRGB ? "srgb" : "linear");
+
+    if (settings.resolvedFormat == NLS::Render::RHI::TextureFormat::BC5 ||
+        settings.textureIntent == "normal" ||
+        settings.textureIntent == "mask")
+    {
+        options.push_back("uniform");
+    }
+
+    std::ostringstream stream;
+    stream << "directxtex:";
+    for (size_t index = 0u; index < options.size(); ++index)
+    {
+        if (index > 0u)
+            stream << ",";
+        stream << options[index];
+    }
+    return stream.str();
+}
+
+std::string TextureSourceContentHash(
+    const ExternalModelImportRequest& request,
+    const NLS::Render::Assets::TextureSourceDescriptor& source,
+    const std::vector<uint8_t>& encodedBytes)
+{
+    if (auto path = ResolveExternalSceneResourceFilePath(request.projectRoot, request.sourcePath, source.assetPath))
+    {
+        const auto stamp = FileStamp(*path);
+        if (!stamp.empty())
+            return stamp;
+    }
+
+    return NLS::Core::Assets::ComputeNativeArtifactPayloadHash(encodedBytes);
+}
+
+std::string TextureSourceIdentity(
+    const ExternalModelImportRequest& request,
+    const std::string& textureKey,
+    const NLS::Render::Assets::TextureSourceDescriptor& source)
+{
+    std::ostringstream stream;
+    stream
+        << request.meta.id.ToString()
+        << "|" << textureKey
+        << "|" << source.assetPath;
+    return stream.str();
+}
+
+bool ValidateDecodedTextureSafetyLimits(
+    const NLS::Render::Assets::TextureArtifactData& artifact,
+    NLS::Core::Assets::AssetDiagnostics& diagnostics,
+    const NLS::Core::Assets::AssetId assetId,
+    const std::filesystem::path& sourcePath,
+    const std::string& textureKey,
+    const std::string& textureUri)
+{
+    const uint64_t pixelCount = static_cast<uint64_t>(artifact.width) * static_cast<uint64_t>(artifact.height);
+    if (artifact.width <= kExternalTextureSafetyMaxDimension &&
+        artifact.height <= kExternalTextureSafetyMaxDimension &&
+        pixelCount <= kExternalTextureSafetyMaxPixels)
+    {
+        return true;
+    }
+
+    AddError(
+        diagnostics,
+        assetId,
+        sourcePath,
+        "external-model-importer-texture-safety-limit",
+        "Texture " +
+            textureKey +
+            " uri=" +
+            textureUri +
+            " dimensions " +
+            std::to_string(artifact.width) +
+            "x" +
+            std::to_string(artifact.height) +
+            " exceed external model import safety limits.");
+    return false;
+}
+
+bool TextureArtifactHasAlpha(const NLS::Render::Assets::TextureArtifactData& artifact)
+{
+    if (artifact.format != NLS::Render::RHI::TextureFormat::RGBA8 || artifact.mips.empty())
+        return true;
+
+    const auto& pixels = artifact.mips.front().pixels;
+    for (size_t alphaIndex = 3u; alphaIndex < pixels.size(); alphaIndex += 4u)
+    {
+        if (pixels[alphaIndex] != 255u)
+            return true;
+    }
+    return false;
+}
+
+NLS::Render::Assets::TextureSourceDescriptor BuildTextureSourceDescriptor(
+    const NLS::Render::Assets::ImportedScene& scene,
+    const std::string& textureKey,
+    const NLS::Render::Assets::TextureArtifactData& artifact)
+{
+    NLS::Render::Assets::TextureSourceDescriptor source;
+    source.width = artifact.width;
+    source.height = artifact.height;
+    source.hasAlpha = TextureArtifactHasAlpha(artifact);
+    source.isHDR = artifact.format == NLS::Render::RHI::TextureFormat::RGBA16F;
+
+    const auto found = std::find_if(
+        scene.textures.begin(),
+        scene.textures.end(),
+        [&textureKey](const NLS::Render::Assets::ImportedSceneNamedRecord& texture)
+        {
+            return texture.sourceKey == textureKey;
+        });
+    source.assetPath = found != scene.textures.end() ? found->uri : textureKey;
+    return source;
+}
+
+NLS::Render::Assets::TextureBackendCapabilities BuildExternalTexturePassthroughCapabilities(
+    std::string targetPlatform)
+{
+    NLS::Render::Assets::TextureBackendCapabilities capabilities;
+    capabilities.targetPlatform = std::move(targetPlatform);
+    NLS::Render::RHI::TextureFormatCapability rgba8;
+    rgba8.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    rgba8.sampled = true;
+    rgba8.upload = true;
+    rgba8.supportsSrgbView = true;
+
+    NLS::Render::RHI::TextureFormatCapability rgba16f;
+    rgba16f.format = NLS::Render::RHI::TextureFormat::RGBA16F;
+    rgba16f.sampled = true;
+    rgba16f.upload = true;
+
+    capabilities.supportedFormats = {
+        {NLS::Render::RHI::TextureFormat::RGBA8, rgba8},
+        {NLS::Render::RHI::TextureFormat::RGBA16F, rgba16f}
+    };
+    return capabilities;
+}
+
+NLS::Render::Assets::TextureBackendCapabilities BuildExternalTextureDirectXCapabilities()
+{
+    auto capabilities = BuildExternalTexturePassthroughCapabilities("win64-dx12");
+
+    const auto addCompressed = [&capabilities](const NLS::Render::RHI::TextureFormat format, const bool supportsSrgbView)
+    {
+        NLS::Render::RHI::TextureFormatCapability capability;
+        capability.format = format;
+        capability.sampled = true;
+        capability.upload = true;
+        capability.supportsSrgbView = supportsSrgbView;
+        capability.supportsUnalignedBlockTextures = true;
+        capabilities.supportedFormats[format] = capability;
+    };
+
+    addCompressed(NLS::Render::RHI::TextureFormat::BC1, true);
+    addCompressed(NLS::Render::RHI::TextureFormat::BC3, true);
+    addCompressed(NLS::Render::RHI::TextureFormat::BC5, false);
+    addCompressed(NLS::Render::RHI::TextureFormat::BC7, true);
+    return capabilities;
+}
+
+std::string ResolveExternalTextureBuildTargetPlatform(const std::string& artifactTargetPlatform)
+{
+    if (artifactTargetPlatform == "editor")
+    {
+#if defined(_WIN32)
+        return "win64-dx12";
+#else
+        return artifactTargetPlatform;
+#endif
+    }
+
+    return artifactTargetPlatform;
+}
+
+void AppendTextureFormatResolverDiagnostics(
+    NLS::Core::Assets::AssetDiagnostics& diagnostics,
+    const NLS::Core::Assets::AssetId assetId,
+    const std::filesystem::path& sourcePath,
+    const std::string& textureKey,
+    const std::vector<NLS::Render::Assets::TextureBuildDiagnostic>& resolverDiagnostics)
+{
+    for (const auto& diagnostic : resolverDiagnostics)
+    {
+        AddWarning(
+            diagnostics,
+            assetId,
+            sourcePath,
+            "external-model-importer-texture-format-resolution",
+            "Texture " +
+                textureKey +
+                " format resolution for " +
+                diagnostic.targetPlatform +
+                " requested " +
+                TextureFormatName(diagnostic.requestedFormat) +
+                " resolved " +
+                TextureFormatName(diagnostic.resolvedFormat) +
+                ": " +
+                diagnostic.reason +
+                " source=" +
+                diagnostic.assetPath);
+    }
+}
+
 std::vector<uint8_t> SerializeTextureSubAsset(
     const NLS::Render::Assets::ImportedScene& scene,
     const NLS::Render::Assets::GeneratedSceneSubAsset& subAsset,
     const std::unordered_map<std::string, NLS::Render::Assets::TextureArtifactColorSpace>& textureColorSpaces,
-    const std::unordered_map<std::string, std::vector<uint8_t>>& texturePayloads)
+    std::unordered_map<std::string, std::vector<uint8_t>>& texturePayloads,
+    NLS::Core::Assets::AssetDiagnostics& diagnostics,
+    const NLS::Core::Assets::AssetId assetId,
+    const ExternalModelImportRequest& request,
+    const std::string& textureBuildTargetPlatform,
+    const NLS::Render::Assets::TextureEncoderRegistry& textureEncoders)
 {
     const auto payload = texturePayloads.find(subAsset.sourceKey);
     const auto* bytes = payload != texturePayloads.end() ? &payload->second : nullptr;
 
     if (!bytes || bytes->empty())
+    {
+        AddError(
+            diagnostics,
+            assetId,
+            request.sourcePath,
+            "external-model-importer-texture-payload-missing",
+            "Texture " + subAsset.key + " source=" + subAsset.sourceKey + " has no readable encoded payload.");
         return {};
+    }
+
+    const auto textureIntent = ResolveSceneTextureMipIntent(scene, subAsset.sourceKey);
+    NLS::Render::Assets::TextureMipGeneratorSettings mipSettings;
+    mipSettings.intent = textureIntent;
+    mipSettings.colorSpace = [&]()
+    {
+        const auto colorSpace = textureColorSpaces.find(subAsset.sourceKey);
+        return colorSpace != textureColorSpaces.end()
+            ? colorSpace->second
+            : NLS::Render::Assets::TextureArtifactColorSpace::Srgb;
+    }();
+    mipSettings.mipmapEnabled = textureIntent != NLS::Render::Assets::TextureMipIntent::UI;
+    mipSettings.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    const auto importSettings = BuildTextureImportSettingsSnapshot(mipSettings);
+
+    auto decodeSettings = mipSettings;
+    decodeSettings.mipmapEnabled = false;
 
     auto artifact = NLS::Render::Assets::DecodeTextureArtifactFromEncodedImage(
         bytes->data(),
         bytes->size(),
-        [&]()
-        {
-            const auto colorSpace = textureColorSpaces.find(subAsset.sourceKey);
-            return colorSpace != textureColorSpaces.end()
-                ? colorSpace->second
-                : NLS::Render::Assets::TextureArtifactColorSpace::Srgb;
-        }(),
+        decodeSettings,
         true);
     if (!artifact.has_value())
+    {
+        AddError(
+            diagnostics,
+            assetId,
+            request.sourcePath,
+            "external-model-importer-texture-decode-failed",
+            "Texture " + subAsset.key + " source=" + subAsset.sourceKey + " could not be decoded.");
         return {};
-    return NLS::Render::Assets::SerializeTextureArtifact(*artifact);
+    }
+
+    const auto sourceDescriptor = BuildTextureSourceDescriptor(scene, subAsset.sourceKey, *artifact);
+    if (!ValidateDecodedTextureSafetyLimits(
+            *artifact,
+            diagnostics,
+            assetId,
+            request.sourcePath,
+            subAsset.key,
+            sourceDescriptor.assetPath))
+    {
+        return {};
+    }
+    const auto* directXTexEncoder = textureEncoders.Find("directxtex-bc");
+    const bool canEncodeBC = directXTexEncoder != nullptr && textureBuildTargetPlatform == "win64-dx12";
+    const auto capabilities = canEncodeBC
+        ? BuildExternalTextureDirectXCapabilities()
+        : BuildExternalTexturePassthroughCapabilities(textureBuildTargetPlatform);
+    const std::string requestedEncoderId = canEncodeBC
+        ? std::string(directXTexEncoder->GetId())
+        : std::string("rgba8-passthrough");
+    const uint32_t requestedEncoderVersion = canEncodeBC ? directXTexEncoder->GetVersion() : 1u;
+
+    auto resolved = NLS::Render::Assets::ResolveTextureBuildSettingsWithDiagnostics(
+        importSettings,
+        std::nullopt,
+        sourceDescriptor,
+        capabilities,
+        requestedEncoderId,
+        requestedEncoderVersion);
+    AppendTextureFormatResolverDiagnostics(
+        diagnostics,
+        assetId,
+        request.sourcePath,
+        subAsset.key,
+        resolved.diagnostics);
+    if (!resolved.settings.has_value())
+        return {};
+
+    if (resolved.settings->maxTextureSize > 0u &&
+        (artifact->width > resolved.settings->maxTextureSize ||
+            artifact->height > resolved.settings->maxTextureSize))
+    {
+        AddWarning(
+            diagnostics,
+            assetId,
+            request.sourcePath,
+            "external-model-importer-texture-size-limit",
+            "Texture " +
+                subAsset.key +
+                " exceeds maxTextureSize=" +
+                std::to_string(resolved.settings->maxTextureSize) +
+                " and resizePolicy=" +
+                resolved.settings->resizePolicy +
+                " is not implemented for external model textures yet");
+        return {};
+    }
+
+    resolved.settings->sourceAssetIdentity = TextureSourceIdentity(request, subAsset.sourceKey, sourceDescriptor);
+    resolved.settings->sourceContentHash = TextureSourceContentHash(request, sourceDescriptor, *bytes);
+    resolved.settings->normalizedSettingsHash = BuildTextureSettingsIdentity(importSettings);
+    resolved.settings->platformOverrideHash = "none";
+    resolved.settings->importerVersion = request.meta.importerVersion;
+    resolved.settings->postprocessorVersion = kExternalTexturePostprocessorVersion;
+    resolved.settings->dependencyHash = NLS::Core::Assets::ComputeNativeArtifactDependencyHash(scene.dependencies);
+    if (resolved.settings->encoderId == "directxtex-bc")
+    {
+        resolved.settings->encoderOptionsHash = BuildDirectXTexEncoderOptionsHash(*resolved.settings);
+        resolved.settings->toolVersion = GetDirectXTexTextureEncoderToolVersion();
+    }
+
+    if (resolved.settings->encoderId == "directxtex-bc")
+    {
+        if (directXTexEncoder == nullptr)
+            return {};
+
+        mipSettings.mipmapEnabled = resolved.settings->mipmapEnabled;
+        mipSettings.format = NLS::Render::RHI::TextureFormat::RGBA8;
+        const bool hasRequestedMipChain = resolved.settings->mipmapEnabled
+            ? artifact->mips.size() > 1u
+            : artifact->mips.size() == 1u;
+        if (!hasRequestedMipChain)
+        {
+            artifact = NLS::Render::Assets::GenerateTextureMipChain(
+                artifact->width,
+                artifact->height,
+                artifact->mips.front().pixels,
+                mipSettings);
+            if (!artifact.has_value())
+                return {};
+        }
+
+        auto encodeResult = directXTexEncoder->Encode({ &*resolved.settings, &*artifact });
+        for (const auto& diagnostic : encodeResult.diagnostics)
+        {
+            AddWarning(
+                diagnostics,
+                assetId,
+                request.sourcePath,
+                "external-model-importer-texture-encoding",
+                "Texture " + subAsset.key + " " + diagnostic.stage + ": " + diagnostic.message);
+        }
+        if (!encodeResult.succeeded)
+            return {};
+
+        artifact = std::move(encodeResult.artifact);
+        const auto serialized = NLS::Render::Assets::SerializeTextureArtifact(*artifact);
+        if (serialized.empty())
+        {
+            AddError(
+                diagnostics,
+                assetId,
+                request.sourcePath,
+                "external-model-importer-texture-serialization-failed",
+                "Texture " + subAsset.key + " encoded artifact could not be serialized.");
+            return {};
+        }
+
+        texturePayloads.erase(payload);
+        return serialized;
+    }
+    else
+    {
+        mipSettings.mipmapEnabled = resolved.settings->mipmapEnabled;
+        mipSettings.format = resolved.settings->resolvedFormat;
+        if (mipSettings.format != artifact->format ||
+            mipSettings.mipmapEnabled != (artifact->mips.size() > 1u))
+        {
+            artifact = NLS::Render::Assets::GenerateTextureMipChain(
+                artifact->width,
+                artifact->height,
+                artifact->mips.front().pixels,
+                mipSettings);
+            if (!artifact.has_value())
+                return {};
+        }
+
+        artifact->targetPlatform = resolved.settings->targetPlatform;
+        artifact->encoderId = resolved.settings->encoderId;
+        artifact->encoderVersion = resolved.settings->encoderVersion;
+        artifact->buildIdentity = NLS::Render::Assets::BuildTextureBuildIdentity(*resolved.settings);
+    }
+
+    const auto serialized = NLS::Render::Assets::SerializeTextureArtifact(*artifact);
+    if (serialized.empty())
+    {
+        AddError(
+            diagnostics,
+            assetId,
+            request.sourcePath,
+            "external-model-importer-texture-serialization-failed",
+            "Texture " + subAsset.key + " artifact could not be serialized.");
+        return {};
+    }
+
+    texturePayloads.erase(payload);
+    return serialized;
 }
 
 void RecordTextureSlotColorSpace(
@@ -2173,6 +2715,10 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
         NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::LoadTextures");
         texturePayloads = LoadTexturePayloads(request, scene, extension);
     }
+    NLS::Render::Assets::TextureEncoderRegistry textureEncoders;
+#if NLS_HAS_DIRECTXTEX
+    textureEncoders.Register(CreateDirectXTexTextureEncoder());
+#endif
 
     size_t processedSubAssets = 0u;
     {
@@ -2191,16 +2737,43 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
                 ImportPhase::IntermediateConversion,
                 subAssetProgress,
                 "Converting " + subAsset.key);
+            auto artifactPayload = subAsset.type == NLS::Render::Assets::ImportedSceneSubAssetType::Mesh
+                ? SerializeMeshSubAsset(scene, subAsset, sourceMeshes)
+                : subAsset.type == NLS::Render::Assets::ImportedSceneSubAssetType::Texture
+                    ? SerializeTextureSubAsset(
+                        scene,
+                        subAsset,
+                        textureColorSpaces,
+                        texturePayloads,
+                        result.diagnostics,
+                        request.meta.id,
+                        request,
+                        ResolveExternalTextureBuildTargetPlatform(request.targetPlatform),
+                        textureEncoders)
+                    : ToBytes(SerializeGenericSubAsset(scene, subAsset));
+            if (subAsset.type == NLS::Render::Assets::ImportedSceneSubAssetType::Texture &&
+                artifactPayload.empty())
+            {
+                if (!HasErrors(result.diagnostics))
+                {
+                    AddError(
+                        result.diagnostics,
+                        request.meta.id,
+                        request.sourcePath,
+                        "external-model-importer-texture-serialization-failed",
+                        "Texture " + subAsset.key + " could not be converted into a native texture artifact.");
+                }
+                timingStats.diagnosticCount = result.diagnostics.size();
+                timingStats.status = "failed";
+                return result;
+            }
+
             payloads.push_back({
                 subAsset.key,
                 ToArtifactType(subAsset.type),
                 LoaderIdFor(subAsset.type),
                 RelativePathFor(subAsset),
-                subAsset.type == NLS::Render::Assets::ImportedSceneSubAssetType::Mesh
-                    ? SerializeMeshSubAsset(scene, subAsset, sourceMeshes)
-                    : subAsset.type == NLS::Render::Assets::ImportedSceneSubAssetType::Texture
-                        ? SerializeTextureSubAsset(scene, subAsset, textureColorSpaces, texturePayloads)
-                        : ToBytes(SerializeGenericSubAsset(scene, subAsset))
+                std::move(artifactPayload)
             });
             ++processedSubAssets;
         }
@@ -2264,10 +2837,16 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
     CollectObjMaterialFileDependencies(request, externalSourceDependencies);
     for (auto& dependency : externalSourceDependencies)
         AddUniqueDependency(writeRequest.dependencies, std::move(dependency));
+    AddTextureBuildIdentityDependencies(writeRequest.dependencies, writeRequest.artifacts);
     writeRequest.dependencies.push_back({
         NLS::Core::Assets::AssetDependencyKind::ImporterVersion,
         request.meta.importerId,
         std::to_string(request.meta.importerVersion)
+    });
+    writeRequest.dependencies.push_back({
+        NLS::Core::Assets::AssetDependencyKind::PostprocessorVersion,
+        kExternalTextureBuildPipelineDependencyName,
+        std::to_string(kExternalTexturePostprocessorVersion)
     });
     writeRequest.dependencies.push_back({
         NLS::Core::Assets::AssetDependencyKind::BuildTarget,

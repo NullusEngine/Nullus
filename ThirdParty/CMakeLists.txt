@@ -5,6 +5,10 @@ option(NLS_ENABLE_ASSIMP_FBX_IMPORTER "Enable Assimp FBX importer without enabli
 option(NLS_ENABLE_AUTODESK_FBX_SDK "Enable Autodesk FBX SDK integration when the bundled SDK is available" OFF)
 option(NLS_REQUIRE_BUNDLED_FBX_SDK "Require the bundled Autodesk FBX SDK package during configure" OFF)
 
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/DirectXTex/CMakeLists.txt")
+    add_subdirectory(DirectXTex)
+endif()
+
 function(nls_create_fbx_sdk_unavailable_target reason)
     if(TARGET Autodesk::FbxSdk)
         return()

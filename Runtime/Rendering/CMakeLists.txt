@@ -69,8 +69,16 @@ target_sources(
     "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/MeshArtifact.h"
     "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/ShaderArtifact.cpp"
     "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/ShaderArtifact.h"
+    "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/TextureBuildSettings.cpp"
+    "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/TextureBuildSettings.h"
     "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/TextureArtifact.cpp"
     "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/TextureArtifact.h"
+    "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/TextureEncoder.cpp"
+    "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/TextureEncoder.h"
+    "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/TextureFormatResolver.cpp"
+    "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/TextureFormatResolver.h"
+    "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/TextureMipGenerator.cpp"
+    "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/TextureMipGenerator.h"
     "${NLS_ROOT_DIR}/Runtime/Rendering/Geometry/BoundingSphereUtils.h"
     "${NLS_ROOT_DIR}/Runtime/Core/ResourceManagement/MaterialManager.cpp"
     "${NLS_ROOT_DIR}/Runtime/Core/ResourceManagement/MeshManager.cpp"
@@ -82,6 +90,6 @@ target_compile_definitions(NLS_Render PRIVATE NLS_RESOURCE_MANAGEMENT_EXPORT)
 target_compile_definitions(NLS_Render PUBLIC
   NLS_HAS_ASSIMP_FBX_IMPORTER=$<OR:$<BOOL:${NLS_ENABLE_ASSIMP_FBX_IMPORTER}>,$<BOOL:${NLS_ASSIMP_BUILD_ALL_FORMATS}>>
 )
-target_compile_definitions(NLS_Render PRIVATE
+target_compile_definitions(NLS_Render PUBLIC
   $<$<BOOL:${NLS_ENABLE_TEST_HOOKS}>:NLS_ENABLE_TEST_HOOKS=1>
 )

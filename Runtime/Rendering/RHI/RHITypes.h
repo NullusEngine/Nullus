@@ -1,9 +1,12 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "RenderDef.h"
@@ -40,9 +43,162 @@ namespace NLS::Render::RHI
 		R32F,
 		RG32F,
 		RGBA32F,
+		BC1,
+		BC3,
+		BC5,
+		BC7,
+		BC6H,
+		ASTC4x4,
+		ETC2RGBA8,
 		Depth32F,
-		Depth24Stencil8
+		Depth24Stencil8,
+		Count
 	};
+
+	enum class NLS_RENDER_API TextureColorSpace : uint8_t
+	{
+		Linear = 0,
+		SRGB = 1
+	};
+
+	enum class NLS_RENDER_API TextureFormatFamily : uint8_t
+	{
+		Unknown = 0,
+		Uncompressed,
+		BC,
+		ASTC,
+		ETC2,
+		DepthStencil
+	};
+
+	struct NLS_RENDER_API TextureFormatDescriptor
+	{
+		TextureFormat format = TextureFormat::RGBA8;
+		const char* name = "";
+		TextureFormatFamily family = TextureFormatFamily::Unknown;
+		uint32_t blockWidth = 1u;
+		uint32_t blockHeight = 1u;
+		uint32_t blockDepth = 1u;
+		uint32_t bytesPerBlock = 0u;
+		uint32_t channelCount = 0u;
+		bool isCompressed = false;
+		bool hasAlpha = false;
+		bool isHDR = false;
+		bool isDepthStencil = false;
+		bool supportsSrgbView = false;
+		bool supportsUpload = false;
+		bool sampled = false;
+		bool colorAttachment = false;
+		bool storage = false;
+		bool requiresAlignedTopLevelBlocks = false;
+	};
+
+	struct NLS_RENDER_API TextureFormatCapability
+	{
+		TextureFormat format = TextureFormat::RGBA8;
+		bool sampled = false;
+		bool upload = false;
+		bool colorAttachment = false;
+		bool storage = false;
+		bool supportsSrgbView = false;
+		bool requiresAlignedTopLevelBlocks = false;
+		bool supportsUnalignedBlockTextures = false;
+		std::string diagnosticReason;
+	};
+
+	inline constexpr size_t TextureFormatToIndex(const TextureFormat format)
+	{
+		return static_cast<size_t>(format);
+	}
+
+	inline constexpr std::array<TextureFormatDescriptor, TextureFormatToIndex(TextureFormat::Count)> kTextureFormatDescriptors{ {
+		{ TextureFormat::R8, "r8", TextureFormatFamily::Uncompressed, 1u, 1u, 1u, 1u, 1u, false, false, false, false, false, true, true, false, false, false },
+		{ TextureFormat::RG8, "rg8", TextureFormatFamily::Uncompressed, 1u, 1u, 1u, 2u, 2u, false, false, false, false, false, true, true, false, false, false },
+		{ TextureFormat::RGB8, "rgb8", TextureFormatFamily::Uncompressed, 1u, 1u, 1u, 3u, 3u, false, false, false, false, false, true, true, false, false, false },
+		{ TextureFormat::RGBA8, "rgba8", TextureFormatFamily::Uncompressed, 1u, 1u, 1u, 4u, 4u, false, true, false, false, true, true, true, true, false, false },
+		{ TextureFormat::R16F, "r16f", TextureFormatFamily::Uncompressed, 1u, 1u, 1u, 2u, 1u, false, false, true, false, false, true, true, false, false, false },
+		{ TextureFormat::RG16F, "rg16f", TextureFormatFamily::Uncompressed, 1u, 1u, 1u, 4u, 2u, false, false, true, false, false, true, true, false, false, false },
+		{ TextureFormat::RGBA16F, "rgba16f", TextureFormatFamily::Uncompressed, 1u, 1u, 1u, 8u, 4u, false, true, true, false, false, true, true, true, false, false },
+		{ TextureFormat::R32F, "r32f", TextureFormatFamily::Uncompressed, 1u, 1u, 1u, 4u, 1u, false, false, true, false, false, true, true, false, false, false },
+		{ TextureFormat::RG32F, "rg32f", TextureFormatFamily::Uncompressed, 1u, 1u, 1u, 8u, 2u, false, false, true, false, false, true, true, false, false, false },
+		{ TextureFormat::RGBA32F, "rgba32f", TextureFormatFamily::Uncompressed, 1u, 1u, 1u, 16u, 4u, false, true, true, false, false, true, true, false, false, false },
+		{ TextureFormat::BC1, "bc1", TextureFormatFamily::BC, 4u, 4u, 1u, 8u, 4u, true, true, false, false, true, true, true, false, false, true },
+		{ TextureFormat::BC3, "bc3", TextureFormatFamily::BC, 4u, 4u, 1u, 16u, 4u, true, true, false, false, true, true, true, false, false, true },
+		{ TextureFormat::BC5, "bc5", TextureFormatFamily::BC, 4u, 4u, 1u, 16u, 2u, true, false, false, false, false, true, true, false, false, true },
+		{ TextureFormat::BC7, "bc7", TextureFormatFamily::BC, 4u, 4u, 1u, 16u, 4u, true, true, false, false, true, true, true, false, false, true },
+		{ TextureFormat::BC6H, "bc6h", TextureFormatFamily::BC, 4u, 4u, 1u, 16u, 3u, true, false, true, false, false, false, false, false, false, true },
+		{ TextureFormat::ASTC4x4, "astc4x4", TextureFormatFamily::ASTC, 4u, 4u, 1u, 16u, 4u, true, true, false, false, true, false, false, false, false, true },
+		{ TextureFormat::ETC2RGBA8, "etc2-rgba8", TextureFormatFamily::ETC2, 4u, 4u, 1u, 16u, 4u, true, true, false, false, true, false, false, false, false, true },
+		{ TextureFormat::Depth32F, "depth32f", TextureFormatFamily::DepthStencil, 1u, 1u, 1u, 4u, 1u, false, false, false, true, false, false, false, false, false, false },
+		{ TextureFormat::Depth24Stencil8, "depth24stencil8", TextureFormatFamily::DepthStencil, 1u, 1u, 1u, 4u, 2u, false, false, false, true, false, false, false, false, false, false }
+	} };
+
+	inline constexpr const TextureFormatDescriptor* GetTextureFormatDescriptor(const TextureFormat format)
+	{
+		const size_t index = TextureFormatToIndex(format);
+		return index < kTextureFormatDescriptors.size()
+			? &kTextureFormatDescriptors[index]
+			: nullptr;
+	}
+
+	inline constexpr const char* GetTextureFormatName(const TextureFormat format)
+	{
+		const auto* descriptor = GetTextureFormatDescriptor(format);
+		return descriptor != nullptr ? descriptor->name : "unknown";
+	}
+
+	inline constexpr TextureFormat ParseTextureFormatName(const std::string_view name)
+	{
+		if (name == "etc2")
+			return TextureFormat::ETC2RGBA8;
+
+		for (const auto& descriptor : kTextureFormatDescriptors)
+		{
+			if (name == descriptor.name)
+				return descriptor.format;
+		}
+		return TextureFormat::Count;
+	}
+
+	inline constexpr bool IsTextureFormatCompressed(const TextureFormat format)
+	{
+		const auto* descriptor = GetTextureFormatDescriptor(format);
+		return descriptor != nullptr && descriptor->isCompressed;
+	}
+
+	inline constexpr uint32_t CalculateTextureRowPitch(const TextureFormat format, const uint32_t width)
+	{
+		const auto* descriptor = GetTextureFormatDescriptor(format);
+		if (descriptor == nullptr || descriptor->bytesPerBlock == 0u || descriptor->blockWidth == 0u)
+			return 0u;
+
+		const uint32_t clampedWidth = (std::max)(width, 1u);
+		const uint32_t blocksWide = (clampedWidth + descriptor->blockWidth - 1u) / descriptor->blockWidth;
+		return blocksWide * descriptor->bytesPerBlock;
+	}
+
+	inline constexpr uint32_t CalculateTextureSlicePitch(
+		const TextureFormat format,
+		const uint32_t width,
+		const uint32_t height,
+		const uint32_t depth = 1u)
+	{
+		const auto* descriptor = GetTextureFormatDescriptor(format);
+		if (descriptor == nullptr ||
+			descriptor->bytesPerBlock == 0u ||
+			descriptor->blockHeight == 0u ||
+			descriptor->blockDepth == 0u)
+		{
+			return 0u;
+		}
+
+		const uint32_t rowPitch = CalculateTextureRowPitch(format, width);
+		const uint32_t clampedHeight = (std::max)(height, 1u);
+		const uint32_t clampedDepth = (std::max)(depth, 1u);
+		const uint32_t blocksHigh = (clampedHeight + descriptor->blockHeight - 1u) / descriptor->blockHeight;
+		const uint32_t blocksDeep = (clampedDepth + descriptor->blockDepth - 1u) / descriptor->blockDepth;
+		return rowPitch * blocksHigh * blocksDeep;
+	}
 
 	inline constexpr uint32_t GetTextureLayerCount(TextureDimension dimension, uint32_t requestedArrayLayers = 1u)
 	{
@@ -72,11 +228,21 @@ namespace NLS::Render::RHI
 		case TextureFormat::R32F: return 4u;
 		case TextureFormat::RG32F: return 8u;
 		case TextureFormat::RGBA32F: return 16u;
-		case TextureFormat::RGBA8:
+		case TextureFormat::BC1:
+		case TextureFormat::BC3:
+		case TextureFormat::BC5:
+		case TextureFormat::BC7:
+		case TextureFormat::BC6H:
+		case TextureFormat::ASTC4x4:
+		case TextureFormat::ETC2RGBA8:
+			return 0u;
 		case TextureFormat::Depth32F:
-		case TextureFormat::Depth24Stencil8:
+		case TextureFormat::Depth24Stencil8: return 4u;
+		case TextureFormat::Count:
+			return 0u;
+		case TextureFormat::RGBA8: return 4u;
 		default:
-			return 4u;
+			return 0u;
 		}
 	}
 
@@ -235,6 +401,7 @@ namespace NLS::Render::RHI
 		uint32_t maxColorAttachments = 0;
 		RHIDeviceLimits limits{};
 		std::array<RHIDeviceFeatureState, static_cast<size_t>(RHIDeviceFeature::Count)> features{};
+		std::array<TextureFormatCapability, TextureFormatToIndex(TextureFormat::Count)> textureFormatCapabilities{};
 
 		RHIDeviceFeatureState GetFeature(RHIDeviceFeature feature) const
 		{
@@ -275,6 +442,25 @@ namespace NLS::Render::RHI
 			SetFeatureStateFromLegacy(RHIDeviceFeature::TransientResourceAllocator, supportsTransientResourceAllocator);
 			SetFeatureStateFromLegacy(RHIDeviceFeature::CentralizedDescriptorManagement, supportsCentralizedDescriptorManagement);
 			SetFeatureStateFromLegacy(RHIDeviceFeature::PipelineStateCache, supportsPipelineStateCache);
+		}
+
+		const TextureFormatCapability& GetTextureFormatCapability(TextureFormat format) const
+		{
+			static const TextureFormatCapability kUnknownCapability{};
+			const size_t index = TextureFormatToIndex(format);
+			return index < textureFormatCapabilities.size()
+				? textureFormatCapabilities[index]
+				: kUnknownCapability;
+		}
+
+		void SetTextureFormatCapability(const TextureFormat format, TextureFormatCapability capability)
+		{
+			const size_t index = TextureFormatToIndex(format);
+			if (index >= textureFormatCapabilities.size())
+				return;
+
+			capability.format = format;
+			textureFormatCapabilities[index] = std::move(capability);
 		}
 
 	private:

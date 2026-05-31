@@ -1,4 +1,6 @@
 #include "Core/ResourceManagement/TextureManager.h"
+#include "Rendering/Context/DriverAccess.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/Settings/DriverSettings.h"
 
 #include "Rendering/Assets/TextureArtifact.h"
@@ -30,11 +32,20 @@ struct AsyncTextureArtifactRequest
 	ETextureFilteringMode minFilter = ETextureFilteringMode::NEAREST;
 	ETextureFilteringMode magFilter = ETextureFilteringMode::NEAREST;
 	bool mipmap = false;
+	std::optional<std::filesystem::file_time_type> writeTime;
 	std::future<std::optional<NLS::Render::Assets::TextureArtifactData>> future;
+};
+
+struct FailedTextureArtifactLoad
+{
+	std::string realPath;
+	std::optional<std::filesystem::file_time_type> writeTime;
+	std::string runtimeSignature;
 };
 
 std::mutex g_asyncTextureMutex;
 std::unordered_map<std::string, AsyncTextureArtifactRequest> g_asyncTextureRequests;
+std::unordered_map<std::string, FailedTextureArtifactLoad> g_failedAsyncTextureArtifacts;
 
 ETextureFilteringMode ParseTextureFilteringMode(int value)
 {
@@ -73,6 +84,46 @@ bool IsTextureArtifactPath(const std::string& path)
 			return static_cast<char>(std::tolower(character));
 		});
 	return extension == ".ntex";
+}
+
+std::optional<std::filesystem::file_time_type> TryGetLastWriteTime(const std::string& path)
+{
+	std::error_code error;
+	auto writeTime = std::filesystem::last_write_time(path, error);
+	if (error)
+		return std::nullopt;
+	return writeTime;
+}
+
+std::string CurrentTextureRuntimeSignature()
+{
+	auto* driver = NLS::Render::Context::TryGetLocatedDriver();
+	if (driver == nullptr)
+		return "driver:none";
+
+	auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(*driver);
+	if (device == nullptr)
+		return "device:none";
+
+	const auto nativeInfo = device->GetNativeDeviceInfo();
+	const auto& capabilities = device->GetCapabilities();
+	std::string signature =
+		"backend=" + std::to_string(static_cast<uint32_t>(nativeInfo.backend)) +
+		"|ready=" + std::to_string(device->IsBackendReady() ? 1u : 0u);
+	for (const auto format : {
+		NLS::Render::RHI::TextureFormat::BC1,
+		NLS::Render::RHI::TextureFormat::BC3,
+		NLS::Render::RHI::TextureFormat::BC5,
+		NLS::Render::RHI::TextureFormat::BC7 })
+	{
+		const auto& capability = capabilities.GetTextureFormatCapability(format);
+		signature +=
+			"|" + std::to_string(static_cast<uint32_t>(format)) +
+			":" + std::to_string(capability.sampled ? 1u : 0u) +
+			std::to_string(capability.upload ? 1u : 0u) +
+			std::to_string(capability.supportsSrgbView ? 1u : 0u);
+	}
+	return signature;
 }
 }
 
@@ -116,10 +167,23 @@ Texture2D* TextureManager::RequestAsyncArtifact(const std::string& path)
 	if (!IsTextureArtifactPath(realPath))
 		return nullptr;
 
+	const auto writeTime = TryGetLastWriteTime(realPath);
+	const auto runtimeSignature = CurrentTextureRuntimeSignature();
 	{
 		std::lock_guard lock(g_asyncTextureMutex);
 		if (g_asyncTextureRequests.find(path) != g_asyncTextureRequests.end())
 			return nullptr;
+		auto failed = g_failedAsyncTextureArtifacts.find(path);
+		if (failed != g_failedAsyncTextureArtifacts.end())
+		{
+			if (failed->second.realPath == realPath &&
+				failed->second.writeTime == writeTime &&
+				failed->second.runtimeSignature == runtimeSignature)
+			{
+				return nullptr;
+			}
+			g_failedAsyncTextureArtifacts.erase(failed);
+		}
 	}
 
 	auto [min, mag, mipmap] = GetTextureMetadata(realPath);
@@ -129,6 +193,7 @@ Texture2D* TextureManager::RequestAsyncArtifact(const std::string& path)
 	request.minFilter = min;
 	request.magFilter = mag;
 	request.mipmap = mipmap;
+	request.writeTime = writeTime;
 	request.future = std::async(
 		std::launch::async,
 		[realPath]()
@@ -139,6 +204,25 @@ Texture2D* TextureManager::RequestAsyncArtifact(const std::string& path)
 	std::lock_guard lock(g_asyncTextureMutex);
 	g_asyncTextureRequests.emplace(path, std::move(request));
 	return nullptr;
+}
+
+bool TextureManager::IsAsyncArtifactLoadPending(const std::string& path) const
+{
+	std::lock_guard lock(g_asyncTextureMutex);
+	return g_asyncTextureRequests.find(path) != g_asyncTextureRequests.end();
+}
+
+bool TextureManager::IsAsyncArtifactLoadFailed(const std::string& path) const
+{
+	const auto realPath = GetRealPath(path);
+	const auto writeTime = TryGetLastWriteTime(realPath);
+	const auto runtimeSignature = CurrentTextureRuntimeSignature();
+	std::lock_guard lock(g_asyncTextureMutex);
+	auto failed = g_failedAsyncTextureArtifacts.find(path);
+	return failed != g_failedAsyncTextureArtifacts.end() &&
+		failed->second.realPath == realPath &&
+		failed->second.writeTime == writeTime &&
+		failed->second.runtimeSignature == runtimeSignature;
 }
 
 void TextureManager::PumpAsyncLoads(const size_t maxCompletions)
@@ -170,6 +254,8 @@ void TextureManager::PumpAsyncLoads(const size_t maxCompletions)
 		{
 			if (GetResource(request.path, false) != nullptr)
 			{
+				std::lock_guard lock(g_asyncTextureMutex);
+				g_failedAsyncTextureArtifacts.erase(request.path);
 				++completedCount;
 				continue;
 			}
@@ -182,7 +268,21 @@ void TextureManager::PumpAsyncLoads(const size_t maxCompletions)
 			{
 				texture->path = request.path;
 				RegisterResource(request.path, texture);
+				std::lock_guard lock(g_asyncTextureMutex);
+				g_failedAsyncTextureArtifacts.erase(request.path);
 			}
+			else
+			{
+				std::lock_guard lock(g_asyncTextureMutex);
+				g_failedAsyncTextureArtifacts[request.path] =
+					{ request.realPath, request.writeTime, CurrentTextureRuntimeSignature() };
+			}
+		}
+		else
+		{
+			std::lock_guard lock(g_asyncTextureMutex);
+			g_failedAsyncTextureArtifacts[request.path] =
+				{ request.realPath, request.writeTime, CurrentTextureRuntimeSignature() };
 		}
 
 		++completedCount;

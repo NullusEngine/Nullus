@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -40,6 +41,8 @@ struct TexturePlatformOverride
     uint32_t maxTextureSize = 0u;
     std::string format;
     std::string compressionQuality;
+    std::string resizePolicy;
+    std::optional<bool> mipmapEnabled;
 };
 
 struct TextureImporterSettings
@@ -51,7 +54,9 @@ struct TextureImporterSettings
     std::string wrapMode = "repeat";
     std::string filterMode = "bilinear";
     uint32_t maxTextureSize = 2048u;
+    std::string resizePolicy = "keep";
     std::string compressionIntent = "default";
+    std::string explicitFormat;
     std::vector<TexturePlatformOverride> platformOverrides;
 };
 

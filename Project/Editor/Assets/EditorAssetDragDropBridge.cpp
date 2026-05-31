@@ -6,6 +6,8 @@
 #include "Assets/EditorAssetPath.h"
 #include "Assets/NativeArtifactContainer.h"
 #include "Core/ServiceLocator.h"
+#include "Rendering/Assets/MeshArtifact.h"
+#include "Rendering/Assets/TextureArtifact.h"
 
 #include <algorithm>
 #include <cctype>
@@ -20,6 +22,14 @@ namespace NLS::Editor::Assets
 {
 namespace
 {
+struct FastImportedPrefabLoadResult
+{
+    std::optional<NLS::Engine::Assets::PrefabArtifact> prefab;
+    bool rendererDependencyMissing = false;
+    std::string diagnosticCode;
+    std::string diagnosticMessage;
+};
+
 std::string FileStamp(const std::filesystem::path& path)
 {
     std::error_code error;
@@ -52,6 +62,47 @@ std::string ToEditorAssetPathFromProjectRoot(
     return NormalizeEditorAssetPath(relative);
 }
 
+bool HasDependency(
+    const NLS::Core::Assets::ArtifactManifest& manifest,
+    const NLS::Core::Assets::AssetDependencyKind kind,
+    const std::string_view value,
+    const std::string_view hashOrVersion)
+{
+    return std::any_of(
+        manifest.dependencies.begin(),
+        manifest.dependencies.end(),
+        [kind, value, hashOrVersion](const NLS::Core::Assets::AssetDependencyRecord& dependency)
+        {
+            return dependency.kind == kind &&
+                dependency.value == value &&
+                dependency.hashOrVersion == hashOrVersion;
+        });
+}
+
+bool HasCurrentExternalTextureBuildPipelineDependency(
+    const NLS::Core::Assets::ArtifactManifest& manifest,
+    const NLS::Core::Assets::AssetType assetType)
+{
+    if (assetType != NLS::Core::Assets::AssetType::ModelScene)
+        return true;
+
+    const bool hasTextureArtifact = std::any_of(
+        manifest.subAssets.begin(),
+        manifest.subAssets.end(),
+        [](const NLS::Core::Assets::ImportedArtifact& artifact)
+        {
+            return artifact.artifactType == NLS::Core::Assets::ArtifactType::Texture;
+        });
+    if (!hasTextureArtifact)
+        return true;
+
+    return HasDependency(
+        manifest,
+        NLS::Core::Assets::AssetDependencyKind::PostprocessorVersion,
+        "external-texture-build-pipeline",
+        "1");
+}
+
 bool ManifestDependenciesAreCurrent(
     const NLS::Core::Assets::ArtifactManifest& manifest,
     const NLS::Core::Assets::AssetMeta& meta,
@@ -60,7 +111,8 @@ bool ManifestDependenciesAreCurrent(
 {
     if (manifest.importerId != meta.importerId ||
         manifest.importerVersion != meta.importerVersion ||
-        manifest.targetPlatform != "editor")
+        manifest.targetPlatform != "editor" ||
+        !HasCurrentExternalTextureBuildPipelineDependency(manifest, meta.assetType))
     {
         return false;
     }
@@ -169,6 +221,30 @@ std::optional<NLS::Core::Assets::ArtifactManifest> LoadFastManifest(
     return ParseArtifactManifestJson(root, true);
 }
 
+std::vector<uint8_t> ReadAllBytes(const std::filesystem::path& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        return {};
+
+    return {
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()};
+}
+
+bool IsReadableMaterialArtifact(const std::filesystem::path& path)
+{
+    const auto bytes = ReadAllBytes(path);
+    if (bytes.empty())
+        return false;
+
+    const auto container = NLS::Core::Assets::ReadNativeArtifactContainer(
+        bytes,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+    return container.has_value() && !container->payload.empty();
+}
+
 std::string ExpectedPrefabResolvedAssetType(const NLS::Core::Assets::ArtifactType type)
 {
     using NLS::Core::Assets::ArtifactType;
@@ -192,49 +268,135 @@ std::string ExpectedPrefabResolvedAssetType(const NLS::Core::Assets::ArtifactTyp
     }
 }
 
-std::optional<NLS::Engine::Assets::PrefabArtifact> LoadImportedPrefabFast(
+FastImportedPrefabLoadResult ValidateGeneratedModelRendererArtifactsReady(
+    const NLS::Core::Assets::ArtifactManifest& manifest,
+    const std::filesystem::path& projectRoot,
+    const std::filesystem::path& artifactRoot)
+{
+    FastImportedPrefabLoadResult result;
+
+    for (const auto& artifact : manifest.subAssets)
+    {
+        if (artifact.artifactType == NLS::Core::Assets::ArtifactType::Prefab ||
+            artifact.artifactType == NLS::Core::Assets::ArtifactType::Model ||
+            artifact.artifactType == NLS::Core::Assets::ArtifactType::Skeleton ||
+            artifact.artifactType == NLS::Core::Assets::ArtifactType::Skin ||
+            artifact.artifactType == NLS::Core::Assets::ArtifactType::AnimationClip ||
+            artifact.artifactType == NLS::Core::Assets::ArtifactType::MorphTarget)
+        {
+            continue;
+        }
+
+        if (artifact.artifactType != NLS::Core::Assets::ArtifactType::Mesh &&
+            artifact.artifactType != NLS::Core::Assets::ArtifactType::Material &&
+            artifact.artifactType != NLS::Core::Assets::ArtifactType::Texture)
+        {
+            continue;
+        }
+
+        const auto resolvedPath = ResolveManifestArtifactPath(projectRoot, artifactRoot, artifact.artifactPath);
+        if (resolvedPath.empty())
+        {
+            result.rendererDependencyMissing = true;
+            result.diagnosticCode = "dragdrop-renderer-dependency-missing";
+            result.diagnosticMessage =
+                "The generated model renderer dependency is missing: " +
+                artifact.subAssetKey;
+            return result;
+        }
+
+        if (artifact.artifactType == NLS::Core::Assets::ArtifactType::Texture &&
+            !NLS::Render::Assets::LoadTextureArtifact(resolvedPath).has_value())
+        {
+            result.rendererDependencyMissing = true;
+            result.diagnosticCode = "dragdrop-renderer-dependency-missing";
+            result.diagnosticMessage =
+                "The generated model texture dependency is not a readable native texture artifact: " +
+                artifact.subAssetKey;
+            return result;
+        }
+
+        if (artifact.artifactType == NLS::Core::Assets::ArtifactType::Mesh &&
+            !NLS::Render::Assets::LoadMeshArtifact(resolvedPath).has_value())
+        {
+            result.rendererDependencyMissing = true;
+            result.diagnosticCode = "dragdrop-renderer-dependency-missing";
+            result.diagnosticMessage =
+                "The generated model mesh dependency is not a readable native mesh artifact: " +
+                artifact.subAssetKey;
+            return result;
+        }
+
+        if (artifact.artifactType == NLS::Core::Assets::ArtifactType::Material &&
+            !IsReadableMaterialArtifact(resolvedPath))
+        {
+            result.rendererDependencyMissing = true;
+            result.diagnosticCode = "dragdrop-renderer-dependency-missing";
+            result.diagnosticMessage =
+                "The generated model material dependency is not a readable native material artifact: " +
+                artifact.subAssetKey;
+            return result;
+        }
+    }
+
+    return result;
+}
+
+FastImportedPrefabLoadResult LoadImportedPrefabFast(
     const std::filesystem::path& projectRoot,
     const std::string& assetPath,
     const std::string& prefabSubAssetKey,
     const NLS::Core::Assets::AssetType assetType)
 {
+    FastImportedPrefabLoadResult result;
     const auto absolutePath = (projectRoot / std::filesystem::path(assetPath)).lexically_normal();
     const auto meta = NLS::Core::Assets::AssetMeta::Load(
         NLS::Core::Assets::GetAssetMetaPath(absolutePath));
     if (!meta.has_value() || !meta->id.IsValid())
-        return std::nullopt;
+        return result;
+    auto currentMeta = *meta;
+    currentMeta.importerVersion = std::max(
+        currentMeta.importerVersion,
+        NLS::Core::Assets::GetCurrentImporterVersion(currentMeta.assetType));
 
-    const auto artifactRoot = projectRoot / "Library" / "Artifacts" / meta->id.ToString();
+    const auto artifactRoot = projectRoot / "Library" / "Artifacts" / currentMeta.id.ToString();
     auto manifest = LoadFastManifest(artifactRoot / "manifest.json");
-    if (!manifest.has_value() || manifest->sourceAssetId != meta->id)
-        return std::nullopt;
-    if (!ManifestDependenciesAreCurrent(*manifest, *meta, projectRoot, absolutePath))
-        return std::nullopt;
+    if (!manifest.has_value() || manifest->sourceAssetId != currentMeta.id)
+        return result;
+    if (!ManifestDependenciesAreCurrent(*manifest, currentMeta, projectRoot, absolutePath))
+        return result;
+
+    if (assetType == NLS::Core::Assets::AssetType::ModelScene)
+    {
+        auto rendererReadiness = ValidateGeneratedModelRendererArtifactsReady(
+            *manifest,
+            projectRoot,
+            artifactRoot);
+        if (rendererReadiness.rendererDependencyMissing)
+            return rendererReadiness;
+    }
 
     const auto* prefabArtifact = manifest->FindSubAsset(prefabSubAssetKey);
     if (!prefabArtifact ||
         prefabArtifact->artifactType != NLS::Core::Assets::ArtifactType::Prefab)
     {
-        return std::nullopt;
+        return result;
     }
 
     const auto prefabPath = ResolveManifestArtifactPath(projectRoot, artifactRoot, prefabArtifact->artifactPath);
     if (prefabPath.empty())
-        return std::nullopt;
+        return result;
 
-    std::ifstream input(prefabPath, std::ios::binary);
-    if (!input)
-        return std::nullopt;
+    const auto bytes = ReadAllBytes(prefabPath);
+    if (bytes.empty())
+        return result;
 
-    const std::vector<uint8_t> bytes {
-        std::istreambuf_iterator<char>(input),
-        std::istreambuf_iterator<char>()};
     const auto container = NLS::Core::Assets::ReadNativeArtifactContainer(
         bytes,
         NLS::Core::Assets::ArtifactType::Prefab,
         1u);
     if (!container.has_value())
-        return std::nullopt;
+        return result;
 
     std::vector<NLS::Engine::Assets::PrefabResolvedAsset> resolvedAssets;
     for (const auto& artifact : manifest->subAssets)
@@ -261,11 +423,29 @@ std::optional<NLS::Engine::Assets::PrefabArtifact> LoadImportedPrefabFast(
         meta->id,
         std::move(resolvedAssets));
     if (importResult.diagnostics.HasErrors())
-        return std::nullopt;
+        return result;
 
     auto prefab = std::move(importResult.artifact);
     prefab.generatedModelPrefab = assetType == NLS::Core::Assets::AssetType::ModelScene;
-    return prefab;
+    result.prefab = std::move(prefab);
+    return result;
+}
+
+EditorAssetDragDropBridgeResult MakePendingImportedPrefabResult(
+    const FastImportedPrefabLoadResult& loadResult,
+    const std::string& fallbackCode,
+    const std::string& fallbackMessage)
+{
+    EditorAssetDragDropBridgeResult result;
+    result.handled = true;
+    result.pendingImport = true;
+    result.dragDrop.operation = DragDropOperationKind::InstantiatePrefab;
+    result.dragDrop.status = DragDropOperationStatus::Rejected;
+    result.dragDrop.diagnostics.push_back({
+        loadResult.rendererDependencyMissing ? loadResult.diagnosticCode : fallbackCode,
+        loadResult.rendererDependencyMissing ? loadResult.diagnosticMessage : fallbackMessage
+    });
+    return result;
 }
 
 }
@@ -432,10 +612,11 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropModelAssetIntoHie
     if (!std::filesystem::exists(absolutePath))
         return result;
 
-    if (auto prefab = LoadImportedPrefabFast(ProjectRoot(), assetPath, prefabSubAssetKey, assetType))
+    auto fastLoad = LoadImportedPrefabFast(ProjectRoot(), assetPath, prefabSubAssetKey, assetType);
+    if (fastLoad.prefab.has_value())
     {
         return InstantiateImportedAsset(
-            *prefab,
+            *fastLoad.prefab,
             prefabSubAssetKey,
             assetType,
             scene,
@@ -446,14 +627,10 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropModelAssetIntoHie
             assetPath);
     }
 
-    result.handled = true;
-    result.pendingImport = true;
-    result.dragDrop.operation = DragDropOperationKind::InstantiatePrefab;
-    result.dragDrop.diagnostics.push_back({
+    return MakePendingImportedPrefabResult(
+        fastLoad,
         "dragdrop-asset-import-pending",
-        "The dragged asset is not imported yet; background preimport must complete before it can be instantiated."
-    });
-    return result;
+        "The dragged asset is not imported yet; background preimport must complete before it can be instantiated.");
 }
 
 EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropModelAssetIntoHierarchyAsync(
@@ -475,10 +652,11 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropModelAssetIntoHie
     if (!std::filesystem::exists(absolutePath))
         return result;
 
-    if (auto prefab = LoadImportedPrefabFast(ProjectRoot(), assetPath, prefabSubAssetKey, assetType))
+    auto fastLoad = LoadImportedPrefabFast(ProjectRoot(), assetPath, prefabSubAssetKey, assetType);
+    if (fastLoad.prefab.has_value())
     {
         return InstantiateImportedAsset(
-            *prefab,
+            *fastLoad.prefab,
             prefabSubAssetKey,
             assetType,
             scene,
@@ -487,6 +665,13 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropModelAssetIntoHie
             request.parent,
             request.progressTracker,
             assetPath);
+    }
+    if (fastLoad.rendererDependencyMissing)
+    {
+        return MakePendingImportedPrefabResult(
+            fastLoad,
+            "dragdrop-asset-import-pending",
+            "The dragged asset is not imported yet; background preimport must complete before it can be instantiated.");
     }
 
     AssetDatabaseFacade database(MakeProjectEditorAssetRoots(ProjectRoot()));
@@ -508,14 +693,10 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropModelAssetIntoHie
             assetPath);
     }
 
-    result.handled = true;
-    result.pendingImport = true;
-    result.dragDrop.operation = DragDropOperationKind::InstantiatePrefab;
-    result.dragDrop.status = DragDropOperationStatus::Rejected;
-    result.dragDrop.diagnostics.push_back({
+    result = MakePendingImportedPrefabResult(
+        fastLoad,
         "dragdrop-asset-import-pending",
-        "The dragged asset is not imported yet; background preimport must complete before it can be instantiated."
-    });
+        "The dragged asset is not imported yet; background preimport must complete before it can be instantiated.");
 
     if (request.scheduleBackgroundTask && request.completion)
     {
@@ -628,22 +809,18 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropImportedAssetHand
         return result;
     }
 
-    auto prefab = LoadImportedPrefabFast(ProjectRoot(), assetPath, prefabSubAssetKey, assetType);
-    if (!prefab.has_value())
+    auto fastLoad = LoadImportedPrefabFast(ProjectRoot(), assetPath, prefabSubAssetKey, assetType);
+    if (!fastLoad.prefab.has_value())
     {
-        result.handled = true;
-        result.pendingImport = true;
-        result.dragDrop.operation = DragDropOperationKind::InstantiatePrefab;
-        result.dragDrop.diagnostics.push_back({
+        return MakePendingImportedPrefabResult(
+            fastLoad,
             payload.imported == 0u ? "dragdrop-asset-import-pending" : "dragdrop-asset-artifact-missing",
             payload.imported == 0u
                 ? "The dragged asset is not imported yet; import must complete before it can be instantiated."
-                : "The dragged asset has no committed prefab artifact available for non-blocking instantiation."
-        });
-        return result;
+                : "The dragged asset has no committed prefab artifact available for non-blocking instantiation.");
     }
 
-    if (prefab->assetId != payloadAssetId)
+    if (fastLoad.prefab->assetId != payloadAssetId)
     {
         result.handled = true;
         result.dragDrop.operation = DragDropOperationKind::InstantiatePrefab;
@@ -655,7 +832,7 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropImportedAssetHand
     }
 
     return InstantiateImportedAsset(
-        *prefab,
+        *fastLoad.prefab,
         prefabSubAssetKey,
         assetType,
         scene,

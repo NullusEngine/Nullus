@@ -56,10 +56,17 @@ namespace NLS::Render::RHI::DX12
     struct NLS_RENDER_API DX12InitialUploadRequest
     {
         DX12InitialUploadResourceKind resourceKind = DX12InitialUploadResourceKind::Buffer;
+        struct TextureSubresourceData
+        {
+            const void* data = nullptr;
+            size_t dataSize = 0u;
+        };
+
         const void* data = nullptr;
         size_t dataSize = 0;
         size_t destinationOffset = 0;
         DX12TextureUploadPlan texturePlan{};
+        std::vector<TextureSubresourceData> textureSubresources;
         std::string debugName;
     };
 

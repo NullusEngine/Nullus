@@ -4,12 +4,14 @@
 #include "Rendering/Assets/SceneImportPipeline.h"
 #include "Rendering/Assets/ShaderArtifact.h"
 #include "Rendering/Assets/TextureArtifact.h"
+#include "Rendering/Assets/TextureMipGenerator.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Resources/Loaders/MaterialLoader.h"
 #include "Rendering/Resources/Loaders/ShaderLoader.h"
 #include "Rendering/Resources/Loaders/TextureLoader.h"
 #include "Rendering/RHI/BindingPointMap.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/Resources/MaterialResourceSet.h"
 #include "Rendering/Resources/Texture2D.h"
 #include "Rendering/ShaderCompiler/ShaderCompilationTypes.h"
@@ -26,9 +28,15 @@
 
 #include <algorithm>
 #include <any>
+#include <array>
+#include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
+#include <string_view>
+#include <utility>
 
 namespace
 {
@@ -78,6 +86,46 @@ bool HasDiagnosticCode(
         });
 }
 
+uint32_t NextTextureTestMipDimension(const uint32_t value)
+{
+    return value > 1u ? value / 2u : 1u;
+}
+
+NLS::Render::Assets::TextureArtifactData MakeDescriptorBackedTextureArtifact(
+    const NLS::Render::RHI::TextureFormat format,
+    const NLS::Render::Assets::TextureArtifactColorSpace colorSpace,
+    const uint32_t width,
+    const uint32_t height,
+    const uint32_t mipCount)
+{
+    NLS::Render::Assets::TextureArtifactData artifact;
+    artifact.width = width;
+    artifact.height = height;
+    artifact.format = format;
+    artifact.colorSpace = colorSpace;
+
+    uint32_t mipWidth = width;
+    uint32_t mipHeight = height;
+    for (uint32_t level = 0u; level < mipCount; ++level)
+    {
+        NLS::Render::Assets::TextureArtifactMip mip;
+        mip.level = level;
+        mip.width = mipWidth;
+        mip.height = mipHeight;
+        mip.rowPitch = NLS::Render::RHI::CalculateTextureRowPitch(format, mipWidth);
+        mip.slicePitch = NLS::Render::RHI::CalculateTextureSlicePitch(format, mipWidth, mipHeight, 1u);
+        mip.pixels.resize(mip.slicePitch);
+        for (size_t byteIndex = 0u; byteIndex < mip.pixels.size(); ++byteIndex)
+            mip.pixels[byteIndex] = static_cast<uint8_t>((byteIndex + level * 17u) & 0xFFu);
+
+        artifact.mips.push_back(std::move(mip));
+        mipWidth = NextTextureTestMipDimension(mipWidth);
+        mipHeight = NextTextureTestMipDimension(mipHeight);
+    }
+
+    return artifact;
+}
+
 class ScopedDriverService final
 {
 public:
@@ -93,6 +141,139 @@ public:
 
     ScopedDriverService(const ScopedDriverService&) = delete;
     ScopedDriverService& operator=(const ScopedDriverService&) = delete;
+};
+
+class TextureLoaderTestAdapter final : public NLS::Render::RHI::RHIAdapter
+{
+public:
+    std::string_view GetDebugName() const override { return "AssetMaterialConversionTextureLoaderAdapter"; }
+    NLS::Render::RHI::NativeBackendType GetBackendType() const override { return NLS::Render::RHI::NativeBackendType::DX12; }
+    std::string_view GetVendor() const override { return "TestVendor"; }
+    std::string_view GetHardware() const override { return "TestHardware"; }
+};
+
+class TextureLoaderTestTexture final : public NLS::Render::RHI::RHITexture
+{
+public:
+    explicit TextureLoaderTestTexture(NLS::Render::RHI::RHITextureDesc desc)
+        : m_desc(std::move(desc))
+    {
+    }
+
+    std::string_view GetDebugName() const override { return m_desc.debugName; }
+    const NLS::Render::RHI::RHITextureDesc& GetDesc() const override { return m_desc; }
+    NLS::Render::RHI::ResourceState GetState() const override { return NLS::Render::RHI::ResourceState::Unknown; }
+
+private:
+    NLS::Render::RHI::RHITextureDesc m_desc {};
+};
+
+class TextureLoaderTestTextureView final : public NLS::Render::RHI::RHITextureView
+{
+public:
+    TextureLoaderTestTextureView(
+        std::shared_ptr<NLS::Render::RHI::RHITexture> texture,
+        NLS::Render::RHI::RHITextureViewDesc desc)
+        : m_texture(std::move(texture))
+        , m_desc(std::move(desc))
+    {
+    }
+
+    std::string_view GetDebugName() const override { return m_desc.debugName; }
+    const NLS::Render::RHI::RHITextureViewDesc& GetDesc() const override { return m_desc; }
+    const std::shared_ptr<NLS::Render::RHI::RHITexture>& GetTexture() const override { return m_texture; }
+
+private:
+    std::shared_ptr<NLS::Render::RHI::RHITexture> m_texture;
+    NLS::Render::RHI::RHITextureViewDesc m_desc {};
+};
+
+class TextureLoaderTestDevice final : public NLS::Render::RHI::RHIDevice
+{
+public:
+    TextureLoaderTestDevice()
+        : m_adapter(std::make_shared<TextureLoaderTestAdapter>())
+    {
+        m_nativeDeviceInfo.backend = NLS::Render::RHI::NativeBackendType::DX12;
+        m_capabilities.backendReady = true;
+        m_capabilities.supportsGraphics = true;
+        m_capabilities.supportsCurrentSceneRenderer = true;
+        for (const auto& descriptor : NLS::Render::RHI::kTextureFormatDescriptors)
+        {
+            m_capabilities.SetTextureFormatCapability(
+                descriptor.format,
+                {
+                    descriptor.format,
+                    descriptor.sampled,
+                    descriptor.supportsUpload,
+                    descriptor.colorAttachment,
+                    descriptor.storage,
+                    descriptor.supportsSrgbView,
+                    descriptor.requiresAlignedTopLevelBlocks,
+                    true,
+                    {}
+                });
+        }
+    }
+
+    std::string_view GetDebugName() const override { return "AssetMaterialConversionTextureLoaderDevice"; }
+    const std::shared_ptr<NLS::Render::RHI::RHIAdapter>& GetAdapter() const override { return m_adapter; }
+    const NLS::Render::RHI::RHIDeviceCapabilities& GetCapabilities() const override { return m_capabilities; }
+    NLS::Render::RHI::NativeRenderDeviceInfo GetNativeDeviceInfo() const override { return m_nativeDeviceInfo; }
+    bool IsBackendReady() const override { return true; }
+    std::shared_ptr<NLS::Render::RHI::RHIQueue> GetQueue(NLS::Render::RHI::QueueType) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHISwapchain> CreateSwapchain(const NLS::Render::RHI::SwapchainDesc&) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHIBuffer> CreateBuffer(
+        const NLS::Render::RHI::RHIBufferDesc&,
+        const NLS::Render::RHI::RHIBufferUploadDesc&) override
+    {
+        return nullptr;
+    }
+    std::shared_ptr<NLS::Render::RHI::RHITexture> CreateTexture(
+        const NLS::Render::RHI::RHITextureDesc& desc,
+        const NLS::Render::RHI::RHITextureUploadDesc& uploadDesc) override
+    {
+        ++textureCreateCalls;
+        lastTextureDesc = desc;
+        lastTextureUploadDesc = uploadDesc;
+        return std::make_shared<TextureLoaderTestTexture>(desc);
+    }
+    std::shared_ptr<NLS::Render::RHI::RHITextureView> CreateTextureView(
+        const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+        const NLS::Render::RHI::RHITextureViewDesc& desc) override
+    {
+        lastTextureViewDesc = desc;
+        return std::make_shared<TextureLoaderTestTextureView>(texture, desc);
+    }
+    std::shared_ptr<NLS::Render::RHI::RHISampler> CreateSampler(const NLS::Render::RHI::SamplerDesc&, std::string = {}) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> CreateBindingLayout(const NLS::Render::RHI::RHIBindingLayoutDesc&) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHIBindingSet> CreateBindingSet(const NLS::Render::RHI::RHIBindingSetDesc&) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> CreatePipelineLayout(const NLS::Render::RHI::RHIPipelineLayoutDesc&) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHIShaderModule> CreateShaderModule(const NLS::Render::RHI::RHIShaderModuleDesc&) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline> CreateGraphicsPipeline(const NLS::Render::RHI::RHIGraphicsPipelineDesc&) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> CreateComputePipeline(const NLS::Render::RHI::RHIComputePipelineDesc&) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHICommandPool> CreateCommandPool(NLS::Render::RHI::QueueType, std::string = {}) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHIFence> CreateFence(std::string = {}) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHISemaphore> CreateSemaphore(std::string = {}) override { return nullptr; }
+    void ReadPixels(
+        const std::shared_ptr<NLS::Render::RHI::RHITexture>&,
+        uint32_t,
+        uint32_t,
+        uint32_t,
+        uint32_t,
+        NLS::Render::Settings::EPixelDataFormat,
+        NLS::Render::Settings::EPixelDataType,
+        void*) override {}
+
+    size_t textureCreateCalls = 0u;
+    NLS::Render::RHI::RHITextureDesc lastTextureDesc {};
+    NLS::Render::RHI::RHITextureUploadDesc lastTextureUploadDesc {};
+    NLS::Render::RHI::RHITextureViewDesc lastTextureViewDesc {};
+
+private:
+    std::shared_ptr<NLS::Render::RHI::RHIAdapter> m_adapter;
+    NLS::Render::RHI::NativeRenderDeviceInfo m_nativeDeviceInfo {};
+    NLS::Render::RHI::RHIDeviceCapabilities m_capabilities {};
 };
 
 class ScopedShaderManagerAssetPaths final
@@ -375,6 +556,162 @@ std::vector<uint8_t> TinyRgb16Png()
         0x0E, 0xDE, 0xD5, 0x7A, 0x00, 0x00, 0x00, 0x00,
         0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82
     };
+}
+
+void AppendUInt32Le(std::vector<uint8_t>& bytes, const uint32_t value)
+{
+    bytes.push_back(static_cast<uint8_t>(value & 0xFFu));
+    bytes.push_back(static_cast<uint8_t>((value >> 8u) & 0xFFu));
+    bytes.push_back(static_cast<uint8_t>((value >> 16u) & 0xFFu));
+    bytes.push_back(static_cast<uint8_t>((value >> 24u) & 0xFFu));
+}
+
+void AppendUInt64Le(std::vector<uint8_t>& bytes, const uint64_t value)
+{
+    for (uint32_t byteIndex = 0u; byteIndex < 8u; ++byteIndex)
+        bytes.push_back(static_cast<uint8_t>((value >> (byteIndex * 8u)) & 0xFFu));
+}
+
+std::vector<uint8_t> MakeLegacyTextureArtifactPayloadV2()
+{
+    std::vector<uint8_t> bytes;
+    bytes.reserve(32u + 2u * 36u + 20u);
+
+    constexpr uint32_t kMagic = 0x5845544Eu;
+    constexpr uint32_t kVersion = 2u;
+    AppendUInt32Le(bytes, kMagic);
+    AppendUInt32Le(bytes, kVersion);
+    AppendUInt32Le(bytes, 2u);
+    AppendUInt32Le(bytes, 2u);
+    AppendUInt32Le(bytes, static_cast<uint32_t>(NLS::Render::RHI::TextureFormat::RGBA8));
+    AppendUInt32Le(bytes, static_cast<uint32_t>(NLS::Render::Assets::TextureArtifactColorSpace::Srgb));
+    AppendUInt32Le(bytes, 2u);
+    AppendUInt32Le(bytes, 0u);
+
+    AppendUInt32Le(bytes, 0u);
+    AppendUInt32Le(bytes, 2u);
+    AppendUInt32Le(bytes, 2u);
+    AppendUInt32Le(bytes, 8u);
+    AppendUInt32Le(bytes, 16u);
+    AppendUInt64Le(bytes, 104u);
+    AppendUInt64Le(bytes, 16u);
+
+    AppendUInt32Le(bytes, 1u);
+    AppendUInt32Le(bytes, 1u);
+    AppendUInt32Le(bytes, 1u);
+    AppendUInt32Le(bytes, 4u);
+    AppendUInt32Le(bytes, 4u);
+    AppendUInt64Le(bytes, 120u);
+    AppendUInt64Le(bytes, 4u);
+
+    const std::vector<uint8_t> basePixels{
+        255u, 0u, 0u, 255u,
+        0u, 255u, 0u, 255u,
+        0u, 0u, 255u, 255u,
+        255u, 255u, 255u, 255u
+    };
+    const std::vector<uint8_t> mipPixels{128u, 128u, 128u, 255u};
+    bytes.insert(bytes.end(), basePixels.begin(), basePixels.end());
+    bytes.insert(bytes.end(), mipPixels.begin(), mipPixels.end());
+    return bytes;
+}
+
+std::vector<uint8_t> EncodeNormalVector(float x, float y, float z)
+{
+    const auto encode = [](float component)
+    {
+        const float normalized = std::clamp(component * 0.5f + 0.5f, 0.0f, 1.0f);
+        return static_cast<uint8_t>(std::lround(normalized * 255.0f));
+    };
+
+    return {encode(x), encode(y), encode(z), 255u};
+}
+
+std::array<float, 3> DecodeNormalVector(const std::vector<uint8_t>& rgba)
+{
+    const auto decode = [](uint8_t component)
+    {
+        return (static_cast<float>(component) / 255.0f) * 2.0f - 1.0f;
+    };
+
+    return {decode(rgba[0]), decode(rgba[1]), decode(rgba[2])};
+}
+
+uint16_t FloatToHalfBitsForTest(const float value)
+{
+    uint32_t bits = 0u;
+    std::memcpy(&bits, &value, sizeof(float));
+
+    const uint32_t sign = (bits >> 16u) & 0x8000u;
+    int32_t exponent = static_cast<int32_t>((bits >> 23u) & 0xFFu) - 127 + 15;
+    uint32_t mantissa = bits & 0x7FFFFFu;
+
+    if (exponent <= 0)
+    {
+        if (exponent < -10)
+            return static_cast<uint16_t>(sign);
+        mantissa = (mantissa | 0x800000u) >> static_cast<uint32_t>(1 - exponent);
+        return static_cast<uint16_t>(sign | ((mantissa + 0x1000u) >> 13u));
+    }
+
+    if (exponent >= 31)
+        return static_cast<uint16_t>(sign | 0x7C00u);
+
+    return static_cast<uint16_t>(sign | (static_cast<uint32_t>(exponent) << 10u) | ((mantissa + 0x1000u) >> 13u));
+}
+
+float HalfBitsToFloatForTest(const uint16_t half)
+{
+    const uint32_t sign = static_cast<uint32_t>(half & 0x8000u) << 16u;
+    int32_t exponent = static_cast<int32_t>((half >> 10u) & 0x1Fu);
+    uint32_t mantissa = half & 0x03FFu;
+
+    uint32_t bits = 0u;
+    if (exponent == 0)
+    {
+        if (mantissa == 0u)
+        {
+            bits = sign;
+        }
+        else
+        {
+            exponent = 1u;
+            while ((mantissa & 0x0400u) == 0u)
+            {
+                mantissa <<= 1u;
+                --exponent;
+            }
+            mantissa &= 0x03FFu;
+            bits = sign | (static_cast<uint32_t>(exponent + (127 - 15)) << 23u) | (mantissa << 13u);
+        }
+    }
+    else if (exponent == 31)
+    {
+        bits = sign | 0x7F800000u | (mantissa << 13u);
+    }
+    else
+    {
+        bits = sign | (static_cast<uint32_t>(exponent + (127 - 15)) << 23u) | (mantissa << 13u);
+    }
+
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(float));
+    return value;
+}
+
+void AppendHalfFloatForTest(std::vector<uint8_t>& bytes, const float value)
+{
+    const uint16_t half = FloatToHalfBitsForTest(value);
+    bytes.push_back(static_cast<uint8_t>(half & 0xFFu));
+    bytes.push_back(static_cast<uint8_t>((half >> 8u) & 0xFFu));
+}
+
+float ReadHalfFloatForTest(const std::vector<uint8_t>& bytes, const size_t halfIndex)
+{
+    const size_t byteIndex = halfIndex * 2u;
+    const uint16_t half = static_cast<uint16_t>(bytes[byteIndex]) |
+        (static_cast<uint16_t>(bytes[byteIndex + 1u]) << 8u);
+    return HalfBitsToFloatForTest(half);
 }
 }
 
@@ -1593,6 +1930,105 @@ TEST(AssetMaterialConversionTests, TextureLoaderReadsNativeTextureArtifactWithou
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetMaterialConversionTests, TextureLoaderPropagatesCompressedArtifactMetadataToRhi)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_compressed_texture_artifact_load_" + NLS::Guid::New().ToString());
+    const auto texturePath = root / "Library" / "Artifacts" / "Hero" / "textures" / "CompressedBaseColor.ntex";
+
+    const auto artifact = MakeDescriptorBackedTextureArtifact(
+        NLS::Render::RHI::TextureFormat::BC7,
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb,
+        8u,
+        8u,
+        2u);
+    WriteBinaryFile(texturePath, NLS::Render::Assets::SerializeTextureArtifact(artifact));
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    auto explicitDevice = std::make_shared<TextureLoaderTestDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+
+    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::Create(
+        texturePath.string(),
+        NLS::Render::Settings::ETextureFilteringMode::LINEAR,
+        NLS::Render::Settings::ETextureFilteringMode::LINEAR,
+        false);
+
+    ASSERT_NE(texture, nullptr);
+    EXPECT_EQ(texture->width, 8u);
+    EXPECT_EQ(texture->height, 8u);
+    EXPECT_TRUE(texture->isMimapped);
+    EXPECT_EQ(texture->path, texturePath.string());
+
+    EXPECT_EQ(explicitDevice->lastTextureDesc.format, NLS::Render::RHI::TextureFormat::BC7);
+    EXPECT_EQ(explicitDevice->lastTextureDesc.colorSpace, NLS::Render::RHI::TextureColorSpace::SRGB);
+    EXPECT_EQ(explicitDevice->lastTextureDesc.mipLevels, 2u);
+    EXPECT_EQ(explicitDevice->lastTextureUploadDesc.dataSize, 80u);
+    EXPECT_EQ(explicitDevice->lastTextureUploadDesc.rowPitch, 32u);
+    EXPECT_EQ(explicitDevice->lastTextureUploadDesc.slicePitch, 64u);
+
+    const auto view = texture->GetOrCreateExplicitTextureView("CompressedTextureArtifactView");
+    ASSERT_NE(view, nullptr);
+    EXPECT_EQ(view->GetDesc().format, NLS::Render::RHI::TextureFormat::BC7);
+    EXPECT_EQ(view->GetDesc().colorSpace, NLS::Render::RHI::TextureColorSpace::SRGB);
+    EXPECT_EQ(view->GetDesc().subresourceRange.mipLevelCount, 2u);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(texture));
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetMaterialConversionTests, TextureLoaderWarnsWhenCompressedArtifactBackendIsUnsupported)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_unsupported_compressed_texture_artifact_" + NLS::Guid::New().ToString());
+    const auto texturePath = root / "Library" / "Artifacts" / "Hero" / "textures" / "UnsupportedCompressed.ntex";
+
+    const auto artifact = MakeDescriptorBackedTextureArtifact(
+        NLS::Render::RHI::TextureFormat::BC1,
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb,
+        4u,
+        4u,
+        1u);
+    WriteBinaryFile(texturePath, NLS::Render::Assets::SerializeTextureArtifact(artifact));
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+
+    bool sawUnsupportedCompressedWarning = false;
+    const auto listener = NLS::Debug::Logger::LogEvent +=
+        [&sawUnsupportedCompressedWarning](const NLS::Debug::LogData& log)
+        {
+            if (log.logLevel == NLS::Debug::ELogLevel::LOG_WARNING &&
+                log.message.find("unsupported compressed texture artifact") != std::string::npos)
+            {
+                sawUnsupportedCompressedWarning = true;
+            }
+        };
+
+    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::Create(
+        texturePath.string(),
+        NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+        NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+        false);
+
+    NLS::Debug::Logger::LogEvent -= listener;
+
+    EXPECT_EQ(texture, nullptr);
+    EXPECT_TRUE(sawUnsupportedCompressedWarning);
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetMaterialConversionTests, TextureArtifactSerializesNativeRgba8MipChain)
 {
     NLS::Render::Assets::TextureArtifactData artifact;
@@ -1646,6 +2082,242 @@ TEST(AssetMaterialConversionTests, TextureArtifactSerializesNativeRgba8MipChain)
     EXPECT_EQ(decoded->mips[1].pixels, (std::vector<uint8_t>{128u, 128u, 128u, 255u}));
 }
 
+TEST(AssetMaterialConversionTests, TextureArtifactWritesCurrentSchema4Container)
+{
+    NLS::Render::Assets::TextureArtifactData artifact;
+    artifact.width = 2u;
+    artifact.height = 2u;
+    artifact.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    artifact.colorSpace = NLS::Render::Assets::TextureArtifactColorSpace::Srgb;
+    artifact.mips.push_back({
+        0u,
+        2u,
+        2u,
+        8u,
+        16u,
+        {
+            255u, 0u, 0u, 255u,
+            0u, 255u, 0u, 255u,
+            0u, 0u, 255u, 255u,
+            255u, 255u, 255u, 255u
+        }
+    });
+
+    const auto bytes = NLS::Render::Assets::SerializeTextureArtifact(artifact);
+    const auto container = NLS::Core::Assets::ReadNativeArtifactContainer(
+        bytes,
+        NLS::Core::Assets::ArtifactType::Texture,
+        4u);
+    ASSERT_TRUE(container.has_value());
+
+    const auto decoded = NLS::Render::Assets::DeserializeTextureArtifact(bytes);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->width, 2u);
+    EXPECT_EQ(decoded->height, 2u);
+}
+
+TEST(AssetMaterialConversionTests, TextureArtifactSerializesBcAndRgba16fDescriptorBackedPayloads)
+{
+    struct FormatCase
+    {
+        NLS::Render::RHI::TextureFormat format;
+        NLS::Render::Assets::TextureArtifactColorSpace colorSpace;
+    };
+
+    const std::array<FormatCase, 5u> cases{{
+        {NLS::Render::RHI::TextureFormat::BC1, NLS::Render::Assets::TextureArtifactColorSpace::Srgb},
+        {NLS::Render::RHI::TextureFormat::BC3, NLS::Render::Assets::TextureArtifactColorSpace::Srgb},
+        {NLS::Render::RHI::TextureFormat::BC5, NLS::Render::Assets::TextureArtifactColorSpace::Linear},
+        {NLS::Render::RHI::TextureFormat::BC7, NLS::Render::Assets::TextureArtifactColorSpace::Srgb},
+        {NLS::Render::RHI::TextureFormat::RGBA16F, NLS::Render::Assets::TextureArtifactColorSpace::Linear}
+    }};
+
+    for (const auto& formatCase : cases)
+    {
+        SCOPED_TRACE(static_cast<int>(formatCase.format));
+        const auto artifact = MakeDescriptorBackedTextureArtifact(
+            formatCase.format,
+            formatCase.colorSpace,
+            8u,
+            8u,
+            2u);
+
+        const auto bytes = NLS::Render::Assets::SerializeTextureArtifact(artifact);
+        ASSERT_FALSE(bytes.empty());
+
+        const auto decoded = NLS::Render::Assets::DeserializeTextureArtifact(bytes);
+        ASSERT_TRUE(decoded.has_value());
+        EXPECT_EQ(decoded->width, 8u);
+        EXPECT_EQ(decoded->height, 8u);
+        EXPECT_EQ(decoded->format, formatCase.format);
+        EXPECT_EQ(decoded->colorSpace, formatCase.colorSpace);
+        ASSERT_EQ(decoded->mips.size(), artifact.mips.size());
+        ASSERT_EQ(decoded->subresources.size(), artifact.mips.size());
+
+        for (size_t mipIndex = 0u; mipIndex < artifact.mips.size(); ++mipIndex)
+        {
+            const auto& expectedMip = artifact.mips[mipIndex];
+            const auto& actualMip = decoded->mips[mipIndex];
+            const auto& actualSubresource = decoded->subresources[mipIndex];
+
+            EXPECT_EQ(actualMip.level, expectedMip.level);
+            EXPECT_EQ(actualMip.width, expectedMip.width);
+            EXPECT_EQ(actualMip.height, expectedMip.height);
+            EXPECT_EQ(actualMip.rowPitch, NLS::Render::RHI::CalculateTextureRowPitch(formatCase.format, expectedMip.width));
+            EXPECT_EQ(actualMip.slicePitch, NLS::Render::RHI::CalculateTextureSlicePitch(formatCase.format, expectedMip.width, expectedMip.height, 1u));
+            EXPECT_EQ(actualMip.pixels, expectedMip.pixels);
+
+            EXPECT_EQ(actualSubresource.level, expectedMip.level);
+            EXPECT_EQ(actualSubresource.arrayLayer, 0u);
+            EXPECT_EQ(actualSubresource.width, expectedMip.width);
+            EXPECT_EQ(actualSubresource.height, expectedMip.height);
+            EXPECT_EQ(actualSubresource.depth, 1u);
+            EXPECT_EQ(actualSubresource.rowPitch, actualMip.rowPitch);
+            EXPECT_EQ(actualSubresource.slicePitch, actualMip.slicePitch);
+            EXPECT_EQ(actualSubresource.dataSize, expectedMip.pixels.size());
+        }
+    }
+}
+
+TEST(AssetMaterialConversionTests, TextureArtifactPreservesBuildMetadataAndCubeFaceOrdering)
+{
+    NLS::Render::Assets::TextureArtifactData artifact;
+    artifact.width = 4u;
+    artifact.height = 4u;
+    artifact.dimension = NLS::Render::RHI::TextureDimension::TextureCube;
+    artifact.arrayLayers = 6u;
+    artifact.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    artifact.colorSpace = NLS::Render::Assets::TextureArtifactColorSpace::Srgb;
+    artifact.targetPlatform = "win64-dx12";
+    artifact.buildIdentity = "texture-build-identity";
+    artifact.encoderId = "rgba8-passthrough";
+    artifact.encoderVersion = 7u;
+
+    const std::array<NLS::Render::Assets::TextureArtifactCubeFace, 6u> faces{{
+        NLS::Render::Assets::TextureArtifactCubeFace::PositiveX,
+        NLS::Render::Assets::TextureArtifactCubeFace::NegativeX,
+        NLS::Render::Assets::TextureArtifactCubeFace::PositiveY,
+        NLS::Render::Assets::TextureArtifactCubeFace::NegativeY,
+        NLS::Render::Assets::TextureArtifactCubeFace::PositiveZ,
+        NLS::Render::Assets::TextureArtifactCubeFace::NegativeZ
+    }};
+
+    for (uint32_t faceIndex = 0u; faceIndex < faces.size(); ++faceIndex)
+    {
+        NLS::Render::Assets::TextureArtifactMip mip;
+        mip.level = 0u;
+        mip.width = artifact.width;
+        mip.height = artifact.height;
+        mip.rowPitch = NLS::Render::RHI::CalculateTextureRowPitch(artifact.format, mip.width);
+        mip.slicePitch = NLS::Render::RHI::CalculateTextureSlicePitch(artifact.format, mip.width, mip.height, 1u);
+        mip.pixels.assign(mip.slicePitch, static_cast<uint8_t>(faceIndex + 1u));
+        artifact.mips.push_back(std::move(mip));
+
+        artifact.subresources.push_back({
+            0u,
+            faceIndex,
+            artifact.width,
+            artifact.height,
+            1u,
+            faces[faceIndex],
+            NLS::Render::RHI::CalculateTextureRowPitch(artifact.format, artifact.width),
+            NLS::Render::RHI::CalculateTextureSlicePitch(artifact.format, artifact.width, artifact.height, 1u),
+            0u,
+            0u
+        });
+    }
+
+    const auto bytes = NLS::Render::Assets::SerializeTextureArtifact(artifact);
+    ASSERT_FALSE(bytes.empty());
+
+    const auto decoded = NLS::Render::Assets::DeserializeTextureArtifact(bytes);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->dimension, NLS::Render::RHI::TextureDimension::TextureCube);
+    EXPECT_EQ(decoded->arrayLayers, 6u);
+    EXPECT_EQ(decoded->targetPlatform, artifact.targetPlatform);
+    EXPECT_EQ(decoded->buildIdentity, artifact.buildIdentity);
+    EXPECT_EQ(decoded->encoderId, artifact.encoderId);
+    EXPECT_EQ(decoded->encoderVersion, artifact.encoderVersion);
+    EXPECT_EQ(decoded->mips.size(), faces.size());
+    ASSERT_EQ(decoded->subresources.size(), faces.size());
+    for (size_t faceIndex = 0u; faceIndex < faces.size(); ++faceIndex)
+    {
+        EXPECT_EQ(decoded->subresources[faceIndex].arrayLayer, faceIndex);
+        EXPECT_EQ(decoded->subresources[faceIndex].face, faces[faceIndex]);
+        ASSERT_EQ(decoded->mips[faceIndex].pixels.size(), decoded->mips[faceIndex].slicePitch);
+        EXPECT_EQ(decoded->mips[faceIndex].pixels.front(), static_cast<uint8_t>(faceIndex + 1u));
+    }
+}
+
+TEST(AssetMaterialConversionTests, TextureArtifactRejectsMalformedCubeFaceOrdering)
+{
+    NLS::Render::Assets::TextureArtifactData artifact;
+    artifact.width = 4u;
+    artifact.height = 4u;
+    artifact.dimension = NLS::Render::RHI::TextureDimension::TextureCube;
+    artifact.arrayLayers = 6u;
+    artifact.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    artifact.colorSpace = NLS::Render::Assets::TextureArtifactColorSpace::Srgb;
+
+    const std::array<NLS::Render::Assets::TextureArtifactCubeFace, 6u> faces{{
+        NLS::Render::Assets::TextureArtifactCubeFace::PositiveX,
+        NLS::Render::Assets::TextureArtifactCubeFace::PositiveX,
+        NLS::Render::Assets::TextureArtifactCubeFace::PositiveY,
+        NLS::Render::Assets::TextureArtifactCubeFace::NegativeY,
+        NLS::Render::Assets::TextureArtifactCubeFace::PositiveZ,
+        NLS::Render::Assets::TextureArtifactCubeFace::NegativeZ
+    }};
+
+    for (uint32_t faceIndex = 0u; faceIndex < faces.size(); ++faceIndex)
+    {
+        NLS::Render::Assets::TextureArtifactMip mip;
+        mip.level = 0u;
+        mip.width = artifact.width;
+        mip.height = artifact.height;
+        mip.rowPitch = NLS::Render::RHI::CalculateTextureRowPitch(artifact.format, mip.width);
+        mip.slicePitch = NLS::Render::RHI::CalculateTextureSlicePitch(artifact.format, mip.width, mip.height, 1u);
+        mip.pixels.assign(mip.slicePitch, static_cast<uint8_t>(faceIndex + 1u));
+        artifact.mips.push_back(std::move(mip));
+
+        artifact.subresources.push_back({
+            0u,
+            faceIndex,
+            artifact.width,
+            artifact.height,
+            1u,
+            faces[faceIndex],
+            NLS::Render::RHI::CalculateTextureRowPitch(artifact.format, artifact.width),
+            NLS::Render::RHI::CalculateTextureSlicePitch(artifact.format, artifact.width, artifact.height, 1u),
+            0u,
+            0u
+        });
+    }
+
+    EXPECT_TRUE(NLS::Render::Assets::SerializeTextureArtifact(artifact).empty());
+}
+
+TEST(AssetMaterialConversionTests, TextureArtifactRejectsNonContiguousMipLevels)
+{
+    NLS::Render::Assets::TextureArtifactData artifact;
+    artifact.width = 4u;
+    artifact.height = 4u;
+    artifact.format = NLS::Render::RHI::TextureFormat::RGBA8;
+
+    for (const uint32_t level : {0u, 2u})
+    {
+        NLS::Render::Assets::TextureArtifactMip mip;
+        mip.level = level;
+        mip.width = level == 0u ? 4u : 1u;
+        mip.height = level == 0u ? 4u : 1u;
+        mip.rowPitch = NLS::Render::RHI::CalculateTextureRowPitch(artifact.format, mip.width);
+        mip.slicePitch = NLS::Render::RHI::CalculateTextureSlicePitch(artifact.format, mip.width, mip.height, 1u);
+        mip.pixels.assign(mip.slicePitch, 255u);
+        artifact.mips.push_back(std::move(mip));
+    }
+
+    EXPECT_TRUE(NLS::Render::Assets::SerializeTextureArtifact(artifact).empty());
+}
+
 TEST(AssetMaterialConversionTests, TextureArtifactDecodesRgb16PngAsRgba8)
 {
     const auto png = TinyRgb16Png();
@@ -1661,6 +2333,213 @@ TEST(AssetMaterialConversionTests, TextureArtifactDecodesRgb16PngAsRgba8)
     EXPECT_EQ(decoded->format, NLS::Render::RHI::TextureFormat::RGBA8);
     ASSERT_EQ(decoded->mips.size(), 1u);
     EXPECT_EQ(decoded->mips[0].pixels, (std::vector<uint8_t>{0x12u, 0x56u, 0x9Au, 0xFFu}));
+}
+
+TEST(AssetMaterialConversionTests, TextureArtifactDeserializesLegacySchema3Payload2)
+{
+    NLS::Core::Assets::NativeArtifactMetadata metadata;
+    metadata.artifactType = NLS::Core::Assets::ArtifactType::Texture;
+    metadata.schemaName = "texture";
+    metadata.schemaVersion = 3u;
+
+    const auto bytes = NLS::Core::Assets::WriteNativeArtifactContainer(
+        std::move(metadata),
+        MakeLegacyTextureArtifactPayloadV2());
+
+    const auto decoded = NLS::Render::Assets::DeserializeTextureArtifact(bytes);
+    ASSERT_TRUE(decoded.has_value());
+    EXPECT_EQ(decoded->width, 2u);
+    EXPECT_EQ(decoded->height, 2u);
+    EXPECT_EQ(decoded->format, NLS::Render::RHI::TextureFormat::RGBA8);
+    EXPECT_EQ(decoded->colorSpace, NLS::Render::Assets::TextureArtifactColorSpace::Srgb);
+    ASSERT_EQ(decoded->mips.size(), 2u);
+    EXPECT_EQ(decoded->mips[0].slicePitch, 16u);
+    EXPECT_EQ(decoded->mips[1].pixels, (std::vector<uint8_t>{128u, 128u, 128u, 255u}));
+}
+
+TEST(AssetMaterialConversionTests, TextureMipGeneratorBuildsFullChainForColorTextures)
+{
+    std::vector<uint8_t> pixels(static_cast<size_t>(1024u) * 1024u * 4u, 0u);
+    for (uint32_t y = 0u; y < 1024u; ++y)
+    {
+        for (uint32_t x = 0u; x < 1024u; ++x)
+        {
+            const size_t index = (static_cast<size_t>(y) * 1024u + x) * 4u;
+            pixels[index + 0u] = static_cast<uint8_t>(x & 0xFFu);
+            pixels[index + 1u] = static_cast<uint8_t>(y & 0xFFu);
+            pixels[index + 2u] = static_cast<uint8_t>((x + y) & 0xFFu);
+            pixels[index + 3u] = 255u;
+        }
+    }
+
+    NLS::Render::Assets::TextureMipGeneratorSettings settings;
+    settings.intent = NLS::Render::Assets::TextureMipIntent::Color;
+    settings.colorSpace = NLS::Render::Assets::TextureArtifactColorSpace::Srgb;
+    settings.mipmapEnabled = true;
+
+    const auto artifact = NLS::Render::Assets::GenerateTextureMipChain(
+        1024u,
+        1024u,
+        std::move(pixels),
+        settings);
+
+    ASSERT_TRUE(artifact.has_value());
+    EXPECT_EQ(artifact->width, 1024u);
+    EXPECT_EQ(artifact->height, 1024u);
+    EXPECT_EQ(artifact->format, NLS::Render::RHI::TextureFormat::RGBA8);
+    ASSERT_EQ(artifact->mips.size(), 11u);
+    EXPECT_EQ(artifact->mips.front().width, 1024u);
+    EXPECT_EQ(artifact->mips.back().width, 1u);
+    EXPECT_EQ(artifact->mips.back().height, 1u);
+}
+
+TEST(AssetMaterialConversionTests, TextureMipGeneratorKeepsUiTexturesSingleMip)
+{
+    std::vector<uint8_t> pixels(4u * 4u * 4u, 255u);
+
+    NLS::Render::Assets::TextureMipGeneratorSettings settings;
+    settings.intent = NLS::Render::Assets::TextureMipIntent::UI;
+    settings.colorSpace = NLS::Render::Assets::TextureArtifactColorSpace::Srgb;
+    settings.mipmapEnabled = false;
+
+    const auto artifact = NLS::Render::Assets::GenerateTextureMipChain(
+        4u,
+        4u,
+        std::move(pixels),
+        settings);
+
+    ASSERT_TRUE(artifact.has_value());
+    ASSERT_EQ(artifact->mips.size(), 1u);
+    EXPECT_EQ(artifact->mips[0].width, 4u);
+    EXPECT_EQ(artifact->mips[0].height, 4u);
+}
+
+TEST(AssetMaterialConversionTests, TextureMipGeneratorKeepsTinyTexturesSingleMip)
+{
+    std::vector<uint8_t> pixels{17u, 34u, 51u, 255u};
+
+    NLS::Render::Assets::TextureMipGeneratorSettings settings;
+    settings.intent = NLS::Render::Assets::TextureMipIntent::Color;
+    settings.colorSpace = NLS::Render::Assets::TextureArtifactColorSpace::Srgb;
+    settings.mipmapEnabled = true;
+
+    const auto artifact = NLS::Render::Assets::GenerateTextureMipChain(
+        1u,
+        1u,
+        std::move(pixels),
+        settings);
+
+    ASSERT_TRUE(artifact.has_value());
+    EXPECT_EQ(artifact->format, NLS::Render::RHI::TextureFormat::RGBA8);
+    ASSERT_EQ(artifact->mips.size(), 1u);
+    EXPECT_EQ(artifact->mips[0].rowPitch, 4u);
+    EXPECT_EQ(artifact->mips[0].slicePitch, 4u);
+    EXPECT_EQ(artifact->mips[0].pixels, (std::vector<uint8_t>{17u, 34u, 51u, 255u}));
+}
+
+TEST(AssetMaterialConversionTests, TextureMipGeneratorFiltersSrgbColorMipsInLinearSpace)
+{
+    std::vector<uint8_t> pixels{
+        0u, 0u, 0u, 255u,
+        255u, 255u, 255u, 255u,
+        255u, 255u, 255u, 255u,
+        255u, 255u, 255u, 255u
+    };
+
+    NLS::Render::Assets::TextureMipGeneratorSettings settings;
+    settings.intent = NLS::Render::Assets::TextureMipIntent::Color;
+    settings.colorSpace = NLS::Render::Assets::TextureArtifactColorSpace::Srgb;
+    settings.mipmapEnabled = true;
+
+    const auto artifact = NLS::Render::Assets::GenerateTextureMipChain(
+        2u,
+        2u,
+        std::move(pixels),
+        settings);
+
+    ASSERT_TRUE(artifact.has_value());
+    ASSERT_EQ(artifact->mips.size(), 2u);
+    ASSERT_EQ(artifact->mips[1].pixels.size(), 4u);
+    EXPECT_GT(artifact->mips[1].pixels[0], 220u);
+    EXPECT_LT(artifact->mips[1].pixels[0], 230u);
+    EXPECT_EQ(artifact->mips[1].pixels[0], artifact->mips[1].pixels[1]);
+    EXPECT_EQ(artifact->mips[1].pixels[1], artifact->mips[1].pixels[2]);
+    EXPECT_EQ(artifact->mips[1].pixels[3], 255u);
+}
+
+TEST(AssetMaterialConversionTests, TextureMipGeneratorRenormalizesNormalMapMips)
+{
+    std::vector<uint8_t> pixels;
+    const auto n0 = EncodeNormalVector(0.0f, 0.0f, 1.0f);
+    const auto n1 = EncodeNormalVector(0.6f, 0.0f, 0.8f);
+    const auto n2 = EncodeNormalVector(0.0f, 0.6f, 0.8f);
+    const auto n3 = EncodeNormalVector(0.6f, 0.6f, 0.529150f);
+    pixels.insert(pixels.end(), n0.begin(), n0.end());
+    pixels.insert(pixels.end(), n1.begin(), n1.end());
+    pixels.insert(pixels.end(), n2.begin(), n2.end());
+    pixels.insert(pixels.end(), n3.begin(), n3.end());
+
+    NLS::Render::Assets::TextureMipGeneratorSettings settings;
+    settings.intent = NLS::Render::Assets::TextureMipIntent::Normal;
+    settings.colorSpace = NLS::Render::Assets::TextureArtifactColorSpace::Linear;
+    settings.mipmapEnabled = true;
+
+    const auto artifact = NLS::Render::Assets::GenerateTextureMipChain(
+        2u,
+        2u,
+        std::move(pixels),
+        settings);
+
+    ASSERT_TRUE(artifact.has_value());
+    ASSERT_EQ(artifact->mips.size(), 2u);
+    const auto decodedNormal = DecodeNormalVector(artifact->mips[1].pixels);
+    const float length = std::sqrt(
+        decodedNormal[0] * decodedNormal[0] +
+        decodedNormal[1] * decodedNormal[1] +
+        decodedNormal[2] * decodedNormal[2]);
+    EXPECT_NEAR(length, 1.0f, 0.05f);
+    EXPECT_GT(decodedNormal[2], 0.5f);
+}
+
+TEST(AssetMaterialConversionTests, TextureMipGeneratorPreservesRgba16fHdrMips)
+{
+    std::vector<uint8_t> pixels;
+    const std::array<std::array<float, 4>, 4> texels = {{
+        {{2.0f, 0.5f, 0.25f, 1.0f}},
+        {{4.0f, 1.5f, 0.5f, 1.0f}},
+        {{6.0f, 2.5f, 0.75f, 1.0f}},
+        {{8.0f, 3.5f, 1.0f, 1.0f}}
+    }};
+    for (const auto& texel : texels)
+    {
+        for (const float component : texel)
+            AppendHalfFloatForTest(pixels, component);
+    }
+    const auto basePixels = pixels;
+
+    NLS::Render::Assets::TextureMipGeneratorSettings settings;
+    settings.intent = NLS::Render::Assets::TextureMipIntent::HDR;
+    settings.colorSpace = NLS::Render::Assets::TextureArtifactColorSpace::Linear;
+    settings.format = NLS::Render::RHI::TextureFormat::RGBA16F;
+    settings.mipmapEnabled = true;
+
+    const auto artifact = NLS::Render::Assets::GenerateTextureMipChain(
+        2u,
+        2u,
+        std::move(pixels),
+        settings);
+
+    ASSERT_TRUE(artifact.has_value());
+    EXPECT_EQ(artifact->format, NLS::Render::RHI::TextureFormat::RGBA16F);
+    ASSERT_EQ(artifact->mips.size(), 2u);
+    EXPECT_EQ(artifact->mips[0].rowPitch, 16u);
+    EXPECT_EQ(artifact->mips[0].slicePitch, 32u);
+    EXPECT_EQ(artifact->mips[0].pixels, basePixels);
+    EXPECT_EQ(artifact->mips[1].rowPitch, 8u);
+    EXPECT_EQ(artifact->mips[1].slicePitch, 8u);
+    EXPECT_NEAR(ReadHalfFloatForTest(artifact->mips[1].pixels, 0u), 5.0f, 0.01f);
+    EXPECT_NEAR(ReadHalfFloatForTest(artifact->mips[1].pixels, 1u), 2.0f, 0.01f);
+    EXPECT_GT(ReadHalfFloatForTest(artifact->mips[1].pixels, 0u), 1.0f);
 }
 
 TEST(AssetMaterialConversionTests, ImageFileLoaderDecodesRgb16Png)
@@ -1779,15 +2658,23 @@ TEST(AssetMaterialConversionTests, PbrShadersSampleNormalMapsWhenEnabled)
 
     const auto standardPbr = read(root / "App/Assets/Engine/Shaders/StandardPBR.hlsl");
     const auto deferredGBuffer = read(root / "App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
+    const auto standard = read(root / "App/Assets/Engine/Shaders/Standard.hlsl");
 
+    ASSERT_FALSE(standard.empty());
     ASSERT_FALSE(standardPbr.empty());
     ASSERT_FALSE(deferredGBuffer.empty());
-    EXPECT_NE(standardPbr.find("ComputeNormal"), std::string::npos);
-    EXPECT_NE(standardPbr.find("u_NormalMap.Sample"), std::string::npos);
-    EXPECT_NE(standardPbr.find("u_EnableNormalMapping > 0.5f"), std::string::npos);
-    EXPECT_NE(deferredGBuffer.find("ComputeNormal"), std::string::npos);
-    EXPECT_NE(deferredGBuffer.find("u_NormalMap.Sample"), std::string::npos);
-    EXPECT_NE(deferredGBuffer.find("u_EnableNormalMapping > 0.5f"), std::string::npos);
+
+    const auto expectBc5CompatibleNormalDecode = [](const std::string& shader)
+    {
+        EXPECT_NE(shader.find("ComputeNormal"), std::string::npos);
+        EXPECT_NE(shader.find("DecodeNormalMapSample"), std::string::npos);
+        EXPECT_NE(shader.find("u_NormalMap.Sample"), std::string::npos);
+        EXPECT_NE(shader.find("sqrt(saturate(1.0f - dot(xy, xy)))"), std::string::npos);
+        EXPECT_NE(shader.find("u_EnableNormalMapping > 0.5f"), std::string::npos);
+    };
+    expectBc5CompatibleNormalDecode(standard);
+    expectBc5CompatibleNormalDecode(standardPbr);
+    expectBc5CompatibleNormalDecode(deferredGBuffer);
 }
 
 TEST(AssetMaterialConversionTests, MissingAndUnsupportedTexturesProduceDiagnosticsWithColorSpacePolicy)

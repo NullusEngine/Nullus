@@ -7,6 +7,7 @@
 #include <sstream>
 #include <system_error>
 #include <thread>
+#include <vector>
 
 #include <Json/json.hpp>
 
@@ -69,6 +70,28 @@ void WriteTextFile(const std::filesystem::path& path, const std::string& text)
     std::filesystem::create_directories(path.parent_path());
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     output << text;
+}
+
+void WriteBinaryFile(const std::filesystem::path& path, const std::vector<uint8_t>& bytes)
+{
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+}
+
+std::vector<uint8_t> TinyPng()
+{
+    return {
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+        0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41,
+        0x54, 0x78, 0x9C, 0x63, 0xF8, 0xCF, 0xC0, 0xF0,
+        0x1F, 0x00, 0x05, 0x00, 0x01, 0xFF, 0x89, 0x99,
+        0x3D, 0x1D, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
+        0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82
+    };
 }
 
 NLS::Engine::GameObject* FindChildByName(
@@ -150,11 +173,32 @@ TEST(GameObjectAssetImportTests, ImportedModelInstantiatesGeneratedPrefabGameObj
         root / "Assets" / "Models" / "ImportedHero.gltf",
         R"({
             "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [
+                { "nodes": [0] }
+            ],
+            "buffers": [
+                {
+                    "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA",
+                    "byteLength": 42
+                }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" }
+            ],
             "meshes": [
                 {
                     "name": "Body",
                     "primitives": [
-                        { "attributes": { "POSITION": 0 } }
+                        {
+                            "attributes": { "POSITION": 0 },
+                            "indices": 1
+                        }
                     ]
                 }
             ],
@@ -193,11 +237,32 @@ TEST(GameObjectAssetImportTests, ColdRawModelDropSchedulesBackgroundImportAndCom
         modelPath,
         R"({
             "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [
+                { "nodes": [0] }
+            ],
+            "buffers": [
+                {
+                    "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA",
+                    "byteLength": 42
+                }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" }
+            ],
             "meshes": [
                 {
                     "name": "Body",
                     "primitives": [
-                        { "attributes": { "POSITION": 0 } }
+                        {
+                            "attributes": { "POSITION": 0 },
+                            "indices": 1
+                        }
                     ]
                 }
             ],
@@ -264,11 +329,32 @@ TEST(GameObjectAssetImportTests, ColdRawModelDropCompletesWhenBackgroundScheduli
         modelPath,
         R"({
             "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [
+                { "nodes": [0] }
+            ],
+            "buffers": [
+                {
+                    "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA",
+                    "byteLength": 42
+                }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" }
+            ],
             "meshes": [
                 {
                     "name": "Body",
                     "primitives": [
-                        { "attributes": { "POSITION": 0 } }
+                        {
+                            "attributes": { "POSITION": 0 },
+                            "indices": 1
+                        }
                     ]
                 }
             ],
@@ -459,11 +545,32 @@ TEST(GameObjectAssetImportTests, WarmGeneratedModelHandleWithManifestPrimaryMode
         modelPath,
         R"({
             "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [
+                { "nodes": [0] }
+            ],
+            "buffers": [
+                {
+                    "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA",
+                    "byteLength": 42
+                }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" }
+            ],
             "meshes": [
                 {
                     "name": "Body",
                     "primitives": [
-                        { "attributes": { "POSITION": 0 } }
+                        {
+                            "attributes": { "POSITION": 0 },
+                            "indices": 1
+                        }
                     ]
                 }
             ],
@@ -1011,7 +1118,7 @@ TEST(GameObjectAssetImportTests, StaleExternalDependencyHandleDropReportsPending
     const auto root = MakeGameObjectAssetImportRoot();
     const auto modelPath = root / "Assets" / "Models" / "DependencyHandleHero.gltf";
     const auto texturePath = root / "Assets" / "Textures" / "HeroBaseColor.png";
-    WriteTextFile(texturePath, "old-texture");
+    WriteBinaryFile(texturePath, TinyPng());
     WriteTextFile(
         modelPath,
         R"({

@@ -427,86 +427,7 @@ TEST(MetaParserGenerationModuleTests, RenderingResourceReflectionSkipsNonReflect
         "db.ResolveRegisteredType(moduleKey, \"NLS::Render::Resources::IMesh\", reportMissingType)");
 }
 
-TEST(MetaParserGenerationModuleTests, MetaParserKeepsCrossHeaderReflectedBasesAndSkipsRuntimeInterfaces)
-{
-    const auto root = std::filesystem::path(NLS_ROOT_DIR);
-    const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserBaseFilteringFixture";
-    const auto runtimeDir = tempRoot / "Runtime" / "Fixture";
-    const auto outputDir = runtimeDir / "Gen";
-    ResetTempDirectory(tempRoot);
-    std::filesystem::create_directories(runtimeDir);
-    std::filesystem::create_directories(outputDir);
-
-    const auto baseHeaderPath = runtimeDir / "ReflectedBase.h";
-    {
-        std::ofstream header(baseHeaderPath);
-        header
-            << "#pragma once\n"
-            << "#include \"Object/Object.h\"\n"
-            << "#include \"Reflection/Macros.h\"\n"
-            << "#include \"ReflectedBase.generated.h\"\n"
-            << "namespace NLS::Fixture {\n"
-            << "CLASS(ReflectedBase) : public NLS::Object\n"
-            << "{\n"
-            << "    GENERATED_BODY()\n"
-            << "};\n"
-            << "} // namespace NLS::Fixture\n";
-    }
-
-    const auto derivedHeaderPath = runtimeDir / "DerivedWithInterface.h";
-    {
-        std::ofstream header(derivedHeaderPath);
-        header
-            << "#pragma once\n"
-            << "#include \"ReflectedBase.h\"\n"
-            << "#include \"Reflection/Macros.h\"\n"
-            << "#include \"DerivedWithInterface.generated.h\"\n"
-            << "namespace NLS::Fixture {\n"
-            << "class RuntimeOnlyInterface\n"
-            << "{\n"
-            << "public:\n"
-            << "    virtual ~RuntimeOnlyInterface() = default;\n"
-            << "};\n"
-            << "CLASS(DerivedWithInterface) : public ReflectedBase, public RuntimeOnlyInterface\n"
-            << "{\n"
-            << "    GENERATED_BODY()\n"
-            << "};\n"
-            << "} // namespace NLS::Fixture\n";
-    }
-
-    const auto paramsPath = tempRoot / "DerivedWithInterface.precompile.json";
-    WriteMetaParserConfig(
-        paramsPath,
-        tempRoot,
-        runtimeDir,
-        outputDir,
-        derivedHeaderPath,
-        {
-            runtimeDir,
-            outputDir,
-            root / "Runtime" / "Base"
-        });
-
-    const auto outputPath = tempRoot / "metaparser.out.txt";
-    ExpectMetaParserSuccess(paramsPath, outputPath);
-
-    const auto generatedSource = outputDir / "DerivedWithInterface.generated.cpp";
-    const auto generatedHeader = outputDir / "DerivedWithInterface.generated.h";
-    const std::string sourceText = ReadAllText(generatedSource);
-    const std::string headerText = ReadAllText(generatedHeader);
-
-    ExpectContains(
-        sourceText,
-        "db.ResolveRegisteredType(moduleKey, \"NLS::Fixture::ReflectedBase\", reportMissingType)");
-    ExpectNotContains(
-        sourceText,
-        "db.ResolveRegisteredType(moduleKey, \"NLS::Fixture::RuntimeOnlyInterface\", reportMissingType)");
-    ExpectContains(
-        headerText,
-        "GetObjectTypeName(void) const override { return \"NLS::Fixture::DerivedWithInterface\"; }");
-}
-
-TEST(MetaParserGenerationModuleTests, MetaParserCreatesTargetGeneratedHeaderStubsBeforeParsingCleanHeaders)
+TEST(MetaParserGenerationModuleTests, MetaParserCreatesHeaderStubsAndFiltersRuntimeInterfaces)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserGeneratedHeaderStubFixture";
@@ -571,13 +492,22 @@ TEST(MetaParserGenerationModuleTests, MetaParserCreatesTargetGeneratedHeaderStub
 
     const auto baseGeneratedHeader = outputDir / "ReflectedBase.generated.h";
     const auto derivedGeneratedHeader = outputDir / "DerivedWithInterface.generated.h";
+    const auto derivedGeneratedSource = outputDir / "DerivedWithInterface.generated.cpp";
     ASSERT_TRUE(std::filesystem::exists(baseGeneratedHeader));
     ASSERT_TRUE(std::filesystem::exists(derivedGeneratedHeader));
+    ASSERT_TRUE(std::filesystem::exists(derivedGeneratedSource));
 
     const std::string headerText = ReadAllText(derivedGeneratedHeader);
+    const std::string sourceText = ReadAllText(derivedGeneratedSource);
     ExpectContains(
         headerText,
         "GetObjectTypeName(void) const override { return \"NLS::Fixture::DerivedWithInterface\"; }");
+    ExpectContains(
+        sourceText,
+        "db.ResolveRegisteredType(moduleKey, \"NLS::Fixture::ReflectedBase\", reportMissingType)");
+    ExpectNotContains(
+        sourceText,
+        "db.ResolveRegisteredType(moduleKey, \"NLS::Fixture::RuntimeOnlyInterface\", reportMissingType)");
 }
 
 TEST(MetaParserGenerationModuleTests, HeaderSourceTemplateIncludesRuntimeMetaPropertiesBeforeReflectedHeader)
@@ -609,6 +539,7 @@ TEST(MetaParserGenerationModuleTests, ExternalReflectionTypeDiscoveryHandlesComm
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserExternalDiscoveryFixture";
     const auto runtimeDir = tempRoot / "Runtime" / "Fixture";
     const auto outputDir = tempRoot / "Gen";
+    ResetTempDirectory(tempRoot);
     std::filesystem::create_directories(runtimeDir);
     std::filesystem::create_directories(outputDir);
 
@@ -674,6 +605,7 @@ TEST(MetaParserGenerationModuleTests, RejectsPPtrFieldsWhoseTargetsAreNotSupport
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserInvalidPPtrFixture";
     const auto runtimeDir = tempRoot / "Runtime" / "Fixture";
     const auto outputDir = tempRoot / "Gen";
+    ResetTempDirectory(tempRoot);
     std::filesystem::create_directories(runtimeDir);
     std::filesystem::create_directories(outputDir);
 
@@ -799,6 +731,7 @@ TEST(MetaParserGenerationModuleTests, GeneratesStdVectorAndArrayReflectedValueFi
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserVectorArrayFixture";
     const auto runtimeDir = tempRoot / "Runtime" / "Fixture";
     const auto outputDir = tempRoot / "Gen";
+    ResetTempDirectory(tempRoot);
     std::filesystem::create_directories(runtimeDir);
     std::filesystem::create_directories(outputDir);
 
@@ -874,6 +807,7 @@ TEST(MetaParserGenerationModuleTests, GeneratesRangeMetadataAndDefaultPrivateFie
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserRangePrivateFixture";
     const auto runtimeDir = tempRoot / "Runtime" / "Fixture";
     const auto outputDir = tempRoot / "Gen";
+    ResetTempDirectory(tempRoot);
     std::filesystem::create_directories(runtimeDir);
     std::filesystem::create_directories(outputDir);
 
@@ -924,6 +858,7 @@ TEST(MetaParserGenerationModuleTests, RejectsPrivateAccessorPropertiesBeforeGene
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserPrivateAccessorFixture";
     const auto runtimeDir = tempRoot / "Runtime" / "Fixture";
     const auto outputDir = tempRoot / "Gen";
+    ResetTempDirectory(tempRoot);
     std::filesystem::create_directories(runtimeDir);
     std::filesystem::create_directories(outputDir);
 
@@ -974,6 +909,7 @@ TEST(MetaParserGenerationModuleTests, RejectsMalformedRangeMetadataBeforeGenerat
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserMalformedRangeFixture";
     const auto runtimeDir = tempRoot / "Runtime" / "Fixture";
     const auto outputDir = tempRoot / "Gen";
+    ResetTempDirectory(tempRoot);
     std::filesystem::create_directories(runtimeDir);
     std::filesystem::create_directories(outputDir);
 
@@ -1018,6 +954,7 @@ TEST(MetaParserGenerationModuleTests, RejectsUnknownPropertyMetadataBeforeGenera
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserUnknownPropertyMetaFixture";
     const auto runtimeDir = tempRoot / "Runtime" / "Fixture";
     const auto outputDir = tempRoot / "Gen";
+    ResetTempDirectory(tempRoot);
     std::filesystem::create_directories(runtimeDir);
     std::filesystem::create_directories(outputDir);
 
@@ -1062,6 +999,7 @@ TEST(MetaParserGenerationModuleTests, RejectsInvertedRangeMetadataBeforeGenerati
     const auto tempRoot = std::filesystem::path(NLS_BUILD_DIR) / "MetaParserInvertedRangeFixture";
     const auto runtimeDir = tempRoot / "Runtime" / "Fixture";
     const auto outputDir = tempRoot / "Gen";
+    ResetTempDirectory(tempRoot);
     std::filesystem::create_directories(runtimeDir);
     std::filesystem::create_directories(outputDir);
 

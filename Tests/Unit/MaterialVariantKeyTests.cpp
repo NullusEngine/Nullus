@@ -9,8 +9,8 @@ TEST(MaterialVariantKeyTests, BuildsStableMaterialIdentityFromAssetPath)
 {
     NLS::Render::Resources::Material firstMaterial;
     NLS::Render::Resources::Material secondMaterial;
-    const_cast<std::string&>(firstMaterial.path) = "App/Assets/Shared.nmat";
-    const_cast<std::string&>(secondMaterial.path) = "App/Assets/Shared.nmat";
+    firstMaterial.path = "App/Assets/Shared.nmat";
+    secondMaterial.path = "App/Assets/Shared.nmat";
     secondMaterial.SetBlendable(true);
     secondMaterial.SetColorWriting(false);
 
@@ -45,7 +45,7 @@ TEST(MaterialVariantKeyTests, BuildsRuntimeMaterialIdentityFromShaderAndRenderSt
 TEST(MaterialVariantKeyTests, BuildsPassAndPipelineVariantKeysFromMaterialPipelineAndOverrides)
 {
     NLS::Render::Resources::Material material;
-    const_cast<std::string&>(material.path) = "App/Assets/Variant.nmat";
+    material.path = "App/Assets/Variant.nmat";
 
     NLS::Render::Data::PipelineState pipelineState;
     pipelineState.depthFunc = NLS::Render::Settings::EComparaisonAlgorithm::GREATER;
@@ -85,7 +85,7 @@ TEST(MaterialVariantKeyTests, BuildsPassAndPipelineVariantKeysFromMaterialPipeli
 TEST(MaterialVariantKeyTests, IncludesRenderTargetFormatsInPassVariantKey)
 {
     NLS::Render::Resources::Material material;
-    const_cast<std::string&>(material.path) = "App/Assets/GBuffer.nmat";
+    material.path = "App/Assets/GBuffer.nmat";
 
     const NLS::Render::Data::PipelineState pipelineState;
 
@@ -119,7 +119,7 @@ TEST(MaterialVariantKeyTests, IncludesRenderTargetFormatsInPassVariantKey)
 TEST(MaterialVariantKeyTests, IncludesBlendOverrideInPassVariantKey)
 {
     NLS::Render::Resources::Material material;
-    const_cast<std::string&>(material.path) = "App/Assets/Overlay.nmat";
+    material.path = "App/Assets/Overlay.nmat";
 
     const NLS::Render::Data::PipelineState pipelineState;
 
@@ -148,7 +148,7 @@ TEST(MaterialVariantKeyTests, IncludesBlendOverrideInPassVariantKey)
 TEST(MaterialVariantKeyTests, InlineColorFormatOverridesMatchOwnedVectorKeySemantics)
 {
     NLS::Render::Resources::Material material;
-    const_cast<std::string&>(material.path) = "App/Assets/GBufferInline.nmat";
+    material.path = "App/Assets/GBufferInline.nmat";
 
     const NLS::Render::Data::PipelineState pipelineState;
 

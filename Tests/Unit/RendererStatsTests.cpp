@@ -70,6 +70,68 @@ namespace
         void Barrier(const NLS::Render::RHI::RHIBarrierDesc&) override {}
     };
 
+    class TestCommandPool final : public NLS::Render::RHI::RHICommandPool
+    {
+    public:
+        explicit TestCommandPool(
+            const NLS::Render::RHI::QueueType queueType,
+            std::string debugName)
+            : m_queueType(queueType)
+            , m_debugName(std::move(debugName))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return m_debugName; }
+        NLS::Render::RHI::QueueType GetQueueType() const override { return m_queueType; }
+        std::shared_ptr<NLS::Render::RHI::RHICommandBuffer> CreateCommandBuffer(std::string = {}) override
+        {
+            return std::make_shared<TestCommandBuffer>();
+        }
+        void Reset() override {}
+
+    private:
+        NLS::Render::RHI::QueueType m_queueType = NLS::Render::RHI::QueueType::Graphics;
+        std::string m_debugName;
+    };
+
+    class TestFence final : public NLS::Render::RHI::RHIFence
+    {
+    public:
+        explicit TestFence(std::string debugName)
+            : m_debugName(std::move(debugName))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return m_debugName; }
+        bool IsSignaled() const override { return m_signaled; }
+        void Reset() override { m_signaled = false; }
+        bool Wait(uint64_t = 0u) override
+        {
+            m_signaled = true;
+            return true;
+        }
+
+    private:
+        std::string m_debugName;
+        bool m_signaled = true;
+    };
+
+    class TestSemaphore final : public NLS::Render::RHI::RHISemaphore
+    {
+    public:
+        explicit TestSemaphore(std::string debugName)
+            : m_debugName(std::move(debugName))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return m_debugName; }
+        bool IsSignaled() const override { return false; }
+        void Reset() override {}
+
+    private:
+        std::string m_debugName;
+    };
+
     class TestBuffer final : public NLS::Render::RHI::RHIBuffer
     {
     public:
@@ -233,10 +295,19 @@ namespace
         std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> CreateComputePipeline(
             const NLS::Render::RHI::RHIComputePipelineDesc&) override { return nullptr; }
         std::shared_ptr<NLS::Render::RHI::RHICommandPool> CreateCommandPool(
-            NLS::Render::RHI::QueueType,
-            std::string = {}) override { return nullptr; }
-        std::shared_ptr<NLS::Render::RHI::RHIFence> CreateFence(std::string = {}) override { return nullptr; }
-        std::shared_ptr<NLS::Render::RHI::RHISemaphore> CreateSemaphore(std::string = {}) override { return nullptr; }
+            NLS::Render::RHI::QueueType queueType,
+            std::string debugName = {}) override
+        {
+            return std::make_shared<TestCommandPool>(queueType, std::move(debugName));
+        }
+        std::shared_ptr<NLS::Render::RHI::RHIFence> CreateFence(std::string debugName = {}) override
+        {
+            return std::make_shared<TestFence>(std::move(debugName));
+        }
+        std::shared_ptr<NLS::Render::RHI::RHISemaphore> CreateSemaphore(std::string debugName = {}) override
+        {
+            return std::make_shared<TestSemaphore>(std::move(debugName));
+        }
         void ReadPixels(
             const std::shared_ptr<NLS::Render::RHI::RHITexture>&,
             uint32_t,
@@ -347,6 +418,12 @@ TEST(RendererStatsTests, RendererStatsTracksRenderPreparationCounters)
     stats.RecordSceneParse(8u, 3u, 1u);
     stats.RecordGBufferMaterialSync();
     stats.RecordGBufferMaterialSync();
+    stats.RecordGBufferMaterialResolve(true);
+    stats.RecordGBufferMaterialResolve(false);
+    stats.RecordGBufferMaterialResolve(true);
+    stats.RecordPreparedRecordedDrawStaticBaseCache(false);
+    stats.RecordPreparedRecordedDrawStaticBaseCache(true);
+    stats.RecordPreparedRecordedDrawStaticBaseCache(true);
     stats.RecordRenderBindingSetCreation();
     stats.RecordRenderBindingSetCreation();
     stats.RecordRenderSnapshotBufferCreation();
@@ -358,6 +435,10 @@ TEST(RendererStatsTests, RendererStatsTracksRenderPreparationCounters)
     EXPECT_EQ(frameInfo.parsedTransparentDrawableCount, 3u);
     EXPECT_EQ(frameInfo.parsedSkyboxDrawableCount, 1u);
     EXPECT_EQ(frameInfo.gBufferMaterialSyncCount, 2u);
+    EXPECT_EQ(frameInfo.gBufferMaterialResolveHitCount, 2u);
+    EXPECT_EQ(frameInfo.gBufferMaterialResolveMissCount, 1u);
+    EXPECT_EQ(frameInfo.preparedRecordedDrawStaticBaseCacheHitCount, 2u);
+    EXPECT_EQ(frameInfo.preparedRecordedDrawStaticBaseCacheMissCount, 1u);
     EXPECT_EQ(frameInfo.renderBindingSetCreationCount, 2u);
     EXPECT_EQ(frameInfo.renderSnapshotBufferCreationCount, 1u);
 }
@@ -491,6 +572,8 @@ TEST(RendererStatsTests, RendererStatsTracksThreadedFrameTelemetryFields)
     telemetry.publishState = NLS::Render::Data::FramePublishState::BackPressured;
     telemetry.stageSummary = NLS::Render::Data::ThreadedFrameStageSummary::Rhi;
     telemetry.retirementState = NLS::Render::Data::FrameRetirementState::Pending;
+    telemetry.unsafeGpuWorkQuarantined = true;
+    telemetry.unsafeGpuWorkQuarantineReason = "queued work without retirement fence";
     stats.SetThreadedFrameTelemetry(telemetry);
     stats.EndFrame();
 
@@ -500,6 +583,8 @@ TEST(RendererStatsTests, RendererStatsTracksThreadedFrameTelemetryFields)
     EXPECT_EQ(frameInfo.publishState, NLS::Render::Data::FramePublishState::BackPressured);
     EXPECT_EQ(frameInfo.stageSummary, NLS::Render::Data::ThreadedFrameStageSummary::Rhi);
     EXPECT_EQ(frameInfo.retirementState, NLS::Render::Data::FrameRetirementState::Pending);
+    EXPECT_TRUE(frameInfo.unsafeGpuWorkQuarantined);
+    EXPECT_EQ(frameInfo.unsafeGpuWorkQuarantineReason, "queued work without retirement fence");
 }
 
 TEST(RendererStatsTests, RendererStatsReusesLastThreadedTelemetryWhenRefreshIsUnavailable)

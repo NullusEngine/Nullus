@@ -1,13 +1,16 @@
 ﻿#pragma once
 
+#include <algorithm>
 #include <any>
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include "Object/Object.h"
@@ -103,6 +106,63 @@ struct MaterialPipelineStateOverrides
                 inlineColorFormats.data(),
                 inlineColorFormatCount);
         return {};
+    }
+
+    friend bool operator==(const MaterialPipelineStateOverrides& lhs, const MaterialPipelineStateOverrides& rhs)
+    {
+        return lhs.depthWrite == rhs.depthWrite &&
+            lhs.colorWrite == rhs.colorWrite &&
+            lhs.blending == rhs.blending &&
+            lhs.depthTest == rhs.depthTest &&
+            lhs.hasDepthAttachment == rhs.hasDepthAttachment &&
+            lhs.culling == rhs.culling &&
+            lhs.cullFace == rhs.cullFace &&
+            lhs.HasColorFormatsOverride() == rhs.HasColorFormatsOverride() &&
+            lhs.GetColorFormats().size() == rhs.GetColorFormats().size() &&
+            std::equal(
+                lhs.GetColorFormats().begin(),
+                lhs.GetColorFormats().end(),
+                rhs.GetColorFormats().begin());
+    }
+
+    friend bool operator!=(const MaterialPipelineStateOverrides& lhs, const MaterialPipelineStateOverrides& rhs)
+    {
+        return !(lhs == rhs);
+    }
+
+    size_t GetHash() const
+    {
+        auto hashCombine = [](size_t& seed, const auto& value)
+        {
+            seed ^= std::hash<std::decay_t<decltype(value)>>{}(value) +
+                0x9e3779b97f4a7c15ull +
+                (seed << 6) +
+                (seed >> 2);
+        };
+
+        auto hashOptionalBool = [&hashCombine](size_t& seed, const std::optional<bool>& value)
+        {
+            hashCombine(seed, value.has_value());
+            if (value.has_value())
+                hashCombine(seed, *value);
+        };
+
+        size_t seed = 0u;
+        hashOptionalBool(seed, depthWrite);
+        hashOptionalBool(seed, colorWrite);
+        hashOptionalBool(seed, blending);
+        hashOptionalBool(seed, depthTest);
+        hashOptionalBool(seed, hasDepthAttachment);
+        hashOptionalBool(seed, culling);
+        hashCombine(seed, cullFace.has_value());
+        if (cullFace.has_value())
+            hashCombine(seed, static_cast<uint32_t>(*cullFace));
+        hashCombine(seed, HasColorFormatsOverride());
+        const auto formats = GetColorFormats();
+        hashCombine(seed, formats.size());
+        for (const auto format : formats)
+            hashCombine(seed, static_cast<uint32_t>(format));
+        return seed;
     }
 };
 
@@ -314,10 +374,11 @@ public:
     uint64_t GetInstanceId() const;
     uint64_t GetParameterRevision() const;
     uint64_t GetRenderStateRevision() const;
+    uint64_t GetBindingRevision() const;
     uint64_t GetExplicitBindingSetCreationCount() const;
     uint64_t GetExplicitSnapshotBufferCreationCount() const;
 
-    const std::string path;
+    std::string path;
 
 protected:
     const ShaderPropertyDesc* FindMaterialProperty(const std::string& key) const;
@@ -340,6 +401,7 @@ protected:
     int m_gpuInstances = 1;
     uint64_t m_instanceId = 0u;
     uint64_t m_renderStateRevision = 1u;
+    mutable uint64_t m_bindingRevision = 1u;
 
 private:
     friend class NLS::Render::Context::Driver;

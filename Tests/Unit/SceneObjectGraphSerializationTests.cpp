@@ -827,7 +827,7 @@ TEST(SceneObjectGraphSerializationTests, MeshFilterLazyResolutionUsesRuntimeAsse
     meshManager.RegisterResource("Library/Artifacts/Hero/meshes/body.nmesh", mesh);
 
     auto* material = new NLS::Render::Resources::Material();
-    const_cast<std::string&>(material->path) = "Library/Artifacts/Hero/materials/body.nmat";
+    material->path = "Library/Artifacts/Hero/materials/body.nmat";
     materialManager.RegisterResource("Library/Artifacts/Hero/materials/body.nmat", material);
 
     const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse("51515151-5151-4151-8151-515151515151"));
@@ -1233,9 +1233,9 @@ TEST(SceneObjectGraphSerializationTests, MeshRendererRejectsResolvedMaterialThat
         "Library/Artifacts/Hero/body.nmat");
 
     NLS::Render::Resources::Material first;
-    const_cast<std::string&>(first.path) = "Library/Artifacts/Hero/body.nmat";
+    first.path = "Library/Artifacts/Hero/body.nmat";
     NLS::Render::Resources::Material second;
-    const_cast<std::string&>(second.path) = "Library/Artifacts/Hero/other.nmat";
+    second.path = "Library/Artifacts/Hero/other.nmat";
 
     MeshRenderer renderer;
     renderer.SetMaterialReferences({
@@ -1264,9 +1264,9 @@ TEST(SceneObjectGraphSerializationTests, MeshRendererLazyBindConflictDoesNotPois
     NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MaterialManager>(materialManager);
 
     auto* first = new NLS::Render::Resources::Material();
-    const_cast<std::string&>(first->path) = "Library/Artifacts/Hero/body.nmat";
+    first->path = "Library/Artifacts/Hero/body.nmat";
     auto* second = new NLS::Render::Resources::Material();
-    const_cast<std::string&>(second->path) = "Library/Artifacts/Hero/body.nmat";
+    second->path = "Library/Artifacts/Hero/body.nmat";
 
     const auto reference = ObjectIdentifier::Asset(
         AssetId(NLS::Guid::Parse("56565656-5656-4656-8656-565656565656")),
@@ -1324,7 +1324,7 @@ TEST(SceneObjectGraphSerializationTests, MeshRendererRetriesPreviouslyMissingMat
     EXPECT_EQ(renderer.ResolveMaterials()[0], nullptr);
 
     auto* material = new NLS::Render::Resources::Material();
-    const_cast<std::string&>(material->path) = path;
+    material->path = path;
     materialManager.RegisterResource(path, material);
 
     EXPECT_EQ(renderer.ResolveMaterials()[0], material);
@@ -1367,7 +1367,7 @@ TEST(SceneObjectGraphSerializationTests, MeshRendererFillWithMaterialSerializesS
 {
     NLS::Engine::Components::MeshRenderer renderer;
     NLS::Render::Resources::Material material;
-    const_cast<std::string&>(material.path) = ":Materials\\Default.mat";
+    material.path = ":Materials\\Default.mat";
 
     renderer.FillWithMaterial(material);
 
@@ -1382,7 +1382,7 @@ TEST(SceneObjectGraphSerializationTests, MeshRendererFallbackDoesNotOverwriteDef
     renderer.SetMaterialPathHints({"Library/Artifacts/Hero/materials/body.nmat"});
 
     NLS::Render::Resources::Material fallback;
-    const_cast<std::string&>(fallback.path) = ":Materials\\Default.mat";
+    fallback.path = ":Materials\\Default.mat";
     renderer.FillEmptySlotsWithMaterial(fallback);
 
     const auto paths = renderer.GetMaterialPaths();

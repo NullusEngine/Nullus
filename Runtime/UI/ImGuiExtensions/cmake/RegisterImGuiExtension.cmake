@@ -1,7 +1,7 @@
 function(nls_register_imgui_extension)
   set(options)
   set(oneValueArgs NAME)
-  set(multiValueArgs SOURCES HEADERS INCLUDE_DIRS COMPILE_DEFINITIONS COMPILE_OPTIONS LIBS)
+  set(multiValueArgs INCLUDE_DIRS COMPILE_DEFINITIONS COMPILE_OPTIONS LIBS)
   cmake_parse_arguments(NLS_IMGUI_EXTENSION "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
   if(NOT NLS_IMGUI_EXTENSION_NAME)
@@ -13,10 +13,13 @@ function(nls_register_imgui_extension)
   endif()
 
   set(extension_root "${CMAKE_CURRENT_LIST_DIR}/${NLS_IMGUI_EXTENSION_NAME}")
-  set(extension_files)
-  foreach(extension_file IN LISTS NLS_IMGUI_EXTENSION_SOURCES NLS_IMGUI_EXTENSION_HEADERS)
-    list(APPEND extension_files "${extension_root}/${extension_file}")
-  endforeach()
+  file(GLOB_RECURSE extension_files CONFIGURE_DEPENDS
+    "${extension_root}/*.cpp"
+    "${extension_root}/*.c"
+    "${extension_root}/*.h"
+    "${extension_root}/*.hpp"
+    "${extension_root}/*.inl"
+  )
 
   target_sources(NLS_UI PRIVATE ${extension_files})
   source_group(TREE "${extension_root}" PREFIX "ImGuiExtensions/${NLS_IMGUI_EXTENSION_NAME}" FILES ${extension_files})

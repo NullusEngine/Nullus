@@ -56,6 +56,7 @@ namespace NLS::Render::Resources
 		const ShaderCompiledArtifact* FindCompiledArtifact(
 			ShaderCompiler::ShaderStage stage,
 			ShaderCompiler::ShaderTargetPlatform targetPlatform) const;
+		uint64_t GetInstanceId() const;
 		uint64_t GetGeneration() const;
 		std::shared_ptr<RHI::RHIShaderModule> GetOrCreateExplicitShaderModule(
 			const std::shared_ptr<RHI::RHIDevice>& device,
@@ -74,15 +75,18 @@ namespace NLS::Render::Resources
 		void ClearCompiledArtifacts();
 
 	public:
-		const std::string path;
+		std::string path;
 
 	private:
 		std::vector<UniformInfo> m_uniforms;
 		ShaderCompiler::ShaderSourceLanguage m_sourceLanguage;
+		uint64_t m_instanceId = 0u;
 		ShaderReflection m_reflection;
 		std::vector<ShaderParameterStruct> m_parameterStructs;
 		std::vector<ShaderCompiledArtifact> m_compiledArtifacts;
 		uint64_t m_generation = 0u;
-		mutable std::map<std::tuple<RHI::NativeBackendType, ShaderCompiler::ShaderStage, uint64_t>, std::shared_ptr<RHI::RHIShaderModule>> m_explicitShaderModules;
+		mutable std::map<
+			std::tuple<uint64_t, RHI::NativeBackendType, ShaderCompiler::ShaderStage, uint64_t>,
+			std::shared_ptr<RHI::RHIShaderModule>> m_explicitShaderModules;
 	};
 }

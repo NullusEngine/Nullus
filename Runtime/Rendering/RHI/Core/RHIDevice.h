@@ -1,5 +1,8 @@
 #pragma once
 
+#include <atomic>
+#include <cstdint>
+
 #include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/RHI/Core/RHISwapchain.h"
 #include "Rendering/Settings/EPixelDataFormat.h"
@@ -12,6 +15,7 @@ namespace NLS::Render::RHI
         Success,
         InvalidArgument,
         UnsupportedFormat,
+        DeviceLost,
         BackendFailure
     };
 
@@ -44,6 +48,9 @@ namespace NLS::Render::RHI
     class NLS_RENDER_API RHIDevice : public RHIObject
     {
     public:
+        RHIDevice() : m_cacheIdentity(AllocateCacheIdentity()) {}
+        uint64_t GetCacheIdentity() const { return m_cacheIdentity; }
+
         virtual const std::shared_ptr<RHIAdapter>& GetAdapter() const = 0;
         virtual const RHIDeviceCapabilities& GetCapabilities() const = 0;
         virtual NativeRenderDeviceInfo GetNativeDeviceInfo() const = 0;
@@ -125,5 +132,17 @@ namespace NLS::Render::RHI
         }
 
         virtual RHIUIDeviceBridge* GetUIBridgeDevice() { return nullptr; }
+
+    private:
+        static uint64_t AllocateCacheIdentity()
+        {
+            static std::atomic_uint64_t nextIdentity { 1u };
+            auto identity = nextIdentity.fetch_add(1u, std::memory_order_relaxed);
+            if (identity == 0u)
+                identity = nextIdentity.fetch_add(1u, std::memory_order_relaxed);
+            return identity;
+        }
+
+        const uint64_t m_cacheIdentity;
     };
 }

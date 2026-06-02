@@ -330,7 +330,10 @@ namespace NLS::Render::Backend
 			capabilities.SetFeature(RHIDeviceFeature::MultiRenderTargets, true);
 			capabilities.SetFeature(RHIDeviceFeature::ParallelCommandRecording, true);
 			capabilities.SetFeature(RHIDeviceFeature::ParallelCommandTranslation, true);
-			capabilities.SetFeature(RHIDeviceFeature::InRenderPassChildCommandBuffers, true);
+			capabilities.SetFeature(
+				RHIDeviceFeature::InRenderPassChildCommandBuffers,
+				false,
+				"DX12 in-render-pass child bundles are disabled by default after model-load device-hung quarantine; re-enable only with DRED/RenderDoc coverage");
 			capabilities.SetFeature(
 				RHIDeviceFeature::TransientResourceAllocator,
 				false,
@@ -353,8 +356,7 @@ namespace NLS::Render::Backend
 	{
 		DX12DeviceResources resources;
 #if defined(_WIN32)
-		if (debugMode)
-			resources.dredDiagnosticsEnabled = EnableDx12Dred();
+		resources.dredDiagnosticsEnabled = EnableDx12Dred();
 
 		const UINT factoryFlags = BuildDx12FactoryFlags(debugMode);
 		if (FAILED(CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&resources.factory))))

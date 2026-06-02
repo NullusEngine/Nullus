@@ -4,6 +4,7 @@
 
 #include "Profiling/Profiler.h"
 #include "Rendering/Context/Driver.h"
+#include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Context/DriverInternal.h"
 #include "Rendering/Context/RenderThreadCoordinator.h"
 #include "Rendering/Context/RhiThreadCoordinator.h"
@@ -21,6 +22,12 @@ namespace NLS::Render::Context
             return impl.threadedLifecycle != nullptr &&
                 impl.hasPendingSwapchainResize &&
                 snapshot.targetsSwapchain;
+        }
+
+        bool CanPublishThreadedRenderWork(const DriverImpl& impl)
+        {
+            return !impl.deviceLostDetected.load(std::memory_order_acquire) &&
+                !impl.unsafeGpuWorkQuarantined.load(std::memory_order_acquire);
         }
 
         RenderScenePackage BuildEmptyRenderScenePackage(const FrameSnapshot& snapshot)
@@ -66,6 +73,37 @@ namespace NLS::Render::Context
             package.computeDispatchInputs.clear();
             package.extractedTextures.clear();
             return package;
+        }
+
+        struct ThreadedPublicationSlotReservation
+        {
+            std::optional<size_t> slotIndex;
+            bool ownedByPublication = false;
+        };
+
+        ThreadedPublicationSlotReservation ReserveThreadedPublicationSlot(Driver& driver)
+        {
+            ThreadedPublicationSlotReservation reservation;
+            reservation.slotIndex = DriverRendererAccess::GetReservedFrameContextSlotIndex(driver);
+            if (reservation.slotIndex.has_value())
+                return reservation;
+
+            if (!DriverRendererAccess::HasExplicitRHI(driver))
+                return reservation;
+
+            reservation.slotIndex = DriverRendererAccess::ReserveReusableFrameContextSlotIndexForPreparedPublication(driver);
+            reservation.ownedByPublication = reservation.slotIndex.has_value();
+            return reservation;
+        }
+
+        void ReleaseOwnedThreadedPublicationSlot(
+            Driver& driver,
+            const ThreadedPublicationSlotReservation& reservation)
+        {
+            if (!reservation.ownedByPublication || !reservation.slotIndex.has_value())
+                return;
+
+            (void)DriverRendererAccess::ReleaseReservedFrameContextSlotIndex(driver, reservation.slotIndex.value());
         }
     }
 
@@ -125,6 +163,9 @@ namespace NLS::Render::Context
         if (!Detail::AllowsThreadedHarnessPublish(*driver.m_impl))
             return false;
 
+        if (!CanPublishThreadedRenderWork(*driver.m_impl))
+            return false;
+
         if (snapshot.targetsSwapchain &&
             driver.m_impl->hasPendingSwapchainResize &&
             driver.m_impl->threadedLifecycle->GetInFlightDepth() == 0u)
@@ -164,6 +205,9 @@ namespace NLS::Render::Context
         if (!Detail::AllowsThreadedHarnessPublish(*driver.m_impl))
             return false;
 
+        if (!CanPublishThreadedRenderWork(*driver.m_impl))
+            return false;
+
         if (snapshot.targetsSwapchain &&
             driver.m_impl->hasPendingSwapchainResize &&
             driver.m_impl->threadedLifecycle->GetInFlightDepth() == 0u)
@@ -181,10 +225,22 @@ namespace NLS::Render::Context
         auto resolvedRenderScenePackage = renderScenePackage;
         resolvedRenderScenePackage.frameId = resolvedSnapshot.frameId;
 
+        const auto slotReservation = ReserveThreadedPublicationSlot(driver);
+        if (DriverRendererAccess::HasExplicitRHI(driver) && !slotReservation.slotIndex.has_value())
+            return false;
+
+        if (!CanPublishThreadedRenderWork(*driver.m_impl))
+        {
+            ReleaseOwnedThreadedPublicationSlot(driver, slotReservation);
+            return false;
+        }
+
         const bool published = driver.m_impl->threadedLifecycle->TryPublishPreparedFrame(
             resolvedSnapshot,
             resolvedRenderScenePackage,
             publishedSlotIndex);
+        if (!published)
+            ReleaseOwnedThreadedPublicationSlot(driver, slotReservation);
         if (published)
             Detail::NotifyThreadedWorkers(*driver.m_impl);
         return published;
@@ -203,6 +259,13 @@ namespace NLS::Render::Context
 
         if (!Detail::SupportsThreadedFoundationExecution(*driver.m_impl))
             return false;
+
+        if (!CanPublishThreadedRenderWork(*driver.m_impl))
+        {
+            if (publishedFrameId != nullptr)
+                *publishedFrameId = 0u;
+            return false;
+        }
 
         if (snapshot.targetsSwapchain &&
             driver.m_impl->hasPendingSwapchainResize &&
@@ -226,11 +289,29 @@ namespace NLS::Render::Context
             return renderScenePackage;
         };
 
+        const auto slotReservation = ReserveThreadedPublicationSlot(driver);
+        if (DriverRendererAccess::HasExplicitRHI(driver) && !slotReservation.slotIndex.has_value())
+        {
+            if (publishedFrameId != nullptr)
+                *publishedFrameId = 0u;
+            return false;
+        }
+
+        if (!CanPublishThreadedRenderWork(*driver.m_impl))
+        {
+            ReleaseOwnedThreadedPublicationSlot(driver, slotReservation);
+            if (publishedFrameId != nullptr)
+                *publishedFrameId = 0u;
+            return false;
+        }
+
         const bool published = driver.m_impl->threadedLifecycle->PublishPreparedFrameBuilder(
             resolvedSnapshot,
             std::move(resolvedRenderSceneBuilder),
             std::chrono::milliseconds(driver.m_impl->threadedPublishRetirementWaitMs),
             publishedSlotIndex);
+        if (!published)
+            ReleaseOwnedThreadedPublicationSlot(driver, slotReservation);
         if (publishedFrameId != nullptr)
             *publishedFrameId = published ? resolvedSnapshot.frameId : 0u;
         if (published)

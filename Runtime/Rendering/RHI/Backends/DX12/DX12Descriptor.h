@@ -54,6 +54,7 @@ namespace NLS::Render::Backend
 		UINT m_descriptorCapacity = 0;
 		Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> m_heap;
 		UINT m_descriptorSize = 0;
+		bool m_quarantined = false;
 #endif
 	};
 
@@ -66,8 +67,8 @@ namespace NLS::Render::Backend
 		explicit NativeDX12BindingSet(
 			ID3D12Device* device,
 			NLS::Render::RHI::RHIBindingSetDesc desc,
-			DX12ShaderVisibleDescriptorHeapAllocator* resourceHeapAllocator,
-			DX12ShaderVisibleDescriptorHeapAllocator* samplerHeapAllocator);
+			std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> resourceHeapAllocator,
+			std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> samplerHeapAllocator);
 #endif
 		~NativeDX12BindingSet() override;
 
@@ -75,6 +76,7 @@ namespace NLS::Render::Backend
 		const NLS::Render::RHI::RHIBindingSetDesc& GetDesc() const override;
 		NLS::Render::RHI::NativeHandle GetNativeBindingSetHandle() const override;
 		NLS::Render::RHI::NativeHandle GetNativeDescriptorHeapCompatibilityHandle(uint32_t heapClass) const override;
+		bool IsValid() const;
 
 #if defined(_WIN32)
 		D3D12_GPU_DESCRIPTOR_HANDLE GetGPUHandle(
@@ -133,8 +135,9 @@ namespace NLS::Render::Backend
 		std::vector<NLS::Render::RHI::DX12::DX12DescriptorTableDesc> m_descriptorTableDescs;
 		ID3D12Device* m_device = nullptr;
 		NLS::Render::RHI::RHIBindingSetDesc m_desc;
-		DX12ShaderVisibleDescriptorHeapAllocator* m_resourceHeapAllocator = nullptr;
-		DX12ShaderVisibleDescriptorHeapAllocator* m_samplerHeapAllocator = nullptr;
+		std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_resourceHeapAllocator;
+		std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_samplerHeapAllocator;
+		bool m_valid = false;
 	};
 
 	class NativeDX12BindingLayout final : public NLS::Render::RHI::RHIBindingLayout

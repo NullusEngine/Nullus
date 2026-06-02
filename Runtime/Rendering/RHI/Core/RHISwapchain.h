@@ -21,6 +21,10 @@ namespace NLS::Render::RHI
         std::shared_ptr<class RHISwapchain> swapchain;
         uint32_t imageIndex = 0;
         std::vector<std::shared_ptr<class RHISemaphore>> waitSemaphores;
+        // CPU-side frame-resource retirement fence. Backends should signal it after
+        // queue-side present waits/calls are ordered, but it is not a compositor
+        // ownership fence for swapchain backbuffer destruction.
+        std::shared_ptr<class RHIFence> signalFence;
         // UI rendering signal semaphore - Driver sets this from UIManager::ResolveUISignalSemaphore()
         // Backend should wait on this semaphore before presenting to ensure UI rendering completes first
         NativeHandle uiSignalSemaphore;
@@ -39,7 +43,11 @@ namespace NLS::Render::RHI
     {
         RHIQueueOperationStatusCode code = RHIQueueOperationStatusCode::Success;
         std::string message;
+        // True when any GPU-visible queue work may have been accepted, even if the
+        // operation later failed before all requested signals were queued.
         bool mayHaveQueuedGpuWork = false;
+        // True only when signalFence was successfully queued and can be used as
+        // the CPU retire point for frame-scoped resources.
         bool frameFenceSignalQueued = false;
 
         bool Succeeded() const { return code == RHIQueueOperationStatusCode::Success; }
@@ -91,7 +99,7 @@ namespace NLS::Render::RHI
 
     struct NLS_RENDER_API RHIFrameContext
     {
-        uint32_t frameIndex = 0;
+        uint64_t frameIndex = 0;
         uint32_t swapchainImageIndex = 0;
         bool hasAcquiredSwapchainImage = false;
         std::shared_ptr<RHICommandPool> commandPool;

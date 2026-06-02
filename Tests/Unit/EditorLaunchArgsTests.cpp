@@ -220,7 +220,7 @@ TEST(EditorLaunchArgsTests, Dx12DeviceResourcesExposeConfirmedShaderModelSupport
 }
 
 #if defined(_WIN32)
-TEST(EditorLaunchArgsTests, DefaultDx12DeviceCreationSkipsDredDiagnostics)
+TEST(EditorLaunchArgsTests, DefaultDx12DeviceCreationEnablesDredDiagnostics)
 {
     std::vector<std::string> storage;
     char** argv = MutableArgv({"Editor.exe", "TestProject.nullus"}, storage);
@@ -234,7 +234,7 @@ TEST(EditorLaunchArgsTests, DefaultDx12DeviceCreationSkipsDredDiagnostics)
     EXPECT_TRUE(resources.shaderModel6Supported);
     EXPECT_GE(resources.confirmedShaderModel, static_cast<unsigned int>(D3D_SHADER_MODEL_6_0));
     EXPECT_NE(resources.shaderModelDiagnostics.find("Shader Model"), std::string::npos);
-    EXPECT_FALSE(resources.dredDiagnosticsEnabled);
+    EXPECT_TRUE(resources.dredDiagnosticsEnabled);
 }
 
 TEST(EditorLaunchArgsTests, ExplicitDebugValidationDx12DeviceCreationEnablesDredDiagnostics)
@@ -254,7 +254,7 @@ TEST(EditorLaunchArgsTests, ExplicitDebugValidationDx12DeviceCreationEnablesDred
     EXPECT_TRUE(resources.dredDiagnosticsEnabled);
 }
 
-TEST(EditorLaunchArgsTests, DisabledDebugValidationDx12DeviceCreationSkipsDredDiagnostics)
+TEST(EditorLaunchArgsTests, DisabledDebugValidationDx12DeviceCreationKeepsDredDiagnosticsEnabled)
 {
     std::vector<std::string> storage;
     char** argv = MutableArgv({"Editor.exe", "TestProject.nullus"}, storage);
@@ -268,6 +268,6 @@ TEST(EditorLaunchArgsTests, DisabledDebugValidationDx12DeviceCreationSkipsDredDi
     EXPECT_TRUE(resources.shaderModel6Supported);
     EXPECT_GE(resources.confirmedShaderModel, static_cast<unsigned int>(D3D_SHADER_MODEL_6_0));
     EXPECT_NE(resources.shaderModelDiagnostics.find("Shader Model"), std::string::npos);
-    EXPECT_FALSE(resources.dredDiagnosticsEnabled);
+    EXPECT_TRUE(resources.dredDiagnosticsEnabled);
 }
 #endif

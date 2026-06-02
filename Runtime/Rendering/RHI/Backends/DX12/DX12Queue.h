@@ -18,6 +18,7 @@ namespace NLS::Render::Backend
 			ID3D12CommandQueue* queue,
 			NLS::Render::RHI::QueueType queueType,
 			const std::string& debugName);
+		~NativeDX12Queue() override;
 
 		std::string_view GetDebugName() const override;
 		NLS::Render::RHI::QueueType GetType() const override;

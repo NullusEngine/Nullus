@@ -71,6 +71,7 @@ public:
     void FinalizeFrameStatistics();
 
 protected:
+    RendererStats* GetMutableRendererStats() const override;
     void OnThreadedFramePublishFailed() override;
     void DrawRegisteredPasses();
     void DrawRegisteredPasses(PipelineState pso);

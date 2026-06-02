@@ -31,6 +31,7 @@
 #include <cinttypes>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -280,7 +281,24 @@ private:
 // Single event
 struct ProfilerEvent
 {
-	const char* pName			 = nullptr;	 ///< Name of event
+	static constexpr size_t MaxNameLength = 255u;
+
+	const char* GetName() const { return Name; }
+	void SetName(const char* pName)
+	{
+		if (pName == nullptr)
+		{
+			Name[0] = '\0';
+			return;
+		}
+
+		size_t copied = 0u;
+		for (; copied < MaxNameLength && pName[copied] != '\0'; ++copied)
+			Name[copied] = pName[copied];
+		Name[copied] = '\0';
+	}
+
+	char		Name[MaxNameLength + 1u]{}; ///< Name of event
 	const char* pFilePath		 = nullptr;	 ///< File path of location where event was started
 	uint32		Color		: 24 = 0xFFFFFF; ///< Color
 	uint32		Depth		: 8	 = 0;		 ///< Stack depth of event
@@ -293,7 +311,6 @@ struct ProfilerEvent
 	bool   IsValid() const { return TicksBegin != 0 && TicksEnd != 0; }
 	uint32 GetColor() const { return Color | (0xFF << 24); }
 };
-static_assert(std::has_unique_object_representations_v<ProfilerEvent>);
 
 
 // Data for a single frame of profiling events

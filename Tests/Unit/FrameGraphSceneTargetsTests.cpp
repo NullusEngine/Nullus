@@ -5110,6 +5110,38 @@ TEST(FrameGraphSceneTargetsTests, ExternalSceneOutputSnapshotDetachesFramebuffer
     EXPECT_FALSE(summary.targetsSwapchain);
     EXPECT_TRUE(summary.hasExternalOutput);
     EXPECT_EQ(summary.textureCount, 2u);
+
+    const auto framebufferSummary = NLS::Render::FrameGraph::BuildExternalSceneOutputSummary(frameDescriptor);
+    EXPECT_EQ(summary.identity, framebufferSummary.identity);
+    EXPECT_EQ(summary.identities, framebufferSummary.identities);
+}
+
+TEST(FrameGraphSceneTargetsTests, ExternalSceneOutputSummaryCountsViewOnlyTargets)
+{
+    NLS::Render::RHI::RHITextureDesc colorDesc;
+    colorDesc.debugName = "ViewOnlySceneColor";
+    colorDesc.extent = { 320u, 180u, 1u };
+    colorDesc.usage =
+        NLS::Render::RHI::TextureUsageFlags::ColorAttachment |
+        NLS::Render::RHI::TextureUsageFlags::Sampled;
+    auto colorTexture = std::make_shared<TestTexture>(colorDesc);
+
+    NLS::Render::RHI::RHITextureViewDesc colorViewDesc;
+    colorViewDesc.debugName = "ViewOnlySceneColorView";
+    auto colorView = std::make_shared<TestTextureView>(colorTexture, colorViewDesc);
+
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 320u;
+    frameDescriptor.renderHeight = 180u;
+    frameDescriptor.outputColorView = colorView;
+
+    const auto summary = NLS::Render::FrameGraph::BuildExternalSceneOutputSummary(frameDescriptor);
+    EXPECT_FALSE(summary.targetsSwapchain);
+    EXPECT_TRUE(summary.hasExternalOutput);
+    EXPECT_EQ(summary.textureCount, 1u);
+    EXPECT_EQ(summary.identity, reinterpret_cast<uint64_t>(colorTexture.get()));
+    ASSERT_EQ(summary.identities.size(), 1u);
+    EXPECT_EQ(summary.identities[0], reinterpret_cast<uint64_t>(colorTexture.get()));
 }
 
 TEST(FrameGraphSceneTargetsTests, PrepareForwardSceneGraphImportsExternalTargetsAndPreservesForwardPassOrder)

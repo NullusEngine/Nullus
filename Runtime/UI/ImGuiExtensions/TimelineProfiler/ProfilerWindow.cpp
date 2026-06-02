@@ -154,7 +154,7 @@ static void EditStyle(StyleOptions& style)
 static StringHash GetEventHash(const ProfilerEvent& event)
 {
 	StringHash hash;
-	hash.Combine(StringHash(event.pName));
+	hash.Combine(StringHash(event.GetName()));
 	hash.Combine(StringHash(event.pFilePath));
 	hash.Combine(event.LineNumber);
 	hash.Combine(event.QueueIndex);
@@ -171,6 +171,7 @@ struct TraceContext
 	std::ofstream TraceStream;
 	uint64		  BaseTime = 0;
 	uint32		  LastExportedFrame = 0;
+	bool		  IncludeEditorUiEvents = true;
 };
 
 void BeginTrace(const char* pPath, TraceContext& context)
@@ -226,7 +227,8 @@ void UpdateTrace(TraceContext& context)
 					event.TicksEnd,
 					context.BaseTime,
 					TicksToMs,
-					event.pName);
+					event.GetName(),
+					context.IncludeEditorUiEvents);
 				if (!eventJson.has_value())
 					continue;
 
@@ -359,7 +361,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 						 ImColor color	   = ImColor(event.GetColor()) * style.BarColorMultiplier;
 						 ImColor textColor = style.FGTextColor;
 						 // Fade out the bars that don't match the filter
-						 if (context.SearchString[0] != 0 && !strstr(event.pName, context.SearchString))
+						 if (context.SearchString[0] != 0 && !strstr(event.GetName(), context.SearchString))
 						 {
 							 color.Value.w *= 0.3f;
 							 textColor.Value.w *= 0.5f;
@@ -415,11 +417,11 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 						 // If the bar size is large enough, draw the name of the bar on top
 						 if (itemRect.GetWidth() > 10.0f)
 						 {
-							 const char* pBarText = event.pName;
+							 const char* pBarText = event.GetName();
 							 ImVec2 textSize = ImGui::CalcTextSize(pBarText);
 							 if (textSize.x * 2 < itemRect.GetWidth())
 							 {
-								 ImFormatStringToTempBuffer(&pBarText, nullptr, "%s (%.2f ms)", event.pName, ms);
+								 ImFormatStringToTempBuffer(&pBarText, nullptr, "%s (%.2f ms)", event.GetName(), ms);
 								 textSize = ImGui::CalcTextSize(pBarText);
 							 }
 
@@ -440,7 +442,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 				 {
 					 if (ImGui::BeginTooltip())
 					 {
-						 ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.4f, 1.0f), "%s | %.3f ms", event.pName, TicksToMs * (float)(event.TicksEnd - event.TicksBegin));
+						 ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.4f, 1.0f), "%s | %.3f ms", event.GetName(), TicksToMs * (float)(event.TicksEnd - event.TicksBegin));
 						 ImGui::Text("Frame %d", frameIndex);
 						 if (event.pFilePath && *event.pFilePath != 0)
 							 ImGui::Text("%s:%d", event.pFilePath, event.LineNumber);
@@ -623,6 +625,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 		ImGui::BeginGroup();
 
 		const char* pTracePath = "trace.json";
+		ImGui::Checkbox("Export Editor UI", &traceContext.IncludeEditorUiEvents);
 		if (!traceContext.TraceStream.is_open())
 		{
 			if (ImGui::Button("Begin Trace", ImVec2(ImGui::GetContentRegionAvail().x, 0)))
@@ -655,7 +658,7 @@ static void DrawProfilerTimeline(const ImVec2& size = ImVec2(0, 0))
 						{
 							float time = TicksToMs * (float)(event.TicksEnd - event.TicksBegin);
 							selectedEvent.AddSample(time);
-							pName	  = event.pName;
+							pName	  = event.GetName();
 							eventTime = time;
 							++n;
 						}

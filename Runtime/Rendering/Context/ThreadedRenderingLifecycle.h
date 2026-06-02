@@ -10,6 +10,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "Math/Vector4.h"
@@ -295,6 +296,8 @@ namespace NLS::Render::Context
         uint64_t visibleTransparentDrawCount = 0u;
         uint64_t visibleSkyboxDrawCount = 0u;
         uint64_t visibleHelperDrawCount = 0u;
+        uint64_t externalOutputIdentity = 0u;
+        std::vector<uint64_t> externalOutputIdentities;
         uint32_t externalOutputTextureCount = 0u;
         std::vector<RecordedDrawCommandInput> recordedDrawCommands;
     };
@@ -342,6 +345,8 @@ namespace NLS::Render::Context
         std::vector<RecordedDrawCommandInput> recordedDrawCommands;
         std::vector<std::shared_ptr<RHI::RHITexture>> extractedTextures;
         std::shared_ptr<RHI::RHITexture> preferredReadbackTexture;
+        uint64_t externalSceneOutputIdentity = 0u;
+        std::vector<uint64_t> externalSceneOutputIdentities;
         uint32_t externalSceneOutputTextureCount = 0u;
     };
 
@@ -375,6 +380,7 @@ namespace NLS::Render::Context
         uint64_t descriptorTransientUsed = 0u;
         uint64_t descriptorTransientPeak = 0u;
         uint64_t descriptorTransientRetired = 0u;
+        bool deferredFrameScopedRetirement = false;
         uint64_t descriptorPersistentUsed = 0u;
         uint64_t descriptorPersistentReleased = 0u;
         uint64_t descriptorAllocationFailures = 0u;
@@ -401,6 +407,8 @@ namespace NLS::Render::Context
         std::string lastCommandRecordingFailure;
         bool deviceLostDetected = false;
         std::string deviceLostReason;
+        bool unsafeGpuWorkQuarantined = false;
+        std::string unsafeGpuWorkQuarantineReason;
         bool submittedSuccessfully = true;
     };
 
@@ -501,6 +509,8 @@ namespace NLS::Render::Context
         std::string currentFrameLastQueueOperationFailure;
         bool deviceLostDetected = false;
         std::string deviceLostReason;
+        bool unsafeGpuWorkQuarantined = false;
+        std::string unsafeGpuWorkQuarantineReason;
     };
 
     struct NLS_RENDER_API RenderScenePreparingResolutionDesc
@@ -558,6 +568,9 @@ namespace NLS::Render::Context
         uint64_t GetPublishedFrameCount() const;
         std::optional<size_t> ReserveReusableSlotIndex(
             std::chrono::nanoseconds retirementWaitTimeout = std::chrono::nanoseconds::zero());
+        std::optional<size_t> ReserveReusableSlotIndexExcluding(
+            const std::vector<size_t>& excludedSlotIndices,
+            std::chrono::nanoseconds retirementWaitTimeout = std::chrono::nanoseconds::zero());
         bool ReleaseReservedReusableSlotIndex(size_t slotIndex);
         std::optional<size_t> GetReservedReusableSlotIndex() const;
         const InFlightFrameSlot* PeekSlot(size_t slotIndex) const;
@@ -586,9 +599,15 @@ namespace NLS::Render::Context
             const RenderScenePackage& renderScenePackage,
             RenderSceneAttribution attribution,
             ThreadedFrameStage expectedStage);
+        bool RetireStaleExternalOutputPublishedFramesLocked();
+        bool RetireStaleExternalOutputReadyFramesLocked();
         InFlightFrameSlot* FindReusableSlotLocked(bool allowReservedSlot = false);
         const InFlightFrameSlot* FindReusableSlotReadOnlyLocked(bool allowReservedSlot = false) const;
+        const InFlightFrameSlot* FindReservableSlotReadOnlyLocked(
+            const std::vector<size_t>& excludedSlotIndices = {}) const;
+        bool IsSlotReusableForPublicationLocked(const InFlightFrameSlot& slot, bool reservedCandidate) const;
         bool IsSlotReservedLocked(size_t slotIndex) const;
+        bool IsSlotExcludedFromReservationLocked(size_t slotIndex, const std::vector<size_t>& excludedSlotIndices) const;
         void ClearReservedSlotLocked(size_t slotIndex);
         const InFlightFrameSlot* PeekSlotLocked(size_t slotIndex) const;
         void RefreshTelemetryLocked();
@@ -601,6 +620,7 @@ namespace NLS::Render::Context
         uint64_t m_latestPublishedFrameId = 0u;
         uint64_t m_latestRetiredFrameId = 0u;
         uint64_t m_latestFailedRetiredFrameId = 0u;
+        std::unordered_map<uint64_t, uint64_t> m_latestExternalOutputRhiFrameIds;
     };
 
 #if defined(NLS_ENABLE_TEST_HOOKS)

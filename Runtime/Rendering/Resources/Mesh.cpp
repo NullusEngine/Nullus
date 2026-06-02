@@ -2,6 +2,8 @@
 #include "Rendering/Geometry/BoundingSphereUtils.h"
 #include "Rendering/RHI/Core/RHIMeshAdapter.h"
 
+#include <atomic>
+
 namespace NLS::Render::Resources
 {
 MeshVertexUploadView BuildMeshVertexUploadView(const std::vector<Geometry::Vertex>& vertices)
@@ -14,6 +16,15 @@ MeshVertexUploadView BuildMeshVertexUploadView(const std::vector<Geometry::Verte
 
 namespace
 {
+uint64_t NextMeshInstanceId()
+{
+	static std::atomic<uint64_t> nextInstanceId { 1u };
+	auto instanceId = nextInstanceId.fetch_add(1u, std::memory_order_relaxed);
+	if (instanceId == 0u)
+		instanceId = nextInstanceId.fetch_add(1u, std::memory_order_relaxed);
+	return instanceId;
+}
+
 NLS::Render::RHI::MemoryUsage ToBufferMemoryUsage(const MeshBufferUploadMode uploadMode)
 {
 	return uploadMode == MeshBufferUploadMode::CpuToGpu
@@ -38,6 +49,7 @@ Mesh::Mesh(
 	: m_vertexCount(static_cast<uint32_t>(vertices.size()))
 	, m_indicesCount(static_cast<uint32_t>(indices.size()))
 	, m_materialIndex(materialIndex)
+	, m_instanceId(NextMeshInstanceId())
 {
 	CreateBuffers(vertices, indices, uploadMode);
 	ComputeBoundingSphere(vertices);
@@ -54,6 +66,7 @@ Mesh::Mesh(
 	, m_indicesCount(static_cast<uint32_t>(indices.size()))
 	, m_materialIndex(materialIndex)
 	, m_boundingSphere(boundingSphere)
+	, m_instanceId(NextMeshInstanceId())
 {
 	CreateBuffers(vertices, indices, uploadMode);
 	m_rhiMesh = std::make_shared<RHI::RHIMeshAdapter>(*this);
@@ -98,6 +111,11 @@ uint32_t Mesh::GetMaterialIndex() const
 const Render::Geometry::BoundingSphere& Mesh::GetBoundingSphere() const
 {
 	return m_boundingSphere;
+}
+
+uint64_t Mesh::GetInstanceId() const
+{
+	return m_instanceId;
 }
 
 uint64_t Mesh::GetContentRevision() const

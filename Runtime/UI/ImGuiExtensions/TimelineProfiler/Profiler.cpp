@@ -389,7 +389,7 @@ void GPUProfiler::BeginEvent(ID3D12GraphicsCommandList* pCmd, const char* pName,
 
 	// Allocate an event in the sample history
 	ProfilerEvent& event = queryData.Events[eventIndex];
-	event.pName			 = gAllocator.String(pName, m_FrameIndex);
+	event.SetName(pName);
 	event.pFilePath		 = pFilePath;
 	event.LineNumber	 = lineNumber;
 	event.Color			 = color == 0 ? ColorFromString(pName) : color;
@@ -877,7 +877,7 @@ void Profiler::BeginEvent(const char* pName, uint32 color, const char* pFilePath
 	ProfilerEvent& newEvent = eventData.emplace_back();
 	newEvent.Depth			= track.EventStack.GetSize() - 1;
 	newEvent.ThreadIndex	= track.Index;
-	newEvent.pName			= gAllocator.String(pName, m_FrameIndex);
+	newEvent.SetName(pName);
 	newEvent.pFilePath		= pFilePath;
 	newEvent.LineNumber		= lineNumber;
 	newEvent.Color			= color == 0 ? ColorFromString(pName) : color;
@@ -919,9 +919,7 @@ void Profiler::AddEvent(uint32 trackIndex, const ProfilerEvent& event, uint32 fr
 	EventTrack&		   track  = m_Tracks[trackIndex];
 	ProfilerEventData& events = track.GetFrameData(frameIndex);
 
-	// Name must be copied
 	ProfilerEvent newEvent = event;
-	newEvent.pName		   = gAllocator.String(newEvent.pName, frameIndex);
 
 	events.push_back(newEvent);
 }
@@ -1035,12 +1033,12 @@ void Profiler::Present(IDXGISwapChain* pSwapChain)
 			else if (pToProcessEntry->DisplayQPC == PresentEntry::sQPCDroppedFrame)
 			{
 				ProfilerEvent event{
-					.pName		= "Discarded",
 					.Color		= GetFrameColor(pToProcessEntry->FrameIndex),
 					.Depth		= 1,
 					.TicksBegin = pNextValidPresentEntry->DisplayQPC,
 					.TicksEnd	= pNextValidPresentEntry->DisplayQPC + m_MsToTicks,
 				};
+				event.SetName("Discarded");
 				AddEvent(m_PresentTrackIndex, event, pToProcessEntry->FrameIndex);
 			}
 			else
@@ -1051,12 +1049,12 @@ void Profiler::Present(IDXGISwapChain* pSwapChain)
 					break;
 
 				ProfilerEvent event{
-					.pName		= "Present",
 					.Color		= GetFrameColor(pToProcessEntry->FrameIndex),
 					.Depth		= stackSize,
 					.TicksBegin = pToProcessEntry->DisplayQPC,
 					.TicksEnd	= pNextValidPresentEntry->DisplayQPC,
 				};
+				event.SetName("Present");
 				++stackSize;
 				AddEvent(m_PresentTrackIndex, event, pToProcessEntry->FrameIndex);
 			}

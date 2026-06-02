@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <optional>
 #include <string>
@@ -41,6 +42,43 @@ inline bool ShouldExportTraceDurationEvent(
 	const std::uint64_t ticksEnd)
 {
 	return ticksBegin != 0u && ticksEnd > ticksBegin;
+}
+
+inline bool TraceNameStartsWith(const char* name, const char* prefix)
+{
+	if (name == nullptr || prefix == nullptr)
+		return false;
+
+	const auto prefixLength = std::strlen(prefix);
+	return std::strncmp(name, prefix, prefixLength) == 0;
+}
+
+inline bool TraceNameEndsWith(const char* name, const char* suffix)
+{
+	if (name == nullptr || suffix == nullptr)
+		return false;
+
+	const auto nameLength = std::strlen(name);
+	const auto suffixLength = std::strlen(suffix);
+	return nameLength >= suffixLength &&
+		std::strncmp(name + nameLength - suffixLength, suffix, suffixLength) == 0;
+}
+
+inline bool IsEditorUiTraceEventName(const char* name)
+{
+	return TraceNameStartsWith(name, "Editor::RenderEditorUI") ||
+		TraceNameStartsWith(name, "Editor::UIManagerRender") ||
+		TraceNameStartsWith(name, "UIManager::") ||
+		TraceNameStartsWith(name, "Canvas::") ||
+		TraceNameStartsWith(name, "Panel::Draw:") ||
+		TraceNameStartsWith(name, "ProfilerPanel::") ||
+		TraceNameEndsWith(name, "UIBridge::RenderDrawData") ||
+		TraceNameEndsWith(name, "DX12UIBridge::RenderDrawData") ||
+		TraceNameStartsWith(name, "ImGui::") ||
+		TraceNameStartsWith(name, "ImGui_ImplDX12_RenderDrawData") ||
+		TraceNameStartsWith(name, "StandaloneUiFrame::") ||
+		TraceNameStartsWith(name, "RhiThreadCoordinator::BeginStandaloneUiExplicitFrame") ||
+		TraceNameStartsWith(name, "RhiThreadCoordinator::PresentStandaloneUiFrame");
 }
 
 inline unsigned long long TraceTicksToMicroseconds(
@@ -144,9 +182,12 @@ inline std::optional<std::string> BuildTraceDurationEventJson(
 	const std::uint64_t ticksEnd,
 	const std::uint64_t baseTime,
 	const double ticksToMs,
-	const char* name)
+	const char* name,
+	const bool includeEditorUiEvents = true)
 {
 	if (!ShouldExportTraceDurationEvent(ticksBegin, ticksEnd))
+		return std::nullopt;
+	if (!includeEditorUiEvents && IsEditorUiTraceEventName(name))
 		return std::nullopt;
 
 	const std::uint64_t relativeBeginTicks = ticksBegin > baseTime

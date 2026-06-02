@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -10,9 +11,11 @@
 #include "Rendering/RHI/Backends/DX12/DX12Command.h"
 #include "Rendering/RHI/Backends/DX12/DX12DebugNameUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12FormatUtils.h"
+#include "Rendering/RHI/Backends/DX12/DX12QueueSynchronization.h"
 #include "Rendering/RHI/Backends/DX12/DX12ReadbackUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12TextureUploadUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12TextureViewUtils.h"
+#include "Rendering/Context/DriverAccess.h"
 #include "Rendering/RHI/Utils/UploadContext/UploadContext.h"
 
 #if defined(_WIN32)
@@ -122,6 +125,72 @@ namespace NLS::Render::Backend
 				return false;
 			}
 			return true;
+		}
+
+		struct DX12InitialUploadQuarantinedSubmission
+		{
+			Microsoft::WRL::ComPtr<ID3D12Resource> targetResource;
+			Microsoft::WRL::ComPtr<ID3D12Resource> uploadBuffer;
+			Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
+			Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
+			Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+			HRESULT signalResult = S_OK;
+			HRESULT deviceStatus = S_OK;
+			std::string debugName;
+		};
+
+		std::mutex& DX12InitialUploadQuarantineMutex()
+		{
+			static std::mutex mutex;
+			return mutex;
+		}
+
+		std::vector<DX12InitialUploadQuarantinedSubmission>& DX12InitialUploadQuarantine()
+		{
+			static std::vector<DX12InitialUploadQuarantinedSubmission> submissions;
+			return submissions;
+		}
+
+		void QuarantineDX12InitialUploadSubmissionAfterExecute(
+			ID3D12Device* device,
+			ID3D12Resource* targetResource,
+			const Microsoft::WRL::ComPtr<ID3D12Resource>& uploadBuffer,
+			const Microsoft::WRL::ComPtr<ID3D12CommandAllocator>& commandAllocator,
+			const Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>& commandList,
+			const Microsoft::WRL::ComPtr<ID3D12Fence>& fence,
+			HRESULT signalResult,
+			const std::string& debugName)
+		{
+			DX12InitialUploadQuarantinedSubmission submission;
+			if (targetResource != nullptr)
+			{
+				targetResource->AddRef();
+				submission.targetResource.Attach(targetResource);
+			}
+			submission.uploadBuffer = uploadBuffer;
+			submission.commandAllocator = commandAllocator;
+			submission.commandList = commandList;
+			submission.fence = fence;
+			submission.signalResult = signalResult;
+			submission.deviceStatus = device != nullptr ? device->GetDeviceRemovedReason() : S_OK;
+			const HRESULT deviceStatus = submission.deviceStatus;
+			submission.debugName = debugName;
+
+			std::lock_guard<std::mutex> lock(DX12InitialUploadQuarantineMutex());
+			DX12InitialUploadQuarantine().push_back(std::move(submission));
+			NLS::Render::Context::MarkLocatedDriverUnsafeGpuWorkQuarantined(
+				"DX12 initial upload queued GPU work without a reliable fence; quarantined submitted resources \"" +
+				debugName +
+				"\" hr=" +
+				std::to_string(signalResult));
+			if (FAILED(deviceStatus))
+			{
+				NLS::Render::Context::MarkLocatedDriverDeviceLost(
+					"DX12 initial upload detected device lost after ExecuteCommandLists; quarantined submitted resources \"" +
+					debugName +
+					"\" hr=" +
+					std::to_string(deviceStatus));
+			}
 		}
 
 		NLS::Render::RHI::ResourceState ResolveUploadedTextureState(const NLS::Render::RHI::RHITextureDesc& desc)
@@ -442,9 +511,6 @@ namespace NLS::Render::Backend
 				return false;
 			}
 
-			ID3D12CommandList* commandLists[] = { commandList.Get() };
-			m_graphicsQueue->ExecuteCommandLists(1, commandLists);
-
 			Microsoft::WRL::ComPtr<ID3D12Fence> fence;
 			hr = m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
 			if (FAILED(hr))
@@ -456,17 +522,56 @@ namespace NLS::Render::Backend
 			SetDx12ObjectName(fence.Get(), debugName + "UploadFence");
 
 			const UINT64 fenceValue = 1;
-			hr = m_graphicsQueue->Signal(fence.Get(), fenceValue);
-			if (FAILED(hr))
 			{
-				NLS_LOG_ERROR("UploadInitialTextureData: failed to signal fence for texture \"" + debugName + "\" hr=" + std::to_string(hr));
-				return false;
+				NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(m_graphicsQueue);
+				ID3D12CommandList* commandLists[] = { commandList.Get() };
+				m_graphicsQueue->ExecuteCommandLists(1, commandLists);
+
+				hr = m_graphicsQueue->Signal(fence.Get(), fenceValue);
+				if (FAILED(hr))
+				{
+					QuarantineDX12InitialUploadSubmissionAfterExecute(
+						m_device,
+						textureResource,
+						uploadBuffer,
+						commandAllocator,
+						commandList,
+						fence,
+						hr,
+						debugName);
+					const HRESULT deviceStatus = m_device->GetDeviceRemovedReason();
+					NLS_LOG_ERROR(
+						"UploadInitialTextureData: failed to signal fence for texture \"" +
+						debugName +
+						"\" after ExecuteCommandLists; quarantined submitted upload resources hr=" +
+						std::to_string(hr) +
+						" deviceStatus=" +
+						std::to_string(deviceStatus));
+					return false;
+				}
 			}
 
-			return WaitForDX12FenceValue(
+			if (!WaitForDX12FenceValue(
 				fence.Get(),
 				fenceValue,
-				"UploadInitialTextureData \"" + debugName + "\"");
+				"UploadInitialTextureData \"" + debugName + "\""))
+			{
+				QuarantineDX12InitialUploadSubmissionAfterExecute(
+					m_device,
+					textureResource,
+					uploadBuffer,
+					commandAllocator,
+					commandList,
+					fence,
+					S_OK,
+					debugName);
+				NLS_LOG_ERROR(
+					"UploadInitialTextureData: failed to wait for upload fence for texture \"" +
+					debugName +
+					"\" after ExecuteCommandLists; quarantined submitted upload resources");
+				return false;
+			}
+			return true;
 		}
 
 		bool DX12InitialUploadContext::UploadBuffer(
@@ -589,9 +694,6 @@ namespace NLS::Render::Backend
 				return false;
 			}
 
-			ID3D12CommandList* commandLists[] = { commandList.Get() };
-			m_graphicsQueue->ExecuteCommandLists(1, commandLists);
-
 			Microsoft::WRL::ComPtr<ID3D12Fence> fence;
 			const HRESULT fenceResult = m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(fence.GetAddressOf()));
 			if (FAILED(fenceResult))
@@ -603,17 +705,56 @@ namespace NLS::Render::Backend
 			SetDx12ObjectName(fence.Get(), debugName + "UploadFence");
 
 			const UINT64 fenceValue = 1u;
-			const HRESULT signalResult = m_graphicsQueue->Signal(fence.Get(), fenceValue);
-			if (FAILED(signalResult))
 			{
-				NLS_LOG_ERROR("UploadInitialBufferData: failed to signal upload fence for \"" + debugName + "\" hr=" + std::to_string(signalResult));
-				return false;
+				NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(m_graphicsQueue);
+				ID3D12CommandList* commandLists[] = { commandList.Get() };
+				m_graphicsQueue->ExecuteCommandLists(1, commandLists);
+
+				const HRESULT signalResult = m_graphicsQueue->Signal(fence.Get(), fenceValue);
+				if (FAILED(signalResult))
+				{
+					QuarantineDX12InitialUploadSubmissionAfterExecute(
+						m_device,
+						bufferResource,
+						uploadBuffer,
+						commandAllocator,
+						commandList,
+						fence,
+						signalResult,
+						debugName);
+					const HRESULT deviceStatus = m_device->GetDeviceRemovedReason();
+					NLS_LOG_ERROR(
+						"UploadInitialBufferData: failed to signal upload fence for \"" +
+						debugName +
+						"\" after ExecuteCommandLists; quarantined submitted upload resources hr=" +
+						std::to_string(signalResult) +
+						" deviceStatus=" +
+						std::to_string(deviceStatus));
+					return false;
+				}
 			}
 
-			return WaitForDX12FenceValue(
+			if (!WaitForDX12FenceValue(
 				fence.Get(),
 				fenceValue,
-				"UploadInitialBufferData \"" + debugName + "\"");
+				"UploadInitialBufferData \"" + debugName + "\""))
+			{
+				QuarantineDX12InitialUploadSubmissionAfterExecute(
+					m_device,
+					bufferResource,
+					uploadBuffer,
+					commandAllocator,
+					commandList,
+					fence,
+					S_OK,
+					debugName);
+				NLS_LOG_ERROR(
+					"UploadInitialBufferData: failed to wait for upload fence for \"" +
+					debugName +
+					"\" after ExecuteCommandLists; quarantined submitted upload resources");
+				return false;
+			}
+			return true;
 		}
 	}
 #endif

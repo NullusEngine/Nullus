@@ -48,6 +48,8 @@ namespace
             snapshot.visibleTransparentDrawCount +
             snapshot.visibleSkyboxDrawCount +
             snapshot.visibleHelperDrawCount;
+        input.externalOutputIdentity = snapshot.externalOutputIdentity;
+        input.externalOutputIdentities = snapshot.externalOutputIdentities;
         input.externalOutputTextureCount = snapshot.externalOutputTextureCount;
         return input;
     }
@@ -82,6 +84,9 @@ namespace
         package.renderHeight = snapshot.renderHeight;
         package.sceneGameObjectCount = snapshot.sceneGameObjectCount;
         package.renderTargetUseCount = package.targetsSwapchain ? 1u : 2u;
+        package.externalSceneOutputIdentity = snapshot.externalOutputIdentity;
+        package.externalSceneOutputIdentities = snapshot.externalOutputIdentities;
+        package.externalSceneOutputTextureCount = snapshot.externalOutputTextureCount;
         return package;
     }
 
@@ -126,6 +131,87 @@ namespace
         return submissionFrame.submittedSuccessfully &&
             submissionFrame.currentFrameQueueOperationFailureCount == 0u &&
             !submissionFrame.deviceLostDetected;
+    }
+
+    uint64_t ResolveSlotFrameId(const InFlightFrameSlot& slot)
+    {
+        if (slot.renderFrameBuild.has_value())
+            return slot.renderFrameBuild->frameId;
+        if (slot.renderScenePackage.has_value())
+            return slot.renderScenePackage->frameId;
+        if (slot.renderFrameInput.has_value())
+            return slot.renderFrameInput->frameId;
+        if (slot.snapshot.has_value())
+            return slot.snapshot->frameId;
+        if (slot.submissionFrame.has_value())
+            return slot.submissionFrame->frameId;
+        return 0u;
+    }
+
+    std::vector<uint64_t> ResolveExternalOutputIdentities(const InFlightFrameSlot& slot)
+    {
+        if (!slot.renderScenePackage.has_value() ||
+            slot.renderScenePackage->targetsSwapchain ||
+            slot.renderScenePackage->externalSceneOutputTextureCount == 0u)
+        {
+            return {};
+        }
+
+        if (!slot.renderScenePackage->externalSceneOutputIdentities.empty())
+            return slot.renderScenePackage->externalSceneOutputIdentities;
+        if (slot.renderScenePackage->externalSceneOutputIdentity != 0u)
+            return { slot.renderScenePackage->externalSceneOutputIdentity };
+
+        if (slot.renderFrameInput.has_value())
+        {
+            if (!slot.renderFrameInput->externalOutputIdentities.empty())
+                return slot.renderFrameInput->externalOutputIdentities;
+            if (slot.renderFrameInput->externalOutputIdentity != 0u)
+                return { slot.renderFrameInput->externalOutputIdentity };
+        }
+
+        if (slot.snapshot.has_value())
+        {
+            if (!slot.snapshot->externalOutputIdentities.empty())
+                return slot.snapshot->externalOutputIdentities;
+            if (slot.snapshot->externalOutputIdentity != 0u)
+                return { slot.snapshot->externalOutputIdentity };
+        }
+
+        return {};
+    }
+
+    std::vector<uint64_t> ResolveExternalOutputIntentIdentities(const InFlightFrameSlot& slot)
+    {
+        if (slot.renderFrameInput.has_value() &&
+            !slot.renderFrameInput->targetsSwapchain &&
+            slot.renderFrameInput->externalOutputTextureCount != 0u)
+        {
+            if (!slot.renderFrameInput->externalOutputIdentities.empty())
+                return slot.renderFrameInput->externalOutputIdentities;
+            if (slot.renderFrameInput->externalOutputIdentity != 0u)
+                return { slot.renderFrameInput->externalOutputIdentity };
+        }
+
+        if (slot.snapshot.has_value() &&
+            !slot.snapshot->targetsSwapchain &&
+            slot.snapshot->externalOutputTextureCount != 0u)
+        {
+            if (!slot.snapshot->externalOutputIdentities.empty())
+                return slot.snapshot->externalOutputIdentities;
+            if (slot.snapshot->externalOutputIdentity != 0u)
+                return { slot.snapshot->externalOutputIdentity };
+        }
+
+        return {};
+    }
+
+    std::vector<uint64_t> ResolveExternalOutputOrderingIdentities(const InFlightFrameSlot& slot)
+    {
+        auto identities = ResolveExternalOutputIdentities(slot);
+        if (!identities.empty())
+            return identities;
+        return ResolveExternalOutputIntentIdentities(slot);
     }
 
     int GetRenderSceneAttributionRank(const InFlightFrameSlot& slot)
@@ -684,42 +770,58 @@ bool ThreadedRenderingLifecycle::PublishPreparedFrameBuilderLocked(
 bool ThreadedRenderingLifecycle::TryBeginNextRenderFrameBuild(size_t* slotIndex, RenderFrameInput* renderFrameInput)
 {
     NLS_PROFILE_SCOPE();
-    std::lock_guard<std::mutex> lock(m_mutex);
-    for (auto& slot : m_slots)
+    bool retiredStaleFrames = false;
+    bool claimedFrame = false;
     {
-        if (slot.stage != ThreadedFrameStage::Published || !slot.renderFrameInput.has_value())
-            continue;
+        std::lock_guard<std::mutex> lock(m_mutex);
+        retiredStaleFrames = RetireStaleExternalOutputPublishedFramesLocked();
+        for (auto& slot : m_slots)
+        {
+            if (slot.stage != ThreadedFrameStage::Published || !slot.renderFrameInput.has_value())
+                continue;
 
-        slot.stage = ThreadedFrameStage::RenderScenePreparing;
-        if (slotIndex != nullptr)
-            *slotIndex = slot.slotIndex;
-        if (renderFrameInput != nullptr)
-            *renderFrameInput = slot.renderFrameInput.value();
-        RefreshTelemetryLocked();
-        return true;
+            slot.stage = ThreadedFrameStage::RenderScenePreparing;
+            if (slotIndex != nullptr)
+                *slotIndex = slot.slotIndex;
+            if (renderFrameInput != nullptr)
+                *renderFrameInput = slot.renderFrameInput.value();
+            RefreshTelemetryLocked();
+            claimedFrame = true;
+            break;
+        }
     }
 
-    return false;
+    if (retiredStaleFrames)
+        m_slotAvailable.notify_all();
+    return claimedFrame;
 }
 
 bool ThreadedRenderingLifecycle::TryBeginNextRenderScene(size_t* slotIndex, FrameSnapshot* snapshot)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    for (auto& slot : m_slots)
+    bool retiredStaleFrames = false;
+    bool claimedFrame = false;
     {
-        if (slot.stage != ThreadedFrameStage::Published || !slot.snapshot.has_value())
-            continue;
+        std::lock_guard<std::mutex> lock(m_mutex);
+        retiredStaleFrames = RetireStaleExternalOutputPublishedFramesLocked();
+        for (auto& slot : m_slots)
+        {
+            if (slot.stage != ThreadedFrameStage::Published || !slot.snapshot.has_value())
+                continue;
 
-        slot.stage = ThreadedFrameStage::RenderScenePreparing;
-        if (slotIndex != nullptr)
-            *slotIndex = slot.slotIndex;
-        if (snapshot != nullptr)
-            *snapshot = slot.snapshot.value();
-        RefreshTelemetryLocked();
-        return true;
+            slot.stage = ThreadedFrameStage::RenderScenePreparing;
+            if (slotIndex != nullptr)
+                *slotIndex = slot.slotIndex;
+            if (snapshot != nullptr)
+                *snapshot = slot.snapshot.value();
+            RefreshTelemetryLocked();
+            claimedFrame = true;
+            break;
+        }
     }
 
-    return false;
+    if (retiredStaleFrames)
+        m_slotAvailable.notify_all();
+    return claimedFrame;
 }
 
 bool ThreadedRenderingLifecycle::TryBeginRenderScene(const size_t slotIndex)
@@ -850,57 +952,201 @@ bool ThreadedRenderingLifecycle::ResolveRenderScenePreparing(
     }
 }
 
+bool ThreadedRenderingLifecycle::RetireStaleExternalOutputPublishedFramesLocked()
+{
+    std::unordered_map<uint64_t, uint64_t> latestExternalOutputFrameIds;
+    for (const auto& slot : m_slots)
+    {
+        switch (slot.stage)
+        {
+        case ThreadedFrameStage::Published:
+        case ThreadedFrameStage::RenderScenePreparing:
+        case ThreadedFrameStage::RenderSceneResolving:
+        case ThreadedFrameStage::RenderReady:
+        case ThreadedFrameStage::RhiSubmitting:
+            break;
+        case ThreadedFrameStage::Available:
+        case ThreadedFrameStage::Retired:
+        default:
+            continue;
+        }
+
+        const uint64_t frameId = ResolveSlotFrameId(slot);
+        for (const auto externalOutputIdentity : ResolveExternalOutputOrderingIdentities(slot))
+        {
+            auto& latestFrameId = latestExternalOutputFrameIds[externalOutputIdentity];
+            latestFrameId = std::max(latestFrameId, frameId);
+        }
+    }
+
+    if (latestExternalOutputFrameIds.empty())
+        return false;
+
+    bool retiredStaleFrames = false;
+    for (auto& slot : m_slots)
+    {
+        if (slot.stage != ThreadedFrameStage::Published)
+            continue;
+
+        const auto externalOutputIdentities = ResolveExternalOutputIntentIdentities(slot);
+        if (externalOutputIdentities.empty())
+            continue;
+
+        const uint64_t frameId = ResolveSlotFrameId(slot);
+        const auto isStaleForAnyOutput =
+            std::any_of(
+                externalOutputIdentities.begin(),
+                externalOutputIdentities.end(),
+                [&latestExternalOutputFrameIds, frameId](const uint64_t externalOutputIdentity)
+                {
+                    const auto latestFrameId = latestExternalOutputFrameIds.find(externalOutputIdentity);
+                    return latestFrameId != latestExternalOutputFrameIds.end() &&
+                        frameId < latestFrameId->second;
+                });
+        if (!isStaleForAnyOutput)
+            continue;
+
+        slot.stage = ThreadedFrameStage::Retired;
+        retiredStaleFrames = true;
+    }
+
+    if (retiredStaleFrames)
+        RefreshTelemetryLocked();
+    return retiredStaleFrames;
+}
+
 bool ThreadedRenderingLifecycle::TryBeginNextRhiFrameExecution(size_t* slotIndex, RenderFrameBuild* renderFrameBuild)
 {
     NLS_PROFILE_SCOPE();
-    std::lock_guard<std::mutex> lock(m_mutex);
-    for (auto& slot : m_slots)
+    bool retiredStaleFrames = false;
+    bool claimedFrame = false;
     {
-        if (slot.stage != ThreadedFrameStage::RenderReady || !slot.renderFrameBuild.has_value())
-            continue;
+        std::lock_guard<std::mutex> lock(m_mutex);
+        retiredStaleFrames = RetireStaleExternalOutputReadyFramesLocked();
+        for (auto& slot : m_slots)
+        {
+            if (slot.stage != ThreadedFrameStage::RenderReady || !slot.renderFrameBuild.has_value())
+                continue;
 
-        slot.stage = ThreadedFrameStage::RhiSubmitting;
-        if (slotIndex != nullptr)
-            *slotIndex = slot.slotIndex;
-        if (renderFrameBuild != nullptr)
-            *renderFrameBuild = slot.renderFrameBuild.value();
-        RefreshTelemetryLocked();
-        return true;
+            for (const auto externalOutputIdentity : ResolveExternalOutputIdentities(slot))
+            {
+                auto& latestFrameId = m_latestExternalOutputRhiFrameIds[externalOutputIdentity];
+                latestFrameId = std::max(latestFrameId, ResolveSlotFrameId(slot));
+            }
+
+            slot.stage = ThreadedFrameStage::RhiSubmitting;
+            if (slotIndex != nullptr)
+                *slotIndex = slot.slotIndex;
+            if (renderFrameBuild != nullptr)
+                *renderFrameBuild = slot.renderFrameBuild.value();
+            RefreshTelemetryLocked();
+            claimedFrame = true;
+            break;
+        }
     }
 
-    return false;
+    if (retiredStaleFrames)
+        m_slotAvailable.notify_all();
+    return claimedFrame;
+}
+
+bool ThreadedRenderingLifecycle::RetireStaleExternalOutputReadyFramesLocked()
+{
+    if (m_latestExternalOutputRhiFrameIds.empty())
+        return false;
+
+    bool retiredStaleFrames = false;
+    for (auto& slot : m_slots)
+    {
+        if (slot.stage != ThreadedFrameStage::RenderReady)
+            continue;
+
+        const auto externalOutputIdentities = ResolveExternalOutputIdentities(slot);
+        if (externalOutputIdentities.empty())
+            continue;
+
+        const uint64_t frameId = ResolveSlotFrameId(slot);
+        const auto isStaleForAnyOutput =
+            std::any_of(
+                externalOutputIdentities.begin(),
+                externalOutputIdentities.end(),
+                [this, frameId](const uint64_t externalOutputIdentity)
+                {
+                    const auto latestFrameId = m_latestExternalOutputRhiFrameIds.find(externalOutputIdentity);
+                    return latestFrameId != m_latestExternalOutputRhiFrameIds.end() &&
+                        frameId < latestFrameId->second;
+                });
+        if (!isStaleForAnyOutput)
+            continue;
+
+        slot.stage = ThreadedFrameStage::Retired;
+        retiredStaleFrames = true;
+    }
+
+    if (retiredStaleFrames)
+        RefreshTelemetryLocked();
+    return retiredStaleFrames;
 }
 
 bool ThreadedRenderingLifecycle::TryBeginNextRhiSubmission(size_t* slotIndex, RenderScenePackage* renderScenePackage)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    for (auto& slot : m_slots)
+    bool retiredStaleFrames = false;
+    bool claimedFrame = false;
     {
-        if (slot.stage != ThreadedFrameStage::RenderReady || !slot.renderScenePackage.has_value())
-            continue;
+        std::lock_guard<std::mutex> lock(m_mutex);
+        retiredStaleFrames = RetireStaleExternalOutputReadyFramesLocked();
+        for (auto& slot : m_slots)
+        {
+            if (slot.stage != ThreadedFrameStage::RenderReady || !slot.renderScenePackage.has_value())
+                continue;
 
-        slot.stage = ThreadedFrameStage::RhiSubmitting;
-        if (slotIndex != nullptr)
-            *slotIndex = slot.slotIndex;
-        if (renderScenePackage != nullptr)
-            *renderScenePackage = slot.renderScenePackage.value();
-        RefreshTelemetryLocked();
-        return true;
+            for (const auto externalOutputIdentity : ResolveExternalOutputIdentities(slot))
+            {
+                auto& latestFrameId = m_latestExternalOutputRhiFrameIds[externalOutputIdentity];
+                latestFrameId = std::max(latestFrameId, ResolveSlotFrameId(slot));
+            }
+
+            slot.stage = ThreadedFrameStage::RhiSubmitting;
+            if (slotIndex != nullptr)
+                *slotIndex = slot.slotIndex;
+            if (renderScenePackage != nullptr)
+                *renderScenePackage = slot.renderScenePackage.value();
+            RefreshTelemetryLocked();
+            claimedFrame = true;
+            break;
+        }
     }
 
-    return false;
+    if (retiredStaleFrames)
+        m_slotAvailable.notify_all();
+    return claimedFrame;
 }
 
 bool ThreadedRenderingLifecycle::TryBeginRhiSubmission(const size_t slotIndex)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
-    auto* slot = const_cast<InFlightFrameSlot*>(PeekSlotLocked(slotIndex));
-    if (slot == nullptr || slot->stage != ThreadedFrameStage::RenderReady)
-        return false;
+    bool retiredStaleFrames = false;
+    bool claimedFrame = false;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        retiredStaleFrames = RetireStaleExternalOutputReadyFramesLocked();
+        auto* slot = const_cast<InFlightFrameSlot*>(PeekSlotLocked(slotIndex));
+        if (slot != nullptr && slot->stage == ThreadedFrameStage::RenderReady)
+        {
+            for (const auto externalOutputIdentity : ResolveExternalOutputIdentities(*slot))
+            {
+                auto& latestFrameId = m_latestExternalOutputRhiFrameIds[externalOutputIdentity];
+                latestFrameId = std::max(latestFrameId, ResolveSlotFrameId(*slot));
+            }
 
-    slot->stage = ThreadedFrameStage::RhiSubmitting;
-    RefreshTelemetryLocked();
-    return true;
+            slot->stage = ThreadedFrameStage::RhiSubmitting;
+            RefreshTelemetryLocked();
+            claimedFrame = true;
+        }
+    }
+
+    if (retiredStaleFrames)
+        m_slotAvailable.notify_all();
+    return claimedFrame;
 }
 
 bool ThreadedRenderingLifecycle::CompleteRhiSubmission(
@@ -980,12 +1226,20 @@ uint64_t ThreadedRenderingLifecycle::GetPublishedFrameCount() const
 std::optional<size_t> ThreadedRenderingLifecycle::ReserveReusableSlotIndex(
     const std::chrono::nanoseconds retirementWaitTimeout)
 {
+    return ReserveReusableSlotIndexExcluding({}, retirementWaitTimeout);
+}
+
+std::optional<size_t> ThreadedRenderingLifecycle::ReserveReusableSlotIndexExcluding(
+    const std::vector<size_t>& excludedSlotIndices,
+    const std::chrono::nanoseconds retirementWaitTimeout)
+{
     std::unique_lock<std::mutex> lock(m_mutex);
     if (m_reservedReusableSlotIndex.has_value())
     {
         const auto* reservedSlot = PeekSlotLocked(m_reservedReusableSlotIndex.value());
         if (reservedSlot != nullptr &&
-            (reservedSlot->stage == ThreadedFrameStage::Available || reservedSlot->stage == ThreadedFrameStage::Retired))
+            (reservedSlot->stage == ThreadedFrameStage::Available || reservedSlot->stage == ThreadedFrameStage::Retired) &&
+            !IsSlotExcludedFromReservationLocked(reservedSlot->slotIndex, excludedSlotIndices))
         {
             return m_reservedReusableSlotIndex;
         }
@@ -993,7 +1247,7 @@ std::optional<size_t> ThreadedRenderingLifecycle::ReserveReusableSlotIndex(
         m_reservedReusableSlotIndex.reset();
     }
 
-    if (FindReusableSlotReadOnlyLocked(false) == nullptr)
+    if (FindReservableSlotReadOnlyLocked(excludedSlotIndices) == nullptr)
     {
         if (retirementWaitTimeout <= std::chrono::nanoseconds::zero())
             return std::nullopt;
@@ -1003,9 +1257,9 @@ std::optional<size_t> ThreadedRenderingLifecycle::ReserveReusableSlotIndex(
         const bool hasReusableSlot = m_slotAvailable.wait_for(
             lock,
             retirementWaitTimeout,
-            [this]()
+            [this, &excludedSlotIndices]()
             {
-                return FindReusableSlotReadOnlyLocked(false) != nullptr;
+                return FindReservableSlotReadOnlyLocked(excludedSlotIndices) != nullptr;
             });
         m_telemetry.reservedSlotWaitTotalNs += static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -1017,7 +1271,7 @@ std::optional<size_t> ThreadedRenderingLifecycle::ReserveReusableSlotIndex(
         }
     }
 
-    const auto* slot = FindReusableSlotReadOnlyLocked(false);
+    const auto* slot = FindReservableSlotReadOnlyLocked(excludedSlotIndices);
     if (slot == nullptr)
         return std::nullopt;
 
@@ -1122,6 +1376,7 @@ void ThreadedRenderingLifecycle::ReleaseRetainedFrameResources()
         }
 
         m_reservedReusableSlotIndex.reset();
+        m_latestExternalOutputRhiFrameIds.clear();
         RefreshTelemetryLocked();
     }
 
@@ -1133,8 +1388,7 @@ InFlightFrameSlot* ThreadedRenderingLifecycle::FindReusableSlotLocked(const bool
     if (allowReservedSlot && m_reservedReusableSlotIndex.has_value())
     {
         auto* reservedSlot = const_cast<InFlightFrameSlot*>(PeekSlotLocked(m_reservedReusableSlotIndex.value()));
-        if (reservedSlot != nullptr &&
-            (reservedSlot->stage == ThreadedFrameStage::Available || reservedSlot->stage == ThreadedFrameStage::Retired))
+        if (reservedSlot != nullptr && IsSlotReusableForPublicationLocked(*reservedSlot, true))
         {
             reservedSlot->publishOrigin = ThreadedFramePublishOrigin::Unknown;
             reservedSlot->renderSceneAttribution = RenderSceneAttribution::Unknown;
@@ -1153,7 +1407,7 @@ InFlightFrameSlot* ThreadedRenderingLifecycle::FindReusableSlotLocked(const bool
 
     for (auto& slot : m_slots)
     {
-        if (slot.stage == ThreadedFrameStage::Available || slot.stage == ThreadedFrameStage::Retired)
+        if (IsSlotReusableForPublicationLocked(slot, false))
         {
             if (!allowReservedSlot && IsSlotReservedLocked(slot.slotIndex))
                 continue;
@@ -1179,8 +1433,7 @@ const InFlightFrameSlot* ThreadedRenderingLifecycle::FindReusableSlotReadOnlyLoc
     if (allowReservedSlot && m_reservedReusableSlotIndex.has_value())
     {
         const auto* reservedSlot = PeekSlotLocked(m_reservedReusableSlotIndex.value());
-        if (reservedSlot != nullptr &&
-            (reservedSlot->stage == ThreadedFrameStage::Available || reservedSlot->stage == ThreadedFrameStage::Retired))
+        if (reservedSlot != nullptr && IsSlotReusableForPublicationLocked(*reservedSlot, true))
         {
             return reservedSlot;
         }
@@ -1190,7 +1443,7 @@ const InFlightFrameSlot* ThreadedRenderingLifecycle::FindReusableSlotReadOnlyLoc
 
     for (const auto& slot : m_slots)
     {
-        if (slot.stage == ThreadedFrameStage::Available || slot.stage == ThreadedFrameStage::Retired)
+        if (IsSlotReusableForPublicationLocked(slot, false))
         {
             if (!allowReservedSlot && IsSlotReservedLocked(slot.slotIndex))
                 continue;
@@ -1201,9 +1454,47 @@ const InFlightFrameSlot* ThreadedRenderingLifecycle::FindReusableSlotReadOnlyLoc
     return nullptr;
 }
 
+const InFlightFrameSlot* ThreadedRenderingLifecycle::FindReservableSlotReadOnlyLocked(
+    const std::vector<size_t>& excludedSlotIndices) const
+{
+    for (const auto& slot : m_slots)
+    {
+        if (IsSlotReservedLocked(slot.slotIndex))
+            continue;
+        if (IsSlotExcludedFromReservationLocked(slot.slotIndex, excludedSlotIndices))
+            continue;
+        if (slot.stage == ThreadedFrameStage::Available || slot.stage == ThreadedFrameStage::Retired)
+            return &slot;
+    }
+
+    return nullptr;
+}
+
+bool ThreadedRenderingLifecycle::IsSlotReusableForPublicationLocked(
+    const InFlightFrameSlot& slot,
+    const bool reservedCandidate) const
+{
+    if (slot.stage == ThreadedFrameStage::Available)
+        return true;
+    if (slot.stage != ThreadedFrameStage::Retired)
+        return false;
+    if (reservedCandidate)
+        return true;
+
+    return !slot.submissionFrame.has_value() ||
+        !slot.submissionFrame->deferredFrameScopedRetirement;
+}
+
 bool ThreadedRenderingLifecycle::IsSlotReservedLocked(const size_t slotIndex) const
 {
     return m_reservedReusableSlotIndex.has_value() && m_reservedReusableSlotIndex.value() == slotIndex;
+}
+
+bool ThreadedRenderingLifecycle::IsSlotExcludedFromReservationLocked(
+    const size_t slotIndex,
+    const std::vector<size_t>& excludedSlotIndices) const
+{
+    return std::find(excludedSlotIndices.begin(), excludedSlotIndices.end(), slotIndex) != excludedSlotIndices.end();
 }
 
 void ThreadedRenderingLifecycle::ClearReservedSlotLocked(const size_t slotIndex)
@@ -1257,6 +1548,8 @@ void ThreadedRenderingLifecycle::RefreshTelemetryLocked()
     m_telemetry.currentFrameLastQueueOperationFailure.clear();
     m_telemetry.deviceLostDetected = false;
     m_telemetry.deviceLostReason.clear();
+    m_telemetry.unsafeGpuWorkQuarantined = false;
+    m_telemetry.unsafeGpuWorkQuarantineReason.clear();
     bool hasPublishedFrames = false;
     bool hasRenderSceneFrames = false;
     bool hasRhiFrames = false;
@@ -1340,10 +1633,12 @@ void ThreadedRenderingLifecycle::RefreshTelemetryLocked()
     {
         m_telemetry.descriptorMainlineActive = latestSubmissionFrame->usedDescriptorAllocator;
         m_telemetry.transientLifetimeMainlineActive = latestSubmissionFrame->usedResourceStateTracker;
-        m_telemetry.retirementMainlineActive = latestSubmissionFrame->retirementFenceWaited;
+        m_telemetry.retirementMainlineActive =
+            latestSubmissionFrame->retirementFenceWaited ||
+            latestSubmissionFrame->deferredFrameScopedRetirement;
         m_telemetry.descriptorBypassCount = latestSubmissionFrame->usedDescriptorAllocator ? 0u : 1u;
         m_telemetry.transientLifetimeBypassCount = latestSubmissionFrame->usedResourceStateTracker ? 0u : 1u;
-        m_telemetry.retirementBypassCount = latestSubmissionFrame->retirementFenceWaited ? 0u : 1u;
+        m_telemetry.retirementBypassCount = m_telemetry.retirementMainlineActive ? 0u : 1u;
         m_telemetry.transientTextureRegistrationCount = latestSubmissionFrame->transientTextureRegistrationCount;
         m_telemetry.transientBufferRegistrationCount = latestSubmissionFrame->transientBufferRegistrationCount;
         m_telemetry.retiredTransientTextureCount = latestSubmissionFrame->retiredTransientTextureCount;
@@ -1371,6 +1666,9 @@ void ThreadedRenderingLifecycle::RefreshTelemetryLocked()
             latestSubmissionFrame->currentFrameLastQueueOperationFailure;
         m_telemetry.deviceLostDetected = latestSubmissionFrame->deviceLostDetected;
         m_telemetry.deviceLostReason = latestSubmissionFrame->deviceLostReason;
+        m_telemetry.unsafeGpuWorkQuarantined = latestSubmissionFrame->unsafeGpuWorkQuarantined;
+        m_telemetry.unsafeGpuWorkQuarantineReason =
+            latestSubmissionFrame->unsafeGpuWorkQuarantineReason;
     }
 
     if (hasRhiFrames)

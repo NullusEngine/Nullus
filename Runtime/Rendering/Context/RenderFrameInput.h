@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 #include "RenderDef.h"
 
@@ -18,6 +19,8 @@ namespace NLS::Render::Context
         bool hasSceneInput = false;
         uint64_t sceneGameObjectCount = 0u;
         uint64_t visibleDrawCount = 0u;
+        uint64_t externalOutputIdentity = 0u;
+        std::vector<uint64_t> externalOutputIdentities;
         uint32_t externalOutputTextureCount = 0u;
     };
 }

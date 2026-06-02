@@ -16,6 +16,7 @@
 #include "Debug/Logger.h"
 #include "Profiling/Profiler.h"
 #include "Rendering/RHI/Backends/DX12/DX12InfoQueueUtils.h"
+#include "Rendering/RHI/Backends/DX12/DX12QueueSynchronization.h"
 #include "Rendering/RHI/Backends/DX12/DX12UIFrameFenceTracker.h"
 #include "Rendering/RHI/Backends/DX12/DX12TextureViewUtils.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
@@ -93,7 +94,11 @@ namespace NLS::Render::RHI
             if (queue == nullptr || fence == nullptr)
                 return false;
 
-            const HRESULT waitHr = queue->Wait(fence, waitSemaphore.value);
+            const HRESULT waitHr = [&]()
+            {
+                DX12::ScopedDX12QueueLock queueLock(queue);
+                return queue->Wait(fence, waitSemaphore.value);
+            }();
             if (FAILED(waitHr))
             {
                 NLS_LOG_ERROR(
@@ -156,7 +161,13 @@ namespace NLS::Render::RHI
                 if (textureView == nullptr)
                     return;
 
-                WaitForSubmittedUiWork();
+                if (!WaitForSubmittedUiWork())
+                {
+                    QuarantineAllUiBridgeResources("DX12UIBridge::ReleaseTextureViewHandle failed to drain submitted UI work");
+                    NLS_LOG_ERROR(
+                        "DX12UIBridge::ReleaseTextureViewHandle: preserving texture handle because submitted UI work could not be drained");
+                    return;
+                }
                 RetireCompletedTextureHandles();
                 const uintptr_t viewKey = reinterpret_cast<uintptr_t>(textureView.get());
                 DiscardCurrentFrameTextureViewHandle(viewKey);
@@ -309,36 +320,54 @@ namespace NLS::Render::RHI
                 m_commandList->ResourceBarrier(1, &barrier);
                 m_commandList->Close();
 
-                ID3D12CommandList* commandLists[] = { m_commandList.Get() };
+                m_lastSubmittedUiSignalValue = 0u;
+                const UINT64 fenceValue = ++m_fenceValue;
+                HRESULT frameSignalHr = S_OK;
+                HRESULT uiSignalHr = S_OK;
                 {
-                    NLS_PROFILE_NAMED_SCOPE("DX12UIBridge::ExecuteCommandLists");
-                    m_queue->ExecuteCommandLists(1, commandLists);
+                    DX12::ScopedDX12QueueLock queueLock(m_queue.Get());
+                    ID3D12CommandList* commandLists[] = { m_commandList.Get() };
+                    {
+                        NLS_PROFILE_NAMED_SCOPE("DX12UIBridge::ExecuteCommandLists");
+                        m_queue->ExecuteCommandLists(1, commandLists);
+                    }
+                    frameSignalHr = m_queue->Signal(m_fence.Get(), fenceValue);
+                    if (SUCCEEDED(frameSignalHr) && m_uiFence != nullptr)
+                        uiSignalHr = m_queue->Signal(m_uiFence.Get(), fenceValue);
                 }
                 if (m_device != nullptr)
                 {
                     const HRESULT deviceStatus = m_device->GetDeviceRemovedReason();
                     if (FAILED(deviceStatus))
                     {
-                        NLS_LOG_ERROR(
+                        const std::string message =
                             "DX12UIBridge::RenderDrawData: device status after ExecuteCommandLists hr=" +
-                            std::to_string(deviceStatus));
-                        DiscardCurrentFrameTextureHandles();
+                            std::to_string(deviceStatus);
+                        QuarantineSubmittedUiFrameAfterExecute(
+                            backBufferIndex,
+                            deviceStatus,
+                            fenceValue,
+                            "DX12UIBridge::RenderDrawData(device removed after execute)");
+                        MarkDriverDeviceLost(message);
+                        NLS_LOG_ERROR(message);
                         return;
                     }
                 }
                 if (ShouldLogDx12FrameFlow())
                     NLS_LOG_INFO("DX12UIBridge::RenderDrawData: UI command list submitted");
 
-                const UINT64 fenceValue = ++m_fenceValue;
-                const HRESULT frameSignalHr = m_queue->Signal(m_fence.Get(), fenceValue);
                 if (FAILED(frameSignalHr))
                 {
+                    QuarantineSubmittedUiFrameAfterExecute(
+                        backBufferIndex,
+                        frameSignalHr,
+                        fenceValue,
+                        "DX12UIBridge::RenderDrawData(frame fence signal)");
                     NLS_LOG_ERROR(
                         "DX12UIBridge::RenderDrawData: UI frame fence signal failed hr=" +
                         std::to_string(frameSignalHr) +
                         " value=" +
                         std::to_string(fenceValue));
-                    DiscardCurrentFrameTextureHandles();
                     return;
                 }
                 m_frameFenceTracker.RecordSubmitted(backBufferIndex, fenceValue);
@@ -346,14 +375,25 @@ namespace NLS::Render::RHI
 
                 if (m_uiFence != nullptr)
                 {
-                    const HRESULT uiSignalHr = m_queue->Signal(m_uiFence.Get(), fenceValue);
                     if (FAILED(uiSignalHr))
                     {
-                        NLS_LOG_ERROR(
+                        const HRESULT uiSignalDeviceStatus = m_device != nullptr
+                            ? m_device->GetDeviceRemovedReason()
+                            : S_OK;
+                        const std::string message =
                             "DX12UIBridge::RenderDrawData: UI composition fence signal failed hr=" +
                             std::to_string(uiSignalHr) +
                             " value=" +
-                            std::to_string(fenceValue));
+                            std::to_string(fenceValue);
+                        if (FAILED(uiSignalDeviceStatus))
+                        {
+                            MarkDriverDeviceLost(
+                                message +
+                                "; device status hr=" +
+                                std::to_string(uiSignalDeviceStatus));
+                        }
+                        NLS_LOG_ERROR(
+                            message);
                         return;
                     }
                     m_lastSubmittedUiSignalValue = fenceValue;
@@ -534,6 +574,48 @@ namespace NLS::Render::RHI
                 std::vector<std::shared_ptr<RHITextureView>> textureViews;
             };
 
+            struct QuarantinedUiFrameSubmission
+            {
+                Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> srvHeap;
+                Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtvHeap;
+                Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
+                Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
+                Microsoft::WRL::ComPtr<ID3D12Resource> backBuffer;
+                Microsoft::WRL::ComPtr<ID3D12Fence> frameFence;
+                Microsoft::WRL::ComPtr<ID3D12Fence> uiFence;
+                std::vector<RetainedTextureHandleUse> textureHandleUses;
+                std::vector<std::shared_ptr<RHITextureView>> textureViews;
+                HRESULT signalResult = S_OK;
+                UINT64 attemptedFenceValue = 0u;
+                UINT backBufferIndex = 0u;
+                std::string context;
+            };
+
+            struct QuarantinedUiBridgeResources
+            {
+                Microsoft::WRL::ComPtr<ID3D12Device> device;
+                Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue;
+                Microsoft::WRL::ComPtr<IDXGISwapChain3> swapchain;
+                Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> srvHeap;
+                Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> rtvHeap;
+                Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
+                Microsoft::WRL::ComPtr<ID3D12Fence> frameFence;
+                Microsoft::WRL::ComPtr<ID3D12Fence> uiFence;
+                std::vector<Microsoft::WRL::ComPtr<ID3D12CommandAllocator>> commandAllocators;
+                std::vector<Microsoft::WRL::ComPtr<ID3D12Resource>> backBuffers;
+                std::deque<RetiredTextureHandleBatch> retiredTextureHandleBatches;
+                std::vector<RetainedTextureHandleUse> currentFrameTextureHandleUses;
+                std::vector<std::shared_ptr<RHITextureView>> currentFrameTextureViews;
+                std::vector<QuarantinedUiFrameSubmission> quarantinedUiFrameSubmissions;
+                std::string context;
+            };
+
+            static std::vector<QuarantinedUiBridgeResources>& QuarantinedUiBridgeResourcesKeepAlive()
+            {
+                static std::vector<QuarantinedUiBridgeResources> resources;
+                return resources;
+            }
+
             void KeepTextureViewForCurrentFrame(
                 const uintptr_t viewKey,
                 const UINT descriptorIndex,
@@ -559,6 +641,74 @@ namespace NLS::Render::RHI
             {
                 m_currentFrameTextureHandleUses.clear();
                 m_currentFrameTextureViews.clear();
+            }
+
+            void MarkDriverUnsafeGpuWorkQuarantined(const std::string& reason)
+            {
+                NLS::Render::Context::MarkLocatedDriverUnsafeGpuWorkQuarantined(reason);
+            }
+
+            void MarkDriverDeviceLost(const std::string& reason)
+            {
+                NLS::Render::Context::MarkLocatedDriverDeviceLost(reason);
+            }
+
+            void QuarantineSubmittedUiFrameAfterExecute(
+                const UINT backBufferIndex,
+                const HRESULT signalResult,
+                const UINT64 attemptedFenceValue,
+                std::string context)
+            {
+                QuarantinedUiFrameSubmission submission;
+                submission.srvHeap = m_srvHeap;
+                submission.rtvHeap = m_rtvHeap;
+                if (backBufferIndex < m_commandAllocators.size())
+                    submission.commandAllocator = m_commandAllocators[backBufferIndex];
+                if (backBufferIndex < m_backBuffers.size())
+                    submission.backBuffer = m_backBuffers[backBufferIndex];
+                submission.commandList = m_commandList;
+                submission.frameFence = m_fence;
+                submission.uiFence = m_uiFence;
+                submission.textureHandleUses = std::move(m_currentFrameTextureHandleUses);
+                submission.textureViews = std::move(m_currentFrameTextureViews);
+                submission.signalResult = signalResult;
+                submission.attemptedFenceValue = attemptedFenceValue;
+                submission.backBufferIndex = backBufferIndex;
+                submission.context = std::move(context);
+                m_currentFrameTextureHandleUses.clear();
+                m_currentFrameTextureViews.clear();
+                m_quarantinedUiFrameSubmissions.push_back(std::move(submission));
+                m_swapchainResourcesQuarantined = true;
+                MarkDriverUnsafeGpuWorkQuarantined(
+                    context +
+                    " failed after ExecuteCommandLists; UI resources were quarantined hr=" +
+                    std::to_string(signalResult));
+            }
+
+            void QuarantineAllUiBridgeResources(std::string context)
+            {
+                const std::string quarantineContext = context;
+                QuarantinedUiBridgeResources resources;
+                resources.device = m_device;
+                resources.queue = m_queue;
+                resources.swapchain = m_swapchain;
+                resources.srvHeap = m_srvHeap;
+                resources.rtvHeap = m_rtvHeap;
+                resources.commandList = m_commandList;
+                resources.frameFence = m_fence;
+                resources.uiFence = m_uiFence;
+                resources.commandAllocators = m_commandAllocators;
+                resources.backBuffers = m_backBuffers;
+                resources.retiredTextureHandleBatches = m_retiredTextureHandleBatches;
+                resources.currentFrameTextureHandleUses = m_currentFrameTextureHandleUses;
+                resources.currentFrameTextureViews = m_currentFrameTextureViews;
+                resources.quarantinedUiFrameSubmissions = m_quarantinedUiFrameSubmissions;
+                resources.context = std::move(context);
+                QuarantinedUiBridgeResourcesKeepAlive().push_back(std::move(resources));
+                m_swapchainResourcesQuarantined = true;
+                MarkDriverUnsafeGpuWorkQuarantined(
+                    "DX12UIBridge quarantined resources: " +
+                    quarantineContext);
             }
 
             bool IsTextureDescriptorReferencedByCurrentFrame(const UINT descriptorIndex) const
@@ -720,6 +870,11 @@ namespace NLS::Render::RHI
             {
                 if (!m_device || !m_queue)
                     return false;
+                if (m_swapchainResourcesQuarantined)
+                {
+                    NLS_LOG_ERROR("DX12UIBridge::EnsureSwapchainRenderResources: UI swapchain resources are quarantined");
+                    return false;
+                }
 
                 auto* swapchain = static_cast<IDXGISwapChain3*>(nativeInfo.swapchain);
                 if (swapchain == nullptr)
@@ -818,7 +973,21 @@ namespace NLS::Render::RHI
 
             void ReleaseSwapchainRenderResources()
             {
-                WaitForSubmittedUiWork();
+                if (m_swapchainResourcesQuarantined)
+                {
+                    NLS_LOG_ERROR(
+                        "DX12UIBridge::ReleaseSwapchainRenderResources: preserving quarantined swapchain UI resources");
+                    return;
+                }
+                if (!WaitForSubmittedUiWork())
+                {
+                    m_swapchainResourcesQuarantined = true;
+                    MarkDriverUnsafeGpuWorkQuarantined(
+                        "DX12UIBridge::ReleaseSwapchainRenderResources failed to drain submitted UI work");
+                    NLS_LOG_ERROR(
+                        "DX12UIBridge::ReleaseSwapchainRenderResources: preserving swapchain UI resources because submitted work could not be drained");
+                    return;
+                }
 
                 m_commandAllocators.clear();
                 m_backBuffers.clear();
@@ -827,25 +996,30 @@ namespace NLS::Render::RHI
                 m_frameFenceTracker.ResetBackbufferCount(0u);
             }
 
-            void WaitForSubmittedUiWork()
+            bool WaitForSubmittedUiWork()
             {
                 if (m_fence && m_queue && m_fenceEvent != nullptr)
                 {
                     const UINT64 fenceValue = ++m_fenceValue;
-                    const HRESULT signalHr = m_queue->Signal(m_fence.Get(), fenceValue);
+                    const HRESULT signalHr = [&]()
+                    {
+                        DX12::ScopedDX12QueueLock queueLock(m_queue.Get());
+                        return m_queue->Signal(m_fence.Get(), fenceValue);
+                    }();
                     if (FAILED(signalHr))
                     {
                         NLS_LOG_ERROR(
                             "DX12UIBridge::WaitForSubmittedUiWork: queue signal failed hr=" +
                             std::to_string(signalHr));
-                        return;
+                        return false;
                     }
-                    WaitForDX12UIFence(
+                    return WaitForDX12UIFence(
                         m_fence.Get(),
                         m_fenceEvent,
                         fenceValue,
                         "DX12UIBridge::WaitForSubmittedUiWork");
                 }
+                return true;
             }
 
             bool Initialize(const NativeRenderDeviceInfo& nativeInfo)
@@ -915,12 +1089,17 @@ namespace NLS::Render::RHI
                 if (m_initialized)
                     ImGui_ImplDX12_Shutdown();
 
-                if (m_fence && m_queue)
+                if (!m_swapchainResourcesQuarantined && m_fence && m_queue)
                 {
                     const UINT64 fenceValue = ++m_fenceValue;
-                    const HRESULT signalHr = m_queue->Signal(m_fence.Get(), fenceValue);
+                    const HRESULT signalHr = [&]()
+                    {
+                        DX12::ScopedDX12QueueLock queueLock(m_queue.Get());
+                        return m_queue->Signal(m_fence.Get(), fenceValue);
+                    }();
                     if (FAILED(signalHr))
                     {
+                        QuarantineAllUiBridgeResources("DX12UIBridge::Shutdown queue signal failed");
                         NLS_LOG_ERROR(
                             "DX12UIBridge::Shutdown: queue signal failed hr=" +
                             std::to_string(signalHr));
@@ -936,6 +1115,12 @@ namespace NLS::Render::RHI
                 }
 
                 ReleaseSwapchainRenderResources();
+                if (m_swapchainResourcesQuarantined)
+                {
+                    QuarantineAllUiBridgeResources("DX12UIBridge::Shutdown preserving quarantined resources");
+                    m_initialized = false;
+                    return;
+                }
                 DiscardCurrentFrameTextureHandles();
                 m_retiredTextureHandleBatches.clear();
                 m_textureDescriptorInFlightUseCounts.clear();
@@ -975,6 +1160,7 @@ namespace NLS::Render::RHI
             std::unordered_map<uintptr_t, CachedTextureHandle> m_textureHandles;
             std::unordered_map<UINT, uint32_t> m_textureDescriptorInFlightUseCounts;
             std::deque<RetiredTextureHandleBatch> m_retiredTextureHandleBatches;
+            std::vector<QuarantinedUiFrameSubmission> m_quarantinedUiFrameSubmissions;
             std::vector<RetainedTextureHandleUse> m_currentFrameTextureHandleUses;
             std::vector<std::shared_ptr<RHITextureView>> m_currentFrameTextureViews;
             std::vector<UINT> m_freeTextureDescriptorIndices;
@@ -990,6 +1176,7 @@ namespace NLS::Render::RHI
             uint32_t m_backbufferHeight = 0;
             uint32_t m_imageCount = 0;
             bool m_initialized = false;
+            bool m_swapchainResourcesQuarantined = false;
             NativeHandle m_waitSemaphore;
             NativeHandle m_signalSemaphore;
             Microsoft::WRL::ComPtr<ID3D12Fence> m_uiFence;

@@ -12,6 +12,7 @@
 
 #if defined(_WIN32)
 #include <dxgiformat.h>
+#include <winerror.h>
 #endif
 
 namespace NLS::Render::RHI
@@ -56,6 +57,7 @@ namespace NLS::Render::RHI::DX12
         Success,
         InvalidArgument,
         UnsupportedFormat,
+        DeviceLost,
         BackendFailure
     };
 
@@ -86,6 +88,9 @@ namespace NLS::Render::RHI::DX12
         NLS::Render::Settings::EPixelDataFormat format,
         NLS::Render::Settings::EPixelDataType type,
         void* data);
+    NLS_RENDER_API DX12ReadbackResult BuildDX12DeviceRemovedReadbackFailure(
+        HRESULT deviceRemovedReason,
+        const std::string& context);
 
     class NLS_RENDER_API DX12ReadbackContext final
     {

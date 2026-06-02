@@ -45,9 +45,7 @@ Material* MaterialManager::CreateResource(
 
 	Material* material = MaterialLoader::Create(realPath, options);
 	if (material)
-	{
-		*reinterpret_cast<std::string*>(reinterpret_cast<char*>(material) + offsetof(Material, path)) = path;
-	}
+		material->path = path;
 
 	return material;
 }

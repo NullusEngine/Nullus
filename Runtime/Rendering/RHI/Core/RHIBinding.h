@@ -1,5 +1,7 @@
 #pragma once
 
+#include <algorithm>
+
 #include "Rendering/RHI/Core/RHIEnums.h"
 
 namespace NLS::Render::RHI
@@ -66,4 +68,20 @@ namespace NLS::Render::RHI
         virtual std::shared_ptr<RHIBindingSet> GetWrappedBindingSetShared() { return nullptr; }
         virtual std::shared_ptr<const RHIBindingSet> GetWrappedBindingSetShared() const { return nullptr; }
     };
+
+    inline uint32_t CountBindingSetDescriptorSlots(const RHIBindingSetDesc& desc)
+    {
+        uint32_t descriptorCount = 0u;
+        if (desc.layout != nullptr)
+        {
+            for (const auto& entry : desc.layout->GetDesc().entries)
+                descriptorCount += (std::max)(1u, entry.count);
+        }
+        else
+        {
+            descriptorCount = static_cast<uint32_t>(desc.entries.size());
+        }
+
+        return (std::max)(1u, descriptorCount);
+    }
 }

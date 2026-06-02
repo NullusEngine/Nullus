@@ -210,6 +210,12 @@ namespace
             : NLS::Render::RHI::NativeBackendType::None;
     }
 
+    uint64_t ResolveDeviceCacheIdentity(
+        const std::shared_ptr<NLS::Render::RHI::RHIDevice>& device)
+    {
+        return device != nullptr ? device->GetCacheIdentity() : 0u;
+    }
+
 	template<typename T>
 	void CopyValueBytes(uint8_t* destination, uint32_t destinationSize, const T& value)
 	{
@@ -414,6 +420,9 @@ namespace NLS::Render::Resources
 		std::shared_ptr<RHI::RHIBindingSet> explicitBindingSet;
 		std::shared_ptr<RHI::RHIPipelineLayout> explicitPipelineLayout;
 		std::vector<MaterialBindingDiagnostic> explicitBindingDiagnostics;
+        uint64_t explicitBindingLayoutDeviceIdentity = 0u;
+        uint64_t explicitBindingSetDeviceIdentity = 0u;
+        uint64_t explicitPipelineLayoutDeviceIdentity = 0u;
 		RHI::NativeBackendType explicitBindingLayoutBackend = RHI::NativeBackendType::None;
 		RHI::NativeBackendType explicitBindingSetBackend = RHI::NativeBackendType::None;
 		RHI::NativeBackendType explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
@@ -440,6 +449,9 @@ namespace NLS::Render::Resources
 		state.explicitBindingSet.reset();
 		state.explicitPipelineLayout.reset();
 		state.explicitBindingDiagnostics.clear();
+        state.explicitBindingLayoutDeviceIdentity = 0u;
+        state.explicitBindingSetDeviceIdentity = 0u;
+        state.explicitPipelineLayoutDeviceIdentity = 0u;
 		state.explicitBindingLayoutBackend = RHI::NativeBackendType::None;
 		state.explicitBindingSetBackend = RHI::NativeBackendType::None;
 		state.explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
@@ -479,9 +491,12 @@ namespace NLS::Render::Resources
 	void Material::InvalidateExplicitBindingSetCache() const
 	{
 		auto& state = GetRuntimeState();
+		++m_bindingRevision;
 		state.explicitBindingSet.reset();
 		state.explicitPipelineLayout.reset();
 		state.explicitBindingDiagnostics.clear();
+        state.explicitBindingSetDeviceIdentity = 0u;
+        state.explicitPipelineLayoutDeviceIdentity = 0u;
 		state.explicitBindingSetBackend = RHI::NativeBackendType::None;
 		state.explicitPipelineLayoutBackend = RHI::NativeBackendType::None;
 		state.explicitBindingSetDirty = true;
@@ -970,14 +985,18 @@ namespace NLS::Render::Resources
 		EnsureShaderGenerationCacheCurrent();
 		auto& state = GetRuntimeState();
 		const auto backend = ResolveDeviceBackendType(device);
+        const auto deviceIdentity = ResolveDeviceCacheIdentity(device);
 		if (!state.explicitBindingLayoutDirty &&
 			state.explicitBindingLayout != nullptr &&
+            state.explicitBindingLayoutDeviceIdentity == deviceIdentity &&
 			state.explicitBindingLayoutBackend == backend)
 		{
 			return state.explicitBindingLayout;
 		}
 
 		state.explicitBindingLayout.reset();
+		state.explicitBindingDiagnostics.clear();
+        state.explicitBindingLayoutDeviceIdentity = deviceIdentity;
 		state.explicitBindingLayoutBackend = backend;
 		if (!m_shader)
 		{
@@ -1027,8 +1046,10 @@ namespace NLS::Render::Resources
 		EnsureShaderGenerationCacheCurrent();
 		auto& state = GetRuntimeState();
 		const auto backend = ResolveDeviceBackendType(device);
+        const auto deviceIdentity = ResolveDeviceCacheIdentity(device);
 		if (!state.explicitBindingSetDirty &&
 			state.explicitBindingSet != nullptr &&
+            state.explicitBindingSetDeviceIdentity == deviceIdentity &&
 			state.explicitBindingSetBackend == backend)
 		{
 			return state.explicitBindingSet;
@@ -1038,6 +1059,7 @@ namespace NLS::Render::Resources
 
 		const auto& explicitLayout = GetExplicitBindingLayout(device);
 		state.explicitBindingSet.reset();
+        state.explicitBindingSetDeviceIdentity = deviceIdentity;
 		state.explicitBindingSetBackend = backend;
 		if (device == nullptr || explicitLayout == nullptr)
 		{
@@ -1218,16 +1240,20 @@ namespace NLS::Render::Resources
 		EnsureShaderGenerationCacheCurrent();
 		auto& state = GetRuntimeState();
 		auto backend = ResolveDeviceBackendType(device);
+        const auto deviceIdentity = ResolveDeviceCacheIdentity(device);
 		if (device != nullptr)
 		{
 			const auto nativeInfo = device->GetNativeDeviceInfo();
 			if (nativeInfo.backend != RHI::NativeBackendType::None)
 				backend = nativeInfo.backend;
 		}
-		if (state.explicitPipelineLayout != nullptr && state.explicitPipelineLayoutBackend == backend)
+		if (state.explicitPipelineLayout != nullptr &&
+            state.explicitPipelineLayoutDeviceIdentity == deviceIdentity &&
+            state.explicitPipelineLayoutBackend == backend)
 			return state.explicitPipelineLayout;
 
 		state.explicitPipelineLayout.reset();
+        state.explicitPipelineLayoutDeviceIdentity = deviceIdentity;
 		state.explicitPipelineLayoutBackend = backend;
 		if (device == nullptr)
 			return state.explicitPipelineLayout;
@@ -1347,12 +1373,21 @@ namespace NLS::Render::Resources
 			return;
 		}
 
+		if (const auto found = m_textureResourcePaths.find(name);
+			found != m_textureResourcePaths.end() &&
+			found->second == path)
+		{
+			return;
+		}
+
 		m_textureResourcePaths[name] = std::move(path);
+		InvalidateExplicitBindingSetCache();
 	}
 
 	void Material::ClearTextureResourcePath(const std::string& name)
 	{
-		m_textureResourcePaths.erase(name);
+		if (m_textureResourcePaths.erase(name) > 0u)
+			InvalidateExplicitBindingSetCache();
 	}
 
 	std::string Material::GetTextureResourcePath(const std::string& name) const
@@ -1409,6 +1444,11 @@ namespace NLS::Render::Resources
 	uint64_t Material::GetRenderStateRevision() const
 	{
 		return m_renderStateRevision;
+	}
+
+	uint64_t Material::GetBindingRevision() const
+	{
+		return m_bindingRevision;
 	}
 
 	uint64_t Material::GetExplicitBindingSetCreationCount() const

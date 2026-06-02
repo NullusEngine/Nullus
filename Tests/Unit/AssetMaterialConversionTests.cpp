@@ -188,6 +188,108 @@ private:
     NLS::Render::RHI::RHITextureViewDesc m_desc {};
 };
 
+class TextureLoaderTestCommandBuffer final : public NLS::Render::RHI::RHICommandBuffer
+{
+public:
+    explicit TextureLoaderTestCommandBuffer(std::string debugName)
+        : m_debugName(std::move(debugName))
+    {
+    }
+
+    std::string_view GetDebugName() const override { return m_debugName; }
+    void Begin() override { m_recording = true; m_closed = false; }
+    void End() override { m_recording = false; m_closed = true; }
+    void Reset() override { m_recording = false; m_closed = false; }
+    bool IsRecording() const override { return m_recording; }
+    bool IsClosedForSubmission() const override { return m_closed; }
+    NLS::Render::RHI::NativeHandle GetNativeCommandBuffer() const override { return {}; }
+    void BeginRenderPass(const NLS::Render::RHI::RHIRenderPassDesc&) override {}
+    void EndRenderPass() override {}
+    void SetViewport(const NLS::Render::RHI::RHIViewport&) override {}
+    void SetScissor(const NLS::Render::RHI::RHIRect2D&) override {}
+    void BindGraphicsPipeline(const std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline>&) override {}
+    void BindComputePipeline(const std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>&) override {}
+    void BindBindingSet(uint32_t, const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>&) override {}
+    void PushConstants(NLS::Render::RHI::ShaderStageMask, uint32_t, uint32_t, const void*) override {}
+    void BindVertexBuffer(uint32_t, const NLS::Render::RHI::RHIVertexBufferView&) override {}
+    void BindIndexBuffer(const NLS::Render::RHI::RHIIndexBufferView&) override {}
+    void Draw(uint32_t, uint32_t, uint32_t, uint32_t) override {}
+    void DrawIndexed(uint32_t, uint32_t, uint32_t, int32_t, uint32_t) override {}
+    void Dispatch(uint32_t, uint32_t, uint32_t) override {}
+    void CopyBuffer(
+        const std::shared_ptr<NLS::Render::RHI::RHIBuffer>&,
+        const std::shared_ptr<NLS::Render::RHI::RHIBuffer>&,
+        const NLS::Render::RHI::RHIBufferCopyRegion&) override {}
+    void CopyBufferToTexture(const NLS::Render::RHI::RHIBufferToTextureCopyDesc&) override {}
+    void CopyTexture(const NLS::Render::RHI::RHITextureCopyDesc&) override {}
+    void Barrier(const NLS::Render::RHI::RHIBarrierDesc&) override {}
+
+private:
+    std::string m_debugName;
+    bool m_recording = false;
+    bool m_closed = false;
+};
+
+class TextureLoaderTestCommandPool final : public NLS::Render::RHI::RHICommandPool
+{
+public:
+    TextureLoaderTestCommandPool(NLS::Render::RHI::QueueType queueType, std::string debugName)
+        : m_queueType(queueType)
+        , m_debugName(std::move(debugName))
+    {
+    }
+
+    std::string_view GetDebugName() const override { return m_debugName; }
+    NLS::Render::RHI::QueueType GetQueueType() const override { return m_queueType; }
+    std::shared_ptr<NLS::Render::RHI::RHICommandBuffer> CreateCommandBuffer(std::string debugName = {}) override
+    {
+        return std::make_shared<TextureLoaderTestCommandBuffer>(std::move(debugName));
+    }
+    void Reset() override {}
+
+private:
+    NLS::Render::RHI::QueueType m_queueType = NLS::Render::RHI::QueueType::Graphics;
+    std::string m_debugName;
+};
+
+class TextureLoaderTestFence final : public NLS::Render::RHI::RHIFence
+{
+public:
+    explicit TextureLoaderTestFence(std::string debugName)
+        : m_debugName(std::move(debugName))
+    {
+    }
+
+    std::string_view GetDebugName() const override { return m_debugName; }
+    bool IsSignaled() const override { return m_signaled; }
+    void Reset() override { m_signaled = false; }
+    bool Wait(uint64_t = 0u) override
+    {
+        m_signaled = true;
+        return true;
+    }
+
+private:
+    std::string m_debugName;
+    bool m_signaled = true;
+};
+
+class TextureLoaderTestSemaphore final : public NLS::Render::RHI::RHISemaphore
+{
+public:
+    explicit TextureLoaderTestSemaphore(std::string debugName)
+        : m_debugName(std::move(debugName))
+    {
+    }
+
+    std::string_view GetDebugName() const override { return m_debugName; }
+    bool IsSignaled() const override { return false; }
+    void Reset() override {}
+
+private:
+    std::string m_debugName;
+};
+
 class TextureLoaderTestDevice final : public NLS::Render::RHI::RHIDevice
 {
 public:
@@ -252,9 +354,20 @@ public:
     std::shared_ptr<NLS::Render::RHI::RHIShaderModule> CreateShaderModule(const NLS::Render::RHI::RHIShaderModuleDesc&) override { return nullptr; }
     std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline> CreateGraphicsPipeline(const NLS::Render::RHI::RHIGraphicsPipelineDesc&) override { return nullptr; }
     std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> CreateComputePipeline(const NLS::Render::RHI::RHIComputePipelineDesc&) override { return nullptr; }
-    std::shared_ptr<NLS::Render::RHI::RHICommandPool> CreateCommandPool(NLS::Render::RHI::QueueType, std::string = {}) override { return nullptr; }
-    std::shared_ptr<NLS::Render::RHI::RHIFence> CreateFence(std::string = {}) override { return nullptr; }
-    std::shared_ptr<NLS::Render::RHI::RHISemaphore> CreateSemaphore(std::string = {}) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHICommandPool> CreateCommandPool(
+        NLS::Render::RHI::QueueType queueType,
+        std::string debugName = {}) override
+    {
+        return std::make_shared<TextureLoaderTestCommandPool>(queueType, std::move(debugName));
+    }
+    std::shared_ptr<NLS::Render::RHI::RHIFence> CreateFence(std::string debugName = {}) override
+    {
+        return std::make_shared<TextureLoaderTestFence>(std::move(debugName));
+    }
+    std::shared_ptr<NLS::Render::RHI::RHISemaphore> CreateSemaphore(std::string debugName = {}) override
+    {
+        return std::make_shared<TextureLoaderTestSemaphore>(std::move(debugName));
+    }
     void ReadPixels(
         const std::shared_ptr<NLS::Render::RHI::RHITexture>&,
         uint32_t,
@@ -2563,6 +2676,62 @@ TEST(AssetMaterialConversionTests, ImageFileLoaderDecodesRgb16Png)
     }
 
     std::filesystem::remove_all(root);
+}
+
+TEST(AssetMaterialConversionTests, ImageMemoryLoaderDecodesRgb16Png)
+{
+    const auto png = TinyRgb16Png();
+
+    const NLS::Image image(png.data(), png.size(), false);
+    const bool loaded = image.GetData() != nullptr;
+    EXPECT_TRUE(loaded);
+    if (loaded)
+    {
+        EXPECT_EQ(image.GetWidth(), 1);
+        EXPECT_EQ(image.GetHeight(), 1);
+        EXPECT_EQ(image.GetChannels(), 3);
+        EXPECT_EQ(image.GetData()[0], 0x12u);
+        EXPECT_EQ(image.GetData()[1], 0x56u);
+        EXPECT_EQ(image.GetData()[2], 0x9Au);
+    }
+}
+
+TEST(AssetMaterialConversionTests, ImageSetDataKeepsOwnedPixelMemoryAliveUntilDestruction)
+{
+    std::array<uint8_t, 4u> pixel { 0x11u, 0x22u, 0x33u, 0x44u };
+
+    {
+        NLS::Image image(1, 1, 4);
+        image.SetData(pixel.data());
+
+        ASSERT_NE(image.GetData(), nullptr);
+        EXPECT_EQ(image.GetData()[0], 0x11u);
+        EXPECT_EQ(image.GetData()[1], 0x22u);
+        EXPECT_EQ(image.GetData()[2], 0x33u);
+        EXPECT_EQ(image.GetData()[3], 0x44u);
+    }
+}
+
+TEST(AssetMaterialConversionTests, ImageCopyAndMovePreserveDecodedPixels)
+{
+    std::array<uint8_t, 4u> pixel { 0x51u, 0x52u, 0x53u, 0x54u };
+
+    NLS::Image source(1, 1, 4);
+    source.SetData(pixel.data());
+
+    NLS::Image copied(source);
+    ASSERT_NE(copied.GetData(), nullptr);
+    EXPECT_EQ(copied.GetData()[0], 0x51u);
+    EXPECT_EQ(copied.GetData()[1], 0x52u);
+    EXPECT_EQ(copied.GetData()[2], 0x53u);
+    EXPECT_EQ(copied.GetData()[3], 0x54u);
+
+    NLS::Image moved(std::move(source));
+    ASSERT_NE(moved.GetData(), nullptr);
+    EXPECT_EQ(moved.GetData()[0], 0x51u);
+    EXPECT_EQ(moved.GetData()[1], 0x52u);
+    EXPECT_EQ(moved.GetData()[2], 0x53u);
+    EXPECT_EQ(moved.GetData()[3], 0x54u);
 }
 
 TEST(AssetMaterialConversionTests, FbxAndObjChannelsMapOrDiagnoseParserExposedData)

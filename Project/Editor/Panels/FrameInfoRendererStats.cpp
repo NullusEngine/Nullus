@@ -79,13 +79,16 @@ Editor::Panels::FrameInfo::FrameInfo
 	m_drawCallOptimizationText(CreateWidget<Widgets::Text>("")),
 	m_parallelWorkText(CreateWidget<Widgets::Text>("")),
 	m_gBufferMaterialSyncText(CreateWidget<Widgets::Text>("")),
+	m_gBufferMaterialResolveText(CreateWidget<Widgets::Text>("")),
+	m_preparedDrawStaticBaseCacheText(CreateWidget<Widgets::Text>("")),
 	m_bindingSetCreationText(CreateWidget<Widgets::Text>("")),
 	m_snapshotBufferCreationText(CreateWidget<Widgets::Text>("")),
 	m_framesInFlightText(CreateWidget<Widgets::Text>("")),
 	m_blockedFramesText(CreateWidget<Widgets::Text>("")),
 	m_publishStateText(CreateWidget<Widgets::Text>("")),
 	m_frameStageText(CreateWidget<Widgets::Text>("")),
-	m_retirementStateText(CreateWidget<Widgets::Text>(""))
+	m_retirementStateText(CreateWidget<Widgets::Text>("")),
+	m_rhiSafetyText(CreateWidget<Widgets::Text>(""))
 {
 	m_polyCountText.lineBreak = false;
 }
@@ -122,6 +125,14 @@ void Editor::Panels::FrameInfo::UpdateForFrameInfo(
 		String::ToString(frameInfo.parallelRecordingWorkerCount) + "/" +
 		(frameInfo.parallelFallbackReason.empty() ? std::string("None") : frameInfo.parallelFallbackReason);
 	m_gBufferMaterialSyncText.content = "GBuffer Material Syncs: " + String::ToString(frameInfo.gBufferMaterialSyncCount);
+	m_gBufferMaterialResolveText.content =
+		"GBuffer Material Resolve H/M: " +
+		String::ToString(frameInfo.gBufferMaterialResolveHitCount) + "/" +
+		String::ToString(frameInfo.gBufferMaterialResolveMissCount);
+	m_preparedDrawStaticBaseCacheText.content =
+		"Prepared Draw Static Base H/M: " +
+		String::ToString(frameInfo.preparedRecordedDrawStaticBaseCacheHitCount) + "/" +
+		String::ToString(frameInfo.preparedRecordedDrawStaticBaseCacheMissCount);
 	m_bindingSetCreationText.content = "Binding Sets Created: " + String::ToString(frameInfo.renderBindingSetCreationCount);
 	m_snapshotBufferCreationText.content = "Snapshot Buffers Created: " + String::ToString(frameInfo.renderSnapshotBufferCreationCount);
 	m_framesInFlightText.content = "Frames In Flight: " + String::ToString(frameInfo.inFlightFrameCount);
@@ -132,4 +143,8 @@ void Editor::Panels::FrameInfo::UpdateForFrameInfo(
 		std::string("Frame Stage: ") + ToThreadedFrameStageSummaryText(frameInfo.stageSummary);
 	m_retirementStateText.content =
 		std::string("Retirement State: ") + ToFrameRetirementStateText(frameInfo.retirementState);
+	m_rhiSafetyText.content =
+		std::string("RHI Safety DeviceLost/UnsafeQuarantine: ") +
+		(frameInfo.deviceLostDetected ? "Yes" : "No") + "/" +
+		(frameInfo.unsafeGpuWorkQuarantined ? "Yes" : "No");
 }

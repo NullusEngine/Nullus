@@ -12,11 +12,14 @@
 #include "Profiling/Profiler.h"
 #include "UI/Profiling/TimelineProfilerSink.h"
 #include "UI/Profiling/TimelineProfilerLimits.h"
+#include "ImGuiExtensions/TimelineProfiler/Profiler.h"
 #include "ImGuiExtensions/TimelineProfiler/ProfilerTraceCursor.h"
 #include "Profiling/TracyProfiler.h"
 
 namespace
 {
+using BaseProfiler = NLS::Base::Profiling::Profiler;
+
 struct RecordedEvent
 {
     std::string phase;
@@ -129,11 +132,11 @@ TEST_F(ProfilerDestinationTest, RegistersAndRoutesScopeToAvailableDestination)
     using namespace NLS::Base::Profiling;
 
     RecordingProfilerDestination destination;
-    Profiler::RegisterDestination(destination);
-    Profiler::SetEnabled(true);
+    BaseProfiler::RegisterDestination(destination);
+    BaseProfiler::SetEnabled(true);
 
-    const auto scope = Profiler::BeginScope("Destination Scope", __FUNCTION__);
-    Profiler::EndScope(scope);
+    const auto scope = BaseProfiler::BeginScope("Destination Scope", __FUNCTION__);
+    BaseProfiler::EndScope(scope);
 
     ASSERT_EQ(destination.events.size(), 2u);
     EXPECT_EQ(destination.events[0].phase, "begin");
@@ -141,7 +144,7 @@ TEST_F(ProfilerDestinationTest, RegistersAndRoutesScopeToAvailableDestination)
     EXPECT_EQ(destination.events[1].phase, "end");
     EXPECT_EQ(destination.events[1].name, "Destination Scope");
 
-    const auto stats = Profiler::GetSessionStats();
+    const auto stats = BaseProfiler::GetSessionStats();
     EXPECT_EQ(stats.acceptedEventCount, 1u);
     EXPECT_EQ(stats.droppedEventCount, 0u);
 }
@@ -152,12 +155,12 @@ TEST_F(ProfilerDestinationTest, RoutesScopeToEveryAvailableDestination)
 
     RecordingProfilerDestination first(ProfilerDestinationId::Tracy);
     RecordingProfilerDestination second(ProfilerDestinationId::Timeline);
-    Profiler::RegisterDestination(first);
-    Profiler::RegisterDestination(second);
-    Profiler::SetEnabled(true);
+    BaseProfiler::RegisterDestination(first);
+    BaseProfiler::RegisterDestination(second);
+    BaseProfiler::SetEnabled(true);
 
-    const auto scope = Profiler::BeginScope("Shared Scope", __FUNCTION__);
-    Profiler::EndScope(scope);
+    const auto scope = BaseProfiler::BeginScope("Shared Scope", __FUNCTION__);
+    BaseProfiler::EndScope(scope);
 
     ASSERT_GE(first.events.size(), 2u);
     ASSERT_GE(second.events.size(), 2u);
@@ -172,17 +175,17 @@ TEST_F(ProfilerDestinationTest, UnregisteredDestinationStopsReceivingScopeEvents
     using namespace NLS::Base::Profiling;
 
     RecordingProfilerDestination destination;
-    Profiler::RegisterDestination(destination);
-    Profiler::SetEnabled(true);
+    BaseProfiler::RegisterDestination(destination);
+    BaseProfiler::SetEnabled(true);
 
-    EXPECT_EQ(Profiler::GetDestinationCountForTesting(), 1u);
+    EXPECT_EQ(BaseProfiler::GetDestinationCountForTesting(), 1u);
 
-    Profiler::UnregisterDestination(destination);
+    BaseProfiler::UnregisterDestination(destination);
 
-    EXPECT_EQ(Profiler::GetDestinationCountForTesting(), 0u);
+    EXPECT_EQ(BaseProfiler::GetDestinationCountForTesting(), 0u);
 
-    const auto scope = Profiler::BeginScope("After Unregister", __FUNCTION__);
-    Profiler::EndScope(scope);
+    const auto scope = BaseProfiler::BeginScope("After Unregister", __FUNCTION__);
+    BaseProfiler::EndScope(scope);
 
     EXPECT_TRUE(destination.events.empty());
 }
@@ -192,15 +195,15 @@ TEST_F(ProfilerDestinationTest, ScopeEndOnlyRoutesToDestinationsThatAcceptedBegi
     using namespace NLS::Base::Profiling;
 
     RecordingProfilerDestination earlyDestination;
-    Profiler::RegisterDestination(earlyDestination);
-    Profiler::SetEnabled(true);
+    BaseProfiler::RegisterDestination(earlyDestination);
+    BaseProfiler::SetEnabled(true);
 
-    const auto scope = Profiler::BeginScope("In Flight Scope", __FUNCTION__);
+    const auto scope = BaseProfiler::BeginScope("In Flight Scope", __FUNCTION__);
 
     RecordingProfilerDestination lateDestination;
-    Profiler::RegisterDestination(lateDestination);
+    BaseProfiler::RegisterDestination(lateDestination);
 
-    Profiler::EndScope(scope);
+    BaseProfiler::EndScope(scope);
 
     ASSERT_EQ(earlyDestination.events.size(), 2u);
     EXPECT_EQ(earlyDestination.events[0].phase, "begin");
@@ -213,12 +216,12 @@ TEST_F(ProfilerDestinationTest, RegisterThreadLabelsSubsequentScopeEvents)
     using namespace NLS::Base::Profiling;
 
     RecordingProfilerDestination destination;
-    Profiler::RegisterDestination(destination);
-    Profiler::SetEnabled(true);
-    Profiler::RegisterThread("Render Thread");
+    BaseProfiler::RegisterDestination(destination);
+    BaseProfiler::SetEnabled(true);
+    BaseProfiler::RegisterThread("Render Thread");
 
-    const auto scope = Profiler::BeginScope("Threaded Scope", __FUNCTION__);
-    Profiler::EndScope(scope);
+    const auto scope = BaseProfiler::BeginScope("Threaded Scope", __FUNCTION__);
+    BaseProfiler::EndScope(scope);
 
     ASSERT_EQ(destination.events.size(), 2u);
     EXPECT_EQ(destination.events[0].threadName, "Render Thread");
@@ -233,13 +236,13 @@ TEST_F(ProfilerDestinationTest, GpuScopeRoutesOnlyToGpuCapableDestinations)
     RecordingProfilerDestination gpuCapable(ProfilerDestinationId::Timeline);
     gpuCapable.m_state.capabilities = ProfilerCapability_CPUScopes | ProfilerCapability_GPUScopes;
 
-    Profiler::RegisterDestination(cpuOnly);
-    Profiler::RegisterDestination(gpuCapable);
-    Profiler::SetEnabled(true);
-    Profiler::RegisterThread("RHI Thread");
+    BaseProfiler::RegisterDestination(cpuOnly);
+    BaseProfiler::RegisterDestination(gpuCapable);
+    BaseProfiler::SetEnabled(true);
+    BaseProfiler::RegisterThread("RHI Thread");
 
-    const auto scope = Profiler::BeginGpuScope(nullptr, "GPU Pass", __FUNCTION__);
-    Profiler::EndGpuScope(scope);
+    const auto scope = BaseProfiler::BeginGpuScope(nullptr, "GPU Pass", __FUNCTION__);
+    BaseProfiler::EndGpuScope(scope);
 
     EXPECT_TRUE(cpuOnly.events.empty());
     ASSERT_EQ(gpuCapable.events.size(), 2u);
@@ -247,8 +250,8 @@ TEST_F(ProfilerDestinationTest, GpuScopeRoutesOnlyToGpuCapableDestinations)
     EXPECT_EQ(gpuCapable.events[0].name, "GPU Pass");
     EXPECT_EQ(gpuCapable.events[0].threadName, "RHI Thread");
     EXPECT_EQ(gpuCapable.events[1].phase, "gpu-end");
-    EXPECT_EQ(Profiler::GetSessionStats().acceptedEventCount, 1u);
-    EXPECT_EQ(Profiler::GetSessionStats().droppedEventCount, 1u);
+    EXPECT_EQ(BaseProfiler::GetSessionStats().acceptedEventCount, 1u);
+    EXPECT_EQ(BaseProfiler::GetSessionStats().droppedEventCount, 1u);
 }
 
 TEST_F(ProfilerDestinationTest, LateRegisteredTimelineDestinationReceivesLastGpuContext)
@@ -262,12 +265,12 @@ TEST_F(ProfilerDestinationTest, LateRegisteredTimelineDestinationReceivesLastGpu
     context.nativeCommandQueues.push_back(&fakeQueue);
     context.frameLatency = 2u;
 
-    Profiler::SetEnabled(true);
-    Profiler::InitializeGpuContext(context);
+    BaseProfiler::SetEnabled(true);
+    BaseProfiler::InitializeGpuContext(context);
 
     RecordingProfilerDestination timeline(ProfilerDestinationId::Timeline);
     timeline.m_state.capabilities = ProfilerCapability_CPUScopes | ProfilerCapability_EditorTimeline;
-    Profiler::RegisterDestination(timeline);
+    BaseProfiler::RegisterDestination(timeline);
 
     EXPECT_EQ(timeline.gpuContextInitializeCalls, 1);
     EXPECT_EQ(timeline.lastGpuContextQueueCount, 1u);
@@ -279,8 +282,8 @@ TEST_F(ProfilerDestinationTest, RegisteredTimelineDestinationReceivesGpuContextB
 
     RecordingProfilerDestination timeline(ProfilerDestinationId::Timeline);
     timeline.m_state.capabilities = ProfilerCapability_CPUScopes | ProfilerCapability_EditorTimeline;
-    Profiler::RegisterDestination(timeline);
-    Profiler::SetEnabled(true);
+    BaseProfiler::RegisterDestination(timeline);
+    BaseProfiler::SetEnabled(true);
 
     int fakeDevice = 0;
     int fakeQueue = 0;
@@ -289,7 +292,7 @@ TEST_F(ProfilerDestinationTest, RegisteredTimelineDestinationReceivesGpuContextB
     context.nativeCommandQueues.push_back(&fakeQueue);
     context.frameLatency = 2u;
 
-    Profiler::InitializeGpuContext(context);
+    BaseProfiler::InitializeGpuContext(context);
 
     EXPECT_EQ(timeline.gpuContextInitializeCalls, 1);
     EXPECT_EQ(timeline.lastGpuContextQueueCount, 1u);
@@ -303,8 +306,8 @@ TEST_F(ProfilerDestinationTest, ReplaysGpuContextWhenDestinationBecomesAvailable
     timeline.m_state.enabled = false;
     timeline.m_state.availability = ProfilerAvailability::Disabled;
     timeline.m_state.capabilities = ProfilerCapability_None;
-    Profiler::RegisterDestination(timeline);
-    Profiler::SetEnabled(true);
+    BaseProfiler::RegisterDestination(timeline);
+    BaseProfiler::SetEnabled(true);
 
     int fakeDevice = 0;
     int fakeQueue = 0;
@@ -312,14 +315,14 @@ TEST_F(ProfilerDestinationTest, ReplaysGpuContextWhenDestinationBecomesAvailable
     context.nativeDevice = &fakeDevice;
     context.nativeCommandQueues.push_back(&fakeQueue);
     context.frameLatency = 2u;
-    Profiler::InitializeGpuContext(context);
+    BaseProfiler::InitializeGpuContext(context);
 
     EXPECT_EQ(timeline.gpuContextInitializeCalls, 0);
 
     timeline.m_state.enabled = true;
     timeline.m_state.availability = ProfilerAvailability::Available;
     timeline.m_state.capabilities = ProfilerCapability_CPUScopes | ProfilerCapability_EditorTimeline;
-    Profiler::ReplayGpuContextIfAvailable(timeline);
+    BaseProfiler::ReplayGpuContextIfAvailable(timeline);
 
     EXPECT_EQ(timeline.gpuContextInitializeCalls, 1);
     EXPECT_EQ(timeline.lastGpuContextQueueCount, 1u);
@@ -330,16 +333,16 @@ TEST_F(ProfilerDestinationTest, ResetForTestingClearsDestinationsAndCounters)
     using namespace NLS::Base::Profiling;
 
     RecordingProfilerDestination destination;
-    Profiler::RegisterDestination(destination);
-    Profiler::SetEnabled(true);
-    const auto scope = Profiler::BeginScope("Before Reset", __FUNCTION__);
-    Profiler::EndScope(scope);
+    BaseProfiler::RegisterDestination(destination);
+    BaseProfiler::SetEnabled(true);
+    const auto scope = BaseProfiler::BeginScope("Before Reset", __FUNCTION__);
+    BaseProfiler::EndScope(scope);
 
-    Profiler::ResetForTesting();
-    EXPECT_FALSE(Profiler::IsEnabled());
-    EXPECT_EQ(Profiler::GetDestinationCountForTesting(), 0u);
-    EXPECT_EQ(Profiler::GetSessionStats().acceptedEventCount, 0u);
-    EXPECT_EQ(Profiler::GetSessionStats().droppedEventCount, 0u);
+    BaseProfiler::ResetForTesting();
+    EXPECT_FALSE(BaseProfiler::IsEnabled());
+    EXPECT_EQ(BaseProfiler::GetDestinationCountForTesting(), 0u);
+    EXPECT_EQ(BaseProfiler::GetSessionStats().acceptedEventCount, 0u);
+    EXPECT_EQ(BaseProfiler::GetSessionStats().droppedEventCount, 0u);
 }
 
 TEST_F(ProfilerDestinationTest, DisabledProfilerDoesNotCallDestinations)
@@ -347,15 +350,15 @@ TEST_F(ProfilerDestinationTest, DisabledProfilerDoesNotCallDestinations)
     using namespace NLS::Base::Profiling;
 
     RecordingProfilerDestination destination;
-    Profiler::RegisterDestination(destination);
-    Profiler::SetEnabled(false);
+    BaseProfiler::RegisterDestination(destination);
+    BaseProfiler::SetEnabled(false);
 
-    const auto scope = Profiler::BeginScope("Disabled Scope", __FUNCTION__);
-    Profiler::EndScope(scope);
+    const auto scope = BaseProfiler::BeginScope("Disabled Scope", __FUNCTION__);
+    BaseProfiler::EndScope(scope);
 
     EXPECT_TRUE(destination.events.empty());
-    EXPECT_EQ(Profiler::GetSessionStats().acceptedEventCount, 0u);
-    EXPECT_EQ(Profiler::GetSessionStats().droppedEventCount, 0u);
+    EXPECT_EQ(BaseProfiler::GetSessionStats().acceptedEventCount, 0u);
+    EXPECT_EQ(BaseProfiler::GetSessionStats().droppedEventCount, 0u);
 }
 
 TEST_F(ProfilerDestinationTest, TracyProfilerReportsUnavailableWhenThirdPartyIsNotEnabled)
@@ -662,6 +665,122 @@ TEST_F(ProfilerDestinationTest, TimelineTraceExporterSkipsIncompleteAndNonPositi
 #endif
 }
 
+TEST_F(ProfilerDestinationTest, TimelineTraceExporterCanFilterEditorUiNoise)
+{
+    using NLS::UI::TimelineProfilerDetail::BuildTraceDurationEventJson;
+    using NLS::UI::TimelineProfilerDetail::IsEditorUiTraceEventName;
+
+    EXPECT_TRUE(IsEditorUiTraceEventName("Editor::RenderEditorUI"));
+    EXPECT_TRUE(IsEditorUiTraceEventName("Canvas::DrawPanels"));
+    EXPECT_TRUE(IsEditorUiTraceEventName("Panel::Draw:Profiler"));
+    EXPECT_TRUE(IsEditorUiTraceEventName("Panel::Draw:Material Editor"));
+    EXPECT_TRUE(IsEditorUiTraceEventName("Panel::Draw:Scene View"));
+    EXPECT_TRUE(IsEditorUiTraceEventName("DX12UIBridge::RenderDrawData"));
+    EXPECT_TRUE(IsEditorUiTraceEventName("NLS::Render::RHI::DX12UIBridge::RenderDrawData"));
+    EXPECT_FALSE(IsEditorUiTraceEventName("NLS::Engine::Rendering::BaseSceneRenderer::CaptureThreadedPreparedDraw"));
+
+    EXPECT_EQ(
+        BuildTraceDurationEventJson(7u, 20u, 24u, 10u, 0.5, "Panel::Draw:Profiler", false),
+        std::nullopt);
+    EXPECT_EQ(
+        BuildTraceDurationEventJson(7u, 20u, 24u, 10u, 0.5, "DX12UIBridge::RenderDrawData", false),
+        std::nullopt);
+    EXPECT_EQ(
+        BuildTraceDurationEventJson(
+            7u,
+            20u,
+            24u,
+            10u,
+            0.5,
+            "NLS::Render::RHI::DX12UIBridge::RenderDrawData",
+            false),
+        std::nullopt);
+
+    const auto sceneDraw = BuildTraceDurationEventJson(
+        7u,
+        20u,
+        24u,
+        10u,
+        0.5,
+        "NLS::Engine::Rendering::BaseSceneRenderer::CaptureThreadedPreparedDraw",
+        false);
+    ASSERT_TRUE(sceneDraw.has_value());
+    EXPECT_NE(sceneDraw->find("CaptureThreadedPreparedDraw"), std::string::npos);
+}
+
+TEST_F(ProfilerDestinationTest, TimelineTraceExporterKeepsEventNamesOwnedUntilExport)
+{
+#if WITH_PROFILING
+    ProfilerEvent event{};
+    {
+        std::string transientName = "NLS::Render::RHI::DX12UIBridge::RenderDrawData";
+        event.SetName(transientName.c_str());
+    }
+
+    const auto exported = NLS::UI::TimelineProfilerDetail::BuildTraceDurationEventJson(
+        4u,
+        20u,
+        24u,
+        10u,
+        0.5,
+        event.GetName());
+
+    ASSERT_TRUE(exported.has_value());
+    EXPECT_NE(
+        exported->find("\"name\":\"NLS::Render::RHI::DX12UIBridge::RenderDrawData\""),
+        std::string::npos);
+    EXPECT_EQ(exported->find("\"name\":\"rawData\""), std::string::npos);
+    EXPECT_EQ(exported->find("\"name\":\"l\""), std::string::npos);
+#else
+    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
+#endif
+}
+
+TEST_F(ProfilerDestinationTest, TimelineProfilerEventsOwnNamesInsteadOfAllocatorPointers)
+{
+    const auto profilerHeaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.h";
+    const auto profilerSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.cpp";
+    const auto profilerWindowPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/ImGuiExtensions/TimelineProfiler/ProfilerWindow.cpp";
+
+    std::ifstream headerStream(profilerHeaderPath, std::ios::binary);
+    const std::string header{
+        std::istreambuf_iterator<char>(headerStream),
+        std::istreambuf_iterator<char>()};
+    std::ifstream sourceStream(profilerSourcePath, std::ios::binary);
+    const std::string source{
+        std::istreambuf_iterator<char>(sourceStream),
+        std::istreambuf_iterator<char>()};
+    std::ifstream windowStream(profilerWindowPath, std::ios::binary);
+    const std::string window{
+        std::istreambuf_iterator<char>(windowStream),
+        std::istreambuf_iterator<char>()};
+
+    ASSERT_FALSE(header.empty());
+    ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(window.empty());
+
+    const auto eventStructBegin = header.find("struct ProfilerEvent");
+    ASSERT_NE(eventStructBegin, std::string::npos);
+    const auto eventStructEnd = header.find("// Data for a single frame", eventStructBegin);
+    ASSERT_NE(eventStructEnd, std::string::npos);
+    const auto eventStruct = header.substr(eventStructBegin, eventStructEnd - eventStructBegin);
+
+    EXPECT_NE(header.find("char\t\tName[MaxNameLength + 1u]{}"), std::string::npos);
+    EXPECT_NE(header.find("const char* GetName() const"), std::string::npos);
+    EXPECT_NE(header.find("void SetName(const char* pName)"), std::string::npos);
+    EXPECT_EQ(eventStruct.find("pName\t"), std::string::npos);
+    EXPECT_EQ(eventStruct.find("pName;"), std::string::npos);
+    EXPECT_NE(source.find("event.SetName(pName);"), std::string::npos);
+    EXPECT_NE(source.find("newEvent.SetName(pName);"), std::string::npos);
+    EXPECT_NE(source.find("event.SetName(\"Present\");"), std::string::npos);
+    EXPECT_EQ(source.find(".pName"), std::string::npos);
+    EXPECT_EQ(window.find(".pName"), std::string::npos);
+    EXPECT_NE(window.find("event.GetName()"), std::string::npos);
+}
+
 TEST_F(ProfilerDestinationTest, TimelineTraceRecordingContinuesDrawingTimelineWhileExporting)
 {
 #if defined(NLS_ENABLE_TIMELINE_PROFILER)
@@ -704,17 +823,17 @@ TEST_F(ProfilerDestinationTest, UnavailableDestinationDoesNotBlockAvailableDesti
 
     UnavailableProfilerDestination unavailable;
     RecordingProfilerDestination available;
-    Profiler::RegisterDestination(unavailable);
-    Profiler::RegisterDestination(available);
-    Profiler::SetEnabled(true);
+    BaseProfiler::RegisterDestination(unavailable);
+    BaseProfiler::RegisterDestination(available);
+    BaseProfiler::SetEnabled(true);
 
-    const auto scope = Profiler::BeginScope("Fallback Scope", __FUNCTION__);
-    Profiler::EndScope(scope);
+    const auto scope = BaseProfiler::BeginScope("Fallback Scope", __FUNCTION__);
+    BaseProfiler::EndScope(scope);
 
     EXPECT_EQ(unavailable.beginCalls, 0);
     EXPECT_EQ(unavailable.endCalls, 0);
     ASSERT_EQ(available.events.size(), 2u);
     EXPECT_EQ(available.events[0].name, "Fallback Scope");
-    EXPECT_EQ(Profiler::GetSessionStats().acceptedEventCount, 1u);
-    EXPECT_EQ(Profiler::GetSessionStats().droppedEventCount, 1u);
+    EXPECT_EQ(BaseProfiler::GetSessionStats().acceptedEventCount, 1u);
+    EXPECT_EQ(BaseProfiler::GetSessionStats().droppedEventCount, 1u);
 }

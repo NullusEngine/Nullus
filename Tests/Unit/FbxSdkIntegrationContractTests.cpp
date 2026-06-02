@@ -1037,7 +1037,7 @@ TEST(FbxSdkIntegrationContractTests, FbxSdkParserReusesSharedMeshDataForMultiple
 TEST(FbxSdkIntegrationContractTests, RuntimeFbxSourceLoadUsesAssimpFbxWithAutodeskFallback)
 {
     const auto meshManagerSource = ReadTextFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Core/ResourceManagement/MeshManager.cpp");
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/ResourceManagement/MeshManager.cpp");
 
     ASSERT_FALSE(meshManagerSource.empty());
 

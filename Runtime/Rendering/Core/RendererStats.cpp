@@ -51,6 +51,10 @@ namespace
         frameInfo.parallelCommandWorkUnitCount = telemetry.parallelCommandWorkUnitCount;
         frameInfo.parallelRecordingWorkerCount = telemetry.parallelRecordingWorkerCount;
         frameInfo.parallelFallbackReason = telemetry.parallelFallbackReason;
+        frameInfo.deviceLostDetected = telemetry.deviceLostDetected;
+        frameInfo.deviceLostReason = telemetry.deviceLostReason;
+        frameInfo.unsafeGpuWorkQuarantined = telemetry.unsafeGpuWorkQuarantined;
+        frameInfo.unsafeGpuWorkQuarantineReason = telemetry.unsafeGpuWorkQuarantineReason;
     }
 }
 
@@ -95,6 +99,10 @@ void RendererStats::BeginFrame()
     m_frameInfo.parsedTransparentDrawableCount = 0u;
     m_frameInfo.parsedSkyboxDrawableCount = 0u;
     m_frameInfo.gBufferMaterialSyncCount = 0u;
+    m_frameInfo.gBufferMaterialResolveHitCount = 0u;
+    m_frameInfo.gBufferMaterialResolveMissCount = 0u;
+    m_frameInfo.preparedRecordedDrawStaticBaseCacheHitCount = 0u;
+    m_frameInfo.preparedRecordedDrawStaticBaseCacheMissCount = 0u;
     m_frameInfo.renderBindingSetCreationCount = 0u;
     m_frameInfo.renderSnapshotBufferCreationCount = 0u;
     m_frameInfo.rawVisibleObjectCount = 0u;
@@ -106,6 +114,10 @@ void RendererStats::BeginFrame()
     m_frameInfo.parallelCommandWorkUnitCount = 0u;
     m_frameInfo.parallelRecordingWorkerCount = 0u;
     m_frameInfo.parallelFallbackReason.clear();
+    m_frameInfo.deviceLostDetected = false;
+    m_frameInfo.deviceLostReason.clear();
+    m_frameInfo.unsafeGpuWorkQuarantined = false;
+    m_frameInfo.unsafeGpuWorkQuarantineReason.clear();
     m_isFrameInfoValid = false;
 }
 
@@ -144,6 +156,22 @@ void RendererStats::RecordSceneParse(
 void RendererStats::RecordGBufferMaterialSync()
 {
     ++m_frameInfo.gBufferMaterialSyncCount;
+}
+
+void RendererStats::RecordGBufferMaterialResolve(const bool hit)
+{
+    if (hit)
+        ++m_frameInfo.gBufferMaterialResolveHitCount;
+    else
+        ++m_frameInfo.gBufferMaterialResolveMissCount;
+}
+
+void RendererStats::RecordPreparedRecordedDrawStaticBaseCache(const bool hit)
+{
+    if (hit)
+        ++m_frameInfo.preparedRecordedDrawStaticBaseCacheHitCount;
+    else
+        ++m_frameInfo.preparedRecordedDrawStaticBaseCacheMissCount;
 }
 
 void RendererStats::RecordRenderBindingSetCreation(const uint64_t count)

@@ -152,6 +152,19 @@ TEST(DX12ReadbackUtilsTests, ValidateReadPixelsInputsReturnsStatusAndMessage)
     EXPECT_NE(invalid.message.find("texture"), std::string::npos);
 }
 
+TEST(DX12ReadbackUtilsTests, DeviceRemovedReadbackFailureMessageIncludesReason)
+{
+    const auto expected = NLS::Render::RHI::DX12::DX12ReadbackStatusCode::DeviceLost;
+    const auto result = NLS::Render::RHI::DX12::BuildDX12DeviceRemovedReadbackFailure(
+        DXGI_ERROR_DEVICE_HUNG,
+        "ReadPixels preflight");
+
+    EXPECT_EQ(result.code, expected);
+    EXPECT_NE(result.message.find("ReadPixels preflight"), std::string::npos);
+    EXPECT_NE(result.message.find("device removed"), std::string::npos);
+    EXPECT_NE(result.message.find(std::to_string(static_cast<long>(DXGI_ERROR_DEVICE_HUNG))), std::string::npos);
+}
+
 TEST(DX12ReadbackUtilsTests, PositiveNanosecondTimeoutsRoundUpToAtLeastOneMillisecond)
 {
     EXPECT_EQ(NLS::Render::RHI::DX12::ConvertDX12WaitTimeoutNanosecondsToMilliseconds(1u), 1u);

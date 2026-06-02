@@ -10,6 +10,7 @@
 #include <fstream>
 #include <filesystem>
 #include <limits>
+#include <mutex>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
@@ -50,6 +51,99 @@ namespace
 {
     constexpr const char* kDriverTelemetryDelimiter = " | driver: ";
 
+    std::mutex& GetUnsafeGpuWorkQuarantineKeepAliveMutex()
+    {
+        static std::mutex mutex;
+        return mutex;
+    }
+
+    std::vector<std::shared_ptr<void>>& GetUnsafeGpuWorkQuarantineKeepAlive()
+    {
+        static std::vector<std::shared_ptr<void>> keepAlive;
+        return keepAlive;
+    }
+
+    void PreserveUnsafeGpuWorkQuarantineResources(DriverImpl& impl)
+    {
+        if (!impl.unsafeGpuWorkQuarantined.load(std::memory_order_acquire) ||
+            impl.deviceLostDetected.load(std::memory_order_acquire) ||
+            impl.unsafeGpuWorkQuarantineResourcesPreserved.exchange(true, std::memory_order_acq_rel))
+        {
+            return;
+        }
+
+        std::lock_guard lock(GetUnsafeGpuWorkQuarantineKeepAliveMutex());
+        auto& keepAlive = GetUnsafeGpuWorkQuarantineKeepAlive();
+        if (impl.explicitDevice != nullptr)
+            keepAlive.push_back(impl.explicitDevice);
+        if (impl.explicitSwapchain != nullptr)
+            keepAlive.push_back(impl.explicitSwapchain);
+        if (impl.pipelineCache != nullptr)
+            keepAlive.push_back(impl.pipelineCache);
+        for (auto& retainedFrameResources : impl.retainedThreadedSubmitResourceKeepAliveByFrameContext)
+        {
+            for (auto& resource : retainedFrameResources)
+            {
+                if (resource != nullptr)
+                    keepAlive.push_back(resource);
+            }
+        }
+        for (const auto& frameContext : impl.frameContexts)
+        {
+            if (frameContext.commandPool != nullptr)
+                keepAlive.push_back(frameContext.commandPool);
+            if (frameContext.commandBuffer != nullptr)
+                keepAlive.push_back(frameContext.commandBuffer);
+            for (const auto& commandPool : frameContext.parallelCommandPools)
+            {
+                if (commandPool != nullptr)
+                    keepAlive.push_back(commandPool);
+            }
+            for (const auto& commandBuffer : frameContext.parallelCommandBuffers)
+            {
+                if (commandBuffer != nullptr)
+                    keepAlive.push_back(commandBuffer);
+            }
+            for (const auto& commandPool : frameContext.childCommandPools)
+            {
+                if (commandPool != nullptr)
+                    keepAlive.push_back(commandPool);
+            }
+            for (const auto& commandBuffer : frameContext.childCommandBuffers)
+            {
+                if (commandBuffer != nullptr)
+                    keepAlive.push_back(commandBuffer);
+            }
+            if (frameContext.frameFence != nullptr)
+                keepAlive.push_back(frameContext.frameFence);
+            if (frameContext.imageAcquiredSemaphore != nullptr)
+                keepAlive.push_back(frameContext.imageAcquiredSemaphore);
+            if (frameContext.renderFinishedSemaphore != nullptr)
+                keepAlive.push_back(frameContext.renderFinishedSemaphore);
+            if (frameContext.computeFinishedSemaphore != nullptr)
+                keepAlive.push_back(frameContext.computeFinishedSemaphore);
+            if (frameContext.descriptorAllocator != nullptr)
+                keepAlive.push_back(frameContext.descriptorAllocator);
+            if (frameContext.uploadContext != nullptr)
+                keepAlive.push_back(frameContext.uploadContext);
+            if (frameContext.resourceStateTracker != nullptr)
+                keepAlive.push_back(frameContext.resourceStateTracker);
+            if (frameContext.swapchainBackbufferView != nullptr)
+                keepAlive.push_back(frameContext.swapchainBackbufferView);
+            if (frameContext.swapchainDepthStencilView != nullptr)
+                keepAlive.push_back(frameContext.swapchainDepthStencilView);
+            if (frameContext.swapchainDepthStencilTexture != nullptr)
+                keepAlive.push_back(frameContext.swapchainDepthStencilTexture);
+            if (frameContext.explicitReadbackTexture != nullptr)
+                keepAlive.push_back(frameContext.explicitReadbackTexture);
+        }
+        if (impl.threadedLifecycle != nullptr)
+        {
+            for (auto slot : impl.threadedLifecycle->CopySlots())
+                keepAlive.push_back(std::make_shared<InFlightFrameSlot>(std::move(slot)));
+        }
+    }
+
     struct DriverQueueTelemetrySnapshot
     {
         uint64_t queueOperationFailureCount = 0u;
@@ -58,6 +152,8 @@ namespace
         std::string currentFrameLastQueueOperationFailure;
         bool deviceLostDetected = false;
         std::string deviceLostReason;
+        bool unsafeGpuWorkQuarantined = false;
+        std::string unsafeGpuWorkQuarantineReason;
     };
 
     void AppendMergedDriverTelemetryMessage(
@@ -101,8 +197,11 @@ namespace
             impl->currentFrameQueueOperationFailureCount;
         snapshot.currentFrameLastQueueOperationFailure =
             impl->currentFrameLastQueueOperationFailure;
-        snapshot.deviceLostDetected = impl->deviceLostDetected;
+        snapshot.deviceLostDetected = impl->deviceLostDetected.load(std::memory_order_acquire);
         snapshot.deviceLostReason = impl->deviceLostReason;
+        snapshot.unsafeGpuWorkQuarantined =
+            impl->unsafeGpuWorkQuarantined.load(std::memory_order_acquire);
+        snapshot.unsafeGpuWorkQuarantineReason = impl->unsafeGpuWorkQuarantineReason;
         return true;
     }
 
@@ -199,6 +298,20 @@ namespace
             else
             {
                 AppendMergedDriverTelemetryMessage(telemetry.deviceLostReason, snapshot.deviceLostReason);
+            }
+        }
+        if (snapshot.unsafeGpuWorkQuarantined)
+        {
+            telemetry.unsafeGpuWorkQuarantined = true;
+            if (telemetry.unsafeGpuWorkQuarantineReason.empty())
+            {
+                telemetry.unsafeGpuWorkQuarantineReason = snapshot.unsafeGpuWorkQuarantineReason;
+            }
+            else
+            {
+                AppendMergedDriverTelemetryMessage(
+                    telemetry.unsafeGpuWorkQuarantineReason,
+                    snapshot.unsafeGpuWorkQuarantineReason);
             }
         }
 
@@ -1144,22 +1257,6 @@ namespace
         return recordedCount;
     }
 
-    uint32_t CountBindingSetDescriptorSlots(const Render::RHI::RHIBindingSetDesc& desc)
-    {
-        uint32_t descriptorCount = 0u;
-        if (desc.layout != nullptr)
-        {
-            for (const auto& entry : desc.layout->GetDesc().entries)
-                descriptorCount += (std::max)(1u, entry.count);
-        }
-        else
-        {
-            descriptorCount = static_cast<uint32_t>(desc.entries.size());
-        }
-
-        return (std::max)(1u, descriptorCount);
-    }
-
     class TrackedBindingSet final : public Render::RHI::RHIBindingSet
     {
     public:
@@ -1245,7 +1342,7 @@ namespace
         }
 
         Render::RHI::DescriptorAllocationRequest allocationRequest;
-        allocationRequest.count = CountBindingSetDescriptorSlots(desc);
+        allocationRequest.count = Render::RHI::CountBindingSetDescriptorSlots(desc);
         allocationRequest.lifetime = allocationLifetime;
         allocationRequest.frameIndex = frameIndex;
         allocationRequest.layout = desc.layout;
@@ -1551,7 +1648,7 @@ namespace
         if (frameContext.frameFence == nullptr || frameContext.frameFence->IsSignaled())
             return true;
 
-        if (impl != nullptr && impl->deviceLostDetected)
+        if (impl != nullptr && impl->deviceLostDetected.load(std::memory_order_acquire))
             return false;
 
         if (frameContext.frameFence->Wait(kDriverGpuDrainTimeoutNanoseconds))
@@ -1574,9 +1671,12 @@ namespace
         return true;
     }
 
-    bool ReleaseFrameContextResources(Render::RHI::RHIFrameContext& frameContext, const DriverImpl* impl)
+    bool ReleaseFrameContextResources(
+        Render::RHI::RHIFrameContext& frameContext,
+        const DriverImpl* impl,
+        const bool abandonFenceWait = false)
     {
-        if (!DrainFrameFenceForResize(frameContext, impl))
+        if (!abandonFenceWait && !DrainFrameFenceForResize(frameContext, impl))
             return false;
 
         if (frameContext.commandBuffer != nullptr && frameContext.commandBuffer->IsRecording())
@@ -1672,6 +1772,88 @@ namespace
             impl.frameContexts.push_back(std::move(frameContext));
         }
         impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.resize(impl.frameContexts.size());
+    }
+
+    bool ReleaseExplicitDeviceResourcesForReplacement(DriverImpl& impl, Driver* driver)
+    {
+        if (impl.unsafeGpuWorkQuarantined.load(std::memory_order_acquire) &&
+            !impl.deviceLostDetected.load(std::memory_order_acquire))
+        {
+            PreserveUnsafeGpuWorkQuarantineResources(impl);
+            NLS_LOG_ERROR(
+                "DriverTestAccess::SetExplicitDevice: refusing to release explicit device resources while GPU work is quarantined without a reliable retirement fence");
+            return false;
+        }
+
+        impl.explicitFrameActive = false;
+        impl.uiStandaloneFrameActive = false;
+        impl.uiStandaloneFramePending.store(false, std::memory_order_release);
+        impl.uiStandaloneFramePendingUntilTickNs.store(0u, std::memory_order_release);
+        impl.uiRenderFinishedSemaphore = {};
+        impl.uiRenderFinishedValue = 0u;
+        {
+            std::lock_guard lock(impl.sceneToUiWaitMutex);
+            impl.sceneToUiWaitSemaphore = {};
+        }
+        {
+            std::lock_guard lock(impl.completedReadbackTextureMutex);
+            impl.completedReadbackTexture = nullptr;
+            impl.completedReadbackTextureHistory.clear();
+        }
+        if (impl.uiStandaloneFrameSubmissionLock.owns_lock())
+            impl.uiStandaloneFrameSubmissionLock.unlock();
+        impl.hasPendingSwapchainResize = false;
+
+        std::unique_lock<std::timed_mutex> threadedSubmissionLock;
+        if (impl.threadedLifecycle != nullptr)
+        {
+            if (driver == nullptr || !DrainThreadedLifecycleSynchronously(impl, driver))
+            {
+                NLS_LOG_ERROR("DriverTestAccess::SetExplicitDevice: timed out draining threaded rendering before replacing explicit device");
+                return false;
+            }
+
+            threadedSubmissionLock = std::unique_lock<std::timed_mutex>(
+                impl.threadedRhiSubmissionMutex,
+                std::defer_lock);
+            if (!threadedSubmissionLock.try_lock_for(kThreadedLifecycleDrainWatchdog))
+            {
+                NLS_LOG_ERROR("DriverTestAccess::SetExplicitDevice: timed out waiting for threaded RHI submission before replacing explicit device");
+                return false;
+            }
+            if (impl.threadedLifecycle->GetInFlightDepth() > 0u)
+            {
+                NLS_LOG_ERROR("DriverTestAccess::SetExplicitDevice: threaded rendering became active while replacing explicit device");
+                return false;
+            }
+
+            impl.threadedLifecycle->ReleaseRetainedFrameResources();
+        }
+
+        const bool abandonFenceWait = impl.deviceLostDetected.load(std::memory_order_acquire);
+        const bool drainedFrameFences =
+            abandonFenceWait ||
+            DrainFrameFencesForResize(impl.frameContexts, &impl);
+        if (drainedFrameFences && !abandonFenceWait)
+            Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(impl);
+        bool releasedAllFrameContexts = drainedFrameFences;
+        for (auto& frameContext : impl.frameContexts)
+        {
+            releasedAllFrameContexts =
+                ReleaseFrameContextResources(frameContext, &impl, abandonFenceWait) &&
+                releasedAllFrameContexts;
+        }
+        if (!releasedAllFrameContexts)
+        {
+            NLS_LOG_ERROR("DriverTestAccess::SetExplicitDevice: timed out before replacing explicit device resources");
+            return false;
+        }
+
+        impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.clear();
+        impl.deferredThreadedFrameScopedRetirementFrameContexts.clear();
+        impl.frameContexts.clear();
+        impl.explicitSwapchain.reset();
+        return true;
     }
 
 }
@@ -1804,6 +1986,18 @@ Driver* TryGetLocatedDriver()
     return NLS::Core::ServiceLocator::Contains<Driver>()
         ? &NLS::Core::ServiceLocator::Get<Driver>()
         : nullptr;
+}
+
+void MarkLocatedDriverUnsafeGpuWorkQuarantined(const std::string& reason)
+{
+    if (auto* driver = TryGetLocatedDriver(); driver != nullptr)
+        DriverUIAccess::MarkUnsafeGpuWorkQuarantined(*driver, reason);
+}
+
+void MarkLocatedDriverDeviceLost(const std::string& reason)
+{
+    if (auto* driver = TryGetLocatedDriver(); driver != nullptr)
+        DriverUIAccess::MarkDeviceLost(*driver, reason);
 }
 
 Driver& RequireLocatedDriver(const std::string_view ownerName)
@@ -1963,22 +2157,110 @@ size_t DriverRendererAccess::GetLifecycleFrameSlotCount(const Driver& driver)
     return GetFrameContextSlotCount(driver);
 }
 
+namespace
+{
+    std::optional<size_t> ReserveReusableFrameContextSlotIndexForDriver(
+        DriverImpl& impl,
+        const bool waitForDeferredFrameFence)
+    {
+        auto* threadedLifecycle = impl.threadedLifecycle.get();
+        if (threadedLifecycle != nullptr)
+        {
+            if (impl.deviceLostDetected.load(std::memory_order_acquire) ||
+                impl.unsafeGpuWorkQuarantined.load(std::memory_order_acquire))
+            {
+                return std::nullopt;
+            }
+
+            if (impl.explicitDevice != nullptr && impl.frameContexts.empty())
+            {
+                RebuildExplicitFrameContextRing(
+                    impl,
+                    static_cast<uint32_t>(threadedLifecycle->GetSlotCount()));
+            }
+
+            std::vector<size_t> skippedUnsafeSlots;
+            while (skippedUnsafeSlots.size() < threadedLifecycle->GetSlotCount())
+            {
+                const auto reservedSlotIndex = threadedLifecycle->ReserveReusableSlotIndexExcluding(
+                    skippedUnsafeSlots,
+                    std::chrono::milliseconds(impl.threadedPublishRetirementWaitMs));
+                if (!reservedSlotIndex.has_value())
+                    return std::nullopt;
+
+                if (reservedSlotIndex.value() >= impl.frameContexts.size())
+                {
+                    if (impl.explicitDevice == nullptr)
+                        return reservedSlotIndex;
+
+                    (void)threadedLifecycle->ReleaseReservedReusableSlotIndex(reservedSlotIndex.value());
+                    skippedUnsafeSlots.push_back(reservedSlotIndex.value());
+                    continue;
+                }
+
+                const auto reservedSlotState = threadedLifecycle->CopySlot(reservedSlotIndex.value());
+                auto& frameContext = impl.frameContexts[reservedSlotIndex.value()];
+                const bool retiredDeferredSlot =
+                    reservedSlotState.has_value() &&
+                    reservedSlotState->stage == ThreadedFrameStage::Retired &&
+                    reservedSlotState->submissionFrame.has_value() &&
+                    reservedSlotState->submissionFrame->deferredFrameScopedRetirement &&
+                    frameContext.frameFence != nullptr;
+                bool deferredFenceComplete =
+                    !retiredDeferredSlot ||
+                    frameContext.frameFence->IsSignaled();
+                const bool exhaustedOtherLifecycleSlots =
+                    skippedUnsafeSlots.size() + 1u >= threadedLifecycle->GetSlotCount();
+                if (!deferredFenceComplete &&
+                    waitForDeferredFrameFence &&
+                    exhaustedOtherLifecycleSlots &&
+                    impl.threadedPublishRetirementWaitMs > 0u)
+                {
+                    const uint64_t waitTimeoutNs =
+                        static_cast<uint64_t>(impl.threadedPublishRetirementWaitMs) * 1'000'000ull;
+                    deferredFenceComplete = frameContext.frameFence->Wait(waitTimeoutNs);
+                }
+                if (!deferredFenceComplete)
+                {
+                    (void)threadedLifecycle->ReleaseReservedReusableSlotIndex(reservedSlotIndex.value());
+                    skippedUnsafeSlots.push_back(reservedSlotIndex.value());
+                    continue;
+                }
+
+                if (frameContext.frameFence != nullptr)
+                {
+                    (void)Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(
+                        impl,
+                        frameContext,
+                        reservedSlotIndex.value());
+                }
+                return reservedSlotIndex;
+            }
+
+            return std::nullopt;
+        }
+
+        if (!impl.frameContexts.empty())
+            return impl.currentFrameIndex % impl.frameContexts.size();
+
+        return 0u;
+    }
+}
+
 std::optional<size_t> DriverRendererAccess::ReserveReusableFrameContextSlotIndex(Driver& driver)
 {
     if (driver.m_impl == nullptr)
         return std::nullopt;
 
-    auto* threadedLifecycle = driver.m_impl->threadedLifecycle.get();
-    if (threadedLifecycle != nullptr)
-    {
-        return threadedLifecycle->ReserveReusableSlotIndex(
-            std::chrono::milliseconds(driver.m_impl->threadedPublishRetirementWaitMs));
-    }
+    return ReserveReusableFrameContextSlotIndexForDriver(*driver.m_impl, false);
+}
 
-    if (!driver.m_impl->frameContexts.empty())
-        return driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size();
+std::optional<size_t> DriverRendererAccess::ReserveReusableFrameContextSlotIndexForPreparedPublication(Driver& driver)
+{
+    if (driver.m_impl == nullptr)
+        return std::nullopt;
 
-    return 0u;
+    return ReserveReusableFrameContextSlotIndexForDriver(*driver.m_impl, true);
 }
 
 bool DriverRendererAccess::ReleaseReservedFrameContextSlotIndex(Driver& driver, const size_t slotIndex)
@@ -2286,6 +2568,44 @@ Render::RHI::NativeRenderDeviceInfo DriverUIAccess::GetNativeDeviceInfo(const Dr
 	return driver.m_impl->explicitDevice->GetNativeDeviceInfo();
 }
 
+void DriverUIAccess::MarkUnsafeGpuWorkQuarantined(Driver& driver, const std::string& reason)
+{
+    if (driver.m_impl == nullptr)
+        return;
+
+    const std::string message = reason.empty()
+        ? std::string{ "UI backend quarantined unsafe GPU work" }
+        : reason;
+    {
+        std::lock_guard lock(driver.m_impl->driverTelemetryMutex);
+        driver.m_impl->unsafeGpuWorkQuarantined.store(true, std::memory_order_release);
+        driver.m_impl->unsafeGpuWorkQuarantineReason = message;
+        ++driver.m_impl->queueOperationFailureCount;
+        ++driver.m_impl->currentFrameQueueOperationFailureCount;
+        driver.m_impl->lastQueueOperationFailure = message;
+        driver.m_impl->currentFrameLastQueueOperationFailure = message;
+    }
+}
+
+void DriverUIAccess::MarkDeviceLost(Driver& driver, const std::string& reason)
+{
+    if (driver.m_impl == nullptr)
+        return;
+
+    const std::string message = reason.empty()
+        ? std::string{ "UI backend detected device lost" }
+        : reason;
+    {
+        std::lock_guard lock(driver.m_impl->driverTelemetryMutex);
+        driver.m_impl->deviceLostDetected.store(true, std::memory_order_release);
+        driver.m_impl->deviceLostReason = message;
+        ++driver.m_impl->queueOperationFailureCount;
+        ++driver.m_impl->currentFrameQueueOperationFailureCount;
+        driver.m_impl->lastQueueOperationFailure = message;
+        driver.m_impl->currentFrameLastQueueOperationFailure = message;
+    }
+}
+
 bool DriverUIAccess::PrepareUIRender(Driver& driver)
 {
 	return RhiThreadCoordinator::PrepareUIRender(driver);
@@ -2403,11 +2723,35 @@ void DriverUIAccess::SetUISignalSemaphore(
 
 void DriverTestAccess::SetExplicitDevice(Driver& driver, std::shared_ptr<Render::RHI::RHIDevice> explicitDevice)
 {
+    if (driver.m_impl == nullptr)
+        return;
+
+    const bool replacingDevice =
+        driver.m_impl->explicitDevice != nullptr &&
+        driver.m_impl->explicitDevice != explicitDevice;
+    const bool clearingDevice = explicitDevice == nullptr;
+    if ((replacingDevice || clearingDevice) &&
+        !ReleaseExplicitDeviceResourcesForReplacement(*driver.m_impl, &driver))
+    {
+        return;
+    }
+
 	driver.m_impl->explicitDevice = std::move(explicitDevice);
     if (driver.m_impl->explicitDevice != nullptr)
     {
-        if (driver.m_impl->pipelineCache == nullptr)
+        if (driver.m_impl->pipelineCache == nullptr || replacingDevice)
             driver.m_impl->pipelineCache = Render::RHI::CreateDefaultPipelineCache();
+        const auto threadedFrameContextCount = driver.m_impl->threadedLifecycle != nullptr
+            ? static_cast<uint32_t>(driver.m_impl->threadedLifecycle->GetSlotCount())
+            : 0u;
+        if (!replacingDevice &&
+            driver.m_impl->frameContexts.empty() &&
+            threadedFrameContextCount > 0u)
+        {
+            RebuildExplicitFrameContextRing(
+                *driver.m_impl,
+                threadedFrameContextCount);
+        }
     }
     else
     {
@@ -2720,6 +3064,21 @@ void Driver::ShutdownRhiResources()
     if (m_impl == nullptr)
         return;
 
+    if (m_impl->unsafeGpuWorkQuarantined.load(std::memory_order_acquire) &&
+        !m_impl->deviceLostDetected.load(std::memory_order_acquire))
+    {
+        PreserveUnsafeGpuWorkQuarantineResources(*m_impl);
+        NLS_LOG_ERROR(
+            "Driver::ShutdownRhiResources: preserving RHI resources because GPU work is quarantined without a reliable retirement fence");
+        m_impl->explicitFrameActive = false;
+        m_impl->uiStandaloneFrameActive = false;
+        m_impl->uiStandaloneFramePending.store(false, std::memory_order_release);
+        m_impl->uiStandaloneFramePendingUntilTickNs.store(0u, std::memory_order_release);
+        if (m_impl->uiStandaloneFrameSubmissionLock.owns_lock())
+            m_impl->uiStandaloneFrameSubmissionLock.unlock();
+        return;
+    }
+
     m_impl->swapchainWillResizeCallback = nullptr;
     m_impl->uiRenderFinishedSemaphore = {};
     m_impl->uiRenderFinishedValue = 0u;
@@ -2743,12 +3102,19 @@ void Driver::ShutdownRhiResources()
     if (m_impl->threadedLifecycle != nullptr)
         m_impl->threadedLifecycle->ReleaseRetainedFrameResources();
 
-    const bool drainedFrameFences = DrainFrameFencesForResize(m_impl->frameContexts, m_impl.get());
-    if (drainedFrameFences)
+    const bool abandonFenceWait = m_impl->deviceLostDetected.load(std::memory_order_acquire);
+    const bool drainedFrameFences =
+        abandonFenceWait ||
+        DrainFrameFencesForResize(m_impl->frameContexts, m_impl.get());
+    if (drainedFrameFences && !abandonFenceWait)
         Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(*m_impl);
     bool releasedAllFrameContexts = drainedFrameFences;
     for (auto& frameContext : m_impl->frameContexts)
-        releasedAllFrameContexts = ReleaseFrameContextResources(frameContext, m_impl.get()) && releasedAllFrameContexts;
+    {
+        releasedAllFrameContexts =
+            ReleaseFrameContextResources(frameContext, m_impl.get(), abandonFenceWait) &&
+            releasedAllFrameContexts;
+    }
     if (!releasedAllFrameContexts)
     {
         NLS_LOG_ERROR("Driver::ShutdownRhiResources: timed out before releasing frame-context resources");

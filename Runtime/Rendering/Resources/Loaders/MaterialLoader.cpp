@@ -515,7 +515,7 @@ Material* MaterialLoader::Create(const std::string& p_path, const LoadOptions& o
 
     auto* material = new Material();
     ApplySerializedMaterial(*material, xml, options);
-    const_cast<std::string&>(material->path) = p_path;
+    material->path = p_path;
     if (IsGeneratedImportedMaterialArtifactPath(p_path))
     {
         material->SetBackfaceCulling(false);

@@ -200,6 +200,11 @@ void CompositeRenderer::EndFrame()
     m_compositeFrameActive = false;
 }
 
+RendererStats* CompositeRenderer::GetMutableRendererStats() const
+{
+    return const_cast<RendererStats*>(&m_rendererStats);
+}
+
 void CompositeRenderer::OnThreadedFramePublishFailed()
 {
     ABaseRenderer::OnThreadedFramePublishFailed();

@@ -79,6 +79,102 @@ namespace
         NLS::Render::RHI::RHITextureViewDesc m_desc {};
     };
 
+    class DeferredTestCommandBuffer final : public NLS::Render::RHI::RHICommandBuffer
+    {
+    public:
+        std::string_view GetDebugName() const override { return "DeferredSceneRendererTestsCommandBuffer"; }
+        void Begin() override { m_recording = true; m_closed = false; }
+        void End() override { m_recording = false; m_closed = true; }
+        void Reset() override { m_recording = false; m_closed = false; }
+        bool IsRecording() const override { return m_recording; }
+        bool IsClosedForSubmission() const override { return m_closed; }
+        NLS::Render::RHI::NativeHandle GetNativeCommandBuffer() const override { return {}; }
+        void BeginRenderPass(const NLS::Render::RHI::RHIRenderPassDesc&) override {}
+        void EndRenderPass() override {}
+        void SetViewport(const NLS::Render::RHI::RHIViewport&) override {}
+        void SetScissor(const NLS::Render::RHI::RHIRect2D&) override {}
+        void BindGraphicsPipeline(const std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline>&) override {}
+        void BindComputePipeline(const std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>&) override {}
+        void BindBindingSet(uint32_t, const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>&) override {}
+        void PushConstants(NLS::Render::RHI::ShaderStageMask, uint32_t, uint32_t, const void*) override {}
+        void BindVertexBuffer(uint32_t, const NLS::Render::RHI::RHIVertexBufferView&) override {}
+        void BindIndexBuffer(const NLS::Render::RHI::RHIIndexBufferView&) override {}
+        void Draw(uint32_t, uint32_t, uint32_t, uint32_t) override {}
+        void DrawIndexed(uint32_t, uint32_t, uint32_t, int32_t, uint32_t) override {}
+        void Dispatch(uint32_t, uint32_t, uint32_t) override {}
+        void CopyBuffer(
+            const std::shared_ptr<NLS::Render::RHI::RHIBuffer>&,
+            const std::shared_ptr<NLS::Render::RHI::RHIBuffer>&,
+            const NLS::Render::RHI::RHIBufferCopyRegion&) override {}
+        void CopyBufferToTexture(const NLS::Render::RHI::RHIBufferToTextureCopyDesc&) override {}
+        void CopyTexture(const NLS::Render::RHI::RHITextureCopyDesc&) override {}
+        void Barrier(const NLS::Render::RHI::RHIBarrierDesc&) override {}
+
+    private:
+        bool m_recording = false;
+        bool m_closed = false;
+    };
+
+    class DeferredTestCommandPool final : public NLS::Render::RHI::RHICommandPool
+    {
+    public:
+        DeferredTestCommandPool(NLS::Render::RHI::QueueType queueType, std::string debugName)
+            : m_queueType(queueType)
+            , m_debugName(std::move(debugName))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return m_debugName; }
+        NLS::Render::RHI::QueueType GetQueueType() const override { return m_queueType; }
+        std::shared_ptr<NLS::Render::RHI::RHICommandBuffer> CreateCommandBuffer(std::string = {}) override
+        {
+            return std::make_shared<DeferredTestCommandBuffer>();
+        }
+        void Reset() override {}
+
+    private:
+        NLS::Render::RHI::QueueType m_queueType = NLS::Render::RHI::QueueType::Graphics;
+        std::string m_debugName;
+    };
+
+    class DeferredTestFence final : public NLS::Render::RHI::RHIFence
+    {
+    public:
+        explicit DeferredTestFence(std::string debugName)
+            : m_debugName(std::move(debugName))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return m_debugName; }
+        bool IsSignaled() const override { return m_signaled; }
+        void Reset() override { m_signaled = false; }
+        bool Wait(uint64_t = 0u) override
+        {
+            m_signaled = true;
+            return true;
+        }
+
+    private:
+        std::string m_debugName;
+        bool m_signaled = true;
+    };
+
+    class DeferredTestSemaphore final : public NLS::Render::RHI::RHISemaphore
+    {
+    public:
+        explicit DeferredTestSemaphore(std::string debugName)
+            : m_debugName(std::move(debugName))
+        {
+        }
+
+        std::string_view GetDebugName() const override { return m_debugName; }
+        bool IsSignaled() const override { return false; }
+        void Reset() override {}
+
+    private:
+        std::string m_debugName;
+    };
+
     class DeferredTestExplicitDevice final : public NLS::Render::RHI::RHIDevice
     {
     public:
@@ -127,9 +223,20 @@ namespace
         std::shared_ptr<NLS::Render::RHI::RHIShaderModule> CreateShaderModule(const NLS::Render::RHI::RHIShaderModuleDesc&) override { return nullptr; }
         std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline> CreateGraphicsPipeline(const NLS::Render::RHI::RHIGraphicsPipelineDesc&) override { return nullptr; }
         std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> CreateComputePipeline(const NLS::Render::RHI::RHIComputePipelineDesc&) override { return nullptr; }
-        std::shared_ptr<NLS::Render::RHI::RHICommandPool> CreateCommandPool(NLS::Render::RHI::QueueType, std::string = {}) override { return nullptr; }
-        std::shared_ptr<NLS::Render::RHI::RHIFence> CreateFence(std::string = {}) override { return nullptr; }
-        std::shared_ptr<NLS::Render::RHI::RHISemaphore> CreateSemaphore(std::string = {}) override { return nullptr; }
+        std::shared_ptr<NLS::Render::RHI::RHICommandPool> CreateCommandPool(
+            NLS::Render::RHI::QueueType queueType,
+            std::string debugName = {}) override
+        {
+            return std::make_shared<DeferredTestCommandPool>(queueType, std::move(debugName));
+        }
+        std::shared_ptr<NLS::Render::RHI::RHIFence> CreateFence(std::string debugName = {}) override
+        {
+            return std::make_shared<DeferredTestFence>(std::move(debugName));
+        }
+        std::shared_ptr<NLS::Render::RHI::RHISemaphore> CreateSemaphore(std::string debugName = {}) override
+        {
+            return std::make_shared<DeferredTestSemaphore>(std::move(debugName));
+        }
         void ReadPixels(
             const std::shared_ptr<NLS::Render::RHI::RHITexture>&,
             uint32_t,
@@ -393,8 +500,8 @@ TEST(DeferredSceneRendererMaterialCacheTests, ReusesGBufferMaterialForStableMate
 
     NLS::Render::Resources::Material firstMaterial(shader);
     NLS::Render::Resources::Material secondMaterial(shader);
-    const_cast<std::string&>(firstMaterial.path) = "App/Assets/Test/SharedDeferredMaterial.nmat";
-    const_cast<std::string&>(secondMaterial.path) = "App/Assets/Test/SharedDeferredMaterial.nmat";
+    firstMaterial.path = "App/Assets/Test/SharedDeferredMaterial.nmat";
+    secondMaterial.path = "App/Assets/Test/SharedDeferredMaterial.nmat";
 
     SyncOneDeferredCacheMaterial(renderer, firstMaterial);
     SyncOneDeferredCacheMaterial(renderer, secondMaterial);
@@ -428,8 +535,8 @@ TEST(DeferredSceneRendererMaterialCacheTests, StableMaterialAssetPathDoesNotShar
 
     NLS::Render::Resources::Material firstMaterial(shader);
     NLS::Render::Resources::Material secondMaterial(shader);
-    const_cast<std::string&>(firstMaterial.path) = "App/Assets/Test/SharedDeferredMaterial.nmat";
-    const_cast<std::string&>(secondMaterial.path) = "App/Assets/Test/SharedDeferredMaterial.nmat";
+    firstMaterial.path = "App/Assets/Test/SharedDeferredMaterial.nmat";
+    secondMaterial.path = "App/Assets/Test/SharedDeferredMaterial.nmat";
     firstMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", firstTexture);
     secondMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", secondTexture);
 
@@ -567,6 +674,96 @@ TEST(DeferredSceneRendererMaterialCacheTests, SkipsGBufferMaterialSyncUntilSourc
     EXPECT_FLOAT_EQ(albedo.y, 0.7f);
     EXPECT_FLOAT_EQ(albedo.z, 0.6f);
     EXPECT_FLOAT_EQ(albedo.w, 1.0f);
+
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, nullptr);
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(gbufferShader));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(lambertShader));
+}
+
+TEST(DeferredSceneRendererMaterialCacheTests, ReusesFrameLocalGBufferMaterialResolveForRepeatedSourceMaterial)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    NLS::Engine::Rendering::DeferredSceneRenderer::ConstructionOptions options;
+    options.loadPipelineResources = false;
+    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver, options);
+
+    auto* lambertShader = CreateTestShader("App/Assets/Engine/Shaders/Lambert.hlsl");
+    ASSERT_NE(lambertShader, nullptr);
+    auto* gbufferShader = CreateTestShader("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
+    ASSERT_NE(gbufferShader, nullptr);
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, gbufferShader);
+
+    NLS::Render::Resources::Material source(lambertShader);
+    source.Set<NLS::Maths::Vector4>("u_Diffuse", { 0.15f, 0.25f, 0.35f, 1.0f });
+
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::ClearFrameGBufferMaterialResolveCache(renderer);
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::ResetFrameGBufferMaterialSyncCount(renderer);
+
+    auto& firstResolve = NLS::Engine::Rendering::DeferredSceneRendererTestAccess::ResolveFrameGBufferMaterial(
+        renderer,
+        source);
+    auto& secondResolve = NLS::Engine::Rendering::DeferredSceneRendererTestAccess::ResolveFrameGBufferMaterial(
+        renderer,
+        source);
+
+    EXPECT_EQ(&secondResolve, &firstResolve);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer).size(), 1u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveCacheSize(renderer), 1u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveHitCount(renderer), 1u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveMissCount(renderer), 1u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialSyncCount(renderer), 1u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer).begin()->second.syncCount, 1u);
+
+    NLS::Render::RHI::SamplerDesc samplerOverride;
+    samplerOverride.minFilter = NLS::Render::RHI::TextureFilter::Nearest;
+    samplerOverride.magFilter = NLS::Render::RHI::TextureFilter::Nearest;
+    source.SetSamplerOverride("u_MaterialSampler", samplerOverride);
+    auto& bindingChangedResolve = NLS::Engine::Rendering::DeferredSceneRendererTestAccess::ResolveFrameGBufferMaterial(
+        renderer,
+        source);
+
+    EXPECT_EQ(&bindingChangedResolve, &firstResolve);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveHitCount(renderer), 1u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveMissCount(renderer), 2u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialSyncCount(renderer), 2u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer).begin()->second.syncCount, 2u);
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    lambertShader->SetReflectionForTesting(lambertShader->GetReflection());
+    auto& shaderChangedResolve = NLS::Engine::Rendering::DeferredSceneRendererTestAccess::ResolveFrameGBufferMaterial(
+        renderer,
+        source);
+
+    EXPECT_EQ(&shaderChangedResolve, &firstResolve);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveHitCount(renderer), 1u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveMissCount(renderer), 3u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialSyncCount(renderer), 3u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer).begin()->second.syncCount, 3u);
+#endif
+
+    source.Set<NLS::Maths::Vector4>("u_Diffuse", { 0.8f, 0.7f, 0.6f, 1.0f });
+    auto& changedResolve = NLS::Engine::Rendering::DeferredSceneRendererTestAccess::ResolveFrameGBufferMaterial(
+        renderer,
+        source);
+
+    EXPECT_EQ(&changedResolve, &firstResolve);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveHitCount(renderer), 1u);
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveMissCount(renderer), 4u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialSyncCount(renderer), 4u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer).begin()->second.syncCount, 4u);
+#else
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveMissCount(renderer), 3u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetFrameGBufferMaterialSyncCount(renderer), 3u);
+    EXPECT_EQ(NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetGBufferMaterialCache(renderer).begin()->second.syncCount, 3u);
+#endif
 
     NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SetGBufferShader(renderer, nullptr);
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(gbufferShader));

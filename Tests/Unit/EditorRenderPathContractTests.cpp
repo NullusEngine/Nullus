@@ -3853,7 +3853,7 @@ TEST(EditorRenderPathContractTests, GeneratedModelMaterialResolutionBindsCachedT
         std::string::npos);
 
     const auto textureManagerSourcePath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Core/ResourceManagement/TextureManager.cpp";
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/ResourceManagement/TextureManager.cpp";
     const std::string textureManagerSource = ReadSourceText(textureManagerSourcePath);
     ASSERT_FALSE(textureManagerSource.empty());
     EXPECT_NE(textureManagerSource.find("std::optional<std::filesystem::file_time_type> writeTime;"), std::string::npos);
@@ -3999,7 +3999,7 @@ TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionFailsUnresol
 TEST(EditorRenderPathContractTests, MaterialArtifactPrewarmDoesNotSynchronouslyLoadShaderDependencies)
 {
     const auto sourcePath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Core/ResourceManagement/MaterialManager.cpp";
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/ResourceManagement/MaterialManager.cpp";
 
     std::ifstream stream(sourcePath, std::ios::binary);
     const std::string source{
@@ -4026,10 +4026,51 @@ TEST(EditorRenderPathContractTests, MaterialArtifactPrewarmDoesNotSynchronouslyL
         prewarmCode.find("return nullptr"));
 }
 
+TEST(EditorRenderPathContractTests, ResourcePathUpdatesDoNotUseOffsetReinterpretCasts)
+{
+    const std::array<std::filesystem::path, 2u> sourcePaths = {
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/ResourceManagement/MaterialManager.cpp",
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp"
+    };
+
+    for (const auto& sourcePath : sourcePaths)
+    {
+        const std::string source = ReadSourceText(sourcePath);
+        ASSERT_FALSE(source.empty()) << sourcePath.string();
+        EXPECT_EQ(source.find("reinterpret_cast<std::string*>"), std::string::npos)
+            << sourcePath.string();
+        EXPECT_EQ(source.find("offsetof("), std::string::npos)
+            << sourcePath.string();
+        EXPECT_EQ(source.find("const_cast<std::string&>"), std::string::npos)
+            << sourcePath.string();
+    }
+}
+
+TEST(EditorRenderPathContractTests, PreparedObjectDataReservationUsesFenceGatedPublicationPath)
+{
+    const auto providerSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Rendering/EngineFrameObjectBindingProvider.cpp";
+    const std::string source = ReadSourceText(providerSourcePath);
+
+    ASSERT_FALSE(source.empty());
+    const auto resolveBegin = source.find("std::optional<size_t> EngineFrameObjectBindingProvider::ResolveActiveObjectDataSlotIndex()");
+    ASSERT_NE(resolveBegin, std::string::npos);
+    const auto resolveEnd = source.find("EngineFrameObjectBindingProvider::ObjectDataFrameSlot* EngineFrameObjectBindingProvider::ResolveActiveObjectDataSlot()", resolveBegin);
+    ASSERT_NE(resolveEnd, std::string::npos);
+    const auto resolveCode = source.substr(resolveBegin, resolveEnd - resolveBegin);
+
+    EXPECT_NE(
+        resolveCode.find("ReserveReusableFrameContextSlotIndexForPreparedPublication"),
+        std::string::npos);
+    EXPECT_EQ(
+        resolveCode.find("ReserveReusableFrameContextSlotIndex(m_renderer.GetDriver())"),
+        std::string::npos);
+}
+
 TEST(EditorRenderPathContractTests, MaterialArtifactLoadWithoutTexturesLoadsShaderButDefersTextureDependencies)
 {
     const auto sourcePath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Core/ResourceManagement/MaterialManager.cpp";
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/ResourceManagement/MaterialManager.cpp";
 
     std::ifstream stream(sourcePath, std::ios::binary);
     const std::string source{

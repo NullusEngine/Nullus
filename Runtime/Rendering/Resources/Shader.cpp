@@ -1,6 +1,7 @@
 #include "Rendering/Resources/Shader.h"
 
 #include <algorithm>
+#include <atomic>
 #include <string>
 
 #include "Math/Matrix4.h"
@@ -25,6 +26,15 @@ namespace
 		case NLS::Render::RHI::NativeBackendType::OpenGL: return NLS::Render::ShaderCompiler::ShaderTargetPlatform::GLSL;
 		default: return NLS::Render::ShaderCompiler::ShaderTargetPlatform::Unknown;
 		}
+	}
+
+	uint64_t NextShaderInstanceId()
+	{
+		static std::atomic<uint64_t> nextInstanceId { 1u };
+		auto instanceId = nextInstanceId.fetch_add(1u, std::memory_order_relaxed);
+		if (instanceId == 0u)
+			instanceId = nextInstanceId.fetch_add(1u, std::memory_order_relaxed);
+		return instanceId;
 	}
 
 	NLS::Render::RHI::ShaderStage ToRHIStage(const NLS::Render::ShaderCompiler::ShaderStage stage)
@@ -80,6 +90,12 @@ namespace
             ? adapter->GetBackendType()
             : NLS::Render::RHI::NativeBackendType::None;
     }
+
+    uint64_t ResolveDeviceCacheIdentity(
+        const std::shared_ptr<NLS::Render::RHI::RHIDevice>& device)
+    {
+        return device != nullptr ? device->GetCacheIdentity() : 0u;
+    }
 }
 
 namespace NLS::Render::Resources
@@ -105,6 +121,7 @@ namespace NLS::Render::Resources
 	Shader::Shader(const std::string p_path, ShaderCompiler::ShaderSourceLanguage p_sourceLanguage)
 		: path(p_path)
 		, m_sourceLanguage(p_sourceLanguage)
+		, m_instanceId(NextShaderInstanceId())
 	{
 	}
 
@@ -155,6 +172,11 @@ namespace NLS::Render::Resources
 		return m_generation;
 	}
 
+	uint64_t Shader::GetInstanceId() const
+	{
+		return m_instanceId;
+	}
+
 	std::shared_ptr<RHI::RHIShaderModule> Shader::GetOrCreateExplicitShaderModule(
 		const std::shared_ptr<RHI::RHIDevice>& device,
 		ShaderCompiler::ShaderStage stage) const
@@ -163,7 +185,7 @@ namespace NLS::Render::Resources
 			return nullptr;
 
 		const auto backend = ResolveDeviceBackendType(device);
-		const auto cacheKey = std::make_tuple(backend, stage, m_generation);
+		const auto cacheKey = std::make_tuple(ResolveDeviceCacheIdentity(device), backend, stage, m_generation);
 		if (const auto found = m_explicitShaderModules.find(cacheKey); found != m_explicitShaderModules.end())
 			return found->second;
 

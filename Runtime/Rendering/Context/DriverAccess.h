@@ -84,6 +84,8 @@ namespace NLS::Render::Context
     NLS_RENDER_API Driver* TryGetLocatedDriver();
     NLS_RENDER_API Driver& RequireLocatedDriver(std::string_view ownerName = {});
     NLS_RENDER_API std::optional<Settings::EGraphicsBackend> TryGetLocatedActiveGraphicsBackend();
+    NLS_RENDER_API void MarkLocatedDriverUnsafeGpuWorkQuarantined(const std::string& reason);
+    NLS_RENDER_API void MarkLocatedDriverDeviceLost(const std::string& reason);
 
     struct NLS_RENDER_API DriverRendererAccess final
     {
@@ -115,6 +117,7 @@ namespace NLS::Render::Context
         static size_t GetFrameContextSlotCount(const Driver& driver);
         static size_t GetLifecycleFrameSlotCount(const Driver& driver);
         static std::optional<size_t> ReserveReusableFrameContextSlotIndex(Driver& driver);
+        static std::optional<size_t> ReserveReusableFrameContextSlotIndexForPreparedPublication(Driver& driver);
         static bool ReleaseReservedFrameContextSlotIndex(Driver& driver, size_t slotIndex);
         static std::optional<size_t> GetReservedFrameContextSlotIndex(const Driver& driver);
         static std::shared_ptr<RHI::RHICommandBuffer> GetActiveExplicitCommandBuffer(const Driver& driver);
@@ -215,6 +218,8 @@ namespace NLS::Render::Context
         };
 
         static RHI::NativeRenderDeviceInfo GetNativeDeviceInfo(const Driver& driver);
+        static void MarkUnsafeGpuWorkQuarantined(Driver& driver, const std::string& reason);
+        static void MarkDeviceLost(Driver& driver, const std::string& reason);
         static bool PrepareUIRender(Driver& driver);
         static void ReleaseUITextureHandles(Driver& driver);
         static void PresentSwapchain(Driver& driver);

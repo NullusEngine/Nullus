@@ -107,6 +107,9 @@ namespace NLS::Render::Context
         package.renderHeight = snapshot.renderHeight;
         package.sceneGameObjectCount = snapshot.sceneGameObjectCount;
         package.recordedDrawCommands = snapshot.recordedDrawCommands;
+        package.externalSceneOutputIdentity = snapshot.externalOutputIdentity;
+        package.externalSceneOutputIdentities = snapshot.externalOutputIdentities;
+        package.externalSceneOutputTextureCount = snapshot.externalOutputTextureCount;
         package.opaqueDrawCount = snapshot.visibleOpaqueDrawCount;
         package.transparentDrawCount = snapshot.visibleTransparentDrawCount;
         package.skyboxDrawCount = snapshot.visibleSkyboxDrawCount;

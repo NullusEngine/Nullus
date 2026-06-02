@@ -1,5 +1,7 @@
 #include "Settings/EditorSettings.h"
 
+#include "Gen/MetaGenerated.h"
+
 #include <Reflection/ReflectionDatabase.h>
 
 namespace NLS::Editor::Settings
@@ -50,6 +52,7 @@ Render::Settings::EngineDiagnosticsSettings EditorSettings::BuildDiagnosticsSett
 
 void EditorSettings::RegisterSettingObjects(EditorSettingsRegistry& p_registry)
 {
+    NLS_META_GENERATED_LINK_FUNCTION();
     meta::ReflectionDatabase::Instance();
     p_registry.Register({
         "editor.runtime",

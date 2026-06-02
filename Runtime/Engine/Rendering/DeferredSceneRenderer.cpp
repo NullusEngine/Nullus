@@ -271,10 +271,14 @@ namespace
 	NLS::Engine::Rendering::DeferredSceneRenderer::GBufferMaterialSyncStamp BuildGBufferMaterialSyncStamp(
 		const NLS::Render::Resources::Material& sourceMaterial)
 	{
+		const auto* shader = sourceMaterial.GetShader();
 		return {
 			sourceMaterial.GetInstanceId(),
 			sourceMaterial.GetParameterRevision(),
-			sourceMaterial.GetRenderStateRevision()
+			sourceMaterial.GetRenderStateRevision(),
+			sourceMaterial.GetBindingRevision(),
+			shader != nullptr ? shader->GetInstanceId() : 0u,
+			shader != nullptr ? shader->GetGeneration() : 0u
 		};
 	}
 
@@ -284,7 +288,10 @@ namespace
 	{
 		return lhs.sourceMaterialInstanceId == rhs.sourceMaterialInstanceId &&
 			lhs.parameterRevision == rhs.parameterRevision &&
-			lhs.renderStateRevision == rhs.renderStateRevision;
+			lhs.renderStateRevision == rhs.renderStateRevision &&
+			lhs.bindingRevision == rhs.bindingRevision &&
+			lhs.shaderInstanceId == rhs.shaderInstanceId &&
+			lhs.shaderGeneration == rhs.shaderGeneration;
 	}
 
 	bool operator!=(
@@ -536,6 +543,7 @@ namespace NLS::Engine::Rendering
 		m_threadedQueuedLightingDrawCount = 0u;
 		m_frameGBufferMaterialSyncCount = 0u;
 		m_skipThreadedFramePublish = false;
+		ClearFrameGBufferMaterialResolveCache();
 
 		auto drawables = ParseScene();
 		const auto& frameDescriptor = GetFrameDescriptor();
@@ -584,19 +592,9 @@ namespace NLS::Engine::Rendering
 					if (!drawable.material)
 						continue;
 					auto gbufferDrawable = drawable;
-					gbufferDrawable.material = &GetOrCreateGBufferMaterial(*drawable.material);
+					gbufferDrawable.material = &ResolveFrameGBufferMaterial(*drawable.material);
 
-					NLS::Render::Resources::MaterialPipelineStateOverrides gBufferOverrides;
-					gBufferOverrides.depthTest = drawable.material->HasDepthTest();
-					gBufferOverrides.depthWrite = drawable.material->HasDepthWriting();
-					gBufferOverrides.colorWrite = true;
-					gBufferOverrides.SetColorFormats(GetDeferredGBufferColorFormats());
-					gBufferOverrides.culling = drawable.material->HasBackfaceCulling() || drawable.material->HasFrontfaceCulling();
-					gBufferOverrides.cullFace = drawable.material->HasBackfaceCulling() && drawable.material->HasFrontfaceCulling()
-						? NLS::Render::Settings::ECullFace::FRONT_AND_BACK
-						: drawable.material->HasFrontfaceCulling()
-							? NLS::Render::Settings::ECullFace::FRONT
-							: NLS::Render::Settings::ECullFace::BACK;
+					const auto gBufferOverrides = BuildGBufferMaterialOverrides(*drawable.material);
 
 					PreparedRecordedDraw preparedDraw;
 					const bool captured = CaptureThreadedPreparedDraw(
@@ -934,6 +932,38 @@ namespace NLS::Engine::Rendering
 		return *entry.material;
 	}
 
+	NLS::Render::Resources::Material& DeferredSceneRenderer::ResolveFrameGBufferMaterial(
+		NLS::Render::Resources::Material& sourceMaterial)
+	{
+		NLS_PROFILE_SCOPE();
+		const auto sourceStamp = BuildGBufferMaterialSyncStamp(sourceMaterial);
+		auto found = m_frameGBufferMaterialResolveCache.find(sourceStamp.sourceMaterialInstanceId);
+		if (found != m_frameGBufferMaterialResolveCache.end() &&
+			found->second.material != nullptr &&
+			found->second.sourceStamp == sourceStamp)
+		{
+			++m_frameGBufferMaterialResolveHitCount;
+			m_rendererStats.RecordGBufferMaterialResolve(true);
+			return *found->second.material;
+		}
+
+		++m_frameGBufferMaterialResolveMissCount;
+		m_rendererStats.RecordGBufferMaterialResolve(false);
+		auto& material = GetOrCreateGBufferMaterial(sourceMaterial);
+		m_frameGBufferMaterialResolveCache[sourceStamp.sourceMaterialInstanceId] = {
+			sourceStamp,
+			&material
+		};
+		return material;
+	}
+
+	void DeferredSceneRenderer::ClearFrameGBufferMaterialResolveCache()
+	{
+		m_frameGBufferMaterialResolveCache.clear();
+		m_frameGBufferMaterialResolveHitCount = 0u;
+		m_frameGBufferMaterialResolveMissCount = 0u;
+	}
+
 	void DeferredSceneRenderer::SyncGBufferMaterial(NLS::Render::Resources::Material& target, const NLS::Render::Resources::Material& sourceMaterial) const
 	{
 		target.SetGPUInstances(sourceMaterial.GetGPUInstances());
@@ -965,19 +995,9 @@ namespace NLS::Engine::Rendering
 				continue;
 
 			auto gbufferDrawable = drawable;
-			gbufferDrawable.material = &GetOrCreateGBufferMaterial(*drawable.material);
+			gbufferDrawable.material = &ResolveFrameGBufferMaterial(*drawable.material);
 
-			NLS::Render::Resources::MaterialPipelineStateOverrides gBufferOverrides;
-			gBufferOverrides.depthTest = drawable.material->HasDepthTest();
-			gBufferOverrides.depthWrite = drawable.material->HasDepthWriting();
-			gBufferOverrides.colorWrite = true;
-			gBufferOverrides.SetColorFormats(GetDeferredGBufferColorFormats());
-			gBufferOverrides.culling = drawable.material->HasBackfaceCulling() || drawable.material->HasFrontfaceCulling();
-			gBufferOverrides.cullFace = drawable.material->HasBackfaceCulling() && drawable.material->HasFrontfaceCulling()
-				? NLS::Render::Settings::ECullFace::FRONT_AND_BACK
-				: drawable.material->HasFrontfaceCulling()
-					? NLS::Render::Settings::ECullFace::FRONT
-					: NLS::Render::Settings::ECullFace::BACK;
+			const auto gBufferOverrides = BuildGBufferMaterialOverrides(*drawable.material);
 
 			DrawEntity(gbufferDrawable, gBufferOverrides, pso.depthFunc);
 		}
@@ -1053,6 +1073,13 @@ namespace NLS::Engine::Rendering
 		return renderer.GetOrCreateGBufferMaterial(sourceMaterial);
 	}
 
+	NLS::Render::Resources::Material& DeferredSceneRendererTestAccess::ResolveFrameGBufferMaterial(
+		DeferredSceneRenderer& renderer,
+		NLS::Render::Resources::Material& sourceMaterial)
+	{
+		return renderer.ResolveFrameGBufferMaterial(sourceMaterial);
+	}
+
 	DeferredSceneRendererTestAccess::GBufferMaterialCache& DeferredSceneRendererTestAccess::GetGBufferMaterialCache(
 		DeferredSceneRenderer& renderer)
 	{
@@ -1088,6 +1115,30 @@ namespace NLS::Engine::Rendering
 		const DeferredSceneRenderer& renderer)
 	{
 		return renderer.m_frameGBufferMaterialSyncCount;
+	}
+
+	void DeferredSceneRendererTestAccess::ClearFrameGBufferMaterialResolveCache(
+		DeferredSceneRenderer& renderer)
+	{
+		renderer.ClearFrameGBufferMaterialResolveCache();
+	}
+
+	uint64_t DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveCacheSize(
+		const DeferredSceneRenderer& renderer)
+	{
+		return static_cast<uint64_t>(renderer.m_frameGBufferMaterialResolveCache.size());
+	}
+
+	uint64_t DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveHitCount(
+		const DeferredSceneRenderer& renderer)
+	{
+		return renderer.m_frameGBufferMaterialResolveHitCount;
+	}
+
+	uint64_t DeferredSceneRendererTestAccess::GetFrameGBufferMaterialResolveMissCount(
+		const DeferredSceneRenderer& renderer)
+	{
+		return renderer.m_frameGBufferMaterialResolveMissCount;
 	}
 
 	void DeferredSceneRendererTestAccess::EnsureGBufferTargets(

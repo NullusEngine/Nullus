@@ -67,6 +67,13 @@ EngineFrameObjectBindingProvider::EngineFrameObjectBindingProvider(NLS::Render::
     m_startTime = std::chrono::high_resolution_clock::now();
 }
 
+#if defined(NLS_ENABLE_TEST_HOOKS)
+uint64_t EngineFrameObjectBindingProvider::GetIndexedObjectDataShaderSupportQueryCountForTesting() const
+{
+    return m_indexedObjectDataShaderSupportQueryCount;
+}
+#endif
+
 void EngineFrameObjectBindingProvider::PrepareRenderScenePackage(
     const NLS::Render::Context::FrameSnapshot&,
     NLS::Render::Context::RenderScenePackage& package) const
@@ -77,7 +84,10 @@ void EngineFrameObjectBindingProvider::PrepareRenderScenePackage(
 
 void EngineFrameObjectBindingProvider::OnBeginFrame(const NLS::Render::Data::FrameDescriptor& frameDescriptor)
 {
+    m_indexedObjectDataShaderSupportCache.clear();
+    m_indexedObjectDataShaderSupportQueryCount = 0u;
     ReleaseStalePreparedObjectDataSlotReservation();
+    InvalidateObjectDataDeviceCachesIfNeeded();
     RetireIdleObjectDataSlots();
     m_preparedFrameHasObjectDataSlot = false;
     m_preparedFrameObjectDataSlotReserved = false;
@@ -281,6 +291,7 @@ bool EngineFrameObjectBindingProvider::OnCapturePreparedBindingSets(
 
 void EngineFrameObjectBindingProvider::RefreshExplicitFrameBindingSet()
 {
+    InvalidateObjectDataDeviceCachesIfNeeded();
     if (!m_explicitFrameBindingSetDirty)
         return;
 
@@ -303,6 +314,7 @@ void EngineFrameObjectBindingProvider::RefreshExplicitFrameBindingSet()
 
 void EngineFrameObjectBindingProvider::RefreshExplicitObjectBindingSet()
 {
+    InvalidateObjectDataDeviceCachesIfNeeded();
     if (!m_explicitObjectBindingSetDirty)
         return;
 
@@ -344,7 +356,7 @@ std::optional<size_t> EngineFrameObjectBindingProvider::ResolveActiveObjectDataS
     else
     {
         const auto reusableSlotIndex =
-            NLS::Render::Context::DriverRendererAccess::ReserveReusableFrameContextSlotIndex(m_renderer.GetDriver());
+            NLS::Render::Context::DriverRendererAccess::ReserveReusableFrameContextSlotIndexForPreparedPublication(m_renderer.GetDriver());
         if (!reusableSlotIndex.has_value())
         {
             m_preparedFrameObjectDataSlotUnavailable = true;
@@ -387,6 +399,7 @@ void EngineFrameObjectBindingProvider::ResetObjectDataSlot(ObjectDataFrameSlot& 
     slot.buffer.reset();
     slot.bindingSet.reset();
     slot.deferredBindingSet.reset();
+    slot.deviceIdentity = 0u;
     slot.objectDataShadow = {};
     slot.capacity = 0u;
     slot.idleFrameCount = 0u;
@@ -413,10 +426,38 @@ void EngineFrameObjectBindingProvider::RetireIdleObjectDataSlots()
     }
 }
 
+void EngineFrameObjectBindingProvider::InvalidateObjectDataDeviceCachesIfNeeded()
+{
+    const auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_renderer.GetDriver());
+    const auto deviceIdentity = device != nullptr ? device->GetCacheIdentity() : 0u;
+    if (deviceIdentity == m_cachedObjectDataDeviceIdentity)
+        return;
+
+    m_cachedObjectDataDeviceIdentity = deviceIdentity;
+    m_explicitFrameBindingSet.reset();
+    m_explicitObjectBindingSet.reset();
+    m_deferredFrameBindingSet.reset();
+    m_deferredObjectBindingSet.reset();
+    m_explicitFrameBindingSetDirty = true;
+    m_explicitObjectBindingSetDirty = true;
+    m_objectDataBindingLayout.reset();
+    m_objectDataBindingLayoutDeviceIdentity = 0u;
+    for (auto& slot : m_objectDataSlots)
+        ResetObjectDataSlot(slot);
+}
+
 bool EngineFrameObjectBindingProvider::EnsureObjectDataBufferCapacity(
     ObjectDataFrameSlot& slot,
     const uint32_t objectIndex)
 {
+    auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_renderer.GetDriver());
+    if (device == nullptr)
+        return false;
+
+    const auto deviceIdentity = device->GetCacheIdentity();
+    if (slot.deviceIdentity != 0u && slot.deviceIdentity != deviceIdentity)
+        ResetObjectDataSlot(slot);
+
     const auto requiredCapacity = static_cast<size_t>(objectIndex) + 1u;
     if (slot.buffer != nullptr && slot.capacity >= requiredCapacity)
         return true;
@@ -430,10 +471,6 @@ bool EngineFrameObjectBindingProvider::EnsureObjectDataBufferCapacity(
             return false;
         newCapacity *= 2u;
     }
-
-    auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_renderer.GetDriver());
-    if (device == nullptr)
-        return false;
 
     NLS::Render::RHI::RHIBufferDesc bufferDesc;
     bufferDesc.size = newCapacity * sizeof(Maths::Matrix4);
@@ -457,6 +494,7 @@ bool EngineFrameObjectBindingProvider::EnsureObjectDataBufferCapacity(
     }
 
     slot.buffer = std::move(buffer);
+    slot.deviceIdentity = deviceIdentity;
     slot.capacity = newCapacity;
     slot.bindingSetDirty = true;
     return true;
@@ -473,6 +511,20 @@ std::shared_ptr<NLS::Render::RHI::RHIBindingSet> EngineFrameObjectBindingProvide
     auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_renderer.GetDriver());
     if (device == nullptr)
         return nullptr;
+    const auto deviceIdentity = device->GetCacheIdentity();
+    if (slot.deviceIdentity != deviceIdentity)
+    {
+        ResetObjectDataSlot(slot);
+        return nullptr;
+    }
+
+    if (m_objectDataBindingLayout != nullptr &&
+        m_objectDataBindingLayoutDeviceIdentity != 0u &&
+        m_objectDataBindingLayoutDeviceIdentity != deviceIdentity)
+    {
+        m_objectDataBindingLayout.reset();
+        m_objectDataBindingLayoutDeviceIdentity = 0u;
+    }
 
     if (m_objectDataBindingLayout == nullptr)
     {
@@ -491,6 +543,7 @@ std::shared_ptr<NLS::Render::RHI::RHIBindingSet> EngineFrameObjectBindingProvide
         m_objectDataBindingLayout = NLS::Render::Context::DriverRendererAccess::CreateExplicitBindingLayout(
             m_renderer.GetDriver(),
             layoutDesc);
+        m_objectDataBindingLayoutDeviceIdentity = m_objectDataBindingLayout != nullptr ? deviceIdentity : 0u;
     }
 
     if (m_objectDataBindingLayout == nullptr)
@@ -543,7 +596,7 @@ bool EngineFrameObjectBindingProvider::TryPrepareIndexedObjectData(
         return false;
     if (drawable.material != nullptr &&
         drawable.material->GetShader() != nullptr &&
-        !ShaderSupportsIndexedObjectData(*drawable.material->GetShader()))
+        !ShaderRequiresIndexedObjectData(*drawable.material->GetShader()))
     {
         return false;
     }
@@ -627,7 +680,25 @@ bool EngineFrameObjectBindingProvider::DrawableRequiresIndexedObjectData(
     if (drawable.material == nullptr || drawable.material->GetShader() == nullptr)
         return false;
 
-    return ShaderSupportsIndexedObjectData(*drawable.material->GetShader());
+    return ShaderRequiresIndexedObjectData(*drawable.material->GetShader());
+}
+
+bool EngineFrameObjectBindingProvider::ShaderRequiresIndexedObjectData(
+    const NLS::Render::Resources::Shader& shader) const
+{
+    const auto generation = shader.GetGeneration();
+    const auto shaderInstanceId = shader.GetInstanceId();
+    if (const auto found = m_indexedObjectDataShaderSupportCache.find(shaderInstanceId);
+        found != m_indexedObjectDataShaderSupportCache.end() &&
+        found->second.first == generation)
+    {
+        return found->second.second;
+    }
+
+    const bool supportsIndexedObjectData = ShaderSupportsIndexedObjectData(shader);
+    m_indexedObjectDataShaderSupportCache[shaderInstanceId] = { generation, supportsIndexedObjectData };
+    ++m_indexedObjectDataShaderSupportQueryCount;
+    return supportsIndexedObjectData;
 }
 
 void EngineFrameObjectBindingProvider::OnDeferredReset()

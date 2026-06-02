@@ -73,6 +73,10 @@ namespace NLS::Render::Data
         uint64_t parsedTransparentDrawableCount = 0;
         uint64_t parsedSkyboxDrawableCount = 0;
         uint64_t gBufferMaterialSyncCount = 0;
+        uint64_t gBufferMaterialResolveHitCount = 0;
+        uint64_t gBufferMaterialResolveMissCount = 0;
+        uint64_t preparedRecordedDrawStaticBaseCacheHitCount = 0;
+        uint64_t preparedRecordedDrawStaticBaseCacheMissCount = 0;
         uint64_t renderBindingSetCreationCount = 0;
         uint64_t renderSnapshotBufferCreationCount = 0;
         uint64_t rawVisibleObjectCount = 0;
@@ -84,5 +88,9 @@ namespace NLS::Render::Data
         uint64_t parallelCommandWorkUnitCount = 0;
         uint64_t parallelRecordingWorkerCount = 0;
         std::string parallelFallbackReason;
+        bool deviceLostDetected = false;
+        std::string deviceLostReason;
+        bool unsafeGpuWorkQuarantined = false;
+        std::string unsafeGpuWorkQuarantineReason;
 	};
 }

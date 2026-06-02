@@ -26,6 +26,8 @@ public:
     void RecordSubmittedDraw(const Entities::Drawable& drawable, uint32_t instanceCount);
     void RecordSceneParse(uint64_t opaqueCount, uint64_t transparentCount, uint64_t skyboxCount);
     void RecordGBufferMaterialSync();
+    void RecordGBufferMaterialResolve(bool hit);
+    void RecordPreparedRecordedDrawStaticBaseCache(bool hit);
     void RecordRenderBindingSetCreation(uint64_t count = 1u);
     void RecordRenderSnapshotBufferCreation(uint64_t count = 1u);
     void RecordDrawCallOptimizationStats(const NLS::Render::Data::DrawCallOptimizationStats& stats);

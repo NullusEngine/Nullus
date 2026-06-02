@@ -2,13 +2,14 @@
 #include <string>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 #include "BaseDef.h"
 namespace NLS
 {
     class NLS_BASE_API Image {
     private:
         int width, height, channels;
-        unsigned char* data;
+        std::vector<unsigned char> data;
 
     public:
         Image(const std::string& filename, bool flipVertically = false);

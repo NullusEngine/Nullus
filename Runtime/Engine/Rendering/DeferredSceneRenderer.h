@@ -53,12 +53,20 @@ namespace NLS::Engine::Rendering
 			uint64_t sourceMaterialInstanceId = 0u;
 			uint64_t parameterRevision = 0u;
 			uint64_t renderStateRevision = 0u;
+			uint64_t bindingRevision = 0u;
+			uint64_t shaderInstanceId = 0u;
+			uint64_t shaderGeneration = 0u;
 		};
 		struct GBufferMaterialCacheEntry
 		{
 			std::unique_ptr<NLS::Render::Resources::Material> material;
 			GBufferMaterialSyncStamp syncedStamp;
 			uint64_t syncCount = 0u;
+		};
+		struct FrameGBufferMaterialResolveEntry
+		{
+			GBufferMaterialSyncStamp sourceStamp;
+			NLS::Render::Resources::Material* material = nullptr;
 		};
 
 	protected:
@@ -94,6 +102,8 @@ namespace NLS::Engine::Rendering
 		void EnsureGBufferTargets(uint16_t width, uint16_t height);
 		std::unique_ptr<NLS::Render::Resources::Material> CreateGBufferMaterial() const;
 		NLS::Render::Resources::Material& GetOrCreateGBufferMaterial(NLS::Render::Resources::Material& sourceMaterial);
+		NLS::Render::Resources::Material& ResolveFrameGBufferMaterial(NLS::Render::Resources::Material& sourceMaterial);
+		void ClearFrameGBufferMaterialResolveCache();
 		void SyncGBufferMaterial(NLS::Render::Resources::Material& target, const NLS::Render::Resources::Material& sourceMaterial) const;
 		void DrawGBufferOpaques(NLS::Render::Data::PipelineState pso);
 		void DrawLightingPass(NLS::Render::Data::PipelineState pso);
@@ -107,11 +117,14 @@ namespace NLS::Engine::Rendering
 		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferMaterialTexture;
 		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferDepthTexture;
 		std::unordered_map<std::string, GBufferMaterialCacheEntry> m_gBufferMaterialCache;
+		std::unordered_map<uint64_t, FrameGBufferMaterialResolveEntry> m_frameGBufferMaterialResolveCache;
 		NLS::Render::Resources::Shader* m_gBufferShader = nullptr;
 		NLS::Render::Resources::Shader* m_lightingShader = nullptr;
 		uint64_t m_threadedQueuedGBufferDrawCount = 0u;
 		uint64_t m_threadedQueuedLightingDrawCount = 0u;
 		uint64_t m_frameGBufferMaterialSyncCount = 0u;
+		uint64_t m_frameGBufferMaterialResolveHitCount = 0u;
+		uint64_t m_frameGBufferMaterialResolveMissCount = 0u;
 		bool m_skipThreadedFramePublish = false;
 	};
 
@@ -122,12 +135,19 @@ namespace NLS::Engine::Rendering
 		static NLS::Render::Resources::Material& GetOrCreateGBufferMaterial(
 			DeferredSceneRenderer& renderer,
 			NLS::Render::Resources::Material& sourceMaterial);
+		static NLS::Render::Resources::Material& ResolveFrameGBufferMaterial(
+			DeferredSceneRenderer& renderer,
+			NLS::Render::Resources::Material& sourceMaterial);
 		static GBufferMaterialCache& GetGBufferMaterialCache(DeferredSceneRenderer& renderer);
 		static const GBufferMaterialCache& GetGBufferMaterialCache(const DeferredSceneRenderer& renderer);
 		static void SetGBufferShader(DeferredSceneRenderer& renderer, NLS::Render::Resources::Shader* shader);
 		static NLS::Render::Resources::Shader* GetGBufferShader(const DeferredSceneRenderer& renderer);
 		static void ResetFrameGBufferMaterialSyncCount(DeferredSceneRenderer& renderer);
 		static uint64_t GetFrameGBufferMaterialSyncCount(const DeferredSceneRenderer& renderer);
+		static void ClearFrameGBufferMaterialResolveCache(DeferredSceneRenderer& renderer);
+		static uint64_t GetFrameGBufferMaterialResolveCacheSize(const DeferredSceneRenderer& renderer);
+		static uint64_t GetFrameGBufferMaterialResolveHitCount(const DeferredSceneRenderer& renderer);
+		static uint64_t GetFrameGBufferMaterialResolveMissCount(const DeferredSceneRenderer& renderer);
 		static void EnsureGBufferTargets(DeferredSceneRenderer& renderer, uint16_t width, uint16_t height);
 		static const NLS::Render::Resources::Texture2D* GetGBufferAlbedoTexture(const DeferredSceneRenderer& renderer);
 		static const NLS::Render::Resources::Texture2D* GetGBufferNormalTexture(const DeferredSceneRenderer& renderer);

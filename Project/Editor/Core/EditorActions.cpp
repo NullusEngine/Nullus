@@ -293,7 +293,7 @@ NLS::Render::Resources::Material* GetOrCreateEditorDefaultMaterial(NLS::Editor::
     if (fallback.GetShader() != shader)
     {
         fallback.SetShader(shader);
-        const_cast<std::string&>(fallback.path) = ":Editor/GeneratedModelFallbackMaterial";
+        fallback.path = ":Editor/GeneratedModelFallbackMaterial";
         fallback.Set<Maths::Vector4>("u_Diffuse", { 0.86f, 0.88f, 0.92f, 1.0f });
         fallback.SetBackfaceCulling(false);
         fallback.SetFrontfaceCulling(false);
@@ -2991,19 +2991,19 @@ void Editor::Core::EditorActions::PropagateFileRename(std::string p_previousName
          if (NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::TextureManager>().MoveResource(p_previousName, p_newName))
          {
              Render::Resources::Texture2D* resource = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::TextureManager>()[p_newName];
-             *reinterpret_cast<std::string*>(reinterpret_cast<char*>(resource) + offsetof(Render::Resources::Texture2D, path)) = p_newName;
+             resource->path = p_newName;
          }
  
          if (NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::ShaderManager>().MoveResource(p_previousName, p_newName))
          {
              Render::Resources::Shader* resource = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::ShaderManager>()[p_newName];
-             *reinterpret_cast<std::string*>(reinterpret_cast<char*>(resource) + offsetof(Render::Resources::Shader, path)) = p_newName;
+             resource->path = p_newName;
          }
  
          if (NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::MaterialManager>().MoveResource(p_previousName, p_newName))
          {
              NLS::Render::Resources::Material* resource = NLS::Core::ServiceLocator::Get<NLS::Core::ResourceManagement::MaterialManager>()[p_newName];
-             *reinterpret_cast<std::string*>(reinterpret_cast<char*>(resource) + offsetof(Render::Resources::Material, path)) = p_newName;
+             resource->path = p_newName;
          }
      }
      else

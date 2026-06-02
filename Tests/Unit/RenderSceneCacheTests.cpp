@@ -1176,6 +1176,35 @@ TEST(RenderSceneCacheTests, DynamicInstancingReducesOneThousandCompatibleOpaqueO
     EXPECT_EQ(secondOptimizationStats.cachedCommandRebuildCount, 0u);
 }
 
+TEST(RenderSceneCacheTests, DynamicInstancingReducesTraceScaleCompatibleObjectsToOneSubmittedDraw)
+{
+    QueueSortFixture fixture;
+    constexpr size_t kTraceScaleDrawCount = 259u;
+    for (size_t index = 0u; index < kTraceScaleDrawCount; ++index)
+    {
+        fixture.AddObject(
+            ("TraceScaleInstance" + std::to_string(index)).c_str(),
+            *fixture.sharedMesh,
+            fixture.opaqueMaterialA,
+            static_cast<float>(index));
+    }
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, kTraceScaleDrawCount);
+    const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
+    const auto optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
+
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    EXPECT_EQ(ResolveVisibleInstanceCount(visible.opaques.front().second), kTraceScaleDrawCount);
+    EXPECT_EQ(optimizationStats.rawVisibleObjectCount, kTraceScaleDrawCount);
+    EXPECT_EQ(optimizationStats.submittedSceneDrawCount, 1u);
+    EXPECT_EQ(optimizationStats.dynamicInstanceGroupCount, 1u);
+    EXPECT_EQ(optimizationStats.largestInstanceGroupSize, kTraceScaleDrawCount);
+}
+
 TEST(RenderSceneCacheTests, DynamicInstancingRejectsIncompatibleMeshMaterialAndTransparentCommands)
 {
     QueueSortFixture fixture;

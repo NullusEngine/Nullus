@@ -77,8 +77,11 @@ namespace NLS::Render::Context
         std::string lastQueueOperationFailure;
         uint64_t currentFrameQueueOperationFailureCount = 0u;
         std::string currentFrameLastQueueOperationFailure;
-        bool deviceLostDetected = false;
+        std::atomic_bool deviceLostDetected{ false };
         std::string deviceLostReason;
+        std::atomic_bool unsafeGpuWorkQuarantined{ false };
+        std::string unsafeGpuWorkQuarantineReason;
+        std::atomic_bool unsafeGpuWorkQuarantineResourcesPreserved{ false };
     };
 
     namespace Detail
@@ -138,7 +141,8 @@ namespace NLS::Render::Context
         NLS_RENDER_API bool AllowsThreadedHarnessPublish(const DriverImpl& impl);
         NLS_RENDER_API RhiSubmissionFrame SubmitThreadedRhiFrame(
             DriverImpl& impl,
-            const RenderScenePackage& renderScenePackage);
+            const RenderScenePackage& renderScenePackage,
+            size_t frameContextIndex);
         NLS_RENDER_API uint64_t ResolveAsyncComputeCandidateWorkloadCount(
             const RenderScenePackage& renderScenePackage);
         NLS_RENDER_API bool SupportsOrderedParallelCommandSubmission(const DriverImpl& impl);
@@ -147,6 +151,7 @@ namespace NLS::Render::Context
         NLS_RENDER_API Render::RHI::RHIFrameContext* BeginThreadedRhiFrame(
             DriverImpl& impl,
             const RenderScenePackage& renderScenePackage,
+            size_t frameContextIndex,
             RhiSubmissionFrame* submissionFrame,
             Render::RHI::ResourceStateTrackerStats* preResetTrackerStats,
             Render::RHI::DescriptorAllocatorStats* descriptorStats);
@@ -173,7 +178,8 @@ namespace NLS::Render::Context
             Render::RHI::RHIFrameContext& frameContext,
             const RenderScenePackage& renderScenePackage,
             AsyncComputeSubmitPlan& submitPlan,
-            RhiSubmissionFrame* submissionFrame);
+            RhiSubmissionFrame* submissionFrame,
+            size_t frameContextIndex);
         NLS_RENDER_API bool ReleaseDeferredThreadedFrameScopedResourcesAfterFence(
             DriverImpl& impl,
             Render::RHI::RHIFrameContext& frameContext,

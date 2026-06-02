@@ -100,6 +100,7 @@ namespace NLS::Render::Resources
 		* Returns the bounding sphere of the mesh
 		*/
 		const Render::Geometry::BoundingSphere& GetBoundingSphere() const;
+		uint64_t GetInstanceId() const;
 		uint64_t GetContentRevision() const;
 		void Reload(
 			const std::vector<Geometry::Vertex>& p_vertices,
@@ -132,6 +133,7 @@ namespace NLS::Render::Resources
 		std::unique_ptr<Buffers::IndexBuffer>			m_indexBuffer;
 
 		Geometry::BoundingSphere m_boundingSphere;
+		uint64_t m_instanceId = 0u;
 		uint64_t m_contentRevision = 1u;
 	};
 }

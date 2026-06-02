@@ -638,6 +638,11 @@ TEST(PanelWindowHookTests, FrameInfoPanelFormatsSuppliedRenderViewSnapshot)
     frameInfo.parallelCommandWorkUnitCount = 4u;
     frameInfo.parallelRecordingWorkerCount = 0u;
     frameInfo.parallelFallbackReason = "attachment-backed pass kept unsliced";
+    frameInfo.gBufferMaterialResolveHitCount = 7u;
+    frameInfo.gBufferMaterialResolveMissCount = 2u;
+    frameInfo.preparedRecordedDrawStaticBaseCacheHitCount = 9u;
+    frameInfo.preparedRecordedDrawStaticBaseCacheMissCount = 1u;
+    frameInfo.unsafeGpuWorkQuarantined = true;
 
     NLS::Editor::Panels::FrameInfo panel("Frame Info", true, {});
     panel.UpdateForFrameInfo("Stats View", frameInfo);
@@ -649,8 +654,11 @@ TEST(PanelWindowHookTests, FrameInfoPanelFormatsSuppliedRenderViewSnapshot)
     EXPECT_EQ(TextWidgetAt(panel, 5u).content, "Vertices: 6");
     ExpectTextWidgetContent(panel, "ParseScene Calls: 0");
     ExpectTextWidgetContent(panel, "Drawables O/T/S: 0/0/0");
+    ExpectTextWidgetContent(panel, "GBuffer Material Resolve H/M: 7/2");
+    ExpectTextWidgetContent(panel, "Prepared Draw Static Base H/M: 9/1");
     ExpectTextWidgetContent(panel, "Draw Opt Raw/Submitted/Groups/Largest/Rebuilds/Dropped: 10/3/1/8/2/1");
     ExpectTextWidgetContent(panel, "Parallel Work Units/Workers/Fallback: 4/0/attachment-backed pass kept unsliced");
+    ExpectTextWidgetContent(panel, "RHI Safety DeviceLost/UnsafeQuarantine: No/Yes");
     ExpectTextWidgetContent(panel, "GBuffer Material Syncs: 0");
     ExpectTextWidgetContent(panel, "Binding Sets Created: 0");
     ExpectTextWidgetContent(panel, "Snapshot Buffers Created: 0");

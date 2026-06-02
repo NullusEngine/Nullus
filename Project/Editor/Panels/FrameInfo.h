@@ -50,6 +50,8 @@ namespace NLS::Editor::Panels
 		UI::Widgets::Text& m_drawCallOptimizationText;
 		UI::Widgets::Text& m_parallelWorkText;
 		UI::Widgets::Text& m_gBufferMaterialSyncText;
+		UI::Widgets::Text& m_gBufferMaterialResolveText;
+		UI::Widgets::Text& m_preparedDrawStaticBaseCacheText;
 		UI::Widgets::Text& m_bindingSetCreationText;
 		UI::Widgets::Text& m_snapshotBufferCreationText;
 		UI::Widgets::Text& m_framesInFlightText;
@@ -57,6 +59,7 @@ namespace NLS::Editor::Panels
 		UI::Widgets::Text& m_publishStateText;
 		UI::Widgets::Text& m_frameStageText;
 		UI::Widgets::Text& m_retirementStateText;
+		UI::Widgets::Text& m_rhiSafetyText;
 		AView* m_targetView = nullptr;
 	};
 }

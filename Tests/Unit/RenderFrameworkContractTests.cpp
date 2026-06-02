@@ -559,7 +559,9 @@ namespace
             NLS::Render::RHI::QueueType,
             std::string = {}) override
         {
-            return nullptr;
+            auto commandPool = std::make_shared<ContractCommandPool>();
+            commandPool->commandBuffer = std::make_shared<ContractCommandBuffer>();
+            return commandPool;
         }
         std::shared_ptr<NLS::Render::RHI::RHIFence> CreateFence(std::string = {}) override
         {
@@ -964,6 +966,40 @@ TEST(RenderFrameworkContractTests, DX12UploadAndDescriptorWaitsUseBoundedFencePo
     EXPECT_NE(descriptorSource.find("WaitForDX12FenceValue"), std::string::npos);
 }
 
+TEST(RenderFrameworkContractTests, DX12BindingSetOwnsDescriptorHeapAllocators)
+{
+    const std::filesystem::path descriptorHeaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12Descriptor.h";
+    const std::filesystem::path deviceFactoryPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12ExplicitDeviceFactory.cpp";
+
+    const auto readFile = [](const std::filesystem::path& path)
+    {
+        std::ifstream stream(path, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>());
+    };
+
+    const std::string descriptorHeader = readFile(descriptorHeaderPath);
+    const std::string deviceFactory = readFile(deviceFactoryPath);
+
+    ASSERT_FALSE(descriptorHeader.empty());
+    ASSERT_FALSE(deviceFactory.empty());
+    EXPECT_NE(
+        descriptorHeader.find("std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_resourceHeapAllocator"),
+        std::string::npos);
+    EXPECT_NE(
+        descriptorHeader.find("std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_samplerHeapAllocator"),
+        std::string::npos);
+    EXPECT_NE(deviceFactory.find("std::make_shared<DX12ShaderVisibleDescriptorHeapAllocator>"), std::string::npos);
+    EXPECT_NE(deviceFactory.find("m_resourceHeapAllocator,\n\t\t\t\tm_samplerHeapAllocator"), std::string::npos);
+    EXPECT_EQ(
+        descriptorHeader.find("DX12ShaderVisibleDescriptorHeapAllocator* m_resourceHeapAllocator"),
+        std::string::npos);
+    EXPECT_EQ(
+        descriptorHeader.find("DX12ShaderVisibleDescriptorHeapAllocator* m_samplerHeapAllocator"),
+        std::string::npos);
+}
+
 TEST(RenderFrameworkContractTests, BaseDepthStencilViewRejectsReadOnlyFallbackToWritableHandle)
 {
     WritableOnlyDepthStencilTextureView view;
@@ -1085,9 +1121,10 @@ TEST(RenderFrameworkContractTests, DX12UIBridgePublishesUiSignalOnlyAfterSuccess
     const std::string renderDrawDataBody = source.substr(renderDrawData, resolveTextureView - renderDrawData);
 
     EXPECT_NE(renderDrawDataBody.find("m_lastSubmittedUiSignalValue = 0u;"), std::string::npos);
-    EXPECT_NE(renderDrawDataBody.find("const HRESULT frameSignalHr = m_queue->Signal(m_fence.Get(), fenceValue);"), std::string::npos);
+    EXPECT_NE(renderDrawDataBody.find("DX12::ScopedDX12QueueLock queueLock(m_queue.Get())"), std::string::npos);
+    EXPECT_NE(renderDrawDataBody.find("frameSignalHr = m_queue->Signal(m_fence.Get(), fenceValue);"), std::string::npos);
     EXPECT_NE(renderDrawDataBody.find("FAILED(frameSignalHr)"), std::string::npos);
-    EXPECT_NE(renderDrawDataBody.find("const HRESULT uiSignalHr = m_queue->Signal(m_uiFence.Get(), fenceValue);"), std::string::npos);
+    EXPECT_NE(renderDrawDataBody.find("uiSignalHr = m_queue->Signal(m_uiFence.Get(), fenceValue);"), std::string::npos);
     EXPECT_NE(renderDrawDataBody.find("FAILED(uiSignalHr)"), std::string::npos);
     EXPECT_NE(renderDrawDataBody.find("m_lastSubmittedUiSignalValue = fenceValue;"), std::string::npos);
 
@@ -1913,7 +1950,8 @@ TEST(RenderFrameworkContractTests, ShaderGenerationParticipatesInExplicitModuleC
     ASSERT_FALSE(source.empty());
     EXPECT_NE(headerSource.find("uint64_t GetGeneration() const"), std::string::npos);
     EXPECT_NE(headerSource.find("m_generation"), std::string::npos);
-    EXPECT_NE(source.find("std::make_tuple(backend, stage, m_generation)"), std::string::npos);
+    EXPECT_NE(source.find("ResolveDeviceCacheIdentity(device)"), std::string::npos);
+    EXPECT_NE(source.find("backend, stage, m_generation"), std::string::npos);
     EXPECT_NE(source.find("++m_generation"), std::string::npos);
 }
 

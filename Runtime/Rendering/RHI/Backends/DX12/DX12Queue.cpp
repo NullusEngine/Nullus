@@ -2,6 +2,7 @@
 
 #include "Profiling/Profiler.h"
 #include "Rendering/RHI/Backends/DX12/DX12PresentPolicy.h"
+#include "Rendering/RHI/Backends/DX12/DX12QueueSynchronization.h"
 #include "Rendering/RHI/Backends/DX12/DX12Synchronization.h"
 #include "Rendering/RHI/Core/RHICommand.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
@@ -16,6 +17,7 @@
 #include <Windows.h>
 #include <d3d12.h>
 #include <d3d12sdklayers.h>
+#include <d3d12video.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 #endif
@@ -60,10 +62,11 @@ namespace NLS::Render::Backend
 			return NLS::Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow;
 		}
 
-		NLS::Render::RHI::RHIQueueOperationResult ClassifyDx12PostExecuteSignalFailure(
+		NLS::Render::RHI::RHIQueueOperationResult ClassifyDx12QueuedWorkFailure(
 			ID3D12Device* device,
 			const std::string& message,
-			const bool mayHaveQueuedGpuWork)
+			const bool mayHaveQueuedGpuWork,
+			const bool frameFenceSignalQueued = false)
 		{
 			if (device != nullptr)
 			{
@@ -73,7 +76,8 @@ namespace NLS::Render::Backend
 					return {
 						NLS::Render::RHI::RHIQueueOperationStatusCode::DeviceLost,
 						message + " deviceRemovedHr=" + std::to_string(deviceStatus),
-						mayHaveQueuedGpuWork
+						mayHaveQueuedGpuWork,
+						frameFenceSignalQueued
 					};
 				}
 			}
@@ -81,7 +85,8 @@ namespace NLS::Render::Backend
 			return {
 				NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure,
 				message,
-				mayHaveQueuedGpuWork
+				mayHaveQueuedGpuWork,
+				frameFenceSignalQueued
 			};
 		}
 
@@ -118,6 +123,174 @@ namespace NLS::Render::Backend
 			}
 
 			infoQueue->ClearStoredMessages();
+		}
+
+		std::string DredOperationName(const D3D12_AUTO_BREADCRUMB_OP operation)
+		{
+			switch (operation)
+			{
+			case D3D12_AUTO_BREADCRUMB_OP_SETMARKER:
+				return "SetMarker";
+			case D3D12_AUTO_BREADCRUMB_OP_BEGINEVENT:
+				return "BeginEvent";
+			case D3D12_AUTO_BREADCRUMB_OP_ENDEVENT:
+				return "EndEvent";
+			case D3D12_AUTO_BREADCRUMB_OP_DRAWINSTANCED:
+				return "DrawInstanced";
+			case D3D12_AUTO_BREADCRUMB_OP_DRAWINDEXEDINSTANCED:
+				return "DrawIndexedInstanced";
+			case D3D12_AUTO_BREADCRUMB_OP_EXECUTEINDIRECT:
+				return "ExecuteIndirect";
+			case D3D12_AUTO_BREADCRUMB_OP_DISPATCH:
+				return "Dispatch";
+			case D3D12_AUTO_BREADCRUMB_OP_COPYBUFFERREGION:
+				return "CopyBufferRegion";
+			case D3D12_AUTO_BREADCRUMB_OP_COPYTEXTUREREGION:
+				return "CopyTextureRegion";
+			case D3D12_AUTO_BREADCRUMB_OP_COPYRESOURCE:
+				return "CopyResource";
+			case D3D12_AUTO_BREADCRUMB_OP_COPYTILES:
+				return "CopyTiles";
+			case D3D12_AUTO_BREADCRUMB_OP_RESOLVESUBRESOURCE:
+				return "ResolveSubresource";
+			case D3D12_AUTO_BREADCRUMB_OP_CLEARRENDERTARGETVIEW:
+				return "ClearRenderTargetView";
+			case D3D12_AUTO_BREADCRUMB_OP_CLEARUNORDEREDACCESSVIEW:
+				return "ClearUnorderedAccessView";
+			case D3D12_AUTO_BREADCRUMB_OP_CLEARDEPTHSTENCILVIEW:
+				return "ClearDepthStencilView";
+			case D3D12_AUTO_BREADCRUMB_OP_RESOURCEBARRIER:
+				return "ResourceBarrier";
+			case D3D12_AUTO_BREADCRUMB_OP_EXECUTEBUNDLE:
+				return "ExecuteBundle";
+			case D3D12_AUTO_BREADCRUMB_OP_PRESENT:
+				return "Present";
+			case D3D12_AUTO_BREADCRUMB_OP_RESOLVEQUERYDATA:
+				return "ResolveQueryData";
+			case D3D12_AUTO_BREADCRUMB_OP_BEGINSUBMISSION:
+				return "BeginSubmission";
+			case D3D12_AUTO_BREADCRUMB_OP_ENDSUBMISSION:
+				return "EndSubmission";
+			case D3D12_AUTO_BREADCRUMB_OP_DECODEFRAME:
+				return "DecodeFrame";
+			case D3D12_AUTO_BREADCRUMB_OP_PROCESSFRAMES:
+				return "ProcessFrames";
+			case D3D12_AUTO_BREADCRUMB_OP_ATOMICCOPYBUFFERUINT:
+				return "AtomicCopyBufferUint";
+			case D3D12_AUTO_BREADCRUMB_OP_ATOMICCOPYBUFFERUINT64:
+				return "AtomicCopyBufferUint64";
+			case D3D12_AUTO_BREADCRUMB_OP_RESOLVESUBRESOURCEREGION:
+				return "ResolveSubresourceRegion";
+			case D3D12_AUTO_BREADCRUMB_OP_WRITEBUFFERIMMEDIATE:
+				return "WriteBufferImmediate";
+			case D3D12_AUTO_BREADCRUMB_OP_DECODEFRAME1:
+				return "DecodeFrame1";
+			case D3D12_AUTO_BREADCRUMB_OP_SETPROTECTEDRESOURCESESSION:
+				return "SetProtectedResourceSession";
+			case D3D12_AUTO_BREADCRUMB_OP_DECODEFRAME2:
+				return "DecodeFrame2";
+			case D3D12_AUTO_BREADCRUMB_OP_PROCESSFRAMES1:
+				return "ProcessFrames1";
+			case D3D12_AUTO_BREADCRUMB_OP_BUILDRAYTRACINGACCELERATIONSTRUCTURE:
+				return "BuildRaytracingAccelerationStructure";
+			case D3D12_AUTO_BREADCRUMB_OP_EMITRAYTRACINGACCELERATIONSTRUCTUREPOSTBUILDINFO:
+				return "EmitRaytracingAccelerationStructurePostbuildInfo";
+			case D3D12_AUTO_BREADCRUMB_OP_COPYRAYTRACINGACCELERATIONSTRUCTURE:
+				return "CopyRaytracingAccelerationStructure";
+			case D3D12_AUTO_BREADCRUMB_OP_DISPATCHRAYS:
+				return "DispatchRays";
+			case D3D12_AUTO_BREADCRUMB_OP_INITIALIZEMETACOMMAND:
+				return "InitializeMetaCommand";
+			case D3D12_AUTO_BREADCRUMB_OP_EXECUTEMETACOMMAND:
+				return "ExecuteMetaCommand";
+			case D3D12_AUTO_BREADCRUMB_OP_ESTIMATEMOTION:
+				return "EstimateMotion";
+			case D3D12_AUTO_BREADCRUMB_OP_RESOLVEMOTIONVECTORHEAP:
+				return "ResolveMotionVectorHeap";
+			case D3D12_AUTO_BREADCRUMB_OP_SETPIPELINESTATE1:
+				return "SetPipelineState1";
+			case D3D12_AUTO_BREADCRUMB_OP_INITIALIZEEXTENSIONCOMMAND:
+				return "InitializeExtensionCommand";
+			case D3D12_AUTO_BREADCRUMB_OP_EXECUTEEXTENSIONCOMMAND:
+				return "ExecuteExtensionCommand";
+			default:
+				return "Unknown(" + std::to_string(static_cast<int>(operation)) + ")";
+			}
+		}
+
+		void LogDx12DredBreadcrumbs(ID3D12Device* device, const std::string& context)
+		{
+			if (device == nullptr)
+				return;
+
+			Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedData1> dred1;
+			const HRESULT dred1Hr = device->QueryInterface(IID_PPV_ARGS(&dred1));
+			if (SUCCEEDED(dred1Hr) && dred1 != nullptr)
+			{
+				D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 breadcrumbs{};
+				if (SUCCEEDED(dred1->GetAutoBreadcrumbsOutput1(&breadcrumbs)))
+				{
+					uint32_t nodeIndex = 0u;
+					for (auto* node = breadcrumbs.pHeadAutoBreadcrumbNode; node != nullptr; node = node->pNext)
+					{
+						const UINT executed =
+							node->pLastBreadcrumbValue != nullptr ? *node->pLastBreadcrumbValue : 0u;
+						const UINT operationCount = node->BreadcrumbCount;
+						const UINT lastOperationIndex = executed > 0u ? executed - 1u : 0u;
+						const auto operation = node->pCommandHistory != nullptr && lastOperationIndex < operationCount
+							? DredOperationName(node->pCommandHistory[lastOperationIndex])
+							: std::string{ "Unavailable" };
+						NLS_LOG_ERROR(
+							context +
+							": DRED breadcrumb node=" + std::to_string(nodeIndex) +
+							" commandList=\"" + (node->pCommandListDebugNameA != nullptr ? node->pCommandListDebugNameA : "") + "\"" +
+							" commandQueue=\"" + (node->pCommandQueueDebugNameA != nullptr ? node->pCommandQueueDebugNameA : "") + "\"" +
+							" executed=" + std::to_string(executed) +
+							"/" + std::to_string(operationCount) +
+							" lastOp=" + operation);
+						++nodeIndex;
+					}
+				}
+
+				D3D12_DRED_PAGE_FAULT_OUTPUT1 pageFault{};
+				if (SUCCEEDED(dred1->GetPageFaultAllocationOutput1(&pageFault)) &&
+					pageFault.PageFaultVA != 0u)
+				{
+					NLS_LOG_ERROR(
+						context +
+						": DRED page fault VA=" + std::to_string(pageFault.PageFaultVA));
+				}
+				return;
+			}
+
+			Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedData> dred;
+			if (FAILED(device->QueryInterface(IID_PPV_ARGS(&dred))) || dred == nullptr)
+				return;
+
+			D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs{};
+			if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput(&breadcrumbs)))
+			{
+				uint32_t nodeIndex = 0u;
+				for (auto* node = breadcrumbs.pHeadAutoBreadcrumbNode; node != nullptr; node = node->pNext)
+				{
+					const UINT executed =
+						node->pLastBreadcrumbValue != nullptr ? *node->pLastBreadcrumbValue : 0u;
+					const UINT operationCount = node->BreadcrumbCount;
+					const UINT lastOperationIndex = executed > 0u ? executed - 1u : 0u;
+					const auto operation = node->pCommandHistory != nullptr && lastOperationIndex < operationCount
+						? DredOperationName(node->pCommandHistory[lastOperationIndex])
+						: std::string{ "Unavailable" };
+					NLS_LOG_ERROR(
+						context +
+						": DRED breadcrumb node=" + std::to_string(nodeIndex) +
+						" commandList=\"" + (node->pCommandListDebugNameA != nullptr ? node->pCommandListDebugNameA : "") + "\"" +
+						" commandQueue=\"" + (node->pCommandQueueDebugNameA != nullptr ? node->pCommandQueueDebugNameA : "") + "\"" +
+						" executed=" + std::to_string(executed) +
+						"/" + std::to_string(operationCount) +
+						" lastOp=" + operation);
+					++nodeIndex;
+				}
+			}
 		}
 
 		NLS::Render::RHI::RHIQueueOperationResult ValidateDX12SemaphoreWaitValue(
@@ -161,6 +334,13 @@ namespace NLS::Render::Backend
 #endif
 	}
 
+	NativeDX12Queue::~NativeDX12Queue()
+	{
+#if defined(_WIN32)
+		NLS::Render::RHI::DX12::Detail::ReleaseQueueMutex(m_queue);
+#endif
+	}
+
 	std::string_view NativeDX12Queue::GetDebugName() const
 	{
 		return m_debugName;
@@ -186,34 +366,6 @@ namespace NLS::Render::Backend
 				NLS::Render::RHI::RHIQueueOperationStatusCode::InvalidArgument,
 				"NativeDX12Queue::Submit: queue is null"
 			};
-
-		{
-			NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::WaitSubmitSemaphores");
-			for (const auto& semaphore : submitDesc.waitSemaphores)
-			{
-				auto* nativeSemaphore = dynamic_cast<NativeDX12Semaphore*>(semaphore.get());
-				if (nativeSemaphore == nullptr || nativeSemaphore->GetFence() == nullptr)
-					continue;
-
-				const auto waitValueValidation = ValidateDX12SemaphoreWaitValue(
-					*nativeSemaphore,
-					"NativeDX12Queue::Submit");
-				if (!waitValueValidation.Succeeded())
-					return waitValueValidation;
-
-				const HRESULT waitHr = m_queue->Wait(
-					nativeSemaphore->GetFence(),
-					nativeSemaphore->GetWaitValue());
-				if (FAILED(waitHr))
-				{
-					const std::string message =
-						"NativeDX12Queue::Submit: queue wait on semaphore failed hr=" +
-						std::to_string(waitHr);
-					NLS_LOG_ERROR(message);
-					return { NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure, message };
-				}
-			}
-		}
 
 		std::vector<ID3D12CommandList*> commandLists;
 		{
@@ -252,6 +404,49 @@ namespace NLS::Render::Backend
 			}
 		}
 
+		bool mayHaveQueuedGpuWork = false;
+		{
+			NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::ValidateSubmitSemaphoreWaits");
+			for (const auto& semaphore : submitDesc.waitSemaphores)
+			{
+				auto* nativeSemaphore = dynamic_cast<NativeDX12Semaphore*>(semaphore.get());
+				if (nativeSemaphore == nullptr || nativeSemaphore->GetFence() == nullptr)
+					continue;
+
+				const auto waitValueValidation = ValidateDX12SemaphoreWaitValue(
+					*nativeSemaphore,
+					"NativeDX12Queue::Submit");
+				if (!waitValueValidation.Succeeded())
+					return waitValueValidation;
+			}
+		}
+		NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(m_queue);
+		{
+			NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::WaitSubmitSemaphores");
+			for (const auto& semaphore : submitDesc.waitSemaphores)
+			{
+				auto* nativeSemaphore = dynamic_cast<NativeDX12Semaphore*>(semaphore.get());
+				if (nativeSemaphore == nullptr || nativeSemaphore->GetFence() == nullptr)
+					continue;
+
+				mayHaveQueuedGpuWork = true;
+				const HRESULT waitHr = m_queue->Wait(
+					nativeSemaphore->GetFence(),
+					nativeSemaphore->GetWaitValue());
+				if (FAILED(waitHr))
+				{
+					const std::string message =
+						"NativeDX12Queue::Submit: queue wait on semaphore failed hr=" +
+						std::to_string(waitHr);
+					NLS_LOG_ERROR(message);
+					return ClassifyDx12QueuedWorkFailure(
+						m_device,
+						message,
+						mayHaveQueuedGpuWork);
+				}
+			}
+		}
+
 		if (!commandLists.empty())
 		{
 			if (ShouldLogDx12FrameFlow())
@@ -260,6 +455,7 @@ namespace NLS::Render::Backend
 			}
 			{
 				NLS_PROFILE_NAMED_SCOPE("ID3D12CommandQueue::ExecuteCommandLists");
+				mayHaveQueuedGpuWork = true;
 				m_queue->ExecuteCommandLists(static_cast<UINT>(commandLists.size()), commandLists.data());
 			}
 			NLS::Base::Profiling::ProfilerGpuCommandListSubmitEvent profilerSubmit;
@@ -288,6 +484,7 @@ namespace NLS::Render::Backend
 						std::to_string(deviceStatus);
 					NLS_LOG_ERROR(message);
 					LogDx12DebugMessages(m_device, "NativeDX12Queue::Submit");
+					LogDx12DredBreadcrumbs(m_device, "NativeDX12Queue::Submit");
 					return {
 						NLS::Render::RHI::RHIQueueOperationStatusCode::DeviceLost,
 						message,
@@ -309,37 +506,62 @@ namespace NLS::Render::Backend
 				if (nativeSemaphore == nullptr || nativeSemaphore->GetFence() == nullptr)
 					continue;
 
+				mayHaveQueuedGpuWork = true;
 				const HRESULT signalHr = nativeSemaphore->SignalOnQueueChecked(m_queue);
 				if (FAILED(signalHr))
 				{
-					const bool mayHaveQueuedGpuWork = !commandLists.empty();
 					const std::string message =
 						"NativeDX12Queue::Submit: queue signal semaphore failed hr=" +
 						std::to_string(signalHr);
 					NLS_LOG_ERROR(message);
-					return ClassifyDx12PostExecuteSignalFailure(m_device, message, mayHaveQueuedGpuWork);
+					bool frameFenceSignalQueued = false;
+					if (submitDesc.signalFence != nullptr)
+					{
+						auto* nativeFence = dynamic_cast<NativeDX12Fence*>(submitDesc.signalFence.get());
+						if (nativeFence != nullptr && nativeFence->GetFence() != nullptr)
+						{
+							submitDesc.signalFence->Reset();
+							const HRESULT fenceSignalHr = m_queue->Signal(
+								nativeFence->GetFence(),
+								nativeFence->GetTargetValue());
+							frameFenceSignalQueued = SUCCEEDED(fenceSignalHr);
+							if (!frameFenceSignalQueued)
+							{
+								NLS_LOG_ERROR(
+									"NativeDX12Queue::Submit: failed to queue retirement fence after semaphore signal failure hr=" +
+									std::to_string(fenceSignalHr));
+							}
+						}
+					}
+					return ClassifyDx12QueuedWorkFailure(
+						m_device,
+						message,
+						mayHaveQueuedGpuWork,
+						frameFenceSignalQueued);
 				}
 			}
 		}
 
 		NLS::Render::RHI::RHIQueueOperationResult result;
+		result.mayHaveQueuedGpuWork = mayHaveQueuedGpuWork;
 		if (submitDesc.signalFence != nullptr)
 		{
 			NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::SignalSubmitFence");
 			auto* nativeFence = dynamic_cast<NativeDX12Fence*>(submitDesc.signalFence.get());
 			if (nativeFence != nullptr && nativeFence->GetFence() != nullptr)
 			{
+				submitDesc.signalFence->Reset();
 				const UINT64 fenceValue = nativeFence->GetTargetValue();
 				const HRESULT signalHr = m_queue->Signal(nativeFence->GetFence(), fenceValue);
 				if (FAILED(signalHr))
 				{
-					const bool mayHaveQueuedGpuWork = !commandLists.empty();
 					const std::string message =
 						"NativeDX12Queue::Submit: queue signal fence failed hr=" +
 						std::to_string(signalHr) +
 						" value=" + std::to_string(fenceValue);
 					NLS_LOG_ERROR(message);
-					return ClassifyDx12PostExecuteSignalFailure(m_device, message, mayHaveQueuedGpuWork);
+					LogDx12DredBreadcrumbs(m_device, "NativeDX12Queue::Submit");
+					return ClassifyDx12QueuedWorkFailure(m_device, message, mayHaveQueuedGpuWork);
 				}
 				result.frameFenceSignalQueued = true;
 			}
@@ -399,8 +621,19 @@ namespace NLS::Render::Backend
 				std::to_string(presentDesc.uiSignalValue));
 		}
 
+		if (presentDesc.uiSignalSemaphore.backend == NLS::Render::RHI::BackendType::DX12 &&
+			presentDesc.uiSignalSemaphore.handle != nullptr &&
+			presentDesc.uiSignalValue == 0u)
 		{
-			NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::WaitPresentSemaphores");
+			const std::string message =
+				"NativeDX12Queue::Present: refusing to wait on UI fence value=0";
+			NLS_LOG_ERROR(message);
+			return { NLS::Render::RHI::RHIQueueOperationStatusCode::InvalidArgument, message };
+		}
+
+		bool mayHaveQueuedGpuWork = false;
+		{
+			NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::ValidatePresentSemaphoreWaits");
 			for (const auto& semaphore : presentDesc.waitSemaphores)
 			{
 				auto* nativeSemaphore = dynamic_cast<NativeDX12Semaphore*>(semaphore.get());
@@ -412,7 +645,18 @@ namespace NLS::Render::Backend
 					"NativeDX12Queue::Present");
 				if (!waitValueValidation.Succeeded())
 					return waitValueValidation;
+			}
+		}
+		NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(m_queue);
+		{
+			NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::WaitPresentSemaphores");
+			for (const auto& semaphore : presentDesc.waitSemaphores)
+			{
+				auto* nativeSemaphore = dynamic_cast<NativeDX12Semaphore*>(semaphore.get());
+				if (nativeSemaphore == nullptr || nativeSemaphore->GetFence() == nullptr)
+					continue;
 
+				mayHaveQueuedGpuWork = true;
 				const HRESULT waitHr = m_queue->Wait(
 					nativeSemaphore->GetFence(),
 					nativeSemaphore->GetWaitValue());
@@ -422,19 +666,12 @@ namespace NLS::Render::Backend
 						"NativeDX12Queue::Present: queue wait on present semaphore failed hr=" +
 						std::to_string(waitHr);
 					NLS_LOG_ERROR(message);
-					return { NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure, message };
+					return ClassifyDx12QueuedWorkFailure(
+						m_device,
+						message,
+						mayHaveQueuedGpuWork);
 				}
 			}
-		}
-
-		if (presentDesc.uiSignalSemaphore.backend == NLS::Render::RHI::BackendType::DX12 &&
-			presentDesc.uiSignalSemaphore.handle != nullptr &&
-			presentDesc.uiSignalValue == 0u)
-		{
-			const std::string message =
-				"NativeDX12Queue::Present: refusing to wait on UI fence value=0";
-			NLS_LOG_ERROR(message);
-			return { NLS::Render::RHI::RHIQueueOperationStatusCode::InvalidArgument, message };
 		}
 
 		if (presentDesc.uiSignalSemaphore.backend == NLS::Render::RHI::BackendType::DX12 &&
@@ -444,6 +681,7 @@ namespace NLS::Render::Backend
 			auto* uiFence = reinterpret_cast<ID3D12Fence*>(presentDesc.uiSignalSemaphore.handle);
 			if (uiFence != nullptr)
 			{
+				mayHaveQueuedGpuWork = true;
 				const HRESULT waitHr = m_queue->Wait(uiFence, presentDesc.uiSignalValue);
 				if (FAILED(waitHr))
 				{
@@ -451,7 +689,10 @@ namespace NLS::Render::Backend
 						"NativeDX12Queue::Present: failed to wait on UI fence before present hr=" +
 						std::to_string(waitHr);
 					NLS_LOG_WARNING(message);
-					return { NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure, message };
+					return ClassifyDx12QueuedWorkFailure(
+						m_device,
+						message,
+						mayHaveQueuedGpuWork);
 				}
 			}
 		}
@@ -464,6 +705,7 @@ namespace NLS::Render::Backend
 		HRESULT hr = S_OK;
 		{
 			NLS_PROFILE_NAMED_SCOPE("IDXGISwapChain::Present");
+			mayHaveQueuedGpuWork = true;
 			hr = swapchain->Present(syncInterval, 0);
 		}
 		if (ShouldLogDx12FrameFlow())
@@ -475,6 +717,7 @@ namespace NLS::Render::Backend
 			std::string message = "NativeDX12Queue::Present: Present failed with hr=" + std::to_string(hr);
 			NLS_LOG_ERROR(message);
 			LogDx12DebugMessages(m_device, "NativeDX12Queue::Present");
+			LogDx12DredBreadcrumbs(m_device, "NativeDX12Queue::Present");
 
 			if (m_device != nullptr)
 			{
@@ -491,9 +734,32 @@ namespace NLS::Render::Backend
 				(hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
 					? NLS::Render::RHI::RHIQueueOperationStatusCode::DeviceLost
 					: NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure;
-			return { statusCode, message };
+			return { statusCode, message, mayHaveQueuedGpuWork };
 		}
-		return {};
+		NLS::Render::RHI::RHIQueueOperationResult result;
+		result.mayHaveQueuedGpuWork = mayHaveQueuedGpuWork;
+		if (presentDesc.signalFence != nullptr)
+		{
+			NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::SignalPresentFence");
+			auto* nativeFence = dynamic_cast<NativeDX12Fence*>(presentDesc.signalFence.get());
+			if (nativeFence != nullptr && nativeFence->GetFence() != nullptr)
+			{
+				presentDesc.signalFence->Reset();
+				const UINT64 fenceValue = nativeFence->GetTargetValue();
+				const HRESULT signalHr = m_queue->Signal(nativeFence->GetFence(), fenceValue);
+				if (FAILED(signalHr))
+				{
+					const std::string message =
+						"NativeDX12Queue::Present: queue signal fence failed hr=" +
+						std::to_string(signalHr) +
+						" value=" + std::to_string(fenceValue);
+					NLS_LOG_ERROR(message);
+					return ClassifyDx12QueuedWorkFailure(m_device, message, mayHaveQueuedGpuWork);
+				}
+				result.frameFenceSignalQueued = true;
+			}
+		}
+		return result;
 #else
 		(void)presentDesc;
 		return { NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure, "DX12 present is only available on Windows" };

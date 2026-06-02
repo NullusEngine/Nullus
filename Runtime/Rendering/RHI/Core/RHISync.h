@@ -8,6 +8,7 @@ namespace NLS::Render::RHI
     {
         Pending,
         Success,
+        DeviceLost,
         Failed
     };
 

@@ -6,136 +6,32 @@ file(GLOB_RECURSE NULLUS_UNIT_TEST_FILES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/*.inl"
 )
 
+file(GLOB_RECURSE NULLUS_RENDERING_TEST_FILES CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/Tests/Rendering/*.cpp"
+    "${CMAKE_SOURCE_DIR}/Tests/Rendering/*.c"
+    "${CMAKE_SOURCE_DIR}/Tests/Rendering/*.h"
+    "${CMAKE_SOURCE_DIR}/Tests/Rendering/*.hpp"
+    "${CMAKE_SOURCE_DIR}/Tests/Rendering/*.inl"
+)
+
 # Exclude DX12 tests on non-Windows platforms
 if(NOT WIN32)
     list(FILTER NULLUS_UNIT_TEST_FILES EXCLUDE REGEX "[/\\\\]DX12.*\\.cpp$")
+    list(FILTER NULLUS_RENDERING_TEST_FILES EXCLUDE REGEX "[/\\\\]DX12.*\\.cpp$")
 endif()
 
-set(NULLUS_RENDER_ALIGNMENT_CONTRACT_TEST_FILES
-    "${CMAKE_CURRENT_SOURCE_DIR}/UE5RenderArchitectureContractTests.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/EditorRenderPathContractTests.cpp"
-)
-
-set(NULLUS_RENDERING_TEST_FILES
-    "${CMAKE_SOURCE_DIR}/Tests/Rendering/AssetMaterialViewportTests.cpp"
-)
-
-set(NULLUS_EDITOR_META_GENERATED_CPP
-    "${CMAKE_SOURCE_DIR}/Project/Editor/Gen/MetaGenerated.cpp"
-)
-set(NULLUS_EDITOR_META_GENERATED_H
-    "${CMAKE_SOURCE_DIR}/Project/Editor/Gen/MetaGenerated.h"
-)
-set_source_files_properties(
-    "${NULLUS_EDITOR_META_GENERATED_CPP}"
-    "${NULLUS_EDITOR_META_GENERATED_H}"
-    PROPERTIES GENERATED TRUE
-)
-set_source_files_properties(
-    "${CMAKE_CURRENT_SOURCE_DIR}/JobSystemBindingCAbiCompileTest.c"
-    PROPERTIES SKIP_PRECOMPILE_HEADERS ON
-)
+set(NULLUS_UNIT_TEST_C_FILES ${NULLUS_UNIT_TEST_FILES} ${NULLUS_RENDERING_TEST_FILES})
+list(FILTER NULLUS_UNIT_TEST_C_FILES INCLUDE REGEX "\\.c$")
+if(NULLUS_UNIT_TEST_C_FILES)
+    set_source_files_properties(${NULLUS_UNIT_TEST_C_FILES} PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
+endif()
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${NULLUS_UNIT_TEST_FILES})
-source_group("Contract Tests" FILES ${NULLUS_RENDER_ALIGNMENT_CONTRACT_TEST_FILES})
-source_group("Rendering Tests" FILES ${NULLUS_RENDERING_TEST_FILES})
+source_group(TREE "${CMAKE_SOURCE_DIR}/Tests/Rendering" PREFIX "Rendering Tests" FILES ${NULLUS_RENDERING_TEST_FILES})
 
 add_executable(NullusUnitTests
     ${NULLUS_UNIT_TEST_FILES}
-    ${NULLUS_RENDER_ALIGNMENT_CONTRACT_TEST_FILES}
     ${NULLUS_RENDERING_TEST_FILES}
-)
-
-target_sources(NullusUnitTests PRIVATE
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ReflectedPropertyDrawer.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ReflectedPropertyDrawer.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ProjectSettings.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ProjectSettings.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettings.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettings.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettingObject.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettingsPersistence.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettingsPersistence.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettingsRegistry.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/EditorSettingsRegistry.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/TagLayerSettings.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Settings/TagLayerSettings.h
-    ${NULLUS_EDITOR_META_GENERATED_CPP}
-    ${NULLUS_EDITOR_META_GENERATED_H}
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutProfile.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutProfile.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutRegistry.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutRegistry.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutResolver.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutResolver.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutService.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Shortcuts/EditorShortcutService.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneCameraFocus.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneCameraFocus.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneViewCameraInteractionStateMachine.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneViewCameraInteractionStateMachine.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneViewImGuizmo.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/SceneViewImGuizmo.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/EditorBackgroundTaskTracker.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/EditorBackgroundTaskTracker.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/AssetFileWatcher.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/AssetFileWatcher.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/EditorAssetDatabase.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/EditorAssetDatabase.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/AssetDragDropWorkflow.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/AssetDragDropWorkflow.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/AssetBrowserPresentation.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/AssetBrowserPresentation.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/EditorAssetPathUtils.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/EditorAssetPathUtils.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/EditorAssetDragPayload.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/EditorAssetDragPayload.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/EditorAssetDragDropBridge.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/EditorAssetDragDropBridge.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/EditorStartupAssetPreimport.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/EditorStartupAssetPreimport.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/ImportProgressTracker.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/ImportProgressTracker.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/PrefabEditorWorkflow.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/PrefabEditorWorkflow.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/AssetDatabaseFacade.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/AssetDatabaseFacade.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/AssetImporterSettings.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/AssetImporterSettings.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/AssetImporterFacade.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/AssetImporterFacade.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/ExternalAssetImporter.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/ExternalAssetImporter.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/TextureEncoding/DirectXTexTextureEncoder.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/TextureEncoding/DirectXTexTextureEncoder.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/PrefabUtilityFacade.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Assets/PrefabUtilityFacade.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ComponentSearchPanel.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ComponentSearchPanel.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/EditorLaunchArgs.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Core/EditorLaunchArgs.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/Console.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/Console.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/AView.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/AView.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/FrameInfo.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/FrameInfoRendererStats.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/FrameInfo.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ProfilerPanel.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ProfilerPanel.h
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ShortcutSettingsPanel.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Editor/Panels/ShortcutSettingsPanel.h
-    ${CMAKE_SOURCE_DIR}/Project/Game/LaunchArgs.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Game/LaunchArgs.h
-    ${CMAKE_SOURCE_DIR}/Project/Game/RuntimeAssetManifestStartup.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Game/RuntimeAssetManifestStartup.h
-    ${CMAKE_SOURCE_DIR}/Project/Launcher/Core/LauncherLocalization.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Launcher/Core/LauncherLocalization.h
-    ${CMAKE_SOURCE_DIR}/Project/Launcher/Core/LauncherProjectMetadata.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Launcher/Core/LauncherProjectMetadata.h
-    ${CMAKE_SOURCE_DIR}/Project/Launcher/Core/LauncherSettings.cpp
-    ${CMAKE_SOURCE_DIR}/Project/Launcher/Core/LauncherSettings.h
-    ${CMAKE_SOURCE_DIR}/Project/Launcher/Core/LauncherNavigation.h
 )
 
 target_compile_features(NullusUnitTests PRIVATE cxx_std_20)
@@ -150,9 +46,9 @@ target_include_directories(NullusUnitTests PRIVATE
     ${CMAKE_SOURCE_DIR}/Runtime/Rendering
     ${CMAKE_SOURCE_DIR}
     ${CMAKE_SOURCE_DIR}/Project/Editor/Gen
-    ${CMAKE_SOURCE_DIR}/Project/Game
     ${CMAKE_SOURCE_DIR}/Project/Editor
     ${CMAKE_SOURCE_DIR}/Project/Launcher
+    ${CMAKE_SOURCE_DIR}/Project/Game
 )
 
 target_compile_definitions(NullusUnitTests PRIVATE
@@ -170,6 +66,9 @@ target_link_libraries(NullusUnitTests PRIVATE
     NLS_Render
     NLS_UI
     NLS_Engine
+    EditorProject
+    GameProject
+    LauncherProject
     DirectXTex::DirectXTex
 )
 
@@ -179,8 +78,12 @@ if(APPLE)
     target_link_libraries(NullusUnitTests PRIVATE "-framework CoreServices")
 endif()
 
-if(TARGET Editor_MetaGenerated)
-    add_dependencies(NullusUnitTests Editor_MetaGenerated)
+if(WIN32)
+    target_link_libraries(NullusUnitTests PRIVATE Comctl32)
+endif()
+
+if(TARGET EditorProject_MetaGenerated)
+    add_dependencies(NullusUnitTests EditorProject_MetaGenerated)
 endif()
 
 set_target_properties(NullusUnitTests PROPERTIES

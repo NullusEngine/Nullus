@@ -201,10 +201,25 @@ endfunction()
 if(NLS_ENABLE_CXX_MODULES)
     if(MSVC AND CMAKE_GENERATOR MATCHES "Visual Studio")
         set(_nls_modules_pilot_source_dir "${NLS_ROOT_DIR}/Runtime/Math/_DISABLED/ModulesPilot")
+        file(GLOB _nls_modules_pilot_interface_files CONFIGURE_DEPENDS
+            "${_nls_modules_pilot_source_dir}/*.ixx"
+        )
+        file(GLOB _nls_modules_pilot_consumer_files CONFIGURE_DEPENDS
+            "${_nls_modules_pilot_source_dir}/*.cpp"
+        )
+        list(LENGTH _nls_modules_pilot_interface_files _nls_modules_pilot_interface_count)
+        list(LENGTH _nls_modules_pilot_consumer_files _nls_modules_pilot_consumer_count)
+        if(NOT _nls_modules_pilot_interface_count EQUAL 1 OR NOT _nls_modules_pilot_consumer_count EQUAL 1)
+            message(FATAL_ERROR "Modules pilot expects exactly one .ixx interface and one .cpp consumer in ${_nls_modules_pilot_source_dir}.")
+        endif()
+        list(GET _nls_modules_pilot_interface_files 0 _nls_modules_pilot_interface_source)
+        list(GET _nls_modules_pilot_consumer_files 0 _nls_modules_pilot_consumer_source)
+        get_filename_component(_nls_modules_pilot_interface_stem "${_nls_modules_pilot_interface_source}" NAME_WE)
+        get_filename_component(_nls_modules_pilot_consumer_stem "${_nls_modules_pilot_consumer_source}" NAME_WE)
         set(_nls_modules_pilot_binary_dir "${CMAKE_BINARY_DIR}/ModulesPilot/$<CONFIG>")
-        set(_nls_modules_pilot_ifc "${_nls_modules_pilot_binary_dir}/NullusMathPilot.ifc")
-        set(_nls_modules_pilot_interface_obj "${_nls_modules_pilot_binary_dir}/NullusMathPilot.obj")
-        set(_nls_modules_pilot_consumer_obj "${_nls_modules_pilot_binary_dir}/NullusMathPilotConsumer.obj")
+        set(_nls_modules_pilot_ifc "${_nls_modules_pilot_binary_dir}/${_nls_modules_pilot_interface_stem}.ifc")
+        set(_nls_modules_pilot_interface_obj "${_nls_modules_pilot_binary_dir}/${_nls_modules_pilot_interface_stem}.obj")
+        set(_nls_modules_pilot_consumer_obj "${_nls_modules_pilot_binary_dir}/${_nls_modules_pilot_consumer_stem}.obj")
 
         add_custom_command(
             OUTPUT
@@ -217,11 +232,11 @@ if(NLS_ENABLE_CXX_MODULES)
                 /std:c++20
                 /EHsc
                 /c
-                "${_nls_modules_pilot_source_dir}/NullusMathPilot.ixx"
+                "${_nls_modules_pilot_interface_source}"
                 "/Fo${_nls_modules_pilot_interface_obj}"
                 "/ifcOutput"
                 "${_nls_modules_pilot_ifc}"
-            DEPENDS "${_nls_modules_pilot_source_dir}/NullusMathPilot.ixx"
+            DEPENDS "${_nls_modules_pilot_interface_source}"
             VERBATIM
             COMMENT "Building Nullus C++20 modules pilot interface"
         )
@@ -235,12 +250,12 @@ if(NLS_ENABLE_CXX_MODULES)
                 /std:c++20
                 /EHsc
                 /c
-                "${_nls_modules_pilot_source_dir}/NullusMathPilotConsumer.cpp"
+                "${_nls_modules_pilot_consumer_source}"
                 "/Fo${_nls_modules_pilot_consumer_obj}"
                 "/reference"
                 "nullus.math.pilot=${_nls_modules_pilot_ifc}"
             DEPENDS
-                "${_nls_modules_pilot_source_dir}/NullusMathPilotConsumer.cpp"
+                "${_nls_modules_pilot_consumer_source}"
                 "${_nls_modules_pilot_ifc}"
             VERBATIM
             COMMENT "Building Nullus C++20 modules pilot consumer"

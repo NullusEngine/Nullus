@@ -254,7 +254,8 @@ namespace NLS::Render::Context
 
         Render::RHI::RHISubmitDesc BuildStandaloneGraphicsSubmitDesc(
             const Render::RHI::RHIFrameContext& frameContext,
-            const bool signalRenderFinished)
+            const bool signalRenderFinished,
+            const bool signalFrameFence)
         {
             Render::RHI::RHISubmitDesc submitDesc;
             if (frameContext.commandBuffer != nullptr)
@@ -263,12 +264,29 @@ namespace NLS::Render::Context
                 submitDesc.waitSemaphores.push_back(frameContext.imageAcquiredSemaphore);
             if (signalRenderFinished && frameContext.renderFinishedSemaphore != nullptr)
                 submitDesc.signalSemaphores.push_back(frameContext.renderFinishedSemaphore);
-            submitDesc.signalFence = frameContext.frameFence;
+            if (signalFrameFence)
+                submitDesc.signalFence = frameContext.frameFence;
             return submitDesc;
         }
 
         bool ShouldDeferFrameScopedRetirementAfterSubmit(
+            const Render::RHI::RHIQueueOperationResult& submitResult,
+            bool submitAttempted);
+
+        bool SubmitMayHaveQueuedGpuWorkWithoutRetirementFence(
+            const Render::RHI::RHIQueueOperationResult& submitResult,
+            bool submitAttempted);
+
+        void MarkQueuedGpuWorkWithoutRetirementFence(
+            DriverImpl& impl,
+            const std::string& context,
             const Render::RHI::RHIQueueOperationResult& submitResult);
+
+        void RetainStandaloneSubmitResourcesUntilNextFence(
+            DriverImpl& impl,
+            size_t frameContextIndex,
+            const Render::RHI::RHIFrameContext& frameContext,
+            const Render::RHI::RHISubmitDesc& submitDesc);
 
         void DeferStandaloneFrameScopedRetirementAfterSubmit(
             DriverImpl& impl,
@@ -279,13 +297,16 @@ namespace NLS::Render::Context
         Render::RHI::RHIPresentDesc BuildSwapchainPresentDesc(
             const DriverImpl& impl,
             const Render::RHI::RHIFrameContext& frameContext,
-            const bool includeUiCompositionSignal)
+            const bool includeUiCompositionSignal,
+            const bool signalFrameFence)
         {
             Render::RHI::RHIPresentDesc presentDesc;
             presentDesc.swapchain = impl.explicitSwapchain;
             presentDesc.imageIndex = frameContext.swapchainImageIndex;
             if (frameContext.renderFinishedSemaphore != nullptr)
                 presentDesc.waitSemaphores.push_back(frameContext.renderFinishedSemaphore);
+            if (signalFrameFence)
+                presentDesc.signalFence = frameContext.frameFence;
 
             if (includeUiCompositionSignal && impl.uiRenderFinishedSemaphore.IsValid())
             {
@@ -354,8 +375,12 @@ namespace NLS::Render::Context
                 impl.currentFrameQueueOperationFailureCount;
             submissionFrame.currentFrameLastQueueOperationFailure =
                 impl.currentFrameLastQueueOperationFailure;
-            submissionFrame.deviceLostDetected = impl.deviceLostDetected;
+            submissionFrame.deviceLostDetected = impl.deviceLostDetected.load(std::memory_order_acquire);
             submissionFrame.deviceLostReason = impl.deviceLostReason;
+            submissionFrame.unsafeGpuWorkQuarantined =
+                impl.unsafeGpuWorkQuarantined.load(std::memory_order_acquire);
+            submissionFrame.unsafeGpuWorkQuarantineReason =
+                impl.unsafeGpuWorkQuarantineReason;
         }
 
         void MarkCommandRecordingFailure(
@@ -382,10 +407,16 @@ namespace NLS::Render::Context
             const std::shared_ptr<Render::RHI::RHIFence>& frameFence,
             const std::string& context)
         {
-            NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::WaitFrameFenceWithDriverPolicy");
             if (frameFence == nullptr)
                 return false;
 
+            {
+                NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::CheckFrameFenceSignaled");
+                if (frameFence->IsSignaled())
+                    return true;
+            }
+
+            NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::WaitFrameFenceWithDriverPolicy");
             const bool waited = frameFence->Wait(kFrameFenceWaitTimeoutNanoseconds);
             if (!waited)
             {
@@ -429,7 +460,7 @@ namespace NLS::Render::Context
                 impl.currentFrameLastQueueOperationFailure = message;
                 if (result.code == Render::RHI::RHIQueueOperationStatusCode::DeviceLost)
                 {
-                    impl.deviceLostDetected = true;
+                    impl.deviceLostDetected.store(true, std::memory_order_release);
                     impl.deviceLostReason = message;
                 }
             }
@@ -438,11 +469,49 @@ namespace NLS::Render::Context
             return false;
         }
 
-        void PresentSwapchainFrame(
+        bool IsDeviceLostReadbackFailure(const Render::RHI::RHIReadbackResult& result)
+        {
+            if (result.Succeeded())
+                return false;
+
+            return result.code == Render::RHI::RHIReadbackStatusCode::DeviceLost ||
+                result.message.find("device removed") != std::string::npos ||
+                result.message.find("device removed/lost") != std::string::npos ||
+                result.message.find("device is lost") != std::string::npos;
+        }
+
+        void MarkReadbackDeviceLostIfNeeded(
+            DriverImpl& impl,
+            const Render::RHI::RHIReadbackResult& result,
+            const std::string& context)
+        {
+            if (!IsDeviceLostReadbackFailure(result))
+                return;
+
+            const std::string message =
+                context +
+                " failed because the RHI device is lost: " +
+                (result.message.empty()
+                    ? std::string{ "readback returned device-lost failure" }
+                    : result.message);
+            {
+                std::lock_guard lock(impl.driverTelemetryMutex);
+                ++impl.queueOperationFailureCount;
+                ++impl.currentFrameQueueOperationFailureCount;
+                impl.lastQueueOperationFailure = message;
+                impl.currentFrameLastQueueOperationFailure = message;
+                impl.deviceLostDetected.store(true, std::memory_order_release);
+                impl.deviceLostReason = message;
+            }
+            NLS_LOG_ERROR(message);
+        }
+
+        Render::RHI::RHIQueueOperationResult PresentSwapchainFrame(
             DriverImpl& impl,
             Render::RHI::RHIQueue& queue,
             const Render::RHI::RHIFrameContext& frameContext,
-            const bool includeUiCompositionSignal)
+            const bool includeUiCompositionSignal,
+            const bool signalFrameFence)
         {
             NLS_PROFILE_SCOPE();
             if (impl.renderDocCaptureController != nullptr)
@@ -451,14 +520,13 @@ namespace NLS::Render::Context
             const auto presentDesc = BuildSwapchainPresentDesc(
                 impl,
                 frameContext,
-                includeUiCompositionSignal);
-            RecordQueueOperationResult(
-                impl,
-                queue.PresentChecked(presentDesc),
-                "RhiThreadCoordinator::PresentSwapchainFrame");
+                includeUiCompositionSignal,
+                signalFrameFence);
+            const auto presentResult = queue.PresentChecked(presentDesc);
 
             if (impl.renderDocCaptureController != nullptr)
                 impl.renderDocCaptureController->OnPostPresent();
+            return presentResult;
         }
 
         bool FinalizeStandaloneUiFrame(DriverImpl& impl)
@@ -471,15 +539,17 @@ namespace NLS::Render::Context
             if (frameContext->commandBuffer != nullptr && frameContext->commandBuffer->IsRecording())
                 frameContext->commandBuffer->End();
 
-            const auto submitDesc = BuildStandaloneGraphicsSubmitDesc(*frameContext, true);
+            const auto submitDesc = BuildStandaloneGraphicsSubmitDesc(*frameContext, true, false);
 
             auto queue = impl.explicitDevice != nullptr
                 ? impl.explicitDevice->GetQueue(Render::RHI::QueueType::Graphics)
                 : nullptr;
             bool submitted = false;
+            bool submitAttempted = false;
             Render::RHI::RHIQueueOperationResult submitResult;
             if (queue != nullptr)
             {
+                submitAttempted = true;
                 {
                     NLS_PROFILE_NAMED_SCOPE("StandaloneUiFrame::QueueSubmitChecked");
                     submitResult = queue->SubmitChecked(submitDesc);
@@ -492,7 +562,20 @@ namespace NLS::Render::Context
                 if (submitted)
                 {
                     NLS_PROFILE_NAMED_SCOPE("StandaloneUiFrame::PresentSwapchainFrame");
-                    PresentSwapchainFrame(impl, *queue, *frameContext, true);
+                    const auto presentResult = PresentSwapchainFrame(impl, *queue, *frameContext, true, true);
+                    RecordQueueOperationResult(
+                        impl,
+                        presentResult,
+                        "RhiThreadCoordinator::FinalizeStandaloneUiFrame::Present");
+                    submitResult.mayHaveQueuedGpuWork =
+                        submitResult.mayHaveQueuedGpuWork ||
+                        presentResult.Succeeded() ||
+                        presentResult.mayHaveQueuedGpuWork;
+                    submitResult.frameFenceSignalQueued =
+                        submitResult.frameFenceSignalQueued ||
+                        presentResult.frameFenceSignalQueued;
+                    if (presentResult.code == Render::RHI::RHIQueueOperationStatusCode::DeviceLost)
+                        submitResult.code = Render::RHI::RHIQueueOperationStatusCode::DeviceLost;
                 }
             }
             else
@@ -506,7 +589,8 @@ namespace NLS::Render::Context
                 ? 0u
                 : static_cast<size_t>(impl.currentFrameIndex % impl.frameContexts.size());
             const bool deferFrameScopedRetirement =
-                ShouldDeferFrameScopedRetirementAfterSubmit(submitResult);
+                ShouldDeferFrameScopedRetirementAfterSubmit(submitResult, submitAttempted);
+            bool quarantinedFrameScopedResources = false;
             if (deferFrameScopedRetirement)
             {
                 DeferStandaloneFrameScopedRetirementAfterSubmit(
@@ -515,16 +599,29 @@ namespace NLS::Render::Context
                     *frameContext,
                     submitDesc);
             }
+            else if (SubmitMayHaveQueuedGpuWorkWithoutRetirementFence(submitResult, submitAttempted))
+            {
+                RetainStandaloneSubmitResourcesUntilNextFence(
+                    impl,
+                    frameContextIndex,
+                    *frameContext,
+                    submitDesc);
+                MarkQueuedGpuWorkWithoutRetirementFence(
+                    impl,
+                    "RhiThreadCoordinator::FinalizeStandaloneUiFrame::Submit",
+                    submitResult);
+                quarantinedFrameScopedResources = true;
+            }
 
-            if (!deferFrameScopedRetirement && frameContext->descriptorAllocator != nullptr)
+            if (!deferFrameScopedRetirement && !quarantinedFrameScopedResources && frameContext->descriptorAllocator != nullptr)
                 frameContext->descriptorAllocator->EndFrame(impl.currentFrameIndex);
-            if (!deferFrameScopedRetirement && frameContext->uploadContext != nullptr)
+            if (!deferFrameScopedRetirement && !quarantinedFrameScopedResources && frameContext->uploadContext != nullptr)
                 frameContext->uploadContext->EndFrame(impl.currentFrameIndex);
 
             RememberCompletedReadbackTexture(impl, frameContext->explicitReadbackTexture);
             impl.explicitFrameActive = false;
             impl.uiStandaloneFrameActive = false;
-            impl.currentFrameIndex = (impl.currentFrameIndex + 1u) % impl.frameContexts.size();
+            ++impl.currentFrameIndex;
             if (impl.uiStandaloneFrameSubmissionLock.owns_lock())
                 impl.uiStandaloneFrameSubmissionLock.unlock();
 
@@ -559,7 +656,7 @@ namespace NLS::Render::Context
                 submitPlan.batches.clear();
                 submitPlan.temporarySemaphores.clear();
                 RememberCompletedReadbackTexture(impl, frameContext.explicitReadbackTexture);
-                impl.currentFrameIndex = (impl.currentFrameIndex + 1u) % impl.frameContexts.size();
+                ++impl.currentFrameIndex;
             }
         }
 
@@ -593,10 +690,43 @@ namespace NLS::Render::Context
         }
 
         bool ShouldDeferFrameScopedRetirementAfterSubmit(
+            const Render::RHI::RHIQueueOperationResult& submitResult,
+            const bool submitAttempted)
+        {
+            return submitAttempted && submitResult.frameFenceSignalQueued;
+        }
+
+        bool SubmitMayHaveQueuedGpuWorkWithoutRetirementFence(
+            const Render::RHI::RHIQueueOperationResult& submitResult,
+            const bool submitAttempted)
+        {
+            return submitAttempted &&
+                submitResult.mayHaveQueuedGpuWork &&
+                !submitResult.frameFenceSignalQueued;
+        }
+
+        void MarkQueuedGpuWorkWithoutRetirementFence(
+            DriverImpl& impl,
+            const std::string& context,
             const Render::RHI::RHIQueueOperationResult& submitResult)
         {
-            return submitResult.mayHaveQueuedGpuWork &&
-                !submitResult.frameFenceSignalQueued;
+            const std::string message =
+                context +
+                " queued GPU work without a frame retirement fence; quarantining RHI resources" +
+                (submitResult.message.empty() ? std::string{} : (": " + submitResult.message));
+            {
+                std::lock_guard lock(impl.driverTelemetryMutex);
+                impl.unsafeGpuWorkQuarantined.store(true, std::memory_order_release);
+                impl.unsafeGpuWorkQuarantineReason = message;
+                if (submitResult.Succeeded())
+                {
+                    ++impl.queueOperationFailureCount;
+                    ++impl.currentFrameQueueOperationFailureCount;
+                    impl.lastQueueOperationFailure = message;
+                    impl.currentFrameLastQueueOperationFailure = message;
+                }
+            }
+            NLS_LOG_ERROR(message);
         }
 
         void RetainStandaloneSubmitResourcesUntilNextFence(
@@ -844,12 +974,16 @@ namespace NLS::Render::Context
 
         bool CanBeginStandaloneExplicitFrameForImpl(const DriverImpl& impl)
         {
-            return impl.threadedLifecycle == nullptr;
+            return impl.threadedLifecycle == nullptr &&
+                !impl.deviceLostDetected.load(std::memory_order_acquire) &&
+                !impl.unsafeGpuWorkQuarantined.load(std::memory_order_acquire);
         }
 
         bool CanBeginStandaloneUiExplicitFrameForImpl(const DriverImpl& impl)
         {
-            return !HasInFlightThreadedSwapchainFrame(impl);
+            return !impl.deviceLostDetected.load(std::memory_order_acquire) &&
+                !impl.unsafeGpuWorkQuarantined.load(std::memory_order_acquire) &&
+                !HasInFlightThreadedSwapchainFrame(impl);
         }
 
         uint64_t GetSteadyClockTickNs()
@@ -912,7 +1046,6 @@ namespace NLS::Render::Context
 
             const size_t frameContextIndex = impl.currentFrameIndex % impl.frameContexts.size();
             auto& frameContext = impl.frameContexts[frameContextIndex];
-            frameContext.frameIndex = static_cast<uint32_t>(impl.currentFrameIndex);
             ResetCurrentFrameQueueOperationTelemetry(impl);
             if (frameContext.frameFence != nullptr)
             {
@@ -928,8 +1061,7 @@ namespace NLS::Render::Context
                 }
                 Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(impl, frameContext, frameContextIndex);
             }
-            if (frameContext.frameFence != nullptr)
-                frameContext.frameFence->Reset();
+            frameContext.frameIndex = static_cast<uint64_t>(impl.currentFrameIndex);
             if (frameContext.imageAcquiredSemaphore != nullptr)
                 frameContext.imageAcquiredSemaphore->Reset();
             if (frameContext.renderFinishedSemaphore != nullptr)
@@ -3557,6 +3689,7 @@ namespace NLS::Render::Context
     Render::RHI::RHIFrameContext* Detail::BeginThreadedRhiFrame(
         DriverImpl& impl,
         const RenderScenePackage& renderScenePackage,
+        const size_t frameContextIndex,
         RhiSubmissionFrame* submissionFrame,
         Render::RHI::ResourceStateTrackerStats* preResetTrackerStats,
         Render::RHI::DescriptorAllocatorStats* descriptorStats)
@@ -3564,10 +3697,21 @@ namespace NLS::Render::Context
         NLS_PROFILE_SCOPE();
         if (impl.explicitDevice == nullptr || impl.frameContexts.empty())
             return nullptr;
+        if (impl.deviceLostDetected.load(std::memory_order_acquire) ||
+            impl.unsafeGpuWorkQuarantined.load(std::memory_order_acquire))
+            return nullptr;
 
-        const size_t frameContextIndex = impl.currentFrameIndex % impl.frameContexts.size();
+        if (frameContextIndex >= impl.frameContexts.size())
+        {
+            if (submissionFrame != nullptr)
+            {
+                submissionFrame->frameContextIndex = static_cast<uint32_t>(frameContextIndex);
+                MarkCommandRecordingFailure(submissionFrame, "Threaded RHI frame context index out of range");
+            }
+            return nullptr;
+        }
+
         auto& frameContext = impl.frameContexts[frameContextIndex];
-        frameContext.frameIndex = static_cast<uint32_t>(impl.currentFrameIndex);
         ResetCurrentFrameQueueOperationTelemetry(impl);
 
         if (submissionFrame != nullptr)
@@ -3596,11 +3740,7 @@ namespace NLS::Render::Context
             }
             Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(impl, frameContext, frameContextIndex);
         }
-        if (renderScenePackage.targetsSwapchain &&
-            frameContext.frameFence != nullptr)
-        {
-            frameContext.frameFence->Reset();
-        }
+        frameContext.frameIndex = static_cast<uint64_t>(impl.currentFrameIndex);
         if (frameContext.imageAcquiredSemaphore != nullptr)
             frameContext.imageAcquiredSemaphore->Reset();
         if (frameContext.renderFinishedSemaphore != nullptr)
@@ -4051,7 +4191,8 @@ namespace NLS::Render::Context
         Render::RHI::RHIFrameContext& frameContext,
         const RenderScenePackage& renderScenePackage,
         AsyncComputeSubmitPlan& submitPlan,
-        RhiSubmissionFrame* submissionFrame)
+        RhiSubmissionFrame* submissionFrame,
+        const size_t frameContextIndex)
     {
         NLS_PROFILE_SCOPE();
         auto graphicsQueue = impl.explicitDevice != nullptr
@@ -4063,6 +4204,7 @@ namespace NLS::Render::Context
         bool submissionSucceeded = true;
         bool submittedGpuWorkMayNeedFenceConfirmation = false;
         bool frameFenceSignalMayHaveBeenQueued = false;
+        bool frameFenceResetForSubmission = false;
         bool deviceLostDuringSubmit = false;
 
         size_t firstGraphicsBatchIndex = submitPlan.batches.size();
@@ -4111,20 +4253,27 @@ namespace NLS::Render::Context
             {
                 submitDesc.signalSemaphores.push_back(frameContext.renderFinishedSemaphore);
             }
-            if (isLastBatch)
+            const bool shouldPresentAfterThisBatch =
+                renderScenePackage.targetsSwapchain &&
+                isLastGraphicsBatch &&
+                frameContext.hasAcquiredSwapchainImage &&
+                impl.explicitSwapchain != nullptr &&
+                batch.queueType == Render::RHI::QueueType::Graphics;
+            const bool signalFrameFenceOnPresent =
+                shouldPresentAfterThisBatch &&
+                isLastBatch;
+            if (isLastBatch && !signalFrameFenceOnPresent)
             {
                 submitDesc.signalFence = frameContext.frameFence;
-                if (!renderScenePackage.targetsSwapchain &&
-                    frameContext.frameFence != nullptr)
-                {
-                    frameContext.frameFence->Reset();
-                }
             }
+            frameFenceResetForSubmission =
+                frameFenceResetForSubmission ||
+                submitDesc.signalFence != nullptr;
             {
                 NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::QueueSubmitChecked");
                 const auto submitResult = queue->SubmitChecked(submitDesc);
                 if (submitDesc.signalFence != nullptr &&
-                    (submitResult.Succeeded() || submitResult.frameFenceSignalQueued))
+                    submitResult.frameFenceSignalQueued)
                 {
                     frameFenceSignalMayHaveBeenQueued = true;
                 }
@@ -4149,12 +4298,7 @@ namespace NLS::Render::Context
                 }
             }
 
-            if (submissionSucceeded &&
-                renderScenePackage.targetsSwapchain &&
-                isLastGraphicsBatch &&
-                frameContext.hasAcquiredSwapchainImage &&
-                impl.explicitSwapchain != nullptr &&
-                batch.queueType == Render::RHI::QueueType::Graphics)
+            if (submissionSucceeded && shouldPresentAfterThisBatch)
             {
                 NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::Present");
                 if (impl.renderDocCaptureController != nullptr)
@@ -4165,12 +4309,27 @@ namespace NLS::Render::Context
                 presentDesc.imageIndex = frameContext.swapchainImageIndex;
                 if (frameContext.renderFinishedSemaphore != nullptr)
                     presentDesc.waitSemaphores.push_back(frameContext.renderFinishedSemaphore);
+                if (signalFrameFenceOnPresent)
+                    presentDesc.signalFence = frameContext.frameFence;
+                frameFenceResetForSubmission =
+                    frameFenceResetForSubmission ||
+                    presentDesc.signalFence != nullptr;
                 bool presented = false;
                 {
                     NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::QueuePresentChecked");
+                    const auto presentResult = graphicsQueue->PresentChecked(presentDesc);
+                    if (presentDesc.signalFence != nullptr &&
+                        presentResult.frameFenceSignalQueued)
+                    {
+                        frameFenceSignalMayHaveBeenQueued = true;
+                    }
+                    deviceLostDuringSubmit |=
+                        presentResult.code == Render::RHI::RHIQueueOperationStatusCode::DeviceLost;
+                    submittedGpuWorkMayNeedFenceConfirmation |= presentResult.Succeeded() ||
+                        presentResult.mayHaveQueuedGpuWork;
                     presented = RecordQueueOperationResult(
                         impl,
-                        graphicsQueue->PresentChecked(presentDesc),
+                        presentResult,
                         "RhiThreadCoordinator::SubmitCompiledExecutionPresent");
                 }
 
@@ -4186,57 +4345,40 @@ namespace NLS::Render::Context
         }
 
         if (submissionFrame != nullptr)
-        {
-            if (frameContext.frameFence != nullptr)
-            {
-                NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::WaitFrameFence");
-                submissionFrame->retirementFenceWaited =
-                    submittedGpuWorkMayNeedFenceConfirmation &&
-                    frameFenceSignalMayHaveBeenQueued &&
-                    !deviceLostDuringSubmit &&
-                    WaitFrameFenceWithDriverPolicy(
-                        impl,
-                        frameContext.frameFence,
-                        "RhiThreadCoordinator::ExecuteThreadedSubmitPlan");
-            }
-            else
-                submissionFrame->retirementFenceWaited = false;
-        }
-        else if (frameContext.frameFence != nullptr &&
-            submittedGpuWorkMayNeedFenceConfirmation &&
-            frameFenceSignalMayHaveBeenQueued &&
-            !deviceLostDuringSubmit)
-        {
-            NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::WaitFrameFence");
-            WaitFrameFenceWithDriverPolicy(
-                impl,
-                frameContext.frameFence,
-                "RhiThreadCoordinator::ExecuteThreadedSubmitPlan");
-        }
+            submissionFrame->retirementFenceWaited = false;
 
         const bool submittedButFenceNotConfirmed =
             submittedGpuWorkMayNeedFenceConfirmation &&
             frameFenceSignalMayHaveBeenQueued &&
             frameContext.frameFence != nullptr &&
-            (submissionFrame == nullptr || !submissionFrame->retirementFenceWaited);
+            !deviceLostDuringSubmit;
         const bool submittedWithoutRetirementFence =
             submittedGpuWorkMayNeedFenceConfirmation &&
             !frameFenceSignalMayHaveBeenQueued;
         const bool mustDeferFrameScopedRetirement =
-            submittedButFenceNotConfirmed ||
+            submittedButFenceNotConfirmed;
+        const bool mustQuarantineFrameScopedResources =
             submittedWithoutRetirementFence;
-        const size_t frameContextIndex = impl.frameContexts.empty()
-            ? 0u
-            : static_cast<size_t>(frameContext.frameIndex % impl.frameContexts.size());
-        if (mustDeferFrameScopedRetirement)
+        if (mustDeferFrameScopedRetirement || mustQuarantineFrameScopedResources)
         {
             RetainThreadedSubmitPlanResourcesUntilNextFence(impl, frameContextIndex, submitPlan);
+        }
+        if (mustQuarantineFrameScopedResources)
+        {
+            Render::RHI::RHIQueueOperationResult quarantineResult;
+            quarantineResult.mayHaveQueuedGpuWork = true;
+            quarantineResult.message = "threaded submit did not queue a frame retirement fence";
+            MarkQueuedGpuWorkWithoutRetirementFence(
+                impl,
+                "RhiThreadCoordinator::ExecuteThreadedSubmitPlan",
+                quarantineResult);
         }
 
         if (submissionFrame != nullptr)
         {
             const bool recordingSucceeded = !HasCommandRecordingFailure(submissionFrame);
             CopyDriverQueueTelemetryToSubmissionFrame(impl, *submissionFrame);
+            submissionFrame->deferredFrameScopedRetirement = mustDeferFrameScopedRetirement;
             submissionFrame->submittedSuccessfully =
                 submissionSucceeded &&
                 recordingSucceeded &&
@@ -4248,7 +4390,7 @@ namespace NLS::Render::Context
             impl,
             frameContext,
             submitPlan,
-            mustDeferFrameScopedRetirement);
+            mustDeferFrameScopedRetirement || mustQuarantineFrameScopedResources);
         if (mustDeferFrameScopedRetirement)
         {
             impl.deferredThreadedFrameScopedRetirementFrameContexts.insert(frameContextIndex);
@@ -4257,7 +4399,8 @@ namespace NLS::Render::Context
 
     RhiSubmissionFrame Detail::SubmitThreadedRhiFrame(
         DriverImpl& impl,
-        const RenderScenePackage& renderScenePackage)
+        const RenderScenePackage& renderScenePackage,
+        const size_t frameContextIndex)
     {
         NLS_PROFILE_SCOPE();
         const auto externalOutputSummary =
@@ -4274,6 +4417,7 @@ namespace NLS::Render::Context
         auto* preparedFrameContext = Detail::BeginThreadedRhiFrame(
             impl,
             renderScenePackage,
+            frameContextIndex,
             &submissionFrame,
             &preResetTrackerStats,
             &descriptorStats);
@@ -4334,7 +4478,8 @@ namespace NLS::Render::Context
                 frameContext,
                 renderScenePackage,
                 submitPlan,
-                &submissionFrame);
+                &submissionFrame,
+                frameContextIndex);
         }
         {
             NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::LogSubmission");
@@ -4434,13 +4579,14 @@ namespace NLS::Render::Context
     {
         if (impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.size() < impl.frameContexts.size())
             impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.resize(impl.frameContexts.size());
-        if (frameContextIndex < impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.size())
-            impl.retainedThreadedSubmitResourceKeepAliveByFrameContext[frameContextIndex].clear();
 
         const bool hadDeferredFrameScopedRetirement =
             impl.deferredThreadedFrameScopedRetirementFrameContexts.erase(frameContextIndex) != 0u;
         if (!hadDeferredFrameScopedRetirement)
             return false;
+
+        if (frameContextIndex < impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.size())
+            impl.retainedThreadedSubmitResourceKeepAliveByFrameContext[frameContextIndex].clear();
 
         const uint64_t completedFrameIndex = frameContext.frameIndex;
         if (frameContext.descriptorAllocator != nullptr)
@@ -4500,7 +4646,6 @@ namespace NLS::Render::Context
             return false;
 
         auto& frameContext = driver.m_impl->frameContexts[driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size()];
-        frameContext.frameIndex = static_cast<uint32_t>(driver.m_impl->currentFrameIndex);
         ResetCurrentFrameQueueOperationTelemetry(*driver.m_impl);
         if (frameContext.frameFence != nullptr)
         {
@@ -4517,8 +4662,7 @@ namespace NLS::Render::Context
                 frameContext,
                 driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size());
         }
-        if (frameContext.frameFence != nullptr)
-            frameContext.frameFence->Reset();
+        frameContext.frameIndex = static_cast<uint64_t>(driver.m_impl->currentFrameIndex);
         if (frameContext.imageAcquiredSemaphore != nullptr)
             frameContext.imageAcquiredSemaphore->Reset();
         if (frameContext.renderFinishedSemaphore != nullptr)
@@ -4590,12 +4734,21 @@ namespace NLS::Render::Context
         if (frameContext.commandBuffer != nullptr && frameContext.commandBuffer->IsRecording())
             frameContext.commandBuffer->End();
 
-        const auto submitDesc = BuildStandaloneGraphicsSubmitDesc(frameContext, true);
+        const bool willPresentSwapchain =
+            presentSwapchain &&
+            frameContext.hasAcquiredSwapchainImage &&
+            driver.m_impl->explicitSwapchain != nullptr;
+        const auto submitDesc = BuildStandaloneGraphicsSubmitDesc(
+            frameContext,
+            true,
+            !willPresentSwapchain);
 
         auto queue = driver.m_impl->explicitDevice->GetQueue(Render::RHI::QueueType::Graphics);
         Render::RHI::RHIQueueOperationResult submitResult;
+        bool submitAttempted = false;
         if (queue != nullptr)
         {
+            submitAttempted = true;
             submitResult = queue->SubmitChecked(submitDesc);
             const bool submitted = RecordQueueOperationResult(
                 *driver.m_impl,
@@ -4611,12 +4764,27 @@ namespace NLS::Render::Context
             {
                 ClearSceneToUiWaitSemaphoreForFrame(*driver.m_impl, frameContext);
             }
-            if (submitted &&
-                presentSwapchain &&
-                frameContext.hasAcquiredSwapchainImage &&
-                driver.m_impl->explicitSwapchain != nullptr)
+            if (submitted && willPresentSwapchain)
             {
-                PresentSwapchainFrame(*driver.m_impl, *queue, frameContext, true);
+                const auto presentResult = PresentSwapchainFrame(
+                    *driver.m_impl,
+                    *queue,
+                    frameContext,
+                    true,
+                    true);
+                RecordQueueOperationResult(
+                    *driver.m_impl,
+                    presentResult,
+                    "RhiThreadCoordinator::EndStandaloneExplicitFrame::Present");
+                submitResult.mayHaveQueuedGpuWork =
+                    submitResult.mayHaveQueuedGpuWork ||
+                    presentResult.Succeeded() ||
+                    presentResult.mayHaveQueuedGpuWork;
+                submitResult.frameFenceSignalQueued =
+                    submitResult.frameFenceSignalQueued ||
+                    presentResult.frameFenceSignalQueued;
+                if (presentResult.code == Render::RHI::RHIQueueOperationStatusCode::DeviceLost)
+                    submitResult.code = Render::RHI::RHIQueueOperationStatusCode::DeviceLost;
                 driver.ApplyPendingSwapchainResize();
             }
         }
@@ -4629,7 +4797,8 @@ namespace NLS::Render::Context
             ? 0u
             : static_cast<size_t>(driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size());
         const bool deferFrameScopedRetirement =
-            ShouldDeferFrameScopedRetirementAfterSubmit(submitResult);
+            ShouldDeferFrameScopedRetirementAfterSubmit(submitResult, submitAttempted);
+        bool quarantinedFrameScopedResources = false;
         if (deferFrameScopedRetirement)
         {
             DeferStandaloneFrameScopedRetirementAfterSubmit(
@@ -4638,14 +4807,27 @@ namespace NLS::Render::Context
                 frameContext,
                 submitDesc);
         }
+        else if (SubmitMayHaveQueuedGpuWorkWithoutRetirementFence(submitResult, submitAttempted))
+        {
+            RetainStandaloneSubmitResourcesUntilNextFence(
+                *driver.m_impl,
+                frameContextIndex,
+                frameContext,
+                submitDesc);
+            MarkQueuedGpuWorkWithoutRetirementFence(
+                *driver.m_impl,
+                "RhiThreadCoordinator::EndStandaloneExplicitFrame::Submit",
+                submitResult);
+            quarantinedFrameScopedResources = true;
+        }
 
-        if (!deferFrameScopedRetirement && frameContext.descriptorAllocator != nullptr)
+        if (!deferFrameScopedRetirement && !quarantinedFrameScopedResources && frameContext.descriptorAllocator != nullptr)
             frameContext.descriptorAllocator->EndFrame(driver.m_impl->currentFrameIndex);
-        if (!deferFrameScopedRetirement && frameContext.uploadContext != nullptr)
+        if (!deferFrameScopedRetirement && !quarantinedFrameScopedResources && frameContext.uploadContext != nullptr)
             frameContext.uploadContext->EndFrame(driver.m_impl->currentFrameIndex);
 
         RememberCompletedReadbackTexture(*driver.m_impl, frameContext.explicitReadbackTexture);
-        driver.m_impl->currentFrameIndex = (driver.m_impl->currentFrameIndex + 1u) % driver.m_impl->frameContexts.size();
+        ++driver.m_impl->currentFrameIndex;
         driver.m_impl->explicitFrameActive = false;
     }
 
@@ -4664,7 +4846,18 @@ namespace NLS::Render::Context
         }
 
         {
-            std::unique_lock<std::timed_mutex> submissionLock(driver.m_impl->threadedRhiSubmissionMutex);
+            std::unique_lock<std::timed_mutex> submissionLock(
+                driver.m_impl->threadedRhiSubmissionMutex,
+                std::defer_lock);
+            if (attribution == RhiSubmissionAttribution::SynchronousDrain)
+            {
+                if (!submissionLock.try_lock())
+                    return false;
+            }
+            else
+            {
+                submissionLock.lock();
+            }
 
             if (attribution == RhiSubmissionAttribution::Worker &&
                 IsUiStandaloneFramePending(*driver.m_impl))
@@ -4685,7 +4878,7 @@ namespace NLS::Render::Context
             RhiSubmissionFrame submissionFrame;
             {
                 NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::SubmitThreadedRhiFrame");
-                submissionFrame = Detail::SubmitThreadedRhiFrame(*driver.m_impl, renderScenePackage);
+                submissionFrame = Detail::SubmitThreadedRhiFrame(*driver.m_impl, renderScenePackage, slotIndex);
             }
             {
                 NLS_PROFILE_NAMED_SCOPE("RhiThreadCoordinator::CompleteRhiSubmission");
@@ -4773,9 +4966,22 @@ namespace NLS::Render::Context
         auto completedResult = result;
         const auto completionStatus = result.completion->Wait();
         completedResult.message = completionStatus.message;
-        completedResult.code = completionStatus.Succeeded()
-            ? Render::RHI::RHIReadbackStatusCode::Success
-            : Render::RHI::RHIReadbackStatusCode::BackendFailure;
+        if (completionStatus.Succeeded())
+        {
+            completedResult.code = Render::RHI::RHIReadbackStatusCode::Success;
+        }
+        else if (completionStatus.code == Render::RHI::RHICompletionStatusCode::DeviceLost)
+        {
+            completedResult.code = Render::RHI::RHIReadbackStatusCode::DeviceLost;
+            MarkReadbackDeviceLostIfNeeded(
+                *driver.m_impl,
+                completedResult,
+                "RhiThreadCoordinator::ReadPixelsChecked");
+        }
+        else
+        {
+            completedResult.code = Render::RHI::RHIReadbackStatusCode::BackendFailure;
+        }
         return completedResult;
     }
 
@@ -4798,9 +5004,22 @@ namespace NLS::Render::Context
         auto completedResult = result;
         const auto completionStatus = result.completion->Wait();
         completedResult.message = completionStatus.message;
-        completedResult.code = completionStatus.Succeeded()
-            ? Render::RHI::RHIReadbackStatusCode::Success
-            : Render::RHI::RHIReadbackStatusCode::BackendFailure;
+        if (completionStatus.Succeeded())
+        {
+            completedResult.code = Render::RHI::RHIReadbackStatusCode::Success;
+        }
+        else if (completionStatus.code == Render::RHI::RHICompletionStatusCode::DeviceLost)
+        {
+            completedResult.code = Render::RHI::RHIReadbackStatusCode::DeviceLost;
+            MarkReadbackDeviceLostIfNeeded(
+                *driver.m_impl,
+                completedResult,
+                "RhiThreadCoordinator::ReadPixelsChecked");
+        }
+        else
+        {
+            completedResult.code = Render::RHI::RHIReadbackStatusCode::BackendFailure;
+        }
         return completedResult;
     }
 
@@ -4817,6 +5036,14 @@ namespace NLS::Render::Context
         NLS_PROFILE_SCOPE();
         if (driver.m_impl == nullptr || driver.m_impl->explicitDevice == nullptr)
             return { Render::RHI::RHIReadbackStatusCode::BackendFailure, "explicit device is unavailable" };
+        if (driver.m_impl->deviceLostDetected.load(std::memory_order_acquire) ||
+            driver.m_impl->unsafeGpuWorkQuarantined.load(std::memory_order_acquire))
+        {
+            return {
+                Render::RHI::RHIReadbackStatusCode::BackendFailure,
+                "explicit readback rejected because RHI device is lost or GPU work is quarantined"
+            };
+        }
 
         const auto texture = DriverRendererAccess::ResolveReadbackTexture(driver);
         if (texture == nullptr)
@@ -4825,7 +5052,7 @@ namespace NLS::Render::Context
                 "no active explicit readback source is available"
             };
 
-        return driver.m_impl->explicitDevice->BeginReadPixels(
+        auto result = driver.m_impl->explicitDevice->BeginReadPixels(
             texture,
             x,
             y,
@@ -4834,6 +5061,11 @@ namespace NLS::Render::Context
             format,
             type,
             data);
+        MarkReadbackDeviceLostIfNeeded(
+            *driver.m_impl,
+            result,
+            "RhiThreadCoordinator::BeginReadPixels");
+        return result;
     }
 
     Render::RHI::RHIReadbackResult RhiThreadCoordinator::BeginReadPixels(
@@ -4850,11 +5082,19 @@ namespace NLS::Render::Context
         NLS_PROFILE_SCOPE();
         if (driver.m_impl == nullptr || driver.m_impl->explicitDevice == nullptr)
             return { Render::RHI::RHIReadbackStatusCode::BackendFailure, "explicit device is unavailable" };
+        if (driver.m_impl->deviceLostDetected.load(std::memory_order_acquire) ||
+            driver.m_impl->unsafeGpuWorkQuarantined.load(std::memory_order_acquire))
+        {
+            return {
+                Render::RHI::RHIReadbackStatusCode::BackendFailure,
+                "explicit readback rejected because RHI device is lost or GPU work is quarantined"
+            };
+        }
 
         if (texture == nullptr)
             return { Render::RHI::RHIReadbackStatusCode::InvalidArgument, "explicit readback source is unavailable" };
 
-        return driver.m_impl->explicitDevice->BeginReadPixels(
+        auto result = driver.m_impl->explicitDevice->BeginReadPixels(
             texture,
             x,
             y,
@@ -4863,6 +5103,11 @@ namespace NLS::Render::Context
             format,
             type,
             data);
+        MarkReadbackDeviceLostIfNeeded(
+            *driver.m_impl,
+            result,
+            "RhiThreadCoordinator::BeginReadPixels");
+        return result;
     }
 
     bool RhiThreadCoordinator::PrepareUIRender(Driver& driver)

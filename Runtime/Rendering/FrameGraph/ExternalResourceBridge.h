@@ -5,6 +5,7 @@
 
 #include <initializer_list>
 #include <optional>
+#include <vector>
 
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/Data/FrameDescriptor.h"
@@ -30,6 +31,8 @@ namespace NLS::Render::FrameGraph
     {
         bool targetsSwapchain = true;
         bool hasExternalOutput = false;
+        uint64_t identity = 0u;
+        std::vector<uint64_t> identities;
         uint32_t textureCount = 0u;
     };
 

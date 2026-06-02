@@ -77,13 +77,13 @@ namespace NLS::Render::Backend
 				, m_adapter(adapter)
 				, m_capabilities(capabilities)
 				, m_rhiAdapter(std::make_shared<NativeDX12Adapter>(vendor, hardware))
-				, m_resourceHeapAllocator(std::make_unique<DX12ShaderVisibleDescriptorHeapAllocator>(
+				, m_resourceHeapAllocator(std::make_shared<DX12ShaderVisibleDescriptorHeapAllocator>(
 					device,
 					graphicsQueue,
 					D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
 					kDx12ShaderVisibleResourceDescriptorCapacity,
 					"DX12ResourceHeapAllocator"))
-				, m_samplerHeapAllocator(std::make_unique<DX12ShaderVisibleDescriptorHeapAllocator>(
+				, m_samplerHeapAllocator(std::make_shared<DX12ShaderVisibleDescriptorHeapAllocator>(
 					device,
 					graphicsQueue,
 					D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER,
@@ -305,8 +305,8 @@ namespace NLS::Render::Backend
 			NLS::Render::RHI::RHIDeviceCapabilities m_capabilities{};
 			std::shared_ptr<NLS::Render::RHI::RHIAdapter> m_rhiAdapter;
 			std::array<std::shared_ptr<NLS::Render::RHI::RHIQueue>, 3> m_queues{};
-			std::unique_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_resourceHeapAllocator;
-			std::unique_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_samplerHeapAllocator;
+			std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_resourceHeapAllocator;
+			std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_samplerHeapAllocator;
 			NLS::Render::RHI::DX12::DX12ReadbackContext m_readbackContext;
 			bool m_gpuProfilerInitialized = false;
 		};
@@ -361,11 +361,12 @@ namespace NLS::Render::Backend
 		std::shared_ptr<NLS::Render::RHI::RHIBindingSet> NativeDX12ExplicitDevice::CreateBindingSet(const NLS::Render::RHI::RHIBindingSetDesc& desc)
 		{
 #if defined(_WIN32)
-			return std::make_shared<NativeDX12BindingSet>(
+			auto bindingSet = std::make_shared<NativeDX12BindingSet>(
 				m_device.Get(),
 				desc,
-				m_resourceHeapAllocator.get(),
-				m_samplerHeapAllocator.get());
+				m_resourceHeapAllocator,
+				m_samplerHeapAllocator);
+			return bindingSet->IsValid() ? bindingSet : nullptr;
 #else
 			return nullptr;
 #endif
@@ -430,6 +431,10 @@ namespace NLS::Render::Backend
 				result.code = NLS::Render::RHI::RHIReadbackStatusCode::Success;
 				result.message = completionStatus.message;
 				return result;
+			case NLS::Render::RHI::RHICompletionStatusCode::DeviceLost:
+				result.code = NLS::Render::RHI::RHIReadbackStatusCode::DeviceLost;
+				result.message = completionStatus.message;
+				return result;
 			case NLS::Render::RHI::RHICompletionStatusCode::Failed:
 				result.code = NLS::Render::RHI::RHIReadbackStatusCode::BackendFailure;
 				result.message = completionStatus.message;
@@ -472,6 +477,8 @@ namespace NLS::Render::Backend
 				return { NLS::Render::RHI::RHIReadbackStatusCode::Success, result.message, result.completion };
 			case NLS::Render::RHI::DX12::DX12ReadbackStatusCode::UnsupportedFormat:
 				return { NLS::Render::RHI::RHIReadbackStatusCode::UnsupportedFormat, result.message, result.completion };
+			case NLS::Render::RHI::DX12::DX12ReadbackStatusCode::DeviceLost:
+				return { NLS::Render::RHI::RHIReadbackStatusCode::DeviceLost, result.message, result.completion };
 			case NLS::Render::RHI::DX12::DX12ReadbackStatusCode::BackendFailure:
 				return { NLS::Render::RHI::RHIReadbackStatusCode::BackendFailure, result.message, result.completion };
 			case NLS::Render::RHI::DX12::DX12ReadbackStatusCode::InvalidArgument:

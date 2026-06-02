@@ -3,10 +3,14 @@
 #include <algorithm>
 #include <climits>
 #include <cstdint>
+#include <mutex>
 #include <utility>
+#include <vector>
 
 #include <Debug/Logger.h>
+#include "Rendering/Context/DriverAccess.h"
 #include "Rendering/RHI/Backends/DX12/DX12FormatUtils.h"
+#include "Rendering/RHI/Backends/DX12/DX12QueueSynchronization.h"
 #include "Rendering/RHI/Backends/DX12/DX12ReadbackUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12SamplerUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12TextureViewUtils.h"
@@ -75,6 +79,58 @@ namespace NLS::Render::Backend
 			}
 			return true;
 		}
+
+		struct DX12DescriptorInitializationQuarantinedSubmission
+		{
+			Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap;
+			Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
+			Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
+			Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+			HRESULT signalResult = S_OK;
+			HRESULT deviceStatus = S_OK;
+		};
+
+		std::mutex& DX12DescriptorInitializationQuarantineMutex()
+		{
+			static std::mutex mutex;
+			return mutex;
+		}
+
+		std::vector<DX12DescriptorInitializationQuarantinedSubmission>& DX12DescriptorInitializationQuarantine()
+		{
+			static std::vector<DX12DescriptorInitializationQuarantinedSubmission> submissions;
+			return submissions;
+		}
+
+		void QuarantineDX12DescriptorInitializationSubmissionAfterExecute(
+			ID3D12Device* device,
+			const Microsoft::WRL::ComPtr<ID3D12DescriptorHeap>& heap,
+			const Microsoft::WRL::ComPtr<ID3D12CommandAllocator>& allocator,
+			const Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>& commandList,
+			const Microsoft::WRL::ComPtr<ID3D12Fence>& fence,
+			HRESULT signalResult)
+		{
+			DX12DescriptorInitializationQuarantinedSubmission submission;
+			submission.heap = heap;
+			submission.allocator = allocator;
+			submission.commandList = commandList;
+			submission.fence = fence;
+			submission.signalResult = signalResult;
+			submission.deviceStatus = device != nullptr ? device->GetDeviceRemovedReason() : S_OK;
+			const HRESULT deviceStatus = submission.deviceStatus;
+
+			std::lock_guard<std::mutex> lock(DX12DescriptorInitializationQuarantineMutex());
+			DX12DescriptorInitializationQuarantine().push_back(std::move(submission));
+			NLS::Render::Context::MarkLocatedDriverUnsafeGpuWorkQuarantined(
+				"DX12 descriptor heap initialization queued GPU work without a reliable fence; quarantined submitted resources hr=" +
+				std::to_string(signalResult));
+			if (FAILED(deviceStatus))
+			{
+				NLS::Render::Context::MarkLocatedDriverDeviceLost(
+					"DX12 descriptor heap initialization detected device lost after ExecuteCommandLists; quarantined submitted resources hr=" +
+					std::to_string(deviceStatus));
+			}
+		}
 	}
 
 	DX12ShaderVisibleDescriptorHeapAllocator::DX12ShaderVisibleDescriptorHeapAllocator(
@@ -130,9 +186,6 @@ namespace NLS::Render::Backend
 				}
 				else
 				{
-					ID3D12CommandList* cmdLists[] = { tempCmdList.Get() };
-					m_commandQueue->ExecuteCommandLists(1, cmdLists);
-
 					Microsoft::WRL::ComPtr<ID3D12Fence> fence;
 					const HRESULT createFenceResult = m_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
 					if (FAILED(createFenceResult))
@@ -152,21 +205,48 @@ namespace NLS::Render::Backend
 						else
 						{
 							constexpr UINT64 fenceValue = 1u;
-							const HRESULT signalResult = m_commandQueue->Signal(fence.Get(), fenceValue);
+							HRESULT signalResult = S_OK;
+							{
+								NLS::Render::RHI::DX12::ScopedDX12QueueLock queueLock(m_commandQueue);
+								ID3D12CommandList* cmdLists[] = { tempCmdList.Get() };
+								m_commandQueue->ExecuteCommandLists(1, cmdLists);
+								signalResult = m_commandQueue->Signal(fence.Get(), fenceValue);
+							}
 							if (FAILED(signalResult))
 							{
+								m_quarantined = true;
+								QuarantineDX12DescriptorInitializationSubmissionAfterExecute(
+									m_device,
+									m_heap,
+									allocator,
+									tempCmdList,
+									fence,
+									signalResult);
+								const HRESULT deviceStatus = m_device->GetDeviceRemovedReason();
 								NLS_LOG_ERROR(
 									m_heapDebugName +
-									": failed to signal descriptor heap initialization fence hr=" +
-									std::to_string(signalResult));
+									": failed to signal descriptor heap initialization fence after ExecuteCommandLists; quarantined submitted resources hr=" +
+									std::to_string(signalResult) +
+									" deviceStatus=" +
+									std::to_string(deviceStatus));
 							}
 							else
 							{
-								(void)WaitForDX12FenceValue(
+								if (!WaitForDX12FenceValue(
 									fence.Get(),
 									fenceValue,
 									fenceEvent,
-									m_heapDebugName + " descriptor heap initialization");
+									m_heapDebugName + " descriptor heap initialization"))
+								{
+									m_quarantined = true;
+									QuarantineDX12DescriptorInitializationSubmissionAfterExecute(
+										m_device,
+										m_heap,
+										allocator,
+										tempCmdList,
+										fence,
+										signalResult);
+								}
 							}
 							CloseHandle(fenceEvent);
 						}
@@ -185,6 +265,8 @@ namespace NLS::Render::Backend
 
 	ID3D12DescriptorHeap* DX12ShaderVisibleDescriptorHeapAllocator::GetHeap() const
 	{
+		if (m_quarantined)
+			return nullptr;
 		return m_heap.Get();
 	}
 
@@ -195,11 +277,21 @@ namespace NLS::Render::Backend
 
 	D3D12_CPU_DESCRIPTOR_HANDLE DX12ShaderVisibleDescriptorHeapAllocator::GetCpuHandle() const
 	{
+		if (m_quarantined)
+		{
+			NLS_LOG_ERROR(m_heapDebugName + "::GetCpuHandle: descriptor heap allocator is quarantined");
+			return {};
+		}
 		return m_heap != nullptr ? m_heap->GetCPUDescriptorHandleForHeapStart() : D3D12_CPU_DESCRIPTOR_HANDLE{};
 	}
 
 	D3D12_GPU_DESCRIPTOR_HANDLE DX12ShaderVisibleDescriptorHeapAllocator::GetGpuHandle() const
 	{
+		if (m_quarantined)
+		{
+			NLS_LOG_ERROR(m_heapDebugName + "::GetGpuHandle: descriptor heap allocator is quarantined");
+			return {};
+		}
 		if (m_heap == nullptr)
 		{
 			NLS_LOG_ERROR(m_heapDebugName + "::GetGpuHandle: heap is null");
@@ -218,6 +310,11 @@ namespace NLS::Render::Backend
 
 	UINT DX12ShaderVisibleDescriptorHeapAllocator::Allocate(UINT count)
 	{
+		if (m_quarantined)
+		{
+			NLS_LOG_ERROR(m_heapDebugName + ": descriptor heap allocator is quarantined");
+			return UINT_MAX;
+		}
 		NLS::Render::RHI::DescriptorAllocationRequest request;
 		request.count = count;
 		request.lifetime = NLS::Render::RHI::DescriptorAllocationLifetime::Persistent;
@@ -248,12 +345,12 @@ namespace NLS::Render::Backend
 	NativeDX12BindingSet::NativeDX12BindingSet(
 		ID3D12Device* device,
 		NLS::Render::RHI::RHIBindingSetDesc desc,
-		DX12ShaderVisibleDescriptorHeapAllocator* resourceHeapAllocator,
-		DX12ShaderVisibleDescriptorHeapAllocator* samplerHeapAllocator)
+		std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> resourceHeapAllocator,
+		std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> samplerHeapAllocator)
 		: m_device(device)
 		, m_desc(std::move(desc))
-		, m_resourceHeapAllocator(resourceHeapAllocator)
-		, m_samplerHeapAllocator(samplerHeapAllocator)
+		, m_resourceHeapAllocator(std::move(resourceHeapAllocator))
+		, m_samplerHeapAllocator(std::move(samplerHeapAllocator))
 	{
 		if (m_device == nullptr || m_desc.layout == nullptr)
 		{
@@ -334,6 +431,11 @@ namespace NLS::Render::Backend
 			const D3D12_GPU_DESCRIPTOR_HANDLE tableGpuHandle = usesSamplerHeap
 				? ComputeSamplerGpuHandle(samplerCursor)
 				: ComputeResourceGpuHandle(resourceCursor);
+			if (tableGpuHandle.ptr == 0)
+			{
+				NLS_LOG_ERROR("NativeDX12BindingSet: descriptor table GPU handle is zero");
+				return;
+			}
 
 			m_descriptorTables.push_back({ table.set, table.heapKind, tableGpuHandle });
 
@@ -358,6 +460,8 @@ namespace NLS::Render::Backend
 			else
 				resourceCursor += tableDescriptorCount;
 		}
+
+		m_valid = true;
 	}
 #endif
 
@@ -384,6 +488,9 @@ namespace NLS::Render::Backend
 	NLS::Render::RHI::NativeHandle NativeDX12BindingSet::GetNativeBindingSetHandle() const
 	{
 #if defined(_WIN32)
+		if (!m_valid)
+			return {};
+
 		auto* self = const_cast<NativeDX12BindingSet*>(this);
 		return {
 			NLS::Render::RHI::BackendType::DX12,
@@ -398,6 +505,9 @@ namespace NLS::Render::Backend
 		const uint32_t heapClass) const
 	{
 #if defined(_WIN32)
+		if (!m_valid)
+			return {};
+
 		const auto heapKind = heapClass == 1u
 			? NLS::Render::RHI::DX12::DX12DescriptorHeapKind::Sampler
 			: NLS::Render::RHI::DX12::DX12DescriptorHeapKind::Resource;
@@ -411,11 +521,19 @@ namespace NLS::Render::Backend
 #endif
 	}
 
+	bool NativeDX12BindingSet::IsValid() const
+	{
+		return m_valid;
+	}
+
 #if defined(_WIN32)
 	D3D12_GPU_DESCRIPTOR_HANDLE NativeDX12BindingSet::GetGPUHandle(
 		uint32_t set,
 		NLS::Render::RHI::DX12::DX12DescriptorHeapKind heapKind) const
 	{
+		if (!m_valid)
+			return {};
+
 		const auto tableIt = std::find_if(
 			m_descriptorTables.begin(),
 			m_descriptorTables.end(),
@@ -429,6 +547,9 @@ namespace NLS::Render::Backend
 	ID3D12DescriptorHeap* NativeDX12BindingSet::GetDescriptorHeap(
 		NLS::Render::RHI::DX12::DX12DescriptorHeapKind heapKind) const
 	{
+		if (!m_valid)
+			return nullptr;
+
 		return heapKind == NLS::Render::RHI::DX12::DX12DescriptorHeapKind::Sampler
 			? (m_samplerHeapAllocator != nullptr ? m_samplerHeapAllocator->GetHeap() : nullptr)
 			: (m_resourceHeapAllocator != nullptr ? m_resourceHeapAllocator->GetHeap() : nullptr);
@@ -438,6 +559,9 @@ namespace NLS::Render::Backend
 	bool NativeDX12BindingSet::IsCompatibleWithDescriptorTable(
 		const NLS::Render::RHI::DX12::DX12DescriptorTableDesc& table) const
 	{
+		if (!m_valid)
+			return false;
+
 		const auto found = std::find_if(
 			m_descriptorTableDescs.begin(),
 			m_descriptorTableDescs.end(),
@@ -510,6 +634,8 @@ namespace NLS::Render::Backend
 	D3D12_GPU_DESCRIPTOR_HANDLE NativeDX12BindingSet::ComputeResourceGpuHandle(UINT descriptorIndex) const
 	{
 		D3D12_GPU_DESCRIPTOR_HANDLE handle = m_resourceHeapAllocator->GetGpuHandle();
+		if (handle.ptr == 0)
+			return {};
 		handle.ptr += static_cast<UINT64>(m_resourceDescriptorOffset + descriptorIndex) * m_resourceDescriptorSize;
 		return handle;
 	}
@@ -524,6 +650,8 @@ namespace NLS::Render::Backend
 	D3D12_GPU_DESCRIPTOR_HANDLE NativeDX12BindingSet::ComputeSamplerGpuHandle(UINT descriptorIndex) const
 	{
 		D3D12_GPU_DESCRIPTOR_HANDLE handle = m_samplerHeapAllocator->GetGpuHandle();
+		if (handle.ptr == 0)
+			return {};
 		handle.ptr += static_cast<UINT64>(m_samplerDescriptorOffset + descriptorIndex) * m_samplerDescriptorSize;
 		return handle;
 	}

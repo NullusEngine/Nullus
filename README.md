@@ -3,7 +3,7 @@
     <img src="NullusLogo.png" width="400" alt="Nullus Engine logo">
 </p>
 
-![License MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![License Source Available](https://img.shields.io/badge/License-Source%20Available-blue.svg)
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C)
 ![CMake >=3.16](https://img.shields.io/badge/CMake-%E2%89%A53.16-064F8C)
 ![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4)
@@ -164,6 +164,11 @@ CI 会正常构建工程，并继续执行反射与单元测试相关目标。
 - 是否正确执行了 `dotnet restore`
 - 是否误用了系统里的旧版 `libclang`
 
+## 贡献
+
+提交 Issue、建议或 Pull Request 前，请先阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)
+和 [CLA.md](./CLA.md)。向 Nullus Engine 提交贡献即表示你接受其中的贡献授权条款。
+
 ## License
 
-本仓库使用 MIT License。详情见 [LICENSE](./LICENSE)。
+Nullus Engine 使用自定义 Source-Available License。允许查看和修改源码、商业使用以及发布使用 Nullus Engine 制作的游戏；禁止分发引擎源码或使用本项目制作竞争引擎。详情见 [LICENSE](./LICENSE)。

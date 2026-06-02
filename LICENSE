@@ -1,20 +1,122 @@
-Copyright (c) 2024 Contributors to the Nullus Engine
+Nullus Engine Source-Available License
 
-Permission is hereby granted, free of charge, to any person obtaining
-a copy of this software and associated documentation files (the
-"Software"), to deal in the Software without restriction, including
-without limitation the rights to use, copy, modify, merge, publish,
-distribute, sublicense, and/or sell copies of the Software, and to
-permit persons to whom the Software is furnished to do so, subject to
-the following conditions:
+Copyright (c) 2024-present the author of Nullus Engine.
+All rights reserved except as expressly granted below.
 
-The above copyright notice and this permission notice shall be
-included in all copies or substantial portions of the Software.
+1. Grant of Rights
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
-NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
-LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
-WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+Subject to this License, you may:
+
+- view and study the Nullus Engine source code;
+- modify the Nullus Engine source code for your own projects;
+- use Nullus Engine for commercial or non-commercial purposes;
+- create, build, publish, sell, and distribute games made with Nullus Engine;
+- distribute compiled game builds that include compiled Nullus Engine code,
+  provided that the Nullus Engine source code itself is not distributed.
+
+2. Restrictions
+
+You may not:
+
+- distribute, sublicense, sell, publish, mirror, or otherwise make available the
+  Nullus Engine source code, in original or modified form, except with the prior
+  written permission of the copyright owner;
+- use Nullus Engine, its source code, or modified versions of its source code to
+  develop, market, sell, license, publish, or distribute a general-purpose game
+  engine, game editor, engine SDK, or engine middleware that is intended to
+  compete with Nullus Engine and substantially replicates or replaces Nullus
+  Engine functionality;
+- remove, obscure, or alter copyright, trademark, license, or attribution
+  notices in Nullus Engine;
+- claim ownership of Nullus Engine or represent that Nullus Engine is authored
+  by anyone other than its author.
+
+For clarity, this restriction does not prohibit you from creating or
+distributing games, game-specific tools, plugins, editor extensions, demos,
+educational projects, internal production tools, or non-engine applications made
+with Nullus Engine, provided that you comply with this License and do not
+distribute Nullus Engine source code.
+
+3. Contributor License Grant
+
+If you submit, upload, or otherwise provide any contribution to Nullus Engine,
+including source code, documentation, assets, bug fixes, suggestions, designs,
+or other materials, you grant the Nullus Engine author a perpetual, worldwide,
+irrevocable, non-exclusive, royalty-free, fully paid, sublicensable, and
+transferable license to use, reproduce, modify, adapt, publish, distribute,
+publicly display, publicly perform, prepare derivative works from, incorporate,
+relicense, and otherwise exploit that contribution as part of Nullus Engine or
+related projects.
+
+You represent that you have the right to submit the contribution and to grant
+the license above. You also agree that your contribution may be included in
+Nullus Engine under this License or under any future license chosen by the
+Nullus Engine author.
+
+Contributions are also subject to the Nullus Engine Contributor License
+Agreement in CLA.md. If this License and CLA.md conflict for a contribution,
+CLA.md controls for that contribution.
+
+You retain any copyright you own in your contribution, but you do not acquire
+any ownership interest in Nullus Engine by submitting a contribution.
+
+4. Ownership
+
+Nullus Engine, including its source code, architecture, tools, editor, runtime,
+documentation, name, and associated original materials, remains the property of
+the Nullus Engine author. No ownership interest in Nullus Engine is transferred
+by this License.
+
+You own your original modifications to Nullus Engine only to the extent that
+those modifications are original work created by you. However, those
+modifications are derivative of Nullus Engine and remain subject to this
+License. This means you may use your modified version as permitted by this
+License, but you may not distribute the modified Nullus Engine source code
+without the prior written permission of the copyright owner.
+
+You retain ownership of your games, game-specific assets, game-specific code,
+and other original work that you create with Nullus Engine, excluding Nullus
+Engine itself.
+
+5. Third-Party Components
+
+Third-party libraries, tools, assets, and components included with or referenced
+by this repository are governed by their own license terms. Those terms continue
+to apply independently of this License.
+
+6. Termination
+
+Your rights under this License terminate automatically if you violate any term
+of this License.
+
+If the violation is capable of cure, your rights will be reinstated if you cure
+the violation within 30 days after becoming aware of it or receiving written
+notice from the copyright owner, whichever occurs first. Repeated, intentional,
+or uncured violations require the prior written permission of the copyright
+owner before any rights are reinstated.
+
+Upon termination, you must stop using Nullus Engine and delete or stop using all
+copies of Nullus Engine source code in your possession or control, except as
+otherwise required by law or expressly permitted in writing by the copyright
+owner. Termination does not affect rights already granted to end users of games
+you distributed in compliance with this License before termination.
+
+7. Governing Law and Disputes
+
+This License is governed by the laws of the jurisdiction where the copyright
+owner resides or is legally organized, without regard to conflict-of-law rules.
+Any dispute arising from or relating to this License must be brought in the
+courts located in that jurisdiction, unless the copyright owner agrees otherwise
+in writing.
+
+8. No Warranty
+
+Nullus Engine is provided "as is", without warranty of any kind, express or
+implied, including but not limited to the warranties of merchantability, fitness
+for a particular purpose, and noninfringement. The copyright owner is not liable
+for any claim, damages, or other liability arising from use of Nullus Engine.
+
+9. Additional Permission
+
+Any permission not granted by this License requires prior written permission
+from the copyright owner.

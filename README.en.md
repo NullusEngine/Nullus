@@ -3,7 +3,7 @@
     <img src="NullusLogo.png" width="400" alt="Nullus Engine logo">
 </p>
 
-![License MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+![License Source Available](https://img.shields.io/badge/License-Source%20Available-blue.svg)
 ![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C)
 ![CMake >=3.16](https://img.shields.io/badge/CMake-%E2%89%A53.16-064F8C)
 ![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4)
@@ -164,6 +164,12 @@ Check these first:
 - `dotnet restore` completed correctly
 - you did not accidentally force the generator onto an old system `libclang`
 
+## Contributing
+
+Before submitting issues, suggestions, or pull requests, please read
+[CONTRIBUTING.md](./CONTRIBUTING.md) and [CLA.md](./CLA.md). By contributing to
+Nullus Engine, you accept the contribution license terms described there.
+
 ## License
 
-This repository uses the MIT License. See [LICENSE](./LICENSE) for details.
+Nullus Engine uses a custom Source-Available License. You may view and modify the source code, use it commercially, and publish games made with Nullus Engine; you may not distribute the engine source code or use this project to create a competing engine. See [LICENSE](./LICENSE) for details.

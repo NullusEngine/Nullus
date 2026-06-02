@@ -11,8 +11,11 @@
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
 #include "SceneSystem/Scene.h"
+#include "SceneSystem/SceneManager.h"
 #include "Serialize/ObjectGraphDocument.h"
+#include "Serialize/ObjectGraphSerializer.h"
 #include "Serialize/ObjectGraphReader.h"
+#include "Serialize/ObjectGraphWriter.h"
 #include "Serialize/PPtr.h"
 #include "Serialize/PPtrResourceTypes.h"
 
@@ -38,6 +41,18 @@ using NLS::Engine::Serialize::PropertyValue;
 AssetId Id(const char* guid)
 {
     return AssetId(NLS::Guid::Parse(guid));
+}
+
+std::string JoinPrefabDiagnostics(const NLS::Editor::Assets::PrefabOperationResult& result)
+{
+    std::string output;
+    for (const auto& diagnostic : result.diagnostics)
+    {
+        if (!output.empty())
+            output += ",";
+        output += diagnostic.code;
+    }
+    return output;
 }
 
 template <typename T>
@@ -83,6 +98,32 @@ const NLS::Engine::Serialize::ObjectRecord* FindObjectRecordByType(
     return nullptr;
 }
 
+const NLS::Engine::Serialize::ObjectRecord* FindObjectRecord(
+    const ObjectGraphDocument& graph,
+    const NLS::Engine::Serialize::PropertyValue& value)
+{
+    if (value.GetKind() != PropertyValue::Kind::OwnedReference)
+        return nullptr;
+    return FindObjectRecord(graph, value.GetObjectId());
+}
+
+const NLS::Engine::Serialize::ObjectRecord* FindGameObjectRecordByName(
+    const ObjectGraphDocument& graph,
+    const char* name)
+{
+    for (const auto& record : graph.objects)
+    {
+        const auto* property = FindProperty(record, "name");
+        if (property &&
+            property->value.GetKind() == PropertyValue::Kind::String &&
+            property->value.GetString() == name)
+        {
+            return &record;
+        }
+    }
+    return nullptr;
+}
+
 bool ContainsResolvedAsset(
     const PrefabArtifact& artifact,
     const AssetId& assetId,
@@ -121,6 +162,16 @@ PrefabArtifact MakePrefabArtifact(const char* name, AssetId assetId)
     EXPECT_EQ(result.status, PrefabOperationStatus::Committed);
     EXPECT_TRUE(result.artifact.has_value());
     return *result.artifact;
+}
+
+NLS::Engine::GameObject* FindChildByName(NLS::Engine::GameObject& root, const char* name)
+{
+    for (auto* child : root.GetChildren())
+    {
+        if (child && child->GetName() == name)
+            return child;
+    }
+    return nullptr;
 }
 
 const NLS::Editor::Assets::PrefabOverrideDescriptor* FindOverride(
@@ -275,6 +326,1076 @@ TEST(PrefabUtilityFacadeTests, SavesConnectsAndEditsPrefabContentsThroughPrefabS
     EXPECT_EQ(unload.status, PrefabOperationStatus::Committed);
     EXPECT_EQ(stage.stageRoot, nullptr);
     EXPECT_EQ(stage.stageScene, nullptr);
+}
+
+TEST(PrefabUtilityFacadeTests, ReportsDisconnectedStatusForReloadedGeneratedModelSceneObjectWithoutRegistryReconnection)
+{
+    using namespace NLS::Engine::Serialize;
+
+    const auto scenePath =
+        std::filesystem::temp_directory_path() /
+        ("nullus_prefab_identity_reload_" + NLS::Guid::New().ToString() + ".scene");
+
+    NLS::Engine::Assets::PrefabArtifact artifact;
+    artifact.assetId = Id("f2010101-0101-4101-8101-010101010101");
+    artifact.generatedModelPrefab = true;
+    artifact.graph.format = "Nullus.ObjectGraph.Prefab";
+    artifact.graph.version = 1;
+    artifact.graph.documentId = NLS::Guid::NewDeterministic("PrefabIdentityReload.Document");
+
+    const auto rootId = ObjectId(NLS::Guid::NewDeterministic("PrefabIdentityReload.Root"));
+    artifact.graph.root = rootId;
+
+    ObjectRecord root;
+    root.id = rootId;
+    root.localIdentifierInFile = MakeLocalIdentifierInFile(rootId);
+    root.typeName = "NLS::Engine::GameObject";
+    root.debugName = "ReloadedGeneratedRoot";
+    root.debugPath = "/ReloadedGeneratedRoot";
+    root.properties.push_back({"name", PropertyValue::String("ReloadedGeneratedRoot")});
+    root.properties.push_back({"tag", PropertyValue::String("Model")});
+    root.properties.push_back({"components", PropertyValue::Array({})});
+    root.properties.push_back({"children", PropertyValue::Array({})});
+    root.properties.push_back({"parent", PropertyValue::Null()});
+    artifact.graph.objects.push_back(std::move(root));
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    auto instantiate = PrefabUtilityFacade().InstantiatePrefab({
+        &artifact,
+        artifact.assetId,
+        "prefab:ReloadedGeneratedRoot"
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+
+    ASSERT_TRUE(NLS::Engine::SceneSystem::SceneManager::SaveSceneToPath(sourceScene, scenePath.string()));
+
+    NLS::Engine::SceneSystem::SceneManager loadedManager;
+    ASSERT_TRUE(loadedManager.LoadScene(scenePath.string(), true));
+
+    auto* loadedRoot = loadedManager.GetCurrentScene()->FindGameObjectByName("ReloadedGeneratedRoot");
+    ASSERT_NE(loadedRoot, nullptr);
+
+    NLS::Editor::Assets::PrefabInstanceRegistry registry;
+    PrefabUtilityFacade facade;
+    EXPECT_EQ(
+        facade.GetPrefabInstanceStatus({registry.FindInstance(*loadedRoot), true, false}),
+        PrefabInstanceStatus::NotAPrefab);
+
+    std::filesystem::remove(scenePath);
+}
+
+TEST(PrefabUtilityFacadeTests, AnnotatesSceneDocumentWithConnectedPrefabRootMetadata)
+{
+    PrefabUtilityFacade facade;
+    auto prefab = MakePrefabArtifact("SceneLinkedPrefab", Id("f3010101-0101-4101-8101-010101010101"));
+    prefab.generatedModelPrefab = true;
+
+    NLS::Engine::SceneSystem::Scene scene;
+    NLS::Editor::Assets::PrefabInstanceRegistry registry;
+    auto instantiate = facade.InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:SceneLinkedPrefab",
+        Id("f3020202-0202-4202-8202-020202020202")
+    }, scene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    registry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(scene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, scene, registry);
+
+    const auto* sceneRecord = FindObjectRecord(document, document.root);
+    ASSERT_NE(sceneRecord, nullptr);
+    ASSERT_FALSE(sceneRecord->properties.empty());
+    ASSERT_EQ(sceneRecord->properties.front().name, "gameObjects");
+    ASSERT_EQ(sceneRecord->properties.front().value.GetKind(), PropertyValue::Kind::Array);
+    ASSERT_FALSE(sceneRecord->properties.front().value.GetArray().empty());
+
+    ASSERT_EQ(document.prefabInstances.size(), 1u);
+    EXPECT_EQ(document.prefabInstances[0].sourcePrefab.guid, prefab.assetId.GetGuid());
+    EXPECT_EQ(document.prefabInstances[0].sourcePrefab.filePath, "prefab:SceneLinkedPrefab");
+    EXPECT_FALSE(document.prefabInstances[0].correspondence.empty());
+
+    const auto* rootRecord = FindObjectRecord(
+        document,
+        sceneRecord->properties.front().value.GetArray().front());
+    ASSERT_NE(rootRecord, nullptr);
+    EXPECT_EQ(FindProperty(*rootRecord, "scenePrefab"), nullptr);
+}
+
+TEST(PrefabUtilityFacadeTests, AnnotatesSceneDocumentWithUnityStylePrefabInstanceRecord)
+{
+    PrefabUtilityFacade facade;
+    auto prefab = MakePrefabArtifact("UnityStyleScenePrefab", Id("f4171717-1717-4717-8717-171717171717"));
+    prefab.generatedModelPrefab = true;
+
+    NLS::Engine::SceneSystem::Scene scene;
+    NLS::Editor::Assets::PrefabInstanceRegistry registry;
+    auto instantiate = facade.InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:UnityStyleScenePrefab",
+        Id("f4181818-1818-4818-8818-181818181818")
+    }, scene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_NE(instantiate.instance->instanceRoot, nullptr);
+    instantiate.instance->instanceRoot->SetName("SceneOnlyUnityStyleOverride");
+    registry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(scene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, scene, registry);
+
+    const auto output = NLS::Engine::Serialize::ObjectGraphWriter::Write(document);
+    EXPECT_NE(output.find("\"prefabInstances\""), std::string::npos);
+    EXPECT_NE(output.find("\"sourcePrefab\""), std::string::npos);
+    EXPECT_NE(output.find("\"instanceRoot\""), std::string::npos);
+    EXPECT_NE(output.find("\"modifications\""), std::string::npos);
+    EXPECT_NE(output.find("\"correspondence\""), std::string::npos);
+    EXPECT_NE(output.find("\"filePath\": \"prefab:UnityStyleScenePrefab\""), std::string::npos);
+    EXPECT_NE(output.find("SceneOnlyUnityStyleOverride"), std::string::npos);
+    EXPECT_EQ(output.find("\"scenePrefab\""), std::string::npos);
+}
+
+TEST(PrefabUtilityFacadeTests, UnityStylePrefabInstanceRecordRoundTripsThroughReaderAndWriter)
+{
+    PrefabUtilityFacade facade;
+    auto prefab = MakePrefabArtifact("RoundTripScenePrefab", Id("f4191919-1919-4919-8919-191919191919"));
+    prefab.generatedModelPrefab = true;
+
+    NLS::Engine::SceneSystem::Scene scene;
+    NLS::Editor::Assets::PrefabInstanceRegistry registry;
+    auto instantiate = facade.InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:RoundTripScenePrefab",
+        Id("f41a1a1a-1a1a-4a1a-8a1a-1a1a1a1a1a1a")
+    }, scene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_NE(instantiate.instance->instanceRoot, nullptr);
+    instantiate.instance->instanceRoot->SetName("RoundTrippedSceneOverride");
+    registry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(scene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, scene, registry);
+    const auto output = NLS::Engine::Serialize::ObjectGraphWriter::Write(document);
+    const auto parsed = NLS::Engine::Serialize::ObjectGraphReader::Read(output);
+
+    ASSERT_TRUE(parsed.has_value());
+    ASSERT_EQ(parsed->prefabInstances.size(), 1u);
+    EXPECT_EQ(parsed->prefabInstances[0].sourcePrefab.guid, prefab.assetId.GetGuid());
+    EXPECT_EQ(parsed->prefabInstances[0].sourcePrefab.filePath, "prefab:RoundTripScenePrefab");
+    EXPECT_TRUE(parsed->prefabInstances[0].generatedReadOnly);
+    EXPECT_FALSE(parsed->prefabInstances[0].modifications.empty());
+    EXPECT_FALSE(parsed->prefabInstances[0].correspondence.empty());
+}
+
+TEST(PrefabUtilityFacadeTests, UnityStylePrefabInstanceRestoresFromStrippedScenePlaceholder)
+{
+    PrefabUtilityFacade facade;
+    auto prefab = MakePrefabArtifact("StrippedScenePrefab", Id("f4212121-2121-4121-8121-212121212121"));
+    prefab.generatedModelPrefab = true;
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto instantiate = facade.InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:StrippedScenePrefab",
+        Id("f4222222-2222-4222-8222-222222222222")
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_NE(instantiate.instance->instanceRoot, nullptr);
+    instantiate.instance->instanceRoot->SetName("StrippedSceneOverride");
+    sourceRegistry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+    ASSERT_EQ(document.prefabInstances.size(), 1u);
+
+    const auto* strippedRootRecord = FindObjectRecord(document, document.prefabInstances[0].instanceRoot);
+    ASSERT_NE(strippedRootRecord, nullptr);
+    EXPECT_EQ(strippedRootRecord->state, ObjectRecordState::Stripped);
+
+    const auto output = NLS::Engine::Serialize::ObjectGraphWriter::Write(document);
+    EXPECT_NE(output.find("\"state\": \"Stripped\""), std::string::npos);
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+    EXPECT_EQ(loadedScene->FindGameObjectByName("StrippedSceneOverride"), nullptr);
+
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f4232323-2323-4323-8323-232323232323"),
+        restoredRegistry,
+        [&prefab](AssetId assetId, const std::string& subAssetKey) -> std::optional<PrefabArtifact>
+        {
+            if (assetId == prefab.assetId && subAssetKey == "prefab:StrippedScenePrefab")
+                return prefab;
+            return std::nullopt;
+        });
+
+    ASSERT_EQ(restore.status, PrefabOperationStatus::Committed) << JoinPrefabDiagnostics(restore);
+    auto* loadedRoot = loadedScene->FindGameObjectByName("StrippedSceneOverride");
+    ASSERT_NE(loadedRoot, nullptr);
+    auto* restored = restoredRegistry.FindInstance(*loadedRoot);
+    ASSERT_NE(restored, nullptr);
+    EXPECT_TRUE(restored->generatedReadOnly);
+    EXPECT_FALSE(restored->localPatches.empty());
+}
+
+TEST(PrefabUtilityFacadeTests, RestoresConnectedPrefabRegistryEntriesFromAnnotatedSceneDocument)
+{
+    PrefabUtilityFacade facade;
+    auto prefab = MakePrefabArtifact("SceneRestoredPrefab", Id("f4010101-0101-4101-8101-010101010101"));
+    prefab.generatedModelPrefab = true;
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto instantiate = facade.InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:SceneRestoredPrefab",
+        Id("f4020202-0202-4202-8202-020202020202")
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    sourceRegistry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+    EXPECT_EQ(loadedScene->FindGameObjectByName("SceneRestoredPrefab"), nullptr);
+
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f4030303-0303-4303-8303-030303030303"),
+        restoredRegistry,
+        [&prefab](AssetId assetId, const std::string& subAssetKey) -> std::optional<PrefabArtifact>
+        {
+            if (assetId == prefab.assetId && subAssetKey == "prefab:SceneRestoredPrefab")
+                return prefab;
+            return std::nullopt;
+        });
+
+    ASSERT_EQ(restore.status, PrefabOperationStatus::Committed);
+    auto* loadedRoot = loadedScene->FindGameObjectByName("SceneRestoredPrefab");
+    ASSERT_NE(loadedRoot, nullptr);
+    auto* restored = restoredRegistry.FindInstance(*loadedRoot);
+    ASSERT_NE(restored, nullptr);
+    EXPECT_EQ(restored->prefabAssetId, prefab.assetId);
+    EXPECT_EQ(restored->prefabSubAssetKey, "prefab:SceneRestoredPrefab");
+    EXPECT_TRUE(restored->generatedReadOnly);
+}
+
+TEST(PrefabUtilityFacadeTests, RestoresNormalPrefabSceneLocalOverrideFromPrefabInstanceRecord)
+{
+    PrefabUtilityFacade facade;
+    auto prefab = MakePrefabArtifact("NormalOverrideScenePrefab", Id("f41b1b1b-1b1b-4b1b-8b1b-1b1b1b1b1b1b"));
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto instantiate = facade.InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:NormalOverrideScenePrefab",
+        Id("f41c1c1c-1c1c-4c1c-8c1c-1c1c1c1c1c1c")
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_NE(instantiate.instance->instanceRoot, nullptr);
+    instantiate.instance->instanceRoot->SetName("NormalSceneLocalName");
+    sourceRegistry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+    ASSERT_EQ(document.prefabInstances.size(), 1u);
+    ASSERT_FALSE(document.prefabInstances[0].modifications.empty());
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+    EXPECT_EQ(loadedScene->FindGameObjectByName("NormalSceneLocalName"), nullptr);
+
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f41d1d1d-1d1d-4d1d-8d1d-1d1d1d1d1d1d"),
+        restoredRegistry,
+        [&prefab](AssetId assetId, const std::string& subAssetKey) -> std::optional<PrefabArtifact>
+        {
+            if (assetId == prefab.assetId && subAssetKey == "prefab:NormalOverrideScenePrefab")
+                return prefab;
+            return std::nullopt;
+        });
+
+    ASSERT_EQ(restore.status, PrefabOperationStatus::Committed);
+    auto* loadedRoot = loadedScene->FindGameObjectByName("NormalSceneLocalName");
+    ASSERT_NE(loadedRoot, nullptr);
+    auto* restored = restoredRegistry.FindInstance(*loadedRoot);
+    ASSERT_NE(restored, nullptr);
+    EXPECT_FALSE(restored->generatedReadOnly);
+    EXPECT_FALSE(restored->localPatches.empty());
+    EXPECT_EQ(ReadStringProperty(prefab, "name"), "NormalOverrideScenePrefab");
+}
+
+TEST(PrefabUtilityFacadeTests, RestoresPrefabSceneLocalAddedChildOverrideFromPrefabInstanceRecord)
+{
+    PrefabUtilityFacade facade;
+    auto prefab = MakePrefabArtifact("StructuralOverrideScenePrefab", Id("f42a2a2a-2a2a-4a2a-8a2a-2a2a2a2a2a2a"));
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto instantiate = facade.InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:StructuralOverrideScenePrefab",
+        Id("f42b2b2b-2b2b-4b2b-8b2b-2b2b2b2b2b2b")
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_NE(instantiate.instance->instanceRoot, nullptr);
+
+    auto* addedChild = new NLS::Engine::GameObject("SceneOnlyAddedChild", "PrefabOverride");
+    addedChild->SetParent(*instantiate.instance->instanceRoot);
+    sourceScene.AddGameObject(addedChild);
+    sourceRegistry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+    ASSERT_EQ(document.prefabInstances.size(), 1u);
+    ASSERT_FALSE(document.prefabInstances[0].modifications.empty());
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+    EXPECT_EQ(loadedScene->FindGameObjectByName("StructuralOverrideScenePrefab"), nullptr);
+    EXPECT_EQ(loadedScene->FindGameObjectByName("SceneOnlyAddedChild"), nullptr);
+
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f42c2c2c-2c2c-4c2c-8c2c-2c2c2c2c2c2c"),
+        restoredRegistry,
+        [&prefab](AssetId assetId, const std::string& subAssetKey) -> std::optional<PrefabArtifact>
+        {
+            if (assetId == prefab.assetId && subAssetKey == "prefab:StructuralOverrideScenePrefab")
+                return prefab;
+            return std::nullopt;
+        });
+
+    ASSERT_EQ(restore.status, PrefabOperationStatus::Committed);
+    auto* loadedRoot = loadedScene->FindGameObjectByName("StructuralOverrideScenePrefab");
+    ASSERT_NE(loadedRoot, nullptr);
+    auto* loadedChild = loadedScene->FindGameObjectByName("SceneOnlyAddedChild");
+    ASSERT_NE(loadedChild, nullptr);
+    EXPECT_EQ(loadedChild->GetParent(), loadedRoot);
+
+    auto* restored = restoredRegistry.FindInstance(*loadedRoot);
+    ASSERT_NE(restored, nullptr);
+    const auto overrides = facade.GetPrefabOverrides(prefab, *restored, true);
+    EXPECT_NE(FindOverride(overrides, PrefabOverrideKind::AddedGameObject, "children"), nullptr);
+}
+
+TEST(PrefabUtilityFacadeTests, LiveRootReconnectPreservesStructuralPrefabInstancePayload)
+{
+    PrefabUtilityFacade facade;
+    auto prefab = MakePrefabArtifact("LiveStructuralOverridePrefab", Id("f4404040-4040-4040-8040-404040404040"));
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto instantiate = facade.InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:LiveStructuralOverridePrefab",
+        Id("f4414141-4141-4141-8141-414141414141")
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_NE(instantiate.instance->instanceRoot, nullptr);
+
+    auto* addedChild = new NLS::Engine::GameObject("LiveSceneOnlyAddedChild", "PrefabOverride");
+    addedChild->SetParent(*instantiate.instance->instanceRoot);
+    sourceScene.AddGameObject(addedChild);
+    sourceRegistry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+    ASSERT_EQ(document.prefabInstances.size(), 1u);
+    ASSERT_FALSE(document.prefabInstances[0].addedObjects.empty());
+    ASSERT_FALSE(document.prefabInstances[0].correspondence.empty());
+
+    auto* rootRecord = const_cast<NLS::Engine::Serialize::ObjectRecord*>(
+        FindGameObjectRecordByName(document, "LiveStructuralOverridePrefab"));
+    ASSERT_NE(rootRecord, nullptr);
+    rootRecord->state = ObjectRecordState::Alive;
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+    auto* liveRoot = loadedScene->FindGameObjectByName("LiveStructuralOverridePrefab");
+    ASSERT_NE(liveRoot, nullptr);
+    EXPECT_EQ(loadedScene->FindGameObjectByName("LiveSceneOnlyAddedChild"), nullptr);
+
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f4424242-4242-4242-8242-424242424242"),
+        restoredRegistry,
+        [&prefab](AssetId assetId, const std::string& subAssetKey) -> std::optional<PrefabArtifact>
+        {
+            if (assetId == prefab.assetId && subAssetKey == "prefab:LiveStructuralOverridePrefab")
+                return prefab;
+            return std::nullopt;
+        });
+
+    ASSERT_EQ(restore.status, PrefabOperationStatus::Committed) << JoinPrefabDiagnostics(restore);
+    auto* restored = restoredRegistry.FindInstance(*liveRoot);
+    ASSERT_NE(restored, nullptr);
+    EXPECT_FALSE(restored->preservedAddedObjects.empty());
+    EXPECT_FALSE(restored->preservedCorrespondence.empty());
+
+    auto rewritten = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(*loadedScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(rewritten, *loadedScene, restoredRegistry);
+
+    ASSERT_EQ(rewritten.prefabInstances.size(), 1u);
+    EXPECT_FALSE(rewritten.prefabInstances[0].addedObjects.empty());
+    EXPECT_FALSE(rewritten.prefabInstances[0].correspondence.empty());
+    EXPECT_FALSE(rewritten.Validate().HasErrors());
+}
+
+TEST(PrefabUtilityFacadeTests, RestoresRemovedPrefabChildSubtreeFromPrefabInstanceRecord)
+{
+    PrefabUtilityFacade facade;
+    NLS::Engine::GameObject prefabRoot("RemovedSubtreeScenePrefab", "Prefab");
+    auto* child = new NLS::Engine::GameObject("RemovedSubtreeChild", "Prefab");
+    auto* grandchild = new NLS::Engine::GameObject("RemovedSubtreeGrandchild", "Prefab");
+    grandchild->SetParent(*child);
+    child->SetParent(prefabRoot);
+
+    auto save = facade.SaveAsPrefabAsset(
+        prefabRoot,
+        Id("f43d3d3d-3d3d-4d3d-8d3d-3d3d3d3d3d3d"),
+        "Assets/Prefabs/RemovedSubtreeScenePrefab.prefab");
+    ASSERT_EQ(save.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(save.artifact.has_value());
+    child->DetachFromParent();
+    grandchild->DetachFromParent();
+    delete grandchild;
+    delete child;
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto instantiate = facade.InstantiatePrefab({
+        &*save.artifact,
+        save.artifact->assetId,
+        "prefab:RemovedSubtreeScenePrefab",
+        Id("f43e3e3e-3e3e-4e3e-8e3e-3e3e3e3e3e3e")
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_NE(instantiate.instance->instanceRoot, nullptr);
+
+    auto* removedChild = FindChildByName(*instantiate.instance->instanceRoot, "RemovedSubtreeChild");
+    ASSERT_NE(removedChild, nullptr);
+    ASSERT_TRUE(sourceScene.DestroyGameObject(*removedChild));
+    sourceRegistry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+    ASSERT_EQ(document.prefabInstances.size(), 1u);
+    ASSERT_TRUE(std::any_of(
+        document.prefabInstances[0].modifications.begin(),
+        document.prefabInstances[0].modifications.end(),
+        [](const auto& operation)
+        {
+            return operation.type == NLS::Engine::Serialize::PatchOperationType::RemoveObject;
+        }));
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f43f3f3f-3f3f-4f3f-8f3f-3f3f3f3f3f3f"),
+        restoredRegistry,
+        [&save](AssetId assetId, const std::string& subAssetKey) -> std::optional<PrefabArtifact>
+        {
+            if (assetId == save.artifact->assetId && subAssetKey == "prefab:RemovedSubtreeScenePrefab")
+                return *save.artifact;
+            return std::nullopt;
+        });
+
+    ASSERT_EQ(restore.status, PrefabOperationStatus::Committed) << JoinPrefabDiagnostics(restore);
+    ASSERT_NE(loadedScene->FindGameObjectByName("RemovedSubtreeScenePrefab"), nullptr);
+    EXPECT_EQ(loadedScene->FindGameObjectByName("RemovedSubtreeChild"), nullptr);
+    EXPECT_EQ(loadedScene->FindGameObjectByName("RemovedSubtreeGrandchild"), nullptr);
+}
+
+TEST(PrefabUtilityFacadeTests, RestoresGeneratedModelSceneLocalOverrideAndStillRejectsApplyToAsset)
+{
+    PrefabUtilityFacade facade;
+    auto generated = MakePrefabArtifact("GeneratedOverrideScenePrefab", Id("f41e1e1e-1e1e-4e1e-8e1e-1e1e1e1e1e1e"));
+    generated.generatedModelPrefab = true;
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto instantiate = facade.InstantiatePrefab({
+        &generated,
+        generated.assetId,
+        "prefab:GeneratedOverrideScenePrefab",
+        Id("f41f1f1f-1f1f-4f1f-8f1f-1f1f1f1f1f1f")
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_NE(instantiate.instance->instanceRoot, nullptr);
+    instantiate.instance->instanceRoot->SetName("GeneratedSceneLocalName");
+    sourceRegistry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+    ASSERT_EQ(document.prefabInstances.size(), 1u);
+    ASSERT_FALSE(document.prefabInstances[0].modifications.empty());
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+    EXPECT_EQ(loadedScene->FindGameObjectByName("GeneratedSceneLocalName"), nullptr);
+
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f4202020-2020-4020-8020-202020202020"),
+        restoredRegistry,
+        [&generated](AssetId assetId, const std::string& subAssetKey) -> std::optional<PrefabArtifact>
+        {
+            if (assetId == generated.assetId && subAssetKey == "prefab:GeneratedOverrideScenePrefab")
+                return generated;
+            return std::nullopt;
+        });
+
+    ASSERT_EQ(restore.status, PrefabOperationStatus::Committed);
+    auto* loadedRoot = loadedScene->FindGameObjectByName("GeneratedSceneLocalName");
+    ASSERT_NE(loadedRoot, nullptr);
+    auto* restored = restoredRegistry.FindInstance(*loadedRoot);
+    ASSERT_NE(restored, nullptr);
+    EXPECT_TRUE(restored->generatedReadOnly);
+    EXPECT_FALSE(restored->localPatches.empty());
+
+    const auto overrides = facade.GetPrefabOverrides(generated, *restored, true);
+    const auto* nameOverride = FindOverride(overrides, PrefabOverrideKind::Property, "name");
+    ASSERT_NE(nameOverride, nullptr);
+    auto applyToGenerated = facade.ApplySingleOverride(generated, *nameOverride);
+    EXPECT_EQ(applyToGenerated.status, PrefabOperationStatus::Rejected);
+    EXPECT_EQ(ReadStringProperty(generated, "name"), "GeneratedOverrideScenePrefab");
+}
+
+TEST(PrefabUtilityFacadeTests, PreservesScenePrefabMetadataWhenRestoreArtifactIsMissing)
+{
+    PrefabUtilityFacade facade;
+    auto prefab = MakePrefabArtifact("MissingScenePrefab", Id("f4070707-0707-4707-8707-070707070707"));
+    prefab.generatedModelPrefab = true;
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto instantiate = facade.InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:MissingScenePrefab",
+        Id("f4080808-0808-4808-8808-080808080808")
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    sourceRegistry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+    EXPECT_EQ(loadedScene->FindGameObjectByName("MissingScenePrefab"), nullptr);
+
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f4090909-0909-4909-8909-090909090909"),
+        restoredRegistry,
+        [](AssetId, const std::string&) -> std::optional<PrefabArtifact>
+        {
+            return std::nullopt;
+        });
+
+    EXPECT_EQ(restore.status, PrefabOperationStatus::Failed);
+    auto* loadedRoot = loadedScene->FindGameObjectByName("MissingScenePrefab");
+    ASSERT_NE(loadedRoot, nullptr);
+    auto* restored = restoredRegistry.FindInstance(*loadedRoot);
+    ASSERT_NE(restored, nullptr);
+    EXPECT_EQ(restored->prefabAssetId, prefab.assetId);
+    EXPECT_EQ(restored->prefabSubAssetKey, "prefab:MissingScenePrefab");
+    EXPECT_TRUE(restored->generatedReadOnly);
+    EXPECT_TRUE(restoredRegistry.GetPresentation(*loadedRoot).missingAsset);
+
+    auto rewritten = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(*loadedScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(rewritten, *loadedScene, restoredRegistry);
+
+    ASSERT_EQ(rewritten.prefabInstances.size(), 1u);
+    EXPECT_EQ(rewritten.prefabInstances[0].sourcePrefab.guid, prefab.assetId.GetGuid());
+    EXPECT_EQ(rewritten.prefabInstances[0].sourcePrefab.filePath, "prefab:MissingScenePrefab");
+    EXPECT_TRUE(rewritten.prefabInstances[0].generatedReadOnly);
+}
+
+TEST(PrefabUtilityFacadeTests, PreservesStructuralPrefabInstancePayloadWhenRestoreArtifactIsMissing)
+{
+    PrefabUtilityFacade facade;
+    NLS::Engine::GameObject prefabRoot("MissingStructuralScenePrefab", "Prefab");
+    auto* sourceChild = new NLS::Engine::GameObject("MissingStructuralSourceChild", "Prefab");
+    sourceChild->SetParent(prefabRoot);
+    auto save = facade.SaveAsPrefabAsset(
+        prefabRoot,
+        Id("f43a3a3a-3a3a-4a3a-8a3a-3a3a3a3a3a3a"),
+        "Assets/Prefabs/MissingStructuralScenePrefab.prefab");
+    ASSERT_EQ(save.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(save.artifact.has_value());
+    sourceChild->DetachFromParent();
+    delete sourceChild;
+    auto prefab = *save.artifact;
+    prefab.generatedModelPrefab = true;
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto instantiate = facade.InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:MissingStructuralScenePrefab",
+        Id("f43b3b3b-3b3b-4b3b-8b3b-3b3b3b3b3b3b")
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_NE(instantiate.instance->instanceRoot, nullptr);
+
+    auto* addedChild = new NLS::Engine::GameObject("MissingStructuralSceneOnlyChild", "PrefabOverride");
+    addedChild->SetParent(*instantiate.instance->instanceRoot);
+    sourceScene.AddGameObject(addedChild);
+    sourceRegistry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+    ASSERT_EQ(document.prefabInstances.size(), 1u);
+    ASSERT_FALSE(document.prefabInstances[0].modifications.empty());
+    ASSERT_FALSE(document.prefabInstances[0].addedObjects.empty());
+    ASSERT_GT(document.prefabInstances[0].correspondence.size(), 1u);
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f43c3c3c-3c3c-4c3c-8c3c-3c3c3c3c3c3c"),
+        restoredRegistry,
+        [](AssetId, const std::string&) -> std::optional<PrefabArtifact>
+        {
+            return std::nullopt;
+        });
+
+    EXPECT_EQ(restore.status, PrefabOperationStatus::Failed);
+    auto* loadedRoot = loadedScene->FindGameObjectByName("MissingStructuralScenePrefab");
+    ASSERT_NE(loadedRoot, nullptr);
+    auto* restored = restoredRegistry.FindInstance(*loadedRoot);
+    ASSERT_NE(restored, nullptr);
+    EXPECT_FALSE(restored->localPatches.empty());
+    EXPECT_FALSE(restored->preservedAddedObjects.empty());
+    EXPECT_FALSE(restored->preservedCorrespondence.empty());
+
+    auto rewritten = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(*loadedScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(rewritten, *loadedScene, restoredRegistry);
+
+    ASSERT_EQ(rewritten.prefabInstances.size(), 1u);
+    EXPECT_EQ(rewritten.prefabInstances[0].sourcePrefab.guid, prefab.assetId.GetGuid());
+    EXPECT_EQ(rewritten.prefabInstances[0].sourcePrefab.filePath, "prefab:MissingStructuralScenePrefab");
+    EXPECT_FALSE(rewritten.prefabInstances[0].modifications.empty());
+    EXPECT_FALSE(rewritten.prefabInstances[0].addedObjects.empty());
+    EXPECT_FALSE(rewritten.prefabInstances[0].correspondence.empty());
+    EXPECT_FALSE(rewritten.Validate().HasErrors());
+}
+
+TEST(PrefabUtilityFacadeTests, PreservesScenePrefabMetadataWhenRestoreConnectFails)
+{
+    PrefabUtilityFacade facade;
+    auto prefab = MakePrefabArtifact("DisconnectedScenePrefab", Id("f4101010-1010-4010-8010-101010101010"));
+    prefab.generatedModelPrefab = true;
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto instantiate = facade.InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:DisconnectedScenePrefab",
+        Id("f4111111-1111-4111-8111-111111111111")
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    sourceRegistry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+    EXPECT_EQ(loadedScene->FindGameObjectByName("DisconnectedScenePrefab"), nullptr);
+
+    auto corruptPrefab = prefab;
+    corruptPrefab.graph.root = ObjectId();
+
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f4121212-1212-4212-8212-121212121212"),
+        restoredRegistry,
+        [&corruptPrefab](AssetId, const std::string&) -> std::optional<PrefabArtifact>
+        {
+            return corruptPrefab;
+        });
+
+    EXPECT_EQ(restore.status, PrefabOperationStatus::Failed);
+    auto* loadedRoot = loadedScene->FindGameObjectByName("DisconnectedScenePrefab");
+    ASSERT_NE(loadedRoot, nullptr);
+    auto* restored = restoredRegistry.FindInstance(*loadedRoot);
+    ASSERT_NE(restored, nullptr);
+    EXPECT_EQ(restored->prefabAssetId, prefab.assetId);
+    EXPECT_EQ(restored->prefabSubAssetKey, "prefab:DisconnectedScenePrefab");
+    EXPECT_TRUE(restored->generatedReadOnly);
+    EXPECT_TRUE(restoredRegistry.GetPresentation(*loadedRoot).missingAsset);
+
+    auto rewritten = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(*loadedScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(rewritten, *loadedScene, restoredRegistry);
+
+    ASSERT_EQ(rewritten.prefabInstances.size(), 1u);
+    EXPECT_EQ(rewritten.prefabInstances[0].sourcePrefab.guid, prefab.assetId.GetGuid());
+    EXPECT_EQ(rewritten.prefabInstances[0].sourcePrefab.filePath, "prefab:DisconnectedScenePrefab");
+    EXPECT_TRUE(rewritten.prefabInstances[0].generatedReadOnly);
+}
+
+TEST(PrefabUtilityFacadeTests, RestoresPrefabRegistryBySceneRootOrderWhenNamesCollide)
+{
+    PrefabUtilityFacade facade;
+    auto prefab = MakePrefabArtifact("DuplicateName", Id("f4040404-0404-4404-8404-040404040404"));
+    prefab.generatedModelPrefab = true;
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    auto& plainRoot = sourceScene.CreateGameObject("DuplicateName", "Plain");
+
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto instantiate = facade.InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:DuplicateName",
+        Id("f4050505-0505-4505-8505-050505050505")
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_NE(instantiate.instance->instanceRoot, &plainRoot);
+    sourceRegistry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+    auto matches = loadedScene->FindGameObjectsByName("DuplicateName");
+    ASSERT_EQ(matches.size(), 1u);
+
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f4060606-0606-4606-8606-060606060606"),
+        restoredRegistry,
+        [&prefab](AssetId assetId, const std::string& subAssetKey) -> std::optional<PrefabArtifact>
+        {
+            if (assetId == prefab.assetId && subAssetKey == "prefab:DuplicateName")
+                return prefab;
+            return std::nullopt;
+        });
+
+    ASSERT_EQ(restore.status, PrefabOperationStatus::Committed);
+    matches = loadedScene->FindGameObjectsByName("DuplicateName");
+    ASSERT_EQ(matches.size(), 2u);
+    EXPECT_EQ(restoredRegistry.FindInstance(matches[0].get()), nullptr);
+    auto* restored = restoredRegistry.FindInstance(matches[1].get());
+    ASSERT_NE(restored, nullptr);
+    EXPECT_EQ(restored->prefabAssetId, prefab.assetId);
+    EXPECT_EQ(restored->prefabSubAssetKey, "prefab:DuplicateName");
+}
+
+TEST(PrefabUtilityFacadeTests, RestoresMixedUnityStyleAndLegacyScenePrefabMetadata)
+{
+    PrefabUtilityFacade facade;
+    auto unityStylePrefab = MakePrefabArtifact("MixedUnityStylePrefab", Id("f42d2d2d-2d2d-4d2d-8d2d-2d2d2d2d2d2d"));
+    unityStylePrefab.generatedModelPrefab = true;
+    auto legacyPrefab = MakePrefabArtifact("MixedLegacyPrefab", Id("f42e2e2e-2e2e-4e2e-8e2e-2e2e2e2e2e2e"));
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto unityStyle = facade.InstantiatePrefab({
+        &unityStylePrefab,
+        unityStylePrefab.assetId,
+        "prefab:MixedUnityStylePrefab",
+        Id("f42f2f2f-2f2f-4f2f-8f2f-2f2f2f2f2f2f")
+    }, sourceScene);
+    ASSERT_EQ(unityStyle.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(unityStyle.instance.has_value());
+    sourceRegistry.Register(*unityStyle.instance);
+
+    auto legacy = facade.InstantiatePrefab({
+        &legacyPrefab,
+        legacyPrefab.assetId,
+        "prefab:MixedLegacyPrefab",
+        Id("f4303030-3030-4030-8030-303030303030")
+    }, sourceScene);
+    ASSERT_EQ(legacy.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(legacy.instance.has_value());
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+    ASSERT_EQ(document.prefabInstances.size(), 1u);
+
+    auto* legacyRootRecord = const_cast<NLS::Engine::Serialize::ObjectRecord*>(
+        FindGameObjectRecordByName(document, "MixedLegacyPrefab"));
+    ASSERT_NE(legacyRootRecord, nullptr);
+    legacyRootRecord->properties.push_back({
+        "scenePrefab",
+        PropertyValue::ObjectReference(ObjectIdentifier::Asset(
+            NLS::Engine::Serialize::AssetId(legacyPrefab.assetId.GetGuid()),
+            NLS::Engine::Serialize::MakeLocalIdentifierInFile(
+                legacyPrefab.assetId.GetGuid(),
+                "prefab:MixedLegacyPrefab"),
+            "prefab:MixedLegacyPrefab"))
+    });
+    legacyRootRecord->properties.push_back({
+        "scenePrefabGeneratedReadOnly",
+        PropertyValue::Bool(false)
+    });
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+    EXPECT_EQ(loadedScene->FindGameObjectByName("MixedUnityStylePrefab"), nullptr);
+    ASSERT_NE(loadedScene->FindGameObjectByName("MixedLegacyPrefab"), nullptr);
+
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f4313131-3131-4131-8131-313131313131"),
+        restoredRegistry,
+        [&](AssetId assetId, const std::string& subAssetKey) -> std::optional<PrefabArtifact>
+        {
+            if (assetId == unityStylePrefab.assetId && subAssetKey == "prefab:MixedUnityStylePrefab")
+                return unityStylePrefab;
+            if (assetId == legacyPrefab.assetId && subAssetKey == "prefab:MixedLegacyPrefab")
+                return legacyPrefab;
+            return std::nullopt;
+        });
+
+    ASSERT_EQ(restore.status, PrefabOperationStatus::Committed);
+    auto* loadedUnityStyleRoot = loadedScene->FindGameObjectByName("MixedUnityStylePrefab");
+    ASSERT_NE(loadedUnityStyleRoot, nullptr);
+    auto* loadedLegacyRoot = loadedScene->FindGameObjectByName("MixedLegacyPrefab");
+    ASSERT_NE(loadedLegacyRoot, nullptr);
+    EXPECT_NE(restoredRegistry.FindInstance(*loadedUnityStyleRoot), nullptr);
+    EXPECT_NE(restoredRegistry.FindInstance(*loadedLegacyRoot), nullptr);
+}
+
+TEST(PrefabUtilityFacadeTests, RestoresStrippedPrefabInstanceAtSavedSceneOrder)
+{
+    PrefabUtilityFacade facade;
+    auto prefab = MakePrefabArtifact("OrderedPrefab", Id("f4323232-3232-4232-8232-323232323232"));
+    prefab.generatedModelPrefab = true;
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    sourceScene.CreateGameObject("BeforePrefab");
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto instantiate = facade.InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:OrderedPrefab",
+        Id("f4333333-3333-4333-8333-333333333333")
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    sourceRegistry.Register(*instantiate.instance);
+    sourceScene.CreateGameObject("AfterPrefab");
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+    ASSERT_EQ(document.prefabInstances.size(), 1u);
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+    ASSERT_EQ(loadedScene->GetGameObjects().size(), 2u);
+    EXPECT_EQ(loadedScene->GetGameObjects()[0]->GetName(), "BeforePrefab");
+    EXPECT_EQ(loadedScene->GetGameObjects()[1]->GetName(), "AfterPrefab");
+
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f4343434-3434-4434-8434-343434343434"),
+        restoredRegistry,
+        [&prefab](AssetId assetId, const std::string& subAssetKey) -> std::optional<PrefabArtifact>
+        {
+            if (assetId == prefab.assetId && subAssetKey == "prefab:OrderedPrefab")
+                return prefab;
+            return std::nullopt;
+        });
+
+    ASSERT_EQ(restore.status, PrefabOperationStatus::Committed);
+    ASSERT_EQ(loadedScene->GetGameObjects().size(), 3u);
+    EXPECT_EQ(loadedScene->GetGameObjects()[0]->GetName(), "BeforePrefab");
+    EXPECT_EQ(loadedScene->GetGameObjects()[1]->GetName(), "OrderedPrefab");
+    EXPECT_EQ(loadedScene->GetGameObjects()[2]->GetName(), "AfterPrefab");
+}
+
+TEST(PrefabUtilityFacadeTests, RestoresParentedGeneratedModelPrefabRegistryFromSceneDocument)
+{
+    PrefabUtilityFacade facade;
+    auto prefab = MakePrefabArtifact("ParentedGeneratedModel", Id("f4141414-1414-4414-8414-141414141414"));
+    prefab.generatedModelPrefab = true;
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    auto& parent = sourceScene.CreateGameObject("SceneParent");
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto instantiate = facade.InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:ParentedGeneratedModel",
+        Id("f4151515-1515-4515-8515-151515151515")
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_NE(instantiate.instance->instanceRoot, nullptr);
+    instantiate.instance->instanceRoot->SetParent(parent);
+    sourceRegistry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+
+    ASSERT_EQ(document.prefabInstances.size(), 1u);
+    EXPECT_EQ(document.prefabInstances[0].sourcePrefab.guid, prefab.assetId.GetGuid());
+    EXPECT_EQ(document.prefabInstances[0].sourcePrefab.filePath, "prefab:ParentedGeneratedModel");
+
+    const auto* parentedRootRecord = FindGameObjectRecordByName(document, "ParentedGeneratedModel");
+    ASSERT_NE(parentedRootRecord, nullptr);
+    EXPECT_EQ(FindProperty(*parentedRootRecord, "scenePrefab"), nullptr);
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+    EXPECT_EQ(loadedScene->FindGameObjectByName("ParentedGeneratedModel"), nullptr);
+
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f4161616-1616-4616-8616-161616161616"),
+        restoredRegistry,
+        [&prefab](AssetId assetId, const std::string& subAssetKey) -> std::optional<PrefabArtifact>
+        {
+            if (assetId == prefab.assetId && subAssetKey == "prefab:ParentedGeneratedModel")
+                return prefab;
+            return std::nullopt;
+        });
+
+    ASSERT_EQ(restore.status, PrefabOperationStatus::Committed);
+    auto* loadedParentedRoot = loadedScene->FindGameObjectByName("ParentedGeneratedModel");
+    ASSERT_NE(loadedParentedRoot, nullptr);
+    ASSERT_NE(loadedParentedRoot->GetParent(), nullptr);
+    EXPECT_EQ(loadedParentedRoot->GetParent()->GetName(), "SceneParent");
+    auto* restored = restoredRegistry.FindInstance(*loadedParentedRoot);
+    ASSERT_NE(restored, nullptr);
+    EXPECT_EQ(restored->prefabAssetId, prefab.assetId);
+    EXPECT_EQ(restored->prefabSubAssetKey, "prefab:ParentedGeneratedModel");
+    EXPECT_TRUE(restored->generatedReadOnly);
+}
+
+TEST(PrefabUtilityFacadeTests, RestoresStrippedPrefabInstanceUnderRestoredPrefabParent)
+{
+    PrefabUtilityFacade facade;
+    auto parentPrefab = MakePrefabArtifact("RestoredPrefabParent", Id("f4353535-3535-4535-8535-353535353535"));
+    parentPrefab.generatedModelPrefab = true;
+    auto childPrefab = MakePrefabArtifact("RestoredPrefabChild", Id("f4363636-3636-4636-8636-363636363636"));
+    childPrefab.generatedModelPrefab = true;
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto parent = facade.InstantiatePrefab({
+        &parentPrefab,
+        parentPrefab.assetId,
+        "prefab:RestoredPrefabParent",
+        Id("f4373737-3737-4737-8737-373737373737")
+    }, sourceScene);
+    ASSERT_EQ(parent.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(parent.instance.has_value());
+    ASSERT_NE(parent.instance->instanceRoot, nullptr);
+
+    auto child = facade.InstantiatePrefab({
+        &childPrefab,
+        childPrefab.assetId,
+        "prefab:RestoredPrefabChild",
+        Id("f4383838-3838-4838-8838-383838383838")
+    }, sourceScene);
+    ASSERT_EQ(child.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(child.instance.has_value());
+    ASSERT_NE(child.instance->instanceRoot, nullptr);
+    child.instance->instanceRoot->SetParent(*parent.instance->instanceRoot);
+
+    sourceRegistry.Register(*parent.instance);
+    sourceRegistry.Register(*child.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+    ASSERT_EQ(document.prefabInstances.size(), 2u);
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+    EXPECT_EQ(loadedScene->FindGameObjectByName("RestoredPrefabParent"), nullptr);
+    EXPECT_EQ(loadedScene->FindGameObjectByName("RestoredPrefabChild"), nullptr);
+
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f4393939-3939-4939-8939-393939393939"),
+        restoredRegistry,
+        [&](AssetId assetId, const std::string& subAssetKey) -> std::optional<PrefabArtifact>
+        {
+            if (assetId == parentPrefab.assetId && subAssetKey == "prefab:RestoredPrefabParent")
+                return parentPrefab;
+            if (assetId == childPrefab.assetId && subAssetKey == "prefab:RestoredPrefabChild")
+                return childPrefab;
+            return std::nullopt;
+        });
+
+    ASSERT_EQ(restore.status, PrefabOperationStatus::Committed) << JoinPrefabDiagnostics(restore);
+    auto* loadedParent = loadedScene->FindGameObjectByName("RestoredPrefabParent");
+    ASSERT_NE(loadedParent, nullptr);
+    auto* loadedChild = loadedScene->FindGameObjectByName("RestoredPrefabChild");
+    ASSERT_NE(loadedChild, nullptr);
+    EXPECT_EQ(loadedChild->GetParent(), loadedParent);
+    EXPECT_NE(restoredRegistry.FindInstance(*loadedParent), nullptr);
+    EXPECT_NE(restoredRegistry.FindInstance(*loadedChild), nullptr);
 }
 
 TEST(PrefabUtilityFacadeTests, SaveAsPrefabAssetResolvesMeshAndMaterialObjectReferences)

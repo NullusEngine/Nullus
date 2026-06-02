@@ -37,7 +37,8 @@ namespace NLS::UI
 				m_isHovered = true;
 
 				DragDropTargetFlags target_flags = DragDropTargetFlags::None;
-				// target_flags |= ImGuiDragDropFlags_AcceptBeforeDelivery;    // Don't wait until the delivery (release mouse button on a target) to do something
+				if (acceptBeforeDelivery)
+					target_flags |= DragDropTargetFlags::AcceptBeforeDelivery;
 				
 				if (!showYellowRect)
 					target_flags |= DragDropTargetFlags::AcceptNoDrawDefaultRect; // Don't display the yellow rectangle
@@ -45,7 +46,10 @@ namespace NLS::UI
 				if (const DragDropPayloadView payload = AcceptDragDropPayload(identifier.c_str(), target_flags); payload.data != nullptr)
 				{
 					T data = *static_cast<const T*>(payload.data);
-					DataReceivedEvent.Invoke(data);
+					if (payload.delivered)
+						DataReceivedEvent.Invoke(data);
+					else
+						PreviewReceivedEvent.Invoke(data);
 				}
 				EndDragDropTarget();
 			}
@@ -69,12 +73,14 @@ namespace NLS::UI
 	public:
 		std::string identifier;
 		Event<T> DataReceivedEvent;
+		Event<T> PreviewReceivedEvent;
 		Event<> HoverStartEvent;
 		Event<> HoverEndEvent;
 
 		bool showYellowRect = true;
+		bool acceptBeforeDelivery = false;
 
 	private:
-		bool m_isHovered;
+		bool m_isHovered = false;
 	};
 }

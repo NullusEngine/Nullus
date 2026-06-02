@@ -175,8 +175,16 @@ namespace NLS::Editor::Core
 		*/
         Engine::GameObject* CreatePrimitive(Engine::PrimitiveType p_type, bool p_focusOnCreation = true, Engine::GameObject* p_parent = nullptr);
         Engine::GameObject* CreateGameObjectWithModel(const std::string& p_path, bool p_focusOnCreation = true, Engine::GameObject* p_parent = nullptr, const std::string& p_name = "");
-        Engine::GameObject* CreateGameObjectFromAsset(const std::string& path, bool focusOnCreation = true, Engine::GameObject* p_parent = nullptr);
-        Engine::GameObject* CreateGameObjectFromAsset(const NLS::Editor::Assets::EditorAssetDragPayload& payload, bool focusOnCreation = true, Engine::GameObject* p_parent = nullptr);
+        Engine::GameObject* CreateGameObjectFromAsset(
+            const std::string& path,
+            bool focusOnCreation = true,
+            Engine::GameObject* p_parent = nullptr,
+            std::optional<Maths::Vector3> placementOverride = std::nullopt);
+        Engine::GameObject* CreateGameObjectFromAsset(
+            const NLS::Editor::Assets::EditorAssetDragPayload& payload,
+            bool focusOnCreation = true,
+            Engine::GameObject* p_parent = nullptr,
+            std::optional<Maths::Vector3> placementOverride = std::nullopt);
 
 		/**
 		* Destroy an GameObject from his scene

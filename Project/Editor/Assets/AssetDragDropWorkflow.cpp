@@ -478,6 +478,7 @@ AssetDragDropResult AssetDragDropWorkflow::InstantiatePrefabInHierarchy(
 {
     AssetDragDropResult result;
     result.operation = DragDropOperationKind::InstantiatePrefab;
+    result.deferredAssetReferenceResolutionRequested = request.deferAssetReferenceResolution;
 
     if (!request.target.scene)
     {

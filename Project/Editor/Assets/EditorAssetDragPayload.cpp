@@ -39,7 +39,8 @@ EditorAssetDragPayload MakeEditorAssetDragPayload(
     const std::string& subAssetKey,
     const NLS::Core::Assets::ArtifactType artifactType,
     const bool generatedModelPrefab,
-    const bool imported)
+    const bool imported,
+    const bool previewPrefabReady)
 {
     EditorAssetDragPayload payload;
     CopyPayloadString(payload.assetPath, assetPath);
@@ -48,6 +49,7 @@ EditorAssetDragPayload MakeEditorAssetDragPayload(
     payload.artifactType = static_cast<uint32_t>(artifactType);
     payload.generatedModelPrefab = generatedModelPrefab ? 1u : 0u;
     payload.imported = imported ? 1u : 0u;
+    payload.previewPrefabReady = previewPrefabReady ? 1u : 0u;
     return payload;
 }
 
@@ -58,7 +60,8 @@ EditorAssetDragPayload MakeEditorAssetDragPayloadForTesting(
     const std::string& subAssetKey,
     const NLS::Core::Assets::ArtifactType artifactType,
     const bool generatedModelPrefab,
-    const bool imported)
+    const bool imported,
+    const bool previewPrefabReady)
 {
     return MakeEditorAssetDragPayload(
         assetPath,
@@ -66,7 +69,8 @@ EditorAssetDragPayload MakeEditorAssetDragPayloadForTesting(
         subAssetKey,
         artifactType,
         generatedModelPrefab,
-        imported);
+        imported,
+        previewPrefabReady);
 }
 #endif
 
@@ -125,5 +129,10 @@ NLS::Core::Assets::ArtifactType GetEditorAssetDragPayloadArtifactType(const Edit
     default:
         return ArtifactType::Unknown;
     }
+}
+
+bool IsEditorAssetDragPayloadPreviewPrefabReady(const EditorAssetDragPayload& payload)
+{
+    return payload.previewPrefabReady != 0u;
 }
 }

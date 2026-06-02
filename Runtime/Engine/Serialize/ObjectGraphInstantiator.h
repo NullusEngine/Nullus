@@ -163,7 +163,7 @@ namespace NLS::Engine::Serialize
 
                 const auto* record = FindRecord(document, *objectId);
                 if (!record ||
-                    record->state == ObjectRecordState::Removed ||
+                    !IsInstantiableRecordState(record->state) ||
                     !RecordTypeMatches<GameObject>(*record))
                     continue;
 
@@ -185,7 +185,7 @@ namespace NLS::Engine::Serialize
             for (const auto& object : document.objects)
             {
                 ++appliedObjectCount;
-                if (object.state == ObjectRecordState::Removed)
+                if (!IsInstantiableRecordState(object.state))
                     continue;
 
                 if (!RecordTypeMatches<GameObject>(object))
@@ -207,7 +207,7 @@ namespace NLS::Engine::Serialize
             for (const auto& object : document.objects)
             {
                 ++resolvedObjectCount;
-                if (object.state == ObjectRecordState::Removed)
+                if (!IsInstantiableRecordState(object.state))
                     continue;
 
                 if (RecordTypeMatches<GameObject>(object))
@@ -250,7 +250,7 @@ namespace NLS::Engine::Serialize
 
             for (const auto& object : graph.objects)
             {
-                if (object.state == ObjectRecordState::Removed)
+                if (!IsInstantiableRecordState(object.state))
                     continue;
 
                 if (!RecordTypeMatches<GameObject>(object))
@@ -268,7 +268,7 @@ namespace NLS::Engine::Serialize
 
             for (const auto& object : graph.objects)
             {
-                if (object.state == ObjectRecordState::Removed)
+                if (!IsInstantiableRecordState(object.state))
                     continue;
 
                 if (!RecordTypeMatches<GameObject>(object))
@@ -285,7 +285,7 @@ namespace NLS::Engine::Serialize
 
             for (const auto& object : graph.objects)
             {
-                if (object.state == ObjectRecordState::Removed)
+                if (!IsInstantiableRecordState(object.state))
                     continue;
 
                 if (RecordTypeMatches<GameObject>(object))
@@ -303,6 +303,18 @@ namespace NLS::Engine::Serialize
         static SerializationDiagnosticList ValidatePrefab(const PrefabDocument& prefab)
         {
             SerializationDiagnosticList diagnostics = prefab.graph.Validate();
+            for (const auto& object : prefab.graph.objects)
+            {
+                if (object.state != ObjectRecordState::Stripped)
+                    continue;
+
+                diagnostics.Add({
+                    SerializationDiagnosticCode::InvalidPrefabOverride,
+                    SerializationDiagnosticSeverity::Error,
+                    "Prefab source graphs cannot contain scene-only stripped object records."
+                });
+            }
+
             for (const auto& operation : prefab.graph.overrides)
             {
                 if (!FindRecord(prefab.graph, operation.target))
@@ -1041,7 +1053,7 @@ namespace NLS::Engine::Serialize
         {
             for (const auto& object : document.objects)
             {
-                if (object.state == ObjectRecordState::Removed)
+                if (!IsInstantiableRecordState(object.state))
                     continue;
 
                 const auto type = NLS::meta::Type::GetFromName(object.typeName);
@@ -1065,7 +1077,7 @@ namespace NLS::Engine::Serialize
         {
             for (const auto& object : document.objects)
             {
-                if (object.state == ObjectRecordState::Removed)
+                if (!IsInstantiableRecordState(object.state))
                     continue;
 
                 const auto type = NLS::meta::Type::GetFromName(object.typeName);
@@ -1142,7 +1154,7 @@ namespace NLS::Engine::Serialize
 
             for (const auto& object : document.objects)
             {
-                if (object.state == ObjectRecordState::Removed)
+                if (!IsInstantiableRecordState(object.state))
                     continue;
 
                 for (const auto& property : object.properties)

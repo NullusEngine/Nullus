@@ -2,6 +2,7 @@
 
 #include "Assets/PrefabEditorWorkflow.h"
 
+#include <functional>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -229,5 +230,17 @@ public:
     PrefabOperationResult UnpackPrefabInstance(
         PrefabInstanceRecord& instance,
         PrefabUnpackMode mode) const;
+    void AnnotateSceneDocumentWithPrefabInstances(
+        NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
+        const NLS::Engine::SceneSystem::Scene& scene,
+        const PrefabInstanceRegistry& instanceRegistry) const;
+    PrefabOperationResult RestorePrefabInstancesFromSceneDocument(
+        const NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
+        NLS::Engine::SceneSystem::Scene& scene,
+        NLS::Core::Assets::AssetId sceneAssetId,
+        PrefabInstanceRegistry& instanceRegistry,
+        const std::function<std::optional<NLS::Engine::Assets::PrefabArtifact>(
+            NLS::Core::Assets::AssetId,
+            const std::string&)>& prefabResolver) const;
 };
 }

@@ -67,6 +67,20 @@ namespace NLS::Engine::Serialize
                 }
             }
 
+            if (const auto prefabInstances = root.find("prefabInstances"); prefabInstances != root.end())
+            {
+                if (!prefabInstances->is_array())
+                    return std::nullopt;
+
+                for (const auto& prefabInstanceJson : *prefabInstances)
+                {
+                    auto prefabInstance = ReadPrefabInstance(prefabInstanceJson);
+                    if (!prefabInstance.has_value())
+                        return std::nullopt;
+                    document.prefabInstances.push_back(std::move(*prefabInstance));
+                }
+            }
+
             return document;
         }
 
@@ -90,9 +104,15 @@ namespace NLS::Engine::Serialize
             record.typeName = json.value("type", std::string {});
             record.debugName = json.value("debugName", std::string {});
             record.debugPath = json.value("debugPath", std::string {});
-            record.state = json.value("state", std::string {"Alive"}) == "Removed"
-                ? ObjectRecordState::Removed
-                : ObjectRecordState::Alive;
+            const auto state = json.value("state", std::string {"Alive"});
+            if (state == "Alive")
+                record.state = ObjectRecordState::Alive;
+            else if (state == "Removed")
+                record.state = ObjectRecordState::Removed;
+            else if (state == "Stripped")
+                record.state = ObjectRecordState::Stripped;
+            else
+                return std::nullopt;
 
             const auto properties = json.find("properties");
             if (properties != json.end())
@@ -309,6 +329,94 @@ namespace NLS::Engine::Serialize
             }
 
             return std::nullopt;
+        }
+
+        static std::optional<PrefabInstanceObjectCorrespondence> ReadPrefabInstanceCorrespondence(
+            const nlohmann::json& json)
+        {
+            if (!json.is_object())
+                return std::nullopt;
+
+            auto sourceObject = NLS::Guid::TryParse(json.value("sourceObject", std::string {}));
+            auto instanceObject = NLS::Guid::TryParse(json.value("instanceObject", std::string {}));
+            if (!sourceObject.has_value() || !instanceObject.has_value())
+                return std::nullopt;
+
+            PrefabInstanceObjectCorrespondence correspondence;
+            correspondence.sourceObject = ObjectId(*sourceObject);
+            correspondence.instanceObject = ObjectId(*instanceObject);
+            return correspondence;
+        }
+
+        static std::optional<PrefabInstanceRecord> ReadPrefabInstance(const nlohmann::json& json)
+        {
+            if (!json.is_object())
+                return std::nullopt;
+
+            auto instanceRoot = NLS::Guid::TryParse(json.value("instanceRoot", std::string {}));
+            if (!instanceRoot.has_value())
+                return std::nullopt;
+
+            const auto sourcePrefabJson = json.find("sourcePrefab");
+            if (sourcePrefabJson == json.end())
+                return std::nullopt;
+
+            auto sourcePrefab = ReadValue(*sourcePrefabJson);
+            if (!sourcePrefab.has_value() ||
+                sourcePrefab->GetKind() != PropertyValue::Kind::ObjectReference ||
+                !sourcePrefab->GetObjectReference().guid.IsValid())
+            {
+                return std::nullopt;
+            }
+
+            PrefabInstanceRecord prefabInstance;
+            prefabInstance.instanceRoot = ObjectId(*instanceRoot);
+            prefabInstance.sourcePrefab = sourcePrefab->GetObjectReference();
+            prefabInstance.generatedReadOnly = json.value("generatedReadOnly", false);
+
+            if (const auto modifications = json.find("modifications"); modifications != json.end())
+            {
+                if (!modifications->is_array())
+                    return std::nullopt;
+
+                for (const auto& operationJson : *modifications)
+                {
+                    auto operation = ReadPatchOperation(operationJson);
+                    if (!operation.has_value())
+                        return std::nullopt;
+                    prefabInstance.modifications.push_back(std::move(*operation));
+                }
+            }
+
+            if (const auto addedObjects = json.find("addedObjects"); addedObjects != json.end())
+            {
+                if (!addedObjects->is_array())
+                    return std::nullopt;
+
+                for (const auto& objectJson : *addedObjects)
+                {
+                    auto object = ReadObject(objectJson);
+                    if (!object.has_value())
+                        return std::nullopt;
+                    prefabInstance.addedObjects.push_back(std::move(*object));
+                }
+            }
+
+            if (const auto correspondence = json.find("correspondence"); correspondence != json.end())
+            {
+                if (!correspondence->is_array())
+                    return std::nullopt;
+
+                for (const auto& correspondenceJson : *correspondence)
+                {
+                    auto mapping = ReadPrefabInstanceCorrespondence(correspondenceJson);
+                    if (!mapping.has_value())
+                        return std::nullopt;
+                    prefabInstance.correspondence.push_back(std::move(*mapping));
+                }
+            }
+
+            return prefabInstance;
         }
     };
 }

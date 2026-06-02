@@ -105,6 +105,9 @@ struct PrefabInstanceRecord
     std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::Serialize::ObjectId> sourceToInstance;
     std::unordered_map<const NLS::Engine::GameObject*, NLS::Engine::Serialize::ObjectId> sourceByInstanceObject;
     std::vector<NLS::Engine::Serialize::PatchOperation> localPatches;
+    NLS::Engine::Serialize::ObjectId preservedInstanceRootObject;
+    std::vector<NLS::Engine::Serialize::ObjectRecord> preservedAddedObjects;
+    std::vector<NLS::Engine::Serialize::PrefabInstanceObjectCorrespondence> preservedCorrespondence;
     std::vector<NLS::Engine::Serialize::ObjectIdentifier> preservedAssetReferences;
     std::vector<PrefabInstanceRecord> nestedInstances;
 };

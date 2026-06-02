@@ -27,6 +27,7 @@ class DebugSceneRenderer : public Engine::Rendering::DeferredSceneRenderer
 			Engine::GameObject* highlightedGameObject;
             Engine::GameObject* selectedGameObject;
             bool requestPickingFrame = false;
+            Engine::SceneSystem::Scene* previewScene = nullptr;
 		};
 
 		/**

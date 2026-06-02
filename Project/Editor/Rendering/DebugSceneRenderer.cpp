@@ -1211,6 +1211,12 @@ std::optional<NLS::Render::Context::FrameSnapshot> Editor::Rendering::DebugScene
     helperState.sceneLightCount = static_cast<uint64_t>(scene.GetFastAccessComponents().lights.size());
     if (HasDescriptor<DebugSceneDescriptor>())
     {
+        const auto* previewScene = GetDescriptor<DebugSceneDescriptor>().previewScene;
+        if (previewScene != nullptr)
+        {
+            helperState.sceneCameraCount += static_cast<uint64_t>(previewScene->GetFastAccessComponents().cameras.size());
+            helperState.sceneLightCount += static_cast<uint64_t>(previewScene->GetFastAccessComponents().lights.size());
+        }
         const auto* selectedGameObject = GetDescriptor<DebugSceneDescriptor>().selectedGameObject;
         helperState.hasSelectedGameObject =
             !IsThreadedFramePublishSkippedForCurrentFrame() &&

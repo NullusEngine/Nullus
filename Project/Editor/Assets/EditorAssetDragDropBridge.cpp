@@ -30,6 +30,19 @@ struct FastImportedPrefabLoadResult
     std::string diagnosticMessage;
 };
 
+struct ImportedAssetHandle
+{
+    std::string assetPath;
+    std::string prefabSubAssetKey;
+    NLS::Core::Assets::AssetType assetType = NLS::Core::Assets::AssetType::Unknown;
+    NLS::Core::Assets::AssetId assetId;
+};
+
+std::string DefaultGeneratedPrefabSubAssetKeyForAssetPath(const std::string& assetPath)
+{
+    return "prefab:" + std::filesystem::path(assetPath).stem().generic_string();
+}
+
 std::string FileStamp(const std::filesystem::path& path)
 {
     std::error_code error;
@@ -448,6 +461,51 @@ EditorAssetDragDropBridgeResult MakePendingImportedPrefabResult(
     return result;
 }
 
+std::optional<ImportedAssetHandle> ResolveImportedAssetHandleForPreview(
+    const std::filesystem::path& projectRoot,
+    const EditorAssetDragPayload& payload)
+{
+    auto assetPath = NormalizeEditorAssetPath(GetEditorAssetDragPayloadPath(payload));
+    if (assetPath.empty())
+        return std::nullopt;
+
+    const auto payloadAssetId = GetEditorAssetDragPayloadAssetId(payload);
+    if (!payloadAssetId.IsValid())
+        return std::nullopt;
+
+    const auto currentMeta = NLS::Core::Assets::AssetMeta::Load(
+        NLS::Core::Assets::GetAssetMetaPath((projectRoot / std::filesystem::path(assetPath)).lexically_normal()));
+    if (currentMeta.has_value() &&
+        currentMeta->id.IsValid() &&
+        currentMeta->id != payloadAssetId)
+    {
+        return std::nullopt;
+    }
+
+    auto prefabSubAssetKey = GetEditorAssetDragPayloadSubAssetKey(payload);
+    auto assetType = payload.generatedModelPrefab != 0u
+        ? NLS::Core::Assets::AssetType::ModelScene
+        : NLS::Core::Assets::InferAssetType(projectRoot / assetPath);
+    if (payload.generatedModelPrefab != 0u ||
+        prefabSubAssetKey.empty())
+    {
+        prefabSubAssetKey = DefaultGeneratedPrefabSubAssetKeyForAssetPath(assetPath);
+    }
+
+    if (assetType != NLS::Core::Assets::AssetType::ModelScene &&
+        assetType != NLS::Core::Assets::AssetType::Prefab)
+    {
+        return std::nullopt;
+    }
+
+    return ImportedAssetHandle{
+        std::move(assetPath),
+        std::move(prefabSubAssetKey),
+        assetType,
+        payloadAssetId
+    };
+}
+
 }
 
 EditorAssetDragDropBridge::EditorAssetDragDropBridge(std::filesystem::path projectAssetsPath)
@@ -477,7 +535,7 @@ std::string EditorAssetDragDropBridge::NormalizeResourcePath(const std::string& 
 std::string EditorAssetDragDropBridge::DefaultGeneratedPrefabSubAssetKey(
     const std::string& assetPath) const
 {
-    return "prefab:" + std::filesystem::path(assetPath).stem().generic_string();
+    return DefaultGeneratedPrefabSubAssetKeyForAssetPath(assetPath);
 }
 
 std::pair<std::string, std::string> EditorAssetDragDropBridge::NormalizePrefabResourcePath(
@@ -556,7 +614,7 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::InstantiateImportedAs
         nullptr,
         prefabInstanceRegistry,
         {},
-        assetType == NLS::Core::Assets::AssetType::ModelScene
+        false
     });
     return result;
 }
@@ -841,5 +899,26 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropImportedAssetHand
         parent,
         progressTracker,
         assetPath);
+}
+
+std::optional<NLS::Engine::Assets::PrefabArtifact> EditorAssetDragDropBridge::TryLoadPreviewPrefabArtifact(
+    const EditorAssetDragPayload& payload) const
+{
+    const auto handle = ResolveImportedAssetHandleForPreview(ProjectRoot(), payload);
+    if (!handle.has_value())
+        return std::nullopt;
+
+    auto fastLoad = LoadImportedPrefabFast(
+        ProjectRoot(),
+        handle->assetPath,
+        handle->prefabSubAssetKey,
+        handle->assetType);
+    if (!fastLoad.prefab.has_value() ||
+        fastLoad.prefab->assetId != handle->assetId)
+    {
+        return std::nullopt;
+    }
+
+    return std::move(fastLoad.prefab);
 }
 }

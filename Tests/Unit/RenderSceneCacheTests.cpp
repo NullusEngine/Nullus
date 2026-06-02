@@ -1067,6 +1067,101 @@ TEST(RenderSceneCacheTests, OpaqueQueueGroupsCompatibleStateAndTransparentKeepsB
     EXPECT_GT(visible.transparents[0].first, visible.transparents[1].first);
 }
 
+TEST(RenderSceneCacheTests, SceneRendererKeepsTransparentBackToFrontAcrossAdditiveScenes)
+{
+    auto& driver = EnsureRenderSceneTestDriver();
+    QueueSortFixture fixture;
+    fixture.AddObject("MainTransparentNear", *fixture.sharedMesh, fixture.transparentMaterial, 3.0f);
+
+    NLS::Engine::SceneSystem::Scene previewScene;
+    auto& previewObject = previewScene.CreateGameObject("PreviewTransparentFar");
+    auto* previewMeshFilter = previewObject.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* previewMeshRenderer = previewObject.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(previewMeshFilter, nullptr);
+    ASSERT_NE(previewMeshRenderer, nullptr);
+    previewMeshFilter->SetMesh(fixture.otherMesh);
+    previewMeshRenderer->FillWithMaterial(fixture.transparentMaterial);
+    previewObject.GetTransform()->SetWorldPosition({ 30.0f, 0.0f, 0.0f });
+
+    SceneDrawableProbeRenderer renderer(driver);
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        fixture.scene,
+        std::nullopt,
+        nullptr,
+        { &previewScene }
+    });
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 128u;
+    frameDescriptor.camera = &camera;
+
+    const auto drawables = renderer.CaptureSceneDrawables(frameDescriptor);
+
+    ASSERT_EQ(drawables.transparents.size(), 2u);
+    EXPECT_EQ(drawables.transparents[0].second.mesh, fixture.otherMesh);
+    EXPECT_EQ(drawables.transparents[1].second.mesh, fixture.sharedMesh);
+    EXPECT_GT(drawables.transparents[0].first, drawables.transparents[1].first);
+}
+
+TEST(RenderSceneCacheTests, SceneRendererRespectsGlobalObjectDataCapacityAcrossAdditiveScenes)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    ScopedObjectDataCountLimitOverride objectDataLimit(2u);
+#endif
+
+    auto& driver = EnsureRenderSceneTestDriver();
+    QueueSortFixture fixture;
+    fixture.AddObject("MainA", *fixture.sharedMesh, fixture.opaqueMaterialA, 3.0f);
+    fixture.AddObject("MainB", *fixture.otherMesh, fixture.opaqueMaterialB, 6.0f);
+
+    NLS::Engine::SceneSystem::Scene previewScene;
+    auto& previewObject = previewScene.CreateGameObject("PreviewOverflow");
+    auto* previewMeshFilter = previewObject.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* previewMeshRenderer = previewObject.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(previewMeshFilter, nullptr);
+    ASSERT_NE(previewMeshRenderer, nullptr);
+    previewMeshFilter->SetMesh(fixture.otherMesh);
+    previewMeshRenderer->FillWithMaterial(fixture.opaqueMaterialA);
+    previewObject.GetTransform()->SetWorldPosition({ 9.0f, 0.0f, 0.0f });
+
+    SceneDrawableProbeRenderer renderer(driver);
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        fixture.scene,
+        std::nullopt,
+        nullptr,
+        { &previewScene }
+    });
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 128u;
+    frameDescriptor.camera = &camera;
+
+    const auto drawables = renderer.CaptureSceneDrawables(frameDescriptor);
+    ASSERT_GE(drawables.opaques.size(), 2u);
+    bool sawInvalidOverflowDrawable = false;
+    for (const auto& entry : drawables.opaques)
+    {
+        NLS::Engine::Rendering::EngineDrawableDescriptor descriptor;
+        ASSERT_TRUE(entry.second.TryGetDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>(descriptor));
+        if (descriptor.objectIndex == NLS::Engine::Rendering::EngineDrawableDescriptor::kInvalidObjectIndex)
+        {
+            sawInvalidOverflowDrawable = true;
+            continue;
+        }
+
+        uint32_t lastObjectIndex = 0u;
+        EXPECT_TRUE(NLS::Render::Data::TryResolveObjectDataRangeEnd(
+            descriptor.objectIndex,
+            std::max<uint32_t>(1u, descriptor.objectCount),
+            lastObjectIndex));
+    }
+    EXPECT_TRUE(sawInvalidOverflowDrawable);
+}
+
 TEST(RenderSceneCacheTests, DynamicInstancingMergesCompatibleOpaqueCommandsIntoObjectIndexRange)
 {
     QueueSortFixture fixture;

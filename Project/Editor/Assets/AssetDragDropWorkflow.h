@@ -117,6 +117,7 @@ struct AssetDragDropResult
     std::vector<NLS::Core::Assets::AssetDependencyChange> dependencyChanges;
     std::vector<NLS::Core::Assets::AssetDependencyRecord> dependencyRefreshRequests;
     std::vector<EditorAssetCommandDescriptor> commandDescriptors;
+    bool deferredAssetReferenceResolutionRequested = false;
 };
 
 class AssetDragDropWorkflow

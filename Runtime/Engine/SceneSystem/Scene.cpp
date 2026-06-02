@@ -112,10 +112,7 @@ bool Scene::AddGameObject(GameObject* gameObject)
 	if (!gameObject)
 		return false;
 
-	// check added...
-
-	m_gameobject.push_back(gameObject);
-	GameObject& instance = *m_gameobject.back();
+	GameObject& instance = *gameObject;
 
 	auto AddComponents = [this](GameObject* go)
 		{
@@ -135,7 +132,12 @@ bool Scene::AddGameObject(GameObject* gameObject)
 			if (!go)
 				return;
 
-			AddComponents(go);
+			const auto alreadyTracked = std::find(m_gameobject.begin(), m_gameobject.end(), go) != m_gameobject.end();
+			if (!alreadyTracked)
+			{
+				m_gameobject.push_back(go);
+				AddComponents(go);
+			}
 			for (auto&& child : go->GetChildren())
 			{
 				AddGameObjectRecursively(child);

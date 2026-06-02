@@ -21,6 +21,7 @@
 #include "Core/ServiceLocator.h"
 #include "Core/ResourceManagement/MaterialManager.h"
 #include "Core/ResourceManagement/MeshManager.h"
+#include "Assets/PrefabEditorWorkflow.h"
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Resources/Material.h"
@@ -122,6 +123,20 @@ NLS::Engine::Serialize::PropertyRecord* FindMutableProperty(
             return property.name == name;
         });
     return found != record.properties.end() ? &*found : nullptr;
+}
+
+const NLS::Engine::Serialize::ObjectRecord* FindObjectRecord(
+    const NLS::Engine::Serialize::ObjectGraphDocument& document,
+    const NLS::Engine::Serialize::ObjectId& id)
+{
+    const auto found = std::find_if(
+        document.objects.begin(),
+        document.objects.end(),
+        [&id](const NLS::Engine::Serialize::ObjectRecord& record)
+        {
+            return record.id == id;
+        });
+    return found != document.objects.end() ? &*found : nullptr;
 }
 
 template <typename T>
@@ -1443,6 +1458,157 @@ TEST(SceneObjectGraphSerializationTests, SceneManagerSavesAndLoadsScenesThroughO
     EXPECT_FLOAT_EQ(loadedLight->GetIntensity(), 6.25f);
 
     std::filesystem::remove(scenePath);
+}
+
+TEST(SceneObjectGraphSerializationTests, SceneManagerRoundTripsGeneratedModelPrefabInstanceHierarchy)
+{
+    using namespace NLS::Engine::Serialize;
+
+    const auto scenePath =
+        std::filesystem::temp_directory_path() /
+        ("nullus_generated_model_prefab_scene_" + NLS::Guid::New().ToString() + ".scene");
+
+    NLS::Engine::Assets::PrefabArtifact artifact;
+    artifact.assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse("f1010101-0101-4101-8101-010101010101"));
+    artifact.generatedModelPrefab = true;
+    artifact.graph.format = "Nullus.ObjectGraph.Prefab";
+    artifact.graph.version = 1;
+    artifact.graph.documentId = NLS::Guid::NewDeterministic("GeneratedModel.SceneRoundTrip.Document");
+
+    const auto rootId = ObjectId(NLS::Guid::NewDeterministic("GeneratedModel.SceneRoundTrip.Root"));
+    const auto childId = ObjectId(NLS::Guid::NewDeterministic("GeneratedModel.SceneRoundTrip.Child"));
+    artifact.graph.root = rootId;
+
+    ObjectRecord root;
+    root.id = rootId;
+    root.localIdentifierInFile = MakeLocalIdentifierInFile(rootId);
+    root.typeName = "NLS::Engine::GameObject";
+    root.debugName = "ImportedModelRoot";
+    root.debugPath = "/ImportedModelRoot";
+    root.properties.push_back({"name", PropertyValue::String("ImportedModelRoot")});
+    root.properties.push_back({"tag", PropertyValue::String("Model")});
+    root.properties.push_back({"components", PropertyValue::Array({})});
+    root.properties.push_back({"children", PropertyValue::Array({PropertyValue::OwnedReference(childId)})});
+    root.properties.push_back({"parent", PropertyValue::Null()});
+
+    ObjectRecord child;
+    child.id = childId;
+    child.localIdentifierInFile = MakeLocalIdentifierInFile(childId);
+    child.typeName = "NLS::Engine::GameObject";
+    child.debugName = "ImportedModelMeshNode";
+    child.debugPath = "/ImportedModelRoot/ImportedModelMeshNode";
+    child.properties.push_back({"name", PropertyValue::String("ImportedModelMeshNode")});
+    child.properties.push_back({"tag", PropertyValue::String("Model")});
+    child.properties.push_back({"components", PropertyValue::Array({})});
+    child.properties.push_back({"children", PropertyValue::Array({})});
+    child.properties.push_back({
+        "parent",
+        PropertyValue::ObjectReference(
+            ObjectIdentifier::LocalObject(MakeLocalIdentifierInFile(rootId)))
+    });
+
+    artifact.graph.objects.push_back(std::move(root));
+    artifact.graph.objects.push_back(std::move(child));
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    auto instantiate = NLS::Editor::Assets::PrefabEditorWorkflow().InstantiatePrefab({
+        &artifact,
+        artifact.assetId,
+        "prefab:ImportedModelRoot"
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_NE(instantiate.instance->instanceRoot, nullptr);
+    ASSERT_EQ(instantiate.instance->instanceRoot->GetChildren().size(), 1u);
+
+    ASSERT_TRUE(NLS::Engine::SceneSystem::SceneManager::SaveSceneToPath(sourceScene, scenePath.string()));
+
+    NLS::Engine::SceneSystem::SceneManager loadedManager;
+    ASSERT_TRUE(loadedManager.LoadScene(scenePath.string(), true));
+
+    auto* loadedRoot = loadedManager.GetCurrentScene()->FindGameObjectByName("ImportedModelRoot");
+    ASSERT_NE(loadedRoot, nullptr);
+    EXPECT_EQ(loadedRoot->GetChildren().size(), 1u);
+
+    auto* loadedChild = loadedManager.GetCurrentScene()->FindGameObjectByName("ImportedModelMeshNode");
+    ASSERT_NE(loadedChild, nullptr);
+    EXPECT_EQ(loadedChild->GetParent(), loadedRoot);
+
+    std::filesystem::remove(scenePath);
+}
+
+TEST(SceneObjectGraphSerializationTests, SceneDocumentCanPersistGeneratedModelPrefabRootReferenceMetadata)
+{
+    using namespace NLS::Engine::Serialize;
+
+    NLS::Engine::Assets::PrefabArtifact artifact;
+    artifact.assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse("f5010101-0101-4101-8101-010101010101"));
+    artifact.generatedModelPrefab = true;
+    artifact.graph.format = "Nullus.ObjectGraph.Prefab";
+    artifact.graph.version = 1;
+    artifact.graph.documentId = NLS::Guid::NewDeterministic("GeneratedModel.ScenePrefabMetadata.Document");
+
+    const auto rootId = ObjectId(NLS::Guid::NewDeterministic("GeneratedModel.ScenePrefabMetadata.Root"));
+    const auto childId = ObjectId(NLS::Guid::NewDeterministic("GeneratedModel.ScenePrefabMetadata.Child"));
+    artifact.graph.root = rootId;
+
+    ObjectRecord root;
+    root.id = rootId;
+    root.localIdentifierInFile = MakeLocalIdentifierInFile(rootId);
+    root.typeName = "NLS::Engine::GameObject";
+    root.debugName = "GeneratedScenePrefabRoot";
+    root.debugPath = "/GeneratedScenePrefabRoot";
+    root.properties.push_back({"name", PropertyValue::String("GeneratedScenePrefabRoot")});
+    root.properties.push_back({"tag", PropertyValue::String("Model")});
+    root.properties.push_back({"components", PropertyValue::Array({})});
+    root.properties.push_back({"children", PropertyValue::Array({PropertyValue::OwnedReference(childId)})});
+    root.properties.push_back({"parent", PropertyValue::Null()});
+
+    ObjectRecord child;
+    child.id = childId;
+    child.localIdentifierInFile = MakeLocalIdentifierInFile(childId);
+    child.typeName = "NLS::Engine::GameObject";
+    child.debugName = "GeneratedScenePrefabMeshNode";
+    child.debugPath = "/GeneratedScenePrefabRoot/GeneratedScenePrefabMeshNode";
+    child.properties.push_back({"name", PropertyValue::String("GeneratedScenePrefabMeshNode")});
+    child.properties.push_back({"tag", PropertyValue::String("Model")});
+    child.properties.push_back({"components", PropertyValue::Array({})});
+    child.properties.push_back({"children", PropertyValue::Array({})});
+    child.properties.push_back({
+        "parent",
+        PropertyValue::ObjectReference(
+            ObjectIdentifier::LocalObject(MakeLocalIdentifierInFile(rootId)))
+    });
+
+    artifact.graph.objects.push_back(std::move(root));
+    artifact.graph.objects.push_back(std::move(child));
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    auto instantiate = NLS::Editor::Assets::PrefabEditorWorkflow().InstantiatePrefab({
+        &artifact,
+        artifact.assetId,
+        "prefab:GeneratedScenePrefabRoot"
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+
+    auto document = ObjectGraphSerializer::SerializeScene(sourceScene);
+    const auto* sceneRecord = FindObjectRecord(document, document.root);
+    ASSERT_NE(sceneRecord, nullptr);
+    auto* rootRecord = const_cast<ObjectRecord*>(FindObjectRecord(document, sceneRecord->properties.front().value.GetArray().front().GetObjectId()));
+    ASSERT_NE(rootRecord, nullptr);
+    rootRecord->properties.push_back({
+        "scenePrefab",
+        PropertyValue::ObjectReference(
+            ObjectIdentifier::Asset(
+                AssetId(artifact.assetId.GetGuid()),
+                MakeLocalIdentifierInFile(artifact.assetId.GetGuid(), "prefab:GeneratedScenePrefabRoot"),
+                "prefab:GeneratedScenePrefabRoot"))
+    });
+
+    const auto output = ObjectGraphWriter::Write(document);
+    EXPECT_NE(output.find("\"scenePrefab\""), std::string::npos);
+    EXPECT_NE(output.find("\"filePath\": \"prefab:GeneratedScenePrefabRoot\""), std::string::npos);
 }
 
 TEST(SceneObjectGraphSerializationTests, SceneManagerLoadPreservesMalformedDeferredMeshReference)

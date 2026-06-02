@@ -4,6 +4,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -76,6 +77,7 @@ namespace NLS::Engine::Rendering
 			SceneSystem::Scene& scene;
 			std::optional<Frustum> frustumOverride;
 			Material* overrideMaterial;
+			std::vector<SceneSystem::Scene*> additiveScenes;
 		};
 
 		using SnapshotRenderScenePackageBuildMode = Render::Context::SnapshotRenderScenePackageBuildMode;
@@ -164,6 +166,7 @@ namespace NLS::Engine::Rendering
 		uint64_t m_sceneFallbackShaderGeneration = 0u;
 		std::string m_sceneFallbackShaderResourcePath;
 		RenderScene m_renderScene;
+		std::unordered_map<SceneSystem::Scene*, RenderScene> m_additiveRenderScenes;
 		mutable std::mutex m_lightGridCompileContextCacheMutex;
 		mutable LightGridCompileContextCache m_lightGridCompileContextCache;
 	};

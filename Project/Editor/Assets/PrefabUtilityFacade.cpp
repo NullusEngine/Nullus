@@ -1,6 +1,8 @@
 #include "Assets/PrefabUtilityFacade.h"
 
 #include <algorithm>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "Serialize/ObjectGraphWriter.h"
 
@@ -118,6 +120,1043 @@ std::vector<PrefabOverrideRecord> ToEditorOverrides(
 bool IsGeneratedModelPrefab(const PrefabArtifact& prefab)
 {
     return prefab.generatedModelPrefab;
+}
+
+const NLS::Engine::Serialize::PropertyRecord* FindProperty(
+    const NLS::Engine::Serialize::ObjectRecord& record,
+    const char* name)
+{
+    for (const auto& property : record.properties)
+    {
+        if (property.name == name)
+            return &property;
+    }
+    return nullptr;
+}
+
+NLS::Engine::Serialize::PropertyRecord* FindMutableProperty(
+    NLS::Engine::Serialize::ObjectRecord& record,
+    const char* name)
+{
+    for (auto& property : record.properties)
+    {
+        if (property.name == name)
+            return &property;
+    }
+    return nullptr;
+}
+
+const NLS::Engine::Serialize::ObjectRecord* FindObjectRecord(
+    const NLS::Engine::Serialize::ObjectGraphDocument& graph,
+    const NLS::Engine::Serialize::ObjectId& id)
+{
+    for (const auto& record : graph.objects)
+    {
+        if (record.id == id)
+            return &record;
+    }
+    return nullptr;
+}
+
+const NLS::Engine::Serialize::ObjectRecord* FindObjectRecordAtSceneObjectIndex(
+    const NLS::Engine::Serialize::ObjectGraphDocument& graph,
+    const NLS::Engine::Serialize::PropertyValue::ArrayValue& sceneObjectValues,
+    const size_t sceneObjectIndex)
+{
+    if (sceneObjectIndex >= sceneObjectValues.size())
+        return nullptr;
+
+    const auto& value = sceneObjectValues[sceneObjectIndex];
+    if (value.GetKind() != NLS::Engine::Serialize::PropertyValue::Kind::OwnedReference)
+        return nullptr;
+
+    return FindObjectRecord(graph, value.GetObjectId());
+}
+
+NLS::Engine::Serialize::ObjectRecord* FindMutableObjectRecord(
+    NLS::Engine::Serialize::ObjectGraphDocument& graph,
+    const NLS::Engine::Serialize::ObjectId& id)
+{
+    for (auto& record : graph.objects)
+    {
+        if (record.id == id)
+            return &record;
+    }
+    return nullptr;
+}
+
+NLS::Engine::Serialize::ObjectRecord* FindMutableObjectRecordAtSceneObjectIndex(
+    NLS::Engine::Serialize::ObjectGraphDocument& graph,
+    const NLS::Engine::Serialize::PropertyValue::ArrayValue& sceneObjectValues,
+    const size_t sceneObjectIndex)
+{
+    if (sceneObjectIndex >= sceneObjectValues.size())
+        return nullptr;
+
+    const auto& value = sceneObjectValues[sceneObjectIndex];
+    if (value.GetKind() != NLS::Engine::Serialize::PropertyValue::Kind::OwnedReference)
+        return nullptr;
+
+    return FindMutableObjectRecord(graph, value.GetObjectId());
+}
+
+void UpsertScenePrefabProperty(
+    NLS::Engine::Serialize::ObjectRecord& record,
+    const NLS::Engine::Serialize::ObjectIdentifier& reference)
+{
+    if (auto* property = FindMutableProperty(record, "scenePrefab"))
+    {
+        property->value = NLS::Engine::Serialize::PropertyValue::ObjectReference(reference);
+        return;
+    }
+
+    record.properties.push_back({
+        "scenePrefab",
+        NLS::Engine::Serialize::PropertyValue::ObjectReference(reference)
+    });
+}
+
+bool ScenePrefabRecordIsGeneratedReadOnly(
+    const NLS::Engine::Serialize::ObjectRecord& record)
+{
+    if (const auto* property = FindProperty(record, "scenePrefabGeneratedReadOnly");
+        property != nullptr &&
+        property->value.GetKind() == NLS::Engine::Serialize::PropertyValue::Kind::Bool)
+    {
+        return property->value.GetBool();
+    }
+    return true;
+}
+
+void UpsertScenePrefabGeneratedReadOnlyProperty(
+    NLS::Engine::Serialize::ObjectRecord& record,
+    const bool generatedReadOnly)
+{
+    if (auto* property = FindMutableProperty(record, "scenePrefabGeneratedReadOnly"))
+    {
+        property->value = NLS::Engine::Serialize::PropertyValue::Bool(generatedReadOnly);
+        return;
+    }
+
+    record.properties.push_back({
+        "scenePrefabGeneratedReadOnly",
+        NLS::Engine::Serialize::PropertyValue::Bool(generatedReadOnly)
+    });
+}
+
+void RegisterScenePrefabRecoveryInstance(
+    PrefabInstanceRegistry& instanceRegistry,
+    NLS::Engine::GameObject& sceneRoot,
+    NLS::Core::Assets::AssetId sceneAssetId,
+    NLS::Core::Assets::AssetId prefabAssetId,
+    const std::string& prefabSubAssetKey,
+    const bool generatedReadOnly,
+    const NLS::Engine::Serialize::PrefabInstanceRecord* preservedPrefabInstance = nullptr)
+{
+    PrefabInstanceRecord recoveryInstance;
+    recoveryInstance.prefabAssetId = prefabAssetId;
+    recoveryInstance.sceneAssetId = sceneAssetId;
+    recoveryInstance.prefabSubAssetKey = prefabSubAssetKey;
+    recoveryInstance.generatedReadOnly = generatedReadOnly;
+    recoveryInstance.instanceRoot = &sceneRoot;
+    if (preservedPrefabInstance)
+    {
+        recoveryInstance.localPatches = preservedPrefabInstance->modifications;
+        recoveryInstance.preservedInstanceRootObject = preservedPrefabInstance->instanceRoot;
+        recoveryInstance.preservedAddedObjects = preservedPrefabInstance->addedObjects;
+        recoveryInstance.preservedCorrespondence = preservedPrefabInstance->correspondence;
+    }
+    instanceRegistry.Register(std::move(recoveryInstance));
+    instanceRegistry.MarkAssetMissing(prefabAssetId, true);
+}
+
+void RegisterScenePrefabRecoveryInstance(
+    PrefabInstanceRegistry& instanceRegistry,
+    NLS::Engine::GameObject& sceneRoot,
+    NLS::Core::Assets::AssetId sceneAssetId,
+    NLS::Core::Assets::AssetId prefabAssetId,
+    const std::string& prefabSubAssetKey,
+    const NLS::Engine::Serialize::ObjectRecord& rootRecord)
+{
+    RegisterScenePrefabRecoveryInstance(
+        instanceRegistry,
+        sceneRoot,
+        sceneAssetId,
+        prefabAssetId,
+        prefabSubAssetKey,
+        ScenePrefabRecordIsGeneratedReadOnly(rootRecord));
+}
+
+std::unordered_map<const NLS::Engine::GameObject*, NLS::Engine::Serialize::ObjectId> BuildSceneObjectIdsByObject(
+    const NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
+    const NLS::Engine::SceneSystem::Scene& scene,
+    const NLS::Engine::Serialize::PropertyValue::ArrayValue& rootValues)
+{
+    std::unordered_map<const NLS::Engine::GameObject*, NLS::Engine::Serialize::ObjectId> idsByObject;
+    const auto& sceneObjects = scene.GetGameObjects();
+    const auto count = std::min(sceneObjects.size(), rootValues.size());
+    for (size_t index = 0u; index < count; ++index)
+    {
+        auto* sceneObject = sceneObjects[index];
+        if (!sceneObject || rootValues[index].GetKind() != NLS::Engine::Serialize::PropertyValue::Kind::OwnedReference)
+            continue;
+
+        if (!FindObjectRecord(sceneDocument, rootValues[index].GetObjectId()))
+            continue;
+
+        idsByObject.emplace(sceneObject, rootValues[index].GetObjectId());
+    }
+    return idsByObject;
+}
+
+std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::GameObject*> BuildSceneObjectsByObjectId(
+    const NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
+    NLS::Engine::SceneSystem::Scene& scene,
+    const NLS::Engine::Serialize::PropertyValue::ArrayValue& rootValues)
+{
+    std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::GameObject*> objectsById;
+    const auto& sceneObjects = scene.GetGameObjects();
+    size_t sceneObjectIndex = 0u;
+    for (size_t rootIndex = 0u; rootIndex < rootValues.size(); ++rootIndex)
+    {
+        if (rootValues[rootIndex].GetKind() != NLS::Engine::Serialize::PropertyValue::Kind::OwnedReference)
+            continue;
+
+        const auto id = rootValues[rootIndex].GetObjectId();
+        const auto* record = FindObjectRecord(sceneDocument, id);
+        if (!record || !NLS::Engine::Serialize::IsInstantiableRecordState(record->state))
+            continue;
+
+        if (sceneObjectIndex >= sceneObjects.size())
+            break;
+
+        auto* sceneObject = sceneObjects[sceneObjectIndex++];
+        if (!sceneObject)
+            continue;
+
+        objectsById.emplace(id, sceneObject);
+    }
+    return objectsById;
+}
+
+std::vector<NLS::Engine::Serialize::PrefabInstanceObjectCorrespondence> BuildPrefabInstanceCorrespondence(
+    const PrefabInstanceRecord& instance,
+    const std::unordered_map<const NLS::Engine::GameObject*, NLS::Engine::Serialize::ObjectId>& sceneObjectIdsByObject)
+{
+    std::vector<NLS::Engine::Serialize::PrefabInstanceObjectCorrespondence> correspondence;
+    correspondence.reserve(instance.sourceByInstanceObject.size());
+    for (const auto& mapping : instance.sourceByInstanceObject)
+    {
+        const auto sceneObject = sceneObjectIdsByObject.find(mapping.first);
+        if (sceneObject == sceneObjectIdsByObject.end())
+            continue;
+
+        correspondence.push_back({mapping.second, sceneObject->second});
+    }
+
+    std::sort(
+        correspondence.begin(),
+        correspondence.end(),
+        [](const auto& lhs, const auto& rhs)
+        {
+            return lhs.sourceObject < rhs.sourceObject;
+        });
+    return correspondence;
+}
+
+std::optional<std::string> ReadStringProperty(
+    const NLS::Engine::Serialize::ObjectRecord& record,
+    const char* propertyName)
+{
+    const auto* property = FindProperty(record, propertyName);
+    if (!property || property->value.GetKind() != NLS::Engine::Serialize::PropertyValue::Kind::String)
+        return std::nullopt;
+
+    return property->value.GetString();
+}
+
+void CollectOwnedObjectIds(
+    const NLS::Engine::Serialize::PropertyValue& value,
+    std::vector<NLS::Engine::Serialize::ObjectId>& ownedObjects)
+{
+    switch (value.GetKind())
+    {
+    case NLS::Engine::Serialize::PropertyValue::Kind::OwnedReference:
+        ownedObjects.push_back(value.GetObjectId());
+        break;
+    case NLS::Engine::Serialize::PropertyValue::Kind::Array:
+        for (const auto& item : value.GetArray())
+            CollectOwnedObjectIds(item, ownedObjects);
+        break;
+    case NLS::Engine::Serialize::PropertyValue::Kind::Object:
+        for (const auto& property : value.GetObject())
+            CollectOwnedObjectIds(property.second, ownedObjects);
+        break;
+    default:
+        break;
+    }
+}
+
+std::vector<NLS::Engine::Serialize::ObjectId> ReadOwnedReferences(
+    const NLS::Engine::Serialize::ObjectRecord& record,
+    const char* propertyName)
+{
+    const auto* property = FindProperty(record, propertyName);
+    if (!property || property->value.GetKind() != NLS::Engine::Serialize::PropertyValue::Kind::Array)
+        return {};
+
+    std::vector<NLS::Engine::Serialize::ObjectId> references;
+    for (const auto& value : property->value.GetArray())
+    {
+        if (value.GetKind() == NLS::Engine::Serialize::PropertyValue::Kind::OwnedReference)
+            references.push_back(value.GetObjectId());
+    }
+    return references;
+}
+
+std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::Serialize::ObjectId> BuildSourceToSceneObjectMap(
+    const NLS::Engine::Serialize::PrefabInstanceRecord& prefabInstance)
+{
+    std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::Serialize::ObjectId> sceneBySource;
+    sceneBySource.emplace(prefabInstance.instanceRoot, prefabInstance.instanceRoot);
+    for (const auto& mapping : prefabInstance.correspondence)
+        sceneBySource.emplace(mapping.sourceObject, mapping.instanceObject);
+    return sceneBySource;
+}
+
+std::optional<NLS::Engine::Serialize::ObjectId> FindMatchingSceneAddedObject(
+    const NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
+    const std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::Serialize::ObjectRecord*>& recordsById,
+    const NLS::Engine::Serialize::PrefabInstanceRecord& prefabInstance,
+    const NLS::Engine::Serialize::PatchOperation& operation)
+{
+    if (operation.type != NLS::Engine::Serialize::PatchOperationType::InsertOwned)
+        return std::nullopt;
+
+    const auto sourceToScene = BuildSourceToSceneObjectMap(prefabInstance);
+    const auto sceneOwner = sourceToScene.find(operation.target);
+    if (sceneOwner == sourceToScene.end())
+        return std::nullopt;
+
+    const auto sceneOwnerRecord = recordsById.find(sceneOwner->second);
+    if (sceneOwnerRecord == recordsById.end() || !sceneOwnerRecord->second)
+        return std::nullopt;
+
+    const auto addedObject = std::find_if(
+        prefabInstance.addedObjects.begin(),
+        prefabInstance.addedObjects.end(),
+        [&operation](const auto& record)
+        {
+            return record.id == operation.object;
+        });
+    if (addedObject == prefabInstance.addedObjects.end())
+        return std::nullopt;
+
+    std::vector<NLS::Engine::Serialize::ObjectId> candidates;
+    if (operation.property == "children")
+    {
+        for (const auto& sceneObject : sceneDocument.objects)
+        {
+            const auto* parentProperty = FindProperty(sceneObject, "parent");
+            if (!parentProperty ||
+                parentProperty->value.GetKind() != NLS::Engine::Serialize::PropertyValue::Kind::ObjectReference)
+            {
+                continue;
+            }
+
+            const auto parentId = sceneDocument.ResolveObjectReference(parentProperty->value.GetObjectReference());
+            if (parentId.has_value() && *parentId == sceneOwner->second)
+                candidates.push_back(sceneObject.id);
+        }
+    }
+    else
+    {
+        candidates = ReadOwnedReferences(*sceneOwnerRecord->second, operation.property.c_str());
+    }
+
+    const auto expectedName = ReadStringProperty(*addedObject, "name").value_or(addedObject->debugName);
+    for (const auto& candidateId : candidates)
+    {
+        const auto candidate = recordsById.find(candidateId);
+        if (candidate == recordsById.end() || !candidate->second)
+            continue;
+
+        if (candidate->second->typeName != addedObject->typeName)
+            continue;
+
+        const auto candidateName = ReadStringProperty(*candidate->second, "name").value_or(candidate->second->debugName);
+        if (candidateName == expectedName)
+            return candidateId;
+    }
+
+    if (operation.hasIndex && operation.index < candidates.size())
+        return candidates[operation.index];
+    return std::nullopt;
+}
+
+void MarkOwnedPlaceholderSubtreeStripped(
+    const std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::Serialize::ObjectRecord*>& recordsById,
+    const NLS::Engine::Serialize::ObjectId& objectId,
+    std::unordered_set<NLS::Engine::Serialize::ObjectId>& visitedObjects)
+{
+    if (!visitedObjects.insert(objectId).second)
+        return;
+
+    const auto foundRecord = recordsById.find(objectId);
+    if (foundRecord == recordsById.end() || !foundRecord->second)
+        return;
+
+    auto* record = foundRecord->second;
+    record->state = NLS::Engine::Serialize::ObjectRecordState::Stripped;
+
+    std::vector<NLS::Engine::Serialize::ObjectId> ownedObjects;
+    for (const auto& property : record->properties)
+        CollectOwnedObjectIds(property.value, ownedObjects);
+
+    for (const auto& ownedObject : ownedObjects)
+        MarkOwnedPlaceholderSubtreeStripped(recordsById, ownedObject, visitedObjects);
+}
+
+void MarkPrefabInstancePlaceholdersStripped(
+    NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
+    const NLS::Engine::Serialize::PrefabInstanceRecord& prefabInstance)
+{
+    std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::Serialize::ObjectRecord*> recordsById;
+    recordsById.reserve(sceneDocument.objects.size());
+    for (auto& record : sceneDocument.objects)
+        recordsById.emplace(record.id, &record);
+
+    std::unordered_set<NLS::Engine::Serialize::ObjectId> strippedObjects;
+    strippedObjects.insert(prefabInstance.instanceRoot);
+    for (const auto& mapping : prefabInstance.correspondence)
+        strippedObjects.insert(mapping.instanceObject);
+    for (const auto& addedObject : prefabInstance.addedObjects)
+        strippedObjects.insert(addedObject.id);
+    for (const auto& operation : prefabInstance.modifications)
+    {
+        const auto sceneAddedObject = FindMatchingSceneAddedObject(
+            sceneDocument,
+            recordsById,
+            prefabInstance,
+            operation);
+        if (sceneAddedObject.has_value())
+            strippedObjects.insert(*sceneAddedObject);
+    }
+
+    std::unordered_set<NLS::Engine::Serialize::ObjectId> visitedObjects;
+    visitedObjects.reserve(strippedObjects.size());
+    for (const auto& objectId : strippedObjects)
+        MarkOwnedPlaceholderSubtreeStripped(recordsById, objectId, visitedObjects);
+}
+
+std::vector<NLS::Engine::Serialize::PatchOperation> BuildPrefabInstanceModifications(
+    const PrefabInstanceRecord& instance,
+    std::vector<NLS::Engine::Serialize::ObjectRecord>& addedObjects)
+{
+    PrefabArtifact prefab;
+    prefab.assetId = instance.prefabAssetId;
+    prefab.graph = instance.sourceGraph;
+    prefab.generatedModelPrefab = instance.generatedReadOnly;
+
+    auto overrides = PrefabEditorWorkflow().DiscoverOverrides(prefab, instance);
+    std::vector<NLS::Engine::Serialize::PatchOperation> modifications;
+    modifications.reserve(overrides.size());
+    std::unordered_set<NLS::Engine::Serialize::ObjectId> addedObjectIds;
+    for (auto& overrideRecord : overrides)
+    {
+        modifications.push_back(std::move(overrideRecord.patch));
+        for (auto& objectRecord : overrideRecord.objectRecords)
+        {
+            if (addedObjectIds.insert(objectRecord.id).second)
+                addedObjects.push_back(std::move(objectRecord));
+        }
+    }
+    return modifications;
+}
+
+void UpsertObjectRecord(
+    NLS::Engine::Serialize::ObjectGraphDocument& graph,
+    const NLS::Engine::Serialize::ObjectRecord& record)
+{
+    auto* existing = FindMutableObjectRecord(graph, record.id);
+    if (existing)
+    {
+        *existing = record;
+        return;
+    }
+
+    graph.objects.push_back(record);
+}
+
+std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::Serialize::ObjectRecord*> BuildMutableObjectRecordIndex(
+    NLS::Engine::Serialize::ObjectGraphDocument& graph)
+{
+    std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::Serialize::ObjectRecord*> recordsById;
+    recordsById.reserve(graph.objects.size());
+    for (auto& record : graph.objects)
+        recordsById.emplace(record.id, &record);
+    return recordsById;
+}
+
+void MarkObjectRecordRemovedRecursive(
+    const std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::Serialize::ObjectRecord*>& recordsById,
+    const NLS::Engine::Serialize::ObjectId& objectId,
+    std::unordered_set<NLS::Engine::Serialize::ObjectId>& visitedObjects)
+{
+    if (!visitedObjects.insert(objectId).second)
+        return;
+
+    const auto foundRecord = recordsById.find(objectId);
+    if (foundRecord == recordsById.end() || !foundRecord->second)
+        return;
+
+    auto* record = foundRecord->second;
+    std::vector<NLS::Engine::Serialize::ObjectId> ownedObjects;
+    for (const auto& property : record->properties)
+        CollectOwnedObjectIds(property.value, ownedObjects);
+
+    record->state = NLS::Engine::Serialize::ObjectRecordState::Removed;
+    for (const auto& ownedObject : ownedObjects)
+        MarkObjectRecordRemovedRecursive(recordsById, ownedObject, visitedObjects);
+}
+
+void ApplyPrefabInstanceModificationForInstantiation(
+    const std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::Serialize::ObjectRecord*>& recordsById,
+    const NLS::Engine::Serialize::PatchOperation& operation)
+{
+    const auto foundRecord = recordsById.find(operation.target);
+    if (foundRecord == recordsById.end() || !foundRecord->second)
+        return;
+
+    auto* record = foundRecord->second;
+    if (operation.type == NLS::Engine::Serialize::PatchOperationType::ReplaceProperty)
+    {
+        if (auto* property = FindMutableProperty(*record, operation.property.c_str()))
+            property->value = operation.value;
+        else
+            record->properties.push_back({operation.property, operation.value});
+        return;
+    }
+
+    if (operation.type == NLS::Engine::Serialize::PatchOperationType::RemoveObject)
+    {
+        std::unordered_set<NLS::Engine::Serialize::ObjectId> visitedObjects;
+        MarkObjectRecordRemovedRecursive(recordsById, operation.target, visitedObjects);
+        return;
+    }
+
+    auto* property = FindMutableProperty(*record, operation.property.c_str());
+    if (!property || property->value.GetKind() != NLS::Engine::Serialize::PropertyValue::Kind::Array)
+        return;
+
+    auto values = property->value.GetArray();
+    const auto isTargetObject = [&operation](const auto& value)
+    {
+        return value.GetKind() == NLS::Engine::Serialize::PropertyValue::Kind::OwnedReference &&
+            value.GetObjectId() == operation.object;
+    };
+
+    switch (operation.type)
+    {
+    case NLS::Engine::Serialize::PatchOperationType::InsertOwned:
+    {
+        values.erase(std::remove_if(values.begin(), values.end(), isTargetObject), values.end());
+        const auto index = operation.hasIndex && operation.index < values.size()
+            ? operation.index
+            : values.size();
+        values.insert(
+            values.begin() + static_cast<std::ptrdiff_t>(index),
+            NLS::Engine::Serialize::PropertyValue::OwnedReference(operation.object));
+        break;
+    }
+    case NLS::Engine::Serialize::PatchOperationType::RemoveOwned:
+        values.erase(std::remove_if(values.begin(), values.end(), isTargetObject), values.end());
+        break;
+    case NLS::Engine::Serialize::PatchOperationType::MoveOwned:
+    {
+        const auto found = std::find_if(values.begin(), values.end(), isTargetObject);
+        if (found == values.end())
+            return;
+
+        auto moved = *found;
+        values.erase(found);
+        const auto index = operation.hasIndex && operation.index < values.size()
+            ? operation.index
+            : values.size();
+        values.insert(values.begin() + static_cast<std::ptrdiff_t>(index), std::move(moved));
+        break;
+    }
+    default:
+        return;
+    }
+
+    property->value = NLS::Engine::Serialize::PropertyValue::Array(std::move(values));
+}
+
+void MaterializePrefabInstanceModificationsForInstantiation(
+    NLS::Engine::Serialize::ObjectGraphDocument& graph,
+    const NLS::Engine::Serialize::PrefabInstanceRecord& prefabInstance)
+{
+    for (const auto& addedObject : prefabInstance.addedObjects)
+        UpsertObjectRecord(graph, addedObject);
+    auto recordsById = BuildMutableObjectRecordIndex(graph);
+    for (const auto& modification : prefabInstance.modifications)
+        ApplyPrefabInstanceModificationForInstantiation(recordsById, modification);
+    graph.overrides.clear();
+}
+
+void RemoveSceneLocalAddedObjectMappings(
+    PrefabInstanceRecord& instance,
+    const NLS::Engine::Serialize::PrefabInstanceRecord& prefabInstance)
+{
+    std::unordered_set<NLS::Engine::Serialize::ObjectId> addedObjectIds;
+    for (const auto& addedObject : prefabInstance.addedObjects)
+        addedObjectIds.insert(addedObject.id);
+
+    for (const auto& addedObjectId : addedObjectIds)
+        instance.sourceToInstance.erase(addedObjectId);
+
+    for (auto it = instance.sourceByInstanceObject.begin(); it != instance.sourceByInstanceObject.end();)
+    {
+        if (addedObjectIds.find(it->second) != addedObjectIds.end())
+            it = instance.sourceByInstanceObject.erase(it);
+        else
+            ++it;
+    }
+}
+
+void AddUnityStylePrefabInstanceRecord(
+    NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
+    const PrefabInstanceRecord& instance,
+    const std::unordered_map<const NLS::Engine::GameObject*, NLS::Engine::Serialize::ObjectId>& sceneObjectIdsByObject)
+{
+    if (!instance.instanceRoot || !instance.prefabAssetId.IsValid())
+        return;
+
+    const auto rootId = sceneObjectIdsByObject.find(instance.instanceRoot);
+    if (rootId == sceneObjectIdsByObject.end())
+        return;
+
+    NLS::Engine::Serialize::PrefabInstanceRecord record;
+    record.instanceRoot = rootId->second;
+    record.sourcePrefab = NLS::Engine::Serialize::ObjectIdentifier::Asset(
+        NLS::Engine::Serialize::AssetId(instance.prefabAssetId.GetGuid()),
+        NLS::Engine::Serialize::MakeLocalIdentifierInFile(
+            instance.prefabAssetId.GetGuid(),
+        instance.prefabSubAssetKey),
+        instance.prefabSubAssetKey);
+    record.generatedReadOnly = instance.generatedReadOnly;
+    if (!instance.preservedAddedObjects.empty() || !instance.preservedCorrespondence.empty())
+    {
+        std::unordered_set<NLS::Engine::Serialize::ObjectId> sceneObjectIds;
+        sceneObjectIds.reserve(sceneDocument.objects.size());
+        for (const auto& object : sceneDocument.objects)
+            sceneObjectIds.insert(object.id);
+
+        record.modifications = instance.localPatches;
+        record.addedObjects = instance.preservedAddedObjects;
+        record.correspondence.reserve(instance.preservedCorrespondence.size());
+        for (auto correspondence : instance.preservedCorrespondence)
+        {
+            if (correspondence.instanceObject == instance.preservedInstanceRootObject)
+                correspondence.instanceObject = record.instanceRoot;
+
+            if (sceneObjectIds.find(correspondence.instanceObject) == sceneObjectIds.end())
+                continue;
+
+            record.correspondence.push_back(std::move(correspondence));
+        }
+    }
+    else
+    {
+        record.modifications = BuildPrefabInstanceModifications(instance, record.addedObjects);
+        record.correspondence = BuildPrefabInstanceCorrespondence(instance, sceneObjectIdsByObject);
+    }
+
+    MarkPrefabInstancePlaceholdersStripped(sceneDocument, record);
+    sceneDocument.prefabInstances.push_back(std::move(record));
+}
+
+NLS::Engine::GameObject* ResolveStrippedPlaceholderParent(
+    const NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
+    const NLS::Engine::Serialize::PrefabInstanceRecord& prefabInstance,
+    const std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::GameObject*>& sceneObjectsById)
+{
+    const auto* rootRecord = FindObjectRecord(sceneDocument, prefabInstance.instanceRoot);
+    if (!rootRecord)
+        return nullptr;
+
+    const auto* parentProperty = FindProperty(*rootRecord, "parent");
+    if (!parentProperty || parentProperty->value.GetKind() != NLS::Engine::Serialize::PropertyValue::Kind::ObjectReference)
+        return nullptr;
+
+    const auto parentId = sceneDocument.ResolveObjectReference(parentProperty->value.GetObjectReference());
+    if (!parentId.has_value())
+        return nullptr;
+
+    const auto parent = sceneObjectsById.find(*parentId);
+    return parent != sceneObjectsById.end() ? parent->second : nullptr;
+}
+
+std::vector<NLS::Engine::Serialize::ObjectId> ReadSceneDocumentObjectOrder(
+    const NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument)
+{
+    const auto* sceneRecord = FindObjectRecord(sceneDocument, sceneDocument.root);
+    if (!sceneRecord)
+        return {};
+
+    return ReadOwnedReferences(*sceneRecord, "gameObjects");
+}
+
+std::optional<NLS::Engine::Serialize::ObjectId> ResolveRecordParentId(
+    const NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
+    const NLS::Engine::Serialize::ObjectRecord& record)
+{
+    const auto* parentProperty = FindProperty(record, "parent");
+    if (!parentProperty || parentProperty->value.GetKind() != NLS::Engine::Serialize::PropertyValue::Kind::ObjectReference)
+        return std::nullopt;
+
+    return sceneDocument.ResolveObjectReference(parentProperty->value.GetObjectReference());
+}
+
+void ReorderLiveObjectsBySceneDocumentOrder(
+    const NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
+    NLS::Engine::SceneSystem::Scene& scene,
+    const std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::GameObject*>& liveObjectsBySceneId)
+{
+    const auto order = ReadSceneDocumentObjectOrder(sceneDocument);
+    std::unordered_map<NLS::Engine::GameObject*, size_t> orderByObject;
+    orderByObject.reserve(liveObjectsBySceneId.size());
+
+    for (size_t index = 0u; index < order.size(); ++index)
+    {
+        const auto live = liveObjectsBySceneId.find(order[index]);
+        if (live != liveObjectsBySceneId.end() && live->second)
+            orderByObject.emplace(live->second, index);
+    }
+
+    const auto unknownOrder = static_cast<size_t>(-1);
+    const auto compareBySceneOrder = [&](NLS::Engine::GameObject* lhs, NLS::Engine::GameObject* rhs)
+    {
+        const auto lhsOrder = orderByObject.find(lhs);
+        const auto rhsOrder = orderByObject.find(rhs);
+        const auto lhsIndex = lhsOrder != orderByObject.end() ? lhsOrder->second : unknownOrder;
+        const auto rhsIndex = rhsOrder != orderByObject.end() ? rhsOrder->second : unknownOrder;
+        return lhsIndex < rhsIndex;
+    };
+
+    auto& sceneObjects = scene.GetGameObjects();
+    std::stable_sort(sceneObjects.begin(), sceneObjects.end(), compareBySceneOrder);
+
+    std::unordered_map<NLS::Engine::GameObject*, std::unordered_map<NLS::Engine::GameObject*, size_t>> childOrderByParent;
+    for (size_t index = 0u; index < order.size(); ++index)
+    {
+        const auto* record = FindObjectRecord(sceneDocument, order[index]);
+        if (!record)
+            continue;
+
+        const auto parentId = ResolveRecordParentId(sceneDocument, *record);
+        if (!parentId.has_value())
+            continue;
+
+        const auto parent = liveObjectsBySceneId.find(*parentId);
+        const auto child = liveObjectsBySceneId.find(order[index]);
+        if (parent == liveObjectsBySceneId.end() ||
+            child == liveObjectsBySceneId.end() ||
+            !parent->second ||
+            !child->second)
+        {
+            continue;
+        }
+
+        childOrderByParent[parent->second].emplace(child->second, index);
+    }
+
+    for (auto& parentOrder : childOrderByParent)
+    {
+        auto& children = parentOrder.first->GetChildren();
+        std::stable_sort(
+            children.begin(),
+            children.end(),
+            [&](NLS::Engine::GameObject* lhs, NLS::Engine::GameObject* rhs)
+            {
+                const auto lhsOrder = parentOrder.second.find(lhs);
+                const auto rhsOrder = parentOrder.second.find(rhs);
+                const auto lhsIndex = lhsOrder != parentOrder.second.end() ? lhsOrder->second : unknownOrder;
+                const auto rhsIndex = rhsOrder != parentOrder.second.end() ? rhsOrder->second : unknownOrder;
+                return lhsIndex < rhsIndex;
+            });
+    }
+}
+
+std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::GameObject*> BuildRestoredLiveObjectsBySceneId(
+    const NLS::Engine::Serialize::PrefabInstanceRecord& prefabInstance,
+    const PrefabInstanceRecord& restoredInstance)
+{
+    std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::GameObject*> liveObjectsBySceneId;
+    if (restoredInstance.instanceRoot)
+        liveObjectsBySceneId.emplace(prefabInstance.instanceRoot, restoredInstance.instanceRoot);
+
+    std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::Serialize::ObjectId> sceneObjectBySource;
+    for (const auto& mapping : prefabInstance.correspondence)
+        sceneObjectBySource.emplace(mapping.sourceObject, mapping.instanceObject);
+
+    for (const auto& mapping : restoredInstance.sourceByInstanceObject)
+    {
+        const auto sceneObject = sceneObjectBySource.find(mapping.second);
+        if (sceneObject != sceneObjectBySource.end())
+            liveObjectsBySceneId.emplace(sceneObject->second, const_cast<NLS::Engine::GameObject*>(mapping.first));
+    }
+
+    return liveObjectsBySceneId;
+}
+
+std::string ReadStringPropertyOr(
+    const NLS::Engine::Serialize::ObjectRecord& record,
+    const char* propertyName,
+    std::string fallback)
+{
+    const auto* property = FindProperty(record, propertyName);
+    if (!property || property->value.GetKind() != NLS::Engine::Serialize::PropertyValue::Kind::String)
+        return fallback;
+
+    return property->value.GetString();
+}
+
+bool ReadBoolPropertyOr(
+    const NLS::Engine::Serialize::ObjectRecord& record,
+    const char* propertyName,
+    const bool fallback)
+{
+    const auto* property = FindProperty(record, propertyName);
+    if (!property || property->value.GetKind() != NLS::Engine::Serialize::PropertyValue::Kind::Bool)
+        return fallback;
+
+    return property->value.GetBool();
+}
+
+NLS::Engine::GameObject* RestoreStrippedRecoveryRoot(
+    const NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
+    const NLS::Engine::Serialize::PrefabInstanceRecord& prefabInstance,
+    NLS::Engine::SceneSystem::Scene& scene,
+    const std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::GameObject*>& sceneObjectsById)
+{
+    const auto* rootRecord = FindObjectRecord(sceneDocument, prefabInstance.instanceRoot);
+    if (!rootRecord)
+        return nullptr;
+
+    auto& root = scene.CreateGameObject(
+        ReadStringPropertyOr(*rootRecord, "name", rootRecord->debugName.empty() ? "Missing Prefab" : rootRecord->debugName),
+        ReadStringPropertyOr(*rootRecord, "tag", "Untagged"));
+    root.SetActive(ReadBoolPropertyOr(*rootRecord, "active", true));
+
+    if (auto* parent = ResolveStrippedPlaceholderParent(sceneDocument, prefabInstance, sceneObjectsById))
+        root.SetParent(*parent);
+
+    return &root;
+}
+
+PrefabOperationResult InstantiateStrippedPrefabInstance(
+    const NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
+    const NLS::Engine::Serialize::PrefabInstanceRecord& prefabInstance,
+    const PrefabArtifact& sourcePrefab,
+    NLS::Core::Assets::AssetId prefabAssetId,
+    const std::string& prefabSubAssetKey,
+    NLS::Core::Assets::AssetId sceneAssetId,
+    NLS::Engine::SceneSystem::Scene& scene,
+    const std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::GameObject*>& sceneObjectsById)
+{
+    auto instantiationPrefab = sourcePrefab;
+    MaterializePrefabInstanceModificationsForInstantiation(instantiationPrefab.graph, prefabInstance);
+
+    InstantiatePrefabRequest request;
+    request.prefab = &instantiationPrefab;
+    request.prefabAssetId = prefabAssetId;
+    request.prefabSubAssetKey = prefabSubAssetKey;
+    request.sceneAssetId = sceneAssetId;
+
+    auto instantiate = ConvertResult(PrefabEditorWorkflow().InstantiatePrefab({
+        request.prefab,
+        request.prefabAssetId,
+        request.prefabSubAssetKey,
+        request.sceneAssetId,
+        request.deferAssetReferenceResolution
+    }, scene));
+
+    if (instantiate.status != PrefabOperationStatus::Committed || !instantiate.instance.has_value())
+        return instantiate;
+
+    instantiate.instance->sourceGraph = sourcePrefab.graph;
+    instantiate.instance->generatedReadOnly = prefabInstance.generatedReadOnly || sourcePrefab.generatedModelPrefab;
+    instantiate.instance->localPatches = prefabInstance.modifications;
+    instantiate.instance->preservedAssetReferences = NLS::Engine::Assets::CollectPrefabAssetReferences(sourcePrefab.graph);
+    RemoveSceneLocalAddedObjectMappings(*instantiate.instance, prefabInstance);
+
+    if (auto* parent = ResolveStrippedPlaceholderParent(sceneDocument, prefabInstance, sceneObjectsById);
+        parent != nullptr && instantiate.instance->instanceRoot != nullptr)
+    {
+        instantiate.instance->instanceRoot->SetParent(*parent);
+    }
+
+    return instantiate;
+}
+
+PrefabOperationResult RestoreUnityStylePrefabInstancesFromSceneDocument(
+    const NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
+    NLS::Engine::SceneSystem::Scene& scene,
+    NLS::Core::Assets::AssetId sceneAssetId,
+    PrefabInstanceRegistry& instanceRegistry,
+    const std::function<std::optional<NLS::Engine::Assets::PrefabArtifact>(
+        NLS::Core::Assets::AssetId,
+        const std::string&)>& prefabResolver,
+    const NLS::Engine::Serialize::PropertyValue::ArrayValue& rootValues)
+{
+    PrefabOperationResult result;
+    result.status = PrefabOperationStatus::Committed;
+
+    auto sceneObjectsById = BuildSceneObjectsByObjectId(sceneDocument, scene, rootValues);
+    bool restoredLiveObjectOrderDirty = false;
+    for (const auto& prefabInstance : sceneDocument.prefabInstances)
+    {
+        const auto sceneRoot = sceneObjectsById.find(prefabInstance.instanceRoot);
+        auto* liveSceneRoot = sceneRoot != sceneObjectsById.end() ? sceneRoot->second : nullptr;
+
+        if (!prefabInstance.sourcePrefab.guid.IsValid())
+        {
+            result.status = PrefabOperationStatus::Failed;
+            AddDiagnostic(
+                result,
+                "prefab-instance-source-invalid",
+                "Scene prefab instance could not be restored because its source prefab reference was invalid.");
+            continue;
+        }
+
+        const auto prefabAssetId = NLS::Core::Assets::AssetId(prefabInstance.sourcePrefab.guid);
+        const auto prefabSubAssetKey = prefabInstance.sourcePrefab.filePath;
+        auto prefab = prefabResolver ? prefabResolver(prefabAssetId, prefabSubAssetKey) : std::optional<NLS::Engine::Assets::PrefabArtifact> {};
+        if (!prefab.has_value())
+        {
+            if (!liveSceneRoot)
+            {
+                liveSceneRoot = RestoreStrippedRecoveryRoot(
+                    sceneDocument,
+                    prefabInstance,
+                    scene,
+                    sceneObjectsById);
+            }
+
+            if (liveSceneRoot)
+            {
+                sceneObjectsById.emplace(prefabInstance.instanceRoot, liveSceneRoot);
+                restoredLiveObjectOrderDirty = true;
+                RegisterScenePrefabRecoveryInstance(
+                    instanceRegistry,
+                    *liveSceneRoot,
+                    sceneAssetId,
+                    prefabAssetId,
+                    prefabSubAssetKey,
+                    prefabInstance.generatedReadOnly,
+                    &prefabInstance);
+            }
+            result.status = PrefabOperationStatus::Failed;
+            AddDiagnostic(
+                result,
+                "prefab-instance-restore-missing-artifact",
+                "Scene prefab instance could not be restored because the prefab artifact was not available.");
+            continue;
+        }
+
+        if (!liveSceneRoot)
+        {
+            auto instantiate = InstantiateStrippedPrefabInstance(
+                sceneDocument,
+                prefabInstance,
+                *prefab,
+                prefabAssetId,
+                prefabSubAssetKey,
+                sceneAssetId,
+                scene,
+                sceneObjectsById);
+            result.diagnostics.insert(result.diagnostics.end(), instantiate.diagnostics.begin(), instantiate.diagnostics.end());
+
+            if (instantiate.status != PrefabOperationStatus::Committed || !instantiate.instance.has_value())
+            {
+                liveSceneRoot = RestoreStrippedRecoveryRoot(
+                    sceneDocument,
+                    prefabInstance,
+                    scene,
+                    sceneObjectsById);
+                if (liveSceneRoot)
+                {
+                    sceneObjectsById.emplace(prefabInstance.instanceRoot, liveSceneRoot);
+                    restoredLiveObjectOrderDirty = true;
+                    RegisterScenePrefabRecoveryInstance(
+                        instanceRegistry,
+                        *liveSceneRoot,
+                        sceneAssetId,
+                        prefabAssetId,
+                        prefabSubAssetKey,
+                        prefabInstance.generatedReadOnly,
+                        &prefabInstance);
+                }
+
+                result.status = PrefabOperationStatus::Failed;
+                AddDiagnostic(
+                    result,
+                    "prefab-instance-restore-instantiate-failed",
+                    "Scene prefab instance could not be restored from its stripped prefab instance record.");
+                continue;
+            }
+
+            auto restoredLiveObjects = BuildRestoredLiveObjectsBySceneId(prefabInstance, *instantiate.instance);
+            sceneObjectsById.insert(restoredLiveObjects.begin(), restoredLiveObjects.end());
+            restoredLiveObjectOrderDirty = true;
+            instanceRegistry.Register(static_cast<PrefabInstanceRecord&&>(*instantiate.instance));
+            continue;
+        }
+
+        InstantiatePrefabRequest request;
+        request.prefab = &*prefab;
+        request.prefabAssetId = prefabAssetId;
+        request.prefabSubAssetKey = prefabSubAssetKey;
+        request.sceneAssetId = sceneAssetId;
+
+        auto connect = ConvertResult(
+            PrefabEditorWorkflow().ConnectExistingPrefabInstance(request, *liveSceneRoot));
+        result.diagnostics.insert(result.diagnostics.end(), connect.diagnostics.begin(), connect.diagnostics.end());
+
+        if (connect.status != PrefabOperationStatus::Committed || !connect.instance.has_value())
+        {
+            RegisterScenePrefabRecoveryInstance(
+                instanceRegistry,
+                *liveSceneRoot,
+                sceneAssetId,
+                prefabAssetId,
+                prefabSubAssetKey,
+                prefabInstance.generatedReadOnly,
+                &prefabInstance);
+            result.status = PrefabOperationStatus::Failed;
+            AddDiagnostic(
+                result,
+                "prefab-instance-restore-connect-failed",
+                "Scene prefab instance metadata was preserved because the prefab artifact could not be reconnected to the scene root.");
+            continue;
+        }
+
+        connect.instance->localPatches = prefabInstance.modifications;
+        connect.instance->preservedInstanceRootObject = prefabInstance.instanceRoot;
+        connect.instance->preservedAddedObjects = prefabInstance.addedObjects;
+        connect.instance->preservedCorrespondence = prefabInstance.correspondence;
+        instanceRegistry.Register(static_cast<PrefabInstanceRecord&&>(*connect.instance));
+    }
+
+    if (restoredLiveObjectOrderDirty)
+    {
+        ReorderLiveObjectsBySceneDocumentOrder(sceneDocument, scene, sceneObjectsById);
+        scene.RebuildRuntimeCachesAfterLoad();
+    }
+
+    return result;
 }
 }
 
@@ -267,6 +1306,160 @@ PrefabOperationResult PrefabUtilityFacade::UnloadPrefabContents(
 
     PrefabOperationResult result;
     result.status = PrefabOperationStatus::Committed;
+    return result;
+}
+
+void PrefabUtilityFacade::AnnotateSceneDocumentWithPrefabInstances(
+    NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
+    const NLS::Engine::SceneSystem::Scene& scene,
+    const PrefabInstanceRegistry& instanceRegistry) const
+{
+    auto* sceneRecord = FindMutableObjectRecord(sceneDocument, sceneDocument.root);
+    if (!sceneRecord)
+        return;
+
+    const auto* gameObjects = FindProperty(*sceneRecord, "gameObjects");
+    if (!gameObjects || gameObjects->value.GetKind() != NLS::Engine::Serialize::PropertyValue::Kind::Array)
+        return;
+
+    const auto& rootValues = gameObjects->value.GetArray();
+    const auto sceneObjectIdsByObject = BuildSceneObjectIdsByObject(sceneDocument, scene, rootValues);
+    std::unordered_set<const PrefabInstanceRecord*> emittedInstances;
+    const auto& sceneObjects = scene.GetGameObjects();
+    for (size_t sceneObjectIndex = 0u; sceneObjectIndex < sceneObjects.size(); ++sceneObjectIndex)
+    {
+        auto* sceneObject = sceneObjects[sceneObjectIndex];
+        if (!sceneObject)
+            continue;
+
+        const auto* instance = instanceRegistry.FindInstance(*sceneObject);
+        if (!instance ||
+            instance->instanceRoot != sceneObject ||
+            !instance->prefabAssetId.IsValid())
+        {
+            continue;
+        }
+
+        if (emittedInstances.insert(instance).second)
+            AddUnityStylePrefabInstanceRecord(sceneDocument, *instance, sceneObjectIdsByObject);
+    }
+}
+
+PrefabOperationResult PrefabUtilityFacade::RestorePrefabInstancesFromSceneDocument(
+    const NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
+    NLS::Engine::SceneSystem::Scene& scene,
+    NLS::Core::Assets::AssetId sceneAssetId,
+    PrefabInstanceRegistry& instanceRegistry,
+    const std::function<std::optional<NLS::Engine::Assets::PrefabArtifact>(
+        NLS::Core::Assets::AssetId,
+        const std::string&)>& prefabResolver) const
+{
+    PrefabOperationResult result;
+    result.status = PrefabOperationStatus::Committed;
+
+    const auto* sceneRecord = FindObjectRecord(sceneDocument, sceneDocument.root);
+    if (!sceneRecord)
+        return result;
+
+    const auto* gameObjects = FindProperty(*sceneRecord, "gameObjects");
+    if (!gameObjects || gameObjects->value.GetKind() != NLS::Engine::Serialize::PropertyValue::Kind::Array)
+        return result;
+
+    const auto& rootValues = gameObjects->value.GetArray();
+    const auto legacySceneObjectsById = BuildSceneObjectsByObjectId(sceneDocument, scene, rootValues);
+
+    if (!sceneDocument.prefabInstances.empty())
+    {
+        auto unityStyleRestore = RestoreUnityStylePrefabInstancesFromSceneDocument(
+            sceneDocument,
+            scene,
+            sceneAssetId,
+            instanceRegistry,
+            prefabResolver,
+            rootValues);
+        result.status = unityStyleRestore.status;
+        result.diagnostics.insert(
+            result.diagnostics.end(),
+            unityStyleRestore.diagnostics.begin(),
+            unityStyleRestore.diagnostics.end());
+    }
+
+    for (const auto& rootValue : rootValues)
+    {
+        if (rootValue.GetKind() != NLS::Engine::Serialize::PropertyValue::Kind::OwnedReference)
+            continue;
+
+        const auto* rootRecord = FindObjectRecord(sceneDocument, rootValue.GetObjectId());
+        if (!rootRecord)
+            continue;
+
+        const auto liveRoot = legacySceneObjectsById.find(rootRecord->id);
+        if (liveRoot == legacySceneObjectsById.end() || !liveRoot->second)
+            continue;
+
+        auto* sceneRoot = liveRoot->second;
+
+        const auto* scenePrefab = FindProperty(*rootRecord, "scenePrefab");
+        if (!scenePrefab || scenePrefab->value.GetKind() != NLS::Engine::Serialize::PropertyValue::Kind::ObjectReference)
+        {
+            continue;
+        }
+
+        const auto& reference = scenePrefab->value.GetObjectReference();
+        if (!reference.guid.IsValid())
+            continue;
+
+        const auto prefabAssetId = NLS::Core::Assets::AssetId(reference.guid);
+        const auto prefabSubAssetKey = reference.filePath;
+        auto prefab = prefabResolver ? prefabResolver(prefabAssetId, prefabSubAssetKey) : std::optional<NLS::Engine::Assets::PrefabArtifact> {};
+        if (!prefab.has_value())
+        {
+            RegisterScenePrefabRecoveryInstance(
+                instanceRegistry,
+                *sceneRoot,
+                sceneAssetId,
+                prefabAssetId,
+                prefabSubAssetKey,
+                *rootRecord);
+            result.status = PrefabOperationStatus::Failed;
+            AddDiagnostic(
+                result,
+                "scene-prefab-restore-missing-artifact",
+                "Scene prefab instance could not be restored because the prefab artifact was not available.");
+            continue;
+        }
+
+        InstantiatePrefabRequest request;
+        request.prefab = &*prefab;
+        request.prefabAssetId = prefabAssetId;
+        request.prefabSubAssetKey = prefabSubAssetKey;
+        request.sceneAssetId = sceneAssetId;
+
+        auto connect = ConvertResult(
+            PrefabEditorWorkflow().ConnectExistingPrefabInstance(request, *sceneRoot));
+
+        result.diagnostics.insert(result.diagnostics.end(), connect.diagnostics.begin(), connect.diagnostics.end());
+
+        if (connect.status != PrefabOperationStatus::Committed || !connect.instance.has_value())
+        {
+            RegisterScenePrefabRecoveryInstance(
+                instanceRegistry,
+                *sceneRoot,
+                sceneAssetId,
+                prefabAssetId,
+                prefabSubAssetKey,
+                *rootRecord);
+            result.status = PrefabOperationStatus::Failed;
+            AddDiagnostic(
+                result,
+                "scene-prefab-restore-connect-failed",
+                "Scene prefab instance metadata was preserved because the prefab artifact could not be reconnected to the scene root.");
+            continue;
+        }
+
+        instanceRegistry.Register(static_cast<PrefabInstanceRecord&&>(*connect.instance));
+    }
+
     return result;
 }
 

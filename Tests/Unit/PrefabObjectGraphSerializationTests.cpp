@@ -229,6 +229,23 @@ TEST(PrefabObjectGraphSerializationTests, PrefabVariantPreservesBasePrefabRefere
     EXPECT_EQ(loaded->basePrefab->fileType, FileType::SerializedAssetType);
 }
 
+TEST(PrefabObjectGraphSerializationTests, PrefabValidationRejectsSceneOnlyStrippedRecords)
+{
+    using namespace NLS::Engine;
+    using namespace NLS::Engine::Serialize;
+
+    GameObject prefabRoot("StrippedInPrefab", "Prop");
+    auto prefab = ObjectGraphSerializer::SerializePrefab(prefabRoot);
+    auto* rootRecord = FindRecord(prefab.graph, prefab.graph.root);
+    ASSERT_NE(rootRecord, nullptr);
+    rootRecord->state = ObjectRecordState::Stripped;
+
+    const auto diagnostics = ObjectGraphInstantiator::ValidatePrefab(prefab);
+
+    EXPECT_TRUE(diagnostics.HasErrors());
+    EXPECT_TRUE(ContainsDiagnostic(diagnostics, SerializationDiagnosticCode::InvalidPrefabOverride));
+}
+
 TEST(PrefabObjectGraphSerializationTests, AssetReferencesInstantiateThroughPathHintsForPathBasedComponents)
 {
     using namespace NLS::Engine;

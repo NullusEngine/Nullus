@@ -2,8 +2,11 @@
 
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <optional>
+#include <string>
 
+#include "Assets/EditorAssetDragPayload.h"
 #include "Core/SceneCameraFocus.h"
 #include "Panels/AViewControllable.h"
 #include "Core/SceneViewImGuizmo.h"
@@ -64,6 +67,11 @@ namespace NLS::Editor::Panels
         void EnsureCameraFocus();
         bool ShouldRequestPickingFrame() const;
         void TryWriteValidationReadback();
+        void UpdateImportedAssetDragPreview(const NLS::Editor::Assets::EditorAssetDragPayload& payload);
+        bool EnsureImportedAssetDragPreviewMeshGhost(const NLS::Editor::Assets::EditorAssetDragPayload& payload);
+        std::optional<Maths::Vector3> ResolveImportedAssetDragPreviewPlacement(const Maths::Vector2& mousePosition) const;
+        void DrawImportedAssetDragPreview();
+        void ClearImportedAssetDragPreview();
 
 	private:
 		Engine::SceneSystem::SceneManager& m_sceneManager;
@@ -79,6 +87,14 @@ namespace NLS::Editor::Panels
         std::optional<Maths::Vector2> m_pendingClickPickRenderPos;
 		std::chrono::steady_clock::time_point m_lastPickingSampleTime {};
         uint64_t m_pendingClickMinReadablePickingFrameSerial = 0u;
+        std::optional<NLS::Editor::Assets::EditorAssetDragPayload> m_importedAssetDragPreviewPayload;
+        std::unique_ptr<Engine::SceneSystem::Scene> m_importedAssetDragPreviewScene;
+        Engine::GameObject* m_importedAssetDragPreviewRoot = nullptr;
+        std::string m_importedAssetDragPreviewAssetGuid;
+        std::string m_importedAssetDragPreviewSubAssetKey;
+        bool m_importedAssetDragPreviewMeshGhostUnavailable = false;
+        Maths::Vector2 m_importedAssetDragPreviewMousePos { 0.0f, 0.0f };
+        std::optional<Maths::Vector3> m_importedAssetDragPreviewPlacement;
 		bool m_hasPickingSample = false;
         bool m_requestPickingFrame = true;
         bool m_cameraMovedForPresentation = true;

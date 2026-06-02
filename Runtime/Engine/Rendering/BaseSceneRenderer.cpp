@@ -1,6 +1,7 @@
 #include <Rendering/Data/LightingDescriptor.h>
 #include <algorithm>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <string>
 
@@ -20,6 +21,7 @@
 #include "Rendering/Context/RenderScenePackageBuilder.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/FrameGraph/ExternalResourceBridge.h"
+#include "Rendering/Data/ObjectDataLimits.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Resources/Shader.h"
@@ -601,7 +603,6 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 
 	auto& camera = *m_frameDescriptor.camera;
 	auto& sceneDescriptor = GetDescriptor<SceneDescriptor>();
-	auto& scene = sceneDescriptor.scene;
 	auto overrideMaterial = sceneDescriptor.overrideMaterial;
 	std::optional<Render::Data::Frustum> frustum = std::nullopt;
 
@@ -611,54 +612,130 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 		frustum = frustumOverride ? frustumOverride : camera.GetFrustum();
 	}
 
-	const auto syncStats = m_renderScene.Synchronize(scene, {
-		ResolveDefaultSceneMaterial(),
-		overrideMaterial
-	});
-	auto retainedDrawables = m_renderScene.GatherVisibleCommands({
-		frustum ? &frustum.value() : nullptr,
-		camera.GetPosition()
-	});
-	opaques = std::move(retainedDrawables.opaques);
-	transparents = std::move(retainedDrawables.transparents);
+	uint64_t rebuiltCachedCommandCount = 0u;
+	uint64_t rawVisibleObjectCount = 0u;
+	uint64_t submittedSceneDrawCount = 0u;
+
+	auto appendSceneDrawables = [&](SceneSystem::Scene& scene, RenderScene& renderScene, const bool includeSkyboxes)
+	{
+		const auto syncStats = renderScene.Synchronize(scene, {
+			ResolveDefaultSceneMaterial(),
+			overrideMaterial
+		});
+		rebuiltCachedCommandCount += syncStats.rebuiltCachedCommandCount;
+		auto retainedDrawables = renderScene.GatherVisibleCommands({
+			frustum ? &frustum.value() : nullptr,
+			camera.GetPosition()
+		});
+		const auto sceneStats = renderScene.GetLastDrawCallOptimizationStats();
+
+		rawVisibleObjectCount += sceneStats.rawVisibleObjectCount;
+		submittedSceneDrawCount += sceneStats.submittedSceneDrawCount;
+		opaques.insert(
+			opaques.end(),
+			std::make_move_iterator(retainedDrawables.opaques.begin()),
+			std::make_move_iterator(retainedDrawables.opaques.end()));
+		transparents.insert(
+			transparents.end(),
+			std::make_move_iterator(retainedDrawables.transparents.begin()),
+			std::make_move_iterator(retainedDrawables.transparents.end()));
+
+		if (!includeSkyboxes)
+			return;
+
+		const auto& fastAccess = scene.GetFastAccessComponents();
+		skyboxes.reserve(skyboxes.size() + fastAccess.skyboxs.size());
+
+		for (auto* skybox : fastAccess.skyboxs)
+		{
+			if (!skybox)
+				continue;
+			auto* owner = skybox->gameobject();
+			if (!owner || !owner->IsActive())
+				continue;
+
+			if (auto mesh = skybox->GetMesh())
+			{
+				if (auto material = skybox->GetMaterial())
+				{
+					auto& transform = owner->GetTransform()->GetTransform();
+					Render::Entities::Drawable drawable;
+					drawable.mesh = mesh;
+					drawable.material = material;
+					drawable.stateMask = material->GenerateStateMask();
+					drawable.AddDescriptor<EngineDrawableDescriptor>({ transform.GetWorldMatrix() });
+					skyboxes.emplace_back(0.0f, std::move(drawable));
+				}
+			}
+		}
+	};
+
+	appendSceneDrawables(sceneDescriptor.scene, m_renderScene, true);
+	for (auto it = m_additiveRenderScenes.begin(); it != m_additiveRenderScenes.end();)
+	{
+		const auto* cachedScene = it->first;
+		const auto isStillActive = std::find(
+			sceneDescriptor.additiveScenes.begin(),
+			sceneDescriptor.additiveScenes.end(),
+			cachedScene) != sceneDescriptor.additiveScenes.end();
+		if (isStillActive)
+			++it;
+		else
+			it = m_additiveRenderScenes.erase(it);
+	}
+	for (auto* additiveScene : sceneDescriptor.additiveScenes)
+	{
+		if (!additiveScene)
+			continue;
+		auto& additiveRenderScene = m_additiveRenderScenes[additiveScene];
+		appendSceneDrawables(*additiveScene, additiveRenderScene, false);
+	}
+
+	SortSceneDrawables(transparents, std::greater<float>{});
+
+	uint32_t nextObjectIndex = 0u;
+	auto reassignObjectIndices = [&nextObjectIndex](auto& queue)
+	{
+		for (auto& entry : queue)
+		{
+			EngineDrawableDescriptor descriptor;
+			if (!entry.second.TryGetDescriptor<EngineDrawableDescriptor>(descriptor))
+				continue;
+
+			const uint32_t objectCount = std::max<uint32_t>(1u, descriptor.objectCount);
+			uint32_t lastObjectIndex = 0u;
+			if (!NLS::Render::Data::TryResolveObjectDataRangeEnd(
+				nextObjectIndex,
+				objectCount,
+				lastObjectIndex))
+			{
+				descriptor.objectIndex = EngineDrawableDescriptor::kInvalidObjectIndex;
+			}
+			else
+			{
+				descriptor.objectIndex = nextObjectIndex;
+				nextObjectIndex = lastObjectIndex + 1u;
+			}
+			entry.second.RemoveDescriptor<EngineDrawableDescriptor>();
+			entry.second.AddDescriptor<EngineDrawableDescriptor>(std::move(descriptor));
+		}
+	};
+	reassignObjectIndices(opaques);
+	reassignObjectIndices(skyboxes);
+	reassignObjectIndices(transparents);
 
 	if (!PumpOneVisibleMaterialTexture(opaques))
 		PumpOneVisibleMaterialTexture(transparents);
 
-	const auto& fastAccess = scene.GetFastAccessComponents();
-	skyboxes.reserve(fastAccess.skyboxs.size());
-
-	for (auto* skybox : fastAccess.skyboxs)
-	{
-		if (!skybox)
-			continue;
-		auto* owner = skybox->gameobject();
-		if (!owner || !owner->IsActive())
-			continue;
-
-		if (auto mesh = skybox->GetMesh())
-		{
-			if (auto material = skybox->GetMaterial())
-			{
-				auto& transform = owner->GetTransform()->GetTransform();
-				Render::Entities::Drawable drawable;
-				drawable.mesh = mesh;
-				drawable.material = material;
-				drawable.stateMask = material->GenerateStateMask();
-				drawable.AddDescriptor<EngineDrawableDescriptor>({ transform.GetWorldMatrix() });
-				skyboxes.emplace_back(0.0f, std::move(drawable));
-			}
-		}
-	}
 	SortSceneDrawables(skyboxes, std::less<float>{});
 	m_rendererStats.RecordSceneParse(
 		static_cast<uint64_t>(opaques.size()),
 		static_cast<uint64_t>(transparents.size()),
 		static_cast<uint64_t>(skyboxes.size()));
 	auto optimizationStats = m_renderScene.GetLastDrawCallOptimizationStats();
-	optimizationStats.cachedCommandRebuildCount = syncStats.rebuiltCachedCommandCount;
-	optimizationStats.rawVisibleObjectCount += static_cast<uint64_t>(skyboxes.size());
-	optimizationStats.submittedSceneDrawCount += static_cast<uint64_t>(skyboxes.size());
+	optimizationStats.cachedCommandRebuildCount = rebuiltCachedCommandCount;
+	optimizationStats.rawVisibleObjectCount = rawVisibleObjectCount + static_cast<uint64_t>(skyboxes.size());
+	optimizationStats.submittedSceneDrawCount = submittedSceneDrawCount + static_cast<uint64_t>(skyboxes.size());
 	m_rendererStats.RecordDrawCallOptimizationStats(optimizationStats);
 	return { opaques, transparents, skyboxes };
 }

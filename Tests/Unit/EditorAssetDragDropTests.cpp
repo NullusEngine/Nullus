@@ -363,6 +363,9 @@ TEST(EditorAssetDragDropTests, GeneratedModelDropCommitsWhenRendererTextureArtif
     ASSERT_EQ(result.dragDrop.status, DragDropOperationStatus::Committed) << JoinDiagnosticCodes(result.dragDrop);
     ASSERT_EQ(scene.GetGameObjects().size(), 1u);
     EXPECT_EQ(scene.GetGameObjects().front()->GetName(), "TexturedHeroRoot");
+    ASSERT_TRUE(result.dragDrop.instance.has_value());
+    ASSERT_NE(result.dragDrop.instance->instanceRoot, nullptr);
+    EXPECT_TRUE(result.dragDrop.instance->instanceRoot->IsSelfActive());
 
     std::filesystem::remove_all(root);
 }

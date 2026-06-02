@@ -19,6 +19,7 @@ An editor user starts dragging an already imported large model into Scene View a
 
 1. **Given** an already imported generated model prefab with current mesh, material, and texture relationships, **When** the user begins dragging it over Scene View, **Then** the preview appears quickly enough to support interactive placement.
 2. **Given** the same already imported large model is dragged repeatedly, **When** the drag path runs, **Then** it reuses stabilized import results instead of reconstructing mesh, material, texture, and prefab relationships during drag.
+3. **Given** the asset browser creates a drag payload for a current generated prefab artifact, **When** Scene View receives pre-drop hover updates, **Then** the hover path consumes the payload readiness hint and bridge fast-preview loader instead of refreshing the full asset database.
 
 ---
 
@@ -32,8 +33,9 @@ An editor user drags an imported model asset over the Scene View and sees a temp
 
 **Acceptance Scenarios**:
 
-1. **Given** an imported model asset is dragged over Scene View, **When** the cursor moves across valid placement space before mouse release, **Then** a preview object remains visible and updates to the latest placement point.
+1. **Given** a ready imported model or prefab asset is dragged over Scene View, **When** the cursor moves across valid placement space before mouse release, **Then** a preview-only mesh ghost remains visible and updates to the latest placement point.
 2. **Given** a preview object is active during drag, **When** the drag is still in progress, **Then** the preview does not become a committed scene instance and does not appear as a normal Hierarchy item.
+3. **Given** a ready imported model has a loadable generated prefab artifact, **When** Scene View creates the drag preview, **Then** the preview uses a private preview scene or equivalent render-only proxy rather than the active scene.
 
 ---
 
@@ -82,18 +84,20 @@ If an older or non-primary path still instantiates generated model prefabs befor
 
 ---
 
-### User Story 6 - Committed Generated Model Instances Survive Save And Reload (Priority: P1)
+### User Story 6 - Scene Prefab Instances Save And Reload Like Unity PrefabInstance Records (Priority: P1)
 
-An editor user drops a generated model prefab into a scene, saves the scene, closes or reloads it, and finds the model instance restored as a prefab-backed scene instance instead of missing.
+An editor user drops or edits a prefab instance in a scene, saves the scene, closes or reloads it, and finds the instance restored from a Unity-style PrefabInstance record rather than from a plain unpacked object copy.
 
 **Why this priority**: This is a confirmed data-loss bug. A successful drop is not usable if the scene cannot persist and restore the generated model instance. The current failure is not only a UI issue: scene save/load still behaves like ordinary object-graph serialization and does not yet reliably persist generated-model prefab instance identity together with enough reconstructible hierarchy state.
 
-**Independent Test**: Commit a generated model instance into a scene, save the scene, reload it through the normal scene-loading path, and verify the model still exists and restores with prefab-instance identity rather than disappearing.
+**Independent Test**: Commit a generated model instance into a scene, save the scene through the editor scene-save path, inspect the scene document, and verify it contains a document-level prefab instance record with source prefab identity, modifications, and source/instance correspondence. Reloading through the editor scene-loading path restores the model from that prefab instance relationship and rebuilds prefab-instance tracking.
 
 **Acceptance Scenarios**:
 
-1. **Given** a generated model instance was committed to a scene, **When** the scene is saved and reloaded, **Then** the instance is restored instead of disappearing from the scene.
-2. **Given** a restored generated model instance comes from a generated model prefab asset, **When** the scene reload completes, **Then** the instance retains prefab-backed identity rather than being reloaded only as an untracked plain object copy.
+1. **Given** a generated model instance was committed to a scene, **When** the scene is saved through editor scene save, **Then** the scene document contains a Unity-style prefab instance record instead of relying only on a `scenePrefab` property on the root object.
+2. **Given** a generated model instance has transform/name/material or hierarchy overrides, **When** the scene is saved, **Then** those differences are persisted as prefab-instance modifications targeting source prefab objects.
+3. **Given** a scene containing prefab instance records is reloaded through the editor, **When** the source prefab artifact is available, **Then** the instance is restored as a prefab-backed instance and editor prefab tracking is rebuilt.
+4. **Given** the source prefab artifact is missing or corrupt on load, **When** the scene is opened, **Then** the editor preserves the prefab instance recovery record and reports missing prefab state rather than silently unpacking or losing the object.
 
 ### Edge Cases
 
@@ -107,6 +111,9 @@ An editor user drops a generated model prefab into a scene, saves the scene, clo
 - A generated model instance is the only scene object added before save; scene reload must still restore it even if no other prefab instances exist.
 - A saved scene references a generated model prefab sub-asset key; reload must resolve the same sub-asset rather than dropping the object when registry state starts empty.
 - A generated model instance may carry most of its visible mesh hierarchy under one prefab root; scene persistence must not rely on only a flat root entry if that would drop the reconstructible model subtree.
+- A scene created before Unity-style PrefabInstance records existed may still contain legacy `scenePrefab` root metadata; load must preserve compatibility, but new editor saves must prefer document-level prefab instance records.
+- A normal prefab instance may be modified in the scene; scene reload must preserve the scene override without applying it back to the prefab asset.
+- A generated model prefab instance may be modified in the scene; scene reload must preserve the scene override, while applying those changes back to the generated model asset remains rejected.
 
 ## Requirements
 
@@ -115,7 +122,9 @@ An editor user drops a generated model prefab into a scene, saves the scene, clo
 - **FR-001**: The import phase MUST generate and stabilize the relationship between mesh, material, texture, and generated model prefab artifacts before Scene View drag/drop consumes that asset.
 - **FR-002**: The already-imported large-model drag/drop main path MUST reuse those stabilized import results instead of rebuilding mesh, material, texture, and prefab relationships on the drag path.
 - **FR-003**: Dragging an imported model over Scene View MUST create a temporary drag preview object before mouse release.
-- **FR-004**: The drag preview object MUST follow the current resolved placement point while the drag remains active in Scene View.
+- **FR-004**: For ready imported model and prefab assets, the drag preview SHOULD render a preview-only mesh ghost based on the generated prefab or prefab artifact.
+- **FR-004a**: Scene View hover preview MUST NOT call full asset database refresh as part of the normal ready-preview path; it MUST use a payload-level ready hint and an asset-layer fast preview prefab loader based on current import artifacts.
+- **FR-004b**: Scene View SHOULD reuse the existing preview-only mesh ghost for repeated hover updates of the same asset identity instead of re-instantiating the preview scene every frame.
 - **FR-005**: The drag preview object MUST NOT be treated as a committed scene instance, MUST NOT appear as a normal Hierarchy item, and MUST NOT become the final persisted result automatically.
 - **FR-006**: Ending a Scene View drag MUST destroy or replace the preview object as part of final drop handling.
 - **FR-007**: Releasing a ready imported model drop MUST commit exactly one scene instance using the final preview placement or resolved drop target.
@@ -128,33 +137,43 @@ An editor user drops a generated model prefab into a scene, saves the scene, clo
 - **FR-014**: Hierarchy and Scene View drops MUST share the same committed-instance readiness gate even if only Scene View provides mouse-follow preview.
 - **FR-015**: Existing async renderer resolution for generated models MUST be treated as a compatibility fallback path rather than the primary large-model Scene View drop experience.
 - **FR-016**: Existing async renderer resolution MUST still fail or cancel cleanly when required assets cannot be resolved and MUST NOT leave a still-live generated model root permanently hidden.
-- **FR-017**: A committed generated model scene instance MUST be serialized in scene data as a prefab-backed instance relationship that can be restored after scene reload.
-- **FR-018**: Scene reload MUST restore committed generated model instances from their prefab asset id and prefab sub-asset identity instead of dropping them or keeping them only as transient runtime registry state.
-- **FR-019**: Loading a scene that contains generated model prefab instances MUST rebuild the corresponding prefab-instance tracking state needed by editor prefab presentation and later prefab-aware operations.
-- **FR-020**: The generated-model save and reload path MUST preserve normal transform, hierarchy parentage, and prefab-sub-asset targeting for restored instances.
-- **FR-021**: Scene persistence for generated model instances MUST NOT depend solely on transient editor-only prefab instance registry state.
-- **FR-022**: Scene persistence for generated model instances MUST preserve enough data to reconstruct the full committed model instance, including prefab-backed hierarchy recovery rather than only a flat root scene entry.
+- **FR-017**: Editor scene save MUST persist prefab instances as document-level Unity-style `PrefabInstance` records containing source prefab identity, scene instance root identity, property/structure modifications, and source-to-instance object correspondence.
+- **FR-018**: New editor scene saves MUST NOT rely on a root-object-only `scenePrefab` metadata property as the authoritative prefab instance representation; that property MAY remain readable as a legacy compatibility fallback.
+- **FR-019**: Scene reload MUST restore committed prefab instances from their prefab asset id and prefab sub-asset identity, then apply saved prefab-instance modifications instead of treating the result as an untracked plain object copy.
+- **FR-020**: Loading a scene that contains prefab instance records MUST rebuild the corresponding prefab-instance tracking state needed by editor prefab presentation and later prefab-aware operations.
+- **FR-021**: The generated-model save and reload path MUST preserve normal transform, hierarchy parentage, prefab-sub-asset targeting, and source/instance correspondence for restored instances.
+- **FR-022**: Scene persistence for generated model instances MUST NOT depend solely on transient editor-only prefab instance registry state.
+- **FR-023**: Scene persistence for generated model instances MUST preserve enough data to reconstruct the full committed model instance, including prefab-backed hierarchy recovery rather than only a flat root scene entry.
+- **FR-024**: Normal prefab instances MUST allow scene-local overrides to be saved and reloaded without automatically applying those overrides back to the prefab asset.
+- **FR-025**: Generated model prefab instances MUST allow scene-local overrides to be saved and reloaded, but applying overrides back to the generated model prefab asset MUST remain rejected with a model-prefab/read-only diagnostic.
+- **FR-026**: Unity-style prefab instance restoration MUST keep legacy `scenePrefab` scenes loadable, but any newly saved scene that has prefab registry state MUST emit the new `PrefabInstance` record path.
 
 ### Key Entities
 
 - **Generated Model Prefab**: Imported model prefab artifact produced from an external model source.
 - **Drag Preview Object**: Temporary, non-committed Scene View object used only while the user is actively dragging before mouse release.
+- **Preview-Only Mesh Ghost**: A ready prefab/model preview rendered from a private preview scene or render-only proxy, separate from the committed scene object graph.
+- **Preview-Ready Payload Hint**: A drag payload flag set when the asset browser observes a current prefab artifact in the stabilized import output, allowing Scene View hover to avoid full database refresh and heavy relationship reconstruction.
 - **Committed Scene Instance**: The formal scene object created only after a drop succeeds.
 - **Renderer Dependency Readiness Gate**: Validation step that decides whether a generated model can be committed immediately or must remain pending.
 - **Legacy Async Resolution Path**: Older compatibility flow that resolves deferred renderer references after instantiation.
-- **Prefab-Backed Scene Instance Record**: The persisted scene representation of a committed generated model instance, including its prefab asset identity and prefab sub-asset identity.
+- **PrefabInstance Record**: The Unity-style persisted scene representation of a committed prefab instance, including source prefab reference, local modifications, and correspondence between prefab source objects and scene instance objects.
+- **Prefab Modification**: A scene-local patch such as a replaced property, added/removed owned component or GameObject, or ordering change that is saved on the instance rather than applied to the source prefab.
+- **Stripped/Correspondence Record**: The scene-side mapping that identifies which scene object corresponds to which object in the source prefab, analogous to Unity stripped object records.
 
 ## Success Criteria
 
 ### Measurable Outcomes
 
-- **SC-001**: During Scene View drag, a visible preview object appears before mouse release and tracks the cursor placement continuously until the drag ends.
+- **SC-001**: During Scene View drag, a ready imported model shows a preview-only mesh ghost before mouse release and tracks the cursor placement continuously until the drag ends.
 - **SC-002**: For already imported large models with current generated prefab relationships, preview appearance is fast enough that drag placement remains interactive instead of feeling blocked by main-thread stabilization work.
 - **SC-003**: A ready generated model drop commits exactly one visible scene instance without a user-visible long hidden-instance waiting phase.
 - **SC-004**: A not-ready generated model drop commits zero scene instances and returns a pending or not-ready result instead of leaving a delayed hidden formal instance in the scene.
 - **SC-005**: Focused tests cover Scene View preview lifecycle, ready commit, not-ready pending behavior, save-and-reload persistence of generated model instances, and legacy async cancellation or failure fallback handling.
 - **SC-006**: For the reported already-imported large-model workflow, the drag/drop path no longer requires the user to wait through a long post-drop invisibility period before the first committed object appears.
 - **SC-007**: Saving and reloading a scene containing a committed generated model instance restores that instance without manual repair or re-drop.
+- **SC-008**: New editor scene saves for prefab instances contain document-level `PrefabInstance` records with source prefab references and modifications, and do not depend on root-only `scenePrefab` metadata as the primary persistence path.
+- **SC-009**: Scene-local prefab instance modifications round-trip for normal prefabs and generated model prefabs; generated model prefab asset apply remains rejected.
 
 ## Assumptions
 

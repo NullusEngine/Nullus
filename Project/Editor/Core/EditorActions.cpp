@@ -3,6 +3,7 @@
 #include "ImGui/imgui.h"
 #include <iostream>
 #include <fstream>
+#include <sstream>
 #include <chrono>
 #include <deque>
 #include <iterator>
@@ -56,6 +57,9 @@
 #include "Panels/SceneView.h"
 #include "Reflection/Type.h"
 #include "Serialize/ObjectGraphDocument.h"
+#include "Serialize/ObjectGraphReader.h"
+#include "Serialize/ObjectGraphSerializer.h"
+#include "Serialize/ObjectGraphWriter.h"
 #include "ResourceManagement/TextureManager.h"
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Resources/Loaders/MaterialLoader.h"
@@ -69,6 +73,53 @@ using namespace NLS;
 
 namespace
 {
+std::optional<std::string> ReadTextFileAtPath(const std::filesystem::path& path)
+{
+    std::ifstream input(path, std::ios::binary);
+    if (!input.is_open())
+        return std::nullopt;
+
+    std::ostringstream stream;
+    stream << input.rdbuf();
+    return stream.str();
+}
+
+bool WriteTextFileAtomicallyAtPath(const std::filesystem::path& path, const std::string& text)
+{
+    std::error_code error;
+    const auto parentPath = path.parent_path();
+    if (!parentPath.empty())
+    {
+        std::filesystem::create_directories(parentPath, error);
+        if (error)
+            return false;
+    }
+
+    const auto tempPath = path.string() + ".tmp";
+    {
+        std::ofstream output(tempPath, std::ios::binary | std::ios::trunc);
+        if (!output.is_open())
+            return false;
+        output << text;
+        if (!output.good())
+            return false;
+    }
+
+    std::filesystem::rename(tempPath, path, error);
+    if (!error)
+        return true;
+
+    std::filesystem::remove(path, error);
+    error.clear();
+    std::filesystem::rename(tempPath, path, error);
+    if (error)
+    {
+        std::filesystem::remove(tempPath, error);
+        return false;
+    }
+    return true;
+}
+
 constexpr size_t kEditorBackgroundTaskQueueCapacity = 256u;
 constexpr auto kRendererResourceResolutionFrameBudget = std::chrono::milliseconds(12);
 constexpr size_t kRendererResourceResolutionBindTasksPerFrame = 12u;
@@ -1637,8 +1688,20 @@ bool Editor::Core::EditorActions::SaveCurrentSceneTo(const std::string& p_path)
     if (scenePath.extension() != ".scene")
         scenePath += ".scene";
 
-    if (m_context.sceneManager.SaveCurrentScene(scenePath.string()))
+    const auto currentScene = m_context.sceneManager.GetCurrentScene();
+    if (!currentScene)
+        return false;
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(*currentScene);
+    NLS::Editor::Assets::PrefabUtilityFacade().AnnotateSceneDocumentWithPrefabInstances(
+        document,
+        *currentScene,
+        m_context.prefabInstanceRegistry);
+    if (!document.Validate().HasErrors() &&
+        WriteTextFileAtomicallyAtPath(scenePath, NLS::Engine::Serialize::ObjectGraphWriter::Write(document)))
     {
+        m_context.sceneManager.StoreCurrentSceneSourcePath(scenePath.string());
+        m_context.sceneManager.MarkCurrentSceneClean();
         DelayAction([this]
         {
             m_panelsManager.GetPanelAs<Panels::AssetBrowser>("Asset Browser").Refresh();
@@ -1667,6 +1730,65 @@ void Editor::Core::EditorActions::LoadSceneFromDisk(const std::string& p_path, b
             Dialogs::MessageBox::EMessageType::ERROR,
             Dialogs::MessageBox::EButtonLayout::OK);
         return;
+    }
+
+    m_context.prefabInstanceRegistry.Clear();
+    const auto sceneText = ReadTextFileAtPath(m_context.sceneManager.GetCurrentSceneSourcePath());
+    if (sceneText.has_value())
+    {
+        const auto document = NLS::Engine::Serialize::ObjectGraphReader::Read(*sceneText);
+        if (document.has_value() && m_context.sceneManager.GetCurrentScene())
+        {
+            NLS::Editor::Assets::AssetDatabaseFacade prefabDatabase({
+                std::filesystem::path(m_context.projectPath)
+            });
+            const auto prefabDatabaseReady = prefabDatabase.Refresh();
+            std::unordered_map<std::string, std::optional<NLS::Engine::Assets::PrefabArtifact>> prefabArtifactCache;
+
+            auto restoreResult = NLS::Editor::Assets::PrefabUtilityFacade().RestorePrefabInstancesFromSceneDocument(
+                *document,
+                *m_context.sceneManager.GetCurrentScene(),
+                {},
+                m_context.prefabInstanceRegistry,
+                [&prefabDatabase, prefabDatabaseReady, &prefabArtifactCache](
+                    NLS::Core::Assets::AssetId assetId,
+                    const std::string& subAssetKey)
+                    -> std::optional<NLS::Engine::Assets::PrefabArtifact>
+                {
+                    if (!prefabDatabaseReady)
+                        return std::nullopt;
+
+                    const auto cacheKey = assetId.ToString() + "\n" + subAssetKey;
+                    const auto cached = prefabArtifactCache.find(cacheKey);
+                    if (cached != prefabArtifactCache.end())
+                        return cached->second;
+
+                    const auto assetPath = prefabDatabase.GUIDToAssetPath(assetId.ToString());
+                    if (assetPath.empty())
+                    {
+                        prefabArtifactCache.emplace(cacheKey, std::nullopt);
+                        return std::nullopt;
+                    }
+
+                    auto artifact = prefabDatabase.LoadPrefabArtifactAtPath(assetPath, subAssetKey);
+                    prefabArtifactCache.emplace(cacheKey, artifact);
+                    return artifact;
+                });
+            if (restoreResult.status != NLS::Editor::Assets::PrefabOperationStatus::Committed)
+            {
+                NLS_LOG_WARNING(
+                    "Scene loaded with missing or unresolved prefab instance metadata: " +
+                    m_context.sceneManager.GetCurrentSceneSourcePath());
+                for (const auto& diagnostic : restoreResult.diagnostics)
+                {
+                    NLS_LOG_WARNING(
+                        "Scene prefab restore diagnostic code=" +
+                        diagnostic.code +
+                        " message=" +
+                        diagnostic.message);
+                }
+            }
+        }
     }
 
     NLS_LOG_INFO("Scene loaded from disk: " + m_context.sceneManager.GetCurrentSceneSourcePath());
@@ -2347,7 +2469,8 @@ Engine::GameObject* Editor::Core::EditorActions::CreatePrimitive(
 Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAsset(
     const std::string& path,
     bool focusOnCreation,
-    Engine::GameObject* p_parent)
+    Engine::GameObject* p_parent,
+    std::optional<Maths::Vector3> placementOverride)
 {
     auto* creationScene = ResolveGameObjectCreationScene(m_context, p_parent);
     if (!creationScene)
@@ -2418,13 +2541,18 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAsset(
     auto& instance = *result.dragDrop.instance->instanceRoot;
     NLS_LOG_INFO("Created GameObject from asset: " + path + " root=" + instance.GetName());
 
-    if (m_gameObjectSpawnMode == EGameObjectSpawnMode::FRONT)
+    if (placementOverride.has_value())
+        instance.GetTransform()->SetWorldPosition(*placementOverride);
+    else if (m_gameObjectSpawnMode == EGameObjectSpawnMode::FRONT)
         instance.GetTransform()->SetLocalPosition(CalculateGameObjectSpawnPoint(10.0f));
 
-    QueuePrefabInstanceAssetResolution(
-        result.dragDrop.instance ? &*result.dragDrop.instance : nullptr,
-        result.dragDrop.artifact ? &*result.dragDrop.artifact : nullptr,
-        path);
+    if (result.dragDrop.deferredAssetReferenceResolutionRequested)
+    {
+        QueuePrefabInstanceAssetResolution(
+            result.dragDrop.instance ? &*result.dragDrop.instance : nullptr,
+            result.dragDrop.artifact ? &*result.dragDrop.artifact : nullptr,
+            path);
+    }
     if (focusOnCreation)
         SelectGameObject(instance);
     MarkGameObjectCreationSceneDirty(m_context, *creationScene);
@@ -2434,7 +2562,8 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAsset(
 Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAsset(
     const NLS::Editor::Assets::EditorAssetDragPayload& payload,
     bool focusOnCreation,
-    Engine::GameObject* p_parent)
+    Engine::GameObject* p_parent,
+    std::optional<Maths::Vector3> placementOverride)
 {
     auto* creationScene = ResolveGameObjectCreationScene(m_context, p_parent);
     const auto path = NLS::Editor::Assets::GetEditorAssetDragPayloadPath(payload);
@@ -2481,7 +2610,7 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAsset(
 
         const auto resourcePath = BuildPrefabResourcePathFromPayload(payload);
         NLS_LOG_INFO("Asset drag handle is not imported yet; scheduling background preimport before scene insertion: " + path);
-        return CreateGameObjectFromAsset(resourcePath, focusOnCreation, p_parent);
+        return CreateGameObjectFromAsset(resourcePath, focusOnCreation, p_parent, placementOverride);
     }
 
     if (!result.handled || result.dragDrop.status != NLS::Editor::Assets::DragDropOperationStatus::Committed ||
@@ -2494,13 +2623,18 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAsset(
     auto& instance = *result.dragDrop.instance->instanceRoot;
     NLS_LOG_INFO("Created GameObject from asset drag handle: " + path + " root=" + instance.GetName());
 
-    if (m_gameObjectSpawnMode == EGameObjectSpawnMode::FRONT)
+    if (placementOverride.has_value())
+        instance.GetTransform()->SetWorldPosition(*placementOverride);
+    else if (m_gameObjectSpawnMode == EGameObjectSpawnMode::FRONT)
         instance.GetTransform()->SetLocalPosition(CalculateGameObjectSpawnPoint(10.0f));
 
-    QueuePrefabInstanceAssetResolution(
-        result.dragDrop.instance ? &*result.dragDrop.instance : nullptr,
-        result.dragDrop.artifact ? &*result.dragDrop.artifact : nullptr,
-        path);
+    if (result.dragDrop.deferredAssetReferenceResolutionRequested)
+    {
+        QueuePrefabInstanceAssetResolution(
+            result.dragDrop.instance ? &*result.dragDrop.instance : nullptr,
+            result.dragDrop.artifact ? &*result.dragDrop.artifact : nullptr,
+            path);
+    }
     if (focusOnCreation)
         SelectGameObject(instance);
     MarkGameObjectCreationSceneDirty(m_context, *creationScene);
@@ -2570,10 +2704,13 @@ void NLS::Editor::Core::EditorActions::CompletePendingAssetDrop(
     if (m_gameObjectSpawnMode == EGameObjectSpawnMode::FRONT)
         instance.GetTransform()->SetLocalPosition(CalculateGameObjectSpawnPoint(10.0f));
 
-    QueuePrefabInstanceAssetResolution(
-        result.dragDrop.instance ? &*result.dragDrop.instance : nullptr,
-        result.dragDrop.artifact ? &*result.dragDrop.artifact : nullptr,
-        path);
+    if (result.dragDrop.deferredAssetReferenceResolutionRequested)
+    {
+        QueuePrefabInstanceAssetResolution(
+            result.dragDrop.instance ? &*result.dragDrop.instance : nullptr,
+            result.dragDrop.artifact ? &*result.dragDrop.artifact : nullptr,
+            path);
+    }
     if (focusOnCreation)
         SelectGameObject(instance);
     MarkGameObjectCreationSceneDirty(m_context, *scene);

@@ -412,6 +412,7 @@ std::optional<NLS::Editor::Assets::EditorAssetDragPayload> BuildEditorAssetDragP
 	NLS::Core::Assets::ArtifactType artifactType = NLS::Core::Assets::ArtifactType::Unknown;
 	std::string subAssetKey;
 	bool imported = false;
+	bool previewPrefabReady = false;
 
 	if (fileType == Utils::PathParser::EFileType::MODEL &&
 		subAssetKey.empty())
@@ -502,7 +503,38 @@ std::optional<NLS::Editor::Assets::EditorAssetDragPayload> BuildEditorAssetDragP
 					else if (artifactTypeText == "Model" || artifactTypeText == "model")
 						artifactType = NLS::Core::Assets::ArtifactType::Model;
 					imported = currentManifest && artifactType != NLS::Core::Assets::ArtifactType::Unknown;
+					previewPrefabReady =
+						imported &&
+						artifactType == NLS::Core::Assets::ArtifactType::Prefab;
 					break;
+				}
+
+				if (previewPrefabReady && fileType == Utils::PathParser::EFileType::MODEL)
+				{
+					for (const auto& subAsset : *subAssets)
+					{
+						const auto artifactTypeText = JsonStringOrDefault(subAsset, "artifactType");
+						if (!artifactTypeText.has_value())
+							continue;
+
+						const bool rendererDependency =
+							artifactTypeText == "Mesh" ||
+							artifactTypeText == "mesh" ||
+							artifactTypeText == "Material" ||
+							artifactTypeText == "material" ||
+							artifactTypeText == "Texture" ||
+							artifactTypeText == "texture";
+						if (!rendererDependency)
+							continue;
+
+						const auto resolvedArtifactPath =
+							ResolveArtifactPathForManifest(ProjectRootFromAssetsFolder(projectAssetsFolder), subAsset);
+						if (resolvedArtifactPath.empty() || !std::filesystem::is_regular_file(resolvedArtifactPath))
+						{
+							previewPrefabReady = false;
+							break;
+						}
+					}
 				}
 			}
 		}
@@ -520,7 +552,8 @@ std::optional<NLS::Editor::Assets::EditorAssetDragPayload> BuildEditorAssetDragP
 		subAssetKey,
 		artifactType,
 		generatedModelPrefab,
-		imported);
+		imported,
+		previewPrefabReady);
 }
 
 void RenameAsset(const std::string& p_prev, const std::string& p_new)
@@ -1899,15 +1932,24 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 		const auto assetPayload = p_isEngineItem
 			? std::optional<NLS::Editor::Assets::EditorAssetDragPayload> {}
 			: BuildEditorAssetDragPayloadForFile(m_projectAssetFolder, path, resourceFormatPath, fileType);
-		auto& ddSource = clickableText.AddPlugin<UI::DDSource<std::pair<std::string, Group*>>>
-		(
-			"File",
-			resourceFormatPath,
-			std::make_pair(resourceFormatPath, &itemGroup)
-		);
+		const bool assetPayloadReplacesFileDrag =
+			assetPayload.has_value() &&
+			(fileType == Utils::PathParser::EFileType::MODEL ||
+			 fileType == Utils::PathParser::EFileType::PREFAB);
+		UI::DDSource<std::pair<std::string, Group*>>* fileDragSource = nullptr;
+		if (!assetPayloadReplacesFileDrag)
+		{
+			fileDragSource = &clickableText.AddPlugin<UI::DDSource<std::pair<std::string, Group*>>>
+			(
+				"File",
+				resourceFormatPath,
+				std::make_pair(resourceFormatPath, &itemGroup)
+			);
+		}
+		UI::DDSource<NLS::Editor::Assets::EditorAssetDragPayload>* editorAssetDragSource = nullptr;
 		if (assetPayload)
 		{
-			clickableText.AddPlugin<UI::DDSource<NLS::Editor::Assets::EditorAssetDragPayload>>(
+			editorAssetDragSource = &clickableText.AddPlugin<UI::DDSource<NLS::Editor::Assets::EditorAssetDragPayload>>(
 				NLS::Editor::Assets::kEditorAssetDragPayloadType,
 				resourceFormatPath,
 				*assetPayload);
@@ -1959,7 +2001,12 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 			assetProperties.Focus();
 		};
 
-		contextMenu->RenamedEvent += [&ddSource, &clickableText, p_scriptFolder](std::string p_prev, std::string p_newPath)
+		contextMenu->RenamedEvent += [
+			this,
+			fileDragSource,
+			editorAssetDragSource,
+			&clickableText,
+			p_scriptFolder](std::string p_prev, std::string p_newPath)
 		{
 			if (p_newPath != p_prev)
 			{
@@ -1967,7 +2014,28 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 				{
 					RenameAsset(p_prev, p_newPath);
 					std::string elementName = Utils::PathParser::GetElementName(p_newPath);
-					ddSource.data.first = Utils::PathParser::GetContainingFolder(ddSource.data.first) + elementName;
+					const auto newResourceFormatPath =
+						EditorAssetPathFromAbsolutePath(m_projectAssetFolder, p_newPath).generic_string();
+					if (fileDragSource != nullptr)
+					{
+						fileDragSource->data.first = newResourceFormatPath.empty()
+							? Utils::PathParser::GetContainingFolder(fileDragSource->data.first) + elementName
+							: newResourceFormatPath;
+						fileDragSource->tooltip = fileDragSource->data.first;
+					}
+					if (editorAssetDragSource != nullptr && !newResourceFormatPath.empty())
+					{
+						const auto updatedPayload = BuildEditorAssetDragPayloadForFile(
+							m_projectAssetFolder,
+							p_newPath,
+							newResourceFormatPath,
+							Utils::PathParser::GetFileType(p_newPath));
+						if (updatedPayload.has_value())
+						{
+							editorAssetDragSource->data = *updatedPayload;
+							editorAssetDragSource->tooltip = newResourceFormatPath;
+						}
+					}
 
 					if (!p_scriptFolder)
 					{

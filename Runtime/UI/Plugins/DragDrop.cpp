@@ -23,6 +23,8 @@ namespace NLS::UI
 			ImGuiDragDropFlags imguiFlags = 0;
 			if ((static_cast<int>(flags) & static_cast<int>(DragDropTargetFlags::AcceptNoDrawDefaultRect)) != 0)
 				imguiFlags |= ImGuiDragDropFlags_AcceptNoDrawDefaultRect;
+			if ((static_cast<int>(flags) & static_cast<int>(DragDropTargetFlags::AcceptBeforeDelivery)) != 0)
+				imguiFlags |= ImGuiDragDropFlags_AcceptBeforeDelivery;
 			return imguiFlags;
 		}
 	}
@@ -62,6 +64,6 @@ namespace NLS::UI
 		const ImGuiPayload* payload = ImGui::AcceptDragDropPayload(type, ToImGuiFlags(flags));
 		if (payload == nullptr)
 			return {};
-		return { payload->Data, static_cast<size_t>(payload->DataSize) };
+		return { payload->Data, static_cast<size_t>(payload->DataSize), payload->IsDelivery() };
 	}
 }

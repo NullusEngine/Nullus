@@ -289,6 +289,84 @@ TEST(ObjectGraphDocumentTests, ValidatesMissingObjectReferences)
     EXPECT_TRUE(ContainsDiagnostic(diagnostics, SerializationDiagnosticCode::DanglingReference));
 }
 
+TEST(ObjectGraphDocumentTests, ValidatesDanglingReferencesOnStrippedPrefabPlaceholders)
+{
+    using namespace NLS::Engine::Serialize;
+
+    ObjectGraphDocument document;
+    const auto sceneId = MakeObjectId("SceneRoot");
+    const auto strippedId = MakeObjectId("StrippedPrefabRoot");
+    const auto missingParentId = MakeObjectId("MissingStrippedParent");
+
+    auto sceneRoot = MakeRecord(sceneId, "SceneType");
+    sceneRoot.properties.push_back({"gameObjects", PropertyValue::Array({
+        PropertyValue::OwnedReference(strippedId)
+    })});
+
+    auto strippedRoot = MakeRecord(strippedId, "GameObjectType");
+    strippedRoot.state = ObjectRecordState::Stripped;
+    strippedRoot.properties.push_back({
+        "parent",
+        PropertyValue::ObjectReference(ObjectIdentifier::LocalObject(MakeLocalIdentifierInFile(missingParentId)))
+    });
+
+    document.root = sceneId;
+    document.objects.push_back(std::move(sceneRoot));
+    document.objects.push_back(std::move(strippedRoot));
+
+    const auto diagnostics = document.Validate();
+
+    EXPECT_TRUE(diagnostics.HasErrors());
+    EXPECT_TRUE(ContainsDiagnostic(diagnostics, SerializationDiagnosticCode::DanglingReference));
+}
+
+TEST(ObjectGraphDocumentTests, ValidatesPrefabInstanceAddedObjectsAndInsertTargets)
+{
+    using namespace NLS::Engine::Serialize;
+
+    ObjectGraphDocument document;
+    const auto sceneId = MakeObjectId("SceneWithPrefabInstance");
+    const auto prefabRootId = MakeObjectId("PrefabInstanceRoot");
+    const auto addedId = MakeObjectId("PrefabInstanceAddedObject");
+    const auto missingId = MakeObjectId("MissingPrefabInstanceAddedObject");
+
+    auto sceneRoot = MakeRecord(sceneId, "SceneType");
+    sceneRoot.properties.push_back({"gameObjects", PropertyValue::Array({
+        PropertyValue::OwnedReference(prefabRootId)
+    })});
+
+    auto prefabRoot = MakeRecord(prefabRootId, "GameObjectType");
+    prefabRoot.state = ObjectRecordState::Stripped;
+
+    ObjectRecord added = MakeRecord(addedId, "GameObjectType");
+    added.localIdentifierInFile = 0;
+    added.properties.push_back({
+        "parent",
+        PropertyValue::ObjectReference(ObjectIdentifier::LocalObject(MakeLocalIdentifierInFile(missingId)))
+    });
+
+    PrefabInstanceRecord instance;
+    instance.instanceRoot = prefabRootId;
+    instance.sourcePrefab = ObjectIdentifier::Asset(
+        AssetId(NLS::Guid::Parse("dddddddd-dddd-4ddd-9ddd-dddddddddddd")),
+        100100000,
+        "prefab:BrokenAddedObject");
+    instance.addedObjects.push_back(std::move(added));
+    instance.modifications.push_back(PatchOperation::InsertOwned(prefabRootId, "children", missingId, 0u));
+
+    document.root = sceneId;
+    document.objects.push_back(std::move(sceneRoot));
+    document.objects.push_back(std::move(prefabRoot));
+    document.prefabInstances.push_back(std::move(instance));
+
+    const auto diagnostics = document.Validate();
+
+    EXPECT_TRUE(diagnostics.HasErrors());
+    EXPECT_TRUE(ContainsDiagnostic(diagnostics, SerializationDiagnosticCode::InvalidPropertyType));
+    EXPECT_TRUE(ContainsDiagnostic(diagnostics, SerializationDiagnosticCode::MissingObject));
+    EXPECT_TRUE(ContainsDiagnostic(diagnostics, SerializationDiagnosticCode::DanglingReference));
+}
+
 TEST(ObjectGraphDocumentTests, ValidatesOwnershipCyclesAndOrphans)
 {
     using namespace NLS::Engine::Serialize;
@@ -620,6 +698,29 @@ TEST(ObjectGraphDocumentTests, ReaderRejectsObjectRecordsWithoutFileID)
       "id": "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb",
       "properties": {},
       "state": "Alive",
+      "type": "RootType"
+    }
+  ],
+  "root": "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb",
+  "version": 1
+})";
+
+    EXPECT_FALSE(ObjectGraphReader::Read(json).has_value());
+}
+
+TEST(ObjectGraphDocumentTests, ReaderRejectsUnknownObjectRecordState)
+{
+    using namespace NLS::Engine::Serialize;
+
+    const std::string json = R"({
+  "documentId": "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa",
+  "format": "Nullus.ObjectGraph.Scene",
+  "objects": [
+    {
+      "fileID": 12345,
+      "id": "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb",
+      "properties": {},
+      "state": "PreviewOnly",
       "type": "RootType"
     }
   ],

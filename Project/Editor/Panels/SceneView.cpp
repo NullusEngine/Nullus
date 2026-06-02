@@ -4,9 +4,12 @@
 #include "Rendering/DebugSceneRenderer.h"
 #include "Rendering/PickingRenderPass.h"
 #include "Rendering/SceneRendererFactory.h"
+#include "Rendering/Debug/DebugDrawGeometry.h"
+#include "Rendering/Debug/DebugDrawService.h"
 #include "Core/EditorActions.h"
+#include "Assets/EditorAssetDragDropBridge.h"
 #include "Assets/EditorAssetDragPayload.h"
-#include "Assets/EditorAssetPathUtils.h"
+#include "Engine/Assets/PrefabAsset.h"
 #include "Panels/SceneView.h"
 #include "Panels/GameView.h"
 #include "Panels/SceneViewPickingPolicy.h"
@@ -28,6 +31,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <string>
 #include <sstream>
 #include <vector>
 using namespace NLS;
@@ -36,6 +40,18 @@ namespace
 {
 constexpr float kSceneViewGizmoCameraLength = 8.0f;
 constexpr float kSceneViewDefaultFocusDistance = 15.0f;
+constexpr float kSceneViewDragPreviewFallbackDistance = 12.0f;
+constexpr float kSceneViewDragPreviewHalfExtent = 0.75f;
+
+std::string GetPreviewLabel(const Editor::Assets::EditorAssetDragPayload& payload)
+{
+    auto path = Editor::Assets::GetEditorAssetDragPayloadPath(payload);
+    if (path.empty())
+        return "Imported asset preview";
+
+    const auto filename = std::filesystem::path(path).filename().generic_string();
+    return filename.empty() ? path : filename;
+}
 
 ImGuizmo::OPERATION ToNativeImGuizmoOperation(Editor::Core::EGizmoOperation operation)
 {
@@ -173,10 +189,25 @@ Editor::Panels::SceneView::SceneView(
         }
     };
 
-    m_image->AddPlugin<UI::DDTarget<NLS::Editor::Assets::EditorAssetDragPayload>>(
-        NLS::Editor::Assets::kEditorAssetDragPayloadType).DataReceivedEvent += [](auto payload)
+    auto& assetDropTarget = m_image->AddPlugin<UI::DDTarget<NLS::Editor::Assets::EditorAssetDragPayload>>(
+        NLS::Editor::Assets::kEditorAssetDragPayloadType);
+    assetDropTarget.acceptBeforeDelivery = true;
+    assetDropTarget.PreviewReceivedEvent += [this](auto payload)
     {
-        EDITOR_EXEC(CreateGameObjectFromAsset(payload, true));
+        UpdateImportedAssetDragPreview(payload);
+    };
+    assetDropTarget.HoverEndEvent += [this]()
+    {
+        ClearImportedAssetDragPreview();
+    };
+    assetDropTarget.DataReceivedEvent += [this](auto payload)
+    {
+        auto previewPlacement =
+            ResolveImportedAssetDragPreviewPlacement(EDITOR_CONTEXT(inputManager)->GetMousePosition());
+        if (!previewPlacement.has_value())
+            previewPlacement = m_importedAssetDragPreviewPlacement;
+        ClearImportedAssetDragPreview();
+        EDITOR_EXEC(CreateGameObjectFromAsset(payload, true, nullptr, previewPlacement));
     };
 
     m_destroyedListener = Engine::GameObject::DestroyedEvent += [this](const Engine::GameObject& actor)
@@ -191,6 +222,188 @@ Editor::Panels::SceneView::SceneView(
 Editor::Panels::SceneView::~SceneView()
 {
     Engine::GameObject::DestroyedEvent -= m_destroyedListener;
+}
+
+void Editor::Panels::SceneView::UpdateImportedAssetDragPreview(
+    const NLS::Editor::Assets::EditorAssetDragPayload& payload)
+{
+    m_importedAssetDragPreviewPayload = payload;
+    m_importedAssetDragPreviewMousePos = EDITOR_CONTEXT(inputManager)->GetMousePosition();
+    m_importedAssetDragPreviewPlacement =
+        ResolveImportedAssetDragPreviewPlacement(m_importedAssetDragPreviewMousePos);
+    EnsureImportedAssetDragPreviewMeshGhost(payload);
+    if (m_importedAssetDragPreviewRoot && m_importedAssetDragPreviewPlacement.has_value())
+        m_importedAssetDragPreviewRoot->GetTransform()->SetWorldPosition(*m_importedAssetDragPreviewPlacement);
+}
+
+bool Editor::Panels::SceneView::EnsureImportedAssetDragPreviewMeshGhost(
+    const NLS::Editor::Assets::EditorAssetDragPayload& payload)
+{
+    const auto assetGuid = NLS::Editor::Assets::GetEditorAssetDragPayloadGuid(payload);
+    const auto subAssetKey = NLS::Editor::Assets::GetEditorAssetDragPayloadSubAssetKey(payload);
+    if (m_importedAssetDragPreviewRoot &&
+        m_importedAssetDragPreviewAssetGuid == assetGuid &&
+        m_importedAssetDragPreviewSubAssetKey == subAssetKey)
+    {
+        return true;
+    }
+    if (m_importedAssetDragPreviewMeshGhostUnavailable &&
+        m_importedAssetDragPreviewAssetGuid == assetGuid &&
+        m_importedAssetDragPreviewSubAssetKey == subAssetKey)
+    {
+        return false;
+    }
+
+    m_importedAssetDragPreviewScene.reset();
+    m_importedAssetDragPreviewRoot = nullptr;
+    m_importedAssetDragPreviewAssetGuid = assetGuid;
+    m_importedAssetDragPreviewSubAssetKey = subAssetKey;
+    m_importedAssetDragPreviewMeshGhostUnavailable = false;
+
+    const auto assetPath = NLS::Editor::Assets::GetEditorAssetDragPayloadPath(payload);
+    if (assetPath.empty() || subAssetKey.empty())
+    {
+        m_importedAssetDragPreviewMeshGhostUnavailable = true;
+        return false;
+    }
+    if (!NLS::Editor::Assets::IsEditorAssetDragPayloadPreviewPrefabReady(payload))
+    {
+        m_importedAssetDragPreviewMeshGhostUnavailable = true;
+        return false;
+    }
+
+    NLS::Editor::Assets::EditorAssetDragDropBridge dragDropBridge(
+        std::filesystem::path(EDITOR_CONTEXT(projectAssetsPath)));
+    auto prefab = dragDropBridge.TryLoadPreviewPrefabArtifact(payload);
+    if (!prefab.has_value())
+    {
+        m_importedAssetDragPreviewMeshGhostUnavailable = true;
+        return false;
+    }
+
+    auto previewScene = std::make_unique<NLS::Engine::SceneSystem::Scene>();
+    auto preview = NLS::Engine::Assets::InstantiatePrefabArtifact(*prefab, *previewScene);
+    if (preview.diagnostics.HasErrors() || preview.root == nullptr)
+    {
+        m_importedAssetDragPreviewMeshGhostUnavailable = true;
+        return false;
+    }
+
+    m_importedAssetDragPreviewRoot = preview.root;
+    if (m_importedAssetDragPreviewPlacement.has_value())
+        m_importedAssetDragPreviewRoot->GetTransform()->SetWorldPosition(*m_importedAssetDragPreviewPlacement);
+    m_importedAssetDragPreviewScene = std::move(previewScene);
+    return true;
+}
+
+std::optional<Maths::Vector3> Editor::Panels::SceneView::ResolveImportedAssetDragPreviewPlacement(
+    const Maths::Vector2& mousePosition) const
+{
+    if (m_camera.transform == nullptr)
+        return std::nullopt;
+
+    const auto localPosition = GetLocalViewPosition(mousePosition);
+    const auto [safeWidth, safeHeight] = GetSafeSize();
+    if (!localPosition.has_value() || safeWidth == 0u || safeHeight == 0u)
+        return m_camera.GetPosition() + m_camera.transform->GetWorldForward() * kSceneViewDragPreviewFallbackDistance;
+
+    const float width = std::max(1.0f, static_cast<float>(safeWidth));
+    const float height = std::max(1.0f, static_cast<float>(safeHeight));
+    const float ndcX = (localPosition->x / width) * 2.0f - 1.0f;
+    const float ndcY = 1.0f - (localPosition->y / height) * 2.0f;
+    const float aspect = width / height;
+    const float tanHalfFov = std::tan(Maths::DegreesToRadians(m_camera.GetFov()) * 0.5f);
+    // Matrix4::CreateView uses eye - look, so this view matrix maps world right to screen-left.
+    const float screenRightNdcX = -ndcX;
+
+    auto rayDirection =
+        m_camera.transform->GetWorldForward() +
+        m_camera.transform->GetWorldRight() * (screenRightNdcX * tanHalfFov * aspect) +
+        m_camera.transform->GetWorldUp() * (ndcY * tanHalfFov);
+    rayDirection.Normalise();
+
+    const auto cameraPosition = m_camera.GetPosition();
+    if (std::fabs(rayDirection.y) > Maths::SMALL_NUMBER)
+    {
+        const float distanceToGround = -cameraPosition.y / rayDirection.y;
+        if (distanceToGround > 0.0f && distanceToGround < m_camera.GetFar())
+            return cameraPosition + rayDirection * distanceToGround;
+    }
+
+    const float fallbackDistance = m_cameraFocus.hasFocus
+        ? std::max(1.0f, m_cameraFocus.focusDistance)
+        : kSceneViewDragPreviewFallbackDistance;
+    return cameraPosition + rayDirection * fallbackDistance;
+}
+
+void Editor::Panels::SceneView::DrawImportedAssetDragPreview()
+{
+    if (!m_importedAssetDragPreviewPayload.has_value() ||
+        !m_importedAssetDragPreviewPlacement.has_value())
+    {
+        return;
+    }
+
+    const bool hasMeshGhost = m_importedAssetDragPreviewRoot != nullptr;
+    if (!hasMeshGhost)
+    {
+        if (auto* debugRenderer = dynamic_cast<Editor::Rendering::DebugSceneRenderer*>(m_renderer.get()))
+        {
+            if (auto* debugDrawService = debugRenderer->GetDebugDrawService())
+            {
+                NLS::Render::Debug::DebugDrawSubmitOptions options;
+                options.category = NLS::Render::Debug::DebugDrawCategory::General;
+                options.style.color = { 0.1f, 0.85f, 0.95f };
+                options.style.depthMode = NLS::Render::Debug::DebugDrawDepthMode::AlwaysOnTop;
+                options.style.lineWidth = 2.0f;
+
+                const auto& placement = *m_importedAssetDragPreviewPlacement;
+                NLS::Render::Debug::SubmitBox(
+                    *debugDrawService,
+                    placement + Maths::Vector3{ 0.0f, kSceneViewDragPreviewHalfExtent, 0.0f },
+                    Maths::Quaternion::Identity,
+                    { kSceneViewDragPreviewHalfExtent, kSceneViewDragPreviewHalfExtent, kSceneViewDragPreviewHalfExtent },
+                    options);
+                debugDrawService->SubmitLine(
+                    placement + Maths::Vector3{ -1.25f, 0.0f, 0.0f },
+                    placement + Maths::Vector3{ 1.25f, 0.0f, 0.0f },
+                    options);
+                debugDrawService->SubmitLine(
+                    placement + Maths::Vector3{ 0.0f, 0.0f, -1.25f },
+                    placement + Maths::Vector3{ 0.0f, 0.0f, 1.25f },
+                    options);
+            }
+        }
+    }
+
+    auto* drawList = ImGui::GetWindowDrawList();
+    if (drawList == nullptr)
+        return;
+
+    const ImVec2 labelPosition(
+        m_importedAssetDragPreviewMousePos.x + 16.0f,
+        m_importedAssetDragPreviewMousePos.y + 18.0f);
+    const std::string label = GetPreviewLabel(*m_importedAssetDragPreviewPayload);
+    const ImVec2 textSize = ImGui::CalcTextSize(label.c_str());
+    const ImVec2 padding(8.0f, 5.0f);
+    const ImVec2 rectMin(labelPosition.x - padding.x, labelPosition.y - padding.y);
+    const ImVec2 rectMax(
+        labelPosition.x + textSize.x + padding.x,
+        labelPosition.y + textSize.y + padding.y);
+    drawList->AddRectFilled(rectMin, rectMax, IM_COL32(10, 26, 30, 190), 5.0f);
+    drawList->AddRect(rectMin, rectMax, IM_COL32(70, 225, 235, 230), 5.0f);
+    drawList->AddText(labelPosition, IM_COL32(190, 255, 255, 255), label.c_str());
+}
+
+void Editor::Panels::SceneView::ClearImportedAssetDragPreview()
+{
+    m_importedAssetDragPreviewPayload.reset();
+    m_importedAssetDragPreviewScene.reset();
+    m_importedAssetDragPreviewRoot = nullptr;
+    m_importedAssetDragPreviewAssetGuid.clear();
+    m_importedAssetDragPreviewSubAssetKey.clear();
+    m_importedAssetDragPreviewMeshGhostUnavailable = false;
+    m_importedAssetDragPreviewPlacement.reset();
 }
 
 void Editor::Panels::SceneView::EnsureRenderer()
@@ -323,7 +536,8 @@ void Editor::Panels::SceneView::InitFrame()
     debugRenderer->AddDescriptor<Rendering::DebugSceneRenderer::DebugSceneDescriptor>({
         m_highlightedGameObject,
         selectedGameObject,
-        m_requestPickingFrame});
+        m_requestPickingFrame,
+        m_importedAssetDragPreviewRoot ? m_importedAssetDragPreviewScene.get() : nullptr});
 }
 
 Engine::SceneSystem::Scene* Editor::Panels::SceneView::GetScene()
@@ -336,7 +550,10 @@ Engine::SceneSystem::Scene* Editor::Panels::SceneView::GetScene()
 
 Engine::Rendering::BaseSceneRenderer::SceneDescriptor Editor::Panels::SceneView::CreateSceneDescriptor()
 {
-    return AViewControllable::CreateSceneDescriptor();
+    auto descriptor = AViewControllable::CreateSceneDescriptor();
+    if (m_importedAssetDragPreviewRoot && m_importedAssetDragPreviewScene)
+        descriptor.additiveScenes.push_back(m_importedAssetDragPreviewScene.get());
+    return descriptor;
 }
 
 bool Editor::Panels::SceneView::RequiresSynchronizedRetiredFramePresentation() const
@@ -346,6 +563,7 @@ bool Editor::Panels::SceneView::RequiresSynchronizedRetiredFramePresentation() c
 
 void Editor::Panels::SceneView::DrawPreRenderViewportOverlay()
 {
+    DrawImportedAssetDragPreview();
     if (ShouldApplySceneMutationFromViewportOverlay(ViewportOverlayLifecyclePhase::BeforeViewRender))
         DrawViewportOverlay();
 }

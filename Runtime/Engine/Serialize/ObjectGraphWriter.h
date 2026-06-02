@@ -40,6 +40,13 @@ namespace NLS::Engine::Serialize
                     root["overrides"].push_back(WritePatchOperation(operation));
             }
 
+            if (!document.prefabInstances.empty())
+            {
+                root["prefabInstances"] = nlohmann::json::array();
+                for (const auto& prefabInstance : document.prefabInstances)
+                    root["prefabInstances"].push_back(WritePrefabInstance(prefabInstance));
+            }
+
             return root.dump(4) + "\n";
         }
 
@@ -54,7 +61,19 @@ namespace NLS::Engine::Serialize
                 json["debugName"] = object.debugName;
             if (!object.debugPath.empty())
                 json["debugPath"] = object.debugPath;
-            json["state"] = object.state == ObjectRecordState::Alive ? "Alive" : "Removed";
+            switch (object.state)
+            {
+            case ObjectRecordState::Alive:
+                json["state"] = "Alive";
+                break;
+            case ObjectRecordState::Stripped:
+                json["state"] = "Stripped";
+                break;
+            case ObjectRecordState::Removed:
+            default:
+                json["state"] = "Removed";
+                break;
+            }
 
             nlohmann::json properties = nlohmann::json::object();
             auto propertyRecords = object.properties;
@@ -170,6 +189,33 @@ namespace NLS::Engine::Serialize
             default:
                 throw std::invalid_argument("Unsupported patch operation type.");
             }
+            return json;
+        }
+
+        static nlohmann::json WritePrefabInstance(const PrefabInstanceRecord& prefabInstance)
+        {
+            nlohmann::json json;
+            json["instanceRoot"] = prefabInstance.instanceRoot.GetGuid().ToString();
+            json["sourcePrefab"] = WriteObjectReference(prefabInstance.sourcePrefab);
+            json["generatedReadOnly"] = prefabInstance.generatedReadOnly;
+
+            json["modifications"] = nlohmann::json::array();
+            for (const auto& modification : prefabInstance.modifications)
+                json["modifications"].push_back(WritePatchOperation(modification));
+
+            json["addedObjects"] = nlohmann::json::array();
+            for (const auto& addedObject : prefabInstance.addedObjects)
+                json["addedObjects"].push_back(WriteObject(addedObject));
+
+            json["correspondence"] = nlohmann::json::array();
+            for (const auto& correspondence : prefabInstance.correspondence)
+            {
+                json["correspondence"].push_back({
+                    {"sourceObject", correspondence.sourceObject.GetGuid().ToString()},
+                    {"instanceObject", correspondence.instanceObject.GetGuid().ToString()}
+                });
+            }
+
             return json;
         }
     };

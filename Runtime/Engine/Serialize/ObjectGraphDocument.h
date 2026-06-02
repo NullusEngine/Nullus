@@ -241,8 +241,19 @@ namespace NLS::Engine::Serialize
     enum class ObjectRecordState
     {
         Alive,
+        Stripped,
         Removed
     };
+
+    inline bool IsReferenceableRecordState(const ObjectRecordState state)
+    {
+        return state == ObjectRecordState::Alive || state == ObjectRecordState::Stripped;
+    }
+
+    inline bool IsInstantiableRecordState(const ObjectRecordState state)
+    {
+        return state == ObjectRecordState::Alive;
+    }
 
     struct ObjectRecord
     {
@@ -340,6 +351,22 @@ namespace NLS::Engine::Serialize
         }
     };
 
+    struct PrefabInstanceObjectCorrespondence
+    {
+        ObjectId sourceObject;
+        ObjectId instanceObject;
+    };
+
+    struct PrefabInstanceRecord
+    {
+        ObjectId instanceRoot;
+        ObjectIdentifier sourcePrefab;
+        bool generatedReadOnly = false;
+        std::vector<PatchOperation> modifications;
+        std::vector<ObjectRecord> addedObjects;
+        std::vector<PrefabInstanceObjectCorrespondence> correspondence;
+    };
+
     class ObjectGraphDocument
     {
     public:
@@ -350,6 +377,7 @@ namespace NLS::Engine::Serialize
         std::optional<ObjectIdentifier> basePrefab;
         std::vector<ObjectRecord> objects;
         std::vector<PatchOperation> overrides;
+        std::vector<PrefabInstanceRecord> prefabInstances;
 
         static ObjectIdentifier MakeLocalObjectReference(const ObjectRecord& object)
         {
@@ -398,7 +426,7 @@ namespace NLS::Engine::Serialize
             for (size_t index = 0; index < objects.size(); ++index)
             {
                 const auto& object = objects[index];
-                if (object.state == ObjectRecordState::Removed)
+                if (!IsReferenceableRecordState(object.state))
                     continue;
 
                 if (!object.id.IsValid())
@@ -430,13 +458,110 @@ namespace NLS::Engine::Serialize
             if (basePrefab.has_value())
                 ValidateAssetReference(*basePrefab, diagnostics);
 
+            for (const auto& prefabInstance : prefabInstances)
+            {
+                if (!prefabInstance.instanceRoot.IsValid() ||
+                    indexById.find(prefabInstance.instanceRoot) == indexById.end())
+                {
+                    AddError(diagnostics, SerializationDiagnosticCode::MissingObject, "Prefab instance root is missing.");
+                }
+
+                ValidateAssetReference(prefabInstance.sourcePrefab, diagnostics);
+
+                for (const auto& mapping : prefabInstance.correspondence)
+                {
+                    if (!mapping.sourceObject.IsValid() || !mapping.instanceObject.IsValid())
+                    {
+                        AddError(diagnostics, SerializationDiagnosticCode::InvalidGuid, "Prefab instance correspondence has an invalid object id.");
+                        continue;
+                    }
+
+                    if (indexById.find(mapping.instanceObject) == indexById.end())
+                    {
+                        AddError(diagnostics, SerializationDiagnosticCode::MissingObject, "Prefab instance correspondence targets a missing scene object.");
+                    }
+                }
+
+                std::unordered_set<ObjectId> addedObjectIds;
+                auto embeddedIndexById = indexById;
+                auto embeddedObjectIdByFileID = objectIdByFileID;
+                for (size_t addedIndex = 0u; addedIndex < prefabInstance.addedObjects.size(); ++addedIndex)
+                {
+                    const auto& addedObject = prefabInstance.addedObjects[addedIndex];
+                    if (!IsReferenceableRecordState(addedObject.state))
+                        continue;
+
+                    if (!addedObject.id.IsValid())
+                    {
+                        AddError(diagnostics, SerializationDiagnosticCode::InvalidGuid, "Prefab instance added object has an invalid id.");
+                        continue;
+                    }
+
+                    if (!addedObjectIds.insert(addedObject.id).second)
+                    {
+                        AddError(diagnostics, SerializationDiagnosticCode::DuplicateObjectId, "Prefab instance contains duplicate added object ids.");
+                    }
+                    else if (indexById.find(addedObject.id) != indexById.end())
+                    {
+                        AddError(diagnostics, SerializationDiagnosticCode::DuplicateObjectId, "Prefab instance added object duplicates a scene object id.");
+                    }
+
+                    if (addedObject.localIdentifierInFile == 0)
+                    {
+                        AddError(diagnostics, SerializationDiagnosticCode::InvalidPropertyType, "Prefab instance added object has a missing fileID.");
+                    }
+                    else
+                    {
+                        const auto existingFileID = embeddedObjectIdByFileID.find(addedObject.localIdentifierInFile);
+                        if (existingFileID != embeddedObjectIdByFileID.end() && existingFileID->second != addedObject.id)
+                        {
+                            AddError(diagnostics, SerializationDiagnosticCode::DuplicateObjectId, "Prefab instance added object duplicates a fileID value.");
+                        }
+                        else
+                        {
+                            embeddedObjectIdByFileID.emplace(addedObject.localIdentifierInFile, addedObject.id);
+                        }
+                    }
+
+                    embeddedIndexById.emplace(addedObject.id, addedIndex);
+                }
+
+                for (const auto& operation : prefabInstance.modifications)
+                {
+                    if (operation.type == PatchOperationType::InsertOwned &&
+                        operation.object.IsValid() &&
+                        addedObjectIds.find(operation.object) == addedObjectIds.end() &&
+                        indexById.find(operation.object) == indexById.end())
+                    {
+                        AddError(diagnostics, SerializationDiagnosticCode::MissingObject, "Prefab instance insert operation targets a missing added object.");
+                    }
+                }
+
+                for (const auto& addedObject : prefabInstance.addedObjects)
+                {
+                    if (!IsReferenceableRecordState(addedObject.state))
+                        continue;
+
+                    for (const auto& property : addedObject.properties)
+                        ValidateReferences(property.value, embeddedIndexById, embeddedObjectIdByFileID, diagnostics);
+                }
+            }
+
             for (const auto& object : objects)
             {
-                if (object.state == ObjectRecordState::Removed)
+                if (!IsReferenceableRecordState(object.state))
                     continue;
 
                 for (const auto& property : object.properties)
+                {
+                    if (!IsInstantiableRecordState(object.state) &&
+                        property.value.GetKind() == PropertyValue::Kind::OwnedReference)
+                    {
+                        continue;
+                    }
+
                     ValidateReferences(property.value, indexById, objectIdByFileID, diagnostics);
+                }
             }
 
             if (root.IsValid() && indexById.find(root) != indexById.end())
@@ -541,7 +666,7 @@ namespace NLS::Engine::Serialize
             std::unordered_map<ObjectId, std::vector<ObjectId>> ownedChildren;
             for (const auto& object : objects)
             {
-                if (object.state == ObjectRecordState::Removed)
+                if (!IsInstantiableRecordState(object.state))
                     continue;
 
                 for (const auto& property : object.properties)
@@ -554,7 +679,7 @@ namespace NLS::Engine::Serialize
 
             for (const auto& object : objects)
             {
-                if (object.state == ObjectRecordState::Removed)
+                if (!IsInstantiableRecordState(object.state))
                     continue;
 
                 if (!object.id.IsValid())

@@ -53,6 +53,8 @@ public:
         PrefabInstanceRegistry* prefabInstanceRegistry = nullptr,
         NLS::Engine::GameObject* parent = nullptr,
         ImportProgressTracker* progressTracker = nullptr) const;
+    std::optional<NLS::Engine::Assets::PrefabArtifact> TryLoadPreviewPrefabArtifact(
+        const EditorAssetDragPayload& payload) const;
 
 private:
     std::filesystem::path ProjectRoot() const;

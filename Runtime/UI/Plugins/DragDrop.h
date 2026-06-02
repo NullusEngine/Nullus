@@ -11,6 +11,7 @@ namespace NLS::UI
 	{
 		const void* data = nullptr;
 		size_t dataSize = 0;
+		bool delivered = false;
 	};
 
 	enum class DragDropSourceFlags : int
@@ -24,7 +25,8 @@ namespace NLS::UI
 	enum class DragDropTargetFlags : int
 	{
 		None = 0,
-		AcceptNoDrawDefaultRect = 1 << 0
+		AcceptNoDrawDefaultRect = 1 << 0,
+		AcceptBeforeDelivery = 1 << 1
 	};
 
 	constexpr DragDropSourceFlags operator|(DragDropSourceFlags lhs, DragDropSourceFlags rhs)

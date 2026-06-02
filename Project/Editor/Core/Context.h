@@ -77,6 +77,7 @@ class Context
         const std::string& label,
         float normalizedProgress,
         std::function<void()> cancelHandler = {});
+    void CompleteTaskProgress(uint64_t taskKey, const std::string& label);
     void CompleteTaskProgress(const std::string& label = "Task complete");
     void ApplyEditorSettings()
     {

@@ -185,6 +185,12 @@ namespace NLS::Editor::Core
             bool focusOnCreation = true,
             Engine::GameObject* p_parent = nullptr,
             std::optional<Maths::Vector3> placementOverride = std::nullopt);
+        Engine::GameObject* CreateGameObjectFromImportedPrefabArtifact(
+            const NLS::Editor::Assets::EditorAssetDragPayload& payload,
+            NLS::Engine::Assets::PrefabArtifact& prefab,
+            bool focusOnCreation = true,
+            Engine::GameObject* p_parent = nullptr,
+            std::optional<Maths::Vector3> placementOverride = std::nullopt);
 
 		/**
 		* Destroy an GameObject from his scene
@@ -321,6 +327,8 @@ namespace NLS::Editor::Core
 		* @param p_absolute
 		*/
 		void LoadSceneFromDisk(const std::string& p_path, bool p_absolute = false);
+
+		bool RestorePrefabInstancesForCurrentSceneFromDisk();
 
 		/**
 		* Returns true if the current scene has been loaded from disk

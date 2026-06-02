@@ -1,4 +1,3 @@
-#include <UI/Plugins/DDTarget.h>
 #include "ImGui/imgui.h"
 
 #include "Rendering/DebugSceneRenderer.h"
@@ -25,7 +24,10 @@
 #include "Rendering/Tooling/MaterialVisualEvidence.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
 #include <ServiceLocator.h>
+#include <UI/Plugins/DragDrop.h>
+#include <UI/Plugins/IPlugin.h>
 #include <UI/UIManager.h>
+#include <UI/Widgets/Layout/Group.h>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -155,6 +157,24 @@ void LogSceneCameraInputDiagnostics(const std::string& message)
         NLS_LOG_INFO("[SceneViewCamera] " + message);
 }
 }
+
+class Editor::Panels::SceneView::ViewportDragDropTarget final : public UI::IPlugin
+{
+public:
+    explicit ViewportDragDropTarget(SceneView& owner)
+        : m_owner(owner)
+    {
+    }
+
+    void Execute() override
+    {
+        m_owner.HandleViewportAssetDragDrop();
+    }
+
+private:
+    SceneView& m_owner;
+};
+
 Editor::Panels::SceneView::SceneView(
     const std::string& p_title,
     bool p_opened,
@@ -170,45 +190,7 @@ Editor::Panels::SceneView::SceneView(
     SetRequiresImmediateRetiredFrameReadback(ShouldSceneViewRequestImmediatePickingReadback());
 
     m_camera.SetFar(5000.0f);
-
-    m_image->AddPlugin<UI::DDTarget<std::pair<std::string, UI::Widgets::Group*>>>("File").DataReceivedEvent += [this](auto p_data)
-    {
-        std::string path = p_data.first;
-
-        switch (Utils::PathParser::GetFileType(path))
-        {
-            case Utils::PathParser::EFileType::SCENE:
-                EDITOR_EXEC(LoadSceneFromDisk(path));
-                break;
-            case Utils::PathParser::EFileType::MODEL:
-            case Utils::PathParser::EFileType::PREFAB:
-                EDITOR_EXEC(CreateGameObjectFromAsset(path, true));
-                break;
-            default:
-                break;
-        }
-    };
-
-    auto& assetDropTarget = m_image->AddPlugin<UI::DDTarget<NLS::Editor::Assets::EditorAssetDragPayload>>(
-        NLS::Editor::Assets::kEditorAssetDragPayloadType);
-    assetDropTarget.acceptBeforeDelivery = true;
-    assetDropTarget.PreviewReceivedEvent += [this](auto payload)
-    {
-        UpdateImportedAssetDragPreview(payload);
-    };
-    assetDropTarget.HoverEndEvent += [this]()
-    {
-        ClearImportedAssetDragPreview();
-    };
-    assetDropTarget.DataReceivedEvent += [this](auto payload)
-    {
-        auto previewPlacement =
-            ResolveImportedAssetDragPreviewPlacement(EDITOR_CONTEXT(inputManager)->GetMousePosition());
-        if (!previewPlacement.has_value())
-            previewPlacement = m_importedAssetDragPreviewPlacement;
-        ClearImportedAssetDragPreview();
-        EDITOR_EXEC(CreateGameObjectFromAsset(payload, true, nullptr, previewPlacement));
-    };
+    m_image->AddPlugin<ViewportDragDropTarget>(*this);
 
     m_destroyedListener = Engine::GameObject::DestroyedEvent += [this](const Engine::GameObject& actor)
     {
@@ -255,6 +237,7 @@ bool Editor::Panels::SceneView::EnsureImportedAssetDragPreviewMeshGhost(
     }
 
     m_importedAssetDragPreviewScene.reset();
+    m_importedAssetDragPreviewArtifact.reset();
     m_importedAssetDragPreviewRoot = nullptr;
     m_importedAssetDragPreviewAssetGuid = assetGuid;
     m_importedAssetDragPreviewSubAssetKey = subAssetKey;
@@ -281,10 +264,13 @@ bool Editor::Panels::SceneView::EnsureImportedAssetDragPreviewMeshGhost(
         return false;
     }
 
+    m_importedAssetDragPreviewArtifact = std::move(*prefab);
+
     auto previewScene = std::make_unique<NLS::Engine::SceneSystem::Scene>();
-    auto preview = NLS::Engine::Assets::InstantiatePrefabArtifact(*prefab, *previewScene);
+    auto preview = NLS::Engine::Assets::InstantiatePrefabArtifact(*m_importedAssetDragPreviewArtifact, *previewScene);
     if (preview.diagnostics.HasErrors() || preview.root == nullptr)
     {
+        m_importedAssetDragPreviewArtifact.reset();
         m_importedAssetDragPreviewMeshGhostUnavailable = true;
         return false;
     }
@@ -334,6 +320,65 @@ std::optional<Maths::Vector3> Editor::Panels::SceneView::ResolveImportedAssetDra
         ? std::max(1.0f, m_cameraFocus.focusDistance)
         : kSceneViewDragPreviewFallbackDistance;
     return cameraPosition + rayDirection * fallbackDistance;
+}
+
+void Editor::Panels::SceneView::HandleViewportAssetDragDrop()
+{
+    if (!UI::BeginDragDropTarget())
+    {
+        ClearImportedAssetDragPreview();
+        return;
+    }
+
+    if (const UI::DragDropPayloadView payloadView = UI::AcceptDragDropPayload(
+        NLS::Editor::Assets::kEditorAssetDragPayloadType,
+        UI::DragDropTargetFlags::AcceptBeforeDelivery);
+        payloadView.data != nullptr)
+    {
+        const auto payload = *static_cast<const NLS::Editor::Assets::EditorAssetDragPayload*>(payloadView.data);
+        if (payloadView.delivered)
+        {
+            auto previewPlacement =
+                ResolveImportedAssetDragPreviewPlacement(EDITOR_CONTEXT(inputManager)->GetMousePosition());
+            if (!previewPlacement.has_value())
+                previewPlacement = m_importedAssetDragPreviewPlacement;
+            auto previewArtifact = std::move(m_importedAssetDragPreviewArtifact);
+            ClearImportedAssetDragPreview();
+            if (previewArtifact.has_value())
+                EDITOR_EXEC(CreateGameObjectFromImportedPrefabArtifact(payload, *previewArtifact, true, nullptr, previewPlacement));
+            else
+                EDITOR_EXEC(CreateGameObjectFromAsset(payload, true, nullptr, previewPlacement));
+        }
+        else
+        {
+            UpdateImportedAssetDragPreview(payload);
+        }
+
+        UI::EndDragDropTarget();
+        return;
+    }
+
+    if (const UI::DragDropPayloadView payloadView = UI::AcceptDragDropPayload("File", UI::DragDropTargetFlags::None);
+        payloadView.data != nullptr)
+    {
+        const auto payload = *static_cast<const std::pair<std::string, UI::Widgets::Group*>*>(payloadView.data);
+        const std::string path = payload.first;
+
+        switch (Utils::PathParser::GetFileType(path))
+        {
+        case Utils::PathParser::EFileType::SCENE:
+            EDITOR_EXEC(LoadSceneFromDisk(path));
+            break;
+        case Utils::PathParser::EFileType::MODEL:
+        case Utils::PathParser::EFileType::PREFAB:
+            EDITOR_EXEC(CreateGameObjectFromAsset(path, true));
+            break;
+        default:
+            break;
+        }
+    }
+
+    UI::EndDragDropTarget();
 }
 
 void Editor::Panels::SceneView::DrawImportedAssetDragPreview()
@@ -398,6 +443,7 @@ void Editor::Panels::SceneView::DrawImportedAssetDragPreview()
 void Editor::Panels::SceneView::ClearImportedAssetDragPreview()
 {
     m_importedAssetDragPreviewPayload.reset();
+    m_importedAssetDragPreviewArtifact.reset();
     m_importedAssetDragPreviewScene.reset();
     m_importedAssetDragPreviewRoot = nullptr;
     m_importedAssetDragPreviewAssetGuid.clear();

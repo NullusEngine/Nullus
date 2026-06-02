@@ -506,6 +506,50 @@ std::optional<ImportedAssetHandle> ResolveImportedAssetHandleForPreview(
     };
 }
 
+bool IsImportedPrefabArtifactCurrentForPayload(
+    const std::filesystem::path& projectRoot,
+    const EditorAssetDragPayload& payload,
+    const NLS::Engine::Assets::PrefabArtifact& prefab,
+    const std::string& assetPath,
+    const std::string& prefabSubAssetKey)
+{
+    const auto payloadAssetId = GetEditorAssetDragPayloadAssetId(payload);
+    if (!payloadAssetId.IsValid() || prefab.assetId != payloadAssetId)
+        return false;
+
+    const auto absolutePath = (projectRoot / std::filesystem::path(assetPath)).lexically_normal();
+    const auto meta = NLS::Core::Assets::AssetMeta::Load(
+        NLS::Core::Assets::GetAssetMetaPath(absolutePath));
+    if (!meta.has_value() || !meta->id.IsValid() || meta->id != prefab.assetId)
+        return false;
+
+    auto currentMeta = *meta;
+    currentMeta.importerVersion = std::max(
+        currentMeta.importerVersion,
+        NLS::Core::Assets::GetCurrentImporterVersion(currentMeta.assetType));
+
+    const auto artifactRoot = projectRoot / "Library" / "Artifacts" / currentMeta.id.ToString();
+    const auto manifest = LoadFastManifest(artifactRoot / "manifest.json");
+    if (!manifest.has_value() || manifest->sourceAssetId != currentMeta.id)
+        return false;
+    if (!ManifestDependenciesAreCurrent(*manifest, currentMeta, projectRoot, absolutePath))
+        return false;
+
+    if (currentMeta.assetType == NLS::Core::Assets::AssetType::ModelScene)
+    {
+        auto rendererReadiness = ValidateGeneratedModelRendererArtifactsReady(
+            *manifest,
+            projectRoot,
+            artifactRoot);
+        if (rendererReadiness.rendererDependencyMissing)
+            return false;
+    }
+
+    const auto* prefabManifestRecord = manifest->FindSubAsset(prefabSubAssetKey);
+    return prefabManifestRecord != nullptr &&
+        prefabManifestRecord->artifactType == NLS::Core::Assets::ArtifactType::Prefab;
+}
+
 }
 
 EditorAssetDragDropBridge::EditorAssetDragDropBridge(std::filesystem::path projectAssetsPath)
@@ -891,6 +935,72 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropImportedAssetHand
 
     return InstantiateImportedAsset(
         *fastLoad.prefab,
+        prefabSubAssetKey,
+        assetType,
+        scene,
+        sceneAssetId,
+        prefabInstanceRegistry,
+        parent,
+        progressTracker,
+        assetPath);
+}
+
+EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropImportedPrefabArtifactIntoHierarchy(
+    const EditorAssetDragPayload& payload,
+    NLS::Engine::Assets::PrefabArtifact& prefab,
+    NLS::Engine::SceneSystem::Scene& scene,
+    NLS::Core::Assets::AssetId sceneAssetId,
+    PrefabInstanceRegistry* prefabInstanceRegistry,
+    NLS::Engine::GameObject* parent,
+    ImportProgressTracker* progressTracker) const
+{
+    EditorAssetDragDropBridgeResult result;
+
+    auto assetPath = NormalizeResourcePath(GetEditorAssetDragPayloadPath(payload));
+    if (assetPath.empty())
+        return result;
+
+    const auto payloadAssetId = GetEditorAssetDragPayloadAssetId(payload);
+    if (!payloadAssetId.IsValid())
+        return result;
+
+    if (prefab.assetId != payloadAssetId)
+    {
+        result.handled = true;
+        result.dragDrop.operation = DragDropOperationKind::InstantiatePrefab;
+        result.dragDrop.diagnostics.push_back({
+            "dragdrop-asset-identity-mismatch",
+            "The dragged asset handle no longer matches the cached preview prefab artifact."
+        });
+        return result;
+    }
+
+    auto prefabSubAssetKey = GetEditorAssetDragPayloadSubAssetKey(payload);
+    const auto assetType = prefab.generatedModelPrefab
+        ? NLS::Core::Assets::AssetType::ModelScene
+        : NLS::Core::Assets::InferAssetType(ProjectRoot() / assetPath);
+    if (prefab.generatedModelPrefab || prefabSubAssetKey.empty())
+        prefabSubAssetKey = DefaultGeneratedPrefabSubAssetKey(assetPath);
+
+    if (!IsImportedPrefabArtifactCurrentForPayload(ProjectRoot(), payload, prefab, assetPath, prefabSubAssetKey))
+    {
+        result.handled = true;
+        result.dragDrop.operation = DragDropOperationKind::InstantiatePrefab;
+        result.dragDrop.diagnostics.push_back({
+            "dragdrop-cached-artifact-stale",
+            "The cached preview prefab artifact is no longer current for this asset."
+        });
+        return result;
+    }
+
+    if (assetType != NLS::Core::Assets::AssetType::ModelScene &&
+        assetType != NLS::Core::Assets::AssetType::Prefab)
+    {
+        return result;
+    }
+
+    return InstantiateImportedAsset(
+        prefab,
         prefabSubAssetKey,
         assetType,
         scene,

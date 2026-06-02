@@ -1086,6 +1086,33 @@ void Editor::Core::Context::PresentTaskProgress(
         false);
 }
 
+void Editor::Core::Context::CompleteTaskProgress(
+    const uint64_t taskKey,
+    const std::string& label)
+{
+    std::unique_ptr<NativeProgressDialog> dialog;
+    {
+        std::lock_guard lock(m_progressDialogMutex);
+        if (!m_taskProgressVisible || m_activeTaskProgressKey != taskKey)
+            return;
+
+        if (m_nativeProgressDialog != nullptr)
+        {
+            m_nativeProgressDialog->Update(label, 1.0f);
+            dialog = std::move(m_nativeProgressDialog);
+        }
+
+        m_lastTaskProgress = 0.0f;
+        m_activeTaskProgressKey = 0u;
+        m_taskProgressVisible = false;
+    }
+
+    if (dialog != nullptr)
+    {
+        dialog->Close();
+    }
+}
+
 void Editor::Core::Context::CompleteTaskProgress(const std::string& label)
 {
     std::unique_ptr<NativeProgressDialog> dialog;

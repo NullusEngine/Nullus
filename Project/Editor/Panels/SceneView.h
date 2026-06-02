@@ -8,6 +8,7 @@
 
 #include "Assets/EditorAssetDragPayload.h"
 #include "Core/SceneCameraFocus.h"
+#include "Engine/Assets/PrefabAsset.h"
 #include "Panels/AViewControllable.h"
 #include "Core/SceneViewImGuizmo.h"
 
@@ -63,6 +64,8 @@ namespace NLS::Editor::Panels
         void DrawViewportOverlay() override;
 
 	private:
+        class ViewportDragDropTarget;
+
 		void HandleGameObjectPicking();
         void EnsureCameraFocus();
         bool ShouldRequestPickingFrame() const;
@@ -70,6 +73,7 @@ namespace NLS::Editor::Panels
         void UpdateImportedAssetDragPreview(const NLS::Editor::Assets::EditorAssetDragPayload& payload);
         bool EnsureImportedAssetDragPreviewMeshGhost(const NLS::Editor::Assets::EditorAssetDragPayload& payload);
         std::optional<Maths::Vector3> ResolveImportedAssetDragPreviewPlacement(const Maths::Vector2& mousePosition) const;
+        void HandleViewportAssetDragDrop();
         void DrawImportedAssetDragPreview();
         void ClearImportedAssetDragPreview();
 
@@ -88,6 +92,7 @@ namespace NLS::Editor::Panels
 		std::chrono::steady_clock::time_point m_lastPickingSampleTime {};
         uint64_t m_pendingClickMinReadablePickingFrameSerial = 0u;
         std::optional<NLS::Editor::Assets::EditorAssetDragPayload> m_importedAssetDragPreviewPayload;
+        std::optional<NLS::Engine::Assets::PrefabArtifact> m_importedAssetDragPreviewArtifact;
         std::unique_ptr<Engine::SceneSystem::Scene> m_importedAssetDragPreviewScene;
         Engine::GameObject* m_importedAssetDragPreviewRoot = nullptr;
         std::string m_importedAssetDragPreviewAssetGuid;

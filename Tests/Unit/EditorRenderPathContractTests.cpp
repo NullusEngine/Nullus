@@ -4829,12 +4829,14 @@ TEST(EditorRenderPathContractTests, SceneAndHierarchyProjectModelDropsUseImporte
     ASSERT_FALSE(hierarchySource.empty());
     ASSERT_FALSE(assetViewSource.empty());
 
-    const auto sceneFileTarget = sceneViewSource.find("DDTarget<std::pair<std::string, UI::Widgets::Group*>>>(\"File\")");
+    const auto sceneFileTarget = sceneViewSource.find("AcceptDragDropPayload(\"File\"");
     const auto sceneAssetTarget =
-        sceneViewSource.find("DDTarget<NLS::Editor::Assets::EditorAssetDragPayload>");
+        sceneViewSource.find("AcceptDragDropPayload(\n        NLS::Editor::Assets::kEditorAssetDragPayloadType");
     ASSERT_NE(sceneFileTarget, std::string::npos);
     ASSERT_NE(sceneAssetTarget, std::string::npos);
-    const auto sceneLegacyDropCode = sceneViewSource.substr(sceneFileTarget, sceneAssetTarget - sceneFileTarget);
+    const auto sceneLegacyDropEnd = sceneViewSource.find("UI::EndDragDropTarget();", sceneFileTarget);
+    ASSERT_NE(sceneLegacyDropEnd, std::string::npos);
+    const auto sceneLegacyDropCode = sceneViewSource.substr(sceneFileTarget, sceneLegacyDropEnd - sceneFileTarget);
     EXPECT_NE(sceneLegacyDropCode.find("EFileType::SCENE"), std::string::npos);
     EXPECT_NE(sceneLegacyDropCode.find("EFileType::PREFAB"), std::string::npos);
     EXPECT_NE(sceneLegacyDropCode.find("EFileType::MODEL"), std::string::npos);
@@ -4961,15 +4963,16 @@ TEST(EditorRenderPathContractTests, SceneViewAssetDropUsesBeforeDeliveryPreviewL
     EXPECT_NE(sceneViewHeader.find("ResolveImportedAssetDragPreviewPlacement"), std::string::npos);
     EXPECT_NE(sceneViewHeader.find("ClearImportedAssetDragPreview"), std::string::npos);
 
-    EXPECT_NE(sceneViewSource.find("assetDropTarget.acceptBeforeDelivery = true;"), std::string::npos);
-    EXPECT_NE(sceneViewSource.find("assetDropTarget.PreviewReceivedEvent"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("HandleViewportAssetDragDrop();"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("UI::DragDropTargetFlags::AcceptBeforeDelivery"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("payloadView.delivered"), std::string::npos);
     EXPECT_NE(sceneViewSource.find("UpdateImportedAssetDragPreview(payload);"), std::string::npos);
-    EXPECT_NE(sceneViewSource.find("assetDropTarget.HoverEndEvent"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("if (!UI::BeginDragDropTarget())"), std::string::npos);
     EXPECT_NE(sceneViewSource.find("ClearImportedAssetDragPreview();"), std::string::npos);
 
     const auto previewBegin = sceneViewSource.find("void Editor::Panels::SceneView::UpdateImportedAssetDragPreview(");
     ASSERT_NE(previewBegin, std::string::npos);
-    const auto previewEnd = sceneViewSource.find("void Editor::Panels::SceneView::ClearImportedAssetDragPreview()", previewBegin);
+    const auto previewEnd = sceneViewSource.find("bool Editor::Panels::SceneView::EnsureImportedAssetDragPreviewMeshGhost(", previewBegin);
     ASSERT_NE(previewEnd, std::string::npos);
     const auto previewCode = sceneViewSource.substr(previewBegin, previewEnd - previewBegin);
     EXPECT_NE(previewCode.find("m_importedAssetDragPreviewPayload = payload;"), std::string::npos);
@@ -4977,6 +4980,50 @@ TEST(EditorRenderPathContractTests, SceneViewAssetDropUsesBeforeDeliveryPreviewL
     EXPECT_NE(previewCode.find("ResolveImportedAssetDragPreviewPlacement"), std::string::npos);
     EXPECT_EQ(previewCode.find("CreateGameObjectFromAsset"), std::string::npos);
     EXPECT_EQ(previewCode.find("Scene::AddGameObject"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SceneViewAssetDropUsesSingleViewportDragTargetForPreviewAndLegacyDrop)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const std::string sceneViewHeader = ReadSourceText(root / "Project/Editor/Panels/SceneView.h");
+    const std::string sceneViewSource = ReadSourceText(root / "Project/Editor/Panels/SceneView.cpp");
+
+    ASSERT_FALSE(sceneViewHeader.empty());
+    ASSERT_FALSE(sceneViewSource.empty());
+
+    EXPECT_NE(sceneViewHeader.find("HandleViewportAssetDragDrop"), std::string::npos);
+    EXPECT_EQ(sceneViewSource.find("m_image->AddPlugin<UI::DDTarget"), std::string::npos)
+        << "Scene View must not stack multiple DDTarget plugins on the same viewport image; the first target can consume the ImGui target scope and starve EditorAsset AcceptBeforeDelivery preview events.";
+    EXPECT_NE(sceneViewSource.find("void Editor::Panels::SceneView::HandleViewportAssetDragDrop()"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("BeginDragDropTarget()"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("AcceptDragDropPayload(\n        NLS::Editor::Assets::kEditorAssetDragPayloadType"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("DragDropTargetFlags::AcceptBeforeDelivery"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("UpdateImportedAssetDragPreview(payload);"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("AcceptDragDropPayload(\"File\""), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("CreateGameObjectFromAsset(path, true)"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SceneViewAssetDropTargetExecutesOnViewportImageItem)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const std::string sceneViewHeader = ReadSourceText(root / "Project/Editor/Panels/SceneView.h");
+    const std::string sceneViewSource = ReadSourceText(root / "Project/Editor/Panels/SceneView.cpp");
+
+    ASSERT_FALSE(sceneViewHeader.empty());
+    ASSERT_FALSE(sceneViewSource.empty());
+
+    EXPECT_NE(sceneViewHeader.find("class ViewportDragDropTarget;"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("class Editor::Panels::SceneView::ViewportDragDropTarget final : public UI::IPlugin"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("m_image->AddPlugin<ViewportDragDropTarget>(*this);"), std::string::npos)
+        << "The Scene View drop target must execute as the viewport image plugin so ImGui::BeginDragDropTarget binds to the image item, not to a later overlay/panel item.";
+
+    const auto afterBegin = sceneViewSource.find("void Editor::Panels::SceneView::OnAfterDrawWidgets()");
+    ASSERT_NE(afterBegin, std::string::npos);
+    const auto afterEnd = sceneViewSource.find("void Editor::Panels::SceneView::AfterRenderFrame()", afterBegin);
+    ASSERT_NE(afterEnd, std::string::npos);
+    const auto afterCode = sceneViewSource.substr(afterBegin, afterEnd - afterBegin);
+    EXPECT_EQ(afterCode.find("HandleViewportAssetDragDrop();"), std::string::npos)
+        << "Calling BeginDragDropTarget after DrawWidgets can miss the viewport image because ImGui uses the last submitted item.";
 }
 
 TEST(EditorRenderPathContractTests, SceneViewAssetDropDrawsNonScenePreviewAndCommitsAtPreviewPlacement)
@@ -4998,18 +5045,76 @@ TEST(EditorRenderPathContractTests, SceneViewAssetDropDrawsNonScenePreviewAndCom
     EXPECT_EQ(drawCode.find("CreateGameObjectFromAsset"), std::string::npos);
     EXPECT_EQ(drawCode.find("Scene::AddGameObject"), std::string::npos);
 
-    const auto dropHandler = sceneViewSource.find("assetDropTarget.DataReceivedEvent");
+    const auto dropHandler = sceneViewSource.find("void Editor::Panels::SceneView::HandleViewportAssetDragDrop()");
     ASSERT_NE(dropHandler, std::string::npos);
-    const auto dropEnd = sceneViewSource.find("m_destroyedListener", dropHandler);
+    const auto dropEnd = sceneViewSource.find("void Editor::Panels::SceneView::DrawImportedAssetDragPreview()", dropHandler);
     ASSERT_NE(dropEnd, std::string::npos);
     const auto dropCode = sceneViewSource.substr(dropHandler, dropEnd - dropHandler);
     EXPECT_NE(dropCode.find("m_importedAssetDragPreviewPlacement"), std::string::npos);
     EXPECT_NE(dropCode.find("ResolveImportedAssetDragPreviewPlacement(EDITOR_CONTEXT(inputManager)->GetMousePosition())"), std::string::npos);
+    EXPECT_NE(dropCode.find("CreateGameObjectFromImportedPrefabArtifact(payload, *previewArtifact, true, nullptr, previewPlacement)"), std::string::npos);
     EXPECT_NE(dropCode.find("CreateGameObjectFromAsset(payload, true, nullptr, previewPlacement)"), std::string::npos);
 
     EXPECT_NE(editorActionsHeader.find("std::optional<Maths::Vector3> placementOverride"), std::string::npos);
     EXPECT_NE(editorActionsSource.find("placementOverride.has_value()"), std::string::npos);
     EXPECT_NE(editorActionsSource.find("instance.GetTransform()->SetWorldPosition(*placementOverride);"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SceneViewFinalDropReusesPreviewPrefabArtifactWhenAvailable)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const std::string sceneViewHeader = ReadSourceText(root / "Project/Editor/Panels/SceneView.h");
+    const std::string sceneViewSource = ReadSourceText(root / "Project/Editor/Panels/SceneView.cpp");
+    const std::string editorActionsHeader = ReadSourceText(root / "Project/Editor/Core/EditorActions.h");
+    const std::string bridgeHeader = ReadSourceText(root / "Project/Editor/Assets/EditorAssetDragDropBridge.h");
+    const std::string bridgeSource = ReadSourceText(root / "Project/Editor/Assets/EditorAssetDragDropBridge.cpp");
+
+    ASSERT_FALSE(sceneViewHeader.empty());
+    ASSERT_FALSE(sceneViewSource.empty());
+    ASSERT_FALSE(editorActionsHeader.empty());
+    ASSERT_FALSE(bridgeHeader.empty());
+    ASSERT_FALSE(bridgeSource.empty());
+
+    EXPECT_NE(sceneViewHeader.find("m_importedAssetDragPreviewArtifact"), std::string::npos);
+    EXPECT_NE(editorActionsHeader.find("CreateGameObjectFromImportedPrefabArtifact"), std::string::npos);
+    EXPECT_NE(bridgeHeader.find("DropImportedPrefabArtifactIntoHierarchy"), std::string::npos);
+
+    const auto ensureBegin = sceneViewSource.find("bool Editor::Panels::SceneView::EnsureImportedAssetDragPreviewMeshGhost(");
+    ASSERT_NE(ensureBegin, std::string::npos);
+    const auto ensureEnd = sceneViewSource.find("std::optional<Maths::Vector3> Editor::Panels::SceneView::ResolveImportedAssetDragPreviewPlacement(", ensureBegin);
+    ASSERT_NE(ensureEnd, std::string::npos);
+    const auto ensureCode = sceneViewSource.substr(ensureBegin, ensureEnd - ensureBegin);
+    EXPECT_NE(ensureCode.find("m_importedAssetDragPreviewArtifact = std::move(*prefab);"), std::string::npos);
+    EXPECT_NE(ensureCode.find("InstantiatePrefabArtifact(*m_importedAssetDragPreviewArtifact"), std::string::npos);
+
+    const auto dropBegin = sceneViewSource.find("void Editor::Panels::SceneView::HandleViewportAssetDragDrop()");
+    ASSERT_NE(dropBegin, std::string::npos);
+    const auto dropEnd = sceneViewSource.find("void Editor::Panels::SceneView::DrawImportedAssetDragPreview()", dropBegin);
+    ASSERT_NE(dropEnd, std::string::npos);
+    const auto dropCode = sceneViewSource.substr(dropBegin, dropEnd - dropBegin);
+    EXPECT_NE(dropCode.find("auto previewArtifact = std::move(m_importedAssetDragPreviewArtifact);"), std::string::npos);
+    EXPECT_NE(dropCode.find("if (previewArtifact.has_value())"), std::string::npos);
+    EXPECT_NE(dropCode.find("CreateGameObjectFromImportedPrefabArtifact(payload, *previewArtifact, true, nullptr, previewPlacement)"), std::string::npos);
+    EXPECT_NE(dropCode.find("CreateGameObjectFromAsset(payload, true, nullptr, previewPlacement)"), std::string::npos)
+        << "A fallback keeps not-yet-previewed payload drops working.";
+
+    EXPECT_NE(bridgeSource.find("bool IsImportedPrefabArtifactCurrentForPayload("), std::string::npos);
+    const auto freshnessBegin = bridgeSource.find("bool IsImportedPrefabArtifactCurrentForPayload(");
+    ASSERT_NE(freshnessBegin, std::string::npos);
+    const auto freshnessEnd = bridgeSource.find("}\n\n}", freshnessBegin);
+    ASSERT_NE(freshnessEnd, std::string::npos);
+    const auto freshnessCode = bridgeSource.substr(freshnessBegin, freshnessEnd - freshnessBegin);
+    EXPECT_NE(freshnessCode.find("ValidateGeneratedModelRendererArtifactsReady("), std::string::npos)
+        << "Cached generated-model prefab drops must reject missing or corrupt mesh/material/texture artifacts at final drop time.";
+
+    const auto cachedDropBegin = bridgeSource.find("EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropImportedPrefabArtifactIntoHierarchy(");
+    ASSERT_NE(cachedDropBegin, std::string::npos);
+    const auto cachedDropEnd = bridgeSource.find("std::optional<NLS::Engine::Assets::PrefabArtifact> EditorAssetDragDropBridge::TryLoadPreviewPrefabArtifact(", cachedDropBegin);
+    ASSERT_NE(cachedDropEnd, std::string::npos);
+    const auto cachedDropCode = bridgeSource.substr(cachedDropBegin, cachedDropEnd - cachedDropBegin);
+    EXPECT_NE(cachedDropCode.find("IsImportedPrefabArtifactCurrentForPayload("), std::string::npos)
+        << "A cached preview artifact must be rejected when the manifest or dependency stamps changed during the drag.";
+    EXPECT_NE(cachedDropCode.find("dragdrop-cached-artifact-stale"), std::string::npos);
 }
 
 TEST(EditorRenderPathContractTests, SceneViewAssetDropPreviewRayMatchesRenderedScreenRight)
@@ -5104,31 +5209,70 @@ TEST(EditorRenderPathContractTests, SceneLoadPrefabRestoreRefreshesAssetDatabase
 {
     const auto actionsSourcePath =
         std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
+    const auto actionsHeaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.h";
     const std::string source = ReadSourceText(actionsSourcePath);
+    const std::string header = ReadSourceText(actionsHeaderPath);
 
     ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(header.empty());
+    EXPECT_NE(header.find("bool RestorePrefabInstancesForCurrentSceneFromDisk();"), std::string::npos);
+
+    const auto helperBegin = source.find("bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk()");
+    ASSERT_NE(helperBegin, std::string::npos);
+    const auto helperEnd = source.find("void Editor::Core::EditorActions::LoadSceneFromDisk(", helperBegin);
+    ASSERT_NE(helperEnd, std::string::npos);
+    const auto helperCode = source.substr(helperBegin, helperEnd - helperBegin);
+
     const auto loadBegin = source.find("void Editor::Core::EditorActions::LoadSceneFromDisk(");
     ASSERT_NE(loadBegin, std::string::npos);
     const auto loadEnd = source.find("bool Editor::Core::EditorActions::IsCurrentSceneLoadedFromDisk() const", loadBegin);
     ASSERT_NE(loadEnd, std::string::npos);
     const auto loadCode = source.substr(loadBegin, loadEnd - loadBegin);
 
-    EXPECT_NE(loadCode.find("AssetDatabaseFacade prefabDatabase"), std::string::npos);
-    EXPECT_NE(loadCode.find("const auto prefabDatabaseReady = prefabDatabase.Refresh();"), std::string::npos);
-    EXPECT_NE(loadCode.find("prefabArtifactCache"), std::string::npos);
+    EXPECT_NE(helperCode.find("AssetDatabaseFacade prefabDatabase"), std::string::npos);
+    EXPECT_NE(helperCode.find("const auto prefabDatabaseReady = prefabDatabase.Refresh();"), std::string::npos);
+    EXPECT_NE(helperCode.find("prefabArtifactCache"), std::string::npos);
+    EXPECT_NE(loadCode.find("RestorePrefabInstancesForCurrentSceneFromDisk();"), std::string::npos);
+    EXPECT_NE(loadCode.find("SceneLoadProgress& progress"), std::string::npos)
+        << "Manual scene switching should surface SceneManager progress instead of appearing frozen.";
+    EXPECT_NE(loadCode.find("PresentTaskProgress"), std::string::npos);
+    EXPECT_NE(loadCode.find("Restoring scene prefab instances"), std::string::npos);
+    EXPECT_NE(loadCode.find("const bool prefabRestoreSucceeded = RestorePrefabInstancesForCurrentSceneFromDisk();"), std::string::npos);
+    EXPECT_NE(loadCode.find("CompleteTaskProgress(kSceneLoadProgressTaskKey"), std::string::npos);
+    EXPECT_NE(loadCode.find("prefabRestoreSucceeded ? \"Scene loaded\" : \"Scene loaded with prefab restore warnings\""), std::string::npos);
 
-    const auto restoreBegin = loadCode.find("RestorePrefabInstancesFromSceneDocument(");
+    const auto restoreBegin = helperCode.find("RestorePrefabInstancesFromSceneDocument(");
     ASSERT_NE(restoreBegin, std::string::npos);
-    const auto resolverBegin = loadCode.find("-> std::optional<NLS::Engine::Assets::PrefabArtifact>", restoreBegin);
+    const auto resolverBegin = helperCode.find("-> std::optional<NLS::Engine::Assets::PrefabArtifact>", restoreBegin);
     ASSERT_NE(resolverBegin, std::string::npos);
-    const auto resolverEnd = loadCode.find("});", resolverBegin);
+    const auto resolverEnd = helperCode.find("});", resolverBegin);
     ASSERT_NE(resolverEnd, std::string::npos);
-    const auto resolverCode = loadCode.substr(resolverBegin, resolverEnd - resolverBegin);
+    const auto resolverCode = helperCode.substr(resolverBegin, resolverEnd - resolverBegin);
 
     EXPECT_EQ(resolverCode.find(".Refresh("), std::string::npos)
         << "Prefab restore resolver should not refresh the asset database once per prefab instance.";
     EXPECT_NE(resolverCode.find("prefabArtifactCache.find(cacheKey)"), std::string::npos);
     EXPECT_NE(resolverCode.find("prefabArtifactCache.emplace(cacheKey, artifact)"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, StartupSceneRestoreUsesSharedPrefabRestoreAndProgress)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const std::string editorSource = ReadSourceText(root / "Project/Editor/Core/Editor.cpp");
+
+    ASSERT_FALSE(editorSource.empty());
+    const auto restoreBegin = editorSource.find("void Editor::Core::Editor::RestoreStartupScene()");
+    ASSERT_NE(restoreBegin, std::string::npos);
+    const auto restoreEnd = editorSource.find("void Editor::Core::Editor::RefreshProjectAssetBrowser()", restoreBegin);
+    ASSERT_NE(restoreEnd, std::string::npos);
+    const auto restoreCode = editorSource.substr(restoreBegin, restoreEnd - restoreBegin);
+
+    EXPECT_NE(restoreCode.find("RestorePrefabInstancesForCurrentSceneFromDisk();"), std::string::npos)
+        << "Startup scene restore must use the same prefab restore path as manual scene open; otherwise saved PrefabInstances remain stripped until the user double-clicks the scene.";
+    EXPECT_NE(restoreCode.find("const bool prefabRestoreSucceeded = m_editorActions.RestorePrefabInstancesForCurrentSceneFromDisk();"), std::string::npos);
+    EXPECT_NE(restoreCode.find("Restoring startup scene prefab instances"), std::string::npos);
+    EXPECT_NE(restoreCode.find("prefabRestoreSucceeded ? \"Startup scene loaded\" : \"Startup scene loaded with prefab restore warnings\""), std::string::npos);
 }
 
 TEST(EditorRenderPathContractTests, UnityStylePrefabRestoreReordersAndRebuildsRuntimeCachesOncePerBatch)
@@ -5374,6 +5518,35 @@ TEST(EditorRenderPathContractTests, NativeTaskProgressDoesNotDisableEditorWindow
         std::string::npos);
     EXPECT_NE(methodSource.find("false);"), std::string::npos);
     EXPECT_EQ(methodSource.find("true);"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, NativeTaskProgressCompletionIsScopedToActiveTaskKey)
+{
+    const auto contextHeaderPath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Context.h";
+    const auto contextSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/Context.cpp";
+
+    const std::string contextHeader = ReadSourceText(contextHeaderPath);
+    const std::string contextSource = ReadSourceText(contextSourcePath);
+    ASSERT_FALSE(contextHeader.empty());
+    ASSERT_FALSE(contextSource.empty());
+
+    EXPECT_NE(contextHeader.find("void CompleteTaskProgress(uint64_t taskKey, const std::string& label);"), std::string::npos);
+
+    const auto keyedComplete = contextSource.find(
+        "void Editor::Core::Context::CompleteTaskProgress(\n    const uint64_t taskKey,");
+    ASSERT_NE(keyedComplete, std::string::npos);
+    const auto unkeyedComplete = contextSource.find(
+        "void Editor::Core::Context::CompleteTaskProgress(const std::string& label)",
+        keyedComplete);
+    ASSERT_NE(unkeyedComplete, std::string::npos);
+    const auto keyedCompleteCode = contextSource.substr(keyedComplete, unkeyedComplete - keyedComplete);
+    EXPECT_NE(keyedCompleteCode.find("m_activeTaskProgressKey != taskKey"), std::string::npos)
+        << "Scene loading must not close an unrelated import progress task.";
+    EXPECT_NE(keyedCompleteCode.find("m_nativeProgressDialog->Update(label, 1.0f)"), std::string::npos);
+    EXPECT_NE(keyedCompleteCode.find("m_activeTaskProgressKey = 0u"), std::string::npos);
+    EXPECT_NE(keyedCompleteCode.find("dialog->Close();"), std::string::npos);
 }
 
 TEST(EditorRenderPathContractTests, SceneValidationReadbackWaitsForDeferredAssetResolution)

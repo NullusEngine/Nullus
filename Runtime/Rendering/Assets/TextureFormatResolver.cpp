@@ -416,36 +416,16 @@ TextureBuildResolveResult ResolveTextureBuildSettingsWithDiagnostics(
     const bool hasAlpha = source.hasAlpha || settings.alphaIsTransparency;
     if (hasAlpha)
     {
-        const std::string compressionQuality = platformOverride.has_value()
-            ? platformOverride->compressionQuality
-            : std::string{};
-        if (compressionQuality == "low" || settings.compressionIntent == "low-quality")
+        if (!ResolveFallbackFormat(
+                result,
+                resolved,
+                source,
+                capabilities,
+                RHI::TextureFormat::BC3,
+                resolved.colorSpace,
+                "alpha color"))
         {
-            if (!ResolveFallbackFormat(
-                    result,
-                    resolved,
-                    source,
-                    capabilities,
-                    RHI::TextureFormat::BC3,
-                    resolved.colorSpace,
-                    "alpha color"))
-            {
-                return result;
-            }
-        }
-        else
-        {
-            if (!ResolveFallbackFormat(
-                    result,
-                    resolved,
-                    source,
-                    capabilities,
-                    RHI::TextureFormat::BC7,
-                    resolved.colorSpace,
-                    "alpha color"))
-            {
-                return result;
-            }
+            return result;
         }
         CompleteResolve(result, resolved, source, capabilities, hasUnknownExplicitFormat, explicitFormatText);
         return result;

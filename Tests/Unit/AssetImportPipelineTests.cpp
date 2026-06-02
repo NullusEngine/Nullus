@@ -2148,7 +2148,7 @@ TEST(AssetImportPipelineTests, TextureFormatResolverMapsWindowsDx12CommonCases)
         "directxtex-bc",
         1u);
     ASSERT_TRUE(alphaColor.has_value());
-    EXPECT_EQ(alphaColor->resolvedFormat, NLS::Render::RHI::TextureFormat::BC7);
+    EXPECT_EQ(alphaColor->resolvedFormat, NLS::Render::RHI::TextureFormat::BC3);
 
     settings.textureType = "normal";
     source.hasAlpha = false;

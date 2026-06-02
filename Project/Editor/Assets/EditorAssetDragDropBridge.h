@@ -53,6 +53,14 @@ public:
         PrefabInstanceRegistry* prefabInstanceRegistry = nullptr,
         NLS::Engine::GameObject* parent = nullptr,
         ImportProgressTracker* progressTracker = nullptr) const;
+    EditorAssetDragDropBridgeResult DropImportedPrefabArtifactIntoHierarchy(
+        const EditorAssetDragPayload& payload,
+        NLS::Engine::Assets::PrefabArtifact& prefab,
+        NLS::Engine::SceneSystem::Scene& scene,
+        NLS::Core::Assets::AssetId sceneAssetId = {},
+        PrefabInstanceRegistry* prefabInstanceRegistry = nullptr,
+        NLS::Engine::GameObject* parent = nullptr,
+        ImportProgressTracker* progressTracker = nullptr) const;
     std::optional<NLS::Engine::Assets::PrefabArtifact> TryLoadPreviewPrefabArtifact(
         const EditorAssetDragPayload& payload) const;
 

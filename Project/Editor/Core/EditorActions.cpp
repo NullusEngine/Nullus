@@ -73,6 +73,8 @@ using namespace NLS;
 
 namespace
 {
+constexpr uint64_t kSceneLoadProgressTaskKey = 0x4E4C5343656E654Cull;
+
 std::optional<std::string> ReadTextFileAtPath(const std::filesystem::path& path)
 {
     std::ifstream input(path, std::ios::binary);
@@ -1714,6 +1716,71 @@ bool Editor::Core::EditorActions::SaveCurrentSceneTo(const std::string& p_path)
     return false;
 }
 
+bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk()
+{
+    m_context.prefabInstanceRegistry.Clear();
+    const auto sceneText = ReadTextFileAtPath(m_context.sceneManager.GetCurrentSceneSourcePath());
+    if (!sceneText.has_value())
+        return false;
+
+    const auto document = NLS::Engine::Serialize::ObjectGraphReader::Read(*sceneText);
+    if (!document.has_value() || !m_context.sceneManager.GetCurrentScene())
+        return false;
+
+    NLS::Editor::Assets::AssetDatabaseFacade prefabDatabase({
+        std::filesystem::path(m_context.projectPath)
+    });
+    const auto prefabDatabaseReady = prefabDatabase.Refresh();
+    std::unordered_map<std::string, std::optional<NLS::Engine::Assets::PrefabArtifact>> prefabArtifactCache;
+
+    auto restoreResult = NLS::Editor::Assets::PrefabUtilityFacade().RestorePrefabInstancesFromSceneDocument(
+        *document,
+        *m_context.sceneManager.GetCurrentScene(),
+        {},
+        m_context.prefabInstanceRegistry,
+        [&prefabDatabase, prefabDatabaseReady, &prefabArtifactCache](
+            NLS::Core::Assets::AssetId assetId,
+            const std::string& subAssetKey)
+            -> std::optional<NLS::Engine::Assets::PrefabArtifact>
+        {
+            if (!prefabDatabaseReady)
+                return std::nullopt;
+
+            const auto cacheKey = assetId.ToString() + "\n" + subAssetKey;
+            const auto cached = prefabArtifactCache.find(cacheKey);
+            if (cached != prefabArtifactCache.end())
+                return cached->second;
+
+            const auto assetPath = prefabDatabase.GUIDToAssetPath(assetId.ToString());
+            if (assetPath.empty())
+            {
+                prefabArtifactCache.emplace(cacheKey, std::nullopt);
+                return std::nullopt;
+            }
+
+            auto artifact = prefabDatabase.LoadPrefabArtifactAtPath(assetPath, subAssetKey);
+            prefabArtifactCache.emplace(cacheKey, artifact);
+            return artifact;
+        });
+    if (restoreResult.status != NLS::Editor::Assets::PrefabOperationStatus::Committed)
+    {
+        NLS_LOG_WARNING(
+            "Scene loaded with missing or unresolved prefab instance metadata: " +
+            m_context.sceneManager.GetCurrentSceneSourcePath());
+        for (const auto& diagnostic : restoreResult.diagnostics)
+        {
+            NLS_LOG_WARNING(
+                "Scene prefab restore diagnostic code=" +
+                diagnostic.code +
+                " message=" +
+                diagnostic.message);
+        }
+        return false;
+    }
+
+    return true;
+}
+
 void Editor::Core::EditorActions::LoadSceneFromDisk(const std::string& p_path, bool p_absolute)
 {
     if (GetCurrentEditorMode() != EEditorMode::EDIT)
@@ -1722,8 +1789,18 @@ void Editor::Core::EditorActions::LoadSceneFromDisk(const std::string& p_path, b
     if (!PromptSaveCurrentSceneIfDirty())
         return;
 
-    if (!m_context.sceneManager.LoadScene(p_path, p_absolute))
+    if (!m_context.sceneManager.LoadScene(
+        p_path,
+        p_absolute,
+        [this](const Engine::SceneSystem::SceneLoadProgress& progress)
+        {
+            m_context.PresentTaskProgress(
+                kSceneLoadProgressTaskKey,
+                progress.message,
+                progress.normalizedProgress * 0.88f);
+        }))
     {
+        m_context.CompleteTaskProgress(kSceneLoadProgressTaskKey, "Scene loading failed");
         Dialogs::MessageBox message(
             "Scene loading failed",
             "The scene you are trying to load was not found or could not be read.",
@@ -1732,64 +1809,11 @@ void Editor::Core::EditorActions::LoadSceneFromDisk(const std::string& p_path, b
         return;
     }
 
-    m_context.prefabInstanceRegistry.Clear();
-    const auto sceneText = ReadTextFileAtPath(m_context.sceneManager.GetCurrentSceneSourcePath());
-    if (sceneText.has_value())
-    {
-        const auto document = NLS::Engine::Serialize::ObjectGraphReader::Read(*sceneText);
-        if (document.has_value() && m_context.sceneManager.GetCurrentScene())
-        {
-            NLS::Editor::Assets::AssetDatabaseFacade prefabDatabase({
-                std::filesystem::path(m_context.projectPath)
-            });
-            const auto prefabDatabaseReady = prefabDatabase.Refresh();
-            std::unordered_map<std::string, std::optional<NLS::Engine::Assets::PrefabArtifact>> prefabArtifactCache;
-
-            auto restoreResult = NLS::Editor::Assets::PrefabUtilityFacade().RestorePrefabInstancesFromSceneDocument(
-                *document,
-                *m_context.sceneManager.GetCurrentScene(),
-                {},
-                m_context.prefabInstanceRegistry,
-                [&prefabDatabase, prefabDatabaseReady, &prefabArtifactCache](
-                    NLS::Core::Assets::AssetId assetId,
-                    const std::string& subAssetKey)
-                    -> std::optional<NLS::Engine::Assets::PrefabArtifact>
-                {
-                    if (!prefabDatabaseReady)
-                        return std::nullopt;
-
-                    const auto cacheKey = assetId.ToString() + "\n" + subAssetKey;
-                    const auto cached = prefabArtifactCache.find(cacheKey);
-                    if (cached != prefabArtifactCache.end())
-                        return cached->second;
-
-                    const auto assetPath = prefabDatabase.GUIDToAssetPath(assetId.ToString());
-                    if (assetPath.empty())
-                    {
-                        prefabArtifactCache.emplace(cacheKey, std::nullopt);
-                        return std::nullopt;
-                    }
-
-                    auto artifact = prefabDatabase.LoadPrefabArtifactAtPath(assetPath, subAssetKey);
-                    prefabArtifactCache.emplace(cacheKey, artifact);
-                    return artifact;
-                });
-            if (restoreResult.status != NLS::Editor::Assets::PrefabOperationStatus::Committed)
-            {
-                NLS_LOG_WARNING(
-                    "Scene loaded with missing or unresolved prefab instance metadata: " +
-                    m_context.sceneManager.GetCurrentSceneSourcePath());
-                for (const auto& diagnostic : restoreResult.diagnostics)
-                {
-                    NLS_LOG_WARNING(
-                        "Scene prefab restore diagnostic code=" +
-                        diagnostic.code +
-                        " message=" +
-                        diagnostic.message);
-                }
-            }
-        }
-    }
+    m_context.PresentTaskProgress(kSceneLoadProgressTaskKey, "Restoring scene prefab instances", 0.92f);
+    const bool prefabRestoreSucceeded = RestorePrefabInstancesForCurrentSceneFromDisk();
+    m_context.CompleteTaskProgress(
+        kSceneLoadProgressTaskKey,
+        prefabRestoreSucceeded ? "Scene loaded" : "Scene loaded with prefab restore warnings");
 
     NLS_LOG_INFO("Scene loaded from disk: " + m_context.sceneManager.GetCurrentSceneSourcePath());
     m_panelsManager.GetPanelAs<Editor::Panels::SceneView>("Scene View").Focus();
@@ -2622,6 +2646,59 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAsset(
 
     auto& instance = *result.dragDrop.instance->instanceRoot;
     NLS_LOG_INFO("Created GameObject from asset drag handle: " + path + " root=" + instance.GetName());
+
+    if (placementOverride.has_value())
+        instance.GetTransform()->SetWorldPosition(*placementOverride);
+    else if (m_gameObjectSpawnMode == EGameObjectSpawnMode::FRONT)
+        instance.GetTransform()->SetLocalPosition(CalculateGameObjectSpawnPoint(10.0f));
+
+    if (result.dragDrop.deferredAssetReferenceResolutionRequested)
+    {
+        QueuePrefabInstanceAssetResolution(
+            result.dragDrop.instance ? &*result.dragDrop.instance : nullptr,
+            result.dragDrop.artifact ? &*result.dragDrop.artifact : nullptr,
+            path);
+    }
+    if (focusOnCreation)
+        SelectGameObject(instance);
+    MarkGameObjectCreationSceneDirty(m_context, *creationScene);
+    return &instance;
+}
+
+Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromImportedPrefabArtifact(
+    const NLS::Editor::Assets::EditorAssetDragPayload& payload,
+    NLS::Engine::Assets::PrefabArtifact& prefab,
+    bool focusOnCreation,
+    Engine::GameObject* p_parent,
+    std::optional<Maths::Vector3> placementOverride)
+{
+    auto* creationScene = ResolveGameObjectCreationScene(m_context, p_parent);
+    const auto path = NLS::Editor::Assets::GetEditorAssetDragPayloadPath(payload);
+    if (!creationScene)
+    {
+        NLS_LOG_ERROR("Failed to create GameObject from cached imported prefab without an active scene: " + path);
+        return nullptr;
+    }
+
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(m_context.projectAssetsPath);
+    auto result = bridge.DropImportedPrefabArtifactIntoHierarchy(
+        payload,
+        prefab,
+        *creationScene,
+        {},
+        &m_context.prefabInstanceRegistry,
+        p_parent,
+        &m_context.importProgressTracker);
+
+    if (!result.handled || result.dragDrop.status != NLS::Editor::Assets::DragDropOperationStatus::Committed ||
+        !result.dragDrop.instance.has_value() || !result.dragDrop.instance->instanceRoot)
+    {
+        NLS_LOG_WARNING("Cached imported prefab drop failed; falling back to asset handle drop: " + path);
+        return CreateGameObjectFromAsset(payload, focusOnCreation, p_parent, placementOverride);
+    }
+
+    auto& instance = *result.dragDrop.instance->instanceRoot;
+    NLS_LOG_INFO("Created GameObject from cached imported prefab: " + path + " root=" + instance.GetName());
 
     if (placementOverride.has_value())
         instance.GetTransform()->SetWorldPosition(*placementOverride);

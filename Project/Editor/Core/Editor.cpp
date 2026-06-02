@@ -671,7 +671,16 @@ void Editor::Core::Editor::RegisterDefaultShortcuts()
 
 void Editor::Core::Editor::RestoreStartupScene()
 {
-    const auto loadRememberedScene = [this](const std::string& scenePath) -> bool
+    const auto restoreLoadedScenePrefabs = [this]()
+    {
+        m_context.PresentStartupProgressFrame("Restoring startup scene prefab instances", 0.87f);
+        const bool prefabRestoreSucceeded = m_editorActions.RestorePrefabInstancesForCurrentSceneFromDisk();
+        m_context.PresentStartupProgressFrame(
+            prefabRestoreSucceeded ? "Startup scene loaded" : "Startup scene loaded with prefab restore warnings",
+            0.89f);
+    };
+
+    const auto loadRememberedScene = [this, &restoreLoadedScenePrefabs](const std::string& scenePath) -> bool
     {
         if (scenePath.empty() || scenePath == "NULL")
             return false;
@@ -684,14 +693,20 @@ void Editor::Core::Editor::RestoreStartupScene()
         if (!std::filesystem::exists(resolvedPath))
             return false;
 
-        return m_context.sceneManager.LoadScene(
+        if (!m_context.sceneManager.LoadScene(
             resolvedPath.string(),
             true,
             [this](const Engine::SceneSystem::SceneLoadProgress& progress)
             {
                 const float startupProgress = 0.65f + progress.normalizedProgress * 0.22f;
                 m_context.PresentStartupProgressFrame(progress.message, startupProgress);
-            });
+            }))
+        {
+            return false;
+        }
+
+        restoreLoadedScenePrefabs();
+        return true;
     };
 
     const auto lastOpenedScene = m_context.projectSettings.GetOrDefault<std::string>("last_opened_scene", "");
@@ -711,6 +726,7 @@ void Editor::Core::Editor::RestoreStartupScene()
                 m_context.PresentStartupProgressFrame(progress.message, startupProgress);
             }))
         {
+            restoreLoadedScenePrefabs();
             return;
         }
     }

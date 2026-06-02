@@ -8,6 +8,8 @@
 #include "Core/EditorActions.h"
 #include "Assets/EditorAssetDragDropBridge.h"
 #include "Assets/EditorAssetDragPayload.h"
+#include "Components/MeshFilter.h"
+#include "Components/MeshRenderer.h"
 #include "Engine/Assets/PrefabAsset.h"
 #include "Panels/SceneView.h"
 #include "Panels/GameView.h"
@@ -19,24 +21,43 @@
 #include "ImGuizmo.h"
 #include "Debug/Logger.h"
 #include "Rendering/Context/DriverAccess.h"
+#include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Settings/EPixelDataFormat.h"
 #include "Rendering/Settings/EPixelDataType.h"
 #include "Rendering/Tooling/MaterialVisualEvidence.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
+#include "Core/ResourceManagement/MaterialManager.h"
+#include "Core/ResourceManagement/MeshManager.h"
 #include <ServiceLocator.h>
 #include <UI/Plugins/DragDrop.h>
 #include <UI/Plugins/IPlugin.h>
 #include <UI/UIManager.h>
 #include <UI/Widgets/Layout/Group.h>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <string>
 #include <sstream>
 #include <vector>
 using namespace NLS;
+
+namespace NLS::Editor::Panels
+{
+struct ImportedAssetDragPreviewMeshLoadState
+{
+    std::mutex mutex;
+    bool accepted = true;
+    bool completed = false;
+    bool failed = false;
+    std::shared_ptr<std::atomic_bool> cancelled = std::make_shared<std::atomic_bool>(false);
+    std::shared_ptr<const NLS::Render::Assets::MeshArtifactData> data;
+    std::shared_ptr<NLS::Render::Resources::Mesh> transientMesh;
+};
+}
 
 namespace
 {
@@ -44,6 +65,8 @@ constexpr float kSceneViewGizmoCameraLength = 8.0f;
 constexpr float kSceneViewDefaultFocusDistance = 15.0f;
 constexpr float kSceneViewDragPreviewFallbackDistance = 12.0f;
 constexpr float kSceneViewDragPreviewHalfExtent = 0.75f;
+constexpr auto kSceneViewDragPreviewRetryDelay = std::chrono::milliseconds(100);
+constexpr size_t kSceneViewDragPreviewResourcePrewarmsPerFrame = 2u;
 
 std::string GetPreviewLabel(const Editor::Assets::EditorAssetDragPayload& payload)
 {
@@ -53,6 +76,173 @@ std::string GetPreviewLabel(const Editor::Assets::EditorAssetDragPayload& payloa
 
     const auto filename = std::filesystem::path(path).filename().generic_string();
     return filename.empty() ? path : filename;
+}
+
+bool IsImportedAssetPreviewRendererResource(const NLS::Engine::Assets::PrefabResolvedAsset& resolved)
+{
+    return (resolved.expectedType == "Mesh" || resolved.expectedType == "Material") &&
+        !resolved.artifactPath.empty();
+}
+
+std::shared_ptr<NLS::Render::Resources::Mesh> TryConsumeImportedAssetDragPreviewMeshLoad(
+    const std::string& path,
+    std::unordered_map<std::string, std::shared_ptr<NLS::Editor::Panels::ImportedAssetDragPreviewMeshLoadState>>& loads)
+{
+    const auto found = loads.find(path);
+    if (found == loads.end() || !found->second)
+        return {};
+
+    {
+        std::lock_guard lock(found->second->mutex);
+        if (!found->second->completed || !found->second->accepted || found->second->failed)
+            return {};
+        if (found->second->transientMesh)
+            return found->second->transientMesh;
+        if (!found->second->data)
+            return {};
+    }
+
+    std::shared_ptr<const NLS::Render::Assets::MeshArtifactData> data;
+    {
+        std::lock_guard lock(found->second->mutex);
+        data = found->second->data;
+    }
+    if (!data)
+        return {};
+
+    auto transientMesh = std::shared_ptr<NLS::Render::Resources::Mesh>(
+        new NLS::Render::Resources::Mesh(
+            data->vertices,
+            data->indices,
+            data->materialIndex,
+            NLS::Render::Resources::MeshBufferUploadMode::CpuToGpu,
+            data->boundingSphere));
+
+    std::lock_guard lock(found->second->mutex);
+    if (!found->second->transientMesh)
+    {
+        found->second->transientMesh = std::move(transientMesh);
+        found->second->data.reset();
+    }
+    return found->second->transientMesh;
+}
+
+bool StartImportedAssetDragPreviewMeshLoad(
+    const std::string& path,
+    std::unordered_map<std::string, std::shared_ptr<NLS::Editor::Panels::ImportedAssetDragPreviewMeshLoadState>>& loads)
+{
+    if (path.empty() || loads.find(path) != loads.end())
+        return false;
+
+    auto state = std::make_shared<NLS::Editor::Panels::ImportedAssetDragPreviewMeshLoadState>();
+    loads.emplace(path, state);
+    const bool accepted = EDITOR_EXEC(TrackBackgroundTask(
+        [state, path]
+        {
+            std::optional<NLS::Render::Assets::MeshArtifactData> data;
+            try
+            {
+                std::filesystem::path artifactPath = path;
+                if (!artifactPath.is_absolute() &&
+                    NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::MeshManager>())
+                {
+                    artifactPath = NLS::Core::ResourceManagement::MeshManager::ResolveResourcePath(path);
+                }
+                data = NLS::Render::Assets::LoadMeshArtifact(artifactPath);
+            }
+            catch (const std::exception& exception)
+            {
+                NLS_LOG_ERROR(std::string("Scene View drag preview mesh load failed: ") + path + " error=" + exception.what());
+            }
+            catch (...)
+            {
+                NLS_LOG_ERROR("Scene View drag preview mesh load failed: " + path + " error=unknown");
+            }
+
+            std::lock_guard lock(state->mutex);
+            if (state->cancelled && state->cancelled->load(std::memory_order_acquire))
+            {
+                state->data.reset();
+                state->transientMesh.reset();
+                state->failed = true;
+            }
+            else if (data.has_value())
+            {
+                state->data = std::make_shared<NLS::Render::Assets::MeshArtifactData>(std::move(*data));
+                state->failed = false;
+            }
+            else
+            {
+                state->failed = true;
+            }
+            state->completed = true;
+        }));
+    if (!accepted)
+    {
+        std::lock_guard lock(state->mutex);
+        state->accepted = false;
+        state->failed = true;
+        state->completed = true;
+    }
+    return accepted;
+}
+
+void CancelImportedAssetDragPreviewMeshLoads(
+    std::unordered_map<std::string, std::shared_ptr<NLS::Editor::Panels::ImportedAssetDragPreviewMeshLoadState>>& loads)
+{
+    for (auto& entry : loads)
+    {
+        if (entry.second && entry.second->cancelled)
+            entry.second->cancelled->store(true, std::memory_order_release);
+    }
+    loads.clear();
+}
+
+void BindImportedAssetDragPreviewCachedResources(
+    NLS::Engine::GameObject& object,
+    std::unordered_map<std::string, std::shared_ptr<NLS::Editor::Panels::ImportedAssetDragPreviewMeshLoadState>>& meshLoads,
+    bool& boundMeshThisFrame)
+{
+    if (auto* meshFilter = object.GetComponent<NLS::Engine::Components::MeshFilter>())
+    {
+        if (!meshFilter->ResolveMesh() && !boundMeshThisFrame)
+        {
+            const auto path = meshFilter->GetModelPath();
+            if (!path.empty())
+            {
+                if (auto transientMesh = TryConsumeImportedAssetDragPreviewMeshLoad(path, meshLoads))
+                {
+                    meshFilter->SetResolvedTransientMeshFromReference(std::move(transientMesh));
+                    boundMeshThisFrame = true;
+                }
+            }
+        }
+    }
+
+    if (auto* meshRenderer = object.GetComponent<NLS::Engine::Components::MeshRenderer>())
+    {
+        if (NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::MaterialManager>())
+        {
+            auto& materialManager = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager);
+            const auto paths = meshRenderer->GetMaterialPaths();
+            for (size_t index = 0;
+                index < paths.size() && index < NLS::Engine::Components::MeshRenderer::kMaxMaterialCount;
+                ++index)
+            {
+                if (paths[index].empty() || meshRenderer->GetMaterialAtIndex(static_cast<uint8_t>(index)) != nullptr)
+                    continue;
+
+                if (auto* cached = materialManager.GetResource(paths[index], false))
+                    meshRenderer->SetResolvedMaterialFromReference(static_cast<uint8_t>(index), *cached);
+            }
+        }
+    }
+
+    for (auto* child : object.GetChildren())
+    {
+        if (child != nullptr)
+            BindImportedAssetDragPreviewCachedResources(*child, meshLoads, boundMeshThisFrame);
+    }
 }
 
 ImGuizmo::OPERATION ToNativeImGuizmoOperation(Editor::Core::EGizmoOperation operation)
@@ -214,6 +404,7 @@ void Editor::Panels::SceneView::UpdateImportedAssetDragPreview(
     m_importedAssetDragPreviewPlacement =
         ResolveImportedAssetDragPreviewPlacement(m_importedAssetDragPreviewMousePos);
     EnsureImportedAssetDragPreviewMeshGhost(payload);
+    PumpImportedAssetDragPreviewResources();
     if (m_importedAssetDragPreviewRoot && m_importedAssetDragPreviewPlacement.has_value())
         m_importedAssetDragPreviewRoot->GetTransform()->SetWorldPosition(*m_importedAssetDragPreviewPlacement);
 }
@@ -233,45 +424,56 @@ bool Editor::Panels::SceneView::EnsureImportedAssetDragPreviewMeshGhost(
         m_importedAssetDragPreviewAssetGuid == assetGuid &&
         m_importedAssetDragPreviewSubAssetKey == subAssetKey)
     {
-        return false;
+        if (std::chrono::steady_clock::now() < m_importedAssetDragPreviewNextMeshGhostRetryTime)
+            return false;
+
+        m_importedAssetDragPreviewMeshGhostUnavailable = false;
     }
 
     m_importedAssetDragPreviewScene.reset();
     m_importedAssetDragPreviewArtifact.reset();
     m_importedAssetDragPreviewRoot = nullptr;
+    m_importedAssetDragPreviewPrewarmedResources.clear();
+    CancelImportedAssetDragPreviewMeshLoads(m_importedAssetDragPreviewMeshLoads);
     m_importedAssetDragPreviewAssetGuid = assetGuid;
     m_importedAssetDragPreviewSubAssetKey = subAssetKey;
     m_importedAssetDragPreviewMeshGhostUnavailable = false;
+    m_importedAssetDragPreviewNextMeshGhostRetryTime = {};
 
     const auto assetPath = NLS::Editor::Assets::GetEditorAssetDragPayloadPath(payload);
     if (assetPath.empty() || subAssetKey.empty())
     {
         m_importedAssetDragPreviewMeshGhostUnavailable = true;
+        m_importedAssetDragPreviewNextMeshGhostRetryTime =
+            std::chrono::steady_clock::now() + kSceneViewDragPreviewRetryDelay;
         return false;
     }
-    if (!NLS::Editor::Assets::IsEditorAssetDragPayloadPreviewPrefabReady(payload))
-    {
-        m_importedAssetDragPreviewMeshGhostUnavailable = true;
-        return false;
-    }
-
     NLS::Editor::Assets::EditorAssetDragDropBridge dragDropBridge(
         std::filesystem::path(EDITOR_CONTEXT(projectAssetsPath)));
     auto prefab = dragDropBridge.TryLoadPreviewPrefabArtifact(payload);
     if (!prefab.has_value())
     {
         m_importedAssetDragPreviewMeshGhostUnavailable = true;
+        m_importedAssetDragPreviewNextMeshGhostRetryTime =
+            std::chrono::steady_clock::now() + kSceneViewDragPreviewRetryDelay;
         return false;
     }
 
     m_importedAssetDragPreviewArtifact = std::move(*prefab);
 
     auto previewScene = std::make_unique<NLS::Engine::SceneSystem::Scene>();
-    auto preview = NLS::Engine::Assets::InstantiatePrefabArtifact(*m_importedAssetDragPreviewArtifact, *previewScene);
+    NLS::Engine::Serialize::LoadPolicy previewLoadPolicy;
+    previewLoadPolicy.deferAssetReferenceResolution = true;
+    auto preview = NLS::Engine::Assets::InstantiatePrefabArtifact(
+        *m_importedAssetDragPreviewArtifact,
+        *previewScene,
+        previewLoadPolicy);
     if (preview.diagnostics.HasErrors() || preview.root == nullptr)
     {
         m_importedAssetDragPreviewArtifact.reset();
         m_importedAssetDragPreviewMeshGhostUnavailable = true;
+        m_importedAssetDragPreviewNextMeshGhostRetryTime =
+            std::chrono::steady_clock::now() + kSceneViewDragPreviewRetryDelay;
         return false;
     }
 
@@ -381,6 +583,49 @@ void Editor::Panels::SceneView::HandleViewportAssetDragDrop()
     UI::EndDragDropTarget();
 }
 
+void Editor::Panels::SceneView::PumpImportedAssetDragPreviewResources()
+{
+    if (!m_importedAssetDragPreviewArtifact.has_value() ||
+        m_importedAssetDragPreviewRoot == nullptr)
+    {
+        return;
+    }
+
+    size_t prewarmedThisFrame = 0u;
+    for (const auto& resolved : m_importedAssetDragPreviewArtifact->resolvedAssets)
+    {
+        if (!IsImportedAssetPreviewRendererResource(resolved) ||
+            m_importedAssetDragPreviewPrewarmedResources.find(resolved.artifactPath) !=
+                m_importedAssetDragPreviewPrewarmedResources.end())
+        {
+            continue;
+        }
+
+        if (resolved.expectedType == "Mesh")
+        {
+            StartImportedAssetDragPreviewMeshLoad(
+                resolved.artifactPath,
+                m_importedAssetDragPreviewMeshLoads);
+        }
+        else if (resolved.expectedType == "Material")
+        {
+            if (NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::MaterialManager>())
+                NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager).LoadArtifactWithoutTextures(resolved.artifactPath);
+        }
+
+        m_importedAssetDragPreviewPrewarmedResources.insert(resolved.artifactPath);
+        ++prewarmedThisFrame;
+        if (prewarmedThisFrame >= kSceneViewDragPreviewResourcePrewarmsPerFrame)
+            break;
+    }
+
+    bool boundMeshThisFrame = false;
+    BindImportedAssetDragPreviewCachedResources(
+        *m_importedAssetDragPreviewRoot,
+        m_importedAssetDragPreviewMeshLoads,
+        boundMeshThisFrame);
+}
+
 void Editor::Panels::SceneView::DrawImportedAssetDragPreview()
 {
     if (!m_importedAssetDragPreviewPayload.has_value() ||
@@ -449,6 +694,9 @@ void Editor::Panels::SceneView::ClearImportedAssetDragPreview()
     m_importedAssetDragPreviewAssetGuid.clear();
     m_importedAssetDragPreviewSubAssetKey.clear();
     m_importedAssetDragPreviewMeshGhostUnavailable = false;
+    m_importedAssetDragPreviewNextMeshGhostRetryTime = {};
+    m_importedAssetDragPreviewPrewarmedResources.clear();
+    CancelImportedAssetDragPreviewMeshLoads(m_importedAssetDragPreviewMeshLoads);
     m_importedAssetDragPreviewPlacement.reset();
 }
 

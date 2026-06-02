@@ -607,6 +607,173 @@ TEST(GameObjectAssetImportTests, WarmEditorAssetHandleProvidesPreviewPrefabWitho
     std::filesystem::remove_all(root);
 }
 
+TEST(GameObjectAssetImportTests, WarmEditorAssetHandlePreviewAcceptsLegacyManifestWithoutRootTargetPlatform)
+{
+    const auto root = MakeGameObjectAssetImportRoot();
+    WriteTextFile(
+        root / "Assets" / "Models" / "LegacyPreviewHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [
+                { "nodes": [0] }
+            ],
+            "buffers": [
+                {
+                    "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA",
+                    "byteLength": 42
+                }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" }
+            ],
+            "meshes": [
+                {
+                    "name": "Body",
+                    "primitives": [
+                        { "attributes": { "POSITION": 0 }, "indices": 1 }
+                    ]
+                }
+            ],
+            "nodes": [
+                { "name": "LegacyPreviewHeroRoot", "mesh": 0 }
+            ]
+        })");
+
+    NLS::Editor::Assets::AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/LegacyPreviewHero.gltf"));
+    const auto guid = database.AssetPathToGUID("Assets/Models/LegacyPreviewHero.gltf");
+    ASSERT_FALSE(guid.empty());
+    const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
+
+    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
+        "Assets/Models/LegacyPreviewHero.gltf");
+    const auto manifestPath = artifactRoot / "manifest.json";
+    {
+        std::ifstream input(manifestPath, std::ios::binary);
+        ASSERT_TRUE(input.good());
+        auto manifest = nlohmann::json::parse(input, nullptr, false);
+        ASSERT_TRUE(manifest.is_object());
+        ASSERT_TRUE(manifest.erase("targetPlatform") > 0u);
+
+        std::ofstream output(manifestPath, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(output.good());
+        output << manifest.dump(2);
+    }
+
+    const auto payload = NLS::Editor::Assets::MakeEditorAssetDragPayloadForTesting(
+        "Assets/Models/LegacyPreviewHero.gltf",
+        assetId,
+        "prefab:LegacyPreviewHero",
+        NLS::Core::Assets::ArtifactType::Prefab,
+        true,
+        true,
+        true);
+
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+    auto prefab = bridge.TryLoadPreviewPrefabArtifact(payload);
+
+    ASSERT_TRUE(prefab.has_value());
+    EXPECT_EQ(prefab->assetId, assetId);
+    EXPECT_TRUE(prefab->generatedModelPrefab);
+
+    NLS::Engine::SceneSystem::Scene previewScene;
+    auto preview = NLS::Engine::Assets::InstantiatePrefabArtifact(*prefab, previewScene);
+    ASSERT_FALSE(preview.diagnostics.HasErrors());
+    ASSERT_NE(preview.root, nullptr);
+    EXPECT_EQ(preview.root->GetName(), "LegacyPreviewHeroRoot");
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(GameObjectAssetImportTests, WarmEditorAssetHandlePreviewRejectsLegacyManifestWithMixedArtifactPlatforms)
+{
+    const auto root = MakeGameObjectAssetImportRoot();
+    WriteTextFile(
+        root / "Assets" / "Models" / "MixedPlatformPreviewHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [
+                { "nodes": [0] }
+            ],
+            "buffers": [
+                {
+                    "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA",
+                    "byteLength": 42
+                }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" }
+            ],
+            "meshes": [
+                {
+                    "name": "Body",
+                    "primitives": [
+                        { "attributes": { "POSITION": 0 }, "indices": 1 }
+                    ]
+                }
+            ],
+            "nodes": [
+                { "name": "MixedPlatformPreviewHeroRoot", "mesh": 0 }
+            ]
+        })");
+
+    NLS::Editor::Assets::AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/MixedPlatformPreviewHero.gltf"));
+    const auto guid = database.AssetPathToGUID("Assets/Models/MixedPlatformPreviewHero.gltf");
+    ASSERT_FALSE(guid.empty());
+    const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
+
+    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
+        "Assets/Models/MixedPlatformPreviewHero.gltf");
+    const auto manifestPath = artifactRoot / "manifest.json";
+    {
+        std::ifstream input(manifestPath, std::ios::binary);
+        ASSERT_TRUE(input.good());
+        auto manifest = nlohmann::json::parse(input, nullptr, false);
+        ASSERT_TRUE(manifest.is_object());
+        ASSERT_TRUE(manifest.erase("targetPlatform") > 0u);
+
+        auto& subAssets = manifest["subAssets"];
+        ASSERT_TRUE(subAssets.is_array());
+        ASSERT_FALSE(subAssets.empty());
+        subAssets.front()["targetPlatform"] = "win64";
+
+        std::ofstream output(manifestPath, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(output.good());
+        output << manifest.dump(2);
+    }
+
+    const auto payload = NLS::Editor::Assets::MakeEditorAssetDragPayloadForTesting(
+        "Assets/Models/MixedPlatformPreviewHero.gltf",
+        assetId,
+        "prefab:MixedPlatformPreviewHero",
+        NLS::Core::Assets::ArtifactType::Prefab,
+        true,
+        true,
+        true);
+
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+    auto prefab = bridge.TryLoadPreviewPrefabArtifact(payload);
+
+    EXPECT_FALSE(prefab.has_value());
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(GameObjectAssetImportTests, WarmGeneratedModelHandleWithManifestPrimaryModelKeyInstantiatesPrefab)
 {
     const auto root = MakeGameObjectAssetImportRoot();

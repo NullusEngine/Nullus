@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <unordered_map>
+#include <unordered_set>
 #include <string>
 
 #include "Assets/EditorAssetDragPayload.h"
@@ -14,6 +16,8 @@
 
 namespace NLS::Editor::Panels
 {
+    struct ImportedAssetDragPreviewMeshLoadState;
+
 	class SceneView : public Editor::Panels::AViewControllable
 	{
 	public:
@@ -74,6 +78,7 @@ namespace NLS::Editor::Panels
         bool EnsureImportedAssetDragPreviewMeshGhost(const NLS::Editor::Assets::EditorAssetDragPayload& payload);
         std::optional<Maths::Vector3> ResolveImportedAssetDragPreviewPlacement(const Maths::Vector2& mousePosition) const;
         void HandleViewportAssetDragDrop();
+        void PumpImportedAssetDragPreviewResources();
         void DrawImportedAssetDragPreview();
         void ClearImportedAssetDragPreview();
 
@@ -98,6 +103,9 @@ namespace NLS::Editor::Panels
         std::string m_importedAssetDragPreviewAssetGuid;
         std::string m_importedAssetDragPreviewSubAssetKey;
         bool m_importedAssetDragPreviewMeshGhostUnavailable = false;
+        std::chrono::steady_clock::time_point m_importedAssetDragPreviewNextMeshGhostRetryTime {};
+        std::unordered_set<std::string> m_importedAssetDragPreviewPrewarmedResources;
+        std::unordered_map<std::string, std::shared_ptr<ImportedAssetDragPreviewMeshLoadState>> m_importedAssetDragPreviewMeshLoads;
         Maths::Vector2 m_importedAssetDragPreviewMousePos { 0.0f, 0.0f };
         std::optional<Maths::Vector3> m_importedAssetDragPreviewPlacement;
 		bool m_hasPickingSample = false;

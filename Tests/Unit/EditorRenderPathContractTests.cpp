@@ -5085,7 +5085,11 @@ TEST(EditorRenderPathContractTests, SceneViewFinalDropReusesPreviewPrefabArtifac
     ASSERT_NE(ensureEnd, std::string::npos);
     const auto ensureCode = sceneViewSource.substr(ensureBegin, ensureEnd - ensureBegin);
     EXPECT_NE(ensureCode.find("m_importedAssetDragPreviewArtifact = std::move(*prefab);"), std::string::npos);
-    EXPECT_NE(ensureCode.find("InstantiatePrefabArtifact(*m_importedAssetDragPreviewArtifact"), std::string::npos);
+    EXPECT_NE(ensureCode.find("InstantiatePrefabArtifact("), std::string::npos);
+    EXPECT_NE(ensureCode.find("*m_importedAssetDragPreviewArtifact"), std::string::npos);
+    EXPECT_NE(ensureCode.find("previewLoadPolicy"), std::string::npos);
+    EXPECT_NE(ensureCode.find("previewLoadPolicy.deferAssetReferenceResolution = true;"), std::string::npos)
+        << "Scene View hover preview must not synchronously prewarm large mesh/material artifacts.";
 
     const auto dropBegin = sceneViewSource.find("void Editor::Panels::SceneView::HandleViewportAssetDragDrop()");
     ASSERT_NE(dropBegin, std::string::npos);
@@ -5104,17 +5108,91 @@ TEST(EditorRenderPathContractTests, SceneViewFinalDropReusesPreviewPrefabArtifac
     const auto freshnessEnd = bridgeSource.find("}\n\n}", freshnessBegin);
     ASSERT_NE(freshnessEnd, std::string::npos);
     const auto freshnessCode = bridgeSource.substr(freshnessBegin, freshnessEnd - freshnessBegin);
+    EXPECT_NE(freshnessCode.find("validateRendererDependencies"), std::string::npos);
     EXPECT_NE(freshnessCode.find("ValidateGeneratedModelRendererArtifactsReady("), std::string::npos)
-        << "Cached generated-model prefab drops must reject missing or corrupt mesh/material/texture artifacts at final drop time.";
+        << "Non-cached generated-model drops must still reject missing or corrupt mesh/material/texture artifacts.";
+    EXPECT_NE(freshnessCode.find("GeneratedModelRendererArtifactFilesExist"), std::string::npos)
+        << "Cached preview drops may skip deep artifact parsing, but must still reject missing renderer artifact files.";
 
     const auto cachedDropBegin = bridgeSource.find("EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropImportedPrefabArtifactIntoHierarchy(");
     ASSERT_NE(cachedDropBegin, std::string::npos);
     const auto cachedDropEnd = bridgeSource.find("std::optional<NLS::Engine::Assets::PrefabArtifact> EditorAssetDragDropBridge::TryLoadPreviewPrefabArtifact(", cachedDropBegin);
     ASSERT_NE(cachedDropEnd, std::string::npos);
     const auto cachedDropCode = bridgeSource.substr(cachedDropBegin, cachedDropEnd - cachedDropBegin);
-    EXPECT_NE(cachedDropCode.find("IsImportedPrefabArtifactCurrentForPayload("), std::string::npos)
-        << "A cached preview artifact must be rejected when the manifest or dependency stamps changed during the drag.";
+    EXPECT_NE(cachedDropCode.find("IsImportedPrefabArtifactCurrentForPayload(ProjectRoot(), payload, prefab, assetPath, prefabSubAssetKey, false)"), std::string::npos)
+        << "A cached preview artifact must be rejected when the manifest or dependency stamps changed during the drag, but final release must not synchronously re-parse mesh/material/texture artifacts already validated during preview.";
     EXPECT_NE(cachedDropCode.find("dragdrop-cached-artifact-stale"), std::string::npos);
+
+    const auto instantiateBegin = bridgeSource.find("EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::InstantiateImportedAsset(");
+    ASSERT_NE(instantiateBegin, std::string::npos);
+    const auto instantiateEnd = bridgeSource.find("EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::InstantiateImportedAsset(\n    AssetDatabaseFacade& database", instantiateBegin);
+    ASSERT_NE(instantiateEnd, std::string::npos);
+    const auto instantiateCode = bridgeSource.substr(instantiateBegin, instantiateEnd - instantiateBegin);
+    EXPECT_NE(instantiateCode.find("Keep Scene View mouse release cheap"), std::string::npos)
+        << "Imported prefab/model drops should defer asset reference resolution so mouse release does not synchronously prewarm large artifacts.";
+    EXPECT_NE(instantiateCode.find("},\n        // Keep Scene View mouse release cheap"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SceneViewPreviewAttemptsCurrentArtifactEvenWhenPayloadReadinessIsStale)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const std::string sceneViewSource = ReadSourceText(root / "Project/Editor/Panels/SceneView.cpp");
+
+    ASSERT_FALSE(sceneViewSource.empty());
+    const auto ensureBegin = sceneViewSource.find("bool Editor::Panels::SceneView::EnsureImportedAssetDragPreviewMeshGhost(");
+    ASSERT_NE(ensureBegin, std::string::npos);
+    const auto ensureEnd = sceneViewSource.find("std::optional<Maths::Vector3> Editor::Panels::SceneView::ResolveImportedAssetDragPreviewPlacement(", ensureBegin);
+    ASSERT_NE(ensureEnd, std::string::npos);
+    const auto ensureCode = sceneViewSource.substr(ensureBegin, ensureEnd - ensureBegin);
+
+    EXPECT_EQ(ensureCode.find("IsEditorAssetDragPayloadPreviewPrefabReady"), std::string::npos)
+        << "AssetBrowser payload readiness can be stale after import; Scene View should ask the bridge to validate current artifacts instead of suppressing preview.";
+    EXPECT_NE(ensureCode.find("TryLoadPreviewPrefabArtifact(payload)"), std::string::npos);
+    EXPECT_NE(ensureCode.find("m_importedAssetDragPreviewMeshGhostUnavailable"), std::string::npos);
+    EXPECT_NE(ensureCode.find("m_importedAssetDragPreviewNextMeshGhostRetryTime"), std::string::npos)
+        << "A transient artifact read failure during hover must not suppress the mesh ghost for the entire drag.";
+    EXPECT_NE(sceneViewSource.find("kSceneViewDragPreviewRetryDelay"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SceneViewPreviewLoadsPrefabGraphWithoutRendererArtifactDeepValidation)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const std::string sceneViewSource = ReadSourceText(root / "Project/Editor/Panels/SceneView.cpp");
+    const std::string bridgeHeader = ReadSourceText(root / "Project/Editor/Assets/EditorAssetDragDropBridge.h");
+    const std::string bridgeSource = ReadSourceText(root / "Project/Editor/Assets/EditorAssetDragDropBridge.cpp");
+
+    ASSERT_FALSE(sceneViewSource.empty());
+    ASSERT_FALSE(bridgeHeader.empty());
+    ASSERT_FALSE(bridgeSource.empty());
+
+    const auto ensureBegin = sceneViewSource.find("bool Editor::Panels::SceneView::EnsureImportedAssetDragPreviewMeshGhost(");
+    ASSERT_NE(ensureBegin, std::string::npos);
+    const auto ensureEnd = sceneViewSource.find("std::optional<Maths::Vector3> Editor::Panels::SceneView::ResolveImportedAssetDragPreviewPlacement(", ensureBegin);
+    ASSERT_NE(ensureEnd, std::string::npos);
+    const auto ensureCode = sceneViewSource.substr(ensureBegin, ensureEnd - ensureBegin);
+    EXPECT_NE(ensureCode.find("TryLoadPreviewPrefabArtifact(payload)"), std::string::npos);
+    EXPECT_NE(ensureCode.find("previewLoadPolicy.deferAssetReferenceResolution = true;"), std::string::npos)
+        << "Hover preview should create the object graph without mesh/material prewarm.";
+
+    const auto previewLoadBegin = bridgeSource.find("std::optional<NLS::Engine::Assets::PrefabArtifact> EditorAssetDragDropBridge::TryLoadPreviewPrefabArtifact(");
+    ASSERT_NE(previewLoadBegin, std::string::npos);
+    const auto previewLoadEnd = bridgeSource.find("\n}", previewLoadBegin);
+    ASSERT_NE(previewLoadEnd, std::string::npos);
+    const auto previewLoadCode = bridgeSource.substr(previewLoadBegin, previewLoadEnd - previewLoadBegin);
+    EXPECT_NE(previewLoadCode.find("ImportedPrefabArtifactLoadMode::PreviewGraphOnly"), std::string::npos)
+        << "Hover preview must load only the prefab object graph; mesh/material/texture deep validation is too heavy for mouse-follow.";
+    EXPECT_EQ(previewLoadCode.find("ValidateGeneratedModelRendererArtifactsReady("), std::string::npos)
+        << "Preview loading should not synchronously read every generated mesh/material/texture artifact.";
+
+    const auto fastLoadBegin = bridgeSource.find("FastImportedPrefabLoadResult LoadImportedPrefabFast(");
+    ASSERT_NE(fastLoadBegin, std::string::npos);
+    const auto fastLoadEnd = bridgeSource.find("EditorAssetDragDropBridgeResult MakePendingImportedPrefabResult(", fastLoadBegin);
+    ASSERT_NE(fastLoadEnd, std::string::npos);
+    const auto fastLoadCode = bridgeSource.substr(fastLoadBegin, fastLoadEnd - fastLoadBegin);
+    EXPECT_NE(fastLoadCode.find("ImportedPrefabArtifactLoadMode"), std::string::npos);
+    EXPECT_NE(fastLoadCode.find("ValidateRendererDependencies"), std::string::npos);
+    EXPECT_NE(fastLoadCode.find("ValidateGeneratedModelRendererArtifactsReady("), std::string::npos)
+        << "The non-preview path should retain deep validation so not-ready artifacts still report pending state.";
 }
 
 TEST(EditorRenderPathContractTests, SceneViewAssetDropPreviewRayMatchesRenderedScreenRight)
@@ -5157,7 +5235,10 @@ TEST(EditorRenderPathContractTests, SceneViewAssetDropUsesPreviewOnlyMeshGhostSc
     EXPECT_NE(sceneViewHeader.find("m_importedAssetDragPreviewScene"), std::string::npos);
     EXPECT_NE(sceneViewHeader.find("m_importedAssetDragPreviewRoot"), std::string::npos);
     EXPECT_NE(sceneViewHeader.find("m_importedAssetDragPreviewMeshGhostUnavailable"), std::string::npos);
+    EXPECT_NE(sceneViewHeader.find("m_importedAssetDragPreviewPrewarmedResources"), std::string::npos);
+    EXPECT_NE(sceneViewHeader.find("m_importedAssetDragPreviewMeshLoads"), std::string::npos);
     EXPECT_NE(sceneViewHeader.find("EnsureImportedAssetDragPreviewMeshGhost"), std::string::npos);
+    EXPECT_NE(sceneViewHeader.find("PumpImportedAssetDragPreviewResources"), std::string::npos);
 
     const auto previewBegin = sceneViewSource.find("bool Editor::Panels::SceneView::EnsureImportedAssetDragPreviewMeshGhost(");
     ASSERT_NE(previewBegin, std::string::npos);
@@ -5165,12 +5246,13 @@ TEST(EditorRenderPathContractTests, SceneViewAssetDropUsesPreviewOnlyMeshGhostSc
     ASSERT_NE(previewEnd, std::string::npos);
     const auto previewCode = sceneViewSource.substr(previewBegin, previewEnd - previewBegin);
     EXPECT_NE(previewCode.find("EditorAssetDragDropBridge"), std::string::npos);
-    EXPECT_NE(previewCode.find("IsEditorAssetDragPayloadPreviewPrefabReady"), std::string::npos);
+    EXPECT_EQ(previewCode.find("IsEditorAssetDragPayloadPreviewPrefabReady"), std::string::npos);
     EXPECT_NE(previewCode.find("TryLoadPreviewPrefabArtifact"), std::string::npos);
     EXPECT_NE(previewCode.find("InstantiatePrefabArtifact"), std::string::npos);
     EXPECT_NE(previewCode.find("m_importedAssetDragPreviewMeshGhostUnavailable"), std::string::npos);
     EXPECT_NE(previewCode.find("m_importedAssetDragPreviewScene"), std::string::npos);
     EXPECT_NE(previewCode.find("m_importedAssetDragPreviewRoot"), std::string::npos);
+    EXPECT_NE(previewCode.find("previewLoadPolicy.deferAssetReferenceResolution = true;"), std::string::npos);
     EXPECT_EQ(previewCode.find("AssetDatabaseFacade"), std::string::npos);
     EXPECT_EQ(previewCode.find(".Refresh("), std::string::npos);
     EXPECT_EQ(previewCode.find("LoadPrefabArtifactAtPath"), std::string::npos);
@@ -5203,6 +5285,27 @@ TEST(EditorRenderPathContractTests, SceneViewAssetDropUsesPreviewOnlyMeshGhostSc
 
     EXPECT_NE(debugRendererHeader.find("Engine::SceneSystem::Scene* previewScene = nullptr;"), std::string::npos);
     EXPECT_NE(debugRendererSource.find("previewScene"), std::string::npos);
+
+    const auto pumpBegin = sceneViewSource.find("void Editor::Panels::SceneView::PumpImportedAssetDragPreviewResources()");
+    ASSERT_NE(pumpBegin, std::string::npos);
+    const auto pumpEnd = sceneViewSource.find("void Editor::Panels::SceneView::DrawImportedAssetDragPreview()", pumpBegin);
+    ASSERT_NE(pumpEnd, std::string::npos);
+    const auto pumpCode = sceneViewSource.substr(pumpBegin, pumpEnd - pumpBegin);
+    EXPECT_NE(pumpCode.find("kSceneViewDragPreviewResourcePrewarmsPerFrame"), std::string::npos);
+    EXPECT_EQ(pumpCode.find("PrewarmArtifact(resolved.artifactPath)"), std::string::npos)
+        << "Scene View drag preview must not synchronously read large mesh artifacts on the hover frame.";
+    EXPECT_NE(sceneViewSource.find("StartImportedAssetDragPreviewMeshLoad"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("TrackBackgroundTask"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("LoadMeshArtifact"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("SetResolvedTransientMeshFromReference"), std::string::npos);
+    EXPECT_NE(pumpCode.find("LoadArtifactWithoutTextures(resolved.artifactPath)"), std::string::npos);
+    EXPECT_NE(pumpCode.find("BindImportedAssetDragPreviewCachedResources"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("ResolveMesh()"), std::string::npos);
+    EXPECT_EQ(sceneViewSource.find("ResolveMaterials()"), std::string::npos)
+        << "Preview material binding must stay within the explicit per-frame budget instead of synchronously resolving every slot.";
+    EXPECT_NE(sceneViewSource.find("GetMaterialPaths()"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("SetResolvedMaterialFromReference"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("CancelImportedAssetDragPreviewMeshLoads"), std::string::npos);
 }
 
 TEST(EditorRenderPathContractTests, SceneLoadPrefabRestoreRefreshesAssetDatabaseOnceAndCachesArtifacts)

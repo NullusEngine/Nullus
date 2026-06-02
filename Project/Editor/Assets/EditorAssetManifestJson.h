@@ -178,11 +178,10 @@ inline std::optional<NLS::Core::Assets::ArtifactManifest> ParseArtifactManifestJ
 
     const auto importerId = JsonStringOrDefault(root, "importerId");
     const auto importerVersion = JsonUIntOrDefault(root, "importerVersion", 1u);
-    const auto targetPlatform = JsonStringOrDefault(root, "targetPlatform");
+    const auto targetPlatform = JsonString(root, "targetPlatform");
     const auto primarySubAssetKey = JsonStringOrDefault(root, "primarySubAssetKey");
     if (!importerId.has_value() ||
         !importerVersion.has_value() ||
-        !targetPlatform.has_value() ||
         !primarySubAssetKey.has_value())
     {
         return std::nullopt;
@@ -192,7 +191,6 @@ inline std::optional<NLS::Core::Assets::ArtifactManifest> ParseArtifactManifestJ
     manifest.sourceAssetId = NLS::Core::Assets::AssetId(*sourceAssetGuid);
     manifest.importerId = *importerId;
     manifest.importerVersion = *importerVersion;
-    manifest.targetPlatform = *targetPlatform;
     manifest.primarySubAssetKey = *primarySubAssetKey;
 
     const auto subAssets = root.find("subAssets");
@@ -245,6 +243,31 @@ inline std::optional<NLS::Core::Assets::ArtifactManifest> ParseArtifactManifestJ
                 *contentHash
             });
         }
+    }
+
+    if (targetPlatform.has_value())
+    {
+        manifest.targetPlatform = *targetPlatform;
+        if (manifest.targetPlatform.empty())
+            return std::nullopt;
+    }
+    else if (!manifest.subAssets.empty())
+    {
+        const auto& inferredTargetPlatform = manifest.subAssets.front().targetPlatform;
+        if (inferredTargetPlatform.empty())
+            return std::nullopt;
+
+        for (const auto& artifact : manifest.subAssets)
+        {
+            if (artifact.targetPlatform != inferredTargetPlatform)
+                return std::nullopt;
+        }
+
+        manifest.targetPlatform = inferredTargetPlatform;
+    }
+    else
+    {
+        return std::nullopt;
     }
 
     if (const auto dependencies = root.find("dependencies");

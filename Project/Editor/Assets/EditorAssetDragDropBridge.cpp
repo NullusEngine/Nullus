@@ -30,6 +30,12 @@ struct FastImportedPrefabLoadResult
     std::string diagnosticMessage;
 };
 
+enum class ImportedPrefabArtifactLoadMode
+{
+    ValidateRendererDependencies,
+    PreviewGraphOnly
+};
+
 struct ImportedAssetHandle
 {
     std::string assetPath;
@@ -355,11 +361,32 @@ FastImportedPrefabLoadResult ValidateGeneratedModelRendererArtifactsReady(
     return result;
 }
 
+bool GeneratedModelRendererArtifactFilesExist(
+    const NLS::Core::Assets::ArtifactManifest& manifest,
+    const std::filesystem::path& projectRoot,
+    const std::filesystem::path& artifactRoot)
+{
+    for (const auto& artifact : manifest.subAssets)
+    {
+        if (artifact.artifactType != NLS::Core::Assets::ArtifactType::Mesh &&
+            artifact.artifactType != NLS::Core::Assets::ArtifactType::Material &&
+            artifact.artifactType != NLS::Core::Assets::ArtifactType::Texture)
+        {
+            continue;
+        }
+
+        if (ResolveManifestArtifactPath(projectRoot, artifactRoot, artifact.artifactPath).empty())
+            return false;
+    }
+    return true;
+}
+
 FastImportedPrefabLoadResult LoadImportedPrefabFast(
     const std::filesystem::path& projectRoot,
     const std::string& assetPath,
     const std::string& prefabSubAssetKey,
-    const NLS::Core::Assets::AssetType assetType)
+    const NLS::Core::Assets::AssetType assetType,
+    const ImportedPrefabArtifactLoadMode loadMode = ImportedPrefabArtifactLoadMode::ValidateRendererDependencies)
 {
     FastImportedPrefabLoadResult result;
     const auto absolutePath = (projectRoot / std::filesystem::path(assetPath)).lexically_normal();
@@ -379,7 +406,8 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
     if (!ManifestDependenciesAreCurrent(*manifest, currentMeta, projectRoot, absolutePath))
         return result;
 
-    if (assetType == NLS::Core::Assets::AssetType::ModelScene)
+    if (loadMode == ImportedPrefabArtifactLoadMode::ValidateRendererDependencies &&
+        assetType == NLS::Core::Assets::AssetType::ModelScene)
     {
         auto rendererReadiness = ValidateGeneratedModelRendererArtifactsReady(
             *manifest,
@@ -511,7 +539,8 @@ bool IsImportedPrefabArtifactCurrentForPayload(
     const EditorAssetDragPayload& payload,
     const NLS::Engine::Assets::PrefabArtifact& prefab,
     const std::string& assetPath,
-    const std::string& prefabSubAssetKey)
+    const std::string& prefabSubAssetKey,
+    const bool validateRendererDependencies)
 {
     const auto payloadAssetId = GetEditorAssetDragPayloadAssetId(payload);
     if (!payloadAssetId.IsValid() || prefab.assetId != payloadAssetId)
@@ -535,7 +564,8 @@ bool IsImportedPrefabArtifactCurrentForPayload(
     if (!ManifestDependenciesAreCurrent(*manifest, currentMeta, projectRoot, absolutePath))
         return false;
 
-    if (currentMeta.assetType == NLS::Core::Assets::AssetType::ModelScene)
+    if (validateRendererDependencies &&
+        currentMeta.assetType == NLS::Core::Assets::AssetType::ModelScene)
     {
         auto rendererReadiness = ValidateGeneratedModelRendererArtifactsReady(
             *manifest,
@@ -543,6 +573,11 @@ bool IsImportedPrefabArtifactCurrentForPayload(
             artifactRoot);
         if (rendererReadiness.rendererDependencyMissing)
             return false;
+    }
+    else if (currentMeta.assetType == NLS::Core::Assets::AssetType::ModelScene &&
+        !GeneratedModelRendererArtifactFilesExist(*manifest, projectRoot, artifactRoot))
+    {
+        return false;
     }
 
     const auto* prefabManifestRecord = manifest->FindSubAsset(prefabSubAssetKey);
@@ -658,7 +693,8 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::InstantiateImportedAs
         nullptr,
         prefabInstanceRegistry,
         {},
-        false
+        // Keep Scene View mouse release cheap; render/resource systems resolve imported mesh/material references after commit.
+        true
     });
     return result;
 }
@@ -982,7 +1018,7 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropImportedPrefabArt
     if (prefab.generatedModelPrefab || prefabSubAssetKey.empty())
         prefabSubAssetKey = DefaultGeneratedPrefabSubAssetKey(assetPath);
 
-    if (!IsImportedPrefabArtifactCurrentForPayload(ProjectRoot(), payload, prefab, assetPath, prefabSubAssetKey))
+    if (!IsImportedPrefabArtifactCurrentForPayload(ProjectRoot(), payload, prefab, assetPath, prefabSubAssetKey, false))
     {
         result.handled = true;
         result.dragDrop.operation = DragDropOperationKind::InstantiatePrefab;
@@ -1022,7 +1058,8 @@ std::optional<NLS::Engine::Assets::PrefabArtifact> EditorAssetDragDropBridge::Tr
         ProjectRoot(),
         handle->assetPath,
         handle->prefabSubAssetKey,
-        handle->assetType);
+        handle->assetType,
+        ImportedPrefabArtifactLoadMode::PreviewGraphOnly);
     if (!fastLoad.prefab.has_value() ||
         fastLoad.prefab->assetId != handle->assetId)
     {

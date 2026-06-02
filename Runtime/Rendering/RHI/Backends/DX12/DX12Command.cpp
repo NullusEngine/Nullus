@@ -366,7 +366,9 @@ namespace NLS::Render::Backend
 		m_boundPushConstantRootParameters.clear();
 		m_initializedRootDescriptorTables.clear();
 		m_boundBindingSets.clear();
+		m_descriptorTableBindingError.clear();
 #if defined(_WIN32)
+		m_plannedRootDescriptorTables.clear();
 		m_bindingComputePipeline = false;
 #endif
 	}
@@ -417,31 +419,147 @@ namespace NLS::Render::Backend
 		return allRequiredTablesInitialized;
 	}
 
+	bool NativeDX12CommandBuffer::ValidateDescriptorTableBindings(std::string_view operationName) const
+	{
+		if (!m_descriptorTableBindingError.empty())
+		{
+			NLS_LOG_ERROR(
+				"NativeDX12CommandBuffer::" + std::string(operationName) +
+				" descriptor table binding failed earlier: commandList=" + m_debugName +
+				" reason=" + m_descriptorTableBindingError);
+			return false;
+		}
+		return true;
+	}
+
+	void NativeDX12CommandBuffer::SetDescriptorTableBindingError(std::string message)
+	{
+		if (m_descriptorTableBindingError.empty())
+			m_descriptorTableBindingError = std::move(message);
+	}
+
+	void NativeDX12CommandBuffer::ClearDescriptorTableBindingError()
+	{
+		m_descriptorTableBindingError.clear();
+	}
+
+	void NativeDX12CommandBuffer::RemoveBoundBindingSet(uint32_t setIndex)
+	{
+		const auto newEnd = std::remove_if(
+			m_boundBindingSets.begin(),
+			m_boundBindingSets.end(),
+			[setIndex](const auto& boundSet)
+			{
+				return boundSet.first == setIndex;
+			});
+		if (newEnd != m_boundBindingSets.end())
+		{
+			m_boundBindingSets.erase(newEnd, m_boundBindingSets.end());
+			m_descriptorTablesDirty = true;
+			for (UINT rootParameterIndex = 0; rootParameterIndex < m_boundDescriptorTables.size(); ++rootParameterIndex)
+			{
+				if (m_boundDescriptorTables[rootParameterIndex].set == setIndex &&
+					rootParameterIndex < m_initializedRootDescriptorTables.size())
+				{
+					m_initializedRootDescriptorTables[rootParameterIndex] = false;
+				}
+			}
+		}
+	}
+
 	bool NativeDX12CommandBuffer::FlushBoundDescriptorTables()
 	{
 		if (m_commandList == nullptr || m_boundDescriptorTables.empty())
 			return true;
 
+		ClearDescriptorTableBindingError();
+		if (!ValidateDescriptorTableBindings("FlushBoundDescriptorTables"))
+			return false;
+
+		m_plannedRootDescriptorTables.clear();
+		if (m_plannedRootDescriptorTables.capacity() < m_boundDescriptorTables.size())
+			m_plannedRootDescriptorTables.reserve(m_boundDescriptorTables.size());
+
 		ID3D12DescriptorHeap* desiredResourceHeap = nullptr;
 		ID3D12DescriptorHeap* desiredSamplerHeap = nullptr;
-		for (const auto& [boundSetIndex, boundSet] : m_boundBindingSets)
-		{
-			(void)boundSetIndex;
-			auto* boundNativeBindingSet = ResolveDX12BindingSetAccess(boundSet);
-			if (boundNativeBindingSet == nullptr)
-				continue;
 
-			if (desiredResourceHeap == nullptr)
+		for (UINT rootParameterIndex = 0; rootParameterIndex < m_boundDescriptorTables.size(); ++rootParameterIndex)
+		{
+			const auto& table = m_boundDescriptorTables[rootParameterIndex];
+			const auto boundSetIt = std::find_if(
+				m_boundBindingSets.begin(),
+				m_boundBindingSets.end(),
+				[&table](const auto& boundSet)
+				{
+					return boundSet.first == table.set;
+				});
+			if (boundSetIt == m_boundBindingSets.end())
 			{
-				desiredResourceHeap =
-					boundNativeBindingSet->GetDescriptorHeap(NLS::Render::RHI::DX12::DX12DescriptorHeapKind::Resource);
+				SetDescriptorTableBindingError(
+					"root descriptor table " + std::to_string(rootParameterIndex) +
+					" requires set " + std::to_string(table.set) +
+					" heap " + ToDescriptorHeapKindName(table.heapKind) +
+					", but no binding set was bound");
+				continue;
 			}
-			if (desiredSamplerHeap == nullptr)
+
+			auto* boundNativeBindingSet = ResolveDX12BindingSetAccess(boundSetIt->second);
+			if (boundNativeBindingSet == nullptr)
 			{
-				desiredSamplerHeap =
-					boundNativeBindingSet->GetDescriptorHeap(NLS::Render::RHI::DX12::DX12DescriptorHeapKind::Sampler);
+				SetDescriptorTableBindingError(
+					"binding set " + std::to_string(boundSetIt->first) +
+					" has no valid DX12 native binding set");
+				continue;
 			}
+			if (!boundNativeBindingSet->IsCompatibleWithDescriptorTable(table))
+			{
+				SetDescriptorTableBindingError(
+					"binding set " + std::to_string(boundSetIt->first) +
+					" is incompatible with root descriptor table " +
+					std::to_string(rootParameterIndex) +
+					" heap " + ToDescriptorHeapKindName(table.heapKind));
+				continue;
+			}
+
+			const auto gpuHandle = boundNativeBindingSet->GetGPUHandle(table.set, table.heapKind);
+			if (gpuHandle.ptr == 0)
+			{
+				SetDescriptorTableBindingError(
+					"binding set " + std::to_string(boundSetIt->first) +
+					" returned a zero GPU descriptor handle for root descriptor table " +
+					std::to_string(rootParameterIndex) +
+					" heap " + ToDescriptorHeapKindName(table.heapKind));
+				continue;
+			}
+
+			auto* tableHeap = boundNativeBindingSet->GetDescriptorHeap(table.heapKind);
+			if (tableHeap == nullptr)
+			{
+				SetDescriptorTableBindingError(
+					"binding set " + std::to_string(boundSetIt->first) +
+					" returned a null descriptor heap for root descriptor table " +
+					std::to_string(rootParameterIndex) +
+					" heap " + ToDescriptorHeapKindName(table.heapKind));
+				continue;
+			}
+			auto*& desiredHeap = table.heapKind == NLS::Render::RHI::DX12::DX12DescriptorHeapKind::Sampler
+				? desiredSamplerHeap
+				: desiredResourceHeap;
+			if (desiredHeap != nullptr && desiredHeap != tableHeap)
+			{
+				SetDescriptorTableBindingError(
+					"root descriptor tables reference multiple DX12 shader-visible " +
+					std::string(ToDescriptorHeapKindName(table.heapKind)) +
+					" heaps in one command list");
+				continue;
+			}
+			desiredHeap = tableHeap;
+
+			m_plannedRootDescriptorTables.push_back({ rootParameterIndex, gpuHandle, table.heapKind });
 		}
+
+		if (!ValidateDescriptorTableBindings("FlushBoundDescriptorTables"))
+			return false;
 
 		if (m_isChildCommandBuffer &&
 			m_descriptorHeapsSet &&
@@ -469,33 +587,15 @@ namespace NLS::Render::Backend
 			m_descriptorHeapsSet = true;
 		}
 
-		for (const auto& [boundSetIndex, boundSet] : m_boundBindingSets)
+		for (const auto& plannedTable : m_plannedRootDescriptorTables)
 		{
-			auto* boundNativeBindingSet = ResolveDX12BindingSetAccess(boundSet);
-			if (boundNativeBindingSet == nullptr)
-				continue;
-
-			for (UINT rootParameterIndex = 0; rootParameterIndex < m_boundDescriptorTables.size(); ++rootParameterIndex)
-			{
-				const auto& table = m_boundDescriptorTables[rootParameterIndex];
-				if (table.set != boundSetIndex)
-					continue;
-				if (!boundNativeBindingSet->IsCompatibleWithDescriptorTable(table))
-					continue;
-
-				const auto gpuHandle = boundNativeBindingSet->GetGPUHandle(table.set, table.heapKind);
-				if (gpuHandle.ptr == 0)
-					continue;
-
-				if (m_bindingComputePipeline)
-					m_commandList->SetComputeRootDescriptorTable(rootParameterIndex, gpuHandle);
-				else
-					m_commandList->SetGraphicsRootDescriptorTable(rootParameterIndex, gpuHandle);
-				if (rootParameterIndex < m_initializedRootDescriptorTables.size())
-					m_initializedRootDescriptorTables[rootParameterIndex] = true;
-			}
+			if (m_bindingComputePipeline)
+				m_commandList->SetComputeRootDescriptorTable(plannedTable.rootParameterIndex, plannedTable.gpuHandle);
+			else
+				m_commandList->SetGraphicsRootDescriptorTable(plannedTable.rootParameterIndex, plannedTable.gpuHandle);
+			if (plannedTable.rootParameterIndex < m_initializedRootDescriptorTables.size())
+				m_initializedRootDescriptorTables[plannedTable.rootParameterIndex] = true;
 		}
-
 		return true;
 	}
 
@@ -509,6 +609,20 @@ namespace NLS::Render::Backend
 
 		m_descriptorTablesDirty = false;
 		return true;
+	}
+
+	void NativeDX12CommandBuffer::InvalidateParentStateAfterChildExecution()
+	{
+		m_boundPipeline.reset();
+		m_boundComputePipeline.reset();
+		m_boundDescriptorTables.clear();
+		m_boundPushConstantRootParameters.clear();
+		m_initializedRootDescriptorTables.clear();
+		m_boundBindingSets.clear();
+		m_descriptorTableBindingError.clear();
+		m_plannedRootDescriptorTables.clear();
+		m_descriptorTablesDirty = false;
+		m_bindingComputePipeline = false;
 	}
 #endif
 
@@ -1094,6 +1208,7 @@ namespace NLS::Render::Backend
 		m_boundDescriptorTables.clear();
 		m_boundPushConstantRootParameters.clear();
 		m_boundBindingSets.clear();
+		ClearDescriptorTableBindingError();
 		if (pipeline->GetDesc().pipelineLayout != nullptr)
 		{
 			auto* nativePipelineLayout = dynamic_cast<IDX12PipelineLayoutAccess*>(pipeline->GetDesc().pipelineLayout.get());
@@ -1146,6 +1261,7 @@ namespace NLS::Render::Backend
 		m_boundDescriptorTables.clear();
 		m_boundPushConstantRootParameters.clear();
 		m_boundBindingSets.clear();
+		ClearDescriptorTableBindingError();
 		if (pipeline->GetDesc().pipelineLayout != nullptr)
 		{
 			auto* nativePipelineLayout = dynamic_cast<IDX12PipelineLayoutAccess*>(pipeline->GetDesc().pipelineLayout.get());
@@ -1175,10 +1291,53 @@ namespace NLS::Render::Backend
 
 		auto* nativeBindingSet = ResolveDX12BindingSetAccess(bindingSet);
 		if (nativeBindingSet == nullptr)
+		{
+			RemoveBoundBindingSet(setIndex);
+			SetDescriptorTableBindingError(
+				"BindBindingSet set " + std::to_string(setIndex) +
+				" rejected binding set \"" + std::string(bindingSet->GetDebugName()) +
+				"\" because it has no valid DX12 native binding set");
 			return;
+		}
 
 		if (m_boundDescriptorTables.empty())
 			return;
+
+		bool matchedRequiredTable = false;
+		bool matchedCompatibleTable = false;
+		bool hasNonZeroGpuHandle = false;
+		for (const auto& table : m_boundDescriptorTables)
+		{
+			if (table.set != setIndex)
+				continue;
+
+			matchedRequiredTable = true;
+			if (!nativeBindingSet->IsCompatibleWithDescriptorTable(table))
+				continue;
+
+			matchedCompatibleTable = true;
+			const auto gpuHandle = nativeBindingSet->GetGPUHandle(table.set, table.heapKind);
+			if (gpuHandle.ptr != 0)
+				hasNonZeroGpuHandle = true;
+		}
+		if (matchedRequiredTable && !matchedCompatibleTable)
+		{
+			RemoveBoundBindingSet(setIndex);
+			SetDescriptorTableBindingError(
+				"BindBindingSet set " + std::to_string(setIndex) +
+				" rejected binding set \"" + std::string(bindingSet->GetDebugName()) +
+				"\" because it is incompatible with the bound DX12 pipeline layout");
+			return;
+		}
+		if (matchedCompatibleTable && !hasNonZeroGpuHandle)
+		{
+			RemoveBoundBindingSet(setIndex);
+			SetDescriptorTableBindingError(
+				"BindBindingSet set " + std::to_string(setIndex) +
+				" rejected binding set \"" + std::string(bindingSet->GetDebugName()) +
+				"\" because its DX12 descriptor table GPU handle is zero");
+			return;
+		}
 
 		const auto existingBindingSetIt = std::find_if(
 			m_boundBindingSets.begin(),
@@ -1194,9 +1353,6 @@ namespace NLS::Render::Backend
 
 		m_recordedBindingSetKeepAlive.push_back(bindingSet);
 		m_descriptorTablesDirty = true;
-		if (m_isChildCommandBuffer)
-			return;
-		(void)FlushBoundDescriptorTablesIfDirty();
 #else
 		(void)setIndex;
 		(void)bindingSet;
@@ -1327,6 +1483,13 @@ namespace NLS::Render::Backend
 				"NativeDX12CommandBuffer::DrawChecked: descriptor table flush failed"
 			};
 		}
+		if (!ValidateDescriptorTableBindings("Draw"))
+		{
+			return {
+				NLS::Render::RHI::RHICommandRecordingStatusCode::BackendFailure,
+				"NativeDX12CommandBuffer::DrawChecked: descriptor table binding failed"
+			};
+		}
 		if (!HasInitializedRequiredRootDescriptorTables("Draw"))
 		{
 			return {
@@ -1370,6 +1533,13 @@ namespace NLS::Render::Backend
 				"NativeDX12CommandBuffer::DrawIndexedChecked: descriptor table flush failed"
 			};
 		}
+		if (!ValidateDescriptorTableBindings("DrawIndexed"))
+		{
+			return {
+				NLS::Render::RHI::RHICommandRecordingStatusCode::BackendFailure,
+				"NativeDX12CommandBuffer::DrawIndexedChecked: descriptor table binding failed"
+			};
+		}
 		if (!HasInitializedRequiredRootDescriptorTables("DrawIndexed"))
 		{
 			return {
@@ -1405,6 +1575,7 @@ namespace NLS::Render::Backend
 			m_boundComputePipeline != nullptr &&
 			IsBoundComputePipelineNativeValid() &&
 			FlushBoundDescriptorTablesIfDirty() &&
+			ValidateDescriptorTableBindings("Dispatch") &&
 			HasInitializedRequiredRootDescriptorTables("Dispatch"))
 		{
 			m_commandList->Dispatch(groupCountX, groupCountY, groupCountZ);
@@ -1864,10 +2035,9 @@ namespace NLS::Render::Backend
 			m_currentResourceDescriptorHeap = nativeChild->m_currentResourceDescriptorHeap;
 			m_currentSamplerDescriptorHeap = nativeChild->m_currentSamplerDescriptorHeap;
 			m_descriptorHeapsSet = true;
-			m_descriptorTablesDirty = true;
-			m_initializedRootDescriptorTables.clear();
 		}
 		m_commandList->ExecuteBundle(nativeChild->GetCommandList());
+		InvalidateParentStateAfterChildExecution();
 		return {};
 #else
 		(void)childCommandBuffer;

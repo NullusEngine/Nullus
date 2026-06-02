@@ -109,6 +109,11 @@ namespace NLS::Render::Backend
 		bool FlushBoundDescriptorTables();
 		bool FlushBoundDescriptorTablesIfDirty();
 		bool HasInitializedRequiredRootDescriptorTables(std::string_view operationName) const;
+		bool ValidateDescriptorTableBindings(std::string_view operationName) const;
+		void SetDescriptorTableBindingError(std::string message);
+		void ClearDescriptorTableBindingError();
+		void RemoveBoundBindingSet(uint32_t setIndex);
+		void InvalidateParentStateAfterChildExecution();
 #endif
 
 		std::string m_debugName;
@@ -126,6 +131,15 @@ namespace NLS::Render::Backend
 		ID3D12DescriptorHeap* m_currentSamplerDescriptorHeap = nullptr;
 		bool m_descriptorHeapsSet = false;
 		bool m_descriptorTablesDirty = false;
+		std::string m_descriptorTableBindingError;
+		struct PlannedRootDescriptorTable
+		{
+			UINT rootParameterIndex = 0u;
+			D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle{};
+			NLS::Render::RHI::DX12::DX12DescriptorHeapKind heapKind =
+				NLS::Render::RHI::DX12::DX12DescriptorHeapKind::Resource;
+		};
+		std::vector<PlannedRootDescriptorTable> m_plannedRootDescriptorTables;
 		struct ActiveRenderPassTransition
 		{
 			ID3D12Resource* resource = nullptr;

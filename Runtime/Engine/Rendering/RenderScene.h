@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <Math/Matrix4.h>
+#include <Rendering/Data/DrawCallOptimizationStats.h>
 #include <Rendering/Data/Frustum.h>
 #include <Rendering/Entities/Drawable.h>
 #include <Rendering/Geometry/BoundingSphere.h>
@@ -67,6 +68,8 @@ namespace NLS::Engine::Rendering
 		SceneDrawables skyboxes;
 	};
 
+	using DrawCallOptimizationStats = NLS::Render::Data::DrawCallOptimizationStats;
+
 	enum class RenderSceneVisibilityMode
 	{
 		Auto,
@@ -107,6 +110,8 @@ namespace NLS::Engine::Rendering
 
 		[[nodiscard]] size_t GetPrimitiveCount() const;
 		[[nodiscard]] uint64_t GetCachedCommandBuildCountForTesting() const;
+		[[nodiscard]] const DrawCallOptimizationStats& GetLastDrawCallOptimizationStats() const;
+		[[nodiscard]] const DrawCallOptimizationStats& GetLastDrawCallOptimizationStatsForTesting() const;
 		[[nodiscard]] RenderSceneVisibilitySnapshot EvaluateVisibilityForTesting(
 			const RenderSceneVisibilityOptions& options = {},
 			RenderSceneVisibilityMode mode = RenderSceneVisibilityMode::Auto) const;
@@ -218,5 +223,7 @@ namespace NLS::Engine::Rendering
 		std::unordered_map<Components::MeshRenderer*, size_t> m_primitiveIndexByMeshRenderer;
 		uint64_t m_nextCachedCommandBuildSerial = 1u;
 		uint64_t m_cachedCommandBuildCount = 0u;
+		RenderSceneSyncStats m_lastSyncStats{};
+		mutable DrawCallOptimizationStats m_lastDrawCallOptimizationStats{};
 	};
 }

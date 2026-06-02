@@ -611,7 +611,7 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 		frustum = frustumOverride ? frustumOverride : camera.GetFrustum();
 	}
 
-	m_renderScene.Synchronize(scene, {
+	const auto syncStats = m_renderScene.Synchronize(scene, {
 		ResolveDefaultSceneMaterial(),
 		overrideMaterial
 	});
@@ -655,6 +655,11 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 		static_cast<uint64_t>(opaques.size()),
 		static_cast<uint64_t>(transparents.size()),
 		static_cast<uint64_t>(skyboxes.size()));
+	auto optimizationStats = m_renderScene.GetLastDrawCallOptimizationStats();
+	optimizationStats.cachedCommandRebuildCount = syncStats.rebuiltCachedCommandCount;
+	optimizationStats.rawVisibleObjectCount += static_cast<uint64_t>(skyboxes.size());
+	optimizationStats.submittedSceneDrawCount += static_cast<uint64_t>(skyboxes.size());
+	m_rendererStats.RecordDrawCallOptimizationStats(optimizationStats);
 	return { opaques, transparents, skyboxes };
 }
 }

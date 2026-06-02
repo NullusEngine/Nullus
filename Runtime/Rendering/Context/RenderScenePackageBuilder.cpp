@@ -1,6 +1,7 @@
 #include "Rendering/Context/RenderScenePackageBuilder.h"
 
 #include <algorithm>
+#include <iterator>
 #include <string>
 
 namespace NLS::Render::Context
@@ -76,18 +77,18 @@ namespace NLS::Render::Context
             package.parallelCommandWorkUnits.reserve(package.passCommandInputs.size());
             for (size_t index = 0; index < package.passCommandInputs.size(); ++index)
             {
-                ParallelCommandWorkUnit workUnit;
-                workUnit.workUnitIndex = static_cast<uint64_t>(index);
-                workUnit.submissionOrder = workUnit.workUnitIndex;
-                workUnit.commandInput = package.passCommandInputs[index];
-                workUnit.debugName = !workUnit.commandInput.debugName.empty()
-                    ? workUnit.commandInput.debugName
-                    : std::string{};
-                package.parallelCommandWorkUnits.push_back(std::move(workUnit));
+                auto workUnits = BuildRecordedDrawCommandWorkUnitsForPass(
+                    package.passCommandInputs[index],
+                    static_cast<uint64_t>(index),
+                    static_cast<uint64_t>(package.parallelCommandWorkUnits.size()));
+                package.parallelCommandWorkUnits.insert(
+                    package.parallelCommandWorkUnits.end(),
+                    std::make_move_iterator(workUnits.begin()),
+                    std::make_move_iterator(workUnits.end()));
             }
             package.parallelCommandWorkUnitCount = static_cast<uint64_t>(package.parallelCommandWorkUnits.size());
             package.containsParallelCommandWorkUnits = !package.parallelCommandWorkUnits.empty();
-            package.parallelDrawCommandBatches = BuildUE427ParallelDrawCommandBatches(package.parallelCommandWorkUnits);
+            package.parallelDrawCommandBatches = BuildParallelDrawCommandBatchMetadata(package.parallelCommandWorkUnits);
         }
     }
 

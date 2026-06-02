@@ -74,6 +74,7 @@ namespace NLS::Render::Backend
 		std::string_view GetDebugName() const override;
 		const NLS::Render::RHI::RHIBindingSetDesc& GetDesc() const override;
 		NLS::Render::RHI::NativeHandle GetNativeBindingSetHandle() const override;
+		NLS::Render::RHI::NativeHandle GetNativeDescriptorHeapCompatibilityHandle(uint32_t heapClass) const override;
 
 #if defined(_WIN32)
 		D3D12_GPU_DESCRIPTOR_HANDLE GetGPUHandle(

@@ -9,6 +9,7 @@
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
@@ -39,6 +40,8 @@ namespace NLS::Render::Context
         std::vector<Render::RHI::RHIFrameContext> frameContexts;
         std::unique_ptr<Render::Tooling::RenderDocCaptureController> renderDocCaptureController;
         size_t currentFrameIndex = 0u;
+        std::vector<std::vector<std::shared_ptr<void>>> retainedThreadedSubmitResourceKeepAliveByFrameContext;
+        std::unordered_set<size_t> deferredThreadedFrameScopedRetirementFrameContexts;
         bool explicitFrameActive = false;
         bool uiStandaloneFrameActive = false;
         mutable std::mutex completedReadbackTextureMutex;
@@ -90,6 +93,7 @@ namespace NLS::Render::Context
             bool requiresDependencyVisibility = false;
             std::vector<std::shared_ptr<Render::RHI::RHICommandPool>> commandPools;
             std::vector<std::shared_ptr<Render::RHI::RHICommandBuffer>> commandBuffers;
+            std::vector<std::shared_ptr<Render::RHI::RHICommandBuffer>> childCommandBuffers;
             std::vector<std::shared_ptr<Render::RHI::RHISemaphore>> waitSemaphores;
             std::vector<std::shared_ptr<Render::RHI::RHISemaphore>> signalSemaphores;
         };
@@ -170,10 +174,17 @@ namespace NLS::Render::Context
             const RenderScenePackage& renderScenePackage,
             AsyncComputeSubmitPlan& submitPlan,
             RhiSubmissionFrame* submissionFrame);
+        NLS_RENDER_API bool ReleaseDeferredThreadedFrameScopedResourcesAfterFence(
+            DriverImpl& impl,
+            Render::RHI::RHIFrameContext& frameContext,
+            size_t frameContextIndex);
+        NLS_RENDER_API void ReleaseDeferredThreadedFrameScopedResourcesAfterFence(DriverImpl& impl);
         NLS_RENDER_API std::vector<ParallelCommandWorkUnit> BuildParallelCommandWorkUnits(
             const RenderScenePackage& renderScenePackage,
             bool parallelRecordingReady,
-            bool parallelTranslationReady);
+            bool parallelTranslationReady,
+            bool allowOrderedSlicedSubmission = true,
+            bool allowInRenderPassChildCommandRecording = true);
         NLS_RENDER_API std::vector<WorkUnitDependencyEdge> FilterWorkUnitDependencyEdges(
             const ParallelCommandWorkUnit& workUnit,
             const std::function<bool(const WorkUnitDependencyEdge&)>& predicate);
@@ -216,6 +227,12 @@ namespace NLS::Render::Context
         NLS_RENDER_API uint64_t RecordPreparedDrawCommandsForPass(
             Render::RHI::RHICommandBuffer* commandBuffer,
             const RenderPassCommandInput& input);
+        NLS_RENDER_API uint64_t RecordPreparedDrawCommandsForPassRange(
+            Render::RHI::RHICommandBuffer* commandBuffer,
+            const RenderPassCommandInput& input,
+            const std::vector<RecordedDrawCommandInput>& recordedDrawCommands,
+            uint64_t recordedDrawBegin,
+            uint64_t recordedDrawCount);
         NLS_RENDER_API uint64_t RecordComputeDispatches(
             Render::RHI::RHICommandBuffer& commandBuffer,
             const std::vector<RecordedComputeDispatchInput>& dispatchInputs,

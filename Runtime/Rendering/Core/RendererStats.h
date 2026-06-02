@@ -11,6 +11,11 @@ namespace NLS::Render::Context
     struct ThreadedFrameTelemetry;
 }
 
+namespace NLS::Render::Data
+{
+    struct DrawCallOptimizationStats;
+}
+
 namespace NLS::Render::Core
 {
 class NLS_RENDER_API RendererStats
@@ -23,6 +28,7 @@ public:
     void RecordGBufferMaterialSync();
     void RecordRenderBindingSetCreation(uint64_t count = 1u);
     void RecordRenderSnapshotBufferCreation(uint64_t count = 1u);
+    void RecordDrawCallOptimizationStats(const NLS::Render::Data::DrawCallOptimizationStats& stats);
     void SetThreadedFrameTelemetry(const NLS::Render::Context::ThreadedFrameTelemetry& telemetry);
     bool ReuseLastThreadedFrameTelemetry();
     static void ApplyThreadedFrameTelemetry(

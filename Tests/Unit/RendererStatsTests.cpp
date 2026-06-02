@@ -8,6 +8,7 @@
 #include "Rendering/Core/CompositeRenderer.h"
 #include "Rendering/Core/FrameObjectBindingProvider.h"
 #include "Rendering/Core/RendererStats.h"
+#include "Rendering/Data/DrawCallOptimizationStats.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
@@ -585,6 +586,9 @@ TEST(RendererStatsTests, RendererStatsTracksInfrastructureMainlineDiagnostics)
     telemetry.pipelineCacheComputeMisses = 1u;
     telemetry.pipelineCacheComputeStores = 1u;
     telemetry.pipelineCacheComputeEntries = 1u;
+    telemetry.parallelCommandWorkUnitCount = 5u;
+    telemetry.parallelRecordingWorkerCount = 3u;
+    telemetry.parallelFallbackReason = "ordered sliced submission unavailable";
 
     stats.BeginFrame();
     stats.SetThreadedFrameTelemetry(telemetry);
@@ -613,4 +617,59 @@ TEST(RendererStatsTests, RendererStatsTracksInfrastructureMainlineDiagnostics)
     EXPECT_EQ(frameInfo.pipelineCacheComputeMisses, 1u);
     EXPECT_EQ(frameInfo.pipelineCacheComputeStores, 1u);
     EXPECT_EQ(frameInfo.pipelineCacheComputeEntries, 1u);
+    EXPECT_EQ(frameInfo.parallelCommandWorkUnitCount, 5u);
+    EXPECT_EQ(frameInfo.parallelRecordingWorkerCount, 3u);
+    EXPECT_EQ(frameInfo.parallelFallbackReason, "ordered sliced submission unavailable");
+}
+
+TEST(RendererStatsTests, RendererStatsTracksDrawCallOptimizationCounters)
+{
+    NLS::Render::Core::RendererStats stats;
+
+    stats.BeginFrame();
+    stats.RecordDrawCallOptimizationStats({
+        .rawVisibleObjectCount = 1000u,
+        .submittedSceneDrawCount = 96u,
+        .dynamicInstanceGroupCount = 12u,
+        .largestInstanceGroupSize = 128u,
+        .cachedCommandRebuildCount = 4u,
+        .objectDataOverflowDroppedObjectCount = 7u
+    });
+    stats.EndFrame();
+
+    const auto& frameInfo = stats.GetFrameInfo();
+    EXPECT_EQ(frameInfo.rawVisibleObjectCount, 1000u);
+    EXPECT_EQ(frameInfo.submittedSceneDrawCount, 96u);
+    EXPECT_EQ(frameInfo.dynamicInstanceGroupCount, 12u);
+    EXPECT_EQ(frameInfo.largestInstanceGroupSize, 128u);
+    EXPECT_EQ(frameInfo.cachedCommandRebuildCount, 4u);
+    EXPECT_EQ(frameInfo.objectDataOverflowDroppedObjectCount, 7u);
+}
+
+TEST(RendererStatsTests, DrawCallOptimizationStatsDoesNotOverwriteThreadedTelemetry)
+{
+    NLS::Render::Core::RendererStats stats;
+
+    NLS::Render::Context::ThreadedFrameTelemetry telemetry;
+    telemetry.parallelCommandWorkUnitCount = 3u;
+    telemetry.parallelRecordingWorkerCount = 2u;
+    telemetry.parallelFallbackReason = "unsafe ordered slice fallback";
+
+    stats.BeginFrame();
+    stats.SetThreadedFrameTelemetry(telemetry);
+    stats.RecordDrawCallOptimizationStats({
+        .rawVisibleObjectCount = 1000u,
+        .submittedSceneDrawCount = 96u,
+        .dynamicInstanceGroupCount = 12u,
+        .largestInstanceGroupSize = 128u,
+        .cachedCommandRebuildCount = 4u,
+        .objectDataOverflowDroppedObjectCount = 7u
+    });
+    stats.EndFrame();
+
+    const auto& frameInfo = stats.GetFrameInfo();
+    EXPECT_EQ(frameInfo.rawVisibleObjectCount, 1000u);
+    EXPECT_EQ(frameInfo.parallelCommandWorkUnitCount, 3u);
+    EXPECT_EQ(frameInfo.parallelRecordingWorkerCount, 2u);
+    EXPECT_EQ(frameInfo.parallelFallbackReason, "unsafe ordered slice fallback");
 }

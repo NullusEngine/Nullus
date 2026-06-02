@@ -14,3 +14,7 @@ target_sources(
     "${CMAKE_CURRENT_SOURCE_DIR}/PrimitiveFactory.h"
     "${CMAKE_CURRENT_SOURCE_DIR}/PrimitiveType.h"
 )
+
+target_compile_definitions(NLS_Engine PUBLIC
+  $<$<BOOL:${NLS_ENABLE_TEST_HOOKS}>:NLS_ENABLE_TEST_HOOKS=1>
+)

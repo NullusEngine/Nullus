@@ -79,6 +79,8 @@ target_sources(
     "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/TextureFormatResolver.h"
     "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/TextureMipGenerator.cpp"
     "${NLS_ROOT_DIR}/Runtime/Rendering/Assets/TextureMipGenerator.h"
+    "${NLS_ROOT_DIR}/Runtime/Rendering/Data/ObjectDataLimits.cpp"
+    "${NLS_ROOT_DIR}/Runtime/Rendering/Data/ObjectDataLimits.h"
     "${NLS_ROOT_DIR}/Runtime/Rendering/Geometry/BoundingSphereUtils.h"
     "${NLS_ROOT_DIR}/Runtime/Core/ResourceManagement/MaterialManager.cpp"
     "${NLS_ROOT_DIR}/Runtime/Core/ResourceManagement/MeshManager.cpp"

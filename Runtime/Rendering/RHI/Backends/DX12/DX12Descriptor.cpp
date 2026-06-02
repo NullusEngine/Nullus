@@ -394,6 +394,23 @@ namespace NLS::Render::Backend
 #endif
 	}
 
+	NLS::Render::RHI::NativeHandle NativeDX12BindingSet::GetNativeDescriptorHeapCompatibilityHandle(
+		const uint32_t heapClass) const
+	{
+#if defined(_WIN32)
+		const auto heapKind = heapClass == 1u
+			? NLS::Render::RHI::DX12::DX12DescriptorHeapKind::Sampler
+			: NLS::Render::RHI::DX12::DX12DescriptorHeapKind::Resource;
+		return {
+			NLS::Render::RHI::BackendType::DX12,
+			GetDescriptorHeap(heapKind)
+		};
+#else
+		(void)heapClass;
+		return {};
+#endif
+	}
+
 #if defined(_WIN32)
 	D3D12_GPU_DESCRIPTOR_HANDLE NativeDX12BindingSet::GetGPUHandle(
 		uint32_t set,

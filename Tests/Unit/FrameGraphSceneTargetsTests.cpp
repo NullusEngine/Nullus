@@ -2896,6 +2896,11 @@ TEST(FrameGraphSceneTargetsTests, ApplyThreadedExecutionPlanPrependsAdditionalOr
     EXPECT_EQ(package.parallelCommandWorkUnits[0].submissionOrder, 0u);
     EXPECT_EQ(package.parallelCommandWorkUnits[1].submissionOrder, 1u);
     EXPECT_EQ(package.parallelCommandWorkUnits[2].submissionOrder, 2u);
+    EXPECT_EQ(
+        package.parallelCommandWorkUnits[0].sourcePassIndex,
+        NLS::Render::Context::kInvalidParallelCommandSourcePassIndex);
+    EXPECT_EQ(package.parallelCommandWorkUnits[1].sourcePassIndex, 0u);
+    EXPECT_EQ(package.parallelCommandWorkUnits[2].sourcePassIndex, 1u);
     EXPECT_FALSE(package.parallelCommandWorkUnits[2].commandInput.dependencySourceWorkUnitIndex.has_value());
     ASSERT_EQ(package.workUnitDependencyEdges.size(), 1u);
     EXPECT_EQ(package.workUnitDependencyEdges[0].sourceWorkUnitIndex, 1u);
@@ -2903,6 +2908,75 @@ TEST(FrameGraphSceneTargetsTests, ApplyThreadedExecutionPlanPrependsAdditionalOr
     ASSERT_EQ(package.parallelCommandWorkUnits[2].incomingDependencyEdges.size(), 1u);
     EXPECT_EQ(package.parallelCommandWorkUnits[2].incomingDependencyEdges[0].sourceWorkUnitIndex, 1u);
     EXPECT_EQ(package.parallelCommandWorkUnits[2].incomingDependencyEdges[0].targetWorkUnitIndex, 2u);
+}
+
+TEST(FrameGraphSceneTargetsTests, ApplyThreadedExecutionPlanSlicesLargeRecordedPassAndRemapsDependencies)
+{
+    NLS::Render::Context::RenderScenePackage package;
+    NLS::Render::FrameGraph::ThreadedRenderSceneExecutionPlan plan;
+
+    NLS::Render::Context::RenderPassCommandInput opaquePass;
+    opaquePass.kind = NLS::Render::Context::RenderPassCommandKind::Opaque;
+    opaquePass.debugName = "ForwardOpaque";
+    opaquePass.drawCount = 2000u;
+    opaquePass.clearColor = false;
+    opaquePass.clearDepth = false;
+    opaquePass.clearStencil = false;
+    opaquePass.recordedDrawCommands.resize(2000u);
+
+    NLS::Render::Context::RenderPassCommandInput lightingPass;
+    lightingPass.kind = NLS::Render::Context::RenderPassCommandKind::Lighting;
+    lightingPass.debugName = "DeferredLighting";
+    lightingPass.drawCount = 1u;
+    lightingPass.recordedDrawCommands.resize(1u);
+
+    plan.passes.push_back(MakeThreadedPassPlan(
+        opaquePass,
+        NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Opaque,
+        "ForwardOpaque",
+        2000u));
+    plan.passes.push_back(MakeThreadedPassPlan(
+        lightingPass,
+        NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Auxiliary,
+        "DeferredLighting",
+        1u));
+    plan.dependencies = NLS::Render::FrameGraph::BuildThreadedRenderSceneDependencyEdges(plan.passes);
+
+    NLS::Render::FrameGraph::ApplyThreadedRenderSceneExecutionPlan(package, plan);
+
+    ASSERT_EQ(package.passCommandInputs.size(), 2u);
+    EXPECT_EQ(package.passCommandInputs[0].recordedDrawCommands.size(), 2000u);
+    ASSERT_GT(package.parallelCommandWorkUnits.size(), 2u);
+
+    const auto opaqueSliceCount = package.parallelCommandWorkUnits[0].sliceCount;
+    ASSERT_GT(opaqueSliceCount, 1u);
+    uint64_t coveredOpaqueDraws = 0u;
+    for (uint32_t sliceIndex = 0u; sliceIndex < opaqueSliceCount; ++sliceIndex)
+    {
+        const auto& workUnit = package.parallelCommandWorkUnits[sliceIndex];
+        EXPECT_EQ(workUnit.sourcePassIndex, 0u);
+        EXPECT_EQ(workUnit.sliceIndex, sliceIndex);
+        EXPECT_EQ(workUnit.sliceCount, opaqueSliceCount);
+        EXPECT_EQ(workUnit.recordedDrawBegin, coveredOpaqueDraws);
+        EXPECT_TRUE(workUnit.commandInput.recordedDrawCommands.empty());
+        EXPECT_EQ(workUnit.commandInput.drawCount, workUnit.recordedDrawCount);
+        EXPECT_TRUE(workUnit.requiresOrderedSlicedSubmission);
+        EXPECT_FALSE(workUnit.eligibleForParallelRecording);
+        EXPECT_FALSE(workUnit.eligibleForParallelTranslation);
+        coveredOpaqueDraws += workUnit.recordedDrawCount;
+        EXPECT_FALSE(workUnit.commandInput.clearColor);
+        EXPECT_FALSE(workUnit.commandInput.clearDepth);
+        EXPECT_FALSE(workUnit.commandInput.clearStencil);
+    }
+    EXPECT_EQ(coveredOpaqueDraws, 2000u);
+
+    ASSERT_EQ(package.workUnitDependencyEdges.size(), 1u);
+    EXPECT_EQ(package.workUnitDependencyEdges[0].sourceWorkUnitIndex, opaqueSliceCount - 1u);
+    EXPECT_EQ(package.workUnitDependencyEdges[0].targetWorkUnitIndex, opaqueSliceCount);
+    ASSERT_EQ(package.parallelCommandWorkUnits[opaqueSliceCount].incomingDependencyEdges.size(), 1u);
+    EXPECT_EQ(
+        package.parallelCommandWorkUnits[opaqueSliceCount].incomingDependencyEdges[0].sourceWorkUnitIndex,
+        opaqueSliceCount - 1u);
 }
 
 TEST(FrameGraphSceneTargetsTests, BuildThreadedExecutionPlanMapsPassMetadataByKind)
@@ -3841,7 +3915,7 @@ TEST(FrameGraphSceneTargetsTests, UE427RdgPassContractCanBeBuiltFromThreadedPass
     EXPECT_FALSE(NLS::Render::FrameGraph::ValidateRDGPassContract(contract).HasErrors());
 }
 
-TEST(FrameGraphSceneTargetsTests, UE427ParallelDrawCommandBatchesPromoteComputeToGraphicsDependencyEdges)
+TEST(FrameGraphSceneTargetsTests, ParallelDrawCommandBatchMetadataPromotesComputeToGraphicsDependencyEdges)
 {
     auto visibilityBuffer = std::make_shared<TestBuffer>(NLS::Render::RHI::RHIBufferDesc{});
 

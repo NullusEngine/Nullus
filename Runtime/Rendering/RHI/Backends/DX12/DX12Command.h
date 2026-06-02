@@ -66,6 +66,17 @@ namespace NLS::Render::Backend
 		void BindIndexBuffer(const NLS::Render::RHI::RHIIndexBufferView& view) override;
 		void Draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance) override;
 		void DrawIndexed(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance) override;
+		NLS::Render::RHI::RHICommandRecordingResult DrawChecked(
+			uint32_t vertexCount,
+			uint32_t instanceCount,
+			uint32_t firstVertex,
+			uint32_t firstInstance) override;
+		NLS::Render::RHI::RHICommandRecordingResult DrawIndexedChecked(
+			uint32_t indexCount,
+			uint32_t instanceCount,
+			uint32_t firstIndex,
+			int32_t vertexOffset,
+			uint32_t firstInstance) override;
 		void Dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) override;
 		void CopyBuffer(
 			const std::shared_ptr<NLS::Render::RHI::RHIBuffer>& source,
@@ -74,8 +85,13 @@ namespace NLS::Render::Backend
 		void CopyBufferToTexture(const NLS::Render::RHI::RHIBufferToTextureCopyDesc& desc) override;
 		void CopyTexture(const NLS::Render::RHI::RHITextureCopyDesc& desc) override;
 		NLS::Render::RHI::RHIBarrierDesc FilterBarrierDesc(const NLS::Render::RHI::RHIBarrierDesc& barrier) const override;
+		bool IsClosedForSubmission() const override;
 		NLS::Render::RHI::RHICommandRecordingResult BarrierChecked(const NLS::Render::RHI::RHIBarrierDesc& barrier) override;
 		void Barrier(const NLS::Render::RHI::RHIBarrierDesc& barrier) override;
+		bool IsChildCommandBuffer() const override;
+		bool CanExecuteChildCommandBuffers() const override;
+		NLS::Render::RHI::RHICommandRecordingResult ExecuteChildCommandBuffer(
+			const std::shared_ptr<NLS::Render::RHI::RHICommandBuffer>& childCommandBuffer) override;
 
 #if defined(_WIN32)
 		ID3D12GraphicsCommandList* GetCommandList() const;
@@ -90,11 +106,16 @@ namespace NLS::Render::Backend
 #if defined(_WIN32)
 		bool IsBoundGraphicsPipelineNativeValid() const;
 		bool IsBoundComputePipelineNativeValid() const;
+		bool FlushBoundDescriptorTables();
+		bool FlushBoundDescriptorTablesIfDirty();
 		bool HasInitializedRequiredRootDescriptorTables(std::string_view operationName) const;
 #endif
 
 		std::string m_debugName;
 		bool m_recording = false;
+		bool m_isChildCommandBuffer = false;
+		bool m_hasClosedRecording = false;
+		bool m_childRecordingValid = true;
 #if defined(_WIN32)
 		ID3D12Device* m_device = nullptr;
 		ID3D12CommandQueue* m_queue = nullptr;
@@ -103,6 +124,8 @@ namespace NLS::Render::Backend
 		Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_commandList;
 		ID3D12DescriptorHeap* m_currentResourceDescriptorHeap = nullptr;
 		ID3D12DescriptorHeap* m_currentSamplerDescriptorHeap = nullptr;
+		bool m_descriptorHeapsSet = false;
+		bool m_descriptorTablesDirty = false;
 		struct ActiveRenderPassTransition
 		{
 			ID3D12Resource* resource = nullptr;
@@ -166,6 +189,7 @@ namespace NLS::Render::Backend
 		std::string_view GetDebugName() const override;
 		NLS::Render::RHI::QueueType GetQueueType() const override;
 		std::shared_ptr<NLS::Render::RHI::RHICommandBuffer> CreateCommandBuffer(std::string debugName) override;
+		std::shared_ptr<NLS::Render::RHI::RHICommandBuffer> CreateChildCommandBuffer(std::string debugName) override;
 		void Reset() override;
 
 	private:

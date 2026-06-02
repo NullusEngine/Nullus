@@ -43,6 +43,35 @@ namespace
         stream << input.rdbuf();
         return stream.str();
     }
+
+    void ExpectJobHandleCompletionStatusThenClear(const std::string& source, const size_t expectedCount)
+    {
+        size_t cursor = 0u;
+        for (size_t index = 0u; index < expectedCount; ++index)
+        {
+            SCOPED_TRACE(index);
+            const auto completeNoClear = source.find("Jobs::CompleteNoClear(handle)", cursor);
+            ASSERT_NE(completeNoClear, std::string::npos);
+            const auto unexpectedClearBeforeComplete =
+                source.find("Jobs::ClearWithoutSync(handle)", cursor);
+            EXPECT_TRUE(unexpectedClearBeforeComplete == std::string::npos ||
+                unexpectedClearBeforeComplete > completeNoClear);
+
+            const auto completionStatus = source.find("GetJobCompletionStatus(handle)", completeNoClear);
+            ASSERT_NE(completionStatus, std::string::npos);
+            EXPECT_LT(completeNoClear, completionStatus);
+
+            const auto clearWithoutSync = source.find("Jobs::ClearWithoutSync(handle)", completeNoClear);
+            ASSERT_NE(clearWithoutSync, std::string::npos);
+            EXPECT_LT(completionStatus, clearWithoutSync);
+
+            cursor = clearWithoutSync + 1u;
+        }
+
+        EXPECT_EQ(source.find("Jobs::CompleteNoClear(handle)", cursor), std::string::npos);
+        EXPECT_EQ(source.find("Jobs::ClearWithoutSync(handle)", cursor), std::string::npos);
+        EXPECT_EQ(source.find("Jobs::Complete(handle)"), std::string::npos);
+    }
 }
 
 TEST(DX12PipelineLayoutUtilsTests, GroupsEntriesByLogicalSetAndDescriptorHeap)
@@ -194,9 +223,11 @@ TEST(DX12PipelineLayoutUtilsTests, DX12CommandChecksBindingSetTableCompatibility
         std::filesystem::path(NLS_ROOT_DIR) /
         "Runtime/Rendering/RHI/Backends/DX12/DX12Command.cpp");
 
-    const auto bindBindingSet = source.find("void NativeDX12CommandBuffer::BindBindingSet");
-    ASSERT_NE(bindBindingSet, std::string::npos);
-    const auto body = source.substr(bindBindingSet);
+    const auto flushBindingSetTables = source.find("bool NativeDX12CommandBuffer::FlushBoundDescriptorTables");
+    ASSERT_NE(flushBindingSetTables, std::string::npos);
+    const auto beginFunction = source.find("void NativeDX12CommandBuffer::Begin", flushBindingSetTables);
+    ASSERT_NE(beginFunction, std::string::npos);
+    const auto body = source.substr(flushBindingSetTables, beginFunction - flushBindingSetTables);
     const auto compatibilityCheck = body.find("IsCompatibleWithDescriptorTable(table)");
     const auto gpuHandleLookup = body.find("GetGPUHandle(table.set, table.heapKind)");
     ASSERT_NE(gpuHandleLookup, std::string::npos);
@@ -243,6 +274,306 @@ TEST(DX12PipelineLayoutUtilsTests, DX12DrawRequiresBoundGraphicsPipeline)
     const auto pipelineGuard = source.rfind("m_boundPipeline == nullptr", drawInstanced);
     ASSERT_NE(pipelineGuard, std::string::npos);
     EXPECT_GT(pipelineGuard, draw);
+}
+
+TEST(DX12PipelineLayoutUtilsTests, DX12DrawCommandsForwardInstanceCountsToNativeInstancedCalls)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime/Rendering/RHI/Backends/DX12/DX12Command.cpp");
+
+    const auto draw = source.find("void NativeDX12CommandBuffer::Draw(");
+    ASSERT_NE(draw, std::string::npos);
+    const auto drawIndexed = source.find("void NativeDX12CommandBuffer::DrawIndexed", draw);
+    ASSERT_NE(drawIndexed, std::string::npos);
+    const auto drawBody = source.substr(draw, drawIndexed - draw);
+    EXPECT_NE(
+        drawBody.find("(void)DrawChecked(vertexCount, instanceCount, firstVertex, firstInstance)"),
+        std::string::npos);
+
+    const auto drawChecked = source.find("RHICommandRecordingResult NativeDX12CommandBuffer::DrawChecked", drawIndexed);
+    ASSERT_NE(drawChecked, std::string::npos);
+    const auto drawCheckedEnd = source.find("RHICommandRecordingResult NativeDX12CommandBuffer::DrawIndexedChecked", drawChecked);
+    ASSERT_NE(drawCheckedEnd, std::string::npos);
+    const auto drawCheckedBody = source.substr(drawChecked, drawCheckedEnd - drawChecked);
+    EXPECT_NE(
+        drawCheckedBody.find("m_commandList->DrawInstanced(vertexCount, instanceCount, firstVertex, firstInstance)"),
+        std::string::npos);
+
+    const auto drawIndexedChecked = drawCheckedEnd;
+    const auto dispatch = source.find("void NativeDX12CommandBuffer::Dispatch", drawIndexedChecked);
+    ASSERT_NE(dispatch, std::string::npos);
+    const auto drawIndexedBody = source.substr(drawIndexed, drawIndexedChecked - drawIndexed);
+    EXPECT_NE(
+        drawIndexedBody.find("(void)DrawIndexedChecked(indexCount, instanceCount, firstIndex, vertexOffset, firstInstance)"),
+        std::string::npos);
+
+    const auto drawIndexedCheckedBody = source.substr(drawIndexedChecked, dispatch - drawIndexedChecked);
+    EXPECT_NE(
+        drawIndexedCheckedBody.find("m_commandList->DrawIndexedInstanced(indexCount, instanceCount, firstIndex, vertexOffset, firstInstance)"),
+        std::string::npos);
+}
+
+TEST(DX12PipelineLayoutUtilsTests, DX12ChildCommandBuffersUseBundlesExecutedByParentCommandList)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime/Rendering/RHI/Backends/DX12/DX12Command.cpp");
+
+    const auto createChild = source.find("NativeDX12CommandPool::CreateChildCommandBuffer");
+    ASSERT_NE(createChild, std::string::npos);
+    const auto bundleType = source.find("D3D12_COMMAND_LIST_TYPE_BUNDLE", createChild);
+    ASSERT_NE(bundleType, std::string::npos);
+
+    const auto executeChild = source.find("NativeDX12CommandBuffer::ExecuteChildCommandBuffer");
+    ASSERT_NE(executeChild, std::string::npos);
+    const auto executeBundle = source.find("ExecuteBundle", executeChild);
+    ASSERT_NE(executeBundle, std::string::npos);
+    const auto childGuard = source.find("!nativeChild->IsChildCommandBuffer()", executeChild);
+    ASSERT_NE(childGuard, std::string::npos);
+    EXPECT_LT(childGuard, executeBundle);
+    const auto parentRecordingGuard = source.find("parent must be a recording direct command list", executeChild);
+    ASSERT_NE(parentRecordingGuard, std::string::npos);
+    EXPECT_LT(parentRecordingGuard, executeBundle);
+    const auto childClosedGuard = source.find("child bundle must be closed and valid before execution", executeChild);
+    ASSERT_NE(childClosedGuard, std::string::npos);
+    EXPECT_LT(childClosedGuard, executeBundle);
+    const auto childValidityGuard = source.find("!nativeChild->m_childRecordingValid", executeChild);
+    ASSERT_NE(childValidityGuard, std::string::npos);
+    EXPECT_LT(childValidityGuard, executeBundle);
+    const auto closeSuccessGuard = source.find("m_hasClosedRecording = SUCCEEDED(closeHr)");
+    ASSERT_NE(closeSuccessGuard, std::string::npos);
+    const auto descriptorHeapSync = source.find("SetDescriptorHeaps(activeHeapCount, activeHeaps)", executeChild);
+    ASSERT_NE(descriptorHeapSync, std::string::npos);
+    EXPECT_LT(descriptorHeapSync, executeBundle);
+    const auto parentRootTableInvalidation = source.find("m_initializedRootDescriptorTables.clear()", descriptorHeapSync);
+    ASSERT_NE(parentRootTableInvalidation, std::string::npos);
+    EXPECT_LT(parentRootTableInvalidation, executeBundle);
+}
+
+TEST(DX12PipelineLayoutUtilsTests, DX12BundleRecordingBindsPipelineInsideEachChildRange)
+{
+    const auto driverSource = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime/Rendering/Context/Driver.cpp");
+    const auto coordinatorSource = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime/Rendering/Context/RhiThreadCoordinator.cpp");
+
+    const auto recordDrawCommand = driverSource.find("RecordPreparedDrawCommand");
+    ASSERT_NE(recordDrawCommand, std::string::npos);
+    const auto bindGraphics = driverSource.find("commandBuffer.BindGraphicsPipeline(drawCommand.pipeline)", recordDrawCommand);
+    ASSERT_NE(bindGraphics, std::string::npos);
+    const auto drawChecked = driverSource.find("DrawChecked", bindGraphics);
+    const auto drawIndexedChecked = driverSource.find("DrawIndexedChecked", bindGraphics);
+    ASSERT_TRUE(drawChecked != std::string::npos || drawIndexedChecked != std::string::npos);
+    if (drawChecked != std::string::npos)
+        EXPECT_LT(bindGraphics, drawChecked);
+    if (drawIndexedChecked != std::string::npos)
+        EXPECT_LT(bindGraphics, drawIndexedChecked);
+
+    const auto recordChild = coordinatorSource.find("RecordSingleInRenderPassChildWorkUnit");
+    ASSERT_NE(recordChild, std::string::npos);
+    const auto childRangeRecord = coordinatorSource.find("RecordPreparedDrawCommandsForPassRange", recordChild);
+    ASSERT_NE(childRangeRecord, std::string::npos);
+    const auto childRangeEnd = coordinatorSource.find("RecordSingleInRenderPassChildWorkUnit", recordChild + 1u);
+    const auto childBody = coordinatorSource.substr(
+        recordChild,
+        childRangeEnd == std::string::npos ? std::string::npos : childRangeEnd - recordChild);
+    EXPECT_NE(childBody.find("parentPassInput.recordedDrawCommands"), std::string::npos);
+}
+
+TEST(DX12PipelineLayoutUtilsTests, DX12ChildCommandBuffersRejectRenderPassAndBarrierOwnership)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime/Rendering/RHI/Backends/DX12/DX12Command.cpp");
+
+    const auto beginRenderPass = source.find("void NativeDX12CommandBuffer::BeginRenderPass");
+    ASSERT_NE(beginRenderPass, std::string::npos);
+    const auto beginChildGuard = source.find("m_isChildCommandBuffer", beginRenderPass);
+    ASSERT_NE(beginChildGuard, std::string::npos);
+
+    const auto endRenderPass = source.find("void NativeDX12CommandBuffer::EndRenderPass");
+    ASSERT_NE(endRenderPass, std::string::npos);
+    const auto endChildGuard = source.find("m_isChildCommandBuffer", endRenderPass);
+    ASSERT_NE(endChildGuard, std::string::npos);
+
+    const auto barrierChecked = source.find("NativeDX12CommandBuffer::BarrierChecked");
+    ASSERT_NE(barrierChecked, std::string::npos);
+    const auto barrierChildGuard = source.find("m_isChildCommandBuffer", barrierChecked);
+    ASSERT_NE(barrierChildGuard, std::string::npos);
+
+    const auto setViewport = source.find("void NativeDX12CommandBuffer::SetViewport");
+    ASSERT_NE(setViewport, std::string::npos);
+    const auto viewportChildGuard = source.find("m_isChildCommandBuffer", setViewport);
+    ASSERT_NE(viewportChildGuard, std::string::npos);
+
+    const auto copyBuffer = source.find("void NativeDX12CommandBuffer::CopyBuffer");
+    ASSERT_NE(copyBuffer, std::string::npos);
+    const auto copyChildGuard = source.find("m_isChildCommandBuffer", copyBuffer);
+    ASSERT_NE(copyChildGuard, std::string::npos);
+
+    const auto bindCompute = source.find("void NativeDX12CommandBuffer::BindComputePipeline");
+    ASSERT_NE(bindCompute, std::string::npos);
+    const auto computeChildGuard = source.find("m_isChildCommandBuffer", bindCompute);
+    ASSERT_NE(computeChildGuard, std::string::npos);
+
+    const auto dispatch = source.find("void NativeDX12CommandBuffer::Dispatch");
+    ASSERT_NE(dispatch, std::string::npos);
+    const auto dispatchChildGuard = source.find("m_isChildCommandBuffer", dispatch);
+    ASSERT_NE(dispatchChildGuard, std::string::npos);
+}
+
+TEST(DX12PipelineLayoutUtilsTests, DX12ChildForbiddenCommandsPoisonBundleValidity)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime/Rendering/RHI/Backends/DX12/DX12Command.cpp");
+
+    const auto executeChild = source.find("NativeDX12CommandBuffer::ExecuteChildCommandBuffer");
+    ASSERT_NE(executeChild, std::string::npos);
+    ASSERT_NE(source.find("!nativeChild->m_childRecordingValid", executeChild), std::string::npos);
+
+    const std::array<const char*, 7> forbiddenFunctions = {
+        "void NativeDX12CommandBuffer::BeginRenderPass",
+        "void NativeDX12CommandBuffer::EndRenderPass",
+        "NLS::Render::RHI::RHICommandRecordingResult NativeDX12CommandBuffer::BarrierChecked",
+        "void NativeDX12CommandBuffer::SetViewport",
+        "void NativeDX12CommandBuffer::SetScissor",
+        "void NativeDX12CommandBuffer::CopyBuffer(",
+        "void NativeDX12CommandBuffer::CopyTexture("
+    };
+
+    for (const char* functionName : forbiddenFunctions)
+    {
+        const auto functionBegin = source.find(functionName);
+        ASSERT_NE(functionBegin, std::string::npos) << functionName;
+        const auto nextFunction = source.find("\n\tvoid NativeDX12CommandBuffer::", functionBegin + 1u);
+        const auto body = source.substr(
+            functionBegin,
+            nextFunction == std::string::npos ? std::string::npos : nextFunction - functionBegin);
+        EXPECT_NE(body.find("m_childRecordingValid = false"), std::string::npos) << functionName;
+    }
+}
+
+TEST(DX12PipelineLayoutUtilsTests, DX12BundlesFailVisibleWhenDescriptorHeapChangesBeforeDraw)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime/Rendering/RHI/Backends/DX12/DX12Command.cpp");
+
+    const auto bindBindingSet = source.find("void NativeDX12CommandBuffer::BindBindingSet");
+    ASSERT_NE(bindBindingSet, std::string::npos);
+    const auto pushConstants = source.find("void NativeDX12CommandBuffer::PushConstants", bindBindingSet);
+    ASSERT_NE(pushConstants, std::string::npos);
+    const auto bindBody = source.substr(bindBindingSet, pushConstants - bindBindingSet);
+    EXPECT_NE(bindBody.find("if (m_isChildCommandBuffer)"), std::string::npos);
+    EXPECT_NE(bindBody.find("return;"), std::string::npos);
+    EXPECT_NE(bindBody.find("m_descriptorTablesDirty = true"), std::string::npos);
+
+    const auto flushDescriptorTables = source.find("bool NativeDX12CommandBuffer::FlushBoundDescriptorTables");
+    ASSERT_NE(flushDescriptorTables, std::string::npos);
+    const auto hasInitialized = source.find("bool NativeDX12CommandBuffer::HasInitializedRequiredRootDescriptorTables");
+    ASSERT_NE(hasInitialized, std::string::npos);
+    const auto flushBody = source.substr(flushDescriptorTables, hasInitialized - flushDescriptorTables);
+    EXPECT_NE(flushBody.find("FlushBoundDescriptorTables rejected descriptor heap change inside child bundle"), std::string::npos);
+    EXPECT_NE(flushBody.find("m_childRecordingValid = false"), std::string::npos);
+    EXPECT_NE(flushBody.find("(!m_isChildCommandBuffer || !m_descriptorHeapsSet)"), std::string::npos);
+
+    const auto draw = source.find("void NativeDX12CommandBuffer::Draw(");
+    ASSERT_NE(draw, std::string::npos);
+    const auto drawFlush = source.find("FlushBoundDescriptorTablesIfDirty()", draw);
+    ASSERT_NE(drawFlush, std::string::npos);
+    const auto drawInitialized = source.find("HasInitializedRequiredRootDescriptorTables", draw);
+    ASSERT_NE(drawInitialized, std::string::npos);
+    EXPECT_LT(drawFlush, drawInitialized);
+}
+
+TEST(DX12PipelineLayoutUtilsTests, DX12QueueRejectsTopLevelChildBundleSubmission)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime/Rendering/RHI/Backends/DX12/DX12Queue.cpp");
+
+    const auto collectCommandLists = source.find("NativeDX12Queue::CollectCommandLists");
+    ASSERT_NE(collectCommandLists, std::string::npos);
+    const auto executeCommandLists = source.find("ExecuteCommandLists", collectCommandLists);
+    ASSERT_NE(executeCommandLists, std::string::npos);
+    const auto collectBody = source.substr(collectCommandLists, executeCommandLists - collectCommandLists);
+
+    EXPECT_NE(collectBody.find("cmdBuffer->IsChildCommandBuffer()"), std::string::npos);
+    EXPECT_NE(collectBody.find("DX12 child bundle command buffers must be executed by a parent command list"), std::string::npos);
+    EXPECT_NE(collectBody.find("RHIQueueOperationStatusCode::InvalidArgument"), std::string::npos);
+}
+
+TEST(DX12PipelineLayoutUtilsTests, DX12QueueRejectsUnclosedCommandBufferSubmission)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime/Rendering/RHI/Backends/DX12/DX12Queue.cpp");
+
+    const auto collectCommandLists = source.find("NativeDX12Queue::CollectCommandLists");
+    ASSERT_NE(collectCommandLists, std::string::npos);
+    const auto executeCommandLists = source.find("ExecuteCommandLists", collectCommandLists);
+    ASSERT_NE(executeCommandLists, std::string::npos);
+    const auto collectBody = source.substr(collectCommandLists, executeCommandLists - collectCommandLists);
+
+    EXPECT_NE(collectBody.find("cmdBuffer->IsClosedForSubmission()"), std::string::npos);
+    EXPECT_NE(collectBody.find("DX12 command buffer must be closed successfully before submission"), std::string::npos);
+    EXPECT_NE(collectBody.find("RHIQueueOperationStatusCode::InvalidArgument"), std::string::npos);
+}
+
+TEST(DX12PipelineLayoutUtilsTests, DX12QueueClassifiesPostExecuteSignalFailureByDeviceStatus)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime/Rendering/RHI/Backends/DX12/DX12Queue.cpp");
+
+    const auto signalSemaphores = source.find("NativeDX12Queue::SignalSubmitSemaphores");
+    ASSERT_NE(signalSemaphores, std::string::npos);
+    const auto signalFence = source.find("NativeDX12Queue::SignalSubmitFence", signalSemaphores);
+    ASSERT_NE(signalFence, std::string::npos);
+    const auto semaphoreSignalBody = source.substr(signalSemaphores, signalFence - signalSemaphores);
+    EXPECT_NE(semaphoreSignalBody.find("ClassifyDx12PostExecuteSignalFailure"), std::string::npos);
+    EXPECT_NE(semaphoreSignalBody.find("mayHaveQueuedGpuWork"), std::string::npos);
+
+    const auto present = source.find("NativeDX12Queue::Present", signalFence);
+    ASSERT_NE(present, std::string::npos);
+    const auto fenceSignalBody = source.substr(signalFence, present - signalFence);
+    EXPECT_NE(fenceSignalBody.find("ClassifyDx12PostExecuteSignalFailure"), std::string::npos);
+    EXPECT_NE(fenceSignalBody.find("mayHaveQueuedGpuWork"), std::string::npos);
+
+    const auto classifier = source.find("ClassifyDx12PostExecuteSignalFailure");
+    ASSERT_NE(classifier, std::string::npos);
+    const auto submit = source.find("NativeDX12Queue::SubmitChecked", classifier);
+    ASSERT_NE(submit, std::string::npos);
+    const auto classifierBody = source.substr(classifier, submit - classifier);
+    EXPECT_NE(classifierBody.find("GetDeviceRemovedReason"), std::string::npos);
+    EXPECT_NE(classifierBody.find("RHIQueueOperationStatusCode::BackendFailure"), std::string::npos);
+    EXPECT_NE(classifierBody.find("RHIQueueOperationStatusCode::DeviceLost"), std::string::npos);
+}
+
+TEST(DX12PipelineLayoutUtilsTests, ThreadedRenderingParallelRecordingUsesJobSystemWorkers)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime/Rendering/Context/RhiThreadCoordinator.cpp");
+
+    EXPECT_NE(source.find("Jobs::ScheduleParallelFor"), std::string::npos);
+    ExpectJobHandleCompletionStatusThenClear(source, 2u);
+    EXPECT_EQ(source.find("std::vector<std::thread> workers"), std::string::npos);
+}
+
+TEST(DX12PipelineLayoutUtilsTests, RenderSceneVisibilityUsesJobSystemInsteadOfAsyncThreads)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime/Engine/Rendering/RenderScene.cpp");
+
+    EXPECT_NE(source.find("Jobs::ScheduleParallelFor"), std::string::npos);
+    ExpectJobHandleCompletionStatusThenClear(source, 1u);
+    EXPECT_EQ(source.find("std::async"), std::string::npos);
 }
 
 TEST(DX12PipelineLayoutUtilsTests, DX12CommandRejectsInvalidNativePipelinesBeforeDrawOrDispatch)

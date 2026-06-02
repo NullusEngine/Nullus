@@ -39,6 +39,8 @@ namespace NLS::Render::RHI
     {
         RHIQueueOperationStatusCode code = RHIQueueOperationStatusCode::Success;
         std::string message;
+        bool mayHaveQueuedGpuWork = false;
+        bool frameFenceSignalQueued = false;
 
         bool Succeeded() const { return code == RHIQueueOperationStatusCode::Success; }
     };
@@ -101,6 +103,10 @@ namespace NLS::Render::RHI
         std::shared_ptr<ResourceStateTracker> resourceStateTracker;
         std::shared_ptr<DescriptorAllocator> descriptorAllocator;
         std::shared_ptr<UploadContext> uploadContext;
+        std::vector<std::shared_ptr<RHICommandPool>> parallelCommandPools;
+        std::vector<std::shared_ptr<RHICommandBuffer>> parallelCommandBuffers;
+        std::vector<std::shared_ptr<RHICommandPool>> childCommandPools;
+        std::vector<std::shared_ptr<RHICommandBuffer>> childCommandBuffers;
         size_t uploadBytesReserved = 0;
         std::shared_ptr<RHITextureView> swapchainBackbufferView; // View for swapchain backbuffer, used when outputBuffer is nullptr
         std::shared_ptr<RHITexture> swapchainDepthStencilTexture;

@@ -20,6 +20,7 @@
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/Data/FrameDescriptor.h"
+#include "Rendering/Data/ObjectDataLimits.h"
 #include "Rendering/DeferredSceneRenderer.h"
 #include "Rendering/EngineDrawableDescriptor.h"
 #include "Rendering/EngineFrameObjectBindingProvider.h"
@@ -75,6 +76,29 @@ namespace
         ScopedShaderManagerService(const ScopedShaderManagerService&) = delete;
         ScopedShaderManagerService& operator=(const ScopedShaderManagerService&) = delete;
     };
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    class ScopedObjectDataCountLimitOverride final
+    {
+    public:
+        explicit ScopedObjectDataCountLimitOverride(const uint32_t limit)
+            : m_previousLimit(NLS::Render::Data::GetObjectDataCountLimitForTesting())
+        {
+            NLS::Render::Data::SetObjectDataCountLimitForTesting(limit);
+        }
+
+        ~ScopedObjectDataCountLimitOverride()
+        {
+            NLS::Render::Data::SetObjectDataCountLimitForTesting(m_previousLimit);
+        }
+
+        ScopedObjectDataCountLimitOverride(const ScopedObjectDataCountLimitOverride&) = delete;
+        ScopedObjectDataCountLimitOverride& operator=(const ScopedObjectDataCountLimitOverride&) = delete;
+
+    private:
+        uint32_t m_previousLimit = 0u;
+    };
+#endif
 
     NLS::Render::Resources::Shader* CreateTestComputeShader(const std::string& sourcePath)
     {
@@ -1954,6 +1978,82 @@ TEST(RendererFrameObjectBindingTests, EngineProviderRejectsIndexedShaderWhenObje
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
     provider.EndFrame();
     NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+}
+
+TEST(RendererFrameObjectBindingTests, EngineProviderRejectsInvalidObjectIndexAfterObjectDataSlotIsFull)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    const ScopedObjectDataCountLimitOverride scopedLimit(3u);
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
+    frameContext.frameIndex = 58u;
+    frameContext.descriptorAllocator = NLS::Render::RHI::CreateDefaultDescriptorAllocator(32u);
+    ASSERT_NE(frameContext.descriptorAllocator, nullptr);
+    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, true);
+
+    ProviderAwareRenderer renderer(driver);
+    NLS::Engine::Rendering::EngineFrameObjectBindingProvider provider(renderer);
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 256u;
+    frameDescriptor.renderHeight = 144u;
+    frameDescriptor.camera = &camera;
+    provider.BeginFrame(frameDescriptor);
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+    NLS::Render::Resources::Material material;
+    material.SetShader(shader);
+
+    const auto modelMatrix = NLS::Maths::Matrix4::Translation({ 3.0f, 4.0f, 5.0f });
+    NLS::Render::Entities::Drawable fullDrawable;
+    fullDrawable.material = &material;
+    fullDrawable.instanceCount = 3u;
+    fullDrawable.AddDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>({
+        modelMatrix,
+        NLS::Maths::Matrix4::Identity,
+        0u,
+        3u,
+        { modelMatrix, modelMatrix, modelMatrix }
+    });
+
+    NLS::Render::Data::PipelineState pso;
+    ASSERT_TRUE(provider.PrepareDraw(pso, fullDrawable));
+
+    NLS::Render::Entities::Drawable overflowDrawable;
+    overflowDrawable.material = &material;
+    overflowDrawable.instanceCount = 1u;
+    overflowDrawable.AddDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>({
+        modelMatrix,
+        NLS::Maths::Matrix4::Identity,
+        NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex,
+        1u,
+        { modelMatrix }
+    });
+
+    EXPECT_FALSE(provider.PrepareDraw(pso, overflowDrawable));
+    NLS::Render::Core::FrameObjectBindingProvider::PreparedBindingSets bindings;
+    EXPECT_FALSE(provider.CapturePreparedBindingSets(pso, overflowDrawable, bindings));
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    provider.EndFrame();
+    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to override object-data limits.";
+#endif
 }
 
 TEST(RendererFrameObjectBindingTests, EngineProviderRejectsIndexedShaderBeforeAllocatingWhenInstanceMatricesAreIncomplete)

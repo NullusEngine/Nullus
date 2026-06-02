@@ -57,6 +57,7 @@ namespace NLS::Render::Backend
 		UINT64 GetWaitValue() const;
 		bool SignalOnCpu();
 		bool SignalOnQueue(ID3D12CommandQueue* queue);
+		HRESULT SignalOnQueueChecked(ID3D12CommandQueue* queue);
 #endif
 
 	private:

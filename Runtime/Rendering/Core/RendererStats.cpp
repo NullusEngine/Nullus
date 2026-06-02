@@ -1,5 +1,6 @@
 #include "Rendering/Core/RendererStats.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
+#include "Rendering/Data/DrawCallOptimizationStats.h"
 
 namespace NLS::Render::Core
 {
@@ -47,6 +48,9 @@ namespace
         frameInfo.pipelineCacheComputeMisses = telemetry.pipelineCacheComputeMisses;
         frameInfo.pipelineCacheComputeStores = telemetry.pipelineCacheComputeStores;
         frameInfo.pipelineCacheComputeEntries = telemetry.pipelineCacheComputeEntries;
+        frameInfo.parallelCommandWorkUnitCount = telemetry.parallelCommandWorkUnitCount;
+        frameInfo.parallelRecordingWorkerCount = telemetry.parallelRecordingWorkerCount;
+        frameInfo.parallelFallbackReason = telemetry.parallelFallbackReason;
     }
 }
 
@@ -93,6 +97,15 @@ void RendererStats::BeginFrame()
     m_frameInfo.gBufferMaterialSyncCount = 0u;
     m_frameInfo.renderBindingSetCreationCount = 0u;
     m_frameInfo.renderSnapshotBufferCreationCount = 0u;
+    m_frameInfo.rawVisibleObjectCount = 0u;
+    m_frameInfo.submittedSceneDrawCount = 0u;
+    m_frameInfo.dynamicInstanceGroupCount = 0u;
+    m_frameInfo.largestInstanceGroupSize = 0u;
+    m_frameInfo.cachedCommandRebuildCount = 0u;
+    m_frameInfo.objectDataOverflowDroppedObjectCount = 0u;
+    m_frameInfo.parallelCommandWorkUnitCount = 0u;
+    m_frameInfo.parallelRecordingWorkerCount = 0u;
+    m_frameInfo.parallelFallbackReason.clear();
     m_isFrameInfoValid = false;
 }
 
@@ -141,6 +154,17 @@ void RendererStats::RecordRenderBindingSetCreation(const uint64_t count)
 void RendererStats::RecordRenderSnapshotBufferCreation(const uint64_t count)
 {
     m_frameInfo.renderSnapshotBufferCreationCount += count;
+}
+
+void RendererStats::RecordDrawCallOptimizationStats(
+    const NLS::Render::Data::DrawCallOptimizationStats& stats)
+{
+    m_frameInfo.rawVisibleObjectCount = stats.rawVisibleObjectCount;
+    m_frameInfo.submittedSceneDrawCount = stats.submittedSceneDrawCount;
+    m_frameInfo.dynamicInstanceGroupCount = stats.dynamicInstanceGroupCount;
+    m_frameInfo.largestInstanceGroupSize = stats.largestInstanceGroupSize;
+    m_frameInfo.cachedCommandRebuildCount = stats.cachedCommandRebuildCount;
+    m_frameInfo.objectDataOverflowDroppedObjectCount = stats.objectDataOverflowDroppedObjectCount;
 }
 
 void RendererStats::SetThreadedFrameTelemetry(const NLS::Render::Context::ThreadedFrameTelemetry& telemetry)

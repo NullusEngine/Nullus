@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <iterator>
@@ -7,8 +8,8 @@
 #include <mutex>
 #include <optional>
 #include <string>
-#include <thread>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <Debug/Assertion.h>
 #include <Debug/Logger.h>
@@ -19,6 +20,8 @@
 #include "Rendering/Context/RenderThreadCoordinator.h"
 #include "Rendering/Context/RhiThreadCoordinator.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
+#include "Rendering/RHI/Core/RHIBinding.h"
+#include "Rendering/RHI/Core/RHIPipeline.h"
 #include "Rendering/RHI/Core/RHISubresourceRangeUtils.h"
 #include "Rendering/RHI/Core/RHIResource.h"
 #include "Rendering/FrameGraph/ExternalResourceBridge.h"
@@ -27,6 +30,7 @@
 #include "Rendering/RHI/Utils/ResourceStateTracker/ResourceStateTracker.h"
 #include "Rendering/RHI/Utils/UploadContext/UploadContext.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
+#include "Jobs/JobSystem.h"
 
 namespace NLS::Render::Context
 {
@@ -35,6 +39,7 @@ namespace NLS::Render::Context
         constexpr uint64_t kFrameFenceWaitTimeoutNanoseconds = 5'000'000'000ull;
         constexpr auto kUiStandaloneFrameSubmissionLockWait = std::chrono::milliseconds(8);
         constexpr auto kUiStandaloneFramePendingLease = std::chrono::milliseconds(64);
+        constexpr uint32_t kMinimumInRenderPassChildSlicesForParallelWorkers = 4u;
 
         Render::RHI::RHIFrameContext* GetCurrentFrameContext(DriverImpl& impl)
         {
@@ -141,6 +146,89 @@ namespace NLS::Render::Context
             return resolvedInput;
         }
 
+        bool AreRenderTargetLayoutsCompatible(
+            const Render::RHI::RHIRenderTargetLayoutDesc& lhs,
+            const Render::RHI::RHIRenderTargetLayoutDesc& rhs)
+        {
+            return lhs.colorFormats == rhs.colorFormats &&
+                lhs.hasDepth == rhs.hasDepth &&
+                (!lhs.hasDepth || lhs.depthFormat == rhs.depthFormat) &&
+                lhs.sampleCount == rhs.sampleCount;
+        }
+
+        std::optional<Render::RHI::RHIRenderTargetLayoutDesc> ResolveAttachmentRenderTargetLayout(
+            const RenderPassCommandInput& passInput)
+        {
+            if (passInput.colorAttachmentViews.empty() &&
+                passInput.depthStencilAttachmentView == nullptr)
+            {
+                return std::nullopt;
+            }
+
+            Render::RHI::RHIRenderTargetLayoutDesc layout;
+            uint32_t sampleCount = 0u;
+            layout.colorFormats.reserve(passInput.colorAttachmentViews.size());
+            for (const auto& colorView : passInput.colorAttachmentViews)
+            {
+                if (colorView == nullptr)
+                    return std::nullopt;
+
+                layout.colorFormats.push_back(colorView->GetDesc().format);
+                if (colorView->GetTexture() != nullptr)
+                    sampleCount = std::max(sampleCount, colorView->GetTexture()->GetDesc().sampleCount);
+            }
+
+            if (passInput.depthStencilAttachmentView != nullptr)
+            {
+                layout.hasDepth = true;
+                layout.depthFormat = passInput.depthStencilAttachmentView->GetDesc().format;
+                if (passInput.depthStencilAttachmentView->GetTexture() != nullptr)
+                {
+                    sampleCount = std::max(
+                        sampleCount,
+                        passInput.depthStencilAttachmentView->GetTexture()->GetDesc().sampleCount);
+                }
+            }
+
+            if (sampleCount != 0u)
+                layout.sampleCount = sampleCount;
+            return layout;
+        }
+
+        bool AreDrawPipelinesCompatibleWithParentRenderPass(
+            const RenderPassCommandInput& parentPassInput,
+            const std::vector<RecordedDrawCommandInput>& recordedDrawCommands,
+            const uint64_t recordedDrawBegin,
+            const uint64_t recordedDrawCount)
+        {
+            const auto parentLayout = ResolveAttachmentRenderTargetLayout(parentPassInput);
+            if (!parentLayout.has_value())
+                return true;
+
+            const auto recordedDrawCommandCount = static_cast<uint64_t>(recordedDrawCommands.size());
+            if (recordedDrawBegin > recordedDrawCommandCount ||
+                recordedDrawCount > recordedDrawCommandCount - recordedDrawBegin)
+            {
+                return false;
+            }
+
+            const uint64_t recordedDrawEnd = recordedDrawBegin + recordedDrawCount;
+            for (uint64_t drawIndex = recordedDrawBegin; drawIndex < recordedDrawEnd; ++drawIndex)
+            {
+                const auto& drawCommand = recordedDrawCommands[static_cast<size_t>(drawIndex)];
+                if (drawCommand.pipeline == nullptr)
+                    continue;
+
+                if (!AreRenderTargetLayoutsCompatible(
+                        *parentLayout,
+                        drawCommand.pipeline->GetDesc().renderTargetLayout))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
         void SeedAcquiredSwapchainBackbufferState(Render::RHI::RHIFrameContext& frameContext)
         {
             if (frameContext.resourceStateTracker == nullptr ||
@@ -178,6 +266,15 @@ namespace NLS::Render::Context
             submitDesc.signalFence = frameContext.frameFence;
             return submitDesc;
         }
+
+        bool ShouldDeferFrameScopedRetirementAfterSubmit(
+            const Render::RHI::RHIQueueOperationResult& submitResult);
+
+        void DeferStandaloneFrameScopedRetirementAfterSubmit(
+            DriverImpl& impl,
+            size_t frameContextIndex,
+            const Render::RHI::RHIFrameContext& frameContext,
+            const Render::RHI::RHISubmitDesc& submitDesc);
 
         Render::RHI::RHIPresentDesc BuildSwapchainPresentDesc(
             const DriverImpl& impl,
@@ -380,13 +477,15 @@ namespace NLS::Render::Context
                 ? impl.explicitDevice->GetQueue(Render::RHI::QueueType::Graphics)
                 : nullptr;
             bool submitted = false;
+            Render::RHI::RHIQueueOperationResult submitResult;
             if (queue != nullptr)
             {
                 {
                     NLS_PROFILE_NAMED_SCOPE("StandaloneUiFrame::QueueSubmitChecked");
+                    submitResult = queue->SubmitChecked(submitDesc);
                     submitted = RecordQueueOperationResult(
                         impl,
-                        queue->SubmitChecked(submitDesc),
+                        submitResult,
                         "RhiThreadCoordinator::FinalizeStandaloneUiFrame::Submit");
                     ClearSceneToUiWaitSemaphoreForFrame(impl, *frameContext);
                 }
@@ -403,9 +502,23 @@ namespace NLS::Render::Context
 
             ClearUICompositionSignal(impl);
 
-            if (frameContext->descriptorAllocator != nullptr)
+            const auto frameContextIndex = impl.frameContexts.empty()
+                ? 0u
+                : static_cast<size_t>(impl.currentFrameIndex % impl.frameContexts.size());
+            const bool deferFrameScopedRetirement =
+                ShouldDeferFrameScopedRetirementAfterSubmit(submitResult);
+            if (deferFrameScopedRetirement)
+            {
+                DeferStandaloneFrameScopedRetirementAfterSubmit(
+                    impl,
+                    frameContextIndex,
+                    *frameContext,
+                    submitDesc);
+            }
+
+            if (!deferFrameScopedRetirement && frameContext->descriptorAllocator != nullptr)
                 frameContext->descriptorAllocator->EndFrame(impl.currentFrameIndex);
-            if (frameContext->uploadContext != nullptr)
+            if (!deferFrameScopedRetirement && frameContext->uploadContext != nullptr)
                 frameContext->uploadContext->EndFrame(impl.currentFrameIndex);
 
             RememberCompletedReadbackTexture(impl, frameContext->explicitReadbackTexture);
@@ -421,7 +534,8 @@ namespace NLS::Render::Context
         void FinalizeThreadedRhiFrameContext(
             DriverImpl& impl,
             Render::RHI::RHIFrameContext& frameContext,
-            Detail::AsyncComputeSubmitPlan& submitPlan)
+            Detail::AsyncComputeSubmitPlan& submitPlan,
+            const bool deferFrameScopedRetirement = false)
         {
             if (frameContext.commandBuffer != nullptr &&
                 frameContext.commandBuffer->IsRecording())
@@ -429,12 +543,12 @@ namespace NLS::Render::Context
                 frameContext.commandBuffer->End();
             }
 
-            if (frameContext.descriptorAllocator != nullptr)
+            if (!deferFrameScopedRetirement && frameContext.descriptorAllocator != nullptr)
             {
                 NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::EndDescriptorAllocatorFrame");
                 frameContext.descriptorAllocator->EndFrame(impl.currentFrameIndex);
             }
-            if (frameContext.uploadContext != nullptr)
+            if (!deferFrameScopedRetirement && frameContext.uploadContext != nullptr)
             {
                 NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::EndUploadContextFrame");
                 frameContext.uploadContext->EndFrame(impl.currentFrameIndex);
@@ -447,6 +561,77 @@ namespace NLS::Render::Context
                 RememberCompletedReadbackTexture(impl, frameContext.explicitReadbackTexture);
                 impl.currentFrameIndex = (impl.currentFrameIndex + 1u) % impl.frameContexts.size();
             }
+        }
+
+        void RetainThreadedSubmitPlanResourcesUntilNextFence(
+            DriverImpl& impl,
+            const size_t frameContextIndex,
+            Detail::AsyncComputeSubmitPlan& submitPlan)
+        {
+            if (impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.size() < impl.frameContexts.size())
+                impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.resize(impl.frameContexts.size());
+            if (frameContextIndex >= impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.size())
+                return;
+
+            auto& keepAlive = impl.retainedThreadedSubmitResourceKeepAliveByFrameContext[frameContextIndex];
+            for (auto& batch : submitPlan.batches)
+            {
+                for (auto& commandPool : batch.commandPools)
+                    keepAlive.push_back(std::move(commandPool));
+                for (auto& commandBuffer : batch.commandBuffers)
+                    keepAlive.push_back(std::move(commandBuffer));
+                for (auto& childCommandBuffer : batch.childCommandBuffers)
+                    keepAlive.push_back(std::move(childCommandBuffer));
+                for (auto& semaphore : batch.waitSemaphores)
+                    keepAlive.push_back(std::move(semaphore));
+                for (auto& semaphore : batch.signalSemaphores)
+                    keepAlive.push_back(std::move(semaphore));
+            }
+
+            for (auto& semaphore : submitPlan.temporarySemaphores)
+                keepAlive.push_back(std::move(semaphore));
+        }
+
+        bool ShouldDeferFrameScopedRetirementAfterSubmit(
+            const Render::RHI::RHIQueueOperationResult& submitResult)
+        {
+            return submitResult.mayHaveQueuedGpuWork &&
+                !submitResult.frameFenceSignalQueued;
+        }
+
+        void RetainStandaloneSubmitResourcesUntilNextFence(
+            DriverImpl& impl,
+            const size_t frameContextIndex,
+            const Render::RHI::RHIFrameContext& frameContext,
+            const Render::RHI::RHISubmitDesc& submitDesc)
+        {
+            if (impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.size() < impl.frameContexts.size())
+                impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.resize(impl.frameContexts.size());
+            if (frameContextIndex >= impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.size())
+                return;
+
+            auto& keepAlive = impl.retainedThreadedSubmitResourceKeepAliveByFrameContext[frameContextIndex];
+            keepAlive.push_back(frameContext.commandPool);
+            for (const auto& commandBuffer : submitDesc.commandBuffers)
+                keepAlive.push_back(commandBuffer);
+            for (const auto& semaphore : submitDesc.waitSemaphores)
+                keepAlive.push_back(semaphore);
+            for (const auto& semaphore : submitDesc.signalSemaphores)
+                keepAlive.push_back(semaphore);
+        }
+
+        void DeferStandaloneFrameScopedRetirementAfterSubmit(
+            DriverImpl& impl,
+            const size_t frameContextIndex,
+            const Render::RHI::RHIFrameContext& frameContext,
+            const Render::RHI::RHISubmitDesc& submitDesc)
+        {
+            RetainStandaloneSubmitResourcesUntilNextFence(
+                impl,
+                frameContextIndex,
+                frameContext,
+                submitDesc);
+            impl.deferredThreadedFrameScopedRetirementFrameContexts.insert(frameContextIndex);
         }
 
         bool RequiresExplicitQueueWait(const QueueDependencyPolicy policy)
@@ -646,23 +831,6 @@ namespace NLS::Render::Context
             }
         }
 
-        bool IsPassEligibleForParallelRecording(const RenderPassCommandInput& input)
-        {
-            switch (input.kind)
-            {
-            case RenderPassCommandKind::Compute:
-            case RenderPassCommandKind::Lighting:
-                return false;
-            case RenderPassCommandKind::Opaque:
-            case RenderPassCommandKind::Transparent:
-            case RenderPassCommandKind::Skybox:
-            case RenderPassCommandKind::Helper:
-            case RenderPassCommandKind::GBuffer:
-            default:
-                return input.drawCount > 0u || !input.recordedDrawCommands.empty();
-            }
-        }
-
         Render::RHI::QueueType ResolveEffectiveQueueTypeForPass(const RenderPassCommandInput& input)
         {
             if (input.kind == RenderPassCommandKind::Compute &&
@@ -742,7 +910,8 @@ namespace NLS::Render::Context
                 return false;
             }
 
-            auto& frameContext = impl.frameContexts[impl.currentFrameIndex % impl.frameContexts.size()];
+            const size_t frameContextIndex = impl.currentFrameIndex % impl.frameContexts.size();
+            auto& frameContext = impl.frameContexts[frameContextIndex];
             frameContext.frameIndex = static_cast<uint32_t>(impl.currentFrameIndex);
             ResetCurrentFrameQueueOperationTelemetry(impl);
             if (frameContext.frameFence != nullptr)
@@ -757,6 +926,7 @@ namespace NLS::Render::Context
                     ClearUiStandaloneFramePending(impl, true);
                     return false;
                 }
+                Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(impl, frameContext, frameContextIndex);
             }
             if (frameContext.frameFence != nullptr)
                 frameContext.frameFence->Reset();
@@ -769,6 +939,26 @@ namespace NLS::Render::Context
                 frameContext.commandPool->Reset();
             if (frameContext.commandBuffer != nullptr)
                 frameContext.commandBuffer->Reset();
+            for (const auto& parallelCommandPool : frameContext.parallelCommandPools)
+            {
+                if (parallelCommandPool != nullptr)
+                    parallelCommandPool->Reset();
+            }
+            for (const auto& parallelCommandBuffer : frameContext.parallelCommandBuffers)
+            {
+                if (parallelCommandBuffer != nullptr)
+                    parallelCommandBuffer->Reset();
+            }
+            for (const auto& childCommandPool : frameContext.childCommandPools)
+            {
+                if (childCommandPool != nullptr)
+                    childCommandPool->Reset();
+            }
+            for (const auto& childCommandBuffer : frameContext.childCommandBuffers)
+            {
+                if (childCommandBuffer != nullptr)
+                    childCommandBuffer->Reset();
+            }
             if (frameContext.resourceStateTracker != nullptr)
             {
                 frameContext.resourceStateTracker->RetireTransientResources(std::numeric_limits<uint64_t>::max());
@@ -1266,9 +1456,51 @@ namespace NLS::Render::Context
     std::vector<ParallelCommandWorkUnit> Detail::BuildParallelCommandWorkUnits(
         const RenderScenePackage& renderScenePackage,
         const bool parallelRecordingReady,
-        const bool parallelTranslationReady)
+        const bool parallelTranslationReady,
+        const bool allowOrderedSlicedSubmission,
+        const bool allowInRenderPassChildCommandRecording)
     {
         std::vector<ParallelCommandWorkUnit> workUnits;
+        const auto canKeepOrderedSourceWorkUnit =
+            [allowOrderedSlicedSubmission, allowInRenderPassChildCommandRecording](
+                const ParallelCommandWorkUnit& sourceWorkUnit)
+            {
+                if (!sourceWorkUnit.requiresOrderedSlicedSubmission)
+                    return true;
+                if (!allowOrderedSlicedSubmission)
+                    return false;
+                if (sourceWorkUnit.usesInRenderPassChildCommandRecording &&
+                    !allowInRenderPassChildCommandRecording)
+                {
+                    return false;
+                }
+                return true;
+            };
+
+        std::unordered_map<uint64_t, uint64_t> fallbackWorkUnitIndexByOriginalIndex;
+        const auto appendFallbackSafeAdditionalWorkUnits = [&](std::vector<ParallelCommandWorkUnit>& destination)
+        {
+            if (!renderScenePackage.containsParallelCommandWorkUnits)
+                return;
+
+            for (size_t sourceIndex = 0u; sourceIndex < renderScenePackage.parallelCommandWorkUnits.size(); ++sourceIndex)
+            {
+                const auto& sourceWorkUnit = renderScenePackage.parallelCommandWorkUnits[sourceIndex];
+                if (sourceWorkUnit.sourcePassIndex != kInvalidParallelCommandSourcePassIndex ||
+                    sourceWorkUnit.requiresOrderedSlicedSubmission)
+                {
+                    continue;
+                }
+
+                auto workUnit = sourceWorkUnit;
+                workUnit.workUnitIndex = static_cast<uint64_t>(destination.size());
+                workUnit.submissionOrder = workUnit.workUnitIndex;
+                workUnit.commandInput.queueType = ResolveEffectiveQueueTypeForPass(workUnit.commandInput);
+                fallbackWorkUnitIndexByOriginalIndex[static_cast<uint64_t>(sourceIndex)] = workUnit.workUnitIndex;
+                destination.push_back(std::move(workUnit));
+            }
+        };
+
         auto appendDispatchComputeWorkUnits = [&](std::vector<ParallelCommandWorkUnit>& destination)
         {
             for (const auto& dispatchInput : renderScenePackage.computeDispatchInputs)
@@ -1292,7 +1524,11 @@ namespace NLS::Render::Context
         };
 
         if (renderScenePackage.containsParallelCommandWorkUnits &&
-            !renderScenePackage.parallelCommandWorkUnits.empty())
+            !renderScenePackage.parallelCommandWorkUnits.empty() &&
+            std::all_of(
+                renderScenePackage.parallelCommandWorkUnits.begin(),
+                renderScenePackage.parallelCommandWorkUnits.end(),
+                canKeepOrderedSourceWorkUnit))
         {
             workUnits.reserve(renderScenePackage.parallelCommandWorkUnits.size());
             workUnits.insert(
@@ -1311,7 +1547,9 @@ namespace NLS::Render::Context
                     workUnit.debugName = Detail::ResolvePassProfileScopeName(workUnit.commandInput);
                 }
                 workUnit.eligibleForParallelRecording =
-                    parallelRecordingReady && workUnit.eligibleForParallelRecording;
+                    (parallelRecordingReady && workUnit.eligibleForParallelRecording) ||
+                    (allowInRenderPassChildCommandRecording &&
+                        workUnit.usesInRenderPassChildCommandRecording);
                 workUnit.eligibleForParallelTranslation =
                     parallelTranslationReady && workUnit.eligibleForParallelTranslation;
             }
@@ -1319,9 +1557,137 @@ namespace NLS::Render::Context
             return workUnits;
         }
 
+        const auto remapFallbackDependencyEdges =
+            [&renderScenePackage, &workUnits, &fallbackWorkUnitIndexByOriginalIndex]()
+            {
+                if (renderScenePackage.parallelCommandWorkUnits.empty() ||
+                    renderScenePackage.workUnitDependencyEdges.empty())
+                {
+                    return;
+                }
+
+                const auto resolveFallbackWorkUnitIndex =
+                    [&renderScenePackage, &workUnits, &fallbackWorkUnitIndexByOriginalIndex](
+                        const uint64_t sourceWorkUnitIndex) -> std::optional<uint64_t>
+                    {
+                        if (const auto mapped = fallbackWorkUnitIndexByOriginalIndex.find(sourceWorkUnitIndex);
+                            mapped != fallbackWorkUnitIndexByOriginalIndex.end())
+                        {
+                            return mapped->second;
+                        }
+
+                        if (sourceWorkUnitIndex >= renderScenePackage.parallelCommandWorkUnits.size())
+                            return std::nullopt;
+
+                        const auto sourcePassIndex =
+                            renderScenePackage.parallelCommandWorkUnits[static_cast<size_t>(sourceWorkUnitIndex)].sourcePassIndex;
+                        if (sourcePassIndex == kInvalidParallelCommandSourcePassIndex)
+                            return std::nullopt;
+
+                        for (size_t fallbackIndex = 0u; fallbackIndex < workUnits.size(); ++fallbackIndex)
+                        {
+                            if (workUnits[fallbackIndex].sourcePassIndex == sourcePassIndex)
+                                return static_cast<uint64_t>(fallbackIndex);
+                        }
+                        return std::nullopt;
+                    };
+
+                for (const auto& edge : renderScenePackage.workUnitDependencyEdges)
+                {
+                    const auto sourceIndex = resolveFallbackWorkUnitIndex(edge.sourceWorkUnitIndex);
+                    const auto targetIndex = resolveFallbackWorkUnitIndex(edge.targetWorkUnitIndex);
+                    if (!sourceIndex.has_value() || !targetIndex.has_value() || *targetIndex >= workUnits.size())
+                        continue;
+
+                    auto fallbackEdge = edge;
+                    fallbackEdge.sourceWorkUnitIndex = *sourceIndex;
+                    fallbackEdge.targetWorkUnitIndex = *targetIndex;
+                    workUnits[static_cast<size_t>(*targetIndex)].incomingDependencyEdges.push_back(std::move(fallbackEdge));
+                }
+            };
+
+        const auto appendUnslicedPassWorkUnit =
+            [&](const size_t passIndex)
+            {
+                if (passIndex >= renderScenePackage.passCommandInputs.size())
+                    return std::optional<uint64_t>{};
+
+                const auto& passInput = renderScenePackage.passCommandInputs[passIndex];
+                ParallelCommandWorkUnit workUnit;
+                workUnit.workUnitIndex = static_cast<uint64_t>(workUnits.size());
+                workUnit.submissionOrder = workUnit.workUnitIndex;
+                workUnit.commandInput = passInput;
+                workUnit.commandInput.queueType =
+                    ResolveEffectiveQueueTypeForPass(workUnit.commandInput);
+                workUnit.debugName = Detail::ResolvePassProfileScopeName(passInput);
+                workUnit.sourcePassIndex = static_cast<uint64_t>(passIndex);
+                workUnit.sliceIndex = 0u;
+                workUnit.sliceCount = 1u;
+                workUnit.recordedDrawBegin = 0u;
+                workUnit.recordedDrawCount = static_cast<uint64_t>(passInput.recordedDrawCommands.size());
+                const bool eligible = IsRenderPassEligibleForParallelRecording(passInput);
+                workUnit.eligibleForParallelRecording = parallelRecordingReady && eligible;
+                workUnit.eligibleForParallelTranslation = parallelTranslationReady && eligible;
+
+                const auto appendedIndex = workUnit.workUnitIndex;
+                workUnits.push_back(std::move(workUnit));
+                return std::optional<uint64_t>{ appendedIndex };
+            };
+
+        if (renderScenePackage.containsParallelCommandWorkUnits &&
+            !renderScenePackage.parallelCommandWorkUnits.empty() &&
+            allowOrderedSlicedSubmission)
+        {
+            std::unordered_set<uint64_t> collapsedSourcePassIndices;
+            workUnits.reserve(
+                renderScenePackage.parallelCommandWorkUnits.size() +
+                renderScenePackage.computeDispatchInputs.size() +
+                renderScenePackage.passCommandInputs.size());
+
+            for (size_t sourceIndex = 0u; sourceIndex < renderScenePackage.parallelCommandWorkUnits.size(); ++sourceIndex)
+            {
+                const auto& sourceWorkUnit = renderScenePackage.parallelCommandWorkUnits[sourceIndex];
+                if (canKeepOrderedSourceWorkUnit(sourceWorkUnit))
+                {
+                    auto workUnit = sourceWorkUnit;
+                    workUnit.workUnitIndex = static_cast<uint64_t>(workUnits.size());
+                    workUnit.submissionOrder = workUnit.workUnitIndex;
+                    workUnit.commandInput.queueType = ResolveEffectiveQueueTypeForPass(workUnit.commandInput);
+                    if (workUnit.debugName.empty())
+                        workUnit.debugName = Detail::ResolvePassProfileScopeName(workUnit.commandInput);
+                    workUnit.eligibleForParallelRecording =
+                        (parallelRecordingReady && workUnit.eligibleForParallelRecording) ||
+                        (allowInRenderPassChildCommandRecording &&
+                            workUnit.usesInRenderPassChildCommandRecording);
+                    workUnit.eligibleForParallelTranslation =
+                        parallelTranslationReady && workUnit.eligibleForParallelTranslation;
+                    fallbackWorkUnitIndexByOriginalIndex[static_cast<uint64_t>(sourceIndex)] = workUnit.workUnitIndex;
+                    workUnits.push_back(std::move(workUnit));
+                    continue;
+                }
+
+                if (sourceWorkUnit.sourcePassIndex == kInvalidParallelCommandSourcePassIndex ||
+                    !collapsedSourcePassIndices.insert(sourceWorkUnit.sourcePassIndex).second)
+                {
+                    continue;
+                }
+
+                const auto collapsedIndex = appendUnslicedPassWorkUnit(
+                    static_cast<size_t>(sourceWorkUnit.sourcePassIndex));
+                if (collapsedIndex.has_value())
+                    fallbackWorkUnitIndexByOriginalIndex[static_cast<uint64_t>(sourceIndex)] = *collapsedIndex;
+            }
+
+            remapFallbackDependencyEdges();
+            Detail::PopulateVisibilityTransitionsFromResourceUsage(workUnits);
+            return workUnits;
+        }
+
         workUnits.reserve(
+            renderScenePackage.parallelCommandWorkUnits.size() +
             renderScenePackage.computeDispatchInputs.size() +
             renderScenePackage.passCommandInputs.size());
+        appendFallbackSafeAdditionalWorkUnits(workUnits);
         appendDispatchComputeWorkUnits(workUnits);
         for (size_t index = 0; index < renderScenePackage.passCommandInputs.size(); ++index)
         {
@@ -1333,12 +1699,18 @@ namespace NLS::Render::Context
             workUnit.commandInput.queueType =
                 ResolveEffectiveQueueTypeForPass(workUnit.commandInput);
             workUnit.debugName = Detail::ResolvePassProfileScopeName(passInput);
-            const bool eligible = IsPassEligibleForParallelRecording(passInput);
+            workUnit.sourcePassIndex = static_cast<uint64_t>(index);
+            workUnit.sliceIndex = 0u;
+            workUnit.sliceCount = 1u;
+            workUnit.recordedDrawBegin = 0u;
+            workUnit.recordedDrawCount = static_cast<uint64_t>(passInput.recordedDrawCommands.size());
+            const bool eligible = IsRenderPassEligibleForParallelRecording(passInput);
             workUnit.eligibleForParallelRecording = parallelRecordingReady && eligible;
             workUnit.eligibleForParallelTranslation = parallelTranslationReady && eligible;
             workUnits.push_back(std::move(workUnit));
         }
 
+        remapFallbackDependencyEdges();
         Detail::PopulateVisibilityTransitionsFromResourceUsage(workUnits);
         return workUnits;
     }
@@ -1475,6 +1847,104 @@ namespace NLS::Render::Context
                 : "Parallel command recording failed";
         }
 
+        bool PrepareParallelCommandResources(
+            DriverImpl& impl,
+            Render::RHI::RHIFrameContext& frameContext,
+            const RenderScenePackage& renderScenePackage,
+            const std::vector<ParallelCommandWorkUnit>& workUnits,
+            const std::vector<size_t>& parallelEligibleIndices)
+        {
+            if (impl.explicitDevice == nullptr)
+                return false;
+
+            size_t requiredSlotCount = 0u;
+            for (const auto workUnitIndex : parallelEligibleIndices)
+                requiredSlotCount = std::max(
+                    requiredSlotCount,
+                    static_cast<size_t>(workUnits[workUnitIndex].workUnitIndex) + 1u);
+
+            frameContext.parallelCommandPools.resize(requiredSlotCount);
+            frameContext.parallelCommandBuffers.resize(requiredSlotCount);
+
+            for (const auto workUnitIndex : parallelEligibleIndices)
+            {
+                const auto& workUnit = workUnits[workUnitIndex];
+                const auto resourceIndex = static_cast<size_t>(workUnit.workUnitIndex);
+                auto& commandPool = frameContext.parallelCommandPools[resourceIndex];
+                if (commandPool == nullptr)
+                {
+                    commandPool = impl.explicitDevice->CreateCommandPool(
+                        workUnit.commandInput.queueType,
+                        "ThreadedCommandPool" + std::to_string(renderScenePackage.frameId) + "_" +
+                            std::to_string(workUnit.workUnitIndex));
+                    if (commandPool == nullptr)
+                        return false;
+                }
+
+                auto& commandBuffer = frameContext.parallelCommandBuffers[resourceIndex];
+                if (commandBuffer == nullptr)
+                {
+                    const auto* passProfileScopeName =
+                        Detail::ResolvePassProfileScopeName(workUnit.commandInput);
+                    commandBuffer = commandPool->CreateCommandBuffer(
+                        !workUnit.debugName.empty() ? workUnit.debugName : passProfileScopeName);
+                    if (commandBuffer == nullptr)
+                        return false;
+                }
+                else
+                {
+                    commandBuffer->Reset();
+                }
+            }
+            return true;
+        }
+
+        bool PrepareInRenderPassChildCommandResources(
+            DriverImpl& impl,
+            Render::RHI::RHIFrameContext& frameContext,
+            const RenderScenePackage& renderScenePackage,
+            const std::vector<ParallelCommandWorkUnit>& workUnits)
+        {
+            if (impl.explicitDevice == nullptr)
+                return false;
+
+            size_t requiredSlotCount = 0u;
+            for (const auto& workUnit : workUnits)
+                requiredSlotCount = std::max(requiredSlotCount, static_cast<size_t>(workUnit.workUnitIndex) + 1u);
+
+            frameContext.childCommandPools.resize(requiredSlotCount);
+            frameContext.childCommandBuffers.resize(requiredSlotCount);
+
+            for (const auto& workUnit : workUnits)
+            {
+                const auto resourceIndex = static_cast<size_t>(workUnit.workUnitIndex);
+                auto& commandPool = frameContext.childCommandPools[resourceIndex];
+                if (commandPool == nullptr)
+                {
+                    commandPool = impl.explicitDevice->CreateCommandPool(
+                        Render::RHI::QueueType::Graphics,
+                        "InRenderPassChildCommandPool" + std::to_string(renderScenePackage.frameId) + "_" +
+                            std::to_string(workUnit.workUnitIndex));
+                    if (commandPool == nullptr)
+                        return false;
+                }
+
+                auto& commandBuffer = frameContext.childCommandBuffers[resourceIndex];
+                if (commandBuffer == nullptr)
+                {
+                    commandBuffer = commandPool->CreateChildCommandBuffer(
+                        !workUnit.debugName.empty() ? workUnit.debugName : "InRenderPassChildDrawRange");
+                    if (commandBuffer == nullptr || !commandBuffer->IsChildCommandBuffer())
+                        return false;
+                }
+                else
+                {
+                    commandBuffer->Reset();
+                }
+            }
+            return true;
+        }
+
         struct TranslatedParallelCommandBufferBatch
         {
             std::vector<Detail::ThreadedCommandSubmissionUnit> submissions;
@@ -1524,23 +1994,31 @@ namespace NLS::Render::Context
                 return recordedWorkUnit;
             }
 
-            auto commandPool = impl.explicitDevice->CreateCommandPool(
-                passInput.queueType,
-                "ThreadedCommandPool" + std::to_string(renderScenePackage.frameId) + "_" + std::to_string(workUnit.workUnitIndex));
+            const auto resourceIndex = static_cast<size_t>(workUnit.workUnitIndex);
+            if (resourceIndex >= frameContext.parallelCommandPools.size() ||
+                resourceIndex >= frameContext.parallelCommandBuffers.size())
+            {
+                Detail::LogSkippedPass(renderScenePackage, passInput, "Missing reusable parallel command resources");
+                MarkRecordedParallelCommandWorkUnitFailure(
+                    recordedWorkUnit,
+                    "Missing reusable parallel command resources");
+                return recordedWorkUnit;
+            }
+
+            auto commandPool = frameContext.parallelCommandPools[resourceIndex];
             if (commandPool == nullptr)
             {
-                Detail::LogSkippedPass(renderScenePackage, passInput, "CreateCommandPool failed");
-                MarkRecordedParallelCommandWorkUnitFailure(recordedWorkUnit, "CreateCommandPool failed");
+                Detail::LogSkippedPass(renderScenePackage, passInput, "Reusable parallel command pool is null");
+                MarkRecordedParallelCommandWorkUnitFailure(recordedWorkUnit, "Reusable parallel command pool is null");
                 return recordedWorkUnit;
             }
 
             const auto* passProfileScopeName = Detail::ResolvePassProfileScopeName(passInput);
-            auto commandBuffer = commandPool->CreateCommandBuffer(
-                !workUnit.debugName.empty() ? workUnit.debugName : passProfileScopeName);
+            auto commandBuffer = frameContext.parallelCommandBuffers[resourceIndex];
             if (commandBuffer == nullptr)
             {
-                Detail::LogSkippedPass(renderScenePackage, passInput, "CreateCommandBuffer failed");
-                MarkRecordedParallelCommandWorkUnitFailure(recordedWorkUnit, "CreateCommandBuffer failed");
+                Detail::LogSkippedPass(renderScenePackage, passInput, "Reusable parallel command buffer is null");
+                MarkRecordedParallelCommandWorkUnitFailure(recordedWorkUnit, "Reusable parallel command buffer is null");
                 return recordedWorkUnit;
             }
 
@@ -1566,8 +2044,8 @@ namespace NLS::Render::Context
                 if (commandBuffer->IsRecording())
                     commandBuffer->End();
 
-                recordedWorkUnit.commandPool = std::move(commandPool);
-                recordedWorkUnit.commandBuffer = std::move(commandBuffer);
+                recordedWorkUnit.commandPool = commandPool;
+                recordedWorkUnit.commandBuffer = commandBuffer;
                 recordedWorkUnit.recordedPassCount = 1u;
                 recordedWorkUnit.recordedComputeDispatchCount = recordedDispatchCount;
                 recordedWorkUnit.wasRecorded = true;
@@ -1601,11 +2079,22 @@ namespace NLS::Render::Context
             const auto* effectivePassProfileScopeName = Detail::ResolvePassProfileScopeName(effectivePassInput);
             NLS_PROFILE_NAMED_SCOPE(effectivePassProfileScopeName);
             commandBuffer->BeginGpuProfileScope(effectivePassProfileScopeName, __FUNCTION__);
-            const auto recordedDrawCount =
-                Detail::RecordPreparedDrawCommandsForPass(commandBuffer.get(), effectivePassInput);
+            const bool recordsSlicedSourceRange =
+                workUnit.requiresOrderedSlicedSubmission &&
+                workUnit.sourcePassIndex < renderScenePackage.passCommandInputs.size();
+            const auto recordedDrawCount = recordsSlicedSourceRange
+                ? Detail::RecordPreparedDrawCommandsForPassRange(
+                    commandBuffer.get(),
+                    effectivePassInput,
+                    renderScenePackage.passCommandInputs[static_cast<size_t>(workUnit.sourcePassIndex)].recordedDrawCommands,
+                    workUnit.recordedDrawBegin,
+                    workUnit.recordedDrawCount)
+                : Detail::RecordPreparedDrawCommandsForPass(commandBuffer.get(), effectivePassInput);
             commandBuffer->EndGpuProfileScope();
             Detail::EndPassCommandPlan(*commandBuffer, &effectivePassInput, &frameContext);
-            if (recordedDrawCount == 0u && !effectivePassInput.recordedDrawCommands.empty())
+            if (recordedDrawCount == 0u &&
+                (!effectivePassInput.recordedDrawCommands.empty() ||
+                    (recordsSlicedSourceRange && workUnit.recordedDrawCount > 0u)))
             {
                 Detail::LogSkippedPass(
                     renderScenePackage,
@@ -1622,9 +2111,218 @@ namespace NLS::Render::Context
             if (commandBuffer->IsRecording())
                 commandBuffer->End();
 
-            recordedWorkUnit.commandPool = std::move(commandPool);
-            recordedWorkUnit.commandBuffer = std::move(commandBuffer);
+            recordedWorkUnit.commandPool = commandPool;
+            recordedWorkUnit.commandBuffer = commandBuffer;
             recordedWorkUnit.recordedPassCount = 1u;
+            recordedWorkUnit.recordedDrawCount = recordedDrawCount;
+            recordedWorkUnit.wasRecorded = true;
+            return recordedWorkUnit;
+        }
+
+        bool NativeHandlesMatch(
+            const Render::RHI::NativeHandle& lhs,
+            const Render::RHI::NativeHandle& rhs)
+        {
+            return lhs.backend == rhs.backend &&
+                lhs.handle == rhs.handle &&
+                lhs.value == rhs.value;
+        }
+
+        struct DescriptorHeapCompatibilitySignature
+        {
+            std::array<Render::RHI::NativeHandle, 2u> heaps {};
+            bool hasKnownHeap = false;
+            bool internallyCompatible = true;
+        };
+
+        void AccumulateDescriptorHeapCompatibilityHandle(
+            DescriptorHeapCompatibilitySignature& signature,
+            const std::shared_ptr<Render::RHI::RHIBindingSet>& bindingSet,
+            const uint32_t heapClass)
+        {
+            if (bindingSet == nullptr || heapClass >= signature.heaps.size())
+                return;
+
+            const auto heap = bindingSet->GetNativeDescriptorHeapCompatibilityHandle(heapClass);
+            if (!heap.IsValid())
+                return;
+
+            auto& current = signature.heaps[heapClass];
+            if (!current.IsValid())
+            {
+                current = heap;
+                signature.hasKnownHeap = true;
+                return;
+            }
+
+            if (!NativeHandlesMatch(current, heap))
+                signature.internallyCompatible = false;
+        }
+
+        DescriptorHeapCompatibilitySignature ResolveDrawDescriptorHeapCompatibilitySignature(
+            const RecordedDrawCommandInput& drawCommand)
+        {
+            DescriptorHeapCompatibilitySignature signature;
+            constexpr uint32_t kResourceHeapClass = 0u;
+            constexpr uint32_t kSamplerHeapClass = 1u;
+            const std::array<std::shared_ptr<Render::RHI::RHIBindingSet>, 4u> bindingSets = {
+                drawCommand.frameBindingSet,
+                drawCommand.objectBindingSet,
+                drawCommand.passBindingSet,
+                drawCommand.materialBindingSet
+            };
+            for (const auto& bindingSet : bindingSets)
+            {
+                AccumulateDescriptorHeapCompatibilityHandle(signature, bindingSet, kResourceHeapClass);
+                AccumulateDescriptorHeapCompatibilityHandle(signature, bindingSet, kSamplerHeapClass);
+            }
+            return signature;
+        }
+
+        bool IsDescriptorHeapSignatureCompatibleWithRange(
+            const DescriptorHeapCompatibilitySignature& referenceSignature,
+            const DescriptorHeapCompatibilitySignature& candidateSignature)
+        {
+            if (!referenceSignature.internallyCompatible ||
+                !candidateSignature.internallyCompatible)
+            {
+                return false;
+            }
+
+            if (!referenceSignature.hasKnownHeap || !candidateSignature.hasKnownHeap)
+                return true;
+
+            for (size_t heapIndex = 0u; heapIndex < referenceSignature.heaps.size(); ++heapIndex)
+            {
+                const auto& referenceHeap = referenceSignature.heaps[heapIndex];
+                const auto& candidateHeap = candidateSignature.heaps[heapIndex];
+                if (referenceHeap.IsValid() &&
+                    candidateHeap.IsValid() &&
+                    !NativeHandlesMatch(referenceHeap, candidateHeap))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        bool IsChildWorkUnitDescriptorHeapStable(
+            const RenderPassCommandInput& parentPassInput,
+            const ParallelCommandWorkUnit& workUnit)
+        {
+            if (workUnit.recordedDrawCount == 0u ||
+                workUnit.recordedDrawBegin >= parentPassInput.recordedDrawCommands.size())
+            {
+                return true;
+            }
+
+            const auto drawEnd = std::min<uint64_t>(
+                static_cast<uint64_t>(parentPassInput.recordedDrawCommands.size()),
+                workUnit.recordedDrawBegin + workUnit.recordedDrawCount);
+            std::optional<DescriptorHeapCompatibilitySignature> referenceSignature;
+            for (uint64_t drawIndex = workUnit.recordedDrawBegin; drawIndex < drawEnd; ++drawIndex)
+            {
+                const auto signature = ResolveDrawDescriptorHeapCompatibilitySignature(
+                    parentPassInput.recordedDrawCommands[static_cast<size_t>(drawIndex)]);
+                if (!signature.internallyCompatible)
+                    return false;
+
+                if (!signature.hasKnownHeap)
+                    continue;
+
+                if (!referenceSignature.has_value())
+                {
+                    referenceSignature = signature;
+                    continue;
+                }
+
+                if (!IsDescriptorHeapSignatureCompatibleWithRange(*referenceSignature, signature))
+                    return false;
+            }
+            return true;
+        }
+
+        RecordedParallelCommandWorkUnit RecordSingleInRenderPassChildWorkUnit(
+            DriverImpl& impl,
+            Render::RHI::RHIFrameContext& frameContext,
+            const RenderScenePackage& renderScenePackage,
+            const ParallelCommandWorkUnit& workUnit,
+            const RenderPassCommandInput& parentPassInput)
+        {
+            RecordedParallelCommandWorkUnit recordedWorkUnit;
+            recordedWorkUnit.workUnit = workUnit;
+
+            if (impl.explicitDevice == nullptr)
+                return recordedWorkUnit;
+
+            const auto resourceIndex = static_cast<size_t>(workUnit.workUnitIndex);
+            if (resourceIndex >= frameContext.childCommandPools.size() ||
+                resourceIndex >= frameContext.childCommandBuffers.size())
+            {
+                MarkRecordedParallelCommandWorkUnitFailure(
+                    recordedWorkUnit,
+                    "Missing reusable child command resources");
+                return recordedWorkUnit;
+            }
+
+            auto commandPool = frameContext.childCommandPools[resourceIndex];
+            auto commandBuffer = frameContext.childCommandBuffers[resourceIndex];
+            if (commandPool == nullptr)
+            {
+                MarkRecordedParallelCommandWorkUnitFailure(
+                    recordedWorkUnit,
+                    "Reusable child command pool is null");
+                return recordedWorkUnit;
+            }
+            if (commandBuffer == nullptr || !commandBuffer->IsChildCommandBuffer())
+            {
+                MarkRecordedParallelCommandWorkUnitFailure(
+                    recordedWorkUnit,
+                    "Reusable child command buffer is invalid");
+                return recordedWorkUnit;
+            }
+            recordedWorkUnit.commandPool = commandPool;
+
+            if (!AreDrawPipelinesCompatibleWithParentRenderPass(
+                    parentPassInput,
+                    parentPassInput.recordedDrawCommands,
+                    workUnit.recordedDrawBegin,
+                    workUnit.recordedDrawCount))
+            {
+                MarkRecordedParallelCommandWorkUnitFailure(
+                    recordedWorkUnit,
+                    "Child draw pipeline render target layout does not match parent render pass");
+                return recordedWorkUnit;
+            }
+            if (!IsChildWorkUnitDescriptorHeapStable(parentPassInput, workUnit))
+            {
+                MarkRecordedParallelCommandWorkUnitFailure(
+                    recordedWorkUnit,
+                    "Child draw descriptor heaps are not stable within bundle range");
+                return recordedWorkUnit;
+            }
+
+            commandBuffer->Begin();
+            const auto recordedDrawCount = Detail::RecordPreparedDrawCommandsForPassRange(
+                commandBuffer.get(),
+                workUnit.commandInput,
+                parentPassInput.recordedDrawCommands,
+                workUnit.recordedDrawBegin,
+                workUnit.recordedDrawCount);
+            if (commandBuffer->IsRecording())
+                commandBuffer->End();
+
+            if (recordedDrawCount != workUnit.recordedDrawCount)
+            {
+                MarkRecordedParallelCommandWorkUnitFailure(
+                    recordedWorkUnit,
+                    recordedDrawCount == 0u
+                        ? "No child draws recorded but commands were expected"
+                        : "Not all child draws were recorded");
+                return recordedWorkUnit;
+            }
+
+            recordedWorkUnit.commandBuffer = commandBuffer;
             recordedWorkUnit.recordedDrawCount = recordedDrawCount;
             recordedWorkUnit.wasRecorded = true;
             return recordedWorkUnit;
@@ -1642,9 +2340,150 @@ namespace NLS::Render::Context
             if (eligibleCount <= 1u)
                 return eligibleCount;
 
-            const auto hardwareThreads = std::max(2u, std::thread::hardware_concurrency());
-            const auto workerBudget = std::max(2u, hardwareThreads - 1u);
+            if (!NLS::Base::Jobs::IsJobSystemInitialized())
+                return 1u;
+
+            const auto workerBudget = std::max(2u, NLS::Base::Jobs::GetJobWorkerCount() + 1u);
             return std::min(eligibleCount, workerBudget);
+        }
+
+        bool RecordParallelEligibleWorkUnitsWithJobSystem(
+            RecordedParallelCommandBufferBatch& batch,
+            DriverImpl& impl,
+            Render::RHI::RHIFrameContext& frameContext,
+            const RenderScenePackage& renderScenePackage,
+            const std::vector<ParallelCommandWorkUnit>& workUnits,
+            const std::vector<size_t>& parallelEligibleIndices)
+        {
+            if (parallelEligibleIndices.empty())
+                return true;
+
+            std::vector<std::atomic_bool> workUnitCompleted(parallelEligibleIndices.size());
+            for (auto& completed : workUnitCompleted)
+                completed.store(false, std::memory_order_relaxed);
+
+            struct RecordParallelWorkUnitJob final : public NLS::Base::Jobs::IJobParallelFor
+            {
+                RecordedParallelCommandBufferBatch* batch = nullptr;
+                DriverImpl* impl = nullptr;
+                Render::RHI::RHIFrameContext* frameContext = nullptr;
+                const RenderScenePackage* renderScenePackage = nullptr;
+                const std::vector<ParallelCommandWorkUnit>* workUnits = nullptr;
+                const std::vector<size_t>* parallelEligibleIndices = nullptr;
+                std::vector<std::atomic_bool>* workUnitCompleted = nullptr;
+
+                void Execute(uint32_t index)
+                {
+                    const auto workUnitIndex = (*parallelEligibleIndices)[static_cast<size_t>(index)];
+                    batch->recordedWorkUnits[workUnitIndex] = RecordSingleParallelCommandWorkUnit(
+                        *impl,
+                        *frameContext,
+                        *renderScenePackage,
+                        (*workUnits)[workUnitIndex]);
+                    (*workUnitCompleted)[static_cast<size_t>(index)].store(true, std::memory_order_release);
+                }
+            };
+
+            RecordParallelWorkUnitJob job;
+            job.batch = &batch;
+            job.impl = &impl;
+            job.frameContext = &frameContext;
+            job.renderScenePackage = &renderScenePackage;
+            job.workUnits = &workUnits;
+            job.parallelEligibleIndices = &parallelEligibleIndices;
+            job.workUnitCompleted = &workUnitCompleted;
+
+            NLS::Base::Jobs::JobParallelForScheduleOptions options;
+            options.batchSize = 1u;
+            options.debugName = "RhiThreadCoordinator::RecordParallelCommandWorkUnits";
+            auto handle = NLS::Base::Jobs::ScheduleParallelFor(
+                job,
+                static_cast<uint32_t>(parallelEligibleIndices.size()),
+                options);
+            if (handle.id == 0u)
+                return false;
+            NLS::Base::Jobs::CompleteNoClear(handle);
+            const auto completionStatus = NLS::Base::Jobs::Internal::GetJobCompletionStatus(handle);
+            NLS::Base::Jobs::ClearWithoutSync(handle);
+            const bool allWorkUnitsCompleted = std::all_of(
+                workUnitCompleted.begin(),
+                workUnitCompleted.end(),
+                [](const std::atomic_bool& completed)
+                {
+                    return completed.load(std::memory_order_acquire);
+                });
+            return completionStatus == NLS::Base::Jobs::JobCompletionStatus::Succeeded &&
+                allWorkUnitsCompleted;
+        }
+
+        bool RecordInRenderPassChildWorkUnitsWithJobSystem(
+            RecordedParallelCommandBufferBatch& batch,
+            DriverImpl& impl,
+            Render::RHI::RHIFrameContext& frameContext,
+            const RenderScenePackage& renderScenePackage,
+            const std::vector<ParallelCommandWorkUnit>& workUnits,
+            const RenderPassCommandInput& parentPassInput)
+        {
+            if (workUnits.empty())
+                return true;
+
+            std::vector<std::atomic_bool> workUnitCompleted(workUnits.size());
+            for (auto& completed : workUnitCompleted)
+                completed.store(false, std::memory_order_relaxed);
+
+            struct RecordChildWorkUnitJob final : public NLS::Base::Jobs::IJobParallelFor
+            {
+                RecordedParallelCommandBufferBatch* batch = nullptr;
+                DriverImpl* impl = nullptr;
+                Render::RHI::RHIFrameContext* frameContext = nullptr;
+                const RenderScenePackage* renderScenePackage = nullptr;
+                const std::vector<ParallelCommandWorkUnit>* workUnits = nullptr;
+                const RenderPassCommandInput* parentPassInput = nullptr;
+                std::vector<std::atomic_bool>* workUnitCompleted = nullptr;
+
+                void Execute(uint32_t index)
+                {
+                    const auto workUnitIndex = static_cast<size_t>(index);
+                    batch->recordedWorkUnits[workUnitIndex] = RecordSingleInRenderPassChildWorkUnit(
+                        *impl,
+                        *frameContext,
+                        *renderScenePackage,
+                        (*workUnits)[workUnitIndex],
+                        *parentPassInput);
+                    (*workUnitCompleted)[workUnitIndex].store(true, std::memory_order_release);
+                }
+            };
+
+            RecordChildWorkUnitJob job;
+            job.batch = &batch;
+            job.impl = &impl;
+            job.frameContext = &frameContext;
+            job.renderScenePackage = &renderScenePackage;
+            job.workUnits = &workUnits;
+            job.parentPassInput = &parentPassInput;
+            job.workUnitCompleted = &workUnitCompleted;
+
+            NLS::Base::Jobs::JobParallelForScheduleOptions options;
+            options.batchSize = 1u;
+            options.debugName = "RhiThreadCoordinator::RecordInRenderPassChildCommandWorkUnits";
+            auto handle = NLS::Base::Jobs::ScheduleParallelFor(
+                job,
+                static_cast<uint32_t>(workUnits.size()),
+                options);
+            if (handle.id == 0u)
+                return false;
+            NLS::Base::Jobs::CompleteNoClear(handle);
+            const auto completionStatus = NLS::Base::Jobs::Internal::GetJobCompletionStatus(handle);
+            NLS::Base::Jobs::ClearWithoutSync(handle);
+            const bool allWorkUnitsCompleted = std::all_of(
+                workUnitCompleted.begin(),
+                workUnitCompleted.end(),
+                [](const std::atomic_bool& completed)
+                {
+                    return completed.load(std::memory_order_acquire);
+                });
+            return completionStatus == NLS::Base::Jobs::JobCompletionStatus::Succeeded &&
+                allWorkUnitsCompleted;
         }
 
         RecordedParallelCommandBufferBatch RecordParallelCommandWorkUnits(
@@ -1658,59 +2497,74 @@ namespace NLS::Render::Context
                 return batch;
 
             batch.recordedWorkUnits.resize(workUnits.size());
+            std::vector<size_t> workUnitResourceIndices;
+            workUnitResourceIndices.reserve(workUnits.size());
             std::vector<size_t> parallelEligibleIndices;
             parallelEligibleIndices.reserve(workUnits.size());
             for (size_t index = 0; index < workUnits.size(); ++index)
             {
+                workUnitResourceIndices.push_back(index);
                 if (workUnits[index].eligibleForParallelRecording)
                     parallelEligibleIndices.push_back(index);
+            }
+
+            if (!workUnitResourceIndices.empty() &&
+                !PrepareParallelCommandResources(
+                    impl,
+                    frameContext,
+                    renderScenePackage,
+                    workUnits,
+                    workUnitResourceIndices))
+            {
+                for (const auto workUnitIndex : workUnitResourceIndices)
+                {
+                    MarkRecordedParallelCommandWorkUnitFailure(
+                        batch.recordedWorkUnits[workUnitIndex],
+                        "PrepareParallelCommandResources failed");
+                }
+                return batch;
             }
 
             const auto workerCount = ResolveParallelRecordingWorkerCount(workUnits);
             if (!parallelEligibleIndices.empty())
             {
-                if (workerCount > 1u)
+                if (workerCount > 1u && NLS::Base::Jobs::IsJobSystemInitialized())
                 {
-                    std::atomic_size_t nextEligibleIndex = 0u;
-                    std::vector<std::thread> workers;
-                    workers.reserve(workerCount);
-                    for (uint32_t workerIndex = 0u; workerIndex < workerCount; ++workerIndex)
-                    {
-                        workers.emplace_back([&]()
-                        {
-                            while (true)
-                            {
-                                const size_t claimIndex = nextEligibleIndex.fetch_add(1u);
-                                if (claimIndex >= parallelEligibleIndices.size())
-                                    break;
-
-                                const auto workUnitIndex = parallelEligibleIndices[claimIndex];
-                                batch.recordedWorkUnits[workUnitIndex] = RecordSingleParallelCommandWorkUnit(
-                                    impl,
-                                    frameContext,
-                                    renderScenePackage,
-                                    workUnits[workUnitIndex]);
-                            }
-                        });
-                    }
-
-                    for (auto& worker : workers)
-                    {
-                        if (worker.joinable())
-                            worker.join();
-                    }
-
-                    batch.parallelWorkerCountUsed = workerCount;
-                    batch.usedParallelRecording = true;
-                }
-                else
-                {
-                    const auto workUnitIndex = parallelEligibleIndices.front();
-                    batch.recordedWorkUnits[workUnitIndex] = RecordSingleParallelCommandWorkUnit(
+                    const bool scheduledParallelJobs = RecordParallelEligibleWorkUnitsWithJobSystem(
+                        batch,
                         impl,
                         frameContext,
                         renderScenePackage,
-                        workUnits[workUnitIndex]);
+                        workUnits,
+                        parallelEligibleIndices);
+                    if (scheduledParallelJobs)
+                    {
+                        batch.parallelWorkerCountUsed = workerCount;
+                        batch.usedParallelRecording = true;
+                    }
+                    else
+                    {
+                        for (const auto workUnitIndex : parallelEligibleIndices)
+                        {
+                            batch.recordedWorkUnits[workUnitIndex] = RecordSingleParallelCommandWorkUnit(
+                                impl,
+                                frameContext,
+                                renderScenePackage,
+                                workUnits[workUnitIndex]);
+                        }
+                        batch.parallelWorkerCountUsed = 1u;
+                    }
+                }
+                else
+                {
+                    for (const auto workUnitIndex : parallelEligibleIndices)
+                    {
+                        batch.recordedWorkUnits[workUnitIndex] = RecordSingleParallelCommandWorkUnit(
+                            impl,
+                            frameContext,
+                            renderScenePackage,
+                            workUnits[workUnitIndex]);
+                    }
                     batch.parallelWorkerCountUsed = 1u;
                 }
             }
@@ -1741,6 +2595,287 @@ namespace NLS::Render::Context
             return batch;
         }
 
+        RecordedParallelCommandBufferBatch RecordInRenderPassChildCommandWorkUnits(
+            DriverImpl& impl,
+            Render::RHI::RHIFrameContext& frameContext,
+            const RenderScenePackage& renderScenePackage,
+            const std::vector<ParallelCommandWorkUnit>& workUnits,
+            const RenderPassCommandInput& parentPassInput)
+        {
+            RecordedParallelCommandBufferBatch batch;
+            if (impl.explicitDevice == nullptr)
+                return batch;
+
+            batch.recordedWorkUnits.resize(workUnits.size());
+            if (!PrepareInRenderPassChildCommandResources(
+                impl,
+                frameContext,
+                renderScenePackage,
+                workUnits))
+            {
+                return batch;
+            }
+
+            const auto workerCount = workUnits.size() >= kMinimumInRenderPassChildSlicesForParallelWorkers
+                ? ResolveParallelRecordingWorkerCount(workUnits)
+                : 1u;
+            if (workerCount > 1u && NLS::Base::Jobs::IsJobSystemInitialized())
+            {
+                const bool scheduledChildJobs = RecordInRenderPassChildWorkUnitsWithJobSystem(
+                    batch,
+                    impl,
+                    frameContext,
+                    renderScenePackage,
+                    workUnits,
+                    parentPassInput);
+                if (scheduledChildJobs)
+                {
+                    batch.parallelWorkerCountUsed = workerCount;
+                    batch.usedParallelRecording = true;
+                }
+                else
+                {
+                    for (size_t workUnitIndex = 0u; workUnitIndex < workUnits.size(); ++workUnitIndex)
+                    {
+                        batch.recordedWorkUnits[workUnitIndex] = RecordSingleInRenderPassChildWorkUnit(
+                            impl,
+                            frameContext,
+                            renderScenePackage,
+                            workUnits[workUnitIndex],
+                            parentPassInput);
+                    }
+                    batch.parallelWorkerCountUsed = 1u;
+                }
+            }
+            else if (!workUnits.empty())
+            {
+                for (size_t workUnitIndex = 0u; workUnitIndex < workUnits.size(); ++workUnitIndex)
+                {
+                    batch.recordedWorkUnits[workUnitIndex] = RecordSingleInRenderPassChildWorkUnit(
+                        impl,
+                        frameContext,
+                        renderScenePackage,
+                        workUnits[workUnitIndex],
+                        parentPassInput);
+                }
+                batch.parallelWorkerCountUsed = 1u;
+            }
+
+            for (const auto& recordedWorkUnit : batch.recordedWorkUnits)
+            {
+                if (!recordedWorkUnit.wasRecorded)
+                    continue;
+
+                batch.recordedDrawCount += recordedWorkUnit.recordedDrawCount;
+                batch.recordedWorkUnitCount += 1u;
+            }
+
+            return batch;
+        }
+
+        struct InRenderPassChildCommandGroupResult
+        {
+            bool recorded = false;
+            bool failedBeforeParentPassOpened = false;
+            bool failedAfterParentPassOpened = false;
+            std::vector<std::shared_ptr<Render::RHI::RHICommandPool>> childCommandPools;
+            std::vector<std::shared_ptr<Render::RHI::RHICommandBuffer>> childCommandBuffers;
+            uint64_t recordedDrawCount = 0u;
+            uint64_t recordedWorkUnitCount = 0u;
+            uint32_t parallelWorkerCountUsed = 0u;
+        };
+
+        bool IsChildRecordingFailureSerialFallbackSafe(const std::string& failureReason)
+        {
+            return failureReason.find("render target layout does not match parent render pass") ==
+                std::string::npos;
+        }
+
+        RenderPassCommandInput BuildInRenderPassChildGroupVisibilityInput(
+            const std::vector<ParallelCommandWorkUnit>& workUnits)
+        {
+            RenderPassCommandInput visibilityInput;
+            if (workUnits.empty())
+                return visibilityInput;
+
+            visibilityInput = Detail::BuildDependencyVisibilityPassInput(
+                workUnits.front(),
+                workUnits.front().incomingDependencyEdges);
+            for (size_t workUnitIndex = 1u; workUnitIndex < workUnits.size(); ++workUnitIndex)
+            {
+                const auto workUnitVisibilityInput = Detail::BuildDependencyVisibilityPassInput(
+                    workUnits[workUnitIndex],
+                    workUnits[workUnitIndex].incomingDependencyEdges);
+                for (const auto& bufferTransition : workUnitVisibilityInput.bufferVisibilityTransitions)
+                {
+                    if (!HasBufferVisibilityTransitionForResource(
+                            visibilityInput,
+                            bufferTransition.buffer))
+                    {
+                        visibilityInput.bufferVisibilityTransitions.push_back(bufferTransition);
+                    }
+                }
+                for (const auto& textureTransition : workUnitVisibilityInput.textureVisibilityTransitions)
+                {
+                    if (!HasTextureVisibilityTransitionForResource(
+                            visibilityInput,
+                            textureTransition.texture,
+                            textureTransition.subresourceRange))
+                    {
+                        visibilityInput.textureVisibilityTransitions.push_back(textureTransition);
+                    }
+                }
+            }
+            visibilityInput.debugName =
+                workUnits.front().debugName + "InRenderPassChildGroupVisibility";
+            return visibilityInput;
+        }
+
+        InRenderPassChildCommandGroupResult RecordInRenderPassChildCommandGroup(
+            DriverImpl& impl,
+            Render::RHI::RHIFrameContext& frameContext,
+            const RenderScenePackage& renderScenePackage,
+            const std::vector<ParallelCommandWorkUnit>& workUnits,
+            RhiSubmissionFrame* submissionFrame)
+        {
+            InRenderPassChildCommandGroupResult result;
+            if (frameContext.commandBuffer == nullptr ||
+                frameContext.commandPool == nullptr ||
+                workUnits.empty() ||
+                submissionFrame == nullptr)
+            {
+                return result;
+            }
+
+            const auto sourcePassIndex = workUnits.front().sourcePassIndex;
+            if (sourcePassIndex >= renderScenePackage.passCommandInputs.size())
+                return result;
+
+            const bool allWorkUnitsUseSameSourcePass = std::all_of(
+                workUnits.begin(),
+                workUnits.end(),
+                [sourcePassIndex](const ParallelCommandWorkUnit& workUnit)
+                {
+                    return workUnit.usesInRenderPassChildCommandRecording &&
+                        workUnit.sourcePassIndex == sourcePassIndex;
+                });
+            if (!allWorkUnitsUseSameSourcePass)
+                return result;
+
+            const auto& parentPassInput = renderScenePackage.passCommandInputs[static_cast<size_t>(sourcePassIndex)];
+            if (!Detail::IsPassRecordable(renderScenePackage, parentPassInput))
+                return result;
+
+            if (parentPassInput.targetsSwapchain && frameContext.swapchainBackbufferView == nullptr)
+                return result;
+
+            auto recordedBatch = RecordInRenderPassChildCommandWorkUnits(
+                impl,
+                frameContext,
+                renderScenePackage,
+                workUnits,
+                parentPassInput);
+            for (const auto& recordedWorkUnit : recordedBatch.recordedWorkUnits)
+            {
+                if (recordedWorkUnit.recordingFailed)
+                {
+                    if (!IsChildRecordingFailureSerialFallbackSafe(recordedWorkUnit.failureReason))
+                    {
+                        MarkCommandRecordingFailure(
+                            submissionFrame,
+                            recordedWorkUnit.failureReason.empty()
+                                ? "In-render-pass child command recording failed"
+                                : recordedWorkUnit.failureReason.c_str());
+                    }
+                    result.failedBeforeParentPassOpened = true;
+                    return result;
+                }
+            }
+            if (recordedBatch.recordedWorkUnitCount != workUnits.size())
+                return result;
+
+            const auto visibilityInput = BuildInRenderPassChildGroupVisibilityInput(workUnits);
+            if (Detail::HasResourceVisibilityTransitions(visibilityInput))
+            {
+                if (!frameContext.commandBuffer->IsRecording())
+                    frameContext.commandBuffer->Begin();
+
+                const bool recordedVisibilityTransitions = Detail::RecordResourceVisibilityTransitions(
+                    *frameContext.commandBuffer,
+                    visibilityInput,
+                    &frameContext);
+                if (!recordedVisibilityTransitions)
+                {
+                    MarkCommandRecordingFailure(
+                        submissionFrame,
+                        "Dependency visibility transition recording failed");
+                    result.failedBeforeParentPassOpened = true;
+                    return result;
+                }
+            }
+
+            if (!frameContext.commandBuffer->IsRecording())
+                frameContext.commandBuffer->Begin();
+
+            const auto effectivePassInput = ResolveSwapchainDepthPassInput(parentPassInput, frameContext);
+            if (!Detail::BeginPassCommandPlan(
+                *frameContext.commandBuffer,
+                frameContext.swapchainBackbufferView,
+                frameContext.swapchainDepthStencilView,
+                effectivePassInput,
+                &frameContext))
+            {
+                MarkCommandRecordingFailure(submissionFrame, "BeginPassCommandPlan failed");
+                return result;
+            }
+            result.failedAfterParentPassOpened = true;
+
+            std::stable_sort(
+                recordedBatch.recordedWorkUnits.begin(),
+                recordedBatch.recordedWorkUnits.end(),
+                [](const RecordedParallelCommandWorkUnit& lhs, const RecordedParallelCommandWorkUnit& rhs)
+                {
+                    return lhs.workUnit.sliceIndex < rhs.workUnit.sliceIndex;
+                });
+
+            bool executedAllChildren = true;
+            for (const auto& recordedWorkUnit : recordedBatch.recordedWorkUnits)
+            {
+                result.childCommandPools.push_back(recordedWorkUnit.commandPool);
+                result.childCommandBuffers.push_back(recordedWorkUnit.commandBuffer);
+                const auto executeResult = frameContext.commandBuffer->ExecuteChildCommandBuffer(
+                    recordedWorkUnit.commandBuffer);
+                if (!executeResult.Succeeded())
+                {
+                    executedAllChildren = false;
+                    MarkCommandRecordingFailure(
+                        submissionFrame,
+                        executeResult.message.empty()
+                            ? "ExecuteChildCommandBuffer failed"
+                            : executeResult.message.c_str());
+                }
+            }
+
+            Detail::EndPassCommandPlan(*frameContext.commandBuffer, &effectivePassInput, &frameContext);
+
+            if (!executedAllChildren)
+                return result;
+
+            submissionFrame->recordedPassCount += 1u;
+            submissionFrame->recordedDrawCount += recordedBatch.recordedDrawCount;
+            submissionFrame->recordedWorkUnitCount += recordedBatch.recordedWorkUnitCount;
+            submissionFrame->parallelRecordingWorkerCount = std::max(
+                submissionFrame->parallelRecordingWorkerCount,
+                recordedBatch.parallelWorkerCountUsed);
+
+            result.recorded = true;
+            result.failedAfterParentPassOpened = false;
+            result.recordedDrawCount = recordedBatch.recordedDrawCount;
+            result.recordedWorkUnitCount = recordedBatch.recordedWorkUnitCount;
+            result.parallelWorkerCountUsed = recordedBatch.parallelWorkerCountUsed;
+            return result;
+        }
+
         void MarkParallelCommandRecordingFailures(
             RhiSubmissionFrame* submissionFrame,
             const RecordedParallelCommandBufferBatch& recordedBatch)
@@ -1759,6 +2894,348 @@ namespace NLS::Render::Context
                         ? "Parallel command recording failed"
                         : recordedWorkUnit.failureReason.c_str());
             }
+        }
+
+        struct MainCommandBufferSerialRecordResult
+        {
+            bool recordedAnyCommand = false;
+            uint64_t recordedPassCount = 0u;
+            uint64_t recordedDrawCount = 0u;
+            uint64_t recordedWorkUnitCount = 0u;
+            bool failed = false;
+        };
+
+        bool BeginMainCommandBufferIfNeeded(Render::RHI::RHIFrameContext& frameContext)
+        {
+            if (frameContext.commandBuffer == nullptr)
+                return false;
+
+            if (!frameContext.commandBuffer->IsRecording())
+                frameContext.commandBuffer->Begin();
+            return true;
+        }
+
+        MainCommandBufferSerialRecordResult RecordWorkUnitOnMainCommandBuffer(
+            Render::RHI::RHIFrameContext& frameContext,
+            const RenderScenePackage& renderScenePackage,
+            const ParallelCommandWorkUnit& workUnit,
+            RhiSubmissionFrame* submissionFrame,
+            const std::optional<RenderPassCommandInput>& overridePassInput = std::nullopt)
+        {
+            MainCommandBufferSerialRecordResult result;
+            const auto& passInput = overridePassInput.has_value()
+                ? *overridePassInput
+                : workUnit.commandInput;
+            const auto visibilityInput = Detail::BuildDependencyVisibilityPassInput(
+                workUnit,
+                workUnit.incomingDependencyEdges);
+
+            if (!Detail::IsPassRecordable(renderScenePackage, passInput))
+            {
+                Detail::LogSkippedPass(
+                    renderScenePackage,
+                    passInput,
+                    "IsPassRecordable returned false");
+                return result;
+            }
+
+            if (passInput.kind == RenderPassCommandKind::Compute)
+            {
+                if (!BeginMainCommandBufferIfNeeded(frameContext))
+                    return result;
+
+                const auto* passProfileScopeName = Detail::ResolvePassProfileScopeName(passInput);
+                NLS_PROFILE_NAMED_SCOPE(passProfileScopeName);
+                frameContext.commandBuffer->BeginGpuProfileScope(passProfileScopeName, __FUNCTION__);
+                const auto recordedDispatches = Detail::RecordComputeDispatches(
+                    *frameContext.commandBuffer,
+                    passInput.computeDispatchInputs,
+                    false);
+                frameContext.commandBuffer->EndGpuProfileScope();
+                if (recordedDispatches == 0u)
+                {
+                    if (!passInput.computeDispatchInputs.empty())
+                    {
+                        Detail::LogSkippedPass(
+                            renderScenePackage,
+                            passInput,
+                            "No dispatches recorded but commands were expected");
+                        MarkCommandRecordingFailure(
+                            submissionFrame,
+                            "No dispatches recorded but commands were expected");
+                        result.failed = true;
+                    }
+                    return result;
+                }
+
+                result.recordedAnyCommand = true;
+                result.recordedPassCount = 1u;
+                result.recordedWorkUnitCount = 1u;
+                return result;
+            }
+
+            if (Detail::HasResourceVisibilityTransitions(visibilityInput))
+            {
+                if (!BeginMainCommandBufferIfNeeded(frameContext))
+                    return result;
+
+                const bool recordedVisibilityTransitions = Detail::RecordResourceVisibilityTransitions(
+                    *frameContext.commandBuffer,
+                    visibilityInput,
+                    &frameContext);
+                result.recordedAnyCommand |= recordedVisibilityTransitions;
+                if (!recordedVisibilityTransitions)
+                {
+                    MarkCommandRecordingFailure(
+                        submissionFrame,
+                        "Dependency visibility transition recording failed");
+                    result.failed = true;
+                    return result;
+                }
+            }
+
+            if (passInput.targetsSwapchain &&
+                frameContext.swapchainBackbufferView == nullptr)
+            {
+                Detail::LogSkippedPass(
+                    renderScenePackage,
+                    passInput,
+                    "swapchainBackbufferView is null");
+                result.recordedPassCount = 1u;
+                result.recordedWorkUnitCount = 1u;
+                return result;
+            }
+
+            if (!BeginMainCommandBufferIfNeeded(frameContext))
+                return result;
+
+            const auto effectivePassInput = ResolveSwapchainDepthPassInput(passInput, frameContext);
+            if (!Detail::BeginPassCommandPlan(
+                *frameContext.commandBuffer,
+                frameContext.swapchainBackbufferView,
+                frameContext.swapchainDepthStencilView,
+                effectivePassInput,
+                &frameContext))
+            {
+                Detail::LogSkippedPass(
+                    renderScenePackage,
+                    effectivePassInput,
+                    "BeginPassCommandPlan failed");
+                MarkCommandRecordingFailure(
+                    submissionFrame,
+                    "BeginPassCommandPlan failed");
+                result.failed = true;
+                return result;
+            }
+
+            result.recordedAnyCommand = true;
+            const auto* effectivePassProfileScopeName =
+                Detail::ResolvePassProfileScopeName(effectivePassInput);
+            NLS_PROFILE_NAMED_SCOPE(effectivePassProfileScopeName);
+            frameContext.commandBuffer->BeginGpuProfileScope(effectivePassProfileScopeName, __FUNCTION__);
+            const bool recordsSlicedSourceRange =
+                !overridePassInput.has_value() &&
+                workUnit.requiresOrderedSlicedSubmission &&
+                workUnit.sourcePassIndex < renderScenePackage.passCommandInputs.size();
+            const auto recordedDrawCount = recordsSlicedSourceRange
+                ? Detail::RecordPreparedDrawCommandsForPassRange(
+                    frameContext.commandBuffer.get(),
+                    effectivePassInput,
+                    renderScenePackage.passCommandInputs[static_cast<size_t>(workUnit.sourcePassIndex)]
+                        .recordedDrawCommands,
+                    workUnit.recordedDrawBegin,
+                    workUnit.recordedDrawCount)
+                : Detail::RecordPreparedDrawCommandsForPass(
+                    frameContext.commandBuffer.get(),
+                    effectivePassInput);
+            frameContext.commandBuffer->EndGpuProfileScope();
+            Detail::EndPassCommandPlan(*frameContext.commandBuffer, &effectivePassInput, &frameContext);
+            if (recordedDrawCount == 0u &&
+                (!effectivePassInput.recordedDrawCommands.empty() ||
+                    (recordsSlicedSourceRange && workUnit.recordedDrawCount > 0u)))
+            {
+                Detail::LogSkippedPass(
+                    renderScenePackage,
+                    effectivePassInput,
+                    "No draws recorded but commands were expected");
+                MarkCommandRecordingFailure(
+                    submissionFrame,
+                    "No draws recorded but commands were expected");
+                result.failed = true;
+                return result;
+            }
+
+            result.recordedPassCount = 1u;
+            result.recordedDrawCount = recordedDrawCount;
+            result.recordedWorkUnitCount = 1u;
+            return result;
+        }
+
+        void AccumulateSerialRecordResult(
+            RhiSubmissionFrame* submissionFrame,
+            const MainCommandBufferSerialRecordResult& result)
+        {
+            if (submissionFrame == nullptr)
+                return;
+
+            submissionFrame->recordedPassCount += result.recordedPassCount;
+            submissionFrame->recordedDrawCount += result.recordedDrawCount;
+            submissionFrame->recordedWorkUnitCount += result.recordedWorkUnitCount;
+        }
+
+        bool RecordOrderedInRenderPassChildAndSerialWorkUnits(
+            DriverImpl& impl,
+            Render::RHI::RHIFrameContext& frameContext,
+            const RenderScenePackage& renderScenePackage,
+            const std::vector<ParallelCommandWorkUnit>& workUnits,
+            Detail::AsyncComputeSubmitPlan* submitPlan,
+            RhiSubmissionFrame* submissionFrame)
+        {
+            if (submitPlan == nullptr ||
+                submissionFrame == nullptr ||
+                frameContext.commandBuffer == nullptr)
+            {
+                return false;
+            }
+
+            bool recordedAnyCommand = false;
+            bool recordedChildCommandGroup = false;
+            bool recordedSerialWorkUnit = false;
+            std::vector<std::shared_ptr<Render::RHI::RHICommandPool>> childCommandPoolKeepAlive;
+            std::vector<std::shared_ptr<Render::RHI::RHICommandBuffer>> childCommandBufferKeepAlive;
+            for (size_t workUnitIndex = 0u; workUnitIndex < workUnits.size();)
+            {
+                const auto& workUnit = workUnits[workUnitIndex];
+                if (!workUnit.usesInRenderPassChildCommandRecording)
+                {
+                    const auto result = RecordWorkUnitOnMainCommandBuffer(
+                        frameContext,
+                        renderScenePackage,
+                        workUnit,
+                        submissionFrame);
+                    AccumulateSerialRecordResult(submissionFrame, result);
+                    recordedAnyCommand |= result.recordedAnyCommand;
+                    recordedSerialWorkUnit |= result.recordedAnyCommand;
+                    if (result.failed)
+                        return false;
+                    ++workUnitIndex;
+                    continue;
+                }
+
+                std::vector<ParallelCommandWorkUnit> childGroup;
+                const auto sourcePassIndex = workUnit.sourcePassIndex;
+                while (workUnitIndex < workUnits.size() &&
+                    workUnits[workUnitIndex].usesInRenderPassChildCommandRecording &&
+                    workUnits[workUnitIndex].sourcePassIndex == sourcePassIndex)
+                {
+                    childGroup.push_back(workUnits[workUnitIndex]);
+                    ++workUnitIndex;
+                }
+
+                auto childGroupResult = RecordInRenderPassChildCommandGroup(
+                    impl,
+                    frameContext,
+                    renderScenePackage,
+                    childGroup,
+                    submissionFrame);
+                if (childGroupResult.recorded)
+                {
+                    recordedAnyCommand = true;
+                    recordedChildCommandGroup = true;
+                    childCommandPoolKeepAlive.insert(
+                        childCommandPoolKeepAlive.end(),
+                        childGroupResult.childCommandPools.begin(),
+                        childGroupResult.childCommandPools.end());
+                    childCommandBufferKeepAlive.insert(
+                        childCommandBufferKeepAlive.end(),
+                        childGroupResult.childCommandBuffers.begin(),
+                        childGroupResult.childCommandBuffers.end());
+                    continue;
+                }
+
+                if (childGroupResult.failedAfterParentPassOpened ||
+                    (childGroupResult.failedBeforeParentPassOpened &&
+                        HasCommandRecordingFailure(submissionFrame)))
+                {
+                    return false;
+                }
+
+                if (sourcePassIndex >= renderScenePackage.passCommandInputs.size())
+                    return false;
+
+                ParallelCommandWorkUnit fallbackWorkUnit = childGroup.front();
+                fallbackWorkUnit.requiresOrderedSlicedSubmission = false;
+                fallbackWorkUnit.usesInRenderPassChildCommandRecording = false;
+                fallbackWorkUnit.recordedDrawBegin = 0u;
+                fallbackWorkUnit.recordedDrawCount = static_cast<uint64_t>(
+                    renderScenePackage.passCommandInputs[static_cast<size_t>(sourcePassIndex)]
+                        .recordedDrawCommands.size());
+
+                if (submissionFrame->parallelFallbackReason.empty())
+                {
+                    submissionFrame->parallelFallbackReason =
+                        "in-render-pass child command recording failed; using unsliced passCommandInputs";
+                }
+
+                const auto result = RecordWorkUnitOnMainCommandBuffer(
+                    frameContext,
+                    renderScenePackage,
+                    fallbackWorkUnit,
+                    submissionFrame,
+                    renderScenePackage.passCommandInputs[static_cast<size_t>(sourcePassIndex)]);
+                AccumulateSerialRecordResult(submissionFrame, result);
+                recordedAnyCommand |= result.recordedAnyCommand;
+                recordedSerialWorkUnit |= result.recordedAnyCommand;
+                if (result.failed)
+                    return false;
+            }
+
+            const auto extractionVisibilityInput =
+                Render::FrameGraph::BuildExtractionVisibilityPassInput(renderScenePackage);
+            if (Detail::HasResourceVisibilityTransitions(extractionVisibilityInput))
+            {
+                if (!BeginMainCommandBufferIfNeeded(frameContext))
+                    return false;
+
+                const bool recordedPostPassTransitions = Detail::RecordResourceVisibilityTransitions(
+                    *frameContext.commandBuffer,
+                    extractionVisibilityInput,
+                    &frameContext);
+                recordedAnyCommand |= recordedPostPassTransitions;
+                if (!recordedPostPassTransitions)
+                {
+                    MarkCommandRecordingFailure(
+                        submissionFrame,
+                        "Post-pass transition recording failed");
+                    return false;
+                }
+            }
+
+            submissionFrame->usedParallelCommandPath = recordedChildCommandGroup;
+            submissionFrame->usedSerialCommandPath =
+                submissionFrame->usedSerialCommandPath ||
+                recordedSerialWorkUnit;
+            submissionFrame->usedTranslationMerge = false;
+            submissionFrame->translatedWorkUnitCount = 0u;
+            if (recordedAnyCommand)
+            {
+                if (frameContext.commandBuffer->IsRecording())
+                    frameContext.commandBuffer->End();
+
+                Detail::ThreadedQueueSubmissionBatch batch;
+                batch.queueType = Render::RHI::QueueType::Graphics;
+                if (frameContext.commandPool != nullptr)
+                    batch.commandPools.push_back(frameContext.commandPool);
+                batch.commandPools.insert(
+                    batch.commandPools.end(),
+                    childCommandPoolKeepAlive.begin(),
+                    childCommandPoolKeepAlive.end());
+                batch.commandBuffers.push_back(frameContext.commandBuffer);
+                batch.childCommandBuffers = std::move(childCommandBufferKeepAlive);
+                submitPlan->batches.push_back(std::move(batch));
+            }
+
+            return true;
         }
 
         Detail::ThreadedCommandSubmissionUnit BuildSubmissionUnitFromRecordedWorkUnit(
@@ -2117,6 +3594,7 @@ namespace NLS::Render::Context
             {
                 return nullptr;
             }
+            Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(impl, frameContext, frameContextIndex);
         }
         if (renderScenePackage.targetsSwapchain &&
             frameContext.frameFence != nullptr)
@@ -2134,6 +3612,26 @@ namespace NLS::Render::Context
                 frameContext.commandPool->Reset();
             if (frameContext.commandBuffer != nullptr)
                 frameContext.commandBuffer->Reset();
+            for (const auto& parallelCommandPool : frameContext.parallelCommandPools)
+            {
+                if (parallelCommandPool != nullptr)
+                    parallelCommandPool->Reset();
+            }
+            for (const auto& parallelCommandBuffer : frameContext.parallelCommandBuffers)
+            {
+                if (parallelCommandBuffer != nullptr)
+                    parallelCommandBuffer->Reset();
+            }
+            for (const auto& childCommandPool : frameContext.childCommandPools)
+            {
+                if (childCommandPool != nullptr)
+                    childCommandPool->Reset();
+            }
+            for (const auto& childCommandBuffer : frameContext.childCommandBuffers)
+            {
+                if (childCommandBuffer != nullptr)
+                    childCommandBuffer->Reset();
+            }
         }
 
         if (preResetTrackerStats != nullptr)
@@ -2232,12 +3730,96 @@ namespace NLS::Render::Context
                 impl.explicitDevice->GetCapabilities()
                     .GetFeature(Render::RHI::RHIDeviceFeature::ParallelCommandTranslation)
                     .supported;
+            const bool inRenderPassChildCommandRecordingReady =
+                supportsOrderedWorkUnitSubmission &&
+                impl.explicitDevice != nullptr &&
+                impl.explicitDevice->GetCapabilities()
+                    .GetFeature(Render::RHI::RHIDeviceFeature::ParallelCommandRecording)
+                    .supported &&
+                impl.explicitDevice->GetCapabilities()
+                    .GetFeature(Render::RHI::RHIDeviceFeature::InRenderPassChildCommandBuffers)
+                    .supported &&
+                frameContext.commandBuffer->CanExecuteChildCommandBuffers();
+            const bool packageContainsOrderedSlicedWorkUnits = std::any_of(
+                renderScenePackage.parallelCommandWorkUnits.begin(),
+                renderScenePackage.parallelCommandWorkUnits.end(),
+                [](const ParallelCommandWorkUnit& workUnit)
+                {
+                    return workUnit.requiresOrderedSlicedSubmission;
+                });
+            const bool packageContainsInRenderPassChildWorkUnits = std::any_of(
+                renderScenePackage.parallelCommandWorkUnits.begin(),
+                renderScenePackage.parallelCommandWorkUnits.end(),
+                [](const ParallelCommandWorkUnit& workUnit)
+                {
+                    return workUnit.usesInRenderPassChildCommandRecording;
+                });
+            const bool packageContainsNonChildOrderedSlicedWorkUnits = std::any_of(
+                renderScenePackage.parallelCommandWorkUnits.begin(),
+                renderScenePackage.parallelCommandWorkUnits.end(),
+                [](const ParallelCommandWorkUnit& workUnit)
+                {
+                    return workUnit.requiresOrderedSlicedSubmission &&
+                        !workUnit.usesInRenderPassChildCommandRecording;
+                });
+            const bool canPreserveOrderedPathWithChildFallback =
+                !packageContainsInRenderPassChildWorkUnits ||
+                inRenderPassChildCommandRecordingReady ||
+                packageContainsNonChildOrderedSlicedWorkUnits;
+            const bool allowOrderedSlicedSubmission =
+                supportsOrderedWorkUnitSubmission &&
+                packageContainsOrderedSlicedWorkUnits &&
+                canPreserveOrderedPathWithChildFallback;
+            const bool useOrderedWorkUnitPath =
+                supportsOrderedWorkUnitSubmission &&
+                canPreserveOrderedPathWithChildFallback;
+            if (packageContainsOrderedSlicedWorkUnits &&
+                (!allowOrderedSlicedSubmission ||
+                    (packageContainsInRenderPassChildWorkUnits && !inRenderPassChildCommandRecordingReady)))
+            {
+                submissionFrame->parallelFallbackReason =
+                    packageContainsInRenderPassChildWorkUnits
+                        ? "in-render-pass child command recording unavailable; using unsliced passCommandInputs"
+                        : "ordered sliced submission unavailable; using unsliced passCommandInputs";
+            }
             const auto workUnits = Detail::BuildParallelCommandWorkUnits(
                 renderScenePackage,
-                parallelRecordingReady,
-                parallelTranslationReady);
-            submissionFrame->parallelDrawCommandBatches = BuildUE427ParallelDrawCommandBatches(workUnits);
-            if (supportsOrderedWorkUnitSubmission && !workUnits.empty())
+                useOrderedWorkUnitPath ? parallelRecordingReady : false,
+                useOrderedWorkUnitPath ? parallelTranslationReady : false,
+                allowOrderedSlicedSubmission,
+                inRenderPassChildCommandRecordingReady);
+            submissionFrame->parallelDrawCommandBatches = BuildParallelDrawCommandBatchMetadata(workUnits);
+            const bool workUnitsContainInRenderPassChildRecording =
+                std::any_of(
+                    workUnits.begin(),
+                    workUnits.end(),
+                    [](const ParallelCommandWorkUnit& workUnit)
+                    {
+                        return workUnit.usesInRenderPassChildCommandRecording;
+                    });
+            if (useOrderedWorkUnitPath &&
+                workUnitsContainInRenderPassChildRecording &&
+                inRenderPassChildCommandRecordingReady &&
+                !workUnits.empty())
+            {
+                const bool recordedOrderedChildStream = RecordOrderedInRenderPassChildAndSerialWorkUnits(
+                    impl,
+                    frameContext,
+                    renderScenePackage,
+                    workUnits,
+                    submitPlan,
+                    submissionFrame);
+                if (!recordedOrderedChildStream)
+                {
+                    if (!HasCommandRecordingFailure(submissionFrame))
+                    {
+                        MarkCommandRecordingFailure(
+                            submissionFrame,
+                            "Ordered in-render-pass child command recording failed");
+                    }
+                }
+            }
+            else if (useOrderedWorkUnitPath && !workUnits.empty())
             {
                 auto recordedBatch = RecordParallelCommandWorkUnits(
                     impl,
@@ -2451,7 +4033,8 @@ namespace NLS::Render::Context
 
         if (submitPlan->batches.empty() &&
             renderScenePackage.targetsSwapchain &&
-            frameContext.commandBuffer != nullptr)
+            frameContext.commandBuffer != nullptr &&
+            !HasCommandRecordingFailure(submissionFrame))
         {
             frameContext.commandBuffer->Begin();
             if (frameContext.commandBuffer->IsRecording())
@@ -2478,6 +4061,9 @@ namespace NLS::Render::Context
             ? impl.explicitDevice->GetQueue(Render::RHI::QueueType::Compute)
             : nullptr;
         bool submissionSucceeded = true;
+        bool submittedGpuWorkMayNeedFenceConfirmation = false;
+        bool frameFenceSignalMayHaveBeenQueued = false;
+        bool deviceLostDuringSubmit = false;
 
         size_t firstGraphicsBatchIndex = submitPlan.batches.size();
         size_t lastGraphicsBatchIndex = submitPlan.batches.size();
@@ -2536,9 +4122,19 @@ namespace NLS::Render::Context
             }
             {
                 NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::QueueSubmitChecked");
+                const auto submitResult = queue->SubmitChecked(submitDesc);
+                if (submitDesc.signalFence != nullptr &&
+                    (submitResult.Succeeded() || submitResult.frameFenceSignalQueued))
+                {
+                    frameFenceSignalMayHaveBeenQueued = true;
+                }
+                deviceLostDuringSubmit |=
+                    submitResult.code == Render::RHI::RHIQueueOperationStatusCode::DeviceLost;
+                submittedGpuWorkMayNeedFenceConfirmation |= submitResult.Succeeded() ||
+                    submitResult.mayHaveQueuedGpuWork;
                 const bool submitted = RecordQueueOperationResult(
                     impl,
-                    queue->SubmitChecked(submitDesc),
+                    submitResult,
                     "RhiThreadCoordinator::SubmitCompiledExecution");
                 if (submitted &&
                     hasExternalSceneOutput &&
@@ -2594,7 +4190,10 @@ namespace NLS::Render::Context
             if (frameContext.frameFence != nullptr)
             {
                 NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::WaitFrameFence");
-                submissionFrame->retirementFenceWaited = submissionSucceeded &&
+                submissionFrame->retirementFenceWaited =
+                    submittedGpuWorkMayNeedFenceConfirmation &&
+                    frameFenceSignalMayHaveBeenQueued &&
+                    !deviceLostDuringSubmit &&
                     WaitFrameFenceWithDriverPolicy(
                         impl,
                         frameContext.frameFence,
@@ -2603,7 +4202,10 @@ namespace NLS::Render::Context
             else
                 submissionFrame->retirementFenceWaited = false;
         }
-        else if (frameContext.frameFence != nullptr && submissionSucceeded)
+        else if (frameContext.frameFence != nullptr &&
+            submittedGpuWorkMayNeedFenceConfirmation &&
+            frameFenceSignalMayHaveBeenQueued &&
+            !deviceLostDuringSubmit)
         {
             NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::WaitFrameFence");
             WaitFrameFenceWithDriverPolicy(
@@ -2612,14 +4214,28 @@ namespace NLS::Render::Context
                 "RhiThreadCoordinator::ExecuteThreadedSubmitPlan");
         }
 
+        const bool submittedButFenceNotConfirmed =
+            submittedGpuWorkMayNeedFenceConfirmation &&
+            frameFenceSignalMayHaveBeenQueued &&
+            frameContext.frameFence != nullptr &&
+            (submissionFrame == nullptr || !submissionFrame->retirementFenceWaited);
+        const bool submittedWithoutRetirementFence =
+            submittedGpuWorkMayNeedFenceConfirmation &&
+            !frameFenceSignalMayHaveBeenQueued;
+        const bool mustDeferFrameScopedRetirement =
+            submittedButFenceNotConfirmed ||
+            submittedWithoutRetirementFence;
+        const size_t frameContextIndex = impl.frameContexts.empty()
+            ? 0u
+            : static_cast<size_t>(frameContext.frameIndex % impl.frameContexts.size());
+        if (mustDeferFrameScopedRetirement)
+        {
+            RetainThreadedSubmitPlanResourcesUntilNextFence(impl, frameContextIndex, submitPlan);
+        }
+
         if (submissionFrame != nullptr)
         {
             const bool recordingSucceeded = !HasCommandRecordingFailure(submissionFrame);
-            submissionFrame->submittedSuccessfully =
-                submissionSucceeded &&
-                recordingSucceeded &&
-                submissionFrame->currentFrameQueueOperationFailureCount == 0u &&
-                !submissionFrame->deviceLostDetected;
             CopyDriverQueueTelemetryToSubmissionFrame(impl, *submissionFrame);
             submissionFrame->submittedSuccessfully =
                 submissionSucceeded &&
@@ -2628,7 +4244,15 @@ namespace NLS::Render::Context
                 !submissionFrame->deviceLostDetected;
         }
 
-        FinalizeThreadedRhiFrameContext(impl, frameContext, submitPlan);
+        FinalizeThreadedRhiFrameContext(
+            impl,
+            frameContext,
+            submitPlan,
+            mustDeferFrameScopedRetirement);
+        if (mustDeferFrameScopedRetirement)
+        {
+            impl.deferredThreadedFrameScopedRetirementFrameContexts.insert(frameContextIndex);
+        }
     }
 
     RhiSubmissionFrame Detail::SubmitThreadedRhiFrame(
@@ -2803,6 +4427,51 @@ namespace NLS::Render::Context
         return !(submissionFrame->recordedPassCount == 0u && submissionFrame->offscreenOnly);
     }
 
+    bool Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(
+        DriverImpl& impl,
+        Render::RHI::RHIFrameContext& frameContext,
+        const size_t frameContextIndex)
+    {
+        if (impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.size() < impl.frameContexts.size())
+            impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.resize(impl.frameContexts.size());
+        if (frameContextIndex < impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.size())
+            impl.retainedThreadedSubmitResourceKeepAliveByFrameContext[frameContextIndex].clear();
+
+        const bool hadDeferredFrameScopedRetirement =
+            impl.deferredThreadedFrameScopedRetirementFrameContexts.erase(frameContextIndex) != 0u;
+        if (!hadDeferredFrameScopedRetirement)
+            return false;
+
+        const uint64_t completedFrameIndex = frameContext.frameIndex;
+        if (frameContext.descriptorAllocator != nullptr)
+        {
+            NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::ReleaseDeferredDescriptorAllocatorFrame");
+            frameContext.descriptorAllocator->EndFrame(completedFrameIndex);
+        }
+        if (frameContext.uploadContext != nullptr)
+        {
+            NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::ReleaseDeferredUploadContextFrame");
+            frameContext.uploadContext->EndFrame(completedFrameIndex);
+        }
+        if (frameContext.resourceStateTracker != nullptr)
+        {
+            NLS_PROFILE_NAMED_SCOPE("ThreadedRhiFrame::ReleaseDeferredTransientResources");
+            frameContext.resourceStateTracker->RetireTransientResources(std::numeric_limits<uint64_t>::max());
+        }
+        return true;
+    }
+
+    void Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(DriverImpl& impl)
+    {
+        for (size_t frameContextIndex = 0u; frameContextIndex < impl.frameContexts.size(); ++frameContextIndex)
+        {
+            ReleaseDeferredThreadedFrameScopedResourcesAfterFence(
+                impl,
+                impl.frameContexts[frameContextIndex],
+                frameContextIndex);
+        }
+    }
+
     void Detail::LogCompletedThreadedRhiSubmission(
         DriverImpl& impl,
         Render::RHI::RHIFrameContext& frameContext,
@@ -2843,6 +4512,10 @@ namespace NLS::Render::Context
             {
                 return false;
             }
+            Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(
+                *driver.m_impl,
+                frameContext,
+                driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size());
         }
         if (frameContext.frameFence != nullptr)
             frameContext.frameFence->Reset();
@@ -2920,11 +4593,13 @@ namespace NLS::Render::Context
         const auto submitDesc = BuildStandaloneGraphicsSubmitDesc(frameContext, true);
 
         auto queue = driver.m_impl->explicitDevice->GetQueue(Render::RHI::QueueType::Graphics);
+        Render::RHI::RHIQueueOperationResult submitResult;
         if (queue != nullptr)
         {
+            submitResult = queue->SubmitChecked(submitDesc);
             const bool submitted = RecordQueueOperationResult(
                 *driver.m_impl,
-                queue->SubmitChecked(submitDesc),
+                submitResult,
                 "RhiThreadCoordinator::EndStandaloneExplicitFrame::Submit");
             if (submitted &&
                 !presentSwapchain &&
@@ -2950,9 +4625,23 @@ namespace NLS::Render::Context
             ClearSceneToUiWaitSemaphoreForFrame(*driver.m_impl, frameContext);
         }
         ClearUICompositionSignal(*driver.m_impl);
-        if (frameContext.descriptorAllocator != nullptr)
+        const auto frameContextIndex = driver.m_impl->frameContexts.empty()
+            ? 0u
+            : static_cast<size_t>(driver.m_impl->currentFrameIndex % driver.m_impl->frameContexts.size());
+        const bool deferFrameScopedRetirement =
+            ShouldDeferFrameScopedRetirementAfterSubmit(submitResult);
+        if (deferFrameScopedRetirement)
+        {
+            DeferStandaloneFrameScopedRetirementAfterSubmit(
+                *driver.m_impl,
+                frameContextIndex,
+                frameContext,
+                submitDesc);
+        }
+
+        if (!deferFrameScopedRetirement && frameContext.descriptorAllocator != nullptr)
             frameContext.descriptorAllocator->EndFrame(driver.m_impl->currentFrameIndex);
-        if (frameContext.uploadContext != nullptr)
+        if (!deferFrameScopedRetirement && frameContext.uploadContext != nullptr)
             frameContext.uploadContext->EndFrame(driver.m_impl->currentFrameIndex);
 
         RememberCompletedReadbackTexture(*driver.m_impl, frameContext.explicitReadbackTexture);

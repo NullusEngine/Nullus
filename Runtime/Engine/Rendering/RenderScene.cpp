@@ -1,14 +1,14 @@
 #include "Rendering/RenderScene.h"
 
 #include <algorithm>
-#include <future>
+#include <atomic>
 #include <limits>
-#include <thread>
 
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
 #include "Components/TransformComponent.h"
 #include "GameObject.h"
+#include "Jobs/JobSystem.h"
 #include "Rendering/EngineDrawableDescriptor.h"
 #include "Rendering/IndexedObjectDataShaderSupport.h"
 #include "Rendering/Data/DrawableInstanceCount.h"
@@ -51,6 +51,8 @@ namespace
 		SortToken mesh{};
 		uint8_t stateMask = 0u;
 		uint8_t primitiveMode = 0u;
+		uint32_t vertexStart = 0u;
+		uint32_t vertexCount = 0u;
 	};
 
 	bool operator<(const OpaqueDrawSortKey::SortToken& lhs, const OpaqueDrawSortKey::SortToken& rhs)
@@ -86,7 +88,9 @@ namespace
 			BuildMaterialSortToken(drawable.material),
 			BuildResourceSortToken(drawable.mesh),
 			drawable.stateMask.mask,
-			static_cast<uint8_t>(drawable.primitiveMode)
+			static_cast<uint8_t>(drawable.primitiveMode),
+			drawable.vertexStart,
+			drawable.vertexCount
 		};
 	}
 
@@ -98,7 +102,11 @@ namespace
 			return lhs.mesh < rhs.mesh;
 		if (lhs.stateMask != rhs.stateMask)
 			return lhs.stateMask < rhs.stateMask;
-		return lhs.primitiveMode < rhs.primitiveMode;
+		if (lhs.primitiveMode != rhs.primitiveMode)
+			return lhs.primitiveMode < rhs.primitiveMode;
+		if (lhs.vertexStart != rhs.vertexStart)
+			return lhs.vertexStart < rhs.vertexStart;
+		return lhs.vertexCount < rhs.vertexCount;
 	}
 
 	bool operator==(const OpaqueDrawSortKey& lhs, const OpaqueDrawSortKey& rhs)
@@ -106,7 +114,9 @@ namespace
 		return lhs.material == rhs.material &&
 			lhs.mesh == rhs.mesh &&
 			lhs.stateMask == rhs.stateMask &&
-			lhs.primitiveMode == rhs.primitiveMode;
+			lhs.primitiveMode == rhs.primitiveMode &&
+			lhs.vertexStart == rhs.vertexStart &&
+			lhs.vertexCount == rhs.vertexCount;
 	}
 
 	bool DescriptorCanParticipateInDynamicInstancing(
@@ -118,6 +128,13 @@ namespace
 		if (descriptor.instanceModelMatrices.empty())
 			return instanceCount == 1u;
 		return descriptor.instanceModelMatrices.size() == instanceCount;
+	}
+
+	bool DescriptorPerObjectStateMatchesForDynamicInstancing(
+		const NLS::Engine::Rendering::EngineDrawableDescriptor& lhs,
+		const NLS::Engine::Rendering::EngineDrawableDescriptor& rhs)
+	{
+		return NLS::Maths::Matrix4::AreEquals(lhs.userMatrix, rhs.userMatrix);
 	}
 
 	bool CanMergeOpaqueDrawables(
@@ -145,7 +162,8 @@ namespace
 		return lhs.TryGetDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>(lhsDescriptor) &&
 			rhs.TryGetDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>(rhsDescriptor) &&
 			DescriptorCanParticipateInDynamicInstancing(lhsDescriptor, lhsInstanceCount) &&
-			DescriptorCanParticipateInDynamicInstancing(rhsDescriptor, rhsInstanceCount);
+			DescriptorCanParticipateInDynamicInstancing(rhsDescriptor, rhsInstanceCount) &&
+			DescriptorPerObjectStateMatchesForDynamicInstancing(lhsDescriptor, rhsDescriptor);
 	}
 
 	void ExpandDescriptorForObjectDataRange(
@@ -163,6 +181,19 @@ namespace
 			return;
 
 		descriptor.instanceModelMatrices.assign(objectCount, descriptor.modelMatrix);
+	}
+
+	uint32_t ResolveMaxObjectsPerSubmittedDraw()
+	{
+		return NLS::Render::Data::GetMaxObjectDataCountPerDraw();
+	}
+
+	bool DrawableRequiresIndexedObjectDataRange(const NLS::Render::Entities::Drawable& drawable)
+	{
+		if (drawable.material == nullptr || drawable.material->GetShader() == nullptr)
+			return false;
+
+		return ShaderSupportsIndexedObjectData(*drawable.material->GetShader());
 	}
 
 	constexpr size_t kBitsPerWord = sizeof(uint64_t) * 8u;
@@ -251,6 +282,7 @@ RenderSceneSyncStats RenderScene::Synchronize(
 	}
 
 	RemoveMissingPrimitives(liveMeshRenderers, stats);
+	m_lastSyncStats = stats;
 	return stats;
 }
 
@@ -259,6 +291,7 @@ RenderSceneVisibleQueues RenderScene::GatherVisibleCommands(
 	const RenderSceneVisibilityMode mode) const
 {
 	RenderSceneVisibleQueues output;
+	m_lastDrawCallOptimizationStats = {};
 	const auto meshBaseIndices = BuildMeshBaseIndices();
 	const auto visibility = EvaluateVisibility(options, mode, meshBaseIndices);
 	const auto visibleMeshCount = static_cast<size_t>(visibility.visibleMeshCount);
@@ -286,12 +319,28 @@ RenderSceneVisibleQueues RenderScene::GatherVisibleCommands(
 				continue;
 
 			AppendVisibleDrawable(output, primitive, slot.command, options);
+			++m_lastDrawCallOptimizationStats.rawVisibleObjectCount;
 		}
 	}
 
 	FinalizeOpaqueQueue(output.opaques);
 	SortVisibleQueue(output.transparents, std::greater<float>{});
 	AssignVisibleObjectIndices(output);
+	m_lastDrawCallOptimizationStats.submittedSceneDrawCount =
+		static_cast<uint64_t>(output.opaques.size() + output.transparents.size() + output.skyboxes.size());
+	m_lastDrawCallOptimizationStats.dynamicInstanceGroupCount = 0u;
+	m_lastDrawCallOptimizationStats.largestInstanceGroupSize = 0u;
+	for (const auto& entry : output.opaques)
+	{
+		const auto instanceCount = entry.second.instanceCount;
+		if (instanceCount <= 1u)
+			continue;
+
+		++m_lastDrawCallOptimizationStats.dynamicInstanceGroupCount;
+		m_lastDrawCallOptimizationStats.largestInstanceGroupSize =
+			std::max<uint64_t>(m_lastDrawCallOptimizationStats.largestInstanceGroupSize, instanceCount);
+	}
+	m_lastDrawCallOptimizationStats.cachedCommandRebuildCount = m_lastSyncStats.rebuiltCachedCommandCount;
 	return output;
 }
 
@@ -303,6 +352,16 @@ size_t RenderScene::GetPrimitiveCount() const
 uint64_t RenderScene::GetCachedCommandBuildCountForTesting() const
 {
 	return m_cachedCommandBuildCount;
+}
+
+const DrawCallOptimizationStats& RenderScene::GetLastDrawCallOptimizationStats() const
+{
+	return m_lastDrawCallOptimizationStats;
+}
+
+const DrawCallOptimizationStats& RenderScene::GetLastDrawCallOptimizationStatsForTesting() const
+{
+	return GetLastDrawCallOptimizationStats();
 }
 
 RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilityForTesting(
@@ -641,7 +700,10 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilityParallel(
 	if (primitiveCount == 0u)
 		return snapshot;
 
-	const auto hardwareThreads = std::max(1u, std::thread::hardware_concurrency());
+	if (!NLS::Base::Jobs::IsJobSystemInitialized())
+		return EvaluateVisibilitySerialRange(options, meshBaseIndices, 0u, primitiveCount);
+
+	const auto hardwareThreads = std::max<uint32_t>(1u, NLS::Base::Jobs::GetJobWorkerCount() + 1u);
 	const auto desiredTaskCount =
 		(primitiveCount + kParallelVisibilityPrimitivesPerTask - 1u) /
 		kParallelVisibilityPrimitivesPerTask;
@@ -652,26 +714,71 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilityParallel(
 	snapshot.usedParallelEvaluation = true;
 
 	const auto rangeSize = (primitiveCount + taskCount - 1u) / taskCount;
-	std::vector<std::future<RenderSceneVisibilityRangeSnapshot>> futures;
-	futures.reserve(taskCount);
+	std::vector<RenderSceneVisibilityRangeSnapshot> rangeSnapshots(taskCount);
+	std::vector<std::atomic_bool> rangeCompleted(taskCount);
+	for (auto& completed : rangeCompleted)
+		completed.store(false, std::memory_order_relaxed);
 
-	for (size_t taskIndex = 0u; taskIndex < taskCount; ++taskIndex)
+	struct VisibilityRangeJob final : public NLS::Base::Jobs::IJobParallelFor
 	{
-		const auto begin = taskIndex * rangeSize;
-		if (begin >= primitiveCount)
-			break;
+		const RenderScene* scene = nullptr;
+		const RenderSceneVisibilityOptions* options = nullptr;
+		const std::vector<size_t>* meshBaseIndices = nullptr;
+		std::vector<RenderSceneVisibilityRangeSnapshot>* rangeSnapshots = nullptr;
+		std::vector<std::atomic_bool>* rangeCompleted = nullptr;
+		size_t primitiveCount = 0u;
+		size_t rangeSize = 0u;
 
-		const auto end = std::min(begin + rangeSize, primitiveCount);
-		futures.push_back(std::async(
-			std::launch::async,
-			[this, &options, &meshBaseIndices, begin, end]()
-			{
-				return EvaluateVisibilityCompactRange(options, meshBaseIndices, begin, end);
-			}));
+		void Execute(uint32_t taskIndex)
+		{
+			const auto begin = static_cast<size_t>(taskIndex) * rangeSize;
+			if (begin >= primitiveCount)
+				return;
+
+			const auto end = std::min(begin + rangeSize, primitiveCount);
+			(*rangeSnapshots)[static_cast<size_t>(taskIndex)] =
+				scene->EvaluateVisibilityCompactRange(*options, *meshBaseIndices, begin, end);
+			(*rangeCompleted)[static_cast<size_t>(taskIndex)].store(true, std::memory_order_release);
+		}
+	};
+
+	VisibilityRangeJob job;
+	job.scene = this;
+	job.options = &options;
+	job.meshBaseIndices = &meshBaseIndices;
+	job.rangeSnapshots = &rangeSnapshots;
+	job.rangeCompleted = &rangeCompleted;
+	job.primitiveCount = primitiveCount;
+	job.rangeSize = rangeSize;
+
+	NLS::Base::Jobs::JobParallelForScheduleOptions scheduleOptions;
+	scheduleOptions.batchSize = 1u;
+	scheduleOptions.debugName = "RenderScene::EvaluateVisibilityParallel";
+	auto handle = NLS::Base::Jobs::ScheduleParallelFor(
+		job,
+		static_cast<uint32_t>(taskCount),
+		scheduleOptions);
+	if (handle.id == 0u)
+		return EvaluateVisibilitySerialRange(options, meshBaseIndices, 0u, primitiveCount);
+
+	NLS::Base::Jobs::CompleteNoClear(handle);
+	const auto completionStatus = NLS::Base::Jobs::Internal::GetJobCompletionStatus(handle);
+	NLS::Base::Jobs::ClearWithoutSync(handle);
+	const bool allRangesCompleted = std::all_of(
+		rangeCompleted.begin(),
+		rangeCompleted.end(),
+		[](const std::atomic_bool& completed)
+		{
+			return completed.load(std::memory_order_acquire);
+		});
+	if (completionStatus != NLS::Base::Jobs::JobCompletionStatus::Succeeded ||
+		!allRangesCompleted)
+	{
+		return EvaluateVisibilitySerialRange(options, meshBaseIndices, 0u, primitiveCount);
 	}
 
-	for (auto& future : futures)
-		MergeVisibilityRangeSnapshot(snapshot, future.get());
+	for (const auto& rangeSnapshot : rangeSnapshots)
+		MergeVisibilityRangeSnapshot(snapshot, rangeSnapshot);
 
 	return snapshot;
 }
@@ -785,30 +892,152 @@ void RenderScene::AssignVisibleObjectIndices(RenderSceneVisibleQueues& output) c
 {
 	uint32_t nextObjectIndex = 0u;
 	const auto assignQueue =
-		[&nextObjectIndex](RenderSceneVisibleQueues::SceneDrawables& queue)
+		[this, &nextObjectIndex](RenderSceneVisibleQueues::SceneDrawables& queue)
 		{
-			for (auto& entry : queue)
+			RenderSceneVisibleQueues::SceneDrawables assigned;
+			const auto maxObjectsPerSubmittedDraw = ResolveMaxObjectsPerSubmittedDraw();
+			size_t estimatedSubmittedDraws = queue.size();
+			for (const auto& entry : queue)
 			{
-				EngineDrawableDescriptor descriptor;
-				if (!entry.second.TryGetDescriptor<EngineDrawableDescriptor>(descriptor))
-					continue;
-
-				const auto instanceCount = ResolveVisibleInstanceCount(entry.second);
-				const auto objectCount = std::max(1u, instanceCount);
-				uint32_t lastObjectIndex = 0u;
-				if (!NLS::Render::Data::TryResolveObjectDataRangeEnd(
-					nextObjectIndex,
-					objectCount,
-					lastObjectIndex))
+				if (!entry.second.HasDescriptor<EngineDrawableDescriptor>() ||
+					!DrawableRequiresIndexedObjectDataRange(entry.second))
 				{
 					continue;
 				}
-				descriptor.objectIndex = nextObjectIndex;
-				ExpandDescriptorForObjectDataRange(descriptor, objectCount);
-				nextObjectIndex = lastObjectIndex + 1u;
-				entry.second.RemoveDescriptor<EngineDrawableDescriptor>();
-				entry.second.AddDescriptor<EngineDrawableDescriptor>(std::move(descriptor));
+
+				const auto instanceCount = ResolveVisibleInstanceCount(entry.second);
+				const auto objectCount = std::max(1u, instanceCount);
+				if (objectCount > maxObjectsPerSubmittedDraw)
+				{
+					estimatedSubmittedDraws +=
+						static_cast<size_t>((objectCount - 1u) / maxObjectsPerSubmittedDraw);
+				}
 			}
+			assigned.reserve(estimatedSubmittedDraws);
+			for (auto& entry : queue)
+			{
+				if (!entry.second.HasDescriptor<EngineDrawableDescriptor>())
+				{
+					assigned.push_back(std::move(entry));
+					continue;
+				}
+
+				if (!DrawableRequiresIndexedObjectDataRange(entry.second))
+				{
+					assigned.push_back(std::move(entry));
+					continue;
+				}
+
+				const auto& descriptor = entry.second.GetDescriptor<EngineDrawableDescriptor>();
+				const auto instanceCount = ResolveVisibleInstanceCount(entry.second);
+				const auto objectCount = std::max(1u, instanceCount);
+				const bool preservesMaterialInstanceCount =
+					entry.second.instanceCount == 0u && objectCount == instanceCount;
+				auto remainingObjectCount = objectCount;
+				size_t matrixOffset = 0u;
+				const auto appendChunk =
+					[&assigned, &descriptor, &entry, objectCount, preservesMaterialInstanceCount](
+						const uint32_t chunkObjectCount,
+						const uint32_t objectIndex,
+						const size_t sourceMatrixOffset)
+					{
+						NLS::Render::Entities::Drawable chunkDrawable;
+						chunkDrawable.mesh = entry.second.mesh;
+						chunkDrawable.material = entry.second.material;
+						chunkDrawable.stateMask = entry.second.stateMask;
+						chunkDrawable.primitiveMode = entry.second.primitiveMode;
+						chunkDrawable.vertexStart = entry.second.vertexStart;
+						chunkDrawable.vertexCount = entry.second.vertexCount;
+
+						EngineDrawableDescriptor chunkDescriptor;
+						chunkDescriptor.modelMatrix = descriptor.modelMatrix;
+						chunkDescriptor.userMatrix = descriptor.userMatrix;
+						chunkDescriptor.objectIndex = objectIndex;
+						chunkDescriptor.objectCount = chunkObjectCount;
+						if (!descriptor.instanceModelMatrices.empty())
+						{
+							const auto sliceBegin = std::min(
+								descriptor.instanceModelMatrices.size(),
+								sourceMatrixOffset);
+							const auto sliceEnd = std::min(
+								descriptor.instanceModelMatrices.size(),
+								sliceBegin + static_cast<size_t>(chunkObjectCount));
+							chunkDescriptor.instanceModelMatrices.assign(
+								descriptor.instanceModelMatrices.begin() + static_cast<std::ptrdiff_t>(sliceBegin),
+								descriptor.instanceModelMatrices.begin() + static_cast<std::ptrdiff_t>(sliceEnd));
+						}
+						else
+						{
+							chunkDescriptor.instanceModelMatrices.clear();
+							ExpandDescriptorForObjectDataRange(chunkDescriptor, chunkObjectCount);
+						}
+						chunkDrawable.instanceCount =
+							preservesMaterialInstanceCount && chunkObjectCount == objectCount
+								? 0u
+								: chunkObjectCount;
+						chunkDrawable.AddDescriptor<EngineDrawableDescriptor>(std::move(chunkDescriptor));
+						assigned.emplace_back(entry.first, std::move(chunkDrawable));
+					};
+
+				if (objectCount <= maxObjectsPerSubmittedDraw &&
+					nextObjectIndex < NLS::Render::Data::GetMaxObjectDataCount())
+				{
+					uint32_t lastObjectIndex = 0u;
+					if (NLS::Render::Data::TryResolveObjectDataRangeEnd(
+							nextObjectIndex,
+							objectCount,
+							lastObjectIndex))
+					{
+						EngineDrawableDescriptor updatedDescriptor = descriptor;
+						updatedDescriptor.objectIndex = nextObjectIndex;
+						updatedDescriptor.objectCount = objectCount;
+						if (updatedDescriptor.instanceModelMatrices.empty())
+							ExpandDescriptorForObjectDataRange(updatedDescriptor, objectCount);
+						entry.second.RemoveDescriptor<EngineDrawableDescriptor>();
+						entry.second.AddDescriptor<EngineDrawableDescriptor>(std::move(updatedDescriptor));
+						if (!preservesMaterialInstanceCount || objectCount != instanceCount)
+							entry.second.instanceCount = objectCount;
+						assigned.push_back(std::move(entry));
+						nextObjectIndex = lastObjectIndex + 1u;
+						continue;
+					}
+				}
+
+				while (remainingObjectCount > 0u)
+				{
+					const auto remainingGlobalCapacity =
+						nextObjectIndex < NLS::Render::Data::GetMaxObjectDataCount()
+							? NLS::Render::Data::GetMaxObjectDataCount() - nextObjectIndex
+							: 0u;
+					if (remainingGlobalCapacity == 0u)
+					{
+						m_lastDrawCallOptimizationStats.objectDataOverflowDroppedObjectCount += remainingObjectCount;
+						break;
+					}
+
+					const auto chunkObjectCount = std::min<uint32_t>(
+						remainingObjectCount,
+						std::min<uint32_t>(
+							remainingGlobalCapacity,
+							ResolveMaxObjectsPerSubmittedDraw()));
+					uint32_t lastObjectIndex = 0u;
+					if (!NLS::Render::Data::TryResolveObjectDataRangeEnd(
+						nextObjectIndex,
+						chunkObjectCount,
+						lastObjectIndex))
+					{
+						m_lastDrawCallOptimizationStats.objectDataOverflowDroppedObjectCount += remainingObjectCount;
+						break;
+					}
+
+					appendChunk(chunkObjectCount, nextObjectIndex, matrixOffset);
+
+					nextObjectIndex = lastObjectIndex + 1u;
+					remainingObjectCount -= chunkObjectCount;
+					matrixOffset += chunkObjectCount;
+				}
+			}
+			queue = std::move(assigned);
 		};
 
 	assignQueue(output.opaques);

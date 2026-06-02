@@ -355,6 +355,7 @@ namespace NLS::Render::RHI
 		ExplicitBarriers,
 		ParallelCommandRecording,
 		ParallelCommandTranslation,
+		InRenderPassChildCommandBuffers,
 		TransientResourceAllocator,
 		CentralizedDescriptorManagement,
 		PipelineStateCache,
@@ -394,6 +395,7 @@ namespace NLS::Render::RHI
 		bool supportsExplicitBarriers = false;
 		bool supportsParallelCommandRecording = false;
 		bool supportsParallelCommandTranslation = false;
+		bool supportsInRenderPassChildCommandBuffers = false;
 		bool supportsTransientResourceAllocator = false;
 		bool supportsCentralizedDescriptorManagement = false;
 		bool supportsPipelineStateCache = false;
@@ -439,6 +441,7 @@ namespace NLS::Render::RHI
 			SetFeatureStateFromLegacy(RHIDeviceFeature::ExplicitBarriers, supportsExplicitBarriers);
 			SetFeatureStateFromLegacy(RHIDeviceFeature::ParallelCommandRecording, supportsParallelCommandRecording);
 			SetFeatureStateFromLegacy(RHIDeviceFeature::ParallelCommandTranslation, supportsParallelCommandTranslation);
+			SetFeatureStateFromLegacy(RHIDeviceFeature::InRenderPassChildCommandBuffers, supportsInRenderPassChildCommandBuffers);
 			SetFeatureStateFromLegacy(RHIDeviceFeature::TransientResourceAllocator, supportsTransientResourceAllocator);
 			SetFeatureStateFromLegacy(RHIDeviceFeature::CentralizedDescriptorManagement, supportsCentralizedDescriptorManagement);
 			SetFeatureStateFromLegacy(RHIDeviceFeature::PipelineStateCache, supportsPipelineStateCache);
@@ -497,6 +500,7 @@ namespace NLS::Render::RHI
 			case RHIDeviceFeature::ExplicitBarriers: supportsExplicitBarriers = supported; break;
 			case RHIDeviceFeature::ParallelCommandRecording: supportsParallelCommandRecording = supported; break;
 			case RHIDeviceFeature::ParallelCommandTranslation: supportsParallelCommandTranslation = supported; break;
+			case RHIDeviceFeature::InRenderPassChildCommandBuffers: supportsInRenderPassChildCommandBuffers = supported; break;
 			case RHIDeviceFeature::TransientResourceAllocator: supportsTransientResourceAllocator = supported; break;
 			case RHIDeviceFeature::CentralizedDescriptorManagement: supportsCentralizedDescriptorManagement = supported; break;
 			case RHIDeviceFeature::PipelineStateCache: supportsPipelineStateCache = supported; break;

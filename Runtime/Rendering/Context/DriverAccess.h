@@ -75,6 +75,7 @@ namespace NLS::Render::RHI
 namespace NLS::Render::Context
 {
     class Driver;
+    class DriverImpl;
     class ThreadedRenderingLifecycle;
     struct FrameSnapshot;
     struct RenderScenePackage;
@@ -245,6 +246,11 @@ namespace NLS::Render::Context
         static void SetCompletedReadbackTexture(
             Driver& driver,
             std::shared_ptr<RHI::RHITexture> texture);
+        static size_t GetRetainedThreadedSubmitResourceCount(const Driver& driver);
+#if defined(NLS_ENABLE_TEST_HOOKS)
+        static DriverImpl* GetImplForTesting(Driver& driver);
+        static void ShutdownRhiResourcesForTesting(Driver& driver);
+#endif
         static void SetExplicitFrameActive(Driver& driver, bool active);
         static void AgePendingSwapchainResize(
             Driver& driver,

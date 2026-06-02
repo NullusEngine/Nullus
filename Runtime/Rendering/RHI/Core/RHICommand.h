@@ -31,6 +31,7 @@ namespace NLS::Render::RHI
         Barrier,
         BeginRenderPass,
         EndRenderPass,
+        ExecuteChildCommandBuffer,
         BindPipeline,
         BindResources
     };
@@ -294,6 +295,25 @@ namespace NLS::Render::RHI
         virtual void BindIndexBuffer(const RHIIndexBufferView& view) = 0;
         virtual void Draw(uint32_t vertexCount, uint32_t instanceCount = 1, uint32_t firstVertex = 0, uint32_t firstInstance = 0) = 0;
         virtual void DrawIndexed(uint32_t indexCount, uint32_t instanceCount = 1, uint32_t firstIndex = 0, int32_t vertexOffset = 0, uint32_t firstInstance = 0) = 0;
+        virtual RHICommandRecordingResult DrawChecked(
+            uint32_t vertexCount,
+            uint32_t instanceCount = 1,
+            uint32_t firstVertex = 0,
+            uint32_t firstInstance = 0)
+        {
+            Draw(vertexCount, instanceCount, firstVertex, firstInstance);
+            return {};
+        }
+        virtual RHICommandRecordingResult DrawIndexedChecked(
+            uint32_t indexCount,
+            uint32_t instanceCount = 1,
+            uint32_t firstIndex = 0,
+            int32_t vertexOffset = 0,
+            uint32_t firstInstance = 0)
+        {
+            DrawIndexed(indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
+            return {};
+        }
         virtual void Dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ) = 0;
         virtual void CopyBuffer(const std::shared_ptr<RHIBuffer>& source, const std::shared_ptr<RHIBuffer>& destination, const RHIBufferCopyRegion& region) = 0;
         virtual void CopyBufferToTexture(const RHIBufferToTextureCopyDesc& desc) = 0;
@@ -302,12 +322,24 @@ namespace NLS::Render::RHI
         {
             return barrier;
         }
+        virtual bool IsClosedForSubmission() const { return true; }
         virtual RHICommandRecordingResult BarrierChecked(const RHIBarrierDesc& barrier)
         {
             Barrier(barrier);
             return {};
         }
         virtual void Barrier(const RHIBarrierDesc& barrier) = 0;
+        virtual bool IsChildCommandBuffer() const { return false; }
+        virtual bool CanExecuteChildCommandBuffers() const { return false; }
+        virtual RHICommandRecordingResult ExecuteChildCommandBuffer(
+            const std::shared_ptr<RHICommandBuffer>& childCommandBuffer)
+        {
+            (void)childCommandBuffer;
+            return {
+                RHICommandRecordingStatusCode::InvalidArgument,
+                "RHI command buffer does not support child command buffer execution"
+            };
+        }
     };
 
     class NLS_RENDER_API RHICommandPool : public RHIObject
@@ -315,6 +347,11 @@ namespace NLS::Render::RHI
     public:
         virtual QueueType GetQueueType() const = 0;
         virtual std::shared_ptr<RHICommandBuffer> CreateCommandBuffer(std::string debugName = {}) = 0;
+        virtual std::shared_ptr<RHICommandBuffer> CreateChildCommandBuffer(std::string debugName = {})
+        {
+            (void)debugName;
+            return nullptr;
+        }
         virtual void Reset() = 0;
     };
 }

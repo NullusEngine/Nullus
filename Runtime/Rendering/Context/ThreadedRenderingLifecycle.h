@@ -5,6 +5,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -200,6 +201,9 @@ namespace NLS::Render::Context
         std::shared_ptr<RHI::RHITextureView> depthStencilAttachmentView;
     };
 
+    inline constexpr uint64_t kRecordedDrawCommandSliceThreshold = 512u;
+    inline constexpr uint64_t kInvalidParallelCommandSourcePassIndex = (std::numeric_limits<uint64_t>::max)();
+
     struct NLS_RENDER_API ParallelCommandWorkUnit
     {
         uint64_t workUnitIndex = 0u;
@@ -209,6 +213,13 @@ namespace NLS::Render::Context
         std::vector<WorkUnitDependencyEdge> incomingDependencyEdges;
         bool eligibleForParallelRecording = false;
         bool eligibleForParallelTranslation = false;
+        uint64_t sourcePassIndex = kInvalidParallelCommandSourcePassIndex;
+        uint32_t sliceIndex = 0u;
+        uint32_t sliceCount = 1u;
+        uint64_t recordedDrawBegin = 0u;
+        uint64_t recordedDrawCount = 0u;
+        bool requiresOrderedSlicedSubmission = false;
+        bool usesInRenderPassChildCommandRecording = false;
     };
 
     enum class ParallelDrawCommandPassRole : uint8_t
@@ -233,10 +244,23 @@ namespace NLS::Render::Context
         bool eligibleForParallelRecording = false;
         bool eligibleForParallelTranslation = false;
         std::vector<WorkUnitDependencyEdge> incomingDependencyEdges;
+        uint64_t sourcePassIndex = kInvalidParallelCommandSourcePassIndex;
+        uint32_t sliceIndex = 0u;
+        uint32_t sliceCount = 1u;
+        uint64_t recordedDrawBegin = 0u;
+        uint64_t recordedDrawCount = 0u;
+        bool requiresOrderedSlicedSubmission = false;
+        bool usesInRenderPassChildCommandRecording = false;
     };
 
-    NLS_RENDER_API std::vector<ParallelDrawCommandBatchMetadata> BuildUE427ParallelDrawCommandBatches(
+    NLS_RENDER_API bool IsRenderPassEligibleForParallelRecording(const RenderPassCommandInput& passInput);
+    NLS_RENDER_API bool CanRenderPassUseRecordedDrawCommandSlices(const RenderPassCommandInput& passInput);
+    NLS_RENDER_API std::vector<ParallelDrawCommandBatchMetadata> BuildParallelDrawCommandBatchMetadata(
         const std::vector<ParallelCommandWorkUnit>& workUnits);
+    NLS_RENDER_API std::vector<ParallelCommandWorkUnit> BuildRecordedDrawCommandWorkUnitsForPass(
+        const RenderPassCommandInput& passInput,
+        uint64_t sourcePassIndex,
+        uint64_t workUnitBaseIndex);
 
     enum class AsyncComputeDisposition : uint8_t
     {
@@ -338,6 +362,7 @@ namespace NLS::Render::Context
         std::vector<ParallelDrawCommandBatchMetadata> parallelDrawCommandBatches;
         uint32_t parallelRecordingWorkerCount = 0u;
         uint64_t translatedWorkUnitCount = 0u;
+        std::string parallelFallbackReason;
         bool usedParallelCommandPath = false;
         bool usedTranslationMerge = false;
         bool usedSerialCommandPath = false;
@@ -467,6 +492,9 @@ namespace NLS::Render::Context
         uint64_t pipelineCacheComputeMisses = 0u;
         uint64_t pipelineCacheComputeStores = 0u;
         uint64_t pipelineCacheComputeEntries = 0u;
+        uint64_t parallelCommandWorkUnitCount = 0u;
+        uint32_t parallelRecordingWorkerCount = 0u;
+        std::string parallelFallbackReason;
         uint64_t queueOperationFailureCount = 0u;
         std::string lastQueueOperationFailure;
         uint64_t currentFrameQueueOperationFailureCount = 0u;

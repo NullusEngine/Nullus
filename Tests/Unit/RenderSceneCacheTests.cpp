@@ -12,16 +12,19 @@
 #include "Core/ResourceManagement/MaterialManager.h"
 #include "Core/ResourceManagement/MeshManager.h"
 #include "Core/ResourceManagement/ShaderManager.h"
+#include "Jobs/JobSystem.h"
 #include "Math/Matrix4.h"
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/BaseSceneRenderer.h"
 #include "Rendering/Data/Frustum.h"
 #include "Rendering/Data/DrawableInstanceCount.h"
+#include "Rendering/Data/ObjectDataLimits.h"
 #include "Rendering/Context/Driver.h"
 #include "Rendering/EngineDrawableDescriptor.h"
 #include "Rendering/Geometry/Vertex.h"
 #include "Rendering/RenderScene.h"
 #include "Rendering/Resources/Loaders/ShaderLoader.h"
+#include "Rendering/Resources/IndexedObjectDataShaderSupport.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Settings/DriverSettings.h"
@@ -33,6 +36,39 @@
 
 namespace
 {
+    class ScopedRenderSceneCacheJobSystem
+    {
+    public:
+        explicit ScopedRenderSceneCacheJobSystem(const uint32_t workerCount)
+        {
+            if (NLS::Base::Jobs::IsJobSystemInitialized())
+                return;
+
+            NLS::Base::Jobs::JobSystemConfig config;
+            config.workerCount = workerCount;
+            m_ownsRuntime = NLS::Base::Jobs::TryInitializeJobSystem(config);
+        }
+
+        ~ScopedRenderSceneCacheJobSystem()
+        {
+            if (!m_ownsRuntime)
+                return;
+
+            NLS::Base::Jobs::ShutdownJobSystem(NLS::Base::Jobs::JobSystemShutdownMode::Immediate);
+#if defined(NLS_ENABLE_TEST_HOOKS)
+            NLS::Base::Jobs::ResetJobSystemForTesting();
+#endif
+        }
+
+        bool IsInitialized() const
+        {
+            return NLS::Base::Jobs::IsJobSystemInitialized();
+        }
+
+    private:
+        bool m_ownsRuntime = false;
+    };
+
     NLS::Render::Context::Driver& EnsureRenderSceneTestDriver()
     {
         static auto driver = std::make_unique<NLS::Render::Context::Driver>([]()
@@ -234,6 +270,50 @@ namespace
         return NLS::Render::Data::ResolveDrawableInstanceCount(drawable).count;
     }
 
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    class ScopedObjectDataCountLimitOverride final
+    {
+    public:
+        explicit ScopedObjectDataCountLimitOverride(const uint32_t limit)
+            : m_previousLimit(NLS::Render::Data::GetObjectDataCountLimitForTesting())
+        {
+            NLS::Render::Data::SetObjectDataCountLimitForTesting(limit);
+        }
+
+        ~ScopedObjectDataCountLimitOverride()
+        {
+            NLS::Render::Data::SetObjectDataCountLimitForTesting(m_previousLimit);
+        }
+
+        ScopedObjectDataCountLimitOverride(const ScopedObjectDataCountLimitOverride&) = delete;
+        ScopedObjectDataCountLimitOverride& operator=(const ScopedObjectDataCountLimitOverride&) = delete;
+
+    private:
+        uint32_t m_previousLimit = 0u;
+    };
+
+    class ScopedObjectDataCountPerDrawLimitOverride final
+    {
+    public:
+        explicit ScopedObjectDataCountPerDrawLimitOverride(const uint32_t limit)
+            : m_previousLimit(NLS::Render::Data::GetObjectDataCountPerDrawLimitForTesting())
+        {
+            NLS::Render::Data::SetObjectDataCountPerDrawLimitForTesting(limit);
+        }
+
+        ~ScopedObjectDataCountPerDrawLimitOverride()
+        {
+            NLS::Render::Data::SetObjectDataCountPerDrawLimitForTesting(m_previousLimit);
+        }
+
+        ScopedObjectDataCountPerDrawLimitOverride(const ScopedObjectDataCountPerDrawLimitOverride&) = delete;
+        ScopedObjectDataCountPerDrawLimitOverride& operator=(const ScopedObjectDataCountPerDrawLimitOverride&) = delete;
+
+    private:
+        uint32_t m_previousLimit = 0u;
+    };
+#endif
+
     template <typename T>
     NLS::Engine::Serialize::PPtr<T> MakeRenderScenePPtr(
         const NLS::Engine::Serialize::ObjectIdentifier& identifier)
@@ -367,9 +447,15 @@ TEST(RenderSceneCacheTests, StableSceneReusesPersistentPrimitivesAndCachedComman
     options.defaultMaterial = &fixture.material;
 
     auto first = renderScene.Synchronize(fixture.scene, options);
+    const auto firstVisible = renderScene.GatherVisibleCommands({});
+    const auto firstOptimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
     auto second = renderScene.Synchronize(fixture.scene, options);
+    const auto secondVisible = renderScene.GatherVisibleCommands({});
+    const auto secondOptimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
 
     ASSERT_EQ(renderScene.GetPrimitiveCount(), 1u);
+    ASSERT_EQ(firstVisible.opaques.size(), 1u);
+    ASSERT_EQ(secondVisible.opaques.size(), 1u);
     EXPECT_EQ(first.addedPrimitiveCount, 1u);
     EXPECT_EQ(first.reusedPrimitiveCount, 0u);
     EXPECT_EQ(first.rebuiltCachedCommandCount, 1u);
@@ -377,6 +463,12 @@ TEST(RenderSceneCacheTests, StableSceneReusesPersistentPrimitivesAndCachedComman
     EXPECT_EQ(second.reusedPrimitiveCount, 1u);
     EXPECT_EQ(second.rebuiltCachedCommandCount, 0u);
     EXPECT_EQ(renderScene.GetCachedCommandBuildCountForTesting(), 1u);
+    EXPECT_EQ(firstOptimizationStats.rawVisibleObjectCount, 1u);
+    EXPECT_EQ(firstOptimizationStats.submittedSceneDrawCount, 1u);
+    EXPECT_EQ(firstOptimizationStats.cachedCommandRebuildCount, 1u);
+    EXPECT_EQ(secondOptimizationStats.rawVisibleObjectCount, 1u);
+    EXPECT_EQ(secondOptimizationStats.submittedSceneDrawCount, 1u);
+    EXPECT_EQ(secondOptimizationStats.cachedCommandRebuildCount, 0u);
 }
 
 TEST(RenderSceneCacheTests, MaterialStateChangeInvalidatesOnlyAffectedCachedCommand)
@@ -429,6 +521,7 @@ TEST(RenderSceneCacheTests, TransformAndUserMatrixUpdateVisibleObjectDescriptorW
     fixture.meshRenderer->SetUserMatrixElement(0u, 3u, 9.0f);
     const auto unchangedCommands = renderScene.Synchronize(fixture.scene, options);
     const auto visible = renderScene.GatherVisibleCommands({});
+    const auto optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
 
     ASSERT_EQ(visible.opaques.size(), 1u);
     EXPECT_EQ(unchangedCommands.rebuiltCachedCommandCount, 0u);
@@ -440,6 +533,9 @@ TEST(RenderSceneCacheTests, TransformAndUserMatrixUpdateVisibleObjectDescriptorW
         EXPECT_FLOAT_EQ(descriptor.modelMatrix.data[index], expectedWorldMatrix.data[index]);
     EXPECT_FLOAT_EQ(descriptor.userMatrix.data[3], 9.0f);
     EXPECT_EQ(renderScene.GetCachedCommandBuildCountForTesting(), 1u);
+    EXPECT_EQ(optimizationStats.rawVisibleObjectCount, 1u);
+    EXPECT_EQ(optimizationStats.submittedSceneDrawCount, 1u);
+    EXPECT_EQ(optimizationStats.cachedCommandRebuildCount, 0u);
 }
 
 TEST(RenderSceneCacheTests, GatherVisibleCommandsAssignsStablePerFrameObjectIndices)
@@ -828,6 +924,9 @@ TEST(RenderSceneCacheTests, BitsetVisibilityTracksPrimitiveAndMeshResults)
 
 TEST(RenderSceneCacheTests, SerialAndParallelVisibilityProduceEquivalentQueues)
 {
+    ScopedRenderSceneCacheJobSystem jobSystem(2u);
+    ASSERT_TRUE(jobSystem.IsInitialized());
+
     ManyPrimitiveFixture fixture(192u);
     NLS::Engine::Rendering::RenderScene renderScene;
 
@@ -1028,6 +1127,53 @@ TEST(RenderSceneCacheTests, DynamicInstancingBuildsMergedDescriptorInLinearPass)
     EXPECT_EQ(descriptor.instanceModelMatrices.capacity(), kInstanceCount);
     EXPECT_FLOAT_EQ(descriptor.instanceModelMatrices.front().data[3], 0.0f);
     EXPECT_FLOAT_EQ(descriptor.instanceModelMatrices.back().data[3], static_cast<float>(kInstanceCount - 1u));
+
+    const auto optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
+    EXPECT_EQ(optimizationStats.rawVisibleObjectCount, kInstanceCount);
+    EXPECT_EQ(optimizationStats.submittedSceneDrawCount, 1u);
+    EXPECT_EQ(optimizationStats.dynamicInstanceGroupCount, 1u);
+    EXPECT_EQ(optimizationStats.largestInstanceGroupSize, kInstanceCount);
+    EXPECT_EQ(optimizationStats.cachedCommandRebuildCount, kInstanceCount);
+}
+
+TEST(RenderSceneCacheTests, DynamicInstancingReducesOneThousandCompatibleOpaqueObjectsToOneSubmittedDraw)
+{
+    QueueSortFixture fixture;
+    constexpr size_t kInstanceCount = 1000u;
+    for (size_t index = 0u; index < kInstanceCount; ++index)
+    {
+        fixture.AddObject(
+            ("StressInstance" + std::to_string(index)).c_str(),
+            *fixture.sharedMesh,
+            fixture.opaqueMaterialA,
+            static_cast<float>(index));
+    }
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+
+    const auto firstSync = renderScene.Synchronize(fixture.scene, syncOptions);
+    const auto firstVisible = renderScene.GatherVisibleCommands({ nullptr, {} });
+    const auto firstOptimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
+    const auto secondSync = renderScene.Synchronize(fixture.scene, syncOptions);
+    const auto secondVisible = renderScene.GatherVisibleCommands({ nullptr, {} });
+    const auto secondOptimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
+
+    ASSERT_EQ(firstVisible.opaques.size(), 1u);
+    ASSERT_EQ(secondVisible.opaques.size(), 1u);
+    EXPECT_EQ(firstSync.rebuiltCachedCommandCount, kInstanceCount);
+    EXPECT_EQ(secondSync.rebuiltCachedCommandCount, 0u);
+    EXPECT_EQ(firstOptimizationStats.rawVisibleObjectCount, kInstanceCount);
+    EXPECT_EQ(firstOptimizationStats.submittedSceneDrawCount, 1u);
+    EXPECT_EQ(firstOptimizationStats.dynamicInstanceGroupCount, 1u);
+    EXPECT_EQ(firstOptimizationStats.largestInstanceGroupSize, kInstanceCount);
+    EXPECT_EQ(firstOptimizationStats.cachedCommandRebuildCount, kInstanceCount);
+    EXPECT_EQ(secondOptimizationStats.rawVisibleObjectCount, kInstanceCount);
+    EXPECT_EQ(secondOptimizationStats.submittedSceneDrawCount, 1u);
+    EXPECT_EQ(secondOptimizationStats.dynamicInstanceGroupCount, 1u);
+    EXPECT_EQ(secondOptimizationStats.largestInstanceGroupSize, kInstanceCount);
+    EXPECT_EQ(secondOptimizationStats.cachedCommandRebuildCount, 0u);
 }
 
 TEST(RenderSceneCacheTests, DynamicInstancingRejectsIncompatibleMeshMaterialAndTransparentCommands)
@@ -1060,6 +1206,240 @@ TEST(RenderSceneCacheTests, DynamicInstancingRejectsIncompatibleMeshMaterialAndT
     ASSERT_EQ(visible.transparents.size(), 2u);
     for (const auto& entry : visible.transparents)
         EXPECT_EQ(ResolveVisibleInstanceCount(entry.second), 1u);
+}
+
+TEST(RenderSceneCacheTests, DynamicInstancingRejectsDifferentUserMatrices)
+{
+    QueueSortFixture fixture;
+    fixture.AddObject("UserMatrixA", *fixture.sharedMesh, fixture.opaqueMaterialA, 4.0f);
+    fixture.AddObject("UserMatrixB", *fixture.sharedMesh, fixture.opaqueMaterialA, 8.0f);
+
+    auto& objects = fixture.scene.GetGameObjects();
+    ASSERT_GE(objects.size(), 2u);
+    auto* secondRenderer = objects[1]->GetComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(secondRenderer, nullptr);
+    secondRenderer->SetUserMatrixElement(0u, 3u, 7.0f);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+
+    const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
+
+    ASSERT_EQ(visible.opaques.size(), 2u);
+    for (const auto& entry : visible.opaques)
+        EXPECT_EQ(ResolveVisibleInstanceCount(entry.second), 1u);
+}
+
+TEST(RenderSceneCacheTests, DynamicInstancingSplitsSubmittedDrawsWhenObjectDataLimitIsExceeded)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    QueueSortFixture fixture;
+    for (size_t index = 0u; index < 4u; ++index)
+    {
+        fixture.AddObject(
+            ("SplitInstance" + std::to_string(index)).c_str(),
+            *fixture.sharedMesh,
+            fixture.opaqueMaterialA,
+            static_cast<float>(index));
+    }
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    const ScopedObjectDataCountPerDrawLimitOverride scopedPerDrawLimit(3u);
+    EXPECT_EQ(NLS::Render::Data::GetObjectDataCountPerDrawLimitForTesting(), 3u);
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 4u);
+
+    const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
+    const auto optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
+
+    ASSERT_EQ(visible.opaques.size(), 2u);
+    EXPECT_EQ(ResolveVisibleInstanceCount(visible.opaques[0].second), 3u);
+    EXPECT_EQ(ResolveVisibleInstanceCount(visible.opaques[1].second), 1u);
+
+    NLS::Engine::Rendering::EngineDrawableDescriptor firstDescriptor;
+    NLS::Engine::Rendering::EngineDrawableDescriptor secondDescriptor;
+    ASSERT_TRUE(visible.opaques[0].second.TryGetDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>(firstDescriptor));
+    ASSERT_TRUE(visible.opaques[1].second.TryGetDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>(secondDescriptor));
+    EXPECT_EQ(firstDescriptor.objectIndex, 0u);
+    EXPECT_EQ(firstDescriptor.objectCount, 3u);
+    EXPECT_EQ(secondDescriptor.objectIndex, 3u);
+    EXPECT_EQ(secondDescriptor.objectCount, 1u);
+
+    EXPECT_EQ(optimizationStats.rawVisibleObjectCount, 4u);
+    EXPECT_EQ(optimizationStats.submittedSceneDrawCount, 2u);
+    EXPECT_EQ(optimizationStats.dynamicInstanceGroupCount, 1u);
+    EXPECT_EQ(optimizationStats.largestInstanceGroupSize, 3u);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to override object-data limits.";
+#endif
+}
+
+TEST(RenderSceneCacheTests, DynamicInstancingDropsOverflowObjectsWithDiagnosticWhenObjectDataCapacityIsExceeded)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    QueueSortFixture fixture;
+    for (size_t index = 0u; index < 4u; ++index)
+    {
+        fixture.AddObject(
+            ("OverflowInstance" + std::to_string(index)).c_str(),
+            *fixture.sharedMesh,
+            fixture.opaqueMaterialA,
+            static_cast<float>(index));
+    }
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    const ScopedObjectDataCountLimitOverride scopedTotalLimit(3u);
+    EXPECT_EQ(NLS::Render::Data::GetObjectDataCountLimitForTesting(), 3u);
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 4u);
+
+    const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
+    const auto optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
+
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    EXPECT_EQ(ResolveVisibleInstanceCount(visible.opaques[0].second), 3u);
+
+    NLS::Engine::Rendering::EngineDrawableDescriptor assignedDescriptor;
+    ASSERT_TRUE(visible.opaques[0].second.TryGetDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>(assignedDescriptor));
+    EXPECT_EQ(assignedDescriptor.objectIndex, 0u);
+    EXPECT_EQ(assignedDescriptor.objectCount, 3u);
+
+    EXPECT_EQ(optimizationStats.rawVisibleObjectCount, 4u);
+    EXPECT_EQ(optimizationStats.submittedSceneDrawCount, 1u);
+    EXPECT_EQ(optimizationStats.dynamicInstanceGroupCount, 1u);
+    EXPECT_EQ(optimizationStats.largestInstanceGroupSize, 3u);
+    EXPECT_EQ(optimizationStats.objectDataOverflowDroppedObjectCount, 1u);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to override object-data limits.";
+#endif
+}
+
+TEST(RenderSceneCacheTests, NonIndexedObjectDataDrawsDoNotConsumeGlobalObjectDataCapacity)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    QueueSortFixture fixture;
+    auto* legacyShader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Unlit.hlsl");
+    ASSERT_NE(legacyShader, nullptr);
+    ASSERT_FALSE(NLS::Render::Resources::ShaderSupportsIndexedObjectData(*legacyShader));
+
+    NLS::Render::Resources::Material legacyMaterial;
+    legacyMaterial.SetShader(legacyShader);
+    for (size_t index = 0u; index < 4u; ++index)
+    {
+        fixture.AddObject(
+            ("LegacyObjectDataInstance" + std::to_string(index)).c_str(),
+            *fixture.sharedMesh,
+            legacyMaterial,
+            static_cast<float>(index));
+    }
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    const ScopedObjectDataCountLimitOverride scopedTotalLimit(3u);
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &legacyMaterial;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 4u);
+
+    const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
+    const auto optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
+
+    EXPECT_EQ(visible.opaques.size(), 4u);
+    EXPECT_EQ(optimizationStats.objectDataOverflowDroppedObjectCount, 0u);
+    for (const auto& entry : visible.opaques)
+    {
+        NLS::Engine::Rendering::EngineDrawableDescriptor descriptor;
+        ASSERT_TRUE(entry.second.TryGetDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>(descriptor));
+        EXPECT_EQ(descriptor.objectIndex, NLS::Render::Data::DrawableObjectDescriptor::kInvalidObjectIndex);
+    }
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(legacyShader));
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to override object-data limits.";
+#endif
+}
+
+TEST(RenderSceneCacheTests, DynamicInstancingDropsOverflowObjectsAfterPerDrawChunksWithDiagnostic)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    QueueSortFixture fixture;
+    for (size_t index = 0u; index < 8u; ++index)
+    {
+        fixture.AddObject(
+            ("OverflowChunkInstance" + std::to_string(index)).c_str(),
+            *fixture.sharedMesh,
+            fixture.opaqueMaterialA,
+            static_cast<float>(index));
+    }
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    const ScopedObjectDataCountLimitOverride scopedTotalLimit(3u);
+    const ScopedObjectDataCountPerDrawLimitOverride scopedPerDrawLimit(3u);
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 8u);
+
+    const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
+    const auto optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
+
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    const std::array<uint32_t, 1u> expectedCounts{ 3u };
+    for (size_t index = 0u; index < visible.opaques.size(); ++index)
+    {
+        EXPECT_EQ(ResolveVisibleInstanceCount(visible.opaques[index].second), expectedCounts[index]);
+        NLS::Engine::Rendering::EngineDrawableDescriptor descriptor;
+        ASSERT_TRUE(visible.opaques[index].second.TryGetDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>(descriptor));
+        EXPECT_EQ(descriptor.objectCount, expectedCounts[index]);
+        EXPECT_EQ(descriptor.objectIndex, 0u);
+    }
+
+    EXPECT_EQ(optimizationStats.rawVisibleObjectCount, 8u);
+    EXPECT_EQ(optimizationStats.submittedSceneDrawCount, 1u);
+    EXPECT_EQ(optimizationStats.dynamicInstanceGroupCount, 1u);
+    EXPECT_EQ(optimizationStats.largestInstanceGroupSize, 3u);
+    EXPECT_EQ(optimizationStats.objectDataOverflowDroppedObjectCount, 5u);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to override object-data limits.";
+#endif
+}
+
+TEST(RenderSceneCacheTests, DenseCompatibleInstancesStayBoundedBySubmittedDrawLimit)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    QueueSortFixture fixture;
+    constexpr size_t kInstanceCount = 513u;
+    for (size_t index = 0u; index < kInstanceCount; ++index)
+    {
+        fixture.AddObject(
+            ("DenseInstance" + std::to_string(index)).c_str(),
+            *fixture.sharedMesh,
+            fixture.opaqueMaterialA,
+            static_cast<float>(index % 64u));
+    }
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    const ScopedObjectDataCountPerDrawLimitOverride scopedPerDrawLimit(256u);
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, kInstanceCount);
+
+    const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
+    const auto optimizationStats = renderScene.GetLastDrawCallOptimizationStatsForTesting();
+
+    ASSERT_EQ(visible.opaques.size(), 3u);
+    EXPECT_EQ(ResolveVisibleInstanceCount(visible.opaques[0].second), 256u);
+    EXPECT_EQ(ResolveVisibleInstanceCount(visible.opaques[1].second), 256u);
+    EXPECT_EQ(ResolveVisibleInstanceCount(visible.opaques[2].second), 1u);
+
+    EXPECT_EQ(optimizationStats.rawVisibleObjectCount, kInstanceCount);
+    EXPECT_EQ(optimizationStats.submittedSceneDrawCount, 3u);
+    EXPECT_EQ(optimizationStats.dynamicInstanceGroupCount, 2u);
+    EXPECT_EQ(optimizationStats.largestInstanceGroupSize, 256u);
+#else
+    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to override object-data limits.";
+#endif
 }
 
 TEST(RenderSceneCacheTests, RetainedSingleDrawPreservesMaterialGpuInstances)

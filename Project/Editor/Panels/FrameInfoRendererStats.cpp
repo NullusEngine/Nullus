@@ -76,6 +76,8 @@ Editor::Panels::FrameInfo::FrameInfo
 	m_vertexCountText(CreateWidget<Widgets::Text>("")),
 	m_parseSceneText(CreateWidget<Widgets::Text>("")),
 	m_drawableCountText(CreateWidget<Widgets::Text>("")),
+	m_drawCallOptimizationText(CreateWidget<Widgets::Text>("")),
+	m_parallelWorkText(CreateWidget<Widgets::Text>("")),
 	m_gBufferMaterialSyncText(CreateWidget<Widgets::Text>("")),
 	m_bindingSetCreationText(CreateWidget<Widgets::Text>("")),
 	m_snapshotBufferCreationText(CreateWidget<Widgets::Text>("")),
@@ -106,6 +108,19 @@ void Editor::Panels::FrameInfo::UpdateForFrameInfo(
 		String::ToString(frameInfo.parsedOpaqueDrawableCount) + "/" +
 		String::ToString(frameInfo.parsedTransparentDrawableCount) + "/" +
 		String::ToString(frameInfo.parsedSkyboxDrawableCount);
+	m_drawCallOptimizationText.content =
+		"Draw Opt Raw/Submitted/Groups/Largest/Rebuilds/Dropped: " +
+		String::ToString(frameInfo.rawVisibleObjectCount) + "/" +
+		String::ToString(frameInfo.submittedSceneDrawCount) + "/" +
+		String::ToString(frameInfo.dynamicInstanceGroupCount) + "/" +
+		String::ToString(frameInfo.largestInstanceGroupSize) + "/" +
+		String::ToString(frameInfo.cachedCommandRebuildCount) + "/" +
+		String::ToString(frameInfo.objectDataOverflowDroppedObjectCount);
+	m_parallelWorkText.content =
+		"Parallel Work Units/Workers/Fallback: " +
+		String::ToString(frameInfo.parallelCommandWorkUnitCount) + "/" +
+		String::ToString(frameInfo.parallelRecordingWorkerCount) + "/" +
+		(frameInfo.parallelFallbackReason.empty() ? std::string("None") : frameInfo.parallelFallbackReason);
 	m_gBufferMaterialSyncText.content = "GBuffer Material Syncs: " + String::ToString(frameInfo.gBufferMaterialSyncCount);
 	m_bindingSetCreationText.content = "Binding Sets Created: " + String::ToString(frameInfo.renderBindingSetCreationCount);
 	m_snapshotBufferCreationText.content = "Snapshot Buffers Created: " + String::ToString(frameInfo.renderSnapshotBufferCreationCount);

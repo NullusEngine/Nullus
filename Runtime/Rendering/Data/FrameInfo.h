@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include "RenderDef.h"
 namespace NLS::Render::Data
 {
@@ -74,5 +75,14 @@ namespace NLS::Render::Data
         uint64_t gBufferMaterialSyncCount = 0;
         uint64_t renderBindingSetCreationCount = 0;
         uint64_t renderSnapshotBufferCreationCount = 0;
+        uint64_t rawVisibleObjectCount = 0;
+        uint64_t submittedSceneDrawCount = 0;
+        uint64_t dynamicInstanceGroupCount = 0;
+        uint64_t largestInstanceGroupSize = 0;
+        uint64_t cachedCommandRebuildCount = 0;
+        uint64_t objectDataOverflowDroppedObjectCount = 0;
+        uint64_t parallelCommandWorkUnitCount = 0;
+        uint64_t parallelRecordingWorkerCount = 0;
+        std::string parallelFallbackReason;
 	};
 }

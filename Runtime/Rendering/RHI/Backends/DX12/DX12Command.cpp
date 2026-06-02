@@ -305,6 +305,7 @@ namespace NLS::Render::Backend
 		, m_device(device)
 		, m_queue(queue)
 		, m_commandListType(commandListType)
+		, m_isChildCommandBuffer(commandListType == D3D12_COMMAND_LIST_TYPE_BUNDLE)
 #endif
 	{
 #if defined(_WIN32)
@@ -415,6 +416,100 @@ namespace NLS::Render::Backend
 		}
 		return allRequiredTablesInitialized;
 	}
+
+	bool NativeDX12CommandBuffer::FlushBoundDescriptorTables()
+	{
+		if (m_commandList == nullptr || m_boundDescriptorTables.empty())
+			return true;
+
+		ID3D12DescriptorHeap* desiredResourceHeap = nullptr;
+		ID3D12DescriptorHeap* desiredSamplerHeap = nullptr;
+		for (const auto& [boundSetIndex, boundSet] : m_boundBindingSets)
+		{
+			(void)boundSetIndex;
+			auto* boundNativeBindingSet = ResolveDX12BindingSetAccess(boundSet);
+			if (boundNativeBindingSet == nullptr)
+				continue;
+
+			if (desiredResourceHeap == nullptr)
+			{
+				desiredResourceHeap =
+					boundNativeBindingSet->GetDescriptorHeap(NLS::Render::RHI::DX12::DX12DescriptorHeapKind::Resource);
+			}
+			if (desiredSamplerHeap == nullptr)
+			{
+				desiredSamplerHeap =
+					boundNativeBindingSet->GetDescriptorHeap(NLS::Render::RHI::DX12::DX12DescriptorHeapKind::Sampler);
+			}
+		}
+
+		if (m_isChildCommandBuffer &&
+			m_descriptorHeapsSet &&
+			(desiredResourceHeap != m_currentResourceDescriptorHeap ||
+				desiredSamplerHeap != m_currentSamplerDescriptorHeap))
+		{
+			NLS_LOG_ERROR("NativeDX12CommandBuffer::FlushBoundDescriptorTables rejected descriptor heap change inside child bundle: " + m_debugName);
+			m_childRecordingValid = false;
+			return false;
+		}
+
+		m_currentResourceDescriptorHeap = desiredResourceHeap;
+		m_currentSamplerDescriptorHeap = desiredSamplerHeap;
+
+		ID3D12DescriptorHeap* activeHeaps[2] = {};
+		UINT activeHeapCount = 0;
+		if (m_currentResourceDescriptorHeap != nullptr)
+			activeHeaps[activeHeapCount++] = m_currentResourceDescriptorHeap;
+		if (m_currentSamplerDescriptorHeap != nullptr)
+			activeHeaps[activeHeapCount++] = m_currentSamplerDescriptorHeap;
+		if (activeHeapCount > 0 &&
+			(!m_isChildCommandBuffer || !m_descriptorHeapsSet))
+		{
+			m_commandList->SetDescriptorHeaps(activeHeapCount, activeHeaps);
+			m_descriptorHeapsSet = true;
+		}
+
+		for (const auto& [boundSetIndex, boundSet] : m_boundBindingSets)
+		{
+			auto* boundNativeBindingSet = ResolveDX12BindingSetAccess(boundSet);
+			if (boundNativeBindingSet == nullptr)
+				continue;
+
+			for (UINT rootParameterIndex = 0; rootParameterIndex < m_boundDescriptorTables.size(); ++rootParameterIndex)
+			{
+				const auto& table = m_boundDescriptorTables[rootParameterIndex];
+				if (table.set != boundSetIndex)
+					continue;
+				if (!boundNativeBindingSet->IsCompatibleWithDescriptorTable(table))
+					continue;
+
+				const auto gpuHandle = boundNativeBindingSet->GetGPUHandle(table.set, table.heapKind);
+				if (gpuHandle.ptr == 0)
+					continue;
+
+				if (m_bindingComputePipeline)
+					m_commandList->SetComputeRootDescriptorTable(rootParameterIndex, gpuHandle);
+				else
+					m_commandList->SetGraphicsRootDescriptorTable(rootParameterIndex, gpuHandle);
+				if (rootParameterIndex < m_initializedRootDescriptorTables.size())
+					m_initializedRootDescriptorTables[rootParameterIndex] = true;
+			}
+		}
+
+		return true;
+	}
+
+	bool NativeDX12CommandBuffer::FlushBoundDescriptorTablesIfDirty()
+	{
+		if (!m_descriptorTablesDirty)
+			return true;
+
+		if (!FlushBoundDescriptorTables())
+			return false;
+
+		m_descriptorTablesDirty = false;
+		return true;
+	}
 #endif
 
 	void NativeDX12CommandBuffer::Begin()
@@ -422,6 +517,7 @@ namespace NLS::Render::Backend
 #if defined(_WIN32)
 		if (m_recording)
 			EndPendingGpuProfileScopes();
+		m_hasClosedRecording = false;
 
 		if (m_allocator == nullptr || m_commandList == nullptr)
 		{
@@ -455,9 +551,13 @@ namespace NLS::Render::Backend
 			m_recordedComputePipelineKeepAlive.clear();
 			m_recordedBufferKeepAlive.clear();
 			m_partialTextureStateDirty.clear();
+			m_descriptorHeapsSet = false;
+			m_descriptorTablesDirty = false;
 			EndPendingGpuProfileScopes();
 			m_bindingComputePipeline = false;
 			m_recording = true;
+			m_hasClosedRecording = false;
+			m_childRecordingValid = true;
 		}
 #endif
 	}
@@ -468,8 +568,13 @@ namespace NLS::Render::Backend
 		if (m_commandList != nullptr)
 		{
 			EndPendingGpuProfileScopes();
-			m_commandList->Close();
+			const HRESULT closeHr = m_commandList->Close();
 			m_recording = false;
+			m_hasClosedRecording = SUCCEEDED(closeHr);
+			if (FAILED(closeHr))
+			{
+				NLS_LOG_ERROR("NativeDX12CommandBuffer::End failed: command list close hr=" + std::to_string(closeHr) + " name=" + m_debugName);
+			}
 		}
 #endif
 	}
@@ -480,9 +585,13 @@ namespace NLS::Render::Backend
 		if (m_recording)
 			EndPendingGpuProfileScopes();
 
+		m_hasClosedRecording = false;
+		m_childRecordingValid = true;
 		m_activeRenderPassTransitions.clear();
 		m_currentResourceDescriptorHeap = nullptr;
 		m_currentSamplerDescriptorHeap = nullptr;
+		m_descriptorHeapsSet = false;
+		m_descriptorTablesDirty = false;
 		m_boundDescriptorTables.clear();
 		m_boundPushConstantRootParameters.clear();
 		m_initializedRootDescriptorTables.clear();
@@ -515,8 +624,13 @@ namespace NLS::Render::Backend
 			return;
 		}
 
-		m_commandList->Close();
+		const HRESULT closeHr = m_commandList->Close();
 		m_recording = false;
+		m_hasClosedRecording = SUCCEEDED(closeHr);
+		if (FAILED(closeHr))
+		{
+			NLS_LOG_ERROR("NativeDX12CommandBuffer::Reset failed: command list close hr=" + std::to_string(closeHr) + " name=" + m_debugName);
+		}
 #endif
 	}
 
@@ -577,6 +691,12 @@ namespace NLS::Render::Backend
 	void NativeDX12CommandBuffer::BeginRenderPass(const NLS::Render::RHI::RHIRenderPassDesc& desc)
 	{
 #if defined(_WIN32)
+		if (m_isChildCommandBuffer)
+		{
+			NLS_LOG_ERROR("NativeDX12CommandBuffer::BeginRenderPass rejected on child command buffer: " + m_debugName);
+			m_childRecordingValid = false;
+			return;
+		}
 		if (m_commandList == nullptr)
 			return;
 
@@ -825,6 +945,12 @@ namespace NLS::Render::Backend
 	void NativeDX12CommandBuffer::EndRenderPass()
 	{
 #if defined(_WIN32)
+		if (m_isChildCommandBuffer)
+		{
+			NLS_LOG_ERROR("NativeDX12CommandBuffer::EndRenderPass rejected on child command buffer: " + m_debugName);
+			m_childRecordingValid = false;
+			return;
+		}
 		if (m_commandList == nullptr)
 			return;
 
@@ -884,6 +1010,12 @@ namespace NLS::Render::Backend
 	void NativeDX12CommandBuffer::SetViewport(const NLS::Render::RHI::RHIViewport& viewport)
 	{
 #if defined(_WIN32)
+		if (m_isChildCommandBuffer)
+		{
+			NLS_LOG_ERROR("NativeDX12CommandBuffer::SetViewport rejected on child command buffer: " + m_debugName);
+			m_childRecordingValid = false;
+			return;
+		}
 		if (m_commandList == nullptr)
 			return;
 		D3D12_VIEWPORT vp{};
@@ -900,6 +1032,12 @@ namespace NLS::Render::Backend
 	void NativeDX12CommandBuffer::SetScissor(const NLS::Render::RHI::RHIRect2D& rect)
 	{
 #if defined(_WIN32)
+		if (m_isChildCommandBuffer)
+		{
+			NLS_LOG_ERROR("NativeDX12CommandBuffer::SetScissor rejected on child command buffer: " + m_debugName);
+			m_childRecordingValid = false;
+			return;
+		}
 		if (m_commandList == nullptr)
 			return;
 		D3D12_RECT scissor{};
@@ -966,6 +1104,7 @@ namespace NLS::Render::Backend
 			}
 		}
 		m_initializedRootDescriptorTables.assign(m_boundDescriptorTables.size(), false);
+		m_descriptorTablesDirty = true;
 
 		m_boundPipeline = pipeline;
 		m_boundComputePipeline.reset();
@@ -979,6 +1118,12 @@ namespace NLS::Render::Backend
 	void NativeDX12CommandBuffer::BindComputePipeline(const std::shared_ptr<NLS::Render::RHI::RHIComputePipeline>& pipeline)
 	{
 #if defined(_WIN32)
+		if (m_isChildCommandBuffer)
+		{
+			NLS_LOG_ERROR("NativeDX12CommandBuffer::BindComputePipeline rejected compute work inside child bundle: " + m_debugName);
+			m_childRecordingValid = false;
+			return;
+		}
 		if (m_commandList == nullptr || pipeline == nullptr)
 			return;
 
@@ -1011,6 +1156,7 @@ namespace NLS::Render::Backend
 			}
 		}
 		m_initializedRootDescriptorTables.assign(m_boundDescriptorTables.size(), false);
+		m_descriptorTablesDirty = true;
 
 		m_boundPipeline.reset();
 		m_boundComputePipeline = pipeline;
@@ -1047,65 +1193,10 @@ namespace NLS::Render::Backend
 			m_boundBindingSets.emplace_back(setIndex, bindingSet);
 
 		m_recordedBindingSetKeepAlive.push_back(bindingSet);
-
-		ID3D12DescriptorHeap* desiredResourceHeap = nullptr;
-		ID3D12DescriptorHeap* desiredSamplerHeap = nullptr;
-		for (const auto& [boundSetIndex, boundSet] : m_boundBindingSets)
-		{
-			auto* boundNativeBindingSet = ResolveDX12BindingSetAccess(boundSet);
-			if (boundNativeBindingSet == nullptr)
-				continue;
-
-			if (desiredResourceHeap == nullptr)
-			{
-				desiredResourceHeap =
-					boundNativeBindingSet->GetDescriptorHeap(NLS::Render::RHI::DX12::DX12DescriptorHeapKind::Resource);
-			}
-			if (desiredSamplerHeap == nullptr)
-			{
-				desiredSamplerHeap =
-					boundNativeBindingSet->GetDescriptorHeap(NLS::Render::RHI::DX12::DX12DescriptorHeapKind::Sampler);
-			}
-		}
-
-		m_currentResourceDescriptorHeap = desiredResourceHeap;
-		m_currentSamplerDescriptorHeap = desiredSamplerHeap;
-
-		ID3D12DescriptorHeap* activeHeaps[2] = {};
-		UINT activeHeapCount = 0;
-		if (m_currentResourceDescriptorHeap != nullptr)
-			activeHeaps[activeHeapCount++] = m_currentResourceDescriptorHeap;
-		if (m_currentSamplerDescriptorHeap != nullptr)
-			activeHeaps[activeHeapCount++] = m_currentSamplerDescriptorHeap;
-		if (activeHeapCount > 0)
-			m_commandList->SetDescriptorHeaps(activeHeapCount, activeHeaps);
-
-		for (const auto& [boundSetIndex, boundSet] : m_boundBindingSets)
-		{
-			auto* boundNativeBindingSet = ResolveDX12BindingSetAccess(boundSet);
-			if (boundNativeBindingSet == nullptr)
-				continue;
-
-			for (UINT rootParameterIndex = 0; rootParameterIndex < m_boundDescriptorTables.size(); ++rootParameterIndex)
-			{
-				const auto& table = m_boundDescriptorTables[rootParameterIndex];
-				if (table.set != boundSetIndex)
-					continue;
-				if (!boundNativeBindingSet->IsCompatibleWithDescriptorTable(table))
-					continue;
-
-				const auto gpuHandle = boundNativeBindingSet->GetGPUHandle(table.set, table.heapKind);
-				if (gpuHandle.ptr == 0)
-					continue;
-
-				if (m_bindingComputePipeline)
-					m_commandList->SetComputeRootDescriptorTable(rootParameterIndex, gpuHandle);
-				else
-					m_commandList->SetGraphicsRootDescriptorTable(rootParameterIndex, gpuHandle);
-				if (rootParameterIndex < m_initializedRootDescriptorTables.size())
-					m_initializedRootDescriptorTables[rootParameterIndex] = true;
-			}
-		}
+		m_descriptorTablesDirty = true;
+		if (m_isChildCommandBuffer)
+			return;
+		(void)FlushBoundDescriptorTablesIfDirty();
 #else
 		(void)setIndex;
 		(void)bindingSet;
@@ -1193,11 +1284,7 @@ namespace NLS::Render::Backend
 	void NativeDX12CommandBuffer::Draw(uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)
 	{
 #if defined(_WIN32)
-		if (m_commandList == nullptr || m_boundPipeline == nullptr || !IsBoundGraphicsPipelineNativeValid())
-			return;
-		if (!HasInitializedRequiredRootDescriptorTables("Draw"))
-			return;
-		m_commandList->DrawInstanced(vertexCount, instanceCount, firstVertex, firstInstance);
+		(void)DrawChecked(vertexCount, instanceCount, firstVertex, firstInstance);
 #else
 		(void)vertexCount;
 		(void)instanceCount;
@@ -1209,11 +1296,7 @@ namespace NLS::Render::Backend
 	void NativeDX12CommandBuffer::DrawIndexed(uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance)
 	{
 #if defined(_WIN32)
-		if (m_commandList == nullptr || m_boundPipeline == nullptr || !IsBoundGraphicsPipelineNativeValid())
-			return;
-		if (!HasInitializedRequiredRootDescriptorTables("DrawIndexed"))
-			return;
-		m_commandList->DrawIndexedInstanced(indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
+		(void)DrawIndexedChecked(indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
 #else
 		(void)indexCount;
 		(void)instanceCount;
@@ -1223,12 +1306,105 @@ namespace NLS::Render::Backend
 #endif
 	}
 
+	NLS::Render::RHI::RHICommandRecordingResult NativeDX12CommandBuffer::DrawChecked(
+		uint32_t vertexCount,
+		uint32_t instanceCount,
+		uint32_t firstVertex,
+		uint32_t firstInstance)
+	{
+#if defined(_WIN32)
+		if (m_commandList == nullptr || m_boundPipeline == nullptr || !IsBoundGraphicsPipelineNativeValid())
+		{
+			return {
+				NLS::Render::RHI::RHICommandRecordingStatusCode::InvalidArgument,
+				"NativeDX12CommandBuffer::DrawChecked: graphics pipeline or command list is invalid"
+			};
+		}
+		if (!FlushBoundDescriptorTablesIfDirty())
+		{
+			return {
+				NLS::Render::RHI::RHICommandRecordingStatusCode::BackendFailure,
+				"NativeDX12CommandBuffer::DrawChecked: descriptor table flush failed"
+			};
+		}
+		if (!HasInitializedRequiredRootDescriptorTables("Draw"))
+		{
+			return {
+				NLS::Render::RHI::RHICommandRecordingStatusCode::InvalidArgument,
+				"NativeDX12CommandBuffer::DrawChecked: required root descriptor tables are missing"
+			};
+		}
+		m_commandList->DrawInstanced(vertexCount, instanceCount, firstVertex, firstInstance);
+		return {};
+#else
+		(void)vertexCount;
+		(void)instanceCount;
+		(void)firstVertex;
+		(void)firstInstance;
+		return {
+			NLS::Render::RHI::RHICommandRecordingStatusCode::BackendFailure,
+			"DX12 draw recording is only available on Windows"
+		};
+#endif
+	}
+
+	NLS::Render::RHI::RHICommandRecordingResult NativeDX12CommandBuffer::DrawIndexedChecked(
+		uint32_t indexCount,
+		uint32_t instanceCount,
+		uint32_t firstIndex,
+		int32_t vertexOffset,
+		uint32_t firstInstance)
+	{
+#if defined(_WIN32)
+		if (m_commandList == nullptr || m_boundPipeline == nullptr || !IsBoundGraphicsPipelineNativeValid())
+		{
+			return {
+				NLS::Render::RHI::RHICommandRecordingStatusCode::InvalidArgument,
+				"NativeDX12CommandBuffer::DrawIndexedChecked: graphics pipeline or command list is invalid"
+			};
+		}
+		if (!FlushBoundDescriptorTablesIfDirty())
+		{
+			return {
+				NLS::Render::RHI::RHICommandRecordingStatusCode::BackendFailure,
+				"NativeDX12CommandBuffer::DrawIndexedChecked: descriptor table flush failed"
+			};
+		}
+		if (!HasInitializedRequiredRootDescriptorTables("DrawIndexed"))
+		{
+			return {
+				NLS::Render::RHI::RHICommandRecordingStatusCode::InvalidArgument,
+				"NativeDX12CommandBuffer::DrawIndexedChecked: required root descriptor tables are missing"
+			};
+		}
+		m_commandList->DrawIndexedInstanced(indexCount, instanceCount, firstIndex, vertexOffset, firstInstance);
+		return {};
+#else
+		(void)indexCount;
+		(void)instanceCount;
+		(void)firstIndex;
+		(void)vertexOffset;
+		(void)firstInstance;
+		return {
+			NLS::Render::RHI::RHICommandRecordingStatusCode::BackendFailure,
+			"DX12 indexed draw recording is only available on Windows"
+		};
+#endif
+	}
+
 	void NativeDX12CommandBuffer::Dispatch(uint32_t groupCountX, uint32_t groupCountY, uint32_t groupCountZ)
 	{
 #if defined(_WIN32)
+		if (m_isChildCommandBuffer)
+		{
+			NLS_LOG_ERROR("NativeDX12CommandBuffer::Dispatch rejected compute work inside child bundle: " + m_debugName);
+			m_childRecordingValid = false;
+			return;
+		}
 		if (m_commandList != nullptr &&
 			m_boundComputePipeline != nullptr &&
 			IsBoundComputePipelineNativeValid() &&
+			FlushBoundDescriptorTablesIfDirty() &&
 			HasInitializedRequiredRootDescriptorTables("Dispatch"))
 		{
 			m_commandList->Dispatch(groupCountX, groupCountY, groupCountZ);
@@ -1246,6 +1422,12 @@ namespace NLS::Render::Backend
 		const NLS::Render::RHI::RHIBufferCopyRegion& region)
 	{
 #if defined(_WIN32)
+		if (m_isChildCommandBuffer)
+		{
+			NLS_LOG_ERROR("NativeDX12CommandBuffer::CopyBuffer rejected on child command buffer: " + m_debugName);
+			m_childRecordingValid = false;
+			return;
+		}
 		if (m_commandList == nullptr || source == nullptr || destination == nullptr)
 			return;
 		if (!IsValidDX12BufferCopyEndpoint(*source, *destination, m_debugName))
@@ -1272,6 +1454,12 @@ namespace NLS::Render::Backend
 	void NativeDX12CommandBuffer::CopyBufferToTexture(const NLS::Render::RHI::RHIBufferToTextureCopyDesc& desc)
 	{
 #if defined(_WIN32)
+		if (m_isChildCommandBuffer)
+		{
+			NLS_LOG_ERROR("NativeDX12CommandBuffer::CopyBufferToTexture rejected on child command buffer: " + m_debugName);
+			m_childRecordingValid = false;
+			return;
+		}
 		if (m_commandList == nullptr || desc.source == nullptr || desc.destination == nullptr)
 			return;
 
@@ -1356,6 +1544,12 @@ namespace NLS::Render::Backend
 	void NativeDX12CommandBuffer::CopyTexture(const NLS::Render::RHI::RHITextureCopyDesc& desc)
 	{
 #if defined(_WIN32)
+		if (m_isChildCommandBuffer)
+		{
+			NLS_LOG_ERROR("NativeDX12CommandBuffer::CopyTexture rejected on child command buffer: " + m_debugName);
+			m_childRecordingValid = false;
+			return;
+		}
 		if (m_commandList == nullptr || desc.source == nullptr || desc.destination == nullptr)
 			return;
 
@@ -1429,6 +1623,14 @@ namespace NLS::Render::Backend
 		const NLS::Render::RHI::RHIBarrierDesc& barrierDesc)
 	{
 #if defined(_WIN32)
+		if (m_isChildCommandBuffer)
+		{
+			m_childRecordingValid = false;
+			return {
+				NLS::Render::RHI::RHICommandRecordingStatusCode::InvalidArgument,
+				"NativeDX12CommandBuffer::Barrier rejected on child command buffer"
+			};
+		}
 		if (m_commandList == nullptr)
 		{
 			return {
@@ -1595,6 +1797,87 @@ namespace NLS::Render::Backend
 		(void)BarrierChecked(barrierDesc);
 	}
 
+	bool NativeDX12CommandBuffer::IsChildCommandBuffer() const
+	{
+		return m_isChildCommandBuffer;
+	}
+
+	bool NativeDX12CommandBuffer::CanExecuteChildCommandBuffers() const
+	{
+		return !m_isChildCommandBuffer
+#if defined(_WIN32)
+			&& m_commandListType == D3D12_COMMAND_LIST_TYPE_DIRECT
+#endif
+			;
+	}
+
+	bool NativeDX12CommandBuffer::IsClosedForSubmission() const
+	{
+		return !m_recording && m_hasClosedRecording && !m_isChildCommandBuffer;
+	}
+
+	NLS::Render::RHI::RHICommandRecordingResult NativeDX12CommandBuffer::ExecuteChildCommandBuffer(
+		const std::shared_ptr<NLS::Render::RHI::RHICommandBuffer>& childCommandBuffer)
+	{
+#if defined(_WIN32)
+		if (m_commandList == nullptr)
+		{
+			return {
+				NLS::Render::RHI::RHICommandRecordingStatusCode::InvalidArgument,
+				"NativeDX12CommandBuffer::ExecuteChildCommandBuffer: parent command list is null"
+			};
+		}
+		if (!CanExecuteChildCommandBuffers() || !m_recording)
+		{
+			return {
+				NLS::Render::RHI::RHICommandRecordingStatusCode::InvalidArgument,
+				"NativeDX12CommandBuffer::ExecuteChildCommandBuffer: parent must be a recording direct command list"
+			};
+		}
+		auto* nativeChild = dynamic_cast<NativeDX12CommandBuffer*>(childCommandBuffer.get());
+		if (nativeChild == nullptr || !nativeChild->IsChildCommandBuffer() || nativeChild->GetCommandList() == nullptr)
+		{
+			return {
+				NLS::Render::RHI::RHICommandRecordingStatusCode::InvalidArgument,
+				"NativeDX12CommandBuffer::ExecuteChildCommandBuffer: child command list is invalid"
+			};
+		}
+		if (nativeChild->m_commandListType != D3D12_COMMAND_LIST_TYPE_BUNDLE ||
+			nativeChild->IsRecording() ||
+			!nativeChild->m_hasClosedRecording ||
+			!nativeChild->m_childRecordingValid)
+		{
+			return {
+				NLS::Render::RHI::RHICommandRecordingStatusCode::InvalidArgument,
+				"NativeDX12CommandBuffer::ExecuteChildCommandBuffer: child bundle must be closed and valid before execution"
+			};
+		}
+		ID3D12DescriptorHeap* activeHeaps[2] = {};
+		UINT activeHeapCount = 0;
+		if (nativeChild->m_currentResourceDescriptorHeap != nullptr)
+			activeHeaps[activeHeapCount++] = nativeChild->m_currentResourceDescriptorHeap;
+		if (nativeChild->m_currentSamplerDescriptorHeap != nullptr)
+			activeHeaps[activeHeapCount++] = nativeChild->m_currentSamplerDescriptorHeap;
+		if (activeHeapCount > 0)
+		{
+			m_commandList->SetDescriptorHeaps(activeHeapCount, activeHeaps);
+			m_currentResourceDescriptorHeap = nativeChild->m_currentResourceDescriptorHeap;
+			m_currentSamplerDescriptorHeap = nativeChild->m_currentSamplerDescriptorHeap;
+			m_descriptorHeapsSet = true;
+			m_descriptorTablesDirty = true;
+			m_initializedRootDescriptorTables.clear();
+		}
+		m_commandList->ExecuteBundle(nativeChild->GetCommandList());
+		return {};
+#else
+		(void)childCommandBuffer;
+		return {
+			NLS::Render::RHI::RHICommandRecordingStatusCode::BackendFailure,
+			"DX12 child command buffer execution is only available on Windows"
+		};
+#endif
+	}
+
 #if defined(_WIN32)
 	ID3D12GraphicsCommandList* NativeDX12CommandBuffer::GetCommandList() const
 	{
@@ -1679,6 +1962,22 @@ namespace NLS::Render::Backend
 			m_queue,
 			m_commandListType,
 			debugName.empty() ? m_debugName : debugName);
+	}
+
+	std::shared_ptr<NLS::Render::RHI::RHICommandBuffer> NativeDX12CommandPool::CreateChildCommandBuffer(std::string debugName)
+	{
+#if defined(_WIN32)
+		if (m_commandListType != D3D12_COMMAND_LIST_TYPE_DIRECT)
+			return nullptr;
+		return std::make_shared<NativeDX12CommandBuffer>(
+			m_device,
+			m_queue,
+			D3D12_COMMAND_LIST_TYPE_BUNDLE,
+			debugName.empty() ? m_debugName + "Child" : debugName);
+#else
+		(void)debugName;
+		return nullptr;
+#endif
 	}
 
 	void NativeDX12CommandPool::Reset()

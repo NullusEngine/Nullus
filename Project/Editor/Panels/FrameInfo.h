@@ -47,6 +47,8 @@ namespace NLS::Editor::Panels
 		UI::Widgets::Text& m_vertexCountText;
 		UI::Widgets::Text& m_parseSceneText;
 		UI::Widgets::Text& m_drawableCountText;
+		UI::Widgets::Text& m_drawCallOptimizationText;
+		UI::Widgets::Text& m_parallelWorkText;
 		UI::Widgets::Text& m_gBufferMaterialSyncText;
 		UI::Widgets::Text& m_bindingSetCreationText;
 		UI::Widgets::Text& m_snapshotBufferCreationText;

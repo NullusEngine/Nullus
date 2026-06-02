@@ -330,6 +330,7 @@ namespace NLS::Render::Backend
 			capabilities.SetFeature(RHIDeviceFeature::MultiRenderTargets, true);
 			capabilities.SetFeature(RHIDeviceFeature::ParallelCommandRecording, true);
 			capabilities.SetFeature(RHIDeviceFeature::ParallelCommandTranslation, true);
+			capabilities.SetFeature(RHIDeviceFeature::InRenderPassChildCommandBuffers, true);
 			capabilities.SetFeature(
 				RHIDeviceFeature::TransientResourceAllocator,
 				false,

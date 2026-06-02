@@ -1054,8 +1054,10 @@ namespace
         if (indexBuffer != nullptr && indexCount > 0u)
         {
             commandBuffer.BindIndexBuffer({ indexBuffer, 0, drawCommand.mesh->GetIndexType() });
-            commandBuffer.DrawIndexed(indexCount, drawCommand.instanceCount, 0, 0, 0);
-            return true;
+            const auto drawResult = commandBuffer.DrawIndexedChecked(indexCount, drawCommand.instanceCount, 0, 0, 0);
+            if (!drawResult.Succeeded() && !drawResult.message.empty())
+                NLS_LOG_ERROR(drawResult.message);
+            return drawResult.Succeeded();
         }
 
         const auto meshVertexCount = drawCommand.mesh->GetVertexCount();
@@ -1065,8 +1067,10 @@ namespace
             : meshVertexCount - vertexStart;
         if (vertexCount > 0u)
         {
-            commandBuffer.Draw(vertexCount, drawCommand.instanceCount, vertexStart, 0);
-            return true;
+            const auto drawResult = commandBuffer.DrawChecked(vertexCount, drawCommand.instanceCount, vertexStart, 0);
+            if (!drawResult.Succeeded() && !drawResult.message.empty())
+                NLS_LOG_ERROR(drawResult.message);
+            return drawResult.Succeeded();
         }
 
         return false;
@@ -1088,9 +1092,56 @@ namespace
         for (const auto& recordedDrawCommand : input.recordedDrawCommands)
         {
             if (RecordPreparedDrawCommand(*commandBuffer, input, recordedDrawCommand))
+            {
                 ++recordedDrawCount;
+            }
+            else
+            {
+                break;
+            }
         }
         return recordedDrawCount;
+    }
+
+    uint64_t RecordPreparedDrawCommandsForPassRange(
+        Render::RHI::RHICommandBuffer* commandBuffer,
+        const RenderPassCommandInput& input,
+        const std::vector<RecordedDrawCommandInput>& recordedDrawCommands,
+        const uint64_t recordedDrawBegin,
+        const uint64_t recordedDrawCount)
+    {
+        NLS_PROFILE_NAMED_SCOPE(ResolvePassProfileScopeName(input));
+
+        if (commandBuffer == nullptr)
+            return recordedDrawCount;
+
+        if (recordedDrawCommands.empty() || recordedDrawCount == 0u)
+            return 0u;
+
+        const auto recordedDrawCommandCount = static_cast<uint64_t>(recordedDrawCommands.size());
+        if (recordedDrawBegin > recordedDrawCommandCount ||
+            recordedDrawCount > recordedDrawCommandCount - recordedDrawBegin)
+        {
+            return 0u;
+        }
+        const auto recordedDrawEnd = recordedDrawBegin + recordedDrawCount;
+
+        uint64_t recordedCount = 0u;
+        for (uint64_t drawIndex = recordedDrawBegin; drawIndex < recordedDrawEnd; ++drawIndex)
+        {
+            if (RecordPreparedDrawCommand(
+                *commandBuffer,
+                input,
+                recordedDrawCommands[static_cast<size_t>(drawIndex)]))
+            {
+                ++recordedCount;
+            }
+            else
+            {
+                break;
+            }
+        }
+        return recordedCount;
     }
 
     uint32_t CountBindingSetDescriptorSlots(const Render::RHI::RHIBindingSetDesc& desc)
@@ -1495,10 +1546,13 @@ namespace
             });
     }
 
-    bool DrainFrameFenceForResize(Render::RHI::RHIFrameContext& frameContext)
+    bool DrainFrameFenceForResize(Render::RHI::RHIFrameContext& frameContext, const DriverImpl* impl)
     {
         if (frameContext.frameFence == nullptr || frameContext.frameFence->IsSignaled())
             return true;
+
+        if (impl != nullptr && impl->deviceLostDetected)
+            return false;
 
         if (frameContext.frameFence->Wait(kDriverGpuDrainTimeoutNanoseconds))
             return true;
@@ -1508,20 +1562,22 @@ namespace
         return false;
     }
 
-    bool DrainFrameFencesForResize(std::vector<Render::RHI::RHIFrameContext>& frameContexts)
+    bool DrainFrameFencesForResize(
+        std::vector<Render::RHI::RHIFrameContext>& frameContexts,
+        const DriverImpl* impl)
     {
         for (auto& frameContext : frameContexts)
         {
-            if (!DrainFrameFenceForResize(frameContext))
+            if (!DrainFrameFenceForResize(frameContext, impl))
                 return false;
         }
         return true;
     }
 
-    void ReleaseFrameContextResources(Render::RHI::RHIFrameContext& frameContext)
+    bool ReleaseFrameContextResources(Render::RHI::RHIFrameContext& frameContext, const DriverImpl* impl)
     {
-        if (!DrainFrameFenceForResize(frameContext))
-            return;
+        if (!DrainFrameFenceForResize(frameContext, impl))
+            return false;
 
         if (frameContext.commandBuffer != nullptr && frameContext.commandBuffer->IsRecording())
             frameContext.commandBuffer->End();
@@ -1544,11 +1600,16 @@ namespace
         frameContext.renderFinishedSemaphore.reset();
         frameContext.imageAcquiredSemaphore.reset();
         frameContext.frameFence.reset();
+        frameContext.childCommandBuffers.clear();
+        frameContext.childCommandPools.clear();
+        frameContext.parallelCommandBuffers.clear();
+        frameContext.parallelCommandPools.clear();
         frameContext.commandBuffer.reset();
         frameContext.commandPool.reset();
         frameContext.hasAcquiredSwapchainImage = false;
         frameContext.swapchainImageIndex = 0u;
         frameContext.uploadBytesReserved = 0u;
+        return true;
     }
 
     uint32_t ResolveThreadedLifecycleSlotCount(const Render::Settings::DriverSettings& settings)
@@ -1570,8 +1631,13 @@ namespace
         DriverImpl& impl,
         const uint32_t frameCount)
     {
+        if (!DrainFrameFencesForResize(impl.frameContexts, &impl))
+            return;
+        Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(impl);
         for (auto& frameContext : impl.frameContexts)
-            ReleaseFrameContextResources(frameContext);
+            (void)ReleaseFrameContextResources(frameContext, &impl);
+        impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.clear();
+        impl.deferredThreadedFrameScopedRetirementFrameContexts.clear();
         impl.frameContexts.clear();
 
         if (impl.explicitDevice == nullptr)
@@ -1605,6 +1671,7 @@ namespace
             frameContext.uploadContext = Render::Backend::CreateUploadContextForRhiDevice(impl.explicitDevice);
             impl.frameContexts.push_back(std::move(frameContext));
         }
+        impl.retainedThreadedSubmitResourceKeepAliveByFrameContext.resize(impl.frameContexts.size());
     }
 
 }
@@ -1678,6 +1745,21 @@ uint64_t Detail::RecordPreparedDrawCommandsForPass(
     const RenderPassCommandInput& input)
 {
     return NLS::Render::Context::RecordPreparedDrawCommandsForPass(commandBuffer, input);
+}
+
+uint64_t Detail::RecordPreparedDrawCommandsForPassRange(
+    Render::RHI::RHICommandBuffer* commandBuffer,
+    const RenderPassCommandInput& input,
+    const std::vector<RecordedDrawCommandInput>& recordedDrawCommands,
+    const uint64_t recordedDrawBegin,
+    const uint64_t recordedDrawCount)
+{
+    return NLS::Render::Context::RecordPreparedDrawCommandsForPassRange(
+        commandBuffer,
+        input,
+        recordedDrawCommands,
+        recordedDrawBegin,
+        recordedDrawCount);
 }
 
 uint64_t Detail::RecordComputeDispatches(
@@ -2367,6 +2449,29 @@ void DriverTestAccess::SetCompletedReadbackTexture(
     RememberCompletedReadbackTexture(*driver.m_impl, texture);
 }
 
+size_t DriverTestAccess::GetRetainedThreadedSubmitResourceCount(const Driver& driver)
+{
+    if (driver.m_impl == nullptr)
+        return 0u;
+
+    size_t retainedResourceCount = 0u;
+    for (const auto& keepAlive : driver.m_impl->retainedThreadedSubmitResourceKeepAliveByFrameContext)
+        retainedResourceCount += keepAlive.size();
+    return retainedResourceCount;
+}
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+DriverImpl* DriverTestAccess::GetImplForTesting(Driver& driver)
+{
+    return driver.m_impl.get();
+}
+
+void DriverTestAccess::ShutdownRhiResourcesForTesting(Driver& driver)
+{
+    driver.ShutdownRhiResources();
+}
+#endif
+
 void DriverTestAccess::SetExplicitFrameActive(Driver& driver, const bool active)
 {
     driver.m_impl->explicitFrameActive = active;
@@ -2638,8 +2743,19 @@ void Driver::ShutdownRhiResources()
     if (m_impl->threadedLifecycle != nullptr)
         m_impl->threadedLifecycle->ReleaseRetainedFrameResources();
 
+    const bool drainedFrameFences = DrainFrameFencesForResize(m_impl->frameContexts, m_impl.get());
+    if (drainedFrameFences)
+        Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(*m_impl);
+    bool releasedAllFrameContexts = drainedFrameFences;
     for (auto& frameContext : m_impl->frameContexts)
-        ReleaseFrameContextResources(frameContext);
+        releasedAllFrameContexts = ReleaseFrameContextResources(frameContext, m_impl.get()) && releasedAllFrameContexts;
+    if (!releasedAllFrameContexts)
+    {
+        NLS_LOG_ERROR("Driver::ShutdownRhiResources: timed out before releasing frame-context resources");
+        return;
+    }
+    m_impl->retainedThreadedSubmitResourceKeepAliveByFrameContext.clear();
+    m_impl->deferredThreadedFrameScopedRetirementFrameContexts.clear();
     m_impl->frameContexts.clear();
 
     m_impl->pipelineCache.reset();
@@ -2812,11 +2928,12 @@ void Driver::ApplyPendingSwapchainResize()
 	const uint32_t width = m_impl->pendingSwapchainWidth;
 	const uint32_t height = m_impl->pendingSwapchainHeight;
 
-    if (!DrainFrameFencesForResize(m_impl->frameContexts))
+    if (!DrainFrameFencesForResize(m_impl->frameContexts, m_impl.get()))
     {
         m_impl->lastSwapchainResizeRequestTime = std::chrono::steady_clock::now();
         return;
     }
+    Detail::ReleaseDeferredThreadedFrameScopedResourcesAfterFence(*m_impl);
 
 	if (m_impl->swapchainWillResizeCallback)
 		m_impl->swapchainWillResizeCallback();
@@ -2827,6 +2944,26 @@ void Driver::ApplyPendingSwapchainResize()
 			frameContext.commandBuffer->Reset();
 		if (frameContext.commandPool != nullptr)
 			frameContext.commandPool->Reset();
+        for (const auto& childCommandBuffer : frameContext.childCommandBuffers)
+        {
+            if (childCommandBuffer != nullptr)
+                childCommandBuffer->Reset();
+        }
+        for (const auto& childCommandPool : frameContext.childCommandPools)
+        {
+            if (childCommandPool != nullptr)
+                childCommandPool->Reset();
+        }
+        for (const auto& parallelCommandBuffer : frameContext.parallelCommandBuffers)
+        {
+            if (parallelCommandBuffer != nullptr)
+                parallelCommandBuffer->Reset();
+        }
+        for (const auto& parallelCommandPool : frameContext.parallelCommandPools)
+        {
+            if (parallelCommandPool != nullptr)
+                parallelCommandPool->Reset();
+        }
 		if (frameContext.resourceStateTracker != nullptr)
 			frameContext.resourceStateTracker->Reset();
 	}

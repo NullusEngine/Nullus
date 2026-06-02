@@ -167,11 +167,16 @@ namespace NLS::Render::Backend
 
 	bool NativeDX12Semaphore::SignalOnQueue(ID3D12CommandQueue* queue)
 	{
+		return SUCCEEDED(SignalOnQueueChecked(queue));
+	}
+
+	HRESULT NativeDX12Semaphore::SignalOnQueueChecked(ID3D12CommandQueue* queue)
+	{
 		if (queue == nullptr || m_fence == nullptr)
-			return false;
+			return E_INVALIDARG;
 
 		m_waitValue = ++m_signalValue;
-		return SUCCEEDED(queue->Signal(m_fence.Get(), m_waitValue));
+		return queue->Signal(m_fence.Get(), m_waitValue);
 	}
 #endif
 }

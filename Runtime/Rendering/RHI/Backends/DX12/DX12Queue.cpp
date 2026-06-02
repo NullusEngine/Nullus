@@ -60,6 +60,31 @@ namespace NLS::Render::Backend
 			return NLS::Render::Settings::GetThreadDiagnosticsSettings().dx12LogFrameFlow;
 		}
 
+		NLS::Render::RHI::RHIQueueOperationResult ClassifyDx12PostExecuteSignalFailure(
+			ID3D12Device* device,
+			const std::string& message,
+			const bool mayHaveQueuedGpuWork)
+		{
+			if (device != nullptr)
+			{
+				const HRESULT deviceStatus = device->GetDeviceRemovedReason();
+				if (FAILED(deviceStatus))
+				{
+					return {
+						NLS::Render::RHI::RHIQueueOperationStatusCode::DeviceLost,
+						message + " deviceRemovedHr=" + std::to_string(deviceStatus),
+						mayHaveQueuedGpuWork
+					};
+				}
+			}
+
+			return {
+				NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure,
+				message,
+				mayHaveQueuedGpuWork
+			};
+		}
+
 		void LogDx12DebugMessages(ID3D12Device* device, const std::string& context)
 		{
 			if (device == nullptr)
@@ -197,6 +222,26 @@ namespace NLS::Render::Backend
 			{
 				if (cmdBuffer == nullptr)
 					continue;
+				if (cmdBuffer->IsChildCommandBuffer())
+				{
+					const std::string message =
+						"NativeDX12Queue::Submit: DX12 child bundle command buffers must be executed by a parent command list";
+					NLS_LOG_ERROR(message);
+					return {
+						NLS::Render::RHI::RHIQueueOperationStatusCode::InvalidArgument,
+						message
+					};
+				}
+				if (!cmdBuffer->IsClosedForSubmission())
+				{
+					const std::string message =
+						"NativeDX12Queue::Submit: DX12 command buffer must be closed successfully before submission";
+					NLS_LOG_ERROR(message);
+					return {
+						NLS::Render::RHI::RHIQueueOperationStatusCode::InvalidArgument,
+						message
+					};
+				}
 
 				const auto nativeCommandBuffer = cmdBuffer->GetNativeCommandBuffer();
 				auto* nativeCommandList = nativeCommandBuffer.backend == NLS::Render::RHI::BackendType::DX12
@@ -243,7 +288,11 @@ namespace NLS::Render::Backend
 						std::to_string(deviceStatus);
 					NLS_LOG_ERROR(message);
 					LogDx12DebugMessages(m_device, "NativeDX12Queue::Submit");
-					return { NLS::Render::RHI::RHIQueueOperationStatusCode::DeviceLost, message };
+					return {
+						NLS::Render::RHI::RHIQueueOperationStatusCode::DeviceLost,
+						message,
+						true
+					};
 				}
 			}
 		}
@@ -260,15 +309,20 @@ namespace NLS::Render::Backend
 				if (nativeSemaphore == nullptr || nativeSemaphore->GetFence() == nullptr)
 					continue;
 
-				if (!nativeSemaphore->SignalOnQueue(m_queue))
+				const HRESULT signalHr = nativeSemaphore->SignalOnQueueChecked(m_queue);
+				if (FAILED(signalHr))
 				{
-					const std::string message = "NativeDX12Queue::Submit: queue signal semaphore failed";
+					const bool mayHaveQueuedGpuWork = !commandLists.empty();
+					const std::string message =
+						"NativeDX12Queue::Submit: queue signal semaphore failed hr=" +
+						std::to_string(signalHr);
 					NLS_LOG_ERROR(message);
-					return { NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure, message };
+					return ClassifyDx12PostExecuteSignalFailure(m_device, message, mayHaveQueuedGpuWork);
 				}
 			}
 		}
 
+		NLS::Render::RHI::RHIQueueOperationResult result;
 		if (submitDesc.signalFence != nullptr)
 		{
 			NLS_PROFILE_NAMED_SCOPE("NativeDX12Queue::SignalSubmitFence");
@@ -279,16 +333,18 @@ namespace NLS::Render::Backend
 				const HRESULT signalHr = m_queue->Signal(nativeFence->GetFence(), fenceValue);
 				if (FAILED(signalHr))
 				{
+					const bool mayHaveQueuedGpuWork = !commandLists.empty();
 					const std::string message =
 						"NativeDX12Queue::Submit: queue signal fence failed hr=" +
 						std::to_string(signalHr) +
 						" value=" + std::to_string(fenceValue);
 					NLS_LOG_ERROR(message);
-					return { NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure, message };
+					return ClassifyDx12PostExecuteSignalFailure(m_device, message, mayHaveQueuedGpuWork);
 				}
+				result.frameFenceSignalQueued = true;
 			}
 		}
-		return {};
+		return result;
 #else
 		(void)submitDesc;
 		return { NLS::Render::RHI::RHIQueueOperationStatusCode::BackendFailure, "DX12 queue submit is only available on Windows" };

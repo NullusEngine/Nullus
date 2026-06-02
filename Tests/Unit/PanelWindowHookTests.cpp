@@ -629,6 +629,15 @@ TEST(PanelWindowHookTests, FrameInfoPanelFormatsSuppliedRenderViewSnapshot)
     frameInfo.instanceCount = 2u;
     frameInfo.polyCount = 2u;
     frameInfo.vertexCount = 6u;
+    frameInfo.rawVisibleObjectCount = 10u;
+    frameInfo.submittedSceneDrawCount = 3u;
+    frameInfo.dynamicInstanceGroupCount = 1u;
+    frameInfo.largestInstanceGroupSize = 8u;
+    frameInfo.cachedCommandRebuildCount = 2u;
+    frameInfo.objectDataOverflowDroppedObjectCount = 1u;
+    frameInfo.parallelCommandWorkUnitCount = 4u;
+    frameInfo.parallelRecordingWorkerCount = 0u;
+    frameInfo.parallelFallbackReason = "attachment-backed pass kept unsliced";
 
     NLS::Editor::Panels::FrameInfo panel("Frame Info", true, {});
     panel.UpdateForFrameInfo("Stats View", frameInfo);
@@ -640,6 +649,8 @@ TEST(PanelWindowHookTests, FrameInfoPanelFormatsSuppliedRenderViewSnapshot)
     EXPECT_EQ(TextWidgetAt(panel, 5u).content, "Vertices: 6");
     ExpectTextWidgetContent(panel, "ParseScene Calls: 0");
     ExpectTextWidgetContent(panel, "Drawables O/T/S: 0/0/0");
+    ExpectTextWidgetContent(panel, "Draw Opt Raw/Submitted/Groups/Largest/Rebuilds/Dropped: 10/3/1/8/2/1");
+    ExpectTextWidgetContent(panel, "Parallel Work Units/Workers/Fallback: 4/0/attachment-backed pass kept unsliced");
     ExpectTextWidgetContent(panel, "GBuffer Material Syncs: 0");
     ExpectTextWidgetContent(panel, "Binding Sets Created: 0");
     ExpectTextWidgetContent(panel, "Snapshot Buffers Created: 0");

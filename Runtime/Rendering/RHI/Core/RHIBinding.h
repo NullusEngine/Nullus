@@ -56,6 +56,13 @@ namespace NLS::Render::RHI
     public:
         virtual const RHIBindingSetDesc& GetDesc() const = 0;
         virtual NativeHandle GetNativeBindingSetHandle() const { return {}; }
+        virtual NativeHandle GetNativeDescriptorHeapCompatibilityHandle(uint32_t heapClass) const
+        {
+            const auto wrapped = GetWrappedBindingSetShared();
+            return wrapped != nullptr
+                ? wrapped->GetNativeDescriptorHeapCompatibilityHandle(heapClass)
+                : NativeHandle {};
+        }
         virtual std::shared_ptr<RHIBindingSet> GetWrappedBindingSetShared() { return nullptr; }
         virtual std::shared_ptr<const RHIBindingSet> GetWrappedBindingSetShared() const { return nullptr; }
     };

@@ -2252,20 +2252,31 @@ namespace NLS::Render::FrameGraph
 		for (auto& workUnit : additionalWorkUnits)
 			package.parallelCommandWorkUnits.push_back(std::move(workUnit));
 
-		const uint64_t passWorkUnitBaseIndex = static_cast<uint64_t>(package.parallelCommandWorkUnits.size());
-		for (const auto& plannedPass : plan.passes)
+		std::vector<uint64_t> firstWorkUnitIndexByPass;
+		std::vector<uint64_t> lastWorkUnitIndexByPass;
+		firstWorkUnitIndexByPass.reserve(plan.passes.size());
+		lastWorkUnitIndexByPass.reserve(plan.passes.size());
+
+		for (size_t passIndex = 0; passIndex < plan.passes.size(); ++passIndex)
 		{
+			const auto& plannedPass = plan.passes[passIndex];
 			auto passCommandInput = plannedPass.commandInput;
 			passCommandInput.dependencySourceWorkUnitIndex.reset();
 			passCommandInput.requiresDependencyVisibility = plannedPass.requiresDependencyVisibility;
 
 			package.passCommandInputs.push_back(passCommandInput);
-			Context::ParallelCommandWorkUnit workUnit;
-			workUnit.debugName = !passCommandInput.debugName.empty()
-				? passCommandInput.debugName
-				: std::string(plannedPass.graphPassName);
-			workUnit.commandInput = std::move(passCommandInput);
-			package.parallelCommandWorkUnits.push_back(std::move(workUnit));
+			auto passWorkUnits = Context::BuildRecordedDrawCommandWorkUnitsForPass(
+				passCommandInput,
+				static_cast<uint64_t>(passIndex),
+				static_cast<uint64_t>(package.parallelCommandWorkUnits.size()));
+			for (auto& passWorkUnit : passWorkUnits)
+			{
+				if (passWorkUnit.debugName.empty())
+					passWorkUnit.debugName = std::string(plannedPass.graphPassName);
+				package.parallelCommandWorkUnits.push_back(std::move(passWorkUnit));
+			}
+			firstWorkUnitIndexByPass.push_back(static_cast<uint64_t>(package.parallelCommandWorkUnits.size() - passWorkUnits.size()));
+			lastWorkUnitIndexByPass.push_back(static_cast<uint64_t>(package.parallelCommandWorkUnits.size() - 1u));
 			package.visibleDrawCount += plannedPass.visibleDrawCountContribution;
 
 			switch (plannedPass.role)
@@ -2302,11 +2313,15 @@ namespace NLS::Render::FrameGraph
 		package.workUnitDependencyEdges.reserve(plan.dependencies.size());
 		for (const auto& dependency : plan.dependencies)
 		{
+			if (dependency.sourcePassIndex >= lastWorkUnitIndexByPass.size() ||
+				dependency.targetPassIndex >= firstWorkUnitIndexByPass.size())
+			{
+				continue;
+			}
+
 			Context::WorkUnitDependencyEdge workUnitDependency;
-			workUnitDependency.sourceWorkUnitIndex =
-				passWorkUnitBaseIndex + static_cast<uint64_t>(dependency.sourcePassIndex);
-			workUnitDependency.targetWorkUnitIndex =
-				passWorkUnitBaseIndex + static_cast<uint64_t>(dependency.targetPassIndex);
+			workUnitDependency.sourceWorkUnitIndex = lastWorkUnitIndexByPass[dependency.sourcePassIndex];
+			workUnitDependency.targetWorkUnitIndex = firstWorkUnitIndexByPass[dependency.targetPassIndex];
 			workUnitDependency.kind = dependency.kind;
 			workUnitDependency.resourceKind = dependency.resourceKind;
 			workUnitDependency.sourceBufferAccess = dependency.sourceBufferAccess;
@@ -2332,7 +2347,7 @@ namespace NLS::Render::FrameGraph
 		package.containsCommandInputs = !package.passCommandInputs.empty();
 		package.parallelCommandWorkUnitCount = static_cast<uint64_t>(package.parallelCommandWorkUnits.size());
 		package.containsParallelCommandWorkUnits = !package.parallelCommandWorkUnits.empty();
-		package.parallelDrawCommandBatches = Context::BuildUE427ParallelDrawCommandBatches(package.parallelCommandWorkUnits);
+		package.parallelDrawCommandBatches = Context::BuildParallelDrawCommandBatchMetadata(package.parallelCommandWorkUnits);
 		package.computeDispatchInputs.clear();
 		package.containsComputeDispatchInputs = false;
 		package.asyncComputeWorkloadCount = static_cast<uint64_t>(std::count_if(

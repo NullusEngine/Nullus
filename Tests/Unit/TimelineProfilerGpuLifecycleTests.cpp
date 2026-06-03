@@ -8,7 +8,7 @@
 
 TEST(TimelineProfilerGpuLifecycleTests, BuildConfigurationExposesExpectedProfilerHelpers)
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     EXPECT_FALSE(TimelineProfilerDetail::ShouldUnregisterCommandListDestructionCallback(true, 1u));
     EXPECT_TRUE(TimelineProfilerDetail::ShouldUnregisterCommandListDestructionCallback(false, 1u));
     EXPECT_FALSE(TimelineProfilerDetail::ShouldPublishGpuQueryPair(false));
@@ -33,7 +33,7 @@ TEST(DX12PresentPolicyTests, VsyncControlsPresentSyncInterval)
 
 TEST(TimelineProfilerGpuLifecycleTests, TimelineSinkGpuProfilerOwnershipIsNonCopyableAndNonMovable)
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     using NLS::Base::Profiling::TimelineProfilerSink;
 
     EXPECT_FALSE(std::is_copy_constructible_v<TimelineProfilerSink>);
@@ -47,7 +47,7 @@ TEST(TimelineProfilerGpuLifecycleTests, TimelineSinkGpuProfilerOwnershipIsNonCop
 
 TEST(TimelineProfilerGpuLifecycleTests, ResolveFenceValuesTreatInitialFenceAsIncomplete)
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     EXPECT_EQ(TimelineProfilerDetail::GetGpuProfilerResolveFenceValue(0u), 1u);
     EXPECT_EQ(TimelineProfilerDetail::GetGpuProfilerResolveFenceValue(4u), 5u);
 

@@ -66,4 +66,12 @@ namespace NLS::UI
 			return {};
 		return { payload->Data, static_cast<size_t>(payload->DataSize), payload->IsDelivery() };
 	}
+
+	DragDropPayloadView PeekDragDropPayload(const char* type)
+	{
+		const ImGuiPayload* payload = ImGui::GetDragDropPayload();
+		if (payload == nullptr || !payload->IsDataType(type))
+			return {};
+		return { payload->Data, static_cast<size_t>(payload->DataSize), payload->IsDelivery() };
+	}
 }

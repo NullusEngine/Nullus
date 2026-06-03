@@ -41,5 +41,10 @@ class NLS_RESOURCE_MANAGEMENT_API MaterialManager : public AResourceManager<Rend
 
         virtual Material* PrewarmArtifact(const std::string& p_path);
         virtual Material* LoadArtifactWithoutTextures(const std::string& p_path);
+        virtual Material* RequestAsyncArtifact(const std::string& p_path, bool p_cancelableInterest = false);
+        void CancelAsyncArtifact(const std::string& p_path);
+        bool IsAsyncArtifactLoadPending(const std::string& p_path) const;
+        bool IsAsyncArtifactLoadFailed(const std::string& p_path) const;
+        void PumpAsyncLoads(size_t p_maxCompletions = 1u);
 	};
 }

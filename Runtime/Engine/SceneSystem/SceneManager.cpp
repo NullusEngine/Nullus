@@ -2,16 +2,9 @@
 
 #include "SceneSystem/SceneManager.h"
 #include "Components/LightComponent.h"
-#include "Components/MeshFilter.h"
-#include "Components/MeshRenderer.h"
 #include "Components/SkyBoxComponent.h"
 #include "Components/CameraComponent.h"
 #include "Components/TransformComponent.h"
-#include "ResourceManagement/MaterialManager.h"
-#include "ResourceManagement/MeshManager.h"
-#include "ResourceManagement/TextureManager.h"
-#include "PrimitiveFactory.h"
-#include "ServiceLocator.h"
 #include "Serialize/ObjectGraphInstantiator.h"
 #include "Serialize/ObjectGraphReader.h"
 #include "Serialize/ObjectGraphSerializer.h"
@@ -171,24 +164,6 @@ void SceneManager::LoadEmptyLightedScene()
     {
         tr->SetLocalPosition({0.0f, 0.0f, 0.0f});
         tr->SetLocalRotation(Maths::Quaternion::Identity);
-    }
-
-    if (Core::ServiceLocator::Contains<Core::ResourceManagement::MeshManager>() &&
-        Core::ServiceLocator::Contains<Core::ResourceManagement::MaterialManager>())
-    {
-        auto& validationCube = m_currentScene->CreateGameObject("Validation Cube");
-        if (auto tr = validationCube.GetTransform())
-        {
-            tr->SetLocalPosition({0.0f, 0.0f, 5.0f});
-            tr->SetLocalScale({1.5f, 1.5f, 1.5f});
-        }
-
-        auto* defaultMaterial =
-            NLS_SERVICE(Core::ResourceManagement::MaterialManager)[":Materials\\Default.mat"];
-        Engine::ConfigurePrimitiveGameObject(
-            validationCube,
-            Engine::PrimitiveType::Cube,
-            defaultMaterial);
     }
 
     AppendSceneManagerTrace("LoadEmptyLightedScene end");

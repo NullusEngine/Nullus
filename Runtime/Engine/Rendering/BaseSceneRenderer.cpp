@@ -616,11 +616,16 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 	uint64_t rawVisibleObjectCount = 0u;
 	uint64_t submittedSceneDrawCount = 0u;
 
-	auto appendSceneDrawables = [&](SceneSystem::Scene& scene, RenderScene& renderScene, const bool includeSkyboxes)
+	auto appendSceneDrawables = [&](
+		SceneSystem::Scene& scene,
+		RenderScene& renderScene,
+		const bool includeSkyboxes,
+		const bool requireExplicitMaterialTextures)
 	{
 		const auto syncStats = renderScene.Synchronize(scene, {
 			ResolveDefaultSceneMaterial(),
-			overrideMaterial
+			overrideMaterial,
+			requireExplicitMaterialTextures
 		});
 		rebuiltCachedCommandCount += syncStats.rebuiltCachedCommandCount;
 		auto retainedDrawables = renderScene.GatherVisibleCommands({
@@ -670,7 +675,7 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 		}
 	};
 
-	appendSceneDrawables(sceneDescriptor.scene, m_renderScene, true);
+	appendSceneDrawables(sceneDescriptor.scene, m_renderScene, true, false);
 	for (auto it = m_additiveRenderScenes.begin(); it != m_additiveRenderScenes.end();)
 	{
 		const auto* cachedScene = it->first;
@@ -688,7 +693,7 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 		if (!additiveScene)
 			continue;
 		auto& additiveRenderScene = m_additiveRenderScenes[additiveScene];
-		appendSceneDrawables(*additiveScene, additiveRenderScene, false);
+		appendSceneDrawables(*additiveScene, additiveRenderScene, false, true);
 	}
 
 	SortSceneDrawables(transparents, std::greater<float>{});
@@ -699,7 +704,7 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 		for (auto& entry : queue)
 		{
 			EngineDrawableDescriptor descriptor;
-			if (!entry.second.TryGetDescriptor<EngineDrawableDescriptor>(descriptor))
+			if (!entry.second.template TryGetDescriptor<EngineDrawableDescriptor>(descriptor))
 				continue;
 
 			const uint32_t objectCount = std::max<uint32_t>(1u, descriptor.objectCount);
@@ -716,8 +721,8 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 				descriptor.objectIndex = nextObjectIndex;
 				nextObjectIndex = lastObjectIndex + 1u;
 			}
-			entry.second.RemoveDescriptor<EngineDrawableDescriptor>();
-			entry.second.AddDescriptor<EngineDrawableDescriptor>(std::move(descriptor));
+			entry.second.template RemoveDescriptor<EngineDrawableDescriptor>();
+			entry.second.template AddDescriptor<EngineDrawableDescriptor>(std::move(descriptor));
 		}
 	};
 	reassignObjectIndices(opaques);

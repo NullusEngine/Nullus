@@ -1,12 +1,13 @@
 #include <gtest/gtest.h>
 
+#include <any>
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <memory>
 #include <sstream>
 #include <type_traits>
-#include <algorithm>
 #include <utility>
 
 #include "GameObject.h"
@@ -21,6 +22,7 @@
 #include "Core/ServiceLocator.h"
 #include "Core/ResourceManagement/MaterialManager.h"
 #include "Core/ResourceManagement/MeshManager.h"
+#include "Core/ResourceManagement/ShaderManager.h"
 #include "Assets/PrefabEditorWorkflow.h"
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Context/Driver.h"
@@ -227,15 +229,50 @@ private:
     NLS::ListenerID m_listener = NLS::InvalidListenerID;
 };
 
+template<typename T>
+class ScopedServiceOverride
+{
+public:
+    explicit ScopedServiceOverride(T& service)
+    {
+        m_hadPrevious = NLS::Core::ServiceLocator::Contains<T>();
+        if (m_hadPrevious)
+        {
+            try
+            {
+                m_previous = &NLS::Core::ServiceLocator::Get<T>();
+            }
+            catch (const std::bad_any_cast&)
+            {
+                m_hadPrevious = false;
+                NLS::Core::ServiceLocator::Remove<T>();
+            }
+        }
+
+        NLS::Core::ServiceLocator::Provide<T>(service);
+    }
+
+    ~ScopedServiceOverride()
+    {
+        if (m_hadPrevious && m_previous)
+            NLS::Core::ServiceLocator::Provide<T>(*m_previous);
+        else
+            NLS::Core::ServiceLocator::Remove<T>();
+    }
+
+    ScopedServiceOverride(const ScopedServiceOverride&) = delete;
+    ScopedServiceOverride& operator=(const ScopedServiceOverride&) = delete;
+
+private:
+    bool m_hadPrevious = false;
+    T* m_previous = nullptr;
+};
+
 class ScopedSceneObjectGraphTestDriver final
 {
 public:
     ScopedSceneObjectGraphTestDriver()
-        : m_previousDriver(
-            NLS::Core::ServiceLocator::Contains<NLS::Render::Context::Driver>()
-                ? &NLS_SERVICE(NLS::Render::Context::Driver)
-                : nullptr)
-        , m_driver([]()
+        : m_driver([]()
         {
             NLS::Render::Settings::DriverSettings settings;
             settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
@@ -243,6 +280,18 @@ public:
             return settings;
         }())
     {
+        if (NLS::Core::ServiceLocator::Contains<NLS::Render::Context::Driver>())
+        {
+            try
+            {
+                m_previousDriver = &NLS_SERVICE(NLS::Render::Context::Driver);
+            }
+            catch (const std::bad_any_cast&)
+            {
+                NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
+            }
+        }
+
         NLS::Core::ServiceLocator::Provide(m_driver);
     }
 
@@ -555,6 +604,74 @@ TEST(SceneObjectGraphSerializationTests, ReflectedMeshReferenceWriteClearsMeshFi
 
     EXPECT_EQ(renderer.ResolveMesh(), nullptr);
     EXPECT_TRUE(renderer.GetMeshReference().IsNull());
+}
+
+TEST(SceneObjectGraphSerializationTests, DeferredMeshRendererInstantiationKeepsResolvedMaterialArtifactPathHint)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Engine::Assets;
+    using namespace NLS::Engine::Serialize;
+
+    PersistentManager::Instance().Clear();
+    NLS::ObjectTestAccess::ClearObjectRegistry();
+
+    const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse("72727272-7272-4272-8272-727272727272"));
+    RuntimeAssetManifest manifest;
+    manifest.entries.push_back({
+        assetId,
+        "material:body",
+        ArtifactType::Material,
+        "Nullus.Material",
+        "Library/Artifacts/Hero/materials/body.nmat",
+        "sha256:material",
+        {}
+    });
+    RuntimeAssetDatabase runtimeAssets(manifest);
+    NLS::Core::ServiceLocator::Provide<RuntimeAssetDatabase>(runtimeAssets);
+
+    auto document = MakeSimpleSceneDocument();
+    auto& gameObject = document.objects.front();
+    const auto meshRendererId = ObjectId(NLS::Guid::Parse("83838383-8383-4383-8383-838383838383"));
+    auto* components = FindMutableProperty(gameObject, "components");
+    ASSERT_NE(components, nullptr);
+    components->value = PropertyValue::Array({
+        PropertyValue::OwnedReference(meshRendererId),
+        components->value.GetArray().front()
+    });
+
+    ObjectRecord meshRenderer;
+    meshRenderer.id = meshRendererId;
+    meshRenderer.localIdentifierInFile = MakeLocalIdentifierInFile(meshRendererId);
+    meshRenderer.typeName = "NLS::Engine::Components::MeshRenderer";
+    meshRenderer.debugName = "MeshRenderer";
+    meshRenderer.properties.push_back({
+        "materials",
+        PropertyValue::Array({
+            PropertyValue::ObjectReference(ObjectIdentifier::Asset(
+                NLS::Engine::Serialize::AssetId(assetId.GetGuid()),
+                MakeLocalIdentifierInFile(assetId.GetGuid(), "material:body"),
+                "material:body"))
+        })
+    });
+    document.objects.insert(document.objects.begin() + 1, std::move(meshRenderer));
+
+    LoadPolicy policy;
+    policy.deferAssetReferenceResolution = true;
+
+    auto result = ObjectGraphInstantiator::InstantiateScene(document, policy);
+    ASSERT_NE(result.scene, nullptr);
+    auto* loadedObject = result.scene->FindGameObjectByName("Player");
+    ASSERT_NE(loadedObject, nullptr);
+    auto* loadedRenderer = loadedObject->GetComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(loadedRenderer, nullptr);
+
+    const auto paths = loadedRenderer->GetMaterialPaths();
+    ASSERT_EQ(paths.size(), 1u);
+    EXPECT_EQ(paths[0], "Library/Artifacts/Hero/materials/body.nmat")
+        << "Deferred prefab/model preview must expose artifact material paths so RenderScene suppresses unresolved slots instead of drawing the default material.";
+    EXPECT_EQ(loadedRenderer->GetMaterialAtIndex(0), nullptr);
+
+    NLS::Core::ServiceLocator::Remove<RuntimeAssetDatabase>();
 }
 
 TEST(SceneObjectGraphSerializationTests, SetMeshPathSynchronizesMeshPPtrForInspectorAndPrefabSerialization)
@@ -1157,6 +1274,43 @@ TEST(SceneObjectGraphSerializationTests, MeshFilterTransientResolvedMeshPreserve
     EXPECT_EQ(rebound.filePath, reference.filePath);
 }
 
+TEST(SceneObjectGraphSerializationTests, MeshFilterTransientMeshRemainsRenderableWhenAssetPPtrAlreadyBound)
+{
+    using namespace NLS::Engine::Components;
+    using namespace NLS::Engine::Serialize;
+
+    PersistentManager::Instance().Clear();
+    NLS::ObjectTestAccess::ClearObjectRegistry();
+
+    NLS::Render::Resources::Mesh existingMesh({}, {}, 0u);
+    auto previewMesh = std::make_shared<NLS::Render::Resources::Mesh>(
+        std::vector<NLS::Render::Geometry::Vertex> {},
+        std::vector<uint32_t> {},
+        0u);
+
+    const auto reference = ObjectIdentifier::Asset(
+        AssetId(NLS::Guid::Parse("58585858-5858-4858-8858-585858585858")),
+        MakeLocalIdentifierInFile(
+            NLS::Guid::Parse("58585858-5858-4858-8858-585858585858"),
+            "mesh:body"),
+        "Library/Artifacts/Hero/body.nmesh");
+
+    MeshFilter existingInstance;
+    existingInstance.SetMeshReference(MakePPtr<MeshFilter::Mesh>(reference));
+    existingInstance.SetResolvedMeshFromReference(&existingMesh);
+    ASSERT_EQ(existingInstance.ResolveMesh(), &existingMesh);
+
+    MeshFilter previewInstance;
+    previewInstance.SetMeshReference(MakePPtr<MeshFilter::Mesh>(reference));
+    previewInstance.SetResolvedTransientMeshFromReference(previewMesh);
+
+    EXPECT_TRUE(previewInstance.HasResolvedTransientMesh());
+    EXPECT_EQ(previewInstance.ResolveMesh(), previewMesh.get())
+        << "Scene View drag preview must stay renderable even when another prefab instance already owns the asset PPtr identity.";
+    EXPECT_EQ(previewInstance.GetMeshReference().Get(), &existingMesh)
+        << "Transient preview binding must not steal the persistent asset identity from an existing prefab instance.";
+}
+
 TEST(SceneObjectGraphSerializationTests, MeshFilterLazyBindConflictDoesNotPoisonRetryPath)
 {
     using namespace NLS::Engine::Components;
@@ -1265,6 +1419,47 @@ TEST(SceneObjectGraphSerializationTests, MeshRendererRejectsResolvedMaterialThat
     EXPECT_EQ(renderer.GetMaterialReferences()[0].Get(), &first);
     ASSERT_EQ(renderer.GetMaterialPaths().size(), 1u);
     EXPECT_EQ(renderer.GetMaterialPaths()[0], "Library/Artifacts/Hero/body.nmat");
+}
+
+TEST(SceneObjectGraphSerializationTests, MeshRendererResolvedMaterialRemainsRenderableWhenAssetPPtrAlreadyBound)
+{
+    using namespace NLS::Engine::Components;
+    using namespace NLS::Engine::Serialize;
+
+    PersistentManager::Instance().Clear();
+    NLS::ObjectTestAccess::ClearObjectRegistry();
+
+    const auto reference = ObjectIdentifier::Asset(
+        AssetId(NLS::Guid::Parse("67676767-6767-4767-8767-676767676767")),
+        MakeLocalIdentifierInFile(
+            NLS::Guid::Parse("67676767-6767-4767-8767-676767676767"),
+            "material:body"),
+        "Library/Artifacts/Hero/body.nmat");
+
+    NLS::Render::Resources::Material existingMaterial;
+    existingMaterial.path = "Library/Artifacts/Hero/body.nmat";
+    NLS::Render::Resources::Material previewMaterial;
+    previewMaterial.path = "Library/Artifacts/Hero/body.nmat";
+
+    MeshRenderer existingInstance;
+    existingInstance.SetMaterialReferences({
+        MakePPtr<MeshRenderer::Material>(reference)
+    });
+    existingInstance.SetResolvedMaterialFromReference(0u, existingMaterial);
+    ASSERT_EQ(existingInstance.GetMaterialAtIndex(0u), &existingMaterial);
+
+    MeshRenderer previewInstance;
+    previewInstance.SetMaterialReferences({
+        MakePPtr<MeshRenderer::Material>(reference)
+    });
+    previewInstance.SetResolvedMaterialFromReference(0u, previewMaterial);
+
+    EXPECT_EQ(previewInstance.GetMaterialAtIndex(0u), &previewMaterial)
+        << "Scene View drag/drop must stay renderable even when another prefab instance already owns the material asset PPtr identity.";
+    EXPECT_EQ(previewInstance.GetMaterialReferences()[0].Get(), &existingMaterial)
+        << "Renderable material binding must not steal the persistent asset identity from an existing prefab instance.";
+    ASSERT_EQ(previewInstance.GetMaterialPaths().size(), 1u);
+    EXPECT_EQ(previewInstance.GetMaterialPaths()[0], "Library/Artifacts/Hero/body.nmat");
 }
 
 TEST(SceneObjectGraphSerializationTests, MeshRendererLazyBindConflictDoesNotPoisonRetryPath)
@@ -1378,6 +1573,74 @@ TEST(SceneObjectGraphSerializationTests, MeshRendererPathHintsPreservePrefabMate
     EXPECT_EQ(renderer.GetMaterialPaths()[0], "Library/Artifacts/Hero/materials/body.nmat");
 }
 
+TEST(SceneObjectGraphSerializationTests, MeshRendererPathHintsPreserveEquivalentResolvedMaterial)
+{
+    using namespace NLS::Engine::Components;
+    using namespace NLS::Engine::Serialize;
+
+    PersistentManager::Instance().Clear();
+    NLS::ObjectTestAccess::ClearObjectRegistry();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_material_hint_alias_" + NLS::Guid::New().ToString()));
+    const auto projectAssetsRoot = (root.Path() / "Project" / "Assets").string() + "/";
+    const auto engineAssetsRoot = (root.Path() / "EngineAssets").string() + "/";
+    NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths(projectAssetsRoot, engineAssetsRoot);
+
+    const auto libraryPath = std::string("Library/Artifacts/Hero/materials/body.nmat");
+    const auto absolutePath = NLS::Core::ResourceManagement::MaterialManager::ResolveResourcePath(libraryPath);
+
+    NLS::Render::Resources::Material material;
+    material.path = absolutePath;
+
+    MeshRenderer renderer;
+    renderer.SetMaterialAtIndex(0u, material);
+    ASSERT_EQ(renderer.GetMaterialAtIndex(0u), &material);
+
+    renderer.SetMaterialPathHints({ libraryPath });
+
+    EXPECT_EQ(renderer.GetMaterialAtIndex(0u), &material)
+        << "Renderer resolution must not clear an already bound material just because the same artifact is named by a Library/absolute path alias.";
+    ASSERT_EQ(renderer.GetMaterialPaths().size(), 1u);
+    EXPECT_EQ(renderer.GetMaterialPaths()[0], libraryPath);
+}
+
+TEST(SceneObjectGraphSerializationTests, MeshRendererResolvesEquivalentCachedMaterialPathHint)
+{
+    using namespace NLS::Engine::Components;
+
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    NLS::ObjectTestAccess::ClearObjectRegistry();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_material_resolve_alias_" + NLS::Guid::New().ToString()));
+    const auto projectAssetsRoot = (root.Path() / "Project" / "Assets").string() + "/";
+    const auto engineAssetsRoot = (root.Path() / "EngineAssets").string() + "/";
+    NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths(projectAssetsRoot, engineAssetsRoot);
+
+    NLS::Core::ResourceManagement::MaterialManager materialManager;
+    const ScopedServiceOverride<NLS::Core::ResourceManagement::MaterialManager> materialManagerScope(materialManager);
+
+    const auto libraryPath = std::string("Library/Artifacts/Hero/materials/body.nmat");
+    const auto absolutePath = NLS::Core::ResourceManagement::MaterialManager::ResolveResourcePath(libraryPath);
+
+    auto* material = new NLS::Render::Resources::Material();
+    material->path = absolutePath;
+    materialManager.RegisterResource(absolutePath, material);
+
+    MeshRenderer renderer;
+    renderer.SetMaterialPathHints({ libraryPath });
+
+    EXPECT_EQ(renderer.ResolveMaterialAtIndex(0u), material)
+        << "A formal or preview prefab storing a Library material path must reuse the equivalent absolute-path cached material instead of staying invisible.";
+    EXPECT_EQ(renderer.GetMaterialAtIndex(0u), material);
+
+    materialManager.UnloadResources();
+    NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths({}, {});
+}
+
 TEST(SceneObjectGraphSerializationTests, MeshRendererFillWithMaterialSerializesSingleFallbackMaterialPath)
 {
     NLS::Engine::Components::MeshRenderer renderer;
@@ -1417,6 +1680,28 @@ TEST(SceneObjectGraphSerializationTests, SceneManagerTracksDirtyStateAroundScene
 
     sceneManager.LoadEmptyScene();
     EXPECT_FALSE(sceneManager.HasUnsavedSceneChanges());
+}
+
+TEST(SceneObjectGraphSerializationTests, LoadEmptyLightedSceneDoesNotCreateValidationCube)
+{
+    const ScopedSceneObjectGraphTestDriver driverContext;
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    NLS::Core::ResourceManagement::MaterialManager materialManager;
+    NLS::Core::ResourceManagement::ShaderManager shaderManager;
+    const ScopedServiceOverride<NLS::Core::ResourceManagement::MeshManager> meshManagerScope(meshManager);
+    const ScopedServiceOverride<NLS::Core::ResourceManagement::MaterialManager> materialManagerScope(materialManager);
+    const ScopedServiceOverride<NLS::Core::ResourceManagement::ShaderManager> shaderManagerScope(shaderManager);
+
+    NLS::Engine::SceneSystem::SceneManager sceneManager;
+    sceneManager.LoadEmptyLightedScene();
+
+    auto* scene = sceneManager.GetCurrentScene();
+    ASSERT_NE(scene, nullptr);
+    EXPECT_EQ(scene->FindGameObjectByName("Validation Cube"), nullptr);
+
+    materialManager.UnloadResources();
+    meshManager.UnloadResources();
 }
 
 TEST(SceneObjectGraphSerializationTests, SceneManagerSavesAndLoadsScenesThroughObjectGraphFiles)

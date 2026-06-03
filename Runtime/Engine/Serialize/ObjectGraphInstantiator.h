@@ -7,6 +7,7 @@
 #include <functional>
 #include <stdexcept>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "Components/Component.h"
@@ -348,6 +349,10 @@ namespace NLS::Engine::Serialize
             const ObjectGraphDocument* document = nullptr;
             std::unordered_map<ObjectId, GameObject*> gameObjects;
             std::unordered_map<ObjectId, Components::Component*> components;
+            std::unordered_map<std::string, Core::ResourceManagement::MeshManager::Mesh*> meshResourcesByNormalizedPath;
+            std::unordered_map<std::string, Core::ResourceManagement::MaterialManager::Material*> materialResourcesByNormalizedPath;
+            bool meshResourcePathIndexBuilt = false;
+            bool materialResourcePathIndexBuilt = false;
         };
 
         static const ObjectRecord* FindRecord(const ObjectGraphDocument& document, const ObjectId& id)
@@ -503,7 +508,7 @@ namespace NLS::Engine::Serialize
                     continue;
 
                 context.components.emplace(componentRecord->id, component);
-                ApplyComponentState(*component, *componentRecord, policy);
+                ApplyComponentState(*component, *componentRecord, context, policy);
                 gameObject.MoveComponent(component, index);
             }
         }
@@ -535,18 +540,20 @@ namespace NLS::Engine::Serialize
         static void ApplyComponentState(
             Components::Component& component,
             const ObjectRecord& record,
+            InstanceContext& context,
             const LoadPolicy& policy = {})
         {
             if (policy.deferAssetReferenceResolution)
-                ApplyDeferredAssetReferenceHints(component, record);
-            ApplyReflectedFields(component, record, IsNoGraphProperty, &policy);
+                ApplyDeferredAssetReferenceHints(component, record, context);
+            ApplyReflectedFields(component, record, IsNoGraphProperty, &policy, &context);
         }
 
         static void ApplyReflectedFields(
             NLS::Object& object,
             const ObjectRecord& record,
             bool (*isGraphProperty)(const std::string&),
-            const LoadPolicy* policy = nullptr)
+            const LoadPolicy* policy = nullptr,
+            InstanceContext* context = nullptr)
         {
             auto instance = NLS::meta::Variant(&object, NLS::meta::variant_policy::WrapObject {});
             const auto type = object.GetType();
@@ -572,7 +579,8 @@ namespace NLS::Engine::Serialize
                 const auto objectReferenceResult = TrySetUnityObjectReferenceField(instance, field, property.value);
                 if (objectReferenceResult == UnityObjectReferenceApplyResult::Applied)
                 {
-                    ResolveRuntimeAssetReference(object, record, property);
+                    if (context != nullptr)
+                        ResolveRuntimeAssetReference(object, record, property, *context);
                     continue;
                 }
 
@@ -636,7 +644,8 @@ namespace NLS::Engine::Serialize
         static void ResolveRuntimeAssetReference(
             NLS::Object& object,
             const ObjectRecord& record,
-            const PropertyRecord& property)
+            const PropertyRecord& property,
+            InstanceContext& context)
         {
             if (RecordTypeMatchesComponent<Components::MeshFilter>(record) && property.name == "mesh")
             {
@@ -656,7 +665,7 @@ namespace NLS::Engine::Serialize
                 }
 
                 auto& meshManager = NLS_SERVICE(Core::ResourceManagement::MeshManager);
-                if (auto* mesh = FindCachedMeshResource(meshManager, path))
+                if (auto* mesh = FindCachedMeshResource(meshManager, path, context))
                     meshFilter->SetResolvedMeshFromReference(mesh);
                 return;
             }
@@ -686,7 +695,7 @@ namespace NLS::Engine::Serialize
                     if (path.empty())
                         continue;
 
-                    if (auto* material = materialManager.GetResource(path, false))
+                    if (auto* material = FindCachedMaterialResource(materialManager, path, context))
                         meshRenderer->SetResolvedMaterialFromReference(static_cast<uint8_t>(index), *material);
                 }
             }
@@ -935,7 +944,8 @@ namespace NLS::Engine::Serialize
 
         static void ApplyDeferredAssetReferenceHints(
             Components::Component& component,
-            const ObjectRecord& record)
+            const ObjectRecord& record,
+            InstanceContext& context)
         {
             if (RecordTypeMatchesComponent<Components::MeshFilter>(record) &&
                 component.GetType() == NLS_TYPEOF(Components::MeshFilter))
@@ -951,7 +961,7 @@ namespace NLS::Engine::Serialize
                     if (Core::ServiceLocator::Contains<Core::ResourceManagement::MeshManager>())
                     {
                         auto& meshManager = NLS_SERVICE(Core::ResourceManagement::MeshManager);
-                        if (auto* cached = FindCachedMeshResource(meshManager, path))
+                        if (auto* cached = FindCachedMeshResource(meshManager, path, context))
                         {
                             meshFilter->SetResolvedMeshFromReference(cached);
                             return;
@@ -985,6 +995,7 @@ namespace NLS::Engine::Serialize
                     }
                 }
                 meshRenderer->SetMaterialObjectIdentifiers(references);
+                meshRenderer->SetMaterialPathHints(paths);
                 if (Core::ServiceLocator::Contains<Core::ResourceManagement::MaterialManager>())
                 {
                     for (size_t index = 0; index < paths.size() && index < Components::MeshRenderer::kMaxMaterialCount; ++index)
@@ -992,8 +1003,13 @@ namespace NLS::Engine::Serialize
                         if (paths[index].empty())
                             continue;
 
-                        if (auto* cached = NLS_SERVICE(Core::ResourceManagement::MaterialManager).GetResource(paths[index], false))
+                        if (auto* cached = FindCachedMaterialResource(
+                                NLS_SERVICE(Core::ResourceManagement::MaterialManager),
+                                paths[index],
+                                context))
+                        {
                             meshRenderer->SetResolvedMaterialFromReference(static_cast<uint8_t>(index), *cached);
+                        }
                     }
                 }
             }
@@ -1001,17 +1017,34 @@ namespace NLS::Engine::Serialize
 
         static Core::ResourceManagement::MeshManager::Mesh* FindCachedMeshResource(
             Core::ResourceManagement::MeshManager& meshManager,
-            const std::string& path)
+            const std::string& path,
+            InstanceContext& context)
         {
-            if (auto* cached = meshManager.GetResource(path, false))
-                return cached;
-
-            const auto projectRelative = ToProjectRelativeResourcePath(
+            const auto candidates = BuildEquivalentResourcePathCandidates(
                 path,
+                Core::ResourceManagement::MeshManager::ResolveResourcePath(path),
                 Core::ResourceManagement::MeshManager::ProjectAssetsRoot());
-            return projectRelative.empty()
-                ? nullptr
-                : meshManager.GetResource(projectRelative, false);
+            return FindCachedResourceByEquivalentPath(
+                meshManager,
+                candidates,
+                context.meshResourcesByNormalizedPath,
+                context.meshResourcePathIndexBuilt);
+        }
+
+        static Core::ResourceManagement::MaterialManager::Material* FindCachedMaterialResource(
+            Core::ResourceManagement::MaterialManager& materialManager,
+            const std::string& path,
+            InstanceContext& context)
+        {
+            const auto candidates = BuildEquivalentResourcePathCandidates(
+                path,
+                Core::ResourceManagement::MaterialManager::ResolveResourcePath(path),
+                Core::ResourceManagement::MeshManager::ProjectAssetsRoot());
+            return FindCachedResourceByEquivalentPath(
+                materialManager,
+                candidates,
+                context.materialResourcesByNormalizedPath,
+                context.materialResourcePathIndexBuilt);
         }
 
         static std::string ToProjectRelativeResourcePath(
@@ -1044,6 +1077,114 @@ namespace NLS::Engine::Serialize
             }
 
             return relative.generic_string();
+        }
+
+        static std::vector<std::string> BuildEquivalentResourcePathCandidates(
+            const std::string& path,
+            const std::string& resolvedPath,
+            const std::string& projectAssetsRoot)
+        {
+            std::vector<std::string> candidates;
+            auto addCandidate = [&candidates](const std::string& candidate)
+            {
+                if (candidate.empty() ||
+                    std::find(candidates.begin(), candidates.end(), candidate) != candidates.end())
+                {
+                    return;
+                }
+                candidates.push_back(candidate);
+            };
+
+            auto addPathVariants = [&addCandidate](const std::string& candidate)
+            {
+                if (candidate.empty())
+                    return;
+
+                addCandidate(candidate);
+                const auto normalized = std::filesystem::path(candidate).lexically_normal();
+                addCandidate(normalized.string());
+                addCandidate(normalized.generic_string());
+            };
+
+            addPathVariants(path);
+            addPathVariants(resolvedPath);
+            addPathVariants(ToProjectRelativeResourcePath(
+                resolvedPath.empty() ? path : resolvedPath,
+                projectAssetsRoot));
+            return candidates;
+        }
+
+        static std::string NormalizeResourceCacheLookupKey(std::string path)
+        {
+            if (path.empty())
+                return {};
+
+            std::replace(path.begin(), path.end(), '\\', '/');
+            path = std::filesystem::path(path).lexically_normal().generic_string();
+            return path;
+        }
+
+        template <typename ResourceManagerType>
+        using ResourcePointerForManager = decltype(std::declval<ResourceManagerType&>().GetResource(std::declval<std::string>(), false));
+
+        template <typename ResourceManagerType>
+        static void BuildNormalizedResourceCacheIndex(
+            ResourceManagerType& resourceManager,
+            std::unordered_map<std::string, ResourcePointerForManager<ResourceManagerType>>& normalizedResourceCache)
+        {
+            normalizedResourceCache.clear();
+            const auto resources = resourceManager.GetResources();
+            normalizedResourceCache.reserve(resources.size());
+            for (const auto& [resourcePath, resource] : resources)
+            {
+                if (resource == nullptr)
+                    continue;
+
+                const auto normalizedResourcePath = NormalizeResourceCacheLookupKey(resourcePath);
+                if (!normalizedResourcePath.empty())
+                    normalizedResourceCache.try_emplace(normalizedResourcePath, resource);
+            }
+        }
+
+        template <typename ResourceManagerType>
+        static auto FindCachedResourceByEquivalentPath(
+            ResourceManagerType& resourceManager,
+            const std::vector<std::string>& candidates,
+            std::unordered_map<std::string, ResourcePointerForManager<ResourceManagerType>>& normalizedResourceCache,
+            bool& normalizedResourceCacheBuilt)
+        {
+            for (const auto& candidate : candidates)
+            {
+                if (auto* cached = resourceManager.GetResource(candidate, false))
+                    return cached;
+            }
+
+            std::vector<std::string> normalizedCandidates;
+            normalizedCandidates.reserve(candidates.size());
+            for (const auto& candidate : candidates)
+            {
+                auto normalized = NormalizeResourceCacheLookupKey(candidate);
+                if (!normalized.empty() &&
+                    std::find(normalizedCandidates.begin(), normalizedCandidates.end(), normalized) ==
+                        normalizedCandidates.end())
+                {
+                    normalizedCandidates.push_back(std::move(normalized));
+                }
+            }
+
+            if (!normalizedResourceCacheBuilt)
+            {
+                BuildNormalizedResourceCacheIndex(resourceManager, normalizedResourceCache);
+                normalizedResourceCacheBuilt = true;
+            }
+
+            for (const auto& normalizedCandidate : normalizedCandidates)
+            {
+                const auto cached = normalizedResourceCache.find(normalizedCandidate);
+                if (cached != normalizedResourceCache.end())
+                    return cached->second;
+            }
+            return ResourcePointerForManager<ResourceManagerType> {};
         }
 
         static void AnalyzeObjectTypes(

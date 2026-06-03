@@ -4,6 +4,7 @@
 #include <fstream>
 #include <memory>
 #include <sstream>
+#include <atomic>
 #include <type_traits>
 #include <vector>
 
@@ -133,6 +134,25 @@ TEST(MeshBoundingSphereTests, ComputesCenterFromAllNegativeVertexPositions)
     EXPECT_FLOAT_EQ(sphere.position.x, -5.0f);
     EXPECT_FLOAT_EQ(sphere.position.y, -6.5f);
     EXPECT_FLOAT_EQ(sphere.position.z, -8.0f);
+}
+
+TEST(MeshBoundingSphereTests, LoadMeshArtifactHonorsCancellationBeforeReading)
+{
+    const auto root = std::filesystem::temp_directory_path() / ("nullus_mesh_cancel_" + NLS::Guid::New().ToString());
+    std::filesystem::create_directories(root);
+    const auto artifactPath = root / "cancelled.nmesh";
+
+    const std::vector<NLS::Render::Geometry::Vertex> vertices{
+        VertexAt(-1.0f, 0.0f, 0.0f),
+        VertexAt(1.0f, 0.0f, 0.0f),
+        VertexAt(0.0f, 1.0f, 0.0f)
+    };
+    WriteMeshArtifact(artifactPath, vertices, {0u, 1u, 2u}, 0u);
+
+    std::atomic_bool cancelled{true};
+    EXPECT_FALSE(NLS::Render::Assets::LoadMeshArtifact(artifactPath, &cancelled).has_value());
+
+    std::filesystem::remove_all(root);
 }
 
 TEST(MeshBoundingSphereTests, BuildsVertexUploadViewDirectlyFromStructuredVertices)

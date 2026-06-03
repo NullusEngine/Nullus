@@ -1,6 +1,6 @@
 #include "Profiling/TracyProfiler.h"
 
-#if defined(NLS_ENABLE_TRACY) && !defined(NLS_TRACY_UNAVAILABLE)
+#if NLS_ENABLE_TRACY && !defined(NLS_TRACY_UNAVAILABLE)
 #include <cstdint>
 #include <string_view>
 #include <vector>
@@ -17,7 +17,7 @@ namespace NLS::Base::Profiling
 {
 void TracyProfiler::BeginScope(const ProfilerScopeEvent& event)
 {
-#if defined(NLS_ENABLE_TRACY) && !defined(NLS_TRACY_UNAVAILABLE)
+#if NLS_ENABLE_TRACY && !defined(NLS_TRACY_UNAVAILABLE)
     if (!IsConnected())
         return;
 
@@ -40,7 +40,7 @@ void TracyProfiler::BeginScope(const ProfilerScopeEvent& event)
 
 void TracyProfiler::EndScope(const ProfilerScopeEvent& event)
 {
-#if defined(NLS_ENABLE_TRACY) && !defined(NLS_TRACY_UNAVAILABLE)
+#if NLS_ENABLE_TRACY && !defined(NLS_TRACY_UNAVAILABLE)
     (void)event;
     if (g_tracyScopeStack.empty())
         return;
@@ -55,7 +55,7 @@ void TracyProfiler::EndScope(const ProfilerScopeEvent& event)
 
 ProfilerDestinationState TracyProfiler::GetState() const
 {
-#if defined(NLS_ENABLE_TRACY) && !defined(NLS_TRACY_UNAVAILABLE)
+#if NLS_ENABLE_TRACY && !defined(NLS_TRACY_UNAVAILABLE)
     const bool connected = IsConnected();
     return {
         ProfilerDestinationId::Tracy,
@@ -77,7 +77,7 @@ ProfilerDestinationState TracyProfiler::GetState() const
 
 bool TracyProfiler::IsConnected()
 {
-#if defined(NLS_ENABLE_TRACY) && !defined(NLS_TRACY_UNAVAILABLE)
+#if NLS_ENABLE_TRACY && !defined(NLS_TRACY_UNAVAILABLE)
     return TracyCIsConnected != 0;
 #else
     return false;

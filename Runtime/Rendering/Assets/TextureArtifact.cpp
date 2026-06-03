@@ -11,6 +11,7 @@
 #undef stbi__tga_read_rgb16
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -830,14 +831,42 @@ std::optional<TextureArtifactData> DeserializeTextureArtifact(const std::vector<
 
 std::optional<TextureArtifactData> LoadTextureArtifact(const std::filesystem::path& path)
 {
+    return LoadTextureArtifact(path, nullptr);
+}
+
+std::optional<TextureArtifactData> LoadTextureArtifact(
+    const std::filesystem::path& path,
+    const std::atomic_bool* cancellationFlag)
+{
     std::ifstream input(path, std::ios::binary);
     if (!input)
         return std::nullopt;
 
-    std::vector<uint8_t> bytes{
-        std::istreambuf_iterator<char>(input),
-        std::istreambuf_iterator<char>()
+    auto isCancelled = [cancellationFlag]
+    {
+        return cancellationFlag != nullptr && cancellationFlag->load(std::memory_order_acquire);
     };
+    if (isCancelled())
+        return std::nullopt;
+
+    std::vector<uint8_t> bytes;
+    std::array<char, 64u * 1024u> buffer {};
+    while (input)
+    {
+        if (isCancelled())
+            return std::nullopt;
+
+        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const auto readCount = input.gcount();
+        if (readCount <= 0)
+            break;
+
+        const auto* begin = reinterpret_cast<const uint8_t*>(buffer.data());
+        bytes.insert(bytes.end(), begin, begin + static_cast<size_t>(readCount));
+    }
+    if (isCancelled())
+        return std::nullopt;
+
     return DeserializeTextureArtifact(bytes);
 }
 

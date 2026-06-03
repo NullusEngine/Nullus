@@ -8,6 +8,7 @@ namespace NLS::Engine
 using namespace Components;
 
 Event<GameObject&> GameObject::DestroyedEvent;
+Event<GameObject&> GameObject::MarkedDestroyEvent;
 Event<GameObject&> GameObject::CreatedEvent;
 Event<GameObject&, GameObject&> GameObject::AttachEvent;
 Event<GameObject&> GameObject::DettachEvent;
@@ -184,7 +185,11 @@ void NLS::Engine::GameObject::OnTriggerExit(GameObject& p_otherObject)
 
 void GameObject::MarkAsDestroy()
 {
+    if (m_destroyed)
+        return;
+
     m_destroyed = true;
+    MarkedDestroyEvent.Invoke(*this);
 
     for (auto child : m_children)
         child->MarkAsDestroy();

@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -81,6 +82,8 @@ private:
 class AssetImporterFacade
 {
 public:
+    class ScopedReimportInProgress;
+
     explicit AssetImporterFacade(std::vector<std::filesystem::path> roots);
     explicit AssetImporterFacade(std::vector<EditorAssetRoot> roots);
 
@@ -104,8 +107,14 @@ public:
 
     size_t GetQueuedReimportCount() const;
     const NLS::Core::Assets::AssetDiagnostics& GetDiagnostics() const;
+    static bool IsReimportInProgress(const std::string& assetPath);
+    static std::unique_ptr<ScopedReimportInProgress> MarkReimportInProgressForTesting(const std::string& assetPath);
 
 private:
+    static std::string NormalizeTrackedAssetPath(const std::string& assetPath);
+    static void RegisterReimportInProgress(const std::string& assetPath);
+    static void UnregisterReimportInProgress(const std::string& assetPath);
+
     std::filesystem::path ResolveAssetPath(const std::string& assetPath) const;
     std::string ToEditorAssetPath(const std::filesystem::path& absolutePath) const;
     const NLS::Core::Assets::SourceAssetRecord* FindRecordByEditorAssetPath(const std::string& assetPath) const;
@@ -121,5 +130,18 @@ private:
     std::map<std::string, NLS::Core::Assets::AssetId> m_idByEditorPath;
     std::vector<std::string> m_dirtyAssets;
     std::vector<std::string> m_queuedReimports;
+};
+
+class AssetImporterFacade::ScopedReimportInProgress
+{
+public:
+    explicit ScopedReimportInProgress(std::string assetPath);
+    ~ScopedReimportInProgress();
+
+    ScopedReimportInProgress(const ScopedReimportInProgress&) = delete;
+    ScopedReimportInProgress& operator=(const ScopedReimportInProgress&) = delete;
+
+private:
+    std::string m_assetPath;
 };
 }

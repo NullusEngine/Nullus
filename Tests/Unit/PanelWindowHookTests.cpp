@@ -375,9 +375,22 @@ public:
 const NLS::UI::Widgets::Text& TextWidgetAt(NLS::UI::PanelWindow& panel, const size_t index)
 {
     const auto& widgets = panel.GetWidgets();
-    EXPECT_LT(index, widgets.size());
+    static const NLS::UI::Widgets::Text missingText("<missing text widget>");
+
+    if (index >= widgets.size())
+    {
+        ADD_FAILURE() << "Missing text widget at index " << index
+                      << "; panel has " << widgets.size() << " widgets.";
+        return missingText;
+    }
+
     auto* text = dynamic_cast<NLS::UI::Widgets::Text*>(widgets[index].first);
-    EXPECT_NE(text, nullptr);
+    if (text == nullptr)
+    {
+        ADD_FAILURE() << "Widget at index " << index << " is not a Text widget.";
+        return missingText;
+    }
+
     return *text;
 }
 
@@ -1245,7 +1258,7 @@ TEST(PanelWindowHookTests, ProfilerPanelReportsTimelineDisabledByDefault)
     const auto& status = TextWidgetAt(panel, 0u);
     const auto& detail = TextWidgetAt(panel, 1u);
 
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     EXPECT_EQ(status.content, "TimelineProfiler: Disabled");
     EXPECT_NE(detail.content.find("Profiler panel is closed"), std::string::npos);
 #else
@@ -1289,7 +1302,7 @@ TEST(PanelWindowHookTests, ConsoleDefersBackgroundThreadLogsUntilUiFlush)
 
 TEST(PanelWindowHookTests, ProfilerPanelDrawDoesNotAdvanceTimelineFrameInsideActiveScope)
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
 

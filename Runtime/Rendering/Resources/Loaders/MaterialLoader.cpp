@@ -506,15 +506,26 @@ Material* MaterialLoader::Create(const std::string& p_path)
 
 Material* MaterialLoader::Create(const std::string& p_path, const LoadOptions& options)
 {
-    const auto xml = ReadMaterialPayloadText(p_path);
+    const auto xml = ReadSerializedPayload(p_path);
     if (xml.empty())
     {
         NLS_LOG_ERROR("Failed to load material: " + p_path);
         return nullptr;
     }
 
+    return CreateFromSerializedPayload(p_path, xml, options);
+}
+
+Material* MaterialLoader::CreateFromSerializedPayload(
+    const std::string& p_path,
+    const std::string& p_xml,
+    const LoadOptions& options)
+{
+    if (p_xml.empty())
+        return nullptr;
+
     auto* material = new Material();
-    ApplySerializedMaterial(*material, xml, options);
+    ApplySerializedMaterial(*material, p_xml, options);
     material->path = p_path;
     if (IsGeneratedImportedMaterialArtifactPath(p_path))
     {
@@ -524,6 +535,11 @@ Material* MaterialLoader::Create(const std::string& p_path, const LoadOptions& o
     return material;
 }
 
+std::string MaterialLoader::ReadSerializedPayload(const std::string& p_path)
+{
+    return ReadMaterialPayloadText(p_path);
+}
+
 void MaterialLoader::Reload(Material& p_material, const std::string& p_path)
 {
     Reload(p_material, p_path, {});
@@ -531,7 +547,7 @@ void MaterialLoader::Reload(Material& p_material, const std::string& p_path)
 
 void MaterialLoader::Reload(Material& p_material, const std::string& p_path, const LoadOptions& options)
 {
-    const auto xml = ReadMaterialPayloadText(p_path);
+    const auto xml = ReadSerializedPayload(p_path);
     if (xml.empty())
     {
         NLS_LOG_ERROR("Failed to reload material: " + p_path);

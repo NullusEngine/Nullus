@@ -1,7 +1,6 @@
 #include "Components/MeshRenderer.h"
 
 #include <algorithm>
-#include <cctype>
 #include <filesystem>
 #include <limits>
 
@@ -27,26 +26,48 @@ namespace
         return (std::min)(materialCount, maxSlotCount);
     }
 
-    bool MaterialArtifactPathExists(const std::string& path)
+    std::string NormalizeMaterialArtifactPath(const std::string& path)
     {
         if (path.empty())
-            return false;
+            return {};
 
-        auto extension = std::filesystem::path(path).extension().string();
-        std::transform(
-            extension.begin(),
-            extension.end(),
-            extension.begin(),
-            [](const unsigned char character)
+        auto resolved = Core::ResourceManagement::MaterialManager::ResolveResourcePath(path);
+        std::replace(resolved.begin(), resolved.end(), '\\', '/');
+        return std::filesystem::path(resolved).lexically_normal().generic_string();
+    }
+
+    bool MaterialArtifactPathMatches(const std::string& lhs, const std::string& rhs)
+    {
+        if (lhs == rhs)
+            return true;
+        if (lhs.empty() || rhs.empty())
+            return false;
+        return NormalizeMaterialArtifactPath(lhs) == NormalizeMaterialArtifactPath(rhs);
+    }
+
+    RenderMaterial* FindCachedMaterialByEquivalentPath(
+        Core::ResourceManagement::MaterialManager& materialManager,
+        const std::string& path)
+    {
+        if (auto* material = materialManager.GetResource(path, false))
+            return material;
+
+        const auto target = NormalizeMaterialArtifactPath(path);
+        if (target.empty())
+            return nullptr;
+
+        for (const auto& [resourcePath, material] : materialManager.GetResources())
+        {
+            if (material == nullptr)
+                continue;
+
+            if (NormalizeMaterialArtifactPath(resourcePath) == target ||
+                NormalizeMaterialArtifactPath(material->path) == target)
             {
-                return static_cast<char>(std::tolower(character));
-            });
-        if (extension != ".nmat")
-            return false;
-
-        std::error_code error;
-        const auto resolvedPath = Core::ResourceManagement::MaterialManager::ResolveResourcePath(path);
-        return !resolvedPath.empty() && std::filesystem::is_regular_file(resolvedPath, error);
+                return material;
+            }
+        }
+        return nullptr;
     }
 }
 
@@ -153,6 +174,13 @@ void MeshRenderer::SetResolvedMaterialFromReference(uint8_t p_index, RenderMater
                 identifier) &&
             !NLS::Engine::Serialize::BindResolvedObjectReference(p_material, materials[p_index]))
         {
+            const auto referencePath = NLS::Engine::Serialize::ResolveAssetReferencePath(identifier);
+            if (MaterialArtifactPathMatches(p_material.path, referencePath))
+            {
+                m_materials[p_index] = &p_material;
+                m_materialPaths[p_index] = referencePath.empty() ? p_material.path : referencePath;
+                m_failedMaterialPaths[p_index].clear();
+            }
             return;
         }
     }
@@ -231,16 +259,14 @@ MeshRenderer::Material* MeshRenderer::ResolveMaterialSlot(const size_t p_index)
     if (path.empty())
         return m_materials[p_index];
 
-    if (m_materials[p_index] != nullptr && m_materials[p_index]->path == path)
+    if (m_materials[p_index] != nullptr && MaterialArtifactPathMatches(m_materials[p_index]->path, path))
         return m_materials[p_index];
 
     if (!Core::ServiceLocator::Contains<Core::ResourceManagement::MaterialManager>())
         return m_materials[p_index];
 
     auto& materialManager = NLS_SERVICE(Core::ResourceManagement::MaterialManager);
-    auto* material = materialManager.GetResource(path, false);
-    if (!material && MaterialArtifactPathExists(path))
-        material = materialManager.LoadArtifactWithoutTextures(path);
+    auto* material = FindCachedMaterialByEquivalentPath(materialManager, path);
 
     if (material)
     {
@@ -335,12 +361,12 @@ void MeshRenderer::SetMaterialPaths(const NLS::Array<std::string>& p_paths)
 
 void MeshRenderer::SetMaterialPathHints(const NLS::Array<std::string>& p_paths)
 {
-    m_materials.fill(nullptr);
-    m_materialPaths.fill({});
-    m_failedMaterialPaths.fill({});
-    for (size_t index = 0; index < p_paths.size() && index < kMaxMaterialCount; ++index)
+    for (size_t index = 0; index < kMaxMaterialCount; ++index)
     {
-        m_materialPaths[index] = p_paths[index];
+        const std::string path = index < p_paths.size() ? p_paths[index] : std::string {};
+        if (m_materials[index] != nullptr && !MaterialArtifactPathMatches(m_materials[index]->path, path))
+            m_materials[index] = nullptr;
+        m_materialPaths[index] = path;
         m_failedMaterialPaths[index].clear();
     }
 }

@@ -991,7 +991,10 @@ TEST(RenderFrameworkContractTests, DX12BindingSetOwnsDescriptorHeapAllocators)
         descriptorHeader.find("std::shared_ptr<DX12ShaderVisibleDescriptorHeapAllocator> m_samplerHeapAllocator"),
         std::string::npos);
     EXPECT_NE(deviceFactory.find("std::make_shared<DX12ShaderVisibleDescriptorHeapAllocator>"), std::string::npos);
-    EXPECT_NE(deviceFactory.find("m_resourceHeapAllocator,\n\t\t\t\tm_samplerHeapAllocator"), std::string::npos);
+    const auto resourceAllocatorArgument = deviceFactory.find("m_resourceHeapAllocator,");
+    ASSERT_NE(resourceAllocatorArgument, std::string::npos);
+    const auto samplerAllocatorArgument = deviceFactory.find("m_samplerHeapAllocator", resourceAllocatorArgument);
+    EXPECT_NE(samplerAllocatorArgument, std::string::npos);
     EXPECT_EQ(
         descriptorHeader.find("DX12ShaderVisibleDescriptorHeapAllocator* m_resourceHeapAllocator"),
         std::string::npos);

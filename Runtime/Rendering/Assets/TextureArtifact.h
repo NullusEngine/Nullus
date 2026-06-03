@@ -3,6 +3,7 @@
 #include "RenderDef.h"
 #include "Rendering/RHI/RHITypes.h"
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -74,6 +75,9 @@ struct TextureArtifactData
 NLS_RENDER_API std::vector<uint8_t> SerializeTextureArtifact(const TextureArtifactData& texture);
 NLS_RENDER_API std::optional<TextureArtifactData> DeserializeTextureArtifact(const std::vector<uint8_t>& bytes);
 NLS_RENDER_API std::optional<TextureArtifactData> LoadTextureArtifact(const std::filesystem::path& path);
+NLS_RENDER_API std::optional<TextureArtifactData> LoadTextureArtifact(
+    const std::filesystem::path& path,
+    const std::atomic_bool* cancellationFlag);
 NLS_RENDER_API bool IsNativeTextureArtifact(const std::vector<uint8_t>& bytes);
 NLS_RENDER_API std::optional<TextureArtifactData> DecodeTextureArtifactFromEncodedImage(
     const uint8_t* encodedData,

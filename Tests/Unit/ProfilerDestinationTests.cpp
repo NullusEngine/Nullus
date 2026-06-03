@@ -369,7 +369,7 @@ TEST_F(ProfilerDestinationTest, TracyProfilerReportsUnavailableWhenThirdPartyIsN
     const auto state = tracy.GetState();
 
     EXPECT_EQ(state.id, ProfilerDestinationId::Tracy);
-#if defined(NLS_ENABLE_TRACY) && !defined(NLS_TRACY_UNAVAILABLE)
+#if NLS_ENABLE_TRACY && !defined(NLS_TRACY_UNAVAILABLE)
     if (TracyProfiler::IsConnected())
     {
         EXPECT_EQ(state.availability, ProfilerAvailability::Available);
@@ -407,7 +407,7 @@ TEST_F(ProfilerDestinationTest, TimelineSinkReportsDisabledWhenBuildOptionIsOff)
     const auto state = timeline.GetState();
 
     EXPECT_EQ(state.id, ProfilerDestinationId::Timeline);
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     EXPECT_EQ(state.availability, ProfilerAvailability::Disabled);
     EXPECT_FALSE(state.enabled);
     EXPECT_EQ(state.capabilities, ProfilerCapability_None);
@@ -425,7 +425,7 @@ TEST_F(ProfilerDestinationTest, TimelineSinkRecordsScopesWhenEnabled)
 {
     using namespace NLS::Base::Profiling;
 
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     TimelineProfilerSink timeline;
     timeline.SetRecordingEnabled(true);
     const auto state = timeline.GetState();
@@ -451,7 +451,7 @@ TEST_F(ProfilerDestinationTest, TimelineSinkEndScopeIgnoresUnmatchedEvent)
 {
     using namespace NLS::Base::Profiling;
 
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     TimelineProfilerSink timeline;
     timeline.SetRecordingEnabled(true);
     const auto state = timeline.GetState();
@@ -472,7 +472,7 @@ TEST_F(ProfilerDestinationTest, TimelineSinkSuppressesScopesBeyondInternalStackL
 {
     using namespace NLS::Base::Profiling;
 
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     TimelineProfilerSink timeline;
     timeline.SetRecordingEnabled(true);
     ASSERT_EQ(timeline.GetState().availability, ProfilerAvailability::Available);
@@ -498,7 +498,7 @@ TEST_F(ProfilerDestinationTest, TimelineSinkKeepsEditorPanelDepthScopes)
 {
     using namespace NLS::Base::Profiling;
 
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     TimelineProfilerSink timeline;
     timeline.SetRecordingEnabled(true);
     ASSERT_EQ(timeline.GetState().availability, ProfilerAvailability::Available);
@@ -526,7 +526,7 @@ TEST_F(ProfilerDestinationTest, TimelineSinkKeepsEditorPanelDepthScopes)
 
 TEST_F(ProfilerDestinationTest, SelectionOutlineMaskAggregateScopesRemainExportableAtSceneViewDepth)
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     using namespace NLS::Base::Profiling;
 
     TimelineProfilerSink timeline;
@@ -571,7 +571,7 @@ TEST_F(ProfilerDestinationTest, SelectionOutlineMaskAggregateScopesRemainExporta
 
 TEST_F(ProfilerDestinationTest, TimelineTraceExporterWritesEachFrameOnce)
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     using NLS::UI::TimelineProfilerDetail::ResolveTraceFrameExportRange;
 
     std::uint32_t lastExportedFrame = 0u;
@@ -622,7 +622,7 @@ TEST_F(ProfilerDestinationTest, TimelineTraceExporterWritesEachFrameOnce)
 
 TEST_F(ProfilerDestinationTest, TimelineTraceExporterSkipsIncompleteAndNonPositiveDurationEvents)
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     using NLS::UI::TimelineProfilerDetail::BuildTraceMetadataEventJson;
     using NLS::UI::TimelineProfilerDetail::BuildTraceDurationEventJson;
     using NLS::UI::TimelineProfilerDetail::ShouldExportTraceDurationEvent;
@@ -783,7 +783,7 @@ TEST_F(ProfilerDestinationTest, TimelineProfilerEventsOwnNamesInsteadOfAllocator
 
 TEST_F(ProfilerDestinationTest, TimelineTraceRecordingContinuesDrawingTimelineWhileExporting)
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     const auto profilerWindowPath =
         std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/ImGuiExtensions/TimelineProfiler/ProfilerWindow.cpp";
 

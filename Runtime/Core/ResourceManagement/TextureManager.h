@@ -6,6 +6,7 @@
 #include <Rendering/Resources/TextureCube.h>
 
 #include "Core/ResourceManagement/AResourceManager.h"
+#include <unordered_set>
 #include <vector>
 
 namespace NLS::Core::ResourceManagement
@@ -40,10 +41,14 @@ namespace NLS::Core::ResourceManagement
 		*/
 		virtual void ReloadResource(Texture2D* p_resource, const std::string& p_path) override;
 
-		Texture2D* RequestAsyncArtifact(const std::string& p_path);
+		Texture2D* RequestAsyncArtifact(const std::string& p_path, bool p_cancelableInterest = false);
+		void CancelAsyncArtifact(const std::string& p_path);
 		bool IsAsyncArtifactLoadPending(const std::string& p_path) const;
 		bool IsAsyncArtifactLoadFailed(const std::string& p_path) const;
 		void PumpAsyncLoads(size_t p_maxCompletions = 1u);
+		void PumpAsyncLoadsForPaths(const std::unordered_set<std::string>& p_paths, size_t p_maxCompletions = 1u);
+
+        static std::string ResolveResourcePath(const std::string& p_path);
 
 		static TextureCube* CreateCubeMap(const std::vector<std::string>& filePaths);
 	};

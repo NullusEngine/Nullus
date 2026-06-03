@@ -1,4 +1,5 @@
 #include "Assets/EditorAssetDatabase.h"
+#include "Assets/AssetImporterFacade.h"
 
 #include "Rendering/Assets/ShaderArtifact.h"
 #include "Rendering/SceneRendererMaterialBinding.h"
@@ -523,6 +524,12 @@ AssetPreimportPlan AssetPreimportScheduler::BuildPlan(
         if (!IsPreimportableAsset(assetPath))
             continue;
 
+        if (request.reason == AssetPreimportReason::FileWatcherChanged &&
+            AssetImporterFacade::IsReimportInProgress(assetPath))
+        {
+            continue;
+        }
+
         auto manifest = database.GetArtifactManifestForAssetPath(assetPath);
         if (!AssetMatchesChangedPaths(database, assetPath, request.changedPaths) &&
             (!manifest.has_value() || !ManifestMatchesChangedPaths(database, assetPath, *manifest, request.changedPaths)))
@@ -581,6 +588,11 @@ bool AssetPreimportScheduler::RunAlreadyPlanned(
     pendingAssetPaths.reserve(plan.assetPaths.size());
     for (const auto& assetPath : plan.assetPaths)
     {
+        if (request.reason == AssetPreimportReason::FileWatcherChanged &&
+            AssetImporterFacade::IsReimportInProgress(assetPath))
+        {
+            continue;
+        }
         if (forcePreimport && IsWarmPreimportableAsset(database, assetPath))
             continue;
         pendingAssetPaths.push_back(assetPath);

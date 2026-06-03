@@ -6,6 +6,9 @@ namespace NLS::Core::Assets
 {
 namespace
 {
+constexpr uint64_t kArtifactContentHashOffset = 1469598103934665603ull;
+constexpr uint64_t kArtifactContentHashPrime = 1099511628211ull;
+
 struct CommitPlan
 {
     std::filesystem::path sourcePath;
@@ -85,14 +88,18 @@ void AddError(
     });
 }
 
-std::string PayloadHash(const std::vector<uint8_t>& payload)
+uint64_t AppendArtifactContentHashByte(uint64_t hash, const uint8_t byte)
 {
-    uint64_t hash = 1469598103934665603ull;
-    for (const auto byte : payload)
-    {
-        hash ^= byte;
-        hash *= 1099511628211ull;
-    }
+    hash ^= byte;
+    hash *= kArtifactContentHashPrime;
+    return hash;
+}
+
+std::string ComputeArtifactContentHash(const std::vector<uint8_t>& content)
+{
+    uint64_t hash = kArtifactContentHashOffset;
+    for (const auto byte : content)
+        hash = AppendArtifactContentHashByte(hash, byte);
     return "fnv1a64:" + std::to_string(hash);
 }
 
@@ -373,7 +380,7 @@ ArtifactWriteResult ArtifactWriter::WriteAndCommit(
         imported.loaderId = artifact.loaderId;
         imported.targetPlatform = request.targetPlatform;
         imported.artifactPath = (committedRoot / artifact.relativePath).string();
-        imported.contentHash = PayloadHash(storedPayload);
+        imported.contentHash = ComputeArtifactContentHash(storedPayload);
         nextManifest.subAssets.push_back(std::move(imported));
     }
 

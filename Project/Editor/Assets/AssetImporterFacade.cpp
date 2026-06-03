@@ -6,6 +6,8 @@
 #include "Guid.h"
 
 #include <algorithm>
+#include <mutex>
+#include <unordered_map>
 #include <sstream>
 #include <system_error>
 
@@ -15,6 +17,8 @@ namespace
 {
 constexpr const char* kDirtySetting = "NULLUS_IMPORTER_DIRTY";
 constexpr const char* kRemapPrefix = "EXTERNAL_REMAP.";
+std::mutex g_reimportInProgressMutex;
+std::unordered_map<std::string, size_t> g_reimportInProgressCounts;
 
 bool IsReservedSetting(const std::string& key)
 {
@@ -169,6 +173,17 @@ AssetPostprocessResult AssetPostprocessorRegistry::Run(const std::string& assetP
     return result;
 }
 
+AssetImporterFacade::ScopedReimportInProgress::ScopedReimportInProgress(std::string assetPath)
+    : m_assetPath(AssetImporterFacade::NormalizeTrackedAssetPath(assetPath))
+{
+    AssetImporterFacade::RegisterReimportInProgress(m_assetPath);
+}
+
+AssetImporterFacade::ScopedReimportInProgress::~ScopedReimportInProgress()
+{
+    AssetImporterFacade::UnregisterReimportInProgress(m_assetPath);
+}
+
 AssetImporterFacade::AssetImporterFacade(std::vector<std::filesystem::path> roots)
     : m_roots(MakeEditorAssetRoots(roots))
 {
@@ -311,6 +326,7 @@ bool AssetImporterFacade::SaveAndReimport(
     ImportProgressTracker* progressTracker)
 {
     const auto normalized = NormalizeEditorAssetPath(assetPath);
+    const ScopedReimportInProgress reimportGuard(normalized);
     const auto resolvedAssetPath = ResolveAssetPath(normalized);
     if (resolvedAssetPath.empty() || !std::filesystem::is_regular_file(resolvedAssetPath))
         return false;
@@ -560,6 +576,50 @@ size_t AssetImporterFacade::GetQueuedReimportCount() const
 const NLS::Core::Assets::AssetDiagnostics& AssetImporterFacade::GetDiagnostics() const
 {
     return m_diagnostics;
+}
+
+bool AssetImporterFacade::IsReimportInProgress(const std::string& assetPath)
+{
+    const auto normalized = NormalizeTrackedAssetPath(assetPath);
+    std::lock_guard lock(g_reimportInProgressMutex);
+    const auto found = g_reimportInProgressCounts.find(normalized);
+    return found != g_reimportInProgressCounts.end() && found->second > 0u;
+}
+
+std::unique_ptr<AssetImporterFacade::ScopedReimportInProgress> AssetImporterFacade::MarkReimportInProgressForTesting(
+    const std::string& assetPath)
+{
+    return std::make_unique<ScopedReimportInProgress>(assetPath);
+}
+
+std::string AssetImporterFacade::NormalizeTrackedAssetPath(const std::string& assetPath)
+{
+    return NormalizeEditorAssetPath(assetPath);
+}
+
+void AssetImporterFacade::RegisterReimportInProgress(const std::string& assetPath)
+{
+    if (assetPath.empty())
+        return;
+
+    std::lock_guard lock(g_reimportInProgressMutex);
+    ++g_reimportInProgressCounts[assetPath];
+}
+
+void AssetImporterFacade::UnregisterReimportInProgress(const std::string& assetPath)
+{
+    if (assetPath.empty())
+        return;
+
+    std::lock_guard lock(g_reimportInProgressMutex);
+    const auto found = g_reimportInProgressCounts.find(assetPath);
+    if (found == g_reimportInProgressCounts.end())
+        return;
+
+    if (found->second <= 1u)
+        g_reimportInProgressCounts.erase(found);
+    else
+        --found->second;
 }
 
 std::filesystem::path AssetImporterFacade::ResolveAssetPath(const std::string& assetPath) const

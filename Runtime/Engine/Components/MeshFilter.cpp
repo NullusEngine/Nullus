@@ -196,18 +196,18 @@ void MeshFilter::SetResolvedTransientMeshFromReference(std::shared_ptr<Render::R
     if (rawMesh)
     {
         NLS::Engine::Serialize::ObjectIdentifier identifier;
-        if (NLS::Engine::Serialize::PersistentManager::Instance().InstanceIDToObjectIdentifier(
+        const bool hasPersistentIdentity =
+            NLS::Engine::Serialize::PersistentManager::Instance().InstanceIDToObjectIdentifier(
                 mesh.GetInstanceID(),
-                identifier) &&
-            !NLS::Engine::Serialize::BindResolvedObjectReference(*rawMesh, mesh))
-        {
-            return;
-        }
+                identifier);
+        const bool boundPersistentReference = !hasPersistentIdentity ||
+            NLS::Engine::Serialize::BindResolvedObjectReference(*rawMesh, mesh);
 
         m_transientMesh = std::move(p_mesh);
-        if (mesh.Get() != rawMesh)
+        if (boundPersistentReference && mesh.Get() != rawMesh)
             mesh = rawMesh;
-        if (NLS::Engine::Serialize::PersistentManager::Instance().InstanceIDToObjectIdentifier(
+        if (boundPersistentReference &&
+            NLS::Engine::Serialize::PersistentManager::Instance().InstanceIDToObjectIdentifier(
                 mesh.GetInstanceID(),
                 identifier))
         {
@@ -225,8 +225,16 @@ void MeshFilter::SetResolvedTransientMeshFromReference(std::shared_ptr<Render::R
     NotifyMeshChanged();
 }
 
+bool MeshFilter::HasResolvedTransientMesh() const
+{
+    return m_transientMesh != nullptr;
+}
+
 Render::Resources::Mesh* MeshFilter::ResolveMesh()
 {
+    if (m_transientMesh)
+        return m_transientMesh.get();
+
     if (auto* directMesh = mesh.Get())
         return directMesh;
 

@@ -2,10 +2,14 @@
 
 #include <algorithm>
 #include <atomic>
+#include <any>
+#include <filesystem>
 #include <limits>
 
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
+#include "Core/ResourceManagement/TextureManager.h"
+#include "Core/ServiceLocator.h"
 #include "Components/TransformComponent.h"
 #include "GameObject.h"
 #include "Jobs/JobSystem.h"
@@ -16,6 +20,7 @@
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Resources/Shader.h"
+#include "Rendering/Resources/Texture2D.h"
 #include "SceneSystem/Scene.h"
 
 namespace NLS::Engine::Rendering
@@ -196,6 +201,102 @@ namespace
 		return ShaderSupportsIndexedObjectData(*drawable.material->GetShader());
 	}
 
+	std::string NormalizeResourcePathKey(const std::string& path)
+	{
+		if (path.empty())
+			return {};
+
+		auto normalized = NLS::Core::ResourceManagement::TextureManager::ResolveResourcePath(path);
+		std::replace(normalized.begin(), normalized.end(), '\\', '/');
+		return std::filesystem::path(normalized).lexically_normal().generic_string();
+	}
+
+	bool TexturePathMatchesDeclaredPath(
+		const NLS::Render::Resources::Texture2D& texture,
+		const std::string& declaredPath)
+	{
+		if (declaredPath.empty())
+			return true;
+		if (texture.path == declaredPath)
+			return true;
+		return NormalizeResourcePathKey(texture.path) == NormalizeResourcePathKey(declaredPath);
+	}
+
+	NLS::Render::Resources::Texture2D* FindCachedDeclaredTexture(
+		NLS::Core::ResourceManagement::TextureManager& textureManager,
+		const std::string& texturePath)
+	{
+		if (auto* texture = textureManager.GetResource(texturePath, false))
+			return texture;
+
+		const auto declaredKey = NormalizeResourcePathKey(texturePath);
+		if (declaredKey.empty())
+			return nullptr;
+
+		const auto resources = textureManager.GetResources();
+		for (const auto& [resourcePath, texture] : resources)
+		{
+			if (texture == nullptr)
+				continue;
+			if (NormalizeResourcePathKey(resourcePath) == declaredKey ||
+				TexturePathMatchesDeclaredPath(*texture, texturePath))
+			{
+				return texture;
+			}
+		}
+
+		return nullptr;
+	}
+
+	bool HasResolvedDeclaredMaterialTextures(const NLS::Render::Resources::Material& material)
+	{
+		for (const auto& [uniformName, texturePath] : material.GetTextureResourcePaths())
+		{
+			if (texturePath.empty())
+				continue;
+
+			const auto* parameter = material.GetParameterBlock().TryGet(uniformName);
+			if (parameter == nullptr || parameter->type() != typeid(NLS::Render::Resources::Texture2D*))
+				return false;
+
+			const auto* texture = std::any_cast<NLS::Render::Resources::Texture2D*>(*parameter);
+			if (texture == nullptr || !TexturePathMatchesDeclaredPath(*texture, texturePath))
+				return false;
+		}
+		return true;
+	}
+
+	bool TryBindDeclaredMaterialTexturesFromCache(NLS::Render::Resources::Material& material)
+	{
+		if (!NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>())
+			return false;
+
+		bool boundAny = false;
+		auto& textureManager = NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager);
+		for (const auto& [uniformName, texturePath] : material.GetTextureResourcePaths())
+		{
+			if (texturePath.empty())
+				continue;
+
+			const auto* parameter = material.GetParameterBlock().TryGet(uniformName);
+			if (parameter != nullptr &&
+				parameter->type() == typeid(NLS::Render::Resources::Texture2D*))
+			{
+				const auto* texture = std::any_cast<NLS::Render::Resources::Texture2D*>(*parameter);
+				if (texture != nullptr && TexturePathMatchesDeclaredPath(*texture, texturePath))
+					continue;
+			}
+
+			auto* texture = FindCachedDeclaredTexture(textureManager, texturePath);
+			if (texture == nullptr)
+				continue;
+
+			material.Set<NLS::Render::Resources::Texture2D*>(uniformName, texture);
+			boundAny = true;
+		}
+		return boundAny;
+	}
+
 	constexpr size_t kBitsPerWord = sizeof(uint64_t) * 8u;
 	constexpr size_t kParallelVisibilityPrimitiveThreshold = 1024u;
 	constexpr size_t kParallelVisibilityPrimitivesPerTask = 128u;
@@ -274,6 +375,9 @@ RenderSceneSyncStats RenderScene::Synchronize(
 	for (auto* meshRenderer : fastAccess.modelRenderers)
 	{
 		if (meshRenderer == nullptr)
+			continue;
+		auto* owner = meshRenderer->gameobject();
+		if (owner == nullptr || !owner->IsAlive())
 			continue;
 
 		liveMeshRenderers.insert(meshRenderer);
@@ -474,11 +578,26 @@ NLS::Render::Resources::Material* RenderScene::ResolveMaterialForMesh(
 
 	if (primitive.meshRenderer != nullptr && mesh.GetMaterialIndex() < Components::MeshRenderer::kMaxMaterialCount)
 	{
+		const auto materialPaths = primitive.meshRenderer->GetMaterialPaths();
+		const bool hasExplicitMaterialPath = mesh.GetMaterialIndex() < materialPaths.size() &&
+			!materialPaths[mesh.GetMaterialIndex()].empty();
+
 		if (auto* material = primitive.meshRenderer->ResolveMaterialAtIndex(static_cast<uint8_t>(mesh.GetMaterialIndex()));
 			material != nullptr && material->IsValid())
 		{
+			if (hasExplicitMaterialPath)
+				TryBindDeclaredMaterialTexturesFromCache(*material);
+			if (options.requireExplicitMaterialTextures &&
+				hasExplicitMaterialPath &&
+				!HasResolvedDeclaredMaterialTextures(*material))
+			{
+				return nullptr;
+			}
 			return material;
 		}
+
+		if (hasExplicitMaterialPath)
+			return nullptr;
 	}
 
 	return options.defaultMaterial != nullptr && options.defaultMaterial->IsValid()
@@ -523,7 +642,7 @@ bool RenderScene::IsPrimitiveVisible(
 	const RenderPrimitive& primitive,
 	const RenderSceneVisibilityOptions& options) const
 {
-	if (primitive.owner == nullptr || !primitive.owner->IsActive())
+	if (primitive.owner == nullptr || !primitive.owner->IsAlive() || !primitive.owner->IsActive())
 		return false;
 	if (primitive.mesh == nullptr)
 		return false;

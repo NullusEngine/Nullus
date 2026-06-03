@@ -11,6 +11,7 @@
 #include "Assets/AssetId.h"
 #include "Assets/AssetDatabaseFacade.h"
 #include "Assets/AssetBrowserPresentation.h"
+#include "Assets/AssetImporterFacade.h"
 #include "Assets/AssetMeta.h"
 #include "Assets/EditorAssetDragDropBridge.h"
 #include "Assets/EditorAssetDragPayload.h"
@@ -505,6 +506,43 @@ TEST(EditorAssetDatabaseTests, FileWatcherPreimportSkipsStalePlanWhenAssetBecame
     ASSERT_TRUE(importingDatabase.IsArtifactManifestCurrentForAssetPath("Assets/Models/ConcurrentHero.gltf"));
 
     ASSERT_TRUE(scheduler.RunAlreadyPlanned(planningDatabase, tracker, watcherRequest, stalePlan));
+    EXPECT_EQ(planningDatabase.GetCompletedImportCount(), 0u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, FileWatcherPreimportSkipsStalePlanWhenAssetIsManuallyReimporting)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(
+        root / "Assets" / "Models" / "GuardedConcurrentHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "GuardedConcurrentHeroRoot" }]
+        })");
+
+    AssetDatabaseFacade planningDatabase({root});
+    ASSERT_TRUE(planningDatabase.Refresh());
+
+    AssetPreimportScheduler scheduler;
+    const AssetPreimportRequest watcherRequest {
+        AssetPreimportReason::FileWatcherChanged,
+        {std::filesystem::path("Assets") / "Models" / "GuardedConcurrentHero.gltf"}
+    };
+    const auto stalePlan = scheduler.BuildPlan(planningDatabase, watcherRequest);
+    ASSERT_EQ(stalePlan.assetPaths, std::vector<std::string>({"Assets/Models/GuardedConcurrentHero.gltf"}));
+
+    ImportProgressTracker tracker;
+    {
+        const auto guard = AssetImporterFacade::MarkReimportInProgressForTesting(
+            "Assets/Models/GuardedConcurrentHero.gltf");
+        ASSERT_TRUE(scheduler.RunAlreadyPlanned(planningDatabase, tracker, watcherRequest, stalePlan));
+    }
+
     EXPECT_EQ(planningDatabase.GetCompletedImportCount(), 0u);
 
     std::filesystem::remove_all(root);

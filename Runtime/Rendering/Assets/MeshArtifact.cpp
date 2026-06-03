@@ -3,8 +3,8 @@
 #include "Assets/NativeArtifactContainer.h"
 
 #include <cstring>
+#include <array>
 #include <fstream>
-#include <iterator>
 #include <limits>
 
 namespace NLS::Render::Assets
@@ -226,14 +226,46 @@ std::optional<MeshArtifactData> DeserializeMeshArtifact(const std::vector<uint8_
 
 std::optional<MeshArtifactData> LoadMeshArtifact(const std::filesystem::path& path)
 {
+    return LoadMeshArtifact(path, nullptr);
+}
+
+std::optional<MeshArtifactData> LoadMeshArtifact(
+    const std::filesystem::path& path,
+    const std::atomic_bool* cancellationFlag)
+{
     std::ifstream input(path, std::ios::binary);
     if (!input)
         return std::nullopt;
 
-    std::vector<uint8_t> bytes{
-        std::istreambuf_iterator<char>(input),
-        std::istreambuf_iterator<char>()
+    auto isCancelled = [cancellationFlag]
+    {
+        return cancellationFlag != nullptr && cancellationFlag->load(std::memory_order_acquire);
     };
-    return DeserializeMeshArtifact(bytes);
+    if (isCancelled())
+        return std::nullopt;
+
+    std::vector<uint8_t> bytes;
+    std::array<char, 64u * 1024u> buffer{};
+    while (input)
+    {
+        if (isCancelled())
+            return std::nullopt;
+
+        input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const auto readCount = input.gcount();
+        if (readCount <= 0)
+            break;
+
+        const auto* begin = reinterpret_cast<const uint8_t*>(buffer.data());
+        bytes.insert(bytes.end(), begin, begin + static_cast<size_t>(readCount));
+    }
+
+    if (isCancelled())
+        return std::nullopt;
+
+    auto artifact = DeserializeMeshArtifact(bytes);
+    if (isCancelled())
+        return std::nullopt;
+    return artifact;
 }
 }

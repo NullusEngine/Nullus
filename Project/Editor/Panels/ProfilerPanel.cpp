@@ -14,7 +14,6 @@ ProfilerPanel::ProfilerPanel(
 {
     m_timelineSink.SetRecordingEnabled(IsRecordingEnabled());
     RefreshStatus();
-    m_timelineSink.PrepareTimelineUI();
 }
 
 void ProfilerPanel::RefreshStatus()

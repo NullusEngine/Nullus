@@ -1,7 +1,7 @@
 #include "UI/Profiling/TimelineProfilerSink.h"
 #include "UI/Profiling/TimelineProfilerLimits.h"
 
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
 #include <Profiler.h>
 
 #include <mutex>
@@ -129,14 +129,14 @@ namespace NLS::Base::Profiling
 {
 TimelineProfilerSink::TimelineProfilerSink()
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     EnsureTimelineProfilerInitialized();
 #endif
 }
 
 TimelineProfilerSink::~TimelineProfilerSink()
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     ShutdownTimelineGpuProfilerForSink(m_gpuInitialized);
     ReleaseTimelineGpuProfilerOwnershipForSinkLocked(m_gpuInitialized);
 #endif
@@ -144,7 +144,7 @@ TimelineProfilerSink::~TimelineProfilerSink()
 
 void TimelineProfilerSink::BeginScope(const ProfilerScopeEvent& event)
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     if (!m_recordingEnabled)
         return;
 
@@ -167,7 +167,7 @@ void TimelineProfilerSink::BeginScope(const ProfilerScopeEvent& event)
 
 void TimelineProfilerSink::EndScope(const ProfilerScopeEvent& event)
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     if (!m_recordingEnabled)
         return;
 
@@ -190,7 +190,7 @@ void TimelineProfilerSink::EndScope(const ProfilerScopeEvent& event)
 
 void TimelineProfilerSink::BeginGpuScope(const ProfilerGpuScopeEvent& event)
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER) && defined(_WIN32)
+#if NLS_ENABLE_TIMELINE_PROFILER && defined(_WIN32)
     if (!m_recordingEnabled || !m_gpuInitialized || event.nativeCommandBuffer == nullptr)
         return;
 
@@ -204,7 +204,7 @@ void TimelineProfilerSink::BeginGpuScope(const ProfilerGpuScopeEvent& event)
 
 void TimelineProfilerSink::EndGpuScope(const ProfilerGpuScopeEvent& event)
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER) && defined(_WIN32)
+#if NLS_ENABLE_TIMELINE_PROFILER && defined(_WIN32)
     if (!m_recordingEnabled || !m_gpuInitialized || event.nativeCommandBuffer == nullptr)
         return;
 
@@ -218,7 +218,7 @@ void TimelineProfilerSink::EndGpuScope(const ProfilerGpuScopeEvent& event)
 
 void TimelineProfilerSink::InitializeGpuContext(const ProfilerGpuContextEvent& event)
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER) && defined(_WIN32)
+#if NLS_ENABLE_TIMELINE_PROFILER && defined(_WIN32)
     if (event.nativeDevice == nullptr || event.nativeCommandQueues.empty())
         return;
 
@@ -257,7 +257,7 @@ void TimelineProfilerSink::InitializeGpuContext(const ProfilerGpuContextEvent& e
 
 void TimelineProfilerSink::SubmitGpuCommandLists(const ProfilerGpuCommandListSubmitEvent& event)
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER) && defined(_WIN32)
+#if NLS_ENABLE_TIMELINE_PROFILER && defined(_WIN32)
     if (!m_recordingEnabled || !m_gpuInitialized || event.nativeCommandQueue == nullptr || event.nativeCommandLists.empty())
         return;
 
@@ -282,7 +282,7 @@ void TimelineProfilerSink::SubmitGpuCommandLists(const ProfilerGpuCommandListSub
 
 bool TimelineProfilerSink::PrepareTimelineUI()
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     EnsureTimelineProfilerInitialized();
     return PrepareProfilerHUD();
 #else
@@ -292,7 +292,7 @@ bool TimelineProfilerSink::PrepareTimelineUI()
 
 void TimelineProfilerSink::TickFrame()
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     if (!m_recordingEnabled)
         return;
 
@@ -316,7 +316,7 @@ void TimelineProfilerSink::TickFrame()
 
 size_t TimelineProfilerSink::GetTickFrameCountForTesting() const
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     return m_tickFrameCount;
 #else
     return 0u;
@@ -325,7 +325,7 @@ size_t TimelineProfilerSink::GetTickFrameCountForTesting() const
 
 size_t TimelineProfilerSink::GetSkippedScopeCountForTesting() const
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     return m_skippedScopeCount;
 #else
     return 0u;
@@ -334,7 +334,7 @@ size_t TimelineProfilerSink::GetSkippedScopeCountForTesting() const
 
 void TimelineProfilerSink::DrawTimeline()
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     if (PrepareTimelineUI())
         DrawProfilerHUD();
 #endif
@@ -342,7 +342,7 @@ void TimelineProfilerSink::DrawTimeline()
 
 void TimelineProfilerSink::SetRecordingEnabled(const bool enabled)
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     const bool wasRecordingEnabled = m_recordingEnabled;
     m_recordingEnabled = enabled;
     if (enabled && !wasRecordingEnabled)
@@ -359,7 +359,7 @@ void TimelineProfilerSink::SetRecordingEnabled(const bool enabled)
 
 size_t TimelineProfilerSink::GetRecordedTrackCountForTesting() const
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     return gProfiler.GetTracks().size();
 #else
     return 0u;
@@ -368,7 +368,7 @@ size_t TimelineProfilerSink::GetRecordedTrackCountForTesting() const
 
 ProfilerDestinationState TimelineProfilerSink::GetState() const
 {
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     if (!m_recordingEnabled)
     {
         return {

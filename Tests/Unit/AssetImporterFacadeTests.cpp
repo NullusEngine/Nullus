@@ -7,9 +7,11 @@
 #include "Rendering/Assets/SceneImportPipeline.h"
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace
@@ -155,6 +157,52 @@ TEST(AssetImporterFacadeTests, SaveAndReimportCommitsCleanMetaBeforeImportSoWatc
         {std::filesystem::path("Assets") / "Models" / "NoEchoHero.gltf.meta"}
     }));
     EXPECT_EQ(database.GetCompletedImportCount(), 0u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImporterFacadeTests, FileWatcherPreimportSkipsAssetsMarkedAsManualReimportInProgress)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetImporterFacadeRoot();
+    const auto assetPath = root / "Assets" / "Models" / "GuardedHero.gltf";
+    WriteTextFile(
+        assetPath,
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "GuardedHeroRoot" }]
+        })");
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+
+    AssetPreimportScheduler scheduler;
+    ImportProgressTracker tracker;
+    ASSERT_TRUE(scheduler.Run(database, tracker, AssetPreimportReason::EditorStartup));
+    ASSERT_EQ(database.GetCompletedImportCount(), 1u);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    WriteTextFile(
+        assetPath,
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "GuardedHeroRoot" }, { "name": "ChangedWhileManualReimportRuns" }]
+        })");
+
+    {
+        const auto guard = AssetImporterFacade::MarkReimportInProgressForTesting("Assets/Models/GuardedHero.gltf");
+        ASSERT_TRUE(scheduler.Run(database, tracker, {
+            AssetPreimportReason::FileWatcherChanged,
+            {std::filesystem::path("Assets") / "Models" / "GuardedHero.gltf"}
+        }));
+    }
+
+    EXPECT_EQ(database.GetCompletedImportCount(), 1u);
 
     std::filesystem::remove_all(root);
 }

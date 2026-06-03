@@ -32,38 +32,69 @@ namespace NLS::Core::ResourceManagement
 			if (!newResource)
 				return nullptr;
 
-			const auto alreadyRegistered = std::find_if(
-				m_resources.begin(),
-				m_resources.end(),
-				[newResource](const auto& resource)
+			T* registeredResource = nullptr;
+			bool destroyNewResource = false;
+			{
+				std::lock_guard lock(m_resourcesMutex);
+				if (auto resource = m_resources.find(p_path); resource != m_resources.end())
 				{
-					return resource.second == newResource;
-				});
-			if (alreadyRegistered != m_resources.end())
-				return alreadyRegistered->second;
+					registeredResource = resource->second;
+					destroyNewResource = registeredResource != newResource;
+				}
+				else
+				{
+					const auto alreadyRegistered = std::find_if(
+						m_resources.begin(),
+						m_resources.end(),
+						[newResource](const auto& resource)
+						{
+							return resource.second == newResource;
+						});
+					if (alreadyRegistered != m_resources.end())
+					{
+						registeredResource = alreadyRegistered->second;
+					}
+					else
+					{
+						m_resources[p_path] = newResource;
+						registeredResource = newResource;
+					}
+				}
+			}
 
-			return RegisterResource(p_path, newResource);
+			if (destroyNewResource)
+				DestroyResource(newResource);
+
+			return registeredResource;
 		}
 	}
 
 	template<typename T>
 	inline void AResourceManager<T>::UnloadResource(const std::string & p_path)
 	{
-		if (auto resource = GetResource(p_path, false); resource)
+		T* resource = nullptr;
 		{
-			DestroyResource(resource);
-			UnregisterResource(p_path);
+			std::lock_guard lock(m_resourcesMutex);
+			if (auto found = m_resources.find(p_path); found != m_resources.end())
+			{
+				resource = found->second;
+				m_resources.erase(found);
+			}
 		}
+
+		if (resource)
+			DestroyResource(resource);
 	}
 
 	template<typename T>
 	inline bool AResourceManager<T>::MoveResource(const std::string & p_previousPath, const std::string & p_newPath)
 	{
-		if (IsResourceRegistered(p_previousPath) && !IsResourceRegistered(p_newPath))
+		std::lock_guard lock(m_resourcesMutex);
+		const auto previous = m_resources.find(p_previousPath);
+		if (previous != m_resources.end() && m_resources.find(p_newPath) == m_resources.end())
 		{
-			T* toMove = m_resources.at(p_previousPath);
-			UnregisterResource(p_previousPath);
-			RegisterResource(p_newPath, toMove);
+			m_resources[p_newPath] = previous->second;
+			m_resources.erase(previous);
 			return true;
 		}
 
@@ -82,25 +113,38 @@ namespace NLS::Core::ResourceManagement
 	template<typename T>
 	inline bool AResourceManager<T>::IsResourceRegistered(const std::string & p_path)
 	{
+		std::lock_guard lock(m_resourcesMutex);
 		return m_resources.find(p_path) != m_resources.end();
 	}
 
 	template<typename T>
 	inline void AResourceManager<T>::UnloadResources()
 	{
-		for (auto&[key, value] : m_resources)
-			DestroyResource(value);
+		std::unordered_map<std::string, T*> resources;
+		{
+			std::lock_guard lock(m_resourcesMutex);
+			resources = std::move(m_resources);
+			m_resources.clear();
+		}
 
-		m_resources.clear();
+		for (auto& [key, value] : resources)
+			DestroyResource(value);
 	}
 
 	template<typename T>
 	inline T* AResourceManager<T>::RegisterResource(const std::string& p_path, T* p_instance)
 	{
-		if (auto resource = GetResource(p_path, false); resource)
-			DestroyResource(resource);
+		T* previousResource = nullptr;
+		{
+			std::lock_guard lock(m_resourcesMutex);
+			if (auto resource = m_resources.find(p_path); resource != m_resources.end())
+				previousResource = resource->second;
 
-		m_resources[p_path] = p_instance;
+			m_resources[p_path] = p_instance;
+		}
+
+		if (previousResource)
+			DestroyResource(previousResource);
 
 		return p_instance;
 	}
@@ -108,17 +152,21 @@ namespace NLS::Core::ResourceManagement
 	template<typename T>
 	inline void AResourceManager<T>::UnregisterResource(const std::string & p_path)
 	{
+		std::lock_guard lock(m_resourcesMutex);
 		m_resources.erase(p_path);
 	}
 
 	template<typename T>
 	inline T* AResourceManager<T>::GetResource(const std::string& p_path, bool p_tryToLoadIfNotFound)
 	{
-		if (auto resource = m_resources.find(p_path); resource != m_resources.end())
 		{
-			return resource->second;
+			std::lock_guard lock(m_resourcesMutex);
+			if (auto resource = m_resources.find(p_path); resource != m_resources.end())
+			{
+				return resource->second;
+			}
 		}
-		else if (p_tryToLoadIfNotFound)
+		if (p_tryToLoadIfNotFound)
 		{
 			return LoadResource(p_path);
 		}
@@ -140,8 +188,9 @@ namespace NLS::Core::ResourceManagement
 	}
 
 	template<typename T>
-	inline std::unordered_map<std::string, T*>& AResourceManager<T>::GetResources()
+	inline std::unordered_map<std::string, T*> AResourceManager<T>::GetResources() const
 	{
+		std::lock_guard lock(m_resourcesMutex);
 		return m_resources;
 	}
 

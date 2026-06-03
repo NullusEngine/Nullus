@@ -273,6 +273,7 @@ public:
 
     /* Some events that are triggered when an action occur on any actor */
     static Event<GameObject&> DestroyedEvent;
+    static Event<GameObject&> MarkedDestroyEvent;
     static Event<GameObject&> CreatedEvent;
     static Event<GameObject&, GameObject&> AttachEvent;
     static Event<GameObject&> DettachEvent;

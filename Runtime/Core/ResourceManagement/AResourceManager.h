@@ -2,6 +2,7 @@
 
 #include <any>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
@@ -121,7 +122,7 @@ namespace NLS::Core::ResourceManagement
 		/**
 		* Returns the resource map
 		*/
-		std::unordered_map<std::string, T*>& GetResources();
+		std::unordered_map<std::string, T*> GetResources() const;
 
 	protected:
 		virtual const char* GetResourceTypeName() const { return "Resource"; }
@@ -136,6 +137,7 @@ namespace NLS::Core::ResourceManagement
 		inline static std::string __PROJECT_ASSETS_PATH = "";
 		inline static std::string __ENGINE_ASSETS_PATH = "";
 
+		mutable std::recursive_mutex m_resourcesMutex;
 		std::unordered_map<std::string, T*> m_resources;
 	};
 }

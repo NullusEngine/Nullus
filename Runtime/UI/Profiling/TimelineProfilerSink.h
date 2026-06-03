@@ -3,6 +3,10 @@
 #include "Profiling/Profiler.h"
 #include "UIDef.h"
 
+#ifndef NLS_ENABLE_TIMELINE_PROFILER
+#define NLS_ENABLE_TIMELINE_PROFILER 0
+#endif
+
 namespace NLS::Base::Profiling
 {
 class NLS_UI_API TimelineProfilerSink final : public IProfilerDestination
@@ -36,7 +40,7 @@ public:
     static const char* FormatAvailability(ProfilerAvailability availability);
 
 private:
-#if defined(NLS_ENABLE_TIMELINE_PROFILER)
+#if NLS_ENABLE_TIMELINE_PROFILER
     bool m_recordingEnabled = false;
     bool m_frameStarted = false;
     bool m_gpuInitialized = false;

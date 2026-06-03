@@ -27,6 +27,7 @@ namespace NLS::Engine::Components
         void SetMesh(Mesh* p_mesh);
         void SetResolvedMeshFromReference(Mesh* p_mesh);
         void SetResolvedTransientMeshFromReference(std::shared_ptr<Mesh> p_mesh);
+        bool HasResolvedTransientMesh() const;
         Mesh* ResolveMesh();
         void SetMeshPath(const std::string& p_path);
 

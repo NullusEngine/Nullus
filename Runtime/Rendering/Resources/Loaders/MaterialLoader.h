@@ -30,6 +30,11 @@ public:
      */
     static Material* Create(const std::string& p_path);
     static Material* Create(const std::string& p_path, const LoadOptions& options);
+    static Material* CreateFromSerializedPayload(
+        const std::string& p_path,
+        const std::string& p_xml,
+        const LoadOptions& options);
+    static std::string ReadSerializedPayload(const std::string& p_path);
 
     /**
      * Reload the material using the given file path

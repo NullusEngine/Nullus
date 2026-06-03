@@ -197,21 +197,53 @@ std::filesystem::path ResolveArtifactPathForManifest(
 		return {};
 
 	const auto artifactPath = std::filesystem::path(*artifactPathText);
-	const auto resolvedPath = artifactPath.is_absolute()
-		? artifactPath.lexically_normal()
-		: (projectRoot / artifactPath).lexically_normal();
-
-	const auto relative = resolvedPath.lexically_relative(projectRoot.lexically_normal());
-	if (relative.empty() || relative.is_absolute())
-		return {};
-
-	for (const auto& part : relative)
+	std::vector<std::filesystem::path> candidates;
+	if (artifactPath.is_absolute())
 	{
-		if (part == "..")
-			return {};
+		candidates.push_back(artifactPath.lexically_normal());
+
+		const auto artifactsRoot = projectRoot / "Library" / "Artifacts";
+		std::vector<std::filesystem::path> parts;
+		for (const auto& part : artifactPath.lexically_normal())
+			parts.push_back(part);
+		for (size_t index = 0u; index + 2u < parts.size(); ++index)
+		{
+			if (parts[index].generic_string() != "Artifacts")
+				continue;
+
+			std::filesystem::path remapped = artifactsRoot / parts[index + 1u];
+			for (size_t relativeIndex = index + 2u; relativeIndex < parts.size(); ++relativeIndex)
+				remapped /= parts[relativeIndex];
+			remapped = remapped.lexically_normal();
+			if (std::find(candidates.begin(), candidates.end(), remapped) == candidates.end())
+				candidates.push_back(remapped);
+		}
+	}
+	else
+	{
+		candidates.push_back((projectRoot / artifactPath).lexically_normal());
 	}
 
-	return resolvedPath;
+	for (const auto& resolvedPath : candidates)
+	{
+		const auto relative = resolvedPath.lexically_relative(projectRoot.lexically_normal());
+		if (relative.empty() || relative.is_absolute())
+			continue;
+
+		bool escapesProject = false;
+		for (const auto& part : relative)
+		{
+			if (part == "..")
+			{
+				escapesProject = true;
+				break;
+			}
+		}
+		if (!escapesProject)
+			return resolvedPath;
+	}
+
+	return {};
 }
 
 void ReimportProjectAssetAsync(const std::string& projectAssetsFolder, const std::string& absolutePath)
@@ -1311,7 +1343,7 @@ public:
 		auto& reload = CreateWidget<MenuItem>("Reload");
 		reload.ClickedEvent += [this]
 		{
-			auto materialManager = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager);
+			auto& materialManager = NLS_SERVICE(NLS::Core::ResourceManagement::MaterialManager);
 			auto resourcePath = EDITOR_EXEC(GetResourcePath(filePath, m_protected));
             NLS::Render::Resources::Material* material = materialManager[resourcePath];
 			if (material)
@@ -1953,6 +1985,7 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 				NLS::Editor::Assets::kEditorAssetDragPayloadType,
 				resourceFormatPath,
 				*assetPayload);
+			editorAssetDragSource->hasTooltip = !assetPayloadReplacesFileDrag;
 		}
 
 		if (!p_isEngineItem && fileType == Utils::PathParser::EFileType::MODEL)
@@ -1974,7 +2007,7 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 					}
 
 					auto& subAssetText = itemGroup.CreateWidget<TextClickable>("  " + subAsset.displayName);
-					subAssetText.AddPlugin<UI::DDSource<NLS::Editor::Assets::EditorAssetDragPayload>>(
+					auto& subAssetDragSource = subAssetText.AddPlugin<UI::DDSource<NLS::Editor::Assets::EditorAssetDragPayload>>(
 						NLS::Editor::Assets::kEditorAssetDragPayloadType,
 						subAsset.dragResourcePath,
 						NLS::Editor::Assets::MakeEditorAssetDragPayload(
@@ -1984,6 +2017,7 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 							subAsset.artifactType,
 							false,
 							true));
+					subAssetDragSource.hasTooltip = false;
 				}
 			}
 		}

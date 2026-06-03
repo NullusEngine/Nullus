@@ -43,6 +43,7 @@ namespace NLS::Engine::Rendering
 	{
 		NLS::Render::Resources::Material* defaultMaterial = nullptr;
 		NLS::Render::Resources::Material* overrideMaterial = nullptr;
+		bool requireExplicitMaterialTextures = false;
 	};
 
 	struct RenderSceneSyncStats

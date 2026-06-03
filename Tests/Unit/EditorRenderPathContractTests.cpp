@@ -437,7 +437,7 @@ TEST(EditorRenderPathContractTests, SceneRenderFrameDoesNotLoadRendererAssetsIns
     EXPECT_EQ(source.find("MaterialManager)[\":Materials\\\\Default.mat\"]"), std::string::npos);
     EXPECT_NE(renderSceneSource.find("primitive.meshRenderer->ResolveMaterialAtIndex("), std::string::npos);
     EXPECT_NE(source.find("GetResource(\":Materials\\\\Default.mat\", false)"), std::string::npos);
-    EXPECT_NE(parseSceneBody.find("m_renderScene.Synchronize(scene"), std::string::npos);
+    EXPECT_NE(parseSceneBody.find("renderScene.Synchronize(scene"), std::string::npos);
 }
 
 TEST(EditorRenderPathContractTests, DeferredMaterialTextureBindingDoesNotColdLoadTextures)
@@ -456,7 +456,7 @@ TEST(EditorRenderPathContractTests, DeferredMaterialTextureBindingDoesNotColdLoa
     ASSERT_NE(nextFunction, std::string::npos);
     const auto body = source.substr(bindFunction, nextFunction - bindFunction);
 
-    EXPECT_NE(body.find("textureManager.GetResource(texturePath, false)"), std::string::npos);
+    EXPECT_NE(body.find("FindCachedTextureByEquivalentPath(textureManager, texturePath)"), std::string::npos);
     EXPECT_EQ(body.find("textureManager.GetResource(texturePath, true)"), std::string::npos);
     EXPECT_EQ(body.find("LoadResource(texturePath)"), std::string::npos);
 }
@@ -507,7 +507,11 @@ TEST(EditorRenderPathContractTests, SceneRenderFrameKeepsMeshesVisibleWhenMateri
     EXPECT_EQ(parseSceneBody.find("if (!mesh || !meshRenderer)"), std::string::npos);
     EXPECT_NE(renderSceneSource.find("if (primitive.mesh == nullptr)"), std::string::npos);
     EXPECT_NE(renderSceneSource.find("primitive.meshRenderer != nullptr && mesh.GetMaterialIndex() < Components::MeshRenderer::kMaxMaterialCount"), std::string::npos);
-    EXPECT_NE(renderSceneSource.find("return options.defaultMaterial != nullptr && options.defaultMaterial->IsValid()"), std::string::npos);
+    EXPECT_NE(renderSceneSource.find("GetMaterialPaths()"), std::string::npos)
+        << "Meshes with explicit material path hints must wait for those materials instead of rendering with the white fallback.";
+    EXPECT_NE(renderSceneSource.find("materialPaths[mesh.GetMaterialIndex()].empty()"), std::string::npos);
+    EXPECT_NE(renderSceneSource.find("return options.defaultMaterial != nullptr && options.defaultMaterial->IsValid()"), std::string::npos)
+        << "Meshes without any material path hints still use the renderer-owned fallback material.";
 }
 
 TEST(EditorRenderPathContractTests, SceneFallbackMaterialIsRendererOwnedAndStartupPreloaded)
@@ -602,8 +606,8 @@ TEST(EditorRenderPathContractTests, SceneDrawableCollectionUsesPersistentRenderS
     ASSERT_FALSE(source.empty());
 
     EXPECT_NE(headerSource.find("RenderScene m_renderScene"), std::string::npos);
-    EXPECT_NE(source.find("m_renderScene.Synchronize(scene"), std::string::npos);
-    EXPECT_NE(source.find("m_renderScene.GatherVisibleCommands"), std::string::npos);
+    EXPECT_NE(source.find("renderScene.Synchronize(scene"), std::string::npos);
+    EXPECT_NE(source.find("renderScene.GatherVisibleCommands"), std::string::npos);
     EXPECT_EQ(source.find("for (auto* modelRenderer : fastAccess.modelRenderers)"), std::string::npos);
 }
 
@@ -3640,8 +3644,11 @@ TEST(EditorRenderPathContractTests, GeneratedModelDropLoadsMaterialsOnlyThroughR
     EXPECT_EQ(queueCode.find("FillEmptySlotsWithMaterial"), std::string::npos);
     EXPECT_EQ(queueCode.find("ApplyVisibleFallbackMaterial"), std::string::npos);
     EXPECT_NE(queueCode.find("state->restoreRootSelfActive = instance->instanceRoot->IsSelfActive();"), std::string::npos);
-    EXPECT_NE(queueCode.find("instance->instanceRoot->SetActive(false);"), std::string::npos);
-    EXPECT_NE(queueCode.find("state->rootHiddenUntilRendererResourcesReady = true;"), std::string::npos);
+    EXPECT_EQ(queueCode.find("instance->instanceRoot->SetActive(false);"), std::string::npos)
+        << "Ready generated model drops must stay visible while renderer resources resolve incrementally.";
+    EXPECT_NE(queueCode.find("state->rootHiddenUntilRendererResourcesReady = false;"), std::string::npos);
+    EXPECT_EQ(queueCode.find("state->rootHiddenUntilRendererResourcesReady = true;"), std::string::npos)
+        << "The hidden-root path is a legacy fallback cleanup concern, not the primary ready-drop path.";
     EXPECT_NE(source.find("RestoreRendererResourceResolutionRootVisibility(*state);"), std::string::npos);
     EXPECT_EQ(source.find("if (!meshRenderer->GetMaterialPaths().empty())"), std::string::npos);
     EXPECT_NE(source.find("HasResolvedMaterialBindings(*meshRenderer)"), std::string::npos);
@@ -3650,13 +3657,19 @@ TEST(EditorRenderPathContractTests, GeneratedModelDropLoadsMaterialsOnlyThroughR
     const auto resolvedEnd = source.find("void CountResolvedRendererResources(", resolvedBegin);
     ASSERT_NE(resolvedEnd, std::string::npos);
     const auto resolvedCode = source.substr(resolvedBegin, resolvedEnd - resolvedBegin);
-    EXPECT_NE(resolvedCode.find("if (!material || !material->IsValid() || material->path != paths[index])"), std::string::npos);
+    EXPECT_NE(resolvedCode.find("!ResolvedMaterialPathMatches(material->path, paths[index])"), std::string::npos)
+        << "Generated model readiness must accept equivalent absolute/Library material artifact paths.";
+    EXPECT_NE(source.find("bool HasResolvedMaterialTextures("), std::string::npos)
+        << "A generated model instance is not ready just because material pointers are bound; declared texture slots must be bound too.";
+    EXPECT_NE(resolvedCode.find("!HasResolvedMaterialTextures(*material)"), std::string::npos)
+        << "Already-resolved drops must keep the async resolution queue alive until material texture slots are bound.";
     EXPECT_NE(queueCode.find("resolvedPaths.push_back(materialPath.value_or(std::string {}))"), std::string::npos);
     EXPECT_EQ(queueCode.find("if (auto materialPath = ResolvePrefabAssetPath(prefab, value))\n                            resolvedPaths.push_back(*materialPath)"), std::string::npos);
     EXPECT_EQ(queueCode.find("materialManager[resolvedPaths[index]]"), std::string::npos);
     EXPECT_EQ(queueCode.find("materialManager.GetResource(resolvedPaths[index], false)"), std::string::npos);
     EXPECT_EQ(queueCode.find("materialManager.GetResource(task.materialPaths[index], true)"), std::string::npos);
-    EXPECT_NE(queueCode.find("materialManager.GetResource(task.materialPaths[index], false)"), std::string::npos);
+    EXPECT_NE(queueCode.find("FindCachedMaterialByEquivalentPath(materialManager, task.materialPaths[index])"), std::string::npos)
+        << "Generated model drops must reuse cached material artifacts across Library/absolute path aliases without cold-loading.";
     EXPECT_NE(queueCode.find("meshRenderer.SetResolvedMaterialFromReference(static_cast<uint8_t>(index), *material)"), std::string::npos);
     EXPECT_EQ(queueCode.find("meshRenderer.SetMaterialAtIndex(static_cast<uint8_t>(index), *material)"), std::string::npos);
     EXPECT_NE(queueCode.find("++task.nextMaterialSlot"), std::string::npos);
@@ -3719,14 +3732,14 @@ TEST(EditorRenderPathContractTests, GeneratedModelDropChecksCachedMeshAliasesBef
     const auto loopCode = source.substr(resolutionLoop);
 
     const auto cachedAliasCheck = loopCode.find("IsMeshTaskAlreadyCached(task)");
-    const auto meshArtifactLoad = loopCode.find("StartMeshArtifactLoad(actions, task, state->meshLoadsByPath)");
+    const auto meshArtifactLoad = loopCode.find("StartMeshArtifactLoad(actions, task, *state)");
     ASSERT_NE(cachedAliasCheck, std::string::npos);
     ASSERT_NE(meshArtifactLoad, std::string::npos);
     EXPECT_LT(cachedAliasCheck, meshArtifactLoad);
     EXPECT_NE(source.find("bool IsMeshTaskAlreadyCached("), std::string::npos);
     EXPECT_NE(source.find("std::unordered_map<std::string, std::shared_ptr<MeshArtifactLoadState>> meshLoadsByPath"), std::string::npos);
     EXPECT_NE(source.find("task.meshLoad = existingLoad->second"), std::string::npos);
-    EXPECT_NE(source.find("meshLoadsByPath.emplace(task.modelPath, task.meshLoad)"), std::string::npos);
+    EXPECT_NE(source.find("resolutionState.meshLoadsByPath.emplace(task.modelPath, task.meshLoad)"), std::string::npos);
     EXPECT_NE(source.find("state->failed = true"), std::string::npos);
     EXPECT_NE(source.find("Editor background task queue rejected mesh artifact load"), std::string::npos);
 }
@@ -3770,15 +3783,31 @@ TEST(EditorRenderPathContractTests, GeneratedModelMaterialResolutionKeepsColdMis
     EXPECT_EQ(bindCode.find("loadMissingShaders = true"), std::string::npos);
     EXPECT_EQ(bindCode.find("materialManager.PrewarmArtifact("), std::string::npos);
     EXPECT_EQ(bindCode.find("materialManager.GetResource(task.materialPaths[index], true)"), std::string::npos);
-    EXPECT_NE(bindCode.find("materialManager.LoadArtifactWithoutTextures(task.materialPaths[index])"), std::string::npos);
-    EXPECT_NE(bindCode.find("materialManager.GetResource(task.materialPaths[index], false)"), std::string::npos);
+    EXPECT_EQ(bindCode.find("materialManager.LoadArtifactWithoutTextures(task.materialPaths[index])"), std::string::npos)
+        << "Cold generated material artifacts must not be synchronously parsed during drop-time resource resolution.";
+    EXPECT_NE(bindCode.find("FindCachedMaterialByEquivalentPath(materialManager, task.materialPaths[index])"), std::string::npos)
+        << "Generated model material resolution should probe equivalent cached artifacts without synchronously loading cold misses.";
     EXPECT_NE(bindCode.find("if (!material || !material->IsValid())"), std::string::npos);
     EXPECT_LT(
         bindCode.find("if (!material || !material->IsValid())"),
         bindCode.find("meshRenderer.SetResolvedMaterialFromReference(static_cast<uint8_t>(index), *material)"));
     EXPECT_NE(bindCode.find("meshRenderer.SetResolvedMaterialFromReference(static_cast<uint8_t>(index), *material)"), std::string::npos);
     EXPECT_EQ(bindCode.find("meshRenderer.SetMaterialAtIndex(static_cast<uint8_t>(index), *material)"), std::string::npos);
-    EXPECT_EQ(bindCode.find("++stats->failedMaterialSlots"), std::string::npos);
+    EXPECT_NE(bindCode.find("materialManager.RequestAsyncArtifact(task.materialPaths[index], true)"), std::string::npos)
+        << "Cold generated material artifacts should be requested asynchronously instead of parsed on the drop path.";
+    EXPECT_NE(bindCode.find("TrackRendererResourceAsyncInterest("), std::string::npos)
+        << "A renderer resolution state must register one cancelable material interest per path instead of incrementing the global async request count on every retry.";
+    EXPECT_NE(bindCode.find("materialManager.IsAsyncArtifactLoadPending(task.materialPaths[index])"), std::string::npos);
+    EXPECT_NE(bindCode.find("materialManager.IsAsyncArtifactLoadFailed(task.materialPaths[index])"), std::string::npos);
+    EXPECT_NE(bindCode.find("++stats->failedMaterialSlots"), std::string::npos)
+        << "A material slot should fail only after the async artifact reader reports failure, not on a cold cache miss.";
+    const auto textureBind = bindCode.find("if (!BindDeferredMaterialTextures(*material, task, state, stats, frameBudgetExpired))");
+    ASSERT_NE(textureBind, std::string::npos);
+    const auto taskFailedGuard = bindCode.find("if (task.failed)", textureBind);
+    ASSERT_NE(taskFailedGuard, std::string::npos)
+        << "A material with failed texture dependencies must not be exposed to rendering.";
+    EXPECT_NE(bindCode.find("state.failed = true;", taskFailedGuard), std::string::npos);
+    EXPECT_LT(taskFailedGuard, bindCode.find("meshRenderer.SetResolvedMaterialFromReference(static_cast<uint8_t>(index), *material)"));
 }
 
 TEST(EditorRenderPathContractTests, GeneratedModelMaterialResolutionBindsCachedTexturesAndQueuesAsyncArtifactLoads)
@@ -3814,14 +3843,17 @@ TEST(EditorRenderPathContractTests, GeneratedModelMaterialResolutionBindsCachedT
     const auto textureBindCode = actionsSource.substr(textureBindBegin, textureBindEnd - textureBindBegin);
 
     EXPECT_NE(textureBindCode.find("material.GetTextureResourcePaths()"), std::string::npos);
-    EXPECT_NE(textureBindCode.find("textureManager.GetResource(texturePath, false)"), std::string::npos);
+    EXPECT_NE(textureBindCode.find("FindCachedTextureByEquivalentPath(textureManager, texturePath)"), std::string::npos)
+        << "Generated model texture binding must reuse cached texture artifacts across Library/absolute path aliases.";
     EXPECT_EQ(textureBindCode.find("textureManager.GetResource(texturePath, true)"), std::string::npos);
     EXPECT_EQ(textureBindCode.find("LoadResource(texturePath)"), std::string::npos);
     EXPECT_EQ(textureBindCode.find("PumpAsyncLoads("), std::string::npos);
     EXPECT_NE(textureBindCode.find("textureManager.IsAsyncArtifactLoadPending(texturePath)"), std::string::npos);
     EXPECT_NE(textureBindCode.find("textureManager.IsAsyncArtifactLoadFailed(texturePath)"), std::string::npos);
-    EXPECT_NE(textureBindCode.find("textureManager.RequestAsyncArtifact(texturePath)"), std::string::npos);
-    const auto asyncRequest = textureBindCode.find("textureManager.RequestAsyncArtifact(texturePath)");
+    EXPECT_NE(textureBindCode.find("textureManager.RequestAsyncArtifact(texturePath, true)"), std::string::npos);
+    EXPECT_NE(textureBindCode.find("TrackRendererResourceAsyncInterest("), std::string::npos)
+        << "A renderer resolution state must register one cancelable texture interest per path instead of incrementing the global async request count on every retry.";
+    const auto asyncRequest = textureBindCode.find("textureManager.RequestAsyncArtifact(texturePath, true)");
     const auto pendingTextureGuard = textureBindCode.find("if (!texture && textureManager.IsAsyncArtifactLoadPending(texturePath))", asyncRequest);
     const auto pendingTextureReturn = textureBindCode.find("return false;", pendingTextureGuard);
     const auto failedTextureGuard = textureBindCode.find("if (!texture && textureManager.IsAsyncArtifactLoadFailed(texturePath))", pendingTextureReturn);
@@ -3908,7 +3940,7 @@ TEST(EditorRenderPathContractTests, GeneratedModelMaterialResolutionFailsUnqueue
     ASSERT_NE(textureBindEnd, std::string::npos);
     const auto textureBindCode = source.substr(textureBindBegin, textureBindEnd - textureBindBegin);
 
-    const auto request = textureBindCode.find("textureManager.RequestAsyncArtifact(texturePath)");
+    const auto request = textureBindCode.find("textureManager.RequestAsyncArtifact(texturePath, true)");
     const auto pendingGuard = textureBindCode.find("textureManager.IsAsyncArtifactLoadPending(texturePath)", request);
     const auto failedGuard = textureBindCode.find("textureManager.IsAsyncArtifactLoadFailed(texturePath)", pendingGuard);
     const auto unqueueableGuard = textureBindCode.find("if (!texture)", failedGuard + 1u);
@@ -3970,14 +4002,104 @@ TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionRollsBackHid
 
     const auto finishFailed = stepCode.find("auto finishFailed = [&actions, &tracker, &state]");
     ASSERT_NE(finishFailed, std::string::npos);
-    const auto rollbackCall = stepCode.find("RollbackHiddenRendererResourceResolutionRoot(actions, *state);", finishFailed);
+    const auto rollbackCall = stepCode.find("RollbackFailedRendererResourceResolutionRoot(actions, *state);", finishFailed);
     const auto releaseListener = stepCode.find("actions.ReleaseGameObjectDestroyedListener(state->destroyedListener);", finishFailed);
     ASSERT_NE(rollbackCall, std::string::npos);
     ASSERT_NE(releaseListener, std::string::npos);
     EXPECT_LT(rollbackCall, releaseListener);
 }
 
-TEST(EditorRenderPathContractTests, ReadyGeneratedModelDropDoesNotRequestDeferredAssetResolution)
+TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionPreservesVisibleCommittedRootOnFailure)
+{
+    const auto actionsSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
+    const std::string source = ReadSourceText(actionsSourcePath);
+
+    ASSERT_FALSE(source.empty());
+    const auto rollbackBegin = source.find("void RollbackFailedRendererResourceResolutionRoot(");
+    ASSERT_NE(rollbackBegin, std::string::npos);
+    const auto rollbackEnd = source.find("template<typename ComponentType>", rollbackBegin);
+    ASSERT_NE(rollbackEnd, std::string::npos);
+    const auto rollbackCode = source.substr(rollbackBegin, rollbackEnd - rollbackBegin);
+
+    const auto hiddenGuard = rollbackCode.find("if (state.rootHiddenUntilRendererResourcesReady)");
+    const auto hiddenRollbackCall = rollbackCode.find("RollbackHiddenRendererResourceResolutionRoot(actions, state);");
+    ASSERT_NE(hiddenGuard, std::string::npos);
+    ASSERT_NE(hiddenRollbackCall, std::string::npos);
+    EXPECT_LT(hiddenGuard, hiddenRollbackCall)
+        << "Renderer-resource failure may only destroy the legacy hidden atomic root, never a visible saved/restored prefab instance.";
+    EXPECT_EQ(rollbackCode.find("scene->DestroyGameObject(*root);"), std::string::npos)
+        << "Visible saved/restored prefab instances must not be destroyed by the generic failure path.";
+    EXPECT_NE(rollbackCode.find("RestoreRendererResourceResolutionRootVisibility(state);"), std::string::npos)
+        << "Visible committed/restored instances must remain in the scene and simply be unhidden if needed.";
+
+    const auto stepBegin = source.find("void RunRendererResourceResolutionStep(");
+    ASSERT_NE(stepBegin, std::string::npos);
+    const auto stepEnd = source.find("void Editor::Core::EditorActions::LoadEmptyScene()", stepBegin);
+    ASSERT_NE(stepEnd, std::string::npos);
+    const auto stepCode = source.substr(stepBegin, stepEnd - stepBegin);
+
+    const auto finishFailed = stepCode.find("auto finishFailed = [&actions, &tracker, &state]");
+    ASSERT_NE(finishFailed, std::string::npos);
+    EXPECT_NE(stepCode.find("RollbackFailedRendererResourceResolutionRoot(actions, *state);", finishFailed), std::string::npos);
+    EXPECT_EQ(stepCode.find("RollbackHiddenRendererResourceResolutionRoot(actions, *state);", finishFailed), std::string::npos)
+        << "Failure rollback must preserve visible committed/restored roots while still cleaning up hidden legacy roots.";
+}
+
+TEST(EditorRenderPathContractTests, MeshRendererRuntimeMaterialResolveDoesNotSynchronouslyLoadArtifacts)
+{
+    const auto meshRendererSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Engine/Components/MeshRenderer.cpp";
+
+    const std::string source = ReadSourceText(meshRendererSourcePath);
+
+    ASSERT_FALSE(source.empty());
+    const auto resolveBegin = source.find("MeshRenderer::Material* MeshRenderer::ResolveMaterialSlot(");
+    ASSERT_NE(resolveBegin, std::string::npos);
+    const auto resolveEnd = source.find("MeshRenderer::Material* MeshRenderer::ResolveMaterialAtIndex(", resolveBegin);
+    ASSERT_NE(resolveEnd, std::string::npos);
+    const auto resolveCode = source.substr(resolveBegin, resolveEnd - resolveBegin);
+
+    EXPECT_NE(resolveCode.find("FindCachedMaterialByEquivalentPath(materialManager, path)"), std::string::npos);
+    EXPECT_EQ(resolveCode.find("LoadArtifactWithoutTextures(path)"), std::string::npos)
+        << "Normal render/picking paths must not synchronously load cold material artifacts; generated model material loading belongs to the frame-budgeted editor resolution queue.";
+    EXPECT_EQ(resolveCode.find("MaterialArtifactPathExists(path)"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionCancelsMarkedDestroyedInstancesBeforeMoreWork)
+{
+    const auto actionsSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
+    const std::string source = ReadSourceText(actionsSourcePath);
+
+    ASSERT_FALSE(source.empty());
+
+    const auto resolveBegin = source.find("const NLS::Editor::Assets::PrefabInstanceRecord* ResolveLivePrefabInstance(");
+    ASSERT_NE(resolveBegin, std::string::npos);
+    const auto resolveEnd = source.find("void RendererResourceResolutionTargetDestroyed(", resolveBegin);
+    ASSERT_NE(resolveEnd, std::string::npos);
+    const auto resolveCode = source.substr(resolveBegin, resolveEnd - resolveBegin);
+    EXPECT_NE(resolveCode.find("!root || !root->IsAlive()"), std::string::npos)
+        << "A prefab root marked for destruction must cancel renderer resource resolution before scheduling or binding more mesh/material work.";
+
+    const auto taskObjectBegin = source.find("NLS::Engine::GameObject* ResolveLiveTaskObject(");
+    ASSERT_NE(taskObjectBegin, std::string::npos);
+    const auto taskObjectEnd = source.find("const std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::GameObject*>* EnsureRendererResourceLiveObjectIndex", taskObjectBegin);
+    ASSERT_NE(taskObjectEnd, std::string::npos);
+    const auto taskObjectCode = source.substr(taskObjectBegin, taskObjectEnd - taskObjectBegin);
+    EXPECT_NE(taskObjectCode.find("!object || !object->IsAlive()"), std::string::npos)
+        << "Child objects marked for destruction must be skipped even before Scene::CollectGarbages deletes them.";
+
+    const auto meshLoadBegin = source.find("bool StartMeshArtifactLoad(");
+    ASSERT_NE(meshLoadBegin, std::string::npos);
+    const auto meshLoadEnd = source.find("std::optional<RendererResourceResolutionTask> PopNextRemainingTask(", meshLoadBegin);
+    ASSERT_NE(meshLoadEnd, std::string::npos);
+    const auto meshLoadCode = source.substr(meshLoadBegin, meshLoadEnd - meshLoadBegin);
+    EXPECT_NE(meshLoadCode.find("cancelled"), std::string::npos)
+        << "Background mesh artifact loads must observe cancellation so deleting a prefab does not keep CPU-heavy artifact work alive.";
+}
+
+TEST(EditorRenderPathContractTests, ReadyGeneratedModelDropDefersAssetResolution)
 {
     const auto bridgeSourcePath =
         std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Assets/EditorAssetDragDropBridge.cpp";
@@ -3992,10 +4114,13 @@ TEST(EditorRenderPathContractTests, ReadyGeneratedModelDropDoesNotRequestDeferre
 
     EXPECT_EQ(instantiateCode.find("{}," "\n        assetType == NLS::Core::Assets::AssetType::ModelScene"), std::string::npos)
         << "Ready generated model drops should instantiate from stabilized import results without entering the legacy deferred-resolution path.";
-    EXPECT_NE(instantiateCode.find("{}," "\n        false"), std::string::npos);
+    const auto deferredResolutionComment = instantiateCode.find("Keep Scene View mouse release cheap");
+    ASSERT_NE(deferredResolutionComment, std::string::npos);
+    EXPECT_NE(instantiateCode.find("true\n    });", deferredResolutionComment), std::string::npos)
+        << "Ready imported model drops should defer mesh/material resolution so final mouse release stays non-blocking.";
 }
 
-TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionFailsUnresolvedMaterialSlots)
+TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionAllowsColdMaterialSlots)
 {
     const auto actionsSourcePath =
         std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
@@ -4008,10 +4133,11 @@ TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionFailsUnresol
     ASSERT_NE(stepEnd, std::string::npos);
     const auto stepCode = source.substr(stepBegin, stepEnd - stepBegin);
 
-    const auto finalFailure = stepCode.find("state->stats->unresolvedMaterialSlots > 0u");
-    ASSERT_NE(finalFailure, std::string::npos);
-    EXPECT_NE(stepCode.find("finishFailed();", finalFailure), std::string::npos);
-    EXPECT_LT(finalFailure, stepCode.find("tracker.ReportProgress(state->job, NLS::Editor::Assets::ImportPhase::Postprocess, 1.0, \"Renderer resources ready\")"));
+    EXPECT_EQ(stepCode.find("state->stats->unresolvedMaterialSlots > 0u"), std::string::npos)
+        << "Cold material artifacts must not fail or roll back an otherwise visible generated-model drop.";
+    EXPECT_NE(stepCode.find("state->stats->failedMaterialSlots > 0u"), std::string::npos)
+        << "Explicit material texture failures should still fail the resolution job.";
+    EXPECT_NE(stepCode.find("tracker.ReportProgress(state->job, NLS::Editor::Assets::ImportPhase::Postprocess, 1.0, \"Renderer resources ready\")"), std::string::npos);
 }
 
 TEST(EditorRenderPathContractTests, MaterialArtifactPrewarmDoesNotSynchronouslyLoadShaderDependencies)
@@ -4121,8 +4247,18 @@ TEST(EditorRenderPathContractTests, GeneratedModelMaterialResolutionDoesNotDelay
     const auto bindEnd = source.find("bool BindDeferredMeshPath(", bindBegin);
     ASSERT_NE(bindEnd, std::string::npos);
     const auto bindCode = source.substr(bindBegin, bindEnd - bindBegin);
-    const auto cacheMissCounter = bindCode.find("++stats->unresolvedMaterialSlots");
-    ASSERT_NE(cacheMissCounter, std::string::npos);
+    const auto unresolvedMaterialBegin = bindCode.find("if (!material || !material->IsValid())");
+    ASSERT_NE(unresolvedMaterialBegin, std::string::npos);
+    const auto unresolvedMaterialEnd = bindCode.find("if (!BindDeferredMaterialTextures", unresolvedMaterialBegin);
+    ASSERT_NE(unresolvedMaterialEnd, std::string::npos);
+    const auto unresolvedMaterialCode = bindCode.substr(
+        unresolvedMaterialBegin,
+        unresolvedMaterialEnd - unresolvedMaterialBegin);
+    EXPECT_EQ(unresolvedMaterialCode.find("++stats->unresolvedMaterialSlots"), std::string::npos)
+        << "A material path that is neither cached nor pending is terminal; unresolved success leaves RenderScene suppressing the draw forever.";
+    EXPECT_NE(unresolvedMaterialCode.find("++stats->failedMaterialSlots"), std::string::npos);
+    EXPECT_NE(unresolvedMaterialCode.find("task.failed = true"), std::string::npos);
+    EXPECT_NE(unresolvedMaterialCode.find("state.failed = true"), std::string::npos);
     EXPECT_NE(source.find("kRendererResourceResolutionMaterialSlotsPerTask"), std::string::npos);
     EXPECT_NE(bindCode.find("visitedSlots < kRendererResourceResolutionMaterialSlotsPerTask"), std::string::npos);
     EXPECT_EQ(bindCode.find("materialManager.PrewarmArtifact("), std::string::npos);
@@ -4130,7 +4266,7 @@ TEST(EditorRenderPathContractTests, GeneratedModelMaterialResolutionDoesNotDelay
     EXPECT_NE(bindCode.find("return false;"), std::string::npos);
     EXPECT_NE(bindCode.find("return task.nextMaterialSlot >= task.materialPaths.size()"), std::string::npos);
 
-    EXPECT_EQ(bindCode.find("break;", cacheMissCounter), std::string::npos);
+    EXPECT_EQ(unresolvedMaterialCode.find("break;"), std::string::npos);
 }
 
 TEST(EditorRenderPathContractTests, EditorGeneratedModelFallbackMaterialDoesNotSynchronouslyLoadDefaultMaterial)
@@ -4239,15 +4375,20 @@ TEST(EditorRenderPathContractTests, GeneratedModelDeferredMeshBindUsesNonBlockin
     EXPECT_EQ(loadCode.find("new Render::Resources::Mesh("), std::string::npos);
     EXPECT_EQ(loadCode.find("Render::Resources::MeshBufferUploadMode::CpuToGpu"), std::string::npos);
     EXPECT_EQ(loadCode.find("Render::Resources::Loaders::ModelLoader::Create(path, meshes)"), std::string::npos);
-    EXPECT_NE(loadCode.find("NLS::Render::Assets::LoadMeshArtifact(artifactPath)"), std::string::npos);
-    EXPECT_NE(loadCode.find("std::unordered_map<std::string, std::shared_ptr<MeshArtifactLoadState>>& meshLoadsByPath"), std::string::npos);
+    EXPECT_NE(loadCode.find("NLS::Render::Assets::LoadMeshArtifact(artifactPath, state->cancelled.get())"), std::string::npos);
+    EXPECT_EQ(loadCode.find("NLS::Render::Assets::LoadMeshArtifact(artifactPath)"), std::string::npos);
+    EXPECT_NE(loadCode.find("RendererResourceResolutionState& resolutionState"), std::string::npos);
+    EXPECT_NE(loadCode.find("std::lock_guard lock(resolutionState.asyncLoadsMutex)"), std::string::npos);
+    EXPECT_NE(loadCode.find("resolutionState.meshLoadsByPath.find(task.modelPath)"), std::string::npos);
+    EXPECT_NE(loadCode.find("resolutionState.meshLoadsByPath.emplace(task.modelPath, task.meshLoad)"), std::string::npos);
     EXPECT_NE(loadCode.find("task.meshLoad = existingLoad->second"), std::string::npos);
     EXPECT_NE(loadCode.find("catch (const std::exception& exception)"), std::string::npos);
     EXPECT_NE(loadCode.find("state->completed = true"), std::string::npos);
     EXPECT_EQ(bindCode.find("Render::Resources::MeshBufferUploadMode::GpuOnly"), std::string::npos);
     EXPECT_EQ(bindCode.find("modelManager[task.modelPath]"), std::string::npos);
     EXPECT_EQ(bindCode.find("meshRenderer.SetModel(gpuModel)"), std::string::npos);
-    EXPECT_NE(bindCode.find("meshManager.GetResource(task.modelPath, false)"), std::string::npos);
+    EXPECT_NE(bindCode.find("FindCachedMeshByEquivalentPath(meshManager, task.modelPath)"), std::string::npos)
+        << "Generated model mesh binding must reuse cached mesh artifacts across Library/absolute path aliases.";
     EXPECT_NE(bindCode.find("meshFilter.SetResolvedTransientMeshFromReference(std::move(owner))"), std::string::npos);
     EXPECT_EQ(bindCode.find("meshRenderer.SetResolvedTransientModelFromReference(std::move(owner))"), std::string::npos);
     EXPECT_EQ(bindCode.find("meshRenderer.SetTransientModel(std::move(owner))"), std::string::npos);
@@ -4263,11 +4404,14 @@ TEST(EditorRenderPathContractTests, GeneratedModelDeferredMeshLoadStaysCpuOnlyUn
     const std::string source = ReadSourceText(actionsSourcePath);
 
     ASSERT_FALSE(source.empty());
-    const auto stateBegin = source.find("struct MeshArtifactLoadState");
+    const auto headerPath = std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.h";
+    const std::string header = ReadSourceText(headerPath);
+    ASSERT_FALSE(header.empty());
+    const auto stateBegin = header.find("struct PrefabInstanceMeshArtifactLoadState");
     ASSERT_NE(stateBegin, std::string::npos);
-    const auto stateEnd = source.find("struct RendererResourceResolutionState", stateBegin);
+    const auto stateEnd = header.find("struct PrefabInstancePreviewResourceHandoff", stateBegin);
     ASSERT_NE(stateEnd, std::string::npos);
-    const auto stateCode = source.substr(stateBegin, stateEnd - stateBegin);
+    const auto stateCode = header.substr(stateBegin, stateEnd - stateBegin);
     const auto bindBegin = source.find("bool BindDeferredMeshPath(");
     ASSERT_NE(bindBegin, std::string::npos);
     const auto bindEnd = source.find("bool IsMeshTaskAlreadyCached(", bindBegin);
@@ -4283,7 +4427,7 @@ TEST(EditorRenderPathContractTests, GeneratedModelDeferredMeshLoadStaysCpuOnlyUn
     EXPECT_EQ(bindCode.find("std::move(task.meshLoad->data)"), std::string::npos);
     EXPECT_NE(bindCode.find("transientMesh = task.meshLoad->transientMesh"), std::string::npos);
     EXPECT_NE(bindCode.find("data = task.meshLoad->data"), std::string::npos);
-    EXPECT_NE(bindCode.find("auto* cached = meshManager.GetResource(task.modelPath, false)"), std::string::npos);
+    EXPECT_NE(bindCode.find("auto* cached = FindCachedMeshByEquivalentPath(meshManager, task.modelPath)"), std::string::npos);
     EXPECT_EQ(bindCode.find("else if (auto* gpuModel = modelManager[task.modelPath])"), std::string::npos);
     EXPECT_EQ(bindCode.find("meshRenderer.SetModel(gpuModel)"), std::string::npos);
     EXPECT_NE(bindCode.find("data->boundingSphere"), std::string::npos);
@@ -4305,16 +4449,23 @@ TEST(EditorRenderPathContractTests, GeneratedModelDeferredMeshArtifactFailureFai
     const std::string source = ReadSourceText(actionsSourcePath);
 
     ASSERT_FALSE(source.empty());
+    const auto headerPath = std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.h";
+    const std::string header = ReadSourceText(headerPath);
+    ASSERT_FALSE(header.empty());
+
     const auto taskBegin = source.find("struct RendererResourceResolutionTask");
     ASSERT_NE(taskBegin, std::string::npos);
-    const auto loadStateBegin = source.find("struct MeshArtifactLoadState", taskBegin);
-    ASSERT_NE(loadStateBegin, std::string::npos);
-    const auto rendererStateBegin = source.find("struct RendererResourceResolutionState", loadStateBegin);
+    const auto rendererStateBegin = source.find("struct RendererResourceResolutionState", taskBegin);
     ASSERT_NE(rendererStateBegin, std::string::npos);
-    const auto taskCode = source.substr(taskBegin, loadStateBegin - taskBegin);
-    const auto loadStateCode = source.substr(loadStateBegin, rendererStateBegin - loadStateBegin);
+    const auto taskCode = source.substr(taskBegin, rendererStateBegin - taskBegin);
+    const auto loadStateBegin = header.find("struct PrefabInstanceMeshArtifactLoadState");
+    ASSERT_NE(loadStateBegin, std::string::npos);
+    const auto loadStateEnd = header.find("struct PrefabInstancePreviewResourceHandoff", loadStateBegin);
+    ASSERT_NE(loadStateEnd, std::string::npos);
+    const auto loadStateCode = header.substr(loadStateBegin, loadStateEnd - loadStateBegin);
 
     EXPECT_NE(taskCode.find("bool failed = false"), std::string::npos);
+    EXPECT_NE(taskCode.find("std::shared_ptr<MeshArtifactLoadState> meshLoad"), std::string::npos);
     EXPECT_NE(loadStateCode.find("bool failed = false"), std::string::npos);
 
     const auto bindBegin = source.find("bool BindDeferredMeshPath(");
@@ -4353,7 +4504,8 @@ TEST(EditorRenderPathContractTests, GeneratedModelDeferredMeshArtifactFailureFai
     const auto finalCode = source.substr(finalBegin);
     EXPECT_NE(finalCode.find("if (state->failed ||"), std::string::npos);
     EXPECT_NE(finalCode.find("state->stats->failedMaterialSlots > 0u"), std::string::npos);
-    EXPECT_NE(finalCode.find("state->stats->unresolvedMaterialSlots > 0u"), std::string::npos);
+    EXPECT_EQ(finalCode.find("state->stats->unresolvedMaterialSlots > 0u"), std::string::npos)
+        << "Missing cold material slots should keep the mesh visible with fallback material instead of failing the drop.";
     EXPECT_NE(source.find("++stats->failedMeshTasks"), std::string::npos);
 }
 
@@ -4589,7 +4741,7 @@ TEST(EditorRenderPathContractTests, PendingImportedAssetPayloadDropsUseAsyncComp
     EXPECT_NE(payloadCode.find("if (result.pendingImport)"), std::string::npos);
     EXPECT_NE(payloadCode.find("if (payload.imported != 0u)"), std::string::npos);
     EXPECT_NE(payloadCode.find("const auto resourcePath = BuildPrefabResourcePathFromPayload(payload)"), std::string::npos);
-    EXPECT_NE(payloadCode.find("return CreateGameObjectFromAsset(resourcePath, focusOnCreation, p_parent)"), std::string::npos);
+    EXPECT_NE(payloadCode.find("return CreateGameObjectFromAsset(resourcePath, focusOnCreation, p_parent, placementOverride)"), std::string::npos);
     EXPECT_EQ(payloadCode.find("Asset drag handle is not imported yet; waiting for background preimport"), std::string::npos);
     EXPECT_EQ(payloadCode.find("return nullptr;\n    }\n\n    if (!result.handled"), std::string::npos);
 }
@@ -4715,10 +4867,11 @@ TEST(EditorRenderPathContractTests, BuiltInPrimitiveCreationUsesCreatePrimitiveN
 
     EXPECT_NE(actionsSource.find("CreatePrimitive("), std::string::npos);
     EXPECT_NE(menuSource.find("PrimitiveType::Cube"), std::string::npos);
-    EXPECT_NE(sceneManagerSource.find("PrimitiveType::Cube"), std::string::npos);
     EXPECT_NE(primitiveFactorySource.find("builtin:Primitive/"), std::string::npos);
     EXPECT_EQ(actionsSource.find("\":Models\\\\Cube.fbx\""), std::string::npos);
     EXPECT_EQ(menuSource.find("\":Models\\\\"), std::string::npos);
+    EXPECT_EQ(sceneManagerSource.find("Validation Cube"), std::string::npos);
+    EXPECT_EQ(sceneManagerSource.find("PrimitiveType::Cube"), std::string::npos);
     EXPECT_EQ(sceneManagerSource.find("ModelManager"), std::string::npos);
     EXPECT_EQ(sceneManagerSource.find("SetModel("), std::string::npos);
     EXPECT_EQ(primitiveFactorySource.find(".fbx"), std::string::npos);
@@ -4798,7 +4951,7 @@ TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionIndexesAsset
     EXPECT_NE(source.find("struct RendererResourceLiveObjectIndex"), std::string::npos);
     EXPECT_NE(source.find("EnsureRendererResourceLiveObjectIndex("), std::string::npos);
     EXPECT_NE(source.find("RendererResourceResolutionTargetDestroyed("), std::string::npos);
-    EXPECT_NE(stateCode.find("bool cancelled = false"), std::string::npos);
+    EXPECT_NE(stateCode.find("std::atomic_bool cancelled = false"), std::string::npos);
     EXPECT_NE(stateCode.find("ListenerID destroyedListener ="), std::string::npos);
     EXPECT_NE(stateCode.find("NLS::Editor::Core::EditorActions::SceneMutationToken sceneToken"), std::string::npos);
     EXPECT_NE(stateCode.find("const NLS::Editor::Assets::PrefabInstanceRecord* cachedLiveInstance"), std::string::npos);
@@ -4807,7 +4960,7 @@ TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionIndexesAsset
     EXPECT_EQ(stepCode.find("const auto liveObjectsBySourceId = BuildPrefabInstanceObjectIndex(*liveInstance)"), std::string::npos);
     EXPECT_NE(stepCode.find("auto* liveInstance = ResolveLivePrefabInstance(actions, *state)"), std::string::npos);
     EXPECT_NE(stepCode.find("const auto* liveObjectsBySourceId = EnsureRendererResourceLiveObjectIndex(*state, *liveInstance)"), std::string::npos);
-    EXPECT_NE(stepCode.find("RunRendererResourceResolutionTask(\n            actions,\n            *liveInstance,\n            task,\n            *liveObjectsBySourceId"), std::string::npos);
+    EXPECT_NE(stepCode.find("RunRendererResourceResolutionTask(\n            actions,\n            *liveInstance,\n            task,\n            *state,\n            *liveObjectsBySourceId"), std::string::npos);
     EXPECT_EQ(queueCode.find("state->liveObjectsBySourceId"), std::string::npos);
     EXPECT_NE(queueCode.find("state->destroyedListener = TrackGameObjectDestroyedListener("), std::string::npos);
     EXPECT_EQ(source.find("FindPrefabInstanceObjectBySourceId("), std::string::npos);
@@ -4838,9 +4991,12 @@ TEST(EditorRenderPathContractTests, SceneAndHierarchyProjectModelDropsUseImporte
     ASSERT_NE(sceneLegacyDropEnd, std::string::npos);
     const auto sceneLegacyDropCode = sceneViewSource.substr(sceneFileTarget, sceneLegacyDropEnd - sceneFileTarget);
     EXPECT_NE(sceneLegacyDropCode.find("EFileType::SCENE"), std::string::npos);
-    EXPECT_NE(sceneLegacyDropCode.find("EFileType::PREFAB"), std::string::npos);
-    EXPECT_NE(sceneLegacyDropCode.find("EFileType::MODEL"), std::string::npos);
-    EXPECT_EQ(sceneLegacyDropCode.find("IsBuiltInResourcePath(path)"), std::string::npos);
+    EXPECT_EQ(sceneLegacyDropCode.find("EFileType::PREFAB"), std::string::npos)
+        << "Project prefab drops in Scene View must use the EditorAsset payload so hover preview and resource handoff run before mouse release.";
+    EXPECT_EQ(sceneLegacyDropCode.find("EFileType::MODEL"), std::string::npos)
+        << "Project model drops in Scene View must use the EditorAsset payload; the legacy File path has no before-delivery mesh preview.";
+    EXPECT_NE(sceneLegacyDropCode.find("IsBuiltInResourcePath(path)"), std::string::npos)
+        << "The legacy File path should only preserve built-in primitive resource drops.";
     EXPECT_NE(sceneLegacyDropCode.find("CreateGameObjectFromAsset(path"), std::string::npos);
     EXPECT_EQ(sceneLegacyDropCode.find("modelManager["), std::string::npos);
     EXPECT_EQ(sceneLegacyDropCode.find("ModelManager>().GetResource(path"), std::string::npos);
@@ -4900,6 +5056,10 @@ TEST(EditorRenderPathContractTests, SceneAndHierarchyProjectModelDropsUseImporte
         editorAssetDragSource - assetPayloadDeclaration);
     EXPECT_NE(browserDragCode.find("if (!assetPayloadReplacesFileDrag)"), std::string::npos)
         << "Model/prefab rows with EditorAsset payloads must not also publish the legacy File payload, otherwise Scene View preview cannot receive AcceptBeforeDelivery EditorAsset events.";
+    EXPECT_NE(assetBrowserSource.find("editorAssetDragSource->hasTooltip = !assetPayloadReplacesFileDrag;"), std::string::npos)
+        << "Model/prefab Scene View drags should rely on the mesh ghost instead of keeping the AssetBrowser text tooltip stuck to the cursor.";
+    EXPECT_NE(assetBrowserSource.find("subAssetDragSource.hasTooltip = false;"), std::string::npos)
+        << "Generated model sub-asset drags should not obscure the Scene View mesh preview with the source tooltip.";
 
     const auto renameHandler = assetBrowserSource.find("contextMenu->RenamedEvent +=");
     ASSERT_NE(renameHandler, std::string::npos);
@@ -4951,14 +5111,19 @@ TEST(EditorRenderPathContractTests, SceneViewAssetDropUsesBeforeDeliveryPreviewL
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const std::string sceneViewHeader = ReadSourceText(root / "Project/Editor/Panels/SceneView.h");
     const std::string sceneViewSource = ReadSourceText(root / "Project/Editor/Panels/SceneView.cpp");
+    const std::string dragDropHeader = ReadSourceText(root / "Runtime/UI/Plugins/DragDrop.h");
+    const std::string dragDropSource = ReadSourceText(root / "Runtime/UI/Plugins/DragDrop.cpp");
 
     ASSERT_FALSE(sceneViewHeader.empty());
     ASSERT_FALSE(sceneViewSource.empty());
+    ASSERT_FALSE(dragDropHeader.empty());
+    ASSERT_FALSE(dragDropSource.empty());
 
     EXPECT_NE(sceneViewHeader.find("m_importedAssetDragPreviewPayload"), std::string::npos);
     EXPECT_NE(sceneViewHeader.find("m_importedAssetDragPreviewMousePos"), std::string::npos);
     EXPECT_NE(sceneViewHeader.find("m_importedAssetDragPreviewPlacement"), std::string::npos);
     EXPECT_NE(sceneViewHeader.find("UpdateImportedAssetDragPreview"), std::string::npos);
+    EXPECT_NE(sceneViewHeader.find("PumpImportedAssetDragPreviewBeforeRender"), std::string::npos);
     EXPECT_NE(sceneViewHeader.find("DrawImportedAssetDragPreview"), std::string::npos);
     EXPECT_NE(sceneViewHeader.find("ResolveImportedAssetDragPreviewPlacement"), std::string::npos);
     EXPECT_NE(sceneViewHeader.find("ClearImportedAssetDragPreview"), std::string::npos);
@@ -4969,6 +5134,27 @@ TEST(EditorRenderPathContractTests, SceneViewAssetDropUsesBeforeDeliveryPreviewL
     EXPECT_NE(sceneViewSource.find("UpdateImportedAssetDragPreview(payload);"), std::string::npos);
     EXPECT_NE(sceneViewSource.find("if (!UI::BeginDragDropTarget())"), std::string::npos);
     EXPECT_NE(sceneViewSource.find("ClearImportedAssetDragPreview();"), std::string::npos);
+    EXPECT_NE(dragDropHeader.find("PeekDragDropPayload"), std::string::npos);
+    EXPECT_NE(dragDropSource.find("ImGui::GetDragDropPayload()"), std::string::npos);
+
+    const auto initFrameBegin = sceneViewSource.find("void Editor::Panels::SceneView::InitFrame()");
+    ASSERT_NE(initFrameBegin, std::string::npos);
+    const auto initFrameEnd = sceneViewSource.find("Engine::SceneSystem::Scene* Editor::Panels::SceneView::GetScene()", initFrameBegin);
+    ASSERT_NE(initFrameEnd, std::string::npos);
+    const auto initFrameCode = sceneViewSource.substr(initFrameBegin, initFrameEnd - initFrameBegin);
+    EXPECT_NE(initFrameCode.find("PumpImportedAssetDragPreviewBeforeRender();"), std::string::npos)
+        << "Scene View must peek the active drag payload before AView::InitFrame builds the SceneDescriptor so the mesh ghost scene is rendered on the same frame.";
+    EXPECT_LT(
+        initFrameCode.find("PumpImportedAssetDragPreviewBeforeRender();"),
+        initFrameCode.find("AViewControllable::InitFrame();"));
+
+    const auto preRenderBegin = sceneViewSource.find("void Editor::Panels::SceneView::DrawPreRenderViewportOverlay()");
+    ASSERT_NE(preRenderBegin, std::string::npos);
+    const auto preRenderEnd = sceneViewSource.find("void Editor::Panels::SceneView::OnAfterDrawWidgets()", preRenderBegin);
+    ASSERT_NE(preRenderEnd, std::string::npos);
+    const auto preRenderCode = sceneViewSource.substr(preRenderBegin, preRenderEnd - preRenderBegin);
+    EXPECT_EQ(preRenderCode.find("PumpImportedAssetDragPreviewBeforeRender();"), std::string::npos)
+        << "Overlay-stage preview pumping is too late for the current frame's CreateSceneDescriptor.";
 
     const auto previewBegin = sceneViewSource.find("void Editor::Panels::SceneView::UpdateImportedAssetDragPreview(");
     ASSERT_NE(previewBegin, std::string::npos);
@@ -5026,7 +5212,7 @@ TEST(EditorRenderPathContractTests, SceneViewAssetDropTargetExecutesOnViewportIm
         << "Calling BeginDragDropTarget after DrawWidgets can miss the viewport image because ImGui uses the last submitted item.";
 }
 
-TEST(EditorRenderPathContractTests, SceneViewAssetDropDrawsNonScenePreviewAndCommitsAtPreviewPlacement)
+TEST(EditorRenderPathContractTests, SceneViewAssetDropUsesOnlyReadyMeshMaterialTexturePreviewAndCommitsAtPreviewPlacement)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
     const std::string sceneViewHeader = ReadSourceText(root / "Project/Editor/Panels/SceneView.h");
@@ -5039,9 +5225,17 @@ TEST(EditorRenderPathContractTests, SceneViewAssetDropDrawsNonScenePreviewAndCom
     const auto drawEnd = sceneViewSource.find("void Editor::Panels::SceneView::DrawViewportOverlay()", drawBegin);
     ASSERT_NE(drawEnd, std::string::npos);
     const auto drawCode = sceneViewSource.substr(drawBegin, drawEnd - drawBegin);
-    EXPECT_NE(drawCode.find("GetDebugDrawService()"), std::string::npos);
-    EXPECT_NE(drawCode.find("SubmitBox"), std::string::npos);
-    EXPECT_NE(drawCode.find("AddText"), std::string::npos);
+    EXPECT_EQ(drawCode.find("GetDebugDrawService()"), std::string::npos);
+    EXPECT_EQ(drawCode.find("SubmitBox"), std::string::npos);
+    EXPECT_EQ(drawCode.find("AddText"), std::string::npos)
+        << "Scene View imported model/prefab drags must not fall back to a filename label.";
+    EXPECT_EQ(drawCode.find("submittedSceneGhost"), std::string::npos);
+    EXPECT_EQ(drawCode.find("AddCircle"), std::string::npos);
+    EXPECT_EQ(drawCode.find("AddCircleFilled"), std::string::npos);
+    EXPECT_EQ(drawCode.find("AddLine"), std::string::npos)
+        << "Scene View imported model/prefab drags must not draw a UI crosshair/proxy; only the ready mesh/material/texture preview scene may be visible.";
+    EXPECT_EQ(drawCode.find("const bool previewHasBoundMesh ="), std::string::npos);
+    EXPECT_EQ(drawCode.find("if (!previewHasBoundMesh)"), std::string::npos);
     EXPECT_EQ(drawCode.find("CreateGameObjectFromAsset"), std::string::npos);
     EXPECT_EQ(drawCode.find("Scene::AddGameObject"), std::string::npos);
 
@@ -5052,7 +5246,9 @@ TEST(EditorRenderPathContractTests, SceneViewAssetDropDrawsNonScenePreviewAndCom
     const auto dropCode = sceneViewSource.substr(dropHandler, dropEnd - dropHandler);
     EXPECT_NE(dropCode.find("m_importedAssetDragPreviewPlacement"), std::string::npos);
     EXPECT_NE(dropCode.find("ResolveImportedAssetDragPreviewPlacement(EDITOR_CONTEXT(inputManager)->GetMousePosition())"), std::string::npos);
-    EXPECT_NE(dropCode.find("CreateGameObjectFromImportedPrefabArtifact(payload, *previewArtifact, true, nullptr, previewPlacement)"), std::string::npos);
+    EXPECT_NE(dropCode.find("CollectImportedAssetDragPreviewResourceHandoff()"), std::string::npos);
+    EXPECT_NE(dropCode.find("std::move(previewResourceHandoff)"), std::string::npos);
+    EXPECT_NE(dropCode.find("CreateGameObjectFromImportedPrefabArtifact("), std::string::npos);
     EXPECT_NE(dropCode.find("CreateGameObjectFromAsset(payload, true, nullptr, previewPlacement)"), std::string::npos);
 
     EXPECT_NE(editorActionsHeader.find("std::optional<Maths::Vector3> placementOverride"), std::string::npos);
@@ -5098,7 +5294,10 @@ TEST(EditorRenderPathContractTests, SceneViewFinalDropReusesPreviewPrefabArtifac
     const auto dropCode = sceneViewSource.substr(dropBegin, dropEnd - dropBegin);
     EXPECT_NE(dropCode.find("auto previewArtifact = std::move(m_importedAssetDragPreviewArtifact);"), std::string::npos);
     EXPECT_NE(dropCode.find("if (previewArtifact.has_value())"), std::string::npos);
-    EXPECT_NE(dropCode.find("CreateGameObjectFromImportedPrefabArtifact(payload, *previewArtifact, true, nullptr, previewPlacement)"), std::string::npos);
+    EXPECT_NE(dropCode.find("CollectImportedAssetDragPreviewResourceHandoff()"), std::string::npos);
+    EXPECT_NE(dropCode.find("CreateGameObjectFromImportedPrefabArtifact("), std::string::npos);
+    EXPECT_NE(dropCode.find("std::move(previewResourceHandoff)"), std::string::npos)
+        << "Final drop must transfer completed preview mesh loads to the formal instance instead of discarding them and reloading on mouse release.";
     EXPECT_NE(dropCode.find("CreateGameObjectFromAsset(payload, true, nullptr, previewPlacement)"), std::string::npos)
         << "A fallback keeps not-yet-previewed payload drops working.";
 
@@ -5110,7 +5309,7 @@ TEST(EditorRenderPathContractTests, SceneViewFinalDropReusesPreviewPrefabArtifac
     const auto freshnessCode = bridgeSource.substr(freshnessBegin, freshnessEnd - freshnessBegin);
     EXPECT_NE(freshnessCode.find("validateRendererDependencies"), std::string::npos);
     EXPECT_NE(freshnessCode.find("ValidateGeneratedModelRendererArtifactsReady("), std::string::npos)
-        << "Non-cached generated-model drops must still reject missing or corrupt mesh/material/texture artifacts.";
+        << "Explicit deep validation is allowed only for non-release paths that can afford synchronous artifact reads.";
     EXPECT_NE(freshnessCode.find("GeneratedModelRendererArtifactFilesExist"), std::string::npos)
         << "Cached preview drops may skip deep artifact parsing, but must still reject missing renderer artifact files.";
 
@@ -5154,6 +5353,36 @@ TEST(EditorRenderPathContractTests, SceneViewPreviewAttemptsCurrentArtifactEvenW
     EXPECT_NE(sceneViewSource.find("kSceneViewDragPreviewRetryDelay"), std::string::npos);
 }
 
+TEST(EditorRenderPathContractTests, SceneViewPreviewDoesNotRequirePayloadSubAssetKeyBeforeFastPreviewLoad)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const std::string sceneViewSource = ReadSourceText(root / "Project/Editor/Panels/SceneView.cpp");
+    const std::string bridgeSource = ReadSourceText(root / "Project/Editor/Assets/EditorAssetDragDropBridge.cpp");
+
+    ASSERT_FALSE(sceneViewSource.empty());
+    ASSERT_FALSE(bridgeSource.empty());
+
+    const auto ensureBegin = sceneViewSource.find("bool Editor::Panels::SceneView::EnsureImportedAssetDragPreviewMeshGhost(");
+    ASSERT_NE(ensureBegin, std::string::npos);
+    const auto ensureEnd = sceneViewSource.find("std::optional<Maths::Vector3> Editor::Panels::SceneView::ResolveImportedAssetDragPreviewPlacement(", ensureBegin);
+    ASSERT_NE(ensureEnd, std::string::npos);
+    const auto ensureCode = sceneViewSource.substr(ensureBegin, ensureEnd - ensureBegin);
+
+    const auto assetPathGuard = ensureCode.find("assetPath.empty()");
+    ASSERT_NE(assetPathGuard, std::string::npos);
+    EXPECT_EQ(ensureCode.find("subAssetKey.empty()", assetPathGuard), std::string::npos)
+        << "Scene View hover must let EditorAssetDragDropBridge derive the default model/prefab sub-asset key; otherwise whole-file drags fall back to the text label instead of a mesh ghost.";
+    EXPECT_NE(ensureCode.find("TryLoadPreviewPrefabArtifact(payload)"), std::string::npos);
+
+    const auto previewHandleBegin = bridgeSource.find("std::optional<ImportedAssetHandle> ResolveImportedAssetHandleForPreview(");
+    ASSERT_NE(previewHandleBegin, std::string::npos);
+    const auto previewHandleEnd = bridgeSource.find("bool IsImportedPrefabArtifactCurrentForPayload(", previewHandleBegin);
+    ASSERT_NE(previewHandleEnd, std::string::npos);
+    const auto previewHandleCode = bridgeSource.substr(previewHandleBegin, previewHandleEnd - previewHandleBegin);
+    EXPECT_NE(previewHandleCode.find("prefabSubAssetKey.empty()"), std::string::npos);
+    EXPECT_NE(previewHandleCode.find("DefaultGeneratedPrefabSubAssetKeyForAssetPath(assetPath)"), std::string::npos);
+}
+
 TEST(EditorRenderPathContractTests, SceneViewPreviewLoadsPrefabGraphWithoutRendererArtifactDeepValidation)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);
@@ -5179,8 +5408,8 @@ TEST(EditorRenderPathContractTests, SceneViewPreviewLoadsPrefabGraphWithoutRende
     const auto previewLoadEnd = bridgeSource.find("\n}", previewLoadBegin);
     ASSERT_NE(previewLoadEnd, std::string::npos);
     const auto previewLoadCode = bridgeSource.substr(previewLoadBegin, previewLoadEnd - previewLoadBegin);
-    EXPECT_NE(previewLoadCode.find("ImportedPrefabArtifactLoadMode::PreviewGraphOnly"), std::string::npos)
-        << "Hover preview must load only the prefab object graph; mesh/material/texture deep validation is too heavy for mouse-follow.";
+    EXPECT_NE(previewLoadCode.find("ImportedPrefabArtifactLoadMode::RequireRendererArtifactFiles"), std::string::npos)
+        << "Hover preview must share the formal drop's lightweight renderer artifact file readiness gate, otherwise stale artifacts create an invisible preview scene.";
     EXPECT_EQ(previewLoadCode.find("ValidateGeneratedModelRendererArtifactsReady("), std::string::npos)
         << "Preview loading should not synchronously read every generated mesh/material/texture artifact.";
 
@@ -5190,9 +5419,55 @@ TEST(EditorRenderPathContractTests, SceneViewPreviewLoadsPrefabGraphWithoutRende
     ASSERT_NE(fastLoadEnd, std::string::npos);
     const auto fastLoadCode = bridgeSource.substr(fastLoadBegin, fastLoadEnd - fastLoadBegin);
     EXPECT_NE(fastLoadCode.find("ImportedPrefabArtifactLoadMode"), std::string::npos);
+    EXPECT_NE(fastLoadCode.find("RequireRendererArtifactFiles"), std::string::npos);
     EXPECT_NE(fastLoadCode.find("ValidateRendererDependencies"), std::string::npos);
     EXPECT_NE(fastLoadCode.find("ValidateGeneratedModelRendererArtifactsReady("), std::string::npos)
-        << "The non-preview path should retain deep validation so not-ready artifacts still report pending state.";
+        << "Deep validation may exist for explicit validation paths.";
+    const auto requireRendererFilesBegin =
+        fastLoadCode.find("loadMode == ImportedPrefabArtifactLoadMode::RequireRendererArtifactFiles");
+    ASSERT_NE(requireRendererFilesBegin, std::string::npos);
+    const auto requireRendererFilesEnd =
+        fastLoadCode.find("loadMode == ImportedPrefabArtifactLoadMode::ValidateRendererDependencies", requireRendererFilesBegin);
+    ASSERT_NE(requireRendererFilesEnd, std::string::npos);
+    const auto requireRendererFilesCode =
+        fastLoadCode.substr(requireRendererFilesBegin, requireRendererFilesEnd - requireRendererFilesBegin);
+    EXPECT_NE(requireRendererFilesCode.find("GeneratedModelRendererArtifactFilesExist("), std::string::npos)
+        << "Mouse-release paths should do lightweight artifact-file readiness checks.";
+    EXPECT_EQ(requireRendererFilesCode.find("ValidateGeneratedModelRendererArtifactsReady("), std::string::npos)
+        << "Mouse-release paths must not synchronously parse mesh/material/texture artifacts.";
+    const auto lightweightRendererFilesBegin =
+        bridgeSource.find("FastImportedPrefabLoadResult GeneratedModelRendererArtifactFilesExist(");
+    ASSERT_NE(lightweightRendererFilesBegin, std::string::npos);
+    const auto lightweightRendererFilesEnd =
+        bridgeSource.find("FastImportedPrefabLoadResult LoadImportedPrefabFast(", lightweightRendererFilesBegin);
+    ASSERT_NE(lightweightRendererFilesEnd, std::string::npos);
+    const auto lightweightRendererFilesCode =
+        bridgeSource.substr(lightweightRendererFilesBegin, lightweightRendererFilesEnd - lightweightRendererFilesBegin);
+    EXPECT_NE(lightweightRendererFilesCode.find("HasNativeArtifactHeader("), std::string::npos)
+        << "Release/drop readiness should only perform bounded header validation.";
+    EXPECT_EQ(lightweightRendererFilesCode.find("ComputeArtifactFileContentHash("), std::string::npos)
+        << "Release/drop readiness must not scan whole mesh/material/texture files.";
+    EXPECT_EQ(lightweightRendererFilesCode.find("LoadMeshArtifact("), std::string::npos);
+    EXPECT_EQ(lightweightRendererFilesCode.find("LoadTextureArtifact("), std::string::npos);
+    EXPECT_EQ(lightweightRendererFilesCode.find("IsReadableMaterialArtifact("), std::string::npos);
+    EXPECT_EQ(lightweightRendererFilesCode.find("ValidateGeneratedModelRendererArtifactsReady("), std::string::npos);
+    const auto dropModelBegin = bridgeSource.find("EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropModelAssetIntoHierarchy(");
+    ASSERT_NE(dropModelBegin, std::string::npos);
+    const auto dropModelEnd = bridgeSource.find("EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropModelAssetIntoHierarchyAsync(", dropModelBegin);
+    ASSERT_NE(dropModelEnd, std::string::npos);
+    const auto dropModelCode = bridgeSource.substr(dropModelBegin, dropModelEnd - dropModelBegin);
+    EXPECT_NE(dropModelCode.find("ImportedPrefabArtifactLoadMode::RequireRendererArtifactFiles"), std::string::npos)
+        << "Mouse-release drops must only check committed artifact presence; synchronous mesh/texture parsing causes visible release stalls.";
+    EXPECT_EQ(dropModelCode.find("ValidateGeneratedModelRendererArtifactsReady("), std::string::npos);
+
+    const auto handleDropBegin = bridgeSource.find("EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropImportedAssetHandleIntoHierarchy(");
+    ASSERT_NE(handleDropBegin, std::string::npos);
+    const auto handleDropEnd = bridgeSource.find("EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropImportedPrefabArtifactIntoHierarchy(", handleDropBegin);
+    ASSERT_NE(handleDropEnd, std::string::npos);
+    const auto handleDropCode = bridgeSource.substr(handleDropBegin, handleDropEnd - handleDropBegin);
+    EXPECT_NE(handleDropCode.find("ImportedPrefabArtifactLoadMode::RequireRendererArtifactFiles"), std::string::npos)
+        << "Scene View payload drops must not deep-validate renderer artifacts on release.";
+    EXPECT_EQ(handleDropCode.find("ValidateGeneratedModelRendererArtifactsReady("), std::string::npos);
 }
 
 TEST(EditorRenderPathContractTests, SceneViewAssetDropPreviewRayMatchesRenderedScreenRight)
@@ -5236,9 +5511,13 @@ TEST(EditorRenderPathContractTests, SceneViewAssetDropUsesPreviewOnlyMeshGhostSc
     EXPECT_NE(sceneViewHeader.find("m_importedAssetDragPreviewRoot"), std::string::npos);
     EXPECT_NE(sceneViewHeader.find("m_importedAssetDragPreviewMeshGhostUnavailable"), std::string::npos);
     EXPECT_NE(sceneViewHeader.find("m_importedAssetDragPreviewPrewarmedResources"), std::string::npos);
+    EXPECT_NE(sceneViewHeader.find("m_importedAssetDragPreviewMaterialRequests"), std::string::npos);
+    EXPECT_NE(sceneViewHeader.find("m_importedAssetDragPreviewTextureRequests"), std::string::npos);
     EXPECT_NE(sceneViewHeader.find("m_importedAssetDragPreviewMeshLoads"), std::string::npos);
+    EXPECT_NE(sceneViewHeader.find("m_importedAssetDragPreviewRenderableReady"), std::string::npos);
     EXPECT_NE(sceneViewHeader.find("EnsureImportedAssetDragPreviewMeshGhost"), std::string::npos);
     EXPECT_NE(sceneViewHeader.find("PumpImportedAssetDragPreviewResources"), std::string::npos);
+    EXPECT_NE(sceneViewHeader.find("void ClearImportedAssetDragPreview(bool cancelAsyncResourceRequests = true);"), std::string::npos);
 
     const auto previewBegin = sceneViewSource.find("bool Editor::Panels::SceneView::EnsureImportedAssetDragPreviewMeshGhost(");
     ASSERT_NE(previewBegin, std::string::npos);
@@ -5263,20 +5542,26 @@ TEST(EditorRenderPathContractTests, SceneViewAssetDropUsesPreviewOnlyMeshGhostSc
     const auto descriptorBegin = sceneViewSource.find("debugRenderer->AddDescriptor<Rendering::DebugSceneRenderer::DebugSceneDescriptor>");
     ASSERT_NE(descriptorBegin, std::string::npos);
     const auto descriptorCode = sceneViewSource.substr(descriptorBegin, 600);
-    EXPECT_NE(descriptorCode.find("m_importedAssetDragPreviewScene.get()"), std::string::npos);
+    EXPECT_EQ(descriptorCode.find("m_importedAssetDragPreviewRenderableReady ?"), std::string::npos)
+        << "A large preview scene must not stay globally hidden until every mesh/material/texture is ready.";
+    EXPECT_NE(descriptorCode.find("m_importedAssetDragPreviewScene.get()"), std::string::npos)
+        << "Scene View should submit the preview scene immediately; per-renderer readiness gates suppress unfinished meshes.";
 
     const auto sceneDescriptorBegin = sceneViewSource.find("Engine::Rendering::BaseSceneRenderer::SceneDescriptor Editor::Panels::SceneView::CreateSceneDescriptor()");
     ASSERT_NE(sceneDescriptorBegin, std::string::npos);
     const auto sceneDescriptorCode = sceneViewSource.substr(sceneDescriptorBegin, 700);
+    EXPECT_EQ(sceneDescriptorCode.find("m_importedAssetDragPreviewRenderableReady && m_importedAssetDragPreviewScene"), std::string::npos)
+        << "Whole-prefab readiness gating makes large imported model drags invisible for too long.";
+    EXPECT_NE(sceneDescriptorCode.find("if (m_importedAssetDragPreviewScene)"), std::string::npos);
     EXPECT_NE(sceneDescriptorCode.find("descriptor.additiveScenes.push_back(m_importedAssetDragPreviewScene.get())"), std::string::npos);
 
     EXPECT_NE(baseRendererHeader.find("std::vector<SceneSystem::Scene*> additiveScenes;"), std::string::npos);
     EXPECT_NE(baseRendererHeader.find("std::unordered_map<SceneSystem::Scene*, RenderScene> m_additiveRenderScenes;"), std::string::npos);
-    EXPECT_NE(baseRendererSource.find("appendSceneDrawables(sceneDescriptor.scene, m_renderScene, true);"), std::string::npos);
+    EXPECT_NE(baseRendererSource.find("appendSceneDrawables(sceneDescriptor.scene, m_renderScene, true, false);"), std::string::npos);
     EXPECT_NE(baseRendererSource.find("for (auto* additiveScene : sceneDescriptor.additiveScenes)"), std::string::npos);
     EXPECT_NE(baseRendererSource.find("m_additiveRenderScenes.erase(it)"), std::string::npos);
     EXPECT_NE(baseRendererSource.find("auto& additiveRenderScene = m_additiveRenderScenes[additiveScene];"), std::string::npos);
-    EXPECT_NE(baseRendererSource.find("appendSceneDrawables(*additiveScene, additiveRenderScene, false);"), std::string::npos);
+    EXPECT_NE(baseRendererSource.find("appendSceneDrawables(*additiveScene, additiveRenderScene, false, true);"), std::string::npos);
     EXPECT_NE(baseRendererSource.find("uint32_t nextObjectIndex = 0u;"), std::string::npos);
     EXPECT_NE(baseRendererSource.find("reassignObjectIndices(opaques);"), std::string::npos);
     EXPECT_NE(baseRendererSource.find("reassignObjectIndices(skyboxes);"), std::string::npos);
@@ -5291,21 +5576,445 @@ TEST(EditorRenderPathContractTests, SceneViewAssetDropUsesPreviewOnlyMeshGhostSc
     const auto pumpEnd = sceneViewSource.find("void Editor::Panels::SceneView::DrawImportedAssetDragPreview()", pumpBegin);
     ASSERT_NE(pumpEnd, std::string::npos);
     const auto pumpCode = sceneViewSource.substr(pumpBegin, pumpEnd - pumpBegin);
-    EXPECT_NE(pumpCode.find("kSceneViewDragPreviewResourcePrewarmsPerFrame"), std::string::npos);
+    const auto consumeBegin = sceneViewSource.find("TryConsumeImportedAssetDragPreviewMeshLoad(");
+    ASSERT_NE(consumeBegin, std::string::npos);
+    const auto consumeEnd = sceneViewSource.find("bool StartImportedAssetDragPreviewMeshLoad(", consumeBegin);
+    ASSERT_NE(consumeEnd, std::string::npos);
+    const auto consumeCode = sceneViewSource.substr(consumeBegin, consumeEnd - consumeBegin);
+    EXPECT_NE(pumpCode.find("kSceneViewDragPreviewMeshPrewarmsPerFrame"), std::string::npos);
+    EXPECT_NE(pumpCode.find("kSceneViewDragPreviewMaterialPrewarmsPerFrame"), std::string::npos);
     EXPECT_EQ(pumpCode.find("PrewarmArtifact(resolved.artifactPath)"), std::string::npos)
         << "Scene View drag preview must not synchronously read large mesh artifacts on the hover frame.";
+    EXPECT_NE(sceneViewSource.find("BuildImportedAssetDragPreviewMeshData"), std::string::npos)
+        << "Cold Scene View previews need a capped preview mesh so the real model can follow the mouse without uploading the full artifact.";
+    EXPECT_NE(sceneViewSource.find("kSceneViewDragPreviewMaxMeshVertices"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("kSceneViewDragPreviewMaxMeshIndices"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("kSceneViewDragPreviewMeshPrewarmsPerFrame"), std::string::npos);
+    EXPECT_NE(sceneViewSource.find("kSceneViewDragPreviewMaterialPrewarmsPerFrame"), std::string::npos);
+    EXPECT_NE(consumeCode.find("CreateImportedAssetDragPreviewMesh(*data)"), std::string::npos)
+        << "Completed cold mesh CPU data should become a lightweight preview mesh, not stay proxy forever.";
+    EXPECT_EQ(consumeCode.find("found->second->data.reset()"), std::string::npos)
+        << "Preview mesh consumption must keep the full artifact data available for release handoff; otherwise the formal drop restarts the heavy mesh path.";
+    EXPECT_NE(sceneViewSource.find("MeshBufferUploadMode::CpuToGpu"), std::string::npos)
+        << "Preview mesh upload is allowed only after the CPU artifact is ready and capped by the preview budget.";
     EXPECT_NE(sceneViewSource.find("StartImportedAssetDragPreviewMeshLoad"), std::string::npos);
     EXPECT_NE(sceneViewSource.find("TrackBackgroundTask"), std::string::npos);
     EXPECT_NE(sceneViewSource.find("LoadMeshArtifact"), std::string::npos);
     EXPECT_NE(sceneViewSource.find("SetResolvedTransientMeshFromReference"), std::string::npos);
-    EXPECT_NE(pumpCode.find("LoadArtifactWithoutTextures(resolved.artifactPath)"), std::string::npos);
-    EXPECT_NE(pumpCode.find("BindImportedAssetDragPreviewCachedResources"), std::string::npos);
+    EXPECT_EQ(pumpCode.find("LoadArtifactWithoutTextures(resolved.artifactPath)"), std::string::npos)
+        << "Scene View drag preview must not synchronously parse generated material artifacts on the hover frame.";
+    EXPECT_NE(sceneViewSource.find("materialManager.RequestAsyncArtifact(resolved.artifactPath, true)"), std::string::npos)
+        << "Cold Scene View drag previews should request generated materials as cancellable interests that can be handed off to the formal instance.";
+    EXPECT_NE(sceneViewSource.find("FindImportedAssetDragPreviewCachedMaterial("), std::string::npos)
+        << "Scene View drag preview must reuse already loaded material artifacts across equivalent absolute/Library paths.";
+    EXPECT_NE(sceneViewSource.find("meshRenderer.GetMaterialReferences()"), std::string::npos)
+        << "Scene View drag preview must prefer the prefab PPtr-bound material before equivalent-path cache hits so duplicate artifact registrations cannot keep the preview invisible.";
+    EXPECT_NE(sceneViewSource.find("FindImportedAssetDragPreviewCachedTexture("), std::string::npos)
+        << "Scene View drag preview must reuse already loaded texture artifacts across equivalent absolute/Library paths.";
+    EXPECT_NE(sceneViewSource.find("FindImportedAssetDragPreviewCachedMesh("), std::string::npos)
+        << "Scene View drag preview must reuse already loaded mesh artifacts across equivalent absolute/Library paths.";
+    EXPECT_NE(sceneViewSource.find("bool RequestImportedAssetDragPreviewMaterial("), std::string::npos);
+    EXPECT_NE(pumpCode.find("const bool accepted = RequestImportedAssetDragPreviewMaterial("), std::string::npos)
+        << "Scene View preview should only mark a material artifact prewarmed when the cached material exists or an async request was accepted.";
+    EXPECT_NE(pumpCode.find("if (accepted)"), std::string::npos);
+    EXPECT_EQ(pumpCode.find("if (prewarmedThisFrame >= kSceneViewDragPreviewResourcePrewarmsPerFrame)\n            break;\n    }\n    for (const auto& resolved : m_importedAssetDragPreviewArtifact->resolvedAssets)"), std::string::npos)
+        << "Large imported model previews must not let hundreds of mesh artifacts consume the shared prewarm budget before material/texture requests can start.";
+    EXPECT_NE(pumpCode.find("PumpImportedAssetDragPreviewResourceManagers(m_importedAssetDragPreviewTextureRequests);"), std::string::npos)
+        << "Scene View drag preview should drain async resource completions before binding preview materials.";
+    EXPECT_NE(sceneViewSource.find("materialManager.PumpAsyncLoads("), std::string::npos)
+        << "Scene View drag preview must drain async material completions while hovering.";
+    EXPECT_NE(sceneViewSource.find("textureManager.PumpAsyncLoadsForPaths("), std::string::npos)
+        << "Cold texture previews need a strictly budgeted, preview-owned ready-completion pump or they can stay as proxy forever.";
+    EXPECT_EQ(sceneViewSource.find("textureManager.PumpAsyncLoads(kSceneViewDragPreviewTextureCompletionsPerFrame)"), std::string::npos)
+        << "Scene View preview must not drain arbitrary global texture completions on the hover frame.";
+    EXPECT_NE(sceneViewSource.find("BindImportedAssetDragPreviewMaterialTextures"), std::string::npos)
+        << "When a preview material becomes available, Scene View should asynchronously fill its texture slots instead of relying on the white fallback.";
+    EXPECT_NE(sceneViewSource.find("textureManager.RequestAsyncArtifact(texturePath, true)"), std::string::npos)
+        << "Preview material textures must be requested as cancellable interests so cancelling a hover does not leak pending async state.";
+    EXPECT_NE(pumpCode.find("m_importedAssetDragPreviewMaterialRequests"), std::string::npos)
+        << "Preview material async requests must be tracked so cancellation does not leak CPU work.";
+    EXPECT_NE(pumpCode.find("m_importedAssetDragPreviewTextureRequests"), std::string::npos)
+        << "Preview texture async requests must be tracked so cancellation does not leak CPU work.";
+    EXPECT_EQ(pumpCode.find("ImportedAssetDragPreviewRenderableResourcesReady"), std::string::npos)
+        << "Preview readiness should be evaluated per renderer; a whole-tree readiness pre-pass can leave large drags invisible too long.";
+    EXPECT_NE(pumpCode.find("BindImportedAssetDragPreviewReadyRenderers"), std::string::npos);
+    EXPECT_NE(pumpCode.find("m_importedAssetDragPreviewRenderableReady = BindImportedAssetDragPreviewReadyRenderers"), std::string::npos);
     EXPECT_NE(sceneViewSource.find("ResolveMesh()"), std::string::npos);
     EXPECT_EQ(sceneViewSource.find("ResolveMaterials()"), std::string::npos)
         << "Preview material binding must stay within the explicit per-frame budget instead of synchronously resolving every slot.";
     EXPECT_NE(sceneViewSource.find("GetMaterialPaths()"), std::string::npos);
     EXPECT_NE(sceneViewSource.find("SetResolvedMaterialFromReference"), std::string::npos);
     EXPECT_NE(sceneViewSource.find("CancelImportedAssetDragPreviewMeshLoads"), std::string::npos);
+
+    const auto cancelRequestsBegin = sceneViewSource.find("void CancelImportedAssetDragPreviewAsyncResourceRequests(");
+    ASSERT_NE(cancelRequestsBegin, std::string::npos);
+    const auto cancelRequestsEnd = sceneViewSource.find("ImGuizmo::OPERATION ToNativeImGuizmoOperation", cancelRequestsBegin);
+    ASSERT_NE(cancelRequestsEnd, std::string::npos);
+    const auto cancelRequestsCode = sceneViewSource.substr(cancelRequestsBegin, cancelRequestsEnd - cancelRequestsBegin);
+    EXPECT_NE(cancelRequestsCode.find("materialManager.CancelAsyncArtifact(path)"), std::string::npos)
+        << "Cancelling a preview hover must release its material async interests so they do not leak indefinitely.";
+    EXPECT_NE(cancelRequestsCode.find("textureManager.CancelAsyncArtifact(path)"), std::string::npos)
+        << "Cancelling a preview hover must release its texture async interests so they do not leak indefinitely.";
+    EXPECT_NE(cancelRequestsCode.find("materialRequests.clear()"), std::string::npos);
+    EXPECT_NE(cancelRequestsCode.find("textureRequests.clear()"), std::string::npos);
+
+    const auto dropBegin = sceneViewSource.find("void Editor::Panels::SceneView::HandleViewportAssetDragDrop()");
+    ASSERT_NE(dropBegin, std::string::npos);
+    const auto dropEnd = sceneViewSource.find("void Editor::Panels::SceneView::PumpImportedAssetDragPreviewBeforeRender()", dropBegin);
+    ASSERT_NE(dropEnd, std::string::npos);
+    const auto dropCode = sceneViewSource.substr(dropBegin, dropEnd - dropBegin);
+    EXPECT_NE(dropCode.find("CollectImportedAssetDragPreviewResourceHandoff()"), std::string::npos);
+    EXPECT_NE(dropCode.find("ClearImportedAssetDragPreview(false)"), std::string::npos)
+        << "Drop commit must hand off preview work without cancelling async resources needed by the formal instance.";
+
+    const auto clearBegin = sceneViewSource.find("void Editor::Panels::SceneView::ClearImportedAssetDragPreview(const bool cancelAsyncResourceRequests)");
+    ASSERT_NE(clearBegin, std::string::npos);
+    const auto clearEnd = sceneViewSource.find("void Editor::Panels::SceneView::EnsureRenderer()", clearBegin);
+    ASSERT_NE(clearEnd, std::string::npos);
+    const auto clearCode = sceneViewSource.substr(clearBegin, clearEnd - clearBegin);
+    EXPECT_NE(clearCode.find("if (cancelAsyncResourceRequests)"), std::string::npos);
+    EXPECT_NE(clearCode.find("CancelImportedAssetDragPreviewAsyncResourceRequests("), std::string::npos);
+    EXPECT_NE(clearCode.find("m_importedAssetDragPreviewMaterialRequests.clear()"), std::string::npos);
+    EXPECT_NE(clearCode.find("m_importedAssetDragPreviewTextureRequests.clear()"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, SceneViewAssetDropDoesNotShowMeshBeforePreviewMaterialsAndTexturesAreBound)
+{
+    const auto sceneViewSource = ReadSourceText("Project/Editor/Panels/SceneView.cpp");
+    const auto baseSceneRendererSource = ReadSourceText("Runtime/Engine/Rendering/BaseSceneRenderer.cpp");
+    ASSERT_FALSE(sceneViewSource.empty());
+    ASSERT_FALSE(baseSceneRendererSource.empty());
+
+    const auto resourcesReadyBegin = sceneViewSource.find("bool BindImportedAssetDragPreviewReadyRenderers(");
+    ASSERT_NE(resourcesReadyBegin, std::string::npos);
+    const auto resourcesReadyEnd = sceneViewSource.find("bool RequestImportedAssetDragPreviewMaterial(", resourcesReadyBegin);
+    ASSERT_NE(resourcesReadyEnd, std::string::npos);
+    const auto resourcesReadyCode = sceneViewSource.substr(resourcesReadyBegin, resourcesReadyEnd - resourcesReadyBegin);
+
+    const auto materialGate = resourcesReadyCode.find("ImportedAssetDragPreviewMaterialsReady(");
+    ASSERT_NE(materialGate, std::string::npos)
+        << "Preview must gate mesh visibility until the renderer's material slots have real materials.";
+    EXPECT_NE(resourcesReadyCode.find("ImportedAssetDragPreviewMeshResourceReady"), std::string::npos)
+        << "Preview visibility must wait for mesh CPU data or cached mesh resources too.";
+
+    const auto materialsReadyBegin = sceneViewSource.find("bool ImportedAssetDragPreviewMaterialsReady(");
+    ASSERT_NE(materialsReadyBegin, std::string::npos);
+    const auto materialsReadyEnd = sceneViewSource.find("bool ImportedAssetDragPreviewMeshResourceReady(", materialsReadyBegin);
+    ASSERT_NE(materialsReadyEnd, std::string::npos);
+    const auto materialsReadyCode = sceneViewSource.substr(materialsReadyBegin, materialsReadyEnd - materialsReadyBegin);
+    EXPECT_NE(materialsReadyCode.find("BindImportedAssetDragPreviewMaterialTextures(*"), std::string::npos)
+        << "The material-ready gate must also validate texture slots so preview meshes do not appear as white models.";
+
+    const auto textureBindBegin = sceneViewSource.find("bool BindImportedAssetDragPreviewMaterialTextures(");
+    ASSERT_NE(textureBindBegin, std::string::npos);
+    const auto textureBindEnd = sceneViewSource.find("bool ImportedAssetDragPreviewMaterialsReady(", textureBindBegin);
+    ASSERT_NE(textureBindEnd, std::string::npos);
+    const auto textureBindCode = sceneViewSource.substr(textureBindBegin, textureBindEnd - textureBindBegin);
+    EXPECT_NE(textureBindCode.find("bool ready = true;"), std::string::npos);
+    EXPECT_NE(textureBindCode.find("ready = false;"), std::string::npos)
+        << "Texture binding must report missing or budget-deferred textures so mesh visibility can wait.";
+    EXPECT_NE(textureBindCode.find("texturePathMatches"), std::string::npos)
+        << "An existing texture pointer only satisfies preview readiness if it resolves to the material-declared texture artifact.";
+    EXPECT_NE(textureBindCode.find("ResolveResourcePath"), std::string::npos)
+        << "Preview readiness must accept equivalent absolute/Library texture artifact paths, not raw string equality only.";
+    EXPECT_NE(textureBindCode.find("return ready;"), std::string::npos);
+
+    const auto pumpBegin = sceneViewSource.find("void Editor::Panels::SceneView::PumpImportedAssetDragPreviewResources()");
+    ASSERT_NE(pumpBegin, std::string::npos);
+    const auto pumpEnd = sceneViewSource.find("NLS::Editor::Core::PrefabInstancePreviewResourceHandoff", pumpBegin);
+    ASSERT_NE(pumpEnd, std::string::npos);
+    const auto pumpCode = sceneViewSource.substr(pumpBegin, pumpEnd - pumpBegin);
+    EXPECT_EQ(pumpCode.find("if (!resourcesReady || !foundRenderable)\n        return;"), std::string::npos)
+        << "Large preview scenes must keep progressively binding ready renderers instead of waiting for the whole prefab.";
+    EXPECT_EQ(pumpCode.find("(void)resourcesReady"), std::string::npos)
+        << "Preview must not compute readiness and then ignore it before binding meshes.";
+    EXPECT_NE(pumpCode.find("if (!foundRenderable)\n        m_importedAssetDragPreviewRenderableReady = false;"), std::string::npos);
+    EXPECT_NE(pumpCode.find("m_importedAssetDragPreviewRenderableReady = BindImportedAssetDragPreviewReadyRenderers"), std::string::npos)
+        << "Ready renderer binding must only expose meshes after that renderer's material and texture slots are bound.";
+
+    const auto sceneDescriptorBegin = sceneViewSource.find("Engine::Rendering::BaseSceneRenderer::SceneDescriptor Editor::Panels::SceneView::CreateSceneDescriptor()");
+    ASSERT_NE(sceneDescriptorBegin, std::string::npos);
+    const auto sceneDescriptorCode = sceneViewSource.substr(sceneDescriptorBegin, 700);
+    EXPECT_EQ(sceneDescriptorCode.find("m_importedAssetDragPreviewRenderableReady && m_importedAssetDragPreviewScene"), std::string::npos)
+        << "The additive preview scene must be available early; RenderScene suppresses unresolved renderer slots.";
+    EXPECT_NE(sceneDescriptorCode.find("if (m_importedAssetDragPreviewScene)"), std::string::npos);
+
+    EXPECT_NE(baseSceneRendererSource.find("appendSceneDrawables(sceneDescriptor.scene, m_renderScene, true, false)"), std::string::npos)
+        << "The main saved scene must not use preview-only strict texture gating or existing prefab instances can disappear while drag resources are pending.";
+    EXPECT_NE(baseSceneRendererSource.find("appendSceneDrawables(*additiveScene, additiveRenderScene, false, true)"), std::string::npos)
+        << "Only the additive drag preview scene should require explicit material textures before submitting draws, preventing white preview meshes without hiding the main scene.";
+
+    const auto drawBegin = sceneViewSource.find("void Editor::Panels::SceneView::DrawImportedAssetDragPreview()");
+    ASSERT_NE(drawBegin, std::string::npos);
+    const auto drawEnd = sceneViewSource.find("void Editor::Panels::SceneView::ClearImportedAssetDragPreview", drawBegin);
+    ASSERT_NE(drawEnd, std::string::npos);
+    const auto drawCode = sceneViewSource.substr(drawBegin, drawEnd - drawBegin);
+    EXPECT_EQ(drawCode.find("AddCircle"), std::string::npos);
+    EXPECT_EQ(drawCode.find("AddCircleFilled"), std::string::npos);
+    EXPECT_EQ(drawCode.find("AddLine"), std::string::npos);
+    EXPECT_EQ(drawCode.find("SubmitBox"), std::string::npos)
+        << "Pending preview resources should never fall back to UI proxies or a white mesh.";
+}
+
+TEST(EditorRenderPathContractTests, DeferredMaterialResolutionBindsMaterialOnlyAfterTexturesAreReady)
+{
+    const auto sourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
+    const std::string source = ReadSourceText(sourcePath);
+
+    ASSERT_FALSE(source.empty());
+    const auto bindFunction = source.find("bool BindDeferredMaterialPaths(");
+    ASSERT_NE(bindFunction, std::string::npos);
+    const auto nextFunction = source.find("bool BindDeferredMeshPath(", bindFunction);
+    ASSERT_NE(nextFunction, std::string::npos);
+    const auto body = source.substr(bindFunction, nextFunction - bindFunction);
+
+    const auto textureBind = body.find("if (!BindDeferredMaterialTextures(*material, task, state, stats, frameBudgetExpired))");
+    ASSERT_NE(textureBind, std::string::npos)
+        << "Generated model material resolution must validate texture slots before exposing the material to rendering.";
+    const auto resolvedBind = body.find("meshRenderer.SetResolvedMaterialFromReference", textureBind);
+    ASSERT_NE(resolvedBind, std::string::npos);
+    EXPECT_LT(textureBind, resolvedBind)
+        << "Binding the material before textures are ready renders the dropped model as a white fallback material.";
+    EXPECT_NE(body.find("meshRenderer.GetMaterialAtIndex(static_cast<uint8_t>(index)) == material", resolvedBind), std::string::npos)
+        << "Deferred resolution must only count a material slot as bound after MeshRenderer actually accepted the asset reference.";
+    const auto materialBoundGuard = body.find("if (!materialBound)", resolvedBind);
+    ASSERT_NE(materialBoundGuard, std::string::npos);
+    EXPECT_NE(body.find("++stats->failedMaterialSlots", materialBoundGuard), std::string::npos)
+        << "A rejected material PPtr binding is terminal; retrying forever keeps generated models invisible and leaves the progress job running.";
+    EXPECT_NE(body.find("task.failed = true", materialBoundGuard), std::string::npos);
+    EXPECT_NE(body.find("state.failed = true", materialBoundGuard), std::string::npos);
+    const auto materialBoundBlockEnd = body.find("if (stats)\n            ++stats->boundMaterialSlots;", materialBoundGuard);
+    ASSERT_NE(materialBoundBlockEnd, std::string::npos);
+    const auto materialBoundBlock = body.substr(materialBoundGuard, materialBoundBlockEnd - materialBoundGuard);
+    EXPECT_EQ(materialBoundBlock.find("return false;"), std::string::npos)
+        << "Rejected material reference binding must not requeue the same material slot indefinitely.";
+    EXPECT_NE(body.find("meshRenderer.GetMaterialReferences()"), std::string::npos)
+        << "Deferred resolution must prefer an already PPtr-bound material before equivalent-path cache hits; otherwise duplicate artifact registrations can leave the drop permanently pending.";
+}
+
+TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionCancelsAsyncMaterialAndTextureRequests)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const std::string actionsSource = ReadSourceText(root / "Project/Editor/Core/EditorActions.cpp");
+    const std::string materialHeader = ReadSourceText(root / "Runtime/Core/ResourceManagement/MaterialManager.h");
+    const std::string materialSource = ReadSourceText(root / "Runtime/Rendering/ResourceManagement/MaterialManager.cpp");
+    const std::string textureHeader = ReadSourceText(root / "Runtime/Core/ResourceManagement/TextureManager.h");
+    const std::string textureSource = ReadSourceText(root / "Runtime/Rendering/ResourceManagement/TextureManager.cpp");
+    const std::string sceneViewSource = ReadSourceText(root / "Project/Editor/Panels/SceneView.cpp");
+
+    ASSERT_FALSE(actionsSource.empty());
+    ASSERT_FALSE(materialHeader.empty());
+    ASSERT_FALSE(materialSource.empty());
+    ASSERT_FALSE(textureHeader.empty());
+    ASSERT_FALSE(textureSource.empty());
+    ASSERT_FALSE(sceneViewSource.empty());
+
+    EXPECT_NE(materialHeader.find("CancelAsyncArtifact"), std::string::npos);
+    EXPECT_NE(materialSource.find("void MaterialManager::CancelAsyncArtifact"), std::string::npos);
+    EXPECT_NE(textureHeader.find("CancelAsyncArtifact"), std::string::npos);
+    EXPECT_NE(textureSource.find("void TextureManager::CancelAsyncArtifact"), std::string::npos);
+    EXPECT_NE(materialHeader.find("RequestAsyncArtifact(const std::string& p_path, bool p_cancelableInterest = false)"), std::string::npos)
+        << "Formal drops and renderer paths should remain shared async interests by default.";
+    EXPECT_NE(textureHeader.find("RequestAsyncArtifact(const std::string& p_path, bool p_cancelableInterest = false)"), std::string::npos)
+        << "Formal drops and renderer paths should remain shared async interests by default.";
+    EXPECT_NE(materialSource.find("size_t cancelableInterestCount = 0u"), std::string::npos);
+    EXPECT_NE(materialSource.find("bool hasSharedInterest = false"), std::string::npos);
+    EXPECT_NE(textureSource.find("size_t cancelableInterestCount = 0u"), std::string::npos);
+    EXPECT_NE(textureSource.find("bool hasSharedInterest = false"), std::string::npos);
+    EXPECT_NE(materialSource.find("g_asyncMaterialRequests.emplace(path, std::move(request));"), std::string::npos)
+        << "Async material requests must reserve the path before launching std::async.";
+    EXPECT_LT(
+        materialSource.find("g_asyncMaterialRequests.emplace(path, std::move(request));"),
+        materialSource.find("std::async("));
+    EXPECT_NE(textureSource.find("g_asyncTextureRequests.emplace(path, std::move(request));"), std::string::npos)
+        << "Async texture requests must reserve the path before launching std::async.";
+    EXPECT_LT(
+        textureSource.find("g_asyncTextureRequests.emplace(path, std::move(request));"),
+        textureSource.find("std::async("));
+    const auto materialPendingBegin = materialSource.find("bool MaterialManager::IsAsyncArtifactLoadPending");
+    ASSERT_NE(materialPendingBegin, std::string::npos);
+    const auto materialPendingEnd = materialSource.find("bool MaterialManager::IsAsyncArtifactLoadFailed", materialPendingBegin);
+    ASSERT_NE(materialPendingEnd, std::string::npos);
+    const auto materialPendingCode = materialSource.substr(materialPendingBegin, materialPendingEnd - materialPendingBegin);
+    EXPECT_EQ(materialPendingCode.find("g_cancelledAsyncMaterialArtifacts"), std::string::npos)
+        << "Cancelled in-flight material requests must still look pending until they drain.";
+    const auto texturePendingBegin = textureSource.find("bool TextureManager::IsAsyncArtifactLoadPending");
+    ASSERT_NE(texturePendingBegin, std::string::npos);
+    const auto texturePendingEnd = textureSource.find("bool TextureManager::IsAsyncArtifactLoadFailed", texturePendingBegin);
+    ASSERT_NE(texturePendingEnd, std::string::npos);
+    const auto texturePendingCode = textureSource.substr(texturePendingBegin, texturePendingEnd - texturePendingBegin);
+    EXPECT_EQ(texturePendingCode.find("g_cancelledAsyncTextureArtifacts"), std::string::npos)
+        << "Cancelled in-flight texture requests must still look pending until they drain.";
+    const auto materialCancelBegin = materialSource.find("void MaterialManager::CancelAsyncArtifact");
+    ASSERT_NE(materialCancelBegin, std::string::npos);
+    const auto materialCancelEnd = materialSource.find("bool MaterialManager::IsAsyncArtifactLoadPending", materialCancelBegin);
+    ASSERT_NE(materialCancelEnd, std::string::npos);
+    const auto materialCancelCode = materialSource.substr(materialCancelBegin, materialCancelEnd - materialCancelBegin);
+    EXPECT_NE(materialCancelCode.find("--found->second.cancelableInterestCount"), std::string::npos);
+    EXPECT_EQ(materialCancelCode.find("found->second.cancelled->store"), std::string::npos)
+        << "Preview material cancellation must release only the preview interest; aborting a shared path request can hide existing prefab instances.";
+    EXPECT_EQ(materialCancelCode.find("g_cancelledAsyncMaterialArtifacts.insert"), std::string::npos)
+        << "Preview material cancellation must not mark the equivalent artifact path globally cancelled.";
+
+    const auto textureCancelBegin = textureSource.find("void TextureManager::CancelAsyncArtifact");
+    ASSERT_NE(textureCancelBegin, std::string::npos);
+    const auto textureCancelEnd = textureSource.find("bool TextureManager::IsAsyncArtifactLoadPending", textureCancelBegin);
+    ASSERT_NE(textureCancelEnd, std::string::npos);
+    const auto textureCancelCode = textureSource.substr(textureCancelBegin, textureCancelEnd - textureCancelBegin);
+    EXPECT_NE(textureCancelCode.find("--found->second.cancelableInterestCount"), std::string::npos);
+    EXPECT_EQ(textureCancelCode.find("found->second.cancelled->store"), std::string::npos)
+        << "Preview texture cancellation must release only the preview interest; aborting a shared path request can hide existing prefab instances.";
+    EXPECT_EQ(textureCancelCode.find("g_cancelledAsyncTextureArtifacts.insert"), std::string::npos)
+        << "Preview texture cancellation must not mark the equivalent artifact path globally cancelled.";
+    const auto materialPumpBegin = materialSource.find("void MaterialManager::PumpAsyncLoads");
+    ASSERT_NE(materialPumpBegin, std::string::npos);
+    const auto materialPumpEnd = materialSource.find("void MaterialManager::DestroyResource", materialPumpBegin);
+    ASSERT_NE(materialPumpEnd, std::string::npos);
+    const auto materialPumpCode = materialSource.substr(materialPumpBegin, materialPumpEnd - materialPumpBegin);
+    EXPECT_NE(materialPumpCode.find("request.future.get()"), std::string::npos);
+    EXPECT_NE(materialPumpCode.find("catch (const std::exception& exception)"), std::string::npos)
+        << "Async material task exceptions must be converted into failed artifact state instead of escaping the editor resolution pump.";
+    EXPECT_NE(materialPumpCode.find("g_failedAsyncMaterialArtifacts[request.path]"), std::string::npos);
+    const auto materialCreateBegin = materialPumpCode.find("MaterialLoader::CreateFromSerializedPayload");
+    ASSERT_NE(materialCreateBegin, std::string::npos);
+    EXPECT_NE(materialPumpCode.find("RegisterResource(request.path, material)", materialCreateBegin), std::string::npos);
+    EXPECT_NE(materialPumpCode.find("catch (const std::exception& exception)", materialCreateBegin), std::string::npos)
+        << "Async material runtime creation/register failures must not escape the editor resolution pump.";
+
+    const auto texturePumpBegin = textureSource.find("void PumpAsyncTextureArtifactLoads(");
+    ASSERT_NE(texturePumpBegin, std::string::npos);
+    const auto texturePumpEnd = textureSource.find("void TextureManager::PumpAsyncLoads", texturePumpBegin);
+    ASSERT_NE(texturePumpEnd, std::string::npos);
+    const auto texturePumpCode = textureSource.substr(texturePumpBegin, texturePumpEnd - texturePumpBegin);
+    EXPECT_NE(texturePumpCode.find("request.future.get()"), std::string::npos);
+    EXPECT_NE(texturePumpCode.find("catch (const std::exception& exception)"), std::string::npos)
+        << "Async texture task exceptions must be converted into failed artifact state instead of escaping the editor resolution pump.";
+    EXPECT_NE(texturePumpCode.find("g_failedAsyncTextureArtifacts[request.path]"), std::string::npos);
+    const auto textureCreateBegin = texturePumpCode.find("TextureLoader::CreateFromArtifact");
+    ASSERT_NE(textureCreateBegin, std::string::npos);
+    EXPECT_NE(texturePumpCode.find("RegisterResource(request.path, texture)", textureCreateBegin), std::string::npos);
+    EXPECT_NE(texturePumpCode.find("catch (const std::exception& exception)", textureCreateBegin), std::string::npos)
+        << "Async texture runtime creation/register failures must not escape the editor resolution pump.";
+
+    const auto cancelInterestsBegin = actionsSource.find("void CancelRendererResourceMaterialAndTextureInterests(");
+    ASSERT_NE(cancelInterestsBegin, std::string::npos);
+    const auto cancelInterestsEnd = actionsSource.find("void RegisterRendererResourceResolutionState(", cancelInterestsBegin);
+    ASSERT_NE(cancelInterestsEnd, std::string::npos);
+    const auto cancelInterestsCode = actionsSource.substr(cancelInterestsBegin, cancelInterestsEnd - cancelInterestsBegin);
+    EXPECT_NE(cancelInterestsCode.find("materialManager.CancelAsyncArtifact(path)"), std::string::npos)
+        << "Released renderer-resolution material interests must cancel their cancelable async requests.";
+    EXPECT_NE(cancelInterestsCode.find("textureManager.CancelAsyncArtifact(path)"), std::string::npos)
+        << "Released renderer-resolution texture interests must cancel their cancelable async requests.";
+
+    const auto cancelBegin = actionsSource.find("void CancelRendererResourceResolutionForMarkedObject(");
+    ASSERT_NE(cancelBegin, std::string::npos);
+    const auto cancelEnd = actionsSource.find("std::string ToGenericPath(", cancelBegin);
+    ASSERT_NE(cancelEnd, std::string::npos);
+    const auto cancelCode = actionsSource.substr(cancelBegin, cancelEnd - cancelBegin);
+    EXPECT_NE(cancelCode.find("CancelRendererResourceMaterialAndTextureInterests"), std::string::npos)
+        << "Deleting one prefab instance must release only that state's material/texture interests.";
+    EXPECT_NE(actionsSource.find("std::mutex asyncLoadsMutex"), std::string::npos);
+    EXPECT_NE(actionsSource.find("std::mutex lifecycleMutex"), std::string::npos);
+    EXPECT_NE(actionsSource.find("class PreviewResourceHandoffCancelGuard"), std::string::npos)
+        << "Preview handoff must be RAII-cancelled on every drop/queue early return so hover async work cannot leak CPU after removal.";
+
+    const auto createImportedBegin = actionsSource.find("Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromImportedPrefabArtifact(");
+    ASSERT_NE(createImportedBegin, std::string::npos);
+    const auto createImportedEnd = actionsSource.find("void NLS::Editor::Core::EditorActions::CompletePendingAssetDrop(", createImportedBegin);
+    ASSERT_NE(createImportedEnd, std::string::npos);
+    const auto createImportedCode = actionsSource.substr(createImportedBegin, createImportedEnd - createImportedBegin);
+    EXPECT_NE(createImportedCode.find("PreviewResourceHandoffCancelGuard previewHandoffGuard(previewResourceHandoff);"), std::string::npos);
+    EXPECT_NE(createImportedCode.find("previewHandoffGuard.Disarm();"), std::string::npos)
+        << "The cached-prefab drop path may disarm only after the handoff is passed into formal resolution.";
+
+    const auto queueBegin = actionsSource.find("void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(");
+    ASSERT_NE(queueBegin, std::string::npos);
+    const auto queueEnd = actionsSource.find("bool Editor::Core::EditorActions::DestroyGameObject(", queueBegin);
+    ASSERT_NE(queueEnd, std::string::npos);
+    const auto queueCode = actionsSource.substr(queueBegin, queueEnd - queueBegin);
+    EXPECT_NE(queueCode.find("PreviewResourceHandoffCancelGuard previewHandoffGuard(previewResourceHandoff);"), std::string::npos);
+    const auto registerState = queueCode.find("RegisterRendererResourceResolutionState(state);");
+    ASSERT_NE(registerState, std::string::npos);
+    EXPECT_NE(queueCode.find("previewHandoffGuard.Disarm();", registerState), std::string::npos)
+        << "Queue early returns before state registration must keep the guard armed and cancel preview mesh/material/texture interests.";
+
+    const auto adoptBegin = actionsSource.find("void AdoptPreviewResourceHandoff(");
+    ASSERT_NE(adoptBegin, std::string::npos);
+    const auto adoptEnd = actionsSource.find("NLS::Engine::GameObject* FindLiveGameObjectByAddress(", adoptBegin);
+    ASSERT_NE(adoptEnd, std::string::npos);
+    const auto adoptCode = actionsSource.substr(adoptBegin, adoptEnd - adoptBegin);
+    EXPECT_EQ(adoptCode.find("meshFilter->SetResolvedTransientMeshFromReference"), std::string::npos)
+        << "Formal prefab instances must never adopt the capped Scene View preview mesh as their committed mesh.";
+
+    const auto collectPreviewBegin = sceneViewSource.find("NLS::Editor::Core::PrefabInstancePreviewResourceHandoff CollectImportedAssetDragPreviewMeshes(");
+    ASSERT_NE(collectPreviewBegin, std::string::npos);
+    const auto collectPreviewEnd = sceneViewSource.find("std::string NormalizeImportedAssetDragPreviewResourcePath", collectPreviewBegin);
+    ASSERT_NE(collectPreviewEnd, std::string::npos);
+    const auto collectPreviewCode = sceneViewSource.substr(collectPreviewBegin, collectPreviewEnd - collectPreviewBegin);
+    EXPECT_NE(collectPreviewCode.find("handoff.meshLoadsByPath = std::move(loads)"), std::string::npos)
+        << "Drop handoff must transfer in-flight or completed mesh artifact loads so release does not cancel hover work and restart the heavy mesh path.";
+    EXPECT_EQ(collectPreviewCode.find("CancelImportedAssetDragPreviewMeshLoads(loads)"), std::string::npos)
+        << "Release handoff must not cancel preview mesh loads that the formal prefab instance is about to adopt.";
+    EXPECT_NE(collectPreviewCode.find("entry.second->transientMesh.reset()"), std::string::npos)
+        << "Formal prefab instances may reuse loaded artifact data, but must not inherit the capped Scene View preview mesh.";
+
+    const auto finishCancelled = actionsSource.find("auto finishCancelled =");
+    ASSERT_NE(finishCancelled, std::string::npos);
+    const auto finishFailed = actionsSource.find("auto finishFailed =", finishCancelled);
+    ASSERT_NE(finishFailed, std::string::npos);
+    const auto finishCancelledCode = actionsSource.substr(finishCancelled, finishFailed - finishCancelled);
+    EXPECT_NE(finishCancelledCode.find("CancelRendererResourceMaterialAndTextureInterests"), std::string::npos);
+
+    const auto finishFailedEnd = actionsSource.find("if (state->cancelled.load", finishFailed);
+    ASSERT_NE(finishFailedEnd, std::string::npos);
+    const auto finishFailedCode = actionsSource.substr(finishFailed, finishFailedEnd - finishFailed);
+    EXPECT_NE(finishFailedCode.find("CancelRendererResourceMaterialAndTextureInterests"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, ResourceManagerCacheAccessIsMutexProtectedForAsyncPumps)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const std::string header = ReadSourceText(root / "Runtime/Core/ResourceManagement/AResourceManager.h");
+    const std::string implementation = ReadSourceText(root / "Runtime/Core/ResourceManagement/AResourceManager.inl");
+    const std::string textureManager = ReadSourceText(root / "Runtime/Rendering/ResourceManagement/TextureManager.cpp");
+    const std::string materialManager = ReadSourceText(root / "Runtime/Rendering/ResourceManagement/MaterialManager.cpp");
+
+    ASSERT_FALSE(header.empty());
+    ASSERT_FALSE(implementation.empty());
+    ASSERT_FALSE(textureManager.empty());
+    ASSERT_FALSE(materialManager.empty());
+
+    EXPECT_NE(header.find("mutable std::recursive_mutex m_resourcesMutex"), std::string::npos);
+    EXPECT_NE(header.find("std::unordered_map<std::string, T*> GetResources() const"), std::string::npos)
+        << "Resource iteration must use a snapshot so async pumps cannot race callers over the internal cache map.";
+    EXPECT_EQ(header.find("std::unordered_map<std::string, T*>& GetResources()"), std::string::npos);
+
+    const auto getResourceBegin = implementation.find("inline T* AResourceManager<T>::GetResource(");
+    ASSERT_NE(getResourceBegin, std::string::npos);
+    const auto getResourceEnd = implementation.find("inline T* AResourceManager<T>::operator[]", getResourceBegin);
+    ASSERT_NE(getResourceEnd, std::string::npos);
+    const auto getResourceCode = implementation.substr(getResourceBegin, getResourceEnd - getResourceBegin);
+    EXPECT_NE(getResourceCode.find("std::lock_guard lock(m_resourcesMutex)"), std::string::npos);
+
+    const auto registerBegin = implementation.find("inline T* AResourceManager<T>::RegisterResource(");
+    ASSERT_NE(registerBegin, std::string::npos);
+    const auto registerEnd = implementation.find("inline void AResourceManager<T>::UnregisterResource", registerBegin);
+    ASSERT_NE(registerEnd, std::string::npos);
+    const auto registerCode = implementation.substr(registerBegin, registerEnd - registerBegin);
+    EXPECT_NE(registerCode.find("std::lock_guard lock(m_resourcesMutex)"), std::string::npos);
+    EXPECT_NE(registerCode.find("m_resources[p_path] = p_instance"), std::string::npos);
+
+    const auto snapshotBegin = implementation.find("inline std::unordered_map<std::string, T*> AResourceManager<T>::GetResources() const");
+    ASSERT_NE(snapshotBegin, std::string::npos);
+    const auto snapshotEnd = implementation.find("std::string AResourceManager<T>::GetRealPath", snapshotBegin);
+    ASSERT_NE(snapshotEnd, std::string::npos);
+    const auto snapshotCode = implementation.substr(snapshotBegin, snapshotEnd - snapshotBegin);
+    EXPECT_NE(snapshotCode.find("std::lock_guard lock(m_resourcesMutex)"), std::string::npos);
+    EXPECT_NE(snapshotCode.find("return m_resources;"), std::string::npos);
+
+    EXPECT_NE(textureManager.find("RegisterResource(request.path, texture)"), std::string::npos);
+    EXPECT_NE(materialManager.find("RegisterResource(request.path, material)"), std::string::npos);
 }
 
 TEST(EditorRenderPathContractTests, SceneLoadPrefabRestoreRefreshesAssetDatabaseOnceAndCachesArtifacts)
@@ -5344,6 +6053,14 @@ TEST(EditorRenderPathContractTests, SceneLoadPrefabRestoreRefreshesAssetDatabase
     EXPECT_NE(loadCode.find("const bool prefabRestoreSucceeded = RestorePrefabInstancesForCurrentSceneFromDisk();"), std::string::npos);
     EXPECT_NE(loadCode.find("CompleteTaskProgress(kSceneLoadProgressTaskKey"), std::string::npos);
     EXPECT_NE(loadCode.find("prefabRestoreSucceeded ? \"Scene loaded\" : \"Scene loaded with prefab restore warnings\""), std::string::npos);
+    EXPECT_NE(helperCode.find("QueuePrefabInstanceAssetResolution("), std::string::npos)
+        << "Restored generated model prefab instances must re-enter the renderer resource queue; otherwise cold scene loads can restore prefab metadata but leave meshes hidden by strict material/texture gates.";
+    EXPECT_NE(helperCode.find("FindCachedRestoredPrefabArtifact"), std::string::npos)
+        << "Scene restore must queue renderer resolution with the full prefab artifact loaded from the asset database, not only the registry source graph.";
+    EXPECT_EQ(helperCode.find("registeredInstance,\n                nullptr,\n                m_context.sceneManager.GetCurrentSceneSourcePath()"), std::string::npos)
+        << "Passing nullptr drops manifest-derived resolvedAssets and reproduces resolvedAssets=0/no renderer tasks on restored generated model prefab instances.";
+    EXPECT_NE(helperCode.find("registeredInstance->generatedReadOnly"), std::string::npos);
+    EXPECT_NE(helperCode.find("registeredInstance->instanceRoot == object"), std::string::npos);
 
     const auto restoreBegin = helperCode.find("RestorePrefabInstancesFromSceneDocument(");
     ASSERT_NE(restoreBegin, std::string::npos);
@@ -5357,6 +6074,30 @@ TEST(EditorRenderPathContractTests, SceneLoadPrefabRestoreRefreshesAssetDatabase
         << "Prefab restore resolver should not refresh the asset database once per prefab instance.";
     EXPECT_NE(resolverCode.find("prefabArtifactCache.find(cacheKey)"), std::string::npos);
     EXPECT_NE(resolverCode.find("prefabArtifactCache.emplace(cacheKey, artifact)"), std::string::npos);
+}
+
+TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionReloadsPrefabArtifactWhenSourcePrefabMissing)
+{
+    const auto actionsSourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Core/EditorActions.cpp";
+    const std::string source = ReadSourceText(actionsSourcePath);
+
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(source.find("TryLoadPrefabArtifactForRendererResourceResolution"), std::string::npos)
+        << "Queueing generated model renderer resolution without a source prefab must reload the full prefab artifact so resolvedAssets are available.";
+
+    const auto queue = source.find("void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(");
+    ASSERT_NE(queue, std::string::npos);
+    const auto queueEnd = source.find("bool Editor::Core::EditorActions::DestroyGameObject(", queue);
+    ASSERT_NE(queueEnd, std::string::npos);
+    const auto queueCode = source.substr(queue, queueEnd - queue);
+
+    EXPECT_NE(queueCode.find("TryLoadPrefabArtifactForRendererResourceResolution"), std::string::npos);
+    EXPECT_NE(queueCode.find("loadedSourcePrefab"), std::string::npos);
+    EXPECT_EQ(queueCode.find("prefab.assetId = instance->prefabAssetId;\n        prefab.graph = instance->sourceGraph;\n        prefab.generatedModelPrefab = instance->generatedReadOnly;"), std::string::npos)
+        << "Graph-only fallback leaves resolvedAssets empty and causes no renderer resource tasks.";
+    EXPECT_NE(queueCode.find("prefab.resolvedAssets.empty()"), std::string::npos)
+        << "Generated model resource resolution must fail early with context if the loaded prefab artifact has no resolved renderer assets.";
 }
 
 TEST(EditorRenderPathContractTests, StartupSceneRestoreUsesSharedPrefabRestoreAndProgress)
@@ -5447,10 +6188,16 @@ TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionUsesMultiBin
     const std::string source = ReadSourceText(actionsSourcePath);
 
     ASSERT_FALSE(source.empty());
-    EXPECT_NE(source.find("constexpr size_t kRendererResourceResolutionMeshBindsPerFrame = 4u;"), std::string::npos);
-    EXPECT_NE(source.find("constexpr size_t kRendererResourceResolutionTextureBindsPerFrame = 8u;"), std::string::npos);
-    EXPECT_EQ(source.find("constexpr size_t kRendererResourceResolutionMeshBindsPerFrame = 1u;"), std::string::npos);
-    EXPECT_EQ(source.find("constexpr size_t kRendererResourceResolutionTextureBindsPerFrame = 1u;"), std::string::npos);
+    EXPECT_NE(source.find("constexpr auto kRendererResourceResolutionFrameBudget = std::chrono::milliseconds(12);"), std::string::npos)
+        << "Generated model drops should remain bounded by time instead of dumping all resource binding into one UI tick.";
+    EXPECT_NE(source.find("constexpr size_t kRendererResourceResolutionMeshBindsPerFrame = 32u;"), std::string::npos)
+        << "Large ready prefabs need enough per-step mesh binding throughput to become visible quickly after mouse release.";
+    EXPECT_NE(source.find("constexpr size_t kRendererResourceResolutionTextureBindsPerFrame = 64u;"), std::string::npos)
+        << "Texture binding throughput must be high enough that material-ready models do not remain invisible for dozens of steps.";
+    EXPECT_EQ(source.find("constexpr size_t kRendererResourceResolutionMeshBindsPerFrame = 4u;"), std::string::npos)
+        << "A 4-mesh hard cap makes 400+ mesh prefabs visibly stall even when the frame time budget has room.";
+    EXPECT_EQ(source.find("constexpr size_t kRendererResourceResolutionTextureBindsPerFrame = 8u;"), std::string::npos)
+        << "The old texture cap was tuned for safety but is too low for ready generated model drops.";
 }
 
 TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionQueuesMeshesBeforeMaterials)
@@ -5927,7 +6674,7 @@ TEST(EditorRenderPathContractTests, GeneratedModelResourceResolutionUsesPrefabIn
     EXPECT_NE(collectorCode.find("PrefabComponentRecordMatches<NLS::Engine::Components::MeshFilter>(*componentRecord)"), std::string::npos);
     EXPECT_NE(collectorCode.find("PrefabComponentRecordMatches<NLS::Engine::Components::MeshRenderer>(*componentRecord) && meshRenderer"), std::string::npos);
     EXPECT_NE(source.find("BindDeferredMeshPath"), std::string::npos);
-    EXPECT_NE(source.find("GetResource(task.modelPath, false)"), std::string::npos);
+    EXPECT_NE(source.find("FindCachedMeshByEquivalentPath(meshManager, task.modelPath)"), std::string::npos);
     EXPECT_NE(source.find("meshFilter.SetModelPathHint(task.modelPath)"), std::string::npos);
     EXPECT_EQ(source.find("meshRenderer.SetModelPathHint(task.modelPath)"), std::string::npos);
     EXPECT_EQ(collectorCode.find("meshRenderer->SetModelPathHint(modelPath)"), std::string::npos);

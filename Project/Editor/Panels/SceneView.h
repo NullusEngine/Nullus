@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <string>
+#include <vector>
 
 #include "Assets/EditorAssetDragPayload.h"
 #include "Core/SceneCameraFocus.h"
@@ -14,10 +15,14 @@
 #include "Panels/AViewControllable.h"
 #include "Core/SceneViewImGuizmo.h"
 
+namespace NLS::Editor::Core
+{
+    struct PrefabInstanceMeshArtifactLoadState;
+    struct PrefabInstancePreviewResourceHandoff;
+}
+
 namespace NLS::Editor::Panels
 {
-    struct ImportedAssetDragPreviewMeshLoadState;
-
 	class SceneView : public Editor::Panels::AViewControllable
 	{
 	public:
@@ -78,9 +83,11 @@ namespace NLS::Editor::Panels
         bool EnsureImportedAssetDragPreviewMeshGhost(const NLS::Editor::Assets::EditorAssetDragPayload& payload);
         std::optional<Maths::Vector3> ResolveImportedAssetDragPreviewPlacement(const Maths::Vector2& mousePosition) const;
         void HandleViewportAssetDragDrop();
+        void PumpImportedAssetDragPreviewBeforeRender();
         void PumpImportedAssetDragPreviewResources();
+        NLS::Editor::Core::PrefabInstancePreviewResourceHandoff CollectImportedAssetDragPreviewResourceHandoff();
         void DrawImportedAssetDragPreview();
-        void ClearImportedAssetDragPreview();
+        void ClearImportedAssetDragPreview(bool cancelAsyncResourceRequests = true);
 
 	private:
 		Engine::SceneSystem::SceneManager& m_sceneManager;
@@ -99,13 +106,17 @@ namespace NLS::Editor::Panels
         std::optional<NLS::Editor::Assets::EditorAssetDragPayload> m_importedAssetDragPreviewPayload;
         std::optional<NLS::Engine::Assets::PrefabArtifact> m_importedAssetDragPreviewArtifact;
         std::unique_ptr<Engine::SceneSystem::Scene> m_importedAssetDragPreviewScene;
+        std::vector<std::unique_ptr<Engine::SceneSystem::Scene>> m_retiredImportedAssetDragPreviewScenes;
         Engine::GameObject* m_importedAssetDragPreviewRoot = nullptr;
         std::string m_importedAssetDragPreviewAssetGuid;
         std::string m_importedAssetDragPreviewSubAssetKey;
         bool m_importedAssetDragPreviewMeshGhostUnavailable = false;
+        bool m_importedAssetDragPreviewRenderableReady = false;
         std::chrono::steady_clock::time_point m_importedAssetDragPreviewNextMeshGhostRetryTime {};
         std::unordered_set<std::string> m_importedAssetDragPreviewPrewarmedResources;
-        std::unordered_map<std::string, std::shared_ptr<ImportedAssetDragPreviewMeshLoadState>> m_importedAssetDragPreviewMeshLoads;
+        std::unordered_set<std::string> m_importedAssetDragPreviewMaterialRequests;
+        std::unordered_set<std::string> m_importedAssetDragPreviewTextureRequests;
+        std::unordered_map<std::string, std::shared_ptr<NLS::Editor::Core::PrefabInstanceMeshArtifactLoadState>> m_importedAssetDragPreviewMeshLoads;
         Maths::Vector2 m_importedAssetDragPreviewMousePos { 0.0f, 0.0f };
         std::optional<Maths::Vector3> m_importedAssetDragPreviewPlacement;
 		bool m_hasPickingSample = false;

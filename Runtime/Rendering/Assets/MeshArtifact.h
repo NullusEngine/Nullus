@@ -4,6 +4,7 @@
 #include "Rendering/Geometry/BoundingSphere.h"
 #include "Rendering/Geometry/Vertex.h"
 
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -23,4 +24,7 @@ struct MeshArtifactData
 NLS_RENDER_API std::vector<uint8_t> SerializeMeshArtifact(const MeshArtifactData& mesh);
 NLS_RENDER_API std::optional<MeshArtifactData> DeserializeMeshArtifact(const std::vector<uint8_t>& bytes);
 NLS_RENDER_API std::optional<MeshArtifactData> LoadMeshArtifact(const std::filesystem::path& path);
+NLS_RENDER_API std::optional<MeshArtifactData> LoadMeshArtifact(
+    const std::filesystem::path& path,
+    const std::atomic_bool* cancellationFlag);
 }

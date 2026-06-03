@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -12,6 +13,7 @@
 #include "Core/ResourceManagement/MaterialManager.h"
 #include "Core/ResourceManagement/MeshManager.h"
 #include "Core/ResourceManagement/ShaderManager.h"
+#include "Core/ResourceManagement/TextureManager.h"
 #include "Jobs/JobSystem.h"
 #include "Math/Matrix4.h"
 #include "Rendering/Assets/MeshArtifact.h"
@@ -24,6 +26,7 @@
 #include "Rendering/Geometry/Vertex.h"
 #include "Rendering/RenderScene.h"
 #include "Rendering/Resources/Loaders/ShaderLoader.h"
+#include "Rendering/Resources/Loaders/TextureLoader.h"
 #include "Rendering/Resources/IndexedObjectDataShaderSupport.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
@@ -586,6 +589,24 @@ TEST(RenderSceneCacheTests, RemovedMeshRendererRemovesPersistentPrimitive)
     EXPECT_TRUE(renderScene.GatherVisibleCommands({}).opaques.empty());
 }
 
+TEST(RenderSceneCacheTests, MarkedDestroyedMeshRendererRemovesPersistentPrimitiveBeforeGarbageCollection)
+{
+    RenderableFixture fixture;
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions options;
+    options.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, options).addedPrimitiveCount, 1u);
+
+    fixture.meshRenderer->gameobject()->MarkAsDestroy();
+
+    const auto removed = renderScene.Synchronize(fixture.scene, options);
+
+    EXPECT_EQ(removed.removedPrimitiveCount, 1u);
+    EXPECT_EQ(renderScene.GetPrimitiveCount(), 0u);
+    EXPECT_TRUE(renderScene.GatherVisibleCommands({}).opaques.empty());
+}
+
 TEST(RenderSceneCacheTests, SynchronizeRetriesDeferredMeshAndMaterialReferencesAfterResourceRegistration)
 {
     using namespace NLS::Engine::Serialize;
@@ -892,6 +913,443 @@ TEST(RenderSceneCacheTests, SynchronizeResolvesOnlyMaterialSlotUsedByMesh)
     NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::MaterialManager>();
 }
 
+TEST(RenderSceneCacheTests, ExplicitMaterialPathSuppressesDefaultMaterialUntilResolved)
+{
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    NLS::ObjectTestAccess::ClearObjectRegistry();
+    EnsureRenderSceneTestDriver();
+
+    NLS::Core::ResourceManagement::MaterialManager materialManager;
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MaterialManager>(materialManager);
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+
+    NLS::Render::Resources::Material defaultMaterial;
+    defaultMaterial.SetShader(shader);
+    ASSERT_TRUE(defaultMaterial.IsValid());
+
+    const auto materialPath = std::string("Library/Artifacts/Preview/body.nmat");
+    auto* mesh = CreateSingleMesh(0u);
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& actor = scene.CreateGameObject("MaterialPathPending");
+    auto* meshFilter = actor.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+    meshFilter->SetMesh(mesh);
+    meshRenderer->SetMaterialPathHints({ materialPath });
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &defaultMaterial;
+
+    const auto unresolved = renderScene.Synchronize(scene, syncOptions);
+    EXPECT_EQ(unresolved.rebuiltCachedCommandCount, 0u);
+    EXPECT_TRUE(renderScene.GatherVisibleCommands({}).opaques.empty())
+        << "A generated model with an explicit but unresolved material path must not render with the white fallback.";
+
+    auto* material = new NLS::Render::Resources::Material();
+    material->SetShader(shader);
+    const_cast<std::string&>(material->path) = materialPath;
+    materialManager.RegisterResource(materialPath, material);
+
+    const auto resolved = renderScene.Synchronize(scene, syncOptions);
+    const auto visible = renderScene.GatherVisibleCommands({});
+
+    EXPECT_EQ(resolved.rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    EXPECT_EQ(visible.opaques.front().second.material, material);
+
+    delete mesh;
+    materialManager.UnloadResources();
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::MaterialManager>();
+}
+
+TEST(RenderSceneCacheTests, ExplicitMaterialPathSuppressesDrawUntilDeclaredTexturesResolved)
+{
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    NLS::ObjectTestAccess::ClearObjectRegistry();
+    EnsureRenderSceneTestDriver();
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+
+    NLS::Render::Resources::Material defaultMaterial;
+    defaultMaterial.SetShader(shader);
+    ASSERT_TRUE(defaultMaterial.IsValid());
+
+    const auto materialPath = std::string("Library/Artifacts/Preview/textured-body.nmat");
+    const auto texturePath = std::string("Library/Artifacts/Preview/textures/body-diffuse.ntex");
+    NLS::Render::Resources::Material material;
+    material.SetShader(shader);
+    const_cast<std::string&>(material.path) = materialPath;
+    material.SetTextureResourcePath("u_DiffuseMap", texturePath);
+
+    auto* mesh = CreateSingleMesh(0u);
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& actor = scene.CreateGameObject("MaterialTexturePending");
+    auto* meshFilter = actor.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+    meshFilter->SetMesh(mesh);
+    meshRenderer->SetMaterialPathHints({ materialPath });
+    meshRenderer->SetResolvedMaterialFromReference(0u, material);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &defaultMaterial;
+    syncOptions.requireExplicitMaterialTextures = true;
+
+    const auto texturePending = renderScene.Synchronize(scene, syncOptions);
+    EXPECT_EQ(texturePending.rebuiltCachedCommandCount, 0u);
+    EXPECT_TRUE(renderScene.GatherVisibleCommands({}).opaques.empty())
+        << "A generated model material with declared but unresolved textures must not render as a white/default-textured model.";
+
+    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(32u, 48u, 64u, 255u);
+    ASSERT_NE(texture, nullptr);
+    texture->path = texturePath;
+    material.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", texture);
+
+    const auto textureResolved = renderScene.Synchronize(scene, syncOptions);
+    const auto visible = renderScene.GatherVisibleCommands({});
+
+    EXPECT_EQ(textureResolved.rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    EXPECT_EQ(visible.opaques.front().second.material, &material);
+
+    delete mesh;
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(texture));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RenderSceneCacheTests, ExistingSceneExplicitMaterialPathRemainsVisibleWhileDeclaredTexturesArePending)
+{
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    NLS::ObjectTestAccess::ClearObjectRegistry();
+    EnsureRenderSceneTestDriver();
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+
+    NLS::Render::Resources::Material defaultMaterial;
+    defaultMaterial.SetShader(shader);
+    ASSERT_TRUE(defaultMaterial.IsValid());
+
+    const auto materialPath = std::string("Library/Artifacts/Existing/textured-body.nmat");
+    const auto texturePath = std::string("Library/Artifacts/Existing/textures/body-diffuse.ntex");
+    NLS::Render::Resources::Material material;
+    material.SetShader(shader);
+    const_cast<std::string&>(material.path) = materialPath;
+    material.SetTextureResourcePath("u_DiffuseMap", texturePath);
+
+    auto* mesh = CreateSingleMesh(0u);
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& actor = scene.CreateGameObject("ExistingSceneMaterialTexturePending");
+    auto* meshFilter = actor.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+    meshFilter->SetMesh(mesh);
+    meshRenderer->SetMaterialPathHints({ materialPath });
+    meshRenderer->SetResolvedMaterialFromReference(0u, material);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &defaultMaterial;
+
+    const auto texturePending = renderScene.Synchronize(scene, syncOptions);
+    const auto visible = renderScene.GatherVisibleCommands({});
+
+    EXPECT_EQ(texturePending.rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(visible.opaques.size(), 1u)
+        << "Saved or already-visible prefab instances must not disappear just because a drag preview introduced pending texture work for the same artifact.";
+    EXPECT_EQ(visible.opaques.front().second.material, &material);
+
+    delete mesh;
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RenderSceneCacheTests, ExplicitMaterialPathBindsCachedDeclaredTexturesBeforeSuppressingDraw)
+{
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    NLS::ObjectTestAccess::ClearObjectRegistry();
+    EnsureRenderSceneTestDriver();
+
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+
+    NLS::Render::Resources::Material defaultMaterial;
+    defaultMaterial.SetShader(shader);
+    ASSERT_TRUE(defaultMaterial.IsValid());
+
+    const auto materialPath = std::string("Library/Artifacts/Preview/textured-cached-body.nmat");
+    const auto texturePath = std::string("Library/Artifacts/Preview/textures/cached-body-diffuse.ntex");
+    NLS::Render::Resources::Material material;
+    material.SetShader(shader);
+    const_cast<std::string&>(material.path) = materialPath;
+    material.SetTextureResourcePath("u_DiffuseMap", texturePath);
+
+    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(32u, 48u, 64u, 255u);
+    ASSERT_NE(texture, nullptr);
+    texture->path = texturePath;
+    textureManager.RegisterResource(texturePath, texture);
+
+    auto* mesh = CreateSingleMesh(0u);
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& actor = scene.CreateGameObject("MaterialTextureCached");
+    auto* meshFilter = actor.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+    meshFilter->SetMesh(mesh);
+    meshRenderer->SetMaterialPathHints({ materialPath });
+    meshRenderer->SetResolvedMaterialFromReference(0u, material);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &defaultMaterial;
+
+    const auto textureResolved = renderScene.Synchronize(scene, syncOptions);
+    const auto visible = renderScene.GatherVisibleCommands({});
+
+    EXPECT_EQ(textureResolved.rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    EXPECT_EQ(visible.opaques.front().second.material, &material);
+    const auto* parameter = material.GetParameterBlock().TryGet("u_DiffuseMap");
+    ASSERT_NE(parameter, nullptr);
+    ASSERT_EQ(parameter->type(), typeid(NLS::Render::Resources::Texture2D*));
+    EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*parameter), texture);
+
+    delete mesh;
+    textureManager.UnloadResources();
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
+}
+
+TEST(RenderSceneCacheTests, ExplicitMaterialPathAcceptsEquivalentCachedDeclaredTexturePath)
+{
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    NLS::ObjectTestAccess::ClearObjectRegistry();
+    EnsureRenderSceneTestDriver();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_equivalent_texture_path_" + NLS::Guid::New().ToString()));
+    const auto projectAssetsRoot = (root.Path() / "Project" / "Assets").string() + "/";
+    const auto engineAssetsRoot = (root.Path() / "EngineAssets").string() + "/";
+
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths(projectAssetsRoot, engineAssetsRoot);
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+
+    NLS::Render::Resources::Material defaultMaterial;
+    defaultMaterial.SetShader(shader);
+    ASSERT_TRUE(defaultMaterial.IsValid());
+
+    const auto materialPath = std::string("Library/Artifacts/Preview/textured-equivalent-body.nmat");
+    const auto texturePath = std::string("Library/Artifacts/Preview/textures/equivalent-body-diffuse.ntex");
+    const auto absoluteTexturePath = NLS::Core::ResourceManagement::TextureManager::ResolveResourcePath(texturePath);
+
+    NLS::Render::Resources::Material material;
+    material.SetShader(shader);
+    const_cast<std::string&>(material.path) = materialPath;
+    material.SetTextureResourcePath("u_DiffuseMap", texturePath);
+
+    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(32u, 48u, 64u, 255u);
+    ASSERT_NE(texture, nullptr);
+    texture->path = absoluteTexturePath;
+    textureManager.RegisterResource(absoluteTexturePath, texture);
+
+    auto* mesh = CreateSingleMesh(0u);
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& actor = scene.CreateGameObject("MaterialEquivalentTexturePath");
+    auto* meshFilter = actor.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+    meshFilter->SetMesh(mesh);
+    meshRenderer->SetMaterialPathHints({ materialPath });
+    meshRenderer->SetResolvedMaterialFromReference(0u, material);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &defaultMaterial;
+
+    const auto textureResolved = renderScene.Synchronize(scene, syncOptions);
+    const auto visible = renderScene.GatherVisibleCommands({});
+
+    EXPECT_EQ(textureResolved.rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(visible.opaques.size(), 1u)
+        << "A cached texture registered under an equivalent absolute artifact path must satisfy the material-declared Library path.";
+    EXPECT_EQ(visible.opaques.front().second.material, &material);
+    const auto* parameter = material.GetParameterBlock().TryGet("u_DiffuseMap");
+    ASSERT_NE(parameter, nullptr);
+    ASSERT_EQ(parameter->type(), typeid(NLS::Render::Resources::Texture2D*));
+    EXPECT_EQ(std::any_cast<NLS::Render::Resources::Texture2D*>(*parameter), texture);
+
+    delete mesh;
+    textureManager.UnloadResources();
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
+    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
+}
+
+TEST(RenderSceneCacheTests, ResourceManagersReturnEquivalentCachedArtifactsForAsyncRequests)
+{
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    NLS::ObjectTestAccess::ClearObjectRegistry();
+    EnsureRenderSceneTestDriver();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_equivalent_async_artifact_" + NLS::Guid::New().ToString()));
+    const auto projectAssetsRoot = (root.Path() / "Project" / "Assets").string() + "/";
+    const auto engineAssetsRoot = (root.Path() / "EngineAssets").string() + "/";
+    NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths(projectAssetsRoot, engineAssetsRoot);
+    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths(projectAssetsRoot, engineAssetsRoot);
+
+    NLS::Core::ResourceManagement::MaterialManager materialManager;
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+
+    const auto materialPath = std::string("Library/Artifacts/Hero/materials/body.nmat");
+    const auto texturePath = std::string("Library/Artifacts/Hero/textures/body.ntex");
+    const auto absoluteMaterialPath =
+        NLS::Core::ResourceManagement::MaterialManager::ResolveResourcePath(materialPath);
+    const auto absoluteTexturePath =
+        NLS::Core::ResourceManagement::TextureManager::ResolveResourcePath(texturePath);
+
+    auto* material = new NLS::Render::Resources::Material();
+    material->path = absoluteMaterialPath;
+    materialManager.RegisterResource(absoluteMaterialPath, material);
+
+    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(12u, 34u, 56u, 255u);
+    ASSERT_NE(texture, nullptr);
+    texture->path = absoluteTexturePath;
+    textureManager.RegisterResource(absoluteTexturePath, texture);
+
+    EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath, true), material)
+        << "Dragging a prefab must reuse a material already cached under the equivalent absolute artifact path.";
+    EXPECT_FALSE(materialManager.IsAsyncArtifactLoadPending(materialPath));
+    EXPECT_FALSE(materialManager.IsAsyncArtifactLoadPending(absoluteMaterialPath));
+
+    EXPECT_EQ(textureManager.RequestAsyncArtifact(texturePath, true), texture)
+        << "Dragging a prefab must reuse a texture already cached under the equivalent absolute artifact path.";
+    EXPECT_FALSE(textureManager.IsAsyncArtifactLoadPending(texturePath));
+    EXPECT_FALSE(textureManager.IsAsyncArtifactLoadPending(absoluteTexturePath));
+
+    materialManager.UnloadResources();
+    textureManager.UnloadResources();
+    NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths({}, {});
+    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
+}
+
+TEST(RenderSceneCacheTests, ResourceManagersTrackEquivalentPendingAsyncArtifactRequests)
+{
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    NLS::ObjectTestAccess::ClearObjectRegistry();
+    EnsureRenderSceneTestDriver();
+
+    const ScopedTempDirectory root(
+        std::filesystem::temp_directory_path() /
+        ("nullus_equivalent_pending_artifact_" + NLS::Guid::New().ToString()));
+    const auto projectAssetsRoot = (root.Path() / "Project" / "Assets").string() + "/";
+    const auto engineAssetsRoot = (root.Path() / "EngineAssets").string() + "/";
+    NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths(projectAssetsRoot, engineAssetsRoot);
+    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths(projectAssetsRoot, engineAssetsRoot);
+
+    NLS::Core::ResourceManagement::MaterialManager materialManager;
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+
+    const auto materialPath = std::string("Library/Artifacts/Hero/materials/pending.nmat");
+    const auto texturePath = std::string("Library/Artifacts/Hero/textures/pending.ntex");
+    const auto absoluteMaterialPath =
+        NLS::Core::ResourceManagement::MaterialManager::ResolveResourcePath(materialPath);
+    const auto absoluteTexturePath =
+        NLS::Core::ResourceManagement::TextureManager::ResolveResourcePath(texturePath);
+
+    materialManager.RequestAsyncArtifact(absoluteMaterialPath, true);
+    textureManager.RequestAsyncArtifact(absoluteTexturePath, true);
+
+    EXPECT_TRUE(materialManager.IsAsyncArtifactLoadPending(materialPath))
+        << "Pending material artifact requests must be visible through equivalent Library/absolute path aliases.";
+    EXPECT_TRUE(textureManager.IsAsyncArtifactLoadPending(texturePath))
+        << "Pending texture artifact requests must be visible through equivalent Library/absolute path aliases.";
+
+    materialManager.CancelAsyncArtifact(materialPath);
+    for (size_t attempt = 0; attempt < 32u; ++attempt)
+    {
+        textureManager.PumpAsyncLoadsForPaths({ texturePath }, 8u);
+        if (!textureManager.IsAsyncArtifactLoadPending(absoluteTexturePath))
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_FALSE(textureManager.IsAsyncArtifactLoadPending(absoluteTexturePath))
+        << "Preview-owned texture pumps must complete equivalent absolute-path requests when the preview tracks a Library path.";
+
+    textureManager.RequestAsyncArtifact(absoluteTexturePath, true);
+    textureManager.CancelAsyncArtifact(texturePath);
+    for (size_t attempt = 0; attempt < 32u; ++attempt)
+    {
+        materialManager.PumpAsyncLoads(8u);
+        textureManager.PumpAsyncLoads(8u);
+        if (!materialManager.IsAsyncArtifactLoadPending(absoluteMaterialPath) &&
+            !textureManager.IsAsyncArtifactLoadPending(absoluteTexturePath))
+        {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths({}, {});
+    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
+}
+
+TEST(RenderSceneCacheTests, MissingMaterialPathStillUsesDefaultMaterial)
+{
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    NLS::ObjectTestAccess::ClearObjectRegistry();
+    EnsureRenderSceneTestDriver();
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+
+    NLS::Render::Resources::Material defaultMaterial;
+    defaultMaterial.SetShader(shader);
+    ASSERT_TRUE(defaultMaterial.IsValid());
+
+    auto* mesh = CreateSingleMesh(0u);
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& actor = scene.CreateGameObject("NoMaterialPath");
+    auto* meshFilter = actor.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = actor.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+    meshFilter->SetMesh(mesh);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &defaultMaterial;
+
+    const auto stats = renderScene.Synchronize(scene, syncOptions);
+    const auto visible = renderScene.GatherVisibleCommands({});
+
+    EXPECT_EQ(stats.rebuiltCachedCommandCount, 1u);
+    ASSERT_EQ(visible.opaques.size(), 1u);
+    EXPECT_EQ(visible.opaques.front().second.material, &defaultMaterial);
+
+    delete mesh;
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
 TEST(RenderSceneCacheTests, BitsetVisibilityTracksPrimitiveAndMeshResults)
 {
     ManyPrimitiveFixture fixture(9u);
@@ -1103,6 +1561,113 @@ TEST(RenderSceneCacheTests, SceneRendererKeepsTransparentBackToFrontAcrossAdditi
     EXPECT_EQ(drawables.transparents[0].second.mesh, fixture.otherMesh);
     EXPECT_EQ(drawables.transparents[1].second.mesh, fixture.sharedMesh);
     EXPECT_GT(drawables.transparents[0].first, drawables.transparents[1].first);
+}
+
+TEST(RenderSceneCacheTests, SceneRendererDrawsExistingAndPreviewPrefabInstancesSharingAssetReferences)
+{
+    using namespace NLS::Engine::Serialize;
+
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    NLS::ObjectTestAccess::ClearObjectRegistry();
+    auto& driver = EnsureRenderSceneTestDriver();
+
+    const auto meshGuid = NLS::Guid::Parse("24242424-2424-4424-8424-242424242424");
+    const auto materialGuid = NLS::Guid::Parse("35353535-3535-4535-8535-353535353535");
+    const auto meshPath = std::string("Library/Artifacts/Hero/shared/body.nmesh");
+    const auto materialPath = std::string("Library/Artifacts/Hero/shared/body.nmat");
+    const auto meshReference = ObjectIdentifier::Asset(
+        AssetId(meshGuid),
+        MakeLocalIdentifierInFile(meshGuid, "mesh:body"),
+        meshPath);
+    const auto materialReference = ObjectIdentifier::Asset(
+        AssetId(materialGuid),
+        MakeLocalIdentifierInFile(materialGuid, "material:body"),
+        materialPath);
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+
+    auto* existingMesh = CreateSingleMesh(0u);
+    ASSERT_NE(existingMesh, nullptr);
+    NLS::Render::Resources::Material existingMaterial;
+    existingMaterial.path = materialPath;
+    existingMaterial.SetShader(shader);
+    ASSERT_TRUE(existingMaterial.IsValid());
+
+    NLS::Engine::SceneSystem::Scene mainScene;
+    auto& existingObject = mainScene.CreateGameObject("ExistingPrefab");
+    auto* existingMeshFilter = existingObject.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* existingMeshRenderer = existingObject.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(existingMeshFilter, nullptr);
+    ASSERT_NE(existingMeshRenderer, nullptr);
+    existingMeshFilter->SetMeshReference(MakeRenderScenePPtr<NLS::Render::Resources::Mesh>(meshReference));
+    existingMeshFilter->SetResolvedMeshFromReference(existingMesh);
+    existingMeshRenderer->SetMaterialReferences({
+        MakeRenderScenePPtr<NLS::Render::Resources::Material>(materialReference)
+    });
+    existingMeshRenderer->SetResolvedMaterialFromReference(0u, existingMaterial);
+    ASSERT_EQ(existingMeshFilter->ResolveMesh(), existingMesh);
+    ASSERT_EQ(existingMeshRenderer->GetMaterialAtIndex(0u), &existingMaterial);
+
+    auto previewMesh = std::shared_ptr<NLS::Render::Resources::Mesh>(CreateSingleMesh(0u));
+    ASSERT_NE(previewMesh, nullptr);
+    NLS::Render::Resources::Material previewMaterial;
+    previewMaterial.path = materialPath;
+    previewMaterial.SetShader(shader);
+    ASSERT_TRUE(previewMaterial.IsValid());
+
+    NLS::Engine::SceneSystem::Scene previewScene;
+    auto& previewObject = previewScene.CreateGameObject("PreviewPrefab");
+    auto* previewMeshFilter = previewObject.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* previewMeshRenderer = previewObject.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(previewMeshFilter, nullptr);
+    ASSERT_NE(previewMeshRenderer, nullptr);
+    previewMeshFilter->SetMeshReference(MakeRenderScenePPtr<NLS::Render::Resources::Mesh>(meshReference));
+    previewMeshFilter->SetResolvedTransientMeshFromReference(previewMesh);
+    previewMeshRenderer->SetMaterialReferences({
+        MakeRenderScenePPtr<NLS::Render::Resources::Material>(materialReference)
+    });
+    previewMeshRenderer->SetResolvedMaterialFromReference(0u, previewMaterial);
+    ASSERT_EQ(previewMeshFilter->ResolveMesh(), previewMesh.get());
+    ASSERT_EQ(previewMeshRenderer->GetMaterialAtIndex(0u), &previewMaterial);
+
+    SceneDrawableProbeRenderer renderer(driver);
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        mainScene,
+        std::nullopt,
+        nullptr,
+        { &previewScene }
+    });
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 128u;
+    frameDescriptor.camera = &camera;
+
+    const auto drawables = renderer.CaptureSceneDrawables(frameDescriptor);
+
+    ASSERT_EQ(drawables.opaques.size(), 2u)
+        << "Scene View drag preview must not hide the already saved prefab, and the preview must render through the additive scene.";
+    const auto drewExisting = std::any_of(
+        drawables.opaques.begin(),
+        drawables.opaques.end(),
+        [existingMesh, &existingMaterial](const auto& entry)
+        {
+            return entry.second.mesh == existingMesh && entry.second.material == &existingMaterial;
+        });
+    const auto drewPreview = std::any_of(
+        drawables.opaques.begin(),
+        drawables.opaques.end(),
+        [&previewMesh, &previewMaterial](const auto& entry)
+        {
+            return entry.second.mesh == previewMesh.get() && entry.second.material == &previewMaterial;
+        });
+    EXPECT_TRUE(drewExisting);
+    EXPECT_TRUE(drewPreview);
+
+    delete existingMesh;
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
 }
 
 TEST(RenderSceneCacheTests, SceneRendererRespectsGlobalObjectDataCapacityAcrossAdditiveScenes)

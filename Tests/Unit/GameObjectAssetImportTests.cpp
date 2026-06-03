@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -104,6 +105,31 @@ NLS::Engine::GameObject* FindChildByName(
             return child;
     }
     return nullptr;
+}
+
+size_t CountSceneRootGameObjects(const NLS::Engine::SceneSystem::Scene& scene)
+{
+    const auto& gameObjects = scene.GetGameObjects();
+    return static_cast<size_t>(std::count_if(
+        gameObjects.begin(),
+        gameObjects.end(),
+        [](const NLS::Engine::GameObject* gameObject)
+        {
+            return gameObject && !gameObject->HasParent();
+        }));
+}
+
+NLS::Engine::GameObject* FindSceneRootGameObject(const NLS::Engine::SceneSystem::Scene& scene)
+{
+    const auto& gameObjects = scene.GetGameObjects();
+    const auto found = std::find_if(
+        gameObjects.begin(),
+        gameObjects.end(),
+        [](const NLS::Engine::GameObject* gameObject)
+        {
+            return gameObject && !gameObject->HasParent();
+        });
+    return found != gameObjects.end() ? *found : nullptr;
 }
 
 std::string FormatDragDropDiagnostics(const NLS::Editor::Assets::EditorAssetDragDropBridgeResult& result)
@@ -603,6 +629,190 @@ TEST(GameObjectAssetImportTests, WarmEditorAssetHandleProvidesPreviewPrefabWitho
     ASSERT_FALSE(preview.diagnostics.HasErrors());
     ASSERT_NE(preview.root, nullptr);
     EXPECT_EQ(preview.root->GetName(), "WarmPreviewHeroRoot");
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(GameObjectAssetImportTests, WarmEditorAssetHandlePreviewDerivesDefaultPrefabKeyWhenPayloadSubAssetKeyIsEmpty)
+{
+    const auto root = MakeGameObjectAssetImportRoot();
+    WriteTextFile(
+        root / "Assets" / "Models" / "WarmPreviewWholeFileHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [
+                { "nodes": [0] }
+            ],
+            "buffers": [
+                {
+                    "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA",
+                    "byteLength": 42
+                }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" }
+            ],
+            "meshes": [
+                {
+                    "name": "Body",
+                    "primitives": [
+                        { "attributes": { "POSITION": 0 }, "indices": 1 }
+                    ]
+                }
+            ],
+            "nodes": [
+                { "name": "WarmPreviewWholeFileHeroRoot", "mesh": 0 }
+            ]
+        })");
+
+    NLS::Editor::Assets::AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/WarmPreviewWholeFileHero.gltf"));
+    const auto guid = database.AssetPathToGUID("Assets/Models/WarmPreviewWholeFileHero.gltf");
+    ASSERT_FALSE(guid.empty());
+    const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
+
+    const auto payload = NLS::Editor::Assets::MakeEditorAssetDragPayloadForTesting(
+        "Assets/Models/WarmPreviewWholeFileHero.gltf",
+        assetId,
+        {},
+        NLS::Core::Assets::ArtifactType::Prefab,
+        true,
+        true,
+        true);
+
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+    auto prefab = bridge.TryLoadPreviewPrefabArtifact(payload);
+
+    ASSERT_TRUE(prefab.has_value());
+    EXPECT_EQ(prefab->assetId, assetId);
+    EXPECT_TRUE(prefab->generatedModelPrefab);
+
+    NLS::Engine::SceneSystem::Scene previewScene;
+    auto preview = NLS::Engine::Assets::InstantiatePrefabArtifact(*prefab, previewScene);
+    ASSERT_FALSE(preview.diagnostics.HasErrors());
+    ASSERT_NE(preview.root, nullptr);
+    EXPECT_EQ(preview.root->GetName(), "WarmPreviewWholeFileHeroRoot");
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(GameObjectAssetImportTests, WarmEditorAssetHandlePreviewRemapsStaleAbsoluteArtifactPathsToCurrentProject)
+{
+    const auto root = MakeGameObjectAssetImportRoot();
+    WriteTextFile(
+        root / "Assets" / "Models" / "RemappedPreviewHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [
+                { "nodes": [0] }
+            ],
+            "buffers": [
+                {
+                    "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA",
+                    "byteLength": 42
+                }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" }
+            ],
+            "meshes": [
+                {
+                    "name": "Body",
+                    "primitives": [
+                        { "attributes": { "POSITION": 0 }, "indices": 1 }
+                    ]
+                }
+            ],
+            "nodes": [
+                { "name": "RemappedPreviewHeroRoot", "mesh": 0 }
+            ]
+        })");
+
+    NLS::Editor::Assets::AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/RemappedPreviewHero.gltf"));
+    const auto guid = database.AssetPathToGUID("Assets/Models/RemappedPreviewHero.gltf");
+    ASSERT_FALSE(guid.empty());
+    const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
+
+    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
+        "Assets/Models/RemappedPreviewHero.gltf");
+    const auto manifestPath = artifactRoot / "manifest.json";
+    {
+        std::ifstream input(manifestPath, std::ios::binary);
+        ASSERT_TRUE(input.good());
+        auto manifest = nlohmann::json::parse(input, nullptr, false);
+        ASSERT_TRUE(manifest.is_object());
+        auto& subAssets = manifest["subAssets"];
+        ASSERT_TRUE(subAssets.is_array());
+
+        const auto staleArtifactRoot =
+            root.parent_path() / "StaleProjectCopy" / "Library" / "Artifacts" / assetId.ToString();
+        for (auto& subAsset : subAssets)
+        {
+            ASSERT_TRUE(subAsset.is_object());
+            const auto originalPathText = subAsset.value("artifactPath", std::string {});
+            ASSERT_FALSE(originalPathText.empty());
+            const auto originalPath = std::filesystem::path(originalPathText);
+            std::filesystem::path relativePath;
+            if (originalPath.is_absolute())
+            {
+                std::error_code error;
+                relativePath = std::filesystem::relative(originalPath, artifactRoot, error);
+                ASSERT_FALSE(error);
+            }
+            else
+            {
+                relativePath = originalPath;
+            }
+            ASSERT_FALSE(relativePath.empty());
+            subAsset["artifactPath"] = (staleArtifactRoot / relativePath).lexically_normal().string();
+        }
+
+        std::ofstream output(manifestPath, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(output.good());
+        output << manifest.dump(2);
+    }
+
+    const auto payload = NLS::Editor::Assets::MakeEditorAssetDragPayloadForTesting(
+        "Assets/Models/RemappedPreviewHero.gltf",
+        assetId,
+        "prefab:RemappedPreviewHero",
+        NLS::Core::Assets::ArtifactType::Prefab,
+        true,
+        true,
+        true);
+
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+    auto prefab = bridge.TryLoadPreviewPrefabArtifact(payload);
+
+    ASSERT_TRUE(prefab.has_value());
+    bool sawMesh = false;
+    for (const auto& resolved : prefab->resolvedAssets)
+    {
+        if (resolved.expectedType != "Mesh")
+            continue;
+
+        sawMesh = true;
+        const auto resolvedPath = std::filesystem::path(resolved.artifactPath);
+        EXPECT_TRUE(resolvedPath.is_absolute());
+        EXPECT_EQ(resolvedPath.lexically_normal().generic_string().find(artifactRoot.lexically_normal().generic_string()), 0u);
+        EXPECT_TRUE(NLS::Render::Assets::LoadMeshArtifact(resolvedPath).has_value());
+    }
+    EXPECT_TRUE(sawMesh);
 
     std::filesystem::remove_all(root);
 }
@@ -1530,9 +1740,9 @@ TEST(GameObjectAssetImportTests, ImportedModelDragCreatesOneRootHierarchyWithRen
     ASSERT_TRUE(result.handled);
     ASSERT_EQ(result.dragDrop.status, NLS::Editor::Assets::DragDropOperationStatus::Committed)
         << FormatDragDropDiagnostics(result);
-    ASSERT_EQ(scene.GetGameObjects().size(), 1u);
+    ASSERT_EQ(CountSceneRootGameObjects(scene), 1u);
 
-    auto* importedRoot = scene.GetGameObjects().front();
+    auto* importedRoot = FindSceneRootGameObject(scene);
     ASSERT_NE(importedRoot, nullptr);
     EXPECT_EQ(importedRoot->GetName(), "ImportedMultiRoot");
     ASSERT_EQ(importedRoot->GetChildren().size(), 2u);
@@ -1899,7 +2109,8 @@ TEST(GameObjectAssetImportTests, GeneratedModelDragDoesNotSynchronouslyPrewarmLa
     ASSERT_TRUE(result.handled);
     ASSERT_EQ(result.dragDrop.status, NLS::Editor::Assets::DragDropOperationStatus::Committed)
         << FormatDragDropDiagnostics(result);
-    ASSERT_EQ(scene.GetGameObjects().size(), 1u);
+    ASSERT_EQ(CountSceneRootGameObjects(scene), 1u);
+    EXPECT_EQ(FindSceneRootGameObject(scene), result.dragDrop.instance->instanceRoot);
 
     EXPECT_TRUE(meshManager.GetResources().empty());
     EXPECT_TRUE(materialManager.GetResources().empty());

@@ -1622,7 +1622,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportProducesWarmDragHandleBef
     const auto guid = database.AssetPathToGUID("Assets/Models/StartupDragHero.gltf");
     ASSERT_FALSE(guid.empty());
 
-    const auto payload = MakeEditorAssetDragPayloadForTesting(
+    const auto payload = MakeEditorAssetDragPayload(
         "Assets/Models/StartupDragHero.gltf",
         NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid)),
         "prefab:StartupDragHero",
@@ -1697,7 +1697,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportRepairsUnreadableWarmPref
     const auto guid = database.AssetPathToGUID("Assets/Models/UnreadableWarmHero.gltf");
     ASSERT_FALSE(guid.empty());
 
-    const auto payload = MakeEditorAssetDragPayloadForTesting(
+    const auto payload = MakeEditorAssetDragPayload(
         "Assets/Models/UnreadableWarmHero.gltf",
         NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid)),
         "prefab:UnreadableWarmHero",
@@ -1933,7 +1933,7 @@ TEST(EditorAssetDatabaseTests, BlockingStartupPreimportWarmDragHandleAcceptsArti
     const auto guid = database.AssetPathToGUID("Assets/Model/ArtifactRootRelativeHero.gltf");
     ASSERT_FALSE(guid.empty());
 
-    const auto payload = MakeEditorAssetDragPayloadForTesting(
+    const auto payload = MakeEditorAssetDragPayload(
         "Model/ArtifactRootRelativeHero.gltf",
         NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid)),
         "prefab:ArtifactRootRelativeHero",

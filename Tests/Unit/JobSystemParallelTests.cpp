@@ -1349,26 +1349,6 @@ TEST_F(JobSystemParallelTests, WorkStealingRangeClaimsEveryIndexOnceForUnevenWor
     EXPECT_EQ(totalClaims, 13);
 }
 
-TEST(JobSystemParallelSourceContractTests, ParallelForSchedulingUsesWorkStealingRangesNotOneJobPerIndex)
-{
-    const auto sourcePath = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Base/Jobs/JobSystem.cpp";
-    std::ifstream input(sourcePath, std::ios::binary);
-    ASSERT_TRUE(input.is_open());
-    const std::string source{
-        std::istreambuf_iterator<char>(input),
-        std::istreambuf_iterator<char>()};
-
-    const auto helper = source.find("JobHandle ScheduleJobForEachInternal");
-    ASSERT_NE(helper, std::string::npos);
-    const auto helperEnd = source.find("\nbool InitializeJobSystem", helper);
-    ASSERT_NE(helperEnd, std::string::npos);
-    const auto helperBody = source.substr(helper, helperEnd - helper);
-
-    EXPECT_NE(helperBody.find("InitializeWorkStealingRange"), std::string::npos);
-    EXPECT_NE(helperBody.find("GetWorkStealingRange"), std::string::npos);
-    EXPECT_EQ(helperBody.find("jobs.reserve(desc.iterationCount)"), std::string::npos);
-}
-
 TEST_F(JobSystemParallelTests, BatchDispatcherDoesNotExposeJobsUntilKick)
 {
     NLS::Base::Jobs::JobSystemConfig config;

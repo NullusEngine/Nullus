@@ -225,23 +225,6 @@ void WriteMetaParserConfig(
 }
 }
 
-TEST(MetaParserGenerationModuleTests, MetaParserFixtureExecutionAvoidsShellCommandParsing)
-{
-    const auto source = ReadAllText(
-        std::filesystem::path(NLS_ROOT_DIR) / "Tests" / "Unit" / "MetaParserGenerationModuleTests.cpp");
-    const auto helperStart = source.find("bool RunMetaParser(");
-    const auto helperEnd = source.find("void ExpectMetaParserSuccess(");
-
-    ASSERT_NE(helperStart, std::string::npos);
-    ASSERT_NE(helperEnd, std::string::npos);
-    ASSERT_LT(helperStart, helperEnd);
-    const auto helperSource = source.substr(helperStart, helperEnd - helperStart);
-
-    ExpectContains(helperSource, "ExecuteShaderCompilerProcess(");
-    ExpectNotContains(helperSource, "std::system(");
-    ExpectNotContains(helperSource, "cmd /S /C");
-}
-
 TEST(MetaParserGenerationModuleTests, FixturePrecompileConfigInheritsBuildCompilerEnvironment)
 {
     const auto root = std::filesystem::path(NLS_ROOT_DIR);

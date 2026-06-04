@@ -187,7 +187,7 @@ NLS::Editor::Assets::EditorAssetDragPayload MakeImportedGeneratedModelPayload(
     const auto guid = database.AssetPathToGUID(assetPath);
     EXPECT_FALSE(guid.empty());
     const auto assetId = AssetId(NLS::Guid::Parse(guid));
-    return NLS::Editor::Assets::MakeEditorAssetDragPayloadForTesting(
+    return NLS::Editor::Assets::MakeEditorAssetDragPayload(
         assetPath,
         assetId,
         prefabSubAssetKey,
@@ -647,7 +647,7 @@ TEST(EditorAssetDragDropTests, DropsImportedPrefabHandleAfterFileWatcherPreimpor
         {root / "Assets" / "Validation Cube.prefab"}
     }));
 
-    const auto payload = NLS::Editor::Assets::MakeEditorAssetDragPayloadForTesting(
+    const auto payload = NLS::Editor::Assets::MakeEditorAssetDragPayload(
         "Assets/Validation Cube.prefab",
         prefabId,
         "prefab:Validation Cube",

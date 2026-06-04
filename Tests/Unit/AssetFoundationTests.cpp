@@ -136,22 +136,6 @@ TEST(AssetFoundationTests, ScanPreservesExistingMetaSettingsWhenAddingIdentity)
     std::filesystem::remove_all(root);
 }
 
-TEST(AssetFoundationTests, AssetMetaSaveChecksStreamAfterWritingAndClosing)
-{
-    std::ifstream input(
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Core/Assets/AssetMeta.cpp",
-        std::ios::binary);
-    const std::string source{
-        std::istreambuf_iterator<char>(input),
-        std::istreambuf_iterator<char>()};
-
-    const auto saveBegin = source.find("bool AssetMeta::Save");
-    ASSERT_NE(saveBegin, std::string::npos);
-    const auto saveBody = source.substr(saveBegin);
-    EXPECT_NE(saveBody.find("output.close()"), std::string::npos);
-    EXPECT_NE(saveBody.find("return static_cast<bool>(output);"), std::string::npos);
-}
-
 TEST(AssetFoundationTests, ScanClassifiesPrefabAssets)
 {
     const auto root = MakeAssetTestRoot();

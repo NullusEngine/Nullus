@@ -1,6 +1,5 @@
 #include <gtest/gtest.h>
 
-#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -25,15 +24,6 @@
 
 namespace
 {
-    std::string ReadRepoFile(const std::filesystem::path& relativePath)
-    {
-        std::ifstream input(std::filesystem::path(NLS_ROOT_DIR) / relativePath);
-        return {
-            std::istreambuf_iterator<char>(input),
-            std::istreambuf_iterator<char>()
-        };
-    }
-
     class DeferredTestAdapter final : public NLS::Render::RHI::RHIAdapter
     {
     public:
@@ -355,17 +345,6 @@ namespace
             renderer,
             sourceMaterial);
     }
-}
-
-TEST(DeferredSceneRendererMaterialCacheTests, ReusesStaticGBufferColorFormatOverrides)
-{
-    const auto source = ReadRepoFile("Runtime/Engine/Rendering/DeferredSceneRenderer.cpp");
-
-    EXPECT_NE(source.find("std::span<const NLS::Render::RHI::TextureFormat> GetDeferredGBufferColorFormats()"), std::string::npos);
-    EXPECT_NE(source.find("overrides.SetColorFormats(GetDeferredGBufferColorFormats())"), std::string::npos);
-    EXPECT_EQ(source.find("colorFormatsView"), std::string::npos);
-    EXPECT_EQ(source.find("gBufferOverrides.colorFormats = GetDeferredGBufferColorFormats()"), std::string::npos);
-    EXPECT_EQ(source.find("static const std::vector<NLS::Render::RHI::TextureFormat> kFormats"), std::string::npos);
 }
 
 TEST(DeferredSceneRendererMaterialCacheTests, ReusesWrappedGBufferTargetsUntilSizeChanges)

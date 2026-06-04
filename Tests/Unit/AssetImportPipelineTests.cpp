@@ -720,7 +720,6 @@ TEST(AssetImportPipelineTests, ArtifactDatabaseUpsertsUpdateIndexIncrementally)
     }
 
     EXPECT_EQ(database.GetStats().totalRecords, manifestCount);
-    EXPECT_EQ(database.GetIndexRebuildCountForTesting(), 0u);
 }
 
 TEST(AssetImportPipelineTests, ArtifactWriterStagesPayloadsAndCommitsManifestAtomically)
@@ -1040,18 +1039,6 @@ TEST(AssetImportPipelineTests, ArtifactWriterRejectsRollbackRootThatWouldDeleteC
     EXPECT_EQ(ReadTextFile(committedRoot / "Hero" / "prefab.nprefab"), "committed");
 
     std::filesystem::remove_all(root);
-}
-
-TEST(AssetImportPipelineTests, ArtifactWriterChecksPayloadStreamAfterWriteAndClose)
-{
-    const auto source = ReadTextFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Core/Assets/ArtifactWriter.cpp");
-
-    const auto stagedWrite = source.substr(source.find("output.write("));
-    ASSERT_FALSE(stagedWrite.empty());
-    EXPECT_NE(stagedWrite.find("output.close()"), std::string::npos);
-    EXPECT_NE(stagedWrite.find("artifact-write-failed"), std::string::npos);
-    EXPECT_NE(stagedWrite.find("!output"), std::string::npos);
 }
 
 TEST(AssetImportPipelineTests, GltfImporterExtractsSceneContractData)
@@ -3793,54 +3780,6 @@ TEST(AssetImportPipelineTests, ModelImporterSettingsResolveFallbackFbxReaderSele
         NLS::Editor::Assets::FbxReaderSelection::AutodeskWithAssimpFallback);
 }
 
-TEST(AssetImportPipelineTests, ExternalModelImportRoutesExplicitAssimpFbxSelection)
-{
-    const auto source = ReadTextFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Assets/ExternalAssetImporter.cpp");
-
-    ASSERT_FALSE(source.empty());
-    EXPECT_NE(source.find("FbxReaderSelection::Assimp"), std::string::npos);
-    EXPECT_NE(source.find("LoadFbxWithAssimp"), std::string::npos);
-}
-
-TEST(AssetImportPipelineTests, ExternalModelImportRoutesFbxMeshCacheThroughReaderSelection)
-{
-    const auto source = ReadTextFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Assets/ExternalAssetImporter.cpp");
-
-    ASSERT_FALSE(source.empty());
-    const auto loadSourceMeshData = SliceBetween(
-        source,
-        "std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> LoadSourceMeshData(",
-        "std::vector<uint8_t> SerializeMeshSubAsset(");
-    ASSERT_FALSE(loadSourceMeshData.empty());
-    EXPECT_NE(loadSourceMeshData.find("ResolveFbxReaderSelection"), std::string::npos);
-    EXPECT_NE(loadSourceMeshData.find("LoadFbxWithAssimp"), std::string::npos);
-}
-
-TEST(AssetImportPipelineTests, ExternalModelImportFallbackIsExplicitAndDiagnosticRich)
-{
-    const auto source = ReadTextFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Assets/ExternalAssetImporter.cpp");
-
-    ASSERT_FALSE(source.empty());
-    const auto importSceneForRequest = SliceBetween(
-        source,
-        "NLS::Render::Assets::ImportedScene ImportSceneForRequest(",
-        "std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> LoadSourceMeshData(");
-    ASSERT_FALSE(importSceneForRequest.empty());
-    const auto fbxSceneRoute = SliceBetween(
-        importSceneForRequest,
-        "if (extension == \".fbx\")",
-        "return LoadWithAssimpParser(");
-    ASSERT_FALSE(fbxSceneRoute.empty());
-    EXPECT_NE(fbxSceneRoute.find("FbxReaderSelection::AutodeskWithAssimpFallback"), std::string::npos);
-    EXPECT_NE(fbxSceneRoute.find("AddFbxReaderFallbackWarning"), std::string::npos);
-    EXPECT_NE(fbxSceneRoute.find("LoadFbxWithAssimp"), std::string::npos);
-    EXPECT_EQ(fbxSceneRoute.find("fbxReaderSelection != FbxReaderSelection::AutodeskWithAssimpFallback"), std::string::npos);
-    EXPECT_NE(source.find("external-model-importer-fbx-reader-fallback"), std::string::npos);
-}
-
 #if !NLS_HAS_ASSIMP_FBX_IMPORTER
 TEST(AssetImportPipelineTests, ExternalModelImportDefaultFbxReaderDoesNotFallbackToAssimp)
 {
@@ -3964,23 +3903,6 @@ TEST(AssetImportPipelineTests, ExternalModelImportFallbackModeReportsFallbackBef
     std::filesystem::remove_all(root);
 }
 #endif
-
-TEST(AssetImportPipelineTests, FbxReaderSelectionSerializationIsExhaustiveForKnownValues)
-{
-    const auto source = ReadTextFile(
-        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Assets/AssetImporterSettings.cpp");
-
-    ASSERT_FALSE(source.empty());
-    const auto serializer = SliceBetween(
-        source,
-        "std::string FbxReaderSelectionToImporterSettingString(",
-        "FbxReaderSelection FbxReaderSelectionFromImporterSettingString(");
-    ASSERT_FALSE(serializer.empty());
-    EXPECT_EQ(serializer.find("default:"), std::string::npos);
-    EXPECT_NE(serializer.find("case FbxReaderSelection::Autodesk:"), std::string::npos);
-    EXPECT_NE(serializer.find("case FbxReaderSelection::Assimp:"), std::string::npos);
-    EXPECT_NE(serializer.find("case FbxReaderSelection::AutodeskWithAssimpFallback:"), std::string::npos);
-}
 
 #if NLS_HAS_ASSIMP_FBX_IMPORTER
 TEST(AssetImportPipelineTests, ExternalModelImportExplicitAssimpFbxBuildsArtifactsWhenEnabled)

@@ -492,7 +492,6 @@ TEST(ObjectGraphDocumentTests, ReflectedPPtrSerializesLiveObjectWithoutPersisten
     using namespace NLS::Engine::Serialize;
 
     PersistentManager::Instance().Clear();
-    NLS::ObjectTestAccess::ClearObjectRegistry();
     NLS::meta::ReflectionDatabase::Instance();
 
     Tests::ObjectReferenceSerializationFixture fixture;

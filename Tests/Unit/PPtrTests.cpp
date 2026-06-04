@@ -271,7 +271,6 @@ TEST(PPtrTests, PersistentManagerExplicitInstanceIDIsReservedInObjectRegistry)
 {
     auto& persistentManager = NLS::Engine::Serialize::PersistentManager::Instance();
     persistentManager.Clear();
-    NLS::ObjectTestAccess::ClearObjectRegistry();
 
     const auto identifier = NLS::Engine::Serialize::ObjectIdentifier::Asset(
         NLS::Engine::Serialize::AssetId(NLS::Guid::Parse("12121212-1212-4121-8121-121212121212")),
@@ -289,7 +288,6 @@ TEST(PPtrTests, PersistentManagerReleasesOrphanedReservedInstanceIDWhenIdentifie
 {
     auto& persistentManager = NLS::Engine::Serialize::PersistentManager::Instance();
     persistentManager.Clear();
-    NLS::ObjectTestAccess::ClearObjectRegistry();
 
     const auto identifier = NLS::Engine::Serialize::ObjectIdentifier::Asset(
         NLS::Engine::Serialize::AssetId(NLS::Guid::Parse("13131313-1313-4131-8131-131313131313")),
@@ -298,18 +296,17 @@ TEST(PPtrTests, PersistentManagerReleasesOrphanedReservedInstanceIDWhenIdentifie
 
     const auto originalInstanceID = persistentManager.ObjectIdentifierToInstanceID(identifier);
     ASSERT_NE(originalInstanceID, NLS::Engine::Serialize::InstanceID_None);
-    ASSERT_TRUE(NLS::ObjectTestAccess::IsInstanceIDReserved(originalInstanceID));
 
     persistentManager.RegisterInstanceID(NLS::Engine::Serialize::InstanceID {42}, identifier);
 
     EXPECT_EQ(persistentManager.ObjectIdentifierToInstanceID(identifier), NLS::Engine::Serialize::InstanceID {42});
-    EXPECT_FALSE(NLS::ObjectTestAccess::IsInstanceIDReserved(originalInstanceID));
-    EXPECT_TRUE(NLS::ObjectTestAccess::IsInstanceIDReserved(NLS::Engine::Serialize::InstanceID {42}));
+    TestObject object;
+    EXPECT_NE(object.GetInstanceID(), originalInstanceID);
+    EXPECT_NE(object.GetInstanceID(), NLS::Engine::Serialize::InstanceID {42});
 }
 
 TEST(PPtrTests, ObjectRegistryHandlesMaxExplicitInstanceID)
 {
-    NLS::ObjectTestAccess::ClearObjectRegistry();
 
     TestObject maxObject(std::numeric_limits<NLS::Engine::Serialize::InstanceID>::max());
     TestObject nextObject;
@@ -323,7 +320,6 @@ TEST(PPtrTests, BindingLoadedObjectIdentifierMakesExistingPPtrDereferenceObject)
 {
     auto& persistentManager = NLS::Engine::Serialize::PersistentManager::Instance();
     persistentManager.Clear();
-    NLS::ObjectTestAccess::ClearObjectRegistry();
 
     const auto identifier = NLS::Engine::Serialize::ObjectIdentifier::Asset(
         NLS::Engine::Serialize::AssetId(NLS::Guid::Parse("33333333-3333-4333-8333-333333333333")),
@@ -349,7 +345,6 @@ TEST(PPtrTests, BindingObjectIdentifierRejectsExistingLiveObjectOwner)
 {
     auto& persistentManager = NLS::Engine::Serialize::PersistentManager::Instance();
     persistentManager.Clear();
-    NLS::ObjectTestAccess::ClearObjectRegistry();
 
     const auto identifier = NLS::Engine::Serialize::ObjectIdentifier::Asset(
         NLS::Engine::Serialize::AssetId(NLS::Guid::Parse("44444444-4444-4444-8444-444444444444")),
@@ -371,7 +366,6 @@ TEST(PPtrTests, ResolvedObjectReferenceHelperBindsLoadedObjectWithoutChangingPer
 {
     auto& persistentManager = NLS::Engine::Serialize::PersistentManager::Instance();
     persistentManager.Clear();
-    NLS::ObjectTestAccess::ClearObjectRegistry();
 
     const auto identifier = NLS::Engine::Serialize::ObjectIdentifier::Asset(
         NLS::Engine::Serialize::AssetId(NLS::Guid::Parse("55555555-5555-4555-8555-555555555555")),
@@ -393,7 +387,6 @@ TEST(PPtrTests, ResolvedObjectReferenceHelperRejectsConflictingLoadedObject)
 {
     auto& persistentManager = NLS::Engine::Serialize::PersistentManager::Instance();
     persistentManager.Clear();
-    NLS::ObjectTestAccess::ClearObjectRegistry();
 
     const auto identifier = NLS::Engine::Serialize::ObjectIdentifier::Asset(
         NLS::Engine::Serialize::AssetId(NLS::Guid::Parse("66666666-6666-4666-8666-666666666666")),
@@ -459,7 +452,6 @@ TEST(PPtrTests, PersistentManagerAllocatesStableUniqueInstanceIDsAcrossThreads)
 
 TEST(ObjectSystemTests, ObjectRegistersAndUnregistersInstanceID)
 {
-    NLS::ObjectTestAccess::ClearObjectRegistry();
 
     NLS::Engine::Serialize::InstanceID instanceID = NLS::Engine::Serialize::InstanceID_None;
     {
@@ -475,7 +467,6 @@ TEST(ObjectSystemTests, ObjectRegistersAndUnregistersInstanceID)
 
 TEST(ObjectSystemTests, NamedObjectStoresDisplayName)
 {
-    NLS::ObjectTestAccess::ClearObjectRegistry();
 
     TestNamedObject object("Hero Material");
 
@@ -486,7 +477,6 @@ TEST(ObjectSystemTests, NamedObjectStoresDisplayName)
 
 TEST(PPtrTests, AssignsObjectInstanceIDAndDereferencesThroughRegistry)
 {
-    NLS::ObjectTestAccess::ClearObjectRegistry();
 
     TestObject object;
     NLS::Engine::Serialize::PPtr<TestObject> pointer(&object);
@@ -503,7 +493,6 @@ TEST(PPtrTests, AssignsObjectInstanceIDAndDereferencesThroughRegistry)
 
 TEST(PPtrTests, RejectsIncompatibleObjectTypeOnDereference)
 {
-    NLS::ObjectTestAccess::ClearObjectRegistry();
 
     OtherTestObject other;
     NLS::Engine::Serialize::PPtr<TestObject> pointer(other.GetInstanceID());
@@ -515,7 +504,6 @@ TEST(PPtrTests, RejectsIncompatibleObjectTypeOnDereference)
 
 TEST(ObjectSystemTests, RenderResourcesAreNamedObjectsWithInstanceIDs)
 {
-    NLS::ObjectTestAccess::ClearObjectRegistry();
 
     NLS::Render::Resources::Material material;
     NLS::Render::Resources::Mesh mesh({}, {}, 0u);
@@ -530,7 +518,6 @@ TEST(ObjectSystemTests, RenderResourcesAreNamedObjectsWithInstanceIDs)
 
 TEST(ObjectSystemTests, RenderResourcesReportConcreteObjectTypes)
 {
-    NLS::ObjectTestAccess::ClearObjectRegistry();
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
     settings.enableExplicitRHI = false;

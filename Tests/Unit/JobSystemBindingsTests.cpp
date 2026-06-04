@@ -560,24 +560,3 @@ TEST_F(JobSystemBindingsTests, BindingForEachValidatesStructSizeVersionAndArgume
     desc.callback = nullptr;
     EXPECT_EQ(NLS_Jobs_ScheduleForEach(&desc, &handle), NLS_JOB_STATUS_INVALID_ARGUMENT);
 }
-
-TEST(JobSystemBindingSourceContractTests, BindingHeaderUsesCCompatibleDeclarations)
-{
-    const auto sourcePath = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Base/Jobs/JobBindings.h";
-    std::ifstream input(sourcePath, std::ios::binary);
-    ASSERT_TRUE(input.is_open());
-    const std::string source{
-        std::istreambuf_iterator<char>(input),
-        std::istreambuf_iterator<char>()};
-
-    EXPECT_EQ(source.find("using NLS_BindingJobCallback"), std::string::npos);
-    EXPECT_EQ(source.find("enum NLS_JobStatusCode :"), std::string::npos);
-    EXPECT_EQ(source.find("#include \"BaseDef.h\""), std::string::npos);
-    EXPECT_NE(source.find("#ifndef NLS_BASE_API"), std::string::npos);
-    EXPECT_NE(source.find("typedef enum NLS_JobStatusCode"), std::string::npos);
-    EXPECT_NE(source.find("typedef enum NLS_JobBindingPriority"), std::string::npos);
-    EXPECT_NE(source.find("typedef enum NLS_JobBindingSafetyPolicy"), std::string::npos);
-    EXPECT_NE(source.find("NLS_JOB_BINDING_VERSION"), std::string::npos);
-    EXPECT_NE(source.find("typedef struct NLS_BindingJobHandle"), std::string::npos);
-    EXPECT_NE(source.find("typedef void (*NLS_BindingJobCallback)"), std::string::npos);
-}

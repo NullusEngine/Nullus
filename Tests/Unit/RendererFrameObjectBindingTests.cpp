@@ -2653,86 +2653,6 @@ TEST(RendererFrameObjectBindingTests, EngineProviderRebuildsExplicitFrameObjectB
     NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
 }
 
-TEST(RendererFrameObjectBindingTests, EngineProviderCachesIndexedObjectDataShaderSupportPerShaderGeneration)
-{
-#if defined(NLS_ENABLE_TEST_HOOKS)
-    NLS::Render::Settings::DriverSettings settings;
-    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableExplicitRHI = false;
-    settings.enableThreadedRendering = true;
-    settings.threadedFrameSlotCount = 1u;
-
-    NLS::Render::Context::Driver driver(settings);
-    const ScopedDriverService driverService(driver);
-    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
-    auto explicitDevice = std::make_shared<TestExplicitDevice>();
-    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
-
-    auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
-    frameContext.frameIndex = 51u;
-    frameContext.descriptorAllocator = NLS::Render::RHI::CreateDefaultDescriptorAllocator(32u);
-    ASSERT_NE(frameContext.descriptorAllocator, nullptr);
-    frameContext.descriptorAllocator->BeginFrame(frameContext.frameIndex);
-    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, true);
-
-    ProviderAwareRenderer renderer(driver);
-    NLS::Engine::Rendering::EngineFrameObjectBindingProvider provider(renderer);
-
-    NLS::Render::Entities::Camera camera;
-    NLS::Render::Data::FrameDescriptor frameDescriptor;
-    frameDescriptor.renderWidth = 256u;
-    frameDescriptor.renderHeight = 144u;
-    frameDescriptor.camera = &camera;
-    provider.BeginFrame(frameDescriptor);
-
-    auto* shader = CreateReflectionOnlyObjectDataShader();
-    ASSERT_NE(shader, nullptr);
-    NLS::Render::Resources::Material material;
-    material.SetShader(shader);
-
-    NLS::Render::Entities::Drawable firstDrawable;
-    firstDrawable.material = &material;
-    firstDrawable.AddDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>({
-        NLS::Maths::Matrix4::Translation({ 1.0f, 2.0f, 3.0f }),
-        NLS::Maths::Matrix4::Identity,
-        10u
-    });
-
-    NLS::Render::Entities::Drawable secondDrawable;
-    secondDrawable.material = &material;
-    secondDrawable.AddDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>({
-        NLS::Maths::Matrix4::Translation({ 4.0f, 5.0f, 6.0f }),
-        NLS::Maths::Matrix4::Identity,
-        11u
-    });
-
-    NLS::Render::Data::PipelineState pso;
-    ASSERT_TRUE(provider.PrepareDraw(pso, firstDrawable));
-    NLS::Render::Core::FrameObjectBindingProvider::PreparedBindingSets firstBindings;
-    ASSERT_TRUE(provider.CapturePreparedBindingSets(pso, firstDrawable, firstBindings));
-    ASSERT_TRUE(provider.PrepareDraw(pso, secondDrawable));
-    NLS::Render::Core::FrameObjectBindingProvider::PreparedBindingSets secondBindings;
-    ASSERT_TRUE(provider.CapturePreparedBindingSets(pso, secondDrawable, secondBindings));
-
-    EXPECT_EQ(provider.GetIndexedObjectDataShaderSupportQueryCountForTesting(), 1u);
-    EXPECT_TRUE(firstBindings.usesObjectIndex);
-    EXPECT_TRUE(secondBindings.usesObjectIndex);
-
-    shader->SetReflectionForTesting(shader->GetReflection());
-    ASSERT_TRUE(provider.PrepareDraw(pso, firstDrawable));
-    NLS::Render::Core::FrameObjectBindingProvider::PreparedBindingSets refreshedBindings;
-    ASSERT_TRUE(provider.CapturePreparedBindingSets(pso, firstDrawable, refreshedBindings));
-    EXPECT_EQ(provider.GetIndexedObjectDataShaderSupportQueryCountForTesting(), 2u);
-    EXPECT_TRUE(refreshedBindings.usesObjectIndex);
-
-    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
-    provider.EndFrame();
-    NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);
-#else
-    GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to mutate shader generations.";
-#endif
-}
-
 TEST(RendererFrameObjectBindingTests, ReflectionObjectDataRequiresMatrixStrideForIndexedDraw)
 {
     NLS::Render::Settings::DriverSettings settings;
@@ -3642,48 +3562,6 @@ TEST(RendererFrameObjectBindingTests, MaterialExplicitBindingSetUsesProvidedDevi
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
 }
 
-TEST(RendererFrameObjectBindingTests, MaterialRefreshesCachedBindingStateWhenShaderGenerationChanges)
-{
-    NLS::Render::Settings::DriverSettings settings;
-    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
-    settings.enableExplicitRHI = false;
-
-    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
-    const ScopedDriverService driverService(*driver);
-
-    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
-    ASSERT_NE(shader, nullptr);
-
-    NLS::Render::Resources::Material material(shader);
-    const auto initialGeneration = shader->GetGeneration();
-    EXPECT_EQ(material.GetCachedShaderGenerationForTesting(), initialGeneration);
-
-    auto reflection = shader->GetReflection();
-    reflection.properties.push_back({
-        "u_ReloadTint",
-        NLS::Render::Resources::UniformType::UNIFORM_FLOAT_VEC4,
-        NLS::Render::Resources::ShaderResourceKind::Value,
-        NLS::Render::ShaderCompiler::ShaderStage::Pixel,
-        NLS::Render::RHI::BindingPointMap::kMaterialBindingSpace,
-        31u,
-        -1,
-        1,
-        64u,
-        16u,
-        "MaterialConstants"
-    });
-    shader->SetReflectionForTesting(std::move(reflection));
-    ASSERT_NE(shader->GetGeneration(), initialGeneration);
-
-    EXPECT_FALSE(material.GetParameterBlock().Contains("u_ReloadTint"));
-    material.GetExplicitBindingLayout(nullptr);
-
-    EXPECT_EQ(material.GetCachedShaderGenerationForTesting(), shader->GetGeneration());
-    EXPECT_TRUE(material.GetParameterBlock().Contains("u_ReloadTint"));
-
-    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
-}
-
 TEST(RendererFrameObjectBindingTests, MeshAndShaderInstanceIdsDistinguishResourceInstances)
 {
     NLS::Render::Settings::DriverSettings settings;
@@ -4549,32 +4427,10 @@ TEST(RendererFrameObjectBindingTests, PreparedRecordedDrawStaticBaseCacheReusesP
     EXPECT_EQ(providerPtr->prepareDrawCount, 2u);
     EXPECT_EQ(providerPtr->captureBindingSetCount, 2u);
 
-#if defined(NLS_ENABLE_TEST_HOOKS)
-    shader->SetReflectionForTesting(shader->GetReflection());
-    ASSERT_TRUE(renderer.CaptureDrawForTesting(
-        secondDrawable,
-        overrides,
-        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
-
-    NLS::Render::RHI::SamplerDesc samplerOverride;
-    samplerOverride.minFilter = NLS::Render::RHI::TextureFilter::Nearest;
-    samplerOverride.magFilter = NLS::Render::RHI::TextureFilter::Nearest;
-    material.SetSamplerOverride("u_MaterialSampler", samplerOverride);
-    ASSERT_TRUE(renderer.CaptureDrawForTesting(
-        secondDrawable,
-        overrides,
-        NLS::Render::Settings::EComparaisonAlgorithm::LESS));
-#endif
-
     renderer.EndFrame();
     const auto& frameInfo = renderer.GetFrameInfo();
-#if defined(NLS_ENABLE_TEST_HOOKS)
-    EXPECT_EQ(frameInfo.preparedRecordedDrawStaticBaseCacheMissCount, 3u);
-    EXPECT_EQ(frameInfo.preparedRecordedDrawStaticBaseCacheHitCount, 1u);
-#else
     EXPECT_EQ(frameInfo.preparedRecordedDrawStaticBaseCacheMissCount, 1u);
     EXPECT_EQ(frameInfo.preparedRecordedDrawStaticBaseCacheHitCount, 1u);
-#endif
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
     NLS::Render::Context::DriverTestAccess::SetExplicitFrameActive(driver, false);

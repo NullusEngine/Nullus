@@ -3,9 +3,6 @@
 #if defined(_WIN32)
 #include <memory>
 #include <string_view>
-#include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <utility>
 
 #include "Rendering/RHI/Backends/DX12/DX12RenderPassUtils.h"
@@ -14,15 +11,6 @@
 
 namespace
 {
-    std::string ReadRepoFile(const std::filesystem::path& relativePath)
-    {
-        std::ifstream input(std::filesystem::path(NLS_ROOT_DIR) / relativePath);
-        return {
-            std::istreambuf_iterator<char>(input),
-            std::istreambuf_iterator<char>()
-        };
-    }
-
     class TestTexture final : public NLS::Render::RHI::RHITexture
     {
     public:
@@ -186,16 +174,4 @@ TEST(DX12RenderPassUtilsTests, PresentUsageAloneDoesNotSuppressOwnedRenderTarget
     EXPECT_FALSE(clearPlan.colorClearRequests[0].suppressClearValueMismatchWarning);
 }
 
-TEST(DX12RenderPassUtilsTests, BackbufferClearWarningFilterSerializesDeviceWideInfoQueueMutation)
-{
-    const auto header = ReadRepoFile("Runtime/Rendering/RHI/Backends/DX12/DX12InfoQueueUtils.h");
-
-    EXPECT_NE(header.find("#include <mutex>"), std::string::npos);
-    EXPECT_NE(header.find("Dx12InfoQueueMessageFilterMutex"), std::string::npos);
-    EXPECT_NE(header.find("ScopedDx12InfoQueueMessageScope"), std::string::npos);
-    EXPECT_NE(header.find("D3D12 info-queue filters are device-wide"), std::string::npos);
-
-    const auto commandSource = ReadRepoFile("Runtime/Rendering/RHI/Backends/DX12/DX12Command.cpp");
-    EXPECT_NE(commandSource.find("ScopedDx12InfoQueueMessageScope"), std::string::npos);
-}
 #endif

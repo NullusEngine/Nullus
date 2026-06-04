@@ -253,7 +253,6 @@ TEST(PrefabObjectGraphSerializationTests, AssetReferencesInstantiateThroughPathH
     using namespace NLS::Engine::Serialize;
 
     PersistentManager::Instance().Clear();
-    NLS::ObjectTestAccess::ClearObjectRegistry();
 
     NLS::Core::ResourceManagement::MeshManager meshManager;
     NLS::Core::ResourceManagement::MaterialManager materialManager;

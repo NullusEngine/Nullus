@@ -203,31 +203,6 @@ TEST(MeshResourceTests, MeshIsNotMovableAfterCachingSelfReferentialRhiAdapter)
     EXPECT_FALSE(std::is_move_assignable_v<Mesh>);
 }
 
-TEST(MeshResourceTests, MeshBufferUploadModeDefaultsToGpuOnly)
-{
-    const auto meshHeaderPath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Resources/Mesh.h";
-    const auto meshSourcePath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Resources/Mesh.cpp";
-
-    std::ifstream headerStream(meshHeaderPath, std::ios::binary);
-    const std::string headerSource{
-        std::istreambuf_iterator<char>(headerStream),
-        std::istreambuf_iterator<char>()};
-    std::ifstream sourceStream(meshSourcePath, std::ios::binary);
-    const std::string source{
-        std::istreambuf_iterator<char>(sourceStream),
-        std::istreambuf_iterator<char>()};
-
-    ASSERT_FALSE(headerSource.empty());
-    ASSERT_FALSE(source.empty());
-    EXPECT_NE(headerSource.find("enum class MeshBufferUploadMode"), std::string::npos);
-    EXPECT_NE(source.find(": Mesh(vertices, indices, materialIndex, MeshBufferUploadMode::GpuOnly)"), std::string::npos);
-    EXPECT_NE(source.find("MemoryUsage::CPUToGPU"), std::string::npos);
-    EXPECT_NE(source.find("MemoryUsage::GPUOnly"), std::string::npos);
-    EXPECT_NE(source.find("CreateBuffers(vertices, indices, uploadMode)"), std::string::npos);
-}
-
 TEST(MeshResourceTests, MeshCanReusePrecomputedArtifactBoundingSphere)
 {
     EnsureMeshTestDriver();

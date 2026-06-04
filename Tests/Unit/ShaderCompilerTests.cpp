@@ -330,63 +330,6 @@ TEST(ShaderCompilerTests, CompileBatchRunsIndependentStagesConcurrentlyAndPreser
     EXPECT_EQ(outputs[2].diagnostics, "CSMain");
 }
 
-TEST(ShaderCompilerTests, DxcExecutableLookupPrefersProjectBundledCompilerBeforeEnvironmentAndSdkFallbacks)
-{
-    const auto shaderCompilerSourcePath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/ShaderCompiler/ShaderCompiler.cpp";
-    const std::string source = ReadTextFile(shaderCompilerSourcePath);
-
-    const auto findDxcFunction = source.find("std::optional<std::filesystem::path> FindDxcExecutable()");
-    ASSERT_NE(findDxcFunction, std::string::npos);
-    const auto nextFunction = source.find("std::filesystem::path GetShaderCacheDirectory()", findDxcFunction);
-    ASSERT_NE(nextFunction, std::string::npos);
-    const auto body = source.substr(findDxcFunction, nextFunction - findDxcFunction);
-
-    const auto bundledProbe = body.find("if (const auto bundledPath = findBundledDxc");
-    const auto sourcePathProbe = body.find("__FILE__");
-    const auto currentPathProbe = body.find("std::filesystem::current_path()");
-    const auto dxcPathEnv = body.find("\"DXC_PATH\"");
-    const auto vulkanSdkEnv = body.find("\"VULKAN_SDK\"");
-    const auto vkSdkPathEnv = body.find("\"VK_SDK_PATH\"");
-    const auto windowsSdk = body.find("Windows Kits/10");
-    ASSERT_NE(bundledProbe, std::string::npos);
-    ASSERT_NE(sourcePathProbe, std::string::npos);
-    ASSERT_NE(currentPathProbe, std::string::npos);
-    ASSERT_NE(dxcPathEnv, std::string::npos);
-    ASSERT_NE(vulkanSdkEnv, std::string::npos);
-    ASSERT_NE(vkSdkPathEnv, std::string::npos);
-    ASSERT_NE(windowsSdk, std::string::npos);
-
-    EXPECT_LT(sourcePathProbe, currentPathProbe);
-    EXPECT_LT(bundledProbe, dxcPathEnv);
-    EXPECT_LT(bundledProbe, vulkanSdkEnv);
-    EXPECT_LT(bundledProbe, vkSdkPathEnv);
-    EXPECT_LT(bundledProbe, windowsSdk);
-}
-
-TEST(ShaderCompilerTests, CompileBatchPersistsShaderCacheWithSingleDatabaseFlush)
-{
-    const auto shaderCompilerSourcePath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/ShaderCompiler/ShaderCompiler.cpp";
-    const std::string source = ReadTextFile(shaderCompilerSourcePath);
-
-    const auto compileBatch = source.find("std::vector<ShaderCompilationOutput> ShaderCompiler::CompileBatch");
-    ASSERT_NE(compileBatch, std::string::npos);
-    const auto nextFunction = source.find("ShaderCompilationOutput ShaderCompiler::Compile(ShaderAsset&", compileBatch);
-    ASSERT_NE(nextFunction, std::string::npos);
-    const auto body = source.substr(compileBatch, nextFunction - compileBatch);
-
-    EXPECT_EQ(body.find("return Compile(input);"), std::string::npos);
-    const auto preparedInputs = body.find("std::vector<ShaderCompilationInput> preparedInputs");
-    const auto futureJoin = body.find("outputs[index] = futures[index].get()");
-    const auto cacheFlush = body.find("PersistCacheRecords(preparedInputs, outputs)");
-    ASSERT_NE(preparedInputs, std::string::npos);
-    ASSERT_NE(futureJoin, std::string::npos);
-    ASSERT_NE(cacheFlush, std::string::npos);
-    EXPECT_LT(preparedInputs, futureJoin);
-    EXPECT_LT(futureJoin, cacheFlush);
-}
-
 TEST(ShaderCompilerTests, ReflectBatchPreservesInputOrderForCompiledOutputs)
 {
     std::atomic<int> maxCompileConcurrency{ 0 };
@@ -702,36 +645,6 @@ TEST(ShaderCompilerTests, ShaderCompilerProcessTimeoutTerminatesChildProcessTree
 
     std::this_thread::sleep_for(std::chrono::milliseconds(1200));
     EXPECT_FALSE(std::filesystem::exists(markerPath));
-}
-
-TEST(ShaderCompilerTests, ShaderCompilerProcessUsesJobObjectInsteadOfPipePolling)
-{
-    const auto shaderCompilerSourcePath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/ShaderCompiler/ShaderCompiler.cpp";
-    std::ifstream stream(shaderCompilerSourcePath, std::ios::binary);
-    const std::string source((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
-
-    ASSERT_FALSE(source.empty());
-    EXPECT_EQ(source.find("PeekNamedPipe"), std::string::npos);
-    EXPECT_EQ(source.find("WaitForSingleObject(processInfo.hProcess, 5)"), std::string::npos);
-    EXPECT_NE(source.find("CreateJobObject"), std::string::npos);
-    EXPECT_NE(source.find("AssignProcessToJobObject"), std::string::npos);
-    EXPECT_NE(source.find("TerminateJobObject"), std::string::npos);
-}
-
-TEST(ShaderCompilerTests, ShaderCompilerProcessReadPipeHasSingleOwner)
-{
-    const auto shaderCompilerSourcePath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/ShaderCompiler/ShaderCompiler.cpp";
-    std::ifstream stream(shaderCompilerSourcePath, std::ios::binary);
-    const std::string source((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
-
-    ASSERT_FALSE(source.empty());
-    EXPECT_NE(source.find("const HANDLE outputReadPipe = readPipe;"), std::string::npos);
-    EXPECT_NE(source.find("readPipe = nullptr;"), std::string::npos);
-    EXPECT_NE(source.find("CloseHandle(outputReadPipe);"), std::string::npos);
-    EXPECT_NE(source.find("if (readPipe != nullptr)"), std::string::npos);
-    EXPECT_NE(source.find("CloseHandle(readPipe);"), std::string::npos);
 }
 
 TEST(ShaderCompilerTests, ShaderCacheDatabasePersistsCompiledArtifactsAndFailureDiagnostics)

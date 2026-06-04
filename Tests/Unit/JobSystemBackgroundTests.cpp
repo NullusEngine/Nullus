@@ -2,9 +2,6 @@
 
 #include <atomic>
 #include <chrono>
-#include <filesystem>
-#include <fstream>
-#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -55,26 +52,6 @@ namespace
     {
         auto* data = static_cast<ContinuationData*>(userData);
         data->events->push_back(data->value);
-    }
-
-    std::string ReadRepoFile(const std::filesystem::path& relativePath)
-    {
-        const auto absolutePath = std::filesystem::path(NLS_ROOT_DIR) / relativePath;
-        std::ifstream input(absolutePath, std::ios::binary);
-        if (!input)
-            return {};
-
-        std::ostringstream buffer;
-        buffer << input.rdbuf();
-        auto text = buffer.str();
-        std::string normalized;
-        normalized.reserve(text.size());
-        for (char value : text)
-        {
-            if (value != '\r')
-                normalized.push_back(value);
-        }
-        return normalized;
     }
 
     struct BlockingJobData
@@ -1689,37 +1666,6 @@ TEST_F(JobSystemBackgroundTests, StaleHandleFromPreviousInitializationDoesNotAli
     auto handleToComplete = newHandle;
     NLS::Base::Jobs::Complete(handleToComplete);
     EXPECT_EQ(newCounter.load(std::memory_order_acquire), 1);
-}
-
-TEST_F(JobSystemBackgroundTests, ForegroundQueueDoesNotQueryBackgroundDependencyWhileLocked)
-{
-    const auto source = ReadRepoFile("Runtime/Base/Jobs/JobQueue.cpp");
-    ASSERT_FALSE(source.empty());
-
-    const auto statusBodyBegin = source.find(
-        "JobCompletionStatus JobQueue::GetGroupDependenciesStatusLocked(\n"
-        "        const GroupPtr& group,");
-    ASSERT_NE(statusBodyBegin, std::string::npos);
-    const auto registerLocalDependents = source.find("void JobQueue::RegisterLocalDependentsLocked", statusBodyBegin);
-    ASSERT_NE(registerLocalDependents, std::string::npos);
-    const auto statusBody = source.substr(statusBodyBegin, registerLocalDependents - statusBodyBegin);
-
-    EXPECT_EQ(statusBody.find("Internal::GetJobCompletionStatus"), std::string::npos);
-    EXPECT_NE(statusBody.find("FindResolvedDependencyStatus"), std::string::npos);
-
-    const auto wakeExternalBegin = source.find("void JobQueue::WakeExternalDependencyReadyGroups()");
-    ASSERT_NE(wakeExternalBegin, std::string::npos);
-    const auto collectExternalBegin = source.find("void JobQueue::CollectExternalDependenciesForGroupLocked", wakeExternalBegin);
-    ASSERT_NE(collectExternalBegin, std::string::npos);
-    const auto wakeExternalBody = source.substr(wakeExternalBegin, collectExternalBegin - wakeExternalBegin);
-
-    EXPECT_NE(wakeExternalBody.find("Internal::GetJobCompletionStatus"), std::string::npos);
-    EXPECT_GT(
-        wakeExternalBody.find("Internal::GetJobCompletionStatus"),
-        wakeExternalBody.find("if (dependenciesToCheck.empty())"));
-    EXPECT_LT(
-        wakeExternalBody.find("Internal::GetJobCompletionStatus"),
-        wakeExternalBody.find("std::lock_guard lock(m_mutex);", wakeExternalBody.find("Internal::GetJobCompletionStatus")));
 }
 
 TEST_F(JobSystemBackgroundTests, BackgroundCallbackDoesNotDeadlockCompletingForegroundJobThatDependsOnIt)

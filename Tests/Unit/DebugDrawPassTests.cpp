@@ -597,23 +597,3 @@ TEST(DebugDrawPassTests, LineMeshSlotReusesCapacityWhenLaterFramesNeedFewerVerti
     GTEST_SKIP() << "NLS_ENABLE_TEST_HOOKS is required to inspect DebugDrawPass line mesh slots.";
 #endif
 }
-
-TEST(DebugDrawPassTests, LineMeshRingCapacityTracksThreadedFrameSlots)
-{
-    const auto header = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Debug/DebugDrawPass.h";
-    const auto source = std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/Debug/DebugDrawPass.cpp";
-    std::ifstream headerInput(header);
-    std::ifstream sourceInput(source);
-    const std::string headerText{
-        std::istreambuf_iterator<char>(headerInput),
-        std::istreambuf_iterator<char>()
-    };
-    const std::string sourceText{
-        std::istreambuf_iterator<char>(sourceInput),
-        std::istreambuf_iterator<char>()
-    };
-
-    EXPECT_NE(headerText.find("kMinLineMeshSlotCount"), std::string::npos);
-    EXPECT_NE(headerText.find("std::vector<LineMeshSlot> m_lineMeshSlots"), std::string::npos);
-    EXPECT_NE(sourceText.find("GetFrameContextSlotCount"), std::string::npos);
-}

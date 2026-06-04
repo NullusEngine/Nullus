@@ -595,26 +595,6 @@ TEST_F(ProfilerDestinationTest, TimelineTraceExporterWritesEachFrameOnce)
     EXPECT_EQ(exportRange.Begin, 10u);
     EXPECT_EQ(exportRange.End, 13u);
     EXPECT_EQ(lastExportedFrame, 9u);
-
-    const auto profilerWindowPath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/ImGuiExtensions/TimelineProfiler/ProfilerWindow.cpp";
-
-    std::ifstream stream(profilerWindowPath, std::ios::binary);
-    const std::string source{
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>()};
-
-    ASSERT_FALSE(source.empty());
-    EXPECT_NE(source.find("MaxDepth = static_cast<int>(NLS::UI::Profiling::kTimelineProfilerMaxCpuScopeDepth)"), std::string::npos);
-    EXPECT_NE(source.find("ImGui::SliderInt(\"Depth\", &style.MaxDepth, 1, static_cast<int>(NLS::UI::Profiling::kTimelineProfilerMaxCpuScopeDepth))"), std::string::npos);
-    EXPECT_NE(source.find("LastExportedFrame"), std::string::npos);
-    EXPECT_NE(source.find("ResolveTraceFrameExportRange("), std::string::npos);
-    EXPECT_NE(source.find("{ cpuRange.Begin, cpuRange.End }"), std::string::npos);
-    EXPECT_NE(source.find("context.LastExportedFrame = cpuRange.End > 0 ? cpuRange.End - 1 : 0;"), std::string::npos);
-    EXPECT_NE(source.find("context.LastExportedFrame = frameIndex;"), std::string::npos);
-    EXPECT_NE(source.find("BuildTraceMetadataEventJson("), std::string::npos);
-    EXPECT_NE(source.find("\"thread_name\""), std::string::npos);
-    EXPECT_EQ(source.find("Sprintf(\"{\\\"name\\\":\\\"thread_name\\\""), std::string::npos);
 #else
     GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
 #endif
@@ -731,87 +711,6 @@ TEST_F(ProfilerDestinationTest, TimelineTraceExporterKeepsEventNamesOwnedUntilEx
         std::string::npos);
     EXPECT_EQ(exported->find("\"name\":\"rawData\""), std::string::npos);
     EXPECT_EQ(exported->find("\"name\":\"l\""), std::string::npos);
-#else
-    GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
-#endif
-}
-
-TEST_F(ProfilerDestinationTest, TimelineProfilerEventsOwnNamesInsteadOfAllocatorPointers)
-{
-    const auto profilerHeaderPath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.h";
-    const auto profilerSourcePath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/ImGuiExtensions/TimelineProfiler/Profiler.cpp";
-    const auto profilerWindowPath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/ImGuiExtensions/TimelineProfiler/ProfilerWindow.cpp";
-
-    std::ifstream headerStream(profilerHeaderPath, std::ios::binary);
-    const std::string header{
-        std::istreambuf_iterator<char>(headerStream),
-        std::istreambuf_iterator<char>()};
-    std::ifstream sourceStream(profilerSourcePath, std::ios::binary);
-    const std::string source{
-        std::istreambuf_iterator<char>(sourceStream),
-        std::istreambuf_iterator<char>()};
-    std::ifstream windowStream(profilerWindowPath, std::ios::binary);
-    const std::string window{
-        std::istreambuf_iterator<char>(windowStream),
-        std::istreambuf_iterator<char>()};
-
-    ASSERT_FALSE(header.empty());
-    ASSERT_FALSE(source.empty());
-    ASSERT_FALSE(window.empty());
-
-    const auto eventStructBegin = header.find("struct ProfilerEvent");
-    ASSERT_NE(eventStructBegin, std::string::npos);
-    const auto eventStructEnd = header.find("// Data for a single frame", eventStructBegin);
-    ASSERT_NE(eventStructEnd, std::string::npos);
-    const auto eventStruct = header.substr(eventStructBegin, eventStructEnd - eventStructBegin);
-
-    EXPECT_NE(header.find("char\t\tName[MaxNameLength + 1u]{}"), std::string::npos);
-    EXPECT_NE(header.find("const char* GetName() const"), std::string::npos);
-    EXPECT_NE(header.find("void SetName(const char* pName)"), std::string::npos);
-    EXPECT_EQ(eventStruct.find("pName\t"), std::string::npos);
-    EXPECT_EQ(eventStruct.find("pName;"), std::string::npos);
-    EXPECT_NE(source.find("event.SetName(pName);"), std::string::npos);
-    EXPECT_NE(source.find("newEvent.SetName(pName);"), std::string::npos);
-    EXPECT_NE(source.find("event.SetName(\"Present\");"), std::string::npos);
-    EXPECT_EQ(source.find(".pName"), std::string::npos);
-    EXPECT_EQ(window.find(".pName"), std::string::npos);
-    EXPECT_NE(window.find("event.GetName()"), std::string::npos);
-}
-
-TEST_F(ProfilerDestinationTest, TimelineTraceRecordingContinuesDrawingTimelineWhileExporting)
-{
-#if NLS_ENABLE_TIMELINE_PROFILER
-    const auto profilerWindowPath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/UI/ImGuiExtensions/TimelineProfiler/ProfilerWindow.cpp";
-
-    std::ifstream stream(profilerWindowPath, std::ios::binary);
-    const std::string source{
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>()};
-
-    ASSERT_FALSE(source.empty());
-    EXPECT_EQ(source.find("DrawProfilerTraceControls(traceContext"), std::string::npos);
-    EXPECT_EQ(source.find("IsTraceRecording(traceContext)"), std::string::npos);
-    EXPECT_EQ(source.find("Trace recording active; timeline drawing is paused."), std::string::npos);
-    EXPECT_EQ(source.find("return; // Keep trace capture from profiling the profiler timeline UI."), std::string::npos);
-
-    const auto drawBegin = source.find("static void DrawProfilerTimeline(");
-    ASSERT_NE(drawBegin, std::string::npos);
-    const auto drawEnd = source.find("void DrawProfilerHUD()", drawBegin);
-    ASSERT_NE(drawEnd, std::string::npos);
-    const auto drawCode = source.substr(drawBegin, drawEnd - drawBegin);
-    const auto updateTrace = drawCode.find("UpdateTrace(traceContext);");
-    ASSERT_NE(updateTrace, std::string::npos);
-    const auto sizeActual = drawCode.find("ImVec2 sizeActual", updateTrace);
-    ASSERT_NE(sizeActual, std::string::npos);
-    EXPECT_EQ(drawCode.find("return;", updateTrace), std::string::npos);
-    EXPECT_LT(updateTrace, sizeActual);
-    EXPECT_NE(drawCode.find("if (!traceContext.TraceStream.is_open())"), std::string::npos);
-    EXPECT_NE(drawCode.find("BeginTrace(pTracePath, traceContext)"), std::string::npos);
-    EXPECT_NE(drawCode.find("EndTrace(traceContext)"), std::string::npos);
 #else
     GTEST_SKIP() << "TimelineProfiler is not enabled in this build.";
 #endif

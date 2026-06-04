@@ -1343,21 +1343,6 @@ TEST(PanelWindowHookTests, ProfilerPanelDrawDoesNotAdvanceTimelineFrameInsideAct
 #endif
 }
 
-TEST(PanelWindowHookTests, ProfilerPanelTimelineDrawHasDedicatedTraceAttributionScope)
-{
-    const auto profilerPanelPath =
-        std::filesystem::path(NLS_ROOT_DIR) / "Project/Editor/Panels/ProfilerPanel.cpp";
-
-    std::ifstream stream(profilerPanelPath, std::ios::binary);
-    const std::string source{
-        std::istreambuf_iterator<char>(stream),
-        std::istreambuf_iterator<char>()};
-
-    ASSERT_FALSE(source.empty());
-    EXPECT_NE(source.find("#include \"Profiling/Profiler.h\""), std::string::npos);
-    EXPECT_NE(source.find("NLS_PROFILE_NAMED_SCOPE(\"ProfilerPanel::DrawTimeline\")"), std::string::npos);
-}
-
 TEST(PanelWindowHookTests, FrameInfoPanelReadsThreadedPublishDiagnostics)
 {
     NLS::Render::Settings::DriverSettings settings;

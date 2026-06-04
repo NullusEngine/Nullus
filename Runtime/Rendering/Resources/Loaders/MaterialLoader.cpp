@@ -10,6 +10,7 @@
 
 #include <Debug/Logger.h>
 
+#include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/NativeArtifactContainer.h"
 #include "Core/ResourceManagement/ShaderManager.h"
 #include "Core/ResourceManagement/TextureManager.h"
@@ -29,6 +30,11 @@ namespace
 
     std::vector<uint8_t> ReadAllBytes(const std::string& path)
     {
+        NLS::Core::Assets::ArtifactLoadTelemetryRecord telemetry;
+        telemetry.stage = NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead;
+        telemetry.path = path;
+        NLS::Core::Assets::RecordArtifactLoadTelemetry(telemetry);
+
         std::ifstream stream(path, std::ios::binary);
         if (!stream)
             return {};
@@ -48,19 +54,26 @@ namespace
 
     std::string ReadMaterialPayloadText(const std::string& path)
     {
+        NLS::Core::Assets::RecordArtifactLoadTelemetry({
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::CpuDeserialize});
+
         const auto bytes = ReadAllBytes(path);
         if (bytes.empty())
             return {};
 
         if (IsGeneratedImportedMaterialArtifactPath(path))
         {
-            const auto container = NLS::Core::Assets::ReadNativeArtifactContainer(
+            const auto container = NLS::Core::Assets::ReadNativeArtifactContainerView(
                 bytes,
                 NLS::Core::Assets::ArtifactType::Material,
                 1u);
             if (!container.has_value())
                 return {};
-            return std::string(container->payload.begin(), container->payload.end());
+            if (container->payloadSize == 0u)
+                return {};
+            return std::string(
+                reinterpret_cast<const char*>(container->payloadData),
+                container->payloadSize);
         }
 
         return std::string(bytes.begin(), bytes.end());

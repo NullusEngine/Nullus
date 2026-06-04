@@ -70,6 +70,15 @@ bool IsMeshArtifactPath(const std::filesystem::path& path)
     return ToLower(path.extension().string()) == ".nmesh";
 }
 
+std::string NormalizeResolvedArtifactPath(std::string path)
+{
+    if (path.empty())
+        return {};
+
+    std::replace(path.begin(), path.end(), '\\', '/');
+    return std::filesystem::path(path).lexically_normal().generic_string();
+}
+
 std::filesystem::path NormalizeVirtualBuiltinPath(const std::string& path)
 {
     std::string relativePath = path;
@@ -236,6 +245,29 @@ std::string ResolveBuiltinMeshArtifactPath(const std::string& path)
 
 namespace NLS::Core::ResourceManagement
 {
+namespace
+{
+MeshManager::Mesh* FindCachedMeshByEquivalentArtifactPath(
+    MeshManager& manager,
+    const std::string& realPath)
+{
+    const auto target = NormalizeResolvedArtifactPath(realPath);
+    if (target.empty())
+        return nullptr;
+
+    for (const auto& [resourcePath, mesh] : manager.GetResources())
+    {
+        if (mesh == nullptr)
+            continue;
+
+        if (NormalizeResolvedArtifactPath(MeshManager::ResolveArtifactResourcePath(resourcePath)) == target)
+            return mesh;
+    }
+
+    return nullptr;
+}
+}
+
 std::string MeshManager::ResolveResourcePath(const std::string& path)
 {
     return GetRealPath(path);
@@ -278,6 +310,9 @@ MeshManager::Mesh* MeshManager::PrewarmArtifact(const std::string& path)
         return cached;
 
     const auto realPath = ResolveArtifactResourcePath(path);
+    if (auto* cached = FindCachedMeshByEquivalentArtifactPath(*this, realPath))
+        return cached;
+
     if (!IsMeshArtifactPath(realPath))
         return nullptr;
 

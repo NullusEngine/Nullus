@@ -5,8 +5,10 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include "CoreDef.h"
+#include "Core/ResourceManagement/ResourceHandle.h"
 
 
 namespace NLS::Core::ResourceManagement
@@ -125,9 +127,18 @@ namespace NLS::Core::ResourceManagement
 		std::unordered_map<std::string, T*> GetResources() const;
 
 	protected:
+		ResourceHandle<T> AcquireResourceHandle(
+			ResourceLifetimeRegistry& p_registry,
+			const ResourceLifetimeAcquireRequest& p_request);
+		size_t TrimUnusedResources(
+			ResourceLifetimeRegistry& p_registry,
+			ResourceLifetimeResourceType p_type,
+			const ResourceLifetimeTrimOptions& p_options = {});
+
 		virtual const char* GetResourceTypeName() const { return "Resource"; }
 		virtual T* CreateResource(const std::string& p_path) = 0;
 		virtual void DestroyResource(T* p_resource) = 0;
+		virtual void DestroyResourceForPath(const std::string& p_path, T* p_resource);
 		virtual void ReloadResource(T* p_resource, const std::string& p_path) = 0;
 		static std::string GetRealPath(const std::string& p_path);
 		static const std::string& GetProjectAssetsPath();

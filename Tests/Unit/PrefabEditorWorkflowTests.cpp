@@ -263,6 +263,73 @@ TEST(PrefabEditorWorkflowTests, RegistryTracksConnectedPrefabPresentationStates)
     EXPECT_TRUE(missingPresentation.missingAsset);
 }
 
+TEST(PrefabEditorWorkflowTests, RegistryRemovesPrefabRootInstanceWithoutTouchingUnrelatedPrefabs)
+{
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& root = scene.CreateGameObject("PrefabRoot", "Prefab");
+    auto& child = scene.CreateGameObject("PrefabChild", "Prefab");
+    auto& unrelated = scene.CreateGameObject("UnrelatedPrefab", "Prefab");
+    child.SetParent(root);
+
+    NLS::Editor::Assets::PrefabInstanceRecord instance;
+    instance.prefabAssetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse("83111111-1111-4311-8311-111111111111"));
+    instance.prefabSubAssetKey = "prefab:PrefabRoot";
+    instance.instanceRoot = &root;
+    instance.sourceByInstanceObject.emplace(
+        &root,
+        NLS::Engine::Serialize::ObjectId(NLS::Guid::NewDeterministic("Registry.Remove.Root")));
+    instance.sourceByInstanceObject.emplace(
+        &child,
+        NLS::Engine::Serialize::ObjectId(NLS::Guid::NewDeterministic("Registry.Remove.Child")));
+
+    NLS::Editor::Assets::PrefabInstanceRecord unrelatedInstance;
+    unrelatedInstance.prefabAssetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse("83222222-2222-4322-8322-222222222222"));
+    unrelatedInstance.prefabSubAssetKey = "prefab:UnrelatedPrefab";
+    unrelatedInstance.instanceRoot = &unrelated;
+    unrelatedInstance.sourceByInstanceObject.emplace(
+        &unrelated,
+        NLS::Engine::Serialize::ObjectId(NLS::Guid::NewDeterministic("Registry.Remove.Unrelated")));
+
+    NLS::Editor::Assets::PrefabInstanceRegistry registry;
+    registry.Register(std::move(instance));
+    registry.Register(std::move(unrelatedInstance));
+
+    EXPECT_EQ(registry.FindRootInstance(root), registry.FindInstance(root));
+    EXPECT_TRUE(registry.RemoveRootInstance(root));
+    EXPECT_EQ(registry.FindInstance(root), nullptr);
+    EXPECT_EQ(registry.FindInstance(child), nullptr);
+    EXPECT_NE(registry.FindInstance(unrelated), nullptr);
+    EXPECT_FALSE(registry.RemoveRootInstance(root));
+}
+
+TEST(PrefabEditorWorkflowTests, RegistryPrunesDestroyedChildMappingWithoutRemovingRootInstance)
+{
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& root = scene.CreateGameObject("PrefabRoot", "Prefab");
+    auto& child = scene.CreateGameObject("PrefabChild", "Prefab");
+    child.SetParent(root);
+
+    NLS::Editor::Assets::PrefabInstanceRecord instance;
+    instance.prefabAssetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse("83333333-3333-4333-8333-333333333333"));
+    instance.prefabSubAssetKey = "prefab:PrefabRoot";
+    instance.instanceRoot = &root;
+    instance.sourceByInstanceObject.emplace(
+        &root,
+        NLS::Engine::Serialize::ObjectId(NLS::Guid::NewDeterministic("Registry.Prune.Root")));
+    instance.sourceByInstanceObject.emplace(
+        &child,
+        NLS::Engine::Serialize::ObjectId(NLS::Guid::NewDeterministic("Registry.Prune.Child")));
+
+    NLS::Editor::Assets::PrefabInstanceRegistry registry;
+    registry.Register(std::move(instance));
+
+    EXPECT_NE(registry.FindInstance(child), nullptr);
+    EXPECT_TRUE(registry.RemoveObjectMapping(child));
+    EXPECT_EQ(registry.FindInstance(child), nullptr);
+    EXPECT_NE(registry.FindRootInstance(root), nullptr);
+    EXPECT_FALSE(registry.RemoveObjectMapping(child));
+}
+
 TEST(PrefabEditorWorkflowTests, RegistryTracksPrefabChildAndGeneratedReadOnlyPresentationStates)
 {
     NLS::Engine::SceneSystem::Scene sourceScene;

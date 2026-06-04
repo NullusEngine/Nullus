@@ -42,6 +42,33 @@ namespace NLS::Core::ResourceManagement
 		virtual void ReloadResource(Texture2D* p_resource, const std::string& p_path) override;
 
 		Texture2D* RequestAsyncArtifact(const std::string& p_path, bool p_cancelableInterest = false);
+		ResourceHandle<Texture2D> AcquireTextureHandle(
+			ResourceLifetimeRegistry& registry,
+			const std::string& ownerToken,
+			const std::string& path,
+			ResourceLifetimeOwnerKind ownerKind = ResourceLifetimeOwnerKind::SceneInstance,
+			size_t estimatedBytes = 0u)
+		{
+			return AcquireResourceHandle(
+				registry,
+				ResourceLifetimeAcquireRequest {
+					ownerToken,
+					ResourceLifetimeResourceType::Texture,
+					path,
+					estimatedBytes,
+					ownerKind });
+		}
+
+		size_t TrimUnusedTextureResources(
+			ResourceLifetimeRegistry& registry,
+			const ResourceLifetimeTrimOptions& options = {})
+		{
+			return TrimUnusedResources(
+				registry,
+				ResourceLifetimeResourceType::Texture,
+				options);
+		}
+
 		void CancelAsyncArtifact(const std::string& p_path);
 		bool IsAsyncArtifactLoadPending(const std::string& p_path) const;
 		bool IsAsyncArtifactLoadFailed(const std::string& p_path) const;

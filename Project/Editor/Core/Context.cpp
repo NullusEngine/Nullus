@@ -18,6 +18,7 @@
 #include "Assets/EditorAssetDatabase.h"
 #include "Core/Context.h"
 #include "Core/EditorFrameLatency.h"
+#include "Core/EditorProgressTargets.h"
 #include "Debug/FileHandler.h"
 #include "Rendering/BaseSceneRenderer.h"
 #include "Rendering/Settings/GraphicsBackendUtils.h"
@@ -143,11 +144,10 @@ namespace
     }
 #endif
 
-    constexpr const char* kRendererResourceResolutionTargetPlatform = "asset-resolution";
-
     bool ShouldShowNativeTaskProgress(const NLS::Editor::Assets::ImportProgressEvent& event)
     {
-        return event.targetPlatform != kRendererResourceResolutionTargetPlatform;
+        return event.targetPlatform != NLS::Editor::Core::kRendererResourceResolutionTargetPlatform &&
+            event.targetPlatform != NLS::Editor::Core::kSceneLoadRendererResourceResolutionTargetPlatform;
     }
 
 	bool ResolveEditorLightGridEnabled(const std::filesystem::path& projectPath)
@@ -889,6 +889,7 @@ Editor::Core::Context::Context(const std::string& p_projectPath, const std::stri
     NLS::Core::ServiceLocator::Provide<TextureManager>(textureManager);
     NLS::Core::ServiceLocator::Provide<ShaderManager>(shaderManager);
     NLS::Core::ServiceLocator::Provide<MaterialManager>(materialManager);
+    NLS::Core::ServiceLocator::Provide<ResourceLifetimeRegistry>(resourceLifetimeRegistry);
     NLS::Engine::Rendering::BaseSceneRenderer::PreloadSceneFallbackShader(shaderManager);
 
     PresentStartupProgressFrame("Preparing editor resources", 0.34f);

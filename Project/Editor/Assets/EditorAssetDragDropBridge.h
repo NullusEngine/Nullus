@@ -63,6 +63,9 @@ public:
         ImportProgressTracker* progressTracker = nullptr) const;
     std::optional<NLS::Engine::Assets::PrefabArtifact> TryLoadPreviewPrefabArtifact(
         const EditorAssetDragPayload& payload) const;
+    std::optional<NLS::Engine::Assets::PrefabArtifact> TryLoadImportedPrefabArtifact(
+        const std::string& assetPath,
+        const std::string& prefabSubAssetKey) const;
 
 private:
     std::filesystem::path ProjectRoot() const;

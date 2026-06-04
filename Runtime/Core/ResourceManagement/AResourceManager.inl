@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <filesystem>
 
+#include "Assets/ArtifactLoadTelemetry.h"
 #include "Core/ResourceManagement/AResourceManager.h"
 namespace NLS::Core::ResourceManagement
 {
@@ -83,7 +84,7 @@ namespace NLS::Core::ResourceManagement
 		}
 
 		if (resource)
-			DestroyResource(resource);
+			DestroyResourceForPath(p_path, resource);
 	}
 
 	template<typename T>
@@ -128,7 +129,7 @@ namespace NLS::Core::ResourceManagement
 		}
 
 		for (auto& [key, value] : resources)
-			DestroyResource(value);
+			DestroyResourceForPath(key, value);
 	}
 
 	template<typename T>
@@ -144,9 +145,116 @@ namespace NLS::Core::ResourceManagement
 		}
 
 		if (previousResource)
-			DestroyResource(previousResource);
+			DestroyResourceForPath(p_path, previousResource);
 
 		return p_instance;
+	}
+
+	template<typename T>
+	inline ResourceHandle<T> AResourceManager<T>::AcquireResourceHandle(
+		ResourceLifetimeRegistry& p_registry,
+		const ResourceLifetimeAcquireRequest& p_request)
+	{
+		const auto resourcePath = p_request.path;
+		const auto resourceId = p_registry.Acquire(p_request);
+		if (resourceId.normalizedPath.empty())
+			return {};
+		if (!GetResource(resourcePath, false) && !LoadResource(resourcePath))
+		{
+			p_registry.Release(resourceId, p_request.ownerToken);
+			return {};
+		}
+
+		return ResourceHandle<T>(
+			p_registry,
+			resourceId,
+			p_request.ownerToken,
+			[this, resourcePath](const ResourceId&) -> T*
+			{
+				return GetResource(resourcePath, false);
+			});
+	}
+
+	template<typename T>
+	inline size_t AResourceManager<T>::TrimUnusedResources(
+		ResourceLifetimeRegistry& p_registry,
+		ResourceLifetimeResourceType p_type,
+		const ResourceLifetimeTrimOptions& p_options)
+	{
+		size_t unloadedCount = 0u;
+		for (const auto& [path, resource] : GetResources())
+		{
+			(void)resource;
+			if (p_registry.HasActiveOwners(p_type, path))
+			{
+				NLS::Core::Assets::RecordArtifactLoadTelemetry({
+					NLS::Core::Assets::ArtifactLoadTelemetryStage::LifetimeTrimSkip,
+					{},
+					p_registry.GetEstimatedBytes(p_type, path),
+					ResourceLifetimeRegistry::NormalizeResourcePath(path) });
+			}
+		}
+
+		std::unordered_map<std::string, std::vector<std::string>> normalizedResourceIndex;
+		{
+			std::lock_guard lock(m_resourcesMutex);
+			normalizedResourceIndex.reserve(m_resources.size());
+			for (auto it = m_resources.begin(); it != m_resources.end(); ++it)
+				normalizedResourceIndex[ResourceLifetimeRegistry::NormalizeResourcePath(it->first)].push_back(it->first);
+		}
+
+		for (const auto& candidate : p_registry.CollectTrimCandidates(p_options))
+		{
+			if (candidate.type != p_type)
+				continue;
+
+			if (!p_registry.TryBeginEviction(candidate))
+				continue;
+
+			std::vector<std::pair<std::string, T*>> registeredResources;
+			{
+				std::lock_guard lock(m_resourcesMutex);
+				if (const auto found = normalizedResourceIndex.find(candidate.normalizedPath); found != normalizedResourceIndex.end())
+				{
+					for (const auto& registeredPath : found->second)
+					{
+						if (auto registered = m_resources.find(registeredPath); registered != m_resources.end())
+						{
+							registeredResources.emplace_back(registered->first, registered->second);
+							m_resources.erase(registered);
+						}
+					}
+					normalizedResourceIndex.erase(found);
+				}
+			}
+			if (registeredResources.empty())
+			{
+				p_registry.CompleteEviction(candidate.type, candidate.normalizedPath);
+				++unloadedCount;
+				continue;
+			}
+
+			for (const auto& [registeredPath, resource] : registeredResources)
+			{
+				if (resource == nullptr)
+					continue;
+				DestroyResourceForPath(registeredPath, resource);
+				++unloadedCount;
+			}
+			NLS::Core::Assets::RecordArtifactLoadTelemetry({
+				NLS::Core::Assets::ArtifactLoadTelemetryStage::Eviction,
+				{},
+				candidate.estimatedBytes,
+				candidate.normalizedPath });
+			p_registry.CompleteEviction(candidate.type, candidate.normalizedPath);
+		}
+		return unloadedCount;
+	}
+
+	template<typename T>
+	inline void AResourceManager<T>::DestroyResourceForPath(const std::string&, T* p_resource)
+	{
+		DestroyResource(p_resource);
 	}
 
 	template<typename T>

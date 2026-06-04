@@ -31,8 +31,16 @@ struct NativeArtifactContainer
     std::vector<uint8_t> payload;
 };
 
+struct NativeArtifactContainerView
+{
+    NativeArtifactMetadata metadata;
+    const uint8_t* payloadData = nullptr;
+    size_t payloadSize = 0u;
+};
+
 NLS_CORE_API size_t NativeArtifactContainerHeaderSize();
 NLS_CORE_API std::string ComputeNativeArtifactPayloadHash(const std::vector<uint8_t>& payload);
+NLS_CORE_API std::string ComputeNativeArtifactPayloadHash(const uint8_t* payload, size_t payloadSize);
 NLS_CORE_API std::string ComputeNativeArtifactDependencyHash(const std::vector<AssetDependencyRecord>& dependencies);
 NLS_CORE_API std::vector<uint8_t> WriteNativeArtifactContainer(
     NativeArtifactMetadata metadata,
@@ -41,5 +49,10 @@ NLS_CORE_API std::optional<NativeArtifactContainer> ReadNativeArtifactContainer(
     const std::vector<uint8_t>& bytes,
     ArtifactType expectedType,
     uint32_t expectedSchemaVersion);
+NLS_CORE_API std::optional<NativeArtifactContainerView> ReadNativeArtifactContainerView(
+    const std::vector<uint8_t>& bytes,
+    ArtifactType expectedType,
+    uint32_t expectedSchemaVersion,
+    std::string* diagnostics = nullptr);
 NLS_CORE_API bool IsNativeArtifactContainer(const std::vector<uint8_t>& bytes);
 }

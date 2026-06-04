@@ -1452,6 +1452,40 @@ TEST(RenderSceneCacheTests, BitsetVisibilityTracksPrimitiveAndMeshResults)
     EXPECT_NE(snapshot.meshBits[0] & (1ull << 1u), 0u);
 }
 
+TEST(RenderSceneCacheTests, TransientRenderSuppressionHidesMeshWithoutChangingGameObjectActiveState)
+{
+    RenderableFixture fixture;
+    ASSERT_NE(fixture.meshRenderer, nullptr);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 1u);
+    auto visible = renderScene.GatherVisibleCommands({});
+    ASSERT_EQ(visible.opaques.size(), 1u);
+
+    auto* owner = fixture.meshRenderer->gameobject();
+    ASSERT_NE(owner, nullptr);
+    ASSERT_TRUE(owner->IsSelfActive());
+    fixture.meshRenderer->SetTransientRenderingSuppressed(true);
+    EXPECT_TRUE(owner->IsSelfActive())
+        << "Render-only suppression must not mutate serialized GameObject active state.";
+
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u)
+        << "Render-only suppression should reuse cached commands and only affect visibility.";
+    visible = renderScene.GatherVisibleCommands({});
+    EXPECT_TRUE(visible.opaques.empty());
+
+    fixture.meshRenderer->SetTransientRenderingSuppressed(false);
+    EXPECT_TRUE(owner->IsSelfActive());
+
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 0u)
+        << "Restoring render-only suppression should not rebuild cached commands.";
+    visible = renderScene.GatherVisibleCommands({});
+    ASSERT_EQ(visible.opaques.size(), 1u);
+}
+
 TEST(RenderSceneCacheTests, SerialAndParallelVisibilityProduceEquivalentQueues)
 {
     ScopedRenderSceneCacheJobSystem jobSystem(2u);
@@ -1739,6 +1773,171 @@ TEST(RenderSceneCacheTests, SceneRendererDrawsExistingAndPreviewPrefabInstancesS
 
     delete existingMesh;
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RenderSceneCacheTests, AdditivePreviewSceneSkipsTexturedModelUntilMaterialTexturesAreBound)
+{
+    using namespace NLS::Engine::Serialize;
+
+    NLS::Engine::Serialize::PersistentManager::Instance().Clear();
+    NLS::ObjectTestAccess::ClearObjectRegistry();
+    auto& driver = EnsureRenderSceneTestDriver();
+
+    const auto meshGuid = NLS::Guid::Parse("25252525-2525-4525-8525-252525252525");
+    const auto materialGuid = NLS::Guid::Parse("36363636-3636-4636-8636-363636363636");
+    const auto meshPath = std::string("Library/Artifacts/Hero/preview/body.nmesh");
+    const auto materialPath = std::string("Library/Artifacts/Hero/preview/body.nmat");
+    const auto texturePath = std::string("Library/Artifacts/Hero/preview/body-basecolor.ntex");
+    const auto meshReference = ObjectIdentifier::Asset(
+        AssetId(meshGuid),
+        MakeLocalIdentifierInFile(meshGuid, "mesh:body"),
+        meshPath);
+    const auto materialReference = ObjectIdentifier::Asset(
+        AssetId(materialGuid),
+        MakeLocalIdentifierInFile(materialGuid, "material:body"),
+        materialPath);
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
+    ASSERT_NE(shader, nullptr);
+
+    auto* existingMesh = CreateSingleMesh(0u);
+    ASSERT_NE(existingMesh, nullptr);
+    NLS::Render::Resources::Material existingMaterial;
+    existingMaterial.path = materialPath;
+    existingMaterial.SetShader(shader);
+    ASSERT_TRUE(existingMaterial.IsValid());
+
+    NLS::Engine::SceneSystem::Scene mainScene;
+    auto& existingObject = mainScene.CreateGameObject("ExistingPrefab");
+    auto* existingMeshFilter = existingObject.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* existingMeshRenderer = existingObject.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(existingMeshFilter, nullptr);
+    ASSERT_NE(existingMeshRenderer, nullptr);
+    existingMeshFilter->SetMeshReference(MakeRenderScenePPtr<NLS::Render::Resources::Mesh>(meshReference));
+    existingMeshFilter->SetResolvedMeshFromReference(existingMesh);
+    existingMeshRenderer->SetMaterialReferences({
+        MakeRenderScenePPtr<NLS::Render::Resources::Material>(materialReference)
+    });
+    existingMeshRenderer->SetResolvedMaterialFromReference(0u, existingMaterial);
+
+    auto previewMesh = std::shared_ptr<NLS::Render::Resources::Mesh>(CreateSingleMesh(0u));
+    ASSERT_NE(previewMesh, nullptr);
+    NLS::Render::Resources::Material previewMaterial;
+    previewMaterial.path = materialPath;
+    previewMaterial.SetShader(shader);
+    previewMaterial.SetTextureResourcePath("u_DiffuseMap", texturePath);
+    ASSERT_TRUE(previewMaterial.IsValid());
+
+    NLS::Engine::SceneSystem::Scene previewScene;
+    auto& previewObject = previewScene.CreateGameObject("PreviewPrefab");
+    auto* previewMeshFilter = previewObject.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* previewMeshRenderer = previewObject.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(previewMeshFilter, nullptr);
+    ASSERT_NE(previewMeshRenderer, nullptr);
+    previewMeshFilter->SetMeshReference(MakeRenderScenePPtr<NLS::Render::Resources::Mesh>(meshReference));
+    previewMeshFilter->SetResolvedTransientMeshFromReference(previewMesh);
+    previewMeshRenderer->SetMaterialReferences({
+        MakeRenderScenePPtr<NLS::Render::Resources::Material>(materialReference)
+    });
+    previewMeshRenderer->SetMaterialPathHints({ materialPath });
+    previewMeshRenderer->SetResolvedMaterialFromReference(0u, previewMaterial);
+
+    SceneDrawableProbeRenderer renderer(driver);
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        mainScene,
+        std::nullopt,
+        nullptr,
+        { &previewScene }
+    });
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 128u;
+    frameDescriptor.camera = &camera;
+
+    const auto texturePendingDrawables = renderer.CaptureSceneDrawables(frameDescriptor);
+    ASSERT_EQ(texturePendingDrawables.opaques.size(), 1u)
+        << "The saved scene must remain visible, but the additive preview must not render as a white model while its declared texture is missing.";
+    EXPECT_EQ(texturePendingDrawables.opaques.front().second.mesh, existingMesh);
+    EXPECT_EQ(texturePendingDrawables.opaques.front().second.material, &existingMaterial);
+
+    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(32u, 48u, 64u, 255u);
+    ASSERT_NE(texture, nullptr);
+    texture->path = texturePath;
+    previewMaterial.Set<NLS::Render::Resources::Texture2D*>("u_DiffuseMap", texture);
+
+    const auto textureReadyDrawables = renderer.CaptureSceneDrawables(frameDescriptor);
+    ASSERT_EQ(textureReadyDrawables.opaques.size(), 2u);
+    const auto drewPreview = std::any_of(
+        textureReadyDrawables.opaques.begin(),
+        textureReadyDrawables.opaques.end(),
+        [&previewMesh, &previewMaterial](const auto& entry)
+        {
+            return entry.second.mesh == previewMesh.get() && entry.second.material == &previewMaterial;
+        });
+    EXPECT_TRUE(drewPreview);
+
+    delete existingMesh;
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(texture));
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RenderSceneCacheTests, SceneRendererRespectsGlobalObjectDataCapacityAcrossAdditiveScenes)
+{
+#if defined(NLS_ENABLE_TEST_HOOKS)
+    ScopedObjectDataCountLimitOverride objectDataLimit(2u);
+#endif
+
+    auto& driver = EnsureRenderSceneTestDriver();
+    QueueSortFixture fixture;
+    fixture.AddObject("MainA", *fixture.sharedMesh, fixture.opaqueMaterialA, 3.0f);
+    fixture.AddObject("MainB", *fixture.otherMesh, fixture.opaqueMaterialB, 6.0f);
+
+    NLS::Engine::SceneSystem::Scene previewScene;
+    auto& previewObject = previewScene.CreateGameObject("PreviewOverflow");
+    auto* previewMeshFilter = previewObject.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* previewMeshRenderer = previewObject.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(previewMeshFilter, nullptr);
+    ASSERT_NE(previewMeshRenderer, nullptr);
+    previewMeshFilter->SetMesh(fixture.otherMesh);
+    previewMeshRenderer->FillWithMaterial(fixture.opaqueMaterialA);
+    previewObject.GetTransform()->SetWorldPosition({ 9.0f, 0.0f, 0.0f });
+
+    SceneDrawableProbeRenderer renderer(driver);
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        fixture.scene,
+        std::nullopt,
+        nullptr,
+        { &previewScene }
+    });
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 128u;
+    frameDescriptor.camera = &camera;
+
+    const auto drawables = renderer.CaptureSceneDrawables(frameDescriptor);
+    ASSERT_GE(drawables.opaques.size(), 2u);
+    bool sawInvalidOverflowDrawable = false;
+    for (const auto& entry : drawables.opaques)
+    {
+        NLS::Engine::Rendering::EngineDrawableDescriptor descriptor;
+        ASSERT_TRUE(entry.second.TryGetDescriptor<NLS::Engine::Rendering::EngineDrawableDescriptor>(descriptor));
+        if (descriptor.objectIndex == NLS::Engine::Rendering::EngineDrawableDescriptor::kInvalidObjectIndex)
+        {
+            sawInvalidOverflowDrawable = true;
+            continue;
+        }
+
+        uint32_t lastObjectIndex = 0u;
+        EXPECT_TRUE(NLS::Render::Data::TryResolveObjectDataRangeEnd(
+            descriptor.objectIndex,
+            std::max<uint32_t>(1u, descriptor.objectCount),
+            lastObjectIndex));
+    }
+    EXPECT_TRUE(sawInvalidOverflowDrawable);
 }
 
 TEST(RenderSceneCacheTests, DynamicInstancingMergesCompatibleOpaqueCommandsIntoObjectIndexRange)

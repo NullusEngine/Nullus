@@ -106,6 +106,8 @@ namespace NLS::Engine::Components
         NLS::Array<std::string> GetMaterialPaths() const;
         void SetMaterialPaths(const NLS::Array<std::string>& p_paths);
         void SetMaterialPathHints(const NLS::Array<std::string>& p_paths);
+        void SetTransientRenderingSuppressed(bool suppressed);
+        bool IsTransientRenderingSuppressed() const;
         void FillEmptySlotsWithMaterial(Material& p_material);
 
         FUNCTION()
@@ -132,5 +134,6 @@ namespace NLS::Engine::Components
         Maths::Matrix4 m_userMatrix;
         Render::Geometry::BoundingSphere m_customBoundingSphere = {{}, 1.0f};
 		EFrustumBehaviour m_frustumBehaviour = EFrustumBehaviour::CULL_MODEL;
+        bool m_transientRenderingSuppressed = false;
 	};
 }

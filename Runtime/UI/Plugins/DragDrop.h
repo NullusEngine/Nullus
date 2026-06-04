@@ -60,6 +60,7 @@ namespace NLS::UI
 	NLS_UI_API void EndDragDropSource();
 	NLS_UI_API void DrawDragDropTooltipText(const char* text);
 	NLS_UI_API bool SetDragDropPayload(const char* type, const void* data, size_t dataSize);
+	NLS_UI_API void ClearCachedDragDropPayload();
 	NLS_UI_API bool BeginDragDropTarget();
 	NLS_UI_API void EndDragDropTarget();
 	NLS_UI_API DragDropPayloadView AcceptDragDropPayload(const char* type, DragDropTargetFlags flags);

@@ -237,7 +237,35 @@ std::optional<ImporterRecord> AssetImporterFacade::GetAtPath(const std::string& 
 {
     const auto* record = FindRecordByEditorAssetPath(assetPath);
     if (!record)
-        return std::nullopt;
+    {
+        const auto resolvedPath = ResolveAssetPath(assetPath);
+        if (resolvedPath.empty())
+            return std::nullopt;
+
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(resolvedPath, error) || error)
+            return std::nullopt;
+
+        const auto meta = LoadMetaForPath(assetPath);
+        if (!meta.has_value())
+            return std::nullopt;
+
+        ImporterRecord importer;
+        importer.assetPath = ToEditorAssetPath(resolvedPath);
+        importer.assetId = meta->id;
+        importer.importerId = meta->importerId;
+        importer.importerVersion = meta->importerVersion;
+        importer.assetType = meta->assetType;
+        importer.dirty = meta->settings.find(kDirtySetting) != meta->settings.end() &&
+            meta->settings.at(kDirtySetting) == "true";
+
+        for (const auto& [key, value] : meta->settings)
+        {
+            if (!IsReservedSetting(key))
+                importer.serializedSettings[key] = value;
+        }
+        return importer;
+    }
 
     const auto meta = NLS::Core::Assets::AssetMeta::Load(record->metaPath);
     if (!meta.has_value() && !record->readOnly)
@@ -347,14 +375,8 @@ bool AssetImporterFacade::SaveAndReimport(
         progressTracker->ReportProgress(job, ImportPhase::Queued, 0.01, "Preparing reimport");
     }
 
-    if (!Refresh())
-    {
-        removeQueuedReimport();
-        if (progressTracker && job.IsValid())
-            progressTracker->FinishJob(job, ImportJobTerminalStatus::Failed, m_diagnostics);
-        return false;
-    }
-
+    if (progressTracker && job.IsValid())
+        progressTracker->ReportProgress(job, ImportPhase::Queued, 0.03, "Loading import settings");
     auto meta = LoadMetaForPath(assetPath);
     if (!meta.has_value())
     {
@@ -366,6 +388,8 @@ bool AssetImporterFacade::SaveAndReimport(
 
     auto cleanMeta = *meta;
     cleanMeta.settings.erase(kDirtySetting);
+    if (progressTracker && job.IsValid())
+        progressTracker->ReportProgress(job, ImportPhase::Queued, 0.04, "Saving import settings");
     if (!SaveMetaForPath(assetPath, cleanMeta))
     {
         removeQueuedReimport();
@@ -650,9 +674,29 @@ std::optional<NLS::Core::Assets::AssetMeta> AssetImporterFacade::LoadMetaForPath
     const std::string& assetPath) const
 {
     const auto* record = FindRecordByEditorAssetPath(assetPath);
-    if (!record)
+    if (record)
+        return NLS::Core::Assets::AssetMeta::Load(record->metaPath);
+
+    const auto resolvedPath = ResolveAssetPath(assetPath);
+    if (resolvedPath.empty())
         return std::nullopt;
-    return NLS::Core::Assets::AssetMeta::Load(record->metaPath);
+
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(resolvedPath, error) || error)
+        return std::nullopt;
+
+    const auto metaPath = NLS::Core::Assets::GetAssetMetaPath(resolvedPath);
+    auto meta = NLS::Core::Assets::AssetMeta::Load(metaPath);
+    if (meta.has_value())
+        return meta;
+
+    if (!IsEditorAssetPathWritable(m_roots, resolvedPath))
+        return std::nullopt;
+
+    meta = NLS::Core::Assets::AssetMeta::CreateForAsset(resolvedPath);
+    if (!meta->Save(metaPath))
+        return std::nullopt;
+    return meta;
 }
 
 bool AssetImporterFacade::SaveMetaForPath(
@@ -660,11 +704,22 @@ bool AssetImporterFacade::SaveMetaForPath(
     NLS::Core::Assets::AssetMeta meta)
 {
     const auto* record = FindRecordByEditorAssetPath(assetPath);
-    if (!record)
+    if (record)
+    {
+        if (!IsWritableAssetRecord(*record))
+            return false;
+        return meta.Save(record->metaPath);
+    }
+
+    const auto resolvedPath = ResolveAssetPath(assetPath);
+    if (resolvedPath.empty() || !IsEditorAssetPathWritable(m_roots, resolvedPath))
         return false;
-    if (!IsWritableAssetRecord(*record))
+
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(resolvedPath, error) || error)
         return false;
-    return meta.Save(record->metaPath);
+
+    return meta.Save(NLS::Core::Assets::GetAssetMetaPath(resolvedPath));
 }
 
 void AssetImporterFacade::RebuildPathIndex()

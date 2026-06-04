@@ -157,6 +157,7 @@ namespace NLS::Engine::Rendering
 			std::vector<CachedCommandSlot> cachedCommands;
 			NLS::Render::Geometry::BoundingSphere modelBoundingSphere;
 			Components::MeshRenderer::EFrustumBehaviour frustumBehaviour;
+            bool transientRenderingSuppressed = false;
 		};
 
 		RenderPrimitive& FindOrCreatePrimitive(

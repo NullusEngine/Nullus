@@ -512,6 +512,7 @@ void RenderScene::SynchronizePrimitive(
 		: nullptr;
 	primitive.mesh = meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr;
 	primitive.frustumBehaviour = meshRenderer->GetFrustumBehaviour();
+	primitive.transientRenderingSuppressed = meshRenderer->IsTransientRenderingSuppressed();
 
 	if (primitive.mesh == nullptr)
 	{
@@ -643,6 +644,8 @@ bool RenderScene::IsPrimitiveVisible(
 	const RenderSceneVisibilityOptions& options) const
 {
 	if (primitive.owner == nullptr || !primitive.owner->IsAlive() || !primitive.owner->IsActive())
+		return false;
+	if (primitive.transientRenderingSuppressed)
 		return false;
 	if (primitive.mesh == nullptr)
 		return false;

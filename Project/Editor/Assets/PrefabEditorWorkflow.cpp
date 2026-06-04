@@ -1430,6 +1430,49 @@ void PrefabInstanceRegistry::Clear()
     m_missingAssets.clear();
 }
 
+PrefabInstanceRecord* PrefabInstanceRegistry::FindRootInstance(const GameObject& object)
+{
+    return const_cast<PrefabInstanceRecord*>(
+        static_cast<const PrefabInstanceRegistry&>(*this).FindRootInstance(object));
+}
+
+const PrefabInstanceRecord* PrefabInstanceRegistry::FindRootInstance(const GameObject& object) const
+{
+    for (const auto& instance : m_instances)
+    {
+        if (instance.instanceRoot == &object)
+            return &instance;
+    }
+
+    return nullptr;
+}
+
+bool PrefabInstanceRegistry::RemoveRootInstance(const GameObject& object)
+{
+    for (auto it = m_instances.begin(); it != m_instances.end(); ++it)
+    {
+        if (it->instanceRoot == &object)
+        {
+            m_instances.erase(it);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool PrefabInstanceRegistry::RemoveObjectMapping(const GameObject& object)
+{
+    bool removed = false;
+    for (auto& instance : m_instances)
+    {
+        const auto erased = instance.sourceByInstanceObject.erase(&object);
+        removed = removed || erased > 0u;
+    }
+
+    return removed;
+}
+
 void PrefabInstanceRegistry::MarkAssetMissing(
     NLS::Core::Assets::AssetId assetId,
     const bool missing)

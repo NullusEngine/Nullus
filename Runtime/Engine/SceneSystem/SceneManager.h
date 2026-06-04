@@ -2,8 +2,10 @@
 
 
 #include <functional>
+#include <optional>
 #include <string>
 #include "SceneSystem/Scene.h"
+#include "Serialize/ObjectGraphDocument.h"
 #include "EngineDef.h"
 namespace NLS::Engine::SceneSystem
 {
@@ -101,6 +103,8 @@ namespace NLS::Engine::SceneSystem
 		*/
 		Scene* GetCurrentScene() const;
 
+        const NLS::Engine::Serialize::ObjectGraphDocument* GetLastLoadedSceneDocument() const;
+
 		/**
 		* Return the current scene source path
 		*/
@@ -150,6 +154,7 @@ namespace NLS::Engine::SceneSystem
 		bool m_currentSceneLoadedFromPath = false;
 		std::string m_currentSceneSourcePath = "";
 		bool m_currentSceneDirty = false;
+        std::optional<NLS::Engine::Serialize::ObjectGraphDocument> m_lastLoadedSceneDocument;
 
 		std::function<void()> m_delayedLoadCall;
 	};

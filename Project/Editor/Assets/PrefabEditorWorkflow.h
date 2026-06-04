@@ -145,9 +145,14 @@ class PrefabInstanceRegistry
 public:
     PrefabInstanceRecord& Register(PrefabInstanceRecord instance);
     void Clear();
+    PrefabInstanceRecord* FindRootInstance(const NLS::Engine::GameObject& object);
+    const PrefabInstanceRecord* FindRootInstance(const NLS::Engine::GameObject& object) const;
+    bool RemoveRootInstance(const NLS::Engine::GameObject& object);
+    bool RemoveObjectMapping(const NLS::Engine::GameObject& object);
     void MarkAssetMissing(NLS::Core::Assets::AssetId assetId, bool missing);
     PrefabInstanceRecord* FindInstance(const NLS::Engine::GameObject& object);
     const PrefabInstanceRecord* FindInstance(const NLS::Engine::GameObject& object) const;
+    const std::deque<PrefabInstanceRecord>& GetInstances() const { return m_instances; }
     std::vector<PrefabInstanceRecord*> FindInstancesForPrefab(
         NLS::Core::Assets::AssetId prefabAssetId,
         const std::string& prefabSubAssetKey = {});

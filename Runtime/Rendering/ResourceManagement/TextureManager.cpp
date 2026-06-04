@@ -351,6 +351,12 @@ void TextureManager::CancelAsyncArtifact(const std::string& path)
 	{
 		if (found->second.cancelableInterestCount > 0u)
 			--found->second.cancelableInterestCount;
+		if (found->second.cancelableInterestCount == 0u && !found->second.hasSharedInterest)
+		{
+			if (found->second.cancelled)
+				found->second.cancelled->store(true, std::memory_order_release);
+			g_cancelledAsyncTextureArtifacts.insert(found->second.path);
+		}
 		return;
 	}
 	if (auto failed = FindFailedTextureLoadByEquivalentArtifactPath(g_failedAsyncTextureArtifacts, path, realPath);

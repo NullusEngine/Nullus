@@ -2711,16 +2711,26 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
         timingStats.diagnosticCount = result.diagnostics.size();
     }
     std::unordered_map<std::string, std::vector<uint8_t>> texturePayloads;
+    ReportProgress(request, ImportPhase::IntermediateConversion, 0.42, "Loading texture payloads");
     {
         NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::LoadTextures");
         texturePayloads = LoadTexturePayloads(request, scene, extension);
     }
+    ReportProgress(request, ImportPhase::IntermediateConversion, 0.44, "Loaded texture payloads");
     NLS::Render::Assets::TextureEncoderRegistry textureEncoders;
 #if NLS_HAS_DIRECTXTEX
     textureEncoders.Register(CreateDirectXTexTextureEncoder());
 #endif
 
     size_t processedSubAssets = 0u;
+    const size_t convertibleSubAssetCount = static_cast<size_t>(std::count_if(
+        subAssets.begin(),
+        subAssets.end(),
+        [](const NLS::Render::Assets::GeneratedSceneSubAsset& subAsset)
+        {
+            return subAsset.type != NLS::Render::Assets::ImportedSceneSubAssetType::Material &&
+                subAsset.type != NLS::Render::Assets::ImportedSceneSubAssetType::Prefab;
+        }));
     {
         NLS_PROFILE_NAMED_SCOPE("AssetImport::ExternalModel::SerializeSubAssets");
         for (const auto& subAsset : subAssets)
@@ -2731,7 +2741,7 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
 
             const auto subAssetProgress = subAssets.empty()
                 ? 0.55
-                : 0.45 + (0.25 * static_cast<double>(processedSubAssets) / static_cast<double>(subAssets.size()));
+                : 0.45 + (0.25 * static_cast<double>(processedSubAssets) / static_cast<double>(std::max<size_t>(convertibleSubAssetCount, 1u)));
             ReportProgress(
                 request,
                 ImportPhase::IntermediateConversion,
@@ -2776,6 +2786,13 @@ ExternalModelImportResult ImportExternalModelAsset(const ExternalModelImportRequ
                 std::move(artifactPayload)
             });
             ++processedSubAssets;
+            const auto completedSubAssetProgress = 0.45 +
+                (0.25 * static_cast<double>(processedSubAssets) / static_cast<double>(std::max<size_t>(convertibleSubAssetCount, 1u)));
+            ReportProgress(
+                request,
+                ImportPhase::IntermediateConversion,
+                completedSubAssetProgress,
+                "Converted " + subAsset.key);
         }
     }
     timingStats.payloadCount = payloads.size();

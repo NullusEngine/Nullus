@@ -2,10 +2,22 @@
 
 #include "ImGui/imgui.h"
 
+#include <cstring>
+#include <string>
+#include <vector>
+
 namespace NLS::UI
 {
 	namespace
 	{
+		struct CachedDragDropPayload
+		{
+			std::string type;
+			std::vector<std::byte> bytes;
+		};
+
+		CachedDragDropPayload g_cachedDragDropPayload;
+
 		ImGuiDragDropFlags ToImGuiFlags(const DragDropSourceFlags flags)
 		{
 			ImGuiDragDropFlags imguiFlags = 0;
@@ -46,7 +58,20 @@ namespace NLS::UI
 
 	bool SetDragDropPayload(const char* type, const void* data, const size_t dataSize)
 	{
-		return ImGui::SetDragDropPayload(type, data, dataSize);
+		const bool accepted = ImGui::SetDragDropPayload(type, data, dataSize);
+		if (ImGui::IsDragDropActive() && type != nullptr && (data != nullptr || dataSize == 0u))
+		{
+			g_cachedDragDropPayload.type = type;
+			g_cachedDragDropPayload.bytes.resize(dataSize);
+			if (data != nullptr && dataSize > 0u)
+				std::memcpy(g_cachedDragDropPayload.bytes.data(), data, dataSize);
+		}
+		return accepted;
+	}
+
+	void ClearCachedDragDropPayload()
+	{
+		g_cachedDragDropPayload = {};
 	}
 
 	bool BeginDragDropTarget()
@@ -70,8 +95,22 @@ namespace NLS::UI
 	DragDropPayloadView PeekDragDropPayload(const char* type)
 	{
 		const ImGuiPayload* payload = ImGui::GetDragDropPayload();
-		if (payload == nullptr || !payload->IsDataType(type))
+		if (payload != nullptr && payload->IsDataType(type))
+		{
+			return { payload->Data, static_cast<size_t>(payload->DataSize), payload->IsDelivery() };
+		}
+
+		if (!ImGui::IsDragDropActive() ||
+			type == nullptr ||
+			g_cachedDragDropPayload.type != type ||
+			g_cachedDragDropPayload.bytes.empty())
+		{
 			return {};
-		return { payload->Data, static_cast<size_t>(payload->DataSize), payload->IsDelivery() };
+		}
+
+		return {
+			g_cachedDragDropPayload.bytes.data(),
+			g_cachedDragDropPayload.bytes.size(),
+			false };
 	}
 }

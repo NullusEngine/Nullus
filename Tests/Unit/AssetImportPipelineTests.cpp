@@ -12,6 +12,7 @@
 
 #include "Assets/AssetId.h"
 #include "Assets/ArtifactDatabase.h"
+#include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/ArtifactManifest.h"
 #include "Assets/ArtifactWriter.h"
 #include "Assets/AssetMeta.h"
@@ -94,6 +95,19 @@ const NLS::Core::Assets::AssetDiagnostic* FindDiagnosticByCode(
             return diagnostic.code == expectedCode;
         });
     return found != diagnostics.end() ? &*found : nullptr;
+}
+
+size_t CountArtifactTelemetryStage(
+    const std::vector<NLS::Core::Assets::ArtifactLoadTelemetryRecord>& records,
+    const NLS::Core::Assets::ArtifactLoadTelemetryStage stage)
+{
+    return static_cast<size_t>(std::count_if(
+        records.begin(),
+        records.end(),
+        [stage](const NLS::Core::Assets::ArtifactLoadTelemetryRecord& record)
+        {
+            return record.stage == stage;
+        }));
 }
 
 void AppendU32(std::vector<uint8_t>& bytes, const uint32_t value)
@@ -785,6 +799,84 @@ TEST(AssetImportPipelineTests, ArtifactWriterStagesPayloadsAndCommitsManifestAto
     EXPECT_FALSE(std::filesystem::exists(stagingRoot / "Hero" / "prefab.nprefab"));
 
     std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, NativeArtifactContainerViewPreservesValidationAndAvoidsPayloadCopy)
+{
+    using NLS::Core::Assets::ArtifactLoadTelemetryStage;
+    using NLS::Core::Assets::ArtifactType;
+    using NLS::Core::Assets::ClearArtifactLoadTelemetry;
+    using NLS::Core::Assets::ReadNativeArtifactContainerView;
+    using NLS::Core::Assets::SnapshotArtifactLoadTelemetry;
+
+    const std::vector<uint8_t> payload = {
+        'l', 'o', 'w', '-', 'c', 'o', 'p', 'y', '-', 'p', 'a', 'y', 'l', 'o', 'a', 'd'
+    };
+
+    NLS::Core::Assets::NativeArtifactMetadata metadata;
+    metadata.artifactType = ArtifactType::Prefab;
+    metadata.schemaName = "prefab";
+    metadata.schemaVersion = 1u;
+    metadata.dependencies.push_back({
+        NLS::Core::Assets::AssetDependencyKind::ImporterVersion,
+        "test-importer",
+        "1"
+    });
+
+    const auto bytes = NLS::Core::Assets::WriteNativeArtifactContainer(std::move(metadata), payload);
+    ASSERT_FALSE(bytes.empty());
+
+    ClearArtifactLoadTelemetry();
+    const auto view = ReadNativeArtifactContainerView(bytes, ArtifactType::Prefab, 1u);
+    ASSERT_TRUE(view.has_value());
+    EXPECT_EQ(view->metadata.artifactType, ArtifactType::Prefab);
+    EXPECT_EQ(view->payloadSize, payload.size());
+    ASSERT_NE(view->payloadData, nullptr);
+    const auto payloadOffset = static_cast<size_t>(view->payloadData - bytes.data());
+    EXPECT_LT(payloadOffset, bytes.size());
+    EXPECT_EQ(payloadOffset + view->payloadSize, bytes.size())
+        << "The low-copy view must point into the single file buffer instead of allocating a second payload vector.";
+    const bool payloadMatches = std::equal(payload.begin(), payload.end(), view->payloadData);
+    EXPECT_TRUE(payloadMatches);
+
+    const auto telemetry = SnapshotArtifactLoadTelemetry();
+    EXPECT_GE(CountArtifactTelemetryStage(telemetry, ArtifactLoadTelemetryStage::NativeContainerParseHash), 1u);
+    EXPECT_GE(CountArtifactTelemetryStage(telemetry, ArtifactLoadTelemetryStage::NativeArtifactLowCopyView), 1u)
+        << "Phase 6d needs a counter proving the hot artifact path avoided the redundant payload copy.";
+
+    auto corrupted = bytes;
+    ASSERT_FALSE(corrupted.empty());
+    corrupted.back() ^= 0x7Fu;
+    const auto corruptView = ReadNativeArtifactContainerView(corrupted, ArtifactType::Prefab, 1u);
+    EXPECT_FALSE(corruptView.has_value())
+        << "The low-copy view must keep native container payload hash validation, not trust mapped bytes blindly.";
+}
+
+TEST(AssetImportPipelineTests, NativeArtifactContainerViewRejectsMissingPayloadWithDiagnostics)
+{
+    using NLS::Core::Assets::ArtifactType;
+    using NLS::Core::Assets::ReadNativeArtifactContainerView;
+
+    const std::vector<uint8_t> payload = { 'o', 'k' };
+    NLS::Core::Assets::NativeArtifactMetadata metadata;
+    metadata.artifactType = ArtifactType::Mesh;
+    metadata.schemaName = "mesh";
+    metadata.schemaVersion = 3u;
+    const auto bytes = NLS::Core::Assets::WriteNativeArtifactContainer(std::move(metadata), payload);
+    ASSERT_GT(bytes.size(), payload.size());
+
+    auto truncated = bytes;
+    truncated.resize(truncated.size() - payload.size());
+
+    std::string diagnostics;
+    const auto view = ReadNativeArtifactContainerView(
+        truncated,
+        ArtifactType::Mesh,
+        3u,
+        &diagnostics);
+    EXPECT_FALSE(view.has_value());
+    EXPECT_NE(diagnostics.find("payload"), std::string::npos)
+        << "Missing payload failures must be diagnosable so corrupt artifacts do not look like generic load misses.";
 }
 
 TEST(AssetImportPipelineTests, ArtifactWriterKeepsPreviousManifestWhenStagedPayloadFails)

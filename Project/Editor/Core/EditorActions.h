@@ -16,6 +16,8 @@
 #include "Context.h"
 #include "PanelsManager.h"
 #include "Core/EditorBackgroundTaskTracker.h"
+#include "Core/EditorProgressTargets.h"
+#include "Core/RendererResourcePrewarmRequest.h"
 #include "Assets/EditorAssetDragDropBridge.h"
 
 #define EDITOR_EXEC(action)                 NLS::Core::ServiceLocator::Get<NLS::Editor::Core::EditorActions>().action
@@ -24,34 +26,13 @@
 #define EDITOR_CONTEXT(instance)            NLS::Core::ServiceLocator::Get<NLS::Editor::Core::EditorActions>().GetContext().instance
 #define EDITOR_PANEL(type, id)              NLS::Core::ServiceLocator::Get<NLS::Editor::Core::EditorActions>().GetPanelsManager().GetPanelAs<type>(id)
 
-namespace NLS::Render::Resources
-{
-    class Mesh;
-}
-
-namespace NLS::Render::Assets
-{
-    struct MeshArtifactData;
-}
-
 namespace NLS::Editor::Core
 {
-    struct PrefabInstanceMeshArtifactLoadState
+    struct PrefabInstanceAssetResolutionOptions
     {
-        std::mutex mutex;
-        bool completed = false;
-        bool accepted = true;
-        bool failed = false;
-        std::shared_ptr<std::atomic_bool> cancelled = std::make_shared<std::atomic_bool>(false);
-        std::shared_ptr<const NLS::Render::Assets::MeshArtifactData> data;
-        std::shared_ptr<NLS::Render::Resources::Mesh> transientMesh;
-    };
-
-    struct PrefabInstancePreviewResourceHandoff
-    {
-        std::unordered_map<std::string, std::shared_ptr<PrefabInstanceMeshArtifactLoadState>> meshLoadsByPath;
-        std::unordered_set<std::string> materialLoadsByPath;
-        std::unordered_set<std::string> textureLoadsByPath;
+        bool hideRootUntilRendererResourcesReady = false;
+        bool keepRootRenderingSuppressedOnFailure = false;
+        std::string progressTargetPlatform = kRendererResourceResolutionTargetPlatform;
     };
 
 	/**
@@ -416,6 +397,7 @@ namespace NLS::Editor::Core
 		* @param p_frames
 		*/
 		void DelayAction(std::function<void()> p_action, uint32_t p_frames = 1);
+		void ScheduleImportedResourceTrim();
 		bool TrackBackgroundTask(std::function<void()> task);
         struct SceneMutationToken
         {
@@ -444,7 +426,8 @@ namespace NLS::Editor::Core
 			NLS::Editor::Assets::PrefabInstanceRecord* instance,
 			const NLS::Engine::Assets::PrefabArtifact* prefab,
 			std::string label,
-            PrefabInstancePreviewResourceHandoff previewResourceHandoff = {});
+            PrefabInstancePreviewResourceHandoff previewResourceHandoff = {},
+            PrefabInstanceAssetResolutionOptions options = {});
 
 		/**
 		* Execute every actions that should be executed at this frame (Decrement the frame counter for each actions)
@@ -477,6 +460,7 @@ namespace NLS::Editor::Core
         ListenerID m_sceneLoadListener = InvalidListenerID;
         ListenerID m_sceneUnloadListener = InvalidListenerID;
         ListenerID m_gameObjectMarkedDestroyListener = InvalidListenerID;
+        bool m_importedResourceTrimScheduled = false;
 
 		//tinyxml2::XMLDocument m_sceneBackup;
 		void RefreshWindowTitle();

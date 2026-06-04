@@ -42,6 +42,33 @@ class NLS_RESOURCE_MANAGEMENT_API MaterialManager : public AResourceManager<Rend
         virtual Material* PrewarmArtifact(const std::string& p_path);
         virtual Material* LoadArtifactWithoutTextures(const std::string& p_path);
         virtual Material* RequestAsyncArtifact(const std::string& p_path, bool p_cancelableInterest = false);
+        ResourceHandle<Material> AcquireMaterialHandle(
+            ResourceLifetimeRegistry& registry,
+            const std::string& ownerToken,
+            const std::string& path,
+            ResourceLifetimeOwnerKind ownerKind = ResourceLifetimeOwnerKind::SceneInstance,
+            size_t estimatedBytes = 0u)
+        {
+            return AcquireResourceHandle(
+                registry,
+                ResourceLifetimeAcquireRequest {
+                    ownerToken,
+                    ResourceLifetimeResourceType::Material,
+                    path,
+                    estimatedBytes,
+                    ownerKind });
+        }
+
+        size_t TrimUnusedMaterialResources(
+            ResourceLifetimeRegistry& registry,
+            const ResourceLifetimeTrimOptions& options = {})
+        {
+            return TrimUnusedResources(
+                registry,
+                ResourceLifetimeResourceType::Material,
+                options);
+        }
+
         void CancelAsyncArtifact(const std::string& p_path);
         bool IsAsyncArtifactLoadPending(const std::string& p_path) const;
         bool IsAsyncArtifactLoadFailed(const std::string& p_path) const;

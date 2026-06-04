@@ -85,6 +85,7 @@ MeshRenderer::MeshRenderer(const MeshRenderer& other)
     , m_userMatrix(other.m_userMatrix)
     , m_customBoundingSphere(other.m_customBoundingSphere)
     , m_frustumBehaviour(other.m_frustumBehaviour)
+    , m_transientRenderingSuppressed(false)
 {
     m_materials.fill(nullptr);
     m_failedMaterialPaths.fill({});
@@ -105,6 +106,7 @@ MeshRenderer& MeshRenderer::operator=(const MeshRenderer& other)
     m_userMatrix = other.m_userMatrix;
     m_customBoundingSphere = other.m_customBoundingSphere;
     m_frustumBehaviour = other.m_frustumBehaviour;
+    m_transientRenderingSuppressed = false;
     return *this;
 }
 
@@ -369,6 +371,16 @@ void MeshRenderer::SetMaterialPathHints(const NLS::Array<std::string>& p_paths)
         m_materialPaths[index] = path;
         m_failedMaterialPaths[index].clear();
     }
+}
+
+void MeshRenderer::SetTransientRenderingSuppressed(const bool suppressed)
+{
+    m_transientRenderingSuppressed = suppressed;
+}
+
+bool MeshRenderer::IsTransientRenderingSuppressed() const
+{
+    return m_transientRenderingSuppressed;
 }
 
 void MeshRenderer::SetMaterialReferences(const NLS::Array<NLS::Engine::Serialize::PPtr<Material>>& p_references)

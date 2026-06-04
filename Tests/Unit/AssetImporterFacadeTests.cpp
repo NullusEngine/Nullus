@@ -132,6 +132,43 @@ TEST(AssetImporterFacadeTests, SaveAndReimportReportsProgressWhenTrackerIsProvid
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetImporterFacadeTests, SaveAndReimportAdvancesVisibleProgressBeforeSourceParse)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetImporterFacadeRoot();
+    WriteTextFile(root / "Assets" / "Models" / "VisibleProgressHero.gltf", R"({"asset":{"version":"2.0"}})");
+
+    AssetImporterFacade facade({root});
+    ImportProgressTracker tracker;
+
+    ASSERT_TRUE(facade.SaveAndReimport("Assets/Models/VisibleProgressHero.gltf", tracker));
+
+    const auto events = tracker.GetEvents({1u});
+    ASSERT_FALSE(events.empty());
+
+    const auto firstSourceParse = std::find_if(
+        events.begin(),
+        events.end(),
+        [](const ImportProgressEvent& event)
+        {
+            return event.phase == ImportPhase::SourceParse;
+        });
+    ASSERT_NE(firstSourceParse, events.end());
+
+    const bool advancedDuringPreparation = std::any_of(
+        events.begin(),
+        firstSourceParse,
+        [](const ImportProgressEvent& event)
+        {
+            return event.normalizedProgress > 0.01 &&
+                event.terminalStatus == ImportJobTerminalStatus::None;
+        });
+    EXPECT_TRUE(advancedDuringPreparation);
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetImporterFacadeTests, SaveAndReimportCommitsCleanMetaBeforeImportSoWatcherDoesNotReimportAgain)
 {
     using namespace NLS::Editor::Assets;

@@ -1,5 +1,6 @@
 #include "Assets/NativeArtifactContainer.h"
 
+#include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/AssetPath.h"
 
 #include <algorithm>
@@ -161,10 +162,17 @@ void AppendHeader(std::vector<uint8_t>& bytes, const NativeArtifactHeader& heade
     AppendUInt64(bytes, header.reserved1);
 }
 
-bool ReadHeader(const std::vector<uint8_t>& bytes, NativeArtifactHeader& header)
+bool ReadHeader(
+    const std::vector<uint8_t>& bytes,
+    NativeArtifactHeader& header,
+    std::string* diagnostics = nullptr)
 {
     if (bytes.size() < kNativeArtifactHeaderSize)
+    {
+        if (diagnostics)
+            *diagnostics = "Native artifact container is smaller than the header.";
         return false;
+    }
 
     size_t offset = 0u;
     if (!ReadUInt32(bytes, offset, header.magic) ||
@@ -179,6 +187,8 @@ bool ReadHeader(const std::vector<uint8_t>& bytes, NativeArtifactHeader& header)
         !ReadUInt64(bytes, offset, header.reserved0) ||
         !ReadUInt64(bytes, offset, header.reserved1))
     {
+        if (diagnostics)
+            *diagnostics = "Native artifact container header is truncated.";
         return false;
     }
 
@@ -187,18 +197,26 @@ bool ReadHeader(const std::vector<uint8_t>& bytes, NativeArtifactHeader& header)
         header.headerSize != kNativeArtifactHeaderSize ||
         header.flags != kNativeArtifactFlagsLittleEndian)
     {
+        if (diagnostics)
+            *diagnostics = "Native artifact container header is invalid.";
         return false;
     }
 
     const auto byteSize = static_cast<uint64_t>(bytes.size());
     if (header.metadataSize > byteSize - kNativeArtifactHeaderSize)
+    {
+        if (diagnostics)
+            *diagnostics = "Native artifact metadata extends beyond the container.";
         return false;
+    }
 
     const uint64_t expectedPayloadOffset = kNativeArtifactHeaderSize + header.metadataSize;
     if (header.payloadOffset != expectedPayloadOffset ||
         header.payloadOffset > byteSize ||
         header.payloadSize > byteSize - header.payloadOffset)
     {
+        if (diagnostics)
+            *diagnostics = "Native artifact payload is missing or truncated.";
         return false;
     }
 
@@ -209,10 +227,19 @@ bool ReadHeader(const std::vector<uint8_t>& bytes, NativeArtifactHeader& header)
         header.payloadSize > static_cast<uint64_t>(std::numeric_limits<std::ptrdiff_t>::max()) ||
         header.payloadOffset > static_cast<uint64_t>(std::numeric_limits<std::ptrdiff_t>::max()))
     {
+        if (diagnostics)
+            *diagnostics = "Native artifact container sizes exceed platform address limits.";
         return false;
     }
 
-    return header.payloadOffset + header.payloadSize == byteSize;
+    if (header.payloadOffset + header.payloadSize != byteSize)
+    {
+        if (diagnostics)
+            *diagnostics = "Native artifact container has unexpected trailing or missing payload bytes.";
+        return false;
+    }
+
+    return true;
 }
 
 std::string EscapeValue(std::string_view value)
@@ -432,10 +459,15 @@ size_t NativeArtifactContainerHeaderSize()
 
 std::string ComputeNativeArtifactPayloadHash(const std::vector<uint8_t>& payload)
 {
+    return ComputeNativeArtifactPayloadHash(payload.data(), payload.size());
+}
+
+std::string ComputeNativeArtifactPayloadHash(const uint8_t* payload, const size_t payloadSize)
+{
     uint64_t hash = 1469598103934665603ull;
-    for (const auto byte : payload)
+    for (size_t byteIndex = 0u; byteIndex < payloadSize; ++byteIndex)
     {
-        hash ^= byte;
+        hash ^= payload[byteIndex];
         hash *= 1099511628211ull;
     }
     return "fnv1a64:" + std::to_string(hash);
@@ -506,11 +538,38 @@ std::optional<NativeArtifactContainer> ReadNativeArtifactContainer(
     const ArtifactType expectedType,
     const uint32_t expectedSchemaVersion)
 {
+    auto view = ReadNativeArtifactContainerView(bytes, expectedType, expectedSchemaVersion);
+    if (!view.has_value())
+        return std::nullopt;
+
+    NativeArtifactContainer container;
+    container.metadata = std::move(view->metadata);
+    container.payload.assign(view->payloadData, view->payloadData + view->payloadSize);
+    RecordArtifactLoadTelemetry({
+        ArtifactLoadTelemetryStage::NativeArtifactPayloadCopy,
+        {},
+        view->payloadSize});
+    return container;
+}
+
+std::optional<NativeArtifactContainerView> ReadNativeArtifactContainerView(
+    const std::vector<uint8_t>& bytes,
+    const ArtifactType expectedType,
+    const uint32_t expectedSchemaVersion,
+    std::string* diagnostics)
+{
+    ArtifactLoadTelemetryRecord telemetry;
+    telemetry.stage = ArtifactLoadTelemetryStage::NativeContainerParseHash;
+    telemetry.byteCount = bytes.size();
+    RecordArtifactLoadTelemetry(telemetry);
+
     NativeArtifactHeader header;
-    if (!ReadHeader(bytes, header) ||
+    if (!ReadHeader(bytes, header, diagnostics) ||
         static_cast<ArtifactType>(header.artifactType) != expectedType ||
         header.schemaVersion != expectedSchemaVersion)
     {
+        if (diagnostics && diagnostics->empty())
+            *diagnostics = "Native artifact header type or schema does not match the expected artifact.";
         return std::nullopt;
     }
 
@@ -522,21 +581,36 @@ std::optional<NativeArtifactContainer> ReadNativeArtifactContainer(
         metadata->artifactType != expectedType ||
         metadata->schemaVersion != expectedSchemaVersion)
     {
+        if (diagnostics)
+            *diagnostics = "Native artifact metadata is invalid or does not match the expected artifact.";
         return std::nullopt;
     }
 
-    const auto payloadBegin = bytes.begin() + static_cast<std::ptrdiff_t>(header.payloadOffset);
-    const auto payloadEnd = payloadBegin + static_cast<std::ptrdiff_t>(header.payloadSize);
-    NativeArtifactContainer container;
-    container.metadata = std::move(*metadata);
-    container.payload.assign(payloadBegin, payloadEnd);
-    if (container.metadata.payloadHash != ComputeNativeArtifactPayloadHash(container.payload) ||
-        container.metadata.dependencyHash != ComputeNativeArtifactDependencyHash(container.metadata.dependencies))
+    const auto payloadData = bytes.data() + static_cast<size_t>(header.payloadOffset);
+    const auto payloadSize = static_cast<size_t>(header.payloadSize);
+    if (metadata->payloadHash != ComputeNativeArtifactPayloadHash(payloadData, payloadSize))
     {
+        if (diagnostics)
+            *diagnostics = "Native artifact payload hash mismatch.";
+        return std::nullopt;
+    }
+    if (metadata->dependencyHash != ComputeNativeArtifactDependencyHash(metadata->dependencies))
+    {
+        if (diagnostics)
+            *diagnostics = "Native artifact dependency hash mismatch.";
         return std::nullopt;
     }
 
-    return container;
+    RecordArtifactLoadTelemetry({
+        ArtifactLoadTelemetryStage::NativeArtifactLowCopyView,
+        {},
+        payloadSize});
+
+    NativeArtifactContainerView view;
+    view.metadata = std::move(*metadata);
+    view.payloadData = payloadData;
+    view.payloadSize = payloadSize;
+    return view;
 }
 
 bool IsNativeArtifactContainer(const std::vector<uint8_t>& bytes)

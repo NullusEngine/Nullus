@@ -1,5 +1,6 @@
 #include "Rendering/Assets/MeshArtifact.h"
 #include "Rendering/Geometry/BoundingSphereUtils.h"
+#include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/NativeArtifactContainer.h"
 
 #include <cstring>
@@ -27,6 +28,12 @@ struct MeshArtifactHeader
 };
 
 static_assert(sizeof(MeshArtifactHeader) == 24u);
+
+struct ByteView
+{
+    const uint8_t* data = nullptr;
+    size_t size = 0u;
+};
 
 void AppendUInt32(std::vector<uint8_t>& bytes, const uint32_t value)
 {
@@ -72,23 +79,23 @@ void AppendHeader(std::vector<uint8_t>& bytes, const MeshArtifactHeader& header)
     AppendUInt32(bytes, header.materialIndex);
 }
 
-bool ReadUInt32(const std::vector<uint8_t>& bytes, size_t& offset, uint32_t& value)
+bool ReadUInt32(const ByteView bytes, size_t& offset, uint32_t& value)
 {
-    if (offset + sizeof(uint32_t) > bytes.size())
+    if (offset + sizeof(uint32_t) > bytes.size)
         return false;
 
     value =
-        static_cast<uint32_t>(bytes[offset]) |
-        (static_cast<uint32_t>(bytes[offset + 1u]) << 8u) |
-        (static_cast<uint32_t>(bytes[offset + 2u]) << 16u) |
-        (static_cast<uint32_t>(bytes[offset + 3u]) << 24u);
+        static_cast<uint32_t>(bytes.data[offset]) |
+        (static_cast<uint32_t>(bytes.data[offset + 1u]) << 8u) |
+        (static_cast<uint32_t>(bytes.data[offset + 2u]) << 16u) |
+        (static_cast<uint32_t>(bytes.data[offset + 3u]) << 24u);
     offset += sizeof(uint32_t);
     return true;
 }
 
-bool ReadHeader(const std::vector<uint8_t>& bytes, MeshArtifactHeader& header)
+bool ReadHeader(const ByteView bytes, MeshArtifactHeader& header)
 {
-    if (bytes.size() < sizeof(MeshArtifactHeader))
+    if (bytes.size < sizeof(MeshArtifactHeader))
         return false;
 
     size_t offset = 0u;
@@ -108,7 +115,7 @@ bool ReadHeader(const std::vector<uint8_t>& bytes, MeshArtifactHeader& header)
         header.vertexStride == sizeof(Geometry::Vertex);
 }
 
-bool ReadFloat(const std::vector<uint8_t>& bytes, size_t& offset, float& value)
+bool ReadFloat(const ByteView bytes, size_t& offset, float& value)
 {
     uint32_t bits = 0u;
     if (!ReadUInt32(bytes, offset, bits))
@@ -119,7 +126,7 @@ bool ReadFloat(const std::vector<uint8_t>& bytes, size_t& offset, float& value)
     return true;
 }
 
-bool ReadBoundingSphere(const std::vector<uint8_t>& bytes, size_t& offset, Geometry::BoundingSphere& boundingSphere)
+bool ReadBoundingSphere(const ByteView bytes, size_t& offset, Geometry::BoundingSphere& boundingSphere)
 {
     return ReadFloat(bytes, offset, boundingSphere.position.x) &&
         ReadFloat(bytes, offset, boundingSphere.position.y) &&
@@ -172,14 +179,17 @@ std::vector<uint8_t> SerializeMeshArtifact(const MeshArtifactData& mesh)
 
 std::optional<MeshArtifactData> DeserializeMeshArtifact(const std::vector<uint8_t>& bytes)
 {
-    auto container = NLS::Core::Assets::ReadNativeArtifactContainer(
+    NLS::Core::Assets::RecordArtifactLoadTelemetry({
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::CpuDeserialize});
+
+    auto container = NLS::Core::Assets::ReadNativeArtifactContainerView(
         bytes,
         NLS::Core::Assets::ArtifactType::Mesh,
         kMeshArtifactContainerSchemaVersion);
     if (!container.has_value())
         return std::nullopt;
 
-    const auto& payload = container->payload;
+    const ByteView payload {container->payloadData, container->payloadSize};
     MeshArtifactHeader header;
     if (!ReadHeader(payload, header))
         return std::nullopt;
@@ -192,7 +202,7 @@ std::optional<MeshArtifactData> DeserializeMeshArtifact(const std::vector<uint8_
     const auto payloadBytes = vertexBytes + indexBytes;
     if (payloadBytes > std::numeric_limits<size_t>::max())
         return std::nullopt;
-    if (sizeof(MeshArtifactHeader) + boundsBytes + static_cast<size_t>(payloadBytes) != payload.size())
+    if (sizeof(MeshArtifactHeader) + boundsBytes + static_cast<size_t>(payloadBytes) != payload.size)
         return std::nullopt;
 
     MeshArtifactData mesh;
@@ -209,12 +219,12 @@ std::optional<MeshArtifactData> DeserializeMeshArtifact(const std::vector<uint8_
     }
     if (!mesh.vertices.empty())
     {
-        std::memcpy(mesh.vertices.data(), payload.data() + offset, static_cast<size_t>(vertexBytes));
+        std::memcpy(mesh.vertices.data(), payload.data + offset, static_cast<size_t>(vertexBytes));
         offset += static_cast<size_t>(vertexBytes);
     }
 
     if (!mesh.indices.empty())
-        std::memcpy(mesh.indices.data(), payload.data() + offset, static_cast<size_t>(indexBytes));
+        std::memcpy(mesh.indices.data(), payload.data + offset, static_cast<size_t>(indexBytes));
     if (header.version < kMeshArtifactVersionWithBoundingSphere)
     {
         mesh.boundingSphere = Geometry::ComputeBoundingSphere(mesh.vertices);
@@ -233,6 +243,11 @@ std::optional<MeshArtifactData> LoadMeshArtifact(
     const std::filesystem::path& path,
     const std::atomic_bool* cancellationFlag)
 {
+    NLS::Core::Assets::ArtifactLoadTelemetryRecord telemetry;
+    telemetry.stage = NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead;
+    telemetry.path = path.generic_string();
+    NLS::Core::Assets::RecordArtifactLoadTelemetry(telemetry);
+
     std::ifstream input(path, std::ios::binary);
     if (!input)
         return std::nullopt;

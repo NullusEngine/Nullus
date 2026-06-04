@@ -15,6 +15,7 @@
 #include "ResourceManagement/TextureManager.h"
 #include "ResourceManagement/ShaderManager.h"
 #include "ResourceManagement/MaterialManager.h"
+#include "ResourceManagement/ResourceLifetimeRegistry.h"
 #include "EditorResources.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
@@ -120,6 +121,7 @@ class Context
     NLS::Core::ResourceManagement::TextureManager textureManager;
     NLS::Core::ResourceManagement::ShaderManager shaderManager;
     NLS::Core::ResourceManagement::MaterialManager materialManager;
+    NLS::Core::ResourceManagement::ResourceLifetimeRegistry resourceLifetimeRegistry;
 
     NLS::Windowing::Settings::WindowSettings windowSettings;
 

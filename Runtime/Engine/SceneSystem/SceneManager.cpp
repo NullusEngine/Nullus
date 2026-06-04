@@ -111,6 +111,7 @@ void SceneManager::LoadAndPlayDelayed(const std::string& p_path, bool p_absolute
 void SceneManager::LoadEmptyScene()
 {
     UnloadCurrentScene();
+    m_lastLoadedSceneDocument.reset();
 
     m_currentScene = new Scene();
     MarkCurrentSceneClean();
@@ -122,6 +123,7 @@ void SceneManager::LoadEmptyLightedScene()
 {
     AppendSceneManagerTrace("LoadEmptyLightedScene begin");
     UnloadCurrentScene();
+    m_lastLoadedSceneDocument.reset();
 
     m_currentScene = new Scene();
     MarkCurrentSceneClean();
@@ -187,7 +189,8 @@ bool SceneManager::LoadScene(
         return false;
 
     ReportSceneLoadProgress(p_progressCallback, 0.12f, "Parsing scene object graph");
-    const auto document = Engine::Serialize::ObjectGraphReader::Read(*fileText);
+    auto document = Engine::Serialize::ObjectGraphReader::Read(*fileText);
+    m_lastLoadedSceneDocument.reset();
     if (!document.has_value() || document->format != "Nullus.ObjectGraph.Scene")
         return false;
 
@@ -211,12 +214,14 @@ bool SceneManager::LoadScene(
     if (!scene)
     {
         m_currentScene = new Scene();
+        m_lastLoadedSceneDocument.reset();
         SceneLoadEvent.Invoke();
         MarkCurrentSceneClean();
         return false;
     }
 
     m_currentScene = scene.release();
+    m_lastLoadedSceneDocument = std::move(*document);
     ReportSceneLoadProgress(p_progressCallback, 0.92f, "Activating loaded scene");
     SceneLoadEvent.Invoke();
     StoreCurrentSceneSourcePath(completePath);
@@ -273,6 +278,7 @@ bool SceneManager::SaveSceneToPath(const Scene& p_scene, const std::string& p_pa
 
 void SceneManager::UnloadCurrentScene()
 {
+    m_lastLoadedSceneDocument.reset();
     if (m_currentScene)
     {
         delete m_currentScene;
@@ -292,6 +298,11 @@ bool SceneManager::HasCurrentScene() const
 Engine::SceneSystem::Scene* SceneManager::GetCurrentScene() const
 {
     return m_currentScene;
+}
+
+const Engine::Serialize::ObjectGraphDocument* SceneManager::GetLastLoadedSceneDocument() const
+{
+    return m_lastLoadedSceneDocument ? &*m_lastLoadedSceneDocument : nullptr;
 }
 
 std::string SceneManager::GetCurrentSceneSourcePath() const

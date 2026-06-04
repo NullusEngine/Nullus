@@ -1091,17 +1091,26 @@ bool AssetDatabaseFacade::ReimportAsset(
         return RejectRuntimeEditorApi("AssetDatabase.ReimportAsset");
 
     ImportJobId job = existingJob;
+    const bool ownsProgressJob = !job.IsValid();
     if (progressTracker)
     {
         if (!job.IsValid())
             job = progressTracker->BeginJob({}, NormalizeEditorAssetPath(assetPath), "editor", batchTotalAssets);
-        progressTracker->ReportProgress(
-            job,
-            ImportPhase::Queued,
-            0.01,
-            "Preparing reimport");
+        if (ownsProgressJob)
+        {
+            progressTracker->ReportProgress(
+                job,
+                ImportPhase::Queued,
+                0.01,
+                "Preparing reimport");
+        }
     }
 
+    if (progressTracker && job.IsValid() && refreshDatabase)
+    {
+        const double refreshProgress = ownsProgressJob ? 0.02 : 0.045;
+        progressTracker->ReportProgress(job, ImportPhase::Queued, refreshProgress, "Refreshing asset database");
+    }
     if (refreshDatabase && !Refresh())
     {
         if (progressTracker && job.IsValid())
@@ -1117,12 +1126,17 @@ bool AssetDatabaseFacade::ReimportAsset(
         return false;
     }
 
+    if (progressTracker && job.IsValid())
+    {
+        const double stagingProgress = ownsProgressJob ? 0.04 : 0.048;
+        progressTracker->ReportProgress(job, ImportPhase::Queued, stagingProgress, "Preparing artifact staging");
+    }
     const auto stagingRoot = GetArtifactStagingRootForAssetPath(record->absolutePath);
     std::error_code error;
     if (!stagingRoot.empty())
         std::filesystem::remove_all(stagingRoot, error);
 
-    const auto ok = RefreshSingle(assetPath, progressTracker, job, refreshDatabase);
+    const auto ok = RefreshSingle(assetPath, progressTracker, job, false);
     if (progressTracker && job.IsValid())
     {
         const auto current = progressTracker->GetCurrentEvent(job);

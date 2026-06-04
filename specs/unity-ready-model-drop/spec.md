@@ -115,6 +115,42 @@ An editor user drops or edits a prefab instance in a scene, saves the scene, clo
 - A normal prefab instance may be modified in the scene; scene reload must preserve the scene override without applying it back to the prefab asset.
 - A generated model prefab instance may be modified in the scene; scene reload must preserve the scene override, while applying those changes back to the generated model asset remains rejected.
 
+### User Story 7 - Unity-Style Artifact-To-Memory Loading Is Fast, Bounded, And Complete (Priority: P1)
+
+An editor user repeatedly drags, previews, drops, or reopens an already imported large model, and the editor moves from committed artifacts to a renderable in-memory model through a measured, bounded, Unity-style pipeline: stable import artifacts, fast prefab graph reuse, cancellable renderer-resource prewarm, atomic mesh/material/texture visibility, low-copy native artifact reads, and model-level runtime cache reuse.
+
+**Why this priority**: The remaining user-visible delay is no longer source import; it is the artifact-to-memory path. Unity-like behavior depends on stable import artifacts plus reclaimable hot caches and prewarmed renderer resources, not on keeping every imported mesh, material, and texture permanently resident or rebuilding every sub-resource synchronously on mouse release.
+
+**Independent Test**: Load the same current generated model prefab through Scene View preview and final drop paths multiple times. The first cold load emits stage-level timing telemetry for prefab graph load, manifest validation, native container read/parse/hash, CPU deserialize, runtime resource creation, and GPU upload. The second and later loads reuse valid hot/cache entries where possible, treat mesh/material/texture as one renderability gate, avoid post-release blocking work, invalidate on artifact changes, and remain within a configurable memory budget.
+
+**Acceptance Scenarios**:
+
+1. **Given** a cold current generated model prefab is requested for preview, **When** the artifact-to-memory path runs, **Then** the editor records stage-level timings and byte counts that identify whether the delay is prefab graph load, manifest validation, native artifact file I/O, container parse/hash, CPU deserialization, runtime resource creation, or GPU upload.
+2. **Given** a current generated model prefab was loaded from committed artifacts, **When** the same prefab is requested again during Scene View hover, drop, scene load, or selection preview, **Then** the bridge reuses valid hot prefab/model entries instead of rereading and reparsing unchanged prefab graph artifacts.
+3. **Given** the manifest, prefab artifact, any mesh/material/texture artifact, source asset identity, importer version, project root, or load mode changes, **When** the prefab is requested again, **Then** stale cache entries are rejected and rebuilt from current artifacts.
+4. **Given** many imported prefabs are previewed or dropped, **When** the hot cache exceeds its configured entry or byte budget, **Then** least-recently-used entries that are not active scene references are evicted instead of growing without bound.
+5. **Given** a generated model has mesh, material, and texture dependencies, **When** the preview path considers the model renderable, **Then** mesh, material, and texture readiness are treated as one visibility gate so the user never sees a white model as the primary ready preview state.
+6. **Given** the user begins dragging an already imported model, **When** renderer-resource prewarm is still running, **Then** the work is cancellable or resumable and mouse release does not synchronously wait for long cold loads on the UI thread.
+7. **Given** mesh, material, and texture artifacts use the native artifact container format, **When** the loader reads them from disk, **Then** the hot path uses low-copy container views or equivalent single-allocation reads while preserving validation and hash semantics.
+8. **Given** an imported model contains many submeshes sharing one model manifest, **When** repeated preview/drop paths request those submeshes, **Then** the model-level cache reuses the already opened/parsed model package or submesh alias mapping rather than independently cold-loading every submesh artifact.
+
+---
+
+### User Story 8 - Scene Load Streams Prefab Renderer Resources (Priority: P1)
+
+An editor user opens a scene containing large generated/model prefab instances and can start using the editor as soon as the scene object graph is loaded, while prefab renderer resources continue loading in bounded background/per-frame work instead of blocking startup or scene switch completion.
+
+**Why this priority**: The latest reported workflow is initial level load. Showing a startup/task progress dialog until every prefab's mesh/material/texture resource is restored makes the editor feel frozen and delays scene availability. Unity-like behavior loads scene/prefab identity first, then streams renderer resources and reveals each prefab only when its renderer dependencies are ready together.
+
+**Independent Test**: Open a saved scene containing generated model prefab instances. The scene manager does not reread/reparse the scene document during prefab restore, scene-load renderer-resource resolution does not open a native blocking progress dialog after scene activation, and restored prefab resource jobs advance through the existing delayed/background step system.
+
+**Acceptance Scenarios**:
+
+1. **Given** a scene file has already been read and parsed by `SceneManager::LoadScene`, **When** editor prefab restoration runs, **Then** it reuses the loaded `ObjectGraphDocument` instead of reading and parsing the scene file a second time.
+2. **Given** scene load restored generated model prefab instances, **When** their renderer resources are not yet ready, **Then** scene activation and editor interaction are not blocked by a native modal progress dialog for renderer-resource resolution.
+3. **Given** a restored prefab has many mesh/material/texture dependencies, **When** resource resolution runs after scene activation, **Then** work is chunked through existing background/per-frame queues and each prefab subtree becomes visible only after mesh/material/texture are ready together.
+4. **Given** a scene switch or editor shutdown happens while scene prefab streaming is active, **When** the old scene unloads, **Then** owner-tokened streaming work is cancelled or detached and cannot reveal or keep resources for destroyed scene instances.
+
 ## Requirements
 
 ### Functional Requirements
@@ -147,6 +183,34 @@ An editor user drops or edits a prefab instance in a scene, saves the scene, clo
 - **FR-024**: Normal prefab instances MUST allow scene-local overrides to be saved and reloaded without automatically applying those overrides back to the prefab asset.
 - **FR-025**: Generated model prefab instances MUST allow scene-local overrides to be saved and reloaded, but applying overrides back to the generated model prefab asset MUST remain rejected with a model-prefab/read-only diagnostic.
 - **FR-026**: Unity-style prefab instance restoration MUST keep legacy `scenePrefab` scenes loadable, but any newly saved scene that has prefab registry state MUST emit the new `PrefabInstance` record path.
+- **FR-027**: The artifact-to-memory path MUST emit editor-session telemetry for prefab graph load, manifest validation, dependency scan, native artifact file I/O, native container parse/hash validation, CPU deserialization, runtime resource creation, GPU upload, cache hit/miss, cancellation, and eviction events.
+- **FR-028**: Telemetry MUST be available to focused tests and manual editor validation so cold and warm drag/drop behavior can be compared without relying on subjective "feels faster" reports.
+- **FR-029**: The already-imported prefab fast-load path MUST use a bounded editor-session hot cache for successful prefab artifact loads so repeated Scene View hover/drop requests do not synchronously reread and reparse the same current prefab artifact.
+- **FR-030**: The prefab hot cache key MUST include source asset id, normalized asset path, prefab sub-asset key, asset type, load mode, importer id/version, project root identity, manifest file stamp, and prefab artifact file stamp so reimported, edited, or cross-project artifacts are not reused stale.
+- **FR-031**: The prefab hot cache MUST store only successful prefab graph and resolved-asset results; renderer dependency readiness failures, missing artifacts, partial material loads, and pending import states MUST remain uncached or cached only as short-lived negative telemetry that cannot hide a later success.
+- **FR-032**: Mesh, material, and texture readiness MUST be evaluated as one atomic preview/drop visibility gate for generated model prefabs; a preview or committed instance MUST NOT show a white model as the normal ready state when material or texture dependencies are still missing.
+- **FR-033**: Renderer-resource prewarm MAY run after import completion, asset selection, hover, editor idle, or scene load, but it MUST be cancellable, resumable where practical, and bounded by the same memory and active-reference rules as the hot cache.
+- **FR-034**: Mouse release in Scene View MUST NOT start a long synchronous artifact-to-memory load for already imported current assets when the same work could have been scheduled on hover or editor-idle prewarm.
+- **FR-035**: Native artifact readers used by mesh, material, texture, and prefab fast paths MUST support a low-copy container view or equivalent single-allocation read path that avoids repeated full-file and payload copies while preserving existing validation, hash, and error-reporting semantics.
+- **FR-036**: The loader MUST avoid per-submesh repeated cold reads when a model-level runtime package or cache entry can provide submesh aliases, shared material bindings, and texture dependency references from one current model artifact relationship.
+- **FR-037**: Hot caches MUST expose explicit entry-count and byte-budget controls plus deterministic LRU-style eviction; they MUST NOT keep every imported model's mesh/material/texture payload permanently resident just because import completed.
+- **FR-038**: Cache invalidation MUST cover manifest, prefab, mesh, material, texture, importer version, source asset identity, project root identity, explicit reimport, artifact deletion, and budget eviction.
+- **FR-039**: Active scene instances MUST keep their required runtime resources alive through normal resource ownership, but removal of a prefab instance from the scene MUST release scene-held references so caches may evict the model and CPU/GPU work no longer continues for removed objects.
+- **FR-040**: The implementation MUST treat the current runtime mesh/resource-manager artifact cache and equivalent-path aliasing as the SSoT for imported model runtime cache behavior; the historical `.nmodel`/`ModelManager` plan from `specs/026-asset-management-system` is a reference only unless the current branch reintroduces that concrete API through a separate migration.
+- **FR-041**: Removing or cancelling a preview/committed prefab instance MUST cancel or detach related in-flight prewarm requests, async renderer-resolution jobs, renderer queues, per-frame update sources, and draw-source registrations associated only with that instance.
+- **FR-042**: The default validation budget for an already imported current model MUST require textured preview first visibility within 200 ms on warm cache, Scene View mouse-release UI-thread synchronous work within one frame budget at 60 Hz, and hot-cache fast-load lookup within 10 ms; exceeding any budget MUST fail Phase 7 validation unless the plan records a measured hardware-specific waiver with the responsible stage and follow-up task.
+- **FR-043**: Renderer-specific evidence MUST be captured at least once for the ready textured preview/committed model path during implementation validation, using RenderDoc or an equivalent backend-specific inspection, so material/texture binding correctness is not inferred only from unit tests.
+- **FR-044**: Runtime resource residency MUST follow a Unity-like owner/reference model: scene instances, preview scenes, editor inspectors, and asynchronous prewarm jobs acquire mesh/material/texture resources under explicit owner tokens, and owner removal releases references without blindly destroying resources that other owners still use.
+- **FR-045**: The editor MUST provide an `UnloadUnusedAssets`-style trim path that unloads only resources with zero active owners, using deterministic LRU/budget rules and normalized artifact-path aliases so absolute paths and `Library/...` paths share the same lifetime entry.
+- **FR-046**: Preview cancellation, Scene View drag exit, scene object destruction, and scene unload MUST release their owner tokens; the later trim pass MAY evict unreferenced resources, but active scene or inspector references MUST keep shared mesh/material/texture resources alive.
+- **FR-047**: Resource managers MUST expose a `ResourceHandle<T>` acquisition path that records a resource id, generation, owner token, and normalized path, while preserving the legacy raw-pointer API during migration.
+- **FR-048**: `ResourceHandle<T>` MUST be move-only RAII: constructing or acquiring a handle adds an owner reference, destruction/reset releases that exact resource reference, and `Get()` MUST return null after the registry generation changes.
+- **FR-049**: Cross-frame editor/runtime code SHOULD store `ResourceHandle<T>` or `ResourceId` instead of raw `Mesh*`, `Material*`, or `Texture2D*`; long-lived raw pointer storage remains legacy-only until each subsystem is migrated.
+- **FR-050**: Scene load MUST separate scene-object activation from generated/model prefab renderer-resource restoration so opening a scene does not synchronously wait for every prefab mesh/material/texture artifact to finish loading.
+- **FR-051**: Editor prefab restoration after `SceneManager::LoadScene` MUST reuse the already parsed scene `ObjectGraphDocument` when available and MUST NOT reread/reparse the same scene file as the normal startup or scene-switch path.
+- **FR-052**: Scene-load renderer-resource restoration MUST use non-blocking/background progress semantics rather than opening a native blocking task dialog after the scene object graph is active.
+- **FR-053**: Scene-load prefab streaming MUST keep the no-white-model invariant: restored generated/model prefab renderers remain suppressed until their mesh/material/texture dependencies are ready together, then are revealed atomically per prefab instance or safe subtree.
+- **FR-054**: Scene unload, scene switch, prefab removal, or editor shutdown MUST cancel/detach scene-load streaming work and release owner tokens for the affected scene instances.
 
 ### Key Entities
 
@@ -160,6 +224,15 @@ An editor user drops or edits a prefab instance in a scene, saves the scene, clo
 - **PrefabInstance Record**: The Unity-style persisted scene representation of a committed prefab instance, including source prefab reference, local modifications, and correspondence between prefab source objects and scene instance objects.
 - **Prefab Modification**: A scene-local patch such as a replaced property, added/removed owned component or GameObject, or ordering change that is saved on the instance rather than applied to the source prefab.
 - **Stripped/Correspondence Record**: The scene-side mapping that identifies which scene object corresponds to which object in the source prefab, analogous to Unity stripped object records.
+- **ArtifactLoadTelemetry**: Stage-level timing and byte-count record for moving committed artifacts into preview, scene, runtime, and GPU-ready memory.
+- **ImportedPrefabHotCache**: Bounded editor-session cache for successful current prefab graph and resolved-asset loads, keyed by source asset id, normalized asset path, prefab sub-asset key, asset type, load mode, importer id/version, project root identity, manifest stamp, and prefab artifact stamp.
+- **RendererResourcePrewarmRequest**: Cancellable request that warms mesh, material, texture, runtime resource, and GPU upload dependencies before the final drop needs them.
+- **NativeArtifactContainerView**: Low-copy validated view over a native artifact container payload used by artifact loaders to avoid redundant file and payload copies.
+- **ModelRuntimeCacheEntry**: Bounded runtime/cache entry backed by the current mesh/resource-manager artifact cache and equivalent-path aliasing SSoT, representing loaded submesh artifacts, shared material bindings, and texture dependency readiness without duplicating model package ownership.
+- **ArtifactMemoryBudget**: Configurable memory budget that controls prefab graph, model package, mesh/material/texture, and prewarm cache residency.
+- **ResourceLifetimeRegistry**: Unity-like owner/reference registry that records which scene, preview, inspector, or async job currently owns normalized mesh/material/texture artifact resources, tracks last-use order, and produces trim candidates only after all owners release the resource.
+- **ResourceHandle<T>**: Move-only typed resource lease returned by resource managers. It stores the resource id, generation, owner token, and optional cached pointer, automatically releases the owner reference on reset/destruction, and refuses to expose a pointer after reimport/unload generation invalidation.
+- **ScenePrefabStreamingQueue**: Scene-load restoration flow that queues generated/model prefab renderer-resource work after scene activation and advances it through existing background/per-frame editor actions without blocking the native startup or task progress UI.
 
 ## Success Criteria
 
@@ -174,6 +247,17 @@ An editor user drops or edits a prefab instance in a scene, saves the scene, clo
 - **SC-007**: Saving and reloading a scene containing a committed generated model instance restores that instance without manual repair or re-drop.
 - **SC-008**: New editor scene saves for prefab instances contain document-level `PrefabInstance` records with source prefab references and modifications, and do not depend on root-only `scenePrefab` metadata as the primary persistence path.
 - **SC-009**: Scene-local prefab instance modifications round-trip for normal prefabs and generated model prefabs; generated model prefab asset apply remains rejected.
+- **SC-010**: Cold and warm ready generated-model Scene View preview/drop requests produce artifact-to-memory telemetry that identifies the dominant stage and shows cache hit/miss behavior.
+- **SC-011**: Repeated ready generated-model Scene View preview/drop requests hit the prefab/model hot caches after the first successful load, while manifest, prefab, mesh, material, or texture artifact edits force a miss and reload.
+- **SC-012**: Ready generated-model previews and committed drops render mesh, material, and texture together; the primary ready path does not expose a white model while texture or material dependencies are still pending.
+- **SC-013**: Warm repeated drag/drop avoids prefab artifact reread/reparse and avoids repeated per-submesh cold reads when a current model-level runtime cache entry exists.
+- **SC-014**: Low-copy native artifact readers preserve existing validation and error diagnostics while reducing redundant full-file or payload copies on the hot path.
+- **SC-015**: Hot cache eviction keeps memory growth bounded when many imported prefabs are touched during one editor session, and removing a prefab from the scene releases scene-held references so CPU/GPU work can fall when the object is gone.
+- **SC-016**: Warm already-imported large-model drag/drop telemetry reports textured preview first visibility, release-time synchronous work, cache lookup time, and any budget misses with enough stage detail to identify the remaining bottleneck.
+- **SC-017**: Removing or cancelling a prefab/preview stops instance-owned prewarm, async resolution, renderer queue, update, and draw registrations; no instance-only CPU work continues after the object is gone.
+- **SC-018**: Renderer-specific validation confirms that ready preview and committed draws bind the intended mesh, material, and texture resources together.
+- **SC-019**: Initial scene load with saved generated/model prefabs activates the scene without rereading/reparsing the same scene file for prefab restore and without showing a native blocking renderer-resource dialog after scene activation.
+- **SC-020**: Large restored generated/model prefabs stream renderer resources after scene activation and reveal only when textured renderer dependencies are ready together; scene switch or removal cancels old streaming work.
 
 ## Assumptions
 

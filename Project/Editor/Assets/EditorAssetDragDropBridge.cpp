@@ -2,6 +2,7 @@
 
 #include "Assets/AssetMeta.h"
 #include "Assets/AssetImporterFacade.h"
+#include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/EditorAssetManifestJson.h"
 #include "Assets/EditorAssetPath.h"
 #include "Assets/NativeArtifactContainer.h"
@@ -10,12 +11,14 @@
 #include "Rendering/Assets/TextureArtifact.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cstdint>
 #include <fstream>
 #include <iterator>
 #include <Json/json.hpp>
 #include <memory>
+#include <mutex>
 #include <system_error>
 #include <vector>
 
@@ -46,9 +49,68 @@ struct ImportedAssetHandle
     NLS::Core::Assets::AssetId assetId;
 };
 
+struct ImportedPrefabHotCacheKey
+{
+    std::string sourceAssetId;
+    std::string normalizedAssetPath;
+    std::string prefabSubAssetKey;
+    std::string assetType;
+    std::string loadMode;
+    std::string importerId;
+    uint32_t importerVersion = 0u;
+    std::string projectRoot;
+    std::string manifestStamp;
+    std::string prefabArtifactStamp;
+    std::string rendererArtifactStamp;
+
+    bool operator==(const ImportedPrefabHotCacheKey& other) const
+    {
+        return sourceAssetId == other.sourceAssetId &&
+            normalizedAssetPath == other.normalizedAssetPath &&
+            prefabSubAssetKey == other.prefabSubAssetKey &&
+            assetType == other.assetType &&
+            loadMode == other.loadMode &&
+            importerId == other.importerId &&
+            importerVersion == other.importerVersion &&
+            projectRoot == other.projectRoot &&
+            manifestStamp == other.manifestStamp &&
+            prefabArtifactStamp == other.prefabArtifactStamp &&
+            rendererArtifactStamp == other.rendererArtifactStamp;
+    }
+};
+
+struct ImportedPrefabHotCacheEntry
+{
+    ImportedPrefabHotCacheKey key;
+    FastImportedPrefabLoadResult result;
+    size_t estimatedBytes = 0u;
+    uint64_t lastUsed = 0u;
+};
+
+struct ImportedPrefabHotCache
+{
+    std::vector<ImportedPrefabHotCacheEntry> entries;
+    size_t retainedBytes = 0u;
+    uint64_t useCounter = 0u;
+};
+
+constexpr size_t kMaxImportedPrefabHotCacheEntries = 16u;
+constexpr size_t kMaxImportedPrefabHotCacheBytes = 64u * 1024u * 1024u;
+
 std::string DefaultGeneratedPrefabSubAssetKeyForAssetPath(const std::string& assetPath)
 {
     return "prefab:" + std::filesystem::path(assetPath).stem().generic_string();
+}
+
+std::string NormalizeProjectAssetPath(const std::string& assetPath)
+{
+    if (assetPath.empty() || assetPath.front() == ':')
+        return {};
+
+    auto normalized = NormalizeEditorAssetPath(assetPath);
+    if (normalized == "Assets" || normalized.rfind("Assets/", 0u) == 0u)
+        return normalized;
+    return NormalizeEditorAssetPath(std::filesystem::path("Assets") / normalized);
 }
 
 std::string FileStamp(const std::filesystem::path& path)
@@ -65,6 +127,187 @@ std::string FileStamp(const std::filesystem::path& path)
 
     const auto writeTimeTicks = static_cast<std::intmax_t>(writeTime.time_since_epoch().count());
     return std::to_string(size) + ":" + std::to_string(writeTimeTicks);
+}
+
+std::string ToCacheLoadMode(const ImportedPrefabArtifactLoadMode loadMode)
+{
+    switch (loadMode)
+    {
+    case ImportedPrefabArtifactLoadMode::RequireRendererArtifactFiles:
+        return "require-renderer-artifact-files";
+    case ImportedPrefabArtifactLoadMode::ValidateRendererDependencies:
+        return "validate-renderer-dependencies";
+    case ImportedPrefabArtifactLoadMode::PreviewGraphOnly:
+        return "preview-graph-only";
+    }
+    return "unknown";
+}
+
+size_t EstimatePrefabHotCacheBytes(const NLS::Engine::Assets::PrefabArtifact& prefab)
+{
+    size_t bytes = sizeof(prefab);
+    bytes += prefab.graph.objects.size() * sizeof(NLS::Engine::Serialize::ObjectRecord);
+    bytes += prefab.graph.overrides.size() * sizeof(NLS::Engine::Serialize::PatchOperation);
+    bytes += prefab.graph.prefabInstances.size() * sizeof(NLS::Engine::Serialize::PrefabInstanceRecord);
+    bytes += prefab.resolvedAssets.size() * sizeof(NLS::Engine::Assets::PrefabResolvedAsset);
+    bytes += prefab.baseChain.size() * sizeof(NLS::Core::Assets::AssetId);
+    bytes += prefab.sourceToRuntimeObject.size() *
+        (sizeof(NLS::Engine::Serialize::ObjectId) * 2u);
+
+    for (const auto& object : prefab.graph.objects)
+    {
+        bytes += object.typeName.size();
+        bytes += object.debugName.size();
+        bytes += object.debugPath.size();
+        bytes += object.properties.size() * sizeof(NLS::Engine::Serialize::PropertyRecord);
+        for (const auto& property : object.properties)
+            bytes += property.name.size();
+    }
+    for (const auto& resolved : prefab.resolvedAssets)
+    {
+        bytes += resolved.expectedType.size();
+        bytes += resolved.subAssetKey.size();
+        bytes += resolved.artifactPath.size();
+    }
+    return bytes;
+}
+
+std::mutex& ImportedPrefabHotCacheMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
+ImportedPrefabHotCache& ImportedPrefabHotCacheState()
+{
+    static ImportedPrefabHotCache cache;
+    return cache;
+}
+
+std::optional<FastImportedPrefabLoadResult> TryGetImportedPrefabHotCache(
+    const ImportedPrefabHotCacheKey& key)
+{
+    const auto begin = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(ImportedPrefabHotCacheMutex());
+    auto& cache = ImportedPrefabHotCacheState();
+    ++cache.useCounter;
+
+    for (auto& entry : cache.entries)
+    {
+        if (!(entry.key == key))
+            continue;
+
+        entry.lastUsed = cache.useCounter;
+        NLS::Core::Assets::RecordArtifactLoadTelemetry({
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::CacheHit,
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - begin),
+            entry.estimatedBytes,
+            key.normalizedAssetPath});
+        NLS::Core::Assets::CheckArtifactLoadBudget(
+            NLS::Core::Assets::ArtifactLoadBudgetKind::HotCacheLookup,
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - begin),
+            key.normalizedAssetPath);
+        return entry.result;
+    }
+
+    NLS::Core::Assets::RecordArtifactLoadTelemetry({
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::CacheMiss,
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - begin),
+        0u,
+        key.normalizedAssetPath});
+    NLS::Core::Assets::CheckArtifactLoadBudget(
+        NLS::Core::Assets::ArtifactLoadBudgetKind::HotCacheLookup,
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - begin),
+        key.normalizedAssetPath);
+    return std::nullopt;
+}
+
+void EvictImportedPrefabHotCacheToBudget(ImportedPrefabHotCache& cache)
+{
+    while ((!cache.entries.empty() && cache.entries.size() > kMaxImportedPrefabHotCacheEntries) ||
+        cache.retainedBytes > kMaxImportedPrefabHotCacheBytes)
+    {
+        const auto victim = std::min_element(
+            cache.entries.begin(),
+            cache.entries.end(),
+            [](const ImportedPrefabHotCacheEntry& lhs, const ImportedPrefabHotCacheEntry& rhs)
+            {
+                return lhs.lastUsed < rhs.lastUsed;
+            });
+        if (victim == cache.entries.end())
+            break;
+
+        cache.retainedBytes -= std::min(cache.retainedBytes, victim->estimatedBytes);
+        NLS::Core::Assets::RecordArtifactLoadTelemetry({
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::Eviction,
+            {},
+            victim->estimatedBytes,
+            victim->key.normalizedAssetPath});
+        cache.entries.erase(victim);
+    }
+}
+
+void PutImportedPrefabHotCache(
+    const ImportedPrefabHotCacheKey& key,
+    const FastImportedPrefabLoadResult& result)
+{
+    if (!result.prefab.has_value() || result.rendererDependencyMissing)
+        return;
+
+    const size_t estimatedBytes = EstimatePrefabHotCacheBytes(*result.prefab);
+    if (estimatedBytes > kMaxImportedPrefabHotCacheBytes)
+        return;
+
+    std::lock_guard<std::mutex> lock(ImportedPrefabHotCacheMutex());
+    auto& cache = ImportedPrefabHotCacheState();
+    ++cache.useCounter;
+
+    const auto existing = std::find_if(
+        cache.entries.begin(),
+        cache.entries.end(),
+        [&key](const ImportedPrefabHotCacheEntry& entry)
+        {
+            return entry.key == key;
+        });
+    if (existing != cache.entries.end())
+    {
+        cache.retainedBytes -= std::min(cache.retainedBytes, existing->estimatedBytes);
+        cache.entries.erase(existing);
+    }
+
+    cache.entries.push_back({key, result, estimatedBytes, cache.useCounter});
+    cache.retainedBytes += estimatedBytes;
+    EvictImportedPrefabHotCacheToBudget(cache);
+}
+
+ImportedPrefabHotCacheKey MakeImportedPrefabHotCacheKey(
+    const std::filesystem::path& projectRoot,
+    const std::string& assetPath,
+    const std::string& prefabSubAssetKey,
+    const NLS::Core::Assets::AssetType assetType,
+    const ImportedPrefabArtifactLoadMode loadMode,
+    const NLS::Core::Assets::AssetMeta& meta,
+    const std::filesystem::path& manifestPath,
+    const std::filesystem::path& prefabPath,
+    std::string rendererArtifactStamp)
+{
+    ImportedPrefabHotCacheKey key;
+    key.sourceAssetId = meta.id.ToString();
+    key.normalizedAssetPath = NormalizeEditorAssetPath(assetPath);
+    key.prefabSubAssetKey = prefabSubAssetKey;
+    key.assetType = NLS::Core::Assets::ToString(assetType);
+    key.loadMode = ToCacheLoadMode(loadMode);
+    key.importerId = meta.importerId;
+    key.importerVersion = meta.importerVersion;
+    key.projectRoot = projectRoot.lexically_normal().generic_string();
+    key.manifestStamp = FileStamp(manifestPath);
+    key.prefabArtifactStamp = FileStamp(prefabPath);
+    key.rendererArtifactStamp = std::move(rendererArtifactStamp);
+    return key;
 }
 
 std::string ToEditorAssetPathFromProjectRoot(
@@ -273,9 +516,45 @@ std::filesystem::path ResolveManifestArtifactPath(
     return {};
 }
 
+std::string BuildRendererArtifactStamp(
+    const NLS::Core::Assets::ArtifactManifest& manifest)
+{
+    std::vector<std::string> stamps;
+    for (const auto& artifact : manifest.subAssets)
+    {
+        if (artifact.artifactType != NLS::Core::Assets::ArtifactType::Mesh &&
+            artifact.artifactType != NLS::Core::Assets::ArtifactType::Material &&
+            artifact.artifactType != NLS::Core::Assets::ArtifactType::Texture)
+        {
+            continue;
+        }
+
+        stamps.push_back(
+            artifact.subAssetKey +
+            "=" +
+            std::filesystem::path(artifact.artifactPath).lexically_normal().generic_string() +
+            "@" +
+            artifact.contentHash);
+    }
+
+    std::sort(stamps.begin(), stamps.end());
+    std::string combined;
+    for (const auto& stamp : stamps)
+    {
+        combined += stamp;
+        combined.push_back(';');
+    }
+    return combined;
+}
+
 std::optional<NLS::Core::Assets::ArtifactManifest> LoadFastManifest(
     const std::filesystem::path& manifestPath)
 {
+    NLS::Core::Assets::ArtifactLoadTelemetryRecord telemetry;
+    telemetry.stage = NLS::Core::Assets::ArtifactLoadTelemetryStage::ManifestValidation;
+    telemetry.path = manifestPath.generic_string();
+    NLS::Core::Assets::RecordArtifactLoadTelemetry(telemetry);
+
     std::ifstream input(manifestPath, std::ios::binary);
     if (!input)
         return std::nullopt;
@@ -286,6 +565,11 @@ std::optional<NLS::Core::Assets::ArtifactManifest> LoadFastManifest(
 
 std::vector<uint8_t> ReadAllBytes(const std::filesystem::path& path)
 {
+    NLS::Core::Assets::ArtifactLoadTelemetryRecord telemetry;
+    telemetry.stage = NLS::Core::Assets::ArtifactLoadTelemetryStage::NativeArtifactFileRead;
+    telemetry.path = path.generic_string();
+    NLS::Core::Assets::RecordArtifactLoadTelemetry(telemetry);
+
     std::ifstream input(path, std::ios::binary);
     if (!input)
         return {};
@@ -317,11 +601,11 @@ bool IsReadableMaterialArtifact(const std::filesystem::path& path)
     if (bytes.empty())
         return false;
 
-    const auto container = NLS::Core::Assets::ReadNativeArtifactContainer(
+    const auto container = NLS::Core::Assets::ReadNativeArtifactContainerView(
         bytes,
         NLS::Core::Assets::ArtifactType::Material,
         1u);
-    return container.has_value() && !container->payload.empty();
+    return container.has_value() && container->payloadSize > 0u;
 }
 
 std::string ExpectedPrefabResolvedAssetType(const NLS::Core::Assets::ArtifactType type)
@@ -481,7 +765,8 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
         NLS::Core::Assets::GetCurrentImporterVersion(currentMeta.assetType));
 
     const auto artifactRoot = projectRoot / "Library" / "Artifacts" / currentMeta.id.ToString();
-    auto manifest = LoadFastManifest(artifactRoot / "manifest.json");
+    const auto manifestPath = artifactRoot / "manifest.json";
+    auto manifest = LoadFastManifest(manifestPath);
     if (!manifest.has_value() || manifest->sourceAssetId != currentMeta.id)
         return result;
     if (!ManifestDependenciesAreCurrent(*manifest, currentMeta, projectRoot, absolutePath))
@@ -490,6 +775,8 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
     if (assetType == NLS::Core::Assets::AssetType::ModelScene &&
         loadMode == ImportedPrefabArtifactLoadMode::RequireRendererArtifactFiles)
     {
+        NLS::Core::Assets::RecordArtifactLoadTelemetry({
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::DependencyScan});
         auto rendererReadiness = GeneratedModelRendererArtifactFilesExist(
             *manifest,
             projectRoot,
@@ -501,6 +788,8 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
     if (loadMode == ImportedPrefabArtifactLoadMode::ValidateRendererDependencies &&
         assetType == NLS::Core::Assets::AssetType::ModelScene)
     {
+        NLS::Core::Assets::RecordArtifactLoadTelemetry({
+            NLS::Core::Assets::ArtifactLoadTelemetryStage::DependencyScan});
         auto rendererReadiness = ValidateGeneratedModelRendererArtifactsReady(
             *manifest,
             projectRoot,
@@ -520,15 +809,30 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
     if (prefabPath.empty())
         return result;
 
+    const auto cacheKey = MakeImportedPrefabHotCacheKey(
+        projectRoot,
+        assetPath,
+        prefabSubAssetKey,
+        assetType,
+        loadMode,
+        currentMeta,
+        manifestPath,
+        prefabPath,
+        BuildRendererArtifactStamp(*manifest));
+    if (auto cached = TryGetImportedPrefabHotCache(cacheKey); cached.has_value())
+        return *cached;
+
     const auto bytes = ReadAllBytes(prefabPath);
     if (bytes.empty())
         return result;
 
-    const auto container = NLS::Core::Assets::ReadNativeArtifactContainer(
+    const auto container = NLS::Core::Assets::ReadNativeArtifactContainerView(
         bytes,
         NLS::Core::Assets::ArtifactType::Prefab,
         1u);
     if (!container.has_value())
+        return result;
+    if (container->payloadSize == 0u)
         return result;
 
     std::vector<NLS::Engine::Assets::PrefabResolvedAsset> resolvedAssets;
@@ -557,7 +861,11 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
         }
     }
 
-    const std::string payload(container->payload.begin(), container->payload.end());
+    const std::string payload(
+        reinterpret_cast<const char*>(container->payloadData),
+        container->payloadSize);
+    NLS::Core::Assets::RecordArtifactLoadTelemetry({
+        NLS::Core::Assets::ArtifactLoadTelemetryStage::PrefabGraphLoad});
     auto importResult = NLS::Engine::Assets::ImportPrefabArtifact(
         payload,
         meta->id,
@@ -568,6 +876,7 @@ FastImportedPrefabLoadResult LoadImportedPrefabFast(
     auto prefab = std::move(importResult.artifact);
     prefab.generatedModelPrefab = assetType == NLS::Core::Assets::AssetType::ModelScene;
     result.prefab = std::move(prefab);
+    PutImportedPrefabHotCache(cacheKey, result);
     return result;
 }
 
@@ -592,7 +901,7 @@ std::optional<ImportedAssetHandle> ResolveImportedAssetHandleForPreview(
     const std::filesystem::path& projectRoot,
     const EditorAssetDragPayload& payload)
 {
-    auto assetPath = NormalizeEditorAssetPath(GetEditorAssetDragPayloadPath(payload));
+    auto assetPath = NormalizeProjectAssetPath(GetEditorAssetDragPayloadPath(payload));
     if (assetPath.empty())
         return std::nullopt;
 
@@ -613,8 +922,7 @@ std::optional<ImportedAssetHandle> ResolveImportedAssetHandleForPreview(
     auto assetType = payload.generatedModelPrefab != 0u
         ? NLS::Core::Assets::AssetType::ModelScene
         : NLS::Core::Assets::InferAssetType(projectRoot / assetPath);
-    if (payload.generatedModelPrefab != 0u ||
-        prefabSubAssetKey.empty())
+    if (prefabSubAssetKey.empty())
     {
         prefabSubAssetKey = DefaultGeneratedPrefabSubAssetKeyForAssetPath(assetPath);
     }
@@ -1048,8 +1356,7 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropImportedAssetHand
     auto assetType = payload.generatedModelPrefab != 0u
         ? NLS::Core::Assets::AssetType::ModelScene
         : NLS::Core::Assets::InferAssetType(ProjectRoot() / assetPath);
-    if (payload.generatedModelPrefab != 0u ||
-        prefabSubAssetKey.empty())
+    if (prefabSubAssetKey.empty())
     {
         prefabSubAssetKey = DefaultGeneratedPrefabSubAssetKey(assetPath);
     }
@@ -1133,7 +1440,7 @@ EditorAssetDragDropBridgeResult EditorAssetDragDropBridge::DropImportedPrefabArt
     const auto assetType = prefab.generatedModelPrefab
         ? NLS::Core::Assets::AssetType::ModelScene
         : NLS::Core::Assets::InferAssetType(ProjectRoot() / assetPath);
-    if (prefab.generatedModelPrefab || prefabSubAssetKey.empty())
+    if (prefabSubAssetKey.empty())
         prefabSubAssetKey = DefaultGeneratedPrefabSubAssetKey(assetPath);
 
     if (!IsImportedPrefabArtifactCurrentForPayload(ProjectRoot(), payload, prefab, assetPath, prefabSubAssetKey, false))
@@ -1183,6 +1490,33 @@ std::optional<NLS::Engine::Assets::PrefabArtifact> EditorAssetDragDropBridge::Tr
     {
         return std::nullopt;
     }
+
+    return std::move(fastLoad.prefab);
+}
+
+std::optional<NLS::Engine::Assets::PrefabArtifact> EditorAssetDragDropBridge::TryLoadImportedPrefabArtifact(
+    const std::string& assetPath,
+    const std::string& prefabSubAssetKey) const
+{
+    const auto normalizedAssetPath = NormalizeResourcePath(assetPath);
+    if (normalizedAssetPath.empty() || prefabSubAssetKey.empty())
+        return std::nullopt;
+
+    const auto assetType = NLS::Core::Assets::InferAssetType(ProjectRoot() / normalizedAssetPath);
+    if (assetType != NLS::Core::Assets::AssetType::ModelScene &&
+        assetType != NLS::Core::Assets::AssetType::Prefab)
+    {
+        return std::nullopt;
+    }
+
+    auto fastLoad = LoadImportedPrefabFast(
+        ProjectRoot(),
+        normalizedAssetPath,
+        prefabSubAssetKey,
+        assetType,
+        ImportedPrefabArtifactLoadMode::RequireRendererArtifactFiles);
+    if (!fastLoad.prefab.has_value())
+        return std::nullopt;
 
     return std::move(fastLoad.prefab);
 }

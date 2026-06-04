@@ -15,6 +15,7 @@
 #include "Guid.h"
 #include "GameObject.h"
 #include "Assets/AssetDatabaseFacade.h"
+#include "Assets/ArtifactLoadTelemetry.h"
 #include "Assets/AssetMeta.h"
 #include "Assets/EditorAssetDragDropBridge.h"
 #include "Assets/EditorAssetDragPayload.h"
@@ -30,6 +31,7 @@
 #include "Components/MeshFilter.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Assets/MeshArtifact.h"
+#include "Rendering/Assets/TextureArtifact.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Rendering/Settings/EGraphicsBackend.h"
 #include "SceneSystem/Scene.h"
@@ -167,6 +169,96 @@ NLS::Render::Context::Driver& EnsureGameObjectAssetImportTestDriver()
     }());
     NLS::Core::ServiceLocator::Provide(*driver);
     return *driver;
+}
+
+std::filesystem::path FindPrefabArtifactPath(
+    const std::filesystem::path& artifactRoot,
+    const std::string& prefabSubAssetKey)
+{
+    const auto manifestPath = artifactRoot / "manifest.json";
+    std::ifstream input(manifestPath, std::ios::binary);
+    if (!input.good())
+        return {};
+
+    auto manifest = nlohmann::json::parse(input, nullptr, false);
+    if (!manifest.is_object() || !manifest["subAssets"].is_array())
+        return {};
+
+    for (const auto& subAsset : manifest["subAssets"])
+    {
+        if (!subAsset.is_object() ||
+            subAsset.value("subAssetKey", std::string {}) != prefabSubAssetKey)
+        {
+            continue;
+        }
+
+        const auto artifactPathText = subAsset.value("artifactPath", std::string {});
+        if (artifactPathText.empty())
+            return {};
+
+        auto artifactPath = std::filesystem::path(artifactPathText);
+        if (artifactPath.is_relative())
+            artifactPath = artifactRoot / artifactPath;
+        return artifactPath.lexically_normal();
+    }
+
+    return {};
+}
+
+std::filesystem::path FindFirstArtifactPathWithExtension(
+    const std::filesystem::path& artifactRoot,
+    const std::string& extension)
+{
+    const auto manifestPath = artifactRoot / "manifest.json";
+    std::ifstream input(manifestPath, std::ios::binary);
+    if (!input.good())
+        return {};
+
+    auto manifest = nlohmann::json::parse(input, nullptr, false);
+    if (!manifest.is_object() || !manifest["subAssets"].is_array())
+        return {};
+
+    for (const auto& subAsset : manifest["subAssets"])
+    {
+        if (!subAsset.is_object())
+            continue;
+
+        const auto artifactPathText = subAsset.value("artifactPath", std::string {});
+        if (artifactPathText.empty())
+            continue;
+
+        auto artifactPath = std::filesystem::path(artifactPathText);
+        if (artifactPath.extension() != extension)
+            continue;
+
+        if (artifactPath.is_relative())
+            artifactPath = artifactRoot / artifactPath;
+        return artifactPath.lexically_normal();
+    }
+
+    return {};
+}
+
+size_t CountArtifactTelemetryStage(
+    const std::vector<NLS::Core::Assets::ArtifactLoadTelemetryRecord>& records,
+    const NLS::Core::Assets::ArtifactLoadTelemetryStage stage)
+{
+    return static_cast<size_t>(std::count_if(
+        records.begin(),
+        records.end(),
+        [stage](const NLS::Core::Assets::ArtifactLoadTelemetryRecord& record)
+        {
+            return record.stage == stage;
+        }));
+}
+
+NLS::Render::Geometry::Vertex ImportTestVertexAt(float x, float y, float z)
+{
+    NLS::Render::Geometry::Vertex vertex {};
+    vertex.position[0] = x;
+    vertex.position[1] = y;
+    vertex.position[2] = z;
+    return vertex;
 }
 }
 
@@ -630,6 +722,464 @@ TEST(GameObjectAssetImportTests, WarmEditorAssetHandleProvidesPreviewPrefabWitho
     ASSERT_NE(preview.root, nullptr);
     EXPECT_EQ(preview.root->GetName(), "WarmPreviewHeroRoot");
 
+    std::filesystem::remove_all(root);
+}
+
+TEST(GameObjectAssetImportTests, WarmEditorAssetHandlePreviewAcceptsProjectRelativePayloadPathWithoutAssetsPrefix)
+{
+    const auto root = MakeGameObjectAssetImportRoot();
+    WriteTextFile(
+        root / "Assets" / "Models" / "WarmPreviewProjectRelativeHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [
+                { "nodes": [0] }
+            ],
+            "buffers": [
+                {
+                    "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA",
+                    "byteLength": 42
+                }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" }
+            ],
+            "meshes": [
+                {
+                    "name": "Body",
+                    "primitives": [
+                        { "attributes": { "POSITION": 0 }, "indices": 1 }
+                    ]
+                }
+            ],
+            "nodes": [
+                { "name": "WarmPreviewProjectRelativeHeroRoot", "mesh": 0 }
+            ]
+        })");
+
+    NLS::Editor::Assets::AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/WarmPreviewProjectRelativeHero.gltf"));
+    const auto guid = database.AssetPathToGUID("Assets/Models/WarmPreviewProjectRelativeHero.gltf");
+    ASSERT_FALSE(guid.empty());
+    const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
+
+    const auto payload = NLS::Editor::Assets::MakeEditorAssetDragPayloadForTesting(
+        "Models/WarmPreviewProjectRelativeHero.gltf",
+        assetId,
+        "prefab:WarmPreviewProjectRelativeHero",
+        NLS::Core::Assets::ArtifactType::Prefab,
+        true,
+        true,
+        true);
+
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+    auto prefab = bridge.TryLoadPreviewPrefabArtifact(payload);
+
+    ASSERT_TRUE(prefab.has_value());
+    EXPECT_EQ(prefab->assetId, assetId);
+
+    NLS::Engine::SceneSystem::Scene previewScene;
+    auto preview = NLS::Engine::Assets::InstantiatePrefabArtifact(*prefab, previewScene);
+    ASSERT_FALSE(preview.diagnostics.HasErrors());
+    ASSERT_NE(preview.root, nullptr);
+    EXPECT_EQ(preview.root->GetName(), "WarmPreviewProjectRelativeHeroRoot");
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(GameObjectAssetImportTests, WarmEditorAssetHandlePreviewUsesHotCacheAndInvalidatesOnArtifactStamps)
+{
+    using NLS::Core::Assets::ArtifactLoadTelemetryStage;
+
+    const auto root = MakeGameObjectAssetImportRoot();
+    WriteTextFile(
+        root / "Assets" / "Models" / "HotCacheHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [
+                { "nodes": [0] }
+            ],
+            "buffers": [
+                {
+                    "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA",
+                    "byteLength": 42
+                }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" }
+            ],
+            "meshes": [
+                {
+                    "name": "Body",
+                    "primitives": [
+                        { "attributes": { "POSITION": 0 }, "indices": 1 }
+                    ]
+                }
+            ],
+            "nodes": [
+                { "name": "HotCacheHeroRoot", "mesh": 0 }
+            ]
+        })");
+
+    NLS::Editor::Assets::AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/HotCacheHero.gltf"));
+    const auto guid = database.AssetPathToGUID("Assets/Models/HotCacheHero.gltf");
+    ASSERT_FALSE(guid.empty());
+    const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
+
+    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
+        "Assets/Models/HotCacheHero.gltf");
+    const auto manifestPath = artifactRoot / "manifest.json";
+    const auto prefabPath = FindPrefabArtifactPath(artifactRoot, "prefab:HotCacheHero");
+    const auto meshPath = FindFirstArtifactPathWithExtension(artifactRoot, ".nmesh");
+    ASSERT_FALSE(prefabPath.empty());
+    ASSERT_TRUE(std::filesystem::is_regular_file(prefabPath));
+    ASSERT_FALSE(meshPath.empty());
+    ASSERT_TRUE(std::filesystem::is_regular_file(meshPath));
+
+    const auto payload = NLS::Editor::Assets::MakeEditorAssetDragPayloadForTesting(
+        "Assets/Models/HotCacheHero.gltf",
+        assetId,
+        "prefab:HotCacheHero",
+        NLS::Core::Assets::ArtifactType::Prefab,
+        true,
+        true,
+        true);
+
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    auto firstPrefab = bridge.TryLoadPreviewPrefabArtifact(payload);
+    ASSERT_TRUE(firstPrefab.has_value());
+    auto firstRecords = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_GE(CountArtifactTelemetryStage(firstRecords, ArtifactLoadTelemetryStage::CacheMiss), 1u);
+    EXPECT_EQ(CountArtifactTelemetryStage(firstRecords, ArtifactLoadTelemetryStage::CacheHit), 0u);
+    EXPECT_GE(CountArtifactTelemetryStage(firstRecords, ArtifactLoadTelemetryStage::PrefabGraphLoad), 1u);
+
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    auto cachedPrefab = bridge.TryLoadPreviewPrefabArtifact(payload);
+    ASSERT_TRUE(cachedPrefab.has_value());
+    auto cachedRecords = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_GE(CountArtifactTelemetryStage(cachedRecords, ArtifactLoadTelemetryStage::CacheHit), 1u);
+    EXPECT_EQ(CountArtifactTelemetryStage(cachedRecords, ArtifactLoadTelemetryStage::PrefabGraphLoad), 0u);
+
+    {
+        std::ofstream output(manifestPath, std::ios::binary | std::ios::app);
+        ASSERT_TRUE(output.good());
+        output << '\n';
+    }
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    auto manifestInvalidatedPrefab = bridge.TryLoadPreviewPrefabArtifact(payload);
+    ASSERT_TRUE(manifestInvalidatedPrefab.has_value());
+    auto manifestInvalidatedRecords = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_EQ(CountArtifactTelemetryStage(manifestInvalidatedRecords, ArtifactLoadTelemetryStage::CacheHit), 0u);
+    EXPECT_GE(CountArtifactTelemetryStage(manifestInvalidatedRecords, ArtifactLoadTelemetryStage::CacheMiss), 1u);
+    EXPECT_GE(CountArtifactTelemetryStage(manifestInvalidatedRecords, ArtifactLoadTelemetryStage::PrefabGraphLoad), 1u);
+
+    std::error_code error;
+    const auto prefabWriteTime = std::filesystem::last_write_time(prefabPath, error);
+    ASSERT_FALSE(error);
+    std::filesystem::last_write_time(prefabPath, prefabWriteTime + std::chrono::seconds(1), error);
+    ASSERT_FALSE(error);
+
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    auto prefabInvalidatedPrefab = bridge.TryLoadPreviewPrefabArtifact(payload);
+    ASSERT_TRUE(prefabInvalidatedPrefab.has_value());
+    auto prefabInvalidatedRecords = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_EQ(CountArtifactTelemetryStage(prefabInvalidatedRecords, ArtifactLoadTelemetryStage::CacheHit), 0u);
+    EXPECT_GE(CountArtifactTelemetryStage(prefabInvalidatedRecords, ArtifactLoadTelemetryStage::CacheMiss), 1u);
+    EXPECT_GE(CountArtifactTelemetryStage(prefabInvalidatedRecords, ArtifactLoadTelemetryStage::PrefabGraphLoad), 1u);
+
+    const auto meshInvalidationManifestWriteTime = std::filesystem::last_write_time(manifestPath, error);
+    ASSERT_FALSE(error);
+    {
+        std::ifstream input(manifestPath, std::ios::binary);
+        ASSERT_TRUE(input.good());
+        auto manifestJson = nlohmann::json::parse(input, nullptr, false);
+        ASSERT_TRUE(manifestJson.is_object());
+        ASSERT_TRUE(manifestJson["subAssets"].is_array());
+        bool updatedMeshContentHash = false;
+        for (auto& subAsset : manifestJson["subAssets"])
+        {
+            if (!subAsset.is_object() ||
+                subAsset.value("artifactPath", std::string {}).find(".nmesh") == std::string::npos)
+            {
+                continue;
+            }
+
+            const auto oldHash = subAsset.value("contentHash", std::string {});
+            ASSERT_FALSE(oldHash.empty());
+            std::string newHash = oldHash;
+            newHash.back() = newHash.back() == '0' ? '1' : '0';
+            subAsset["contentHash"] = newHash;
+            updatedMeshContentHash = true;
+            break;
+        }
+        ASSERT_TRUE(updatedMeshContentHash);
+        WriteTextFile(manifestPath, manifestJson.dump(2));
+    }
+    std::filesystem::last_write_time(manifestPath, meshInvalidationManifestWriteTime, error);
+    ASSERT_FALSE(error);
+
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    auto meshInvalidatedPrefab = bridge.TryLoadPreviewPrefabArtifact(payload);
+    ASSERT_TRUE(meshInvalidatedPrefab.has_value());
+    auto meshInvalidatedRecords = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_EQ(CountArtifactTelemetryStage(meshInvalidatedRecords, ArtifactLoadTelemetryStage::CacheHit), 0u);
+    EXPECT_GE(CountArtifactTelemetryStage(meshInvalidatedRecords, ArtifactLoadTelemetryStage::CacheMiss), 1u);
+    EXPECT_GE(CountArtifactTelemetryStage(meshInvalidatedRecords, ArtifactLoadTelemetryStage::PrefabGraphLoad), 1u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(GameObjectAssetImportTests, HotCacheDoesNotHideMissingRendererDependencies)
+{
+    using NLS::Core::Assets::ArtifactLoadTelemetryStage;
+
+    const auto root = MakeGameObjectAssetImportRoot();
+    WriteTextFile(
+        root / "Assets" / "Models" / "HotCacheMissingMeshHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [
+                { "nodes": [0] }
+            ],
+            "buffers": [
+                {
+                    "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA",
+                    "byteLength": 42
+                }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" }
+            ],
+            "meshes": [
+                {
+                    "name": "Body",
+                    "primitives": [
+                        { "attributes": { "POSITION": 0 }, "indices": 1 }
+                    ]
+                }
+            ],
+            "nodes": [
+                { "name": "HotCacheMissingMeshHeroRoot", "mesh": 0 }
+            ]
+        })");
+
+    NLS::Editor::Assets::AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/HotCacheMissingMeshHero.gltf"));
+    const auto guid = database.AssetPathToGUID("Assets/Models/HotCacheMissingMeshHero.gltf");
+    ASSERT_FALSE(guid.empty());
+    const auto assetId = NLS::Core::Assets::AssetId(NLS::Guid::Parse(guid));
+
+    const auto artifactRoot = database.GetArtifactRootForAssetPathForTesting(
+        "Assets/Models/HotCacheMissingMeshHero.gltf");
+    const auto meshPath = FindFirstArtifactPathWithExtension(artifactRoot, ".nmesh");
+    ASSERT_FALSE(meshPath.empty());
+    ASSERT_TRUE(std::filesystem::is_regular_file(meshPath));
+
+    const auto payload = NLS::Editor::Assets::MakeEditorAssetDragPayloadForTesting(
+        "Assets/Models/HotCacheMissingMeshHero.gltf",
+        assetId,
+        "prefab:HotCacheMissingMeshHero",
+        NLS::Core::Assets::ArtifactType::Prefab,
+        true,
+        true,
+        true);
+
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(root / "Assets");
+    auto warmPrefab = bridge.TryLoadPreviewPrefabArtifact(payload);
+    ASSERT_TRUE(warmPrefab.has_value());
+
+    std::filesystem::remove(meshPath);
+    ASSERT_FALSE(std::filesystem::exists(meshPath));
+
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    auto missingDependencyPrefab = bridge.TryLoadPreviewPrefabArtifact(payload);
+    EXPECT_FALSE(missingDependencyPrefab.has_value());
+    const auto records = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_EQ(CountArtifactTelemetryStage(records, ArtifactLoadTelemetryStage::CacheHit), 0u);
+    EXPECT_GE(CountArtifactTelemetryStage(records, ArtifactLoadTelemetryStage::DependencyScan), 1u);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(GameObjectAssetImportTests, MeshArtifactPrewarmReusesEquivalentResourceManagerCacheEntry)
+{
+    using NLS::Core::Assets::ArtifactLoadTelemetryStage;
+
+    EnsureGameObjectAssetImportTestDriver();
+
+    const auto root = MakeGameObjectAssetImportRoot();
+    const auto projectAssetsRoot = (root / "Assets").string() + "/";
+    NLS::Core::ResourceManagement::MeshManager::ProvideAssetPaths(
+        projectAssetsRoot,
+        "App/Assets/Engine/");
+
+    const std::string relativeMeshPath = "Library/Artifacts/CacheHero/body.nmesh";
+    const auto absoluteMeshPath = (root / relativeMeshPath).lexically_normal();
+
+    NLS::Render::Assets::MeshArtifactData meshArtifact;
+    meshArtifact.vertices = {
+        ImportTestVertexAt(-1.0f, 0.0f, 0.0f),
+        ImportTestVertexAt(1.0f, 0.0f, 0.0f),
+        ImportTestVertexAt(0.0f, 1.0f, 0.0f)
+    };
+    meshArtifact.indices = { 0u, 1u, 2u };
+    meshArtifact.materialIndex = 0u;
+    WriteBinaryFile(absoluteMeshPath, NLS::Render::Assets::SerializeMeshArtifact(meshArtifact));
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    auto* firstMesh = meshManager.PrewarmArtifact(relativeMeshPath);
+    ASSERT_NE(firstMesh, nullptr);
+    const auto firstRecords = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_GE(CountArtifactTelemetryStage(firstRecords, ArtifactLoadTelemetryStage::NativeArtifactFileRead), 1u);
+
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    auto* secondMesh = meshManager.PrewarmArtifact(absoluteMeshPath.string());
+    ASSERT_NE(secondMesh, nullptr);
+    EXPECT_EQ(secondMesh, firstMesh)
+        << "Generated-model preview/drop paths must reuse the resource-manager Mesh cache even when prefab "
+           "resolved assets arrive as equivalent relative or absolute artifact paths.";
+    const auto secondRecords = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_EQ(CountArtifactTelemetryStage(secondRecords, ArtifactLoadTelemetryStage::NativeArtifactFileRead), 0u)
+        << "A repeated equivalent mesh artifact prewarm should not cold-read the same .nmesh again.";
+
+    meshManager.UnloadResources();
+    NLS::Core::ResourceManagement::MeshManager::ProvideAssetPaths({}, {});
+    std::filesystem::remove_all(root);
+}
+
+TEST(GameObjectAssetImportTests, RepeatedGeneratedModelPreviewReusesManySubmeshRuntimeCacheEntries)
+{
+    using NLS::Core::Assets::ArtifactLoadTelemetryStage;
+
+    EnsureGameObjectAssetImportTestDriver();
+
+    const auto root = MakeGameObjectAssetImportRoot();
+    const auto projectAssetsRoot = (root / "Assets").string() + "/";
+    NLS::Core::ResourceManagement::MeshManager::ProvideAssetPaths(
+        projectAssetsRoot,
+        "App/Assets/Engine/");
+
+    std::ostringstream meshes;
+    std::ostringstream nodes;
+    for (int index = 0; index < 4; ++index)
+    {
+        if (index > 0)
+        {
+            meshes << ",\n";
+            nodes << ",\n";
+        }
+        meshes <<
+            "                {\n"
+            "                    \"name\": \"Piece" << index << "\",\n"
+            "                    \"primitives\": [\n"
+            "                        { \"attributes\": { \"POSITION\": 0 }, \"indices\": 1 }\n"
+            "                    ]\n"
+            "                }";
+        nodes <<
+            "                { \"name\": \"Piece" << index << "\", \"mesh\": " << index << " }";
+    }
+
+    WriteTextFile(
+        root / "Assets" / "Models" / "RuntimeCacheHero.gltf",
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [
+                { "nodes": [0, 1, 2, 3] }
+            ],
+            "buffers": [
+                {
+                    "uri": "data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA",
+                    "byteLength": 42
+                }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 6, "target": 34963 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR" }
+            ],
+            "meshes": [
+)" + meshes.str() + R"(
+            ],
+            "nodes": [
+)" + nodes.str() + R"(
+            ]
+        })");
+
+    NLS::Editor::Assets::AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+    ASSERT_TRUE(database.ImportAsset("Assets/Models/RuntimeCacheHero.gltf"));
+
+    auto prefab = database.LoadPrefabArtifactAtPath(
+        "Assets/Models/RuntimeCacheHero.gltf",
+        "prefab:RuntimeCacheHero");
+    ASSERT_TRUE(prefab.has_value());
+
+    std::vector<std::filesystem::path> absoluteMeshPaths;
+    for (const auto& resolved : prefab->resolvedAssets)
+    {
+        if (resolved.expectedType == "Mesh" &&
+            std::filesystem::path(resolved.artifactPath).extension() == ".nmesh")
+        {
+            absoluteMeshPaths.push_back(std::filesystem::path(resolved.artifactPath).lexically_normal());
+        }
+    }
+    ASSERT_GE(absoluteMeshPaths.size(), 4u);
+
+    NLS::Core::ResourceManagement::MeshManager meshManager;
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    for (const auto& meshPath : absoluteMeshPaths)
+        ASSERT_NE(meshManager.PrewarmArtifact(meshPath.string()), nullptr);
+
+    const auto coldRecords = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_GE(
+        CountArtifactTelemetryStage(coldRecords, ArtifactLoadTelemetryStage::NativeArtifactFileRead),
+        absoluteMeshPaths.size());
+
+    NLS::Core::Assets::ClearArtifactLoadTelemetry();
+    for (const auto& meshPath : absoluteMeshPaths)
+    {
+        const auto projectRelativePath = meshPath.lexically_relative(root.lexically_normal()).generic_string();
+        ASSERT_NE(meshManager.PrewarmArtifact(projectRelativePath), nullptr);
+    }
+
+    const auto warmRecords = NLS::Core::Assets::SnapshotArtifactLoadTelemetry();
+    EXPECT_EQ(
+        CountArtifactTelemetryStage(warmRecords, ArtifactLoadTelemetryStage::NativeArtifactFileRead),
+        0u)
+        << "Repeated generated-model preview/drop must reuse loaded submesh runtime cache entries instead of "
+           "cold-reading each submesh artifact again through equivalent project-relative paths.";
+
+    meshManager.UnloadResources();
+    NLS::Core::ResourceManagement::MeshManager::ProvideAssetPaths({}, {});
     std::filesystem::remove_all(root);
 }
 
@@ -2114,5 +2664,151 @@ TEST(GameObjectAssetImportTests, GeneratedModelDragDoesNotSynchronouslyPrewarmLa
     EXPECT_TRUE(meshManager.GetResources().empty());
     EXPECT_TRUE(materialManager.GetResources().empty());
 
+    std::filesystem::remove_all(root);
+}
+
+TEST(GameObjectAssetImportTests, CancelledRendererResourcePrewarmCanResumeWithoutCommittingStaleMaterial)
+{
+    EnsureGameObjectAssetImportTestDriver();
+
+    const auto root = MakeGameObjectAssetImportRoot();
+    const auto projectAssetsRoot = (root / "Assets").string() + "/";
+    NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths(
+        projectAssetsRoot,
+        "App/Assets/Engine/");
+    const ScopedShaderManagerAssetPaths shaderAssetPaths(
+        projectAssetsRoot,
+        "App/Assets/Engine/");
+
+    NLS::Core::ResourceManagement::MaterialManager materialManager;
+    NLS::Core::ResourceManagement::ShaderManager shaderManager;
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::MaterialManager>(materialManager);
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::ShaderManager>(shaderManager);
+
+    const auto materialPath = std::string("Library/Artifacts/Hover/body.nmat");
+    const auto absoluteMaterialPath =
+        NLS::Core::ResourceManagement::MaterialManager::ResolveResourcePath(materialPath);
+    WriteTextFile(
+        absoluteMaterialPath,
+        "<root>\n"
+        "  <shader>App/Assets/Engine/Shaders/Standard.hlsl</shader>\n"
+        "  <blendable>false</blendable>\n"
+        "  <backfaceCulling>false</backfaceCulling>\n"
+        "  <frontfaceCulling>false</frontfaceCulling>\n"
+        "  <depthTest>true</depthTest>\n"
+        "  <depthWriting>true</depthWriting>\n"
+        "  <colorWriting>true</colorWriting>\n"
+        "</root>\n");
+
+    EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath, true), nullptr);
+    EXPECT_TRUE(materialManager.IsAsyncArtifactLoadPending(materialPath));
+
+    materialManager.CancelAsyncArtifact(materialPath);
+    for (size_t attempt = 0; attempt < 64u; ++attempt)
+    {
+        materialManager.PumpAsyncLoads(8u);
+        if (!materialManager.IsAsyncArtifactLoadPending(materialPath))
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    EXPECT_FALSE(materialManager.IsAsyncArtifactLoadPending(materialPath));
+    EXPECT_FALSE(materialManager.IsResourceRegistered(materialPath))
+        << "Preview-owned material prewarm cancellation must not leave a stale runtime material registered after drag exit.";
+    EXPECT_FALSE(materialManager.IsResourceRegistered(absoluteMaterialPath));
+
+    EXPECT_EQ(materialManager.RequestAsyncArtifact(materialPath, true), nullptr);
+    for (size_t attempt = 0; attempt < 64u; ++attempt)
+    {
+        materialManager.PumpAsyncLoads(8u);
+        if (materialManager.IsResourceRegistered(materialPath) ||
+            materialManager.IsResourceRegistered(absoluteMaterialPath))
+        {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    EXPECT_TRUE(
+        materialManager.IsResourceRegistered(materialPath) ||
+        materialManager.IsResourceRegistered(absoluteMaterialPath))
+        << "A later hover/drop must be able to resume material prewarm after the previous owner cancelled.";
+
+    materialManager.UnloadResources();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::ShaderManager>();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::MaterialManager>();
+    NLS::Core::ResourceManagement::MaterialManager::ProvideAssetPaths({}, {});
+    std::filesystem::remove_all(root);
+}
+
+TEST(GameObjectAssetImportTests, CancelledRendererResourcePrewarmCanResumeWithoutCommittingStaleTexture)
+{
+    EnsureGameObjectAssetImportTestDriver();
+
+    const auto root = MakeGameObjectAssetImportRoot();
+    const auto projectAssetsRoot = (root / "Assets").string() + "/";
+    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths(
+        projectAssetsRoot,
+        "App/Assets/Engine/");
+
+    NLS::Core::ResourceManagement::TextureManager textureManager;
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::TextureManager>(textureManager);
+
+    const auto texturePath = std::string("Library/Artifacts/Hover/body.ntex");
+    const auto absoluteTexturePath =
+        NLS::Core::ResourceManagement::TextureManager::ResolveResourcePath(texturePath);
+
+    NLS::Render::Assets::TextureArtifactData artifact;
+    artifact.width = 1u;
+    artifact.height = 1u;
+    artifact.format = NLS::Render::RHI::TextureFormat::RGBA8;
+    artifact.colorSpace = NLS::Render::Assets::TextureArtifactColorSpace::Srgb;
+    NLS::Render::Assets::TextureArtifactMip mip;
+    mip.level = 0u;
+    mip.width = 1u;
+    mip.height = 1u;
+    mip.rowPitch = 4u;
+    mip.slicePitch = 4u;
+    mip.pixels = { 255u, 128u, 64u, 255u };
+    artifact.mips.push_back(std::move(mip));
+    WriteBinaryFile(absoluteTexturePath, NLS::Render::Assets::SerializeTextureArtifact(artifact));
+
+    EXPECT_EQ(textureManager.RequestAsyncArtifact(texturePath, true), nullptr);
+    EXPECT_TRUE(textureManager.IsAsyncArtifactLoadPending(texturePath));
+
+    textureManager.CancelAsyncArtifact(texturePath);
+    for (size_t attempt = 0; attempt < 64u; ++attempt)
+    {
+        textureManager.PumpAsyncLoads(8u);
+        if (!textureManager.IsAsyncArtifactLoadPending(texturePath))
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    EXPECT_FALSE(textureManager.IsAsyncArtifactLoadPending(texturePath));
+    EXPECT_FALSE(textureManager.IsResourceRegistered(texturePath))
+        << "Preview-owned texture prewarm cancellation must not leave a stale runtime texture registered after drag exit.";
+    EXPECT_FALSE(textureManager.IsResourceRegistered(absoluteTexturePath));
+
+    EXPECT_EQ(textureManager.RequestAsyncArtifact(texturePath, true), nullptr);
+    for (size_t attempt = 0; attempt < 64u; ++attempt)
+    {
+        textureManager.PumpAsyncLoads(8u);
+        if (textureManager.IsResourceRegistered(texturePath) ||
+            textureManager.IsResourceRegistered(absoluteTexturePath))
+        {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    EXPECT_TRUE(
+        textureManager.IsResourceRegistered(texturePath) ||
+        textureManager.IsResourceRegistered(absoluteTexturePath))
+        << "A later hover/drop must be able to resume texture prewarm after the previous owner cancelled.";
+
+    textureManager.UnloadResources();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::TextureManager>();
+    NLS::Core::ResourceManagement::TextureManager::ProvideAssetPaths({}, {});
     std::filesystem::remove_all(root);
 }

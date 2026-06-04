@@ -246,6 +246,59 @@ std::filesystem::path ResolveArtifactPathForManifest(
 	return {};
 }
 
+std::optional<std::string> SelectManifestPrefabSubAssetKeyForDragPayload(
+	const std::filesystem::path& projectRoot,
+	const nlohmann::json& manifest)
+{
+	const auto subAssets = manifest.find("subAssets");
+	if (subAssets == manifest.end() || !subAssets->is_array())
+		return std::nullopt;
+
+	auto isUsablePrefabSubAsset = [&](const nlohmann::json& subAsset, const std::string* expectedKey)
+	{
+		if (!subAsset.is_object())
+			return false;
+
+		const auto subAssetKeyText = NLS::Editor::Assets::JsonString(subAsset, "subAssetKey");
+		if (!subAssetKeyText.has_value() || subAssetKeyText->empty())
+			return false;
+		if (expectedKey != nullptr && *subAssetKeyText != *expectedKey)
+			return false;
+
+		const auto artifactTypeText = NLS::Editor::Assets::JsonStringOrDefault(subAsset, "artifactType");
+		if (!artifactTypeText.has_value() ||
+			(*artifactTypeText != "Prefab" && *artifactTypeText != "prefab"))
+		{
+			return false;
+		}
+
+		const auto resolvedArtifactPath = ResolveArtifactPathForManifest(projectRoot, subAsset);
+		return !resolvedArtifactPath.empty() && std::filesystem::is_regular_file(resolvedArtifactPath);
+	};
+
+	const auto primarySubAssetKey = NLS::Editor::Assets::JsonString(manifest, "primarySubAssetKey");
+	if (primarySubAssetKey.has_value() && !primarySubAssetKey->empty())
+	{
+		for (const auto& subAsset : *subAssets)
+		{
+			if (isUsablePrefabSubAsset(subAsset, &*primarySubAssetKey))
+				return primarySubAssetKey;
+		}
+	}
+
+	for (const auto& subAsset : *subAssets)
+	{
+		if (!isUsablePrefabSubAsset(subAsset, nullptr))
+			continue;
+
+		const auto subAssetKeyText = NLS::Editor::Assets::JsonString(subAsset, "subAssetKey");
+		if (subAssetKeyText.has_value() && !subAssetKeyText->empty())
+			return subAssetKeyText;
+	}
+
+	return std::nullopt;
+}
+
 void ReimportProjectAssetAsync(const std::string& projectAssetsFolder, const std::string& absolutePath)
 {
 	const auto projectRoot = ProjectRootFromAssetsFolder(projectAssetsFolder);
@@ -501,6 +554,16 @@ std::optional<NLS::Editor::Assets::EditorAssetDragPayload> BuildEditorAssetDragP
 				auto manifestPrimaryKey = JsonString(manifest, "primarySubAssetKey");
 				if (manifestPrimaryKey.has_value() && !manifestPrimaryKey->empty())
 					subAssetKey = std::move(*manifestPrimaryKey);
+			}
+			else if (fileType == Utils::PathParser::EFileType::MODEL)
+			{
+				if (auto manifestPrefabKey = SelectManifestPrefabSubAssetKeyForDragPayload(
+					ProjectRootFromAssetsFolder(projectAssetsFolder),
+					manifest);
+					manifestPrefabKey.has_value())
+				{
+					subAssetKey = std::move(*manifestPrefabKey);
+				}
 			}
 
 			if (const auto subAssets = manifest.find("subAssets");

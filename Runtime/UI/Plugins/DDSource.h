@@ -56,7 +56,10 @@ namespace NLS::UI
 			else
 			{
 				if (m_isDragged)
+				{
+					ClearCachedDragDropPayload();
 					DragStopEvent.Invoke();
+				}
 
 				m_isDragged = false;
 			}

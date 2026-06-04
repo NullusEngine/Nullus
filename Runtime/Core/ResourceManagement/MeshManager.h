@@ -17,6 +17,32 @@ namespace NLS::Core::ResourceManagement
         void DestroyResource(Mesh* resource) override;
         void ReloadResource(Mesh* resource, const std::string& path) override;
         Mesh* PrewarmArtifact(const std::string& path);
+        ResourceHandle<Mesh> AcquireMeshHandle(
+            ResourceLifetimeRegistry& registry,
+            const std::string& ownerToken,
+            const std::string& path,
+            ResourceLifetimeOwnerKind ownerKind = ResourceLifetimeOwnerKind::SceneInstance,
+            size_t estimatedBytes = 0u)
+        {
+            return AcquireResourceHandle(
+                registry,
+                ResourceLifetimeAcquireRequest {
+                    ownerToken,
+                    ResourceLifetimeResourceType::Mesh,
+                    path,
+                    estimatedBytes,
+                    ownerKind });
+        }
+
+        size_t TrimUnusedMeshResources(
+            ResourceLifetimeRegistry& registry,
+            const ResourceLifetimeTrimOptions& options = {})
+        {
+            return TrimUnusedResources(
+                registry,
+                ResourceLifetimeResourceType::Mesh,
+                options);
+        }
 
         static std::string ResolveResourcePath(const std::string& path);
         static std::string ResolveArtifactResourcePath(const std::string& path);

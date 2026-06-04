@@ -2,9 +2,12 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -31,7 +34,6 @@
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Settings/DriverSettings.h"
-#include "Rendering/ShaderCompiler/ShaderCompiler.h"
 #include "Serialize/ObjectReferenceResolver.h"
 #include "Serialize/PPtr.h"
 #include "Components/MeshFilter.h"
@@ -40,34 +42,75 @@
 
 namespace
 {
-    bool IsNativeDxcUnavailableDiagnostic(const std::string& diagnostics)
+    std::optional<std::filesystem::path> FindNativeDxcExecutableForTests()
     {
-        return diagnostics.find("Unable to locate dxc.exe.") != std::string::npos ||
-            diagnostics.find("Unable to locate an executable native dxc.") != std::string::npos ||
-            diagnostics.find("Failed to spawn shader compiler process (") != std::string::npos ||
-            diagnostics.find("[dxc-exit-code] 126") != std::string::npos ||
-            diagnostics.find("[dxc-exit-code] 127") != std::string::npos;
-    }
+        const auto tryPath = [](const std::filesystem::path& candidate) -> std::optional<std::filesystem::path>
+        {
+            std::error_code error;
+            if (candidate.empty() || !std::filesystem::exists(candidate, error) || error)
+                return std::nullopt;
 
-    bool CanCompileStandardShader()
-    {
-        NLS::Render::ShaderCompiler::ShaderCompilationInput input;
-        input.assetPath = "App/Assets/Engine/Shaders/Standard.hlsl";
-        input.stage = NLS::Render::ShaderCompiler::ShaderStage::Vertex;
-        input.options.targetPlatform = NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL;
-        input.options.targetProfile = "vs_6_0";
-        input.options.entryPoint = "VSMain";
-        input.options.includeDirectories.push_back("App/Assets/Engine/Shaders");
+            return candidate;
+        };
 
-        NLS::Render::ShaderCompiler::ShaderCompiler compiler;
-        const auto output = compiler.Compile(input);
-        return output.status == NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded ||
-            !IsNativeDxcUnavailableDiagnostic(output.diagnostics);
+        if (const char* envPath = std::getenv("DXC_PATH"); envPath != nullptr && *envPath != '\0')
+        {
+            if (auto found = tryPath(envPath))
+                return found;
+        }
+
+        const std::vector<const char*> sdkVars = {"VULKAN_SDK", "VK_SDK_PATH"};
+        for (const char* varName : sdkVars)
+        {
+            const char* envPath = std::getenv(varName);
+            if (envPath == nullptr || *envPath == '\0')
+                continue;
+
+            const std::filesystem::path sdkRoot(envPath);
+            const std::vector<std::filesystem::path> candidates = {
+#if defined(_WIN32)
+                sdkRoot / "Bin" / "dxc.exe",
+                sdkRoot / "Bin" / "x64" / "dxc.exe"
+#else
+                sdkRoot / "bin" / "dxc",
+                sdkRoot / "Bin" / "dxc",
+                sdkRoot / "bin" / "x64" / "dxc"
+#endif
+            };
+
+            for (const auto& candidate : candidates)
+            {
+                if (auto found = tryPath(candidate))
+                    return found;
+            }
+        }
+
+        const std::filesystem::path repoRoot(NLS_ROOT_DIR);
+        const std::vector<std::filesystem::path> bundledCandidates = {
+#if defined(_WIN32)
+            repoRoot / "Tools" / "DXC" / "bin" / "x64" / "dxc.exe",
+            repoRoot / "Tools" / "DXC" / "bin" / "arm64" / "dxc.exe",
+            repoRoot / "ThirdParty" / "DirectXShaderCompiler" / "bin" / "x64" / "dxc.exe"
+#else
+            repoRoot / "Tools" / "DXC" / "bin" / "dxc",
+            repoRoot / "Tools" / "DXC" / "bin" / "x64" / "dxc",
+            repoRoot / "Tools" / "DXC" / "bin" / "arm64" / "dxc",
+            repoRoot / "ThirdParty" / "DirectXShaderCompiler" / "bin" / "dxc"
+#endif
+        };
+
+        for (const auto& candidate : bundledCandidates)
+        {
+            if (auto found = tryPath(candidate))
+                return found;
+        }
+
+        return std::nullopt;
     }
 
     void SkipIfNativeDxcUnavailable()
     {
-        if (!CanCompileStandardShader())
+        if (!FindNativeDxcExecutableForTests().has_value())
             GTEST_SKIP() << "Native dxc is unavailable in this environment.";
     }
 

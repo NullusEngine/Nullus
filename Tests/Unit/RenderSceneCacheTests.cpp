@@ -31,6 +31,7 @@
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Settings/DriverSettings.h"
+#include "Rendering/ShaderCompiler/ShaderCompiler.h"
 #include "Serialize/ObjectReferenceResolver.h"
 #include "Serialize/PPtr.h"
 #include "Components/MeshFilter.h"
@@ -39,6 +40,37 @@
 
 namespace
 {
+    bool IsNativeDxcUnavailableDiagnostic(const std::string& diagnostics)
+    {
+        return diagnostics.find("Unable to locate dxc.exe.") != std::string::npos ||
+            diagnostics.find("Unable to locate an executable native dxc.") != std::string::npos ||
+            diagnostics.find("Failed to spawn shader compiler process (") != std::string::npos ||
+            diagnostics.find("[dxc-exit-code] 126") != std::string::npos ||
+            diagnostics.find("[dxc-exit-code] 127") != std::string::npos;
+    }
+
+    bool CanCompileStandardShader()
+    {
+        NLS::Render::ShaderCompiler::ShaderCompilationInput input;
+        input.assetPath = "App/Assets/Engine/Shaders/Standard.hlsl";
+        input.stage = NLS::Render::ShaderCompiler::ShaderStage::Vertex;
+        input.options.targetPlatform = NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL;
+        input.options.targetProfile = "vs_6_0";
+        input.options.entryPoint = "VSMain";
+        input.options.includeDirectories.push_back("App/Assets/Engine/Shaders");
+
+        NLS::Render::ShaderCompiler::ShaderCompiler compiler;
+        const auto output = compiler.Compile(input);
+        return output.status == NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded ||
+            !IsNativeDxcUnavailableDiagnostic(output.diagnostics);
+    }
+
+    void SkipIfNativeDxcUnavailable()
+    {
+        if (!CanCompileStandardShader())
+            GTEST_SKIP() << "Native dxc is unavailable in this environment.";
+    }
+
     class ScopedRenderSceneCacheJobSystem
     {
     public:
@@ -910,6 +942,8 @@ TEST(RenderSceneCacheTests, SynchronizeResolvesOnlyMaterialSlotUsedByMesh)
 
 TEST(RenderSceneCacheTests, ExplicitMaterialPathSuppressesDefaultMaterialUntilResolved)
 {
+    SkipIfNativeDxcUnavailable();
+
     NLS::Engine::Serialize::PersistentManager::Instance().Clear();
     EnsureRenderSceneTestDriver();
 
@@ -963,6 +997,8 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathSuppressesDefaultMaterialUntilRe
 
 TEST(RenderSceneCacheTests, ExplicitMaterialPathSuppressesDrawUntilDeclaredTexturesResolved)
 {
+    SkipIfNativeDxcUnavailable();
+
     NLS::Engine::Serialize::PersistentManager::Instance().Clear();
     EnsureRenderSceneTestDriver();
 
@@ -1020,6 +1056,8 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathSuppressesDrawUntilDeclaredTextu
 
 TEST(RenderSceneCacheTests, ExistingSceneExplicitMaterialPathRemainsVisibleWhileDeclaredTexturesArePending)
 {
+    SkipIfNativeDxcUnavailable();
+
     NLS::Engine::Serialize::PersistentManager::Instance().Clear();
     EnsureRenderSceneTestDriver();
 
@@ -1066,6 +1104,8 @@ TEST(RenderSceneCacheTests, ExistingSceneExplicitMaterialPathRemainsVisibleWhile
 
 TEST(RenderSceneCacheTests, ExplicitMaterialPathBindsCachedDeclaredTexturesBeforeSuppressingDraw)
 {
+    SkipIfNativeDxcUnavailable();
+
     NLS::Engine::Serialize::PersistentManager::Instance().Clear();
     EnsureRenderSceneTestDriver();
 
@@ -1125,6 +1165,8 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathBindsCachedDeclaredTexturesBefor
 
 TEST(RenderSceneCacheTests, ExplicitMaterialPathAcceptsEquivalentCachedDeclaredTexturePath)
 {
+    SkipIfNativeDxcUnavailable();
+
     NLS::Engine::Serialize::PersistentManager::Instance().Clear();
     EnsureRenderSceneTestDriver();
 

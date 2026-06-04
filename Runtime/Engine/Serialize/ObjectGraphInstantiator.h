@@ -1147,7 +1147,7 @@ namespace NLS::Engine::Serialize
         }
 
         template <typename ResourceManagerType>
-        static auto FindCachedResourceByEquivalentPath(
+        static ResourcePointerForManager<ResourceManagerType> FindCachedResourceByEquivalentPath(
             ResourceManagerType& resourceManager,
             const std::vector<std::string>& candidates,
             std::unordered_map<std::string, ResourcePointerForManager<ResourceManagerType>>& normalizedResourceCache,

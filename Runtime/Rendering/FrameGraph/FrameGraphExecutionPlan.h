@@ -2241,10 +2241,12 @@ namespace NLS::Render::FrameGraph
 
 		package.visibleDrawCount = 0u;
 		package.opaqueDrawCount = 0u;
+		package.decalDrawCount = 0u;
 		package.transparentDrawCount = 0u;
 		package.skyboxDrawCount = 0u;
 		package.helperDrawCount = 0u;
 		package.hasOpaquePass = false;
+		package.hasDecalPass = false;
 		package.hasTransparentPass = false;
 		package.hasSkyboxPass = false;
 		package.hasHelperPass = false;
@@ -2284,6 +2286,10 @@ namespace NLS::Render::FrameGraph
 			case ThreadedRenderScenePassRole::Opaque:
 				package.opaqueDrawCount += plannedPass.commandInput.drawCount;
 				package.hasOpaquePass = true;
+				break;
+			case ThreadedRenderScenePassRole::Decal:
+				package.decalDrawCount += plannedPass.commandInput.drawCount;
+				package.hasDecalPass = true;
 				break;
 			case ThreadedRenderScenePassRole::Transparent:
 				package.transparentDrawCount += plannedPass.commandInput.drawCount;

@@ -13,6 +13,7 @@ namespace NLS::Render::Context
             switch (kind)
             {
             case RenderPassCommandKind::Opaque: return "ThreadedOpaquePass";
+            case RenderPassCommandKind::Decal: return "ThreadedDecalPass";
             case RenderPassCommandKind::Transparent: return "ThreadedTransparentPass";
             case RenderPassCommandKind::Skybox: return "ThreadedSkyboxPass";
             case RenderPassCommandKind::Helper: return "ThreadedHelperPass";
@@ -111,11 +112,13 @@ namespace NLS::Render::Context
         package.externalSceneOutputIdentities = snapshot.externalOutputIdentities;
         package.externalSceneOutputTextureCount = snapshot.externalOutputTextureCount;
         package.opaqueDrawCount = snapshot.visibleOpaqueDrawCount;
+        package.decalDrawCount = snapshot.visibleDecalDrawCount;
         package.transparentDrawCount = snapshot.visibleTransparentDrawCount;
         package.skyboxDrawCount = snapshot.visibleSkyboxDrawCount;
         package.helperDrawCount = snapshot.visibleHelperDrawCount;
         package.visibleDrawCount =
             package.opaqueDrawCount +
+            package.decalDrawCount +
             package.transparentDrawCount +
             package.skyboxDrawCount +
             package.helperDrawCount;
@@ -125,6 +128,7 @@ namespace NLS::Render::Context
         package.objectDataReady = true;
         package.lightingDataReady = true;
         package.hasOpaquePass = package.opaqueDrawCount > 0u;
+        package.hasDecalPass = package.decalDrawCount > 0u;
         package.hasTransparentPass = package.transparentDrawCount > 0u;
         package.hasSkyboxPass = package.skyboxDrawCount > 0u;
         package.hasHelperPass = package.helperDrawCount > 0u;
@@ -138,6 +142,7 @@ namespace NLS::Render::Context
         {
             package.passPlanCount =
                 static_cast<uint64_t>(package.hasOpaquePass) +
+                static_cast<uint64_t>(package.hasDecalPass) +
                 static_cast<uint64_t>(package.hasTransparentPass) +
                 static_cast<uint64_t>(package.hasSkyboxPass) +
                 static_cast<uint64_t>(package.hasHelperPass);
@@ -148,8 +153,9 @@ namespace NLS::Render::Context
 
             size_t nextRecordedDrawCommandIndex = 0u;
             AppendPassCommandInput(package, RenderPassCommandKind::Opaque, package.opaqueDrawCount, nextRecordedDrawCommandIndex);
-            AppendPassCommandInput(package, RenderPassCommandKind::Transparent, package.transparentDrawCount, nextRecordedDrawCommandIndex);
+            AppendPassCommandInput(package, RenderPassCommandKind::Decal, package.decalDrawCount, nextRecordedDrawCommandIndex);
             AppendPassCommandInput(package, RenderPassCommandKind::Skybox, package.skyboxDrawCount, nextRecordedDrawCommandIndex);
+            AppendPassCommandInput(package, RenderPassCommandKind::Transparent, package.transparentDrawCount, nextRecordedDrawCommandIndex);
             AppendPassCommandInput(package, RenderPassCommandKind::Helper, package.helperDrawCount, nextRecordedDrawCommandIndex);
             RefreshParallelCommandWorkUnits(package);
         }

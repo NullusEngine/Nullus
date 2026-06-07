@@ -48,6 +48,18 @@ struct ResourceLifetimeTrimCandidate
     size_t estimatedBytes = 0u;
 };
 
+struct ResourceLifetimeDiagnosticSnapshot
+{
+    size_t resourceCount = 0u;
+    size_t ownerCount = 0u;
+    size_t activeLeaseCount = 0u;
+    size_t zeroOwnerResourceCount = 0u;
+    size_t trimCandidateCount = 0u;
+    size_t totalEstimatedBytes = 0u;
+    size_t activeEstimatedBytes = 0u;
+    size_t zeroOwnerEstimatedBytes = 0u;
+};
+
 struct ResourceId
 {
     ResourceLifetimeResourceType type = ResourceLifetimeResourceType::Mesh;
@@ -80,7 +92,8 @@ public:
     bool CanEvict(const ResourceLifetimeTrimCandidate& candidate) const;
     bool TryBeginEviction(const ResourceLifetimeTrimCandidate& candidate);
     void EndEviction(ResourceLifetimeResourceType type, const std::string& path);
-    void CompleteEviction(ResourceLifetimeResourceType type, const std::string& path);
+    bool CompleteEviction(ResourceLifetimeResourceType type, const std::string& path);
+    ResourceLifetimeDiagnosticSnapshot CreateDiagnosticSnapshot() const;
     std::vector<ResourceLifetimeTrimCandidate> CollectTrimCandidates(
         const ResourceLifetimeTrimOptions& options) const;
 

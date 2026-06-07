@@ -13,6 +13,7 @@
 #include "Core/SceneCameraFocus.h"
 #include "Core/RendererResourcePrewarmRequest.h"
 #include "Engine/Assets/PrefabAsset.h"
+#include "Panels/ImportedPrefabDragPreviewSession.h"
 #include "Panels/AViewControllable.h"
 #include "Core/SceneViewImGuizmo.h"
 
@@ -22,6 +23,10 @@ namespace NLS::Editor::Core
 
 namespace NLS::Editor::Panels
 {
+    bool CanCommitImportedAssetDragPreviewRootOnRelease(
+        bool hasPreviewArtifact,
+        bool hasPreviewRoot);
+
 	class SceneView : public Editor::Panels::AViewControllable
 	{
 	public:
@@ -103,12 +108,8 @@ namespace NLS::Editor::Panels
 		std::chrono::steady_clock::time_point m_lastPickingSampleTime {};
         uint64_t m_pendingClickMinReadablePickingFrameSerial = 0u;
         std::optional<NLS::Editor::Assets::EditorAssetDragPayload> m_importedAssetDragPreviewPayload;
-        std::optional<NLS::Engine::Assets::PrefabArtifact> m_importedAssetDragPreviewArtifact;
-        std::unique_ptr<Engine::SceneSystem::Scene> m_importedAssetDragPreviewScene;
-        std::vector<std::unique_ptr<Engine::SceneSystem::Scene>> m_retiredImportedAssetDragPreviewScenes;
-        Engine::GameObject* m_importedAssetDragPreviewRoot = nullptr;
-        std::string m_importedAssetDragPreviewAssetGuid;
-        std::string m_importedAssetDragPreviewSubAssetKey;
+        std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> m_importedAssetDragPreviewArtifact;
+        ImportedPrefabDragPreviewSession m_importedAssetDragPreviewSession;
         bool m_importedAssetDragPreviewMeshGhostUnavailable = false;
         bool m_importedAssetDragPreviewRenderableReady = false;
         std::chrono::steady_clock::time_point m_importedAssetDragPreviewNextMeshGhostRetryTime {};

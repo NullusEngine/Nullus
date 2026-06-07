@@ -134,9 +134,10 @@ TEST(DebugSceneLifecycleTests, EditorHelperDrawsDoNotReceiveLightGridPassBinding
 
     NLS::Render::Context::RenderScenePackage package;
     package.opaqueDrawCount = 1u;
+    package.decalDrawCount = 1u;
     package.transparentDrawCount = 1u;
     package.helperDrawCount = 1u;
-    package.recordedDrawCommands.resize(3u);
+    package.recordedDrawCommands.resize(4u);
     for (auto& drawCommand : package.recordedDrawCommands)
         drawCommand.passBindingSet = placeholder;
 
@@ -144,6 +145,11 @@ TEST(DebugSceneLifecycleTests, EditorHelperDrawsDoNotReceiveLightGridPassBinding
     opaqueInput.kind = NLS::Render::Context::RenderPassCommandKind::Opaque;
     opaqueInput.recordedDrawCommands.resize(1u);
     opaqueInput.recordedDrawCommands[0].passBindingSet = placeholder;
+
+    NLS::Render::Context::RenderPassCommandInput decalInput;
+    decalInput.kind = NLS::Render::Context::RenderPassCommandKind::Decal;
+    decalInput.recordedDrawCommands.resize(1u);
+    decalInput.recordedDrawCommands[0].passBindingSet = placeholder;
 
     NLS::Render::Context::RenderPassCommandInput transparentInput;
     transparentInput.kind = NLS::Render::Context::RenderPassCommandKind::Transparent;
@@ -158,6 +164,7 @@ TEST(DebugSceneLifecycleTests, EditorHelperDrawsDoNotReceiveLightGridPassBinding
 
     package.passCommandInputs = {
         std::move(opaqueInput),
+        std::move(decalInput),
         std::move(transparentInput),
         std::move(helperInput)
     };
@@ -165,14 +172,16 @@ TEST(DebugSceneLifecycleTests, EditorHelperDrawsDoNotReceiveLightGridPassBinding
     NLS::Engine::Rendering::BaseSceneRenderer::ResolvePreparedScenePassBindingSetPlaceholders(
         package,
         lightGridBindingSet,
-        package.opaqueDrawCount + package.skyboxDrawCount + package.transparentDrawCount);
+        package.opaqueDrawCount + package.decalDrawCount + package.skyboxDrawCount + package.transparentDrawCount);
 
     EXPECT_EQ(package.recordedDrawCommands[0].passBindingSet, lightGridBindingSet);
     EXPECT_EQ(package.recordedDrawCommands[1].passBindingSet, lightGridBindingSet);
-    EXPECT_EQ(package.recordedDrawCommands[2].passBindingSet, nullptr);
+    EXPECT_EQ(package.recordedDrawCommands[2].passBindingSet, lightGridBindingSet);
+    EXPECT_EQ(package.recordedDrawCommands[3].passBindingSet, nullptr);
     EXPECT_EQ(package.passCommandInputs[0].recordedDrawCommands[0].passBindingSet, lightGridBindingSet);
     EXPECT_EQ(package.passCommandInputs[1].recordedDrawCommands[0].passBindingSet, lightGridBindingSet);
-    EXPECT_EQ(package.passCommandInputs[2].recordedDrawCommands[0].passBindingSet, nullptr);
+    EXPECT_EQ(package.passCommandInputs[2].recordedDrawCommands[0].passBindingSet, lightGridBindingSet);
+    EXPECT_EQ(package.passCommandInputs[3].recordedDrawCommands[0].passBindingSet, nullptr);
 }
 
 TEST(DebugSceneLifecycleTests, DeferredGBufferDrawsReceiveLightGridPassBindingPlaceholders)

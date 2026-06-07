@@ -62,12 +62,14 @@ namespace NLS::Engine::Rendering
 
 		using SceneDrawables = std::vector<std::pair<float, Drawable>>;
 		using OpaqueDrawables = SceneDrawables;
+		using DecalDrawables = SceneDrawables;
 		using TransparentDrawables = SceneDrawables;
 		using SkyboxDrawables = SceneDrawables;
 
 		struct AllDrawables
 		{
 			OpaqueDrawables opaques;
+			DecalDrawables decals;
 			TransparentDrawables transparents;
 			SkyboxDrawables skyboxes;
 		};

@@ -14,6 +14,8 @@ namespace
     {
         switch (kind)
         {
+        case RenderPassCommandKind::Decal:
+            return ParallelDrawCommandPassRole::Decal;
         case RenderPassCommandKind::Opaque:
         case RenderPassCommandKind::GBuffer:
         case RenderPassCommandKind::Lighting:
@@ -45,6 +47,7 @@ namespace
         input.sceneGameObjectCount = snapshot.sceneGameObjectCount;
         input.visibleDrawCount =
             snapshot.visibleOpaqueDrawCount +
+            snapshot.visibleDecalDrawCount +
             snapshot.visibleTransparentDrawCount +
             snapshot.visibleSkyboxDrawCount +
             snapshot.visibleHelperDrawCount;
@@ -266,6 +269,7 @@ bool IsRenderPassEligibleForParallelRecording(const RenderPassCommandInput& pass
     case RenderPassCommandKind::Lighting:
         return false;
     case RenderPassCommandKind::Opaque:
+    case RenderPassCommandKind::Decal:
     case RenderPassCommandKind::Transparent:
     case RenderPassCommandKind::Skybox:
     case RenderPassCommandKind::Helper:

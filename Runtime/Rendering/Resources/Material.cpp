@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cstring>
 #include <cstdlib>
+#include <string_view>
 #include <vector>
 
 #include "Base/Image.h"
@@ -139,6 +140,34 @@ namespace
 		return name.size() >= 3u && name.rfind("Map") == name.size() - 3u;
 	}
 
+	size_t ResolveRenderTargetCount(const NLS::Render::RHI::RHIGraphicsPipelineDesc& desc)
+	{
+		return std::max<size_t>(1u, desc.renderTargetLayout.colorFormats.size());
+	}
+
+	NLS::Render::RHI::RHIRenderTargetBlendStateDesc MakeNoWriteRenderTargetBlendState()
+	{
+		NLS::Render::RHI::RHIRenderTargetBlendStateDesc target;
+		target.blendEnable = false;
+		target.colorWriteMask = NLS::Render::RHI::RHIColorWriteMask::None;
+		return target;
+	}
+
+	void NormalizeRenderTargetBlendStateCount(
+		NLS::Render::RHI::RHIGraphicsPipelineDesc& desc,
+		const NLS::Render::RHI::RHIRenderTargetBlendStateDesc& fillTarget)
+	{
+		const auto renderTargetCount = ResolveRenderTargetCount(desc);
+		if (desc.blendState.renderTargets.size() > renderTargetCount)
+		{
+			desc.blendState.renderTargets.resize(renderTargetCount);
+			return;
+		}
+
+		while (desc.blendState.renderTargets.size() < renderTargetCount)
+			desc.blendState.renderTargets.push_back(fillTarget);
+	}
+
 	void ApplyPipelineStateOverrides(
 		NLS::Render::RHI::RHIGraphicsPipelineDesc& desc,
 		const NLS::Render::Resources::MaterialPipelineStateOverrides& overrides)
@@ -149,11 +178,10 @@ namespace
 			desc.renderTargetLayout.colorFormats.assign(
 				colorFormats.begin(),
 				colorFormats.end());
-			const size_t renderTargetCount = std::max<size_t>(1u, desc.renderTargetLayout.colorFormats.size());
 			const auto templateTarget = desc.blendState.renderTargets.empty()
 				? NLS::Render::RHI::RHIRenderTargetBlendStateDesc{}
 				: desc.blendState.renderTargets.front();
-			desc.blendState.renderTargets.assign(renderTargetCount, templateTarget);
+			desc.blendState.renderTargets.assign(ResolveRenderTargetCount(desc), templateTarget);
 		}
 		if (overrides.colorWrite.has_value())
 		{
@@ -162,7 +190,7 @@ namespace
 				? NLS::Render::RHI::RHIColorWriteMask::All
 				: NLS::Render::RHI::RHIColorWriteMask::None;
 			if (desc.blendState.renderTargets.empty())
-				desc.blendState.renderTargets.resize(std::max<size_t>(1u, desc.renderTargetLayout.colorFormats.size()));
+				desc.blendState.renderTargets.resize(ResolveRenderTargetCount(desc));
 			for (auto& target : desc.blendState.renderTargets)
 				target.colorWriteMask = writeMask;
 		}
@@ -170,14 +198,41 @@ namespace
 		{
 			desc.blendState.enabled = *overrides.blending;
 			if (desc.blendState.renderTargets.empty())
-				desc.blendState.renderTargets.resize(std::max<size_t>(1u, desc.renderTargetLayout.colorFormats.size()));
+				desc.blendState.renderTargets.resize(ResolveRenderTargetCount(desc));
 			for (auto& target : desc.blendState.renderTargets)
 				target.blendEnable = *overrides.blending;
+		}
+		if (overrides.HasRenderTargetBlendStatesOverride())
+		{
+			const auto renderTargetBlendStates = overrides.GetRenderTargetBlendStates();
+			desc.blendState.independentBlendEnable = true;
+			desc.blendState.renderTargets.assign(
+				renderTargetBlendStates.begin(),
+				renderTargetBlendStates.end());
+			NormalizeRenderTargetBlendStateCount(desc, MakeNoWriteRenderTargetBlendState());
+			desc.blendState.enabled = std::any_of(
+				desc.blendState.renderTargets.begin(),
+				desc.blendState.renderTargets.end(),
+				[](const NLS::Render::RHI::RHIRenderTargetBlendStateDesc& target)
+				{
+					return target.blendEnable;
+				});
+			desc.blendState.colorWrite = std::any_of(
+				desc.blendState.renderTargets.begin(),
+				desc.blendState.renderTargets.end(),
+				[](const NLS::Render::RHI::RHIRenderTargetBlendStateDesc& target)
+				{
+					return target.colorWriteMask != NLS::Render::RHI::RHIColorWriteMask::None;
+				});
 		}
 		if (overrides.depthWrite.has_value())
 			desc.depthStencilState.depthWrite = *overrides.depthWrite;
 		if (overrides.depthTest.has_value())
 			desc.depthStencilState.depthTest = *overrides.depthTest;
+		if (overrides.stencilTest.has_value())
+			desc.depthStencilState.stencilTest = *overrides.stencilTest;
+		if (overrides.stencilWriteMask.has_value())
+			desc.depthStencilState.stencilWriteMask = *overrides.stencilWriteMask;
 		if (overrides.hasDepthAttachment.has_value())
 			desc.renderTargetLayout.hasDepth = *overrides.hasDepthAttachment;
 		if (overrides.culling.has_value())
@@ -406,6 +461,166 @@ namespace
 
 namespace NLS::Render::Resources
 {
+	bool MaterialIdentitySuggestsDecal(
+		const std::string_view displayName,
+		const std::string_view sourceSubAsset)
+	{
+		const auto hasDecalToken = [](const std::string_view value)
+		{
+			constexpr std::string_view kDecal = "decal";
+			const auto isAlpha = [](const char character)
+			{
+				return std::isalpha(static_cast<unsigned char>(character)) != 0;
+			};
+			const auto isLower = [](const char character)
+			{
+				return std::islower(static_cast<unsigned char>(character)) != 0;
+			};
+			const auto isUpper = [](const char character)
+			{
+				return std::isupper(static_cast<unsigned char>(character)) != 0;
+			};
+			const auto matchesDecalAt = [kDecal](const std::string_view candidate, const size_t position)
+			{
+				if (position + kDecal.size() > candidate.size())
+					return false;
+				for (size_t index = 0u; index < kDecal.size(); ++index)
+				{
+					const auto character = static_cast<unsigned char>(candidate[position + index]);
+					if (static_cast<char>(std::tolower(character)) != kDecal[index])
+						return false;
+				}
+				return true;
+			};
+
+			size_t searchFrom = 0u;
+			while (searchFrom < value.size())
+			{
+				size_t position = std::string_view::npos;
+				for (size_t index = searchFrom; index + kDecal.size() <= value.size(); ++index)
+				{
+					if (matchesDecalAt(value, index))
+					{
+						position = index;
+						break;
+					}
+				}
+				if (position == std::string_view::npos)
+					break;
+
+				const size_t after = position + kDecal.size();
+				const bool beginsToken = position == 0u ||
+					!isAlpha(value[position - 1u]) ||
+					(isLower(value[position - 1u]) && isUpper(value[position])) ||
+					(isUpper(value[position]) && position + 1u < value.size() && isLower(value[position + 1u]));
+				const bool endsToken = after == value.size() ||
+					!isAlpha(value[after]) ||
+					(isLower(value[after - 1u]) && isUpper(value[after]));
+				if (beginsToken && endsToken)
+					return true;
+
+				searchFrom = position + 1u;
+			}
+			return false;
+		};
+
+		return !displayName.empty()
+			? hasDecalToken(displayName)
+			: hasDecalToken(sourceSubAsset);
+	}
+
+	const char* MaterialSurfaceModeName(const MaterialSurfaceMode mode)
+	{
+		switch (mode)
+		{
+		case MaterialSurfaceMode::Transparent: return "Transparent";
+		case MaterialSurfaceMode::Decal: return "Decal";
+		case MaterialSurfaceMode::Opaque:
+		default: return "Opaque";
+		}
+	}
+
+	std::optional<MaterialSurfaceMode> ParseMaterialSurfaceMode(const std::string& value)
+	{
+		std::string lowered = value;
+		std::transform(
+			lowered.begin(),
+			lowered.end(),
+			lowered.begin(),
+			[](const unsigned char character)
+			{
+				return static_cast<char>(std::tolower(character));
+			});
+		if (lowered == "opaque")
+			return MaterialSurfaceMode::Opaque;
+		if (lowered == "transparent" || lowered == "blend")
+			return MaterialSurfaceMode::Transparent;
+		if (lowered == "decal")
+			return MaterialSurfaceMode::Decal;
+		return std::nullopt;
+	}
+
+	size_t MaterialPipelineStateOverrides::GetHash() const
+	{
+		auto hashCombine = [](size_t& seed, const auto& value)
+		{
+			seed ^= std::hash<std::decay_t<decltype(value)>>{}(value) +
+				0x9e3779b97f4a7c15ull +
+				(seed << 6) +
+				(seed >> 2);
+		};
+
+		auto hashOptionalBool = [&hashCombine](size_t& seed, const std::optional<bool>& value)
+		{
+			hashCombine(seed, value.has_value());
+			if (value.has_value())
+				hashCombine(seed, *value);
+		};
+
+		auto hashOptionalUInt = [&hashCombine](size_t& seed, const std::optional<uint32_t>& value)
+		{
+			hashCombine(seed, value.has_value());
+			if (value.has_value())
+				hashCombine(seed, *value);
+		};
+
+		auto hashRenderTarget = [&hashCombine](size_t& seed, const RHI::RHIRenderTargetBlendStateDesc& target)
+		{
+			hashCombine(seed, target.blendEnable);
+			hashCombine(seed, static_cast<uint32_t>(target.srcColor));
+			hashCombine(seed, static_cast<uint32_t>(target.dstColor));
+			hashCombine(seed, static_cast<uint32_t>(target.colorOp));
+			hashCombine(seed, static_cast<uint32_t>(target.srcAlpha));
+			hashCombine(seed, static_cast<uint32_t>(target.dstAlpha));
+			hashCombine(seed, static_cast<uint32_t>(target.alphaOp));
+			hashCombine(seed, static_cast<uint32_t>(target.colorWriteMask));
+		};
+
+		size_t seed = 0u;
+		hashOptionalBool(seed, depthWrite);
+		hashOptionalBool(seed, colorWrite);
+		hashOptionalBool(seed, blending);
+		hashOptionalBool(seed, depthTest);
+		hashOptionalBool(seed, hasDepthAttachment);
+		hashOptionalBool(seed, culling);
+		hashOptionalBool(seed, stencilTest);
+		hashOptionalUInt(seed, stencilWriteMask);
+		hashCombine(seed, cullFace.has_value());
+		if (cullFace.has_value())
+			hashCombine(seed, static_cast<uint32_t>(*cullFace));
+		hashCombine(seed, HasColorFormatsOverride());
+		const auto formats = GetColorFormats();
+		hashCombine(seed, formats.size());
+		for (const auto format : formats)
+			hashCombine(seed, static_cast<uint32_t>(format));
+		hashCombine(seed, HasRenderTargetBlendStatesOverride());
+		const auto renderTargetBlendStates = GetRenderTargetBlendStates();
+		hashCombine(seed, renderTargetBlendStates.size());
+		for (const auto& target : renderTargetBlendStates)
+			hashRenderTarget(seed, target);
+		return seed;
+	}
+
 	struct Material::MaterialRuntimeState
 	{
 		struct MaterialConstantBufferState
@@ -503,7 +718,8 @@ namespace NLS::Render::Resources
 	}
 
 	Material::Material(Shader* p_shader)
-		: m_instanceId(NextMaterialInstanceId())
+		: m_surfaceMode(MaterialSurfaceMode::Opaque)
+		, m_instanceId(NextMaterialInstanceId())
 	{
 		m_runtimeState = std::make_unique<MaterialRuntimeState>();
 		SetShader(p_shader);
@@ -793,9 +1009,47 @@ namespace NLS::Render::Resources
 
 	void Material::SetBlendable(bool p_transparent)
 	{
-		if (m_blendable == p_transparent)
+		if (m_surfaceMode == MaterialSurfaceMode::Decal)
+		{
+			if (!m_blendable)
+			{
+				m_blendable = true;
+				++m_renderStateRevision;
+			}
 			return;
+		}
+
+		if (m_blendable == p_transparent)
+		{
+			if (m_surfaceMode == MaterialSurfaceMode::Opaque && p_transparent)
+			{
+				m_surfaceMode = MaterialSurfaceMode::Transparent;
+				++m_renderStateRevision;
+			}
+			else if (m_surfaceMode == MaterialSurfaceMode::Transparent && !p_transparent)
+			{
+				m_surfaceMode = MaterialSurfaceMode::Opaque;
+				++m_renderStateRevision;
+			}
+			return;
+		}
 		m_blendable = p_transparent;
+		if (m_surfaceMode == MaterialSurfaceMode::Opaque && p_transparent)
+			m_surfaceMode = MaterialSurfaceMode::Transparent;
+		else if (m_surfaceMode == MaterialSurfaceMode::Transparent && !p_transparent)
+			m_surfaceMode = MaterialSurfaceMode::Opaque;
+		++m_renderStateRevision;
+	}
+
+	void Material::SetSurfaceMode(const MaterialSurfaceMode surfaceMode)
+	{
+		const bool blendable = surfaceMode == MaterialSurfaceMode::Transparent ||
+			surfaceMode == MaterialSurfaceMode::Decal;
+		if (m_surfaceMode == surfaceMode && m_blendable == blendable)
+			return;
+
+		m_surfaceMode = surfaceMode;
+		m_blendable = blendable;
 		++m_renderStateRevision;
 	}
 
@@ -847,6 +1101,9 @@ namespace NLS::Render::Resources
 		++m_renderStateRevision;
 	}
 	bool Material::IsBlendable() const { return m_blendable; }
+	MaterialSurfaceMode Material::GetSurfaceMode() const { return m_surfaceMode; }
+	bool Material::IsDecal() const { return m_surfaceMode == MaterialSurfaceMode::Decal; }
+	bool Material::IsTransparentSurface() const { return m_surfaceMode == MaterialSurfaceMode::Transparent; }
 	bool Material::HasBackfaceCulling() const { return m_backfaceCulling; }
 	bool Material::HasFrontfaceCulling() const { return m_frontfaceCulling; }
 	bool Material::HasDepthTest() const { return m_depthTest; }

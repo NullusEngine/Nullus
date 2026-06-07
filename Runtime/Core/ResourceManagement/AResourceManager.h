@@ -5,6 +5,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "CoreDef.h"
@@ -150,6 +151,7 @@ namespace NLS::Core::ResourceManagement
 
 		mutable std::recursive_mutex m_resourcesMutex;
 		std::unordered_map<std::string, T*> m_resources;
+		std::unordered_set<std::string> m_lifetimeManagedResources;
 	};
 }
 

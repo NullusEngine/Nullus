@@ -100,6 +100,7 @@ struct PrefabInstanceRecord
     NLS::Core::Assets::AssetId sceneAssetId;
     std::string prefabSubAssetKey;
     bool generatedReadOnly = false;
+    bool unpacked = false;
     NLS::Engine::GameObject* instanceRoot = nullptr;
     NLS::Engine::Serialize::ObjectGraphDocument sourceGraph;
     std::unordered_map<NLS::Engine::Serialize::ObjectId, NLS::Engine::Serialize::ObjectId> sourceToInstance;
@@ -126,7 +127,9 @@ enum class PrefabHierarchyColorToken
     ConnectedChild,
     Override,
     Missing,
-    GeneratedReadOnly
+    GeneratedReadOnly,
+    Pending,
+    Unpacked
 };
 
 struct PrefabHierarchyPresentation
@@ -138,6 +141,8 @@ struct PrefabHierarchyPresentation
     bool hasOverrides = false;
     bool missingAsset = false;
     bool generatedReadOnly = false;
+    bool pendingResources = false;
+    bool unpacked = false;
 };
 
 class PrefabInstanceRegistry
@@ -150,6 +155,12 @@ public:
     bool RemoveRootInstance(const NLS::Engine::GameObject& object);
     bool RemoveObjectMapping(const NLS::Engine::GameObject& object);
     void MarkAssetMissing(NLS::Core::Assets::AssetId assetId, bool missing);
+    void MarkAssetMissing(NLS::Core::Assets::AssetId assetId, const std::string& prefabSubAssetKey, bool missing);
+    void MarkAssetPendingResources(NLS::Core::Assets::AssetId assetId, bool pending);
+    void MarkAssetPendingResources(NLS::Core::Assets::AssetId assetId, const std::string& prefabSubAssetKey, bool pending);
+    void MarkInstanceResourceFailure(const NLS::Engine::GameObject& instanceRoot, bool failed);
+    void MarkInstancePendingResources(const NLS::Engine::GameObject& instanceRoot, bool pending);
+    void ClearInstancePendingResourcesForPrefab(NLS::Core::Assets::AssetId assetId);
     PrefabInstanceRecord* FindInstance(const NLS::Engine::GameObject& object);
     const PrefabInstanceRecord* FindInstance(const NLS::Engine::GameObject& object) const;
     const std::deque<PrefabInstanceRecord>& GetInstances() const { return m_instances; }
@@ -160,7 +171,10 @@ public:
 
 private:
     std::deque<PrefabInstanceRecord> m_instances;
-    std::unordered_set<NLS::Core::Assets::AssetId> m_missingAssets;
+    std::unordered_set<std::string> m_missingPrefabSources;
+    std::unordered_set<std::string> m_pendingResourcePrefabSources;
+    std::unordered_set<const NLS::Engine::GameObject*> m_failedResourceInstanceRoots;
+    std::unordered_set<const NLS::Engine::GameObject*> m_pendingResourceInstanceRoots;
 };
 
 struct CreatePrefabFromSelectionRequest
@@ -178,6 +192,7 @@ struct InstantiatePrefabRequest
     std::string prefabSubAssetKey;
     NLS::Core::Assets::AssetId sceneAssetId;
     bool deferAssetReferenceResolution = false;
+    const NLS::Engine::Assets::PrefabArtifact* constPrefab = nullptr;
 };
 
 struct PrefabEditorOperationResult

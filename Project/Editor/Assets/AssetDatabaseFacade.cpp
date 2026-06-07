@@ -159,8 +159,8 @@ bool HasCurrentExternalTextureBuildPipelineDependency(
     return HasDependency(
         manifest,
         NLS::Core::Assets::AssetDependencyKind::PostprocessorVersion,
-        "external-texture-build-pipeline",
-        "1");
+        kExternalTextureBuildPipelineDependencyName,
+        std::to_string(kExternalTexturePostprocessorVersion));
 }
 
 void AddUniqueDependency(
@@ -1370,6 +1370,132 @@ std::optional<NLS::Engine::Assets::PrefabArtifact> AssetDatabaseFacade::LoadPref
     auto prefab = std::move(importResult.artifact);
     prefab.generatedModelPrefab = record->assetType == NLS::Core::Assets::AssetType::ModelScene;
 
+    return prefab;
+}
+
+std::optional<NLS::Engine::Assets::PrefabArtifact> AssetDatabaseFacade::LoadPrefabArtifactByAssetId(
+    const NLS::Core::Assets::AssetId assetId,
+    const std::string& subAssetKey) const
+{
+    if (!IsEditorMode() || !assetId.IsValid() || subAssetKey.empty())
+        return std::nullopt;
+
+    NLS::Core::Assets::ArtifactManifest manifestCopy;
+    NLS::Core::Assets::ImportedArtifact prefabArtifactCopy;
+    {
+        std::lock_guard manifestLock(m_manifestMutex);
+        const auto foundManifest = m_manifestsBySource.find(assetId);
+        if (foundManifest != m_manifestsBySource.end())
+            manifestCopy = foundManifest->second;
+    }
+
+    if (!manifestCopy.sourceAssetId.IsValid())
+    {
+        for (const auto& root : m_roots)
+        {
+            const auto manifestPath =
+                GetEditorAssetRootLibraryPath(root) / "Artifacts" / assetId.ToString() / "manifest.json";
+            auto persistedManifest = LoadManifestFile(manifestPath);
+            if (persistedManifest.has_value() && persistedManifest->sourceAssetId == assetId)
+            {
+                manifestCopy = std::move(*persistedManifest);
+                break;
+            }
+        }
+    }
+
+    if (!manifestCopy.sourceAssetId.IsValid())
+        return std::nullopt;
+
+    const auto* prefabArtifact = manifestCopy.FindSubAsset(subAssetKey);
+    if (!prefabArtifact || prefabArtifact->artifactType != NLS::Core::Assets::ArtifactType::Prefab)
+        return std::nullopt;
+    prefabArtifactCopy = *prefabArtifact;
+
+    std::filesystem::path artifactPath;
+    const auto rawPath = NLS::Core::Assets::NormalizeAssetPath(prefabArtifactCopy.artifactPath);
+    if (rawPath.is_absolute())
+    {
+        for (const auto& root : m_roots)
+        {
+            const auto artifactRoot = GetEditorAssetRootLibraryPath(root) / "Artifacts" / assetId.ToString();
+            if (IsPathInsideEditorAssetRoot(rawPath, artifactRoot) && std::filesystem::exists(rawPath))
+            {
+                artifactPath = rawPath;
+                break;
+            }
+        }
+    }
+    else
+    {
+        for (const auto& root : m_roots)
+        {
+            const auto libraryPath = GetEditorAssetRootLibraryPath(root);
+            const auto artifactRoot = libraryPath / "Artifacts" / assetId.ToString();
+            const auto candidate = NLS::Core::Assets::NormalizeAssetPath(artifactRoot / rawPath);
+            if (!candidate.empty() &&
+                IsPathInsideEditorAssetRoot(candidate, artifactRoot) &&
+                std::filesystem::exists(candidate))
+            {
+                artifactPath = candidate;
+                break;
+            }
+
+            const auto projectRelative =
+                NLS::Core::Assets::NormalizeAssetPath(libraryPath.parent_path() / rawPath);
+            if (!projectRelative.empty() && std::filesystem::exists(projectRelative))
+            {
+                artifactPath = projectRelative;
+                break;
+            }
+        }
+    }
+
+    if (artifactPath.empty())
+        return std::nullopt;
+
+    std::ifstream input(artifactPath, std::ios::binary);
+    if (!input)
+        return std::nullopt;
+
+    const std::vector<uint8_t> bytes {
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()};
+    const auto container = NLS::Core::Assets::ReadNativeArtifactContainer(
+        bytes,
+        NLS::Core::Assets::ArtifactType::Prefab,
+        1u);
+    if (!container.has_value())
+        return std::nullopt;
+
+    std::vector<NLS::Engine::Assets::PrefabResolvedAsset> resolvedAssets;
+    for (const auto& artifact : manifestCopy.subAssets)
+    {
+        if (artifact.artifactType == NLS::Core::Assets::ArtifactType::Prefab)
+            continue;
+
+        auto expectedType = ExpectedPrefabResolvedAssetType(artifact.artifactType);
+        if (!expectedType.empty())
+        {
+            resolvedAssets.push_back({
+                artifact.sourceAssetId,
+                std::move(expectedType),
+                artifact.subAssetKey,
+                artifact.artifactPath
+            });
+        }
+    }
+
+    const std::string payload(container->payload.begin(), container->payload.end());
+    auto importResult = NLS::Engine::Assets::ImportPrefabArtifact(
+        payload,
+        assetId,
+        std::move(resolvedAssets));
+    if (importResult.diagnostics.HasErrors())
+        return std::nullopt;
+
+    auto prefab = std::move(importResult.artifact);
+    prefab.generatedModelPrefab = manifestCopy.importerId == "scene-model";
     return prefab;
 }
 

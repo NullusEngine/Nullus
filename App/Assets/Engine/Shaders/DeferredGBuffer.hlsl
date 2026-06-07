@@ -46,9 +46,14 @@ VSOutput VSMain(VSInput input, uint instanceId : SV_InstanceID)
     const float4 worldPosition = mul(model, float4(input.Position, 1.0f));
     output.PositionCS = mul(u_ViewProjection, worldPosition);
     output.PositionWS = worldPosition.xyz;
-    output.NormalWS = normalize(mul((float3x3)model, input.Normal));
-    output.TangentWS = normalize(mul((float3x3)model, input.Tangent));
-    output.BitangentWS = normalize(mul((float3x3)model, input.Bitangent));
+    const float3x3 model3x3 = (float3x3)model;
+    const NLSTangentFrame tangentFrame = NLSBuildSafeTangentFrame(
+        NLSTransformNormalDirection(model3x3, input.Normal),
+        mul(model3x3, input.Tangent),
+        mul(model3x3, input.Bitangent));
+    output.NormalWS = tangentFrame.normalWS;
+    output.TangentWS = tangentFrame.tangentWS;
+    output.BitangentWS = tangentFrame.bitangentWS;
     output.TexCoord = input.TexCoord;
     return output;
 }
@@ -59,21 +64,18 @@ float3 DecodeNormalMapSample(float4 normalSample)
     const float rgbZ = normalSample.z * 2.0f - 1.0f;
     const float reconstructedZ = sqrt(saturate(1.0f - dot(xy, xy)));
     const float useRgbZ = step(0.0039f, normalSample.z);
-    return normalize(float3(xy, lerp(reconstructedZ, rgbZ, useRgbZ)));
+    return NLSSafeNormalize(float3(xy, lerp(reconstructedZ, rgbZ, useRgbZ)), float3(0.0f, 0.0f, 1.0f));
 }
 
 float3 ComputeNormal(VSOutput input, float2 texCoord)
 {
-    float3 normalWS = normalize(input.NormalWS);
+    float3 normalWS = NLSSafeNormalize(input.NormalWS, float3(0.0f, 0.0f, 1.0f));
 
     if (u_EnableNormalMapping > 0.5f)
     {
+        const NLSTangentFrame tangentFrame = NLSBuildSafeTangentFrame(normalWS, input.TangentWS, input.BitangentWS);
         const float3 tangentNormal = DecodeNormalMapSample(u_NormalMap.Sample(u_LinearWrapSampler, texCoord));
-        const float3x3 tbn = float3x3(
-            normalize(input.TangentWS),
-            normalize(input.BitangentWS),
-            normalWS);
-        normalWS = normalize(mul(tangentNormal, tbn));
+        normalWS = NLSApplyTangentNormal(tangentNormal, tangentFrame);
     }
 
     return normalWS;
@@ -91,9 +93,10 @@ GBufferOutput PSMain(VSOutput input)
     const float ao = u_AmbientOcclusionMap.Sample(u_LinearWrapSampler, texCoord).r * u_AmbientOcclusion;
     const float opacity = u_OpacityMap.Sample(u_LinearWrapSampler, texCoord).r;
     const float3 normalWS = ComputeNormal(input, texCoord);
+    const float surfaceAlpha = u_Albedo.a * albedoSample.a * opacity;
 
-    output.Albedo = float4(albedo, u_Albedo.a * albedoSample.a * opacity);
-    output.Normal = float4(normalWS * 0.5f + 0.5f, 1.0f);
-    output.Material = float4(metallic, roughness, ao, 1.0f);
+    output.Albedo = float4(albedo, surfaceAlpha);
+    output.Normal = float4(normalWS * 0.5f + 0.5f, surfaceAlpha);
+    output.Material = float4(metallic, roughness, ao, surfaceAlpha);
     return output;
 }

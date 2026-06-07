@@ -80,6 +80,7 @@ namespace NLS::Core::ResourceManagement
 			{
 				resource = found->second;
 				m_resources.erase(found);
+				m_lifetimeManagedResources.erase(ResourceLifetimeRegistry::NormalizeResourcePath(p_path));
 			}
 		}
 
@@ -96,6 +97,9 @@ namespace NLS::Core::ResourceManagement
 		{
 			m_resources[p_newPath] = previous->second;
 			m_resources.erase(previous);
+			const auto previousNormalizedPath = ResourceLifetimeRegistry::NormalizeResourcePath(p_previousPath);
+			if (m_lifetimeManagedResources.erase(previousNormalizedPath) > 0u)
+				m_lifetimeManagedResources.insert(ResourceLifetimeRegistry::NormalizeResourcePath(p_newPath));
 			return true;
 		}
 
@@ -126,6 +130,7 @@ namespace NLS::Core::ResourceManagement
 			std::lock_guard lock(m_resourcesMutex);
 			resources = std::move(m_resources);
 			m_resources.clear();
+			m_lifetimeManagedResources.clear();
 		}
 
 		for (auto& [key, value] : resources)
@@ -142,6 +147,7 @@ namespace NLS::Core::ResourceManagement
 				previousResource = resource->second;
 
 			m_resources[p_path] = p_instance;
+			m_lifetimeManagedResources.erase(ResourceLifetimeRegistry::NormalizeResourcePath(p_path));
 		}
 
 		if (previousResource)
@@ -163,6 +169,10 @@ namespace NLS::Core::ResourceManagement
 		{
 			p_registry.Release(resourceId, p_request.ownerToken);
 			return {};
+		}
+		{
+			std::lock_guard lock(m_resourcesMutex);
+			m_lifetimeManagedResources.insert(ResourceLifetimeRegistry::NormalizeResourcePath(resourcePath));
 		}
 
 		return ResourceHandle<T>(
@@ -211,30 +221,67 @@ namespace NLS::Core::ResourceManagement
 			if (!p_registry.TryBeginEviction(candidate))
 				continue;
 
-			std::vector<std::pair<std::string, T*>> registeredResources;
+			std::vector<std::string> registeredPaths;
 			{
 				std::lock_guard lock(m_resourcesMutex);
 				if (const auto found = normalizedResourceIndex.find(candidate.normalizedPath); found != normalizedResourceIndex.end())
 				{
-					for (const auto& registeredPath : found->second)
-					{
-						if (auto registered = m_resources.find(registeredPath); registered != m_resources.end())
-						{
-							registeredResources.emplace_back(registered->first, registered->second);
-							m_resources.erase(registered);
-						}
-					}
+					registeredPaths = found->second;
 					normalizedResourceIndex.erase(found);
 				}
 			}
-			if (registeredResources.empty())
+
+			std::vector<std::pair<std::string, T*>> resourcesToDestroy;
 			{
-				p_registry.CompleteEviction(candidate.type, candidate.normalizedPath);
+				std::lock_guard lock(m_resourcesMutex);
+				for (const auto& registeredPath : registeredPaths)
+				{
+					if (auto registered = m_resources.find(registeredPath); registered != m_resources.end())
+					{
+						resourcesToDestroy.emplace_back(registered->first, registered->second);
+						m_resources.erase(registered);
+					}
+					m_lifetimeManagedResources.erase(ResourceLifetimeRegistry::NormalizeResourcePath(registeredPath));
+				}
+			}
+
+			if (!p_registry.CompleteEviction(candidate.type, candidate.normalizedPath))
+			{
+				std::vector<std::pair<std::string, T*>> replacedResourcesToDestroy;
+				{
+					std::lock_guard lock(m_resourcesMutex);
+					for (const auto& [registeredPath, resource] : resourcesToDestroy)
+					{
+						auto registered = m_resources.find(registeredPath);
+						if (registered == m_resources.end())
+						{
+							m_resources.emplace(registeredPath, resource);
+							m_lifetimeManagedResources.insert(ResourceLifetimeRegistry::NormalizeResourcePath(registeredPath));
+						}
+						else if (registered->second != resource)
+						{
+							replacedResourcesToDestroy.emplace_back(registeredPath, resource);
+						}
+					}
+				}
+				for (const auto& [registeredPath, resource] : replacedResourcesToDestroy)
+				{
+					if (resource != nullptr)
+						DestroyResourceForPath(registeredPath, resource);
+				}
+				continue;
+			}
+
+			if (registeredPaths.empty())
+			{
 				++unloadedCount;
 				continue;
 			}
 
-			for (const auto& [registeredPath, resource] : registeredResources)
+			if (resourcesToDestroy.empty())
+				continue;
+
+			for (const auto& [registeredPath, resource] : resourcesToDestroy)
 			{
 				if (resource == nullptr)
 					continue;
@@ -246,7 +293,6 @@ namespace NLS::Core::ResourceManagement
 				{},
 				candidate.estimatedBytes,
 				candidate.normalizedPath });
-			p_registry.CompleteEviction(candidate.type, candidate.normalizedPath);
 		}
 		return unloadedCount;
 	}
@@ -262,6 +308,7 @@ namespace NLS::Core::ResourceManagement
 	{
 		std::lock_guard lock(m_resourcesMutex);
 		m_resources.erase(p_path);
+		m_lifetimeManagedResources.erase(ResourceLifetimeRegistry::NormalizeResourcePath(p_path));
 	}
 
 	template<typename T>

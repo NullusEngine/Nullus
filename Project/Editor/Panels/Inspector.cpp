@@ -4,6 +4,8 @@
 #include <UI/Widgets/Layout/Spacing.h>
 #include <UI/Widgets/Layout/Columns.h>
 #include <UI/Widgets/Texts/Text.h>
+#include <UI/Widgets/Texts/TextColored.h>
+#include <UI/Widgets/Texts/TextDisabled.h>
 #include <UI/Widgets/Visual/Separator.h>
 #include <UI/Widgets/Layout/GroupCollapsable.h>
 #include <UI/Widgets/Selection/ComboBox.h>
@@ -13,6 +15,7 @@
 #include <ResourceManagement/ShaderManager.h>
 #include <Reflection/Variant.h>
 #include <imgui.h>
+#include "Assets/PrefabUtilityFacade.h"
 #include "Core/EditorActions.h"
 #include "Components/TransformComponent.h"
 #include "Panels/ComponentSearchPanel.h"
@@ -40,6 +43,69 @@ void DrawComponentFallback(NLS::UI::Internal::WidgetContainer &root, Engine::Com
 {
     root.CreateWidget<NLS::UI::Widgets::Text>("No reflected fields");
     root.CreateWidget<NLS::UI::Widgets::Text>(component.GetType().GetName());
+}
+
+const char* ToPrefabConnectionText(NLS::Editor::Assets::PrefabEditorConnectionState state)
+{
+    using NLS::Editor::Assets::PrefabEditorConnectionState;
+    switch (state)
+    {
+    case PrefabEditorConnectionState::Connected:
+        return "Connected";
+    case PrefabEditorConnectionState::MissingSource:
+        return "Missing Source";
+    case PrefabEditorConnectionState::Disconnected:
+        return "Disconnected";
+    case PrefabEditorConnectionState::Unpacked:
+        return "Unpacked";
+    case PrefabEditorConnectionState::Pending:
+        return "Pending";
+    case PrefabEditorConnectionState::Invalid:
+        return "Invalid";
+    case PrefabEditorConnectionState::NotAPrefab:
+    default:
+        return "Not a Prefab";
+    }
+}
+
+const char* ToPrefabResourceText(NLS::Editor::Assets::PrefabEditorResourceState state)
+{
+    using NLS::Editor::Assets::PrefabEditorResourceState;
+    switch (state)
+    {
+    case PrefabEditorResourceState::Pending:
+        return "Pending";
+    case PrefabEditorResourceState::Failed:
+        return "Failed";
+    case PrefabEditorResourceState::Cancelled:
+        return "Cancelled";
+    case PrefabEditorResourceState::Ready:
+    default:
+        return "Ready";
+    }
+}
+
+NLS::Maths::Color PrefabStateColor(const NLS::Editor::Assets::PrefabEditorState& state)
+{
+    using NLS::Editor::Assets::PrefabEditorConnectionState;
+    using NLS::Editor::Assets::PrefabEditorResourceState;
+    if (state.connectionState == PrefabEditorConnectionState::MissingSource ||
+        state.connectionState == PrefabEditorConnectionState::Invalid ||
+        state.resourceState == PrefabEditorResourceState::Failed)
+    {
+        return {0.95f, 0.34f, 0.34f, 1.0f};
+    }
+
+    if (state.resourceState == PrefabEditorResourceState::Pending)
+        return {0.68f, 0.67f, 0.86f, 1.0f};
+
+    if (state.hasOverrides)
+        return {0.92f, 0.70f, 0.31f, 1.0f};
+
+    if (state.generatedReadOnly)
+        return {0.54f, 0.82f, 0.78f, 1.0f};
+
+    return {0.58f, 0.75f, 0.98f, 1.0f};
 }
 
 class HeaderComboBox final : public NLS::UI::Widgets::ComboBox
@@ -300,6 +366,8 @@ void Inspector::CreateGameObjectInspector(Engine::GameObject& p_target)
     using namespace NLS::Engine::Components;
     std::vector<Component*> components;
 
+    DrawPrefabState(p_target);
+
     for (const auto& component : p_target.GetComponents())
     {
         if (!component)
@@ -328,6 +396,88 @@ void Inspector::CreateGameObjectInspector(Engine::GameObject& p_target)
 
     for (auto* instance : components)
         DrawComponent(instance);
+}
+
+void Inspector::DrawPrefabState(Engine::GameObject& p_target)
+{
+    auto* instance = EDITOR_CONTEXT(prefabInstanceRegistry).FindInstance(p_target);
+    if (!instance)
+        return;
+
+    NLS::Engine::Assets::PrefabArtifact sourcePrefab;
+    sourcePrefab.assetId = instance->prefabAssetId;
+    sourcePrefab.graph = instance->sourceGraph;
+    sourcePrefab.generatedModelPrefab = instance->generatedReadOnly;
+
+    const auto presentation = EDITOR_CONTEXT(prefabInstanceRegistry).GetPresentation(p_target);
+    NLS::Editor::Assets::PrefabEditorStateQuery query;
+    query.instance = instance;
+    query.prefab = sourcePrefab.graph.objects.empty() ? nullptr : &sourcePrefab;
+    query.sourceAssetExists = !presentation.missingAsset;
+    query.resourcesPending = presentation.pendingResources;
+    query.unpacked = instance->unpacked;
+    query.editableSourceArtifactContext = false;
+    query.includeDefaultOverrides = true;
+    const auto state = NLS::Editor::Assets::PrefabUtilityFacade().GetPrefabEditorState(query);
+
+    auto& prefabGroup = m_gameObjectInfo->CreateWidget<UI::Widgets::GroupCollapsable>("Prefab");
+    prefabGroup.opened = true;
+    prefabGroup.closable = false;
+    prefabGroup.CreateWidget<UI::Widgets::TextColored>(
+        std::string("State: ") + ToPrefabConnectionText(state.connectionState),
+        PrefabStateColor(state));
+    prefabGroup.CreateWidget<UI::Widgets::Text>(
+        std::string("Source: ") +
+        (instance->prefabSubAssetKey.empty() ? std::string("<unknown>") : instance->prefabSubAssetKey));
+    prefabGroup.CreateWidget<UI::Widgets::Text>(
+        std::string("Resources: ") + ToPrefabResourceText(state.resourceState));
+
+    if (state.hasOverrides)
+    {
+        prefabGroup.CreateWidget<UI::Widgets::TextColored>(
+            "Overrides: " + std::to_string(state.overrideCount),
+            Maths::Color{0.92f, 0.70f, 0.31f, 1.0f});
+    }
+    else
+    {
+        prefabGroup.CreateWidget<UI::Widgets::TextDisabled>("Overrides: None");
+    }
+
+    if (state.generatedReadOnly)
+        prefabGroup.CreateWidget<UI::Widgets::TextColored>(
+            "Model prefab source is read-only",
+            Maths::Color{0.54f, 0.82f, 0.78f, 1.0f});
+
+    for (const auto& diagnostic : state.diagnostics)
+        prefabGroup.CreateWidget<UI::Widgets::TextColored>(
+            diagnostic.message.empty() ? diagnostic.code : diagnostic.message,
+            Maths::Color{0.95f, 0.56f, 0.34f, 1.0f});
+
+    auto& actions = prefabGroup.CreateWidget<UI::Widgets::Columns>(2);
+    auto& applyButton = actions.CreateWidget<UI::Widgets::Button>("Apply", Maths::Vector2{76.f, 0.f});
+    applyButton.disabled = true;
+    if (applyButton.disabled)
+        applyButton.textColor = Maths::Color{0.62f, 0.62f, 0.62f, 1.0f};
+    prefabGroup.CreateWidget<UI::Widgets::TextDisabled>("Apply from Inspector is unavailable until an editable source asset context is open.");
+
+    auto& revertButton = actions.CreateWidget<UI::Widgets::Button>("Revert", Maths::Vector2{76.f, 0.f});
+    revertButton.disabled = !state.canRevert;
+    if (revertButton.disabled)
+        revertButton.textColor = Maths::Color{0.62f, 0.62f, 0.62f, 1.0f};
+    revertButton.ClickedEvent += [this, instance]
+    {
+        if (!instance)
+            return;
+
+        auto result = NLS::Editor::Assets::PrefabUtilityFacade().RevertPrefabInstance(*instance);
+        if (result.status == NLS::Editor::Assets::PrefabOperationStatus::Committed)
+        {
+            EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+            Refresh();
+        }
+    };
+
+    m_gameObjectInfo->CreateWidget<UI::Widgets::Spacing>(1);
 }
 
 void Inspector::DrawComponent(Engine::Components::Component* p_component)

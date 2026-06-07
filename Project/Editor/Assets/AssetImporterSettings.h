@@ -10,6 +10,9 @@
 
 namespace NLS::Editor::Assets
 {
+inline constexpr const char* kModelFbxIgnoreTexturedNeutralDiffuseTintSetting =
+    "MODEL_FBX_IGNORE_TEXTURED_NEUTRAL_DIFFUSE_TINT";
+
 enum class FbxReaderSelection
 {
     Autodesk,
@@ -33,6 +36,7 @@ struct ModelImporterSettings
     bool importMorphTargets = true;
     bool importCameras = false;
     bool importLights = false;
+    bool ignoreFbxTexturedNeutralDiffuseTint = true;
 };
 
 struct TexturePlatformOverride

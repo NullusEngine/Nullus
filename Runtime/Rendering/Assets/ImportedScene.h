@@ -149,6 +149,7 @@ struct SceneImportSettings
     bool importMorphTargets = true;
     bool importCameras = false;
     bool importLights = false;
+    bool ignoreFbxTexturedNeutralDiffuseTint = true;
 };
 
 struct ImportedScene

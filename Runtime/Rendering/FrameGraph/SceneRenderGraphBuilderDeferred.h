@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -27,8 +28,16 @@ namespace NLS::Render::FrameGraph
         NLS::Render::RHI::TextureUsageFlags::DepthStencilAttachment |
         NLS::Render::RHI::TextureUsageFlags::Sampled;
 
+    enum class DeferredGBufferColorSlotRole : uint8_t
+    {
+        Albedo = 0,
+        Normal,
+        Material
+    };
+
     struct DeferredGBufferColorSlotDesc
     {
+        DeferredGBufferColorSlotRole role;
         NLS::Render::RHI::TextureFormat format;
         NLS::Render::RHI::TextureUsageFlags usage;
         const char* graphResourceName;
@@ -39,6 +48,7 @@ namespace NLS::Render::FrameGraph
 
     inline constexpr std::array<DeferredGBufferColorSlotDesc, kDeferredGBufferColorAttachmentCount> kDeferredGBufferColorSlots = {
         DeferredGBufferColorSlotDesc{
+            DeferredGBufferColorSlotRole::Albedo,
             NLS::Render::RHI::TextureFormat::RGBA8,
             kDeferredGBufferColorUsage,
             "DeferredGBufferAlbedo",
@@ -47,6 +57,7 @@ namespace NLS::Render::FrameGraph
             "GBufferAlbedo"
         },
         DeferredGBufferColorSlotDesc{
+            DeferredGBufferColorSlotRole::Normal,
             NLS::Render::RHI::TextureFormat::RGBA8,
             kDeferredGBufferColorUsage,
             "DeferredGBufferNormal",
@@ -55,6 +66,7 @@ namespace NLS::Render::FrameGraph
             "GBufferNormal"
         },
         DeferredGBufferColorSlotDesc{
+            DeferredGBufferColorSlotRole::Material,
             NLS::Render::RHI::TextureFormat::RGBA8,
             kDeferredGBufferColorUsage,
             "DeferredGBufferMaterial",
@@ -65,6 +77,20 @@ namespace NLS::Render::FrameGraph
     };
 
     static_assert(kDeferredGBufferColorSlots.size() == kDeferredGBufferColorAttachmentCount);
+
+    constexpr size_t FindDeferredGBufferColorSlotIndex(const DeferredGBufferColorSlotRole role)
+    {
+        for (size_t i = 0u; i < kDeferredGBufferColorSlots.size(); ++i)
+        {
+            if (kDeferredGBufferColorSlots[i].role == role)
+                return i;
+        }
+        return kDeferredGBufferColorAttachmentCount;
+    }
+
+    inline constexpr size_t kDeferredGBufferAlbedoColorAttachmentIndex =
+        FindDeferredGBufferColorSlotIndex(DeferredGBufferColorSlotRole::Albedo);
+    static_assert(kDeferredGBufferAlbedoColorAttachmentIndex < kDeferredGBufferColorAttachmentCount);
 
     constexpr std::array<NLS::Render::RHI::TextureFormat, kDeferredGBufferColorAttachmentCount>
         BuildDeferredGBufferColorFormats()
@@ -101,7 +127,9 @@ namespace NLS::Render::FrameGraph
     {
         Unknown = 0,
         GBuffer,
-        Lighting
+        Decal,
+        Lighting,
+        Transparent
     };
 
     struct DeferredPreparedSceneResources
@@ -145,6 +173,13 @@ namespace NLS::Render::FrameGraph
         DeferredGraphSceneResources resources;
     };
 
+    struct DeferredPreparedQueuedDrawCounts
+    {
+        std::optional<uint64_t> lightingDrawCount;
+        std::optional<uint64_t> decalDrawCount;
+        std::optional<uint64_t> transparentDrawCount;
+    };
+
     struct DeferredSceneGraphExecutionCallbacks
     {
         std::function<bool(const RecordedRenderPassExecutionDesc&)> beginGBufferPass;
@@ -153,6 +188,12 @@ namespace NLS::Render::FrameGraph
         std::function<bool(const OutputRenderPassExecutionDesc&)> beginLightingPass;
         std::function<void()> executeLightingPass;
         std::function<void(bool, const OutputRenderPassExecutionDesc&)> endLightingPass;
+        std::function<bool(const OutputRenderPassExecutionDesc&)> beginTransparentPass;
+        std::function<void()> executeTransparentPass;
+        std::function<void(bool, const OutputRenderPassExecutionDesc&)> endTransparentPass;
+        std::function<bool(const RecordedRenderPassExecutionDesc&)> beginDecalPass;
+        std::function<void()> executeDecalPass;
+        std::function<void()> endDecalPass;
     };
 
     NLS_RENDER_API DeferredScenePassExecutionKind GetDeferredScenePassExecutionKind(
@@ -175,7 +216,9 @@ namespace NLS::Render::FrameGraph
 
     NLS_RENDER_API PreparedDeferredSceneGraph PrepareDeferredSceneGraph(
         const DeferredGraphSceneResourceRequest& resourceRequest,
-        const LightGridCompileContext& lightGridContext);
+        const LightGridCompileContext& lightGridContext,
+        bool includeTransparentPass = false,
+        bool includeDecalPass = false);
 
     NLS_RENDER_API void ExecutePreparedDeferredSceneGraph(
         ::FrameGraph& frameGraph,
@@ -188,7 +231,7 @@ namespace NLS::Render::FrameGraph
         const DeferredPreparedSceneResources& resources,
         std::vector<NLS::Render::Context::RenderPassCommandInput>&& appendedPassInputs = {},
         const std::vector<ThreadedRenderScenePassMetadata>& appendedPassMetadata = {},
-        std::optional<uint64_t> queuedLightingDrawCount = std::nullopt);
+        DeferredPreparedQueuedDrawCounts queuedDrawCounts = {});
 
     NLS_RENDER_API void FinalizePreparedDeferredScenePackage(
         NLS::Render::Context::RenderScenePackage& package,

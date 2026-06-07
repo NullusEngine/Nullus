@@ -10,6 +10,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <vector>
 
@@ -17,7 +18,7 @@
 #include "Reflection/Macros.h"
 #include "Rendering/Data/StateMask.h"
 #include "Rendering/Data/PipelineState.h"
-#include "Rendering/RHI/RHITypes.h"
+#include "Rendering/RHI/Core/RHIPipeline.h"
 #include "Rendering/Resources/MaterialLayout.h"
 #include "Rendering/Resources/MaterialParameterBlock.h"
 #include "Rendering/Resources/ResourceBinding.h"
@@ -31,12 +32,12 @@ namespace NLS::Render::Resources
 {
     class MaterialResourceSet;
     struct MaterialPipelineStateOverrides;
+    enum class MaterialSurfaceMode : uint8_t;
     class Material;
     class Shader;
     struct ShaderPropertyDesc;
     class Texture2D;
 }
-
 namespace NLS::Render::RHI
 {
     class RHIDevice;
@@ -61,20 +62,17 @@ namespace NLS::Render::Resources
 {
 struct MaterialPipelineStateOverrides
 {
-    static constexpr size_t kInlineColorFormatCapacity = 4u;
-
-    std::optional<bool> depthWrite;
-    std::optional<bool> colorWrite;
-    std::optional<bool> blending;
-    std::optional<bool> depthTest;
-    std::optional<bool> hasDepthAttachment;
-    std::optional<bool> culling;
+    static constexpr size_t kInlineColorFormatCapacity = 4u, kInlineRenderTargetBlendStateCapacity = 4u;
+    std::optional<bool> depthWrite, colorWrite, blending, depthTest, hasDepthAttachment, culling, stencilTest;
+    std::optional<uint32_t> stencilWriteMask;
     std::optional<Settings::ECullFace> cullFace;
     std::optional<std::vector<RHI::TextureFormat>> colorFormats;
+    std::optional<std::vector<RHI::RHIRenderTargetBlendStateDesc>> renderTargetBlendStates;
     std::array<RHI::TextureFormat, kInlineColorFormatCapacity> inlineColorFormats {};
+    std::array<RHI::RHIRenderTargetBlendStateDesc, kInlineRenderTargetBlendStateCapacity> inlineRenderTargetBlendStates {};
     size_t inlineColorFormatCount = 0u;
-    bool inlineColorFormatsSet = false;
-
+    size_t inlineRenderTargetBlendStateCount = 0u;
+    bool inlineColorFormatsSet = false, inlineRenderTargetBlendStatesSet = false;
     void SetColorFormats(std::span<const RHI::TextureFormat> formats)
     {
         inlineColorFormatCount = 0u;
@@ -92,9 +90,39 @@ struct MaterialPipelineStateOverrides
         inlineColorFormatsSet = false;
     }
 
-    bool HasColorFormatsOverride() const
+    bool HasColorFormatsOverride() const { return inlineColorFormatsSet || colorFormats.has_value(); }
+
+    void SetRenderTargetBlendStates(std::span<const RHI::RHIRenderTargetBlendStateDesc> states)
     {
-        return inlineColorFormatsSet || colorFormats.has_value();
+        inlineRenderTargetBlendStateCount = 0u;
+        inlineRenderTargetBlendStatesSet = true;
+        renderTargetBlendStates.reset();
+        if (states.size() <= inlineRenderTargetBlendStates.size())
+        {
+            for (size_t i = 0u; i < states.size(); ++i)
+                inlineRenderTargetBlendStates[i] = states[i];
+            inlineRenderTargetBlendStateCount = states.size();
+            return;
+        }
+
+        renderTargetBlendStates = std::vector<RHI::RHIRenderTargetBlendStateDesc>(states.begin(), states.end());
+        inlineRenderTargetBlendStatesSet = false;
+    }
+
+    bool HasRenderTargetBlendStatesOverride() const
+    {
+        return inlineRenderTargetBlendStatesSet || renderTargetBlendStates.has_value();
+    }
+
+    std::span<const RHI::RHIRenderTargetBlendStateDesc> GetRenderTargetBlendStates() const
+    {
+        if (renderTargetBlendStates.has_value())
+            return std::span<const RHI::RHIRenderTargetBlendStateDesc>(*renderTargetBlendStates);
+        if (inlineRenderTargetBlendStatesSet)
+            return std::span<const RHI::RHIRenderTargetBlendStateDesc>(
+                inlineRenderTargetBlendStates.data(),
+                inlineRenderTargetBlendStateCount);
+        return {};
     }
 
     std::span<const RHI::TextureFormat> GetColorFormats() const
@@ -102,9 +130,7 @@ struct MaterialPipelineStateOverrides
         if (colorFormats.has_value())
             return std::span<const RHI::TextureFormat>(*colorFormats);
         if (inlineColorFormatsSet)
-            return std::span<const RHI::TextureFormat>(
-                inlineColorFormats.data(),
-                inlineColorFormatCount);
+            return std::span<const RHI::TextureFormat>(inlineColorFormats.data(), inlineColorFormatCount);
         return {};
     }
 
@@ -116,13 +142,21 @@ struct MaterialPipelineStateOverrides
             lhs.depthTest == rhs.depthTest &&
             lhs.hasDepthAttachment == rhs.hasDepthAttachment &&
             lhs.culling == rhs.culling &&
+            lhs.stencilTest == rhs.stencilTest &&
+            lhs.stencilWriteMask == rhs.stencilWriteMask &&
             lhs.cullFace == rhs.cullFace &&
             lhs.HasColorFormatsOverride() == rhs.HasColorFormatsOverride() &&
             lhs.GetColorFormats().size() == rhs.GetColorFormats().size() &&
             std::equal(
                 lhs.GetColorFormats().begin(),
                 lhs.GetColorFormats().end(),
-                rhs.GetColorFormats().begin());
+                rhs.GetColorFormats().begin()) &&
+            lhs.HasRenderTargetBlendStatesOverride() == rhs.HasRenderTargetBlendStatesOverride() &&
+            lhs.GetRenderTargetBlendStates().size() == rhs.GetRenderTargetBlendStates().size() &&
+            std::equal(
+                lhs.GetRenderTargetBlendStates().begin(),
+                lhs.GetRenderTargetBlendStates().end(),
+                rhs.GetRenderTargetBlendStates().begin());
     }
 
     friend bool operator!=(const MaterialPipelineStateOverrides& lhs, const MaterialPipelineStateOverrides& rhs)
@@ -130,40 +164,7 @@ struct MaterialPipelineStateOverrides
         return !(lhs == rhs);
     }
 
-    size_t GetHash() const
-    {
-        auto hashCombine = [](size_t& seed, const auto& value)
-        {
-            seed ^= std::hash<std::decay_t<decltype(value)>>{}(value) +
-                0x9e3779b97f4a7c15ull +
-                (seed << 6) +
-                (seed >> 2);
-        };
-
-        auto hashOptionalBool = [&hashCombine](size_t& seed, const std::optional<bool>& value)
-        {
-            hashCombine(seed, value.has_value());
-            if (value.has_value())
-                hashCombine(seed, *value);
-        };
-
-        size_t seed = 0u;
-        hashOptionalBool(seed, depthWrite);
-        hashOptionalBool(seed, colorWrite);
-        hashOptionalBool(seed, blending);
-        hashOptionalBool(seed, depthTest);
-        hashOptionalBool(seed, hasDepthAttachment);
-        hashOptionalBool(seed, culling);
-        hashCombine(seed, cullFace.has_value());
-        if (cullFace.has_value())
-            hashCombine(seed, static_cast<uint32_t>(*cullFace));
-        hashCombine(seed, HasColorFormatsOverride());
-        const auto formats = GetColorFormats();
-        hashCombine(seed, formats.size());
-        for (const auto format : formats)
-            hashCombine(seed, static_cast<uint32_t>(format));
-        return seed;
-    }
+    NLS_RENDER_API size_t GetHash() const;
 };
 
 enum class MaterialBindingDiagnosticSeverity : uint8_t
@@ -246,10 +247,13 @@ public:
     bool IsValid() const;
 
     /**
-     * Defines if the material is blendable
+     * Defines if the material is blendable for legacy opaque/transparent callers.
+     * Decal materials stay blendable; call SetSurfaceMode(Opaque) or
+     * SetSurfaceMode(Transparent) to leave Decal mode.
      * @param p_blendable
      */
     void SetBlendable(bool p_blendable);
+    void SetSurfaceMode(MaterialSurfaceMode surfaceMode);
 
     /**
      * Defines if the material has backface culling
@@ -291,6 +295,9 @@ public:
      * Returns true if the material is blendable
      */
     bool IsBlendable() const;
+    MaterialSurfaceMode GetSurfaceMode() const;
+    bool IsDecal() const;
+    bool IsTransparentSurface() const;
 
     /**
      * Returns true if the material has backface culling
@@ -393,6 +400,7 @@ protected:
     mutable std::unique_ptr<MaterialRuntimeState> m_runtimeState;
 
     bool m_blendable = false;
+    MaterialSurfaceMode m_surfaceMode;
     bool m_backfaceCulling = true;
     bool m_frontfaceCulling = false;
     bool m_depthTest = true;
@@ -407,6 +415,19 @@ private:
     friend class NLS::Render::Context::Driver;
     friend class NLS::Render::Core::ABaseRenderer;
 };
-} // namespace NLS::Render::Data
+
+enum class MaterialSurfaceMode : uint8_t
+{
+    Opaque = 0,
+    Transparent,
+    Decal
+};
+
+NLS_RENDER_API const char* MaterialSurfaceModeName(MaterialSurfaceMode mode);
+NLS_RENDER_API std::optional<MaterialSurfaceMode> ParseMaterialSurfaceMode(const std::string& value);
+NLS_RENDER_API bool MaterialIdentitySuggestsDecal(
+    std::string_view displayName,
+    std::string_view sourceSubAsset);
+} // namespace NLS::Render::Resources
 
 #include "Rendering/Resources/Material.inl"

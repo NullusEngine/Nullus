@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <memory>
 
 #include "Assets/PrefabUtilityFacade.h"
 #include "Components/LightComponent.h"
@@ -24,6 +25,10 @@ namespace
 using NLS::Core::Assets::AssetId;
 using NLS::Editor::Assets::PrefabAssetQuery;
 using NLS::Editor::Assets::PrefabAssetType;
+using NLS::Editor::Assets::PrefabEditorApplyAvailability;
+using NLS::Editor::Assets::PrefabEditorConnectionState;
+using NLS::Editor::Assets::PrefabEditorResourceState;
+using NLS::Editor::Assets::PrefabEditorStateQuery;
 using NLS::Editor::Assets::PrefabInstanceQuery;
 using NLS::Editor::Assets::PrefabInstanceStatus;
 using NLS::Editor::Assets::PrefabOperationStatus;
@@ -55,6 +60,18 @@ std::string JoinPrefabDiagnostics(const NLS::Editor::Assets::PrefabOperationResu
     return output;
 }
 
+std::string JoinSerializationDiagnostics(const NLS::Engine::Serialize::SerializationDiagnosticList& diagnostics)
+{
+    std::string output;
+    for (const auto& diagnostic : diagnostics.GetItems())
+    {
+        if (!output.empty())
+            output += ",";
+        output += diagnostic.GetMessage();
+    }
+    return output;
+}
+
 template <typename T>
 NLS::Engine::Serialize::PPtr<T> MakePPtr(const NLS::Engine::Serialize::ObjectIdentifier& identifier)
 {
@@ -72,6 +89,38 @@ const NLS::Engine::Serialize::PropertyRecord* FindProperty(
             return &property;
     }
     return nullptr;
+}
+
+const NLS::Engine::Serialize::PropertyValue* FindObjectProperty(
+    const NLS::Engine::Serialize::PropertyValue& value,
+    const char* name)
+{
+    if (value.GetKind() != PropertyValue::Kind::Object)
+        return nullptr;
+
+    for (const auto& property : value.GetObject())
+    {
+        if (property.first == name)
+            return &property.second;
+    }
+    return nullptr;
+}
+
+std::vector<ObjectId> ReadOwnedReferences(
+    const NLS::Engine::Serialize::ObjectRecord& record,
+    const char* name)
+{
+    std::vector<ObjectId> ids;
+    const auto* property = FindProperty(record, name);
+    if (!property || property->value.GetKind() != PropertyValue::Kind::Array)
+        return ids;
+
+    for (const auto& value : property->value.GetArray())
+    {
+        if (value.GetKind() == PropertyValue::Kind::OwnedReference)
+            ids.push_back(value.GetObjectId());
+    }
+    return ids;
 }
 
 const NLS::Engine::Serialize::ObjectRecord* FindObjectRecord(
@@ -649,6 +698,134 @@ TEST(PrefabUtilityFacadeTests, RestoresNormalPrefabSceneLocalOverrideFromPrefabI
     EXPECT_EQ(ReadStringProperty(prefab, "name"), "NormalOverrideScenePrefab");
 }
 
+TEST(PrefabUtilityFacadeTests, RestoresPrefabSceneLocalTransformOverrideFromPrefabInstanceRecord)
+{
+    PrefabUtilityFacade facade;
+    auto prefab = MakePrefabArtifact("TransformOverrideScenePrefab", Id("f4242424-2424-4424-8424-242424242424"));
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto instantiate = facade.InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:TransformOverrideScenePrefab",
+        Id("f4252525-2525-4525-8525-252525252525")
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_NE(instantiate.instance->instanceRoot, nullptr);
+    instantiate.instance->instanceRoot->GetTransform()->SetLocalPosition({7.0f, 3.0f, -2.0f});
+    sourceRegistry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+    ASSERT_EQ(document.prefabInstances.size(), 1u);
+    ASSERT_FALSE(document.prefabInstances[0].modifications.empty());
+    EXPECT_TRUE(std::any_of(
+        document.prefabInstances[0].modifications.begin(),
+        document.prefabInstances[0].modifications.end(),
+        [](const auto& modification)
+        {
+            return modification.type == NLS::Engine::Serialize::PatchOperationType::ReplaceProperty &&
+                modification.property == "localPosition";
+        }));
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f4262626-2626-4626-8626-262626262626"),
+        restoredRegistry,
+        [&prefab](AssetId assetId, const std::string& subAssetKey) -> std::optional<PrefabArtifact>
+        {
+            if (assetId == prefab.assetId && subAssetKey == "prefab:TransformOverrideScenePrefab")
+                return prefab;
+            return std::nullopt;
+        });
+
+    ASSERT_EQ(restore.status, PrefabOperationStatus::Committed);
+    auto* loadedRoot = loadedScene->FindGameObjectByName("TransformOverrideScenePrefab");
+    ASSERT_NE(loadedRoot, nullptr);
+    const auto& restoredPosition = loadedRoot->GetTransform()->GetLocalPosition();
+    EXPECT_FLOAT_EQ(restoredPosition.x, 7.0f);
+    EXPECT_FLOAT_EQ(restoredPosition.y, 3.0f);
+    EXPECT_FLOAT_EQ(restoredPosition.z, -2.0f);
+    EXPECT_NE(restoredRegistry.FindInstance(*loadedRoot), nullptr);
+}
+
+TEST(PrefabUtilityFacadeTests, LiveRootReconnectAppliesPrefabSceneLocalTransformOverride)
+{
+    PrefabUtilityFacade facade;
+    auto prefab = MakePrefabArtifact("LiveTransformOverridePrefab", Id("f4272727-2727-4727-8727-272727272727"));
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto instantiate = facade.InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:LiveTransformOverridePrefab",
+        Id("f4282828-2828-4828-8828-282828282828")
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_NE(instantiate.instance->instanceRoot, nullptr);
+    instantiate.instance->instanceRoot->GetTransform()->SetLocalPosition({11.0f, 4.0f, -6.0f});
+    sourceRegistry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+    ASSERT_EQ(document.prefabInstances.size(), 1u);
+    ASSERT_FALSE(document.prefabInstances[0].modifications.empty());
+
+    auto* rootRecord = const_cast<NLS::Engine::Serialize::ObjectRecord*>(
+        FindGameObjectRecordByName(document, "LiveTransformOverridePrefab"));
+    ASSERT_NE(rootRecord, nullptr);
+    rootRecord->state = ObjectRecordState::Alive;
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+    auto* liveRoot = loadedScene->FindGameObjectByName("LiveTransformOverridePrefab");
+    ASSERT_NE(liveRoot, nullptr);
+    liveRoot->GetTransform()->SetLocalPosition({0.0f, 0.0f, 0.0f});
+
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f4292929-2929-4929-8929-292929292929"),
+        restoredRegistry,
+        [&prefab](AssetId assetId, const std::string& subAssetKey) -> std::optional<PrefabArtifact>
+        {
+            if (assetId == prefab.assetId && subAssetKey == "prefab:LiveTransformOverridePrefab")
+                return prefab;
+            return std::nullopt;
+        });
+
+    ASSERT_EQ(restore.status, PrefabOperationStatus::Committed) << JoinPrefabDiagnostics(restore);
+    const auto& restoredPosition = liveRoot->GetTransform()->GetLocalPosition();
+    EXPECT_FLOAT_EQ(restoredPosition.x, 11.0f);
+    EXPECT_FLOAT_EQ(restoredPosition.y, 4.0f);
+    EXPECT_FLOAT_EQ(restoredPosition.z, -6.0f);
+    auto* restored = restoredRegistry.FindInstance(*liveRoot);
+    ASSERT_NE(restored, nullptr);
+    EXPECT_FALSE(restored->localPatches.empty());
+    const auto* restoredSourceRoot = FindObjectRecord(restored->sourceGraph, restored->sourceGraph.root);
+    ASSERT_NE(restoredSourceRoot, nullptr);
+    const auto restoredSourceComponents = ReadOwnedReferences(*restoredSourceRoot, "components");
+    ASSERT_FALSE(restoredSourceComponents.empty());
+    const auto* restoredSourceTransform = FindObjectRecord(restored->sourceGraph, restoredSourceComponents.front());
+    ASSERT_NE(restoredSourceTransform, nullptr);
+    const auto* sourcePosition = FindProperty(*restoredSourceTransform, "localPosition");
+    ASSERT_NE(sourcePosition, nullptr);
+    const auto* sourceX = FindObjectProperty(sourcePosition->value, "x");
+    ASSERT_NE(sourceX, nullptr);
+    EXPECT_DOUBLE_EQ(sourceX->GetNumber(), 0.0)
+        << "The restored registry must keep the original prefab source graph, not the materialized scene override graph.";
+}
+
 TEST(PrefabUtilityFacadeTests, RestoresPrefabSceneLocalAddedChildOverrideFromPrefabInstanceRecord)
 {
     PrefabUtilityFacade facade;
@@ -771,7 +948,8 @@ TEST(PrefabUtilityFacadeTests, LiveRootReconnectPreservesStructuralPrefabInstanc
     ASSERT_EQ(rewritten.prefabInstances.size(), 1u);
     EXPECT_FALSE(rewritten.prefabInstances[0].addedObjects.empty());
     EXPECT_FALSE(rewritten.prefabInstances[0].correspondence.empty());
-    EXPECT_FALSE(rewritten.Validate().HasErrors());
+    const auto rewrittenDiagnostics = rewritten.Validate();
+    EXPECT_FALSE(rewrittenDiagnostics.HasErrors()) << JoinSerializationDiagnostics(rewrittenDiagnostics);
 }
 
 TEST(PrefabUtilityFacadeTests, RestoresRemovedPrefabChildSubtreeFromPrefabInstanceRecord)
@@ -938,7 +1116,7 @@ TEST(PrefabUtilityFacadeTests, PreservesScenePrefabMetadataWhenRestoreArtifactIs
         });
 
     EXPECT_EQ(restore.status, PrefabOperationStatus::Failed);
-    auto* loadedRoot = loadedScene->FindGameObjectByName("MissingScenePrefab");
+    auto* loadedRoot = loadedScene->FindGameObjectByName("MissingScenePrefab (missing)");
     ASSERT_NE(loadedRoot, nullptr);
     auto* restored = restoredRegistry.FindInstance(*loadedRoot);
     ASSERT_NE(restored, nullptr);
@@ -954,6 +1132,281 @@ TEST(PrefabUtilityFacadeTests, PreservesScenePrefabMetadataWhenRestoreArtifactIs
     EXPECT_EQ(rewritten.prefabInstances[0].sourcePrefab.guid, prefab.assetId.GetGuid());
     EXPECT_EQ(rewritten.prefabInstances[0].sourcePrefab.filePath, "prefab:MissingScenePrefab");
     EXPECT_TRUE(rewritten.prefabInstances[0].generatedReadOnly);
+}
+
+TEST(PrefabUtilityFacadeTests, MissingScenePrefabRestoreMarksNameAndSuppressesStaleRenderer)
+{
+    PrefabUtilityFacade facade;
+    NLS::Engine::GameObject root("MissingRenderablePrefab", "Prefab");
+    auto* meshFilter = root.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* meshRenderer = root.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(meshFilter, nullptr);
+    ASSERT_NE(meshRenderer, nullptr);
+
+    const auto meshAssetId = Id("f4070a0a-0a0a-4a0a-8a0a-0a0a0a0a0a0a");
+    const auto materialAssetId = Id("f4070b0b-0b0b-4b0b-8b0b-0b0b0b0b0b0b");
+    const std::string meshArtifactPath = "Library/Artifacts/MissingRenderable/mesh.nmesh";
+    const std::string materialArtifactPath = "Library/Artifacts/MissingRenderable/material.nmat";
+    const auto meshReference = ObjectIdentifier::Asset(
+        NLS::Engine::Serialize::AssetId(meshAssetId.GetGuid()),
+        NLS::Engine::Serialize::MakeLocalIdentifierInFile(meshAssetId.GetGuid(), meshArtifactPath),
+        meshArtifactPath);
+    const auto materialReference = ObjectIdentifier::Asset(
+        NLS::Engine::Serialize::AssetId(materialAssetId.GetGuid()),
+        NLS::Engine::Serialize::MakeLocalIdentifierInFile(materialAssetId.GetGuid(), materialArtifactPath),
+        materialArtifactPath);
+    meshFilter->SetMeshReference(MakePPtr<NLS::Render::Resources::Mesh>(meshReference));
+    meshRenderer->SetMaterialReferences({
+        MakePPtr<NLS::Render::Resources::Material>(materialReference)
+    });
+
+    auto save = facade.SaveAsPrefabAsset(
+        root,
+        Id("f4070c0c-0c0c-4c0c-8c0c-0c0c0c0c0c0c"),
+        "Assets/Prefabs/MissingRenderablePrefab.prefab");
+    ASSERT_EQ(save.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(save.artifact.has_value());
+    auto prefab = *save.artifact;
+    prefab.generatedModelPrefab = true;
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto instantiate = facade.InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:MissingRenderablePrefab",
+        Id("f4070d0d-0d0d-4d0d-8d0d-0d0d0d0d0d0d")
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    sourceRegistry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f4070e0e-0e0e-4e0e-8e0e-0e0e0e0e0e0e"),
+        restoredRegistry,
+        [](AssetId, const std::string&) -> std::optional<PrefabArtifact>
+        {
+            return std::nullopt;
+        });
+
+    EXPECT_EQ(restore.status, PrefabOperationStatus::Failed);
+    auto* loadedRoot = loadedScene->FindGameObjectByName("MissingRenderablePrefab (missing)");
+    ASSERT_NE(loadedRoot, nullptr);
+    EXPECT_TRUE(restoredRegistry.GetPresentation(*loadedRoot).missingAsset);
+    EXPECT_EQ(loadedScene->FindGameObjectByName("MissingRenderablePrefab"), nullptr);
+    auto* restoredMeshFilter = loadedRoot->GetComponent<NLS::Engine::Components::MeshFilter>();
+    auto* restoredMeshRenderer = loadedRoot->GetComponent<NLS::Engine::Components::MeshRenderer>();
+    EXPECT_TRUE(restoredMeshFilter == nullptr || restoredMeshFilter->GetModelPath().empty());
+    EXPECT_TRUE(restoredMeshFilter == nullptr || restoredMeshFilter->ResolveMesh() == nullptr)
+        << "A missing prefab placeholder must not keep resolving stale mesh data after the source prefab file is gone.";
+    EXPECT_TRUE(restoredMeshRenderer == nullptr || restoredMeshRenderer->GetMaterialPaths().empty());
+    EXPECT_TRUE(restoredMeshRenderer == nullptr || restoredMeshRenderer->IsTransientRenderingSuppressed());
+}
+
+TEST(PrefabUtilityFacadeTests, MissingScenePrefabRestorePreservesSceneLocalTransform)
+{
+    PrefabUtilityFacade facade;
+    auto prefab = MakePrefabArtifact(
+        "MissingTransformPrefab",
+        Id("f4071414-1414-4f14-8f14-141414141414"));
+    prefab.generatedModelPrefab = true;
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto instantiate = facade.InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:MissingTransformPrefab",
+        Id("f4071515-1515-4f15-8f15-151515151515")
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_NE(instantiate.instance->instanceRoot, nullptr);
+    instantiate.instance->instanceRoot->GetTransform()->SetLocalPosition({9.0f, 5.0f, -4.0f});
+    sourceRegistry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+    ASSERT_EQ(document.prefabInstances.size(), 1u);
+    ASSERT_FALSE(document.prefabInstances[0].modifications.empty());
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f4071616-1616-4f16-8f16-161616161616"),
+        restoredRegistry,
+        [](AssetId, const std::string&) -> std::optional<PrefabArtifact>
+        {
+            return std::nullopt;
+        });
+
+    EXPECT_EQ(restore.status, PrefabOperationStatus::Failed);
+    auto* loadedRoot = loadedScene->FindGameObjectByName("MissingTransformPrefab (missing)");
+    ASSERT_NE(loadedRoot, nullptr);
+    const auto& restoredPosition = loadedRoot->GetTransform()->GetLocalPosition();
+    EXPECT_FLOAT_EQ(restoredPosition.x, 9.0f);
+    EXPECT_FLOAT_EQ(restoredPosition.y, 5.0f);
+    EXPECT_FLOAT_EQ(restoredPosition.z, -4.0f);
+    EXPECT_TRUE(restoredRegistry.GetPresentation(*loadedRoot).missingAsset);
+}
+
+TEST(PrefabUtilityFacadeTests, MissingScenePrefabRestoreIgnoresChildTransformOverrideForRoot)
+{
+    PrefabUtilityFacade facade;
+    NLS::Engine::GameObject prefabRoot("MissingRootWithChildOverride", "Prefab");
+    auto* prefabChild = new NLS::Engine::GameObject("MissingChildWithOverride", "Prefab");
+    prefabChild->SetParent(prefabRoot);
+
+    auto save = facade.SaveAsPrefabAsset(
+        prefabRoot,
+        Id("f4071717-1717-4f17-8f17-171717171717"),
+        "Assets/Prefabs/MissingRootWithChildOverride.prefab");
+    ASSERT_EQ(save.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(save.artifact.has_value());
+    save.artifact->generatedModelPrefab = true;
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto instantiate = facade.InstantiatePrefab({
+        &*save.artifact,
+        save.artifact->assetId,
+        "prefab:MissingRootWithChildOverride",
+        Id("f4071818-1818-4f18-8f18-181818181818")
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_NE(instantiate.instance->instanceRoot, nullptr);
+
+    instantiate.instance->instanceRoot->GetTransform()->SetLocalPosition({9.0f, 5.0f, -4.0f});
+    auto* child = FindChildByName(*instantiate.instance->instanceRoot, "MissingChildWithOverride");
+    ASSERT_NE(child, nullptr);
+    child->GetTransform()->SetLocalPosition({99.0f, 88.0f, 77.0f});
+    sourceRegistry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+    ASSERT_EQ(document.prefabInstances.size(), 1u);
+    const auto transformOverrideCount = std::count_if(
+        document.prefabInstances[0].modifications.begin(),
+        document.prefabInstances[0].modifications.end(),
+        [](const auto& modification)
+        {
+            return modification.type == NLS::Engine::Serialize::PatchOperationType::ReplaceProperty &&
+                modification.property == "localPosition";
+        });
+    ASSERT_GE(transformOverrideCount, 2)
+        << "The regression requires both root and child transform overrides in the same missing prefab instance.";
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f4071919-1919-4f19-8f19-191919191919"),
+        restoredRegistry,
+        [](AssetId, const std::string&) -> std::optional<PrefabArtifact>
+        {
+            return std::nullopt;
+        });
+
+    EXPECT_EQ(restore.status, PrefabOperationStatus::Failed);
+    auto* loadedRoot = loadedScene->FindGameObjectByName("MissingRootWithChildOverride (missing)");
+    ASSERT_NE(loadedRoot, nullptr);
+    const auto& restoredPosition = loadedRoot->GetTransform()->GetLocalPosition();
+    EXPECT_FLOAT_EQ(restoredPosition.x, 9.0f);
+    EXPECT_FLOAT_EQ(restoredPosition.y, 5.0f);
+    EXPECT_FLOAT_EQ(restoredPosition.z, -4.0f);
+}
+
+TEST(PrefabUtilityFacadeTests, MissingScenePrefabRestoreDoesNotSuppressUnrelatedPrefabInstance)
+{
+    PrefabUtilityFacade facade;
+    auto missingPrefab = MakePrefabArtifact(
+        "MissingOnlyPrefab",
+        Id("f4070f0f-0f0f-4f0f-8f0f-0f0f0f0f0f0f"));
+    missingPrefab.generatedModelPrefab = true;
+
+    NLS::Engine::GameObject visibleRoot("VisiblePrefab", "Prefab");
+    auto* visibleRenderer = visibleRoot.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(visibleRenderer, nullptr);
+    auto visibleSave = facade.SaveAsPrefabAsset(
+        visibleRoot,
+        Id("f4071010-1010-4f10-8f10-101010101010"),
+        "Assets/Prefabs/VisiblePrefab.prefab");
+    ASSERT_EQ(visibleSave.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(visibleSave.artifact.has_value());
+    auto visiblePrefab = *visibleSave.artifact;
+    visiblePrefab.generatedModelPrefab = true;
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto missingInstance = facade.InstantiatePrefab({
+        &missingPrefab,
+        missingPrefab.assetId,
+        "prefab:MissingOnlyPrefab",
+        Id("f4071111-1111-4f11-8f11-111111111111")
+    }, sourceScene);
+    ASSERT_EQ(missingInstance.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(missingInstance.instance.has_value());
+    sourceRegistry.Register(*missingInstance.instance);
+
+    auto visibleInstance = facade.InstantiatePrefab({
+        &visiblePrefab,
+        visiblePrefab.assetId,
+        "prefab:VisiblePrefab",
+        Id("f4071212-1212-4f12-8f12-121212121212")
+    }, sourceScene);
+    ASSERT_EQ(visibleInstance.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(visibleInstance.instance.has_value());
+    sourceRegistry.Register(*visibleInstance.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f4071313-1313-4f13-8f13-131313131313"),
+        restoredRegistry,
+        [&](AssetId assetId, const std::string& subAssetKey) -> std::optional<PrefabArtifact>
+        {
+            if (assetId == visiblePrefab.assetId && subAssetKey == "prefab:VisiblePrefab")
+                return visiblePrefab;
+            return std::nullopt;
+        });
+
+    EXPECT_EQ(restore.status, PrefabOperationStatus::Failed);
+    auto* missingRoot = loadedScene->FindGameObjectByName("MissingOnlyPrefab (missing)");
+    auto* visibleLoadedRoot = loadedScene->FindGameObjectByName("VisiblePrefab");
+    ASSERT_NE(missingRoot, nullptr);
+    ASSERT_NE(visibleLoadedRoot, nullptr);
+    EXPECT_TRUE(restoredRegistry.GetPresentation(*missingRoot).missingAsset);
+
+    const auto visiblePresentation = restoredRegistry.GetPresentation(*visibleLoadedRoot);
+    EXPECT_EQ(visiblePresentation.state, NLS::Editor::Assets::PrefabHierarchyState::Root);
+    EXPECT_EQ(visiblePresentation.color, NLS::Editor::Assets::PrefabHierarchyColorToken::ConnectedRoot);
+    EXPECT_FALSE(visiblePresentation.missingAsset)
+        << "A missing prefab source must not poison unrelated prefab instances in the same scene.";
+    auto* restoredVisibleRenderer = visibleLoadedRoot->GetComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(restoredVisibleRenderer, nullptr);
+    EXPECT_FALSE(restoredVisibleRenderer->IsTransientRenderingSuppressed());
 }
 
 TEST(PrefabUtilityFacadeTests, PreservesStructuralPrefabInstancePayloadWhenRestoreArtifactIsMissing)
@@ -1011,7 +1464,7 @@ TEST(PrefabUtilityFacadeTests, PreservesStructuralPrefabInstancePayloadWhenResto
         });
 
     EXPECT_EQ(restore.status, PrefabOperationStatus::Failed);
-    auto* loadedRoot = loadedScene->FindGameObjectByName("MissingStructuralScenePrefab");
+    auto* loadedRoot = loadedScene->FindGameObjectByName("MissingStructuralScenePrefab (missing)");
     ASSERT_NE(loadedRoot, nullptr);
     auto* restored = restoredRegistry.FindInstance(*loadedRoot);
     ASSERT_NE(restored, nullptr);
@@ -1028,7 +1481,59 @@ TEST(PrefabUtilityFacadeTests, PreservesStructuralPrefabInstancePayloadWhenResto
     EXPECT_FALSE(rewritten.prefabInstances[0].modifications.empty());
     EXPECT_FALSE(rewritten.prefabInstances[0].addedObjects.empty());
     EXPECT_FALSE(rewritten.prefabInstances[0].correspondence.empty());
-    EXPECT_FALSE(rewritten.Validate().HasErrors());
+    const auto rewrittenDiagnostics = rewritten.Validate();
+    EXPECT_FALSE(rewrittenDiagnostics.HasErrors()) << JoinSerializationDiagnostics(rewrittenDiagnostics);
+}
+
+TEST(PrefabUtilityFacadeTests, MissingPrefabRestoreStripsAddedOverrideDescendants)
+{
+    PrefabUtilityFacade facade;
+    auto prefab = MakePrefabArtifact("MissingAddedSubtreePrefab", Id("f4071a1a-1a1a-4f1a-8f1a-1a1a1a1a1a1a"));
+    prefab.generatedModelPrefab = true;
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    auto instantiate = facade.InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:MissingAddedSubtreePrefab",
+        Id("f4071b1b-1b1b-4f1b-8f1b-1b1b1b1b1b1b")
+    }, sourceScene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_NE(instantiate.instance->instanceRoot, nullptr);
+
+    auto* addedChild = new NLS::Engine::GameObject("SceneOnlyAddedChildWithGrandchild", "PrefabOverride");
+    auto* addedGrandchild = new NLS::Engine::GameObject("SceneOnlyAddedGrandchild", "PrefabOverride");
+    addedGrandchild->SetParent(*addedChild);
+    addedChild->SetParent(*instantiate.instance->instanceRoot);
+    sourceScene.AddGameObject(addedChild);
+    sourceRegistry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+    ASSERT_EQ(document.prefabInstances.size(), 1u);
+    ASSERT_FALSE(document.prefabInstances[0].addedObjects.empty());
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f4071c1c-1c1c-4f1c-8f1c-1c1c1c1c1c1c"),
+        restoredRegistry,
+        [](AssetId, const std::string&) -> std::optional<PrefabArtifact>
+        {
+            return std::nullopt;
+        });
+
+    EXPECT_EQ(restore.status, PrefabOperationStatus::Failed);
+    EXPECT_NE(loadedScene->FindGameObjectByName("MissingAddedSubtreePrefab (missing)"), nullptr);
+    EXPECT_EQ(loadedScene->FindGameObjectByName("SceneOnlyAddedChildWithGrandchild"), nullptr);
+    EXPECT_EQ(loadedScene->FindGameObjectByName("SceneOnlyAddedGrandchild"), nullptr)
+        << "All descendants of a scene-added prefab override subtree must be stripped from the scene placeholder graph.";
 }
 
 TEST(PrefabUtilityFacadeTests, PreservesScenePrefabMetadataWhenRestoreConnectFails)
@@ -1071,7 +1576,7 @@ TEST(PrefabUtilityFacadeTests, PreservesScenePrefabMetadataWhenRestoreConnectFai
         });
 
     EXPECT_EQ(restore.status, PrefabOperationStatus::Failed);
-    auto* loadedRoot = loadedScene->FindGameObjectByName("DisconnectedScenePrefab");
+    auto* loadedRoot = loadedScene->FindGameObjectByName("DisconnectedScenePrefab (missing)");
     ASSERT_NE(loadedRoot, nullptr);
     auto* restored = restoredRegistry.FindInstance(*loadedRoot);
     ASSERT_NE(restored, nullptr);
@@ -1267,6 +1772,29 @@ TEST(PrefabUtilityFacadeTests, RestoresStrippedPrefabInstanceAtSavedSceneOrder)
     EXPECT_EQ(loadedScene->GetGameObjects()[0]->GetName(), "BeforePrefab");
     EXPECT_EQ(loadedScene->GetGameObjects()[1]->GetName(), "OrderedPrefab");
     EXPECT_EQ(loadedScene->GetGameObjects()[2]->GetName(), "AfterPrefab");
+
+    auto* beforePrefab = loadedScene->FindGameObjectByName("BeforePrefab");
+    auto* orderedPrefab = loadedScene->FindGameObjectByName("OrderedPrefab");
+    auto* afterPrefab = loadedScene->FindGameObjectByName("AfterPrefab");
+    ASSERT_NE(beforePrefab, nullptr);
+    ASSERT_NE(orderedPrefab, nullptr);
+    ASSERT_NE(afterPrefab, nullptr);
+    EXPECT_EQ(restoredRegistry.FindInstance(*beforePrefab), nullptr)
+        << "Ordinary scene roots must not inherit prefab metadata from stripped prefab placeholders.";
+    auto* restoredPrefab = restoredRegistry.FindInstance(*orderedPrefab);
+    ASSERT_NE(restoredPrefab, nullptr);
+    EXPECT_EQ(restoredPrefab->instanceRoot, orderedPrefab);
+    EXPECT_EQ(restoredRegistry.FindInstance(*afterPrefab), nullptr)
+        << "Ordinary roots after a stripped prefab placeholder should remain non-prefab hierarchy items.";
+    EXPECT_EQ(
+        restoredRegistry.GetPresentation(*orderedPrefab).state,
+        NLS::Editor::Assets::PrefabHierarchyState::Root);
+    EXPECT_EQ(
+        restoredRegistry.GetPresentation(*beforePrefab).state,
+        NLS::Editor::Assets::PrefabHierarchyState::None);
+    EXPECT_EQ(
+        restoredRegistry.GetPresentation(*afterPrefab).state,
+        NLS::Editor::Assets::PrefabHierarchyState::None);
 }
 
 TEST(PrefabUtilityFacadeTests, RestoresParentedGeneratedModelPrefabRegistryFromSceneDocument)
@@ -1396,6 +1924,127 @@ TEST(PrefabUtilityFacadeTests, RestoresStrippedPrefabInstanceUnderRestoredPrefab
     EXPECT_EQ(loadedChild->GetParent(), loadedParent);
     EXPECT_NE(restoredRegistry.FindInstance(*loadedParent), nullptr);
     EXPECT_NE(restoredRegistry.FindInstance(*loadedChild), nullptr);
+}
+
+TEST(PrefabUtilityFacadeTests, SceneRestoreCanUseSharedPrefabResolverWithoutCopyingPrefabGraph)
+{
+    PrefabUtilityFacade facade;
+    auto prefab = std::make_shared<PrefabArtifact>(
+        MakePrefabArtifact("SharedRestorePrefab", Id("f4404040-4040-4440-8440-404040404040")));
+    prefab->generatedModelPrefab = true;
+
+    NLS::Engine::SceneSystem::Scene sourceScene;
+    NLS::Editor::Assets::PrefabInstanceRegistry sourceRegistry;
+    for (int i = 0; i < 2; ++i)
+    {
+        auto instance = facade.InstantiatePrefab({
+            nullptr,
+            prefab->assetId,
+            "prefab:SharedRestorePrefab",
+            Id("f4414141-4141-4441-8441-414141414141"),
+            false,
+            prefab.get()
+        }, sourceScene);
+        ASSERT_EQ(instance.status, PrefabOperationStatus::Committed) << JoinPrefabDiagnostics(instance);
+        ASSERT_TRUE(instance.instance.has_value());
+        ASSERT_NE(instance.instance->instanceRoot, nullptr);
+        instance.instance->instanceRoot->SetName("SharedRestorePrefab_" + std::to_string(i));
+        sourceRegistry.Register(*instance.instance);
+    }
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(sourceScene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, sourceScene, sourceRegistry);
+    ASSERT_EQ(document.prefabInstances.size(), 2u);
+
+    auto loadedScene = NLS::Engine::Serialize::ObjectGraphInstantiator::InstantiateScene(document);
+    ASSERT_NE(loadedScene, nullptr);
+
+    size_t resolveCount = 0u;
+    NLS::Editor::Assets::PrefabInstanceRegistry restoredRegistry;
+    const auto restore = facade.RestorePrefabInstancesFromSceneDocument(
+        document,
+        *loadedScene,
+        Id("f4424242-4242-4442-8442-424242424242"),
+        restoredRegistry,
+        [&](AssetId assetId, const std::string& subAssetKey)
+            -> std::shared_ptr<const PrefabArtifact>
+        {
+            ++resolveCount;
+            if (assetId == prefab->assetId && subAssetKey == "prefab:SharedRestorePrefab")
+                return prefab;
+            return nullptr;
+        });
+
+    ASSERT_EQ(restore.status, PrefabOperationStatus::Committed) << JoinPrefabDiagnostics(restore);
+    EXPECT_EQ(resolveCount, 2u);
+    auto* firstRoot = loadedScene->FindGameObjectByName("SharedRestorePrefab_0");
+    auto* secondRoot = loadedScene->FindGameObjectByName("SharedRestorePrefab_1");
+    ASSERT_NE(firstRoot, nullptr);
+    ASSERT_NE(secondRoot, nullptr);
+    EXPECT_NE(restoredRegistry.FindInstance(*firstRoot), nullptr);
+    EXPECT_NE(restoredRegistry.FindInstance(*secondRoot), nullptr);
+}
+
+TEST(PrefabUtilityFacadeTests, AnnotatesNestedPrefabInstancesUnderSceneParents)
+{
+    PrefabUtilityFacade facade;
+    auto prefab = MakePrefabArtifact("NestedUnderSceneParent", Id("f4434343-4343-4443-8443-434343434343"));
+
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& parent = scene.CreateGameObject("SceneParent", "Empty");
+    auto instantiate = facade.InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:NestedUnderSceneParent",
+        Id("f4444444-4444-4444-8444-444444444444")
+    }, scene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed) << JoinPrefabDiagnostics(instantiate);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_NE(instantiate.instance->instanceRoot, nullptr);
+    instantiate.instance->instanceRoot->SetParent(parent);
+
+    NLS::Editor::Assets::PrefabInstanceRegistry registry;
+    registry.Register(*instantiate.instance);
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(scene);
+
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, scene, registry);
+
+    ASSERT_EQ(document.prefabInstances.size(), 1u)
+        << "Prefab instances nested below ordinary scene parents must still persist as prefab instances.";
+    EXPECT_EQ(document.prefabInstances.front().sourcePrefab.guid, prefab.assetId.GetGuid());
+    EXPECT_EQ(document.prefabInstances.front().sourcePrefab.filePath, "prefab:NestedUnderSceneParent");
+}
+
+TEST(PrefabUtilityFacadeTests, AnnotatedSceneWithPrefabInstanceValidatesForEditorSave)
+{
+    PrefabUtilityFacade facade;
+    auto prefab = MakePrefabArtifact("SaveableScenePrefab", Id("f4454545-4545-4545-8545-454545454545"));
+
+    NLS::Engine::SceneSystem::Scene scene;
+    NLS::Editor::Assets::PrefabInstanceRegistry registry;
+    auto instantiate = facade.InstantiatePrefab({
+        &prefab,
+        prefab.assetId,
+        "prefab:SaveableScenePrefab",
+        Id("f4464646-4646-4646-8646-464646464646")
+    }, scene);
+    ASSERT_EQ(instantiate.status, PrefabOperationStatus::Committed) << JoinPrefabDiagnostics(instantiate);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_NE(instantiate.instance->instanceRoot, nullptr);
+    registry.Register(*instantiate.instance);
+
+    auto document = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeScene(scene);
+    facade.AnnotateSceneDocumentWithPrefabInstances(document, scene, registry);
+
+    EXPECT_FALSE(document.Validate().HasErrors())
+        << "Editor scene save rejects prefab scenes when prefab instance metadata serializes invalid object references.";
+    ASSERT_EQ(document.prefabInstances.size(), 1u);
+    EXPECT_EQ(document.prefabInstances.front().sourcePrefab.guid, prefab.assetId.GetGuid());
+    EXPECT_EQ(document.prefabInstances.front().sourcePrefab.filePath, "prefab:SaveableScenePrefab");
+
+    const auto output = NLS::Engine::Serialize::ObjectGraphWriter::Write(document);
+    EXPECT_NE(output.find("\"prefabInstances\""), std::string::npos);
+    EXPECT_NE(output.find("\"filePath\": \"prefab:SaveableScenePrefab\""), std::string::npos);
 }
 
 TEST(PrefabUtilityFacadeTests, SaveAsPrefabAssetResolvesMeshAndMaterialObjectReferences)
@@ -1669,6 +2318,160 @@ TEST(PrefabUtilityFacadeTests, AppliesOverridesToNearestEditableLayerAndRejectsI
 
     auto rejectReadOnly = facade.ApplySingleOverride(artifact, *property, true);
     EXPECT_EQ(rejectReadOnly.status, PrefabOperationStatus::Rejected);
+}
+
+TEST(PrefabUtilityFacadeTests, DerivesUnityLikePrefabEditorStateForConnectedOverridesAndUnpackedObjects)
+{
+    PrefabUtilityFacade facade;
+    auto artifact = MakePrefabArtifact("EditorStateRoot", Id("b5210101-0101-4101-8101-010101010101"));
+
+    NLS::Engine::SceneSystem::Scene scene;
+    auto instantiate = facade.InstantiatePrefab({
+        &artifact,
+        artifact.assetId,
+        "prefab:EditorStateRoot",
+        Id("b5220202-0202-4202-8202-020202020202")
+    }, scene);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    instantiate.instance->instanceRoot->SetName("EditorStateOverride");
+
+    PrefabEditorStateQuery stateQuery;
+    stateQuery.instance = &*instantiate.instance;
+    stateQuery.prefab = &artifact;
+    stateQuery.sourceAssetExists = true;
+    stateQuery.editableSourceArtifactContext = true;
+    const auto state = facade.GetPrefabEditorState(stateQuery);
+
+    EXPECT_EQ(state.connectionState, PrefabEditorConnectionState::Connected);
+    EXPECT_EQ(state.resourceState, PrefabEditorResourceState::Ready);
+    EXPECT_TRUE(state.hasOverrides);
+    EXPECT_EQ(state.overrideCount, 1u);
+    EXPECT_EQ(state.applyAvailability, PrefabEditorApplyAvailability::Allowed);
+    EXPECT_TRUE(state.canRevert);
+    EXPECT_TRUE(state.diagnostics.empty());
+
+    const auto unpack = facade.UnpackPrefabInstance(*instantiate.instance, PrefabUnpackMode::Completely);
+    ASSERT_EQ(unpack.status, PrefabOperationStatus::Committed);
+    EXPECT_TRUE(instantiate.instance->unpacked);
+    PrefabEditorStateQuery unpackedQuery;
+    unpackedQuery.instance = &*instantiate.instance;
+    unpackedQuery.prefab = &artifact;
+    unpackedQuery.sourceAssetExists = true;
+    unpackedQuery.editableSourceArtifactContext = true;
+    const auto unpackedState = facade.GetPrefabEditorState(unpackedQuery);
+    EXPECT_EQ(unpackedState.connectionState, PrefabEditorConnectionState::Unpacked);
+    EXPECT_EQ(unpackedState.applyAvailability, PrefabEditorApplyAvailability::Unavailable);
+    EXPECT_FALSE(unpackedState.canRevert);
+}
+
+TEST(PrefabUtilityFacadeTests, ModelPrefabEditorStateReportsReadOnlyApplyDiagnostic)
+{
+    PrefabUtilityFacade facade;
+    auto generated = MakePrefabArtifact("ReadOnlyModelState", Id("b5230303-0303-4303-8303-030303030303"));
+    generated.generatedModelPrefab = true;
+
+    NLS::Engine::SceneSystem::Scene scene;
+    auto instantiate = facade.InstantiatePrefab({
+        &generated,
+        generated.assetId,
+        "prefab:ReadOnlyModelState",
+        Id("b5240404-0404-4404-8404-040404040404")
+    }, scene);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    instantiate.instance->instanceRoot->SetName("SceneOnlyReadOnlyOverride");
+
+    PrefabEditorStateQuery stateQuery;
+    stateQuery.instance = &*instantiate.instance;
+    stateQuery.prefab = &generated;
+    stateQuery.sourceAssetExists = true;
+    stateQuery.editableSourceArtifactContext = true;
+    const auto state = facade.GetPrefabEditorState(stateQuery);
+
+    ASSERT_TRUE(state.hasOverrides);
+    EXPECT_TRUE(state.generatedReadOnly);
+    EXPECT_EQ(state.applyAvailability, PrefabEditorApplyAvailability::ReadOnlyRejected);
+    EXPECT_TRUE(state.canRevert);
+    ASSERT_FALSE(state.diagnostics.empty());
+    EXPECT_EQ(state.diagnostics.front().code, "prefab-generated-read-only");
+
+    const auto overrides = facade.GetPrefabOverrides(generated, *instantiate.instance, true);
+    const auto* nameOverride = FindOverride(overrides, PrefabOverrideKind::Property, "name");
+    ASSERT_NE(nameOverride, nullptr);
+    const auto apply = facade.ApplySingleOverride(generated, *nameOverride);
+    ASSERT_EQ(apply.status, PrefabOperationStatus::Rejected);
+    ASSERT_FALSE(apply.diagnostics.empty());
+    EXPECT_EQ(apply.diagnostics.front().code, "prefab-generated-read-only");
+}
+
+TEST(PrefabUtilityFacadeTests, PrefabEditorStateDisablesApplyWithoutEditableSourceArtifactContext)
+{
+    PrefabUtilityFacade facade;
+    auto artifact = MakePrefabArtifact("InspectorNoSourceContext", Id("b5230505-0505-4505-8505-050505050505"));
+
+    NLS::Engine::SceneSystem::Scene scene;
+    auto instantiate = facade.InstantiatePrefab({
+        &artifact,
+        artifact.assetId,
+        "prefab:InspectorNoSourceContext",
+        Id("b5240606-0606-4606-8606-060606060606")
+    }, scene);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    instantiate.instance->instanceRoot->SetName("InspectorLocalOverride");
+
+    PrefabEditorStateQuery query;
+    query.instance = &*instantiate.instance;
+    query.prefab = &artifact;
+    query.sourceAssetExists = true;
+    query.editableSourceArtifactContext = false;
+    query.includeDefaultOverrides = true;
+
+    const auto state = facade.GetPrefabEditorState(query);
+
+    ASSERT_TRUE(state.hasOverrides);
+    EXPECT_EQ(state.connectionState, PrefabEditorConnectionState::Connected);
+    EXPECT_EQ(state.applyAvailability, PrefabEditorApplyAvailability::Unavailable)
+        << "Inspector must not present Apply as executable when it only has a copied source graph and no asset writeback context.";
+    EXPECT_TRUE(state.canRevert);
+    ASSERT_FALSE(state.diagnostics.empty());
+    EXPECT_EQ(state.diagnostics.back().code, "prefab-apply-source-context-missing");
+}
+
+TEST(PrefabUtilityFacadeTests, PrefabEditorStateSurfacesMissingSourceAndPendingResources)
+{
+    PrefabUtilityFacade facade;
+    auto artifact = MakePrefabArtifact("PendingSourceState", Id("b5250505-0505-4505-8505-050505050505"));
+
+    NLS::Engine::SceneSystem::Scene scene;
+    auto instantiate = facade.InstantiatePrefab({
+        &artifact,
+        artifact.assetId,
+        "prefab:PendingSourceState",
+        Id("b5260606-0606-4606-8606-060606060606")
+    }, scene);
+    ASSERT_TRUE(instantiate.instance.has_value());
+
+    PrefabEditorStateQuery missingQuery;
+    missingQuery.instance = &*instantiate.instance;
+    missingQuery.prefab = &artifact;
+    missingQuery.sourceAssetExists = false;
+    missingQuery.editableSourceArtifactContext = true;
+    const auto missingState = facade.GetPrefabEditorState(missingQuery);
+    EXPECT_EQ(missingState.connectionState, PrefabEditorConnectionState::MissingSource);
+    EXPECT_EQ(missingState.applyAvailability, PrefabEditorApplyAvailability::Unavailable);
+    ASSERT_FALSE(missingState.diagnostics.empty());
+    EXPECT_EQ(missingState.diagnostics.front().code, "prefab-source-missing");
+
+    PrefabEditorStateQuery pendingQuery;
+    pendingQuery.instance = &*instantiate.instance;
+    pendingQuery.prefab = &artifact;
+    pendingQuery.sourceAssetExists = true;
+    pendingQuery.resourcesPending = true;
+    pendingQuery.editableSourceArtifactContext = true;
+    const auto pendingState = facade.GetPrefabEditorState(pendingQuery);
+    EXPECT_EQ(pendingState.connectionState, PrefabEditorConnectionState::Connected);
+    EXPECT_EQ(pendingState.resourceState, PrefabEditorResourceState::Pending);
+    ASSERT_FALSE(pendingState.diagnostics.empty());
+    EXPECT_EQ(pendingState.diagnostics.front().code, "prefab-resources-pending");
 }
 
 TEST(PrefabUtilityFacadeTests, PreservesNestedPrefabDiagnosticsAndMissingRecoveryRecords)

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -33,12 +34,20 @@ struct AssimpTextureSlot
 	const char* channelName = "";
 };
 
+struct AssimpDirectionTransforms
+{
+	aiMatrix4x4 linear;
+	aiMatrix4x4 normal;
+};
+
 std::string IndexedKey(const char* prefix, const uint32_t index)
 {
 	return std::string(prefix) + "/" + std::to_string(index);
 }
 
 constexpr int64_t kAssimpImportTimingLogThresholdMilliseconds = 100;
+constexpr double kAssimpUnitScaleEpsilon = 1e-4;
+constexpr float kAssimpDirectionLengthEpsilon = 1e-8f;
 
 int64_t MillisecondsSince(const std::chrono::steady_clock::time_point start)
 {
@@ -46,11 +55,9 @@ int64_t MillisecondsSince(const std::chrono::steady_clock::time_point start)
 		std::chrono::steady_clock::now() - start).count();
 }
 
-void ConfigureAssimpImporterForEditorCache(
-	Assimp::Importer& importer,
-	const std::filesystem::path& sourcePath)
+std::string LowerExtension(const std::filesystem::path& path)
 {
-	auto extension = sourcePath.extension().string();
+	auto extension = path.extension().string();
 	std::transform(
 		extension.begin(),
 		extension.end(),
@@ -59,6 +66,24 @@ void ConfigureAssimpImporterForEditorCache(
 		{
 			return static_cast<char>(std::tolower(character));
 		});
+	return extension;
+}
+
+SceneModelSourceFormat SourceFormatForPath(const std::filesystem::path& path)
+{
+	const auto extension = LowerExtension(path);
+	if (extension == ".fbx")
+		return SceneModelSourceFormat::Fbx;
+	if (extension == ".obj")
+		return SceneModelSourceFormat::Obj;
+	return SceneModelSourceFormat::Gltf;
+}
+
+void ConfigureAssimpImporterForEditorCache(
+	Assimp::Importer& importer,
+	const std::filesystem::path& sourcePath)
+{
+	const auto extension = LowerExtension(sourcePath);
 	if (extension != ".fbx")
 		return;
 
@@ -118,6 +143,111 @@ std::string NodeName(const aiNode& node, const uint32_t index)
 	if (node.mName.length > 0u)
 		return node.mName.C_Str();
 	return "Node " + std::to_string(index);
+}
+
+bool NearlyEqual(const double left, const double right, const double epsilon = kAssimpUnitScaleEpsilon)
+{
+	return std::fabs(left - right) <= epsilon;
+}
+
+bool IsFiniteVector(const aiVector3D& value)
+{
+	return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+}
+
+float LengthSquared(const aiVector3D& value)
+{
+	return value.x * value.x + value.y * value.y + value.z * value.z;
+}
+
+aiVector3D NormalizeDirection(const aiVector3D& value)
+{
+	if (!IsFiniteVector(value))
+		return {};
+
+	const float lengthSquared = LengthSquared(value);
+	if (!std::isfinite(lengthSquared) || lengthSquared <= kAssimpDirectionLengthEpsilon)
+		return {};
+
+	const float inverseLength = 1.0f / std::sqrt(lengthSquared);
+	return {value.x * inverseLength, value.y * inverseLength, value.z * inverseLength};
+}
+
+aiVector3D TransformLinearDirection(const aiMatrix4x4& matrix, const aiVector3D& direction)
+{
+	return {
+		matrix.a1 * direction.x + matrix.a2 * direction.y + matrix.a3 * direction.z,
+		matrix.b1 * direction.x + matrix.b2 * direction.y + matrix.b3 * direction.z,
+		matrix.c1 * direction.x + matrix.c2 * direction.y + matrix.c3 * direction.z
+	};
+}
+
+aiMatrix4x4 LinearOnlyMatrix(aiMatrix4x4 matrix)
+{
+	matrix.a4 = 0.0f;
+	matrix.b4 = 0.0f;
+	matrix.c4 = 0.0f;
+	matrix.d1 = 0.0f;
+	matrix.d2 = 0.0f;
+	matrix.d3 = 0.0f;
+	matrix.d4 = 1.0f;
+	return matrix;
+}
+
+AssimpDirectionTransforms BuildDirectionTransforms(const aiMatrix4x4& matrix)
+{
+	AssimpDirectionTransforms transforms;
+	transforms.linear = LinearOnlyMatrix(matrix);
+	transforms.normal = transforms.linear;
+	transforms.normal.Inverse();
+	transforms.normal.Transpose();
+	return transforms;
+}
+
+bool ShouldCopyDirectionStreams(const aiMatrix4x4& matrix)
+{
+	const bool diagonalOnly =
+		NearlyEqual(matrix.a2, 0.0) &&
+		NearlyEqual(matrix.a3, 0.0) &&
+		NearlyEqual(matrix.b1, 0.0) &&
+		NearlyEqual(matrix.b3, 0.0) &&
+		NearlyEqual(matrix.c1, 0.0) &&
+		NearlyEqual(matrix.c2, 0.0);
+	if (!diagonalOnly)
+		return false;
+
+	const double x = matrix.a1;
+	const double y = matrix.b2;
+	const double z = matrix.c3;
+	return x > 0.0 &&
+		NearlyEqual(x, y) &&
+		NearlyEqual(x, z);
+}
+
+aiVector3D TransformDirection(const AssimpDirectionTransforms& transforms, const aiVector3D& direction)
+{
+	const auto sourceDirection = NormalizeDirection(direction);
+	if (!IsFiniteVector(sourceDirection) || LengthSquared(sourceDirection) <= kAssimpDirectionLengthEpsilon)
+		return {};
+
+	const auto transformed = NormalizeDirection(TransformLinearDirection(transforms.linear, sourceDirection));
+	if (LengthSquared(transformed) > kAssimpDirectionLengthEpsilon)
+		return transformed;
+
+	return sourceDirection;
+}
+
+aiVector3D TransformNormalDirection(const AssimpDirectionTransforms& transforms, const aiVector3D& normal)
+{
+	const auto sourceNormal = NormalizeDirection(normal);
+	if (!IsFiniteVector(sourceNormal) || LengthSquared(sourceNormal) <= kAssimpDirectionLengthEpsilon)
+		return {};
+
+	auto transformed = NormalizeDirection(TransformLinearDirection(transforms.normal, sourceNormal));
+	if (LengthSquared(transformed) > kAssimpDirectionLengthEpsilon)
+		return transformed;
+
+	return TransformDirection(transforms, sourceNormal);
 }
 
 void AddUniqueDependency(std::vector<std::string>* dependencies, const std::string& path)
@@ -301,6 +431,37 @@ void ApplyNodeTransform(const aiNode& node, ImportedSceneNode& record)
 	record.scale = {scaling.x, scaling.y, scaling.z};
 }
 
+bool IsUniformPositiveUnitScale(const ImportedSceneNode& record)
+{
+	if (record.scale.size() != 3u)
+		return false;
+
+	const double x = record.scale[0];
+	const double y = record.scale[1];
+	const double z = record.scale[2];
+	return x > 0.0 &&
+		y > 0.0 &&
+		z > 0.0 &&
+		NearlyEqual(x, y) &&
+		NearlyEqual(x, z) &&
+		!NearlyEqual(x, 1.0);
+}
+
+bool IsAssimpFbxSyntheticRootUnitScale(
+	const aiNode& node,
+	const std::string& parentKey,
+	const ImportedSceneNode& record,
+	const SceneModelSourceFormat sourceFormat)
+{
+	if (sourceFormat != SceneModelSourceFormat::Fbx)
+		return false;
+
+	if (!parentKey.empty() || node.mParent || node.mNumMeshes != 0u)
+		return false;
+
+	return record.name == "RootNode" && IsUniformPositiveUnitScale(record);
+}
+
 const std::vector<AssimpTextureSlot>& MaterialTextureSlots()
 {
 	static const std::vector<AssimpTextureSlot> slots = {
@@ -311,7 +472,7 @@ const std::vector<AssimpTextureSlot>& MaterialTextureSlots()
 		{aiTextureType_HEIGHT, "bump"},
 		{aiTextureType_DISPLACEMENT, "bump"},
 		{aiTextureType_DIFFUSE_ROUGHNESS, "roughness"},
-		{aiTextureType_SHININESS, "roughness"},
+		{aiTextureType_SHININESS, "shininess"},
 		{aiTextureType_METALNESS, "metallic"},
 		{aiTextureType_OPACITY, "opacity"},
 		{aiTextureType_LIGHTMAP, "occlusion"},
@@ -394,7 +555,8 @@ void BuildNodeRecords(
 	const aiScene* source,
 	const std::string& parentKey,
 	ImportedScene& scene,
-	uint32_t& nextNodeIndex)
+	uint32_t& nextNodeIndex,
+	const SceneModelSourceFormat sourceFormat)
 {
 	if (!node)
 		return;
@@ -409,6 +571,8 @@ void BuildNodeRecords(
 		record.name = NodeName(*node, nodeIndex);
 		record.parentKey = parentKey;
 		ApplyNodeTransform(*node, record);
+		if (IsAssimpFbxSyntheticRootUnitScale(*node, parentKey, record, sourceFormat))
+			record.scale = {1.0, 1.0, 1.0};
 		if (node->mNumMeshes == 1u)
 		{
 			const auto meshIndex = node->mMeshes[0u];
@@ -424,6 +588,8 @@ void BuildNodeRecords(
 		parentRecord.name = NodeName(*node, nodeIndex);
 		parentRecord.parentKey = parentKey;
 		ApplyNodeTransform(*node, parentRecord);
+		if (IsAssimpFbxSyntheticRootUnitScale(*node, parentKey, parentRecord, sourceFormat))
+			parentRecord.scale = {1.0, 1.0, 1.0};
 		scene.nodes.push_back(std::move(parentRecord));
 
 		for (uint32_t meshSlot = 0u; meshSlot < node->mNumMeshes; ++meshSlot)
@@ -443,7 +609,7 @@ void BuildNodeRecords(
 	}
 
 	for (uint32_t childIndex = 0u; childIndex < node->mNumChildren; ++childIndex)
-		BuildNodeRecords(node->mChildren[childIndex], source, nodeKey, scene, nextNodeIndex);
+		BuildNodeRecords(node->mChildren[childIndex], source, nodeKey, scene, nextNodeIndex, sourceFormat);
 }
 }
 
@@ -470,7 +636,7 @@ bool AssimpParser::LoadModel(const std::string & p_fileName, std::vector<Mesh*>&
 	for (auto& mesh : parsedMeshes)
 		p_meshes.push_back(new Mesh(mesh.vertices, mesh.indices, mesh.materialIndex));
 
-	BuildImportedSceneData(scene, NLS::Render::Assets::SceneModelSourceFormat::Fbx, m_lastImportedScene);
+	BuildImportedSceneData(scene, SourceFormatForPath(p_fileName), m_lastImportedScene);
 	m_hasImportedSceneData = true;
 
 	return true;
@@ -528,7 +694,7 @@ bool AssimpParser::LoadModelData(
 		scene->mNumMaterials);
 
 	const auto sceneDataStart = std::chrono::steady_clock::now();
-	BuildImportedSceneData(scene, NLS::Render::Assets::SceneModelSourceFormat::Fbx, m_lastImportedScene);
+	BuildImportedSceneData(scene, SourceFormatForPath(p_fileName), m_lastImportedScene);
 	m_hasImportedSceneData = true;
 	LogAssimpImportTiming(
 		p_fileName,
@@ -595,14 +761,14 @@ bool AssimpParser::PopulateImportedSceneData(
 
 void AssimpParser::BuildImportedSceneData(
 	const aiScene* p_scene,
-	NLS::Render::Assets::SceneModelSourceFormat,
+	NLS::Render::Assets::SceneModelSourceFormat p_sourceFormat,
 	NLS::Render::Assets::ImportedScene& p_outScene)
 {
 	std::vector<std::string> unusedMaterialNames;
 	BuildMaterials(p_scene, p_outScene, unusedMaterialNames, nullptr);
 
 	uint32_t nextNodeIndex = 0u;
-	BuildNodeRecords(p_scene->mRootNode, p_scene, {}, p_outScene, nextNodeIndex);
+	BuildNodeRecords(p_scene->mRootNode, p_scene, {}, p_outScene, nextNodeIndex, p_sourceFormat);
 }
 
 void AssimpParser::ProcessSourceMeshes(const aiScene* p_scene, std::vector<ParsedMeshData>& p_meshes)
@@ -653,16 +819,20 @@ void AssimpParser::ProcessNode(void* p_transform, aiNode * p_node, const aiScene
 void AssimpParser::ProcessMesh(void* p_transform, aiMesh* p_mesh, const aiScene* p_scene, std::vector<Geometry::Vertex>& p_outVertices, std::vector<uint32_t>& p_outIndices)
 {
 	aiMatrix4x4 meshTransformation = *reinterpret_cast<aiMatrix4x4*>(p_transform);
+	const bool copyDirectionStreams = ShouldCopyDirectionStreams(meshTransformation);
+	AssimpDirectionTransforms directionTransforms{};
+	if (!copyDirectionStreams)
+		directionTransforms = BuildDirectionTransforms(meshTransformation);
 	p_outVertices.reserve(p_outVertices.size() + p_mesh->mNumVertices);
 	p_outIndices.reserve(p_outIndices.size() + static_cast<size_t>(p_mesh->mNumFaces) * 3u);
 
 	for (uint32_t i = 0; i < p_mesh->mNumVertices; ++i)
 	{
 		aiVector3D position		= meshTransformation * p_mesh->mVertices[i];
-		aiVector3D normal		= meshTransformation * (p_mesh->mNormals ? p_mesh->mNormals[i] : aiVector3D(0.0f, 0.0f, 0.0f));
+		aiVector3D normal		= p_mesh->mNormals ? (copyDirectionStreams ? p_mesh->mNormals[i] : TransformNormalDirection(directionTransforms, p_mesh->mNormals[i])) : aiVector3D(0.0f, 0.0f, 0.0f);
 		aiVector3D texCoords	= p_mesh->mTextureCoords[0] ? p_mesh->mTextureCoords[0][i] : aiVector3D(0.0f, 0.0f, 0.0f);
-		aiVector3D tangent		= p_mesh->mTangents ? meshTransformation * p_mesh->mTangents[i] : aiVector3D(0.0f, 0.0f, 0.0f);
-		aiVector3D bitangent	= p_mesh->mBitangents ? meshTransformation * p_mesh->mBitangents[i] : aiVector3D(0.0f, 0.0f, 0.0f);
+		aiVector3D tangent		= p_mesh->mTangents ? (copyDirectionStreams ? p_mesh->mTangents[i] : TransformDirection(directionTransforms, p_mesh->mTangents[i])) : aiVector3D(0.0f, 0.0f, 0.0f);
+		aiVector3D bitangent	= p_mesh->mBitangents ? (copyDirectionStreams ? p_mesh->mBitangents[i] : TransformDirection(directionTransforms, p_mesh->mBitangents[i])) : aiVector3D(0.0f, 0.0f, 0.0f);
 
 		p_outVertices.push_back
 		(

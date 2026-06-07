@@ -130,6 +130,23 @@ void AddSourceAssetRefresh(
         {NLS::Core::Assets::AssetDependencyKind::SourceAssetGuid, assetId.ToString(), {}});
 }
 
+std::string ResolvePrefabSubAssetKey(
+    const NLS::Engine::Assets::PrefabArtifact& prefab,
+    const NLS::Engine::GameObject& fallbackRoot)
+{
+    const auto rootRecord = std::find_if(
+        prefab.graph.objects.begin(),
+        prefab.graph.objects.end(),
+        [&prefab](const NLS::Engine::Serialize::ObjectRecord& record)
+        {
+            return record.id == prefab.graph.root;
+        });
+    if (rootRecord != prefab.graph.objects.end() && !rootRecord->debugName.empty())
+        return "prefab:" + rootRecord->debugName;
+
+    return "prefab:" + fallbackRoot.GetName();
+}
+
 }
 
 AssetDragDropResult AssetDragDropWorkflow::Execute(const AssetDragDropRequest& request) const
@@ -363,6 +380,47 @@ AssetDragDropResult AssetDragDropWorkflow::SaveHierarchyObjectAsPrefab(
     result.createdAssetPaths.push_back(destinationPath);
     result.modifiedAssets.push_back(destinationId);
     AddSourceAssetRefresh(result, destinationId);
+
+    auto connected = PrefabEditorWorkflow().ConnectExistingPrefabInstance({
+        nullptr,
+        destinationId,
+        ResolvePrefabSubAssetKey(*created.artifact, *request.payload.object),
+        request.sceneAssetId,
+        false,
+        &*created.artifact
+    }, *request.payload.object);
+    for (const auto& diagnostic : connected.diagnostics)
+        result.diagnostics.push_back({diagnostic.code, diagnostic.message});
+    result.dependencyChanges.insert(
+        result.dependencyChanges.end(),
+        connected.dependencyChanges.begin(),
+        connected.dependencyChanges.end());
+    result.dependencyRefreshRequests.insert(
+        result.dependencyRefreshRequests.end(),
+        connected.dependencyRefreshRequests.begin(),
+        connected.dependencyRefreshRequests.end());
+    if (connected.status != PrefabEditorOperationStatus::Committed || !connected.instance.has_value())
+    {
+        result.status = DragDropOperationStatus::Failed;
+        AddDiagnostic(
+            result,
+            "dragdrop-prefab-connect-failed",
+            "Prefab source asset was created but the scene object could not be connected to it.");
+        return result;
+    }
+
+    if (request.prefabInstanceRegistry)
+        result.instance = request.prefabInstanceRegistry->Register(std::move(*connected.instance));
+    else
+        result.instance = std::move(connected.instance);
+
+    if (request.sceneAssetId.IsValid())
+    {
+        result.modifiedScenes.push_back(request.sceneAssetId);
+        result.dependencyRefreshRequests.push_back(
+            {NLS::Core::Assets::AssetDependencyKind::SourceAssetGuid, request.sceneAssetId.ToString(), {}});
+    }
+
     result.commandDescriptors.push_back({"dragdrop.save-as-prefab", "Save As Prefab", true});
     return result;
 }
@@ -489,7 +547,12 @@ AssetDragDropResult AssetDragDropWorkflow::InstantiatePrefabInHierarchy(
         return result;
     }
 
-    if (!request.payload.prefab)
+    const auto* prefab = request.payload.sharedPrefab
+        ? request.payload.sharedPrefab.get()
+        : request.payload.constPrefab != nullptr
+        ? request.payload.constPrefab
+        : request.payload.prefab;
+    if (!prefab)
     {
         AddDiagnostic(
             result,
@@ -503,7 +566,8 @@ AssetDragDropResult AssetDragDropWorkflow::InstantiatePrefabInHierarchy(
         request.payload.assetId,
         request.payload.subAssetKey,
         request.sceneAssetId,
-        request.deferAssetReferenceResolution
+        request.deferAssetReferenceResolution,
+        prefab == request.payload.prefab ? nullptr : prefab
     }, *request.target.scene);
 
     result.status = ConvertStatus(instantiate.status);
@@ -523,7 +587,9 @@ AssetDragDropResult AssetDragDropWorkflow::InstantiatePrefabInHierarchy(
         else
             result.instance = std::move(instantiate.instance);
     }
-    result.artifact = *request.payload.prefab;
+    result.sharedArtifact = request.payload.sharedPrefab;
+    if (!result.sharedArtifact && request.payload.prefab != nullptr)
+        result.artifact = *request.payload.prefab;
 
     result.dependencyRefreshRequests = std::move(instantiate.dependencyRefreshRequests);
     result.dependencyChanges = std::move(instantiate.dependencyChanges);

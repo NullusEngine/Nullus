@@ -373,6 +373,47 @@ TEST(AssetImporterFacadeTests, RefreshReportsDuplicateEditorPathAliases)
     std::filesystem::remove_all(packageRoot);
 }
 
+TEST(AssetImporterFacadeTests, LegacyProjectRootRefreshOnlyGeneratesMetaBelowAssets)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetImporterFacadeRoot();
+    WriteTextFile(root / "TestProject.nullus", "name=TestProject\n");
+    WriteTextFile(root / "help.txt", "project notes");
+    WriteTextFile(root / "Assets" / "Models" / "Hero.gltf", R"({"asset":{"version":"2.0"}})");
+
+    AssetImporterFacade facade({root});
+    ASSERT_TRUE(facade.Refresh());
+
+    EXPECT_FALSE(std::filesystem::exists(root / "TestProject.nullus.meta"));
+    EXPECT_FALSE(std::filesystem::exists(root / "help.txt.meta"));
+    EXPECT_TRUE(std::filesystem::exists(root / "Assets" / "Models" / "Hero.gltf.meta"));
+    EXPECT_FALSE(facade.GetAtPath("TestProject.nullus").has_value());
+    EXPECT_FALSE(facade.GetAtPath("help.txt").has_value());
+    EXPECT_TRUE(facade.GetAtPath("Assets/Models/Hero.gltf").has_value());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImporterFacadeTests, LegacyFilesystemRootWithAssetsChildKeepsScanningSiblings)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetImporterFacadeRoot();
+    WriteTextFile(root / "Assets" / "Models" / "Hero.gltf", R"({"asset":{"version":"2.0"}})");
+    WriteTextFile(root / "Packages" / "Starter" / "Tree.obj", "o Tree");
+
+    AssetImporterFacade facade({root});
+    ASSERT_TRUE(facade.Refresh());
+
+    EXPECT_TRUE(std::filesystem::exists(root / "Assets" / "Models" / "Hero.gltf.meta"));
+    EXPECT_TRUE(std::filesystem::exists(root / "Packages" / "Starter" / "Tree.obj.meta"));
+    EXPECT_TRUE(facade.GetAtPath("Assets/Models/Hero.gltf").has_value());
+    EXPECT_TRUE(facade.GetAtPath("Packages/Starter/Tree.obj").has_value());
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetImporterFacadeTests, ExternalObjectRemapsPersistForModelMaterialAndTextureOutputs)
 {
     using namespace NLS::Editor::Assets;
@@ -447,6 +488,7 @@ TEST(AssetImporterFacadeTests, ModelImporterSettingsPersistAndDriveSceneConversi
     settings.importMorphTargets = false;
     settings.importCameras = true;
     settings.importLights = true;
+    settings.ignoreFbxTexturedNeutralDiffuseTint = false;
 
     ASSERT_TRUE(facade.SetModelImporterSettings("Assets/Models/RiggedHero.gltf", settings));
     const auto stored = facade.GetModelImporterSettings("Assets/Models/RiggedHero.gltf");
@@ -455,6 +497,7 @@ TEST(AssetImporterFacadeTests, ModelImporterSettingsPersistAndDriveSceneConversi
     EXPECT_EQ(stored->axisConversion, "z-up-to-y-up");
     EXPECT_FALSE(stored->importNormals);
     EXPECT_TRUE(stored->importCameras);
+    EXPECT_FALSE(stored->ignoreFbxTexturedNeutralDiffuseTint);
 
     const std::string gltf = R"(
     {
@@ -487,6 +530,7 @@ TEST(AssetImporterFacadeTests, ModelImporterSettingsPersistAndDriveSceneConversi
 
     EXPECT_DOUBLE_EQ(scene.importSettings.globalScale, 0.01);
     EXPECT_EQ(scene.importSettings.axisConversion, "z-up-to-y-up");
+    EXPECT_FALSE(scene.importSettings.ignoreFbxTexturedNeutralDiffuseTint);
     ASSERT_EQ(scene.meshes.size(), 1u);
     EXPECT_EQ(scene.meshes[0].attributes, std::vector<std::string>({"POSITION"}));
     ASSERT_EQ(scene.meshes[0].primitives.size(), 1u);
@@ -549,6 +593,9 @@ TEST(AssetImporterFacadeTests, ModelImporterSettingsPersistFbxReaderSelectionAnd
         NLS::Core::Assets::GetAssetMetaPath(root / "Assets" / "Models" / "AssimpHero.fbx"));
     ASSERT_TRUE(loadedMeta.has_value());
     EXPECT_EQ(loadedMeta->settings.at("MODEL_FBX_READER"), "assimp");
+    EXPECT_EQ(
+        loadedMeta->settings.at(kModelFbxIgnoreTexturedNeutralDiffuseTintSetting),
+        "true");
 
     std::filesystem::remove_all(root);
 }

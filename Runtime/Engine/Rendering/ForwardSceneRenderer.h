@@ -16,6 +16,7 @@ namespace NLS::Engine::Rendering
 
 	protected:
 		virtual void DrawOpaques(NLS::Render::Data::PipelineState pso);
+		virtual void DrawDecals(NLS::Render::Data::PipelineState pso);
 		virtual void DrawSkyboxes(NLS::Render::Data::PipelineState pso);
 		virtual void DrawTransparents(NLS::Render::Data::PipelineState pso);
 

@@ -12,6 +12,7 @@
 #include "Rendering/Resources/Loaders/TextureLoader.h"
 #include "Rendering/RHI/BindingPointMap.h"
 #include "Rendering/RHI/Core/RHIDevice.h"
+#include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/MaterialResourceSet.h"
 #include "Rendering/Resources/Texture2D.h"
 #include "Rendering/ShaderCompiler/ShaderCompilationTypes.h"
@@ -33,6 +34,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -57,6 +59,19 @@ const NLS::Render::Assets::ConvertedMaterialTextureSlot* FindSlot(
             return candidate.slot == slot;
         });
     return found != material.textureSlots.end() ? &*found : nullptr;
+}
+
+size_t CountSlots(
+    const ConvertedMaterialArtifact& material,
+    const std::string& slot)
+{
+    return static_cast<size_t>(std::count_if(
+        material.textureSlots.begin(),
+        material.textureSlots.end(),
+        [&slot](const NLS::Render::Assets::ConvertedMaterialTextureSlot& candidate)
+        {
+            return candidate.slot == slot;
+        }));
 }
 
 const NLS::Render::Assets::ConvertedMaterialFactor* FindFactor(
@@ -84,6 +99,157 @@ bool HasDiagnosticCode(
         {
             return diagnostic.code == code;
         });
+}
+
+size_t CountDiagnosticCode(
+    const ConvertedMaterialArtifact& material,
+    const std::string& code)
+{
+    return static_cast<size_t>(std::count_if(
+        material.diagnostics.begin(),
+        material.diagnostics.end(),
+        [&code](const NLS::Render::Assets::MaterialConversionDiagnostic& diagnostic)
+        {
+            return diagnostic.code == code;
+        }));
+}
+
+struct TestVec3
+{
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+};
+
+struct TestTangentFrame
+{
+    TestVec3 tangent;
+    TestVec3 bitangent;
+    TestVec3 normal;
+};
+
+constexpr double kTestSafeNormalEpsilon = 1.0e-8;
+constexpr double kTestSafeNormalMaxLengthSq = 1.0e20;
+constexpr double kTestSafeNormalMaxComponent = 1.0e30;
+
+TestVec3 Add(const TestVec3 a, const TestVec3 b)
+{
+    return {a.x + b.x, a.y + b.y, a.z + b.z};
+}
+
+TestVec3 Subtract(const TestVec3 a, const TestVec3 b)
+{
+    return {a.x - b.x, a.y - b.y, a.z - b.z};
+}
+
+TestVec3 Scale(const TestVec3 value, const double scale)
+{
+    return {value.x * scale, value.y * scale, value.z * scale};
+}
+
+double Dot(const TestVec3 a, const TestVec3 b)
+{
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+TestVec3 Cross(const TestVec3 a, const TestVec3 b)
+{
+    return {
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x};
+}
+
+bool TestIsFinite3(const TestVec3 value)
+{
+    return std::isfinite(value.x) &&
+        std::isfinite(value.y) &&
+        std::isfinite(value.z) &&
+        std::fabs(value.x) < kTestSafeNormalMaxComponent &&
+        std::fabs(value.y) < kTestSafeNormalMaxComponent &&
+        std::fabs(value.z) < kTestSafeNormalMaxComponent;
+}
+
+TestVec3 TestNormalizeFallback(const TestVec3 fallback)
+{
+    const double lengthSq = Dot(fallback, fallback);
+    if (TestIsFinite3(fallback) &&
+        lengthSq > kTestSafeNormalEpsilon &&
+        lengthSq < kTestSafeNormalMaxLengthSq)
+    {
+        return Scale(fallback, 1.0 / std::sqrt(lengthSq));
+    }
+
+    return {0.0, 0.0, 1.0};
+}
+
+TestVec3 TestSafeNormalize(const TestVec3 value, const TestVec3 fallback)
+{
+    const double lengthSq = Dot(value, value);
+    if (TestIsFinite3(value) &&
+        lengthSq > kTestSafeNormalEpsilon &&
+        lengthSq < kTestSafeNormalMaxLengthSq)
+    {
+        return Scale(value, 1.0 / std::sqrt(lengthSq));
+    }
+
+    return TestNormalizeFallback(fallback);
+}
+
+TestVec3 TestSafePerpendicular(const TestVec3 normal)
+{
+    const TestVec3 safeNormal = TestSafeNormalize(normal, {0.0, 0.0, 1.0});
+    const TestVec3 reference = std::fabs(safeNormal.z) < 0.999
+        ? TestVec3{0.0, 0.0, 1.0}
+        : TestVec3{0.0, 1.0, 0.0};
+    return TestSafeNormalize(Cross(reference, safeNormal), {1.0, 0.0, 0.0});
+}
+
+TestTangentFrame TestBuildSafeTangentFrame(
+    const TestVec3 normal,
+    const TestVec3 tangent,
+    const TestVec3 bitangent)
+{
+    TestTangentFrame frame;
+    frame.normal = TestSafeNormalize(normal, {0.0, 0.0, 1.0});
+
+    const TestVec3 tangentCandidate = Subtract(tangent, Scale(frame.normal, Dot(tangent, frame.normal)));
+    const double tangentLengthSq = Dot(tangentCandidate, tangentCandidate);
+    if (TestIsFinite3(tangentCandidate) &&
+        tangentLengthSq > kTestSafeNormalEpsilon &&
+        tangentLengthSq < kTestSafeNormalMaxLengthSq)
+    {
+        frame.tangent = Scale(tangentCandidate, 1.0 / std::sqrt(tangentLengthSq));
+    }
+    else
+    {
+        frame.tangent = TestSafePerpendicular(frame.normal);
+    }
+
+    const TestVec3 bitangentCandidate = Subtract(
+        Subtract(bitangent, Scale(frame.normal, Dot(bitangent, frame.normal))),
+        Scale(frame.tangent, Dot(bitangent, frame.tangent)));
+    const double bitangentLengthSq = Dot(bitangentCandidate, bitangentCandidate);
+    if (TestIsFinite3(bitangentCandidate) &&
+        bitangentLengthSq > kTestSafeNormalEpsilon &&
+        bitangentLengthSq < kTestSafeNormalMaxLengthSq)
+    {
+        frame.bitangent = Scale(bitangentCandidate, 1.0 / std::sqrt(bitangentLengthSq));
+    }
+    else
+    {
+        frame.bitangent = TestNormalizeFallback(Cross(frame.normal, frame.tangent));
+    }
+
+    return frame;
+}
+
+TestVec3 TestApplyTangentNormal(const TestVec3 tangentNormal, const TestTangentFrame& frame)
+{
+    const TestVec3 mapped = Add(
+        Add(Scale(frame.tangent, tangentNormal.x), Scale(frame.bitangent, tangentNormal.y)),
+        Scale(frame.normal, tangentNormal.z));
+    return TestSafeNormalize(mapped, frame.normal);
 }
 
 uint32_t NextTextureTestMipDimension(const uint32_t value)
@@ -1037,6 +1203,7 @@ TEST(AssetMaterialConversionTests, ConvertedMaterialPayloadUsesRuntimeMaterialXm
     EXPECT_NE(material.serializedPayload.find("<root>"), std::string::npos);
     EXPECT_NE(material.serializedPayload.find("<shader>:Shaders/StandardPBR.hlsl</shader>"), std::string::npos);
     EXPECT_NE(material.serializedPayload.find("<blendable>true</blendable>"), std::string::npos);
+    EXPECT_NE(material.serializedPayload.find("<surfaceMode>Transparent</surfaceMode>"), std::string::npos);
     EXPECT_NE(material.serializedPayload.find("<backfaceCulling>false</backfaceCulling>"), std::string::npos);
     EXPECT_NE(material.serializedPayload.find("<depthWriting>false</depthWriting>"), std::string::npos);
     EXPECT_NE(material.serializedPayload.find("<alphaMode>Blend</alphaMode>"), std::string::npos);
@@ -1052,6 +1219,434 @@ TEST(AssetMaterialConversionTests, ConvertedMaterialPayloadUsesRuntimeMaterialXm
         std::string::npos);
     EXPECT_EQ(material.serializedPayload.find("MATERIAL="), std::string::npos);
     EXPECT_EQ(material.serializedPayload.find("TEXTURE_SLOT="), std::string::npos);
+}
+
+TEST(AssetMaterialConversionTests, GltfBlendMaterialWithDecalNameSerializesAsDecalSurface)
+{
+    const std::string gltf = R"(
+    {
+      "asset": { "version": "2.0" },
+      "materials": [
+        {
+          "name": "dirt_decal",
+          "alphaMode": "BLEND",
+          "pbrMetallicRoughness": {
+            "baseColorFactor": [1.0, 1.0, 1.0, 0.65]
+          }
+        }
+      ]
+    })";
+
+    const auto scene = NLS::Render::Assets::ImportGltfSceneJson(
+        gltf,
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("e1110303-0303-4303-8303-030303030303")),
+        "DecalHero");
+    ASSERT_EQ(scene.materials.size(), 1u);
+
+    const auto material = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        scene.materials.front(),
+        MaterialSourceModel::GltfPbrMetallicRoughness);
+
+    EXPECT_EQ(material.alphaMode, MaterialAlphaMode::Blend);
+    EXPECT_NE(material.serializedPayload.find("<name>dirt_decal</name>"), std::string::npos);
+    EXPECT_NE(material.serializedPayload.find("<surfaceMode>Decal</surfaceMode>"), std::string::npos);
+    EXPECT_NE(material.serializedPayload.find("<blendable>true</blendable>"), std::string::npos);
+    EXPECT_NE(material.serializedPayload.find("<depthWriting>false</depthWriting>"), std::string::npos);
+    EXPECT_EQ(material.serializedPayload.find("<surfaceMode>Transparent</surfaceMode>"), std::string::npos);
+}
+
+TEST(AssetMaterialConversionTests, GltfBlendMaterialWithCamelCaseDecalNameSerializesAsDecalSurface)
+{
+    const std::string gltf = R"(
+    {
+      "asset": { "version": "2.0" },
+      "materials": [
+        {
+          "name": "DirtDecal",
+          "alphaMode": "BLEND",
+          "pbrMetallicRoughness": {
+            "baseColorFactor": [1.0, 1.0, 1.0, 0.5]
+          }
+        }
+      ]
+    })";
+
+    const auto scene = NLS::Render::Assets::ImportGltfSceneJson(
+        gltf,
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("e1110505-0505-4505-8505-050505050505")),
+        "CamelDecalHero");
+    ASSERT_EQ(scene.materials.size(), 1u);
+
+    const auto material = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        scene.materials.front(),
+        MaterialSourceModel::GltfPbrMetallicRoughness);
+
+    EXPECT_EQ(material.alphaMode, MaterialAlphaMode::Blend);
+    EXPECT_NE(material.serializedPayload.find("<surfaceMode>Decal</surfaceMode>"), std::string::npos);
+    EXPECT_EQ(material.serializedPayload.find("<surfaceMode>Transparent</surfaceMode>"), std::string::npos);
+}
+
+TEST(AssetMaterialConversionTests, GltfBlendMaterialWithAcronymDecalNameSerializesAsDecalSurface)
+{
+    const std::string gltf = R"(
+    {
+      "asset": { "version": "2.0" },
+      "materials": [
+        {
+          "name": "UIDecal",
+          "alphaMode": "BLEND",
+          "pbrMetallicRoughness": {
+            "baseColorFactor": [1.0, 1.0, 1.0, 0.5]
+          }
+        }
+      ]
+    })";
+
+    const auto scene = NLS::Render::Assets::ImportGltfSceneJson(
+        gltf,
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("e1110606-0606-4606-8606-060606060606")),
+        "AcronymDecalHero");
+    ASSERT_EQ(scene.materials.size(), 1u);
+
+    const auto material = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        scene.materials.front(),
+        MaterialSourceModel::GltfPbrMetallicRoughness);
+
+    EXPECT_EQ(material.alphaMode, MaterialAlphaMode::Blend);
+    EXPECT_NE(material.serializedPayload.find("<surfaceMode>Decal</surfaceMode>"), std::string::npos);
+    EXPECT_EQ(material.serializedPayload.find("<surfaceMode>Transparent</surfaceMode>"), std::string::npos);
+}
+
+TEST(AssetMaterialConversionTests, GltfBlendMaterialWithoutDecalTokenStaysTransparent)
+{
+    const std::string gltf = R"(
+    {
+      "asset": { "version": "2.0" },
+      "materials": [
+        {
+          "name": "DecalogueGlass",
+          "alphaMode": "BLEND",
+          "pbrMetallicRoughness": {
+            "baseColorFactor": [1.0, 1.0, 1.0, 0.35]
+          }
+        }
+      ]
+    })";
+
+    const auto scene = NLS::Render::Assets::ImportGltfSceneJson(
+        gltf,
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("e1110404-0404-4404-8404-040404040404")),
+        "TransparentHero");
+    ASSERT_EQ(scene.materials.size(), 1u);
+
+    const auto material = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        scene.materials.front(),
+        MaterialSourceModel::GltfPbrMetallicRoughness);
+
+    EXPECT_EQ(material.alphaMode, MaterialAlphaMode::Blend);
+    EXPECT_NE(material.serializedPayload.find("<surfaceMode>Transparent</surfaceMode>"), std::string::npos);
+    EXPECT_EQ(material.serializedPayload.find("<surfaceMode>Decal</surfaceMode>"), std::string::npos);
+    EXPECT_NE(material.serializedPayload.find("<blendable>true</blendable>"), std::string::npos);
+}
+
+TEST(AssetMaterialConversionTests, MaskAlphaModeDoesNotAdvertiseUnimplementedAlphaTestSurfaceMode)
+{
+    const std::string gltf = R"(
+    {
+      "asset": { "version": "2.0" },
+      "materials": [
+        {
+          "name": "MaskedMaterial",
+          "alphaMode": "MASK",
+          "alphaCutoff": 0.35,
+          "pbrMetallicRoughness": {
+            "baseColorFactor": [0.9, 0.8, 0.7, 0.6]
+          }
+        }
+      ]
+    })";
+
+    const auto scene = NLS::Render::Assets::ImportGltfSceneJson(
+        gltf,
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("e1110202-0202-4202-8202-020202020202")),
+        "Hero");
+    ASSERT_EQ(scene.materials.size(), 1u);
+
+    const auto material = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        scene.materials.front(),
+        MaterialSourceModel::GltfPbrMetallicRoughness);
+
+    EXPECT_EQ(material.alphaMode, MaterialAlphaMode::Mask);
+    EXPECT_DOUBLE_EQ(material.alphaCutoff, 0.35);
+    EXPECT_NE(material.serializedPayload.find("<alphaMode>Mask</alphaMode>"), std::string::npos);
+    EXPECT_NE(material.serializedPayload.find("<alphaCutoff>0.350000</alphaCutoff>"), std::string::npos);
+    EXPECT_NE(material.serializedPayload.find("<surfaceMode>Opaque</surfaceMode>"), std::string::npos);
+    EXPECT_NE(material.serializedPayload.find("<blendable>false</blendable>"), std::string::npos);
+    EXPECT_EQ(material.serializedPayload.find("<surfaceMode>AlphaTest</surfaceMode>"), std::string::npos);
+}
+
+TEST(AssetMaterialConversionTests, MaterialLoaderAppliesExplicitDecalSurfaceMode)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_decal_material_" + NLS::Guid::New().ToString());
+    const auto shaderArtifactPath = WriteStandardPbrShaderArtifact(root);
+    static NLS::Core::ResourceManagement::ShaderManager shaderManager;
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::ShaderManager>(shaderManager);
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(shaderArtifactPath.string());
+    ASSERT_NE(shader, nullptr);
+    shaderManager.RegisterResource(":Shaders/StandardPBR.hlsl", shader);
+
+    const auto materialPath = root / "Decal.nmat";
+    {
+        std::ofstream output(materialPath, std::ios::binary | std::ios::trunc);
+        output <<
+            "<root>\n"
+            "  <shader>:Shaders/StandardPBR.hlsl</shader>\n"
+            "  <surfaceMode>Decal</surfaceMode>\n"
+            "  <blendable>true</blendable>\n"
+            "  <backfaceCulling>false</backfaceCulling>\n"
+            "  <frontfaceCulling>false</frontfaceCulling>\n"
+            "  <depthTest>true</depthTest>\n"
+            "  <depthWriting>false</depthWriting>\n"
+            "  <colorWriting>true</colorWriting>\n"
+            "  <gpuInstances>1</gpuInstances>\n"
+            "</root>\n";
+    }
+
+    auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string());
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->GetSurfaceMode(), NLS::Render::Resources::MaterialSurfaceMode::Decal);
+    EXPECT_TRUE(loaded->IsDecal());
+    EXPECT_TRUE(loaded->IsBlendable());
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(loaded));
+    shaderManager.UnloadResources();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::ShaderManager>();
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetMaterialConversionTests, MaterialLoaderInfersLegacyDecalSurfaceModeFromSerializedName)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_legacy_decal_material_" + NLS::Guid::New().ToString());
+    std::filesystem::create_directories(root);
+
+    const auto materialPath = root / "LegacyDirtDecal.nmat";
+    {
+        std::ofstream output(materialPath, std::ios::binary | std::ios::trunc);
+        output <<
+            "<root>\n"
+            "  <shader>?</shader>\n"
+            "  <name>dirt_decal</name>\n"
+            "  <sourceSubAsset>material:material/21</sourceSubAsset>\n"
+            "  <blendable>true</blendable>\n"
+            "</root>\n";
+    }
+
+    auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string());
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->GetSurfaceMode(), NLS::Render::Resources::MaterialSurfaceMode::Decal);
+    EXPECT_TRUE(loaded->IsDecal());
+    EXPECT_TRUE(loaded->IsBlendable());
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(loaded));
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetMaterialConversionTests, MaterialLoaderKeepsLegacyNonDecalBlendAsTransparent)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_legacy_transparent_material_" + NLS::Guid::New().ToString());
+    std::filesystem::create_directories(root);
+
+    const auto materialPath = root / "LegacyGlass.nmat";
+    {
+        std::ofstream output(materialPath, std::ios::binary | std::ios::trunc);
+        output <<
+            "<root>\n"
+            "  <shader>?</shader>\n"
+            "  <name>HeroGlass</name>\n"
+            "  <blendable>true</blendable>\n"
+            "</root>\n";
+    }
+
+    auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string());
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->GetSurfaceMode(), NLS::Render::Resources::MaterialSurfaceMode::Transparent);
+    EXPECT_FALSE(loaded->IsDecal());
+    EXPECT_TRUE(loaded->IsBlendable());
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(loaded));
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetMaterialConversionTests, MaterialLoaderIgnoresDecalTokenInSourceWhenNameIsNonDecal)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_legacy_source_decal_transparent_material_" + NLS::Guid::New().ToString());
+    std::filesystem::create_directories(root);
+
+    const auto materialPath = root / "LegacyGlassFromDecalFolder.nmat";
+    {
+        std::ofstream output(materialPath, std::ios::binary | std::ios::trunc);
+        output <<
+            "<root>\n"
+            "  <shader>?</shader>\n"
+            "  <name>HeroGlass</name>\n"
+            "  <sourceSubAsset>material:decal_folder/hero_glass</sourceSubAsset>\n"
+            "  <blendable>true</blendable>\n"
+            "</root>\n";
+    }
+
+    auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string());
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->GetSurfaceMode(), NLS::Render::Resources::MaterialSurfaceMode::Transparent);
+    EXPECT_FALSE(loaded->IsDecal());
+    EXPECT_TRUE(loaded->IsBlendable());
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(loaded));
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetMaterialConversionTests, MaterialLoaderUsesSourceSubAssetForLegacyDecalWhenNameMissing)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_legacy_source_decal_material_" + NLS::Guid::New().ToString());
+    std::filesystem::create_directories(root);
+
+    const auto materialPath = root / "LegacySourceDecal.nmat";
+    {
+        std::ofstream output(materialPath, std::ios::binary | std::ios::trunc);
+        output <<
+            "<root>\n"
+            "  <shader>?</shader>\n"
+            "  <sourceSubAsset>material:dirt_decal</sourceSubAsset>\n"
+            "  <blendable>true</blendable>\n"
+            "</root>\n";
+    }
+
+    auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string());
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->GetSurfaceMode(), NLS::Render::Resources::MaterialSurfaceMode::Decal);
+    EXPECT_TRUE(loaded->IsDecal());
+    EXPECT_TRUE(loaded->IsBlendable());
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(loaded));
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetMaterialConversionTests, MaterialLoaderExplicitSurfaceModeOverridesLegacyDecalInference)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_explicit_transparent_decal_name_material_" + NLS::Guid::New().ToString());
+    std::filesystem::create_directories(root);
+
+    const auto materialPath = root / "ExplicitTransparentDirtDecal.nmat";
+    {
+        std::ofstream output(materialPath, std::ios::binary | std::ios::trunc);
+        output <<
+            "<root>\n"
+            "  <shader>?</shader>\n"
+            "  <surfaceMode>Transparent</surfaceMode>\n"
+            "  <name>dirt_decal</name>\n"
+            "  <blendable>true</blendable>\n"
+            "</root>\n";
+    }
+
+    auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string());
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->GetSurfaceMode(), NLS::Render::Resources::MaterialSurfaceMode::Transparent);
+    EXPECT_FALSE(loaded->IsDecal());
+    EXPECT_TRUE(loaded->IsBlendable());
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(loaded));
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetMaterialConversionTests, MaterialLoaderExplicitOpaqueSurfaceModeOverridesBlendableFlag)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_explicit_opaque_blendable_material_" + NLS::Guid::New().ToString());
+    std::filesystem::create_directories(root);
+
+    const auto materialPath = root / "ExplicitOpaqueBlendable.nmat";
+    {
+        std::ofstream output(materialPath, std::ios::binary | std::ios::trunc);
+        output <<
+            "<root>\n"
+            "  <shader>?</shader>\n"
+            "  <surfaceMode>Opaque</surfaceMode>\n"
+            "  <name>dirt_decal</name>\n"
+            "  <blendable>true</blendable>\n"
+            "</root>\n";
+    }
+
+    auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string());
+    ASSERT_NE(loaded, nullptr);
+    EXPECT_EQ(loaded->GetSurfaceMode(), NLS::Render::Resources::MaterialSurfaceMode::Opaque);
+    EXPECT_FALSE(loaded->IsBlendable());
+    EXPECT_FALSE(loaded->IsDecal());
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::MaterialLoader::Destroy(loaded));
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetMaterialConversionTests, MaterialLoaderRejectsUnimplementedAlphaTestSurfaceMode)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_alpha_test_surface_mode_material_" + NLS::Guid::New().ToString());
+    std::filesystem::create_directories(root);
+
+    const auto materialPath = root / "AlphaTest.nmat";
+    {
+        std::ofstream output(materialPath, std::ios::binary | std::ios::trunc);
+        output <<
+            "<root>\n"
+            "  <shader>?</shader>\n"
+            "  <surfaceMode>AlphaTest</surfaceMode>\n"
+            "  <blendable>false</blendable>\n"
+            "</root>\n";
+    }
+
+    auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string());
+    EXPECT_EQ(loaded, nullptr);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetMaterialConversionTests, MaterialLoaderRejectsInvalidExplicitSurfaceMode)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_invalid_surface_mode_material_" + NLS::Guid::New().ToString());
+    const auto shaderArtifactPath = WriteStandardPbrShaderArtifact(root);
+    static NLS::Core::ResourceManagement::ShaderManager shaderManager;
+    NLS::Core::ServiceLocator::Provide<NLS::Core::ResourceManagement::ShaderManager>(shaderManager);
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(shaderArtifactPath.string());
+    ASSERT_NE(shader, nullptr);
+    shaderManager.RegisterResource(":Shaders/StandardPBR.hlsl", shader);
+
+    const auto materialPath = root / "InvalidSurfaceMode.nmat";
+    {
+        std::ofstream output(materialPath, std::ios::binary | std::ios::trunc);
+        output <<
+            "<root>\n"
+            "  <shader>:Shaders/StandardPBR.hlsl</shader>\n"
+            "  <surfaceMode>Decaal</surfaceMode>\n"
+            "  <blendable>true</blendable>\n"
+            "</root>\n";
+    }
+
+    auto* loaded = NLS::Render::Resources::Loaders::MaterialLoader::Create(materialPath.string());
+    EXPECT_EQ(loaded, nullptr);
+
+    shaderManager.UnloadResources();
+    NLS::Core::ServiceLocator::Remove<NLS::Core::ResourceManagement::ShaderManager>();
+    std::filesystem::remove_all(root);
 }
 
 TEST(AssetMaterialConversionTests, MaterialConversionCanReferenceShaderArtifactHandle)
@@ -2811,7 +3406,467 @@ TEST(AssetMaterialConversionTests, FbxAndObjChannelsMapOrDiagnoseParserExposedDa
     EXPECT_EQ(convertedObj.workflow, "mtl");
     EXPECT_NE(FindSlot(convertedObj, "BaseColor"), nullptr);
     EXPECT_NE(FindFactor(convertedObj, "SpecularPower"), nullptr);
+    EXPECT_EQ(FindFactor(convertedObj, "Roughness"), nullptr)
+        << "OBJ shininess should remain legacy specular metadata and must not trigger the FBX-only PBR fallback.";
     EXPECT_TRUE(HasDiagnosticCode(convertedObj, "material-illumination-model-unsupported"));
+}
+
+TEST(AssetMaterialConversionTests, FbxShininessFallbackGeneratesPbrRoughness)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("e2010202-0202-4202-8202-020202020202"));
+    scene.textures.push_back({"fbx/texture/roughness", "Roughness", "Roughness.png", "image/png"});
+
+    NLS::Render::Assets::ImportedSceneNamedRecord shininessOnly;
+    shininessOnly.sourceKey = "fbx/material/Glossy";
+    shininessOnly.name = "Glossy";
+    shininessOnly.materialChannels.push_back({"diffuse", {}, {0.8, 0.7, 0.6}, false, 0.0});
+    shininessOnly.materialChannels.push_back({"shininess", {}, {}, true, 64.0});
+
+    const auto convertedShininessOnly = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        shininessOnly,
+        MaterialSourceModel::FbxParserMaterial);
+    const auto* fallbackRoughness = FindFactor(convertedShininessOnly, "Roughness");
+    ASSERT_NE(fallbackRoughness, nullptr)
+        << "FBX shininess must feed the PBR roughness uniform consumed by StandardPBR and DeferredGBuffer.";
+    EXPECT_NEAR(fallbackRoughness->scalar, std::sqrt(2.0 / (64.0 + 2.0)), 1e-6);
+    EXPECT_NE(
+        convertedShininessOnly.serializedPayload.find("<uniform name=\"u_Roughness\" type=\"float\" value=\"0.174078\"/>"),
+        std::string::npos);
+    EXPECT_NE(FindFactor(convertedShininessOnly, "SpecularPower"), nullptr);
+
+    shininessOnly.materialChannels.push_back({"roughness", {}, {}, true, 0.35});
+    const auto convertedExplicitRoughness = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        shininessOnly,
+        MaterialSourceModel::FbxParserMaterial);
+    const auto* explicitRoughness = FindFactor(convertedExplicitRoughness, "Roughness");
+    ASSERT_NE(explicitRoughness, nullptr);
+    EXPECT_DOUBLE_EQ(explicitRoughness->scalar, 0.35)
+        << "Authored roughness must take precedence over the shininess fallback.";
+
+    NLS::Render::Assets::ImportedSceneNamedRecord roughnessTexture;
+    roughnessTexture.sourceKey = "fbx/material/TexturedGloss";
+    roughnessTexture.name = "TexturedGloss";
+    roughnessTexture.materialChannels.push_back({"diffuse", {}, {0.8, 0.7, 0.6}, false, 0.0});
+    roughnessTexture.materialChannels.push_back({"roughness", "fbx/texture/roughness", {}, false, 0.0});
+    roughnessTexture.materialChannels.push_back({"shininess", {}, {}, true, 64.0});
+
+    const auto convertedRoughnessTexture = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        roughnessTexture,
+        MaterialSourceModel::FbxParserMaterial);
+    EXPECT_NE(FindSlot(convertedRoughnessTexture, "Roughness"), nullptr);
+    EXPECT_EQ(FindFactor(convertedRoughnessTexture, "Roughness"), nullptr)
+        << "A roughness texture already supplies the PBR roughness signal; shininess must not multiply it.";
+    EXPECT_NE(
+        convertedRoughnessTexture.serializedPayload.find("<uniform name=\"u_Roughness\" type=\"float\" value=\"1.000000\"/>"),
+        std::string::npos);
+    EXPECT_NE(convertedRoughnessTexture.serializedPayload.find("u_RoughnessMap"), std::string::npos);
+}
+
+TEST(AssetMaterialConversionTests, FbxInvalidRoughnessScalarDoesNotPollutePbrUniform)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("e2010505-0505-4505-8505-050505050505"));
+    scene.textures.push_back({"fbx/texture/roughness", "Roughness", "Roughness.png", "image/png"});
+
+    NLS::Render::Assets::ImportedSceneNamedRecord textured;
+    textured.sourceKey = "fbx/material/InvalidTexturedRoughness";
+    textured.name = "InvalidTexturedRoughness";
+    textured.materialChannels.push_back({"diffuse", {}, {0.5, 0.5, 0.5}, false, 0.0});
+    textured.materialChannels.push_back({"roughness", "fbx/texture/roughness", {}, true, -2.2});
+
+    const auto convertedTextured = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        textured,
+        MaterialSourceModel::FbxParserMaterial);
+    EXPECT_NE(FindSlot(convertedTextured, "Roughness"), nullptr);
+    EXPECT_EQ(FindFactor(convertedTextured, "Roughness"), nullptr)
+        << "Parser sentinel roughness values must not multiply an authored roughness texture into invalid PBR space.";
+    EXPECT_TRUE(HasDiagnosticCode(convertedTextured, "material-invalid-roughness-scalar"));
+    EXPECT_EQ(CountDiagnosticCode(convertedTextured, "material-invalid-roughness-scalar"), 1u);
+    EXPECT_NE(
+        convertedTextured.serializedPayload.find("<uniform name=\"u_Roughness\" type=\"float\" value=\"1.000000\"/>"),
+        std::string::npos);
+    EXPECT_EQ(convertedTextured.serializedPayload.find("-2.200000"), std::string::npos);
+
+    NLS::Render::Assets::ImportedSceneNamedRecord shininessFallback;
+    shininessFallback.sourceKey = "fbx/material/InvalidRoughnessWithShininess";
+    shininessFallback.name = "InvalidRoughnessWithShininess";
+    shininessFallback.materialChannels.push_back({"diffuse", {}, {0.5, 0.5, 0.5}, false, 0.0});
+    shininessFallback.materialChannels.push_back({"roughness", {}, {}, true, -2.2});
+    shininessFallback.materialChannels.push_back({"shininess", {}, {}, true, 64.0});
+
+    const auto convertedFallback = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        shininessFallback,
+        MaterialSourceModel::FbxParserMaterial);
+    const auto* fallbackRoughness = FindFactor(convertedFallback, "Roughness");
+    ASSERT_NE(fallbackRoughness, nullptr)
+        << "Invalid imported roughness must not suppress the FBX shininess fallback.";
+    EXPECT_NEAR(fallbackRoughness->scalar, std::sqrt(2.0 / (64.0 + 2.0)), 1e-6);
+    EXPECT_TRUE(HasDiagnosticCode(convertedFallback, "material-invalid-roughness-scalar"));
+    EXPECT_EQ(CountDiagnosticCode(convertedFallback, "material-invalid-roughness-scalar"), 1u);
+    EXPECT_EQ(convertedFallback.serializedPayload.find("-2.200000"), std::string::npos);
+
+    NLS::Render::Assets::ImportedSceneNamedRecord missingTextureFallback;
+    missingTextureFallback.sourceKey = "fbx/material/InvalidRoughnessMissingTexture";
+    missingTextureFallback.name = "InvalidRoughnessMissingTexture";
+    missingTextureFallback.materialChannels.push_back({"diffuse", {}, {0.5, 0.5, 0.5}, false, 0.0});
+    missingTextureFallback.materialChannels.push_back({"roughness", "fbx/texture/missing", {}, true, -2.2});
+    missingTextureFallback.materialChannels.push_back({"shininess", {}, {}, true, 64.0});
+
+    const auto convertedMissingTextureFallback = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        missingTextureFallback,
+        MaterialSourceModel::FbxParserMaterial);
+    EXPECT_EQ(FindSlot(convertedMissingTextureFallback, "Roughness"), nullptr);
+    const auto* missingTextureFallbackRoughness = FindFactor(convertedMissingTextureFallback, "Roughness");
+    ASSERT_NE(missingTextureFallbackRoughness, nullptr)
+        << "A roughness texture key that failed to resolve must not suppress shininess fallback.";
+    EXPECT_NEAR(missingTextureFallbackRoughness->scalar, std::sqrt(2.0 / (64.0 + 2.0)), 1e-6);
+    EXPECT_TRUE(HasDiagnosticCode(convertedMissingTextureFallback, "material-missing-texture"));
+    EXPECT_TRUE(HasDiagnosticCode(convertedMissingTextureFallback, "material-invalid-roughness-scalar"));
+    EXPECT_EQ(CountDiagnosticCode(convertedMissingTextureFallback, "material-invalid-roughness-scalar"), 1u);
+    EXPECT_EQ(convertedMissingTextureFallback.serializedPayload.find("-2.200000"), std::string::npos);
+
+    const std::array<double, 3> invalidScalars {
+        1.2,
+        std::numeric_limits<double>::infinity(),
+        std::numeric_limits<double>::quiet_NaN()
+    };
+    for (size_t index = 0u; index < invalidScalars.size(); ++index)
+    {
+        NLS::Render::Assets::ImportedSceneNamedRecord invalidScalar;
+        invalidScalar.sourceKey = "fbx/material/InvalidScalar" + std::to_string(index);
+        invalidScalar.name = "InvalidScalar" + std::to_string(index);
+        invalidScalar.materialChannels.push_back({"diffuse", {}, {0.5, 0.5, 0.5}, false, 0.0});
+        invalidScalar.materialChannels.push_back({"roughness", {}, {}, true, invalidScalars[index]});
+
+        const auto convertedInvalidScalar = NLS::Render::Assets::ConvertImportedSceneMaterial(
+            scene,
+            invalidScalar,
+            MaterialSourceModel::FbxParserMaterial);
+        EXPECT_EQ(FindFactor(convertedInvalidScalar, "Roughness"), nullptr);
+        EXPECT_TRUE(HasDiagnosticCode(convertedInvalidScalar, "material-invalid-roughness-scalar"));
+        EXPECT_EQ(CountDiagnosticCode(convertedInvalidScalar, "material-invalid-roughness-scalar"), 1u);
+        EXPECT_NE(
+            convertedInvalidScalar.serializedPayload.find("<uniform name=\"u_Roughness\" type=\"float\" value=\"1.000000\"/>"),
+            std::string::npos);
+        EXPECT_EQ(convertedInvalidScalar.serializedPayload.find("nan"), std::string::npos);
+        EXPECT_EQ(convertedInvalidScalar.serializedPayload.find("inf"), std::string::npos);
+    }
+}
+
+TEST(AssetMaterialConversionTests, FbxTexturedDiffuseDoesNotDarkenBaseColorTexture)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("e2010606-0606-4606-8606-060606060606"));
+    scene.textures.push_back({"fbx/texture/basecolor", "HeroBaseColor", "HeroBaseColor.png", "image/png"});
+
+    NLS::Render::Assets::ImportedSceneNamedRecord textured;
+    textured.sourceKey = "fbx/material/TexturedNeutralDiffuse";
+    textured.name = "TexturedNeutralDiffuse";
+    NLS::Render::Assets::ImportedSceneMaterialChannel neutralDiffuse;
+    neutralDiffuse.name = "diffuse";
+    neutralDiffuse.textureKey = "fbx/texture/basecolor";
+    neutralDiffuse.values = {0.5, 0.5, 0.5};
+    textured.materialChannels.push_back(std::move(neutralDiffuse));
+
+    const auto convertedTextured = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        textured,
+        MaterialSourceModel::FbxParserMaterial);
+    ASSERT_NE(FindSlot(convertedTextured, "BaseColor"), nullptr);
+    EXPECT_EQ(FindFactor(convertedTextured, "BaseColor"), nullptr)
+        << "Nullus treats neutral textured FBX diffuse factors as a compatibility tint so common FBX exports do not halve the sampled texture.";
+    EXPECT_NE(
+        convertedTextured.serializedPayload.find("<uniform name=\"u_Albedo\" type=\"vec4\" value=\"1.000000 1.000000 1.000000 1.000000\"/>"),
+        std::string::npos);
+    EXPECT_TRUE(HasDiagnosticCode(convertedTextured, "material-ignored-fbx-textured-neutral-diffuse-tint"));
+
+    NLS::Render::Assets::ImportedSceneNamedRecord textureless;
+    textureless.sourceKey = "fbx/material/TexturelessDiffuse";
+    textureless.name = "TexturelessDiffuse";
+    textureless.materialChannels.push_back({"diffuse", {}, {0.25, 0.5, 0.75}, false, 0.0});
+
+    const auto convertedTextureless = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        textureless,
+        MaterialSourceModel::FbxParserMaterial);
+    const auto* preservedDiffuse = FindFactor(convertedTextureless, "BaseColor");
+    ASSERT_NE(preservedDiffuse, nullptr);
+    ASSERT_EQ(preservedDiffuse->values.size(), 3u);
+    EXPECT_DOUBLE_EQ(preservedDiffuse->values[0], 0.25);
+    EXPECT_DOUBLE_EQ(preservedDiffuse->values[1], 0.5);
+    EXPECT_DOUBLE_EQ(preservedDiffuse->values[2], 0.75);
+    EXPECT_NE(
+        convertedTextureless.serializedPayload.find("<uniform name=\"u_Albedo\" type=\"vec4\" value=\"0.250000 0.500000 0.750000 1.000000\"/>"),
+        std::string::npos);
+
+    NLS::Render::Assets::ImportedSceneNamedRecord obj;
+    obj.sourceKey = "mtl/material/TexturedTint";
+    obj.name = "TexturedTint";
+    obj.materialChannels.push_back({"diffuse", "fbx/texture/basecolor", {0.5, 0.5, 0.5}, false, 0.0});
+
+    const auto convertedObj = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        obj,
+        MaterialSourceModel::ObjMtl);
+    EXPECT_NE(FindFactor(convertedObj, "BaseColor"), nullptr)
+        << "The FBX compatibility-tint guard must not change OBJ MTL tint compatibility.";
+}
+
+TEST(AssetMaterialConversionTests, FbxTexturedAuthoredDiffuseTintIsPreserved)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("e2010808-0808-4808-8808-080808080808"));
+    scene.textures.push_back({"fbx/texture/basecolor", "TintedBaseColor", "TintedBaseColor.png", "image/png"});
+
+    NLS::Render::Assets::ImportedSceneNamedRecord tinted;
+    tinted.sourceKey = "fbx/material/TexturedAuthoredTint";
+    tinted.name = "TexturedAuthoredTint";
+    tinted.materialChannels.push_back({"diffuse", "fbx/texture/basecolor", {0.8, 0.7, 0.6}, false, 0.0});
+
+    const auto convertedTinted = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        tinted,
+        MaterialSourceModel::FbxParserMaterial);
+
+    ASSERT_NE(FindSlot(convertedTinted, "BaseColor"), nullptr);
+    const auto* preservedTint = FindFactor(convertedTinted, "BaseColor");
+    ASSERT_NE(preservedTint, nullptr)
+        << "The FBX compatibility-tint guard must not discard clearly authored textured diffuse tints.";
+    ASSERT_EQ(preservedTint->values.size(), 3u);
+    EXPECT_DOUBLE_EQ(preservedTint->values[0], 0.8);
+    EXPECT_DOUBLE_EQ(preservedTint->values[1], 0.7);
+    EXPECT_DOUBLE_EQ(preservedTint->values[2], 0.6);
+    EXPECT_NE(
+        convertedTinted.serializedPayload.find("<uniform name=\"u_Albedo\" type=\"vec4\" value=\"0.800000 0.700000 0.600000 1.000000\"/>"),
+        std::string::npos);
+    EXPECT_FALSE(HasDiagnosticCode(convertedTinted, "material-ignored-fbx-textured-neutral-diffuse-tint"));
+}
+
+TEST(AssetMaterialConversionTests, FbxTexturedNeutralDiffuseTintIsIgnoredByCompatibilityPolicy)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("e2010909-0909-4909-8909-090909090909"));
+    scene.textures.push_back({"fbx/texture/basecolor", "HalfTintBaseColor", "HalfTintBaseColor.png", "image/png"});
+
+    NLS::Render::Assets::ImportedSceneNamedRecord tinted;
+    tinted.sourceKey = "fbx/material/TexturedAuthoredHalfTint";
+    tinted.name = "TexturedAuthoredHalfTint";
+    tinted.materialChannels.push_back({"diffuse", "fbx/texture/basecolor", {0.5, 0.5, 0.5}, false, 0.0});
+
+    const auto convertedTinted = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        tinted,
+        MaterialSourceModel::FbxParserMaterial);
+
+    ASSERT_NE(FindSlot(convertedTinted, "BaseColor"), nullptr);
+    EXPECT_EQ(FindFactor(convertedTinted, "BaseColor"), nullptr)
+        << "Nullus intentionally ignores neutral textured FBX diffuse factors by default to match glTF brightness for common FBX exports.";
+    EXPECT_NE(
+        convertedTinted.serializedPayload.find("<uniform name=\"u_Albedo\" type=\"vec4\" value=\"1.000000 1.000000 1.000000 1.000000\"/>"),
+        std::string::npos);
+    EXPECT_TRUE(HasDiagnosticCode(convertedTinted, "material-ignored-fbx-textured-neutral-diffuse-tint"));
+}
+
+TEST(AssetMaterialConversionTests, FbxTexturedNeutralDiffuseCompatibilityPolicyCoversNonHalfGray)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("e2010909-0909-4909-8909-090909090911"));
+    scene.textures.push_back({"fbx/texture/basecolor", "GrayTintBaseColor", "GrayTintBaseColor.png", "image/png"});
+
+    NLS::Render::Assets::ImportedSceneNamedRecord tinted;
+    tinted.sourceKey = "fbx/material/TexturedAuthoredGrayTint";
+    tinted.name = "TexturedAuthoredGrayTint";
+    tinted.materialChannels.push_back({"diffuse", "fbx/texture/basecolor", {0.8, 0.8, 0.8}, false, 0.0});
+
+    const auto convertedTinted = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        tinted,
+        MaterialSourceModel::FbxParserMaterial);
+
+    ASSERT_NE(FindSlot(convertedTinted, "BaseColor"), nullptr);
+    EXPECT_EQ(FindFactor(convertedTinted, "BaseColor"), nullptr);
+    EXPECT_TRUE(HasDiagnosticCode(convertedTinted, "material-ignored-fbx-textured-neutral-diffuse-tint"));
+}
+
+TEST(AssetMaterialConversionTests, FbxTexturedNeutralDiffuseTintCanBePreservedByPolicyOverride)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("e2010909-0909-4909-8909-090909090910"));
+    scene.textures.push_back({"fbx/texture/basecolor", "HalfTintBaseColor", "HalfTintBaseColor.png", "image/png"});
+
+    NLS::Render::Assets::ImportedSceneNamedRecord tinted;
+    tinted.sourceKey = "fbx/material/TexturedAuthoredHalfTint";
+    tinted.name = "TexturedAuthoredHalfTint";
+    tinted.materialChannels.push_back({"diffuse", "fbx/texture/basecolor", {0.5, 0.5, 0.5}, false, 0.0});
+
+    NLS::Render::Assets::MaterialConversionContext context;
+    context.ignoreFbxTexturedNeutralDiffuseTint = false;
+
+    const auto convertedTinted = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        tinted,
+        MaterialSourceModel::FbxParserMaterial,
+        context);
+
+    ASSERT_NE(FindSlot(convertedTinted, "BaseColor"), nullptr);
+    const auto* preservedTint = FindFactor(convertedTinted, "BaseColor");
+    ASSERT_NE(preservedTint, nullptr)
+        << "Projects that rely on authored grayscale FBX tints can disable Nullus' compatibility policy.";
+    ASSERT_EQ(preservedTint->values.size(), 3u);
+    EXPECT_DOUBLE_EQ(preservedTint->values[0], 0.5);
+    EXPECT_DOUBLE_EQ(preservedTint->values[1], 0.5);
+    EXPECT_DOUBLE_EQ(preservedTint->values[2], 0.5);
+    EXPECT_NE(
+        convertedTinted.serializedPayload.find("<uniform name=\"u_Albedo\" type=\"vec4\" value=\"0.500000 0.500000 0.500000 1.000000\"/>"),
+        std::string::npos);
+    EXPECT_FALSE(HasDiagnosticCode(convertedTinted, "material-ignored-fbx-textured-neutral-diffuse-tint"));
+}
+
+TEST(AssetMaterialConversionTests, FbxOpacityTextureWithDecalNameSerializesAsDecalSurface)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("e2010707-0707-4707-8707-070707070707"));
+    scene.textures.push_back({"fbx/texture/albedo", "DirtDecalBaseColor", "DirtDecalBaseColor.png", "image/png"});
+    scene.textures.push_back({"fbx/texture/opacity", "DirtDecalOpacity", "DirtDecalOpacity.png", "image/png"});
+
+    NLS::Render::Assets::ImportedSceneNamedRecord decal;
+    decal.sourceKey = "fbx/material/dirt_decal";
+    decal.name = "dirt_decal";
+    decal.materialChannels.push_back({"diffuse", "fbx/texture/albedo", {1.0, 1.0, 1.0}, false, 0.0});
+    decal.materialChannels.push_back({"opacity", "fbx/texture/opacity", {}, false, 0.0});
+
+    const auto convertedDecal = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        decal,
+        MaterialSourceModel::FbxParserMaterial);
+
+    ASSERT_NE(FindSlot(convertedDecal, "Opacity"), nullptr);
+    EXPECT_EQ(convertedDecal.alphaMode, MaterialAlphaMode::Blend);
+    EXPECT_NE(convertedDecal.serializedPayload.find("<alphaMode>Blend</alphaMode>"), std::string::npos);
+    EXPECT_NE(convertedDecal.serializedPayload.find("<surfaceMode>Decal</surfaceMode>"), std::string::npos);
+    EXPECT_NE(convertedDecal.serializedPayload.find("<depthWriting>false</depthWriting>"), std::string::npos);
+    EXPECT_NE(convertedDecal.serializedPayload.find("u_OpacityMap"), std::string::npos);
+
+    NLS::Render::Assets::ImportedSceneNamedRecord transparent;
+    transparent.sourceKey = "fbx/material/window_mask";
+    transparent.name = "window_mask";
+    transparent.materialChannels.push_back({"opacity", "fbx/texture/opacity", {}, false, 0.0});
+
+    const auto convertedTransparent = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        transparent,
+        MaterialSourceModel::FbxParserMaterial);
+
+    EXPECT_EQ(convertedTransparent.alphaMode, MaterialAlphaMode::Blend);
+    EXPECT_NE(convertedTransparent.serializedPayload.find("<surfaceMode>Transparent</surfaceMode>"), std::string::npos);
+    EXPECT_EQ(convertedTransparent.serializedPayload.find("<surfaceMode>Decal</surfaceMode>"), std::string::npos);
+}
+
+TEST(AssetMaterialConversionTests, FbxBumpOnlyChannelDoesNotEnableNormalMapping)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("e2010303-0303-4303-8303-030303030303"));
+    scene.textures.push_back({"fbx/texture/bump", "HeroBump", "HeroBump.png", "image/png"});
+    scene.textures.push_back({"fbx/texture/normal", "HeroNormal", "HeroNormal.png", "image/png"});
+
+    NLS::Render::Assets::ImportedSceneNamedRecord bumpOnly;
+    bumpOnly.sourceKey = "fbx/material/BumpOnly";
+    bumpOnly.name = "BumpOnly";
+    bumpOnly.materialChannels.push_back({"bump", "fbx/texture/bump", {}, false, 0.0});
+
+    const auto convertedBumpOnly = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        bumpOnly,
+        MaterialSourceModel::FbxParserMaterial);
+
+    EXPECT_EQ(FindSlot(convertedBumpOnly, "Normal"), nullptr)
+        << "FBX bump/height textures are not tangent-space normal maps unless converted during import.";
+    EXPECT_TRUE(HasDiagnosticCode(convertedBumpOnly, "material-ignored-fbx-bump-height-map"));
+    EXPECT_EQ(convertedBumpOnly.serializedPayload.find("u_NormalMap"), std::string::npos);
+    EXPECT_NE(
+        convertedBumpOnly.serializedPayload.find("<uniform name=\"u_EnableNormalMapping\" type=\"float\" value=\"0.000000\"/>"),
+        std::string::npos);
+
+    NLS::Render::Assets::ImportedSceneNamedRecord normal;
+    normal.sourceKey = "fbx/material/NormalMapped";
+    normal.name = "NormalMapped";
+    normal.materialChannels.push_back({"normal", "fbx/texture/normal", {}, false, 0.0});
+
+    const auto convertedNormal = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        normal,
+        MaterialSourceModel::FbxParserMaterial);
+
+    const auto* normalSlot = FindSlot(convertedNormal, "Normal");
+    ASSERT_NE(normalSlot, nullptr);
+    EXPECT_EQ(normalSlot->textureKey, "fbx/texture/normal");
+    EXPECT_NE(convertedNormal.serializedPayload.find("u_NormalMap"), std::string::npos);
+    EXPECT_NE(convertedNormal.serializedPayload.find("HeroNormal.png"), std::string::npos);
+    EXPECT_NE(
+        convertedNormal.serializedPayload.find("<uniform name=\"u_EnableNormalMapping\" type=\"float\" value=\"1.000000\"/>"),
+        std::string::npos);
+
+    NLS::Render::Assets::ImportedSceneNamedRecord normalAndBump;
+    normalAndBump.sourceKey = "fbx/material/NormalAndBump";
+    normalAndBump.name = "NormalAndBump";
+    normalAndBump.materialChannels.push_back({"normal", "fbx/texture/normal", {}, false, 0.0});
+    normalAndBump.materialChannels.push_back({"bump", "fbx/texture/bump", {}, false, 0.0});
+
+    const auto convertedNormalAndBump = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        normalAndBump,
+        MaterialSourceModel::FbxParserMaterial);
+
+    ASSERT_EQ(CountSlots(convertedNormalAndBump, "Normal"), 1u);
+    const auto* authoritativeNormal = FindSlot(convertedNormalAndBump, "Normal");
+    ASSERT_NE(authoritativeNormal, nullptr);
+    EXPECT_EQ(authoritativeNormal->textureKey, "fbx/texture/normal");
+    EXPECT_NE(convertedNormalAndBump.serializedPayload.find("HeroNormal.png"), std::string::npos);
+    EXPECT_EQ(convertedNormalAndBump.serializedPayload.find("HeroBump.png"), std::string::npos);
+}
+
+TEST(AssetMaterialConversionTests, ObjBumpChannelStillUsesNormalMapCompatibility)
+{
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("e2010404-0404-4404-8404-040404040404"));
+    scene.textures.push_back({"obj/texture/bump", "ObjBump", "ObjBump.png", "image/png"});
+
+    NLS::Render::Assets::ImportedSceneNamedRecord obj;
+    obj.sourceKey = "mtl/material/LegacyBump";
+    obj.name = "LegacyBump";
+    obj.materialChannels.push_back({"bump", "obj/texture/bump", {}, false, 0.0});
+
+    const auto converted = NLS::Render::Assets::ConvertImportedSceneMaterial(
+        scene,
+        obj,
+        MaterialSourceModel::ObjMtl);
+
+    const auto* normalSlot = FindSlot(converted, "Normal");
+    ASSERT_NE(normalSlot, nullptr);
+    EXPECT_EQ(normalSlot->textureKey, "obj/texture/bump");
+    EXPECT_EQ(CountSlots(converted, "Normal"), 1u);
+    EXPECT_NE(converted.serializedPayload.find("u_NormalMap"), std::string::npos);
+    EXPECT_NE(converted.serializedPayload.find("ObjBump.png"), std::string::npos);
+    EXPECT_NE(
+        converted.serializedPayload.find("<uniform name=\"u_EnableNormalMapping\" type=\"float\" value=\"1.000000\"/>"),
+        std::string::npos);
 }
 
 TEST(AssetMaterialConversionTests, PbrShadersSampleNormalMapsWhenEnabled)
@@ -2844,6 +3899,110 @@ TEST(AssetMaterialConversionTests, PbrShadersSampleNormalMapsWhenEnabled)
     expectBc5CompatibleNormalDecode(standard);
     expectBc5CompatibleNormalDecode(standardPbr);
     expectBc5CompatibleNormalDecode(deferredGBuffer);
+}
+
+TEST(AssetMaterialConversionTests, PbrShadersGuardDegenerateNormalMapInputs)
+{
+    const auto root = std::filesystem::path(NLS_ROOT_DIR);
+    const auto read = [](const std::filesystem::path& path)
+    {
+        std::ifstream input(path, std::ios::binary);
+        return std::string(
+            std::istreambuf_iterator<char>(input),
+            std::istreambuf_iterator<char>());
+    };
+
+    const auto commonTypes = read(root / "App/Assets/Engine/Shaders/CommonTypes.hlsli");
+    const auto standardPbr = read(root / "App/Assets/Engine/Shaders/StandardPBR.hlsl");
+    const auto deferredGBuffer = read(root / "App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
+    const auto deferredLighting = read(root / "App/Assets/Engine/Shaders/DeferredLighting.hlsl");
+    const auto lightGridCommon = read(root / "App/Assets/Engine/Shaders/LightGridCommon.hlsli");
+    const auto standard = read(root / "App/Assets/Engine/Shaders/Standard.hlsl");
+
+    ASSERT_FALSE(commonTypes.empty());
+    ASSERT_FALSE(lightGridCommon.empty());
+    ASSERT_FALSE(standard.empty());
+    ASSERT_FALSE(standardPbr.empty());
+    ASSERT_FALSE(deferredGBuffer.empty());
+    ASSERT_FALSE(deferredLighting.empty());
+
+    EXPECT_NE(commonTypes.find("NLSIsFinite3"), std::string::npos);
+    EXPECT_NE(commonTypes.find("NLSSafeNormalize"), std::string::npos);
+    EXPECT_NE(commonTypes.find("NLSTransformNormalDirection"), std::string::npos);
+    EXPECT_NE(commonTypes.find("cross(row1, row2)"), std::string::npos);
+    EXPECT_NE(commonTypes.find("NLSSafePerpendicular"), std::string::npos);
+    EXPECT_NE(commonTypes.find("NLSBuildSafeTangentFrame"), std::string::npos);
+    EXPECT_NE(commonTypes.find("NLSApplyTangentNormal"), std::string::npos);
+    EXPECT_NE(commonTypes.find("NLSNormalizeFallback"), std::string::npos);
+    EXPECT_NE(commonTypes.find("cross(frame.normalWS, frame.tangentWS)"), std::string::npos);
+    EXPECT_NE(lightGridCommon.find("NLSSafeLightingNormalize"), std::string::npos);
+    EXPECT_NE(lightGridCommon.find("NLSSafeLightingPerpendicular"), std::string::npos);
+    EXPECT_EQ(lightGridCommon.find("normalize("), std::string::npos);
+
+    const auto expectSafeNormalMapping = [](const std::string& shader)
+    {
+        EXPECT_NE(shader.find("NLSTransformNormalDirection(model3x3, input.Normal)"), std::string::npos);
+        EXPECT_EQ(shader.find("mul((float3x3)model, input.Normal)"), std::string::npos);
+        EXPECT_NE(shader.find("NLSBuildSafeTangentFrame("), std::string::npos);
+        EXPECT_NE(shader.find("NLSSafeNormalize(float3(xy, lerp(reconstructedZ, rgbZ, useRgbZ))"), std::string::npos);
+        EXPECT_NE(shader.find("NLSApplyTangentNormal(tangentNormal, tangentFrame)"), std::string::npos);
+    };
+
+    expectSafeNormalMapping(standard);
+    expectSafeNormalMapping(standardPbr);
+    expectSafeNormalMapping(deferredGBuffer);
+    EXPECT_NE(deferredGBuffer.find("const float surfaceAlpha = u_Albedo.a * albedoSample.a * opacity"), std::string::npos);
+    EXPECT_NE(deferredGBuffer.find("output.Normal = float4(normalWS * 0.5f + 0.5f, surfaceAlpha)"), std::string::npos);
+    EXPECT_NE(deferredGBuffer.find("output.Material = float4(metallic, roughness, ao, surfaceAlpha)"), std::string::npos);
+    EXPECT_NE(deferredLighting.find("NLSDeferredSafeNormalize(encodedNormal * 2.0f - 1.0f"), std::string::npos);
+    EXPECT_EQ(deferredLighting.find("normalize(encodedNormal * 2.0f - 1.0f)"), std::string::npos);
+}
+
+TEST(AssetMaterialConversionTests, SafeTangentFrameFallbacksKeepMappedNormalsFinite)
+{
+    const TestVec3 nanVec {
+        std::numeric_limits<double>::quiet_NaN(),
+        0.0,
+        0.0
+    };
+    const TestVec3 infVec {
+        std::numeric_limits<double>::infinity(),
+        0.0,
+        0.0
+    };
+    const std::array<TestTangentFrame, 5> frames {
+        TestBuildSafeTangentFrame({0.0, 0.0, 1.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}),
+        TestBuildSafeTangentFrame({0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}),
+        TestBuildSafeTangentFrame(nanVec, {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}),
+        TestBuildSafeTangentFrame({0.0, 0.0, 1.0}, infVec, {0.0, 1.0, 0.0}),
+        TestBuildSafeTangentFrame({0.0, 0.0, 1.0}, {1.0, 0.0, 0.0}, {2.0, 0.0, 0.0})
+    };
+    const std::array<TestVec3, 4> tangentNormals {
+        TestVec3{0.0, 0.0, 1.0},
+        TestVec3{0.0, 0.0, 0.0},
+        nanVec,
+        infVec
+    };
+
+    for (const auto& frame : frames)
+    {
+        EXPECT_TRUE(TestIsFinite3(frame.normal));
+        EXPECT_TRUE(TestIsFinite3(frame.tangent));
+        EXPECT_TRUE(TestIsFinite3(frame.bitangent));
+        EXPECT_NEAR(Dot(frame.normal, frame.normal), 1.0, 1e-9);
+        EXPECT_NEAR(Dot(frame.tangent, frame.tangent), 1.0, 1e-9);
+        EXPECT_NEAR(Dot(frame.bitangent, frame.bitangent), 1.0, 1e-9);
+        EXPECT_NEAR(Dot(frame.normal, frame.tangent), 0.0, 1e-9);
+        EXPECT_NEAR(Dot(frame.normal, frame.bitangent), 0.0, 1e-9);
+        EXPECT_NEAR(Dot(frame.tangent, frame.bitangent), 0.0, 1e-9);
+
+        for (const auto tangentNormal : tangentNormals)
+        {
+            const auto mapped = TestApplyTangentNormal(tangentNormal, frame);
+            EXPECT_TRUE(TestIsFinite3(mapped));
+            EXPECT_NEAR(Dot(mapped, mapped), 1.0, 1e-9);
+        }
+    }
 }
 
 TEST(AssetMaterialConversionTests, MissingAndUnsupportedTexturesProduceDiagnosticsWithColorSpacePolicy)

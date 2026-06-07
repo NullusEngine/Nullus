@@ -110,6 +110,23 @@ namespace NLS::Render::RHI
         RHIColorWriteMask colorWriteMask = RHIColorWriteMask::All;
     };
 
+    inline constexpr bool operator==(const RHIRenderTargetBlendStateDesc& lhs, const RHIRenderTargetBlendStateDesc& rhs)
+    {
+        return lhs.blendEnable == rhs.blendEnable &&
+            lhs.srcColor == rhs.srcColor &&
+            lhs.dstColor == rhs.dstColor &&
+            lhs.colorOp == rhs.colorOp &&
+            lhs.srcAlpha == rhs.srcAlpha &&
+            lhs.dstAlpha == rhs.dstAlpha &&
+            lhs.alphaOp == rhs.alphaOp &&
+            lhs.colorWriteMask == rhs.colorWriteMask;
+    }
+
+    inline constexpr bool operator!=(const RHIRenderTargetBlendStateDesc& lhs, const RHIRenderTargetBlendStateDesc& rhs)
+    {
+        return !(lhs == rhs);
+    }
+
     struct NLS_RENDER_API RHIBlendStateDesc
     {
         bool enabled = false;

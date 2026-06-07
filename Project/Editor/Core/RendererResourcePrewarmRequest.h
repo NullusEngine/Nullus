@@ -6,6 +6,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 
 namespace NLS::Render::Resources
 {
@@ -43,4 +44,19 @@ namespace NLS::Editor::Core
     {
         RendererResourcePrewarmRequest prewarm;
     };
+
+    inline PrefabInstancePreviewResourceHandoff CollectPrefabInstancePreviewResourceHandoff(
+        RendererResourcePrewarmRequest& request)
+    {
+        PrefabInstancePreviewResourceHandoff handoff;
+        handoff.prewarm = std::move(request);
+        request = {};
+        return handoff;
+    }
+
+    inline PrefabInstancePreviewResourceHandoff CollectPrefabInstancePreviewResourceHandoff(
+        RendererResourcePrewarmRequest&& request)
+    {
+        return CollectPrefabInstancePreviewResourceHandoff(request);
+    }
 }

@@ -82,6 +82,7 @@ public:
     void Refresh();
 
 private:
+    void DrawPrefabState(Engine::GameObject& p_target);
     void SyncComponentPicker();
 
     Engine::GameObject* m_targetGameObject = nullptr;

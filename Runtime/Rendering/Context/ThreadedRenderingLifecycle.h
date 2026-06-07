@@ -47,7 +47,8 @@ namespace NLS::Render::Context
         Helper,
         GBuffer,
         Lighting,
-        Compute
+        Compute,
+        Decal
     };
 
     struct NLS_RENDER_API RecordedDrawCommandInput
@@ -230,7 +231,8 @@ namespace NLS::Render::Context
         Skybox,
         Helper,
         Auxiliary,
-        Compute
+        Compute,
+        Decal
     };
 
     struct NLS_RENDER_API ParallelDrawCommandBatchMetadata
@@ -293,6 +295,7 @@ namespace NLS::Render::Context
         uint64_t sceneLightCount = 0u;
         uint64_t sceneSkyboxCount = 0u;
         uint64_t visibleOpaqueDrawCount = 0u;
+        uint64_t visibleDecalDrawCount = 0u;
         uint64_t visibleTransparentDrawCount = 0u;
         uint64_t visibleSkyboxDrawCount = 0u;
         uint64_t visibleHelperDrawCount = 0u;
@@ -320,10 +323,12 @@ namespace NLS::Render::Context
         uint64_t sceneGameObjectCount = 0u;
         uint64_t visibleDrawCount = 0u;
         uint64_t opaqueDrawCount = 0u;
+        uint64_t decalDrawCount = 0u;
         uint64_t transparentDrawCount = 0u;
         uint64_t skyboxDrawCount = 0u;
         uint64_t helperDrawCount = 0u;
         bool hasOpaquePass = false;
+        bool hasDecalPass = false;
         bool hasTransparentPass = false;
         bool hasSkyboxPass = false;
         bool hasHelperPass = false;

@@ -251,6 +251,7 @@ std::optional<Render::Context::FrameSnapshot> BaseSceneRenderer::BuildFrameSnaps
 	snapshot->sceneLightCount = static_cast<uint64_t>(fastAccess.lights.size());
 	snapshot->sceneSkyboxCount = static_cast<uint64_t>(fastAccess.skyboxs.size());
 	snapshot->visibleOpaqueDrawCount = 0u;
+	snapshot->visibleDecalDrawCount = 0u;
 	snapshot->visibleTransparentDrawCount = 0u;
 	snapshot->visibleSkyboxDrawCount = 0u;
 	snapshot->visibleHelperDrawCount = 0u;
@@ -262,6 +263,7 @@ void BaseSceneRenderer::RefreshFrameSnapshotVisibility(
 	const AllDrawables& drawables)
 {
 	snapshot.visibleOpaqueDrawCount = static_cast<uint64_t>(drawables.opaques.size());
+	snapshot.visibleDecalDrawCount = static_cast<uint64_t>(drawables.decals.size());
 	snapshot.visibleTransparentDrawCount = static_cast<uint64_t>(drawables.transparents.size());
 	snapshot.visibleSkyboxDrawCount = static_cast<uint64_t>(drawables.skyboxes.size());
 }
@@ -458,6 +460,7 @@ void BaseSceneRenderer::ResolvePreparedScenePassBindingSetPlaceholders(
 		switch (passInput.kind)
 		{
 		case NLS::Render::Context::RenderPassCommandKind::Opaque:
+		case NLS::Render::Context::RenderPassCommandKind::Decal:
 		case NLS::Render::Context::RenderPassCommandKind::Skybox:
 		case NLS::Render::Context::RenderPassCommandKind::Transparent:
 		case NLS::Render::Context::RenderPassCommandKind::GBuffer:
@@ -598,6 +601,7 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 		NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).PumpAsyncLoads(1u);
 
 	OpaqueDrawables opaques;
+	DecalDrawables decals;
 	TransparentDrawables transparents;
 	SkyboxDrawables skyboxes;
 
@@ -640,6 +644,10 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 			opaques.end(),
 			std::make_move_iterator(retainedDrawables.opaques.begin()),
 			std::make_move_iterator(retainedDrawables.opaques.end()));
+		decals.insert(
+			decals.end(),
+			std::make_move_iterator(retainedDrawables.decals.begin()),
+			std::make_move_iterator(retainedDrawables.decals.end()));
 		transparents.insert(
 			transparents.end(),
 			std::make_move_iterator(retainedDrawables.transparents.begin()),
@@ -696,6 +704,7 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 		appendSceneDrawables(*additiveScene, additiveRenderScene, false, true);
 	}
 
+	SortSceneDrawables(decals, std::greater<float>{});
 	SortSceneDrawables(transparents, std::greater<float>{});
 
 	uint32_t nextObjectIndex = 0u;
@@ -726,22 +735,26 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 		}
 	};
 	reassignObjectIndices(opaques);
+	reassignObjectIndices(decals);
 	reassignObjectIndices(skyboxes);
 	reassignObjectIndices(transparents);
 
-	if (!PumpOneVisibleMaterialTexture(opaques))
+	if (!PumpOneVisibleMaterialTexture(opaques) &&
+		!PumpOneVisibleMaterialTexture(decals))
+	{
 		PumpOneVisibleMaterialTexture(transparents);
+	}
 
 	SortSceneDrawables(skyboxes, std::less<float>{});
 	m_rendererStats.RecordSceneParse(
 		static_cast<uint64_t>(opaques.size()),
-		static_cast<uint64_t>(transparents.size()),
+		static_cast<uint64_t>(decals.size() + transparents.size()),
 		static_cast<uint64_t>(skyboxes.size()));
 	auto optimizationStats = m_renderScene.GetLastDrawCallOptimizationStats();
 	optimizationStats.cachedCommandRebuildCount = rebuiltCachedCommandCount;
 	optimizationStats.rawVisibleObjectCount = rawVisibleObjectCount + static_cast<uint64_t>(skyboxes.size());
 	optimizationStats.submittedSceneDrawCount = submittedSceneDrawCount + static_cast<uint64_t>(skyboxes.size());
 	m_rendererStats.RecordDrawCallOptimizationStats(optimizationStats);
-	return { opaques, transparents, skyboxes };
+	return { opaques, decals, transparents, skyboxes };
 }
 }

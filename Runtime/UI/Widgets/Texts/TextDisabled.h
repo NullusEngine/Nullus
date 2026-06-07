@@ -7,7 +7,7 @@ namespace NLS::UI::Widgets
 	/**
 	* Widget to display a disabled text on a panel
 	*/
-	class TextDisabled : public Text
+	class NLS_UI_API TextDisabled : public Text
 	{
 	public:
 		/**

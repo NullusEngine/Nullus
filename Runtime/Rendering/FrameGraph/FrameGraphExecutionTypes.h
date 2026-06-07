@@ -35,7 +35,8 @@ namespace NLS::Render::FrameGraph
 		Transparent,
 		Skybox,
 		Helper,
-		Auxiliary
+		Auxiliary,
+		Decal
 	};
 
 	enum class ThreadedRenderScenePassExecutionMode : uint8_t

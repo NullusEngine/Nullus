@@ -415,6 +415,111 @@ TEST(SceneObjectGraphSerializationTests, SimpleSceneObjectGraphMatchesGoldenOutp
     EXPECT_EQ(output, ReadTextFile(goldenPath));
 }
 
+TEST(SceneObjectGraphSerializationTests, PrefabInstanceRecordsRoundTripAuthoritativeCorrespondenceAndMissingSourceRecoveryPayload)
+{
+    using namespace NLS::Engine::Serialize;
+
+    const auto sceneId = ObjectId(NLS::Guid::Parse("3a1c0000-0000-4000-8000-000000000001"));
+    const auto rootId = ObjectId(NLS::Guid::Parse("3a1c0000-0000-4000-8000-000000000002"));
+    const auto childId = ObjectId(NLS::Guid::Parse("3a1c0000-0000-4000-8000-000000000003"));
+    const auto sourceRootId = ObjectId(NLS::Guid::Parse("3a1c0000-0000-4000-8000-000000000004"));
+    const auto sourceChildId = ObjectId(NLS::Guid::Parse("3a1c0000-0000-4000-8000-000000000005"));
+    const auto addedChildId = ObjectId(NLS::Guid::Parse("3a1c0000-0000-4000-8000-000000000006"));
+    const auto prefabAssetId = AssetId(NLS::Guid::Parse("3a1c0000-0000-4000-8000-000000000010"));
+
+    ObjectGraphDocument document;
+    document.documentId = NLS::Guid::Parse("3a1c0000-0000-4000-8000-000000000020");
+    document.root = sceneId;
+
+    ObjectRecord scene;
+    scene.id = sceneId;
+    scene.localIdentifierInFile = MakeLocalIdentifierInFile(sceneId);
+    scene.typeName = "NLS::Engine::SceneSystem::Scene";
+    scene.debugName = "Prefab Scene";
+    scene.properties.push_back({"gameObjects", PropertyValue::Array({PropertyValue::OwnedReference(rootId)})});
+
+    ObjectRecord root;
+    root.id = rootId;
+    root.localIdentifierInFile = MakeLocalIdentifierInFile(rootId);
+    root.typeName = "NLS::Engine::GameObject";
+    root.debugName = "PrefabInstanceRoot";
+    root.debugPath = "/PrefabInstanceRoot";
+    root.state = ObjectRecordState::Stripped;
+
+    ObjectRecord child;
+    child.id = childId;
+    child.localIdentifierInFile = MakeLocalIdentifierInFile(childId);
+    child.typeName = "NLS::Engine::GameObject";
+    child.debugName = "PrefabInstanceChild";
+    child.debugPath = "/PrefabInstanceRoot/PrefabInstanceChild";
+    child.state = ObjectRecordState::Stripped;
+
+    ObjectRecord addedChild;
+    addedChild.id = addedChildId;
+    addedChild.localIdentifierInFile = MakeLocalIdentifierInFile(addedChildId);
+    addedChild.typeName = "NLS::Engine::GameObject";
+    addedChild.debugName = "SceneOnlyRecoveredChild";
+    addedChild.debugPath = "/PrefabInstanceRoot/SceneOnlyRecoveredChild";
+    addedChild.properties.push_back({"name", PropertyValue::String("SceneOnlyRecoveredChild")});
+    addedChild.properties.push_back({
+        "parent",
+        PropertyValue::ObjectReference(ObjectIdentifier::LocalObject(MakeLocalIdentifierInFile(rootId)))
+    });
+
+    PrefabInstanceRecord instance;
+    instance.instanceRoot = rootId;
+    instance.sourcePrefab = ObjectIdentifier::Asset(
+        prefabAssetId,
+        MakeLocalIdentifierInFile(prefabAssetId.GetGuid(), "prefab:RoundTripAuthoritativePrefab"),
+        "prefab:RoundTripAuthoritativePrefab");
+    instance.generatedReadOnly = true;
+    instance.correspondence.push_back({sourceRootId, rootId});
+    instance.correspondence.push_back({sourceChildId, childId});
+    instance.modifications.push_back(
+        PatchOperation::ReplaceProperty(rootId, "name", PropertyValue::String("SceneOverrideName")));
+    instance.modifications.push_back(PatchOperation::InsertOwned(rootId, "children", addedChildId, 1u));
+    instance.addedObjects.push_back(std::move(addedChild));
+
+    document.objects.push_back(std::move(root));
+    document.objects.push_back(std::move(child));
+    document.objects.push_back(std::move(scene));
+    document.prefabInstances.push_back(std::move(instance));
+
+    ASSERT_FALSE(document.Validate().HasErrors());
+
+    const auto output = ObjectGraphWriter::Write(document);
+    EXPECT_NE(output.find("\"prefabInstances\""), std::string::npos);
+    EXPECT_NE(output.find("\"sourcePrefab\""), std::string::npos);
+    EXPECT_NE(output.find("\"generatedReadOnly\": true"), std::string::npos);
+    EXPECT_NE(output.find("\"addedObjects\""), std::string::npos);
+    EXPECT_NE(output.find("\"correspondence\""), std::string::npos);
+
+    const auto parsed = ObjectGraphReader::Read(output);
+    ASSERT_TRUE(parsed.has_value());
+    ASSERT_FALSE(parsed->Validate().HasErrors());
+    ASSERT_EQ(parsed->prefabInstances.size(), 1u);
+
+    const auto& parsedInstance = parsed->prefabInstances.front();
+    EXPECT_EQ(parsedInstance.instanceRoot, rootId);
+    EXPECT_EQ(parsedInstance.sourcePrefab.guid, prefabAssetId.GetGuid());
+    EXPECT_EQ(parsedInstance.sourcePrefab.filePath, "prefab:RoundTripAuthoritativePrefab");
+    EXPECT_TRUE(parsedInstance.generatedReadOnly);
+    ASSERT_EQ(parsedInstance.correspondence.size(), 2u);
+    EXPECT_EQ(parsedInstance.correspondence[0].sourceObject, sourceRootId);
+    EXPECT_EQ(parsedInstance.correspondence[0].instanceObject, rootId);
+    ASSERT_EQ(parsedInstance.modifications.size(), 2u);
+    EXPECT_EQ(parsedInstance.modifications[0].type, PatchOperationType::ReplaceProperty);
+    EXPECT_EQ(parsedInstance.modifications[0].target, rootId);
+    EXPECT_EQ(parsedInstance.modifications[0].property, "name");
+    EXPECT_EQ(parsedInstance.modifications[0].value.GetString(), "SceneOverrideName");
+    EXPECT_EQ(parsedInstance.modifications[1].type, PatchOperationType::InsertOwned);
+    EXPECT_EQ(parsedInstance.modifications[1].object, addedChildId);
+    EXPECT_EQ(parsedInstance.modifications[1].index, 1u);
+    ASSERT_EQ(parsedInstance.addedObjects.size(), 1u);
+    EXPECT_EQ(parsedInstance.addedObjects[0].id, addedChildId);
+    EXPECT_EQ(parsedInstance.addedObjects[0].debugName, "SceneOnlyRecoveredChild");
+}
+
 TEST(SceneObjectGraphSerializationTests, SceneRoundTripsGameObjectsComponentsParentsAndCaches)
 {
     using namespace NLS::Engine;
@@ -538,6 +643,79 @@ TEST(SceneObjectGraphSerializationTests, ResourceRendererReferencesSerializeAsUn
     ASSERT_EQ(materials->value.GetArray()[0].GetKind(), PropertyValue::Kind::ObjectReference);
     EXPECT_EQ(materials->value.GetArray()[0].GetObjectReference().filePath, "Library/Artifacts/Hero/materials/body.nmat");
     EXPECT_NE(materials->value.GetArray()[0].GetObjectReference().localIdentifierInFile, 0);
+}
+
+TEST(SceneObjectGraphSerializationTests, SceneGraphActivationDoesNotWaitForGeneratedPrefabRendererResources)
+{
+    using namespace NLS::Engine::Serialize;
+
+    PersistentManager::Instance().Clear();
+
+    auto document = MakeSimpleSceneDocument();
+    auto& gameObject = document.objects.front();
+    const auto meshFilterId = ObjectId(NLS::Guid::Parse("e1010101-0101-4101-8101-010101010101"));
+    const auto meshRendererId = ObjectId(NLS::Guid::Parse("e2020202-0202-4202-8202-020202020202"));
+    auto* components = FindMutableProperty(gameObject, "components");
+    ASSERT_NE(components, nullptr);
+    components->value = PropertyValue::Array({
+        PropertyValue::OwnedReference(meshFilterId),
+        PropertyValue::OwnedReference(meshRendererId),
+        components->value.GetArray().front()
+    });
+
+    const auto meshAssetId = AssetId(NLS::Guid::Parse("e3030303-0303-4303-8303-030303030303"));
+    ObjectRecord meshFilter;
+    meshFilter.id = meshFilterId;
+    meshFilter.localIdentifierInFile = MakeLocalIdentifierInFile(meshFilterId);
+    meshFilter.typeName = "NLS::Engine::Components::MeshFilter";
+    meshFilter.debugName = "MeshFilter";
+    meshFilter.properties.push_back({
+        "mesh",
+        PropertyValue::ObjectReference(ObjectIdentifier::Asset(
+            meshAssetId,
+            MakeLocalIdentifierInFile(meshAssetId.GetGuid(), "Library/Artifacts/StreamingHero/body.nmesh"),
+            "Library/Artifacts/StreamingHero/body.nmesh"))
+    });
+
+    const auto materialAssetId = AssetId(NLS::Guid::Parse("e4040404-0404-4404-8404-040404040404"));
+    ObjectRecord meshRenderer;
+    meshRenderer.id = meshRendererId;
+    meshRenderer.localIdentifierInFile = MakeLocalIdentifierInFile(meshRendererId);
+    meshRenderer.typeName = "NLS::Engine::Components::MeshRenderer";
+    meshRenderer.debugName = "MeshRenderer";
+    meshRenderer.properties.push_back({
+        "materials",
+        PropertyValue::Array({
+            PropertyValue::ObjectReference(ObjectIdentifier::Asset(
+                materialAssetId,
+                MakeLocalIdentifierInFile(materialAssetId.GetGuid(), "Library/Artifacts/StreamingHero/body.nmat"),
+                "Library/Artifacts/StreamingHero/body.nmat"))
+        })
+    });
+
+    document.objects.insert(document.objects.begin() + 1, std::move(meshFilter));
+    document.objects.insert(document.objects.begin() + 2, std::move(meshRenderer));
+
+    LoadPolicy policy;
+    policy.deferAssetReferenceResolution = true;
+    auto result = ObjectGraphInstantiator::InstantiateScene(document, policy);
+
+    ASSERT_NE(result.scene, nullptr);
+    auto* loadedObject = result.scene->FindGameObjectByName("Player");
+    ASSERT_NE(loadedObject, nullptr)
+        << "Scene graph activation should create the GameObject before generated/model prefab renderer resources finish loading.";
+
+    auto* loadedMeshFilter = loadedObject->GetComponent<NLS::Engine::Components::MeshFilter>();
+    ASSERT_NE(loadedMeshFilter, nullptr);
+    EXPECT_EQ(loadedMeshFilter->GetModelPath(), "Library/Artifacts/StreamingHero/body.nmesh");
+    EXPECT_EQ(loadedMeshFilter->ResolveMesh(), nullptr);
+
+    auto* loadedRenderer = loadedObject->GetComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(loadedRenderer, nullptr);
+    const auto materialPaths = loadedRenderer->GetMaterialPaths();
+    ASSERT_EQ(materialPaths.size(), 1u);
+    EXPECT_EQ(materialPaths[0], "Library/Artifacts/StreamingHero/body.nmat");
+    EXPECT_EQ(loadedRenderer->GetMaterialAtIndex(0), nullptr);
 }
 
 #if 0

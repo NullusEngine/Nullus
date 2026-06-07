@@ -2229,3 +2229,44 @@ TEST(EditorAssetDatabaseTests, LegacyProjectRootFacadeDoesNotImportLibraryArtifa
 
     std::filesystem::remove_all(root);
 }
+
+TEST(EditorAssetDatabaseTests, LegacyProjectRootFacadeOnlyGeneratesMetaBelowAssets)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(root / "TestProject.nullus", "name=TestProject\n");
+    WriteText(root / "help.txt", "project notes");
+    WriteText(root / "Assets" / "Models" / "Hero.gltf", R"({"asset":{"version":"2.0"}})");
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+
+    EXPECT_FALSE(std::filesystem::exists(root / "TestProject.nullus.meta"));
+    EXPECT_FALSE(std::filesystem::exists(root / "help.txt.meta"));
+    EXPECT_TRUE(std::filesystem::exists(root / "Assets" / "Models" / "Hero.gltf.meta"));
+    EXPECT_TRUE(database.AssetPathToGUID("TestProject.nullus").empty());
+    EXPECT_TRUE(database.AssetPathToGUID("help.txt").empty());
+    EXPECT_FALSE(database.AssetPathToGUID("Assets/Models/Hero.gltf").empty());
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(EditorAssetDatabaseTests, LegacyFilesystemRootWithAssetsChildKeepsScanningSiblings)
+{
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeEditorAssetTestRoot();
+    WriteText(root / "Assets" / "Models" / "Hero.gltf", R"({"asset":{"version":"2.0"}})");
+    WriteText(root / "Packages" / "Starter" / "Tree.obj", "o Tree");
+
+    AssetDatabaseFacade database({root});
+    ASSERT_TRUE(database.Refresh());
+
+    EXPECT_TRUE(std::filesystem::exists(root / "Assets" / "Models" / "Hero.gltf.meta"));
+    EXPECT_TRUE(std::filesystem::exists(root / "Packages" / "Starter" / "Tree.obj.meta"));
+    EXPECT_FALSE(database.AssetPathToGUID("Assets/Models/Hero.gltf").empty());
+    EXPECT_FALSE(database.AssetPathToGUID("Packages/Starter/Tree.obj").empty());
+
+    std::filesystem::remove_all(root);
+}

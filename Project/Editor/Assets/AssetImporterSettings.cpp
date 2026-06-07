@@ -118,6 +118,10 @@ ModelImporterSettings ModelImporterSettingsFromSerialized(
     result.importMorphTargets = BoolFromImporterSettings(settings, "MODEL_IMPORT_MORPH_TARGETS", result.importMorphTargets);
     result.importCameras = BoolFromImporterSettings(settings, "MODEL_IMPORT_CAMERAS", result.importCameras);
     result.importLights = BoolFromImporterSettings(settings, "MODEL_IMPORT_LIGHTS", result.importLights);
+    result.ignoreFbxTexturedNeutralDiffuseTint = BoolFromImporterSettings(
+        settings,
+        kModelFbxIgnoreTexturedNeutralDiffuseTintSetting,
+        result.ignoreFbxTexturedNeutralDiffuseTint);
     return result;
 }
 
@@ -137,6 +141,7 @@ NLS::Render::Assets::SceneImportSettings ToSceneImportSettings(const ModelImport
     result.importMorphTargets = settings.importMorphTargets;
     result.importCameras = settings.importCameras;
     result.importLights = settings.importLights;
+    result.ignoreFbxTexturedNeutralDiffuseTint = settings.ignoreFbxTexturedNeutralDiffuseTint;
     return result;
 }
 

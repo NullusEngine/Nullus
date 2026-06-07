@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <stdexcept>
 #include <utility>
 
 #include "Profiling/Profiler.h"
@@ -34,6 +35,34 @@ namespace NLS::Render::FrameGraph
             FrameGraphResource depth = -1;
             FrameGraphResource outputColor = -1;
             FrameGraphResource outputDepth = -1;
+        };
+
+        struct DeferredTransparentGraphPassData
+        {
+            FrameGraphResource gbufferDepth = -1;
+            FrameGraphResource outputColor = -1;
+            FrameGraphResource outputDepth = -1;
+        };
+
+        struct DeferredScenePassDescriptorRange
+        {
+            std::array<DeferredScenePassDescriptor, 4u> descriptors{};
+            size_t count = 0u;
+
+            const DeferredScenePassDescriptor* begin() const
+            {
+                return descriptors.data();
+            }
+
+            const DeferredScenePassDescriptor* end() const
+            {
+                return descriptors.data() + count;
+            }
+
+            size_t size() const
+            {
+                return count;
+            }
         };
 
         bool TextureWrapperMatchesHandle(
@@ -325,6 +354,35 @@ namespace NLS::Render::FrameGraph
                 });
         }
 
+        bool HasTextureResourceAccess(
+            const NLS::Render::Context::RenderPassCommandInput& passInput,
+            const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
+            const NLS::Render::RHI::RHISubresourceRange& subresourceRange,
+            const NLS::Render::Context::ResourceAccessMode mode)
+        {
+            if (texture == nullptr)
+                return true;
+
+            return std::any_of(
+                passInput.textureResourceAccesses.begin(),
+                passInput.textureResourceAccesses.end(),
+                [&texture, &subresourceRange, mode](const NLS::Render::Context::TextureResourceAccess& access)
+                {
+                    if (access.texture != texture || access.mode != mode)
+                        return false;
+
+                    const auto accessRange = NLS::Render::RHI::NormalizeTextureSubresourceRange(
+                        texture->GetDesc(),
+                        access.subresourceRange);
+                    const auto requestedRange = NLS::Render::RHI::NormalizeTextureSubresourceRange(
+                        texture->GetDesc(),
+                        subresourceRange);
+                    return accessRange.has_value() &&
+                        requestedRange.has_value() &&
+                        NLS::Render::RHI::DoesSubresourceRangeCover(*accessRange, *requestedRange);
+                });
+        }
+
         void AddTextureResourceAccess(
             NLS::Render::Context::RenderPassCommandInput& passInput,
             const std::shared_ptr<NLS::Render::RHI::RHITexture>& texture,
@@ -365,9 +423,18 @@ namespace NLS::Render::FrameGraph
                 passInput.textureResourceAccesses.end());
         }
 
+        void AddDecalColorAttachmentResourceAccesses(
+            NLS::Render::Context::RenderPassCommandInput& passInput);
+
         void AddColorAttachmentWriteResourceAccesses(
             NLS::Render::Context::RenderPassCommandInput& passInput)
         {
+            if (passInput.kind == NLS::Render::Context::RenderPassCommandKind::Decal)
+            {
+                AddDecalColorAttachmentResourceAccesses(passInput);
+                return;
+            }
+
             for (const auto& colorView : passInput.colorAttachmentViews)
             {
                 const auto& texture = colorView != nullptr ? colorView->GetTexture() : nullptr;
@@ -389,11 +456,41 @@ namespace NLS::Render::FrameGraph
             }
         }
 
-        void AttachDeferredGBufferDepthForHelperPasses(
+        void AddDecalColorAttachmentResourceAccesses(
+            NLS::Render::Context::RenderPassCommandInput& passInput)
+        {
+            // The pass binds the full GBuffer MRT set; current color decals write albedo
+            // only through their PSO color-write masks.
+            for (size_t index = 0u; index < passInput.colorAttachmentViews.size(); ++index)
+            {
+                const auto& colorView = passInput.colorAttachmentViews[index];
+                const auto& texture = colorView != nullptr ? colorView->GetTexture() : nullptr;
+                const auto subresourceRange = colorView != nullptr
+                    ? colorView->GetDesc().subresourceRange
+                    : NLS::Render::RHI::RHISubresourceRange{};
+                if (HasTextureWriteResourceAccess(passInput, texture, subresourceRange))
+                    continue;
+
+                AddTextureResourceAccess(
+                    passInput,
+                    texture,
+                    subresourceRange,
+                    NLS::Render::Context::ResourceAccessMode::Write,
+                    NLS::Render::RHI::ResourceState::RenderTarget,
+                    NLS::Render::RHI::PipelineStageMask::RenderTarget,
+                    NLS::Render::RHI::AccessMask::ColorAttachmentRead |
+                        NLS::Render::RHI::AccessMask::ColorAttachmentWrite);
+            }
+        }
+
+        void AttachDeferredGBufferDepthForPostLightingPasses(
             NLS::Render::Context::RenderPassCommandInput& passInput,
             const DeferredPreparedSceneResources& resources)
         {
-            if (passInput.kind != NLS::Render::Context::RenderPassCommandKind::Helper ||
+            const bool needsDeferredDepth =
+                passInput.kind == NLS::Render::Context::RenderPassCommandKind::Transparent ||
+                passInput.kind == NLS::Render::Context::RenderPassCommandKind::Helper;
+            if (!needsDeferredDepth ||
                 !passInput.usesDepthStencilAttachment ||
                 resources.gbufferDepthView == nullptr)
             {
@@ -487,6 +584,29 @@ namespace NLS::Render::FrameGraph
         }
 
         template<typename TExecuteFn>
+        const DeferredGBufferGraphPassData& AddDeferredCompiledDecalPass(
+            ::FrameGraph& frameGraph,
+            const CompiledThreadedRenderSceneGraphPass& compiledPass,
+            const DeferredGBufferGraphPassData* gBufferPassData,
+            TExecuteFn&& execute)
+        {
+            return AddExecutingMetadataPass<DeferredGBufferGraphPassData>(
+                frameGraph,
+                compiledPass,
+                [gBufferPassData](::FrameGraph::Builder& builder, DeferredGBufferGraphPassData& data)
+                {
+                    if (gBufferPassData == nullptr)
+                        return;
+
+                    data.albedo = builder.write(gBufferPassData->albedo);
+                    data.normal = builder.write(gBufferPassData->normal);
+                    data.material = builder.write(gBufferPassData->material);
+                    data.depth = builder.read(gBufferPassData->depth);
+                },
+                std::forward<TExecuteFn>(execute));
+        }
+
+        template<typename TExecuteFn>
         void AddDeferredCompiledLightingPass(
             ::FrameGraph& frameGraph,
             const CompiledThreadedRenderSceneGraphPass& compiledPass,
@@ -513,13 +633,43 @@ namespace NLS::Render::FrameGraph
                 std::forward<TExecuteFn>(execute));
         }
 
-        template<typename TAddGBufferPassFn, typename TAddLightingPassFn>
+        template<typename TExecuteFn>
+        void AddDeferredCompiledTransparentPass(
+            ::FrameGraph& frameGraph,
+            const CompiledThreadedRenderSceneGraphPass& compiledPass,
+            ScenePassOutputResourceState& outputState,
+            const DeferredGBufferGraphPassData* gBufferPassData,
+            TExecuteFn&& execute)
+        {
+            AddExecutingSceneOutputPass<
+                DeferredTransparentGraphPassData,
+                &DeferredTransparentGraphPassData::outputColor,
+                &DeferredTransparentGraphPassData::outputDepth>(
+                frameGraph,
+                compiledPass,
+                outputState,
+                [gBufferPassData](::FrameGraph::Builder& builder, DeferredTransparentGraphPassData& data)
+                {
+                    if (gBufferPassData == nullptr)
+                        return;
+                    data.gbufferDepth = builder.read(gBufferPassData->depth);
+                },
+                std::forward<TExecuteFn>(execute));
+        }
+
+        template<
+            typename TAddGBufferPassFn,
+            typename TAddDecalPassFn,
+            typename TAddLightingPassFn,
+            typename TAddTransparentPassFn>
         void DispatchDeferredCompiledGraphPasses(
             ::FrameGraph& frameGraph,
             const PreparedComputeDispatchSource& preparedComputeSource,
             const std::vector<CompiledThreadedRenderSceneGraphPass>& compiledPasses,
             TAddGBufferPassFn&& addGBufferPass,
-            TAddLightingPassFn&& addLightingPass)
+            TAddDecalPassFn&& addDecalPass,
+            TAddLightingPassFn&& addLightingPass,
+            TAddTransparentPassFn&& addTransparentPass)
         {
             const DeferredGBufferGraphPassData* gBufferPassData = nullptr;
             ScenePassOutputResourceState outputState;
@@ -540,8 +690,15 @@ namespace NLS::Render::FrameGraph
                 case DeferredScenePassExecutionKind::GBuffer:
                     gBufferPassData = &addGBufferPass(compiledPass);
                     break;
+                case DeferredScenePassExecutionKind::Decal:
+                    if (gBufferPassData != nullptr)
+                        gBufferPassData = &addDecalPass(compiledPass, gBufferPassData);
+                    break;
                 case DeferredScenePassExecutionKind::Lighting:
                     addLightingPass(compiledPass, outputState, gBufferPassData);
+                    break;
+                case DeferredScenePassExecutionKind::Transparent:
+                    addTransparentPass(compiledPass, outputState, gBufferPassData);
                     break;
                 default:
                     break;
@@ -627,13 +784,109 @@ namespace NLS::Render::FrameGraph
                 resources.gbufferDepth >= 0;
         }
 
+        const NLS::Render::Context::RenderPassCommandInput* FindPackagePassInputByKind(
+            const NLS::Render::Context::RenderScenePackage& package,
+            const NLS::Render::Context::RenderPassCommandKind kind)
+        {
+            const auto passInput = std::find_if(
+                package.passCommandInputs.begin(),
+                package.passCommandInputs.end(),
+                [kind](const NLS::Render::Context::RenderPassCommandInput& input)
+                {
+                    return input.kind == kind;
+                });
+            return passInput != package.passCommandInputs.end() ? &(*passInput) : nullptr;
+        }
+
+        bool HasTypedRecordedDrawCommands(
+            const NLS::Render::Context::RenderPassCommandInput* passInput)
+        {
+            return passInput != nullptr && !passInput->recordedDrawCommands.empty();
+        }
+
+        const NLS::Render::Context::RenderPassCommandInput* FindDeferredPreparedScenePassInput(
+            const NLS::Render::Context::RenderScenePackage& package,
+            const DeferredScenePassExecutionKind executionKind)
+        {
+            switch (executionKind)
+            {
+            case DeferredScenePassExecutionKind::GBuffer:
+            {
+                const auto* gbufferInput = FindPackagePassInputByKind(
+                    package,
+                    NLS::Render::Context::RenderPassCommandKind::GBuffer);
+                const auto* opaqueInput = FindPackagePassInputByKind(
+                    package,
+                    NLS::Render::Context::RenderPassCommandKind::Opaque);
+                if (HasTypedRecordedDrawCommands(gbufferInput) || opaqueInput == nullptr)
+                    return gbufferInput;
+                return opaqueInput;
+            }
+            case DeferredScenePassExecutionKind::Decal:
+                return FindPackagePassInputByKind(package, NLS::Render::Context::RenderPassCommandKind::Decal);
+            case DeferredScenePassExecutionKind::Lighting:
+                return FindPackagePassInputByKind(package, NLS::Render::Context::RenderPassCommandKind::Lighting);
+            case DeferredScenePassExecutionKind::Transparent:
+                return FindPackagePassInputByKind(package, NLS::Render::Context::RenderPassCommandKind::Transparent);
+            default:
+                return nullptr;
+            }
+        }
+
+        void ValidateDeferredTypedRecordedDrawSource(
+            const char* passName,
+            const NLS::Render::Context::RenderPassCommandInput& typedPassInput,
+            const uint64_t expectedDrawCount)
+        {
+            if (typedPassInput.drawCount != expectedDrawCount ||
+                static_cast<uint64_t>(typedPassInput.recordedDrawCommands.size()) != expectedDrawCount)
+            {
+                throw std::invalid_argument(
+                    std::string("Deferred typed pass input recorded draw count does not match declared drawCount for ") +
+                    passName + ".");
+            }
+        }
+
+        void AssignDeferredRecordedDrawCommands(
+            NLS::Render::Context::RenderPassCommandInput& passInput,
+            const NLS::Render::Context::RenderPassCommandInput* typedPassInput,
+            const std::vector<NLS::Render::Context::RecordedDrawCommandInput>& fallbackRecordedDrawCommands,
+            const uint64_t fallbackBeginOffset,
+            const uint64_t drawCount,
+            const char* passName)
+        {
+            if (HasTypedRecordedDrawCommands(typedPassInput))
+            {
+                ValidateDeferredTypedRecordedDrawSource(
+                    passName,
+                    *typedPassInput,
+                    drawCount);
+                passInput.recordedDrawCommands = typedPassInput->recordedDrawCommands;
+                return;
+            }
+
+            if (fallbackRecordedDrawCommands.size() <= fallbackBeginOffset || drawCount == 0u)
+                return;
+
+            const auto begin =
+                fallbackRecordedDrawCommands.begin() + static_cast<std::ptrdiff_t>(fallbackBeginOffset);
+            const auto endOffset = static_cast<size_t>(
+                std::min<uint64_t>(
+                    fallbackBeginOffset + drawCount,
+                    static_cast<uint64_t>(fallbackRecordedDrawCommands.size())));
+            passInput.recordedDrawCommands.assign(
+                begin,
+                fallbackRecordedDrawCommands.begin() + static_cast<std::ptrdiff_t>(endOffset));
+        }
+
         NLS::Render::Context::RenderPassCommandInput BuildDeferredScenePassInput(
             const CompiledThreadedRenderSceneGraphPass& compiledPass,
             const NLS::Render::Context::RenderScenePackage& package,
             const PreparedComputeDispatchSource& preparedComputeSource,
             const uint64_t opaqueDrawCount,
+            const uint64_t decalDrawCount,
             const uint64_t lightingDrawCount,
-            const std::vector<NLS::Render::Context::RecordedDrawCommandInput>& recordedDrawCommands,
+            const uint64_t transparentDrawCount,
             const DeferredPreparedSceneResources& resources)
         {
             NLS::Render::Context::RenderPassCommandInput passInput;
@@ -646,16 +899,19 @@ namespace NLS::Render::FrameGraph
             }
 
             passInput = MakeCompiledThreadedRenderPassCommandInput(compiledPass);
-            switch (GetDeferredScenePassExecutionKind(compiledPass.metadata.commandKind))
+            const auto executionKind = GetDeferredScenePassExecutionKind(compiledPass.metadata.commandKind);
+            const auto* typedPassInput = FindDeferredPreparedScenePassInput(package, executionKind);
+            switch (executionKind)
             {
             case DeferredScenePassExecutionKind::GBuffer:
                 passInput.drawCount = opaqueDrawCount;
-                if (recordedDrawCommands.size() >= opaqueDrawCount)
-                {
-                    passInput.recordedDrawCommands.assign(
-                        recordedDrawCommands.begin(),
-                        recordedDrawCommands.begin() + static_cast<std::ptrdiff_t>(opaqueDrawCount));
-                }
+                AssignDeferredRecordedDrawCommands(
+                    passInput,
+                    typedPassInput,
+                    package.recordedDrawCommands,
+                    0u,
+                    opaqueDrawCount,
+                    "GBuffer");
                 passInput.requiresFrameData = true;
                 passInput.requiresObjectData = true;
                 passInput.targetsSwapchain = false;
@@ -688,20 +944,51 @@ namespace NLS::Render::FrameGraph
                         NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite);
                 }
                 break;
-            case DeferredScenePassExecutionKind::Lighting:
-                passInput.drawCount = lightingDrawCount;
-                if (recordedDrawCommands.size() > opaqueDrawCount && lightingDrawCount > 0u)
+            case DeferredScenePassExecutionKind::Decal:
+            {
+                passInput.drawCount = decalDrawCount;
+                const auto decalBeginOffset = opaqueDrawCount;
+                AssignDeferredRecordedDrawCommands(
+                    passInput,
+                    typedPassInput,
+                    package.recordedDrawCommands,
+                    decalBeginOffset,
+                    decalDrawCount,
+                    "Decal");
+                passInput.requiresFrameData = true;
+                passInput.requiresObjectData = true;
+                passInput.targetsSwapchain = false;
+                passInput.usesColorAttachment = true;
+                passInput.usesDepthStencilAttachment = true;
+                passInput.writesDepthStencilAttachment = false;
+                passInput.gbufferTextures = resources.gbufferTextures;
+                passInput.colorAttachmentViews = resources.gbufferColorViews;
+                passInput.depthStencilAttachmentView = resources.gbufferDepthView;
+                AddDecalColorAttachmentResourceAccesses(passInput);
+                if (resources.gbufferDepthView != nullptr &&
+                    resources.gbufferDepthView->GetTexture() != nullptr)
                 {
-                    const auto lightingBegin =
-                        recordedDrawCommands.begin() + static_cast<std::ptrdiff_t>(opaqueDrawCount);
-                    const auto lightingEndOffset = static_cast<size_t>(
-                        std::min<uint64_t>(
-                            opaqueDrawCount + lightingDrawCount,
-                            static_cast<uint64_t>(recordedDrawCommands.size())));
-                    passInput.recordedDrawCommands.assign(
-                        lightingBegin,
-                        recordedDrawCommands.begin() + static_cast<std::ptrdiff_t>(lightingEndOffset));
+                    AddFullTextureResourceAccess(
+                        passInput,
+                        resources.gbufferDepthView->GetTexture(),
+                        NLS::Render::Context::ResourceAccessMode::Read,
+                        NLS::Render::RHI::ResourceState::DepthRead,
+                        NLS::Render::RHI::PipelineStageMask::DepthStencil,
+                        NLS::Render::RHI::AccessMask::DepthStencilRead);
                 }
+                break;
+            }
+            case DeferredScenePassExecutionKind::Lighting:
+            {
+                passInput.drawCount = lightingDrawCount;
+                const auto lightingBeginOffset = opaqueDrawCount + decalDrawCount;
+                AssignDeferredRecordedDrawCommands(
+                    passInput,
+                    typedPassInput,
+                    package.recordedDrawCommands,
+                    lightingBeginOffset,
+                    lightingDrawCount,
+                    "Lighting");
                 passInput.requiresFrameData = true;
                 passInput.requiresLightingData = true;
                 passInput.targetsSwapchain = package.targetsSwapchain;
@@ -719,6 +1006,38 @@ namespace NLS::Render::FrameGraph
                         NLS::Render::RHI::AccessMask::ShaderRead);
                 }
                 break;
+            }
+            case DeferredScenePassExecutionKind::Transparent:
+            {
+                passInput.drawCount = transparentDrawCount;
+                const auto transparentBeginOffset = opaqueDrawCount + decalDrawCount + lightingDrawCount;
+                AssignDeferredRecordedDrawCommands(
+                    passInput,
+                    typedPassInput,
+                    package.recordedDrawCommands,
+                    transparentBeginOffset,
+                    transparentDrawCount,
+                    "Transparent");
+                passInput.requiresFrameData = true;
+                passInput.requiresObjectData = true;
+                passInput.targetsSwapchain = package.targetsSwapchain;
+                passInput.usesColorAttachment = true;
+                passInput.usesDepthStencilAttachment = true;
+                passInput.writesDepthStencilAttachment = false;
+                passInput.depthStencilAttachmentView = resources.gbufferDepthView;
+                if (resources.gbufferDepthView != nullptr &&
+                    resources.gbufferDepthView->GetTexture() != nullptr)
+                {
+                    AddFullTextureResourceAccess(
+                        passInput,
+                        resources.gbufferDepthView->GetTexture(),
+                        NLS::Render::Context::ResourceAccessMode::Read,
+                        NLS::Render::RHI::ResourceState::DepthRead,
+                        NLS::Render::RHI::PipelineStageMask::DepthStencil,
+                        NLS::Render::RHI::AccessMask::DepthStencilRead);
+                }
+                break;
+            }
             default:
                 break;
             }
@@ -732,8 +1051,9 @@ namespace NLS::Render::FrameGraph
             const PreparedComputeDispatchSource& preparedComputeSource,
             const NLS::Render::Data::FrameDescriptor& frameDescriptor,
             const uint64_t opaqueDrawCount,
+            const uint64_t decalDrawCount,
             const uint64_t lightingDrawCount,
-            const std::vector<NLS::Render::Context::RecordedDrawCommandInput>& recordedDrawCommands,
+            const uint64_t transparentDrawCount,
             const DeferredPreparedSceneResources& resources)
         {
             std::vector<NLS::Render::Context::RenderPassCommandInput> passInputs;
@@ -749,8 +1069,9 @@ namespace NLS::Render::FrameGraph
                     package,
                     preparedComputeSource,
                     opaqueDrawCount,
+                    decalDrawCount,
                     lightingDrawCount,
-                    recordedDrawCommands,
+                    transparentDrawCount,
                     resources));
             }
 
@@ -760,11 +1081,29 @@ namespace NLS::Render::FrameGraph
         std::optional<NLS::Render::Context::RenderPassCommandInput> BuildDeferredAggregateHelperPassInput(
             const NLS::Render::Context::RenderScenePackage& package,
             const uint64_t opaqueDrawCount,
-            const uint64_t lightingDrawCount)
+            const uint64_t decalDrawCount,
+            const uint64_t lightingDrawCount,
+            const uint64_t transparentDrawCount,
+            const bool canSlicePostLightingRecordedDraws)
         {
+            const auto* typedHelperInput = FindPackagePassInputByKind(
+                package,
+                NLS::Render::Context::RenderPassCommandKind::Helper);
+            if (HasTypedRecordedDrawCommands(typedHelperInput))
+            {
+                ValidateDeferredTypedRecordedDrawSource(
+                    "Helper",
+                    *typedHelperInput,
+                    package.helperDrawCount);
+                return *typedHelperInput;
+            }
+
+            if (!canSlicePostLightingRecordedDraws)
+                return std::nullopt;
+
             const auto helperStart = static_cast<size_t>(
                 std::min<uint64_t>(
-                    opaqueDrawCount + lightingDrawCount,
+                    opaqueDrawCount + decalDrawCount + lightingDrawCount + transparentDrawCount,
                     static_cast<uint64_t>(package.recordedDrawCommands.size())));
             const auto helperDrawCount =
                 package.recordedDrawCommands.size() > helperStart
@@ -795,60 +1134,180 @@ namespace NLS::Render::FrameGraph
         uint64_t ResolveDeferredLightingDrawCount(
             const NLS::Render::Context::RenderScenePackage& package,
             const uint64_t opaqueDrawCount,
-            const std::vector<NLS::Render::Context::RenderPassCommandInput>& appendedPassInputs,
-            const std::vector<NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata>& appendedPassMetadata,
+            const uint64_t decalDrawCount,
             const std::optional<uint64_t> queuedLightingDrawCount = std::nullopt)
         {
-            if (queuedLightingDrawCount.has_value())
-            {
-                const auto recordedDrawCount = static_cast<uint64_t>(package.recordedDrawCommands.size());
-                if (recordedDrawCount <= opaqueDrawCount)
-                    return 0u;
+            (void)package;
+            (void)opaqueDrawCount;
+            (void)decalDrawCount;
+            if (!queuedLightingDrawCount.has_value())
+                return 0u;
 
-                return std::min<uint64_t>(*queuedLightingDrawCount, recordedDrawCount - opaqueDrawCount);
+            return *queuedLightingDrawCount;
+        }
+
+        void ValidateDeferredRecordedDrawSliceSize(
+            const char* passName,
+            const uint64_t recordedDrawCount,
+            const uint64_t sliceBegin,
+            const uint64_t sliceDrawCount)
+        {
+            if (sliceBegin > recordedDrawCount ||
+                sliceDrawCount > recordedDrawCount - sliceBegin)
+            {
+                throw std::invalid_argument(
+                    std::string("Deferred recorded draw slice is shorter than declared drawCount for ") +
+                    passName + ".");
+            }
+        }
+
+        void ValidateDeferredRecordedDrawSource(
+            const char* passName,
+            const NLS::Render::Context::RenderPassCommandInput* typedPassInput,
+            const uint64_t expectedDrawCount,
+            const uint64_t recordedDrawCount,
+            const uint64_t sliceBegin)
+        {
+            if (HasTypedRecordedDrawCommands(typedPassInput))
+            {
+                ValidateDeferredTypedRecordedDrawSource(
+                    passName,
+                    *typedPassInput,
+                    expectedDrawCount);
+                return;
             }
 
+            ValidateDeferredRecordedDrawSliceSize(
+                passName,
+                recordedDrawCount,
+                sliceBegin,
+                expectedDrawCount);
+        }
+
+        void ValidateDeferredRecordedDrawSliceBoundaries(
+            const NLS::Render::Context::RenderScenePackage& package,
+            const uint64_t opaqueDrawCount,
+            const uint64_t decalDrawCount,
+            const uint64_t lightingDrawCount,
+            const uint64_t transparentDrawCount,
+            const DeferredPreparedQueuedDrawCounts& queuedDrawCounts,
+            const bool canSliceHelperDraws)
+        {
             const auto recordedDrawCount = static_cast<uint64_t>(package.recordedDrawCommands.size());
-            if (recordedDrawCount <= opaqueDrawCount)
-                return 0u;
+            const auto* gbufferInput = FindDeferredPreparedScenePassInput(
+                package,
+                DeferredScenePassExecutionKind::GBuffer);
+            const auto* decalInput = FindDeferredPreparedScenePassInput(
+                package,
+                DeferredScenePassExecutionKind::Decal);
+            const auto* lightingInput = FindDeferredPreparedScenePassInput(
+                package,
+                DeferredScenePassExecutionKind::Lighting);
+            const auto* transparentInput = FindDeferredPreparedScenePassInput(
+                package,
+                DeferredScenePassExecutionKind::Transparent);
+            const auto* helperInput = FindPackagePassInputByKind(
+                package,
+                NLS::Render::Context::RenderPassCommandKind::Helper);
 
-            const auto drawsAfterOpaque = recordedDrawCount - opaqueDrawCount;
-            uint64_t explicitAppendedHelperContribution = 0u;
-            for (const auto& metadata : appendedPassMetadata)
+            ValidateDeferredRecordedDrawSource(
+                "GBuffer",
+                gbufferInput,
+                opaqueDrawCount,
+                recordedDrawCount,
+                0u);
+
+            const auto decalBegin = opaqueDrawCount;
+            ValidateDeferredRecordedDrawSource(
+                "Decal",
+                decalInput,
+                decalDrawCount,
+                recordedDrawCount,
+                decalBegin);
+
+            const auto lightingBegin = decalBegin + decalDrawCount;
+            if (recordedDrawCount > lightingBegin &&
+                !queuedDrawCounts.lightingDrawCount.has_value() &&
+                !HasTypedRecordedDrawCommands(lightingInput))
             {
-                if (metadata.commandKind != NLS::Render::Context::RenderPassCommandKind::Helper ||
-                    metadata.role != NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Helper)
-                {
-                    continue;
-                }
+                throw std::invalid_argument(
+                    "Deferred recorded draw slicing is ambiguous without queuedDrawCounts.lightingDrawCount.");
+            }
+            ValidateDeferredRecordedDrawSource(
+                "Lighting",
+                lightingInput,
+                lightingDrawCount,
+                recordedDrawCount,
+                lightingBegin);
 
-                const auto metadataName = metadata.graphPassName != nullptr
-                    ? std::string_view(metadata.graphPassName)
-                    : std::string_view{};
-                const auto appendedInput = std::find_if(
-                    appendedPassInputs.begin(),
-                    appendedPassInputs.end(),
-                    [metadataName](const NLS::Render::Context::RenderPassCommandInput& input)
-                    {
-                        return metadataName.empty() || input.debugName == metadataName;
-                    });
-                if (appendedInput == appendedPassInputs.end())
-                    continue;
+            const auto transparentBegin = lightingBegin + lightingDrawCount;
+            if (recordedDrawCount > transparentBegin &&
+                package.transparentDrawCount > 0u &&
+                !queuedDrawCounts.transparentDrawCount.has_value() &&
+                !HasTypedRecordedDrawCommands(transparentInput))
+            {
+                throw std::invalid_argument(
+                    "Deferred recorded draw slicing is ambiguous without queuedDrawCounts.transparentDrawCount.");
+            }
+            ValidateDeferredRecordedDrawSource(
+                "Transparent",
+                transparentInput,
+                transparentDrawCount,
+                recordedDrawCount,
+                transparentBegin);
 
-                explicitAppendedHelperContribution +=
-                    metadata.visibleDrawCountContribution == NLS::Render::FrameGraph::kThreadedPlanUsePassDrawCount
-                        ? appendedInput->drawCount
-                        : metadata.visibleDrawCountContribution;
+            const auto helperBegin = transparentBegin + transparentDrawCount;
+            if (HasTypedRecordedDrawCommands(helperInput))
+            {
+                ValidateDeferredTypedRecordedDrawSource(
+                    "Helper",
+                    *helperInput,
+                    package.helperDrawCount);
+                return;
             }
 
-            const auto aggregateHelperDrawCount =
-                package.helperDrawCount > explicitAppendedHelperContribution
-                    ? package.helperDrawCount - explicitAppendedHelperContribution
+            const auto remainingHelperDraws =
+                recordedDrawCount > helperBegin
+                    ? recordedDrawCount - helperBegin
                     : 0u;
-            if (aggregateHelperDrawCount >= drawsAfterOpaque)
+            if (remainingHelperDraws > 0u &&
+                (!canSliceHelperDraws || remainingHelperDraws > package.helperDrawCount))
+            {
+                throw std::invalid_argument(
+                    "Deferred recorded draw slicing leaves commands outside declared scene pass counts.");
+            }
+        }
+
+        uint64_t ResolveDeferredDecalDrawCount(
+            const NLS::Render::Context::RenderScenePackage& package,
+            const uint64_t opaqueDrawCount,
+            const std::optional<uint64_t> queuedDecalDrawCount = std::nullopt)
+        {
+            (void)opaqueDrawCount;
+            const auto requestedDecalDraws = queuedDecalDrawCount.has_value()
+                ? *queuedDecalDrawCount
+                : package.decalDrawCount;
+            return requestedDecalDraws;
+        }
+
+        uint64_t ResolveDeferredTransparentDrawCount(
+            const NLS::Render::Context::RenderScenePackage& package,
+            const uint64_t opaqueDrawCount,
+            const uint64_t decalDrawCount,
+            const uint64_t lightingDrawCount,
+            const std::optional<uint64_t> queuedTransparentDrawCount,
+            const bool canSlicePostLightingRecordedDraws)
+        {
+            (void)opaqueDrawCount;
+            (void)decalDrawCount;
+            (void)lightingDrawCount;
+            if (!canSlicePostLightingRecordedDraws)
                 return 0u;
 
-            return 1u;
+            const auto requestedTransparentDraws = queuedTransparentDrawCount.has_value()
+                ? *queuedTransparentDrawCount
+                : package.transparentDrawCount;
+            return requestedTransparentDraws;
         }
 
         void AppendDeferredHelperPassInputForMetadata(
@@ -881,6 +1340,55 @@ namespace NLS::Render::FrameGraph
                 passInputs.push_back(*aggregateHelperPassInput);
             }
         }
+
+        DeferredScenePassDescriptor BuildDeferredTransparentPassDescriptor()
+        {
+            return {
+                {
+                    NLS::Render::Context::RenderPassCommandKind::Transparent,
+                    NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Transparent,
+                    NLS::Render::FrameGraph::ThreadedRenderScenePassExecutionMode::Output,
+                    NLS::Render::RHI::QueueType::Graphics,
+                    NLS::Render::Context::QueueDependencyPolicy::Previous,
+                    "DeferredTransparent",
+                    NLS::Render::FrameGraph::kThreadedPlanUsePassDrawCount,
+                    true,
+                    false
+                }
+            };
+        }
+
+        DeferredScenePassDescriptor BuildDeferredDecalPassDescriptor()
+        {
+            return {
+                {
+                    NLS::Render::Context::RenderPassCommandKind::Decal,
+                    NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Decal,
+                    NLS::Render::FrameGraph::ThreadedRenderScenePassExecutionMode::Recorded,
+                    NLS::Render::RHI::QueueType::Graphics,
+                    NLS::Render::Context::QueueDependencyPolicy::Previous,
+                    "DeferredDecal",
+                    NLS::Render::FrameGraph::kThreadedPlanUsePassDrawCount,
+                    false,
+                    false
+                }
+            };
+        }
+
+        DeferredScenePassDescriptorRange BuildDeferredScenePassDescriptors(
+            const bool includeTransparentPass,
+            const bool includeDecalPass)
+        {
+            const auto baseDescriptors = GetDeferredScenePassDescriptors();
+            DeferredScenePassDescriptorRange range;
+            range.descriptors[range.count++] = baseDescriptors[0];
+            if (includeDecalPass)
+                range.descriptors[range.count++] = BuildDeferredDecalPassDescriptor();
+            range.descriptors[range.count++] = baseDescriptors[1];
+            if (includeTransparentPass)
+                range.descriptors[range.count++] = BuildDeferredTransparentPassDescriptor();
+            return range;
+        }
     }
 
     DeferredScenePassExecutionKind GetDeferredScenePassExecutionKind(
@@ -890,8 +1398,12 @@ namespace NLS::Render::FrameGraph
         {
         case NLS::Render::Context::RenderPassCommandKind::GBuffer:
             return DeferredScenePassExecutionKind::GBuffer;
+        case NLS::Render::Context::RenderPassCommandKind::Decal:
+            return DeferredScenePassExecutionKind::Decal;
         case NLS::Render::Context::RenderPassCommandKind::Lighting:
             return DeferredScenePassExecutionKind::Lighting;
+        case NLS::Render::Context::RenderPassCommandKind::Transparent:
+            return DeferredScenePassExecutionKind::Transparent;
         default:
             return DeferredScenePassExecutionKind::Unknown;
         }
@@ -998,12 +1510,14 @@ namespace NLS::Render::FrameGraph
         const bool hasExternalOutput =
             resourceRequest.frameDescriptor != nullptr &&
             ResolveExternalSceneOutputFramebuffer(*resourceRequest.frameDescriptor) != nullptr;
-        frameGraph.reserve(2, hasExternalOutput ? 6 : 4);
+        frameGraph.reserve(4, hasExternalOutput ? 7 : 4);
     }
 
     PreparedDeferredSceneGraph PrepareDeferredSceneGraph(
         const DeferredGraphSceneResourceRequest& resourceRequest,
-        const LightGridCompileContext& lightGridContext)
+        const LightGridCompileContext& lightGridContext,
+        const bool includeTransparentPass,
+        const bool includeDecalPass)
     {
         NLS_PROFILE_SCOPE();
         PreparedDeferredSceneGraph preparedGraph;
@@ -1011,11 +1525,14 @@ namespace NLS::Render::FrameGraph
         if (!HasCompleteDeferredGraphGBufferResources(preparedGraph.resources))
             return preparedGraph;
 
+        const auto scenePassDescriptors = BuildDeferredScenePassDescriptors(
+            includeTransparentPass,
+            includeDecalPass);
         preparedGraph.execution = Detail::CompilePreparedSceneGraphExecution(
             lightGridContext,
             preparedGraph.resources.sceneTargets.color,
             preparedGraph.resources.sceneTargets.depth,
-            GetDeferredScenePassDescriptors());
+            scenePassDescriptors);
         return preparedGraph;
     }
 
@@ -1086,12 +1603,72 @@ namespace NLS::Render::FrameGraph
                         });
                 });
         };
+        const auto addCompiledDecalPass = [&frameGraph, capturedCallbacks](
+            const CompiledThreadedRenderSceneGraphPass& compiledPass,
+            const DeferredGBufferGraphPassData* gBufferPassData) -> const DeferredGBufferGraphPassData&
+        {
+            return AddDeferredCompiledDecalPass(
+                frameGraph,
+                compiledPass,
+                gBufferPassData,
+                [capturedCallbacks](const DeferredGBufferGraphPassData&, FrameGraphPassResources&, void*, const auto& desc)
+                {
+                    ExecuteRecordedRenderPass(
+                        desc,
+                        [&capturedCallbacks](const auto& beginDesc) -> bool
+                        {
+                            return capturedCallbacks.beginDecalPass ? capturedCallbacks.beginDecalPass(beginDesc) : false;
+                        },
+                        [&capturedCallbacks]()
+                        {
+                            if (capturedCallbacks.executeDecalPass)
+                                capturedCallbacks.executeDecalPass();
+                        },
+                        [&capturedCallbacks]()
+                        {
+                            if (capturedCallbacks.endDecalPass)
+                                capturedCallbacks.endDecalPass();
+                        });
+                });
+        };
+        const auto addCompiledTransparentPass = [&frameGraph, capturedCallbacks](
+            const CompiledThreadedRenderSceneGraphPass& compiledPass,
+            ScenePassOutputResourceState& outputState,
+            const DeferredGBufferGraphPassData* gBufferPassData)
+        {
+            AddDeferredCompiledTransparentPass(
+                frameGraph,
+                compiledPass,
+                outputState,
+                gBufferPassData,
+                [capturedCallbacks](const DeferredTransparentGraphPassData&, FrameGraphPassResources&, void*, const auto& desc)
+                {
+                    ExecuteOutputRenderPass(
+                        desc,
+                        [&capturedCallbacks](const auto& beginDesc) -> bool
+                        {
+                            return capturedCallbacks.beginTransparentPass ? capturedCallbacks.beginTransparentPass(beginDesc) : false;
+                        },
+                        [&capturedCallbacks]()
+                        {
+                            if (capturedCallbacks.executeTransparentPass)
+                                capturedCallbacks.executeTransparentPass();
+                        },
+                        [&capturedCallbacks](bool startedRenderPass, const auto& endDesc)
+                        {
+                            if (capturedCallbacks.endTransparentPass)
+                                capturedCallbacks.endTransparentPass(startedRenderPass, endDesc);
+                        });
+                });
+        };
         DispatchDeferredCompiledGraphPasses(
             frameGraph,
             preparedGraph.execution.preparedComputeSource,
             preparedGraph.execution.compiledExecution.graphPasses,
             addCompiledGBufferPass,
-            addCompiledLightingPass);
+            addCompiledDecalPass,
+            addCompiledLightingPass,
+            addCompiledTransparentPass);
     }
 
     CompiledThreadedRenderSceneExecution CompileAndApplyPreparedDeferredLightGridSceneExecution(
@@ -1100,18 +1677,49 @@ namespace NLS::Render::FrameGraph
         const DeferredPreparedSceneResources& resources,
         std::vector<NLS::Render::Context::RenderPassCommandInput>&& appendedPassInputs,
         const std::vector<ThreadedRenderScenePassMetadata>& appendedPassMetadata,
-        const std::optional<uint64_t> queuedLightingDrawCount)
+        const DeferredPreparedQueuedDrawCounts queuedDrawCounts)
     {
         NLS_PROFILE_SCOPE();
         const auto opaqueDrawCount = package.opaqueDrawCount;
+        const auto decalDrawCount = ResolveDeferredDecalDrawCount(
+            package,
+            opaqueDrawCount,
+            queuedDrawCounts.decalDrawCount);
         const auto lightingDrawCount = ResolveDeferredLightingDrawCount(
             package,
             opaqueDrawCount,
-            appendedPassInputs,
-            appendedPassMetadata,
-            queuedLightingDrawCount);
+            decalDrawCount,
+            queuedDrawCounts.lightingDrawCount);
+        const bool canSlicePostLightingRecordedDraws = true;
+        const auto transparentDrawCount = ResolveDeferredTransparentDrawCount(
+            package,
+            opaqueDrawCount,
+            decalDrawCount,
+            lightingDrawCount,
+            queuedDrawCounts.transparentDrawCount,
+            canSlicePostLightingRecordedDraws);
+        const bool canSliceHelperDraws = std::any_of(
+            appendedPassMetadata.begin(),
+            appendedPassMetadata.end(),
+            [](const ThreadedRenderScenePassMetadata& metadata)
+            {
+                return metadata.commandKind == NLS::Render::Context::RenderPassCommandKind::Helper;
+            });
+        if (HasCompleteDeferredPreparedSceneResources(resources, lightGridContext.frameDescriptor))
+        {
+            ValidateDeferredRecordedDrawSliceBoundaries(
+                package,
+                opaqueDrawCount,
+                decalDrawCount,
+                lightingDrawCount,
+                transparentDrawCount,
+                queuedDrawCounts,
+                canSliceHelperDraws);
+        }
         std::vector<ThreadedRenderScenePassMetadata> scenePassMetadata;
-        const auto deferredPassDescriptors = GetDeferredScenePassDescriptors();
+        const auto deferredPassDescriptors = BuildDeferredScenePassDescriptors(
+            transparentDrawCount > 0u,
+            decalDrawCount > 0u);
         scenePassMetadata.reserve(deferredPassDescriptors.size() + appendedPassMetadata.size());
         for (const auto& descriptor : deferredPassDescriptors)
             scenePassMetadata.push_back(descriptor.metadata);
@@ -1143,10 +1751,13 @@ namespace NLS::Render::FrameGraph
                 Detail::ResolvePreparedLightGridPassBindings(scenePackage, lightGridContext);
             },
             scenePassMetadata,
-            [&package, &resources, &appendedPassInputs, &appendedPassMetadata, &lightGridContext, opaqueDrawCount, lightingDrawCount](const auto& lightGridComputeSource, const auto& compiledPasses) mutable
+            [&package, &resources, &appendedPassInputs, &appendedPassMetadata, &lightGridContext, opaqueDrawCount, decalDrawCount, lightingDrawCount, transparentDrawCount, canSlicePostLightingRecordedDraws](const auto& lightGridComputeSource, const auto& compiledPasses) mutable
             {
                 std::vector<CompiledThreadedRenderSceneGraphPass> deferredCompiledPasses;
-                deferredCompiledPasses.reserve(2u);
+                deferredCompiledPasses.reserve(
+                    2u +
+                    static_cast<size_t>(decalDrawCount > 0u) +
+                    static_cast<size_t>(transparentDrawCount > 0u));
                 for (const auto& compiledPass : compiledPasses)
                 {
                     if (GetDeferredScenePassExecutionKind(compiledPass.metadata.commandKind) != DeferredScenePassExecutionKind::Unknown)
@@ -1161,11 +1772,18 @@ namespace NLS::Render::FrameGraph
                     lightGridComputeSource,
                     lightGridContext.frameDescriptor,
                     opaqueDrawCount,
+                    decalDrawCount,
                     lightingDrawCount,
-                    package.recordedDrawCommands,
+                    transparentDrawCount,
                     resources);
                 const auto aggregateHelperPassInput =
-                    BuildDeferredAggregateHelperPassInput(package, opaqueDrawCount, lightingDrawCount);
+                    BuildDeferredAggregateHelperPassInput(
+                        package,
+                        opaqueDrawCount,
+                        decalDrawCount,
+                        lightingDrawCount,
+                        transparentDrawCount,
+                        canSlicePostLightingRecordedDraws);
                 for (const auto& metadata : appendedPassMetadata)
                 {
                     AppendDeferredHelperPassInputForMetadata(
@@ -1177,7 +1795,7 @@ namespace NLS::Render::FrameGraph
                 if (hasValidDeferredResources)
                 {
                     for (auto& passInput : passInputs)
-                        AttachDeferredGBufferDepthForHelperPasses(passInput, resources);
+                        AttachDeferredGBufferDepthForPostLightingPasses(passInput, resources);
                 }
                 if (!package.targetsSwapchain)
                 {
@@ -1189,6 +1807,7 @@ namespace NLS::Render::FrameGraph
                             "DeferredOutputDepthView"),
                         {
                             NLS::Render::Context::RenderPassCommandKind::Lighting,
+                            NLS::Render::Context::RenderPassCommandKind::Transparent,
                             NLS::Render::Context::RenderPassCommandKind::Helper
                         });
                     for (auto& passInput : passInputs)
@@ -1209,7 +1828,8 @@ namespace NLS::Render::FrameGraph
             "DeferredOutputColorView",
             "DeferredOutputDepthView",
             {
-                NLS::Render::Context::RenderPassCommandKind::Lighting
+                NLS::Render::Context::RenderPassCommandKind::Lighting,
+                NLS::Render::Context::RenderPassCommandKind::Transparent
             });
         RegisterExternalSceneOutputExtractions(package, frameDescriptor);
     }

@@ -19,6 +19,8 @@ CLASS(NLS_ENGINE_API GameObject) : public NLS::Object
 public:
     GENERATED_BODY()
     GameObject(const std::string& p_name, const std::string& p_tag = "Untagged");
+    struct SilentCreationTag {};
+    GameObject(SilentCreationTag, const std::string& p_name, const std::string& p_tag = "Untagged");
     ~GameObject();
     template<typename T>
     T* AddComponent(const std::function<void(Components::Component*)>& func = {});
@@ -193,6 +195,8 @@ public:
      * @param p_sleeping
      */
     void SetSleeping(bool p_sleeping) { m_sleeping = p_sleeping; }
+    void SetEditorTransient(bool transient) { m_editorTransient = transient; }
+    bool IsEditorTransient() const { return m_editorTransient; }
     /**
      * Called when the scene start or when the actor gets enabled for the first time during play mode
      * This method will always be called in an ordered triple:
@@ -292,6 +296,7 @@ protected:
     bool m_awaked = false;
     bool m_started = false;
     bool m_wasActive = false;
+    bool m_editorTransient = false;
     /* Parenting system stuff */
     GameObject* m_parent = nullptr;
     std::vector<GameObject*> m_children;

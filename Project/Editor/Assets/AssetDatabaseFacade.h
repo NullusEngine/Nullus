@@ -99,6 +99,9 @@ public:
     std::optional<NLS::Engine::Assets::PrefabArtifact> LoadPrefabArtifactAtPath(
         const std::string& assetPath,
         const std::string& subAssetKey) const;
+    std::optional<NLS::Engine::Assets::PrefabArtifact> LoadPrefabArtifactByAssetId(
+        NLS::Core::Assets::AssetId assetId,
+        const std::string& subAssetKey) const;
 
     bool MoveAsset(const std::string& sourceAssetPath, const std::string& destinationAssetPath);
     bool RenameAsset(const std::string& assetPath, const std::string& newName);

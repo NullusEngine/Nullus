@@ -47,6 +47,7 @@ bool CanApplyOverrides(const PrefabCommandSurfaceRequest& request)
     return request.subject == PrefabCommandSubject::PrefabInstance &&
         request.connectedInstance &&
         request.assetExists &&
+        request.editableSourceArtifactContext &&
         request.overrideCount > 0u;
 }
 
@@ -250,6 +251,7 @@ EditorImportProgressStatus EditorAssetDatabase::GetImportProgressStatus(
     status.visible = true;
     status.normalizedProgress = static_cast<float>(activeEvent->normalizedProgress);
     status.cancellable =
+        activeEvent->terminalStatus == ImportJobTerminalStatus::None &&
         activeEvent->sourcePath != "Startup Scene" &&
         activeEvent->sourcePath != "Asset Browser";
     status.label = activeEvent->message.empty()

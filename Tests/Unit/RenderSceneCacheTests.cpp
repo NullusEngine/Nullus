@@ -243,13 +243,21 @@ namespace
         NLS::Engine::SceneSystem::Scene scene;
         NLS::Render::Resources::Shader* shader = nullptr;
         NLS::Render::Resources::Material material;
+        NLS::Render::Resources::Material decalMaterial;
+        NLS::Render::Resources::Material transparentMaterial;
         std::vector<NLS::Render::Resources::Mesh*> meshes;
 
-        explicit ManyPrimitiveFixture(const size_t primitiveCount)
+        explicit ManyPrimitiveFixture(
+            const size_t primitiveCount,
+            const bool mixSurfaceModes = false)
         {
             EnsureRenderSceneTestDriver();
             shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
             material.SetShader(shader);
+            decalMaterial.SetShader(shader);
+            decalMaterial.SetSurfaceMode(NLS::Render::Resources::MaterialSurfaceMode::Decal);
+            transparentMaterial.SetShader(shader);
+            transparentMaterial.SetBlendable(true);
             meshes.reserve(primitiveCount);
 
             for (size_t index = 0u; index < primitiveCount; ++index)
@@ -262,7 +270,15 @@ namespace
                 auto* meshRenderer = object.AddComponent<NLS::Engine::Components::MeshRenderer>();
                 meshFilter->SetMesh(mesh);
                 meshRenderer->SetFrustumBehaviour(NLS::Engine::Components::MeshRenderer::EFrustumBehaviour::CULL_MODEL);
-                meshRenderer->FillWithMaterial(material);
+                auto* selectedMaterial = &material;
+                if (mixSurfaceModes)
+                {
+                    if ((index % 4u) == 1u)
+                        selectedMaterial = &decalMaterial;
+                    else if ((index % 4u) == 2u)
+                        selectedMaterial = &transparentMaterial;
+                }
+                meshRenderer->FillWithMaterial(*selectedMaterial);
 
                 const bool visible = (index % 3u) != 0u;
                 object.GetTransform()->SetWorldPosition({
@@ -287,9 +303,11 @@ namespace
         const NLS::Engine::Rendering::RenderSceneVisibleQueues& queues)
     {
         std::vector<const NLS::Render::Resources::Mesh*> result;
-        result.reserve(queues.opaques.size() + queues.transparents.size());
+        result.reserve(queues.opaques.size() + queues.decals.size() + queues.transparents.size());
 
         for (const auto& entry : queues.opaques)
+            result.push_back(entry.second.mesh);
+        for (const auto& entry : queues.decals)
             result.push_back(entry.second.mesh);
         for (const auto& entry : queues.transparents)
             result.push_back(entry.second.mesh);
@@ -304,6 +322,7 @@ namespace
         NLS::Render::Resources::Shader* shader = nullptr;
         NLS::Render::Resources::Material opaqueMaterialA;
         NLS::Render::Resources::Material opaqueMaterialB;
+        NLS::Render::Resources::Material decalMaterial;
         NLS::Render::Resources::Material transparentMaterial;
         NLS::Render::Resources::Mesh* sharedMesh = nullptr;
         NLS::Render::Resources::Mesh* otherMesh = nullptr;
@@ -314,6 +333,8 @@ namespace
             shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/Standard.hlsl");
             opaqueMaterialA.SetShader(shader);
             opaqueMaterialB.SetShader(shader);
+            decalMaterial.SetShader(shader);
+            decalMaterial.SetSurfaceMode(NLS::Render::Resources::MaterialSurfaceMode::Decal);
             transparentMaterial.SetShader(shader);
             transparentMaterial.SetBlendable(true);
             sharedMesh = CreateSingleMesh();
@@ -328,7 +349,7 @@ namespace
                 EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
         }
 
-        void AddObject(
+        NLS::Engine::GameObject& AddObject(
             const char* name,
             NLS::Render::Resources::Mesh& mesh,
             NLS::Render::Resources::Material& material,
@@ -340,6 +361,7 @@ namespace
             meshFilter->SetMesh(&mesh);
             meshRenderer->FillWithMaterial(material);
             object.GetTransform()->SetWorldPosition({ distance, 0.0f, 0.0f });
+            return object;
         }
     };
 
@@ -1491,7 +1513,7 @@ TEST(RenderSceneCacheTests, SerialAndParallelVisibilityProduceEquivalentQueues)
     ScopedRenderSceneCacheJobSystem jobSystem(2u);
     ASSERT_TRUE(jobSystem.IsInitialized());
 
-    ManyPrimitiveFixture fixture(192u);
+    ManyPrimitiveFixture fixture(192u, true);
     NLS::Engine::Rendering::RenderScene renderScene;
 
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
@@ -1523,6 +1545,10 @@ TEST(RenderSceneCacheTests, SerialAndParallelVisibilityProduceEquivalentQueues)
     EXPECT_EQ(serialSnapshot.visiblePrimitiveCount, parallelSnapshot.visiblePrimitiveCount);
     EXPECT_EQ(serialSnapshot.visibleMeshCount, parallelSnapshot.visibleMeshCount);
     EXPECT_EQ(serialQueues.opaques.size(), parallelQueues.opaques.size());
+    EXPECT_EQ(serialQueues.decals.size(), parallelQueues.decals.size());
+    EXPECT_EQ(serialQueues.transparents.size(), parallelQueues.transparents.size());
+    EXPECT_FALSE(serialQueues.decals.empty());
+    EXPECT_FALSE(serialQueues.transparents.empty());
     EXPECT_EQ(ExtractMeshes(serialQueues), ExtractMeshes(parallelQueues));
 }
 
@@ -1610,13 +1636,15 @@ TEST(RenderSceneCacheTests, OpaqueQueueGroupsCompatibleStateAndTransparentKeepsB
     fixture.AddObject("OpaqueNearA", *fixture.sharedMesh, fixture.opaqueMaterialA, 5.0f);
     fixture.AddObject("OpaqueMiddleB", *fixture.otherMesh, fixture.opaqueMaterialB, 10.0f);
     fixture.AddObject("OpaqueFarA", *fixture.sharedMesh, fixture.opaqueMaterialA, 20.0f);
+    fixture.AddObject("DecalNear", *fixture.sharedMesh, fixture.decalMaterial, 4.0f);
+    fixture.AddObject("DecalFar", *fixture.sharedMesh, fixture.decalMaterial, 40.0f);
     fixture.AddObject("TransparentNear", *fixture.sharedMesh, fixture.transparentMaterial, 3.0f);
     fixture.AddObject("TransparentFar", *fixture.sharedMesh, fixture.transparentMaterial, 30.0f);
 
     NLS::Engine::Rendering::RenderScene renderScene;
     NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
     syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
-    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 5u);
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 7u);
 
     const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
 
@@ -1626,6 +1654,9 @@ TEST(RenderSceneCacheTests, OpaqueQueueGroupsCompatibleStateAndTransparentKeepsB
     EXPECT_TRUE(
         (visible.opaques[0].second.mesh == fixture.sharedMesh && firstInstances == 2u) ||
         (visible.opaques[1].second.mesh == fixture.sharedMesh && secondInstances == 2u));
+
+    ASSERT_EQ(visible.decals.size(), 2u);
+    EXPECT_GT(visible.decals[0].first, visible.decals[1].first);
 
     ASSERT_EQ(visible.transparents.size(), 2u);
     EXPECT_GT(visible.transparents[0].first, visible.transparents[1].first);
@@ -1667,6 +1698,44 @@ TEST(RenderSceneCacheTests, SceneRendererKeepsTransparentBackToFrontAcrossAdditi
     EXPECT_EQ(drawables.transparents[0].second.mesh, fixture.otherMesh);
     EXPECT_EQ(drawables.transparents[1].second.mesh, fixture.sharedMesh);
     EXPECT_GT(drawables.transparents[0].first, drawables.transparents[1].first);
+}
+
+TEST(RenderSceneCacheTests, SceneRendererKeepsDecalsBackToFrontAcrossAdditiveScenes)
+{
+    auto& driver = EnsureRenderSceneTestDriver();
+    QueueSortFixture fixture;
+    fixture.AddObject("MainDecalNear", *fixture.sharedMesh, fixture.decalMaterial, 3.0f);
+
+    NLS::Engine::SceneSystem::Scene previewScene;
+    auto& previewObject = previewScene.CreateGameObject("PreviewDecalFar");
+    auto* previewMeshFilter = previewObject.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* previewMeshRenderer = previewObject.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(previewMeshFilter, nullptr);
+    ASSERT_NE(previewMeshRenderer, nullptr);
+    previewMeshFilter->SetMesh(fixture.otherMesh);
+    previewMeshRenderer->FillWithMaterial(fixture.decalMaterial);
+    previewObject.GetTransform()->SetWorldPosition({ 30.0f, 0.0f, 0.0f });
+
+    SceneDrawableProbeRenderer renderer(driver);
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        fixture.scene,
+        std::nullopt,
+        nullptr,
+        { &previewScene }
+    });
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 128u;
+    frameDescriptor.camera = &camera;
+
+    const auto drawables = renderer.CaptureSceneDrawables(frameDescriptor);
+
+    ASSERT_EQ(drawables.decals.size(), 2u);
+    EXPECT_EQ(drawables.decals[0].second.mesh, fixture.otherMesh);
+    EXPECT_EQ(drawables.decals[1].second.mesh, fixture.sharedMesh);
+    EXPECT_GT(drawables.decals[0].first, drawables.decals[1].first);
 }
 
 TEST(RenderSceneCacheTests, SceneRendererDrawsExistingAndPreviewPrefabInstancesSharingAssetReferences)
@@ -1967,6 +2036,29 @@ TEST(RenderSceneCacheTests, DynamicInstancingMergesCompatibleOpaqueCommandsIntoO
     EXPECT_FLOAT_EQ(descriptor.instanceModelMatrices[0].data[3], 4.0f);
     EXPECT_FLOAT_EQ(descriptor.instanceModelMatrices[1].data[3], 12.0f);
     EXPECT_FLOAT_EQ(descriptor.instanceModelMatrices[2].data[3], 24.0f);
+}
+
+TEST(RenderSceneCacheTests, DynamicInstancingKeepsSiblingVisibleAfterDeletingOneSharedPrefabLikeObject)
+{
+    QueueSortFixture fixture;
+    auto& first = fixture.AddObject("SharedPrefabA", *fixture.sharedMesh, fixture.opaqueMaterialA, 4.0f);
+    fixture.AddObject("SharedPrefabB", *fixture.sharedMesh, fixture.opaqueMaterialA, 12.0f);
+
+    NLS::Engine::Rendering::RenderScene renderScene;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.opaqueMaterialA;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 2u);
+    ASSERT_EQ(renderScene.GatherVisibleCommands({ nullptr, {} }).opaques.size(), 1u);
+
+    ASSERT_TRUE(fixture.scene.DestroyGameObject(first));
+    const auto afterDelete = renderScene.Synchronize(fixture.scene, syncOptions);
+    const auto visible = renderScene.GatherVisibleCommands({ nullptr, {} });
+
+    EXPECT_EQ(afterDelete.removedPrimitiveCount, 1u);
+    ASSERT_EQ(visible.opaques.size(), 1u)
+        << "Deleting one instance from a dynamically-instanced prefab group must not drop the sibling draw.";
+    EXPECT_EQ(visible.opaques.front().second.mesh, fixture.sharedMesh);
+    EXPECT_EQ(ResolveVisibleInstanceCount(visible.opaques.front().second), 1u);
 }
 
 TEST(RenderSceneCacheTests, DynamicInstancingBuildsMergedDescriptorInLinearPass)

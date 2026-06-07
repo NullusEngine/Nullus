@@ -9,6 +9,9 @@ static const uint NLS_LIGHT_TYPE_AMBIENT_SPHERE = 4u;
 static const uint NLS_LIGHT_WORD_STRIDE = 16u;
 static const uint NLS_NUM_CULLED_LIGHTS_GRID_STRIDE = 2u;
 static const uint NLS_LIGHT_LINK_STRIDE = 2u;
+static const float NLS_LIGHTING_SAFE_NORMAL_EPSILON = 1.0e-8f;
+static const float NLS_LIGHTING_SAFE_NORMAL_MAX_LENGTH_SQ = 1.0e+20f;
+static const float NLS_LIGHTING_SAFE_NORMAL_MAX_COMPONENT = 1.0e+30f;
 
 cbuffer ForwardLightData : register(b0, space1)
 {
@@ -37,6 +40,46 @@ struct NLSLightGridLight
     float quadraticAttenuation;
     float outerCutoffDegrees;
 };
+
+bool NLSIsFiniteLighting3(float3 value)
+{
+    return all(value == value) && all(abs(value) < NLS_LIGHTING_SAFE_NORMAL_MAX_COMPONENT);
+}
+
+float3 NLSLightingNormalizeFallback(float3 fallback)
+{
+    const float lengthSq = dot(fallback, fallback);
+    if (NLSIsFiniteLighting3(fallback) &&
+        lengthSq > NLS_LIGHTING_SAFE_NORMAL_EPSILON &&
+        lengthSq < NLS_LIGHTING_SAFE_NORMAL_MAX_LENGTH_SQ)
+    {
+        return fallback * rsqrt(lengthSq);
+    }
+
+    return float3(0.0f, 1.0f, 0.0f);
+}
+
+float3 NLSSafeLightingNormalize(float3 value, float3 fallback)
+{
+    const float lengthSq = dot(value, value);
+    if (NLSIsFiniteLighting3(value) &&
+        lengthSq > NLS_LIGHTING_SAFE_NORMAL_EPSILON &&
+        lengthSq < NLS_LIGHTING_SAFE_NORMAL_MAX_LENGTH_SQ)
+    {
+        return value * rsqrt(lengthSq);
+    }
+
+    return NLSLightingNormalizeFallback(fallback);
+}
+
+float3 NLSSafeLightingPerpendicular(float3 normal)
+{
+    const float3 safeNormal = NLSSafeLightingNormalize(normal, float3(0.0f, 1.0f, 0.0f));
+    const float3 reference = abs(safeNormal.y) < 0.999f
+        ? float3(0.0f, 1.0f, 0.0f)
+        : float3(1.0f, 0.0f, 0.0f);
+    return NLSSafeLightingNormalize(cross(reference, safeNormal), float3(0.0f, 0.0f, 1.0f));
+}
 
 uint NLSGetGridSizeX() { return (uint)u_LightGridGridParams.x; }
 uint NLSGetGridSizeY() { return (uint)u_LightGridGridParams.y; }
@@ -126,8 +169,9 @@ bool NLSIsAabbOutsideInfiniteAcuteConeApprox(
     float3 aabbExtent)
 {
     const float3 d = aabbCenter - coneVertex;
-    const float3 m = -normalize(cross(cross(d, coneAxis), coneAxis));
-    const float3 n = -tanConeAngle * coneAxis + m;
+    const float3 safeConeAxis = NLSSafeLightingNormalize(coneAxis, float3(0.0f, 0.0f, -1.0f));
+    const float3 m = -NLSSafeLightingNormalize(cross(cross(d, safeConeAxis), safeConeAxis), NLSSafeLightingPerpendicular(safeConeAxis));
+    const float3 n = -tanConeAngle * safeConeAxis + m;
     const float dist = dot(d, n);
     const float radius = dot(aabbExtent, abs(n));
     return dist > radius;
@@ -160,7 +204,9 @@ NLSLightGridLight NLSLoadLight(StructuredBuffer<uint> forwardLocalLightBuffer, u
     NLSLightGridLight light;
     light.positionWS = float3(asfloat(forwardLocalLightBuffer[baseIndex + 0u]), asfloat(forwardLocalLightBuffer[baseIndex + 1u]), asfloat(forwardLocalLightBuffer[baseIndex + 2u]));
     light.range = asfloat(forwardLocalLightBuffer[baseIndex + 3u]);
-    light.directionWS = normalize(float3(asfloat(forwardLocalLightBuffer[baseIndex + 4u]), asfloat(forwardLocalLightBuffer[baseIndex + 5u]), asfloat(forwardLocalLightBuffer[baseIndex + 6u])));
+    light.directionWS = NLSSafeLightingNormalize(
+        float3(asfloat(forwardLocalLightBuffer[baseIndex + 4u]), asfloat(forwardLocalLightBuffer[baseIndex + 5u]), asfloat(forwardLocalLightBuffer[baseIndex + 6u])),
+        float3(0.0f, -1.0f, 0.0f));
     light.type = forwardLocalLightBuffer[baseIndex + 7u];
     light.color = float3(asfloat(forwardLocalLightBuffer[baseIndex + 8u]), asfloat(forwardLocalLightBuffer[baseIndex + 9u]), asfloat(forwardLocalLightBuffer[baseIndex + 10u]));
     light.intensity = asfloat(forwardLocalLightBuffer[baseIndex + 11u]);
@@ -279,7 +325,8 @@ float3 NLSAccumulateClusteredLightingPhong(
     const uint recordBase = clusterIndex * NLS_NUM_CULLED_LIGHTS_GRID_STRIDE;
     const uint offset = numCulledLightsGrid[recordBase + 0u];
     const uint count = numCulledLightsGrid[recordBase + 1u];
-    const float3 viewDir = normalize(NLSGetCameraWorldPosition() - worldPosition);
+    const float3 safeNormalWS = NLSSafeLightingNormalize(normalWS, float3(0.0f, 0.0f, 1.0f));
+    const float3 viewDir = NLSSafeLightingNormalize(NLSGetCameraWorldPosition() - worldPosition, safeNormalWS);
     float3 lighting = baseColor * NLSGetAmbientFloor();
 
     [loop]
@@ -296,7 +343,7 @@ float3 NLSAccumulateClusteredLightingPhong(
         float attenuation = 1.0f;
         if (light.type == NLS_LIGHT_TYPE_DIRECTIONAL)
         {
-            lightDir = normalize(-light.directionWS);
+            lightDir = NLSSafeLightingNormalize(-light.directionWS, float3(0.0f, 1.0f, 0.0f));
         }
         else
         {
@@ -305,19 +352,19 @@ float3 NLSAccumulateClusteredLightingPhong(
             if (distanceToLight > max(light.range, 0.0001f))
                 continue;
 
-            lightDir = toLight / max(distanceToLight, 1e-4f);
+            lightDir = NLSSafeLightingNormalize(toLight, safeNormalWS);
             attenuation = NLSComputePointAttenuation(light, distanceToLight);
             if (light.type == NLS_LIGHT_TYPE_SPOT)
             {
-                const float spotCos = dot(normalize(-light.directionWS), lightDir);
+                const float spotCos = dot(NLSSafeLightingNormalize(-light.directionWS, lightDir), lightDir);
                 const float outerCutoffCos = cos(radians(light.outerCutoffDegrees));
                 attenuation *= saturate((spotCos - outerCutoffCos) / max(1.0f - outerCutoffCos, 1e-3f));
             }
         }
 
-        const float ndotl = saturate(dot(normalWS, lightDir));
-        const float3 halfVector = normalize(lightDir + viewDir);
-        const float specularTerm = pow(saturate(dot(normalWS, halfVector)), max(shininess, 1.0f));
+        const float ndotl = saturate(dot(safeNormalWS, lightDir));
+        const float3 halfVector = NLSSafeLightingNormalize(lightDir + viewDir, safeNormalWS);
+        const float specularTerm = pow(saturate(dot(safeNormalWS, halfVector)), max(shininess, 1.0f));
         lighting += baseColor * light.color * (ndotl * light.intensity * attenuation);
         lighting += specularColor * light.color * (specularTerm * light.intensity * attenuation);
     }
@@ -340,7 +387,8 @@ float3 NLSAccumulateClusteredLightingPBR(
     const uint recordBase = clusterIndex * NLS_NUM_CULLED_LIGHTS_GRID_STRIDE;
     const uint offset = numCulledLightsGrid[recordBase + 0u];
     const uint count = numCulledLightsGrid[recordBase + 1u];
-    const float3 viewDir = normalize(NLSGetCameraWorldPosition() - worldPosition);
+    const float3 safeNormalWS = NLSSafeLightingNormalize(normalWS, float3(0.0f, 0.0f, 1.0f));
+    const float3 viewDir = NLSSafeLightingNormalize(NLSGetCameraWorldPosition() - worldPosition, safeNormalWS);
     float3 lighting = albedo * (NLSGetVisibleAmbientFloor() * ao);
 
     [loop]
@@ -357,7 +405,7 @@ float3 NLSAccumulateClusteredLightingPBR(
         float attenuation = 1.0f;
         if (light.type == NLS_LIGHT_TYPE_DIRECTIONAL)
         {
-            lightDir = normalize(-light.directionWS);
+            lightDir = NLSSafeLightingNormalize(-light.directionWS, float3(0.0f, 1.0f, 0.0f));
         }
         else
         {
@@ -366,19 +414,19 @@ float3 NLSAccumulateClusteredLightingPBR(
             if (distanceToLight > max(light.range, 0.0001f))
                 continue;
 
-            lightDir = toLight / max(distanceToLight, 1e-4f);
+            lightDir = NLSSafeLightingNormalize(toLight, safeNormalWS);
             attenuation = NLSComputePointAttenuation(light, distanceToLight);
             if (light.type == NLS_LIGHT_TYPE_SPOT)
             {
-                const float spotCos = dot(normalize(-light.directionWS), lightDir);
+                const float spotCos = dot(NLSSafeLightingNormalize(-light.directionWS, lightDir), lightDir);
                 const float outerCutoffCos = cos(radians(light.outerCutoffDegrees));
                 attenuation *= saturate((spotCos - outerCutoffCos) / max(1.0f - outerCutoffCos, 1e-3f));
             }
         }
 
-        const float ndotl = saturate(dot(normalWS, lightDir));
-        const float3 halfVector = normalize(lightDir + viewDir);
-        const float specularHint = pow(saturate(dot(normalWS, halfVector)), max(4.0f, (1.0f - roughness) * 64.0f));
+        const float ndotl = saturate(dot(safeNormalWS, lightDir));
+        const float3 halfVector = NLSSafeLightingNormalize(lightDir + viewDir, safeNormalWS);
+        const float specularHint = pow(saturate(dot(safeNormalWS, halfVector)), max(4.0f, (1.0f - roughness) * 64.0f));
         lighting += albedo * light.color * (ndotl * light.intensity * attenuation);
         lighting += light.color * (specularHint * metallic * (1.0f - roughness) * light.intensity * attenuation);
     }
@@ -395,7 +443,8 @@ float3 NLSAccumulateSceneLightingPBR(
     float roughness,
     float ao)
 {
-    const float3 viewDir = normalize(NLSGetCameraWorldPosition() - worldPosition);
+    const float3 safeNormalWS = NLSSafeLightingNormalize(normalWS, float3(0.0f, 0.0f, 1.0f));
+    const float3 viewDir = NLSSafeLightingNormalize(NLSGetCameraWorldPosition() - worldPosition, safeNormalWS);
     float3 lighting = albedo * (NLSGetVisibleAmbientFloor() * ao);
 
     [loop]
@@ -412,7 +461,7 @@ float3 NLSAccumulateSceneLightingPBR(
         float attenuation = 1.0f;
         if (light.type == NLS_LIGHT_TYPE_DIRECTIONAL)
         {
-            lightDir = normalize(-light.directionWS);
+            lightDir = NLSSafeLightingNormalize(-light.directionWS, float3(0.0f, 1.0f, 0.0f));
         }
         else
         {
@@ -421,19 +470,19 @@ float3 NLSAccumulateSceneLightingPBR(
             if (distanceToLight > max(light.range, 0.0001f))
                 continue;
 
-            lightDir = toLight / max(distanceToLight, 1e-4f);
+            lightDir = NLSSafeLightingNormalize(toLight, safeNormalWS);
             attenuation = NLSComputePointAttenuation(light, distanceToLight);
             if (light.type == NLS_LIGHT_TYPE_SPOT)
             {
-                const float spotCos = dot(normalize(-light.directionWS), lightDir);
+                const float spotCos = dot(NLSSafeLightingNormalize(-light.directionWS, lightDir), lightDir);
                 const float outerCutoffCos = cos(radians(light.outerCutoffDegrees));
                 attenuation *= saturate((spotCos - outerCutoffCos) / max(1.0f - outerCutoffCos, 1e-3f));
             }
         }
 
-        const float ndotl = saturate(dot(normalWS, lightDir));
-        const float3 halfVector = normalize(lightDir + viewDir);
-        const float specularHint = pow(saturate(dot(normalWS, halfVector)), max(4.0f, (1.0f - roughness) * 64.0f));
+        const float ndotl = saturate(dot(safeNormalWS, lightDir));
+        const float3 halfVector = NLSSafeLightingNormalize(lightDir + viewDir, safeNormalWS);
+        const float specularHint = pow(saturate(dot(safeNormalWS, halfVector)), max(4.0f, (1.0f - roughness) * 64.0f));
         lighting += albedo * light.color * (ndotl * light.intensity * attenuation);
         lighting += light.color * (specularHint * metallic * (1.0f - roughness) * light.intensity * attenuation);
     }

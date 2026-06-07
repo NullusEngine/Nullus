@@ -27,6 +27,19 @@ m_transform(nullptr)
 	CreatedEvent.Invoke(*this);
 }
 
+GameObject::GameObject(SilentCreationTag, const std::string& p_name, const std::string& p_tag):
+m_name(p_name),
+m_tag(p_tag.empty() ? "Untagged" : p_tag),
+m_active(true),
+m_transform(nullptr)
+{
+    m_transform = AddComponent<Components::TransformComponent>();
+    if (m_transform)
+    {
+        m_transform->CreateBy(this);
+    }
+}
+
 GameObject::~GameObject()
 {
     for (auto& component : m_vComponents)

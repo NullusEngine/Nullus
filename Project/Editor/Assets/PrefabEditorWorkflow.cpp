@@ -1,9 +1,12 @@
 #include "Assets/PrefabEditorWorkflow.h"
 
+#include "Components/MeshFilter.h"
+#include "Components/MeshRenderer.h"
 #include "Engine/Assets/PrefabAsset.h"
 #include "Reflection/Type.h"
 #include "Reflection/TypeCreator.h"
 #include "Serialize/ObjectGraphInstantiator.h"
+#include "Serialize/ObjectReferenceResolver.h"
 #include "Serialize/ObjectGraphSerializer.h"
 #include "Serialize/ObjectGraphWriter.h"
 
@@ -38,6 +41,14 @@ const std::string& GameObjectTypeName()
 bool IsGameObjectRecord(const ObjectRecord& record)
 {
     return record.typeName == GameObjectTypeName();
+}
+
+ObjectId MakePrefabInstanceObjectId(
+    const std::string& instanceSeed,
+    const ObjectId& sourceObject)
+{
+    return ObjectId(NLS::Guid::NewDeterministic(
+        "Prefab.Instance:" + instanceSeed + ":" + sourceObject.GetGuid().ToString()));
 }
 
 std::vector<PrefabInstanceRecord> BuildNestedInstanceRecords(
@@ -173,6 +184,156 @@ std::optional<PropertyValue> ReadPropertyValue(
     return property->value;
 }
 
+bool PropertyValuesEqual(
+    const PropertyValue& lhs,
+    const PropertyValue& rhs)
+{
+    if (lhs.GetKind() != rhs.GetKind())
+        return false;
+
+    switch (lhs.GetKind())
+    {
+    case PropertyValue::Kind::Null:
+        return true;
+    case PropertyValue::Kind::Bool:
+        return lhs.GetBool() == rhs.GetBool();
+    case PropertyValue::Kind::Integer:
+        return lhs.GetInteger() == rhs.GetInteger();
+    case PropertyValue::Kind::Number:
+        return lhs.GetNumber() == rhs.GetNumber();
+    case PropertyValue::Kind::String:
+        return lhs.GetString() == rhs.GetString();
+    case PropertyValue::Kind::Guid:
+        return lhs.GetGuid() == rhs.GetGuid();
+    case PropertyValue::Kind::OwnedReference:
+        return lhs.GetObjectId() == rhs.GetObjectId();
+    case PropertyValue::Kind::ObjectReference:
+        return lhs.GetObjectReference() == rhs.GetObjectReference() &&
+            lhs.GetObjectReference().filePath == rhs.GetObjectReference().filePath;
+    case PropertyValue::Kind::Array:
+    {
+        const auto& lhsArray = lhs.GetArray();
+        const auto& rhsArray = rhs.GetArray();
+        if (lhsArray.size() != rhsArray.size())
+            return false;
+
+        for (size_t index = 0; index < lhsArray.size(); ++index)
+        {
+            if (!PropertyValuesEqual(lhsArray[index], rhsArray[index]))
+                return false;
+        }
+        return true;
+    }
+    case PropertyValue::Kind::Object:
+    {
+        const auto& lhsObject = lhs.GetObject();
+        const auto& rhsObject = rhs.GetObject();
+        if (lhsObject.size() != rhsObject.size())
+            return false;
+
+        for (size_t index = 0; index < lhsObject.size(); ++index)
+        {
+            if (lhsObject[index].first != rhsObject[index].first ||
+                !PropertyValuesEqual(lhsObject[index].second, rhsObject[index].second))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
+bool ContainsAssetReferenceValue(const PropertyValue& value)
+{
+    switch (value.GetKind())
+    {
+    case PropertyValue::Kind::ObjectReference:
+        return value.GetObjectReference().guid.IsValid();
+    case PropertyValue::Kind::Array:
+        return std::any_of(
+            value.GetArray().begin(),
+            value.GetArray().end(),
+            ContainsAssetReferenceValue);
+    case PropertyValue::Kind::Object:
+        return std::any_of(
+            value.GetObject().begin(),
+            value.GetObject().end(),
+            [](const auto& property)
+            {
+                return ContainsAssetReferenceValue(property.second);
+            });
+    default:
+        return false;
+    }
+}
+
+nlohmann::json ConvertPropertyValueToJson(const PropertyValue& value)
+{
+    switch (value.GetKind())
+    {
+    case PropertyValue::Kind::Null:
+        return nullptr;
+    case PropertyValue::Kind::Bool:
+        return value.GetBool();
+    case PropertyValue::Kind::Integer:
+        return value.GetInteger();
+    case PropertyValue::Kind::Number:
+        return value.GetNumber();
+    case PropertyValue::Kind::String:
+        return value.GetString();
+    case PropertyValue::Kind::Guid:
+        return value.GetGuid().ToString();
+    case PropertyValue::Kind::ObjectReference:
+    {
+        const auto& reference = value.GetObjectReference();
+        return reference.guid.IsValid() ? nlohmann::json(reference.filePath) : nlohmann::json(nullptr);
+    }
+    case PropertyValue::Kind::Array:
+    {
+        nlohmann::json output = nlohmann::json::array();
+        for (const auto& item : value.GetArray())
+            output.push_back(ConvertPropertyValueToJson(item));
+        return output;
+    }
+    case PropertyValue::Kind::Object:
+    {
+        nlohmann::json output = nlohmann::json::object();
+        for (const auto& property : value.GetObject())
+            output[property.first] = ConvertPropertyValueToJson(property.second);
+        return output;
+    }
+    default:
+        return nullptr;
+    }
+}
+
+void ApplyLiveComponentRecordFields(
+    NLS::Engine::Components::Component& component,
+    const ObjectRecord& record)
+{
+    auto componentInstance = NLS::meta::Variant(&component, NLS::meta::variant_policy::WrapObject {});
+    const auto type = component.GetType();
+    if (!type.IsValid())
+        return;
+
+    for (const auto& property : record.properties)
+    {
+        if (ContainsAssetReferenceValue(property.value))
+            continue;
+
+        const auto field = type.GetField(property.name);
+        if (!field.IsValid() || field.IsReadOnly())
+            continue;
+
+        const auto json = ConvertPropertyValueToJson(property.value);
+        auto value = field.GetType().DeserializeJson(NLS::Json(json));
+        field.SetValue(componentInstance, value);
+    }
+}
+
 std::optional<std::string> ReadStringPropertyValue(
     const ObjectRecord& record,
     const std::string& propertyName)
@@ -190,6 +351,24 @@ const ObjectRecord* FindComponentRecordByType(
 {
     for (const auto& componentId : componentIds)
     {
+        const auto* record = FindObjectRecord(graph, componentId);
+        if (record && record->typeName == typeName)
+            return record;
+    }
+    return nullptr;
+}
+
+const ObjectRecord* FindNextUnmatchedComponentRecordByType(
+    const ObjectGraphDocument& graph,
+    const std::vector<ObjectId>& componentIds,
+    const std::string& typeName,
+    const std::unordered_set<ObjectId>& matchedIds)
+{
+    for (const auto& componentId : componentIds)
+    {
+        if (matchedIds.find(componentId) != matchedIds.end())
+            continue;
+
         const auto* record = FindObjectRecord(graph, componentId);
         if (record && record->typeName == typeName)
             return record;
@@ -286,6 +465,33 @@ ObjectRecord SerializeAddedComponent(
     record.localIdentifierInFile = NLS::Engine::Serialize::MakeLocalIdentifierInFile(objectId);
     record.debugName = component.GetType().GetName();
     return record;
+}
+
+void DiscoverMatchedComponentPropertyOverrides(
+    const PrefabInstanceRecord& instance,
+    const ObjectRecord& sourceComponent,
+    NLS::Engine::Components::Component& liveComponent,
+    std::vector<PrefabOverrideRecord>& overrides)
+{
+    auto liveRecord = NLS::Engine::Serialize::ObjectGraphSerializer::SerializeObjectRecord(
+        liveComponent,
+        sourceComponent.id);
+
+    for (const auto& liveProperty : liveRecord.properties)
+    {
+        const auto* sourceProperty = FindProperty(sourceComponent, liveProperty.name);
+        if (sourceProperty && PropertyValuesEqual(sourceProperty->value, liveProperty.value))
+            continue;
+
+        overrides.push_back(MakeOverrideRecord(
+            instance,
+            sourceComponent.id,
+            liveProperty.name,
+            PatchOperation::ReplaceProperty(
+                sourceComponent.id,
+                liveProperty.name,
+                liveProperty.value)));
+    }
 }
 
 std::vector<ObjectRecord> SerializeAddedGameObjectSubtree(GameObject& root, const ObjectId& rootId)
@@ -476,10 +682,13 @@ void MapInstanceHierarchy(
     GameObject& instanceObject,
     PrefabInstanceRecord& instance)
 {
+    const auto instanceSeed = instance.instanceRoot != nullptr
+        ? std::to_string(instance.instanceRoot->GetInstanceID())
+        : NLS::Guid::New().ToString();
     instance.sourceByInstanceObject.emplace(&instanceObject, sourceRecord.id);
     instance.sourceToInstance.emplace(
         sourceRecord.id,
-        ObjectId(NLS::Guid::NewDeterministic("Prefab.Instance:" + sourceRecord.id.GetGuid().ToString())));
+        MakePrefabInstanceObjectId(instanceSeed, sourceRecord.id));
 
     const auto sourceComponents = ReadOwnedArray(sourceRecord, "components");
     const auto& liveComponents = instanceObject.GetComponents();
@@ -493,7 +702,7 @@ void MapInstanceHierarchy(
 
         instance.sourceToInstance.emplace(
             componentRecord->id,
-            ObjectId(NLS::Guid::NewDeterministic("Prefab.Instance:" + componentRecord->id.GetGuid().ToString())));
+            MakePrefabInstanceObjectId(instanceSeed, componentRecord->id));
     }
 
     const auto sourceChildren = ReadOwnedArray(sourceRecord, "children");
@@ -535,7 +744,194 @@ NLS::Engine::Components::Component* EnsureLiveComponentFromRecord(
     const auto type = NLS::meta::Type::GetFromName(record.typeName);
     if (!type.IsValid() || !type.DerivesFrom(NLS_TYPEOF(NLS::Engine::Components::Component)))
         return nullptr;
+
+    for (const auto& component : owner.GetComponents())
+    {
+        if (component && component->GetType() == type)
+            return component.get();
+    }
+
     return owner.AddComponent(type);
+}
+
+NLS::Engine::Components::Component* EnsureLiveComponentFromRecordAtIndex(
+    GameObject& owner,
+    const ObjectRecord& record,
+    const size_t index,
+    const std::unordered_set<NLS::Engine::Components::Component*>& consumedComponents)
+{
+    const auto type = NLS::meta::Type::GetFromName(record.typeName);
+    if (!type.IsValid() || !type.DerivesFrom(NLS_TYPEOF(NLS::Engine::Components::Component)))
+        return nullptr;
+
+    if (index < owner.GetComponents().size())
+    {
+        auto* existing = owner.GetComponents()[index].get();
+        if (existing &&
+            existing->GetType() == type &&
+            consumedComponents.find(existing) == consumedComponents.end())
+        {
+            return existing;
+        }
+    }
+
+    for (const auto& component : owner.GetComponents())
+    {
+        if (component &&
+            component->GetType() == type &&
+            consumedComponents.find(component.get()) == consumedComponents.end())
+        {
+            owner.MoveComponent(component.get(), index);
+            return component.get();
+        }
+    }
+
+    return owner.AddComponent(type);
+}
+
+void ApplyDeferredAssetReferenceHintsIfMissing(
+    NLS::Engine::Components::Component& component,
+    const ObjectRecord& record)
+{
+    if (record.typeName == NLS_TYPEOF(NLS::Engine::Components::MeshFilter).GetName() &&
+        component.GetType() == NLS_TYPEOF(NLS::Engine::Components::MeshFilter))
+    {
+        auto& meshFilter = static_cast<NLS::Engine::Components::MeshFilter&>(component);
+        // SetMeshObjectIdentifier clears transient preview meshes; prefab graph tasks keep the canonical path.
+        if (!meshFilter.GetModelPath().empty() || meshFilter.HasResolvedTransientMesh())
+            return;
+
+        const auto mesh = ReadPropertyValue(record, "mesh");
+        if (mesh.has_value() &&
+            mesh->GetKind() == PropertyValue::Kind::ObjectReference &&
+            mesh->GetObjectReference().guid.IsValid())
+        {
+            meshFilter.SetMeshObjectIdentifier(mesh->GetObjectReference());
+        }
+        return;
+    }
+
+    if (record.typeName == NLS_TYPEOF(NLS::Engine::Components::MeshRenderer).GetName() &&
+        component.GetType() == NLS_TYPEOF(NLS::Engine::Components::MeshRenderer))
+    {
+        auto& meshRenderer = static_cast<NLS::Engine::Components::MeshRenderer&>(component);
+        const auto materials = ReadPropertyValue(record, "materials");
+        if (!materials.has_value() || materials->GetKind() != PropertyValue::Kind::Array)
+            return;
+
+        const auto existingPaths = meshRenderer.GetMaterialPaths();
+        NLS::Array<std::string> paths;
+        paths.reserve(materials->GetArray().size());
+        bool changed = false;
+        size_t index = 0u;
+        for (const auto& value : materials->GetArray())
+        {
+            std::string path;
+            if (value.GetKind() == PropertyValue::Kind::ObjectReference &&
+                value.GetObjectReference().guid.IsValid())
+            {
+                path = NLS::Engine::Serialize::ResolveAssetReferencePath(value.GetObjectReference());
+            }
+
+            if (path.empty() && index < existingPaths.size())
+                path = existingPaths[index];
+            if (path.empty() && index < NLS::Engine::Components::MeshRenderer::kMaxMaterialCount)
+            {
+                if (auto* material = meshRenderer.GetMaterialAtIndex(static_cast<uint8_t>(index));
+                    material != nullptr)
+                {
+                    path = material->path;
+                }
+            }
+
+            if (index >= existingPaths.size() || existingPaths[index] != path)
+                changed = true;
+            paths.push_back(std::move(path));
+            ++index;
+        }
+
+        if (changed)
+            meshRenderer.SetMaterialPathHints(paths);
+    }
+}
+
+GameObject* FindLiveChildForSourceRecord(
+    GameObject& owner,
+    const ObjectRecord& childRecord,
+    const std::unordered_set<GameObject*>& consumedChildren)
+{
+    const auto childName = ReadStringPropertyValue(childRecord, "name").value_or(childRecord.debugName);
+    const auto childTag = ReadStringPropertyValue(childRecord, "tag").value_or(std::string {});
+    for (auto* child : owner.GetChildren())
+    {
+        if (!child)
+            continue;
+        if (consumedChildren.find(child) != consumedChildren.end())
+            continue;
+        if (child->GetName() == childName && (childTag.empty() || child->GetTag() == childTag))
+            return child;
+    }
+    return nullptr;
+}
+
+void CompleteLiveGameObjectSubtreeFromPrefab(
+    const ObjectGraphDocument& graph,
+    const ObjectRecord& sourceRecord,
+    GameObject& liveObject,
+    PrefabInstanceRecord& instance)
+{
+    const auto instanceSeed = instance.instanceRoot != nullptr
+        ? std::to_string(instance.instanceRoot->GetInstanceID())
+        : NLS::Guid::New().ToString();
+    ApplyRecordToLiveGameObject(liveObject, sourceRecord);
+    instance.sourceByInstanceObject.emplace(&liveObject, sourceRecord.id);
+    instance.sourceToInstance.emplace(
+        sourceRecord.id,
+        MakePrefabInstanceObjectId(instanceSeed, sourceRecord.id));
+
+    const auto sourceComponents = ReadOwnedArray(sourceRecord, "components");
+    std::unordered_set<NLS::Engine::Components::Component*> consumedComponents;
+    for (size_t index = 0u; index < sourceComponents.size(); ++index)
+    {
+        const auto* componentRecord = FindObjectRecord(graph, sourceComponents[index]);
+        if (!componentRecord)
+            continue;
+
+        auto* component = EnsureLiveComponentFromRecordAtIndex(
+            liveObject,
+            *componentRecord,
+            index,
+            consumedComponents);
+        if (!component)
+            continue;
+
+        consumedComponents.insert(component);
+        ApplyLiveComponentRecordFields(*component, *componentRecord);
+        ApplyDeferredAssetReferenceHintsIfMissing(*component, *componentRecord);
+        instance.sourceToInstance.emplace(
+            componentRecord->id,
+            MakePrefabInstanceObjectId(instanceSeed, componentRecord->id));
+    }
+
+    std::unordered_set<GameObject*> consumedChildren;
+    for (const auto& childId : ReadOwnedArray(sourceRecord, "children"))
+    {
+        const auto* childRecord = FindObjectRecord(graph, childId);
+        if (!childRecord || !IsGameObjectRecord(*childRecord))
+            continue;
+
+        auto* child = FindLiveChildForSourceRecord(liveObject, *childRecord, consumedChildren);
+        if (!child)
+        {
+            child = CreateLiveGameObjectFromRecord(*childRecord);
+            if (!child)
+                continue;
+            child->SetParent(liveObject);
+        }
+
+        consumedChildren.insert(child);
+        CompleteLiveGameObjectSubtreeFromPrefab(graph, *childRecord, *child, instance);
+    }
 }
 
 void RestoreLiveGameObjectSubtree(
@@ -544,11 +940,14 @@ void RestoreLiveGameObjectSubtree(
     GameObject& liveObject,
     PrefabInstanceRecord& instance)
 {
+    const auto instanceSeed = instance.instanceRoot != nullptr
+        ? std::to_string(instance.instanceRoot->GetInstanceID())
+        : NLS::Guid::New().ToString();
     ApplyRecordToLiveGameObject(liveObject, sourceRecord);
     instance.sourceByInstanceObject.emplace(&liveObject, sourceRecord.id);
     instance.sourceToInstance.emplace(
         sourceRecord.id,
-        ObjectId(NLS::Guid::NewDeterministic("Prefab.Instance:" + sourceRecord.id.GetGuid().ToString())));
+        MakePrefabInstanceObjectId(instanceSeed, sourceRecord.id));
 
     for (const auto& componentId : ReadOwnedArray(sourceRecord, "components"))
     {
@@ -562,7 +961,7 @@ void RestoreLiveGameObjectSubtree(
 
         instance.sourceToInstance.emplace(
             componentRecord->id,
-            ObjectId(NLS::Guid::NewDeterministic("Prefab.Instance:" + componentRecord->id.GetGuid().ToString())));
+            MakePrefabInstanceObjectId(instanceSeed, componentRecord->id));
     }
 
     for (const auto& childId : ReadOwnedArray(sourceRecord, "children"))
@@ -592,6 +991,39 @@ GameObject* FindLiveObjectForSource(
         if (mapping.second == sourceObject)
             return const_cast<GameObject*>(mapping.first);
     }
+    return nullptr;
+}
+
+NLS::Engine::Components::Component* FindLiveComponentForSource(
+    const PrefabInstanceRecord& instance,
+    const ObjectId& sourceComponent)
+{
+    const auto* sourceRecord = FindObjectRecord(instance.sourceGraph, sourceComponent);
+    if (!sourceRecord)
+        return nullptr;
+
+    for (const auto& mapping : instance.sourceByInstanceObject)
+    {
+        auto* owner = const_cast<GameObject*>(mapping.first);
+        const auto* ownerRecord = FindObjectRecord(instance.sourceGraph, mapping.second);
+        if (!owner || !ownerRecord)
+            continue;
+
+        const auto sourceComponents = ReadOwnedArray(*ownerRecord, "components");
+        const auto componentIt = std::find(sourceComponents.begin(), sourceComponents.end(), sourceComponent);
+        if (componentIt == sourceComponents.end())
+            continue;
+
+        const auto componentIndex = static_cast<size_t>(std::distance(sourceComponents.begin(), componentIt));
+        if (componentIndex >= owner->GetComponents().size())
+            return nullptr;
+
+        auto* component = owner->GetComponents()[componentIndex].get();
+        if (component && ComponentTypeName(*component) == sourceRecord->typeName)
+            return component;
+        return nullptr;
+    }
+
     return nullptr;
 }
 
@@ -756,8 +1188,24 @@ bool RebuildExistingInstanceFromPrefab(
     if (!rootRecord || !IsGameObjectRecord(*rootRecord))
         return false;
 
-    ApplyRecordToLiveGameObject(root, *rootRecord);
-    MapInstanceHierarchy(prefab, *rootRecord, root, instance);
+    CompleteLiveGameObjectSubtreeFromPrefab(prefab.graph, *rootRecord, root, instance);
+    return true;
+}
+
+bool ApplyLiveComponentLocalPatch(PrefabInstanceRecord& instance, const PatchOperation& patch)
+{
+    auto* component = FindLiveComponentForSource(instance, patch.target);
+    if (!component)
+        return false;
+
+    const auto field = component->GetType().GetField(patch.property);
+    if (!field.IsValid() || field.IsReadOnly())
+        return false;
+
+    auto componentInstance = NLS::meta::Variant(component, NLS::meta::variant_policy::WrapObject {});
+    const auto json = ConvertPropertyValueToJson(patch.value);
+    auto value = field.GetType().DeserializeJson(NLS::Json(json));
+    field.SetValue(componentInstance, value);
     return true;
 }
 
@@ -768,7 +1216,7 @@ bool ApplyLiveLocalPatch(PrefabInstanceRecord& instance, const PatchOperation& p
 
     auto* liveObject = FindLiveObjectForSource(instance, patch.target);
     if (!liveObject)
-        return false;
+        return ApplyLiveComponentLocalPatch(instance, patch);
 
     if (patch.property == "name" && patch.value.GetKind() == PropertyValue::Kind::String)
     {
@@ -838,10 +1286,15 @@ void DiscoverComponentOverrides(
         if (!component)
             continue;
 
-        const auto* sourceRecord = FindComponentRecordByType(prefab.graph, sourceComponents, ComponentTypeName(*component));
+        const auto* sourceRecord = FindNextUnmatchedComponentRecordByType(
+            prefab.graph,
+            sourceComponents,
+            ComponentTypeName(*component),
+            matchedSources);
         if (sourceRecord && matchedSources.insert(sourceRecord->id).second)
         {
             liveSourceOrder.push_back(sourceRecord->id);
+            DiscoverMatchedComponentPropertyOverrides(instance, *sourceRecord, *component, overrides);
             continue;
         }
 
@@ -1404,6 +1857,16 @@ void AddArtifactDiagnostics(
             AddUnresolvedAssetReferenceDiagnostics(result, artifact, property.value);
     }
 }
+
+std::string MakePrefabSourceStateKey(
+    const NLS::Core::Assets::AssetId& assetId,
+    const std::string& prefabSubAssetKey)
+{
+    if (!assetId.IsValid())
+        return {};
+
+    return assetId.GetGuid().ToString() + "|" + prefabSubAssetKey;
+}
 }
 
 PrefabInstanceRecord& PrefabInstanceRegistry::Register(PrefabInstanceRecord instance)
@@ -1414,6 +1877,8 @@ PrefabInstanceRecord& PrefabInstanceRegistry::Register(PrefabInstanceRecord inst
         {
             if (existing.instanceRoot == instance.instanceRoot)
             {
+                m_failedResourceInstanceRoots.erase(existing.instanceRoot);
+                m_pendingResourceInstanceRoots.erase(existing.instanceRoot);
                 existing = std::move(instance);
                 return existing;
             }
@@ -1427,7 +1892,10 @@ PrefabInstanceRecord& PrefabInstanceRegistry::Register(PrefabInstanceRecord inst
 void PrefabInstanceRegistry::Clear()
 {
     m_instances.clear();
-    m_missingAssets.clear();
+    m_missingPrefabSources.clear();
+    m_pendingResourcePrefabSources.clear();
+    m_failedResourceInstanceRoots.clear();
+    m_pendingResourceInstanceRoots.clear();
 }
 
 PrefabInstanceRecord* PrefabInstanceRegistry::FindRootInstance(const GameObject& object)
@@ -1453,6 +1921,8 @@ bool PrefabInstanceRegistry::RemoveRootInstance(const GameObject& object)
     {
         if (it->instanceRoot == &object)
         {
+            m_failedResourceInstanceRoots.erase(it->instanceRoot);
+            m_pendingResourceInstanceRoots.erase(it->instanceRoot);
             m_instances.erase(it);
             return true;
         }
@@ -1480,10 +1950,114 @@ void PrefabInstanceRegistry::MarkAssetMissing(
     if (!assetId.IsValid())
         return;
 
+    bool markedKnownInstance = false;
+    for (const auto& instance : m_instances)
+    {
+        if (instance.prefabAssetId != assetId)
+            continue;
+
+        MarkAssetMissing(assetId, instance.prefabSubAssetKey, missing);
+        markedKnownInstance = true;
+    }
+
+    if (markedKnownInstance)
+        return;
+
+    MarkAssetMissing(assetId, std::string {}, missing);
+}
+
+void PrefabInstanceRegistry::MarkAssetMissing(
+    NLS::Core::Assets::AssetId assetId,
+    const std::string& prefabSubAssetKey,
+    const bool missing)
+{
+    const auto key = MakePrefabSourceStateKey(assetId, prefabSubAssetKey);
+    if (key.empty())
+        return;
+
     if (missing)
-        m_missingAssets.insert(assetId);
+        m_missingPrefabSources.insert(key);
     else
-        m_missingAssets.erase(assetId);
+        m_missingPrefabSources.erase(key);
+}
+
+void PrefabInstanceRegistry::MarkAssetPendingResources(
+    NLS::Core::Assets::AssetId assetId,
+    const bool pending)
+{
+    if (!assetId.IsValid())
+        return;
+
+    bool markedKnownInstance = false;
+    for (const auto& instance : m_instances)
+    {
+        if (instance.prefabAssetId != assetId)
+            continue;
+
+        MarkAssetPendingResources(assetId, instance.prefabSubAssetKey, pending);
+        markedKnownInstance = true;
+    }
+
+    if (markedKnownInstance)
+        return;
+
+    MarkAssetPendingResources(assetId, std::string {}, pending);
+}
+
+void PrefabInstanceRegistry::MarkAssetPendingResources(
+    NLS::Core::Assets::AssetId assetId,
+    const std::string& prefabSubAssetKey,
+    const bool pending)
+{
+    const auto key = MakePrefabSourceStateKey(assetId, prefabSubAssetKey);
+    if (key.empty())
+        return;
+
+    if (pending)
+        m_pendingResourcePrefabSources.insert(key);
+    else
+        m_pendingResourcePrefabSources.erase(key);
+}
+
+void PrefabInstanceRegistry::MarkInstanceResourceFailure(
+    const GameObject& instanceRoot,
+    const bool failed)
+{
+    const auto* instance = FindRootInstance(instanceRoot);
+    if (!instance || instance->instanceRoot == nullptr)
+        return;
+
+    if (failed)
+        m_failedResourceInstanceRoots.insert(instance->instanceRoot);
+    else
+        m_failedResourceInstanceRoots.erase(instance->instanceRoot);
+}
+
+void PrefabInstanceRegistry::MarkInstancePendingResources(
+    const GameObject& instanceRoot,
+    const bool pending)
+{
+    const auto* instance = FindRootInstance(instanceRoot);
+    if (!instance || instance->instanceRoot == nullptr)
+        return;
+
+    if (pending)
+        m_pendingResourceInstanceRoots.insert(instance->instanceRoot);
+    else
+        m_pendingResourceInstanceRoots.erase(instance->instanceRoot);
+}
+
+void PrefabInstanceRegistry::ClearInstancePendingResourcesForPrefab(
+    NLS::Core::Assets::AssetId assetId)
+{
+    if (!assetId.IsValid())
+        return;
+
+    for (const auto& instance : m_instances)
+    {
+        if (instance.prefabAssetId == assetId && instance.instanceRoot != nullptr)
+            m_pendingResourceInstanceRoots.erase(instance.instanceRoot);
+    }
 }
 
 PrefabInstanceRecord* PrefabInstanceRegistry::FindInstance(const GameObject& object)
@@ -1533,18 +2107,26 @@ PrefabHierarchyPresentation PrefabInstanceRegistry::GetPresentation(const GameOb
     presentation.assetId = instance->prefabAssetId;
     presentation.subAssetKey = instance->prefabSubAssetKey;
     presentation.generatedReadOnly = instance->generatedReadOnly;
-    presentation.missingAsset = m_missingAssets.find(instance->prefabAssetId) != m_missingAssets.end();
+    const auto prefabSourceStateKey =
+        MakePrefabSourceStateKey(instance->prefabAssetId, instance->prefabSubAssetKey);
+    presentation.missingAsset =
+        m_missingPrefabSources.find(prefabSourceStateKey) != m_missingPrefabSources.end() ||
+        (instance->instanceRoot != nullptr &&
+            m_failedResourceInstanceRoots.find(instance->instanceRoot) != m_failedResourceInstanceRoots.end());
+    presentation.pendingResources =
+        m_pendingResourcePrefabSources.find(prefabSourceStateKey) != m_pendingResourcePrefabSources.end() ||
+        (instance->instanceRoot != nullptr &&
+            m_pendingResourceInstanceRoots.find(instance->instanceRoot) != m_pendingResourceInstanceRoots.end());
+    presentation.unpacked = instance->unpacked;
     presentation.hasOverrides = !instance->localPatches.empty();
     presentation.state = instance->instanceRoot == &object
         ? PrefabHierarchyState::Root
         : PrefabHierarchyState::Child;
 
-    if (presentation.missingAsset)
+    if (presentation.unpacked)
+        presentation.color = PrefabHierarchyColorToken::Unpacked;
+    else if (presentation.missingAsset)
         presentation.color = PrefabHierarchyColorToken::Missing;
-    else if (presentation.hasOverrides)
-        presentation.color = PrefabHierarchyColorToken::Override;
-    else if (presentation.generatedReadOnly)
-        presentation.color = PrefabHierarchyColorToken::GeneratedReadOnly;
     else
     {
         presentation.color = presentation.state == PrefabHierarchyState::Root
@@ -1611,7 +2193,10 @@ PrefabEditorOperationResult PrefabEditorWorkflow::InstantiatePrefab(
     PrefabEditorOperationResult result;
     result.status = PrefabEditorOperationStatus::Rejected;
 
-    if (!request.prefab)
+    const auto* prefab = request.constPrefab != nullptr
+        ? request.constPrefab
+        : request.prefab;
+    if (!prefab)
     {
         AddDiagnostic(result, "prefab-missing-artifact", "Prefab instantiation requires a prefab artifact.");
         return result;
@@ -1625,7 +2210,7 @@ PrefabEditorOperationResult PrefabEditorWorkflow::InstantiatePrefab(
 
     NLS::Engine::Serialize::LoadPolicy loadPolicy;
     loadPolicy.deferAssetReferenceResolution = request.deferAssetReferenceResolution;
-    auto instantiateResult = NLS::Engine::Assets::InstantiatePrefabArtifact(*request.prefab, scene, loadPolicy);
+    auto instantiateResult = NLS::Engine::Assets::InstantiatePrefabArtifact(*prefab, scene, loadPolicy);
     if (instantiateResult.diagnostics.HasErrors())
     {
         result.status = PrefabEditorOperationStatus::Failed;
@@ -1637,23 +2222,23 @@ PrefabEditorOperationResult PrefabEditorWorkflow::InstantiatePrefab(
     instance.prefabAssetId = request.prefabAssetId;
     instance.sceneAssetId = request.sceneAssetId;
     instance.prefabSubAssetKey = request.prefabSubAssetKey;
-    instance.generatedReadOnly = request.prefab->generatedModelPrefab;
+    instance.generatedReadOnly = prefab->generatedModelPrefab;
     instance.instanceRoot = instantiateResult.root;
-    instance.sourceGraph = request.prefab->graph;
+    instance.sourceGraph = prefab->graph;
     instance.sourceToInstance = std::move(instantiateResult.sourceToInstance);
     instance.sourceByInstanceObject.clear();
     for (const auto& mapping : instantiateResult.sourceByInstanceObject)
         instance.sourceByInstanceObject.emplace(mapping.first, mapping.second);
-    instance.preservedAssetReferences = NLS::Engine::Assets::CollectPrefabAssetReferences(request.prefab->graph);
+    instance.preservedAssetReferences = NLS::Engine::Assets::CollectPrefabAssetReferences(prefab->graph);
     instance.nestedInstances = BuildNestedInstanceRecords(
-        *request.prefab,
+        *prefab,
         instance.preservedAssetReferences,
         request.sceneAssetId,
         instance.instanceRoot);
     if (instance.instanceRoot)
     {
-        if (const auto* rootRecord = FindObjectRecord(request.prefab->graph, request.prefab->graph.root))
-            MapInstanceHierarchy(*request.prefab, *rootRecord, *instance.instanceRoot, instance);
+        if (const auto* rootRecord = FindObjectRecord(prefab->graph, prefab->graph.root))
+            MapInstanceHierarchy(*prefab, *rootRecord, *instance.instanceRoot, instance);
     }
 
     result.instance = std::move(instance);
@@ -1678,7 +2263,10 @@ PrefabEditorOperationResult PrefabEditorWorkflow::ConnectExistingPrefabInstance(
     PrefabEditorOperationResult result;
     result.status = PrefabEditorOperationStatus::Rejected;
 
-    if (!request.prefab)
+    const auto* prefab = request.constPrefab != nullptr
+        ? request.constPrefab
+        : request.prefab;
+    if (!prefab)
     {
         AddDiagnostic(result, "prefab-missing-artifact", "Connecting a prefab instance requires a prefab artifact.");
         return result;
@@ -1690,7 +2278,7 @@ PrefabEditorOperationResult PrefabEditorWorkflow::ConnectExistingPrefabInstance(
         return result;
     }
 
-    const auto validation = request.prefab->Validate();
+    const auto validation = prefab->Validate();
     if (validation.HasErrors())
     {
         result.status = PrefabEditorOperationStatus::Failed;
@@ -1702,17 +2290,17 @@ PrefabEditorOperationResult PrefabEditorWorkflow::ConnectExistingPrefabInstance(
     instance.prefabAssetId = request.prefabAssetId;
     instance.sceneAssetId = request.sceneAssetId;
     instance.prefabSubAssetKey = request.prefabSubAssetKey;
-    instance.generatedReadOnly = request.prefab->generatedModelPrefab;
+    instance.generatedReadOnly = prefab->generatedModelPrefab;
     instance.instanceRoot = &root;
-    instance.sourceGraph = request.prefab->graph;
-    instance.preservedAssetReferences = NLS::Engine::Assets::CollectPrefabAssetReferences(request.prefab->graph);
+    instance.sourceGraph = prefab->graph;
+    instance.preservedAssetReferences = NLS::Engine::Assets::CollectPrefabAssetReferences(prefab->graph);
     instance.nestedInstances = BuildNestedInstanceRecords(
-        *request.prefab,
+        *prefab,
         instance.preservedAssetReferences,
         request.sceneAssetId,
         instance.instanceRoot);
 
-    if (!RebuildExistingInstanceFromPrefab(*request.prefab, root, instance))
+    if (!RebuildExistingInstanceFromPrefab(*prefab, root, instance))
     {
         AddDiagnostic(
             result,
@@ -2194,6 +2782,7 @@ PrefabEditorOperationResult PrefabEditorWorkflow::UnpackPrefabInstance(PrefabIns
 
     instance.prefabAssetId = {};
     instance.prefabSubAssetKey.clear();
+    instance.unpacked = true;
     instance.sourceToInstance.clear();
     instance.sourceByInstanceObject.clear();
     instance.localPatches.clear();

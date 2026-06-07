@@ -53,8 +53,6 @@ namespace NLS::Editor::Assets
 {
 namespace
 {
-constexpr uint32_t kExternalTexturePostprocessorVersion = 1u;
-constexpr const char* kExternalTextureBuildPipelineDependencyName = "external-texture-build-pipeline";
 constexpr uint32_t kExternalTextureSafetyMaxDimension = 16384u;
 constexpr uint64_t kExternalTextureSafetyMaxPixels = 16384ull * 16384ull;
 
@@ -86,6 +84,18 @@ std::string ToLower(std::string value)
             return static_cast<char>(std::tolower(character));
         });
     return value;
+}
+
+bool IsGltfModelSourcePath(const std::filesystem::path& sourcePath)
+{
+    const auto extension = ToLower(sourcePath.extension().string());
+    return extension == ".gltf" || extension == ".glb";
+}
+
+bool ShouldFlipExternalModelTextureVertically(const std::filesystem::path& sourcePath)
+{
+    // glTF UVs are already authored against the encoded image row order.
+    return !IsGltfModelSourcePath(sourcePath);
 }
 
 char HexDigit(const unsigned char value)
@@ -1911,7 +1921,7 @@ std::vector<uint8_t> SerializeTextureSubAsset(
         bytes->data(),
         bytes->size(),
         decodeSettings,
-        true);
+        ShouldFlipExternalModelTextureVertically(request.sourcePath));
     if (!artifact.has_value())
     {
         AddError(
@@ -2291,7 +2301,10 @@ NLS::Render::Assets::ImportedScene ImportSceneForRequest(
     {
         std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> meshes;
         std::vector<std::string> materialNames;
-        const auto parserFlags = NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE;
+        const auto parserFlags = extension == ".fbx"
+            ? NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE |
+                NLS::Render::Resources::Parsers::EModelParserFlags::GLOBAL_SCALE
+            : NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE;
         NLS::Render::Assets::ImportedScene detailedScene;
         detailedScene.sourceAssetId = request.meta.id;
         detailedScene.sceneKey = request.sceneKey;
@@ -2435,6 +2448,9 @@ std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> LoadSourceMeshData(
         {
             NLS::Render::Assets::ImportedScene unusedScene;
             bool hasDetailedScene = false;
+            const auto fbxParserFlags =
+                NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE |
+                NLS::Render::Resources::Parsers::EModelParserFlags::GLOBAL_SCALE;
             const auto fbxReaderSelection = ResolveFbxReaderSelection(request);
             if (fbxReaderSelection == FbxReaderSelection::Assimp)
             {
@@ -2442,7 +2458,7 @@ std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> LoadSourceMeshData(
                     request,
                     meshes,
                     materials,
-                    NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE,
+                    fbxParserFlags,
                     externalDependencies,
                     unusedScene,
                     hasDetailedScene,
@@ -2453,7 +2469,7 @@ std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> LoadSourceMeshData(
                 request,
                 meshes,
                 materials,
-                NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE,
+                fbxParserFlags,
                 externalDependencies,
                 unusedScene,
                 hasDetailedScene);
@@ -2471,7 +2487,7 @@ std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> LoadSourceMeshData(
                 request,
                 meshes,
                 materials,
-                NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE,
+                fbxParserFlags,
                 externalDependencies,
                 unusedScene,
                 hasDetailedScene,
@@ -2595,7 +2611,8 @@ void AppendConvertedMaterialPayloads(
     const NLS::Render::Assets::MaterialConversionContext context {
         textureResourcePathPrefix,
         std::move(importedTextureArtifactPaths),
-        std::move(materialShaderResourcePath)
+        std::move(materialShaderResourcePath),
+        scene.importSettings.ignoreFbxTexturedNeutralDiffuseTint
     };
     for (const auto& material : scene.materials)
     {

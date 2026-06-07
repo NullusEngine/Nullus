@@ -40,6 +40,36 @@ struct VSOutput
     float2 TexCoord : TEXCOORD0;
 };
 
+static const float NLS_DEFERRED_SAFE_NORMAL_EPSILON = 1.0e-8f;
+static const float NLS_DEFERRED_SAFE_NORMAL_MAX_LENGTH_SQ = 1.0e+20f;
+static const float NLS_DEFERRED_SAFE_NORMAL_MAX_COMPONENT = 1.0e+30f;
+
+bool NLSDeferredIsFinite3(float3 value)
+{
+    return all(value == value) && all(abs(value) < NLS_DEFERRED_SAFE_NORMAL_MAX_COMPONENT);
+}
+
+float3 NLSDeferredSafeNormalize(float3 value, float3 fallback)
+{
+    const float lengthSq = dot(value, value);
+    if (NLSDeferredIsFinite3(value) &&
+        lengthSq > NLS_DEFERRED_SAFE_NORMAL_EPSILON &&
+        lengthSq < NLS_DEFERRED_SAFE_NORMAL_MAX_LENGTH_SQ)
+    {
+        return value * rsqrt(lengthSq);
+    }
+
+    const float fallbackLengthSq = dot(fallback, fallback);
+    if (NLSDeferredIsFinite3(fallback) &&
+        fallbackLengthSq > NLS_DEFERRED_SAFE_NORMAL_EPSILON &&
+        fallbackLengthSq < NLS_DEFERRED_SAFE_NORMAL_MAX_LENGTH_SQ)
+    {
+        return fallback * rsqrt(fallbackLengthSq);
+    }
+
+    return float3(0.0f, 0.0f, 1.0f);
+}
+
 VSOutput VSMain(VSInput input)
 {
     VSOutput output;
@@ -104,7 +134,7 @@ float4 PSMain(VSOutput input) : SV_Target0
 
     const float4 albedo = u_GBufferAlbedo.Sample(u_LinearWrapSampler, input.TexCoord);
     const float3 encodedNormal = u_GBufferNormal.Sample(u_LinearWrapSampler, input.TexCoord).xyz;
-    const float3 normalWS = normalize(encodedNormal * 2.0f - 1.0f);
+    const float3 normalWS = NLSDeferredSafeNormalize(encodedNormal * 2.0f - 1.0f, float3(0.0f, 0.0f, 1.0f));
     const float3 materialParams = u_GBufferMaterial.Sample(u_LinearWrapSampler, input.TexCoord).xyz;
     const float3 worldPosition = ReconstructWorldPosition(input.TexCoord, depth01);
 

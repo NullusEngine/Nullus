@@ -431,13 +431,15 @@ void ABaseRenderer::SetActivePreparedPassBindingSet(const std::shared_ptr<NLS::R
     m_activePreparedPassBindingSet = bindingSet;
 }
 
-bool ABaseRenderer::BeginRecordedRenderPass(
+bool ABaseRenderer::BeginSingleTargetRenderPass(
     Buffers::Framebuffer* p_framebuffer,
     uint16_t p_width,
     uint16_t p_height,
     bool p_clearColor,
     bool p_clearDepth,
     bool p_clearStencil,
+    const std::shared_ptr<RHI::RHITextureView>& p_depthStencilViewOverride,
+    bool p_writesDepthStencilAttachment,
     const Maths::Vector4& p_clearValue)
 {
     NLS_PROFILE_SCOPE();
@@ -474,35 +476,36 @@ bool ABaseRenderer::BeginRecordedRenderPass(
         renderPassDesc.colorAttachments.push_back(std::move(colorAttachment));
     }
 
-    if (p_framebuffer != nullptr &&
+    auto depthStencilView = p_depthStencilViewOverride;
+    const bool hasDepthStencilViewOverride = depthStencilView != nullptr;
+    if (!hasDepthStencilViewOverride &&
+        p_framebuffer != nullptr &&
         (p_clearDepth || p_framebuffer->GetExplicitDepthStencilTextureHandle() != nullptr))
     {
+        depthStencilView = p_framebuffer->GetOrCreateExplicitDepthStencilView("FramebufferDepthView");
+    }
+    else if (!hasDepthStencilViewOverride && p_framebuffer == nullptr)
+    {
+        depthStencilView = Context::DriverRendererAccess::GetSwapchainDepthStencilView(m_driver);
+    }
+
+    if (depthStencilView != nullptr)
+    {
+        const bool writesDepthStencil = p_writesDepthStencilAttachment || p_clearDepth || p_clearStencil;
+        const bool preserveFramebufferStencil =
+            !hasDepthStencilViewOverride && p_framebuffer != nullptr;
         NLS::Render::RHI::RHIRenderPassDepthStencilAttachmentDesc depthAttachment;
         depthAttachment.depthLoadOp = p_clearDepth ? NLS::Render::RHI::LoadOp::Clear : NLS::Render::RHI::LoadOp::Load;
         depthAttachment.depthStoreOp = NLS::Render::RHI::StoreOp::Store;
-        depthAttachment.stencilLoadOp = p_clearStencil ? NLS::Render::RHI::LoadOp::Clear : NLS::Render::RHI::LoadOp::Load;
+        depthAttachment.stencilLoadOp = p_clearStencil
+            ? NLS::Render::RHI::LoadOp::Clear
+            : (preserveFramebufferStencil ? NLS::Render::RHI::LoadOp::Load : NLS::Render::RHI::LoadOp::DontCare);
         depthAttachment.stencilStoreOp = NLS::Render::RHI::StoreOp::Store;
         depthAttachment.clearValue.depth = 1.0f;
         depthAttachment.clearValue.stencil = 0u;
-        if (p_framebuffer != nullptr)
-            depthAttachment.view = p_framebuffer->GetOrCreateExplicitDepthStencilView("FramebufferDepthView");
+        depthAttachment.view = std::move(depthStencilView);
+        depthAttachment.readOnlyDepthStencil = !writesDepthStencil;
         renderPassDesc.depthStencilAttachment = std::move(depthAttachment);
-    }
-    else if (p_framebuffer == nullptr)
-    {
-        auto swapchainDepthView = Context::DriverRendererAccess::GetSwapchainDepthStencilView(m_driver);
-        if (swapchainDepthView != nullptr)
-        {
-            NLS::Render::RHI::RHIRenderPassDepthStencilAttachmentDesc depthAttachment;
-            depthAttachment.depthLoadOp = p_clearDepth ? NLS::Render::RHI::LoadOp::Clear : NLS::Render::RHI::LoadOp::Load;
-            depthAttachment.depthStoreOp = NLS::Render::RHI::StoreOp::Store;
-            depthAttachment.stencilLoadOp = p_clearStencil ? NLS::Render::RHI::LoadOp::Clear : NLS::Render::RHI::LoadOp::DontCare;
-            depthAttachment.stencilStoreOp = NLS::Render::RHI::StoreOp::Store;
-            depthAttachment.clearValue.depth = 1.0f;
-            depthAttachment.clearValue.stencil = 0u;
-            depthAttachment.view = std::move(swapchainDepthView);
-            renderPassDesc.depthStencilAttachment = std::move(depthAttachment);
-        }
     }
 
     if (useResourceStateTracker)
@@ -531,15 +534,21 @@ bool ABaseRenderer::BeginRecordedRenderPass(
             renderPassDesc.depthStencilAttachment->view != nullptr &&
             renderPassDesc.depthStencilAttachment->view->GetTexture() != nullptr)
         {
+            const bool writesDepthStencil = !renderPassDesc.depthStencilAttachment->readOnlyDepthStencil;
             attachmentBarriers.textureBarriers.push_back({
                 renderPassDesc.depthStencilAttachment->view->GetTexture(),
                 NLS::Render::RHI::ResourceState::Unknown,
-                NLS::Render::RHI::ResourceState::DepthWrite,
+                writesDepthStencil
+                    ? NLS::Render::RHI::ResourceState::DepthWrite
+                    : NLS::Render::RHI::ResourceState::DepthRead,
                 renderPassDesc.depthStencilAttachment->view->GetDesc().subresourceRange,
                 NLS::Render::RHI::PipelineStageMask::AllCommands,
                 NLS::Render::RHI::PipelineStageMask::DepthStencil,
                 NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite,
-                NLS::Render::RHI::AccessMask::DepthStencilRead | NLS::Render::RHI::AccessMask::DepthStencilWrite
+                writesDepthStencil
+                    ? (NLS::Render::RHI::AccessMask::DepthStencilRead |
+                        NLS::Render::RHI::AccessMask::DepthStencilWrite)
+                    : NLS::Render::RHI::AccessMask::DepthStencilRead
             });
         }
         if (!attachmentBarriers.textureBarriers.empty())
@@ -564,6 +573,27 @@ bool ABaseRenderer::BeginRecordedRenderPass(
     bool p_clearColor,
     bool p_clearDepth,
     bool p_clearStencil,
+    const Maths::Vector4& p_clearValue)
+{
+    return BeginRecordedRenderPass(
+        p_framebuffer,
+        p_width,
+        p_height,
+        p_clearColor,
+        p_clearDepth,
+        p_clearStencil,
+        true,
+        p_clearValue);
+}
+
+bool ABaseRenderer::BeginRecordedRenderPass(
+    Buffers::MultiFramebuffer* p_framebuffer,
+    uint16_t p_width,
+    uint16_t p_height,
+    bool p_clearColor,
+    bool p_clearDepth,
+    bool p_clearStencil,
+    bool p_writesDepthStencilAttachment,
     const Maths::Vector4& p_clearValue)
 {
     NLS_PROFILE_SCOPE();
@@ -594,6 +624,7 @@ bool ABaseRenderer::BeginRecordedRenderPass(
 
     if (p_clearDepth || p_framebuffer->GetExplicitDepthTextureHandle() != nullptr)
     {
+        const bool writesDepthStencil = p_writesDepthStencilAttachment || p_clearDepth || p_clearStencil;
         NLS::Render::RHI::RHIRenderPassDepthStencilAttachmentDesc depthAttachment;
         depthAttachment.depthLoadOp = p_clearDepth ? NLS::Render::RHI::LoadOp::Clear : NLS::Render::RHI::LoadOp::Load;
         depthAttachment.depthStoreOp = NLS::Render::RHI::StoreOp::Store;
@@ -602,6 +633,7 @@ bool ABaseRenderer::BeginRecordedRenderPass(
         depthAttachment.clearValue.depth = 1.0f;
         depthAttachment.clearValue.stencil = 0u;
         depthAttachment.view = p_framebuffer->GetOrCreateExplicitDepthView("MultiFramebufferDepthView");
+        depthAttachment.readOnlyDepthStencil = !writesDepthStencil;
         renderPassDesc.depthStencilAttachment = std::move(depthAttachment);
     }
 
@@ -631,15 +663,21 @@ bool ABaseRenderer::BeginRecordedRenderPass(
             renderPassDesc.depthStencilAttachment->view != nullptr &&
             renderPassDesc.depthStencilAttachment->view->GetTexture() != nullptr)
         {
+            const bool writesDepthStencil = !renderPassDesc.depthStencilAttachment->readOnlyDepthStencil;
             attachmentBarriers.textureBarriers.push_back({
                 renderPassDesc.depthStencilAttachment->view->GetTexture(),
                 NLS::Render::RHI::ResourceState::Unknown,
-                NLS::Render::RHI::ResourceState::DepthWrite,
+                writesDepthStencil
+                    ? NLS::Render::RHI::ResourceState::DepthWrite
+                    : NLS::Render::RHI::ResourceState::DepthRead,
                 renderPassDesc.depthStencilAttachment->view->GetDesc().subresourceRange,
                 NLS::Render::RHI::PipelineStageMask::AllCommands,
                 NLS::Render::RHI::PipelineStageMask::DepthStencil,
                 NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite,
-                NLS::Render::RHI::AccessMask::DepthStencilRead | NLS::Render::RHI::AccessMask::DepthStencilWrite
+                writesDepthStencil
+                    ? (NLS::Render::RHI::AccessMask::DepthStencilRead |
+                        NLS::Render::RHI::AccessMask::DepthStencilWrite)
+                    : NLS::Render::RHI::AccessMask::DepthStencilRead
             });
         }
         if (!attachmentBarriers.textureBarriers.empty())
@@ -674,6 +712,53 @@ bool ABaseRenderer::BeginOutputRenderPass(
         p_clearColor,
         p_clearDepth,
         p_clearStencil,
+        p_clearValue);
+}
+
+bool ABaseRenderer::BeginOutputRenderPass(
+    uint16_t p_width,
+    uint16_t p_height,
+    bool p_clearColor,
+    bool p_clearDepth,
+    bool p_clearStencil,
+    const std::shared_ptr<RHI::RHITextureView>& p_depthStencilView,
+    bool p_writesDepthStencilAttachment,
+    const Maths::Vector4& p_clearValue)
+{
+    NLS_PROFILE_SCOPE();
+
+    return BeginSingleTargetRenderPass(
+        NLS::Render::FrameGraph::ResolveExternalSceneOutputFramebuffer(m_frameDescriptor),
+        p_width,
+        p_height,
+        p_clearColor,
+        p_clearDepth,
+        p_clearStencil,
+        p_depthStencilView,
+        p_writesDepthStencilAttachment,
+        p_clearValue);
+}
+
+bool ABaseRenderer::BeginRecordedRenderPass(
+    Buffers::Framebuffer* p_framebuffer,
+    uint16_t p_width,
+    uint16_t p_height,
+    bool p_clearColor,
+    bool p_clearDepth,
+    bool p_clearStencil,
+    const Maths::Vector4& p_clearValue)
+{
+    NLS_PROFILE_SCOPE();
+
+    return BeginSingleTargetRenderPass(
+        p_framebuffer,
+        p_width,
+        p_height,
+        p_clearColor,
+        p_clearDepth,
+        p_clearStencil,
+        {},
+        true,
         p_clearValue);
 }
 

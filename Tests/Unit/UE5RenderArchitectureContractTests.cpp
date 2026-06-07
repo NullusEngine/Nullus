@@ -211,6 +211,9 @@ TEST(UE5RenderArchitectureContractTests, RuntimeCompilationRebuildsPreparedPassP
                 case NLS::Render::Context::RenderPassCommandKind::Opaque:
                     passInput.drawCount = package.opaqueDrawCount;
                     break;
+                case NLS::Render::Context::RenderPassCommandKind::Decal:
+                    passInput.drawCount = package.decalDrawCount;
+                    break;
                 case NLS::Render::Context::RenderPassCommandKind::Skybox:
                     passInput.drawCount = package.skyboxDrawCount;
                     break;
@@ -231,10 +234,11 @@ TEST(UE5RenderArchitectureContractTests, RuntimeCompilationRebuildsPreparedPassP
         });
 
     const auto& graphPasses = compiledExecution.graphPasses;
-    ASSERT_EQ(graphPasses.size(), 3u);
+    ASSERT_EQ(graphPasses.size(), 4u);
     EXPECT_EQ(graphPasses[0].metadata.commandKind, NLS::Render::Context::RenderPassCommandKind::Opaque);
-    EXPECT_EQ(graphPasses[1].metadata.commandKind, NLS::Render::Context::RenderPassCommandKind::Skybox);
-    EXPECT_EQ(graphPasses[2].metadata.commandKind, NLS::Render::Context::RenderPassCommandKind::Transparent);
+    EXPECT_EQ(graphPasses[1].metadata.commandKind, NLS::Render::Context::RenderPassCommandKind::Decal);
+    EXPECT_EQ(graphPasses[2].metadata.commandKind, NLS::Render::Context::RenderPassCommandKind::Skybox);
+    EXPECT_EQ(graphPasses[3].metadata.commandKind, NLS::Render::Context::RenderPassCommandKind::Transparent);
 
     ASSERT_EQ(package.passCommandInputs.size(), 3u);
     EXPECT_EQ(package.passCommandInputs[0].kind, NLS::Render::Context::RenderPassCommandKind::Opaque);

@@ -32,6 +32,11 @@ namespace
 		return NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(driver).diagSkipSkyboxDraw;
 	}
 
+	NLS::Render::Settings::EComparaisonAlgorithm GetForwardDecalDepthCompare()
+	{
+		return NLS::Render::Settings::EComparaisonAlgorithm::LESS_EQUAL;
+	}
+
 }
 
 namespace NLS::Engine::Rendering
@@ -50,6 +55,9 @@ namespace NLS::Engine::Rendering
 		{
 		case NLS::Render::FrameGraph::ForwardScenePassExecutionKind::Opaque:
 			DrawOpaques(pipelineState);
+			break;
+		case NLS::Render::FrameGraph::ForwardScenePassExecutionKind::Decal:
+			DrawDecals(pipelineState);
 			break;
 		case NLS::Render::FrameGraph::ForwardScenePassExecutionKind::Skybox:
 			DrawSkyboxes(pipelineState);
@@ -82,6 +90,16 @@ namespace NLS::Engine::Rendering
 				const auto& drawable = entry.second;
 				PreparedRecordedDraw preparedDraw;
 				if (CaptureThreadedPreparedDraw(opaquePso, drawable, preparedDraw))
+					QueueThreadedRecordedDraw(preparedDraw);
+			}
+
+			auto decalOverrides = NLS::Render::Resources::MaterialPipelineStateOverrides{};
+			decalOverrides.depthWrite = false;
+			for (const auto& entry : drawables.decals)
+			{
+				const auto& drawable = entry.second;
+				PreparedRecordedDraw preparedDraw;
+				if (CaptureThreadedPreparedDraw(drawable, decalOverrides, GetForwardDecalDepthCompare(), preparedDraw))
 					QueueThreadedRecordedDraw(preparedDraw);
 			}
 
@@ -121,6 +139,7 @@ namespace NLS::Engine::Rendering
 		{
 			NLS_LOG_INFO(
 				"[ForwardSceneRenderer] Parsed scene drawables: opaque=" + std::to_string(drawables.opaques.size()) +
+				", decal=" + std::to_string(drawables.decals.size()) +
 				", transparent=" + std::to_string(drawables.transparents.size()) +
 				", skybox=" + std::to_string(drawables.skyboxes.size()));
 		}
@@ -255,6 +274,23 @@ namespace NLS::Engine::Rendering
 			if (drawable.mesh == nullptr || drawable.material == nullptr)
 				continue;
 			DrawEntity(pso, drawable);
+		}
+	}
+
+	void ForwardSceneRenderer::DrawDecals(NLS::Render::Data::PipelineState pso)
+	{
+		NLS_PROFILE_SCOPE();
+		const auto& scene = GetDescriptor<ForwardSceneDescriptor>();
+
+		NLS::Render::Resources::MaterialPipelineStateOverrides decalOverrides;
+		decalOverrides.depthWrite = false;
+
+		for (const auto& entry : scene.drawables.decals)
+		{
+			const auto& drawable = entry.second;
+			if (drawable.material == nullptr || drawable.mesh == nullptr)
+				continue;
+			DrawEntity(drawable, decalOverrides, GetForwardDecalDepthCompare());
 		}
 	}
 

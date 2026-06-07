@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <array>
 #include <span>
 
 #include "Rendering/Resources/Material.h"
@@ -38,8 +39,27 @@ TEST(MaterialVariantKeyTests, BuildsRuntimeMaterialIdentityFromShaderAndRenderSt
     EXPECT_NE(identity.stableKey.find("|depthWrite:0"), std::string::npos);
     EXPECT_NE(identity.stableKey.find("|colorWrite:0"), std::string::npos);
     EXPECT_NE(identity.stableKey.find("|blend:1"), std::string::npos);
+    EXPECT_NE(identity.stableKey.find("|surface:Transparent"), std::string::npos);
     EXPECT_NE(identity.stableKey.find("|backCull:0"), std::string::npos);
     EXPECT_NE(identity.stableKey.find("|frontCull:1"), std::string::npos);
+}
+
+TEST(MaterialVariantKeyTests, RuntimeMaterialIdentityUsesSemanticSurfaceModeTokens)
+{
+    NLS::Render::Resources::Material transparentMaterial;
+    transparentMaterial.SetSurfaceMode(NLS::Render::Resources::MaterialSurfaceMode::Transparent);
+
+    NLS::Render::Resources::Material decalMaterial;
+    decalMaterial.SetSurfaceMode(NLS::Render::Resources::MaterialSurfaceMode::Decal);
+
+    const auto transparentIdentity = NLS::Render::Resources::BuildMaterialVariantIdentity(transparentMaterial);
+    const auto decalIdentity = NLS::Render::Resources::BuildMaterialVariantIdentity(decalMaterial);
+
+    EXPECT_NE(transparentIdentity.stableKey, decalIdentity.stableKey);
+    EXPECT_NE(transparentIdentity.stableKey.find("|surface:Transparent"), std::string::npos);
+    EXPECT_NE(decalIdentity.stableKey.find("|surface:Decal"), std::string::npos);
+    EXPECT_EQ(transparentIdentity.stableKey.find("|surface:1"), std::string::npos);
+    EXPECT_EQ(decalIdentity.stableKey.find("|surface:2"), std::string::npos);
 }
 
 TEST(MaterialVariantKeyTests, BuildsPassAndPipelineVariantKeysFromMaterialPipelineAndOverrides)
@@ -143,6 +163,55 @@ TEST(MaterialVariantKeyTests, IncludesBlendOverrideInPassVariantKey)
     EXPECT_NE(blendedKey.stableKey, opaqueKey.stableKey);
     EXPECT_NE(blendedKey.stableKey.find("overrideBlending:1"), std::string::npos);
     EXPECT_NE(opaqueKey.stableKey.find("overrideBlending:0"), std::string::npos);
+}
+
+TEST(MaterialVariantKeyTests, IncludesPerTargetBlendAndStencilOverridesInPassVariantKey)
+{
+    NLS::Render::Resources::Material material;
+    material.path = "App/Assets/Decal.nmat";
+
+    const NLS::Render::Data::PipelineState pipelineState;
+
+    NLS::Render::RHI::RHIRenderTargetBlendStateDesc albedoTarget;
+    albedoTarget.blendEnable = true;
+    albedoTarget.colorWriteMask = NLS::Render::RHI::RHIColorWriteMask::All;
+
+    NLS::Render::RHI::RHIRenderTargetBlendStateDesc suppressedTarget;
+    suppressedTarget.blendEnable = false;
+    suppressedTarget.colorWriteMask = NLS::Render::RHI::RHIColorWriteMask::None;
+
+    NLS::Render::Resources::MaterialPipelineStateOverrides decalOverrides;
+    const std::array<NLS::Render::RHI::RHIRenderTargetBlendStateDesc, 3u> decalTargets = {
+        albedoTarget,
+        suppressedTarget,
+        suppressedTarget
+    };
+    decalOverrides.SetRenderTargetBlendStates(decalTargets);
+    decalOverrides.stencilTest = false;
+    decalOverrides.stencilWriteMask = 0u;
+
+    auto changedOverrides = decalOverrides;
+    auto changedTargets = decalTargets;
+    changedTargets[1].colorWriteMask = NLS::Render::RHI::RHIColorWriteMask::All;
+    changedOverrides.SetRenderTargetBlendStates(changedTargets);
+    changedOverrides.stencilWriteMask = 0xFFu;
+
+    const auto decalKey = NLS::Render::Resources::BuildMaterialPassVariantKey(
+        material,
+        "DeferredDecal",
+        pipelineState,
+        decalOverrides);
+    const auto changedKey = NLS::Render::Resources::BuildMaterialPassVariantKey(
+        material,
+        "DeferredDecal",
+        pipelineState,
+        changedOverrides);
+
+    EXPECT_NE(decalKey.stableKey, changedKey.stableKey);
+    EXPECT_NE(decalKey.stableKey.find("overrideRenderTargetBlendStates:3"), std::string::npos);
+    EXPECT_NE(decalKey.stableKey.find("overrideStencilTest:0"), std::string::npos);
+    EXPECT_NE(decalKey.stableKey.find("overrideStencilWrite:0"), std::string::npos);
+    EXPECT_NE(changedKey.stableKey.find("overrideStencilWrite:255"), std::string::npos);
 }
 
 TEST(MaterialVariantKeyTests, InlineColorFormatOverridesMatchOwnedVectorKeySemantics)

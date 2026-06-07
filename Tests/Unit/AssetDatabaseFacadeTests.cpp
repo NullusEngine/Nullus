@@ -3218,6 +3218,53 @@ TEST(AssetDatabaseFacadeTests, ImportPrefabSourceAssetBuildsLoadablePrefabArtifa
     std::filesystem::remove_all(root);
 }
 
+TEST(AssetDatabaseFacadeTests, LoadsPersistedPrefabArtifactByAssetIdWhenSourcePathIndexIsMissing)
+{
+    using namespace NLS::Core::Assets;
+    using namespace NLS::Editor::Assets;
+
+    const auto root = MakeAssetDatabaseFacadeRoot();
+    NLS::Engine::GameObject gameObject("SceneOnlyLamp", "Prefab");
+    const auto prefabId = ParseAssetId("e6161616-1616-4616-8616-161616161616");
+    const auto created = NLS::Editor::Assets::PrefabEditorWorkflow().CreatePrefabFromSelection({
+        &gameObject,
+        {},
+        prefabId,
+        "Assets/Prefabs/SceneOnlyLamp.prefab"
+    });
+    ASSERT_EQ(created.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
+    ASSERT_FALSE(created.prefabSourceText.empty());
+
+    {
+        AssetDatabaseFacade database({root});
+        ASSERT_TRUE(database.Refresh());
+        ASSERT_TRUE(database.CreateTextAsset(
+            created.prefabSourceText,
+            "Assets/Prefabs/SceneOnlyLamp.prefab",
+            prefabId));
+        ASSERT_TRUE(database.ImportAsset("Assets/Prefabs/SceneOnlyLamp.prefab"));
+        ASSERT_TRUE(database.LoadPrefabArtifactAtPath(
+            "Assets/Prefabs/SceneOnlyLamp.prefab",
+            "prefab:SceneOnlyLamp").has_value());
+    }
+
+    std::filesystem::remove(root / "Assets" / "Prefabs" / "SceneOnlyLamp.prefab");
+    std::filesystem::remove(root / "Assets" / "Prefabs" / "SceneOnlyLamp.prefab.meta");
+
+    AssetDatabaseFacade freshDatabase({root});
+    ASSERT_TRUE(freshDatabase.Refresh());
+    ASSERT_TRUE(freshDatabase.GUIDToAssetPath(prefabId.ToString()).empty());
+
+    auto prefab = freshDatabase.LoadPrefabArtifactByAssetId(prefabId, "prefab:SceneOnlyLamp");
+    ASSERT_TRUE(prefab.has_value());
+    EXPECT_EQ(prefab->assetId, prefabId);
+    EXPECT_FALSE(prefab->generatedModelPrefab);
+    EXPECT_FALSE(prefab->Validate().HasErrors());
+    EXPECT_EQ(prefab->graph.root.GetGuid(), created.artifact->graph.root.GetGuid());
+
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetDatabaseFacadeTests, FileWatcherPreimportImportsSavedPrefabWithExternalAssetReferences)
 {
     using namespace NLS::Core::Assets;

@@ -54,6 +54,15 @@ struct ArtifactLoadBudgetMissRecord
     std::string path;
 };
 
+struct ArtifactLoadTelemetryStageSummary
+{
+    ArtifactLoadTelemetryStage stage = ArtifactLoadTelemetryStage::CacheMiss;
+    std::string path;
+    size_t recordCount = 0u;
+    std::chrono::microseconds totalElapsed {};
+    size_t totalBytes = 0u;
+};
+
 struct ArtifactLoadBudget
 {
     static constexpr int kWarmTexturedPreviewFirstVisibleBudgetMs = 200;
@@ -63,7 +72,7 @@ struct ArtifactLoadBudget
 
 namespace Detail
 {
-#if !defined(NDEBUG) || defined(NLS_ENABLE_ARTIFACT_LOAD_TELEMETRY)
+#if !defined(NDEBUG) || defined(NLS_ENABLE_TEST_HOOKS) || defined(NLS_ENABLE_ARTIFACT_LOAD_TELEMETRY)
 inline constexpr bool kArtifactLoadTelemetryEnabled = true;
 #else
 inline constexpr bool kArtifactLoadTelemetryEnabled = false;
@@ -75,6 +84,7 @@ inline constexpr size_t kMaxArtifactLoadBudgetMissRecords = 256u;
 
 NLS_CORE_API void RecordArtifactLoadTelemetry(const ArtifactLoadTelemetryRecord& record);
 NLS_CORE_API std::vector<ArtifactLoadTelemetryRecord> SnapshotArtifactLoadTelemetry();
+NLS_CORE_API std::vector<ArtifactLoadTelemetryStageSummary> SummarizeArtifactLoadTelemetry();
 NLS_CORE_API std::vector<ArtifactLoadBudgetMissRecord> SnapshotArtifactLoadBudgetMisses();
 NLS_CORE_API void ClearArtifactLoadTelemetry();
 

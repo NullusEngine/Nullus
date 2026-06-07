@@ -65,6 +65,7 @@ namespace NLS::Engine::Rendering
 		using SceneDrawables = std::vector<std::pair<float, NLS::Render::Entities::Drawable>>;
 
 		SceneDrawables opaques;
+		SceneDrawables decals;
 		SceneDrawables transparents;
 		SceneDrawables skyboxes;
 	};

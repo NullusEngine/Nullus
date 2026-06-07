@@ -108,6 +108,63 @@ TEST(ResourceLifetimeRegistryTests, SharedOwnersPreventPrematureUnload)
     EXPECT_EQ(candidates.front().normalizedPath, "Library/Artifacts/model/body.nmesh");
 }
 
+TEST(ResourceLifetimeRegistryTests, PreviewCancelCleanupDoesNotReleaseScenePrefabOwners)
+{
+    ResourceLifetimeRegistry registry;
+    const auto meshPath = std::string("Library/Artifacts/model/shared-body.nmesh");
+    const auto materialPath = std::string("Library/Artifacts/model/shared-body.nmat");
+    const auto texturePath = std::string("Library/Artifacts/model/shared-albedo.ntex");
+
+    registry.Acquire({
+        "scene:prefab-instance",
+        ResourceLifetimeResourceType::Mesh,
+        meshPath,
+        4096u,
+        ResourceLifetimeOwnerKind::SceneInstance});
+    registry.Acquire({
+        "scene:prefab-instance",
+        ResourceLifetimeResourceType::Material,
+        materialPath,
+        1024u,
+        ResourceLifetimeOwnerKind::SceneInstance});
+    registry.Acquire({
+        "scene:prefab-instance",
+        ResourceLifetimeResourceType::Texture,
+        texturePath,
+        8192u,
+        ResourceLifetimeOwnerKind::SceneInstance});
+
+    registry.Acquire({
+        "preview:hover",
+        ResourceLifetimeResourceType::Mesh,
+        meshPath,
+        4096u,
+        ResourceLifetimeOwnerKind::Preview});
+    registry.Acquire({
+        "preview:hover",
+        ResourceLifetimeResourceType::Material,
+        materialPath,
+        1024u,
+        ResourceLifetimeOwnerKind::Preview});
+    registry.Acquire({
+        "preview:hover",
+        ResourceLifetimeResourceType::Texture,
+        texturePath,
+        8192u,
+        ResourceLifetimeOwnerKind::Preview});
+
+    registry.ReleaseOwner("preview:hover");
+
+    EXPECT_EQ(registry.GetActiveOwnerCount(ResourceLifetimeResourceType::Mesh, meshPath), 1u);
+    EXPECT_EQ(registry.GetActiveOwnerCount(ResourceLifetimeResourceType::Material, materialPath), 1u);
+    EXPECT_EQ(registry.GetActiveOwnerCount(ResourceLifetimeResourceType::Texture, texturePath), 1u);
+    EXPECT_TRUE(registry.CollectTrimCandidates({}).empty())
+        << "Cancelling a drag preview that shares renderer resources with a saved prefab must not make those resources trim-eligible.";
+
+    registry.ReleaseOwner("scene:prefab-instance");
+    EXPECT_EQ(registry.CollectTrimCandidates({}).size(), 3u);
+}
+
 TEST(ResourceLifetimeRegistryTests, TrimCandidatesUseDeterministicLruOrderAndBudget)
 {
     ResourceLifetimeRegistry registry;
@@ -537,16 +594,15 @@ TEST(ResourceLifetimeRegistryTests, ResourceManagerTrimTreatsAbsoluteLibraryPath
     constexpr auto absolutePath = "D:/Project/Library/Artifacts/model/alias.nmesh";
 
     manager.RegisterResource(absolutePath, new int(42));
-    registry.Acquire({
+    auto handle = manager.AcquireIntHandle(
+        registry,
         "scene:absolute-alias",
-        ResourceLifetimeResourceType::Mesh,
-        libraryPath,
-        sizeof(int),
-        ResourceLifetimeOwnerKind::SceneInstance });
-    registry.ReleaseOwner("scene:absolute-alias");
+        absolutePath);
+    ASSERT_TRUE(handle);
+    handle.Reset();
 
     EXPECT_EQ(manager.TrimMeshes(registry), 1u)
-        << "Registry trim candidates are normalized to Library/... and must still unload manager entries registered by absolute artifact path.";
+        << "Lifetime-managed registry trim candidates are normalized to Library/... and must still unload manager entries registered by absolute artifact path.";
     EXPECT_FALSE(manager.IsResourceRegistered(absolutePath));
     ASSERT_EQ(manager.destroyedPaths.size(), 1u);
     EXPECT_EQ(manager.destroyedPaths.front(), absolutePath);
@@ -562,16 +618,15 @@ TEST(ResourceLifetimeRegistryTests, ResourceManagerTrimUnloadsAllRegisteredAlias
 
     manager.RegisterResource(libraryPath, new int(1));
     manager.RegisterResource(absolutePath, new int(2));
-    registry.Acquire({
+    auto handle = manager.AcquireIntHandle(
+        registry,
         "scene:multi-alias",
-        ResourceLifetimeResourceType::Mesh,
-        libraryPath,
-        sizeof(int) * 2u,
-        ResourceLifetimeOwnerKind::SceneInstance });
-    registry.ReleaseOwner("scene:multi-alias");
+        libraryPath);
+    ASSERT_TRUE(handle);
+    handle.Reset();
 
     EXPECT_EQ(manager.TrimMeshes(registry), 2u)
-        << "Trimming a normalized registry resource must unload every manager alias for that artifact.";
+        << "Trimming a lifetime-managed normalized registry resource must unload every manager alias for that artifact.";
     EXPECT_FALSE(manager.IsResourceRegistered(libraryPath));
     EXPECT_FALSE(manager.IsResourceRegistered(absolutePath));
     ASSERT_EQ(manager.destroyedPaths.size(), 2u);
@@ -617,9 +672,10 @@ TEST(ResourceLifetimeRegistryTests, RegistryOnlyTrimCandidateDoesNotBlockLaterMa
     EXPECT_EQ(manager.TrimMeshes(registry, oneCandidate), 1u);
     EXPECT_FALSE(manager.IsResourceRegistered(livePath))
         << "The next budgeted slice must reach and unload real manager resources instead of being blocked forever.";
+    EXPECT_FALSE(registry.HasActiveOwners(ResourceLifetimeResourceType::Mesh, livePath));
 }
 
-TEST(ResourceLifetimeRegistryTests, EvictionReservationBlocksNewOwnerUntilEvictionEnds)
+TEST(ResourceLifetimeRegistryTests, AcquireDuringPendingEvictionCancelsTrimAndKeepsResourceReachable)
 {
     ResourceLifetimeRegistry registry;
     const auto id = registry.Acquire({
@@ -634,29 +690,59 @@ TEST(ResourceLifetimeRegistryTests, EvictionReservationBlocksNewOwnerUntilEvicti
     ASSERT_EQ(candidates.size(), 1u);
     ASSERT_TRUE(registry.TryBeginEviction(candidates.front()));
 
-    const auto blocked = registry.Acquire({
-        "preview:blocked",
+    const auto reacquired = registry.Acquire({
+        "preview:reacquired",
         ResourceLifetimeResourceType::Mesh,
         "Library/Artifacts/model/evict.nmesh",
         sizeof(int),
         ResourceLifetimeOwnerKind::Preview });
 
-    EXPECT_TRUE(blocked.normalizedPath.empty())
-        << "A resource reserved for eviction must not accept a new owner lease until manager trim completes.";
-    EXPECT_FALSE(registry.HasActiveOwners(
+    EXPECT_FALSE(reacquired.normalizedPath.empty())
+        << "A scene restore or drag preview owner that arrives before manager destruction must cancel pending eviction instead of becoming invisible.";
+    EXPECT_TRUE(registry.HasActiveOwners(
         ResourceLifetimeResourceType::Mesh,
         "Library/Artifacts/model/evict.nmesh"));
 
-    registry.EndEviction(
-        ResourceLifetimeResourceType::Mesh,
-        "Library/Artifacts/model/evict.nmesh");
-    const auto afterEviction = registry.Acquire({
-        "preview:after-evict",
+    EXPECT_FALSE(registry.CompleteEviction(candidates.front().type, candidates.front().normalizedPath))
+        << "The manager must restore its resource when eviction loses the race to a new active owner.";
+    registry.Release(reacquired, "preview:reacquired");
+    ASSERT_TRUE(registry.TryBeginEviction(candidates.front()));
+    EXPECT_TRUE(registry.CompleteEviction(candidates.front().type, candidates.front().normalizedPath));
+    const auto afterCompletedEviction = registry.Acquire({
+        "preview:after-completed-evict",
         ResourceLifetimeResourceType::Mesh,
         "Library/Artifacts/model/evict.nmesh",
         sizeof(int),
         ResourceLifetimeOwnerKind::Preview });
-    EXPECT_FALSE(afterEviction.normalizedPath.empty());
+    EXPECT_FALSE(afterCompletedEviction.normalizedPath.empty());
+    EXPECT_TRUE(registry.IsGenerationCurrent(afterCompletedEviction));
+}
+
+TEST(ResourceLifetimeRegistryTests, ManagerTrimEvictsZeroOwnerRegisteredResourcesWithoutPermanentRawOwner)
+{
+    ResourceLifetimeRegistry registry;
+    TestIntResourceManager manager;
+    constexpr auto path = "Library/Artifacts/model/raw-bound.nmesh";
+    manager.RegisterResource(path, new int(42));
+
+    const auto id = registry.Acquire({
+        "scene:raw-bound",
+        ResourceLifetimeResourceType::Mesh,
+        path,
+        sizeof(int),
+        ResourceLifetimeOwnerKind::SceneInstance });
+    registry.Release(id, "scene:raw-bound");
+
+    EXPECT_EQ(manager.TrimMeshes(registry, {}), 1u)
+        << "Released preview/scene owners must not leave a permanent manager-raw lease that keeps canceled prefab resources alive forever.";
+    EXPECT_FALSE(manager.IsResourceRegistered(path));
+    EXPECT_FALSE(registry.HasActiveOwners(ResourceLifetimeResourceType::Mesh, path));
+    ASSERT_EQ(manager.destroyedPaths.size(), 1u);
+    EXPECT_EQ(manager.destroyedPaths.front(), path);
+
+    const auto snapshot = registry.CreateDiagnosticSnapshot();
+    EXPECT_EQ(snapshot.ownerCount, 0u)
+        << "Trim must not manufacture manager-raw owners with no release path.";
 }
 
 TEST(ResourceLifetimeRegistryTests, RuntimeManagersExposeTypedHandleAndTrimApis)
@@ -709,4 +795,48 @@ TEST(ResourceLifetimeRegistryTests, RuntimeManagersExposeTypedHandleAndTrimApis)
     EXPECT_EQ(meshManager.TrimUnusedMeshResources(registry), 0u);
     EXPECT_EQ(materialManager.TrimUnusedMaterialResources(registry), 0u);
     EXPECT_EQ(textureManager.TrimUnusedTextureResources(registry), 0u);
+}
+
+TEST(ResourceLifetimeRegistryTests, DiagnosticSnapshotReportsBaselineOwnerAndTrimState)
+{
+    ResourceLifetimeRegistry registry;
+
+    registry.Acquire({
+        "scene:prefab",
+        ResourceLifetimeResourceType::Mesh,
+        "Library/Artifacts/model/body.nmesh",
+        128u,
+        ResourceLifetimeOwnerKind::SceneInstance });
+    registry.Acquire({
+        "preview:hover",
+        ResourceLifetimeResourceType::Material,
+        "Library/Artifacts/model/body.nmat",
+        64u,
+        ResourceLifetimeOwnerKind::Preview });
+    registry.ReleaseOwner("preview:hover");
+
+    const auto snapshot = registry.CreateDiagnosticSnapshot();
+    EXPECT_EQ(snapshot.resourceCount, 2u);
+    EXPECT_EQ(snapshot.ownerCount, 1u);
+    EXPECT_EQ(snapshot.activeLeaseCount, 1u);
+    EXPECT_EQ(snapshot.zeroOwnerResourceCount, 1u);
+    EXPECT_EQ(snapshot.trimCandidateCount, 1u);
+    EXPECT_EQ(snapshot.totalEstimatedBytes, 192u);
+    EXPECT_EQ(snapshot.activeEstimatedBytes, 128u);
+    EXPECT_EQ(snapshot.zeroOwnerEstimatedBytes, 64u);
+
+    const auto candidates = registry.CollectTrimCandidates({});
+    ASSERT_EQ(candidates.size(), 1u);
+    registry.CompleteEviction(candidates.front().type, candidates.front().normalizedPath);
+
+    const auto postTrimSnapshot = registry.CreateDiagnosticSnapshot();
+    EXPECT_EQ(postTrimSnapshot.resourceCount, 1u);
+    EXPECT_EQ(postTrimSnapshot.ownerCount, 1u);
+    EXPECT_EQ(postTrimSnapshot.activeLeaseCount, 1u);
+    EXPECT_EQ(postTrimSnapshot.zeroOwnerResourceCount, 0u);
+    EXPECT_EQ(postTrimSnapshot.trimCandidateCount, 0u);
+    EXPECT_EQ(postTrimSnapshot.totalEstimatedBytes, 128u)
+        << "Evicted tombstones must not look like still-resident zero-owner byte pressure.";
+    EXPECT_EQ(postTrimSnapshot.activeEstimatedBytes, 128u);
+    EXPECT_EQ(postTrimSnapshot.zeroOwnerEstimatedBytes, 0u);
 }

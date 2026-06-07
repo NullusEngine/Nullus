@@ -29,6 +29,7 @@
 #include "Rendering/DeferredSceneRenderer.h"
 #include "Rendering/ForwardSceneRenderer.h"
 #include "Rendering/Buffers/Framebuffer.h"
+#include "Rendering/FrameGraph/SceneRenderGraphBuilderDeferred.h"
 #include "Rendering/RHI/BindingPointMap.h"
 #include "Rendering/RHI/Core/RHICommand.h"
 #include "Rendering/RHI/Core/RHIBinding.h"
@@ -1183,6 +1184,48 @@ namespace
         NLS::Render::RHI::RHITextureViewDesc m_desc{};
         std::shared_ptr<NLS::Render::RHI::RHITexture> m_texture;
     };
+
+    NLS::Render::FrameGraph::DeferredPreparedSceneResources BuildDeferredTestPreparedSceneResources(
+        const uint16_t width = 64u,
+        const uint16_t height = 64u)
+    {
+        NLS::Render::FrameGraph::DeferredPreparedSceneResources resources;
+        resources.gbufferColorViews.reserve(NLS::Render::FrameGraph::kDeferredGBufferColorAttachmentCount);
+        resources.gbufferTextures.reserve(NLS::Render::FrameGraph::kDeferredGBufferTextureCount);
+
+        for (const auto& slot : NLS::Render::FrameGraph::kDeferredGBufferColorSlots)
+        {
+            NLS::Render::RHI::RHITextureDesc textureDesc;
+            textureDesc.extent = { width, height, 1u };
+            textureDesc.format = slot.format;
+            textureDesc.usage = slot.usage;
+            textureDesc.debugName = slot.debugName;
+            auto texture = std::make_shared<TestTexture>(textureDesc);
+
+            NLS::Render::RHI::RHITextureViewDesc viewDesc;
+            viewDesc.viewType = NLS::Render::RHI::TextureViewType::Texture2D;
+            viewDesc.format = slot.format;
+            viewDesc.debugName = slot.capturedViewName;
+            resources.gbufferColorViews.push_back(std::make_shared<TestTextureView>(texture, viewDesc));
+            resources.gbufferTextures.push_back(texture);
+        }
+
+        NLS::Render::RHI::RHITextureDesc depthDesc;
+        depthDesc.extent = { width, height, 1u };
+        depthDesc.format = NLS::Render::FrameGraph::kDeferredGBufferDepthSlot.format;
+        depthDesc.usage = NLS::Render::FrameGraph::kDeferredGBufferDepthSlot.usage;
+        depthDesc.debugName = NLS::Render::FrameGraph::kDeferredGBufferDepthSlot.debugName;
+        auto depthTexture = std::make_shared<TestTexture>(depthDesc);
+
+        NLS::Render::RHI::RHITextureViewDesc depthViewDesc;
+        depthViewDesc.viewType = NLS::Render::RHI::TextureViewType::Texture2D;
+        depthViewDesc.format = NLS::Render::FrameGraph::kDeferredGBufferDepthSlot.format;
+        depthViewDesc.debugName = NLS::Render::FrameGraph::kDeferredGBufferDepthSlot.capturedViewName;
+        resources.gbufferDepthView = std::make_shared<TestTextureView>(depthTexture, depthViewDesc);
+        resources.gbufferTextures.push_back(depthTexture);
+
+        return resources;
+    }
 
     class TestSwapchain final : public NLS::Render::RHI::RHISwapchain
     {
@@ -4639,6 +4682,7 @@ TEST(ThreadedRenderingLifecycleTests, RenderScenePackageBuildsTypedPassPlanFromS
     snapshot.renderHeight = 144u;
     snapshot.hasSceneInput = true;
     snapshot.visibleOpaqueDrawCount = 3u;
+    snapshot.visibleDecalDrawCount = 5u;
     snapshot.visibleTransparentDrawCount = 2u;
     snapshot.visibleSkyboxDrawCount = 1u;
     snapshot.visibleHelperDrawCount = 4u;
@@ -4648,20 +4692,27 @@ TEST(ThreadedRenderingLifecycleTests, RenderScenePackageBuildsTypedPassPlanFromS
 
     EXPECT_EQ(package.frameId, 9u);
     EXPECT_EQ(package.opaqueDrawCount, 3u);
+    EXPECT_EQ(package.decalDrawCount, 5u);
     EXPECT_EQ(package.transparentDrawCount, 2u);
     EXPECT_EQ(package.skyboxDrawCount, 1u);
     EXPECT_EQ(package.helperDrawCount, 4u);
-    EXPECT_EQ(package.visibleDrawCount, 10u);
+    EXPECT_EQ(package.visibleDrawCount, 15u);
     EXPECT_TRUE(package.hasOpaquePass);
+    EXPECT_TRUE(package.hasDecalPass);
     EXPECT_TRUE(package.hasTransparentPass);
     EXPECT_TRUE(package.hasSkyboxPass);
     EXPECT_TRUE(package.hasHelperPass);
-    EXPECT_EQ(package.passPlanCount, 4u);
-    EXPECT_EQ(package.drawCommandCount, 10u);
-    EXPECT_EQ(package.materialBatchCount, 10u);
+    EXPECT_EQ(package.passPlanCount, 5u);
+    EXPECT_EQ(package.drawCommandCount, 15u);
+    EXPECT_EQ(package.materialBatchCount, 15u);
     EXPECT_EQ(package.renderTargetUseCount, 1u);
     EXPECT_TRUE(package.containsCommandInputs);
-    ASSERT_EQ(package.passCommandInputs.size(), 4u);
+    ASSERT_EQ(package.passCommandInputs.size(), 5u);
+    EXPECT_EQ(package.passCommandInputs[0].kind, NLS::Render::Context::RenderPassCommandKind::Opaque);
+    EXPECT_EQ(package.passCommandInputs[1].kind, NLS::Render::Context::RenderPassCommandKind::Decal);
+    EXPECT_EQ(package.passCommandInputs[2].kind, NLS::Render::Context::RenderPassCommandKind::Skybox);
+    EXPECT_EQ(package.passCommandInputs[3].kind, NLS::Render::Context::RenderPassCommandKind::Transparent);
+    EXPECT_EQ(package.passCommandInputs[4].kind, NLS::Render::Context::RenderPassCommandKind::Helper);
     EXPECT_EQ(package.passCommandInputs[0].renderWidth, 256u);
     EXPECT_EQ(package.passCommandInputs[0].renderHeight, 144u);
     EXPECT_TRUE(package.passCommandInputs[0].usesColorAttachment);
@@ -8652,6 +8703,120 @@ TEST(ThreadedRenderingLifecycleTests, DeferredSceneRendererPublishesPreparedRend
     for (const auto& texture : lightingPass.gbufferTextures)
         EXPECT_NE(texture, nullptr);
     ASSERT_EQ(lightingPass.textureResourceAccesses.size(), 4u);
+}
+
+TEST(ThreadedRenderingLifecycleTests, DeferredSceneRendererSkipsThreadedPublishWhenPipelineResourcesAreMissing)
+{
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableExplicitRHI = false;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+
+    NLS::Render::Context::Driver driver(settings);
+    NLS::Core::ServiceLocator::Provide(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+
+    NLS::Engine::Rendering::DeferredSceneRenderer::ConstructionOptions options;
+    options.loadPipelineResources = false;
+    NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver, options);
+
+    NLS::Engine::SceneSystem::Scene scene;
+    scene.CreateGameObject("LightActor").AddComponent<NLS::Engine::Components::LightComponent>();
+    renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
+        scene,
+        std::nullopt,
+        nullptr
+    });
+
+    NLS::Render::Entities::Camera camera;
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 128u;
+    frameDescriptor.renderHeight = 96u;
+    frameDescriptor.camera = &camera;
+
+    ASSERT_NO_THROW(renderer.BeginFrame(frameDescriptor));
+    EXPECT_TRUE(renderer.IsThreadedFramePublishSkippedForCurrentFrame());
+    ASSERT_NO_THROW(renderer.EndFrame());
+
+    const auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
+    ASSERT_NE(lifecycle, nullptr);
+    const auto* slot = lifecycle->PeekSlot(0u);
+    ASSERT_NE(slot, nullptr);
+    EXPECT_NE(slot->stage, NLS::Render::Context::ThreadedFrameStage::Published);
+}
+
+TEST(ThreadedRenderingLifecycleTests, DeferredLightGridSceneExecutionPreservesTransparentPassAfterLighting)
+{
+    NLS::Render::Data::FrameDescriptor frameDescriptor;
+    frameDescriptor.renderWidth = 64u;
+    frameDescriptor.renderHeight = 64u;
+
+    NLS::Render::FrameGraph::LightGridCompileContext lightGridContext;
+    lightGridContext.frameDescriptor = frameDescriptor;
+    lightGridContext.graphicsPassBindingSet = std::make_shared<TestBindingSet>("LightGridGraphicsPass");
+
+    auto gbufferPipeline = std::make_shared<TestGraphicsPipeline>("DeferredGBufferPipeline");
+    auto lightingPipeline = std::make_shared<TestGraphicsPipeline>("DeferredLightingPipeline");
+    auto transparentPipeline = std::make_shared<TestGraphicsPipeline>("DeferredTransparentPipeline");
+    auto materialBindingSet = std::make_shared<TestBindingSet>("MaterialBindingSet");
+    auto mesh = std::make_shared<TestMesh>();
+
+    NLS::Render::Context::RenderScenePackage package;
+    package.frameId = 604u;
+    package.targetsSwapchain = false;
+    package.renderWidth = frameDescriptor.renderWidth;
+    package.renderHeight = frameDescriptor.renderHeight;
+    package.opaqueDrawCount = 1u;
+    package.transparentDrawCount = 1u;
+    package.visibleDrawCount = 3u;
+    package.drawCommandCount = 3u;
+    package.hasVisibleDraws = true;
+    package.hasOpaquePass = true;
+    package.hasTransparentPass = true;
+    package.frameDataReady = true;
+    package.objectDataReady = true;
+    package.lightingDataReady = true;
+    package.recordedDrawCommands = {
+        { gbufferPipeline, nullptr, nullptr, nullptr, materialBindingSet, mesh, 1u },
+        { lightingPipeline, nullptr, nullptr, nullptr, materialBindingSet, mesh, 1u },
+        { transparentPipeline, nullptr, nullptr, nullptr, materialBindingSet, mesh, 1u }
+    };
+
+    auto resources = BuildDeferredTestPreparedSceneResources(
+        frameDescriptor.renderWidth,
+        frameDescriptor.renderHeight);
+    NLS::Render::FrameGraph::DeferredPreparedQueuedDrawCounts queuedDrawCounts;
+    queuedDrawCounts.decalDrawCount = 0u;
+    queuedDrawCounts.lightingDrawCount = 1u;
+    queuedDrawCounts.transparentDrawCount = 1u;
+    const auto execution =
+        NLS::Render::FrameGraph::CompileAndApplyPreparedDeferredLightGridSceneExecution(
+            package,
+            lightGridContext,
+            resources,
+            {},
+            {},
+            queuedDrawCounts);
+    (void)execution;
+
+    ASSERT_EQ(package.passCommandInputs.size(), 3u);
+    const auto& gbufferPass = package.passCommandInputs[0];
+    const auto& lightingPass = package.passCommandInputs[1];
+    const auto& transparentPass = package.passCommandInputs[2];
+    EXPECT_EQ(gbufferPass.kind, NLS::Render::Context::RenderPassCommandKind::GBuffer);
+    EXPECT_EQ(lightingPass.kind, NLS::Render::Context::RenderPassCommandKind::Lighting);
+    EXPECT_EQ(transparentPass.kind, NLS::Render::Context::RenderPassCommandKind::Transparent);
+    ASSERT_EQ(transparentPass.recordedDrawCommands.size(), 1u);
+    EXPECT_EQ(transparentPass.recordedDrawCommands[0].pipeline, transparentPipeline);
+    EXPECT_EQ(transparentPass.drawCount, 1u);
+    EXPECT_TRUE(transparentPass.usesColorAttachment);
+    EXPECT_TRUE(transparentPass.usesDepthStencilAttachment);
+    EXPECT_FALSE(transparentPass.writesDepthStencilAttachment);
+    ASSERT_NE(transparentPass.depthStencilAttachmentView, nullptr);
+    EXPECT_EQ(transparentPass.depthStencilAttachmentView, resources.gbufferDepthView);
 }
 
 TEST(ThreadedRenderingLifecycleTests, DriverRenderSceneWorkerRejectsPublishedSnapshotPackage)

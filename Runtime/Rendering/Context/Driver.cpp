@@ -397,6 +397,8 @@ namespace
         {
         case RenderPassCommandKind::Opaque:
             return "ThreadedOpaquePass";
+        case RenderPassCommandKind::Decal:
+            return "ThreadedDecalPass";
         case RenderPassCommandKind::Transparent:
             return "ThreadedTransparentPass";
         case RenderPassCommandKind::Skybox:

@@ -54,6 +54,7 @@ namespace NLS::Engine::Serialize
         MissingAssetPolicy missingAssetPolicy = MissingAssetPolicy::Preserve;
         InvalidReferencePolicy invalidReferencePolicy = InvalidReferencePolicy::Fail;
         bool deferAssetReferenceResolution = false;
+        bool suppressGameObjectCreatedEvents = false;
     };
 
     struct DocumentAnalysisResult
@@ -168,7 +169,7 @@ namespace NLS::Engine::Serialize
                     !RecordTypeMatches<GameObject>(*record))
                     continue;
 
-                auto* gameObject = CreateGameObject(*record);
+                auto* gameObject = CreateGameObject(*record, policy);
                 if (!gameObject)
                     continue;
 
@@ -248,6 +249,12 @@ namespace NLS::Engine::Serialize
 
             InstanceContext context;
             context.document = &graph;
+            const auto instanceSeed = NLS::Guid::New().ToString();
+            auto makeInstanceObjectId = [&instanceSeed](const ObjectId& sourceObject)
+            {
+                return ObjectId(NLS::Guid::NewDeterministic(
+                    "Prefab.Instance:" + instanceSeed + ":" + sourceObject.GetGuid().ToString()));
+            };
 
             for (const auto& object : graph.objects)
             {
@@ -257,12 +264,11 @@ namespace NLS::Engine::Serialize
                 if (!RecordTypeMatches<GameObject>(object))
                     continue;
 
-                auto* gameObject = CreateGameObject(object);
+                auto* gameObject = CreateGameObject(object, policy);
                 if (!gameObject)
                     continue;
 
-                const auto instanceId = ObjectId(NLS::Guid::NewDeterministic("Prefab.Instance:" + object.id.GetGuid().ToString()));
-                result.sourceToInstance.emplace(object.id, instanceId);
+                result.sourceToInstance.emplace(object.id, makeInstanceObjectId(object.id));
                 result.sourceByInstanceObject.emplace(gameObject, object.id);
                 context.gameObjects.emplace(object.id, gameObject);
             }
@@ -281,7 +287,7 @@ namespace NLS::Engine::Serialize
 
                 ApplyGameObjectState(*gameObject, object);
                 InstantiateComponents(graph, object, *gameObject, context, policy);
-                RegisterComponentMappings(object, result, graph);
+                RegisterComponentMappings(object, result, graph, makeInstanceObjectId);
             }
 
             for (const auto& object : graph.objects)
@@ -463,10 +469,12 @@ namespace NLS::Engine::Serialize
             return false;
         }
 
-        static GameObject* CreateGameObject(const ObjectRecord& record)
+        static GameObject* CreateGameObject(const ObjectRecord& record, const LoadPolicy& policy)
         {
             const auto name = ReadString(record, "name").value_or(record.debugName);
             const auto tag = ReadString(record, "tag").value_or(std::string {});
+            if (policy.suppressGameObjectCreatedEvents)
+                return new GameObject(GameObject::SilentCreationTag {}, name, tag);
             return new GameObject(name, tag);
         }
 
@@ -719,10 +727,12 @@ namespace NLS::Engine::Serialize
                 child->SetParent(*parent);
         }
 
+        template<typename MakeInstanceObjectId>
         static void RegisterComponentMappings(
             const ObjectRecord& gameObjectRecord,
             PrefabInstantiationResult& result,
-            const ObjectGraphDocument& graph)
+            const ObjectGraphDocument& graph,
+            const MakeInstanceObjectId& makeInstanceObjectId)
         {
             const auto* components = FindProperty(gameObjectRecord, "components");
             if (!components || components->value.GetKind() != PropertyValue::Kind::Array)
@@ -738,9 +748,7 @@ namespace NLS::Engine::Serialize
                 if (!componentRecord)
                     continue;
 
-                result.sourceToInstance.emplace(
-                    componentRecord->id,
-                    ObjectId(NLS::Guid::NewDeterministic("Prefab.Instance:" + componentRecord->id.GetGuid().ToString())));
+                result.sourceToInstance.emplace(componentRecord->id, makeInstanceObjectId(componentRecord->id));
             }
         }
 

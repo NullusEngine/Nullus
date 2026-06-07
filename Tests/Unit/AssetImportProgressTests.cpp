@@ -204,6 +204,84 @@ TEST(AssetImportProgressTests, ManualImportSchedulerAllowsEditorCommandsWhileJob
     EXPECT_FALSE(tracker.HasRunningJobs());
 }
 
+TEST(AssetImportProgressTests, VisibleEditorImportProgressIgnoresHiddenRendererResolutionJobs)
+{
+    ImportProgressTracker tracker;
+    std::vector<NLS::Editor::Assets::ImportProgressEvent> publishedEditorEvents;
+    tracker.Subscribe([&publishedEditorEvents](const auto& event)
+    {
+        if (event.targetPlatform == "editor")
+            publishedEditorEvents.push_back(event);
+    });
+
+    const auto hiddenRendererJob = tracker.BeginJob(
+        Id("d3030303-0303-4303-8303-030303030303"),
+        "Resolve model instance",
+        "asset-resolution",
+        120u);
+    tracker.ReportProgress(
+        hiddenRendererJob,
+        ImportPhase::Postprocess,
+        0.0,
+        "Preparing renderer resources");
+
+    const auto reimportJob = tracker.BeginJob(
+        Id("d3040404-0404-4404-8404-040404040404"),
+        "Assets/Models/Hero.fbx",
+        "editor",
+        1u);
+    tracker.ReportProgress(
+        reimportJob,
+        ImportPhase::SourceParse,
+        0.05,
+        "Reading model source");
+
+    const auto parsing = tracker.GetCurrentEvent(reimportJob);
+    ASSERT_TRUE(parsing.has_value());
+    EXPECT_DOUBLE_EQ(parsing->normalizedProgress, 0.05);
+
+    const auto publishedParsing = std::find_if(
+        publishedEditorEvents.begin(),
+        publishedEditorEvents.end(),
+        [reimportJob](const NLS::Editor::Assets::ImportProgressEvent& event)
+        {
+            return event.jobId == reimportJob &&
+                event.message == "Reading model source";
+        });
+    ASSERT_NE(publishedParsing, publishedEditorEvents.end());
+    EXPECT_DOUBLE_EQ(publishedParsing->normalizedProgress, 0.05);
+
+    tracker.FinishJob(reimportJob, ImportJobTerminalStatus::Succeeded, {});
+
+    const auto finished = tracker.GetCurrentEvent(reimportJob);
+    ASSERT_TRUE(finished.has_value());
+    EXPECT_DOUBLE_EQ(finished->normalizedProgress, 1.0);
+
+    const auto publishedFinished = std::find_if(
+        publishedEditorEvents.begin(),
+        publishedEditorEvents.end(),
+        [reimportJob](const NLS::Editor::Assets::ImportProgressEvent& event)
+        {
+            return event.jobId == reimportJob &&
+                event.terminalStatus == ImportJobTerminalStatus::Succeeded;
+        });
+    ASSERT_NE(publishedFinished, publishedEditorEvents.end());
+    EXPECT_DOUBLE_EQ(publishedFinished->normalizedProgress, 1.0);
+
+    const auto globalBatch = tracker.GetBatchProgress();
+    EXPECT_EQ(globalBatch.totalAssets, 120u);
+    EXPECT_EQ(globalBatch.completedAssets, 1u);
+    ASSERT_TRUE(globalBatch.activeJob.has_value());
+    EXPECT_EQ(*globalBatch.activeJob, hiddenRendererJob);
+
+    NLS::Editor::Assets::EditorAssetDatabase database;
+    const auto status = database.GetImportProgressStatus(finished);
+    ASSERT_TRUE(status.visible);
+    EXPECT_FALSE(status.cancellable);
+
+    tracker.FinishJob(hiddenRendererJob, ImportJobTerminalStatus::Succeeded, {});
+}
+
 TEST(AssetImportProgressTests, CancellationPreservesPreviousCommittedArtifactAndCleansStaging)
 {
     using namespace NLS::Core::Assets;

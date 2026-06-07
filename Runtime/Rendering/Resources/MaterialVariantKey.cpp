@@ -23,6 +23,16 @@ namespace NLS::Render::Resources
             key += value.has_value() ? (*value ? "1" : "0") : "unset";
         }
 
+        void AppendOptionalUInt(std::string& key, std::string_view name, const std::optional<uint32_t>& value)
+        {
+            key += "|";
+            key += name;
+            key += ":";
+            key += value.has_value()
+                ? std::to_string(*value)
+                : std::string("unset");
+        }
+
         void AppendOptionalCullFace(
             std::string& key,
             std::string_view name,
@@ -53,6 +63,40 @@ namespace NLS::Render::Resources
             {
                 key += ",";
                 key += std::to_string(static_cast<uint32_t>(format));
+            }
+        }
+
+        void AppendOptionalRenderTargetBlendStates(
+            std::string& key,
+            const bool hasOverride,
+            const std::span<const NLS::Render::RHI::RHIRenderTargetBlendStateDesc> states)
+        {
+            key += "|overrideRenderTargetBlendStates:";
+            if (!hasOverride)
+            {
+                key += "unset";
+                return;
+            }
+
+            key += std::to_string(states.size());
+            for (const auto& state : states)
+            {
+                key += ",";
+                key += state.blendEnable ? "1" : "0";
+                key += ":";
+                key += std::to_string(static_cast<uint32_t>(state.srcColor));
+                key += ":";
+                key += std::to_string(static_cast<uint32_t>(state.dstColor));
+                key += ":";
+                key += std::to_string(static_cast<uint32_t>(state.colorOp));
+                key += ":";
+                key += std::to_string(static_cast<uint32_t>(state.srcAlpha));
+                key += ":";
+                key += std::to_string(static_cast<uint32_t>(state.dstAlpha));
+                key += ":";
+                key += std::to_string(static_cast<uint32_t>(state.alphaOp));
+                key += ":";
+                key += std::to_string(static_cast<uint32_t>(state.colorWriteMask));
             }
         }
 
@@ -89,11 +133,17 @@ namespace NLS::Render::Resources
             AppendOptionalBool(key, "overrideDepthTest", overrides.depthTest);
             AppendOptionalBool(key, "overrideHasDepth", overrides.hasDepthAttachment);
             AppendOptionalBool(key, "overrideCulling", overrides.culling);
+            AppendOptionalBool(key, "overrideStencilTest", overrides.stencilTest);
+            AppendOptionalUInt(key, "overrideStencilWrite", overrides.stencilWriteMask);
             AppendOptionalCullFace(key, "overrideCullFace", overrides.cullFace);
             AppendOptionalColorFormats(
                 key,
                 overrides.HasColorFormatsOverride(),
                 overrides.GetColorFormats());
+            AppendOptionalRenderTargetBlendStates(
+                key,
+                overrides.HasRenderTargetBlendStatesOverride(),
+                overrides.GetRenderTargetBlendStates());
             return key;
         }
     }
@@ -114,6 +164,8 @@ namespace NLS::Render::Resources
         AppendBool(identity.stableKey, "depthWrite", material.HasDepthWriting());
         AppendBool(identity.stableKey, "colorWrite", material.HasColorWriting());
         AppendBool(identity.stableKey, "blend", material.IsBlendable());
+        identity.stableKey += "|surface:";
+        identity.stableKey += MaterialSurfaceModeName(material.GetSurfaceMode());
         AppendBool(identity.stableKey, "backCull", material.HasBackfaceCulling());
         AppendBool(identity.stableKey, "frontCull", material.HasFrontfaceCulling());
         return identity;

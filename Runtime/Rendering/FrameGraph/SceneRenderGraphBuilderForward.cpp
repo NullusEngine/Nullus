@@ -34,6 +34,9 @@ namespace NLS::Render::FrameGraph
                 case NLS::Render::Context::RenderPassCommandKind::Opaque:
                     drawCount = package.opaqueDrawCount;
                     break;
+                case NLS::Render::Context::RenderPassCommandKind::Decal:
+                    drawCount = package.decalDrawCount;
+                    break;
                 case NLS::Render::Context::RenderPassCommandKind::Skybox:
                     drawCount = package.skyboxDrawCount;
                     break;
@@ -166,7 +169,7 @@ namespace NLS::Render::FrameGraph
         }
     }
 
-    std::array<ForwardScenePassDescriptor, 3> GetForwardScenePassDescriptors()
+    std::array<ForwardScenePassDescriptor, 4> GetForwardScenePassDescriptors()
     {
         return { {
             {
@@ -183,6 +186,16 @@ namespace NLS::Render::FrameGraph
                     {
                         true
                     }
+                }
+            },
+            {
+                {
+                    NLS::Render::Context::RenderPassCommandKind::Decal,
+                    NLS::Render::FrameGraph::ThreadedRenderScenePassRole::Decal,
+                    NLS::Render::FrameGraph::ThreadedRenderScenePassExecutionMode::Output,
+                    NLS::Render::RHI::QueueType::Graphics,
+                    NLS::Render::Context::QueueDependencyPolicy::Previous,
+                    "ForwardDecal"
                 }
             },
             {
@@ -214,7 +227,7 @@ namespace NLS::Render::FrameGraph
     {
         NLS_PROFILE_SCOPE();
         frameGraph.reserve(
-            3,
+            GetForwardScenePassDescriptors().size(),
             !FrameTargetsSwapchain(frameDescriptor) ? 2 : 0);
     }
 
@@ -317,6 +330,7 @@ namespace NLS::Render::FrameGraph
                 "ForwardOutputDepthView",
                 {
                     NLS::Render::Context::RenderPassCommandKind::Opaque,
+                    NLS::Render::Context::RenderPassCommandKind::Decal,
                     NLS::Render::Context::RenderPassCommandKind::Skybox,
                     NLS::Render::Context::RenderPassCommandKind::Transparent,
                     NLS::Render::Context::RenderPassCommandKind::Helper
@@ -332,6 +346,8 @@ namespace NLS::Render::FrameGraph
         {
         case NLS::Render::Context::RenderPassCommandKind::Opaque:
             return ForwardScenePassExecutionKind::Opaque;
+        case NLS::Render::Context::RenderPassCommandKind::Decal:
+            return ForwardScenePassExecutionKind::Decal;
         case NLS::Render::Context::RenderPassCommandKind::Skybox:
             return ForwardScenePassExecutionKind::Skybox;
         case NLS::Render::Context::RenderPassCommandKind::Transparent:

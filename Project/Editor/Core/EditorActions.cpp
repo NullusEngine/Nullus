@@ -38,6 +38,8 @@
 #include <Utils/SystemCalls.h>
 
 #include "Core/EditorActions.h"
+#include "Core/PrefabInstanceResourceLifetime.h"
+#include "Core/RendererResourceStreamingBudget.h"
 #include "Assets/AssetDatabaseFacade.h"
 #include "Assets/EditorAssetDatabase.h"
 #include "Assets/EditorAssetDragDropBridge.h"
@@ -134,13 +136,18 @@ bool WriteTextFileAtomicallyAtPath(const std::filesystem::path& path, const std:
 }
 
 constexpr size_t kEditorBackgroundTaskQueueCapacity = 256u;
-constexpr auto kRendererResourceResolutionFrameBudget = std::chrono::milliseconds(12);
+constexpr auto kRendererResourceResolutionFrameBudget =
+    NLS::Editor::Core::kPrefabRendererResourceStreamingFrameBudget;
 constexpr size_t kRendererResourceResolutionBindTasksPerFrame = 96u;
-constexpr size_t kRendererResourceResolutionMeshBindsPerFrame = 32u;
+constexpr size_t kRendererResourceResolutionMeshBindsPerFrame =
+    NLS::Editor::Core::kPrefabRendererResourceMeshBindsPerFrame;
 constexpr size_t kRendererResourceResolutionScheduleTasksPerFrame = 128u;
-constexpr size_t kRendererResourceResolutionMaxInflightMeshLoads = 64u;
-constexpr size_t kRendererResourceResolutionMaterialSlotsPerTask = 32u;
-constexpr size_t kRendererResourceResolutionTextureBindsPerFrame = 64u;
+constexpr size_t kRendererResourceResolutionMaxInflightMeshLoads =
+    NLS::Editor::Core::kPrefabRendererResourceMaxInflightMeshLoads;
+constexpr size_t kRendererResourceResolutionMaterialSlotsPerTask =
+    NLS::Editor::Core::kPrefabRendererResourceMaterialPrewarmsPerFrame;
+constexpr size_t kRendererResourceResolutionTextureBindsPerFrame =
+    NLS::Editor::Core::kPrefabRendererResourceTextureCompletionsPerFrame;
 enum class RendererResourceResolutionTaskKind
 {
     Mesh,
@@ -210,6 +217,7 @@ struct RendererResourceResolutionState
     size_t totalTasks = 0u;
     bool rootRenderingSuppressedUntilRendererResourcesReady = false;
     bool keepRootRenderingSuppressedOnFailure = false;
+    std::atomic_bool completed = false;
 };
 
 struct RendererResourceResolutionStats
@@ -279,19 +287,6 @@ void CancelRendererResourceMaterialAndTextureInterests(RendererResourceResolutio
     }
 }
 
-std::string BuildPrefabInstanceResourceOwnerToken(const NLS::Editor::Assets::PrefabInstanceRecord& instance)
-{
-    if (instance.instanceRoot == nullptr)
-        return {};
-
-    return "scene-prefab:" +
-        instance.prefabAssetId.ToString() +
-        ":" +
-        instance.prefabSubAssetKey +
-        ":" +
-        std::to_string(instance.instanceRoot->GetInstanceID());
-}
-
 std::optional<ResourceLifetimeResourceType> ResourceLifetimeTypeFromPrefabResolvedAsset(
     const NLS::Engine::Assets::PrefabResolvedAsset& resolved)
 {
@@ -338,15 +333,16 @@ void AcquirePrefabInstanceResourceOwners(
     }
 }
 
-void ReleasePrefabInstanceResourceOwners(const std::string& ownerToken)
+void ReleasePrefabInstanceResourceOwnersFromLocatedRegistry(const std::string& ownerToken)
 {
-    if (ownerToken.empty() ||
-        !NLS::Core::ServiceLocator::Contains<ResourceLifetimeRegistry>())
+    if (!NLS::Core::ServiceLocator::Contains<ResourceLifetimeRegistry>())
     {
         return;
     }
 
-    NLS_SERVICE(ResourceLifetimeRegistry).ReleaseOwner(ownerToken);
+    NLS::Editor::Core::ReleasePrefabInstanceResourceOwners(
+        NLS_SERVICE(ResourceLifetimeRegistry),
+        ownerToken);
 }
 
 void CancelPreviewResourceHandoff(NLS::Editor::Core::PrefabInstancePreviewResourceHandoff& handoff)
@@ -422,6 +418,45 @@ void RegisterRendererResourceResolutionState(const std::shared_ptr<RendererResou
             }),
         g_rendererResourceResolutionStates.end());
     g_rendererResourceResolutionStates.push_back(state);
+}
+
+void RefreshPrefabPendingResourcePresentation(
+    NLS::Editor::Core::EditorActions& actions,
+    const NLS::Core::Assets::AssetId prefabAssetId)
+{
+    if (!prefabAssetId.IsValid())
+        return;
+
+    auto& registry = actions.GetContext().prefabInstanceRegistry;
+    registry.ClearInstancePendingResourcesForPrefab(prefabAssetId);
+    {
+        std::lock_guard lock(g_rendererResourceResolutionStatesMutex);
+        g_rendererResourceResolutionStates.erase(
+            std::remove_if(
+                g_rendererResourceResolutionStates.begin(),
+                g_rendererResourceResolutionStates.end(),
+                [](const auto& candidate)
+                {
+                    return candidate.expired();
+                }),
+            g_rendererResourceResolutionStates.end());
+
+        for (const auto& weakState : g_rendererResourceResolutionStates)
+        {
+            auto state = weakState.lock();
+            if (!state ||
+                state->prefabAssetId != prefabAssetId ||
+                state->cancelled.load(std::memory_order_acquire) ||
+                state->completed.load(std::memory_order_acquire))
+            {
+                continue;
+            }
+
+            auto* root = state->instanceRoot;
+            if (root && root->IsAlive())
+                registry.MarkInstancePendingResources(*root, true);
+        }
+    }
 }
 
 bool ResolutionStateReferencesObject(
@@ -770,7 +805,7 @@ std::optional<std::string> ResolvePrefabAssetPath(
                 }
             }
         }
-        return std::nullopt;
+        return referencePath.empty() ? std::nullopt : std::optional<std::string>(referencePath);
     }
 
     if (const auto foundByAssetId = resolvedAssets.byAssetId.find(assetId);
@@ -788,7 +823,7 @@ std::optional<std::string> ResolvePrefabAssetPath(
 
     if (candidate)
         return candidate->artifactPath;
-    return std::nullopt;
+    return referencePath.empty() ? std::nullopt : std::optional<std::string>(referencePath);
 }
 
 bool IsObjectInSceneHierarchy(
@@ -1390,6 +1425,74 @@ void ForEachMeshRendererInSubtree(NLS::Engine::GameObject& root, const Callback&
     }
 }
 
+void AcquirePrefabInstanceRendererOwnersFromLiveRoot(
+    const std::string& ownerToken,
+    NLS::Engine::GameObject& root)
+{
+    ForEachMeshRendererInSubtree(
+        root,
+        [&ownerToken](NLS::Engine::Components::MeshRenderer& meshRenderer)
+        {
+            auto* owner = meshRenderer.gameobject();
+            auto* meshFilter = owner != nullptr
+                ? owner->GetComponent<NLS::Engine::Components::MeshFilter>()
+                : nullptr;
+            if (meshFilter != nullptr)
+            {
+                if (const auto meshPath = meshFilter->GetModelPath(); !meshPath.empty())
+                {
+                    AcquireRendererResourceOwner(
+                        ownerToken,
+                        ResourceLifetimeResourceType::Mesh,
+                        meshPath);
+                }
+            }
+
+            const auto materialPaths = meshRenderer.GetMaterialPaths();
+            for (size_t index = 0u;
+                index < NLS::Engine::Components::MeshRenderer::kMaxMaterialCount;
+                ++index)
+            {
+                auto* material = meshRenderer.GetMaterialAtIndex(static_cast<uint8_t>(index));
+                const auto materialPath = index < materialPaths.size()
+                    ? materialPaths[index]
+                    : std::string {};
+                const auto resolvedMaterialPath = !materialPath.empty()
+                    ? materialPath
+                    : (material != nullptr ? material->path : std::string {});
+                if (!resolvedMaterialPath.empty())
+                {
+                    AcquireRendererResourceOwner(
+                        ownerToken,
+                        ResourceLifetimeResourceType::Material,
+                        resolvedMaterialPath);
+                }
+
+                if (material == nullptr || !material->IsValid())
+                    continue;
+
+                for (const auto& [_, texturePath] : material->GetTextureResourcePaths())
+                {
+                    if (texturePath.empty())
+                        continue;
+
+                    AcquireRendererResourceOwner(
+                        ownerToken,
+                        ResourceLifetimeResourceType::Texture,
+                        texturePath);
+                }
+            }
+        });
+}
+
+void RefreshPrefabInstanceRendererOwnersFromLiveRoot(
+    const std::string& ownerToken,
+    NLS::Engine::GameObject& root)
+{
+    ReleasePrefabInstanceResourceOwnersFromLocatedRegistry(ownerToken);
+    AcquirePrefabInstanceRendererOwnersFromLiveRoot(ownerToken, root);
+}
+
 void SuppressRendererResourceResolutionRootRendering(NLS::Engine::GameObject& root)
 {
     ForEachMeshRendererInSubtree(
@@ -1410,6 +1513,63 @@ void RestoreRendererResourceResolutionRootRendering(NLS::Engine::GameObject& roo
         });
 }
 
+void ReacquirePrefabInstanceRendererOwnersFromLiveScene(
+    const NLS::Editor::Assets::PrefabInstanceRegistry& prefabInstanceRegistry)
+{
+    for (const auto& instance : prefabInstanceRegistry.GetInstances())
+    {
+        auto* root = instance.instanceRoot;
+        if (root == nullptr || !root->IsAlive())
+            continue;
+
+        const auto ownerToken = NLS::Editor::Core::BuildPrefabInstanceResourceOwnerToken(instance);
+        if (ownerToken.empty())
+            continue;
+
+        RefreshPrefabInstanceRendererOwnersFromLiveRoot(ownerToken, *root);
+
+        NLS::Engine::Assets::PrefabArtifact declaredPrefab;
+        declaredPrefab.assetId = instance.prefabAssetId;
+        declaredPrefab.graph = instance.sourceGraph;
+        declaredPrefab.generatedModelPrefab = instance.generatedReadOnly;
+        declaredPrefab.resolvedAssets = NLS::Engine::Assets::BuildPrefabResolvedAssetsFromReferences(
+            instance.sourceGraph);
+        if (!instance.preservedAssetReferences.empty())
+        {
+            for (const auto& reference : instance.preservedAssetReferences)
+            {
+                if (!reference.guid.IsValid())
+                    continue;
+
+                auto referenceGraph = NLS::Engine::Serialize::ObjectGraphDocument {};
+                referenceGraph.objects.emplace_back(
+                    NLS::Engine::Serialize::ObjectId(NLS::Guid::New()),
+                    "PrefabReference",
+                    "PrefabReference",
+                    "PrefabReference",
+                    NLS::Engine::Serialize::ObjectRecordState::Alive,
+                    std::vector<NLS::Engine::Serialize::PropertyRecord> {
+                        {
+                            "asset",
+                            NLS::Engine::Serialize::PropertyValue::ObjectReference(reference)
+                        }
+                    });
+                auto resolved = NLS::Engine::Assets::BuildPrefabResolvedAssetsFromReferences(referenceGraph);
+                declaredPrefab.resolvedAssets.insert(
+                    declaredPrefab.resolvedAssets.end(),
+                    std::make_move_iterator(resolved.begin()),
+                    std::make_move_iterator(resolved.end()));
+            }
+        }
+        AcquirePrefabInstanceResourceOwners(ownerToken, declaredPrefab);
+    }
+}
+
+void RefreshHierarchyAfterPrefabInstanceRegistration(NLS::Editor::Core::PanelsManager& panelsManager)
+{
+    panelsManager.GetPanelAs<NLS::Editor::Panels::Hierarchy>("Hierarchy").RebuildFromCurrentScene();
+}
+
 void RestoreRendererResourceResolutionRootVisibility(RendererResourceResolutionState& state)
 {
     if (!state.rootRenderingSuppressedUntilRendererResourcesReady)
@@ -1421,16 +1581,54 @@ void RestoreRendererResourceResolutionRootVisibility(RendererResourceResolutionS
     state.rootRenderingSuppressedUntilRendererResourcesReady = false;
 }
 
+void MarkRendererResourceResolutionSucceeded(
+    NLS::Editor::Core::EditorActions& actions,
+    NLS::Engine::GameObject& instanceRoot,
+    const NLS::Core::Assets::AssetId prefabAssetId)
+{
+    actions.GetContext().prefabInstanceRegistry.MarkInstanceResourceFailure(instanceRoot, false);
+    actions.GetContext().prefabInstanceRegistry.MarkInstancePendingResources(instanceRoot, false);
+    RefreshPrefabPendingResourcePresentation(actions, prefabAssetId);
+}
+
+void MarkRendererResourceResolutionFailedPlaceholder(
+    NLS::Editor::Core::EditorActions& actions,
+    RendererResourceResolutionState& state)
+{
+    auto* root = state.instanceRoot;
+    if (root && root->IsAlive())
+    {
+        constexpr std::string_view kMissingSuffix = " (missing)";
+        if (!root->GetName().ends_with(kMissingSuffix))
+            root->SetName(root->GetName() + std::string(kMissingSuffix));
+    }
+
+    if (root && root->IsAlive())
+    {
+        actions.GetContext().prefabInstanceRegistry.MarkInstanceResourceFailure(*root, true);
+        actions.GetContext().prefabInstanceRegistry.MarkInstancePendingResources(*root, false);
+    }
+    actions.GetPanelsManager().GetPanelAs<NLS::Editor::Panels::Hierarchy>("Hierarchy").RebuildFromCurrentScene();
+}
+
+bool ShouldRevealRendererResourceResolutionObjectBeforeAllReady(
+    const bool rootRenderingSuppressedUntilRendererResourcesReady)
+{
+    (void)rootRenderingSuppressedUntilRendererResourcesReady;
+    return false;
+}
+
 void RollbackSuppressedRendererResourceResolutionRoot(
     NLS::Editor::Core::EditorActions& actions,
     RendererResourceResolutionState& state)
 {
-    (void)actions;
     if (!state.rootRenderingSuppressedUntilRendererResourcesReady)
         return;
 
     if (!state.keepRootRenderingSuppressedOnFailure)
         RestoreRendererResourceResolutionRootVisibility(state);
+    else
+        MarkRendererResourceResolutionFailedPlaceholder(actions, state);
 }
 
 void RollbackFailedRendererResourceResolutionRoot(
@@ -1444,13 +1642,15 @@ void RollbackFailedRendererResourceResolutionRoot(
     }
 
     RestoreRendererResourceResolutionRootVisibility(state);
+    MarkRendererResourceResolutionFailedPlaceholder(actions, state);
 }
 
 void TryRevealRendererResourceResolutionObject(
     RendererResourceResolutionState& state,
     NLS::Engine::GameObject& object)
 {
-    if (!state.rootRenderingSuppressedUntilRendererResourcesReady)
+    if (!NLS::Editor::Core::ShouldRevealRendererResourceResolutionObjectBeforeAllReady(
+            state.rootRenderingSuppressedUntilRendererResourcesReady))
         return;
 
     auto* meshFilter = object.GetComponent<NLS::Engine::Components::MeshFilter>();
@@ -1480,7 +1680,7 @@ bool PrefabRecordIsGameObject(const NLS::Engine::Serialize::ObjectRecord& record
 }
 
 void CollectPrefabAssetResolutionTasks(
-    NLS::Engine::Assets::PrefabArtifact& prefab,
+    const NLS::Engine::Assets::PrefabArtifact& prefab,
     const NLS::Editor::Assets::PrefabInstanceRecord& instance,
     std::vector<RendererResourceResolutionTask>& meshTasks,
     std::vector<RendererResourceResolutionTask>& materialTasks,
@@ -1939,8 +2139,9 @@ bool BindDeferredMeshPath(
 struct CachedRuntimeMaterialBinding
 {
     size_t slot = 0u;
+    std::string materialPath;
     NLS::Render::Resources::Material* material = nullptr;
-    std::vector<std::pair<std::string, NLS::Render::Resources::Texture2D*>> textures;
+    std::vector<std::tuple<std::string, std::string, NLS::Render::Resources::Texture2D*>> textures;
 };
 
 struct CachedRuntimeRendererBinding
@@ -1948,6 +2149,7 @@ struct CachedRuntimeRendererBinding
     NLS::Engine::GameObject* object = nullptr;
     NLS::Engine::Components::MeshFilter* meshFilter = nullptr;
     NLS::Engine::Components::MeshRenderer* meshRenderer = nullptr;
+    std::string meshPath;
     NLS::Core::ResourceManagement::MeshManager::Mesh* mesh = nullptr;
     NLS::Array<std::string> materialPaths;
     std::vector<CachedRuntimeMaterialBinding> materials;
@@ -2003,6 +2205,7 @@ bool TryCollectCachedRuntimeMaterialBinding(
 
         CachedRuntimeMaterialBinding materialBinding;
         materialBinding.slot = index;
+        materialBinding.materialPath = materialPath;
         materialBinding.material = material;
         for (const auto& [uniformName, texturePath] : material->GetTextureResourcePaths())
         {
@@ -2025,7 +2228,7 @@ bool TryCollectCachedRuntimeMaterialBinding(
             }
             if (!texture)
                 return false;
-            materialBinding.textures.emplace_back(uniformName, texture);
+            materialBinding.textures.emplace_back(uniformName, texturePath, texture);
         }
         binding.materials.push_back(std::move(materialBinding));
     }
@@ -2037,7 +2240,7 @@ bool TryBindPrefabInstanceCachedRendererResources(
     const std::vector<RendererResourceResolutionTask>& meshTasks,
     const std::vector<RendererResourceResolutionTask>& materialTasks,
     const RendererResourceLiveObjectIndex& liveObjects,
-    NLS::Editor::Core::PrefabInstancePreviewResourceHandoff& previewResourceHandoff)
+    const std::string& sceneOwnerToken)
 {
     if (meshTasks.empty() && materialTasks.empty())
         return false;
@@ -2095,6 +2298,7 @@ bool TryBindPrefabInstanceCachedRendererResources(
         binding.object = object;
         binding.meshFilter = meshFilter;
         binding.meshRenderer = meshRenderer;
+        binding.meshPath = task.modelPath;
         binding.mesh = mesh;
     }
 
@@ -2130,6 +2334,37 @@ bool TryBindPrefabInstanceCachedRendererResources(
 
     for (auto& [_, binding] : bindingsBySourceObject)
     {
+        if (!sceneOwnerToken.empty())
+        {
+            if (binding.mesh && !binding.meshPath.empty())
+            {
+                AcquireRendererResourceOwner(
+                    sceneOwnerToken,
+                    ResourceLifetimeResourceType::Mesh,
+                    binding.meshPath);
+            }
+            for (const auto& materialBinding : binding.materials)
+            {
+                if (materialBinding.material && !materialBinding.materialPath.empty())
+                {
+                    AcquireRendererResourceOwner(
+                        sceneOwnerToken,
+                        ResourceLifetimeResourceType::Material,
+                        materialBinding.materialPath);
+                }
+                for (const auto& [_, texturePath, texture] : materialBinding.textures)
+                {
+                    if (texture && !texturePath.empty())
+                    {
+                        AcquireRendererResourceOwner(
+                            sceneOwnerToken,
+                            ResourceLifetimeResourceType::Texture,
+                            texturePath);
+                    }
+                }
+            }
+        }
+
         if (binding.meshFilter && binding.mesh)
             binding.meshFilter->SetResolvedMeshFromReference(binding.mesh);
         if (binding.meshRenderer)
@@ -2138,7 +2373,7 @@ bool TryBindPrefabInstanceCachedRendererResources(
                 binding.meshRenderer->SetMaterialPathHints(binding.materialPaths);
             for (auto& materialBinding : binding.materials)
             {
-                for (const auto& [uniformName, texture] : materialBinding.textures)
+                for (const auto& [uniformName, _, texture] : materialBinding.textures)
                     materialBinding.material->Set<NLS::Render::Resources::Texture2D*>(uniformName, texture);
                 binding.meshRenderer->SetResolvedMaterialFromReference(
                     static_cast<uint8_t>(materialBinding.slot),
@@ -2149,7 +2384,6 @@ bool TryBindPrefabInstanceCachedRendererResources(
         }
     }
 
-    (void)previewResourceHandoff;
     return true;
 }
 
@@ -2286,11 +2520,20 @@ bool StartMeshArtifactLoad(
         });
     if (!accepted)
     {
-        std::lock_guard lock(state->mutex);
-        state->accepted = false;
-        state->failed = true;
-        state->completed = true;
-        NLS_LOG_ERROR("Editor background task queue rejected mesh artifact load: " + task.modelPath);
+        {
+            std::lock_guard loadLock(state->mutex);
+            state->accepted = false;
+            state->failed = false;
+            state->completed = false;
+        }
+        {
+            std::lock_guard loadsLock(resolutionState.asyncLoadsMutex);
+            const auto found = resolutionState.meshLoadsByPath.find(task.modelPath);
+            if (found != resolutionState.meshLoadsByPath.end() && found->second == state)
+                resolutionState.meshLoadsByPath.erase(found);
+        }
+        task.meshLoad.reset();
+        NLS_LOG_WARNING("Editor background task queue deferred mesh artifact load retry: " + task.modelPath);
     }
     return true;
 }
@@ -2355,13 +2598,15 @@ void RunRendererResourceResolutionStep(
     auto finishCancelled = [&actions, &tracker, &state](const bool restoreRootVisibility)
     {
         state->cancelled.store(true, std::memory_order_release);
+        state->completed.store(true, std::memory_order_release);
         CancelRendererResourceMeshLoads(*state);
         CancelRendererResourceMaterialAndTextureInterests(*state);
         if (restoreRootVisibility)
             RestoreRendererResourceResolutionRootVisibility(*state);
         actions.ReleaseGameObjectDestroyedListener(state->destroyedListener);
         state->destroyedListener = InvalidListenerID;
-        ReleasePrefabInstanceResourceOwners(state->ownerToken);
+        ReleasePrefabInstanceResourceOwnersFromLocatedRegistry(state->ownerToken);
+        RefreshPrefabPendingResourcePresentation(actions, state->prefabAssetId);
         actions.ScheduleImportedResourceTrim();
         tracker.FinishJob(
             state->job,
@@ -2372,12 +2617,14 @@ void RunRendererResourceResolutionStep(
     auto finishFailed = [&actions, &tracker, &state]
     {
         state->cancelled.store(true, std::memory_order_release);
+        state->completed.store(true, std::memory_order_release);
         CancelRendererResourceMeshLoads(*state);
         CancelRendererResourceMaterialAndTextureInterests(*state);
         RollbackFailedRendererResourceResolutionRoot(actions, *state);
         actions.ReleaseGameObjectDestroyedListener(state->destroyedListener);
         state->destroyedListener = InvalidListenerID;
-        ReleasePrefabInstanceResourceOwners(state->ownerToken);
+        ReleasePrefabInstanceResourceOwnersFromLocatedRegistry(state->ownerToken);
+        RefreshPrefabPendingResourcePresentation(actions, state->prefabAssetId);
         actions.ScheduleImportedResourceTrim();
         tracker.ReportProgress(state->job, NLS::Editor::Assets::ImportPhase::Postprocess, 1.0, "Renderer resource resolution failed");
         tracker.FinishJob(
@@ -2389,7 +2636,7 @@ void RunRendererResourceResolutionStep(
     if (state->cancelled.load(std::memory_order_acquire))
     {
         NLS_LOG_INFO("Cancelled renderer resource resolution because the prefab instance was destroyed");
-        finishCancelled(false);
+        finishCancelled(true);
         return;
     }
 
@@ -2461,7 +2708,7 @@ void RunRendererResourceResolutionStep(
             if (task.kind == RendererResourceResolutionTaskKind::Mesh)
             {
                 ++meshBindsThisFrame;
-                if (task.failed || (task.meshLoad && !task.meshLoad->accepted))
+                if (task.failed)
                     state->failed = true;
             }
             ++state->completedTasks;
@@ -2519,7 +2766,7 @@ void RunRendererResourceResolutionStep(
             if (task.kind == RendererResourceResolutionTaskKind::Mesh)
             {
                 ++meshBindsThisFrame;
-                if (task.failed || (task.meshLoad && !task.meshLoad->accepted))
+                if (task.failed)
                     state->failed = true;
             }
             ++state->completedTasks;
@@ -2590,9 +2837,40 @@ void RunRendererResourceResolutionStep(
     actions.ReleaseGameObjectDestroyedListener(state->destroyedListener);
     state->destroyedListener = InvalidListenerID;
     RestoreRendererResourceResolutionRootVisibility(*state);
+    state->completed.store(true, std::memory_order_release);
+    if (auto* root = state->instanceRoot; root && root->IsAlive())
+        MarkRendererResourceResolutionSucceeded(actions, *root, state->prefabAssetId);
     tracker.ReportProgress(state->job, NLS::Editor::Assets::ImportPhase::Postprocess, 1.0, "Renderer resources ready");
     tracker.FinishJob(state->job, NLS::Editor::Assets::ImportJobTerminalStatus::Succeeded, {});
 }
+}
+
+NLS::Editor::Core::PrefabInstanceAssetResolutionOptions
+NLS::Editor::Core::BuildImportedPrefabPreviewCommitResolutionOptions(
+    const bool previewRenderableReady)
+{
+    (void)previewRenderableReady;
+    PrefabInstanceAssetResolutionOptions options;
+    options.hideRootUntilRendererResourcesReady = false;
+    options.keepRootRenderingSuppressedOnFailure = false;
+    return options;
+}
+
+NLS::Editor::Core::PrefabInstanceAssetResolutionOptions
+NLS::Editor::Core::BuildSceneLoadPrefabResourceResolutionOptions()
+{
+    PrefabInstanceAssetResolutionOptions options;
+    options.hideRootUntilRendererResourcesReady = false;
+    options.keepRootRenderingSuppressedOnFailure = false;
+    options.progressTargetPlatform = kSceneLoadRendererResourceResolutionTargetPlatform;
+    return options;
+}
+
+bool NLS::Editor::Core::ShouldRevealRendererResourceResolutionObjectBeforeAllReady(
+    const bool rootRenderingSuppressedUntilRendererResourcesReady)
+{
+    return ::ShouldRevealRendererResourceResolutionObjectBeforeAllReady(
+        rootRenderingSuppressedUntilRendererResourcesReady);
 }
 
 Editor::Core::EditorActions::EditorActions(Context& p_context, PanelsManager& p_panelsManager)
@@ -2627,16 +2905,12 @@ Editor::Core::EditorActions::EditorActions(Context& p_context, PanelsManager& p_
     m_gameObjectMarkedDestroyListener = Engine::GameObject::MarkedDestroyEvent += [this](Engine::GameObject& object)
     {
         CancelRendererResourceResolutionForMarkedObject(object);
-        if (const auto* instance = m_context.prefabInstanceRegistry.FindRootInstance(object))
-        {
-            ReleasePrefabInstanceResourceOwners(BuildPrefabInstanceResourceOwnerToken(*instance));
-            m_context.prefabInstanceRegistry.RemoveRootInstance(object);
+        const auto cleanup = NLS::Editor::Core::CleanupPrefabInstanceMarkedDestroy(
+            m_context.prefabInstanceRegistry,
+            m_context.resourceLifetimeRegistry,
+            object);
+        if (cleanup.removedRootInstance)
             ScheduleImportedResourceTrim();
-        }
-        else
-        {
-            m_context.prefabInstanceRegistry.RemoveObjectMapping(object);
-        }
     };
 }
 
@@ -2733,20 +3007,29 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
     });
     const auto prefabDatabaseReady = prefabDatabase.Refresh();
     NLS::Editor::Assets::EditorAssetDragDropBridge prefabArtifactLoader(m_context.projectAssetsPath);
-    std::unordered_map<std::string, std::optional<NLS::Engine::Assets::PrefabArtifact>> prefabArtifactCache;
+    const auto projectRoot = std::filesystem::path(m_context.projectPath);
+    const auto sceneOwnerScope = m_context.sceneManager.GetCurrentSceneSourcePath();
+    std::unordered_map<std::string, std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact>> prefabArtifactCache;
+    std::unordered_set<std::string> sourceMissingPrefabSources;
 
     auto restoreResult = NLS::Editor::Assets::PrefabUtilityFacade().RestorePrefabInstancesFromSceneDocument(
         *document,
         *m_context.sceneManager.GetCurrentScene(),
         {},
         m_context.prefabInstanceRegistry,
-        [&prefabDatabase, &prefabArtifactLoader, prefabDatabaseReady, &prefabArtifactCache](
+        [&prefabDatabase,
+            &prefabArtifactLoader,
+            prefabDatabaseReady,
+            &prefabArtifactCache,
+            &sourceMissingPrefabSources,
+            projectRoot,
+            sceneOwnerScope](
             NLS::Core::Assets::AssetId assetId,
             const std::string& subAssetKey)
-            -> std::optional<NLS::Engine::Assets::PrefabArtifact>
+            -> std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact>
         {
             if (!prefabDatabaseReady)
-                return std::nullopt;
+                return nullptr;
 
             const auto cacheKey = assetId.ToString() + "\n" + subAssetKey;
             const auto cached = prefabArtifactCache.find(cacheKey);
@@ -2756,17 +3039,54 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
             const auto assetPath = prefabDatabase.GUIDToAssetPath(assetId.ToString());
             if (assetPath.empty())
             {
-                prefabArtifactCache.emplace(cacheKey, std::nullopt);
-                return std::nullopt;
+                sourceMissingPrefabSources.insert(cacheKey);
+                prefabArtifactCache.emplace(cacheKey, nullptr);
+                return nullptr;
             }
 
-            auto artifact = prefabArtifactLoader.TryLoadImportedPrefabArtifact(assetPath, subAssetKey);
-            if (!artifact.has_value())
-                artifact = prefabDatabase.LoadPrefabArtifactAtPath(assetPath, subAssetKey);
+            const auto absoluteSourcePath = (projectRoot / std::filesystem::path(assetPath)).lexically_normal();
+            const bool sourceAssetExists = std::filesystem::is_regular_file(absoluteSourcePath);
+            if (!sourceAssetExists)
+            {
+                sourceMissingPrefabSources.insert(cacheKey);
+                prefabArtifactCache.emplace(cacheKey, nullptr);
+                return nullptr;
+            }
+
+            auto loadRequest = NLS::Editor::Assets::MakeSceneRestoreUnifiedPrefabLoadRequest(
+                NLS::Editor::Assets::NormalizePrefabSourceIdentity(
+                    projectRoot,
+                    assetPath,
+                    subAssetKey,
+                    assetId),
+                sceneOwnerScope);
+            auto unifiedLoad = prefabArtifactLoader.LoadUnifiedPrefabShared(loadRequest);
+            auto artifact = std::move(unifiedLoad.prefab);
+            if (!artifact)
+            {
+                auto fallbackArtifact = prefabDatabase.LoadPrefabArtifactAtPath(assetPath, subAssetKey);
+                if (fallbackArtifact.has_value())
+                {
+                    artifact = std::make_shared<NLS::Engine::Assets::PrefabArtifact>(
+                        std::move(*fallbackArtifact));
+                }
+            }
+            if (!artifact)
+            {
+                auto fallbackArtifact = prefabDatabase.LoadPrefabArtifactByAssetId(assetId, subAssetKey);
+                if (fallbackArtifact.has_value())
+                {
+                    artifact = std::make_shared<NLS::Engine::Assets::PrefabArtifact>(
+                        std::move(*fallbackArtifact));
+                }
+            }
+
             prefabArtifactCache.emplace(cacheKey, artifact);
             return artifact;
         });
-    if (restoreResult.status != NLS::Editor::Assets::PrefabOperationStatus::Committed)
+    const bool prefabRestoreCommitted =
+        restoreResult.status == NLS::Editor::Assets::PrefabOperationStatus::Committed;
+    if (!prefabRestoreCommitted)
     {
         NLS_LOG_WARNING(
             "Scene loaded with missing or unresolved prefab instance metadata: " +
@@ -2779,7 +3099,22 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
                 " message=" +
                 diagnostic.message);
         }
-        return false;
+    }
+
+    for (const auto& sourceKey : sourceMissingPrefabSources)
+    {
+        const auto separator = sourceKey.find('\n');
+        if (separator == std::string::npos)
+            continue;
+
+        const auto prefabAssetGuid = NLS::Guid::Parse(sourceKey.substr(0u, separator));
+        if (!prefabAssetGuid.IsValid())
+            continue;
+
+        m_context.prefabInstanceRegistry.MarkAssetMissing(
+            NLS::Core::Assets::AssetId(prefabAssetGuid),
+            sourceKey.substr(separator + 1u),
+            true);
     }
 
     std::unordered_set<NLS::Editor::Assets::PrefabInstanceRecord*> queuedGeneratedInstances;
@@ -2789,9 +3124,9 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
     {
         const auto cacheKey = instance.prefabAssetId.ToString() + "\n" + instance.prefabSubAssetKey;
         const auto cached = prefabArtifactCache.find(cacheKey);
-        if (cached == prefabArtifactCache.end() || !cached->second.has_value())
+        if (cached == prefabArtifactCache.end() || !cached->second)
             return nullptr;
-        return &*cached->second;
+        return cached->second.get();
     };
     auto queueGeneratedInstanceResources = [&](auto&& self, Engine::GameObject* object) -> void
     {
@@ -2804,10 +3139,7 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
             registeredInstance->generatedReadOnly &&
             queuedGeneratedInstances.insert(registeredInstance).second)
         {
-            PrefabInstanceAssetResolutionOptions sceneLoadResolutionOptions;
-            sceneLoadResolutionOptions.hideRootUntilRendererResourcesReady = true;
-            sceneLoadResolutionOptions.keepRootRenderingSuppressedOnFailure = true;
-            sceneLoadResolutionOptions.progressTargetPlatform = kSceneLoadRendererResourceResolutionTargetPlatform;
+            const auto sceneLoadResolutionOptions = BuildSceneLoadPrefabResourceResolutionOptions();
             QueuePrefabInstanceAssetResolution(
                 registeredInstance,
                 FindCachedRestoredPrefabArtifact(*registeredInstance),
@@ -2826,7 +3158,8 @@ bool Editor::Core::EditorActions::RestorePrefabInstancesForCurrentSceneFromDisk(
             queueGeneratedInstanceResources(queueGeneratedInstanceResources, root);
     }
 
-    return true;
+    RefreshHierarchyAfterPrefabInstanceRegistration(m_panelsManager);
+    return prefabRestoreCommitted;
 }
 
 void Editor::Core::EditorActions::LoadSceneFromDisk(const std::string& p_path, bool p_absolute)
@@ -3208,6 +3541,7 @@ void Editor::Core::EditorActions::ScheduleImportedResourceTrim()
         [this]
         {
             m_importedResourceTrimScheduled = false;
+            ReacquirePrefabInstanceRendererOwnersFromLiveScene(m_context.prefabInstanceRegistry);
             NLS::Core::ResourceManagement::ResourceLifetimeTrimOptions options;
             options.maxCandidates = kImportedResourceTrimCandidatesPerSlice;
             options.maxBytes = kImportedResourceTrimBytesPerSlice;
@@ -3646,11 +3980,14 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAsset(
     {
         QueuePrefabInstanceAssetResolution(
             result.dragDrop.instance ? &*result.dragDrop.instance : nullptr,
-            result.dragDrop.artifact ? &*result.dragDrop.artifact : nullptr,
+            result.dragDrop.sharedArtifact
+                ? result.dragDrop.sharedArtifact.get()
+                : (result.dragDrop.artifact ? &*result.dragDrop.artifact : nullptr),
             path);
     }
     if (focusOnCreation)
         SelectGameObject(instance);
+    RefreshHierarchyAfterPrefabInstanceRegistration(m_panelsManager);
     MarkGameObjectCreationSceneDirty(m_context, *creationScene);
     return &instance;
 }
@@ -3728,11 +4065,14 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAsset(
     {
         QueuePrefabInstanceAssetResolution(
             result.dragDrop.instance ? &*result.dragDrop.instance : nullptr,
-            result.dragDrop.artifact ? &*result.dragDrop.artifact : nullptr,
+            result.dragDrop.sharedArtifact
+                ? result.dragDrop.sharedArtifact.get()
+                : (result.dragDrop.artifact ? &*result.dragDrop.artifact : nullptr),
             path);
     }
     if (focusOnCreation)
         SelectGameObject(instance);
+    RefreshHierarchyAfterPrefabInstanceRegistration(m_panelsManager);
     MarkGameObjectCreationSceneDirty(m_context, *creationScene);
     return &instance;
 }
@@ -3740,6 +4080,23 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromAsset(
 Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromImportedPrefabArtifact(
     const NLS::Editor::Assets::EditorAssetDragPayload& payload,
     NLS::Engine::Assets::PrefabArtifact& prefab,
+    bool focusOnCreation,
+    Engine::GameObject* p_parent,
+    std::optional<Maths::Vector3> placementOverride,
+    PrefabInstancePreviewResourceHandoff previewResourceHandoff)
+{
+    return CreateGameObjectFromImportedPrefabArtifact(
+        payload,
+        static_cast<const NLS::Engine::Assets::PrefabArtifact&>(prefab),
+        focusOnCreation,
+        p_parent,
+        placementOverride,
+        std::move(previewResourceHandoff));
+}
+
+Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromImportedPrefabArtifact(
+    const NLS::Editor::Assets::EditorAssetDragPayload& payload,
+    const NLS::Engine::Assets::PrefabArtifact& prefab,
     bool focusOnCreation,
     Engine::GameObject* p_parent,
     std::optional<Maths::Vector3> placementOverride,
@@ -3783,7 +4140,9 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromImport
     {
         QueuePrefabInstanceAssetResolution(
             result.dragDrop.instance ? &*result.dragDrop.instance : nullptr,
-            result.dragDrop.artifact ? &*result.dragDrop.artifact : nullptr,
+            result.dragDrop.sharedArtifact
+                ? result.dragDrop.sharedArtifact.get()
+                : &prefab,
             path,
             std::move(previewResourceHandoff));
         previewHandoffGuard.Disarm();
@@ -3792,6 +4151,190 @@ Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromImport
         SelectGameObject(instance);
     MarkGameObjectCreationSceneDirty(m_context, *creationScene);
     return &instance;
+}
+
+Engine::GameObject* NLS::Editor::Core::EditorActions::CreateGameObjectFromImportedPrefabArtifact(
+    const NLS::Editor::Assets::EditorAssetDragPayload& payload,
+    std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> sharedPrefab,
+    bool focusOnCreation,
+    Engine::GameObject* p_parent,
+    std::optional<Maths::Vector3> placementOverride,
+    PrefabInstancePreviewResourceHandoff previewResourceHandoff)
+{
+    if (!sharedPrefab)
+    {
+        NLS_LOG_ERROR(
+            "Failed to create GameObject from shared imported prefab because the shared artifact is missing: " +
+            NLS::Editor::Assets::GetEditorAssetDragPayloadPath(payload));
+        CancelPreviewResourceHandoff(previewResourceHandoff);
+        return nullptr;
+    }
+
+    PreviewResourceHandoffCancelGuard previewHandoffGuard(previewResourceHandoff);
+    auto* creationScene = ResolveGameObjectCreationScene(m_context, p_parent);
+    const auto path = NLS::Editor::Assets::GetEditorAssetDragPayloadPath(payload);
+    if (!creationScene)
+    {
+        NLS_LOG_ERROR("Failed to create GameObject from shared imported prefab without an active scene: " + path);
+        return nullptr;
+    }
+
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(m_context.projectAssetsPath);
+    auto result = bridge.DropImportedPrefabArtifactIntoHierarchy(
+        payload,
+        *sharedPrefab,
+        *creationScene,
+        {},
+        &m_context.prefabInstanceRegistry,
+        p_parent,
+        &m_context.importProgressTracker);
+
+    if (!result.handled || result.dragDrop.status != NLS::Editor::Assets::DragDropOperationStatus::Committed ||
+        !result.dragDrop.instance.has_value() || !result.dragDrop.instance->instanceRoot)
+    {
+        NLS_LOG_WARNING("Shared imported prefab drop failed; falling back to asset handle drop: " + path);
+        return CreateGameObjectFromAsset(payload, focusOnCreation, p_parent, placementOverride);
+    }
+
+    auto& instance = *result.dragDrop.instance->instanceRoot;
+    NLS_LOG_INFO("Created GameObject from shared imported prefab: " + path + " root=" + instance.GetName());
+
+    if (placementOverride.has_value())
+        instance.GetTransform()->SetWorldPosition(*placementOverride);
+    else if (m_gameObjectSpawnMode == EGameObjectSpawnMode::FRONT)
+        instance.GetTransform()->SetLocalPosition(CalculateGameObjectSpawnPoint(10.0f));
+
+    if (result.dragDrop.deferredAssetReferenceResolutionRequested)
+    {
+        QueuePrefabInstanceAssetResolution(
+            result.dragDrop.instance ? &*result.dragDrop.instance : nullptr,
+            sharedPrefab.get(),
+            path,
+            std::move(previewResourceHandoff));
+        previewHandoffGuard.Disarm();
+    }
+    if (focusOnCreation)
+        SelectGameObject(instance);
+    RefreshHierarchyAfterPrefabInstanceRegistration(m_panelsManager);
+    MarkGameObjectCreationSceneDirty(m_context, *creationScene);
+    return &instance;
+}
+
+Engine::GameObject* NLS::Editor::Core::EditorActions::CommitGameObjectFromImportedPrefabPreview(
+    const NLS::Editor::Assets::EditorAssetDragPayload& payload,
+    std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> sharedPrefab,
+    Engine::GameObject& previewRoot,
+    bool focusOnCreation,
+    Engine::GameObject* p_parent,
+    std::optional<Maths::Vector3> placementOverride,
+    PrefabInstancePreviewResourceHandoff previewResourceHandoff,
+    const bool previewRenderableReady)
+{
+    const auto path = NLS::Editor::Assets::GetEditorAssetDragPayloadPath(payload);
+    auto cleanupFailedPreviewRoot = [&]
+    {
+        previewRoot.SetEditorTransient(true);
+        if (auto* scene = ResolveSceneForLiveObject(m_context, previewRoot))
+        {
+            scene->DestroyGameObject(previewRoot);
+            scene->CollectGarbages();
+        }
+        else if (previewRoot.IsAlive())
+        {
+            previewRoot.MarkAsDestroy();
+        }
+    };
+
+    if (!sharedPrefab)
+    {
+        NLS_LOG_ERROR(
+            "Failed to commit imported prefab preview because the shared artifact is missing: " +
+            path);
+        CancelPreviewResourceHandoff(previewResourceHandoff);
+        cleanupFailedPreviewRoot();
+        return nullptr;
+    }
+
+    PreviewResourceHandoffCancelGuard previewHandoffGuard(previewResourceHandoff);
+    auto* creationScene = ResolveSceneForLiveObject(m_context, previewRoot);
+    if (!creationScene)
+    {
+        NLS_LOG_ERROR("Failed to commit imported prefab preview because the preview root is not in a live scene: " + path);
+        cleanupFailedPreviewRoot();
+        return nullptr;
+    }
+
+    const auto payloadAssetId = NLS::Editor::Assets::GetEditorAssetDragPayloadAssetId(payload);
+    if (!payloadAssetId.IsValid() || sharedPrefab->assetId != payloadAssetId)
+    {
+        NLS_LOG_ERROR("Failed to commit imported prefab preview because the payload no longer matches the artifact: " + path);
+        cleanupFailedPreviewRoot();
+        return nullptr;
+    }
+
+    NLS::Editor::Assets::EditorAssetDragDropBridge bridge(m_context.projectAssetsPath);
+    if (!bridge.IsPreviewPrefabArtifactCurrent(payload, *sharedPrefab, false))
+    {
+        NLS_LOG_ERROR("Failed to commit imported prefab preview because the preview artifact is no longer current: " + path);
+        cleanupFailedPreviewRoot();
+        return nullptr;
+    }
+
+    auto prefabSubAssetKey = NLS::Editor::Assets::GetEditorAssetDragPayloadSubAssetKey(payload);
+    if (prefabSubAssetKey.empty())
+    {
+        const auto rootRecord = std::find_if(
+            sharedPrefab->graph.objects.begin(),
+            sharedPrefab->graph.objects.end(),
+            [&sharedPrefab](const NLS::Engine::Serialize::ObjectRecord& record)
+            {
+                return record.id == sharedPrefab->graph.root;
+            });
+        if (rootRecord != sharedPrefab->graph.objects.end() && !rootRecord->debugName.empty())
+        {
+            prefabSubAssetKey = "prefab:" + rootRecord->debugName;
+        }
+    }
+
+    NLS::Editor::Assets::InstantiatePrefabRequest request;
+    request.constPrefab = sharedPrefab.get();
+    request.prefabAssetId = sharedPrefab->assetId;
+    request.prefabSubAssetKey = prefabSubAssetKey;
+
+    auto connect = NLS::Editor::Assets::PrefabEditorWorkflow().ConnectExistingPrefabInstance(
+        request,
+        previewRoot);
+    if (connect.status != NLS::Editor::Assets::PrefabEditorOperationStatus::Committed ||
+        !connect.instance.has_value() ||
+        connect.instance->instanceRoot != &previewRoot)
+    {
+        NLS_LOG_ERROR("Failed to connect imported prefab preview root as a prefab instance: " + path);
+        cleanupFailedPreviewRoot();
+        return nullptr;
+    }
+
+    creationScene->AddGameObject(&previewRoot);
+    auto& registeredInstance = m_context.prefabInstanceRegistry.Register(std::move(*connect.instance));
+
+    if (placementOverride.has_value())
+        previewRoot.GetTransform()->SetWorldPosition(*placementOverride);
+    if (p_parent != nullptr)
+        previewRoot.SetParent(*p_parent);
+
+    QueuePrefabInstanceAssetResolution(
+        &registeredInstance,
+        sharedPrefab.get(),
+        path,
+        std::move(previewResourceHandoff),
+        BuildImportedPrefabPreviewCommitResolutionOptions(previewRenderableReady));
+    previewHandoffGuard.Disarm();
+
+    if (focusOnCreation)
+        SelectGameObject(previewRoot);
+    m_panelsManager.GetPanelAs<Panels::Hierarchy>("Hierarchy").RebuildFromCurrentScene();
+    MarkGameObjectCreationSceneDirty(m_context, *creationScene);
+    NLS_LOG_INFO("Committed imported prefab preview as scene instance: " + path + " root=" + previewRoot.GetName());
+    return &previewRoot;
 }
 
 void NLS::Editor::Core::EditorActions::CompletePendingAssetDrop(
@@ -3861,11 +4404,14 @@ void NLS::Editor::Core::EditorActions::CompletePendingAssetDrop(
     {
         QueuePrefabInstanceAssetResolution(
             result.dragDrop.instance ? &*result.dragDrop.instance : nullptr,
-            result.dragDrop.artifact ? &*result.dragDrop.artifact : nullptr,
+            result.dragDrop.sharedArtifact
+                ? result.dragDrop.sharedArtifact.get()
+                : (result.dragDrop.artifact ? &*result.dragDrop.artifact : nullptr),
             path);
     }
     if (focusOnCreation)
         SelectGameObject(instance);
+    RefreshHierarchyAfterPrefabInstanceRegistration(m_panelsManager);
     MarkGameObjectCreationSceneDirty(m_context, *scene);
     cleanupParentGuard();
 }
@@ -3928,9 +4474,12 @@ void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(
     };
 
     auto loadedSourcePrefab = sourcePrefab
-        ? std::optional<NLS::Engine::Assets::PrefabArtifact>(*sourcePrefab)
+        ? std::optional<NLS::Engine::Assets::PrefabArtifact> {}
         : TryLoadPrefabArtifactForRendererResourceResolution(m_context, *instance);
-    if (!loadedSourcePrefab.has_value())
+    const auto* prefab = sourcePrefab != nullptr
+        ? sourcePrefab
+        : (loadedSourcePrefab.has_value() ? &*loadedSourcePrefab : nullptr);
+    if (prefab == nullptr)
     {
         NLS_LOG_WARNING(
             "Skipped renderer resource resolution: could not load prefab artifact with resolved assets for " +
@@ -3943,28 +4492,16 @@ void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(
         return;
     }
 
-    auto prefab = std::move(*loadedSourcePrefab);
-    if (prefab.resolvedAssets.empty())
-    {
-        NLS_LOG_WARNING(
-            "Skipped renderer resource resolution: prefab artifact has no resolved assets for " +
-            label +
-            " prefabAssetId=" +
-            instance->prefabAssetId.ToString() +
-            " prefabSubAssetKey=" +
-            instance->prefabSubAssetKey);
-        restoreSuppressedRootOnFailureIfNeeded();
-        return;
-    }
-    const auto sceneOwnerToken = BuildPrefabInstanceResourceOwnerToken(*instance);
-    AcquirePrefabInstanceResourceOwners(sceneOwnerToken, prefab);
-    ReleasePrefabInstanceResourceOwners(previewResourceHandoff.prewarm.ownerToken);
+    const auto sceneOwnerToken = NLS::Editor::Core::BuildPrefabInstanceResourceOwnerToken(*instance);
+    AcquirePrefabInstanceResourceOwners(sceneOwnerToken, *prefab);
+    ReleasePrefabInstanceResourceOwnersFromLocatedRegistry(previewResourceHandoff.prewarm.ownerToken);
 
     const auto resolvedStats = CountResolvedRendererResources(*instance->instanceRoot);
     if (resolvedStats.meshRenderers > 0u &&
         resolvedStats.boundMeshes == resolvedStats.meshRenderers &&
         resolvedStats.boundMaterialSlotRenderers == resolvedStats.materialSlotRenderers)
     {
+        RefreshPrefabInstanceRendererOwnersFromLiveRoot(sceneOwnerToken, *instance->instanceRoot);
         NLS_LOG_INFO(
             "Renderer resources already resolved for prefab instance from cached artifact paths: " +
             label +
@@ -3977,6 +4514,7 @@ void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(
             "/" +
             std::to_string(resolvedStats.materialSlotRenderers));
         restoreSuppressedRootOnSuccessIfNeeded();
+        MarkRendererResourceResolutionSucceeded(*this, *instance->instanceRoot, instance->prefabAssetId);
         return;
     }
 
@@ -3987,7 +4525,7 @@ void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(
     size_t visitedMeshReferences = 0u;
     size_t visitedMaterialReferences = 0u;
     CollectPrefabAssetResolutionTasks(
-        prefab,
+        *prefab,
         *instance,
         meshTasks,
         materialTasks,
@@ -4006,7 +4544,7 @@ void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(
         previewResourceHandoff,
         adoptedPreviewMeshLoads);
 
-    if (TryBindPrefabInstanceCachedRendererResources(meshTasks, materialTasks, liveObjects, previewResourceHandoff))
+    if (TryBindPrefabInstanceCachedRendererResources(meshTasks, materialTasks, liveObjects, sceneOwnerToken))
     {
         NLS_LOG_INFO(
             "Fast-bound cached renderer resources for prefab instance: " +
@@ -4016,6 +4554,7 @@ void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(
             " materialTasks=" +
             std::to_string(materialTasks.size()));
         restoreSuppressedRootOnSuccessIfNeeded();
+        MarkRendererResourceResolutionSucceeded(*this, *instance->instanceRoot, instance->prefabAssetId);
         CancelPreviewResourceHandoff(previewResourceHandoff);
         previewHandoffGuard.Disarm();
         return;
@@ -4033,8 +4572,8 @@ void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(
             " materialRefs=" +
             std::to_string(visitedMaterialReferences) +
             " resolvedAssets=" +
-            std::to_string(prefab.resolvedAssets.size()));
-        ReleasePrefabInstanceResourceOwners(sceneOwnerToken);
+            std::to_string(prefab->resolvedAssets.size()));
+        ReleasePrefabInstanceResourceOwnersFromLocatedRegistry(sceneOwnerToken);
         ScheduleImportedResourceTrim();
         restoreSuppressedRootOnFailureIfNeeded();
         return;
@@ -4088,7 +4627,10 @@ void NLS::Editor::Core::EditorActions::QueuePrefabInstanceAssetResolution(
         {
             RendererResourceResolutionTargetDestroyed(*state, destroyed);
         });
+    if (auto* root = state->instanceRoot; root && root->IsAlive())
+        m_context.prefabInstanceRegistry.MarkInstanceResourceFailure(*root, false);
     RegisterRendererResourceResolutionState(state);
+    RefreshPrefabPendingResourcePresentation(*this, state->prefabAssetId);
     previewHandoffGuard.Disarm();
     DelayAction(
         [this, state]

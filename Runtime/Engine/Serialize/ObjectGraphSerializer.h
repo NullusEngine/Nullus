@@ -46,7 +46,7 @@ namespace NLS::Engine::Serialize
             size_t gameObjectIndex = 0;
             for (auto* gameObject : scene.GetGameObjects())
             {
-                if (!gameObject)
+                if (!gameObject || gameObject->IsEditorTransient())
                     continue;
 
                 context.GetId(gameObject, MakeGameObjectLabel(*gameObject, gameObjectIndex++));
@@ -55,7 +55,7 @@ namespace NLS::Engine::Serialize
             PropertyValue::ArrayValue gameObjects;
             for (auto* gameObject : scene.GetGameObjects())
             {
-                if (!gameObject)
+                if (!gameObject || gameObject->IsEditorTransient())
                     continue;
 
                 const auto objectId = context.GetId(gameObject, "");

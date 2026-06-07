@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -26,6 +27,7 @@
 #include "Rendering/EngineDrawableDescriptor.h"
 #include "Rendering/EngineFrameObjectBindingProvider.h"
 #include "Rendering/Entities/Camera.h"
+#include "Rendering/FrameGraph/SceneRenderGraphBuilderDeferred.h"
 #include "Rendering/ForwardSceneRenderer.h"
 #include "Rendering/RHI/BindingPointMap.h"
 #include "Rendering/RHI/Core/RHICommand.h"
@@ -1311,9 +1313,9 @@ TEST(RendererFrameObjectBindingTests, RenderScenePackageMarksFrameAndObjectDataR
     ASSERT_EQ(package.passCommandInputs.size(), 3u);
     EXPECT_EQ(package.passCommandInputs[0].kind, NLS::Render::Context::RenderPassCommandKind::Opaque);
     EXPECT_EQ(package.passCommandInputs[0].drawCount, 2u);
-    EXPECT_EQ(package.passCommandInputs[1].kind, NLS::Render::Context::RenderPassCommandKind::Transparent);
+    EXPECT_EQ(package.passCommandInputs[1].kind, NLS::Render::Context::RenderPassCommandKind::Skybox);
     EXPECT_EQ(package.passCommandInputs[1].drawCount, 1u);
-    EXPECT_EQ(package.passCommandInputs[2].kind, NLS::Render::Context::RenderPassCommandKind::Skybox);
+    EXPECT_EQ(package.passCommandInputs[2].kind, NLS::Render::Context::RenderPassCommandKind::Transparent);
     EXPECT_EQ(package.passCommandInputs[2].drawCount, 1u);
 }
 
@@ -4245,6 +4247,267 @@ TEST(RendererFrameObjectBindingTests, RecordedPipelineOverridesCanForceBlending)
     EXPECT_TRUE(explicitDevice->lastGraphicsPipelineDesc.blendState.renderTargets.front().blendEnable);
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RendererFrameObjectBindingTests, RecordedPipelineOverridesCanUseIndependentDecalGBufferBlendState)
+{
+#if !defined(_WIN32)
+    GTEST_SKIP() << "DX12 recorded material pipeline override test requires the phase-1 Windows DX12 runtime.";
+#endif
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::DX12;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    const ScopedDriverService driverService(*driver);
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
+    ASSERT_NE(shader, nullptr);
+
+    NLS::Render::Resources::Material material(shader);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    auto pipelineCache = NLS::Render::RHI::CreateDefaultPipelineCache();
+
+    static constexpr NLS::Render::RHI::TextureFormat kGBufferFormats[] = {
+        NLS::Render::RHI::TextureFormat::RGBA8,
+        NLS::Render::RHI::TextureFormat::RGBA8,
+        NLS::Render::RHI::TextureFormat::RGBA8
+    };
+
+    NLS::Render::RHI::RHIRenderTargetBlendStateDesc albedoTarget;
+    albedoTarget.blendEnable = true;
+    albedoTarget.colorWriteMask = NLS::Render::RHI::RHIColorWriteMask::All;
+
+    NLS::Render::RHI::RHIRenderTargetBlendStateDesc suppressedTarget;
+    suppressedTarget.blendEnable = false;
+    suppressedTarget.colorWriteMask = NLS::Render::RHI::RHIColorWriteMask::None;
+
+    NLS::Render::Resources::MaterialPipelineStateOverrides overrides;
+    overrides.SetColorFormats(kGBufferFormats);
+    overrides.blending = true;
+    overrides.colorWrite = true;
+    const std::array<NLS::Render::RHI::RHIRenderTargetBlendStateDesc, 3u> decalTargets = {
+        albedoTarget,
+        suppressedTarget,
+        suppressedTarget
+    };
+    overrides.SetRenderTargetBlendStates(decalTargets);
+    overrides.stencilTest = false;
+    overrides.stencilWriteMask = 0u;
+
+    NLS::Render::Data::PipelineState pipelineState;
+    pipelineState.stencilTest = true;
+    pipelineState.stencilWriteMask = 0xFFu;
+
+    const auto pipeline = material.BuildRecordedGraphicsPipeline(
+        explicitDevice,
+        pipelineCache,
+        NLS::Render::Settings::EPrimitiveMode::TRIANGLES,
+        pipelineState,
+        overrides);
+
+    ASSERT_NE(pipeline, nullptr);
+    const auto& desc = explicitDevice->lastGraphicsPipelineDesc;
+    EXPECT_TRUE(desc.blendState.enabled);
+    EXPECT_TRUE(desc.blendState.independentBlendEnable);
+    ASSERT_EQ(desc.blendState.renderTargets.size(), 3u);
+    EXPECT_TRUE(desc.blendState.renderTargets[0].blendEnable);
+    EXPECT_EQ(desc.blendState.renderTargets[0].colorWriteMask, NLS::Render::RHI::RHIColorWriteMask::All);
+    EXPECT_FALSE(desc.blendState.renderTargets[1].blendEnable);
+    EXPECT_EQ(desc.blendState.renderTargets[1].colorWriteMask, NLS::Render::RHI::RHIColorWriteMask::None);
+    EXPECT_FALSE(desc.blendState.renderTargets[2].blendEnable);
+    EXPECT_EQ(desc.blendState.renderTargets[2].colorWriteMask, NLS::Render::RHI::RHIColorWriteMask::None);
+    EXPECT_FALSE(desc.depthStencilState.stencilTest);
+    EXPECT_EQ(desc.depthStencilState.stencilWriteMask, 0u);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RendererFrameObjectBindingTests, RecordedPipelinePadsPerTargetBlendOverridesWithNoWriteTargets)
+{
+#if !defined(_WIN32)
+    GTEST_SKIP() << "DX12 recorded material pipeline override test requires the phase-1 Windows DX12 runtime.";
+#endif
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::DX12;
+    settings.enableExplicitRHI = false;
+
+    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
+    const ScopedDriverService driverService(*driver);
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create("App/Assets/Engine/Shaders/DeferredGBuffer.hlsl");
+    ASSERT_NE(shader, nullptr);
+
+    NLS::Render::Resources::Material material(shader);
+    auto explicitDevice = std::make_shared<TestExplicitDevice>();
+    auto pipelineCache = NLS::Render::RHI::CreateDefaultPipelineCache();
+
+    static constexpr NLS::Render::RHI::TextureFormat kGBufferFormats[] = {
+        NLS::Render::RHI::TextureFormat::RGBA8,
+        NLS::Render::RHI::TextureFormat::RGBA8,
+        NLS::Render::RHI::TextureFormat::RGBA8
+    };
+
+    NLS::Render::RHI::RHIRenderTargetBlendStateDesc albedoTarget;
+    albedoTarget.blendEnable = true;
+    albedoTarget.colorWriteMask = NLS::Render::RHI::RHIColorWriteMask::All;
+
+    NLS::Render::RHI::RHIRenderTargetBlendStateDesc normalTarget;
+    normalTarget.blendEnable = false;
+    normalTarget.colorWriteMask = NLS::Render::RHI::RHIColorWriteMask::None;
+
+    NLS::Render::Resources::MaterialPipelineStateOverrides overrides;
+    overrides.SetColorFormats(kGBufferFormats);
+    overrides.blending = true;
+    overrides.colorWrite = true;
+    const std::array<NLS::Render::RHI::RHIRenderTargetBlendStateDesc, 2u> shortTargets = {
+        albedoTarget,
+        normalTarget
+    };
+    overrides.SetRenderTargetBlendStates(shortTargets);
+
+    const NLS::Render::Data::PipelineState pipelineState;
+    const auto pipeline = material.BuildRecordedGraphicsPipeline(
+        explicitDevice,
+        pipelineCache,
+        NLS::Render::Settings::EPrimitiveMode::TRIANGLES,
+        pipelineState,
+        overrides);
+
+    ASSERT_NE(pipeline, nullptr);
+    const auto& desc = explicitDevice->lastGraphicsPipelineDesc;
+    ASSERT_EQ(desc.renderTargetLayout.colorFormats.size(), 3u);
+    ASSERT_EQ(desc.blendState.renderTargets.size(), 3u);
+    EXPECT_TRUE(desc.blendState.renderTargets[0].blendEnable);
+    EXPECT_EQ(desc.blendState.renderTargets[0].colorWriteMask, NLS::Render::RHI::RHIColorWriteMask::All);
+    EXPECT_FALSE(desc.blendState.renderTargets[1].blendEnable);
+    EXPECT_EQ(desc.blendState.renderTargets[1].colorWriteMask, NLS::Render::RHI::RHIColorWriteMask::None);
+    EXPECT_FALSE(desc.blendState.renderTargets[2].blendEnable);
+    EXPECT_EQ(desc.blendState.renderTargets[2].colorWriteMask, NLS::Render::RHI::RHIColorWriteMask::None);
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+}
+
+TEST(RendererFrameObjectBindingTests, DeferredDecalOverridesBlendAlbedoOnlyAndDisableStencilWrites)
+{
+    NLS::Render::Resources::Material decalMaterial;
+    decalMaterial.SetSurfaceMode(NLS::Render::Resources::MaterialSurfaceMode::Decal);
+    decalMaterial.SetDepthTest(false);
+
+    const auto overrides =
+        NLS::Engine::Rendering::DeferredSceneRendererTestAccess::BuildDeferredDecalMaterialOverridesForTesting(
+            decalMaterial);
+
+    ASSERT_TRUE(overrides.blending.has_value());
+    EXPECT_TRUE(*overrides.blending);
+    ASSERT_TRUE(overrides.depthTest.has_value());
+    EXPECT_TRUE(*overrides.depthTest);
+    ASSERT_TRUE(overrides.depthWrite.has_value());
+    EXPECT_FALSE(*overrides.depthWrite);
+    ASSERT_TRUE(overrides.hasDepthAttachment.has_value());
+    EXPECT_TRUE(*overrides.hasDepthAttachment);
+    ASSERT_TRUE(overrides.HasRenderTargetBlendStatesOverride());
+    const auto targets = overrides.GetRenderTargetBlendStates();
+    ASSERT_EQ(targets.size(), NLS::Render::FrameGraph::kDeferredGBufferColorAttachmentCount);
+    EXPECT_TRUE(targets[0].blendEnable);
+    EXPECT_EQ(targets[0].colorWriteMask, NLS::Render::RHI::RHIColorWriteMask::All);
+    EXPECT_FALSE(targets[1].blendEnable);
+    EXPECT_EQ(targets[1].colorWriteMask, NLS::Render::RHI::RHIColorWriteMask::None);
+    EXPECT_FALSE(targets[2].blendEnable);
+    EXPECT_EQ(targets[2].colorWriteMask, NLS::Render::RHI::RHIColorWriteMask::None);
+    ASSERT_TRUE(overrides.stencilTest.has_value());
+    EXPECT_FALSE(*overrides.stencilTest);
+    ASSERT_TRUE(overrides.stencilWriteMask.has_value());
+    EXPECT_EQ(*overrides.stencilWriteMask, 0u);
+    EXPECT_EQ(
+        NLS::Engine::Rendering::DeferredSceneRendererTestAccess::GetDeferredDecalDepthCompareForTesting(),
+        NLS::Render::Settings::EComparaisonAlgorithm::LESS_EQUAL);
+}
+
+TEST(RendererFrameObjectBindingTests, ThreadedDeferredFramePublishFailsClosedWhenLightingDrawIsMissing)
+{
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.hasSceneInput = true;
+    snapshot.visibleOpaqueDrawCount = 1u;
+    snapshot.visibleDecalDrawCount = 1u;
+    snapshot.visibleTransparentDrawCount = 1u;
+    snapshot.visibleSkyboxDrawCount = 1u;
+
+    EXPECT_TRUE(
+        NLS::Engine::Rendering::DeferredSceneRendererTestAccess::ShouldSkipThreadedDeferredFramePublishForTesting(
+            snapshot,
+            1u,
+            1u,
+            0u,
+            1u));
+    EXPECT_FALSE(
+        NLS::Engine::Rendering::DeferredSceneRendererTestAccess::ShouldSkipThreadedDeferredFramePublishForTesting(
+            snapshot,
+            1u,
+            1u,
+            1u,
+            1u));
+}
+
+TEST(RendererFrameObjectBindingTests, ThreadedDeferredFramePublishFailsClosedWhenAnySceneQueueIsPartial)
+{
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.hasSceneInput = true;
+    snapshot.visibleOpaqueDrawCount = 2u;
+    snapshot.visibleDecalDrawCount = 2u;
+    snapshot.visibleTransparentDrawCount = 2u;
+
+    EXPECT_TRUE(
+        NLS::Engine::Rendering::DeferredSceneRendererTestAccess::ShouldSkipThreadedDeferredFramePublishForTesting(
+            snapshot,
+            1u,
+            2u,
+            1u,
+            2u));
+    EXPECT_TRUE(
+        NLS::Engine::Rendering::DeferredSceneRendererTestAccess::ShouldSkipThreadedDeferredFramePublishForTesting(
+            snapshot,
+            2u,
+            1u,
+            1u,
+            2u));
+    EXPECT_TRUE(
+        NLS::Engine::Rendering::DeferredSceneRendererTestAccess::ShouldSkipThreadedDeferredFramePublishForTesting(
+            snapshot,
+            2u,
+            2u,
+            1u,
+            1u));
+    EXPECT_FALSE(
+        NLS::Engine::Rendering::DeferredSceneRendererTestAccess::ShouldSkipThreadedDeferredFramePublishForTesting(
+            snapshot,
+            2u,
+            2u,
+            1u,
+            2u));
+}
+
+TEST(RendererFrameObjectBindingTests, ThreadedDeferredSnapshotSynchronizationClampsTransparentToRecordedRemainder)
+{
+    NLS::Render::Context::FrameSnapshot snapshot;
+    snapshot.hasSceneInput = true;
+    snapshot.visibleOpaqueDrawCount = 2u;
+    snapshot.visibleDecalDrawCount = 2u;
+    snapshot.visibleTransparentDrawCount = 2u;
+    snapshot.recordedDrawCommands.resize(4u);
+
+    NLS::Engine::Rendering::DeferredSceneRendererTestAccess::SynchronizeThreadedDeferredSnapshotForTesting(
+        snapshot,
+        2u,
+        1u,
+        1u,
+        2u);
+
+    EXPECT_EQ(snapshot.visibleOpaqueDrawCount, 2u);
+    EXPECT_EQ(snapshot.visibleDecalDrawCount, 1u);
+    EXPECT_EQ(snapshot.visibleTransparentDrawCount, 0u);
 }
 
 TEST(RendererFrameObjectBindingTests, ThreadedPreparedBindingSetCreationUsesCurrentFrameDescriptorAllocator)

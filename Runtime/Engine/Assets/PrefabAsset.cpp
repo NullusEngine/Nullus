@@ -659,7 +659,28 @@ PrefabArtifactInstantiationResult InstantiatePrefabArtifact(
 }
 
 PrefabArtifactInstantiationResult InstantiatePrefabArtifact(
+    const PrefabArtifact& artifact,
+    SceneSystem::Scene& scene)
+{
+    return InstantiatePrefabArtifact(artifact, scene, {});
+}
+
+PrefabArtifactInstantiationResult InstantiatePrefabArtifact(
     PrefabArtifact& artifact,
+    SceneSystem::Scene& scene,
+    const Serialize::LoadPolicy& policy)
+{
+    auto result = InstantiatePrefabArtifact(
+        static_cast<const PrefabArtifact&>(artifact),
+        scene,
+        policy);
+    if (!result.diagnostics.HasErrors())
+        artifact.sourceToRuntimeObject = result.sourceToInstance;
+    return result;
+}
+
+PrefabArtifactInstantiationResult InstantiatePrefabArtifact(
+    const PrefabArtifact& artifact,
     SceneSystem::Scene& scene,
     const Serialize::LoadPolicy& policy)
 {
@@ -685,7 +706,6 @@ PrefabArtifactInstantiationResult InstantiatePrefabArtifact(
     result.root = instantiated.root;
     result.sourceToInstance = instantiated.sourceToInstance;
     result.sourceByInstanceObject = instantiated.sourceByInstanceObject;
-    artifact.sourceToRuntimeObject = instantiated.sourceToInstance;
 
     if (!result.root)
     {

@@ -81,6 +81,7 @@ struct PrefabCommandSurfaceRequest
     bool assetExists = false;
     bool generatedReadOnly = false;
     bool connectedInstance = false;
+    bool editableSourceArtifactContext = false;
     size_t overrideCount = 0u;
 };
 

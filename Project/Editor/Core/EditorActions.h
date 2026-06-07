@@ -35,6 +35,12 @@ namespace NLS::Editor::Core
         std::string progressTargetPlatform = kRendererResourceResolutionTargetPlatform;
     };
 
+    PrefabInstanceAssetResolutionOptions BuildImportedPrefabPreviewCommitResolutionOptions(
+        bool previewRenderableReady);
+    PrefabInstanceAssetResolutionOptions BuildSceneLoadPrefabResourceResolutionOptions();
+    bool ShouldRevealRendererResourceResolutionObjectBeforeAllReady(
+        bool rootRenderingSuppressedUntilRendererResourcesReady);
+
 	/**
 	* A set of editor actions
 	*/
@@ -205,6 +211,29 @@ namespace NLS::Editor::Core
             Engine::GameObject* p_parent = nullptr,
             std::optional<Maths::Vector3> placementOverride = std::nullopt,
             PrefabInstancePreviewResourceHandoff previewResourceHandoff = {});
+        Engine::GameObject* CreateGameObjectFromImportedPrefabArtifact(
+            const NLS::Editor::Assets::EditorAssetDragPayload& payload,
+            const NLS::Engine::Assets::PrefabArtifact& prefab,
+            bool focusOnCreation = true,
+            Engine::GameObject* p_parent = nullptr,
+            std::optional<Maths::Vector3> placementOverride = std::nullopt,
+            PrefabInstancePreviewResourceHandoff previewResourceHandoff = {});
+        Engine::GameObject* CreateGameObjectFromImportedPrefabArtifact(
+            const NLS::Editor::Assets::EditorAssetDragPayload& payload,
+            std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> prefab,
+            bool focusOnCreation = true,
+            Engine::GameObject* p_parent = nullptr,
+            std::optional<Maths::Vector3> placementOverride = std::nullopt,
+            PrefabInstancePreviewResourceHandoff previewResourceHandoff = {});
+        Engine::GameObject* CommitGameObjectFromImportedPrefabPreview(
+            const NLS::Editor::Assets::EditorAssetDragPayload& payload,
+            std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> prefab,
+            Engine::GameObject& previewRoot,
+            bool focusOnCreation = true,
+            Engine::GameObject* p_parent = nullptr,
+            std::optional<Maths::Vector3> placementOverride = std::nullopt,
+            PrefabInstancePreviewResourceHandoff previewResourceHandoff = {},
+            bool previewRenderableReady = true);
 
 		/**
 		* Destroy an GameObject from his scene

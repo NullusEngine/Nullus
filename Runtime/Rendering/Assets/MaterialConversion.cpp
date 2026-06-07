@@ -2,11 +2,14 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <filesystem>
 #include <iomanip>
 #include <optional>
 #include <sstream>
 #include <utility>
+
+#include "Rendering/Resources/Material.h"
 
 namespace NLS::Render::Assets
 {
@@ -85,6 +88,57 @@ const ImportedSceneMaterialChannel* FindChannel(
             return ToLower(channel.name) == ToLower(name);
         });
     return found != material.materialChannels.end() ? &*found : nullptr;
+}
+
+double FbxShininessToPbrRoughness(const double shininess)
+{
+    if (!std::isfinite(shininess))
+        return 1.0;
+
+    const auto clampedShininess = std::max(0.0, shininess);
+    return std::clamp(std::sqrt(2.0 / (clampedShininess + 2.0)), 0.0, 1.0);
+}
+
+bool IsValidPbrUnitScalar(const double value)
+{
+    return std::isfinite(value) && value >= 0.0 && value <= 1.0;
+}
+
+bool IsIdentityColorFactor(const std::vector<double>& values)
+{
+    if (values.empty())
+        return true;
+
+    for (size_t index = 0u; index < std::min<size_t>(values.size(), 3u); ++index)
+    {
+        if (std::fabs(values[index] - 1.0) > 1e-6)
+            return false;
+    }
+    return true;
+}
+
+bool IsNeutralRgbFactor(const std::vector<double>& values)
+{
+    if (values.size() < 3u)
+        return false;
+
+    const double red = values[0];
+    const double green = values[1];
+    const double blue = values[2];
+    if (!std::isfinite(red) || !std::isfinite(green) || !std::isfinite(blue))
+        return false;
+
+    return red > 0.0 &&
+        red < 1.0 &&
+        std::fabs(red - green) <= 1e-6 &&
+        std::fabs(red - blue) <= 1e-6;
+}
+
+bool ShouldIgnoreFbxTexturedNeutralDiffuseTint(
+    const ImportedSceneMaterialChannel& diffuse,
+    const MaterialConversionContext& context)
+{
+    return context.ignoreFbxTexturedNeutralDiffuseTint && IsNeutralRgbFactor(diffuse.values);
 }
 
 void AddDiagnostic(
@@ -217,6 +271,28 @@ std::string AlphaModeName(const MaterialAlphaMode mode)
     case MaterialAlphaMode::Opaque:
     default: return "Opaque";
     }
+}
+
+NLS::Render::Resources::MaterialSurfaceMode SurfaceModeForAlphaMode(const MaterialAlphaMode mode)
+{
+    switch (mode)
+    {
+    case MaterialAlphaMode::Blend: return NLS::Render::Resources::MaterialSurfaceMode::Transparent;
+    case MaterialAlphaMode::Mask:
+    case MaterialAlphaMode::Opaque:
+    default: return NLS::Render::Resources::MaterialSurfaceMode::Opaque;
+    }
+}
+
+NLS::Render::Resources::MaterialSurfaceMode SurfaceModeForMaterial(const ConvertedMaterialArtifact& material)
+{
+    if (material.alphaMode == MaterialAlphaMode::Blend &&
+        NLS::Render::Resources::MaterialIdentitySuggestsDecal(material.displayName, material.subAssetKey))
+    {
+        return NLS::Render::Resources::MaterialSurfaceMode::Decal;
+    }
+
+    return SurfaceModeForAlphaMode(material.alphaMode);
 }
 
 std::string ColorSpaceName(const MaterialTextureColorSpace colorSpace)
@@ -383,6 +459,9 @@ std::string SerializeMaterial(
     stream << "  <workflow>" << EscapeXml(material.workflow) << "</workflow>\n";
     stream << "  <alphaMode>" << AlphaModeName(material.alphaMode) << "</alphaMode>\n";
     stream << "  <alphaCutoff>" << FormatDouble(material.alphaCutoff) << "</alphaCutoff>\n";
+    stream << "  <surfaceMode>"
+        << NLS::Render::Resources::MaterialSurfaceModeName(SurfaceModeForMaterial(material))
+        << "</surfaceMode>\n";
     stream << "  <blendable>" << (material.alphaMode == MaterialAlphaMode::Blend ? "true" : "false") << "</blendable>\n";
     // Imported model winding can differ across glTF/FBX/OBJ conversion paths while the
     // asset pipeline is resolving engine-space orientation, so generated model materials
@@ -523,13 +602,42 @@ void ConvertParserChannels(
     if (const auto* diffuse = FindChannel(source, "diffuse"))
     {
         AddTextureSlot(scene, material, context, "BaseColor", diffuse->textureKey, MaterialTextureColorSpace::SRgb, source.sampler);
-        if (!diffuse->values.empty())
+        const bool hasBaseColorTexture = FindTextureSlot(material, "BaseColor") != nullptr;
+        if (!diffuse->values.empty() &&
+            sourceModel == MaterialSourceModel::FbxParserMaterial &&
+            hasBaseColorTexture)
+        {
+            if (ShouldIgnoreFbxTexturedNeutralDiffuseTint(*diffuse, context))
+            {
+                AddDiagnostic(
+                    material,
+                    "material-ignored-fbx-textured-neutral-diffuse-tint",
+                    "FBX neutral diffuse compatibility tint was ignored because a base-color texture is already bound.");
+            }
+            else if (!IsIdentityColorFactor(diffuse->values))
+            {
+                AddFactor(material, "BaseColor", diffuse->values);
+            }
+        }
+        else if (!diffuse->values.empty())
+        {
             AddFactor(material, "BaseColor", diffuse->values);
+        }
     }
     if (const auto* normal = FindChannel(source, "normal"))
         AddTextureSlot(scene, material, context, "Normal", normal->textureKey, MaterialTextureColorSpace::Linear, source.sampler);
-    if (const auto* bump = FindChannel(source, "bump"))
+    if (const auto* bump = FindChannel(source, "bump");
+        bump && sourceModel != MaterialSourceModel::FbxParserMaterial)
+    {
         AddTextureSlot(scene, material, context, "Normal", bump->textureKey, MaterialTextureColorSpace::Linear, source.sampler);
+    }
+    else if (bump && sourceModel == MaterialSourceModel::FbxParserMaterial && !bump->textureKey.empty())
+    {
+        AddDiagnostic(
+            material,
+            "material-ignored-fbx-bump-height-map",
+            "FBX bump/height texture was ignored because it is not a tangent-space normal map.");
+    }
     if (const auto* emissive = FindChannel(source, "emissive"))
     {
         AddTextureSlot(scene, material, context, "Emissive", emissive->textureKey, MaterialTextureColorSpace::SRgb, source.sampler);
@@ -540,20 +648,37 @@ void ConvertParserChannels(
         AddTextureSlot(scene, material, context, "Occlusion", occlusion->textureKey, MaterialTextureColorSpace::Linear, source.sampler);
     if (const auto* metallic = FindChannel(source, "metallic"))
         AddTextureSlot(scene, material, context, "Metallic", metallic->textureKey, MaterialTextureColorSpace::Linear, source.sampler);
-    if (const auto* roughness = FindChannel(source, "roughness"))
-        AddTextureSlot(scene, material, context, "Roughness", roughness->textureKey, MaterialTextureColorSpace::Linear, source.sampler);
+    const auto* roughnessChannel = FindChannel(source, "roughness");
+    if (roughnessChannel)
+        AddTextureSlot(scene, material, context, "Roughness", roughnessChannel->textureKey, MaterialTextureColorSpace::Linear, source.sampler);
+    const bool hasValidRoughnessTexture = FindTextureSlot(material, "Roughness") != nullptr;
     if (const auto* opacity = FindChannel(source, "opacity"))
+    {
         AddTextureSlot(scene, material, context, "Opacity", opacity->textureKey, MaterialTextureColorSpace::Linear, source.sampler);
+        if (sourceModel == MaterialSourceModel::FbxParserMaterial &&
+            FindTextureSlot(material, "Opacity") != nullptr)
+        {
+            material.alphaMode = MaterialAlphaMode::Blend;
+        }
+    }
     if (const auto* specular = FindChannel(source, "specular"))
     {
         AddTextureSlot(scene, material, context, "Specular", specular->textureKey, MaterialTextureColorSpace::SRgb, source.sampler);
         if (!specular->values.empty())
             AddFactor(material, "Specular", specular->values);
     }
-    if (const auto* roughness = FindChannel(source, "roughness");
-        roughness && roughness->hasScalar)
+    const bool hasRoughnessScalar = roughnessChannel && roughnessChannel->hasScalar;
+    const bool hasValidRoughnessScalar = hasRoughnessScalar && IsValidPbrUnitScalar(roughnessChannel->scalar);
+    if (hasValidRoughnessScalar)
     {
-        AddScalar(material, "Roughness", roughness->scalar);
+        AddScalar(material, "Roughness", roughnessChannel->scalar);
+    }
+    else if (hasRoughnessScalar)
+    {
+        AddDiagnostic(
+            material,
+            "material-invalid-roughness-scalar",
+            "Parser material roughness scalar is outside the PBR [0, 1] range and was ignored.");
     }
     if (const auto* metallic = FindChannel(source, "metallic");
         metallic && metallic->hasScalar)
@@ -569,6 +694,8 @@ void ConvertParserChannels(
         shininess && shininess->hasScalar)
     {
         AddScalar(material, "SpecularPower", shininess->scalar);
+        if (sourceModel == MaterialSourceModel::FbxParserMaterial && !hasValidRoughnessScalar && !hasValidRoughnessTexture)
+            AddScalar(material, "Roughness", FbxShininessToPbrRoughness(shininess->scalar));
     }
     if (const auto* opacity = FindChannel(source, "opacity");
         opacity && opacity->hasScalar)

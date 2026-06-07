@@ -44,6 +44,7 @@ namespace NLS::Render::RHI
     class RHIGraphicsPipeline;
     class RHIDevice;
     class RHICommandBuffer;
+    class RHITextureView;
     struct RHIFrameContext;
     class RHIMesh;
 }
@@ -117,12 +118,30 @@ public:
         bool p_clearDepth,
         bool p_clearStencil,
         const Maths::Vector4& p_clearValue = Core::DefaultOpaqueClearColor());
+    bool BeginRecordedRenderPass(
+        NLS::Render::Buffers::MultiFramebuffer* p_framebuffer,
+        uint16_t p_width,
+        uint16_t p_height,
+        bool p_clearColor,
+        bool p_clearDepth,
+        bool p_clearStencil,
+        bool p_writesDepthStencilAttachment,
+        const Maths::Vector4& p_clearValue = Core::DefaultOpaqueClearColor());
     bool BeginOutputRenderPass(
         uint16_t p_width,
         uint16_t p_height,
         bool p_clearColor,
         bool p_clearDepth,
         bool p_clearStencil,
+        const Maths::Vector4& p_clearValue = Core::DefaultOpaqueClearColor());
+    bool BeginOutputRenderPass(
+        uint16_t p_width,
+        uint16_t p_height,
+        bool p_clearColor,
+        bool p_clearDepth,
+        bool p_clearStencil,
+        const std::shared_ptr<RHI::RHITextureView>& p_depthStencilView,
+        bool p_writesDepthStencilAttachment,
         const Maths::Vector4& p_clearValue = Core::DefaultOpaqueClearColor());
     void EndRecordedRenderPass();
     void EndOutputRenderPass(bool p_startedRecordedPass);
@@ -232,6 +251,16 @@ protected:
     std::shared_ptr<NLS::Render::RHI::RHIDevice> GetExplicitDevice() const;
     void SetActivePreparedPassBindingSet(const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& bindingSet);
     void CaptureRecordedPassAttachmentViews(const NLS::Render::RHI::RHIRenderPassDesc& renderPassDesc);
+    bool BeginSingleTargetRenderPass(
+        NLS::Render::Buffers::Framebuffer* p_framebuffer,
+        uint16_t p_width,
+        uint16_t p_height,
+        bool p_clearColor,
+        bool p_clearDepth,
+        bool p_clearStencil,
+        const std::shared_ptr<RHI::RHITextureView>& p_depthStencilViewOverride,
+        bool p_writesDepthStencilAttachment,
+        const Maths::Vector4& p_clearValue);
 
     Data::FrameDescriptor m_frameDescriptor;
     Context::Driver& m_driver;

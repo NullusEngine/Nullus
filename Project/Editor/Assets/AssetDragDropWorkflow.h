@@ -10,6 +10,7 @@
 #include "SceneSystem/Scene.h"
 
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -63,6 +64,8 @@ struct DragPayload
     NLS::Engine::GameObject* object = nullptr;
     PrefabInstanceRecord* prefabInstance = nullptr;
     std::string assetPath;
+    const NLS::Engine::Assets::PrefabArtifact* constPrefab = nullptr;
+    std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> sharedPrefab;
 };
 
 struct DropTarget
@@ -117,6 +120,7 @@ struct AssetDragDropResult
     std::vector<NLS::Core::Assets::AssetDependencyChange> dependencyChanges;
     std::vector<NLS::Core::Assets::AssetDependencyRecord> dependencyRefreshRequests;
     std::vector<EditorAssetCommandDescriptor> commandDescriptors;
+    std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact> sharedArtifact;
     bool deferredAssetReferenceResolutionRequested = false;
 };
 

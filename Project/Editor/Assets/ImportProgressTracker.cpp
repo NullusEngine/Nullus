@@ -36,8 +36,19 @@ ImportJobId ImportProgressTracker::BeginJob(
 
     {
         std::lock_guard lock(m_mutex);
-        if (!HasRunningJobsLocked() && GetFinishedBatchAssetCountLocked() >= m_batchProgress.totalAssets)
+        if (!HasRunningJobsLocked() && GetFinishedBatchAssetCountLocked(m_batchProgress) >= m_batchProgress.totalAssets)
+        {
             m_batchProgress = {};
+            m_batchProgressByTargetPlatform.clear();
+        }
+
+        const auto targetPlatformKey = targetPlatform;
+        auto& targetProgress = GetMutableBatchProgressForTargetLocked(targetPlatformKey);
+        if (!HasRunningJobsLocked(targetPlatformKey) &&
+            GetFinishedBatchAssetCountLocked(targetProgress) >= targetProgress.totalAssets)
+        {
+            targetProgress = {};
+        }
 
         jobId = {m_nextJobId++};
 
@@ -50,7 +61,10 @@ ImportJobId ImportProgressTracker::BeginJob(
         inserted->second.current.message = "Queued";
         m_batchProgress.totalAssets = std::max(m_batchProgress.totalAssets, batchTotalAssets);
         m_batchProgress.activeJob = jobId;
-        inserted->second.current.normalizedProgress = CalculateBatchProgressLocked();
+        targetProgress.totalAssets = std::max(targetProgress.totalAssets, batchTotalAssets);
+        targetProgress.activeJob = jobId;
+        inserted->second.current.normalizedProgress =
+            CalculateTargetBatchProgressLocked(inserted->second.current.targetPlatform);
         Publish(inserted->second, inserted->second.current);
         publishedEvent = inserted->second.current;
         subscribers = m_subscribers;
@@ -77,7 +91,7 @@ void ImportProgressTracker::ReportProgress(
         auto event = state->current;
         event.phase = phase;
         state->localProgress = ClampProgress(normalizedProgress);
-        event.normalizedProgress = CalculateBatchProgressLocked();
+        event.normalizedProgress = CalculateTargetBatchProgressLocked(event.targetPlatform);
         event.message = std::move(message);
         event.cancellationRequested = state->cancellation.IsCancellationRequested();
         Publish(*state, std::move(event));
@@ -107,18 +121,22 @@ void ImportProgressTracker::FinishJob(
         event.terminalStatus = status;
         event.diagnostics = std::move(diagnostics);
         state->localProgress = 1.0;
+        auto& targetProgress = GetMutableBatchProgressForTargetLocked(state->current.targetPlatform);
         switch (status)
         {
         case ImportJobTerminalStatus::Succeeded:
             ++m_batchProgress.completedAssets;
+            ++targetProgress.completedAssets;
             event.message = "Import succeeded";
             break;
         case ImportJobTerminalStatus::Failed:
             ++m_batchProgress.failedAssets;
+            ++targetProgress.failedAssets;
             event.message = "Import failed";
             break;
         case ImportJobTerminalStatus::Cancelled:
             ++m_batchProgress.cancelledAssets;
+            ++targetProgress.cancelledAssets;
             event.message = "Import cancelled";
             break;
         case ImportJobTerminalStatus::None:
@@ -126,17 +144,25 @@ void ImportProgressTracker::FinishJob(
             break;
         }
         state->finished = true;
-        event.normalizedProgress = CalculateBatchProgressLocked();
+        event.normalizedProgress = CalculateTargetBatchProgressLocked(event.targetPlatform);
         Publish(*state, std::move(event));
 
         m_batchProgress.activeJob.reset();
+        targetProgress.activeJob.reset();
         for (const auto& [_, job] : m_jobs)
         {
             if (!job.finished)
             {
-                m_batchProgress.activeJob = job.current.jobId;
-                break;
+                if (!m_batchProgress.activeJob.has_value())
+                    m_batchProgress.activeJob = job.current.jobId;
+                if (job.current.targetPlatform == event.targetPlatform &&
+                    !targetProgress.activeJob.has_value())
+                {
+                    targetProgress.activeJob = job.current.jobId;
+                }
             }
+            if (m_batchProgress.activeJob.has_value() && targetProgress.activeJob.has_value())
+                break;
         }
         publishedEvent = state->current;
         subscribers = m_subscribers;
@@ -213,31 +239,51 @@ bool ImportProgressTracker::HasRunningJobsLocked() const
         });
 }
 
-size_t ImportProgressTracker::GetFinishedBatchAssetCountLocked() const
+bool ImportProgressTracker::HasRunningJobsLocked(const std::string& targetPlatform) const
 {
-    return m_batchProgress.completedAssets +
-        m_batchProgress.failedAssets +
-        m_batchProgress.cancelledAssets;
+    return std::any_of(
+        m_jobs.begin(),
+        m_jobs.end(),
+        [&targetPlatform](const auto& entry)
+        {
+            return !entry.second.finished &&
+                entry.second.current.targetPlatform == targetPlatform;
+        });
 }
 
-double ImportProgressTracker::CalculateBatchProgressLocked() const
+size_t ImportProgressTracker::GetFinishedBatchAssetCountLocked(const ImportBatchProgress& progress) const
 {
-    if (m_batchProgress.totalAssets == 0u)
+    return progress.completedAssets +
+        progress.failedAssets +
+        progress.cancelledAssets;
+}
+
+double ImportProgressTracker::CalculateTargetBatchProgressLocked(const std::string& targetPlatform) const
+{
+    const auto found = m_batchProgressByTargetPlatform.find(targetPlatform);
+    if (found == m_batchProgressByTargetPlatform.end() || found->second.totalAssets == 0u)
         return 0.0;
 
     double localProgressSum = 0.0;
     for (const auto& [_, job] : m_jobs)
     {
-        if (!job.finished)
+        if (!job.finished && job.current.targetPlatform == targetPlatform)
             localProgressSum += ClampProgress(job.localProgress);
     }
 
+    const auto& progress = found->second;
     const auto finishedAssets =
-        std::min(GetFinishedBatchAssetCountLocked(), m_batchProgress.totalAssets);
+        std::min(GetFinishedBatchAssetCountLocked(progress), progress.totalAssets);
     const auto aggregateProgress =
         (static_cast<double>(finishedAssets) + localProgressSum) /
-        static_cast<double>(m_batchProgress.totalAssets);
+        static_cast<double>(progress.totalAssets);
     return ClampProgress(aggregateProgress);
+}
+
+ImportBatchProgress& ImportProgressTracker::GetMutableBatchProgressForTargetLocked(
+    const std::string& targetPlatform)
+{
+    return m_batchProgressByTargetPlatform[targetPlatform];
 }
 
 void ImportProgressTracker::Publish(ImportJobState& state, ImportProgressEvent event)

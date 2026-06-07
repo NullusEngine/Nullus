@@ -493,6 +493,8 @@ bool AssetImporterFacade::SetModelImporterSettings(
     meta->settings["MODEL_IMPORT_MORPH_TARGETS"] = BoolToImporterSettingString(settings.importMorphTargets);
     meta->settings["MODEL_IMPORT_CAMERAS"] = BoolToImporterSettingString(settings.importCameras);
     meta->settings["MODEL_IMPORT_LIGHTS"] = BoolToImporterSettingString(settings.importLights);
+    meta->settings[kModelFbxIgnoreTexturedNeutralDiffuseTintSetting] =
+        BoolToImporterSettingString(settings.ignoreFbxTexturedNeutralDiffuseTint);
     meta->settings[kDirtySetting] = "true";
     return SaveMetaForPath(assetPath, *meta);
 }

@@ -81,6 +81,7 @@ struct MaterialConversionContext
     std::filesystem::path texturePathPrefix;
     std::unordered_map<std::string, std::filesystem::path> importedTextureArtifactPaths;
     std::string shaderResourcePath;
+    bool ignoreFbxTexturedNeutralDiffuseTint = true;
 };
 
 NLS_RENDER_API ConvertedMaterialArtifact ConvertImportedSceneMaterial(

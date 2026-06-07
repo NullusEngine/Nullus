@@ -102,7 +102,16 @@ NLS_ENGINE_API PrefabArtifactInstantiationResult InstantiatePrefabArtifact(
     SceneSystem::Scene& scene);
 
 NLS_ENGINE_API PrefabArtifactInstantiationResult InstantiatePrefabArtifact(
+    const PrefabArtifact& artifact,
+    SceneSystem::Scene& scene);
+
+NLS_ENGINE_API PrefabArtifactInstantiationResult InstantiatePrefabArtifact(
     PrefabArtifact& artifact,
+    SceneSystem::Scene& scene,
+    const Serialize::LoadPolicy& policy);
+
+NLS_ENGINE_API PrefabArtifactInstantiationResult InstantiatePrefabArtifact(
+    const PrefabArtifact& artifact,
     SceneSystem::Scene& scene,
     const Serialize::LoadPolicy& policy);
 

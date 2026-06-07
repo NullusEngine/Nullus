@@ -38,6 +38,7 @@
 #include "Panels/AssetBrowser.h"
 #include "Panels/AssetView.h"
 #include "Panels/AssetProperties.h"
+#include "Panels/Hierarchy.h"
 #include "Panels/SceneView.h"
 #include "Assets/AssetBrowserPresentation.h"
 #include "Assets/AssetDatabaseFacade.h"
@@ -1926,12 +1927,23 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 						return;
 					}
 
+					NLS::Core::Assets::AssetId sceneAssetId;
+					const auto currentSceneSourcePath = EDITOR_CONTEXT(sceneManager).GetCurrentSceneSourcePath();
+					if (!currentSceneSourcePath.empty())
+					{
+						const auto sceneMeta = NLS::Core::Assets::AssetMeta::Load(
+							NLS::Core::Assets::GetAssetMetaPath(std::filesystem::path(currentSceneSourcePath).lexically_normal()));
+						if (sceneMeta.has_value())
+							sceneAssetId = sceneMeta->id;
+					}
+
 					const auto result = NLS::Editor::Assets::AssetDragDropWorkflow().Execute({
 						{NLS::Editor::Assets::DragPayloadKind::HierarchyObject, {}, {}, nullptr, p_data.first},
 						{NLS::Editor::Assets::DropTargetKind::AssetBrowserFolder, nullptr, nullptr, 0u, false, destinationFolder},
-						{},
+						sceneAssetId,
 						NLS::Editor::Assets::DragDropOperationKind::SaveAsPrefab,
-						&database
+						&database,
+						&EDITOR_CONTEXT(prefabInstanceRegistry)
 					});
 
 					if (result.status != NLS::Editor::Assets::DragDropOperationStatus::Committed)
@@ -1941,6 +1953,12 @@ void Editor::Panels::AssetBrowser::ConsiderItem(TreeNode* p_root, const std::fil
 						return;
 					}
 
+					EDITOR_CONTEXT(sceneManager).MarkCurrentSceneDirty();
+					if (result.instance.has_value() && result.instance->instanceRoot != nullptr)
+					{
+						EDITOR_PANEL(NLS::Editor::Panels::Hierarchy, "Hierarchy")
+							.RefreshPrefabPresentation(*result.instance->instanceRoot);
+					}
 					treeNode.Open();
 					treeNode.RemoveAllWidgets();
 					ParseFolder(treeNode, std::filesystem::directory_entry(correctPath), p_isEngineItem);

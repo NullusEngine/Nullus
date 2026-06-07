@@ -1,8 +1,10 @@
 #pragma once
 
+#include "Assets/AssetMeta.h"
 #include "Assets/PrefabEditorWorkflow.h"
 
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -56,6 +58,33 @@ enum class PrefabOperationStatus
     Committed
 };
 
+enum class PrefabEditorConnectionState
+{
+    NotAPrefab,
+    Connected,
+    MissingSource,
+    Disconnected,
+    Unpacked,
+    Pending,
+    Invalid
+};
+
+enum class PrefabEditorApplyAvailability
+{
+    Allowed,
+    ReadOnlyRejected,
+    Unsupported,
+    Unavailable
+};
+
+enum class PrefabEditorResourceState
+{
+    Ready,
+    Pending,
+    Failed,
+    Cancelled
+};
+
 struct PrefabDiagnostic
 {
     std::string code;
@@ -87,6 +116,35 @@ struct LoadPrefabContentsRequest
     std::string prefabAssetPath;
 };
 
+struct PrefabSourceIdentity
+{
+    std::string projectRootId;
+    NLS::Core::Assets::AssetId sourceAssetId;
+    std::string sourceAssetPath;
+    std::string prefabSubAssetKey;
+    NLS::Core::Assets::AssetType assetType = NLS::Core::Assets::AssetType::Unknown;
+    std::string importerId;
+    uint32_t importerVersion = 0u;
+
+    bool operator==(const PrefabSourceIdentity& other) const
+    {
+        return projectRootId == other.projectRootId &&
+            sourceAssetId == other.sourceAssetId &&
+            sourceAssetPath == other.sourceAssetPath &&
+            prefabSubAssetKey == other.prefabSubAssetKey &&
+            assetType == other.assetType &&
+            importerId == other.importerId &&
+            importerVersion == other.importerVersion;
+    }
+};
+
+PrefabSourceIdentity NormalizePrefabSourceIdentity(
+    const std::filesystem::path& projectRoot,
+    const std::string& sourceAssetPath,
+    const std::string& prefabSubAssetKey,
+    NLS::Core::Assets::AssetId sourceAssetId = {},
+    NLS::Core::Assets::AssetType assetType = NLS::Core::Assets::AssetType::Unknown);
+
 struct PrefabInstantiateRequest
 {
     NLS::Engine::Assets::PrefabArtifact* prefab = nullptr;
@@ -94,6 +152,7 @@ struct PrefabInstantiateRequest
     std::string prefabSubAssetKey;
     NLS::Core::Assets::AssetId sceneAssetId;
     bool deferAssetReferenceResolution = false;
+    const NLS::Engine::Assets::PrefabArtifact* constPrefab = nullptr;
 };
 
 struct PrefabOverrideDescriptor
@@ -149,11 +208,40 @@ struct PrefabApplyTarget
     std::vector<PrefabDiagnostic> diagnostics;
 };
 
+struct PrefabEditorStateQuery
+{
+    const PrefabInstanceRecord* instance = nullptr;
+    const NLS::Engine::Assets::PrefabArtifact* prefab = nullptr;
+    bool sourceAssetExists = false;
+    bool sourceCorrupt = false;
+    bool resourcesPending = false;
+    bool resourcesFailed = false;
+    bool resourcesCancelled = false;
+    bool unpacked = false;
+    bool editableSourceArtifactContext = false;
+    bool includeDefaultOverrides = true;
+};
+
+struct PrefabEditorState
+{
+    PrefabEditorConnectionState connectionState = PrefabEditorConnectionState::NotAPrefab;
+    PrefabEditorApplyAvailability applyAvailability = PrefabEditorApplyAvailability::Unavailable;
+    PrefabEditorResourceState resourceState = PrefabEditorResourceState::Ready;
+    std::vector<PrefabDiagnostic> diagnostics;
+    size_t overrideCount = 0u;
+    bool hasOverrides = false;
+    bool canRevert = false;
+    bool generatedReadOnly = false;
+    bool missingSource = false;
+    bool pendingResources = false;
+};
+
 class PrefabUtilityFacade
 {
 public:
     PrefabAssetType GetPrefabAssetType(const PrefabAssetQuery& query) const;
     PrefabInstanceStatus GetPrefabInstanceStatus(const PrefabInstanceQuery& query) const;
+    PrefabEditorState GetPrefabEditorState(const PrefabEditorStateQuery& query) const;
 
     PrefabOperationResult SaveAsPrefabAsset(
         NLS::Engine::GameObject& root,
@@ -240,6 +328,14 @@ public:
         NLS::Core::Assets::AssetId sceneAssetId,
         PrefabInstanceRegistry& instanceRegistry,
         const std::function<std::optional<NLS::Engine::Assets::PrefabArtifact>(
+            NLS::Core::Assets::AssetId,
+            const std::string&)>& prefabResolver) const;
+    PrefabOperationResult RestorePrefabInstancesFromSceneDocument(
+        const NLS::Engine::Serialize::ObjectGraphDocument& sceneDocument,
+        NLS::Engine::SceneSystem::Scene& scene,
+        NLS::Core::Assets::AssetId sceneAssetId,
+        PrefabInstanceRegistry& instanceRegistry,
+        const std::function<std::shared_ptr<const NLS::Engine::Assets::PrefabArtifact>(
             NLS::Core::Assets::AssetId,
             const std::string&)>& prefabResolver) const;
 };

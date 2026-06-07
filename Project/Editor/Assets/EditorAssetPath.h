@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace NLS::Editor::Assets
@@ -39,6 +40,22 @@ inline std::optional<std::filesystem::path> ResolveEditorManifestDependencyPath(
     return (projectRoot / normalized).lexically_normal();
 }
 
+inline bool HasNullusProjectFile(const std::filesystem::path& projectRoot)
+{
+    std::error_code error;
+    for (std::filesystem::directory_iterator iterator(projectRoot, error), end; iterator != end; iterator.increment(error))
+    {
+        if (error)
+            return false;
+
+        if (iterator->is_regular_file(error) && iterator->path().extension() == ".nullus")
+            return true;
+        error.clear();
+    }
+
+    return false;
+}
+
 inline std::vector<EditorAssetRoot> MakeEditorAssetRoots(
     const std::vector<std::filesystem::path>& roots,
     const bool readOnly = false)
@@ -53,6 +70,19 @@ inline std::vector<EditorAssetRoot> MakeEditorAssetRoots(
         const auto normalized = NLS::Core::Assets::NormalizeAssetPath(root);
         if (normalized.empty() || normalized == normalized.root_path())
             continue;
+
+        std::error_code error;
+        const auto assetsRoot = normalized / "Assets";
+        const bool looksLikeProjectRoot =
+            normalized.filename() != "Assets" &&
+            std::filesystem::exists(assetsRoot, error) &&
+            std::filesystem::is_directory(assetsRoot, error) &&
+            HasNullusProjectFile(normalized);
+        if (looksLikeProjectRoot)
+        {
+            result.push_back({assetsRoot.lexically_normal(), readOnly, "Assets", normalized / "Library"});
+            continue;
+        }
 
         result.push_back({normalized, readOnly, {}, {}});
     }

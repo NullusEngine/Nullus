@@ -135,11 +135,14 @@ private:
     ImportJobState* FindJob(ImportJobId jobId);
     const ImportJobState* FindJob(ImportJobId jobId) const;
     bool HasRunningJobsLocked() const;
-    size_t GetFinishedBatchAssetCountLocked() const;
-    double CalculateBatchProgressLocked() const;
+    bool HasRunningJobsLocked(const std::string& targetPlatform) const;
+    size_t GetFinishedBatchAssetCountLocked(const ImportBatchProgress& progress) const;
+    double CalculateTargetBatchProgressLocked(const std::string& targetPlatform) const;
+    ImportBatchProgress& GetMutableBatchProgressForTargetLocked(const std::string& targetPlatform);
 
     uint64_t m_nextJobId = 1u;
     ImportBatchProgress m_batchProgress;
+    std::unordered_map<std::string, ImportBatchProgress> m_batchProgressByTargetPlatform;
     std::unordered_map<uint64_t, ImportJobState> m_jobs;
     std::unordered_map<uint64_t, std::vector<ImportProgressEvent>> m_eventsByJob;
     std::vector<Subscriber> m_subscribers;

@@ -25,6 +25,7 @@ namespace
 {
     using UniformType = NLS::Render::Resources::UniformType;
     using Material = NLS::Render::Resources::Material;
+    using MaterialSurfaceMode = NLS::Render::Resources::MaterialSurfaceMode;
     using UniformInfo = NLS::Render::Resources::UniformInfo;
     using Texture2D = NLS::Render::Resources::Texture2D;
 
@@ -448,12 +449,26 @@ namespace
         }
     }
 
-    void ApplySerializedMaterial(
+    bool ApplySerializedMaterial(
         Material& material,
         const std::string& xml,
         const NLS::Render::Resources::Loaders::MaterialLoader::LoadOptions& options)
     {
-        material.ClearSamplerOverrides();
+        const auto blendable = GetTagValue(xml, "blendable");
+        const bool resolvedBlendable = !blendable.empty()
+            ? ParseBool(blendable, material.IsBlendable())
+            : material.IsBlendable();
+        const auto surfaceMode = GetTagValue(xml, "surfaceMode");
+        std::optional<MaterialSurfaceMode> resolvedSurfaceMode;
+        if (!surfaceMode.empty())
+        {
+            resolvedSurfaceMode = NLS::Render::Resources::ParseMaterialSurfaceMode(surfaceMode);
+            if (!resolvedSurfaceMode.has_value())
+            {
+                NLS_LOG_ERROR("Failed to load material: invalid surfaceMode '" + surfaceMode + "'");
+                return false;
+            }
+        }
 
         const auto shaderPath = GetTagValue(xml, "shader");
         auto* shader = shaderPath.empty() || shaderPath == "?"
@@ -461,14 +476,28 @@ namespace
             : NLS_SERVICE(NLS::Core::ResourceManagement::ShaderManager).GetResource(
                 shaderPath,
                 options.loadMissingShaders);
+
+        material.ClearSamplerOverrides();
         material.SetShader(shader);
 
-        if (!shader)
-            return;
-
-        const auto blendable = GetTagValue(xml, "blendable");
-        if (!blendable.empty())
-            material.SetBlendable(ParseBool(blendable, material.IsBlendable()));
+        if (resolvedSurfaceMode.has_value())
+        {
+            material.SetSurfaceMode(*resolvedSurfaceMode);
+        }
+        else
+        {
+            const auto serializedName = GetTagValue(xml, "name");
+            const auto serializedSourceSubAsset = GetTagValue(xml, "sourceSubAsset");
+            const bool legacyDecal =
+                resolvedBlendable &&
+                NLS::Render::Resources::MaterialIdentitySuggestsDecal(
+                    !serializedName.empty() ? serializedName : serializedSourceSubAsset,
+                    {});
+            material.SetSurfaceMode(
+                legacyDecal
+                    ? MaterialSurfaceMode::Decal
+                    : (resolvedBlendable ? MaterialSurfaceMode::Transparent : MaterialSurfaceMode::Opaque));
+        }
 
         const auto backfaceCulling = GetTagValue(xml, "backfaceCulling");
         if (!backfaceCulling.empty())
@@ -494,6 +523,9 @@ namespace
         if (!gpuInstances.empty())
             material.SetGPUInstances(std::stoi(gpuInstances));
 
+        if (!shader)
+            return true;
+
         for (const auto& block : GetBlocks(xml, "uniform"))
         {
             const auto uniformName = GetAttributeValue(block, "name");
@@ -506,6 +538,7 @@ namespace
         }
 
         ApplyTextureSlotSamplerOverrides(material, xml);
+        return true;
     }
 
 }
@@ -538,7 +571,11 @@ Material* MaterialLoader::CreateFromSerializedPayload(
         return nullptr;
 
     auto* material = new Material();
-    ApplySerializedMaterial(*material, p_xml, options);
+    if (!ApplySerializedMaterial(*material, p_xml, options))
+    {
+        delete material;
+        return nullptr;
+    }
     material->path = p_path;
     if (IsGeneratedImportedMaterialArtifactPath(p_path))
     {
@@ -567,7 +604,8 @@ void MaterialLoader::Reload(Material& p_material, const std::string& p_path, con
         return;
     }
 
-    ApplySerializedMaterial(p_material, xml, options);
+    if (!ApplySerializedMaterial(p_material, xml, options))
+        return;
     if (IsGeneratedImportedMaterialArtifactPath(p_path))
     {
         p_material.SetBackfaceCulling(false);
@@ -586,6 +624,7 @@ void MaterialLoader::Save(Material& p_material, const std::string& p_path)
 
     output << "<root>\n";
     output << "  <shader>" << EscapeXml(p_material.GetShader() ? p_material.GetShader()->path : "?") << "</shader>\n";
+    output << "  <surfaceMode>" << MaterialSurfaceModeName(p_material.GetSurfaceMode()) << "</surfaceMode>\n";
     output << "  <blendable>" << (p_material.IsBlendable() ? "true" : "false") << "</blendable>\n";
     output << "  <backfaceCulling>" << (p_material.HasBackfaceCulling() ? "true" : "false") << "</backfaceCulling>\n";
     output << "  <frontfaceCulling>" << (p_material.HasFrontfaceCulling() ? "true" : "false") << "</frontfaceCulling>\n";

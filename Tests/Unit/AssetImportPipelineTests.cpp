@@ -1,11 +1,13 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -81,6 +83,11 @@ bool ContainsDiagnosticCode(
         {
             return diagnostic.code == expectedCode;
         });
+}
+
+uint32_t CurrentModelSceneImporterVersion()
+{
+    return NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
 }
 
 const NLS::Core::Assets::AssetDiagnostic* FindDiagnosticByCode(
@@ -288,6 +295,20 @@ std::string ReadArtifactPayloadText(
     return std::string(container->payload.begin(), container->payload.end());
 }
 
+const NLS::Core::Assets::ImportedArtifact* FindFirstArtifactOfType(
+    const NLS::Core::Assets::ArtifactManifest& manifest,
+    const NLS::Core::Assets::ArtifactType artifactType)
+{
+    const auto found = std::find_if(
+        manifest.subAssets.begin(),
+        manifest.subAssets.end(),
+        [artifactType](const NLS::Core::Assets::ImportedArtifact& artifact)
+        {
+            return artifact.artifactType == artifactType;
+        });
+    return found != manifest.subAssets.end() ? &*found : nullptr;
+}
+
 std::vector<uint8_t> ReadArtifactPayloadBytes(
     const std::filesystem::path& path,
     const NLS::Core::Assets::ArtifactType artifactType,
@@ -322,6 +343,19 @@ std::vector<uint8_t> TinyPng()
         0x03, 0x03, 0x02, 0x00, 0xEF, 0xBF, 0x4A, 0x3B,
         0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44,
         0xAE, 0x42, 0x60, 0x82
+    };
+}
+
+std::vector<uint8_t> TwoRowColorPng()
+{
+    return {
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+        0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x02,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x72, 0xB6, 0x0D, 0x24, 0x00, 0x00, 0x00,
+        0x12, 0x49, 0x44, 0x41, 0x54, 0x78, 0xDA, 0x63, 0xF8, 0xCF, 0xC0, 0xF0,
+        0x1F, 0x84, 0x19, 0xA0, 0xF4, 0x7F, 0x00, 0x43, 0xCE, 0x07, 0xF9, 0x00,
+        0xF3, 0x98, 0x01, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+        0x42, 0x60, 0x82
     };
 }
 
@@ -408,6 +442,18 @@ float DecodeNormalComponent(const uint8_t component)
     return (static_cast<float>(component) / 255.0f) * 2.0f - 1.0f;
 }
 
+float MaxAbsMeshPosition(const NLS::Render::Assets::MeshArtifactData& mesh)
+{
+    float maxPosition = 0.0f;
+    for (const auto& vertex : mesh.vertices)
+    {
+        maxPosition = std::max(maxPosition, std::fabs(vertex.position[0]));
+        maxPosition = std::max(maxPosition, std::fabs(vertex.position[1]));
+        maxPosition = std::max(maxPosition, std::fabs(vertex.position[2]));
+    }
+    return maxPosition;
+}
+
 const NLS::Engine::Serialize::ObjectRecord* FindRecord(
     const NLS::Engine::Serialize::ObjectGraphDocument& document,
     const std::string& debugName,
@@ -450,6 +496,43 @@ double GetObjectNumber(
             return property.first == name;
         });
     return found != object.end() ? found->second.GetNumber() : 0.0;
+}
+
+double MaxAbsLocalScale(const NLS::Engine::Serialize::PropertyValue& scale)
+{
+    double maxScale = 0.0;
+    maxScale = std::max(maxScale, std::fabs(GetObjectNumber(scale, "x")));
+    maxScale = std::max(maxScale, std::fabs(GetObjectNumber(scale, "y")));
+    maxScale = std::max(maxScale, std::fabs(GetObjectNumber(scale, "z")));
+    return maxScale;
+}
+
+std::string DescribeTransformLocalScales(
+    const NLS::Engine::Serialize::ObjectGraphDocument& document,
+    const std::string& transformTypeName)
+{
+    std::string description;
+    for (const auto& object : document.objects)
+    {
+        if (object.typeName != transformTypeName)
+            continue;
+
+        const auto* scale = FindProperty(object, "localScale");
+        if (!scale)
+            continue;
+
+        if (!description.empty())
+            description += " | ";
+        description += object.debugName;
+        description += "=(";
+        description += std::to_string(GetObjectNumber(scale->value, "x"));
+        description += ",";
+        description += std::to_string(GetObjectNumber(scale->value, "y"));
+        description += ",";
+        description += std::to_string(GetObjectNumber(scale->value, "z"));
+        description += ")";
+    }
+    return description;
 }
 
 void WriteTextFile(const std::filesystem::path& path, const std::string& text)
@@ -514,37 +597,28 @@ private:
 TEST(AssetImportPipelineTests, DefaultRegistrySelectsSceneImportersByExtension)
 {
     auto registry = NLS::Render::Assets::SceneImporterRegistry::CreateDefault();
-    EXPECT_EQ(
-        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
-        6u);
+    const auto currentModelSceneImporterVersion =
+        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
 
     const auto* gltf = registry.FindImporterForPath("Assets/Models/Hero.gltf");
     ASSERT_NE(gltf, nullptr);
     EXPECT_EQ(gltf->importerId, "gltf-scene");
-    EXPECT_EQ(
-        gltf->importerVersion,
-        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene));
+    EXPECT_EQ(gltf->importerVersion, currentModelSceneImporterVersion);
 
     const auto* glb = registry.FindImporterForPath("Assets/Models/Hero.GLB");
     ASSERT_NE(glb, nullptr);
     EXPECT_EQ(glb->importerId, "gltf-scene");
-    EXPECT_EQ(
-        glb->importerVersion,
-        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene));
+    EXPECT_EQ(glb->importerVersion, currentModelSceneImporterVersion);
 
     const auto* fbx = registry.FindImporterForPath("Assets/Models/Hero.fbx");
     ASSERT_NE(fbx, nullptr);
     EXPECT_EQ(fbx->importerId, "fbx-scene");
-    EXPECT_EQ(
-        fbx->importerVersion,
-        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene));
+    EXPECT_EQ(fbx->importerVersion, currentModelSceneImporterVersion);
 
     const auto* obj = registry.FindImporterForPath("Assets/Models/Hero.obj");
     ASSERT_NE(obj, nullptr);
     EXPECT_EQ(obj->importerId, "obj-scene");
-    EXPECT_EQ(
-        obj->importerVersion,
-        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene));
+    EXPECT_EQ(obj->importerVersion, currentModelSceneImporterVersion);
 
     EXPECT_EQ(registry.FindImporterForPath("Assets/Textures/Hero.png"), nullptr);
 }
@@ -640,7 +714,7 @@ TEST(AssetImportPipelineTests, ArtifactDatabasePersistsCentralIndexBySourceSubAs
     NLS::Core::Assets::ArtifactManifest manifest;
     manifest.sourceAssetId = sourceId;
     manifest.importerId = "scene-model";
-    manifest.importerVersion = 7u;
+    manifest.importerVersion = CurrentModelSceneImporterVersion();
     manifest.targetPlatform = "editor-windows";
     manifest.primarySubAssetKey = "prefab:Hero";
     manifest.subAssets.push_back({
@@ -686,7 +760,7 @@ TEST(AssetImportPipelineTests, ArtifactDatabasePersistsCentralIndexBySourceSubAs
     EXPECT_EQ(mesh->artifactPath, "Library/Artifacts/Hero/body.nmesh");
     EXPECT_EQ(mesh->loaderId, "mesh");
     EXPECT_EQ(mesh->status, NLS::Core::Assets::ArtifactRecordStatus::UpToDate);
-    EXPECT_EQ(mesh->importerVersion, 7u);
+    EXPECT_EQ(mesh->importerVersion, CurrentModelSceneImporterVersion());
     EXPECT_EQ(mesh->dependencyCount, 1u);
 
     const auto sourceRecords = loaded.FindBySource(sourceId);
@@ -712,7 +786,7 @@ TEST(AssetImportPipelineTests, ArtifactDatabaseUpsertsUpdateIndexIncrementally)
         ArtifactManifest manifest;
         manifest.sourceAssetId = sourceId;
         manifest.importerId = "scene-model";
-        manifest.importerVersion = 7u;
+        manifest.importerVersion = CurrentModelSceneImporterVersion();
         manifest.targetPlatform = "editor";
         manifest.primarySubAssetKey = "mesh:Body";
         manifest.subAssets.push_back({
@@ -747,7 +821,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterStagesPayloadsAndCommitsManifestAto
     ArtifactWriteRequest request;
     request.sourceAssetId = AssetId(NLS::Guid::Parse("dddddddd-dddd-4ddd-8ddd-dddddddddddd"));
     request.importerId = "scene-model";
-    request.importerVersion = 7u;
+    request.importerVersion = CurrentModelSceneImporterVersion();
     request.targetPlatform = "editor-windows";
     request.primarySubAssetKey = "prefab:Hero";
     request.artifacts.push_back({
@@ -772,7 +846,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterStagesPayloadsAndCommitsManifestAto
     EXPECT_TRUE(result.diagnostics.empty());
     EXPECT_EQ(result.manifest.sourceAssetId, request.sourceAssetId);
     EXPECT_EQ(result.manifest.importerId, "scene-model");
-    EXPECT_EQ(result.manifest.importerVersion, 7u);
+    EXPECT_EQ(result.manifest.importerVersion, CurrentModelSceneImporterVersion());
     EXPECT_EQ(result.manifest.primarySubAssetKey, "prefab:Hero");
     ASSERT_EQ(result.manifest.subAssets.size(), 2u);
 
@@ -786,7 +860,7 @@ TEST(AssetImportPipelineTests, ArtifactWriterStagesPayloadsAndCommitsManifestAto
     EXPECT_EQ(prefabContainer->metadata.sourceAssetId, request.sourceAssetId);
     EXPECT_EQ(prefabContainer->metadata.subAssetKey, "prefab:Hero");
     EXPECT_EQ(prefabContainer->metadata.importerId, "scene-model");
-    EXPECT_EQ(prefabContainer->metadata.importerVersion, 7u);
+    EXPECT_EQ(prefabContainer->metadata.importerVersion, CurrentModelSceneImporterVersion());
     EXPECT_EQ(prefabContainer->metadata.targetPlatform, "editor-windows");
     EXPECT_EQ(std::string(prefabContainer->payload.begin(), prefabContainer->payload.end()), "prefab");
 
@@ -1509,6 +1583,7 @@ TEST(AssetImportPipelineTests, AssimpParserPopulatesImportedSceneMaterialChannel
     const auto root = MakeImportTestRoot();
     WriteTextFile(root / "Assets" / "Textures" / "HeroDiffuse.png", "texture-bytes");
     WriteTextFile(root / "Assets" / "Textures" / "HeroNormal.png", "texture-bytes");
+    WriteTextFile(root / "Assets" / "Textures" / "HeroShininess.png", "texture-bytes");
     WriteTextFile(
         root / "Assets" / "Models" / "Hero.mtl",
         R"(
@@ -1520,6 +1595,7 @@ Ns 32
 d 0.65
 map_Kd ../Textures/HeroDiffuse.png
 map_Bump ../Textures/HeroNormal.png
+map_Ns ../Textures/HeroShininess.png
 )");
     WriteTextFile(
         root / "Assets" / "Models" / "Hero.obj",
@@ -1566,11 +1642,13 @@ f 1/1/1 2/2/1 3/3/1
         });
     ASSERT_NE(material, scene.materials.end());
 
-    ASSERT_EQ(scene.textures.size(), 2u);
+    ASSERT_EQ(scene.textures.size(), 3u);
     EXPECT_EQ(scene.textures[0].sourceKey, "parser/texture/0");
     EXPECT_EQ(scene.textures[0].uri, "../Textures/HeroDiffuse.png");
     EXPECT_EQ(scene.textures[1].sourceKey, "parser/texture/1");
     EXPECT_EQ(scene.textures[1].uri, "../Textures/HeroNormal.png");
+    EXPECT_EQ(scene.textures[2].sourceKey, "parser/texture/2");
+    EXPECT_EQ(scene.textures[2].uri, "../Textures/HeroShininess.png");
 
     const auto* diffuse = FindMaterialChannel(*material, "diffuse");
     ASSERT_NE(diffuse, nullptr);
@@ -1603,9 +1681,14 @@ f 1/1/1 2/2/1 3/3/1
     ASSERT_NE(shininess, nullptr);
     EXPECT_TRUE(shininess->hasScalar);
     EXPECT_DOUBLE_EQ(shininess->scalar, 32.0);
+    EXPECT_EQ(shininess->textureKey, "parser/texture/2")
+        << "Shininess/gloss textures must retain their source semantic instead of masquerading as PBR roughness maps.";
+    EXPECT_EQ(FindMaterialChannel(*material, "roughness"), nullptr)
+        << "Assimp shininess textures are gloss data; treating them as roughness maps reverses their shader meaning.";
 
     EXPECT_TRUE(Contains(externalDependencies, "../Textures/HeroDiffuse.png"));
     EXPECT_TRUE(Contains(externalDependencies, "../Textures/HeroNormal.png"));
+    EXPECT_TRUE(Contains(externalDependencies, "../Textures/HeroShininess.png"));
 
     std::filesystem::remove_all(root);
 }
@@ -1660,6 +1743,196 @@ f 4//2 5//2 6//2
     }
 
     std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, AssimpFbxParserSurfacesTemplateDiffuseAndTexture)
+{
+#if !NLS_HAS_ASSIMP_FBX_IMPORTER
+    GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
+#else
+    const auto root = MakeImportTestRoot();
+    const auto sourceFixture =
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "ThirdParty" /
+        "assimp" /
+        "test" /
+        "models" /
+        "FBX" /
+        "embedded_ascii" /
+        "box.FBX";
+    ASSERT_TRUE(std::filesystem::exists(sourceFixture));
+
+    auto fbx = ReadTextFile(sourceFixture);
+    const auto materialBegin = fbx.find("Material: 2669981279872");
+    ASSERT_NE(materialBegin, std::string::npos);
+    const auto directDiffuseBegin = fbx.find(
+        "P: \"DiffuseColor\", \"Color\", \"\", \"A\",0.588235318660736,0.588235318660736,0.588235318660736",
+        materialBegin);
+    ASSERT_NE(directDiffuseBegin, std::string::npos);
+    const auto lineBegin = fbx.rfind('\n', directDiffuseBegin);
+    const auto eraseBegin = lineBegin == std::string::npos ? directDiffuseBegin : lineBegin + 1u;
+    const auto lineEnd = fbx.find('\n', directDiffuseBegin);
+    const auto eraseEnd = lineEnd == std::string::npos ? fbx.size() : lineEnd + 1u;
+    fbx.erase(eraseBegin, eraseEnd - eraseBegin);
+
+    const auto sourcePath = root / "Assets" / "Models" / "TemplateDiffuseBox.fbx";
+    WriteTextFile(sourcePath, fbx);
+
+    NLS::Render::Resources::Parsers::AssimpParser parser;
+    std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> meshes;
+    std::vector<std::string> materials;
+    ASSERT_TRUE(parser.LoadModelData(
+        sourcePath.string(),
+        meshes,
+        materials,
+        NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE));
+
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("92929292-9292-4292-8292-929292929293"));
+    scene.sceneKey = "TemplateDiffuseBox";
+    ASSERT_TRUE(parser.PopulateImportedSceneData(
+        sourcePath,
+        NLS::Render::Assets::SceneModelSourceFormat::Fbx,
+        scene));
+
+    ASSERT_EQ(scene.materials.size(), 1u);
+    const auto* diffuse = FindMaterialChannel(scene.materials.front(), "diffuse");
+    ASSERT_NE(diffuse, nullptr);
+    ASSERT_GE(diffuse->values.size(), 3u);
+    EXPECT_NEAR(diffuse->values[0], 0.8, 0.00001);
+    EXPECT_NEAR(diffuse->values[1], 0.8, 0.00001);
+    EXPECT_NEAR(diffuse->values[2], 0.8, 0.00001);
+    EXPECT_FALSE(diffuse->textureKey.empty());
+
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetImportPipelineTests, AssimpFbxParserSurfacesNeutralTexturedDiffuse)
+{
+#if !NLS_HAS_ASSIMP_FBX_IMPORTER
+    GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
+#else
+    const auto root = MakeImportTestRoot();
+    const auto sourceFixture =
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "ThirdParty" /
+        "assimp" /
+        "test" /
+        "models" /
+        "FBX" /
+        "embedded_ascii" /
+        "box.FBX";
+    ASSERT_TRUE(std::filesystem::exists(sourceFixture));
+
+    auto fbx = ReadTextFile(sourceFixture);
+    const auto materialBegin = fbx.find("Material: 2669981279872");
+    ASSERT_NE(materialBegin, std::string::npos);
+    const auto directDiffuseBegin = fbx.find(
+        "P: \"DiffuseColor\", \"Color\", \"\", \"A\",0.588235318660736,0.588235318660736,0.588235318660736",
+        materialBegin);
+    ASSERT_NE(directDiffuseBegin, std::string::npos);
+    fbx.replace(
+        directDiffuseBegin,
+        std::string("P: \"DiffuseColor\", \"Color\", \"\", \"A\",0.588235318660736,0.588235318660736,0.588235318660736").size(),
+        "P: \"DiffuseColor\", \"Color\", \"\", \"A\",0.5,0.5,0.5");
+
+    const auto sourcePath = root / "Assets" / "Models" / "NeutralDiffuseBox.fbx";
+    WriteTextFile(sourcePath, fbx);
+
+    NLS::Render::Resources::Parsers::AssimpParser parser;
+    std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> meshes;
+    std::vector<std::string> materials;
+    ASSERT_TRUE(parser.LoadModelData(
+        sourcePath.string(),
+        meshes,
+        materials,
+        NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE));
+
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("92929292-9292-4292-8292-929292929294"));
+    scene.sceneKey = "NeutralDiffuseBox";
+    ASSERT_TRUE(parser.PopulateImportedSceneData(
+        sourcePath,
+        NLS::Render::Assets::SceneModelSourceFormat::Fbx,
+        scene));
+
+    ASSERT_EQ(scene.materials.size(), 1u);
+    const auto* diffuse = FindMaterialChannel(scene.materials.front(), "diffuse");
+    ASSERT_NE(diffuse, nullptr);
+    ASSERT_GE(diffuse->values.size(), 3u);
+    EXPECT_NEAR(diffuse->values[0], 0.5, 0.00001);
+    EXPECT_NEAR(diffuse->values[1], 0.5, 0.00001);
+    EXPECT_NEAR(diffuse->values[2], 0.5, 0.00001);
+    EXPECT_FALSE(diffuse->textureKey.empty());
+
+    std::filesystem::remove_all(root);
+#endif
+}
+
+TEST(AssetImportPipelineTests, AssimpFbxParserKeepsColoredTexturedDiffuseTintAuthored)
+{
+#if !NLS_HAS_ASSIMP_FBX_IMPORTER
+    GTEST_SKIP() << "Assimp FBX import is not enabled in this build.";
+#else
+    const auto root = MakeImportTestRoot();
+    const auto sourceFixture =
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "ThirdParty" /
+        "assimp" /
+        "test" /
+        "models" /
+        "FBX" /
+        "embedded_ascii" /
+        "box.FBX";
+    ASSERT_TRUE(std::filesystem::exists(sourceFixture));
+
+    auto fbx = ReadTextFile(sourceFixture);
+    const auto materialBegin = fbx.find("Material: 2669981279872");
+    ASSERT_NE(materialBegin, std::string::npos);
+    const auto directDiffuseBegin = fbx.find(
+        "P: \"DiffuseColor\", \"Color\", \"\", \"A\",0.588235318660736,0.588235318660736,0.588235318660736",
+        materialBegin);
+    ASSERT_NE(directDiffuseBegin, std::string::npos);
+    fbx.replace(
+        directDiffuseBegin,
+        std::string("P: \"DiffuseColor\", \"Color\", \"\", \"A\",0.588235318660736,0.588235318660736,0.588235318660736").size(),
+        "P: \"DiffuseColor\", \"Color\", \"\", \"A\",0.8,0.7,0.6");
+
+    const auto sourcePath = root / "Assets" / "Models" / "ColoredDiffuseBox.fbx";
+    WriteTextFile(sourcePath, fbx);
+
+    NLS::Render::Resources::Parsers::AssimpParser parser;
+    std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> meshes;
+    std::vector<std::string> materials;
+    ASSERT_TRUE(parser.LoadModelData(
+        sourcePath.string(),
+        meshes,
+        materials,
+        NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE));
+
+    NLS::Render::Assets::ImportedScene scene;
+    scene.sourceAssetId = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("92929292-9292-4292-8292-929292929295"));
+    scene.sceneKey = "ColoredDiffuseBox";
+    ASSERT_TRUE(parser.PopulateImportedSceneData(
+        sourcePath,
+        NLS::Render::Assets::SceneModelSourceFormat::Fbx,
+        scene));
+
+    ASSERT_EQ(scene.materials.size(), 1u);
+    const auto* diffuse = FindMaterialChannel(scene.materials.front(), "diffuse");
+    ASSERT_NE(diffuse, nullptr);
+    ASSERT_GE(diffuse->values.size(), 3u);
+    EXPECT_NEAR(diffuse->values[0], 0.8, 0.00001);
+    EXPECT_NEAR(diffuse->values[1], 0.7, 0.00001);
+    EXPECT_NEAR(diffuse->values[2], 0.6, 0.00001);
+    EXPECT_FALSE(diffuse->textureKey.empty());
+
+    std::filesystem::remove_all(root);
+#endif
 }
 
 TEST(AssetImportPipelineTests, AssimpParserKeepsSharedMeshPayloadInSourceSpaceAndStoresNodeTransforms)
@@ -1746,6 +2019,290 @@ TEST(AssetImportPipelineTests, AssimpParserKeepsSharedMeshPayloadInSourceSpaceAn
     EXPECT_EQ(instanceB->meshKey, "parser/mesh/0");
     ASSERT_GE(instanceB->translation.size(), 3u);
     EXPECT_DOUBLE_EQ(instanceB->translation[1], 5.0);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, AssimpBakedNodeTransformsDoNotTranslateDirectionStreams)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "BakedDirections.gltf";
+    std::vector<uint8_t> meshBytes;
+    const std::array<std::array<float, 3>, 3> positions {{
+        {{0.0f, 0.0f, 0.0f}},
+        {{1.0f, 0.0f, 0.0f}},
+        {{0.0f, 1.0f, 0.0f}}
+    }};
+    const std::array<std::array<float, 3>, 3> normals {{
+        {{0.0f, 0.0f, 1.0f}},
+        {{0.0f, 0.0f, 1.0f}},
+        {{0.0f, 0.0f, 1.0f}}
+    }};
+    const std::array<std::array<float, 3>, 3> tangents {{
+        {{1.0f, 0.0f, 0.0f}},
+        {{1.0f, 0.0f, 0.0f}},
+        {{1.0f, 0.0f, 0.0f}}
+    }};
+    const std::array<std::array<float, 2>, 3> uvs {{
+        {{0.0f, 0.0f}},
+        {{1.0f, 0.0f}},
+        {{0.0f, 1.0f}}
+    }};
+
+    for (const auto& position : positions)
+        for (const auto value : position)
+            AppendFloat32(meshBytes, value);
+    for (const auto& normal : normals)
+        for (const auto value : normal)
+            AppendFloat32(meshBytes, value);
+    for (const auto& tangent : tangents)
+    {
+        for (const auto value : tangent)
+            AppendFloat32(meshBytes, value);
+        AppendFloat32(meshBytes, 1.0f);
+    }
+    for (const auto& uv : uvs)
+        for (const auto value : uv)
+            AppendFloat32(meshBytes, value);
+    AppendU16(meshBytes, 0u);
+    AppendU16(meshBytes, 1u);
+    AppendU16(meshBytes, 2u);
+
+    WriteBinaryFile(root / "Assets" / "Models" / "baked-directions.bin", meshBytes);
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "buffers": [
+                { "uri": "baked-directions.bin", "byteLength": 150 }
+            ],
+            "bufferViews": [
+                { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 36, "byteLength": 36, "target": 34962 },
+                { "buffer": 0, "byteOffset": 72, "byteLength": 48, "target": 34962 },
+                { "buffer": 0, "byteOffset": 120, "byteLength": 24, "target": 34962 },
+                { "buffer": 0, "byteOffset": 144, "byteLength": 6, "target": 34963 }
+            ],
+            "accessors": [
+                { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3" },
+                { "bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC4" },
+                { "bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC2" },
+                { "bufferView": 4, "componentType": 5123, "count": 3, "type": "SCALAR" }
+            ],
+            "meshes": [
+                {
+                    "name": "BakedDirectionTriangle",
+                    "primitives": [
+                        {
+                            "attributes": {
+                                "POSITION": 0,
+                                "NORMAL": 1,
+                                "TANGENT": 2,
+                                "TEXCOORD_0": 3
+                            },
+                            "indices": 4
+                        }
+                    ]
+                }
+            ],
+            "nodes": [
+                {
+                    "name": "TranslatedNode",
+                    "mesh": 0,
+                    "translation": [10.0, 20.0, 30.0]
+                }
+            ]
+        })");
+
+    NLS::Render::Resources::Parsers::AssimpParser parser;
+    std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> meshes;
+    std::vector<std::string> materials;
+    ASSERT_TRUE(parser.LoadModelData(
+        sourcePath.string(),
+        meshes,
+        materials,
+        NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE,
+        nullptr,
+        true));
+
+    ASSERT_EQ(meshes.size(), 1u);
+    ASSERT_FALSE(meshes[0].vertices.empty());
+    const auto& vertex = meshes[0].vertices[0];
+    EXPECT_FLOAT_EQ(vertex.position[0], 10.0f);
+    EXPECT_FLOAT_EQ(vertex.position[1], 20.0f);
+    EXPECT_FLOAT_EQ(vertex.position[2], 30.0f);
+    EXPECT_NEAR(vertex.normals[0], 0.0f, 1e-5f);
+    EXPECT_NEAR(vertex.normals[1], 0.0f, 1e-5f);
+    EXPECT_NEAR(vertex.normals[2], 1.0f, 1e-5f);
+    EXPECT_NEAR(vertex.tangent[0], 1.0f, 1e-5f);
+    EXPECT_NEAR(vertex.tangent[1], 0.0f, 1e-5f);
+    EXPECT_NEAR(vertex.tangent[2], 0.0f, 1e-5f);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, AssimpBakedNormalMatrixIsPrecomputedPerMesh)
+{
+    const auto source = ReadTextFile(
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "Runtime" /
+        "Rendering" /
+        "Resources" /
+        "Parsers" /
+        "AssimpParser.cpp");
+
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(source.find("BuildDirectionTransforms(meshTransformation)"), std::string::npos)
+        << "Assimp baked transform import must precompute normal/direction matrices once per mesh.";
+    EXPECT_NE(source.find("copyDirectionStreams"), std::string::npos)
+        << "Identity and positive-uniform-scale transforms must bypass per-vertex direction normalization on large meshes.";
+    EXPECT_NE(source.find("ShouldCopyDirectionStreams"), std::string::npos)
+        << "The baked transform path must classify direction-stream work once per mesh instead of per vertex.";
+    EXPECT_NE(source.find("TransformNormalDirection(directionTransforms"), std::string::npos);
+    EXPECT_EQ(source.find("TransformNormalDirection(meshTransformation"), std::string::npos)
+        << "Normal matrix inverse/transpose must not run once per vertex in ProcessMesh.";
+}
+
+TEST(AssetImportPipelineTests, AssimpBakedDirectionStreamsStayFiniteForScaledNodes)
+{
+    const auto root = MakeImportTestRoot();
+    const auto writeModel = [&root](
+        const std::string& modelName,
+        const std::string& nodeTransformJson,
+        const std::array<float, 3>& normal)
+    {
+        const auto sourcePath = root / "Assets" / "Models" / (modelName + ".gltf");
+        const auto binName = modelName + ".bin";
+
+        std::vector<uint8_t> meshBytes;
+        const std::array<std::array<float, 3>, 3> positions {{
+            {{0.0f, 0.0f, 0.0f}},
+            {{1.0f, 0.0f, 0.0f}},
+            {{0.0f, 1.0f, 0.0f}}
+        }};
+        const std::array<std::array<float, 3>, 3> tangents {{
+            {{1.0f, 0.0f, 0.0f}},
+            {{1.0f, 0.0f, 0.0f}},
+            {{1.0f, 0.0f, 0.0f}}
+        }};
+        const std::array<std::array<float, 2>, 3> uvs {{
+            {{0.0f, 0.0f}},
+            {{1.0f, 0.0f}},
+            {{0.0f, 1.0f}}
+        }};
+
+        for (const auto& position : positions)
+            for (const auto value : position)
+                AppendFloat32(meshBytes, value);
+        for (size_t vertex = 0u; vertex < positions.size(); ++vertex)
+            for (const auto value : normal)
+                AppendFloat32(meshBytes, value);
+        for (const auto& tangent : tangents)
+        {
+            for (const auto value : tangent)
+                AppendFloat32(meshBytes, value);
+            AppendFloat32(meshBytes, 1.0f);
+        }
+        for (const auto& uv : uvs)
+            for (const auto value : uv)
+                AppendFloat32(meshBytes, value);
+        AppendU16(meshBytes, 0u);
+        AppendU16(meshBytes, 1u);
+        AppendU16(meshBytes, 2u);
+
+        WriteBinaryFile(root / "Assets" / "Models" / binName, meshBytes);
+        WriteTextFile(
+            sourcePath,
+            R"({
+                "asset": { "version": "2.0" },
+                "scene": 0,
+                "scenes": [{ "nodes": [0] }],
+                "buffers": [
+                    { "uri": ")" + binName + R"(", "byteLength": 150 }
+                ],
+                "bufferViews": [
+                    { "buffer": 0, "byteOffset": 0, "byteLength": 36, "target": 34962 },
+                    { "buffer": 0, "byteOffset": 36, "byteLength": 36, "target": 34962 },
+                    { "buffer": 0, "byteOffset": 72, "byteLength": 48, "target": 34962 },
+                    { "buffer": 0, "byteOffset": 120, "byteLength": 24, "target": 34962 },
+                    { "buffer": 0, "byteOffset": 144, "byteLength": 6, "target": 34963 }
+                ],
+                "accessors": [
+                    { "bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3" },
+                    { "bufferView": 1, "componentType": 5126, "count": 3, "type": "VEC3" },
+                    { "bufferView": 2, "componentType": 5126, "count": 3, "type": "VEC4" },
+                    { "bufferView": 3, "componentType": 5126, "count": 3, "type": "VEC2" },
+                    { "bufferView": 4, "componentType": 5123, "count": 3, "type": "SCALAR" }
+                ],
+                "meshes": [
+                    {
+                        "name": "ScaledDirectionTriangle",
+                        "primitives": [
+                            {
+                                "attributes": {
+                                    "POSITION": 0,
+                                    "NORMAL": 1,
+                                    "TANGENT": 2,
+                                    "TEXCOORD_0": 3
+                                },
+                                "indices": 4
+                            }
+                        ]
+                    }
+                ],
+                "nodes": [
+                    {
+                        "name": "ScaledNode",
+                        "mesh": 0,
+)" + nodeTransformJson + R"(
+                    }
+                ]
+            })");
+        return sourcePath;
+    };
+    const auto loadFirstVertex = [](
+        const std::filesystem::path& sourcePath)
+    {
+        NLS::Render::Resources::Parsers::AssimpParser parser;
+        std::vector<NLS::Render::Resources::Parsers::ParsedMeshData> meshes;
+        std::vector<std::string> materials;
+        EXPECT_TRUE(parser.LoadModelData(
+            sourcePath.string(),
+            meshes,
+            materials,
+            NLS::Render::Resources::Parsers::EModelParserFlags::TRIANGULATE,
+            nullptr,
+            true));
+        EXPECT_EQ(meshes.size(), 1u);
+        EXPECT_FALSE(meshes.empty() || meshes[0].vertices.empty());
+        return meshes.empty() || meshes[0].vertices.empty()
+            ? NLS::Render::Geometry::Vertex{}
+            : meshes[0].vertices[0];
+    };
+
+    constexpr float inverseSqrt2 = 0.70710678f;
+    const auto nonUniform = loadFirstVertex(writeModel(
+        "NonUniformDirectionScale",
+        R"(                        "scale": [2.0, 1.0, 1.0])",
+        {inverseSqrt2, inverseSqrt2, 0.0f}));
+    EXPECT_NEAR(nonUniform.normals[0], 0.4472136f, 1e-4f);
+    EXPECT_NEAR(nonUniform.normals[1], 0.8944272f, 1e-4f);
+    EXPECT_NEAR(nonUniform.normals[2], 0.0f, 1e-4f);
+
+    const auto singular = loadFirstVertex(writeModel(
+        "SingularDirectionScale",
+        R"(                        "scale": [0.0, 2.0, 3.0])",
+        {1.0f, 0.0f, 0.0f}));
+    EXPECT_TRUE(std::isfinite(singular.normals[0]));
+    EXPECT_TRUE(std::isfinite(singular.normals[1]));
+    EXPECT_TRUE(std::isfinite(singular.normals[2]));
+    EXPECT_NEAR(singular.normals[0], 1.0f, 1e-4f)
+        << "A singular normal matrix should fall back to the authored finite source direction instead of emitting zero or NaN.";
+    EXPECT_NEAR(singular.normals[1], 0.0f, 1e-4f);
+    EXPECT_NEAR(singular.normals[2], 0.0f, 1e-4f);
 
     std::filesystem::remove_all(root);
 }
@@ -2061,7 +2618,7 @@ f 1/1/1 2/2/1 3/3/1
         {
             return dependency.kind == NLS::Core::Assets::AssetDependencyKind::PostprocessorVersion &&
                 dependency.value == "external-texture-build-pipeline" &&
-                dependency.hashOrVersion == "1";
+                dependency.hashOrVersion == std::to_string(NLS::Editor::Assets::kExternalTexturePostprocessorVersion);
         });
     EXPECT_TRUE(hasTexturePipelineDependency);
     ASSERT_FALSE(nativeTexture->mips.empty());
@@ -2726,13 +3283,16 @@ TEST(AssetImportPipelineTests, DirectXTexTextureEncoderProducesFirstScopeBCArtif
 
 TEST(AssetImportPipelineTests, TextureBuildIdentityChangesWhenKeyInputsChange)
 {
+    constexpr uint32_t baselineImporterVersion = 41u;
+    constexpr uint32_t changedImporterVersion = baselineImporterVersion + 1u;
+
     NLS::Render::Assets::TextureBuildSettings base;
     base.sourceAssetPath = "Assets/Textures/HeroBaseColor.png";
     base.sourceAssetIdentity = "guid:hero-basecolor";
     base.sourceContentHash = "sha256:source";
     base.normalizedSettingsHash = "settings:base";
     base.platformOverrideHash = "override:sorted";
-    base.importerVersion = 7u;
+    base.importerVersion = baselineImporterVersion;
     base.postprocessorVersion = 3u;
     base.dependencyHash = "deps:v1";
     base.targetPlatform = "win64-dx12";
@@ -2765,7 +3325,7 @@ TEST(AssetImportPipelineTests, TextureBuildIdentityChangesWhenKeyInputsChange)
     EXPECT_NE(baseline, NLS::Render::Assets::BuildTextureBuildIdentity(changed));
 
     changed = base;
-    changed.importerVersion = 8u;
+    changed.importerVersion = changedImporterVersion;
     EXPECT_NE(baseline, NLS::Render::Assets::BuildTextureBuildIdentity(changed));
 
     changed = base;
@@ -3002,6 +3562,188 @@ TEST(AssetImportPipelineTests, ExternalModelImportPreservesPreviousArtifactsWhen
     EXPECT_EQ(result.manifest.primarySubAssetKey, "prefab:Previous");
     EXPECT_EQ(ReadTextFile(committedRoot / "old" / "prefab.nprefab"), "previous");
     EXPECT_FALSE(std::filesystem::exists(root / "Staging"));
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalGltfModelTextureArtifactsPreserveEncodedRowOrder)
+{
+    const auto root = MakeImportTestRoot();
+    WriteBinaryFile(root / "Assets" / "Textures" / "TwoRows.png", TwoRowColorPng());
+    const std::string gltfDocument =
+        R"({
+            "asset": { "version": "2.0" },
+            "images": [
+                { "uri": "../Textures/TwoRows.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "Body",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "meshes": [{ "name": "BodyMesh", "primitives": [{ "attributes": {}, "material": 0 }] }],
+            "nodes": [{ "name": "Root", "mesh": 0 }]
+        })";
+    struct ImportCase
+    {
+        const char* fileName;
+        const char* assetId;
+        bool writeGlb;
+    };
+    const ImportCase importCases[] = {
+        {"TextureOrientation.gltf", "93939393-9393-4393-8393-939393939393", false},
+        {"TextureOrientationUpper.GLB", "94949494-9494-4494-8494-949494949494", true}
+    };
+
+    for (const auto& importCase : importCases)
+    {
+        SCOPED_TRACE(importCase.fileName);
+        const auto sourcePath = root / "Assets" / "Models" / importCase.fileName;
+        if (importCase.writeGlb)
+            WriteBinaryFile(sourcePath, MakeGlb(gltfDocument, {}));
+        else
+            WriteTextFile(sourcePath, gltfDocument);
+
+        NLS::Core::Assets::AssetMeta meta;
+        meta.id = NLS::Core::Assets::AssetId(NLS::Guid::Parse(importCase.assetId));
+        meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+        meta.importerId = "scene-model";
+        meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+
+        const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+            sourcePath,
+            root / "Staging",
+            root / "Library" / "Artifacts" / meta.id.ToString(),
+            meta,
+            "TextureOrientation",
+            "unit-test",
+            nullptr,
+            nullptr,
+            {},
+            std::filesystem::path("Models"),
+            root,
+            {}
+        });
+
+        ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+        const auto* textureArtifact = result.manifest.FindSubAsset("texture:image/0");
+        ASSERT_NE(textureArtifact, nullptr);
+        const auto texture = NLS::Render::Assets::DeserializeTextureArtifact(
+            ReadBinaryFile(textureArtifact->artifactPath));
+        ASSERT_TRUE(texture.has_value());
+        EXPECT_EQ(texture->width, 2u);
+        EXPECT_EQ(texture->height, 2u);
+        EXPECT_EQ(texture->format, NLS::Render::RHI::TextureFormat::RGBA8);
+        ASSERT_FALSE(texture->mips.empty());
+        const auto& baseMip = texture->mips.front();
+        ASSERT_EQ(baseMip.width, 2u);
+        ASSERT_EQ(baseMip.height, 2u);
+        ASSERT_GE(baseMip.rowPitch, 8u);
+        ASSERT_GE(baseMip.pixels.size(), static_cast<size_t>(baseMip.rowPitch) * baseMip.height);
+
+        const auto expectPixel = [&baseMip](const uint32_t x, const uint32_t y, const uint8_t r, const uint8_t g, const uint8_t b)
+        {
+            const size_t offset = static_cast<size_t>(y) * baseMip.rowPitch + static_cast<size_t>(x) * 4u;
+            EXPECT_EQ(baseMip.pixels[offset + 0u], r);
+            EXPECT_EQ(baseMip.pixels[offset + 1u], g);
+            EXPECT_EQ(baseMip.pixels[offset + 2u], b);
+            EXPECT_EQ(baseMip.pixels[offset + 3u], 255u);
+        };
+        expectPixel(0u, 0u, 255u, 0u, 0u);
+        expectPixel(1u, 0u, 255u, 0u, 0u);
+        expectPixel(0u, 1u, 0u, 0u, 255u);
+        expectPixel(1u, 1u, 0u, 0u, 255u);
+        EXPECT_NE(
+            texture->buildIdentity.find(
+                "|post=" + std::to_string(NLS::Editor::Assets::kExternalTexturePostprocessorVersion)),
+            std::string::npos);
+    }
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalObjModelTextureArtifactsKeepLegacyFlippedRowOrder)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourcePath = root / "Assets" / "Models" / "TextureOrientation.obj";
+    WriteBinaryFile(root / "Assets" / "Textures" / "TwoRows.png", TwoRowColorPng());
+    WriteTextFile(
+        root / "Assets" / "Models" / "TextureOrientation.mtl",
+        R"(
+newmtl Body
+map_Kd ../Textures/TwoRows.png
+)");
+    WriteTextFile(
+        sourcePath,
+        R"(
+mtllib TextureOrientation.mtl
+o Body
+v 0 0 0
+v 1 0 0
+v 0 1 0
+vt 0 0
+vt 1 0
+vt 0 1
+vn 0 0 1
+usemtl Body
+f 1/1/1 2/2/1 3/3/1
+)");
+
+    NLS::Core::Assets::AssetMeta meta;
+    meta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("92929292-9292-4292-8292-929292929292"));
+    meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    meta.importerId = "scene-model";
+    meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / meta.id.ToString(),
+        meta,
+        "TextureOrientationObj",
+        "unit-test",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Models"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    const auto* textureArtifact = result.manifest.FindSubAsset("texture:parser/texture/0");
+    ASSERT_NE(textureArtifact, nullptr);
+    const auto texture = NLS::Render::Assets::DeserializeTextureArtifact(
+        ReadBinaryFile(textureArtifact->artifactPath));
+    ASSERT_TRUE(texture.has_value());
+    ASSERT_FALSE(texture->mips.empty());
+    const auto& baseMip = texture->mips.front();
+    ASSERT_EQ(baseMip.width, 2u);
+    ASSERT_EQ(baseMip.height, 2u);
+    ASSERT_GE(baseMip.rowPitch, 8u);
+    ASSERT_GE(baseMip.pixels.size(), static_cast<size_t>(baseMip.rowPitch) * baseMip.height);
+
+    const auto expectPixel = [&baseMip](const uint32_t x, const uint32_t y, const uint8_t r, const uint8_t g, const uint8_t b)
+    {
+        const size_t offset = static_cast<size_t>(y) * baseMip.rowPitch + static_cast<size_t>(x) * 4u;
+        EXPECT_EQ(baseMip.pixels[offset + 0u], r);
+        EXPECT_EQ(baseMip.pixels[offset + 1u], g);
+        EXPECT_EQ(baseMip.pixels[offset + 2u], b);
+        EXPECT_EQ(baseMip.pixels[offset + 3u], 255u);
+    };
+    expectPixel(0u, 0u, 0u, 0u, 255u);
+    expectPixel(1u, 0u, 0u, 0u, 255u);
+    expectPixel(0u, 1u, 255u, 0u, 0u);
+    expectPixel(1u, 1u, 255u, 0u, 0u);
 
     std::filesystem::remove_all(root);
 }
@@ -3713,13 +4455,14 @@ TEST(AssetImportPipelineTests, ExternalModelImportExportsGltfMultiPrimitiveMeshe
 
 TEST(AssetImportPipelineTests, PrimitiveMeshSourceKeyParserRejectsMalformedKeys)
 {
-    const auto key = NLS::Render::Assets::BuildPrimitiveMeshSourceKey("mesh/Body", 7u);
+    constexpr uint32_t primitiveIndex = 7u;
+    const auto key = NLS::Render::Assets::BuildPrimitiveMeshSourceKey("mesh/Body", primitiveIndex);
     EXPECT_EQ(key, "mesh/Body/primitive/7");
 
     const auto parsed = NLS::Render::Assets::ParsePrimitiveMeshSourceKey(key);
     ASSERT_TRUE(parsed.has_value());
     EXPECT_EQ(parsed->first, "mesh/Body");
-    EXPECT_EQ(parsed->second, 7u);
+    EXPECT_EQ(parsed->second, primitiveIndex);
 
     EXPECT_FALSE(NLS::Render::Assets::ParsePrimitiveMeshSourceKey("mesh/Body").has_value());
     EXPECT_FALSE(NLS::Render::Assets::ParsePrimitiveMeshSourceKey("/primitive/1").has_value());
@@ -3870,6 +4613,14 @@ TEST(AssetImportPipelineTests, ModelImporterSettingsResolveFallbackFbxReaderSele
     EXPECT_EQ(
         parsed.fbxReaderSelection,
         NLS::Editor::Assets::FbxReaderSelection::AutodeskWithAssimpFallback);
+}
+
+TEST(AssetImportPipelineTests, ModelSceneImporterVersionInvalidatesFbxParityVersion6Artifacts)
+{
+    EXPECT_GT(
+        NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene),
+        6u)
+        << "Importer version 6 artifacts can still contain dark FBX albedo, invalid roughness, and opaque decal metadata.";
 }
 
 #if !NLS_HAS_ASSIMP_FBX_IMPORTER
@@ -4041,6 +4792,164 @@ TEST(AssetImportPipelineTests, ExternalModelImportExplicitAssimpFbxBuildsArtifac
     ASSERT_TRUE(mesh.has_value());
     EXPECT_FALSE(mesh->vertices.empty());
     EXPECT_FALSE(mesh->indices.empty());
+    const float maxMeshPosition = MaxAbsMeshPosition(*mesh);
+    EXPECT_LT(maxMeshPosition, 2.0f)
+        << "FBX import should preserve the same meter-scale convention as glTF imports.";
+
+    const auto* prefabArtifact = result.manifest.FindSubAsset("prefab:AssimpCube");
+    ASSERT_NE(prefabArtifact, nullptr);
+    const auto prefabPayload = ReadArtifactPayloadText(
+        prefabArtifact->artifactPath,
+        NLS::Core::Assets::ArtifactType::Prefab,
+        1u);
+    const auto prefabGraph = NLS::Engine::Serialize::ObjectGraphReader::Read(prefabPayload);
+    ASSERT_TRUE(prefabGraph.has_value());
+    const std::string transformTypeName = "NLS::Engine::Components::TransformComponent";
+    const auto* authoredScaleTransform = FindRecord(
+        *prefabGraph,
+        "pCube1 Transform",
+        transformTypeName);
+    ASSERT_NE(authoredScaleTransform, nullptr)
+        << "The FBX authored mesh node should remain present after synthetic-root normalization. "
+        << DescribeTransformLocalScales(*prefabGraph, transformTypeName);
+    const auto* authoredScale = FindProperty(*authoredScaleTransform, "localScale");
+    ASSERT_NE(authoredScale, nullptr);
+    EXPECT_DOUBLE_EQ(GetObjectNumber(authoredScale->value, "x"), 100.0);
+    EXPECT_DOUBLE_EQ(GetObjectNumber(authoredScale->value, "y"), 100.0);
+    EXPECT_DOUBLE_EQ(GetObjectNumber(authoredScale->value, "z"), 100.0);
+    const double maxInstantiatedPosition =
+        static_cast<double>(maxMeshPosition) * MaxAbsLocalScale(authoredScale->value);
+    EXPECT_GT(maxInstantiatedPosition, 0.25)
+        << "FBX import should not shrink the generated prefab below the expected cube scale. "
+        << DescribeTransformLocalScales(
+            *prefabGraph,
+            transformTypeName);
+    EXPECT_LT(maxInstantiatedPosition, 2.0)
+        << "FBX prefab transforms should not make the generated mesh instantiate 100x larger than glTF scale. "
+        << DescribeTransformLocalScales(
+            *prefabGraph,
+            transformTypeName);
+
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalAssimpFbxNeutralDiffusePolicyAffectsMaterialArtifactIdentity)
+{
+    const auto root = MakeImportTestRoot();
+    const auto sourceFixture =
+        std::filesystem::path(NLS_ROOT_DIR) /
+        "ThirdParty" /
+        "assimp" /
+        "test" /
+        "models" /
+        "FBX" /
+        "maxPbrMaterial_metalRough.fbx";
+    ASSERT_TRUE(std::filesystem::exists(sourceFixture));
+
+    auto fbx = ReadTextFile(sourceFixture);
+    const std::string diffuseColorLine =
+        "P: \"DiffuseColor\", \"ColorRGB\", \"Color\", \"\",0,1,1";
+    const auto diffuseColorBegin = fbx.find(diffuseColorLine);
+    ASSERT_NE(diffuseColorBegin, std::string::npos);
+    fbx.replace(
+        diffuseColorBegin,
+        diffuseColorLine.size(),
+        "P: \"DiffuseColor\", \"ColorRGB\", \"Color\", \"\",0.5,0.5,0.5");
+    const std::string baseColorLine =
+        "P: \"3dsMax|main|basecolor\", \"ColorAndAlpha\", \"\", \"A\",0,1,1,1";
+    const auto baseColorBegin = fbx.find(baseColorLine);
+    ASSERT_NE(baseColorBegin, std::string::npos);
+    fbx.replace(
+        baseColorBegin,
+        baseColorLine.size(),
+        "P: \"3dsMax|main|basecolor\", \"ColorAndAlpha\", \"\", \"A\",0.5,0.5,0.5,1");
+
+    const auto sourcePath = root / "Assets" / "Models" / "NeutralPbrMaterial.fbx";
+    WriteTextFile(sourcePath, fbx);
+    for (const auto* textureName : {
+        "albedo.png",
+        "metalness.png",
+        "roughness.png",
+        "occlusion.png",
+        "normal.png",
+        "emission.png",
+        "opacity.png"
+    })
+    {
+        WriteBinaryFile(sourcePath.parent_path() / "Textures" / textureName, TinyPng());
+    }
+
+    const auto importMaterial = [&](
+        const char* assetId,
+        const char* sceneKey,
+        const std::optional<bool> ignoreNeutralTint)
+    {
+        NLS::Core::Assets::AssetMeta meta;
+        meta.id = NLS::Core::Assets::AssetId(NLS::Guid::Parse(assetId));
+        meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+        meta.importerId = "scene-model";
+        meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+        meta.settings["MODEL_FBX_READER"] = "assimp";
+        if (ignoreNeutralTint.has_value())
+        {
+            meta.settings[NLS::Editor::Assets::kModelFbxIgnoreTexturedNeutralDiffuseTintSetting] =
+                *ignoreNeutralTint ? "true" : "false";
+        }
+
+        auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+            sourcePath,
+            root / "Staging" / meta.id.ToString(),
+            root / "Library" / "Artifacts" / meta.id.ToString(),
+            meta,
+            sceneKey,
+            "editor",
+            nullptr,
+            nullptr,
+            {},
+            std::filesystem::path("Models"),
+            root,
+            {}
+        });
+        EXPECT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+        return result;
+    };
+
+    const auto defaultResult = importMaterial(
+        "b6b6b6b6-b6b6-4b6b-8b6b-b6b6b6b6b6b6",
+        "NeutralPbrDefault",
+        std::nullopt);
+    ASSERT_TRUE(defaultResult.imported);
+    const auto* defaultMaterial = FindFirstArtifactOfType(
+        defaultResult.manifest,
+        NLS::Core::Assets::ArtifactType::Material);
+    ASSERT_NE(defaultMaterial, nullptr);
+    const auto defaultPayload = ReadArtifactPayloadText(
+        defaultMaterial->artifactPath,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+    EXPECT_NE(
+        defaultPayload.find("<uniform name=\"u_Albedo\" type=\"vec4\" value=\"1.000000 1.000000 1.000000 1.000000\"/>"),
+        std::string::npos);
+    EXPECT_EQ(defaultPayload.find("0.500000 0.500000 0.500000 1.000000"), std::string::npos);
+
+    const auto preservedResult = importMaterial(
+        "c6c6c6c6-c6c6-4c6c-8c6c-c6c6c6c6c6c6",
+        "NeutralPbrPreserved",
+        false);
+    ASSERT_TRUE(preservedResult.imported);
+    const auto* preservedMaterial = FindFirstArtifactOfType(
+        preservedResult.manifest,
+        NLS::Core::Assets::ArtifactType::Material);
+    ASSERT_NE(preservedMaterial, nullptr);
+    const auto preservedPayload = ReadArtifactPayloadText(
+        preservedMaterial->artifactPath,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+    EXPECT_NE(
+        preservedPayload.find("<uniform name=\"u_Albedo\" type=\"vec4\" value=\"0.500000 0.500000 0.500000 1.000000\"/>"),
+        std::string::npos);
+    EXPECT_NE(defaultMaterial->contentHash, preservedMaterial->contentHash)
+        << "Changing FBX neutral-diffuse compatibility policy must change generated material identity.";
 
     std::filesystem::remove_all(root);
 }
@@ -4218,4 +5127,82 @@ TEST(AssetImportPipelineTests, ParserDetailedSceneFailureFallsBackWithoutPartial
     ASSERT_EQ(scene.diagnostics.size(), 2u);
     EXPECT_EQ(scene.diagnostics[0].code, "parser-detailed-scene-data-failed");
     EXPECT_EQ(scene.diagnostics[1].code, "fbx-parser-limited-scene-data");
+}
+
+TEST(AssetImportPipelineTests, ArtifactLoadTelemetrySummarizesStageBaselineForPrefabPathComparison)
+{
+    using NLS::Core::Assets::ArtifactLoadTelemetryStage;
+    using NLS::Core::Assets::ClearArtifactLoadTelemetry;
+    using NLS::Core::Assets::RecordArtifactLoadTelemetry;
+    using NLS::Core::Assets::SummarizeArtifactLoadTelemetry;
+
+    struct ScopedArtifactTelemetryClear
+    {
+        ScopedArtifactTelemetryClear() { ClearArtifactLoadTelemetry(); }
+        ~ScopedArtifactTelemetryClear() { ClearArtifactLoadTelemetry(); }
+    } telemetryScope;
+
+    constexpr auto prefabPath = "Library/Artifacts/model/prefab.nprefab";
+    constexpr auto sceneLoadPath = "Library/Artifacts/scene/prefab.nprefab";
+
+    RecordArtifactLoadTelemetry({
+        ArtifactLoadTelemetryStage::PrefabGraphLoad,
+        std::chrono::microseconds(120),
+        16u,
+        prefabPath });
+    RecordArtifactLoadTelemetry({
+        ArtifactLoadTelemetryStage::PrefabGraphLoad,
+        std::chrono::microseconds(80),
+        24u,
+        prefabPath });
+    RecordArtifactLoadTelemetry({
+        ArtifactLoadTelemetryStage::PrefabGraphLoad,
+        std::chrono::microseconds(300),
+        64u,
+        sceneLoadPath });
+    RecordArtifactLoadTelemetry({
+        ArtifactLoadTelemetryStage::CacheHit,
+        std::chrono::microseconds(5),
+        0u,
+        prefabPath });
+
+    const auto summary = SummarizeArtifactLoadTelemetry();
+    const auto prefabGraph = std::find_if(
+        summary.begin(),
+        summary.end(),
+        [](const auto& stage)
+        {
+            return stage.stage == ArtifactLoadTelemetryStage::PrefabGraphLoad &&
+                stage.path == prefabPath;
+        });
+    ASSERT_NE(prefabGraph, summary.end());
+    EXPECT_EQ(prefabGraph->path, prefabPath);
+    EXPECT_EQ(prefabGraph->recordCount, 2u);
+    EXPECT_EQ(prefabGraph->totalElapsed, std::chrono::microseconds(200));
+    EXPECT_EQ(prefabGraph->totalBytes, 40u);
+
+    const auto sceneLoadGraph = std::find_if(
+        summary.begin(),
+        summary.end(),
+        [](const auto& stage)
+        {
+            return stage.stage == ArtifactLoadTelemetryStage::PrefabGraphLoad &&
+                stage.path == sceneLoadPath;
+        });
+    ASSERT_NE(sceneLoadGraph, summary.end());
+    EXPECT_EQ(sceneLoadGraph->recordCount, 1u)
+        << "Stage summaries must stay path-bucketed so scene-load and drag/drop baselines do not mix.";
+    EXPECT_EQ(sceneLoadGraph->totalElapsed, std::chrono::microseconds(300));
+
+    const auto cacheHit = std::find_if(
+        summary.begin(),
+        summary.end(),
+        [](const auto& stage)
+        {
+            return stage.stage == ArtifactLoadTelemetryStage::CacheHit &&
+                stage.path == prefabPath;
+        });
+    ASSERT_NE(cacheHit, summary.end());
+    EXPECT_EQ(cacheHit->recordCount, 1u);
+    EXPECT_EQ(cacheHit->totalElapsed, std::chrono::microseconds(5));
 }

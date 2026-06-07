@@ -916,7 +916,7 @@ std::optional<TextureArtifactData> DecodeTextureArtifactFromEncodedImage(
     int width = 0;
     int height = 0;
     int channels = 0;
-    stbi_set_flip_vertically_on_load(flipVertically);
+    stbi_set_flip_vertically_on_load_thread(flipVertically);
     unsigned char* decoded = stbi_load_from_memory(
         encodedData,
         static_cast<int>(encodedDataSize),

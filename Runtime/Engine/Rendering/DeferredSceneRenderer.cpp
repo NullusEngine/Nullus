@@ -3,6 +3,7 @@
 #include <fg/Blackboard.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <span>
@@ -268,6 +269,36 @@ namespace
 		return overrides;
 	}
 
+	NLS::Render::Resources::MaterialPipelineStateOverrides BuildDeferredDecalMaterialOverrides(
+		const NLS::Render::Resources::Material& sourceMaterial)
+	{
+		auto overrides = BuildGBufferMaterialOverrides(sourceMaterial);
+		NLS::Render::RHI::RHIRenderTargetBlendStateDesc blendedTarget;
+		blendedTarget.blendEnable = true;
+		blendedTarget.colorWriteMask = NLS::Render::RHI::RHIColorWriteMask::All;
+		NLS::Render::RHI::RHIRenderTargetBlendStateDesc suppressedTarget;
+		suppressedTarget.blendEnable = false;
+		suppressedTarget.colorWriteMask = NLS::Render::RHI::RHIColorWriteMask::None;
+		std::array<
+			NLS::Render::RHI::RHIRenderTargetBlendStateDesc,
+			NLS::Render::FrameGraph::kDeferredGBufferColorAttachmentCount> decalTargets {};
+		decalTargets.fill(suppressedTarget);
+		decalTargets[NLS::Render::FrameGraph::kDeferredGBufferAlbedoColorAttachmentIndex] = blendedTarget;
+		overrides.depthTest = true;
+		overrides.depthWrite = false;
+		overrides.blending = true;
+		overrides.hasDepthAttachment = true;
+		overrides.stencilTest = false;
+		overrides.stencilWriteMask = 0u;
+		overrides.SetRenderTargetBlendStates(decalTargets);
+		return overrides;
+	}
+
+	NLS::Render::Settings::EComparaisonAlgorithm GetDeferredDecalDepthCompare()
+	{
+		return NLS::Render::Settings::EComparaisonAlgorithm::LESS_EQUAL;
+	}
+
 	NLS::Engine::Rendering::DeferredSceneRenderer::GBufferMaterialSyncStamp BuildGBufferMaterialSyncStamp(
 		const NLS::Render::Resources::Material& sourceMaterial)
 	{
@@ -372,18 +403,52 @@ namespace NLS::Engine::Rendering
 
 	void DeferredSceneRenderer::SynchronizeThreadedDeferredSnapshot(
 		NLS::Render::Context::FrameSnapshot& snapshot,
-		const uint64_t queuedGBufferDrawCount)
+		const uint64_t queuedGBufferDrawCount,
+		const uint64_t queuedDecalDrawCount,
+		const uint64_t queuedLightingDrawCount,
+		const uint64_t queuedTransparentDrawCount)
 	{
 		const auto totalRecordedDrawCount =
 			static_cast<uint64_t>(snapshot.recordedDrawCommands.size());
-		snapshot.visibleOpaqueDrawCount = (std::min)(queuedGBufferDrawCount, totalRecordedDrawCount);
+		snapshot.visibleOpaqueDrawCount =
+			(std::min)(queuedGBufferDrawCount, totalRecordedDrawCount);
+		const auto recordedDrawsAfterOpaque =
+			totalRecordedDrawCount > snapshot.visibleOpaqueDrawCount
+				? totalRecordedDrawCount - snapshot.visibleOpaqueDrawCount
+				: 0u;
+		snapshot.visibleDecalDrawCount =
+			(std::min)(queuedDecalDrawCount, recordedDrawsAfterOpaque);
+		const auto recordedDrawsAfterDecal =
+			recordedDrawsAfterOpaque > snapshot.visibleDecalDrawCount
+				? recordedDrawsAfterOpaque - snapshot.visibleDecalDrawCount
+				: 0u;
+		const auto recordedLightingDrawCount =
+			(std::min)(queuedLightingDrawCount, recordedDrawsAfterDecal);
+		const auto recordedDrawsAfterLighting =
+			recordedDrawsAfterDecal > recordedLightingDrawCount
+				? recordedDrawsAfterDecal - recordedLightingDrawCount
+				: 0u;
+		snapshot.visibleTransparentDrawCount =
+			(std::min)(queuedTransparentDrawCount, recordedDrawsAfterLighting);
 	}
 
 	bool ShouldSkipThreadedDeferredFramePublish(
 		const NLS::Render::Context::FrameSnapshot& snapshot,
-		const uint64_t queuedGBufferDrawCount)
+		const uint64_t queuedGBufferDrawCount,
+		const uint64_t queuedDecalDrawCount,
+		const uint64_t queuedLightingDrawCount,
+		const uint64_t queuedTransparentDrawCount)
 	{
-		return snapshot.visibleOpaqueDrawCount > 0u && queuedGBufferDrawCount == 0u;
+		const bool requiresDeferredLighting =
+			snapshot.visibleOpaqueDrawCount > 0u ||
+			snapshot.visibleDecalDrawCount > 0u ||
+			snapshot.visibleTransparentDrawCount > 0u ||
+			snapshot.visibleSkyboxDrawCount > 0u;
+		return queuedGBufferDrawCount != snapshot.visibleOpaqueDrawCount ||
+			queuedDecalDrawCount != snapshot.visibleDecalDrawCount ||
+			(requiresDeferredLighting && queuedLightingDrawCount != 1u) ||
+			(!requiresDeferredLighting && queuedLightingDrawCount > 1u) ||
+			queuedTransparentDrawCount != snapshot.visibleTransparentDrawCount;
 	}
 
 	DeferredSceneRenderer::~DeferredSceneRenderer()
@@ -461,7 +526,14 @@ namespace NLS::Engine::Rendering
 				appendedPassMetadata = std::move(appendedPassMetadata),
 				preferredReadbackTexture = std::move(preferredReadbackTexture),
 				additionalRenderTargetUseCount,
-				queuedLightingDrawCount = m_threadedQueuedLightingDrawCount,
+				queuedDrawCounts = [this]()
+				{
+					NLS::Render::FrameGraph::DeferredPreparedQueuedDrawCounts counts;
+					counts.lightingDrawCount = m_threadedQueuedLightingDrawCount;
+					counts.decalDrawCount = m_threadedQueuedDecalDrawCount;
+					counts.transparentDrawCount = m_threadedQueuedTransparentDrawCount;
+					return counts;
+				}(),
 				frozenFrameDescriptor = std::move(frozenFrameDescriptor)]() mutable
 		{
 			frameDescriptorForBuilder.camera = frozenFrameDescriptor.camera.get();
@@ -484,7 +556,7 @@ namespace NLS::Engine::Rendering
 				deferredResources,
 				std::move(appendedPassInputs),
 				appendedPassMetadata,
-				queuedLightingDrawCount);
+				queuedDrawCounts);
 			if (preferredReadbackTexture != nullptr)
 				NLS::Render::FrameGraph::RegisterPreferredReadbackTexture(
 					package,
@@ -538,9 +610,13 @@ namespace NLS::Engine::Rendering
 
 		const bool usesThreadedRendering = NLS::Render::Context::DriverRendererAccess::IsThreadedRenderingEnabled(m_driver);
 		uint64_t queuedGBufferDrawCount = 0u;
+		uint64_t queuedDecalDrawCount = 0u;
 		uint64_t queuedLightingDrawCount = 0u;
+		uint64_t queuedTransparentDrawCount = 0u;
 		m_threadedQueuedGBufferDrawCount = 0u;
+		m_threadedQueuedDecalDrawCount = 0u;
 		m_threadedQueuedLightingDrawCount = 0u;
+		m_threadedQueuedTransparentDrawCount = 0u;
 		m_frameGBufferMaterialSyncCount = 0u;
 		m_skipThreadedFramePublish = false;
 		ClearFrameGBufferMaterialResolveCache();
@@ -567,8 +643,12 @@ namespace NLS::Engine::Rendering
 
 		if (usesThreadedRendering)
 		{
+			const bool hasPreparedSceneDrawables =
+				!drawables.opaques.empty() ||
+				!drawables.decals.empty() ||
+				!drawables.transparents.empty();
 			const bool preparedFrameResourcesAvailable =
-				drawables.opaques.empty() ||
+				!hasPreparedSceneDrawables ||
 				TryReservePreparedFrameResourcesForThreadedCapture(*this);
 			if (!preparedFrameResourcesAvailable && queuedGBufferDrawCount == 0u)
 			{
@@ -577,78 +657,155 @@ namespace NLS::Engine::Rendering
 				{
 					NLS_LOG_INFO(
 						"[DeferredSceneRenderer] Skipping threaded deferred capture: prepared frame resources unavailable sceneOpaqueDrawables=" +
-						std::to_string(drawables.opaques.size()));
+						std::to_string(drawables.opaques.size()) +
+						" sceneDecalDrawables=" + std::to_string(drawables.decals.size()) +
+						" sceneTransparentDrawables=" + std::to_string(drawables.transparents.size()));
 				}
 			}
 			else
 			{
 				EnsureGBufferTargets(frameDescriptor.renderWidth, frameDescriptor.renderHeight);
-				SetActivePreparedPassBindingSet(BaseSceneRenderer::GetPreparedPassBindingSetPlaceholder());
-
-				auto gbufferPso = CreateSceneDefaultPipelineState(*this);
-				for (const auto& entry : drawables.opaques)
+				if (!HasDeferredThreadedPipelineResources())
 				{
-					const auto& drawable = entry.second;
-					if (!drawable.material)
-						continue;
-					auto gbufferDrawable = drawable;
-					gbufferDrawable.material = &ResolveFrameGBufferMaterial(*drawable.material);
-
-					const auto gBufferOverrides = BuildGBufferMaterialOverrides(*drawable.material);
-
-					PreparedRecordedDraw preparedDraw;
-					const bool captured = CaptureThreadedPreparedDraw(
-						gbufferDrawable,
-						gBufferOverrides,
-						gbufferPso.depthFunc,
-						preparedDraw);
-					bool queued = false;
-					if (captured)
+					m_skipThreadedFramePublish = true;
+					if (NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver).logRenderDrawPath)
 					{
-						queued = QueueThreadedRecordedDraw(preparedDraw);
-						if (queued)
-							++queuedGBufferDrawCount;
+						NLS_LOG_INFO(
+							"[DeferredSceneRenderer] Skipping threaded deferred capture: pipeline resources unavailable"
+							" gBufferShader=" + std::to_string(m_gBufferShader != nullptr ? 1 : 0) +
+							" lightingMaterial=" + std::to_string(m_lightingMaterial != nullptr ? 1 : 0) +
+							" fullscreenQuad=" + std::to_string(m_fullscreenQuad != nullptr ? 1 : 0) +
+							" gBufferAlbedo=" + std::to_string(m_gBufferAlbedoTexture != nullptr ? 1 : 0) +
+							" gBufferNormal=" + std::to_string(m_gBufferNormalTexture != nullptr ? 1 : 0) +
+							" gBufferMaterial=" + std::to_string(m_gBufferMaterialTexture != nullptr ? 1 : 0) +
+							" gBufferDepth=" + std::to_string(m_gBufferDepthTexture != nullptr ? 1 : 0));
 					}
-					LogPreparedDrawResult("GBuffer", captured, queued, preparedDraw);
 				}
-
+				else
 				{
-					m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferAlbedo", m_gBufferAlbedoTexture.get());
-					m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferNormal", m_gBufferNormalTexture.get());
-					m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferMaterial", m_gBufferMaterialTexture.get());
-					if (m_gBufferDepthTexture)
-						m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferDepth", m_gBufferDepthTexture.get());
-					if (m_lightingMaterial->GetParameterBlock().Contains("u_SkyboxCube"))
-						m_lightingMaterial->Set<NLS::Render::Resources::TextureCube*>("u_SkyboxCube", skyboxTexture);
-					EnsureDeferredLightingSkyParameters(*m_lightingMaterial, skyboxMaterial);
+					SetActivePreparedPassBindingSet(BaseSceneRenderer::GetPreparedPassBindingSetPlaceholder());
 
-					NLS::Render::Entities::Drawable lightingDrawable;
-					lightingDrawable.mesh = m_fullscreenQuad.get();
-					lightingDrawable.material = m_lightingMaterial.get();
-					lightingDrawable.primitiveMode = NLS::Render::Settings::EPrimitiveMode::TRIANGLES;
+					auto gbufferPso = CreateSceneDefaultPipelineState(*this);
+					for (const auto& entry : drawables.opaques)
+					{
+						const auto& drawable = entry.second;
+						if (!drawable.material)
+							continue;
+						auto gbufferDrawable = drawable;
+						gbufferDrawable.material = &ResolveFrameGBufferMaterial(*drawable.material);
 
-					NLS::Render::Resources::MaterialPipelineStateOverrides compositeOverrides;
-					compositeOverrides.depthTest = false;
-					compositeOverrides.depthWrite = false;
-					compositeOverrides.culling = false;
-					compositeOverrides.colorWrite = true;
+						const auto gBufferOverrides = BuildGBufferMaterialOverrides(*drawable.material);
 
-					PreparedRecordedDraw preparedDraw;
-					const bool captured = CaptureThreadedPreparedDraw(
-						lightingDrawable,
-						compositeOverrides,
-						gbufferPso.depthFunc,
-						preparedDraw);
-					const bool queued = captured && QueueThreadedRecordedDraw(preparedDraw);
-					if (queued)
-						++queuedLightingDrawCount;
-					LogPreparedDrawResult("Lighting", captured, queued, preparedDraw);
-					SetActivePreparedPassBindingSet(nullptr);
+						PreparedRecordedDraw preparedDraw;
+						const bool captured = CaptureThreadedPreparedDraw(
+							gbufferDrawable,
+							gBufferOverrides,
+							gbufferPso.depthFunc,
+							preparedDraw);
+						bool queued = false;
+						if (captured)
+						{
+							queued = QueueThreadedRecordedDraw(preparedDraw);
+							if (queued)
+								++queuedGBufferDrawCount;
+						}
+						LogPreparedDrawResult("GBuffer", captured, queued, preparedDraw);
+					}
+
+					for (const auto& entry : drawables.decals)
+					{
+						const auto& drawable = entry.second;
+						if (!drawable.material)
+							continue;
+
+						auto gbufferDrawable = drawable;
+						gbufferDrawable.material = &ResolveFrameGBufferMaterial(*drawable.material);
+
+						const auto decalOverrides = BuildDeferredDecalMaterialOverrides(*drawable.material);
+
+						PreparedRecordedDraw preparedDraw;
+						const bool captured = CaptureThreadedPreparedDraw(
+							gbufferDrawable,
+							decalOverrides,
+							GetDeferredDecalDepthCompare(),
+							preparedDraw);
+						bool queued = false;
+						if (captured)
+						{
+							queued = QueueThreadedRecordedDraw(preparedDraw);
+							if (queued)
+								++queuedDecalDrawCount;
+						}
+						LogPreparedDrawResult("Decal", captured, queued, preparedDraw);
+					}
+
+					{
+						m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferAlbedo", m_gBufferAlbedoTexture.get());
+						m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferNormal", m_gBufferNormalTexture.get());
+						m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferMaterial", m_gBufferMaterialTexture.get());
+						if (m_gBufferDepthTexture)
+							m_lightingMaterial->Set<NLS::Render::Resources::Texture2D*>("u_GBufferDepth", m_gBufferDepthTexture.get());
+						if (m_lightingMaterial->GetParameterBlock().Contains("u_SkyboxCube"))
+							m_lightingMaterial->Set<NLS::Render::Resources::TextureCube*>("u_SkyboxCube", skyboxTexture);
+						EnsureDeferredLightingSkyParameters(*m_lightingMaterial, skyboxMaterial);
+
+						NLS::Render::Entities::Drawable lightingDrawable;
+						lightingDrawable.mesh = m_fullscreenQuad.get();
+						lightingDrawable.material = m_lightingMaterial.get();
+						lightingDrawable.primitiveMode = NLS::Render::Settings::EPrimitiveMode::TRIANGLES;
+
+						NLS::Render::Resources::MaterialPipelineStateOverrides compositeOverrides;
+						compositeOverrides.depthTest = false;
+						compositeOverrides.depthWrite = false;
+						compositeOverrides.culling = false;
+						compositeOverrides.colorWrite = true;
+
+						PreparedRecordedDraw preparedDraw;
+						const bool captured = CaptureThreadedPreparedDraw(
+							lightingDrawable,
+							compositeOverrides,
+							gbufferPso.depthFunc,
+							preparedDraw);
+						const bool queued = captured && QueueThreadedRecordedDraw(preparedDraw);
+						if (queued)
+							++queuedLightingDrawCount;
+						LogPreparedDrawResult("Lighting", captured, queued, preparedDraw);
+					}
+
+					{
+						NLS::Render::Resources::MaterialPipelineStateOverrides transparentOverrides;
+						transparentOverrides.depthWrite = false;
+						auto transparentPso = CreateSceneDefaultPipelineState(*this);
+						for (const auto& entry : drawables.transparents)
+						{
+							const auto& drawable = entry.second;
+							if (!drawable.material || !drawable.mesh)
+								continue;
+
+							PreparedRecordedDraw preparedDraw;
+							const bool captured = CaptureThreadedPreparedDraw(
+								drawable,
+								transparentOverrides,
+								transparentPso.depthFunc,
+								preparedDraw);
+							bool queued = false;
+							if (captured)
+							{
+								queued = QueueThreadedRecordedDraw(preparedDraw);
+								if (queued)
+									++queuedTransparentDrawCount;
+							}
+							LogPreparedDrawResult("Transparent", captured, queued, preparedDraw);
+						}
+						SetActivePreparedPassBindingSet(nullptr);
+					}
 				}
 			}
 
 			m_threadedQueuedGBufferDrawCount = queuedGBufferDrawCount;
+			m_threadedQueuedDecalDrawCount = queuedDecalDrawCount;
 			m_threadedQueuedLightingDrawCount = queuedLightingDrawCount;
+			m_threadedQueuedTransparentDrawCount = queuedTransparentDrawCount;
 
 		}
 
@@ -657,12 +814,22 @@ namespace NLS::Engine::Rendering
 		{
 			RefreshFrameSnapshotVisibility(pendingFrameSnapshot.value(), drawables);
 			if (usesThreadedRendering &&
-				ShouldSkipThreadedDeferredFramePublish(pendingFrameSnapshot.value(), queuedGBufferDrawCount))
+				ShouldSkipThreadedDeferredFramePublish(
+					pendingFrameSnapshot.value(),
+					queuedGBufferDrawCount,
+					queuedDecalDrawCount,
+					queuedLightingDrawCount,
+					queuedTransparentDrawCount))
 			{
 				m_skipThreadedFramePublish = true;
 			}
 			if (usesThreadedRendering)
-				SynchronizeThreadedDeferredSnapshot(pendingFrameSnapshot.value(), queuedGBufferDrawCount);
+				SynchronizeThreadedDeferredSnapshot(
+					pendingFrameSnapshot.value(),
+					queuedGBufferDrawCount,
+					queuedDecalDrawCount,
+					queuedLightingDrawCount,
+					queuedTransparentDrawCount);
 			if (usesThreadedRendering &&
 				NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver).logRenderDrawPath)
 			{
@@ -670,8 +837,12 @@ namespace NLS::Engine::Rendering
 					"[DeferredSceneRenderer] Snapshot recordedDraws=" +
 					std::to_string(pendingFrameSnapshot->recordedDrawCommands.size()) +
 					" queuedGBufferDraws=" + std::to_string(queuedGBufferDrawCount) +
+					" queuedDecalDraws=" + std::to_string(queuedDecalDrawCount) +
 					" queuedLightingDraws=" + std::to_string(queuedLightingDrawCount) +
+					" queuedTransparentDraws=" + std::to_string(queuedTransparentDrawCount) +
 					" visibleOpaqueDraws=" + std::to_string(pendingFrameSnapshot->visibleOpaqueDrawCount) +
+					" visibleDecalDraws=" + std::to_string(pendingFrameSnapshot->visibleDecalDrawCount) +
+					" visibleTransparentDraws=" + std::to_string(pendingFrameSnapshot->visibleTransparentDrawCount) +
 					" sceneOpaqueDrawables=" + std::to_string(drawables.opaques.size()));
 			}
 			SetPendingFrameSnapshot(pendingFrameSnapshot.value());
@@ -730,10 +901,17 @@ namespace NLS::Engine::Rendering
 				NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::PrepareDeferredSceneGraph");
 				preparedGraph = NLS::Render::FrameGraph::PrepareDeferredSceneGraph(
 					resourceRequest,
-					lightGridContext);
+					lightGridContext,
+					!scene.drawables.transparents.empty(),
+					!scene.drawables.decals.empty());
 			}
 			{
 				NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::ExecutePreparedDeferredSceneGraph");
+				const auto transparentDepthView = !scene.drawables.transparents.empty()
+					? NLS::Render::FrameGraph::CaptureDeferredPreparedSceneResources(
+						deferredResourceRequest).gbufferDepthView
+					: std::shared_ptr<NLS::Render::RHI::RHITextureView>{};
+				SetActivePreparedPassBindingSet(lightGridContext.graphicsPassBindingSet);
 				NLS::Render::FrameGraph::ExecutePreparedDeferredSceneGraph(
 					frameGraph,
 					preparedGraph,
@@ -781,6 +959,53 @@ namespace NLS::Engine::Rendering
 							NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::EndLightingPass");
 							(void)endDesc;
 							EndOutputRenderPass(startedRenderPass);
+						},
+						[this, transparentDepthView](const auto& beginDesc) -> bool
+						{
+							NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginTransparentPass");
+							return BeginOutputRenderPass(
+								beginDesc.renderWidth,
+								beginDesc.renderHeight,
+								beginDesc.clearColor,
+								beginDesc.clearDepth,
+								beginDesc.clearStencil,
+								transparentDepthView,
+								false,
+								beginDesc.clearValue);
+						},
+						[this]()
+						{
+							NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::DrawTransparentsCallback");
+							DrawTransparents(CreateSceneDefaultPipelineState(*this));
+						},
+						[this](bool startedRenderPass, const auto& endDesc)
+						{
+							NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::EndTransparentPass");
+							(void)endDesc;
+							EndOutputRenderPass(startedRenderPass);
+						},
+						[this](const auto& beginDesc) -> bool
+						{
+							NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::BeginDecalPass");
+							return BeginRecordedRenderPass(
+								&m_gBuffer,
+								beginDesc.renderWidth,
+								beginDesc.renderHeight,
+								beginDesc.clearColor,
+								beginDesc.clearDepth,
+								beginDesc.clearStencil,
+								false,
+								beginDesc.clearValue);
+						},
+						[this]()
+						{
+							NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::DrawDecalsCallback");
+							DrawDecals(CreateSceneDefaultPipelineState(*this));
+						},
+						[this]()
+						{
+							NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::EndDecalPass");
+							EndRecordedRenderPass();
 						}
 					});
 			}
@@ -794,6 +1019,7 @@ namespace NLS::Engine::Rendering
 				NLS_PROFILE_NAMED_SCOPE("DeferredSceneRenderer::FrameGraphExecute");
 				frameGraph.execute(&executionContext, &executionContext);
 			}
+			SetActivePreparedPassBindingSet(nullptr);
 		}
 
 		DrawRegisteredPasses();
@@ -805,7 +1031,12 @@ namespace NLS::Engine::Rendering
 			if (pendingFrameSnapshot.has_value())
 			{
 				RefreshFrameSnapshotVisibility(pendingFrameSnapshot.value(), scene.drawables);
-				SynchronizeThreadedDeferredSnapshot(pendingFrameSnapshot.value(), m_threadedQueuedGBufferDrawCount);
+				SynchronizeThreadedDeferredSnapshot(
+					pendingFrameSnapshot.value(),
+					m_threadedQueuedGBufferDrawCount,
+					m_threadedQueuedDecalDrawCount,
+					m_threadedQueuedLightingDrawCount,
+					m_threadedQueuedTransparentDrawCount);
 				SetPendingFrameSnapshot(pendingFrameSnapshot.value());
 			}
 		}
@@ -895,6 +1126,21 @@ namespace NLS::Engine::Rendering
 		for (size_t i = 0u; i < colorWrappers.size(); ++i)
 			*colorWrappers[i] = wrapTexture(colorResources[i]);
 		m_gBufferDepthTexture = wrapTexture(depthResource);
+	}
+
+	bool DeferredSceneRenderer::HasDeferredThreadedPipelineResources() const
+	{
+		return m_gBufferShader != nullptr &&
+			m_lightingMaterial != nullptr &&
+			m_fullscreenQuad != nullptr &&
+			m_gBufferAlbedoTexture != nullptr &&
+			m_gBufferNormalTexture != nullptr &&
+			m_gBufferMaterialTexture != nullptr &&
+			m_gBufferDepthTexture != nullptr &&
+			m_gBufferAlbedoTexture->GetExplicitRHITextureHandle() != nullptr &&
+			m_gBufferNormalTexture->GetExplicitRHITextureHandle() != nullptr &&
+			m_gBufferMaterialTexture->GetExplicitRHITextureHandle() != nullptr &&
+			m_gBufferDepthTexture->GetExplicitRHITextureHandle() != nullptr;
 	}
 
 	std::unique_ptr<NLS::Render::Resources::Material> DeferredSceneRenderer::CreateGBufferMaterial() const
@@ -1003,6 +1249,29 @@ namespace NLS::Engine::Rendering
 		}
 	}
 
+	void DeferredSceneRenderer::DrawDecals(NLS::Render::Data::PipelineState pso)
+	{
+		NLS_PROFILE_SCOPE();
+		if (!m_gBufferShader)
+			return;
+
+		const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
+
+		for (const auto& entry : scene.drawables.decals)
+		{
+			const auto& drawable = entry.second;
+			if (drawable.material == nullptr || drawable.mesh == nullptr)
+				continue;
+
+			auto gbufferDrawable = drawable;
+			gbufferDrawable.material = &ResolveFrameGBufferMaterial(*drawable.material);
+
+			const auto decalOverrides = BuildDeferredDecalMaterialOverrides(*drawable.material);
+
+			DrawEntity(gbufferDrawable, decalOverrides, GetDeferredDecalDepthCompare());
+		}
+	}
+
 	void DeferredSceneRenderer::DrawLightingPass(NLS::Render::Data::PipelineState pso)
 	{
 		NLS_PROFILE_SCOPE();
@@ -1064,6 +1333,23 @@ namespace NLS::Engine::Rendering
 			commandBuffer->BindBindingSet(NLS::Render::RHI::BindingPointMap::kPassDescriptorSet, GetLightGridGraphicsPassBindingSet());
 		commandBuffer->BindBindingSet(NLS::Render::RHI::BindingPointMap::kMaterialDescriptorSet, bindingSet);
 		SubmitMeshDraw(commandBuffer, rhiMesh, material->GetGPUInstances());
+	}
+
+	void DeferredSceneRenderer::DrawTransparents(NLS::Render::Data::PipelineState pso)
+	{
+		NLS_PROFILE_SCOPE();
+		const auto& scene = GetDescriptor<DeferredSceneDescriptor>();
+
+		NLS::Render::Resources::MaterialPipelineStateOverrides transparentOverrides;
+		transparentOverrides.depthWrite = false;
+
+		for (const auto& entry : scene.drawables.transparents)
+		{
+			const auto& drawable = entry.second;
+			if (drawable.material == nullptr || drawable.mesh == nullptr)
+				continue;
+			DrawEntity(drawable, transparentOverrides, pso.depthFunc);
+		}
 	}
 
 	NLS::Render::Resources::Material& DeferredSceneRendererTestAccess::GetOrCreateGBufferMaterial(
@@ -1139,6 +1425,47 @@ namespace NLS::Engine::Rendering
 		const DeferredSceneRenderer& renderer)
 	{
 		return renderer.m_frameGBufferMaterialResolveMissCount;
+	}
+
+	NLS::Render::Resources::MaterialPipelineStateOverrides DeferredSceneRendererTestAccess::BuildDeferredDecalMaterialOverridesForTesting(
+		const NLS::Render::Resources::Material& sourceMaterial)
+	{
+		return BuildDeferredDecalMaterialOverrides(sourceMaterial);
+	}
+
+	NLS::Render::Settings::EComparaisonAlgorithm DeferredSceneRendererTestAccess::GetDeferredDecalDepthCompareForTesting()
+	{
+		return GetDeferredDecalDepthCompare();
+	}
+
+	bool DeferredSceneRendererTestAccess::ShouldSkipThreadedDeferredFramePublishForTesting(
+		const NLS::Render::Context::FrameSnapshot& snapshot,
+		const uint64_t queuedGBufferDrawCount,
+		const uint64_t queuedDecalDrawCount,
+		const uint64_t queuedLightingDrawCount,
+		const uint64_t queuedTransparentDrawCount)
+	{
+		return ShouldSkipThreadedDeferredFramePublish(
+			snapshot,
+			queuedGBufferDrawCount,
+			queuedDecalDrawCount,
+			queuedLightingDrawCount,
+			queuedTransparentDrawCount);
+	}
+
+	void DeferredSceneRendererTestAccess::SynchronizeThreadedDeferredSnapshotForTesting(
+		NLS::Render::Context::FrameSnapshot& snapshot,
+		const uint64_t queuedGBufferDrawCount,
+		const uint64_t queuedDecalDrawCount,
+		const uint64_t queuedLightingDrawCount,
+		const uint64_t queuedTransparentDrawCount)
+	{
+		DeferredSceneRenderer::SynchronizeThreadedDeferredSnapshot(
+			snapshot,
+			queuedGBufferDrawCount,
+			queuedDecalDrawCount,
+			queuedLightingDrawCount,
+			queuedTransparentDrawCount);
 	}
 
 	void DeferredSceneRendererTestAccess::EnsureGBufferTargets(

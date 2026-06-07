@@ -82,7 +82,7 @@ ResourceId ResourceLifetimeRegistry::Acquire(const ResourceLifetimeAcquireReques
         resource = &inserted->second;
     }
     if (resource->evictionPending)
-        return {};
+        resource->evictionPending = false;
 
     resource->evicted = false;
     resource->estimatedBytes = std::max(resource->estimatedBytes, request.estimatedBytes);
@@ -330,7 +330,7 @@ void ResourceLifetimeRegistry::EndEviction(
     resource->lastUsed = ++m_useCounter;
 }
 
-void ResourceLifetimeRegistry::CompleteEviction(
+bool ResourceLifetimeRegistry::CompleteEviction(
     const ResourceLifetimeResourceType type,
     const std::string& path)
 {
@@ -342,7 +342,14 @@ void ResourceLifetimeRegistry::CompleteEviction(
         m_resources.emplace(
             key,
             ResourceEntry { key, 0u, ++m_useCounter, 2u, false, true, {} });
-        return;
+        return true;
+    }
+
+    if (CountActiveLeases(*resource) != 0u)
+    {
+        resource->evictionPending = false;
+        resource->lastUsed = ++m_useCounter;
+        return false;
     }
 
     ++resource->generation;
@@ -350,6 +357,39 @@ void ResourceLifetimeRegistry::CompleteEviction(
     resource->evicted = true;
     resource->ownerLeases.clear();
     resource->lastUsed = ++m_useCounter;
+    return true;
+}
+
+ResourceLifetimeDiagnosticSnapshot ResourceLifetimeRegistry::CreateDiagnosticSnapshot() const
+{
+    std::lock_guard lock(m_mutex);
+    ResourceLifetimeDiagnosticSnapshot snapshot;
+    snapshot.ownerCount = m_owners.size();
+
+    for (const auto& resource : m_resources)
+    {
+        const auto& entry = resource.second;
+        if (entry.evicted)
+            continue;
+
+        ++snapshot.resourceCount;
+        const auto activeLeases = CountActiveLeases(entry);
+        snapshot.activeLeaseCount += activeLeases;
+        snapshot.totalEstimatedBytes += entry.estimatedBytes;
+
+        if (activeLeases == 0u)
+        {
+            ++snapshot.zeroOwnerResourceCount;
+            snapshot.zeroOwnerEstimatedBytes += entry.estimatedBytes;
+            if (!entry.evicted && !entry.evictionPending)
+                ++snapshot.trimCandidateCount;
+            continue;
+        }
+
+        snapshot.activeEstimatedBytes += entry.estimatedBytes;
+    }
+
+    return snapshot;
 }
 
 std::vector<ResourceLifetimeTrimCandidate> ResourceLifetimeRegistry::CollectTrimCandidates(

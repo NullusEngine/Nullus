@@ -153,11 +153,15 @@ NLS::Maths::Color PrefabColorForToken(NLS::Editor::Assets::PrefabHierarchyColorT
 	case NLS::Editor::Assets::PrefabHierarchyColorToken::ConnectedChild:
 		return {0.58f, 0.75f, 0.98f, 1.0f};
 	case NLS::Editor::Assets::PrefabHierarchyColorToken::Override:
-		return {0.92f, 0.70f, 0.31f, 1.0f};
+		return {0.36f, 0.62f, 0.96f, 1.0f};
 	case NLS::Editor::Assets::PrefabHierarchyColorToken::Missing:
 		return {0.95f, 0.34f, 0.34f, 1.0f};
 	case NLS::Editor::Assets::PrefabHierarchyColorToken::GeneratedReadOnly:
 		return {0.54f, 0.82f, 0.78f, 1.0f};
+	case NLS::Editor::Assets::PrefabHierarchyColorToken::Pending:
+		return {0.68f, 0.67f, 0.86f, 1.0f};
+	case NLS::Editor::Assets::PrefabHierarchyColorToken::Unpacked:
+		return {0.72f, 0.72f, 0.72f, 1.0f};
 	case NLS::Editor::Assets::PrefabHierarchyColorToken::Default:
 	default:
 		return {1.0f, 1.0f, 1.0f, 1.0f};
@@ -383,6 +387,9 @@ void Editor::Panels::Hierarchy::DeleteGameObjectByInstance(Engine::GameObject& p
 
 void Editor::Panels::Hierarchy::AddGameObjectByInstance(Engine::GameObject & p_actor)
 {
+	if (p_actor.IsEditorTransient())
+		return;
+
 	if (m_widgetGameObjectLink.find(&p_actor) != m_widgetGameObjectLink.end())
 		return;
 
@@ -436,13 +443,13 @@ void Editor::Panels::Hierarchy::RebuildFromCurrentScene()
 
 	for (auto* actor : scene->GetGameObjects())
 	{
-		if (actor)
+		if (actor && !actor->IsEditorTransient())
 			AddGameObjectByInstance(*actor);
 	}
 
 	for (auto* actor : scene->GetGameObjects())
 	{
-		if (actor && actor->HasParent())
+		if (actor && !actor->IsEditorTransient() && actor->HasParent())
 			AttachGameObjectToParent(*actor);
 	}
 }

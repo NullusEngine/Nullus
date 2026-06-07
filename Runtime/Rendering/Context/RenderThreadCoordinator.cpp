@@ -45,6 +45,7 @@ namespace NLS::Render::Context
             package.recordedDrawCommands.clear();
             package.visibleDrawCount = 0u;
             package.opaqueDrawCount = 0u;
+            package.decalDrawCount = 0u;
             package.transparentDrawCount = 0u;
             package.skyboxDrawCount = 0u;
             package.helperDrawCount = 0u;
@@ -54,6 +55,7 @@ namespace NLS::Render::Context
             package.objectDataReady = false;
             package.lightingDataReady = false;
             package.hasOpaquePass = false;
+            package.hasDecalPass = false;
             package.hasTransparentPass = false;
             package.hasSkyboxPass = false;
             package.hasHelperPass = false;

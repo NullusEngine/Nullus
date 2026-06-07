@@ -5,8 +5,12 @@
 #include "Assets/EditorAssetDatabase.h"
 #include "Assets/PrefabEditorWorkflow.h"
 #include "Components/LightComponent.h"
+#include "Components/MeshFilter.h"
+#include "Components/MeshRenderer.h"
 #include "GameObject.h"
 #include "Guid.h"
+#include "Rendering/Resources/Material.h"
+#include "Rendering/Resources/Mesh.h"
 #include "SceneSystem/Scene.h"
 #include "Serialize/ObjectGraphReader.h"
 
@@ -63,6 +67,21 @@ const NLS::Engine::Serialize::PropertyRecord* FindProperty(
     return nullptr;
 }
 
+const NLS::Engine::Serialize::PropertyValue* FindObjectProperty(
+    const NLS::Engine::Serialize::PropertyValue& value,
+    const char* name)
+{
+    if (value.GetKind() != NLS::Engine::Serialize::PropertyValue::Kind::Object)
+        return nullptr;
+
+    for (const auto& property : value.GetObject())
+    {
+        if (property.first == name)
+            return &property.second;
+    }
+    return nullptr;
+}
+
 const NLS::Engine::Serialize::ObjectRecord* FindObjectRecord(
     const NLS::Engine::Serialize::ObjectGraphDocument& graph,
     const NLS::Engine::Serialize::ObjectId& id)
@@ -73,6 +92,23 @@ const NLS::Engine::Serialize::ObjectRecord* FindObjectRecord(
             return &record;
     }
     return nullptr;
+}
+
+std::vector<NLS::Engine::Serialize::ObjectId> ReadOwnedReferences(
+    const NLS::Engine::Serialize::ObjectRecord& record,
+    const char* name)
+{
+    std::vector<NLS::Engine::Serialize::ObjectId> ids;
+    const auto* property = FindProperty(record, name);
+    if (!property || property->value.GetKind() != NLS::Engine::Serialize::PropertyValue::Kind::Array)
+        return ids;
+
+    for (const auto& value : property->value.GetArray())
+    {
+        if (value.GetKind() == NLS::Engine::Serialize::PropertyValue::Kind::OwnedReference)
+            ids.push_back(value.GetObjectId());
+    }
+    return ids;
 }
 
 std::string ReadStringProperty(
@@ -118,6 +154,17 @@ NLS::Engine::GameObject* FindChildByName(NLS::Engine::GameObject& root, const st
     return nullptr;
 }
 
+size_t CountChildrenByName(NLS::Engine::GameObject& root, const std::string& name)
+{
+    return static_cast<size_t>(std::count_if(
+        root.GetChildren().begin(),
+        root.GetChildren().end(),
+        [&name](const NLS::Engine::GameObject* child)
+        {
+            return child != nullptr && child->GetName() == name;
+        }));
+}
+
 NLS::Engine::GameObject* FindDescendantByName(NLS::Engine::GameObject& root, const std::string& name)
 {
     if (root.GetName() == name)
@@ -131,6 +178,13 @@ NLS::Engine::GameObject* FindDescendantByName(NLS::Engine::GameObject& root, con
             return found;
     }
     return nullptr;
+}
+
+template <typename T>
+NLS::Engine::Serialize::PPtr<T> MakePPtr(const NLS::Engine::Serialize::ObjectIdentifier& identifier)
+{
+    return NLS::Engine::Serialize::PPtr<T>(
+        NLS::Engine::Serialize::PersistentManager::Instance().ObjectIdentifierToInstanceID(identifier));
 }
 }
 
@@ -218,6 +272,252 @@ TEST(PrefabEditorWorkflowTests, InstantiatesPrefabAndStoresSceneConnection)
     EXPECT_EQ(scene.GetGameObjects()[0], result.instance->instanceRoot);
 }
 
+TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstanceCompletesPreviewRootStructure)
+{
+    const std::string meshPath = "Library/Artifacts/PreviewCommitHero/body.nmesh";
+    const std::string materialPath = "Library/Artifacts/PreviewCommitHero/body.nmat";
+    const auto meshId = NLS::Engine::Serialize::AssetId(
+        NLS::Guid::Parse("83838383-8383-4383-8383-838383838385"));
+    const auto materialId = NLS::Engine::Serialize::AssetId(
+        NLS::Guid::Parse("83838383-8383-4383-8383-838383838386"));
+
+    NLS::Engine::GameObject sourceRoot("PreviewCommitHero", "Model");
+    auto* sourceMeshFilter = sourceRoot.AddComponent<NLS::Engine::Components::MeshFilter>();
+    auto* sourceMeshRenderer = sourceRoot.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(sourceMeshFilter, nullptr);
+    ASSERT_NE(sourceMeshRenderer, nullptr);
+    sourceMeshFilter->SetMeshReference(MakePPtr<NLS::Render::Resources::Mesh>(
+        NLS::Engine::Serialize::ObjectIdentifier::Asset(
+            meshId,
+            NLS::Engine::Serialize::MakeLocalIdentifierInFile(meshId.GetGuid(), meshPath),
+            meshPath)));
+    sourceMeshRenderer->SetMaterialReferences({
+        MakePPtr<NLS::Render::Resources::Material>(
+            NLS::Engine::Serialize::ObjectIdentifier::Asset(
+                materialId,
+                NLS::Engine::Serialize::MakeLocalIdentifierInFile(materialId.GetGuid(), materialPath),
+                materialPath))
+    });
+    auto* sourceChild = new NLS::Engine::GameObject("PreviewCommitChild", "ModelPart");
+    sourceChild->SetParent(sourceRoot);
+
+    auto artifact = NLS::Editor::Assets::PrefabEditorWorkflow().CreatePrefabFromSelection({
+        &sourceRoot,
+        {},
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-838383838384")),
+        "Assets/Prefabs/PreviewCommitHero.prefab"
+    }).artifact;
+    ASSERT_TRUE(artifact.has_value());
+
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& previewRoot = scene.CreateGameObject("PreviewCommitHero", "Model");
+
+    NLS::Editor::Assets::PrefabEditorWorkflow workflow;
+    auto result = workflow.ConnectExistingPrefabInstance({
+        &*artifact,
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-838383838384")),
+        "prefab:PreviewCommitHero"
+    }, previewRoot);
+
+    ASSERT_EQ(result.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
+    ASSERT_TRUE(result.instance.has_value());
+    EXPECT_EQ(result.instance->instanceRoot, &previewRoot)
+        << "Scene View release must keep the same preview root instead of instantiating a replacement.";
+    EXPECT_NE(previewRoot.GetComponent<NLS::Engine::Components::MeshFilter>(), nullptr);
+    EXPECT_NE(previewRoot.GetComponent<NLS::Engine::Components::MeshRenderer>(), nullptr);
+    EXPECT_EQ(previewRoot.GetComponent<NLS::Engine::Components::MeshFilter>()->GetModelPath(), meshPath)
+        << "Committing an incomplete drag preview must preserve the prefab mesh reference hint so renderer resolution does not reload or lose tasks.";
+    const auto materialPaths = previewRoot.GetComponent<NLS::Engine::Components::MeshRenderer>()->GetMaterialPaths();
+    ASSERT_EQ(materialPaths.size(), 1u);
+    EXPECT_EQ(materialPaths.front(), materialPath)
+        << "Committing an incomplete drag preview must preserve material hints for the same live object instead of creating a second load path.";
+    auto* completedChild = FindChildByName(previewRoot, "PreviewCommitChild");
+    ASSERT_NE(completedChild, nullptr);
+
+    scene.AddGameObject(&previewRoot);
+    EXPECT_NE(
+        std::find(scene.GetGameObjects().begin(), scene.GetGameObjects().end(), completedChild),
+        scene.GetGameObjects().end())
+        << "Prefab completion must register newly restored children with the active scene for save and render traversal.";
+    EXPECT_EQ(scene.GetFastAccessComponents().modelRenderers.size(), 1u);
+
+    ASSERT_NE(result.instance->sourceByInstanceObject.find(&previewRoot), result.instance->sourceByInstanceObject.end());
+    EXPECT_GE(result.instance->sourceByInstanceObject.size(), 2u)
+        << "The connected instance must map the completed prefab hierarchy so renderer resolution can find mesh/material tasks.";
+    EXPECT_FALSE(result.instance->sourceToInstance.empty());
+}
+
+TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstancePreservesPreviewTransientMesh)
+{
+    const std::string meshPath = "Library/Artifacts/PreviewCommitTransient/body.nmesh";
+    const auto meshId = NLS::Engine::Serialize::AssetId(
+        NLS::Guid::Parse("83838383-8383-4383-8383-838383838387"));
+
+    NLS::Engine::GameObject sourceRoot("PreviewCommitTransient", "Model");
+    auto* sourceMeshFilter = sourceRoot.AddComponent<NLS::Engine::Components::MeshFilter>();
+    ASSERT_NE(sourceMeshFilter, nullptr);
+    sourceMeshFilter->SetMeshReference(MakePPtr<NLS::Render::Resources::Mesh>(
+        NLS::Engine::Serialize::ObjectIdentifier::Asset(
+            meshId,
+            NLS::Engine::Serialize::MakeLocalIdentifierInFile(meshId.GetGuid(), meshPath),
+            meshPath)));
+
+    auto artifact = NLS::Editor::Assets::PrefabEditorWorkflow().CreatePrefabFromSelection({
+        &sourceRoot,
+        {},
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-838383838388")),
+        "Assets/Prefabs/PreviewCommitTransient.prefab"
+    }).artifact;
+    ASSERT_TRUE(artifact.has_value());
+
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& previewRoot = scene.CreateGameObject("PreviewCommitTransient", "Model");
+    auto* previewMeshFilter = previewRoot.AddComponent<NLS::Engine::Components::MeshFilter>();
+    ASSERT_NE(previewMeshFilter, nullptr);
+    auto transientMesh = std::shared_ptr<NLS::Render::Resources::Mesh>(
+        new NLS::Render::Resources::Mesh({}, {}, 0u));
+    previewMeshFilter->SetResolvedTransientMeshFromReference(transientMesh);
+
+    auto result = NLS::Editor::Assets::PrefabEditorWorkflow().ConnectExistingPrefabInstance({
+        &*artifact,
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-838383838388")),
+        "prefab:PreviewCommitTransient"
+    }, previewRoot);
+
+    ASSERT_EQ(result.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
+    ASSERT_TRUE(result.instance.has_value());
+    EXPECT_EQ(result.instance->instanceRoot, &previewRoot);
+    ASSERT_NE(previewRoot.GetComponent<NLS::Engine::Components::MeshFilter>(), nullptr);
+    EXPECT_TRUE(previewRoot.GetComponent<NLS::Engine::Components::MeshFilter>()->HasResolvedTransientMesh())
+        << "Connecting the preview root must not overwrite a mesh already loaded during drag preview.";
+}
+
+TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstanceCompletesDuplicateNamedChildrenIndependently)
+{
+    NLS::Engine::GameObject sourceRoot("DuplicateChildPreview", "Model");
+    auto* firstChild = new NLS::Engine::GameObject("RepeatedPart", "ModelPart");
+    firstChild->SetParent(sourceRoot);
+    auto* secondChild = new NLS::Engine::GameObject("RepeatedPart", "ModelPart");
+    secondChild->SetParent(sourceRoot);
+
+    auto artifact = NLS::Editor::Assets::PrefabEditorWorkflow().CreatePrefabFromSelection({
+        &sourceRoot,
+        {},
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-838383838389")),
+        "Assets/Prefabs/DuplicateChildPreview.prefab"
+    }).artifact;
+    ASSERT_TRUE(artifact.has_value());
+
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& previewRoot = scene.CreateGameObject("DuplicateChildPreview", "Model");
+
+    auto result = NLS::Editor::Assets::PrefabEditorWorkflow().ConnectExistingPrefabInstance({
+        &*artifact,
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-838383838389")),
+        "prefab:DuplicateChildPreview"
+    }, previewRoot);
+
+    ASSERT_EQ(result.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
+    ASSERT_TRUE(result.instance.has_value());
+    EXPECT_EQ(CountChildrenByName(previewRoot, "RepeatedPart"), 2u)
+        << "Completing a preview root must not collapse same-name prefab siblings into one live child.";
+    EXPECT_GE(result.instance->sourceByInstanceObject.size(), 3u);
+}
+
+TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstanceCompletesDuplicateSameTypeComponentsIndependently)
+{
+    NLS::Engine::GameObject sourceRoot("DuplicateComponentPreview", "Model");
+    ASSERT_NE(sourceRoot.AddComponent<NLS::Engine::Components::LightComponent>(), nullptr);
+    ASSERT_NE(sourceRoot.AddComponent<NLS::Engine::Components::LightComponent>(), nullptr);
+
+    auto artifact = NLS::Editor::Assets::PrefabEditorWorkflow().CreatePrefabFromSelection({
+        &sourceRoot,
+        {},
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-83838383838a")),
+        "Assets/Prefabs/DuplicateComponentPreview.prefab"
+    }).artifact;
+    ASSERT_TRUE(artifact.has_value());
+
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& previewRoot = scene.CreateGameObject("DuplicateComponentPreview", "Model");
+
+    auto result = NLS::Editor::Assets::PrefabEditorWorkflow().ConnectExistingPrefabInstance({
+        &*artifact,
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-83838383838a")),
+        "prefab:DuplicateComponentPreview"
+    }, previewRoot);
+
+    ASSERT_EQ(result.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
+    ASSERT_TRUE(result.instance.has_value());
+    const auto duplicateLightCount = static_cast<size_t>(std::count_if(
+        previewRoot.GetComponents().begin(),
+        previewRoot.GetComponents().end(),
+        [](const auto& component)
+        {
+            return component &&
+                component->GetType() == NLS_TYPEOF(NLS::Engine::Components::LightComponent);
+        }));
+    EXPECT_EQ(duplicateLightCount, 2u)
+        << "Completing a preview root must not map duplicate same-type source components onto one live component.";
+}
+
+TEST(PrefabEditorWorkflowTests, ConnectExistingPrefabInstanceCompletesMissingMaterialSlotsWithoutClearingLoadedSlot)
+{
+    const std::string firstMaterialPath = "Library/Artifacts/PreviewCommitPartialMaterials/first.nmat";
+    const std::string secondMaterialPath = "Library/Artifacts/PreviewCommitPartialMaterials/second.nmat";
+    const auto firstMaterialId = NLS::Engine::Serialize::AssetId(
+        NLS::Guid::Parse("83838383-8383-4383-8383-83838383838b"));
+    const auto secondMaterialId = NLS::Engine::Serialize::AssetId(
+        NLS::Guid::Parse("83838383-8383-4383-8383-83838383838c"));
+
+    NLS::Engine::GameObject sourceRoot("PartialMaterialPreview", "Model");
+    auto* sourceMeshRenderer = sourceRoot.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(sourceMeshRenderer, nullptr);
+    sourceMeshRenderer->SetMaterialReferences({
+        MakePPtr<NLS::Render::Resources::Material>(
+            NLS::Engine::Serialize::ObjectIdentifier::Asset(
+                firstMaterialId,
+                NLS::Engine::Serialize::MakeLocalIdentifierInFile(firstMaterialId.GetGuid(), firstMaterialPath),
+                firstMaterialPath)),
+        MakePPtr<NLS::Render::Resources::Material>(
+            NLS::Engine::Serialize::ObjectIdentifier::Asset(
+                secondMaterialId,
+                NLS::Engine::Serialize::MakeLocalIdentifierInFile(secondMaterialId.GetGuid(), secondMaterialPath),
+                secondMaterialPath))
+    });
+
+    auto artifact = NLS::Editor::Assets::PrefabEditorWorkflow().CreatePrefabFromSelection({
+        &sourceRoot,
+        {},
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-83838383838d")),
+        "Assets/Prefabs/PartialMaterialPreview.prefab"
+    }).artifact;
+    ASSERT_TRUE(artifact.has_value());
+
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& previewRoot = scene.CreateGameObject("PartialMaterialPreview", "Model");
+    auto* previewMeshRenderer = previewRoot.AddComponent<NLS::Engine::Components::MeshRenderer>();
+    ASSERT_NE(previewMeshRenderer, nullptr);
+    auto firstMaterial = std::make_unique<NLS::Render::Resources::Material>();
+    firstMaterial->path = firstMaterialPath;
+    previewMeshRenderer->SetResolvedMaterialFromReference(0u, *firstMaterial);
+
+    auto result = NLS::Editor::Assets::PrefabEditorWorkflow().ConnectExistingPrefabInstance({
+        &*artifact,
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("83838383-8383-4383-8383-83838383838d")),
+        "prefab:PartialMaterialPreview"
+    }, previewRoot);
+
+    ASSERT_EQ(result.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
+    ASSERT_TRUE(result.instance.has_value());
+    ASSERT_EQ(previewMeshRenderer->GetMaterialAtIndex(0u), firstMaterial.get());
+    const auto materialPaths = previewMeshRenderer->GetMaterialPaths();
+    ASSERT_EQ(materialPaths.size(), 2u);
+    EXPECT_EQ(materialPaths[0], firstMaterialPath);
+    EXPECT_EQ(materialPaths[1], secondMaterialPath)
+        << "Partially loaded preview materials must still receive hints for not-yet-loaded slots.";
+}
+
 TEST(PrefabEditorWorkflowTests, RegistryTracksConnectedPrefabPresentationStates)
 {
     NLS::Engine::GameObject root("Crate", "Prop");
@@ -257,10 +557,124 @@ TEST(PrefabEditorWorkflowTests, RegistryTracksConnectedPrefabPresentationStates)
     const auto overriddenPresentation = registry.GetPresentation(*registered.instanceRoot);
     EXPECT_EQ(overriddenPresentation.state, NLS::Editor::Assets::PrefabHierarchyState::Root);
     EXPECT_TRUE(overriddenPresentation.hasOverrides);
+    EXPECT_EQ(overriddenPresentation.color, NLS::Editor::Assets::PrefabHierarchyColorToken::ConnectedRoot);
+
+    registry.MarkAssetPendingResources(artifact->assetId, true);
+    const auto pendingPresentation = registry.GetPresentation(*registered.instanceRoot);
+    EXPECT_TRUE(pendingPresentation.pendingResources);
+    EXPECT_EQ(pendingPresentation.color, NLS::Editor::Assets::PrefabHierarchyColorToken::ConnectedRoot);
 
     registry.MarkAssetMissing(artifact->assetId, true);
     const auto missingPresentation = registry.GetPresentation(*registered.instanceRoot);
     EXPECT_TRUE(missingPresentation.missingAsset);
+    EXPECT_EQ(missingPresentation.color, NLS::Editor::Assets::PrefabHierarchyColorToken::Missing);
+
+    registry.MarkAssetMissing(artifact->assetId, false);
+    registry.MarkAssetPendingResources(artifact->assetId, false);
+    const auto unpack = workflow.UnpackPrefabInstance(registered);
+    ASSERT_EQ(unpack.status, NLS::Editor::Assets::PrefabEditorOperationStatus::Committed);
+
+    const auto unpackedPresentation = registry.GetPresentation(*registered.instanceRoot);
+    EXPECT_TRUE(unpackedPresentation.unpacked);
+    EXPECT_EQ(unpackedPresentation.color, NLS::Editor::Assets::PrefabHierarchyColorToken::Unpacked);
+}
+
+TEST(PrefabEditorWorkflowTests, RegistryResourceFailurePresentationIsScopedToInstanceRoot)
+{
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& firstRoot = scene.CreateGameObject("SharedPrefab", "Prop");
+    auto& secondRoot = scene.CreateGameObject("SharedPrefab", "Prop");
+
+    const auto prefabAssetId =
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("83112222-2222-4322-8322-222222222222"));
+
+    NLS::Editor::Assets::PrefabInstanceRecord firstInstance;
+    firstInstance.prefabAssetId = prefabAssetId;
+    firstInstance.prefabSubAssetKey = "prefab:SharedPrefab";
+    firstInstance.instanceRoot = &firstRoot;
+
+    NLS::Editor::Assets::PrefabInstanceRecord secondInstance;
+    secondInstance.prefabAssetId = prefabAssetId;
+    secondInstance.prefabSubAssetKey = "prefab:SharedPrefab";
+    secondInstance.instanceRoot = &secondRoot;
+
+    NLS::Editor::Assets::PrefabInstanceRegistry registry;
+    registry.Register(std::move(firstInstance));
+    registry.Register(std::move(secondInstance));
+
+    registry.MarkInstanceResourceFailure(firstRoot, true);
+    registry.MarkInstancePendingResources(firstRoot, false);
+
+    const auto failedPresentation = registry.GetPresentation(firstRoot);
+    EXPECT_TRUE(failedPresentation.missingAsset);
+    EXPECT_EQ(failedPresentation.color, NLS::Editor::Assets::PrefabHierarchyColorToken::Missing);
+
+    const auto siblingPresentation = registry.GetPresentation(secondRoot);
+    EXPECT_FALSE(siblingPresentation.missingAsset)
+        << "Renderer-resource failure on one prefab instance must not poison sibling instances "
+           "that reference the same prefab asset.";
+    EXPECT_EQ(siblingPresentation.color, NLS::Editor::Assets::PrefabHierarchyColorToken::ConnectedRoot);
+}
+
+TEST(PrefabEditorWorkflowTests, RegistrySourceMissingStateIsScopedToSubAssetKey)
+{
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& firstRoot = scene.CreateGameObject("SharedModelVariantA", "Prefab");
+    auto& secondRoot = scene.CreateGameObject("SharedModelVariantB", "Prefab");
+
+    const auto prefabAssetId =
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("83114444-4444-4344-8344-444444444444"));
+
+    NLS::Editor::Assets::PrefabInstanceRecord firstInstance;
+    firstInstance.prefabAssetId = prefabAssetId;
+    firstInstance.prefabSubAssetKey = "prefab:VariantA";
+    firstInstance.instanceRoot = &firstRoot;
+
+    NLS::Editor::Assets::PrefabInstanceRecord secondInstance;
+    secondInstance.prefabAssetId = prefabAssetId;
+    secondInstance.prefabSubAssetKey = "prefab:VariantB";
+    secondInstance.instanceRoot = &secondRoot;
+
+    NLS::Editor::Assets::PrefabInstanceRegistry registry;
+    registry.Register(std::move(firstInstance));
+    registry.Register(std::move(secondInstance));
+
+    registry.MarkAssetMissing(prefabAssetId, "prefab:VariantA", true);
+
+    EXPECT_TRUE(registry.GetPresentation(firstRoot).missingAsset);
+    EXPECT_FALSE(registry.GetPresentation(secondRoot).missingAsset)
+        << "A missing sub-prefab must not mark sibling prefab instances from the same source asset as missing.";
+
+    registry.MarkAssetMissing(prefabAssetId, "prefab:VariantA", false);
+    EXPECT_FALSE(registry.GetPresentation(firstRoot).missingAsset);
+}
+
+TEST(PrefabEditorWorkflowTests, RegistryClearsInstanceResourceFailureWithoutTouchingSourceAssetMissing)
+{
+    NLS::Engine::SceneSystem::Scene scene;
+    auto& root = scene.CreateGameObject("RecoveringPrefab", "Prop");
+    const auto prefabAssetId =
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("83113333-3333-4333-8333-333333333333"));
+
+    NLS::Editor::Assets::PrefabInstanceRecord instance;
+    instance.prefabAssetId = prefabAssetId;
+    instance.prefabSubAssetKey = "prefab:RecoveringPrefab";
+    instance.instanceRoot = &root;
+
+    NLS::Editor::Assets::PrefabInstanceRegistry registry;
+    registry.Register(std::move(instance));
+
+    registry.MarkInstanceResourceFailure(root, true);
+    EXPECT_TRUE(registry.GetPresentation(root).missingAsset);
+
+    registry.MarkInstanceResourceFailure(root, false);
+    EXPECT_FALSE(registry.GetPresentation(root).missingAsset)
+        << "A successful retry must be able to clear only the instance-level renderer resource failure.";
+
+    registry.MarkAssetMissing(prefabAssetId, true);
+    registry.MarkInstanceResourceFailure(root, false);
+    EXPECT_TRUE(registry.GetPresentation(root).missingAsset)
+        << "Clearing renderer resource failure must not hide a real missing source prefab asset.";
 }
 
 TEST(PrefabEditorWorkflowTests, RegistryRemovesPrefabRootInstanceWithoutTouchingUnrelatedPrefabs)
@@ -365,12 +779,12 @@ TEST(PrefabEditorWorkflowTests, RegistryTracksPrefabChildAndGeneratedReadOnlyPre
     const auto rootPresentation = registry.GetPresentation(*registered.instanceRoot);
     EXPECT_EQ(rootPresentation.state, NLS::Editor::Assets::PrefabHierarchyState::Root);
     EXPECT_TRUE(rootPresentation.generatedReadOnly);
-    EXPECT_EQ(rootPresentation.color, NLS::Editor::Assets::PrefabHierarchyColorToken::GeneratedReadOnly);
+    EXPECT_EQ(rootPresentation.color, NLS::Editor::Assets::PrefabHierarchyColorToken::ConnectedRoot);
 
     const auto childPresentation = registry.GetPresentation(*instanceChild);
     EXPECT_EQ(childPresentation.state, NLS::Editor::Assets::PrefabHierarchyState::Child);
     EXPECT_TRUE(childPresentation.generatedReadOnly);
-    EXPECT_EQ(childPresentation.color, NLS::Editor::Assets::PrefabHierarchyColorToken::GeneratedReadOnly);
+    EXPECT_EQ(childPresentation.color, NLS::Editor::Assets::PrefabHierarchyColorToken::ConnectedChild);
 }
 
 TEST(PrefabEditorWorkflowTests, SavingPrefabStageRefreshesRegisteredConnectedInstancesAndKeepsLocalOverrides)
@@ -459,6 +873,113 @@ TEST(PrefabEditorWorkflowTests, DiscoversReflectedPropertyOverridesFromPrefabIns
     EXPECT_EQ(overrides[0].patch.property, "name");
     ASSERT_EQ(overrides[0].patch.value.GetKind(), NLS::Engine::Serialize::PropertyValue::Kind::String);
     EXPECT_EQ(overrides[0].patch.value.GetString(), "RenamedCrate");
+}
+
+TEST(PrefabEditorWorkflowTests, DiscoversReflectedComponentPropertyOverridesFromPrefabInstance)
+{
+    NLS::Engine::GameObject root("MovedCrate", "Prop");
+    auto artifact = NLS::Editor::Assets::PrefabEditorWorkflow().CreatePrefabFromSelection({
+        &root,
+        {},
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("84848484-8484-4484-8484-848484848486")),
+        "Assets/Prefabs/MovedCrate.prefab"
+    }).artifact;
+    ASSERT_TRUE(artifact.has_value());
+
+    NLS::Engine::SceneSystem::Scene scene;
+    NLS::Editor::Assets::PrefabEditorWorkflow workflow;
+    auto instantiate = workflow.InstantiatePrefab({
+        &*artifact,
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("84848484-8484-4484-8484-848484848486")),
+        "prefab:MovedCrate"
+    }, scene);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_NE(instantiate.instance->instanceRoot, nullptr);
+
+    instantiate.instance->instanceRoot->GetTransform()->SetLocalPosition({7.0f, 3.0f, -2.0f});
+
+    const auto overrides = workflow.DiscoverOverrides(*artifact, *instantiate.instance);
+    const auto* positionOverride = FindOverride(
+        overrides,
+        NLS::Engine::Serialize::PatchOperationType::ReplaceProperty,
+        "localPosition");
+
+    ASSERT_NE(positionOverride, nullptr);
+    EXPECT_NE(positionOverride->sourceObject, artifact->graph.root);
+    EXPECT_EQ(positionOverride->propertyPath, "localPosition");
+    ASSERT_EQ(positionOverride->patch.value.GetKind(), NLS::Engine::Serialize::PropertyValue::Kind::Object);
+    const auto* x = FindObjectProperty(positionOverride->patch.value, "x");
+    const auto* y = FindObjectProperty(positionOverride->patch.value, "y");
+    const auto* z = FindObjectProperty(positionOverride->patch.value, "z");
+    ASSERT_NE(x, nullptr);
+    ASSERT_NE(y, nullptr);
+    ASSERT_NE(z, nullptr);
+    EXPECT_DOUBLE_EQ(x->GetNumber(), 7.0);
+    EXPECT_DOUBLE_EQ(y->GetNumber(), 3.0);
+    EXPECT_DOUBLE_EQ(z->GetNumber(), -2.0);
+}
+
+TEST(PrefabEditorWorkflowTests, DiscoversDuplicateSameTypeComponentPropertyOverridesBySourceOrder)
+{
+    NLS::Engine::GameObject root("DuplicateLightOverrides", "Prop");
+    auto* firstSourceLight = root.AddComponent<NLS::Engine::Components::LightComponent>();
+    auto* secondSourceLight = root.AddComponent<NLS::Engine::Components::LightComponent>();
+    ASSERT_NE(firstSourceLight, nullptr);
+    ASSERT_NE(secondSourceLight, nullptr);
+    firstSourceLight->SetIntensity(1.0f);
+    secondSourceLight->SetIntensity(2.0f);
+
+    auto artifact = NLS::Editor::Assets::PrefabEditorWorkflow().CreatePrefabFromSelection({
+        &root,
+        {},
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("84848484-8484-4484-8484-848484848487")),
+        "Assets/Prefabs/DuplicateLightOverrides.prefab"
+    }).artifact;
+    ASSERT_TRUE(artifact.has_value());
+
+    const auto* rootRecord = FindObjectRecord(artifact->graph, artifact->graph.root);
+    ASSERT_NE(rootRecord, nullptr);
+    const auto sourceComponents = ReadOwnedReferences(*rootRecord, "components");
+    ASSERT_GE(sourceComponents.size(), 3u);
+    const auto secondLightSource = sourceComponents[2];
+
+    NLS::Engine::SceneSystem::Scene scene;
+    NLS::Editor::Assets::PrefabEditorWorkflow workflow;
+    auto instantiate = workflow.InstantiatePrefab({
+        &*artifact,
+        NLS::Core::Assets::AssetId(NLS::Guid::Parse("84848484-8484-4484-8484-848484848487")),
+        "prefab:DuplicateLightOverrides"
+    }, scene);
+    ASSERT_TRUE(instantiate.instance.has_value());
+    ASSERT_NE(instantiate.instance->instanceRoot, nullptr);
+
+    size_t lightIndex = 0u;
+    for (const auto& component : instantiate.instance->instanceRoot->GetComponents())
+    {
+        if (!component || component->GetType() != NLS_TYPEOF(NLS::Engine::Components::LightComponent))
+            continue;
+
+        if (lightIndex == 1u)
+            static_cast<NLS::Engine::Components::LightComponent*>(component.get())->SetIntensity(9.0f);
+        ++lightIndex;
+    }
+    ASSERT_EQ(lightIndex, 2u);
+
+    const auto overrides = workflow.DiscoverOverrides(*artifact, *instantiate.instance);
+    const auto found = std::find_if(
+        overrides.begin(),
+        overrides.end(),
+        [&](const NLS::Editor::Assets::PrefabOverrideRecord& overrideRecord)
+        {
+            return overrideRecord.patch.type == NLS::Engine::Serialize::PatchOperationType::ReplaceProperty &&
+                overrideRecord.patch.target == secondLightSource &&
+                overrideRecord.patch.property == "intensity" &&
+                overrideRecord.patch.value.GetKind() == NLS::Engine::Serialize::PropertyValue::Kind::Number &&
+                overrideRecord.patch.value.GetNumber() == 9.0;
+        });
+
+    EXPECT_NE(found, overrides.end())
+        << "Duplicate same-type component property overrides must stay aligned with the corresponding source component.";
 }
 
 TEST(PrefabEditorWorkflowTests, PrefersLivePropertyOverrideOverStaleLocalPatchWhenApplying)
@@ -1650,16 +2171,13 @@ TEST(PrefabEditorWorkflowTests, AssetBrowserPrefabCommandSurfaceExposesCreateOpe
         NLS::Guid::Parse("a2a2a2a2-a2a2-4a2a-8a2a-a2a2a2a2a2a2"));
 
     EditorAssetDatabase database;
-    const auto sourceCommands = database.GetPrefabCommandSurface({
-        PrefabCommandSurface::AssetBrowser,
-        PrefabCommandSubject::SourcePrefabAsset,
-        prefabAsset,
-        "prefab:Crate",
-        true,
-        false,
-        false,
-        0u
-    });
+    PrefabCommandSurfaceRequest sourceRequest;
+    sourceRequest.surface = PrefabCommandSurface::AssetBrowser;
+    sourceRequest.subject = PrefabCommandSubject::SourcePrefabAsset;
+    sourceRequest.prefabAssetId = prefabAsset;
+    sourceRequest.prefabSubAssetKey = "prefab:Crate";
+    sourceRequest.assetExists = true;
+    const auto sourceCommands = database.GetPrefabCommandSurface(sourceRequest);
 
     EXPECT_TRUE(HasCommand(sourceCommands, "prefab.create-from-selection", true));
     EXPECT_TRUE(HasCommand(sourceCommands, "prefab.open", true));
@@ -1671,16 +2189,14 @@ TEST(PrefabEditorWorkflowTests, AssetBrowserPrefabCommandSurfaceExposesCreateOpe
         "prefab:GeneratedModel",
         GeneratedPrefabEditPolicy::ReadOnlyGenerated
     });
-    const auto generatedCommands = database.GetPrefabCommandSurface({
-        PrefabCommandSurface::AssetBrowser,
-        PrefabCommandSubject::GeneratedModelPrefabAsset,
-        prefabAsset,
-        "prefab:GeneratedModel",
-        true,
-        true,
-        false,
-        0u
-    });
+    PrefabCommandSurfaceRequest generatedRequest;
+    generatedRequest.surface = PrefabCommandSurface::AssetBrowser;
+    generatedRequest.subject = PrefabCommandSubject::GeneratedModelPrefabAsset;
+    generatedRequest.prefabAssetId = prefabAsset;
+    generatedRequest.prefabSubAssetKey = "prefab:GeneratedModel";
+    generatedRequest.assetExists = true;
+    generatedRequest.generatedReadOnly = true;
+    const auto generatedCommands = database.GetPrefabCommandSurface(generatedRequest);
 
     EXPECT_TRUE(HasCommand(generatedCommands, "prefab.open", true));
     EXPECT_TRUE(HasCommand(generatedCommands, "prefab.create-variant", true));
@@ -1688,7 +2204,7 @@ TEST(PrefabEditorWorkflowTests, AssetBrowserPrefabCommandSurfaceExposesCreateOpe
     EXPECT_TRUE(HasCommand(generatedCommands, "prefab.apply-overrides", false));
 }
 
-TEST(PrefabEditorWorkflowTests, InspectorPrefabCommandSurfaceExposesApplyRevertAndUnpack)
+TEST(PrefabEditorWorkflowTests, InspectorPrefabCommandSurfaceRequiresEditableSourceContextForApply)
 {
     using namespace NLS::Editor::Assets;
 
@@ -1696,32 +2212,31 @@ TEST(PrefabEditorWorkflowTests, InspectorPrefabCommandSurfaceExposesApplyRevertA
         NLS::Guid::Parse("a3a3a3a3-a3a3-4a3a-8a3a-a3a3a3a3a3a3"));
 
     EditorAssetDatabase database;
-    const auto instanceCommands = database.GetPrefabCommandSurface({
-        PrefabCommandSurface::Inspector,
-        PrefabCommandSubject::PrefabInstance,
-        prefabAsset,
-        "prefab:Crate",
-        true,
-        false,
-        true,
-        3u
-    });
+    PrefabCommandSurfaceRequest instanceRequest;
+    instanceRequest.surface = PrefabCommandSurface::Inspector;
+    instanceRequest.subject = PrefabCommandSubject::PrefabInstance;
+    instanceRequest.prefabAssetId = prefabAsset;
+    instanceRequest.prefabSubAssetKey = "prefab:Crate";
+    instanceRequest.assetExists = true;
+    instanceRequest.connectedInstance = true;
+    instanceRequest.overrideCount = 3u;
+    const auto instanceCommands = database.GetPrefabCommandSurface(instanceRequest);
 
-    EXPECT_TRUE(HasCommand(instanceCommands, "prefab.apply-overrides", true));
+    EXPECT_TRUE(HasCommand(instanceCommands, "prefab.apply-overrides", false));
     EXPECT_TRUE(HasCommand(instanceCommands, "prefab.revert-overrides", true));
     EXPECT_TRUE(HasCommand(instanceCommands, "prefab.unpack", true));
     EXPECT_TRUE(HasCommand(instanceCommands, "prefab.open", true));
 
-    const auto missingCommands = database.GetPrefabCommandSurface({
-        PrefabCommandSurface::Inspector,
-        PrefabCommandSubject::MissingPrefabInstance,
-        {},
-        {},
-        false,
-        false,
-        true,
-        1u
-    });
+    instanceRequest.editableSourceArtifactContext = true;
+    const auto editableSourceCommands = database.GetPrefabCommandSurface(instanceRequest);
+    EXPECT_TRUE(HasCommand(editableSourceCommands, "prefab.apply-overrides", true));
+
+    PrefabCommandSurfaceRequest missingRequest;
+    missingRequest.surface = PrefabCommandSurface::Inspector;
+    missingRequest.subject = PrefabCommandSubject::MissingPrefabInstance;
+    missingRequest.connectedInstance = true;
+    missingRequest.overrideCount = 1u;
+    const auto missingCommands = database.GetPrefabCommandSurface(missingRequest);
 
     EXPECT_TRUE(HasCommand(missingCommands, "prefab.apply-overrides", false));
     EXPECT_TRUE(HasCommand(missingCommands, "prefab.revert-overrides", true));

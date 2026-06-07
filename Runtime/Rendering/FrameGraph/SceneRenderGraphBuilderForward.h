@@ -20,6 +20,7 @@ namespace NLS::Render::FrameGraph
     {
         Unknown = 0,
         Opaque,
+        Decal,
         Skybox,
         Transparent
     };
@@ -40,7 +41,7 @@ namespace NLS::Render::FrameGraph
         ::FrameGraph& frameGraph,
         const NLS::Render::Data::FrameDescriptor& frameDescriptor);
 
-    NLS_RENDER_API std::array<ForwardScenePassDescriptor, 3> GetForwardScenePassDescriptors();
+    NLS_RENDER_API std::array<ForwardScenePassDescriptor, 4> GetForwardScenePassDescriptors();
 
     NLS_RENDER_API PreparedForwardSceneGraph PrepareForwardSceneGraph(
         ::FrameGraph& frameGraph,

@@ -428,10 +428,15 @@ RenderSceneVisibleQueues RenderScene::GatherVisibleCommands(
 	}
 
 	FinalizeOpaqueQueue(output.opaques);
+	SortVisibleQueue(output.decals, std::greater<float>{});
 	SortVisibleQueue(output.transparents, std::greater<float>{});
 	AssignVisibleObjectIndices(output);
 	m_lastDrawCallOptimizationStats.submittedSceneDrawCount =
-		static_cast<uint64_t>(output.opaques.size() + output.transparents.size() + output.skyboxes.size());
+		static_cast<uint64_t>(
+			output.opaques.size() +
+			output.decals.size() +
+			output.transparents.size() +
+			output.skyboxes.size());
 	m_lastDrawCallOptimizationStats.dynamicInstanceGroupCount = 0u;
 	m_lastDrawCallOptimizationStats.largestInstanceGroupSize = 0u;
 	for (const auto& entry : output.opaques)
@@ -943,7 +948,9 @@ void RenderScene::AppendVisibleDrawable(
 		transform.GetWorldPosition(),
 		options.cameraPosition);
 
-	if (command.material != nullptr && command.material->IsBlendable())
+	if (command.material != nullptr && command.material->IsDecal())
+		output.decals.emplace_back(distanceToActor, std::move(drawable));
+	else if (command.material != nullptr && command.material->IsBlendable())
 		output.transparents.emplace_back(distanceToActor, std::move(drawable));
 	else
 		output.opaques.emplace_back(distanceToActor, std::move(drawable));
@@ -1163,6 +1170,7 @@ void RenderScene::AssignVisibleObjectIndices(RenderSceneVisibleQueues& output) c
 		};
 
 	assignQueue(output.opaques);
+	assignQueue(output.decals);
 	assignQueue(output.skyboxes);
 	assignQueue(output.transparents);
 }

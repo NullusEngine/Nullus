@@ -14,9 +14,26 @@ namespace NLS::UI
 		{
 			std::string type;
 			std::vector<std::byte> bytes;
+			int frame = -1;
+			bool valid = false;
 		};
 
 		CachedDragDropPayload g_cachedDragDropPayload;
+		constexpr int kCachedPayloadFrameGrace = 1;
+
+		int GetCurrentImGuiFrame()
+		{
+			return ImGui::GetCurrentContext() != nullptr ? ImGui::GetFrameCount() : -1;
+		}
+
+		bool IsCachedPayloadFresh()
+		{
+			const int currentFrame = GetCurrentImGuiFrame();
+			return g_cachedDragDropPayload.valid &&
+				currentFrame >= 0 &&
+				g_cachedDragDropPayload.frame >= 0 &&
+				currentFrame <= g_cachedDragDropPayload.frame + kCachedPayloadFrameGrace;
+		}
 
 		ImGuiDragDropFlags ToImGuiFlags(const DragDropSourceFlags flags)
 		{
@@ -58,15 +75,17 @@ namespace NLS::UI
 
 	bool SetDragDropPayload(const char* type, const void* data, const size_t dataSize)
 	{
-		const bool accepted = ImGui::SetDragDropPayload(type, data, dataSize);
-		if (ImGui::IsDragDropActive() && type != nullptr && (data != nullptr || dataSize == 0u))
+		const bool payloadAcceptedByTarget = ImGui::SetDragDropPayload(type, data, dataSize);
+		if (type != nullptr && (data != nullptr || dataSize == 0u))
 		{
 			g_cachedDragDropPayload.type = type;
 			g_cachedDragDropPayload.bytes.resize(dataSize);
+			g_cachedDragDropPayload.frame = GetCurrentImGuiFrame();
+			g_cachedDragDropPayload.valid = true;
 			if (data != nullptr && dataSize > 0u)
 				std::memcpy(g_cachedDragDropPayload.bytes.data(), data, dataSize);
 		}
-		return accepted;
+		return payloadAcceptedByTarget;
 	}
 
 	void ClearCachedDragDropPayload()
@@ -100,8 +119,9 @@ namespace NLS::UI
 			return { payload->Data, static_cast<size_t>(payload->DataSize), payload->IsDelivery() };
 		}
 
-		if (!ImGui::IsDragDropActive() ||
+		if (payload != nullptr ||
 			type == nullptr ||
+			!IsCachedPayloadFresh() ||
 			g_cachedDragDropPayload.type != type ||
 			g_cachedDragDropPayload.bytes.empty())
 		{
@@ -113,4 +133,21 @@ namespace NLS::UI
 			g_cachedDragDropPayload.bytes.size(),
 			false };
 	}
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+	void SetCachedDragDropPayloadForTesting(const char* type, const void* data, const size_t dataSize, const bool fresh)
+	{
+		g_cachedDragDropPayload = {};
+		if (type == nullptr || (data == nullptr && dataSize > 0u))
+			return;
+
+		g_cachedDragDropPayload.type = type;
+		g_cachedDragDropPayload.bytes.resize(dataSize);
+		const int currentFrame = GetCurrentImGuiFrame();
+		g_cachedDragDropPayload.frame = currentFrame - (fresh ? 0 : kCachedPayloadFrameGrace + 1);
+		g_cachedDragDropPayload.valid = true;
+		if (data != nullptr && dataSize > 0u)
+			std::memcpy(g_cachedDragDropPayload.bytes.data(), data, dataSize);
+	}
+#endif
 }

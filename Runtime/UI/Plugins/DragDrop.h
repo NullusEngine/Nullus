@@ -65,4 +65,8 @@ namespace NLS::UI
 	NLS_UI_API void EndDragDropTarget();
 	NLS_UI_API DragDropPayloadView AcceptDragDropPayload(const char* type, DragDropTargetFlags flags);
 	NLS_UI_API DragDropPayloadView PeekDragDropPayload(const char* type);
+
+#if defined(NLS_ENABLE_TEST_HOOKS)
+	NLS_UI_API void SetCachedDragDropPayloadForTesting(const char* type, const void* data, size_t dataSize, bool fresh);
+#endif
 }

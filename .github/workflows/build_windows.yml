@@ -106,6 +106,7 @@ jobs:
         run: exit [int]'${{ steps.build_step.outputs.exit_code }}'
 
       - name: Run unit tests
+        timeout-minutes: 20
         shell: powershell
         run: |
           Get-ChildItem "build/windows/bin/${{ matrix.configuration }}" | Format-Table -AutoSize
@@ -113,17 +114,19 @@ jobs:
           $reflectionLog = "reflection_test.log"
           $unitExe = (Resolve-Path "build/windows/bin/${{ matrix.configuration }}/NullusUnitTests.exe").Path
           $reflectionExe = (Resolve-Path "build/windows/bin/${{ matrix.configuration }}/ReflectionTest.exe").Path
-          cmd /c """$unitExe"" > ""$unitLog"" 2>&1"
+          $unitCommand = '"' + $unitExe + '" 2>&1'
+          cmd /d /c $unitCommand | Tee-Object -FilePath $unitLog
           $unitExit = $LASTEXITCODE
-          Get-Content $unitLog
           if ($unitExit -ne 0) {
-            Get-Content $unitLog | ForEach-Object { Write-Output "::error::$_" }
+            Write-Output "::error::NullusUnitTests failed with exit code $unitExit"
+            Get-Content $unitLog -Tail 200 | ForEach-Object { Write-Output "::error::$_" }
             exit $unitExit
           }
-          cmd /c """$reflectionExe"" > ""$reflectionLog"" 2>&1"
+          $reflectionCommand = '"' + $reflectionExe + '" 2>&1'
+          cmd /d /c $reflectionCommand | Tee-Object -FilePath $reflectionLog
           $reflectionExit = $LASTEXITCODE
-          Get-Content $reflectionLog
           if ($reflectionExit -ne 0) {
-            Get-Content $reflectionLog | ForEach-Object { Write-Output "::error::$_" }
+            Write-Output "::error::ReflectionTest failed with exit code $reflectionExit"
+            Get-Content $reflectionLog -Tail 200 | ForEach-Object { Write-Output "::error::$_" }
             exit $reflectionExit
           }

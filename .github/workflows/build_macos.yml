@@ -46,6 +46,7 @@ jobs:
           fi
 
       - name: Run unit tests
+        timeout-minutes: 20
         shell: bash
         run: |
           set -euo pipefail
@@ -58,19 +59,22 @@ jobs:
           test -n "${REFLECTION_TEST}"
           file "${NULLUS_UNIT_TESTS}" || true
           file "${REFLECTION_TEST}" || true
-          "${NULLUS_UNIT_TESTS}" > nullus_unit_tests.log 2>&1 || {
-            cat nullus_unit_tests.log
-            while IFS= read -r line; do
-              echo "::error::$line"
-            done < nullus_unit_tests.log
-            exit 1
+          run_test() {
+            local label="$1"
+            local log_path="$2"
+            shift 2
+            echo "Running ${label}"
+            set +e
+            "$@" 2>&1 | tee "${log_path}"
+            local test_exit=${PIPESTATUS[0]}
+            set -e
+            if [[ ${test_exit} -ne 0 ]]; then
+              echo "::error::${label} failed with exit code ${test_exit}"
+              while IFS= read -r line; do
+                echo "::error::$line"
+              done < <(tail -n 200 "${log_path}")
+              exit "${test_exit}"
+            fi
           }
-          cat nullus_unit_tests.log
-          "${REFLECTION_TEST}" > reflection_test.log 2>&1 || {
-            cat reflection_test.log
-            while IFS= read -r line; do
-              echo "::error::$line"
-            done < reflection_test.log
-            exit 1
-          }
-          cat reflection_test.log
+          run_test "NullusUnitTests" nullus_unit_tests.log "${NULLUS_UNIT_TESTS}"
+          run_test "ReflectionTest" reflection_test.log "${REFLECTION_TEST}"

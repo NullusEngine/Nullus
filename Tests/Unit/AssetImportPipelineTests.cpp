@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -249,6 +250,34 @@ std::filesystem::path MakeImportTestRoot()
     std::filesystem::create_directories(root);
     return root;
 }
+
+class ScopedImportTestRoot final
+{
+public:
+    explicit ScopedImportTestRoot(std::filesystem::path path)
+        : m_path(std::move(path))
+    {
+    }
+
+    ScopedImportTestRoot(const ScopedImportTestRoot&) = delete;
+    ScopedImportTestRoot& operator=(const ScopedImportTestRoot&) = delete;
+    ScopedImportTestRoot(ScopedImportTestRoot&&) = delete;
+    ScopedImportTestRoot& operator=(ScopedImportTestRoot&&) = delete;
+
+    ~ScopedImportTestRoot()
+    {
+        std::error_code error;
+        std::filesystem::remove_all(m_path, error);
+    }
+
+    const std::filesystem::path& Path() const
+    {
+        return m_path;
+    }
+
+private:
+    std::filesystem::path m_path;
+};
 
 std::string ReadTextFile(const std::filesystem::path& path)
 {
@@ -4249,6 +4278,149 @@ TEST(AssetImportPipelineTests, ExternalModelImportDecodesPercentEncodedTextureUr
     EXPECT_TRUE(NLS::Render::Assets::DeserializeTextureArtifact(texturePayload).has_value());
 
     std::filesystem::remove_all(root);
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportResolvesBackslashTextureUrisOnPortableAssetPaths)
+{
+    const ScopedImportTestRoot tempRoot(MakeImportTestRoot());
+    const auto& root = tempRoot.Path();
+    const auto sourcePath = root / "Assets" / "Model" / "main_sponza" / "BackslashTextureHero.gltf";
+    WriteTextFile(root / "Assets" / "Model" / "main_sponza" / "mesh.bin", "mesh-binary");
+    WriteBinaryFile(
+        root / "Assets" / "Model" / "main_sponza" / "textures" / "HeroBaseColor.png",
+        TinyPng());
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "buffers": [
+                { "uri": "mesh.bin", "byteLength": 11 }
+            ],
+            "images": [
+                { "uri": "textures\\HeroBaseColor.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "HeroMaterial",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "HeroRoot", "mesh": 0 }],
+            "meshes": [{ "primitives": [{ "attributes": {}, "material": 0 }] }]
+        })");
+
+    NLS::Core::Assets::AssetMeta meta;
+    meta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("96969696-9696-4696-8696-969696969696"));
+    meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    meta.importerId = "scene-model";
+    meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / meta.id.ToString(),
+        meta,
+        "BackslashTextureHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Model/main_sponza"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    const auto* textureArtifact = result.manifest.FindSubAsset("texture:image/0");
+    ASSERT_NE(textureArtifact, nullptr);
+    const auto texturePayload = ReadBinaryFile(textureArtifact->artifactPath);
+    EXPECT_TRUE(NLS::Render::Assets::IsNativeTextureArtifact(texturePayload));
+    EXPECT_TRUE(NLS::Render::Assets::DeserializeTextureArtifact(texturePayload).has_value());
+}
+
+TEST(AssetImportPipelineTests, ExternalModelImportResolvesProjectRelativeBackslashTextureUrisFromAssetsRoot)
+{
+    const ScopedImportTestRoot tempRoot(MakeImportTestRoot());
+    const auto& root = tempRoot.Path();
+    const auto sourcePath = root / "Assets" / "Model" / "main_sponza" / "BackslashProjectTextureHero.gltf";
+    WriteTextFile(root / "Assets" / "Model" / "main_sponza" / "mesh.bin", "mesh-binary");
+    WriteBinaryFile(
+        root / "Assets" / "Model" / "main_sponza" / "textures" / "HeroBaseColor.png",
+        TinyPng());
+    WriteTextFile(
+        sourcePath,
+        R"({
+            "asset": { "version": "2.0" },
+            "buffers": [
+                { "uri": "mesh.bin", "byteLength": 11 }
+            ],
+            "images": [
+                { "uri": "Model\\main_sponza\\textures\\HeroBaseColor.png", "mimeType": "image/png" }
+            ],
+            "textures": [
+                { "source": 0 }
+            ],
+            "materials": [
+                {
+                    "name": "HeroMaterial",
+                    "pbrMetallicRoughness": {
+                        "baseColorTexture": { "index": 0 }
+                    }
+                }
+            ],
+            "scene": 0,
+            "scenes": [{ "nodes": [0] }],
+            "nodes": [{ "name": "HeroRoot", "mesh": 0 }],
+            "meshes": [{ "primitives": [{ "attributes": {}, "material": 0 }] }]
+        })");
+
+    NLS::Core::Assets::AssetMeta meta;
+    meta.id = NLS::Core::Assets::AssetId(
+        NLS::Guid::Parse("93939393-9393-4393-8393-939393939393"));
+    meta.assetType = NLS::Core::Assets::AssetType::ModelScene;
+    meta.importerId = "scene-model";
+    meta.importerVersion = NLS::Core::Assets::GetCurrentImporterVersion(NLS::Core::Assets::AssetType::ModelScene);
+
+    const auto result = NLS::Editor::Assets::ImportExternalModelAsset({
+        sourcePath,
+        root / "Staging",
+        root / "Library" / "Artifacts" / meta.id.ToString(),
+        meta,
+        "BackslashProjectTextureHero",
+        "editor",
+        nullptr,
+        nullptr,
+        {},
+        std::filesystem::path("Model/main_sponza"),
+        root,
+        {}
+    });
+
+    ASSERT_TRUE(result.imported) << JoinDiagnosticSummaries(result.diagnostics);
+    const auto* textureArtifact = result.manifest.FindSubAsset("texture:image/0");
+    ASSERT_NE(textureArtifact, nullptr);
+    const auto texturePayload = ReadBinaryFile(textureArtifact->artifactPath);
+    EXPECT_TRUE(NLS::Render::Assets::IsNativeTextureArtifact(texturePayload));
+    EXPECT_TRUE(NLS::Render::Assets::DeserializeTextureArtifact(texturePayload).has_value());
+
+    const auto* materialArtifact = result.manifest.FindSubAsset("material:material/0");
+    ASSERT_NE(materialArtifact, nullptr);
+    const auto materialPayload = ReadArtifactPayloadText(
+        materialArtifact->artifactPath,
+        NLS::Core::Assets::ArtifactType::Material,
+        1u);
+    EXPECT_NE(materialPayload.find("Library/Artifacts/"), std::string::npos);
+    EXPECT_NE(materialPayload.find(".ntex"), std::string::npos);
+    EXPECT_EQ(materialPayload.find("Model/main_sponza/textures/HeroBaseColor.png"), std::string::npos);
+    EXPECT_EQ(materialPayload.find("Model\\main_sponza\\textures\\HeroBaseColor.png"), std::string::npos);
 }
 
 TEST(AssetImportPipelineTests, ExternalModelImportResolvesProjectRelativeBufferUrisFromAssetsRoot)

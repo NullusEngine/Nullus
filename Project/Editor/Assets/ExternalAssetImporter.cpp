@@ -506,7 +506,9 @@ std::vector<std::filesystem::path> ExternalSceneResourceCandidates(
     const std::string& uri)
 {
     std::vector<std::filesystem::path> candidates;
-    const auto decodedUri = DecodeUriPercentEscapes(uri);
+    auto decodedUri = DecodeUriPercentEscapes(uri);
+    // DCC exporters often write Windows separators for external asset references.
+    std::replace(decodedUri.begin(), decodedUri.end(), '\\', '/');
     const auto uriPath = std::filesystem::path(decodedUri);
     if (uriPath.is_absolute())
     {

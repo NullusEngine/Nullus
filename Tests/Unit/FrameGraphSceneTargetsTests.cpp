@@ -1776,6 +1776,7 @@ TEST(FrameGraphSceneTargetsTests, DeferredPreparedExecutionDeclaresDepthStencilW
 {
     NLS::Render::Context::RenderScenePackage package;
     package.opaqueDrawCount = 1u;
+    package.helperDrawCount = 1u;
     package.drawCommandCount = 2u;
     package.renderWidth = 320u;
     package.renderHeight = 180u;
@@ -1788,6 +1789,7 @@ TEST(FrameGraphSceneTargetsTests, DeferredPreparedExecutionDeclaresDepthStencilW
     helperPass.drawCount = 1u;
     helperPass.usesDepthStencilAttachment = true;
     helperPass.writesDepthStencilAttachment = true;
+    helperPass.recordedDrawCommands.resize(1u);
 
     NLS::Render::FrameGraph::ThreadedRenderScenePassMetadata helperMetadata;
     helperMetadata.commandKind = NLS::Render::Context::RenderPassCommandKind::Helper;
@@ -1814,6 +1816,7 @@ TEST(FrameGraphSceneTargetsTests, DeferredPreparedExecutionDeclaresDepthStencilW
     ASSERT_EQ(package.passCommandInputs.size(), 3u);
     const auto& preparedHelperPass = package.passCommandInputs[2];
     EXPECT_EQ(preparedHelperPass.debugName, "EditorSelectionPass");
+    ASSERT_EQ(preparedHelperPass.recordedDrawCommands.size(), 1u);
     EXPECT_EQ(preparedHelperPass.depthStencilAttachmentView, resources.gbufferDepthView);
     const auto depthAccess = std::find_if(
         preparedHelperPass.textureResourceAccesses.begin(),
@@ -6172,10 +6175,11 @@ TEST(FrameGraphSceneTargetsTests, ForwardPreparedExecutionDeclaresDepthStencilWr
     package.renderWidth = 320u;
     package.renderHeight = 180u;
     package.opaqueDrawCount = 1u;
+    package.decalDrawCount = 1u;
     package.skyboxDrawCount = 1u;
     package.transparentDrawCount = 1u;
-    package.drawCommandCount = 3u;
-    package.recordedDrawCommands.resize(3u);
+    package.drawCommandCount = 4u;
+    package.recordedDrawCommands.resize(4u);
     package.clearDepthBuffer = true;
     package.clearStencilBuffer = true;
 
@@ -6186,13 +6190,18 @@ TEST(FrameGraphSceneTargetsTests, ForwardPreparedExecutionDeclaresDepthStencilWr
         package,
         lightGridContext);
 
-    ASSERT_EQ(package.passCommandInputs.size(), 3u);
+    ASSERT_EQ(package.passCommandInputs.size(), 4u);
     const auto& opaquePass = package.passCommandInputs[0];
-    const auto& skyboxPass = package.passCommandInputs[1];
-    const auto& transparentPass = package.passCommandInputs[2];
+    const auto& decalPass = package.passCommandInputs[1];
+    const auto& skyboxPass = package.passCommandInputs[2];
+    const auto& transparentPass = package.passCommandInputs[3];
     EXPECT_EQ(opaquePass.kind, NLS::Render::Context::RenderPassCommandKind::Opaque);
+    EXPECT_EQ(decalPass.kind, NLS::Render::Context::RenderPassCommandKind::Decal);
+    EXPECT_EQ(skyboxPass.kind, NLS::Render::Context::RenderPassCommandKind::Skybox);
+    EXPECT_EQ(transparentPass.kind, NLS::Render::Context::RenderPassCommandKind::Transparent);
     EXPECT_TRUE(opaquePass.usesDepthStencilAttachment);
     EXPECT_TRUE(opaquePass.writesDepthStencilAttachment);
+    EXPECT_FALSE(decalPass.writesDepthStencilAttachment);
     EXPECT_TRUE(skyboxPass.writesDepthStencilAttachment);
     EXPECT_FALSE(transparentPass.writesDepthStencilAttachment);
 }

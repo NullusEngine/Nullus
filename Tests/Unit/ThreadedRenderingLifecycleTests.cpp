@@ -8499,6 +8499,7 @@ TEST(ThreadedRenderingLifecycleTests, RenderScenePackageSplitsRecordedDrawComman
     SceneSnapshotRenderer renderer(driver);
 
     auto opaquePipeline = std::make_shared<TestGraphicsPipeline>("OpaquePipeline");
+    auto decalPipeline = std::make_shared<TestGraphicsPipeline>("DecalPipeline");
     auto transparentPipelineA = std::make_shared<TestGraphicsPipeline>("TransparentPipelineA");
     auto transparentPipelineB = std::make_shared<TestGraphicsPipeline>("TransparentPipelineB");
     auto skyPipeline = std::make_shared<TestGraphicsPipeline>("SkyPipeline");
@@ -8511,26 +8512,34 @@ TEST(ThreadedRenderingLifecycleTests, RenderScenePackageSplitsRecordedDrawComman
     snapshot.renderHeight = 144u;
     snapshot.hasSceneInput = true;
     snapshot.visibleOpaqueDrawCount = 1u;
+    snapshot.visibleDecalDrawCount = 1u;
     snapshot.visibleTransparentDrawCount = 2u;
     snapshot.visibleSkyboxDrawCount = 1u;
 
     snapshot.recordedDrawCommands = {
         { opaquePipeline, nullptr, nullptr, nullptr, materialBindingSet, mesh, 1u },
+        { decalPipeline, nullptr, nullptr, nullptr, materialBindingSet, mesh, 1u },
+        { skyPipeline, nullptr, nullptr, nullptr, materialBindingSet, mesh, 1u },
         { transparentPipelineA, nullptr, nullptr, nullptr, materialBindingSet, mesh, 1u },
-        { transparentPipelineB, nullptr, nullptr, nullptr, materialBindingSet, mesh, 1u },
-        { skyPipeline, nullptr, nullptr, nullptr, materialBindingSet, mesh, 1u }
+        { transparentPipelineB, nullptr, nullptr, nullptr, materialBindingSet, mesh, 1u }
     };
 
     const auto package = renderer.CaptureRenderScenePackage(snapshot);
 
-    ASSERT_EQ(package.passCommandInputs.size(), 3u);
+    ASSERT_EQ(package.passCommandInputs.size(), 4u);
+    EXPECT_EQ(package.passCommandInputs[0].kind, NLS::Render::Context::RenderPassCommandKind::Opaque);
+    EXPECT_EQ(package.passCommandInputs[1].kind, NLS::Render::Context::RenderPassCommandKind::Decal);
+    EXPECT_EQ(package.passCommandInputs[2].kind, NLS::Render::Context::RenderPassCommandKind::Skybox);
+    EXPECT_EQ(package.passCommandInputs[3].kind, NLS::Render::Context::RenderPassCommandKind::Transparent);
     ASSERT_EQ(package.passCommandInputs[0].recordedDrawCommands.size(), 1u);
     EXPECT_EQ(package.passCommandInputs[0].recordedDrawCommands[0].pipeline, opaquePipeline);
-    ASSERT_EQ(package.passCommandInputs[1].recordedDrawCommands.size(), 2u);
-    EXPECT_EQ(package.passCommandInputs[1].recordedDrawCommands[0].pipeline, transparentPipelineA);
-    EXPECT_EQ(package.passCommandInputs[1].recordedDrawCommands[1].pipeline, transparentPipelineB);
+    ASSERT_EQ(package.passCommandInputs[1].recordedDrawCommands.size(), 1u);
+    EXPECT_EQ(package.passCommandInputs[1].recordedDrawCommands[0].pipeline, decalPipeline);
     ASSERT_EQ(package.passCommandInputs[2].recordedDrawCommands.size(), 1u);
     EXPECT_EQ(package.passCommandInputs[2].recordedDrawCommands[0].pipeline, skyPipeline);
+    ASSERT_EQ(package.passCommandInputs[3].recordedDrawCommands.size(), 2u);
+    EXPECT_EQ(package.passCommandInputs[3].recordedDrawCommands[0].pipeline, transparentPipelineA);
+    EXPECT_EQ(package.passCommandInputs[3].recordedDrawCommands[1].pipeline, transparentPipelineB);
 }
 
 TEST(ThreadedRenderingLifecycleTests, ForwardSceneRendererPublishesSnapshotOwnedSceneInputsWhenThreaded)
@@ -8580,7 +8589,7 @@ TEST(ThreadedRenderingLifecycleTests, ForwardSceneRendererPublishesSnapshotOwned
     EXPECT_EQ(slot->snapshot->visibleSkyboxDrawCount, 0u);
 }
 
-TEST(ThreadedRenderingLifecycleTests, DeferredSceneRendererPublishesSnapshotOwnedSceneInputsWhenThreaded)
+TEST(ThreadedRenderingLifecycleTests, DeferredSceneRendererSkipsSnapshotPublishWhenPipelineResourcesAreUnavailable)
 {
     NLS::Render::Settings::DriverSettings settings;
     settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
@@ -8588,10 +8597,11 @@ TEST(ThreadedRenderingLifecycleTests, DeferredSceneRendererPublishesSnapshotOwne
     settings.enableThreadedRendering = true;
     settings.threadedFrameSlotCount = 2u;
 
-    static auto driver = std::make_unique<NLS::Render::Context::Driver>(settings);
-    NLS::Core::ServiceLocator::Provide(*driver);
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
     std::unique_ptr<NLS::Engine::Rendering::DeferredSceneRenderer> renderer;
-    ASSERT_NO_THROW(renderer = std::make_unique<NLS::Engine::Rendering::DeferredSceneRenderer>(*driver));
+    ASSERT_NO_THROW(renderer = std::make_unique<NLS::Engine::Rendering::DeferredSceneRenderer>(driver));
     ASSERT_NE(renderer, nullptr);
 
     NLS::Engine::SceneSystem::Scene scene;
@@ -8610,21 +8620,16 @@ TEST(ThreadedRenderingLifecycleTests, DeferredSceneRendererPublishesSnapshotOwne
     frameDescriptor.camera = &camera;
 
     ASSERT_NO_THROW(renderer->BeginFrame(frameDescriptor));
+    EXPECT_TRUE(renderer->IsThreadedFramePublishSkippedForCurrentFrame());
     scene.CreateGameObject("LateMutation").AddComponent<NLS::Engine::Components::MeshRenderer>();
     ASSERT_NO_THROW(renderer->EndFrame());
 
-    const auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(*driver);
+    const auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
     ASSERT_NE(lifecycle, nullptr);
     const auto* slot = lifecycle->PeekSlot(0u);
     ASSERT_NE(slot, nullptr);
-    ASSERT_TRUE(slot->snapshot.has_value());
-    EXPECT_TRUE(slot->snapshot->hasSceneInput);
-    EXPECT_EQ(slot->snapshot->sceneGameObjectCount, 2u);
-    EXPECT_EQ(slot->snapshot->sceneModelRendererCount, 1u);
-    EXPECT_EQ(slot->snapshot->sceneLightCount, 1u);
-    EXPECT_EQ(slot->snapshot->sceneSkyboxCount, 0u);
-    EXPECT_EQ(slot->snapshot->visibleOpaqueDrawCount, 0u);
-    EXPECT_EQ(slot->snapshot->visibleSkyboxDrawCount, 0u);
+    EXPECT_NE(slot->stage, NLS::Render::Context::ThreadedFrameStage::Published);
+    EXPECT_FALSE(slot->snapshot.has_value());
 }
 
 TEST(ThreadedRenderingLifecycleTests, DeferredSceneRendererPublishesPreparedRenderScenePackageWhenThreadedWorkersArePaused)
@@ -8643,6 +8648,7 @@ TEST(ThreadedRenderingLifecycleTests, DeferredSceneRendererPublishesPreparedRend
 
     NLS::Engine::Rendering::DeferredSceneRenderer renderer(driver);
     NLS::Engine::SceneSystem::Scene scene;
+    scene.CreateGameObject("ModelActor").AddComponent<NLS::Engine::Components::MeshRenderer>();
     scene.CreateGameObject("LightActor").AddComponent<NLS::Engine::Components::LightComponent>();
     renderer.AddDescriptor<NLS::Engine::Rendering::BaseSceneRenderer::SceneDescriptor>({
         scene,
@@ -8657,6 +8663,8 @@ TEST(ThreadedRenderingLifecycleTests, DeferredSceneRendererPublishesPreparedRend
     frameDescriptor.camera = &camera;
 
     ASSERT_NO_THROW(renderer.BeginFrame(frameDescriptor));
+    EXPECT_FALSE(renderer.IsThreadedFramePublishSkippedForCurrentFrame());
+    scene.CreateGameObject("LateMutation").AddComponent<NLS::Engine::Components::MeshRenderer>();
     ASSERT_NO_THROW(renderer.EndFrame());
 
     const auto* lifecycle = NLS::Render::Context::DriverTestAccess::GetThreadedRenderingLifecycle(driver);
@@ -8664,6 +8672,11 @@ TEST(ThreadedRenderingLifecycleTests, DeferredSceneRendererPublishesPreparedRend
     const auto* slot = lifecycle->PeekSlot(0u);
     ASSERT_NE(slot, nullptr);
     ASSERT_TRUE(slot->snapshot.has_value());
+    EXPECT_TRUE(slot->snapshot->hasSceneInput);
+    EXPECT_EQ(slot->snapshot->sceneGameObjectCount, 2u);
+    EXPECT_EQ(slot->snapshot->sceneModelRendererCount, 1u);
+    EXPECT_EQ(slot->snapshot->sceneLightCount, 1u);
+    EXPECT_EQ(slot->snapshot->sceneSkyboxCount, 0u);
     EXPECT_TRUE(slot->preparedRenderSceneBuilder.has_value() || slot->renderScenePackage.has_value());
     EXPECT_EQ(slot->stage, NLS::Render::Context::ThreadedFrameStage::Published);
     EXPECT_EQ(slot->renderSceneAttribution, NLS::Render::Context::RenderSceneAttribution::Unknown);

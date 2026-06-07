@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -12,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "Guid.h"
 #include "Core/ServiceLocator.h"
 #include "Core/ResourceManagement/MaterialManager.h"
 #include "Core/ResourceManagement/MeshManager.h"
@@ -34,6 +34,7 @@
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Settings/DriverSettings.h"
+#include "Rendering/ShaderCompiler/ShaderCompiler.h"
 #include "Serialize/ObjectReferenceResolver.h"
 #include "Serialize/PPtr.h"
 #include "Components/MeshFilter.h"
@@ -42,77 +43,69 @@
 
 namespace
 {
-    std::optional<std::filesystem::path> FindNativeDxcExecutableForTests()
+    bool IsDxcUnavailableDiagnosticForTests(const std::string& diagnostics)
     {
-        const auto tryPath = [](const std::filesystem::path& candidate) -> std::optional<std::filesystem::path>
-        {
-            std::error_code error;
-            if (candidate.empty() || !std::filesystem::exists(candidate, error) || error)
-                return std::nullopt;
-
-            return candidate;
-        };
-
-        if (const char* envPath = std::getenv("DXC_PATH"); envPath != nullptr && *envPath != '\0')
-        {
-            if (auto found = tryPath(envPath))
-                return found;
-        }
-
-        const std::vector<const char*> sdkVars = {"VULKAN_SDK", "VK_SDK_PATH"};
-        for (const char* varName : sdkVars)
-        {
-            const char* envPath = std::getenv(varName);
-            if (envPath == nullptr || *envPath == '\0')
-                continue;
-
-            const std::filesystem::path sdkRoot(envPath);
-            const std::vector<std::filesystem::path> candidates = {
-#if defined(_WIN32)
-                sdkRoot / "Bin" / "dxc.exe",
-                sdkRoot / "Bin" / "x64" / "dxc.exe"
-#else
-                sdkRoot / "bin" / "dxc",
-                sdkRoot / "Bin" / "dxc",
-                sdkRoot / "bin" / "x64" / "dxc"
-#endif
-            };
-
-            for (const auto& candidate : candidates)
-            {
-                if (auto found = tryPath(candidate))
-                    return found;
-            }
-        }
-
-        const std::filesystem::path repoRoot(NLS_ROOT_DIR);
-        const std::vector<std::filesystem::path> bundledCandidates = {
-#if defined(_WIN32)
-            repoRoot / "Tools" / "DXC" / "bin" / "x64" / "dxc.exe",
-            repoRoot / "Tools" / "DXC" / "bin" / "arm64" / "dxc.exe",
-            repoRoot / "ThirdParty" / "DirectXShaderCompiler" / "bin" / "x64" / "dxc.exe"
-#else
-            repoRoot / "Tools" / "DXC" / "bin" / "dxc",
-            repoRoot / "Tools" / "DXC" / "bin" / "x64" / "dxc",
-            repoRoot / "Tools" / "DXC" / "bin" / "arm64" / "dxc",
-            repoRoot / "ThirdParty" / "DirectXShaderCompiler" / "bin" / "dxc"
-#endif
-        };
-
-        for (const auto& candidate : bundledCandidates)
-        {
-            if (auto found = tryPath(candidate))
-                return found;
-        }
-
-        return std::nullopt;
+        return diagnostics.find("Unable to locate dxc.exe.") != std::string::npos ||
+            diagnostics.find("Unable to locate an executable native dxc.") != std::string::npos ||
+            diagnostics.find("Failed to spawn shader compiler process (") != std::string::npos ||
+            diagnostics.find("[dxc-exit-code] 126") != std::string::npos ||
+            diagnostics.find("[dxc-exit-code] 127") != std::string::npos;
     }
 
-    void SkipIfNativeDxcUnavailable()
+    bool IsNativeDxcUnavailableForRenderSceneCacheTests()
     {
-        if (!FindNativeDxcExecutableForTests().has_value())
-            GTEST_SKIP() << "Native dxc is unavailable in this environment.";
+        const auto directory = std::filesystem::temp_directory_path() /
+            "NullusRenderSceneCacheTests" /
+            ("DxcProbe-" + NLS::Guid::New().ToString());
+        std::error_code error;
+        std::filesystem::create_directories(directory, error);
+        if (error)
+            return false;
+
+        const auto shaderPath = directory / "NativeDxcProbe.hlsl";
+        std::ofstream shaderFile(shaderPath, std::ios::binary | std::ios::trunc);
+        if (!shaderFile)
+            return false;
+
+        shaderFile
+            << "struct VSOutput { float4 position : SV_Position; };\n"
+            << "VSOutput VSMain(uint vertexId : SV_VertexID) {\n"
+            << "    VSOutput output;\n"
+            << "    output.position = float4(0.0f, 0.0f, 0.0f, 1.0f);\n"
+            << "    return output;\n"
+            << "}\n";
+        shaderFile.close();
+        if (!shaderFile)
+            return false;
+
+        NLS::Render::ShaderCompiler::ShaderCompilationInput input;
+        input.assetPath = shaderPath.string();
+        input.stage = NLS::Render::ShaderCompiler::ShaderStage::Vertex;
+        input.options.targetPlatform = NLS::Render::ShaderCompiler::ShaderTargetPlatform::DXIL;
+        input.options.targetProfile = "vs_6_0";
+        input.options.entryPoint = "VSMain";
+        input.options.artifactDirectory = (directory / "Artifacts").string();
+        input.options.includeDirectories.push_back(directory.string());
+
+        NLS::Render::ShaderCompiler::ShaderCompiler compiler;
+        const auto output = compiler.Compile(input);
+        std::filesystem::remove_all(directory, error);
+        return output.status != NLS::Render::ShaderCompiler::ShaderCompilationStatus::Succeeded &&
+            IsDxcUnavailableDiagnosticForTests(output.diagnostics);
     }
+
+    bool NativeDxcUnavailableForTests()
+    {
+        static const bool unavailable = IsNativeDxcUnavailableForRenderSceneCacheTests();
+        return unavailable;
+    }
+
+#define NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE()        \
+    do                                                                \
+    {                                                                 \
+        if (NativeDxcUnavailableForTests())                           \
+            GTEST_SKIP() << "Native dxc is unavailable in this environment."; \
+    } while (false)
 
     class ScopedRenderSceneCacheJobSystem
     {
@@ -1007,7 +1000,7 @@ TEST(RenderSceneCacheTests, SynchronizeResolvesOnlyMaterialSlotUsedByMesh)
 
 TEST(RenderSceneCacheTests, ExplicitMaterialPathSuppressesDefaultMaterialUntilResolved)
 {
-    SkipIfNativeDxcUnavailable();
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
 
     NLS::Engine::Serialize::PersistentManager::Instance().Clear();
     EnsureRenderSceneTestDriver();
@@ -1062,7 +1055,7 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathSuppressesDefaultMaterialUntilRe
 
 TEST(RenderSceneCacheTests, ExplicitMaterialPathSuppressesDrawUntilDeclaredTexturesResolved)
 {
-    SkipIfNativeDxcUnavailable();
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
 
     NLS::Engine::Serialize::PersistentManager::Instance().Clear();
     EnsureRenderSceneTestDriver();
@@ -1121,7 +1114,7 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathSuppressesDrawUntilDeclaredTextu
 
 TEST(RenderSceneCacheTests, ExistingSceneExplicitMaterialPathRemainsVisibleWhileDeclaredTexturesArePending)
 {
-    SkipIfNativeDxcUnavailable();
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
 
     NLS::Engine::Serialize::PersistentManager::Instance().Clear();
     EnsureRenderSceneTestDriver();
@@ -1169,7 +1162,7 @@ TEST(RenderSceneCacheTests, ExistingSceneExplicitMaterialPathRemainsVisibleWhile
 
 TEST(RenderSceneCacheTests, ExplicitMaterialPathBindsCachedDeclaredTexturesBeforeSuppressingDraw)
 {
-    SkipIfNativeDxcUnavailable();
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
 
     NLS::Engine::Serialize::PersistentManager::Instance().Clear();
     EnsureRenderSceneTestDriver();
@@ -1230,7 +1223,7 @@ TEST(RenderSceneCacheTests, ExplicitMaterialPathBindsCachedDeclaredTexturesBefor
 
 TEST(RenderSceneCacheTests, ExplicitMaterialPathAcceptsEquivalentCachedDeclaredTexturePath)
 {
-    SkipIfNativeDxcUnavailable();
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
 
     NLS::Engine::Serialize::PersistentManager::Instance().Clear();
     EnsureRenderSceneTestDriver();
@@ -1847,6 +1840,8 @@ TEST(RenderSceneCacheTests, SceneRendererDrawsExistingAndPreviewPrefabInstancesS
 TEST(RenderSceneCacheTests, AdditivePreviewSceneSkipsTexturedModelUntilMaterialTexturesAreBound)
 {
     using namespace NLS::Engine::Serialize;
+
+    NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE();
 
     NLS::Engine::Serialize::PersistentManager::Instance().Clear();
     NLS::ObjectTestAccess::ClearObjectRegistry();
@@ -2467,3 +2462,5 @@ TEST(RenderSceneCacheTests, RetainedSingleDrawPreservesMaterialGpuInstances)
             EXPECT_FLOAT_EQ(instanceMatrix.data[3], expectedTranslations[drawIndex]);
     }
 }
+
+#undef NLS_RENDER_SCENE_CACHE_SKIP_IF_NATIVE_DXC_UNAVAILABLE

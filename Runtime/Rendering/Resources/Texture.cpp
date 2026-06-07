@@ -9,11 +9,12 @@ using namespace NLS::Render::Resources;
 
 namespace
 {
-	// Helper to get RHIDevice from driver
-	std::shared_ptr<NLS::Render::RHI::RHIDevice> GetExplicitDevice()
+	std::shared_ptr<NLS::Render::RHI::RHIDevice> TryGetExplicitDevice()
 	{
-		auto& driver = NLS::Render::Context::RequireLocatedDriver("Texture::CreateRHITexture");
-		return NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver);
+		auto* driver = NLS::Render::Context::TryGetLocatedDriver();
+		if (driver == nullptr)
+			return nullptr;
+		return NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(*driver);
 	}
 }
 
@@ -33,7 +34,7 @@ void Texture::CreateRHITexture()
 	if (m_explicitTexture != nullptr)
 		return;
 
-	auto device = GetExplicitDevice();
+	auto device = TryGetExplicitDevice();
 	if (device == nullptr)
 		return;
 
@@ -71,7 +72,7 @@ std::shared_ptr<NLS::Render::RHI::RHITextureView> Texture::GetOrCreateExplicitTe
 	if (m_explicitTextureView != nullptr)
 		return m_explicitTextureView;
 
-	auto device = GetExplicitDevice();
+	auto device = TryGetExplicitDevice();
 	if (device == nullptr)
 		return nullptr;
 
@@ -110,7 +111,7 @@ bool Texture::RecreateRHITextureIfNeeded(
 	const auto& existingDesc = m_explicitTexture->GetDesc();
 	if (CanUpdateRHITextureInPlace(existingDesc, width, height, format, initialData))
 	{
-		auto device = GetExplicitDevice();
+		auto device = TryGetExplicitDevice();
 		if (device == nullptr)
 			return false;
 
@@ -140,7 +141,7 @@ bool Texture::RecreateRHITextureIfNeeded(
 	}
 
 	// Need to recreate with correct dimensions
-	auto device = GetExplicitDevice();
+	auto device = TryGetExplicitDevice();
 	if (device == nullptr)
 		return false;
 

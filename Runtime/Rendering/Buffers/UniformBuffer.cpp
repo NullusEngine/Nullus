@@ -22,10 +22,12 @@ namespace
 		std::memcpy(shadowData.data() + offset, data, size);
 	}
 
-	std::shared_ptr<NLS::Render::RHI::RHIDevice> GetExplicitDevice()
+	std::shared_ptr<NLS::Render::RHI::RHIDevice> TryGetExplicitDevice()
 	{
-		auto& driver = NLS::Render::Context::RequireLocatedDriver("UniformBuffer");
-		return NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver);
+		auto* driver = NLS::Render::Context::TryGetLocatedDriver();
+		if (driver == nullptr)
+			return nullptr;
+		return NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(*driver);
 	}
 }
 
@@ -46,7 +48,7 @@ UniformBuffer::UniformBuffer(
     desc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
     desc.debugName = "UniformBuffer";
 
-    auto device = GetExplicitDevice();
+    auto device = TryGetExplicitDevice();
     if (device != nullptr)
     {
         m_explicitBuffer = device->CreateBuffer(desc);
@@ -87,7 +89,7 @@ std::shared_ptr<NLS::Render::RHI::RHIBuffer> UniformBuffer::CreateExplicitSnapsh
     desc.memoryUsage = NLS::Render::RHI::MemoryUsage::CPUToGPU;
     desc.debugName = debugName.empty() ? "UniformBufferSnapshot" : debugName;
 
-    auto device = GetExplicitDevice();
+    auto device = TryGetExplicitDevice();
     if (device != nullptr)
     {
         if (m_shadowData.empty())

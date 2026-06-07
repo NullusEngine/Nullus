@@ -155,8 +155,10 @@ bool Texture2D::SetTextureResource(const NLS::Render::Assets::TextureArtifactDat
 	if (m_explicitTexture == nullptr)
 		CreateRHITexture();
 
-	auto& driver = NLS::Render::Context::RequireLocatedDriver("Texture2D::SetTextureResource(TextureArtifact)");
-	auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(driver);
+	auto* driver = NLS::Render::Context::TryGetLocatedDriver();
+	auto device = driver != nullptr
+		? NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(*driver)
+		: nullptr;
 	if (device == nullptr)
 	{
 		if (NLS::Render::RHI::IsTextureFormatCompressed(artifact.format))

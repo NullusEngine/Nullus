@@ -15,6 +15,7 @@
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/MaterialResourceSet.h"
 #include "Rendering/Resources/Texture2D.h"
+#include "Rendering/RHI/Core/RHIBinding.h"
 #include "Rendering/ShaderCompiler/ShaderCompilationTypes.h"
 #include "Rendering/Settings/DriverSettings.h"
 #include "Core/ResourceManagement/ShaderManager.h"
@@ -309,6 +310,30 @@ public:
     ScopedDriverService& operator=(const ScopedDriverService&) = delete;
 };
 
+class ScopedNoDriverService final
+{
+public:
+    ScopedNoDriverService()
+    {
+        if (NLS::Core::ServiceLocator::Contains<NLS::Render::Context::Driver>())
+            m_previousDriver = &NLS::Core::ServiceLocator::Get<NLS::Render::Context::Driver>();
+        NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
+    }
+
+    ~ScopedNoDriverService()
+    {
+        NLS::Core::ServiceLocator::Remove<NLS::Render::Context::Driver>();
+        if (m_previousDriver != nullptr)
+            NLS::Core::ServiceLocator::Provide(*m_previousDriver);
+    }
+
+    ScopedNoDriverService(const ScopedNoDriverService&) = delete;
+    ScopedNoDriverService& operator=(const ScopedNoDriverService&) = delete;
+
+private:
+    NLS::Render::Context::Driver* m_previousDriver = nullptr;
+};
+
 class TextureLoaderTestAdapter final : public NLS::Render::RHI::RHIAdapter
 {
 public:
@@ -352,6 +377,36 @@ public:
 private:
     std::shared_ptr<NLS::Render::RHI::RHITexture> m_texture;
     NLS::Render::RHI::RHITextureViewDesc m_desc {};
+};
+
+class TextureLoaderTestBindingLayout final : public NLS::Render::RHI::RHIBindingLayout
+{
+public:
+    explicit TextureLoaderTestBindingLayout(NLS::Render::RHI::RHIBindingLayoutDesc desc)
+        : m_desc(std::move(desc))
+    {
+    }
+
+    std::string_view GetDebugName() const override { return m_desc.debugName; }
+    const NLS::Render::RHI::RHIBindingLayoutDesc& GetDesc() const override { return m_desc; }
+
+private:
+    NLS::Render::RHI::RHIBindingLayoutDesc m_desc {};
+};
+
+class TextureLoaderTestBindingSet final : public NLS::Render::RHI::RHIBindingSet
+{
+public:
+    explicit TextureLoaderTestBindingSet(NLS::Render::RHI::RHIBindingSetDesc desc)
+        : m_desc(std::move(desc))
+    {
+    }
+
+    std::string_view GetDebugName() const override { return m_desc.debugName; }
+    const NLS::Render::RHI::RHIBindingSetDesc& GetDesc() const override { return m_desc; }
+
+private:
+    NLS::Render::RHI::RHIBindingSetDesc m_desc {};
 };
 
 class TextureLoaderTestCommandBuffer final : public NLS::Render::RHI::RHICommandBuffer
@@ -514,8 +569,17 @@ public:
         return std::make_shared<TextureLoaderTestTextureView>(texture, desc);
     }
     std::shared_ptr<NLS::Render::RHI::RHISampler> CreateSampler(const NLS::Render::RHI::SamplerDesc&, std::string = {}) override { return nullptr; }
-    std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> CreateBindingLayout(const NLS::Render::RHI::RHIBindingLayoutDesc&) override { return nullptr; }
-    std::shared_ptr<NLS::Render::RHI::RHIBindingSet> CreateBindingSet(const NLS::Render::RHI::RHIBindingSetDesc&) override { return nullptr; }
+    std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> CreateBindingLayout(const NLS::Render::RHI::RHIBindingLayoutDesc& desc) override
+    {
+        ++bindingLayoutCreateCalls;
+        return std::make_shared<TextureLoaderTestBindingLayout>(desc);
+    }
+    std::shared_ptr<NLS::Render::RHI::RHIBindingSet> CreateBindingSet(const NLS::Render::RHI::RHIBindingSetDesc& desc) override
+    {
+        ++bindingSetCreateCalls;
+        lastBindingSetDesc = desc;
+        return std::make_shared<TextureLoaderTestBindingSet>(desc);
+    }
     std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> CreatePipelineLayout(const NLS::Render::RHI::RHIPipelineLayoutDesc&) override { return nullptr; }
     std::shared_ptr<NLS::Render::RHI::RHIShaderModule> CreateShaderModule(const NLS::Render::RHI::RHIShaderModuleDesc&) override { return nullptr; }
     std::shared_ptr<NLS::Render::RHI::RHIGraphicsPipeline> CreateGraphicsPipeline(const NLS::Render::RHI::RHIGraphicsPipelineDesc&) override { return nullptr; }
@@ -545,9 +609,12 @@ public:
         void*) override {}
 
     size_t textureCreateCalls = 0u;
+    size_t bindingLayoutCreateCalls = 0u;
+    size_t bindingSetCreateCalls = 0u;
     NLS::Render::RHI::RHITextureDesc lastTextureDesc {};
     NLS::Render::RHI::RHITextureUploadDesc lastTextureUploadDesc {};
     NLS::Render::RHI::RHITextureViewDesc lastTextureViewDesc {};
+    NLS::Render::RHI::RHIBindingSetDesc lastBindingSetDesc {};
 
 private:
     std::shared_ptr<NLS::Render::RHI::RHIAdapter> m_adapter;
@@ -1719,6 +1786,61 @@ TEST(AssetMaterialConversionTests, EngineDefaultMaterialIsDoubleSidedForDeferred
     EXPECT_NE(payload.find("<backfaceCulling>false</backfaceCulling>"), std::string::npos);
 }
 
+TEST(AssetMaterialConversionTests, DefaultWhiteTextureRecoversRhiHandleAfterHeadlessMaterialLoad)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_default_white_texture_headless_recover_" + NLS::Guid::New().ToString());
+    const auto shaderArtifactPath = root / "Library" / "Artifacts" / "shader-guid" / "shader.nshader";
+    WriteBinaryFile(
+        shaderArtifactPath,
+        NLS::Render::Assets::SerializeShaderArtifact(MakeShaderArtifact(
+            "Assets/Shaders/HeadlessDefaultWhiteTexture.hlsl",
+            "shader:HeadlessDefaultWhiteTexture",
+            MakeAlbedoMapShaderReflection())));
+
+    auto* shader = NLS::Render::Resources::Loaders::ShaderLoader::Create(shaderArtifactPath.string());
+    ASSERT_NE(shader, nullptr);
+
+    {
+        const ScopedNoDriverService noDriverService;
+        NLS::Render::Resources::Material headlessMaterial(shader);
+        EXPECT_FALSE(headlessMaterial.HasExplicitBindingErrors());
+    }
+
+    NLS::Render::Settings::DriverSettings settings;
+    settings.graphicsBackend = NLS::Render::Settings::EGraphicsBackend::NONE;
+    settings.enableThreadedRendering = true;
+    settings.threadedFrameSlotCount = 1u;
+    NLS::Render::Context::Driver driver(settings);
+    const ScopedDriverService driverService(driver);
+    auto explicitDevice = std::make_shared<TextureLoaderTestDevice>();
+    NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
+
+    NLS::Render::Resources::Material material(shader);
+    const auto& bindingSet = material.GetExplicitBindingSet(explicitDevice);
+
+    ASSERT_NE(bindingSet, nullptr);
+    ASSERT_EQ(explicitDevice->bindingSetCreateCalls, 1u);
+    const auto textureEntry = std::find_if(
+        explicitDevice->lastBindingSetDesc.entries.begin(),
+        explicitDevice->lastBindingSetDesc.entries.end(),
+        [](const NLS::Render::RHI::RHIBindingSetEntry& entry)
+        {
+            return entry.type == NLS::Render::RHI::BindingType::Texture &&
+                entry.textureView != nullptr;
+        });
+    ASSERT_NE(textureEntry, explicitDevice->lastBindingSetDesc.entries.end());
+    ASSERT_NE(textureEntry->textureView->GetTexture(), nullptr);
+    EXPECT_EQ(textureEntry->textureView->GetTexture()->GetDesc().extent.width, 1u);
+    EXPECT_EQ(textureEntry->textureView->GetTexture()->GetDesc().extent.height, 1u);
+    EXPECT_TRUE(material.GetLastExplicitBindingDiagnostics().empty());
+    EXPECT_FALSE(material.HasExplicitBindingErrors());
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::ShaderLoader::Destroy(shader));
+    std::filesystem::remove_all(root);
+}
+
 TEST(AssetMaterialConversionTests, ShaderReflectionFallsBackToRuntimeCompileBackendWhenLocatedDriverHasNoRhi)
 {
     const auto root = std::filesystem::temp_directory_path() /
@@ -2633,6 +2755,39 @@ TEST(AssetMaterialConversionTests, TextureLoaderReadsNativeTextureArtifactWithou
     EXPECT_EQ(texture->height, 2u);
     EXPECT_TRUE(texture->isMimapped);
     EXPECT_EQ(texture->path, texturePath.string());
+
+    EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(texture));
+    std::filesystem::remove_all(root);
+}
+
+TEST(AssetMaterialConversionTests, TextureLoaderReadsNativeTextureArtifactWithoutDriverService)
+{
+    const auto root = std::filesystem::temp_directory_path() /
+        ("nullus_native_texture_artifact_headless_load_" + NLS::Guid::New().ToString());
+    const auto texturePath = root / "Library" / "Artifacts" / "Hero" / "textures" / "NativeBaseColor.ntex";
+
+    const auto artifact = MakeDescriptorBackedTextureArtifact(
+        NLS::Render::RHI::TextureFormat::RGBA8,
+        NLS::Render::Assets::TextureArtifactColorSpace::Srgb,
+        2u,
+        2u,
+        2u);
+    WriteBinaryFile(texturePath, NLS::Render::Assets::SerializeTextureArtifact(artifact));
+
+    const ScopedNoDriverService noDriverService;
+
+    auto* texture = NLS::Render::Resources::Loaders::TextureLoader::Create(
+        texturePath.string(),
+        NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+        NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+        false);
+
+    ASSERT_NE(texture, nullptr);
+    EXPECT_EQ(texture->width, 2u);
+    EXPECT_EQ(texture->height, 2u);
+    EXPECT_TRUE(texture->isMimapped);
+    EXPECT_EQ(texture->path, texturePath.string());
+    EXPECT_EQ(texture->GetTextureHandle(), nullptr);
 
     EXPECT_TRUE(NLS::Render::Resources::Loaders::TextureLoader::Destroy(texture));
     std::filesystem::remove_all(root);

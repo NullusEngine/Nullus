@@ -15,6 +15,7 @@
 #include "Math/Vector3.h"
 #include "Math/Vector4.h"
 #include "Math/Matrix4.h"
+#include "Rendering/Assets/TextureArtifact.h"
 #include "Rendering/Buffers/UniformBuffer.h"
 #include "Rendering/Context/DriverAccess.h"
 #include "Rendering/Geometry/Vertex.h"
@@ -71,42 +72,118 @@ namespace
 		return desc;
 	}
 
+	std::shared_ptr<NLS::Render::RHI::RHIDevice> TryGetLocatedExplicitDevice()
+	{
+		auto* driver = NLS::Render::Context::TryGetLocatedDriver();
+		return driver != nullptr
+			? NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(*driver)
+			: nullptr;
+	}
+
+	NLS::Render::RHI::NativeBackendType ResolveDeviceBackend(
+		const std::shared_ptr<NLS::Render::RHI::RHIDevice>& device)
+	{
+		if (device == nullptr || device->GetAdapter() == nullptr)
+			return NLS::Render::RHI::NativeBackendType::None;
+		return device->GetAdapter()->GetBackendType();
+	}
+
+	NLS::Render::Resources::Texture2D* CreateDefaultWhiteTexture2D()
+	{
+		NLS::Render::Assets::TextureArtifactData artifact;
+		artifact.width = 1u;
+		artifact.height = 1u;
+		artifact.format = NLS::Render::RHI::TextureFormat::RGBA8;
+		artifact.colorSpace = NLS::Render::Assets::TextureArtifactColorSpace::Linear;
+		artifact.mips.push_back({
+			0u,
+			1u,
+			1u,
+			NLS::Render::RHI::CalculateTextureRowPitch(NLS::Render::RHI::TextureFormat::RGBA8, 1u),
+			NLS::Render::RHI::CalculateTextureSlicePitch(NLS::Render::RHI::TextureFormat::RGBA8, 1u, 1u, 1u),
+			std::vector<uint8_t> {255u, 255u, 255u, 255u}
+		});
+
+		auto* created = NLS::Render::Resources::Loaders::TextureLoader::CreateFromArtifact(
+			artifact,
+			NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+			NLS::Render::Settings::ETextureFilteringMode::NEAREST,
+			false);
+		if (created != nullptr)
+			created->path = ":Generated/DefaultWhiteTexture";
+		return created;
+	}
+
 	NLS::Render::Resources::Texture2D* GetDefaultWhiteTexture2D()
 	{
-		static NLS::Render::Resources::Texture2D* texture = []()
+		static NLS::Render::Resources::Texture2D* texture = nullptr;
+		static uint64_t textureDeviceIdentity = 0u;
+		static NLS::Render::RHI::NativeBackendType textureBackend = NLS::Render::RHI::NativeBackendType::None;
+
+		const auto device = TryGetLocatedExplicitDevice();
+		const auto deviceIdentity = device != nullptr ? device->GetCacheIdentity() : 0u;
+		const auto backend = ResolveDeviceBackend(device);
+		const bool needsRefresh =
+			texture == nullptr ||
+			textureDeviceIdentity != deviceIdentity ||
+			textureBackend != backend ||
+			(device != nullptr && texture->GetTextureHandle() == nullptr) ||
+			(device == nullptr && texture->GetTextureHandle() != nullptr);
+		if (needsRefresh)
 		{
-			auto* created = NLS::Render::Resources::Loaders::TextureLoader::CreatePixel(255, 255, 255, 255);
-			if (created != nullptr)
-				created->path = ":Generated/DefaultWhiteTexture";
-			return created;
-		}();
+			NLS::Render::Resources::Loaders::TextureLoader::Destroy(texture);
+			texture = CreateDefaultWhiteTexture2D();
+			textureDeviceIdentity = texture != nullptr ? deviceIdentity : 0u;
+			textureBackend = texture != nullptr ? backend : NLS::Render::RHI::NativeBackendType::None;
+		}
 		return texture;
+	}
+
+	NLS::Render::Resources::TextureCube* CreateDefaultWhiteTextureCube()
+	{
+		auto* cubeMap = new NLS::Render::Resources::TextureCube();
+		std::vector<uint8_t> whitePixel(4, 255);
+		std::vector<NLS::Image> images;
+		images.reserve(6);
+		for (int i = 0; i < 6; ++i)
+		{
+			images.emplace_back(1, 1, 4);
+			images.back().SetData(whitePixel.data());
+		}
+		std::vector<const NLS::Image*> imagePtrs;
+		imagePtrs.reserve(6);
+		for (auto& img : images)
+			imagePtrs.push_back(&img);
+		if (!cubeMap->SetTextureResource(imagePtrs))
+		{
+			delete cubeMap;
+			return nullptr;
+		}
+		return cubeMap;
 	}
 
 	NLS::Render::Resources::TextureCube* GetDefaultWhiteTextureCube()
 	{
-		static NLS::Render::Resources::TextureCube* texture = []() -> NLS::Render::Resources::TextureCube*
+		static NLS::Render::Resources::TextureCube* texture = nullptr;
+		static uint64_t textureDeviceIdentity = 0u;
+		static NLS::Render::RHI::NativeBackendType textureBackend = NLS::Render::RHI::NativeBackendType::None;
+
+		const auto device = TryGetLocatedExplicitDevice();
+		const auto deviceIdentity = device != nullptr ? device->GetCacheIdentity() : 0u;
+		const auto backend = ResolveDeviceBackend(device);
+		const bool needsRefresh =
+			texture == nullptr ||
+			textureDeviceIdentity != deviceIdentity ||
+			textureBackend != backend ||
+			(device != nullptr && texture->GetTextureHandle() == nullptr) ||
+			(device == nullptr && texture->GetTextureHandle() != nullptr);
+		if (needsRefresh)
 		{
-			auto* cubeMap = new NLS::Render::Resources::TextureCube();
-			std::vector<uint8_t> whitePixel(4, 255);
-			std::vector<NLS::Image> images;
-			images.reserve(6);
-			for (int i = 0; i < 6; ++i)
-			{
-				images.emplace_back(1, 1, 4);
-				images.back().SetData(whitePixel.data());
-			}
-			std::vector<const NLS::Image*> imagePtrs;
-			imagePtrs.reserve(6);
-			for (auto& img : images)
-				imagePtrs.push_back(&img);
-			if (!cubeMap->SetTextureResource(imagePtrs))
-			{
-				delete cubeMap;
-				return nullptr;
-			}
-			return cubeMap;
-		}();
+			delete texture;
+			texture = CreateDefaultWhiteTextureCube();
+			textureDeviceIdentity = texture != nullptr ? deviceIdentity : 0u;
+			textureBackend = texture != nullptr ? backend : NLS::Render::RHI::NativeBackendType::None;
+		}
 		return texture;
 	}
 

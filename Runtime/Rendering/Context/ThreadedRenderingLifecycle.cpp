@@ -90,6 +90,7 @@ namespace
         package.externalSceneOutputIdentity = snapshot.externalOutputIdentity;
         package.externalSceneOutputIdentities = snapshot.externalOutputIdentities;
         package.externalSceneOutputTextureCount = snapshot.externalOutputTextureCount;
+        package.streamingDependencyPins = snapshot.streamingDependencyPins;
         return package;
     }
 
@@ -215,6 +216,40 @@ namespace
         if (!identities.empty())
             return identities;
         return ResolveExternalOutputIntentIdentities(slot);
+    }
+
+    bool ContainsDependencyPin(const std::vector<uint64_t>& pins, const uint64_t dependencyId)
+    {
+        return std::find(pins.begin(), pins.end(), dependencyId) != pins.end();
+    }
+
+    void AddUniqueDependencyPin(std::vector<uint64_t>& pins, const uint64_t dependencyId)
+    {
+        if (dependencyId == 0u || ContainsDependencyPin(pins, dependencyId))
+            return;
+        pins.push_back(dependencyId);
+    }
+
+    void SetSlotStreamingDependencyPins(
+        InFlightFrameSlot& slot,
+        const std::vector<uint64_t>& dependencyPins)
+    {
+        slot.streamingDependencyPins.clear();
+        for (const auto dependencyId : dependencyPins)
+            AddUniqueDependencyPin(slot.streamingDependencyPins, dependencyId);
+    }
+
+    void RefreshSlotStreamingDependencyPins(InFlightFrameSlot& slot)
+    {
+        if (slot.stage == ThreadedFrameStage::Available ||
+            slot.stage == ThreadedFrameStage::Retired)
+        {
+            slot.streamingDependencyPins.clear();
+            return;
+        }
+
+        if (slot.renderScenePackage.has_value())
+            SetSlotStreamingDependencyPins(slot, slot.renderScenePackage->streamingDependencyPins);
     }
 
     int GetRenderSceneAttributionRank(const InFlightFrameSlot& slot)
@@ -694,6 +729,7 @@ bool ThreadedRenderingLifecycle::PublishFrameSnapshotLocked(const FrameSnapshot&
     slot->preparedRenderSceneBuilder.reset();
     slot->renderScenePackage.reset();
     slot->submissionFrame.reset();
+    SetSlotStreamingDependencyPins(*slot, snapshot.streamingDependencyPins);
     slot->stage = ThreadedFrameStage::Published;
     ++m_telemetry.publishedFrameCount;
     m_latestPublishedFrameId = snapshot.frameId;
@@ -728,6 +764,7 @@ bool ThreadedRenderingLifecycle::PublishPreparedFrameLocked(
     };
     slot->renderScenePackage.reset();
     slot->submissionFrame.reset();
+    SetSlotStreamingDependencyPins(*slot, renderScenePackage.streamingDependencyPins);
     slot->stage = ThreadedFrameStage::Published;
     ++m_telemetry.publishedFrameCount;
     m_latestPublishedFrameId = snapshot.frameId;
@@ -759,6 +796,7 @@ bool ThreadedRenderingLifecycle::PublishPreparedFrameBuilderLocked(
     slot->preparedRenderSceneBuilder = std::move(renderSceneBuilder);
     slot->renderScenePackage.reset();
     slot->submissionFrame.reset();
+    SetSlotStreamingDependencyPins(*slot, snapshot.streamingDependencyPins);
     slot->stage = ThreadedFrameStage::Published;
     ++m_telemetry.publishedFrameCount;
     m_latestPublishedFrameId = snapshot.frameId;
@@ -869,6 +907,7 @@ bool ThreadedRenderingLifecycle::CompleteRenderSceneLocked(
     slot->preparedRenderSceneBuilder.reset();
     slot->renderSceneAttribution = attribution;
     slot->stage = ThreadedFrameStage::RenderReady;
+    RefreshSlotStreamingDependencyPins(*slot);
     RefreshTelemetryLocked();
     return true;
 }
@@ -1011,6 +1050,7 @@ bool ThreadedRenderingLifecycle::RetireStaleExternalOutputPublishedFramesLocked(
             continue;
 
         slot.stage = ThreadedFrameStage::Retired;
+        RefreshSlotStreamingDependencyPins(slot);
         retiredStaleFrames = true;
     }
 
@@ -1084,6 +1124,7 @@ bool ThreadedRenderingLifecycle::RetireStaleExternalOutputReadyFramesLocked()
             continue;
 
         slot.stage = ThreadedFrameStage::Retired;
+        RefreshSlotStreamingDependencyPins(slot);
         retiredStaleFrames = true;
     }
 
@@ -1191,6 +1232,7 @@ bool ThreadedRenderingLifecycle::RetireFrame(const size_t slotIndex)
                 slot->submissionFrame->frameId);
         }
         slot->stage = ThreadedFrameStage::Retired;
+        RefreshSlotStreamingDependencyPins(*slot);
         RefreshTelemetryLocked();
     }
     m_slotAvailable.notify_one();
@@ -1322,6 +1364,24 @@ std::vector<InFlightFrameSlot> ThreadedRenderingLifecycle::CopySlots() const
     return m_slots;
 }
 
+std::vector<uint64_t> ThreadedRenderingLifecycle::CollectStreamingDependencyPins() const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    std::vector<uint64_t> pins;
+    for (const auto& slot : m_slots)
+    {
+        if (slot.stage == ThreadedFrameStage::Available ||
+            slot.stage == ThreadedFrameStage::Retired)
+        {
+            continue;
+        }
+
+        for (const auto dependencyId : slot.streamingDependencyPins)
+            AddUniqueDependencyPin(pins, dependencyId);
+    }
+    return pins;
+}
+
 ThreadedFrameTelemetry ThreadedRenderingLifecycle::GetTelemetry() const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -1371,11 +1431,13 @@ void ThreadedRenderingLifecycle::ReleaseRetainedFrameResources()
             std::swap(retainedSlot.preparedRenderSceneBuilder, slot.preparedRenderSceneBuilder);
             std::swap(retainedSlot.renderScenePackage, slot.renderScenePackage);
             std::swap(retainedSlot.submissionFrame, slot.submissionFrame);
+            std::swap(retainedSlot.streamingDependencyPins, slot.streamingDependencyPins);
             retainedSlots.push_back(std::move(retainedSlot));
 
             slot.publishOrigin = ThreadedFramePublishOrigin::Unknown;
             slot.renderSceneAttribution = RenderSceneAttribution::Unknown;
             slot.rhiSubmissionAttribution = RhiSubmissionAttribution::Unknown;
+            slot.streamingDependencyPins.clear();
             slot.stage = ThreadedFrameStage::Available;
         }
 
@@ -1403,6 +1465,7 @@ InFlightFrameSlot* ThreadedRenderingLifecycle::FindReusableSlotLocked(const bool
             reservedSlot->preparedRenderSceneBuilder.reset();
             reservedSlot->renderScenePackage.reset();
             reservedSlot->submissionFrame.reset();
+            reservedSlot->streamingDependencyPins.clear();
             return reservedSlot;
         }
 
@@ -1425,6 +1488,7 @@ InFlightFrameSlot* ThreadedRenderingLifecycle::FindReusableSlotLocked(const bool
             slot.preparedRenderSceneBuilder.reset();
             slot.renderScenePackage.reset();
             slot.submissionFrame.reset();
+            slot.streamingDependencyPins.clear();
             return &slot;
         }
     }

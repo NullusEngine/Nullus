@@ -17,6 +17,7 @@
 
 namespace NLS::Render::RHI
 {
+    struct RHIBufferReadbackDesc;
     class RHITexture;
 }
 
@@ -125,6 +126,10 @@ namespace NLS::Render::RHI::DX12
             NLS::Render::Settings::EPixelDataFormat format,
             NLS::Render::Settings::EPixelDataType type,
             void* data);
+        DX12ReadbackResult BeginBuffer(
+            ID3D12Device* device,
+            ID3D12CommandQueue* graphicsQueue,
+            const RHIBufferReadbackDesc& desc);
 
     private:
         struct Impl;

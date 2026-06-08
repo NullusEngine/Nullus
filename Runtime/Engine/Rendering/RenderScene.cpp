@@ -1,10 +1,14 @@
 #include "Rendering/RenderScene.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <any>
+#include <chrono>
 #include <filesystem>
 #include <limits>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "Components/MeshFilter.h"
 #include "Components/MeshRenderer.h"
@@ -14,6 +18,7 @@
 #include "GameObject.h"
 #include "Jobs/JobSystem.h"
 #include "Rendering/EngineDrawableDescriptor.h"
+#include "Rendering/LargeSceneSettings.h"
 #include "Rendering/IndexedObjectDataShaderSupport.h"
 #include "Rendering/Data/DrawableInstanceCount.h"
 #include "Rendering/Data/ObjectDataLimits.h"
@@ -21,6 +26,11 @@
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Resources/Shader.h"
 #include "Rendering/Resources/Texture2D.h"
+#include "Rendering/SceneHLOD.h"
+#include "Rendering/SceneLOD.h"
+#include "Rendering/SceneStreamingResidency.h"
+#include "Rendering/SceneSpatialIndex.h"
+#include "Rendering/SceneVisibilityPipeline.h"
 #include "SceneSystem/Scene.h"
 
 namespace NLS::Engine::Rendering
@@ -298,8 +308,6 @@ namespace
 	}
 
 	constexpr size_t kBitsPerWord = sizeof(uint64_t) * 8u;
-	constexpr size_t kParallelVisibilityPrimitiveThreshold = 1024u;
-	constexpr size_t kParallelVisibilityPrimitivesPerTask = 128u;
 
 	size_t BitWordCount(const size_t bitCount)
 	{
@@ -349,6 +357,333 @@ namespace
 			}
 		}
 	}
+
+	const LargeSceneSettings& ResolveLargeSceneSettings(const RenderSceneVisibilityOptions& options)
+	{
+		if (options.largeSceneSettings != nullptr)
+			return *options.largeSceneSettings;
+
+		static const LargeSceneSettings kDefaultSettings = LargeSceneSettings::Defaults();
+		return kDefaultSettings;
+	}
+
+	const LargeSceneSettings& ResolveLargeSceneSettings(const RenderSceneSyncOptions& options)
+	{
+		if (options.largeSceneSettings != nullptr)
+			return *options.largeSceneSettings;
+
+		static const LargeSceneSettings kDefaultSettings = LargeSceneSettings::Defaults();
+		return kDefaultSettings;
+	}
+
+	struct ScenePrimitiveHandleHash
+	{
+		size_t operator()(const ScenePrimitiveHandle& handle) const noexcept
+		{
+			auto hash = static_cast<size_t>(handle.sceneId);
+			hash ^= static_cast<size_t>(handle.index) + 0x9e3779b9u + (hash << 6u) + (hash >> 2u);
+			hash ^= static_cast<size_t>(handle.generation) + 0x9e3779b9u + (hash << 6u) + (hash >> 2u);
+			return hash;
+		}
+	};
+
+	void OverlayRepresentationResidencySnapshot(
+		RepresentationResidencySnapshot& residency,
+		const RepresentationResidencySnapshot& overlay)
+	{
+		for (const auto handle : overlay.fallbackPrimitiveResources)
+			residency.MarkFallback(handle);
+		for (const auto handle : overlay.readyPrimitiveResources)
+			residency.MarkReady(handle);
+		for (const auto handle : overlay.readyHLODProxyResources)
+			residency.MarkHLODProxyReady(handle);
+		for (const auto handle : overlay.notResidentResources)
+			residency.MarkNotResident(handle);
+	}
+
+	RepresentationResidencySnapshot BuildRepresentationResidencySnapshot(
+		const ScenePrimitiveSnapshot& snapshot,
+		const RepresentationResidencySnapshot* modeledResidency)
+	{
+		RepresentationResidencySnapshot residency;
+		for (const auto& record : snapshot.primitiveRecords)
+		{
+			if (!record.ownerAlive || !record.ownerActive)
+				continue;
+			if (modeledResidency != nullptr)
+				residency.MarkNotResident(record.handle);
+			else if (record.mesh != nullptr)
+				residency.MarkReady(record.handle);
+			else
+				residency.MarkNotResident(record.handle);
+		}
+		if (modeledResidency != nullptr)
+			OverlayRepresentationResidencySnapshot(residency, *modeledResidency);
+		return residency;
+	}
+
+	void MarkHLODProxyResidency(
+		RepresentationResidencySnapshot& residency,
+		const ScenePrimitiveSnapshot& snapshot,
+		const std::vector<HLODClusterRecord>& clusters)
+	{
+		for (const auto& cluster : clusters)
+		{
+			if (cluster.proxyPrimitive.has_value() &&
+				residency.IsReady(*cluster.proxyPrimitive))
+			{
+				residency.MarkHLODProxyReady(*cluster.proxyPrimitive);
+			}
+		}
+	}
+
+	uint64_t AllocateRenderSceneId()
+	{
+		static std::atomic_uint64_t nextSceneId { 1u };
+		return nextSceneId.fetch_add(1u, std::memory_order_relaxed);
+	}
+
+	uint32_t IncrementPrimitiveGeneration(const uint32_t generation)
+	{
+		const auto nextGeneration = generation + 1u;
+		return nextGeneration != 0u ? nextGeneration : 1u;
+	}
+
+	bool AreSameBounds(
+		const NLS::Render::Geometry::BoundingSphere& lhs,
+		const NLS::Render::Geometry::BoundingSphere& rhs)
+	{
+		return lhs.position == rhs.position && lhs.radius == rhs.radius;
+	}
+
+	bool AreSameMatrix(const Maths::Matrix4& lhs, const Maths::Matrix4& rhs)
+	{
+		for (size_t index = 0u; index < 16u; ++index)
+		{
+			if (lhs.data[index] != rhs.data[index])
+				return false;
+		}
+		return true;
+	}
+
+	uint64_t ElapsedNanoseconds(const std::chrono::steady_clock::time_point start)
+	{
+		const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+			std::chrono::steady_clock::now() - start).count();
+		return static_cast<uint64_t>(std::max<int64_t>(elapsed, 1));
+	}
+
+	float ResolveSpatialQueryRadius(const RenderSceneVisibilityOptions& options)
+	{
+		if (options.frustum == nullptr)
+			return 0.0f;
+
+		const auto planeNormal = [](const std::array<float, 4>& plane)
+		{
+			return Maths::Vector3(plane[0], plane[1], plane[2]);
+		};
+		const auto intersectPlanes = [&](const std::array<float, 4>& first,
+			const std::array<float, 4>& second,
+			const std::array<float, 4>& third,
+			Maths::Vector3& point)
+		{
+			const auto n1 = planeNormal(first);
+			const auto n2 = planeNormal(second);
+			const auto n3 = planeNormal(third);
+			const auto n2CrossN3 = Maths::Vector3::Cross(n2, n3);
+			const auto denominator = Maths::Vector3::Dot(n1, n2CrossN3);
+			if (std::abs(denominator) <= std::numeric_limits<float>::epsilon())
+				return false;
+
+			point =
+				(n2CrossN3 * -first[3] -
+				 Maths::Vector3::Cross(n3, n1) * second[3] -
+				 Maths::Vector3::Cross(n1, n2) * third[3]) /
+				denominator;
+			return true;
+		};
+
+		const auto farPlane = options.frustum->GetFarPlane();
+		const auto farSignedDistance =
+			farPlane[0] * options.cameraPosition.x +
+			farPlane[1] * options.cameraPosition.y +
+			farPlane[2] * options.cameraPosition.z +
+			farPlane[3];
+		const auto farDistance = std::abs(farSignedDistance);
+		float queryRadius = farDistance;
+
+		const std::array<std::array<float, 4>, 2u> horizontalPlanes = {
+			options.frustum->GetLeftPlane(),
+			options.frustum->GetRightPlane()
+		};
+		const std::array<std::array<float, 4>, 2u> verticalPlanes = {
+			options.frustum->GetBottomPlane(),
+			options.frustum->GetTopPlane()
+		};
+		for (const auto& horizontalPlane : horizontalPlanes)
+		{
+			for (const auto& verticalPlane : verticalPlanes)
+			{
+				Maths::Vector3 corner;
+				if (!intersectPlanes(farPlane, horizontalPlane, verticalPlane, corner))
+					continue;
+				queryRadius = std::max(queryRadius, Maths::Vector3::Distance(options.cameraPosition, corner));
+			}
+		}
+
+		return queryRadius > 0.0f ? queryRadius : 0.0f;
+	}
+
+}
+
+struct RenderScene::RepresentationRegistry
+{
+	std::vector<LODGroupRecord> lodGroups;
+	std::vector<HLODClusterRecord> hlodClusters;
+	mutable std::unordered_map<uint64_t, std::vector<LODSelectionHistory>> lodSelectionHistoryByView;
+	std::unordered_map<ScenePrimitiveHandle, std::vector<uint32_t>, ScenePrimitiveHandleStableHash> lodGroupsByPrimitive;
+	std::unordered_map<ScenePrimitiveHandle, std::vector<uint32_t>, ScenePrimitiveHandleStableHash> hlodClustersByPrimitive;
+
+	[[nodiscard]] bool HasLOD() const
+	{
+		return !lodGroups.empty();
+	}
+
+	[[nodiscard]] bool HasHLOD() const
+	{
+		return !hlodClusters.empty();
+	}
+
+	[[nodiscard]] std::vector<LODSelectionHistory>& LODHistoryForView(const uint64_t viewKey) const
+	{
+		auto& history = lodSelectionHistoryByView[viewKey];
+		if (history.size() < lodGroups.size())
+			history.resize(lodGroups.size());
+		return history;
+	}
+
+	void ResizeLODHistories()
+	{
+		for (auto& [viewKey, history] : lodSelectionHistoryByView)
+		{
+			(void)viewKey;
+			if (history.size() < lodGroups.size())
+				history.resize(lodGroups.size());
+		}
+	}
+
+	void RebuildLookup()
+	{
+		lodGroupsByPrimitive.clear();
+		hlodClustersByPrimitive.clear();
+		for (const auto& group : lodGroups)
+		{
+			if (!group.groupHandle.IsValid())
+				continue;
+			for (const auto& level : group.levels)
+			{
+				for (const auto handle : level.primitiveHandles)
+					lodGroupsByPrimitive[handle].push_back(group.groupHandle.index);
+			}
+		}
+		for (const auto& cluster : hlodClusters)
+		{
+			if (!cluster.clusterHandle.IsValid())
+				continue;
+			for (const auto child : cluster.childPrimitives)
+				hlodClustersByPrimitive[child].push_back(cluster.clusterHandle.index);
+			if (cluster.proxyPrimitive.has_value())
+				hlodClustersByPrimitive[*cluster.proxyPrimitive].push_back(cluster.clusterHandle.index);
+		}
+	}
+};
+
+RenderScene::RenderScene()
+	: m_sceneId(AllocateRenderSceneId()),
+	  m_spatialIndex(std::make_unique<SceneSpatialIndex>()),
+	  m_representationRegistry(std::make_unique<RepresentationRegistry>())
+{
+}
+
+RenderScene::~RenderScene() = default;
+
+RenderScene::RenderScene(RenderScene&& other) noexcept
+	: m_sceneId(other.m_sceneId),
+	  m_primitives(std::move(other.m_primitives)),
+	  m_primitiveIndexByMeshRenderer(std::move(other.m_primitiveIndexByMeshRenderer)),
+	  m_firstFreePrimitiveSlot(other.m_firstFreePrimitiveSlot),
+	  m_livePrimitiveCount(other.m_livePrimitiveCount),
+	  m_lastSceneFastAccessRevision(other.m_lastSceneFastAccessRevision),
+	  m_nextCachedCommandBuildSerial(other.m_nextCachedCommandBuildSerial),
+	  m_cachedCommandBuildCount(other.m_cachedCommandBuildCount),
+	  m_nextPrimitiveSnapshotSerial(other.m_nextPrimitiveSnapshotSerial),
+	  m_cachedMeshBaseIndices(std::move(other.m_cachedMeshBaseIndices)),
+	  m_commandOffsetTableDirty(other.m_commandOffsetTableDirty),
+	  m_lastDirtySyncHandles(std::move(other.m_lastDirtySyncHandles)),
+	  m_lastRemovedHandles(std::move(other.m_lastRemovedHandles)),
+	  m_lastSyncStats(other.m_lastSyncStats),
+	  m_lastDrawCallOptimizationStats(other.m_lastDrawCallOptimizationStats),
+	  m_lastLargeSceneTelemetry(other.m_lastLargeSceneTelemetry),
+	  m_lastVisiblePrimitiveHandles(std::move(other.m_lastVisiblePrimitiveHandles)),
+	  m_lastRepresentationStreamingInterest(std::move(other.m_lastRepresentationStreamingInterest)),
+	  m_spatialIndex(std::move(other.m_spatialIndex)),
+	  m_representationRegistry(std::move(other.m_representationRegistry))
+{
+	other.ResetMovedFromState();
+}
+
+RenderScene& RenderScene::operator=(RenderScene&& other) noexcept
+{
+	if (this == &other)
+		return *this;
+
+	m_sceneId = other.m_sceneId;
+	m_primitives = std::move(other.m_primitives);
+	m_primitiveIndexByMeshRenderer = std::move(other.m_primitiveIndexByMeshRenderer);
+	m_firstFreePrimitiveSlot = other.m_firstFreePrimitiveSlot;
+	m_livePrimitiveCount = other.m_livePrimitiveCount;
+	m_lastSceneFastAccessRevision = other.m_lastSceneFastAccessRevision;
+	m_nextCachedCommandBuildSerial = other.m_nextCachedCommandBuildSerial;
+	m_cachedCommandBuildCount = other.m_cachedCommandBuildCount;
+	m_nextPrimitiveSnapshotSerial = other.m_nextPrimitiveSnapshotSerial;
+	m_cachedMeshBaseIndices = std::move(other.m_cachedMeshBaseIndices);
+	m_commandOffsetTableDirty = other.m_commandOffsetTableDirty;
+	m_lastDirtySyncHandles = std::move(other.m_lastDirtySyncHandles);
+	m_lastRemovedHandles = std::move(other.m_lastRemovedHandles);
+	m_lastSyncStats = other.m_lastSyncStats;
+	m_lastDrawCallOptimizationStats = other.m_lastDrawCallOptimizationStats;
+	m_lastLargeSceneTelemetry = other.m_lastLargeSceneTelemetry;
+	m_lastVisiblePrimitiveHandles = std::move(other.m_lastVisiblePrimitiveHandles);
+	m_lastRepresentationStreamingInterest = std::move(other.m_lastRepresentationStreamingInterest);
+	m_spatialIndex = std::move(other.m_spatialIndex);
+	m_representationRegistry = std::move(other.m_representationRegistry);
+
+	other.ResetMovedFromState();
+	return *this;
+}
+
+void RenderScene::ResetMovedFromState() noexcept
+{
+	m_sceneId = AllocateRenderSceneId();
+	m_primitives.clear();
+	m_primitiveIndexByMeshRenderer.clear();
+	m_firstFreePrimitiveSlot.reset();
+	m_livePrimitiveCount = 0u;
+	m_lastSceneFastAccessRevision = 0u;
+	m_nextCachedCommandBuildSerial = 1u;
+	m_cachedCommandBuildCount = 0u;
+	m_nextPrimitiveSnapshotSerial = 1u;
+	m_cachedMeshBaseIndices.clear();
+	m_commandOffsetTableDirty = true;
+	m_lastDirtySyncHandles.clear();
+	m_lastRemovedHandles.clear();
+	m_lastSyncStats = {};
+	m_lastDrawCallOptimizationStats = {};
+	m_lastLargeSceneTelemetry = {};
+	m_lastVisiblePrimitiveHandles.clear();
+	m_lastRepresentationStreamingInterest.clear();
+	m_spatialIndex = std::make_unique<SceneSpatialIndex>();
+	m_representationRegistry = std::make_unique<RepresentationRegistry>();
 }
 
 bool RenderScene::CachedCommandInputStamp::operator==(const CachedCommandInputStamp& other) const
@@ -366,11 +701,18 @@ RenderSceneSyncStats RenderScene::Synchronize(
 	SceneSystem::Scene& scene,
 	const RenderSceneSyncOptions& options)
 {
+	const auto syncStart = std::chrono::steady_clock::now();
 	RenderSceneSyncStats stats;
+	m_lastDirtySyncHandles.clear();
+	m_lastRemovedHandles.clear();
 	const auto& fastAccess = scene.GetFastAccessComponents();
+	const auto fastAccessRevision = scene.GetFastAccessComponentsRevision();
+	const bool fastAccessMembershipChanged =
+		fastAccessRevision != m_lastSceneFastAccessRevision;
 
-	std::unordered_set<Components::MeshRenderer*> liveMeshRenderers;
-	liveMeshRenderers.reserve(fastAccess.modelRenderers.size());
+	std::unordered_map<Components::MeshRenderer*, NLS::InstanceID> liveMeshRenderers;
+	if (fastAccessMembershipChanged)
+		liveMeshRenderers.reserve(fastAccess.modelRenderers.size());
 
 	for (auto* meshRenderer : fastAccess.modelRenderers)
 	{
@@ -378,15 +720,27 @@ RenderSceneSyncStats RenderScene::Synchronize(
 			continue;
 		auto* owner = meshRenderer->gameobject();
 		if (owner == nullptr || !owner->IsAlive())
+		{
+			const auto found = m_primitiveIndexByMeshRenderer.find(meshRenderer);
+			if (found != m_primitiveIndexByMeshRenderer.end())
+				TombstonePrimitive(found->second, stats);
 			continue;
+		}
 
-		liveMeshRenderers.insert(meshRenderer);
+		if (fastAccessMembershipChanged)
+			liveMeshRenderers.emplace(meshRenderer, meshRenderer->GetInstanceID());
 		auto& primitive = FindOrCreatePrimitive(*meshRenderer, stats);
 		SynchronizePrimitive(primitive, options, stats);
 	}
 
-	RemoveMissingPrimitives(liveMeshRenderers, stats);
+	if (fastAccessMembershipChanged)
+		RemoveMissingPrimitives(liveMeshRenderers, stats);
+	m_lastSceneFastAccessRevision = fastAccessRevision;
+	RefreshSpatialIndex(options);
 	m_lastSyncStats = stats;
+	stats.syncTimeNs = ElapsedNanoseconds(syncStart);
+	m_lastSyncStats.syncTimeNs = stats.syncTimeNs;
+	RefreshSyncTelemetry(stats);
 	return stats;
 }
 
@@ -396,41 +750,123 @@ RenderSceneVisibleQueues RenderScene::GatherVisibleCommands(
 {
 	RenderSceneVisibleQueues output;
 	m_lastDrawCallOptimizationStats = {};
-	const auto meshBaseIndices = BuildMeshBaseIndices();
-	const auto visibility = EvaluateVisibility(options, mode, meshBaseIndices);
+	m_lastCullReasonDebugSnapshot.reset();
+	m_lastVisiblePrimitiveHandles.clear();
+	m_lastRepresentationStreamingInterest.clear();
+	const auto commandOffsetStart = std::chrono::steady_clock::now();
+	uint64_t commandOffsetTouchedPrimitiveCount = 0u;
+	const auto& meshBaseIndices = GetMeshBaseIndices(&commandOffsetTouchedPrimitiveCount);
+	const auto commandOffsetTimeNs = ElapsedNanoseconds(commandOffsetStart);
+	const auto visibilityStart = std::chrono::steady_clock::now();
+	const auto visibility = EvaluateVisibility(options, mode, meshBaseIndices, false);
+	const auto visibilityTimeNs = ElapsedNanoseconds(visibilityStart);
+	m_lastLargeSceneTelemetry.culledByReason = visibility.culledByReason;
+	m_lastLargeSceneTelemetry.spatialCandidateCount = visibility.spatialCandidateCount;
+	m_lastLargeSceneTelemetry.fullScanCandidateCount = visibility.fullScanCandidateCount;
+	m_lastLargeSceneTelemetry.staticPrimitiveCount = 0u;
+	m_lastLargeSceneTelemetry.dynamicPrimitiveCount = 0u;
+	m_lastLargeSceneTelemetry.unclassifiedPrimitiveCount = static_cast<uint64_t>(m_livePrimitiveCount);
+	if (ResolveLargeSceneSettings(options).enableSpatialIndex && m_spatialIndex != nullptr)
+	{
+		m_lastLargeSceneTelemetry.staticPrimitiveCount =
+			static_cast<uint64_t>(m_spatialIndex->GetStaticPrimitiveCount());
+		m_lastLargeSceneTelemetry.dynamicPrimitiveCount =
+			static_cast<uint64_t>(m_spatialIndex->GetDynamicPrimitiveCount());
+		m_lastLargeSceneTelemetry.unclassifiedPrimitiveCount = 0u;
+	}
+	m_lastLargeSceneTelemetry.dynamicCandidateCount = visibility.dynamicCandidateCount;
+	m_lastLargeSceneTelemetry.dynamicRecordsTouched = visibility.dynamicRecordsTouched;
+	m_lastLargeSceneTelemetry.staticIndexRefitCount = visibility.staticIndexRefitCount;
+	m_lastLargeSceneTelemetry.staticIndexRebuildCount = visibility.staticIndexRebuildCount;
+	m_lastLargeSceneTelemetry.staticIndexLastGoodQueryCount = visibility.staticIndexLastGoodQueryCount;
+	m_lastLargeSceneTelemetry.staticIndexDirtyOverlayCount = visibility.staticIndexDirtyOverlayCount;
+	m_lastLargeSceneTelemetry.spatialRebuildFallbackCount = visibility.spatialRebuildFallbackCount;
+	m_lastLargeSceneTelemetry.dynamicIndexUpdateCount = visibility.dynamicIndexUpdateCount;
+	m_lastLargeSceneTelemetry.primitiveRecordsTouched =
+		commandOffsetTouchedPrimitiveCount + visibility.primitiveRecordsTouched;
+	m_lastLargeSceneTelemetry.visibilityTestedPrimitiveCount = visibility.visibilityTestedPrimitiveCount;
+	m_lastLargeSceneTelemetry.visibilityBitsetWordCount =
+		static_cast<uint64_t>(visibility.primitiveBits.size() + visibility.meshBits.size());
+	m_lastLargeSceneTelemetry.visiblePrimitiveCount = visibility.visiblePrimitiveCount;
+	m_lastLargeSceneTelemetry.visibleMeshCount = visibility.visibleMeshCount;
+	m_lastLargeSceneTelemetry.occlusionTestCount = visibility.occlusionTestCount;
+	m_lastLargeSceneTelemetry.occlusionCulledCount = visibility.occlusionCulledCount;
+	m_lastLargeSceneTelemetry.commandOffsetRebuildCount = commandOffsetTouchedPrimitiveCount > 0u ? 1u : 0u;
+	m_lastLargeSceneTelemetry.serialVisibilityTimeNs = 0u;
+	m_lastLargeSceneTelemetry.parallelVisibilityTimeNs = 0u;
+	if (visibility.usedParallelEvaluation)
+		m_lastLargeSceneTelemetry.parallelVisibilityTimeNs = visibilityTimeNs;
+	else
+		m_lastLargeSceneTelemetry.serialVisibilityTimeNs = visibilityTimeNs;
+	m_lastLargeSceneTelemetry.rawVisibleDrawCount = 0u;
+	m_lastLargeSceneTelemetry.submittedDrawCount = 0u;
+	m_lastLargeSceneTelemetry.dynamicInstanceGroupCount = 0u;
+	m_lastLargeSceneTelemetry.finalizationTouchedPrimitiveCount = 0u;
+	m_lastLargeSceneTelemetry.finalizationTouchedCommandCount = 0u;
 	const auto visibleMeshCount = static_cast<size_t>(visibility.visibleMeshCount);
 	output.opaques.reserve(visibleMeshCount);
 	output.transparents.reserve(visibleMeshCount);
 
-	for (size_t primitiveIndex = 0u; primitiveIndex < m_primitives.size(); ++primitiveIndex)
+	const auto finalizationStart = std::chrono::steady_clock::now();
+	const auto finalizePrimitive = [&](const size_t primitiveIndex)
 	{
-		if (!IsBitSet(visibility.primitiveBits, primitiveIndex))
-			continue;
+		if (primitiveIndex >= m_primitives.size())
+			return;
 
 		const auto& primitive = m_primitives[primitiveIndex];
+		if (!primitive.occupied || primitive.tombstoned)
+			return;
+		++m_lastLargeSceneTelemetry.finalizationTouchedPrimitiveCount;
+
+		if (!visibility.usesSparseVisiblePrimitiveIndices &&
+			!IsBitSet(visibility.primitiveBits, primitiveIndex))
+			return;
+
 		const auto meshBaseIndex = primitiveIndex < meshBaseIndices.size()
 			? meshBaseIndices[primitiveIndex]
 			: 0u;
 
 		for (size_t slotIndex = 0u; slotIndex < primitive.cachedCommands.size(); ++slotIndex)
 		{
+			++m_lastLargeSceneTelemetry.finalizationTouchedCommandCount;
 			const auto& slot = primitive.cachedCommands[slotIndex];
 			if (!slot.valid || slot.command.mesh == nullptr || slot.command.material == nullptr)
 				continue;
 
 			const auto meshBitIndex = meshBaseIndex + slotIndex;
-			if (!IsBitSet(visibility.meshBits, meshBitIndex))
+			if (visibility.meshBits.empty())
+			{
+				if (!IsMeshVisible(primitive, *slot.command.mesh, options))
+					continue;
+			}
+			else if (!IsBitSet(visibility.meshBits, meshBitIndex))
+			{
 				continue;
+			}
 
 			AppendVisibleDrawable(output, primitive, slot.command, options);
 			++m_lastDrawCallOptimizationStats.rawVisibleObjectCount;
+			++m_lastLargeSceneTelemetry.rawVisibleDrawCount;
 		}
+	};
+
+	if (visibility.usesSparseVisiblePrimitiveIndices)
+	{
+		for (const auto primitiveIndex : visibility.visiblePrimitiveIndices)
+			finalizePrimitive(primitiveIndex);
+	}
+	else
+	{
+		for (size_t primitiveIndex = 0u; primitiveIndex < m_primitives.size(); ++primitiveIndex)
+			finalizePrimitive(primitiveIndex);
 	}
 
 	FinalizeOpaqueQueue(output.opaques);
 	SortVisibleQueue(output.decals, std::greater<float>{});
 	SortVisibleQueue(output.transparents, std::greater<float>{});
 	AssignVisibleObjectIndices(output);
+	m_lastVisiblePrimitiveHandles = visibility.visiblePrimitiveHandles;
+	m_lastRepresentationStreamingInterest = visibility.representationStreamingInterest;
 	m_lastDrawCallOptimizationStats.submittedSceneDrawCount =
 		static_cast<uint64_t>(
 			output.opaques.size() +
@@ -450,12 +886,16 @@ RenderSceneVisibleQueues RenderScene::GatherVisibleCommands(
 			std::max<uint64_t>(m_lastDrawCallOptimizationStats.largestInstanceGroupSize, instanceCount);
 	}
 	m_lastDrawCallOptimizationStats.cachedCommandRebuildCount = m_lastSyncStats.rebuiltCachedCommandCount;
+	m_lastLargeSceneTelemetry.submittedDrawCount = m_lastDrawCallOptimizationStats.submittedSceneDrawCount;
+	m_lastLargeSceneTelemetry.dynamicInstanceGroupCount = m_lastDrawCallOptimizationStats.dynamicInstanceGroupCount;
+	m_lastLargeSceneTelemetry.queueFinalizationTimeNs =
+		commandOffsetTimeNs + ElapsedNanoseconds(finalizationStart);
 	return output;
 }
 
 size_t RenderScene::GetPrimitiveCount() const
 {
-	return m_primitives.size();
+	return m_livePrimitiveCount;
 }
 
 uint64_t RenderScene::GetCachedCommandBuildCountForTesting() const
@@ -473,11 +913,363 @@ const DrawCallOptimizationStats& RenderScene::GetLastDrawCallOptimizationStatsFo
 	return GetLastDrawCallOptimizationStats();
 }
 
+const NLS::Render::Data::LargeSceneTelemetry& RenderScene::GetLastLargeSceneTelemetry() const
+{
+	return m_lastLargeSceneTelemetry;
+}
+
+const NLS::Render::Data::LargeSceneTelemetry& RenderScene::GetLastLargeSceneTelemetryForTesting() const
+{
+	return GetLastLargeSceneTelemetry();
+}
+
+std::shared_ptr<const SceneCullReasonDebugSnapshot> RenderScene::GetLastCullReasonDebugSnapshot() const
+{
+	return m_lastCullReasonDebugSnapshot;
+}
+
+const std::vector<ScenePrimitiveHandle>& RenderScene::GetLastVisiblePrimitiveHandles() const
+{
+	return m_lastVisiblePrimitiveHandles;
+}
+
+const std::vector<ScenePrimitiveHandle>& RenderScene::GetLastRemovedPrimitiveHandles() const
+{
+	return m_lastRemovedHandles;
+}
+
+std::vector<ScenePrimitiveHandle> RenderScene::GetLivePrimitiveHandles() const
+{
+	std::vector<ScenePrimitiveHandle> handles;
+	handles.reserve(m_livePrimitiveCount);
+	for (const auto& primitive : m_primitives)
+	{
+		if (primitive.occupied && !primitive.tombstoned)
+			handles.push_back(primitive.handle);
+	}
+	return handles;
+}
+
+const std::vector<ScenePrimitiveHandle>& RenderScene::GetLastRepresentationStreamingInterest() const
+{
+	return m_lastRepresentationStreamingInterest;
+}
+
 RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilityForTesting(
 	const RenderSceneVisibilityOptions& options,
 	const RenderSceneVisibilityMode mode) const
 {
 	return EvaluateVisibility(options, mode);
+}
+
+ScenePrimitiveSnapshot RenderScene::CreatePrimitiveSnapshotForTesting(const uint64_t frameSerial) const
+{
+	return CreatePrimitiveSnapshot(frameSerial);
+}
+
+bool RenderScene::IsPrimitiveHandleLiveForTesting(const ScenePrimitiveHandle handle) const
+{
+	return IsPrimitiveHandleLive(handle);
+}
+
+void RenderScene::ClearRepresentationRecords()
+{
+	m_representationRegistry = std::make_unique<RepresentationRegistry>();
+	for (auto& primitive : m_primitives)
+	{
+		primitive.lodGroup.reset();
+		primitive.hlodCluster.reset();
+	}
+}
+
+SceneLODGroupHandle RenderScene::RegisterLODGroup(const LODGroupRecord& group)
+{
+	if (m_representationRegistry == nullptr)
+		m_representationRegistry = std::make_unique<RepresentationRegistry>();
+
+	auto record = group;
+	if (!record.groupHandle.IsValid())
+		record.groupHandle = { static_cast<uint32_t>(m_representationRegistry->lodGroups.size()) };
+
+	const auto handle = record.groupHandle;
+	if (handle.index >= m_representationRegistry->lodGroups.size())
+		m_representationRegistry->lodGroups.resize(static_cast<size_t>(handle.index) + 1u);
+	m_representationRegistry->lodGroups[handle.index] = record;
+	m_representationRegistry->ResizeLODHistories();
+
+	for (const auto& level : record.levels)
+	{
+		for (const auto primitiveHandle : level.primitiveHandles)
+		{
+			if (!IsPrimitiveHandleLive(primitiveHandle))
+				continue;
+			m_primitives[primitiveHandle.index].lodGroup = handle;
+		}
+	}
+	m_representationRegistry->RebuildLookup();
+
+	return handle;
+}
+
+SceneHLODClusterHandle RenderScene::RegisterHLODCluster(const HLODClusterRecord& cluster)
+{
+	if (m_representationRegistry == nullptr)
+		m_representationRegistry = std::make_unique<RepresentationRegistry>();
+
+	auto record = cluster;
+	if (!record.clusterHandle.IsValid())
+		record.clusterHandle = { static_cast<uint32_t>(m_representationRegistry->hlodClusters.size()) };
+
+	const auto handle = record.clusterHandle;
+	if (handle.index >= m_representationRegistry->hlodClusters.size())
+		m_representationRegistry->hlodClusters.resize(static_cast<size_t>(handle.index) + 1u);
+	m_representationRegistry->hlodClusters[handle.index] = record;
+
+	for (const auto primitiveHandle : record.childPrimitives)
+	{
+		if (!IsPrimitiveHandleLive(primitiveHandle))
+			continue;
+		m_primitives[primitiveHandle.index].hlodCluster = handle;
+	}
+	if (record.proxyPrimitive.has_value() && IsPrimitiveHandleLive(*record.proxyPrimitive))
+		m_primitives[record.proxyPrimitive->index].hlodCluster = handle;
+	m_representationRegistry->RebuildLookup();
+
+	return handle;
+}
+
+void RenderScene::ClearRepresentationRecordsForTesting()
+{
+	ClearRepresentationRecords();
+}
+
+SceneLODGroupHandle RenderScene::RegisterLODGroupForTesting(const LODGroupRecord& group)
+{
+	return RegisterLODGroup(group);
+}
+
+SceneHLODClusterHandle RenderScene::RegisterHLODClusterForTesting(const HLODClusterRecord& cluster)
+{
+	return RegisterHLODCluster(cluster);
+}
+
+ScenePrimitiveSnapshot RenderScene::CreatePrimitiveSnapshot(const uint64_t frameSerial) const
+{
+	ScenePrimitiveSnapshot snapshot;
+	snapshot.snapshotSerial = m_nextPrimitiveSnapshotSerial++;
+	snapshot.sceneId = m_sceneId;
+	snapshot.frameSerial = frameSerial;
+	snapshot.memoryArenaSerial = snapshot.snapshotSerial;
+	snapshot.primitiveRecords.reserve(m_livePrimitiveCount);
+	snapshot.handleToDenseIndex.reserve(m_livePrimitiveCount);
+	snapshot.denseIndexToHandle.reserve(m_livePrimitiveCount);
+	snapshot.dirtySyncHandles = m_lastDirtySyncHandles;
+	snapshot.removedHandles = m_lastRemovedHandles;
+	snapshot.liveHandleBits.resize(BitWordCount(m_primitives.size()));
+
+	uint64_t commandOffset = 0u;
+	for (const auto& primitive : m_primitives)
+	{
+		if (!primitive.occupied || primitive.tombstoned)
+			continue;
+
+		const auto denseIndex = static_cast<uint64_t>(snapshot.primitiveRecords.size());
+		const auto commandOffsetBegin = commandOffset;
+		commandOffset += static_cast<uint64_t>(primitive.cachedCommands.size());
+
+		ScenePrimitiveSnapshotRecord record;
+		record.handle = primitive.handle;
+		record.mesh = primitive.mesh;
+		record.modelBoundingSphere = primitive.modelBoundingSphere;
+		record.worldMatrix = primitive.worldMatrix;
+		record.ownerAlive = primitive.ownerAlive;
+		record.ownerActive = primitive.ownerActive;
+		if (primitive.meshRenderer != nullptr)
+			record.userMatrix = primitive.meshRenderer->GetUserMatrix();
+		record.frustumBehaviour = primitive.frustumBehaviour;
+		record.visibilitySettings = primitive.visibilitySettings;
+		record.lodGroup = primitive.lodGroup;
+		record.hlodCluster = primitive.hlodCluster;
+		record.commandOffsetBegin = commandOffsetBegin;
+		record.commandOffsetEnd = commandOffset;
+		record.hasMeshBinding = primitive.meshRenderer != nullptr;
+		record.hasValidMaterial = std::any_of(
+			primitive.cachedCommands.begin(),
+			primitive.cachedCommands.end(),
+			[](const CachedCommandSlot& slot)
+			{
+				return slot.valid && slot.command.material != nullptr;
+			});
+		record.depthWriteEligibleForOcclusion = std::any_of(
+			primitive.cachedCommands.begin(),
+			primitive.cachedCommands.end(),
+			[](const CachedCommandSlot& slot)
+			{
+				return slot.valid &&
+					slot.command.material != nullptr &&
+					!slot.command.material->IsBlendable() &&
+					slot.command.stateMask.depthWriting &&
+					slot.command.stateMask.depthTest;
+			});
+		record.occupied = primitive.occupied;
+		record.tombstoned = primitive.tombstoned;
+
+		snapshot.primitiveRecords.push_back(record);
+		snapshot.handleToDenseIndex.push_back({ primitive.handle, denseIndex });
+		snapshot.denseIndexToHandle.push_back(primitive.handle);
+		snapshot.commandOffsetTable.push_back({ primitive.handle, commandOffsetBegin, commandOffset });
+		SetBit(snapshot.liveHandleBits, primitive.handle.index);
+	}
+
+	return snapshot;
+}
+
+ScenePrimitiveSnapshot RenderScene::CreatePrimitiveSnapshotForHandles(
+	const std::vector<ScenePrimitiveHandle>& handles,
+	const std::vector<ScenePrimitiveHandle>& removedHandles,
+	const uint64_t frameSerial) const
+{
+	ScenePrimitiveSnapshot snapshot;
+	snapshot.snapshotSerial = m_nextPrimitiveSnapshotSerial++;
+	snapshot.sceneId = m_sceneId;
+	snapshot.frameSerial = frameSerial;
+	snapshot.memoryArenaSerial = snapshot.snapshotSerial;
+	snapshot.primitiveRecords.reserve(handles.size());
+	snapshot.handleToDenseIndex.reserve(handles.size());
+	snapshot.denseIndexToHandle.reserve(handles.size());
+	snapshot.dirtySyncHandles = handles;
+	snapshot.removedHandles = removedHandles;
+	snapshot.liveHandleBits.resize(BitWordCount(m_primitives.size()));
+
+	std::vector<size_t> localMeshBaseIndices;
+	const auto* meshBaseIndices = &m_cachedMeshBaseIndices;
+	if (m_commandOffsetTableDirty)
+	{
+		localMeshBaseIndices.reserve(m_primitives.size() + 1u);
+		size_t meshCount = 0u;
+		for (const auto& primitive : m_primitives)
+		{
+			localMeshBaseIndices.push_back(meshCount);
+			if (primitive.occupied && !primitive.tombstoned)
+				meshCount += primitive.cachedCommands.size();
+		}
+		localMeshBaseIndices.push_back(meshCount);
+		meshBaseIndices = &localMeshBaseIndices;
+	}
+
+	for (const auto& handle : handles)
+	{
+		if (handle.sceneId != m_sceneId || handle.index >= m_primitives.size())
+			continue;
+
+		const auto& primitive = m_primitives[handle.index];
+		if (primitive.handle != handle || !primitive.occupied || primitive.tombstoned)
+			continue;
+
+		ScenePrimitiveSnapshotRecord record;
+		record.handle = primitive.handle;
+		record.mesh = primitive.mesh;
+		record.modelBoundingSphere = primitive.modelBoundingSphere;
+		record.worldMatrix = primitive.worldMatrix;
+		record.ownerAlive = primitive.ownerAlive;
+		record.ownerActive = primitive.ownerActive;
+		if (primitive.meshRenderer != nullptr)
+			record.userMatrix = primitive.meshRenderer->GetUserMatrix();
+		record.frustumBehaviour = primitive.frustumBehaviour;
+		record.visibilitySettings = primitive.visibilitySettings;
+		record.lodGroup = primitive.lodGroup;
+		record.hlodCluster = primitive.hlodCluster;
+		record.commandOffsetBegin = handle.index < meshBaseIndices->size()
+			? static_cast<uint64_t>((*meshBaseIndices)[handle.index])
+			: 0u;
+		record.commandOffsetEnd = record.commandOffsetBegin + static_cast<uint64_t>(primitive.cachedCommands.size());
+		record.hasMeshBinding = primitive.meshRenderer != nullptr;
+		record.hasValidMaterial = std::any_of(
+			primitive.cachedCommands.begin(),
+			primitive.cachedCommands.end(),
+			[](const CachedCommandSlot& slot)
+			{
+				return slot.valid && slot.command.material != nullptr;
+			});
+		record.depthWriteEligibleForOcclusion = std::any_of(
+			primitive.cachedCommands.begin(),
+			primitive.cachedCommands.end(),
+			[](const CachedCommandSlot& slot)
+			{
+				return slot.valid &&
+					slot.command.material != nullptr &&
+					!slot.command.material->IsBlendable() &&
+					slot.command.stateMask.depthWriting &&
+					slot.command.stateMask.depthTest;
+			});
+		record.occupied = primitive.occupied;
+		record.tombstoned = primitive.tombstoned;
+
+		const auto denseIndex = static_cast<uint64_t>(snapshot.primitiveRecords.size());
+		snapshot.primitiveRecords.push_back(record);
+		snapshot.handleToDenseIndex.push_back({ primitive.handle, denseIndex });
+		snapshot.denseIndexToHandle.push_back(primitive.handle);
+		snapshot.commandOffsetTable.push_back({ primitive.handle, record.commandOffsetBegin, record.commandOffsetEnd });
+		SetBit(snapshot.liveHandleBits, primitive.handle.index);
+	}
+
+	return snapshot;
+}
+
+bool RenderScene::IsPrimitiveHandleLive(const ScenePrimitiveHandle handle) const
+{
+	if (handle.sceneId != m_sceneId || handle.index >= m_primitives.size())
+		return false;
+
+	const auto& primitive = m_primitives[handle.index];
+	return primitive.occupied &&
+		!primitive.tombstoned &&
+		primitive.handle == handle;
+}
+
+RenderScene::RenderPrimitive& RenderScene::AllocatePrimitiveSlot(
+	Components::MeshRenderer& meshRenderer,
+	RenderSceneSyncStats& stats)
+{
+	if (m_firstFreePrimitiveSlot.has_value())
+	{
+		const auto primitiveIndex = m_firstFreePrimitiveSlot.value();
+		auto& primitive = m_primitives[primitiveIndex];
+		m_firstFreePrimitiveSlot = primitive.nextFreePrimitiveSlot;
+		const auto generation = IncrementPrimitiveGeneration(primitive.handle.generation);
+		primitive = {};
+		primitive.handle = {
+			m_sceneId,
+			static_cast<uint32_t>(primitiveIndex),
+			generation
+		};
+		primitive.meshRenderer = &meshRenderer;
+		primitive.meshRendererInstanceId = meshRenderer.GetInstanceID();
+		primitive.frustumBehaviour = meshRenderer.GetFrustumBehaviour();
+		primitive.occupied = true;
+		primitive.tombstoned = false;
+		++m_livePrimitiveCount;
+		++stats.primitiveSlotReuseCount;
+		MarkCommandOffsetTableDirty();
+		return primitive;
+	}
+
+	const auto primitiveIndex = m_primitives.size();
+	RenderPrimitive primitive;
+	primitive.handle = {
+		m_sceneId,
+		static_cast<uint32_t>(primitiveIndex),
+		1u
+	};
+	primitive.meshRenderer = &meshRenderer;
+	primitive.meshRendererInstanceId = meshRenderer.GetInstanceID();
+	primitive.frustumBehaviour = meshRenderer.GetFrustumBehaviour();
+	primitive.occupied = true;
+	primitive.tombstoned = false;
+	m_primitives.push_back(std::move(primitive));
+	++m_livePrimitiveCount;
+	MarkCommandOffsetTableDirty();
+	return m_primitives.back();
 }
 
 RenderScene::RenderPrimitive& RenderScene::FindOrCreatePrimitive(
@@ -487,19 +1279,84 @@ RenderScene::RenderPrimitive& RenderScene::FindOrCreatePrimitive(
 	const auto found = m_primitiveIndexByMeshRenderer.find(&meshRenderer);
 	if (found != m_primitiveIndexByMeshRenderer.end())
 	{
-		++stats.reusedPrimitiveCount;
-		return m_primitives[found->second];
+		const auto primitiveIndex = found->second;
+		if (primitiveIndex < m_primitives.size())
+		{
+			auto& primitive = m_primitives[primitiveIndex];
+			if (primitive.occupied &&
+				!primitive.tombstoned &&
+				primitive.meshRenderer == &meshRenderer &&
+				primitive.meshRendererInstanceId == meshRenderer.GetInstanceID())
+			{
+				++stats.reusedPrimitiveCount;
+				return primitive;
+			}
+			if (primitive.occupied &&
+				!primitive.tombstoned &&
+				primitive.meshRenderer == &meshRenderer)
+			{
+				TombstonePrimitive(primitiveIndex, stats);
+				m_primitiveIndexByMeshRenderer.erase(&meshRenderer);
+			}
+			else
+			{
+				m_primitiveIndexByMeshRenderer.erase(found);
+			}
+		}
+		else
+		{
+			m_primitiveIndexByMeshRenderer.erase(found);
+		}
 	}
 
-	RenderPrimitive primitive;
-	primitive.meshRenderer = &meshRenderer;
-	primitive.frustumBehaviour = meshRenderer.GetFrustumBehaviour();
-
-	m_primitives.push_back(std::move(primitive));
-	const auto newIndex = m_primitives.size() - 1u;
-	m_primitiveIndexByMeshRenderer[&meshRenderer] = newIndex;
+	auto& primitive = AllocatePrimitiveSlot(meshRenderer, stats);
+	m_primitiveIndexByMeshRenderer[&meshRenderer] = primitive.handle.index;
+	m_lastDirtySyncHandles.push_back(primitive.handle);
 	++stats.addedPrimitiveCount;
-	return m_primitives.back();
+	return primitive;
+}
+
+void RenderScene::TombstonePrimitive(const size_t primitiveIndex, RenderSceneSyncStats& stats)
+{
+	if (primitiveIndex >= m_primitives.size())
+		return;
+
+	auto& primitive = m_primitives[primitiveIndex];
+	if (!primitive.occupied || primitive.tombstoned)
+		return;
+
+	if (primitive.meshRenderer != nullptr)
+	{
+		const auto found = m_primitiveIndexByMeshRenderer.find(primitive.meshRenderer);
+		if (found != m_primitiveIndexByMeshRenderer.end() && found->second == primitiveIndex)
+			m_primitiveIndexByMeshRenderer.erase(found);
+	}
+
+	m_lastRemovedHandles.push_back(primitive.handle);
+	primitive.meshRenderer = nullptr;
+	primitive.meshRendererInstanceId = NLS::InstanceID_None;
+	primitive.owner = nullptr;
+	primitive.mesh = nullptr;
+	if (!primitive.cachedCommands.empty())
+		MarkCommandOffsetTableDirty();
+	primitive.cachedCommands.clear();
+	primitive.occupied = false;
+	primitive.tombstoned = true;
+	primitive.nextFreePrimitiveSlot = m_firstFreePrimitiveSlot;
+	m_firstFreePrimitiveSlot = primitiveIndex;
+	--m_livePrimitiveCount;
+	++stats.removedPrimitiveCount;
+}
+
+void RenderScene::MarkPrimitiveDirtyForSnapshot(const RenderPrimitive& primitive)
+{
+	if (!primitive.occupied || primitive.tombstoned)
+		return;
+	if (std::find(m_lastDirtySyncHandles.begin(), m_lastDirtySyncHandles.end(), primitive.handle) ==
+		m_lastDirtySyncHandles.end())
+	{
+		m_lastDirtySyncHandles.push_back(primitive.handle);
+	}
 }
 
 void RenderScene::SynchronizePrimitive(
@@ -507,21 +1364,58 @@ void RenderScene::SynchronizePrimitive(
 	const RenderSceneSyncOptions& options,
 	RenderSceneSyncStats& stats)
 {
+	if (!primitive.occupied || primitive.tombstoned)
+		return;
+	++stats.syncTouchedPrimitiveCount;
+
 	auto* meshRenderer = primitive.meshRenderer;
 	if (meshRenderer == nullptr)
 		return;
 
+	const auto previousCommandCount = primitive.cachedCommands.size();
+	const auto* previousOwner = primitive.owner;
+	const auto* previousMesh = primitive.mesh;
+	const auto previousBounds = primitive.modelBoundingSphere;
+	const auto previousWorldMatrix = primitive.worldMatrix;
+	const auto previousFrustumBehaviour = primitive.frustumBehaviour;
+	const auto previousVisibilitySettings = primitive.visibilitySettings;
+	const bool previousOwnerAlive = primitive.ownerAlive;
+	const bool previousOwnerActive = primitive.ownerActive;
 	primitive.owner = meshRenderer->gameobject();
+	primitive.ownerAlive = primitive.owner != nullptr && primitive.owner->IsAlive();
+	primitive.ownerActive = primitive.owner != nullptr && primitive.owner->IsActive();
+	if (auto* transform = primitive.owner != nullptr ? primitive.owner->GetTransform() : nullptr)
+		primitive.worldMatrix = transform->GetWorldMatrix();
+	else
+		primitive.worldMatrix = Maths::Matrix4::Identity;
 	auto* meshFilter = primitive.owner != nullptr
 		? primitive.owner->GetComponent<Components::MeshFilter>()
 		: nullptr;
-	primitive.mesh = meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr;
+	auto* resolvedMesh = meshFilter != nullptr ? meshFilter->ResolveMesh() : nullptr;
+	primitive.mesh = resolvedMesh;
 	primitive.frustumBehaviour = meshRenderer->GetFrustumBehaviour();
 	primitive.transientRenderingSuppressed = meshRenderer->IsTransientRenderingSuppressed();
+	const auto layer = primitive.owner != nullptr ? primitive.owner->GetLayer() : 0;
+	primitive.visibilitySettings.layer = static_cast<uint32_t>(std::clamp(layer, 0, 31));
+	primitive.visibilitySettings.distanceCullingEnabled = false;
+	primitive.visibilitySettings.minDrawDistance = 0.0f;
+	primitive.visibilitySettings.maxDrawDistance = 0.0f;
 
 	if (primitive.mesh == nullptr)
 	{
+		const bool becameMissing = previousMesh != nullptr || !primitive.cachedCommands.empty();
+		if (!primitive.cachedCommands.empty())
+			MarkCommandOffsetTableDirty();
 		primitive.cachedCommands.clear();
+		if (becameMissing ||
+			previousOwner != primitive.owner ||
+			previousOwnerAlive != primitive.ownerAlive ||
+			previousOwnerActive != primitive.ownerActive ||
+			previousVisibilitySettings.layer != primitive.visibilitySettings.layer ||
+			!AreSameMatrix(previousWorldMatrix, primitive.worldMatrix))
+		{
+			MarkPrimitiveDirtyForSnapshot(primitive);
+		}
 		return;
 	}
 
@@ -529,48 +1423,80 @@ void RenderScene::SynchronizePrimitive(
 		primitive.frustumBehaviour == Components::MeshRenderer::EFrustumBehaviour::CULL_CUSTOM
 			? meshRenderer->GetCustomBoundingSphere()
 			: primitive.mesh->GetBoundingSphere();
+	if (!AreSameBounds(previousBounds, primitive.modelBoundingSphere) ||
+		previousFrustumBehaviour != primitive.frustumBehaviour ||
+		previousOwnerAlive != primitive.ownerAlive ||
+		previousOwnerActive != primitive.ownerActive ||
+		!AreSameMatrix(previousWorldMatrix, primitive.worldMatrix))
+	{
+		++stats.boundsDirtyPrimitiveCount;
+	}
 
+	if (previousCommandCount != 1u)
+		MarkCommandOffsetTableDirty();
 	primitive.cachedCommands.resize(1u);
 	auto* material = ResolveMaterialForMesh(primitive, *primitive.mesh, options);
 	if (material == nullptr || !material->IsValid())
 	{
+		const bool wasValid = primitive.cachedCommands[0].valid;
 		primitive.cachedCommands[0].valid = false;
+		if (wasValid ||
+			previousOwner != primitive.owner ||
+			previousMesh != primitive.mesh ||
+			previousFrustumBehaviour != primitive.frustumBehaviour ||
+			previousOwnerAlive != primitive.ownerAlive ||
+			previousOwnerActive != primitive.ownerActive ||
+			previousVisibilitySettings.layer != primitive.visibilitySettings.layer ||
+			!AreSameBounds(previousBounds, primitive.modelBoundingSphere) ||
+			!AreSameMatrix(previousWorldMatrix, primitive.worldMatrix))
+		{
+			MarkPrimitiveDirtyForSnapshot(primitive);
+		}
 		return;
 	}
 
 	auto stamp = BuildCommandInputStamp(primitive, *primitive.mesh, *material);
 	auto& slot = primitive.cachedCommands[0];
+	const bool commandInputChanged = !slot.valid || slot.stamp != stamp;
 	if (!slot.valid || slot.stamp != stamp)
 		RebuildCachedCommand(slot, stamp, stats);
+	if (previousOwner != primitive.owner ||
+		previousMesh != primitive.mesh ||
+		previousFrustumBehaviour != primitive.frustumBehaviour ||
+		previousOwnerAlive != primitive.ownerAlive ||
+		previousOwnerActive != primitive.ownerActive ||
+		previousVisibilitySettings.layer != primitive.visibilitySettings.layer ||
+		previousVisibilitySettings.distanceCullingEnabled != primitive.visibilitySettings.distanceCullingEnabled ||
+		previousVisibilitySettings.minDrawDistance != primitive.visibilitySettings.minDrawDistance ||
+		previousVisibilitySettings.maxDrawDistance != primitive.visibilitySettings.maxDrawDistance ||
+		!AreSameBounds(previousBounds, primitive.modelBoundingSphere) ||
+		!AreSameMatrix(previousWorldMatrix, primitive.worldMatrix) ||
+		commandInputChanged)
+	{
+		MarkPrimitiveDirtyForSnapshot(primitive);
+	}
 }
 
 void RenderScene::RemoveMissingPrimitives(
-	const std::unordered_set<Components::MeshRenderer*>& liveMeshRenderers,
+	const std::unordered_map<Components::MeshRenderer*, NLS::InstanceID>& liveMeshRenderers,
 	RenderSceneSyncStats& stats)
 {
-	bool removedAny = false;
-	for (auto it = m_primitives.begin(); it != m_primitives.end();)
+	++stats.syncFullSweepCount;
+	for (size_t primitiveIndex = 0u; primitiveIndex < m_primitives.size(); ++primitiveIndex)
 	{
-		if (it->meshRenderer == nullptr || liveMeshRenderers.find(it->meshRenderer) == liveMeshRenderers.end())
+		++stats.syncSweepTouchedSlotCount;
+		const auto& primitive = m_primitives[primitiveIndex];
+		if (!primitive.occupied || primitive.tombstoned)
+			continue;
+		if (primitive.meshRenderer == nullptr)
 		{
-			it = m_primitives.erase(it);
-			++stats.removedPrimitiveCount;
-			removedAny = true;
+			TombstonePrimitive(primitiveIndex, stats);
+			continue;
 		}
-		else
-		{
-			++it;
-		}
-	}
 
-	if (!removedAny)
-		return;
-
-	m_primitiveIndexByMeshRenderer.clear();
-	for (size_t index = 0u; index < m_primitives.size(); ++index)
-	{
-		if (m_primitives[index].meshRenderer != nullptr)
-			m_primitiveIndexByMeshRenderer[m_primitives[index].meshRenderer] = index;
+		const auto live = liveMeshRenderers.find(primitive.meshRenderer);
+		if (live == liveMeshRenderers.end() || live->second != primitive.meshRendererInstanceId)
+			TombstonePrimitive(primitiveIndex, stats);
 	}
 }
 
@@ -648,11 +1574,15 @@ bool RenderScene::IsPrimitiveVisible(
 	const RenderPrimitive& primitive,
 	const RenderSceneVisibilityOptions& options) const
 {
+	if (!primitive.occupied || primitive.tombstoned)
+		return false;
 	if (primitive.owner == nullptr || !primitive.owner->IsAlive() || !primitive.owner->IsActive())
 		return false;
 	if (primitive.transientRenderingSuppressed)
 		return false;
 	if (primitive.mesh == nullptr)
+		return false;
+	if ((options.visibleLayerMask & (1u << primitive.visibilitySettings.layer)) == 0u)
 		return false;
 	if (options.frustum == nullptr)
 		return true;
@@ -673,6 +1603,8 @@ bool RenderScene::IsMeshVisible(
 	const NLS::Render::Resources::Mesh& mesh,
 	const RenderSceneVisibilityOptions& options) const
 {
+	if (!primitive.occupied || primitive.tombstoned)
+		return false;
 	if (options.frustum == nullptr ||
 		primitive.frustumBehaviour != Components::MeshRenderer::EFrustumBehaviour::CULL_MESHES)
 	{
@@ -683,36 +1615,146 @@ bool RenderScene::IsMeshVisible(
 	return transform != nullptr && options.frustum->IsMeshInFrustum(mesh, transform->GetTransform());
 }
 
-std::vector<size_t> RenderScene::BuildMeshBaseIndices() const
+const std::vector<size_t>& RenderScene::GetMeshBaseIndices(uint64_t* touchedPrimitiveCount) const
 {
-	std::vector<size_t> meshBaseIndices;
-	meshBaseIndices.reserve(m_primitives.size() + 1u);
+	if (!m_commandOffsetTableDirty)
+	{
+		if (touchedPrimitiveCount != nullptr)
+			*touchedPrimitiveCount = 0u;
+		return m_cachedMeshBaseIndices;
+	}
+
+	m_cachedMeshBaseIndices.clear();
+	m_cachedMeshBaseIndices.reserve(m_primitives.size() + 1u);
 
 	size_t meshCount = 0u;
 	for (const auto& primitive : m_primitives)
 	{
-		meshBaseIndices.push_back(meshCount);
-		meshCount += primitive.cachedCommands.size();
+		m_cachedMeshBaseIndices.push_back(meshCount);
+		if (primitive.occupied && !primitive.tombstoned)
+		{
+			if (touchedPrimitiveCount != nullptr)
+				++*touchedPrimitiveCount;
+			meshCount += primitive.cachedCommands.size();
+		}
 	}
-	meshBaseIndices.push_back(meshCount);
+	m_cachedMeshBaseIndices.push_back(meshCount);
+	m_commandOffsetTableDirty = false;
 
-	return meshBaseIndices;
+	return m_cachedMeshBaseIndices;
+}
+
+void RenderScene::MarkCommandOffsetTableDirty() noexcept
+{
+	m_commandOffsetTableDirty = true;
+}
+
+void RenderScene::RefreshSpatialIndex(const RenderSceneSyncOptions& options)
+{
+	const auto& settings = ResolveLargeSceneSettings(options);
+	if (!settings.enableSpatialIndex)
+		return;
+
+	if (m_spatialIndex == nullptr)
+		m_spatialIndex = std::make_unique<SceneSpatialIndex>();
+
+	SceneSpatialIndexUpdateOptions updateOptions;
+	updateOptions.staticRebuildDirtyRatio = settings.staticRebuildDirtyRatio;
+	updateOptions.rebuildBudgetUs = settings.staticRebuildBudgetUs;
+	const auto buildDirtyMetadata = [this]()
+	{
+		std::vector<SceneSpatialIndexPrimitiveMetadata> metadata;
+		metadata.reserve(m_lastDirtySyncHandles.size());
+		for (const auto& handle : m_lastDirtySyncHandles)
+		{
+			SceneSpatialIndexPrimitiveMetadata entry;
+			entry.handle = handle;
+			entry.primitiveClass = SceneSpatialIndexPrimitiveClass::Dynamic;
+			metadata.push_back(entry);
+		}
+		return metadata;
+	};
+	if (!m_spatialIndex->IsInitialized())
+	{
+		m_spatialIndex->Update(CreatePrimitiveSnapshot(), {}, updateOptions);
+		return;
+	}
+
+	m_spatialIndex->UpdateChanged(
+		CreatePrimitiveSnapshotForHandles(m_lastDirtySyncHandles, m_lastRemovedHandles),
+		buildDirtyMetadata(),
+		updateOptions);
+}
+
+namespace
+{
+	void ApplySpatialIndexUpdateTelemetry(
+		NLS::Render::Data::LargeSceneTelemetry& target,
+		const SceneSpatialIndex& spatialIndex)
+	{
+		const auto updateTelemetry = spatialIndex.GetLastUpdateTelemetry();
+		target.staticIndexRefitCount = updateTelemetry.staticIndexRefitCount;
+		target.staticIndexRebuildCount = updateTelemetry.staticIndexRebuildCount;
+		target.staticIndexLastGoodQueryCount = updateTelemetry.staticIndexLastGoodQueryCount;
+		target.staticIndexDirtyOverlayCount = updateTelemetry.staticIndexDirtyOverlayCount;
+		target.spatialRebuildFallbackCount = updateTelemetry.spatialRebuildFallbackCount;
+		target.dynamicIndexUpdateCount = updateTelemetry.dynamicIndexUpdateCount;
+	}
+
+	void CopyCullReasonCounts(
+		RenderSceneVisibilitySnapshot& target,
+		const SceneVisibilityPipelineResult& source)
+	{
+		for (const auto reason : source.cullReasons)
+		{
+			const auto reasonIndex = static_cast<size_t>(reason);
+			if (reasonIndex < target.culledByReason.size())
+				++target.culledByReason[reasonIndex];
+		}
+	}
 }
 
 RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibility(
 	const RenderSceneVisibilityOptions& options,
 	const RenderSceneVisibilityMode mode) const
 {
-	const auto meshBaseIndices = BuildMeshBaseIndices();
+	const auto& meshBaseIndices = GetMeshBaseIndices();
 	return EvaluateVisibility(options, mode, meshBaseIndices);
 }
 
 RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibility(
 	const RenderSceneVisibilityOptions& options,
 	const RenderSceneVisibilityMode mode,
-	const std::vector<size_t>& meshBaseIndices) const
+	const std::vector<size_t>& meshBaseIndices,
+	const bool buildVisibilityBitsets) const
 {
+	const auto& settings = ResolveLargeSceneSettings(options);
+	const bool occlusionEnabled =
+		settings.enableHZBOcclusion && options.occlusion != nullptr;
+	const bool representationEnabled =
+		(settings.enableLOD && m_representationRegistry != nullptr && m_representationRegistry->HasLOD()) ||
+		(settings.enableHLOD && m_representationRegistry != nullptr && m_representationRegistry->HasHLOD());
+	if (settings.enableSpatialIndex && m_spatialIndex != nullptr)
+		return EvaluateVisibilitySpatial(options, meshBaseIndices, mode, buildVisibilityBitsets);
+	if (representationEnabled || occlusionEnabled || options.enableCullReasonDebugSnapshot)
+	{
+		return EvaluateVisibilityThroughPipeline(
+			options,
+			meshBaseIndices,
+			mode == RenderSceneVisibilityMode::Parallel
+				? SceneVisibilityPipelineMode::Parallel
+				: SceneVisibilityPipelineMode::Serial,
+			buildVisibilityBitsets);
+	}
+
 	if (mode == RenderSceneVisibilityMode::Parallel)
+	{
+		return EvaluateVisibilityParallel(options, meshBaseIndices);
+	}
+	if (mode == RenderSceneVisibilityMode::Auto &&
+		settings.enableParallelVisibility &&
+		m_livePrimitiveCount >= settings.parallelVisibilityPrimitiveThreshold &&
+		NLS::Base::Jobs::IsJobSystemInitialized())
 	{
 		return EvaluateVisibilityParallel(options, meshBaseIndices);
 	}
@@ -738,10 +1780,16 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilitySerialRange(
 	for (size_t primitiveIndex = primitiveBegin; primitiveIndex < clampedEnd; ++primitiveIndex)
 	{
 		const auto& primitive = m_primitives[primitiveIndex];
+		if (!primitive.occupied || primitive.tombstoned)
+			continue;
+		++snapshot.fullScanCandidateCount;
+		++snapshot.primitiveRecordsTouched;
+		++snapshot.visibilityTestedPrimitiveCount;
 		if (!IsPrimitiveVisible(primitive, options))
 			continue;
 
 		SetBit(snapshot.primitiveBits, primitiveIndex);
+		snapshot.visiblePrimitiveHandles.push_back(primitive.handle);
 		++snapshot.visiblePrimitiveCount;
 
 		const auto meshBaseIndex = primitiveIndex < meshBaseIndices.size()
@@ -785,10 +1833,16 @@ RenderScene::RenderSceneVisibilityRangeSnapshot RenderScene::EvaluateVisibilityC
 	for (size_t primitiveIndex = snapshot.primitiveBegin; primitiveIndex < clampedEnd; ++primitiveIndex)
 	{
 		const auto& primitive = m_primitives[primitiveIndex];
+		if (!primitive.occupied || primitive.tombstoned)
+			continue;
+		++snapshot.fullScanCandidateCount;
+		++snapshot.primitiveRecordsTouched;
+		++snapshot.visibilityTestedPrimitiveCount;
 		if (!IsPrimitiveVisible(primitive, options))
 			continue;
 
 		SetBit(snapshot.primitiveBits, primitiveIndex - snapshot.primitiveBegin);
+		snapshot.visiblePrimitiveHandles.push_back(primitive.handle);
 		++snapshot.visiblePrimitiveCount;
 
 		const auto meshBaseIndex = primitiveIndex < meshBaseIndices.size()
@@ -804,6 +1858,308 @@ RenderScene::RenderSceneVisibilityRangeSnapshot RenderScene::EvaluateVisibilityC
 				continue;
 
 			SetBit(snapshot.meshBits, meshBaseIndex + slotIndex - snapshot.meshBegin);
+			++snapshot.visibleMeshCount;
+		}
+	}
+
+	return snapshot;
+}
+
+RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilityThroughPipeline(
+	const RenderSceneVisibilityOptions& options,
+	const std::vector<size_t>& meshBaseIndices,
+	const SceneVisibilityPipelineMode mode,
+	const bool buildVisibilityBitsets) const
+{
+	RenderSceneVisibilitySnapshot snapshot;
+	snapshot.usesSparseVisiblePrimitiveIndices = true;
+	snapshot.primitiveCount = static_cast<uint64_t>(m_primitives.size());
+	snapshot.meshCount = !meshBaseIndices.empty()
+		? static_cast<uint64_t>(meshBaseIndices.back())
+		: 0u;
+	if (buildVisibilityBitsets)
+	{
+		snapshot.primitiveBits.resize(BitWordCount(static_cast<size_t>(snapshot.primitiveCount)));
+		snapshot.meshBits.resize(BitWordCount(static_cast<size_t>(snapshot.meshCount)));
+	}
+
+	auto primitiveSnapshot = CreatePrimitiveSnapshot();
+	auto residency = BuildRepresentationResidencySnapshot(
+		primitiveSnapshot,
+		options.representationResidency);
+
+	const auto& settings = ResolveLargeSceneSettings(options);
+	SceneVisibilityPipelineOptions pipelineOptions;
+	pipelineOptions.frustum = options.frustum;
+	pipelineOptions.cameraPosition = options.cameraPosition;
+	pipelineOptions.visibleLayerMask = options.visibleLayerMask;
+	pipelineOptions.enableSpatialIndex = false;
+	pipelineOptions.enableLOD = settings.enableLOD;
+	pipelineOptions.enableHLOD = settings.enableHLOD;
+	pipelineOptions.enableOcclusion = settings.enableHZBOcclusion && options.occlusion != nullptr;
+	pipelineOptions.enableParallelVisibility = settings.enableParallelVisibility;
+	pipelineOptions.parallelVisibilityPrimitiveThreshold = settings.parallelVisibilityPrimitiveThreshold;
+	pipelineOptions.parallelVisibilityPrimitivesPerTask = settings.parallelVisibilityPrimitivesPerTask;
+	pipelineOptions.maxVisibilityJobs = settings.maxVisibilityJobs;
+	pipelineOptions.lodBias = options.lodBias;
+	pipelineOptions.lodHistoryViewKey = options.lodHistoryViewKey;
+	pipelineOptions.allowHLOD = options.allowHLOD;
+	pipelineOptions.editorInspectionView = options.editorInspectionView;
+	pipelineOptions.selectedPrimitiveHandles = options.selectedPrimitiveHandles;
+
+	SceneRepresentationState representation;
+	if (m_representationRegistry != nullptr)
+	{
+		representation.lodGroups = &m_representationRegistry->lodGroups;
+		representation.hlodClusters = &m_representationRegistry->hlodClusters;
+		representation.lodGroupsByPrimitive = &m_representationRegistry->lodGroupsByPrimitive;
+		representation.hlodClustersByPrimitive = &m_representationRegistry->hlodClustersByPrimitive;
+		representation.lodSelectionHistory =
+			&m_representationRegistry->LODHistoryForView(options.lodHistoryViewKey);
+		MarkHLODProxyResidency(
+			residency,
+			primitiveSnapshot,
+			m_representationRegistry->hlodClusters);
+	}
+	representation.residency = &residency;
+	representation.occlusion = options.occlusion;
+
+	const auto pipelineResult = SceneVisibilityPipeline::Evaluate(
+		pipelineOptions,
+		primitiveSnapshot,
+		*m_spatialIndex,
+		representation,
+		mode);
+	if (options.enableCullReasonDebugSnapshot)
+	{
+		m_lastCullReasonDebugSnapshot = std::make_shared<SceneCullReasonDebugSnapshot>(
+			SceneVisibilityPipeline::BuildCullReasonDebugSnapshot(
+				primitiveSnapshot,
+				pipelineResult,
+				options.maxCullReasonDebugSnapshotEntries));
+	}
+
+	snapshot.fullScanCandidateCount = pipelineResult.fullScanCandidateCount;
+	snapshot.primitiveRecordsTouched = pipelineResult.primitiveRecordsTouched;
+	snapshot.visibilityTestedPrimitiveCount = pipelineResult.visibilityTestedPrimitiveCount;
+	snapshot.occlusionTestCount = pipelineResult.occlusionTestCount;
+	snapshot.occlusionCulledCount = pipelineResult.occlusionCulledCount;
+	snapshot.usedParallelEvaluation = pipelineResult.usedParallelEvaluation;
+	snapshot.representationStreamingInterest = pipelineResult.representationStreamingInterest;
+	CopyCullReasonCounts(snapshot, pipelineResult);
+
+	for (const auto handle : pipelineResult.visiblePrimitiveHandles)
+	{
+		if (!IsPrimitiveHandleLive(handle))
+			continue;
+		const auto primitiveIndex = static_cast<size_t>(handle.index);
+		const auto& primitive = m_primitives[primitiveIndex];
+		if (buildVisibilityBitsets)
+			SetBit(snapshot.primitiveBits, primitiveIndex);
+		snapshot.visiblePrimitiveIndices.push_back(primitiveIndex);
+		snapshot.visiblePrimitiveHandles.push_back(handle);
+		++snapshot.visiblePrimitiveCount;
+
+		const auto meshBaseIndex = primitiveIndex < meshBaseIndices.size()
+			? meshBaseIndices[primitiveIndex]
+			: 0u;
+		for (size_t slotIndex = 0u; slotIndex < primitive.cachedCommands.size(); ++slotIndex)
+		{
+			const auto& slot = primitive.cachedCommands[slotIndex];
+			if (!slot.valid || slot.command.mesh == nullptr || slot.command.material == nullptr)
+				continue;
+			if (!IsMeshVisible(primitive, *slot.command.mesh, options))
+				continue;
+
+			if (buildVisibilityBitsets)
+				SetBit(snapshot.meshBits, meshBaseIndex + slotIndex);
+			++snapshot.visibleMeshCount;
+		}
+	}
+
+	return snapshot;
+}
+
+RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilitySpatial(
+	const RenderSceneVisibilityOptions& options,
+	const std::vector<size_t>& meshBaseIndices,
+	const RenderSceneVisibilityMode mode,
+	const bool buildVisibilityBitsets) const
+{
+	const auto& settings = ResolveLargeSceneSettings(options);
+	const bool occlusionEnabled =
+		settings.enableHZBOcclusion && options.occlusion != nullptr;
+	const bool representationEnabled =
+		(settings.enableLOD && m_representationRegistry != nullptr && m_representationRegistry->HasLOD()) ||
+		(settings.enableHLOD && m_representationRegistry != nullptr && m_representationRegistry->HasHLOD());
+	const auto queryRadius = ResolveSpatialQueryRadius(options);
+	if (queryRadius <= 0.0f)
+	{
+		if (representationEnabled || occlusionEnabled || options.enableCullReasonDebugSnapshot)
+		{
+			return EvaluateVisibilityThroughPipeline(
+				options,
+				meshBaseIndices,
+				SceneVisibilityPipelineMode::Serial,
+				buildVisibilityBitsets);
+		}
+		return EvaluateVisibilitySerialRange(options, meshBaseIndices, 0u, m_primitives.size());
+	}
+
+	RenderSceneVisibilitySnapshot snapshot;
+	snapshot.usesSparseVisiblePrimitiveIndices = true;
+	snapshot.primitiveCount = static_cast<uint64_t>(m_primitives.size());
+	snapshot.meshCount = !meshBaseIndices.empty()
+		? static_cast<uint64_t>(meshBaseIndices.back())
+		: 0u;
+	if (buildVisibilityBitsets)
+	{
+		snapshot.primitiveBits.resize(BitWordCount(static_cast<size_t>(snapshot.primitiveCount)));
+		snapshot.meshBits.resize(BitWordCount(static_cast<size_t>(snapshot.meshCount)));
+	}
+
+	SceneVisibilityPipelineOptions pipelineOptions;
+	pipelineOptions.frustum = options.frustum;
+	pipelineOptions.cameraPosition = options.cameraPosition;
+	pipelineOptions.visibleLayerMask = options.visibleLayerMask;
+	pipelineOptions.enableSpatialIndex = false;
+	pipelineOptions.spatialQueryRadius = queryRadius;
+	pipelineOptions.enableLOD = settings.enableLOD;
+	pipelineOptions.enableHLOD = settings.enableHLOD;
+	pipelineOptions.enableOcclusion = settings.enableHZBOcclusion && options.occlusion != nullptr;
+	pipelineOptions.enableParallelVisibility = settings.enableParallelVisibility;
+	pipelineOptions.parallelVisibilityPrimitiveThreshold = settings.parallelVisibilityPrimitiveThreshold;
+	pipelineOptions.parallelVisibilityPrimitivesPerTask = settings.parallelVisibilityPrimitivesPerTask;
+	pipelineOptions.maxVisibilityJobs = settings.maxVisibilityJobs;
+
+	SceneSpatialIndexQuery query;
+	query.center = options.cameraPosition;
+	query.radius = queryRadius;
+	query.visibleLayerMask = options.visibleLayerMask;
+
+	const auto candidates = m_spatialIndex->Query(query);
+	auto initialCandidateSnapshot = CreatePrimitiveSnapshotForHandles(
+		candidates.candidatePrimitiveHandles,
+		{});
+	std::vector<LODGroupRecord> candidateLODGroups;
+	std::vector<HLODClusterRecord> candidateHLODClusters;
+	SceneRepresentationState representation;
+	if (m_representationRegistry != nullptr)
+	{
+		SceneRepresentationState registryRepresentation;
+		registryRepresentation.lodGroups = &m_representationRegistry->lodGroups;
+		registryRepresentation.hlodClusters = &m_representationRegistry->hlodClusters;
+		registryRepresentation.lodGroupsByPrimitive = &m_representationRegistry->lodGroupsByPrimitive;
+		registryRepresentation.hlodClustersByPrimitive = &m_representationRegistry->hlodClustersByPrimitive;
+		const auto expansion = SceneVisibilityPipeline::ExpandRepresentationCandidates(
+			candidates.candidatePrimitiveHandles,
+			initialCandidateSnapshot,
+			registryRepresentation);
+		initialCandidateSnapshot = CreatePrimitiveSnapshotForHandles(
+			expansion.primitiveHandles,
+			{});
+
+		candidateLODGroups.reserve(expansion.lodGroupIndices.size());
+		for (const auto groupIndex : expansion.lodGroupIndices)
+		{
+			if (groupIndex < m_representationRegistry->lodGroups.size())
+				candidateLODGroups.push_back(m_representationRegistry->lodGroups[groupIndex]);
+		}
+		candidateHLODClusters.reserve(expansion.hlodClusterIndices.size());
+		for (const auto clusterIndex : expansion.hlodClusterIndices)
+		{
+			if (clusterIndex < m_representationRegistry->hlodClusters.size())
+				candidateHLODClusters.push_back(m_representationRegistry->hlodClusters[clusterIndex]);
+		}
+
+		representation.lodGroups = &candidateLODGroups;
+		representation.hlodClusters = &candidateHLODClusters;
+		representation.lodSelectionHistory =
+			&m_representationRegistry->LODHistoryForView(options.lodHistoryViewKey);
+	}
+	auto residency = BuildRepresentationResidencySnapshot(
+		initialCandidateSnapshot,
+		options.representationResidency);
+	if (m_representationRegistry != nullptr)
+	{
+		MarkHLODProxyResidency(
+			residency,
+			initialCandidateSnapshot,
+			candidateHLODClusters);
+	}
+	representation.residency = &residency;
+	representation.occlusion = options.occlusion;
+	pipelineOptions.lodBias = options.lodBias;
+	pipelineOptions.lodHistoryViewKey = options.lodHistoryViewKey;
+	pipelineOptions.allowHLOD = options.allowHLOD;
+	pipelineOptions.editorInspectionView = options.editorInspectionView;
+	pipelineOptions.selectedPrimitiveHandles = options.selectedPrimitiveHandles;
+	const auto pipelineResult = SceneVisibilityPipeline::Evaluate(
+		pipelineOptions,
+		initialCandidateSnapshot,
+		*m_spatialIndex,
+		representation,
+		mode == RenderSceneVisibilityMode::Parallel
+			? SceneVisibilityPipelineMode::Parallel
+			: (mode == RenderSceneVisibilityMode::Auto
+				? SceneVisibilityPipelineMode::Auto
+				: SceneVisibilityPipelineMode::Serial));
+	if (options.enableCullReasonDebugSnapshot)
+	{
+		m_lastCullReasonDebugSnapshot = std::make_shared<SceneCullReasonDebugSnapshot>(
+			SceneVisibilityPipeline::BuildCullReasonDebugSnapshot(
+				initialCandidateSnapshot,
+				pipelineResult,
+				options.maxCullReasonDebugSnapshotEntries));
+	}
+	snapshot.spatialCandidateCount = candidates.candidateCount;
+	snapshot.fullScanCandidateCount = candidates.fullScanCandidateCount;
+	snapshot.primitiveRecordsTouched =
+		candidates.primitiveRecordsTouched + pipelineResult.primitiveRecordsTouched;
+	snapshot.visibilityTestedPrimitiveCount = pipelineResult.visibilityTestedPrimitiveCount;
+	snapshot.occlusionTestCount = pipelineResult.occlusionTestCount;
+	snapshot.occlusionCulledCount = pipelineResult.occlusionCulledCount;
+	snapshot.dynamicCandidateCount = candidates.dynamicCandidateCount;
+	snapshot.dynamicRecordsTouched = candidates.dynamicRecordsTouched;
+	snapshot.staticIndexRefitCount = candidates.telemetry.staticIndexRefitCount;
+	snapshot.staticIndexRebuildCount = candidates.telemetry.staticIndexRebuildCount;
+	snapshot.staticIndexLastGoodQueryCount = candidates.telemetry.staticIndexLastGoodQueryCount;
+	snapshot.staticIndexDirtyOverlayCount = candidates.telemetry.staticIndexDirtyOverlayCount;
+	snapshot.spatialRebuildFallbackCount = candidates.telemetry.spatialRebuildFallbackCount;
+	snapshot.dynamicIndexUpdateCount = candidates.telemetry.dynamicIndexUpdateCount;
+	snapshot.representationStreamingInterest = pipelineResult.representationStreamingInterest;
+	CopyCullReasonCounts(snapshot, pipelineResult);
+
+	for (const auto& handle : pipelineResult.visiblePrimitiveHandles)
+	{
+		if (handle.sceneId != m_sceneId || handle.index >= m_primitives.size())
+			continue;
+
+		const auto primitiveIndex = static_cast<size_t>(handle.index);
+		const auto& primitive = m_primitives[primitiveIndex];
+		if (primitive.handle != handle || !primitive.occupied || primitive.tombstoned)
+			continue;
+
+		if (buildVisibilityBitsets)
+			SetBit(snapshot.primitiveBits, primitiveIndex);
+		snapshot.visiblePrimitiveIndices.push_back(primitiveIndex);
+		snapshot.visiblePrimitiveHandles.push_back(handle);
+		++snapshot.visiblePrimitiveCount;
+
+		const auto meshBaseIndex = primitiveIndex < meshBaseIndices.size()
+			? meshBaseIndices[primitiveIndex]
+			: 0u;
+
+		for (size_t slotIndex = 0u; slotIndex < primitive.cachedCommands.size(); ++slotIndex)
+		{
+			const auto& slot = primitive.cachedCommands[slotIndex];
+			if (!slot.valid || slot.command.mesh == nullptr || slot.command.material == nullptr)
+				continue;
+			if (!IsMeshVisible(primitive, *slot.command.mesh, options))
+				continue;
+
+			if (buildVisibilityBitsets)
+				SetBit(snapshot.meshBits, meshBaseIndex + slotIndex);
 			++snapshot.visibleMeshCount;
 		}
 	}
@@ -830,11 +2186,17 @@ RenderSceneVisibilitySnapshot RenderScene::EvaluateVisibilityParallel(
 	if (!NLS::Base::Jobs::IsJobSystemInitialized())
 		return EvaluateVisibilitySerialRange(options, meshBaseIndices, 0u, primitiveCount);
 
+	const auto& settings = ResolveLargeSceneSettings(options);
+	const auto primitivesPerTask = std::max<size_t>(1u, settings.parallelVisibilityPrimitivesPerTask);
 	const auto hardwareThreads = std::max<uint32_t>(1u, NLS::Base::Jobs::GetJobWorkerCount() + 1u);
 	const auto desiredTaskCount =
-		(primitiveCount + kParallelVisibilityPrimitivesPerTask - 1u) /
-		kParallelVisibilityPrimitivesPerTask;
-	const auto taskCount = std::min<size_t>(hardwareThreads, desiredTaskCount);
+		(primitiveCount + primitivesPerTask - 1u) /
+		primitivesPerTask;
+	const auto maxVisibilityJobs = settings.maxVisibilityJobs != 0u
+		? settings.maxVisibilityJobs
+		: hardwareThreads;
+	const auto taskLimit = std::max<uint32_t>(1u, std::min(hardwareThreads, maxVisibilityJobs));
+	const auto taskCount = std::min<size_t>(taskLimit, desiredTaskCount);
 	if (taskCount <= 1u)
 		return EvaluateVisibilitySerialRange(options, meshBaseIndices, 0u, primitiveCount);
 
@@ -918,6 +2280,37 @@ void RenderScene::MergeVisibilityRangeSnapshot(
 	MergeBitRange(target.meshBits, source.meshBits, source.meshBegin);
 	target.visiblePrimitiveCount += source.visiblePrimitiveCount;
 	target.visibleMeshCount += source.visibleMeshCount;
+	target.visiblePrimitiveHandles.insert(
+		target.visiblePrimitiveHandles.end(),
+		source.visiblePrimitiveHandles.begin(),
+		source.visiblePrimitiveHandles.end());
+	target.spatialCandidateCount += source.spatialCandidateCount;
+	target.fullScanCandidateCount += source.fullScanCandidateCount;
+	target.primitiveRecordsTouched += source.primitiveRecordsTouched;
+	target.visibilityTestedPrimitiveCount += source.visibilityTestedPrimitiveCount;
+}
+
+void RenderScene::RefreshSyncTelemetry(const RenderSceneSyncStats& stats)
+{
+	m_lastLargeSceneTelemetry = {};
+	m_lastLargeSceneTelemetry.registeredPrimitiveCount = static_cast<uint64_t>(m_livePrimitiveCount);
+	m_lastLargeSceneTelemetry.staticPrimitiveCount = 0u;
+	m_lastLargeSceneTelemetry.dynamicPrimitiveCount = 0u;
+	m_lastLargeSceneTelemetry.unclassifiedPrimitiveCount = static_cast<uint64_t>(m_livePrimitiveCount);
+	m_lastLargeSceneTelemetry.allocatedPrimitiveSlotCount = static_cast<uint64_t>(m_primitives.size());
+	m_lastLargeSceneTelemetry.tombstonedPrimitiveSlotCount =
+		static_cast<uint64_t>(m_primitives.size() - m_livePrimitiveCount);
+	m_lastLargeSceneTelemetry.syncSweepTouchedSlotCount = stats.syncSweepTouchedSlotCount;
+	m_lastLargeSceneTelemetry.syncTouchedPrimitiveCount = stats.syncTouchedPrimitiveCount;
+	m_lastLargeSceneTelemetry.syncFullSweepCount = stats.syncFullSweepCount;
+	m_lastLargeSceneTelemetry.boundsDirtyPrimitiveCount = stats.boundsDirtyPrimitiveCount;
+	m_lastLargeSceneTelemetry.primitiveSlotReuseCount = stats.primitiveSlotReuseCount;
+	m_lastLargeSceneTelemetry.commandOffsetRebuildCount = 0u;
+	m_lastLargeSceneTelemetry.syncTimeNs = stats.syncTimeNs;
+	if (m_spatialIndex != nullptr)
+	{
+		ApplySpatialIndexUpdateTelemetry(m_lastLargeSceneTelemetry, *m_spatialIndex);
+	}
 }
 
 void RenderScene::AppendVisibleDrawable(

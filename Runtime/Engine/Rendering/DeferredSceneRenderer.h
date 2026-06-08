@@ -1,10 +1,15 @@
 #pragma once
 
+#include <array>
 #include <memory>
+#include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 
 #include <Rendering/Buffers/MultiFramebuffer.h>
+#include <Rendering/FrameGraph/SceneRenderGraphBuilder.h>
+#include <Rendering/RHI/Utils/PipelineCache/PipelineCache.h>
 
 #include "Rendering/BaseSceneRenderer.h"
 
@@ -20,11 +25,19 @@ namespace NLS::Render::Resources
 
 namespace NLS::Render::RHI
 {
+	class RHIBindingLayout;
+	class RHIBindingSet;
+	class RHIBuffer;
+	class RHICompletionToken;
+	class RHIComputePipeline;
+	class RHIPipelineLayout;
+	class RHITexture;
 	class RHITextureView;
 }
 
 namespace NLS::Engine::Rendering
 {
+	struct SceneOcclusionPrimitivePacket;
 	struct DeferredSceneRendererTestAccess;
 
 	class NLS_ENGINE_API DeferredSceneRenderer : public BaseSceneRenderer
@@ -100,11 +113,27 @@ namespace NLS::Engine::Rendering
 		NLS::Render::Context::PreparedRenderSceneBuilder BuildPreparedRenderSceneBuilder(
 			const NLS::Render::Context::FrameSnapshot& snapshot) const override;
 		bool TryPublishThreadedFrame() override;
+		void OnThreadedFramePublishFailed() override;
 
 	private:
 		void LoadPipelineResources();
 		void EnsureGBufferTargets(uint16_t width, uint16_t height);
 		bool HasDeferredThreadedPipelineResources() const;
+		bool EnsureHZBTargets(uint16_t width, uint16_t height);
+		bool PrepareHZBOcclusionPrimitiveBuffers(std::span<const SceneOcclusionPrimitivePacket> packets);
+		bool PollHZBOcclusionResultReadback();
+		bool BeginHZBOcclusionResultReadback();
+		std::optional<NLS::Render::Context::PostSubmitBufferReadbackRequest> BuildHZBPostSubmitReadbackRequest(
+			bool waitForLastComputeQueueCompletion = true) const;
+		bool IsHZBOcclusionSupported() const;
+		void BeginHZBOcclusionObservationFrame(
+			const SceneOcclusionFrameInput& frame,
+			std::span<const SceneOcclusionPrimitiveInput> primitiveInputs);
+		SceneOcclusionObservationStats CompleteHZBOcclusionObservationFrame(
+			std::span<const uint32_t> primitiveResultFlags);
+		bool EnsureHZBPipelines();
+		bool PrepareHZBFrameResources(const NLS::Render::FrameGraph::DeferredPreparedSceneResourceRequest& deferredResources);
+		NLS::Render::FrameGraph::HZBFrameResourceRequest BuildHZBFrameResourceRequest() const;
 		std::unique_ptr<NLS::Render::Resources::Material> CreateGBufferMaterial() const;
 		NLS::Render::Resources::Material& GetOrCreateGBufferMaterial(NLS::Render::Resources::Material& sourceMaterial);
 		NLS::Render::Resources::Material& ResolveFrameGBufferMaterial(NLS::Render::Resources::Material& sourceMaterial);
@@ -123,10 +152,40 @@ namespace NLS::Engine::Rendering
 		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferNormalTexture;
 		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferMaterialTexture;
 		std::unique_ptr<NLS::Render::Resources::Texture2D> m_gBufferDepthTexture;
+		std::shared_ptr<NLS::Render::RHI::RHITexture> m_hzbTexture;
+		std::shared_ptr<NLS::Render::RHI::RHIBuffer> m_hzbOcclusionPrimitiveInputBuffer;
+		std::shared_ptr<NLS::Render::RHI::RHIBuffer> m_hzbOcclusionPrimitiveResultBuffer;
+		std::shared_ptr<NLS::Render::RHI::RHITexture> m_hzbPreparedDepthTexture;
+		std::shared_ptr<NLS::Render::RHI::RHITexture> m_hzbPreparedHZBTexture;
+		std::shared_ptr<NLS::Render::RHI::RHIBuffer> m_hzbPreparedOcclusionPrimitiveInputBuffer;
+		std::shared_ptr<NLS::Render::RHI::RHIBuffer> m_hzbPreparedOcclusionPrimitiveResultBuffer;
+		mutable std::shared_ptr<NLS::Render::RHI::RHICompletionToken> m_hzbOcclusionResultReadbackCompletion;
+		mutable std::shared_ptr<std::vector<uint32_t>> m_hzbOcclusionResultReadbackFlags;
+		mutable std::shared_ptr<NLS::Render::Context::PostSubmitBufferReadbackState> m_hzbOcclusionResultReadbackState;
+		std::shared_ptr<NLS::Render::RHI::RHITextureView> m_hzbDepthReadView;
+		std::shared_ptr<NLS::Render::RHI::RHITextureView> m_hzbWriteView;
+		std::shared_ptr<NLS::Render::RHI::RHITextureView> m_hzbReadView;
+		std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> m_hzbBuildBindingLayout;
+		std::shared_ptr<NLS::Render::RHI::RHIBindingLayout> m_hzbOcclusionBindingLayout;
+		std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> m_hzbBuildPipelineLayout;
+		std::shared_ptr<NLS::Render::RHI::RHIPipelineLayout> m_hzbOcclusionPipelineLayout;
+		std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> m_hzbBuildPipeline;
+		std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> m_hzbOcclusionPipeline;
+		std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_hzbBuildBindingSet;
+		std::shared_ptr<NLS::Render::RHI::RHIBindingSet> m_hzbOcclusionBindingSet;
 		std::unordered_map<std::string, GBufferMaterialCacheEntry> m_gBufferMaterialCache;
 		std::unordered_map<uint64_t, FrameGBufferMaterialResolveEntry> m_frameGBufferMaterialResolveCache;
 		NLS::Render::Resources::Shader* m_gBufferShader = nullptr;
 		NLS::Render::Resources::Shader* m_lightingShader = nullptr;
+		NLS::Render::Resources::Shader* m_hzbBuildShader = nullptr;
+		NLS::Render::Resources::Shader* m_hzbOcclusionShader = nullptr;
+		NLS::Render::RHI::PipelineCacheKey m_hzbBuildPipelineKey;
+		NLS::Render::RHI::PipelineCacheKey m_hzbOcclusionPipelineKey;
+		std::array<uint32_t, 3u> m_hzbBuildDispatchGroups{ 1u, 1u, 1u };
+		std::array<uint32_t, 3u> m_hzbOcclusionDispatchGroups{ 1u, 1u, 1u };
+		uint32_t m_hzbOcclusionPrimitiveCount = 1u;
+		uint64_t m_hzbOcclusionPrimitivePacketHash = 0u;
+		uint32_t m_hzbOcclusionObservationPrimitiveCount = 0u;
 		uint64_t m_threadedQueuedGBufferDrawCount = 0u;
 		uint64_t m_threadedQueuedDecalDrawCount = 0u;
 		uint64_t m_threadedQueuedLightingDrawCount = 0u;
@@ -173,6 +232,22 @@ namespace NLS::Engine::Rendering
 			uint64_t queuedLightingDrawCount,
 			uint64_t queuedTransparentDrawCount);
 		static void EnsureGBufferTargets(DeferredSceneRenderer& renderer, uint16_t width, uint16_t height);
+		static bool EnsureHZBTargets(DeferredSceneRenderer& renderer, uint16_t width, uint16_t height);
+		static bool PrepareHZBOcclusionPrimitiveBuffers(
+			DeferredSceneRenderer& renderer,
+			std::span<const SceneOcclusionPrimitivePacket> packets);
+		static bool PollHZBOcclusionResultReadback(DeferredSceneRenderer& renderer);
+		static bool BeginHZBOcclusionResultReadback(DeferredSceneRenderer& renderer);
+		static void BeginHZBOcclusionObservationFrame(
+			DeferredSceneRenderer& renderer,
+			const SceneOcclusionFrameInput& frame,
+			std::span<const SceneOcclusionPrimitiveInput> primitiveInputs);
+		static SceneOcclusionObservationStats CompleteHZBOcclusionObservationFrame(
+			DeferredSceneRenderer& renderer,
+			std::span<const uint32_t> primitiveResultFlags);
+		static const SceneOcclusionHistory& GetHZBOcclusionHistory(const DeferredSceneRenderer& renderer);
+		static NLS::Render::FrameGraph::HZBFrameResourceRequest BuildHZBFrameResourceRequest(
+			const DeferredSceneRenderer& renderer);
 		static const NLS::Render::Resources::Texture2D* GetGBufferAlbedoTexture(const DeferredSceneRenderer& renderer);
 		static const NLS::Render::Resources::Texture2D* GetGBufferNormalTexture(const DeferredSceneRenderer& renderer);
 		static const NLS::Render::Resources::Texture2D* GetGBufferMaterialTexture(const DeferredSceneRenderer& renderer);

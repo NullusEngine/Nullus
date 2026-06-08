@@ -39,6 +39,7 @@ TEST(MetaParserGenerationEngineTests, GeneratesExpectedEngineReflectionBindings)
     ExpectContains(cameraText, "AddField<NLS::Engine::Components::CameraComponent, float>(\"fov\"");
     ExpectContains(cameraText, "AddField<NLS::Engine::Components::CameraComponent, bool>(\"frustumGeometryCulling\", static_cast<bool (NLS::Engine::Components::CameraComponent::*)() const>(&NLS::Engine::Components::CameraComponent::HasFrustumGeometryCulling), static_cast<void (NLS::Engine::Components::CameraComponent::*)(bool)>(&NLS::Engine::Components::CameraComponent::SetFrustumGeometryCulling), {})");
     ExpectContains(cameraText, "AddField<NLS::Engine::Components::CameraComponent, NLS::Render::Settings::EProjectionMode>(\"projectionMode\"");
+    ExpectContains(cameraText, "AddField<NLS::Engine::Components::CameraComponent, NLS::Engine::LayerMask>(\"visibleLayers\"");
     ExpectContains(lightText, "AddField<NLS::Engine::Components::LightComponent, float>(\"intensity\"");
     ExpectContains(lightText, "AddField<NLS::Engine::Components::LightComponent, NLS::Render::Settings::ELightType>(\"lightType\"");
     ExpectContains(meshFilterText, "AllocateType(typeKey, \"NLS::Engine::Components::MeshFilter\", moduleKey)");

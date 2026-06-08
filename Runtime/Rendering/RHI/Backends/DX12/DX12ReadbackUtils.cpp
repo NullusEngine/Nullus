@@ -17,6 +17,8 @@
 #include "Rendering/RHI/Backends/DX12/DX12Command.h"
 #include "Rendering/RHI/Backends/DX12/DX12FormatUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12QueueSynchronization.h"
+#include "Rendering/RHI/Backends/DX12/DX12Synchronization.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Core/RHIResource.h"
 #endif
 
@@ -217,9 +219,23 @@ namespace NLS::Render::RHI::DX12
             void* data = nullptr;
         };
 
+        struct DX12BufferReadbackPendingCopy
+        {
+            Microsoft::WRL::ComPtr<ID3D12Device> device;
+            std::shared_ptr<RHIBuffer> sourceBuffer;
+            Microsoft::WRL::ComPtr<ID3D12Resource> readbackResource;
+            Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+            HANDLE fenceEvent = nullptr;
+            std::shared_ptr<std::atomic_bool> inFlightFlag;
+            uint64_t fenceValue = 0u;
+            uint64_t readbackSize = 0u;
+            void* data = nullptr;
+        };
+
         struct DX12ReadbackQuarantinedSubmission
         {
             std::shared_ptr<RHITexture> sourceTexture;
+            std::shared_ptr<RHIBuffer> sourceBuffer;
             Microsoft::WRL::ComPtr<ID3D12Resource> readbackResource;
             Microsoft::WRL::ComPtr<ID3D12CommandAllocator> commandAllocator;
             Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> commandList;
@@ -243,6 +259,7 @@ namespace NLS::Render::RHI::DX12
         void QuarantineDX12ReadbackSubmissionAfterExecute(
             ID3D12Device* device,
             const std::shared_ptr<RHITexture>& sourceTexture,
+            const std::shared_ptr<RHIBuffer>& sourceBuffer,
             const Microsoft::WRL::ComPtr<ID3D12Resource>& readbackResource,
             const Microsoft::WRL::ComPtr<ID3D12CommandAllocator>& commandAllocator,
             const Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList>& commandList,
@@ -251,6 +268,7 @@ namespace NLS::Render::RHI::DX12
         {
             DX12ReadbackQuarantinedSubmission submission;
             submission.sourceTexture = sourceTexture;
+            submission.sourceBuffer = sourceBuffer;
             submission.readbackResource = readbackResource;
             submission.commandAllocator = commandAllocator;
             submission.commandList = commandList;
@@ -465,6 +483,149 @@ namespace NLS::Render::RHI::DX12
             }
 
             DX12ReadbackPendingCopy m_pendingCopy;
+            mutable RHICompletionStatus m_status{};
+        };
+
+        class DX12BufferReadbackCompletionToken final : public RHICompletionToken
+        {
+        public:
+            explicit DX12BufferReadbackCompletionToken(DX12BufferReadbackPendingCopy pendingCopy)
+                : m_pendingCopy(std::move(pendingCopy))
+            {
+            }
+
+            std::string_view GetDebugName() const override { return "DX12BufferReadbackCompletionToken"; }
+
+            bool IsComplete() override
+            {
+                return Poll().IsComplete();
+            }
+
+            RHICompletionStatus Poll() override
+            {
+                if (m_status.IsComplete())
+                    return m_status;
+                if (m_pendingCopy.fence == nullptr ||
+                    m_pendingCopy.fence->GetCompletedValue() < m_pendingCopy.fenceValue)
+                {
+                    const HRESULT deviceStatus = m_pendingCopy.device != nullptr
+                        ? m_pendingCopy.device->GetDeviceRemovedReason()
+                        : S_OK;
+                    if (FAILED(deviceStatus))
+                        return CompleteWithDeviceStatusFailure(
+                            "BeginReadBuffer device was removed before readback fence completion");
+                    return { RHICompletionStatusCode::Pending, {} };
+                }
+                return FinalizeCompletedCopy();
+            }
+
+            RHICompletionStatus Wait(uint64_t timeoutNanoseconds = 0) override
+            {
+                if (m_status.IsComplete())
+                    return m_status;
+                if (m_pendingCopy.fence == nullptr || m_pendingCopy.readbackResource == nullptr)
+                    return CompleteWithFailure("DX12 buffer readback completion token is missing backend resources");
+
+                if (m_pendingCopy.fence->GetCompletedValue() < m_pendingCopy.fenceValue)
+                {
+                    HANDLE eventHandle = m_pendingCopy.fenceEvent;
+                    HANDLE ownedEvent = nullptr;
+                    if (eventHandle == nullptr)
+                    {
+                        ownedEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+                        eventHandle = ownedEvent;
+                    }
+                    if (eventHandle == nullptr)
+                        return CompleteWithFailure("BeginReadBuffer failed to create fence event");
+
+                    const HRESULT hr = m_pendingCopy.fence->SetEventOnCompletion(m_pendingCopy.fenceValue, eventHandle);
+                    if (FAILED(hr))
+                    {
+                        if (ownedEvent != nullptr)
+                            CloseHandle(ownedEvent);
+                        return CompleteWithDeviceStatusFailure(
+                            "BeginReadBuffer failed to set fence completion event hr=" +
+                            std::to_string(static_cast<long>(hr)));
+                    }
+
+                    const DWORD waitMs = ConvertDX12WaitTimeoutNanosecondsToMilliseconds(timeoutNanoseconds);
+                    const DWORD waitResult = WaitForSingleObject(eventHandle, waitMs);
+                    if (ownedEvent != nullptr)
+                        CloseHandle(ownedEvent);
+                    if (waitResult == WAIT_TIMEOUT)
+                        return { RHICompletionStatusCode::Pending, "BeginReadBuffer completion wait timed out" };
+                    if (waitResult != WAIT_OBJECT_0)
+                    {
+                        return CompleteWithDeviceStatusFailure(
+                            "BeginReadBuffer completion wait failed result=" +
+                            std::to_string(waitResult));
+                    }
+                }
+
+                return FinalizeCompletedCopy();
+            }
+
+        private:
+            RHICompletionStatus FinalizeCompletedCopy() const
+            {
+                if (m_status.IsComplete())
+                    return m_status;
+                if (m_pendingCopy.readbackResource == nullptr || m_pendingCopy.data == nullptr || m_pendingCopy.readbackSize == 0u)
+                    return CompleteWithFailure("DX12 buffer readback completion token is missing destination data");
+
+                void* mappedData = nullptr;
+                D3D12_RANGE readRange{};
+                readRange.Begin = 0;
+                readRange.End = static_cast<SIZE_T>(m_pendingCopy.readbackSize);
+                const HRESULT hr = m_pendingCopy.readbackResource->Map(0, &readRange, &mappedData);
+                if (FAILED(hr) || mappedData == nullptr)
+                {
+                    return CompleteWithDeviceStatusFailure(
+                        "BeginReadBuffer failed to map readback resource hr=" +
+                        std::to_string(static_cast<long>(hr)));
+                }
+
+                std::memcpy(m_pendingCopy.data, mappedData, static_cast<size_t>(m_pendingCopy.readbackSize));
+
+                D3D12_RANGE writeRange{};
+                writeRange.Begin = 0;
+                writeRange.End = 0;
+                m_pendingCopy.readbackResource->Unmap(0, &writeRange);
+                if (m_pendingCopy.inFlightFlag != nullptr)
+                    m_pendingCopy.inFlightFlag->store(false);
+                m_status = { RHICompletionStatusCode::Success, {} };
+                return m_status;
+            }
+
+            RHICompletionStatus CompleteWithFailure(std::string message) const
+            {
+                if (m_pendingCopy.inFlightFlag != nullptr)
+                    m_pendingCopy.inFlightFlag->store(false);
+                m_status = { RHICompletionStatusCode::Failed, std::move(message) };
+                return m_status;
+            }
+
+            RHICompletionStatus CompleteWithDeviceStatusFailure(std::string message) const
+            {
+                if (m_pendingCopy.inFlightFlag != nullptr)
+                    m_pendingCopy.inFlightFlag->store(false);
+
+                const HRESULT deviceStatus = m_pendingCopy.device != nullptr
+                    ? m_pendingCopy.device->GetDeviceRemovedReason()
+                    : S_OK;
+                if (FAILED(deviceStatus))
+                {
+                    message += "; DX12 device removed/lost hr=" +
+                        std::to_string(static_cast<long>(deviceStatus));
+                    m_status = { RHICompletionStatusCode::DeviceLost, std::move(message) };
+                    return m_status;
+                }
+
+                m_status = { RHICompletionStatusCode::Failed, std::move(message) };
+                return m_status;
+            }
+
+            DX12BufferReadbackPendingCopy m_pendingCopy;
             mutable RHICompletionStatus m_status{};
         };
 
@@ -728,6 +889,7 @@ namespace NLS::Render::RHI::DX12
                 QuarantineDX12ReadbackSubmissionAfterExecute(
                     device,
                     texture,
+                    nullptr,
                     m_impl->readbackResource,
                     m_impl->commandAllocator,
                     m_impl->commandList,
@@ -777,6 +939,259 @@ namespace NLS::Render::RHI::DX12
             auto failure = BuildDX12DeviceRemovedReadbackFailure(
                 executeDeviceStatus,
                 "ReadPixels after ExecuteCommandLists");
+            failure.completion = completion;
+            return failure;
+        }
+
+        return {
+            DX12ReadbackStatusCode::Success,
+            {},
+            std::move(completion)
+        };
+    }
+
+    DX12ReadbackResult DX12ReadbackContext::BeginBuffer(
+        ID3D12Device* device,
+        ID3D12CommandQueue* graphicsQueue,
+        const RHIBufferReadbackDesc& desc)
+    {
+        if (device == nullptr)
+            return { DX12ReadbackStatusCode::InvalidArgument, "BeginReadBuffer DX12 device is null" };
+        if (graphicsQueue == nullptr)
+            return { DX12ReadbackStatusCode::InvalidArgument, "BeginReadBuffer DX12 graphics queue is null" };
+        if (desc.source == nullptr)
+            return { DX12ReadbackStatusCode::InvalidArgument, "BeginReadBuffer source buffer is null" };
+        if (desc.data == nullptr)
+            return { DX12ReadbackStatusCode::InvalidArgument, "BeginReadBuffer destination data is null" };
+        if (desc.size == 0u)
+            return { DX12ReadbackStatusCode::InvalidArgument, "BeginReadBuffer size is zero" };
+        const uint64_t sourceSize = desc.source->GetDesc().size;
+        if (desc.sourceOffset > sourceSize || desc.size > sourceSize - desc.sourceOffset)
+            return { DX12ReadbackStatusCode::InvalidArgument, "BeginReadBuffer range exceeds source buffer size" };
+
+        const HRESULT preflightDeviceStatus = device->GetDeviceRemovedReason();
+        if (FAILED(preflightDeviceStatus))
+            return BuildDX12DeviceRemovedReadbackFailure(preflightDeviceStatus, "BeginReadBuffer preflight");
+
+        auto srcHandle = desc.source->GetNativeBufferHandle();
+        ID3D12Resource* srcResource = srcHandle.backend == NLS::Render::RHI::BackendType::DX12
+            ? static_cast<ID3D12Resource*>(srcHandle.handle)
+            : nullptr;
+        if (srcResource == nullptr)
+            return { DX12ReadbackStatusCode::InvalidArgument, "BeginReadBuffer source is not a valid DX12 buffer" };
+
+        if (m_impl == nullptr)
+            m_impl = std::make_shared<Impl>();
+        if (m_impl->readbackQuarantined)
+        {
+            return {
+                DX12ReadbackStatusCode::BackendFailure,
+                "BeginReadBuffer context is quarantined after a submitted readback failed to signal its fence"
+            };
+        }
+        if (m_impl->readbackInFlight != nullptr && m_impl->readbackInFlight->load())
+        {
+            return {
+                DX12ReadbackStatusCode::BackendFailure,
+                "BeginReadBuffer previous async readback has not been completed"
+            };
+        }
+
+        const auto scratchPlan = BuildDX12ReadbackScratchResourcePlan(m_impl->readbackCapacity, desc.size);
+        if (scratchPlan.needsNewResource || m_impl->readbackResource == nullptr)
+        {
+            D3D12_HEAP_PROPERTIES heapProperties{};
+            heapProperties.Type = D3D12_HEAP_TYPE_READBACK;
+            heapProperties.CreationNodeMask = 0;
+            heapProperties.VisibleNodeMask = 0;
+
+            D3D12_RESOURCE_DESC bufferDesc{};
+            bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+            bufferDesc.Width = scratchPlan.committedCapacity;
+            bufferDesc.Height = 1;
+            bufferDesc.DepthOrArraySize = 1;
+            bufferDesc.MipLevels = 1;
+            bufferDesc.Format = DXGI_FORMAT_UNKNOWN;
+            bufferDesc.SampleDesc.Count = 1;
+            bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+            bufferDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
+
+            const HRESULT hr = device->CreateCommittedResource(
+                &heapProperties,
+                D3D12_HEAP_FLAG_NONE,
+                &bufferDesc,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                nullptr,
+                IID_PPV_ARGS(m_impl->readbackResource.ReleaseAndGetAddressOf()));
+            if (FAILED(hr))
+                return { DX12ReadbackStatusCode::BackendFailure, "BeginReadBuffer failed to create readback resource" };
+            m_impl->readbackCapacity = scratchPlan.committedCapacity;
+        }
+
+        HRESULT hr = S_OK;
+        if (m_impl->commandAllocator == nullptr)
+        {
+            hr = device->CreateCommandAllocator(
+                D3D12_COMMAND_LIST_TYPE_DIRECT,
+                IID_PPV_ARGS(m_impl->commandAllocator.GetAddressOf()));
+            if (FAILED(hr))
+                return { DX12ReadbackStatusCode::BackendFailure, "BeginReadBuffer failed to create command allocator" };
+        }
+        else
+        {
+            hr = m_impl->commandAllocator->Reset();
+            if (FAILED(hr))
+                return { DX12ReadbackStatusCode::BackendFailure, "BeginReadBuffer failed to reset command allocator" };
+        }
+
+        if (m_impl->commandList == nullptr)
+        {
+            hr = device->CreateCommandList(
+                0,
+                D3D12_COMMAND_LIST_TYPE_DIRECT,
+                m_impl->commandAllocator.Get(),
+                nullptr,
+                IID_PPV_ARGS(m_impl->commandList.GetAddressOf()));
+            if (FAILED(hr))
+                return { DX12ReadbackStatusCode::BackendFailure, "BeginReadBuffer failed to create command list" };
+        }
+        else
+        {
+            hr = m_impl->commandList->Reset(m_impl->commandAllocator.Get(), nullptr);
+            if (FAILED(hr))
+                return { DX12ReadbackStatusCode::BackendFailure, "BeginReadBuffer failed to reset command list" };
+        }
+
+        const ResourceState readbackSourceState = desc.sourceState != ResourceState::Unknown
+            ? desc.sourceState
+            : ResourceState::Unknown;
+        const D3D12_RESOURCE_STATES sourceBefore =
+            NLS::Render::Backend::NativeDX12CommandBuffer::ToD3D12ResourceState(readbackSourceState);
+        if (sourceBefore != D3D12_RESOURCE_STATE_COPY_SOURCE)
+        {
+            D3D12_RESOURCE_BARRIER toCopySourceBarrier{};
+            toCopySourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            toCopySourceBarrier.Transition.pResource = srcResource;
+            toCopySourceBarrier.Transition.StateBefore = sourceBefore;
+            toCopySourceBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+            toCopySourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            m_impl->commandList->ResourceBarrier(1, &toCopySourceBarrier);
+        }
+
+        m_impl->commandList->CopyBufferRegion(
+            m_impl->readbackResource.Get(),
+            0u,
+            srcResource,
+            desc.sourceOffset,
+            desc.size);
+
+        if (sourceBefore != D3D12_RESOURCE_STATE_COPY_SOURCE)
+        {
+            D3D12_RESOURCE_BARRIER restoreSourceBarrier{};
+            restoreSourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            restoreSourceBarrier.Transition.pResource = srcResource;
+            restoreSourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+            restoreSourceBarrier.Transition.StateAfter = sourceBefore;
+            restoreSourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            m_impl->commandList->ResourceBarrier(1, &restoreSourceBarrier);
+        }
+
+        hr = m_impl->commandList->Close();
+        if (FAILED(hr))
+            return { DX12ReadbackStatusCode::BackendFailure, "BeginReadBuffer failed to close command list" };
+
+        if (m_impl->fence == nullptr)
+        {
+            hr = device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(m_impl->fence.GetAddressOf()));
+            if (FAILED(hr))
+                return { DX12ReadbackStatusCode::BackendFailure, "BeginReadBuffer failed to create fence" };
+        }
+
+        if (m_impl->fenceEvent == nullptr)
+        {
+            m_impl->fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+            if (m_impl->fenceEvent == nullptr)
+                return { DX12ReadbackStatusCode::BackendFailure, "BeginReadBuffer failed to create fence event" };
+        }
+
+        const UINT64 fenceValue = ++m_impl->nextFenceValue;
+        HRESULT executeDeviceStatus = S_OK;
+        {
+            ScopedDX12QueueLock queueLock(graphicsQueue);
+            for (const auto& waitSemaphore : desc.waitSemaphores)
+            {
+                auto* nativeSemaphore =
+                    dynamic_cast<NLS::Render::Backend::NativeDX12Semaphore*>(waitSemaphore.get());
+                if (nativeSemaphore == nullptr || nativeSemaphore->GetFence() == nullptr)
+                    continue;
+
+                const HRESULT waitHr = graphicsQueue->Wait(
+                    nativeSemaphore->GetFence(),
+                    nativeSemaphore->GetWaitValue());
+                if (FAILED(waitHr))
+                {
+                    return {
+                        DX12ReadbackStatusCode::BackendFailure,
+                        "BeginReadBuffer failed to wait on producer semaphore hr=" + std::to_string(waitHr)
+                    };
+                }
+            }
+
+            ID3D12CommandList* commandLists[] = { m_impl->commandList.Get() };
+            graphicsQueue->ExecuteCommandLists(1, commandLists);
+            hr = graphicsQueue->Signal(m_impl->fence.Get(), fenceValue);
+            if (FAILED(hr))
+            {
+                QuarantineDX12ReadbackSubmissionAfterExecute(
+                    device,
+                    nullptr,
+                    desc.source,
+                    m_impl->readbackResource,
+                    m_impl->commandAllocator,
+                    m_impl->commandList,
+                    m_impl->fence,
+                    hr);
+                m_impl->readbackQuarantined = true;
+                if (m_impl->readbackInFlight != nullptr)
+                    m_impl->readbackInFlight->store(true);
+
+                const HRESULT signalDeviceStatus = device->GetDeviceRemovedReason();
+                if (FAILED(signalDeviceStatus))
+                {
+                    auto failure = BuildDX12DeviceRemovedReadbackFailure(
+                        signalDeviceStatus,
+                        "BeginReadBuffer failed to signal fence");
+                    failure.message += "; submitted readback resources were quarantined";
+                    return failure;
+                }
+                return {
+                    DX12ReadbackStatusCode::BackendFailure,
+                    "BeginReadBuffer failed to signal fence after ExecuteCommandLists; submitted readback resources were quarantined"
+                };
+            }
+
+            executeDeviceStatus = device->GetDeviceRemovedReason();
+        }
+
+        DX12BufferReadbackPendingCopy pendingCopy;
+        pendingCopy.device = device;
+        pendingCopy.sourceBuffer = desc.source;
+        pendingCopy.readbackResource = m_impl->readbackResource;
+        pendingCopy.fence = m_impl->fence;
+        pendingCopy.fenceEvent = m_impl->fenceEvent;
+        pendingCopy.inFlightFlag = m_impl->readbackInFlight;
+        pendingCopy.fenceValue = fenceValue;
+        pendingCopy.readbackSize = desc.size;
+        pendingCopy.data = desc.data;
+        if (m_impl->readbackInFlight != nullptr)
+            m_impl->readbackInFlight->store(true);
+
+        auto completion = std::make_shared<DX12BufferReadbackCompletionToken>(std::move(pendingCopy));
+        if (FAILED(executeDeviceStatus))
+        {
+            auto failure = BuildDX12DeviceRemovedReadbackFailure(
+                executeDeviceStatus,
+                "BeginReadBuffer after ExecuteCommandLists");
             failure.completion = completion;
             return failure;
         }

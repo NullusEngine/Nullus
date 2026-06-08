@@ -4,6 +4,7 @@
 #include "Assets/AssetPath.h"
 #include "Assets/EditorAssetPath.h"
 #include "Guid.h"
+#include "Rendering/LargeSceneSettings.h"
 
 #include <algorithm>
 #include <mutex>
@@ -351,6 +352,81 @@ bool AssetImporterFacade::SaveAndReimport(
 
 bool AssetImporterFacade::SaveAndReimport(
     const std::string& assetPath,
+    const EditorImportBudgetRequest& budgetRequest)
+{
+    auto request = budgetRequest;
+    if (request.assetPath.empty())
+        request.assetPath = assetPath;
+    else if (NormalizeEditorAssetPath(request.assetPath) != NormalizeEditorAssetPath(assetPath))
+        return false;
+
+    const auto admission = TryReserveEditorImportBudgetInternal(request, true);
+    if (!admission.admitted)
+        return false;
+
+    const auto imported = SaveAndReimport(assetPath, nullptr);
+    if (!imported)
+        ReleaseEditorImportBudgetReservation(request);
+    return imported;
+}
+
+EditorImportBudgetSnapshot AssetImporterFacade::MakeEditorImportBudget(
+    const NLS::Engine::Rendering::LargeSceneSettings& settings)
+{
+    EditorImportBudgetSnapshot budget;
+    budget.cpuBudgetUs = settings.streamingCpuBudgetUs;
+    budget.ioBudgetBytes = settings.streamingIoBudgetBytes;
+    budget.gpuUploadBudgetBytes = settings.streamingGpuUploadBudgetBytes;
+    budget.cpuMemoryBudgetBytes = settings.streamingCpuMemoryBudgetBytes;
+    budget.gpuMemoryBudgetBytes = settings.streamingGpuMemoryBudgetBytes;
+    budget.remainingCpuBudgetUs = budget.cpuBudgetUs;
+    budget.remainingIoBudgetBytes = budget.ioBudgetBytes;
+    budget.remainingGpuUploadBudgetBytes = budget.gpuUploadBudgetBytes;
+    budget.remainingCpuMemoryBudgetBytes = budget.cpuMemoryBudgetBytes;
+    budget.remainingGpuMemoryBudgetBytes = budget.gpuMemoryBudgetBytes;
+    return budget;
+}
+
+void AssetImporterFacade::SetEditorImportBudget(EditorImportBudgetSnapshot budget)
+{
+    budget.remainingCpuBudgetUs =
+        budget.cpuBudgetUs > budget.reservedCpuBudgetUs
+            ? budget.cpuBudgetUs - budget.reservedCpuBudgetUs
+            : 0u;
+    budget.remainingIoBudgetBytes =
+        budget.ioBudgetBytes > budget.reservedIoBudgetBytes
+            ? budget.ioBudgetBytes - budget.reservedIoBudgetBytes
+            : 0u;
+    budget.remainingGpuUploadBudgetBytes =
+        budget.gpuUploadBudgetBytes > budget.reservedGpuUploadBudgetBytes
+            ? budget.gpuUploadBudgetBytes - budget.reservedGpuUploadBudgetBytes
+            : 0u;
+    budget.remainingCpuMemoryBudgetBytes =
+        budget.cpuMemoryBudgetBytes > budget.reservedCpuMemoryBudgetBytes
+            ? budget.cpuMemoryBudgetBytes - budget.reservedCpuMemoryBudgetBytes
+            : 0u;
+    budget.remainingGpuMemoryBudgetBytes =
+        budget.gpuMemoryBudgetBytes > budget.reservedGpuMemoryBudgetBytes
+            ? budget.gpuMemoryBudgetBytes - budget.reservedGpuMemoryBudgetBytes
+            : 0u;
+    std::lock_guard lock(m_editorImportBudgetMutex);
+    m_editorImportBudget = budget;
+}
+
+EditorImportBudgetSnapshot AssetImporterFacade::GetEditorImportBudgetSnapshot() const
+{
+    std::lock_guard lock(m_editorImportBudgetMutex);
+    return m_editorImportBudget.value_or(EditorImportBudgetSnapshot{});
+}
+
+EditorImportBudgetAdmission AssetImporterFacade::TryReserveEditorImportBudget(
+    const EditorImportBudgetRequest& request)
+{
+    return TryReserveEditorImportBudgetInternal(request, true);
+}
+
+bool AssetImporterFacade::SaveAndReimport(
+    const std::string& assetPath,
     ImportProgressTracker* progressTracker)
 {
     const auto normalized = NormalizeEditorAssetPath(assetPath);
@@ -413,6 +489,85 @@ bool AssetImporterFacade::SaveAndReimport(
         std::remove(m_dirtyAssets.begin(), m_dirtyAssets.end(), normalized),
         m_dirtyAssets.end());
     return true;
+}
+
+EditorImportBudgetAdmission AssetImporterFacade::TryReserveEditorImportBudgetInternal(
+    const EditorImportBudgetRequest& request,
+    const bool commitReservation)
+{
+    std::lock_guard lock(m_editorImportBudgetMutex);
+    if (!m_editorImportBudget.has_value())
+        return {true, "unbudgeted", {}};
+
+    auto budget = *m_editorImportBudget;
+    auto reject = [&](std::string reason)
+    {
+        return EditorImportBudgetAdmission{false, std::move(reason), budget};
+    };
+
+    if (request.cpuCostUs > budget.remainingCpuBudgetUs)
+        return reject("cpu-budget-exhausted");
+    if (request.ioBytes > budget.remainingIoBudgetBytes)
+        return reject("io-budget-exhausted");
+    if (request.gpuUploadBytes > budget.remainingGpuUploadBudgetBytes)
+        return reject("gpu-upload-budget-exhausted");
+    if (request.cpuMemoryBytes > budget.remainingCpuMemoryBudgetBytes)
+        return reject("cpu-memory-budget-exhausted");
+    if (request.gpuMemoryBytes > budget.remainingGpuMemoryBudgetBytes)
+        return reject("gpu-memory-budget-exhausted");
+
+    if (commitReservation)
+    {
+        budget.reservedCpuBudgetUs += request.cpuCostUs;
+        budget.reservedIoBudgetBytes += request.ioBytes;
+        budget.reservedGpuUploadBudgetBytes += request.gpuUploadBytes;
+        budget.reservedCpuMemoryBudgetBytes += request.cpuMemoryBytes;
+        budget.reservedGpuMemoryBudgetBytes += request.gpuMemoryBytes;
+        budget.remainingCpuBudgetUs -= request.cpuCostUs;
+        budget.remainingIoBudgetBytes -= request.ioBytes;
+        budget.remainingGpuUploadBudgetBytes -= request.gpuUploadBytes;
+        budget.remainingCpuMemoryBudgetBytes -= request.cpuMemoryBytes;
+        budget.remainingGpuMemoryBudgetBytes -= request.gpuMemoryBytes;
+        m_editorImportBudget = budget;
+    }
+
+    return {true, "admitted", budget};
+}
+
+void AssetImporterFacade::ReleaseEditorImportBudgetReservation(
+    const EditorImportBudgetRequest& request)
+{
+    std::lock_guard lock(m_editorImportBudgetMutex);
+    if (!m_editorImportBudget.has_value())
+        return;
+
+    auto& budget = *m_editorImportBudget;
+    const auto releaseCpuUs = std::min(request.cpuCostUs, budget.reservedCpuBudgetUs);
+    const auto releaseIoBytes = std::min(request.ioBytes, budget.reservedIoBudgetBytes);
+    const auto releaseGpuUploadBytes = std::min(request.gpuUploadBytes, budget.reservedGpuUploadBudgetBytes);
+    const auto releaseCpuMemoryBytes = std::min(request.cpuMemoryBytes, budget.reservedCpuMemoryBudgetBytes);
+    const auto releaseGpuMemoryBytes = std::min(request.gpuMemoryBytes, budget.reservedGpuMemoryBudgetBytes);
+
+    budget.reservedCpuBudgetUs -= releaseCpuUs;
+    budget.reservedIoBudgetBytes -= releaseIoBytes;
+    budget.reservedGpuUploadBudgetBytes -= releaseGpuUploadBytes;
+    budget.reservedCpuMemoryBudgetBytes -= releaseCpuMemoryBytes;
+    budget.reservedGpuMemoryBudgetBytes -= releaseGpuMemoryBytes;
+    budget.remainingCpuBudgetUs = std::min(
+        budget.cpuBudgetUs,
+        budget.remainingCpuBudgetUs + releaseCpuUs);
+    budget.remainingIoBudgetBytes = std::min(
+        budget.ioBudgetBytes,
+        budget.remainingIoBudgetBytes + releaseIoBytes);
+    budget.remainingGpuUploadBudgetBytes = std::min(
+        budget.gpuUploadBudgetBytes,
+        budget.remainingGpuUploadBudgetBytes + releaseGpuUploadBytes);
+    budget.remainingCpuMemoryBudgetBytes = std::min(
+        budget.cpuMemoryBudgetBytes,
+        budget.remainingCpuMemoryBudgetBytes + releaseCpuMemoryBytes);
+    budget.remainingGpuMemoryBudgetBytes = std::min(
+        budget.gpuMemoryBudgetBytes,
+        budget.remainingGpuMemoryBudgetBytes + releaseGpuMemoryBytes);
 }
 
 bool AssetImporterFacade::AddRemap(const std::string& assetPath, ExternalObjectRemap remap)

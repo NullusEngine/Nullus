@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+#include "Rendering/Data/SceneOcclusionPacketLayout.h"
 #include "Rendering/RHI/Core/RHIEnums.h"
 #include "Rendering/RHI/BindingPointMap.h"
 
@@ -223,6 +224,33 @@ namespace
         });
     }
 
+    ShaderRootParameterMetadata BuildHZBBuildParameters()
+    {
+        return MakeRootMetadata("HZBBuildCSRootParameters", {
+            ShaderParameterStructBuilder("HZBBuildParameters")
+                .SetGroup(ShaderParameterGroupKind::Pass)
+                .AddTexture("u_OpaqueDepth", 0u, NLS::Render::RHI::ShaderStageMask::Compute)
+                .AddRWTexture("u_HZBOutput", 1u, NLS::Render::RHI::ShaderStageMask::Compute)
+                .Build()
+        });
+    }
+
+    ShaderRootParameterMetadata BuildHZBOcclusionParameters()
+    {
+        return MakeRootMetadata("HZBOcclusionCSRootParameters", {
+			ShaderParameterStructBuilder("HZBOcclusionParameters")
+				.SetGroup(ShaderParameterGroupKind::Pass)
+				.AddTexture("u_HZB", 0u, NLS::Render::RHI::ShaderStageMask::Compute)
+				.AddStructuredBuffer(
+					"u_OcclusionPrimitiveInputs",
+					2u,
+                    NLS::Render::RHI::ShaderStageMask::Compute,
+                    static_cast<uint32_t>(NLS::Render::Data::kSceneOcclusionPrimitivePacketStride))
+                .AddStorageBuffer("u_OcclusionPrimitiveResults", 3u, NLS::Render::RHI::ShaderStageMask::Compute)
+                .Build()
+        });
+    }
+
     ShaderTypeRegistry BuildEngineShaderTypeRegistry()
     {
         ShaderTypeRegistry registry;
@@ -321,6 +349,22 @@ namespace
             NLS::Render::ShaderCompiler::ShaderStage::Compute,
             ShaderTypeKind::Global,
             BuildLightGridCompactParameters()
+        });
+        registry.Register({
+            "HZBBuildCS",
+            "App/Assets/Engine/Shaders/HZBBuild.hlsl",
+            "CSMain",
+            NLS::Render::ShaderCompiler::ShaderStage::Compute,
+            ShaderTypeKind::Global,
+            BuildHZBBuildParameters()
+        });
+        registry.Register({
+            "HZBOcclusionCS",
+            "App/Assets/Engine/Shaders/HZBOcclusion.hlsl",
+            "CSMain",
+            NLS::Render::ShaderCompiler::ShaderStage::Compute,
+            ShaderTypeKind::Global,
+            BuildHZBOcclusionParameters()
         });
         return registry;
     }

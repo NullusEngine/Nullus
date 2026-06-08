@@ -20,6 +20,13 @@ namespace NLS::Render::Tooling
 	NLS_RENDER_API ::NLS::Render::RHI::NativeRenderDeviceHandle ResolveRenderDocCaptureDeviceHandle(
 		const ::NLS::Render::RHI::NativeRenderDeviceInfo& nativeInfo);
 	NLS_RENDER_API void* ResolveRenderDocCaptureDevice(const ::NLS::Render::RHI::NativeRenderDeviceInfo& nativeInfo);
+	NLS_RENDER_API bool CanQueueRenderDocCapture(
+		bool available,
+		bool captureQueued,
+		bool manualCaptureActive,
+		bool queuedCaptureActive,
+		bool waitingForTriggeredCapture);
+	NLS_RENDER_API uint32_t ResolveRenderDocQueuedCaptureInitialCountdown();
 	NLS_RENDER_API RenderDocQueuedCaptureAction ResolveRenderDocQueuedCapturePreFrameAction(
 		bool available,
 		bool captureQueued,
@@ -39,6 +46,7 @@ namespace NLS::Render::Tooling
 		void OnPreFrame(bool frameWillPresent = true);
 		void OnPrePresent();
 		void OnPostPresent();
+		void OnPostFrame(bool frameWillPresent, bool outputMayBePresentedLater);
 
 		std::string GetLatestCapturePath() const;
 		std::string GetCaptureDirectory() const;

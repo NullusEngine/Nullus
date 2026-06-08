@@ -2,14 +2,20 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 
 #include "Engine/Rendering/Shaders/DeferredLightingShaders.h"
+#include "Engine/Rendering/Shaders/HZBShaders.h"
+#include "Rendering/SceneOcclusion.h"
 #include "Engine/Rendering/Shaders/LightGridShaders.h"
 #include "Engine/Rendering/Shaders/MaterialShaders.h"
+#include "Rendering/Data/SceneOcclusionPacketLayout.h"
 #include "Rendering/Resources/ShaderMap.h"
 #include "Rendering/Resources/ShaderParameterMetadata.h"
 #include "Rendering/Resources/ShaderType.h"
@@ -94,23 +100,193 @@ TEST(ShaderArchitectureAlignmentTests, MigratedShaderTypesExposeRootParameterMet
 
 TEST(ShaderArchitectureAlignmentTests, GlobalShaderClassesRegisterLightGridAndDeferredLightingTypes)
 {
-    using namespace NLS::Render::Engine::Shaders;
+	using namespace NLS::Render::Engine::Shaders;
 
     EXPECT_EQ(LightGridResetCS::GetStaticShaderType().GetName(), "LightGridResetCS");
     EXPECT_EQ(LightGridInjectionCS::GetStaticShaderType().GetName(), "LightGridInjectionCS");
     EXPECT_EQ(LightGridCompactCS::GetStaticShaderType().GetName(), "LightGridCompactCS");
+    EXPECT_EQ(HZBBuildCS::GetStaticShaderType().GetName(), "HZBBuildCS");
+    EXPECT_EQ(HZBOcclusionCS::GetStaticShaderType().GetName(), "HZBOcclusionCS");
     EXPECT_EQ(DeferredLightingPS::GetStaticShaderType().GetName(), "DeferredLightingPS");
 
     const auto& registry = NLS::Render::Resources::GetShaderTypeRegistry();
     EXPECT_EQ(registry.FindByName("LightGridResetCS"), &LightGridResetCS::GetStaticShaderType());
     EXPECT_EQ(registry.FindByName("LightGridInjectionCS"), &LightGridInjectionCS::GetStaticShaderType());
     EXPECT_EQ(registry.FindByName("LightGridCompactCS"), &LightGridCompactCS::GetStaticShaderType());
-    EXPECT_EQ(registry.FindByName("DeferredLightingPS"), &DeferredLightingPS::GetStaticShaderType());
+    EXPECT_EQ(registry.FindByName("HZBBuildCS"), &HZBBuildCS::GetStaticShaderType());
+	EXPECT_EQ(registry.FindByName("HZBOcclusionCS"), &HZBOcclusionCS::GetStaticShaderType());
+	EXPECT_EQ(registry.FindByName("DeferredLightingPS"), &DeferredLightingPS::GetStaticShaderType());
+}
+
+TEST(ShaderArchitectureAlignmentTests, HZBShaderTypeLookupReportsMissingRegistryEntries)
+{
+	NLS::Render::Resources::ShaderTypeRegistry emptyRegistry;
+
+	try
+	{
+		(void)NLS::Render::Engine::Shaders::ResolveRequiredHZBShaderType(emptyRegistry, "HZBBuildCS");
+		FAIL() << "missing HZB shader type should throw";
+	}
+	catch (const std::runtime_error& error)
+	{
+		const std::string message = error.what();
+		EXPECT_NE(message.find("Required HZB shader type is not registered"), std::string::npos);
+		EXPECT_NE(message.find("HZBBuildCS"), std::string::npos);
+	}
+}
+
+TEST(ShaderArchitectureAlignmentTests, HZBOcclusionShaderConsumesPrimitiveInputsAndWritesPrimitiveResults)
+{
+	const std::filesystem::path shaderPath =
+		std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders/HZBOcclusion.hlsl";
+	std::ifstream stream(shaderPath, std::ios::binary);
+	ASSERT_TRUE(stream) << shaderPath.string();
+
+	std::ostringstream sourceBuffer;
+	sourceBuffer << stream.rdbuf();
+	const std::string shaderSourceText = sourceBuffer.str();
+
+	EXPECT_NE(shaderSourceText.find("struct OcclusionPrimitiveInput"), std::string::npos);
+	EXPECT_NE(shaderSourceText.find("StructuredBuffer<OcclusionPrimitiveInput> u_OcclusionPrimitiveInputs"), std::string::npos);
+	EXPECT_NE(shaderSourceText.find("RWStructuredBuffer<uint> u_OcclusionPrimitiveResults"), std::string::npos);
+	EXPECT_EQ(shaderSourceText.find("u_OcclusionOutput"), std::string::npos);
+	EXPECT_NE(shaderSourceText.find("u_OcclusionPrimitiveResults[primitiveIndex]"), std::string::npos);
+	EXPECT_NE(shaderSourceText.find("kHZBOcclusionDepthBias"), std::string::npos);
+	EXPECT_NE(shaderSourceText.find("IsConservativelyOccludedByHZBMip0Coverage"), std::string::npos);
+	EXPECT_NE(shaderSourceText.find("kHZBOcclusionMaxMip0ScanPixels"), std::string::npos);
+	EXPECT_EQ(shaderSourceText.find("kHZBOcclusionGridDimension"), std::string::npos);
+	EXPECT_EQ(shaderSourceText.find("float2(0.5f, 0.5f)"), std::string::npos);
+	EXPECT_EQ(shaderSourceText.find("allCornersOcclude"), std::string::npos);
+	EXPECT_NE(shaderSourceText.find("nearestOccluderDepth = primitive.nearestDepth - kHZBOcclusionDepthBias"), std::string::npos);
+	EXPECT_EQ(shaderSourceText.find("hzbDepth <= primitive.nearestDepth"), std::string::npos);
+	EXPECT_EQ(shaderSourceText.find("hzbDepth + kHZBOcclusionDepthBias < primitive.nearestDepth"), std::string::npos);
+}
+
+TEST(ShaderArchitectureAlignmentTests, HZBOcclusionPrimitiveInputMemberOrderMatchesCppPacketLayout)
+{
+	const std::filesystem::path shaderPath =
+		std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders/HZBOcclusion.hlsl";
+	std::ifstream stream(shaderPath, std::ios::binary);
+	ASSERT_TRUE(stream) << shaderPath.string();
+
+	std::ostringstream sourceBuffer;
+	sourceBuffer << stream.rdbuf();
+	const std::string shaderSourceText = sourceBuffer.str();
+
+	const auto structStart = shaderSourceText.find("struct OcclusionPrimitiveInput");
+	ASSERT_NE(structStart, std::string::npos);
+	const auto bodyStart = shaderSourceText.find('{', structStart);
+	const auto bodyEnd = shaderSourceText.find("};", bodyStart);
+	ASSERT_NE(bodyStart, std::string::npos);
+	ASSERT_NE(bodyEnd, std::string::npos);
+	const auto structBody = shaderSourceText.substr(bodyStart, bodyEnd - bodyStart);
+
+	const std::array<std::string_view, 4u> expectedMembers = {
+		"float2 screenMin;",
+		"float2 screenMax;",
+		"float nearestDepth;",
+		"uint flags;"
+	};
+	size_t previousOffset = 0u;
+	for (const auto expectedMember : expectedMembers)
+	{
+		const auto offset = structBody.find(expectedMember);
+		ASSERT_NE(offset, std::string::npos) << expectedMember;
+		EXPECT_GE(offset, previousOffset) << expectedMember;
+		previousOffset = offset;
+	}
+}
+
+TEST(ShaderArchitectureAlignmentTests, HZBMip0OnlyOcclusionShaderUsesBoundedExhaustiveMip0Coverage)
+{
+	const std::filesystem::path hzbBuildPath =
+		std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders/HZBBuild.hlsl";
+	std::ifstream hzbBuildStream(hzbBuildPath, std::ios::binary);
+	ASSERT_TRUE(hzbBuildStream) << hzbBuildPath.string();
+
+	std::ostringstream hzbBuildBuffer;
+	hzbBuildBuffer << hzbBuildStream.rdbuf();
+	const std::string hzbBuildSource = hzbBuildBuffer.str();
+	ASSERT_NE(hzbBuildSource.find("RWTexture2D<float> u_HZBOutput"), std::string::npos);
+	ASSERT_EQ(hzbBuildSource.find("RWTexture2DArray"), std::string::npos);
+	ASSERT_EQ(hzbBuildSource.find("RWTexture2D<float> u_HZBOutputMip"), std::string::npos);
+
+	const std::filesystem::path occlusionPath =
+		std::filesystem::path(NLS_ROOT_DIR) / "App/Assets/Engine/Shaders/HZBOcclusion.hlsl";
+	std::ifstream occlusionStream(occlusionPath, std::ios::binary);
+	ASSERT_TRUE(occlusionStream) << occlusionPath.string();
+
+	std::ostringstream occlusionBuffer;
+	occlusionBuffer << occlusionStream.rdbuf();
+	const std::string occlusionSource = occlusionBuffer.str();
+
+	EXPECT_NE(occlusionSource.find("kHZBOcclusionMaxMip0ScanPixels"), std::string::npos);
+	EXPECT_NE(occlusionSource.find("IsConservativelyOccludedByHZBMip0Coverage"), std::string::npos);
+	EXPECT_NE(occlusionSource.find("coveredPixelCount > kHZBOcclusionMaxMip0ScanPixels"), std::string::npos);
+	EXPECT_NE(occlusionSource.find("for (uint pixelY = minPixelY; pixelY <= maxPixelY; ++pixelY)"), std::string::npos);
+	EXPECT_NE(occlusionSource.find("for (uint pixelX = minPixelX; pixelX <= maxPixelX; ++pixelX)"), std::string::npos);
+	EXPECT_NE(occlusionSource.find("u_OcclusionPrimitiveResults[primitiveIndex] = occluded ? 1u : 0u"), std::string::npos);
+	EXPECT_EQ(occlusionSource.find("kHZBOcclusionGridDimension"), std::string::npos);
+	EXPECT_NE(occlusionSource.find("[numthreads(8, 1, 1)]"), std::string::npos);
+	EXPECT_EQ(occlusionSource.find("dispatchThreadId.y"), std::string::npos);
+}
+
+TEST(ShaderArchitectureAlignmentTests, HZBOcclusionPrimitivePacketLayoutOffsetsAreSingleSourceOfTruth)
+{
+	using NLS::Engine::Rendering::SceneOcclusionPrimitivePacket;
+	using namespace NLS::Render::Data;
+
+	EXPECT_EQ(kSceneOcclusionPrimitivePacketScreenMinXOffset, offsetof(SceneOcclusionPrimitivePacket, screenMinX));
+	EXPECT_EQ(kSceneOcclusionPrimitivePacketScreenMinYOffset, offsetof(SceneOcclusionPrimitivePacket, screenMinY));
+	EXPECT_EQ(kSceneOcclusionPrimitivePacketScreenMaxXOffset, offsetof(SceneOcclusionPrimitivePacket, screenMaxX));
+	EXPECT_EQ(kSceneOcclusionPrimitivePacketScreenMaxYOffset, offsetof(SceneOcclusionPrimitivePacket, screenMaxY));
+	EXPECT_EQ(kSceneOcclusionPrimitivePacketNearestDepthOffset, offsetof(SceneOcclusionPrimitivePacket, nearestDepth));
+	EXPECT_EQ(kSceneOcclusionPrimitivePacketFlagsOffset, offsetof(SceneOcclusionPrimitivePacket, flags));
+	EXPECT_EQ(kSceneOcclusionPrimitivePacketStride, sizeof(SceneOcclusionPrimitivePacket));
+	EXPECT_LT(kSceneOcclusionPrimitivePacketScreenMinXOffset, kSceneOcclusionPrimitivePacketScreenMinYOffset);
+	EXPECT_LT(kSceneOcclusionPrimitivePacketScreenMinYOffset, kSceneOcclusionPrimitivePacketScreenMaxXOffset);
+	EXPECT_LT(kSceneOcclusionPrimitivePacketScreenMaxXOffset, kSceneOcclusionPrimitivePacketScreenMaxYOffset);
+	EXPECT_LT(kSceneOcclusionPrimitivePacketScreenMaxYOffset, kSceneOcclusionPrimitivePacketNearestDepthOffset);
+	EXPECT_LT(kSceneOcclusionPrimitivePacketNearestDepthOffset, kSceneOcclusionPrimitivePacketFlagsOffset);
+}
+
+TEST(ShaderArchitectureAlignmentTests, HZBOcclusionMetadataMatchesPrimitiveBufferShaderContract)
+{
+	using namespace NLS::Render::Engine::Shaders;
+
+	const auto& parameters = HZBOcclusionCS::GetStaticShaderType().GetRootParameterStructs().front();
+	auto findMember = [&parameters](const std::string_view name)
+	{
+		return std::find_if(
+			parameters.members.begin(),
+			parameters.members.end(),
+			[name](const NLS::Render::Resources::ShaderParameterMember& member)
+			{
+				return member.name == name;
+			});
+	};
+
+	const auto input = findMember("u_OcclusionPrimitiveInputs");
+	ASSERT_NE(input, parameters.members.end());
+	EXPECT_EQ(input->type, NLS::Render::RHI::BindingType::StructuredBuffer);
+	EXPECT_EQ(input->binding, 2u);
+	EXPECT_EQ(input->stageMask, NLS::Render::RHI::ShaderStageMask::Compute);
+	EXPECT_EQ(input->elementStride, NLS::Render::Data::kSceneOcclusionPrimitivePacketStride);
+
+	const auto staleTextureOutput = findMember("u_OcclusionOutput");
+	EXPECT_EQ(staleTextureOutput, parameters.members.end());
+
+	const auto result = findMember("u_OcclusionPrimitiveResults");
+	ASSERT_NE(result, parameters.members.end());
+	EXPECT_EQ(result->type, NLS::Render::RHI::BindingType::StorageBuffer);
+	EXPECT_EQ(result->binding, 3u);
+	EXPECT_EQ(result->stageMask, NLS::Render::RHI::ShaderStageMask::Compute);
+	EXPECT_EQ(result->elementStride, sizeof(uint32_t));
 }
 
 TEST(ShaderArchitectureAlignmentTests, MaterialShaderClassesRegisterStandardLambertAndDeferredGBufferTypes)
 {
-    using namespace NLS::Render::Engine::Shaders;
+	using namespace NLS::Render::Engine::Shaders;
 
     EXPECT_EQ(StandardVS::GetStaticShaderType().GetName(), "StandardVS");
     EXPECT_EQ(StandardPS::GetStaticShaderType().GetName(), "StandardPS");

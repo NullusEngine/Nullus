@@ -264,6 +264,58 @@ PropertyValue MakeOwnedArray(const std::vector<ObjectId>& objectIds)
     return PropertyValue::Array(std::move(values));
 }
 
+PropertyValue MakeStringArray(const std::vector<std::string>& strings)
+{
+    PropertyValue::ArrayValue values;
+    values.reserve(strings.size());
+    for (const auto& string : strings)
+        values.push_back(PropertyValue::String(string));
+    return PropertyValue::Array(std::move(values));
+}
+
+std::vector<std::string> CollectDirectMeshChildKeys(
+    const std::vector<ImportedSceneNode>& nodes,
+    const std::string& parentKey)
+{
+    std::vector<std::string> childKeys;
+    for (const auto& candidate : nodes)
+    {
+        if (candidate.parentKey == parentKey && !candidate.meshKey.empty())
+            childKeys.push_back(candidate.sourceKey);
+    }
+    return childKeys;
+}
+
+PropertyValue MakeImportedHierarchyHLODMetadata(
+    const ImportedSceneNode& node,
+    const std::vector<std::string>& childKeys,
+    const std::string& proxySubAssetKey)
+{
+    return PropertyValue::Object({
+        {GeneratedModelPrefabHLODSchema::SourceField,
+            PropertyValue::String(GeneratedModelPrefabHLODSchema::ImportedHierarchySource)},
+        {GeneratedModelPrefabHLODSchema::ClusterKeyField, PropertyValue::String(node.sourceKey)},
+        {GeneratedModelPrefabHLODSchema::ChildrenField, MakeStringArray(childKeys)},
+        {GeneratedModelPrefabHLODSchema::ProxySubAssetKeyField, PropertyValue::String(proxySubAssetKey)}
+    });
+}
+
+std::string ResolveImportedHierarchyHLODProxySubAssetKey(
+    const NLS::Core::Assets::ArtifactManifest& manifest,
+    const std::string& nodeSourceKey)
+{
+    const auto proxySubAssetKey =
+        std::string(GeneratedModelPrefabHLODSchema::ProxySubAssetKeyPrefix) + nodeSourceKey;
+    const auto* proxyArtifact = manifest.FindSubAsset(proxySubAssetKey);
+    if (proxyArtifact == nullptr ||
+        proxyArtifact->artifactType != NLS::Core::Assets::ArtifactType::Mesh ||
+        proxyArtifact->artifactPath.empty())
+    {
+        return {};
+    }
+    return proxySubAssetKey;
+}
+
 PropertyValue Vector3FromValues(const std::vector<double>& values, const double x, const double y, const double z)
 {
     return MakeVector3(
@@ -421,6 +473,20 @@ void AddGeneratedRecords(
             : PropertyValue::Null()
     });
     gameObject.properties.push_back({"tag", PropertyValue::String({})});
+
+    const auto hlodChildKeys = !hasMesh
+        ? CollectDirectMeshChildKeys(scene.nodes, node.sourceKey)
+        : std::vector<std::string> {};
+    const auto hlodProxySubAssetKey = hlodChildKeys.size() >= 2u
+        ? ResolveImportedHierarchyHLODProxySubAssetKey(manifest, node.sourceKey)
+        : std::string {};
+    if (!hlodProxySubAssetKey.empty())
+    {
+        gameObject.properties.push_back({
+            GeneratedModelPrefabHLODSchema::PropertyName,
+            MakeImportedHierarchyHLODMetadata(node, hlodChildKeys, hlodProxySubAssetKey)
+        });
+    }
 
     graph.objects.push_back(std::move(gameObject));
     graph.objects.push_back(MakeTransformRecord(node, transformId, nodeName));

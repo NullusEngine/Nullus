@@ -161,4 +161,24 @@ std::array<float, 4> Frustum::GetFarPlane() const
 {
 	return { m_frustum[BACK][0], m_frustum[BACK][1], m_frustum[BACK][2], m_frustum[BACK][3] };
 }
+
+std::array<float, 4> Frustum::GetLeftPlane() const
+{
+	return { m_frustum[LEFT][0], m_frustum[LEFT][1], m_frustum[LEFT][2], m_frustum[LEFT][3] };
+}
+
+std::array<float, 4> Frustum::GetRightPlane() const
+{
+	return { m_frustum[RIGHT][0], m_frustum[RIGHT][1], m_frustum[RIGHT][2], m_frustum[RIGHT][3] };
+}
+
+std::array<float, 4> Frustum::GetBottomPlane() const
+{
+	return { m_frustum[BOTTOM][0], m_frustum[BOTTOM][1], m_frustum[BOTTOM][2], m_frustum[BOTTOM][3] };
+}
+
+std::array<float, 4> Frustum::GetTopPlane() const
+{
+	return { m_frustum[TOP][0], m_frustum[TOP][1], m_frustum[TOP][2], m_frustum[TOP][3] };
+}
 }

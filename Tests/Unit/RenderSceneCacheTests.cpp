@@ -564,6 +564,58 @@ TEST(RenderSceneCacheTests, StableSceneReusesPersistentPrimitivesAndCachedComman
     EXPECT_EQ(secondOptimizationStats.cachedCommandRebuildCount, 0u);
 }
 
+TEST(RenderSceneCacheTests, DisabledSpatialIndexDoesNotBuildIndexDuringSync)
+{
+    ManyPrimitiveFixture fixture(128u);
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::LargeSceneSettings largeSceneSettings;
+    largeSceneSettings.enableSpatialIndex = false;
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    syncOptions.largeSceneSettings = &largeSceneSettings;
+
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 128u);
+
+    auto frustum = CreateForwardFrustum();
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.frustum = &frustum;
+    visibilityOptions.cameraPosition = {};
+    visibilityOptions.largeSceneSettings = &largeSceneSettings;
+    (void)renderScene.GatherVisibleCommands(visibilityOptions);
+
+    const auto& telemetry = renderScene.GetLastLargeSceneTelemetryForTesting();
+    EXPECT_EQ(telemetry.staticPrimitiveCount, 0u);
+    EXPECT_EQ(telemetry.dynamicPrimitiveCount, 0u);
+    EXPECT_EQ(telemetry.unclassifiedPrimitiveCount, 128u);
+    EXPECT_EQ(telemetry.staticIndexRebuildCount, 0u);
+    EXPECT_EQ(telemetry.staticIndexRefitCount, 0u);
+    EXPECT_EQ(telemetry.dynamicIndexUpdateCount, 0u);
+}
+
+TEST(RenderSceneCacheTests, SpatialVisibilityFinalizationAvoidsGlobalBitsetsOnRuntimeGather)
+{
+    ManyPrimitiveFixture fixture(256u);
+    NLS::Engine::Rendering::RenderScene renderScene;
+
+    NLS::Engine::Rendering::RenderSceneSyncOptions syncOptions;
+    syncOptions.defaultMaterial = &fixture.material;
+    ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 256u);
+
+    auto frustum = CreateForwardFrustum();
+    NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
+    visibilityOptions.frustum = &frustum;
+    visibilityOptions.cameraPosition = {};
+    const auto visible = renderScene.GatherVisibleCommands(visibilityOptions);
+
+    EXPECT_FALSE(visible.opaques.empty());
+    const auto& telemetry = renderScene.GetLastLargeSceneTelemetryForTesting();
+    EXPECT_GT(telemetry.spatialCandidateCount, 0u);
+    EXPECT_EQ(telemetry.visibilityBitsetWordCount, 0u);
+    EXPECT_GT(telemetry.finalizationTouchedPrimitiveCount, 0u);
+    EXPECT_LT(telemetry.finalizationTouchedPrimitiveCount, telemetry.registeredPrimitiveCount);
+}
+
 TEST(RenderSceneCacheTests, MaterialStateChangeInvalidatesOnlyAffectedCachedCommand)
 {
     RenderableFixture fixture;
@@ -1514,9 +1566,12 @@ TEST(RenderSceneCacheTests, SerialAndParallelVisibilityProduceEquivalentQueues)
     ASSERT_EQ(renderScene.Synchronize(fixture.scene, syncOptions).rebuiltCachedCommandCount, 192u);
 
     auto frustum = CreateForwardFrustum();
+    NLS::Engine::Rendering::LargeSceneSettings largeSceneSettings;
+    largeSceneSettings.enableSpatialIndex = false;
     NLS::Engine::Rendering::RenderSceneVisibilityOptions visibilityOptions;
     visibilityOptions.frustum = &frustum;
     visibilityOptions.cameraPosition = {};
+    visibilityOptions.largeSceneSettings = &largeSceneSettings;
 
     const auto serialSnapshot = renderScene.EvaluateVisibilityForTesting(
         visibilityOptions,

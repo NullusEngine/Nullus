@@ -12,6 +12,13 @@
 #include "Rendering/FrameGraph/SceneRenderGraphBuilderLightGrid.h"
 #include "Rendering/Resources/Texture2D.h"
 
+namespace NLS::Render::RHI
+{
+    class RHIBindingSet;
+    class RHIBuffer;
+    class RHIComputePipeline;
+}
+
 namespace NLS::Render::FrameGraph
 {
     using DeferredScenePassDescriptor = ThreadedRenderSceneGraphPassDescriptor<>;
@@ -148,12 +155,29 @@ namespace NLS::Render::FrameGraph
         const NLS::Render::Resources::Texture2D* gbufferDepthTexture = nullptr;
     };
 
+    struct HZBFrameResourceRequest
+    {
+        std::shared_ptr<NLS::Render::RHI::RHITexture> opaqueDepthTexture;
+        std::shared_ptr<NLS::Render::RHI::RHITexture> hzbTexture;
+        std::shared_ptr<NLS::Render::RHI::RHIBuffer> occlusionPrimitiveInputBuffer;
+        std::shared_ptr<NLS::Render::RHI::RHIBuffer> occlusionPrimitiveResultBuffer;
+        std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> hzbBuildPipeline;
+        std::shared_ptr<NLS::Render::RHI::RHIBindingSet> hzbBuildBindingSet;
+        std::array<uint32_t, 3u> hzbBuildGroupCounts{ 1u, 1u, 1u };
+        std::shared_ptr<NLS::Render::RHI::RHIComputePipeline> occlusionPipeline;
+        std::shared_ptr<NLS::Render::RHI::RHIBindingSet> occlusionBindingSet;
+        std::array<uint32_t, 3u> occlusionGroupCounts{ 1u, 1u, 1u };
+        bool opaqueDepthEligible = false;
+        uint32_t hzbMipCount = 0u;
+    };
+
     struct DeferredGraphSceneResourceRequest
     {
         ::FrameGraph* frameGraph = nullptr;
         FrameGraphBlackboard* blackboard = nullptr;
         const NLS::Render::Data::FrameDescriptor* frameDescriptor = nullptr;
         DeferredPreparedSceneResourceRequest preparedResources;
+        HZBFrameResourceRequest hzbResources;
         const char* outputColorResourceName = "DeferredOutputColor";
         const char* outputDepthResourceName = "DeferredOutputDepth";
     };
@@ -225,13 +249,17 @@ namespace NLS::Render::FrameGraph
         const PreparedDeferredSceneGraph& preparedGraph,
         const DeferredSceneGraphExecutionCallbacks& callbacks);
 
+    NLS_RENDER_API PreparedComputeDispatchSource BuildHZBPreparedComputeDispatchSource(
+        const HZBFrameResourceRequest& request);
+
     NLS_RENDER_API CompiledThreadedRenderSceneExecution CompileAndApplyPreparedDeferredLightGridSceneExecution(
         NLS::Render::Context::RenderScenePackage& package,
         const LightGridCompileContext& lightGridContext,
         const DeferredPreparedSceneResources& resources,
         std::vector<NLS::Render::Context::RenderPassCommandInput>&& appendedPassInputs = {},
         const std::vector<ThreadedRenderScenePassMetadata>& appendedPassMetadata = {},
-        DeferredPreparedQueuedDrawCounts queuedDrawCounts = {});
+        DeferredPreparedQueuedDrawCounts queuedDrawCounts = {},
+        const PreparedComputeDispatchSource& hzbSource = {});
 
     NLS_RENDER_API void FinalizePreparedDeferredScenePackage(
         NLS::Render::Context::RenderScenePackage& package,

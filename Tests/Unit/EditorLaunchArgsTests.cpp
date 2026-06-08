@@ -98,6 +98,26 @@ TEST(EditorLaunchArgsTests, ParsesEditorValidationViewAndCameraInputDiagnostics)
     EXPECT_EQ(parsed.projectPathArgument, "TestProject.nullus");
 }
 
+TEST(EditorLaunchArgsTests, ParsesHZBOcclusionComparisonValidationDirectives)
+{
+    std::vector<std::string> storage;
+    char** argv = MutableArgv({
+        "Editor.exe",
+        "--editor-validation-disable-hzb-occlusion",
+        "--editor-validation-occlusion-stack",
+        "6",
+        "TestProject.nullus"
+    }, storage);
+
+    const auto parsed = NLS::Editor::Launch::ParseEditorArgs(static_cast<int>(storage.size()), argv);
+
+    EXPECT_FALSE(parsed.hasError);
+    EXPECT_TRUE(parsed.hasDiagnosticsOverride);
+    EXPECT_TRUE(parsed.diagnosticsSettings.editorValidationDisableHZBOcclusion);
+    EXPECT_EQ(parsed.diagnosticsSettings.editorValidationOcclusionStackCount, 6u);
+    EXPECT_EQ(parsed.projectPathArgument, "TestProject.nullus");
+}
+
 TEST(EditorLaunchArgsTests, ParsesSceneViewReadbackValidationOutputs)
 {
     std::vector<std::string> storage;

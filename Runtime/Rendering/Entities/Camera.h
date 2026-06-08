@@ -1,6 +1,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 #include <Math/Vector3.h>
 #include <Math/Matrix4.h>
 #include <Math/Quaternion.h>
@@ -17,6 +19,8 @@ namespace NLS::Render::Entities
 	class NLS_RENDER_API Camera : public Entity
 	{
 	public:
+		static constexpr uint32_t kAllVisibleLayersMask = 0xFFFFFFFFu;
+
 		Camera();
 		/**
 		* Constructor
@@ -142,6 +146,16 @@ namespace NLS::Render::Entities
 		NLS::Render::Settings::EProjectionMode GetProjectionMode() const;
 
 		/**
+		* Returns the layer mask rendered by this view.
+		*/
+		uint32_t GetVisibleLayerMask() const;
+
+		/**
+		* Returns true when the given layer is visible to this camera.
+		*/
+		bool IsLayerVisible(int p_layer) const;
+
+		/**
 		* Set the camera position
 		* @param p_position
 		*/
@@ -219,6 +233,11 @@ namespace NLS::Render::Entities
 		*/
 		void SetProjectionMode(NLS::Render::Settings::EProjectionMode p_projectionMode);
 
+		/**
+		* Defines the layer mask rendered by this view.
+		*/
+		void SetVisibleLayerMask(uint32_t p_layerMask);
+
 	private:
 		Maths::Matrix4 CalculateProjectionMatrix(uint16_t p_windowWidth, uint16_t p_windowHeight) const;
 		Maths::Matrix4 CalculateViewMatrix() const;
@@ -243,5 +262,7 @@ namespace NLS::Render::Entities
 		bool m_clearColorBuffer;
 		bool m_clearDepthBuffer;
 		bool m_clearStencilBuffer;
+
+		uint32_t m_visibleLayerMask;
 	};
 }

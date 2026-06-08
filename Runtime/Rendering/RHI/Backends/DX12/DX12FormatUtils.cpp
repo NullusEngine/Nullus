@@ -67,6 +67,7 @@ namespace NLS::Render::RHI::DX12
     {
         switch (format)
         {
+        case TextureFormat::Depth32F: return DXGI_FORMAT_R32_TYPELESS;
         case TextureFormat::Depth24Stencil8: return DXGI_FORMAT_R24G8_TYPELESS;
         default: return ToDXGIFormat(format, colorSpace);
         }
@@ -159,11 +160,14 @@ namespace NLS::Render::RHI::DX12
 
         TextureFormatCapability capability{};
         capability.format = format;
+        const bool isDepthStencil = IsDepthStencilFormat(format);
+        const bool supportsTexture2D = (support1 & D3D12_FORMAT_SUPPORT1_TEXTURE2D) != 0;
         capability.sampled =
-            (support1 & D3D12_FORMAT_SUPPORT1_TEXTURE2D) != 0 &&
-            (support1 & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE) != 0;
+            supportsTexture2D &&
+            ((support1 & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE) != 0 ||
+                (isDepthStencil && (support1 & D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL) != 0));
         capability.upload =
-            (support1 & D3D12_FORMAT_SUPPORT1_TEXTURE2D) != 0 &&
+            supportsTexture2D &&
             SupportsRuntimeInitialUpload(format);
         capability.colorAttachment = (support1 & D3D12_FORMAT_SUPPORT1_RENDER_TARGET) != 0;
         capability.storage = (support1 & D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW) != 0;

@@ -75,6 +75,26 @@ namespace NLS::Render::Data
 		*/
 		std::array<float, 4> GetFarPlane() const;
 
+		/**
+		* Returns the left plane
+		*/
+		std::array<float, 4> GetLeftPlane() const;
+
+		/**
+		* Returns the right plane
+		*/
+		std::array<float, 4> GetRightPlane() const;
+
+		/**
+		* Returns the bottom plane
+		*/
+		std::array<float, 4> GetBottomPlane() const;
+
+		/**
+		* Returns the top plane
+		*/
+		std::array<float, 4> GetTopPlane() const;
+
 	private:
 		float m_frustum[6][4];
 	};

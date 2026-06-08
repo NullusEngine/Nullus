@@ -10,11 +10,18 @@
 
 #include <filesystem>
 #include <functional>
+#include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
+
+namespace NLS::Engine::Rendering
+{
+struct LargeSceneSettings;
+}
 
 namespace NLS::Editor::Assets
 {
@@ -69,6 +76,42 @@ struct AssetPostprocessResult
     std::vector<AssetPostprocessDiagnostic> diagnostics;
 };
 
+struct EditorImportBudgetSnapshot
+{
+    uint64_t cpuBudgetUs = 0u;
+    uint64_t ioBudgetBytes = 0u;
+    uint64_t gpuUploadBudgetBytes = 0u;
+    uint64_t cpuMemoryBudgetBytes = 0u;
+    uint64_t gpuMemoryBudgetBytes = 0u;
+    uint64_t reservedCpuBudgetUs = 0u;
+    uint64_t reservedIoBudgetBytes = 0u;
+    uint64_t reservedGpuUploadBudgetBytes = 0u;
+    uint64_t reservedCpuMemoryBudgetBytes = 0u;
+    uint64_t reservedGpuMemoryBudgetBytes = 0u;
+    uint64_t remainingCpuBudgetUs = 0u;
+    uint64_t remainingIoBudgetBytes = 0u;
+    uint64_t remainingGpuUploadBudgetBytes = 0u;
+    uint64_t remainingCpuMemoryBudgetBytes = 0u;
+    uint64_t remainingGpuMemoryBudgetBytes = 0u;
+};
+
+struct EditorImportBudgetRequest
+{
+    std::string assetPath;
+    uint64_t cpuCostUs = 0u;
+    uint64_t ioBytes = 0u;
+    uint64_t gpuUploadBytes = 0u;
+    uint64_t cpuMemoryBytes = 0u;
+    uint64_t gpuMemoryBytes = 0u;
+};
+
+struct EditorImportBudgetAdmission
+{
+    bool admitted = false;
+    std::string reason;
+    EditorImportBudgetSnapshot snapshot;
+};
+
 class AssetPostprocessorRegistry
 {
 public:
@@ -96,6 +139,14 @@ public:
     bool WriteImportSettingsIfDirty(const std::string& assetPath);
     bool SaveAndReimport(const std::string& assetPath);
     bool SaveAndReimport(const std::string& assetPath, ImportProgressTracker& progressTracker);
+    bool SaveAndReimport(const std::string& assetPath, const EditorImportBudgetRequest& budgetRequest);
+
+    static EditorImportBudgetSnapshot MakeEditorImportBudget(
+        const NLS::Engine::Rendering::LargeSceneSettings& settings);
+    void SetEditorImportBudget(EditorImportBudgetSnapshot budget);
+    [[nodiscard]] EditorImportBudgetSnapshot GetEditorImportBudgetSnapshot() const;
+    [[nodiscard]] EditorImportBudgetAdmission TryReserveEditorImportBudget(
+        const EditorImportBudgetRequest& request);
 
     bool AddRemap(const std::string& assetPath, ExternalObjectRemap remap);
     bool RemoveRemap(const std::string& assetPath, const std::string& sourceObjectKey);
@@ -122,6 +173,10 @@ private:
     std::optional<NLS::Core::Assets::AssetMeta> LoadMetaForPath(const std::string& assetPath) const;
     bool SaveMetaForPath(const std::string& assetPath, NLS::Core::Assets::AssetMeta meta);
     bool SaveAndReimport(const std::string& assetPath, ImportProgressTracker* progressTracker);
+    [[nodiscard]] EditorImportBudgetAdmission TryReserveEditorImportBudgetInternal(
+        const EditorImportBudgetRequest& request,
+        bool commitReservation);
+    void ReleaseEditorImportBudgetReservation(const EditorImportBudgetRequest& request);
     void RebuildPathIndex();
 
     std::vector<EditorAssetRoot> m_roots;
@@ -130,6 +185,8 @@ private:
     std::map<std::string, NLS::Core::Assets::AssetId> m_idByEditorPath;
     std::vector<std::string> m_dirtyAssets;
     std::vector<std::string> m_queuedReimports;
+    mutable std::mutex m_editorImportBudgetMutex;
+    std::optional<EditorImportBudgetSnapshot> m_editorImportBudget;
 };
 
 class AssetImporterFacade::ScopedReimportInProgress

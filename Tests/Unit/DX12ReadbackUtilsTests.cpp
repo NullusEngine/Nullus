@@ -2,12 +2,17 @@
 
 #if defined(_WIN32)
 #include <array>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 
 #include <Windows.h>
 
 #include "Rendering/RHI/Backends/DX12/DX12Device.h"
+#include "Rendering/RHI/Backends/DX12/DX12ExplicitDeviceFactory.h"
 #include "Rendering/RHI/Backends/DX12/DX12ReadbackUtils.h"
 #include "Rendering/RHI/Backends/DX12/DX12Resource.h"
+#include "Rendering/RHI/Core/RHIDevice.h"
 #include "Rendering/RHI/Core/RHIEnums.h"
 #include "Rendering/RHI/Core/RHIResource.h"
 
@@ -248,5 +253,156 @@ TEST(DX12ReadbackUtilsTests, PollingCompletedAsyncReadbackFinalizesAndAllowsNext
         NLS::Render::Settings::EPixelDataType::UNSIGNED_BYTE,
         secondReadback.data());
     EXPECT_TRUE(second.Succeeded()) << second.message;
+}
+
+TEST(DX12ReadbackUtilsTests, SourceContainsDedicatedBufferReadbackPath)
+{
+    const auto sourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12ReadbackUtils.cpp";
+    std::ifstream input(sourcePath);
+    const std::string source{
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()
+    };
+
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(source.find("BeginBuffer("), std::string::npos);
+    EXPECT_NE(source.find("CopyBufferRegion("), std::string::npos);
+    EXPECT_NE(source.find("DX12BufferReadbackCompletionToken"), std::string::npos);
+    EXPECT_NE(source.find("readbackResource->Map(0, &readRange, &mappedData)"), std::string::npos);
+}
+
+TEST(DX12ReadbackUtilsTests, BufferReadbackSourceStateAndLifetimeAreExplicit)
+{
+    const auto sourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12ReadbackUtils.cpp";
+    std::ifstream input(sourcePath);
+    const std::string source{
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()
+    };
+
+    ASSERT_FALSE(source.empty());
+    EXPECT_NE(source.find("desc.sourceState"), std::string::npos);
+    EXPECT_EQ(source.find("desc.source->GetState()"), std::string::npos);
+    EXPECT_NE(source.find("std::shared_ptr<RHIBuffer> sourceBuffer"), std::string::npos);
+    EXPECT_NE(source.find("pendingCopy.sourceBuffer = desc.source"), std::string::npos);
+    EXPECT_NE(source.find("submission.sourceBuffer = sourceBuffer"), std::string::npos);
+}
+
+TEST(DX12ReadbackUtilsTests, BufferReadbackWaitsOnProducerSemaphoresBeforeCopySubmission)
+{
+    const auto sourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12ReadbackUtils.cpp";
+    std::ifstream input(sourcePath);
+    const std::string source{
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()
+    };
+
+    ASSERT_FALSE(source.empty());
+    const auto beginBuffer = source.find("DX12ReadbackResult DX12ReadbackContext::BeginBuffer");
+    ASSERT_NE(beginBuffer, std::string::npos);
+    const auto execute = source.find("ExecuteCommandLists", beginBuffer);
+    ASSERT_NE(execute, std::string::npos);
+    const auto beginBodyBeforeExecute = source.substr(beginBuffer, execute - beginBuffer);
+
+    EXPECT_NE(beginBodyBeforeExecute.find("desc.waitSemaphores"), std::string::npos);
+    EXPECT_NE(beginBodyBeforeExecute.find("NativeDX12Semaphore"), std::string::npos);
+    EXPECT_NE(beginBodyBeforeExecute.find("graphicsQueue->Wait"), std::string::npos);
+    EXPECT_NE(beginBodyBeforeExecute.find("GetWaitValue()"), std::string::npos);
+}
+
+TEST(DX12ReadbackUtilsTests, BufferReadbackGuardsRangeOverflowAndLateDeviceLoss)
+{
+    const auto sourcePath =
+        std::filesystem::path(NLS_ROOT_DIR) / "Runtime/Rendering/RHI/Backends/DX12/DX12ReadbackUtils.cpp";
+    std::ifstream input(sourcePath);
+    const std::string source{
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()
+    };
+
+    ASSERT_FALSE(source.empty());
+    EXPECT_EQ(source.find("desc.sourceOffset + desc.size > desc.source->GetDesc().size"), std::string::npos);
+    EXPECT_NE(source.find("desc.sourceOffset > sourceSize"), std::string::npos);
+    EXPECT_NE(source.find("desc.size > sourceSize - desc.sourceOffset"), std::string::npos);
+
+    const auto bufferToken = source.find("class DX12BufferReadbackCompletionToken");
+    ASSERT_NE(bufferToken, std::string::npos);
+    const auto bufferPoll = source.find("RHICompletionStatus Poll() override", bufferToken);
+    const auto bufferWait = source.find("RHICompletionStatus Wait", bufferPoll);
+    ASSERT_NE(bufferPoll, std::string::npos);
+    ASSERT_NE(bufferWait, std::string::npos);
+    const auto pollBody = source.substr(bufferPoll, bufferWait - bufferPoll);
+    EXPECT_NE(pollBody.find("GetDeviceRemovedReason()"), std::string::npos);
+    EXPECT_NE(pollBody.find("CompleteWithDeviceStatusFailure"), std::string::npos);
+}
+
+TEST(DX12ReadbackUtilsTests, PollingCompletedAsyncBufferReadbackCopiesGpuBufferBytes)
+{
+    const auto resources = NLS::Render::Backend::CreateDX12DeviceResources(false);
+    if (!resources.IsValid())
+    {
+        GTEST_SKIP() << "DX12 device unavailable on this test machine";
+    }
+
+    const std::array<uint32_t, 4u> sourceData{ 11u, 22u, 33u, 44u };
+    NLS::Render::RHI::RHIBufferDesc bufferDesc;
+    bufferDesc.size = sizeof(sourceData);
+    bufferDesc.usage = NLS::Render::RHI::BufferUsageFlags::CopySrc |
+        NLS::Render::RHI::BufferUsageFlags::ShaderRead;
+    bufferDesc.memoryUsage = NLS::Render::RHI::MemoryUsage::GPUOnly;
+    bufferDesc.debugName = "DX12AsyncBufferReadbackSource";
+
+    NLS::Render::RHI::RHIBufferUploadDesc uploadDesc;
+    uploadDesc.data = sourceData.data();
+    uploadDesc.dataSize = sizeof(sourceData);
+    uploadDesc.debugName = "DX12AsyncBufferReadbackSourceUpload";
+
+    auto device = NLS::Render::Backend::CreateNativeDX12ExplicitDevice(
+        resources.device.Get(),
+        resources.graphicsQueue.Get(),
+        resources.computeQueue.Get(),
+        resources.factory.Get(),
+        resources.adapter.Get(),
+        resources.capabilities,
+        resources.vendor,
+        resources.hardware);
+    ASSERT_NE(device, nullptr);
+
+    auto sourceBuffer = device->CreateBuffer(bufferDesc, uploadDesc);
+    ASSERT_NE(sourceBuffer, nullptr);
+    ASSERT_TRUE(sourceBuffer->GetNativeBufferHandle().IsValid());
+
+    std::array<uint32_t, 4u> readbackData{};
+    NLS::Render::RHI::RHIBufferReadbackDesc readbackDesc;
+    readbackDesc.source = sourceBuffer;
+    readbackDesc.sourceState = NLS::Render::RHI::ResourceState::CopySrc;
+    readbackDesc.size = sizeof(readbackData);
+    readbackDesc.data = readbackData.data();
+    readbackDesc.debugName = "DX12AsyncBufferReadback";
+
+    NLS::Render::RHI::DX12::DX12ReadbackContext context;
+    auto result = context.BeginBuffer(
+        resources.device.Get(),
+        resources.graphicsQueue.Get(),
+        readbackDesc);
+    ASSERT_TRUE(result.Succeeded()) << result.message;
+    ASSERT_NE(result.completion, nullptr);
+    sourceBuffer.reset();
+    readbackDesc.source.reset();
+
+    NLS::Render::RHI::RHICompletionStatus status{};
+    for (int attempt = 0; attempt < 100; ++attempt)
+    {
+        status = result.completion->Poll();
+        if (status.IsComplete())
+            break;
+        Sleep(1);
+    }
+
+    ASSERT_EQ(status.code, NLS::Render::RHI::RHICompletionStatusCode::Success) << status.message;
+    EXPECT_EQ(readbackData, sourceData);
 }
 #endif

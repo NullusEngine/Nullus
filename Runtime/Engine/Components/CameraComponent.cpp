@@ -51,6 +51,11 @@ void CameraComponent::SetProjectionMode(Render::Settings::EProjectionMode p_proj
     m_camera->SetProjectionMode(p_projectionMode);
 }
 
+void CameraComponent::SetVisibleLayers(const NLS::Engine::LayerMask p_visibleLayers)
+{
+	m_camera->SetVisibleLayerMask(p_visibleLayers.GetMask());
+}
+
 float CameraComponent::GetFov() const
 {
 	return m_camera->GetFov();
@@ -94,6 +99,11 @@ bool CameraComponent::HasFrustumLightCulling() const
 Render::Settings::EProjectionMode CameraComponent::GetProjectionMode() const
 {
     return m_camera->GetProjectionMode();
+}
+
+NLS::Engine::LayerMask CameraComponent::GetVisibleLayers() const
+{
+	return NLS::Engine::LayerMask(m_camera->GetVisibleLayerMask());
 }
 
 Render::Entities::Camera* CameraComponent::GetCamera()

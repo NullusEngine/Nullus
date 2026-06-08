@@ -359,6 +359,9 @@ namespace NLS::Render::RHI
 		TransientResourceAllocator,
 		CentralizedDescriptorManagement,
 		PipelineStateCache,
+		HierarchicalZBuffer,
+		ConservativeOcclusion,
+		AsyncReadback,
 		Count
 	};
 
@@ -399,6 +402,9 @@ namespace NLS::Render::RHI
 		bool supportsTransientResourceAllocator = false;
 		bool supportsCentralizedDescriptorManagement = false;
 		bool supportsPipelineStateCache = false;
+		bool supportsHierarchicalZBuffer = false;
+		bool supportsConservativeOcclusion = false;
+		bool supportsAsyncReadback = false;
 		uint32_t maxTextureDimension2D = 0;
 		uint32_t maxColorAttachments = 0;
 		RHIDeviceLimits limits{};
@@ -445,6 +451,9 @@ namespace NLS::Render::RHI
 			SetFeatureStateFromLegacy(RHIDeviceFeature::TransientResourceAllocator, supportsTransientResourceAllocator);
 			SetFeatureStateFromLegacy(RHIDeviceFeature::CentralizedDescriptorManagement, supportsCentralizedDescriptorManagement);
 			SetFeatureStateFromLegacy(RHIDeviceFeature::PipelineStateCache, supportsPipelineStateCache);
+			SetFeatureStateFromLegacy(RHIDeviceFeature::HierarchicalZBuffer, supportsHierarchicalZBuffer);
+			SetFeatureStateFromLegacy(RHIDeviceFeature::ConservativeOcclusion, supportsConservativeOcclusion);
+			SetFeatureStateFromLegacy(RHIDeviceFeature::AsyncReadback, supportsAsyncReadback);
 		}
 
 		const TextureFormatCapability& GetTextureFormatCapability(TextureFormat format) const
@@ -504,6 +513,9 @@ namespace NLS::Render::RHI
 			case RHIDeviceFeature::TransientResourceAllocator: supportsTransientResourceAllocator = supported; break;
 			case RHIDeviceFeature::CentralizedDescriptorManagement: supportsCentralizedDescriptorManagement = supported; break;
 			case RHIDeviceFeature::PipelineStateCache: supportsPipelineStateCache = supported; break;
+			case RHIDeviceFeature::HierarchicalZBuffer: supportsHierarchicalZBuffer = supported; break;
+			case RHIDeviceFeature::ConservativeOcclusion: supportsConservativeOcclusion = supported; break;
+			case RHIDeviceFeature::AsyncReadback: supportsAsyncReadback = supported; break;
 			case RHIDeviceFeature::Count: break;
 			}
 		}

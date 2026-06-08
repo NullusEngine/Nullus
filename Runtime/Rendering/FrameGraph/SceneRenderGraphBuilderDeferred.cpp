@@ -9,6 +9,7 @@
 #include "Rendering/FrameGraph/FrameGraphExecutionPlan.h"
 #include "Rendering/FrameGraph/SceneRenderGraphBuilderInternal.h"
 #include "Rendering/RHI/Core/RHISubresourceRangeUtils.h"
+#include "Rendering/RHI/BindingPointMap.h"
 
 namespace NLS::Render::FrameGraph
 {
@@ -879,6 +880,51 @@ namespace NLS::Render::FrameGraph
                 fallbackRecordedDrawCommands.begin() + static_cast<std::ptrdiff_t>(endOffset));
         }
 
+        PreparedComputeDispatchSource MergePreparedComputeDispatchSources(
+            const PreparedComputeDispatchSource& lightGridSource,
+            const PreparedComputeDispatchSource& hzbSource)
+        {
+            PreparedComputeDispatchSource mergedSource;
+            mergedSource.dispatchInputs.reserve(
+                lightGridSource.dispatchInputs.size() + hzbSource.dispatchInputs.size());
+            mergedSource.dispatchInputs.insert(
+                mergedSource.dispatchInputs.end(),
+                lightGridSource.dispatchInputs.begin(),
+                lightGridSource.dispatchInputs.end());
+            mergedSource.dispatchInputs.insert(
+                mergedSource.dispatchInputs.end(),
+                hzbSource.dispatchInputs.begin(),
+                hzbSource.dispatchInputs.end());
+            mergedSource.metadata = BuildPreparedComputeDispatchPassMetadata(mergedSource.dispatchInputs);
+            return mergedSource;
+        }
+
+        std::vector<ThreadedRenderScenePassMetadata> BuildDeferredSceneGraphMetadata(
+            const PreparedComputeDispatchSource& lightGridSource,
+            const PreparedComputeDispatchSource& hzbSource)
+        {
+            const auto deferredPassDescriptors = GetDeferredScenePassDescriptors();
+            std::vector<ThreadedRenderScenePassMetadata> metadata;
+            metadata.reserve(
+                lightGridSource.metadata.size() +
+                hzbSource.metadata.size() +
+                deferredPassDescriptors.size());
+
+            metadata.insert(
+                metadata.end(),
+                lightGridSource.metadata.begin(),
+                lightGridSource.metadata.end());
+            metadata.push_back(deferredPassDescriptors[0].metadata);
+            metadata.insert(
+                metadata.end(),
+                hzbSource.metadata.begin(),
+                hzbSource.metadata.end());
+            metadata.push_back(deferredPassDescriptors[1].metadata);
+
+            PromotePreparedComputeConsumerDependencies(metadata);
+            return metadata;
+        }
+
         NLS::Render::Context::RenderPassCommandInput BuildDeferredScenePassInput(
             const CompiledThreadedRenderSceneGraphPass& compiledPass,
             const NLS::Render::Context::RenderScenePackage& package,
@@ -1409,6 +1455,148 @@ namespace NLS::Render::FrameGraph
         }
     }
 
+    PreparedComputeDispatchSource BuildHZBPreparedComputeDispatchSource(
+        const HZBFrameResourceRequest& request)
+    {
+        NLS_PROFILE_SCOPE();
+        if (!request.opaqueDepthEligible ||
+            request.opaqueDepthTexture == nullptr ||
+            request.hzbTexture == nullptr)
+        {
+            return {};
+        }
+
+        const auto hzbMipCount = (std::min<uint32_t>)(
+            1u,
+            request.hzbTexture->GetDesc().mipLevels);
+        if (hzbMipCount == 0u)
+            return {};
+
+        auto makeRange = [](const uint32_t baseMipLevel, const uint32_t mipLevelCount)
+        {
+            NLS::Render::RHI::RHISubresourceRange range;
+            range.baseMipLevel = baseMipLevel;
+            range.mipLevelCount = mipLevelCount;
+            range.baseArrayLayer = 0u;
+            range.arrayLayerCount = 1u;
+            return range;
+        };
+
+        NLS::Render::Context::RecordedComputeDispatchInput buildHZB;
+        buildHZB.debugName = "HZBBuild";
+        buildHZB.pipeline = request.hzbBuildPipeline;
+        if (request.hzbBuildBindingSet != nullptr)
+        {
+            buildHZB.bindingSets.push_back({
+                NLS::Render::RHI::BindingPointMap::kPassDescriptorSet,
+                request.hzbBuildBindingSet
+            });
+        }
+        buildHZB.groupCountX = request.hzbBuildGroupCounts[0];
+        buildHZB.groupCountY = request.hzbBuildGroupCounts[1];
+        buildHZB.groupCountZ = request.hzbBuildGroupCounts[2];
+        const auto opaqueDepthRange = NLS::Render::RHI::GetFullTextureSubresourceRange(
+            request.opaqueDepthTexture->GetDesc());
+        buildHZB.textureResourceAccesses.push_back({
+            request.opaqueDepthTexture,
+            opaqueDepthRange,
+            NLS::Render::Context::ResourceAccessMode::Read,
+            NLS::Render::RHI::ResourceState::ShaderRead,
+            NLS::Render::RHI::PipelineStageMask::ComputeShader,
+            NLS::Render::RHI::AccessMask::ShaderRead
+        });
+        buildHZB.textureVisibilityTransitionsBefore.push_back({
+            request.opaqueDepthTexture,
+            opaqueDepthRange,
+            NLS::Render::RHI::ResourceState::Unknown,
+            NLS::Render::RHI::ResourceState::ShaderRead,
+            NLS::Render::RHI::PipelineStageMask::AllCommands,
+            NLS::Render::RHI::PipelineStageMask::ComputeShader,
+            NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite,
+            NLS::Render::RHI::AccessMask::ShaderRead
+        });
+
+        for (uint32_t mip = 0u; mip < hzbMipCount; ++mip)
+        {
+            const auto mipRange = makeRange(mip, 1u);
+            buildHZB.textureResourceAccesses.push_back({
+                request.hzbTexture,
+                mipRange,
+                NLS::Render::Context::ResourceAccessMode::Write,
+                NLS::Render::RHI::ResourceState::ShaderWrite,
+                NLS::Render::RHI::PipelineStageMask::ComputeShader,
+                NLS::Render::RHI::AccessMask::ShaderWrite
+            });
+            buildHZB.textureVisibilityTransitionsBefore.push_back({
+                request.hzbTexture,
+                mipRange,
+                NLS::Render::RHI::ResourceState::Unknown,
+                NLS::Render::RHI::ResourceState::ShaderWrite,
+                NLS::Render::RHI::PipelineStageMask::AllCommands,
+                NLS::Render::RHI::PipelineStageMask::ComputeShader,
+                NLS::Render::RHI::AccessMask::MemoryRead | NLS::Render::RHI::AccessMask::MemoryWrite,
+                NLS::Render::RHI::AccessMask::ShaderWrite
+            });
+            buildHZB.exportedTextureVisibilityTransitions.push_back({
+                request.hzbTexture,
+                mipRange,
+                NLS::Render::RHI::ResourceState::ShaderWrite,
+                NLS::Render::RHI::ResourceState::ShaderRead,
+                NLS::Render::RHI::PipelineStageMask::ComputeShader,
+                NLS::Render::RHI::PipelineStageMask::ComputeShader,
+                NLS::Render::RHI::AccessMask::ShaderWrite,
+                NLS::Render::RHI::AccessMask::ShaderRead
+            });
+        }
+
+        NLS::Render::Context::RecordedComputeDispatchInput occlusion;
+        occlusion.debugName = "HZBOcclusion";
+        occlusion.pipeline = request.occlusionPipeline;
+        if (request.occlusionBindingSet != nullptr)
+        {
+            occlusion.bindingSets.push_back({
+                NLS::Render::RHI::BindingPointMap::kPassDescriptorSet,
+                request.occlusionBindingSet
+            });
+        }
+        occlusion.groupCountX = request.occlusionGroupCounts[0];
+        occlusion.groupCountY = request.occlusionGroupCounts[1];
+        occlusion.groupCountZ = request.occlusionGroupCounts[2];
+        const auto hzbReadRange = makeRange(0u, hzbMipCount);
+        occlusion.textureResourceAccesses.push_back({
+            request.hzbTexture,
+            hzbReadRange,
+            NLS::Render::Context::ResourceAccessMode::Read,
+            NLS::Render::RHI::ResourceState::ShaderRead,
+            NLS::Render::RHI::PipelineStageMask::ComputeShader,
+            NLS::Render::RHI::AccessMask::ShaderRead
+        });
+        if (request.occlusionPrimitiveInputBuffer != nullptr)
+        {
+            occlusion.shaderReadBuffersBefore.push_back(request.occlusionPrimitiveInputBuffer);
+            occlusion.bufferResourceAccesses.push_back({
+                request.occlusionPrimitiveInputBuffer,
+                NLS::Render::Context::ResourceAccessMode::Read,
+                NLS::Render::RHI::ResourceState::ShaderRead,
+                NLS::Render::RHI::PipelineStageMask::ComputeShader,
+                NLS::Render::RHI::AccessMask::ShaderRead
+            });
+        }
+        if (request.occlusionPrimitiveResultBuffer != nullptr)
+        {
+            occlusion.shaderWriteBuffersBefore.push_back(request.occlusionPrimitiveResultBuffer);
+            occlusion.uavBarrierBuffersAfter.push_back(request.occlusionPrimitiveResultBuffer);
+            occlusion.bufferResourceAccesses.push_back({
+                request.occlusionPrimitiveResultBuffer,
+                NLS::Render::Context::ResourceAccessMode::Write,
+                NLS::Render::RHI::ResourceState::ShaderWrite,
+                NLS::Render::RHI::PipelineStageMask::ComputeShader,
+                NLS::Render::RHI::AccessMask::ShaderWrite
+            });
+        }
+        return BuildPreparedComputeDispatchSource({ std::move(buildHZB), std::move(occlusion) });
+    }
+
     DeferredPreparedSceneResources CaptureDeferredPreparedSceneResources(
         const DeferredPreparedSceneResourceRequest& request)
     {
@@ -1528,11 +1716,36 @@ namespace NLS::Render::FrameGraph
         const auto scenePassDescriptors = BuildDeferredScenePassDescriptors(
             includeTransparentPass,
             includeDecalPass);
-        preparedGraph.execution = Detail::CompilePreparedSceneGraphExecution(
-            lightGridContext,
+        const auto lightGridSource = Detail::BuildPreparedLightGridDispatchSource(lightGridContext);
+        const auto hzbSource = BuildHZBPreparedComputeDispatchSource(resourceRequest.hzbResources);
+        preparedGraph.execution.preparedComputeSource = MergePreparedComputeDispatchSources(
+            lightGridSource,
+            hzbSource);
+        std::vector<ThreadedRenderScenePassMetadata> metadata;
+        metadata.reserve(
+            lightGridSource.metadata.size() +
+            scenePassDescriptors.size() +
+            hzbSource.metadata.size());
+        metadata.insert(metadata.end(), lightGridSource.metadata.begin(), lightGridSource.metadata.end());
+        if (scenePassDescriptors.size() > 0u)
+            metadata.push_back(scenePassDescriptors.descriptors[0].metadata);
+        if (scenePassDescriptors.size() > 1u &&
+            scenePassDescriptors.descriptors[1].metadata.commandKind == NLS::Render::Context::RenderPassCommandKind::Decal)
+        {
+            metadata.push_back(scenePassDescriptors.descriptors[1].metadata);
+        }
+        metadata.insert(metadata.end(), hzbSource.metadata.begin(), hzbSource.metadata.end());
+        for (size_t i = 1u; i < scenePassDescriptors.size(); ++i)
+        {
+            if (scenePassDescriptors.descriptors[i].metadata.commandKind != NLS::Render::Context::RenderPassCommandKind::Decal)
+                metadata.push_back(scenePassDescriptors.descriptors[i].metadata);
+        }
+        PromotePreparedComputeConsumerDependencies(metadata);
+        preparedGraph.execution.compiledExecution = CompileThreadedRenderSceneExecution(
+            lightGridContext.frameDescriptor,
             preparedGraph.resources.sceneTargets.color,
             preparedGraph.resources.sceneTargets.depth,
-            scenePassDescriptors);
+            metadata);
         return preparedGraph;
     }
 
@@ -1677,7 +1890,8 @@ namespace NLS::Render::FrameGraph
         const DeferredPreparedSceneResources& resources,
         std::vector<NLS::Render::Context::RenderPassCommandInput>&& appendedPassInputs,
         const std::vector<ThreadedRenderScenePassMetadata>& appendedPassMetadata,
-        const DeferredPreparedQueuedDrawCounts queuedDrawCounts)
+        const DeferredPreparedQueuedDrawCounts queuedDrawCounts,
+        const PreparedComputeDispatchSource& hzbSource)
     {
         NLS_PROFILE_SCOPE();
         const auto opaqueDrawCount = package.opaqueDrawCount;
@@ -1716,20 +1930,40 @@ namespace NLS::Render::FrameGraph
                 queuedDrawCounts,
                 canSliceHelperDraws);
         }
-        std::vector<ThreadedRenderScenePassMetadata> scenePassMetadata;
+        const auto lightGridSource = Detail::BuildPreparedLightGridDispatchSource(lightGridContext);
+        const auto mergedComputeSource = MergePreparedComputeDispatchSources(lightGridSource, hzbSource);
         const auto deferredPassDescriptors = BuildDeferredScenePassDescriptors(
             transparentDrawCount > 0u,
             decalDrawCount > 0u);
-        scenePassMetadata.reserve(deferredPassDescriptors.size() + appendedPassMetadata.size());
-        for (const auto& descriptor : deferredPassDescriptors)
-            scenePassMetadata.push_back(descriptor.metadata);
+        std::vector<ThreadedRenderScenePassMetadata> scenePassMetadata;
+        scenePassMetadata.reserve(
+            lightGridSource.metadata.size() +
+            deferredPassDescriptors.size() +
+            hzbSource.metadata.size() +
+            appendedPassMetadata.size());
+        scenePassMetadata.insert(scenePassMetadata.end(), lightGridSource.metadata.begin(), lightGridSource.metadata.end());
+        if (deferredPassDescriptors.size() > 0u)
+            scenePassMetadata.push_back(deferredPassDescriptors.descriptors[0].metadata);
+        if (deferredPassDescriptors.size() > 1u &&
+            deferredPassDescriptors.descriptors[1].metadata.commandKind == NLS::Render::Context::RenderPassCommandKind::Decal)
+        {
+            scenePassMetadata.push_back(deferredPassDescriptors.descriptors[1].metadata);
+        }
+        scenePassMetadata.insert(scenePassMetadata.end(), hzbSource.metadata.begin(), hzbSource.metadata.end());
+        for (size_t i = 1u; i < deferredPassDescriptors.size(); ++i)
+        {
+            if (deferredPassDescriptors.descriptors[i].metadata.commandKind != NLS::Render::Context::RenderPassCommandKind::Decal)
+                scenePassMetadata.push_back(deferredPassDescriptors.descriptors[i].metadata);
+        }
+        PromotePreparedComputeConsumerDependencies(scenePassMetadata);
+        const auto appendedMetadataBegin = scenePassMetadata.size();
         scenePassMetadata.insert(
             scenePassMetadata.end(),
             appendedPassMetadata.begin(),
             appendedPassMetadata.end());
         scenePassMetadata.erase(
             std::remove_if(
-                scenePassMetadata.begin() + static_cast<std::ptrdiff_t>(deferredPassDescriptors.size()),
+                scenePassMetadata.begin() + static_cast<std::ptrdiff_t>(appendedMetadataBegin),
                 scenePassMetadata.end(),
                 [](const ThreadedRenderScenePassMetadata& metadata)
                 {
@@ -1737,31 +1971,26 @@ namespace NLS::Render::FrameGraph
                 }),
             scenePassMetadata.end());
 
+        Detail::ResolvePreparedLightGridPassBindings(package, lightGridContext);
         return CompileAndApplyThreadedRenderSceneExecution(
             package,
             lightGridContext.frameDescriptor,
             -1,
             -1,
-            [&lightGridContext]()
-            {
-                return Detail::BuildPreparedLightGridDispatchSource(lightGridContext);
-            },
-            [&lightGridContext](NLS::Render::Context::RenderScenePackage& scenePackage)
-            {
-                Detail::ResolvePreparedLightGridPassBindings(scenePackage, lightGridContext);
-            },
             scenePassMetadata,
-            [&package, &resources, &appendedPassInputs, &appendedPassMetadata, &lightGridContext, opaqueDrawCount, decalDrawCount, lightingDrawCount, transparentDrawCount, canSlicePostLightingRecordedDraws](const auto& lightGridComputeSource, const auto& compiledPasses) mutable
+            [&package, &resources, &appendedPassInputs, &appendedPassMetadata, &mergedComputeSource, &lightGridContext, opaqueDrawCount, decalDrawCount, lightingDrawCount, transparentDrawCount, canSlicePostLightingRecordedDraws](const auto& compiledPasses) mutable
             {
                 std::vector<CompiledThreadedRenderSceneGraphPass> deferredCompiledPasses;
-                deferredCompiledPasses.reserve(
-                    2u +
-                    static_cast<size_t>(decalDrawCount > 0u) +
-                    static_cast<size_t>(transparentDrawCount > 0u));
+                deferredCompiledPasses.reserve(compiledPasses.size());
                 for (const auto& compiledPass : compiledPasses)
                 {
-                    if (GetDeferredScenePassExecutionKind(compiledPass.metadata.commandKind) != DeferredScenePassExecutionKind::Unknown)
+                    if (FindPreparedComputeDispatchByName(
+                            mergedComputeSource,
+                            compiledPass.metadata.graphPassName) != nullptr ||
+                        GetDeferredScenePassExecutionKind(compiledPass.metadata.commandKind) != DeferredScenePassExecutionKind::Unknown)
+                    {
                         deferredCompiledPasses.push_back(compiledPass);
+                    }
                 }
                 const bool hasValidDeferredResources = HasCompleteDeferredPreparedSceneResources(
                     resources,
@@ -1769,7 +1998,7 @@ namespace NLS::Render::FrameGraph
                 auto passInputs = BuildDeferredScenePassInputs(
                     deferredCompiledPasses,
                     package,
-                    lightGridComputeSource,
+                    mergedComputeSource,
                     lightGridContext.frameDescriptor,
                     opaqueDrawCount,
                     decalDrawCount,

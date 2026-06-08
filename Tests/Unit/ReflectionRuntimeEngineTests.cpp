@@ -25,7 +25,7 @@ TEST_F(ReflectionRuntimeTestFixture, RegistersEngineReflectionTypes)
     const std::vector<TypeExpectation> expectations = {
         {"NLS::Engine::Components::Component", {"CreateBy"}, {}, {}, ""},
         {"NLS::Engine::Components::TransformComponent", {"SetLocalPosition", "GetWorldMatrix"}, {}, {"localPosition", "localRotation", "localScale"}, "NLS::Engine::Components::Component"},
-        {"NLS::Engine::Components::CameraComponent", {"SetFov", "GetCamera"}, {}, {"fov", "size", "near", "far", "clearColor", "frustumGeometryCulling", "frustumLightCulling", "projectionMode"}, "NLS::Engine::Components::Component"},
+        {"NLS::Engine::Components::CameraComponent", {"SetFov", "GetCamera"}, {}, {"fov", "size", "near", "far", "clearColor", "frustumGeometryCulling", "frustumLightCulling", "projectionMode", "visibleLayers"}, "NLS::Engine::Components::Component"},
         {"NLS::Engine::Components::LightComponent", {"SetIntensity", "GetData"}, {}, {"lightType", "color", "intensity", "constant", "linear", "quadratic", "cutoff", "outerCutoff", "radius", "size"}, "NLS::Engine::Components::Component"},
         {"NLS::Engine::Components::MeshFilter", {}, {}, {"mesh"}, "NLS::Engine::Components::Component"},
         {"NLS::Engine::Components::MeshRenderer", {"FillWithMaterial", "GetUserMatrix"}, {}, {"frustumBehaviour", "customBoundingSphere", "materials", "userMatrixValues"}, "NLS::Engine::Components::Component"},
@@ -56,6 +56,7 @@ TEST_F(ReflectionRuntimeTestFixture, RegistersSpecialCasePropertyBindingsWithExp
     EXPECT_FALSE(Type::GetFromName("NLS::Engine::Components::MaterialRenderer").IsValid());
 
     ExpectFieldTypeName(cameraType, "projectionMode", "NLS::Render::Settings::EProjectionMode");
+    ExpectFieldTypeName(cameraType, "visibleLayers", "NLS::Engine::LayerMask");
     ExpectFieldTypeName(cameraType, "frustumGeometryCulling", "bool");
     ExpectFieldTypeName(cameraType, "frustumLightCulling", "bool");
     ExpectFieldTypeName(lightType, "lightType", "NLS::Render::Settings::ELightType");

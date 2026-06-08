@@ -56,6 +56,7 @@ Scene::~Scene()
 
 	m_gameobject.clear();
     m_fastAccessComponents = {};
+    m_fastAccessComponentsValid = false;
 }
 
 void Scene::Play()
@@ -290,14 +291,15 @@ const std::vector<Engine::GameObject*>& Scene::GetGameObjects() const
 
 const Scene::FastAccessComponents& Scene::GetFastAccessComponents() const
 {
-	if (m_fastAccessComponents.modelRenderers.empty() &&
-		m_fastAccessComponents.cameras.empty() &&
-		m_fastAccessComponents.lights.empty() &&
-		m_fastAccessComponents.skyboxs.empty())
-	{
+	if (!m_fastAccessComponentsValid)
 		const_cast<Scene*>(this)->RebuildFastAccessComponents();
-	}
 	return m_fastAccessComponents;
+}
+
+uint64_t Scene::GetFastAccessComponentsRevision() const
+{
+	(void)GetFastAccessComponents();
+	return m_fastAccessComponentsRevision;
 }
 
 void Scene::NotifyGameObjectDestroyed(GameObject& p_actor)
@@ -418,5 +420,7 @@ void Scene::RebuildFastAccessComponents()
 	{
 		collectComponents(go);
 	}
+	m_fastAccessComponentsValid = true;
+	++m_fastAccessComponentsRevision;
 }
 

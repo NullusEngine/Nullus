@@ -1230,6 +1230,74 @@ std::optional<NLS::Render::Context::FrameSnapshot> Editor::Rendering::DebugScene
     return snapshot;
 }
 
+std::vector<Editor::Rendering::DebugSceneRenderer::CullingOverlayItem>
+Editor::Rendering::DebugSceneRenderer::BuildCullingOverlayItems(
+    const NLS::Render::Context::FrameSnapshot& snapshot) const
+{
+    return Editor::Rendering::BuildDebugSceneCullingOverlayItems(
+        snapshot,
+        m_cullingOverlayOptions);
+}
+
+std::vector<Editor::Rendering::DebugSceneRenderer::CullingOverlayItem>
+Editor::Rendering::BuildDebugSceneCullingOverlayItems(
+    const NLS::Render::Context::FrameSnapshot& snapshot,
+    const DebugSceneRenderer::CullingOverlayOptions& options)
+{
+    std::vector<DebugSceneRenderer::CullingOverlayItem> items;
+    if (!options.enabled || options.maxItems == 0u)
+        return items;
+
+    const auto& cullSnapshot = snapshot.largeSceneCullReasonSnapshot;
+    items.reserve(static_cast<size_t>(std::min<uint64_t>(
+        cullSnapshot.entries.size(),
+        options.maxItems)));
+    for (const auto& entry : cullSnapshot.entries)
+    {
+        if (entry.visible && !options.includeVisiblePrimitives)
+            continue;
+
+        items.push_back({
+            entry.sceneId,
+            entry.primitiveIndex,
+            entry.primitiveGeneration,
+            entry.reason,
+            entry.visible
+        });
+        if (items.size() >= options.maxItems)
+            break;
+    }
+    return items;
+}
+
+void Editor::Rendering::DebugSceneRenderer::SetCullingOverlayOptions(
+    const CullingOverlayOptions& options)
+{
+    m_cullingOverlayOptions = options;
+}
+
+const Editor::Rendering::DebugSceneRenderer::CullingOverlayOptions&
+Editor::Rendering::DebugSceneRenderer::GetCullingOverlayOptions() const
+{
+    return m_cullingOverlayOptions;
+}
+
+bool Editor::Rendering::DebugSceneRenderer::ShouldPublishCullReasonDebugSnapshots() const
+{
+    return Editor::Rendering::ShouldPublishDebugSceneCullReasonSnapshots(m_cullingOverlayOptions);
+}
+
+uint64_t Editor::Rendering::DebugSceneRenderer::GetCullReasonDebugSnapshotMaxEntries() const
+{
+    return m_cullingOverlayOptions.enabled ? m_cullingOverlayOptions.maxItems : 0u;
+}
+
+bool Editor::Rendering::ShouldPublishDebugSceneCullReasonSnapshots(
+    const DebugSceneRenderer::CullingOverlayOptions& options)
+{
+    return options.enabled && options.maxItems > 0u;
+}
+
 NLS::Render::Context::PreparedRenderSceneBuilder Editor::Rendering::DebugSceneRenderer::BuildPreparedRenderSceneBuilder(
     const NLS::Render::Context::FrameSnapshot& snapshot) const
 {

@@ -340,6 +340,17 @@ namespace NLS::Render::Backend
 				"DX12 transient resource allocator is not implemented yet");
 			capabilities.SetFeature(RHIDeviceFeature::CentralizedDescriptorManagement, true);
 			capabilities.SetFeature(RHIDeviceFeature::PipelineStateCache, true);
+			capabilities.SetFeature(
+				RHIDeviceFeature::HierarchicalZBuffer,
+				true,
+				"DX12 HZB is RenderDoc-validated after GBuffer depth production with explicit mip0 resource-state transitions for the current shader path");
+			capabilities.SetFeature(
+				RHIDeviceFeature::ConservativeOcclusion,
+				true,
+				"DX12 conservative occlusion is enabled after async readback and frame-history validation");
+			capabilities.SetFeature(
+				RHIDeviceFeature::AsyncReadback,
+				true);
 			capabilities.maxTextureDimension2D = D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
 			capabilities.maxColorAttachments = D3D12_SIMULTANEOUS_RENDER_TARGET_COUNT;
 			capabilities.limits.maxTextureDimension2D = capabilities.maxTextureDimension2D;

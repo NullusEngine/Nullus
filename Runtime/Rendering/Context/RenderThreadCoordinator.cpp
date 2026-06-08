@@ -74,6 +74,7 @@ namespace NLS::Render::Context
             package.containsComputeDispatchInputs = false;
             package.computeDispatchInputs.clear();
             package.extractedTextures.clear();
+            package.streamingDependencyPins = snapshot.streamingDependencyPins;
             return package;
         }
 

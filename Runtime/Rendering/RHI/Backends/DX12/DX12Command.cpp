@@ -156,7 +156,8 @@ namespace NLS::Render::Backend
 					texture.GetDesc(),
 					barrier.subresourceRange);
 			return barrier.before == NLS::Render::RHI::ResourceState::Unknown &&
-				!coversWholeTexture;
+				!coversWholeTexture &&
+				IsD3D12CommonPromotionAllowedForTexture(barrier.after);
 		}
 
 		bool IsValidDX12BufferCopyEndpoint(

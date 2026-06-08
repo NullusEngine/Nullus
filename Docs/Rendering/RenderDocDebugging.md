@@ -21,7 +21,7 @@ The runtime exposes RenderDoc capture support through `Driver`.
 
 ### Keyboard Shortcuts
 
-- `F11`: capture the next presented frame
+- `F11`: queue a Nullus-managed capture for the next whole frame
 - `Ctrl + F11`: open the latest `.rdc`
 
 ### Editor Menu
@@ -29,7 +29,7 @@ The runtime exposes RenderDoc capture support through `Driver`.
 Editor menu: `Settings -> Debugging -> RenderDoc`
 
 - **Enabled**: toggle RenderDoc on/off
-- **Capture Next Frame**: trigger a single-frame capture (same as F11)
+- **Capture Next Frame**: queue a Nullus-managed single-frame capture (same as F11)
 - **Open Latest Capture**: open the most recent `.rdc` file (same as Ctrl+F11)
 - **Open Capture Folder**: open the capture directory in Explorer
 - **Auto Open Replay UI**: automatically open `qrenderdoc.exe` after each capture
@@ -62,10 +62,10 @@ Game.exe --capture-after-frames 120
 
 ### Backend Selection
 
-Use `--backend <name>` to select graphics backend (dx12, vulkan, opengl, dx11):
+Use `--backend <name>` to select graphics backend. Current editor/runtime RenderDoc validation is DX12-only while the UE5-alignment backend gate is active; Vulkan, OpenGL, and DX11 examples below are legacy references and must not be used as acceptance evidence unless those backends are explicitly re-enabled.
 
 ```powershell
-Editor.exe --backend vulkan --renderdoc MyProject.nullus
+Editor.exe --backend dx12 --renderdoc MyProject.nullus
 ```
 
 ## Environment Variables
@@ -93,22 +93,20 @@ Capture files are saved to:
 Use the repo runner to launch a capture-ready session:
 
 ```powershell
-py -3 Tools/RenderDoc/renderdoc_runner.py --target editor --backend vulkan --capture --open-capture-ui
+py -3 Tools/RenderDoc/renderdoc_runner.py --target editor --backend dx12 --capture --open-capture-ui
 ```
 
 Common examples:
 
 ```powershell
 py -3 Tools/RenderDoc/renderdoc_runner.py --target editor --backend dx12
-py -3 Tools/RenderDoc/renderdoc_runner.py --target editor --backend vulkan --capture --capture-after-frames 180
-py -3 Tools/RenderDoc/renderdoc_runner.py --target game --backend opengl --capture
 ```
 
 Runner behavior:
 
 - uses `launch-mode=auto` by default
-- in `auto`, OpenGL launches use direct startup with early RenderDoc preload because that path is currently the most reliable in Nullus
-- in `auto`, Vulkan and DX12 can still use `renderdoccmd capture` when available
+- in `auto`, DX12 can use `renderdoccmd capture` when available
+- legacy Vulkan/OpenGL launch modes may still exist in tooling, but are not current Nullus rendering acceptance paths
 - locates `Editor.exe` or `Game.exe` under `App`
 - defaults Editor project to `TestProject/TestProject.nullus`
 - writes captures under `Build/RenderDocCaptures/<target>/<backend>`
@@ -120,7 +118,7 @@ Runner behavior:
 Use the repo analysis helper to turn an existing `.rdc` into a first-pass structured summary:
 
 ```powershell
-py -3 Tools/RenderDoc/rdc_analyze.py Build/RenderDocCaptures/game/opengl/game_opengl_OpenGL_frame2.rdc
+py -3 Tools/RenderDoc/rdc_analyze.py Build/RenderDocCaptures/editor/dx12/editor_dx12_DX12_frame2.rdc
 ```
 
 What it does:
@@ -148,3 +146,23 @@ When debugging rendering issues in Nullus:
 - use RenderDoc first
 - only fall back to screenshots for desktop/UI problems that RenderDoc cannot help with
 - always record the requested backend and the actual backend when a fallback occurs
+
+## Large-Scene HZB/Occlusion Capture Notes
+
+Large-scene HZB occlusion validation must use the active DX12 runtime path and must record both the capture artifact and the exact validation notes under `specs/large-scene-optimization/validation/hzb-occlusion-dx12.md`.
+
+Recommended capture command:
+
+```powershell
+py -3 Tools/RenderDoc/renderdoc_runner.py --target editor --backend dx12 --capture --open-capture-ui
+```
+
+For HZB/occlusion sign-off, inspect and record:
+
+- The opaque depth-producing pass that feeds HZB is from qualified opaque depth-writing geometry only.
+- HZB build appears after the depth producer and before any pass that consumes HZB/history output.
+- Current mip0 HZB UAV writes and SRV reads have explicit subresource ranges and ordering; future mip-chain builds need separate shader and barrier evidence before sign-off.
+- Occlusion history consumption is conservative: missing, invalid, stale, or capability-gated history keeps primitives visible.
+- Ordinary occlusion frames do not introduce synchronous `ReadPixelsChecked`, blocking readback-map, CPU fence wait, or same-frame GPU readback dependency.
+
+Do not mark final gate task `T078F` complete from unit tests alone. It requires real DX12 RenderDoc or equivalent RHI-event evidence with backend, build, frame, feature gates, fallback reasons, and pass/order observations recorded.

@@ -1,9 +1,14 @@
 #include <Rendering/Data/LightingDescriptor.h>
 #include <algorithm>
+#include <cstring>
+#include <chrono>
 #include <filesystem>
 #include <functional>
 #include <fstream>
+#include <cstdint>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 
 #include "Math/Vector2.h"
 #include "Math/Vector4.h"
@@ -11,8 +16,11 @@
 #include "Rendering/BaseSceneRenderer.h"
 #include "Rendering/EngineDrawableDescriptor.h"
 #include "Rendering/EngineFrameObjectBindingProvider.h"
+#include "Rendering/LargeSceneSettings.h"
 #include "Rendering/LightGridPrepass.h"
 #include "Rendering/SceneLightingProvider.h"
+#include "Rendering/SceneOcclusion.h"
+#include "Rendering/SceneVisibilityPipeline.h"
 #include "Core/ResourceManagement/MaterialManager.h"
 #include "Core/ResourceManagement/ShaderManager.h"
 #include "Core/ResourceManagement/TextureManager.h"
@@ -21,7 +29,9 @@
 #include "Rendering/Context/RenderScenePackageBuilder.h"
 #include "Rendering/Context/ThreadedRenderingLifecycle.h"
 #include "Rendering/FrameGraph/ExternalResourceBridge.h"
+#include "Rendering/FrameGraph/SceneRenderGraphBuilderDeferred.h"
 #include "Rendering/Data/ObjectDataLimits.h"
+#include "Rendering/Settings/EngineDiagnosticsSettings.h"
 #include "Rendering/Resources/Material.h"
 #include "Rendering/Resources/Mesh.h"
 #include "Rendering/Resources/Shader.h"
@@ -72,6 +82,39 @@ namespace
 		}
 
 		return {};
+	}
+
+	uint64_t ElapsedNanoseconds(const std::chrono::steady_clock::time_point start)
+	{
+		const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+			std::chrono::steady_clock::now() - start).count();
+		return static_cast<uint64_t>(std::max<int64_t>(elapsed, 1));
+	}
+
+	Render::Context::LargeSceneCullReasonDebugSnapshot ToFrameCullReasonDebugSnapshot(
+		const SceneCullReasonDebugSnapshot& source)
+	{
+		Render::Context::LargeSceneCullReasonDebugSnapshot target;
+		target.frameSerial = source.frameSerial;
+		target.sceneId = source.sceneId;
+		target.primitiveCount = source.primitiveCount;
+		target.visiblePrimitiveCount = source.visiblePrimitiveCount;
+		target.reasonCounts = source.reasonCounts;
+		target.entries.reserve(source.entries.size());
+		for (const auto& sourceEntry : source.entries)
+		{
+			target.entries.push_back({
+				sourceEntry.handle.sceneId,
+				sourceEntry.handle.index,
+				sourceEntry.handle.generation,
+				static_cast<uint8_t>(sourceEntry.reason),
+				sourceEntry.selectedLOD,
+				sourceEntry.commandOffsetBegin,
+				sourceEntry.commandOffsetEnd,
+				sourceEntry.visible
+			});
+		}
+		return target;
 	}
 
     class PreparedPassBindingPlaceholder final : public NLS::Render::RHI::RHIBindingSet
@@ -183,6 +226,212 @@ namespace
 		return false;
 	}
 
+	void HashCombine(size_t& seed, const size_t value)
+	{
+		seed ^= value + 0x9e3779b9u + (seed << 6u) + (seed >> 2u);
+	}
+
+	void HashFloat(size_t& seed, const float value)
+	{
+		uint32_t bits = 0u;
+		std::memcpy(&bits, &value, sizeof(bits));
+		HashCombine(seed, static_cast<size_t>(bits));
+	}
+
+	uint64_t HashMatrix(const Maths::Matrix4& matrix)
+	{
+		size_t seed = 0u;
+		for (const float value : matrix.data)
+			HashFloat(seed, value);
+		const auto hash = static_cast<uint64_t>(seed);
+		return hash != 0u ? hash : 1u;
+	}
+
+	uint64_t HashCameraViewCompatibility(const NLS::Render::Entities::Camera& camera)
+	{
+		size_t seed = 0u;
+		const auto& position = camera.GetPosition();
+		HashFloat(seed, position.x);
+		HashFloat(seed, position.y);
+		HashFloat(seed, position.z);
+		const auto& rotation = camera.GetRotation();
+		HashFloat(seed, rotation.x);
+		HashFloat(seed, rotation.y);
+		HashFloat(seed, rotation.z);
+		HashFloat(seed, rotation.w);
+		HashFloat(seed, camera.GetNear());
+		HashFloat(seed, camera.GetFar());
+		HashCombine(seed, static_cast<size_t>(camera.GetProjectionMode()));
+		const auto hash = static_cast<uint64_t>(seed);
+		return hash != 0u ? hash : 1u;
+	}
+
+	uint64_t ResolveDepthFormatKey(const NLS::Render::Data::FrameDescriptor& frameDescriptor)
+	{
+		if (frameDescriptor.outputDepthStencilTexture != nullptr)
+			return static_cast<uint64_t>(frameDescriptor.outputDepthStencilTexture->GetDesc().format);
+		return static_cast<uint64_t>(NLS::Render::FrameGraph::kDeferredGBufferDepthFormat);
+	}
+
+	uint64_t BuildRuntimeStreamingDependencyId(const ScenePrimitiveHandle handle)
+	{
+		size_t seed = 0x4e554c4c55535f53ull;
+		HashCombine(seed, static_cast<size_t>(handle.sceneId));
+		HashCombine(seed, static_cast<size_t>(handle.index));
+		HashCombine(seed, static_cast<size_t>(handle.generation));
+		const auto dependencyId = static_cast<uint64_t>(seed);
+		return dependencyId != 0u ? dependencyId : 1u;
+	}
+
+	void AddUniqueRuntimeStreamingDependencyPin(
+		std::vector<uint64_t>& pins,
+		std::unordered_set<uint64_t>& seenDependencyIds,
+		const ScenePrimitiveHandle handle)
+	{
+		if (!handle.IsValid())
+			return;
+
+		const auto dependencyId = BuildRuntimeStreamingDependencyId(handle);
+		if (seenDependencyIds.insert(dependencyId).second)
+			pins.push_back(dependencyId);
+	}
+
+	std::vector<uint64_t> BuildRuntimeStreamingDependencyPins(
+		const std::vector<ScenePrimitiveHandle>& visiblePrimitiveHandles,
+		const std::vector<ScenePrimitiveHandle>& representationStreamingInterest)
+	{
+		std::vector<uint64_t> pins;
+		std::unordered_set<uint64_t> seenDependencyIds;
+		pins.reserve(visiblePrimitiveHandles.size() + representationStreamingInterest.size());
+		seenDependencyIds.reserve(pins.capacity());
+		for (const auto handle : representationStreamingInterest)
+			AddUniqueRuntimeStreamingDependencyPin(pins, seenDependencyIds, handle);
+		for (const auto handle : visiblePrimitiveHandles)
+			AddUniqueRuntimeStreamingDependencyPin(pins, seenDependencyIds, handle);
+		return pins;
+	}
+
+	void AppendUniqueRuntimeStreamingDependencyPins(
+		std::vector<uint64_t>& target,
+		std::unordered_set<uint64_t>& seenDependencyIds,
+		const std::vector<uint64_t>& source)
+	{
+		for (const auto dependencyId : source)
+		{
+			if (dependencyId != 0u && seenDependencyIds.insert(dependencyId).second)
+				target.push_back(dependencyId);
+		}
+	}
+
+	void RegisterRuntimeStreamingDependencies(
+		SceneStreamingResidency& residency,
+		const std::vector<ScenePrimitiveHandle>& visiblePrimitiveHandles,
+		const std::vector<ScenePrimitiveHandle>& representationStreamingInterest)
+	{
+		auto registerPrimitive = [&residency](const ScenePrimitiveHandle handle, const StreamingDependencySource source)
+		{
+			if (!handle.IsValid())
+				return;
+
+			StreamingResourceDependency dependency;
+			dependency.dependencyId = BuildRuntimeStreamingDependencyId(handle);
+			dependency.source = source;
+			dependency.resourceType = StreamingResourceType::Placeholder;
+			dependency.artifactId =
+				"runtime-primitive:" +
+				std::to_string(handle.sceneId) + ":" +
+				std::to_string(handle.index) + ":" +
+				std::to_string(handle.generation);
+			dependency.cpuBytes = 64u;
+			dependency.gpuBytes = 128u;
+			dependency.ioBytes = 64u;
+			dependency.gpuUploadBytes = 128u;
+			dependency.cpuCommitUs = 1u;
+			dependency.priority = source == StreamingDependencySource::Visibility ? 100u : 50u;
+			dependency.requiredForVisibleRepresentation = source == StreamingDependencySource::Visibility;
+			residency.RegisterDependency(dependency);
+			residency.RegisterPrimitiveDependency(handle, dependency.dependencyId);
+		};
+
+		for (const auto handle : representationStreamingInterest)
+			registerPrimitive(handle, StreamingDependencySource::HLOD);
+		for (const auto handle : visiblePrimitiveHandles)
+			registerPrimitive(handle, StreamingDependencySource::Visibility);
+	}
+
+	void MergeStreamingTelemetry(
+		NLS::Render::Data::LargeSceneTelemetry& target,
+		const StreamingResidencyPlan& plan,
+		const StreamingCommitResult& commit)
+	{
+		target.streamingDependencyCount += plan.telemetry.streamingDependencyCount;
+		target.streamingRequestCount += plan.telemetry.streamingRequestCount;
+		target.streamingCommitCount += commit.telemetry.streamingCommitCount;
+		target.streamingEvictCount += commit.telemetry.streamingEvictCount;
+		target.residencyTicketCount = commit.telemetry.residencyTicketCount;
+		target.requestedCpuBytes = commit.telemetry.requestedCpuBytes;
+		target.requestedGpuBytes = commit.telemetry.requestedGpuBytes;
+		target.residentCpuBytes = commit.telemetry.residentCpuBytes;
+		target.residentGpuBytes = commit.telemetry.residentGpuBytes;
+	}
+
+	RepresentationResidencySnapshot BuildRepresentationResidencySnapshotFromStreamingCommit(
+		const StreamingResidencyPlan& plan,
+		const StreamingCommitResult& commit)
+	{
+		RepresentationResidencySnapshot snapshot;
+		std::unordered_map<uint64_t, const StreamingResourceDependency*> dependencyById;
+		dependencyById.reserve(plan.dependencyClosure.size());
+		for (const auto& dependency : plan.dependencyClosure)
+			dependencyById[dependency.dependencyId] = &dependency;
+
+		std::unordered_map<uint64_t, ResidencyTicketState> stateByDependency;
+		stateByDependency.reserve(commit.tickets.size());
+		for (const auto& ticket : commit.tickets)
+			stateByDependency[ticket.dependencyId] = ticket.state;
+
+		for (const auto& binding : plan.primitiveDependencyBindings)
+		{
+			const auto stateIt = stateByDependency.find(binding.dependencyId);
+			const auto dependencyIt = dependencyById.find(binding.dependencyId);
+			if (stateIt == stateByDependency.end() || dependencyIt == dependencyById.end())
+				continue;
+
+			const bool resident =
+				stateIt->second == ResidencyTicketState::Resident ||
+				stateIt->second == ResidencyTicketState::VisibleResident;
+			const bool hlodProxy =
+				dependencyIt->second->source == StreamingDependencySource::HLOD ||
+				dependencyIt->second->resourceType == StreamingResourceType::HLODProxy;
+			if (!resident)
+			{
+				snapshot.MarkNotResident(binding.primitive);
+				continue;
+			}
+
+			if (hlodProxy)
+				snapshot.MarkHLODProxyReady(binding.primitive);
+			else
+				snapshot.MarkReady(binding.primitive);
+		}
+
+		return snapshot;
+	}
+
+	void MergeRepresentationResidencySnapshot(
+		RepresentationResidencySnapshot& target,
+		const RepresentationResidencySnapshot& source)
+	{
+		for (const auto handle : source.fallbackPrimitiveResources)
+			target.MarkFallback(handle);
+		for (const auto handle : source.readyPrimitiveResources)
+			target.MarkReady(handle);
+		for (const auto handle : source.readyHLODProxyResources)
+			target.MarkHLODProxyReady(handle);
+		for (const auto handle : source.notResidentResources)
+			target.MarkNotResident(handle);
+	}
+
 }
 
 using namespace Components;
@@ -228,6 +477,7 @@ void BaseSceneRenderer::BeginFrame(const Render::Data::FrameDescriptor& p_frameD
 
 	Render::Core::CompositeRenderer::BeginFrame(p_frameDescriptor);
 
+	m_lastCullReasonDebugSnapshot = {};
 	if (const auto snapshot = BuildFrameSnapshot(p_frameDescriptor); snapshot.has_value())
 		SetPendingFrameSnapshot(snapshot.value());
 }
@@ -255,6 +505,8 @@ std::optional<Render::Context::FrameSnapshot> BaseSceneRenderer::BuildFrameSnaps
 	snapshot->visibleTransparentDrawCount = 0u;
 	snapshot->visibleSkyboxDrawCount = 0u;
 	snapshot->visibleHelperDrawCount = 0u;
+	snapshot->largeSceneCullReasonSnapshot = m_lastCullReasonDebugSnapshot;
+	snapshot->streamingDependencyPins = m_lastStreamingDependencyPins;
 	return snapshot;
 }
 
@@ -266,6 +518,40 @@ void BaseSceneRenderer::RefreshFrameSnapshotVisibility(
 	snapshot.visibleDecalDrawCount = static_cast<uint64_t>(drawables.decals.size());
 	snapshot.visibleTransparentDrawCount = static_cast<uint64_t>(drawables.transparents.size());
 	snapshot.visibleSkyboxDrawCount = static_cast<uint64_t>(drawables.skyboxes.size());
+}
+
+void BaseSceneRenderer::SetLastCullReasonDebugSnapshot(
+	const std::shared_ptr<const SceneCullReasonDebugSnapshot>& snapshot) const
+{
+	if (snapshot == nullptr)
+		return;
+
+	auto converted = ToFrameCullReasonDebugSnapshot(*snapshot);
+	if (m_lastCullReasonDebugSnapshot.entries.empty())
+	{
+		m_lastCullReasonDebugSnapshot = std::move(converted);
+		return;
+	}
+
+	m_lastCullReasonDebugSnapshot.sceneId = 0u;
+	m_lastCullReasonDebugSnapshot.primitiveCount += converted.primitiveCount;
+	m_lastCullReasonDebugSnapshot.visiblePrimitiveCount += converted.visiblePrimitiveCount;
+	for (size_t reasonIndex = 0u; reasonIndex < m_lastCullReasonDebugSnapshot.reasonCounts.size(); ++reasonIndex)
+		m_lastCullReasonDebugSnapshot.reasonCounts[reasonIndex] += converted.reasonCounts[reasonIndex];
+	m_lastCullReasonDebugSnapshot.entries.insert(
+		m_lastCullReasonDebugSnapshot.entries.end(),
+		std::make_move_iterator(converted.entries.begin()),
+		std::make_move_iterator(converted.entries.end()));
+}
+
+bool BaseSceneRenderer::ShouldPublishCullReasonDebugSnapshots() const
+{
+	return false;
+}
+
+uint64_t BaseSceneRenderer::GetCullReasonDebugSnapshotMaxEntries() const
+{
+	return 0u;
 }
 
 const std::shared_ptr<NLS::Render::RHI::RHIBindingSet>& BaseSceneRenderer::GetLightGridGraphicsPassBindingSet() const
@@ -564,6 +850,47 @@ const SceneLightingProvider& BaseSceneRenderer::GetSceneLightingProvider() const
 	return *m_sceneLightingProvider;
 }
 
+const SceneOcclusionPrimitivePacketBuildResult& BaseSceneRenderer::GetLastHZBOcclusionPrimitivePacketBuildResult() const
+{
+	return m_lastHZBOcclusionPrimitivePacketBuildResult;
+}
+
+const SceneOcclusionHistory& BaseSceneRenderer::GetHZBOcclusionHistoryForTesting() const
+{
+	return m_hzbOcclusionHistory;
+}
+
+const SceneOcclusionFrameInput& BaseSceneRenderer::GetLastHZBOcclusionFrameInput() const
+{
+	return m_lastHZBOcclusionFrameInput;
+}
+
+void BaseSceneRenderer::BeginHZBOcclusionObservationFrame(
+	const SceneOcclusionFrameInput& frame,
+	std::span<const SceneOcclusionPrimitiveInput> primitiveInputs)
+{
+	std::vector<SceneOcclusionPrimitiveInput> inputs(
+		primitiveInputs.begin(),
+		primitiveInputs.end());
+	m_hzbPendingOcclusionObservationBatch =
+		SceneOcclusionSystem::CreatePendingObservationBatch(frame, inputs);
+}
+
+SceneOcclusionObservationStats BaseSceneRenderer::CompleteHZBOcclusionObservationFrame(
+	std::span<const uint32_t> primitiveResultFlags)
+{
+	std::vector<uint32_t> flags(primitiveResultFlags.begin(), primitiveResultFlags.end());
+	auto readyBatch = SceneOcclusionSystem::CompleteObservationBatchWithPrimitiveResultFlags(
+		m_hzbPendingOcclusionObservationBatch,
+		flags);
+	const auto stats = SceneOcclusionSystem::ApplyReadyObservationBatch(
+		m_hzbOcclusionHistory,
+		readyBatch.frame,
+		readyBatch);
+	m_hzbPendingOcclusionObservationBatch = {};
+	return stats;
+}
+
 void BaseSceneRenderer::RefreshSceneLightingDescriptor(SceneSystem::Scene& scene)
 {
 	NLS_PROFILE_SCOPE();
@@ -600,6 +927,11 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 	if (NLS::Core::ServiceLocator::Contains<NLS::Core::ResourceManagement::TextureManager>())
 		NLS_SERVICE(NLS::Core::ResourceManagement::TextureManager).PumpAsyncLoads(1u);
 
+	m_lastCullReasonDebugSnapshot = {};
+	const auto previousHZBOcclusionPrimitiveInputs =
+		m_lastHZBOcclusionPrimitivePacketBuildResult.primitiveInputs;
+	m_lastHZBOcclusionPrimitivePacketBuildResult = {};
+
 	OpaqueDrawables opaques;
 	DecalDrawables decals;
 	TransparentDrawables transparents;
@@ -616,9 +948,65 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 		frustum = frustumOverride ? frustumOverride : camera.GetFrustum();
 	}
 
+	const auto occlusionSettings = [&]()
+	{
+		auto settings = LargeSceneSettings::Defaults();
+		SceneOcclusionCapabilityRequest capabilityRequest;
+		capabilityRequest.opaqueDepthFormat =
+			static_cast<NLS::Render::RHI::TextureFormat>(ResolveDepthFormatKey(m_frameDescriptor));
+		const auto device = NLS::Render::Context::DriverRendererAccess::GetExplicitDevice(m_driver);
+		const auto support = device != nullptr
+			? SceneOcclusionSystem::ResolveCapabilities(*device, capabilityRequest)
+			: SceneOcclusionCapabilitySupport{};
+		settings.enableHZBOcclusion = support.backendSupported;
+		const auto diagnostics = NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver);
+		if (diagnostics.editorValidationDisableHZBOcclusion)
+		{
+			settings.enableHZBOcclusion = false;
+			if (diagnostics.logRenderDrawPath)
+				NLS_LOG_INFO("[BaseSceneRenderer][HZB] disabled by editor validation override");
+		}
+		return settings;
+	}();
+
+	SceneOcclusionFrameInput occlusionFrameInput;
+	occlusionFrameInput.enabled = occlusionSettings.enableHZBOcclusion;
+	occlusionFrameInput.backendSupported = occlusionSettings.enableHZBOcclusion;
+	occlusionFrameInput.historyTextureValid = occlusionSettings.enableHZBOcclusion;
+	occlusionFrameInput.frameSerial = ++m_hzbOcclusionFrameSerial;
+	occlusionFrameInput.maxHistoryAge = occlusionSettings.maxOcclusionHistoryAge;
+	occlusionFrameInput.viewKey = reinterpret_cast<uintptr_t>(&camera);
+	occlusionFrameInput.viewCompatibilityHash = HashCameraViewCompatibility(camera);
+	occlusionFrameInput.projectionHash = HashMatrix(camera.GetProjectionMatrix());
+	occlusionFrameInput.jitterHash = 0u;
+	occlusionFrameInput.depthFormatKey = ResolveDepthFormatKey(m_frameDescriptor);
+	occlusionFrameInput.viewportWidth = static_cast<uint32_t>(m_frameDescriptor.renderWidth);
+	occlusionFrameInput.viewportHeight = static_cast<uint32_t>(m_frameDescriptor.renderHeight);
+	m_lastHZBOcclusionFrameInput = occlusionFrameInput;
+
 	uint64_t rebuiltCachedCommandCount = 0u;
 	uint64_t rawVisibleObjectCount = 0u;
 	uint64_t submittedSceneDrawCount = 0u;
+	uint64_t dynamicInstanceGroupCount = 0u;
+	uint64_t largestInstanceGroupSize = 0u;
+	uint64_t objectDataOverflowDroppedObjectCount = 0u;
+	const uint64_t streamingFrameSerial = ++m_streamingResidencyFrameSerial;
+	std::vector<uint64_t> currentFrameStreamingDependencyPins;
+	std::unordered_set<uint64_t> currentFrameStreamingDependencyPinSet;
+	RepresentationResidencySnapshot currentFrameRepresentationResidency;
+	StreamingResidencyPlanInput allSceneStreamingInput;
+	allSceneStreamingInput.frameSerial = streamingFrameSerial;
+	NLS::Render::Data::LargeSceneTelemetry occlusionPruneTelemetry;
+
+	auto recordOcclusionPrune = [&occlusionPruneTelemetry](
+		const SceneOcclusionHistoryPruneStats& stats,
+		const uint64_t elapsedNs)
+	{
+		occlusionPruneTelemetry.hzbHistoryPruneTouchedHandleCount += stats.touchedHandleCount;
+		occlusionPruneTelemetry.hzbHistoryPruneRemovedHandleCount += stats.removedHandleCount;
+		occlusionPruneTelemetry.hzbHistoryPruneRemovedKeyCount += stats.removedKeyCount;
+		occlusionPruneTelemetry.hzbHistoryPruneTimeNs += elapsedNs;
+	};
 
 	auto appendSceneDrawables = [&](
 		SceneSystem::Scene& scene,
@@ -629,14 +1017,115 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 		const auto syncStats = renderScene.Synchronize(scene, {
 			ResolveDefaultSceneMaterial(),
 			overrideMaterial,
-			requireExplicitMaterialTextures
+			requireExplicitMaterialTextures,
+			&occlusionSettings
 		});
 		rebuiltCachedCommandCount += syncStats.rebuiltCachedCommandCount;
+		if (occlusionSettings.enableHZBOcclusion && !renderScene.GetLastRemovedPrimitiveHandles().empty())
+		{
+			const auto pruneStart = std::chrono::steady_clock::now();
+			const auto pruneStats =
+				m_hzbOcclusionHistory.PruneHandles(renderScene.GetLastRemovedPrimitiveHandles());
+			recordOcclusionPrune(pruneStats, ElapsedNanoseconds(pruneStart));
+		}
+		SceneOcclusionState occlusionState;
+		occlusionState.frameInput = occlusionFrameInput;
+		occlusionState.history = &m_hzbOcclusionHistory;
+		if (occlusionSettings.enableHZBOcclusion && !previousHZBOcclusionPrimitiveInputs.empty())
+			occlusionState.primitiveInputs = &previousHZBOcclusionPrimitiveInputs;
+		uint64_t hzbBuildTimeNs = 0u;
 		auto retainedDrawables = renderScene.GatherVisibleCommands({
 			frustum ? &frustum.value() : nullptr,
-			camera.GetPosition()
+			camera.GetPosition(),
+			camera.GetVisibleLayerMask(),
+			&occlusionSettings,
+			1.0f,
+			0u,
+			true,
+			false,
+			{},
+			ShouldPublishCullReasonDebugSnapshots(),
+			GetCullReasonDebugSnapshotMaxEntries(),
+			occlusionState.primitiveInputs != nullptr ? &occlusionState : nullptr,
+			&m_lastRepresentationResidency
 		});
 		const auto sceneStats = renderScene.GetLastDrawCallOptimizationStats();
+		dynamicInstanceGroupCount += sceneStats.dynamicInstanceGroupCount;
+		largestInstanceGroupSize = std::max(largestInstanceGroupSize, sceneStats.largestInstanceGroupSize);
+		objectDataOverflowDroppedObjectCount += sceneStats.objectDataOverflowDroppedObjectCount;
+		auto largeSceneTelemetry = renderScene.GetLastLargeSceneTelemetry();
+		SetLastCullReasonDebugSnapshot(renderScene.GetLastCullReasonDebugSnapshot());
+		if (occlusionSettings.enableHZBOcclusion)
+		{
+			const auto snapshotStart = std::chrono::steady_clock::now();
+			const auto hzbPrimitiveSnapshot = renderScene.CreatePrimitiveSnapshotForHandles(
+				renderScene.GetLastVisiblePrimitiveHandles(),
+				{});
+			hzbBuildTimeNs += ElapsedNanoseconds(snapshotStart);
+
+			const auto packetSourceStart = std::chrono::steady_clock::now();
+			const auto packetSources = SceneOcclusionSystem::BuildHZBPrimitivePacketSources(
+				hzbPrimitiveSnapshot,
+				renderScene.GetLastVisiblePrimitiveHandles());
+			hzbBuildTimeNs += ElapsedNanoseconds(packetSourceStart);
+			SceneOcclusionPrimitivePacketBuildInput packetInput;
+			packetInput.viewProjection = camera.GetProjectionMatrix() * camera.GetViewMatrix();
+			packetInput.viewportWidth = static_cast<uint32_t>(m_frameDescriptor.renderWidth);
+			packetInput.viewportHeight = static_cast<uint32_t>(m_frameDescriptor.renderHeight);
+			const auto packetBuildStart = std::chrono::steady_clock::now();
+			const auto packetBuild = SceneOcclusionSystem::BuildHZBPrimitivePackets(
+				packetInput,
+				packetSources.sources);
+			hzbBuildTimeNs += ElapsedNanoseconds(packetBuildStart);
+			m_lastHZBOcclusionPrimitivePacketBuildResult.rejectedPrimitiveCount +=
+				packetSources.rejectedPrimitiveCount + packetBuild.rejectedPrimitiveCount;
+			m_lastHZBOcclusionPrimitivePacketBuildResult.primitiveInputs.insert(
+				m_lastHZBOcclusionPrimitivePacketBuildResult.primitiveInputs.end(),
+				packetBuild.primitiveInputs.begin(),
+				packetBuild.primitiveInputs.end());
+			m_lastHZBOcclusionPrimitivePacketBuildResult.primitivePackets.insert(
+				m_lastHZBOcclusionPrimitivePacketBuildResult.primitivePackets.end(),
+				packetBuild.primitivePackets.begin(),
+				packetBuild.primitivePackets.end());
+		}
+		RegisterRuntimeStreamingDependencies(
+			m_streamingResidency,
+			renderScene.GetLastVisiblePrimitiveHandles(),
+			renderScene.GetLastRepresentationStreamingInterest());
+		AppendUniqueRuntimeStreamingDependencyPins(
+			currentFrameStreamingDependencyPins,
+			currentFrameStreamingDependencyPinSet,
+			BuildRuntimeStreamingDependencyPins(
+				renderScene.GetLastVisiblePrimitiveHandles(),
+				renderScene.GetLastRepresentationStreamingInterest()));
+		allSceneStreamingInput.visiblePrimitiveHandles.insert(
+			allSceneStreamingInput.visiblePrimitiveHandles.end(),
+			renderScene.GetLastVisiblePrimitiveHandles().begin(),
+			renderScene.GetLastVisiblePrimitiveHandles().end());
+		allSceneStreamingInput.representationStreamingInterest.insert(
+			allSceneStreamingInput.representationStreamingInterest.end(),
+			renderScene.GetLastRepresentationStreamingInterest().begin(),
+			renderScene.GetLastRepresentationStreamingInterest().end());
+		largeSceneTelemetry.hzbBuildTimeNs += hzbBuildTimeNs;
+		m_rendererStats.RecordLargeSceneTelemetry(largeSceneTelemetry);
+		if (NLS::Render::Context::DriverRendererAccess::GetDiagnosticsSettings(m_driver).logRenderDrawPath)
+		{
+			NLS_LOG_INFO(
+				"[BaseSceneRenderer][LargeScene] registered=" +
+				std::to_string(largeSceneTelemetry.registeredPrimitiveCount) +
+				" visible=" +
+				std::to_string(largeSceneTelemetry.visiblePrimitiveCount) +
+				" rawDraws=" +
+				std::to_string(largeSceneTelemetry.rawVisibleDrawCount) +
+				" submittedDraws=" +
+				std::to_string(largeSceneTelemetry.submittedDrawCount) +
+				" occlusionTests=" +
+				std::to_string(largeSceneTelemetry.occlusionTestCount) +
+				" occlusionCulled=" +
+				std::to_string(largeSceneTelemetry.occlusionCulledCount) +
+				" hzbPackets=" +
+				std::to_string(m_lastHZBOcclusionPrimitivePacketBuildResult.primitivePackets.size()));
+		}
 
 		rawVisibleObjectCount += sceneStats.rawVisibleObjectCount;
 		submittedSceneDrawCount += sceneStats.submittedSceneDrawCount;
@@ -694,7 +1183,16 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 		if (isStillActive)
 			++it;
 		else
+		{
+			if (occlusionSettings.enableHZBOcclusion)
+			{
+				const auto droppedSceneHandles = it->second.GetLivePrimitiveHandles();
+				const auto pruneStart = std::chrono::steady_clock::now();
+				const auto pruneStats = m_hzbOcclusionHistory.PruneHandles(droppedSceneHandles);
+				recordOcclusionPrune(pruneStats, ElapsedNanoseconds(pruneStart));
+			}
 			it = m_additiveRenderScenes.erase(it);
+		}
 	}
 	for (auto* additiveScene : sceneDescriptor.additiveScenes)
 	{
@@ -703,12 +1201,39 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 		auto& additiveRenderScene = m_additiveRenderScenes[additiveScene];
 		appendSceneDrawables(*additiveScene, additiveRenderScene, false, true);
 	}
+	if (occlusionPruneTelemetry.hzbHistoryPruneTouchedHandleCount > 0u ||
+		occlusionPruneTelemetry.hzbHistoryPruneRemovedHandleCount > 0u ||
+		occlusionPruneTelemetry.hzbHistoryPruneRemovedKeyCount > 0u ||
+		occlusionPruneTelemetry.hzbHistoryPruneTimeNs > 0u)
+	{
+		m_rendererStats.RecordLargeSceneTelemetry(occlusionPruneTelemetry);
+	}
+	const auto streamingCommitStart = std::chrono::steady_clock::now();
+	const auto allSceneStreamingPlan = m_streamingResidency.Plan(allSceneStreamingInput, occlusionSettings);
+	StreamingResidencyFramePins framePins;
+	framePins.pinnedDependencyIds =
+		NLS::Render::Context::DriverRendererAccess::CollectStreamingDependencyPins(m_driver);
+	const auto allSceneStreamingCommit = m_streamingResidency.Commit(
+		allSceneStreamingPlan,
+		occlusionSettings,
+		framePins);
+	MergeRepresentationResidencySnapshot(
+		currentFrameRepresentationResidency,
+		BuildRepresentationResidencySnapshotFromStreamingCommit(
+			allSceneStreamingPlan,
+			allSceneStreamingCommit));
+	NLS::Render::Data::LargeSceneTelemetry streamingTelemetry;
+	MergeStreamingTelemetry(streamingTelemetry, allSceneStreamingPlan, allSceneStreamingCommit);
+	streamingTelemetry.streamingCommitTimeNs += ElapsedNanoseconds(streamingCommitStart);
+	m_rendererStats.RecordLargeSceneTelemetry(streamingTelemetry);
+	m_lastStreamingDependencyPins = std::move(currentFrameStreamingDependencyPins);
+	m_lastRepresentationResidency = std::move(currentFrameRepresentationResidency);
 
 	SortSceneDrawables(decals, std::greater<float>{});
 	SortSceneDrawables(transparents, std::greater<float>{});
 
 	uint32_t nextObjectIndex = 0u;
-	auto reassignObjectIndices = [&nextObjectIndex](auto& queue)
+	auto reassignObjectIndices = [&nextObjectIndex, &objectDataOverflowDroppedObjectCount](auto& queue)
 	{
 		for (auto& entry : queue)
 		{
@@ -724,6 +1249,7 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 				lastObjectIndex))
 			{
 				descriptor.objectIndex = EngineDrawableDescriptor::kInvalidObjectIndex;
+				objectDataOverflowDroppedObjectCount += objectCount;
 			}
 			else
 			{
@@ -754,6 +1280,9 @@ BaseSceneRenderer::AllDrawables BaseSceneRenderer::ParseScene()
 	optimizationStats.cachedCommandRebuildCount = rebuiltCachedCommandCount;
 	optimizationStats.rawVisibleObjectCount = rawVisibleObjectCount + static_cast<uint64_t>(skyboxes.size());
 	optimizationStats.submittedSceneDrawCount = submittedSceneDrawCount + static_cast<uint64_t>(skyboxes.size());
+	optimizationStats.dynamicInstanceGroupCount = dynamicInstanceGroupCount;
+	optimizationStats.largestInstanceGroupSize = largestInstanceGroupSize;
+	optimizationStats.objectDataOverflowDroppedObjectCount = objectDataOverflowDroppedObjectCount;
 	m_rendererStats.RecordDrawCallOptimizationStats(optimizationStats);
 	return { opaques, decals, transparents, skyboxes };
 }

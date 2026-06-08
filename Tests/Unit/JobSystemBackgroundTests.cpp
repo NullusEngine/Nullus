@@ -130,6 +130,21 @@ namespace
         throw std::runtime_error("expected background failure");
     }
 
+    struct BlockingThrowingBackgroundData
+    {
+        std::atomic<int>* started = nullptr;
+        std::atomic<bool>* release = nullptr;
+    };
+
+    void ThrowingBackgroundJobAfterRelease(void* userData)
+    {
+        auto* data = static_cast<BlockingThrowingBackgroundData*>(userData);
+        data->started->fetch_add(1, std::memory_order_acq_rel);
+        while (!data->release->load(std::memory_order_acquire))
+            std::this_thread::yield();
+        throw std::runtime_error("expected background failure");
+    }
+
     void ThrowingContinuation(void*)
     {
         throw std::runtime_error("expected continuation failure");
@@ -1909,15 +1924,44 @@ TEST_F(JobSystemBackgroundTests, CompletingBackgroundJobDoesNotRunUnrelatedBackg
 
 TEST_F(JobSystemBackgroundTests, CompletingBackgroundJobDoesNotRunUnrelatedForegroundExternalCancelCleanup)
 {
+    constexpr auto kBackgroundStartTimeout = std::chrono::seconds(5);
+    auto waitUntil = [](auto&& predicate, const std::chrono::steady_clock::duration timeout)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (!predicate())
+        {
+            if (std::chrono::steady_clock::now() >= deadline)
+                return false;
+            std::this_thread::yield();
+        }
+
+        return true;
+    };
+
     NLS::Base::Jobs::JobSystemConfig config;
     config.workerCount = 0u;
     config.backgroundWorkerCount = 1u;
     ASSERT_TRUE(NLS::Base::Jobs::InitializeJobSystem(config));
 
+    std::atomic<int> failingBackgroundStarted = 0;
+    std::atomic<bool> releaseFailingBackground = false;
+    BlockingThrowingBackgroundData failingBackgroundData{&failingBackgroundStarted, &releaseFailingBackground};
     NLS::Base::Jobs::BackgroundJobDesc failingBackgroundDesc;
-    failingBackgroundDesc.function = ThrowingBackgroundJob;
+    failingBackgroundDesc.function = ThrowingBackgroundJobAfterRelease;
+    failingBackgroundDesc.userData = &failingBackgroundData;
     auto failingBackground = NLS::Base::Jobs::ScheduleBackgroundJob(failingBackgroundDesc);
     ASSERT_NE(failingBackground.id, 0u);
+    if (!waitUntil(
+            [&failingBackgroundStarted]
+            {
+                return failingBackgroundStarted.load(std::memory_order_acquire) == 1;
+            },
+            kBackgroundStartTimeout))
+    {
+        releaseFailingBackground.store(true, std::memory_order_release);
+        NLS::Base::Jobs::CompleteNoClear(failingBackground);
+        FAIL() << "Expected unrelated failing background dependency to start before scheduling its foreground waiter.";
+    }
 
     std::atomic<int> unrelatedForegroundRuns = 0;
     std::atomic<int> unrelatedForegroundCancelCount = 0;
@@ -1929,8 +1973,16 @@ TEST_F(JobSystemBackgroundTests, CompletingBackgroundJobDoesNotRunUnrelatedForeg
     unrelatedForegroundDesc.cancelUserData = &unrelatedForegroundCancelCount;
     unrelatedForegroundDesc.dependency = failingBackground;
     auto unrelatedForeground = NLS::Base::Jobs::ScheduleJob(unrelatedForegroundDesc);
-    ASSERT_NE(unrelatedForeground.id, 0u);
+    if (unrelatedForeground.id == 0u)
+    {
+        releaseFailingBackground.store(true, std::memory_order_release);
+        NLS::Base::Jobs::CompleteNoClear(failingBackground);
+        FAIL() << "Expected unrelated foreground waiter to be scheduled before releasing its failing dependency.";
+    }
+
+    releaseFailingBackground.store(true, std::memory_order_release);
     NLS::Base::Jobs::CompleteNoClear(failingBackground);
+    EXPECT_EQ(unrelatedForegroundCancelCount.load(std::memory_order_acquire), 0);
 
     std::atomic<int> targetDependencyCounter = 0;
     AtomicCounterData targetDependencyData{&targetDependencyCounter};

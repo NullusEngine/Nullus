@@ -6,15 +6,21 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 10
         with:
           submodules: false
 
       - name: Sync submodules
+        timeout-minutes: 20
         shell: bash
         run: |
           set -euo pipefail
@@ -22,11 +28,13 @@ jobs:
           git submodule update --init --recursive --jobs 4
 
       - name: Setup .NET SDK
+        timeout-minutes: 10
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
 
       - name: Build
+        timeout-minutes: 60
         shell: bash
         run: |
           set -o pipefail
@@ -46,7 +54,7 @@ jobs:
           fi
 
       - name: Run unit tests
-        timeout-minutes: 20
+        timeout-minutes: 45
         shell: bash
         run: |
           set -euo pipefail

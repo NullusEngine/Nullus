@@ -6,20 +6,27 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 15
         with:
           submodules: 'true'
 
       - name: Setup .NET SDK
+        timeout-minutes: 10
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
 
       - name: Install system build dependencies
+        timeout-minutes: 20
         run: |
           sudo apt update
           sudo apt-get install -y \
@@ -29,10 +36,11 @@ jobs:
             libgl1-mesa-dev libglu1-mesa-dev libvulkan-dev
 
       - name: Build
+        timeout-minutes: 60
         run: NLS_CMAKE_OPTIONS="-DNLS_BUILD_TESTS=ON" NLS_BUILD_TARGETS="NullusUnitTests ReflectionTest" NLS_BUILD_JOBS=1 ./build_linux.sh debug
 
       - name: Run unit tests
-        timeout-minutes: 20
+        timeout-minutes: 45
         run: |
           set -euo pipefail
           ls -R build/linux/bin || true

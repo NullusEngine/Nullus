@@ -3462,6 +3462,7 @@ TEST(ThreadedRenderingLifecycleTests, ReusableFrameContextReservationWaitsForGpu
     NLS::Render::Context::Driver driver(settings);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
     NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
 
     auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
     auto frameFence = std::make_shared<TestFence>();
@@ -3515,6 +3516,7 @@ TEST(ThreadedRenderingLifecycleTests, PreparedPublicationZeroRetirementWaitDoesN
     NLS::Render::Context::Driver driver(settings);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
     NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
 
     auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
     auto frameFence = std::make_shared<TestFence>();
@@ -3547,6 +3549,9 @@ TEST(ThreadedRenderingLifecycleTests, PreparedPublicationZeroRetirementWaitDoesN
     EXPECT_EQ(frameFence->waitCalls, 0u)
         << "A zero publish retirement wait is a non-blocking poll, not an infinite GPU fence wait.";
     EXPECT_FALSE(NLS::Render::Context::DriverRendererAccess::GetReservedFrameContextSlotIndex(driver).has_value());
+
+    // Keep Driver teardown focused on the reservation path already asserted above.
+    frameFence->signaled = true;
 }
 
 TEST(ThreadedRenderingLifecycleTests, ReusableFrameContextReservationAllowsRetiredNoGpuWorkSlotWithoutFenceSignal)
@@ -3561,6 +3566,7 @@ TEST(ThreadedRenderingLifecycleTests, ReusableFrameContextReservationAllowsRetir
     NLS::Render::Context::Driver driver(settings);
     auto explicitDevice = std::make_shared<TestExplicitDevice>();
     NLS::Render::Context::DriverTestAccess::SetExplicitDevice(driver, explicitDevice);
+    NLS::Render::Context::DriverTestAccess::PauseThreadedRenderingWorkers(driver);
 
     auto& frameContext = NLS::Render::Context::DriverTestAccess::EnsureFrameContext(driver, 0u);
     auto frameFence = std::make_shared<TestFence>();
@@ -3593,6 +3599,9 @@ TEST(ThreadedRenderingLifecycleTests, ReusableFrameContextReservationAllowsRetir
         NLS::Render::Context::DriverRendererAccess::ReserveReusableFrameContextSlotIndex(driver);
     ASSERT_TRUE(reusableSlot.has_value());
     EXPECT_EQ(reusableSlot.value(), 0u);
+
+    // Keep Driver teardown focused on the reservation path already asserted above.
+    frameFence->signaled = true;
 }
 
 TEST(ThreadedRenderingLifecycleTests, CompositeRendererKeepsFrameDescriptorsUntilPreparedBuilderIsCaptured)

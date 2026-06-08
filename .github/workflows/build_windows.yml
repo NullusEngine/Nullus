@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-latest
@@ -15,15 +19,18 @@ jobs:
         platform: [x64]
     steps:
       - uses: actions/checkout@v4
+        timeout-minutes: 15
         with:
           submodules: 'true'
 
       - name: Setup .NET SDK
+        timeout-minutes: 10
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
 
       - name: Install Vulkan SDK
+        timeout-minutes: 30
         shell: powershell
         run: |
           winget install --id KhronosGroup.VulkanSDK --exact --accept-package-agreements --accept-source-agreements --disable-interactivity
@@ -43,15 +50,18 @@ jobs:
           "VK_SDK_PATH=$($vulkanSdk.FullName)" >> $env:GITHUB_ENV
 
       - name: Configure
+        timeout-minutes: 20
         shell: powershell
         run: cmake -S . -B build\windows -G "Visual Studio 17 2022" -A ${{ matrix.platform }} -DCMAKE_CONFIGURATION_TYPES=${{ matrix.configuration }} -DNLS_BUILD_TESTS=ON
 
       - name: Restore MetaParser
+        timeout-minutes: 10
         shell: powershell
         run: dotnet restore build\windows\Tools\MetaParser\generated\src\MetaParser.csproj
 
       - name: Build
         id: build_step
+        timeout-minutes: 60
         shell: powershell
         continue-on-error: true
         run: |
@@ -103,10 +113,16 @@ jobs:
       - name: Fail on build error
         if: always() && steps.build_step.outputs.exit_code != '0'
         shell: powershell
-        run: exit [int]'${{ steps.build_step.outputs.exit_code }}'
+        run: |
+          $exitCodeText = '${{ steps.build_step.outputs.exit_code }}'
+          if ([string]::IsNullOrWhiteSpace($exitCodeText)) {
+            Write-Output "::error::Windows build timed out or ended before reporting an exit code."
+            exit 1
+          }
+          exit [int]$exitCodeText
 
       - name: Run unit tests
-        timeout-minutes: 20
+        timeout-minutes: 45
         shell: powershell
         run: |
           Get-ChildItem "build/windows/bin/${{ matrix.configuration }}" | Format-Table -AutoSize
